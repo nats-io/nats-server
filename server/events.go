@@ -80,7 +80,6 @@ type internal struct {
 	statsz   time.Duration
 	shash    string
 	inboxPre string
-	closeRes func()
 }
 
 // ServerStatsMsg is sent periodically with stats updates.
@@ -771,10 +770,6 @@ func (s *Server) shutdownEventing() {
 	clearTimer(&s.sys.sweeper)
 	clearTimer(&s.sys.stmr)
 	s.mu.Unlock()
-
-	if s.sys.closeRes != nil {
-		s.sys.closeRes()
-	}
 
 	// We will queue up a shutdown event and wait for the
 	// internal send loop to exit.

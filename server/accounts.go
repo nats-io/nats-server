@@ -2591,7 +2591,7 @@ type AccountResolver interface {
 	Fetch(name string) (string, error)
 	Store(name, jwt string) error
 	IsReadOnly() bool
-	Start(server *Server, systemAccPubKey string) (func(), error)
+	Start(server *Server) error
 	IsTrackingUpdate() bool
 	Reload() error
 	Close()
@@ -2608,8 +2608,8 @@ func (*resolverDefaultsOpsImpl) IsTrackingUpdate() bool {
 	return false
 }
 
-func (*resolverDefaultsOpsImpl) Start(*Server, string) (func(), error) {
-	return func() {}, nil
+func (*resolverDefaultsOpsImpl) Start(*Server) error {
+	return nil
 }
 
 func (*resolverDefaultsOpsImpl) Reload() error {
@@ -2730,10 +2730,7 @@ func respondToUpdate(s *Server, respSubj string, acc string, message string, err
 	s.sendInternalMsgLocked(respSubj, _EMPTY_, server, response)
 }
 
-func (dr *DirAccResolver) Start(s *Server, sysAcc string) (func(), error) {
-	if dr == nil {
-		return func() {}, nil
-	}
+func (dr *DirAccResolver) Start(s *Server) error {
 	dr.Lock()
 	defer dr.Unlock()
 	dr.DirJWTStore.changed = func(pubKey string) {
@@ -2746,14 +2743,9 @@ func (dr *DirAccResolver) Start(s *Server, sysAcc string) (func(), error) {
 	}
 	const accountPackRequest = "$SYS.ACCOUNT.CLAIMS.PACK"
 	const accountLookupRequest = "$SYS.ACCOUNT.*.CLAIMS.LOOKUP"
-	var (
-		subLookupReq, subPackResp, subPackReq, subUpdate *subscription
-		err                                              error
-	)
-	quit := make(chan struct{})
 	packRespIb := s.newRespInbox()
 	// subscribe to account jwt update requests
-	if subUpdate, err = s.sysSubscribe(fmt.Sprintf(accUpdateEventSubj, "*"), func(_ *subscription, _ *client, subj, resp string, msg []byte) {
+	if _, err := s.sysSubscribe(fmt.Sprintf(accUpdateEventSubj, "*"), func(_ *subscription, _ *client, subj, resp string, msg []byte) {
 		tk := strings.Split(subj, tsep)
 		if len(tk) != accUpdateTokens {
 			return
@@ -2770,8 +2762,8 @@ func (dr *DirAccResolver) Start(s *Server, sysAcc string) (func(), error) {
 			respondToUpdate(s, resp, pubKey, "jwt updated", nil)
 		}
 	}); err != nil {
-		s.Errorf("Error setting up update handling: %v", err)
-	} else if subLookupReq, err = s.sysSubscribe(accountLookupRequest, func(_ *subscription, _ *client, subj, reply string, msg []byte) {
+		return fmt.Errorf("error setting up update handling: %v", err)
+	} else if _, err := s.sysSubscribe(accountLookupRequest, func(_ *subscription, _ *client, subj, reply string, msg []byte) {
 		// respond to lookups with our version
 		if reply == "" {
 			return
@@ -2786,8 +2778,8 @@ func (dr *DirAccResolver) Start(s *Server, sysAcc string) (func(), error) {
 			s.sendInternalMsgLocked(reply, "", nil, []byte(theJWT))
 		}
 	}); err != nil {
-		s.Errorf("Error setting up pack response handling: %v", err)
-	} else if subPackReq, err = s.sysSubscribeQ(accountPackRequest, "responder",
+		return fmt.Errorf("error setting up lookup request handling: %v", err)
+	} else if _, err = s.sysSubscribeQ(accountPackRequest, "responder",
 		// respond to pack requests with one or more pack messages
 		// an empty message signifies the end of the response responder
 		func(_ *subscription, _ *client, _, reply string, theirHash []byte) {
@@ -2808,8 +2800,8 @@ func (dr *DirAccResolver) Start(s *Server, sysAcc string) (func(), error) {
 				s.sendInternalMsgLocked(reply, "", nil, []byte{})
 			}
 		}); err != nil {
-		s.Errorf("Error setting up pack request handling: %v", err)
-	} else if subPackResp, err = s.sysSubscribe(packRespIb, func(_ *subscription, _ *client, _, _ string, msg []byte) {
+		return fmt.Errorf("error setting up pack request handling: %v", err)
+	} else if _, err = s.sysSubscribe(packRespIb, func(_ *subscription, _ *client, _, _ string, msg []byte) {
 		// embed pack responses into store
 		hash := dr.DirJWTStore.Hash()
 		if len(msg) == 0 { // end of response stream
@@ -2821,37 +2813,27 @@ func (dr *DirAccResolver) Start(s *Server, sysAcc string) (func(), error) {
 			s.Debugf("Merging succeeded and changed %x to %x", hash, dr.DirJWTStore.Hash())
 		}
 	}); err != nil {
-		s.Errorf("Error setting up pack response handling: %v", err)
-	} else {
-		// periodically send out pack message
-		go func() {
-			ticker := time.NewTicker(dr.syncInterval)
-			for {
-				select {
-				case <-quit:
-					ticker.Stop()
-					return
-				case <-ticker.C:
-				}
-				ourHash := dr.DirJWTStore.Hash()
-				s.Debugf("Checking store state: %x", ourHash)
-				s.sendInternalMsgLocked(accountPackRequest, packRespIb, nil, ourHash[:])
+		return fmt.Errorf("error setting up pack response handling: %v", err)
+	}
+	// periodically send out pack message
+	quit := s.quitCh
+	s.startGoRoutine(func() {
+		defer s.grWG.Done()
+		ticker := time.NewTicker(dr.syncInterval)
+		for {
+			select {
+			case <-quit:
+				ticker.Stop()
+				return
+			case <-ticker.C:
 			}
-		}()
-		s.Noticef("Managing all jwt in exclusive directory %s", dr.directory)
-	}
-	closer := func() {
-		close(quit)
-		s.sysUnsubscribe(subUpdate)
-		s.sysUnsubscribe(subLookupReq)
-		s.sysUnsubscribe(subPackResp)
-		s.sysUnsubscribe(subPackReq)
-	}
-	if err != nil {
-		closer()
-		return nil, err
-	}
-	return closer, err
+			ourHash := dr.DirJWTStore.Hash()
+			s.Debugf("Checking store state: %x", ourHash)
+			s.sendInternalMsgLocked(accountPackRequest, packRespIb, nil, ourHash[:])
+		}
+	})
+	s.Noticef("Managing all jwt in exclusive directory %s", dr.directory)
+	return nil
 }
 
 func (dr *DirAccResolver) Fetch(name string) (string, error) {
@@ -2936,7 +2918,7 @@ func NewCacheDirAccResolver(path string, limit int64, ttl time.Duration) (*Cache
 	return &CacheDirAccResolver{DirAccResolver{store, 0}, nil, ttl}, nil
 }
 
-func (dr *CacheDirAccResolver) Start(s *Server, sysAcc string) (func(), error) {
+func (dr *CacheDirAccResolver) Start(s *Server) error {
 	dr.Lock()
 	defer dr.Unlock()
 	dr.Server = s
@@ -2948,10 +2930,8 @@ func (dr *CacheDirAccResolver) Start(s *Server, sysAcc string) (func(), error) {
 			s.Errorf("update resulted in error %v", err)
 		}
 	}
-	var subUpdate *subscription
-	var err error
 	// subscribe to account jwt update requests
-	if subUpdate, err = s.sysSubscribe(fmt.Sprintf(accUpdateEventSubj, "*"), func(_ *subscription, _ *client, subj, resp string, msg []byte) {
+	if _, err := s.sysSubscribe(fmt.Sprintf(accUpdateEventSubj, "*"), func(_ *subscription, _ *client, subj, resp string, msg []byte) {
 		tk := strings.Split(subj, tsep)
 		if len(tk) != accUpdateTokens {
 			return
@@ -2970,13 +2950,10 @@ func (dr *CacheDirAccResolver) Start(s *Server, sysAcc string) (func(), error) {
 			respondToUpdate(s, resp, pubKey, "jwt updated cache", nil)
 		}
 	}); err != nil {
-		s.Errorf("Error setting up update handling: %v", err)
-		return nil, err
+		return fmt.Errorf("error setting up update handling: %v", err)
 	}
 	s.Noticef("Managing some jwt in exclusive directory %s", dr.directory)
-	return func() {
-		s.sysUnsubscribe(subUpdate)
-	}, nil
+	return nil
 }
 
 func (dr *CacheDirAccResolver) Reload() error {

@@ -1020,7 +1020,6 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		chkOrph: 3 * eventsHBInterval,
 	}
 	s.sys.wg.Add(1)
-	resolver := s.accResolver
 	s.mu.Unlock()
 
 	// Register with the account.
@@ -1034,17 +1033,6 @@ func (s *Server) setSystemAccount(acc *Account) error {
 
 	// Start up our general subscriptions
 	s.initEventTracking()
-
-	// start up resolver machinery
-	if resolver != nil {
-		if closer, err := resolver.Start(s, acc.Name); err != nil {
-			return err
-		} else {
-			s.mu.Lock()
-			s.sys.closeRes = closer
-			s.mu.Unlock()
-		}
-	}
 
 	// Track for dead remote servers.
 	s.wrapChk(s.startRemoteServerSweepTimer)()
@@ -1372,12 +1360,34 @@ func (s *Server) Start() {
 		s.checkResolvePreloads()
 	}
 
-	// In operator mode, when the account resolver depends on an external system and
-	// the system account is the bootstrapping account, start fetching it
-	if ar := s.accResolver; len(opts.TrustedOperators) == 1 && ar != nil &&
-		opts.SystemAccount != _EMPTY_ && opts.SystemAccount != DEFAULT_SYSTEM_ACCOUNT {
-		if _, ok := ar.(*MemAccResolver); !ok {
-			if v, ok := s.accounts.Load(s.opts.SystemAccount); ok && v.(*Account).claimJWT == "" {
+	// Log the pid to a file
+	if opts.PidFile != _EMPTY_ {
+		if err := s.logPid(); err != nil {
+			PrintAndDie(fmt.Sprintf("Could not write pidfile: %v\n", err))
+		}
+	}
+
+	// Setup system account which will start the eventing stack.
+	if sa := opts.SystemAccount; sa != _EMPTY_ {
+		if err := s.SetSystemAccount(sa); err != nil {
+			s.Fatalf("Can't set system account: %v", err)
+			return
+		}
+	} else if !opts.NoSystemAccount {
+		// We will create a default system account here.
+		s.SetDefaultSystemAccount()
+	}
+
+	// start up resolver machinery
+	if ar := s.AccountResolver(); ar != nil {
+		if err := ar.Start(s); err != nil {
+			PrintAndDie(fmt.Sprintf("Could not start resolver: %v\n", err))
+		}
+		// In operator mode, when the account resolver depends on an external system and
+		// the system account is the bootstrapping account, start fetching it
+		if len(opts.TrustedOperators) == 1 && opts.SystemAccount != _EMPTY_ && opts.SystemAccount != DEFAULT_SYSTEM_ACCOUNT {
+			if _, ok := ar.(*MemAccResolver); !ok {
+			} else if v, ok := s.accounts.Load(s.opts.SystemAccount); ok && v.(*Account).claimJWT == "" {
 				s.Noticef("Using bootstrapping system account")
 				s.startGoRoutine(func() {
 					defer s.grWG.Done()
@@ -1398,24 +1408,6 @@ func (s *Server) Start() {
 				})
 			}
 		}
-	}
-
-	// Log the pid to a file
-	if opts.PidFile != _EMPTY_ {
-		if err := s.logPid(); err != nil {
-			PrintAndDie(fmt.Sprintf("Could not write pidfile: %v\n", err))
-		}
-	}
-
-	// Setup system account which will start the eventing stack.
-	if sa := opts.SystemAccount; sa != _EMPTY_ {
-		if err := s.SetSystemAccount(sa); err != nil {
-			s.Fatalf("Can't set system account: %v", err)
-			return
-		}
-	} else if !opts.NoSystemAccount {
-		// We will create a default system account here.
-		s.SetDefaultSystemAccount()
 	}
 
 	// Start expiration of mapped GW replies, regardless if
