@@ -768,7 +768,6 @@ func (c *client) setPermissions(perms *Permissions) {
 // Check to see if we have an expiration for the user JWT via base claims.
 // FIXME(dlc) - Clear on connect with new JWT.
 func (c *client) setExpiration(claims *jwt.ClaimsData, validFor time.Duration) {
-	tn := time.Now().Unix()
 	if claims.Expires == 0 {
 		if validFor != 0 {
 			c.setExpirationTimer(validFor)
@@ -776,6 +775,7 @@ func (c *client) setExpiration(claims *jwt.ClaimsData, validFor time.Duration) {
 		return
 	}
 	expiresAt := time.Duration(0)
+	tn := time.Now().Unix()
 	if claims.Expires > tn {
 		expiresAt = time.Duration(claims.Expires-tn) * time.Second
 	}
