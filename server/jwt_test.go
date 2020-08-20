@@ -3286,7 +3286,8 @@ func TestJWTUserLimits(t *testing.T) {
 }
 
 func TestJWTTimeExpiration(t *testing.T) {
-	validFor := 4 * time.Second
+	validFor := 1500 * time.Millisecond
+	validRange := 500 * time.Millisecond
 	doNotExpire := time.Now().AddDate(1, 0, 0)
 	// create account
 	kp, _ := nkeys.CreateAccount()
@@ -3328,7 +3329,7 @@ func TestJWTTimeExpiration(t *testing.T) {
 				now := time.Now()
 				stop := start.Add(validFor)
 				// assure event happens within a second of stop
-				if stop.Add(-time.Second).Before(stop) && now.Before(stop.Add(time.Second)) {
+				if stop.Add(-validRange).Before(stop) && now.Before(stop.Add(validRange)) {
 					errChan <- struct{}{}
 				}
 			}))
@@ -3361,13 +3362,13 @@ func TestJWTTimeExpiration(t *testing.T) {
 				now := time.Now()
 				stop := start1.Add(validFor)
 				// assure event happens within a second of stop
-				if stop.Add(-time.Second).Before(stop) && now.Before(stop.Add(time.Second)) {
+				if stop.Add(-validRange).Before(stop) && now.Before(stop.Add(validRange)) {
 					errChan <- struct{}{}
 					return
 				}
 				stop = start2.Add(validFor)
 				// assure event happens within a second of stop
-				if stop.Add(-time.Second).Before(stop) && now.Before(stop.Add(time.Second)) {
+				if stop.Add(-validRange).Before(stop) && now.Before(stop.Add(validRange)) {
 					errChan <- struct{}{}
 				}
 			}))
@@ -3401,7 +3402,7 @@ func TestJWTTimeExpiration(t *testing.T) {
 				now := time.Now()
 				stop := start.Add(validFor)
 				// assure event happens within a second of stop
-				if stop.Add(-time.Second).Before(stop) && now.Before(stop.Add(time.Second)) {
+				if stop.Add(-validRange).Before(stop) && now.Before(stop.Add(validRange)) {
 					errChan <- struct{}{}
 				}
 			}))
