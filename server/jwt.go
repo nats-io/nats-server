@@ -16,8 +16,10 @@ package server
 import (
 	"fmt"
 	"io/ioutil"
+	"net"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"
@@ -139,4 +141,61 @@ func validateTrustedOperators(o *Options) error {
 		}
 	}
 	return nil
+}
+
+func validateSrc(claims *jwt.UserClaims, host string) bool {
+	if claims == nil {
+		return false
+	} else if claims.Src == "" {
+		return true
+	} else if host == "" {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, cidr := range strings.Split(claims.Src, ",") {
+		if _, net, err := net.ParseCIDR(cidr); err != nil {
+			return false // should not happen as this jwt is invalid
+		} else if net.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateTimes(claims *jwt.UserClaims) (bool, time.Duration) {
+	if claims == nil {
+		return false, time.Duration(0)
+	} else if len(claims.Times) == 0 {
+		return true, time.Duration(0)
+	}
+	now := time.Now()
+	for _, timeRange := range claims.Times {
+		y, m, d := now.Date()
+		m = m - 1
+		d = d - 1
+		start, err := time.ParseInLocation("15:04:05", timeRange.Start, now.Location())
+		if err != nil {
+			return false, time.Duration(0) // parsing not expected to fail at this point
+		}
+		end, err := time.ParseInLocation("15:04:05", timeRange.End, now.Location())
+		if err != nil {
+			return false, time.Duration(0) // parsing not expected to fail at this point
+		}
+		if start.After(end) {
+			start = start.AddDate(y, int(m), d)
+			d++ // the intent is to be the next day
+		} else {
+			start = start.AddDate(y, int(m), d)
+		}
+		if start.Before(now) {
+			end = end.AddDate(y, int(m), d)
+			if end.After(now) {
+				return true, end.Sub(now)
+			}
+		}
+	}
+	return false, time.Duration(0)
 }

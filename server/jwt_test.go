@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
@@ -40,7 +41,16 @@ var (
 	oSeed = []byte("SOAFYNORQLQFJYBYNUGC5D7SH2MXMUX5BFEWWGHN3EK4VGG5TPT5DZP7QU")
 	// This matches ./configs/nkeys/op.jwt
 	ojwt = "eyJ0eXAiOiJqd3QiLCJhbGciOiJlZDI1NTE5In0.eyJhdWQiOiJURVNUUyIsImV4cCI6MTg1OTEyMTI3NSwianRpIjoiWE5MWjZYWVBIVE1ESlFSTlFPSFVPSlFHV0NVN01JNVc1SlhDWk5YQllVS0VRVzY3STI1USIsImlhdCI6MTU0Mzc2MTI3NSwiaXNzIjoiT0NBVDMzTVRWVTJWVU9JTUdOR1VOWEo2NkFIMlJMU0RBRjNNVUJDWUFZNVFNSUw2NU5RTTZYUUciLCJuYW1lIjoiU3luYWRpYSBDb21tdW5pY2F0aW9ucyBJbmMuIiwibmJmIjoxNTQzNzYxMjc1LCJzdWIiOiJPQ0FUMzNNVFZVMlZVT0lNR05HVU5YSjY2QUgyUkxTREFGM01VQkNZQVk1UU1JTDY1TlFNNlhRRyIsInR5cGUiOiJvcGVyYXRvciIsIm5hdHMiOnsic2lnbmluZ19rZXlzIjpbIk9EU0tSN01ZRlFaNU1NQUo2RlBNRUVUQ1RFM1JJSE9GTFRZUEpSTUFWVk40T0xWMllZQU1IQ0FDIiwiT0RTS0FDU1JCV1A1MzdEWkRSVko2NTdKT0lHT1BPUTZLRzdUNEhONk9LNEY2SUVDR1hEQUhOUDIiLCJPRFNLSTM2TFpCNDRPWTVJVkNSNlA1MkZaSlpZTVlXWlZXTlVEVExFWjVUSzJQTjNPRU1SVEFCUiJdfX0.hyfz6E39BMUh0GLzovFfk3wT4OfualftjdJ_eYkLfPvu5tZubYQ_Pn9oFYGCV_6yKy3KMGhWGUCyCdHaPhalBw"
+	oKp  nkeys.KeyPair
 )
+
+func init() {
+	var err error
+	oKp, err = nkeys.FromSeed(oSeed)
+	if err != nil {
+		panic(fmt.Sprintf("Parsing oSeed failed with: %v", err))
+	}
+}
 
 func opTrustBasicSetup() *Server {
 	kp, _ := nkeys.FromSeed(oSeed)
@@ -92,8 +102,6 @@ func createClientWithIssuer(t *testing.T, s *Server, akp nkeys.KeyPair, optIssue
 func setupJWTTestWithClaims(t *testing.T, nac *jwt.AccountClaims, nuc *jwt.UserClaims, expected string) (*Server, nkeys.KeyPair, *testAsyncClient, *bufio.Reader) {
 	t.Helper()
 
-	okp, _ := nkeys.FromSeed(oSeed)
-
 	akp, _ := nkeys.CreateAccount()
 	apub, _ := akp.PublicKey()
 	if nac == nil {
@@ -101,7 +109,7 @@ func setupJWTTestWithClaims(t *testing.T, nac *jwt.AccountClaims, nuc *jwt.UserC
 	} else {
 		nac.Subject = apub
 	}
-	ajwt, err := nac.Encode(okp)
+	ajwt, err := nac.Encode(oKp)
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
@@ -288,7 +296,10 @@ func TestJWTUserExpiresAfterConnect(t *testing.T) {
 	s, c, cr := setupJWTTestWithUserClaims(t, nuc, "+OK")
 	defer s.Shutdown()
 	defer c.close()
-	l, _ := cr.ReadString('\n')
+	l, err := cr.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Received %v", err)
+	}
 	if !strings.HasPrefix(l, "PONG") {
 		t.Fatalf("Expected a PONG")
 	}
@@ -296,7 +307,10 @@ func TestJWTUserExpiresAfterConnect(t *testing.T) {
 	// Now we should expire after 1 second or so.
 	time.Sleep(1250 * time.Millisecond)
 
-	l, _ = cr.ReadString('\n')
+	l, err = cr.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Received %v", err)
+	}
 	if !strings.HasPrefix(l, "-ERR ") {
 		t.Fatalf("Expected an error")
 	}
@@ -2935,7 +2949,7 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 		nc := natsConnect(t, url, nats.UserCredentials(credsfile))
 		nc.Close()
 	}
-	createAccountAndUser := func(pair nkeys.KeyPair, limit bool) (string, string, string, string) {
+	createAccountAndUser := func(limit bool) (string, string, string, string) {
 		t.Helper()
 		kp, _ := nkeys.CreateAccount()
 		pub, _ := kp.PublicKey()
@@ -2943,14 +2957,14 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 		if limit {
 			claim.Limits.Conn = 1
 		}
-		jwt1, err := claim.Encode(pair)
+		jwt1, err := claim.Encode(oKp)
 		require_NoError(t, err)
 		time.Sleep(2 * time.Second)
 		// create updated claim allowing more connections
 		if limit {
 			claim.Limits.Conn = 2
 		}
-		jwt2, err := claim.Encode(pair)
+		jwt2, err := claim.Encode(oKp)
 		require_NoError(t, err)
 		ukp, _ := nkeys.CreateUser()
 		seed, _ := ukp.Seed()
@@ -2991,21 +3005,14 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 		}
 		return passCnt
 	}
-	// Create Operator
-	op, _ := nkeys.CreateOperator()
-	opub, _ := op.PublicKey()
-	oc := jwt.NewOperatorClaims(opub)
-	oc.Subject = opub
-	ojwt, err := oc.Encode(op)
-	require_NoError(t, err)
 	// Create Accounts and corresponding user creds
-	syspub, sysjwt, _, sysCreds := createAccountAndUser(op, false)
+	syspub, sysjwt, _, sysCreds := createAccountAndUser(false)
 	defer os.Remove(sysCreds)
-	apub, ajwt1, ajwt2, aCreds := createAccountAndUser(op, true)
+	apub, ajwt1, ajwt2, aCreds := createAccountAndUser(true)
 	defer os.Remove(aCreds)
-	bpub, bjwt1, bjwt2, bCreds := createAccountAndUser(op, true)
+	bpub, bjwt1, bjwt2, bCreds := createAccountAndUser(true)
 	defer os.Remove(bCreds)
-	cpub, cjwt1, cjwt2, cCreds := createAccountAndUser(op, true)
+	cpub, cjwt1, cjwt2, cCreds := createAccountAndUser(true)
 	defer os.Remove(cCreds)
 	// Create one directory for each server
 	dirA := createDir("srv-a")
@@ -3180,8 +3187,192 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 
 	// Test exceeding limit. For the exclusive directory resolver, limit is a stop gap measure.
 	// It is not expected to be hit. When hit the administrator is supposed to take action.
-	dpub, djwt1, _, dCreds := createAccountAndUser(op, true)
+	dpub, djwt1, _, dCreds := createAccountAndUser(true)
 	defer os.Remove(dCreds)
 	passCnt = updateJwt(sA.ClientURL(), sysCreds, dpub, djwt1)
 	require_True(t, passCnt == 1) // Only Server C updated
+}
+
+func newTimeRange(start time.Time, dur time.Duration) jwt.TimeRange {
+	return jwt.TimeRange{Start: start.Format("15:04:05"), End: start.Add(dur).Format("15:04:05")}
+}
+
+func createUserWithLimit(t *testing.T, accKp nkeys.KeyPair, limits func(*jwt.Limits)) string {
+	t.Helper()
+	ukp, _ := nkeys.CreateUser()
+	seed, _ := ukp.Seed()
+	upub, _ := ukp.PublicKey()
+	uclaim := newJWTTestUserClaims()
+	uclaim.Subject = upub
+	if limits != nil {
+		limits(&uclaim.Limits)
+	}
+	vr := jwt.ValidationResults{}
+	uclaim.Validate(&vr)
+	require_Len(t, len(vr.Errors()), 0)
+	ujwt, err := uclaim.Encode(accKp)
+	require_NoError(t, err)
+	return genCredsFile(t, ujwt, seed)
+}
+
+func TestJWTUserLimits(t *testing.T) {
+	// helper for time
+	inAnHour := time.Now().Add(time.Hour)
+	inTwoHours := time.Now().Add(2 * time.Hour)
+	// create account
+	kp, _ := nkeys.CreateAccount()
+	aPub, _ := kp.PublicKey()
+	claim := jwt.NewAccountClaims(aPub)
+	aJwt, err := claim.Encode(oKp)
+	require_NoError(t, err)
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		operator: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+		}
+    `, ojwt, aPub, aJwt)))
+	defer os.Remove(conf)
+	sA, _ := RunServerWithConfig(conf)
+	defer sA.Shutdown()
+	for _, v := range []struct {
+		pass bool
+		f    func(*jwt.Limits)
+	}{
+		{true, nil},
+		{false, func(j *jwt.Limits) { j.Src = "8.8.8.8/8" }},
+		{true, func(j *jwt.Limits) { j.Src = "8.8.8.8/0" }},
+		{true, func(j *jwt.Limits) { j.Src = "127.0.0.1/8" }},
+		{true, func(j *jwt.Limits) { j.Src = "8.8.8.8/8,127.0.0.1/8" }},
+		{false, func(j *jwt.Limits) { j.Src = "8.8.8.8/8,9.9.9.9/8" }},
+		{true, func(j *jwt.Limits) { j.Times = append(j.Times, newTimeRange(time.Now(), time.Hour)) }},
+		{false, func(j *jwt.Limits) { j.Times = append(j.Times, newTimeRange(time.Now().Add(time.Hour), time.Hour)) }},
+		{true, func(j *jwt.Limits) {
+			j.Times = append(j.Times, newTimeRange(inAnHour, time.Hour), newTimeRange(time.Now(), time.Hour))
+		}}, // last one is within range
+		{false, func(j *jwt.Limits) {
+			j.Times = append(j.Times, newTimeRange(inAnHour, time.Hour), newTimeRange(inTwoHours, time.Hour))
+		}}, // out of range
+		{false, func(j *jwt.Limits) {
+			j.Times = append(j.Times, newTimeRange(inAnHour, 3*time.Hour), newTimeRange(inTwoHours, 2*time.Hour))
+		}}, // overlapping [a[]b] out of range*/
+		{false, func(j *jwt.Limits) {
+			j.Times = append(j.Times, newTimeRange(inAnHour, 3*time.Hour), newTimeRange(inTwoHours, time.Hour))
+		}}, // overlapping [a[b]] out of range
+		// next day tests where end < begin
+		{true, func(j *jwt.Limits) { j.Times = append(j.Times, newTimeRange(time.Now(), 25*time.Hour)) }},
+		{true, func(j *jwt.Limits) { j.Times = append(j.Times, newTimeRange(time.Now(), -time.Hour)) }},
+	} {
+		t.Run("", func(t *testing.T) {
+			creds := createUserWithLimit(t, kp, v.f)
+			defer os.Remove(creds)
+			if c, err := nats.Connect(sA.ClientURL(), nats.UserCredentials(creds)); err == nil {
+				c.Close()
+				if !v.pass {
+					t.Fatalf("Expected failure got none")
+				}
+			} else if v.pass {
+				t.Fatalf("Expected success got %v", err)
+			} else if !strings.Contains(err.Error(), "Authorization Violation") {
+				t.Fatalf("Expected error other than %v", err)
+			}
+		})
+	}
+}
+
+func TestJWTTimeExpiration(t *testing.T) {
+	validFor := 4 * time.Second
+	// create account
+	kp, _ := nkeys.CreateAccount()
+	aPub, _ := kp.PublicKey()
+	claim := jwt.NewAccountClaims(aPub)
+	aJwt, err := claim.Encode(oKp)
+	require_NoError(t, err)
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		operator: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+		}
+    `, ojwt, aPub, aJwt)))
+	defer os.Remove(conf)
+	sA, _ := RunServerWithConfig(conf)
+	defer sA.Shutdown()
+	t.Run("simple expiration", func(t *testing.T) {
+		start := time.Now()
+		creds := createUserWithLimit(t, kp, func(j *jwt.Limits) { j.Times = []jwt.TimeRange{newTimeRange(start, validFor)} })
+		defer os.Remove(creds)
+		disconnectChan := make(chan struct{})
+		defer close(disconnectChan)
+		errChan := make(chan struct{})
+		defer close(errChan)
+		c := natsConnect(t, sA.ClientURL(),
+			nats.UserCredentials(creds),
+			nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
+				if err != io.EOF {
+					return
+				}
+				disconnectChan <- struct{}{}
+			}),
+			nats.ErrorHandler(func(conn *nats.Conn, s *nats.Subscription, err error) {
+				if err != nats.ErrAuthExpired {
+					return
+				}
+				now := time.Now()
+				stop := start.Add(4 * time.Second)
+				// assure event happens within a second of stop
+				if stop.Add(-time.Second).Before(stop) && now.Before(stop.Add(time.Second)) {
+					errChan <- struct{}{}
+				}
+			}))
+		<-errChan
+		<-disconnectChan
+		require_True(t, c.IsReconnecting())
+		require_False(t, c.IsConnected())
+		c.Close()
+	})
+	t.Run("double expiration", func(t *testing.T) {
+		start1 := time.Now()
+		start2 := start1.Add(2 * validFor)
+		creds := createUserWithLimit(t, kp, func(j *jwt.Limits) {
+			j.Times = []jwt.TimeRange{newTimeRange(start1, validFor), newTimeRange(start2, validFor)}
+		})
+		defer os.Remove(creds)
+		errChan := make(chan struct{})
+		defer close(errChan)
+		reConnectChan := make(chan struct{})
+		defer close(reConnectChan)
+		c := natsConnect(t, sA.ClientURL(),
+			nats.UserCredentials(creds),
+			nats.ReconnectHandler(func(conn *nats.Conn) {
+				reConnectChan <- struct{}{}
+			}),
+			nats.ErrorHandler(func(conn *nats.Conn, s *nats.Subscription, err error) {
+				if err != nats.ErrAuthExpired {
+					return
+				}
+				now := time.Now()
+				stop := start1.Add(validFor)
+				// assure event happens within a second of stop
+				if stop.Add(-time.Second).Before(stop) && now.Before(stop.Add(time.Second)) {
+					errChan <- struct{}{}
+					return
+				}
+				stop = start2.Add(validFor)
+				// assure event happens within a second of stop
+				if stop.Add(-time.Second).Before(stop) && now.Before(stop.Add(time.Second)) {
+					errChan <- struct{}{}
+				}
+			}))
+		<-errChan
+		require_False(t, c.IsConnected())
+		<-reConnectChan
+		require_False(t, c.IsReconnecting())
+		require_True(t, c.IsConnected())
+		<-errChan
+		require_False(t, c.IsConnected())
+		c.Close()
+	})
 }

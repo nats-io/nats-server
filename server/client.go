@@ -767,16 +767,23 @@ func (c *client) setPermissions(perms *Permissions) {
 
 // Check to see if we have an expiration for the user JWT via base claims.
 // FIXME(dlc) - Clear on connect with new JWT.
-func (c *client) checkExpiration(claims *jwt.ClaimsData) {
-	if claims.Expires == 0 {
-		return
-	}
+func (c *client) setExpiration(claims *jwt.ClaimsData, validFor time.Duration) {
 	tn := time.Now().Unix()
-	if claims.Expires < tn {
+	expiresAt := time.Duration(0)
+	if claims.Expires > tn {
+		expiresAt = time.Duration(claims.Expires - tn)
+	}
+	if claims.Expires == 0 {
+		if validFor != 0 {
+			c.setExpirationTimer(validFor)
+		}
 		return
 	}
-	expiresAt := time.Duration(claims.Expires - tn)
-	c.setExpirationTimer(expiresAt * time.Second)
+	if validFor != 0 && validFor < expiresAt {
+		c.setExpirationTimer(validFor)
+	} else if claims.Expires != 0 {
+		c.setExpirationTimer(expiresAt * time.Second)
+	}
 }
 
 // This will load up the deny structure used for filtering delivered
