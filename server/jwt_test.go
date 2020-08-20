@@ -3197,7 +3197,7 @@ func newTimeRange(start time.Time, dur time.Duration) jwt.TimeRange {
 	return jwt.TimeRange{Start: start.Format("15:04:05"), End: start.Add(dur).Format("15:04:05")}
 }
 
-func createUserWithLimit(t *testing.T, accKp nkeys.KeyPair, limits func(*jwt.Limits)) string {
+func createUserWithLimit(t *testing.T, accKp nkeys.KeyPair, expiration time.Time, limits func(*jwt.Limits)) string {
 	t.Helper()
 	ukp, _ := nkeys.CreateUser()
 	seed, _ := ukp.Seed()
@@ -3206,6 +3206,9 @@ func createUserWithLimit(t *testing.T, accKp nkeys.KeyPair, limits func(*jwt.Lim
 	uclaim.Subject = upub
 	if limits != nil {
 		limits(&uclaim.Limits)
+	}
+	if !expiration.IsZero() {
+		uclaim.Expires = expiration.Unix()
 	}
 	vr := jwt.ValidationResults{}
 	uclaim.Validate(&vr)
@@ -3219,6 +3222,7 @@ func TestJWTUserLimits(t *testing.T) {
 	// helper for time
 	inAnHour := time.Now().Add(time.Hour)
 	inTwoHours := time.Now().Add(2 * time.Hour)
+	doNotExpire := time.Now().AddDate(1, 0, 0)
 	// create account
 	kp, _ := nkeys.CreateAccount()
 	aPub, _ := kp.PublicKey()
@@ -3265,7 +3269,7 @@ func TestJWTUserLimits(t *testing.T) {
 		{true, func(j *jwt.Limits) { j.Times = append(j.Times, newTimeRange(time.Now(), -time.Hour)) }},
 	} {
 		t.Run("", func(t *testing.T) {
-			creds := createUserWithLimit(t, kp, v.f)
+			creds := createUserWithLimit(t, kp, doNotExpire, v.f)
 			defer os.Remove(creds)
 			if c, err := nats.Connect(sA.ClientURL(), nats.UserCredentials(creds)); err == nil {
 				c.Close()
@@ -3283,6 +3287,7 @@ func TestJWTUserLimits(t *testing.T) {
 
 func TestJWTTimeExpiration(t *testing.T) {
 	validFor := 4 * time.Second
+	doNotExpire := time.Now().AddDate(1, 0, 0)
 	// create account
 	kp, _ := nkeys.CreateAccount()
 	aPub, _ := kp.PublicKey()
@@ -3302,7 +3307,7 @@ func TestJWTTimeExpiration(t *testing.T) {
 	defer sA.Shutdown()
 	t.Run("simple expiration", func(t *testing.T) {
 		start := time.Now()
-		creds := createUserWithLimit(t, kp, func(j *jwt.Limits) { j.Times = []jwt.TimeRange{newTimeRange(start, validFor)} })
+		creds := createUserWithLimit(t, kp, doNotExpire, func(j *jwt.Limits) { j.Times = []jwt.TimeRange{newTimeRange(start, validFor)} })
 		defer os.Remove(creds)
 		disconnectChan := make(chan struct{})
 		defer close(disconnectChan)
@@ -3321,7 +3326,7 @@ func TestJWTTimeExpiration(t *testing.T) {
 					return
 				}
 				now := time.Now()
-				stop := start.Add(4 * time.Second)
+				stop := start.Add(validFor)
 				// assure event happens within a second of stop
 				if stop.Add(-time.Second).Before(stop) && now.Before(stop.Add(time.Second)) {
 					errChan <- struct{}{}
@@ -3336,7 +3341,7 @@ func TestJWTTimeExpiration(t *testing.T) {
 	t.Run("double expiration", func(t *testing.T) {
 		start1 := time.Now()
 		start2 := start1.Add(2 * validFor)
-		creds := createUserWithLimit(t, kp, func(j *jwt.Limits) {
+		creds := createUserWithLimit(t, kp, doNotExpire, func(j *jwt.Limits) {
 			j.Times = []jwt.TimeRange{newTimeRange(start1, validFor), newTimeRange(start2, validFor)}
 		})
 		defer os.Remove(creds)
@@ -3371,6 +3376,38 @@ func TestJWTTimeExpiration(t *testing.T) {
 		require_False(t, c.IsReconnecting())
 		require_True(t, c.IsConnected())
 		<-errChan
+		c.Close()
+	})
+	t.Run("lower jwt expiration overwrites time", func(t *testing.T) {
+		start := time.Now()
+		creds := createUserWithLimit(t, kp, start.Add(validFor), func(j *jwt.Limits) { j.Times = []jwt.TimeRange{newTimeRange(start, 2*validFor)} })
+		defer os.Remove(creds)
+		disconnectChan := make(chan struct{})
+		defer close(disconnectChan)
+		errChan := make(chan struct{})
+		defer close(errChan)
+		c := natsConnect(t, sA.ClientURL(),
+			nats.UserCredentials(creds),
+			nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
+				if err != io.EOF {
+					return
+				}
+				disconnectChan <- struct{}{}
+			}),
+			nats.ErrorHandler(func(conn *nats.Conn, s *nats.Subscription, err error) {
+				if err != nats.ErrAuthExpired {
+					return
+				}
+				now := time.Now()
+				stop := start.Add(validFor)
+				// assure event happens within a second of stop
+				if stop.Add(-time.Second).Before(stop) && now.Before(stop.Add(time.Second)) {
+					errChan <- struct{}{}
+				}
+			}))
+		<-errChan
+		<-disconnectChan
+		require_True(t, c.IsReconnecting())
 		require_False(t, c.IsConnected())
 		c.Close()
 	})

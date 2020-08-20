@@ -771,7 +771,7 @@ func (c *client) setExpiration(claims *jwt.ClaimsData, validFor time.Duration) {
 	tn := time.Now().Unix()
 	expiresAt := time.Duration(0)
 	if claims.Expires > tn {
-		expiresAt = time.Duration(claims.Expires - tn)
+		expiresAt = time.Duration(claims.Expires-tn) * time.Second
 	}
 	if claims.Expires == 0 {
 		if validFor != 0 {
@@ -781,8 +781,8 @@ func (c *client) setExpiration(claims *jwt.ClaimsData, validFor time.Duration) {
 	}
 	if validFor != 0 && validFor < expiresAt {
 		c.setExpirationTimer(validFor)
-	} else if claims.Expires != 0 {
-		c.setExpirationTimer(expiresAt * time.Second)
+	} else {
+		c.setExpirationTimer(expiresAt)
 	}
 }
 
