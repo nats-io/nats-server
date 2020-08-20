@@ -52,6 +52,10 @@ func NewUserClaims(subject string) *UserClaims {
 	}
 	c := &UserClaims{}
 	c.Subject = subject
+	c.Limits = Limits{
+		UserLimits{"", nil},
+		NatsLimits{NoLimit, NoLimit, NoLimit, NoLimit, NoLimit},
+	}
 	return c
 }
 
@@ -61,7 +65,7 @@ func (u *UserClaims) Encode(pair nkeys.KeyPair) (string, error) {
 		return "", errors.New("expected subject to be user public key")
 	}
 	u.Type = UserClaim
-	return u.ClaimsData.Encode(pair, u)
+	return u.ClaimsData.encode(pair, u)
 }
 
 // DecodeUserClaims tries to parse a user claims from a JWT string

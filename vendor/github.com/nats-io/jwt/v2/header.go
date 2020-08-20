@@ -27,7 +27,9 @@ const (
 
 	// TokenTypeJwt is the JWT token type supported JWT tokens
 	// encoded and decoded by this library
-	TokenTypeJwt = "jwt"
+	// from RFC7519 5.1 "typ":
+	// it is RECOMMENDED that "JWT" always be spelled using uppercase characters for compatibility
+	TokenTypeJwt = "JWT"
 
 	// AlgorithmNkey is the algorithm supported by JWT tokens
 	// encoded and decoded by this library
@@ -61,7 +63,7 @@ func parseHeaders(s string) (*Header, error) {
 // Valid validates the Header. It returns nil if the Header is
 // a JWT header, and the algorithm used is the NKEY algorithm.
 func (h *Header) Valid() error {
-	if TokenTypeJwt != strings.ToLower(h.Type) {
+	if TokenTypeJwt != strings.ToUpper(h.Type) {
 		return fmt.Errorf("not supported type %q", h.Type)
 	}
 

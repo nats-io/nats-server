@@ -21,10 +21,13 @@ import (
 )
 
 type v1NatsAccount struct {
-	Imports     Imports        `json:"imports,omitempty"`
-	Exports     Exports        `json:"exports,omitempty"`
-	Identities  []Identity     `json:"identity,omitempty"`
-	Limits      OperatorLimits `json:"limits,omitempty"`
+	Imports    Imports    `json:"imports,omitempty"`
+	Exports    Exports    `json:"exports,omitempty"`
+	Identities []Identity `json:"identity,omitempty"`
+	Limits     struct {
+		NatsLimits
+		AccountLimits
+	} `json:"limits,omitempty"`
 	SigningKeys StringList     `json:"signing_keys,omitempty"`
 	Revocations RevocationList `json:"revocations,omitempty"`
 }
@@ -69,7 +72,9 @@ func (oa v1AccountClaims) migrateV1() (*AccountClaims, error) {
 	a.Account.Imports = oa.v1NatsAccount.Imports
 	a.Account.Exports = oa.v1NatsAccount.Exports
 	a.Account.Identities = oa.v1NatsAccount.Identities
-	a.Account.Limits = oa.v1NatsAccount.Limits
+	a.Account.Limits.AccountLimits = oa.v1NatsAccount.Limits.AccountLimits
+	a.Account.Limits.NatsLimits = oa.v1NatsAccount.Limits.NatsLimits
+	a.Account.Limits.JetStreamLimits = JetStreamLimits{0, 0, 0, 0}
 	a.Account.SigningKeys = oa.v1NatsAccount.SigningKeys
 	a.Account.Revocations = oa.v1NatsAccount.Revocations
 	return &a, nil

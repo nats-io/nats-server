@@ -195,7 +195,7 @@ func (oc *OperatorClaims) Encode(pair nkeys.KeyPair) (string, error) {
 		return "", err
 	}
 	oc.Type = OperatorClaim
-	return oc.ClaimsData.Encode(pair, oc)
+	return oc.ClaimsData.encode(pair, oc)
 }
 
 func (oc *OperatorClaims) ClaimType() ClaimType {

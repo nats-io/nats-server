@@ -27,6 +27,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nkeys"
+
 	"github.com/nats-io/nats.go"
 )
 
@@ -2713,17 +2716,19 @@ func TestReadOperatorJWTSystemAccountMismatch(t *testing.T) {
 	}
 }
 
-const operatorJwtAssertVersion_1_2_3 = `
-	listen: "127.0.0.1:-1"
-	// Operator "TESTOP"
-	operator: eyJ0eXAiOiJqd3QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJqdGkiOiJYWFhGNEREQTdRSEtCSU5MUlBSNTZPUFFTUjc0RFdLSjZCQkZWN1BSVEpMNUtDUUdCUFhBIiwiaWF0IjoxNTkwNTI4NTI1LCJpc3MiOiJPRDRYSkwyM0haSlozTzZKQ0FGUTZSVk9ZR0JZWUtGU0tIRlJFWkRaUEJGN1I0SlpQSTVWNzNLTSIsInN1YiI6Ik9ENFhKTDIzSFpKWjNPNkpDQUZRNlJWT1lHQllZS0ZTS0hGUkVaRFpQQkY3UjRKWlBJNVY3M0tNIiwibmF0cyI6eyJhc3NlcnRfc2VydmVyX3ZlcnNpb24iOiIxLjIuMyIsInR5cGUiOiJvcGVyYXRvciIsInZlcnNpb24iOjJ9fQ.ERRsFUekK7W5tZbeYlkLlwU3AGMpZTtlh5jKIj2rWoLnoWLlWcjXYD4uKdaT-tNGbsahiQZV82C5_K89BCWODA
-	resolver: MEMORY
-	resolver_preload: {
-	}
-`
-
 func TestReadOperatorAssertVersion(t *testing.T) {
-	confFileName := createConfFile(t, []byte(operatorJwtAssertVersion_1_2_3))
+	kp, _ := nkeys.CreateOperator()
+	pk, _ := kp.PublicKey()
+	op := jwt.NewOperatorClaims(pk)
+	op.AssertServerVersion = "1.2.3"
+	jwt, err := op.Encode(kp)
+	if err != nil {
+		t.Fatalf("Received unexpected error %s", err)
+	}
+	confFileName := createConfFile(t, []byte(fmt.Sprintf(`
+		operator: %s
+		resolver: MEM
+	`, jwt)))
 	defer os.Remove(confFileName)
 	opts, err := ProcessConfigFile(confFileName)
 	if err != nil {
@@ -2736,17 +2741,19 @@ func TestReadOperatorAssertVersion(t *testing.T) {
 	s.Shutdown()
 }
 
-const operatorJwtAssertVersion_10_20_30 = `
-	listen: "127.0.0.1:-1"
-	// Operator "TESTOP"
-	operator: eyJ0eXAiOiJqd3QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJqdGkiOiJJRjNXQkFENk9JWE5HTzRWUFkzQ0hTS1ZMUDJXT0ZLQkZPR0RMUFRHSERVR0hRV1BUVlNRIiwiaWF0IjoxNTkwNTI4NTI1LCJpc3MiOiJPQ0laQUFVN0dDNkREU0QyTk1VQU9VQ0JRS09SQlNEQUxPSVBNRDRSVEM0SUhCRUZQRVE0TjZERSIsInN1YiI6Ik9DSVpBQVU3R0M2RERTRDJOTVVBT1VDQlFLT1JCU0RBTE9JUE1ENFJUQzRJSEJFRlBFUTRONkRFIiwibmF0cyI6eyJhc3NlcnRfc2VydmVyX3ZlcnNpb24iOiIxMC4yMC4zMCIsInR5cGUiOiJvcGVyYXRvciIsInZlcnNpb24iOjJ9fQ.bGFUCQIa2D5GjluEbXYJQGZnsM_O1r46b_xq2AUp4cEYGqCqvBAJZp9coBTgXL-4MPjyoPZSj2RglC1yUy9aDQ
-	resolver: MEMORY
-	resolver_preload: {
-	}
-`
-
 func TestReadOperatorAssertVersionFail(t *testing.T) {
-	confFileName := createConfFile(t, []byte(operatorJwtAssertVersion_10_20_30))
+	kp, _ := nkeys.CreateOperator()
+	pk, _ := kp.PublicKey()
+	op := jwt.NewOperatorClaims(pk)
+	op.AssertServerVersion = "10.20.30"
+	jwt, err := op.Encode(kp)
+	if err != nil {
+		t.Fatalf("Received unexpected error %s", err)
+	}
+	confFileName := createConfFile(t, []byte(fmt.Sprintf(`
+		operator: %s
+		resolver: MEM
+	`, jwt)))
 	defer os.Remove(confFileName)
 	opts, err := ProcessConfigFile(confFileName)
 	if err != nil {
