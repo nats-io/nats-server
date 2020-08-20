@@ -3367,7 +3367,6 @@ func TestJWTTimeExpiration(t *testing.T) {
 				}
 			}))
 		<-errChan
-		require_False(t, c.IsConnected())
 		<-reConnectChan
 		require_False(t, c.IsReconnecting())
 		require_True(t, c.IsConnected())
