@@ -769,15 +769,15 @@ func (c *client) setPermissions(perms *Permissions) {
 // FIXME(dlc) - Clear on connect with new JWT.
 func (c *client) setExpiration(claims *jwt.ClaimsData, validFor time.Duration) {
 	tn := time.Now().Unix()
-	expiresAt := time.Duration(0)
-	if claims.Expires > tn {
-		expiresAt = time.Duration(claims.Expires-tn) * time.Second
-	}
 	if claims.Expires == 0 {
 		if validFor != 0 {
 			c.setExpirationTimer(validFor)
 		}
 		return
+	}
+	expiresAt := time.Duration(0)
+	if claims.Expires > tn {
+		expiresAt = time.Duration(claims.Expires-tn) * time.Second
 	}
 	if validFor != 0 && validFor < expiresAt {
 		c.setExpirationTimer(validFor)
