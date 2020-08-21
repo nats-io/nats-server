@@ -3200,16 +3200,14 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 	require_FileEqual(dirC, apub, ajwt1) // still contains old cached value
 	checkClusterFormed(t, sA, sB, sC)
 	// Force next connect to do a lookup exceeds ttl
-	for i := 0; ; i++ {
-		time.Sleep(100 * time.Millisecond)
-		_, err := os.Stat(filepath.Join(dirC, apub+".jwt"))
+	fname := filepath.Join(dirC, apub+".jwt")
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		_, err := os.Stat(fname)
 		if os.IsNotExist(err) {
-			break
-		} else if i == 20 {
-			t.Fatalf("File not removed in time")
-			break
+			return nil
 		}
-	}
+		return fmt.Errorf("File not removed in time")
+	})
 	connect(sC.ClientURL(), aCreds)      // When lookup happens
 	require_FileEqual(dirC, apub, ajwt2) // was looked up form A or B
 	require_2Connection(sC.ClientURL(), aCreds)
