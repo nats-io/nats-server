@@ -3438,3 +3438,64 @@ func TestJWTTimeExpiration(t *testing.T) {
 		c.Close()
 	})
 }
+
+func TestJWTSubLimits(t *testing.T) {
+	doNotExpire := time.Now().AddDate(1, 0, 0)
+	// create account
+	kp, _ := nkeys.CreateAccount()
+	aPub, _ := kp.PublicKey()
+	claim := jwt.NewAccountClaims(aPub)
+	aJwt, err := claim.Encode(oKp)
+	require_NoError(t, err)
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		operator: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+		}
+    `, ojwt, aPub, aJwt)))
+	defer os.Remove(conf)
+	sA, _ := RunServerWithConfig(conf)
+	defer sA.Shutdown()
+	errChan := make(chan struct{})
+	defer close(errChan)
+	t.Run("subs", func(t *testing.T) {
+		creds := createUserWithLimit(t, kp, doNotExpire, func(j *jwt.Limits) { j.Subs = 1 })
+		defer os.Remove(creds)
+		c := natsConnect(t, sA.ClientURL(), nats.UserCredentials(creds),
+			nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
+				if e := conn.LastError(); e != nil && strings.Contains(e.Error(), "maximum subscriptions exceeded") {
+					errChan <- struct{}{}
+				}
+			}),
+		)
+		if _, err := c.Subscribe("foo", func(msg *nats.Msg) {}); err != nil {
+			t.Fatalf("couldn't subscribe: %v", err)
+		}
+		if _, err = c.Subscribe("bar", func(msg *nats.Msg) {}); err != nil {
+			t.Fatalf("expected error got: %v", err)
+		}
+		<-errChan
+		c.Close()
+	})
+	t.Run("payload", func(t *testing.T) {
+		creds := createUserWithLimit(t, kp, doNotExpire, func(j *jwt.Limits) { j.Payload = 5 })
+		defer os.Remove(creds)
+		c := natsConnect(t, sA.ClientURL(), nats.UserCredentials(creds),
+			nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
+				if e := conn.LastError(); e != nil && strings.Contains(e.Error(), "Maximum Payload Violation") {
+					errChan <- struct{}{}
+				}
+			}),
+		)
+		if err := c.Publish("foo", []byte("world")); err != nil {
+			t.Fatalf("couldn't publish: %v", err)
+		}
+		if err := c.Publish("foo", []byte("worldX")); err != nil {
+			t.Fatalf("couldn't publish: %v", err)
+		}
+		<-errChan
+		c.Close()
+	})
+}

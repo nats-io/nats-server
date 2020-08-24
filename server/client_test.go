@@ -33,7 +33,9 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 
+	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nkeys"
 )
 
 type serverInfo struct {
@@ -2457,6 +2459,68 @@ func TestClientConnectionName(t *testing.T) {
 			checkLog(" 3 4")
 			c.Errorf("error: %v %s", 5, "6")
 			checkLog(" 5 6")
+		})
+	}
+}
+
+func TestClientLimits(t *testing.T) {
+	accKp, err := nkeys.CreateAccount()
+	if err != nil {
+		t.Fatalf("Error creating account key: %v", err)
+	}
+	uKp, err := nkeys.CreateUser()
+	if err != nil {
+		t.Fatalf("Error creating user key: %v", err)
+	}
+	uPub, err := uKp.PublicKey()
+	if err != nil {
+		t.Fatalf("Error obtaining publicKey: %v", err)
+	}
+	s, err := NewServer(DefaultOptions())
+	if err != nil {
+		t.Fatalf("Error creating server: %v", err)
+	}
+	for _, test := range []struct {
+		client int32
+		acc    int32
+		srv    int32
+		expect int32
+	}{
+		// all identical
+		{1, 1, 1, 1},
+		{-1, -1, 0, -1},
+		// only one value unlimited
+		{1, -1, 0, 1},
+		{-1, 1, 0, 1},
+		{-1, -1, 1, 1},
+		// all combinations of distinct values
+		{1, 2, 3, 1},
+		{1, 3, 2, 1},
+		{2, 1, 3, 1},
+		{2, 3, 1, 1},
+		{3, 1, 2, 1},
+		{3, 2, 1, 1},
+	} {
+		t.Run("", func(t *testing.T) {
+			s.opts.MaxPayload = test.srv
+			s.opts.MaxSubs = int(test.srv)
+			c := &client{srv: s, acc: &Account{
+				limits: limits{mpay: test.acc, msubs: test.acc},
+			}}
+			uc := jwt.NewUserClaims(uPub)
+			uc.Limits.Subs = int64(test.client)
+			uc.Limits.Payload = int64(test.client)
+			c.opts.JWT, err = uc.Encode(accKp)
+			if err != nil {
+				t.Fatalf("Error encoding jwt: %v", err)
+			}
+			c.applyAccountLimits()
+			if c.mpay != test.expect {
+				t.Fatalf("payload %d not as ecpected %d", c.mpay, test.expect)
+			}
+			if c.msubs != test.expect {
+				t.Fatalf("subscriber %d not as ecpected %d", c.msubs, test.expect)
+			}
 		})
 	}
 }
