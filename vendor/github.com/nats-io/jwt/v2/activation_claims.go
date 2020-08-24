@@ -32,7 +32,6 @@ type Activation struct {
 	// IssuerAccount stores the public key for the account the issuer represents.
 	// When set, the claim was issued by a signing key.
 	IssuerAccount string `json:"issuer_account,omitempty"`
-	Limits
 	GenericFields
 }
 
@@ -59,7 +58,6 @@ func (a *Activation) Validate(vr *ValidationResults) {
 	}
 
 	a.ImportSubject.Validate(vr)
-	a.Limits.Validate(vr)
 }
 
 // ActivationClaims holds the data specific to an activation JWT
@@ -84,7 +82,7 @@ func (a *ActivationClaims) Encode(pair nkeys.KeyPair) (string, error) {
 		return "", errors.New("expected subject to be an account")
 	}
 	a.Type = ActivationClaim
-	return a.ClaimsData.Encode(pair, a)
+	return a.ClaimsData.encode(pair, a)
 }
 
 // DecodeActivationClaims tries to create an activation claim from a JWT string

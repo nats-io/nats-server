@@ -167,24 +167,28 @@ func (tr *TimeRange) Validate(vr *ValidationResults) {
 	}
 }
 
-// Limits are used to control acccess for users and importing accounts
 // Src is a comma separated list of CIDR specifications
+type UserLimits struct {
+	Src   string      `json:"src,omitempty"`
+	Times []TimeRange `json:"times,omitempty"`
+}
+
+func (u *UserLimits) IsUnlimited() bool {
+	return u.Src == "" && len(u.Times) == 0
+}
+
+// Limits are used to control acccess for users and importing accounts
 type Limits struct {
-	Max     int64       `json:"max,omitempty"`
-	Payload int64       `json:"payload,omitempty"`
-	Src     string      `json:"src,omitempty"`
-	Times   []TimeRange `json:"times,omitempty"`
+	UserLimits
+	NatsLimits
+}
+
+func (l *Limits) IsUnlimited() bool {
+	return l.UserLimits.IsUnlimited() && l.NatsLimits.IsUnlimited()
 }
 
 // Validate checks the values in a limit struct
 func (l *Limits) Validate(vr *ValidationResults) {
-	if l.Max < 0 {
-		vr.AddError("limits cannot contain a negative maximum, %d", l.Max)
-	}
-	if l.Payload < 0 {
-		vr.AddError("limits cannot contain a negative payload, %d", l.Payload)
-	}
-
 	if l.Src != "" {
 		elements := strings.Split(l.Src, ",")
 

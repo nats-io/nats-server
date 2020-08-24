@@ -78,6 +78,7 @@ type Export struct {
 	TokenReq             bool            `json:"token_req,omitempty"`
 	Revocations          RevocationList  `json:"revocations,omitempty"`
 	ResponseType         ResponseType    `json:"response_type,omitempty"`
+	ResponseThreshold    time.Duration   `json:"response_threshold,omitempty"`
 	Latency              *ServiceLatency `json:"service_latency,omitempty"`
 	AccountTokenPosition uint            `json:"account_token_position,omitempty"`
 }
@@ -124,6 +125,12 @@ func (e *Export) Validate(vr *ValidationResults) {
 			vr.AddError("latency tracking only permitted for services")
 		}
 		e.Latency.Validate(vr)
+	}
+	if e.ResponseThreshold.Nanoseconds() < 0 {
+		vr.AddError("negative response threshold is invalid")
+	}
+	if e.ResponseThreshold.Nanoseconds() > 0 && !e.IsService() {
+		vr.AddError("response threshold only valid for services")
 	}
 	e.Subject.Validate(vr)
 	if e.AccountTokenPosition > 0 {

@@ -49,7 +49,8 @@ func DecodeGeneric(token string) (*GenericClaims, error) {
 	}
 
 	// header
-	if _, err := parseHeaders(chunks[0]); err != nil {
+	header, err := parseHeaders(chunks[0])
+	if err != nil {
 		return nil, err
 	}
 	// claim
@@ -68,10 +69,16 @@ func DecodeGeneric(token string) (*GenericClaims, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !gc.Verify(chunks[1], sig) {
-		return nil, errors.New("claim failed signature verification")
-	}
 
+	if header.Algorithm == AlgorithmNkeyOld {
+		if !gc.verify(chunks[1], sig) {
+			return nil, errors.New("claim failed V1 signature verification")
+		}
+	} else {
+		if !gc.verify(token[:len(chunks[0])+len(chunks[1])+1], sig) {
+			return nil, errors.New("claim failed V2 signature verification")
+		}
+	}
 	return &gc, nil
 }
 
@@ -87,7 +94,7 @@ func (gc *GenericClaims) Payload() interface{} {
 
 // Encode takes a generic claims and creates a JWT string
 func (gc *GenericClaims) Encode(pair nkeys.KeyPair) (string, error) {
-	return gc.ClaimsData.Encode(pair, gc)
+	return gc.ClaimsData.encode(pair, gc)
 }
 
 // Validate checks the generic part of the claims data
@@ -123,11 +130,8 @@ func (gc *GenericClaims) ClaimType() ClaimType {
 }
 
 func (gc *GenericClaims) updateVersion() {
-	v, ok := gc.Data["nats"]
-	if ok {
-		m, ok := v.(map[string]interface{})
-		if ok {
-			m["version"] = libVersion
-		}
+	if gc.Data != nil {
+		// store as float as that is what decoding with json does too
+		gc.Data["version"] = float64(libVersion)
 	}
 }

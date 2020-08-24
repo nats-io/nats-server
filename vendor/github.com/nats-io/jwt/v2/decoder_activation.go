@@ -23,7 +23,11 @@ import (
 type v1NatsActivation struct {
 	ImportSubject Subject    `json:"subject,omitempty"`
 	ImportType    ExportType `json:"type,omitempty"`
-	Limits
+	// Limit values deprecated inv v2
+	Max     int64       `json:"max,omitempty"`
+	Payload int64       `json:"payload,omitempty"`
+	Src     string      `json:"src,omitempty"`
+	Times   []TimeRange `json:"times,omitempty"`
 }
 
 type v1ActivationClaims struct {
@@ -36,6 +40,8 @@ func loadActivation(data []byte, version int) (*ActivationClaims, error) {
 	switch version {
 	case 1:
 		var v1a v1ActivationClaims
+		v1a.Max = NoLimit
+		v1a.Payload = NoLimit
 		if err := json.Unmarshal(data, &v1a); err != nil {
 			return nil, err
 		}
@@ -66,6 +72,5 @@ func (oa v1ActivationClaims) migrateV1() (*ActivationClaims, error) {
 	// copy the activation data
 	a.ImportSubject = oa.ImportSubject
 	a.ImportType = oa.ImportType
-	a.Limits = oa.Limits
 	return &a, nil
 }
