@@ -588,6 +588,21 @@ func (c *client) subsAtLimit() bool {
 	return c.msubs != jwt.NoLimit && len(c.subs) >= int(c.msubs)
 }
 
+func minLimit(value *int32, limit int32) bool {
+	if *value != jwt.NoLimit {
+		if limit != jwt.NoLimit {
+			if limit < *value {
+				*value = limit
+				return true
+			}
+		}
+	} else if limit != jwt.NoLimit {
+		*value = limit
+		return true
+	}
+	return false
+}
+
 // Apply account limits
 // Lock is held on entry.
 // FIXME(dlc) - Should server be able to override here?
@@ -595,30 +610,35 @@ func (c *client) applyAccountLimits() {
 	if c.acc == nil || (c.kind != CLIENT && c.kind != LEAF) {
 		return
 	}
-
-	// Set here, will need to fo checks for NoLimit.
-	if c.acc.msubs != jwt.NoLimit {
-		c.msubs = c.acc.msubs
+	c.mpay = jwt.NoLimit
+	c.msubs = jwt.NoLimit
+	if c.opts.JWT != "" { // user jwt implies account
+		if uc, _ := jwt.DecodeUserClaims(c.opts.JWT); uc != nil {
+			c.mpay = int32(uc.Limits.Payload)
+			c.msubs = int32(uc.Limits.Subs)
+		}
 	}
-	if c.acc.mpay != jwt.NoLimit {
-		c.mpay = c.acc.mpay
-	}
-
+	minLimit(&c.mpay, c.acc.mpay)
+	minLimit(&c.msubs, c.acc.msubs)
 	s := c.srv
 	opts := s.getOpts()
-
-	// We check here if the server has an option set that is lower than the account limit.
-	if c.mpay != jwt.NoLimit && opts.MaxPayload != 0 && int32(opts.MaxPayload) < c.acc.mpay {
-		c.Errorf("Max Payload set to %d from server config which overrides %d from account claims", opts.MaxPayload, c.acc.mpay)
-		c.mpay = int32(opts.MaxPayload)
+	mPay := opts.MaxPayload
+	// options encode unlimited differently
+	if mPay == 0 {
+		mPay = jwt.NoLimit
 	}
-
-	// We check here if the server has an option set that is lower than the account limit.
-	if c.msubs != jwt.NoLimit && opts.MaxSubs != 0 && opts.MaxSubs < int(c.acc.msubs) {
-		c.Errorf("Max Subscriptions set to %d from server config which overrides %d from account claims", opts.MaxSubs, c.acc.msubs)
-		c.msubs = int32(opts.MaxSubs)
+	mSubs := int32(opts.MaxSubs)
+	if mSubs == 0 {
+		mSubs = jwt.NoLimit
 	}
-
+	wasUnlimited := c.mpay == jwt.NoLimit
+	if minLimit(&c.mpay, mPay) && !wasUnlimited {
+		c.Errorf("Max Payload set to %d from server overrides account or user config", opts.MaxPayload)
+	}
+	wasUnlimited = c.msubs == jwt.NoLimit
+	if minLimit(&c.msubs, mSubs) && !wasUnlimited {
+		c.Errorf("Max Subscriptions set to %d from server overrides account or user config", opts.MaxSubs)
+	}
 	if c.subsAtLimit() {
 		go func() {
 			c.maxSubsExceeded()
