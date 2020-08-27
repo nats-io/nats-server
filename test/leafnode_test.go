@@ -1713,6 +1713,9 @@ func TestLeadNodeExportImportComplexSetup(t *testing.T) {
 	})
 	nc2.Flush()
 
+	// Wait for it to make it across.
+	time.Sleep(250 * time.Millisecond)
+
 	// Now send the request on the leaf node client.
 	if _, err := ncl.Request("import.request", []byte("fingers crossed"), 5500*time.Millisecond); err != nil {
 		if atomic.LoadInt32(&gotIt) == 0 {

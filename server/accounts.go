@@ -415,6 +415,21 @@ func (a *Account) TotalSubs() int {
 	return int(a.sl.Count())
 }
 
+// SubscriptionInterest returns true if this account has a matching subscription
+// for the given `subject`. Works only for literal subjects.
+// TODO: Add support for wildcards
+func (a *Account) SubscriptionInterest(subject string) bool {
+	var interest bool
+	a.mu.RLock()
+	if a.sl != nil {
+		if res := a.sl.Match(subject); len(res.psubs)+len(res.qsubs) > 0 {
+			interest = true
+		}
+	}
+	a.mu.RUnlock()
+	return interest
+}
+
 // addClient keeps our accounting of local active clients or leafnodes updated.
 // Returns previous total.
 func (a *Account) addClient(c *client) int {

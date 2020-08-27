@@ -632,6 +632,9 @@ func TestNoRaceRouteCache(t *testing.T) {
 			})
 			natsFlush(t, responder)
 
+			checkExpectedSubs(t, 1, sa)
+			checkExpectedSubs(t, 1, sb)
+
 			bURL := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
 			requestor := natsConnect(t, bURL)
 			defer requestor.Close()

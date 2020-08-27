@@ -391,22 +391,36 @@ func TestClientAdvertiseConnectURL(t *testing.T) {
 	s.Shutdown()
 }
 
+type captureFatalLogger struct {
+	DummyLogger
+	fatalCh chan string
+}
+
+func (l *captureFatalLogger) Fatalf(format string, v ...interface{}) {
+	select {
+	case l.fatalCh <- fmt.Sprintf(format, v...):
+	default:
+	}
+}
+
 func TestClientAdvertiseErrorOnStartup(t *testing.T) {
 	opts := DefaultOptions()
 	// Set invalid address
 	opts.ClientAdvertise = "addr:::123"
 	s := New(opts)
 	defer s.Shutdown()
-	dl := &DummyLogger{}
-	s.SetLogger(dl, false, false)
+	l := &captureFatalLogger{fatalCh: make(chan string, 1)}
+	s.SetLogger(l, false, false)
 
 	// Expect this to return due to failure
 	s.Start()
-	dl.Lock()
-	msg := dl.msg
-	dl.Unlock()
-	if !strings.Contains(msg, "ClientAdvertise") {
-		t.Fatalf("Unexpected error: %v", msg)
+	select {
+	case msg := <-l.fatalCh:
+		if !strings.Contains(msg, "ClientAdvertise") {
+			t.Fatalf("Unexpected error: %v", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("Should have failed to start")
 	}
 }
 
@@ -1079,6 +1093,7 @@ func TestClientWriteLoopStall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error on subscribe: %v", err)
 	}
+	nc.Flush()
 	cid, _ := nc.GetClientID()
 
 	sender, err := nats.Connect(url)
@@ -1234,23 +1249,21 @@ func TestConnectErrorReports(t *testing.T) {
 	s = RunServer(opts)
 	defer s.Shutdown()
 
-	// Wait long enough for the number of recurring attempts to happen
-	time.Sleep(50 * routeConnectDelay)
-	s.Shutdown()
-
-	content, err := ioutil.ReadFile(log)
-	if err != nil {
-		t.Fatalf("Error reading log file: %v", err)
-	}
-
 	checkContent := func(t *testing.T, txt string, attempt int, shouldBeThere bool) {
 		t.Helper()
-		present := bytes.Contains(content, []byte(fmt.Sprintf("%s (attempt %d)", txt, attempt)))
-		if shouldBeThere && !present {
-			t.Fatalf("Did not find expected log statement (%s) for attempt %d: %s", txt, attempt, content)
-		} else if !shouldBeThere && present {
-			t.Fatalf("Log statement (%s) for attempt %d should not be present: %s", txt, attempt, content)
-		}
+		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+			content, err := ioutil.ReadFile(log)
+			if err != nil {
+				return fmt.Errorf("Error reading log file: %v", err)
+			}
+			present := bytes.Contains(content, []byte(fmt.Sprintf("%s (attempt %d)", txt, attempt)))
+			if shouldBeThere && !present {
+				return fmt.Errorf("Did not find expected log statement (%s) for attempt %d: %s", txt, attempt, content)
+			} else if !shouldBeThere && present {
+				return fmt.Errorf("Log statement (%s) for attempt %d should not be present: %s", txt, attempt, content)
+			}
+			return nil
+		})
 	}
 
 	type testConnect struct {
@@ -1273,6 +1286,7 @@ func TestConnectErrorReports(t *testing.T) {
 		})
 	}
 
+	s.Shutdown()
 	os.Remove(log)
 
 	// Now try with leaf nodes
@@ -1283,23 +1297,21 @@ func TestConnectErrorReports(t *testing.T) {
 	s = RunServer(opts)
 	defer s.Shutdown()
 
-	// Wait long enough for the number of recurring attempts to happen
-	time.Sleep(50 * opts.LeafNode.ReconnectInterval)
-	s.Shutdown()
-
-	content, err = ioutil.ReadFile(log)
-	if err != nil {
-		t.Fatalf("Error reading log file: %v", err)
-	}
-
 	checkLeafContent := func(t *testing.T, txt, host string, attempt int, shouldBeThere bool) {
 		t.Helper()
-		present := bytes.Contains(content, []byte(fmt.Sprintf("%s %q (attempt %d)", txt, host, attempt)))
-		if shouldBeThere && !present {
-			t.Fatalf("Did not find expected log statement (%s %q) for attempt %d: %s", txt, host, attempt, content)
-		} else if !shouldBeThere && present {
-			t.Fatalf("Log statement (%s %q) for attempt %d should not be present: %s", txt, host, attempt, content)
-		}
+		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+			content, err := ioutil.ReadFile(log)
+			if err != nil {
+				return fmt.Errorf("Error reading log file: %v", err)
+			}
+			present := bytes.Contains(content, []byte(fmt.Sprintf("%s %q (attempt %d)", txt, host, attempt)))
+			if shouldBeThere && !present {
+				return fmt.Errorf("Did not find expected log statement (%s %q) for attempt %d: %s", txt, host, attempt, content)
+			} else if !shouldBeThere && present {
+				return fmt.Errorf("Log statement (%s %q) for attempt %d should not be present: %s", txt, host, attempt, content)
+			}
+			return nil
+		})
 	}
 
 	for _, test := range []testConnect{
@@ -1317,6 +1329,7 @@ func TestConnectErrorReports(t *testing.T) {
 		})
 	}
 
+	s.Shutdown()
 	os.Remove(log)
 
 	// Now try with gateways
@@ -1332,15 +1345,6 @@ func TestConnectErrorReports(t *testing.T) {
 	opts.gatewaysSolicitDelay = 15 * time.Millisecond
 	s = RunServer(opts)
 	defer s.Shutdown()
-
-	// Wait long enough for the number of recurring attempts to happen
-	time.Sleep(50 * gatewayConnectDelay)
-	s.Shutdown()
-
-	content, err = ioutil.ReadFile(log)
-	if err != nil {
-		t.Fatalf("Error reading log file: %v", err)
-	}
 
 	for _, test := range []testConnect{
 		{"gateway_attempt_1", 1, true},
@@ -1361,7 +1365,6 @@ func TestConnectErrorReports(t *testing.T) {
 		})
 	}
 }
-
 func TestReconnectErrorReports(t *testing.T) {
 	// On Windows, an attempt to connect to a port that has no listener will
 	// take whatever timeout specified in DialTimeout() before failing.
@@ -1408,23 +1411,24 @@ func TestReconnectErrorReports(t *testing.T) {
 	// Now shutdown the server s connected to.
 	cs.Shutdown()
 
-	// Wait long enough for the number of recurring attempts to happen
-	time.Sleep(DEFAULT_ROUTE_RECONNECT + 50*routeConnectDelay)
-	s.Shutdown()
-
-	content, err := ioutil.ReadFile(log)
-	if err != nil {
-		t.Fatalf("Error reading log file: %v", err)
-	}
+	// Specifically for route test, wait at least reconnect interval before checking logs
+	time.Sleep(DEFAULT_ROUTE_RECONNECT)
 
 	checkContent := func(t *testing.T, txt string, attempt int, shouldBeThere bool) {
 		t.Helper()
-		present := bytes.Contains(content, []byte(fmt.Sprintf("%s (attempt %d)", txt, attempt)))
-		if shouldBeThere && !present {
-			t.Fatalf("Did not find expected log statement (%s) for attempt %d: %s", txt, attempt, content)
-		} else if !shouldBeThere && present {
-			t.Fatalf("Log statement (%s) for attempt %d should not be present: %s", txt, attempt, content)
-		}
+		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+			content, err := ioutil.ReadFile(log)
+			if err != nil {
+				return fmt.Errorf("Error reading log file: %v", err)
+			}
+			present := bytes.Contains(content, []byte(fmt.Sprintf("%s (attempt %d)", txt, attempt)))
+			if shouldBeThere && !present {
+				return fmt.Errorf("Did not find expected log statement (%s) for attempt %d: %s", txt, attempt, content)
+			} else if !shouldBeThere && present {
+				return fmt.Errorf("Log statement (%s) for attempt %d should not be present: %s", txt, attempt, content)
+			}
+			return nil
+		})
 	}
 
 	type testConnect struct {
@@ -1447,6 +1451,7 @@ func TestReconnectErrorReports(t *testing.T) {
 		})
 	}
 
+	s.Shutdown()
 	os.Remove(log)
 
 	// Now try with leaf nodes
@@ -1465,33 +1470,26 @@ func TestReconnectErrorReports(t *testing.T) {
 	s = RunServer(opts)
 	defer s.Shutdown()
 
-	checkFor(t, 3*time.Second, 10*time.Millisecond, func() error {
-		if nln := s.NumLeafNodes(); nln != 1 {
-			return fmt.Errorf("Number of leaf nodes is %d", nln)
-		}
-		return nil
-	})
+	checkLeafNodeConnected(t, s)
 
 	// Now shutdown the server s is connected to
 	cs.Shutdown()
 
-	// Wait long enough for the number of recurring attempts to happen
-	time.Sleep(50 * opts.LeafNode.ReconnectInterval)
-	s.Shutdown()
-
-	content, err = ioutil.ReadFile(log)
-	if err != nil {
-		t.Fatalf("Error reading log file: %v", err)
-	}
-
 	checkLeafContent := func(t *testing.T, txt, host string, attempt int, shouldBeThere bool) {
 		t.Helper()
-		present := bytes.Contains(content, []byte(fmt.Sprintf("%s %q (attempt %d)", txt, host, attempt)))
-		if shouldBeThere && !present {
-			t.Fatalf("Did not find expected log statement (%s %q) for attempt %d: %s", txt, host, attempt, content)
-		} else if !shouldBeThere && present {
-			t.Fatalf("Log statement (%s %q) for attempt %d should not be present: %s", txt, host, attempt, content)
-		}
+		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+			content, err := ioutil.ReadFile(log)
+			if err != nil {
+				return fmt.Errorf("Error reading log file: %v", err)
+			}
+			present := bytes.Contains(content, []byte(fmt.Sprintf("%s %q (attempt %d)", txt, host, attempt)))
+			if shouldBeThere && !present {
+				return fmt.Errorf("Did not find expected log statement (%s %q) for attempt %d: %s", txt, host, attempt, content)
+			} else if !shouldBeThere && present {
+				return fmt.Errorf("Log statement (%s %q) for attempt %d should not be present: %s", txt, host, attempt, content)
+			}
+			return nil
+		})
 	}
 
 	for _, test := range []testConnect{
@@ -1509,6 +1507,7 @@ func TestReconnectErrorReports(t *testing.T) {
 		})
 	}
 
+	s.Shutdown()
 	os.Remove(log)
 
 	// Now try with gateways
@@ -1537,15 +1536,6 @@ func TestReconnectErrorReports(t *testing.T) {
 
 	// Now stop server s is connecting to
 	cs.Shutdown()
-
-	// Wait long enough for the number of recurring attempts to happen
-	time.Sleep(50 * gatewayConnectDelay)
-	s.Shutdown()
-
-	content, err = ioutil.ReadFile(log)
-	if err != nil {
-		t.Fatalf("Error reading log file: %v", err)
-	}
 
 	connTxt := fmt.Sprintf("Connecting to explicit gateway \"B\" (127.0.0.1:%d) at 127.0.0.1:%d", remoteGWPort, remoteGWPort)
 	dbgConnTxt := fmt.Sprintf("[DBG] %s", connTxt)

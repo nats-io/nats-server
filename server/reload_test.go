@@ -3882,6 +3882,7 @@ func TestAuthReloadDoesNotBreakRouteInterest(t *testing.T) {
 
 	// Use this to check for message.
 	checkForMsg := func() {
+		t.Helper()
 		select {
 		case <-ch:
 		case <-time.After(2 * time.Second):
@@ -3898,6 +3899,7 @@ func TestAuthReloadDoesNotBreakRouteInterest(t *testing.T) {
 	defer sa.Shutdown()
 
 	checkClusterFormed(t, s, sa)
+	checkSubInterest(t, sa, globalAccountName, "foo", time.Second)
 
 	// Create second client and send message from this one. Interest should be here.
 	urlA := fmt.Sprintf("nats://%s:%d/", optsA.Host, optsA.Port)
@@ -3923,6 +3925,7 @@ func TestAuthReloadDoesNotBreakRouteInterest(t *testing.T) {
 	defer sa.Shutdown()
 
 	checkClusterFormed(t, s, sa)
+	checkSubInterest(t, sa, globalAccountName, "foo", time.Second)
 
 	nc2, err = nats.Connect(urlA)
 	if err != nil {
@@ -4029,6 +4032,7 @@ func TestLoggingReload(t *testing.T) {
 	}
 
 	check := func(filename string, valid func([]byte) bool) {
+		t.Helper()
 		log, err := ioutil.ReadFile(filename)
 		if err != nil {
 			t.Fatalf("Error reading log file %s: %v\n", filename, err)
@@ -4056,6 +4060,7 @@ func TestLoggingReload(t *testing.T) {
 	defer s.Shutdown()
 
 	reload := func(change string) {
+		t.Helper()
 		changeCurrentConfigContentWithNewContent(t, conf, []byte(commonCfg+`
 			`+change+`
 		`))
@@ -4066,6 +4071,7 @@ func TestLoggingReload(t *testing.T) {
 	}
 
 	traffic := func(cnt int) {
+		t.Helper()
 		// Create client and sub interest on server and create traffic
 		urlSeed := fmt.Sprintf("nats://bar:pwd@%s:%d/", opts.Host, opts.Port)
 		nc, err := nats.Connect(urlSeed)
@@ -4073,7 +4079,7 @@ func TestLoggingReload(t *testing.T) {
 			t.Fatalf("Error creating client: %v\n", err)
 		}
 
-		msgs := make(chan *nats.Msg)
+		msgs := make(chan *nats.Msg, 1)
 		defer close(msgs)
 
 		sub, err := nc.ChanSubscribe("foo", msgs)
@@ -4230,6 +4236,7 @@ func TestConfigReloadAccounts(t *testing.T) {
 	// Below tests use connection names so that they can be checked for.
 	// The test subscribes to ACC only. This avoids receiving own messages.
 	subscribe := func(name string) (*nats.Conn, *nats.Subscription, *nats.Subscription) {
+		t.Helper()
 		c, err := nats.Connect(urlSys, nats.Name(name))
 		if err != nil {
 			t.Fatalf("Error on connect: %v", err)
@@ -4242,9 +4249,11 @@ func TestConfigReloadAccounts(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Error on subscribe DISCONNECT: %v", err)
 		}
+		c.Flush()
 		return c, subCon, subDis
 	}
 	recv := func(name string, sub *nats.Subscription) {
+		t.Helper()
 		if msg, err := sub.NextMsg(1 * time.Second); err != nil {
 			t.Fatalf("%s Error on next: %v", name, err)
 		} else {
@@ -4263,6 +4272,10 @@ func TestConfigReloadAccounts(t *testing.T) {
 		ncs1.Close()
 		for _, sub := range subs {
 			recv(name, sub)
+			// Make sure they are empty.
+			if pending, _, _ := sub.Pending(); pending != 0 {
+				t.Fatalf("Expected no pending, got %d for %+v", pending, sub)
+			}
 		}
 	}
 

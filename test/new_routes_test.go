@@ -1242,6 +1242,11 @@ func TestNewRouteServiceImport(t *testing.T) {
 	sendB("SUB reply 1\r\nPING\r\n")
 	expectB(pongRe)
 
+	// Wait for all subs to be propagated.
+	if err := checkExpectedSubs(2, srvA, srvB); err != nil {
+		t.Fatal(err.Error())
+	}
+
 	// Send the request from clientB on foo.request,
 	sendB("PUB foo.request reply 2\r\nhi\r\nPING\r\n")
 	expectB(pongRe)
@@ -1338,6 +1343,11 @@ func TestNewRouteServiceExportWithWildcards(t *testing.T) {
 			sendB("SUB reply 1\r\nPING\r\n")
 			expectB(pongRe)
 
+			// Wait for all subs to be propagated
+			if err := checkExpectedSubs(2, srvA, srvB); err != nil {
+				t.Fatal(err.Error())
+			}
+
 			// Send the request from clientB on foo.request,
 			sendB("PUB ngs.update reply 2\r\nhi\r\nPING\r\n")
 			expectB(pongRe)
@@ -1412,6 +1422,11 @@ func TestNewRouteServiceImportQueueGroups(t *testing.T) {
 	sendB, expectB := setupConnWithAccount(t, clientB, "$bar")
 	sendB("SUB reply QGROUP_TOO 1\r\nPING\r\n")
 	expectB(pongRe)
+
+	// Wait for all subs to be propagated.
+	if err := checkExpectedSubs(2, srvA, srvB); err != nil {
+		t.Fatal(err.Error())
+	}
 
 	// Send the request from clientB on foo.request,
 	sendB("PUB foo.request reply 2\r\nhi\r\nPING\r\n")
@@ -1489,6 +1504,16 @@ func TestNewRouteServiceImportDanglingRemoteSubs(t *testing.T) {
 	sendB, expectB := setupConnWithAccount(t, clientB, "$bar")
 	sendB("SUB reply 1\r\nPING\r\n")
 	expectB(pongRe)
+
+	// Wait for all subs to be propagated (1 on foo and 1 on bar on srvA)
+	// (note that srvA is not importing)
+	if err := checkExpectedSubs(2, srvA); err != nil {
+		t.Fatal(err.Error())
+	}
+	// Wait for all subs to be propagated
+	if err := checkExpectedSubs(2, srvB); err != nil {
+		t.Fatal(err.Error())
+	}
 
 	// Send 100 requests from clientB on foo.request,
 	for i := 0; i < 100; i++ {

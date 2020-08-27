@@ -1601,6 +1601,7 @@ func TestResponsePermissions(t *testing.T) {
 			svcNC := natsConnect(t, fmt.Sprintf("nats://service:pwd@%s:%d", opts.Host, opts.Port))
 			defer svcNC.Close()
 			reqSub := natsSubSync(t, svcNC, "request")
+			natsFlush(t, svcNC)
 
 			nc := natsConnect(t, fmt.Sprintf("nats://ivan:pwd@%s:%d", opts.Host, opts.Port))
 			defer nc.Close()

@@ -42,6 +42,20 @@ func checkNumRoutes(t *testing.T, s *Server, expected int) {
 	})
 }
 
+func checkSubInterest(t *testing.T, s *Server, accName, subject string, timeout time.Duration) {
+	t.Helper()
+	checkFor(t, timeout, 15*time.Millisecond, func() error {
+		acc, err := s.LookupAccount(accName)
+		if err != nil {
+			return fmt.Errorf("error looking up account %q: %v", accName, err)
+		}
+		if acc.SubscriptionInterest(subject) {
+			return nil
+		}
+		return fmt.Errorf("no subscription interest for account %q on %q", accName, subject)
+	})
+}
+
 func TestRouteConfig(t *testing.T) {
 	opts, err := ProcessConfigFile("./configs/cluster.conf")
 	if err != nil {
@@ -263,6 +277,8 @@ func TestServerRoutesWithAuthAndBCrypt(t *testing.T) {
 	}
 	nc1.Flush()
 	defer sub.Unsubscribe()
+
+	checkSubInterest(t, srvB, globalAccountName, "foo", time.Second)
 
 	nc2, err := nats.Connect(urlB)
 	if err != nil {
@@ -753,6 +769,7 @@ func wait(ch chan bool) error {
 
 func TestServerPoolUpdatedWhenRouteGoesAway(t *testing.T) {
 	s1Opts := DefaultOptions()
+	s1Opts.ServerName = "A"
 	s1Opts.Host = "127.0.0.1"
 	s1Opts.Port = 4222
 	s1Opts.Cluster.Host = "127.0.0.1"
@@ -771,6 +788,7 @@ func TestServerPoolUpdatedWhenRouteGoesAway(t *testing.T) {
 		chch <- true
 	}
 	nc, err := nats.Connect(s1Url,
+		nats.ReconnectWait(50*time.Millisecond),
 		nats.ReconnectHandler(connHandler),
 		nats.DiscoveredServersHandler(func(_ *nats.Conn) {
 			ch <- true
@@ -780,6 +798,7 @@ func TestServerPoolUpdatedWhenRouteGoesAway(t *testing.T) {
 	}
 
 	s2Opts := DefaultOptions()
+	s2Opts.ServerName = "B"
 	s2Opts.Host = "127.0.0.1"
 	s2Opts.Port = s1Opts.Port + 1
 	s2Opts.Cluster.Host = "127.0.0.1"
@@ -794,6 +813,7 @@ func TestServerPoolUpdatedWhenRouteGoesAway(t *testing.T) {
 	}
 
 	checkPool := func(expected []string) {
+		t.Helper()
 		// Don't use discovered here, but Servers to have the full list.
 		// Also, there may be cases where the mesh is not formed yet,
 		// so try again on failure.
@@ -822,6 +842,7 @@ func TestServerPoolUpdatedWhenRouteGoesAway(t *testing.T) {
 	checkPool([]string{s1Url, s2Url})
 
 	s3Opts := DefaultOptions()
+	s3Opts.ServerName = "C"
 	s3Opts.Host = "127.0.0.1"
 	s3Opts.Port = s2Opts.Port + 1
 	s3Opts.Cluster.Host = "127.0.0.1"

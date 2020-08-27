@@ -1450,7 +1450,7 @@ func TestGatewayAccountInterest(t *testing.T) {
 	// S2 and S3 should have sent a protocol indicating no account interest.
 	checkForAccountNoInterest(t, gwcb, "$foo", true, 2*time.Second)
 	checkForAccountNoInterest(t, gwcc, "$foo", true, 2*time.Second)
-	// Second send should not go through to B
+	// Second send should not go to B nor C.
 	natsPub(t, nc, "foo", []byte("hello"))
 	natsFlush(t, nc)
 	checkCount(t, gwcb, 1)
@@ -1470,12 +1470,9 @@ func TestGatewayAccountInterest(t *testing.T) {
 	defer ncS2.Close()
 	// Any subscription should cause s2 to send an A+
 	natsSubSync(t, ncS2, "asub")
-	checkFor(t, time.Second, 15*time.Millisecond, func() error {
-		if _, inMap := gwcb.gw.outsim.Load("$foo"); inMap {
-			return fmt.Errorf("NoInterest has not been cleared")
-		}
-		return nil
-	})
+	// Wait for the A+
+	checkForAccountNoInterest(t, gwcb, "$foo", false, 2*time.Second)
+
 	// Now publish a message that should go to B
 	natsPub(t, nc, "foo", []byte("hello"))
 	natsFlush(t, nc)
@@ -1483,11 +1480,21 @@ func TestGatewayAccountInterest(t *testing.T) {
 	// Still won't go to C since there is no sub interest
 	checkCount(t, gwcc, 1)
 
-	// By closing the client from S2, the sole subscription for this
-	// account will disappear and since S2 sent an A+, it will send
-	// an A-.
-	ncS2.Close()
+	// We should have received a subject no interest for foo
 	checkForSubjectNoInterest(t, gwcb, "$foo", "foo", true, 2*time.Second)
+
+	// Now if we close the client, which removed the sole subscription,
+	// and publish to a new subject, we should then get an A-
+	ncS2.Close()
+	// Wait a bit...
+	time.Sleep(20 * time.Millisecond)
+	// Publish on new subject
+	natsPub(t, nc, "bar", []byte("hello"))
+	natsFlush(t, nc)
+	// It should go out to B...
+	checkCount(t, gwcb, 3)
+	// But then we should get a A-
+	checkForAccountNoInterest(t, gwcb, "$foo", true, 2*time.Second)
 
 	// Restart C and that should reset the no-interest
 	s3.Shutdown()
@@ -1506,7 +1513,7 @@ func TestGatewayAccountInterest(t *testing.T) {
 	natsPub(t, nc, "foo", []byte("hello"))
 	natsFlush(t, nc)
 	// it should not go to B (no sub interest)
-	checkCount(t, gwcb, 2)
+	checkCount(t, gwcb, 3)
 	// but will go to C
 	checkCount(t, gwcc, 1)
 }
@@ -5590,24 +5597,35 @@ func TestGatewaySingleOutbound(t *testing.T) {
 	defer l.Close()
 	port := l.Addr().(*net.TCPAddr).Port
 
-	o1 := testGatewayOptionsFromToWithTLS(t, "A", "B", []string{fmt.Sprintf("nats://127.0.0.1:%d", port)})
-	o1.Gateway.TLSTimeout = 0.1
-	s1 := runGatewayServer(o1)
-	defer s1.Shutdown()
+	oa := testGatewayOptionsFromToWithTLS(t, "A", "B", []string{fmt.Sprintf("nats://127.0.0.1:%d", port)})
+	oa.Gateway.TLSTimeout = 0.1
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
 
-	buf := make([]byte, 10000)
-	// Check for a little bit that we don't have the situation
-	timeout := time.Now().Add(2 * time.Second)
-	for time.Now().Before(timeout) {
-		n := runtime.Stack(buf, true)
-		index := strings.Index(string(buf[:n]), "reconnectGateway")
-		if index != -1 {
-			newIndex := strings.LastIndex(string(buf[:n]), "reconnectGateway")
-			if newIndex > index {
-				t.Fatalf("Trying to reconnect twice for the same outbound!")
-			}
-		}
-		time.Sleep(15 * time.Millisecond)
+	// Wait a bit for reconnections
+	time.Sleep(500 * time.Millisecond)
+
+	// Now prepare gateway B to take place of the bare listener.
+	ob := testGatewayOptionsWithTLS(t, "B")
+	// There is a risk that when stopping the listener and starting
+	// the actual server, that port is being reused by some other process.
+	ob.Gateway.Port = port
+	l.Close()
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	// To make sure that we don't fail, bump the TLSTimeout now.
+	cfg := sa.getRemoteGateway("B")
+	cfg.Lock()
+	cfg.TLSTimeout = 2.0
+	cfg.Unlock()
+
+	waitForOutboundGateways(t, sa, 1, time.Second)
+	sa.gateway.Lock()
+	lm := len(sa.gateway.out)
+	sa.gateway.Unlock()
+	if lm != 1 {
+		t.Fatalf("Expected 1 outbound, got %v", lm)
 	}
 }
 
