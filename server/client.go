@@ -2408,7 +2408,7 @@ var needFlush = struct{}{}
 
 // deliverMsg will deliver a message to a matching subscription and its underlying client.
 // We process all connection/client types. mh is the part that will be protocol/client specific.
-func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte, gwrply bool) bool {
+func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, gwrply bool) bool {
 	if sub.client == nil {
 		return false
 	}
@@ -2548,8 +2548,8 @@ func (c *client) deliverMsg(sub *subscription, subject, mh, msg []byte, gwrply b
 
 	// If we are tracking dynamic publish permissions that track reply subjects,
 	// do that accounting here. We only look at client.replies which will be non-nil.
-	if client.replies != nil && len(c.pa.reply) > 0 {
-		client.replies[string(c.pa.reply)] = &resp{time.Now(), 0}
+	if client.replies != nil && len(reply) > 0 {
+		client.replies[string(reply)] = &resp{time.Now(), 0}
 		if len(client.replies) > replyPermLimit {
 			client.pruneReplyPerms()
 		}
@@ -3095,7 +3095,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 		}
 		// Normal delivery
 		mh := c.msgHeader(msgh[:si], sub, creply)
-		c.deliverMsg(sub, subject, mh, msg, rplyHasGWPrefix)
+		c.deliverMsg(sub, subject, creply, mh, msg, rplyHasGWPrefix)
 	}
 
 	// Set these up to optionally filter based on the queue lists.
@@ -3207,7 +3207,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 			// "rreply" will be stripped of the $GNR prefix (if present)
 			// for client connections only.
 			mh := c.msgHeader(msgh[:si], sub, rreply)
-			if c.deliverMsg(sub, subject, mh, msg, rplyHasGWPrefix) {
+			if c.deliverMsg(sub, subject, rreply, mh, msg, rplyHasGWPrefix) {
 				// Clear rsub
 				rsub = nil
 				if flags&pmrCollectQueueNames != 0 {
@@ -3271,7 +3271,7 @@ sendToRoutesOrLeafs:
 		}
 		mh = append(mh, c.pa.szb...)
 		mh = append(mh, _CRLF_...)
-		c.deliverMsg(rt.sub, subject, mh, msg, false)
+		c.deliverMsg(rt.sub, subject, reply, mh, msg, false)
 	}
 	return queues
 }

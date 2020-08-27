@@ -2480,7 +2480,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 		sub.nm, sub.max = 0, 0
 		sub.client = gwc
 		sub.subject = subject
-		c.deliverMsg(sub, subject, mh, msg, false)
+		c.deliverMsg(sub, subject, mreply, mh, msg, false)
 	}
 	// Done with subscription, put back to pool. We don't need
 	// to reset content since we explicitly set when using it.
