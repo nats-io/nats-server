@@ -18,6 +18,8 @@ package jwt
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/nats-io/jwt"
 )
 
 type v1User struct {
@@ -43,6 +45,7 @@ func loadUser(data []byte, version int) (*UserClaims, error) {
 	switch version {
 	case 1:
 		var v1a v1UserClaims
+		v1a.Limits = Limits{NatsLimits: NatsLimits{jwt.NoLimit, jwt.NoLimit, jwt.NoLimit}}
 		v1a.Max = NoLimit
 		if err := json.Unmarshal(data, &v1a); err != nil {
 			return nil, err

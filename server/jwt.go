@@ -146,7 +146,7 @@ func validateTrustedOperators(o *Options) error {
 func validateSrc(claims *jwt.UserClaims, host string) bool {
 	if claims == nil {
 		return false
-	} else if claims.Src == "" {
+	} else if len(claims.Src) == 0 {
 		return true
 	} else if host == "" {
 		return false
@@ -155,7 +155,7 @@ func validateSrc(claims *jwt.UserClaims, host string) bool {
 	if ip == nil {
 		return false
 	}
-	for _, cidr := range strings.Split(claims.Src, ",") {
+	for _, cidr := range claims.Src {
 		if _, net, err := net.ParseCIDR(cidr); err != nil {
 			return false // should not happen as this jwt is invalid
 		} else if net.Contains(ip) {
