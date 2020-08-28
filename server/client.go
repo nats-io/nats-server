@@ -1541,6 +1541,10 @@ func (c *client) processConnect(arg []byte) error {
 	if ws := c.ws; ws != nil && c.opts.JWT == "" {
 		c.opts.JWT = ws.cookieJwt
 	}
+	// when not in operator mode, discard the jwt
+	if srv != nil && srv.trustedKeys == nil {
+		c.opts.JWT = ""
+	}
 	ujwt := c.opts.JWT
 
 	// For headers both client and server need to support.
