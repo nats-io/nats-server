@@ -3504,3 +3504,35 @@ func TestJWTLimits(t *testing.T) {
 		}
 	})
 }
+
+func TestJWTNoOperatorMode(t *testing.T) {
+	for _, login := range []bool{true, false} {
+		t.Run("", func(t *testing.T) {
+			opts := DefaultOptions()
+			if login {
+				opts.Users = append(opts.Users, &User{Username: "u", Password: "pwd"})
+			}
+			sA := RunServer(opts)
+			defer sA.Shutdown()
+			kp, _ := nkeys.CreateAccount()
+			creds := createUserWithLimit(t, kp, time.Now().Add(time.Hour), nil)
+			defer os.Remove(creds)
+			url := sA.ClientURL()
+			if login {
+				url = fmt.Sprintf("nats://u:pwd@%s:%d", sA.opts.Host, sA.opts.Port)
+			}
+			c := natsConnect(t, url, nats.UserCredentials(creds))
+			defer c.Close()
+			sA.mu.Lock()
+			defer sA.mu.Unlock()
+			if len(sA.clients) != 1 {
+				t.Fatalf("Expected exactly one client")
+			}
+			for _, v := range sA.clients {
+				if v.opts.JWT != "" {
+					t.Fatalf("Expected no jwt %v", v.opts.JWT)
+				}
+			}
+		})
+	}
+}
