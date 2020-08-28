@@ -3340,39 +3340,50 @@ func TestJWTTimeExpiration(t *testing.T) {
 	defer os.Remove(conf)
 	sA, _ := RunServerWithConfig(conf)
 	defer sA.Shutdown()
-	t.Run("simple expiration", func(t *testing.T) {
-		start := time.Now()
-		creds := createUserWithLimit(t, kp, doNotExpire, func(j *jwt.Limits) { j.Times = []jwt.TimeRange{newTimeRange(start, validFor)} })
-		defer os.Remove(creds)
-		disconnectChan := make(chan struct{})
-		defer close(disconnectChan)
-		errChan := make(chan struct{})
-		defer close(errChan)
-		c := natsConnect(t, sA.ClientURL(),
-			nats.UserCredentials(creds),
-			nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
-				if err != io.EOF {
-					return
+	for _, l := range []string{"", "Europe/Berlin", "America/New_York"} {
+		t.Run("simple expiration "+l, func(t *testing.T) {
+			start := time.Now()
+			creds := createUserWithLimit(t, kp, doNotExpire, func(j *jwt.Limits) {
+				if l == "" {
+					j.Times = []jwt.TimeRange{newTimeRange(start, validFor)}
+				} else {
+					loc, err := time.LoadLocation(l)
+					require_NoError(t, err)
+					j.Times = []jwt.TimeRange{newTimeRange(start.In(loc), validFor)}
+					j.Locale = l
 				}
-				disconnectChan <- struct{}{}
-			}),
-			nats.ErrorHandler(func(conn *nats.Conn, s *nats.Subscription, err error) {
-				if err != nats.ErrAuthExpired {
-					return
-				}
-				now := time.Now()
-				stop := start.Add(validFor)
-				// assure event happens within a second of stop
-				if stop.Add(-validRange).Before(stop) && now.Before(stop.Add(validRange)) {
-					errChan <- struct{}{}
-				}
-			}))
-		chanRecv(t, errChan, 10*time.Second)
-		chanRecv(t, disconnectChan, 10*time.Second)
-		require_True(t, c.IsReconnecting())
-		require_False(t, c.IsConnected())
-		c.Close()
-	})
+			})
+			defer os.Remove(creds)
+			disconnectChan := make(chan struct{})
+			defer close(disconnectChan)
+			errChan := make(chan struct{})
+			defer close(errChan)
+			c := natsConnect(t, sA.ClientURL(),
+				nats.UserCredentials(creds),
+				nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
+					if err != io.EOF {
+						return
+					}
+					disconnectChan <- struct{}{}
+				}),
+				nats.ErrorHandler(func(conn *nats.Conn, s *nats.Subscription, err error) {
+					if err != nats.ErrAuthExpired {
+						return
+					}
+					now := time.Now()
+					stop := start.Add(validFor)
+					// assure event happens within a second of stop
+					if stop.Add(-validRange).Before(stop) && now.Before(stop.Add(validRange)) {
+						errChan <- struct{}{}
+					}
+				}))
+			chanRecv(t, errChan, 10*time.Second)
+			chanRecv(t, disconnectChan, 10*time.Second)
+			require_True(t, c.IsReconnecting())
+			require_False(t, c.IsConnected())
+			c.Close()
+		})
+	}
 	t.Run("double expiration", func(t *testing.T) {
 		start1 := time.Now()
 		start2 := start1.Add(2 * validFor)
