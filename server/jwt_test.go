@@ -3279,11 +3279,11 @@ func TestJWTUserLimits(t *testing.T) {
 		f    func(*jwt.Limits)
 	}{
 		{true, nil},
-		{false, func(j *jwt.Limits) { j.Src = "8.8.8.8/8" }},
-		{true, func(j *jwt.Limits) { j.Src = "8.8.8.8/0" }},
-		{true, func(j *jwt.Limits) { j.Src = "127.0.0.1/8" }},
-		{true, func(j *jwt.Limits) { j.Src = "8.8.8.8/8,127.0.0.1/8" }},
-		{false, func(j *jwt.Limits) { j.Src = "8.8.8.8/8,9.9.9.9/8" }},
+		{false, func(j *jwt.Limits) { j.Src.Set("8.8.8.8/8") }},
+		{true, func(j *jwt.Limits) { j.Src.Set("8.8.8.8/0") }},
+		{true, func(j *jwt.Limits) { j.Src.Set("127.0.0.1/8") }},
+		{true, func(j *jwt.Limits) { j.Src.Set("8.8.8.8/8,127.0.0.1/8") }},
+		{false, func(j *jwt.Limits) { j.Src.Set("8.8.8.8/8,9.9.9.9/8") }},
 		{true, func(j *jwt.Limits) { j.Times = append(j.Times, newTimeRange(time.Now(), time.Hour)) }},
 		{false, func(j *jwt.Limits) { j.Times = append(j.Times, newTimeRange(time.Now().Add(time.Hour), time.Hour)) }},
 		{true, func(j *jwt.Limits) {

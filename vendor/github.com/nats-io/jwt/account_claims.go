@@ -26,47 +26,16 @@ import (
 // NoLimit is used to indicate a limit field is unlimited in value.
 const NoLimit = -1
 
-type AccountLimits struct {
-	Imports         int64 `json:"imports,omitempty"`   // Max number of imports
-	Exports         int64 `json:"exports,omitempty"`   // Max number of exports
-	WildcardExports bool  `json:"wildcards,omitempty"` // Are wildcards allowed in exports
-	Conn            int64 `json:"conn,omitempty"`      // Max number of active connections
-	LeafNodeConn    int64 `json:"leaf,omitempty"`      // Max number of active leaf node connections
-}
-
-// IsUnlimited returns true if all limits are unlimited
-func (a *AccountLimits) IsUnlimited() bool {
-	return *a == AccountLimits{NoLimit, NoLimit, true, NoLimit, NoLimit}
-}
-
-type NatsLimits struct {
-	Subs    int64 `json:"subs,omitempty"`    // Max number of subscriptions
-	Data    int64 `json:"data,omitempty"`    // Max number of bytes
-	Payload int64 `json:"payload,omitempty"` // Max message payload
-}
-
-// IsUnlimited returns true if all limits are unlimited
-func (n *NatsLimits) IsUnlimited() bool {
-	return *n == NatsLimits{NoLimit, NoLimit, NoLimit}
-}
-
-type JetStreamLimits struct {
-	MemoryStorage int64 `json:"mem_storage,omitempty"`  // Max number of bytes stored in memory across all streams. (0 means disabled)
-	DiskStorage   int64 `json:"disk_storage,omitempty"` // Max number of bytes stored on disk across all streams. (0 means disabled)
-	Streams       int64 `json:"streams,omitempty"`      // Max number of streams
-	Consumer      int64 `json:"consumer,omitempty"`     // Max number of consumer
-}
-
-// IsUnlimited returns true if all limits are unlimited
-func (j *JetStreamLimits) IsUnlimited() bool {
-	return *j == JetStreamLimits{NoLimit, NoLimit, NoLimit, NoLimit}
-}
-
 // OperatorLimits are used to limit access by an account
 type OperatorLimits struct {
-	NatsLimits
-	AccountLimits
-	JetStreamLimits
+	Subs            int64 `json:"subs,omitempty"`      // Max number of subscriptions
+	Conn            int64 `json:"conn,omitempty"`      // Max number of active connections
+	LeafNodeConn    int64 `json:"leaf,omitempty"`      // Max number of active leaf node connections
+	Imports         int64 `json:"imports,omitempty"`   // Max number of imports
+	Exports         int64 `json:"exports,omitempty"`   // Max number of exports
+	Data            int64 `json:"data,omitempty"`      // Max number of bytes
+	Payload         int64 `json:"payload,omitempty"`   // Max message payload
+	WildcardExports bool  `json:"wildcards,omitempty"` // Are wildcards allowed in exports
 }
 
 // IsEmpty returns true if all of the limits are 0/false.
@@ -74,26 +43,24 @@ func (o *OperatorLimits) IsEmpty() bool {
 	return *o == OperatorLimits{}
 }
 
-// IsUnlimited returns true if all limits are unlimited
+// IsUnlimited returns true if all limits are
 func (o *OperatorLimits) IsUnlimited() bool {
-	return o.AccountLimits.IsUnlimited() && o.NatsLimits.IsUnlimited() && o.JetStreamLimits.IsUnlimited()
+	return *o == OperatorLimits{NoLimit, NoLimit, NoLimit, NoLimit, NoLimit, NoLimit, NoLimit, true}
 }
 
 // Validate checks that the operator limits contain valid values
-func (o *OperatorLimits) Validate(_ *ValidationResults) {
+func (o *OperatorLimits) Validate(vr *ValidationResults) {
 	// negative values mean unlimited, so all numbers are valid
 }
 
 // Account holds account specific claims data
 type Account struct {
-	Imports            Imports        `json:"imports,omitempty"`
-	Exports            Exports        `json:"exports,omitempty"`
-	Identities         []Identity     `json:"identity,omitempty"`
-	Limits             OperatorLimits `json:"limits,omitempty"`
-	SigningKeys        StringList     `json:"signing_keys,omitempty"`
-	Revocations        RevocationList `json:"revocations,omitempty"`
-	DefaultPermissions Permissions    `json:"default_permissions,omitempty"`
-	GenericFields
+	Imports     Imports        `json:"imports,omitempty"`
+	Exports     Exports        `json:"exports,omitempty"`
+	Identities  []Identity     `json:"identity,omitempty"`
+	Limits      OperatorLimits `json:"limits,omitempty"`
+	SigningKeys StringList     `json:"signing_keys,omitempty"`
+	Revocations RevocationList `json:"revocations,omitempty"`
 }
 
 // Validate checks if the account is valid, based on the wrapper
@@ -101,7 +68,6 @@ func (a *Account) Validate(acct *AccountClaims, vr *ValidationResults) {
 	a.Imports.Validate(acct.Subject, vr)
 	a.Exports.Validate(vr)
 	a.Limits.Validate(vr)
-	a.DefaultPermissions.Validate(vr)
 
 	for _, i := range a.Identities {
 		i.Validate(vr)
@@ -152,10 +118,7 @@ func NewAccountClaims(subject string) *AccountClaims {
 	c := &AccountClaims{}
 	// Set to unlimited to start. We do it this way so we get compiler
 	// errors if we add to the OperatorLimits.
-	c.Limits = OperatorLimits{
-		NatsLimits{NoLimit, NoLimit, NoLimit},
-		AccountLimits{NoLimit, NoLimit, true, NoLimit, NoLimit},
-		JetStreamLimits{NoLimit, NoLimit, NoLimit, NoLimit}}
+	c.Limits = OperatorLimits{NoLimit, NoLimit, NoLimit, NoLimit, NoLimit, NoLimit, NoLimit, true}
 	c.Subject = subject
 	return c
 }
@@ -167,21 +130,17 @@ func (a *AccountClaims) Encode(pair nkeys.KeyPair) (string, error) {
 	}
 	sort.Sort(a.Exports)
 	sort.Sort(a.Imports)
-	a.Type = AccountClaim
-	return a.ClaimsData.encode(pair, a)
+	a.ClaimsData.Type = AccountClaim
+	return a.ClaimsData.Encode(pair, a)
 }
 
 // DecodeAccountClaims decodes account claims from a JWT string
 func DecodeAccountClaims(token string) (*AccountClaims, error) {
-	claims, err := Decode(token)
-	if err != nil {
+	v := AccountClaims{}
+	if err := Decode(token, &v); err != nil {
 		return nil, err
 	}
-	ac, ok := claims.(*AccountClaims)
-	if !ok {
-		return nil, errors.New("not account claim")
-	}
-	return ac, nil
+	return &v, nil
 }
 
 func (a *AccountClaims) String() string {
@@ -208,14 +167,6 @@ func (a *AccountClaims) Validate(vr *ValidationResults) {
 	}
 }
 
-func (a *AccountClaims) ClaimType() ClaimType {
-	return a.Type
-}
-
-func (a *AccountClaims) updateVersion() {
-	a.GenericFields.Version = libVersion
-}
-
 // ExpectedPrefixes defines the types that can encode an account jwt, account and operator
 func (a *AccountClaims) ExpectedPrefixes() []nkeys.PrefixByte {
 	return []nkeys.PrefixByte{nkeys.PrefixByteAccount, nkeys.PrefixByteOperator}
@@ -238,12 +189,12 @@ func (a *AccountClaims) DidSign(op Claims) bool {
 	return false
 }
 
-// Revoke enters a revocation by public key using time.Now().
+// Revoke enters a revocation by publickey using time.Now().
 func (a *AccountClaims) Revoke(pubKey string) {
 	a.RevokeAt(pubKey, time.Now())
 }
 
-// RevokeAt enters a revocation by public key and timestamp into this export
+// RevokeAt enters a revocation by publickey and timestamp into this export
 // If there is already a revocation for this public key that is newer, it is kept.
 func (a *AccountClaims) RevokeAt(pubKey string, timestamp time.Time) {
 	if a.Revocations == nil {

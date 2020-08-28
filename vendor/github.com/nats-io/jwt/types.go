@@ -127,6 +127,17 @@ func (s Subject) IsContainedIn(other Subject) bool {
 	return true
 }
 
+// NamedSubject is the combination of a subject and a name for it
+type NamedSubject struct {
+	Name    string  `json:"name,omitempty"`
+	Subject Subject `json:"subject,omitempty"`
+}
+
+// Validate checks the subject
+func (ns *NamedSubject) Validate(vr *ValidationResults) {
+	ns.Subject.Validate(vr)
+}
+
 // TimeRange is used to represent a start and end time
 type TimeRange struct {
 	Start string `json:"start,omitempty"`
@@ -156,31 +167,29 @@ func (tr *TimeRange) Validate(vr *ValidationResults) {
 	}
 }
 
-// Src is a comma separated list of CIDR specifications
-type UserLimits struct {
-	Src    CIDRList    `json:"src,omitempty"`
-	Times  []TimeRange `json:"times,omitempty"`
-	Locale string      `json:"times_location,omitempty"`
-}
-
-func (u *UserLimits) IsUnlimited() bool {
-	return len(u.Src) == 0 && len(u.Times) == 0
-}
-
 // Limits are used to control acccess for users and importing accounts
+// Src is a comma separated list of CIDR specifications
 type Limits struct {
-	UserLimits
-	NatsLimits
-}
-
-func (l *Limits) IsUnlimited() bool {
-	return l.UserLimits.IsUnlimited() && l.NatsLimits.IsUnlimited()
+	Max     int64       `json:"max,omitempty"`
+	Payload int64       `json:"payload,omitempty"`
+	Src     string      `json:"src,omitempty"`
+	Times   []TimeRange `json:"times,omitempty"`
 }
 
 // Validate checks the values in a limit struct
 func (l *Limits) Validate(vr *ValidationResults) {
-	if len(l.Src) != 0 {
-		for _, cidr := range l.Src {
+	if l.Max < 0 {
+		vr.AddError("limits cannot contain a negative maximum, %d", l.Max)
+	}
+	if l.Payload < 0 {
+		vr.AddError("limits cannot contain a negative payload, %d", l.Payload)
+	}
+
+	if l.Src != "" {
+		elements := strings.Split(l.Src, ",")
+
+		for _, cidr := range elements {
+			cidr = strings.TrimSpace(cidr)
 			_, ipNet, err := net.ParseCIDR(cidr)
 			if err != nil || ipNet == nil {
 				vr.AddError("invalid cidr %q in user src limits", cidr)
@@ -191,12 +200,6 @@ func (l *Limits) Validate(vr *ValidationResults) {
 	if l.Times != nil && len(l.Times) > 0 {
 		for _, t := range l.Times {
 			t.Validate(vr)
-		}
-	}
-
-	if l.Locale != "" {
-		if _, err := time.LoadLocation(l.Locale); err != nil {
-			vr.AddError("could not parse iana time zone by name: %v", err)
 		}
 	}
 }
@@ -225,7 +228,7 @@ type ResponsePermission struct {
 }
 
 // Validate the response permission.
-func (p *ResponsePermission) Validate(_ *ValidationResults) {
+func (p *ResponsePermission) Validate(vr *ValidationResults) {
 	// Any values can be valid for now.
 }
 
@@ -284,7 +287,7 @@ type TagList []string
 
 // Contains returns true if the list contains the tags
 func (u *TagList) Contains(p string) bool {
-	p = strings.ToLower(strings.TrimSpace(p))
+	p = strings.ToLower(p)
 	for _, t := range *u {
 		if t == p {
 			return true
@@ -296,7 +299,7 @@ func (u *TagList) Contains(p string) bool {
 // Add appends 1 or more tags to a list
 func (u *TagList) Add(p ...string) {
 	for _, v := range p {
-		v = strings.ToLower(strings.TrimSpace(v))
+		v = strings.ToLower(v)
 		if !u.Contains(v) && v != "" {
 			*u = append(*u, v)
 		}
@@ -306,7 +309,7 @@ func (u *TagList) Add(p ...string) {
 // Remove removes 1 or more tags from a list
 func (u *TagList) Remove(p ...string) {
 	for _, v := range p {
-		v = strings.ToLower(strings.TrimSpace(v))
+		v = strings.ToLower(v)
 		for i, t := range *u {
 			if t == v {
 				a := *u
@@ -317,40 +320,6 @@ func (u *TagList) Remove(p ...string) {
 	}
 }
 
-type CIDRList TagList
-
-func (c *CIDRList) Contains(p string) bool {
-	return (*TagList)(c).Contains(p)
-}
-
-func (c *CIDRList) Add(p ...string) {
-	(*TagList)(c).Add(p...)
-}
-
-func (c *CIDRList) Remove(p ...string) {
-	(*TagList)(c).Remove(p...)
-}
-
-func (c *CIDRList) Set(values string) {
-	*c = CIDRList{}
-	c.Add(strings.Split(strings.ToLower(values), ",")...)
-}
-
-func (c *CIDRList) UnmarshalJSON(body []byte) (err error) {
-	// parse either as array of strings or comma separate list
-	var request []string
-	var list string
-	if err := json.Unmarshal(body, &request); err == nil {
-		*c = request
-		return nil
-	} else if err := json.Unmarshal(body, &list); err == nil {
-		c.Set(list)
-		return nil
-	} else {
-		return err
-	}
-}
-
 // Identity is used to associate an account or operator with a real entity
 type Identity struct {
 	ID    string `json:"id,omitempty"`
@@ -358,6 +327,6 @@ type Identity struct {
 }
 
 // Validate checks the values in an Identity
-func (u *Identity) Validate(_ *ValidationResults) {
+func (u *Identity) Validate(vr *ValidationResults) {
 	//Fixme identity validation
 }
