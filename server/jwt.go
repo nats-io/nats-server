@@ -171,14 +171,15 @@ func validateTimes(claims *jwt.UserClaims) (bool, time.Duration) {
 	} else if len(claims.Times) == 0 {
 		return true, time.Duration(0)
 	}
+	now := time.Now()
 	loc := time.Local
 	if claims.Locale != "" {
 		var err error
 		if loc, err = time.LoadLocation(claims.Locale); err != nil {
 			return false, time.Duration(0) // parsing not expected to fail at this point
 		}
+		now = now.In(loc)
 	}
-	now := time.Now()
 	for _, timeRange := range claims.Times {
 		y, m, d := now.Date()
 		m = m - 1
@@ -197,9 +198,8 @@ func validateTimes(claims *jwt.UserClaims) (bool, time.Duration) {
 		} else {
 			start = start.AddDate(y, int(m), d)
 		}
-		start = start.In(now.Location())
 		if start.Before(now) {
-			end = end.AddDate(y, int(m), d).In(now.Location())
+			end = end.AddDate(y, int(m), d)
 			if end.After(now) {
 				return true, end.Sub(now)
 			}
