@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nats-server/v2/internal/ldap"
 	"github.com/nats-io/nkeys"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -419,18 +420,39 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			return false
 		}
 	} else if hasUsers {
-		// Check if we are tls verify and are mapping users from the client_certificate
+		// Check if we are tls verify and are mapping users from the client_certificate.
 		if tlsMap {
-			var euser string
-			authorized := checkClientTLSCertSubject(c, func(u string) bool {
-				var ok bool
-				user, ok = users[u]
-				if !ok {
-					c.Debugf("User in cert [%q], not found", u)
-					return false
+			authorized := checkClientTLSCertSubject(c, func(u string, certRDN *ldap.DN) (string, bool) {
+				// First do literal lookup using the resulting string representation
+				// of RDNSequence as implemented by the pkix package from Go.
+				if u != "" {
+					usr, ok := users[u]
+					if !ok {
+						return "", ok
+					}
+					user = usr
+					return usr.Username, ok
 				}
-				euser = u
-				return true
+
+				if certRDN == nil {
+					return "", false
+				}
+
+				// Look through the accounts for an RDN that is equal to the one
+				// presented by the certificate.
+				for _, usr := range users {
+					// TODO: Use this utility to make a full validation pass
+					// on start in case tlsmap feature is being used.
+					inputRDN, err := ldap.ParseDN(usr.Username)
+					if err != nil {
+						continue
+					}
+					if inputRDN.Equal(certRDN) {
+						user = usr
+						return usr.Username, true
+					}
+				}
+				return "", false
 			})
 			if !authorized {
 				s.mu.Unlock()
@@ -441,7 +463,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			}
 			// Already checked that the client didn't send a user in connect
 			// but we set it here to be able to identify it in the logs.
-			c.opts.Username = euser
+			c.opts.Username = user.Username
 		} else {
 			if c.kind == CLIENT && c.opts.Username == "" && noAuthUser != "" {
 				if u, exists := users[noAuthUser]; exists {
@@ -567,7 +589,6 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 		}
 		return true
 	}
-
 	if user != nil {
 		ok = comparePasswords(user.Password, c.opts.Password)
 		// If we are authorized, register the user which will properly setup any permissions
@@ -596,7 +617,6 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 		// or the one specified in config (if provided).
 		return s.registerLeafWithAccount(c, opts.LeafNode.Account)
 	}
-
 	return false
 }
 
@@ -620,7 +640,9 @@ func getTLSAuthDCs(rdns *pkix.RDNSequence) string {
 	return strings.Join(dcs, ",")
 }
 
-func checkClientTLSCertSubject(c *client, fn func(string) bool) bool {
+type tlsMapAuthFn func(string, *ldap.DN) (string, bool)
+
+func checkClientTLSCertSubject(c *client, fn tlsMapAuthFn) bool {
 	tlsState := c.GetTLSConnectionState()
 	if tlsState == nil {
 		c.Debugf("User required in cert, no TLS connection state")
@@ -647,48 +669,71 @@ func checkClientTLSCertSubject(c *client, fn func(string) bool) bool {
 	switch {
 	case hasEmailAddresses:
 		for _, u := range cert.EmailAddresses {
-			if fn(u) {
-				c.Debugf("Using email found in cert for auth [%q]", u)
+			if match, ok := fn(u, nil); ok {
+				c.Debugf("Using email found in cert for auth [%q]", match)
 				return true
 			}
 		}
 		fallthrough
 	case hasSANs:
 		for _, u := range cert.DNSNames {
-			if fn(u) {
-				c.Debugf("Using SAN found in cert for auth [%q]", u)
+			if match, ok := fn(u, nil); ok {
+				c.Debugf("Using SAN found in cert for auth [%q]", match)
 				return true
 			}
 		}
 	case hasURIs:
 		for _, u := range cert.URIs {
-			if fn(u.String()) {
-				c.Debugf("Using URI found in cert for auth [%q]", u)
+			if match, ok := fn(u.String(), nil); ok {
+				c.Debugf("Using URI found in cert for auth [%q]", match)
 				return true
 			}
 		}
 	}
 
-	// Try to get the full RDN Sequence that includes the domain components.
+	// Use the string representation of the full RDN Sequence including
+	// the domain components in case there are any.
+	rdn := cert.Subject.ToRDNSequence().String()
+
+	// Match that follows original order from the subject takes precedence.
+	dn, err := ldap.FromCertSubject(cert.Subject)
+	if err == nil {
+		if match, ok := fn("", dn); ok {
+			c.Debugf("Using DistinguishedNameMatch for auth [%q]", match)
+			return true
+		}
+		c.Debugf("DistinguishedNameMatch could not be used for auth [%q]", rdn)
+	}
+
 	var rdns pkix.RDNSequence
 	if _, err := asn1.Unmarshal(cert.RawSubject, &rdns); err == nil {
 		// If found domain components then include roughly following
 		// the order from https://tools.ietf.org/html/rfc2253
-		rdn := cert.Subject.ToRDNSequence().String()
+		//
+		// NOTE: The original sequence from string representation by ToRDNSequence does not follow
+		// the correct ordering, so this addition ofdomainComponents would likely be deprecated in
+		// another release in favor of using the correct ordered as parsed by the go-ldap library.
+		//
 		dcs := getTLSAuthDCs(&rdns)
 		if len(dcs) > 0 {
 			u := strings.Join([]string{rdn, dcs}, ",")
-			if fn(u) {
-				c.Debugf("Using RDNSequence for auth [%q]", u)
+			if match, ok := fn(u, nil); ok {
+				c.Debugf("Using RDNSequence for auth [%q]", match)
 				return true
 			}
+			c.Debugf("RDNSequence could not be used for auth [%q]", u)
 		}
 	}
 
-	// Use the subject of the certificate.
-	u := cert.Subject.String()
-	c.Debugf("Using certificate subject for auth [%q]", u)
-	return fn(u)
+	// If no match, then use the string representation of the RDNSequence
+	// from the subject without the domainComponents.
+	if match, ok := fn(rdn, nil); ok {
+		c.Debugf("Using certificate subject for auth [%q]", match)
+		return true
+	}
+
+	c.Debugf("User in cert [%q], not found", rdn)
+	return false
 }
 
 // checkRouterAuth checks optional router authorization which can be nil or username/password.
@@ -707,8 +752,8 @@ func (s *Server) isRouterAuthorized(c *client) bool {
 	}
 
 	if opts.Cluster.TLSMap {
-		return checkClientTLSCertSubject(c, func(user string) bool {
-			return opts.Cluster.Username == user
+		return checkClientTLSCertSubject(c, func(user string, _ *ldap.DN) (string, bool) {
+			return "", opts.Cluster.Username == user
 		})
 	}
 
@@ -731,8 +776,8 @@ func (s *Server) isGatewayAuthorized(c *client) bool {
 
 	// Check whether TLS map is enabled, otherwise use single user/pass.
 	if opts.Gateway.TLSMap {
-		return checkClientTLSCertSubject(c, func(user string) bool {
-			return opts.Gateway.Username == user
+		return checkClientTLSCertSubject(c, func(user string, _ *ldap.DN) (string, bool) {
+			return "", opts.Gateway.Username == user
 		})
 	}
 
@@ -781,16 +826,15 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 	} else if len(opts.LeafNode.Users) > 0 {
 		if opts.LeafNode.TLSMap {
 			var user *User
-			found := checkClientTLSCertSubject(c, func(u string) bool {
+			found := checkClientTLSCertSubject(c, func(u string, _ *ldap.DN) (string, bool) {
 				// This is expected to be a very small array.
 				for _, usr := range opts.LeafNode.Users {
 					if u == usr.Username {
 						user = usr
-						return true
+						return u, true
 					}
 				}
-				c.Debugf("User in cert [%q], not found", u)
-				return false
+				return "", false
 			})
 			if !found {
 				return false
