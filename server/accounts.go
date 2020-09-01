@@ -71,6 +71,7 @@ type Account struct {
 	jsLimits     *JetStreamAccountLimits
 	limits
 	expired      bool
+	incomplete   bool
 	signingKeys  []string
 	srv          *Server // server this account is registered with (possibly nil)
 	lds          string  // loop detection subject for leaf nodes
@@ -2448,6 +2449,7 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 			a.mu.Unlock()
 		}
 	}
+	incomplete := false
 	for _, i := range ac.Imports {
 		// check tmpAccounts with priority
 		var acc *Account
@@ -2459,6 +2461,8 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 		}
 		if acc == nil || err != nil {
 			s.Errorf("Can't locate account [%s] for import of [%v] %s (err=%v)", i.Account, i.Subject, i.Type, err)
+			incomplete = true
+			s.incompleteAccExporterMap.Store(i.Account, struct{}{})
 			continue
 		}
 		switch i.Type {
@@ -2466,12 +2470,16 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 			s.Debugf("Adding stream import %s:%q for %s:%q", acc.Name, i.Subject, a.Name, i.To)
 			if err := a.AddStreamImportWithClaim(acc, string(i.Subject), string(i.To), i); err != nil {
 				s.Debugf("Error adding stream import to account [%s]: %v", a.Name, err.Error())
+				incomplete = true
+				s.incompleteAccExporterMap.Store(i.Account, struct{}{})
 			}
 		case jwt.Service:
 			// FIXME(dlc) - need to add in respThresh here eventually.
 			s.Debugf("Adding service import %s:%q for %s:%q", acc.Name, i.Subject, a.Name, i.To)
 			if err := a.AddServiceImportWithClaim(acc, string(i.Subject), string(i.To), i); err != nil {
 				s.Debugf("Error adding service import to account [%s]: %v", a.Name, err.Error())
+				incomplete = true
+				s.incompleteAccExporterMap.Store(i.Account, struct{}{})
 			}
 		}
 	}
@@ -2574,6 +2582,7 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 		}
 	}
 	a.defaultPerms = buildPermissionsFromJwt(&ac.DefaultPermissions)
+	a.incomplete = incomplete
 	a.mu.Unlock()
 
 	clients := gatherClients()
@@ -2622,6 +2631,30 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 				c.closeConnection(AuthenticationViolation)
 			}
 		}
+	}
+
+	if _, ok := s.incompleteAccExporterMap.Load(old.Name); ok {
+		s.incompleteAccExporterMap.Delete(old.Name)
+		s.accounts.Range(func(key, value interface{}) bool {
+			acc := value.(*Account)
+			acc.mu.RLock()
+			incomplete := acc.incomplete
+			name := acc.Name
+			// Must use jwt in account or risk failing on fetch
+			// This jwt may not be the same that caused exportingAcc to be in incompleteAccExporterMap
+			claimJWT := acc.claimJWT
+			acc.mu.RUnlock()
+			if incomplete && name != old.Name {
+				if accClaims, _, err := s.verifyAccountClaims(claimJWT); err == nil {
+					s.UpdateAccountClaims(acc, accClaims)
+					if _, ok := s.incompleteAccExporterMap.Load(old.Name); ok {
+						s.incompleteAccExporterMap.Delete(old.Name)
+						s.Errorf("Account %s has issues importing account %s", name, old.Name)
+					}
+				}
+			}
+			return true
+		})
 	}
 }
 
