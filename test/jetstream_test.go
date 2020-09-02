@@ -4798,7 +4798,8 @@ func TestJetStreamInterestRetentionStream(t *testing.T) {
 				}
 			}
 
-			checkNumMsgs(totalMsgs)
+			// Since we had no interest this should be 0.
+			checkNumMsgs(0)
 
 			syncSub := func() *nats.Subscription {
 				sub, _ := nc.SubscribeSync(nats.NewInbox())
@@ -4819,6 +4820,13 @@ func TestJetStreamInterestRetentionStream(t *testing.T) {
 
 			sub3 := syncSub()
 			mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: sub3.Subject, AckPolicy: server.AckNone})
+
+			for i := 0; i < totalMsgs; i++ {
+				nc.Publish("DC", []byte("OK!"))
+			}
+			nc.Flush()
+
+			checkNumMsgs(totalMsgs)
 
 			// Wait for all messsages to be pending for each sub.
 			for i, sub := range []*nats.Subscription{sub1, sub2, sub3} {
@@ -4898,8 +4906,8 @@ func TestJetStreamConsumerReplayRate(t *testing.T) {
 		name    string
 		mconfig *server.StreamConfig
 	}{
-		{"MemoryStore", &server.StreamConfig{Name: "DC", Storage: server.MemoryStorage, Retention: server.InterestPolicy}},
-		{"FileStore", &server.StreamConfig{Name: "DC", Storage: server.FileStorage, Retention: server.InterestPolicy}},
+		{"MemoryStore", &server.StreamConfig{Name: "DC", Storage: server.MemoryStorage}},
+		{"FileStore", &server.StreamConfig{Name: "DC", Storage: server.FileStorage}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -5080,8 +5088,8 @@ func TestJetStreamConsumerReplayQuit(t *testing.T) {
 		name    string
 		mconfig *server.StreamConfig
 	}{
-		{"MemoryStore", &server.StreamConfig{Name: "DC", Storage: server.MemoryStorage, Retention: server.InterestPolicy}},
-		{"FileStore", &server.StreamConfig{Name: "DC", Storage: server.FileStorage, Retention: server.InterestPolicy}},
+		{"MemoryStore", &server.StreamConfig{Name: "DC", Storage: server.MemoryStorage}},
+		{"FileStore", &server.StreamConfig{Name: "DC", Storage: server.FileStorage}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

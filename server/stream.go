@@ -760,6 +760,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 	name := mset.config.Name
 	maxMsgSize := int(mset.config.MaxMsgSize)
 	numConsumers := len(mset.consumers)
+	interestRetention := mset.config.Retention == InterestPolicy
 
 	// Process msgId if we have headers.
 	var msgId string
@@ -795,7 +796,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 	// Check to see if we are over the account limit.
 	if maxMsgSize >= 0 && len(msg) > maxMsgSize {
 		response = []byte("-ERR 'message size exceeds maximum allowed'")
-	} else {
+	} else if !interestRetention || numConsumers > 0 {
 		// Headers.
 		if pc != nil && pc.pa.hdr > 0 {
 			hdr = msg[:pc.pa.hdr]
