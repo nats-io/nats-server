@@ -2449,7 +2449,7 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 			a.mu.Unlock()
 		}
 	}
-	incomplete := false
+	var incompleteImports []*jwt.Import
 	for _, i := range ac.Imports {
 		// check tmpAccounts with priority
 		var acc *Account
@@ -2461,8 +2461,7 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 		}
 		if acc == nil || err != nil {
 			s.Errorf("Can't locate account [%s] for import of [%v] %s (err=%v)", i.Account, i.Subject, i.Type, err)
-			incomplete = true
-			s.incompleteAccExporterMap.Store(i.Account, struct{}{})
+			incompleteImports = append(incompleteImports, i)
 			continue
 		}
 		switch i.Type {
@@ -2470,16 +2469,14 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 			s.Debugf("Adding stream import %s:%q for %s:%q", acc.Name, i.Subject, a.Name, i.To)
 			if err := a.AddStreamImportWithClaim(acc, string(i.Subject), string(i.To), i); err != nil {
 				s.Debugf("Error adding stream import to account [%s]: %v", a.Name, err.Error())
-				incomplete = true
-				s.incompleteAccExporterMap.Store(i.Account, struct{}{})
+				incompleteImports = append(incompleteImports, i)
 			}
 		case jwt.Service:
 			// FIXME(dlc) - need to add in respThresh here eventually.
 			s.Debugf("Adding service import %s:%q for %s:%q", acc.Name, i.Subject, a.Name, i.To)
 			if err := a.AddServiceImportWithClaim(acc, string(i.Subject), string(i.To), i); err != nil {
 				s.Debugf("Error adding service import to account [%s]: %v", a.Name, err.Error())
-				incomplete = true
-				s.incompleteAccExporterMap.Store(i.Account, struct{}{})
+				incompleteImports = append(incompleteImports, i)
 			}
 		}
 	}
@@ -2582,7 +2579,10 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 		}
 	}
 	a.defaultPerms = buildPermissionsFromJwt(&ac.DefaultPermissions)
-	a.incomplete = incomplete
+	a.incomplete = len(incompleteImports) != 0
+	for _, i := range incompleteImports {
+		s.incompleteAccExporterMap.Store(i.Account, struct{}{})
+	}
 	a.mu.Unlock()
 
 	clients := gatherClients()
@@ -2647,6 +2647,10 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 			if incomplete && name != old.Name {
 				if accClaims, _, err := s.verifyAccountClaims(claimJWT); err == nil {
 					s.UpdateAccountClaims(acc, accClaims)
+					// old.Name was deleted before ranging over accounts
+					// If it exists again, UpdateAccountClaims set it for failed imports of acc.
+					// So there was one import of acc that imported this account and failed again.
+					// Since this account just got updated, the import itself may be in error. So trace that.
 					if _, ok := s.incompleteAccExporterMap.Load(old.Name); ok {
 						s.incompleteAccExporterMap.Delete(old.Name)
 						s.Errorf("Account %s has issues importing account %s", name, old.Name)
