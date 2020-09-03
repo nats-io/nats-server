@@ -3320,6 +3320,8 @@ func TestLeafNodeDaisyChain(t *testing.T) {
 	})
 	nc1.Flush()
 
+	checkSubInterest(t, s3, "$G", "ngs.usage", time.Second)
+
 	nc2, err := nats.Connect(s3.ClientURL())
 	if err != nil {
 		t.Fatalf("Error creating client: %v", err)

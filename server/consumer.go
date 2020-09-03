@@ -1347,14 +1347,23 @@ func (o *Consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dcount u
 	}
 
 	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, o.dseq, dcount, ts), hdr, msg, o, seq}
+	mset := o.mset
 	sendq := o.mset.sendq
+	ap := o.config.AckPolicy
 
 	// This needs to be unlocked since the other side may need this lock on failed delivery.
 	o.mu.Unlock()
+	// Send message.
 	sendq <- pmsg
+	// If we are ack none and mset is interest only we should make sure stream removes interest.
+	if ap == AckNone && mset.config.Retention == InterestPolicy {
+		// FIXME(dlc) - we have mset lock here, but should we??
+		if !mset.checkInterest(seq, o) {
+			mset.store.RemoveMsg(seq)
+		}
+	}
 	o.mu.Lock()
 
-	ap := o.config.AckPolicy
 	if ap == AckNone {
 		o.adflr = o.dseq
 		o.asflr = seq
@@ -1726,7 +1735,25 @@ func (o *Consumer) stop(dflag, doSignal, advisory bool) error {
 	mset.unsubscribe(ackSub)
 	mset.unsubscribe(reqSub)
 	delete(mset.consumers, o.name)
+	rp := mset.config.Retention
 	mset.mu.Unlock()
+
+	// We need to optionally remove all messages since we are interest based retention.
+	if dflag && rp == InterestPolicy {
+		var seqs []uint64
+		o.mu.Lock()
+		for seq := range o.pending {
+			seqs = append(seqs, seq)
+		}
+		o.mu.Unlock()
+		// Sort just to keep pending sparse array state small.
+		sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
+		for _, seq := range seqs {
+			if !mset.checkInterest(seq, o) {
+				mset.store.RemoveMsg(seq)
+			}
+		}
+	}
 
 	// Make sure we stamp our update state
 	if !dflag {

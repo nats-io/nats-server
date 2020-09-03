@@ -4798,7 +4798,8 @@ func TestJetStreamInterestRetentionStream(t *testing.T) {
 				}
 			}
 
-			checkNumMsgs(totalMsgs)
+			// Since we had no interest this should be 0.
+			checkNumMsgs(0)
 
 			syncSub := func() *nats.Subscription {
 				sub, _ := nc.SubscribeSync(nats.NewInbox())
@@ -4819,6 +4820,13 @@ func TestJetStreamInterestRetentionStream(t *testing.T) {
 
 			sub3 := syncSub()
 			mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: sub3.Subject, AckPolicy: server.AckNone})
+
+			for i := 0; i < totalMsgs; i++ {
+				nc.Publish("DC", []byte("OK!"))
+			}
+			nc.Flush()
+
+			checkNumMsgs(totalMsgs)
 
 			// Wait for all messsages to be pending for each sub.
 			for i, sub := range []*nats.Subscription{sub1, sub2, sub3} {
@@ -4893,13 +4901,160 @@ func TestJetStreamInterestRetentionStream(t *testing.T) {
 	}
 }
 
+func TestJetStreamInterestRetentionStreamWithDurableRestart(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &server.StreamConfig{Name: "IK", Storage: server.MemoryStorage, Retention: server.InterestPolicy}},
+		{"FileStore", &server.StreamConfig{Name: "IK", Storage: server.FileStorage, Retention: server.InterestPolicy}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			checkNumMsgs := func(numExpected int) {
+				t.Helper()
+				if state := mset.State(); state.Msgs != uint64(numExpected) {
+					t.Fatalf("Expected %d messages, got %d", numExpected, state.Msgs)
+				}
+			}
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			sub, _ := nc.SubscribeSync(nats.NewInbox())
+			nc.Flush()
+
+			cfg := &server.ConsumerConfig{Durable: "ivan", DeliverPolicy: server.DeliverNew, DeliverSubject: sub.Subject, AckPolicy: server.AckNone}
+
+			o, _ := mset.AddConsumer(cfg)
+
+			sendStreamMsg(t, nc, "IK", "M1")
+			sendStreamMsg(t, nc, "IK", "M2")
+
+			checkSubPending := func(numExpected int) {
+				t.Helper()
+				checkFor(t, 200*time.Millisecond, 10*time.Millisecond, func() error {
+					if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != numExpected {
+						return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, numExpected)
+					}
+					return nil
+				})
+			}
+
+			checkSubPending(2)
+			checkNumMsgs(0)
+
+			// Now stop the subscription.
+			sub.Unsubscribe()
+			checkFor(t, 200*time.Millisecond, 10*time.Millisecond, func() error {
+				if o.Active() {
+					return fmt.Errorf("Still active consumer")
+				}
+				return nil
+			})
+
+			sendStreamMsg(t, nc, "IK", "M3")
+			sendStreamMsg(t, nc, "IK", "M4")
+
+			checkNumMsgs(2)
+
+			// Now restart the durable.
+			sub, _ = nc.SubscribeSync(nats.NewInbox())
+			nc.Flush()
+			cfg.DeliverSubject = sub.Subject
+			if o, err = mset.AddConsumer(cfg); err != nil {
+				t.Fatalf("Error re-establishing the durable consumer: %v", err)
+			}
+			checkSubPending(2)
+
+			for _, expected := range []string{"M3", "M4"} {
+				if m, err := sub.NextMsg(time.Second); err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				} else if string(m.Data) != expected {
+					t.Fatalf("Expected %q, got %q", expected, m.Data)
+				}
+			}
+
+			// Should all be gone now.
+			checkNumMsgs(0)
+
+			// Now restart again and make sure we do not get any messages.
+			sub.Unsubscribe()
+			checkFor(t, 200*time.Millisecond, 10*time.Millisecond, func() error {
+				if o.Active() {
+					return fmt.Errorf("Still active consumer")
+				}
+				return nil
+			})
+			o.Delete()
+
+			sub, _ = nc.SubscribeSync(nats.NewInbox())
+			nc.Flush()
+
+			cfg.DeliverSubject = sub.Subject
+			cfg.AckPolicy = server.AckExplicit // Set ack
+			if o, err = mset.AddConsumer(cfg); err != nil {
+				t.Fatalf("Error re-establishing the durable consumer: %v", err)
+			}
+			time.Sleep(100 * time.Millisecond)
+			checkSubPending(0)
+			checkNumMsgs(0)
+
+			// Now queue up some messages.
+			for i := 1; i <= 10; i++ {
+				sendStreamMsg(t, nc, "IK", fmt.Sprintf("M%d", i))
+			}
+			checkNumMsgs(10)
+			checkSubPending(10)
+
+			// Create second consumer
+			sub2, _ := nc.SubscribeSync(nats.NewInbox())
+			nc.Flush()
+			cfg.DeliverSubject = sub2.Subject
+			cfg.Durable = "derek"
+			o2, err := mset.AddConsumer(cfg)
+			if err != nil {
+				t.Fatalf("Error creating second durable consumer: %v", err)
+			}
+
+			// Now queue up some messages.
+			for i := 11; i <= 20; i++ {
+				sendStreamMsg(t, nc, "IK", fmt.Sprintf("M%d", i))
+			}
+			checkNumMsgs(20)
+			checkSubPending(20)
+
+			// Now make sure deleting the consumers will remove messages from
+			// the stream since we are interest retention based.
+			o.Delete()
+			checkNumMsgs(10)
+
+			o2.Delete()
+			checkNumMsgs(0)
+		})
+	}
+}
+
 func TestJetStreamConsumerReplayRate(t *testing.T) {
 	cases := []struct {
 		name    string
 		mconfig *server.StreamConfig
 	}{
-		{"MemoryStore", &server.StreamConfig{Name: "DC", Storage: server.MemoryStorage, Retention: server.InterestPolicy}},
-		{"FileStore", &server.StreamConfig{Name: "DC", Storage: server.FileStorage, Retention: server.InterestPolicy}},
+		{"MemoryStore", &server.StreamConfig{Name: "DC", Storage: server.MemoryStorage}},
+		{"FileStore", &server.StreamConfig{Name: "DC", Storage: server.FileStorage}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -5080,8 +5235,8 @@ func TestJetStreamConsumerReplayQuit(t *testing.T) {
 		name    string
 		mconfig *server.StreamConfig
 	}{
-		{"MemoryStore", &server.StreamConfig{Name: "DC", Storage: server.MemoryStorage, Retention: server.InterestPolicy}},
-		{"FileStore", &server.StreamConfig{Name: "DC", Storage: server.FileStorage, Retention: server.InterestPolicy}},
+		{"MemoryStore", &server.StreamConfig{Name: "DC", Storage: server.MemoryStorage}},
+		{"FileStore", &server.StreamConfig{Name: "DC", Storage: server.FileStorage}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
