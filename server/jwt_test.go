@@ -1999,13 +1999,15 @@ func TestAccountURLResolverPermanentFetchFailure(t *testing.T) {
 	natsPub(t, sysc, fmt.Sprintf(accUpdateEventSubj, exppub), []byte(expjwt))
 	sysc.Flush()
 	importErrCnt := 0
+	tmr := time.NewTimer(500 * time.Millisecond)
+	defer tmr.Stop()
 	for {
 		select {
 		case line := <-l.dbgCh:
 			if strings.HasPrefix(line, "Error adding stream import to account") {
 				importErrCnt++
 			}
-		case <-time.After(time.Second * 2):
+		case <-tmr.C:
 			// connecting and updating, each cause 3 traces (2 + 1 on iteration)
 			if importErrCnt != 6 {
 				t.Fatalf("Expected 6 debug traces, got %d", importErrCnt)
