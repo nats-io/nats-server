@@ -64,6 +64,7 @@ type Account struct {
 	pruning       bool
 	rmPruning     bool
 	expired       bool
+	incomplete    bool
 	signingKeys   []string
 	srv           *Server // server this account is registered with (possibly nil)
 	lds           string  // loop detection subject for leaf nodes
@@ -1806,6 +1807,14 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 // This will replace any exports or imports previously defined.
 // Lock MUST NOT be held upon entry.
 func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
+	s.updateAccountClaimsWithRefresh(a, ac, true)
+}
+
+// updateAccountClaimsWithRefresh will update an existing account with new claims.
+// If refreshImportingAccounts is true it will also update incomplete dependent accounts
+// This will replace any exports or imports previously defined.
+// Lock MUST NOT be held upon entry.
+func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaims, refreshImportingAccounts bool) {
 	if a == nil {
 		return
 	}
@@ -1901,10 +1910,12 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 			a.mu.Unlock()
 		}
 	}
+	var incompleteImports []*jwt.Import
 	for _, i := range ac.Imports {
 		acc, err := s.lookupAccount(i.Account)
 		if acc == nil || err != nil {
 			s.Errorf("Can't locate account [%s] for import of [%v] %s (err=%v)", i.Account, i.Subject, i.Type, err)
+			incompleteImports = append(incompleteImports, i)
 			continue
 		}
 		switch i.Type {
@@ -1912,11 +1923,13 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 			s.Debugf("Adding stream import %s:%q for %s:%q", acc.Name, i.Subject, a.Name, i.To)
 			if err := a.AddStreamImportWithClaim(acc, string(i.Subject), string(i.To), i); err != nil {
 				s.Debugf("Error adding stream import to account [%s]: %v", a.Name, err.Error())
+				incompleteImports = append(incompleteImports, i)
 			}
 		case jwt.Service:
 			s.Debugf("Adding service import %s:%q for %s:%q", acc.Name, i.Subject, a.Name, i.To)
 			if err := a.AddServiceImportWithClaim(acc, string(i.Subject), string(i.To), i); err != nil {
 				s.Debugf("Error adding service import to account [%s]: %v", a.Name, err.Error())
+				incompleteImports = append(incompleteImports, i)
 			}
 		}
 	}
@@ -1998,6 +2011,10 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 			a.usersRevoked[pk] = t
 		}
 	}
+	a.incomplete = len(incompleteImports) != 0
+	for _, i := range incompleteImports {
+		s.incompleteAccExporterMap.Store(i.Account, struct{}{})
+	}
 	a.mu.Unlock()
 
 	clients := gatherClients()
@@ -2046,6 +2063,36 @@ func (s *Server) updateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 				c.closeConnection(AuthenticationViolation)
 			}
 		}
+	}
+
+	if _, ok := s.incompleteAccExporterMap.Load(old.Name); ok && refreshImportingAccounts {
+		s.incompleteAccExporterMap.Delete(old.Name)
+		s.accounts.Range(func(key, value interface{}) bool {
+			acc := value.(*Account)
+			acc.mu.RLock()
+			incomplete := acc.incomplete
+			name := acc.Name
+			// Must use jwt in account or risk failing on fetch
+			// This jwt may not be the same that caused exportingAcc to be in incompleteAccExporterMap
+			claimJWT := acc.claimJWT
+			acc.mu.RUnlock()
+			if incomplete && name != old.Name {
+				if accClaims, _, err := s.verifyAccountClaims(claimJWT); err == nil {
+					// Since claimJWT has not changed, acc can become complete
+					// but it won't alter incomplete for it's dependents accounts.
+					s.updateAccountClaimsWithRefresh(acc, accClaims, false)
+					// old.Name was deleted before ranging over accounts
+					// If it exists again, UpdateAccountClaims set it for failed imports of acc.
+					// So there was one import of acc that imported this account and failed again.
+					// Since this account just got updated, the import itself may be in error. So trace that.
+					if _, ok := s.incompleteAccExporterMap.Load(old.Name); ok {
+						s.incompleteAccExporterMap.Delete(old.Name)
+						s.Errorf("Account %s has issues importing account %s", name, old.Name)
+					}
+				}
+			}
+			return true
+		})
 	}
 }
 

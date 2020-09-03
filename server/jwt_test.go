@@ -34,7 +34,27 @@ import (
 var (
 	// This matches ./configs/nkeys_jwts/test.seed
 	oSeed = []byte("SOAFYNORQLQFJYBYNUGC5D7SH2MXMUX5BFEWWGHN3EK4VGG5TPT5DZP7QU")
+	// This matches ./configs/nkeys/op.jwt
+	ojwt = "eyJ0eXAiOiJqd3QiLCJhbGciOiJlZDI1NTE5In0.eyJhdWQiOiJURVNUUyIsImV4cCI6MTg1OTEyMTI3NSwianRpIjoiWE5MWjZYWVBIVE1ESlFSTlFPSFVPSlFHV0NVN01JNVc1SlhDWk5YQllVS0VRVzY3STI1USIsImlhdCI6MTU0Mzc2MTI3NSwiaXNzIjoiT0NBVDMzTVRWVTJWVU9JTUdOR1VOWEo2NkFIMlJMU0RBRjNNVUJDWUFZNVFNSUw2NU5RTTZYUUciLCJuYW1lIjoiU3luYWRpYSBDb21tdW5pY2F0aW9ucyBJbmMuIiwibmJmIjoxNTQzNzYxMjc1LCJzdWIiOiJPQ0FUMzNNVFZVMlZVT0lNR05HVU5YSjY2QUgyUkxTREFGM01VQkNZQVk1UU1JTDY1TlFNNlhRRyIsInR5cGUiOiJvcGVyYXRvciIsIm5hdHMiOnsic2lnbmluZ19rZXlzIjpbIk9EU0tSN01ZRlFaNU1NQUo2RlBNRUVUQ1RFM1JJSE9GTFRZUEpSTUFWVk40T0xWMllZQU1IQ0FDIiwiT0RTS0FDU1JCV1A1MzdEWkRSVko2NTdKT0lHT1BPUTZLRzdUNEhONk9LNEY2SUVDR1hEQUhOUDIiLCJPRFNLSTM2TFpCNDRPWTVJVkNSNlA1MkZaSlpZTVlXWlZXTlVEVExFWjVUSzJQTjNPRU1SVEFCUiJdfX0.hyfz6E39BMUh0GLzovFfk3wT4OfualftjdJ_eYkLfPvu5tZubYQ_Pn9oFYGCV_6yKy3KMGhWGUCyCdHaPhalBw"
+	oKp  nkeys.KeyPair
 )
+
+func init() {
+	var err error
+	oKp, err = nkeys.FromSeed(oSeed)
+	if err != nil {
+		panic(fmt.Sprintf("Parsing oSeed failed with: %v", err))
+	}
+}
+
+func chanRecv(t *testing.T, recvChan <-chan struct{}, limit time.Duration) {
+	t.Helper()
+	select {
+	case <-recvChan:
+	case <-time.After(limit):
+		t.Fatal("Should have received from channel")
+	}
+}
 
 func opTrustBasicSetup() *Server {
 	kp, _ := nkeys.FromSeed(oSeed)
@@ -1685,6 +1705,304 @@ func TestAccountURLResolverNoFetchOnReload(t *testing.T) {
 			s.Shutdown()
 		}
 		t.Fatalf("Expected error regarding account resolver, got %v", err)
+	}
+}
+
+func TestAccountURLResolverFetchFailureInServer1(t *testing.T) {
+	const subj = "test"
+	const crossAccSubj = "test"
+	// Create Exporting Account
+	expkp, _ := nkeys.CreateAccount()
+	exppub, _ := expkp.PublicKey()
+	expac := jwt.NewAccountClaims(exppub)
+	expac.Exports.Add(&jwt.Export{
+		Subject: crossAccSubj,
+		Type:    jwt.Stream,
+	})
+	expjwt, err := expac.Encode(oKp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	// Create importing Account
+	impkp, _ := nkeys.CreateAccount()
+	imppub, _ := impkp.PublicKey()
+	impac := jwt.NewAccountClaims(imppub)
+	impac.Imports.Add(&jwt.Import{
+		Account: exppub,
+		Subject: crossAccSubj,
+		Type:    jwt.Stream,
+	})
+	impjwt, err := impac.Encode(oKp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	// Simulate an account server that drops the first request to exppub
+	chanImpA := make(chan struct{}, 10)
+	defer close(chanImpA)
+	chanExpS := make(chan struct{}, 10)
+	defer close(chanExpS)
+	chanExpF := make(chan struct{}, 1)
+	defer close(chanExpF)
+	failureCnt := int32(0)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/A/" {
+			// Server startup
+			w.Write(nil)
+			chanImpA <- struct{}{}
+		} else if r.URL.Path == "/A/"+imppub {
+			w.Write([]byte(impjwt))
+			chanImpA <- struct{}{}
+		} else if r.URL.Path == "/A/"+exppub {
+			if atomic.AddInt32(&failureCnt, 1) <= 1 {
+				// skip the write to simulate the failure
+				chanExpF <- struct{}{}
+			} else {
+				w.Write([]byte(expjwt))
+				chanExpS <- struct{}{}
+			}
+		} else {
+			t.Fatal("not expected")
+		}
+	}))
+	defer ts.Close()
+	// Create server
+	confA := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		operator: %s
+		resolver: URL("%s/A/")
+    `, ojwt, ts.URL)))
+	defer os.Remove(confA)
+	sA := RunServer(LoadConfig(confA))
+	defer sA.Shutdown()
+	// server observed one fetch on startup
+	chanRecv(t, chanImpA, 10*time.Second)
+	// Create first client
+	ncA := natsConnect(t, sA.ClientURL(), createUserCreds(t, nil, impkp))
+	defer ncA.Close()
+	// create a test subscription
+	subA, err := ncA.SubscribeSync(subj)
+	if err != nil {
+		t.Fatalf("Expected no error during subscribe: %v", err)
+	}
+	defer subA.Unsubscribe()
+	// Connect of client triggered a fetch of both accounts
+	// the fetch for the imported account will fail
+	chanRecv(t, chanImpA, 10*time.Second)
+	chanRecv(t, chanExpF, 10*time.Second)
+	// create second client for user exporting
+	ncB := natsConnect(t, sA.ClientURL(), createUserCreds(t, nil, expkp))
+	defer ncB.Close()
+	chanRecv(t, chanExpS, 10*time.Second)
+	// Connect of client triggered another fetch, this time passing
+	checkSubInterest(t, sA, imppub, subj, 10*time.Second)
+	checkSubInterest(t, sA, exppub, crossAccSubj, 10*time.Second) // Will fail as a result of this issue
+}
+
+func TestAccountURLResolverFetchFailurePushReorder(t *testing.T) {
+	const subj = "test"
+	const crossAccSubj = "test"
+	// Create System Account
+	syskp, _ := nkeys.CreateAccount()
+	syspub, _ := syskp.PublicKey()
+	sysAc := jwt.NewAccountClaims(syspub)
+	sysjwt, err := sysAc.Encode(oKp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	// Create Exporting Account
+	expkp, _ := nkeys.CreateAccount()
+	exppub, _ := expkp.PublicKey()
+	expac := jwt.NewAccountClaims(exppub)
+	expjwt1, err := expac.Encode(oKp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	expac.Exports.Add(&jwt.Export{
+		Subject: crossAccSubj,
+		Type:    jwt.Stream,
+	})
+	expjwt2, err := expac.Encode(oKp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	// Create importing Account
+	impkp, _ := nkeys.CreateAccount()
+	imppub, _ := impkp.PublicKey()
+	impac := jwt.NewAccountClaims(imppub)
+	impac.Imports.Add(&jwt.Import{
+		Account: exppub,
+		Subject: crossAccSubj,
+		Type:    jwt.Stream,
+	})
+	impjwt, err := impac.Encode(oKp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	// Simulate an account server that does not serve the updated jwt for exppub
+	chanImpA := make(chan struct{}, 10)
+	defer close(chanImpA)
+	chanExpS := make(chan struct{}, 10)
+	defer close(chanExpS)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/A/" {
+			// Server startup
+			w.Write(nil)
+			chanImpA <- struct{}{}
+		} else if r.URL.Path == "/A/"+imppub {
+			w.Write([]byte(impjwt))
+			chanImpA <- struct{}{}
+		} else if r.URL.Path == "/A/"+exppub {
+			// respond with jwt that does not have the export
+			// this simulates an ordering issue
+			w.Write([]byte(expjwt1))
+			chanExpS <- struct{}{}
+		} else if r.URL.Path == "/A/"+syspub {
+			w.Write([]byte(sysjwt))
+		} else {
+			t.Fatal("not expected")
+		}
+	}))
+	defer ts.Close()
+	confA := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		operator: %s
+		resolver: URL("%s/A/")
+		system_account: %s
+    `, ojwt, ts.URL, syspub)))
+	defer os.Remove(confA)
+	sA := RunServer(LoadConfig(confA))
+	defer sA.Shutdown()
+	// server observed one fetch on startup
+	chanRecv(t, chanImpA, 10*time.Second)
+	// Create first client
+	ncA := natsConnect(t, sA.ClientURL(), createUserCreds(t, nil, impkp))
+	defer ncA.Close()
+	// create a test subscription
+	subA, err := ncA.SubscribeSync(subj)
+	if err != nil {
+		t.Fatalf("Expected no error during subscribe: %v", err)
+	}
+	defer subA.Unsubscribe()
+	// Connect of client triggered a fetch of both accounts
+	// the fetch for the imported account will fail
+	chanRecv(t, chanImpA, 10*time.Second)
+	chanRecv(t, chanExpS, 10*time.Second)
+	// create second client for user exporting
+	ncB := natsConnect(t, sA.ClientURL(), createUserCreds(t, nil, expkp))
+	defer ncB.Close()
+	// update expjwt2, this will correct the import issue
+	sysc := natsConnect(t, sA.ClientURL(), createUserCreds(t, nil, syskp))
+	defer sysc.Close()
+	natsPub(t, sysc, fmt.Sprintf(accUpdateEventSubj, exppub), []byte(expjwt2))
+	sysc.Flush()
+	// updating expjwt should cause this to pass
+	checkSubInterest(t, sA, imppub, subj, 10*time.Second)
+	checkSubInterest(t, sA, exppub, crossAccSubj, 10*time.Second) // Will fail as a result of this issue
+}
+
+type captureDebugLogger struct {
+	DummyLogger
+	dbgCh chan string
+}
+
+func (l *captureDebugLogger) Debugf(format string, v ...interface{}) {
+	select {
+	case l.dbgCh <- fmt.Sprintf(format, v...):
+	default:
+	}
+}
+
+func TestAccountURLResolverPermanentFetchFailure(t *testing.T) {
+	const crossAccSubj = "test"
+	expkp, _ := nkeys.CreateAccount()
+	exppub, _ := expkp.PublicKey()
+	impkp, _ := nkeys.CreateAccount()
+	imppub, _ := impkp.PublicKey()
+	// Create System Account
+	syskp, _ := nkeys.CreateAccount()
+	syspub, _ := syskp.PublicKey()
+	sysAc := jwt.NewAccountClaims(syspub)
+	sysjwt, err := sysAc.Encode(oKp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	// Create 2 Accounts. Each importing from the other, but NO matching export
+	expac := jwt.NewAccountClaims(exppub)
+	expac.Imports.Add(&jwt.Import{
+		Account: imppub,
+		Subject: crossAccSubj,
+		Type:    jwt.Stream,
+	})
+	expjwt, err := expac.Encode(oKp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	// Create importing Account
+	impac := jwt.NewAccountClaims(imppub)
+	impac.Imports.Add(&jwt.Import{
+		Account: exppub,
+		Subject: crossAccSubj,
+		Type:    jwt.Stream,
+	})
+	impjwt, err := impac.Encode(oKp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	// Simulate an account server that does not serve the updated jwt for exppub
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/A/" {
+			// Server startup
+			w.Write(nil)
+		} else if r.URL.Path == "/A/"+imppub {
+			w.Write([]byte(impjwt))
+		} else if r.URL.Path == "/A/"+exppub {
+			w.Write([]byte(expjwt))
+		} else if r.URL.Path == "/A/"+syspub {
+			w.Write([]byte(sysjwt))
+		} else {
+			t.Fatal("not expected")
+		}
+	}))
+	defer ts.Close()
+	confA := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		operator: %s
+		resolver: URL("%s/A/")
+		system_account: %s
+    `, ojwt, ts.URL, syspub)))
+	defer os.Remove(confA)
+	o := LoadConfig(confA)
+	sA := RunServer(o)
+	defer sA.Shutdown()
+	l := &captureDebugLogger{dbgCh: make(chan string, 100)} // has enough space to not block
+	sA.SetLogger(l, true, false)
+	// Create clients
+	ncA := natsConnect(t, sA.ClientURL(), createUserCreds(t, nil, impkp))
+	defer ncA.Close()
+	ncB := natsConnect(t, sA.ClientURL(), createUserCreds(t, nil, expkp))
+	defer ncB.Close()
+	sysc := natsConnect(t, sA.ClientURL(), createUserCreds(t, nil, syskp))
+	defer sysc.Close()
+	// push accounts
+	natsPub(t, sysc, fmt.Sprintf(accUpdateEventSubj, imppub), []byte(impjwt))
+	natsPub(t, sysc, fmt.Sprintf(accUpdateEventSubj, exppub), []byte(expjwt))
+	sysc.Flush()
+	importErrCnt := 0
+	tmr := time.NewTimer(500 * time.Millisecond)
+	defer tmr.Stop()
+	for {
+		select {
+		case line := <-l.dbgCh:
+			if strings.HasPrefix(line, "Error adding stream import to account") {
+				importErrCnt++
+			}
+		case <-tmr.C:
+			// connecting and updating, each cause 3 traces (2 + 1 on iteration)
+			if importErrCnt != 6 {
+				t.Fatalf("Expected 6 debug traces, got %d", importErrCnt)
+			}
+			return
+		}
 	}
 }
 

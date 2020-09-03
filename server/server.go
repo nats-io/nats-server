@@ -205,6 +205,9 @@ type Server struct {
 		ch chan time.Duration
 		m  sync.Map
 	}
+
+	// exporting account name the importer experienced issues with
+	incompleteAccExporterMap sync.Map
 }
 
 // Make sure all are 64bits for atomic use
@@ -1028,8 +1031,7 @@ func (s *Server) updateAccountWithClaimJWT(acc *Account, claimJWT string) error 
 	if acc == nil {
 		return ErrMissingAccount
 	}
-	acc.updated = time.Now()
-	if acc.claimJWT != "" && acc.claimJWT == claimJWT {
+	if acc.claimJWT != "" && acc.claimJWT == claimJWT && !acc.incomplete {
 		s.Debugf("Requested account update for [%s], same claims detected", acc.Name)
 		return ErrAccountResolverSameClaims
 	}
