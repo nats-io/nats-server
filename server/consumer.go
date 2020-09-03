@@ -1347,14 +1347,23 @@ func (o *Consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dcount u
 	}
 
 	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, o.dseq, dcount, ts), hdr, msg, o, seq}
+	mset := o.mset
 	sendq := o.mset.sendq
+	ap := o.config.AckPolicy
 
 	// This needs to be unlocked since the other side may need this lock on failed delivery.
 	o.mu.Unlock()
+	// Send message.
 	sendq <- pmsg
+	// If we are ack none and mset is interest only we should make sure stream removes interest.
+	if ap == AckNone && mset.config.Retention == InterestPolicy {
+		// FIXME(dlc) - we have mset lock here, but should we??
+		if !mset.checkInterest(seq, o) {
+			mset.store.RemoveMsg(seq)
+		}
+	}
 	o.mu.Lock()
 
-	ap := o.config.AckPolicy
 	if ap == AckNone {
 		o.adflr = o.dseq
 		o.asflr = seq

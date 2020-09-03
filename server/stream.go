@@ -796,7 +796,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 	// Check to see if we are over the account limit.
 	if maxMsgSize >= 0 && len(msg) > maxMsgSize {
 		response = []byte("-ERR 'message size exceeds maximum allowed'")
-	} else if !interestRetention || numConsumers > 0 {
+	} else {
 		// Headers.
 		if pc != nil && pc.pa.hdr > 0 {
 			hdr = msg[:pc.pa.hdr]
@@ -821,6 +821,10 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 			// If we have a msgId make sure to save.
 			if msgId != "" {
 				mset.storeMsgId(&ddentry{msgId, seq, ts})
+			}
+			// If we are interest based retention and have no consumers clean that up here.
+			if interestRetention && numConsumers == 0 {
+				store.RemoveMsg(seq)
 			}
 		}
 	}
@@ -1114,6 +1118,18 @@ func (mset *Stream) partitionUnique(partition string) bool {
 	return true
 }
 
+// Lock should be held.
+func (mset *Stream) checkInterest(seq uint64, obs *Consumer) bool {
+	var needAck bool
+	for _, o := range mset.consumers {
+		if o != obs && o.needAck(seq) {
+			needAck = true
+			break
+		}
+	}
+	return needAck
+}
+
 // ackMsg is called into from an observable when we have a WorkQueue or Interest retention policy.
 func (mset *Stream) ackMsg(obs *Consumer, seq uint64) {
 	switch mset.config.Retention {
@@ -1122,16 +1138,10 @@ func (mset *Stream) ackMsg(obs *Consumer, seq uint64) {
 	case WorkQueuePolicy:
 		mset.store.RemoveMsg(seq)
 	case InterestPolicy:
-		var needAck bool
 		mset.mu.Lock()
-		for _, o := range mset.consumers {
-			if o != obs && o.needAck(seq) {
-				needAck = true
-				break
-			}
-		}
+		hasInterest := mset.checkInterest(seq, obs)
 		mset.mu.Unlock()
-		if !needAck {
+		if !hasInterest {
 			mset.store.RemoveMsg(seq)
 		}
 	}
