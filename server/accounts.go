@@ -2351,6 +2351,14 @@ func (a *Account) isClaimAccount() bool {
 // This will replace any exports or imports previously defined.
 // Lock MUST NOT be held upon entry.
 func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
+	s.updateAccountClaimsWithRefresh(a, ac, true)
+}
+
+// updateAccountClaimsWithRefresh will update an existing account with new claims.
+// If refreshImportingAccounts is true it will also update incomplete dependent accounts
+// This will replace any exports or imports previously defined.
+// Lock MUST NOT be held upon entry.
+func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaims, refreshImportingAccounts bool) {
 	if a == nil {
 		return
 	}
@@ -2633,7 +2641,7 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 		}
 	}
 
-	if _, ok := s.incompleteAccExporterMap.Load(old.Name); ok {
+	if _, ok := s.incompleteAccExporterMap.Load(old.Name); ok && refreshImportingAccounts {
 		s.incompleteAccExporterMap.Delete(old.Name)
 		s.accounts.Range(func(key, value interface{}) bool {
 			acc := value.(*Account)
@@ -2646,7 +2654,9 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 			acc.mu.RUnlock()
 			if incomplete && name != old.Name {
 				if accClaims, _, err := s.verifyAccountClaims(claimJWT); err == nil {
-					s.UpdateAccountClaims(acc, accClaims)
+					// Since claimJWT has not changed, acc can become complete
+					// but it won't alter incomplete for it's dependents accounts.
+					s.updateAccountClaimsWithRefresh(acc, accClaims, false)
 					// old.Name was deleted before ranging over accounts
 					// If it exists again, UpdateAccountClaims set it for failed imports of acc.
 					// So there was one import of acc that imported this account and failed again.
