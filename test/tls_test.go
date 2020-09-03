@@ -1193,19 +1193,49 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 		err    error
 		rerr   error
 	}{
+		// To generate certs for these tests:
+		//
+		// ```
+		// openssl req -newkey rsa:2048  -nodes -keyout client-$CLIENT_ID.key -subj "/C=US/ST=CA/L=Los Angeles/OU=NATS/O=NATS/CN=*.example.com/DC=example/DC=com" -addext extendedKeyUsage=clientAuth -out client-$CLIENT_ID.csr
+		// openssl x509 -req -extfile <(printf "subjectAltName=DNS:localhost,DNS:example.com,DNS:www.example.com") -days 1825 -in client-$CLIENT_ID.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out client-$CLIENT_ID.pem
+		// ```
+		//
+		// To confirm subject from cert:
+		//
+		// ```
+		// openssl x509 -in client-$CLIENT_ID.pem -text | grep Subject:
+		// ```
+		//
 		{
 			"connect with tls using full RDN sequence",
+			`
+                                port: -1
+                                %s
+
+                                authorization {
+                                  users = [
+                                    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US,DC=foo1,DC=foo2" }
+                                  ]
+                                }
+                        `,
+			// C = US, ST = California, L = Los Angeles, O = NATS, OU = NATS, CN = localhost, DC = foo1, DC = foo2
+			nats.ClientCert("./configs/certs/rdns/client-a.pem", "./configs/certs/rdns/client-a.key"),
+			nil,
+			nil,
+		},
+		{
+			"connect with tls using full RDN sequence in original order",
 			`
 				port: -1
 				%s
 
 				authorization {
 				  users = [
-				    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US,DC=foo1,DC=foo2" }
+				    { user = "DC=foo2,DC=foo1,CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US" }
 				  ]
 				}
 			`,
-			// C=US/ST=California/L=Los Angeles/O=NATS/OU=NATS/CN=localhost/DC=foo1/DC=foo2
+			// C = US, ST = California, L = Los Angeles, O = NATS, OU = NATS, CN = localhost, DC = foo1, DC = foo2
 			nats.ClientCert("./configs/certs/rdns/client-a.pem", "./configs/certs/rdns/client-a.key"),
 			nil,
 			nil,
@@ -1218,13 +1248,14 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 
 				authorization {
 				  users = [
+				    { user = "DC=foo2,DC=foo1,CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US" },
 				    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US,DC=foo1,DC=foo2" },
 				    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US",
                                       permissions = { subscribe = { deny = ">" }} }
 				  ]
 				}
 			`,
-			// C=US/ST=California/L=Los Angeles/O=NATS/OU=NATS/CN=localhost
+			// C = US, ST = California, L = Los Angeles, O = NATS, OU = NATS, CN = localhost
 			nats.ClientCert("./configs/certs/rdns/client-b.pem", "./configs/certs/rdns/client-b.key"),
 			nil,
 			errors.New("nats: timeout"),
@@ -1237,17 +1268,19 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 
 				authorization {
 				  users = [
+				    { user = "DC=foo2,DC=foo1,CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US" }
 				    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US,DC=foo1,DC=foo2" }
 				    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US"},
 				  ]
 				}
 			`,
+			// Cert is:
 			//
-			// C=US/ST=California/L=Los Angeles/O=NATS/OU=NATS/CN=localhost/DC=foo3/DC=foo4
+			// C = US, ST = California, L = Los Angeles, O = NATS, OU = NATS, CN = localhost, DC = foo3, DC = foo4
 			//
-			// but it will actually match the 2nd user so will not get an error (backwards compatible behavior)
+			// but it will actually match the user without DCs so will not get an error:
 			//
-			// CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US
+			// C = US, ST = California, L = Los Angeles, O = NATS, OU = NATS, CN = localhost
 			//
 			nats.ClientCert("./configs/certs/rdns/client-c.pem", "./configs/certs/rdns/client-c.key"),
 			nil,
@@ -1261,14 +1294,94 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 
 				authorization {
 				  users = [
-				    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US,DC=foo1,DC=foo2" }
+				    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US,DC=foo1,DC=foo2" },
+				    { user = "DC=foo2,DC=foo1,CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US" }
 				  ]
 				}
 			`,
-			// C=US/ST=California/L=Los Angeles/O=NATS/OU=NATS/CN=localhost/DC=foo3/DC=foo4
+			// C = US, ST = California, L = Los Angeles, O = NATS, OU = NATS, CN = localhost, DC = foo3, DC = foo4
 			//
 			nats.ClientCert("./configs/certs/rdns/client-c.pem", "./configs/certs/rdns/client-c.key"),
 			errors.New("nats: Authorization Violation"),
+			nil,
+		},
+		{
+			"connect with tls and RDN sequence with space after comma not should matter",
+			`
+				port: -1
+				%s
+
+				authorization {
+				  users = [
+				    { user = "DC=foo2, DC=foo1, CN=localhost, OU=NATS, O=NATS, L=Los Angeles, ST=California, C=US" }
+				  ]
+				}
+			`,
+			// C=US/ST=California/L=Los Angeles/O=NATS/OU=NATS/CN=localhost/DC=foo1/DC=foo2
+			//
+			nats.ClientCert("./configs/certs/rdns/client-a.pem", "./configs/certs/rdns/client-a.key"),
+			nil,
+			nil,
+		},
+		{
+			"connect with tls and full RDN sequence respects order",
+			`
+				port: -1
+				%s
+
+				authorization {
+				  users = [
+				    { user = "DC=com, DC=example, CN=*.example.com, O=NATS, OU=NATS, L=Los Angeles, ST=CA, C=US" }
+				  ]
+				}
+			`,
+			//
+			// C = US, ST = CA, L = Los Angeles, OU = NATS, O = NATS, CN = *.example.com, DC = example, DC = com
+			//
+			nats.ClientCert("./configs/certs/rdns/client-d.pem", "./configs/certs/rdns/client-d.key"),
+			nil,
+			nil,
+		},
+		{
+			"connect with tls and full RDN sequence with added domainComponents and spaces also matches",
+			`
+				port: -1
+				%s
+
+				authorization {
+				  users = [
+				    { user = "CN=*.example.com,OU=NATS,O=NATS,L=Los Angeles,ST=CA,C=US,DC=example,DC=com" }
+				  ]
+				}
+			`,
+			//
+			// C = US, ST = CA, L = Los Angeles, OU = NATS, O = NATS, CN = *.example.com, DC = example, DC = com
+			//
+			nats.ClientCert("./configs/certs/rdns/client-d.pem", "./configs/certs/rdns/client-d.key"),
+			nil,
+			nil,
+		},
+		{
+			"connect with tls and full RDN sequence with correct order takes precedence over others matches",
+			`
+				port: -1
+				%s
+
+				authorization {
+				  users = [
+				    { user = "CN=*.example.com,OU=NATS,O=NATS,L=Los Angeles,ST=CA,C=US,DC=example,DC=com",
+                                        permissions = { subscribe = { deny = ">" }} }
+				    { user = "DC=com,DC=example,CN=*.example.com,O=NATS,OU=NATS,L=Los Angeles,ST=CA,C=US" }
+				    { user = "CN=*.example.com,OU=NATS,O=NATS,L=Los Angeles,ST=CA,C=US",
+                                        permissions = { subscribe = { deny = ">" }} }
+				  ]
+				}
+			`,
+			//
+			// C = US, ST = CA, L = Los Angeles, OU = NATS, O = NATS, CN = *.example.com, DC = example, DC = com
+			//
+			nats.ClientCert("./configs/certs/rdns/client-d.pem", "./configs/certs/rdns/client-d.key"),
+			nil,
 			nil,
 		},
 	} {
