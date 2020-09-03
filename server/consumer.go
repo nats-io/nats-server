@@ -1735,7 +1735,25 @@ func (o *Consumer) stop(dflag, doSignal, advisory bool) error {
 	mset.unsubscribe(ackSub)
 	mset.unsubscribe(reqSub)
 	delete(mset.consumers, o.name)
+	rp := mset.config.Retention
 	mset.mu.Unlock()
+
+	// We need to optionally remove all messages since we are interest based retention.
+	if dflag && rp == InterestPolicy {
+		var seqs []uint64
+		o.mu.Lock()
+		for seq := range o.pending {
+			seqs = append(seqs, seq)
+		}
+		o.mu.Unlock()
+		// Sort just to keep pending sparse array state small.
+		sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
+		for _, seq := range seqs {
+			if !mset.checkInterest(seq, o) {
+				mset.store.RemoveMsg(seq)
+			}
+		}
+	}
 
 	// Make sure we stamp our update state
 	if !dflag {

@@ -4999,15 +4999,50 @@ func TestJetStreamInterestRetentionStreamWithDurableRestart(t *testing.T) {
 				}
 				return nil
 			})
+			o.Delete()
 
 			sub, _ = nc.SubscribeSync(nats.NewInbox())
 			nc.Flush()
+
 			cfg.DeliverSubject = sub.Subject
+			cfg.AckPolicy = server.AckExplicit // Set ack
 			if o, err = mset.AddConsumer(cfg); err != nil {
 				t.Fatalf("Error re-establishing the durable consumer: %v", err)
 			}
 			time.Sleep(100 * time.Millisecond)
 			checkSubPending(0)
+			checkNumMsgs(0)
+
+			// Now queue up some messages.
+			for i := 1; i <= 10; i++ {
+				sendStreamMsg(t, nc, "IK", fmt.Sprintf("M%d", i))
+			}
+			checkNumMsgs(10)
+			checkSubPending(10)
+
+			// Create second consumer
+			sub2, _ := nc.SubscribeSync(nats.NewInbox())
+			nc.Flush()
+			cfg.DeliverSubject = sub2.Subject
+			cfg.Durable = "derek"
+			o2, err := mset.AddConsumer(cfg)
+			if err != nil {
+				t.Fatalf("Error creating second durable consumer: %v", err)
+			}
+
+			// Now queue up some messages.
+			for i := 11; i <= 20; i++ {
+				sendStreamMsg(t, nc, "IK", fmt.Sprintf("M%d", i))
+			}
+			checkNumMsgs(20)
+			checkSubPending(20)
+
+			// Now make sure deleting the consumers will remove messages from
+			// the stream since we are interest retention based.
+			o.Delete()
+			checkNumMsgs(10)
+
+			o2.Delete()
 			checkNumMsgs(0)
 		})
 	}
