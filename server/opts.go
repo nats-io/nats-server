@@ -1455,8 +1455,9 @@ func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]e
 			}
 		case "remotes":
 			// Parse the remote options here.
-			remotes, err := parseRemoteLeafNodes(mv, errors, warnings)
+			remotes, err := parseRemoteLeafNodes(tk, errors, warnings)
 			if err != nil {
+				*errors = append(*errors, err)
 				continue
 			}
 			opts.LeafNode.Remotes = remotes
@@ -1612,7 +1613,6 @@ func parseLeafUsers(mv interface{}, errors *[]error, warnings *[]error) ([]*User
 func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]*RemoteLeafOpts, error) {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
-
 	tk, v := unwrapValue(v, &lt)
 	ra, ok := v.([]interface{})
 	if !ok {
@@ -1647,6 +1647,9 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 						continue
 					}
 					remote.URLs = append(remote.URLs, url)
+				default:
+					*errors = append(*errors, &configErr{tk, fmt.Sprintf("Expected remote leafnode url to be an array or string, got %v", v)})
+					continue
 				}
 			case "account", "local":
 				remote.LocalAccount = v.(string)

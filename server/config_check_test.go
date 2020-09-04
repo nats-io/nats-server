@@ -1129,7 +1129,7 @@ func TestConfigCheck(t *testing.T) {
 		leafnodes {
 		  remotes = [
 		    {
-		      url: "tls://connect.ngs.global:7422"
+		      url: "tls://nats:7422"
 		      tls {
 		        timeout: 0.01
 		      }
@@ -1139,6 +1139,30 @@ func TestConfigCheck(t *testing.T) {
 			err:       nil,
 			errorLine: 0,
 			errorPos:  0,
+		},
+		{
+			name: "when leafnode remotes use wrong type",
+			config: `
+		leafnodes {
+		  remotes: {
+  	            url: "tls://nats:7422"
+		  }
+		}`,
+			err:       errors.New(`Expected remotes field to be an array, got map[string]interface {}`),
+			errorLine: 3,
+			errorPos:  5,
+		},
+		{
+			name: "when leafnode remotes url uses wrong type",
+			config: `
+		leafnodes {
+		  remotes: [
+  	            { urls: 1234 }
+		  ]
+		}`,
+			err:       errors.New(`Expected remote leafnode url to be an array or string, got 1234`),
+			errorLine: 4,
+			errorPos:  18,
 		},
 		{
 			name: "when setting latency tracking without a system account",
