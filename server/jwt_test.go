@@ -3946,10 +3946,9 @@ func TestJWTJetStreamLimits(t *testing.T) {
 		system_account: %s
     `, ojwt, dir, sysPub)))
 	defer os.Remove(conf)
-	opts := LoadConfig(conf)
-	s := RunServer(opts)
+	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
-
+	port := opts.Port
 	updateJwt(s.ClientURL(), sysCreds, sysPub, sysJwt)
 	sys := natsConnect(t, s.ClientURL(), nats.UserCredentials(sysCreds))
 	expect_InfoError(sys)
@@ -3985,7 +3984,6 @@ func TestJWTJetStreamLimits(t *testing.T) {
 	validate_limits(c, limits2)
 	updateJwt(s.ClientURL(), sysCreds, aPub, aJwtLimitsExceeded)
 	validate_limits(c, limits2)
-
 	s.Shutdown()
 	conf = createConfFile(t, []byte(fmt.Sprintf(`
 		listen: %d
@@ -3996,15 +3994,15 @@ func TestJWTJetStreamLimits(t *testing.T) {
 			dir: %s
 		}
 		system_account: %s
-    `, opts.Port, ojwt, dir, sysPub)))
+    `, port, ojwt, dir, sysPub)))
 	defer os.Remove(conf)
-	s = RunServer(LoadConfig(conf))
+	s, _ = RunServerWithConfig(conf)
+	defer s.Shutdown()
 	c.Flush() // force client to discover the disconnect
 	checkClientsCount(t, s, 1)
 	validate_limits(c, limitsExceeded)
-
-	// disable jetstream test
 	s.Shutdown()
+	// disable jetstream test
 	conf = createConfFile(t, []byte(fmt.Sprintf(`
 		listen: %d
 		operator: %s
@@ -4013,17 +4011,15 @@ func TestJWTJetStreamLimits(t *testing.T) {
 			dir: %s
 		}
 		system_account: %s
-    `, opts.Port, ojwt, dir, sysPub)))
+    `, port, ojwt, dir, sysPub)))
 	defer os.Remove(conf)
-	opts = LoadConfig(conf)
-	opts.NoLog = false
-	opts.Debug = true
-	opts.Trace = true
-	s = RunServer(opts)
+	s, _ = RunServerWithConfig(conf)
+	defer s.Shutdown()
 	c.Flush() // force client to discover the disconnect
 	checkClientsCount(t, s, 1)
 	expect_JSDisabledForAccount(c)
 	// test that it stays disabled
 	updateJwt(s.ClientURL(), sysCreds, aPub, aJwt2)
 	expect_JSDisabledForAccount(c)
+	c.Close()
 }
