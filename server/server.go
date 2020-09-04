@@ -721,6 +721,10 @@ func (s *Server) generateRouteInfoJSON() {
 func (s *Server) globalAccountOnly() bool {
 	var hasOthers bool
 
+	if len(s.trustedKeys) > 0 {
+		return false
+	}
+
 	s.mu.Lock()
 	s.accounts.Range(func(k, v interface{}) bool {
 		acc := v.(*Account)

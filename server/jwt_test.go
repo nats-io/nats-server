@@ -3836,3 +3836,194 @@ func TestJWTNoOperatorMode(t *testing.T) {
 		})
 	}
 }
+
+func TestJWTJetStreamLimits(t *testing.T) {
+	updateJwt := func(url string, creds string, pubKey string, jwt string) {
+		t.Helper()
+		c := natsConnect(t, url, nats.UserCredentials(creds))
+		defer c.Close()
+		if msg, err := c.Request(fmt.Sprintf(accUpdateEventSubj, pubKey), []byte(jwt), time.Second); err != nil {
+			t.Fatal("error not expected in this test", err)
+		} else {
+			content := make(map[string]interface{})
+			if err := json.Unmarshal(msg.Data, &content); err != nil {
+				t.Fatalf("%v", err)
+			} else if _, ok := content["data"]; !ok {
+				t.Fatalf("did not get an ok response got: %v", content)
+			}
+		}
+	}
+	require_IdenticalLimits := func(infoLim JetStreamAccountLimits, lim jwt.JetStreamLimits) {
+		t.Helper()
+		if int64(infoLim.MaxConsumers) != lim.Consumer || int64(infoLim.MaxStreams) != lim.Streams ||
+			infoLim.MaxMemory != lim.MemoryStorage || infoLim.MaxStore != lim.DiskStorage {
+			t.Fatalf("limits do not match %v != %v", infoLim, lim)
+		}
+	}
+	expect_JSDisabledForAccount := func(c *nats.Conn) {
+		t.Helper()
+		if _, err := c.Request("$JS.API.INFO", nil, time.Second); err != nats.ErrTimeout {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+	expect_InfoError := func(c *nats.Conn) {
+		t.Helper()
+		var info JSApiAccountInfoResponse
+		if resp, err := c.Request("$JS.API.INFO", nil, time.Second); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		} else if err = json.Unmarshal(resp.Data, &info); err != nil {
+			t.Fatalf("response1 %v got error %v", string(resp.Data), err)
+		} else if info.Error == nil {
+			t.Fatalf("expected error")
+		}
+	}
+	validate_limits := func(c *nats.Conn, expectedLimits jwt.JetStreamLimits) {
+		t.Helper()
+		var info JSApiAccountInfoResponse
+		if resp, err := c.Request("$JS.API.INFO", nil, time.Second); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		} else if err = json.Unmarshal(resp.Data, &info); err != nil {
+			t.Fatalf("response1 %v got error %v", string(resp.Data), err)
+		} else {
+			require_IdenticalLimits(info.Limits, expectedLimits)
+		}
+	}
+	// create system account
+	sysKp, _ := nkeys.CreateAccount()
+	sysPub, _ := sysKp.PublicKey()
+	claim := jwt.NewAccountClaims(sysPub)
+	sysJwt, err := claim.Encode(oKp)
+	require_NoError(t, err)
+	sysUKp, _ := nkeys.CreateUser()
+	sysUSeed, _ := sysUKp.Seed()
+	uclaim := newJWTTestUserClaims()
+	uclaim.Subject, _ = sysUKp.PublicKey()
+	sysUserJwt, err := uclaim.Encode(sysKp)
+	require_NoError(t, err)
+	sysKp.Seed()
+	sysCreds := genCredsFile(t, sysUserJwt, sysUSeed)
+	// limits to apply and check
+	limits1 := jwt.JetStreamLimits{MemoryStorage: 1024 * 1024, DiskStorage: 2048 * 1024, Streams: 1, Consumer: 2}
+	// has valid limits that would fail when incorrectly applied twice
+	limits2 := jwt.JetStreamLimits{MemoryStorage: 4096 * 1024, DiskStorage: 8192 * 1024, Streams: 3, Consumer: 4}
+	// limits exceeding actual configured value of DiskStorage
+	limitsExceeded := jwt.JetStreamLimits{MemoryStorage: 8192 * 1024, DiskStorage: 16384 * 1024, Streams: 5, Consumer: 6}
+	// create account using jetstream with both limits
+	akp, _ := nkeys.CreateAccount()
+	aPub, _ := akp.PublicKey()
+	claim = jwt.NewAccountClaims(aPub)
+	claim.Limits.JetStreamLimits = limits1
+	aJwt1, err := claim.Encode(oKp)
+	require_NoError(t, err)
+	claim.Limits.JetStreamLimits = limits2
+	aJwt2, err := claim.Encode(oKp)
+	require_NoError(t, err)
+	claim.Limits.JetStreamLimits = limitsExceeded
+	aJwtLimitsExceeded, err := claim.Encode(oKp)
+	require_NoError(t, err)
+	claim.Limits.JetStreamLimits = jwt.JetStreamLimits{} // disabled
+	aJwt4, err := claim.Encode(oKp)
+	require_NoError(t, err)
+	// account user
+	uKp, _ := nkeys.CreateUser()
+	uSeed, _ := uKp.Seed()
+	uclaim = newJWTTestUserClaims()
+	uclaim.Subject, _ = uKp.PublicKey()
+	userJwt, err := uclaim.Encode(akp)
+	require_NoError(t, err)
+	userCreds := genCredsFile(t, userJwt, uSeed)
+	dir, err := ioutil.TempDir("", "srv")
+	require_NoError(t, err)
+	defer os.RemoveAll(dir)
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		jetstream: {max_mem_store: 10Mb, max_file_store: 10Mb}
+		operator: %s
+		resolver: {
+			type: full
+			dir: %s
+		}
+		system_account: %s
+    `, ojwt, dir, sysPub)))
+	defer os.Remove(conf)
+	opts := LoadConfig(conf)
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	updateJwt(s.ClientURL(), sysCreds, sysPub, sysJwt)
+	sys := natsConnect(t, s.ClientURL(), nats.UserCredentials(sysCreds))
+	expect_InfoError(sys)
+	sys.Close()
+	updateJwt(s.ClientURL(), sysCreds, aPub, aJwt1)
+	c := natsConnect(t, s.ClientURL(), nats.UserCredentials(userCreds), nats.ReconnectWait(200*time.Millisecond))
+	defer c.Close()
+	validate_limits(c, limits1)
+	// keep using the same connection
+	updateJwt(s.ClientURL(), sysCreds, aPub, aJwt2)
+	validate_limits(c, limits2)
+	// keep using the same connection but do NOT CHANGE anything.
+	// This tests if the jwt is applied a second time (would fail)
+	updateJwt(s.ClientURL(), sysCreds, aPub, aJwt2)
+	validate_limits(c, limits2)
+	// keep using the same connection. This update EXCEEDS LIMITS
+	updateJwt(s.ClientURL(), sysCreds, aPub, aJwtLimitsExceeded)
+	validate_limits(c, limits2)
+	// disable test after failure
+	updateJwt(s.ClientURL(), sysCreds, aPub, aJwt4)
+	expect_InfoError(c)
+	// re enable, again testing with a value that can't be applied twice
+	updateJwt(s.ClientURL(), sysCreds, aPub, aJwt2)
+	validate_limits(c, limits2)
+	// disable test no prior failure
+	updateJwt(s.ClientURL(), sysCreds, aPub, aJwt4)
+	expect_InfoError(c)
+	// Wrong limits form start
+	updateJwt(s.ClientURL(), sysCreds, aPub, aJwtLimitsExceeded)
+	expect_JSDisabledForAccount(c)
+	// enable js but exceed limits. Followed by fix via restart
+	updateJwt(s.ClientURL(), sysCreds, aPub, aJwt2)
+	validate_limits(c, limits2)
+	updateJwt(s.ClientURL(), sysCreds, aPub, aJwtLimitsExceeded)
+	validate_limits(c, limits2)
+
+	s.Shutdown()
+	conf = createConfFile(t, []byte(fmt.Sprintf(`
+		listen: %d
+		jetstream: {max_mem_store: 20Mb, max_file_store: 20Mb}
+		operator: %s
+		resolver: {
+			type: full
+			dir: %s
+		}
+		system_account: %s
+    `, opts.Port, ojwt, dir, sysPub)))
+	defer os.Remove(conf)
+	s = RunServer(LoadConfig(conf))
+	c.Flush() // force client to discover the disconnect
+	checkClientsCount(t, s, 1)
+	validate_limits(c, limitsExceeded)
+
+	// disable jetstream test
+	s.Shutdown()
+	conf = createConfFile(t, []byte(fmt.Sprintf(`
+		listen: %d
+		operator: %s
+		resolver: {
+			type: full
+			dir: %s
+		}
+		system_account: %s
+    `, opts.Port, ojwt, dir, sysPub)))
+	defer os.Remove(conf)
+	opts = LoadConfig(conf)
+	opts.NoLog = false
+	opts.Debug = true
+	opts.Trace = true
+	s = RunServer(opts)
+	c.Flush() // force client to discover the disconnect
+	checkClientsCount(t, s, 1)
+	expect_JSDisabledForAccount(c)
+	// test that it stays disabled
+	updateJwt(s.ClientURL(), sysCreds, aPub, aJwt2)
+	expect_JSDisabledForAccount(c)
+}

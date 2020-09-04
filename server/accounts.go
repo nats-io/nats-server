@@ -2420,6 +2420,16 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		return clients
 	}
 
+	jsEnabled := s.JetStreamEnabled()
+	if jsEnabled && a == s.SystemAccount() {
+		for _, export := range allJsExports {
+			s.Debugf("Adding jetstream service export %q for %s", export, a.Name)
+			if err := a.AddServiceExport(export, nil); err != nil {
+				s.Errorf("Error setting up jetstream service exports: %v", err)
+			}
+		}
+	}
+
 	for _, e := range ac.Exports {
 		switch e.Type {
 		case jwt.Stream:
@@ -2591,6 +2601,23 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	for _, i := range incompleteImports {
 		s.incompleteAccExporterMap.Store(i.Account, struct{}{})
 	}
+	if a.srv == nil {
+		a.srv = s
+	}
+	if jsEnabled {
+		if ac.Limits.JetStreamLimits.DiskStorage != 0 || ac.Limits.JetStreamLimits.MemoryStorage != 0 {
+			// JetStreamAccountLimits and jwt.JetStreamLimits use same value for unlimited
+			a.jsLimits = &JetStreamAccountLimits{
+				MaxMemory:    ac.Limits.JetStreamLimits.MemoryStorage,
+				MaxStore:     ac.Limits.JetStreamLimits.DiskStorage,
+				MaxStreams:   int(ac.Limits.JetStreamLimits.Streams),
+				MaxConsumers: int(ac.Limits.JetStreamLimits.Consumer),
+			}
+		} else if a.jsLimits != nil {
+			// covers failed update followed by disable
+			a.jsLimits = nil
+		}
+	}
 	a.mu.Unlock()
 
 	clients := gatherClients()
@@ -2600,6 +2627,17 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			return clients[i].start.After(clients[j].start)
 		})
 	}
+
+	if jsEnabled {
+		if err := s.configJetStream(a); err != nil {
+			s.Errorf("Error configuring jetstream for account [%s]: %v", a.Name, err.Error())
+			a.mu.Lock()
+			// Absent reload of js server cfg, this is going to be broken until js is disabled
+			a.incomplete = true
+			a.mu.Unlock()
+		}
+	}
+
 	now := time.Now().Unix()
 	for i, c := range clients {
 		a.mu.RLock()
