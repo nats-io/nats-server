@@ -52,6 +52,13 @@ archives:
     files:
       - README.md
       - LICENSE
+  - name_template: '{{.ProjectName}}-{{.Tag}}-{{.Os}}-{{.Arch}}{{if .Arm}}{{.Arm}}{{end}}'
+    id: targz-archives
+    wrap_in_directory: true
+    format: tar.gz
+    files:
+      - README.md
+      - LICENSE
 
 checksum:
   name_template: 'SHA256SUMS'
