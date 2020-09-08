@@ -4207,7 +4207,7 @@ func (c *client) reconnect() {
 			srv.Debugf("Not attempting reconnect for solicited route, already connected to \"%s\"", rid)
 			return
 		} else if rid == srv.info.ID {
-			srv.Debugf("Detected route to self, ignoring \"%s\"", rurl)
+			srv.Debugf("Detected route to self, ignoring %q", rurl)
 			return
 		} else if rtype != Implicit || retryImplicit {
 			srv.Debugf("Attempting reconnect for solicited route \"%s\"", rurl)

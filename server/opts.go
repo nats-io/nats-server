@@ -71,6 +71,9 @@ type ClusterOpts struct {
 	Advertise      string            `json:"-"`
 	NoAdvertise    bool              `json:"-"`
 	ConnectRetries int               `json:"-"`
+
+	// Not exported (used in tests)
+	resolver netResolver
 }
 
 // GatewayOpts are options for gateways.

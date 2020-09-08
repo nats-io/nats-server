@@ -14,6 +14,7 @@
 package server
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -1280,4 +1281,61 @@ func TestRouteClusterNameConflictBetweenStaticAndDynamic(t *testing.T) {
 	defer s2.Shutdown()
 
 	checkClusterFormed(t, s1, s2)
+}
+
+type testRouteResolver struct{}
+
+func (r *testRouteResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
+	return []string{"127.0.0.1", "other.host.in.cluster"}, nil
+}
+
+type routeHostLookupLogger struct {
+	DummyLogger
+	errCh chan string
+	ch    chan bool
+	count int
+}
+
+func (l *routeHostLookupLogger) Debugf(format string, v ...interface{}) {
+	l.Lock()
+	defer l.Unlock()
+	msg := fmt.Sprintf(format, v...)
+	if strings.Contains(msg, "127.0.0.1:1234") {
+		l.errCh <- msg
+	} else if strings.Contains(msg, "other.host.in.cluster") {
+		if l.count++; l.count == 10 {
+			l.ch <- true
+		}
+	}
+}
+
+func TestRouteIPResolutionAndRouteToSelf(t *testing.T) {
+	o := DefaultOptions()
+	o.Cluster.Port = 1234
+	r := &testRouteResolver{}
+	o.Cluster.resolver = r
+	o.Routes = RoutesFromStr("nats://routehost:1234")
+	o.Debug = true
+	o.NoLog = false
+	s, err := NewServer(o)
+	if err != nil {
+		t.Fatalf("Error creating server: %v", err)
+	}
+	defer s.Shutdown()
+	l := &routeHostLookupLogger{errCh: make(chan string, 1), ch: make(chan bool, 1)}
+	s.SetLogger(l, true, true)
+	go func() {
+		s.Start()
+	}()
+	if !s.ReadyForConnections(time.Second) {
+		t.Fatalf("Failed to start server")
+	}
+
+	select {
+	case e := <-l.errCh:
+		t.Fatalf("Unexpected trace: %q", e)
+	case <-l.ch:
+		// Ok
+		return
+	}
 }

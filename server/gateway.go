@@ -620,7 +620,7 @@ func (s *Server) solicitGateway(cfg *gatewayCfg, firstConnect bool) {
 		report := s.shouldReportConnectErr(firstConnect, attempts)
 		// Iteration is random
 		for _, u := range urls {
-			address, err := s.getRandomIP(s.gateway.resolver, u.Host)
+			address, err := s.getRandomIP(s.gateway.resolver, u.Host, nil)
 			if err != nil {
 				s.Errorf("Error getting IP for %s gateway %q (%s): %v", typeStr, cfg.Name, u.Host, err)
 				continue
