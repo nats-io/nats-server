@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -140,6 +141,8 @@ type Server struct {
 	routeListener    net.Listener
 	routeInfo        Info
 	routeInfoJSON    []byte
+	routeResolver    netResolver
+	routesToSelf     map[string]struct{}
 	leafNodeListener net.Listener
 	leafNodeInfo     Info
 	leafNodeInfoJSON []byte
@@ -303,6 +306,7 @@ func NewServer(opts *Options) (*Server, error) {
 		gwLeafSubs:   NewSublistWithCache(),
 		httpBasePath: httpBasePath,
 		eventIds:     nuid.New(),
+		routesToSelf: make(map[string]struct{}),
 	}
 
 	// Trusted root operator keys.
@@ -312,6 +316,11 @@ func NewServer(opts *Options) (*Server, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	s.routeResolver = opts.Cluster.resolver
+	if s.routeResolver == nil {
+		s.routeResolver = net.DefaultResolver
+	}
 
 	// Used internally for quick look-ups.
 	s.clientConnectURLsMap = make(refCountedUrlSet)
@@ -3122,7 +3131,9 @@ func (s *Server) acceptError(acceptName string, err error, tmpDelay time.Duratio
 	return tmpDelay
 }
 
-func (s *Server) getRandomIP(resolver netResolver, url string) (string, error) {
+var errNoIPAvail = errors.New("no IP available")
+
+func (s *Server) getRandomIP(resolver netResolver, url string, excludedAddresses map[string]struct{}) (string, error) {
 	host, port, err := net.SplitHostPort(url)
 	if err != nil {
 		return "", err
@@ -3134,6 +3145,24 @@ func (s *Server) getRandomIP(resolver netResolver, url string) (string, error) {
 	ips, err := resolver.LookupHost(context.Background(), host)
 	if err != nil {
 		return "", fmt.Errorf("lookup for host %q: %v", host, err)
+	}
+	if len(excludedAddresses) > 0 {
+		for i := 0; i < len(ips); i++ {
+			ip := ips[i]
+			addr := net.JoinHostPort(ip, port)
+			if _, excluded := excludedAddresses[addr]; excluded {
+				if len(ips) == 1 {
+					ips = nil
+					break
+				}
+				ips[i] = ips[len(ips)-1]
+				ips = ips[:len(ips)-1]
+				i--
+			}
+		}
+		if len(ips) == 0 {
+			return "", errNoIPAvail
+		}
 	}
 	var address string
 	if len(ips) == 0 {

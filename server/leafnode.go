@@ -283,7 +283,7 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 	attempts := 0
 	for s.isRunning() && s.remoteLeafNodeStillValid(remote) {
 		rURL := remote.pickNextURL()
-		url, err := s.getRandomIP(resolver, rURL.Host)
+		url, err := s.getRandomIP(resolver, rURL.Host, nil)
 		if err == nil {
 			var ipStr string
 			if url != rURL.Host {

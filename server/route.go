@@ -1755,6 +1755,23 @@ func (s *Server) startRouteAcceptLoop() {
 		s.Warnf(clusterTLSInsecureWarning)
 	}
 
+	// Now that we have the port, keep track of all ip:port that resolve to this server.
+	if interfaceAddr, err := net.InterfaceAddrs(); err == nil {
+		var localIPs []string
+		for i := 0; i < len(interfaceAddr); i++ {
+			interfaceIP, _, _ := net.ParseCIDR(interfaceAddr[i].String())
+			ipStr := interfaceIP.String()
+			if net.ParseIP(ipStr) != nil {
+				localIPs = append(localIPs, ipStr)
+			}
+		}
+		var portStr = strconv.FormatInt(int64(s.routeInfo.Port), 10)
+		for _, ip := range localIPs {
+			ipPort := net.JoinHostPort(ip, portStr)
+			s.routesToSelf[ipPort] = struct{}{}
+		}
+	}
+
 	// Start the accept loop in a different go routine.
 	go s.acceptConnections(l, "Route", func(conn net.Conn) { s.createRoute(conn, nil) }, nil)
 
@@ -1836,13 +1853,26 @@ func (s *Server) connectToRoute(rURL *url.URL, tryForEver, firstConnect bool) {
 
 	const connErrFmt = "Error trying to connect to route (attempt %v): %v"
 
+	s.mu.Lock()
+	resolver := s.routeResolver
+	excludedAddresses := s.routesToSelf
+	s.mu.Unlock()
+
 	attempts := 0
 	for s.isRunning() && rURL != nil {
 		if tryForEver && !s.routeStillValid(rURL) {
 			return
 		}
-		s.Debugf("Trying to connect to route on %s", rURL.Host)
-		conn, err := natsDialTimeout("tcp", rURL.Host, DEFAULT_ROUTE_DIAL)
+		var conn net.Conn
+		address, err := s.getRandomIP(resolver, rURL.Host, excludedAddresses)
+		if err == errNoIPAvail {
+			// This is ok, we are done.
+			return
+		}
+		if err == nil {
+			s.Debugf("Trying to connect to route on %s (%s)", rURL.Host, address)
+			conn, err = natsDialTimeout("tcp", address, DEFAULT_ROUTE_DIAL)
+		}
 		if err != nil {
 			attempts++
 			if s.shouldReportConnectErr(firstConnect, attempts) {

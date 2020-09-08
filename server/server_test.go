@@ -1405,15 +1405,15 @@ func TestGetRandomIP(t *testing.T) {
 	s := &Server{}
 	resolver := &myDummyDNSResolver{}
 	// no port...
-	if _, err := s.getRandomIP(resolver, "noport"); err == nil || !strings.Contains(err.Error(), "port") {
+	if _, err := s.getRandomIP(resolver, "noport", nil); err == nil || !strings.Contains(err.Error(), "port") {
 		t.Fatalf("Expected error about port missing, got %v", err)
 	}
 	resolver.err = fmt.Errorf("on purpose")
-	if _, err := s.getRandomIP(resolver, "localhost:4222"); err == nil || !strings.Contains(err.Error(), "on purpose") {
+	if _, err := s.getRandomIP(resolver, "localhost:4222", nil); err == nil || !strings.Contains(err.Error(), "on purpose") {
 		t.Fatalf("Expected error about no port, got %v", err)
 	}
 	resolver.err = nil
-	a, err := s.getRandomIP(resolver, "localhost:4222")
+	a, err := s.getRandomIP(resolver, "localhost:4222", nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1421,7 +1421,7 @@ func TestGetRandomIP(t *testing.T) {
 		t.Fatalf("Expected address to be %q, got %q", "localhost:4222", a)
 	}
 	resolver.ips = []string{"1.2.3.4"}
-	a, err = s.getRandomIP(resolver, "localhost:4222")
+	a, err = s.getRandomIP(resolver, "localhost:4222", nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1432,7 +1432,7 @@ func TestGetRandomIP(t *testing.T) {
 	resolver.ips = []string{"1.2.3.4", "2.2.3.4", "3.2.3.4"}
 	dist := [3]int{}
 	for i := 0; i < 100; i++ {
-		ip, err := s.getRandomIP(resolver, "localhost:4222")
+		ip, err := s.getRandomIP(resolver, "localhost:4222", nil)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -1446,6 +1446,43 @@ func TestGetRandomIP(t *testing.T) {
 			t.Fatalf("Unexpected distribution for ip %v, got %v", i, d)
 		} else if d < low || d > high {
 			t.Logf("Warning: out of expected range [%v,%v] for ip %v, got %v", low, high, i, d)
+		}
+	}
+
+	// Check IP exclusions
+	excludedIPs := map[string]struct{}{"1.2.3.4:4222": struct{}{}}
+	for i := 0; i < 100; i++ {
+		ip, err := s.getRandomIP(resolver, "localhost:4222", excludedIPs)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if ip[0] == '1' {
+			t.Fatalf("Should not have returned this ip: %q", ip)
+		}
+	}
+	excludedIPs["2.2.3.4:4222"] = struct{}{}
+	for i := 0; i < 100; i++ {
+		ip, err := s.getRandomIP(resolver, "localhost:4222", excludedIPs)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if ip[0] != '3' {
+			t.Fatalf("Should only have returned '3.2.3.4', got returned %q", ip)
+		}
+	}
+	excludedIPs["3.2.3.4:4222"] = struct{}{}
+	for i := 0; i < 100; i++ {
+		if _, err := s.getRandomIP(resolver, "localhost:4222", excludedIPs); err != errNoIPAvail {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	// Now check that exclusion takes into account the port number.
+	resolver.ips = []string{"127.0.0.1"}
+	excludedIPs = map[string]struct{}{"127.0.0.1:4222": struct{}{}}
+	for i := 0; i < 100; i++ {
+		if _, err := s.getRandomIP(resolver, "localhost:4223", excludedIPs); err == errNoIPAvail {
+			t.Fatal("Should not have failed")
 		}
 	}
 }
