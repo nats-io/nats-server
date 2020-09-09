@@ -1995,6 +1995,11 @@ func (s *Server) startMonitoring(secure bool) error {
 		MaxHeaderBytes: 1 << 20,
 	}
 	s.mu.Lock()
+	if s.shutdown {
+		httpListener.Close()
+		s.mu.Unlock()
+		return nil
+	}
 	s.http = httpListener
 	s.httpHandler = mux
 	s.monitoringServer = srv

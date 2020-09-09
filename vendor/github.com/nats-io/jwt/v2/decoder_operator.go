@@ -21,7 +21,6 @@ import (
 )
 
 type v1NatsOperator struct {
-	Identities          []Identity `json:"identity,omitempty"`
 	SigningKeys         StringList `json:"signing_keys,omitempty"`
 	AccountServerURL    string     `json:"account_server_url,omitempty"`
 	OperatorServiceURLs StringList `json:"operator_service_urls,omitempty"`
@@ -65,10 +64,10 @@ func (oa v1OperatorClaims) migrateV1() (*OperatorClaims, error) {
 	a.Operator.Type = oa.v1ClaimsDataDeletedFields.Type
 	a.Operator.Tags = oa.v1ClaimsDataDeletedFields.Tags
 	// copy the account data
-	a.Operator.Identities = oa.v1NatsOperator.Identities
 	a.Operator.SigningKeys = oa.v1NatsOperator.SigningKeys
 	a.Operator.AccountServerURL = oa.v1NatsOperator.AccountServerURL
 	a.Operator.OperatorServiceURLs = oa.v1NatsOperator.OperatorServiceURLs
 	a.Operator.SystemAccount = oa.v1NatsOperator.SystemAccount
+	a.Version = 1
 	return &a, nil
 }

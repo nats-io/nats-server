@@ -350,14 +350,3 @@ func (c *CIDRList) UnmarshalJSON(body []byte) (err error) {
 		return err
 	}
 }
-
-// Identity is used to associate an account or operator with a real entity
-type Identity struct {
-	ID    string `json:"id,omitempty"`
-	Proof string `json:"proof,omitempty"`
-}
-
-// Validate checks the values in an Identity
-func (u *Identity) Validate(_ *ValidationResults) {
-	//Fixme identity validation
-}

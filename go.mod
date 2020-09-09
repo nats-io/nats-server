@@ -2,7 +2,7 @@ module github.com/nats-io/nats-server/v2
 
 require (
 	github.com/minio/highwayhash v1.0.0
-	github.com/nats-io/jwt/v2 v2.0.0-20200827232814-292806fa48ba
+	github.com/nats-io/jwt/v2 v2.0.0-20200916203241-1f8ce17dff02
 	github.com/nats-io/nats.go v1.10.1-0.20200606002146-fc6fed82929a
 	github.com/nats-io/nkeys v0.2.0
 	github.com/nats-io/nuid v1.0.1

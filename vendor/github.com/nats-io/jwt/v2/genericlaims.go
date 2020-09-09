@@ -122,9 +122,9 @@ func (gc *GenericClaims) ClaimType() ClaimType {
 			}
 		}
 	}
-	ct, ctok := v.(ClaimType)
+	ct, ctok := v.(string)
 	if ctok {
-		return ct
+		return ClaimType(ct)
 	}
 	return ""
 }

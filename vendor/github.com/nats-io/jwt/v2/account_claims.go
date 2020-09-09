@@ -88,7 +88,6 @@ func (o *OperatorLimits) Validate(_ *ValidationResults) {
 type Account struct {
 	Imports            Imports        `json:"imports,omitempty"`
 	Exports            Exports        `json:"exports,omitempty"`
-	Identities         []Identity     `json:"identity,omitempty"`
 	Limits             OperatorLimits `json:"limits,omitempty"`
 	SigningKeys        StringList     `json:"signing_keys,omitempty"`
 	Revocations        RevocationList `json:"revocations,omitempty"`
@@ -102,10 +101,6 @@ func (a *Account) Validate(acct *AccountClaims, vr *ValidationResults) {
 	a.Exports.Validate(vr)
 	a.Limits.Validate(vr)
 	a.DefaultPermissions.Validate(vr)
-
-	for _, i := range a.Identities {
-		i.Validate(vr)
-	}
 
 	if !a.Limits.IsEmpty() && a.Limits.Imports >= 0 && int64(len(a.Imports)) > a.Limits.Imports {
 		vr.AddError("the account contains more imports than allowed by the operator")
@@ -199,9 +194,6 @@ func (a *AccountClaims) Validate(vr *ValidationResults) {
 	a.Account.Validate(a, vr)
 
 	if nkeys.IsValidPublicAccountKey(a.ClaimsData.Issuer) {
-		if len(a.Identities) > 0 {
-			vr.AddWarning("self-signed account JWTs shouldn't contain identity proofs")
-		}
 		if !a.Limits.IsEmpty() {
 			vr.AddWarning("self-signed account JWTs shouldn't contain operator limits")
 		}

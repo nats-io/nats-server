@@ -1318,6 +1318,48 @@ func TestConfigCheck(t *testing.T) {
 			errorLine: 3,
 			errorPos:  20,
 		},
+		{
+			name: "connection types wrong type",
+			config: `
+                   authorization {
+                       users [
+                           {user: a, password: pwd, allowed_connection_types: 123}
+					   ]
+				   }
+			`,
+			err:       errors.New(`error parsing allowed connection types: unsupported type int64`),
+			errorLine: 4,
+			errorPos:  53,
+		},
+		{
+			name: "connection types content wrong type",
+			config: `
+                   authorization {
+                       users [
+                           {user: a, password: pwd, allowed_connection_types: [
+                               123
+                               WEBSOCKET
+							]}
+					   ]
+				   }
+			`,
+			err:       errors.New(`error parsing allowed connection types: unsupported type in array int64`),
+			errorLine: 5,
+			errorPos:  32,
+		},
+		{
+			name: "connection types type unknown",
+			config: `
+                   authorization {
+                       users [
+                           {user: a, password: pwd, allowed_connection_types: [ "UNKNOWN" ]}
+					   ]
+				   }
+			`,
+			err:       fmt.Errorf("invalid connection type %q", "UNKNOWN"),
+			errorLine: 4,
+			errorPos:  53,
+		},
 	}
 
 	checkConfig := func(config string) error {

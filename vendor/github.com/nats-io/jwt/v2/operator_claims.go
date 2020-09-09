@@ -27,8 +27,6 @@ import (
 
 // Operator specific claims
 type Operator struct {
-	// Slice of real identies (like websites) that can be used to identify the operator.
-	Identities []Identity `json:"identity,omitempty"`
 	// Slice of other operator NKeys that can be used to sign on behalf of the main
 	// operator identity.
 	SigningKeys StringList `json:"signing_keys,omitempty"`
@@ -78,10 +76,6 @@ func (o *Operator) Validate(vr *ValidationResults) {
 		if v != nil {
 			vr.AddError(v.Error())
 		}
-	}
-
-	for _, i := range o.Identities {
-		i.Validate(vr)
 	}
 
 	for _, k := range o.SigningKeys {

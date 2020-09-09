@@ -263,9 +263,8 @@ type WebsocketOpts struct {
 	// The host:port to advertise to websocket clients in the cluster.
 	Advertise string
 
-	// If no user is provided when a client connects, will default to this
-	// user and associated account. This user has to exist either in the
-	// Users defined here or in the global options.
+	// If no user name is provided when a client connects, will default to the
+	// matching user from the global list of users in `Options.Users`.
 	NoAuthUser string
 
 	// Name of the cookie, which if present in WebSocket upgrade headers,
@@ -274,12 +273,10 @@ type WebsocketOpts struct {
 	JWTCookie string
 
 	// Authentication section. If anything is configured in this section,
-	// it will override the authorization configuration for regular clients.
+	// it will override the authorization configuration of regular clients.
 	Username string
 	Password string
 	Token    string
-	Users    []*User
-	Nkeys    []*NkeyUser
 
 	// Timeout for the authentication process.
 	AuthTimeout float64
@@ -2714,6 +2711,10 @@ func parseUsers(mv interface{}, opts *Options, errors *[]error, warnings *[]erro
 					*errors = append(*errors, err)
 					continue
 				}
+			case "allowed_connection_types", "connection_types", "clients":
+				cts := parseAllowedConnectionTypes(tk, &lt, v, errors, warnings)
+				nkey.AllowedConnectionTypes = cts
+				user.AllowedConnectionTypes = cts
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
@@ -2755,6 +2756,19 @@ func parseUsers(mv interface{}, opts *Options, errors *[]error, warnings *[]erro
 		}
 	}
 	return keys, users, nil
+}
+
+func parseAllowedConnectionTypes(tk token, lt *token, mv interface{}, errors *[]error, warnings *[]error) map[string]struct{} {
+	cts, err := parseStringArray("allowed connection types", tk, lt, mv, errors, warnings)
+	// If error, it has already been added to the `errors` array, simply return
+	if err != nil {
+		return nil
+	}
+	m, err := convertAllowedConnectionTypes(cts)
+	if err != nil {
+		*errors = append(*errors, &configErr{tk, err.Error()})
+	}
+	return m
 }
 
 // Helper function to parse user/account permissions
@@ -3119,6 +3133,75 @@ func parseTLS(v interface{}) (t *TLSConfigOpts, retErr error) {
 	return &tc, nil
 }
 
+func parseAuthForWS(v interface{}, errors *[]error, warnings *[]error) *authorization {
+	var (
+		am   map[string]interface{}
+		tk   token
+		lt   token
+		auth = &authorization{}
+	)
+	defer convertPanicToErrorList(&lt, errors)
+
+	_, v = unwrapValue(v, &lt)
+	am = v.(map[string]interface{})
+	for mk, mv := range am {
+		tk, mv = unwrapValue(mv, &lt)
+		switch strings.ToLower(mk) {
+		case "user", "username":
+			auth.user = mv.(string)
+		case "pass", "password":
+			auth.pass = mv.(string)
+		case "token":
+			auth.token = mv.(string)
+		case "timeout":
+			at := float64(1)
+			switch mv := mv.(type) {
+			case int64:
+				at = float64(mv)
+			case float64:
+				at = mv
+			}
+			auth.timeout = at
+		default:
+			if !tk.IsUsedVariable() {
+				err := &unknownConfigFieldErr{
+					field: mk,
+					configErr: configErr{
+						token: tk,
+					},
+				}
+				*errors = append(*errors, err)
+			}
+			continue
+		}
+	}
+	return auth
+}
+
+func parseStringArray(fieldName string, tk token, lt *token, mv interface{}, errors *[]error, warnings *[]error) ([]string, error) {
+	switch mv := mv.(type) {
+	case string:
+		return []string{mv}, nil
+	case []interface{}:
+		strs := make([]string, 0, len(mv))
+		for _, val := range mv {
+			tk, val = unwrapValue(val, lt)
+			if str, ok := val.(string); ok {
+				strs = append(strs, str)
+			} else {
+				err := &configErr{tk, fmt.Sprintf("error parsing %s: unsupported type in array %T", fieldName, val)}
+				*errors = append(*errors, err)
+				continue
+			}
+		}
+		return strs, nil
+	default:
+		err := &configErr{tk, fmt.Sprintf("error parsing %s: unsupported type %T", fieldName, mv)}
+		*errors = append(*errors, err)
+		return nil, err
+	}
+}
+
 func parseWebsocket(v interface{}, o *Options, errors *[]error, warnings *[]error) error {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
@@ -3164,26 +3247,7 @@ func parseWebsocket(v interface{}, o *Options, errors *[]error, warnings *[]erro
 		case "same_origin":
 			o.Websocket.SameOrigin = mv.(bool)
 		case "allowed_origins", "allowed_origin", "allow_origins", "allow_origin", "origins", "origin":
-			switch mv := mv.(type) {
-			case string:
-				o.Websocket.AllowedOrigins = []string{mv}
-			case []interface{}:
-				keys := make([]string, 0, len(mv))
-				for _, val := range mv {
-					tk, val = unwrapValue(val, &lt)
-					if key, ok := val.(string); ok {
-						keys = append(keys, key)
-					} else {
-						err := &configErr{tk, fmt.Sprintf("error parsing allowed origins: unsupported type in array %T", val)}
-						*errors = append(*errors, err)
-						continue
-					}
-				}
-				o.Websocket.AllowedOrigins = keys
-			default:
-				err := &configErr{tk, fmt.Sprintf("error parsing allowed origins: unsupported type %T", mv)}
-				*errors = append(*errors, err)
-			}
+			o.Websocket.AllowedOrigins, _ = parseStringArray("allowed origins", tk, &lt, mv, errors, warnings)
 		case "handshake_timeout":
 			ht := time.Duration(0)
 			switch mv := mv.(type) {
@@ -3205,39 +3269,11 @@ func parseWebsocket(v interface{}, o *Options, errors *[]error, warnings *[]erro
 		case "compression":
 			o.Websocket.Compression = mv.(bool)
 		case "authorization", "authentication":
-			auth, err := parseAuthorization(tk, o, errors, warnings)
-			if err != nil {
-				*errors = append(*errors, err)
-				continue
-			}
+			auth := parseAuthForWS(tk, errors, warnings)
 			o.Websocket.Username = auth.user
 			o.Websocket.Password = auth.pass
 			o.Websocket.Token = auth.token
-			if (auth.user != "" || auth.pass != "") && auth.token != "" {
-				err := &configErr{tk, "Cannot have a user/pass and token"}
-				*errors = append(*errors, err)
-				continue
-			}
 			o.Websocket.AuthTimeout = auth.timeout
-			// Check for multiple users defined
-			if auth.users != nil {
-				if auth.user != "" {
-					err := &configErr{tk, "Can not have a single user/pass and a users array"}
-					*errors = append(*errors, err)
-					continue
-				}
-				if auth.token != "" {
-					err := &configErr{tk, "Can not have a token and a users array"}
-					*errors = append(*errors, err)
-					continue
-				}
-				// Users may have been added from Accounts parsing, so do an append here
-				o.Websocket.Users = append(o.Websocket.Users, auth.users...)
-			}
-			// Check for nkeys
-			if auth.nkeys != nil {
-				o.Websocket.Nkeys = append(o.Websocket.Nkeys, auth.nkeys...)
-			}
 		case "jwt_cookie":
 			o.Websocket.JWTCookie = mv.(string)
 		case "no_auth_user":
