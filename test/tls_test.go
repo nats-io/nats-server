@@ -1214,11 +1214,11 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 
                                 authorization {
                                   users = [
-                                    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US,DC=foo1,DC=foo2" }
+                                    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=CA,C=US,DC=foo1,DC=foo2" }
                                   ]
                                 }
                         `,
-			// C = US, ST = California, L = Los Angeles, O = NATS, OU = NATS, CN = localhost, DC = foo1, DC = foo2
+			// C = US, ST = CA, L = Los Angeles, O = NATS, OU = NATS, CN = localhost, DC = foo1, DC = foo2
 			nats.ClientCert("./configs/certs/rdns/client-a.pem", "./configs/certs/rdns/client-a.key"),
 			nil,
 			nil,
@@ -1231,11 +1231,11 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 
 				authorization {
 				  users = [
-				    { user = "DC=foo2,DC=foo1,CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US" }
+				    { user = "DC=foo2,DC=foo1,CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=CA,C=US" }
 				  ]
 				}
 			`,
-			// C = US, ST = California, L = Los Angeles, O = NATS, OU = NATS, CN = localhost, DC = foo1, DC = foo2
+			// C = US, ST = CA, L = Los Angeles, O = NATS, OU = NATS, CN = localhost, DC = foo1, DC = foo2
 			nats.ClientCert("./configs/certs/rdns/client-a.pem", "./configs/certs/rdns/client-a.key"),
 			nil,
 			nil,
@@ -1248,9 +1248,9 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 
 				authorization {
 				  users = [
-				    { user = "DC=foo2,DC=foo1,CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US" },
-				    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US,DC=foo1,DC=foo2" },
-				    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US",
+				    { user = "DC=foo2,DC=foo1,CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=CA,C=US" },
+				    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=CA,C=US,DC=foo1,DC=foo2" },
+				    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=CA,C=US",
                                       permissions = { subscribe = { deny = ">" }} }
 				  ]
 				}
@@ -1268,19 +1268,19 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 
 				authorization {
 				  users = [
-				    { user = "DC=foo2,DC=foo1,CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US" }
-				    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US,DC=foo1,DC=foo2" }
-				    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US"},
+				    { user = "DC=foo2,DC=foo1,CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=CA,C=US" }
+				    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=CA,C=US,DC=foo1,DC=foo2" }
+				    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=CA,C=US"},
 				  ]
 				}
 			`,
 			// Cert is:
 			//
-			// C = US, ST = California, L = Los Angeles, O = NATS, OU = NATS, CN = localhost, DC = foo3, DC = foo4
+			// C = US, ST = CA, L = Los Angeles, O = NATS, OU = NATS, CN = localhost, DC = foo3, DC = foo4
 			//
 			// but it will actually match the user without DCs so will not get an error:
 			//
-			// C = US, ST = California, L = Los Angeles, O = NATS, OU = NATS, CN = localhost
+			// C = US, ST = CA, L = Los Angeles, O = NATS, OU = NATS, CN = localhost
 			//
 			nats.ClientCert("./configs/certs/rdns/client-c.pem", "./configs/certs/rdns/client-c.key"),
 			nil,
@@ -1294,8 +1294,8 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 
 				authorization {
 				  users = [
-				    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US,DC=foo1,DC=foo2" },
-				    { user = "DC=foo2,DC=foo1,CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US" }
+				    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=CA,C=US,DC=foo1,DC=foo2" },
+				    { user = "DC=foo2,DC=foo1,CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=CA,C=US" }
 				  ]
 				}
 			`,
@@ -1313,7 +1313,7 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 
 				authorization {
 				  users = [
-				    { user = "DC=foo2, DC=foo1, CN=localhost, OU=NATS, O=NATS, L=Los Angeles, ST=California, C=US" }
+				    { user = "DC=foo2, DC=foo1, CN=localhost, OU=NATS, O=NATS, L=Los Angeles, ST=CA, C=US" }
 				  ]
 				}
 			`,
@@ -1328,7 +1328,7 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			`
 				port: -1
 				%s
-
+		
 				authorization {
 				  users = [
 				    { user = "DC=com, DC=example, CN=*.example.com, O=NATS, OU=NATS, L=Los Angeles, ST=CA, C=US" }
@@ -1347,7 +1347,7 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			`
 				port: -1
 				%s
-
+		
 				authorization {
 				  users = [
 				    { user = "CN=*.example.com,OU=NATS,O=NATS,L=Los Angeles,ST=CA,C=US,DC=example,DC=com" }
@@ -1454,7 +1454,7 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 				  ]
 				}
 			`,
-			nats.ClientCert("./configs/certs/svid/svid-user-a.pem", "./configs/certs/svid/svid-user-a.key"),
+			nats.ClientCert("./configs/certs/svid/client-a.pem", "./configs/certs/svid/client-a.key"),
 			nil,
 			nil,
 		},
@@ -1476,7 +1476,7 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 				  ]
 				}
 			`,
-			nats.ClientCert("./configs/certs/svid/svid-user-b.pem", "./configs/certs/svid/svid-user-b.key"),
+			nats.ClientCert("./configs/certs/svid/client-b.pem", "./configs/certs/svid/client-b.key"),
 			nil,
 			errors.New("nats: timeout"),
 		},
@@ -1494,7 +1494,7 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 				  ]
 				}
 			`,
-			nats.ClientCert("./configs/certs/svid/svid-user-a.pem", "./configs/certs/svid/svid-user-a.key"),
+			nats.ClientCert("./configs/certs/svid/client-b.pem", "./configs/certs/svid/client-b.key"),
 			nil,
 			nil,
 		},
@@ -1512,7 +1512,7 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 				  ]
 				}
 			`,
-			nats.ClientCert("./configs/certs/svid/svid-user-a.pem", "./configs/certs/svid/svid-user-a.key"),
+			nats.ClientCert("./configs/certs/svid/client-a.pem", "./configs/certs/svid/client-a.key"),
 			errors.New("nats: Authorization Violation"),
 			nil,
 		},

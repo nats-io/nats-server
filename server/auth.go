@@ -682,6 +682,7 @@ func checkClientTLSCertSubject(c *client, fn tlsMapAuthFn) bool {
 				return true
 			}
 		}
+		fallthrough
 	case hasURIs:
 		for _, u := range cert.URIs {
 			if match, ok := fn(u.String(), nil); ok {
