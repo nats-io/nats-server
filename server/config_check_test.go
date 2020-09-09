@@ -1092,7 +1092,7 @@ func TestConfigCheck(t *testing.T) {
 			config: `
 				lame_duck_duration: abc
 			`,
-			err:       errors.New(`error parsing lame_duck_duration: time: invalid duration abc`),
+			err:       errors.New(`error parsing lame_duck_duration: time: invalid duration`),
 			errorLine: 2,
 			errorPos:  5,
 		},
@@ -1110,7 +1110,7 @@ func TestConfigCheck(t *testing.T) {
 			config: `
 				lame_duck_grace_period: abc
 			`,
-			err:       errors.New(`error parsing lame_duck_grace_period: time: invalid duration abc`),
+			err:       errors.New(`error parsing lame_duck_grace_period: time: invalid duration`),
 			errorLine: 2,
 			errorPos:  5,
 		},
@@ -1357,8 +1357,7 @@ func TestConfigCheck(t *testing.T) {
 				if test.reason != "" {
 					msg += ": " + test.reason
 				}
-				msg += "\n"
-				if err.Error() != msg {
+				if !strings.Contains(err.Error(), msg) {
 					t.Errorf("Expected:\n%q\ngot:\n%q", msg, err.Error())
 				}
 			}

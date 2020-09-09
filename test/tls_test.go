@@ -1185,6 +1185,56 @@ func TestTLSHandshakeFailureMemUsage(t *testing.T) {
 	}
 }
 
+func genTLSConf(t *testing.T, certFile, keyFile string) nats.Option {
+	t.Helper()
+	rootPEM, err := ioutil.ReadFile("./configs/certs/rdns/ca.pem")
+	if err != nil || rootPEM == nil {
+		t.Fatalf("failed to read root certificate")
+	}
+	pool := x509.NewCertPool()
+	ok := pool.AppendCertsFromPEM([]byte(rootPEM))
+	if !ok {
+		t.Fatal("failed to parse root certificate")
+	}
+	tlsconf := &tls.Config{
+		ServerName: "localhost",
+		RootCAs:    pool,
+		MinVersion: tls.VersionTLS12,
+
+		// Use InsecureSkipVerify+VerifyConnection to skip to
+		// avoid https://github.com/golang/go/issues/39568
+		//
+		// The server should still be able to map the correct permissions
+		// from the certificate presented by the client.
+		//
+		InsecureSkipVerify: true,
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			opts := x509.VerifyOptions{
+				DNSName:       "localhost",
+				Intermediates: x509.NewCertPool(),
+			}
+			for _, cert := range cs.PeerCertificates[1:] {
+				opts.Intermediates.AddCert(cert)
+			}
+			// Skip client verification for these tests.
+			//
+			// _, err := cs.PeerCertificates[0].Verify(opts)
+			//
+			return err
+		},
+	}
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		t.Fatalf("error loading client certificate: %v", err)
+	}
+	cert.Leaf, err = x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatalf("error parsing client certificate: %v", err)
+	}
+	tlsconf.Certificates = []tls.Certificate{cert}
+	return nats.Secure(tlsconf)
+}
+
 func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 	for _, test := range []struct {
 		name   string
@@ -1219,7 +1269,7 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
                                 }
                         `,
 			// C = US, ST = California, L = Los Angeles, O = NATS, OU = NATS, CN = localhost, DC = foo1, DC = foo2
-			nats.ClientCert("./configs/certs/rdns/client-a.pem", "./configs/certs/rdns/client-a.key"),
+			genTLSConf(t, "./configs/certs/rdns/client-a.pem", "./configs/certs/rdns/client-a.key"),
 			nil,
 			nil,
 		},
@@ -1236,7 +1286,7 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 				}
 			`,
 			// C = US, ST = California, L = Los Angeles, O = NATS, OU = NATS, CN = localhost, DC = foo1, DC = foo2
-			nats.ClientCert("./configs/certs/rdns/client-a.pem", "./configs/certs/rdns/client-a.key"),
+			genTLSConf(t, "./configs/certs/rdns/client-a.pem", "./configs/certs/rdns/client-a.key"),
 			nil,
 			nil,
 		},
@@ -1251,12 +1301,12 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 				    { user = "DC=foo2,DC=foo1,CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US" },
 				    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US,DC=foo1,DC=foo2" },
 				    { user = "CN=localhost,OU=NATS,O=NATS,L=Los Angeles,ST=California,C=US",
-                                      permissions = { subscribe = { deny = ">" }} }
+		                      permissions = { subscribe = { deny = ">" }} }
 				  ]
 				}
 			`,
 			// C = US, ST = California, L = Los Angeles, O = NATS, OU = NATS, CN = localhost
-			nats.ClientCert("./configs/certs/rdns/client-b.pem", "./configs/certs/rdns/client-b.key"),
+			genTLSConf(t, "./configs/certs/rdns/client-b.pem", "./configs/certs/rdns/client-b.key"),
 			nil,
 			errors.New("nats: timeout"),
 		},
@@ -1282,7 +1332,7 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			//
 			// C = US, ST = California, L = Los Angeles, O = NATS, OU = NATS, CN = localhost
 			//
-			nats.ClientCert("./configs/certs/rdns/client-c.pem", "./configs/certs/rdns/client-c.key"),
+			genTLSConf(t, "./configs/certs/rdns/client-c.pem", "./configs/certs/rdns/client-c.key"),
 			nil,
 			nil,
 		},
@@ -1301,7 +1351,7 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			`,
 			// C = US, ST = California, L = Los Angeles, O = NATS, OU = NATS, CN = localhost, DC = foo3, DC = foo4
 			//
-			nats.ClientCert("./configs/certs/rdns/client-c.pem", "./configs/certs/rdns/client-c.key"),
+			genTLSConf(t, "./configs/certs/rdns/client-c.pem", "./configs/certs/rdns/client-c.key"),
 			errors.New("nats: Authorization Violation"),
 			nil,
 		},
@@ -1319,7 +1369,7 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			`,
 			// C=US/ST=California/L=Los Angeles/O=NATS/OU=NATS/CN=localhost/DC=foo1/DC=foo2
 			//
-			nats.ClientCert("./configs/certs/rdns/client-a.pem", "./configs/certs/rdns/client-a.key"),
+			genTLSConf(t, "./configs/certs/rdns/client-a.pem", "./configs/certs/rdns/client-a.key"),
 			nil,
 			nil,
 		},
@@ -1338,7 +1388,7 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			//
 			// C = US, ST = CA, L = Los Angeles, OU = NATS, O = NATS, CN = *.example.com, DC = example, DC = com
 			//
-			nats.ClientCert("./configs/certs/rdns/client-d.pem", "./configs/certs/rdns/client-d.key"),
+			genTLSConf(t, "./configs/certs/rdns/client-d.pem", "./configs/certs/rdns/client-d.key"),
 			nil,
 			nil,
 		},
@@ -1357,7 +1407,7 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			//
 			// C = US, ST = CA, L = Los Angeles, OU = NATS, O = NATS, CN = *.example.com, DC = example, DC = com
 			//
-			nats.ClientCert("./configs/certs/rdns/client-d.pem", "./configs/certs/rdns/client-d.key"),
+			genTLSConf(t, "./configs/certs/rdns/client-d.pem", "./configs/certs/rdns/client-d.key"),
 			nil,
 			nil,
 		},
@@ -1370,17 +1420,17 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 				authorization {
 				  users = [
 				    { user = "CN=*.example.com,OU=NATS,O=NATS,L=Los Angeles,ST=CA,C=US,DC=example,DC=com",
-                                        permissions = { subscribe = { deny = ">" }} }
+		                        permissions = { subscribe = { deny = ">" }} }
 				    { user = "DC=com,DC=example,CN=*.example.com,O=NATS,OU=NATS,L=Los Angeles,ST=CA,C=US" }
 				    { user = "CN=*.example.com,OU=NATS,O=NATS,L=Los Angeles,ST=CA,C=US",
-                                        permissions = { subscribe = { deny = ">" }} }
+		                        permissions = { subscribe = { deny = ">" }} }
 				  ]
 				}
 			`,
 			//
 			// C = US, ST = CA, L = Los Angeles, OU = NATS, O = NATS, CN = *.example.com, DC = example, DC = com
 			//
-			nats.ClientCert("./configs/certs/rdns/client-d.pem", "./configs/certs/rdns/client-d.key"),
+			genTLSConf(t, "./configs/certs/rdns/client-d.pem", "./configs/certs/rdns/client-d.key"),
 			nil,
 			nil,
 		},
@@ -1402,7 +1452,6 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 
 			nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port),
 				test.certs,
-				nats.RootCAs("./configs/certs/rdns/ca.pem"),
 			)
 			if test.err == nil && err != nil {
 				t.Errorf("Expected to connect, got %v", err)
@@ -1454,7 +1503,7 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 				  ]
 				}
 			`,
-			nats.ClientCert("./configs/certs/svid/svid-user-a.pem", "./configs/certs/svid/svid-user-a.key"),
+			genTLSConf(t, "./configs/certs/svid/svid-user-a.pem", "./configs/certs/svid/svid-user-a.key"),
 			nil,
 			nil,
 		},
@@ -1476,7 +1525,7 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 				  ]
 				}
 			`,
-			nats.ClientCert("./configs/certs/svid/svid-user-b.pem", "./configs/certs/svid/svid-user-b.key"),
+			genTLSConf(t, "./configs/certs/svid/svid-user-b.pem", "./configs/certs/svid/svid-user-b.key"),
 			nil,
 			errors.New("nats: timeout"),
 		},
@@ -1494,7 +1543,7 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 				  ]
 				}
 			`,
-			nats.ClientCert("./configs/certs/svid/svid-user-a.pem", "./configs/certs/svid/svid-user-a.key"),
+			genTLSConf(t, "./configs/certs/svid/svid-user-a.pem", "./configs/certs/svid/svid-user-a.key"),
 			nil,
 			nil,
 		},
@@ -1512,7 +1561,7 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 				  ]
 				}
 			`,
-			nats.ClientCert("./configs/certs/svid/svid-user-a.pem", "./configs/certs/svid/svid-user-a.key"),
+			genTLSConf(t, "./configs/certs/svid/svid-user-a.pem", "./configs/certs/svid/svid-user-a.key"),
 			errors.New("nats: Authorization Violation"),
 			nil,
 		},
