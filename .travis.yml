@@ -1,7 +1,7 @@
 language: go
 go:
+- 1.15.x
 - 1.14.x
-- 1.13.x
 addons:
   apt:
     packages:
@@ -26,7 +26,7 @@ script:
 - set -e
 - go test -i ./...
 - go test -v -run=TestNoRace --failfast -p=1 ./...
-- if [[ "$TRAVIS_GO_VERSION" =~ 1.13 ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race -p=1 --failfast ./...; fi
+- if [[ "$TRAVIS_GO_VERSION" =~ 1.14 ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race -p=1 --failfast ./...; fi
 - set +e
 
 deploy:
@@ -35,4 +35,4 @@ deploy:
   script: curl -sL http://git.io/goreleaser | bash
   on:
     tags: true
-    condition: $TRAVIS_GO_VERSION =~ 1.13
+    condition: $TRAVIS_GO_VERSION =~ 1.14
