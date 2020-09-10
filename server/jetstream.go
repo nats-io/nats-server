@@ -227,51 +227,54 @@ func (a *Account) enableJetStreamInfoServiceImportOnly() error {
 	return nil
 }
 
+func (s *Server) configJetStream(acc *Account) error {
+	if acc.jsLimits != nil {
+		// Check if already enabled. This can be during a reload.
+		if acc.JetStreamEnabled() {
+			if err := acc.enableAllJetStreamServiceImports(); err != nil {
+				return err
+			}
+			if err := acc.UpdateJetStreamLimits(acc.jsLimits); err != nil {
+				return err
+			}
+		} else if err := acc.EnableJetStream(acc.jsLimits); err != nil {
+			return err
+		}
+		acc.jsLimits = nil
+	} else if acc != s.SystemAccount() {
+		if acc.JetStreamEnabled() {
+			acc.DisableJetStream()
+		}
+		// We will setup basic service imports to respond to
+		// requests if JS is enabled for this account.
+		if err := acc.enableJetStreamInfoServiceImportOnly(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // configAllJetStreamAccounts walk all configured accounts and turn on jetstream if requested.
 func (s *Server) configAllJetStreamAccounts() error {
 	var jsAccounts []*Account
 
 	// Snapshot into our own list. Might not be needed.
 	s.mu.Lock()
+	// Bail if server not enabled. If it was enabled and a reload turns it off
+	// that will be handled elsewhere.
+	if s.js == nil {
+		s.mu.Unlock()
+		return nil
+	}
 	s.accounts.Range(func(k, v interface{}) bool {
 		jsAccounts = append(jsAccounts, v.(*Account))
 		return true
 	})
-	enabled := s.js != nil
 	s.mu.Unlock()
-
-	// Bail if server not enabled. If it was enabled and a reload turns it off
-	// that will be handled elsewhere.
-	if !enabled {
-		return nil
-	}
-
-	sys := s.SystemAccount()
-
 	// Process any jetstream enabled accounts here.
 	for _, acc := range jsAccounts {
-		if acc.jsLimits != nil {
-			// Check if already enabled. This can be during a reload.
-			if acc.JetStreamEnabled() {
-				if err := acc.enableAllJetStreamServiceImports(); err != nil {
-					return err
-				}
-				if err := acc.UpdateJetStreamLimits(acc.jsLimits); err != nil {
-					return err
-				}
-			} else if err := acc.EnableJetStream(acc.jsLimits); err != nil {
-				return err
-			}
-			acc.jsLimits = nil
-		} else if acc != sys {
-			if acc.JetStreamEnabled() {
-				acc.DisableJetStream()
-			}
-			// We will setup basic service imports to respond to
-			// requests if JS is enabled for this account.
-			if err := acc.enableJetStreamInfoServiceImportOnly(); err != nil {
-				return err
-			}
+		if err := s.configJetStream(acc); err != nil {
+			return err
 		}
 	}
 	return nil
