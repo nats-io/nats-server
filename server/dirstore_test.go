@@ -401,7 +401,7 @@ func createTestAccount(t *testing.T, dirStore *DirJWTStore, expSec int, accKey n
 	require_NoError(t, err)
 	account := jwt.NewAccountClaims(pubKey)
 	if expSec > 0 {
-		account.Expires = time.Now().Add(time.Second * time.Duration(expSec)).Unix()
+		account.Expires = time.Now().Round(time.Second).Add(time.Second * time.Duration(expSec)).Unix()
 	}
 	jwt, err := account.Encode(accKey)
 	require_NoError(t, err)
@@ -438,20 +438,20 @@ func TestExpiration(t *testing.T) {
 
 	h := dirStore.Hash()
 
-	for i := 1; i <= 5; i++ {
-		account(i * 2)
+	for i := 1; i <= 3; i++ {
+		account(i)
 		nh := dirStore.Hash()
 		require_NotEqual(t, h, nh)
 		h = nh
 	}
-	time.Sleep(1 * time.Second)
-	for i := 5; i > 0; i-- {
+	time.Sleep(500 * time.Millisecond)
+	for i := 3; i > 0; i-- {
 		f, err := ioutil.ReadDir(dir)
 		require_NoError(t, err)
 		require_Len(t, len(f), i)
 		assertStoreSize(t, dirStore, i)
 
-		time.Sleep(2 * time.Second)
+		time.Sleep(time.Second)
 
 		nh := dirStore.Hash()
 		require_NotEqual(t, h, nh)
@@ -625,7 +625,7 @@ func TestLru(t *testing.T) {
 	_, err = os.Stat(fmt.Sprintf("%s/%s.jwt", dir, pKey3))
 	require_True(t, os.IsNotExist(err))
 	// let key1 expire
-	time.Sleep(2 * time.Second)
+	time.Sleep(1500 * time.Millisecond)
 	assertStoreSize(t, dirStore, 1)
 	_, err = os.Stat(fmt.Sprintf("%s/%s.jwt", dir, pKey1))
 	require_True(t, os.IsNotExist(err))
@@ -762,7 +762,7 @@ func TestTTL(t *testing.T) {
 		require_NoError(t, err)
 		require_Len(t, len(f), 1)
 	}
-	dirStore, err := NewExpiringDirJWTStore(dir, false, false, time.Millisecond*100, 10, true, 2*time.Second, nil)
+	dirStore, err := NewExpiringDirJWTStore(dir, false, false, 100*time.Millisecond, 10, true, time.Second, nil)
 	require_NoError(t, err)
 	defer dirStore.Close()
 
@@ -772,22 +772,22 @@ func TestTTL(t *testing.T) {
 	require_NoError(t, err)
 	jwt := createTestAccount(t, dirStore, 0, accountKey)
 	require_OneJWT()
-	for i := 0; i < 6; i++ {
-		time.Sleep(time.Second)
+	for i := 0; i < 3; i++ {
+		time.Sleep(250 * time.Millisecond)
 		dirStore.LoadAcc(pubKey)
 		require_OneJWT()
 	}
-	for i := 0; i < 6; i++ {
-		time.Sleep(time.Second)
+	for i := 0; i < 3; i++ {
+		time.Sleep(250 * time.Millisecond)
 		dirStore.SaveAcc(pubKey, jwt)
 		require_OneJWT()
 	}
-	for i := 0; i < 6; i++ {
-		time.Sleep(time.Second)
+	for i := 0; i < 3; i++ {
+		time.Sleep(250 * time.Millisecond)
 		createTestAccount(t, dirStore, 0, accountKey)
 		require_OneJWT()
 	}
-	time.Sleep(3 * time.Second)
+	time.Sleep(2 * time.Second)
 	f, err := ioutil.ReadDir(dir)
 	require_NoError(t, err)
 	require_Len(t, len(f), 0)

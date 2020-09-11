@@ -566,7 +566,7 @@ func (pq *expirationTracker) updateTrack(publicKey string) {
 		i := e.Value.(*jwtItem)
 		if pq.ttl != 0 {
 			// only update expiration when set
-			i.expiration = time.Now().Add(pq.ttl).Unix()
+			i.expiration = time.Now().Round(time.Second).Add(pq.ttl).Unix()
 			heap.Fix(pq, i.index)
 		}
 		if pq.evictOnLimit {
@@ -590,7 +590,7 @@ func (pq *expirationTracker) track(publicKey string, hash *[sha256.Size]byte, th
 		if pq.ttl == time.Duration(math.MaxInt64) {
 			exp = math.MaxInt64
 		} else {
-			exp = time.Now().Add(pq.ttl).Unix()
+			exp = time.Now().Round(time.Second).Add(pq.ttl).Unix()
 		}
 	} else {
 		if g, err := jwt.DecodeGeneric(theJWT); err == nil {
