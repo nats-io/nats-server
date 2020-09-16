@@ -32,6 +32,10 @@ import (
 )
 
 const (
+	accLookupReqTokens = 6
+	accLookupReqSubj   = "$SYS.REQ.ACCOUNT.%s.CLAIMS.LOOKUP"
+	accPackReqSubj     = "$SYS.REQ.ACCOUNT.CLAIMS.PACK"
+
 	connectEventSubj         = "$SYS.ACCOUNT.%s.CONNECT"
 	disconnectEventSubj      = "$SYS.ACCOUNT.%s.DISCONNECT"
 	accConnsReqSubj          = "$SYS.REQ.ACCOUNT.%s.CONNS"
@@ -41,8 +45,9 @@ const (
 	shutdownEventSubj        = "$SYS.SERVER.%s.SHUTDOWN"
 	authErrorEventSubj       = "$SYS.SERVER.%s.CLIENT.AUTH.ERR"
 	serverStatsSubj          = "$SYS.SERVER.%s.STATSZ"
-	serverStatsReqSubj       = "$SYS.REQ.SERVER.%s.STATSZ"
-	serverStatsPingReqSubj   = "$SYS.REQ.SERVER.PING"
+	serverDirectReqSubj      = "$SYS.REQ.SERVER.%s.%s"
+	serverPingReqSubj        = "$SYS.REQ.SERVER.PING.%s"
+	serverStatsPingReqSubj   = "$SYS.REQ.SERVER.PING" // use $SYS.REQ.SERVER.PING.STATSZ instead
 	leafNodeConnectEventSubj = "$SYS.ACCOUNT.%s.LEAFNODE.CONNECT"
 	remoteLatencyEventSubj   = "$SYS.LATENCY.M2.%s"
 	inboxRespSubj            = "$SYS._INBOX.%s.%s"
@@ -630,13 +635,12 @@ func (s *Server) initEventTracking() {
 			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Leafz(&optz.LeafzOptions) })
 		},
 	}
-
 	for name, req := range monSrvc {
-		subject = fmt.Sprintf("$SYS.REQ.SERVER.%s.%s", s.info.ID, name)
+		subject = fmt.Sprintf(serverDirectReqSubj, s.info.ID, name)
 		if _, err := s.sysSubscribe(subject, req); err != nil {
 			s.Errorf("Error setting up internal tracking: %v", err)
 		}
-		subject = fmt.Sprintf("$SYS.REQ.SERVER.PING.%s", name)
+		subject = fmt.Sprintf(serverPingReqSubj, name)
 		if _, err := s.sysSubscribe(subject, req); err != nil {
 			s.Errorf("Error setting up internal tracking: %v", err)
 		}

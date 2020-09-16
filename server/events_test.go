@@ -1380,6 +1380,7 @@ func TestSystemAccountWithGateways(t *testing.T) {
 	}
 }
 func TestServerEventsStatsZ(t *testing.T) {
+	serverStatsReqSubj := "$SYS.REQ.SERVER.%s.STATSZ"
 	preStart := time.Now()
 	// Add little bit of delay to make sure that time check
 	// between pre-start and actual start does not fail.
