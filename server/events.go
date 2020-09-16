@@ -27,10 +27,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/server/pse"
 )
 
 const (
+	accLookupReqTokens = 6
+	accLookupReqSubj   = "$SYS.REQ.ACCOUNT.%s.CLAIMS.LOOKUP"
+	accPackReqSubj     = "$SYS.REQ.ACCOUNT.CLAIMS.PACK"
+
 	connectEventSubj         = "$SYS.ACCOUNT.%s.CONNECT"
 	disconnectEventSubj      = "$SYS.ACCOUNT.%s.DISCONNECT"
 	accConnsReqSubj          = "$SYS.REQ.ACCOUNT.%s.CONNS"
@@ -40,8 +45,9 @@ const (
 	shutdownEventSubj        = "$SYS.SERVER.%s.SHUTDOWN"
 	authErrorEventSubj       = "$SYS.SERVER.%s.CLIENT.AUTH.ERR"
 	serverStatsSubj          = "$SYS.SERVER.%s.STATSZ"
-	serverStatsReqSubj       = "$SYS.REQ.SERVER.%s.STATSZ"
-	serverStatsPingReqSubj   = "$SYS.REQ.SERVER.PING"
+	serverDirectReqSubj      = "$SYS.REQ.SERVER.%s.%s"
+	serverPingReqSubj        = "$SYS.REQ.SERVER.PING.%s"
+	serverStatsPingReqSubj   = "$SYS.REQ.SERVER.PING" // use $SYS.REQ.SERVER.PING.STATSZ instead
 	leafNodeConnectEventSubj = "$SYS.ACCOUNT.%s.LEAFNODE.CONNECT"
 	remoteLatencyEventSubj   = "$SYS.LATENCY.M2.%s"
 	inboxRespSubj            = "$SYS._INBOX.%s.%s"
@@ -57,6 +63,9 @@ const (
 	serverSubjectIndex  = 2
 	accUpdateTokens     = 5
 	accUpdateAccIndex   = 2
+
+	accReqTokens   = 5
+	accReqAccIndex = 3
 )
 
 // FIXME(dlc) - make configurable.
@@ -594,17 +603,13 @@ func (s *Server) initEventTracking() {
 			s.Errorf("Error setting up internal tracking: %v", err)
 		}
 	}
-	// Listen for requests for our statsz.
-	subject = fmt.Sprintf(serverStatsReqSubj, s.info.ID)
-	if _, err := s.sysSubscribe(subject, s.statszReq); err != nil {
-		s.Errorf("Error setting up internal tracking: %v", err)
-	}
 	// Listen for ping messages that will be sent to all servers for statsz.
+	// This subscription is kept for backwards compatibility. Got replaced by ...PING.STATZ from below
 	if _, err := s.sysSubscribe(serverStatsPingReqSubj, s.statszReq); err != nil {
 		s.Errorf("Error setting up internal tracking: %v", err)
 	}
-
 	monSrvc := map[string]msgHandler{
+		"STATSZ": s.statszReq,
 		"VARZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
 			optz := &VarzEventOptions{}
 			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Varz(&optz.VarzOptions) })
@@ -630,13 +635,12 @@ func (s *Server) initEventTracking() {
 			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Leafz(&optz.LeafzOptions) })
 		},
 	}
-
 	for name, req := range monSrvc {
-		subject = fmt.Sprintf("$SYS.REQ.SERVER.%s.%s", s.info.ID, name)
+		subject = fmt.Sprintf(serverDirectReqSubj, s.info.ID, name)
 		if _, err := s.sysSubscribe(subject, req); err != nil {
 			s.Errorf("Error setting up internal tracking: %v", err)
 		}
-		subject = fmt.Sprintf("$SYS.REQ.SERVER.PING.%s", name)
+		subject = fmt.Sprintf(serverPingReqSubj, name)
 		if _, err := s.sysSubscribe(subject, req); err != nil {
 			s.Errorf("Error setting up internal tracking: %v", err)
 		}
@@ -679,7 +683,12 @@ func (s *Server) accountClaimUpdate(sub *subscription, _ *client, subject, reply
 		s.Debugf("Received account claims update on bad subject %q", subject)
 		return
 	}
-	if v, ok := s.accounts.Load(toks[accUpdateAccIndex]); ok {
+	pubKey := toks[accUpdateAccIndex]
+	if claim, err := jwt.DecodeAccountClaims(string(msg)); err != nil {
+		s.Debugf("Received account claims update with bad jwt: %v", err)
+	} else if claim.Subject != pubKey {
+		s.Debugf("Received account claims update where jwt content does not match subject")
+	} else if v, ok := s.accounts.Load(pubKey); ok {
 		s.updateAccountWithClaimJWT(v.(*Account), string(msg))
 	}
 }
@@ -794,9 +803,19 @@ func (s *Server) connsRequest(sub *subscription, _ *client, subject, reply strin
 	if !s.eventsRunning() {
 		return
 	}
-	m := accNumConnsReq{}
+	tk := strings.Split(subject, ".")
+	if len(tk) != accReqTokens {
+		s.sys.client.Errorf("Bad subject account connections request message")
+		return
+	}
+	a := tk[accReqAccIndex]
+	m := accNumConnsReq{Account: a}
 	if err := json.Unmarshal(msg, &m); err != nil {
 		s.sys.client.Errorf("Error unmarshalling account connections request message: %v", err)
+		return
+	}
+	if m.Account != a {
+		s.sys.client.Errorf("Error unmarshalled account does not match subject")
 		return
 	}
 	// Here we really only want to lookup the account if its local. We do not want to fetch this

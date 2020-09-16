@@ -1354,7 +1354,7 @@ func TestSystemAccountWithGateways(t *testing.T) {
 
 	// If this tests fails with wrong number after 10 seconds we may have
 	// added a new inititial subscription for the eventing system.
-	checkExpectedSubs(t, 25, sa)
+	checkExpectedSubs(t, 26, sa)
 
 	// Create a client on B and see if we receive the event
 	urlb := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
@@ -1380,6 +1380,7 @@ func TestSystemAccountWithGateways(t *testing.T) {
 	}
 }
 func TestServerEventsStatsZ(t *testing.T) {
+	serverStatsReqSubj := "$SYS.REQ.SERVER.%s.STATSZ"
 	preStart := time.Now()
 	// Add little bit of delay to make sure that time check
 	// between pre-start and actual start does not fail.

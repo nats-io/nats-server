@@ -2936,8 +2936,6 @@ func (dr *DirAccResolver) Start(s *Server) error {
 			s.Errorf("update resulted in error %v", err)
 		}
 	}
-	const accountPackRequest = "$SYS.ACCOUNT.CLAIMS.PACK"
-	const accountLookupRequest = "$SYS.ACCOUNT.*.CLAIMS.LOOKUP"
 	packRespIb := s.newRespInbox()
 	// subscribe to account jwt update requests
 	if _, err := s.sysSubscribe(fmt.Sprintf(accUpdateEventSubj, "*"), func(_ *subscription, _ *client, subj, resp string, msg []byte) {
@@ -2958,23 +2956,23 @@ func (dr *DirAccResolver) Start(s *Server) error {
 		}
 	}); err != nil {
 		return fmt.Errorf("error setting up update handling: %v", err)
-	} else if _, err := s.sysSubscribe(accountLookupRequest, func(_ *subscription, _ *client, subj, reply string, msg []byte) {
+	} else if _, err := s.sysSubscribe(fmt.Sprintf(accLookupReqSubj, "*"), func(_ *subscription, _ *client, subj, reply string, msg []byte) {
 		// respond to lookups with our version
 		if reply == "" {
 			return
 		}
 		tk := strings.Split(subj, tsep)
-		if len(tk) != accUpdateTokens {
+		if len(tk) != accLookupReqTokens {
 			return
 		}
-		if theJWT, err := dr.DirJWTStore.LoadAcc(tk[accUpdateAccIndex]); err != nil {
+		if theJWT, err := dr.DirJWTStore.LoadAcc(tk[accReqAccIndex]); err != nil {
 			s.Errorf("Merging resulted in error: %v", err)
 		} else {
 			s.sendInternalMsgLocked(reply, "", nil, []byte(theJWT))
 		}
 	}); err != nil {
 		return fmt.Errorf("error setting up lookup request handling: %v", err)
-	} else if _, err = s.sysSubscribeQ(accountPackRequest, "responder",
+	} else if _, err = s.sysSubscribeQ(accPackReqSubj, "responder",
 		// respond to pack requests with one or more pack messages
 		// an empty message signifies the end of the response responder
 		func(_ *subscription, _ *client, _, reply string, theirHash []byte) {
@@ -3024,7 +3022,7 @@ func (dr *DirAccResolver) Start(s *Server) error {
 			}
 			ourHash := dr.DirJWTStore.Hash()
 			s.Debugf("Checking store state: %x", ourHash)
-			s.sendInternalMsgLocked(accountPackRequest, packRespIb, nil, ourHash[:])
+			s.sendInternalMsgLocked(accPackReqSubj, packRespIb, nil, ourHash[:])
 		}
 	})
 	s.Noticef("Managing all jwt in exclusive directory %s", dr.directory)
@@ -3070,7 +3068,7 @@ func (dr *CacheDirAccResolver) Fetch(name string) (string, error) {
 		return "", ErrNoAccountResolver
 	}
 	respC := make(chan []byte, 1)
-	accountLookupRequest := fmt.Sprintf("$SYS.ACCOUNT.%s.CLAIMS.LOOKUP", name)
+	accountLookupRequest := fmt.Sprintf(accLookupReqSubj, name)
 	s.mu.Lock()
 	replySubj := s.newRespInbox()
 	if s.sys == nil || s.sys.replies == nil {
