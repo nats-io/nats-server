@@ -2937,7 +2937,8 @@ func (dr *DirAccResolver) Start(s *Server) error {
 		}
 	}
 	const accountPackRequest = "$SYS.ACCOUNT.CLAIMS.PACK"
-	const accountLookupRequest = "$SYS.ACCOUNT.*.CLAIMS.LOOKUP"
+	const accountLookupRequest = "$SYS.REQ.ACCOUNT.*.CLAIMS.LOOKUP"
+	const accountLookupTokens = 6
 	packRespIb := s.newRespInbox()
 	// subscribe to account jwt update requests
 	if _, err := s.sysSubscribe(fmt.Sprintf(accUpdateEventSubj, "*"), func(_ *subscription, _ *client, subj, resp string, msg []byte) {
@@ -2964,10 +2965,10 @@ func (dr *DirAccResolver) Start(s *Server) error {
 			return
 		}
 		tk := strings.Split(subj, tsep)
-		if len(tk) != accUpdateTokens {
+		if len(tk) != accountLookupTokens {
 			return
 		}
-		if theJWT, err := dr.DirJWTStore.LoadAcc(tk[accUpdateAccIndex]); err != nil {
+		if theJWT, err := dr.DirJWTStore.LoadAcc(tk[accReqAccIndex]); err != nil {
 			s.Errorf("Merging resulted in error: %v", err)
 		} else {
 			s.sendInternalMsgLocked(reply, "", nil, []byte(theJWT))
@@ -3070,7 +3071,7 @@ func (dr *CacheDirAccResolver) Fetch(name string) (string, error) {
 		return "", ErrNoAccountResolver
 	}
 	respC := make(chan []byte, 1)
-	accountLookupRequest := fmt.Sprintf("$SYS.ACCOUNT.%s.CLAIMS.LOOKUP", name)
+	accountLookupRequest := fmt.Sprintf("$SYS.REQ.ACCOUNT.%s.CLAIMS.LOOKUP", name)
 	s.mu.Lock()
 	replySubj := s.newRespInbox()
 	if s.sys == nil || s.sys.replies == nil {
