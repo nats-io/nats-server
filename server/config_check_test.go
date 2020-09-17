@@ -1360,6 +1360,32 @@ func TestConfigCheck(t *testing.T) {
 			errorLine: 4,
 			errorPos:  53,
 		},
+		{
+			name: "websocket auth unknown var",
+			config: `
+				websocket {
+					authorization {
+                        unknown: "field"
+				   }
+				}
+			`,
+			err:       fmt.Errorf("unknown field %q", "unknown"),
+			errorLine: 4,
+			errorPos:  25,
+		},
+		{
+			name: "websocket bad tls",
+			config: `
+				websocket {
+                    tls {
+						cert_file: "configs/certs/server.pem"
+					}
+				}
+			`,
+			err:       fmt.Errorf("missing 'key_file' in TLS configuration"),
+			errorLine: 3,
+			errorPos:  21,
+		},
 	}
 
 	checkConfig := func(config string) error {

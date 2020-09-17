@@ -1420,6 +1420,68 @@ func TestWSParseOptions(t *testing.T) {
 				}
 				return nil
 			}, ""},
+		{"compression",
+			`
+			websocket {
+				compression: true
+			}
+			`, func(wo *WebsocketOpts) error {
+				if !wo.Compression {
+					return fmt.Errorf("Compression should have been set")
+				}
+				return nil
+			}, ""},
+		{"jwt cookie",
+			`
+			websocket {
+				jwt_cookie: "jwtcookie"
+			}
+			`, func(wo *WebsocketOpts) error {
+				if wo.JWTCookie != "jwtcookie" {
+					return fmt.Errorf("Invalid JWTCookie value: %q", wo.JWTCookie)
+				}
+				return nil
+			}, ""},
+		{"no auth user",
+			`
+			websocket {
+				no_auth_user: "noauthuser"
+			}
+			`, func(wo *WebsocketOpts) error {
+				if wo.NoAuthUser != "noauthuser" {
+					return fmt.Errorf("Invalid NoAuthUser value: %q", wo.NoAuthUser)
+				}
+				return nil
+			}, ""},
+		{"auth block",
+			`
+			websocket {
+				authorization {
+					user: "webuser"
+					password: "pwd"
+					token: "token"
+					timeout: 2.0
+				}
+			}
+			`, func(wo *WebsocketOpts) error {
+				if wo.Username != "webuser" || wo.Password != "pwd" || wo.Token != "token" || wo.AuthTimeout != 2.0 {
+					return fmt.Errorf("Invalid auth block: %+v", wo)
+				}
+				return nil
+			}, ""},
+		{"auth timeout as int",
+			`
+			websocket {
+				authorization {
+					timeout: 2
+				}
+			}
+			`, func(wo *WebsocketOpts) error {
+				if wo.AuthTimeout != 2.0 {
+					return fmt.Errorf("Invalid auth timeout: %v", wo.AuthTimeout)
+				}
+				return nil
+			}, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(test.content))
