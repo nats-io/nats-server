@@ -4397,7 +4397,14 @@ func (c *client) getAuthUser() string {
 
 // Given an array of strings, this function converts it to a map as long
 // as all the content (converted to upper-case) matches some constants.
+
+// Converts the given array of strings to a map of string.
+// The strings are converted to upper-case and added to the map only
+// if the server recognize them as valid connection types.
+// If there are unknown connection types, the map of valid ones is returned
+// along with an error that contains the name of the unknown.
 func convertAllowedConnectionTypes(cts []string) (map[string]struct{}, error) {
+	var unknown []string
 	m := make(map[string]struct{}, len(cts))
 	for _, i := range cts {
 		i = strings.ToUpper(i)
@@ -4405,10 +4412,15 @@ func convertAllowedConnectionTypes(cts []string) (map[string]struct{}, error) {
 		case jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket, jwt.ConnectionTypeLeafnode:
 			m[i] = struct{}{}
 		default:
-			return nil, fmt.Errorf("invalid connection type %q", i)
+			unknown = append(unknown, i)
 		}
 	}
-	return m, nil
+	var err error
+	// We will still return the map of valid ones.
+	if len(unknown) != 0 {
+		err = fmt.Errorf("invalid connection types %q", unknown)
+	}
+	return m, err
 }
 
 // This will return true if the connection is of a type present in the given `acts` map.

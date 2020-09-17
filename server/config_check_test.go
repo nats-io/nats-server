@@ -1356,7 +1356,7 @@ func TestConfigCheck(t *testing.T) {
 					   ]
 				   }
 			`,
-			err:       fmt.Errorf("invalid connection type %q", "UNKNOWN"),
+			err:       fmt.Errorf("invalid connection types [%q]", "UNKNOWN"),
 			errorLine: 4,
 			errorPos:  53,
 		},

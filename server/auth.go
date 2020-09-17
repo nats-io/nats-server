@@ -486,8 +486,27 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 	if juc != nil {
 		allowedConnTypes, err := convertAllowedConnectionTypes(juc.AllowedConnectionTypes)
 		if err != nil {
-			c.Debugf("Connection type error: %v", err)
-			return false
+			// We got an error, which means some connection types were unknown. As long as
+			// a valid one is returned, we proceed with auth. If not, we have to reject.
+			// In other words, suppose that JWT allows "WEBSOCKET" in the array. No error
+			// is returned and allowedConnTypes will contain "WEBSOCKET" only.
+			// Client will be rejected if not a websocket client, or proceed with rest of
+			// auth if it is.
+			// Now suppose JWT allows "WEBSOCKET, MQTT" and say MQTT is not known by this
+			// server. In this case, allowedConnTypes would contain "WEBSOCKET" and we
+			// would get `err` indicating that "MQTT" is an unknown connection type.
+			// If a websocket client connects, it should still be allowed, since after all
+			// the admin wanted to allow websocket and mqtt connection types.
+			// However, say that the JWT only allows "MQTT" (and again suppose this server
+			// does not know about MQTT connection type), then since the allowedConnTypes
+			// map would be empty (no valid types found), and since empty means allow-all,
+			// then we should reject because the intent was to allow connections for this
+			// user only as an MQTT client.
+			c.Debugf("%v", err)
+			if len(allowedConnTypes) == 0 {
+				return false
+			}
+			err = nil
 		}
 		if !c.connectionTypeAllowed(allowedConnTypes) {
 			c.Debugf("Connection type not allowed")

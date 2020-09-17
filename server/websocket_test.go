@@ -3400,6 +3400,8 @@ func TestWSJWTWithAllowedConnectionTypes(t *testing.T) {
 	}{
 		{"not allowed", []string{jwt.ConnectionTypeStandard}, "-ERR"},
 		{"allowed", []string{jwt.ConnectionTypeStandard, strings.ToLower(jwt.ConnectionTypeWebsocket)}, "+OK"},
+		{"allowed with unknown", []string{jwt.ConnectionTypeWebsocket, "SomeNewType"}, "+OK"},
+		{"not allowed with unknown", []string{"SomeNewType"}, "-ERR"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			nuc := newJWTTestUserClaims()
