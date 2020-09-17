@@ -41,7 +41,8 @@ const (
 	accConnsReqSubj          = "$SYS.REQ.ACCOUNT.%s.CONNS"
 	accUpdateEventSubj       = "$SYS.ACCOUNT.%s.CLAIMS.UPDATE"
 	connsRespSubj            = "$SYS._INBOX_.%s"
-	accConnsEventSubj        = "$SYS.SERVER.ACCOUNT.%s.CONNS"
+	accConnsEventSubjNew     = "$SYS.ACCOUNT.%s.SERVER.CONNS"
+	accConnsEventSubjOld     = "$SYS.SERVER.ACCOUNT.%s.CONNS" // kept for backward compatibility
 	shutdownEventSubj        = "$SYS.SERVER.%s.SHUTDOWN"
 	authErrorEventSubj       = "$SYS.SERVER.%s.CLIENT.AUTH.ERR"
 	serverStatsSubj          = "$SYS.SERVER.%s.STATSZ"
@@ -569,14 +570,12 @@ func (s *Server) initEventTracking() {
 	}
 	s.sys.inboxPre = subject
 	// This is for remote updates for connection accounting.
-	subject = fmt.Sprintf(accConnsEventSubj, "*")
-	if _, err := s.sysSubscribe(subject, s.remoteConnsUpdate); err != nil {
-		s.Errorf("Error setting up internal tracking: %v", err)
-	}
-	// This will be for responses for account info that we send out.
-	subject = fmt.Sprintf(connsRespSubj, s.info.ID)
-	if _, err := s.sysSubscribe(subject, s.remoteConnsUpdate); err != nil {
-		s.Errorf("Error setting up internal tracking: %v", err)
+
+	for _, subj := range []string{accConnsEventSubjOld, accConnsEventSubjNew, connsRespSubj} {
+		subject = fmt.Sprintf(subj, "*")
+		if _, err := s.sysSubscribe(subject, s.remoteConnsUpdate); err != nil {
+			s.Errorf("Error setting up internal tracking for %s: %v", subject, err)
+		}
 	}
 	// Listen for broad requests to respond with account info.
 	subject = fmt.Sprintf(accConnsReqSubj, "*")
@@ -1067,23 +1066,32 @@ func (s *Server) sendLeafNodeConnectMsg(accName string) {
 // sendAccConnsUpdate is called to send out our information on the
 // account's local connections.
 // Lock should be held on entry.
-func (s *Server) sendAccConnsUpdate(a *Account, subj string) {
+func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 	if !s.eventsEnabled() || a == nil {
 		return
 	}
-	a.mu.RLock()
-
-	// Build event with account name and number of local clients and leafnodes.
-	m := AccountNumConns{
-		Account:    a.Name,
-		Conns:      a.numLocalConnections(),
-		LeafNodes:  a.numLocalLeafNodes(),
-		TotalConns: a.numLocalConnections() + a.numLocalLeafNodes(),
+	// Build event with account name and number of local clients and leafnodes. (if there is any interest in receiving)
+	var m *AccountNumConns
+	for _, sub := range subj {
+		if s.sys != nil {
+			if sac := s.sys.account; sac != nil && !sac.SubscriptionInterest(sub) {
+				continue
+			}
+		}
+		if m == nil {
+			a.mu.RLock()
+			// Build event with account name and number of local clients and leafnodes.
+			m = &AccountNumConns{
+				Account:    a.Name,
+				Conns:      a.numLocalConnections(),
+				LeafNodes:  a.numLocalLeafNodes(),
+				TotalConns: a.numLocalConnections() + a.numLocalLeafNodes(),
+			}
+			a.mu.RUnlock()
+		}
+		// does re-lock the server lock
+		s.sendInternalMsg(sub, _EMPTY_, &m.Server, &m)
 	}
-	a.mu.RUnlock()
-
-	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
-
 	// Set timer to fire again unless we are at zero.
 	a.mu.Lock()
 	if a.numLocalConnections() == 0 {
@@ -1107,8 +1115,7 @@ func (s *Server) accConnsUpdate(a *Account) {
 	if !s.eventsEnabled() || a == nil {
 		return
 	}
-	subj := fmt.Sprintf(accConnsEventSubj, a.Name)
-	s.sendAccConnsUpdate(a, subj)
+	s.sendAccConnsUpdate(a, fmt.Sprintf(accConnsEventSubjOld, a.Name), fmt.Sprintf(accConnsEventSubjNew, a.Name))
 }
 
 // server lock should be held
