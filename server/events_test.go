@@ -216,7 +216,24 @@ func TestSystemAccountNewConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error receiving msg: %v", err)
 	}
-
+	connsMsg, err := sub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Error receiving msg: %v", err)
+	}
+	if strings.HasPrefix(msg.Subject, fmt.Sprintf("$SYS.ACCOUNT.%s.SERVER.CONNS", acc2.Name)) {
+		msg, connsMsg = connsMsg, msg
+	}
+	if !strings.HasPrefix(connsMsg.Subject, fmt.Sprintf("$SYS.ACCOUNT.%s.SERVER.CONNS", acc2.Name)) {
+		t.Fatalf("Expected subject to start with %q, got %q", "$SYS.ACCOUNT.<account>.CONNECT", msg.Subject)
+	}
+	conns := AccountNumConns{}
+	if err := json.Unmarshal(connsMsg.Data, &conns); err != nil {
+		t.Fatalf("Error unmarshalling conns event message: %v", err)
+	} else if conns.Account != acc2.Name {
+		t.Fatalf("Wrong account in conns message: %v", conns)
+	} else if conns.Conns != 1 || conns.TotalConns != 1 || conns.LeafNodes != 0 {
+		t.Fatalf("Wrong counts in conns message: %v", conns)
+	}
 	if !strings.HasPrefix(msg.Subject, fmt.Sprintf("$SYS.ACCOUNT.%s.CONNECT", acc2.Name)) {
 		t.Fatalf("Expected subject to start with %q, got %q", "$SYS.ACCOUNT.<account>.CONNECT", msg.Subject)
 	}
@@ -272,7 +289,26 @@ func TestSystemAccountNewConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error receiving msg: %v", err)
 	}
-
+	connsMsg, err = sub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Error receiving msg: %v", err)
+	}
+	if strings.HasPrefix(msg.Subject, fmt.Sprintf("$SYS.ACCOUNT.%s.SERVER.CONNS", acc2.Name)) {
+		msg, connsMsg = connsMsg, msg
+	}
+	if !strings.HasPrefix(connsMsg.Subject, fmt.Sprintf("$SYS.ACCOUNT.%s.SERVER.CONNS", acc2.Name)) {
+		t.Fatalf("Expected subject to start with %q, got %q", "$SYS.ACCOUNT.<account>.CONNECT", msg.Subject)
+	} else if !strings.Contains(string(connsMsg.Data), `"total_conns": 0`) {
+		t.Fatalf("Expected event to reflect created connection, got: %s", string(msg.Data))
+	}
+	conns = AccountNumConns{}
+	if err := json.Unmarshal(connsMsg.Data, &conns); err != nil {
+		t.Fatalf("Error unmarshalling conns event message: %v", err)
+	} else if conns.Account != acc2.Name {
+		t.Fatalf("Wrong account in conns message: %v", conns)
+	} else if conns.Conns != 0 || conns.TotalConns != 0 || conns.LeafNodes != 0 {
+		t.Fatalf("Wrong counts in conns message: %v", conns)
+	}
 	if !strings.HasPrefix(msg.Subject, fmt.Sprintf("$SYS.ACCOUNT.%s.DISCONNECT", acc2.Name)) {
 		t.Fatalf("Expected subject to start with %q, got %q", "$SYS.ACCOUNT.<account>.DISCONNECT", msg.Subject)
 	}
@@ -722,7 +758,7 @@ func TestSystemAccountConnectionUpdatesStopAfterNoLocal(t *testing.T) {
 		copy := append([]byte(nil), msg...)
 		received <- &nats.Msg{Subject: subject, Reply: reply, Data: copy}
 	}
-	subj := fmt.Sprintf(accConnsEventSubj, pub)
+	subj := fmt.Sprintf(accConnsEventSubjOld, pub)
 	sub, err := sa.sysSubscribe(subj, cb)
 	if sub == nil || err != nil {
 		t.Fatalf("Expected to subscribe, got %v", err)
@@ -1354,7 +1390,7 @@ func TestSystemAccountWithGateways(t *testing.T) {
 
 	// If this tests fails with wrong number after 10 seconds we may have
 	// added a new inititial subscription for the eventing system.
-	checkExpectedSubs(t, 26, sa)
+	checkExpectedSubs(t, 27, sa)
 
 	// Create a client on B and see if we receive the event
 	urlb := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
@@ -1365,18 +1401,32 @@ func TestSystemAccountWithGateways(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error receiving msg: %v", err)
 	}
+	connsMsgA, err := sub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Error receiving msg: %v", err)
+	}
+	connsMsgG, err := sub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Error receiving msg: %v", err)
+	}
+	if strings.HasSuffix(connsMsgA.Subject, ".CONNECT") {
+		msg, connsMsgA = connsMsgA, msg
+	} else if strings.HasSuffix(connsMsgG.Subject, ".CONNECT") {
+		msg, connsMsgG = connsMsgG, msg
+	}
+	if connsMsgG.Subject != "$SYS.ACCOUNT.$G.SERVER.CONNS" {
+		connsMsgA, connsMsgG = connsMsgG, connsMsgA
+	}
+	if connsMsgG.Subject != "$SYS.ACCOUNT.$G.SERVER.CONNS" {
+		t.Fatalf("Expected subject $SYS.ACCOUNT.$G.SERVER.CONNS but got %s", connsMsgG.Subject)
+	}
 	// Basic checks, could expand on that...
 	accName := sa.SystemAccount().Name
-	if !strings.HasPrefix(msg.Subject, fmt.Sprintf("$SYS.ACCOUNT.%s.CONNECT", accName)) {
-		t.Fatalf("Expected subject to start with %q, got %q", "$SYS.ACCOUNT.<account>.CONNECT", msg.Subject)
+	if connsMsgA.Subject != fmt.Sprintf("$SYS.ACCOUNT.%s.SERVER.CONNS", accName) {
+		t.Fatalf("Expected subject to be $SYS.ACCOUNT.%s.SERVER.CONNS but got: %s", accName, connsMsgA.Subject)
 	}
-	tokens := strings.Split(msg.Subject, ".")
-	if len(tokens) < 4 {
-		t.Fatalf("Expected 4 tokens, got %d", len(tokens))
-	}
-	account := tokens[2]
-	if account != accName {
-		t.Fatalf("Expected %q for account, got %q", accName, account)
+	if msg.Subject != fmt.Sprintf("$SYS.ACCOUNT.%s.CONNECT", accName) {
+		t.Fatalf("Expected subject to be $SYS.ACCOUNT.%s.CONNECT but got: %s", accName, msg.Subject)
 	}
 }
 func TestServerEventsStatsZ(t *testing.T) {
@@ -1853,7 +1903,7 @@ func TestConnectionUpdatesTimerProperlySet(t *testing.T) {
 	cb := func(sub *subscription, _ *client, subject, reply string, msg []byte) {
 		atomic.AddInt32(&count, 1)
 	}
-	subj := fmt.Sprintf(accConnsEventSubj, pub)
+	subj := fmt.Sprintf(accConnsEventSubjOld, pub)
 	sub, err := sa.sysSubscribe(subj, cb)
 	if sub == nil || err != nil {
 		t.Fatalf("Expected to subscribe, got %v", err)
