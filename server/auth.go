@@ -922,7 +922,33 @@ func comparePasswords(serverPassword, clientPassword string) bool {
 }
 
 func validateAuth(o *Options) error {
+	for _, u := range o.Users {
+		if err := validateAllowedConnectionTypes(u.AllowedConnectionTypes); err != nil {
+			return err
+		}
+	}
+	for _, u := range o.Nkeys {
+		if err := validateAllowedConnectionTypes(u.AllowedConnectionTypes); err != nil {
+			return err
+		}
+	}
 	return validateNoAuthUser(o, o.NoAuthUser)
+}
+
+func validateAllowedConnectionTypes(m map[string]struct{}) error {
+	for ct := range m {
+		ctuc := strings.ToUpper(ct)
+		switch ctuc {
+		case jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket, jwt.ConnectionTypeLeafnode:
+		default:
+			return fmt.Errorf("unknown connection type %q", ct)
+		}
+		if ctuc != ct {
+			delete(m, ct)
+			m[ctuc] = struct{}{}
+		}
+	}
+	return nil
 }
 
 func validateNoAuthUser(o *Options, noAuthUser string) error {
