@@ -4395,6 +4395,55 @@ func (c *client) getAuthUser() string {
 	}
 }
 
+// Given an array of strings, this function converts it to a map as long
+// as all the content (converted to upper-case) matches some constants.
+
+// Converts the given array of strings to a map of string.
+// The strings are converted to upper-case and added to the map only
+// if the server recognize them as valid connection types.
+// If there are unknown connection types, the map of valid ones is returned
+// along with an error that contains the name of the unknown.
+func convertAllowedConnectionTypes(cts []string) (map[string]struct{}, error) {
+	var unknown []string
+	m := make(map[string]struct{}, len(cts))
+	for _, i := range cts {
+		i = strings.ToUpper(i)
+		switch i {
+		case jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket, jwt.ConnectionTypeLeafnode:
+			m[i] = struct{}{}
+		default:
+			unknown = append(unknown, i)
+		}
+	}
+	var err error
+	// We will still return the map of valid ones.
+	if len(unknown) != 0 {
+		err = fmt.Errorf("invalid connection types %q", unknown)
+	}
+	return m, err
+}
+
+// This will return true if the connection is of a type present in the given `acts` map.
+// Note that so far this is used only for CLIENT or LEAF connections.
+// But a CLIENT can be standard or websocket (and other types in the future).
+func (c *client) connectionTypeAllowed(acts map[string]struct{}) bool {
+	// Empty means all type of clients are allowed
+	if len(acts) == 0 {
+		return true
+	}
+	// Assume standard client, then update based on presence of websocket
+	// or other type.
+	want := jwt.ConnectionTypeStandard
+	if c.kind == LEAF {
+		want = jwt.ConnectionTypeLeafnode
+	}
+	if c.ws != nil {
+		want = jwt.ConnectionTypeWebsocket
+	}
+	_, ok := acts[want]
+	return ok
+}
+
 // isClosed returns true if either closeConnection or connMarkedClosed
 // flag have been set, or if `nc` is nil, which may happen in tests.
 func (c *client) isClosed() bool {

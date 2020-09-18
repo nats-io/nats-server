@@ -1318,6 +1318,74 @@ func TestConfigCheck(t *testing.T) {
 			errorLine: 3,
 			errorPos:  20,
 		},
+		{
+			name: "connection types wrong type",
+			config: `
+                   authorization {
+                       users [
+                           {user: a, password: pwd, allowed_connection_types: 123}
+					   ]
+				   }
+			`,
+			err:       errors.New(`error parsing allowed connection types: unsupported type int64`),
+			errorLine: 4,
+			errorPos:  53,
+		},
+		{
+			name: "connection types content wrong type",
+			config: `
+                   authorization {
+                       users [
+                           {user: a, password: pwd, allowed_connection_types: [
+                               123
+                               WEBSOCKET
+							]}
+					   ]
+				   }
+			`,
+			err:       errors.New(`error parsing allowed connection types: unsupported type in array int64`),
+			errorLine: 5,
+			errorPos:  32,
+		},
+		{
+			name: "connection types type unknown",
+			config: `
+                   authorization {
+                       users [
+                           {user: a, password: pwd, allowed_connection_types: [ "UNKNOWN" ]}
+					   ]
+				   }
+			`,
+			err:       fmt.Errorf("invalid connection types [%q]", "UNKNOWN"),
+			errorLine: 4,
+			errorPos:  53,
+		},
+		{
+			name: "websocket auth unknown var",
+			config: `
+				websocket {
+					authorization {
+                        unknown: "field"
+				   }
+				}
+			`,
+			err:       fmt.Errorf("unknown field %q", "unknown"),
+			errorLine: 4,
+			errorPos:  25,
+		},
+		{
+			name: "websocket bad tls",
+			config: `
+				websocket {
+                    tls {
+						cert_file: "configs/certs/server.pem"
+					}
+				}
+			`,
+			err:       fmt.Errorf("missing 'key_file' in TLS configuration"),
+			errorLine: 3,
+			errorPos:  21,
+		},
 	}
 
 	checkConfig := func(config string) error {

@@ -72,5 +72,6 @@ func (oa v1ActivationClaims) migrateV1() (*ActivationClaims, error) {
 	// copy the activation data
 	a.ImportSubject = oa.ImportSubject
 	a.ImportType = oa.ImportType
+	a.Version = 1
 	return &a, nil
 }

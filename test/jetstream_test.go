@@ -2497,6 +2497,7 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 	s.Shutdown()
 	// Restart.
 	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
 
 	nc = clientConnectToServer(t, s)
 	defer nc.Close()
