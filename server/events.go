@@ -1070,26 +1070,16 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 	if !s.eventsEnabled() || a == nil {
 		return
 	}
-	// Build event with account name and number of local clients and leafnodes. (if there is any interest in receiving)
-	var m *AccountNumConns
+	// Build event with account name and number of local clients and leafnodes.
+	a.mu.RLock()
+	m := &AccountNumConns{
+		Account:    a.Name,
+		Conns:      a.numLocalConnections(),
+		LeafNodes:  a.numLocalLeafNodes(),
+		TotalConns: a.numLocalConnections() + a.numLocalLeafNodes(),
+	}
+	a.mu.RUnlock()
 	for _, sub := range subj {
-		if s.sys != nil {
-			if sac := s.sys.account; sac != nil && !sac.SubscriptionInterest(sub) {
-				continue
-			}
-		}
-		if m == nil {
-			a.mu.RLock()
-			// Build event with account name and number of local clients and leafnodes.
-			m = &AccountNumConns{
-				Account:    a.Name,
-				Conns:      a.numLocalConnections(),
-				LeafNodes:  a.numLocalLeafNodes(),
-				TotalConns: a.numLocalConnections() + a.numLocalLeafNodes(),
-			}
-			a.mu.RUnlock()
-		}
-		// does re-lock the server lock
 		s.sendInternalMsg(sub, _EMPTY_, &m.Server, &m)
 	}
 	// Set timer to fire again unless we are at zero.
