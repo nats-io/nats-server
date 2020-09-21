@@ -1146,53 +1146,61 @@ func TestSystemAccountFromConfig(t *testing.T) {
 }
 
 func TestAccountClaimsUpdates(t *testing.T) {
-	s, opts := runTrustedServer(t)
-	defer s.Shutdown()
+	test := func(subj string) {
+		s, opts := runTrustedServer(t)
+		defer s.Shutdown()
 
-	sacc, sakp := createAccount(s)
-	s.setSystemAccount(sacc)
+		sacc, sakp := createAccount(s)
+		s.setSystemAccount(sacc)
 
-	// Let's create a normal account with limits we can update.
-	okp, _ := nkeys.FromSeed(oSeed)
-	akp, _ := nkeys.CreateAccount()
-	pub, _ := akp.PublicKey()
-	nac := jwt.NewAccountClaims(pub)
-	nac.Limits.Conn = 4
-	ajwt, _ := nac.Encode(okp)
+		// Let's create a normal account with limits we can update.
+		okp, _ := nkeys.FromSeed(oSeed)
+		akp, _ := nkeys.CreateAccount()
+		pub, _ := akp.PublicKey()
+		nac := jwt.NewAccountClaims(pub)
+		nac.Limits.Conn = 4
+		ajwt, _ := nac.Encode(okp)
 
-	addAccountToMemResolver(s, pub, ajwt)
+		addAccountToMemResolver(s, pub, ajwt)
 
-	acc, _ := s.LookupAccount(pub)
-	if acc.MaxActiveConnections() != 4 {
-		t.Fatalf("Expected to see a limit of 4 connections")
+		acc, _ := s.LookupAccount(pub)
+		if acc.MaxActiveConnections() != 4 {
+			t.Fatalf("Expected to see a limit of 4 connections")
+		}
+
+		// Simulate a systems publisher so we can do an account claims update.
+		url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+		nc, err := nats.Connect(url, createUserCreds(t, s, sakp))
+		if err != nil {
+			t.Fatalf("Error on connect: %v", err)
+		}
+		defer nc.Close()
+
+		// Update the account
+		nac = jwt.NewAccountClaims(pub)
+		nac.Limits.Conn = 8
+		issAt := time.Now().Add(-30 * time.Second).Unix()
+		nac.IssuedAt = issAt
+		expires := time.Now().Add(2 * time.Second).Unix()
+		nac.Expires = expires
+		ajwt, _ = nac.Encode(okp)
+
+		// Publish to the system update subject.
+		claimUpdateSubj := fmt.Sprintf(subj, pub)
+		nc.Publish(claimUpdateSubj, []byte(ajwt))
+		nc.Flush()
+
+		acc, _ = s.LookupAccount(pub)
+		if acc.MaxActiveConnections() != 8 {
+			t.Fatalf("Account was not updated")
+		}
 	}
-
-	// Simulate a systems publisher so we can do an account claims update.
-	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
-	nc, err := nats.Connect(url, createUserCreds(t, s, sakp))
-	if err != nil {
-		t.Fatalf("Error on connect: %v", err)
-	}
-	defer nc.Close()
-
-	// Update the account
-	nac = jwt.NewAccountClaims(pub)
-	nac.Limits.Conn = 8
-	issAt := time.Now().Add(-30 * time.Second).Unix()
-	nac.IssuedAt = issAt
-	expires := time.Now().Add(2 * time.Second).Unix()
-	nac.Expires = expires
-	ajwt, _ = nac.Encode(okp)
-
-	// Publish to the system update subject.
-	claimUpdateSubj := fmt.Sprintf(accUpdateEventSubj, pub)
-	nc.Publish(claimUpdateSubj, []byte(ajwt))
-	nc.Flush()
-
-	acc, _ = s.LookupAccount(pub)
-	if acc.MaxActiveConnections() != 8 {
-		t.Fatalf("Account was not updated")
-	}
+	t.Run("new", func(t *testing.T) {
+		test(accUpdateEventSubjNew)
+	})
+	t.Run("old", func(t *testing.T) {
+		test(accUpdateEventSubjOld)
+	})
 }
 
 func TestAccountClaimsUpdatesWithServiceImports(t *testing.T) {
@@ -1241,7 +1249,7 @@ func TestAccountClaimsUpdatesWithServiceImports(t *testing.T) {
 		ajwt2, _ = nac2.Encode(okp)
 
 		// Publish to the system update subject.
-		claimUpdateSubj := fmt.Sprintf(accUpdateEventSubj, pub2)
+		claimUpdateSubj := fmt.Sprintf(accUpdateEventSubjNew, pub2)
 		nc.Publish(claimUpdateSubj, []byte(ajwt2))
 	}
 	nc.Flush()
@@ -1390,7 +1398,7 @@ func TestSystemAccountWithGateways(t *testing.T) {
 
 	// If this tests fails with wrong number after 10 seconds we may have
 	// added a new inititial subscription for the eventing system.
-	checkExpectedSubs(t, 27, sa)
+	checkExpectedSubs(t, 28, sa)
 
 	// Create a client on B and see if we receive the event
 	urlb := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)

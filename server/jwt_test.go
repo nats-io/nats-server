@@ -1904,7 +1904,7 @@ func TestAccountURLResolverFetchFailurePushReorder(t *testing.T) {
 	// update expjwt2, this will correct the import issue
 	sysc := natsConnect(t, sA.ClientURL(), createUserCreds(t, nil, syskp))
 	defer sysc.Close()
-	natsPub(t, sysc, fmt.Sprintf(accUpdateEventSubj, exppub), []byte(expjwt2))
+	natsPub(t, sysc, fmt.Sprintf(accUpdateEventSubjNew, exppub), []byte(expjwt2))
 	sysc.Flush()
 	// updating expjwt should cause this to pass
 	checkSubInterest(t, sA, imppub, subj, 10*time.Second)
@@ -1995,8 +1995,8 @@ func TestAccountURLResolverPermanentFetchFailure(t *testing.T) {
 	sysc := natsConnect(t, sA.ClientURL(), createUserCreds(t, nil, syskp))
 	defer sysc.Close()
 	// push accounts
-	natsPub(t, sysc, fmt.Sprintf(accUpdateEventSubj, imppub), []byte(impjwt))
-	natsPub(t, sysc, fmt.Sprintf(accUpdateEventSubj, exppub), []byte(expjwt))
+	natsPub(t, sysc, fmt.Sprintf(accUpdateEventSubjNew, imppub), []byte(impjwt))
+	natsPub(t, sysc, fmt.Sprintf(accUpdateEventSubjNew, exppub), []byte(expjwt))
 	sysc.Flush()
 	importErrCnt := 0
 	tmr := time.NewTimer(500 * time.Millisecond)
@@ -3293,7 +3293,7 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 		sub := natsSubSync(t, c, resp)
 		err := sub.AutoUnsubscribe(3)
 		require_NoError(t, err)
-		require_NoError(t, c.PublishRequest(fmt.Sprintf(accUpdateEventSubj, pubKey), resp, []byte(jwt)))
+		require_NoError(t, c.PublishRequest(fmt.Sprintf(accUpdateEventSubjNew, pubKey), resp, []byte(jwt)))
 		passCnt := 0
 		if require_NextMsg(sub) {
 			passCnt++
@@ -3842,7 +3842,7 @@ func TestJWTJetStreamLimits(t *testing.T) {
 		t.Helper()
 		c := natsConnect(t, url, nats.UserCredentials(creds))
 		defer c.Close()
-		if msg, err := c.Request(fmt.Sprintf(accUpdateEventSubj, pubKey), []byte(jwt), time.Second); err != nil {
+		if msg, err := c.Request(fmt.Sprintf(accUpdateEventSubjNew, pubKey), []byte(jwt), time.Second); err != nil {
 			t.Fatal("error not expected in this test", err)
 		} else {
 			content := make(map[string]interface{})

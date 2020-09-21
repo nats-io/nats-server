@@ -18,6 +18,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -34,12 +35,15 @@ import (
 const (
 	accLookupReqTokens = 6
 	accLookupReqSubj   = "$SYS.REQ.ACCOUNT.%s.CLAIMS.LOOKUP"
-	accPackReqSubj     = "$SYS.REQ.ACCOUNT.CLAIMS.PACK"
+	accPackReqSubj     = "$SYS.REQ.CLAIMS.PACK"
 
-	connectEventSubj         = "$SYS.ACCOUNT.%s.CONNECT"
-	disconnectEventSubj      = "$SYS.ACCOUNT.%s.DISCONNECT"
-	accConnsReqSubj          = "$SYS.REQ.ACCOUNT.%s.CONNS"
-	accUpdateEventSubj       = "$SYS.ACCOUNT.%s.CLAIMS.UPDATE"
+	connectEventSubj    = "$SYS.ACCOUNT.%s.CONNECT"
+	disconnectEventSubj = "$SYS.ACCOUNT.%s.DISCONNECT"
+	accConnsReqSubj     = "$SYS.REQ.ACCOUNT.%s.CONNS"
+	// kept for backward compatibility when using http resolver
+	// this overlaps with the names for events but you'd have to have the operator private key in order to succeed.
+	accUpdateEventSubjOld    = "$SYS.ACCOUNT.%s.CLAIMS.UPDATE"
+	accUpdateEventSubjNew    = "$SYS.REQ.ACCOUNT.%s.CLAIMS.UPDATE"
 	connsRespSubj            = "$SYS._INBOX_.%s"
 	accConnsEventSubjNew     = "$SYS.ACCOUNT.%s.SERVER.CONNS"
 	accConnsEventSubjOld     = "$SYS.SERVER.ACCOUNT.%s.CONNS" // kept for backward compatibility
@@ -62,8 +66,9 @@ const (
 
 	shutdownEventTokens = 4
 	serverSubjectIndex  = 2
-	accUpdateTokens     = 5
-	accUpdateAccIndex   = 2
+	accUpdateTokensNew  = 6
+	accUpdateTokensOld  = 5
+	accUpdateAccIdxOld  = 2
 
 	accReqTokens   = 5
 	accReqAccIndex = 3
@@ -602,9 +607,10 @@ func (s *Server) initEventTracking() {
 		subscribeToUpdate = !s.accResolver.IsTrackingUpdate()
 	}
 	if subscribeToUpdate {
-		subject = fmt.Sprintf(accUpdateEventSubj, "*")
-		if _, err := s.sysSubscribe(subject, s.accountClaimUpdate); err != nil {
-			s.Errorf("Error setting up internal tracking: %v", err)
+		for _, sub := range []string{accUpdateEventSubjOld, accUpdateEventSubjNew} {
+			if _, err := s.sysSubscribe(fmt.Sprintf(sub, "*"), s.accountClaimUpdate); err != nil {
+				s.Errorf("Error setting up internal tracking: %v", err)
+			}
 		}
 	}
 	// Listen for ping messages that will be sent to all servers for statsz.
@@ -678,22 +684,31 @@ func (s *Server) addSystemAccountExports(sacc *Account) {
 }
 
 // accountClaimUpdate will receive claim updates for accounts.
-func (s *Server) accountClaimUpdate(sub *subscription, _ *client, subject, reply string, msg []byte) {
+func (s *Server) accountClaimUpdate(sub *subscription, _ *client, subject, resp string, msg []byte) {
 	if !s.EventsEnabled() {
 		return
 	}
+	pubKey := ""
 	toks := strings.Split(subject, tsep)
-	if len(toks) < accUpdateTokens {
+	if len(toks) == accUpdateTokensNew {
+		pubKey = toks[accReqAccIndex]
+	} else if len(toks) == accUpdateTokensOld {
+		pubKey = toks[accUpdateAccIdxOld]
+	} else {
 		s.Debugf("Received account claims update on bad subject %q", subject)
 		return
 	}
-	pubKey := toks[accUpdateAccIndex]
 	if claim, err := jwt.DecodeAccountClaims(string(msg)); err != nil {
-		s.Debugf("Received account claims update with bad jwt: %v", err)
+		respondToUpdate(s, resp, pubKey, "jwt update resulted in error", err)
 	} else if claim.Subject != pubKey {
-		s.Debugf("Received account claims update where jwt content does not match subject")
-	} else if v, ok := s.accounts.Load(pubKey); ok {
-		s.updateAccountWithClaimJWT(v.(*Account), string(msg))
+		err := errors.New("subject does not match jwt content")
+		respondToUpdate(s, resp, pubKey, "jwt update resulted in error", err)
+	} else if v, ok := s.accounts.Load(pubKey); !ok {
+		respondToUpdate(s, resp, pubKey, "jwt update skipped", nil)
+	} else if err := s.updateAccountWithClaimJWT(v.(*Account), string(msg)); err != nil {
+		respondToUpdate(s, resp, pubKey, "jwt update resulted in error", err)
+	} else {
+		respondToUpdate(s, resp, pubKey, "jwt updated", nil)
 	}
 }
 
