@@ -2937,26 +2937,34 @@ func (dr *DirAccResolver) Start(s *Server) error {
 		}
 	}
 	packRespIb := s.newRespInbox()
-	// subscribe to account jwt update requests
-	if _, err := s.sysSubscribe(fmt.Sprintf(accUpdateEventSubj, "*"), func(_ *subscription, _ *client, subj, resp string, msg []byte) {
-		tk := strings.Split(subj, tsep)
-		if len(tk) != accUpdateTokens {
-			return
+	for _, reqSub := range []string{accUpdateEventSubjOld, accUpdateEventSubjNew} {
+		// subscribe to account jwt update requests
+		if _, err := s.sysSubscribe(fmt.Sprintf(reqSub, "*"), func(_ *subscription, _ *client, subj, resp string, msg []byte) {
+			pubKey := ""
+			tk := strings.Split(subj, tsep)
+			if len(tk) == accUpdateTokensNew {
+				pubKey = tk[accReqAccIndex]
+			} else if len(tk) == accUpdateTokensOld {
+				pubKey = tk[accUpdateAccIdxOld]
+			} else {
+				s.Debugf("jwt update skipped due to bad subject %q", subj)
+				return
+			}
+			if claim, err := jwt.DecodeAccountClaims(string(msg)); err != nil {
+				respondToUpdate(s, resp, pubKey, "jwt update resulted in error", err)
+			} else if claim.Subject != pubKey {
+				err := errors.New("subject does not match jwt content")
+				respondToUpdate(s, resp, pubKey, "jwt update resulted in error", err)
+			} else if err := dr.save(pubKey, string(msg)); err != nil {
+				respondToUpdate(s, resp, pubKey, "jwt update resulted in error", err)
+			} else {
+				respondToUpdate(s, resp, pubKey, "jwt updated", nil)
+			}
+		}); err != nil {
+			return fmt.Errorf("error setting up update handling: %v", err)
 		}
-		pubKey := tk[accUpdateAccIndex]
-		if claim, err := jwt.DecodeAccountClaims(string(msg)); err != nil {
-			respondToUpdate(s, resp, pubKey, "jwt update resulted in error", err)
-		} else if claim.Subject != pubKey {
-			err := errors.New("subject does not match jwt content")
-			respondToUpdate(s, resp, pubKey, "jwt update resulted in error", err)
-		} else if err := dr.save(pubKey, string(msg)); err != nil {
-			respondToUpdate(s, resp, pubKey, "jwt update resulted in error", err)
-		} else {
-			respondToUpdate(s, resp, pubKey, "jwt updated", nil)
-		}
-	}); err != nil {
-		return fmt.Errorf("error setting up update handling: %v", err)
-	} else if _, err := s.sysSubscribe(fmt.Sprintf(accLookupReqSubj, "*"), func(_ *subscription, _ *client, subj, reply string, msg []byte) {
+	}
+	if _, err := s.sysSubscribe(fmt.Sprintf(accLookupReqSubj, "*"), func(_ *subscription, _ *client, subj, reply string, msg []byte) {
 		// respond to lookups with our version
 		if reply == "" {
 			return
@@ -3131,27 +3139,34 @@ func (dr *CacheDirAccResolver) Start(s *Server) error {
 			s.Errorf("update resulted in error %v", err)
 		}
 	}
-	// subscribe to account jwt update requests
-	if _, err := s.sysSubscribe(fmt.Sprintf(accUpdateEventSubj, "*"), func(_ *subscription, _ *client, subj, resp string, msg []byte) {
-		tk := strings.Split(subj, tsep)
-		if len(tk) != accUpdateTokens {
-			return
+	for _, reqSub := range []string{accUpdateEventSubjOld, accUpdateEventSubjNew} {
+		// subscribe to account jwt update requests
+		if _, err := s.sysSubscribe(fmt.Sprintf(reqSub, "*"), func(_ *subscription, _ *client, subj, resp string, msg []byte) {
+			pubKey := ""
+			tk := strings.Split(subj, tsep)
+			if len(tk) == accUpdateTokensNew {
+				pubKey = tk[accReqAccIndex]
+			} else if len(tk) == accUpdateTokensOld {
+				pubKey = tk[accUpdateAccIdxOld]
+			} else {
+				s.Debugf("jwt update cache skipped due to bad subject %q", subj)
+				return
+			}
+			if claim, err := jwt.DecodeAccountClaims(string(msg)); err != nil {
+				respondToUpdate(s, resp, pubKey, "jwt update cache resulted in error", err)
+			} else if claim.Subject != pubKey {
+				err := errors.New("subject does not match jwt content")
+				respondToUpdate(s, resp, pubKey, "jwt update cache resulted in error", err)
+			} else if _, ok := s.accounts.Load(pubKey); !ok {
+				respondToUpdate(s, resp, pubKey, "jwt update cache skipped", nil)
+			} else if err := dr.save(pubKey, string(msg)); err != nil {
+				respondToUpdate(s, resp, pubKey, "jwt update cache resulted in error", err)
+			} else {
+				respondToUpdate(s, resp, pubKey, "jwt updated cache", nil)
+			}
+		}); err != nil {
+			return fmt.Errorf("error setting up update handling: %v", err)
 		}
-		pubKey := tk[accUpdateAccIndex]
-		if claim, err := jwt.DecodeAccountClaims(string(msg)); err != nil {
-			respondToUpdate(s, resp, pubKey, "jwt update cache resulted in error", err)
-		} else if claim.Subject != pubKey {
-			err := errors.New("subject does not match jwt content")
-			respondToUpdate(s, resp, pubKey, "jwt update cache resulted in error", err)
-		} else if _, ok := s.accounts.Load(pubKey); !ok {
-			respondToUpdate(s, resp, pubKey, "jwt update cache skipped", nil)
-		} else if err := dr.save(pubKey, string(msg)); err != nil {
-			respondToUpdate(s, resp, pubKey, "jwt update cache resulted in error", err)
-		} else {
-			respondToUpdate(s, resp, pubKey, "jwt updated cache", nil)
-		}
-	}); err != nil {
-		return fmt.Errorf("error setting up update handling: %v", err)
 	}
 	s.Noticef("Managing some jwt in exclusive directory %s", dr.directory)
 	return nil
