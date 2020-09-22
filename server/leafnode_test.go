@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1649,4 +1650,155 @@ func TestLeafNodeOriginClusterInfo(t *testing.T) {
 	if l.cid == pcid {
 		t.Fatalf("Expected a different id, got the same")
 	}
+}
+
+type proxyAcceptDetectFailureLate struct {
+	sync.Mutex
+	wg         sync.WaitGroup
+	acceptPort int
+	l          net.Listener
+	srvs       []net.Conn
+	leaf       net.Conn
+}
+
+func (p *proxyAcceptDetectFailureLate) run(t *testing.T) int {
+	l, err := natsListen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Error on listen: %v", err)
+	}
+	p.Lock()
+	p.l = l
+	p.Unlock()
+	port := l.Addr().(*net.TCPAddr).Port
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		defer l.Close()
+		defer func() {
+			p.Lock()
+			for _, c := range p.srvs {
+				c.Close()
+			}
+			p.Unlock()
+		}()
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			srv, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", p.acceptPort))
+			if err != nil {
+				return
+			}
+			p.Lock()
+			p.leaf = c
+			p.srvs = append(p.srvs, srv)
+			p.Unlock()
+
+			transfer := func(c1, c2 net.Conn) {
+				var buf [1024]byte
+				for {
+					n, err := c1.Read(buf[:])
+					if err != nil {
+						return
+					}
+					if _, err := c2.Write(buf[:n]); err != nil {
+						return
+					}
+				}
+			}
+
+			go transfer(srv, c)
+			go transfer(c, srv)
+		}
+	}()
+	return port
+}
+
+func (p *proxyAcceptDetectFailureLate) close() {
+	p.Lock()
+	p.l.Close()
+	p.Unlock()
+
+	p.wg.Wait()
+}
+
+type oldConnReplacedLogger struct {
+	DummyLogger
+	errCh  chan string
+	warnCh chan string
+}
+
+func (l *oldConnReplacedLogger) Errorf(format string, v ...interface{}) {
+	select {
+	case l.errCh <- fmt.Sprintf(format, v...):
+	default:
+	}
+}
+
+func (l *oldConnReplacedLogger) Warnf(format string, v ...interface{}) {
+	select {
+	case l.warnCh <- fmt.Sprintf(format, v...):
+	default:
+	}
+}
+
+// This test will simulate that the accept side does not detect the connection
+// has been closed early enough. The soliciting side will attempt to reconnect
+// and we should not be getting the "loop detected" error.
+func TestLeafNodeLoopDetectedDueToReconnect(t *testing.T) {
+	o := DefaultOptions()
+	o.LeafNode.Host = "127.0.0.1"
+	o.LeafNode.Port = -1
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	l := &oldConnReplacedLogger{errCh: make(chan string, 10), warnCh: make(chan string, 10)}
+	s.SetLogger(l, false, false)
+
+	p := &proxyAcceptDetectFailureLate{acceptPort: o.LeafNode.Port}
+	defer p.close()
+	port := p.run(t)
+
+	aurl, err := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("Error parsing url: %v", err)
+	}
+	ol := DefaultOptions()
+	ol.Cluster.Name = "cde"
+	ol.LeafNode.ReconnectInterval = 50 * time.Millisecond
+	ol.LeafNode.Remotes = []*RemoteLeafOpts{&RemoteLeafOpts{URLs: []*url.URL{aurl}}}
+	sl := RunServer(ol)
+	defer sl.Shutdown()
+
+	checkLeafNodeConnected(t, s)
+	checkLeafNodeConnected(t, sl)
+
+	// Cause disconnect client side...
+	p.Lock()
+	p.leaf.Close()
+	p.Unlock()
+
+	// Make sure we did not get the loop detected error
+	select {
+	case e := <-l.errCh:
+		if strings.Contains(e, "Loop detected") {
+			t.Fatalf("Loop detected: %v", e)
+		}
+	case <-time.After(250 * time.Millisecond):
+		// We are ok
+	}
+
+	// Now make sure we got the warning
+	select {
+	case w := <-l.warnCh:
+		if !strings.Contains(w, "Replacing connection from same server") {
+			t.Fatalf("Unexpected warning: %v", w)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Did not get expected warning")
+	}
+
+	checkLeafNodeConnected(t, s)
+	checkLeafNodeConnected(t, sl)
 }

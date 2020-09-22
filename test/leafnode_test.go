@@ -1722,7 +1722,7 @@ func TestLeafNodeExportsImports(t *testing.T) {
 	}
 }
 
-func TestLeadNodeExportImportComplexSetup(t *testing.T) {
+func TestLeafNodeExportImportComplexSetup(t *testing.T) {
 	content := `
 	port: -1
 	operator = "./configs/nkeys/op.jwt"
