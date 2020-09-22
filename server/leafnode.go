@@ -1035,6 +1035,9 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 		return ErrWrongGateway
 	}
 
+	// Check for stale connection from same server/account
+	c.replaceOldLeafNodeConnIfNeeded(s, proto)
+
 	// Leaf Nodes do not do echo or verbose or pedantic.
 	c.opts.Verbose = false
 	c.opts.Echo = false
@@ -1066,6 +1069,42 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	s.sendLeafNodeConnect(c.acc)
 
 	return nil
+}
+
+// Invoked from a server accepting a leafnode connection. It looks for a possible
+// existing leafnode connection from the same server with the same account, and
+// if it finds one, closes it so that the new one is accepted and not reported as
+// forming a cycle.
+//
+// This must be invoked for LEAF client types, and on the server accepting the connection.
+//
+// No server nor client lock held on entry.
+func (c *client) replaceOldLeafNodeConnIfNeeded(s *Server, connInfo *leafConnectInfo) {
+	var accName string
+	c.mu.Lock()
+	if c.acc != nil {
+		accName = c.acc.Name
+	}
+	c.mu.Unlock()
+
+	var old *client
+	s.mu.Lock()
+	for _, ol := range s.leafs {
+		ol.mu.Lock()
+		// We check for empty because in some test we may send empty CONNECT{}
+		if ol.opts.Name == connInfo.Name && connInfo.Name != _EMPTY_ && ol.acc.Name == accName {
+			old = ol
+		}
+		ol.mu.Unlock()
+		if old != nil {
+			break
+		}
+	}
+	s.mu.Unlock()
+	if old != nil {
+		old.Warnf("Replacing connection from same server")
+		old.closeConnection(ReadError)
+	}
 }
 
 // Returns the remote cluster name. This is set only once so does not require a lock.
