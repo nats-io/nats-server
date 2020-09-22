@@ -1203,6 +1203,61 @@ func TestAccountClaimsUpdates(t *testing.T) {
 	})
 }
 
+func TestAccountReqMonitoring(t *testing.T) {
+	s, opts := runTrustedServer(t)
+	defer s.Shutdown()
+	sacc, sakp := createAccount(s)
+	s.setSystemAccount(sacc)
+	acc, akp := createAccount(s)
+	if acc == nil {
+		t.Fatalf("did not create account")
+	}
+	subsz := fmt.Sprintf(accReqSubj, acc.Name, "SUBSZ")
+	connz := fmt.Sprintf(accReqSubj, acc.Name, "CONNZ")
+	// Create system account connection to query
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	ncSys, err := nats.Connect(url, createUserCreds(t, s, sakp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncSys.Close()
+	// Create a connection that we can query
+	nc, err := nats.Connect(url, createUserCreds(t, s, akp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+	// query SUBSZ for account
+	if resp, err := ncSys.Request(subsz, nil, time.Second); err != nil {
+		t.Fatalf("Error on request: %v", err)
+	} else if !strings.Contains(string(resp.Data), `"num_subscriptions": 0`) {
+		t.Fatalf("unexpected subs count (expected 0): %v", string(resp.Data))
+	}
+	// create a subscription
+	if sub, err := nc.Subscribe("foo", func(msg *nats.Msg) {}); err != nil {
+		t.Fatalf("error on subscribe %v", err)
+	} else {
+		defer sub.Unsubscribe()
+	}
+	nc.Flush()
+	// query SUBSZ for account
+	if resp, err := ncSys.Request(subsz, nil, time.Second); err != nil {
+		t.Fatalf("Error on request: %v", err)
+	} else if !strings.Contains(string(resp.Data), `"num_subscriptions": 1`) {
+		t.Fatalf("unexpected subs count (expected 1): %v", string(resp.Data))
+	} else if !strings.Contains(string(resp.Data), `"subject": "foo"`) {
+		t.Fatalf("expected subscription foo: %v", string(resp.Data))
+	}
+	// query connections for account
+	if resp, err := ncSys.Request(connz, nil, time.Second); err != nil {
+		t.Fatalf("Error on request: %v", err)
+	} else if !strings.Contains(string(resp.Data), `"num_connections": 1`) {
+		t.Fatalf("unexpected subs count (expected 1): %v", string(resp.Data))
+	} else if !strings.Contains(string(resp.Data), `"total": 2`) { // includes system acc connection
+		t.Fatalf("unexpected subs count (expected 1): %v", string(resp.Data))
+	}
+}
+
 func TestAccountClaimsUpdatesWithServiceImports(t *testing.T) {
 	s, opts := runTrustedServer(t)
 	defer s.Shutdown()
@@ -1398,7 +1453,7 @@ func TestSystemAccountWithGateways(t *testing.T) {
 
 	// If this tests fails with wrong number after 10 seconds we may have
 	// added a new inititial subscription for the eventing system.
-	checkExpectedSubs(t, 28, sa)
+	checkExpectedSubs(t, 30, sa)
 
 	// Create a client on B and see if we receive the event
 	urlb := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
