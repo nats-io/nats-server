@@ -39,7 +39,7 @@ const (
 
 	connectEventSubj    = "$SYS.ACCOUNT.%s.CONNECT"
 	disconnectEventSubj = "$SYS.ACCOUNT.%s.DISCONNECT"
-	accConnsReqSubj     = "$SYS.REQ.ACCOUNT.%s.CONNS"
+	accReqSubj          = "$SYS.REQ.ACCOUNT.%s.%s"
 	// kept for backward compatibility when using http resolver
 	// this overlaps with the names for events but you'd have to have the operator private key in order to succeed.
 	accUpdateEventSubjOld    = "$SYS.ACCOUNT.%s.CLAIMS.UPDATE"
@@ -587,11 +587,6 @@ func (s *Server) initEventTracking() {
 	if _, err := s.sysSubscribe(subject, s.remoteConnsUpdate); err != nil {
 		s.Errorf("Error setting up internal tracking: %v", err)
 	}
-	// Listen for broad requests to respond with account info.
-	subject = fmt.Sprintf(accConnsReqSubj, "*")
-	if _, err := s.sysSubscribe(subject, s.connsRequest); err != nil {
-		s.Errorf("Error setting up internal tracking: %v", err)
-	}
 	// Listen for broad requests to respond with number of subscriptions for a given subject.
 	if _, err := s.sysSubscribe(accNumSubsReqSubj, s.nsubsRequest); err != nil {
 		s.Errorf("Error setting up internal tracking: %v", err)
@@ -652,6 +647,44 @@ func (s *Server) initEventTracking() {
 		}
 		subject = fmt.Sprintf(serverPingReqSubj, name)
 		if _, err := s.sysSubscribe(subject, req); err != nil {
+			s.Errorf("Error setting up internal tracking: %v", err)
+		}
+	}
+	extractAccount := func(subject string) (string, error) {
+		if tk := strings.Split(subject, tsep); len(tk) != accReqTokens {
+			return "", fmt.Errorf("subject %q is malformed", subject)
+		} else {
+			return tk[accReqAccIndex], nil
+		}
+	}
+	monAccSrvc := map[string]msgHandler{
+		"SUBSZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+			optz := &SubszEventOptions{}
+			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
+				if acc, err := extractAccount(subject); err != nil {
+					return nil, err
+				} else {
+					optz.SubszOptions.Subscriptions = true
+					optz.SubszOptions.Account = acc
+					return s.Subsz(&optz.SubszOptions)
+				}
+			})
+		},
+		"CONNZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+			optz := &ConnzEventOptions{}
+			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
+				if acc, err := extractAccount(subject); err != nil {
+					return nil, err
+				} else {
+					optz.ConnzOptions.Account = acc
+					return s.Connz(&optz.ConnzOptions)
+				}
+			})
+		},
+		"CONNS": s.connsRequest,
+	}
+	for name, req := range monAccSrvc {
+		if _, err := s.sysSubscribe(fmt.Sprintf(accReqSubj, "*", name), req); err != nil {
 			s.Errorf("Error setting up internal tracking: %v", err)
 		}
 	}
@@ -822,7 +855,7 @@ func (s *Server) connsRequest(sub *subscription, _ *client, subject, reply strin
 	if !s.eventsRunning() {
 		return
 	}
-	tk := strings.Split(subject, ".")
+	tk := strings.Split(subject, tsep)
 	if len(tk) != accReqTokens {
 		s.sys.client.Errorf("Bad subject account connections request message")
 		return
@@ -1054,7 +1087,7 @@ func (s *Server) enableAccountTracking(a *Account) {
 	// May need to ensure we do so only if there is a known interest.
 	// This can get complicated with gateways.
 
-	subj := fmt.Sprintf(accConnsReqSubj, a.Name)
+	subj := fmt.Sprintf(accReqSubj, a.Name, "CONNS")
 	reply := fmt.Sprintf(connsRespSubj, s.info.ID)
 	m := accNumConnsReq{Account: a.Name}
 	s.sendInternalMsg(subj, reply, &m.Server, &m)
