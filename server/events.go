@@ -639,6 +639,10 @@ func (s *Server) initEventTracking() {
 			optz := &LeafzEventOptions{}
 			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Leafz(&optz.LeafzOptions) })
 		},
+		"ACCOUNTZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+			optz := &AccountzEventOptions{}
+			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Accountz(&optz.AccountzOptions) })
+		},
 	}
 	for name, req := range monSrvc {
 		subject = fmt.Sprintf(serverDirectReqSubj, s.info.ID, name)
@@ -678,6 +682,16 @@ func (s *Server) initEventTracking() {
 				} else {
 					optz.ConnzOptions.Account = acc
 					return s.Connz(&optz.ConnzOptions)
+				}
+			})
+		},
+		"INFO": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+			optz := &AccInfoEventOptions{}
+			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
+				if acc, err := extractAccount(subject); err != nil {
+					return nil, err
+				} else {
+					return s.accountInfo(acc)
 				}
 			})
 		},
@@ -918,7 +932,12 @@ type EventFilterOptions struct {
 // StatszEventOptions are options passed to Statsz
 type StatszEventOptions struct {
 	// No actual options yet
+	EventFilterOptions
+}
 
+// Options for account Info
+type AccInfoEventOptions struct {
+	// No actual options yet
 	EventFilterOptions
 }
 
@@ -955,6 +974,12 @@ type GatewayzEventOptions struct {
 // In the context of system events, LeafzEventOptions are options passed to Leafz
 type LeafzEventOptions struct {
 	LeafzOptions
+	EventFilterOptions
+}
+
+// In the context of system events, AccountzEventOptions are options passed to Accountz
+type AccountzEventOptions struct {
+	AccountzOptions
 	EventFilterOptions
 }
 

@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/server/pse"
 )
 
@@ -1144,6 +1145,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	<a href=.%s>gatewayz</a><br/>
 	<a href=.%s>leafz</a><br/>
 	<a href=.%s>subsz</a><br/>
+	<a href=.%s>accountz</a><br/>
     <br/>
     <a href=https://docs.nats.io/nats-server/configuration/monitoring.html>help</a>
   </body>
@@ -1154,6 +1156,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 		s.basePath(GatewayzPath),
 		s.basePath(LeafzPath),
 		s.basePath(SubszPath),
+		s.basePath(AccountzPath),
 	)
 }
 
@@ -1909,4 +1912,162 @@ func (reason ClosedState) String() string {
 	}
 
 	return "Unknown State"
+}
+
+// LeafzOptions are options passed to Leafz
+type AccountzOptions struct {
+	// Account indicates that Accountz will return details for the account
+	Account string `json:"account"`
+}
+
+type ExtImport struct {
+	jwt.Import
+	Invalid bool
+}
+
+type ExtExport struct {
+	jwt.Export
+	ApprovedAccounts []string `json:"approved_accounts"`
+}
+
+type AccountInfo struct {
+	AccountName string             `json:"account_name"`
+	LastUpdate  time.Time          `json:"update_time,omitempty"`
+	Expired     bool               `json:"expired"`
+	Complete    bool               `json:"complete"`
+	JetStream   bool               `json:"jetstream_enabled"`
+	LeafCnt     int                `json:"leafnode_connections"`
+	ClientCnt   int                `json:"client_connections"`
+	SubCnt      uint32             `json:"subscriptions"`
+	Exps        []ExtExport        `json:"exports"`
+	Imps        []ExtImport        `json:"imports"`
+	Jwt         string             `json:"jwt,omitempty"`
+	Claim       *jwt.AccountClaims `json:"decoded_jwt,omitempty"`
+}
+
+type Accountz struct {
+	ID       string       `json:"server_id"`
+	Now      time.Time    `json:"now"`
+	Accounts []string     `json:"accounts,omitempty"`
+	Account  *AccountInfo `json:"account_detail,omitempty"`
+}
+
+// HandleAccountz process HTTP requests for account information.
+func (s *Server) HandleAccountz(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	s.httpReqStats[AccountzPath]++
+	s.mu.Unlock()
+	if l, err := s.Accountz(&AccountzOptions{r.URL.Query().Get("acc")}); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(err.Error()))
+	} else if b, err := json.MarshalIndent(l, "", "  "); err != nil {
+		s.Errorf("Error marshaling response to %s request: %v", AccountzPath, err)
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(err.Error()))
+	} else {
+		ResponseHandler(w, r, b) // Handle response
+	}
+}
+
+func (s *Server) Accountz(optz *AccountzOptions) (*Accountz, error) {
+	a := &Accountz{
+		ID:  s.ID(),
+		Now: time.Now(),
+	}
+	if optz.Account == "" {
+		a.Accounts = []string{}
+		s.accounts.Range(func(key, value interface{}) bool {
+			a.Accounts = append(a.Accounts, key.(string))
+			return true
+		})
+		return a, nil
+	} else if aInfo, err := s.accountInfo(optz.Account); err != nil {
+		return nil, err
+	} else {
+		a.Account = aInfo
+		return a, nil
+	}
+}
+
+func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
+	var a *Account
+	if v, ok := s.accounts.Load(accName); !ok {
+		return nil, fmt.Errorf("Account %s does not exist", accName)
+	} else {
+		a = v.(*Account)
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	claim, _ := jwt.DecodeAccountClaims(a.claimJWT) // ignore error
+	exports := []ExtExport{}
+	for k, v := range a.exports.services {
+		e := ExtExport{
+			Export: jwt.Export{
+				Subject:      jwt.Subject(k),
+				Type:         jwt.Service,
+				TokenReq:     v.tokenReq,
+				ResponseType: jwt.ResponseType(v.respType.String()),
+			},
+			ApprovedAccounts: []string{},
+		}
+		for name := range v.approved {
+			e.ApprovedAccounts = append(e.ApprovedAccounts, name)
+		}
+		exports = append(exports, e)
+	}
+	for k, v := range a.exports.streams {
+		e := ExtExport{
+			Export: jwt.Export{
+				Subject:  jwt.Subject(k),
+				Type:     jwt.Stream,
+				TokenReq: v.tokenReq,
+			},
+			ApprovedAccounts: []string{},
+		}
+		for name := range v.approved {
+			e.ApprovedAccounts = append(e.ApprovedAccounts, name)
+		}
+		exports = append(exports, e)
+	}
+	imports := []ExtImport{}
+	for _, v := range a.imports.streams {
+		to := ""
+		if v.prefix != "" {
+			to = v.prefix + "." + v.from
+		}
+		imports = append(imports, ExtImport{
+			Import: jwt.Import{
+				Subject: jwt.Subject(v.from),
+				Account: v.acc.Name,
+				Type:    jwt.Stream,
+				To:      jwt.Subject(to),
+			},
+			Invalid: v.invalid,
+		})
+	}
+	for _, v := range a.imports.services {
+		imports = append(imports, ExtImport{
+			Import: jwt.Import{
+				Subject: jwt.Subject(v.from),
+				Account: v.acc.Name,
+				Type:    jwt.Service,
+				To:      jwt.Subject(v.to),
+			},
+			Invalid: v.invalid,
+		})
+	}
+	return &AccountInfo{
+		accName,
+		a.updated,
+		a.expired,
+		!a.incomplete,
+		a.js != nil,
+		a.numLocalLeafNodes(),
+		a.numLocalConnections(),
+		a.sl.Count(),
+		exports,
+		imports,
+		a.claimJWT,
+		claim,
+	}, nil
 }

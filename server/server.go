@@ -640,7 +640,7 @@ func (s *Server) configureAccounts() error {
 			acc.ic.acc = acc
 			acc.addAllServiceImportSubs()
 		}
-
+		acc.updated = time.Now()
 		return true
 	})
 
@@ -1157,6 +1157,7 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 		acc.lqws = make(map[string]int32)
 	}
 	acc.srv = s
+	acc.updated = time.Now()
 	acc.mu.Unlock()
 	s.accounts.Store(acc.Name, acc)
 	s.tmpAccounts.Delete(acc.Name)
@@ -1205,7 +1206,7 @@ func (s *Server) LookupAccount(name string) (*Account, error) {
 // Lock MUST NOT be held upon entry.
 func (s *Server) updateAccount(acc *Account) error {
 	// TODO(dlc) - Make configurable
-	if time.Since(acc.updated) < time.Second {
+	if !acc.incomplete && time.Since(acc.updated) < time.Second {
 		s.Debugf("Requested account update for [%s] ignored, too soon", acc.Name)
 		return ErrAccountResolverUpdateTooSoon
 	}
@@ -1228,7 +1229,6 @@ func (s *Server) updateAccountWithClaimJWT(acc *Account, claimJWT string) error 
 	}
 	accClaims, _, err := s.verifyAccountClaims(claimJWT)
 	if err == nil && accClaims != nil {
-		acc.updated = time.Now()
 		acc.mu.Lock()
 		if acc.Issuer == "" {
 			acc.Issuer = accClaims.Issuer
@@ -1908,6 +1908,7 @@ const (
 	LeafzPath    = "/leafz"
 	SubszPath    = "/subsz"
 	StackszPath  = "/stacksz"
+	AccountzPath = "/accountz"
 )
 
 func (s *Server) basePath(p string) string {
@@ -1985,6 +1986,8 @@ func (s *Server) startMonitoring(secure bool) error {
 	mux.HandleFunc(s.basePath("/subscriptionsz"), s.HandleSubsz)
 	// Stacksz
 	mux.HandleFunc(s.basePath(StackszPath), s.HandleStacksz)
+	// Accountz
+	mux.HandleFunc(s.basePath(AccountzPath), s.HandleAccountz)
 
 	// Do not set a WriteTimeout because it could cause cURL/browser
 	// to return empty response or unable to display page if the
