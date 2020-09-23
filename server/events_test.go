@@ -1326,16 +1326,16 @@ func TestAccountReqInfo(t *testing.T) {
 		t.Fatalf("Error on request: %v", err)
 	} else if err := json.Unmarshal(resp.Data, &msg); err != nil {
 		t.Fatalf("Unmarshalling failed: %v", err)
-	} else if len(info.Exps) != 1 {
-		t.Fatalf("Unexpected value: %v", info.Exps)
-	} else if len(info.Imps) != 0 {
-		t.Fatalf("Unexpected value: %v", info.Imps)
-	} else if info.Exps[0].Subject != "req.*" {
-		t.Fatalf("Unexpected value: %v", info.Exps)
-	} else if info.Exps[0].Type != jwt.Service {
-		t.Fatalf("Unexpected value: %v", info.Exps)
-	} else if info.Exps[0].ResponseType != jwt.ResponseTypeSingleton {
-		t.Fatalf("Unexpected value: %v", info.Exps)
+	} else if len(info.Exports) != 1 {
+		t.Fatalf("Unexpected value: %v", info.Exports)
+	} else if len(info.Imports) != 0 {
+		t.Fatalf("Unexpected value: %v", info.Imports)
+	} else if info.Exports[0].Subject != "req.*" {
+		t.Fatalf("Unexpected value: %v", info.Exports)
+	} else if info.Exports[0].Type != jwt.Service {
+		t.Fatalf("Unexpected value: %v", info.Exports)
+	} else if info.Exports[0].ResponseType != jwt.ResponseTypeSingleton {
+		t.Fatalf("Unexpected value: %v", info.Exports)
 	} else if info.SubCnt != 0 {
 		t.Fatalf("Unexpected value: %v", info.SubCnt)
 	} else {
@@ -1347,16 +1347,16 @@ func TestAccountReqInfo(t *testing.T) {
 		t.Fatalf("Error on request: %v", err)
 	} else if err := json.Unmarshal(resp.Data, &msg); err != nil {
 		t.Fatalf("Unmarshalling failed: %v", err)
-	} else if len(info.Exps) != 0 {
-		t.Fatalf("Unexpected value: %v", info.Exps)
-	} else if len(info.Imps) != 1 {
-		t.Fatalf("Unexpected value: %v", info.Imps)
-	} else if info.Imps[0].Subject != "req.1" {
-		t.Fatalf("Unexpected value: %v", info.Exps)
-	} else if info.Imps[0].Type != jwt.Service {
-		t.Fatalf("Unexpected value: %v", info.Exps)
-	} else if info.Imps[0].Account != pub1 {
-		t.Fatalf("Unexpected value: %v", info.Exps)
+	} else if len(info.Exports) != 0 {
+		t.Fatalf("Unexpected value: %v", info.Exports)
+	} else if len(info.Imports) != 1 {
+		t.Fatalf("Unexpected value: %v", info.Imports)
+	} else if info.Imports[0].Subject != "req.1" {
+		t.Fatalf("Unexpected value: %v", info.Exports)
+	} else if info.Imports[0].Type != jwt.Service {
+		t.Fatalf("Unexpected value: %v", info.Exports)
+	} else if info.Imports[0].Account != pub1 {
+		t.Fatalf("Unexpected value: %v", info.Exports)
 	} else if info.SubCnt != 1 {
 		t.Fatalf("Unexpected value: %v", info.SubCnt)
 	} else {

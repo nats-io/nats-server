@@ -1922,12 +1922,12 @@ type AccountzOptions struct {
 
 type ExtImport struct {
 	jwt.Import
-	Invalid bool
+	Invalid bool `json:"invalid"`
 }
 
 type ExtExport struct {
 	jwt.Export
-	ApprovedAccounts []string `json:"approved_accounts"`
+	ApprovedAccounts []string `json:"approved_accounts,omitempty"`
 }
 
 type AccountInfo struct {
@@ -1939,8 +1939,8 @@ type AccountInfo struct {
 	LeafCnt     int                `json:"leafnode_connections"`
 	ClientCnt   int                `json:"client_connections"`
 	SubCnt      uint32             `json:"subscriptions"`
-	Exps        []ExtExport        `json:"exports"`
-	Imps        []ExtImport        `json:"imports"`
+	Exports     []ExtExport        `json:"exports"`
+	Imports     []ExtImport        `json:"imports"`
 	Jwt         string             `json:"jwt,omitempty"`
 	Claim       *jwt.AccountClaims `json:"decoded_jwt,omitempty"`
 }
