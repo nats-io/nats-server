@@ -1734,7 +1734,7 @@ func (c *client) auditUser() string {
 
 // Returns the audit client name, which will just be IP:Port
 func (c *client) auditClient() (string, int) {
-	parts := strings.Split(c.ncs, " ")
+	parts := strings.Split(c.String(), " ")
 	h, p, _ := net.SplitHostPort(parts[0])
 	port, _ := strconv.Atoi(p)
 	return h, port
