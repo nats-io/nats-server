@@ -1512,20 +1512,22 @@ func (c *client) processConnect(arg []byte) error {
 			ncs = fmt.Sprintf("v%s", c.opts.Version)
 		}
 		if c.opts.Lang != "" {
-			if c.opts.Version == _EMPTY_ && c.opts.Name == _EMPTY_ {
+			if c.opts.Version == _EMPTY_ {
 				ncs = c.opts.Lang
 			} else {
 				ncs = fmt.Sprintf("%s:%s", ncs, c.opts.Lang)
 			}
 		}
 		if c.opts.Name != "" {
-			if c.opts.Version == _EMPTY_ {
+			if c.opts.Version == _EMPTY_ && c.opts.Lang == _EMPTY_ {
 				ncs = c.opts.Name
 			} else {
 				ncs = fmt.Sprintf("%s:%s", ncs, c.opts.Name)
 			}
 		}
-		c.ncs.Store(fmt.Sprintf("%s - %q", c.String(), ncs))
+		if ncs != _EMPTY_ {
+			c.ncs.Store(fmt.Sprintf("%s - %q", c.String(), ncs))
+		}
 	}
 
 	// If websocket client and JWT not in the CONNECT, use the cookie JWT (possibly empty).
