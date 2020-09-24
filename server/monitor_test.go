@@ -3607,7 +3607,27 @@ func TestMonitorLeafz(t *testing.T) {
 			}
 		}
 	}
-
+	// Make sure that we can request per account - existing account
+	pollURL = fmt.Sprintf("http://127.0.0.1:%d/leafz?acc=%s", sa.MonitorAddr().Port, acc1.Name)
+	for pollMode := 1; pollMode < 2; pollMode++ {
+		l := pollLeafz(t, sa, pollMode, pollURL, &LeafzOptions{Account: acc1.Name})
+		for _, ln := range l.Leafs {
+			if ln.Account != acc1.Name {
+				t.Fatalf("Expected leaf node to be from account %s, got: %v", acc1.Name, ln)
+			}
+		}
+		if len(l.Leafs) != 1 {
+			t.Fatalf("Expected only two leaf node for this account, got: %v", len(l.Leafs))
+		}
+	}
+	// Make sure that we can request per account - non existing account
+	pollURL = fmt.Sprintf("http://127.0.0.1:%d/leafz?acc=%s", sa.MonitorAddr().Port, "DOESNOTEXIST")
+	for pollMode := 1; pollMode < 2; pollMode++ {
+		l := pollLeafz(t, sa, pollMode, pollURL, &LeafzOptions{Account: "DOESNOTEXIST"})
+		if len(l.Leafs) != 0 {
+			t.Fatalf("Expected no leaf node for this account, got: %v", len(l.Leafs))
+		}
+	}
 	// Now polling server B.
 	pollURL = fmt.Sprintf("http://127.0.0.1:%d/leafz?subs=1", sb.MonitorAddr().Port)
 	for pollMode := 1; pollMode < 2; pollMode++ {
@@ -3663,7 +3683,7 @@ func TestMonitorAccountz(t *testing.T) {
 		t.Fatalf("Body missing value. Contains: %s", body)
 	} else if !strings.Contains(body, `"account_name": "$SYS",`) {
 		t.Fatalf("Body missing value. Contains: %s", body)
-	} else if !strings.Contains(body, `"subscriptions": 32,`) {
+	} else if !strings.Contains(body, `"subscriptions": 33,`) {
 		t.Fatalf("Body missing value. Contains: %s", body)
 	}
 }

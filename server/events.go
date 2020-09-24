@@ -685,6 +685,17 @@ func (s *Server) initEventTracking() {
 				}
 			})
 		},
+		"LEAFZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+			optz := &LeafzEventOptions{}
+			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
+				if acc, err := extractAccount(subject); err != nil {
+					return nil, err
+				} else {
+					optz.LeafzOptions.Account = acc
+					return s.Leafz(&optz.LeafzOptions)
+				}
+			})
+		},
 		"INFO": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
 			optz := &AccInfoEventOptions{}
 			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
