@@ -1150,11 +1150,12 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 	}
 	// Build event with account name and number of local clients and leafnodes.
 	a.mu.RLock()
+	localConns := a.numLocalConnections()
 	m := &AccountNumConns{
 		Account:    a.Name,
-		Conns:      a.numLocalConnections(),
+		Conns:      localConns,
 		LeafNodes:  a.numLocalLeafNodes(),
-		TotalConns: a.numLocalConnections() + a.numLocalLeafNodes(),
+		TotalConns: localConns + a.numLocalLeafNodes(),
 	}
 	a.mu.RUnlock()
 	for _, sub := range subj {
@@ -1162,7 +1163,7 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 	}
 	// Set timer to fire again unless we are at zero.
 	a.mu.Lock()
-	if a.numLocalConnections() == 0 {
+	if localConns == 0 {
 		clearTimer(&a.ctmr)
 	} else {
 		// Check to see if we have an HB running and update.

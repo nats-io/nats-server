@@ -169,7 +169,7 @@ func checkClientsCount(t *testing.T, s *Server, expected int) {
 
 func checkAccClientsCount(t *testing.T, acc *Account, expected int) {
 	t.Helper()
-	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+	checkFor(t, 4*time.Second, 10*time.Millisecond, func() error {
 		if nc := acc.NumConnections(); nc != expected {
 			return fmt.Errorf("Expected account %q to have %v clients, got %v",
 				acc.Name, expected, nc)

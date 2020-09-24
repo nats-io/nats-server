@@ -3184,6 +3184,9 @@ func TestExpiredUserCredentialsRenewal(t *testing.T) {
 }
 
 func TestAccountNATSResolverFetch(t *testing.T) {
+	origEventsHBInterval := eventsHBInterval
+	eventsHBInterval = 50 * time.Millisecond // speed up eventing
+	defer func() { eventsHBInterval = origEventsHBInterval }()
 	require_NextMsg := func(sub *nats.Subscription) bool {
 		msg := natsNexMsg(t, sub, time.Second)
 		content := make(map[string]interface{})
@@ -3210,27 +3213,45 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 		require_NoError(t, err)
 		require_Equal(t, string(content), jwt)
 	}
-	require_1Connection := func(url string, creds string) {
+	require_NoLocalOrRemoteConnections := func(account string, srvs ...*Server) {
 		t.Helper()
-		c := natsConnect(t, url, nats.UserCredentials(creds))
-		defer c.Close()
-		if _, err := nats.Connect(url, nats.UserCredentials(creds)); err == nil {
-			t.Fatal("Second connection was supposed to fail due to limits")
-		} else if !strings.Contains(err.Error(), ErrTooManyAccountConnections.Error()) {
-			t.Fatal("Second connection was supposed to fail with too many conns")
+		for _, srv := range srvs {
+			if acc, ok := srv.accounts.Load(account); ok {
+				checkAccClientsCount(t, acc.(*Account), 0)
+			}
 		}
 	}
-	require_2Connection := func(url string, creds string) {
+	// After each connection check, require_XConnection and connect assures that
+	// listed server have no connections for the account used
+	require_1Connection := func(url, creds, acc string, srvs ...*Server) {
 		t.Helper()
-		c1 := natsConnect(t, url, nats.UserCredentials(creds))
-		defer c1.Close()
-		c2 := natsConnect(t, url, nats.UserCredentials(creds))
-		defer c2.Close()
-		if _, err := nats.Connect(url, nats.UserCredentials(creds)); err == nil {
-			t.Fatal("Third connection was supposed to fail due to limits")
-		} else if !strings.Contains(err.Error(), ErrTooManyAccountConnections.Error()) {
-			t.Fatal("Third connection was supposed to fail with too many conns")
-		}
+		func() {
+			t.Helper()
+			c := natsConnect(t, url, nats.UserCredentials(creds))
+			defer c.Close()
+			if _, err := nats.Connect(url, nats.UserCredentials(creds)); err == nil {
+				t.Fatal("Second connection was supposed to fail due to limits")
+			} else if !strings.Contains(err.Error(), ErrTooManyAccountConnections.Error()) {
+				t.Fatal("Second connection was supposed to fail with too many conns")
+			}
+		}()
+		require_NoLocalOrRemoteConnections(acc, srvs...)
+	}
+	require_2Connection := func(url, creds, acc string, srvs ...*Server) {
+		t.Helper()
+		func() {
+			t.Helper()
+			c1 := natsConnect(t, url, nats.UserCredentials(creds))
+			defer c1.Close()
+			c2 := natsConnect(t, url, nats.UserCredentials(creds))
+			defer c2.Close()
+			if _, err := nats.Connect(url, nats.UserCredentials(creds)); err == nil {
+				t.Fatal("Third connection was supposed to fail due to limits")
+			} else if !strings.Contains(err.Error(), ErrTooManyAccountConnections.Error()) {
+				t.Fatal("Third connection was supposed to fail with too many conns")
+			}
+		}()
+		require_NoLocalOrRemoteConnections(acc, srvs...)
 	}
 	writeFile := func(dir string, pub string, jwt string) {
 		t.Helper()
@@ -3243,10 +3264,11 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 		require_NoError(t, err)
 		return dir
 	}
-	connect := func(url string, credsfile string) {
+	connect := func(url string, credsfile string, acc string, srvs ...*Server) {
 		t.Helper()
 		nc := natsConnect(t, url, nats.UserCredentials(credsfile))
 		nc.Close()
+		require_NoLocalOrRemoteConnections(acc, srvs...)
 	}
 	createAccountAndUser := func(limit bool, done chan struct{}, pubKey, jwt1, jwt2, creds *string) {
 		t.Helper()
@@ -3437,9 +3459,9 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 	require_FileAbsent(dirB, syspub)
 	require_FileAbsent(dirC, syspub)
 	// system account client can connect to every server
-	connect(sA.ClientURL(), sysCreds)
-	connect(sB.ClientURL(), sysCreds)
-	connect(sC.ClientURL(), sysCreds)
+	connect(sA.ClientURL(), sysCreds, "")
+	connect(sB.ClientURL(), sysCreds, "")
+	connect(sC.ClientURL(), sysCreds, "")
 	checkClusterFormed(t, sA, sB, sC)
 	// upload system account and require a response from each server
 	passCnt := updateJwt(sA.ClientURL(), sysCreds, syspub, sysjwt)
@@ -3448,32 +3470,27 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 	require_FilePresent(dirB, syspub) // was just received
 	require_FilePresent(dirC, syspub) // was just received
 	// Only files missing are in C, which is only caching
-	connect(sC.ClientURL(), aCreds)
-	connect(sC.ClientURL(), bCreds)
+	connect(sC.ClientURL(), aCreds, apub, sA, sB, sC)
+	connect(sC.ClientURL(), bCreds, bpub, sA, sB, sC)
 	require_FilePresent(dirC, apub) // was looked up form A or B
 	require_FilePresent(dirC, bpub) // was looked up from A or B
-
 	// Check limits and update jwt B connecting to server A
 	for port, v := range map[string]struct{ pub, jwt, creds string }{
 		sB.ClientURL(): {bpub, bjwt2, bCreds},
 		sC.ClientURL(): {cpub, cjwt2, cCreds},
 	} {
-		require_1Connection(sA.ClientURL(), v.creds)
-		require_1Connection(sB.ClientURL(), v.creds)
-		require_1Connection(sC.ClientURL(), v.creds)
-		checkClientsCount(t, sA, 0)
-		checkClientsCount(t, sB, 0)
-		checkClientsCount(t, sC, 0)
+		require_1Connection(sA.ClientURL(), v.creds, v.pub, sA, sB, sC)
+		require_1Connection(sB.ClientURL(), v.creds, v.pub, sA, sB, sC)
+		require_1Connection(sC.ClientURL(), v.creds, v.pub, sA, sB, sC)
 		passCnt := updateJwt(port, sysCreds, v.pub, v.jwt)
 		require_True(t, passCnt == 3)
-		require_2Connection(sA.ClientURL(), v.creds)
-		require_2Connection(sB.ClientURL(), v.creds)
-		require_2Connection(sC.ClientURL(), v.creds)
+		require_2Connection(sA.ClientURL(), v.creds, v.pub, sA, sB, sC)
+		require_2Connection(sB.ClientURL(), v.creds, v.pub, sA, sB, sC)
+		require_2Connection(sC.ClientURL(), v.creds, v.pub, sA, sB, sC)
 		require_FileEqual(dirA, v.pub, v.jwt)
 		require_FileEqual(dirB, v.pub, v.jwt)
 		require_FileEqual(dirC, v.pub, v.jwt)
 	}
-
 	// Simulates A having missed an update
 	// shutting B down as it has it will directly connect to A and connect right away
 	sB.Shutdown()
@@ -3488,10 +3505,9 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 	require_FileEqual(dirA, apub, ajwt2)      // was copied from server B
 	require_FileEqual(dirB, apub, ajwt2)      // was restarted with this
 	require_FileEqual(dirC, apub, ajwt1)      // still contains old cached value
-	require_2Connection(sA.ClientURL(), aCreds)
-	require_2Connection(sB.ClientURL(), aCreds)
-	require_1Connection(sC.ClientURL(), aCreds)
-
+	require_2Connection(sA.ClientURL(), aCreds, apub, sA, sB, sC)
+	require_2Connection(sB.ClientURL(), aCreds, apub, sA, sB, sC)
+	require_1Connection(sC.ClientURL(), aCreds, apub, sA, sB, sC)
 	// Restart server C. this is a workaround to force C to do a lookup in the absence of account cleanup
 	sC.Shutdown()
 	sC, _ = RunServerWithConfig(confCshortTTL) //TODO remove this once we clean up accounts
@@ -3507,10 +3523,9 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 		}
 		return fmt.Errorf("File not removed in time")
 	})
-	connect(sC.ClientURL(), aCreds)      // When lookup happens
-	require_FileEqual(dirC, apub, ajwt2) // was looked up form A or B
-	require_2Connection(sC.ClientURL(), aCreds)
-
+	connect(sC.ClientURL(), aCreds, apub, sA, sB, sC) // When lookup happens
+	require_FileEqual(dirC, apub, ajwt2)              // was looked up form A or B
+	require_2Connection(sC.ClientURL(), aCreds, apub, sA, sB, sC)
 	// Test exceeding limit. For the exclusive directory resolver, limit is a stop gap measure.
 	// It is not expected to be hit. When hit the administrator is supposed to take action.
 	passCnt = updateJwt(sA.ClientURL(), sysCreds, dpub, djwt1)
