@@ -1765,8 +1765,13 @@ func (s *Server) Leafz(opts *LeafzOptions) (*Leafz, error) {
 	if len(s.leafs) > 0 {
 		lconns = make([]*client, 0, len(s.leafs))
 		for _, ln := range s.leafs {
-			if opts != nil && opts.Account != "" && ln.acc.Name != opts.Account {
-				continue
+			if opts != nil && opts.Account != "" {
+				ln.mu.Lock()
+				ok := ln.acc.Name == opts.Account
+				ln.mu.Unlock()
+				if !ok {
+					continue
+				}
 			}
 			lconns = append(lconns, ln)
 		}
