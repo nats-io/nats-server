@@ -1739,7 +1739,8 @@ type Leafz struct {
 // LeafzOptions are options passed to Leafz
 type LeafzOptions struct {
 	// Subscriptions indicates that Leafz will return a leafnode's subscriptions
-	Subscriptions bool `json:"subscriptions"`
+	Subscriptions bool   `json:"subscriptions"`
+	Account       string `json:"account"`
 }
 
 // LeafInfo has detailed information on each remote leafnode connection.
@@ -1764,6 +1765,14 @@ func (s *Server) Leafz(opts *LeafzOptions) (*Leafz, error) {
 	if len(s.leafs) > 0 {
 		lconns = make([]*client, 0, len(s.leafs))
 		for _, ln := range s.leafs {
+			if opts != nil && opts.Account != "" {
+				ln.mu.Lock()
+				ok := ln.acc.Name == opts.Account
+				ln.mu.Unlock()
+				if !ok {
+					continue
+				}
+			}
 			lconns = append(lconns, ln)
 		}
 	}
@@ -1813,12 +1822,7 @@ func (s *Server) HandleLeafz(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	var opts *LeafzOptions
-	if subs {
-		opts = &LeafzOptions{Subscriptions: true}
-	}
-
-	l, err := s.Leafz(opts)
+	l, err := s.Leafz(&LeafzOptions{subs, r.URL.Query().Get("acc")})
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(err.Error()))

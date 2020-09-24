@@ -1559,7 +1559,7 @@ func TestSystemAccountWithGateways(t *testing.T) {
 
 	// If this tests fails with wrong number after 10 seconds we may have
 	// added a new inititial subscription for the eventing system.
-	checkExpectedSubs(t, 33, sa)
+	checkExpectedSubs(t, 34, sa)
 
 	// Create a client on B and see if we receive the event
 	urlb := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
@@ -1935,6 +1935,8 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 			[]string{"now", "leafs"}},
 		{"ACCOUNTZ", &AccountzOptions{Account: sysAcc}, &Accountz{},
 			[]string{"now", "account_detail"}},
+		{"LEAFZ", &LeafzOptions{Account: sysAcc}, &Leafz{},
+			[]string{"now", "leafs"}},
 
 		{"ROUTEZ", json.RawMessage(`{"cluster":""}`), &Routez{},
 			[]string{"now", "routes"}},
