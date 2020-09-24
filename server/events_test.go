@@ -1258,6 +1258,112 @@ func TestAccountReqMonitoring(t *testing.T) {
 	}
 }
 
+func TestAccountReqInfo(t *testing.T) {
+	s, opts := runTrustedServer(t)
+	defer s.Shutdown()
+	sacc, sakp := createAccount(s)
+	s.setSystemAccount(sacc)
+	// Let's create an account with service export.
+	akp, _ := nkeys.CreateAccount()
+	pub1, _ := akp.PublicKey()
+	nac1 := jwt.NewAccountClaims(pub1)
+	nac1.Exports.Add(&jwt.Export{Subject: "req.*", Type: jwt.Service})
+	ajwt1, _ := nac1.Encode(oKp)
+	addAccountToMemResolver(s, pub1, ajwt1)
+	s.LookupAccount(pub1)
+	info1 := fmt.Sprintf(accReqSubj, pub1, "INFO")
+	// Now add an account with service imports.
+	akp2, _ := nkeys.CreateAccount()
+	pub2, _ := akp2.PublicKey()
+	nac2 := jwt.NewAccountClaims(pub2)
+	nac2.Imports.Add(&jwt.Import{Account: pub1, Subject: "req.1", Type: jwt.Service})
+	ajwt2, _ := nac2.Encode(oKp)
+	addAccountToMemResolver(s, pub2, ajwt2)
+	s.LookupAccount(pub2)
+	info2 := fmt.Sprintf(accReqSubj, pub2, "INFO")
+	// Create system account connection to query
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	ncSys, err := nats.Connect(url, createUserCreds(t, s, sakp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncSys.Close()
+	checkCommon := func(info *AccountInfo, srv *ServerInfo, pub, jwt string) {
+		if info.Complete != true {
+			t.Fatalf("Unexpected value: %v", info.Complete)
+		} else if info.Expired != false {
+			t.Fatalf("Unexpected value: %v", info.Expired)
+		} else if info.JetStream != false {
+			t.Fatalf("Unexpected value: %v", info.JetStream)
+		} else if info.ClientCnt != 0 {
+			t.Fatalf("Unexpected value: %v", info.ClientCnt)
+		} else if info.AccountName != pub {
+			t.Fatalf("Unexpected value: %v", info.AccountName)
+		} else if info.LeafCnt != 0 {
+			t.Fatalf("Unexpected value: %v", info.LeafCnt)
+		} else if info.Jwt != jwt {
+			t.Fatalf("Unexpected value: %v", info.Jwt)
+		} else if srv.Cluster != "abc" {
+			t.Fatalf("Unexpected value: %v", srv.Cluster)
+		} else if srv.Name != s.Name() {
+			t.Fatalf("Unexpected value: %v", srv.Name)
+		} else if srv.Host != opts.Host {
+			t.Fatalf("Unexpected value: %v", srv.Host)
+		} else if srv.Seq < 1 {
+			t.Fatalf("Unexpected value: %v", srv.Seq)
+		}
+	}
+	info := AccountInfo{}
+	srv := ServerInfo{}
+	msg := struct {
+		Data *AccountInfo `json:"data"`
+		Srv  *ServerInfo  `json:"server"`
+	}{
+		&info,
+		&srv,
+	}
+	if resp, err := ncSys.Request(info1, nil, time.Second); err != nil {
+		t.Fatalf("Error on request: %v", err)
+	} else if err := json.Unmarshal(resp.Data, &msg); err != nil {
+		t.Fatalf("Unmarshalling failed: %v", err)
+	} else if len(info.Exports) != 1 {
+		t.Fatalf("Unexpected value: %v", info.Exports)
+	} else if len(info.Imports) != 0 {
+		t.Fatalf("Unexpected value: %v", info.Imports)
+	} else if info.Exports[0].Subject != "req.*" {
+		t.Fatalf("Unexpected value: %v", info.Exports)
+	} else if info.Exports[0].Type != jwt.Service {
+		t.Fatalf("Unexpected value: %v", info.Exports)
+	} else if info.Exports[0].ResponseType != jwt.ResponseTypeSingleton {
+		t.Fatalf("Unexpected value: %v", info.Exports)
+	} else if info.SubCnt != 0 {
+		t.Fatalf("Unexpected value: %v", info.SubCnt)
+	} else {
+		checkCommon(&info, &srv, pub1, ajwt1)
+	}
+	info = AccountInfo{}
+	srv = ServerInfo{}
+	if resp, err := ncSys.Request(info2, nil, time.Second); err != nil {
+		t.Fatalf("Error on request: %v", err)
+	} else if err := json.Unmarshal(resp.Data, &msg); err != nil {
+		t.Fatalf("Unmarshalling failed: %v", err)
+	} else if len(info.Exports) != 0 {
+		t.Fatalf("Unexpected value: %v", info.Exports)
+	} else if len(info.Imports) != 1 {
+		t.Fatalf("Unexpected value: %v", info.Imports)
+	} else if info.Imports[0].Subject != "req.1" {
+		t.Fatalf("Unexpected value: %v", info.Exports)
+	} else if info.Imports[0].Type != jwt.Service {
+		t.Fatalf("Unexpected value: %v", info.Exports)
+	} else if info.Imports[0].Account != pub1 {
+		t.Fatalf("Unexpected value: %v", info.Exports)
+	} else if info.SubCnt != 1 {
+		t.Fatalf("Unexpected value: %v", info.SubCnt)
+	} else {
+		checkCommon(&info, &srv, pub2, ajwt2)
+	}
+}
+
 func TestAccountClaimsUpdatesWithServiceImports(t *testing.T) {
 	s, opts := runTrustedServer(t)
 	defer s.Shutdown()
@@ -1453,7 +1559,7 @@ func TestSystemAccountWithGateways(t *testing.T) {
 
 	// If this tests fails with wrong number after 10 seconds we may have
 	// added a new inititial subscription for the eventing system.
-	checkExpectedSubs(t, 30, sa)
+	checkExpectedSubs(t, 33, sa)
 
 	// Create a client on B and see if we receive the event
 	urlb := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
@@ -1775,7 +1881,7 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 	sa, _, sb, optsB, akp := runTrustedCluster(t)
 	defer sa.Shutdown()
 	defer sb.Shutdown()
-
+	sysAcc, _ := akp.PublicKey()
 	url := fmt.Sprintf("nats://%s:%d", optsB.Host, optsB.Port)
 	nc, err := nats.Connect(url, createUserCreds(t, sb, akp))
 	if err != nil {
@@ -1814,6 +1920,8 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 			[]string{"now", "outbound_gateways", "inbound_gateways"}},
 		{"LEAFZ", &LeafzOptions{}, &Leafz{},
 			[]string{"now", "leafs"}},
+		{"ACCOUNTZ", &AccountzOptions{}, &Accountz{},
+			[]string{"now", "accounts"}},
 
 		{"SUBSZ", &SubszOptions{Limit: 5}, &Subsz{},
 			[]string{"num_subscriptions", "num_cache"}},
@@ -1825,6 +1933,8 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 			[]string{"now", "outbound_gateways", "inbound_gateways"}},
 		{"LEAFZ", &LeafzOptions{Subscriptions: true}, &Leafz{},
 			[]string{"now", "leafs"}},
+		{"ACCOUNTZ", &AccountzOptions{Account: sysAcc}, &Accountz{},
+			[]string{"now", "account_detail"}},
 
 		{"ROUTEZ", json.RawMessage(`{"cluster":""}`), &Routez{},
 			[]string{"now", "routes"}},
