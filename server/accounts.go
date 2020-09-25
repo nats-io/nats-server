@@ -2892,11 +2892,16 @@ func (ur *URLAccResolver) Fetch(name string) (string, error) {
 // Resolver based on nats for synchronization and backing directory for storage.
 type DirAccResolver struct {
 	*DirJWTStore
+	*Server
 	syncInterval time.Duration
 }
 
 func (dr *DirAccResolver) IsTrackingUpdate() bool {
 	return true
+}
+
+func (dr *DirAccResolver) Reload() error {
+	return dr.DirJWTStore.Reload()
 }
 
 func respondToUpdate(s *Server, respSubj string, acc string, message string, err error) {
@@ -2929,6 +2934,7 @@ func respondToUpdate(s *Server, respSubj string, acc string, message string, err
 func (dr *DirAccResolver) Start(s *Server) error {
 	dr.Lock()
 	defer dr.Unlock()
+	dr.Server = s
 	dr.DirJWTStore.changed = func(pubKey string) {
 		if v, ok := s.accounts.Load(pubKey); !ok {
 		} else if jwt, err := dr.LoadAcc(pubKey); err != nil {
@@ -2998,7 +3004,7 @@ func (dr *DirAccResolver) Start(s *Server) error {
 				// let them timeout
 				s.Errorf("pack request error: %v", err)
 			} else {
-				s.Debugf("pack request hash %x - finished responding with hash %x")
+				s.Debugf("pack request hash %x - finished responding with hash %x", theirHash, ourHash)
 				s.sendInternalMsgLocked(reply, "", nil, []byte{})
 			}
 		}); err != nil {
@@ -3039,7 +3045,18 @@ func (dr *DirAccResolver) Start(s *Server) error {
 }
 
 func (dr *DirAccResolver) Fetch(name string) (string, error) {
-	return dr.LoadAcc(name)
+	if theJWT, err := dr.LoadAcc(name); theJWT != "" {
+		return theJWT, nil
+	} else {
+		dr.Lock()
+		srv := dr.Server
+		dr.Unlock()
+		if srv == nil {
+			return "", err
+		} else {
+			return srv.fetch(dr, name) // lookup from other server
+		}
+	}
 }
 
 func (dr *DirAccResolver) Store(name, jwt string) error {
@@ -3057,33 +3074,27 @@ func NewDirAccResolver(path string, limit int64, syncInterval time.Duration) (*D
 	if err != nil {
 		return nil, err
 	}
-	return &DirAccResolver{store, syncInterval}, nil
+	return &DirAccResolver{store, nil, syncInterval}, nil
 }
 
 // Caching resolver using nats for lookups and making use of a directory for storage
 type CacheDirAccResolver struct {
 	DirAccResolver
-	*Server
 	ttl time.Duration
 }
 
-func (dr *CacheDirAccResolver) Fetch(name string) (string, error) {
-	if theJWT, _ := dr.LoadAcc(name); theJWT != "" {
-		return theJWT, nil
-	}
-	// lookup from other server
-	s := dr.Server
+func (s *Server) fetch(res AccountResolver, name string) (string, error) {
 	if s == nil {
 		return "", ErrNoAccountResolver
 	}
 	respC := make(chan []byte, 1)
 	accountLookupRequest := fmt.Sprintf(accLookupReqSubj, name)
 	s.mu.Lock()
-	replySubj := s.newRespInbox()
 	if s.sys == nil || s.sys.replies == nil {
 		s.mu.Unlock()
 		return "", fmt.Errorf("eventing shut down")
 	}
+	replySubj := s.newRespInbox()
 	replies := s.sys.replies
 	// Store our handler.
 	replies[replySubj] = func(sub *subscription, _ *client, subject, _ string, msg []byte) {
@@ -3091,7 +3102,10 @@ func (dr *CacheDirAccResolver) Fetch(name string) (string, error) {
 		copy(clone, msg)
 		s.mu.Lock()
 		if _, ok := replies[replySubj]; ok {
-			respC <- clone // only send if there is still interest
+			select {
+			case respC <- clone: // only use first response and only if there is still interest
+			default:
+			}
 		}
 		s.mu.Unlock()
 	}
@@ -3106,7 +3120,7 @@ func (dr *CacheDirAccResolver) Fetch(name string) (string, error) {
 	case <-time.After(fetchTimeout):
 		err = errors.New("fetching jwt timed out")
 	case m := <-respC:
-		if err = dr.Store(name, string(m)); err == nil {
+		if err = res.Store(name, string(m)); err == nil {
 			theJWT = string(m)
 		}
 	}
@@ -3125,7 +3139,7 @@ func NewCacheDirAccResolver(path string, limit int64, ttl time.Duration) (*Cache
 	if err != nil {
 		return nil, err
 	}
-	return &CacheDirAccResolver{DirAccResolver{store, 0}, nil, ttl}, nil
+	return &CacheDirAccResolver{DirAccResolver{store, nil, 0}, ttl}, nil
 }
 
 func (dr *CacheDirAccResolver) Start(s *Server) error {
@@ -3171,8 +3185,4 @@ func (dr *CacheDirAccResolver) Start(s *Server) error {
 	}
 	s.Noticef("Managing some jwt in exclusive directory %s", dr.directory)
 	return nil
-}
-
-func (dr *CacheDirAccResolver) Reload() error {
-	return dr.DirAccResolver.Reload()
 }
