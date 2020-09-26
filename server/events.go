@@ -1159,8 +1159,13 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 	if !s.eventsEnabled() || a == nil {
 		return
 	}
+	sendQ := s.sys.sendq
+	if sendQ == nil {
+		return
+	}
 	// Build event with account name and number of local clients and leafnodes.
-	a.mu.RLock()
+	a.mu.Lock()
+	s.mu.Unlock()
 	localConns := a.numLocalConnections()
 	m := &AccountNumConns{
 		Account:    a.Name,
@@ -1168,12 +1173,7 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 		LeafNodes:  a.numLocalLeafNodes(),
 		TotalConns: localConns + a.numLocalLeafNodes(),
 	}
-	a.mu.RUnlock()
-	for _, sub := range subj {
-		s.sendInternalMsg(sub, _EMPTY_, &m.Server, &m)
-	}
 	// Set timer to fire again unless we are at zero.
-	a.mu.Lock()
 	if localConns == 0 {
 		clearTimer(&a.ctmr)
 	} else {
@@ -1184,7 +1184,11 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 			a.ctmr.Reset(eventsHBInterval)
 		}
 	}
+	for _, sub := range subj {
+		sendQ <- &pubMsg{nil, sub, _EMPTY_, &m.Server, &m, false}
+	}
 	a.mu.Unlock()
+	s.mu.Lock()
 }
 
 // accConnsUpdate is called whenever there is a change to the account's
