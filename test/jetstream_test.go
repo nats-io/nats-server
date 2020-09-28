@@ -3954,6 +3954,96 @@ func TestJetStreamDurableConsumerReconnect(t *testing.T) {
 	}
 }
 
+func TestJetStreamDurableConsumerReconnectWithOnlyPending(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &server.StreamConfig{Name: "DT", Storage: server.MemoryStorage, Subjects: []string{"foo.*"}}},
+		{"FileStore", &server.StreamConfig{Name: "DT", Storage: server.FileStorage, Subjects: []string{"foo.*"}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			dname := "d22"
+			subj1 := nats.NewInbox()
+
+			o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: dname, DeliverSubject: subj1, AckPolicy: server.AckExplicit})
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+
+			sendMsg := func(payload string) {
+				t.Helper()
+				if err := nc.Publish("foo.22", []byte(payload)); err != nil {
+					return
+				}
+			}
+
+			sendMsg("1")
+
+			sub, _ := nc.SubscribeSync(subj1)
+			defer sub.Unsubscribe()
+
+			checkFor(t, 500*time.Millisecond, 10*time.Millisecond, func() error {
+				if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != 1 {
+					return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, 1)
+				}
+				return nil
+			})
+
+			// Now unsubscribe and wait to become inactive
+			sub.Unsubscribe()
+			checkFor(t, 250*time.Millisecond, 50*time.Millisecond, func() error {
+				if o.Active() {
+					return fmt.Errorf("Consumer is still active")
+				}
+				return nil
+			})
+
+			// Send the second message while delivery subscriber is not running
+			sendMsg("2")
+
+			// Now we should be able to replace the delivery subject.
+			subj2 := nats.NewInbox()
+			o, err = mset.AddConsumer(&server.ConsumerConfig{Durable: dname, DeliverSubject: subj2, AckPolicy: server.AckExplicit})
+			if err != nil {
+				t.Fatalf("Unexpected error trying to add a new durable consumer: %v", err)
+			}
+			sub, _ = nc.SubscribeSync(subj2)
+			defer sub.Unsubscribe()
+			nc.Flush()
+
+			// We should get msg "1" and "2" delivered.
+			for i := 0; i < 2; i++ {
+				msg, err := sub.NextMsg(250 * time.Millisecond)
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				expected := fmt.Sprintf("%d", i+1)
+				if string(msg.Data) != expected {
+					t.Fatalf("Expected message %q, got %q", expected, msg.Data)
+				}
+			}
+		})
+	}
+}
+
 func TestJetStreamDurableFilteredSubjectConsumerReconnect(t *testing.T) {
 	cases := []struct {
 		name    string
