@@ -236,6 +236,13 @@ func (s *Server) configureAuthorization() {
 		return
 	}
 
+	bearerAuth, err := bearerAuthFactory(s)
+	if err != nil {
+		s.Debugf("Bearer authorization not configured; %s", err.Error())
+	} else {
+		opts.CustomClientAuthentication = bearerAuth
+	}
+
 	// Check for multiple users first
 	// This just checks and sets up the user map if we have multiple users.
 	if opts.CustomClientAuthentication != nil {
@@ -329,6 +336,11 @@ func (s *Server) isClientAuthorized(c *client) bool {
 	// multiple users with TLS map if enabled, then token,
 	// then single user/pass.
 	if opts.CustomClientAuthentication != nil && !opts.CustomClientAuthentication.Check(c) {
+		if len(c.GetOpts().JWT) == 0 {
+			s.Tracef("no signed JWT provided; attempting fallback authorization")
+			return s.processClientOrLeafAuthentication(c, opts)
+		}
+
 		return false
 	}
 
