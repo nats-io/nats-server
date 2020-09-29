@@ -3416,6 +3416,7 @@ func TestAccountNATSResolverFetch(t *testing.T) {
     `, ojwt, syspub, dirB, sA.opts.Cluster.Port)))
 	defer os.Remove(confB)
 	sB, _ := RunServerWithConfig(confB)
+	defer sB.Shutdown()
 	// Create Server C (using no_advertise to prevent fail over)
 	fmtC := `
 		listen: -1
@@ -3442,6 +3443,7 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 	confCshortTTL := createConfFile(t, []byte(fmt.Sprintf(fmtC, ojwt, syspub, dirC, 1000, sA.opts.Cluster.Port)))
 	defer os.Remove(confCshortTTL)
 	sC, _ := RunServerWithConfig(confClongTTL) // use long ttl to assure it is not kicking
+	defer sC.Shutdown()
 	// startup cluster
 	checkClusterFormed(t, sA, sB, sC)
 	time.Sleep(500 * time.Millisecond) // wait for the protocol to converge
@@ -3503,9 +3505,10 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 	// Restart server C. this is a workaround to force C to do a lookup in the absence of account cleanup
 	sC.Shutdown()
 	sC, _ = RunServerWithConfig(confClongTTL) //TODO remove this once we clean up accounts
-	require_JWTEqual(t, dirA, apub, ajwt2)    // was copied from server B
-	require_JWTEqual(t, dirB, apub, ajwt2)    // was restarted with this
-	require_JWTEqual(t, dirC, apub, ajwt1)    // still contains old cached value
+	defer sC.Shutdown()
+	require_JWTEqual(t, dirA, apub, ajwt2) // was copied from server B
+	require_JWTEqual(t, dirB, apub, ajwt2) // was restarted with this
+	require_JWTEqual(t, dirC, apub, ajwt1) // still contains old cached value
 	require_2Connection(sA.ClientURL(), aCreds, apub, sA, sB, sC)
 	require_2Connection(sB.ClientURL(), aCreds, apub, sA, sB, sC)
 	require_1Connection(sC.ClientURL(), aCreds, apub, sA, sB, sC)
