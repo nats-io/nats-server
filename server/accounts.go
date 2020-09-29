@@ -3053,9 +3053,8 @@ func (dr *DirAccResolver) Fetch(name string) (string, error) {
 		dr.Unlock()
 		if srv == nil {
 			return "", err
-		} else {
-			return srv.fetch(dr, name) // lookup from other server
 		}
+		return srv.fetch(dr, name) // lookup from other server
 	}
 }
 

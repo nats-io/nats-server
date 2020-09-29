@@ -3531,6 +3531,19 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 	// It is not expected to be hit. When hit the administrator is supposed to take action.
 	passCnt = updateJwt(t, sA.ClientURL(), sysCreds, dpub, djwt1, 3)
 	require_True(t, passCnt == 1) // Only Server C updated
+	for _, srv := range []*Server{sA, sB, sC} {
+		if a, ok := srv.accounts.Load(syspub); ok {
+			acc := a.(*Account)
+			checkFor(t, time.Second, 20*time.Millisecond, func() error {
+				acc.mu.Lock()
+				defer acc.mu.Unlock()
+				if acc.ctmr != nil {
+					return fmt.Errorf("Timer still exists")
+				}
+				return nil
+			})
+		}
+	}
 }
 
 func TestAccountNATSResolverCrossClusterFetch(t *testing.T) {
