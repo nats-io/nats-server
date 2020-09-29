@@ -261,11 +261,11 @@ func (store *DirJWTStore) PackWalk(maxJWTs int, cb func(partialPackMsg string)) 
 	exp := store.expiration
 	store.Unlock()
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if !info.IsDir() && strings.HasSuffix(path, fileExtension) { // this is a JWT
+		if info != nil && !info.IsDir() && strings.HasSuffix(path, fileExtension) { // this is a JWT
 			pubKey := strings.TrimSuffix(filepath.Base(path), fileExtension)
 			store.Lock()
 			if exp != nil {
-				if _, ok := store.expiration.idx[pubKey]; !ok {
+				if _, ok := exp.idx[pubKey]; !ok {
 					store.Unlock()
 					return nil // only include indexed files
 				}
