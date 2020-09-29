@@ -193,6 +193,7 @@ type Consumer struct {
 	ackEventT         string
 	deliveryExcEventT string
 	created           time.Time
+	closed            bool
 }
 
 const (
@@ -1707,11 +1708,11 @@ func (o *Consumer) Delete() error {
 
 func (o *Consumer) stop(dflag, doSignal, advisory bool) error {
 	o.mu.Lock()
-	mset := o.mset
-	if mset == nil {
+	if o.closed {
 		o.mu.Unlock()
 		return nil
 	}
+	o.closed = true
 
 	if dflag && advisory {
 		o.sendDeleteAdvisoryLocked()
@@ -1721,6 +1722,7 @@ func (o *Consumer) stop(dflag, doSignal, advisory bool) error {
 	close(o.qch)
 
 	store := o.store
+	mset := o.mset
 	o.mset = nil
 	o.active = false
 	ackSub := o.ackSub
