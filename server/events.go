@@ -1185,7 +1185,14 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 		}
 	}
 	for _, sub := range subj {
-		sendQ <- &pubMsg{nil, sub, _EMPTY_, &m.Server, &m, false}
+		msg := &pubMsg{nil, sub, _EMPTY_, &m.Server, &m, false}
+		select {
+		case sendQ <- msg:
+		default:
+			a.mu.Unlock()
+			sendQ <- msg
+			a.mu.Lock()
+		}
 	}
 	a.mu.Unlock()
 	s.mu.Lock()
