@@ -584,6 +584,56 @@ func TestJetStreamPullConsumerDelayedFirstPullWithReplayOriginal(t *testing.T) {
 	}
 }
 
+func TestJetStreamNoPanicOnRaceBetweenShutdownAndConsumerDelete(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &server.StreamConfig{Name: "MY_STREAM", Storage: server.MemoryStorage}},
+		{"FileStore", &server.StreamConfig{Name: "MY_STREAM", Storage: server.FileStorage}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			var cons []*server.Consumer
+			for i := 0; i < 100; i++ {
+				o, err := mset.AddConsumer(&server.ConsumerConfig{
+					Durable:   fmt.Sprintf("d%d", i),
+					AckPolicy: server.AckExplicit,
+				})
+				if err != nil {
+					t.Fatalf("Expected no error, got %v", err)
+				}
+				defer o.Delete()
+				cons = append(cons, o)
+			}
+
+			wg := sync.WaitGroup{}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for _, c := range cons {
+					c.Delete()
+				}
+			}()
+			time.Sleep(10 * time.Millisecond)
+			s.Shutdown()
+		})
+	}
+}
+
 func TestJetStreamAddStreamMaxMsgSize(t *testing.T) {
 	cases := []struct {
 		name    string
