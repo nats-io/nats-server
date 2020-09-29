@@ -675,6 +675,14 @@ func (o *Consumer) updateDeliverSubject(newDeliver string) {
 	o.dseq = o.adflr
 	o.sseq = o.asflr
 
+	// If we never received an ack, set to 1.
+	if o.dseq == 0 {
+		o.dseq = 1
+	}
+	if o.sseq == 0 {
+		o.sseq = 1
+	}
+
 	// When we register new one it will deliver to update state loop.
 	o.acc.sl.ClearNotification(oldDeliver, o.inch)
 	o.acc.sl.RegisterNotification(newDeliver, o.inch)
