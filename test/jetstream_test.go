@@ -1665,6 +1665,11 @@ func TestJetStreamWorkQueueAckAndNext(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Unexpected error waiting for messages: %v", err)
 				}
+
+				if !bytes.Equal(m.Data, []byte("Hello World!")) {
+					t.Fatalf("Got an invalid message from the stream: %q", m.Data)
+				}
+
 				nc.PublishRequest(m.Reply, sub.Subject, server.AckNext)
 			}
 		})
