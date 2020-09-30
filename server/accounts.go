@@ -2089,12 +2089,12 @@ func (a *Account) checkActivation(importAcc *Account, claim *jwt.Import, expTime
 	if err != nil {
 		return false
 	}
+	if !a.isIssuerClaimTrusted(act) {
+		return false
+	}
 	vr = jwt.CreateValidationResults()
 	act.Validate(vr)
 	if vr.IsBlocking(true) {
-		return false
-	}
-	if !a.isIssuerClaimTrusted(act) {
 		return false
 	}
 	if act.Expires != 0 {

@@ -25,6 +25,7 @@ const (
 	ConnectionTypeStandard  = "STANDARD"
 	ConnectionTypeWebsocket = "WEBSOCKET"
 	ConnectionTypeLeafnode  = "LEAFNODE"
+	ConnectionTypeMqtt      = "MQTT"
 )
 
 // User defines the user specific data in a user JWT
