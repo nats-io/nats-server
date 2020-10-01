@@ -2815,6 +2815,10 @@ func (*resolverDefaultsOpsImpl) Reload() error {
 func (*resolverDefaultsOpsImpl) Close() {
 }
 
+func (*resolverDefaultsOpsImpl) Store(_, _ string) error {
+	return fmt.Errorf("Store operation not supported for the specified Account Resolver")
+}
+
 // MemAccResolver is a memory only resolver.
 // Mostly for testing.
 type MemAccResolver struct {
@@ -2889,13 +2893,15 @@ func (ur *URLAccResolver) Fetch(name string) (string, error) {
 // to the base url, appending the account name onto the end.
 func (ur *URLAccResolver) Store(name, jwt string) error {
 	url := ur.url + name
-	resp, err := http.Post(url, "application/jwt", strings.NewReader(jwt))
+	resp, err := ur.c.Post(url, "application/jwt", strings.NewReader(jwt))
 	if err != nil {
 		return err
-	} else if resp.StatusCode != http.StatusOK {
+	}
+
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("could not post to <%q>: %v", url, resp.Status)
 	}
-	resp.Body.Close()
 
 	return err
 }
