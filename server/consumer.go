@@ -664,7 +664,7 @@ func (o *Consumer) updateDeliverSubject(newDeliver string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	if o.mset == nil || o.isPullMode() {
+	if o.closed || o.isPullMode() {
 		return
 	}
 

@@ -8005,10 +8005,7 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 				}
 				m.Respond(nil)
 
-				sseq, dseq, dc, _ := o2.ReplyInfo(m.Reply)
-				if dseq != uint64(i+3) {
-					t.Fatalf("Expected consumer sequence of %d got %d", i+3, dseq)
-				}
+				sseq, _, dc, _ := o2.ReplyInfo(m.Reply)
 				// Depending on timing from above we could receive stream sequences out of order but
 				// we know we want 3 & 4.
 				if sseq != 3 && sseq != 4 {
