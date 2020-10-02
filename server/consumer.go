@@ -664,28 +664,13 @@ func (o *Consumer) updateDeliverSubject(newDeliver string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	mset := o.mset
-	if mset == nil || o.isPullMode() {
+	if o.mset == nil || o.isPullMode() {
 		return
 	}
 
-	oldDeliver := o.config.DeliverSubject
-	o.dsubj = newDeliver
-	o.config.DeliverSubject = newDeliver
-	// FIXME(dlc) - check partitions, we may need offset.
-	o.dseq = o.adflr + 1
-	o.sseq = o.asflr + 1
-
-	// If we never received an ack, set to 1.
-	if o.dseq == 0 {
-		o.dseq = 1
-	}
-	if o.sseq == 0 {
-		o.sseq = 1
-	}
-
+	o.acc.sl.ClearNotification(o.dsubj, o.inch)
+	o.dsubj, o.config.DeliverSubject = newDeliver, newDeliver
 	// When we register new one it will deliver to update state loop.
-	o.acc.sl.ClearNotification(oldDeliver, o.inch)
 	o.acc.sl.RegisterNotification(newDeliver, o.inch)
 }
 
@@ -1037,7 +1022,7 @@ func (o *Consumer) needAck(sseq uint64) bool {
 		if sseq > o.asflr {
 			// Generally this means we need an ack, but just double check pending acks.
 			needAck = true
-			if len(o.pending) > 0 {
+			if len(o.pending) > 0 && sseq < o.sseq {
 				_, needAck = o.pending[sseq]
 			}
 		}

@@ -3934,7 +3934,11 @@ func TestJetStreamDurableConsumerReconnect(t *testing.T) {
 			dname := "d22"
 			subj1 := nats.NewInbox()
 
-			o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: dname, DeliverSubject: subj1, AckPolicy: server.AckExplicit})
+			o, err := mset.AddConsumer(&server.ConsumerConfig{
+				Durable:        dname,
+				DeliverSubject: subj1,
+				AckPolicy:      server.AckExplicit,
+				AckWait:        50 * time.Millisecond})
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -3967,7 +3971,7 @@ func TestJetStreamDurableConsumerReconnect(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Unexpected error: %v", err)
 				}
-				if seq := o.SeqFromReply(m.Reply); seq != uint64(seqno) {
+				if seq := o.StreamSeqFromReply(m.Reply); seq != uint64(seqno) {
 					t.Fatalf("Expected sequence of %d , got %d", seqno, seq)
 				}
 				m.Respond(nil)
@@ -3995,7 +3999,11 @@ func TestJetStreamDurableConsumerReconnect(t *testing.T) {
 			defer sub.Unsubscribe()
 			nc.Flush()
 
-			o, err = mset.AddConsumer(&server.ConsumerConfig{Durable: dname, DeliverSubject: subj2, AckPolicy: server.AckExplicit})
+			o, err = mset.AddConsumer(&server.ConsumerConfig{
+				Durable:        dname,
+				DeliverSubject: subj2,
+				AckPolicy:      server.AckExplicit,
+				AckWait:        50 * time.Millisecond})
 			if err != nil {
 				t.Fatalf("Unexpected error trying to add a new durable consumer: %v", err)
 			}
@@ -4038,7 +4046,11 @@ func TestJetStreamDurableConsumerReconnectWithOnlyPending(t *testing.T) {
 			dname := "d22"
 			subj1 := nats.NewInbox()
 
-			o, err := mset.AddConsumer(&server.ConsumerConfig{Durable: dname, DeliverSubject: subj1, AckPolicy: server.AckExplicit})
+			o, err := mset.AddConsumer(&server.ConsumerConfig{
+				Durable:        dname,
+				DeliverSubject: subj1,
+				AckPolicy:      server.AckExplicit,
+				AckWait:        25 * time.Millisecond})
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -4076,7 +4088,11 @@ func TestJetStreamDurableConsumerReconnectWithOnlyPending(t *testing.T) {
 
 			// Now we should be able to replace the delivery subject.
 			subj2 := nats.NewInbox()
-			o, err = mset.AddConsumer(&server.ConsumerConfig{Durable: dname, DeliverSubject: subj2, AckPolicy: server.AckExplicit})
+			o, err = mset.AddConsumer(&server.ConsumerConfig{
+				Durable:        dname,
+				DeliverSubject: subj2,
+				AckPolicy:      server.AckExplicit,
+				AckWait:        25 * time.Millisecond})
 			if err != nil {
 				t.Fatalf("Unexpected error trying to add a new durable consumer: %v", err)
 			}
@@ -4084,15 +4100,18 @@ func TestJetStreamDurableConsumerReconnectWithOnlyPending(t *testing.T) {
 			defer sub.Unsubscribe()
 			nc.Flush()
 
-			// We should get msg "1" and "2" delivered.
+			// We should get msg "1" and "2" delivered. They will be reversed.
 			for i := 0; i < 2; i++ {
-				msg, err := sub.NextMsg(250 * time.Millisecond)
+				msg, err := sub.NextMsg(500 * time.Millisecond)
 				if err != nil {
 					t.Fatalf("Unexpected error: %v", err)
 				}
-				expected := fmt.Sprintf("%d", i+1)
-				if string(msg.Data) != expected {
-					t.Fatalf("Expected message %q, got %q", expected, msg.Data)
+				sseq, _, dc, _ := o.ReplyInfo(msg.Reply)
+				if sseq == 1 && dc == 1 {
+					t.Fatalf("Expected a redelivery count greater then 1 for sseq 1, got %d", dc)
+				}
+				if sseq != 1 && sseq != 2 {
+					t.Fatalf("Expected stream sequence of 1 or 2 but got %d", sseq)
 				}
 			}
 		})
@@ -7901,13 +7920,13 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 
 			sub2, _ := nc2.SubscribeSync(nats.NewInbox())
 			defer sub2.Unsubscribe()
-			nc2.Flush()
 
 			o2, err := mset.AddConsumer(&server.ConsumerConfig{
 				Durable:        "dur2",
 				DeliverSubject: sub2.Subject,
 				FilterSubject:  "foo.bar",
 				AckPolicy:      server.AckExplicit,
+				AckWait:        25 * time.Millisecond,
 			})
 			if err != nil {
 				t.Fatalf("Unexpected error adding consumer: %v", err)
@@ -7935,17 +7954,12 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 					m.Respond(nil)
 				}
 			}
+			// To make sure acks are processed for checking state after sending new ones.
 			nc1.Flush()
 			nc2.Flush()
 
 			// Now close the 2nd subscription...
 			sub2.Unsubscribe()
-			checkFor(t, time.Second, 10*time.Millisecond, func() error {
-				if o2.Active() {
-					return fmt.Errorf("Consumer still active")
-				}
-				return nil
-			})
 
 			// Send 2 more new messages
 			for i := 0; i < toSend; i++ {
@@ -7976,26 +7990,33 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 				DeliverSubject: sub2.Subject,
 				FilterSubject:  "foo.bar",
 				AckPolicy:      server.AckExplicit,
+				AckWait:        25 * time.Millisecond,
 			})
 			if err != nil {
 				t.Fatalf("Unexpected error adding consumer: %v", err)
 			}
 			defer o2.Delete()
 
-			checkFor(t, time.Second, 100*time.Millisecond, func() error {
-				if nmsgs, _, _ := sub2.Pending(); nmsgs != toSend {
-					return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, toSend)
-				}
-				return nil
-			})
-
 			// Those messages should be redelivered to the 2nd consumer
-			for i := 0; i < toSend; i++ {
+			for i := 1; i <= toSend; i++ {
 				m, err := sub2.NextMsg(time.Second)
 				if err != nil {
-					t.Fatalf("Error acking message: %v", err)
+					t.Fatalf("Error receiving message %d: %v", i, err)
 				}
 				m.Respond(nil)
+
+				sseq, dseq, dc, _ := o2.ReplyInfo(m.Reply)
+				if dseq != uint64(i+3) {
+					t.Fatalf("Expected consumer sequence of %d got %d", i+3, dseq)
+				}
+				// Depending on timing from above we could receive stream sequences out of order but
+				// we know we want 3 & 4.
+				if sseq != 3 && sseq != 4 {
+					t.Fatalf("Expected stream sequence of 3 or 4 but got %d", sseq)
+				}
+				if sseq == 3 && dc == 1 {
+					t.Fatalf("Expected a redelivery count greater then 1 for sseq 3, got %d", dc)
+				}
 			}
 		})
 	}
