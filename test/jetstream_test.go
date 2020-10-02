@@ -8005,14 +8005,11 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 				}
 				m.Respond(nil)
 
-				sseq, _, dc, _ := o2.ReplyInfo(m.Reply)
+				sseq := o2.StreamSeqFromReply(m.Reply)
 				// Depending on timing from above we could receive stream sequences out of order but
 				// we know we want 3 & 4.
 				if sseq != 3 && sseq != 4 {
 					t.Fatalf("Expected stream sequence of 3 or 4 but got %d", sseq)
-				}
-				if sseq == 3 && dc == 1 {
-					t.Fatalf("Expected a redelivery count greater then 1 for sseq 3, got %d", dc)
 				}
 			}
 		})
