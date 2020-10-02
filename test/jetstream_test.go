@@ -872,7 +872,7 @@ func TestJetStreamAddStreamSameConfigOK(t *testing.T) {
 
 func sendStreamMsg(t *testing.T, nc *nats.Conn, subject, msg string) {
 	t.Helper()
-	resp, _ := nc.Request(subject, []byte(msg), 100*time.Millisecond)
+	resp, _ := nc.Request(subject, []byte(msg), 500*time.Millisecond)
 	if resp == nil {
 		t.Fatalf("No response for %q, possible timeout?", msg)
 	}
@@ -2928,7 +2928,7 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 	checkSubPending := func(numExpected int) {
 		t.Helper()
 		checkFor(t, time.Second, 10*time.Millisecond, func() error {
-			if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != numExpected {
+			if nmsgs, _, _ := sub.Pending(); nmsgs != numExpected {
 				return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, numExpected)
 			}
 			return nil
@@ -4001,7 +4001,7 @@ func TestJetStreamDurableConsumerReconnect(t *testing.T) {
 			}
 
 			// We should get the remaining messages here.
-			for i := toSend / 2; i <= toSend; i++ {
+			for i := toSend/2 + 1; i <= toSend; i++ {
 				m := getMsg(i)
 				m.Respond(nil)
 			}
@@ -5031,11 +5031,12 @@ func TestJetStreamInterestRetentionStream(t *testing.T) {
 			// we should have 1, 2, 3 acks now.
 			checkNumMsgs(totalMsgs - 3)
 
-			// Now ack last ackall message. This should clear all of them.
-			for i := 4; i <= totalMsgs; i++ {
+			nm, _, _ := sub2.Pending()
+			// Now ack last ackAll message. This should clear all of them.
+			for i := 1; i <= nm; i++ {
 				if m, err := sub2.NextMsg(time.Second); err != nil {
 					t.Fatalf("Unexpected error: %v", err)
-				} else if i == totalMsgs {
+				} else if i == nm {
 					m.Respond(nil)
 				}
 			}
@@ -7913,7 +7914,7 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 			}
 			defer o2.Delete()
 
-			// Send 1 message
+			// Send 2 messages
 			toSend := 2
 			for i := 0; i < toSend; i++ {
 				sendStreamMsg(t, nc1, "foo.bar", fmt.Sprintf("msg%v", i+1))
@@ -7923,7 +7924,7 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 				t.Fatalf("Expected %v messages, got %d", toSend, state.Msgs)
 			}
 
-			// Receive this first message and ack it.
+			// Receive the messages and ack them.
 			subs := []*nats.Subscription{sub1, sub2}
 			for _, sub := range subs {
 				for i := 0; i < toSend; i++ {
@@ -7934,14 +7935,25 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 					m.Respond(nil)
 				}
 			}
+			nc1.Flush()
+			nc2.Flush()
 
 			// Now close the 2nd subscription...
 			sub2.Unsubscribe()
-			nc2.Flush()
+			checkFor(t, time.Second, 10*time.Millisecond, func() error {
+				if o2.Active() {
+					return fmt.Errorf("Consumer still active")
+				}
+				return nil
+			})
 
-			// Send new messages
+			// Send 2 more new messages
 			for i := 0; i < toSend; i++ {
 				sendStreamMsg(t, nc1, "foo.bar", fmt.Sprintf("msg%v", 2+i+1))
+			}
+			state = mset.State()
+			if state.Msgs != uint64(toSend) {
+				t.Fatalf("Expected %v messages, got %d", toSend, state.Msgs)
 			}
 
 			// first subscription should get it and will ack it.
@@ -7952,11 +7964,12 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 				}
 				m.Respond(nil)
 			}
+			// For acks from m.Respond above
+			nc1.Flush()
 
 			// Now recreate the subscription for the 2nd JS consumer
 			sub2, _ = nc2.SubscribeSync(nats.NewInbox())
 			defer sub2.Unsubscribe()
-			nc2.Flush()
 
 			o2, err = mset.AddConsumer(&server.ConsumerConfig{
 				Durable:        "dur2",
@@ -7968,6 +7981,13 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 				t.Fatalf("Unexpected error adding consumer: %v", err)
 			}
 			defer o2.Delete()
+
+			checkFor(t, time.Second, 100*time.Millisecond, func() error {
+				if nmsgs, _, _ := sub2.Pending(); nmsgs != toSend {
+					return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, toSend)
+				}
+				return nil
+			})
 
 			// Those messages should be redelivered to the 2nd consumer
 			for i := 0; i < toSend; i++ {

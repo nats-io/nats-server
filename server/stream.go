@@ -1120,14 +1120,12 @@ func (mset *Stream) partitionUnique(partition string) bool {
 
 // Lock should be held.
 func (mset *Stream) checkInterest(seq uint64, obs *Consumer) bool {
-	var needAck bool
 	for _, o := range mset.consumers {
 		if o != obs && o.needAck(seq) {
-			needAck = true
-			break
+			return true
 		}
 	}
-	return needAck
+	return false
 }
 
 // ackMsg is called into from an observable when we have a WorkQueue or Interest retention policy.

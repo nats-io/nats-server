@@ -713,13 +713,14 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 		return false, nil
 	}
 	sm, _ := mb.fetchMsg(seq)
-	// We have the message here, so we can delete it.
-	if sm != nil {
+	// We might have the message here, so we can delete it.
+	found := sm != nil
+	if found {
 		if err := fs.deleteMsgFromBlock(mb, seq, sm, secure); err != nil {
 			return false, err
 		}
 	}
-	return sm != nil, nil
+	return found, nil
 }
 
 // Loop on requests to write out our index file. This is used when calling
@@ -798,11 +799,13 @@ func (fs *fileStore) deleteMsgFromBlock(mb *msgBlock, seq uint64, sm *fileStored
 		}
 	}
 
-	if seq < mb.cache.fseq || (seq-mb.cache.fseq) >= uint64(len(mb.cache.idx)) {
+	// See if the sequence numbers is still relevant. Check first and cache first.
+	if seq < mb.first.seq || seq < mb.cache.fseq || (seq-mb.cache.fseq) >= uint64(len(mb.cache.idx)) {
 		mb.mu.Unlock()
 		fs.mu.Unlock()
 		return nil
 	}
+
 	// Now check dmap if it is there.
 	if mb.dmap != nil {
 		if _, ok := mb.dmap[seq]; ok {
@@ -843,6 +846,7 @@ func (fs *fileStore) deleteMsgFromBlock(mb *msgBlock, seq uint64, sm *fileStored
 		mb.dmap[seq] = struct{}{}
 		shouldWriteIndex = true
 	}
+
 	if secure {
 		fs.eraseMsg(mb, sm)
 	}
