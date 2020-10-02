@@ -664,28 +664,13 @@ func (o *Consumer) updateDeliverSubject(newDeliver string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	mset := o.mset
-	if mset == nil || o.isPullMode() {
+	if o.closed || o.isPullMode() {
 		return
 	}
 
-	oldDeliver := o.config.DeliverSubject
-	o.dsubj = newDeliver
-	o.config.DeliverSubject = newDeliver
-	// FIXME(dlc) - check partitions, we may need offset.
-	o.dseq = o.adflr
-	o.sseq = o.asflr
-
-	// If we never received an ack, set to 1.
-	if o.dseq == 0 {
-		o.dseq = 1
-	}
-	if o.sseq == 0 {
-		o.sseq = 1
-	}
-
+	o.acc.sl.ClearNotification(o.dsubj, o.inch)
+	o.dsubj, o.config.DeliverSubject = newDeliver, newDeliver
 	// When we register new one it will deliver to update state loop.
-	o.acc.sl.ClearNotification(oldDeliver, o.inch)
 	o.acc.sl.RegisterNotification(newDeliver, o.inch)
 }
 
@@ -977,14 +962,16 @@ func (o *Consumer) processAckMsg(sseq, dseq, dcount uint64, doSample bool) {
 				o.sampleAck(sseq, dseq, dcount)
 			}
 			delete(o.pending, sseq)
+			// Consumers sequence numbers can skip during redlivery since
+			// they always increment. So if we do not have any pending treat
+			// as all scenario below. Otherwise check that we filled in a gap.
+			if len(o.pending) == 0 {
+				o.adflr, o.asflr = o.dseq-1, o.sseq-1
+			} else if dseq == o.adflr+1 {
+				o.adflr, o.asflr = dseq, sseq
+			}
 		}
-		// Consumers sequence numbers can skip during redlivery since
-		// they always increment. So if we do not have any pending treat
-		// as all scenario below. Otherwise check that we filled in a gap.
-		// TODO(dlc) - check this.
-		if len(o.pending) == 0 || dseq == o.adflr+1 {
-			o.adflr, o.asflr = dseq, sseq
-		}
+		// We do these regardless.
 		delete(o.rdc, sseq)
 		o.removeFromRedeliverQueue(sseq)
 	case AckAll:
@@ -1024,19 +1011,24 @@ func (o *Consumer) processAckMsg(sseq, dseq, dcount uint64, doSample bool) {
 }
 
 // Check if we need an ack for this store seq.
+// This is called for interest based retention streams to remove messages.
 func (o *Consumer) needAck(sseq uint64) bool {
-	var na bool
+	var needAck bool
 	o.mu.Lock()
 	switch o.config.AckPolicy {
 	case AckNone, AckAll:
-		na = sseq > o.asflr
+		needAck = sseq > o.asflr
 	case AckExplicit:
-		if sseq > o.asflr && len(o.pending) > 0 {
-			_, na = o.pending[sseq]
+		if sseq > o.asflr {
+			// Generally this means we need an ack, but just double check pending acks.
+			needAck = true
+			if len(o.pending) > 0 && sseq < o.sseq {
+				_, needAck = o.pending[sseq]
+			}
 		}
 	}
 	o.mu.Unlock()
-	return na
+	return needAck
 }
 
 // Default is 1 if msg is nil.
@@ -1364,26 +1356,27 @@ func (o *Consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dcount u
 	sendq := o.mset.sendq
 	ap := o.config.AckPolicy
 
-	// This needs to be unlocked since the other side may need this lock on failed delivery.
+	// This needs to be unlocked since the other side may need this lock on a failed delivery.
 	o.mu.Unlock()
 	// Send message.
 	sendq <- pmsg
+
 	// If we are ack none and mset is interest only we should make sure stream removes interest.
-	if ap == AckNone && mset.config.Retention == InterestPolicy {
+	if ap == AckNone && mset.config.Retention == InterestPolicy && !mset.checkInterest(seq, o) {
 		// FIXME(dlc) - we have mset lock here, but should we??
-		if !mset.checkInterest(seq, o) {
-			mset.store.RemoveMsg(seq)
-		}
+		mset.store.RemoveMsg(seq)
 	}
 	o.mu.Lock()
 
-	if ap == AckNone {
+	if ap == AckExplicit || ap == AckAll {
+		o.trackPending(seq)
+	} else if ap == AckNone {
 		o.adflr = o.dseq
 		o.asflr = seq
-	} else if ap == AckExplicit || ap == AckAll {
-		o.trackPending(seq)
 	}
+
 	o.dseq++
+
 	o.updateStore()
 }
 
@@ -1763,7 +1756,10 @@ func (o *Consumer) stop(dflag, doSignal, advisory bool) error {
 		// Sort just to keep pending sparse array state small.
 		sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
 		for _, seq := range seqs {
-			if !mset.checkInterest(seq, o) {
+			mset.mu.Lock()
+			hasNoInterest := !mset.checkInterest(seq, o)
+			mset.mu.Unlock()
+			if hasNoInterest {
 				mset.store.RemoveMsg(seq)
 			}
 		}
