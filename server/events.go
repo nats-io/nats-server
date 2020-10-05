@@ -575,12 +575,9 @@ func (s *Server) initEventTracking() {
 	}
 	s.sys.inboxPre = subject
 	// This is for remote updates for connection accounting.
-
-	for _, subj := range []string{accConnsEventSubjOld, accConnsEventSubjNew} {
-		subject = fmt.Sprintf(subj, "*")
-		if _, err := s.sysSubscribe(subject, s.remoteConnsUpdate); err != nil {
-			s.Errorf("Error setting up internal tracking for %s: %v", subject, err)
-		}
+	subject = fmt.Sprintf(accConnsEventSubjOld, "*")
+	if _, err := s.sysSubscribe(subject, s.remoteConnsUpdate); err != nil {
+		s.Errorf("Error setting up internal tracking for %s: %v", subject, err)
 	}
 	// This will be for responses for account info that we send out.
 	subject = fmt.Sprintf(connsRespSubj, s.info.ID)
