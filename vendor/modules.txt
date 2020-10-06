@@ -1,6 +1,6 @@
 # github.com/minio/highwayhash v1.0.0
 github.com/minio/highwayhash
-# github.com/nats-io/jwt/v2 v2.0.0-20200930010033-c4fd08d85545
+# github.com/nats-io/jwt/v2 v2.0.0-20201006231922-e00ffcea7738
 github.com/nats-io/jwt/v2
 # github.com/nats-io/nats.go v1.10.1-0.20200606002146-fc6fed82929a
 github.com/nats-io/nats.go

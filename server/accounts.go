@@ -2253,13 +2253,13 @@ func (a *Account) clearExpirationTimer() bool {
 }
 
 // checkUserRevoked will check if a user has been revoked.
-func (a *Account) checkUserRevoked(nkey string) bool {
+func (a *Account) checkUserRevoked(nkey string, issuedAt int64) bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	if a.usersRevoked == nil {
 		return false
 	}
-	if t, ok := a.usersRevoked[nkey]; !ok || t > time.Now().Unix() {
+	if t, ok := a.usersRevoked[nkey]; !ok || t < issuedAt {
 		return false
 	}
 	return true
@@ -2595,6 +2595,8 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		for pk, t := range ac.Revocations {
 			a.usersRevoked[pk] = t
 		}
+	} else {
+		a.usersRevoked = nil
 	}
 	a.defaultPerms = buildPermissionsFromJwt(&ac.DefaultPermissions)
 	a.incomplete = len(incompleteImports) != 0
@@ -2639,7 +2641,6 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		}
 	}
 
-	now := time.Now().Unix()
 	for i, c := range clients {
 		a.mu.RLock()
 		exceeded := a.mconns != jwt.NoLimit && i >= int(a.mconns)
@@ -2650,17 +2651,15 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		}
 		c.mu.Lock()
 		c.applyAccountLimits()
-		// Check for being revoked here. We use ac one to avoid
-		// the account lock.
-		var nkey string
-		if c.user != nil {
-			nkey = c.user.Nkey
-		}
+		theJWT := c.opts.JWT
 		c.mu.Unlock()
-
-		// Check if we have been revoked.
+		// Check for being revoked here. We use ac one to avoid the account lock.
 		if ac.Revocations != nil {
-			if t, ok := ac.Revocations[nkey]; ok && now >= t {
+			if juc, err := jwt.DecodeUserClaims(theJWT); err != nil {
+				c.Debugf("User JWT not valid: %v", err)
+				c.authViolation()
+				continue
+			} else if ok := ac.IsClaimRevoked(juc); ok {
 				c.sendErrAndDebug("User Authentication Revoked")
 				c.closeConnection(Revocation)
 				continue
