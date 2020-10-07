@@ -559,7 +559,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 				return false
 			}
 		}
-		if acc.checkUserRevoked(juc.Subject) {
+		if acc.checkUserRevoked(juc.Subject, juc.IssuedAt) {
 			c.Debugf("User authentication revoked")
 			return false
 		}

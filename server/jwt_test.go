@@ -4268,3 +4268,93 @@ func TestJWTJetStreamLimits(t *testing.T) {
 	expect_JSDisabledForAccount(c)
 	c.Close()
 }
+
+func TestJWTUserRevocation(t *testing.T) {
+	createAccountAndUser := func(done chan struct{}, pubKey, jwt1, jwt2, creds1, creds2 *string) {
+		t.Helper()
+		kp, _ := nkeys.CreateAccount()
+		*pubKey, _ = kp.PublicKey()
+		claim := jwt.NewAccountClaims(*pubKey)
+		var err error
+		*jwt1, err = claim.Encode(oKp)
+		require_NoError(t, err)
+
+		ukp, _ := nkeys.CreateUser()
+		seed, _ := ukp.Seed()
+		upub, _ := ukp.PublicKey()
+		uclaim := newJWTTestUserClaims()
+		uclaim.Subject = upub
+
+		ujwt1, err := uclaim.Encode(kp)
+		require_NoError(t, err)
+		*creds1 = genCredsFile(t, ujwt1, seed)
+
+		// create updated claim need to assure that issue time differs
+		claim.Revoke(upub) // revokes all jwt from now on
+		time.Sleep(time.Millisecond * 1100)
+		*jwt2, err = claim.Encode(oKp)
+		require_NoError(t, err)
+
+		ujwt2, err := uclaim.Encode(kp)
+		require_NoError(t, err)
+		*creds2 = genCredsFile(t, ujwt2, seed)
+
+		done <- struct{}{}
+	}
+	// Create Accounts and corresponding revoked and non revoked user creds. Do so concurrently to speed up the test
+	doneChan := make(chan struct{}, 2)
+	defer close(doneChan)
+	var syspub, sysjwt, dummy1, sysCreds, dummyCreds string
+	go createAccountAndUser(doneChan, &syspub, &sysjwt, &dummy1, &sysCreds, &dummyCreds)
+	var apub, ajwt1, ajwt2, aCreds1, aCreds2 string
+	go createAccountAndUser(doneChan, &apub, &ajwt1, &ajwt2, &aCreds1, &aCreds2)
+	for i := 0; i < cap(doneChan); i++ {
+		<-doneChan
+	}
+	defer os.Remove(sysCreds)
+	defer os.Remove(dummyCreds)
+	defer os.Remove(aCreds1)
+	defer os.Remove(aCreds2)
+	dirSrv := createDir(t, "srv")
+	defer os.RemoveAll(dirSrv)
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: full
+			dir: %s
+		}
+    `, ojwt, syspub, dirSrv)))
+	defer os.Remove(conf)
+	srv, _ := RunServerWithConfig(conf)
+	defer srv.Shutdown()
+	updateJwt(t, srv.ClientURL(), sysCreds, syspub, sysjwt, 1) // update system account jwt
+	updateJwt(t, srv.ClientURL(), sysCreds, apub, ajwt1, 1)    // set account jwt without revocation
+	// use credentials that will be revoked ans assure that the connection will be disconnected
+	nc := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aCreds1),
+		nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
+			if lErr := conn.LastError(); lErr != nil && strings.Contains(lErr.Error(), "Authentication Revoked") {
+				doneChan <- struct{}{}
+			}
+		}))
+	defer nc.Close()
+	// update account jwt to contain revocation
+	if passCnt := updateJwt(t, srv.ClientURL(), sysCreds, apub, ajwt2, 1); passCnt != 1 {
+		t.Fatalf("Expected jwt update to pass")
+	}
+	// assure that nc got disconnected due to the revocation
+	select {
+	case <-doneChan:
+	case <-time.After(time.Second):
+		t.Fatalf("Expected connection to have failed")
+	}
+	// try again with old credentials. Expected to fail
+	if nc1, err := nats.Connect(srv.ClientURL(), nats.UserCredentials(aCreds1)); err == nil {
+		nc1.Close()
+		t.Fatalf("Expected revoked credentials to fail")
+	}
+	// Assure new creds pass
+	nc2 := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aCreds2))
+	defer nc2.Close()
+}
