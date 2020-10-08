@@ -3554,7 +3554,7 @@ func setBaselineOptions(opts *Options) {
 		opts.TLSTimeout = float64(TLS_TIMEOUT) / float64(time.Second)
 	}
 	if opts.AuthTimeout == 0 {
-		opts.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
+		opts.AuthTimeout = getDefaultAuthTimeout(opts.TLSConfig, opts.TLSTimeout)
 	}
 	if opts.Cluster.Port != 0 {
 		if opts.Cluster.Host == "" {
@@ -3564,7 +3564,7 @@ func setBaselineOptions(opts *Options) {
 			opts.Cluster.TLSTimeout = float64(TLS_TIMEOUT) / float64(time.Second)
 		}
 		if opts.Cluster.AuthTimeout == 0 {
-			opts.Cluster.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
+			opts.Cluster.AuthTimeout = getDefaultAuthTimeout(opts.Cluster.TLSConfig, opts.Cluster.TLSTimeout)
 		}
 	}
 	if opts.LeafNode.Port != 0 {
@@ -3575,7 +3575,7 @@ func setBaselineOptions(opts *Options) {
 			opts.LeafNode.TLSTimeout = float64(TLS_TIMEOUT) / float64(time.Second)
 		}
 		if opts.LeafNode.AuthTimeout == 0 {
-			opts.LeafNode.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
+			opts.LeafNode.AuthTimeout = getDefaultAuthTimeout(opts.LeafNode.TLSConfig, opts.LeafNode.TLSTimeout)
 		}
 	}
 	// Set baseline connect port for remotes.
@@ -3623,7 +3623,7 @@ func setBaselineOptions(opts *Options) {
 			opts.Gateway.TLSTimeout = float64(TLS_TIMEOUT) / float64(time.Second)
 		}
 		if opts.Gateway.AuthTimeout == 0 {
-			opts.Gateway.AuthTimeout = float64(AUTH_TIMEOUT) / float64(time.Second)
+			opts.Gateway.AuthTimeout = getDefaultAuthTimeout(opts.Gateway.TLSConfig, opts.Gateway.TLSTimeout)
 		}
 	}
 	if opts.ConnectErrorReports == 0 {
@@ -3644,6 +3644,16 @@ func setBaselineOptions(opts *Options) {
 	if opts.JetStreamMaxStore == 0 {
 		opts.JetStreamMaxStore = -1
 	}
+}
+
+func getDefaultAuthTimeout(tls *tls.Config, tlsTimeout float64) float64 {
+	var authTimeout float64
+	if tls != nil {
+		authTimeout = tlsTimeout + 1.0
+	} else {
+		authTimeout = float64(AUTH_TIMEOUT / time.Second)
+	}
+	return authTimeout
 }
 
 // ConfigureOptions accepts a flag set and augments it with NATS Server
