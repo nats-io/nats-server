@@ -74,10 +74,10 @@ const (
 	DEFAULT_MAX_CONNECTIONS = (64 * 1024)
 
 	// TLS_TIMEOUT is the TLS wait time.
-	TLS_TIMEOUT = 500 * time.Millisecond
+	TLS_TIMEOUT = 2 * time.Second
 
 	// AUTH_TIMEOUT is the authorization wait time.
-	AUTH_TIMEOUT = 2 * TLS_TIMEOUT
+	AUTH_TIMEOUT = 2 * time.Second
 
 	// DEFAULT_PING_INTERVAL is how often pings are sent to clients and routes.
 	DEFAULT_PING_INTERVAL = 2 * time.Minute

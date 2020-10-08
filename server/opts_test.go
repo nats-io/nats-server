@@ -2790,3 +2790,37 @@ func TestClusterNameAndGatewayNameConflict(t *testing.T) {
 		t.Fatalf("Expected ErrClusterNameConfigConflict got %v", err)
 	}
 }
+
+func TestDefaultAuthTimeout(t *testing.T) {
+	opts := DefaultOptions()
+	opts.AuthTimeout = 0
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	sopts := s.getOpts()
+	if at := time.Duration(sopts.AuthTimeout * float64(time.Second)); at != AUTH_TIMEOUT {
+		t.Fatalf("Expected auth timeout to be %v, got %v", AUTH_TIMEOUT, at)
+	}
+	s.Shutdown()
+
+	opts = DefaultOptions()
+	tc := &TLSConfigOpts{
+		CertFile: "../test/configs/certs/server-cert.pem",
+		KeyFile:  "../test/configs/certs/server-key.pem",
+		CaFile:   "../test/configs/certs/ca.pem",
+		Timeout:  4.0,
+	}
+	tlsConfig, err := GenTLSConfig(tc)
+	if err != nil {
+		t.Fatalf("Error generating tls config: %v", err)
+	}
+	opts.TLSConfig = tlsConfig
+	opts.TLSTimeout = tc.Timeout
+	s = RunServer(opts)
+	defer s.Shutdown()
+
+	sopts = s.getOpts()
+	if sopts.AuthTimeout != 5 {
+		t.Fatalf("Expected auth timeout to be %v, got %v", 5, sopts.AuthTimeout)
+	}
+}
