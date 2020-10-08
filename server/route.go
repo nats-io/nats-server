@@ -491,6 +491,7 @@ func (c *client) processRouteInfo(info *Info) {
 
 	supportsHeaders := c.srv.supportsHeaders()
 	clusterName := c.srv.ClusterName()
+	srvName := c.srv.Name()
 
 	c.mu.Lock()
 	// Connection can be closed at any time (by auth timeout, etc).
@@ -576,6 +577,12 @@ func (c *client) processRouteInfo(info *Info) {
 			s.removeConnectURLsAndSendINFOToClients(connectURLs, wsConnectURLs)
 		}
 		return
+	}
+
+	// Check if remote has same server name than this server.
+	if !c.route.didSolicit && info.Name == srvName {
+		// For now simply report as a warning.
+		c.Warnf("Remote server has the same name: %q", info.Name)
 	}
 
 	// Mark that the INFO protocol has been received, so we can detect updates.

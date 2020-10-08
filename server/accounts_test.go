@@ -1600,7 +1600,7 @@ func TestAccountTrackLatencyRemoteLeaks(t *testing.T) {
 	defer srvA.Shutdown()
 	optsB := nextServerOpts(optsA)
 	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsA.Cluster.Host, optsA.Cluster.Port))
-	optsA.ServerName = "B"
+	optsB.ServerName = "B"
 	srvB := RunServer(optsB)
 	defer srvB.Shutdown()
 

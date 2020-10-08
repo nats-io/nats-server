@@ -1721,6 +1721,7 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	}
 
 	s.Noticef("Server id is %s", s.info.ID)
+	s.Noticef("Server name is %s", s.info.Name)
 	s.Noticef("Server is ready")
 
 	// If server was started with RANDOM_PORT (-1), opts.Port would be equal

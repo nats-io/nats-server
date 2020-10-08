@@ -82,6 +82,7 @@ func TestSendRouteInfoOnConnect(t *testing.T) {
 	// Need to send a different INFO than the one received, otherwise the server
 	// will detect as a "cycle" and close the connection.
 	info.ID = routeID
+	info.Name = ""
 	b, err := json.Marshal(info)
 	if err != nil {
 		t.Fatalf("Could not marshal test route info: %v", err)
@@ -478,6 +479,7 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 		t.Fatalf("Could not unmarshal route info: %v", err)
 	}
 	info.ID = "ROUTE:1234"
+	info.Name = ""
 	b, err := json.Marshal(info)
 	if err != nil {
 		t.Fatalf("Could not marshal test route info: %v", err)

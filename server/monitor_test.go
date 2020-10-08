@@ -2175,6 +2175,7 @@ func TestRoutezPermissions(t *testing.T) {
 	defer s1.Shutdown()
 
 	opts = DefaultMonitorOptions()
+	opts.ServerName = "monitor_server_2"
 	opts.Cluster.Host = "127.0.0.1"
 	opts.Cluster.Name = "A"
 	opts.Cluster.Port = -1

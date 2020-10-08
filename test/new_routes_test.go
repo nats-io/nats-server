@@ -129,6 +129,17 @@ func TestNewRouteHeaderSupportOldAndNew(t *testing.T) {
 	checkMsg(t, matches[0], "foo", "22", "reply", "2", "ok")
 }
 
+func sendRouteInfo(t *testing.T, rc net.Conn, routeSend sendFun, routeID string) {
+	info := checkInfoMsg(t, rc)
+	info.ID = routeID
+	info.Name = ""
+	b, err := json.Marshal(info)
+	if err != nil {
+		t.Fatalf("Could not marshal test route info: %v", err)
+	}
+	routeSend(fmt.Sprintf("INFO %s\r\n", b))
+}
+
 func TestNewRouteConnectSubs(t *testing.T) {
 	s, opts := runNewRouteServer(t)
 	defer s.Shutdown()
@@ -154,15 +165,7 @@ func TestNewRouteConnectSubs(t *testing.T) {
 	routeID := "RTEST_NEW:22"
 	routeSend, routeExpect := setupRouteEx(t, rc, opts, routeID)
 
-	info := checkInfoMsg(t, rc)
-
-	info.ID = routeID
-	b, err := json.Marshal(info)
-	if err != nil {
-		t.Fatalf("Could not marshal test route info: %v", err)
-	}
-	routeSend(fmt.Sprintf("INFO %s\r\n", b))
-
+	sendRouteInfo(t, rc, routeSend, routeID)
 	buf := routeExpect(rsubRe)
 
 	matches := rsubRe.FindAllSubmatch(buf, -1)
@@ -228,15 +231,7 @@ func TestNewRouteConnectSubsWithAccount(t *testing.T) {
 	routeID := "RTEST_NEW:22"
 	routeSend, routeExpect := setupRouteEx(t, rc, opts, routeID)
 
-	info := checkInfoMsg(t, rc)
-
-	info.ID = routeID
-	b, err := json.Marshal(info)
-	if err != nil {
-		t.Fatalf("Could not marshal test route info: %v", err)
-	}
-	routeSend(fmt.Sprintf("INFO %s\r\n", b))
-
+	sendRouteInfo(t, rc, routeSend, routeID)
 	buf := routeExpect(rsubRe)
 
 	matches := rsubRe.FindAllSubmatch(buf, -1)
@@ -308,13 +303,7 @@ func TestNewRouteRSubs(t *testing.T) {
 	routeID := "RTEST_NEW:33"
 	routeSend, routeExpect := setupRouteEx(t, rc, opts, routeID)
 
-	info := checkInfoMsg(t, rc)
-	info.ID = routeID
-	b, err := json.Marshal(info)
-	if err != nil {
-		t.Fatalf("Could not marshal test route info: %v", err)
-	}
-	routeSend(fmt.Sprintf("INFO %s\r\n", b))
+	sendRouteInfo(t, rc, routeSend, routeID)
 	routeSend("PING\r\n")
 	routeExpect(pongRe)
 
@@ -386,13 +375,7 @@ func TestNewRouteProgressiveNormalSubs(t *testing.T) {
 	routeID := "RTEST_NEW:33"
 	routeSend, routeExpect := setupRouteEx(t, rc, opts, routeID)
 
-	info := checkInfoMsg(t, rc)
-	info.ID = routeID
-	b, err := json.Marshal(info)
-	if err != nil {
-		t.Fatalf("Could not marshal test route info: %v", err)
-	}
-	routeSend(fmt.Sprintf("INFO %s\r\n", b))
+	sendRouteInfo(t, rc, routeSend, routeID)
 	routeSend("PING\r\n")
 	routeExpect(pongRe)
 
@@ -483,13 +466,7 @@ func TestNewRouteClientClosedWithNormalSubscriptions(t *testing.T) {
 	routeID := "RTEST_NEW:44"
 	routeSend, routeExpect := setupRouteEx(t, rc, opts, routeID)
 
-	info := checkInfoMsg(t, rc)
-	info.ID = routeID
-	b, err := json.Marshal(info)
-	if err != nil {
-		t.Fatalf("Could not marshal test route info: %v", err)
-	}
-	routeSend(fmt.Sprintf("INFO %s\r\n", b))
+	sendRouteInfo(t, rc, routeSend, routeID)
 	routeSend("PING\r\n")
 	routeExpect(pongRe)
 
@@ -532,13 +509,7 @@ func TestNewRouteClientClosedWithQueueSubscriptions(t *testing.T) {
 	routeID := "RTEST_NEW:44"
 	routeSend, routeExpect := setupRouteEx(t, rc, opts, routeID)
 
-	info := checkInfoMsg(t, rc)
-	info.ID = routeID
-	b, err := json.Marshal(info)
-	if err != nil {
-		t.Fatalf("Could not marshal test route info: %v", err)
-	}
-	routeSend(fmt.Sprintf("INFO %s\r\n", b))
+	sendRouteInfo(t, rc, routeSend, routeID)
 	routeSend("PING\r\n")
 	routeExpect(pongRe)
 
@@ -579,13 +550,7 @@ func TestNewRouteRUnsubAccountSpecific(t *testing.T) {
 	routeID := "RTEST_NEW:77"
 	routeSend, routeExpect := setupRouteEx(t, rc, opts, routeID)
 
-	info := checkInfoMsg(t, rc)
-	info.ID = routeID
-	b, err := json.Marshal(info)
-	if err != nil {
-		t.Fatalf("Could not marshal test route info: %v", err)
-	}
-	routeSend(fmt.Sprintf("INFO %s\r\n", b))
+	sendRouteInfo(t, rc, routeSend, routeID)
 
 	// Now create 500 subs on same subject but all different accounts.
 	for i := 0; i < 500; i++ {
@@ -635,13 +600,7 @@ func TestNewRouteRSubCleanupOnDisconnect(t *testing.T) {
 	routeID := "RTEST_NEW:77"
 	routeSend, routeExpect := setupRouteEx(t, rc, opts, routeID)
 
-	info := checkInfoMsg(t, rc)
-	info.ID = routeID
-	b, err := json.Marshal(info)
-	if err != nil {
-		t.Fatalf("Could not marshal test route info: %v", err)
-	}
-	routeSend(fmt.Sprintf("INFO %s\r\n", b))
+	sendRouteInfo(t, rc, routeSend, routeID)
 
 	// Now create 100 subs on 3 different accounts.
 	for i := 0; i < 100; i++ {
@@ -673,13 +632,7 @@ func TestNewRouteSendSubsAndMsgs(t *testing.T) {
 	routeID := "RTEST_NEW:44"
 	routeSend, routeExpect := setupRouteEx(t, rc, opts, routeID)
 
-	info := checkInfoMsg(t, rc)
-	info.ID = routeID
-	b, err := json.Marshal(info)
-	if err != nil {
-		t.Fatalf("Could not marshal test route info: %v", err)
-	}
-	routeSend(fmt.Sprintf("INFO %s\r\n", b))
+	sendRouteInfo(t, rc, routeSend, routeID)
 	routeSend("PING\r\n")
 	routeExpect(pongRe)
 
@@ -801,13 +754,7 @@ func TestNewRouteProcessRoutedMsgs(t *testing.T) {
 	routeID := "RTEST_NEW:55"
 	routeSend, routeExpect := setupRouteEx(t, rc, opts, routeID)
 
-	info := checkInfoMsg(t, rc)
-	info.ID = routeID
-	b, err := json.Marshal(info)
-	if err != nil {
-		t.Fatalf("Could not marshal test route info: %v", err)
-	}
-	routeSend(fmt.Sprintf("INFO %s\r\n", b))
+	sendRouteInfo(t, rc, routeSend, routeID)
 	routeSend("PING\r\n")
 	routeExpect(pongRe)
 
@@ -1775,6 +1722,7 @@ func TestNewRouteLeafNodeOriginSupport(t *testing.T) {
 
 	info := checkInfoMsg(t, rc)
 	info.ID = routeID
+	info.Name = ""
 	info.LNOC = true
 	b, err := json.Marshal(info)
 	if err != nil {
@@ -1859,13 +1807,7 @@ func TestNewRouteDuplicateSubscription(t *testing.T) {
 
 	routeID := "RTEST_DUPLICATE:22"
 	routeSend, routeExpect := setupRouteEx(t, rc, opts, routeID)
-	info := checkInfoMsg(t, rc)
-	info.ID = routeID
-	b, err := json.Marshal(info)
-	if err != nil {
-		t.Fatalf("Could not marshal test route info: %v", err)
-	}
-	routeSend(fmt.Sprintf("INFO %s\r\n", b))
+	sendRouteInfo(t, rc, routeSend, routeID)
 	routeSend("PING\r\n")
 	routeExpect(pongRe)
 
