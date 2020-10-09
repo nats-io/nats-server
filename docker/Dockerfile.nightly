@@ -8,7 +8,8 @@ FROM alpine:latest
 RUN apk add --update ca-certificates && mkdir -p /nats/bin && mkdir /nats/conf
 
 COPY docker/nats-server.conf /nats/conf/nats-server.conf
-COPY nats-server /bin/nats-server
+COPY nats-server /nats/bin/nats-server
+RUN ln -ns /nats/bin/nats-server /bin/nats-server && ln -ns /nats/bin/nats-server /nats-server && ln -ns /nats/bin/nats-server /gnatsd
 COPY --from=builder /go/bin/nats /bin/nats
 
 EXPOSE 4222 8222 6222 5222
