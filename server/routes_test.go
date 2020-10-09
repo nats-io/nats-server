@@ -1361,7 +1361,7 @@ func TestRouteDuplicateServerName(t *testing.T) {
 
 	select {
 	case w := <-l.warn:
-		if !strings.Contains(w, "Remote server has the same name") {
+		if !strings.Contains(w, "Remote server has a duplicate name") {
 			t.Fatalf("Expected warning about same name, got %q", w)
 		}
 	case <-time.After(time.Second):

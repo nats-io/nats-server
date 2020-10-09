@@ -582,7 +582,7 @@ func (c *client) processRouteInfo(info *Info) {
 	// Check if remote has same server name than this server.
 	if !c.route.didSolicit && info.Name == srvName {
 		// For now simply report as a warning.
-		c.Warnf("Remote server has the same name: %q", info.Name)
+		c.Warnf("Remote server has a duplicate name: %q", info.Name)
 	}
 
 	// Mark that the INFO protocol has been received, so we can detect updates.
