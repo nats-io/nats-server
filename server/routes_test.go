@@ -299,6 +299,7 @@ func nextServerOpts(opts *Options) *Options {
 	if nopts.Gateway.Name != "" {
 		nopts.Gateway.Port = -1
 	}
+	nopts.ServerName = ""
 	return &nopts
 }
 
@@ -1337,5 +1338,33 @@ func TestRouteIPResolutionAndRouteToSelf(t *testing.T) {
 	case <-l.ch:
 		// Ok
 		return
+	}
+}
+
+func TestRouteDuplicateServerName(t *testing.T) {
+	o := DefaultOptions()
+	o.ServerName = "A"
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	l := &captureWarnLogger{warn: make(chan string, 1)}
+	s.SetLogger(l, false, false)
+
+	o2 := DefaultOptions()
+	// Set the same server name on purpose
+	o2.ServerName = "A"
+	o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o.Cluster.Port))
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s, s2)
+
+	select {
+	case w := <-l.warn:
+		if !strings.Contains(w, "Remote server has a duplicate name") {
+			t.Fatalf("Expected warning about same name, got %q", w)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Should have gotten a warning regarding duplicate server name")
 	}
 }

@@ -239,7 +239,6 @@ func natsUnsub(t *testing.T, sub *nats.Subscription) {
 func testDefaultOptionsForGateway(name string) *Options {
 	o := DefaultOptions()
 	o.NoSystemAccount = true
-	o.ServerName = name
 	o.Cluster.Name = name
 	o.Gateway.Name = name
 	o.Gateway.Host = "127.0.0.1"
