@@ -431,9 +431,8 @@ func (store *DirJWTStore) delete(publicKey string) error {
 			return nil
 		}
 		return err
-	} else {
-		store.expiration.unTrack(publicKey)
 	}
+	store.expiration.unTrack(publicKey)
 	// TODO do cb
 	return nil
 }
