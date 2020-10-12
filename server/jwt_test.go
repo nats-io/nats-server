@@ -1996,7 +1996,7 @@ func TestAccountURLResolverPermanentFetchFailure(t *testing.T) {
 	defer sysc.Close()
 	// push accounts
 	natsPub(t, sysc, fmt.Sprintf(accUpdateEventSubjNew, imppub), []byte(impjwt))
-	natsPub(t, sysc, fmt.Sprintf(accUpdateEventSubjNew, exppub), []byte(expjwt))
+	natsPub(t, sysc, fmt.Sprintf(accUpdateEventSubjOld, exppub), []byte(expjwt))
 	sysc.Flush()
 	importErrCnt := 0
 	tmr := time.NewTimer(500 * time.Millisecond)
@@ -3210,7 +3210,7 @@ func updateJwt(t *testing.T, url string, creds string, pubKey string, jwt string
 	sub := natsSubSync(t, c, resp)
 	err := sub.AutoUnsubscribe(respCnt)
 	require_NoError(t, err)
-	require_NoError(t, c.PublishRequest(fmt.Sprintf(accUpdateEventSubjNew, pubKey), resp, []byte(jwt)))
+	require_NoError(t, c.PublishRequest(accClaimsReqSubj, resp, []byte(jwt)))
 	passCnt := 0
 	for i := 0; i < respCnt; i++ {
 		if require_NextMsg(sub) {
@@ -4357,4 +4357,68 @@ func TestJWTUserRevocation(t *testing.T) {
 	// Assure new creds pass
 	nc2 := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aCreds2))
 	defer nc2.Close()
+}
+
+func TestJWTAccountOps(t *testing.T) {
+	createAccountAndUser := func(pubKey, jwt1, creds1 *string) {
+		t.Helper()
+		kp, _ := nkeys.CreateAccount()
+		*pubKey, _ = kp.PublicKey()
+		claim := jwt.NewAccountClaims(*pubKey)
+		var err error
+		*jwt1, err = claim.Encode(oKp)
+		require_NoError(t, err)
+
+		ukp, _ := nkeys.CreateUser()
+		seed, _ := ukp.Seed()
+		upub, _ := ukp.PublicKey()
+		uclaim := newJWTTestUserClaims()
+		uclaim.Subject = upub
+
+		ujwt1, err := uclaim.Encode(kp)
+		require_NoError(t, err)
+		*creds1 = genCredsFile(t, ujwt1, seed)
+	}
+	var syspub, sysjwt, sysCreds string
+	createAccountAndUser(&syspub, &sysjwt, &sysCreds)
+	var apub, ajwt1, aCreds1 string
+	createAccountAndUser(&apub, &ajwt1, &aCreds1)
+	defer os.Remove(sysCreds)
+	defer os.Remove(aCreds1)
+	dirSrv := createDir(t, "srv")
+	defer os.RemoveAll(dirSrv)
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: full
+			dir: %s
+		}
+    `, ojwt, syspub, dirSrv)))
+	defer os.Remove(conf)
+	srv, _ := RunServerWithConfig(conf)
+	defer srv.Shutdown()
+	updateJwt(t, srv.ClientURL(), sysCreds, syspub, sysjwt, 1) // update system account jwt
+	updateJwt(t, srv.ClientURL(), sysCreds, apub, ajwt1, 1)    // set jwt
+	nc := natsConnect(t, srv.ClientURL(), nats.UserCredentials(sysCreds))
+	defer nc.Close()
+	resp, err := nc.Request(accListReqSubj, nil, time.Second)
+	require_NoError(t, err)
+	require_True(t, strings.Contains(string(resp.Data), apub))
+	require_True(t, strings.Contains(string(resp.Data), syspub))
+	// delete nothing
+	resp, err = nc.Request(accDeleteReqSubj, nil, time.Second)
+	require_NoError(t, err)
+	require_True(t, strings.Contains(string(resp.Data), `"message": "deleted 0 accounts"`))
+	// issue delete, twice to also delete a non existing account
+	for i := 0; i < 2; i++ {
+		resp, err = nc.Request(accDeleteReqSubj, []byte(apub), time.Second)
+		require_NoError(t, err)
+		require_True(t, strings.Contains(string(resp.Data), `"message": "deleted 1 accounts"`))
+		resp, err = nc.Request(accListReqSubj, nil, time.Second)
+		require_False(t, strings.Contains(string(resp.Data), apub))
+		require_True(t, strings.Contains(string(resp.Data), syspub))
+		require_NoError(t, err)
+	}
 }

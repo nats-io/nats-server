@@ -2905,9 +2905,17 @@ func (dr *DirAccResolver) Reload() error {
 
 func respondToUpdate(s *Server, respSubj string, acc string, message string, err error) {
 	if err == nil {
-		s.Debugf("%s - %s", message, acc)
+		if acc == "" {
+			s.Debugf("%s", message)
+		} else {
+			s.Debugf("%s - %s", message, acc)
+		}
 	} else {
-		s.Errorf("%s - %s - %s", message, acc, err)
+		if acc == "" {
+			s.Errorf("%s - %s", message, err)
+		} else {
+			s.Errorf("%s - %s - %s", message, acc, err)
+		}
 	}
 	if respSubj == "" {
 		return
@@ -2917,17 +2925,63 @@ func respondToUpdate(s *Server, respSubj string, acc string, message string, err
 	if err == nil {
 		response["data"] = map[string]interface{}{
 			"code":    http.StatusOK,
-			"account": acc,
 			"message": message,
+		}
+		if acc != "" {
+			response["data"].(map[string]interface{})["account"] = acc
 		}
 	} else {
 		response["error"] = map[string]interface{}{
 			"code":        http.StatusInternalServerError,
-			"account":     acc,
 			"description": fmt.Sprintf("%s - %v", message, err),
+		}
+		if acc != "" {
+			response["error"].(map[string]interface{})["account"] = acc
 		}
 	}
 	s.sendInternalMsgLocked(respSubj, _EMPTY_, server, response)
+}
+
+func handleListRequest(store *DirJWTStore, s *Server, reply string) {
+	if reply == "" {
+		return
+	}
+	accIds := make([]string, 0, 1024)
+	if err := store.PackWalk(1, func(partialPackMsg string) {
+		if tk := strings.Split(partialPackMsg, "|"); len(tk) == 2 {
+			accIds = append(accIds, tk[0])
+		}
+	}); err != nil {
+		// let them timeout
+		s.Errorf("list request error: %v", err)
+	} else {
+		s.Debugf("list request responded with %d account ids", len(accIds))
+		server := &ServerInfo{}
+		response := map[string]interface{}{"server": server, "data": accIds}
+		s.sendInternalMsgLocked(reply, _EMPTY_, server, response)
+	}
+}
+
+func handleDeleteRequest(store *DirJWTStore, s *Server, msg []byte, reply string) {
+	accIds := strings.Split(strings.Replace(string(msg), "\r\n", "\n", -1), "\n")
+	errs := []string{}
+	passCnt := 0
+	for _, acc := range accIds {
+		if acc == "" {
+			continue
+		}
+		if err := store.delete(acc); err != nil {
+			errs = append(errs, err.Error())
+		} else {
+			passCnt++
+		}
+	}
+	if len(errs) == 0 {
+		respondToUpdate(s, reply, "", fmt.Sprintf("deleted %d accounts", passCnt), nil)
+	} else {
+		respondToUpdate(s, reply, "", fmt.Sprintf("deleted %d accounts, failed for %d", passCnt, len(errs)),
+			errors.New(strings.Join(errs, "<\n")))
+	}
 }
 
 func (dr *DirAccResolver) Start(s *Server) error {
@@ -2970,6 +3024,17 @@ func (dr *DirAccResolver) Start(s *Server) error {
 			return fmt.Errorf("error setting up update handling: %v", err)
 		}
 	}
+	if _, err := s.sysSubscribe(accClaimsReqSubj, func(_ *subscription, _ *client, subj, resp string, msg []byte) {
+		if claim, err := jwt.DecodeAccountClaims(string(msg)); err != nil {
+			respondToUpdate(s, resp, "n/a", "jwt update resulted in error", err)
+		} else if err := dr.save(claim.Subject, string(msg)); err != nil {
+			respondToUpdate(s, resp, claim.Subject, "jwt update resulted in error", err)
+		} else {
+			respondToUpdate(s, resp, claim.Subject, "jwt updated", nil)
+		}
+	}); err != nil {
+		return fmt.Errorf("error setting up update handling: %v", err)
+	}
 	if _, err := s.sysSubscribe(fmt.Sprintf(accLookupReqSubj, "*"), func(_ *subscription, _ *client, subj, reply string, msg []byte) {
 		// respond to lookups with our version
 		if reply == "" {
@@ -3008,6 +3073,17 @@ func (dr *DirAccResolver) Start(s *Server) error {
 			}
 		}); err != nil {
 		return fmt.Errorf("error setting up pack request handling: %v", err)
+	} else if _, err = s.sysSubscribe(accListReqSubj,
+		// respond to list requests with one message containing all account ids
+		func(_ *subscription, _ *client, _, reply string, _ []byte) {
+			handleListRequest(dr.DirJWTStore, s, reply)
+		}); err != nil {
+		return fmt.Errorf("error setting up list request handling: %v", err)
+	} else if _, err := s.sysSubscribe(accDeleteReqSubj,
+		func(_ *subscription, _ *client, _, reply string, msg []byte) {
+			handleDeleteRequest(dr.DirJWTStore, s, msg, reply)
+		}); err != nil {
+		return fmt.Errorf("error setting up delete request handling: %v", err)
 	} else if _, err = s.sysSubscribe(packRespIb, func(_ *subscription, _ *client, _, _ string, msg []byte) {
 		// embed pack responses into store
 		hash := dr.DirJWTStore.Hash()
@@ -3180,6 +3256,32 @@ func (dr *CacheDirAccResolver) Start(s *Server) error {
 		}); err != nil {
 			return fmt.Errorf("error setting up update handling: %v", err)
 		}
+	}
+	if _, err := s.sysSubscribe(accClaimsReqSubj, func(_ *subscription, _ *client, subj, resp string, msg []byte) {
+		if claim, err := jwt.DecodeAccountClaims(string(msg)); err != nil {
+			respondToUpdate(s, resp, "n/a", "jwt update cache resulted in error", err)
+		} else if _, ok := s.accounts.Load(claim.Subject); !ok {
+			respondToUpdate(s, resp, claim.Subject, "jwt update cache skipped", nil)
+		} else if err := dr.save(claim.Subject, string(msg)); err != nil {
+			respondToUpdate(s, resp, claim.Subject, "jwt update cache resulted in error", err)
+		} else {
+			respondToUpdate(s, resp, claim.Subject, "jwt updated cache", nil)
+		}
+	}); err != nil {
+		return fmt.Errorf("error setting up update handling: %v", err)
+	}
+	if _, err := s.sysSubscribe(accListReqSubj,
+		// respond to list requests with one message containing all account ids
+		func(_ *subscription, _ *client, _, reply string, _ []byte) {
+			handleListRequest(dr.DirJWTStore, s, reply)
+		}); err != nil {
+		return fmt.Errorf("error setting up list request handling: %v", err)
+	}
+	if _, err := s.sysSubscribe(accDeleteReqSubj,
+		func(_ *subscription, _ *client, _, reply string, msg []byte) {
+			handleDeleteRequest(dr.DirJWTStore, s, msg, reply)
+		}); err != nil {
+		return fmt.Errorf("error setting up list request handling: %v", err)
 	}
 	s.Noticef("Managing some jwt in exclusive directory %s", dr.directory)
 	return nil
