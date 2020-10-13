@@ -872,11 +872,12 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 				return
 			}
 			if dir == "" {
-				*errors = append(*errors, &configErr{tk, "dir needs to point to a directory"})
+				*errors = append(*errors, &configErr{tk, "dir has no value and needs to point to a directory"})
 				return
 			}
-			if info, err := os.Stat(dir); err != nil || !info.IsDir() || info.Mode().Perm()&(1<<(uint(7))) == 0 {
-				info.IsDir()
+			if info, err := os.Stat(dir); err != nil && (!info.IsDir() || info.Mode().Perm()&(1<<(uint(7))) == 0) {
+				*errors = append(*errors, &configErr{tk, "dir needs to point to an accessible directory"})
+				return
 			}
 			var res AccountResolver
 			switch strings.ToUpper(dirType) {

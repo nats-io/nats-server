@@ -793,6 +793,31 @@ func TestTTL(t *testing.T) {
 	require_Len(t, len(f), 0)
 }
 
+func TestRemove(t *testing.T) {
+	dir, err := ioutil.TempDir(os.TempDir(), "jwtstore_test")
+	require_NoError(t, err)
+	require_OneJWT := func() {
+		t.Helper()
+		f, err := ioutil.ReadDir(dir)
+		require_NoError(t, err)
+		require_Len(t, len(f), 1)
+	}
+	dirStore, err := NewExpiringDirJWTStore(dir, false, false, 0, 10, true, 0, nil)
+	require_NoError(t, err)
+	defer dirStore.Close()
+
+	accountKey, err := nkeys.CreateAccount()
+	require_NoError(t, err)
+	pubKey, err := accountKey.PublicKey()
+	require_NoError(t, err)
+	createTestAccount(t, dirStore, 0, accountKey)
+	require_OneJWT()
+	dirStore.delete(pubKey)
+	f, err := ioutil.ReadDir(dir)
+	require_NoError(t, err)
+	require_Len(t, len(f), 0)
+}
+
 const infDur = time.Duration(math.MaxInt64)
 
 func TestNotificationOnPack(t *testing.T) {

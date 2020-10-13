@@ -420,6 +420,23 @@ func (store *DirJWTStore) write(path string, publicKey string, theJWT string) (b
 	return true, nil
 }
 
+func (store *DirJWTStore) delete(publicKey string) error {
+	if store.readonly {
+		return fmt.Errorf("store is read-only")
+	}
+	store.Lock()
+	defer store.Unlock()
+	if err := os.Remove(store.pathForKey(publicKey)); err != nil {
+		if _, ok := err.(*os.PathError); ok || err == os.ErrNotExist {
+			return nil
+		}
+		return err
+	}
+	store.expiration.unTrack(publicKey)
+	// TODO do cb
+	return nil
+}
+
 // Save puts the JWT in a map by public key and performs update callbacks
 // Assumes lock is NOT held
 func (store *DirJWTStore) save(publicKey string, theJWT string) error {

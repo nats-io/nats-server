@@ -36,6 +36,9 @@ const (
 	accLookupReqTokens = 6
 	accLookupReqSubj   = "$SYS.REQ.ACCOUNT.%s.CLAIMS.LOOKUP"
 	accPackReqSubj     = "$SYS.REQ.CLAIMS.PACK"
+	accListReqSubj     = "$SYS.REQ.CLAIMS.LIST"
+	accClaimsReqSubj   = "$SYS.REQ.CLAIMS.UPDATE"
+	accDeleteReqSubj   = "$SYS.REQ.CLAIMS.DELETE"
 
 	connectEventSubj    = "$SYS.ACCOUNT.%s.CONNECT"
 	disconnectEventSubj = "$SYS.ACCOUNT.%s.DISCONNECT"
