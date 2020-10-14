@@ -2419,6 +2419,9 @@ func (c *client) addShadowSub(sub *subscription, im *streamImport, useFrom bool)
 
 	// Update our route map here.
 	c.srv.updateRouteSubscriptionMap(im.acc, &nsub, 1)
+	if c.srv.gateway.enabled {
+		c.srv.gatewayUpdateSubInterest(im.acc.Name, &nsub, 1)
+	}
 	c.srv.updateLeafNodes(im.acc, &nsub, 1)
 
 	return &nsub, nil
@@ -2545,10 +2548,14 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force, remove bool
 
 	// Check to see if we have shadow subscriptions.
 	var updateRoute bool
+	var updateGWs bool
 	shadowSubs := sub.shadow
 	sub.shadow = nil
 	if len(shadowSubs) > 0 {
 		updateRoute = (c.kind == CLIENT || c.kind == SYSTEM || c.kind == LEAF) && c.srv != nil
+		if updateRoute {
+			updateGWs = c.srv.gateway.enabled
+		}
 	}
 	sub.close()
 	c.mu.Unlock()
@@ -2557,8 +2564,13 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force, remove bool
 	for _, nsub := range shadowSubs {
 		if err := nsub.im.acc.sl.Remove(nsub); err != nil {
 			c.Debugf("Could not remove shadow import subscription for account %q", nsub.im.acc.Name)
-		} else if updateRoute {
-			c.srv.updateRouteSubscriptionMap(nsub.im.acc, nsub, -1)
+		} else {
+			if updateRoute {
+				c.srv.updateRouteSubscriptionMap(nsub.im.acc, nsub, -1)
+			}
+			if updateGWs {
+				c.srv.gatewayUpdateSubInterest(nsub.im.acc.Name, nsub, -1)
+			}
 		}
 		// Now check on leafnode updates.
 		c.srv.updateLeafNodes(nsub.im.acc, nsub, -1)
