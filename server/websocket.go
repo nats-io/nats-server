@@ -529,7 +529,7 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 	}
 	// Point 3.
 	if !wsHeaderContains(r.Header, "Upgrade", "websocket") {
-		return nil, wsReturnHTTPError(w, http.StatusBadRequest, "invalid value for header 'Uprade'")
+		return nil, wsReturnHTTPError(w, http.StatusBadRequest, "invalid value for header 'Upgrade'")
 	}
 	// Point 4.
 	if !wsHeaderContains(r.Header, "Connection", "Upgrade") {
