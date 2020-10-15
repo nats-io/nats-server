@@ -2068,6 +2068,16 @@ func (a *Account) activationExpired(exportAcc *Account, subject string, kind jwt
 	}
 }
 
+func isRevoked(revocations map[string]int64, subject string, issuedAt int64) bool {
+	if revocations == nil {
+		return false
+	}
+	if t, ok := revocations[subject]; !ok || t < issuedAt {
+		return false
+	}
+	return true
+}
+
 // checkActivation will check the activation token for validity.
 func (a *Account) checkActivation(importAcc *Account, claim *jwt.Import, expTimer bool) bool {
 	if claim == nil || claim.Token == "" {
@@ -2110,13 +2120,7 @@ func (a *Account) checkActivation(importAcc *Account, claim *jwt.Import, expTime
 		}
 	}
 	// Check for token revocation..
-	if a.actsRevoked != nil {
-		if t, ok := a.actsRevoked[act.Subject]; ok && t <= time.Now().Unix() {
-			return false
-		}
-	}
-
-	return true
+	return !isRevoked(a.actsRevoked, act.Subject, act.IssuedAt)
 }
 
 // Returns true if the activation claim is trusted. That is the issuer matches
@@ -2256,13 +2260,7 @@ func (a *Account) clearExpirationTimer() bool {
 func (a *Account) checkUserRevoked(nkey string, issuedAt int64) bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	if a.usersRevoked == nil {
-		return false
-	}
-	if t, ok := a.usersRevoked[nkey]; !ok || t < issuedAt {
-		return false
-	}
-	return true
+	return isRevoked(a.usersRevoked, nkey, issuedAt)
 }
 
 // Check expiration and set the proper state as needed.
