@@ -629,6 +629,11 @@ func (s *Server) jsTemplateNamesRequest(sub *subscription, c *client, subject, r
 		return strings.Compare(ts[i].StreamTemplateConfig.Name, ts[j].StreamTemplateConfig.Name) < 0
 	})
 
+	tcnt := len(ts)
+	if offset > tcnt {
+		offset = tcnt
+	}
+
 	for _, t := range ts[offset:] {
 		t.mu.Lock()
 		name := t.Name
@@ -638,7 +643,7 @@ func (s *Server) jsTemplateNamesRequest(sub *subscription, c *client, subject, r
 			break
 		}
 	}
-	resp.Total = len(ts)
+	resp.Total = tcnt
 	resp.Limit = JSApiNamesLimit
 	resp.Offset = offset
 	if resp.Templates == nil {
@@ -840,13 +845,18 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, rep
 		return strings.Compare(msets[i].config.Name, msets[j].config.Name) < 0
 	})
 
+	scnt := len(msets)
+	if offset > scnt {
+		offset = scnt
+	}
+
 	for _, mset := range msets[offset:] {
 		resp.Streams = append(resp.Streams, mset.config.Name)
 		if len(resp.Streams) >= JSApiNamesLimit {
 			break
 		}
 	}
-	resp.Total = len(msets)
+	resp.Total = scnt
 	resp.Limit = JSApiNamesLimit
 	resp.Offset = offset
 	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
@@ -888,13 +898,18 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 		return strings.Compare(msets[i].config.Name, msets[j].config.Name) < 0
 	})
 
+	scnt := len(msets)
+	if offset > scnt {
+		offset = scnt
+	}
+
 	for _, mset := range msets[offset:] {
 		resp.Streams = append(resp.Streams, &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config()})
 		if len(resp.Streams) >= JSApiListLimit {
 			break
 		}
 	}
-	resp.Total = len(msets)
+	resp.Total = scnt
 	resp.Limit = JSApiListLimit
 	resp.Offset = offset
 	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
@@ -1542,13 +1557,19 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 	sort.Slice(obs, func(i, j int) bool {
 		return strings.Compare(obs[i].name, obs[j].name) < 0
 	})
+
+	ocnt := len(obs)
+	if offset > ocnt {
+		offset = ocnt
+	}
+
 	for _, o := range obs[offset:] {
 		resp.Consumers = append(resp.Consumers, o.Name())
 		if len(resp.Consumers) >= JSApiNamesLimit {
 			break
 		}
 	}
-	resp.Total = len(obs)
+	resp.Total = ocnt
 	resp.Limit = JSApiNamesLimit
 	resp.Offset = offset
 	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
@@ -1594,13 +1615,19 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 	sort.Slice(obs, func(i, j int) bool {
 		return strings.Compare(obs[i].name, obs[j].name) < 0
 	})
+
+	ocnt := len(obs)
+	if offset > ocnt {
+		offset = ocnt
+	}
+
 	for _, o := range obs[offset:] {
 		resp.Consumers = append(resp.Consumers, o.Info())
 		if len(resp.Consumers) >= JSApiListLimit {
 			break
 		}
 	}
-	resp.Total = len(obs)
+	resp.Total = ocnt
 	resp.Limit = JSApiListLimit
 	resp.Offset = offset
 	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))

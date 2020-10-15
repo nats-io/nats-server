@@ -1918,7 +1918,7 @@ func (reason ClosedState) String() string {
 	return "Unknown State"
 }
 
-// LeafzOptions are options passed to Leafz
+// AccountzOptions are options passed to Accountz
 type AccountzOptions struct {
 	// Account indicates that Accountz will return details for the account
 	Account string `json:"account"`
