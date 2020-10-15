@@ -977,6 +977,7 @@ func (c *client) readLoop(pre []byte) {
 	cpacc := c.kind == ROUTER || c.kind == GATEWAY
 	// Last per-account-cache check for closed subscriptions
 	lpacc := time.Now()
+	acc := c.acc
 	c.mu.Unlock()
 
 	defer func() {
@@ -1031,7 +1032,7 @@ func (c *client) readLoop(pre []byte) {
 		// Check if the account has mappings and if so set the local readcache flag.
 		// We check here to make sure any changes such as config reload are reflected here.
 		if c.kind == CLIENT {
-			if c.Account().hasMappings() {
+			if acc.hasMappings() {
 				c.in.flags.set(hasMappings)
 			} else {
 				c.in.flags.clear(hasMappings)
@@ -1108,6 +1109,8 @@ func (c *client) readLoop(pre []byte) {
 			c.in.rsz = int32(cap(b) / 2)
 			b = make([]byte, c.in.rsz)
 		}
+		// re-snapshot the account since it can change during reload, etc.
+		acc = c.acc
 		c.mu.Unlock()
 
 		if dur := time.Since(start); dur >= readLoopReportThreshold {
