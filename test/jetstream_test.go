@@ -6608,6 +6608,7 @@ func TestJetStreamAPIStreamListPaging(t *testing.T) {
 	checkResp(reqList(2*server.JSApiNamesLimit), server.JSApiNamesLimit, 2*server.JSApiNamesLimit)
 	checkResp(reqList(streamsNum), 0, streamsNum)
 	checkResp(reqList(streamsNum-22), 22, streamsNum-22)
+	checkResp(reqList(streamsNum+22), 0, streamsNum)
 }
 
 func TestJetStreamAPIConsumerListPaging(t *testing.T) {
@@ -6674,6 +6675,7 @@ func TestJetStreamAPIConsumerListPaging(t *testing.T) {
 
 	checkResp(reqList(0), server.JSApiNamesLimit, 0)
 	checkResp(reqList(consumersNum-22), 22, consumersNum-22)
+	checkResp(reqList(consumersNum+22), 0, consumersNum)
 }
 
 func TestJetStreamUpdateStream(t *testing.T) {
