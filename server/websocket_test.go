@@ -1107,7 +1107,7 @@ func TestWSUpgradeValidationErrors(t *testing.T) {
 				req.Header.Del("Upgrade")
 				return opts, nil, req
 			},
-			"invalid value for header 'Uprade'",
+			"invalid value for header 'Upgrade'",
 			http.StatusBadRequest,
 		},
 		{
