@@ -1031,7 +1031,7 @@ func (c *client) readLoop(pre []byte) {
 		// Check if the account has mappings and if so set the local readcache flag.
 		// We check here to make sure any changes such as config reload are reflected here.
 		if c.kind == CLIENT {
-			if c.acc.hasMappings() {
+			if c.Account().hasMappings() {
 				c.in.flags.set(hasMappings)
 			} else {
 				c.in.flags.clear(hasMappings)
@@ -4409,8 +4409,9 @@ func (c *client) Account() *Account {
 		return nil
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.acc
+	acc := c.acc
+	c.mu.Unlock()
+	return acc
 }
 
 // prunePerAccountCache will prune off a random number of cache entries.
