@@ -596,6 +596,8 @@ func (s *Server) configureAccounts() error {
 			// For now just move and wipe from opts.Accounts version.
 			a.mappings = acc.mappings
 			acc.mappings = nil
+			// We use this for selecting between multiple weighted destinations.
+			a.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
 		}
 		acc.sl = nil
 		acc.clients = nil

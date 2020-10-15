@@ -2405,9 +2405,10 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
 	}
 
 	// Now walk through collected stream imports that matched.
-	for _, ime := range ims {
+	for i := 0; i < len(ims); i++ {
+		ime := &ims[i]
 		// We will create a shadow subscription.
-		nsub, err := c.addShadowSub(sub, &ime)
+		nsub, err := c.addShadowSub(sub, ime)
 		if err != nil {
 			return err
 		}

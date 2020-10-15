@@ -525,6 +525,11 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	// We use this for selecting between multiple weighted destinations.
+	if a.prand == nil {
+		a.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+
 	if !IsValidSubject(src) {
 		return ErrBadSubject
 	}
@@ -698,9 +703,6 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 	if len(m.dests) == 1 && m.dests[0].weight == 100 {
 		d = m.dests[0]
 	} else {
-		if a.prand == nil {
-			a.makeRand()
-		}
 		w := uint8(a.prand.Int31n(100))
 		for _, rm := range m.dests {
 			if w <= rm.weight {
@@ -720,16 +722,6 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 
 	a.mu.RUnlock()
 	return dest, true
-}
-
-// Small helper function.
-// Read lock assumed held.
-func (a *Account) makeRand() {
-	a.mu.RUnlock()
-	a.mu.Lock()
-	a.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
-	a.mu.Unlock()
-	a.mu.RLock()
 }
 
 // SubscriptionInterest returns true if this account has a matching subscription
