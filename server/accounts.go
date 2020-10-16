@@ -709,7 +709,7 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 	} else {
 		w := uint8(a.prand.Int31n(100))
 		for _, rm := range m.dests {
-			if w <= rm.weight {
+			if w < rm.weight {
 				d = rm
 				break
 			}

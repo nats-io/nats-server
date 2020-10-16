@@ -2646,6 +2646,7 @@ func TestAccountRouteMappingsWithLossInjection(t *testing.T) {
 	cf := createConfFile(t, []byte(`
 	mappings = {
 		foo: [ { dest: foo, weight: 80% } ]
+		bar: [ { dest: bar, weight: 0% } ]
     }
     `))
 	defer os.Remove(cf)
@@ -2666,6 +2667,16 @@ func TestAccountRouteMappingsWithLossInjection(t *testing.T) {
 
 	if pending, _, _ := sub.Pending(); pending == total {
 		t.Fatalf("Expected some loss and pending to not be same as sent")
+	}
+
+	sub, _ = nc.SubscribeSync("bar")
+	for i := 0; i < total; i++ {
+		nc.Publish("bar", nil)
+	}
+	nc.Flush()
+
+	if pending, _, _ := sub.Pending(); pending != 0 {
+		t.Fatalf("Expected all messages to be dropped and pending to be 0, got %d", pending)
 	}
 }
 
