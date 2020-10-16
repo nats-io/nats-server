@@ -86,6 +86,7 @@ type Stream struct {
 	ddarr     []*ddentry
 	ddindex   int
 	ddtmr     *time.Timer
+	lastMsgId string
 }
 
 // JSPubId is used for identifying published messages and performing de-duplication.
@@ -98,6 +99,10 @@ type ddentry struct {
 	seq uint64
 	ts  int64
 }
+
+// JSCausalId is used to perform an optimistic concurrency control check for a published message.
+const JSCausalId = "Causal-Id"
+const JSCausalAny = "*"
 
 // Replicas Range
 const (
@@ -187,6 +192,7 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 	mset.pubAck = append(mset.pubAck, fmt.Sprintf(" {\"stream\": %q, \"seq\": ", cfg.Name)...)
 
 	// Rebuild dedupe as needed.
+	mset.rebuildLastId()
 	mset.rebuildDedupe()
 
 	// Setup subscriptions
@@ -201,6 +207,23 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 	return mset, nil
 }
 
+// rebuildLastMsg will rebuild any dedupe structures needed after recovery of a stream.
+// Lock not needed, only called during initialization.
+func (mset *Stream) rebuildLastId() {
+	state := mset.store.State()
+	if state.Msgs == 0 {
+		return
+	}
+
+	// Set the last message id.
+	_, hdr, _, _, err := mset.store.LoadMsg(state.LastSeq)
+	if err == nil && len(hdr) > 0 {
+		if msgId := getMsgId(hdr); msgId != "" {
+			mset.lastMsgId = msgId
+		}
+	}
+}
+
 // rebuildDedupe will rebuild any dedupe structures needed after recovery of a stream.
 // Lock not needed, only called during initialization.
 // TODO(dlc) - Might be good to know if this should be checked at all for streams with no
@@ -210,6 +233,7 @@ func (mset *Stream) rebuildDedupe() {
 	if state.Msgs == 0 {
 		return
 	}
+
 	// We have some messages. Lookup starting sequence by duplicate time window.
 	sseq := mset.store.GetSeqFromTime(time.Now().Add(-mset.config.Duplicates))
 	if sseq == 0 {
@@ -529,6 +553,7 @@ func (mset *Stream) Purge() uint64 {
 	for _, o := range obs {
 		o.purge(stats.FirstSeq)
 	}
+	mset.lastMsgId = ""
 	return purged
 }
 
@@ -744,6 +769,15 @@ func getMsgId(hdr []byte) string {
 	return string(getHdrVal(JSPubId, hdr))
 }
 
+// Fast lookup of causalId
+func getCausalId(hdr []byte) (string, bool) {
+	index := bytes.Index(hdr, []byte(JSCausalId))
+	if index < 0 {
+		return "", false
+	}
+	return string(getHdrVal(JSCausalId, hdr)), true
+}
+
 // processInboundJetStreamMsg handles processing messages bound for a stream.
 func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subject, reply string, msg []byte) {
 	mset.mu.Lock()
@@ -762,10 +796,11 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 	numConsumers := len(mset.consumers)
 	interestRetention := mset.config.Retention == InterestPolicy
 
-	// Process msgId if we have headers.
+	// Process msgId and causalId if we have headers.
 	var msgId string
 	if pc != nil && pc.pa.hdr > 0 {
 		msgId = getMsgId(msg[:pc.pa.hdr])
+
 		if dde := mset.checkMsgId(msgId); dde != nil {
 			if doAck && len(reply) > 0 {
 				response := append(pubAck, strconv.FormatUint(dde.seq, 10)...)
@@ -775,7 +810,20 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 			mset.mu.Unlock()
 			return
 		}
+
+		// Check if the causal ID is present or not. If not, process
+		// without a check.
+		causalId, present := getCausalId(msg[:pc.pa.hdr])
+		if present && causalId != JSCausalAny && causalId != mset.lastMsgId {
+			if doAck && len(reply) > 0 {
+				response := []byte("-ERR 'causal id conflict'")
+				mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
+			}
+			mset.mu.Unlock()
+			return
+		}
 	}
+
 	mset.mu.Unlock()
 
 	if c == nil {
@@ -820,6 +868,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 			}
 			// If we have a msgId make sure to save.
 			if msgId != "" {
+				mset.lastMsgId = msgId
 				mset.storeMsgId(&ddentry{msgId, seq, ts})
 			}
 			// If we are interest based retention and have no consumers clean that up here.

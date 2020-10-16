@@ -2583,6 +2583,133 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 	}
 }
 
+func TestJetStreamPublishCausalConflict(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	mname := "Causal"
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: mname, Storage: server.FileStorage, MaxAge: time.Hour, Subjects: []string{"foo.*"}})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset.Delete()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	sendMsg := func(seq uint64, id, cid string, set, ok bool) {
+		t.Helper()
+		m := nats.NewMsg(fmt.Sprintf("foo.%d", seq))
+		m.Header.Add(server.JSPubId, id)
+		if set {
+			m.Header.Add(server.JSCausalId, cid)
+		}
+		m.Data = []byte("Hello conflict")
+		resp, _ := nc.RequestMsg(m, 100*time.Millisecond)
+		if resp == nil {
+			t.Fatalf("No response for %q, possible timeout?", string(m.Data))
+		}
+		if bytes.HasPrefix(resp.Data, []byte("+OK {")) {
+			if !ok {
+				t.Fatalf("Expected conflict, but OK")
+			}
+		} else if string(resp.Data) == "-ERR 'causal id conflict'" {
+			if ok {
+				t.Fatalf("expected OK, but not conflict")
+			}
+			return // expected don't inspect puback
+		}
+		var pubAck server.PubAck
+		if err := json.Unmarshal(resp.Data[3:], &pubAck); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if pubAck.Seq != seq {
+			t.Fatalf("Did not get correct sequence in PubAck, expected %d, got %d", seq, pubAck.Seq)
+		}
+	}
+
+	expect := func(n uint64) {
+		t.Helper()
+		state := mset.State()
+		if state.Msgs != n {
+			t.Fatalf("Expected %d messages, got %d", n, state.Msgs)
+		}
+	}
+
+	nmids := func(expected int) {
+		t.Helper()
+		checkFor(t, 200*time.Millisecond, 10*time.Millisecond, func() error {
+			if nids := mset.NumMsgIds(); nids != expected {
+				return fmt.Errorf("Expected %d message ids, got %d", expected, nids)
+			}
+			return nil
+		})
+	}
+
+	// Do not set a causal id. Default behavior, everything should work.
+	sendMsg(1, "AA", "", false, true)
+	sendMsg(2, "BB", "", false, true)
+	expect(2)
+
+	// Try setting header with * (any) id.
+	sendMsg(3, "CC", "*", true, true)
+	sendMsg(4, "DD", "*", true, true)
+	expect(4)
+
+	// Simulate explicit id required.
+	sendMsg(4, "EE", "CC", true, false)
+	expect(4)
+
+	// Simulate correct causal id.
+	sendMsg(5, "EE", "DD", true, true)
+	sendMsg(6, "FF", "EE", true, true)
+	expect(6)
+
+	mset.Purge()
+
+	// Empty requires no causal id on first message.
+	sendMsg(7, "AAAA", "EE", true, false)
+	expect(0)
+
+	// Try again with expected empty followed by next.
+	sendMsg(7, "AAAA", "", true, true)
+	sendMsg(8, "BBBB", "AAAA", true, true)
+	expect(2)
+
+	// Stop current server.
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+	// Restart.
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc = clientConnectToServer(t, s)
+	defer nc.Close()
+
+	mset, _ = s.GlobalAccount().LookupStream(mname)
+	if nms := mset.State().Msgs; nms != 2 {
+		t.Fatalf("Expected 2 restored messages, got %d", nms)
+	}
+	nmids(2)
+
+	// Should fail with empty value.
+	sendMsg(9, "CCCC", "", true, false)
+	expect(2)
+
+	//
+	sendMsg(9, "CCCC", "BBBB", true, true)
+	expect(3)
+
+	if nms := mset.State().Msgs; nms != 3 {
+		t.Fatalf("Expected 3 restored messages, got %d", nms)
+	}
+	nmids(3)
+}
+
 func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
