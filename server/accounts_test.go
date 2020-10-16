@@ -2629,6 +2629,17 @@ func TestAccountRouteMappingsConfiguration(t *testing.T) {
 	if !acc.hasMappings() {
 		t.Fatalf("Account %q does not have mappings", "synadia")
 	}
+
+	az, err := s.Accountz(&AccountzOptions{"synadia"})
+	if err != nil {
+		t.Fatalf("Error getting Accountz: %v", err)
+	}
+	if az.Account == nil {
+		t.Fatalf("Expected an Account")
+	}
+	if len(az.Account.Mappings) != 3 {
+		t.Fatalf("Expected %d mappings, saw %d", 3, len(az.Account.Mappings))
+	}
 }
 
 func TestAccountServiceImportWithRouteMappings(t *testing.T) {

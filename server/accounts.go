@@ -260,6 +260,7 @@ func (a *Account) shallowCopy() *Account {
 			}
 		}
 	}
+	// JetStream
 	na.jsLimits = a.jsLimits
 
 	return na
@@ -496,8 +497,8 @@ func (a *Account) TotalSubs() int {
 
 // MapDest is for mapping published subjects for clients.
 type MapDest struct {
-	Subject string
-	Weight  uint8
+	Subject string `json:"subject"`
+	Weight  uint8  `json:"weight"`
 }
 
 // destination is for internal representation for a weighted mapped destination.
