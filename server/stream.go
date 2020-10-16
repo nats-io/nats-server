@@ -763,7 +763,7 @@ func getMsgId(hdr []byte) string {
 	return string(getHdrVal(JSPubId, hdr))
 }
 
-// Fast lookup of causalId
+// Fast lookup of expected sequence
 func getExpSeq(hdr []byte) (uint64, bool, error) {
 	val := getHdrVal(JSExpSeq, hdr)
 	if len(val) == 0 {
@@ -791,7 +791,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 	numConsumers := len(mset.consumers)
 	interestRetention := mset.config.Retention == InterestPolicy
 
-	// Process msgId and causalId if we have headers.
+	// Process msgId and expSeq if we have headers.
 	var msgId string
 	if pc != nil && pc.pa.hdr > 0 {
 		msgId = getMsgId(msg[:pc.pa.hdr])
@@ -806,7 +806,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 			return
 		}
 
-		// Check if the causal ID is present or not. If not, process
+		// Check if the expected sequence is present or not. If not, process
 		// without a check.
 		expSeq, present, err := getExpSeq(msg[:pc.pa.hdr])
 		if err != nil {
