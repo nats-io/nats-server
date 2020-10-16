@@ -1887,6 +1887,7 @@ func parseAccountMappings(v interface{}, acc *Account, errors *[]error, warnings
 					continue
 				}
 				mdest := &MapDest{}
+				var sw bool
 				for k, v := range mv {
 					tk, dmv := unwrapValue(v, &lt)
 					switch strings.ToLower(k) {
@@ -1911,6 +1912,7 @@ func parseAccountMappings(v interface{}, acc *Account, errors *[]error, warnings
 								continue
 							}
 							mdest.Weight = uint8(weight)
+							sw = true
 						case int64:
 							weight := vv
 							if weight > 100 || weight < 0 {
@@ -1919,12 +1921,24 @@ func parseAccountMappings(v interface{}, acc *Account, errors *[]error, warnings
 								continue
 							}
 							mdest.Weight = uint8(weight)
+							sw = true
+						default:
+							err := &configErr{tk, fmt.Sprintf("Unknown entry type for weight of %v\n", vv)}
+							*errors = append(*errors, err)
+							continue
 						}
+					case "cluster":
+						mdest.OptCluster = dmv.(string)
 					default:
 						err := &configErr{tk, fmt.Sprintf("Unknown field %q for mapping destination", k)}
 						*errors = append(*errors, err)
 						continue
 					}
+				}
+				if !sw {
+					err := &configErr{tk, fmt.Sprintf("Missing weight for mapping destination %q", mdest.Subject)}
+					*errors = append(*errors, err)
+					continue
 				}
 				mappings = append(mappings, mdest)
 			}

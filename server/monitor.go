@@ -1934,10 +1934,7 @@ type ExtExport struct {
 	ApprovedAccounts []string `json:"approved_accounts,omitempty"`
 }
 
-type ExtMap struct {
-	Source      string     `json:"src"`
-	Destination []*MapDest `json:"dest"`
-}
+type ExtMap map[string][]*MapDest
 
 type AccountInfo struct {
 	AccountName string             `json:"account_name"`
@@ -1948,7 +1945,7 @@ type AccountInfo struct {
 	LeafCnt     int                `json:"leafnode_connections"`
 	ClientCnt   int                `json:"client_connections"`
 	SubCnt      uint32             `json:"subscriptions"`
-	Mappings    []*ExtMap          `json:"mappings,omitempty"`
+	Mappings    ExtMap             `json:"mappings,omitempty"`
 	Exports     []ExtExport        `json:"exports,omitempty"`
 	Imports     []ExtImport        `json:"imports,omitempty"`
 	Jwt         string             `json:"jwt,omitempty"`
@@ -2063,13 +2060,13 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 		})
 	}
 
-	var mappings []*ExtMap
+	mappings := ExtMap{}
 	for _, m := range a.mappings {
-		e := &ExtMap{m.src, nil}
+		var dests []*MapDest
 		for _, d := range m.dests {
-			e.Destination = append(e.Destination, &MapDest{d.tr.dest, d.weight})
+			dests = append(dests, &MapDest{d.tr.dest, d.weight, ""})
 		}
-		mappings = append(mappings, e)
+		mappings[m.src] = dests
 	}
 
 	return &AccountInfo{

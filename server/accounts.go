@@ -497,8 +497,13 @@ func (a *Account) TotalSubs() int {
 
 // MapDest is for mapping published subjects for clients.
 type MapDest struct {
-	Subject string `json:"subject"`
-	Weight  uint8  `json:"weight"`
+	Subject    string `json:"subject"`
+	Weight     uint8  `json:"weight"`
+	OptCluster string `json:"cluster,omitempty"`
+}
+
+func NewMapDest(subject string, weight uint8) *MapDest {
+	return &MapDest{subject, weight, ""}
 }
 
 // destination is for internal representation for a weighted mapped destination.
@@ -509,15 +514,16 @@ type destination struct {
 
 // mapping is an internal entry for mapping subjects.
 type mapping struct {
-	src   string
-	wc    bool
-	dests []*destination
+	src    string
+	wc     bool
+	dests  []*destination
+	cdests map[string][]*destination
 }
 
 // AddMapping adds in a simple route mapping from src subject to dest subject
 // for inbound client messages.
 func (a *Account) AddMapping(src, dest string) error {
-	return a.AddWeightedMappings(src, &MapDest{dest, 100})
+	return a.AddWeightedMappings(src, NewMapDest(dest, 100))
 }
 
 // AddWeightedMapping will add in a weighted mappings for the destinations.
@@ -558,32 +564,66 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 		if err != nil {
 			return err
 		}
-
-		m.dests = append(m.dests, &destination{tr, d.Weight})
+		if d.OptCluster == "" {
+			m.dests = append(m.dests, &destination{tr, d.Weight})
+		} else {
+			// We have a cluster scoped filter.
+			if m.cdests == nil {
+				m.cdests = make(map[string][]*destination)
+			}
+			ad := m.cdests[d.OptCluster]
+			ad = append(ad, &destination{tr, d.Weight})
+			m.cdests[d.OptCluster] = ad
+		}
 	}
 
-	// Auto add in original at weight difference if all entries weight does not total to 100.
-	// Iff the src was not already added in explicitly, meaning they want loss.
-	_, haveSrc := seen[src]
-	if tw != 100 && !haveSrc {
-		dest := src
-		if m.wc {
-			// We need to make the appropriate markers for the wildcards etc.
-			dest = transformTokenize(dest)
+	processDestinations := func(dests []*destination) ([]*destination, error) {
+		var ltw uint8
+		for _, d := range dests {
+			ltw += d.weight
 		}
-		tr, err := newTransform(src, dest)
-		if err != nil {
+		// Auto add in original at weight difference if all entries weight does not total to 100.
+		// Iff the src was not already added in explicitly, meaning they want loss.
+		_, haveSrc := seen[src]
+		if ltw != 100 && !haveSrc {
+			dest := src
+			if m.wc {
+				// We need to make the appropriate markers for the wildcards etc.
+				dest = transformTokenize(dest)
+			}
+			tr, err := newTransform(src, dest)
+			if err != nil {
+				return nil, err
+			}
+			aw := 100 - ltw
+			if len(dests) == 0 {
+				aw = 100
+			}
+			dests = append(dests, &destination{tr, aw})
+		}
+		sort.Slice(dests, func(i, j int) bool { return dests[i].weight < dests[j].weight })
+
+		var lw uint8
+		for _, d := range dests {
+			d.weight += lw
+			lw = d.weight
+		}
+		return dests, nil
+	}
+
+	var err error
+	if m.dests, err = processDestinations(m.dests); err != nil {
+		return err
+	}
+
+	// Option cluster scoped destinations
+	for cluster, dests := range m.cdests {
+		if dests, err = processDestinations(dests); err != nil {
 			return err
 		}
-		m.dests = append(m.dests, &destination{tr, 100 - tw})
+		m.cdests[cluster] = dests
 	}
-	sort.Slice(m.dests, func(i, j int) bool { return m.dests[i].weight < m.dests[j].weight })
 
-	var lw uint8
-	for _, d := range m.dests {
-		d.weight += lw
-		lw = d.weight
-	}
 	// Replace an old one if it exists.
 	for i, m := range a.mappings {
 		if m.src == src {
@@ -703,12 +743,22 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 	var d *destination
 	var ndest string
 
+	dests := m.dests
+	if len(m.cdests) > 0 {
+		cn := a.srv.ClusterName()
+		dests = m.cdests[cn]
+		if dests == nil {
+			// Fallback to main if we do not match the cluster.
+			dests = m.dests
+		}
+	}
+
 	// Optimize for single entry case.
-	if len(m.dests) == 1 && m.dests[0].weight == 100 {
-		d = m.dests[0]
+	if len(dests) == 1 && dests[0].weight == 100 {
+		d = dests[0]
 	} else {
 		w := uint8(a.prand.Int31n(100))
-		for _, rm := range m.dests {
+		for _, rm := range dests {
 			if w < rm.weight {
 				d = rm
 				break

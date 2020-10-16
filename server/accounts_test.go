@@ -2462,7 +2462,7 @@ func TestAccountSimpleWeightedRouteMapping(t *testing.T) {
 	defer s.Shutdown()
 
 	acc, _ := s.LookupAccount(DEFAULT_GLOBAL_ACCOUNT)
-	acc.AddWeightedMappings("foo", &MapDest{"bar", 50})
+	acc.AddWeightedMappings("foo", NewMapDest("bar", 50))
 
 	nc := natsConnect(t, s.ClientURL())
 	defer nc.Close()
@@ -2509,18 +2509,18 @@ func TestAccountMultiWeightedRouteMappings(t *testing.T) {
 		}
 	}
 
-	shouldErr(&MapDest{"bar", 150})
-	shouldNotErr(&MapDest{"bar", 50})
-	shouldNotErr(&MapDest{"bar", 50}, &MapDest{"baz", 50})
+	shouldErr(NewMapDest("bar", 150))
+	shouldNotErr(NewMapDest("bar", 50))
+	shouldNotErr(NewMapDest("bar", 50), NewMapDest("baz", 50))
 	// Same dest duplicated should error.
-	shouldErr(&MapDest{"bar", 50}, &MapDest{"bar", 50})
+	shouldErr(NewMapDest("bar", 50), NewMapDest("bar", 50))
 	// total over 100
-	shouldErr(&MapDest{"bar", 50}, &MapDest{"baz", 60})
+	shouldErr(NewMapDest("bar", 50), NewMapDest("baz", 60))
 
 	acc.RemoveMapping("foo")
 
 	// 20 for original, you can leave it off will be auto-added.
-	shouldNotErr(&MapDest{"bar", 50}, &MapDest{"baz", 30})
+	shouldNotErr(NewMapDest("bar", 50), NewMapDest("baz", 30))
 
 	nc := natsConnect(t, s.ClientURL())
 	defer nc.Close()
@@ -2640,6 +2640,8 @@ func TestAccountRouteMappingsConfiguration(t *testing.T) {
 	if len(az.Account.Mappings) != 3 {
 		t.Fatalf("Expected %d mappings, saw %d", 3, len(az.Account.Mappings))
 	}
+	b, _ := json.MarshalIndent(az, "", "  ")
+	fmt.Printf("%s", b)
 }
 
 func TestAccountRouteMappingsWithLossInjection(t *testing.T) {
@@ -2677,6 +2679,44 @@ func TestAccountRouteMappingsWithLossInjection(t *testing.T) {
 
 	if pending, _, _ := sub.Pending(); pending != 0 {
 		t.Fatalf("Expected all messages to be dropped and pending to be 0, got %d", pending)
+	}
+}
+
+func TestAccountRouteMappingsWithOriginClusterFilter(t *testing.T) {
+	cf := createConfFile(t, []byte(`
+	mappings = {
+		foo: [ { dest: bar, cluster: SYN, weight: 100% } ]
+    }
+    `))
+	defer os.Remove(cf)
+
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	sub, _ := nc.SubscribeSync("foo")
+
+	total := 1000
+	for i := 0; i < total; i++ {
+		nc.Publish("foo", nil)
+	}
+	nc.Flush()
+
+	if pending, _, _ := sub.Pending(); pending != total {
+		t.Fatalf("Expected pending to be %d, got %d", total, pending)
+	}
+
+	s.setClusterName("SYN")
+	sub, _ = nc.SubscribeSync("bar")
+	for i := 0; i < total; i++ {
+		nc.Publish("foo", nil)
+	}
+	nc.Flush()
+
+	if pending, _, _ := sub.Pending(); pending != total {
+		t.Fatalf("Expected pending to be %d, got %d", total, pending)
 	}
 }
 
