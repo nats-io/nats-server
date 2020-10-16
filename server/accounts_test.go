@@ -2642,6 +2642,33 @@ func TestAccountRouteMappingsConfiguration(t *testing.T) {
 	}
 }
 
+func TestAccountRouteMappingsWithLossInjection(t *testing.T) {
+	cf := createConfFile(t, []byte(`
+	mappings = {
+		foo: [ { dest: foo, weight: 80% } ]
+    }
+    `))
+	defer os.Remove(cf)
+
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	sub, _ := nc.SubscribeSync("foo")
+
+	total := 1000
+	for i := 0; i < total; i++ {
+		nc.Publish("foo", nil)
+	}
+	nc.Flush()
+
+	if pending, _, _ := sub.Pending(); pending == total {
+		t.Fatalf("Expected some loss and pending to not be same as sent")
+	}
+}
+
 func TestAccountServiceImportWithRouteMappings(t *testing.T) {
 	cf := createConfFile(t, []byte(`
     accounts {

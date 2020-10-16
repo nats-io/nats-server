@@ -562,8 +562,10 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 		m.dests = append(m.dests, &destination{tr, d.Weight})
 	}
 
-	// Auto add in original at weight if all entries weight does not total to 100.
-	if tw != 100 {
+	// Auto add in original at weight difference if all entries weight does not total to 100.
+	// Iff the src was not already added in explicitly, meaning they want loss.
+	_, haveSrc := seen[src]
+	if tw != 100 && !haveSrc {
 		dest := src
 		if m.wc {
 			// We need to make the appropriate markers for the wildcards etc.
@@ -699,6 +701,7 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 
 	// The selected destination for the mapping.
 	var d *destination
+	var ndest string
 
 	// Optimize for single entry case.
 	if len(m.dests) == 1 && m.dests[0].weight == 100 {
@@ -715,14 +718,14 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 
 	if d != nil {
 		if len(d.tr.dtpi) == 0 {
-			dest = d.tr.dest
+			ndest = d.tr.dest
 		} else if nsubj, err := d.tr.transform(tts); err == nil {
-			dest = nsubj
+			ndest = nsubj
 		}
 	}
 
 	a.mu.RUnlock()
-	return dest, true
+	return ndest, true
 }
 
 // SubscriptionInterest returns true if this account has a matching subscription
