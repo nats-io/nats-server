@@ -86,7 +86,7 @@ type Stream struct {
 	ddarr     []*ddentry
 	ddindex   int
 	ddtmr     *time.Timer
-	lastMsgId string
+	lastSeq   uint64
 }
 
 // JSPubId is used for identifying published messages and performing de-duplication.
@@ -100,9 +100,10 @@ type ddentry struct {
 	ts  int64
 }
 
-// JSCausalId is used to perform an optimistic concurrency control check for a published message.
-const JSCausalId = "Causal-Id"
-const JSCausalAny = "*"
+// JSExpSeq is used to perform an optimistic concurrency control check
+// for a published message. The value of this header should be the current
+// sequence of the stream.
+const JSExpSeq = "Exp-Seq"
 
 // Replicas Range
 const (
@@ -192,7 +193,7 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 	mset.pubAck = append(mset.pubAck, fmt.Sprintf(" {\"stream\": %q, \"seq\": ", cfg.Name)...)
 
 	// Rebuild dedupe as needed.
-	mset.rebuildLastId()
+	mset.rebuildLastSeq()
 	mset.rebuildDedupe()
 
 	// Setup subscriptions
@@ -209,19 +210,12 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 
 // rebuildLastMsg will rebuild any dedupe structures needed after recovery of a stream.
 // Lock not needed, only called during initialization.
-func (mset *Stream) rebuildLastId() {
+func (mset *Stream) rebuildLastSeq() {
 	state := mset.store.State()
 	if state.Msgs == 0 {
 		return
 	}
-
-	// Set the last message id.
-	_, hdr, _, _, err := mset.store.LoadMsg(state.LastSeq)
-	if err == nil && len(hdr) > 0 {
-		if msgId := getMsgId(hdr); msgId != "" {
-			mset.lastMsgId = msgId
-		}
-	}
+	mset.lastSeq = state.LastSeq
 }
 
 // rebuildDedupe will rebuild any dedupe structures needed after recovery of a stream.
@@ -553,7 +547,7 @@ func (mset *Stream) Purge() uint64 {
 	for _, o := range obs {
 		o.purge(stats.FirstSeq)
 	}
-	mset.lastMsgId = ""
+	mset.lastSeq = 0
 	return purged
 }
 
@@ -770,12 +764,13 @@ func getMsgId(hdr []byte) string {
 }
 
 // Fast lookup of causalId
-func getCausalId(hdr []byte) (string, bool) {
-	index := bytes.Index(hdr, []byte(JSCausalId))
-	if index < 0 {
-		return "", false
+func getExpSeq(hdr []byte) (uint64, bool, error) {
+	val := getHdrVal(JSExpSeq, hdr)
+	if len(val) == 0 {
+		return 0, false, nil
 	}
-	return string(getHdrVal(JSCausalId, hdr)), true
+	seq, err := strconv.ParseUint(string(val), 10, 64)
+	return seq, true, err
 }
 
 // processInboundJetStreamMsg handles processing messages bound for a stream.
@@ -813,10 +808,19 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 
 		// Check if the causal ID is present or not. If not, process
 		// without a check.
-		causalId, present := getCausalId(msg[:pc.pa.hdr])
-		if present && causalId != JSCausalAny && causalId != mset.lastMsgId {
+		expSeq, present, err := getExpSeq(msg[:pc.pa.hdr])
+		if err != nil {
 			if doAck && len(reply) > 0 {
-				response := []byte("-ERR 'causal id conflict'")
+				response := []byte("-ERR 'Exp-Seq bad format'")
+				mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
+			}
+			mset.mu.Unlock()
+			return
+		}
+
+		if present && expSeq != mset.lastSeq {
+			if doAck && len(reply) > 0 {
+				response := []byte("-ERR 'expected sequence conflict'")
 				mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
 			}
 			mset.mu.Unlock()
@@ -866,9 +870,9 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 				response = append(pubAck, strconv.FormatUint(seq, 10)...)
 				response = append(response, '}')
 			}
+			mset.lastSeq = seq
 			// If we have a msgId make sure to save.
 			if msgId != "" {
-				mset.lastMsgId = msgId
 				mset.storeMsgId(&ddentry{msgId, seq, ts})
 			}
 			// If we are interest based retention and have no consumers clean that up here.
