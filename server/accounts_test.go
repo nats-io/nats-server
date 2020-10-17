@@ -2647,8 +2647,8 @@ func TestAccountRouteMappingsConfiguration(t *testing.T) {
 func TestAccountRouteMappingsWithLossInjection(t *testing.T) {
 	cf := createConfFile(t, []byte(`
 	mappings = {
-		foo: [ { dest: foo, weight: 80% } ]
-		bar: [ { dest: bar, weight: 0% } ]
+		foo: { dest: foo, weight: 80% }
+		bar: { dest: bar, weight: 0% }
     }
     `))
 	defer os.Remove(cf)
@@ -2685,7 +2685,7 @@ func TestAccountRouteMappingsWithLossInjection(t *testing.T) {
 func TestAccountRouteMappingsWithOriginClusterFilter(t *testing.T) {
 	cf := createConfFile(t, []byte(`
 	mappings = {
-		foo: [ { dest: bar, cluster: SYN, weight: 100% } ]
+		foo: { dest: bar, cluster: SYN, weight: 100% }
     }
     `))
 	defer os.Remove(cf)
