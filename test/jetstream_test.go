@@ -2601,11 +2601,11 @@ func TestJetStreamPublishExpSeq(t *testing.T) {
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
 
-	sendMsg := func(sub string, seq int64, ok bool) int64 {
+	sendMsg := func(sub string, exp string, ok bool) {
 		t.Helper()
 		m := nats.NewMsg(sub)
-		if seq >= 0 {
-			m.Header.Add(server.JSExpSeq, strconv.FormatInt(seq, 10))
+		if exp != "" {
+			m.Header.Add(server.JSExpSeq, exp)
 		}
 		m.Data = []byte("Hello exp seq")
 		resp, _ := nc.RequestMsg(m, 100*time.Millisecond)
@@ -2616,18 +2616,16 @@ func TestJetStreamPublishExpSeq(t *testing.T) {
 			if !ok {
 				t.Fatalf("Expected conflict, but OK")
 			}
-		} else if string(resp.Data) == "-ERR 'expected sequence conflict'" {
+		} else if string(resp.Data) == "-ERR 'exp-seq conflict'" {
 			if ok {
 				t.Fatalf("expected OK, not conflict")
 			}
-			return 0 // expected don't inspect pubAck
+			return // expected don't inspect pubAck
 		}
 		var pubAck server.PubAck
 		if err := json.Unmarshal(resp.Data[3:], &pubAck); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
-		// Just to simplify testing..
-		return int64(pubAck.Seq)
 	}
 
 	expect := func(n uint64) {
@@ -2638,31 +2636,41 @@ func TestJetStreamPublishExpSeq(t *testing.T) {
 		}
 	}
 
-	// Do not set an expected sequence. Default behavior, everything should work.
-	var seq int64
-	sendMsg("foo.1", -1, true)
-	seq = sendMsg("foo.1", -1, true)
+	// No exp-seq, works as normal.
+	sendMsg("foo.1", "", true) // 1
+	sendMsg("foo.2", "", true) // 2
 	expect(2)
 
-	// Set expected sequence.
-	seq = sendMsg("foo.2", seq, true)
-	seq = sendMsg("foo.1", seq, true)
+	// Set stream-scoped sequence
+	sendMsg("foo.1", "@2", true) // 3
+	sendMsg("foo.2", "@3", true) // 4
 	expect(4)
 
-	// Use wrong expected sequence.
-	sendMsg("foo.2", seq-1, false)
-	sendMsg("foo.1", seq-2, false)
+	// Wrong stream-scoped sequence.
+	sendMsg("foo.1", "@1", false)
+	sendMsg("foo.2", "@2", false)
 	expect(4)
+
+	// Subject-level sequence.
+	// foo.1 at 3, jump to 5
+	sendMsg("foo.1", "3", true) // 5
+	sendMsg("foo.1", "5", true) // 6
+
+	// Fail
+	sendMsg("foo.1", "3", false) // 5
+	sendMsg("foo.1", "5", false) // 6
+
+	// foo.2 at 4, jump to 7
+	sendMsg("foo.2", "4", true) // 7
+	sendMsg("foo.2", "7", true) // 8
+	expect(8)
 
 	// Delete all messages.
 	mset.Purge()
 
-	// Zero value for empty stream should work.
-	seq = sendMsg("foo.3", 0, true)
-	expect(1)
-
-	// Try again with expected empty followed by next.
-	seq = sendMsg("foo.1", seq, true)
+	// Subject-level zero value for subject.
+	sendMsg("foo.1", "8", true) // 9
+	sendMsg("foo.2", "9", true) // 10
 	expect(2)
 
 	// Stop current server.
@@ -2679,8 +2687,9 @@ func TestJetStreamPublishExpSeq(t *testing.T) {
 	expect(2)
 
 	// Sequence should work.
-	sendMsg("foo.2", seq, true)
-	expect(3)
+	sendMsg("foo.1", "9", true)
+	sendMsg("foo.2", "10", true)
+	expect(4)
 }
 
 func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {

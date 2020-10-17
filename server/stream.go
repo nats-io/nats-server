@@ -70,23 +70,24 @@ type StreamInfo struct {
 // Stream is a jetstream stream of messages. When we receive a message internally destined
 // for a Stream we will direct link from the client to this Stream structure.
 type Stream struct {
-	mu        sync.RWMutex
-	sg        *sync.Cond
-	sgw       int
-	jsa       *jsAccount
-	client    *client
-	sid       int
-	pubAck    []byte
-	sendq     chan *jsPubMsg
-	store     StreamStore
-	consumers map[string]*Consumer
-	config    StreamConfig
-	created   time.Time
-	ddmap     map[string]*ddentry
-	ddarr     []*ddentry
-	ddindex   int
-	ddtmr     *time.Timer
-	lastSeq   uint64
+	mu          sync.RWMutex
+	sg          *sync.Cond
+	sgw         int
+	jsa         *jsAccount
+	client      *client
+	sid         int
+	pubAck      []byte
+	sendq       chan *jsPubMsg
+	store       StreamStore
+	consumers   map[string]*Consumer
+	config      StreamConfig
+	created     time.Time
+	ddmap       map[string]*ddentry
+	ddarr       []*ddentry
+	ddindex     int
+	ddtmr       *time.Timer
+	streamSeq   uint64
+	subjectSeqs map[string]uint64
 }
 
 // JSPubId is used for identifying published messages and performing de-duplication.
@@ -161,7 +162,13 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 
 	// Setup the internal client.
 	c := s.createInternalJetStreamClient()
-	mset := &Stream{jsa: jsa, config: cfg, client: c, consumers: make(map[string]*Consumer)}
+	mset := &Stream{
+		jsa:         jsa,
+		config:      cfg,
+		client:      c,
+		consumers:   make(map[string]*Consumer),
+		subjectSeqs: make(map[string]uint64),
+	}
 	mset.sg = sync.NewCond(&mset.mu)
 
 	jsa.streams[cfg.Name] = mset
@@ -193,8 +200,9 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 	mset.pubAck = append(mset.pubAck, fmt.Sprintf(" {\"stream\": %q, \"seq\": ", cfg.Name)...)
 
 	// Rebuild dedupe as needed.
-	mset.rebuildLastSeq()
 	mset.rebuildDedupe()
+	// Rebuild seqs as needed.
+	mset.rebuildSeqs()
 
 	// Setup subscriptions
 	if err := mset.subscribeToStream(); err != nil {
@@ -208,14 +216,25 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 	return mset, nil
 }
 
-// rebuildLastMsg will rebuild any dedupe structures needed after recovery of a stream.
+// rebuildSeqs will rebuild any dedupe structures needed after recovery of a stream.
 // Lock not needed, only called during initialization.
-func (mset *Stream) rebuildLastSeq() {
+func (mset *Stream) rebuildSeqs() {
 	state := mset.store.State()
 	if state.Msgs == 0 {
 		return
 	}
-	mset.lastSeq = state.LastSeq
+
+	mset.streamSeq = state.LastSeq
+	if mset.subjectSeqs == nil {
+		mset.subjectSeqs = make(map[string]uint64)
+	}
+
+	for seq := uint64(0); seq <= state.LastSeq; seq++ {
+		sub, _, _, _, err := mset.store.LoadMsg(seq)
+		if err == nil {
+			mset.subjectSeqs[sub] = seq
+		}
+	}
 }
 
 // rebuildDedupe will rebuild any dedupe structures needed after recovery of a stream.
@@ -547,7 +566,8 @@ func (mset *Stream) Purge() uint64 {
 	for _, o := range obs {
 		o.purge(stats.FirstSeq)
 	}
-	mset.lastSeq = 0
+	mset.streamSeq = stats.LastSeq
+	mset.subjectSeqs = make(map[string]uint64)
 	return purged
 }
 
@@ -763,14 +783,24 @@ func getMsgId(hdr []byte) string {
 	return string(getHdrVal(JSPubId, hdr))
 }
 
+const ExpSeqStreamScope = "@"
+
 // Fast lookup of expected sequence
-func getExpSeq(hdr []byte) (uint64, bool, error) {
+func getExpSeq(hdr []byte) (uint64, bool, bool, error) {
 	val := getHdrVal(JSExpSeq, hdr)
 	if len(val) == 0 {
-		return 0, false, nil
+		return 0, false, false, nil
+	}
+	var stream bool
+	// Character indicator stream flag.
+	// TODO: this is arbitrary, but something to distinguish a stream vs.
+	// subject level check is needed.
+	if val[0] == ExpSeqStreamScope[0] {
+		stream = true
+		val = val[1:]
 	}
 	seq, err := strconv.ParseUint(string(val), 10, 64)
-	return seq, true, err
+	return seq, true, stream, err
 }
 
 // processInboundJetStreamMsg handles processing messages bound for a stream.
@@ -808,23 +838,32 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 
 		// Check if the expected sequence is present or not. If not, process
 		// without a check.
-		expSeq, present, err := getExpSeq(msg[:pc.pa.hdr])
+		expSeq, present, streamScope, err := getExpSeq(msg[:pc.pa.hdr])
 		if err != nil {
 			if doAck && len(reply) > 0 {
-				response := []byte("-ERR 'Exp-Seq bad format'")
+				response := []byte("-ERR 'bad exp-seq'")
 				mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
 			}
 			mset.mu.Unlock()
 			return
 		}
 
-		if present && expSeq != mset.lastSeq {
-			if doAck && len(reply) > 0 {
-				response := []byte("-ERR 'expected sequence conflict'")
-				mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
+		if present {
+			currentSeq := mset.streamSeq
+			if !streamScope {
+				if seq, ok := mset.subjectSeqs[subject]; ok {
+					currentSeq = seq
+				}
 			}
-			mset.mu.Unlock()
-			return
+
+			if expSeq != currentSeq {
+				if doAck && len(reply) > 0 {
+					response := []byte("-ERR 'exp-seq conflict'")
+					mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
+				}
+				mset.mu.Unlock()
+				return
+			}
 		}
 	}
 
@@ -870,7 +909,8 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 				response = append(pubAck, strconv.FormatUint(seq, 10)...)
 				response = append(response, '}')
 			}
-			mset.lastSeq = seq
+			mset.streamSeq = seq
+			mset.subjectSeqs[subject] = seq
 			// If we have a msgId make sure to save.
 			if msgId != "" {
 				mset.storeMsgId(&ddentry{msgId, seq, ts})
