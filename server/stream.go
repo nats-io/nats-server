@@ -562,12 +562,12 @@ func (mset *Stream) Purge() uint64 {
 	for _, o := range mset.consumers {
 		obs = append(obs, o)
 	}
+	mset.streamSeq = stats.LastSeq
+	mset.subjectSeqs = make(map[string]uint64)
 	mset.mu.Unlock()
 	for _, o := range obs {
 		o.purge(stats.FirstSeq)
 	}
-	mset.streamSeq = stats.LastSeq
-	mset.subjectSeqs = make(map[string]uint64)
 	return purged
 }
 
@@ -905,12 +905,16 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 			store.RemoveMsg(seq)
 			seq = 0
 		} else if err == nil {
+			mset.mu.Lock()
+			mset.streamSeq = seq
+			mset.subjectSeqs[subject] = seq
+			mset.mu.Unlock()
+
 			if doAck && len(reply) > 0 {
 				response = append(pubAck, strconv.FormatUint(seq, 10)...)
 				response = append(response, '}')
 			}
-			mset.streamSeq = seq
-			mset.subjectSeqs[subject] = seq
+
 			// If we have a msgId make sure to save.
 			if msgId != "" {
 				mset.storeMsgId(&ddentry{msgId, seq, ts})
