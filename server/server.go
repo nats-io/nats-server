@@ -224,6 +224,10 @@ type Server struct {
 
 	// exporting account name the importer experienced issues with
 	incompleteAccExporterMap sync.Map
+
+	// Holds cluster name under different lock for mapping
+	cnMu sync.RWMutex
+	cn   string
 }
 
 // Make sure all are 64bits for atomic use
@@ -460,6 +464,14 @@ func (s *Server) ClusterName() string {
 	return cn
 }
 
+// Grabs cluster name with cluster name specific lock.
+func (s *Server) cachedClusterName() string {
+	s.cnMu.RLock()
+	cn := s.cn
+	s.cnMu.RUnlock()
+	return cn
+}
+
 // setClusterName will update the cluster name for this server.
 func (s *Server) setClusterName(name string) {
 	s.mu.Lock()
@@ -470,6 +482,7 @@ func (s *Server) setClusterName(name string) {
 	}
 	s.info.Cluster = name
 	s.routeInfo.Cluster = name
+
 	// Regenerate the info byte array
 	s.generateRouteInfoJSON()
 	// Need to close solicited leaf nodes. The close has to be done outside of the server lock.
@@ -482,6 +495,12 @@ func (s *Server) setClusterName(name string) {
 		c.mu.Unlock()
 	}
 	s.mu.Unlock()
+
+	// Also place into mapping cn with cnMu lock.
+	s.cnMu.Lock()
+	s.cn = name
+	s.cnMu.Unlock()
+
 	for _, l := range leafs {
 		l.closeConnection(ClusterNameConflict)
 	}
@@ -489,7 +508,6 @@ func (s *Server) setClusterName(name string) {
 		resetCh <- struct{}{}
 	}
 	s.Noticef("Cluster name updated to %s", name)
-
 }
 
 // Return whether the cluster name is dynamic.

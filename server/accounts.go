@@ -745,7 +745,7 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 
 	dests := m.dests
 	if len(m.cdests) > 0 {
-		cn := a.srv.ClusterName()
+		cn := a.srv.cachedClusterName()
 		dests = m.cdests[cn]
 		if dests == nil {
 			// Fallback to main if we do not match the cluster.
