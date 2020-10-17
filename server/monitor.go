@@ -1934,6 +1934,8 @@ type ExtExport struct {
 	ApprovedAccounts []string `json:"approved_accounts,omitempty"`
 }
 
+type ExtMap map[string][]*MapDest
+
 type AccountInfo struct {
 	AccountName string             `json:"account_name"`
 	LastUpdate  time.Time          `json:"update_time,omitempty"`
@@ -1943,8 +1945,9 @@ type AccountInfo struct {
 	LeafCnt     int                `json:"leafnode_connections"`
 	ClientCnt   int                `json:"client_connections"`
 	SubCnt      uint32             `json:"subscriptions"`
-	Exports     []ExtExport        `json:"exports"`
-	Imports     []ExtImport        `json:"imports"`
+	Mappings    ExtMap             `json:"mappings,omitempty"`
+	Exports     []ExtExport        `json:"exports,omitempty"`
+	Imports     []ExtImport        `json:"imports,omitempty"`
 	Jwt         string             `json:"jwt,omitempty"`
 	Claim       *jwt.AccountClaims `json:"decoded_jwt,omitempty"`
 }
@@ -2035,16 +2038,12 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 	}
 	imports := []ExtImport{}
 	for _, v := range a.imports.streams {
-		to := ""
-		if v.prefix != "" {
-			to = v.prefix + "." + v.from
-		}
 		imports = append(imports, ExtImport{
 			Import: jwt.Import{
 				Subject: jwt.Subject(v.from),
 				Account: v.acc.Name,
 				Type:    jwt.Stream,
-				To:      jwt.Subject(to),
+				To:      jwt.Subject(v.to),
 			},
 			Invalid: v.invalid,
 		})
@@ -2060,6 +2059,16 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 			Invalid: v.invalid,
 		})
 	}
+
+	mappings := ExtMap{}
+	for _, m := range a.mappings {
+		var dests []*MapDest
+		for _, d := range m.dests {
+			dests = append(dests, &MapDest{d.tr.dest, d.weight, ""})
+		}
+		mappings[m.src] = dests
+	}
+
 	return &AccountInfo{
 		accName,
 		a.updated,
@@ -2069,6 +2078,7 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 		a.numLocalLeafNodes(),
 		a.numLocalConnections(),
 		a.sl.Count(),
+		mappings,
 		exports,
 		imports,
 		a.claimJWT,

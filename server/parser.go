@@ -389,6 +389,17 @@ func (c *client) parse(buf []byte) error {
 				if err := c.processPub(arg); err != nil {
 					return err
 				}
+				// Check if we have and account mappings or tees or filters.
+				// FIXME(dlc) - Probably better way to do this.
+				// Could add in cache but will be tricky since results based on pub subject are dynamic
+				// due to wildcard matching and weight sets.
+				if c.kind == CLIENT && c.in.flags.isSet(hasMappings) {
+					old := c.pa.subject
+					changed := c.selectMappedSubject()
+					if trace && changed {
+						c.traceInOp("MAPPING", []byte(fmt.Sprintf("%s -> %s", old, c.pa.subject)))
+					}
+				}
 				c.drop, c.as, c.state = 0, i+1, MSG_PAYLOAD
 				// If we don't have a saved buffer then jump ahead with
 				// the index. If this overruns what is left we fall out

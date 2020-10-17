@@ -603,6 +603,14 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 	case "logtime":
 		o.Logtime = v.(bool)
 		trackExplicitVal(o, &o.inConfig, "Logtime", o.Logtime)
+	case "mappings", "maps":
+		gacc := NewAccount(globalAccountName)
+		o.Accounts = append(o.Accounts, gacc)
+		err := parseAccountMappings(tk, gacc, errors, warnings)
+		if err != nil {
+			*errors = append(*errors, err)
+			return
+		}
 	case "disable_sublist_cache", "no_sublist_cache":
 		o.NoSublistCache = v.(bool)
 	case "accounts":
@@ -1828,6 +1836,7 @@ type importStream struct {
 	acc *Account
 	an  string
 	sub string
+	to  string
 	pre string
 }
 
@@ -1842,6 +1851,137 @@ type importService struct {
 // Checks if an account name is reserved.
 func isReservedAccount(name string) bool {
 	return name == globalAccountName
+}
+
+func parseAccountMapDest(v interface{}, tk token, errors *[]error, warnings *[]error) (*MapDest, *configErr) {
+	// These should be maps.
+	mv, ok := v.(map[string]interface{})
+	if !ok {
+		err := &configErr{tk, "Expected an entry for the mapping destination"}
+		*errors = append(*errors, err)
+		return nil, err
+	}
+
+	mdest := &MapDest{}
+	var lt token
+	var sw bool
+
+	for k, v := range mv {
+		tk, dmv := unwrapValue(v, &lt)
+		switch strings.ToLower(k) {
+		case "dest", "destination":
+			mdest.Subject = dmv.(string)
+		case "weight":
+			switch vv := dmv.(type) {
+			case string:
+				ws := vv
+				if strings.HasSuffix(ws, "%") {
+					ws = ws[:len(ws)-1]
+				}
+				weight, err := strconv.Atoi(ws)
+				if err != nil {
+					err := &configErr{tk, fmt.Sprintf("Invalid weight %q for mapping destination", ws)}
+					*errors = append(*errors, err)
+					return nil, err
+				}
+				if weight > 100 || weight < 0 {
+					err := &configErr{tk, fmt.Sprintf("Invalid weight %d for mapping destination", weight)}
+					*errors = append(*errors, err)
+					return nil, err
+				}
+				mdest.Weight = uint8(weight)
+				sw = true
+			case int64:
+				weight := vv
+				if weight > 100 || weight < 0 {
+					err := &configErr{tk, fmt.Sprintf("Invalid weight %d for mapping destination", weight)}
+					*errors = append(*errors, err)
+					return nil, err
+				}
+				mdest.Weight = uint8(weight)
+				sw = true
+			default:
+				err := &configErr{tk, fmt.Sprintf("Unknown entry type for weight of %v\n", vv)}
+				*errors = append(*errors, err)
+				return nil, err
+			}
+		case "cluster":
+			mdest.OptCluster = dmv.(string)
+		default:
+			err := &configErr{tk, fmt.Sprintf("Unknown field %q for mapping destination", k)}
+			*errors = append(*errors, err)
+			return nil, err
+		}
+	}
+
+	if !sw {
+		err := &configErr{tk, fmt.Sprintf("Missing weight for mapping destination %q", mdest.Subject)}
+		*errors = append(*errors, err)
+		return nil, err
+	}
+
+	return mdest, nil
+}
+
+// parseAccountMappings is called to parse account mappings.
+func parseAccountMappings(v interface{}, acc *Account, errors *[]error, warnings *[]error) error {
+	var lt token
+	defer convertPanicToErrorList(&lt, errors)
+
+	tk, v := unwrapValue(v, &lt)
+	am := v.(map[string]interface{})
+	for subj, mv := range am {
+		if !IsValidSubject(subj) {
+			err := &configErr{tk, fmt.Sprintf("Subject %q is not a valid subject", subj)}
+			*errors = append(*errors, err)
+			continue
+		}
+		tk, v := unwrapValue(mv, &lt)
+
+		switch vv := v.(type) {
+		case string:
+			if err := acc.AddMapping(subj, v.(string)); err != nil {
+				err := &configErr{tk, fmt.Sprintf("Error adding mapping for %q: %v", subj, err)}
+				*errors = append(*errors, err)
+				continue
+			}
+		case []interface{}:
+			var mappings []*MapDest
+			for _, mv := range v.([]interface{}) {
+				tk, amv := unwrapValue(mv, &lt)
+				mdest, err := parseAccountMapDest(amv, tk, errors, warnings)
+				if err != nil {
+					continue
+				}
+				mappings = append(mappings, mdest)
+			}
+
+			// Now add them in..
+			if err := acc.AddWeightedMappings(subj, mappings...); err != nil {
+				err := &configErr{tk, fmt.Sprintf("Error adding mapping for %q: %v", subj, err)}
+				*errors = append(*errors, err)
+				continue
+			}
+		case interface{}:
+			tk, amv := unwrapValue(mv, &lt)
+			mdest, err := parseAccountMapDest(amv, tk, errors, warnings)
+			if err != nil {
+				continue
+			}
+			// Now add it in..
+			if err := acc.AddWeightedMappings(subj, mdest); err != nil {
+				err := &configErr{tk, fmt.Sprintf("Error adding mapping for %q: %v", subj, err)}
+				*errors = append(*errors, err)
+				continue
+			}
+		default:
+			err := &configErr{tk, fmt.Sprintf("Unknown type %T for mapping destination", vv)}
+			*errors = append(*errors, err)
+			continue
+		}
+	}
+
+	return nil
 }
 
 // parseAccounts will parse the different accounts syntax.
@@ -1958,6 +2098,12 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 						continue
 					}
 					acc.defaultPerms = permissions
+				case "mappings", "maps":
+					err := parseAccountMappings(tk, acc, errors, warnings)
+					if err != nil {
+						*errors = append(*errors, err)
+						continue
+					}
 				default:
 					if !tk.IsUsedVariable() {
 						err := &unknownConfigFieldErr{
@@ -2075,10 +2221,18 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 			*errors = append(*errors, &configErr{tk, msg})
 			continue
 		}
-		if err := stream.acc.AddStreamImport(ta, stream.sub, stream.pre); err != nil {
-			msg := fmt.Sprintf("Error adding stream import %q: %v", stream.sub, err)
-			*errors = append(*errors, &configErr{tk, msg})
-			continue
+		if stream.pre != "" {
+			if err := stream.acc.AddStreamImport(ta, stream.sub, stream.pre); err != nil {
+				msg := fmt.Sprintf("Error adding stream import %q: %v", stream.sub, err)
+				*errors = append(*errors, &configErr{tk, msg})
+				continue
+			}
+		} else {
+			if err := stream.acc.AddMappedStreamImport(ta, stream.sub, stream.to); err != nil {
+				msg := fmt.Sprintf("Error adding stream import %q: %v", stream.sub, err)
+				*errors = append(*errors, &configErr{tk, msg})
+				continue
+			}
 		}
 	}
 	for _, service := range importServices {
@@ -2518,6 +2672,9 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 				continue
 			}
 			curStream = &importStream{an: accountName, sub: subject}
+			if to != "" {
+				curStream.to = to
+			}
 			if pre != "" {
 				curStream.pre = pre
 			}
@@ -2560,6 +2717,14 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 			to = mv.(string)
 			if curService != nil {
 				curService.to = to
+			}
+			if curStream != nil {
+				curStream.to = to
+				if curStream.pre != "" {
+					err := &configErr{tk, "Stream import can not have a 'prefix' and a 'to' property"}
+					*errors = append(*errors, err)
+					continue
+				}
 			}
 		case "share":
 			share = mv.(bool)

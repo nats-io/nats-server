@@ -43,6 +43,12 @@ var (
 	// ErrBadPublishSubject represents an error condition for an invalid publish subject.
 	ErrBadPublishSubject = errors.New("invalid publish subject")
 
+	// ErrBadSubject represents an error condition for an invalid subject.
+	ErrBadSubject = errors.New("invalid subject")
+
+	// ErrBadQualifier is used to error on a bad qualifier for a transform.
+	ErrBadQualifier = errors.New("bad qualifier")
+
 	// ErrBadClientProtocol signals a client requested an invalid client protocol.
 	ErrBadClientProtocol = errors.New("invalid client protocol")
 
@@ -160,6 +166,9 @@ var (
 
 	// ErrSubscribePermissionViolation is returned when processing of a subscription fails due to permissions.
 	ErrSubscribePermissionViolation = errors.New("subscribe permission viloation")
+
+	// ErrNoTransforms signals no subject transforms are available to map this subject.
+	ErrNoTransforms = errors.New("no matching transforms available")
 )
 
 // configErr is a configuration error.

@@ -4488,3 +4488,65 @@ func TestConfigReloadDefaultSystemAccount(t *testing.T) {
 	}
 	testInAccounts()
 }
+
+func TestConfigReloadAccountMappings(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+	listen: "127.0.0.1:-1"
+	accounts {
+		ACC {
+			users = [{user: usr, password: pwd}]
+			mappings = { foo: bar }
+		}
+	}
+	`))
+	defer os.Remove(conf)
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	reloadUpdateConfig(t, s, conf, `
+	listen: "127.0.0.1:-1"
+	accounts {
+		ACC {
+			users = [{user: usr, password: pwd}]
+			mappings = { foo: baz }
+		}
+	}
+	`)
+
+	nc := natsConnect(t, fmt.Sprintf("nats://usr:pwd@%s:%d", opts.Host, opts.Port))
+	defer nc.Close()
+
+	fsub, _ := nc.SubscribeSync("foo")
+	sub, _ := nc.SubscribeSync("baz")
+	nc.Publish("foo", nil)
+	nc.Flush()
+
+	checkPending := func(sub *nats.Subscription, expected int) {
+		t.Helper()
+		if n, _, _ := sub.Pending(); n != expected {
+			t.Fatalf("Expected %d msgs for %q, but got %d", expected, sub.Subject, n)
+		}
+	}
+	checkPending(fsub, 0)
+	checkPending(sub, 1)
+
+	// Drain it off
+	if _, err := sub.NextMsg(2 * time.Second); err != nil {
+		t.Fatalf("Error receiving msg: %v", err)
+	}
+
+	reloadUpdateConfig(t, s, conf, `
+	listen: "127.0.0.1:-1"
+	accounts {
+		ACC {
+			users = [{user: usr, password: pwd}]
+		}
+	}
+	`)
+
+	nc.Publish("foo", nil)
+	nc.Flush()
+
+	checkPending(fsub, 1)
+	checkPending(sub, 0)
+}
