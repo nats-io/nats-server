@@ -105,6 +105,7 @@ type ddentry struct {
 // for a published message. The value of this header should be the current
 // sequence of the stream.
 const JSExpSeq = "Exp-Seq"
+const JSExpSeqStreamPrefix = "!"
 
 // Replicas Range
 const (
@@ -783,8 +784,6 @@ func getMsgId(hdr []byte) string {
 	return string(getHdrVal(JSPubId, hdr))
 }
 
-const ExpSeqStreamScope = "@"
-
 // Fast lookup of expected sequence
 func getExpSeq(hdr []byte) (uint64, bool, bool, error) {
 	val := getHdrVal(JSExpSeq, hdr)
@@ -795,7 +794,7 @@ func getExpSeq(hdr []byte) (uint64, bool, bool, error) {
 	// Character indicator stream flag.
 	// TODO: this is arbitrary, but something to distinguish a stream vs.
 	// subject level check is needed.
-	if val[0] == ExpSeqStreamScope[0] {
+	if val[0] == JSExpSeqStreamPrefix[0] {
 		stream = true
 		val = val[1:]
 	}
