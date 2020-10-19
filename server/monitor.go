@@ -1934,6 +1934,12 @@ type ExtExport struct {
 	ApprovedAccounts []string `json:"approved_accounts,omitempty"`
 }
 
+type ExtVrIssues struct {
+	Description string `json:"description"`
+	Blocking    bool   `json:"blocking"`
+	Time        bool   `json:"time_check"`
+}
+
 type ExtMap map[string][]*MapDest
 
 type AccountInfo struct {
@@ -1950,6 +1956,7 @@ type AccountInfo struct {
 	Imports     []ExtImport        `json:"imports,omitempty"`
 	Jwt         string             `json:"jwt,omitempty"`
 	Claim       *jwt.AccountClaims `json:"decoded_jwt,omitempty"`
+	Vr          []ExtVrIssues      `json:"validation_result_jwt,omitempty"`
 }
 
 type Accountz struct {
@@ -2005,68 +2012,105 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	claim, _ := jwt.DecodeAccountClaims(a.claimJWT) // ignore error
+	var vrIssues []ExtVrIssues
+	claim, _ := jwt.DecodeAccountClaims(a.claimJWT) //ignore error
+	if claim != nil {
+		vr := jwt.ValidationResults{}
+		claim.Validate(&vr)
+		vrIssues = make([]ExtVrIssues, len(vr.Issues))
+		for i, v := range vr.Issues {
+			vrIssues[i] = ExtVrIssues{v.Description, v.Blocking, v.TimeCheck}
+		}
+	}
 	exports := []ExtExport{}
 	for k, v := range a.exports.services {
 		e := ExtExport{
 			Export: jwt.Export{
-				Subject:      jwt.Subject(k),
-				Type:         jwt.Service,
-				TokenReq:     v.tokenReq,
-				ResponseType: jwt.ResponseType(v.respType.String()),
+				Subject: jwt.Subject(k),
+				Type:    jwt.Service,
 			},
 			ApprovedAccounts: []string{},
 		}
-		for name := range v.approved {
-			e.ApprovedAccounts = append(e.ApprovedAccounts, name)
+		if v != nil {
+			e.TokenReq = v.tokenReq
+			e.ResponseType = jwt.ResponseType(v.respType.String())
+			for name := range v.approved {
+				e.ApprovedAccounts = append(e.ApprovedAccounts, name)
+			}
 		}
 		exports = append(exports, e)
 	}
 	for k, v := range a.exports.streams {
 		e := ExtExport{
 			Export: jwt.Export{
-				Subject:  jwt.Subject(k),
-				Type:     jwt.Stream,
-				TokenReq: v.tokenReq,
+				Subject: jwt.Subject(k),
+				Type:    jwt.Stream,
 			},
 			ApprovedAccounts: []string{},
 		}
-		for name := range v.approved {
-			e.ApprovedAccounts = append(e.ApprovedAccounts, name)
+		if v != nil {
+			e.TokenReq = v.tokenReq
+			for name := range v.approved {
+				e.ApprovedAccounts = append(e.ApprovedAccounts, name)
+			}
 		}
 		exports = append(exports, e)
 	}
 	imports := []ExtImport{}
 	for _, v := range a.imports.streams {
-		imports = append(imports, ExtImport{
-			Import: jwt.Import{
+		imp := ExtImport{
+			Invalid: true,
+			Import:  jwt.Import{Type: jwt.Stream},
+		}
+		if v != nil {
+			imp.Invalid = v.invalid
+			imp.Import = jwt.Import{
 				Subject: jwt.Subject(v.from),
 				Account: v.acc.Name,
 				Type:    jwt.Stream,
 				To:      jwt.Subject(v.to),
-			},
-			Invalid: v.invalid,
-		})
+			}
+		}
+		imports = append(imports, imp)
 	}
 	for _, v := range a.imports.services {
-		imports = append(imports, ExtImport{
-			Import: jwt.Import{
+		imp := ExtImport{
+			Invalid: true,
+			Import:  jwt.Import{Type: jwt.Service},
+		}
+		if v != nil {
+			imp.Invalid = v.invalid
+			imp.Import = jwt.Import{
 				Subject: jwt.Subject(v.from),
 				Account: v.acc.Name,
 				Type:    jwt.Service,
 				To:      jwt.Subject(v.to),
-			},
-			Invalid: v.invalid,
-		})
+			}
+		}
+		imports = append(imports, imp)
 	}
-
 	mappings := ExtMap{}
 	for _, m := range a.mappings {
 		var dests []*MapDest
-		for _, d := range m.dests {
-			dests = append(dests, &MapDest{d.tr.dest, d.weight, ""})
+		src := ""
+		if m == nil {
+			src = "nil"
+			if _, ok := mappings[src]; ok { // only set if not present (keep orig in case nil is used)
+				continue
+			}
+			dests = append(dests, &MapDest{})
+		} else {
+			src = m.src
+			for _, d := range m.dests {
+				dests = append(dests, &MapDest{d.tr.dest, d.weight, ""})
+			}
+			for c, cd := range m.cdests {
+				for _, d := range cd {
+					dests = append(dests, &MapDest{d.tr.dest, d.weight, c})
+				}
+			}
 		}
-		mappings[m.src] = dests
+		mappings[src] = dests
 	}
 
 	return &AccountInfo{
@@ -2083,5 +2127,6 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 		imports,
 		a.claimJWT,
 		claim,
+		vrIssues,
 	}, nil
 }
