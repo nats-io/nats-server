@@ -134,12 +134,15 @@ const DisconnectEventMsgType = "io.nats.server.advisory.v1.client_disconnect"
 // a given account when the number of connections changes. It will also HB
 // updates in the absence of any changes.
 type AccountNumConns struct {
+	TypedEvent
 	Server     ServerInfo `json:"server"`
 	Account    string     `json:"acc"`
 	Conns      int        `json:"conns"`
 	LeafNodes  int        `json:"leafnodes"`
 	TotalConns int        `json:"total_conns"`
 }
+
+const AccountNumConnsMsgType = "io.nats.server.advisory.v1.account_connections"
 
 // accNumConnsReq is sent when we are starting to track an account for the first
 // time. We will request others send info to us about their local state.
@@ -1164,10 +1167,16 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 		return
 	}
 	// Build event with account name and number of local clients and leafnodes.
+	eid := s.nextEventID()
 	a.mu.Lock()
 	s.mu.Unlock()
 	localConns := a.numLocalConnections()
 	m := &AccountNumConns{
+		TypedEvent: TypedEvent{
+			Type: AccountNumConnsMsgType,
+			ID:   eid,
+			Time: time.Now().UTC(),
+		},
 		Account:    a.Name,
 		Conns:      localConns,
 		LeafNodes:  a.numLocalLeafNodes(),
