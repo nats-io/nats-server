@@ -617,6 +617,17 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 	// Grab lock
 	c.mu.Lock()
 
+	// If client has been closed, this function will unlock and make sure
+	// the the connection is closed for proper clean-up.
+	isClosedUnlockAndReturn := func() bool {
+		if c.isClosed() {
+			c.mu.Unlock()
+			c.closeConnection(WriteError)
+			return true
+		}
+		return false
+	}
+
 	if solicited {
 		// We need to wait here for the info, but not for too long.
 		c.nc.SetReadDeadline(time.Now().Add(DEFAULT_LEAFNODE_INFO_WAIT))
@@ -651,9 +662,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 
 		// Not sure that can happen, but in case the connection was marked
 		// as closed during the call to parse...
-		if c.isClosed() {
-			c.mu.Unlock()
-			c.closeConnection(ReadError)
+		if isClosedUnlockAndReturn() {
 			return nil
 		}
 
@@ -722,8 +731,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 			c.mu.Lock()
 
 			// Timeout may have closed the connection while the lock was released.
-			if c.isClosed() {
-				c.mu.Unlock()
+			if isClosedUnlockAndReturn() {
 				return nil
 			}
 		}
@@ -752,11 +760,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 
 		// The above call could have marked the connection as closed (due to
 		// TCP error), so if that is the case, bail out here.
-		if c.isClosed() {
-			c.mu.Unlock()
-			// We need to call closeConnection() for proper cleanup, but
-			// "reason" does not really matter since it has been already set.
-			c.closeConnection(WriteError)
+		if isClosedUnlockAndReturn() {
 			return nil
 		}
 
@@ -788,8 +792,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 			c.flags.set(handshakeComplete)
 
 			// Timeout may have closed the connection while the lock was released.
-			if c.isClosed() {
-				c.mu.Unlock()
+			if isClosedUnlockAndReturn() {
 				return nil
 			}
 		}
