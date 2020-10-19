@@ -617,6 +617,17 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 	// Grab lock
 	c.mu.Lock()
 
+	// If client has been closed, this function will unlock and make sure
+	// the the connection is closed for proper clean-up.
+	isClosedUnlockAndReturn := func() bool {
+		if c.isClosed() {
+			c.mu.Unlock()
+			c.closeConnection(WriteError)
+			return true
+		}
+		return false
+	}
+
 	if solicited {
 		// We need to wait here for the info, but not for too long.
 		c.nc.SetReadDeadline(time.Now().Add(DEFAULT_LEAFNODE_INFO_WAIT))
@@ -646,6 +657,12 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 			c.mu.Unlock()
 			c.Errorf("Did not get the remote leafnode's INFO, timed-out")
 			c.closeConnection(ReadError)
+			return nil
+		}
+
+		// Not sure that can happen, but in case the connection was marked
+		// as closed during the call to parse...
+		if isClosedUnlockAndReturn() {
 			return nil
 		}
 
@@ -712,6 +729,11 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 
 			// Re-Grab lock
 			c.mu.Lock()
+
+			// Timeout may have closed the connection while the lock was released.
+			if isClosedUnlockAndReturn() {
+				return nil
+			}
 		}
 
 		if err := c.sendLeafConnect(clusterName, tlsRequired); err != nil {
@@ -735,6 +757,12 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 		// writeLoop go routine. The other side needs to receive
 		// this before it can initiate the TLS handshake..
 		c.sendProtoNow(bytes.Join(pcs, []byte(" ")))
+
+		// The above call could have marked the connection as closed (due to
+		// TCP error), so if that is the case, bail out here.
+		if isClosedUnlockAndReturn() {
+			return nil
+		}
 
 		// Check to see if we need to spin up TLS.
 		if info.TLSRequired {
@@ -762,14 +790,17 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 
 			// Indicate that handshake is complete (used in monitoring)
 			c.flags.set(handshakeComplete)
+
+			// Timeout may have closed the connection while the lock was released.
+			if isClosedUnlockAndReturn() {
+				return nil
+			}
 		}
 
 		// Leaf nodes will always require a CONNECT to let us know
 		// when we are properly bound to an account.
 		// The connection may have been closed
-		if !c.isClosed() {
-			c.setAuthTimer(secondsToDuration(opts.LeafNode.AuthTimeout))
-		}
+		c.setAuthTimer(secondsToDuration(opts.LeafNode.AuthTimeout))
 	}
 
 	// Keep track in case server is shutdown before we can successfully register.
