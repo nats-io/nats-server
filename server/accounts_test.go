@@ -2640,8 +2640,6 @@ func TestAccountRouteMappingsConfiguration(t *testing.T) {
 	if len(az.Account.Mappings) != 3 {
 		t.Fatalf("Expected %d mappings, saw %d", 3, len(az.Account.Mappings))
 	}
-	b, _ := json.MarshalIndent(az, "", "  ")
-	fmt.Printf("%s", b)
 }
 
 func TestAccountRouteMappingsWithLossInjection(t *testing.T) {

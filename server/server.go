@@ -1221,7 +1221,7 @@ func (s *Server) lookupAccount(name string) (*Account, error) {
 	}
 	// If we have a resolver see if it can fetch the account.
 	if s.AccountResolver() == nil {
-		return nil, ErrMissingAccount
+		return nil, ErrNoAccountResolver
 	}
 	return s.fetchAccount(name)
 }
@@ -1262,7 +1262,8 @@ func (s *Server) updateAccountWithClaimJWT(acc *Account, claimJWT string) error 
 		acc.mu.Lock()
 		if acc.Issuer == "" {
 			acc.Issuer = accClaims.Issuer
-		} else if acc.Issuer != accClaims.Issuer {
+		}
+		if acc.Name != accClaims.Subject {
 			acc.mu.Unlock()
 			return ErrAccountValidation
 		}

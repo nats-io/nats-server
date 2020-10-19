@@ -882,6 +882,27 @@ func TestSystemAccountConnectionLimits(t *testing.T) {
 	})
 }
 
+func TestBadAccountUpdate(t *testing.T) {
+	sa, _ := runTrustedServer(t)
+	defer sa.Shutdown()
+	akp1, _ := nkeys.CreateAccount()
+	pub, _ := akp1.PublicKey()
+	nac := jwt.NewAccountClaims(pub)
+	ajwt1, err := nac.Encode(oKp)
+	require_NoError(t, err)
+	addAccountToMemResolver(sa, pub, ajwt1)
+	akp2, _ := nkeys.CreateAccount()
+	pub2, _ := akp2.PublicKey()
+	nac.Subject = pub2 // maliciously use a different subject but pretend to remain pub
+	ajwt2, err := nac.Encode(oKp)
+	require_NoError(t, err)
+	acc, err := sa.fetchAccount(pub)
+	require_NoError(t, err)
+	if err := sa.updateAccountWithClaimJWT(acc, ajwt2); err != ErrAccountValidation {
+		t.Fatalf("expected %v but got %v", ErrAccountValidation, err)
+	}
+}
+
 // Make sure connection limits apply to the system account itself.
 func TestSystemAccountSystemConnectionLimitsHonored(t *testing.T) {
 	sa, optsA, sb, optsB, sakp := runTrustedCluster(t)
