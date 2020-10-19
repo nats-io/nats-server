@@ -2024,25 +2024,16 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 	}
 	exports := []ExtExport{}
 	for k, v := range a.exports.services {
-		var e ExtExport
-		subj := jwt.Subject(k)
-		if v == nil {
-			e = ExtExport{
-				Export: jwt.Export{
-					Subject: subj,
-					Type:    jwt.Service,
-				},
-			}
-		} else {
-			e = ExtExport{
-				Export: jwt.Export{
-					Subject:      subj,
-					Type:         jwt.Service,
-					TokenReq:     v.tokenReq,
-					ResponseType: jwt.ResponseType(v.respType.String()),
-				},
-				ApprovedAccounts: []string{},
-			}
+		e := ExtExport{
+			Export: jwt.Export{
+				Subject: jwt.Subject(k),
+				Type:    jwt.Service,
+			},
+			ApprovedAccounts: []string{},
+		}
+		if v != nil {
+			e.TokenReq = v.tokenReq
+			e.ResponseType = jwt.ResponseType(v.respType.String())
 			for name := range v.approved {
 				e.ApprovedAccounts = append(e.ApprovedAccounts, name)
 			}
@@ -2050,21 +2041,15 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 		exports = append(exports, e)
 	}
 	for k, v := range a.exports.streams {
-		token := false
-		expTp := jwt.Unknown
-		if v != nil {
-			token = v.tokenReq
-			expTp = jwt.Stream
-		}
 		e := ExtExport{
 			Export: jwt.Export{
-				Subject:  jwt.Subject(k),
-				Type:     expTp,
-				TokenReq: token,
+				Subject: jwt.Subject(k),
+				Type:    jwt.Stream,
 			},
 			ApprovedAccounts: []string{},
 		}
 		if v != nil {
+			e.TokenReq = v.tokenReq
 			for name := range v.approved {
 				e.ApprovedAccounts = append(e.ApprovedAccounts, name)
 			}
@@ -2073,37 +2058,36 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 	}
 	imports := []ExtImport{}
 	for _, v := range a.imports.streams {
-		invalid := true
-		var imp jwt.Import
+		imp := ExtImport{
+			Invalid: true,
+			Import:  jwt.Import{Type: jwt.Stream},
+		}
 		if v != nil {
-			imp = jwt.Import{
+			imp.Invalid = v.invalid
+			imp.Import = jwt.Import{
 				Subject: jwt.Subject(v.from),
 				Account: v.acc.Name,
 				Type:    jwt.Stream,
 				To:      jwt.Subject(v.to),
 			}
 		}
-		imports = append(imports, ExtImport{
-			Import:  imp,
-			Invalid: invalid,
-		})
+		imports = append(imports, imp)
 	}
 	for _, v := range a.imports.services {
-		invalid := true
-		var imp jwt.Import
+		imp := ExtImport{
+			Invalid: true,
+			Import:  jwt.Import{Type: jwt.Service},
+		}
 		if v != nil {
-			invalid = v.invalid
-			imp = jwt.Import{
+			imp.Invalid = v.invalid
+			imp.Import = jwt.Import{
 				Subject: jwt.Subject(v.from),
 				Account: v.acc.Name,
 				Type:    jwt.Service,
 				To:      jwt.Subject(v.to),
 			}
 		}
-		imports = append(imports, ExtImport{
-			Import:  imp,
-			Invalid: invalid,
-		})
+		imports = append(imports, imp)
 	}
 	mappings := ExtMap{}
 	for _, m := range a.mappings {
