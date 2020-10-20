@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
 )
 
@@ -3301,14 +3302,49 @@ func handleListRequest(store *DirJWTStore, s *Server, reply string) {
 }
 
 func handleDeleteRequest(store *DirJWTStore, s *Server, msg []byte, reply string) {
-	accIds := strings.Split(strings.Replace(string(msg), "\r\n", "\n", -1), "\n")
+	var accIds []interface{}
+	var subj, sysAccName string
+	if sysAcc := s.SystemAccount(); sysAcc != nil {
+		sysAccName = sysAcc.GetName()
+	}
+	// TODO Can allow keys (issuer) to delete accounts they issued and operator key to delete all accounts.
+	//      For now only operator is allowed to delete
+	gk, err := jwt.DecodeGeneric(string(msg))
+	if err == nil {
+		subj = gk.Subject
+		if store.deleteType == NoDelete {
+			err = fmt.Errorf("delete must be enabled in server config")
+		} else if subj != gk.Issuer {
+			err = fmt.Errorf("not self signed")
+		} else if !s.isTrustedIssuer(gk.Issuer) {
+			err = fmt.Errorf("not trusted")
+		} else if store.operator != gk.Issuer {
+			err = fmt.Errorf("needs to be the operator operator")
+		} else if list, ok := gk.Data["accounts"]; !ok {
+			err = fmt.Errorf("malformed request")
+		} else if accIds, ok = list.([]interface{}); !ok {
+			err = fmt.Errorf("malformed request")
+		} else {
+			for _, entry := range accIds {
+				if acc, ok := entry.(string); !ok ||
+					acc == "" || !nkeys.IsValidPublicAccountKey(acc) {
+					err = fmt.Errorf("malformed request")
+					break
+				} else if acc == sysAccName {
+					err = fmt.Errorf("not allowed to delete system account")
+					break
+				}
+			}
+		}
+	}
+	if err != nil {
+		respondToUpdate(s, reply, "", fmt.Sprintf("delete accounts request by %s failed", subj), err)
+		return
+	}
 	errs := []string{}
 	passCnt := 0
 	for _, acc := range accIds {
-		if acc == "" {
-			continue
-		}
-		if err := store.delete(acc); err != nil {
+		if err := store.delete(acc.(string)); err != nil {
 			errs = append(errs, err.Error())
 		} else {
 			passCnt++
@@ -3322,10 +3358,26 @@ func handleDeleteRequest(store *DirJWTStore, s *Server, msg []byte, reply string
 	}
 }
 
+func getOperator(s *Server) (string, error) {
+	var op string
+	if opts := s.getOpts(); opts != nil && len(opts.TrustedOperators) > 0 {
+		op = opts.TrustedOperators[0].Subject
+	}
+	if op == "" {
+		return "", fmt.Errorf("no operator found")
+	}
+	return op, nil
+}
+
 func (dr *DirAccResolver) Start(s *Server) error {
+	op, err := getOperator(s)
+	if err != nil {
+		return err
+	}
 	dr.Lock()
 	defer dr.Unlock()
 	dr.Server = s
+	dr.operator = op
 	dr.DirJWTStore.changed = func(pubKey string) {
 		if v, ok := s.accounts.Load(pubKey); !ok {
 		} else if jwt, err := dr.LoadAcc(pubKey); err != nil {
@@ -3476,14 +3528,18 @@ func (dr *DirAccResolver) Store(name, jwt string) error {
 	return dr.saveIfNewer(name, jwt)
 }
 
-func NewDirAccResolver(path string, limit int64, syncInterval time.Duration) (*DirAccResolver, error) {
+func NewDirAccResolver(path string, limit int64, syncInterval time.Duration, delete bool) (*DirAccResolver, error) {
 	if limit == 0 {
 		limit = math.MaxInt64
 	}
 	if syncInterval <= 0 {
 		syncInterval = time.Minute
 	}
-	store, err := NewExpiringDirJWTStore(path, false, true, 0, limit, false, 0, nil)
+	deleteType := NoDelete
+	if delete {
+		deleteType = RenameDeleted
+	}
+	store, err := NewExpiringDirJWTStore(path, false, true, deleteType, 0, limit, false, 0, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -3544,11 +3600,11 @@ func (s *Server) fetch(res AccountResolver, name string) (string, error) {
 	return theJWT, err
 }
 
-func NewCacheDirAccResolver(path string, limit int64, ttl time.Duration) (*CacheDirAccResolver, error) {
+func NewCacheDirAccResolver(path string, limit int64, ttl time.Duration, _ ...dirJWTStoreOption) (*CacheDirAccResolver, error) {
 	if limit <= 0 {
 		limit = 1_000
 	}
-	store, err := NewExpiringDirJWTStore(path, false, true, 0, limit, true, ttl, nil)
+	store, err := NewExpiringDirJWTStore(path, false, true, HardDelete, 0, limit, true, ttl, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -3556,9 +3612,14 @@ func NewCacheDirAccResolver(path string, limit int64, ttl time.Duration) (*Cache
 }
 
 func (dr *CacheDirAccResolver) Start(s *Server) error {
+	op, err := getOperator(s)
+	if err != nil {
+		return err
+	}
 	dr.Lock()
 	defer dr.Unlock()
 	dr.Server = s
+	dr.operator = op
 	dr.DirJWTStore.changed = func(pubKey string) {
 		if v, ok := s.accounts.Load(pubKey); !ok {
 		} else if jwt, err := dr.LoadAcc(pubKey); err != nil {
