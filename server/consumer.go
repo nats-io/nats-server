@@ -715,7 +715,7 @@ func (o *Consumer) processAck(_ *subscription, _ *client, subject, reply string,
 		o.ackMsg(sseq, dseq, dcount)
 	case bytes.Equal(msg, AckNext):
 		o.ackMsg(sseq, dseq, dcount)
-		o.processNextMsgReq(nil, nil, subject, reply, nil)
+		o.processNextMsgReq(nil, nil, subject, reply, msg)
 		skipAckReply = true
 	case bytes.Equal(msg, AckNak):
 		o.processNak(sseq, dseq)
