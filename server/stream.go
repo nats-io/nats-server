@@ -945,6 +945,7 @@ func (mset *Stream) internalSendLoop() {
 				c.pa.hdb = nil
 				msg = append(pm.msg, _CRLF_...)
 			}
+
 			didDeliver := c.processInboundClientMsg(msg)
 			c.pa.szb = nil
 			c.flushClients(0)

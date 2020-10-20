@@ -366,6 +366,9 @@ type JSApiMsgGetResponse struct {
 
 const JSApiMsgGetResponseType = "io.nats.jetstream.api.v1.stream_msg_get_response"
 
+// JSWaitQueueDefaultMax is the default max number of outstanding requests for pull consumers.
+const JSWaitQueueDefaultMax = 1024
+
 // JSApiConsumerCreateResponse.
 type JSApiConsumerCreateResponse struct {
 	ApiResponse

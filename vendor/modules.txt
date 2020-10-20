@@ -2,7 +2,7 @@
 github.com/minio/highwayhash
 # github.com/nats-io/jwt/v2 v2.0.0-20201015190852-e11ce317263c
 github.com/nats-io/jwt/v2
-# github.com/nats-io/nats.go v1.10.1-0.20200606002146-fc6fed82929a
+# github.com/nats-io/nats.go v1.10.1-0.20201013114232-5a33ce07522f
 github.com/nats-io/nats.go
 github.com/nats-io/nats.go/encoders/builtin
 github.com/nats-io/nats.go/util
@@ -10,7 +10,7 @@ github.com/nats-io/nats.go/util
 github.com/nats-io/nkeys
 # github.com/nats-io/nuid v1.0.1
 github.com/nats-io/nuid
-# golang.org/x/crypto v0.0.0-20200323165209-0ec3e9974c59
+# golang.org/x/crypto v0.0.0-20201016220609-9e8e0b390897
 golang.org/x/crypto/bcrypt
 golang.org/x/crypto/blowfish
 golang.org/x/crypto/ed25519

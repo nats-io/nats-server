@@ -58,34 +58,37 @@ func (nc *Conn) requestWithContext(ctx context.Context, subj string, hdr, data [
 		return nil, ctx.Err()
 	}
 
-	nc.mu.Lock()
+	var m *Msg
+	var err error
+
 	// If user wants the old style.
-	if nc.Opts.UseOldRequestStyle {
-		nc.mu.Unlock()
-		return nc.oldRequestWithContext(ctx, subj, hdr, data)
-	}
-
-	mch, token, err := nc.createNewRequestAndSend(subj, hdr, data)
-	if err != nil {
-		return nil, err
-	}
-
-	var ok bool
-	var msg *Msg
-
-	select {
-	case msg, ok = <-mch:
-		if !ok {
-			return nil, ErrConnectionClosed
+	if nc.useOldRequestStyle() {
+		m, err = nc.oldRequestWithContext(ctx, subj, hdr, data)
+	} else {
+		mch, token, err := nc.createNewRequestAndSend(subj, hdr, data)
+		if err != nil {
+			return nil, err
 		}
-	case <-ctx.Done():
-		nc.mu.Lock()
-		delete(nc.respMap, token)
-		nc.mu.Unlock()
-		return nil, ctx.Err()
-	}
 
-	return msg, nil
+		var ok bool
+
+		select {
+		case m, ok = <-mch:
+			if !ok {
+				return nil, ErrConnectionClosed
+			}
+		case <-ctx.Done():
+			nc.mu.Lock()
+			delete(nc.respMap, token)
+			nc.mu.Unlock()
+			return nil, ctx.Err()
+		}
+	}
+	// Check for no responder status.
+	if err == nil && len(m.Data) == 0 && m.Header.Get(statusHdr) == noResponders {
+		m, err = nil, ErrNoResponders
+	}
+	return m, err
 }
 
 // oldRequestWithContext utilizes inbox and subscription per request.
