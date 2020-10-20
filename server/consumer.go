@@ -1051,15 +1051,25 @@ func (o *Consumer) needAck(sseq uint64) bool {
 	return needAck
 }
 
-// Default is 1 if msg is nil.
-func batchSizeFromMsg(msg []byte) int {
-	bs := 1
-	if len(msg) > 0 {
-		if n, err := strconv.Atoi(string(msg)); err == nil {
-			bs = n
-		}
+// Helper for the next message requests.
+func nextReqFromMsg(msg []byte) (time.Time, int, bool, error) {
+	req := strings.TrimSpace(string(msg))
+	if len(req) == 0 {
+		return time.Time{}, 1, false, nil
 	}
-	return bs
+	if req[0] == '{' {
+		var cr JSApiConsumerGetNextRequest
+		if err := json.Unmarshal(msg, &cr); err != nil {
+			return time.Time{}, -1, false, err
+		}
+		return cr.Expires, cr.Batch, cr.NoWait, nil
+	}
+	// Naked batch size here for backward compatibility.
+	bs := 1
+	if n, err := strconv.Atoi(req); err == nil {
+		bs = n
+	}
+	return time.Time{}, bs, false, nil
 }
 
 // Represents a request that is on the internal waiting queue
@@ -1068,6 +1078,7 @@ type waitingRequest struct {
 	reply   string
 	n       int // For batching
 	expires time.Time
+	noWait  bool
 }
 
 // waiting queue for requests that are waiting for new messages to arrive.
@@ -1153,9 +1164,6 @@ func (wq *waitQueue) pop() *waitingRequest {
 // a single message. If the payload is a number parseable with Atoi(), then we will send a batch of messages without
 // requiring another request to this endpoint, or an ACK.
 func (o *Consumer) processNextMsgReq(_ *subscription, c *client, _, reply string, msg []byte) {
-	// Check payload here to see if they sent in batch size.
-	batchSize := batchSizeFromMsg(msg)
-
 	o.mu.Lock()
 	mset := o.mset
 	if mset == nil || o.isPushMode() {
@@ -1163,20 +1171,30 @@ func (o *Consumer) processNextMsgReq(_ *subscription, c *client, _, reply string
 		return
 	}
 
+	sendErr := func(status int, description string) {
+		sendq := mset.sendq
+		o.mu.Unlock()
+		hdr := []byte(fmt.Sprintf("NATS/1.0 %d %s\r\n\r\n", status, description))
+		pmsg := &jsPubMsg{reply, reply, _EMPTY_, hdr, nil, nil, 0}
+		sendq <- pmsg // Send message.
+	}
+
 	if o.waiting.isFull() {
 		// If our waiting queue is full return an empty response with the proper header.
 		// FIXME(dlc) - Should we do advisory here as well?
-		sendq := mset.sendq
-		o.mu.Unlock()
-		hdr := []byte("NATS/1.0 500 WaitQueue Exceeded\r\n\r\n")
-		pmsg := &jsPubMsg{reply, reply, _EMPTY_, hdr, nil, nil, 0}
-		// Send message.
-		sendq <- pmsg
+		sendErr(500, "WaitQueue Exceeded")
+		return
+	}
+
+	// Check payload here to see if they sent in batch size or a formal request.
+	expires, batchSize, noWait, err := nextReqFromMsg(msg)
+	if err != nil {
+		sendErr(400, "Bad Request")
 		return
 	}
 
 	// In case we have to queue up this request. This is all on stack pre-allocated.
-	wr := waitingRequest{client: c, reply: reply, n: batchSize}
+	wr := waitingRequest{client: c, reply: reply, n: batchSize, noWait: noWait, expires: expires}
 
 	// If we are in replay mode, defer to processReplay for delivery.
 	if o.replay {
@@ -1192,6 +1210,10 @@ func (o *Consumer) processNextMsgReq(_ *subscription, c *client, _, reply string
 			// Need to discount this from the total n for the request.
 			wr.n--
 		} else {
+			if wr.noWait {
+				sendErr(404, "No Messages")
+				return
+			}
 			o.waiting.add(&wr)
 			break
 		}

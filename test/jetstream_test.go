@@ -1558,6 +1558,112 @@ func TestJetStreamWorkQueueWrapWaiting(t *testing.T) {
 	}
 }
 
+func TestJetStreamWorkQueueRequest(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &server.StreamConfig{Name: "MY_MSG_SET", Storage: server.MemoryStorage, Subjects: []string{"foo", "bar"}}},
+		{"FileStore", &server.StreamConfig{Name: "MY_MSG_SET", Storage: server.FileStorage, Subjects: []string{"foo", "bar"}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			o, err := mset.AddConsumer(workerModeConfig("WRAP"))
+			if err != nil {
+				t.Fatalf("Expected no error with registered interest, got %v", err)
+			}
+			defer o.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			toSend := 25
+			for i := 0; i < toSend; i++ {
+				sendStreamMsg(t, nc, "bar", "Hello World!")
+			}
+
+			reply := "_.consumer._"
+			sub, _ := nc.SubscribeSync(reply)
+			defer sub.Unsubscribe()
+
+			getSubj := o.RequestNextMsgSubject()
+
+			checkSubPending := func(numExpected int) {
+				t.Helper()
+				checkFor(t, 200*time.Millisecond, 10*time.Millisecond, func() error {
+					if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != numExpected {
+						return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, numExpected)
+					}
+					return nil
+				})
+			}
+
+			// Create a formal request object.
+			req := &server.JSApiConsumerGetNextRequest{Batch: toSend}
+			jreq, _ := json.Marshal(req)
+			nc.PublishRequest(getSubj, reply, jreq)
+
+			checkSubPending(toSend)
+
+			// Now check that we can ask for NoWait
+			req.Batch = 1
+			req.NoWait = true
+			jreq, _ = json.Marshal(req)
+
+			resp, err := nc.Request(getSubj, jreq, 50*time.Millisecond)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if status := resp.Header.Get("Status"); !strings.HasPrefix(status, "404") {
+				t.Fatalf("Expected status code of 404")
+			}
+			// Load up more messages.
+			for i := 0; i < toSend; i++ {
+				sendStreamMsg(t, nc, "foo", "Hello World!")
+			}
+			// Now we will ask for a batch larger then what is queued up.
+			req.Batch = toSend + 10
+			req.NoWait = true
+			jreq, _ = json.Marshal(req)
+			nc.PublishRequest(getSubj, reply, jreq)
+			// We should now have 2 * toSend + the 404 message.
+			checkSubPending(2*toSend + 1)
+			for i := 0; i < 2*toSend+1; i++ {
+				sub.NextMsg(time.Millisecond)
+			}
+			checkSubPending(0)
+			mset.Purge()
+
+			// Now do expiration
+			req.Batch = 1
+			req.NoWait = false
+			req.Expires = time.Now().Add(10 * time.Millisecond)
+			jreq, _ = json.Marshal(req)
+
+			nc.PublishRequest(getSubj, reply, jreq)
+			// Let it expire
+			time.Sleep(20 * time.Millisecond)
+			// Send a few more messages. These should not be delivered to the sub.
+			sendStreamMsg(t, nc, "foo", "Hello World!")
+			sendStreamMsg(t, nc, "bar", "Hello World!")
+			checkSubPending(0)
+		})
+	}
+}
+
 func TestJetStreamSubjectFiltering(t *testing.T) {
 	cases := []struct {
 		name    string
