@@ -849,6 +849,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 				}
 			}
 		case map[string]interface{}:
+			del := false
 			dir := ""
 			dirType := ""
 			limit := int64(0)
@@ -862,6 +863,10 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			if v, ok := v["type"]; ok {
 				_, v := unwrapValue(v, &lt)
 				dirType = v.(string)
+			}
+			if v, ok := v["allow_delete"]; ok {
+				_, v := unwrapValue(v, &lt)
+				del = v.(bool)
 			}
 			if v, ok := v["limit"]; ok {
 				_, v := unwrapValue(v, &lt)
@@ -893,12 +898,15 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 				if sync != 0 {
 					*errors = append(*errors, &configErr{tk, "CACHE does not accept sync"})
 				}
+				if del {
+					*errors = append(*errors, &configErr{tk, "CACHE does not accept allow_delete"})
+				}
 				res, err = NewCacheDirAccResolver(dir, limit, ttl)
 			case "FULL":
 				if ttl != 0 {
 					*errors = append(*errors, &configErr{tk, "FULL does not accept ttl"})
 				}
-				res, err = NewDirAccResolver(dir, limit, sync)
+				res, err = NewDirAccResolver(dir, limit, sync, del)
 			}
 			if err != nil {
 				*errors = append(*errors, &configErr{tk, err.Error()})

@@ -4379,46 +4379,73 @@ func TestJWTAccountOps(t *testing.T) {
 		require_NoError(t, err)
 		*creds1 = genCredsFile(t, ujwt1, seed)
 	}
-	var syspub, sysjwt, sysCreds string
-	createAccountAndUser(&syspub, &sysjwt, &sysCreds)
-	var apub, ajwt1, aCreds1 string
-	createAccountAndUser(&apub, &ajwt1, &aCreds1)
-	defer os.Remove(sysCreds)
-	defer os.Remove(aCreds1)
-	dirSrv := createDir(t, "srv")
-	defer os.RemoveAll(dirSrv)
-	conf := createConfFile(t, []byte(fmt.Sprintf(`
+	generateRequest := func(accs []string) []byte {
+		t.Helper()
+		opk, _ := oKp.PublicKey()
+		c := jwt.NewGenericClaims(opk)
+		c.Data["accounts"] = accs
+		cJwt, err := c.Encode(oKp)
+		if err != nil {
+			t.Fatalf("Expected no error %v", err)
+		}
+		return []byte(cJwt)
+	}
+	for _, cfg := range []string{
+		`type: full
+ 		allow_delete: true`,
+		`type: cache`,
+	} {
+		t.Run("", func(t *testing.T) {
+			var syspub, sysjwt, sysCreds string
+			createAccountAndUser(&syspub, &sysjwt, &sysCreds)
+			var apub, ajwt1, aCreds1 string
+			createAccountAndUser(&apub, &ajwt1, &aCreds1)
+			defer os.Remove(sysCreds)
+			defer os.Remove(aCreds1)
+			dirSrv := createDir(t, "srv")
+			defer os.RemoveAll(dirSrv)
+			conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: -1
 		operator: %s
 		system_account: %s
 		resolver: {
-			type: full
+			%s
 			dir: %s
 		}
-    `, ojwt, syspub, dirSrv)))
-	defer os.Remove(conf)
-	srv, _ := RunServerWithConfig(conf)
-	defer srv.Shutdown()
-	updateJwt(t, srv.ClientURL(), sysCreds, syspub, sysjwt, 1) // update system account jwt
-	updateJwt(t, srv.ClientURL(), sysCreds, apub, ajwt1, 1)    // set jwt
-	nc := natsConnect(t, srv.ClientURL(), nats.UserCredentials(sysCreds))
-	defer nc.Close()
-	resp, err := nc.Request(accListReqSubj, nil, time.Second)
-	require_NoError(t, err)
-	require_True(t, strings.Contains(string(resp.Data), apub))
-	require_True(t, strings.Contains(string(resp.Data), syspub))
-	// delete nothing
-	resp, err = nc.Request(accDeleteReqSubj, nil, time.Second)
-	require_NoError(t, err)
-	require_True(t, strings.Contains(string(resp.Data), `"message": "deleted 0 accounts"`))
-	// issue delete, twice to also delete a non existing account
-	for i := 0; i < 2; i++ {
-		resp, err = nc.Request(accDeleteReqSubj, []byte(apub), time.Second)
-		require_NoError(t, err)
-		require_True(t, strings.Contains(string(resp.Data), `"message": "deleted 1 accounts"`))
-		resp, err = nc.Request(accListReqSubj, nil, time.Second)
-		require_False(t, strings.Contains(string(resp.Data), apub))
-		require_True(t, strings.Contains(string(resp.Data), syspub))
-		require_NoError(t, err)
+    `, ojwt, syspub, cfg, dirSrv)))
+			defer os.Remove(conf)
+			srv, _ := RunServerWithConfig(conf)
+			defer srv.Shutdown()
+			updateJwt(t, srv.ClientURL(), sysCreds, syspub, sysjwt, 1) // update system account jwt
+			// push jwt (for full resolver)
+			updateJwt(t, srv.ClientURL(), sysCreds, apub, ajwt1, 1) // set jwt
+			nc := natsConnect(t, srv.ClientURL(), nats.UserCredentials(sysCreds))
+			defer nc.Close()
+			// simulate nas resolver in case of a lookup request (cache)
+			nc.Subscribe(fmt.Sprintf(accLookupReqSubj, apub), func(msg *nats.Msg) {
+				msg.Respond([]byte(ajwt1))
+			})
+			// connect so there is a reason to cache the request
+			ncA := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aCreds1))
+			ncA.Close()
+			resp, err := nc.Request(accListReqSubj, nil, time.Second)
+			require_NoError(t, err)
+			require_True(t, strings.Contains(string(resp.Data), apub))
+			require_True(t, strings.Contains(string(resp.Data), syspub))
+			// delete nothing
+			resp, err = nc.Request(accDeleteReqSubj, generateRequest([]string{}), time.Second)
+			require_NoError(t, err)
+			require_True(t, strings.Contains(string(resp.Data), `"message": "deleted 0 accounts"`))
+			// issue delete, twice to also delete a non existing account
+			for i := 0; i < 2; i++ {
+				resp, err = nc.Request(accDeleteReqSubj, generateRequest([]string{apub}), time.Second)
+				require_NoError(t, err)
+				require_True(t, strings.Contains(string(resp.Data), `"message": "deleted 1 accounts"`))
+				resp, err = nc.Request(accListReqSubj, nil, time.Second)
+				require_False(t, strings.Contains(string(resp.Data), apub))
+				require_True(t, strings.Contains(string(resp.Data), syspub))
+				require_NoError(t, err)
+			}
+		})
 	}
 }
