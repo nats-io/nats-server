@@ -1778,8 +1778,12 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// Re-Grab lock
 	c.mu.Lock()
 
+	// Connection could have been closed while sending the INFO proto,
+	// or during a server shutdown (since already added to s.clients).
+	isClosed := c.isClosed()
+
 	// Check for TLS
-	if info.TLSRequired {
+	if !isClosed && info.TLSRequired {
 		c.Debugf("Starting TLS client connection handshake")
 		c.nc = tls.Server(c.nc, opts.TLSConfig)
 		conn := c.nc.(*tls.Conn)
@@ -1804,10 +1808,13 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 		// Indicate that handshake is complete (used in monitoring)
 		c.flags.set(handshakeComplete)
+
+		// The connection may have been closed
+		isClosed = c.isClosed()
 	}
 
-	// The connection may have been closed
-	if c.isClosed() {
+	// If connection is marked as closed, bail out.
+	if isClosed {
 		c.mu.Unlock()
 		// If it was due to TLS timeout, teardownConn() has already been called.
 		// Otherwise, if connection was marked as closed while sending the INFO,
