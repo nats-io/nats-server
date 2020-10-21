@@ -3555,3 +3555,36 @@ func TestLeafNodeQueueSubscriberUnsubscribe(t *testing.T) {
 	// Make sure we receive nothing...
 	expectNothing(t, lc)
 }
+
+func TestLeafNodeNoPanicOnTLSSolicit(t *testing.T) {
+	content := `
+	listen: "127.0.0.1:-1"
+	leafnodes {
+		listen: "127.0.0.1:-1"
+		tls {
+			cert_file: "./configs/certs/server-cert.pem"
+			key_file: "./configs/certs/server-key.pem"
+			timeout: 2.0
+		}
+	}
+	`
+	conf := createConfFile(t, []byte(content))
+	defer os.Remove(conf)
+
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	lc, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", opts.LeafNode.Port))
+	if err != nil {
+		t.Fatalf("Unable to connect: %v", err)
+	}
+
+	// Then close right away
+	lc.Close()
+
+	// Check server does not crash...
+	time.Sleep(250 * time.Millisecond)
+	if s.ID() == "" {
+		t.Fatalf("should not happen")
+	}
+}
