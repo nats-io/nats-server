@@ -1083,6 +1083,9 @@ func (s *Server) verifyAccountClaims(claimJWT string) (*jwt.AccountClaims, strin
 	if err != nil {
 		return nil, _EMPTY_, err
 	}
+	if !s.isTrustedIssuer(accClaims.Issuer) {
+		return nil, _EMPTY_, ErrAccountValidation
+	}
 	vr := jwt.CreateValidationResults()
 	accClaims.Validate(vr)
 	if vr.IsBlocking(true) {

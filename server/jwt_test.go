@@ -1575,13 +1575,14 @@ func TestAccountURLResolver(t *testing.T) {
 			defer ts.Close()
 
 			confTemplate := `
+				operator: %s
 				listen: -1
 				resolver: URL("%s/ngs/v1/accounts/jwt/")
 				resolver_tls {
 					insecure: true
 				}
 			`
-			conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, ts.URL)))
+			conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, ojwt, ts.URL)))
 			defer os.Remove(conf)
 
 			s, opts := RunServerWithConfig(conf)
@@ -1660,10 +1661,11 @@ func TestAccountURLResolverNoFetchOnReload(t *testing.T) {
 	defer ts.Close()
 
 	confTemplate := `
+		operator: %s
 		listen: -1
 		resolver: URL("%s/ngs/v1/accounts/jwt/")
     `
-	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, ts.URL)))
+	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, ojwt, ts.URL)))
 	defer os.Remove(conf)
 
 	s, _ := RunServerWithConfig(conf)
@@ -1685,7 +1687,7 @@ func TestAccountURLResolverNoFetchOnReload(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	changeCurrentConfigContentWithNewContent(t, conf, []byte(fmt.Sprintf(confTemplate, ts.URL)))
+	changeCurrentConfigContentWithNewContent(t, conf, []byte(fmt.Sprintf(confTemplate, ojwt, ts.URL)))
 
 	if err := s.Reload(); err != nil {
 		t.Fatalf("Error on reload: %v", err)

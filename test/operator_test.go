@@ -155,7 +155,15 @@ func runOperatorServer(t *testing.T) (*server.Server, *server.Options) {
 	return RunServerWithConfig(testOpConfig)
 }
 
-func createAccountForOperatorKey(t *testing.T, s *server.Server, seed []byte) (*server.Account, nkeys.KeyPair) {
+func publicKeyFromKeyPair(t *testing.T, pair nkeys.KeyPair) (pkey string) {
+	var err error
+	if pkey, err = pair.PublicKey(); err != nil {
+		t.Fatalf("Expected no error %v", err)
+	}
+	return
+}
+
+func createAccountForOperatorKey(t *testing.T, s *server.Server, seed []byte) nkeys.KeyPair {
 	t.Helper()
 	okp, _ := nkeys.FromSeed(seed)
 	akp, _ := nkeys.CreateAccount()
@@ -165,16 +173,18 @@ func createAccountForOperatorKey(t *testing.T, s *server.Server, seed []byte) (*
 	if err := s.AccountResolver().Store(pub, jwt); err != nil {
 		t.Fatalf("Account Resolver returned an error: %v", err)
 	}
-	acc, err := s.LookupAccount(pub)
-	if err != nil {
+	return akp
+}
+
+func createAccount(t *testing.T, s *server.Server) (acc *server.Account, akp nkeys.KeyPair) {
+	t.Helper()
+	akp = createAccountForOperatorKey(t, s, oSeed)
+	if pub, err := akp.PublicKey(); err != nil {
+		t.Fatalf("Expected this to pass, got %v", err)
+	} else if acc, err = s.LookupAccount(pub); err != nil {
 		t.Fatalf("Error looking up account: %v", err)
 	}
 	return acc, akp
-}
-
-func createAccount(t *testing.T, s *server.Server) (*server.Account, nkeys.KeyPair) {
-	t.Helper()
-	return createAccountForOperatorKey(t, s, oSeed)
 }
 
 func createUserCreds(t *testing.T, s *server.Server, akp nkeys.KeyPair) nats.Option {
@@ -215,10 +225,14 @@ func TestOperatorServer(t *testing.T) {
 	// Now create an account from another operator, this should fail.
 	okp, _ := nkeys.CreateOperator()
 	seed, _ := okp.Seed()
-	_, akp = createAccountForOperatorKey(t, s, seed)
+	akp = createAccountForOperatorKey(t, s, seed)
 	_, err = nats.Connect(url, createUserCreds(t, s, akp))
 	if err == nil {
 		t.Fatalf("Expected error on connect")
+	}
+	// The account should not be in memory either
+	if v, err := s.LookupAccount(publicKeyFromKeyPair(t, akp)); err == nil {
+		t.Fatalf("Expected account to NOT be in memory: %v", v)
 	}
 }
 
@@ -229,15 +243,15 @@ func TestOperatorSystemAccount(t *testing.T) {
 	// Create an account from another operator, this should fail if used as a system account.
 	okp, _ := nkeys.CreateOperator()
 	seed, _ := okp.Seed()
-	acc, _ := createAccountForOperatorKey(t, s, seed)
-	if err := s.SetSystemAccount(acc.Name); err == nil {
+	akp := createAccountForOperatorKey(t, s, seed)
+	if err := s.SetSystemAccount(publicKeyFromKeyPair(t, akp)); err == nil {
 		t.Fatalf("Expected this to fail")
 	}
 	if acc := s.SystemAccount(); acc != nil {
 		t.Fatalf("Expected no account to be set for system account")
 	}
 
-	acc, _ = createAccount(t, s)
+	acc, _ := createAccount(t, s)
 	if err := s.SetSystemAccount(acc.Name); err != nil {
 		t.Fatalf("Expected this succeed, got %v", err)
 	}
@@ -251,10 +265,10 @@ func TestOperatorSigningKeys(t *testing.T) {
 	defer s.Shutdown()
 
 	// Create an account with a signing key, not the master key.
-	acc, akp := createAccountForOperatorKey(t, s, skSeed)
+	akp := createAccountForOperatorKey(t, s, skSeed)
 
 	// Make sure we can set system account.
-	if err := s.SetSystemAccount(acc.Name); err != nil {
+	if err := s.SetSystemAccount(publicKeyFromKeyPair(t, akp)); err != nil {
 		t.Fatalf("Expected this succeed, got %v", err)
 	}
 
