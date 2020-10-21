@@ -1190,7 +1190,7 @@ func (o *Consumer) processNextMsgReq(_ *subscription, c *client, _, reply string
 	// Check payload here to see if they sent in batch size or a formal request.
 	expires, batchSize, noWait, err := nextReqFromMsg(msg)
 	if err != nil {
-		sendErr(400, "Bad Request")
+		sendErr(400, fmt.Sprintf("Bad Request - %v", err))
 		return
 	}
 
