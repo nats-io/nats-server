@@ -884,7 +884,7 @@ func DiscoveredServersHandler(cb ConnHandler) Option {
 	}
 }
 
-// ErrorHandler is an Option to set the async error  handler.
+// ErrorHandler is an Option to set the async error handler.
 func ErrorHandler(cb ErrHandler) Option {
 	return func(o *Options) error {
 		o.AsyncErrorCB = cb
@@ -2769,7 +2769,9 @@ const (
 	crlf         = "\r\n"
 	hdrPreEnd    = len(hdrLine) - len(crlf)
 	statusHdr    = "Status"
+	descrHdr     = "Description"
 	noResponders = "503"
+	statusLen    = 3 // e.g. 20x, 40x, 50x
 )
 
 // decodeHeadersMsg will decode and headers.
@@ -2785,7 +2787,16 @@ func decodeHeadersMsg(data []byte) (http.Header, error) {
 	}
 	// Check if we have an inlined status.
 	if len(l) > hdrPreEnd {
-		mh.Add(statusHdr, strings.TrimLeft(l[hdrPreEnd:], " "))
+		var description string
+		status := strings.TrimSpace(l[hdrPreEnd:])
+		if len(status) != statusLen {
+			description = strings.TrimSpace(status[statusLen:])
+			status = status[:statusLen]
+		}
+		mh.Add(statusHdr, status)
+		if len(description) > 0 {
+			mh.Add(descrHdr, description)
+		}
 	}
 	return http.Header(mh), nil
 }

@@ -3,7 +3,7 @@ module github.com/nats-io/nats-server/v2
 require (
 	github.com/minio/highwayhash v1.0.0
 	github.com/nats-io/jwt/v2 v2.0.0-20201015190852-e11ce317263c
-	github.com/nats-io/nats.go v1.10.1-0.20201013114232-5a33ce07522f
+	github.com/nats-io/nats.go v1.10.1-0.20201021145452-94be476ad6e0
 	github.com/nats-io/nkeys v0.2.0
 	github.com/nats-io/nuid v1.0.1
 	golang.org/x/crypto v0.0.0-20201016220609-9e8e0b390897

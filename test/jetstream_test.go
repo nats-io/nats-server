@@ -1452,6 +1452,16 @@ func TestJetStreamWorkQueueMaxWaiting(t *testing.T) {
 			defer sub.Unsubscribe()
 			nc.Flush()
 
+			checkSubPending := func(numExpected int) {
+				t.Helper()
+				checkFor(t, 200*time.Millisecond, 10*time.Millisecond, func() error {
+					if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != numExpected {
+						return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, numExpected)
+					}
+					return nil
+				})
+			}
+
 			getSubj := o.RequestNextMsgSubject()
 			// Queue up JSWaitQueueDefaultMax requests.
 			for i := 0; i < server.JSWaitQueueDefaultMax; i++ {
@@ -1459,14 +1469,16 @@ func TestJetStreamWorkQueueMaxWaiting(t *testing.T) {
 			}
 			expectWaiting(server.JSWaitQueueDefaultMax)
 
-			// Now we should get an immediate response since we are full and the system can not disqualify anyone.
-			nm, err := nc.Request(getSubj, nil, 100*time.Millisecond)
-			if err != nil {
-				t.Fatalf("Unexpected error: %v", err)
+			// So when we submit our next request this one should succeed since we do not want these to fail.
+			// We should get notified that the first request is now stale and has been removed.
+			if _, err := nc.Request(getSubj, nil, 10*time.Millisecond); err != nats.ErrTimeout {
+				t.Fatalf("Expected timeout error, got: %v", err)
 			}
-			// FIXME(dlc) - Update Go client to parse description too.
-			if nm.Header.Get("Status") == "" {
-				t.Fatalf("Expected a non-empty status code")
+			checkSubPending(1)
+			m, _ := sub.NextMsg(0)
+			// Make sure this is an alert that tells us our request is now stale.
+			if m.Header.Get("Status") != "408" {
+				t.Fatalf("Expected a 408 status code, got %q", m.Header.Get("Status"))
 			}
 			sendStreamMsg(t, nc, "foo", "Hello World!")
 			sendStreamMsg(t, nc, "bar", "Hello World!")
@@ -1656,10 +1668,17 @@ func TestJetStreamWorkQueueRequest(t *testing.T) {
 			nc.PublishRequest(getSubj, reply, jreq)
 			// Let it expire
 			time.Sleep(20 * time.Millisecond)
+
 			// Send a few more messages. These should not be delivered to the sub.
 			sendStreamMsg(t, nc, "foo", "Hello World!")
 			sendStreamMsg(t, nc, "bar", "Hello World!")
-			checkSubPending(0)
+			// We will have an alert here.
+			checkSubPending(1)
+			m, _ := sub.NextMsg(0)
+			// Make sure this is an alert that tells us our request is now stale.
+			if m.Header.Get("Status") != "408" {
+				t.Fatalf("Expected a 408 status code, got %q", m.Header.Get("Status"))
+			}
 		})
 	}
 }

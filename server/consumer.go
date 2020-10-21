@@ -1180,10 +1180,11 @@ func (o *Consumer) processNextMsgReq(_ *subscription, c *client, _, reply string
 	}
 
 	if o.waiting.isFull() {
-		// If our waiting queue is full return an empty response with the proper header.
-		// FIXME(dlc) - Should we do advisory here as well?
-		sendErr(500, "WaitQueue Exceeded")
-		return
+		// Try to expire some of the requests.
+		if expired := o.expireWaiting(); expired == 0 {
+			// Force expiration if needed.
+			o.forceExpireFirstWaiting()
+		}
 	}
 
 	// Check payload here to see if they sent in batch size or a formal request.
@@ -1308,12 +1309,35 @@ func (o *Consumer) getNextMsg() (subj string, hdr, msg []byte, seq uint64, dcoun
 	}
 }
 
-// Will check to make sure those waiting still have registered interest.
-func (o *Consumer) checkWaitingForInterest() bool {
+// forceExpireFirstWaiting will force expire the first waiting.
+// Lock should be held.
+func (o *Consumer) forceExpireFirstWaiting() *waitingRequest {
+	// FIXME(dlc) - Should we do advisory here as well?
+	wr := o.waiting.pop()
+	if wr == nil {
+		return wr
+	}
+	// If we are expiring this and we think there is still interest, alert.
+	if rr := o.acc.sl.Match(wr.reply); len(rr.psubs)+len(rr.qsubs) > 0 && o.mset != nil {
+		// We still appear to have interest, so send alert as courtesy.
+		sendq := o.mset.sendq
+		o.mu.Unlock()
+		hdr := []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
+		pmsg := &jsPubMsg{wr.reply, wr.reply, _EMPTY_, hdr, nil, nil, 0}
+		sendq <- pmsg // Send message.
+		o.mu.Lock()
+	}
+	return wr
+}
+
+// Will check for expiration and lack of interest on waiting requests.
+func (o *Consumer) expireWaiting() int {
+	var expired int
 	now := time.Now()
 	for wr := o.waiting.peek(); wr != nil; wr = o.waiting.peek() {
 		if !wr.expires.IsZero() && now.After(wr.expires) {
-			o.waiting.pop()
+			o.forceExpireFirstWaiting()
+			expired++
 			continue
 		}
 		rr := o.acc.sl.Match(wr.reply)
@@ -1321,8 +1345,15 @@ func (o *Consumer) checkWaitingForInterest() bool {
 			break
 		}
 		// No more interest so go ahead and remove this one from our list.
-		o.waiting.pop()
+		o.forceExpireFirstWaiting()
+		expired++
 	}
+	return expired
+}
+
+// Will check to make sure those waiting still have registered interest.
+func (o *Consumer) checkWaitingForInterest() bool {
+	o.expireWaiting()
 	return o.waiting.len() > 0
 }
 
