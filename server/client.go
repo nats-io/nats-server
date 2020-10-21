@@ -179,12 +179,13 @@ const (
 	ClusterNameConflict
 )
 
-// Some flags passed to processMsgResultsEx
+// Some flags passed to processMsgResults
 const pmrNoFlag int = 0
 const (
 	pmrCollectQueueNames int = 1 << iota
 	pmrIgnoreEmptyQueueFilter
 	pmrAllowSendFromRouteToRoute
+	pmrMsgImportedFromService
 )
 
 type client struct {
@@ -2234,7 +2235,6 @@ func (c *client) parseSub(argo []byte, noForward bool) error {
 }
 
 func (c *client) processSub(subject, queue, bsid []byte, cb msgHandler, noForward bool) (*subscription, error) {
-
 	// Create the subscription
 	sub := &subscription{client: c, subject: subject, queue: queue, sid: bsid, icb: cb}
 
@@ -3538,7 +3538,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 
 	// If we are a route or gateway or leafnode and this message is flipped to a queue subscriber we
 	// need to handle that since the processMsgResults will want a queue filter.
-	flags := pmrNoFlag
+	flags := pmrMsgImportedFromService
 	if c.kind == GATEWAY || c.kind == ROUTER || c.kind == LEAF {
 		flags |= pmrIgnoreEmptyQueueFilter
 	}
@@ -3708,6 +3708,10 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		dsubj = subj
 		// Check for stream import mapped subs (shadow subs). These apply to local subs only.
 		if sub.im != nil {
+			// If this message was a service import do not re-export to an exported stream.
+			if flags&pmrMsgImportedFromService != 0 {
+				continue
+			}
 			if sub.im.tr != nil {
 				to, _ := sub.im.tr.transformSubject(string(subj))
 				dsubj = append(_dsubj[:0], to...)
@@ -3823,6 +3827,10 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			dsubj = subj
 			// Check for stream import mapped subs. These apply to local subs only.
 			if sub.im != nil {
+				// If this message was a service import do not re-export to an exported stream.
+				if flags&pmrMsgImportedFromService != 0 {
+					continue
+				}
 				if sub.im.tr != nil {
 					to, _ := sub.im.tr.transformSubject(string(subj))
 					dsubj = append(_dsubj[:0], to...)
