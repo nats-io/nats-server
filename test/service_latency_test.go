@@ -1221,6 +1221,87 @@ func TestServiceLatencyOldRequestStyleSingleServer(t *testing.T) {
 	noShareCheck(t, &sl.Requestor)
 }
 
+// To test a bug wally@nats.io is seeing.
+func TestServiceAndStreamStackOverflow(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		accounts {
+		  STATIC {
+		    users = [ { user: "static", pass: "foo" } ]
+		    exports [
+		      { stream: > }
+		      { service: my.service }
+		    ]
+		  }
+		  DYN {
+		    users = [ { user: "foo", pass: "bar" } ]
+		    imports [
+		      { stream { subject: >, account: STATIC } }
+		      { service { subject: my.service, account: STATIC } }
+		    ]
+		  }
+		}
+	`))
+	defer os.Remove(conf)
+
+	srv, opts := RunServerWithConfig(conf)
+	defer srv.Shutdown()
+
+	// Responder (just request sub)
+	nc, err := nats.Connect(fmt.Sprintf("nats://static:foo@%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	sub, _ := nc.SubscribeSync("my.service")
+	nc.Flush()
+
+	// Requestor
+	nc2, err := nats.Connect(fmt.Sprintf("nats://foo:bar@%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+
+	// Send a single request.
+	nc2.PublishRequest("my.service", "foo", []byte("hi"))
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if nm, _, err := sub.Pending(); err != nil || nm != 1 {
+			return fmt.Errorf("Expected one request, got %d", nm)
+		}
+		return nil
+	})
+
+	// Make sure works for queue subscribers as well.
+	sub.Unsubscribe()
+	sub, _ = nc.QueueSubscribeSync("my.service", "prod")
+	nc.Flush()
+
+	// Send a single request.
+	nc2.PublishRequest("my.service", "foo", []byte("hi"))
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if nm, _, err := sub.Pending(); err != nil || nm != 1 {
+			return fmt.Errorf("Expected one request, got %d", nm)
+		}
+		return nil
+	})
+
+	// Now create an interest in the stream from nc2. that is a queue subscriber.
+	sub2, _ := nc2.QueueSubscribeSync("my.service", "prod")
+	defer sub2.Unsubscribe()
+	nc2.Flush()
+
+	// Send a single request.
+	nc2.PublishRequest("my.service", "foo", []byte("hi"))
+	time.Sleep(10 * time.Millisecond)
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if nm, _, err := sub.Pending(); err != nil || nm != 2 {
+			return fmt.Errorf("Expected two requests, got %d", nm)
+		}
+		return nil
+	})
+}
+
 // Check we get the proper detailed information for the requestor when allowed.
 func TestServiceLatencyRequestorSharesDetailedInfo(t *testing.T) {
 	sc := createSuperCluster(t, 3, 3)
@@ -1635,7 +1716,7 @@ func TestServiceLatencyHeaderTriggered(t *testing.T) {
 					},
 					SYS: { users: [{user: admin, password: pass}] }
 				}
-		
+
 				system_account: SYS
 			`, v.shared)))
 			defer os.Remove(conf)
