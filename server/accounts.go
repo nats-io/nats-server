@@ -1525,6 +1525,16 @@ func (a *Account) activationExpired(exportAcc *Account, subject string, kind jwt
 	}
 }
 
+func isRevoked(revocations map[string]int64, subject string, issuedAt int64) bool {
+	if revocations == nil {
+		return false
+	}
+	if t, ok := revocations[subject]; !ok || t < issuedAt {
+		return false
+	}
+	return true
+}
+
 // checkActivation will check the activation token for validity.
 func (a *Account) checkActivation(importAcc *Account, claim *jwt.Import, expTimer bool) bool {
 	if claim == nil || claim.Token == "" {
@@ -1567,13 +1577,7 @@ func (a *Account) checkActivation(importAcc *Account, claim *jwt.Import, expTime
 		}
 	}
 	// Check for token revocation..
-	if a.actsRevoked != nil {
-		if t, ok := a.actsRevoked[act.Subject]; ok && t <= time.Now().Unix() {
-			return false
-		}
-	}
-
-	return true
+	return !isRevoked(a.actsRevoked, act.Subject, act.IssuedAt)
 }
 
 // Returns true if the activation claim is trusted. That is the issuer matches
@@ -1710,16 +1714,10 @@ func (a *Account) clearExpirationTimer() bool {
 }
 
 // checkUserRevoked will check if a user has been revoked.
-func (a *Account) checkUserRevoked(nkey string) bool {
+func (a *Account) checkUserRevoked(nkey string, issuedAt int64) bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	if a.usersRevoked == nil {
-		return false
-	}
-	if t, ok := a.usersRevoked[nkey]; !ok || t > time.Now().Unix() {
-		return false
-	}
-	return true
+	return isRevoked(a.usersRevoked, nkey, issuedAt)
 }
 
 // Check expiration and set the proper state as needed.
@@ -2010,6 +2008,8 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		for pk, t := range ac.Revocations {
 			a.usersRevoked[pk] = t
 		}
+	} else {
+		a.usersRevoked = nil
 	}
 	a.incomplete = len(incompleteImports) != 0
 	for _, i := range incompleteImports {
@@ -2024,7 +2024,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			return clients[i].start.After(clients[j].start)
 		})
 	}
-	now := time.Now().Unix()
+
 	for i, c := range clients {
 		a.mu.RLock()
 		exceeded := a.mconns != jwt.NoLimit && i >= int(a.mconns)
@@ -2035,17 +2035,16 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		}
 		c.mu.Lock()
 		c.applyAccountLimits()
-		// Check for being revoked here. We use ac one to avoid
-		// the account lock.
-		var nkey string
-		if c.user != nil {
-			nkey = c.user.Nkey
-		}
+		theJWT := c.opts.JWT
 		c.mu.Unlock()
 
-		// Check if we have been revoked.
-		if ac.Revocations != nil {
-			if t, ok := ac.Revocations[nkey]; ok && now >= t {
+		// Check for being revoked here. We use ac one to avoid the account lock.
+		if ac.Revocations != nil && theJWT != "" {
+			if juc, err := jwt.DecodeUserClaims(theJWT); err != nil {
+				c.Debugf("User JWT not valid: %v", err)
+				c.authViolation()
+				continue
+			} else if ok := ac.IsClaimRevoked(juc); ok {
 				c.sendErrAndDebug("User Authentication Revoked")
 				c.closeConnection(Revocation)
 				continue

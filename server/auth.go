@@ -474,7 +474,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client) bool {
 			c.Debugf("Signature not verified")
 			return false
 		}
-		if acc.checkUserRevoked(juc.Subject) {
+		if acc.checkUserRevoked(juc.Subject, juc.IssuedAt) {
 			c.Debugf("User authentication revoked")
 			return false
 		}
