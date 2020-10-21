@@ -2306,7 +2306,6 @@ func TestCloseConnectionVeryEarly(t *testing.T) {
 			// Get a normal TCP connection to the server.
 			c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", o.Port))
 			if err != nil {
-				s.mu.Unlock()
 				t.Fatalf("Unable to create tcp connection")
 			}
 			// Now close it.

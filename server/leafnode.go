@@ -617,15 +617,22 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 	// Grab lock
 	c.mu.Lock()
 
-	// If client has been closed, this function will unlock and make sure
-	// the the connection is closed for proper clean-up.
-	isClosedUnlockAndReturn := func() bool {
+	// If connection has been closed, this function will unlock and call
+	// closeConnection() to ensure proper clean-up.
+	isClosedUnlock := func() bool {
 		if c.isClosed() {
 			c.mu.Unlock()
 			c.closeConnection(WriteError)
 			return true
 		}
 		return false
+	}
+
+	// I don't think that the connection can be closed this early (since it isn't
+	// registered anywhere and doesn't have read/write loops running), but let's
+	// check in case code is changed in the future and there is such possibility.
+	if isClosedUnlock() {
+		return nil
 	}
 
 	if solicited {
@@ -662,7 +669,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 
 		// Not sure that can happen, but in case the connection was marked
 		// as closed during the call to parse...
-		if isClosedUnlockAndReturn() {
+		if isClosedUnlock() {
 			return nil
 		}
 
@@ -731,7 +738,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 			c.mu.Lock()
 
 			// Timeout may have closed the connection while the lock was released.
-			if isClosedUnlockAndReturn() {
+			if isClosedUnlock() {
 				return nil
 			}
 		}
@@ -760,7 +767,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 
 		// The above call could have marked the connection as closed (due to
 		// TCP error), so if that is the case, bail out here.
-		if isClosedUnlockAndReturn() {
+		if isClosedUnlock() {
 			return nil
 		}
 
@@ -792,7 +799,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 			c.flags.set(handshakeComplete)
 
 			// Timeout may have closed the connection while the lock was released.
-			if isClosedUnlockAndReturn() {
+			if isClosedUnlock() {
 				return nil
 			}
 		}
