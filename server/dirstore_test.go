@@ -426,7 +426,7 @@ func TestExpiration(t *testing.T) {
 	dir, err := ioutil.TempDir(os.TempDir(), "jwtstore_test")
 	require_NoError(t, err)
 
-	dirStore, err := NewExpiringDirJWTStore(dir, false, false, NoDelete, time.Millisecond*100, 10, true, 0, nil)
+	dirStore, err := NewExpiringDirJWTStore(dir, false, false, NoDelete, time.Millisecond*50, 10, true, 0, nil)
 	require_NoError(t, err)
 	defer dirStore.Close()
 
@@ -506,7 +506,7 @@ func TestLimitNoEvict(t *testing.T) {
 	dir, err := ioutil.TempDir(os.TempDir(), "jwtstore_test")
 	require_NoError(t, err)
 
-	dirStore, err := NewExpiringDirJWTStore(dir, false, false, NoDelete, time.Millisecond*100, 2, false, 0, nil)
+	dirStore, err := NewExpiringDirJWTStore(dir, false, false, NoDelete, time.Millisecond*50, 2, false, 0, nil)
 	require_NoError(t, err)
 	defer dirStore.Close()
 
@@ -523,7 +523,7 @@ func TestLimitNoEvict(t *testing.T) {
 
 	createTestAccount(t, dirStore, 100, accountKey1)
 	assertStoreSize(t, dirStore, 1)
-	createTestAccount(t, dirStore, 2, accountKey2)
+	createTestAccount(t, dirStore, 1, accountKey2)
 	assertStoreSize(t, dirStore, 2)
 
 	hBefore := dirStore.Hash()
@@ -544,7 +544,7 @@ func TestLimitNoEvict(t *testing.T) {
 	hAfter := dirStore.Hash()
 	require_True(t, bytes.Equal(hBefore[:], hAfter[:]))
 	// wait for expiration of account2
-	time.Sleep(3 * time.Second)
+	time.Sleep(2200 * time.Millisecond)
 	err = dirStore.SaveAcc(pubKey, jwt)
 	require_NoError(t, err)
 	assertStoreSize(t, dirStore, 2)
@@ -590,7 +590,7 @@ func TestLru(t *testing.T) {
 	dir, err := ioutil.TempDir(os.TempDir(), "jwtstore_test")
 	require_NoError(t, err)
 
-	dirStore, err := NewExpiringDirJWTStore(dir, false, false, NoDelete, time.Millisecond*100, 2, true, 0, nil)
+	dirStore, err := NewExpiringDirJWTStore(dir, false, false, NoDelete, time.Millisecond*50, 2, true, 0, nil)
 	require_NoError(t, err)
 	defer dirStore.Close()
 
@@ -612,6 +612,7 @@ func TestLru(t *testing.T) {
 	createTestAccount(t, dirStore, 10, accountKey3)
 	assertStoreSize(t, dirStore, 2)
 	_, err = os.Stat(fmt.Sprintf("%s/%s.jwt", dir, pKey1))
+	require_Error(t, err)
 	require_True(t, os.IsNotExist(err))
 	_, err = os.Stat(fmt.Sprintf("%s/%s.jwt", dir, pKey3))
 	require_NoError(t, err)
@@ -624,8 +625,8 @@ func TestLru(t *testing.T) {
 	assertStoreSize(t, dirStore, 2)
 	_, err = os.Stat(fmt.Sprintf("%s/%s.jwt", dir, pKey3))
 	require_True(t, os.IsNotExist(err))
-	// let key1 expire
-	time.Sleep(1500 * time.Millisecond)
+	// let key1 expire. sleep expSec=1 + 1 for rounding
+	time.Sleep(2200 * time.Millisecond)
 	assertStoreSize(t, dirStore, 1)
 	_, err = os.Stat(fmt.Sprintf("%s/%s.jwt", dir, pKey1))
 	require_True(t, os.IsNotExist(err))
@@ -699,7 +700,7 @@ func TestExpirationUpdate(t *testing.T) {
 	dir, err := ioutil.TempDir(os.TempDir(), "jwtstore_test")
 	require_NoError(t, err)
 
-	dirStore, err := NewExpiringDirJWTStore(dir, false, false, NoDelete, time.Millisecond*100, 10, true, 0, nil)
+	dirStore, err := NewExpiringDirJWTStore(dir, false, false, NoDelete, time.Millisecond*50, 10, true, 0, nil)
 	require_NoError(t, err)
 	defer dirStore.Close()
 
@@ -713,7 +714,7 @@ func TestExpirationUpdate(t *testing.T) {
 	require_NotEqual(t, h, nh)
 	h = nh
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(2200 * time.Millisecond)
 	f, err := ioutil.ReadDir(dir)
 	require_NoError(t, err)
 	require_Len(t, len(f), 1)
@@ -723,7 +724,7 @@ func TestExpirationUpdate(t *testing.T) {
 	require_NotEqual(t, h, nh)
 	h = nh
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(2200 * time.Millisecond)
 	f, err = ioutil.ReadDir(dir)
 	require_NoError(t, err)
 	require_Len(t, len(f), 1)
@@ -733,7 +734,7 @@ func TestExpirationUpdate(t *testing.T) {
 	require_NotEqual(t, h, nh)
 	h = nh
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(2200 * time.Millisecond)
 	f, err = ioutil.ReadDir(dir)
 	require_NoError(t, err)
 	require_Len(t, len(f), 1)
@@ -743,7 +744,7 @@ func TestExpirationUpdate(t *testing.T) {
 	require_NotEqual(t, h, nh)
 	h = nh
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(2200 * time.Millisecond)
 	f, err = ioutil.ReadDir(dir)
 	require_NoError(t, err)
 	require_Len(t, len(f), 0)
@@ -762,7 +763,7 @@ func TestTTL(t *testing.T) {
 		require_NoError(t, err)
 		require_Len(t, len(f), 1)
 	}
-	dirStore, err := NewExpiringDirJWTStore(dir, false, false, NoDelete, 100*time.Millisecond, 10, true, time.Second, nil)
+	dirStore, err := NewExpiringDirJWTStore(dir, false, false, NoDelete, 50*time.Millisecond, 10, true, time.Second, nil)
 	require_NoError(t, err)
 	defer dirStore.Close()
 
