@@ -1364,7 +1364,7 @@ func TestJetStreamBasicWorkQueue(t *testing.T) {
 
 			go func() {
 				time.Sleep(nextDelay)
-				nc.Request(sendSubj, []byte("Hello World!"), 100*time.Millisecond)
+				sendStreamMsg(t, nc, sendSubj, "Hello World!")
 			}()
 
 			start := time.Now()
@@ -1383,6 +1383,301 @@ func TestJetStreamBasicWorkQueue(t *testing.T) {
 
 			for i := toSend + 2; i < toSend*2+2; i++ {
 				getNext(i)
+			}
+		})
+	}
+}
+
+func TestJetStreamWorkQueueMaxWaiting(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &server.StreamConfig{Name: "MY_MSG_SET", Storage: server.MemoryStorage, Subjects: []string{"foo", "bar"}}},
+		{"FileStore", &server.StreamConfig{Name: "MY_MSG_SET", Storage: server.FileStorage, Subjects: []string{"foo", "bar"}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			// Make sure these cases fail
+			cfg := &server.ConsumerConfig{Durable: "foo", AckPolicy: server.AckExplicit, MaxWaiting: 10, DeliverSubject: "_INBOX.22"}
+			if _, err := mset.AddConsumer(cfg); err == nil {
+				t.Fatalf("Expected an error with MaxWaiting set on non-pull based consumer")
+			}
+			cfg = &server.ConsumerConfig{Durable: "foo", AckPolicy: server.AckExplicit, MaxWaiting: -1}
+			if _, err := mset.AddConsumer(cfg); err == nil {
+				t.Fatalf("Expected an error with MaxWaiting being negative")
+			}
+
+			// Create basic work queue mode consumer.
+			wcfg := workerModeConfig("MAXWQ")
+			o, err := mset.AddConsumer(wcfg)
+			if err != nil {
+				t.Fatalf("Expected no error with registered interest, got %v", err)
+			}
+			defer o.Delete()
+
+			// Make sure we set default correctly.
+			if cfg := o.Config(); cfg.MaxWaiting != server.JSWaitQueueDefaultMax {
+				t.Fatalf("Expected default max waiting to have been set to %d, got %d", server.JSWaitQueueDefaultMax, cfg.MaxWaiting)
+			}
+
+			expectWaiting := func(expected int) {
+				t.Helper()
+				checkFor(t, time.Second, 25*time.Millisecond, func() error {
+					if oi := o.Info(); oi.NumWaiting != expected {
+						return fmt.Errorf("Expected %d waiting, got %d", expected, oi.NumWaiting)
+					}
+					return nil
+				})
+			}
+
+			nc := clientConnectWithOldRequest(t, s)
+			defer nc.Close()
+
+			// Like muxed new INBOX.
+			sub, _ := nc.SubscribeSync("req.*")
+			defer sub.Unsubscribe()
+			nc.Flush()
+
+			checkSubPending := func(numExpected int) {
+				t.Helper()
+				checkFor(t, 200*time.Millisecond, 10*time.Millisecond, func() error {
+					if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != numExpected {
+						return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, numExpected)
+					}
+					return nil
+				})
+			}
+
+			getSubj := o.RequestNextMsgSubject()
+			// Queue up JSWaitQueueDefaultMax requests.
+			for i := 0; i < server.JSWaitQueueDefaultMax; i++ {
+				nc.PublishRequest(getSubj, fmt.Sprintf("req.%d", i), nil)
+			}
+			expectWaiting(server.JSWaitQueueDefaultMax)
+
+			// So when we submit our next request this one should succeed since we do not want these to fail.
+			// We should get notified that the first request is now stale and has been removed.
+			if _, err := nc.Request(getSubj, nil, 10*time.Millisecond); err != nats.ErrTimeout {
+				t.Fatalf("Expected timeout error, got: %v", err)
+			}
+			checkSubPending(1)
+			m, _ := sub.NextMsg(0)
+			// Make sure this is an alert that tells us our request is now stale.
+			if m.Header.Get("Status") != "408" {
+				t.Fatalf("Expected a 408 status code, got %q", m.Header.Get("Status"))
+			}
+			sendStreamMsg(t, nc, "foo", "Hello World!")
+			sendStreamMsg(t, nc, "bar", "Hello World!")
+			expectWaiting(server.JSWaitQueueDefaultMax - 2)
+		})
+	}
+}
+
+func TestJetStreamWorkQueueWrapWaiting(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &server.StreamConfig{Name: "MY_MSG_SET", Storage: server.MemoryStorage, Subjects: []string{"foo", "bar"}}},
+		{"FileStore", &server.StreamConfig{Name: "MY_MSG_SET", Storage: server.FileStorage, Subjects: []string{"foo", "bar"}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			maxWaiting := 8
+			wcfg := workerModeConfig("WRAP")
+			wcfg.MaxWaiting = maxWaiting
+
+			o, err := mset.AddConsumer(wcfg)
+			if err != nil {
+				t.Fatalf("Expected no error with registered interest, got %v", err)
+			}
+			defer o.Delete()
+
+			getSubj := o.RequestNextMsgSubject()
+
+			expectWaiting := func(expected int) {
+				t.Helper()
+				checkFor(t, time.Second, 25*time.Millisecond, func() error {
+					if oi := o.Info(); oi.NumWaiting != expected {
+						return fmt.Errorf("Expected %d waiting, got %d", expected, oi.NumWaiting)
+					}
+					return nil
+				})
+			}
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			sub, _ := nc.SubscribeSync("req.*")
+			defer sub.Unsubscribe()
+			nc.Flush()
+
+			// Fill up waiting.
+			for i := 0; i < maxWaiting; i++ {
+				nc.PublishRequest(getSubj, fmt.Sprintf("req.%d", i), nil)
+			}
+			expectWaiting(maxWaiting)
+
+			// Now use 1/2 of the waiting.
+			for i := 0; i < maxWaiting/2; i++ {
+				sendStreamMsg(t, nc, "foo", "Hello World!")
+			}
+			expectWaiting(maxWaiting / 2)
+
+			// Now add in two (2) more pull requests.
+			for i := maxWaiting; i < maxWaiting+2; i++ {
+				nc.PublishRequest(getSubj, fmt.Sprintf("req.%d", i), nil)
+			}
+			expectWaiting(maxWaiting/2 + 2)
+
+			// Now use second 1/2 of the waiting and the 2 extra.
+			for i := 0; i < maxWaiting/2+2; i++ {
+				sendStreamMsg(t, nc, "bar", "Hello World!")
+			}
+			expectWaiting(0)
+
+			if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != maxWaiting+2 {
+				t.Fatalf("Expected sub to have %d pending, got %d", maxWaiting+2, nmsgs)
+			}
+		})
+	}
+}
+
+func TestJetStreamWorkQueueRequest(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &server.StreamConfig{Name: "MY_MSG_SET", Storage: server.MemoryStorage, Subjects: []string{"foo", "bar"}}},
+		{"FileStore", &server.StreamConfig{Name: "MY_MSG_SET", Storage: server.FileStorage, Subjects: []string{"foo", "bar"}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			o, err := mset.AddConsumer(workerModeConfig("WRAP"))
+			if err != nil {
+				t.Fatalf("Expected no error with registered interest, got %v", err)
+			}
+			defer o.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			toSend := 25
+			for i := 0; i < toSend; i++ {
+				sendStreamMsg(t, nc, "bar", "Hello World!")
+			}
+
+			reply := "_.consumer._"
+			sub, _ := nc.SubscribeSync(reply)
+			defer sub.Unsubscribe()
+
+			getSubj := o.RequestNextMsgSubject()
+
+			checkSubPending := func(numExpected int) {
+				t.Helper()
+				checkFor(t, 200*time.Millisecond, 10*time.Millisecond, func() error {
+					if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != numExpected {
+						return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, numExpected)
+					}
+					return nil
+				})
+			}
+
+			// Create a formal request object.
+			req := &server.JSApiConsumerGetNextRequest{Batch: toSend}
+			jreq, _ := json.Marshal(req)
+			nc.PublishRequest(getSubj, reply, jreq)
+
+			checkSubPending(toSend)
+
+			// Now check that we can ask for NoWait
+			req.Batch = 1
+			req.NoWait = true
+			jreq, _ = json.Marshal(req)
+
+			resp, err := nc.Request(getSubj, jreq, 50*time.Millisecond)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if status := resp.Header.Get("Status"); !strings.HasPrefix(status, "404") {
+				t.Fatalf("Expected status code of 404")
+			}
+			// Load up more messages.
+			for i := 0; i < toSend; i++ {
+				sendStreamMsg(t, nc, "foo", "Hello World!")
+			}
+			// Now we will ask for a batch larger then what is queued up.
+			req.Batch = toSend + 10
+			req.NoWait = true
+			jreq, _ = json.Marshal(req)
+			nc.PublishRequest(getSubj, reply, jreq)
+			// We should now have 2 * toSend + the 404 message.
+			checkSubPending(2*toSend + 1)
+			for i := 0; i < 2*toSend+1; i++ {
+				sub.NextMsg(time.Millisecond)
+			}
+			checkSubPending(0)
+			mset.Purge()
+
+			// Now do expiration
+			req.Batch = 1
+			req.NoWait = false
+			req.Expires = time.Now().Add(10 * time.Millisecond)
+			jreq, _ = json.Marshal(req)
+
+			nc.PublishRequest(getSubj, reply, jreq)
+			// Let it expire
+			time.Sleep(20 * time.Millisecond)
+
+			// Send a few more messages. These should not be delivered to the sub.
+			sendStreamMsg(t, nc, "foo", "Hello World!")
+			sendStreamMsg(t, nc, "bar", "Hello World!")
+			// We will have an alert here.
+			checkSubPending(1)
+			m, _ := sub.NextMsg(0)
+			// Make sure this is an alert that tells us our request is now stale.
+			if m.Header.Get("Status") != "408" {
+				t.Fatalf("Expected a 408 status code, got %q", m.Header.Get("Status"))
 			}
 		})
 	}
@@ -1783,6 +2078,26 @@ func TestJetStreamWorkQueueRequestBatch(t *testing.T) {
 			// Kick things off with batch size of 50.
 			batchSize := 50
 			nc.PublishRequest(o.RequestNextMsgSubject(), sub.Subject, []byte(strconv.Itoa(batchSize)))
+
+			// We should receive batchSize with no acks or additional requests.
+			checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
+				if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != batchSize {
+					return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, batchSize)
+				}
+				return nil
+			})
+
+			// Now queue up the request without messages and add them after.
+			sub, _ = nc.SubscribeSync(nats.NewInbox())
+			defer sub.Unsubscribe()
+			mset.Purge()
+
+			nc.PublishRequest(o.RequestNextMsgSubject(), sub.Subject, []byte(strconv.Itoa(batchSize)))
+			nc.Flush() // Make sure its registered.
+
+			for i := 0; i < toSend; i++ {
+				sendStreamMsg(t, nc, sendSubj, "Hello World!")
+			}
 
 			// We should receive batchSize with no acks or additional requests.
 			checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {

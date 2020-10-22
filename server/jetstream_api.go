@@ -366,6 +366,9 @@ type JSApiMsgGetResponse struct {
 
 const JSApiMsgGetResponseType = "io.nats.jetstream.api.v1.stream_msg_get_response"
 
+// JSWaitQueueDefaultMax is the default max number of outstanding requests for pull consumers.
+const JSWaitQueueDefaultMax = 512
+
 // JSApiConsumerCreateResponse.
 type JSApiConsumerCreateResponse struct {
 	ApiResponse
@@ -412,6 +415,13 @@ type JSApiConsumerListResponse struct {
 }
 
 const JSApiConsumerListResponseType = "io.nats.jetstream.api.v1.consumer_list_response"
+
+// JSApiConsumerGetNextRequest is for getting next messages for pull based consumers.
+type JSApiConsumerGetNextRequest struct {
+	Expires time.Time `json:"expires,omitempty"`
+	Batch   int       `json:"batch,omitempty"`
+	NoWait  bool      `json:"no_wait,omitempty"`
+}
 
 // JSApiStreamTemplateCreateResponse for creating templates.
 type JSApiStreamTemplateCreateResponse struct {

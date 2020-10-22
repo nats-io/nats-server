@@ -2130,7 +2130,7 @@ func TestAccountURLResolverFetchFailureInCluster(t *testing.T) {
 		cluster {
 			name: clust
 			no_advertise: true
-			listen: -1 
+			listen: -1
 			routes [
 				nats-route://localhost:%d
 			]
@@ -3407,7 +3407,7 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 		}
 		cluster {
 			name: clust
-			listen: -1 
+			listen: -1
 			no_advertise: true
 			routes [
 				nats-route://localhost:%d
@@ -3431,7 +3431,7 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 		}
 		cluster {
 			name: clust
-			listen: -1 
+			listen: -1
 			no_advertise: true
 			routes [
 				nats-route://localhost:%d
@@ -3650,7 +3650,7 @@ func TestAccountNATSResolverCrossClusterFetch(t *testing.T) {
 		}
 		cluster {
 			name: clust-A
-			listen: -1 
+			listen: -1
 			no_advertise: true
 			routes [
 				nats-route://localhost:%d
@@ -4107,7 +4107,7 @@ func TestJWTJetStreamLimits(t *testing.T) {
 	}
 	expect_JSDisabledForAccount := func(c *nats.Conn) {
 		t.Helper()
-		if _, err := c.Request("$JS.API.INFO", nil, time.Second); err != nats.ErrTimeout {
+		if _, err := c.Request("$JS.API.INFO", nil, time.Second); err != nats.ErrTimeout && err != nats.ErrNoResponders {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 	}

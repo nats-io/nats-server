@@ -18,6 +18,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	mrand "math/rand"
 	"reflect"
@@ -40,6 +41,7 @@ type ConsumerInfo struct {
 	AckFloor       SequencePair   `json:"ack_floor"`
 	NumPending     int            `json:"num_pending"`
 	NumRedelivered int            `json:"num_redelivered"`
+	NumWaiting     int            `json:"num_waiting"`
 }
 
 type ConsumerConfig struct {
@@ -55,6 +57,7 @@ type ConsumerConfig struct {
 	ReplayPolicy    ReplayPolicy  `json:"replay_policy"`
 	RateLimit       uint64        `json:"rate_limit_bps,omitempty"` // Bits per sec
 	SampleFrequency string        `json:"sample_freq,omitempty"`
+	MaxWaiting      int           `json:"max_waiting,omitempty"`
 }
 
 type CreateConsumerRequest struct {
@@ -178,7 +181,7 @@ type Consumer struct {
 	rdq               []uint64
 	rdc               map[uint64]uint64
 	maxdc             uint64
-	waiting           []string
+	waiting           *waitQueue
 	config            ConsumerConfig
 	store             ConsumerStore
 	active            bool
@@ -218,6 +221,9 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 		if mset.deliveryFormsCycle(config.DeliverSubject) {
 			return nil, fmt.Errorf("consumer deliver subject forms a cycle")
 		}
+		if config.MaxWaiting != 0 {
+			return nil, fmt.Errorf("consumer in push mode can not set max waiting")
+		}
 	} else {
 		// Pull mode / work queue mode require explicit ack.
 		if config.AckPolicy != AckExplicit {
@@ -230,6 +236,13 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 		}
 		if config.RateLimit > 0 {
 			return nil, fmt.Errorf("consumer in pull mode can not have rate limit set")
+		}
+		if config.MaxWaiting < 0 {
+			return nil, fmt.Errorf("consumer max waiting needs to be positive")
+		}
+		// Set to default if not specified.
+		if config.MaxWaiting == 0 {
+			config.MaxWaiting = JSWaitQueueDefaultMax
 		}
 	}
 
@@ -380,6 +393,9 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 			return nil, fmt.Errorf("consumer name is too long, maximum allowed is %d", JSMaxNameLen)
 		}
 		o.name = config.Durable
+		if o.isPullMode() {
+			o.waiting = newWaitQueue(config.MaxWaiting)
+		}
 	} else {
 		for {
 			o.name = createConsumerName()
@@ -699,7 +715,7 @@ func (o *Consumer) processAck(_ *subscription, _ *client, subject, reply string,
 		o.ackMsg(sseq, dseq, dcount)
 	case bytes.Equal(msg, AckNext):
 		o.ackMsg(sseq, dseq, dcount)
-		o.processNextMsgReq(nil, nil, subject, reply, nil)
+		o.processNextMsgReq(nil, nil, subject, reply, msg)
 		skipAckReply = true
 	case bytes.Equal(msg, AckNak):
 		o.processNak(sseq, dseq)
@@ -885,6 +901,10 @@ func (o *Consumer) Info() *ConsumerInfo {
 		NumPending:     len(o.pending),
 		NumRedelivered: len(o.rdc),
 	}
+	// If we are a pull mode consumer, report on number of waiting requests.
+	if o.isPullMode() {
+		info.NumWaiting = o.waiting.len()
+	}
 	o.mu.Unlock()
 	return info
 }
@@ -1031,47 +1051,175 @@ func (o *Consumer) needAck(sseq uint64) bool {
 	return needAck
 }
 
-// Default is 1 if msg is nil.
-func batchSizeFromMsg(msg []byte) int {
+// Helper for the next message requests.
+func nextReqFromMsg(msg []byte) (time.Time, int, bool, error) {
+	req := strings.TrimSpace(string(msg))
+	if len(req) == 0 {
+		return time.Time{}, 1, false, nil
+	}
+	if req[0] == '{' {
+		var cr JSApiConsumerGetNextRequest
+		if err := json.Unmarshal(msg, &cr); err != nil {
+			return time.Time{}, -1, false, err
+		}
+		return cr.Expires, cr.Batch, cr.NoWait, nil
+	}
+	// Naked batch size here for backward compatibility.
 	bs := 1
-	if len(msg) > 0 {
-		if n, err := strconv.Atoi(string(msg)); err == nil {
-			bs = n
+	if n, err := strconv.Atoi(req); err == nil {
+		bs = n
+	}
+	return time.Time{}, bs, false, nil
+}
+
+// Represents a request that is on the internal waiting queue
+type waitingRequest struct {
+	client  *client
+	reply   string
+	n       int // For batching
+	expires time.Time
+	noWait  bool
+}
+
+// waiting queue for requests that are waiting for new messages to arrive.
+type waitQueue struct {
+	rp, wp int
+	reqs   []*waitingRequest
+}
+
+// Create a new ring buffer with at most max items.
+func newWaitQueue(max int) *waitQueue {
+	return &waitQueue{rp: -1, reqs: make([]*waitingRequest, max)}
+}
+
+var (
+	errWaitQueueFull = errors.New("wait queue is full")
+	errWaitQueueNil  = errors.New("wait queue is nil")
+)
+
+// Adds in a new request.
+func (wq *waitQueue) add(req *waitingRequest) error {
+	if wq == nil {
+		return errWaitQueueNil
+	}
+	if wq.isFull() {
+		return errWaitQueueFull
+	}
+	wq.reqs[wq.wp] = req
+	// TODO(dlc) - Could make pow2 and get rid of mod.
+	wq.wp = (wq.wp + 1) % cap(wq.reqs)
+
+	// Adjust read pointer if we were empty.
+	if wq.rp < 0 {
+		wq.rp = 0
+	}
+
+	return nil
+}
+
+func (wq *waitQueue) isFull() bool {
+	return wq.rp == wq.wp
+}
+
+func (wq *waitQueue) len() int {
+	if wq == nil || wq.rp < 0 {
+		return 0
+	}
+	if wq.rp < wq.wp {
+		return wq.wp - wq.rp
+	}
+	return cap(wq.reqs) - wq.rp + wq.wp
+}
+
+// Peek will return the next request waiting or nil if empty.
+func (wq *waitQueue) peek() *waitingRequest {
+	if wq == nil {
+		return nil
+	}
+	var wr *waitingRequest
+	if wq.rp >= 0 {
+		wr = wq.reqs[wq.rp]
+	}
+	return wr
+}
+
+// pop will return the next request and move the read cursor.
+func (wq *waitQueue) pop() *waitingRequest {
+	wr := wq.peek()
+	if wr != nil {
+		wr.n--
+		if wr.n <= 0 {
+			wq.reqs[wq.rp] = nil
+			wq.rp = (wq.rp + 1) % cap(wq.reqs)
+			// Check if we are empty.
+			if wq.rp == wq.wp {
+				wq.rp, wq.wp = -1, 0
+			}
 		}
 	}
-	return bs
+	return wr
 }
 
 // processNextMsgReq will process a request for the next message available. A nil message payload means deliver
 // a single message. If the payload is a number parseable with Atoi(), then we will send a batch of messages without
 // requiring another request to this endpoint, or an ACK.
-func (o *Consumer) processNextMsgReq(_ *subscription, _ *client, _, reply string, msg []byte) {
-	// Check payload here to see if they sent in batch size.
-	batchSize := batchSizeFromMsg(msg)
-
+func (o *Consumer) processNextMsgReq(_ *subscription, c *client, _, reply string, msg []byte) {
 	o.mu.Lock()
 	mset := o.mset
 	if mset == nil || o.isPushMode() {
 		o.mu.Unlock()
 		return
 	}
-	shouldSignal := false
+
+	sendErr := func(status int, description string) {
+		sendq := mset.sendq
+		o.mu.Unlock()
+		hdr := []byte(fmt.Sprintf("NATS/1.0 %d %s\r\n\r\n", status, description))
+		pmsg := &jsPubMsg{reply, reply, _EMPTY_, hdr, nil, nil, 0}
+		sendq <- pmsg // Send message.
+	}
+
+	if o.waiting.isFull() {
+		// Try to expire some of the requests.
+		if expired := o.expireWaiting(); expired == 0 {
+			// Force expiration if needed.
+			o.forceExpireFirstWaiting()
+		}
+	}
+
+	// Check payload here to see if they sent in batch size or a formal request.
+	expires, batchSize, noWait, err := nextReqFromMsg(msg)
+	if err != nil {
+		sendErr(400, fmt.Sprintf("Bad Request - %v", err))
+		return
+	}
+
+	// In case we have to queue up this request. This is all on stack pre-allocated.
+	wr := waitingRequest{client: c, reply: reply, n: batchSize, noWait: noWait, expires: expires}
+
+	// If we are in replay mode, defer to processReplay for delivery.
+	if o.replay {
+		o.waiting.add(&wr)
+		o.mu.Unlock()
+		mset.signalConsumers()
+		return
+	}
 
 	for i := 0; i < batchSize; i++ {
-		// If we are in replay mode, defer to processReplay for delivery.
-		if o.replay {
-			o.waiting = append(o.waiting, reply)
-			shouldSignal = true
-		} else if subj, hdr, msg, seq, dc, ts, err := o.getNextMsg(); err == nil {
+		if subj, hdr, msg, seq, dc, ts, err := o.getNextMsg(); err == nil {
 			o.deliverMsg(reply, subj, hdr, msg, seq, dc, ts)
+			// Need to discount this from the total n for the request.
+			wr.n--
 		} else {
-			o.waiting = append(o.waiting, reply)
+			if wr.noWait {
+				sendErr(404, "No Messages")
+				return
+			}
+			o.waiting.add(&wr)
+			break
 		}
 	}
 	o.mu.Unlock()
-	if shouldSignal {
-		mset.signalConsumers()
-	}
 }
 
 // Increase the delivery count for this message.
@@ -1161,17 +1309,52 @@ func (o *Consumer) getNextMsg() (subj string, hdr, msg []byte, seq uint64, dcoun
 	}
 }
 
-// Will check to make sure those waiting still have registered interest.
-func (o *Consumer) checkWaitingForInterest() bool {
-	for len(o.waiting) > 0 {
-		rr := o.acc.sl.Match(o.waiting[0])
+// forceExpireFirstWaiting will force expire the first waiting.
+// Lock should be held.
+func (o *Consumer) forceExpireFirstWaiting() *waitingRequest {
+	// FIXME(dlc) - Should we do advisory here as well?
+	wr := o.waiting.pop()
+	if wr == nil {
+		return wr
+	}
+	// If we are expiring this and we think there is still interest, alert.
+	if rr := o.acc.sl.Match(wr.reply); len(rr.psubs)+len(rr.qsubs) > 0 && o.mset != nil {
+		// We still appear to have interest, so send alert as courtesy.
+		sendq := o.mset.sendq
+		o.mu.Unlock()
+		hdr := []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
+		pmsg := &jsPubMsg{wr.reply, wr.reply, _EMPTY_, hdr, nil, nil, 0}
+		sendq <- pmsg // Send message.
+		o.mu.Lock()
+	}
+	return wr
+}
+
+// Will check for expiration and lack of interest on waiting requests.
+func (o *Consumer) expireWaiting() int {
+	var expired int
+	now := time.Now()
+	for wr := o.waiting.peek(); wr != nil; wr = o.waiting.peek() {
+		if !wr.expires.IsZero() && now.After(wr.expires) {
+			o.forceExpireFirstWaiting()
+			expired++
+			continue
+		}
+		rr := o.acc.sl.Match(wr.reply)
 		if len(rr.psubs)+len(rr.qsubs) > 0 {
 			break
 		}
 		// No more interest so go ahead and remove this one from our list.
-		o.waiting = append(o.waiting[:0], o.waiting[1:]...)
+		o.forceExpireFirstWaiting()
+		expired++
 	}
-	return len(o.waiting) > 0
+	return expired
+}
+
+// Will check to make sure those waiting still have registered interest.
+func (o *Consumer) checkWaitingForInterest() bool {
+	o.expireWaiting()
+	return o.waiting.len() > 0
 }
 
 func (o *Consumer) loopAndDeliverMsgs(s *Server, a *Account) {
@@ -1235,9 +1418,8 @@ func (o *Consumer) loopAndDeliverMsgs(s *Server, a *Account) {
 			}
 		}
 
-		if len(o.waiting) > 0 {
-			dsubj = o.waiting[0]
-			o.waiting = append(o.waiting[:0], o.waiting[1:]...)
+		if wr := o.waiting.pop(); wr != nil {
+			dsubj = wr.reply
 		} else {
 			dsubj = o.dsubj
 		}
@@ -1326,10 +1508,10 @@ func (o *Consumer) deliverCurrentMsg(subj string, hdr, msg []byte, seq uint64, t
 		o.mu.Unlock()
 		return true
 	}
+
 	var dsubj string
-	if len(o.waiting) > 0 {
-		dsubj = o.waiting[0]
-		o.waiting = append(o.waiting[:0], o.waiting[1:]...)
+	if wr := o.waiting.pop(); wr != nil {
+		dsubj = wr.reply
 	} else {
 		dsubj = o.dsubj
 	}
@@ -1725,6 +1907,7 @@ func (o *Consumer) stop(dflag, doSignal, advisory bool) error {
 	stopAndClearTimer(&o.ptmr)
 	stopAndClearTimer(&o.dtmr)
 	delivery := o.config.DeliverSubject
+	o.waiting = nil
 	o.mu.Unlock()
 
 	if delivery != "" {

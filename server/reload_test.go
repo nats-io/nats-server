@@ -3180,7 +3180,7 @@ func TestConfigReloadAccountServicesImportExport(t *testing.T) {
 			if string(msg.Data) != reply {
 				t.Fatalf("Expected reply %s on subject %s, got %s", reply, subj, msg.Data)
 			}
-		} else if err != nats.ErrTimeout {
+		} else if err != nats.ErrTimeout && err != nats.ErrNoResponders {
 			t.Fatalf("Expected timeout on subject %s, got %v", subj, err)
 		}
 	}
