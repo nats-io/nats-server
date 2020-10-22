@@ -20,6 +20,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"path"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1779,5 +1780,95 @@ func TestServiceLatencyHeaderTriggered(t *testing.T) {
 			}
 			receiveAndTest(t, rsub, v.shared, v.header, http.StatusBadRequest, srv.Name())
 		})
+	}
+}
+
+// From a report by rip@nats.io on simple latency reporting missing in 2 server cluster setup.
+func TestServiceLatencyMissingResults(t *testing.T) {
+	accConf := createConfFile(t, []byte(`
+		accounts {
+		  one: {
+		    users = [ {user: one, password: password} ]
+		    imports = [ {service: {account: weather, subject: service.weather.requests.>}, to: service.weather.>, share: true} ]
+		  }
+		  weather: {
+		    users = [ {user: weather, password: password} ]
+		    exports = [ {
+		        service: service.weather.requests.>
+		        accounts: [one]
+		        latency: { sampling: 100%, subject: service.weather.latency }
+		      } ]
+		  }
+		}
+	`))
+	defer os.Remove(accConf)
+
+	s1Conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		server_name: s1
+		cluster { port: -1 }
+		include %q
+	`, path.Base(accConf))))
+	defer os.Remove(s1Conf)
+
+	s1, opts1 := RunServerWithConfig(s1Conf)
+	defer s1.Shutdown()
+
+	s2Conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		server_name: s2
+		cluster {
+			port: -1
+			routes = [ nats-route://127.0.0.1:%d ]
+		}
+		include %q
+	`, opts1.Cluster.Port, path.Base(accConf))))
+	defer os.Remove(s2Conf)
+
+	s2, opts2 := RunServerWithConfig(s2Conf)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	nc1, err := nats.Connect(fmt.Sprintf("nats://%s:%s@%s:%d", "weather", "password", opts1.Host, opts1.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc1.Close()
+
+	// Create responder
+	sub, _ := nc1.Subscribe("service.weather.requests.>", func(msg *nats.Msg) {
+		time.Sleep(25 * time.Millisecond)
+		msg.Respond([]byte("sunny!"))
+	})
+	defer sub.Unsubscribe()
+
+	// Create sync listener for latency.
+	lsub, _ := nc1.SubscribeSync("service.weather.latency")
+	defer lsub.Unsubscribe()
+	nc1.Flush()
+
+	// Create requestor on s2.
+	nc2, err := nats.Connect(fmt.Sprintf("nats://%s:%s@%s:%d", "one", "password", opts2.Host, opts2.Port), nats.UseOldRequestStyle())
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+
+	nc2.Request("service.weather.los_angeles", nil, time.Second)
+
+	lr, err := lsub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Expected a latency result, got %v", err)
+	}
+	// Make sure we reported ok and have valid results for service, system and total.
+	var sl server.ServiceLatency
+	json.Unmarshal(lr.Data, &sl)
+
+	if sl.Status != 200 {
+		t.Fatalf("Expected a 200 status, got %d\n", sl.Status)
+	}
+	if sl.ServiceLatency == 0 || sl.SystemLatency == 0 || sl.TotalLatency == 0 {
+		t.Fatalf("Received invalid tracking measurements, %d %d %d", sl.ServiceLatency, sl.SystemLatency, sl.TotalLatency)
 	}
 }
