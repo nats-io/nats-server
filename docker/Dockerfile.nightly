@@ -2,6 +2,7 @@ FROM golang:1.14-alpine AS builder
 
 RUN apk add --update git
 RUN go get github.com/nats-io/jetstream/nats
+RUN go get github.com/nats-io/nsc
 
 FROM alpine:latest
 
@@ -10,6 +11,7 @@ RUN apk add --update ca-certificates && mkdir -p /nats/bin && mkdir /nats/conf
 COPY docker/nats-server.conf /nats/conf/nats-server.conf
 COPY nats-server /bin/nats-server
 COPY --from=builder /go/bin/nats /bin/nats
+COPY --from=builder /go/bin/nsc /bin/nsc
 
 EXPOSE 4222 8222 6222 5222
 
