@@ -2209,7 +2209,8 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 		}
 
 		if service.lat != nil {
-			if opts.SystemAccount == "" {
+			// System accounts are on be default so just make sure we have not opted out..
+			if opts.NoSystemAccount {
 				msg := fmt.Sprintf("Error adding service latency sampling for %q: %v", service.sub, ErrNoSysAccount.Error())
 				*errors = append(*errors, &configErr{tk, msg})
 				continue

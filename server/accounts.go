@@ -130,6 +130,7 @@ type serviceImport struct {
 	invalid     bool
 	share       bool
 	tracking    bool
+	didDeliver  bool
 	trackingHdr http.Header // header from request
 }
 
@@ -1535,9 +1536,8 @@ func (a *Account) checkForReverseEntry(reply string, si *serviceImport, checkInt
 	// If there is we can not delete any entries yet.
 	// Note that if we are here reply has to be a literal subject.
 	if checkInterest {
-		rr := a.sl.Match(reply)
 		// If interest still exists we can not clean these up yet.
-		if len(rr.psubs)+len(rr.qsubs) > 0 {
+		if rr := a.sl.Match(reply); len(rr.psubs)+len(rr.qsubs) > 0 {
 			a.mu.RUnlock()
 			return
 		}
@@ -1572,7 +1572,7 @@ func (a *Account) checkForReverseEntry(reply string, si *serviceImport, checkInt
 			var trackingCleanup bool
 			var rsi *serviceImport
 			acc.mu.Lock()
-			if rsi = acc.exports.responses[sre.msub]; rsi != nil {
+			if rsi = acc.exports.responses[sre.msub]; rsi != nil && !rsi.didDeliver {
 				delete(acc.exports.responses, rsi.from)
 				trackingCleanup = rsi.tracking && rsi.rc != nil
 			}
@@ -1640,7 +1640,7 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 		}
 	}
 
-	si := &serviceImport{dest, claim, se, nil, from, to, "", tr, 0, rt, lat, nil, nil, usePub, false, false, false, false, nil}
+	si := &serviceImport{dest, claim, se, nil, from, to, "", tr, 0, rt, lat, nil, nil, usePub, false, false, false, false, false, nil}
 	a.imports.services[from] = si
 	a.mu.Unlock()
 
@@ -1865,6 +1865,7 @@ func (a *Account) processServiceImportResponse(sub *subscription, c *client, sub
 		return
 	}
 	si := a.exports.responses[subject]
+
 	if si == nil || si.invalid {
 		a.mu.RUnlock()
 		return
@@ -2054,7 +2055,7 @@ func (a *Account) addRespServiceImport(dest *Account, to string, osi *serviceImp
 
 	// dest is the requestor's account. a is the service responder with the export.
 	// Marked as internal here, that is how we distinguish.
-	si := &serviceImport{dest, nil, osi.se, nil, nrr, to, osi.to, nil, 0, rt, nil, nil, nil, false, true, false, osi.share, false, nil}
+	si := &serviceImport{dest, nil, osi.se, nil, nrr, to, osi.to, nil, 0, rt, nil, nil, nil, false, true, false, osi.share, false, false, nil}
 
 	if a.exports.responses == nil {
 		a.exports.responses = make(map[string]*serviceImport)

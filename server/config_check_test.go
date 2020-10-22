@@ -1165,32 +1165,6 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  18,
 		},
 		{
-			name: "when setting latency tracking without a system account",
-			config: `
-                accounts {
-                  sys { users = [ {user: sys, pass: "" } ] }
-
-                  nats.io: {
-                    users = [ { user : bar, pass: "" } ]
-
-                    exports = [
-                      { service: "nats.add"
-                        response: singleton
-                        latency: {
-                          sampling: 100%
-                          subject: "latency.tracking.add"
-                        }
-                      }
-
-                    ]
-                  }
-                }
-                `,
-			err:       errors.New(`Error adding service latency sampling for "nats.add": system account not setup`),
-			errorLine: 2,
-			errorPos:  17,
-		},
-		{
 			name: "when setting latency tracking with a system account",
 			config: `
                 system_account: sys
