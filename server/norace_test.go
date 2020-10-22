@@ -16,12 +16,14 @@
 package server
 
 import (
+	"bufio"
 	"fmt"
 	"math/rand"
 	"net"
 	"net/url"
 	"runtime"
 	"runtime/debug"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -977,4 +979,95 @@ func TestNoRaceQueueAutoUnsubscribe(t *testing.T) {
 		return fmt.Errorf("Did not receive all %d queue messages, received %d for 'bar' and %d for 'baz'",
 			expected, atomic.LoadInt32(&rbar), atomic.LoadInt32(&rbaz))
 	})
+}
+
+func TestNoRaceAcceptLoopsDoNotLeaveOpenedConn(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		url  func(o *Options) (string, int)
+	}{
+		{"client", func(o *Options) (string, int) { return o.Host, o.Port }},
+		{"route", func(o *Options) (string, int) { return o.Cluster.Host, o.Cluster.Port }},
+		{"gateway", func(o *Options) (string, int) { return o.Gateway.Host, o.Gateway.Port }},
+		{"leafnode", func(o *Options) (string, int) { return o.LeafNode.Host, o.LeafNode.Port }},
+		{"websocket", func(o *Options) (string, int) { return o.Websocket.Host, o.Websocket.Port }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o := DefaultOptions()
+			o.DisableShortFirstPing = true
+			o.Accounts = []*Account{NewAccount("$SYS")}
+			o.SystemAccount = "$SYS"
+			o.Cluster.Name = "abc"
+			o.Cluster.Host = "127.0.0.1"
+			o.Cluster.Port = -1
+			o.Gateway.Name = "abc"
+			o.Gateway.Host = "127.0.0.1"
+			o.Gateway.Port = -1
+			o.LeafNode.Host = "127.0.0.1"
+			o.LeafNode.Port = -1
+			o.Websocket.Host = "127.0.0.1"
+			o.Websocket.Port = -1
+			o.Websocket.HandshakeTimeout = 1
+			o.Websocket.NoTLS = true
+			s := RunServer(o)
+			defer s.Shutdown()
+
+			host, port := test.url(o)
+			url := fmt.Sprintf("%s:%d", host, port)
+			var conns []net.Conn
+
+			wg := sync.WaitGroup{}
+			wg.Add(1)
+			done := make(chan struct{}, 1)
+			go func() {
+				defer wg.Done()
+				// Have an upper limit
+				for i := 0; i < 200; i++ {
+					c, err := net.Dial("tcp", url)
+					if err != nil {
+						return
+					}
+					conns = append(conns, c)
+					select {
+					case <-done:
+						return
+					default:
+					}
+				}
+			}()
+			time.Sleep(15 * time.Millisecond)
+			s.Shutdown()
+			close(done)
+			wg.Wait()
+			for _, c := range conns {
+				c.SetReadDeadline(time.Now().Add(2 * time.Second))
+				br := bufio.NewReader(c)
+				// Read INFO for connections that were accepted
+				_, _, err := br.ReadLine()
+				if err == nil {
+					// After that, the connection should be closed,
+					// so we should get an error here.
+					_, _, err = br.ReadLine()
+				}
+				// We expect an io.EOF or any other error indicating the use of a closed
+				// connection, but we should not get the timeout error.
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					err = nil
+				}
+				if err == nil {
+					var buf [10]byte
+					c.SetDeadline(time.Now().Add(2 * time.Second))
+					c.Write([]byte("C"))
+					_, err = c.Read(buf[:])
+					if ne, ok := err.(net.Error); ok && ne.Timeout() {
+						err = nil
+					}
+				}
+				if err == nil {
+					t.Fatalf("Connection should have been closed")
+				}
+				c.Close()
+			}
+		})
+	}
 }
