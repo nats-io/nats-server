@@ -204,6 +204,83 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 	}
 }
 
+func TestFileStoreSelectNextFirst(t *testing.T) {
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 256}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	numMsgs := 10
+	subj, msg := "zzz", []byte("Hello World")
+	for i := 0; i < numMsgs; i++ {
+		fs.StoreMsg(subj, nil, msg)
+	}
+	if state := fs.State(); state.Msgs != uint64(numMsgs) {
+		t.Fatalf("Expected %d msgs, got %d", numMsgs, state.Msgs)
+	}
+
+	// Note the 256 block size is tied to the msg size below to give us 5 messages per block.
+	if fmb := fs.selectMsgBlock(1); fmb.msgs != 5 {
+		t.Fatalf("Expected 5 messages per block, but got %d", fmb.msgs)
+	}
+
+	// Delete 2-7, this will cross message blocks.
+	for i := 2; i <= 7; i++ {
+		fs.RemoveMsg(uint64(i))
+	}
+
+	if state := fs.State(); state.Msgs != 4 || state.FirstSeq != 1 {
+		t.Fatalf("Expected 4 msgs, first seq of 11, got msgs of %d and first seq of %d", state.Msgs, state.FirstSeq)
+	}
+	// Now close the gap which will force the system to jump underlying message blocks to find the right sequence.
+	fs.RemoveMsg(1)
+	if state := fs.State(); state.Msgs != 3 || state.FirstSeq != 8 {
+		t.Fatalf("Expected 3 msgs, first seq of 8, got msgs of %d and first seq of %d", state.Msgs, state.FirstSeq)
+	}
+}
+
+func TestFileStoreSkipMsg(t *testing.T) {
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 256}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	numSkips := 10
+	for i := 0; i < numSkips; i++ {
+		fs.SkipMsg()
+	}
+	state := fs.State()
+	if state.Msgs != 0 {
+		t.Fatalf("Expected %d msgs, got %d", 0, state.Msgs)
+	}
+	if state.FirstSeq != uint64(numSkips+1) || state.LastSeq != uint64(numSkips) {
+		t.Fatalf("Expected first to be %d and last to be %d. got first %d and last %d", numSkips+1, numSkips, state.FirstSeq, state.LastSeq)
+	}
+
+	fs.StoreMsg("zzz", nil, []byte("Hello World!"))
+	fs.SkipMsg()
+	fs.SkipMsg()
+	fs.StoreMsg("zzz", nil, []byte("Hello World!"))
+
+	state = fs.State()
+	if state.Msgs != 2 {
+		t.Fatalf("Expected %d msgs, got %d", 2, state.Msgs)
+	}
+	if state.FirstSeq != uint64(numSkips+1) || state.LastSeq != uint64(numSkips+4) {
+		t.Fatalf("Expected first to be %d and last to be %d. got first %d and last %d", numSkips+1, numSkips+4, state.FirstSeq, state.LastSeq)
+	}
+}
+
 func TestFileStoreMsgLimit(t *testing.T) {
 	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
