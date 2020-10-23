@@ -1062,7 +1062,7 @@ func nextReqFromMsg(msg []byte) (time.Time, int, bool, error) {
 		if err := json.Unmarshal(msg, &cr); err != nil {
 			return time.Time{}, -1, false, err
 		}
-		return cr.Expires, cr.Batch, cr.NoWait, nil
+		return time.Now().Add(time.Duration(cr.Expires) * time.Millisecond), cr.Batch, cr.NoWait, nil
 	}
 	// Naked batch size here for backward compatibility.
 	bs := 1

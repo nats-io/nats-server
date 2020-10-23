@@ -1662,7 +1662,7 @@ func TestJetStreamWorkQueueRequest(t *testing.T) {
 			// Now do expiration
 			req.Batch = 1
 			req.NoWait = false
-			req.Expires = time.Now().Add(10 * time.Millisecond)
+			req.Expires = 10
 			jreq, _ = json.Marshal(req)
 
 			nc.PublishRequest(getSubj, reply, jreq)
