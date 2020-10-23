@@ -140,6 +140,24 @@ func (ms *memStore) StoreMsg(subj string, hdr, msg []byte) (uint64, int64, error
 	return seq, ts, nil
 }
 
+// SkipMsg will use the next sequence number but not store anything.
+func (ms *memStore) SkipMsg() uint64 {
+	// Grab time.
+	now := time.Now().UTC()
+
+	ms.mu.Lock()
+	seq := ms.state.LastSeq + 1
+	ms.state.LastSeq = seq
+	ms.state.LastTime = now
+	if ms.state.Msgs == 0 {
+		ms.state.FirstSeq = seq
+		ms.state.FirstTime = now
+	}
+	ms.updateFirstSeq(seq)
+	ms.mu.Unlock()
+	return seq
+}
+
 // StorageBytesUpdate registers an async callback for updates to storage changes.
 func (ms *memStore) StorageBytesUpdate(cb func(int64)) {
 	ms.mu.Lock()
@@ -297,6 +315,29 @@ func (ms *memStore) EraseMsg(seq uint64) (bool, error) {
 	return removed, nil
 }
 
+// Performs logic tp update first sequence number.
+// Lock should be held.
+func (ms *memStore) updateFirstSeq(seq uint64) {
+	if seq != ms.state.FirstSeq {
+		return
+	}
+	var nsm *storedMsg
+	var ok bool
+	for nseq := ms.state.FirstSeq + 1; nseq <= ms.state.LastSeq; nseq++ {
+		if nsm, ok = ms.msgs[nseq]; ok {
+			break
+		}
+	}
+	if nsm != nil {
+		ms.state.FirstSeq = nsm.seq
+		ms.state.FirstTime = time.Unix(0, nsm.ts).UTC()
+	} else {
+		// Like purge.
+		ms.state.FirstSeq = ms.state.LastSeq + 1
+		ms.state.FirstTime = time.Time{}
+	}
+}
+
 // Removes the message referenced by seq.
 func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 	var ss uint64
@@ -309,23 +350,7 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 	ms.state.Msgs--
 	ss = memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 	ms.state.Bytes -= ss
-	if seq == ms.state.FirstSeq {
-		var nsm *storedMsg
-		var ok bool
-		for nseq := ms.state.FirstSeq + 1; nseq <= ms.state.LastSeq; nseq++ {
-			if nsm, ok = ms.msgs[nseq]; ok {
-				break
-			}
-		}
-		if nsm != nil {
-			ms.state.FirstSeq = nsm.seq
-			ms.state.FirstTime = time.Unix(0, nsm.ts).UTC()
-		} else {
-			// Like purge.
-			ms.state.FirstSeq = ms.state.LastSeq + 1
-			ms.state.FirstTime = time.Time{}
-		}
-	}
+	ms.updateFirstSeq(seq)
 
 	if secure {
 		if len(sm.hdr) > 0 {

@@ -639,6 +639,26 @@ func (fs *fileStore) StoreMsg(subj string, hdr, msg []byte) (uint64, int64, erro
 	return seq, ts, nil
 }
 
+// SkipMsg will use the next sequence number but not store anything.
+func (fs *fileStore) SkipMsg() uint64 {
+	// Grab time.
+	now := time.Now().UTC()
+	fs.mu.Lock()
+	seq := fs.state.LastSeq + 1
+	fs.state.LastSeq = seq
+	fs.state.LastTime = now
+	if fs.state.Msgs == 0 {
+		fs.state.FirstSeq = seq
+		fs.state.FirstTime = now
+	}
+	if seq == fs.state.FirstSeq {
+		fs.state.FirstSeq = seq + 1
+		fs.state.FirstTime = now
+	}
+	fs.mu.Unlock()
+	return seq
+}
+
 // Will check the msg limit and drop firstSeq msg if needed.
 // Lock should be held.
 func (fs *fileStore) enforceMsgLimit() {
@@ -745,6 +765,11 @@ func (mb *msgBlock) kickWriteFlusher() {
 }
 
 // Lock should be held.
+func (mb *msgBlock) isEmpty() bool {
+	return mb.first.seq > mb.last.seq
+}
+
+// Lock should be held.
 func (mb *msgBlock) selectNextFirst() {
 	var seq uint64
 	for seq = mb.first.seq + 1; seq <= mb.last.seq; seq++ {
@@ -757,6 +782,11 @@ func (mb *msgBlock) selectNextFirst() {
 	}
 	// Set new first sequence.
 	mb.first.seq = seq
+	// Check if we are empty..
+	if mb.isEmpty() {
+		mb.first.ts = 0
+		return
+	}
 
 	// Need to get the timestamp.
 	// We will try the cache direct and fallback if needed.
@@ -771,6 +801,21 @@ func (mb *msgBlock) selectNextFirst() {
 		mb.first.ts = sm.ts
 	} else {
 		mb.first.ts = 0
+	}
+}
+
+// Select the next FirstSeq
+func (fs *fileStore) selectNextFirst() {
+	if len(fs.blks) > 0 {
+		mb := fs.blks[0]
+		mb.mu.RLock()
+		fs.state.FirstSeq = mb.first.seq
+		fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
+		mb.mu.RUnlock()
+	} else {
+		// Could not find anything, so treat like purge
+		fs.state.FirstSeq = fs.state.LastSeq + 1
+		fs.state.FirstTime = time.Time{}
 	}
 }
 
@@ -825,18 +870,20 @@ func (fs *fileStore) deleteMsgFromBlock(mb *msgBlock, seq uint64, sm *fileStored
 	atomic.AddUint64(&mb.cgenid, 1)
 
 	var shouldWriteIndex bool
+	var firstSeqNeedsUpdate bool
 
 	// Optimize for FIFO case.
 	if seq == mb.first.seq {
 		mb.selectNextFirst()
-		if seq == fs.state.FirstSeq {
-			fs.state.FirstSeq = mb.first.seq // new one.
-			fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
-		}
-		if mb.first.seq > mb.last.seq {
+		if mb.isEmpty() {
 			fs.removeMsgBlock(mb)
+			firstSeqNeedsUpdate = seq == fs.state.FirstSeq
 		} else {
 			shouldWriteIndex = true
+			if seq == fs.state.FirstSeq {
+				fs.state.FirstSeq = mb.first.seq // new one.
+				fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
+			}
 		}
 	} else {
 		// Out of order delete.
@@ -864,6 +911,13 @@ func (fs *fileStore) deleteMsgFromBlock(mb *msgBlock, seq uint64, sm *fileStored
 		}
 	}
 	mb.mu.Unlock()
+
+	// If we emptied the current message block and the seq was state.First.Seq
+	// then we need to jump message blocks.
+	if firstSeqNeedsUpdate {
+		fs.selectNextFirst()
+	}
+
 	fs.mu.Unlock()
 
 	if fs.scb != nil {

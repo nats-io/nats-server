@@ -793,39 +793,55 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 	// Header support.
 	var hdr []byte
 
-	// Check to see if we are over the account limit.
+	// Check to see if we are over the max msg size.
 	if maxMsgSize >= 0 && len(msg) > maxMsgSize {
 		response = []byte("-ERR 'message size exceeds maximum allowed'")
-	} else {
-		// Headers.
-		if pc != nil && pc.pa.hdr > 0 {
-			hdr = msg[:pc.pa.hdr]
-			msg = msg[pc.pa.hdr:]
+		if doAck && len(reply) > 0 {
+			mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
 		}
-		seq, ts, err = store.StoreMsg(subject, hdr, msg)
-		if err != nil {
-			if err != ErrStoreClosed {
-				c.Errorf("JetStream failed to store a msg on account: %q stream: %q -  %v", accName, name, err)
-			}
-			response = []byte(fmt.Sprintf("-ERR '%v'", err))
-		} else if jsa.limitsExceeded(stype) {
-			c.Warnf("JetStream resource limits exceeded for account: %q", accName)
-			response = []byte("-ERR 'resource limits exceeded for account'")
-			store.RemoveMsg(seq)
-			seq = 0
-		} else if err == nil {
-			if doAck && len(reply) > 0 {
-				response = append(pubAck, strconv.FormatUint(seq, 10)...)
-				response = append(response, '}')
-			}
-			// If we have a msgId make sure to save.
-			if msgId != "" {
-				mset.storeMsgId(&ddentry{msgId, seq, ts})
-			}
-			// If we are interest based retention and have no consumers clean that up here.
-			if interestRetention && numConsumers == 0 {
-				store.RemoveMsg(seq)
-			}
+		return
+	}
+
+	// If we are interest based retention and have no consumers then skip.
+	if interestRetention && numConsumers == 0 {
+		seq = store.SkipMsg()
+		if doAck && len(reply) > 0 {
+			response = append(pubAck, strconv.FormatUint(seq, 10)...)
+			response = append(response, '}')
+			mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
+		}
+		// If we have a msgId make sure to save.
+		if msgId != "" {
+			mset.storeMsgId(&ddentry{msgId, seq, time.Now().UnixNano()})
+		}
+		return
+	}
+
+	// If here we will attempt to store the message.
+	// Headers.
+	if pc != nil && pc.pa.hdr > 0 {
+		hdr = msg[:pc.pa.hdr]
+		msg = msg[pc.pa.hdr:]
+	}
+	seq, ts, err = store.StoreMsg(subject, hdr, msg)
+	if err != nil {
+		if err != ErrStoreClosed {
+			c.Errorf("JetStream failed to store a msg on account: %q stream: %q -  %v", accName, name, err)
+		}
+		response = []byte(fmt.Sprintf("-ERR '%v'", err))
+	} else if jsa.limitsExceeded(stype) {
+		c.Warnf("JetStream resource limits exceeded for account: %q", accName)
+		response = []byte("-ERR 'resource limits exceeded for account'")
+		store.RemoveMsg(seq)
+		seq = 0
+	} else {
+		if doAck && len(reply) > 0 {
+			response = append(pubAck, strconv.FormatUint(seq, 10)...)
+			response = append(response, '}')
+		}
+		// If we have a msgId make sure to save.
+		if msgId != "" {
+			mset.storeMsgId(&ddentry{msgId, seq, ts})
 		}
 	}
 
@@ -834,7 +850,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
 	}
 
-	if err == nil && numConsumers > 0 && seq > 0 {
+	if err == nil && seq > 0 && numConsumers > 0 {
 		var needSignal bool
 		mset.mu.Lock()
 		for _, o := range mset.consumers {
