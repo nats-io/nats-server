@@ -520,6 +520,8 @@ func (mset *Stream) Purge() uint64 {
 		return 0
 	}
 	purged := mset.store.Purge()
+	// Purge dedupe.
+	mset.ddmap = nil
 	stats := mset.store.State()
 	var obs []*Consumer
 	for _, o := range mset.consumers {

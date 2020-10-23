@@ -2896,6 +2896,10 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 	if !pa.Duplicate {
 		t.Fatalf("Expected duplicate to be set")
 	}
+
+	// Purge should wipe the msgIds as well.
+	mset.Purge()
+	nmids(0)
 }
 
 func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {
