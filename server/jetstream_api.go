@@ -295,7 +295,7 @@ const JSApiStreamListResponseType = "io.nats.jetstream.api.v1.stream_list_respon
 type JSApiStreamPurgeResponse struct {
 	ApiResponse
 	Success bool   `json:"success,omitempty"`
-	Purged  uint64 `json:"purged,omitempty"`
+	Purged  uint64 `json:"purged"`
 }
 
 const JSApiStreamPurgeResponseType = "io.nats.jetstream.api.v1.stream_purge_response"
