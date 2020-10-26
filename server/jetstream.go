@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
@@ -101,13 +102,15 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 	s.Noticef("Starting JetStream")
 	if config == nil || config.MaxMemory <= 0 || config.MaxStore <= 0 {
 		var storeDir string
-		s.Debugf("JetStream creating dynamic configuration - 75%% of system memory, %s disk", FriendlyBytes(JetStreamMaxStoreDefault))
+		var maxStore int64
 		if config != nil {
 			storeDir = config.StoreDir
+			maxStore = config.MaxStore
 		}
-		config = s.dynJetStreamConfig(storeDir)
+		config = s.dynJetStreamConfig(storeDir, maxStore)
+		s.Debugf("JetStream creating dynamic configuration - %s memory, %s disk", FriendlyBytes(config.MaxMemory), FriendlyBytes(config.MaxStore))
 	}
-	// Copy, don't change callers.
+	// Copy, don't change callers version.
 	cfg := *config
 	if cfg.StoreDir == "" {
 		cfg.StoreDir = filepath.Join(os.TempDir(), JetStreamStoreDir)
@@ -827,6 +830,13 @@ func (jsa *jsAccount) checkBytesLimits(addBytes int64, storage StorageType) erro
 	return nil
 }
 
+func (jsa *jsAccount) acc() *Account {
+	jsa.mu.RLock()
+	acc := jsa.account
+	jsa.mu.RUnlock()
+	return acc
+}
+
 // Delete the JetStream resources.
 func (jsa *jsAccount) delete() {
 	var streams []*Stream
@@ -922,7 +932,7 @@ const (
 )
 
 // Dynamically create a config with a tmp based directory (repeatable) and 75% of system memory.
-func (s *Server) dynJetStreamConfig(storeDir string) *JetStreamConfig {
+func (s *Server) dynJetStreamConfig(storeDir string, maxStore int64) *JetStreamConfig {
 	jsc := &JetStreamConfig{}
 	if storeDir != "" {
 		jsc.StoreDir = filepath.Join(storeDir, JetStreamStoreDir)
@@ -930,7 +940,22 @@ func (s *Server) dynJetStreamConfig(storeDir string) *JetStreamConfig {
 		tdir, _ := ioutil.TempDir(os.TempDir(), "nats-jetstream-storedir-")
 		jsc.StoreDir = filepath.Join(tdir, JetStreamStoreDir)
 	}
-	jsc.MaxStore = JetStreamMaxStoreDefault
+
+	if maxStore > 0 {
+		jsc.MaxStore = maxStore
+	} else {
+		if _, err := os.Stat(jsc.StoreDir); os.IsNotExist(err) {
+			os.MkdirAll(jsc.StoreDir, 0755)
+		}
+		var fs syscall.Statfs_t
+		if err := syscall.Statfs(jsc.StoreDir, &fs); err == nil {
+			// Estimate 75% of available storage.
+			jsc.MaxStore = int64(fs.Bavail * uint64(fs.Bsize) / 4 * 3)
+		} else {
+			// Used 1TB default as a guess if all else fails.
+			jsc.MaxStore = JetStreamMaxStoreDefault
+		}
+	}
 	// Estimate to 75% of total memory if we can determine system memory.
 	if sysMem := sysmem.Memory(); sysMem > 0 {
 		jsc.MaxMemory = sysMem / 4 * 3

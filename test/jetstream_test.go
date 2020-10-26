@@ -303,6 +303,57 @@ func TestJetStreamAddStreamDiscardNew(t *testing.T) {
 	}
 }
 
+func TestJetStreamAutoTuneFSConfig(t *testing.T) {
+	s := RunRandClientPortServer()
+	defer s.Shutdown()
+
+	jsconfig := &server.JetStreamConfig{MaxMemory: -1, MaxStore: 128 * 1024 * 1024 * 1024 * 1024}
+	if err := s.EnableJetStream(jsconfig); err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	maxMsgSize := int32(512)
+	streamConfig := func(name string, maxMsgs, maxBytes int64) *server.StreamConfig {
+		t.Helper()
+		cfg := &server.StreamConfig{Name: name, MaxMsgSize: maxMsgSize, Storage: server.FileStorage}
+		if maxMsgs > 0 {
+			cfg.MaxMsgs = maxMsgs
+		}
+		if maxBytes > 0 {
+			cfg.MaxBytes = maxBytes
+		}
+		return cfg
+	}
+
+	acc := s.GlobalAccount()
+
+	testBlkSize := func(subject string, maxMsgs, maxBytes int64, expectedBlkSize uint64) {
+		t.Helper()
+		mset, err := acc.AddStream(streamConfig(subject, maxMsgs, maxBytes))
+		if err != nil {
+			t.Fatalf("Unexpected error adding stream: %v", err)
+		}
+		defer mset.Delete()
+		fsCfg, err := mset.FileStoreConfig()
+		if err != nil {
+			t.Fatalf("Unexpected error retrieving file store: %v", err)
+		}
+		if fsCfg.BlockSize != expectedBlkSize {
+			t.Fatalf("Expected auto tuned block size to be %d, got %d", expectedBlkSize, fsCfg.BlockSize)
+		}
+	}
+
+	testBlkSize("foo", 1, 0, server.FileStoreMinBlkSize)
+	testBlkSize("foo", 1, 512, server.FileStoreMinBlkSize)
+	testBlkSize("foo", 1, 1024*1024, 262200)
+	testBlkSize("foo", 1, 8*1024*1024, 2097200)
+	testBlkSize("foo_bar_baz", -1, 32*1024*1024*1024*1024, server.FileStoreMaxBlkSize)
+}
+
 func TestJetStreamPubAck(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
@@ -6437,8 +6488,13 @@ type info struct {
 func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
 	base := runtime.NumGoroutine()
 
-	s := RunBasicJetStreamServer()
+	s := RunRandClientPortServer()
 	defer s.Shutdown()
+
+	jsconfig := &server.JetStreamConfig{MaxMemory: 128 * 1024 * 1024, MaxStore: 32 * 1024 * 1024 * 1024}
+	if err := s.EnableJetStream(jsconfig); err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
 
 	if config := s.JetStreamConfig(); config != nil {
 		defer os.RemoveAll(config.StoreDir)
@@ -6503,11 +6559,6 @@ func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
 	pusage := acc.JetStreamUsage()
 
 	// Shutdown the server. Restart and make sure things come back.
-	// Capture port since it was dynamic.
-	u, _ := url.Parse(s.ClientURL())
-	port, _ := strconv.Atoi(u.Port())
-	sd := s.JetStreamConfig().StoreDir
-
 	s.Shutdown()
 
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
@@ -6518,8 +6569,12 @@ func TestJetStreamSimpleFileStorageRecovery(t *testing.T) {
 		return nil
 	})
 
-	s = RunJetStreamServerOnPort(port, sd)
+	s = RunRandClientPortServer()
 	defer s.Shutdown()
+
+	if err := s.EnableJetStream(jsconfig); err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
 
 	acc = s.GlobalAccount()
 

@@ -337,6 +337,14 @@ func (a *Account) removeRemoteServer(sid string) {
 	a.mu.Unlock()
 }
 
+// Return our server.
+func (a *Account) server() *Server {
+	a.mu.RLock()
+	s := a.srv
+	a.mu.RUnlock()
+	return s
+}
+
 // When querying for subject interest this is the number of
 // expected responses. We need to actually check that the entry
 // has active connections.

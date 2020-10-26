@@ -317,7 +317,7 @@ func (ms *memStore) EraseMsg(seq uint64) (bool, error) {
 	return removed, nil
 }
 
-// Performs logic tp update first sequence number.
+// Performs logic to update first sequence number.
 // Lock should be held.
 func (ms *memStore) updateFirstSeq(seq uint64) {
 	if seq != ms.state.FirstSeq {
