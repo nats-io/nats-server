@@ -99,13 +99,18 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 		return fmt.Errorf("jetstream already enabled")
 	}
 	s.Noticef("Starting JetStream")
-	if config == nil || config.MaxMemory <= 0 || config.MaxStore <= 0 {
-		var storeDir string
-		s.Debugf("JetStream creating dynamic configuration - 75%% of system memory, %s disk", FriendlyBytes(JetStreamMaxStoreDefault))
-		if config != nil {
-			storeDir = config.StoreDir
+	if config == nil {
+		config = &JetStreamConfig{}
+	}
+	if config.MaxMemory <= 0 || config.MaxStore <= 0 {
+		if config == nil {
+			config = &JetStreamConfig{}
 		}
-		config = s.dynJetStreamConfig(storeDir)
+		err := s.dynJetStreamConfig(config)
+		if err != nil {
+			return err
+		}
+		s.Debugf("JetStream creating dynamic configuration - %s of system memory, %s disk", FriendlyBytes(config.MaxMemory), FriendlyBytes(config.MaxStore))
 	}
 	// Copy, don't change callers.
 	cfg := *config
@@ -922,22 +927,30 @@ const (
 )
 
 // Dynamically create a config with a tmp based directory (repeatable) and 75% of system memory.
-func (s *Server) dynJetStreamConfig(storeDir string) *JetStreamConfig {
-	jsc := &JetStreamConfig{}
-	if storeDir != "" {
-		jsc.StoreDir = filepath.Join(storeDir, JetStreamStoreDir)
+func (s *Server) dynJetStreamConfig(jsc *JetStreamConfig) error {
+	if jsc.StoreDir != "" {
+		jsc.StoreDir = filepath.Join(jsc.StoreDir, JetStreamStoreDir)
 	} else {
-		tdir, _ := ioutil.TempDir(os.TempDir(), "nats-jetstream-storedir-")
+		tdir, err := ioutil.TempDir(os.TempDir(), "nats-jetstream-storedir-")
+		if err != nil {
+			return err
+		}
 		jsc.StoreDir = filepath.Join(tdir, JetStreamStoreDir)
 	}
-	jsc.MaxStore = JetStreamMaxStoreDefault
-	// Estimate to 75% of total memory if we can determine system memory.
-	if sysMem := sysmem.Memory(); sysMem > 0 {
-		jsc.MaxMemory = sysMem / 4 * 3
-	} else {
-		jsc.MaxMemory = JetStreamMaxMemDefault
+
+	if jsc.MaxStore <= 0 {
+		jsc.MaxStore = JetStreamMaxStoreDefault
 	}
-	return jsc
+	if jsc.MaxMemory <= 0 {
+		// Estimate to 75% of total memory if we can determine system memory.
+		if sysMem := sysmem.Memory(); sysMem > 0 {
+			jsc.MaxMemory = sysMem / 4 * 3
+		} else {
+			jsc.MaxMemory = JetStreamMaxMemDefault
+		}
+	}
+
+	return nil
 }
 
 // Helper function.
