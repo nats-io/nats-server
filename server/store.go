@@ -61,7 +61,7 @@ type StreamStore interface {
 	Purge() uint64
 	GetSeqFromTime(t time.Time) uint64
 	State() StreamState
-	StorageBytesUpdate(func(int64))
+	RegisterStorageUpdates(func(int64, int64, uint64))
 	UpdateConfig(cfg *StreamConfig) error
 	Delete() error
 	Stop() error

@@ -479,13 +479,13 @@ func (mset *Stream) Update(config *StreamConfig) error {
 	}
 	// Update config with new values. The store update will enforce any stricter limits.
 	mset.mu.Lock()
-	defer mset.mu.Unlock()
 
 	// Now walk new subjects. All of these need to be added, but we will check
 	// the originals first, since if it is in there we can skip, already added.
 	for _, s := range cfg.Subjects {
 		if _, ok := current[s]; !ok {
 			if _, err := mset.subscribeInternal(s, mset.processInboundJetStreamMsg); err != nil {
+				mset.mu.Unlock()
 				return err
 			}
 		}
@@ -494,6 +494,7 @@ func (mset *Stream) Update(config *StreamConfig) error {
 	// What is left in current needs to be deleted.
 	for s := range current {
 		if err := mset.unsubscribeInternal(s); err != nil {
+			mset.mu.Unlock()
 			return err
 		}
 	}
@@ -505,9 +506,10 @@ func (mset *Stream) Update(config *StreamConfig) error {
 	}
 	// Now update config and store's version of our config.
 	mset.config = cfg
-	mset.store.UpdateConfig(&cfg)
-
 	mset.sendUpdateAdvisoryLocked()
+	mset.mu.Unlock()
+
+	mset.store.UpdateConfig(&cfg)
 
 	return nil
 }
@@ -519,15 +521,17 @@ func (mset *Stream) Purge() uint64 {
 		mset.mu.Unlock()
 		return 0
 	}
-	purged := mset.store.Purge()
 	// Purge dedupe.
 	mset.ddmap = nil
-	stats := mset.store.State()
-	var obs []*Consumer
+	var _obs [4]*Consumer
+	obs := _obs[:0]
 	for _, o := range mset.consumers {
 		obs = append(obs, o)
 	}
 	mset.mu.Unlock()
+
+	purged := mset.store.Purge()
+	stats := mset.store.State()
 	for _, o := range obs {
 		o.purge(stats.FirstSeq)
 	}
@@ -537,17 +541,31 @@ func (mset *Stream) Purge() uint64 {
 // RemoveMsg will remove a message from a stream.
 // FIXME(dlc) - Should pick one and be consistent.
 func (mset *Stream) RemoveMsg(seq uint64) (bool, error) {
-	return mset.store.RemoveMsg(seq)
+	return mset.removeMsg(seq, false)
 }
 
 // DeleteMsg will remove a message from a stream.
 func (mset *Stream) DeleteMsg(seq uint64) (bool, error) {
-	return mset.store.RemoveMsg(seq)
+	return mset.removeMsg(seq, false)
 }
 
 // EraseMsg will securely remove a message and rewrite the data with random data.
 func (mset *Stream) EraseMsg(seq uint64) (bool, error) {
-	return mset.store.EraseMsg(seq)
+	return mset.removeMsg(seq, true)
+}
+
+func (mset *Stream) removeMsg(seq uint64, secure bool) (bool, error) {
+	mset.mu.RLock()
+	if mset.client == nil {
+		mset.mu.RUnlock()
+		return false, fmt.Errorf("invalid stream")
+	}
+	mset.mu.RUnlock()
+	if secure {
+		return mset.store.EraseMsg(seq)
+	} else {
+		return mset.store.RemoveMsg(seq)
+	}
 }
 
 // Will create internal subscriptions for the msgSet.
@@ -634,27 +652,55 @@ func (mset *Stream) unsubscribeUnlocked(sub *subscription) {
 
 func (mset *Stream) setupStore(fsCfg *FileStoreConfig) error {
 	mset.mu.Lock()
-	defer mset.mu.Unlock()
-
 	mset.created = time.Now().UTC()
 
 	switch mset.config.Storage {
 	case MemoryStorage:
 		ms, err := newMemStore(&mset.config)
 		if err != nil {
+			mset.mu.Unlock()
 			return err
 		}
 		mset.store = ms
 	case FileStorage:
 		fs, err := newFileStoreWithCreated(*fsCfg, mset.config, mset.created)
 		if err != nil {
+			mset.mu.Unlock()
 			return err
 		}
 		mset.store = fs
 	}
-	jsa, st := mset.jsa, mset.config.Storage
-	mset.store.StorageBytesUpdate(func(delta int64) { jsa.updateUsage(st, delta) })
+	mset.mu.Unlock()
+
+	mset.store.RegisterStorageUpdates(mset.storeUpdates)
+
 	return nil
+}
+
+// Called for any updates to the underlying stream. We pass through the bytes to the
+// jetstream account. We do local processing for stream pending for consumers, but only
+// for removals.
+// Lock should not ne held.
+func (mset *Stream) storeUpdates(md, bd int64, seq uint64) {
+	var _obs [4]*Consumer
+	obs := _obs[:0]
+
+	// If we have a single negative update then we will process our consumers for stream pending.
+	// Purge and Store handled separately inside individual calls.
+	if md == -1 {
+		mset.mu.Lock()
+		for _, o := range mset.consumers {
+			obs = append(obs, o)
+		}
+		mset.mu.Unlock()
+	}
+
+	for _, o := range obs {
+		o.decStreamPending(seq)
+	}
+	if mset.jsa != nil {
+		mset.jsa.updateUsage(mset.config.Storage, bd)
+	}
 }
 
 // NumMsgIds returns the number of message ids being tracked for duplicate suppression.
@@ -854,13 +900,21 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 
 	if err == nil && seq > 0 && numConsumers > 0 {
 		var needSignal bool
+		var _obs [4]*Consumer
+		obs := _obs[:0]
+
 		mset.mu.Lock()
 		for _, o := range mset.consumers {
+			obs = append(obs, o)
+		}
+		mset.mu.Unlock()
+
+		for _, o := range obs {
+			o.incStreamPending(seq, subject)
 			if !o.deliverCurrentMsg(subject, hdr, msg, seq, ts) {
 				needSignal = true
 			}
 		}
-		mset.mu.Unlock()
 
 		if needSignal {
 			mset.signalConsumers()
@@ -1147,7 +1201,7 @@ func (mset *Stream) checkInterest(seq uint64, obs *Consumer) bool {
 	return false
 }
 
-// ackMsg is called into from an observable when we have a WorkQueue or Interest retention policy.
+// ackMsg is called into from a consumer when we have a WorkQueue or Interest retention policy.
 func (mset *Stream) ackMsg(obs *Consumer, seq uint64) {
 	switch mset.config.Retention {
 	case LimitsPolicy:

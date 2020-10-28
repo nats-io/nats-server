@@ -33,15 +33,16 @@ import (
 )
 
 type ConsumerInfo struct {
-	Stream         string         `json:"stream_name"`
-	Name           string         `json:"name"`
-	Created        time.Time      `json:"created"`
-	Config         ConsumerConfig `json:"config"`
-	Delivered      SequencePair   `json:"delivered"`
-	AckFloor       SequencePair   `json:"ack_floor"`
-	NumPending     int            `json:"num_pending"`
-	NumRedelivered int            `json:"num_redelivered"`
-	NumWaiting     int            `json:"num_waiting"`
+	Stream           string         `json:"stream_name"`
+	Name             string         `json:"name"`
+	Created          time.Time      `json:"created"`
+	Config           ConsumerConfig `json:"config"`
+	Delivered        SequencePair   `json:"delivered"`
+	AckFloor         SequencePair   `json:"ack_floor"`
+	NumPending       int            `json:"num_pending"`
+	NumRedelivered   int            `json:"num_redelivered"`
+	NumWaiting       int            `json:"num_waiting"`
+	NumStreamPending uint64         `json:"num_stream_pending"`
 }
 
 type ConsumerConfig struct {
@@ -170,6 +171,7 @@ type Consumer struct {
 	dseq              uint64
 	adflr             uint64
 	asflr             uint64
+	spending          uint64
 	dsubj             string
 	rlimit            *rate.Limiter
 	reqSub            *subscription
@@ -377,7 +379,8 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 	}
 
 	// Set name, which will be durable name if set, otherwise we create one at random.
-	o := &Consumer{mset: mset,
+	o := &Consumer{
+		mset:    mset,
 		config:  *config,
 		dsubj:   config.DeliverSubject,
 		active:  true,
@@ -481,8 +484,8 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 	// that to scanf them back in.
 	mn := mset.config.Name
 	pre := fmt.Sprintf(jsAckT, mn, o.name)
-	o.ackReplyT = fmt.Sprintf("%s.%%d.%%d.%%d.%%d", pre)
-	ackSubj := fmt.Sprintf("%s.*.*.*.*", pre)
+	o.ackReplyT = fmt.Sprintf("%s.%%d.%%d.%%d.%%d.%%d", pre)
+	ackSubj := fmt.Sprintf("%s.*.*.*.*.*", pre)
 	if sub, err := mset.subscribeInternal(ackSubj, o.processAck); err != nil {
 		mset.mu.Unlock()
 		return nil, err
@@ -501,6 +504,8 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 			o.reqSub = sub
 		}
 	}
+	o.setInitialPending()
+
 	mset.consumers[o.name] = o
 	mset.mu.Unlock()
 
@@ -706,7 +711,7 @@ func (o *Consumer) sendAckReply(subj string) {
 
 // Process a message for the ack reply subject delivered with a message.
 func (o *Consumer) processAck(_ *subscription, _ *client, subject, reply string, msg []byte) {
-	sseq, dseq, dcount, _ := o.ReplyInfo(subject)
+	sseq, dseq, dcount, _, _ := o.ReplyInfo(subject)
 
 	var skipAckReply bool
 
@@ -875,8 +880,8 @@ func (o *Consumer) updateStateLoop() {
 			// just block and not fire.
 			o.updateDeliveryInterest(interest)
 		case <-fch:
-			// FIXME(dlc) - Check for fast changes at quick intervals.
-			time.Sleep(25 * time.Millisecond)
+			// FIXME(dlc) - Do better, check for fast changes at quick intervals.
+			time.Sleep(10 * time.Millisecond)
 			o.writeState()
 		}
 	}
@@ -898,8 +903,9 @@ func (o *Consumer) Info() *ConsumerInfo {
 			ConsumerSeq: o.adflr,
 			StreamSeq:   o.asflr,
 		},
-		NumPending:     len(o.pending),
-		NumRedelivered: len(o.rdc),
+		NumPending:       len(o.pending),
+		NumRedelivered:   len(o.rdc),
+		NumStreamPending: o.spending,
 	}
 	// If we are a pull mode consumer, report on number of waiting requests.
 	if o.isPullMode() {
@@ -1256,7 +1262,12 @@ func (o *Consumer) notifyDeliveryExceeded(sseq, dcount uint64) {
 }
 
 // Check to see if the candidate subject matches a filter if its present.
+// Lock should be held.
 func (o *Consumer) isFilteredMatch(subj string) bool {
+	// No filter is automatic match.
+	if o.config.FilterSubject == _EMPTY_ {
+		return true
+	}
 	if !o.filterWC {
 		return subj == o.config.FilterSubject
 	}
@@ -1474,8 +1485,8 @@ func (o *Consumer) loopAndDeliverMsgs(s *Server, a *Account) {
 	}
 }
 
-func (o *Consumer) ackReply(sseq, dseq, dcount uint64, ts int64) string {
-	return fmt.Sprintf(o.ackReplyT, dcount, sseq, dseq, ts)
+func (o *Consumer) ackReply(sseq, dseq, dcount uint64, ts int64, pending uint64) string {
+	return fmt.Sprintf(o.ackReplyT, dcount, sseq, dseq, ts, pending)
 }
 
 // deliverCurrentMsg is the hot path to deliver a message that was just received.
@@ -1526,16 +1537,20 @@ func (o *Consumer) deliverCurrentMsg(subj string, hdr, msg []byte, seq uint64, t
 	return true
 }
 
-// Deliver a msg to the observable.
+// Deliver a msg to the consumer.
 // Lock should be held and o.mset validated to be non-nil.
 func (o *Consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dcount uint64, ts int64) {
 	if o.mset == nil {
 		return
 	}
+	// Update pending on first attempt
+	if dcount == 1 && o.spending > 0 {
+		o.spending--
+	}
 
-	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, o.dseq, dcount, ts), hdr, msg, o, seq}
+	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, o.dseq, dcount, ts, o.spending), hdr, msg, o, seq}
 	mset := o.mset
-	sendq := o.mset.sendq
+	sendq := mset.sendq
 	ap := o.config.AckPolicy
 
 	// This needs to be unlocked since the other side may need this lock on a failed delivery.
@@ -1545,7 +1560,6 @@ func (o *Consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dcount u
 
 	// If we are ack none and mset is interest only we should make sure stream removes interest.
 	if ap == AckNone && mset.config.Retention == InterestPolicy && !mset.checkInterest(seq, o) {
-		// FIXME(dlc) - we have mset lock here, but should we??
 		mset.store.RemoveMsg(seq)
 	}
 	o.mu.Lock()
@@ -1583,6 +1597,7 @@ func (o *Consumer) didNotDeliver(seq uint64) {
 		o.mu.Unlock()
 		return
 	}
+
 	shouldSignal := false
 	if o.isPushMode() {
 		o.active = false
@@ -1684,21 +1699,21 @@ func (o *Consumer) checkPending() {
 
 // SeqFromReply will extract a sequence number from a reply subject.
 func (o *Consumer) SeqFromReply(reply string) uint64 {
-	_, seq, _, _ := o.ReplyInfo(reply)
+	_, seq, _, _, _ := o.ReplyInfo(reply)
 	return seq
 }
 
 // StreamSeqFromReply will extract the stream sequence from the reply subject.
 func (o *Consumer) StreamSeqFromReply(reply string) uint64 {
-	seq, _, _, _ := o.ReplyInfo(reply)
+	seq, _, _, _, _ := o.ReplyInfo(reply)
 	return seq
 }
 
 // Grab encoded information in the reply subject for a delivered message.
-func (o *Consumer) ReplyInfo(reply string) (sseq, dseq, dcount uint64, ts int64) {
-	n, err := fmt.Sscanf(reply, o.ackReplyT, &dcount, &sseq, &dseq, &ts)
-	if err != nil || n != 4 {
-		return 0, 0, 0, 0
+func (o *Consumer) ReplyInfo(reply string) (sseq, dseq, dcount uint64, ts int64, pending uint64) {
+	n, err := fmt.Sscanf(reply, o.ackReplyT, &dcount, &sseq, &dseq, &ts, &pending)
+	if err != nil || n != 5 {
+		return 0, 0, 0, 0, 0
 	}
 	return
 }
@@ -1835,6 +1850,7 @@ func (o *Consumer) purge(sseq uint64) {
 	o.sseq = sseq
 	o.asflr = sseq - 1
 	o.adflr = o.dseq - 1
+	o.spending = 0
 	if len(o.pending) > 0 {
 		o.pending = nil
 		if o.ptmr != nil {
@@ -2024,4 +2040,60 @@ func (o *Consumer) switchToEphemeral() {
 // Returns empty otherwise.
 func (o *Consumer) RequestNextMsgSubject() string {
 	return o.nextMsgSubj
+}
+
+// Will set the initial pending.
+// mset lock should be held.
+func (o *Consumer) setInitialPending() {
+	mset := o.mset
+	if mset == nil {
+		return
+	}
+	// Non-filtering, means we want all messages.
+	if o.config.FilterSubject == _EMPTY_ {
+		state := mset.store.State()
+		if state.Msgs > 0 {
+			o.spending = state.Msgs - (o.sseq - state.FirstSeq)
+		}
+	} else {
+		// Here we are filtered.
+		// FIXME(dlc) - This could be slow with O(n)
+		for seq := o.sseq; ; seq++ {
+			subj, _, _, _, err := o.mset.store.LoadMsg(seq)
+			if err == ErrStoreMsgNotFound {
+				continue
+			} else if err == ErrStoreEOF {
+				break
+			} else if err == nil && o.isFilteredMatch(subj) {
+				o.spending++
+			}
+		}
+	}
+}
+
+// addStreamPending will add to the stream pending.
+func (o *Consumer) incStreamPending(sseq uint64, subj string) {
+	o.mu.Lock()
+	if o.isFilteredMatch(subj) {
+		o.spending++
+	}
+	o.mu.Unlock()
+}
+
+func (o *Consumer) decStreamPending(sseq uint64) {
+	o.mu.Lock()
+	// Ignore if we have already sent this one.
+	if sseq < o.sseq || o.spending == 0 {
+		o.mu.Unlock()
+		return
+	}
+	if o.config.FilterSubject == _EMPTY_ {
+		o.spending--
+	} else if o.mset != nil {
+		subj, _, _, _, _ := o.mset.store.LoadMsg(sseq)
+		if o.isFilteredMatch(subj) {
+			o.spending--
+		}
+	}
+	o.mu.Unlock()
 }
