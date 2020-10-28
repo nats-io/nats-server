@@ -376,7 +376,7 @@ func TestFileStoreWriteExpireWrite(t *testing.T) {
 	}
 
 	// Wait for write cache portion to go to zero.
-	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+	checkFor(t, time.Second, 20*time.Millisecond, func() error {
 		if csz := fs.cacheSize(); csz != 0 {
 			return fmt.Errorf("cache size not 0, got %s", FriendlyBytes(int64(csz)))
 		}

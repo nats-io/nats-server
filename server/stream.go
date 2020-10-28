@@ -210,13 +210,12 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 func (mset *Stream) maxMsgSize() uint64 {
 	maxMsgSize := mset.config.MaxMsgSize
 	if maxMsgSize <= 0 {
-		// Pull from server.
+		// Pull from the account.
 		if mset.jsa != nil {
 			if acc := mset.jsa.acc(); acc != nil {
-				if s := acc.server(); s != nil {
-					opts := s.getOpts()
-					maxMsgSize = opts.MaxPayload
-				}
+				acc.mu.RLock()
+				maxMsgSize = acc.mpay
+				acc.mu.RUnlock()
 			}
 		}
 		// If all else fails use default.

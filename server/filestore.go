@@ -687,9 +687,11 @@ func (fs *fileStore) StoreMsg(subj string, hdr, msg []byte) (uint64, int64, erro
 	return seq, ts, nil
 }
 
-// skipMsg will update message block for a skipped message. If first
-// just meta data, but if interior an empty message record with erase bit.
-// fs lock will be held.
+// skipMsg will update this message block for a skipped message.
+// If we do not have any messages, just update the metadata, otherwise
+// we will place and empty record marking the sequence as used. The
+// sequence will be marked erased.
+// fs lock should be held.
 func (mb *msgBlock) skipMsg(seq uint64, now time.Time) {
 	if mb == nil {
 		return
@@ -1111,7 +1113,8 @@ func (mb *msgBlock) expireCache() {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 
-	if mb.cache == nil {
+	if mb.cache == nil && mb.ctmr != nil {
+		mb.ctmr.Stop()
 		mb.ctmr = nil
 		return
 	}
