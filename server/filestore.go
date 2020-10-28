@@ -67,7 +67,7 @@ type FileConsumerInfo struct {
 type fileStore struct {
 	mu       sync.RWMutex
 	state    StreamState
-	scb      func(int64)
+	scb      func(int64, int64, uint64)
 	ageChk   *time.Timer
 	syncTmr  *time.Timer
 	cfg      FileStreamInfo
@@ -504,14 +504,16 @@ func (fs *fileStore) GetSeqFromTime(t time.Time) uint64 {
 	return 0
 }
 
-// StorageBytesUpdate registers an async callback for updates to storage changes.
-func (fs *fileStore) StorageBytesUpdate(cb func(int64)) {
+// RegisterStorageUpdates registers a callback for updates to storage changes.
+// It will present number of messages and bytes as a signed integer and an
+// optional sequence number of the message if a single.
+func (fs *fileStore) RegisterStorageUpdates(cb func(int64, int64, uint64)) {
 	fs.mu.Lock()
 	fs.scb = cb
 	bsz := fs.state.Bytes
 	fs.mu.Unlock()
 	if cb != nil && bsz > 0 {
-		cb(int64(bsz))
+		cb(0, int64(bsz), 0)
 	}
 }
 
@@ -633,7 +635,7 @@ func (fs *fileStore) StoreMsg(subj string, hdr, msg []byte) (uint64, int64, erro
 	fs.mu.Unlock()
 
 	if cb != nil {
-		cb(int64(n))
+		cb(1, int64(n), seq)
 	}
 
 	return seq, ts, nil
@@ -822,6 +824,16 @@ func (fs *fileStore) selectNextFirst() {
 func (fs *fileStore) deleteMsgFromBlock(mb *msgBlock, seq uint64, sm *fileStoredMsg, secure bool) error {
 	// Update global accounting.
 	msz := fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
+	delta := int64(msz)
+
+	fs.mu.RLock()
+	cb := fs.scb
+	fs.mu.RUnlock()
+
+	// Call this early so that we can look this message up if needed.
+	if cb != nil {
+		cb(-1, -delta, seq)
+	}
 
 	fs.mu.Lock()
 	mb.mu.Lock()
@@ -848,6 +860,10 @@ func (fs *fileStore) deleteMsgFromBlock(mb *msgBlock, seq uint64, sm *fileStored
 	if seq < mb.first.seq || seq < mb.cache.fseq || (seq-mb.cache.fseq) >= uint64(len(mb.cache.idx)) {
 		mb.mu.Unlock()
 		fs.mu.Unlock()
+		// Undo
+		if cb != nil {
+			cb(1, delta, seq)
+		}
 		return nil
 	}
 
@@ -856,6 +872,10 @@ func (fs *fileStore) deleteMsgFromBlock(mb *msgBlock, seq uint64, sm *fileStored
 		if _, ok := mb.dmap[seq]; ok {
 			mb.mu.Unlock()
 			fs.mu.Unlock()
+			// Undo
+			if cb != nil {
+				cb(1, delta, seq)
+			}
 			return nil
 		}
 	}
@@ -919,11 +939,6 @@ func (fs *fileStore) deleteMsgFromBlock(mb *msgBlock, seq uint64, sm *fileStored
 	}
 
 	fs.mu.Unlock()
-
-	if fs.scb != nil {
-		delta := int64(msz)
-		fs.scb(-delta)
-	}
 
 	return nil
 }
@@ -1951,7 +1966,7 @@ func (fs *fileStore) Purge() uint64 {
 	fs.mu.Unlock()
 
 	if cb != nil {
-		cb(-rbytes)
+		cb(-int64(purged), -rbytes, 0)
 	}
 
 	return purged
