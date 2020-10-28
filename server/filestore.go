@@ -263,7 +263,9 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		}
 	}
 
-	go fs.flushLoop(fs.fch, fs.qch)
+	sch := make(chan struct{})
+	go fs.flushLoop(fs.fch, fs.qch, sch)
+	<-sch // Will be closed when flush starts.
 
 	fs.syncTmr = time.AfterFunc(fs.fcfg.SyncInterval, fs.syncBlocks)
 
@@ -1300,7 +1302,11 @@ func (fs *fileStore) pendingWriteSize() int {
 	return fs.lastMsgBlock().numWriteBytesPending()
 }
 
-func (fs *fileStore) flushLoop(fch, qch chan struct{}) {
+// Main flush loop.
+func (fs *fileStore) flushLoop(fch, qch, sch chan struct{}) {
+	if sch != nil {
+		close(sch)
+	}
 	for {
 		select {
 		case <-fch:
@@ -1682,7 +1688,6 @@ func (mb *msgBlock) flushPendingWrites() error {
 	}
 
 	mb.mu.Lock()
-
 	if mb.cache == nil {
 		mb.mu.Unlock()
 		return nil
