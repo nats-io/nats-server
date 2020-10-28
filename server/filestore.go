@@ -911,11 +911,12 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 	if firstSeqNeedsUpdate {
 		fs.selectNextFirst()
 	}
+	cb := fs.scb
 	fs.mu.Unlock()
 
-	if fs.scb != nil {
+	if cb != nil {
 		delta := int64(msz)
-		fs.scb(-delta)
+		cb(-1, -delta, seq)
 	}
 
 	return true, nil
@@ -1113,9 +1114,11 @@ func (mb *msgBlock) expireCache() {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 
-	if mb.cache == nil && mb.ctmr != nil {
-		mb.ctmr.Stop()
-		mb.ctmr = nil
+	if mb.cache == nil {
+		if mb.ctmr != nil {
+			mb.ctmr.Stop()
+			mb.ctmr = nil
+		}
 		return
 	}
 
