@@ -33,16 +33,16 @@ import (
 )
 
 type ConsumerInfo struct {
-	Stream           string         `json:"stream_name"`
-	Name             string         `json:"name"`
-	Created          time.Time      `json:"created"`
-	Config           ConsumerConfig `json:"config"`
-	Delivered        SequencePair   `json:"delivered"`
-	AckFloor         SequencePair   `json:"ack_floor"`
-	NumPending       int            `json:"num_pending"`
-	NumRedelivered   int            `json:"num_redelivered"`
-	NumWaiting       int            `json:"num_waiting"`
-	NumStreamPending uint64         `json:"num_stream_pending"`
+	Stream         string         `json:"stream_name"`
+	Name           string         `json:"name"`
+	Created        time.Time      `json:"created"`
+	Config         ConsumerConfig `json:"config"`
+	Delivered      SequencePair   `json:"delivered"`
+	AckFloor       SequencePair   `json:"ack_floor"`
+	NumAckPending  int            `json:"num_ack_pending"`
+	NumRedelivered int            `json:"num_redelivered"`
+	NumWaiting     int            `json:"num_waiting"`
+	NumPending     uint64         `json:"num_pending"`
 }
 
 type ConsumerConfig struct {
@@ -903,9 +903,9 @@ func (o *Consumer) Info() *ConsumerInfo {
 			ConsumerSeq: o.adflr,
 			StreamSeq:   o.asflr,
 		},
-		NumPending:       len(o.pending),
-		NumRedelivered:   len(o.rdc),
-		NumStreamPending: o.spending,
+		NumAckPending:  len(o.pending),
+		NumRedelivered: len(o.rdc),
+		NumPending:     o.spending,
 	}
 	// If we are a pull mode consumer, report on number of waiting requests.
 	if o.isPullMode() {
