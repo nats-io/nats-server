@@ -252,7 +252,11 @@ func (mset *Stream) autoTuneFileStorageBlockSize(fsCfg *FileStoreConfig) {
 	} else if mset.config.MaxMsgs > 0 {
 		// Determine max message size to estimate.
 		totalEstSize = mset.maxMsgSize() * uint64(mset.config.MaxMsgs)
+	} else {
+		// If nothing set will let underlying filestore determine blkSize.
+		return
 	}
+
 	blkSize := (totalEstSize / 4) + 1 // (25% overhead)
 	// Round up to nearest 100
 	if m := blkSize % 100; m != 0 {
