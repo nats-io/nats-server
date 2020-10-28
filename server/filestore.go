@@ -229,7 +229,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	fs := &fileStore{
 		fcfg: fcfg,
 		cfg:  FileStreamInfo{Created: created, StreamConfig: cfg},
-		fch:  make(chan struct{}),
+		fch:  make(chan struct{}, 1), // Make buffered on purpose.
 		qch:  make(chan struct{}),
 	}
 
