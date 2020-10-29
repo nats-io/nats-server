@@ -169,6 +169,11 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 	fsCfg := fsConfig
 	if fsCfg == nil {
 		fsCfg = &FileStoreConfig{}
+		// If we are file based and not explicitly configured
+		// we may be able to auto-tune based on max msgs or bytes.
+		if cfg.Storage == FileStorage {
+			mset.autoTuneFileStorageBlockSize(fsCfg)
+		}
 	}
 	fsCfg.StoreDir = storeDir
 	if err := mset.setupStore(fsCfg); err != nil {
@@ -199,6 +204,71 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 	mset.sendCreateAdvisory()
 
 	return mset, nil
+}
+
+// Helper to determine the max msg size for this stream if file based.
+func (mset *Stream) maxMsgSize() uint64 {
+	maxMsgSize := mset.config.MaxMsgSize
+	if maxMsgSize <= 0 {
+		// Pull from the account.
+		if mset.jsa != nil {
+			if acc := mset.jsa.acc(); acc != nil {
+				acc.mu.RLock()
+				maxMsgSize = acc.mpay
+				acc.mu.RUnlock()
+			}
+		}
+		// If all else fails use default.
+		if maxMsgSize <= 0 {
+			maxMsgSize = MAX_PAYLOAD_SIZE
+		}
+	}
+	// Now determine an estimation for the subjects etc.
+	maxSubject := -1
+	for _, subj := range mset.config.Subjects {
+		if subjectIsLiteral(subj) {
+			if len(subj) > maxSubject {
+				maxSubject = len(subj)
+			}
+		}
+	}
+	if maxSubject < 0 {
+		const defaultMaxSubject = 256
+		maxSubject = defaultMaxSubject
+	}
+	// filestore will add in estimates for record headers, etc.
+	return fileStoreMsgSizeEstimate(maxSubject, int(maxMsgSize))
+}
+
+// If we are file based and the file storage config was not explicitly set
+// we can autotune block sizes to better match. Our target will be to store 125%
+// of the theoretical limit. We will round up to nearest 100 bytes as well.
+func (mset *Stream) autoTuneFileStorageBlockSize(fsCfg *FileStoreConfig) {
+	var totalEstSize uint64
+
+	// MaxBytes will take precedence for now.
+	if mset.config.MaxBytes > 0 {
+		totalEstSize = uint64(mset.config.MaxBytes)
+	} else if mset.config.MaxMsgs > 0 {
+		// Determine max message size to estimate.
+		totalEstSize = mset.maxMsgSize() * uint64(mset.config.MaxMsgs)
+	} else {
+		// If nothing set will let underlying filestore determine blkSize.
+		return
+	}
+
+	blkSize := (totalEstSize / 4) + 1 // (25% overhead)
+	// Round up to nearest 100
+	if m := blkSize % 100; m != 0 {
+		blkSize += 100 - m
+	}
+	if blkSize < FileStoreMinBlkSize {
+		blkSize = FileStoreMinBlkSize
+	}
+	if blkSize > FileStoreMaxBlkSize {
+		blkSize = FileStoreMaxBlkSize
+	}
+	fsCfg.BlockSize = uint64(blkSize)
 }
 
 // rebuildDedupe will rebuild any dedupe structures needed after recovery of a stream.
@@ -405,6 +475,16 @@ func (mset *Stream) Config() StreamConfig {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 	return mset.config
+}
+
+func (mset *Stream) FileStoreConfig() (FileStoreConfig, error) {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	fs, ok := mset.store.(*fileStore)
+	if !ok {
+		return FileStoreConfig{}, ErrStoreWrongType
+	}
+	return fs.fileStoreConfig(), nil
 }
 
 // Delete deletes a stream from the owning account.

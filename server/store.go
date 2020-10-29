@@ -50,6 +50,8 @@ var (
 	ErrStoreSnapshotInProgress = errors.New("snapshot in progress")
 	// ErrMsgTooBig is returned when a message is considered too large.
 	ErrMsgTooLarge = errors.New("message to large")
+	// ErrStoreWrongType is for when you access the wrong storage type.
+	ErrStoreWrongType = errors.New("wrong storage type")
 )
 
 type StreamStore interface {
