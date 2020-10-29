@@ -293,13 +293,14 @@ func TestFileStoreSkipMsg(t *testing.T) {
 	fs.SkipMsg()
 	fs.SkipMsg()
 	fs.StoreMsg("zzz", nil, []byte("Hello World!"))
+	fs.SkipMsg()
 
 	state = fs.State()
 	if state.Msgs != 2 {
 		t.Fatalf("Expected %d msgs, got %d", 2, state.Msgs)
 	}
-	if state.FirstSeq != uint64(numSkips+1) || state.LastSeq != uint64(numSkips+4) {
-		t.Fatalf("Expected first to be %d and last to be %d. got first %d and last %d", numSkips+1, numSkips+4, state.FirstSeq, state.LastSeq)
+	if state.FirstSeq != uint64(numSkips+1) || state.LastSeq != uint64(numSkips+5) {
+		t.Fatalf("Expected first to be %d and last to be %d. got first %d and last %d", numSkips+1, numSkips+5, state.FirstSeq, state.LastSeq)
 	}
 
 	// Make sure we recover same state.
@@ -315,8 +316,8 @@ func TestFileStoreSkipMsg(t *testing.T) {
 	if state.Msgs != 2 {
 		t.Fatalf("Expected %d msgs, got %d", 2, state.Msgs)
 	}
-	if state.FirstSeq != uint64(numSkips+1) || state.LastSeq != uint64(numSkips+4) {
-		t.Fatalf("Expected first to be %d and last to be %d. got first %d and last %d", numSkips+1, numSkips+4, state.FirstSeq, state.LastSeq)
+	if state.FirstSeq != uint64(numSkips+1) || state.LastSeq != uint64(numSkips+5) {
+		t.Fatalf("Expected first to be %d and last to be %d. got first %d and last %d", numSkips+1, numSkips+5, state.FirstSeq, state.LastSeq)
 	}
 
 	subj, _, msg, _, err := fs.LoadMsg(11)
@@ -332,8 +333,8 @@ func TestFileStoreSkipMsg(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error looking up seq 11: %v", err)
 	}
-	if nseq != 16 {
-		t.Fatalf("Expected seq of %d but got %d", 16, nseq)
+	if nseq != 17 {
+		t.Fatalf("Expected seq of %d but got %d", 17, nseq)
 	}
 
 	// Make sure we recover same state.

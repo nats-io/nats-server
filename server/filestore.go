@@ -434,7 +434,8 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) *msgBlock {
 
 		// This is an old erased message, or a new one that we can track.
 		if seq == 0 || seq&ebit != 0 {
-			addToDmap(seq &^ ebit)
+			seq = seq &^ ebit
+			addToDmap(seq)
 			offset += int64(rl)
 			continue
 		}
@@ -2086,7 +2087,7 @@ func (mb *msgBlock) readIndexInfo() error {
 			return 0
 		}
 		bi += n
-		return seq
+		return seq &^ ebit
 	}
 	readCount := readSeq
 	readTimeStamp := func() int64 {
