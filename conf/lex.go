@@ -995,7 +995,7 @@ func lexNumberOrDateOrStringOrIP(lx *lexer) stateFn {
 func lexConvenientNumber(lx *lexer) stateFn {
 	r := lx.next()
 	switch {
-	case r == 'b' || r == 'B':
+	case r == 'b' || r == 'B' || r == 'i' || r == 'I':
 		return lexConvenientNumber
 	}
 	lx.backup()

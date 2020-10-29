@@ -142,20 +142,44 @@ func TestBcryptVariable(t *testing.T) {
 var easynum = `
 k = 8k
 kb = 4kb
+ki = 3ki
+kib = 4ki
 m = 1m
 mb = 2MB
+mi = 2Mi
+mib = 64MiB
 g = 2g
 gb = 22GB
+gi = 22Gi
+gib = 22GiB
+tb = 22TB
+ti = 22Ti
+tib = 22TiB
+pb = 22PB
+pi = 22Pi
+pib = 22PiB
 `
 
 func TestConvenientNumbers(t *testing.T) {
 	ex := map[string]interface{}{
 		"k":  int64(8 * 1000),
 		"kb": int64(4 * 1024),
+		"ki": int64(3 * 1024),
+		"kib": int64(4 * 1024),
 		"m":  int64(1000 * 1000),
 		"mb": int64(2 * 1024 * 1024),
+		"mi": int64(2 * 1024 * 1024),
+		"mib": int64(64 * 1024 * 1024),
 		"g":  int64(2 * 1000 * 1000 * 1000),
 		"gb": int64(22 * 1024 * 1024 * 1024),
+		"gi": int64(22 * 1024 * 1024 * 1024),
+		"gib": int64(22 * 1024 * 1024 * 1024),
+		"tb": int64(22 * 1024 * 1024 * 1024 * 1024),
+		"ti": int64(22 * 1024 * 1024 * 1024 * 1024),
+		"tib": int64(22 * 1024 * 1024 * 1024 * 1024),
+		"pb": int64(22 * 1024 * 1024 * 1024 * 1024 * 1024),
+		"pi": int64(22 * 1024 * 1024 * 1024 * 1024 * 1024),
+		"pib": int64(22 * 1024 * 1024 * 1024 * 1024 * 1024),
 	}
 	test(t, easynum, ex)
 }
