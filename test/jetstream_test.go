@@ -456,6 +456,8 @@ func TestJetStreamConsumerWithStartTime(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
+			defer o.Delete()
+
 			msg, err := nc.Request(o.RequestNextMsgSubject(), nil, time.Second)
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
@@ -5657,6 +5659,71 @@ func TestJetStreamInterestRetentionStream(t *testing.T) {
 
 			// Should be zero now.
 			checkNumMsgs(0)
+		})
+	}
+}
+
+func TestJetStreamInterestRetentionWithWildcardsAndFilteredConsumers(t *testing.T) {
+	msc := server.StreamConfig{
+		Name:      "DCWC",
+		Subjects:  []string{"foo.*"},
+		Storage:   server.MemoryStorage,
+		Retention: server.InterestPolicy,
+	}
+	fsc := msc
+	fsc.Storage = server.FileStorage
+
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &msc},
+		{"FileStore", &fsc},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			// Send 10 msgs
+			for i := 0; i < 10; i++ {
+				sendStreamMsg(t, nc, "foo.bar", "Hello World!")
+			}
+			if state := mset.State(); state.Msgs != 0 {
+				t.Fatalf("Expected %d messages, got %d", 0, state.Msgs)
+			}
+
+			cfg := &server.ConsumerConfig{Durable: "ddd", FilterSubject: "foo.bar", AckPolicy: server.AckExplicit}
+			o, err := mset.AddConsumer(cfg)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			defer o.Delete()
+
+			sendStreamMsg(t, nc, "foo.bar", "Hello World!")
+			if state := mset.State(); state.Msgs != 1 {
+				t.Fatalf("Expected %d message, got %d", 1, state.Msgs)
+			} else if state.FirstSeq != 11 {
+				t.Fatalf("Expected %d for first seq, got %d", 11, state.FirstSeq)
+			}
+			// Now send to foo.baz, which has no interest, so we should not hold onto this message.
+			sendStreamMsg(t, nc, "foo.baz", "Hello World!")
+			if state := mset.State(); state.Msgs != 1 {
+				t.Fatalf("Expected %d message, got %d", 1, state.Msgs)
+			}
 		})
 	}
 }

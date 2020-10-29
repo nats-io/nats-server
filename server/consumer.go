@@ -506,7 +506,7 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 	}
 	o.setInitialPending()
 
-	mset.consumers[o.name] = o
+	mset.addConsumer(o)
 	mset.mu.Unlock()
 
 	// If push mode, register for notifications on interest.
@@ -1940,7 +1940,7 @@ func (o *Consumer) stop(dflag, doSignal, advisory bool) error {
 	}
 	mset.unsubscribe(ackSub)
 	mset.unsubscribe(reqSub)
-	delete(mset.consumers, o.name)
+	mset.deleteConsumer(o)
 	rp := mset.config.Retention
 	mset.mu.Unlock()
 
