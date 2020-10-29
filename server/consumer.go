@@ -385,7 +385,7 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 		dsubj:   config.DeliverSubject,
 		active:  true,
 		qch:     make(chan struct{}),
-		fch:     make(chan struct{}),
+		fch:     make(chan struct{}, 1),
 		sfreq:   int32(sampleFreq),
 		maxdc:   uint64(config.MaxDeliver),
 		created: time.Now().UTC(),
@@ -846,7 +846,7 @@ func (o *Consumer) readStoredState() error {
 func (o *Consumer) writeState() {
 	o.mu.Lock()
 	if o.store != nil {
-		state := &ConsumerState{
+		state := ConsumerState{
 			Delivered: SequencePair{
 				ConsumerSeq: o.dseq,
 				StreamSeq:   o.sseq,
@@ -859,7 +859,7 @@ func (o *Consumer) writeState() {
 			Redelivered: o.rdc,
 		}
 		// FIXME(dlc) - Hold onto any errors.
-		o.store.Update(state)
+		o.store.Update(&state)
 	}
 	o.mu.Unlock()
 }
@@ -2090,8 +2090,7 @@ func (o *Consumer) decStreamPending(sseq uint64) {
 	if o.config.FilterSubject == _EMPTY_ {
 		o.spending--
 	} else if o.mset != nil {
-		subj, _, _, _, _ := o.mset.store.LoadMsg(sseq)
-		if o.isFilteredMatch(subj) {
+		if subj, _, _, _, _ := o.mset.store.LoadMsg(sseq); o.isFilteredMatch(subj) {
 			o.spending--
 		}
 	}

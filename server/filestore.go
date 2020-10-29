@@ -839,10 +839,23 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 		}
 	}
 
+	// Set cache timestamp for last remove.
+	mb.lrts = time.Now().UnixNano()
+
 	// Grab record length from idx.
 	slot := seq - mb.cache.fseq
 	ri, rl, _, _ := mb.slotInfo(int(slot))
 	msz := uint64(rl)
+
+	// Call this early so that we can look this message up if needed.
+	if cb := fs.scb; cb != nil {
+		mb.mu.Unlock()
+		fs.mu.Unlock()
+		delta := int64(msz)
+		cb(-1, -delta, seq)
+		fs.mu.Lock()
+		mb.mu.Lock()
+	}
 
 	// Global stats
 	fs.state.Msgs--
@@ -851,9 +864,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 	// Now local mb updates.
 	mb.msgs--
 	mb.bytes -= msz
-
-	// Set cache timestamp for last remove.
-	mb.lrts = time.Now().UnixNano()
 
 	var shouldWriteIndex bool
 	var firstSeqNeedsUpdate bool
@@ -913,13 +923,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 	if firstSeqNeedsUpdate {
 		fs.selectNextFirst()
 	}
-	cb := fs.scb
 	fs.mu.Unlock()
-
-	if cb != nil {
-		delta := int64(msz)
-		cb(-1, -delta, seq)
-	}
 
 	return true, nil
 }
@@ -2608,8 +2612,6 @@ type consumerFileStore struct {
 	ifd    *os.File
 	lwsz   int64
 	hh     hash.Hash64
-	fch    chan struct{}
-	qch    chan struct{}
 	closed bool
 }
 
@@ -2634,8 +2636,6 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 		name: name,
 		odir: odir,
 		ifn:  path.Join(odir, consumerState),
-		fch:  make(chan struct{}),
-		qch:  make(chan struct{}),
 	}
 	key := sha256.Sum256([]byte(fs.cfg.Name + "/" + name))
 	hh, err := highwayhash.New64(key[:])
