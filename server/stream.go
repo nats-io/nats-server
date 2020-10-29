@@ -80,6 +80,7 @@ type Stream struct {
 	sendq     chan *jsPubMsg
 	store     StreamStore
 	consumers map[string]*Consumer
+	numFilter int
 	config    StreamConfig
 	created   time.Time
 	ddmap     map[string]*ddentry
@@ -904,9 +905,9 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 			return
 		}
 	}
-	mset.mu.Unlock()
 
 	if c == nil {
+		mset.mu.Unlock()
 		return
 	}
 
@@ -923,6 +924,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 
 	// Check to see if we are over the max msg size.
 	if maxMsgSize >= 0 && len(msg) > maxMsgSize {
+		mset.mu.Unlock()
 		response = []byte("-ERR 'message size exceeds maximum allowed'")
 		if doAck && len(reply) > 0 {
 			mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
@@ -930,8 +932,27 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 		return
 	}
 
-	// If we are interest based retention and have no consumers then skip.
-	if interestRetention && numConsumers == 0 {
+	var noInterest bool
+
+	// If we are interest based retention and have no consumers then we can skip.
+	if interestRetention {
+		if numConsumers == 0 {
+			noInterest = true
+		} else if mset.numFilter > 0 {
+			// Assume none.
+			noInterest = true
+			for _, o := range mset.consumers {
+				if o.config.FilterSubject != _EMPTY_ && subjectIsSubsetMatch(subject, o.config.FilterSubject) {
+					noInterest = false
+					break
+				}
+			}
+		}
+	}
+	mset.mu.Unlock()
+
+	// Skip here.
+	if noInterest {
 		seq = store.SkipMsg()
 		if doAck && len(reply) > 0 {
 			response = append(pubAck, strconv.FormatUint(seq, 10)...)
@@ -939,7 +960,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 			mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
 		}
 		// If we have a msgId make sure to save.
-		if msgId != "" {
+		if msgId != _EMPTY_ {
 			mset.storeMsgId(&ddentry{msgId, seq, time.Now().UnixNano()})
 		}
 		return
@@ -1215,17 +1236,25 @@ func (mset *Stream) NumConsumers() int {
 	return len(mset.consumers)
 }
 
+func (mset *Stream) addConsumer(o *Consumer) {
+	mset.consumers[o.name] = o
+	if o.config.FilterSubject != _EMPTY_ {
+		mset.numFilter++
+	}
+}
+
+func (mset *Stream) deleteConsumer(o *Consumer) {
+	if o.config.FilterSubject != _EMPTY_ {
+		mset.numFilter--
+	}
+	delete(mset.consumers, o.name)
+}
+
 // LookupConsumer will retrieve a consumer by name.
 func (mset *Stream) LookupConsumer(name string) *Consumer {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
-
-	for _, o := range mset.consumers {
-		if o.name == name {
-			return o
-		}
-	}
-	return nil
+	return mset.consumers[name]
 }
 
 // State will return the current state for this stream.
