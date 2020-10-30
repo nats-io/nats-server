@@ -158,6 +158,8 @@ var (
 	AckNext = []byte("+NXT")
 	// Terminate delivery of the message.
 	AckTerm = []byte("+TERM")
+
+	ackNextCnt = "+NXT %d+"
 )
 
 // Consumer is a jetstream consumer.
@@ -718,7 +720,7 @@ func (o *Consumer) processAck(_ *subscription, _ *client, subject, reply string,
 	switch {
 	case len(msg) == 0, bytes.Equal(msg, AckAck), bytes.Equal(msg, AckOK):
 		o.ackMsg(sseq, dseq, dcount)
-	case bytes.Equal(msg, AckNext):
+	case bytes.HasPrefix(msg, AckNext):
 		o.ackMsg(sseq, dseq, dcount)
 		o.processNextMsgReq(nil, nil, subject, reply, msg)
 		skipAckReply = true
@@ -1070,11 +1072,20 @@ func nextReqFromMsg(msg []byte) (time.Time, int, bool, error) {
 		}
 		return cr.Expires, cr.Batch, cr.NoWait, nil
 	}
-	// Naked batch size here for backward compatibility.
+
 	bs := 1
-	if n, err := strconv.Atoi(req); err == nil {
-		bs = n
+	// Naked batch size here for backward compatibility.
+	switch {
+	case strings.HasPrefix(req, string(AckNext)):
+		if n, _ := fmt.Sscanf(req, ackNextCnt, &bs); n == 0 {
+			bs = 1
+		}
+	default:
+		if n, err := strconv.Atoi(req); err == nil {
+			bs = n
+		}
 	}
+
 	return time.Time{}, bs, false, nil
 }
 
