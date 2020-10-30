@@ -83,7 +83,6 @@ func RunBasicJetStreamServer() *server.Server {
 	opts := DefaultTestOptions
 	opts.Port = -1
 	opts.JetStream = true
-	opts.NoLog = true
 	return RunServer(&opts)
 }
 
@@ -3018,7 +3017,7 @@ func TestJetStreamConsumerAckAck(t *testing.T) {
 	testAck(server.AckTerm)
 }
 
-func TestJetStreamNack(t *testing.T) {
+func TestJetStreamAckNext(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 

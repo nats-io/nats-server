@@ -1076,8 +1076,8 @@ func nextReqFromMsg(msg []byte) (time.Time, int, bool, error) {
 	bs := 1
 	// Naked batch size here for backward compatibility.
 	switch {
-	case bytes.HasPrefix(msg, AckNext):
-		if n, _ := fmt.Sscanf(string(msg), ackNextCnt, &bs); n == 0 {
+	case strings.HasPrefix(req, string(AckNext)):
+		if n, _ := fmt.Sscanf(req, ackNextCnt, &bs); n == 0 {
 			bs = 1
 		}
 	default:
