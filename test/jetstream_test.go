@@ -2459,6 +2459,8 @@ func TestJetStreamAckReplyStreamPending(t *testing.T) {
 			expectPending(toSend*2 - 2)
 			// Purge and send a new one.
 			mset.Purge()
+			nc.Flush()
+
 			sendStreamMsg(t, nc, "foo.1", "Hello World!")
 			expectPending(0)
 			for i := 0; i < toSend; i++ {
