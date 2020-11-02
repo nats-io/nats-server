@@ -955,9 +955,7 @@ func TestFileStoreEraseMsg(t *testing.T) {
 	if sm2, _ := fs.msgForSeq(1); sm2 != nil {
 		t.Fatalf("Expected msg to be erased")
 	}
-	if err := fs.flushPendingWritesUnlocked(); err != nil {
-		t.Fatalf("Unexpected error flushing: %v", err)
-	}
+	fs.checkAndFlushAllBlocks()
 
 	// Now look on disk as well.
 	rl := fileStoreMsgSize(subj, nil, msg)
@@ -1870,6 +1868,49 @@ func TestFileStoreStoreLimitRemovePerf(t *testing.T) {
 
 	tt := time.Since(start)
 	fmt.Printf("time to store and remove all messages is %v\n", tt)
+	fmt.Printf("%.0f msgs/sec\n", float64(toStore)/tt.Seconds())
+	fmt.Printf("%s per sec\n", FriendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
+}
+
+func TestFileStorePubPerfWithSmallBlkSize(t *testing.T) {
+	// Comment out to run, holding place for now.
+	t.SkipNow()
+
+	subj, msg := "foo", make([]byte, 1024-33)
+	for i := 0; i < len(msg); i++ {
+		msg[i] = 'D'
+	}
+	storedMsgSize := fileStoreMsgSize(subj, nil, msg)
+
+	// 1GB
+	toStore := 1 * 1024 * 1024 * 1024 / storedMsgSize
+
+	fmt.Printf("storing %d msgs of %s each, totalling %s\n",
+		toStore,
+		FriendlyBytes(int64(storedMsgSize)),
+		FriendlyBytes(int64(toStore*storedMsgSize)),
+	)
+
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: FileStoreMinBlkSize},
+		StreamConfig{Name: "zzz", Storage: FileStorage},
+	)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	start := time.Now()
+	for i := 0; i < int(toStore); i++ {
+		fs.StoreMsg(subj, nil, msg)
+	}
+	fs.Stop()
+
+	tt := time.Since(start)
+	fmt.Printf("time to store is %v\n", tt)
 	fmt.Printf("%.0f msgs/sec\n", float64(toStore)/tt.Seconds())
 	fmt.Printf("%s per sec\n", FriendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
 }
