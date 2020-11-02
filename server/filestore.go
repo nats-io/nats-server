@@ -971,6 +971,7 @@ func (mb *msgBlock) spinUpFlushLoop() {
 		mb.mu.Unlock()
 		return
 	}
+	mb.flusher = true
 	mb.fch = make(chan struct{}, 1)
 	mb.qch = make(chan struct{})
 	fch, qch := mb.fch, mb.qch
