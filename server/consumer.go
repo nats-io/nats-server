@@ -158,8 +158,6 @@ var (
 	AckNext = []byte("+NXT")
 	// Terminate delivery of the message.
 	AckTerm = []byte("+TERM")
-
-	ackNextCnt = "+NXT %d+"
 )
 
 // Consumer is a jetstream consumer.
@@ -722,7 +720,7 @@ func (o *Consumer) processAck(_ *subscription, _ *client, subject, reply string,
 		o.ackMsg(sseq, dseq, dcount)
 	case bytes.HasPrefix(msg, AckNext):
 		o.ackMsg(sseq, dseq, dcount)
-		o.processNextMsgReq(nil, nil, subject, reply, msg)
+		o.processNextMsgReq(nil, nil, subject, reply, msg[len(AckNext):])
 		skipAckReply = true
 	case bytes.Equal(msg, AckNak):
 		o.processNak(sseq, dseq)
@@ -1061,32 +1059,26 @@ func (o *Consumer) needAck(sseq uint64) bool {
 
 // Helper for the next message requests.
 func nextReqFromMsg(msg []byte) (time.Time, int, bool, error) {
-	req := strings.TrimSpace(string(msg))
-	if len(req) == 0 {
+	req := bytes.TrimSpace(msg)
+
+	switch {
+	case len(req) == 0:
 		return time.Time{}, 1, false, nil
-	}
-	if req[0] == '{' {
+
+	case req[0] == '{':
 		var cr JSApiConsumerGetNextRequest
-		if err := json.Unmarshal(msg, &cr); err != nil {
+		if err := json.Unmarshal(req, &cr); err != nil {
 			return time.Time{}, -1, false, err
 		}
 		return cr.Expires, cr.Batch, cr.NoWait, nil
-	}
 
-	bs := 1
-	// Naked batch size here for backward compatibility.
-	switch {
-	case strings.HasPrefix(req, string(AckNext)):
-		if n, _ := fmt.Sscanf(req, ackNextCnt, &bs); n == 0 {
-			bs = 1
-		}
 	default:
-		if n, err := strconv.Atoi(req); err == nil {
-			bs = n
+		if n, err := strconv.Atoi(string(req)); err == nil {
+			return time.Time{}, n, false, nil
 		}
 	}
 
-	return time.Time{}, bs, false, nil
+	return time.Time{}, 1, false, nil
 }
 
 // Represents a request that is on the internal waiting queue

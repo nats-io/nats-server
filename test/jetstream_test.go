@@ -3056,7 +3056,7 @@ func TestJetStreamAckNext(t *testing.T) {
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
 
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 12; i++ {
 		sendStreamMsg(t, nc, mname, fmt.Sprintf("msg %d", i))
 	}
 
@@ -3087,28 +3087,41 @@ func TestJetStreamAckNext(t *testing.T) {
 		t.Fatalf("wrong message received, expected: msg 1 got %q", msg.Data)
 	}
 
-	// now ack and request 5 more
+	// now ack and request 5 more using a naked number
 	err = msg.RespondMsg(&nats.Msg{Reply: sub.Subject, Subject: msg.Reply, Data: append(server.AckNext, []byte(" 5")...)})
 	if err != nil {
 		t.Fatalf("RespondMsg failed: %s", err)
 	}
 
-	// check next+cnt worked and got the right amount of messages, use ctx to avoid
-	// sleeps when all is working
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
+	getMsgs := func(start, count int) {
+		t.Helper()
 
-	for i := 1; i < 6; i++ {
-		select {
-		case msg := <-q:
-			expect := fmt.Sprintf("msg %d", i+1)
-			if !bytes.Equal(msg.Data, []byte(expect)) {
-				t.Fatalf("wrong message received, expected: %s", expect)
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+
+		for i := start; i < count+1; i++ {
+			select {
+			case msg := <-q:
+				expect := fmt.Sprintf("msg %d", i+1)
+				if !bytes.Equal(msg.Data, []byte(expect)) {
+					t.Fatalf("wrong message received, expected: %s got %#v", expect, msg)
+				}
+			case <-ctx.Done():
+				t.Fatalf("did not receive all messages")
 			}
-		case <-ctx.Done():
-			t.Fatalf("did not receive all messages")
 		}
+
 	}
+
+	getMsgs(1, 5)
+
+	// now ack and request 5 more using the full request
+	err = msg.RespondMsg(&nats.Msg{Reply: sub.Subject, Subject: msg.Reply, Data: append(server.AckNext, []byte(`{"batch": 5}`)...)})
+	if err != nil {
+		t.Fatalf("RespondMsg failed: %s", err)
+	}
+
+	getMsgs(6, 10)
 
 	if o.Info().AckFloor.StreamSeq != 2 {
 		t.Fatalf("second message was not acknowledged")
