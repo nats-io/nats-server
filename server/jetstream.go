@@ -26,7 +26,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
@@ -944,17 +943,7 @@ func (s *Server) dynJetStreamConfig(storeDir string, maxStore int64) *JetStreamC
 	if maxStore > 0 {
 		jsc.MaxStore = maxStore
 	} else {
-		if _, err := os.Stat(jsc.StoreDir); os.IsNotExist(err) {
-			os.MkdirAll(jsc.StoreDir, 0755)
-		}
-		var fs syscall.Statfs_t
-		if err := syscall.Statfs(jsc.StoreDir, &fs); err == nil {
-			// Estimate 75% of available storage.
-			jsc.MaxStore = int64(fs.Bavail * uint64(fs.Bsize) / 4 * 3)
-		} else {
-			// Used 1TB default as a guess if all else fails.
-			jsc.MaxStore = JetStreamMaxStoreDefault
-		}
+		jsc.MaxStore = diskAvailable(jsc.StoreDir)
 	}
 	// Estimate to 75% of total memory if we can determine system memory.
 	if sysMem := sysmem.Memory(); sysMem > 0 {
