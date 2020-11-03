@@ -49,6 +49,10 @@ const (
 	gwClusterOffset  = gwReplyPrefixLen
 	gwServerOffset   = gwClusterOffset + gwHashLen + 1
 	gwSubjectOffset  = gwServerOffset + gwHashLen + 1
+
+	// Gateway connections send PINGs regardless of traffic. The interval is
+	// either Options.PingInterval or this value, whichever is the smallest.
+	gwMaxPingInterval = 15 * time.Second
 )
 
 var (
@@ -56,6 +60,7 @@ var (
 	gatewayReconnectDelay        = defaultGatewayReconnectDelay
 	gatewayMaxRUnsubBeforeSwitch = defaultGatewayMaxRUnsubBeforeSwitch
 	gatewaySolicitDelay          = int64(defaultSolicitGatewaysDelay)
+	gatewayMaxPingInterval       = gwMaxPingInterval
 )
 
 // Warning when user configures gateway TLS insecure

@@ -3255,6 +3255,9 @@ func (s *Server) setFirstPingTimer(c *client) {
 			if d > firstPingInterval {
 				d = firstPingInterval
 			}
+			if c.kind == GATEWAY {
+				d = adjustPingIntervalForGateway(d)
+			}
 		} else if d > firstClientPingInterval {
 			d = firstClientPingInterval
 		}
