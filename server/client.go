@@ -3952,18 +3952,30 @@ func (c *client) processPingTimer() {
 
 	c.Debugf("%s Ping Timer", c.typeString())
 
+	var sendPing bool
+
 	// If we have had activity within the PingInterval then
 	// there is no need to send a ping. This can be client data
 	// or if we received a ping from the other side.
 	pingInterval := c.srv.getOpts().PingInterval
+	if c.kind == GATEWAY {
+		pingInterval = adjustPingIntervalForGateway(pingInterval)
+		sendPing = true
+	}
 	now := time.Now()
 	needRTT := c.rtt == 0 || now.Sub(c.rttStart) > DEFAULT_RTT_MEASUREMENT_INTERVAL
 
-	if delta := now.Sub(c.last); delta < pingInterval && !needRTT {
-		c.Debugf("Delaying PING due to client activity %v ago", delta.Round(time.Second))
-	} else if delta := now.Sub(c.ping.last); delta < pingInterval && !needRTT {
-		c.Debugf("Delaying PING due to remote ping %v ago", delta.Round(time.Second))
-	} else {
+	// Do not delay PINGs for GATEWAY connections.
+	if c.kind != GATEWAY {
+		if delta := now.Sub(c.last); delta < pingInterval && !needRTT {
+			c.Debugf("Delaying PING due to client activity %v ago", delta.Round(time.Second))
+		} else if delta := now.Sub(c.ping.last); delta < pingInterval && !needRTT {
+			c.Debugf("Delaying PING due to remote ping %v ago", delta.Round(time.Second))
+		} else {
+			sendPing = true
+		}
+	}
+	if sendPing {
 		// Check for violation
 		if c.ping.out+1 > c.srv.getOpts().MaxPingsOut {
 			c.Debugf("Stale Client Connection - Closing")
@@ -3981,12 +3993,24 @@ func (c *client) processPingTimer() {
 	c.mu.Unlock()
 }
 
+// Returns the smallest value between the given `d` and `gatewayMaxPingInterval` durations.
+// Invoked for connections known to be of GATEWAY type.
+func adjustPingIntervalForGateway(d time.Duration) time.Duration {
+	if d > gatewayMaxPingInterval {
+		return gatewayMaxPingInterval
+	}
+	return d
+}
+
 // Lock should be held
 func (c *client) setPingTimer() {
 	if c.srv == nil {
 		return
 	}
 	d := c.srv.getOpts().PingInterval
+	if c.kind == GATEWAY {
+		d = adjustPingIntervalForGateway(d)
+	}
 	c.ping.tmr = time.AfterFunc(d, c.processPingTimer)
 }
 

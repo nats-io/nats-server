@@ -6201,3 +6201,50 @@ func TestGatewayUpdateURLsFromRemoteCluster(t *testing.T) {
 	expected[fmt.Sprintf("127.0.0.1:%d", ob3.Gateway.Port)] = "B3"
 	checkURLs(expected)
 }
+
+type capturePingConn struct {
+	net.Conn
+	ch chan struct{}
+}
+
+func (c *capturePingConn) Write(b []byte) (int, error) {
+	if bytes.Contains(b, []byte(pingProto)) {
+		select {
+		case c.ch <- struct{}{}:
+		default:
+		}
+	}
+	return c.Conn.Write(b)
+}
+
+func TestGatewayPings(t *testing.T) {
+	gatewayMaxPingInterval = 50 * time.Millisecond
+	defer func() { gatewayMaxPingInterval = gwMaxPingInterval }()
+
+	ob := testDefaultOptionsForGateway("B")
+	sb := RunServer(ob)
+	defer sb.Shutdown()
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	sa := RunServer(oa)
+	defer sa.Shutdown()
+
+	waitForInboundGateways(t, sa, 1, 2*time.Second)
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+	waitForInboundGateways(t, sb, 1, 2*time.Second)
+	waitForOutboundGateways(t, sb, 1, 2*time.Second)
+
+	c := sa.getOutboundGatewayConnection("B")
+	ch := make(chan struct{}, 1)
+	c.mu.Lock()
+	c.nc = &capturePingConn{c.nc, ch}
+	c.mu.Unlock()
+
+	for i := 0; i < 5; i++ {
+		select {
+		case <-ch:
+		case <-time.After(250 * time.Millisecond):
+			t.Fatalf("Did not send PING")
+		}
+	}
+}
