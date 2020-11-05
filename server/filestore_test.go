@@ -853,6 +853,7 @@ func TestFileStoreAgeLimitRecovery(t *testing.T) {
 
 	// Make sure they expire.
 	checkFor(t, time.Second, 2*maxAge, func() error {
+		t.Helper()
 		state = fs.State()
 		if state.Msgs != 0 {
 			return fmt.Errorf("Expected no msgs, got %d", state.Msgs)
@@ -1297,7 +1298,7 @@ func TestFileStoreReadCache(t *testing.T) {
 		fs.StoreMsg(subj, nil, msg)
 	}
 
-	// Wait for write cache portion to go to zero.
+	// Wait for cache to go to zero.
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
 		if csz := fs.cacheSize(); csz != 0 {
 			return fmt.Errorf("cache size not 0, got %s", FriendlyBytes(int64(csz)))
@@ -1328,6 +1329,32 @@ func TestFileStoreReadCache(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 		fs.LoadMsg(1) // register activity.
+	}
+}
+
+func TestFileStorePartialCacheExpiration(t *testing.T) {
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
+	cexp := 10 * time.Millisecond
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, CacheExpire: cexp}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	fs.StoreMsg("foo", nil, []byte("msg1"))
+
+	// Should expire and be removed.
+	time.Sleep(2 * cexp)
+	fs.StoreMsg("bar", nil, []byte("msg2"))
+
+	// Again wait for cache to expire.
+	time.Sleep(2 * cexp)
+	if _, _, _, _, err := fs.LoadMsg(1); err != nil {
+		t.Fatalf("Error loading message 1: %v", err)
 	}
 }
 
