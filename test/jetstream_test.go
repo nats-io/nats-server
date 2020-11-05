@@ -8857,7 +8857,7 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 	}
 }
 
-func TestJetStreamStoredMsgsDontDisappear(t *testing.T) {
+func TestJetStreamStoredMsgsDontDisappearAfterCacheExpiration(t *testing.T) {
 	sc := &server.StreamConfig{
 		Name:      "MY_STREAM",
 		Storage:   server.FileStorage,
@@ -8903,6 +8903,7 @@ func TestJetStreamStoredMsgsDontDisappear(t *testing.T) {
 	defer nc2.Close()
 
 	sendStreamMsg(t, nc2, "foo.bar", "msg1")
+
 	msg, err := sub.NextMsg(time.Second)
 	if err != nil {
 		t.Fatalf("Did not get message: %v", err)
@@ -8929,9 +8930,11 @@ func TestJetStreamStoredMsgsDontDisappear(t *testing.T) {
 			t.Fatalf("Error: %q", smsgj.Data)
 		}
 	}
+
 	getMsgSeq(1)
 
 	time.Sleep(time.Second)
+
 	sendStreamMsg(t, nc2, "foo.bar", "msg2")
 	sendStreamMsg(t, nc2, "foo.bar", "msg3")
 

@@ -602,6 +602,10 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	}
 	mb.ifd = ifd
 
+	// Set cache time to creation time to start.
+	ts := time.Now().UnixNano()
+	mb.llts, mb.lrts, mb.lwts = ts, ts, ts
+
 	// We know we will need this so go ahead and spin up.
 	mb.spinUpFlushLoop()
 
@@ -1195,13 +1199,34 @@ func (mb *msgBlock) startCacheExpireTimer() {
 	mb.resetCacheExpireTimer(0)
 }
 
+// Used when we load in a message block.
+// Lock should be held.
+func (mb *msgBlock) clearCacheAndOffset() {
+	if mb.cache != nil {
+		mb.cache.off = 0
+		mb.cache.wp = 0
+	}
+	mb.clearCache()
+}
+
 // Lock should be held.
 func (mb *msgBlock) clearCache() {
 	if mb.ctmr != nil {
 		mb.ctmr.Stop()
 		mb.ctmr = nil
 	}
-	mb.cache = nil
+	if mb.cache == nil {
+		return
+	}
+
+	if mb.cache.off == 0 {
+		mb.cache = nil
+	} else {
+		// Clear msgs and index.
+		mb.cache.buf = nil
+		mb.cache.idx = nil
+		mb.cache.wp = 0
+	}
 }
 
 // Called to possibly expire a message block cache.
@@ -1232,13 +1257,15 @@ func (mb *msgBlock) expireCache() {
 		bufts = mb.lwts
 	}
 
-	// Check for the underlying buffer first.
+	// Check for activity on the cache that would prevent us from expiring.
 	if tns-bufts <= int64(mb.cexp) {
 		mb.resetCacheExpireTimer(mb.cexp - time.Duration(tns-bufts))
 		return
 	}
 
 	// If we are here we will at least expire the core msg buffer.
+	// We need to capture offset in case we do a write next before a full load.
+	mb.cache.off += len(mb.cache.buf)
 	mb.cache.buf = nil
 	mb.cache.wp = 0
 
@@ -1617,7 +1644,6 @@ func (fs *fileStore) selectMsgBlock(seq uint64) *msgBlock {
 	if seq < fs.state.FirstSeq || seq > fs.state.LastSeq {
 		return nil
 	}
-
 	// blks are sorted in ascending order.
 	// TODO(dlc) - Can be smarter here, when lots of blks maybe use binary search.
 	// For now this is cache friendly for small to medium numbers of blks.
@@ -1703,7 +1729,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	mb.cache.buf = buf
 	mb.cache.idx = idx
 	mb.cache.fseq = fseq
-	mb.cache.wp += len(buf)
+	mb.cache.wp += int(lbuf)
 
 	return nil
 }
@@ -1844,7 +1870,7 @@ func (mb *msgBlock) loadMsgs() error {
 
 checkCache:
 	// Check to see if we have a full cache.
-	if mb.cache != nil && len(mb.cache.idx) == int(mb.msgs) && mb.cache.off == 0 {
+	if mb.cache != nil && len(mb.cache.idx) == int(mb.msgs) && mb.cache.off == 0 && len(mb.cache.buf) > 0 {
 		return nil
 	}
 
@@ -1867,8 +1893,9 @@ checkCache:
 		return err
 	}
 
+	// Reset the cache since we just read everything in.
 	// Make sure this is cleared in case we had a partial when we started.
-	mb.clearCache()
+	mb.clearCacheAndOffset()
 
 	if err := mb.indexCacheBuf(buf); err != nil {
 		return err
@@ -1927,11 +1954,11 @@ func (mb *msgBlock) cacheLookup(seq uint64) (*fileStoredMsg, error) {
 
 // Will do a lookup from cache assuming lock is held.
 func (mb *msgBlock) cacheLookupWithLock(seq uint64) (*fileStoredMsg, error) {
-	if mb.cache == nil {
+	if mb.cache == nil || len(mb.cache.idx) == 0 {
 		return nil, errNoCache
 	}
 
-	if seq < mb.first.seq || seq < mb.cache.fseq || (seq-mb.cache.fseq) >= uint64(len(mb.cache.idx)) {
+	if seq < mb.first.seq || seq < mb.cache.fseq || seq > mb.last.seq {
 		return nil, ErrStoreMsgNotFound
 	}
 
@@ -1947,19 +1974,16 @@ func (mb *msgBlock) cacheLookupWithLock(seq uint64) (*fileStoredMsg, error) {
 
 	bi, _, hashChecked, _ := mb.slotInfo(int(seq - mb.cache.fseq))
 
+	// Check if partial cache and we miss.
+	if mb.cache.off > 0 && bi <= uint32(mb.cache.off) {
+		return nil, errPartialCache
+	}
+
 	// We use the high bit to denote we have already checked the checksum.
 	var hh hash.Hash64
 	if !hashChecked {
 		hh = mb.hh // This will force the hash check in msgFromBuf.
 		mb.cache.idx[seq-mb.cache.fseq] = (bi | hbit)
-	}
-
-	// Check if partial
-	if mb.cache.off > 0 && bi < uint32(mb.cache.off) {
-		buf := mb.cache.buf
-		mb.cache.buf = nil
-		mb.cache.buf = buf
-		return nil, errPartialCache
 	}
 
 	li := int(bi) - mb.cache.off
@@ -2010,6 +2034,7 @@ func (fs *fileStore) msgForSeq(seq uint64) (*fileStoredMsg, error) {
 		fs.mu.RUnlock()
 		return nil, err
 	}
+
 	// TODO(dlc) - older design had a check to prefetch when we knew we were
 	// loading in order and getting close to end of current mb. Should add
 	// something like it back in.
@@ -2385,7 +2410,7 @@ func (mb *msgBlock) dirtyCloseWithRemove(remove bool) {
 		return
 	}
 	// Close cache
-	mb.clearCache()
+	mb.clearCacheAndOffset()
 	// Quit our loops.
 	if mb.qch != nil {
 		close(mb.qch)
@@ -2423,7 +2448,7 @@ func (mb *msgBlock) close(sync bool) {
 	}
 
 	// Close cache
-	mb.clearCache()
+	mb.clearCacheAndOffset()
 	// Quit our loops.
 	if mb.qch != nil {
 		close(mb.qch)
