@@ -697,6 +697,7 @@ func (o *Consumer) forceExpirePending() {
 		for _, seq := range expired {
 			o.pending[seq] += off
 		}
+		o.ptmr.Reset(o.ackWait(0))
 	}
 }
 

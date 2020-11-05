@@ -8989,7 +8989,7 @@ func TestJetStreamConsumerUpdateRedelivery(t *testing.T) {
 				FilterSubject:  "foo.bar",
 				AckPolicy:      server.AckExplicit,
 				AckWait:        25 * time.Millisecond,
-				MaxDeliver:     2,
+				MaxDeliver:     3,
 			})
 			if err != nil {
 				t.Fatalf("Unexpected error adding consumer: %v", err)
@@ -9046,7 +9046,7 @@ func TestJetStreamConsumerUpdateRedelivery(t *testing.T) {
 				FilterSubject:  "foo.bar",
 				AckPolicy:      server.AckExplicit,
 				AckWait:        25 * time.Millisecond,
-				MaxDeliver:     2,
+				MaxDeliver:     3,
 			})
 			if err != nil {
 				t.Fatalf("Unexpected error adding consumer: %v", err)
@@ -9079,6 +9079,37 @@ func TestJetStreamConsumerUpdateRedelivery(t *testing.T) {
 				}
 				if seq > uint64(toSend) && dc != 1 {
 					t.Fatalf("Expected delivery count of 1 for sequence of %d, got %d", seq, dc)
+				}
+				if seq > uint64(toSend) {
+					m.Respond(nil) // Ack
+				}
+				eseq++
+			}
+
+			// We should get the second half back since we did not ack those from above.
+			expect = toSend - 5
+			checkFor(t, time.Second, 5*time.Millisecond, func() error {
+				if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != expect {
+					return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, expect)
+				}
+				return nil
+			})
+
+			for i, eseq := 0, uint64(1); i < expect; i++ {
+				m, err := sub.NextMsg(time.Second)
+				if err != nil {
+					t.Fatalf("Error getting message: %v", err)
+				}
+				// Skip the ones we ack'd from above. We should not get them back here.
+				if eseq <= uint64(toSend) && eseq%4 == 0 {
+					eseq++
+				}
+				seq, _, dc, _, _ := o.ReplyInfo(m.Reply)
+				if seq != eseq {
+					t.Fatalf("Expected stream sequence of %d, got %d", eseq, seq)
+				}
+				if dc != 3 {
+					t.Fatalf("Expected delivery count of 3 for sequence of %d, got %d", seq, dc)
 				}
 				eseq++
 			}
