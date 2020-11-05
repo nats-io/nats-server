@@ -678,6 +678,29 @@ func (o *Consumer) Config() ConsumerConfig {
 	return o.config
 }
 
+// Force expiration of all pending.
+// Lock should be held.
+func (o *Consumer) forceExpirePending() {
+	now := time.Now().UnixNano()
+	var expired []uint64
+	for seq := range o.pending {
+		if !o.onRedeliverQueue(seq) {
+			expired = append(expired, seq)
+		}
+	}
+	if len(expired) > 0 {
+		sort.Slice(expired, func(i, j int) bool { return expired[i] < expired[j] })
+		o.rdq = append(o.rdq, expired...)
+		// Now we should update the timestamp here since we are redelivering.
+		// We will use an incrementing time to preserve order for any other redelivery.
+		off := now - o.pending[expired[0]]
+		for _, seq := range expired {
+			o.pending[seq] += off
+		}
+		o.ptmr.Reset(o.ackWait(0))
+	}
+}
+
 // This is a config change for the delivery subject for a
 // push based consumer.
 func (o *Consumer) updateDeliverSubject(newDeliver string) {
@@ -685,8 +708,13 @@ func (o *Consumer) updateDeliverSubject(newDeliver string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	if o.closed || o.isPullMode() {
+	if o.closed || o.isPullMode() || o.config.DeliverSubject == newDeliver {
 		return
+	}
+
+	// Force redeliver of all pending on change of delivery subject.
+	if len(o.pending) > 0 {
+		o.forceExpirePending()
 	}
 
 	o.acc.sl.ClearNotification(o.dsubj, o.inch)

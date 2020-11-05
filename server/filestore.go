@@ -2170,6 +2170,15 @@ func (mb *msgBlock) writeIndexInfo() error {
 	return err
 }
 
+// Make sure the header is correct.
+func checkHeader(hdr []byte) error {
+	if hdr == nil || len(hdr) < 2 || hdr[0] != magic || hdr[1] != version {
+		return fmt.Errorf("corrupt state file")
+	}
+	return nil
+}
+
+// readIndexInfo will read in the index information for the message block.
 func (mb *msgBlock) readIndexInfo() error {
 	buf, err := ioutil.ReadFile(mb.ifn)
 	if err != nil {
@@ -2916,13 +2925,6 @@ func (o *consumerFileStore) ensureStateFileOpen() error {
 			return err
 		}
 		o.ifd = ifd
-	}
-	return nil
-}
-
-func checkHeader(hdr []byte) error {
-	if hdr == nil || len(hdr) < 2 || hdr[0] != magic || hdr[1] != version {
-		return fmt.Errorf("corrupt state file")
 	}
 	return nil
 }
