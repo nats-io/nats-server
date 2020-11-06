@@ -2382,7 +2382,7 @@ func TestJetStreamAckReplyStreamPending(t *testing.T) {
 		Name:      "MY_WQ",
 		Subjects:  []string{"foo.*"},
 		Storage:   server.MemoryStorage,
-		MaxAge:    100 * time.Millisecond,
+		MaxAge:    250 * time.Millisecond,
 		Retention: server.WorkQueuePolicy,
 	}
 	fsc := msc
@@ -2432,6 +2432,7 @@ func TestJetStreamAckReplyStreamPending(t *testing.T) {
 			defer o.Delete()
 
 			expectPending := func(ep int) {
+				t.Helper()
 				// Now check consumer info.
 				checkFor(t, time.Second, 10*time.Millisecond, func() error {
 					if info, pep := o.Info(), ep+1; int(info.NumPending) != pep {
@@ -8988,7 +8989,7 @@ func TestJetStreamConsumerUpdateRedelivery(t *testing.T) {
 				DeliverSubject: sub.Subject,
 				FilterSubject:  "foo.bar",
 				AckPolicy:      server.AckExplicit,
-				AckWait:        25 * time.Millisecond,
+				AckWait:        100 * time.Millisecond,
 				MaxDeliver:     3,
 			})
 			if err != nil {
@@ -9045,7 +9046,7 @@ func TestJetStreamConsumerUpdateRedelivery(t *testing.T) {
 				DeliverSubject: sub.Subject,
 				FilterSubject:  "foo.bar",
 				AckPolicy:      server.AckExplicit,
-				AckWait:        25 * time.Millisecond,
+				AckWait:        100 * time.Millisecond,
 				MaxDeliver:     3,
 			})
 			if err != nil {
