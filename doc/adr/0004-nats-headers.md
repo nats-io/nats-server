@@ -55,17 +55,17 @@ The server that is able to send and receive headers will specify so in it's [`IN
 Messages that include a header have a `HPUB` protocol:
 
 ```
-HPUB SUBJECT REPLY 23 30␍␊NATS/1.0␍␊Header: X␍␊␍␊PAYLOAD␍␊
-HPUB SUBJECT REPLY 23 23␍␊NATS/1.0␍␊Header: X␍␊␍␊␍␊
+HPUB SUBJECT REPLY 13 20␍␊NATS/1.0␍␊Header: X␍␊␍␊PAYLOAD␍␊
+HPUB SUBJECT REPLY 13 13␍␊NATS/1.0␍␊Header: X␍␊␍␊␍␊
+HPUB SUBJECT REPLY 38 45␍␊NATS/1.0␍␊Header1: X␍␊Header1: Y␍␊Header2: Z␍␊␍␊PAYLOAD␍␊
+HPUB SUBJECT REPLY 38 38␍␊NATS/1.0␍␊Header1: X␍␊Header1: Y␍␊Header2: Z␍␊␍␊␍␊
 
 HPUB <SUBJ> [REPLY] <HDR_LEN> <TOT_LEN>
 <HEADER><PAYLOAD>
-
 ```
 
 #### NOTES:
-
-- `HDR_LEN` includes the entire serialized header
+- `HDR_LEN` includes the entire serialized header, including the ␍␊ before the payload
 - `TOT_LEN` includes the entire payload length including the header
 
 ### MSG with Headers
@@ -73,8 +73,10 @@ HPUB <SUBJ> [REPLY] <HDR_LEN> <TOT_LEN>
 Clients will see `HMSG` protocol lines for `MSG`s that contain headers
 
 ```
-HMSG SUBJECT 1 REPLY 23 30␍␊NATS/1.0␍␊Header: X␍␊␍␊PAYLOAD␍␊
-HPUB SUBJECT 1 REPLY 23 23␍␊NATS/1.0␍␊Header: X␍␊␍␊␍␊
+HMSG SUBJECT 1 REPLY 13 20␍␊NATS/1.0␍␊Header: X␍␊␍␊PAYLOAD␍␊
+HMSG SUBJECT 1 REPLY 13 13␍␊NATS/1.0␍␊Header: X␍␊␍␊␍␊
+HMSG SUBJECT 1 REPLY 38 45␍␊NATS/1.0␍␊Header1: X␍␊Header1: Y␍␊Header2: Z␍␊␍␊PAYLOAD␍␊
+HMSG SUBJECT 1 REPLY 38 38␍␊NATS/1.0␍␊Header1: X␍␊Header1: Y␍␊Header2: Z␍␊␍␊␍␊
 
 HMSG <SUBJECT> <SID> [REPLY] <HDR_LEN> <TOT_LEN>
 <PAYLOAD>
