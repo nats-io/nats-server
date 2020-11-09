@@ -435,9 +435,12 @@ func (ms *memStore) Snapshot(_ time.Duration, _, _ bool) (*SnapshotResult, error
 }
 
 // No-ops.
-func (os *consumerMemStore) Update(_ *ConsumerState) error {
-	return nil
-}
+func (os *consumerMemStore) Update(_ *ConsumerState) error { return nil }
+
+func (os *consumerMemStore) UpdateDelivered(_, _, _ uint64, _ int64) error { return nil }
+
+func (os *consumerMemStore) UpdateAcks(_, _ uint64) error { return nil }
+
 func (os *consumerMemStore) Stop() error {
 	os.ms.decConsumers()
 	return nil
