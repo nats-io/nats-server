@@ -638,6 +638,78 @@ func TestJetStreamPullConsumerDelayedFirstPullWithReplayOriginal(t *testing.T) {
 	}
 }
 
+func TestJetStreamConsumerAckFloorFill(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &server.StreamConfig{Name: "MQ", Storage: server.MemoryStorage}},
+		{"FileStore", &server.StreamConfig{Name: "MQ", Storage: server.FileStorage}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			for i := 1; i <= 4; i++ {
+				sendStreamMsg(t, nc, c.mconfig.Name, fmt.Sprintf("msg-%d", i))
+			}
+
+			sub, _ := nc.SubscribeSync(nats.NewInbox())
+			defer sub.Unsubscribe()
+			nc.Flush()
+
+			o, err := mset.AddConsumer(&server.ConsumerConfig{
+				Durable:        "d",
+				DeliverSubject: sub.Subject,
+				AckPolicy:      server.AckExplicit,
+			})
+			if err != nil {
+				t.Fatalf("Expected no error, got %v", err)
+			}
+			defer o.Delete()
+
+			var first *nats.Msg
+
+			for i := 1; i <= 3; i++ {
+				m, err := sub.NextMsg(time.Second)
+				if err != nil {
+					t.Fatalf("Error receiving message %d: %v", i, err)
+				}
+				// Don't ack 1 or 4.
+				if i == 1 {
+					first = m
+				} else if i == 2 || i == 3 {
+					m.Respond(nil)
+				}
+			}
+			nc.Flush()
+			if info := o.Info(); info.AckFloor.Consumer != 0 {
+				t.Fatalf("Expected the ack floor to be 0, got %d", info.AckFloor.Consumer)
+			}
+			// Now ack first, should move ack floor to 3.
+			first.Respond(nil)
+			nc.Flush()
+			if info := o.Info(); info.AckFloor.Consumer != 3 {
+				t.Fatalf("Expected the ack floor to be 3, got %d", info.AckFloor.Consumer)
+			}
+		})
+	}
+}
+
 func TestJetStreamNoPanicOnRaceBetweenShutdownAndConsumerDelete(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -3080,7 +3152,7 @@ func TestJetStreamAckNext(t *testing.T) {
 	if len(q) != 0 {
 		t.Fatalf("Expected empty q got %d", len(q))
 	}
-	if o.Info().AckFloor.StreamSeq != 1 {
+	if o.Info().AckFloor.Stream != 1 {
 		t.Fatalf("First message was not acknowledged")
 	}
 	if !bytes.Equal(msg.Data, []byte("msg 1")) {
@@ -3123,7 +3195,7 @@ func TestJetStreamAckNext(t *testing.T) {
 
 	getMsgs(6, 10)
 
-	if o.Info().AckFloor.StreamSeq != 2 {
+	if o.Info().AckFloor.Stream != 2 {
 		t.Fatalf("second message was not acknowledged")
 	}
 }
@@ -3611,7 +3683,7 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 		Durable:        "TO",
 		DeliverSubject: dsubj,
 		AckPolicy:      server.AckExplicit,
-		AckWait:        25 * time.Millisecond,
+		AckWait:        20 * time.Millisecond,
 		MaxDeliver:     max,
 	})
 	defer o.Delete()
@@ -3690,9 +3762,7 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 	})
 
 	// Once we are here send third order.
-	// Send third
 	sendStreamMsg(t, nc, mname, "order-3")
-
 	checkNumMsgs(3)
 
 	// Restart.
@@ -3960,7 +4030,7 @@ func TestJetStreamSnapshots(t *testing.T) {
 	for _, oi := range info.obs {
 		if o := mset.LookupConsumer(oi.cfg.Durable); o != nil {
 			if uint64(oi.ack+1) != o.NextSeq() {
-				t.Fatalf("Consumer next seq is not correct: %d vs %d", oi.ack+1, o.NextSeq())
+				t.Fatalf("[%v] Consumer next seq is not correct: %d vs %d", o.Name(), oi.ack+1, o.NextSeq())
 			}
 		} else {
 			t.Fatalf("Expected to get an consumer")
@@ -5500,8 +5570,8 @@ func TestJetStreamStreamPurgeWithConsumer(t *testing.T) {
 				}
 			}
 			state := o.Info()
-			if state.AckFloor.ConsumerSeq != 50 {
-				t.Fatalf("Expected ack floor of 50, got %d", state.AckFloor.ConsumerSeq)
+			if state.AckFloor.Consumer != 50 {
+				t.Fatalf("Expected ack floor of 50, got %d", state.AckFloor.Consumer)
 			}
 			if state.NumAckPending != 25 {
 				t.Fatalf("Expected len(pending) to be 25, got %d", state.NumAckPending)
@@ -5518,15 +5588,15 @@ func TestJetStreamStreamPurgeWithConsumer(t *testing.T) {
 			if state.NumAckPending != 0 {
 				t.Fatalf("Expected no pending, got %d", state.NumAckPending)
 			}
-			if state.Delivered.StreamSeq != 100 {
-				t.Fatalf("Expected to have setseq now at next seq of 100, got %d", state.Delivered.StreamSeq)
+			if state.Delivered.Stream != 100 {
+				t.Fatalf("Expected to have setseq now at next seq of 100, got %d", state.Delivered.Stream)
 			}
 			// Check AckFloors which should have also been adjusted.
-			if state.AckFloor.StreamSeq != 100 {
-				t.Fatalf("Expected ackfloor for setseq to be 100, got %d", state.AckFloor.StreamSeq)
+			if state.AckFloor.Stream != 100 {
+				t.Fatalf("Expected ackfloor for setseq to be 100, got %d", state.AckFloor.Stream)
 			}
-			if state.AckFloor.ConsumerSeq != 75 {
-				t.Fatalf("Expected ackfloor for obsseq to be 75, got %d", state.AckFloor.ConsumerSeq)
+			if state.AckFloor.Consumer != 75 {
+				t.Fatalf("Expected ackfloor for obsseq to be 75, got %d", state.AckFloor.Consumer)
 			}
 			// Also make sure we can get new messages correctly.
 			nc.Request("DC", []byte("OK-22"), time.Second)
@@ -5606,15 +5676,15 @@ func TestJetStreamStreamPurgeWithConsumerAndRedelivery(t *testing.T) {
 			if state.NumAckPending != 0 {
 				t.Fatalf("Expected no pending, got %d", state.NumAckPending)
 			}
-			if state.Delivered.StreamSeq != 100 {
-				t.Fatalf("Expected to have setseq now at next seq of 100, got %d", state.Delivered.StreamSeq)
+			if state.Delivered.Stream != 100 {
+				t.Fatalf("Expected to have setseq now at next seq of 100, got %d", state.Delivered.Stream)
 			}
 			// Check AckFloors which should have also been adjusted.
-			if state.AckFloor.StreamSeq != 100 {
-				t.Fatalf("Expected ackfloor for setseq to be 100, got %d", state.AckFloor.StreamSeq)
+			if state.AckFloor.Stream != 100 {
+				t.Fatalf("Expected ackfloor for setseq to be 100, got %d", state.AckFloor.Stream)
 			}
-			if state.AckFloor.ConsumerSeq != 50 {
-				t.Fatalf("Expected ackfloor for obsseq to be 75, got %d", state.AckFloor.ConsumerSeq)
+			if state.AckFloor.Consumer != 50 {
+				t.Fatalf("Expected ackfloor for obsseq to be 75, got %d", state.AckFloor.Consumer)
 			}
 			// Also make sure we can get new messages correctly.
 			nc.Request("DC", []byte("OK-22"), time.Second)
@@ -7059,11 +7129,11 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if oinfo.Config.DeliverSubject != delivery {
 		t.Fatalf("Expected to have delivery subject of %q, got %q", delivery, oinfo.Config.DeliverSubject)
 	}
-	if oinfo.Delivered.ConsumerSeq != 10 {
-		t.Fatalf("Expected consumer delivered sequence of 10, got %d", oinfo.Delivered.ConsumerSeq)
+	if oinfo.Delivered.Consumer != 10 {
+		t.Fatalf("Expected consumer delivered sequence of 10, got %d", oinfo.Delivered.Consumer)
 	}
-	if oinfo.AckFloor.ConsumerSeq != 10 {
-		t.Fatalf("Expected ack floor to be 10, got %d", oinfo.AckFloor.ConsumerSeq)
+	if oinfo.AckFloor.Consumer != 10 {
+		t.Fatalf("Expected ack floor to be 10, got %d", oinfo.AckFloor.Consumer)
 	}
 
 	// Now delete the consumer.
@@ -7919,7 +7989,7 @@ func TestJetStreamNextMsgNoInterest(t *testing.T) {
 			}
 			nc.Flush()
 			ostate := o.Info()
-			if ostate.AckFloor.StreamSeq != 11 || ostate.NumAckPending > 0 {
+			if ostate.AckFloor.Stream != 11 || ostate.NumAckPending > 0 {
 				t.Fatalf("Inconsistent ack state: %+v", ostate)
 			}
 		})
@@ -8632,6 +8702,77 @@ func TestJetStreamConsumerPerf(t *testing.T) {
 			done <- true
 		}
 	})
+	start := time.Now()
+	nc.Flush()
+
+	<-done
+	tt := time.Since(start)
+	fmt.Printf("time is %v\n", tt)
+	fmt.Printf("%.0f msgs/sec\n", float64(toStore)/tt.Seconds())
+}
+
+func TestJetStreamConsumerAckFileStorePerf(t *testing.T) {
+	// Comment out to run, holding place for now.
+	t.SkipNow()
+
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	acc := s.GlobalAccount()
+
+	msetConfig := server.StreamConfig{
+		Name:     "sr22",
+		Storage:  server.FileStorage,
+		Subjects: []string{"foo"},
+	}
+
+	mset, err := acc.AddStream(&msetConfig)
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	payload := []byte("Hello World")
+
+	toStore := uint64(200000)
+	for i := uint64(0); i < toStore; i++ {
+		nc.Publish("foo", payload)
+	}
+	nc.Flush()
+
+	if msgs := mset.State().Msgs; msgs != uint64(toStore) {
+		t.Fatalf("Expected %d messages, got %d", toStore, msgs)
+	}
+
+	o, err := mset.AddConsumer(&server.ConsumerConfig{
+		Durable:        "d",
+		DeliverSubject: "d",
+		AckPolicy:      server.AckExplicit,
+		AckWait:        10 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Error creating consumer: %v", err)
+	}
+	defer o.Stop()
+
+	var received uint64
+	done := make(chan bool)
+
+	sub, _ := nc.Subscribe("d", func(m *nats.Msg) {
+		m.Respond(nil) // Ack
+		received++
+		if received >= toStore {
+			done <- true
+		}
+	})
+	sub.SetPendingLimits(-1, -1)
+
 	start := time.Now()
 	nc.Flush()
 

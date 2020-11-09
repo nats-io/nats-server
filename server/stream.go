@@ -1335,16 +1335,7 @@ func (mset *Stream) Snapshot(deadline time.Duration, checkMsgs, includeConsumers
 		return nil, fmt.Errorf("invalid stream")
 	}
 	store := mset.store
-	var obs []*Consumer
-	for _, o := range mset.consumers {
-		obs = append(obs, o)
-	}
 	mset.mu.Unlock()
-
-	// Make sure to sync their state.
-	for _, o := range obs {
-		o.writeState()
-	}
 
 	return store.Snapshot(deadline, checkMsgs, includeConsumers)
 }

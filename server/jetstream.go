@@ -533,7 +533,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		stats := mset.State()
 		s.Noticef("  Restored %s messages for Stream %q", comma(int64(stats.Msgs)), fi.Name())
 
-		// Now do Consumers.
+		// Now do the consumers.
 		odir := path.Join(sdir, fi.Name(), consumerDir)
 		ofis, _ := ioutil.ReadDir(odir)
 		if len(ofis) > 0 {
