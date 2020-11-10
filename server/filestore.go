@@ -826,12 +826,11 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 
 	mb.mu.Lock()
 
-	// Check cache. This will be very rare, will hold lock on this one.
+	// Check cache. This will be very rare.
 	if mb.cache == nil || mb.cache.idx == nil {
 		mb.mu.Unlock()
 		fs.mu.Unlock()
 		if err := mb.loadMsgs(); err != nil {
-			fs.mu.Unlock()
 			return false, err
 		}
 		fs.mu.Lock()
@@ -940,7 +939,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 // Grab info from a slot.
 // Lock should be held.
 func (mb *msgBlock) slotInfo(slot int) (uint32, uint32, bool, error) {
-	if mb.cache == nil || mb.cache.idx == nil {
+	if mb.cache == nil || slot >= len(mb.cache.idx) {
 		return 0, 0, false, errPartialCache
 	}
 	bi := mb.cache.idx[slot]
@@ -1963,15 +1962,17 @@ func (mb *msgBlock) cacheLookupWithLock(seq uint64) (*fileStoredMsg, error) {
 		}
 	}
 
-	// Update cache activity.
-	mb.llts = time.Now().UnixNano()
-
-	bi, _, hashChecked, _ := mb.slotInfo(int(seq - mb.cache.fseq))
-
-	// Check if partial cache and we miss.
-	if mb.cache.off > 0 && bi <= uint32(mb.cache.off) {
+	if mb.cache.off > 0 {
 		return nil, errPartialCache
 	}
+
+	bi, _, hashChecked, err := mb.slotInfo(int(seq - mb.cache.fseq))
+	if err != nil {
+		return nil, errPartialCache
+	}
+
+	// Update cache activity.
+	mb.llts = time.Now().UnixNano()
 
 	// We use the high bit to denote we have already checked the checksum.
 	var hh hash.Hash64

@@ -1357,6 +1357,54 @@ func TestFileStorePartialCacheExpiration(t *testing.T) {
 	}
 }
 
+func TestFileStorePartialIndexes(t *testing.T) {
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
+	cexp := 10 * time.Millisecond
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, CacheExpire: cexp}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	toSend := 5
+	for i := 0; i < toSend; i++ {
+		fs.StoreMsg("foo", nil, []byte("ok-1"))
+	}
+
+	// Now wait til the cache expires, including the index.
+	fs.mu.Lock()
+	mb := fs.blks[0]
+	fs.mu.Unlock()
+
+	// Force idx to expire by resetting last remove ts.
+	mb.mu.Lock()
+	mb.lrts = mb.lrts - int64(defaultCacheIdxExpiration*2)
+	mb.mu.Unlock()
+
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		if mb.cache == nil || len(mb.cache.idx) == 0 {
+			return nil
+		}
+		return fmt.Errorf("Index not empty")
+	})
+
+	// Create a partial cache by adding more msgs.
+	for i := 0; i < toSend; i++ {
+		fs.StoreMsg("foo", nil, []byte("ok-2"))
+	}
+	// If we now load in a message in second half if we do not
+	// detect idx is a prtial correctly this will panic.
+	if _, _, _, _, err := fs.LoadMsg(8); err != nil {
+		t.Fatalf("Error loading %d: %v", 1, err)
+	}
+}
+
 func TestFileStoreSnapshot(t *testing.T) {
 	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
