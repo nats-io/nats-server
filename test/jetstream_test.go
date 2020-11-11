@@ -2665,6 +2665,7 @@ func TestJetStreamAckReplyStreamPendingWithAcks(t *testing.T) {
 
 			sub, _ := nc.SubscribeSync(dsubj)
 			defer sub.Unsubscribe()
+
 			checkFor(t, 500*time.Millisecond, 10*time.Millisecond, func() error {
 				if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != toSend {
 					return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, toSend)
