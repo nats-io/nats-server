@@ -980,9 +980,7 @@ func (mb *msgBlock) spinUpFlushLoop() {
 	fch, qch := mb.fch, mb.qch
 	mb.mu.Unlock()
 
-	sch := make(chan struct{})
-	go mb.flushLoop(fch, qch, sch)
-	<-sch // Will be closed when flush loop starts.
+	go mb.flushLoop(fch, qch)
 }
 
 // Raw low level kicker for flush loops.
@@ -1015,14 +1013,9 @@ func (mb *msgBlock) clearInFlusher() {
 }
 
 // flushLoop watches for messages, index info, or recently closed msg block updates.
-func (mb *msgBlock) flushLoop(fch, qch, sch chan struct{}) {
+func (mb *msgBlock) flushLoop(fch, qch chan struct{}) {
 	mb.setInFlusher()
 	defer mb.clearInFlusher()
-
-	// Signal back that we are runnng.
-	if sch != nil {
-		close(sch)
-	}
 
 	// Will use to test if we have meta data updates.
 	var firstSeq, lastSeq uint64
@@ -1933,6 +1926,7 @@ var (
 	errNoPending    = errors.New("message block does not have pending data")
 	errNotReadable  = errors.New("storage directory not readable")
 	errFlushRunning = errors.New("flush is already running")
+	errCorruptState = errors.New("corrupt state file")
 )
 
 // Used for marking messages that have had their checksums checked.
@@ -2169,14 +2163,6 @@ func (mb *msgBlock) writeIndexInfo() error {
 	}
 
 	return err
-}
-
-// Make sure the header is correct.
-func checkHeader(hdr []byte) error {
-	if hdr == nil || len(hdr) < 2 || hdr[0] != magic || hdr[1] != version {
-		return fmt.Errorf("corrupt state file")
-	}
-	return nil
 }
 
 // readIndexInfo will read in the index information for the message block.
@@ -2646,7 +2632,6 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, blks []*msgBlock, includeC
 	fs.mu.Unlock()
 
 	for _, o := range cfs {
-		o.syncStateFile()
 		o.mu.Lock()
 		meta, err := ioutil.ReadFile(path.Join(o.odir, JetStreamMetaFile))
 		if err != nil {
@@ -2660,10 +2645,12 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, blks []*msgBlock, includeC
 			writeErr(fmt.Sprintf("Could not read consumer checksum file for %q: %v", o.name, err))
 			return
 		}
-		state, err := ioutil.ReadFile(path.Join(o.odir, consumerState))
+
+		// We can have the running state directly encoded now.
+		state, err := o.encodeState()
 		if err != nil {
 			o.mu.Unlock()
-			writeErr(fmt.Sprintf("Could not read consumer state for %q: %v", o.name, err))
+			writeErr(fmt.Sprintf("Could not encode consumer state for %q: %v", o.name, err))
 			return
 		}
 		odirPre := consumerDir + "/" + o.name
@@ -2729,16 +2716,21 @@ func (fs *fileStore) fileStoreConfig() FileStoreConfig {
 ////////////////////////////////////////////////////////////////////////////////
 
 type consumerFileStore struct {
-	mu     sync.Mutex
-	fs     *fileStore
-	cfg    *FileConsumerInfo
-	name   string
-	odir   string
-	ifn    string
-	ifd    *os.File
-	lwsz   int64
-	hh     hash.Hash64
-	closed bool
+	mu      sync.Mutex
+	fs      *fileStore
+	cfg     *FileConsumerInfo
+	name    string
+	odir    string
+	ifn     string
+	ifd     *os.File
+	lwsz    int64
+	hh      hash.Hash64
+	state   ConsumerState
+	fch     chan struct{}
+	qch     chan struct{}
+	flusher bool
+	writing bool
+	closed  bool
 }
 
 func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerStore, error) {
@@ -2779,6 +2771,11 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 		}
 	}
 
+	// Create channels to control our flush go routine.
+	o.fch = make(chan struct{}, 1)
+	o.qch = make(chan struct{})
+	go o.flushLoop()
+
 	fs.mu.Lock()
 	fs.cfs = append(fs.cfs, o)
 	fs.mu.Unlock()
@@ -2786,91 +2783,302 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 	return o, nil
 }
 
+// Kick flusher for this consumer.
+// Lock should be held.
+func (o *consumerFileStore) kickFlusher() {
+	if o.fch != nil {
+		select {
+		case o.fch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// Set in flusher status
+func (o *consumerFileStore) setInFlusher() {
+	o.mu.Lock()
+	o.flusher = true
+	o.mu.Unlock()
+}
+
+// Clear in flusher status
+func (o *consumerFileStore) clearInFlusher() {
+	o.mu.Lock()
+	o.flusher = false
+	o.mu.Unlock()
+}
+
+// Report in flusher status
+func (o *consumerFileStore) inFlusher() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.flusher
+}
+
+// flushLoop watches for consumer updates and the quit channel.
+func (o *consumerFileStore) flushLoop() {
+	o.mu.Lock()
+	fch, qch := o.fch, o.qch
+	o.mu.Unlock()
+
+	o.setInFlusher()
+	defer o.clearInFlusher()
+
+	for {
+		select {
+		case <-fch:
+			time.Sleep(5 * time.Millisecond)
+			select {
+			case <-qch:
+				return
+			default:
+			}
+			o.mu.Lock()
+			if o.closed {
+				o.mu.Unlock()
+				return
+			}
+			buf, err := o.encodeState()
+			o.mu.Unlock()
+			if err != nil {
+				return
+			}
+			// TODO(dlc) - if we error should start failing upwards.
+			o.writeState(buf)
+		case <-qch:
+			return
+		}
+	}
+}
+
+// UpdateDelivered is called whenever a new message has been delivered.
+func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	if dc != 1 && o.cfg.AckPolicy == AckNone {
+		return ErrNoAckPolicy
+	}
+
+	// See if we expect an ack for this.
+	if o.cfg.AckPolicy != AckNone {
+		// Need to create pending records here.
+		if o.state.Pending == nil {
+			o.state.Pending = make(map[uint64]*Pending)
+		}
+		var p *Pending
+		// Check for an update to a message already delivered.
+		if sseq <= o.state.Delivered.Stream {
+			if p = o.state.Pending[sseq]; p != nil {
+				p.Timestamp = ts
+			}
+		}
+		if p == nil {
+			// Move delivered if this is new.
+			o.state.Delivered.Consumer = dseq
+			o.state.Delivered.Stream = sseq
+			p = &Pending{dseq, ts}
+		} else if dc > 1 {
+			if o.state.Redelivered == nil {
+				o.state.Redelivered = make(map[uint64]uint64)
+			}
+			o.state.Redelivered[sseq] = dc
+		}
+		o.state.Pending[sseq] = &Pending{dseq, ts}
+	} else {
+		// For AckNone just update delivered and ackfloor at the same time.
+		o.state.Delivered.Consumer = dseq
+		o.state.Delivered.Stream = sseq
+		o.state.AckFloor.Consumer = dseq
+		o.state.AckFloor.Stream = sseq
+	}
+	// Make sure we flush to disk.
+	o.kickFlusher()
+
+	return nil
+}
+
+// UpdateAcks is called whenever a consumer with explicit ack or ack all acks a message.
+func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	if o.cfg.AckPolicy == AckNone {
+		return ErrNoAckPolicy
+	}
+	if len(o.state.Pending) == 0 {
+		return ErrStoreMsgNotFound
+	}
+	p := o.state.Pending[sseq]
+	if p == nil {
+		return ErrStoreMsgNotFound
+	}
+	delete(o.state.Pending, sseq)
+
+	// TODO(dlc) - Check to see if we move ack floor.
+	if len(o.state.Pending) == 0 {
+		o.state.Pending = nil
+		o.state.AckFloor.Consumer = o.state.Delivered.Consumer
+		o.state.AckFloor.Stream = o.state.Delivered.Stream
+	} else if o.state.AckFloor.Consumer == 0 {
+		o.state.AckFloor.Consumer = dseq
+		o.state.AckFloor.Stream = sseq
+	} else if o.state.AckFloor.Consumer == dseq-1 {
+		o.state.AckFloor.Consumer = dseq
+		o.state.AckFloor.Stream = sseq
+		// Close gap if needed.
+		for ss := sseq + 1; ss < o.state.Delivered.Stream; ss++ {
+			if p, ok := o.state.Pending[ss]; ok {
+				if p.Sequence > 0 {
+					o.state.AckFloor.Consumer = p.Sequence - 1
+					o.state.AckFloor.Stream = ss - 1
+				}
+				break
+			}
+		}
+	}
+	o.kickFlusher()
+	return nil
+}
+
 const seqsHdrSize = 6*binary.MaxVarintLen64 + hdrLen
 
-func (o *consumerFileStore) Update(state *ConsumerState) error {
-	// Sanity checks.
-	if state.Delivered.ConsumerSeq < 1 || state.Delivered.StreamSeq < 1 {
-		return fmt.Errorf("bad delivered sequences")
-	}
-	if state.AckFloor.ConsumerSeq > state.Delivered.ConsumerSeq {
-		return fmt.Errorf("bad ack floor for consumer")
-	}
-	if state.AckFloor.StreamSeq > state.Delivered.StreamSeq {
-		return fmt.Errorf("bad ack floor for stream")
+// Encode our consumer state, version 2.
+// Lock should be held.
+func (o *consumerFileStore) encodeState() ([]byte, error) {
+	if o.closed {
+		return nil, ErrStoreClosed
 	}
 
 	var hdr [seqsHdrSize]byte
+	var buf []byte
+
+	maxSize := seqsHdrSize
+	if lp := len(o.state.Pending); lp > 0 {
+		maxSize += lp*(3*binary.MaxVarintLen64) + binary.MaxVarintLen64
+	}
+	if lr := len(o.state.Redelivered); lr > 0 {
+		maxSize += lr*(2*binary.MaxVarintLen64) + binary.MaxVarintLen64
+	}
+	if maxSize == seqsHdrSize {
+		buf = hdr[:seqsHdrSize]
+	} else {
+		buf = make([]byte, maxSize)
+	}
+
+	now := time.Now()
 
 	// Write header
-	hdr[0] = magic
-	hdr[1] = version
+	buf[0] = magic
+	buf[1] = 2
 
 	n := hdrLen
-	n += binary.PutUvarint(hdr[n:], state.AckFloor.ConsumerSeq)
-	n += binary.PutUvarint(hdr[n:], state.AckFloor.StreamSeq)
-	n += binary.PutUvarint(hdr[n:], state.Delivered.ConsumerSeq-state.AckFloor.ConsumerSeq)
-	n += binary.PutUvarint(hdr[n:], state.Delivered.StreamSeq-state.AckFloor.StreamSeq)
-	n += binary.PutUvarint(hdr[n:], uint64(len(state.Pending)))
-	buf := hdr[:n]
+	n += binary.PutUvarint(buf[n:], o.state.AckFloor.Consumer)
+	n += binary.PutUvarint(buf[n:], o.state.AckFloor.Stream)
+	n += binary.PutUvarint(buf[n:], o.state.Delivered.Consumer)
+	n += binary.PutUvarint(buf[n:], o.state.Delivered.Stream)
+	n += binary.PutUvarint(buf[n:], uint64(len(o.state.Pending)))
+
+	asflr := o.state.AckFloor.Stream
+	adflr := o.state.AckFloor.Consumer
 
 	// These are optional, but always write len. This is to avoid a truncate inline.
-	// If these get big might make more sense to do writes directly to the file.
-	if len(state.Pending) > 0 {
-		mbuf := make([]byte, len(state.Pending)*(2*binary.MaxVarintLen64)+binary.MaxVarintLen64)
-		aflr := state.AckFloor.StreamSeq
-		maxd := state.Delivered.StreamSeq
-
-		// To save space we select the smallest timestamp.
-		var mints int64
-		for k, v := range state.Pending {
-			if mints == 0 || v < mints {
-				mints = v
-			}
-			if k <= aflr || k > maxd {
-				return fmt.Errorf("bad pending entry, sequence [%d] out of range", k)
-			}
-		}
-
-		// Downsample the minimum timestamp.
-		mints /= int64(time.Second)
-		var n int
+	if len(o.state.Pending) > 0 {
+		// To save space we will use now rounded to seconds to be base timestamp.
+		mints := now.Round(time.Second).Unix()
 		// Write minimum timestamp we found from above.
-		n += binary.PutVarint(mbuf[n:], mints)
+		n += binary.PutVarint(buf[n:], mints)
 
-		for k, v := range state.Pending {
-			n += binary.PutUvarint(mbuf[n:], k-aflr)
-			// Downsample to seconds to save on space. Subsecond resolution not
-			// needed for recovery etc.
-			n += binary.PutVarint(mbuf[n:], (v/int64(time.Second))-mints)
+		for k, v := range o.state.Pending {
+			n += binary.PutUvarint(buf[n:], k-asflr)
+			n += binary.PutUvarint(buf[n:], v.Sequence-adflr)
+			// Downsample to seconds to save on space.
+			// Subsecond resolution not needed for recovery etc.
+			ts := v.Timestamp / 1_000_000_000
+			n += binary.PutVarint(buf[n:], mints-ts)
 		}
-		buf = append(buf, mbuf[:n]...)
 	}
 
-	var lenbuf [binary.MaxVarintLen64]byte
-	n = binary.PutUvarint(lenbuf[0:], uint64(len(state.Redelivered)))
-	buf = append(buf, lenbuf[:n]...)
+	// We always write the redelivered len.
+	n += binary.PutUvarint(buf[n:], uint64(len(o.state.Redelivered)))
 
-	// We expect these to be small so will not do anything too crazy here to
-	// keep the size small. Trick could be to offset sequence like above, but
-	// we would need to know low sequence number for redelivery, can't depend on ackfloor etc.
+	// We expect these to be small.
+	if len(o.state.Redelivered) > 0 {
+		for k, v := range o.state.Redelivered {
+			n += binary.PutUvarint(buf[n:], k-asflr)
+			n += binary.PutUvarint(buf[n:], v)
+		}
+	}
+	return buf[:n], nil
+}
+
+func (o *consumerFileStore) Update(state *ConsumerState) error {
+	// Sanity checks.
+	if state.Delivered.Consumer < 1 || state.Delivered.Stream < 1 {
+		return fmt.Errorf("bad delivered sequences")
+	}
+	if state.AckFloor.Consumer > state.Delivered.Consumer {
+		return fmt.Errorf("bad ack floor for consumer")
+	}
+	if state.AckFloor.Stream > state.Delivered.Stream {
+		return fmt.Errorf("bad ack floor for stream")
+	}
+
+	// Copy to our state.
+	var pending map[uint64]*Pending
+	var redelivered map[uint64]uint64
+	if len(state.Pending) > 0 {
+		pending = make(map[uint64]*Pending, len(state.Pending))
+		for seq, p := range state.Pending {
+			pending[seq] = &Pending{p.Sequence, p.Timestamp}
+		}
+		for seq := range pending {
+			if seq <= state.AckFloor.Stream || seq > state.Delivered.Stream {
+				return fmt.Errorf("bad pending entry, sequence [%d] out of range", seq)
+			}
+		}
+	}
 	if len(state.Redelivered) > 0 {
-		mbuf := make([]byte, len(state.Redelivered)*(2*binary.MaxVarintLen64))
-		var n int
-		for k, v := range state.Redelivered {
-			n += binary.PutUvarint(mbuf[n:], k)
-			n += binary.PutUvarint(mbuf[n:], v)
+		redelivered = make(map[uint64]uint64, len(state.Redelivered))
+		for seq, dc := range state.Redelivered {
+			redelivered[seq] = dc
 		}
-		buf = append(buf, mbuf[:n]...)
 	}
 
+	// Replace our state.
+	o.mu.Lock()
+	o.state.Delivered = state.Delivered
+	o.state.AckFloor = state.AckFloor
+	o.state.Pending = pending
+	o.state.Redelivered = redelivered
+	o.mu.Unlock()
+
+	o.kickFlusher()
+	return nil
+}
+
+func (o *consumerFileStore) writeState(buf []byte) error {
 	// Check if we have the index file open.
 	o.mu.Lock()
-	err := o.ensureStateFileOpen()
+	if o.writing || len(buf) == 0 {
+		o.mu.Unlock()
+		return nil
+	}
+	if err := o.ensureStateFileOpen(); err != nil {
+		o.mu.Unlock()
+		return err
+	}
+	o.writing = true
+	ifd := o.ifd
+	o.mu.Unlock()
+
+	n, err := ifd.WriteAt(buf, 0)
+
+	o.mu.Lock()
 	if err == nil {
-		n, err = o.ifd.WriteAt(buf, 0)
 		o.lwsz = int64(n)
 	}
+	o.writing = false
 	o.mu.Unlock()
 
 	return err
@@ -2930,24 +3138,76 @@ func (o *consumerFileStore) ensureStateFileOpen() error {
 	return nil
 }
 
+// Make sure the header is correct.
+func checkHeader(hdr []byte) error {
+	if hdr == nil || len(hdr) < 2 || hdr[0] != magic || hdr[1] != version {
+		return errCorruptState
+	}
+	return nil
+}
+
+func checkConsumerHeader(hdr []byte) (uint8, error) {
+	if hdr == nil || len(hdr) < 2 || hdr[0] != magic {
+		return 0, errCorruptState
+	}
+	version := hdr[1]
+	switch version {
+	case 1, 2:
+		return version, nil
+	}
+	return 0, fmt.Errorf("unsupported version: %d", version)
+}
+
+func (o *consumerFileStore) copyPending() map[uint64]*Pending {
+	pending := make(map[uint64]*Pending, len(o.state.Pending))
+	for seq, p := range o.state.Pending {
+		pending[seq] = &Pending{p.Sequence, p.Timestamp}
+	}
+	return pending
+}
+
+func (o *consumerFileStore) copyRedelivered() map[uint64]uint64 {
+	redelivered := make(map[uint64]uint64, len(o.state.Redelivered))
+	for seq, dc := range o.state.Redelivered {
+		redelivered[seq] = dc
+	}
+	return redelivered
+}
+
 // State retrieves the state from the state file.
 // This is not expected to be called in high performance code, only on startup.
 func (o *consumerFileStore) State() (*ConsumerState, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
+	var state *ConsumerState
+
+	// See if we have a running state or if we need to read in from disk.
+	if o.state.Delivered.Consumer != 0 {
+		state = &ConsumerState{}
+		state.Delivered = o.state.Delivered
+		state.AckFloor = o.state.AckFloor
+		if len(o.state.Pending) > 0 {
+			state.Pending = o.copyPending()
+		}
+		if len(o.state.Redelivered) > 0 {
+			state.Redelivered = o.copyRedelivered()
+		}
+		return state, nil
+	}
+
+	// Read the state in here from disk..
 	buf, err := ioutil.ReadFile(o.ifn)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
 
-	var state *ConsumerState
-
 	if len(buf) == 0 {
 		return state, nil
 	}
 
-	if err := checkHeader(buf); err != nil {
+	version, err := checkConsumerHeader(buf)
+	if err != nil {
 		return nil, err
 	}
 
@@ -2983,36 +3243,50 @@ func (o *consumerFileStore) State() (*ConsumerState, error) {
 	readCount := readSeq
 
 	state = &ConsumerState{}
-	state.AckFloor.ConsumerSeq = readSeq()
-	state.AckFloor.StreamSeq = readSeq()
-	state.Delivered.ConsumerSeq = readSeq()
-	state.Delivered.StreamSeq = readSeq()
+	state.AckFloor.Consumer = readSeq()
+	state.AckFloor.Stream = readSeq()
+	state.Delivered.Consumer = readSeq()
+	state.Delivered.Stream = readSeq()
 
 	if bi == -1 {
-		return nil, fmt.Errorf("corrupt state file")
+		return nil, errCorruptState
 	}
-	// Adjust back.
-	state.Delivered.ConsumerSeq += state.AckFloor.ConsumerSeq
-	state.Delivered.StreamSeq += state.AckFloor.StreamSeq
+	if version == 1 {
+		// Adjust back. Version 1 also stored delivered as next to be delivered,
+		// so adjust that back down here.
+		state.Delivered.Consumer += state.AckFloor.Consumer - 1
+		state.Delivered.Stream += state.AckFloor.Stream - 1
+	}
 
 	numPending := readLen()
 
 	// We have additional stuff.
 	if numPending > 0 {
 		mints := readTimeStamp()
-		state.Pending = make(map[uint64]int64, numPending)
+		state.Pending = make(map[uint64]*Pending, numPending)
 		for i := 0; i < int(numPending); i++ {
-			seq := readSeq()
+			sseq := readSeq()
+			var dseq uint64
+			if version == 2 {
+				dseq = readSeq()
+			}
 			ts := readTimeStamp()
-			if seq == 0 || ts == -1 {
-				return nil, fmt.Errorf("corrupt state file")
+			if sseq == 0 || ts == -1 {
+				return nil, errCorruptState
 			}
 			// Adjust seq back.
-			seq += state.AckFloor.StreamSeq
+			sseq += state.AckFloor.Stream
+			if version == 2 {
+				dseq += state.AckFloor.Consumer
+			}
 			// Adjust the timestamp back.
-			ts = (ts + mints) * int64(time.Second)
+			if version == 1 {
+				ts = (ts + mints) * int64(time.Second)
+			} else {
+				ts = (mints - ts) * int64(time.Second)
+			}
 			// Store in pending.
-			state.Pending[seq] = ts
+			state.Pending[sseq] = &Pending{dseq, ts}
 		}
 	}
 
@@ -3025,7 +3299,7 @@ func (o *consumerFileStore) State() (*ConsumerState, error) {
 			seq := readSeq()
 			n := readCount()
 			if seq == 0 || n == 0 {
-				return nil, fmt.Errorf("corrupt state file")
+				return nil, errCorruptState
 			}
 			state.Redelivered[seq] = n
 		}
@@ -3040,43 +3314,82 @@ func (o *consumerFileStore) Stop() error {
 		o.mu.Unlock()
 		return nil
 	}
-	o.closed = true
-	if o.ifd != nil {
-		o.ifd.Sync()
-		o.ifd.Close()
-		o.ifd = nil
+	if o.qch != nil {
+		close(o.qch)
+		o.qch = nil
 	}
+
+	err := o.ensureStateFileOpen()
+	ifd := o.ifd
+
+	if err == nil {
+		var buf []byte
+		// Make sure to write this out..
+		if buf, err = o.encodeState(); err == nil {
+			_, err = ifd.WriteAt(buf, 0)
+		}
+	}
+
+	o.ifd, o.odir = nil, _EMPTY_
 	fs := o.fs
+	o.closed = true
+	o.kickFlusher()
 	o.mu.Unlock()
+
+	if ifd != nil {
+		ifd.Sync()
+		ifd.Close()
+	}
+
 	fs.removeConsumer(o)
-	return nil
+	return err
 }
 
 // Delete the consumer.
 func (o *consumerFileStore) Delete() error {
-	// Call stop first. OK if already stopped.
-	o.Stop()
 	o.mu.Lock()
+
+	if o.closed {
+		o.mu.Unlock()
+		return nil
+	}
+	if o.qch != nil {
+		close(o.qch)
+		o.qch = nil
+	}
+
+	if o.ifd != nil {
+		o.ifd.Close()
+		o.ifd = nil
+	}
 	var err error
-	if o.odir != "" {
+	if o.odir != _EMPTY_ {
 		err = os.RemoveAll(o.odir)
 	}
+	o.ifd, o.odir = nil, _EMPTY_
+	o.closed = true
+	fs := o.fs
 	o.mu.Unlock()
+
+	fs.removeConsumer(o)
 	return err
 }
 
 func (fs *fileStore) removeConsumer(cfs *consumerFileStore) {
 	fs.mu.Lock()
+	defer fs.mu.Unlock()
 	for i, o := range fs.cfs {
 		if o == cfs {
 			fs.cfs = append(fs.cfs[:i], fs.cfs[i+1:]...)
 			break
 		}
 	}
-	fs.mu.Unlock()
 }
 
+////////////////////////////////////////////////////////////////////////////////
 // Templates
+////////////////////////////////////////////////////////////////////////////////
+
 type templateFileStore struct {
 	dir string
 	hh  hash.Hash64

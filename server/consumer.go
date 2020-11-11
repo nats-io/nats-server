@@ -171,14 +171,14 @@ type Consumer struct {
 	dseq              uint64
 	adflr             uint64
 	asflr             uint64
-	spending          uint64
+	sgap              uint64
 	dsubj             string
 	rlimit            *rate.Limiter
 	reqSub            *subscription
 	ackSub            *subscription
 	ackReplyT         string
 	nextMsgSubj       string
-	pending           map[uint64]int64
+	pending           map[uint64]*Pending
 	ptmr              *time.Timer
 	rdq               []uint64
 	rdc               map[uint64]uint64
@@ -191,7 +191,6 @@ type Consumer struct {
 	filterWC          bool
 	dtmr              *time.Timer
 	dthresh           time.Duration
-	fch               chan struct{}
 	qch               chan struct{}
 	inch              chan bool
 	sfreq             int32
@@ -385,7 +384,6 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 		dsubj:   config.DeliverSubject,
 		active:  true,
 		qch:     make(chan struct{}),
-		fch:     make(chan struct{}, 1),
 		sfreq:   int32(sampleFreq),
 		maxdc:   uint64(config.MaxDeliver),
 		created: time.Now().UTC(),
@@ -529,8 +527,9 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 
 	// Now start up Go routine to deliver msgs.
 	go o.loopAndDeliverMsgs(s, a)
-	// Startup our state update loop.
-	go o.updateStateLoop()
+	// Startup our interest update loop.
+	// FIXME(dlc) - combine with above once conditional signaling removed.
+	go o.updateInterestLoop()
 
 	o.sendCreateAdvisory()
 
@@ -693,9 +692,11 @@ func (o *Consumer) forceExpirePending() {
 		o.rdq = append(o.rdq, expired...)
 		// Now we should update the timestamp here since we are redelivering.
 		// We will use an incrementing time to preserve order for any other redelivery.
-		off := now - o.pending[expired[0]]
+		off := now - o.pending[expired[0]].Timestamp
 		for _, seq := range expired {
-			o.pending[seq] += off
+			if p, ok := o.pending[seq]; ok && p != nil {
+				p.Timestamp += off
+			}
 		}
 		o.ptmr.Reset(o.ackWait(0))
 	}
@@ -768,8 +769,10 @@ func (o *Consumer) processAck(_ *subscription, _ *client, subject, reply string,
 func (o *Consumer) progressUpdate(seq uint64) {
 	o.mu.Lock()
 	if len(o.pending) > 0 {
-		if _, ok := o.pending[seq]; ok {
-			o.pending[seq] = time.Now().UnixNano()
+		if p, ok := o.pending[seq]; ok {
+			p.Timestamp = time.Now().UnixNano()
+			// Update store system.
+			o.store.UpdateDelivered(p.Sequence, seq, 1, p.Timestamp)
 		}
 	}
 	o.mu.Unlock()
@@ -784,7 +787,7 @@ func (o *Consumer) processNak(sseq, dseq uint64) {
 		o.mu.Unlock()
 		return
 	}
-	// If we are explicit ack make sure this is still on pending list.
+	// If we are explicit ack make sure this is still on our pending list.
 	if len(o.pending) > 0 {
 		if _, ok := o.pending[sseq]; !ok {
 			o.mu.Unlock()
@@ -853,10 +856,10 @@ func (o *Consumer) readStoredState() error {
 	state, err := o.store.State()
 	if err == nil && state != nil {
 		// FIXME(dlc) - re-apply state.
-		o.dseq = state.Delivered.ConsumerSeq
-		o.sseq = state.Delivered.StreamSeq
-		o.adflr = state.AckFloor.ConsumerSeq
-		o.asflr = state.AckFloor.StreamSeq
+		o.dseq = state.Delivered.Consumer + 1
+		o.sseq = state.Delivered.Stream + 1
+		o.adflr = state.AckFloor.Consumer
+		o.asflr = state.AckFloor.Stream
 		o.pending = state.Pending
 		o.rdc = state.Redelivered
 	}
@@ -876,12 +879,12 @@ func (o *Consumer) writeState() {
 	if o.store != nil {
 		state := ConsumerState{
 			Delivered: SequencePair{
-				ConsumerSeq: o.dseq,
-				StreamSeq:   o.sseq,
+				Consumer: o.dseq - 1,
+				Stream:   o.sseq - 1,
 			},
 			AckFloor: SequencePair{
-				ConsumerSeq: o.adflr,
-				StreamSeq:   o.asflr,
+				Consumer: o.adflr,
+				Stream:   o.asflr,
 			},
 			Pending:     o.pending,
 			Redelivered: o.rdc,
@@ -892,9 +895,8 @@ func (o *Consumer) writeState() {
 	o.mu.Unlock()
 }
 
-func (o *Consumer) updateStateLoop() {
+func (o *Consumer) updateInterestLoop() {
 	o.mu.Lock()
-	fch := o.fch
 	qch := o.qch
 	inch := o.inch
 	o.mu.Unlock()
@@ -907,10 +909,6 @@ func (o *Consumer) updateStateLoop() {
 			// inch can be nil on pull-based, but then this will
 			// just block and not fire.
 			o.updateDeliveryInterest(interest)
-		case <-fch:
-			// FIXME(dlc) - Do better, check for fast changes at quick intervals.
-			time.Sleep(10 * time.Millisecond)
-			o.writeState()
 		}
 	}
 }
@@ -924,16 +922,16 @@ func (o *Consumer) Info() *ConsumerInfo {
 		Created: o.created,
 		Config:  o.config,
 		Delivered: SequencePair{
-			ConsumerSeq: o.dseq - 1,
-			StreamSeq:   o.sseq - 1,
+			Consumer: o.dseq - 1,
+			Stream:   o.sseq - 1,
 		},
 		AckFloor: SequencePair{
-			ConsumerSeq: o.adflr,
-			StreamSeq:   o.asflr,
+			Consumer: o.adflr,
+			Stream:   o.asflr,
 		},
 		NumAckPending:  len(o.pending),
 		NumRedelivered: len(o.rdc),
-		NumPending:     o.spending,
+		NumPending:     o.sgap,
 	}
 	// If we are a pull mode consumer, report on number of waiting requests.
 	if o.isPullMode() {
@@ -941,19 +939,6 @@ func (o *Consumer) Info() *ConsumerInfo {
 	}
 	o.mu.Unlock()
 	return info
-}
-
-// Will update the underlying store.
-// Lock should be held.
-func (o *Consumer) updateStore() {
-	if o.store == nil {
-		return
-	}
-	// Kick our flusher
-	select {
-	case o.fch <- struct{}{}:
-	default:
-	}
 }
 
 // shouldSample lets us know if we are sampling metrics on acks.
@@ -988,7 +973,7 @@ func (o *Consumer) sampleAck(sseq, dseq, dcount uint64) {
 		Consumer:    o.name,
 		ConsumerSeq: dseq,
 		StreamSeq:   sseq,
-		Delay:       unow - o.pending[sseq],
+		Delay:       unow - o.pending[sseq].Timestamp,
 		Deliveries:  dcount,
 	}
 
@@ -1006,23 +991,36 @@ func (o *Consumer) ackMsg(sseq, dseq, dcount uint64) {
 }
 
 func (o *Consumer) processAckMsg(sseq, dseq, dcount uint64, doSample bool) {
+	o.mu.Lock()
 	var sagap uint64
 
-	o.mu.Lock()
 	switch o.config.AckPolicy {
 	case AckExplicit:
-		if _, ok := o.pending[sseq]; ok {
+		if p, ok := o.pending[sseq]; ok {
 			if doSample {
 				o.sampleAck(sseq, dseq, dcount)
 			}
 			delete(o.pending, sseq)
-			// Consumers sequence numbers can skip during redlivery since
+
+			// Use the original deliver sequence from our pending record.
+			dseq = p.Sequence
+
+			// Consumers sequence numbers can skip during re-delivery since
 			// they always increment. So if we do not have any pending treat
 			// as all scenario below. Otherwise check that we filled in a gap.
 			if len(o.pending) == 0 {
 				o.adflr, o.asflr = o.dseq-1, o.sseq-1
+				o.pending = nil
 			} else if dseq == o.adflr+1 {
 				o.adflr, o.asflr = dseq, sseq
+				for ss := sseq + 1; ss < o.sseq; ss++ {
+					if p, ok := o.pending[ss]; ok {
+						if p.Sequence > 0 {
+							o.adflr, o.asflr = p.Sequence-1, ss-1
+						}
+						break
+					}
+				}
 			}
 		}
 		// We do these regardless.
@@ -1046,7 +1044,9 @@ func (o *Consumer) processAckMsg(sseq, dseq, dcount uint64, doSample bool) {
 		o.mu.Unlock()
 		return
 	}
-	o.updateStore()
+
+	// Update underlying store.
+	o.store.UpdateAcks(dseq, sseq)
 
 	mset := o.mset
 	o.mu.Unlock()
@@ -1575,11 +1575,12 @@ func (o *Consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dcount u
 		return
 	}
 	// Update pending on first attempt
-	if dcount == 1 && o.spending > 0 {
-		o.spending--
+	if dcount == 1 && o.sgap > 0 {
+		o.sgap--
 	}
 
-	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, o.dseq, dcount, ts, o.spending), hdr, msg, o, seq}
+	dseq := o.dseq
+	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, dseq, dcount, ts, o.sgap), hdr, msg, o, seq}
 	mset := o.mset
 	sendq := mset.sendq
 	ap := o.config.AckPolicy
@@ -1596,7 +1597,7 @@ func (o *Consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dcount u
 	o.mu.Lock()
 
 	if ap == AckExplicit || ap == AckAll {
-		o.trackPending(seq)
+		o.trackPending(seq, dseq)
 	} else if ap == AckNone {
 		o.adflr = o.dseq
 		o.asflr = seq
@@ -1604,19 +1605,24 @@ func (o *Consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dcount u
 
 	o.dseq++
 
-	o.updateStore()
+	// FIXME(dlc) - Capture errors?
+	o.store.UpdateDelivered(dseq, seq, dcount, ts)
 }
 
 // Tracks our outstanding pending acks. Only applicable to AckExplicit mode.
 // Lock should be held.
-func (o *Consumer) trackPending(seq uint64) {
+func (o *Consumer) trackPending(sseq, dseq uint64) {
 	if o.pending == nil {
-		o.pending = make(map[uint64]int64)
+		o.pending = make(map[uint64]*Pending)
 	}
 	if o.ptmr == nil {
 		o.ptmr = time.AfterFunc(o.ackWait(0), o.checkPending)
 	}
-	o.pending[seq] = time.Now().UnixNano()
+	if p, ok := o.pending[sseq]; ok {
+		p.Timestamp = time.Now().UnixNano()
+	} else {
+		o.pending[sseq] = &Pending{dseq, time.Now().UnixNano()}
+	}
 }
 
 // didNotDeliver is called when a delivery for a consumer message failed.
@@ -1689,10 +1695,9 @@ func (o *Consumer) checkPending() {
 
 	// Since we can update timestamps, we have to review all pending.
 	// We may want to unlock here or warn if list is big.
-	// We also need to sort after.
 	var expired []uint64
-	for seq, ts := range o.pending {
-		elapsed := now - ts
+	for seq, p := range o.pending {
+		elapsed := now - p.Timestamp
 		if elapsed >= ttl {
 			if !o.onRedeliverQueue(seq) {
 				expired = append(expired, seq)
@@ -1705,13 +1710,16 @@ func (o *Consumer) checkPending() {
 	}
 
 	if len(expired) > 0 {
+		// We need to sort.
 		sort.Slice(expired, func(i, j int) bool { return expired[i] < expired[j] })
 		o.rdq = append(o.rdq, expired...)
 		// Now we should update the timestamp here since we are redelivering.
 		// We will use an incrementing time to preserve order for any other redelivery.
-		off := now - o.pending[expired[0]]
+		off := now - o.pending[expired[0]].Timestamp
 		for _, seq := range expired {
-			o.pending[seq] += off
+			if p, ok := o.pending[seq]; ok {
+				p.Timestamp += off
+			}
 		}
 	}
 
@@ -1881,7 +1889,7 @@ func (o *Consumer) purge(sseq uint64) {
 	o.sseq = sseq
 	o.asflr = sseq - 1
 	o.adflr = o.dseq - 1
-	o.spending = 0
+	o.sgap = 0
 	if len(o.pending) > 0 {
 		o.pending = nil
 		if o.ptmr != nil {
@@ -1902,6 +1910,8 @@ func (o *Consumer) purge(sseq uint64) {
 		o.rdq = newRDQ
 	}
 	o.mu.Unlock()
+
+	o.writeState()
 }
 
 func stopAndClearTimer(tp **time.Timer) {
@@ -1995,11 +2005,6 @@ func (o *Consumer) stop(dflag, doSignal, advisory bool) error {
 		}
 	}
 
-	// Make sure we stamp our update state
-	if !dflag {
-		o.writeState()
-	}
-
 	var err error
 	if store != nil {
 		if dflag {
@@ -2084,7 +2089,7 @@ func (o *Consumer) setInitialPending() {
 	if o.config.FilterSubject == _EMPTY_ {
 		state := mset.store.State()
 		if state.Msgs > 0 {
-			o.spending = state.Msgs - (o.sseq - state.FirstSeq)
+			o.sgap = state.Msgs - (o.sseq - state.FirstSeq)
 		}
 	} else {
 		// Here we are filtered.
@@ -2096,7 +2101,7 @@ func (o *Consumer) setInitialPending() {
 			} else if err == ErrStoreEOF {
 				break
 			} else if err == nil && o.isFilteredMatch(subj) {
-				o.spending++
+				o.sgap++
 			}
 		}
 	}
@@ -2106,7 +2111,7 @@ func (o *Consumer) setInitialPending() {
 func (o *Consumer) incStreamPending(sseq uint64, subj string) {
 	o.mu.Lock()
 	if o.isFilteredMatch(subj) {
-		o.spending++
+		o.sgap++
 	}
 	o.mu.Unlock()
 }
@@ -2114,15 +2119,15 @@ func (o *Consumer) incStreamPending(sseq uint64, subj string) {
 func (o *Consumer) decStreamPending(sseq uint64) {
 	o.mu.Lock()
 	// Ignore if we have already sent this one.
-	if sseq < o.sseq || o.spending == 0 {
+	if sseq < o.sseq || o.sgap == 0 {
 		o.mu.Unlock()
 		return
 	}
 	if o.config.FilterSubject == _EMPTY_ {
-		o.spending--
+		o.sgap--
 	} else if o.mset != nil {
 		if subj, _, _, _, _ := o.mset.store.LoadMsg(sseq); o.isFilteredMatch(subj) {
-			o.spending--
+			o.sgap--
 		}
 	}
 	o.mu.Unlock()
