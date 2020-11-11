@@ -71,8 +71,6 @@ type StreamInfo struct {
 // for a Stream we will direct link from the client to this Stream structure.
 type Stream struct {
 	mu        sync.RWMutex
-	sg        *sync.Cond
-	sgw       int
 	jsa       *jsAccount
 	client    *client
 	sid       int
@@ -157,7 +155,6 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 	// Setup the internal client.
 	c := s.createInternalJetStreamClient()
 	mset := &Stream{jsa: jsa, config: cfg, client: c, consumers: make(map[string]*Consumer)}
-	mset.sg = sync.NewCond(&mset.mu)
 
 	jsa.streams[cfg.Name] = mset
 	storeDir := path.Join(jsa.storeDir, streamsDir, cfg.Name)
@@ -1000,7 +997,6 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 	}
 
 	if err == nil && seq > 0 && numConsumers > 0 {
-		var needSignal bool
 		var _obs [4]*Consumer
 		obs := _obs[:0]
 
@@ -1013,23 +1009,10 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 		for _, o := range obs {
 			o.incStreamPending(seq, subject)
 			if !o.deliverCurrentMsg(subject, hdr, msg, seq, ts) {
-				needSignal = true
+				o.signalNewMessages()
 			}
 		}
-
-		if needSignal {
-			mset.signalConsumers()
-		}
 	}
-}
-
-// Will signal all waiting consumers.
-func (mset *Stream) signalConsumers() {
-	mset.mu.Lock()
-	if mset.sgw > 0 {
-		mset.sg.Broadcast()
-	}
-	mset.mu.Unlock()
 }
 
 // Internal message for use by jetstream subsystem.
@@ -1156,9 +1139,7 @@ func (mset *Stream) stop(delete bool) error {
 		o.stop(delete, false, delete)
 	}
 
-	// Make sure we release all consumers here at once.
 	mset.mu.Lock()
-	mset.sg.Broadcast()
 
 	// Send stream delete advisory after the consumers.
 	if delete {
@@ -1268,22 +1249,6 @@ func (mset *Stream) State() StreamState {
 	// Currently rely on store.
 	// TODO(dlc) - This will need to change with clusters.
 	return mset.store.State()
-}
-
-// waitForMsgs will have the stream wait for the arrival of new messages.
-func (mset *Stream) waitForMsgs() {
-	mset.mu.Lock()
-
-	if mset.client == nil {
-		mset.mu.Unlock()
-		return
-	}
-
-	mset.sgw++
-	mset.sg.Wait()
-	mset.sgw--
-
-	mset.mu.Unlock()
 }
 
 // Determines if the new proposed partition is unique amongst all observables.
