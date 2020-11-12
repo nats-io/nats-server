@@ -701,6 +701,7 @@ func (o *Consumer) forceExpirePending() {
 		}
 		o.ptmr.Reset(o.ackWait(0))
 	}
+	o.signalNewMessages()
 }
 
 // This is a config change for the delivery subject for a

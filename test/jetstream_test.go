@@ -4655,6 +4655,7 @@ func TestJetStreamConsumerReconnect(t *testing.T) {
 			sub.Unsubscribe()
 			// Re-establish new sub on same subject.
 			sub, _ = nc.SubscribeSync(delivery)
+			nc.Flush()
 
 			// We should be getting 2 here.
 			sendMsg() // 2
@@ -9015,7 +9016,6 @@ func TestJetStreamStoredMsgsDontDisappearAfterCacheExpiration(t *testing.T) {
 		defer os.RemoveAll(config.StoreDir)
 	}
 
-	// mset, err := s.GlobalAccount().AddStream(sc)
 	mset, err := s.GlobalAccount().AddStreamWithStore(sc, &server.FileStoreConfig{BlockSize: 128, CacheExpire: 15 * time.Millisecond})
 	if err != nil {
 		t.Fatalf("Unexpected error adding stream: %v", err)
