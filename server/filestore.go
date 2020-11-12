@@ -1513,6 +1513,13 @@ func (mb *msgBlock) clearFlushing() {
 	}
 }
 
+// Lock should not be held.
+func (mb *msgBlock) clearFlushingUnlocked() {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+	mb.clearFlushing()
+}
+
 // Lock should be held.
 func (mb *msgBlock) setFlushing() {
 	if mb.cache != nil {
@@ -1770,7 +1777,7 @@ func (mb *msgBlock) flushPendingMsgs() error {
 
 	// Only one can be flushing at a time.
 	mb.setFlushing()
-	defer mb.clearFlushing()
+	defer mb.clearFlushingUnlocked()
 
 	woff := int64(mb.cache.off + mb.cache.wp)
 	lob := len(buf)
@@ -2017,19 +2024,18 @@ func (fs *fileStore) msgForSeq(seq uint64) (*fileStoredMsg, error) {
 	if seq == 0 {
 		seq = fs.state.FirstSeq
 	}
+	// Make sure to snapshot here.
+	lseq := fs.state.LastSeq
 	mb := fs.selectMsgBlock(seq)
 	fs.mu.RUnlock()
 
 	if mb == nil {
 		var err = ErrStoreEOF
-		fs.mu.RLock()
-		if seq <= fs.state.LastSeq {
+		if seq <= lseq {
 			err = ErrStoreMsgNotFound
 		}
-		fs.mu.RUnlock()
 		return nil, err
 	}
-
 	// TODO(dlc) - older design had a check to prefetch when we knew we were
 	// loading in order and getting close to end of current mb. Should add
 	// something like it back in.
