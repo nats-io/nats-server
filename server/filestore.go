@@ -1768,13 +1768,11 @@ func (mb *msgBlock) flushPendingMsgs() error {
 		return err
 	}
 
-	// Only one can be flushing at a time.
-	mb.setFlushing()
-	defer mb.clearFlushing()
-
 	woff := int64(mb.cache.off + mb.cache.wp)
 	lob := len(buf)
 
+	// Only one can be flushing at a time.
+	mb.setFlushing()
 	mb.mu.Unlock()
 
 	var tn int
@@ -1785,6 +1783,9 @@ func (mb *msgBlock) flushPendingMsgs() error {
 		if err != nil {
 			// FIXME(dlc) - What is the correct behavior here?
 			mb.removeIndexFile()
+			mb.mu.Lock()
+			mb.clearFlushing()
+			mb.mu.Unlock()
 			return err
 		}
 		woff += int64(n)
@@ -1802,6 +1803,8 @@ func (mb *msgBlock) flushPendingMsgs() error {
 	// Re-acquire lock to update.
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
+	// Clear on exit.
+	defer mb.clearFlushing()
 
 	// Cache may be gone.
 	if mb.cache == nil || mb.mfd == nil {
@@ -2017,19 +2020,18 @@ func (fs *fileStore) msgForSeq(seq uint64) (*fileStoredMsg, error) {
 	if seq == 0 {
 		seq = fs.state.FirstSeq
 	}
+	// Make sure to snapshot here.
+	lseq := fs.state.LastSeq
 	mb := fs.selectMsgBlock(seq)
 	fs.mu.RUnlock()
 
 	if mb == nil {
 		var err = ErrStoreEOF
-		fs.mu.RLock()
-		if seq <= fs.state.LastSeq {
+		if seq <= lseq {
 			err = ErrStoreMsgNotFound
 		}
-		fs.mu.RUnlock()
 		return nil, err
 	}
-
 	// TODO(dlc) - older design had a check to prefetch when we knew we were
 	// loading in order and getting close to end of current mb. Should add
 	// something like it back in.
