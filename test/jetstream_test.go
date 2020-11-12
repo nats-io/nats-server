@@ -7480,13 +7480,14 @@ func TestJetStreamAPIConsumerListPaging(t *testing.T) {
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
 
-	sub, _ := nc.SubscribeSync("d.*")
-	defer sub.Unsubscribe()
-	nc.Flush()
-
 	consumersNum := server.JSApiNamesLimit
 	for i := 1; i <= consumersNum; i++ {
-		_, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: fmt.Sprintf("d.%d", i)})
+		dsubj := fmt.Sprintf("d.%d", i)
+		sub, _ := nc.SubscribeSync(dsubj)
+		defer sub.Unsubscribe()
+		nc.Flush()
+
+		_, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: dsubj})
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -8905,6 +8906,7 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 
 			sub2, _ := nc2.SubscribeSync(nats.NewInbox())
 			defer sub2.Unsubscribe()
+			nc2.Flush()
 
 			o2, err := mset.AddConsumer(&server.ConsumerConfig{
 				Durable:        "dur2",
@@ -8945,6 +8947,7 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 
 			// Now close the 2nd subscription...
 			sub2.Unsubscribe()
+			nc2.Flush()
 
 			// Send 2 more new messages
 			for i := 0; i < toSend; i++ {
@@ -8959,7 +8962,7 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 			for i := 0; i < toSend; i++ {
 				m, err := sub1.NextMsg(time.Second)
 				if err != nil {
-					t.Fatalf("Error acking message: %v", err)
+					t.Fatalf("Error getting message to ack: %v", err)
 				}
 				m.Respond(nil)
 			}
