@@ -1651,7 +1651,7 @@ func (o *Consumer) didNotDeliver(seq uint64) {
 	if o.isPushMode() {
 		o.active = false
 	} else if o.pending != nil {
-		// push mode and we have pending.
+		// pull mode and we have pending.
 		if _, ok := o.pending[seq]; ok {
 			// We found this messsage on pending, we need
 			// to queue it up for immediate redelivery since
