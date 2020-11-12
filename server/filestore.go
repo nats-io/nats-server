@@ -1513,13 +1513,6 @@ func (mb *msgBlock) clearFlushing() {
 	}
 }
 
-// Lock should not be held.
-func (mb *msgBlock) clearFlushingUnlocked() {
-	mb.mu.Lock()
-	defer mb.mu.Unlock()
-	mb.clearFlushing()
-}
-
 // Lock should be held.
 func (mb *msgBlock) setFlushing() {
 	if mb.cache != nil {
@@ -1775,13 +1768,11 @@ func (mb *msgBlock) flushPendingMsgs() error {
 		return err
 	}
 
-	// Only one can be flushing at a time.
-	mb.setFlushing()
-	defer mb.clearFlushingUnlocked()
-
 	woff := int64(mb.cache.off + mb.cache.wp)
 	lob := len(buf)
 
+	// Only one can be flushing at a time.
+	mb.setFlushing()
 	mb.mu.Unlock()
 
 	var tn int
@@ -1792,6 +1783,9 @@ func (mb *msgBlock) flushPendingMsgs() error {
 		if err != nil {
 			// FIXME(dlc) - What is the correct behavior here?
 			mb.removeIndexFile()
+			mb.mu.Lock()
+			mb.clearFlushing()
+			mb.mu.Unlock()
 			return err
 		}
 		woff += int64(n)
@@ -1809,6 +1803,8 @@ func (mb *msgBlock) flushPendingMsgs() error {
 	// Re-acquire lock to update.
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
+	// Clear on exit.
+	defer mb.clearFlushing()
 
 	// Cache may be gone.
 	if mb.cache == nil || mb.mfd == nil {
