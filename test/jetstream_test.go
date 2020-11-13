@@ -8913,7 +8913,7 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 				DeliverSubject: sub2.Subject,
 				FilterSubject:  "foo.bar",
 				AckPolicy:      server.AckExplicit,
-				AckWait:        25 * time.Millisecond,
+				AckWait:        100 * time.Millisecond,
 			})
 			if err != nil {
 				t.Fatalf("Unexpected error adding consumer: %v", err)
@@ -8978,7 +8978,7 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 				DeliverSubject: sub2.Subject,
 				FilterSubject:  "foo.bar",
 				AckPolicy:      server.AckExplicit,
-				AckWait:        25 * time.Millisecond,
+				AckWait:        100 * time.Millisecond,
 			})
 			if err != nil {
 				t.Fatalf("Unexpected error adding consumer: %v", err)
