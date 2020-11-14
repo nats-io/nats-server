@@ -169,6 +169,15 @@ var (
 
 	// ErrNoTransforms signals no subject transforms are available to map this subject.
 	ErrNoTransforms = errors.New("no matching transforms available")
+
+	// ErrJetStreamNotEnabled is returned when JetStream is not enabled.
+	ErrJetStreamNotEnabled = errors.New("jetstream not enabled")
+
+	// ErrJetStreamStreamNotFound is returned when a stream can not be found.
+	ErrJetStreamStreamNotFound = errors.New("stream not found")
+
+	// ErrJetStreamNotEnabledForAccount is returned JetStream is not enabled for this account.
+	ErrJetStreamNotEnabledForAccount = errors.New("jetstream not enabled for account")
 )
 
 // configErr is a configuration error.

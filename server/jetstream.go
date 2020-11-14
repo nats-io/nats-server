@@ -343,7 +343,7 @@ func (s *Server) JetStreamNumAccounts() int {
 func (s *Server) JetStreamReservedResources() (int64, int64, error) {
 	js := s.getJetStream()
 	if js == nil {
-		return -1, -1, fmt.Errorf("jetstream not enabled")
+		return -1, -1, ErrJetStreamNotEnabled
 	}
 	js.mu.RLock()
 	defer js.mu.RUnlock()
@@ -369,7 +369,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	// FIXME(dlc) - cluster mode
 	js := s.getJetStream()
 	if js == nil {
-		return fmt.Errorf("jetstream not enabled")
+		return ErrJetStreamNotEnabled
 	}
 	if s.SystemAccount() == a {
 		return fmt.Errorf("jetstream can not be enabled on the system account")
@@ -622,21 +622,49 @@ func (a *Account) Streams() []*Stream {
 	return msets
 }
 
+// LookupStream will lookup a stream by name.
 func (a *Account) LookupStream(name string) (*Stream, error) {
 	a.mu.RLock()
 	jsa := a.js
 	a.mu.RUnlock()
 
 	if jsa == nil {
-		return nil, fmt.Errorf("jetstream not enabled")
+		return nil, ErrJetStreamNotEnabled
 	}
 	jsa.mu.Lock()
 	mset, ok := jsa.streams[name]
 	jsa.mu.Unlock()
 	if !ok {
-		return nil, fmt.Errorf("stream not found")
+		return nil, ErrJetStreamStreamNotFound
 	}
 	return mset, nil
+}
+
+// LookupStreamBySubject will lookup a stream by a subject.
+// The subject needs to be an exact match or a subset. Supersets will not match.
+func (a *Account) LookupStreamBySubject(subj string) (*Stream, bool, error) {
+	a.mu.RLock()
+	jsa := a.js
+	a.mu.RUnlock()
+
+	if jsa == nil {
+		return nil, false, ErrJetStreamNotEnabled
+	}
+	jsa.mu.Lock()
+	defer jsa.mu.Unlock()
+
+	for _, mset := range jsa.streams {
+		for _, tsubj := range mset.config.Subjects {
+			if subj == tsubj {
+				return mset, len(mset.config.Subjects) > 1, nil
+			}
+			if subjectIsSubsetMatch(subj, tsubj) {
+				return mset, true, nil
+			}
+		}
+	}
+
+	return nil, false, ErrJetStreamStreamNotFound
 }
 
 // UpdateJetStreamLimits will update the account limits for a JetStream enabled account.
@@ -651,10 +679,10 @@ func (a *Account) UpdateJetStreamLimits(limits *JetStreamAccountLimits) error {
 	}
 	js := s.getJetStream()
 	if js == nil {
-		return fmt.Errorf("jetstream not enabled")
+		return ErrJetStreamNotEnabled
 	}
 	if jsa == nil {
-		return fmt.Errorf("jetstream not enabled for account")
+		return ErrJetStreamNotEnabledForAccount
 	}
 
 	if limits == nil {
@@ -724,7 +752,7 @@ func (a *Account) DisableJetStream() error {
 
 	js := s.getJetStream()
 	if js == nil {
-		return fmt.Errorf("jetstream not enabled")
+		return ErrJetStreamNotEnabled
 	}
 
 	// Remove service imports.
@@ -738,7 +766,7 @@ func (a *Account) DisableJetStream() error {
 // Disable JetStream for the account.
 func (js *jetStream) disableJetStream(jsa *jsAccount) error {
 	if jsa == nil {
-		return fmt.Errorf("jetstream not enabled for account")
+		return ErrJetStreamNotEnabledForAccount
 	}
 
 	js.mu.Lock()
@@ -966,7 +994,7 @@ func (a *Account) checkForJetStream() (*Server, *jsAccount, error) {
 	}
 
 	if jsa == nil {
-		return nil, nil, fmt.Errorf("jetstream not enabled for account")
+		return nil, nil, ErrJetStreamNotEnabledForAccount
 	}
 
 	return s, jsa, nil
@@ -1177,7 +1205,7 @@ func (t *StreamTemplate) Delete() error {
 	t.mu.Unlock()
 
 	if jsa == nil {
-		return fmt.Errorf("jetstream not enabled")
+		return ErrJetStreamNotEnabled
 	}
 
 	jsa.mu.Lock()

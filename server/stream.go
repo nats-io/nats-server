@@ -491,7 +491,7 @@ func (mset *Stream) Delete() error {
 	jsa := mset.jsa
 	mset.mu.Unlock()
 	if jsa == nil {
-		return fmt.Errorf("jetstream not enabled for account")
+		return ErrJetStreamNotEnabledForAccount
 	}
 	jsa.mu.Lock()
 	delete(jsa.streams, mset.config.Name)

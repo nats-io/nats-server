@@ -404,6 +404,93 @@ func TestJetStreamPubAck(t *testing.T) {
 	}
 }
 
+func TestJetStreamLookupStreamBySubject(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+	acc := s.GlobalAccount()
+
+	if _, err := acc.AddStream(&server.StreamConfig{Name: "1", Subjects: []string{"foo"}}); err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	if _, err := acc.AddStream(&server.StreamConfig{Name: "2", Subjects: []string{"bar", "baz", "boo"}}); err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	if _, err := acc.AddStream(&server.StreamConfig{Name: "3", Subjects: []string{"foo.*", "bar.*"}}); err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	if _, err := acc.AddStream(&server.StreamConfig{Name: "4", Subjects: []string{"baz.*.*.>"}}); err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+
+	// Check some errors first.
+	checkError := func(subj string) {
+		t.Helper()
+		if _, _, err := acc.LookupStreamBySubject(subj); err != server.ErrJetStreamStreamNotFound {
+			t.Fatalf("Expected to get a stream not found error, got %v", err)
+		}
+	}
+
+	checkError("zzz")
+	checkError("*")
+	checkError("baz.>")
+
+	checkLookup := func(subj, stream string, filtered bool) {
+		t.Helper()
+		s, f, err := acc.LookupStreamBySubject(subj)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if s.Name() != stream {
+			t.Fatalf("Expected stream name of %q, got %q", stream, s.Name())
+		}
+		if f != filtered {
+			t.Fatalf("Expected filtered to be %v, got %v", filtered, f)
+		}
+	}
+
+	checkLookup("foo", "1", false)
+	checkLookup("boo", "2", true)
+	checkLookup("foo.*", "3", true)
+	checkLookup("foo.1", "3", true)
+	checkLookup("baz.*.*.>", "4", false)
+	checkLookup("baz.2.*.>", "4", true)
+
+	// Now test API
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	checkAPILookup := func(subj, stream string, filtered bool) {
+		resp, err := nc.Request(server.JSApiStreamLookup, []byte(subj), time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var lresp server.JSApiStreamLookupResponse
+		if err := json.Unmarshal(resp.Data, &lresp); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if lresp.Error != nil {
+			t.Fatalf("Got an API error: %+v", lresp.Error)
+		}
+		if lresp.Stream != stream {
+			t.Fatalf("Expected stream name of %q, got %q", stream, lresp.Stream)
+		}
+		if lresp.Filtered != filtered {
+			t.Fatalf("Expected filtered to be %v, got %v", filtered, lresp.Filtered)
+		}
+	}
+
+	checkAPILookup("foo", "1", false)
+	checkAPILookup("boo", "2", true)
+	checkAPILookup("foo.*", "3", true)
+	checkAPILookup("foo.1", "3", true)
+	checkAPILookup("baz.*.*.>", "4", false)
+	checkAPILookup("baz.2.*.>", "4", true)
+}
+
 func TestJetStreamConsumerWithStartTime(t *testing.T) {
 	subj := "my_stream"
 	cases := []struct {
@@ -7039,7 +7126,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	}
 	checkNotFound(bResp.Error, "stream not found")
 
-	// Now create an consumer.
+	// Now create a consumer.
 	delivery := nats.NewInbox()
 	obsReq := server.CreateConsumerRequest{
 		Stream: msetCfg.Name,
