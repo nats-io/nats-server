@@ -66,7 +66,7 @@ type FileConsumerInfo struct {
 type fileStore struct {
 	mu       sync.RWMutex
 	state    StreamState
-	scb      func(int64, int64, uint64)
+	scb      StorageUpdateHandler
 	ageChk   *time.Timer
 	syncTmr  *time.Timer
 	cfg      FileStreamInfo
@@ -551,13 +551,13 @@ func (fs *fileStore) GetSeqFromTime(t time.Time) uint64 {
 // RegisterStorageUpdates registers a callback for updates to storage changes.
 // It will present number of messages and bytes as a signed integer and an
 // optional sequence number of the message if a single.
-func (fs *fileStore) RegisterStorageUpdates(cb func(int64, int64, uint64)) {
+func (fs *fileStore) RegisterStorageUpdates(cb StorageUpdateHandler) {
 	fs.mu.Lock()
 	fs.scb = cb
 	bsz := fs.state.Bytes
 	fs.mu.Unlock()
 	if cb != nil && bsz > 0 {
-		cb(0, int64(bsz), 0)
+		cb(0, int64(bsz), 0, _EMPTY_)
 	}
 }
 
@@ -688,7 +688,7 @@ func (fs *fileStore) StoreMsg(subj string, hdr, msg []byte) (uint64, int64, erro
 
 	// Update the upper layers regarding storage used.
 	if cb != nil {
-		cb(1, int64(n), seq)
+		cb(1, int64(n), seq, subj)
 	}
 
 	return seq, ts, nil
@@ -824,9 +824,19 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 		return false, err
 	}
 
+	// If we have a callback grab the message since we need the subject.
+	// TODO(dlc) - This will cause whole buffer to be loaded which I was trying
+	// to avoid. Maybe use side cache for subjects or understand when we really need them.
+	// Meaning if the stream above is only a single subject no need to store, this is just
+	// for updating stream pending for consumers.
+	var sm *fileStoredMsg
+	if fs.scb != nil {
+		sm, _ = mb.fetchMsg(seq)
+	}
+
 	mb.mu.Lock()
 
-	// Check cache. This will be very rare.
+	// Check cache. This should be very rare.
 	if mb.cache == nil || mb.cache.idx == nil {
 		mb.mu.Unlock()
 		fs.mu.Unlock()
@@ -860,16 +870,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 	slot := seq - mb.cache.fseq
 	ri, rl, _, _ := mb.slotInfo(int(slot))
 	msz := uint64(rl)
-
-	// Call this early so that we can look this message up if needed.
-	if cb := fs.scb; cb != nil {
-		mb.mu.Unlock()
-		fs.mu.Unlock()
-		delta := int64(msz)
-		cb(-1, -delta, seq)
-		fs.mu.Lock()
-		mb.mu.Lock()
-	}
 
 	// Global stats
 	fs.state.Msgs--
@@ -913,6 +913,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 		qch = mb.qch
 		fch = mb.fch
 	}
+	cb := fs.scb
 	mb.mu.Unlock()
 
 	// Kick outside of lock.
@@ -932,6 +933,16 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 		fs.selectNextFirst()
 	}
 	fs.mu.Unlock()
+
+	// Storage updates.
+	if cb != nil {
+		subj := _EMPTY_
+		if sm != nil {
+			subj = sm.subj
+		}
+		delta := int64(msz)
+		cb(-1, -delta, seq, subj)
+	}
 
 	return true, nil
 }
@@ -1773,13 +1784,14 @@ func (mb *msgBlock) flushPendingMsgs() error {
 
 	// Only one can be flushing at a time.
 	mb.setFlushing()
+	mfd := mb.mfd
 	mb.mu.Unlock()
 
 	var tn int
 
 	// Append new data to the message block file.
 	for lbb := lob; lbb > 0; lbb = len(buf) {
-		n, err := mb.mfd.WriteAt(buf, woff)
+		n, err := mfd.WriteAt(buf, woff)
 		if err != nil {
 			// FIXME(dlc) - What is the correct behavior here?
 			mb.removeIndexFile()
@@ -2350,7 +2362,7 @@ func (fs *fileStore) Purge() uint64 {
 	fs.mu.Unlock()
 
 	if cb != nil {
-		cb(-int64(purged), -rbytes, 0)
+		cb(-int64(purged), -rbytes, 0, _EMPTY_)
 	}
 
 	return purged

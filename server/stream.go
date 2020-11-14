@@ -759,23 +759,17 @@ func (mset *Stream) setupStore(fsCfg *FileStoreConfig) error {
 // jetstream account. We do local processing for stream pending for consumers, but only
 // for removals.
 // Lock should not ne held.
-func (mset *Stream) storeUpdates(md, bd int64, seq uint64) {
-	var _obs [4]*Consumer
-	obs := _obs[:0]
-
+func (mset *Stream) storeUpdates(md, bd int64, seq uint64, subj string) {
 	// If we have a single negative update then we will process our consumers for stream pending.
 	// Purge and Store handled separately inside individual calls.
 	if md == -1 {
-		mset.mu.Lock()
+		mset.mu.RLock()
 		for _, o := range mset.consumers {
-			obs = append(obs, o)
+			o.decStreamPending(seq, subj)
 		}
-		mset.mu.Unlock()
+		mset.mu.RUnlock()
 	}
 
-	for _, o := range obs {
-		o.decStreamPending(seq)
-	}
 	if mset.jsa != nil {
 		mset.jsa.updateUsage(mset.config.Storage, bd)
 	}

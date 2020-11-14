@@ -56,6 +56,10 @@ var (
 	ErrNoAckPolicy = errors.New("ack policy is none")
 )
 
+// Used to call back into the upper layers to report on changes in storage resources.
+// For the cases where its a single message we will also supply sequence number and subject.
+type StorageUpdateHandler func(msgs, bytes int64, seq uint64, subj string)
+
 type StreamStore interface {
 	StoreMsg(subj string, hdr, msg []byte) (uint64, int64, error)
 	SkipMsg() uint64
@@ -65,7 +69,7 @@ type StreamStore interface {
 	Purge() uint64
 	GetSeqFromTime(t time.Time) uint64
 	State() StreamState
-	RegisterStorageUpdates(func(int64, int64, uint64))
+	RegisterStorageUpdates(StorageUpdateHandler)
 	UpdateConfig(cfg *StreamConfig) error
 	Delete() error
 	Stop() error
