@@ -2117,19 +2117,15 @@ func (o *Consumer) incStreamPending(sseq uint64, subj string) {
 	o.mu.Unlock()
 }
 
-func (o *Consumer) decStreamPending(sseq uint64) {
+func (o *Consumer) decStreamPending(sseq uint64, subj string) {
 	o.mu.Lock()
-	// Ignore if we have already sent this one.
+	defer o.mu.Unlock()
+
+	// Ignore if we have already seen this one.
 	if sseq < o.sseq || o.sgap == 0 {
-		o.mu.Unlock()
 		return
 	}
-	if o.config.FilterSubject == _EMPTY_ {
+	if o.isFilteredMatch(subj) {
 		o.sgap--
-	} else if o.mset != nil {
-		if subj, _, _, _, _ := o.mset.store.LoadMsg(sseq); o.isFilteredMatch(subj) {
-			o.sgap--
-		}
 	}
-	o.mu.Unlock()
 }

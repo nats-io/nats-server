@@ -1922,6 +1922,8 @@ func TestFileStoreStoreLimitRemovePerf(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
+	fs.RegisterStorageUpdates(func(md, bd int64, seq uint64, subj string) {})
+
 	fmt.Printf("storing and removing (limit 1) %d msgs of %s each, totalling %s\n",
 		toStore,
 		FriendlyBytes(int64(storedMsgSize)),

@@ -8942,8 +8942,12 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 				}
 			}
 			// To make sure acks are processed for checking state after sending new ones.
-			nc1.Flush()
-			nc2.Flush()
+			checkFor(t, time.Second, 25*time.Millisecond, func() error {
+				if state = mset.State(); state.Msgs != 0 {
+					return fmt.Errorf("Stream still has messages")
+				}
+				return nil
+			})
 
 			// Now close the 2nd subscription...
 			sub2.Unsubscribe()

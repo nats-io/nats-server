@@ -27,7 +27,7 @@ type memStore struct {
 	cfg       StreamConfig
 	state     StreamState
 	msgs      map[uint64]*storedMsg
-	scb       func(int64, int64, uint64)
+	scb       StorageUpdateHandler
 	ageChk    *time.Timer
 	consumers int
 }
@@ -134,7 +134,7 @@ func (ms *memStore) StoreMsg(subj string, hdr, msg []byte) (uint64, int64, error
 	ms.mu.Unlock()
 
 	if cb != nil {
-		cb(1, stopBytes-startBytes, seq)
+		cb(1, stopBytes-startBytes, seq, subj)
 	}
 
 	return seq, ts, nil
@@ -161,7 +161,7 @@ func (ms *memStore) SkipMsg() uint64 {
 // RegisterStorageUpdates registers a callback for updates to storage changes.
 // It will present number of messages and bytes as a signed integer and an
 // optional sequence number of the message if a single.
-func (ms *memStore) RegisterStorageUpdates(cb func(int64, int64, uint64)) {
+func (ms *memStore) RegisterStorageUpdates(cb StorageUpdateHandler) {
 	ms.mu.Lock()
 	ms.scb = cb
 	ms.mu.Unlock()
@@ -267,7 +267,7 @@ func (ms *memStore) Purge() uint64 {
 	ms.mu.Unlock()
 
 	if cb != nil {
-		cb(-int64(purged), -bytes, 0)
+		cb(-int64(purged), -bytes, 0, _EMPTY_)
 	}
 
 	return purged
@@ -351,13 +351,6 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 
 	ss = memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 
-	if ms.scb != nil {
-		delta := int64(ss)
-		ms.mu.Unlock()
-		ms.scb(-1, -delta, seq)
-		ms.mu.Lock()
-	}
-
 	delete(ms.msgs, seq)
 	ms.state.Msgs--
 	ms.state.Bytes -= ss
@@ -373,6 +366,13 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 			rand.Read(sm.msg)
 		}
 		sm.seq, sm.ts = 0, 0
+	}
+
+	if ms.scb != nil {
+		ms.mu.Unlock()
+		delta := int64(ss)
+		ms.scb(-1, -delta, seq, sm.subj)
+		ms.mu.Lock()
 	}
 
 	return ok
