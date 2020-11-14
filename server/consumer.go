@@ -59,6 +59,7 @@ type ConsumerConfig struct {
 	RateLimit       uint64        `json:"rate_limit_bps,omitempty"` // Bits per sec
 	SampleFrequency string        `json:"sample_freq,omitempty"`
 	MaxWaiting      int           `json:"max_waiting,omitempty"`
+	MaxAckPending   int           `json:"max_ack_pending,omitempty"`
 }
 
 type CreateConsumerRequest struct {
@@ -178,6 +179,7 @@ type Consumer struct {
 	ackSub            *subscription
 	ackReplyT         string
 	nextMsgSubj       string
+	maxp              int
 	pending           map[uint64]*Pending
 	ptmr              *time.Timer
 	rdq               []uint64
@@ -225,6 +227,9 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 		}
 		if config.MaxWaiting != 0 {
 			return nil, fmt.Errorf("consumer in push mode can not set max waiting")
+		}
+		if config.MaxAckPending > 0 && config.AckPolicy == AckNone {
+			return nil, fmt.Errorf("consumer requires ack policy for max ack pending")
 		}
 	} else {
 		// Pull mode / work queue mode require explicit ack.
@@ -388,6 +393,7 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 		mch:     make(chan struct{}, 1),
 		sfreq:   int32(sampleFreq),
 		maxdc:   uint64(config.MaxDeliver),
+		maxp:    config.MaxAckPending,
 		created: time.Now().UTC(),
 	}
 	if isDurableConsumer(config) {
@@ -1000,6 +1006,7 @@ func (o *Consumer) ackMsg(sseq, dseq, dcount uint64) {
 func (o *Consumer) processAckMsg(sseq, dseq, dcount uint64, doSample bool) {
 	o.mu.Lock()
 	var sagap uint64
+	var needSignal bool
 
 	switch o.config.AckPolicy {
 	case AckExplicit:
@@ -1007,11 +1014,12 @@ func (o *Consumer) processAckMsg(sseq, dseq, dcount uint64, doSample bool) {
 			if doSample {
 				o.sampleAck(sseq, dseq, dcount)
 			}
+			if o.maxp > 0 && len(o.pending) >= o.maxp {
+				needSignal = true
+			}
 			delete(o.pending, sseq)
-
 			// Use the original deliver sequence from our pending record.
 			dseq = p.Sequence
-
 			// Consumers sequence numbers can skip during re-delivery since
 			// they always increment. So if we do not have any pending treat
 			// as all scenario below. Otherwise check that we filled in a gap.
@@ -1029,6 +1037,7 @@ func (o *Consumer) processAckMsg(sseq, dseq, dcount uint64, doSample bool) {
 					}
 				}
 			}
+
 		}
 		// We do these regardless.
 		delete(o.rdc, sseq)
@@ -1038,6 +1047,9 @@ func (o *Consumer) processAckMsg(sseq, dseq, dcount uint64, doSample bool) {
 		if dseq <= o.adflr || sseq <= o.asflr {
 			o.mu.Unlock()
 			return
+		}
+		if o.maxp > 0 && len(o.pending) >= o.maxp {
+			needSignal = true
 		}
 		sagap = sseq - o.asflr
 		o.adflr, o.asflr = dseq, sseq
@@ -1068,6 +1080,11 @@ func (o *Consumer) processAckMsg(sseq, dseq, dcount uint64, doSample bool) {
 		} else {
 			mset.ackMsg(o, sseq)
 		}
+	}
+
+	// If we had max ack pending set and were at limit we need to unblock folks.
+	if needSignal {
+		o.signalNewMessages()
 	}
 }
 
@@ -1205,8 +1222,8 @@ func (wq *waitQueue) pop() *waitingRequest {
 }
 
 // processNextMsgReq will process a request for the next message available. A nil message payload means deliver
-// a single message. If the payload is a number parseable with Atoi(), then we will send a batch of messages without
-// requiring another request to this endpoint, or an ACK.
+// a single message. If the payload is a formal request or a number parseable with Atoi(), then we will send a
+// batch of messages without requiring another request to this endpoint, or an ACK.
 func (o *Consumer) processNextMsgReq(_ *subscription, c *client, _, reply string, msg []byte) {
 	o.mu.Lock()
 	mset := o.mset
@@ -1250,13 +1267,19 @@ func (o *Consumer) processNextMsgReq(_ *subscription, c *client, _, reply string
 	}
 
 	for i := 0; i < batchSize; i++ {
+		// See if we have more messages available.
 		if subj, hdr, msg, seq, dc, ts, err := o.getNextMsg(); err == nil {
 			o.deliverMsg(reply, subj, hdr, msg, seq, dc, ts)
 			// Need to discount this from the total n for the request.
 			wr.n--
 		} else {
 			if wr.noWait {
-				sendErr(404, "No Messages")
+				switch err {
+				case errMaxAckPending:
+					sendErr(409, "Exceeded MaxAckPending")
+				default:
+					sendErr(404, "No Messages")
+				}
 				return
 			}
 			o.waiting.add(&wr)
@@ -1314,12 +1337,15 @@ func (o *Consumer) isFilteredMatch(subj string) bool {
 	return subjectIsSubsetMatch(subj, o.config.FilterSubject)
 }
 
+var errMaxAckPending = errors.New("max ack pending reached")
+var errBadConsumer = errors.New("consumer not valid")
+
 // Get next available message from underlying store.
 // Is partition aware and redeliver aware.
 // Lock should be held.
 func (o *Consumer) getNextMsg() (subj string, hdr, msg []byte, seq uint64, dcount uint64, ts int64, err error) {
 	if o.mset == nil {
-		return _EMPTY_, nil, nil, 0, 0, 0, fmt.Errorf("consumer not valid")
+		return _EMPTY_, nil, nil, 0, 0, 0, errBadConsumer
 	}
 	for {
 		seq, dcount := o.sseq, uint64(1)
@@ -1336,7 +1362,12 @@ func (o *Consumer) getNextMsg() (subj string, hdr, msg []byte, seq uint64, dcoun
 				delete(o.pending, seq)
 				continue
 			}
+		} else if o.maxp > 0 && len(o.pending) >= o.maxp {
+			// maxp only set when ack policy != AckNone and user set MaxAckPending
+			// Stall if we have hit max pending.
+			return _EMPTY_, nil, nil, 0, 0, 0, errMaxAckPending
 		}
+
 		subj, hdr, msg, ts, err := o.mset.store.LoadMsg(seq)
 		if err == nil {
 			if dcount == 1 { // First delivery.
@@ -1457,7 +1488,7 @@ func (o *Consumer) loopAndDeliverMsgs(s *Server, a *Account) {
 
 		// On error either wait or return.
 		if err != nil {
-			if err == ErrStoreMsgNotFound || err == ErrStoreEOF {
+			if err == ErrStoreMsgNotFound || err == ErrStoreEOF || err == errMaxAckPending {
 				goto waitForMsgs
 			} else {
 				o.mu.Unlock()
