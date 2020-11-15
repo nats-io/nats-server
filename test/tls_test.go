@@ -1553,6 +1553,27 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			nil,
 			nil,
 		},
+		{
+			"connect with tls and RDN includes multiple CN elements",
+			`
+				port: -1
+				%s
+
+				authorization {
+				  users = [
+				    { user = "DC=com,DC=acme,OU=Organic Units,OU=Users,CN=jdoe,CN=123456,CN=John Doe" }
+                                  ]
+				}
+			`,
+			//
+			// OpenSSL: -subj "/CN=John Doe/CN=123456/CN=jdoe/OU=Users/OU=Organic Units/DC=acme/DC=com"
+			// Go:       CN=jdoe,OU=Users+OU=Organic Units
+			// RFC2253:  DC=com,DC=acme,OU=Organic Units,OU=Users,CN=jdoe,CN=123456,CN=John Doe
+			//
+			nats.ClientCert("./configs/certs/rdns/client-e.pem", "./configs/certs/rdns/client-e.key"),
+			nil,
+			nil,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			content := fmt.Sprintf(test.config, `
