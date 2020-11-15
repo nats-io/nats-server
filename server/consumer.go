@@ -180,6 +180,7 @@ type Consumer struct {
 	ackReplyT         string
 	nextMsgSubj       string
 	maxp              int
+	sendq             chan *jsPubMsg
 	pending           map[uint64]*Pending
 	ptmr              *time.Timer
 	rdq               []uint64
@@ -533,11 +534,13 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 		o.replay = true
 	}
 
+	// Create internal sendq
+	o.sendq = make(chan *jsPubMsg, msetSendQSize)
+
 	// Now start up Go routine to deliver msgs.
-	go o.loopAndDeliverMsgs(s, a)
-	// Startup our interest update loop.
-	// FIXME(dlc) - combine with above once conditional signaling removed.
-	go o.updateInterestLoop()
+	go o.loopAndGatherMsgs(s, a)
+	// Startup our deliver loop.
+	go o.loopAndDeliverMsgs()
 
 	o.sendCreateAdvisory()
 
@@ -548,12 +551,7 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 // Do all advisory sends here.
 // Lock should be held on entry but will be released.
 func (o *Consumer) sendAdvisory(subj string, msg []byte) {
-	if o.mset != nil && o.mset.sendq != nil {
-		sendq := o.mset.sendq
-		o.mu.Unlock()
-		sendq <- &jsPubMsg{subj, subj, _EMPTY_, nil, msg, nil, 0}
-		o.mu.Lock()
-	}
+	o.sendq <- &jsPubMsg{subj, subj, _EMPTY_, nil, msg, nil, 0}
 }
 
 func (o *Consumer) sendDeleteAdvisoryLocked() {
@@ -899,13 +897,31 @@ func (o *Consumer) writeState() {
 	o.mu.Unlock()
 }
 
-func (o *Consumer) updateInterestLoop() {
+// loopAndDeliverMsgs() will loop and deliver messages and watch for interest changes.
+func (o *Consumer) loopAndDeliverMsgs() {
 	o.mu.Lock()
-	qch := o.qch
-	inch := o.inch
+	qch, inch, sendq := o.qch, o.inch, o.sendq
+	s, acc := o.acc.srv, o.acc
 	o.mu.Unlock()
 
+	// Create our client used to send messages.
+	c := s.createInternalJetStreamClient()
+	// Bind to the account.
+	c.registerWithAccount(acc)
+	// Clean up on exit.
+	defer c.closeConnection(ClientClosed)
+
+	// Warn when internal send queue is backed up past 75%
+	warnThresh := cap(sendq) * 3 / 4
+	warnFreq := time.Second
+	last := time.Now().Add(-warnFreq)
+
 	for {
+		if len(sendq) > warnThresh && time.Since(last) >= warnFreq {
+			s.Warnf("Jetstream internal consumer send queue > 75%% for account: %q consumer: %q", acc.Name, o.Name())
+			last = time.Now()
+		}
+
 		select {
 		case <-qch:
 			return
@@ -913,6 +929,37 @@ func (o *Consumer) updateInterestLoop() {
 			// inch can be nil on pull-based, but then this will
 			// just block and not fire.
 			o.updateDeliveryInterest(interest)
+		case pm := <-sendq:
+			if pm == nil {
+				return
+			}
+			c.pa.subject = []byte(pm.subj)
+			c.pa.deliver = []byte(pm.dsubj)
+			c.pa.size = len(pm.msg) + len(pm.hdr)
+			c.pa.szb = []byte(strconv.Itoa(c.pa.size))
+			c.pa.reply = []byte(pm.reply)
+
+			var msg []byte
+			if len(pm.hdr) > 0 {
+				c.pa.hdr = len(pm.hdr)
+				c.pa.hdb = []byte(strconv.Itoa(c.pa.hdr))
+				msg = append(pm.hdr, pm.msg...)
+				msg = append(msg, _CRLF_...)
+			} else {
+				c.pa.hdr = -1
+				c.pa.hdb = nil
+				msg = append(pm.msg, _CRLF_...)
+			}
+
+			didDeliver := c.processInboundClientMsg(msg)
+			c.pa.szb = nil
+			c.flushClients(0)
+
+			// Check to see if this is a delivery for an observable and
+			// we failed to deliver the message. If so alert the observable.
+			if !didDeliver && pm.o != nil && pm.seq > 0 {
+				pm.o.didNotDeliver(pm.seq)
+			}
 		}
 	}
 }
@@ -1233,11 +1280,10 @@ func (o *Consumer) processNextMsgReq(_ *subscription, c *client, _, reply string
 	}
 
 	sendErr := func(status int, description string) {
-		sendq := mset.sendq
 		o.mu.Unlock()
 		hdr := []byte(fmt.Sprintf("NATS/1.0 %d %s\r\n\r\n", status, description))
 		pmsg := &jsPubMsg{reply, reply, _EMPTY_, hdr, nil, nil, 0}
-		sendq <- pmsg // Send message.
+		o.sendq <- pmsg // Send message.
 	}
 
 	if o.waiting.isFull() {
@@ -1400,12 +1446,9 @@ func (o *Consumer) forceExpireFirstWaiting() *waitingRequest {
 	// If we are expiring this and we think there is still interest, alert.
 	if rr := o.acc.sl.Match(wr.reply); len(rr.psubs)+len(rr.qsubs) > 0 && o.mset != nil {
 		// We still appear to have interest, so send alert as courtesy.
-		sendq := o.mset.sendq
-		o.mu.Unlock()
 		hdr := []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
 		pmsg := &jsPubMsg{wr.reply, wr.reply, _EMPTY_, hdr, nil, nil, 0}
-		sendq <- pmsg // Send message.
-		o.mu.Lock()
+		o.sendq <- pmsg // Send message.
 	}
 	return wr
 }
@@ -1437,7 +1480,7 @@ func (o *Consumer) checkWaitingForInterest() bool {
 	return o.waiting.len() > 0
 }
 
-func (o *Consumer) loopAndDeliverMsgs(s *Server, a *Account) {
+func (o *Consumer) loopAndGatherMsgs(s *Server, a *Account) {
 	// On startup check to see if we are in a a reply situtation where replay policy is not instant.
 	var (
 		lts  int64 // last time stamp seen, used for replay.
@@ -1458,7 +1501,7 @@ func (o *Consumer) loopAndDeliverMsgs(s *Server, a *Account) {
 	// Deliver all the msgs we have now, once done or on a condition, we wait for new ones.
 	for {
 		var (
-			seq, dcnt   uint64
+			seq, dcount uint64
 			subj, dsubj string
 			hdr         []byte
 			msg         []byte
@@ -1484,7 +1527,7 @@ func (o *Consumer) loopAndDeliverMsgs(s *Server, a *Account) {
 			goto waitForMsgs
 		}
 
-		subj, hdr, msg, seq, dcnt, ts, err = o.getNextMsg()
+		subj, hdr, msg, seq, dcount, ts, err = o.getNextMsg()
 
 		// On error either wait or return.
 		if err != nil {
@@ -1536,7 +1579,7 @@ func (o *Consumer) loopAndDeliverMsgs(s *Server, a *Account) {
 			}
 		}
 
-		o.deliverMsg(dsubj, subj, hdr, msg, seq, dcnt, ts)
+		o.deliverMsg(dsubj, subj, hdr, msg, seq, dcount, ts)
 
 		o.mu.Unlock()
 		continue
@@ -1602,10 +1645,6 @@ func (o *Consumer) deliverCurrentMsg(subj string, hdr, msg []byte, seq uint64, t
 		dsubj = o.dsubj
 	}
 
-	if len(msg) > 0 {
-		msg = append(msg[:0:0], msg...)
-	}
-
 	o.deliverMsg(dsubj, subj, hdr, msg, seq, 1, ts)
 	o.mu.Unlock()
 
@@ -1623,21 +1662,27 @@ func (o *Consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dcount u
 		o.sgap--
 	}
 
+	if len(hdr) > 0 {
+		hdr = append(hdr[:0:0], hdr...)
+	}
+	if len(msg) > 0 {
+		msg = append(msg[:0:0], msg...)
+	}
+
 	dseq := o.dseq
 	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, dseq, dcount, ts, o.sgap), hdr, msg, o, seq}
 	mset := o.mset
-	sendq := mset.sendq
 	ap := o.config.AckPolicy
 
 	// This needs to be unlocked since the other side may need this lock on a failed delivery.
 	o.mu.Unlock()
 	// Send message.
-	sendq <- pmsg
-
+	o.sendq <- pmsg
 	// If we are ack none and mset is interest only we should make sure stream removes interest.
 	if ap == AckNone && mset.config.Retention == InterestPolicy && !mset.checkInterest(seq, o) {
 		mset.store.RemoveMsg(seq)
 	}
+	// Re-acquire lock.
 	o.mu.Lock()
 
 	if ap == AckExplicit || ap == AckAll {
