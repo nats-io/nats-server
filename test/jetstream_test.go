@@ -9266,3 +9266,299 @@ func TestJetStreamConsumerUpdateRedelivery(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamConsumerMaxAckPending(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &server.StreamConfig{
+			Name:     "MY_STREAM",
+			Storage:  server.MemoryStorage,
+			Subjects: []string{"foo.*"},
+		}},
+		{"FileStore", &server.StreamConfig{
+			Name:     "MY_STREAM",
+			Storage:  server.FileStorage,
+			Subjects: []string{"foo.*"},
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			// Do error scenarios.
+			_, err = mset.AddConsumer(&server.ConsumerConfig{
+				Durable:        "d22",
+				DeliverSubject: nats.NewInbox(),
+				AckPolicy:      server.AckNone,
+				MaxAckPending:  1,
+			})
+			if err == nil {
+				t.Fatalf("Expected error, MaxAckPending only applicable to ack != AckNone")
+			}
+
+			// Queue up 100 messages.
+			toSend := 100
+			for i := 0; i < toSend; i++ {
+				sendStreamMsg(t, nc, "foo.bar", fmt.Sprintf("MSG: %d", i+1))
+			}
+
+			// Limit to 33
+			maxAckPending := 33
+
+			o, err := mset.AddConsumer(&server.ConsumerConfig{
+				Durable:        "d22",
+				DeliverSubject: nats.NewInbox(),
+				AckPolicy:      server.AckExplicit,
+				MaxAckPending:  maxAckPending,
+			})
+			if err != nil {
+				t.Fatalf("Expected no error, got %v", err)
+			}
+			defer o.Delete()
+
+			sub, _ := nc.SubscribeSync(o.Info().Config.DeliverSubject)
+			defer sub.Unsubscribe()
+
+			checkSubPending := func(numExpected int) {
+				t.Helper()
+				checkFor(t, 200*time.Millisecond, 10*time.Millisecond, func() error {
+					if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != numExpected {
+						return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, numExpected)
+					}
+					return nil
+				})
+			}
+
+			checkSubPending(maxAckPending)
+			// We hit the limit, double check we stayed there.
+			if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != maxAckPending {
+				t.Fatalf("Too many messages received: %d vs %d", nmsgs, maxAckPending)
+			}
+
+			// Now ack them all.
+			for i := 0; i < maxAckPending; i++ {
+				m, err := sub.NextMsg(time.Second)
+				if err != nil {
+					t.Fatalf("Error receiving message %d: %v", i, err)
+				}
+				m.Respond(nil)
+			}
+			checkSubPending(maxAckPending)
+		})
+	}
+}
+
+func TestJetStreamPullConsumerMaxAckPending(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &server.StreamConfig{
+			Name:     "MY_STREAM",
+			Storage:  server.MemoryStorage,
+			Subjects: []string{"foo.*"},
+		}},
+		{"FileStore", &server.StreamConfig{
+			Name:     "MY_STREAM",
+			Storage:  server.FileStorage,
+			Subjects: []string{"foo.*"},
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			// Queue up 100 messages.
+			toSend := 100
+			for i := 0; i < toSend; i++ {
+				sendStreamMsg(t, nc, "foo.bar", fmt.Sprintf("MSG: %d", i+1))
+			}
+
+			// Limit to 33
+			maxAckPending := 33
+
+			o, err := mset.AddConsumer(&server.ConsumerConfig{
+				Durable:       "d22",
+				AckPolicy:     server.AckExplicit,
+				MaxAckPending: maxAckPending,
+			})
+			if err != nil {
+				t.Fatalf("Expected no error, got %v", err)
+			}
+			defer o.Delete()
+
+			getSubj := o.RequestNextMsgSubject()
+
+			var toAck []*nats.Msg
+
+			for i := 0; i < maxAckPending; i++ {
+				if m, err := nc.Request(getSubj, nil, time.Second); err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				} else {
+					toAck = append(toAck, m)
+				}
+			}
+			// This should fail.. But we do not want to queue up our request.
+			req := &server.JSApiConsumerGetNextRequest{Batch: 1, NoWait: true}
+			jreq, _ := json.Marshal(req)
+			m, err := nc.Request(getSubj, jreq, time.Second)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if m.Header.Get("Status") != "409" {
+				t.Fatalf("Expected a 409 status code, got %q", m.Header.Get("Status"))
+			}
+
+			// Now ack them all.
+			for _, m := range toAck {
+				m.Respond(nil)
+			}
+
+			// Now do batch above the max.
+			sub, _ := nc.SubscribeSync(nats.NewInbox())
+			defer sub.Unsubscribe()
+
+			checkSubPending := func(numExpected int) {
+				t.Helper()
+				checkFor(t, time.Second, 10*time.Millisecond, func() error {
+					if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != numExpected {
+						return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, numExpected)
+					}
+					return nil
+				})
+			}
+
+			req = &server.JSApiConsumerGetNextRequest{Batch: toSend}
+			jreq, _ = json.Marshal(req)
+			nc.PublishRequest(getSubj, sub.Subject, jreq)
+
+			checkSubPending(maxAckPending)
+			// We hit the limit, double check we stayed there.
+			if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != maxAckPending {
+				t.Fatalf("Too many messages received: %d vs %d", nmsgs, maxAckPending)
+			}
+		})
+	}
+}
+
+func TestJetStreamPullConsumerMaxAckPendingRedeliveries(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &server.StreamConfig{
+			Name:     "MY_STREAM",
+			Storage:  server.MemoryStorage,
+			Subjects: []string{"foo.*"},
+		}},
+		{"FileStore", &server.StreamConfig{
+			Name:     "MY_STREAM",
+			Storage:  server.FileStorage,
+			Subjects: []string{"foo.*"},
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			// Queue up 10 messages.
+			toSend := 10
+			for i := 0; i < toSend; i++ {
+				sendStreamMsg(t, nc, "foo.bar", fmt.Sprintf("MSG: %d", i+1))
+			}
+
+			// Limit to 1
+			maxAckPending := 1
+			ackWait := 20 * time.Millisecond
+			expSeq := uint64(4)
+
+			o, err := mset.AddConsumer(&server.ConsumerConfig{
+				Durable:       "d22",
+				DeliverPolicy: server.DeliverByStartSequence,
+				OptStartSeq:   expSeq,
+				AckPolicy:     server.AckExplicit,
+				AckWait:       ackWait,
+				MaxAckPending: maxAckPending,
+			})
+			if err != nil {
+				t.Fatalf("Expected no error, got %v", err)
+			}
+			defer o.Delete()
+
+			getSubj := o.RequestNextMsgSubject()
+			delivery := uint64(1)
+
+			getNext := func() {
+				t.Helper()
+				m, err := nc.Request(getSubj, nil, time.Second)
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				sseq, dseq, dcount, _, pending := o.ReplyInfo(m.Reply)
+				if sseq != expSeq {
+					t.Fatalf("Expected stream sequence of %d, got %d", expSeq, sseq)
+				}
+				if dseq != delivery {
+					t.Fatalf("Expected consumer sequence of %d, got %d", delivery, dseq)
+				}
+				if dcount != delivery {
+					t.Fatalf("Expected delivery count of %d, got %d", delivery, dcount)
+				}
+				if pending != uint64(toSend)-expSeq {
+					t.Fatalf("Expected pending to be %d, got %d", uint64(toSend)-expSeq, pending)
+				}
+				delivery++
+			}
+
+			getNext()
+			getNext()
+			getNext()
+			getNext()
+			getNext()
+		})
+	}
+}
