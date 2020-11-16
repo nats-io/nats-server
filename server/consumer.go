@@ -551,7 +551,12 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 // Do all advisory sends here.
 // Lock should be held on entry but will be released.
 func (o *Consumer) sendAdvisory(subj string, msg []byte) {
-	o.sendq <- &jsPubMsg{subj, subj, _EMPTY_, nil, msg, nil, 0}
+	sendq := o.sendq
+	o.mu.Unlock()
+	if sendq != nil {
+		sendq <- &jsPubMsg{subj, subj, _EMPTY_, nil, msg, nil, 0}
+	}
+	o.mu.Lock()
 }
 
 func (o *Consumer) sendDeleteAdvisoryLocked() {
