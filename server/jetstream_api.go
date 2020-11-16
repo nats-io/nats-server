@@ -75,6 +75,10 @@ const (
 	JSApiStreamInfo  = "$JS.API.STREAM.INFO.*"
 	JSApiStreamInfoT = "$JS.API.STREAM.INFO.%s"
 
+	// JSApiStreamLookup is for obtaining a stream by a target subject.
+	// Will return JSON response.
+	JSApiStreamLookup = "$JS.API.STREAM.LOOKUP"
+
 	// JSApiStreamDelete is the endpoint to delete streams.
 	// Will return JSON response.
 	JSApiStreamDelete  = "$JS.API.STREAM.DELETE.*"
@@ -112,7 +116,7 @@ const (
 	JSApiConsumerCreate  = "$JS.API.CONSUMER.CREATE.*"
 	JSApiConsumerCreateT = "$JS.API.CONSUMER.CREATE.%s"
 
-	// JSApiDurableCreate is the endpoint to create ephemeral consumers for streams.
+	// JSApiDurableCreate is the endpoint to create durable consumers for streams.
 	// You need to include the stream and consumer name in the subject.
 	JSApiDurableCreate  = "$JS.API.CONSUMER.DURABLE.CREATE.*.*"
 	JSApiDurableCreateT = "$JS.API.CONSUMER.DURABLE.CREATE.%s.%s"
@@ -261,6 +265,15 @@ type JSApiStreamInfoResponse struct {
 }
 
 const JSApiStreamInfoResponseType = "io.nats.jetstream.api.v1.stream_info_response"
+
+// JSApiStreamLookupResponse.
+type JSApiStreamLookupResponse struct {
+	ApiResponse
+	Stream   string `json:"stream"`
+	Filtered bool   `json:"is_filtered"`
+}
+
+const JSApiStreamLookupResponseType = "io.nats.jetstream.api.v1.stream_lookup_response"
 
 // Maximum entries we will return for streams or consumers lists.
 // TODO(dlc) - with header or request support could request chunked response.
@@ -480,6 +493,7 @@ var allJsExports = []string{
 	JSApiStreams,
 	JSApiStreamList,
 	JSApiStreamInfo,
+	JSApiStreamLookup,
 	JSApiStreamDelete,
 	JSApiStreamPurge,
 	JSApiStreamSnapshot,
@@ -509,6 +523,7 @@ func (s *Server) setJetStreamExportSubs() error {
 		{JSApiStreams, s.jsStreamNamesRequest},
 		{JSApiStreamList, s.jsStreamListRequest},
 		{JSApiStreamInfo, s.jsStreamInfoRequest},
+		{JSApiStreamLookup, s.jsStreamLookupRequest},
 		{JSApiStreamDelete, s.jsStreamDeleteRequest},
 		{JSApiStreamPurge, s.jsStreamPurgeRequest},
 		{JSApiStreamSnapshot, s.jsStreamSnapshotRequest},
@@ -950,6 +965,44 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 		return
 	}
 	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config()}
+	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+}
+
+// Request to lookup a stream by target subject.
+func (s *Server) jsStreamLookupRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if c == nil || c.acc == nil {
+		return
+	}
+
+	var resp = JSApiStreamLookupResponse{ApiResponse: ApiResponse{Type: JSApiStreamLookupResponseType}}
+	if !c.acc.JetStreamEnabled() {
+		resp.Error = jsNotEnabledErr
+		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	if isEmptyRequest(msg) {
+		resp.Error = &ApiError{Code: 400, Description: "subject required"}
+		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	subj := string(msg)
+	if !IsValidSubject(subj) {
+		resp.Error = &ApiError{Code: 400, Description: "subject argument is not a valid subject"}
+		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	// Lookup our stream.
+	mset, filtered, err := c.acc.LookupStreamBySubject(subj)
+	if err != nil {
+		resp.Error = jsNotFoundError(err)
+		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	resp.Stream = mset.Name()
+	resp.Filtered = filtered
+
 	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
