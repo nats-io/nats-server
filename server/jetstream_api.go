@@ -266,6 +266,11 @@ type JSApiStreamInfoResponse struct {
 
 const JSApiStreamInfoResponseType = "io.nats.jetstream.api.v1.stream_info_response"
 
+type JSApiStreamLookupRequest struct {
+	// Subject finds any stream that matches this subject including those where wildcards intercepts
+	Subject string `json:"subject"`
+}
+
 // JSApiStreamLookupResponse.
 type JSApiStreamLookupResponse struct {
 	ApiResponse
@@ -980,14 +985,29 @@ func (s *Server) jsStreamLookupRequest(sub *subscription, c *client, subject, re
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+
 	if isEmptyRequest(msg) {
 		resp.Error = &ApiError{Code: 400, Description: "subject required"}
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+
 	subj := string(msg)
+
+	if bytes.HasPrefix(msg, []byte("{")) {
+		var req JSApiStreamLookupRequest
+		err := json.Unmarshal(msg, &req)
+		if err != nil {
+			resp.Error = &ApiError{Code: 400, Description: "invalid request"}
+			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+
+		subj = req.Subject
+	}
+
 	if !IsValidSubject(subj) {
-		resp.Error = &ApiError{Code: 400, Description: "subject argument is not a valid subject"}
+		resp.Error = &ApiError{Code: 400, Description: "subject argument is not a valid subject or request"}
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
