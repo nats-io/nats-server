@@ -9682,8 +9682,6 @@ func TestJetStreamPullConsumerMaxAckPendingRedeliveries(t *testing.T) {
 }
 
 func TestJetStreamDeliveryAfterServerRestart(t *testing.T) {
-	t.Skip("Enable this test to show the delivery problem after restart")
-
 	opts := DefaultTestOptions
 	opts.Port = -1
 	opts.JetStream = true
@@ -9737,8 +9735,6 @@ func TestJetStreamDeliveryAfterServerRestart(t *testing.T) {
 	// Ack it!
 	msg.Respond(nil)
 	nc.Flush()
-	// Give chance for server to process this ack
-	time.Sleep(100 * time.Millisecond)
 
 	// Shutdown client and server
 	nc.Close()
@@ -9751,17 +9747,12 @@ func TestJetStreamDeliveryAfterServerRestart(t *testing.T) {
 	s = RunServer(&opts)
 	defer s.Shutdown()
 
-	nc = clientConnectToServer(t, s)
-	defer nc.Close()
-
-	// Send 2nd message
-	sendStreamMsg(t, nc, "foo.bar", "msg2")
-
 	// Lookup stream.
 	mset, err = s.GlobalAccount().LookupStream("MY_STREAM")
 	if err != nil {
 		t.Fatalf("Error looking up stream: %v", err)
 	}
+
 	// Update consumer's deliver subject with new inbox
 	inbox = nats.NewInbox()
 	o, err = mset.AddConsumer(&server.ConsumerConfig{
@@ -9775,6 +9766,12 @@ func TestJetStreamDeliveryAfterServerRestart(t *testing.T) {
 	}
 	defer o.Delete()
 
+	nc = clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Send 2nd message
+	sendStreamMsg(t, nc, "foo.bar", "msg2")
+
 	// Start sub on new inbox
 	sub, err = nc.SubscribeSync(inbox)
 	if err != nil {
@@ -9783,7 +9780,7 @@ func TestJetStreamDeliveryAfterServerRestart(t *testing.T) {
 	nc.Flush()
 
 	// Should receive message 2.
-	if _, err := sub.NextMsg(250 * time.Millisecond); err != nil {
+	if _, err := sub.NextMsg(500 * time.Millisecond); err != nil {
 		t.Fatalf("Did not get message: %v", err)
 	}
 }

@@ -606,6 +606,10 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	ts := time.Now().UnixNano()
 	mb.llts, mb.lrts, mb.lwts = ts, ts, ts
 
+	// Remember our last sequence number.
+	mb.first.seq = fs.state.LastSeq + 1
+	mb.last.seq = fs.state.LastSeq
+
 	// We know we will need this so go ahead and spin up.
 	mb.spinUpFlushLoop()
 
@@ -1148,6 +1152,7 @@ func (mb *msgBlock) selectNextFirst() {
 	}
 	// Set new first sequence.
 	mb.first.seq = seq
+
 	// Check if we are empty..
 	if mb.isEmpty() {
 		mb.first.ts = 0
@@ -1381,8 +1386,8 @@ func (fs *fileStore) checkAndFlushAllBlocks() {
 	for _, mb := range fs.blks {
 		if mb.pendingWriteSize() > 0 {
 			mb.flushPendingMsgsAndWait()
-			mb.writeIndexInfo()
 		}
+		mb.writeIndexInfo()
 	}
 }
 
@@ -1562,7 +1567,7 @@ func (mb *msgBlock) numBytes() uint64 {
 // Update accounting on a write msg.
 // Lock should be held.
 func (mb *msgBlock) updateAccounting(seq uint64, ts int64, rl uint64) {
-	if mb.first.seq == 0 {
+	if mb.first.seq == 0 || mb.first.ts == 0 {
 		mb.first.seq = seq
 		mb.first.ts = ts
 	}
@@ -2416,7 +2421,7 @@ func (mb *msgBlock) dirtyClose() {
 
 // Should be called with lock held.
 func (mb *msgBlock) dirtyCloseWithRemove(remove bool) {
-	if mb == nil || mb.qch == nil {
+	if mb == nil {
 		return
 	}
 	// Close cache
