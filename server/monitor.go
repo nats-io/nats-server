@@ -1065,7 +1065,7 @@ type GatewayOptsVarz struct {
 	Advertise      string                  `json:"advertise,omitempty"`
 	ConnectRetries int                     `json:"connect_retries,omitempty"`
 	Gateways       []RemoteGatewayOptsVarz `json:"gateways,omitempty"`
-	RejectUnknown  bool                    `json:"reject_unknown,omitempty"`
+	RejectUnknown  bool                    `json:"reject_unknown,omitempty"` // config got renamed to reject_unknown_cluster
 }
 
 // RemoteGatewayOptsVarz contains monitoring remote gateway information

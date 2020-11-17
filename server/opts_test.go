@@ -1859,6 +1859,7 @@ func TestParsingGateways(t *testing.T) {
 		listen: "127.0.0.1:4444"
 		host: "127.0.0.1"
 		port: 4444
+		reject_unknown_cluster: true
 		authorization {
 			user: "ivan"
 			password: "pwd"
@@ -1903,6 +1904,7 @@ func TestParsingGateways(t *testing.T) {
 		Advertise:      "me:1",
 		ConnectRetries: 10,
 		TLSTimeout:     3.0,
+		RejectUnknown:  true,
 	}
 	u1, _ := url.Parse("nats://user1:pwd1@host2:5222")
 	u2, _ := url.Parse("nats://user1:pwd1@host3:6222")
@@ -1969,7 +1971,7 @@ func TestParsingGatewaysErrors(t *testing.T) {
 			`gateway {
 				name: "A"
 				port: -1
-				reject_unknown: true
+				reject_unknown_cluster: true
 				unknown_field: 1
 			}`,
 			"unknown field",
