@@ -15,6 +15,19 @@
 
 package server
 
+var defaultServerOptions = Options{
+	Host:                  "127.0.0.1",
+	Trace:                 true,
+	Debug:                 true,
+	DisableShortFirstPing: true,
+	NoLog:                 true,
+	NoSigs:                true,
+}
+
+func dummyClient() *client {
+	return &client{srv: New(&defaultServerOptions), msubs: -1, mpay: -1, mcl: MAX_CONTROL_LINE_SIZE}
+}
+
 func FuzzClient(data []byte) int {
 	if len(data) < 100 {
 		return -1
