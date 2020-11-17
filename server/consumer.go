@@ -1633,6 +1633,13 @@ func (o *Consumer) deliverCurrentMsg(subj string, hdr, msg []byte, seq uint64, t
 		return false
 	}
 
+	// Since we short circuit the getNextMsg() call where we check for max pending
+	// we need to do that here as well.
+	if o.maxp > 0 && len(o.pending) >= o.maxp {
+		o.mu.Unlock()
+		return false
+	}
+
 	// Bump store sequence here.
 	o.sseq++
 

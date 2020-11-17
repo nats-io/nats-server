@@ -9447,6 +9447,37 @@ func TestJetStreamConsumerMaxAckPending(t *testing.T) {
 				m.Respond(nil)
 			}
 			checkSubPending(maxAckPending)
+
+			o.Stop()
+			mset.Purge()
+
+			// Now test a consumer that is live while we publish messages to the stream.
+			o, err = mset.AddConsumer(&server.ConsumerConfig{
+				Durable:        "d22",
+				DeliverSubject: nats.NewInbox(),
+				AckPolicy:      server.AckExplicit,
+				MaxAckPending:  maxAckPending,
+			})
+			if err != nil {
+				t.Fatalf("Expected no error, got %v", err)
+			}
+			defer o.Delete()
+
+			sub, _ = nc.SubscribeSync(o.Info().Config.DeliverSubject)
+			defer sub.Unsubscribe()
+			nc.Flush()
+
+			checkSubPending(0)
+
+			// Now stream more then maxAckPending.
+			for i := 0; i < toSend; i++ {
+				sendStreamMsg(t, nc, "foo.baz", fmt.Sprintf("MSG: %d", i+1))
+			}
+			checkSubPending(maxAckPending)
+			// We hit the limit, double check we stayed there.
+			if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != maxAckPending {
+				t.Fatalf("Too many messages received: %d vs %d", nmsgs, maxAckPending)
+			}
 		})
 	}
 }
