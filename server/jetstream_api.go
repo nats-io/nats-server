@@ -994,7 +994,7 @@ func (s *Server) jsStreamLookupRequest(sub *subscription, c *client, subject, re
 
 	subj := string(msg)
 
-	if bytes.HasPrefix(msg, []byte("{")) {
+	if bytes.HasPrefix(bytes.TrimSpace(msg), []byte("{")) {
 		var req JSApiStreamLookupRequest
 		err := json.Unmarshal(msg, &req)
 		if err != nil {
