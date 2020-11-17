@@ -15,7 +15,7 @@
 
 package server
 
-func Fuzz(data []byte) int {
+func FuzzClient(data []byte) int {
 	if len(data) < 100 {
 		return -1
 	}
