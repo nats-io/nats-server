@@ -92,7 +92,7 @@ type GatewayOpts struct {
 	Advertise      string               `json:"advertise,omitempty"`
 	ConnectRetries int                  `json:"connect_retries,omitempty"`
 	Gateways       []*RemoteGatewayOpts `json:"gateways,omitempty"`
-	RejectUnknown  bool                 `json:"reject_unknown,omitempty"`
+	RejectUnknown  bool                 `json:"reject_unknown,omitempty"` // config got renamed to reject_unknown_cluster
 
 	// Not exported, for tests.
 	resolver         netResolver
@@ -1285,7 +1285,7 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 				return err
 			}
 			o.Gateway.Gateways = gateways
-		case "reject_unknown":
+		case "reject_unknown", "reject_unknown_cluster":
 			o.Gateway.RejectUnknown = mv.(bool)
 		default:
 			if !tk.IsUsedVariable() {
