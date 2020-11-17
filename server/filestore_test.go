@@ -224,6 +224,41 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 	if state.Bytes != expectedSize*2 {
 		t.Fatalf("Expected %d bytes, got %d", expectedSize*2, state.Bytes)
 	}
+
+	fs.Purge()
+	fs.Stop()
+
+	fs, err = newFileStore(fcfg, StreamConfig{Name: "dlc", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	state = fs.State()
+	if state.Msgs != 0 {
+		t.Fatalf("Expected %d msgs, got %d", 0, state.Msgs)
+	}
+	if state.Bytes != 0 {
+		t.Fatalf("Expected %d bytes, got %d", 0, state.Bytes)
+	}
+
+	seq, _, err := fs.StoreMsg(subj, nil, []byte("Hello"))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	fs.RemoveMsg(seq)
+
+	fs.Stop()
+	fs, err = newFileStore(fcfg, StreamConfig{Name: "dlc", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	state = fs.State()
+	if state.FirstSeq != seq+1 {
+		t.Fatalf("Expected first seq to be %d, got %d", seq+1, state.FirstSeq)
+	}
 }
 
 func TestFileStoreSelectNextFirst(t *testing.T) {
@@ -803,7 +838,7 @@ func TestFileStoreRemoveOutOfOrderRecovery(t *testing.T) {
 
 	state2 := fs.State()
 	if state != state2 {
-		t.Fatalf("Expected receovered states to be the same, got %+v vs %+v\n", state, state2)
+		t.Fatalf("Expected recovered states to be the same, got %+v vs %+v\n", state, state2)
 	}
 
 	if _, _, _, _, err := fs.LoadMsg(1); err != nil {
