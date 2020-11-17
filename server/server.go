@@ -397,7 +397,7 @@ func NewServer(opts *Options) (*Server, error) {
 			s.mu.Unlock()
 			var a *Account
 			// perform direct lookup to avoid warning trace
-			if _, err := ar.Fetch(s.opts.SystemAccount); err == nil {
+			if _, err := FetchAccount(ar, s.opts.SystemAccount); err == nil {
 				a, _ = s.fetchAccount(s.opts.SystemAccount)
 			}
 			s.mu.Lock()
@@ -1284,7 +1284,7 @@ func (s *Server) fetchRawAccountClaims(name string) (string, error) {
 	}
 	// Need to do actual Fetch
 	start := time.Now()
-	claimJWT, err := accResolver.Fetch(name)
+	claimJWT, err := FetchAccount(accResolver, name)
 	fetchTime := time.Since(start)
 	if fetchTime > time.Second {
 		s.Warnf("Account [%s] fetch took %v", name, fetchTime)
@@ -1305,7 +1305,12 @@ func (s *Server) fetchAccountClaims(name string) (*jwt.AccountClaims, string, er
 	if err != nil {
 		return nil, _EMPTY_, err
 	}
-	return s.verifyAccountClaims(claimJWT)
+	var claim *jwt.AccountClaims
+	claim, claimJWT, err = s.verifyAccountClaims(claimJWT)
+	if claim != nil && claim.Subject != name {
+		return nil, _EMPTY_, ErrAccountValidation
+	}
+	return claim, claimJWT, err
 }
 
 // verifyAccountClaims will decode and validate any account claims.
@@ -1447,7 +1452,7 @@ func (s *Server) Start() {
 						case <-s.quitCh:
 							return
 						case <-t.C:
-							if _, err := ar.Fetch(s.opts.SystemAccount); err != nil {
+							if _, err := FetchAccount(ar, s.opts.SystemAccount); err != nil {
 								continue
 							}
 							if _, err := s.fetchAccount(s.opts.SystemAccount); err != nil {
