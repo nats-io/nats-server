@@ -997,13 +997,11 @@ func (s *Server) jsStreamLookupRequest(sub *subscription, c *client, subject, re
 	if bytes.HasPrefix(bytes.TrimSpace(msg), []byte("{")) {
 		var req JSApiStreamLookupRequest
 		err := json.Unmarshal(msg, &req)
-		if err != nil {
-			resp.Error = &ApiError{Code: 400, Description: "invalid request"}
-			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
+		// happy path we set it, otherwise we try whatever was in the
+		// msg as if its a subject this is because '{' is a valid subject
+		if err == nil {
+			subj = req.Subject
 		}
-
-		subj = req.Subject
 	}
 
 	if !IsValidSubject(subj) {

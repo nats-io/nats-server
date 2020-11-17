@@ -425,6 +425,9 @@ func TestJetStreamLookupStreamBySubject(t *testing.T) {
 	if _, err := acc.AddStream(&server.StreamConfig{Name: "4", Subjects: []string{"baz.*.*.>"}}); err != nil {
 		t.Fatalf("Unexpected error adding stream: %v", err)
 	}
+	if _, err := acc.AddStream(&server.StreamConfig{Name: "5", Subjects: []string{"{test"}}); err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
 
 	// Check some errors first.
 	checkError := func(subj string) {
@@ -500,6 +503,8 @@ func TestJetStreamLookupStreamBySubject(t *testing.T) {
 		checkAPILookup(c.subj, c.stream, c.filtered)
 		checkAPILookup(fmt.Sprintf(`{"subject":%q}`, c.subj), c.stream, c.filtered)
 	}
+
+	checkAPILookup("{test", "5", false)
 }
 
 func TestJetStreamConsumerWithStartTime(t *testing.T) {
