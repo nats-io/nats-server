@@ -425,6 +425,9 @@ func TestJetStreamLookupStreamBySubject(t *testing.T) {
 	if _, err := acc.AddStream(&server.StreamConfig{Name: "4", Subjects: []string{"baz.*.*.>"}}); err != nil {
 		t.Fatalf("Unexpected error adding stream: %v", err)
 	}
+	if _, err := acc.AddStream(&server.StreamConfig{Name: "5", Subjects: []string{"{test"}}); err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
 
 	// Check some errors first.
 	checkError := func(subj string) {
@@ -464,6 +467,7 @@ func TestJetStreamLookupStreamBySubject(t *testing.T) {
 	defer nc.Close()
 
 	checkAPILookup := func(subj, stream string, filtered bool) {
+		t.Helper()
 		resp, err := nc.Request(server.JSApiStreamLookup, []byte(subj), time.Second)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -483,12 +487,24 @@ func TestJetStreamLookupStreamBySubject(t *testing.T) {
 		}
 	}
 
-	checkAPILookup("foo", "1", false)
-	checkAPILookup("boo", "2", true)
-	checkAPILookup("foo.*", "3", true)
-	checkAPILookup("foo.1", "3", true)
-	checkAPILookup("baz.*.*.>", "4", false)
-	checkAPILookup("baz.2.*.>", "4", true)
+	cases := []struct {
+		subj     string
+		stream   string
+		filtered bool
+	}{
+		{"foo", "1", false},
+		{"boo", "2", true},
+		{"foo.*", "3", true},
+		{"foo.1", "3", true},
+		{"baz.*.*.>", "4", false},
+		{"baz.2.*.>", "4", true},
+	}
+	for _, c := range cases {
+		checkAPILookup(c.subj, c.stream, c.filtered)
+		checkAPILookup(fmt.Sprintf(`{"subject":%q}`, c.subj), c.stream, c.filtered)
+	}
+
+	checkAPILookup("{test", "5", false)
 }
 
 func TestJetStreamConsumerWithStartTime(t *testing.T) {
