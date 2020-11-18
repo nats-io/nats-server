@@ -3125,6 +3125,13 @@ func buildInternalNkeyUser(uc *jwt.UserClaims, acts map[string]struct{}, acc *Ac
 
 const fetchTimeout = 2 * time.Second
 
+func fetchAccount(res AccountResolver, name string) (string, error) {
+	if !nkeys.IsValidPublicAccountKey(name) {
+		return "", fmt.Errorf("will only fetch valid account keys")
+	}
+	return res.Fetch(name)
+}
+
 // AccountResolver interface. This is to fetch Account JWTs by public nkeys
 type AccountResolver interface {
 	Fetch(name string) (string, error)
