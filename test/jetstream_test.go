@@ -2182,6 +2182,161 @@ func TestJetStreamWildcardSubjectFiltering(t *testing.T) {
 	}
 }
 
+func TestJetStreamWildcardSubjectFilteringEphemeralConsumer(t *testing.T) {
+	subjects := []string{"js.test.one", "js.test.two", "js.test.three"}
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{"MemoryStore", &server.StreamConfig{Name: "TEST", Storage: server.MemoryStorage, Subjects: subjects}},
+		{"FileStore", &server.StreamConfig{Name: "TEST", Storage: server.FileStorage, Subjects: subjects}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.Delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			sendStreamMsg(t, nc, "js.test.one", "1")
+			sendStreamMsg(t, nc, "js.test.two", "2")
+			sendStreamMsg(t, nc, "js.test.three", "3")
+			sendStreamMsg(t, nc, "js.test.one", "11")
+
+			delivery := nats.NewInbox()
+			sub, _ := nc.SubscribeSync(delivery)
+			defer sub.Unsubscribe()
+			nc.Flush()
+
+			// Get all messages via wildcard FilterSubject
+			o, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: delivery, FilterSubject: "js.test.*"})
+			if err != nil {
+				t.Fatalf("Expected no error with registered interest, got: %v", err)
+			}
+			defer o.Delete()
+
+			// js.test.one => 1
+			msg, err := sub.NextMsg(time.Second)
+			if err != nil {
+				t.Fatalf("Unexpected error getting message: %s", err)
+			}
+			got := msg.Subject
+			expected := "js.test.one"
+			if got != expected {
+				t.Errorf("Expected %q, got %q", expected, got)
+			}
+			got = string(msg.Data)
+			expected = "1"
+			if got != expected {
+				t.Errorf("Expected %q, got %q", expected, got)
+			}
+
+			// js.test.two => 2
+			msg, err = sub.NextMsg(time.Second)
+			if err != nil {
+				t.Fatalf("Unexpected error getting message: %s", err)
+			}
+			got = msg.Subject
+			expected = "js.test.two"
+			if got != expected {
+				t.Errorf("Expected %q, got %q", expected, got)
+			}
+			got = string(msg.Data)
+			expected = "2"
+			if got != expected {
+				t.Errorf("Expected %q, got %q", expected, got)
+			}
+
+			// js.test.three => 3
+			msg, err = sub.NextMsg(time.Second)
+			if err != nil {
+				t.Fatalf("Unexpected error getting message: %s", err)
+			}
+			got = msg.Subject
+			expected = "js.test.three"
+			if got != expected {
+				t.Errorf("Expected %q, got %q", expected, got)
+			}
+			got = string(msg.Data)
+			expected = "3"
+			if got != expected {
+				t.Errorf("Expected %q, got %q", expected, got)
+			}
+
+			// js.test.one => 11
+			msg, err = sub.NextMsg(time.Second)
+			if err != nil {
+				t.Fatalf("Unexpected error getting message: %s", err)
+			}
+			got = msg.Subject
+			expected = "js.test.one"
+			if got != expected {
+				t.Errorf("Expected %q, got %q", expected, got)
+			}
+			got = string(msg.Data)
+			expected = "11"
+			if got != expected {
+				t.Errorf("Expected %q, got %q", expected, got)
+			}
+
+			// Get only a subset of messages
+			delivery = nats.NewInbox()
+			sub, _ = nc.SubscribeSync(delivery)
+			defer sub.Unsubscribe()
+			nc.Flush()
+
+			o2, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: delivery, FilterSubject: "js.test.one"})
+			if err != nil {
+				t.Fatalf("Expected no error with registered interest, got: %v", err)
+			}
+			defer o2.Delete()
+
+			// js.test.one => 1
+			msg, err = sub.NextMsg(time.Second)
+			if err != nil {
+				t.Fatalf("Unexpected error getting message: %s", err)
+			}
+			got = msg.Subject
+			expected = "js.test.one"
+			if got != expected {
+				t.Errorf("Expected %q, got %q", expected, got)
+			}
+			got = string(msg.Data)
+			expected = "1"
+			if got != expected {
+				t.Errorf("Expected %q, got %q", expected, got)
+			}
+
+			// js.test.one => 11
+			msg, err = sub.NextMsg(time.Second)
+			if err != nil {
+				t.Fatalf("Unexpected error getting message: %s", err)
+			}
+			got = msg.Subject
+			expected = "js.test.one"
+			if got != expected {
+				t.Errorf("Expected %q, got %q", expected, got)
+			}
+			got = string(msg.Data)
+			expected = "11"
+			if got != expected {
+				t.Errorf("Expected %q, got %q", expected, got)
+			}
+		})
+	}
+}
+
 func TestJetStreamWorkQueueAckAndNext(t *testing.T) {
 	cases := []struct {
 		name    string
