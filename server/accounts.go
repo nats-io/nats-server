@@ -3125,7 +3125,7 @@ func buildInternalNkeyUser(uc *jwt.UserClaims, acts map[string]struct{}, acc *Ac
 
 const fetchTimeout = 2 * time.Second
 
-func FetchAccount(res AccountResolver, name string) (string, error) {
+func fetchAccount(res AccountResolver, name string) (string, error) {
 	if !nkeys.IsValidPublicAccountKey(name) {
 		return "", fmt.Errorf("will only fetch valid account keys")
 	}
