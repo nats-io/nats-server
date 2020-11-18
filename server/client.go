@@ -3818,6 +3818,8 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 					continue
 				} else {
 					c.addSubToRouteTargets(sub)
+					// Clear rsub since we added a sub.
+					rsub = nil
 					if flags&pmrCollectQueueNames != 0 {
 						queues = append(queues, sub.queue)
 					}
