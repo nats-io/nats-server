@@ -808,12 +808,11 @@ func (s *Server) isRouterAuthorized(c *client) bool {
 		return s.opts.CustomRouterAuthentication.Check(c)
 	}
 
-	if opts.Cluster.Username == "" {
-		return true
-	}
-
 	if opts.Cluster.TLSMap || opts.Cluster.TLSImplicitAllow {
 		return checkClientTLSCertSubject(c, func(user string, _ *ldap.DN, isDNSAltName bool) (string, bool) {
+			if user == "" {
+				return "", false
+			}
 			if opts.Cluster.TLSImplicitAllow && isDNSAltName {
 				if dnsAltNameMatches(dnsAltNameLabels(user), opts.Routes) {
 					return "", true
@@ -824,6 +823,10 @@ func (s *Server) isRouterAuthorized(c *client) bool {
 			}
 			return "", false
 		})
+	}
+
+	if opts.Cluster.Username == "" {
+		return true
 	}
 
 	if opts.Cluster.Username != c.opts.Username {
@@ -839,9 +842,6 @@ func (s *Server) isRouterAuthorized(c *client) bool {
 func (s *Server) isGatewayAuthorized(c *client) bool {
 	// Snapshot server options.
 	opts := s.getOpts()
-	if opts.Gateway.Username == "" {
-		return true
-	}
 
 	// Check whether TLS map is enabled, otherwise use single user/pass.
 	if opts.Gateway.TLSMap || opts.Gateway.TLSImplicitAllow {
@@ -862,6 +862,10 @@ func (s *Server) isGatewayAuthorized(c *client) bool {
 			}
 			return "", false
 		})
+	}
+
+	if opts.Gateway.Username == "" {
+		return true
 	}
 
 	if opts.Gateway.Username != c.opts.Username {

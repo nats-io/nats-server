@@ -3261,7 +3261,7 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 		case "verify_and_implicit_allow":
 			verify, ok := mv.(bool)
 			if !ok {
-				return nil, &configErr{tk, "error parsing tls config, expected 'verify_and_map' to be a boolean"}
+				return nil, &configErr{tk, "error parsing tls config, expected 'verify_and_implicit_allow' to be a boolean"}
 			}
 			if verify && isClientCtx {
 				return nil, &configErr{tk, "verify_and_implicit_allow not supported in this context"}

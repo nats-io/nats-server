@@ -795,25 +795,28 @@ func TestTLSRoutesCertificateImplicitAllowFail(t *testing.T) {
 }
 
 func testTLSRoutesCertificateImplicitAllow(t *testing.T, pass bool) {
+	t.Helper()
 	// Base config for the servers
 	cfg, err := ioutil.TempFile("", "cfg")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = cfg.Sync(); err != nil {
-		t.Fatal(err)
-	}
-	cfg.WriteString(`
+	defer os.Remove(cfg.Name())
+	cfg.WriteString(fmt.Sprintf(`
 		cluster {
 		  tls {
 			cert_file = "./configs/certs/tlsauth/server.pem"
 			key_file = "./configs/certs/tlsauth/server-key.pem"
 			ca_file = "./configs/certs/tlsauth/ca.pem"
 			verify_and_implicit_allow = true
+			insecure = %t
 			timeout = 1
 		  }
 		}
-	`)
+	`, !pass)) // set insecure to skip verification on the outgoing end
+	if err = cfg.Sync(); err != nil {
+		t.Fatal(err)
+	}
 
 	optsA := LoadConfig(cfg.Name())
 	optsB := LoadConfig(cfg.Name())
@@ -847,7 +850,7 @@ func testTLSRoutesCertificateImplicitAllow(t *testing.T, pass bool) {
 		checkNumRoutes(t, srvA, 1)
 		checkNumRoutes(t, srvB, 1)
 	} else {
-		time.Sleep(1 * time.Second)
+		time.Sleep(5 * time.Second)
 		checkNumRoutes(t, srvA, 0)
 		checkNumRoutes(t, srvB, 0)
 	}
@@ -862,25 +865,28 @@ func TestTLSGatewaysCertificateImplicitAllowFail(t *testing.T) {
 }
 
 func testTLSGatewaysCertificateImplicitAllow(t *testing.T, pass bool) {
+	t.Helper()
 	// Base config for the servers
 	cfg, err := ioutil.TempFile("", "cfg")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = cfg.Sync(); err != nil {
-		t.Fatal(err)
-	}
-	cfg.WriteString(`
+	defer os.Remove(cfg.Name())
+	cfg.WriteString(fmt.Sprintf(`
 		gateway {
 		  tls {
 			cert_file = "./configs/certs/tlsauth/server.pem"
 			key_file = "./configs/certs/tlsauth/server-key.pem"
 			ca_file = "./configs/certs/tlsauth/ca.pem"
 			verify_and_implicit_allow = true
+			insecure = %t
 			timeout = 1
 		  }
 		}
-	`)
+	`, !pass)) // set insecure to skip verification on the outgoing end
+	if err = cfg.Sync(); err != nil {
+		t.Fatal(err)
+	}
 
 	optsA := LoadConfig(cfg.Name())
 	optsB := LoadConfig(cfg.Name())
@@ -941,9 +947,9 @@ func testTLSGatewaysCertificateImplicitAllow(t *testing.T, pass bool) {
 		waitForOutboundGateways(t, srvA, 1, 5*time.Second)
 		waitForOutboundGateways(t, srvB, 1, 5*time.Second)
 	} else {
-		time.Sleep(1 * time.Second)
-		waitForOutboundGateways(t, srvA, 0, 5*time.Second)
-		waitForOutboundGateways(t, srvB, 0, 5*time.Second)
+		time.Sleep(5 * time.Second)
+		waitForOutboundGateways(t, srvA, 0, 1*time.Second)
+		waitForOutboundGateways(t, srvB, 0, 1*time.Second)
 	}
 }
 
