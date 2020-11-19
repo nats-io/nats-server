@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -418,7 +419,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 	} else if hasUsers {
 		// Check if we are tls verify and are mapping users from the client_certificate.
 		if tlsMap {
-			authorized := checkClientTLSCertSubject(c, func(u string, certRDN *ldap.DN) (string, bool) {
+			authorized := checkClientTLSCertSubject(c, func(u string, certRDN *ldap.DN, _ bool) (string, bool) {
 				// First do literal lookup using the resulting string representation
 				// of RDNSequence as implemented by the pkix package from Go.
 				if u != "" {
@@ -667,7 +668,7 @@ func getTLSAuthDCs(rdns *pkix.RDNSequence) string {
 	return strings.Join(dcs, ",")
 }
 
-type tlsMapAuthFn func(string, *ldap.DN) (string, bool)
+type tlsMapAuthFn func(string, *ldap.DN, bool) (string, bool)
 
 func checkClientTLSCertSubject(c *client, fn tlsMapAuthFn) bool {
 	tlsState := c.GetTLSConnectionState()
@@ -696,7 +697,7 @@ func checkClientTLSCertSubject(c *client, fn tlsMapAuthFn) bool {
 	switch {
 	case hasEmailAddresses:
 		for _, u := range cert.EmailAddresses {
-			if match, ok := fn(u, nil); ok {
+			if match, ok := fn(u, nil, false); ok {
 				c.Debugf("Using email found in cert for auth [%q]", match)
 				return true
 			}
@@ -704,7 +705,7 @@ func checkClientTLSCertSubject(c *client, fn tlsMapAuthFn) bool {
 		fallthrough
 	case hasSANs:
 		for _, u := range cert.DNSNames {
-			if match, ok := fn(u, nil); ok {
+			if match, ok := fn(u, nil, true); ok {
 				c.Debugf("Using SAN found in cert for auth [%q]", match)
 				return true
 			}
@@ -712,7 +713,7 @@ func checkClientTLSCertSubject(c *client, fn tlsMapAuthFn) bool {
 		fallthrough
 	case hasURIs:
 		for _, u := range cert.URIs {
-			if match, ok := fn(u.String(), nil); ok {
+			if match, ok := fn(u.String(), nil, false); ok {
 				c.Debugf("Using URI found in cert for auth [%q]", match)
 				return true
 			}
@@ -726,7 +727,7 @@ func checkClientTLSCertSubject(c *client, fn tlsMapAuthFn) bool {
 	// Match that follows original order from the subject takes precedence.
 	dn, err := ldap.FromCertSubject(cert.Subject)
 	if err == nil {
-		if match, ok := fn("", dn); ok {
+		if match, ok := fn("", dn, false); ok {
 			c.Debugf("Using DistinguishedNameMatch for auth [%q]", match)
 			return true
 		}
@@ -745,7 +746,7 @@ func checkClientTLSCertSubject(c *client, fn tlsMapAuthFn) bool {
 		dcs := getTLSAuthDCs(&rdns)
 		if len(dcs) > 0 {
 			u := strings.Join([]string{rdn, dcs}, ",")
-			if match, ok := fn(u, nil); ok {
+			if match, ok := fn(u, nil, false); ok {
 				c.Debugf("Using RDNSequence for auth [%q]", match)
 				return true
 			}
@@ -755,12 +756,44 @@ func checkClientTLSCertSubject(c *client, fn tlsMapAuthFn) bool {
 
 	// If no match, then use the string representation of the RDNSequence
 	// from the subject without the domainComponents.
-	if match, ok := fn(rdn, nil); ok {
+	if match, ok := fn(rdn, nil, false); ok {
 		c.Debugf("Using certificate subject for auth [%q]", match)
 		return true
 	}
 
 	c.Debugf("User in cert [%q], not found", rdn)
+	return false
+}
+
+func dnsAltNameLabels(dnsAltName string) []string {
+	return strings.Split(strings.ToLower(dnsAltName), ".")
+}
+
+// Check DNS name according to https://tools.ietf.org/html/rfc6125#section-6.4.1
+func dnsAltNameMatches(dnsAltNameLabels []string, urls []*url.URL) bool {
+URLS:
+	for _, url := range urls {
+		if url == nil {
+			continue URLS
+		}
+		hostLabels := strings.Split(strings.ToLower(url.Hostname()), ".")
+		// following https://tools.ietf.org/html/rfc6125#section-6.4.3, should not => will not, may => will not
+		// wilcard does not match multiple labels
+		if len(hostLabels) != len(dnsAltNameLabels) {
+			continue URLS
+		}
+		i := 0
+		// only match wildcard on left most label
+		if dnsAltNameLabels[0] == "*" {
+			i++
+		}
+		for ; i < len(dnsAltNameLabels); i++ {
+			if dnsAltNameLabels[i] != hostLabels[i] {
+				continue URLS
+			}
+		}
+		return true
+	}
 	return false
 }
 
@@ -779,9 +812,17 @@ func (s *Server) isRouterAuthorized(c *client) bool {
 		return true
 	}
 
-	if opts.Cluster.TLSMap {
-		return checkClientTLSCertSubject(c, func(user string, _ *ldap.DN) (string, bool) {
-			return "", opts.Cluster.Username == user
+	if opts.Cluster.TLSMap || opts.Cluster.TLSImplicitAllow {
+		return checkClientTLSCertSubject(c, func(user string, _ *ldap.DN, isDNSAltName bool) (string, bool) {
+			if opts.Cluster.TLSImplicitAllow && isDNSAltName {
+				if dnsAltNameMatches(dnsAltNameLabels(user), opts.Routes) {
+					return "", true
+				}
+			}
+			if opts.Cluster.TLSMap && opts.Cluster.Username == user {
+				return "", true
+			}
+			return "", false
 		})
 	}
 
@@ -803,9 +844,23 @@ func (s *Server) isGatewayAuthorized(c *client) bool {
 	}
 
 	// Check whether TLS map is enabled, otherwise use single user/pass.
-	if opts.Gateway.TLSMap {
-		return checkClientTLSCertSubject(c, func(user string, _ *ldap.DN) (string, bool) {
-			return "", opts.Gateway.Username == user
+	if opts.Gateway.TLSMap || opts.Gateway.TLSImplicitAllow {
+		return checkClientTLSCertSubject(c, func(user string, _ *ldap.DN, isDNSAltName bool) (string, bool) {
+			if user == "" {
+				return "", false
+			}
+			if opts.Gateway.TLSImplicitAllow && isDNSAltName {
+				labels := dnsAltNameLabels(user)
+				for _, gw := range opts.Gateway.Gateways {
+					if gw != nil && dnsAltNameMatches(labels, gw.URLs) {
+						return "", true
+					}
+				}
+			}
+			if opts.Gateway.TLSMap && opts.Gateway.Username == user {
+				return "", true
+			}
+			return "", false
 		})
 	}
 
@@ -854,7 +909,7 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 	} else if len(opts.LeafNode.Users) > 0 {
 		if opts.LeafNode.TLSMap {
 			var user *User
-			found := checkClientTLSCertSubject(c, func(u string, _ *ldap.DN) (string, bool) {
+			found := checkClientTLSCertSubject(c, func(u string, _ *ldap.DN, _ bool) (string, bool) {
 				// This is expected to be a very small array.
 				for _, usr := range opts.LeafNode.Users {
 					if u == usr.Username {

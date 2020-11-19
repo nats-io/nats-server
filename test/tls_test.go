@@ -786,6 +786,167 @@ func TestTLSGatewaysCertificateCNBasedAuth(t *testing.T) {
 	}
 }
 
+func TestTLSRoutesCertificateImplicitAllowPass(t *testing.T) {
+	testTLSRoutesCertificateImplicitAllow(t, true)
+}
+
+func TestTLSRoutesCertificateImplicitAllowFail(t *testing.T) {
+	testTLSRoutesCertificateImplicitAllow(t, false)
+}
+
+func testTLSRoutesCertificateImplicitAllow(t *testing.T, pass bool) {
+	// Base config for the servers
+	cfg, err := ioutil.TempFile("", "cfg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = cfg.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	cfg.WriteString(`
+		cluster {
+		  tls {
+			cert_file = "./configs/certs/tlsauth/server.pem"
+			key_file = "./configs/certs/tlsauth/server-key.pem"
+			ca_file = "./configs/certs/tlsauth/ca.pem"
+			verify_and_implicit_allow = true
+			timeout = 1
+		  }
+		}
+	`)
+
+	optsA := LoadConfig(cfg.Name())
+	optsB := LoadConfig(cfg.Name())
+
+	routeURLs := "nats://localhost:9935, nats://localhost:9936"
+	if !pass {
+		routeURLs = "nats://127.0.0.1:9935, nats://127.0.0.1:9936"
+	}
+	optsA.Host = "127.0.0.1"
+	optsA.Port = 9335
+	optsA.Cluster.Name = "xyz"
+	optsA.Cluster.Host = optsA.Host
+	optsA.Cluster.Port = 9935
+	optsA.Routes = server.RoutesFromStr(routeURLs)
+	optsA.NoSystemAccount = true
+	srvA := RunServer(optsA)
+	defer srvA.Shutdown()
+
+	optsB.Host = "127.0.0.1"
+	optsB.Port = 9336
+	optsB.Cluster.Name = "xyz"
+	optsB.Cluster.Host = optsB.Host
+	optsB.Cluster.Port = 9936
+	optsB.Routes = server.RoutesFromStr(routeURLs)
+	optsB.NoSystemAccount = true
+	srvB := RunServer(optsB)
+	defer srvB.Shutdown()
+
+	// srvC is not connected to srvA and srvB due to wrong cert
+	if pass {
+		checkNumRoutes(t, srvA, 1)
+		checkNumRoutes(t, srvB, 1)
+	} else {
+		time.Sleep(1 * time.Second)
+		checkNumRoutes(t, srvA, 0)
+		checkNumRoutes(t, srvB, 0)
+	}
+}
+
+func TestTLSGatewaysCertificateImplicitAllowPass(t *testing.T) {
+	testTLSGatewaysCertificateImplicitAllow(t, true)
+}
+
+func TestTLSGatewaysCertificateImplicitAllowFail(t *testing.T) {
+	testTLSGatewaysCertificateImplicitAllow(t, false)
+}
+
+func testTLSGatewaysCertificateImplicitAllow(t *testing.T, pass bool) {
+	// Base config for the servers
+	cfg, err := ioutil.TempFile("", "cfg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = cfg.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	cfg.WriteString(`
+		gateway {
+		  tls {
+			cert_file = "./configs/certs/tlsauth/server.pem"
+			key_file = "./configs/certs/tlsauth/server-key.pem"
+			ca_file = "./configs/certs/tlsauth/ca.pem"
+			verify_and_implicit_allow = true
+			timeout = 1
+		  }
+		}
+	`)
+
+	optsA := LoadConfig(cfg.Name())
+	optsB := LoadConfig(cfg.Name())
+
+	urlA := "nats://localhost:9995"
+	urlB := "nats://localhost:9996"
+	if !pass {
+		urlA = "nats://127.0.0.1:9995"
+		urlB = "nats://127.0.0.1:9996"
+	}
+
+	gwA, err := url.Parse(urlA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gwB, err := url.Parse(urlB)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	optsA.Host = "127.0.0.1"
+	optsA.Port = -1
+	optsA.Gateway.Name = "A"
+	optsA.Gateway.Port = 9995
+
+	optsB.Host = "127.0.0.1"
+	optsB.Port = -1
+	optsB.Gateway.Name = "B"
+	optsB.Gateway.Port = 9996
+
+	gateways := make([]*server.RemoteGatewayOpts, 2)
+	gateways[0] = &server.RemoteGatewayOpts{
+		Name: optsA.Gateway.Name,
+		URLs: []*url.URL{gwA},
+	}
+	gateways[1] = &server.RemoteGatewayOpts{
+		Name: optsB.Gateway.Name,
+		URLs: []*url.URL{gwB},
+	}
+
+	optsA.Gateway.Gateways = gateways
+	optsB.Gateway.Gateways = gateways
+
+	server.SetGatewaysSolicitDelay(100 * time.Millisecond)
+	defer server.ResetGatewaysSolicitDelay()
+
+	srvA := RunServer(optsA)
+	defer srvA.Shutdown()
+
+	srvB := RunServer(optsB)
+	defer srvB.Shutdown()
+
+	// Because we need to use "localhost" in the gw URLs (to match
+	// hostname in the user/CN), the server may try to connect to
+	// a [::1], etc.. that may or may not work, so give a lot of
+	// time for that to complete ok.
+	if pass {
+		waitForOutboundGateways(t, srvA, 1, 5*time.Second)
+		waitForOutboundGateways(t, srvB, 1, 5*time.Second)
+	} else {
+		time.Sleep(1 * time.Second)
+		waitForOutboundGateways(t, srvA, 0, 5*time.Second)
+		waitForOutboundGateways(t, srvB, 0, 5*time.Second)
+	}
+}
+
 func TestTLSVerifyClientCertificate(t *testing.T) {
 	srv, opts := RunServerWithConfig("./configs/tlsverify_noca.conf")
 	defer srv.Shutdown()
