@@ -850,9 +850,10 @@ func testTLSRoutesCertificateImplicitAllow(t *testing.T, pass bool) {
 		checkNumRoutes(t, srvA, 1)
 		checkNumRoutes(t, srvB, 1)
 	} else {
-		time.Sleep(5 * time.Second)
-		checkNumRoutes(t, srvA, 0)
-		checkNumRoutes(t, srvB, 0)
+		time.Sleep(1 * time.Second) // the fail case uses the IP, so a short wait is sufficient
+		if srvA.NumRoutes() != 0 || srvB.NumRoutes() != 0 {
+			t.Fatal("No route connection expected")
+		}
 	}
 }
 
@@ -947,9 +948,10 @@ func testTLSGatewaysCertificateImplicitAllow(t *testing.T, pass bool) {
 		waitForOutboundGateways(t, srvA, 1, 5*time.Second)
 		waitForOutboundGateways(t, srvB, 1, 5*time.Second)
 	} else {
-		time.Sleep(5 * time.Second)
-		waitForOutboundGateways(t, srvA, 0, 1*time.Second)
-		waitForOutboundGateways(t, srvB, 0, 1*time.Second)
+		time.Sleep(1 * time.Second) // the fail case uses the IP, so a short wait is sufficient
+		if srvA.NumOutboundGateways() != 0 || srvB.NumOutboundGateways() != 0 {
+			t.Fatal("No outbound gateway connection expected")
+		}
 	}
 }
 
