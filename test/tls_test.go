@@ -1574,6 +1574,69 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			nil,
 			nil,
 		},
+		{
+			"connect with tls and DN includes a multi value RDN",
+			`
+				port: -1
+				%s
+
+				authorization {
+				  users = [
+				    { user = "CN=John Doe,DC=DEV+O=users,DC=OpenSSL,DC=org" }
+                                  ]
+				}
+			`,
+			//
+			// OpenSSL: -subj "/DC=org/DC=OpenSSL/DC=DEV+O=users/CN=John Doe"
+			// Go:       CN=John Doe,O=users
+			// RFC2253:  CN=John Doe,DC=DEV+O=users,DC=OpenSSL,DC=org
+			//
+			nats.ClientCert("./configs/certs/rdns/client-f.pem", "./configs/certs/rdns/client-f.key"),
+			nil,
+			nil,
+		},
+		{
+			"connect with tls and DN includes a multi value RDN but there is no match",
+			`
+				port: -1
+				%s
+
+				authorization {
+				  users = [
+				    { user = "CN=John Doe,DC=DEV,DC=OpenSSL,DC=org" }
+                                  ]
+				}
+			`,
+			//
+			// OpenSSL: -subj "/DC=org/DC=OpenSSL/DC=DEV+O=users/CN=John Doe" -multivalue-rdn
+			// Go:       CN=John Doe,O=users
+			// RFC2253:  CN=John Doe,DC=DEV+O=users,DC=OpenSSL,DC=org
+			//
+			nats.ClientCert("./configs/certs/rdns/client-f.pem", "./configs/certs/rdns/client-f.key"),
+			errors.New("nats: Authorization Violation"),
+			nil,
+		},
+		{
+			"connect with tls and DN includes a multi value RDN that are reordered",
+			`
+				port: -1
+				%s
+
+				authorization {
+				  users = [
+				    { user = "CN=John Doe,O=users+DC=DEV,DC=OpenSSL,DC=org" }
+                                  ]
+				}
+			`,
+			//
+			// OpenSSL: -subj "/DC=org/DC=OpenSSL/DC=DEV+O=users/CN=John Doe" -multivalue-rdn
+			// Go:       CN=John Doe,O=users
+			// RFC2253:  CN=John Doe,DC=DEV+O=users,DC=OpenSSL,DC=org
+			//
+			nats.ClientCert("./configs/certs/rdns/client-f.pem", "./configs/certs/rdns/client-f.key"),
+			nil,
+			nil,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			content := fmt.Sprintf(test.config, `
