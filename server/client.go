@@ -2949,14 +2949,13 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 	client.outBytes += msgSize
 
 	// Check for internal subscriptions.
-	if sub.icb != nil || client.kind == SYSTEM || client.kind == JETSTREAM || client.kind == ACCOUNT {
+	if sub.icb != nil {
 		client.mu.Unlock()
-		// Internal account clients are for service imports and need the
-		// complete raw msg with '\r\n'.
+		// Internal account clients are for service imports and need the '\r\n'.
 		if client.kind == ACCOUNT {
-			sub.icb(sub, c, string(subject), string(c.pa.reply), msg)
+			sub.icb(sub, c, string(subject), string(reply), msg)
 		} else {
-			sub.icb(sub, c, string(subject), string(c.pa.reply), msg[:msgSize])
+			sub.icb(sub, c, string(subject), string(reply), msg[:msgSize])
 		}
 		return true
 	}
@@ -3378,6 +3377,7 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 			atomic.LoadInt64(&c.srv.gateway.totalQSubs) > 0 {
 			flag |= pmrCollectQueueNames
 		}
+
 		didDeliver, qnames = c.processMsgResults(c.acc, r, msg, c.pa.deliver, c.pa.subject, c.pa.reply, flag)
 	}
 
@@ -3501,8 +3501,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// TODO(dlc) - restrict to configured service imports and not responses?
 	tracking, headers := shouldSample(si.latency, c)
 	if len(c.pa.reply) > 0 {
-		rsi = c.setupResponseServiceImport(acc, si, tracking, headers)
-		if rsi != nil {
+		if rsi = c.setupResponseServiceImport(acc, si, tracking, headers); rsi != nil {
 			nrr = []byte(rsi.from)
 		}
 	} else {
@@ -3531,7 +3530,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	}
 
 	// Now check to see if this account has mappings that could affect the service import.
-	// Can't use non locked trick like in processInboundClientMsg, so just call into selectMappedSubject
+	// Can't use non-locked trick like in processInboundClientMsg, so just call into selectMappedSubject
 	// so we only lock once.
 	to, _ = si.acc.selectMappedSubject(to)
 
@@ -3706,8 +3705,9 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			}
 			continue
 		}
-		// Assume delivery subject is normal subject to this point.
+		// Assume delivery subject is the normal subject to this point.
 		dsubj = subj
+
 		// Check for stream import mapped subs (shadow subs). These apply to local subs only.
 		if sub.im != nil {
 			// If this message was a service import do not re-export to an exported stream.
@@ -3715,14 +3715,26 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				continue
 			}
 			if sub.im.tr != nil {
-				to, _ := sub.im.tr.transformSubject(string(subj))
+				to, _ := sub.im.tr.transformSubject(string(dsubj))
 				dsubj = append(_dsubj[:0], to...)
 			} else if sub.im.usePub {
 				dsubj = append(_dsubj[:0], subj...)
 			} else {
 				dsubj = append(_dsubj[:0], sub.im.to...)
 			}
+			// If we are mapping for a deliver subject we will reverse roles.
+			// The original subj we set from above is correct for the msg header,
+			// but we need to transform the deliver subject to properly route.
+			if len(deliver) > 0 {
+				dsubj, subj = subj, dsubj
+			}
 		}
+
+		// Remap to original if internal.
+		if sub.icb != nil {
+			subj = subject
+		}
+
 		// Normal delivery
 		mh := c.msgHeader(dsubj, creply, sub)
 		didDeliver = c.deliverMsg(sub, subj, creply, mh, msg, rplyHasGWPrefix) || didDeliver

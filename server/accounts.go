@@ -1631,6 +1631,7 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 		if to == from {
 			usePub = true
 		} else {
+			from, _ = transformUntokenize(from)
 			// Create a transform
 			if tr, err = newTransform(from, transformTokenize(to)); err != nil {
 				a.mu.Unlock()

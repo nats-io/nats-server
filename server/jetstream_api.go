@@ -552,7 +552,7 @@ func (s *Server) setJetStreamExportSubs() error {
 }
 
 func (s *Server) sendAPIResponse(c *client, subject, reply, request, response string) {
-	s.sendInternalAccountMsg(c.acc, reply, response)
+	s.sendInternalAccountMsg(nil, reply, response)
 	s.sendJetStreamAPIAuditAdvisory(c, subject, request, response)
 }
 
