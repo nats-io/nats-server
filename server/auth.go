@@ -777,8 +777,8 @@ URLS:
 			continue URLS
 		}
 		hostLabels := strings.Split(strings.ToLower(url.Hostname()), ".")
-		// following https://tools.ietf.org/html/rfc6125#section-6.4.3, should not => will not, may => will not
-		// wilcard does not match multiple labels
+		// Following https://tools.ietf.org/html/rfc6125#section-6.4.3, should not => will not, may => will not
+		// The wilcard * never matches multiple label and only matches the left most label.
 		if len(hostLabels) != len(dnsAltNameLabels) {
 			continue URLS
 		}
@@ -808,12 +808,12 @@ func (s *Server) isRouterAuthorized(c *client) bool {
 		return s.opts.CustomRouterAuthentication.Check(c)
 	}
 
-	if opts.Cluster.TLSMap || opts.Cluster.TLSImplicitAllow {
+	if opts.Cluster.TLSMap || opts.Cluster.TLSAcceptKnownUrls {
 		return checkClientTLSCertSubject(c, func(user string, _ *ldap.DN, isDNSAltName bool) (string, bool) {
 			if user == "" {
 				return "", false
 			}
-			if opts.Cluster.TLSImplicitAllow && isDNSAltName {
+			if opts.Cluster.TLSAcceptKnownUrls && isDNSAltName {
 				if dnsAltNameMatches(dnsAltNameLabels(user), opts.Routes) {
 					return "", true
 				}
@@ -844,12 +844,12 @@ func (s *Server) isGatewayAuthorized(c *client) bool {
 	opts := s.getOpts()
 
 	// Check whether TLS map is enabled, otherwise use single user/pass.
-	if opts.Gateway.TLSMap || opts.Gateway.TLSImplicitAllow {
+	if opts.Gateway.TLSMap || opts.Gateway.TLSAcceptKnownUrls {
 		return checkClientTLSCertSubject(c, func(user string, _ *ldap.DN, isDNSAltName bool) (string, bool) {
 			if user == "" {
 				return "", false
 			}
-			if opts.Gateway.TLSImplicitAllow && isDNSAltName {
+			if opts.Gateway.TLSAcceptKnownUrls && isDNSAltName {
 				labels := dnsAltNameLabels(user)
 				for _, gw := range opts.Gateway.Gateways {
 					if gw != nil && dnsAltNameMatches(labels, gw.URLs) {

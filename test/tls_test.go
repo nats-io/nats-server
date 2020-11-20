@@ -808,7 +808,7 @@ func testTLSRoutesCertificateImplicitAllow(t *testing.T, pass bool) {
 			cert_file = "./configs/certs/tlsauth/server.pem"
 			key_file = "./configs/certs/tlsauth/server-key.pem"
 			ca_file = "./configs/certs/tlsauth/ca.pem"
-			verify_and_implicit_allow = true
+			verify_and_accept_known_urls = true
 			insecure = %t
 			timeout = 1
 		  }
@@ -879,7 +879,7 @@ func testTLSGatewaysCertificateImplicitAllow(t *testing.T, pass bool) {
 			cert_file = "./configs/certs/tlsauth/server.pem"
 			key_file = "./configs/certs/tlsauth/server-key.pem"
 			ca_file = "./configs/certs/tlsauth/ca.pem"
-			verify_and_implicit_allow = true
+			verify_and_accept_known_urls = true
 			insecure = %t
 			timeout = 1
 		  }

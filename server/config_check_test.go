@@ -361,15 +361,15 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  5,
 		},
 		{
-			name: "verify_and_implicit_allow not support for clients",
+			name: "verify_and_accept_known_urls not support for clients",
 			config: `
 		tls = {
 						cert_file: "configs/certs/server.pem"
 						key_file: "configs/certs/key.pem"
-					    verify_and_implicit_allow: true
+					    verify_and_accept_known_urls: true
 		}
 		`,
-			err:       errors.New("verify_and_implicit_allow not supported in this context"),
+			err:       errors.New("verify_and_accept_known_urls not supported in this context"),
 			errorLine: 5,
 			errorPos:  10,
 		},
@@ -1154,7 +1154,7 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  0,
 		},
 		{
-			name: "verify_and_implicit_allow do not work for leaf nodes",
+			name: "verify_and_accept_known_urls do not work for leaf nodes",
 			config: `
 		leafnodes {
 		  remotes = [
@@ -1162,13 +1162,13 @@ func TestConfigCheck(t *testing.T) {
 		      url: "tls://nats:7422"
 		      tls {
 		        timeout: 0.01
-				verify_and_implicit_allow: true
+				verify_and_accept_known_urls: true
 		      }
 		    }
 		  ]
 		}`,
 			//Unexpected error after processing config: /var/folders/9h/6g_c9l6n6bb8gp331d_9y0_w0000gn/T/057996446:8:5:
-			err:       errors.New("verify_and_implicit_allow not supported in this context"),
+			err:       errors.New("verify_and_accept_known_urls not supported in this context"),
 			errorLine: 8,
 			errorPos:  5,
 		},
@@ -1393,17 +1393,17 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  21,
 		},
 		{
-			name: "verify_and_implicit_allow not support for websockets",
+			name: "verify_and_accept_known_urls not support for websockets",
 			config: `
 				websocket {
                     tls {
 						cert_file: "configs/certs/server.pem"
 						key_file: "configs/certs/key.pem"
-					    verify_and_implicit_allow: true
+					    verify_and_accept_known_urls: true
 					}
 				}
 			`,
-			err:       fmt.Errorf("verify_and_implicit_allow not supported in this context"),
+			err:       fmt.Errorf("verify_and_accept_known_urls not supported in this context"),
 			errorLine: 6,
 			errorPos:  10,
 		},
