@@ -57,20 +57,21 @@ func NoErrOnUnknownFields(noError bool) {
 // NOTE: This structure is no longer used for monitoring endpoints
 // and json tags are deprecated and may be removed in the future.
 type ClusterOpts struct {
-	Name           string            `json:"-"`
-	Host           string            `json:"addr,omitempty"`
-	Port           int               `json:"cluster_port,omitempty"`
-	Username       string            `json:"-"`
-	Password       string            `json:"-"`
-	AuthTimeout    float64           `json:"auth_timeout,omitempty"`
-	Permissions    *RoutePermissions `json:"-"`
-	TLSTimeout     float64           `json:"-"`
-	TLSConfig      *tls.Config       `json:"-"`
-	TLSMap         bool              `json:"-"`
-	ListenStr      string            `json:"-"`
-	Advertise      string            `json:"-"`
-	NoAdvertise    bool              `json:"-"`
-	ConnectRetries int               `json:"-"`
+	Name              string            `json:"-"`
+	Host              string            `json:"addr,omitempty"`
+	Port              int               `json:"cluster_port,omitempty"`
+	Username          string            `json:"-"`
+	Password          string            `json:"-"`
+	AuthTimeout       float64           `json:"auth_timeout,omitempty"`
+	Permissions       *RoutePermissions `json:"-"`
+	TLSTimeout        float64           `json:"-"`
+	TLSConfig         *tls.Config       `json:"-"`
+	TLSMap            bool              `json:"-"`
+	TLSCheckKnwonURLs bool              `json:"-"`
+	ListenStr         string            `json:"-"`
+	Advertise         string            `json:"-"`
+	NoAdvertise       bool              `json:"-"`
+	ConnectRetries    int               `json:"-"`
 
 	// Not exported (used in tests)
 	resolver netResolver
@@ -80,19 +81,20 @@ type ClusterOpts struct {
 // NOTE: This structure is no longer used for monitoring endpoints
 // and json tags are deprecated and may be removed in the future.
 type GatewayOpts struct {
-	Name           string               `json:"name"`
-	Host           string               `json:"addr,omitempty"`
-	Port           int                  `json:"port,omitempty"`
-	Username       string               `json:"-"`
-	Password       string               `json:"-"`
-	AuthTimeout    float64              `json:"auth_timeout,omitempty"`
-	TLSConfig      *tls.Config          `json:"-"`
-	TLSTimeout     float64              `json:"tls_timeout,omitempty"`
-	TLSMap         bool                 `json:"-"`
-	Advertise      string               `json:"advertise,omitempty"`
-	ConnectRetries int                  `json:"connect_retries,omitempty"`
-	Gateways       []*RemoteGatewayOpts `json:"gateways,omitempty"`
-	RejectUnknown  bool                 `json:"reject_unknown,omitempty"` // config got renamed to reject_unknown_cluster
+	Name              string               `json:"name"`
+	Host              string               `json:"addr,omitempty"`
+	Port              int                  `json:"port,omitempty"`
+	Username          string               `json:"-"`
+	Password          string               `json:"-"`
+	AuthTimeout       float64              `json:"auth_timeout,omitempty"`
+	TLSConfig         *tls.Config          `json:"-"`
+	TLSTimeout        float64              `json:"tls_timeout,omitempty"`
+	TLSMap            bool                 `json:"-"`
+	TLSCheckKnownURLs bool                 `json:"-"`
+	Advertise         string               `json:"advertise,omitempty"`
+	ConnectRetries    int                  `json:"connect_retries,omitempty"`
+	Gateways          []*RemoteGatewayOpts `json:"gateways,omitempty"`
+	RejectUnknown     bool                 `json:"reject_unknown,omitempty"` // config got renamed to reject_unknown_cluster
 
 	// Not exported, for tests.
 	resolver         netResolver
@@ -391,15 +393,16 @@ type authorization struct {
 // TLSConfigOpts holds the parsed tls config information,
 // used with flag parsing
 type TLSConfigOpts struct {
-	CertFile         string
-	KeyFile          string
-	CaFile           string
-	Verify           bool
-	Insecure         bool
-	Map              bool
-	Timeout          float64
-	Ciphers          []uint16
-	CurvePreferences []tls.CurveID
+	CertFile          string
+	KeyFile           string
+	CaFile            string
+	Verify            bool
+	Insecure          bool
+	Map               bool
+	TLSCheckKnownURLs bool
+	Timeout           float64
+	Ciphers           []uint16
+	CurvePreferences  []tls.CurveID
 }
 
 var tlsUsage = `
@@ -745,7 +748,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 	case "ping_max":
 		o.MaxPingsOut = int(v.(int64))
 	case "tls":
-		tc, err := parseTLS(tk)
+		tc, err := parseTLS(tk, true)
 		if err != nil {
 			*errors = append(*errors, err)
 			return
@@ -924,7 +927,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			*errors = append(*errors, err)
 		}
 	case "resolver_tls":
-		tc, err := parseTLS(tk)
+		tc, err := parseTLS(tk, true)
 		if err != nil {
 			*errors = append(*errors, err)
 			return
@@ -1160,6 +1163,7 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 			opts.Cluster.TLSConfig = config
 			opts.Cluster.TLSTimeout = tlsopts.Timeout
 			opts.Cluster.TLSMap = tlsopts.Map
+			opts.Cluster.TLSCheckKnwonURLs = tlsopts.TLSCheckKnownURLs
 		case "cluster_advertise", "advertise":
 			opts.Cluster.Advertise = mv.(string)
 		case "no_advertise":
@@ -1275,6 +1279,7 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 			o.Gateway.TLSConfig = config
 			o.Gateway.TLSTimeout = tlsopts.Timeout
 			o.Gateway.TLSMap = tlsopts.Map
+			o.Gateway.TLSCheckKnownURLs = tlsopts.TLSCheckKnownURLs
 		case "advertise":
 			o.Gateway.Advertise = mv.(string)
 		case "connect_retries":
@@ -1481,7 +1486,7 @@ func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]e
 		case "reconnect", "reconnect_delay", "reconnect_interval":
 			opts.LeafNode.ReconnectInterval = time.Duration(int(mv.(int64))) * time.Second
 		case "tls":
-			tc, err := parseTLS(tk)
+			tc, err := parseTLS(tk, true)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
@@ -1678,7 +1683,7 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 				}
 				remote.Credentials = p
 			case "tls":
-				tc, err := parseTLS(tk)
+				tc, err := parseTLS(tk, true)
 				if err != nil {
 					*errors = append(*errors, err)
 					continue
@@ -1733,7 +1738,7 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 // Parse TLS and returns a TLSConfig and TLSTimeout.
 // Used by cluster and gateway parsing.
 func getTLSConfig(tk token) (*tls.Config, *TLSConfigOpts, error) {
-	tc, err := parseTLS(tk)
+	tc, err := parseTLS(tk, false)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -3203,7 +3208,7 @@ func parseCurvePreferences(curveName string) (tls.CurveID, error) {
 }
 
 // Helper function to parse TLS configs.
-func parseTLS(v interface{}) (t *TLSConfigOpts, retErr error) {
+func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 	var (
 		tlsm map[string]interface{}
 		tc   = TLSConfigOpts{}
@@ -3251,8 +3256,22 @@ func parseTLS(v interface{}) (t *TLSConfigOpts, retErr error) {
 			if !ok {
 				return nil, &configErr{tk, "error parsing tls config, expected 'verify_and_map' to be a boolean"}
 			}
-			tc.Verify = verify
+			if verify {
+				tc.Verify = verify
+			}
 			tc.Map = verify
+		case "verify_cert_and_check_known_urls":
+			verify, ok := mv.(bool)
+			if !ok {
+				return nil, &configErr{tk, "error parsing tls config, expected 'verify_cert_and_check_known_urls' to be a boolean"}
+			}
+			if verify && isClientCtx {
+				return nil, &configErr{tk, "verify_cert_and_check_known_urls not supported in this context"}
+			}
+			if verify {
+				tc.Verify = verify
+			}
+			tc.TLSCheckKnownURLs = verify
 		case "cipher_suites":
 			ra := mv.([]interface{})
 			if len(ra) == 0 {
@@ -3408,7 +3427,7 @@ func parseWebsocket(v interface{}, o *Options, errors *[]error, warnings *[]erro
 		case "no_tls":
 			o.Websocket.NoTLS = mv.(bool)
 		case "tls":
-			tc, err := parseTLS(tk)
+			tc, err := parseTLS(tk, true)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue

@@ -361,6 +361,19 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  5,
 		},
 		{
+			name: "verify_cert_and_check_known_urls not support for clients",
+			config: `
+		tls = {
+						cert_file: "configs/certs/server.pem"
+						key_file: "configs/certs/key.pem"
+					    verify_cert_and_check_known_urls: true
+		}
+		`,
+			err:       errors.New("verify_cert_and_check_known_urls not supported in this context"),
+			errorLine: 5,
+			errorPos:  10,
+		},
+		{
 			name: "when unknown option is in cluster config with defined routes",
 			config: `
 		cluster {
@@ -1141,6 +1154,25 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  0,
 		},
 		{
+			name: "verify_cert_and_check_known_urls do not work for leaf nodes",
+			config: `
+		leafnodes {
+		  remotes = [
+		    {
+		      url: "tls://nats:7422"
+		      tls {
+		        timeout: 0.01
+				verify_cert_and_check_known_urls: true
+		      }
+		    }
+		  ]
+		}`,
+			//Unexpected error after processing config: /var/folders/9h/6g_c9l6n6bb8gp331d_9y0_w0000gn/T/057996446:8:5:
+			err:       errors.New("verify_cert_and_check_known_urls not supported in this context"),
+			errorLine: 8,
+			errorPos:  5,
+		},
+		{
 			name: "when leafnode remotes use wrong type",
 			config: `
 		leafnodes {
@@ -1359,6 +1391,21 @@ func TestConfigCheck(t *testing.T) {
 			err:       fmt.Errorf("missing 'key_file' in TLS configuration"),
 			errorLine: 3,
 			errorPos:  21,
+		},
+		{
+			name: "verify_cert_and_check_known_urls not support for websockets",
+			config: `
+				websocket {
+                    tls {
+						cert_file: "configs/certs/server.pem"
+						key_file: "configs/certs/key.pem"
+					    verify_cert_and_check_known_urls: true
+					}
+				}
+			`,
+			err:       fmt.Errorf("verify_cert_and_check_known_urls not supported in this context"),
+			errorLine: 6,
+			errorPos:  10,
 		},
 	}
 
