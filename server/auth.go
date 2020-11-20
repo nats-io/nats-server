@@ -808,12 +808,12 @@ func (s *Server) isRouterAuthorized(c *client) bool {
 		return s.opts.CustomRouterAuthentication.Check(c)
 	}
 
-	if opts.Cluster.TLSMap || opts.Cluster.TLSAcceptKnownUrls {
+	if opts.Cluster.TLSMap || opts.Cluster.TLSCheckKnwonURLs {
 		return checkClientTLSCertSubject(c, func(user string, _ *ldap.DN, isDNSAltName bool) (string, bool) {
 			if user == "" {
 				return "", false
 			}
-			if opts.Cluster.TLSAcceptKnownUrls && isDNSAltName {
+			if opts.Cluster.TLSCheckKnwonURLs && isDNSAltName {
 				if dnsAltNameMatches(dnsAltNameLabels(user), opts.Routes) {
 					return "", true
 				}
@@ -844,12 +844,12 @@ func (s *Server) isGatewayAuthorized(c *client) bool {
 	opts := s.getOpts()
 
 	// Check whether TLS map is enabled, otherwise use single user/pass.
-	if opts.Gateway.TLSMap || opts.Gateway.TLSAcceptKnownUrls {
+	if opts.Gateway.TLSMap || opts.Gateway.TLSCheckKnownURLs {
 		return checkClientTLSCertSubject(c, func(user string, _ *ldap.DN, isDNSAltName bool) (string, bool) {
 			if user == "" {
 				return "", false
 			}
-			if opts.Gateway.TLSAcceptKnownUrls && isDNSAltName {
+			if opts.Gateway.TLSCheckKnownURLs && isDNSAltName {
 				labels := dnsAltNameLabels(user)
 				for _, gw := range opts.Gateway.Gateways {
 					if gw != nil && dnsAltNameMatches(labels, gw.URLs) {
