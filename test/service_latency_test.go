@@ -1303,6 +1303,72 @@ func TestServiceAndStreamStackOverflow(t *testing.T) {
 	})
 }
 
+func TestServiceCycle(t *testing.T) {
+	t.Skip("Remove the skip to run this test and shows the issue")
+
+	conf := createConfFile(t, []byte(`
+		accounts {
+		  A {
+		    users = [ { user: "a", pass: "a" } ]
+		    exports [
+		      { service: help }
+			]
+			imports [
+		      { service { subject: help, account: B } }
+		    ]
+		  }
+		  B {
+		    users = [ { user: "b", pass: "b" } ]
+		    exports [
+		      { service: help }
+			]
+			imports [
+		      { service { subject: help, account: A } }
+		    ]
+		  }
+		}
+	`))
+	defer os.Remove(conf)
+
+	srv, opts := RunServerWithConfig(conf)
+	defer srv.Shutdown()
+
+	// Responder (just request sub)
+	nc, err := nats.Connect(fmt.Sprintf("nats://a:a@%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	cb := func(m *nats.Msg) {
+		m.Respond(nil)
+	}
+	sub, _ := nc.Subscribe("help", cb)
+	nc.Flush()
+
+	// Requestor
+	nc2, err := nats.Connect(fmt.Sprintf("nats://b:b@%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+
+	// Send a single request.
+	if _, err := nc2.Request("help", []byte("hi"), time.Second); err != nil {
+		t.Fatal("Did not get the reply")
+	}
+
+	// Make sure works for queue subscribers as well.
+	sub.Unsubscribe()
+	sub, _ = nc.QueueSubscribe("help", "prod", cb)
+	nc.Flush()
+
+	// Send a single request.
+	if _, err := nc2.Request("help", []byte("hi"), time.Second); err != nil {
+		t.Fatal("Did not get the reply")
+	}
+}
+
 // Check we get the proper detailed information for the requestor when allowed.
 func TestServiceLatencyRequestorSharesDetailedInfo(t *testing.T) {
 	sc := createSuperCluster(t, 3, 3)
