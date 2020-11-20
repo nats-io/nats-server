@@ -1099,7 +1099,7 @@ func TestJetStreamAddStreamSameConfigOK(t *testing.T) {
 	}
 }
 
-func sendStreamMsg(t *testing.T, nc *nats.Conn, subject, msg string) uint64 {
+func sendStreamMsg(t *testing.T, nc *nats.Conn, subject, msg string) *server.PubAck {
 	t.Helper()
 	resp, _ := nc.Request(subject, []byte(msg), 500*time.Millisecond)
 	if resp == nil {
@@ -1112,7 +1112,7 @@ func sendStreamMsg(t *testing.T, nc *nats.Conn, subject, msg string) uint64 {
 	if err := json.Unmarshal(resp.Data[3:], &pubAck); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	return pubAck.Seq
+	return &pubAck
 }
 
 func TestJetStreamBasicAckPublish(t *testing.T) {
@@ -9798,5 +9798,149 @@ func TestJetStreamDeliveryAfterServerRestart(t *testing.T) {
 	// Should receive message 2.
 	if _, err := sub.NextMsg(500 * time.Millisecond); err != nil {
 		t.Fatalf("Did not get message: %v", err)
+	}
+}
+
+// This is for the basics of importing the ability to send to a stream and consume
+// from a consumer that is pull based on push based on a well known delivery subject.
+func TestJetStreamAccountImportBasics(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		no_auth_user: rip
+		jetstream: {max_mem_store: 64GB, max_file_store: 10TB}
+		accounts: {
+			JS: {
+				jetstream: enabled
+				users: [ {user: dlc, password: foo} ]
+				exports [
+					# This is for sending into a stream from other accounts.
+					{ service: "ORDERS.*" }
+					# This is for accessing a pull based consumer.
+					{ service: "$JS.API.CONSUMER.MSG.NEXT.*.*" }
+					# This is streaming to a delivery subject for a push based consumer.
+					{ stream: "deliver.ORDERS" }
+					# This is to ack received messages. This is a service to ack acks..
+					{ service: "$JS.ACK.ORDERS.*.>" }
+				]
+			},
+			IU: {
+				users: [ {user: rip, password: bar} ]
+				imports [
+					{ service: { subject: "ORDERS.*", account: JS }, to: "my.orders.$1" }
+					{ service: { subject: "$JS.API.CONSUMER.MSG.NEXT.ORDERS.d", account: JS }, to: "nxt.msg" }
+					{ stream:  { subject: "deliver.ORDERS", account: JS }, to: "d" }
+					{ service: { subject: "$JS.ACK.ORDERS.*.>", account: JS } }
+				]
+			},
+		}
+	`))
+	defer os.Remove(conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	acc, err := s.LookupAccount("JS")
+	if err != nil {
+		t.Fatalf("Unexpected error looking up account: %v", err)
+	}
+
+	mset, err := acc.AddStream(&server.StreamConfig{Name: "ORDERS", Subjects: []string{"ORDERS.*"}})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset.Delete()
+
+	// This should be the rip user, the one that imports some JS.
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Simple publish to a stream.
+	pubAck := sendStreamMsg(t, nc, "my.orders.foo", "ORDERS-1")
+	if pubAck.Stream != "ORDERS" || pubAck.Seq != 1 {
+		t.Fatalf("Bad pubAck received: %+v", pubAck)
+	}
+	if msgs := mset.State().Msgs; msgs != 1 {
+		t.Fatalf("Expected 1 message, got %d", msgs)
+	}
+
+	total := 2
+	for i := 2; i <= total; i++ {
+		sendStreamMsg(t, nc, "my.orders.bar", fmt.Sprintf("ORDERS-%d", i))
+	}
+	if msgs := mset.State().Msgs; msgs != uint64(total) {
+		t.Fatalf("Expected %d messages, got %d", total, msgs)
+	}
+
+	// Now test access to a pull based consumer, e.g. workqueue.
+	o, err := mset.AddConsumer(&server.ConsumerConfig{
+		Durable:   "d",
+		AckPolicy: server.AckExplicit,
+	})
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	defer o.Delete()
+
+	// We mapped the next message request, "$JS.API.CONSUMER.MSG.NEXT.ORDERS.d" -> "nxt.msg"
+	m, err := nc.Request("nxt.msg", nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if string(m.Data) != "ORDERS-1" {
+		t.Fatalf("Expected to receive %q, got %q", "ORDERS-1", m.Data)
+	}
+
+	// Now test access to a push based consumer
+	o, err = mset.AddConsumer(&server.ConsumerConfig{
+		Durable:        "p",
+		DeliverSubject: "deliver.ORDERS",
+		AckPolicy:      server.AckExplicit,
+	})
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	defer o.Delete()
+
+	// We remapped from above, deliver.ORDERS -> d
+	sub, _ := nc.SubscribeSync("d")
+	defer sub.Unsubscribe()
+
+	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
+		if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != total {
+			return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, total)
+		}
+		return nil
+	})
+
+	m, _ = sub.NextMsg(time.Second)
+	// Make sure we remapped subject correctly across the account boundary.
+	if m.Subject != "ORDERS.foo" {
+		t.Fatalf("Expected subject of %q, got %q", "ORDERS.foo", m.Subject)
+	}
+	// Now make sure we can ack messages correctly.
+	m.Ack()
+	nc.Flush()
+
+	if info := o.Info(); info.AckFloor.Consumer != 1 {
+		t.Fatalf("Did not receive the ack properly")
+	}
+
+	// Grab second one now.
+	m, _ = sub.NextMsg(time.Second)
+	// Make sure we remapped subject correctly across the account boundary.
+	if m.Subject != "ORDERS.bar" {
+		t.Fatalf("Expected subject of %q, got %q", "ORDERS.bar", m.Subject)
+	}
+	// Now make sure we can ack messages and get back an ack as well.
+	resp, _ := nc.Request(m.Reply, nil, 100*time.Millisecond)
+	if resp == nil {
+		t.Fatalf("No response, possible timeout?")
+	}
+	if info := o.Info(); info.AckFloor.Consumer != 2 {
+		t.Fatalf("Did not receive the ack properly")
 	}
 }

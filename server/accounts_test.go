@@ -661,7 +661,7 @@ func TestSimpleMapping(t *testing.T) {
 		}
 		matches := mraw[0]
 		if matches[SUB_INDEX] != "import.foo" {
-			t.Fatalf("Did not get correct subject: '%s'", matches[SUB_INDEX])
+			t.Fatalf("Did not get correct subject: wanted %q, got %q", "import.foo", matches[SUB_INDEX])
 		}
 		if matches[SID_INDEX] != sid {
 			t.Fatalf("Did not get correct sid: '%s'", matches[SID_INDEX])

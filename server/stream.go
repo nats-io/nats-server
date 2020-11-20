@@ -873,6 +873,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 	if c != nil && c.acc != nil {
 		accName = c.acc.Name
 	}
+
 	doAck := !mset.config.NoAck
 	pubAck := mset.pubAck
 	jsa := mset.jsa
@@ -1099,6 +1100,7 @@ func (mset *Stream) internalSendLoop() {
 			didDeliver := c.processInboundClientMsg(msg)
 			c.pa.szb = nil
 			c.flushClients(0)
+
 			// Check to see if this is a delivery for an observable and
 			// we failed to deliver the message. If so alert the observable.
 			if pm.o != nil && pm.seq > 0 && !didDeliver {
