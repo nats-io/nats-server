@@ -1304,68 +1304,62 @@ func TestServiceAndStreamStackOverflow(t *testing.T) {
 }
 
 func TestServiceCycle(t *testing.T) {
-	t.Skip("Remove the skip to run this test and shows the issue")
-
 	conf := createConfFile(t, []byte(`
 		accounts {
 		  A {
-		    users = [ { user: "a", pass: "a" } ]
-		    exports [
-		      { service: help }
-			]
-			imports [
-		      { service { subject: help, account: B } }
-		    ]
+		    exports [ { service: help } ]
+			imports [ { service { subject: help, account: B } } ]
 		  }
 		  B {
-		    users = [ { user: "b", pass: "b" } ]
-		    exports [
-		      { service: help }
-			]
-			imports [
-		      { service { subject: help, account: A } }
-		    ]
+		    exports [ { service: help } ]
+			imports [ { service { subject: help, account: A } } ]
 		  }
 		}
 	`))
 	defer os.Remove(conf)
 
-	srv, opts := RunServerWithConfig(conf)
-	defer srv.Shutdown()
-
-	// Responder (just request sub)
-	nc, err := nats.Connect(fmt.Sprintf("nats://a:a@%s:%d", opts.Host, opts.Port))
-	if err != nil {
-		t.Fatalf("Error on connect: %v", err)
-	}
-	defer nc.Close()
-
-	cb := func(m *nats.Msg) {
-		m.Respond(nil)
-	}
-	sub, _ := nc.Subscribe("help", cb)
-	nc.Flush()
-
-	// Requestor
-	nc2, err := nats.Connect(fmt.Sprintf("nats://b:b@%s:%d", opts.Host, opts.Port))
-	if err != nil {
-		t.Fatalf("Error on connect: %v", err)
-	}
-	defer nc2.Close()
-
-	// Send a single request.
-	if _, err := nc2.Request("help", []byte("hi"), time.Second); err != nil {
-		t.Fatal("Did not get the reply")
+	if _, err := server.ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), server.ErrServiceImportFormsCycle.Error()) {
+		t.Fatalf("Expected an error on cycle service import, got none")
 	}
 
-	// Make sure works for queue subscribers as well.
-	sub.Unsubscribe()
-	sub, _ = nc.QueueSubscribe("help", "prod", cb)
-	nc.Flush()
+	conf = createConfFile(t, []byte(`
+		accounts {
+		  A {
+		    exports [ { service: * } ]
+			imports [ { service { subject: help, account: B } } ]
+		  }
+		  B {
+		    exports [ { service: help } ]
+			imports [ { service { subject: *, account: A } } ]
+		  }
+		}
+	`))
+	defer os.Remove(conf)
 
-	// Send a single request.
-	if _, err := nc2.Request("help", []byte("hi"), time.Second); err != nil {
-		t.Fatal("Did not get the reply")
+	if _, err := server.ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), server.ErrServiceImportFormsCycle.Error()) {
+		t.Fatalf("Expected an error on cycle service import, got none")
+	}
+
+	conf = createConfFile(t, []byte(`
+		accounts {
+		  A {
+		    exports [ { service: * } ]
+			imports [ { service { subject: help, account: B } } ]
+		  }
+		  B {
+		    exports [ { service: help } ]
+			imports [ { service { subject: help, account: C } } ]
+		  }
+		  C {
+		    exports [ { service: * } ]
+			imports [ { service { subject: *, account: A } } ]
+		  }
+		}
+	`))
+	defer os.Remove(conf)
+
+	if _, err := server.ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), server.ErrServiceImportFormsCycle.Error()) {
+		t.Fatalf("Expected an error on cycle service import, got none")
 	}
 }
 
