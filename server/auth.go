@@ -435,8 +435,9 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 					return "", false
 				}
 
-				// Look through the accounts for an RDN that is equal to the one
+				// Look through the accounts for a DN that is equal to the one
 				// presented by the certificate.
+				dns := make(map[*User]*ldap.DN)
 				for _, usr := range s.users {
 					if !c.connectionTypeAllowed(usr.AllowedConnectionTypes) {
 						continue
@@ -448,6 +449,18 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 						continue
 					}
 					if inputDN.Equal(certDN) {
+						user = usr
+						return usr.Username, true
+					}
+
+					// In case it did not match exactly, then collect the DNs
+					// and try to match later in case the DN was reordered.
+					dns[usr] = inputDN
+				}
+
+				// Check in case the DN was reordered.
+				for usr, inputDN := range dns {
+					if inputDN.RDNsMatch(certDN) {
 						user = usr
 						return usr.Username, true
 					}

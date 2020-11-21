@@ -229,6 +229,29 @@ func (d *DN) Equal(other *DN) bool {
 	return true
 }
 
+// RDNsMatch returns true if the individual RDNs of the DNs
+// are the same regardless of ordering.
+func (d *DN) RDNsMatch(other *DN) bool {
+	if len(d.RDNs) != len(other.RDNs) {
+		return false
+	}
+
+CheckNextRDN:
+	for _, irdn := range d.RDNs {
+		for _, ordn := range other.RDNs {
+			if (len(irdn.Attributes) == len(ordn.Attributes)) &&
+				(irdn.hasAllAttributes(ordn.Attributes) && ordn.hasAllAttributes(irdn.Attributes)) {
+				// Found the RDN, check if next one matches.
+				continue CheckNextRDN
+			}
+		}
+
+		// Could not find a matching individual RDN, auth fails.
+		return false
+	}
+	return true
+}
+
 // AncestorOf returns true if the other DN consists of at least one RDN followed by all the RDNs of the current DN.
 // "ou=widgets,o=acme.com" is an ancestor of "ou=sprockets,ou=widgets,o=acme.com"
 // "ou=widgets,o=acme.com" is not an ancestor of "ou=sprockets,ou=widgets,o=foo.com"

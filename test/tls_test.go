@@ -1540,7 +1540,10 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 				  users = [
 				    { user = "CN=*.example.com,OU=NATS,O=NATS,L=Los Angeles,ST=CA,C=US,DC=example,DC=com",
                                         permissions = { subscribe = { deny = ">" }} }
+
+				    # This should take precedence since it is in the RFC2253 order.
 				    { user = "DC=com,DC=example,CN=*.example.com,O=NATS,OU=NATS,L=Los Angeles,ST=CA,C=US" }
+
 				    { user = "CN=*.example.com,OU=NATS,O=NATS,L=Los Angeles,ST=CA,C=US",
                                         permissions = { subscribe = { deny = ">" }} }
 				  ]
@@ -1635,6 +1638,125 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			//
 			nats.ClientCert("./configs/certs/rdns/client-f.pem", "./configs/certs/rdns/client-f.key"),
 			nil,
+			nil,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			content := fmt.Sprintf(test.config, `
+				tls {
+					cert_file: "configs/certs/rdns/server.pem"
+					key_file: "configs/certs/rdns/server.key"
+					ca_file: "configs/certs/rdns/ca.pem"
+					timeout: 5
+					verify_and_map: true
+				}
+			`)
+			conf := createConfFile(t, []byte(content))
+			defer os.Remove(conf)
+			s, opts := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port),
+				test.certs,
+				nats.RootCAs("./configs/certs/rdns/ca.pem"),
+			)
+			if test.err == nil && err != nil {
+				t.Errorf("Expected to connect, got %v", err)
+			} else if test.err != nil && err == nil {
+				t.Errorf("Expected error on connect")
+			} else if test.err != nil && err != nil {
+				// Error on connect was expected
+				if test.err.Error() != err.Error() {
+					t.Errorf("Expected error %s, got: %s", test.err, err)
+				}
+				return
+			}
+			defer nc.Close()
+
+			nc.Subscribe("ping", func(m *nats.Msg) {
+				m.Respond([]byte("pong"))
+			})
+			nc.Flush()
+
+			_, err = nc.Request("ping", []byte("ping"), 250*time.Millisecond)
+			if test.rerr != nil && err == nil {
+				t.Errorf("Expected error getting response")
+			} else if test.rerr == nil && err != nil {
+				t.Errorf("Expected response")
+			}
+		})
+	}
+}
+
+func TestTLSClientAuthWithRDNSequenceReordered(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		config string
+		certs  nats.Option
+		err    error
+		rerr   error
+	}{
+		{
+			"connect with tls and DN includes a multi value RDN that are reordered",
+			`
+				port: -1
+				%s
+
+				authorization {
+				  users = [
+				    { user = "DC=org,DC=OpenSSL,O=users+DC=DEV,CN=John Doe" }
+                                  ]
+				}
+			`,
+			//
+			// OpenSSL: -subj "/DC=org/DC=OpenSSL/DC=DEV+O=users/CN=John Doe" -multivalue-rdn
+			// Go:       CN=John Doe,O=users
+			// RFC2253:  CN=John Doe,DC=DEV+O=users,DC=OpenSSL,DC=org
+			//
+			nats.ClientCert("./configs/certs/rdns/client-f.pem", "./configs/certs/rdns/client-f.key"),
+			nil,
+			nil,
+		},
+		{
+			"connect with tls and DN includes a multi value RDN that are reordered but not equal RDNs",
+			`
+				port: -1
+				%s
+
+				authorization {
+				  users = [
+				    { user = "DC=org,DC=OpenSSL,O=users,CN=John Doe" }
+                                  ]
+				}
+			`,
+			//
+			// OpenSSL: -subj "/DC=org/DC=OpenSSL/DC=DEV+O=users/CN=John Doe" -multivalue-rdn
+			// Go:       CN=John Doe,O=users
+			// RFC2253:  CN=John Doe,DC=DEV+O=users,DC=OpenSSL,DC=org
+			//
+			nats.ClientCert("./configs/certs/rdns/client-f.pem", "./configs/certs/rdns/client-f.key"),
+			errors.New("nats: Authorization Violation"),
+			nil,
+		},
+		{
+			"connect with tls and DN includes a multi value RDN that are reordered but not equal RDNs",
+			`
+				port: -1
+				%s
+
+				authorization {
+				  users = [
+				    { user = "DC=OpenSSL, DC=org, O=users, CN=John Doe" }
+                                  ]
+				}
+			`,
+			//
+			// OpenSSL: -subj "/DC=org/DC=OpenSSL/DC=DEV+O=users/CN=John Doe" -multivalue-rdn
+			// Go:       CN=John Doe,O=users
+			// RFC2253:  CN=John Doe,DC=DEV+O=users,DC=OpenSSL,DC=org
+			//
+			nats.ClientCert("./configs/certs/rdns/client-f.pem", "./configs/certs/rdns/client-f.key"),
+			errors.New("nats: Authorization Violation"),
 			nil,
 		},
 	} {
