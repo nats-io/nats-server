@@ -392,8 +392,8 @@ func TestJetStreamPubAck(t *testing.T) {
 		if pubAck.Stream != sname {
 			t.Fatalf("Expected %q for stream name, got %q", sname, pubAck.Stream)
 		}
-		if pubAck.Seq != seq {
-			t.Fatalf("Expected %d for sequence, got %d", seq, pubAck.Seq)
+		if pubAck.Sequence != seq {
+			t.Fatalf("Expected %d for sequence, got %d", seq, pubAck.Sequence)
 		}
 	}
 
@@ -3344,7 +3344,7 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 	sendMsg := func(seq uint64, id, msg string) *server.PubAck {
 		t.Helper()
 		m := nats.NewMsg(fmt.Sprintf("foo.%d", seq))
-		m.Header.Add(server.JSPubId, id)
+		m.Header.Add(server.JSMsgId, id)
 		m.Data = []byte(msg)
 		resp, _ := nc.RequestMsg(m, 100*time.Millisecond)
 		if resp == nil {
@@ -3357,8 +3357,8 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 		if err := json.Unmarshal(resp.Data[3:], &pubAck); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
-		if pubAck.Seq != seq {
-			t.Fatalf("Did not get correct sequence in PubAck, expected %d, got %d", seq, pubAck.Seq)
+		if pubAck.Sequence != seq {
+			t.Fatalf("Did not get correct sequence in PubAck, expected %d, got %d", seq, pubAck.Sequence)
 		}
 		return &pubAck
 	}
@@ -3415,7 +3415,6 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 	if err := mset.Update(&cfg); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-
 	mset.Purge()
 
 	// Send 5 new messages.
@@ -3463,6 +3462,102 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 	// Purge should wipe the msgIds as well.
 	mset.Purge()
 	nmids(0)
+}
+
+func TestJetStreamPublishExpect(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	mname := "EXPECT"
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: mname, Storage: server.FileStorage, MaxAge: time.Hour, Subjects: []string{"foo.*"}})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset.Delete()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Test that we get no error when expected stream is correct.
+	m := nats.NewMsg("foo.bar")
+	m.Data = []byte("HELLO")
+	m.Header.Set(server.JSExpectedStream, mname)
+	resp, err := nc.RequestMsg(m, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !bytes.HasPrefix(resp.Data, []byte("+OK {")) {
+		t.Fatalf("Expected a JetStreamPubAck, got %q", resp.Data)
+	}
+
+	// Now test that we get an error back when expecting a different stream.
+	m.Header.Set(server.JSExpectedStream, "ORDERS")
+	resp, err = nc.RequestMsg(m, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !bytes.HasPrefix(resp.Data, []byte("-ERR '")) {
+		t.Fatalf("Expected an error, got %q", resp.Data)
+	}
+
+	// Now test that we get an error back when expecting a different sequence number.
+	m.Header.Set(server.JSExpectedStream, mname)
+	m.Header.Set(server.JSExpectedLastSeq, "10")
+	resp, err = nc.RequestMsg(m, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !bytes.HasPrefix(resp.Data, []byte("-ERR '")) {
+		t.Fatalf("Expected an error, got %q", resp.Data)
+	}
+
+	// Now send a message with a message ID and make sure we can match that.
+	m = nats.NewMsg("foo.bar")
+	m.Data = []byte("HELLO")
+	m.Header.Set(server.JSMsgId, "AAA")
+	if _, err = nc.RequestMsg(m, 100*time.Millisecond); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now try again with new message ID but require last one to be 'BBB'
+	m.Header.Set(server.JSMsgId, "ZZZ")
+	m.Header.Set(server.JSExpectedLastMsgId, "BBB")
+	resp, err = nc.RequestMsg(m, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !bytes.HasPrefix(resp.Data, []byte("-ERR '")) {
+		t.Fatalf("Expected an error, got %q", resp.Data)
+	}
+
+	// Restart the server and make sure we remember/rebuild last seq and last msgId.
+	// Stop current server.
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+	// Restart.
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc = clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Our last sequence was 2 and last msgId was "AAA"
+	m = nats.NewMsg("foo.baz")
+	m.Data = []byte("HELLO AGAIN")
+	m.Header.Set(server.JSExpectedLastSeq, "2")
+	m.Header.Set(server.JSExpectedLastMsgId, "AAA")
+	m.Header.Set(server.JSMsgId, "BBB")
+	resp, err = nc.RequestMsg(m, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !bytes.HasPrefix(resp.Data, []byte("+OK {")) {
+		t.Fatalf("Expected a JetStreamPubAck, got %q", resp.Data)
+	}
 }
 
 func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {
@@ -9860,7 +9955,7 @@ func TestJetStreamAccountImportBasics(t *testing.T) {
 
 	// Simple publish to a stream.
 	pubAck := sendStreamMsg(t, nc, "my.orders.foo", "ORDERS-1")
-	if pubAck.Stream != "ORDERS" || pubAck.Seq != 1 {
+	if pubAck.Stream != "ORDERS" || pubAck.Sequence != 1 {
 		t.Fatalf("Bad pubAck received: %+v", pubAck)
 	}
 	if msgs := mset.State().Msgs; msgs != 1 {
