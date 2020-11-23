@@ -177,6 +177,7 @@ const (
 	MsgHeaderViolation
 	NoRespondersRequiresHeaders
 	ClusterNameConflict
+	DuplicateRemoteLeafnodeConnection
 )
 
 // Some flags passed to processMsgResults

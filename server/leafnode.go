@@ -836,7 +836,7 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 	if solicited {
 		// Make sure we register with the account here.
 		c.registerWithAccount(acc)
-		s.addLeafNodeConnection(c)
+		s.addLeafNodeConnection(c, _EMPTY_, false)
 		s.initLeafNodeSmapAndSendSubs(c)
 		if sendSysConnectEvent {
 			s.sendLeafNodeConnect(acc)
@@ -1006,14 +1006,53 @@ func (s *Server) setLeafNodeInfoHostPortAndIP() error {
 	return nil
 }
 
-func (s *Server) addLeafNodeConnection(c *client) {
+// Add the connection to the map of leaf nodes.
+// If `checkForDup` is true (invoked when a leafnode is accepted), then we check
+// if a connection already exists for the same server name (ID) and account.
+// That can happen when the remote is attempting to reconnect while the accepting
+// side did not detect the connection as broken yet.
+// But it can also happen when there is a misconfiguration and the remote is
+// creating two (or more) connections that bind to the same account on the accept
+// side.
+// When a duplicate is found, the new connection is accepted and the old is closed
+// (this solves the stale connection situation). An error is returned to help the
+// remote detect the misconfiguration when the duplicate is the result of that
+// misconfiguration.
+func (s *Server) addLeafNodeConnection(c *client, srvName string, checkForDup bool) {
+	var accName string
 	c.mu.Lock()
 	cid := c.cid
+	if c.acc != nil {
+		accName = c.acc.Name
+	}
 	c.mu.Unlock()
+
+	var old *client
 	s.mu.Lock()
+	if checkForDup {
+		for _, ol := range s.leafs {
+			ol.mu.Lock()
+			// We check for empty because in some test we may send empty CONNECT{}
+			if srvName != _EMPTY_ && ol.opts.Name == srvName && ol.acc.Name == accName {
+				old = ol
+			}
+			ol.mu.Unlock()
+			if old != nil {
+				break
+			}
+		}
+	}
+	// Store new connection in the map
 	s.leafs[cid] = c
 	s.mu.Unlock()
 	s.removeFromTempClients(cid)
+
+	// If applicable, evict the old one.
+	if old != nil {
+		old.sendErrAndErr(DuplicateRemoteLeafnodeConnection.String())
+		old.closeConnection(DuplicateRemoteLeafnodeConnection)
+		c.Warnf("Replacing connection from same server")
+	}
 }
 
 func (s *Server) removeLeafNodeConnection(c *client) {
@@ -1073,9 +1112,6 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 		return ErrWrongGateway
 	}
 
-	// Check for stale connection from same server/account
-	c.replaceOldLeafNodeConnIfNeeded(s, proto)
-
 	// Leaf Nodes do not do echo or verbose or pedantic.
 	c.opts.Verbose = false
 	c.opts.Echo = false
@@ -1091,6 +1127,9 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 		c.leaf.remoteCluster = proto.Cluster
 	}
 
+	// Add in the leafnode here since we passed through auth at this point.
+	s.addLeafNodeConnection(c, proto.Name, true)
+
 	// If we have permissions bound to this leafnode we need to send then back to the
 	// origin server for local enforcement.
 	s.sendPermsInfo(c)
@@ -1099,50 +1138,11 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	// This will send all registered subs too.
 	s.initLeafNodeSmapAndSendSubs(c)
 
-	// Add in the leafnode here since we passed through auth at this point.
-	s.addLeafNodeConnection(c)
-
 	// Announce the account connect event for a leaf node.
 	// This will no-op as needed.
 	s.sendLeafNodeConnect(c.acc)
 
 	return nil
-}
-
-// Invoked from a server accepting a leafnode connection. It looks for a possible
-// existing leafnode connection from the same server with the same account, and
-// if it finds one, closes it so that the new one is accepted and not reported as
-// forming a cycle.
-//
-// This must be invoked for LEAF client types, and on the server accepting the connection.
-//
-// No server nor client lock held on entry.
-func (c *client) replaceOldLeafNodeConnIfNeeded(s *Server, connInfo *leafConnectInfo) {
-	var accName string
-	c.mu.Lock()
-	if c.acc != nil {
-		accName = c.acc.Name
-	}
-	c.mu.Unlock()
-
-	var old *client
-	s.mu.Lock()
-	for _, ol := range s.leafs {
-		ol.mu.Lock()
-		// We check for empty because in some test we may send empty CONNECT{}
-		if ol.opts.Name == connInfo.Name && connInfo.Name != _EMPTY_ && ol.acc.Name == accName {
-			old = ol
-		}
-		ol.mu.Unlock()
-		if old != nil {
-			break
-		}
-	}
-	s.mu.Unlock()
-	if old != nil {
-		old.Warnf("Replacing connection from same server")
-		old.closeConnection(ReadError)
-	}
 }
 
 // Returns the remote cluster name. This is set only once so does not require a lock.
