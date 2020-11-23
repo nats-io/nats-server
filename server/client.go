@@ -3719,6 +3719,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			}
 			continue
 		}
+
 		// Assume delivery subject is the normal subject to this point.
 		dsubj = subj
 

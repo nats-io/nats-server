@@ -1344,8 +1344,24 @@ func (a *Account) AddServiceImportWithClaim(destination *Account, from, to strin
 		return ErrServiceImportAuthorization
 	}
 
+	if a.importFormsCycle(destination, from, to) {
+		return ErrServiceImportFormsCycle
+	}
+
 	_, err := a.addServiceImport(destination, from, to, imClaim)
 	return err
+}
+
+// Detects if we have a cycle.
+func (a *Account) importFormsCycle(destination *Account, from, to string) bool {
+	// Check that what we are importing is not something we also export.
+	if a.serviceExportOverlaps(to) {
+		// So at this point if destination account is also importing from us, that forms a cycle.
+		if destination.serviceImportOverlaps(from) {
+			return true
+		}
+	}
+	return false
 }
 
 // SetServiceImportSharing will allow sharing of information about requests with the export account.
@@ -1584,6 +1600,30 @@ func (a *Account) checkForReverseEntry(reply string, si *serviceImport, checkInt
 			}
 		}
 	}
+}
+
+// Internal check to see if the to subject overlaps with another export.
+func (a *Account) serviceExportOverlaps(to string) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for subj := range a.exports.services {
+		if to == subj || SubjectsCollide(to, subj) {
+			return true
+		}
+	}
+	return false
+}
+
+// Internal check to see if the from subject overlaps with another import.
+func (a *Account) serviceImportOverlaps(from string) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for subj := range a.imports.services {
+		if from == subj || SubjectsCollide(from, subj) {
+			return true
+		}
+	}
+	return false
 }
 
 // Internal check to see if a service import exists.
