@@ -1363,6 +1363,26 @@ func TestServiceCycle(t *testing.T) {
 	}
 }
 
+func TestServiceCycleWithMapping(t *testing.T) {
+	t.Skip("will fail without an error otherwise")
+	conf := createConfFile(t, []byte(`
+		accounts {
+		  A {
+		    exports [ { service: a } ]
+			imports [ { service { subject: b, account: B }, to: a } ]
+		  }
+		  B {
+		    exports [ { service: b } ]
+			imports [ { service { subject: a, account: A }, to: b } ]
+		  }
+		}
+	`))
+	defer os.Remove(conf)
+	if _, err := server.ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), server.ErrServiceImportFormsCycle.Error()) {
+		t.Fatalf("Expected an error on cycle service import, got none")
+	}
+}
+
 // Check we get the proper detailed information for the requestor when allowed.
 func TestServiceLatencyRequestorSharesDetailedInfo(t *testing.T) {
 	sc := createSuperCluster(t, 3, 3)
