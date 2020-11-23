@@ -3534,6 +3534,13 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// so we only lock once.
 	to, _ = si.acc.selectMappedSubject(to)
 
+	oreply, oacc := c.pa.reply, c.acc
+	c.pa.reply = nrr
+	if !si.isSysAcc {
+		c.mu.Lock()
+		c.acc = si.acc
+		c.mu.Unlock()
+	}
 	// FIXME(dlc) - Do L1 cache trick like normal client?
 	rr := si.acc.sl.Match(to)
 
@@ -3568,6 +3575,13 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 
 	// Put what was there back now.
 	c.in.rts = orts
+	c.pa.reply = oreply
+
+	if !si.isSysAcc {
+		c.mu.Lock()
+		c.acc = oacc
+		c.mu.Unlock()
+	}
 
 	// Determine if we should remove this service import. This is for response service imports.
 	// We will remove if we did not deliver, or if we are a response service import and we are

@@ -9944,3 +9944,75 @@ func TestJetStreamAccountImportBasics(t *testing.T) {
 		t.Fatalf("Did not receive the ack properly")
 	}
 }
+
+// This is for importing all of JetStream into another account for admin purposes.
+func TestJetStreamAccountImportAll(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		no_auth_user: rip
+		jetstream: {max_mem_store: 64GB, max_file_store: 10TB}
+		accounts: {
+			JS: {
+				jetstream: enabled
+				users: [ {user: dlc, password: foo} ]
+				exports [ { service: "$JS.API.>" } ]
+			},
+			IU: {
+				users: [ {user: rip, password: bar} ]
+				imports [ { service: { subject: "$JS.API.>", account: JS } , to: "jsapi.>" } ]
+			},
+		}
+	`))
+	defer os.Remove(conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	acc, err := s.LookupAccount("JS")
+	if err != nil {
+		t.Fatalf("Unexpected error looking up account: %v", err)
+	}
+
+	mset, err := acc.AddStream(&server.StreamConfig{Name: "ORDERS", Subjects: []string{"ORDERS.*"}})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset.Delete()
+
+	// This should be the rip user, the one that imports all of JS.
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	mapSubj := func(subject string) string {
+		return strings.Replace(subject, "$JS.API.", "jsapi.", 1)
+	}
+
+	// This will get the current information about usage and limits for this account.
+	resp, err := nc.Request(mapSubj(server.JSApiAccountInfo), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var info server.JSApiAccountInfoResponse
+	if err := json.Unmarshal(resp.Data, &info); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if info.Error != nil {
+		t.Fatalf("Unexpected error: %+v", info.Error)
+	}
+	// Lookup streams.
+	resp, err = nc.Request(mapSubj(server.JSApiStreams), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var namesResponse server.JSApiStreamNamesResponse
+	if err = json.Unmarshal(resp.Data, &namesResponse); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if namesResponse.Error != nil {
+		t.Fatalf("Unexpected error: %+v", namesResponse.Error)
+	}
+}
