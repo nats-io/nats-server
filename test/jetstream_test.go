@@ -3946,6 +3946,15 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 		s = RunJetStreamServerOnPort(port, sd)
 	}
 
+	waitForClientReconnect := func() {
+		checkFor(t, 2500*time.Millisecond, 5*time.Millisecond, func() error {
+			if !nc.IsConnected() {
+				return fmt.Errorf("Not connected")
+			}
+			return nil
+		})
+	}
+
 	// Restart.
 	restartServer()
 	defer s.Shutdown()
@@ -3953,12 +3962,7 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 	checkNumMsgs(2)
 
 	// Wait for client to be reconnected.
-	checkFor(t, 2500*time.Millisecond, 5*time.Millisecond, func() error {
-		if !nc.IsConnected() {
-			return fmt.Errorf("Not connected")
-		}
-		return nil
-	})
+	waitForClientReconnect()
 
 	// Once we are here send third order.
 	sendStreamMsg(t, nc, mname, "order-3")
@@ -3969,6 +3973,9 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 	defer s.Shutdown()
 
 	checkNumMsgs(3)
+
+	// Wait for client to be reconnected.
+	waitForClientReconnect()
 
 	// Now we should have max times three on our sub.
 	checkSubPending(max * 3)
