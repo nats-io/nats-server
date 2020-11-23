@@ -22,6 +22,7 @@ builds:
   - darwin
   - linux
   - windows
+  - freebsd
   goarch:
   - amd64
   - arm
@@ -32,6 +33,12 @@ builds:
   - 7
   ignore:
     - goos: darwin
+      goarch: 386
+    - goos: freebsd
+      goarch: arm
+    - goos: freebsd
+      goarch: arm64
+    - goos: freebsd
       goarch: 386
 
 nfpms:
