@@ -1363,7 +1363,7 @@ func TestServiceCycle(t *testing.T) {
 	}
 }
 
-func TestStreamCycleWithMapping(t *testing.T) {
+func TestStreamCycle(t *testing.T) {
 	t.Skip("will fail without an error otherwise")
 	conf := createConfFile(t, []byte(`
 		accounts {
@@ -1379,7 +1379,7 @@ func TestStreamCycleWithMapping(t *testing.T) {
 	`))
 	defer os.Remove(conf)
 	if _, err := server.ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), server.ErrServiceImportFormsCycle.Error()) {
-		t.Fatalf("Expected an error on cycle service import, got none")
+		t.Fatalf("Expected an error on cyclic import, got none")
 	}
 }
 
@@ -1400,6 +1400,42 @@ func TestServiceCycleWithMapping(t *testing.T) {
 	defer os.Remove(conf)
 	if _, err := server.ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), server.ErrServiceImportFormsCycle.Error()) {
 		t.Fatalf("Expected an error on cycle service import, got none")
+	}
+}
+
+func TestServiceNonCycle(t *testing.T) {
+	t.Skip("will fail without an error otherwise")
+	/*  Occasionally this test passes, probably because the order at which accounts are inspected matters
+	> go test -v "-run=TestServiceNonCycle" ./test -count 100 --failfast
+	=== RUN   TestServiceNonCycle
+	--- PASS: TestServiceNonCycle (0.00s)
+	=== RUN   TestServiceNonCycle
+	    TestServiceNonCycle: service_latency_test.go:1427: Expected no error but got /tmp/807881498:2:3: Error adding service import "*": service import forms cycle
+	--- FAIL: TestServiceNonCycle (0.00s)
+	FAIL
+	FAIL	github.com/nats-io/nats-server/v2/test	0.176s
+	FAIL
+	*/
+	conf := createConfFile(t, []byte(`
+		accounts {
+		  A {
+		    exports [ { service: * } ]
+			imports [ { service { subject: help, account: B } } ]
+		  }
+		  B {
+		    exports [ { service: help } ]
+			imports [ { service { subject: nohelp, account: C } } ]
+		  }
+		  C {
+		    exports [ { service: * } ]
+			imports [ { service { subject: *, account: A } } ]
+		  }
+		}
+	`))
+	defer os.Remove(conf)
+
+	if _, err := server.ProcessConfigFile(conf); err != nil {
+		t.Fatalf("Expected no error but got %s", err)
 	}
 }
 
