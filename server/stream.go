@@ -200,7 +200,9 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 		ApiResponse: ApiResponse{Type: JSApiPubAckResponseType},
 		PubAck:      &PubAck{Stream: cfg.Name, Sequence: math.MaxUint64},
 	})
-	mset.pubAck = b[:bytes.Index(b, []byte(strconv.FormatUint(math.MaxUint64, 10)))]
+	end := bytes.Index(b, []byte(strconv.FormatUint(math.MaxUint64, 10)))
+	// We need to force cap here to make sure this is a copy when sending a response.
+	mset.pubAck = b[:end:end]
 
 	// Rebuild dedupe as needed.
 	mset.rebuildDedupe()
