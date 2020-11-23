@@ -285,8 +285,8 @@ func TestJetStreamAddStreamDiscardNew(t *testing.T) {
 			if resp == nil {
 				t.Fatalf("No response, possible timeout?")
 			}
-			if string(resp.Data) != "-ERR 'maximum messages exceeded'" {
-				t.Fatalf("Expected to get an error about maximum messages, got %q", resp.Data)
+			if pa := getPubAckResponse(resp.Data); pa == nil || pa.Error.Description != "maximum messages exceeded" {
+				t.Fatalf("Expected to get an error about maximum messages, got %q", pa.Error)
 			}
 
 			// Now do bytes.
@@ -297,7 +297,7 @@ func TestJetStreamAddStreamDiscardNew(t *testing.T) {
 			if resp == nil {
 				t.Fatalf("No response, possible timeout?")
 			}
-			if string(resp.Data) != "-ERR 'maximum bytes exceeded'" {
+			if pa := getPubAckResponse(resp.Data); pa == nil || pa.Error.Description != "maximum bytes exceeded" {
 				t.Fatalf("Expected to get an error about maximum bytes, got %q", resp.Data)
 			}
 		})
@@ -382,18 +382,15 @@ func TestJetStreamPubAck(t *testing.T) {
 		if resp == nil {
 			t.Fatalf("No response from send stream msg")
 		}
-		if !bytes.HasPrefix(resp.Data, []byte("+OK {")) {
-			t.Fatalf("Did not get a correct response: %q", resp.Data)
+		pa := getPubAckResponse(resp.Data)
+		if pa == nil || pa.Error != nil {
+			t.Fatalf("Expected a valid JetStreamPubAck, got %q", resp.Data)
 		}
-		var pubAck server.PubAck
-		if err := json.Unmarshal(resp.Data[3:], &pubAck); err != nil {
-			t.Fatalf("Unexpected error: %v", err)
+		if pa.Stream != sname {
+			t.Fatalf("Expected %q for stream name, got %q", sname, pa.Stream)
 		}
-		if pubAck.Stream != sname {
-			t.Fatalf("Expected %q for stream name, got %q", sname, pubAck.Stream)
-		}
-		if pubAck.Seq != seq {
-			t.Fatalf("Expected %d for sequence, got %d", seq, pubAck.Seq)
+		if pa.Sequence != seq {
+			t.Fatalf("Expected %d for sequence, got %d", seq, pa.Sequence)
 		}
 	}
 
@@ -914,8 +911,8 @@ func TestJetStreamAddStreamMaxMsgSize(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
-			if string(resp.Data) != "-ERR 'message size exceeds maximum allowed'" {
-				t.Fatalf("Expected to get an error for maximum message size, got %q", resp.Data)
+			if pa := getPubAckResponse(resp.Data); pa == nil || pa.Error.Description != "message size exceeds maximum allowed" {
+				t.Fatalf("Expected to get an error for maximum message size, got %q", pa.Error)
 			}
 		})
 	}
@@ -1105,14 +1102,11 @@ func sendStreamMsg(t *testing.T, nc *nats.Conn, subject, msg string) *server.Pub
 	if resp == nil {
 		t.Fatalf("No response for %q, possible timeout?", msg)
 	}
-	if !bytes.HasPrefix(resp.Data, []byte("+OK {")) {
-		t.Fatalf("Expected a JetStreamPubAck, got %q", resp.Data)
+	pa := getPubAckResponse(resp.Data)
+	if pa == nil || pa.Error != nil {
+		t.Fatalf("Expected a valid JetStreamPubAck, got %q", resp.Data)
 	}
-	var pubAck server.PubAck
-	if err := json.Unmarshal(resp.Data[3:], &pubAck); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	return &pubAck
+	return pa.PubAck
 }
 
 func TestJetStreamBasicAckPublish(t *testing.T) {
@@ -3344,23 +3338,20 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 	sendMsg := func(seq uint64, id, msg string) *server.PubAck {
 		t.Helper()
 		m := nats.NewMsg(fmt.Sprintf("foo.%d", seq))
-		m.Header.Add(server.JSPubId, id)
+		m.Header.Add(server.JSMsgId, id)
 		m.Data = []byte(msg)
 		resp, _ := nc.RequestMsg(m, 100*time.Millisecond)
 		if resp == nil {
 			t.Fatalf("No response for %q, possible timeout?", msg)
 		}
-		if !bytes.HasPrefix(resp.Data, []byte("+OK {")) {
+		pa := getPubAckResponse(resp.Data)
+		if pa == nil || pa.Error != nil {
 			t.Fatalf("Expected a JetStreamPubAck, got %q", resp.Data)
 		}
-		var pubAck server.PubAck
-		if err := json.Unmarshal(resp.Data[3:], &pubAck); err != nil {
-			t.Fatalf("Unexpected error: %v", err)
+		if pa.Sequence != seq {
+			t.Fatalf("Did not get correct sequence in PubAck, expected %d, got %d", seq, pa.Sequence)
 		}
-		if pubAck.Seq != seq {
-			t.Fatalf("Did not get correct sequence in PubAck, expected %d, got %d", seq, pubAck.Seq)
-		}
-		return &pubAck
+		return pa.PubAck
 	}
 
 	expect := func(n uint64) {
@@ -3415,7 +3406,6 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 	if err := mset.Update(&cfg); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-
 	mset.Purge()
 
 	// Send 5 new messages.
@@ -3463,6 +3453,110 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 	// Purge should wipe the msgIds as well.
 	mset.Purge()
 	nmids(0)
+}
+
+func getPubAckResponse(msg []byte) *server.JSPubAckResponse {
+	var par server.JSPubAckResponse
+	if err := json.Unmarshal(msg, &par); err != nil {
+		return nil
+	}
+	return &par
+}
+
+func TestJetStreamPublishExpect(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	mname := "EXPECT"
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: mname, Storage: server.FileStorage, MaxAge: time.Hour, Subjects: []string{"foo.*"}})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset.Delete()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Test that we get no error when expected stream is correct.
+	m := nats.NewMsg("foo.bar")
+	m.Data = []byte("HELLO")
+	m.Header.Set(server.JSExpectedStream, mname)
+	resp, err := nc.RequestMsg(m, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if pa := getPubAckResponse(resp.Data); pa == nil || pa.Error != nil {
+		t.Fatalf("Expected a valid JetStreamPubAck, got %q", resp.Data)
+	}
+
+	// Now test that we get an error back when expecting a different stream.
+	m.Header.Set(server.JSExpectedStream, "ORDERS")
+	resp, err = nc.RequestMsg(m, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if pa := getPubAckResponse(resp.Data); pa == nil || pa.Error == nil {
+		t.Fatalf("Expected an error, got %q", resp.Data)
+	}
+
+	// Now test that we get an error back when expecting a different sequence number.
+	m.Header.Set(server.JSExpectedStream, mname)
+	m.Header.Set(server.JSExpectedLastSeq, "10")
+	resp, err = nc.RequestMsg(m, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if pa := getPubAckResponse(resp.Data); pa == nil || pa.Error == nil {
+		t.Fatalf("Expected an error, got %q", resp.Data)
+	}
+
+	// Now send a message with a message ID and make sure we can match that.
+	m = nats.NewMsg("foo.bar")
+	m.Data = []byte("HELLO")
+	m.Header.Set(server.JSMsgId, "AAA")
+	if _, err = nc.RequestMsg(m, 100*time.Millisecond); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now try again with new message ID but require last one to be 'BBB'
+	m.Header.Set(server.JSMsgId, "ZZZ")
+	m.Header.Set(server.JSExpectedLastMsgId, "BBB")
+	resp, err = nc.RequestMsg(m, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if pa := getPubAckResponse(resp.Data); pa == nil || pa.Error == nil {
+		t.Fatalf("Expected an error, got %q", resp.Data)
+	}
+
+	// Restart the server and make sure we remember/rebuild last seq and last msgId.
+	// Stop current server.
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+	// Restart.
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc = clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Our last sequence was 2 and last msgId was "AAA"
+	m = nats.NewMsg("foo.baz")
+	m.Data = []byte("HELLO AGAIN")
+	m.Header.Set(server.JSExpectedLastSeq, "2")
+	m.Header.Set(server.JSExpectedLastMsgId, "AAA")
+	m.Header.Set(server.JSMsgId, "BBB")
+	resp, err = nc.RequestMsg(m, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if pa := getPubAckResponse(resp.Data); pa == nil || pa.Error != nil {
+		t.Fatalf("Expected a valid JetStreamPubAck, got %q", resp.Data)
+	}
 }
 
 func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {
@@ -3852,6 +3946,15 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 		s = RunJetStreamServerOnPort(port, sd)
 	}
 
+	waitForClientReconnect := func() {
+		checkFor(t, 2500*time.Millisecond, 5*time.Millisecond, func() error {
+			if !nc.IsConnected() {
+				return fmt.Errorf("Not connected")
+			}
+			return nil
+		})
+	}
+
 	// Restart.
 	restartServer()
 	defer s.Shutdown()
@@ -3859,12 +3962,7 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 	checkNumMsgs(2)
 
 	// Wait for client to be reconnected.
-	checkFor(t, 2500*time.Millisecond, 5*time.Millisecond, func() error {
-		if !nc.IsConnected() {
-			return fmt.Errorf("Not connected")
-		}
-		return nil
-	})
+	waitForClientReconnect()
 
 	// Once we are here send third order.
 	sendStreamMsg(t, nc, mname, "order-3")
@@ -3875,6 +3973,9 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 	defer s.Shutdown()
 
 	checkNumMsgs(3)
+
+	// Wait for client to be reconnected.
+	waitForClientReconnect()
 
 	// Now we should have max times three on our sub.
 	checkSubPending(max * 3)
@@ -8756,6 +8857,46 @@ func TestJetStreamPubPerf(t *testing.T) {
 	fmt.Printf("%.0f msgs/sec\n", float64(toSend)/tt.Seconds())
 }
 
+func TestJetStreamPubWithAsyncResponsePerf(t *testing.T) {
+	// Comment out to run, holding place for now.
+	t.SkipNow()
+
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	acc := s.GlobalAccount()
+
+	msetConfig := server.StreamConfig{
+		Name:     "sr33",
+		Storage:  server.MemoryStorage,
+		Subjects: []string{"foo"},
+	}
+
+	if _, err := acc.AddStream(&msetConfig); err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	toSend := 1000000
+	payload := []byte("Hello World")
+
+	start := time.Now()
+	for i := 0; i < toSend; i++ {
+		nc.PublishRequest("foo", "bar", payload)
+	}
+	nc.Flush()
+
+	tt := time.Since(start)
+	fmt.Printf("time is %v\n", tt)
+	fmt.Printf("%.0f msgs/sec\n", float64(toSend)/tt.Seconds())
+}
+
 func TestJetStreamConsumerPerf(t *testing.T) {
 	// Comment out to run, holding place for now.
 	t.SkipNow()
@@ -9860,7 +10001,7 @@ func TestJetStreamAccountImportBasics(t *testing.T) {
 
 	// Simple publish to a stream.
 	pubAck := sendStreamMsg(t, nc, "my.orders.foo", "ORDERS-1")
-	if pubAck.Stream != "ORDERS" || pubAck.Seq != 1 {
+	if pubAck.Stream != "ORDERS" || pubAck.Sequence != 1 {
 		t.Fatalf("Bad pubAck received: %+v", pubAck)
 	}
 	if msgs := mset.State().Msgs; msgs != 1 {

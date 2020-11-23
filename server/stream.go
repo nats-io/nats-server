@@ -52,11 +52,19 @@ type StreamConfig struct {
 	Duplicates   time.Duration   `json:"duplicate_window,omitempty"`
 }
 
+const JSApiPubAckResponseType = "io.nats.jetstream.api.v1.pub_ack_response"
+
+// JSPubAckResponse is a formal response to a publish operation.
+type JSPubAckResponse struct {
+	ApiResponse
+	*PubAck
+}
+
 // PubAck is the detail you get back from a publish to a stream that was successful.
 // e.g. +OK {"stream": "Orders", "seq": 22}
 type PubAck struct {
 	Stream    string `json:"stream"`
-	Seq       uint64 `json:"seq"`
+	Sequence  uint64 `json:"seq"`
 	Duplicate bool   `json:"duplicate,omitempty"`
 }
 
@@ -77,6 +85,8 @@ type Stream struct {
 	pubAck    []byte
 	sendq     chan *jsPubMsg
 	store     StreamStore
+	lseq      uint64
+	lmsgId    string
 	consumers map[string]*Consumer
 	numFilter int
 	config    StreamConfig
@@ -87,9 +97,13 @@ type Stream struct {
 	ddtmr     *time.Timer
 }
 
-// JSPubId is used for identifying published messages and performing de-duplication.
-const JSPubId = "Msg-Id"
-const StreamDefaultDuplicatesWindow = 2 * time.Minute
+// Headers for published messages.
+const (
+	JSMsgId             = "Nats-Msg-Id"
+	JSExpectedStream    = "Nats-Expected-Stream"
+	JSExpectedLastSeq   = "Nats-Expected-Last-Sequence"
+	JSExpectedLastMsgId = "Nats-Expected-Last-Msg-Id"
+)
 
 // Dedupe entry
 type ddentry struct {
@@ -181,13 +195,14 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 	// Setup our internal send go routine.
 	mset.setupSendCapabilities()
 
-	// Create our pubAck here. This will be reused and for +OK will contain JSON
-	// for stream name and sequence.
-	longestSeq := strconv.FormatUint(math.MaxUint64, 10)
-	lpubAck := len(OK) + len(cfg.Name) + len("{\"stream\": ,\"seq\": }") + len(longestSeq)
-	mset.pubAck = make([]byte, 0, lpubAck)
-	mset.pubAck = append(mset.pubAck, OK...)
-	mset.pubAck = append(mset.pubAck, fmt.Sprintf(" {\"stream\": %q, \"seq\": ", cfg.Name)...)
+	// Create our pubAck template here. Better than json marshal each time on success.
+	b, _ := json.Marshal(&JSPubAckResponse{
+		ApiResponse: ApiResponse{Type: JSApiPubAckResponseType},
+		PubAck:      &PubAck{Stream: cfg.Name, Sequence: math.MaxUint64},
+	})
+	end := bytes.Index(b, []byte(strconv.FormatUint(math.MaxUint64, 10)))
+	// We need to force cap here to make sure this is a copy when sending a response.
+	mset.pubAck = b[:end:end]
 
 	// Rebuild dedupe as needed.
 	mset.rebuildDedupe()
@@ -270,14 +285,12 @@ func (mset *Stream) autoTuneFileStorageBlockSize(fsCfg *FileStoreConfig) {
 }
 
 // rebuildDedupe will rebuild any dedupe structures needed after recovery of a stream.
-// Lock not needed, only called during initialization.
 // TODO(dlc) - Might be good to know if this should be checked at all for streams with no
 // headers and msgId in them. Would need signaling from the storage layer.
 func (mset *Stream) rebuildDedupe() {
 	state := mset.store.State()
-	if state.Msgs == 0 {
-		return
-	}
+	mset.lseq = state.LastSeq
+
 	// We have some messages. Lookup starting sequence by duplicate time window.
 	sseq := mset.store.GetSeqFromTime(time.Now().Add(-mset.config.Duplicates))
 	if sseq == 0 {
@@ -286,10 +299,14 @@ func (mset *Stream) rebuildDedupe() {
 
 	for seq := sseq; seq <= state.LastSeq; seq++ {
 		_, hdr, _, ts, err := mset.store.LoadMsg(seq)
+		var msgId string
 		if err == nil && len(hdr) > 0 {
-			if msgId := getMsgId(hdr); msgId != "" {
+			if msgId = getMsgId(hdr); msgId != _EMPTY_ {
 				mset.storeMsgId(&ddentry{msgId, seq, ts})
 			}
+		}
+		if seq == state.LastSeq {
+			mset.lmsgId = msgId
 		}
 	}
 }
@@ -398,6 +415,9 @@ func (jsa *jsAccount) subjectsOverlap(subjects []string) bool {
 	}
 	return false
 }
+
+// Default duplicates window.
+const StreamDefaultDuplicatesWindow = 2 * time.Minute
 
 func checkStreamCfg(config *StreamConfig) (StreamConfig, error) {
 	if config == nil {
@@ -861,7 +881,26 @@ func getHdrVal(key string, hdr []byte) []byte {
 
 // Fast lookup of msgId.
 func getMsgId(hdr []byte) string {
-	return string(getHdrVal(JSPubId, hdr))
+	return string(getHdrVal(JSMsgId, hdr))
+}
+
+// Fast lookup of expected last msgId.
+func getExpectedLastMsgId(hdr []byte) string {
+	return string(getHdrVal(JSExpectedLastMsgId, hdr))
+}
+
+// Fast lookup of expected stream.
+func getExpectedStream(hdr []byte) string {
+	return string(getHdrVal(JSExpectedStream, hdr))
+}
+
+// Fast lookup of expected stream.
+func getExpectedLastSeq(hdr []byte) uint64 {
+	bseq := getHdrVal(JSExpectedLastSeq, hdr)
+	if len(bseq) == 0 {
+		return 0
+	}
+	return uint64(parseInt64(bseq))
 }
 
 // processInboundJetStreamMsg handles processing messages bound for a stream.
@@ -883,17 +922,53 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 	numConsumers := len(mset.consumers)
 	interestRetention := mset.config.Retention == InterestPolicy
 
-	// Process msgId if we have headers.
+	var resp = &JSPubAckResponse{ApiResponse: ApiResponse{Type: JSApiPubAckResponseType}}
+
+	// Process msg headers if present.
 	var msgId string
 	if pc != nil && pc.pa.hdr > 0 {
-		msgId = getMsgId(msg[:pc.pa.hdr])
+		hdr := msg[:pc.pa.hdr]
+		msgId = getMsgId(hdr)
+		sendq := mset.sendq
 		if dde := mset.checkMsgId(msgId); dde != nil {
+			mset.mu.Unlock()
 			if doAck && len(reply) > 0 {
 				response := append(pubAck, strconv.FormatUint(dde.seq, 10)...)
-				response = append(response, ", \"duplicate\": true}"...)
-				mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
+				response = append(response, ",\"duplicate\": true}"...)
+				sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
 			}
+			return
+		}
+		// Expected stream.
+		if sname := getExpectedStream(hdr); sname != _EMPTY_ && sname != name {
 			mset.mu.Unlock()
+			if doAck && len(reply) > 0 {
+				resp.Error = &ApiError{Code: 400, Description: "expected stream does not match"}
+				b, _ := json.Marshal(resp)
+				sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0}
+			}
+			return
+		}
+		// Expected last sequence.
+		if seq := getExpectedLastSeq(hdr); seq > 0 && seq != mset.lseq {
+			lseq := mset.lseq
+			mset.mu.Unlock()
+			if doAck && len(reply) > 0 {
+				resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("wrong last sequence: %d", lseq)}
+				b, _ := json.Marshal(resp)
+				sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0}
+			}
+			return
+		}
+		// Expected last msgId.
+		if lmsgId := getExpectedLastMsgId(hdr); lmsgId != _EMPTY_ && lmsgId != mset.lmsgId {
+			last := mset.lmsgId
+			mset.mu.Unlock()
+			if doAck && len(reply) > 0 {
+				resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("wrong last msg ID: %s", last)}
+				b, _ := json.Marshal(resp)
+				sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0}
+			}
 			return
 		}
 	}
@@ -917,9 +992,10 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 	// Check to see if we are over the max msg size.
 	if maxMsgSize >= 0 && len(msg) > maxMsgSize {
 		mset.mu.Unlock()
-		response = []byte("-ERR 'message size exceeds maximum allowed'")
 		if doAck && len(reply) > 0 {
-			mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
+			resp.Error = &ApiError{Code: 400, Description: "message size exceeds maximum allowed"}
+			b, _ := json.Marshal(resp)
+			mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0}
 		}
 		return
 	}
@@ -941,13 +1017,15 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 			}
 		}
 	}
-	mset.mu.Unlock()
 
-	// Skip here.
+	// Skip msg here.
 	if noInterest {
-		seq = store.SkipMsg()
+		mset.lseq = store.SkipMsg()
+		mset.lmsgId = msgId
+		mset.mu.Unlock()
+
 		if doAck && len(reply) > 0 {
-			response = append(pubAck, strconv.FormatUint(seq, 10)...)
+			response = append(pubAck, strconv.FormatUint(mset.lseq, 10)...)
 			response = append(response, '}')
 			mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
 		}
@@ -959,30 +1037,44 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 	}
 
 	// If here we will attempt to store the message.
-	// Headers.
+	// Check for headers.
 	if pc != nil && pc.pa.hdr > 0 {
 		hdr = msg[:pc.pa.hdr]
 		msg = msg[pc.pa.hdr:]
 	}
 	seq, ts, err = store.StoreMsg(subject, hdr, msg)
+	if err == nil && seq > 0 {
+		mset.lseq = seq
+		mset.lmsgId = msgId
+	}
+
+	// We hold the lock to this point to make sure nothing gets between us since we check for pre-conditions.
+	mset.mu.Unlock()
+
 	if err != nil {
 		if err != ErrStoreClosed {
 			c.Errorf("JetStream failed to store a msg on account: %q stream: %q -  %v", accName, name, err)
 		}
-		response = []byte(fmt.Sprintf("-ERR '%v'", err))
+		if doAck && len(reply) > 0 {
+			resp.Error = &ApiError{Code: 400, Description: err.Error()}
+			response, _ = json.Marshal(resp)
+		}
 	} else if jsa.limitsExceeded(stype) {
 		c.Warnf("JetStream resource limits exceeded for account: %q", accName)
-		response = []byte("-ERR 'resource limits exceeded for account'")
+		if doAck && len(reply) > 0 {
+			resp.Error = &ApiError{Code: 400, Description: "resource limits exceeded for account"}
+			response, _ = json.Marshal(resp)
+		}
 		store.RemoveMsg(seq)
 		seq = 0
 	} else {
-		if doAck && len(reply) > 0 {
-			response = append(pubAck, strconv.FormatUint(seq, 10)...)
-			response = append(response, '}')
-		}
 		// If we have a msgId make sure to save.
 		if msgId != "" {
 			mset.storeMsgId(&ddentry{msgId, seq, ts})
+		}
+		if doAck && len(reply) > 0 {
+			response = append(pubAck, strconv.FormatUint(seq, 10)...)
+			response = append(response, '}')
 		}
 	}
 
