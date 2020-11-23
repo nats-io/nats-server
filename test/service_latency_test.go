@@ -1363,6 +1363,26 @@ func TestServiceCycle(t *testing.T) {
 	}
 }
 
+func TestStreamCycleWithMapping(t *testing.T) {
+	t.Skip("will fail without an error otherwise")
+	conf := createConfFile(t, []byte(`
+		accounts {
+		  A {
+		    exports [ { stream: strm } ]
+			imports [ { stream { subject: strm, account: B } } ]
+		  }
+		  B {
+		    exports [ { stream: strm } ]
+			imports [ { stream { subject: strm, account: A } } ]
+		  }
+		}
+	`))
+	defer os.Remove(conf)
+	if _, err := server.ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), server.ErrServiceImportFormsCycle.Error()) {
+		t.Fatalf("Expected an error on cycle service import, got none")
+	}
+}
+
 func TestServiceCycleWithMapping(t *testing.T) {
 	t.Skip("will fail without an error otherwise")
 	conf := createConfFile(t, []byte(`
