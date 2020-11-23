@@ -525,6 +525,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			c.Debugf("Account JWT not signed by trusted operator")
 			return false
 		}
+		// this only executes IF there's an issuer on the Juc - otherwise the account is already
 		if juc.IssuerAccount != "" && !acc.hasIssuer(juc.Issuer) {
 			c.Debugf("User JWT issuer is not known")
 			return false

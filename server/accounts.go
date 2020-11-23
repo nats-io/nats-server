@@ -2693,7 +2693,7 @@ func (a *Account) hasIssuer(issuer string) bool {
 // hasIssuerNoLock is the unlocked version of hasIssuer
 func (a *Account) hasIssuerNoLock(issuer string) bool {
 	// same issuer
-	if a.Issuer == issuer {
+	if a.Name == issuer {
 		return true
 	}
 	for i := 0; i < len(a.signingKeys); i++ {
