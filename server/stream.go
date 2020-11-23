@@ -195,13 +195,12 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 	// Setup our internal send go routine.
 	mset.setupSendCapabilities()
 
-	// Create our pubAck here. This will be reused and for +OK will contain JSON
-	// for stream name and sequence.
-	longestSeq := strconv.FormatUint(math.MaxUint64, 10)
-	lpubAck := len(OK) + len(cfg.Name) + len("{\"stream\": ,\"seq\": }") + len(longestSeq)
-	mset.pubAck = make([]byte, 0, lpubAck)
-	mset.pubAck = append(mset.pubAck, OK...)
-	mset.pubAck = append(mset.pubAck, fmt.Sprintf(" {\"stream\": %q, \"seq\": ", cfg.Name)...)
+	// Create our pubAck template here. Better than json marshal each time on success.
+	b, _ := json.Marshal(&JSPubAckResponse{
+		ApiResponse: ApiResponse{Type: JSApiPubAckResponseType},
+		PubAck:      &PubAck{Stream: cfg.Name, Sequence: math.MaxUint64},
+	})
+	mset.pubAck = b[:bytes.Index(b, []byte(strconv.FormatUint(math.MaxUint64, 10)))]
 
 	// Rebuild dedupe as needed.
 	mset.rebuildDedupe()
@@ -921,6 +920,8 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 	numConsumers := len(mset.consumers)
 	interestRetention := mset.config.Retention == InterestPolicy
 
+	var resp = &JSPubAckResponse{ApiResponse: ApiResponse{Type: JSApiPubAckResponseType}}
+
 	// Process msg headers if present.
 	var msgId string
 	if pc != nil && pc.pa.hdr > 0 {
@@ -931,7 +932,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 			mset.mu.Unlock()
 			if doAck && len(reply) > 0 {
 				response := append(pubAck, strconv.FormatUint(dde.seq, 10)...)
-				response = append(response, ", \"duplicate\": true}"...)
+				response = append(response, ",\"duplicate\": true}"...)
 				sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
 			}
 			return
@@ -940,8 +941,9 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 		if sname := getExpectedStream(hdr); sname != _EMPTY_ && sname != name {
 			mset.mu.Unlock()
 			if doAck && len(reply) > 0 {
-				response := []byte("-ERR 'wrong expected stream'")
-				sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
+				resp.Error = &ApiError{Code: 400, Description: "expected stream does not match"}
+				b, _ := json.Marshal(resp)
+				sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0}
 			}
 			return
 		}
@@ -950,8 +952,9 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 			lseq := mset.lseq
 			mset.mu.Unlock()
 			if doAck && len(reply) > 0 {
-				response := []byte(fmt.Sprintf("-ERR 'wrong last sequence: %d'", lseq))
-				sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
+				resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("wrong last sequence: %d", lseq)}
+				b, _ := json.Marshal(resp)
+				sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0}
 			}
 			return
 		}
@@ -960,8 +963,9 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 			last := mset.lmsgId
 			mset.mu.Unlock()
 			if doAck && len(reply) > 0 {
-				response := []byte(fmt.Sprintf("-ERR 'wrong last msg ID: %s'", last))
-				sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
+				resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("wrong last msg ID: %s", last)}
+				b, _ := json.Marshal(resp)
+				sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0}
 			}
 			return
 		}
@@ -986,9 +990,10 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 	// Check to see if we are over the max msg size.
 	if maxMsgSize >= 0 && len(msg) > maxMsgSize {
 		mset.mu.Unlock()
-		response = []byte("-ERR 'message size exceeds maximum allowed'")
 		if doAck && len(reply) > 0 {
-			mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
+			resp.Error = &ApiError{Code: 400, Description: "message size exceeds maximum allowed"}
+			b, _ := json.Marshal(resp)
+			mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0}
 		}
 		return
 	}
@@ -1048,10 +1053,16 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 		if err != ErrStoreClosed {
 			c.Errorf("JetStream failed to store a msg on account: %q stream: %q -  %v", accName, name, err)
 		}
-		response = []byte(fmt.Sprintf("-ERR '%v'", err))
+		if doAck && len(reply) > 0 {
+			resp.Error = &ApiError{Code: 400, Description: err.Error()}
+			response, _ = json.Marshal(resp)
+		}
 	} else if jsa.limitsExceeded(stype) {
 		c.Warnf("JetStream resource limits exceeded for account: %q", accName)
-		response = []byte("-ERR 'resource limits exceeded for account'")
+		if doAck && len(reply) > 0 {
+			resp.Error = &ApiError{Code: 400, Description: "resource limits exceeded for account"}
+			response, _ = json.Marshal(resp)
+		}
 		store.RemoveMsg(seq)
 		seq = 0
 	} else {

@@ -285,8 +285,8 @@ func TestJetStreamAddStreamDiscardNew(t *testing.T) {
 			if resp == nil {
 				t.Fatalf("No response, possible timeout?")
 			}
-			if string(resp.Data) != "-ERR 'maximum messages exceeded'" {
-				t.Fatalf("Expected to get an error about maximum messages, got %q", resp.Data)
+			if pa := getPubAckResponse(resp.Data); pa == nil || pa.Error.Description != "maximum messages exceeded" {
+				t.Fatalf("Expected to get an error about maximum messages, got %q", pa.Error)
 			}
 
 			// Now do bytes.
@@ -297,7 +297,7 @@ func TestJetStreamAddStreamDiscardNew(t *testing.T) {
 			if resp == nil {
 				t.Fatalf("No response, possible timeout?")
 			}
-			if string(resp.Data) != "-ERR 'maximum bytes exceeded'" {
+			if pa := getPubAckResponse(resp.Data); pa == nil || pa.Error.Description != "maximum bytes exceeded" {
 				t.Fatalf("Expected to get an error about maximum bytes, got %q", resp.Data)
 			}
 		})
@@ -382,18 +382,15 @@ func TestJetStreamPubAck(t *testing.T) {
 		if resp == nil {
 			t.Fatalf("No response from send stream msg")
 		}
-		if !bytes.HasPrefix(resp.Data, []byte("+OK {")) {
-			t.Fatalf("Did not get a correct response: %q", resp.Data)
+		pa := getPubAckResponse(resp.Data)
+		if pa == nil || pa.Error != nil {
+			t.Fatalf("Expected a valid JetStreamPubAck, got %q", resp.Data)
 		}
-		var pubAck server.PubAck
-		if err := json.Unmarshal(resp.Data[3:], &pubAck); err != nil {
-			t.Fatalf("Unexpected error: %v", err)
+		if pa.Stream != sname {
+			t.Fatalf("Expected %q for stream name, got %q", sname, pa.Stream)
 		}
-		if pubAck.Stream != sname {
-			t.Fatalf("Expected %q for stream name, got %q", sname, pubAck.Stream)
-		}
-		if pubAck.Sequence != seq {
-			t.Fatalf("Expected %d for sequence, got %d", seq, pubAck.Sequence)
+		if pa.Sequence != seq {
+			t.Fatalf("Expected %d for sequence, got %d", seq, pa.Sequence)
 		}
 	}
 
@@ -914,8 +911,8 @@ func TestJetStreamAddStreamMaxMsgSize(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
-			if string(resp.Data) != "-ERR 'message size exceeds maximum allowed'" {
-				t.Fatalf("Expected to get an error for maximum message size, got %q", resp.Data)
+			if pa := getPubAckResponse(resp.Data); pa == nil || pa.Error.Description != "message size exceeds maximum allowed" {
+				t.Fatalf("Expected to get an error for maximum message size, got %q", pa.Error)
 			}
 		})
 	}
@@ -1105,14 +1102,11 @@ func sendStreamMsg(t *testing.T, nc *nats.Conn, subject, msg string) *server.Pub
 	if resp == nil {
 		t.Fatalf("No response for %q, possible timeout?", msg)
 	}
-	if !bytes.HasPrefix(resp.Data, []byte("+OK {")) {
-		t.Fatalf("Expected a JetStreamPubAck, got %q", resp.Data)
+	pa := getPubAckResponse(resp.Data)
+	if pa == nil || pa.Error != nil {
+		t.Fatalf("Expected a valid JetStreamPubAck, got %q", resp.Data)
 	}
-	var pubAck server.PubAck
-	if err := json.Unmarshal(resp.Data[3:], &pubAck); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	return &pubAck
+	return pa.PubAck
 }
 
 func TestJetStreamBasicAckPublish(t *testing.T) {
@@ -3350,17 +3344,14 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 		if resp == nil {
 			t.Fatalf("No response for %q, possible timeout?", msg)
 		}
-		if !bytes.HasPrefix(resp.Data, []byte("+OK {")) {
+		pa := getPubAckResponse(resp.Data)
+		if pa == nil || pa.Error != nil {
 			t.Fatalf("Expected a JetStreamPubAck, got %q", resp.Data)
 		}
-		var pubAck server.PubAck
-		if err := json.Unmarshal(resp.Data[3:], &pubAck); err != nil {
-			t.Fatalf("Unexpected error: %v", err)
+		if pa.Sequence != seq {
+			t.Fatalf("Did not get correct sequence in PubAck, expected %d, got %d", seq, pa.Sequence)
 		}
-		if pubAck.Sequence != seq {
-			t.Fatalf("Did not get correct sequence in PubAck, expected %d, got %d", seq, pubAck.Sequence)
-		}
-		return &pubAck
+		return pa.PubAck
 	}
 
 	expect := func(n uint64) {
@@ -3464,6 +3455,14 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 	nmids(0)
 }
 
+func getPubAckResponse(msg []byte) *server.JSPubAckResponse {
+	var par server.JSPubAckResponse
+	if err := json.Unmarshal(msg, &par); err != nil {
+		return nil
+	}
+	return &par
+}
+
 func TestJetStreamPublishExpect(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
@@ -3490,8 +3489,8 @@ func TestJetStreamPublishExpect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if !bytes.HasPrefix(resp.Data, []byte("+OK {")) {
-		t.Fatalf("Expected a JetStreamPubAck, got %q", resp.Data)
+	if pa := getPubAckResponse(resp.Data); pa == nil || pa.Error != nil {
+		t.Fatalf("Expected a valid JetStreamPubAck, got %q", resp.Data)
 	}
 
 	// Now test that we get an error back when expecting a different stream.
@@ -3500,7 +3499,7 @@ func TestJetStreamPublishExpect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if !bytes.HasPrefix(resp.Data, []byte("-ERR '")) {
+	if pa := getPubAckResponse(resp.Data); pa == nil || pa.Error == nil {
 		t.Fatalf("Expected an error, got %q", resp.Data)
 	}
 
@@ -3511,7 +3510,7 @@ func TestJetStreamPublishExpect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if !bytes.HasPrefix(resp.Data, []byte("-ERR '")) {
+	if pa := getPubAckResponse(resp.Data); pa == nil || pa.Error == nil {
 		t.Fatalf("Expected an error, got %q", resp.Data)
 	}
 
@@ -3530,7 +3529,7 @@ func TestJetStreamPublishExpect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if !bytes.HasPrefix(resp.Data, []byte("-ERR '")) {
+	if pa := getPubAckResponse(resp.Data); pa == nil || pa.Error == nil {
 		t.Fatalf("Expected an error, got %q", resp.Data)
 	}
 
@@ -3555,8 +3554,8 @@ func TestJetStreamPublishExpect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if !bytes.HasPrefix(resp.Data, []byte("+OK {")) {
-		t.Fatalf("Expected a JetStreamPubAck, got %q", resp.Data)
+	if pa := getPubAckResponse(resp.Data); pa == nil || pa.Error != nil {
+		t.Fatalf("Expected a valid JetStreamPubAck, got %q", resp.Data)
 	}
 }
 
@@ -8845,6 +8844,46 @@ func TestJetStreamPubPerf(t *testing.T) {
 
 	close(startCh)
 	wg.Wait()
+
+	tt := time.Since(start)
+	fmt.Printf("time is %v\n", tt)
+	fmt.Printf("%.0f msgs/sec\n", float64(toSend)/tt.Seconds())
+}
+
+func TestJetStreamPubWithAsyncResponsePerf(t *testing.T) {
+	// Comment out to run, holding place for now.
+	t.SkipNow()
+
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	acc := s.GlobalAccount()
+
+	msetConfig := server.StreamConfig{
+		Name:     "sr33",
+		Storage:  server.MemoryStorage,
+		Subjects: []string{"foo"},
+	}
+
+	if _, err := acc.AddStream(&msetConfig); err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	toSend := 1000000
+	payload := []byte("Hello World")
+
+	start := time.Now()
+	for i := 0; i < toSend; i++ {
+		nc.PublishRequest("foo", "bar", payload)
+	}
+	nc.Flush()
 
 	tt := time.Since(start)
 	fmt.Printf("time is %v\n", tt)
