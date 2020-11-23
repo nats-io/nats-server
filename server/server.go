@@ -451,6 +451,18 @@ func NewServer(opts *Options) (*Server, error) {
 				return nil, fmt.Errorf("no local account %q for remote leafnode", r.LocalAccount)
 			}
 		}
+	} else {
+		if len(opts.LeafNode.Users) != 0 {
+			return nil, fmt.Errorf("operator mode does not allow specifying user in leafnode config")
+		}
+		for _, r := range opts.LeafNode.Remotes {
+			if !nkeys.IsValidPublicAccountKey(r.LocalAccount) {
+				return nil, fmt.Errorf("operator mode requires account nkeys in remotes")
+			}
+		}
+		if opts.LeafNode.Port != 0 && opts.LeafNode.Account != "" && !nkeys.IsValidPublicAccountKey(opts.LeafNode.Account) {
+			return nil, fmt.Errorf("operator mode and non account nkeys are incompatible")
+		}
 	}
 
 	// Used to setup Authorization.
