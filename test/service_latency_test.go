@@ -1406,14 +1406,17 @@ func TestServiceCycleWithMapping(t *testing.T) {
 func TestServiceNonCycle(t *testing.T) {
 	t.Skip("will fail without an error otherwise")
 	/*  Occasionally this test passes, probably because the order at which accounts are inspected matters
-	> go test -v "-run=TestServiceNonCycle" ./test -count 100 --failfast
+	go test -v "-run=TestServiceNonCycle" ./test -count 100 --failfast
 	=== RUN   TestServiceNonCycle
 	--- PASS: TestServiceNonCycle (0.00s)
+	=== RUN   TestServiceNonCycleChain
+	    TestServiceNonCycleChain: service_latency_test.go:1443: will fail without an error otherwise
+	--- SKIP: TestServiceNonCycleChain (0.00s)
 	=== RUN   TestServiceNonCycle
-	    TestServiceNonCycle: service_latency_test.go:1427: Expected no error but got /tmp/807881498:2:3: Error adding service import "*": service import forms cycle
+	    TestServiceNonCycle: service_latency_test.go:1438: Expected no error but got /var/folders/9h/6g_c9l6n6bb8gp331d_9y0_w0000gn/T/218571535:2:3: Error adding service import "*": service import forms cycle
 	--- FAIL: TestServiceNonCycle (0.00s)
 	FAIL
-	FAIL	github.com/nats-io/nats-server/v2/test	0.176s
+	FAIL	github.com/nats-io/nats-server/v2/test	0.255s
 	FAIL
 	*/
 	conf := createConfFile(t, []byte(`
@@ -1429,6 +1432,50 @@ func TestServiceNonCycle(t *testing.T) {
 		  C {
 		    exports [ { service: * } ]
 			imports [ { service { subject: *, account: A } } ]
+		  }
+		}
+	`))
+	defer os.Remove(conf)
+
+	if _, err := server.ProcessConfigFile(conf); err != nil {
+		t.Fatalf("Expected no error but got %s", err)
+	}
+}
+
+func TestServiceNonCycleChain(t *testing.T) {
+	t.Skip("will fail without an error otherwise")
+	/*  Occasionally this test passes, probably because the order at which accounts are inspected matters
+	go test -v "-run=TestServiceNonCycleChain" ./test -count 100
+	=== RUN   TestServiceNonCycleChain
+	--- PASS: TestServiceNonCycleChain (0.00s)
+	=== RUN   TestServiceNonCycleChain
+	--- PASS: TestServiceNonCycleChain (0.00s)
+	=== RUN   TestServiceNonCycleChain
+	--- PASS: TestServiceNonCycleChain (0.00s)
+	=== RUN   TestServiceNonCycleChain
+	--- PASS: TestServiceNonCycleChain (0.00s)
+	=== RUN   TestServiceNonCycleChain
+	--- PASS: TestServiceNonCycleChain (0.00s)
+	=== RUN   TestServiceNonCycleChain
+	    TestServiceNonCycleChain: service_latency_test.go:1477: Expected no error but got /var/folders/9h/6g_c9l6n6bb8gp331d_9y0_w0000gn/T/118198795:2:3: Error adding service import "help": service import forms cycle
+	--- FAIL: TestServiceNonCycleChain (0.00s)
+	*/
+	conf := createConfFile(t, []byte(`
+		accounts {
+		  A {
+		    exports [ { service: help } ]
+			imports [ { service { subject: help, account: B } } ]
+		  }
+		  B {
+		    exports [ { service: help } ]
+			imports [ { service { subject: help, account: C } } ]
+		  }
+		  C {
+		    exports [ { service: help } ]
+			imports [ { service { subject: help, account: D } } ]
+		  }
+		  D {
+		    exports [ { service: help } ]
 		  }
 		}
 	`))
