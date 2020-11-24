@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"net/url"
 	"os"
@@ -1941,5 +1942,50 @@ func TestLeafNodeNoDuplicateWithinCluster(t *testing.T) {
 		if string(replyMsg.Data) != "from leaf1" {
 			t.Fatalf("Expected reply from leaf1, got %q", replyMsg.Data)
 		}
+	}
+}
+
+func TestLeafNodeOperatorBadCfg(t *testing.T) {
+	tmpDir, err := ioutil.TempDir("", "_nats-server")
+	if err != nil {
+		t.Fatal("Could not create tmp dir")
+	}
+	defer os.RemoveAll(tmpDir)
+	for errorText, cfg := range map[string]string{
+		"operator mode does not allow specifying user in leafnode config": `
+			port: -1
+			authorization {
+				users = [{user: "u", password: "p"}]}
+			}`,
+		`operator mode and non account nkeys are incompatible`: `
+			port: -1
+			authorization {
+				account: notankey
+			}`,
+		`operator mode requires account nkeys in remotes`: `remotes: [{url: u}]`,
+	} {
+		t.Run(errorText, func(t *testing.T) {
+			conf := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		operator: %s
+		resolver: {
+			type: cache
+			dir: %s
+		}
+		leafnodes: {
+			%s
+		}
+	`, ojwt, tmpDir, cfg)))
+			defer os.Remove(conf)
+			opts := LoadConfig(conf)
+			s, err := NewServer(opts)
+			if err == nil {
+				s.Shutdown()
+				t.Fatal("Expected an error")
+			}
+			if err.Error() != errorText {
+				t.Fatalf("Expected error %s but got %s", errorText, err)
+			}
+		})
 	}
 }
