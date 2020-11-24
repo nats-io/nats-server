@@ -133,7 +133,8 @@ func validateLeafNode(o *Options) error {
 		}
 		// global account is always created
 		accNames[DEFAULT_GLOBAL_ACCOUNT] = struct{}{}
-		accNames[_EMPTY_] = struct{}{} // in the context of leaf nodes, empty account means global account
+		// in the context of leaf nodes, empty account means global account
+		accNames[_EMPTY_] = struct{}{}
 		// system account either exists or, if not disabled, will be created
 		if o.SystemAccount == _EMPTY_ && !o.NoSystemAccount {
 			accNames[DEFAULT_SYSTEM_ACCOUNT] = struct{}{}
