@@ -125,6 +125,58 @@ func validateLeafNode(o *Options) error {
 	if err := validateLeafNodeAuthOptions(o); err != nil {
 		return err
 	}
+	// In local config mode, check that leafnode configuration refers to accounts that exist.
+	if len(o.TrustedOperators) == 0 {
+		checkAccountExists := func(accName string, cfgType string) error {
+			found := false
+			if accName == "$G" || accName == _EMPTY_ {
+				found = true
+			} else {
+				for _, a := range o.Accounts {
+					if a.Name == accName {
+						found = true
+						break
+					}
+				}
+			}
+			if !found {
+				if accName == DEFAULT_SYSTEM_ACCOUNT && o.SystemAccount == _EMPTY_ && !o.NoSystemAccount {
+					return nil
+				}
+				return fmt.Errorf("cannot find local account %q specified in leafnode %s", accName, cfgType)
+			}
+			return nil
+		}
+		if err := checkAccountExists(o.LeafNode.Account, "authorization"); err != nil {
+			return err
+		}
+		for _, lu := range o.LeafNode.Users {
+			if lu.Account == nil {
+				continue
+			}
+			if err := checkAccountExists(lu.Account.Name, "authorization"); err != nil {
+				return err
+			}
+		}
+		for _, r := range o.LeafNode.Remotes {
+			if err := checkAccountExists(r.LocalAccount, "remote"); err != nil {
+				return err
+			}
+		}
+	} else {
+		if len(o.LeafNode.Users) != 0 {
+			return fmt.Errorf("operator mode does not allow specifying user in leafnode config")
+		}
+		for _, r := range o.LeafNode.Remotes {
+			if !nkeys.IsValidPublicAccountKey(r.LocalAccount) {
+				return fmt.Errorf("operator mode requires account nkeys in remotes")
+			}
+		}
+		if o.LeafNode.Port != 0 && o.LeafNode.Account != "" && !nkeys.IsValidPublicAccountKey(o.LeafNode.Account) {
+			return fmt.Errorf("operator mode and non account nkeys are incompatible")
+		}
+	}
+
 	if o.LeafNode.Port == 0 {
 		return nil
 	}

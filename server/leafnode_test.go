@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"net/url"
 	"os"
@@ -1885,8 +1886,11 @@ func TestLeafNodeNoDuplicateWithinCluster(t *testing.T) {
 }
 
 func TestLeafNodeOperatorBadCfg(t *testing.T) {
-	dir := os.TempDir()
-	os.RemoveAll(dir)
+	tmpDir, err := ioutil.TempDir("", "_nats-server")
+	if err != nil {
+		t.Fatal("Could not create tmp dir")
+	}
+	defer os.RemoveAll(tmpDir)
 	for errorText, cfg := range map[string]string{
 		"operator mode does not allow specifying user in leafnode config": `
 			port: -1
@@ -1911,7 +1915,7 @@ func TestLeafNodeOperatorBadCfg(t *testing.T) {
 		leafnodes: {
 			%s
 		}
-	`, ojwt, dir, cfg)))
+	`, ojwt, tmpDir, cfg)))
 			defer os.Remove(conf)
 			opts := LoadConfig(conf)
 			s, err := NewServer(opts)
