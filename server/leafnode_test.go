@@ -1803,6 +1803,66 @@ func TestLeafNodeLoopDetectedDueToReconnect(t *testing.T) {
 	checkLeafNodeConnected(t, sl)
 }
 
+func TestLeafNodeTwoRemotesBindToSameAccount(t *testing.T) {
+	opts := DefaultOptions()
+	opts.LeafNode.Host = "127.0.0.1"
+	opts.LeafNode.Port = -1
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	conf := `
+	listen: 127.0.0.1:-1
+	cluster { name: ln22, listen: 127.0.0.1:-1 }
+	accounts {
+		a { users [ {user: a, password: a} ]}
+		b { users [ {user: b, password: b} ]}
+	}
+	leafnodes {
+		remotes = [
+			{
+				url: nats-leaf://127.0.0.1:%d
+				account: a
+			}
+			{
+				url: nats-leaf://127.0.0.1:%d
+				account: b
+			}
+		]
+	}
+	`
+	lconf := createConfFile(t, []byte(fmt.Sprintf(conf, opts.LeafNode.Port, opts.LeafNode.Port)))
+	defer os.Remove(lconf)
+
+	lopts, err := ProcessConfigFile(lconf)
+	if err != nil {
+		t.Fatalf("Error loading config file: %v", err)
+	}
+	lopts.NoLog = false
+	ln, err := NewServer(lopts)
+	if err != nil {
+		t.Fatalf("Error creating server: %v", err)
+	}
+	defer ln.Shutdown()
+	l := &captureErrorLogger{errCh: make(chan string, 10)}
+	ln.SetLogger(l, false, false)
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ln.Start()
+	}()
+
+	select {
+	case err := <-l.errCh:
+		fmt.Printf("@@IK: err=%q\n", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Did not get any error")
+	}
+	ln.Shutdown()
+	wg.Wait()
+}
+
 func TestLeafNodeNoDuplicateWithinCluster(t *testing.T) {
 	// This set the cluster name to "abc"
 	oSrv1 := DefaultOptions()

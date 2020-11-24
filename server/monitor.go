@@ -1913,6 +1913,8 @@ func (reason ClosedState) String() string {
 		return "No Responders Requires Headers"
 	case ClusterNameConflict:
 		return "Cluster Name Conflict"
+	case DuplicateRemoteLeafnodeConnection:
+		return "Duplicate Remote LeafNode Connection"
 	}
 
 	return "Unknown State"
