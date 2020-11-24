@@ -127,22 +127,19 @@ func validateLeafNode(o *Options) error {
 	}
 	// In local config mode, check that leafnode configuration refers to accounts that exist.
 	if len(o.TrustedOperators) == 0 {
+		accNames := map[string]struct{}{}
+		for _, a := range o.Accounts {
+			accNames[a.Name] = struct{}{}
+		}
+		// global account is always created
+		accNames[DEFAULT_GLOBAL_ACCOUNT] = struct{}{}
+		accNames[_EMPTY_] = struct{}{} // in the context of leaf nodes, empty account means global account
+		// system account either exists or, if not disabled, will be created
+		if o.SystemAccount == _EMPTY_ && !o.NoSystemAccount {
+			accNames[DEFAULT_SYSTEM_ACCOUNT] = struct{}{}
+		}
 		checkAccountExists := func(accName string, cfgType string) error {
-			found := false
-			if accName == "$G" || accName == _EMPTY_ {
-				found = true
-			} else {
-				for _, a := range o.Accounts {
-					if a.Name == accName {
-						found = true
-						break
-					}
-				}
-			}
-			if !found {
-				if accName == DEFAULT_SYSTEM_ACCOUNT && o.SystemAccount == _EMPTY_ && !o.NoSystemAccount {
-					return nil
-				}
+			if _, ok := accNames[accName]; !ok {
 				return fmt.Errorf("cannot find local account %q specified in leafnode %s", accName, cfgType)
 			}
 			return nil
@@ -151,7 +148,7 @@ func validateLeafNode(o *Options) error {
 			return err
 		}
 		for _, lu := range o.LeafNode.Users {
-			if lu.Account == nil {
+			if lu.Account == nil { // means global account
 				continue
 			}
 			if err := checkAccountExists(lu.Account.Name, "authorization"); err != nil {
