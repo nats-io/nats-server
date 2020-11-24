@@ -132,6 +132,7 @@ const (
 func (c *client) parse(buf []byte) error {
 	var i int
 	var b byte
+	var lmsg bool
 
 	// Snapshots
 	c.mu.Lock()
@@ -463,6 +464,7 @@ func (c *client) parse(buf []byte) error {
 			// Drop all pub args
 			c.pa.arg, c.pa.pacache, c.pa.origin, c.pa.account, c.pa.subject = nil, nil, nil, nil, nil
 			c.pa.reply, c.pa.hdr, c.pa.size, c.pa.szb, c.pa.hdb, c.pa.queues = nil, -1, 0, nil, nil, nil
+			lmsg = false
 		case OP_A:
 			switch b {
 			case '+':
@@ -932,6 +934,7 @@ func (c *client) parse(buf []byte) error {
 						if trace {
 							c.traceInOp("LMSG", arg)
 						}
+						lmsg = true
 						err = c.processRoutedOriginClusterMsgArgs(arg)
 					}
 				} else if c.kind == LEAF {
@@ -1114,7 +1117,7 @@ func (c *client) parse(buf []byte) error {
 
 		if c.argBuf == nil {
 			// Works also for MSG_ARG, when message comes from ROUTE.
-			if err := c.clonePubArg(); err != nil {
+			if err := c.clonePubArg(lmsg); err != nil {
 				goto parseErr
 			}
 		}
@@ -1165,13 +1168,16 @@ func protoSnippet(start int, buf []byte) string {
 
 // clonePubArg is used when the split buffer scenario has the pubArg in the existing read buffer, but
 // we need to hold onto it into the next read.
-func (c *client) clonePubArg() error {
+func (c *client) clonePubArg(lmsg bool) error {
 	// Just copy and re-process original arg buffer.
 	c.argBuf = c.scratch[:0]
 	c.argBuf = append(c.argBuf, c.pa.arg...)
 
 	switch c.kind {
 	case ROUTER, GATEWAY:
+		if lmsg {
+			return c.processRoutedOriginClusterMsgArgs(c.argBuf)
+		}
 		if c.pa.hdr < 0 {
 			return c.processRoutedMsgArgs(c.argBuf)
 		} else {

@@ -1856,7 +1856,9 @@ func TestLeafNodeTwoRemotesBindToSameAccount(t *testing.T) {
 
 	select {
 	case err := <-l.errCh:
-		fmt.Printf("@@IK: err=%q\n", err)
+		if !strings.Contains(err, DuplicateRemoteLeafnodeConnection.String()) {
+			t.Fatalf("Unexpected error: %v", err)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Did not get any error")
 	}
@@ -1942,6 +1944,83 @@ func TestLeafNodeNoDuplicateWithinCluster(t *testing.T) {
 		if string(replyMsg.Data) != "from leaf1" {
 			t.Fatalf("Expected reply from leaf1, got %q", replyMsg.Data)
 		}
+	}
+}
+
+func TestLeafNodeNoRouteParserError(t *testing.T) {
+	// This set the cluster name to "abc"
+	oSrv1 := DefaultOptions()
+	oSrv1.LeafNode.Host = "127.0.0.1"
+	oSrv1.LeafNode.Port = -1
+	srv1 := RunServer(oSrv1)
+	defer srv1.Shutdown()
+
+	oSrv2 := DefaultOptions()
+	oSrv2.LeafNode.Host = "127.0.0.1"
+	oSrv2.LeafNode.Port = -1
+	oSrv2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", oSrv1.Cluster.Port))
+	srv2 := RunServer(oSrv2)
+	defer srv2.Shutdown()
+
+	checkClusterFormed(t, srv1, srv2)
+
+	u1, err := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", oSrv1.LeafNode.Port))
+	if err != nil {
+		t.Fatalf("Error parsing url: %v", err)
+	}
+	u2, err := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", oSrv2.LeafNode.Port))
+	if err != nil {
+		t.Fatalf("Error parsing url: %v", err)
+	}
+	remoteLeafs := []*RemoteLeafOpts{&RemoteLeafOpts{URLs: []*url.URL{u1, u2}}}
+
+	oLeaf1 := DefaultOptions()
+	oLeaf1.LeafNode.Remotes = remoteLeafs
+	leaf1 := RunServer(oLeaf1)
+	defer leaf1.Shutdown()
+
+	oLeaf2 := DefaultOptions()
+	oLeaf2.LeafNode.Remotes = remoteLeafs
+	oLeaf2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", oLeaf1.Cluster.Port))
+	leaf2 := RunServer(oLeaf2)
+	defer leaf2.Shutdown()
+
+	checkClusterFormed(t, leaf1, leaf2)
+
+	checkLeafNodeConnected(t, leaf1)
+	checkLeafNodeConnected(t, leaf2)
+
+	ncSrv2 := natsConnect(t, srv2.ClientURL())
+	defer ncSrv2.Close()
+	natsQueueSub(t, ncSrv2, "foo", "queue", func(m *nats.Msg) {
+		m.Respond([]byte("from srv2"))
+	})
+
+	// Check that "foo" interest is available everywhere.
+	checkSubInterest(t, srv1, globalAccountName, "foo", time.Second)
+	checkSubInterest(t, srv2, globalAccountName, "foo", time.Second)
+	checkSubInterest(t, leaf1, globalAccountName, "foo", time.Second)
+	checkSubInterest(t, leaf2, globalAccountName, "foo", time.Second)
+
+	// Not required, but have a request payload that is more than 100 bytes
+	reqPayload := make([]byte, 150)
+	for i := 0; i < len(reqPayload); i++ {
+		reqPayload[i] = byte((i % 26)) + 'A'
+	}
+
+	// Send repeated requests (from scratch) from leaf-2:
+	sendReq := func() {
+		t.Helper()
+
+		ncLeaf2 := natsConnect(t, leaf2.ClientURL())
+		defer ncLeaf2.Close()
+
+		if _, err := ncLeaf2.Request("foo", reqPayload, time.Second); err != nil {
+			t.Fatalf("Did not receive reply: %v", err)
+		}
+	}
+	for i := 0; i < 100; i++ {
+		sendReq()
 	}
 }
 
