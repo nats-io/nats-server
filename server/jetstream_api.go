@@ -264,12 +264,7 @@ const JSApiListLimit = 256
 
 type JSApiStreamNamesRequest struct {
 	ApiPagedRequest
-	Filters *Filters `json:"filters,omitempty"`
-}
-
-// Filters is to optionally filter streams from the names list.
-// This will include more filters in the future.
-type Filters struct {
+	// These are filters that can be applied to the list.
 	Subject string `json:"subject,omitempty"`
 }
 
@@ -850,8 +845,8 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, rep
 			return
 		}
 		offset = req.Offset
-		if req.Filters != nil && req.Filters.Subject != _EMPTY_ {
-			filter = req.Filters.Subject
+		if req.Subject != _EMPTY_ {
+			filter = req.Subject
 		}
 	}
 

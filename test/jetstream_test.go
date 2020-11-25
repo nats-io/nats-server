@@ -7526,7 +7526,7 @@ func TestJetStreamFilteredStreamNames(t *testing.T) {
 
 	expectStreams := func(filter string, streams []string) {
 		t.Helper()
-		req, _ := json.Marshal(&server.JSApiStreamNamesRequest{Filters: &server.Filters{Subject: filter}})
+		req, _ := json.Marshal(&server.JSApiStreamNamesRequest{Subject: filter})
 		r, _ := nc.Request(server.JSApiStreams, req, time.Second)
 		var resp server.JSApiStreamNamesResponse
 		if err := json.Unmarshal(r.Data, &resp); err != nil {
