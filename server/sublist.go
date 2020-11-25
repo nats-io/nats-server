@@ -1117,6 +1117,10 @@ func SubjectsCollide(subj1, subj2 string) bool {
 		return isSubsetMatch(toks2, subj1)
 	}
 	// Both have wildcards.
+	// If they only have partials then the lengths must match.
+	if !fwc1 && !fwc2 && len(toks1) != len(toks2) {
+		return false
+	}
 	stop := len(toks1)
 	if len(toks2) < stop {
 		stop = len(toks2)

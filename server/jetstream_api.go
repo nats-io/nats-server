@@ -75,10 +75,6 @@ const (
 	JSApiStreamInfo  = "$JS.API.STREAM.INFO.*"
 	JSApiStreamInfoT = "$JS.API.STREAM.INFO.%s"
 
-	// JSApiStreamLookup is for obtaining a stream by a target subject.
-	// Will return JSON response.
-	JSApiStreamLookup = "$JS.API.STREAM.LOOKUP"
-
 	// JSApiStreamDelete is the endpoint to delete streams.
 	// Will return JSON response.
 	JSApiStreamDelete  = "$JS.API.STREAM.DELETE.*"
@@ -147,13 +143,8 @@ const (
 	jsSnapshotAckT    = "$JS.SNAPSHOT.ACK.%s.%s"
 	jsRestoreDeliverT = "$JS.SNAPSHOT.RESTORE.%s.%s"
 
-	///////////////////////
-	// FIXME(dlc)
-	///////////////////////
-
 	// JetStreamAckT is the template for the ack message stream coming back from a consumer
 	// when they ACK/NAK, etc a message.
-	// FIXME(dlc) - What do we really need here??
 	jsAckT   = "$JS.ACK.%s.%s"
 	jsAckPre = "$JS.ACK."
 
@@ -266,20 +257,6 @@ type JSApiStreamInfoResponse struct {
 
 const JSApiStreamInfoResponseType = "io.nats.jetstream.api.v1.stream_info_response"
 
-type JSApiStreamLookupRequest struct {
-	// Subject finds any stream that matches this subject including those where wildcards intercepts
-	Subject string `json:"subject"`
-}
-
-// JSApiStreamLookupResponse.
-type JSApiStreamLookupResponse struct {
-	ApiResponse
-	Stream   string `json:"stream"`
-	Filtered bool   `json:"is_filtered"`
-}
-
-const JSApiStreamLookupResponseType = "io.nats.jetstream.api.v1.stream_lookup_response"
-
 // Maximum entries we will return for streams or consumers lists.
 // TODO(dlc) - with header or request support could request chunked response.
 const JSApiNamesLimit = 1024
@@ -287,6 +264,8 @@ const JSApiListLimit = 256
 
 type JSApiStreamNamesRequest struct {
 	ApiPagedRequest
+	// These are filters that can be applied to the list.
+	Subject string `json:"subject,omitempty"`
 }
 
 // JSApiStreamNamesResponse list of streams.
@@ -498,7 +477,6 @@ var allJsExports = []string{
 	JSApiStreams,
 	JSApiStreamList,
 	JSApiStreamInfo,
-	JSApiStreamLookup,
 	JSApiStreamDelete,
 	JSApiStreamPurge,
 	JSApiStreamSnapshot,
@@ -528,7 +506,6 @@ func (s *Server) setJetStreamExportSubs() error {
 		{JSApiStreams, s.jsStreamNamesRequest},
 		{JSApiStreamList, s.jsStreamListRequest},
 		{JSApiStreamInfo, s.jsStreamInfoRequest},
-		{JSApiStreamLookup, s.jsStreamLookupRequest},
 		{JSApiStreamDelete, s.jsStreamDeleteRequest},
 		{JSApiStreamPurge, s.jsStreamPurgeRequest},
 		{JSApiStreamSnapshot, s.jsStreamSnapshotRequest},
@@ -858,6 +835,8 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, rep
 	}
 
 	var offset int
+	var filter string
+
 	if !isEmptyRequest(msg) {
 		var req JSApiStreamNamesRequest
 		if err := json.Unmarshal(msg, &req); err != nil {
@@ -866,11 +845,15 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, rep
 			return
 		}
 		offset = req.Offset
+		if req.Subject != _EMPTY_ {
+			filter = req.Subject
+		}
 	}
 
 	// TODO(dlc) - Maybe hold these results for large results that we expect to be paged.
 	// TODO(dlc) - If this list is long maybe do this in a Go routine?
-	msets := c.acc.Streams()
+	msets := c.acc.filteredStreams(filter)
+	// Since we page results order matters.
 	sort.Slice(msets, func(i, j int) bool {
 		return strings.Compare(msets[i].config.Name, msets[j].config.Name) < 0
 	})
@@ -970,57 +953,6 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 		return
 	}
 	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config()}
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
-}
-
-// Request to lookup a stream by target subject.
-func (s *Server) jsStreamLookupRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c == nil || c.acc == nil {
-		return
-	}
-
-	var resp = JSApiStreamLookupResponse{ApiResponse: ApiResponse{Type: JSApiStreamLookupResponseType}}
-	if !c.acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-
-	if isEmptyRequest(msg) {
-		resp.Error = &ApiError{Code: 400, Description: "subject required"}
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-
-	subj := string(msg)
-
-	if bytes.HasPrefix(bytes.TrimSpace(msg), []byte("{")) {
-		var req JSApiStreamLookupRequest
-		err := json.Unmarshal(msg, &req)
-		// happy path we set it, otherwise we try whatever was in the
-		// msg as if its a subject this is because '{' is a valid subject
-		if err == nil {
-			subj = req.Subject
-		}
-	}
-
-	if !IsValidSubject(subj) {
-		resp.Error = &ApiError{Code: 400, Description: "subject argument is not a valid subject or request"}
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-
-	// Lookup our stream.
-	mset, filtered, err := c.acc.LookupStreamBySubject(subj)
-	if err != nil {
-		resp.Error = jsNotFoundError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-
-	resp.Stream = mset.Name()
-	resp.Filtered = filtered
-
 	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
 }
 

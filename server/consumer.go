@@ -265,12 +265,21 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 
 	// Make sure any partition subject is also a literal.
 	if config.FilterSubject != "" {
-		// Make sure this is a valid partition of the interest subjects.
-		if !mset.validSubject(config.FilterSubject) {
-			return nil, fmt.Errorf("consumer filter subject is not a valid subset of the interest subjects")
+		// If this is a direct match for the streams only subject clear the filter.
+		mset.mu.RLock()
+		if len(mset.config.Subjects) == 1 && mset.config.Subjects[0] == config.FilterSubject {
+			config.FilterSubject = _EMPTY_
 		}
-		if config.AckPolicy == AckAll {
-			return nil, fmt.Errorf("consumer with filter subject can not have an ack policy of ack all")
+		mset.mu.RUnlock()
+
+		if config.FilterSubject != "" {
+			// Make sure this is a valid partition of the interest subjects.
+			if !mset.validSubject(config.FilterSubject) {
+				return nil, fmt.Errorf("consumer filter subject is not a valid subset of the interest subjects")
+			}
+			if config.AckPolicy == AckAll {
+				return nil, fmt.Errorf("consumer with filter subject can not have an ack policy of ack all")
+			}
 		}
 	}
 

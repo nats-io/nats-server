@@ -56,7 +56,7 @@ const JSApiPubAckResponseType = "io.nats.jetstream.api.v1.pub_ack_response"
 
 // JSPubAckResponse is a formal response to a publish operation.
 type JSPubAckResponse struct {
-	ApiResponse
+	Error *ApiError `json:"error,omitempty"`
 	*PubAck
 }
 
@@ -196,10 +196,7 @@ func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 	mset.setupSendCapabilities()
 
 	// Create our pubAck template here. Better than json marshal each time on success.
-	b, _ := json.Marshal(&JSPubAckResponse{
-		ApiResponse: ApiResponse{Type: JSApiPubAckResponseType},
-		PubAck:      &PubAck{Stream: cfg.Name, Sequence: math.MaxUint64},
-	})
+	b, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: cfg.Name, Sequence: math.MaxUint64}})
 	end := bytes.Index(b, []byte(strconv.FormatUint(math.MaxUint64, 10)))
 	// We need to force cap here to make sure this is a copy when sending a response.
 	mset.pubAck = b[:end:end]
@@ -922,7 +919,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 	numConsumers := len(mset.consumers)
 	interestRetention := mset.config.Retention == InterestPolicy
 
-	var resp = &JSPubAckResponse{ApiResponse: ApiResponse{Type: JSApiPubAckResponseType}}
+	var resp = &JSPubAckResponse{}
 
 	// Process msg headers if present.
 	var msgId string
