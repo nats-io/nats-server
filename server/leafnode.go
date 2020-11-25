@@ -1162,6 +1162,7 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 		return ErrWrongGateway
 	}
 
+	c.mu.Lock()
 	// Leaf Nodes do not do echo or verbose or pedantic.
 	c.opts.Verbose = false
 	c.opts.Echo = false
@@ -1176,6 +1177,7 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	if proto.Cluster != "" {
 		c.leaf.remoteCluster = proto.Cluster
 	}
+	c.mu.Unlock()
 
 	// Add in the leafnode here since we passed through auth at this point.
 	s.addLeafNodeConnection(c, proto.Name, true)
@@ -1372,7 +1374,10 @@ func (s *Server) updateLeafNodes(acc *Account, sub *subscription, delta int32) {
 
 	for _, ln := range leafs {
 		// Check to make sure this sub does not have an origin cluster than matches the leafnode.
-		if sub.origin != nil && string(sub.origin) == ln.remoteCluster() {
+		ln.mu.Lock()
+		skip := sub.origin != nil && string(sub.origin) == ln.remoteCluster()
+		ln.mu.Unlock()
+		if skip {
 			continue
 		}
 		ln.updateSmap(sub, delta)
