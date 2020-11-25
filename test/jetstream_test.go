@@ -401,109 +401,6 @@ func TestJetStreamPubAck(t *testing.T) {
 	}
 }
 
-func TestJetStreamLookupStreamBySubject(t *testing.T) {
-	s := RunBasicJetStreamServer()
-	defer s.Shutdown()
-
-	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
-	}
-	acc := s.GlobalAccount()
-
-	if _, err := acc.AddStream(&server.StreamConfig{Name: "1", Subjects: []string{"foo"}}); err != nil {
-		t.Fatalf("Unexpected error adding stream: %v", err)
-	}
-	if _, err := acc.AddStream(&server.StreamConfig{Name: "2", Subjects: []string{"bar", "baz", "boo"}}); err != nil {
-		t.Fatalf("Unexpected error adding stream: %v", err)
-	}
-	if _, err := acc.AddStream(&server.StreamConfig{Name: "3", Subjects: []string{"foo.*", "bar.*"}}); err != nil {
-		t.Fatalf("Unexpected error adding stream: %v", err)
-	}
-	if _, err := acc.AddStream(&server.StreamConfig{Name: "4", Subjects: []string{"baz.*.*.>"}}); err != nil {
-		t.Fatalf("Unexpected error adding stream: %v", err)
-	}
-	if _, err := acc.AddStream(&server.StreamConfig{Name: "5", Subjects: []string{"{test"}}); err != nil {
-		t.Fatalf("Unexpected error adding stream: %v", err)
-	}
-
-	// Check some errors first.
-	checkError := func(subj string) {
-		t.Helper()
-		if _, _, err := acc.LookupStreamBySubject(subj); err != server.ErrJetStreamStreamNotFound {
-			t.Fatalf("Expected to get a stream not found error, got %v", err)
-		}
-	}
-
-	checkError("zzz")
-	checkError("*")
-	checkError("baz.>")
-
-	checkLookup := func(subj, stream string, filtered bool) {
-		t.Helper()
-		s, f, err := acc.LookupStreamBySubject(subj)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		if s.Name() != stream {
-			t.Fatalf("Expected stream name of %q, got %q", stream, s.Name())
-		}
-		if f != filtered {
-			t.Fatalf("Expected filtered to be %v, got %v", filtered, f)
-		}
-	}
-
-	checkLookup("foo", "1", false)
-	checkLookup("boo", "2", true)
-	checkLookup("foo.*", "3", true)
-	checkLookup("foo.1", "3", true)
-	checkLookup("baz.*.*.>", "4", false)
-	checkLookup("baz.2.*.>", "4", true)
-
-	// Now test API
-	nc := clientConnectToServer(t, s)
-	defer nc.Close()
-
-	checkAPILookup := func(subj, stream string, filtered bool) {
-		t.Helper()
-		resp, err := nc.Request(server.JSApiStreamLookup, []byte(subj), time.Second)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		var lresp server.JSApiStreamLookupResponse
-		if err := json.Unmarshal(resp.Data, &lresp); err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		if lresp.Error != nil {
-			t.Fatalf("Got an API error: %+v", lresp.Error)
-		}
-		if lresp.Stream != stream {
-			t.Fatalf("Expected stream name of %q, got %q", stream, lresp.Stream)
-		}
-		if lresp.Filtered != filtered {
-			t.Fatalf("Expected filtered to be %v, got %v", filtered, lresp.Filtered)
-		}
-	}
-
-	cases := []struct {
-		subj     string
-		stream   string
-		filtered bool
-	}{
-		{"foo", "1", false},
-		{"boo", "2", true},
-		{"foo.*", "3", true},
-		{"foo.1", "3", true},
-		{"baz.*.*.>", "4", false},
-		{"baz.2.*.>", "4", true},
-	}
-	for _, c := range cases {
-		checkAPILookup(c.subj, c.stream, c.filtered)
-		checkAPILookup(fmt.Sprintf(`{"subject":%q}`, c.subj), c.stream, c.filtered)
-	}
-
-	checkAPILookup("{test", "5", false)
-}
-
 func TestJetStreamConsumerWithStartTime(t *testing.T) {
 	subj := "my_stream"
 	cases := []struct {
@@ -7172,6 +7069,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err = json.Unmarshal(resp.Data, &namesResponse); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+
 	if len(namesResponse.Streams) != 1 {
 		t.Fatalf("Expected only 1 stream but got %d", len(namesResponse.Streams))
 	}
@@ -7595,6 +7493,59 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	checkEmptyReqArg(" { } ")
 }
 
+func TestJetStreamFilteredStreamNames(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	// Forced cleanup of all persisted state.
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// Create some streams.
+	var snid int
+	createStream := func(subjects []string) {
+		t.Helper()
+		snid++
+		name := fmt.Sprintf("S-%d", snid)
+		sc := &server.StreamConfig{Name: name, Subjects: subjects}
+		if _, err := s.GlobalAccount().AddStream(sc); err != nil {
+			t.Fatalf("Unexpected error adding stream: %v", err)
+		}
+	}
+
+	createStream([]string{"foo"})                  // S1
+	createStream([]string{"bar"})                  // S2
+	createStream([]string{"baz"})                  // S3
+	createStream([]string{"foo.*", "bar.*"})       // S4
+	createStream([]string{"foo-1.22", "bar-1.33"}) // S5
+
+	expectStreams := func(filter string, streams []string) {
+		t.Helper()
+		req, _ := json.Marshal(&server.JSApiStreamNamesRequest{Filters: &server.Filters{Subject: filter}})
+		r, _ := nc.Request(server.JSApiStreams, req, time.Second)
+		var resp server.JSApiStreamNamesResponse
+		if err := json.Unmarshal(r.Data, &resp); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if len(resp.Streams) != len(streams) {
+			t.Fatalf("Expected %d results, got %d", len(streams), len(resp.Streams))
+		}
+	}
+
+	expectStreams("foo", []string{"S1"})
+	expectStreams("bar", []string{"S2"})
+	expectStreams("baz", []string{"S3"})
+	expectStreams("*", []string{"S1", "S2", "S3"})
+	expectStreams(">", []string{"S1", "S2", "S3", "S4", "S5"})
+	expectStreams("*.*", []string{"S4", "S5"})
+	expectStreams("*.22", []string{"S4", "S5"})
+}
+
 func TestJetStreamAPIStreamListPaging(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
@@ -7623,7 +7574,7 @@ func TestJetStreamAPIStreamListPaging(t *testing.T) {
 		t.Helper()
 		var req []byte
 		if offset > 0 {
-			req, _ = json.Marshal(&server.JSApiStreamNamesRequest{ApiPagedRequest: server.ApiPagedRequest{Offset: offset}})
+			req, _ = json.Marshal(&server.ApiPagedRequest{Offset: offset})
 		}
 		resp, err := nc.Request(server.JSApiStreams, req, time.Second)
 		if err != nil {
@@ -9250,6 +9201,53 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 			}
 		})
 	}
+}
+
+// This test is in support fo clients that want to match on subject, they
+// can set the filter subject always and if the stream only has one subject
+// and they match the filter is cleared automatically. This eliminates us
+// needing to know if a subject is a subset of a stream when looking it up.
+func TestJetStreamConsumerFilterSubject(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	sc := &server.StreamConfig{Name: "MY_STREAM", Subjects: []string{"foo"}}
+	mset, err := s.GlobalAccount().AddStream(sc)
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset.Delete()
+
+	cfg := &server.ConsumerConfig{
+		Durable:        "d",
+		DeliverSubject: "A",
+		AckPolicy:      server.AckExplicit,
+		FilterSubject:  "foo",
+	}
+
+	o, err := mset.AddConsumer(cfg)
+	if err != nil {
+		t.Fatalf("Unexpected error adding consumer: %v", err)
+	}
+	defer o.Delete()
+
+	if o.Info().Config.FilterSubject != "" {
+		t.Fatalf("Expected the filter to be cleared")
+	}
+
+	// Now use the original cfg with updated delivery subject and make sure that works ok.
+	cfg = &server.ConsumerConfig{
+		Durable:        "d",
+		DeliverSubject: "B",
+		AckPolicy:      server.AckExplicit,
+		FilterSubject:  "foo",
+	}
+
+	o, err = mset.AddConsumer(cfg)
+	if err != nil {
+		t.Fatalf("Unexpected error adding consumer: %v", err)
+	}
+	defer o.Delete()
 }
 
 func TestJetStreamStoredMsgsDontDisappearAfterCacheExpiration(t *testing.T) {

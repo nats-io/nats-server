@@ -607,18 +607,35 @@ func (a *Account) NumStreams() int {
 
 // Streams will return all known streams.
 func (a *Account) Streams() []*Stream {
+	return a.filteredStreams(_EMPTY_)
+}
+
+func (a *Account) filteredStreams(filter string) []*Stream {
 	a.mu.RLock()
 	jsa := a.js
 	a.mu.RUnlock()
+
 	if jsa == nil {
 		return nil
 	}
-	var msets []*Stream
+
 	jsa.mu.Lock()
+	defer jsa.mu.Unlock()
+
+	var msets []*Stream
 	for _, mset := range jsa.streams {
-		msets = append(msets, mset)
+		if filter != _EMPTY_ {
+			for _, subj := range mset.config.Subjects {
+				if SubjectsCollide(filter, subj) {
+					msets = append(msets, mset)
+					break
+				}
+			}
+		} else {
+			msets = append(msets, mset)
+		}
 	}
-	jsa.mu.Unlock()
+
 	return msets
 }
 
@@ -638,33 +655,6 @@ func (a *Account) LookupStream(name string) (*Stream, error) {
 		return nil, ErrJetStreamStreamNotFound
 	}
 	return mset, nil
-}
-
-// LookupStreamBySubject will lookup a stream by a subject.
-// The subject needs to be an exact match or a subset. Supersets will not match.
-func (a *Account) LookupStreamBySubject(subj string) (*Stream, bool, error) {
-	a.mu.RLock()
-	jsa := a.js
-	a.mu.RUnlock()
-
-	if jsa == nil {
-		return nil, false, ErrJetStreamNotEnabled
-	}
-	jsa.mu.Lock()
-	defer jsa.mu.Unlock()
-
-	for _, mset := range jsa.streams {
-		for _, tsubj := range mset.config.Subjects {
-			if subj == tsubj {
-				return mset, len(mset.config.Subjects) > 1, nil
-			}
-			if subjectIsSubsetMatch(subj, tsubj) {
-				return mset, true, nil
-			}
-		}
-	}
-
-	return nil, false, ErrJetStreamStreamNotFound
 }
 
 // UpdateJetStreamLimits will update the account limits for a JetStream enabled account.
