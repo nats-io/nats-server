@@ -2897,11 +2897,12 @@ func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) err
 			o.state.Delivered.Consumer = dseq
 			o.state.Delivered.Stream = sseq
 			p = &Pending{dseq, ts}
-		} else if dc > 1 {
+		}
+		if dc > 1 {
 			if o.state.Redelivered == nil {
 				o.state.Redelivered = make(map[uint64]uint64)
 			}
-			o.state.Redelivered[sseq] = dc
+			o.state.Redelivered[sseq] = dc - 1
 		}
 		o.state.Pending[sseq] = &Pending{dseq, ts}
 	} else {
@@ -2932,27 +2933,33 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 	if p == nil {
 		return ErrStoreMsgNotFound
 	}
+	// Delete from our state.
 	delete(o.state.Pending, sseq)
+	if len(o.state.Redelivered) > 0 {
+		delete(o.state.Redelivered, sseq)
+		if len(o.state.Redelivered) == 0 {
+			o.state.Redelivered = nil
+		}
+	}
 
-	// TODO(dlc) - Check to see if we move ack floor.
 	if len(o.state.Pending) == 0 {
 		o.state.Pending = nil
 		o.state.AckFloor.Consumer = o.state.Delivered.Consumer
 		o.state.AckFloor.Stream = o.state.Delivered.Stream
-	} else if o.state.AckFloor.Consumer == 0 {
-		o.state.AckFloor.Consumer = dseq
-		o.state.AckFloor.Stream = sseq
 	} else if o.state.AckFloor.Consumer == dseq-1 {
+		notFirst := o.state.AckFloor.Consumer != 0
 		o.state.AckFloor.Consumer = dseq
 		o.state.AckFloor.Stream = sseq
-		// Close gap if needed.
-		for ss := sseq + 1; ss < o.state.Delivered.Stream; ss++ {
-			if p, ok := o.state.Pending[ss]; ok {
-				if p.Sequence > 0 {
-					o.state.AckFloor.Consumer = p.Sequence - 1
-					o.state.AckFloor.Stream = ss - 1
+		// Close the gap if needed.
+		if notFirst && o.state.Delivered.Consumer > dseq {
+			for ss := sseq + 1; ss < o.state.Delivered.Stream; ss++ {
+				if p, ok := o.state.Pending[ss]; ok {
+					if p.Sequence > 0 {
+						o.state.AckFloor.Consumer = p.Sequence - 1
+						o.state.AckFloor.Stream = ss - 1
+					}
+					break
 				}
-				break
 			}
 		}
 	}
@@ -3028,6 +3035,7 @@ func (o *consumerFileStore) encodeState() ([]byte, error) {
 			n += binary.PutUvarint(buf[n:], v)
 		}
 	}
+
 	return buf[:n], nil
 }
 
@@ -3323,6 +3331,23 @@ func (o *consumerFileStore) State() (*ConsumerState, error) {
 			state.Redelivered[seq] = n
 		}
 	}
+
+	// Copy this state into our own.
+	o.state.Delivered = state.Delivered
+	o.state.AckFloor = state.AckFloor
+	if len(state.Pending) > 0 {
+		o.state.Pending = make(map[uint64]*Pending, len(state.Pending))
+		for seq, p := range state.Pending {
+			o.state.Pending[seq] = &Pending{p.Sequence, p.Timestamp}
+		}
+	}
+	if len(state.Redelivered) > 0 {
+		o.state.Redelivered = make(map[uint64]uint64, len(state.Redelivered))
+		for seq, dc := range state.Redelivered {
+			o.state.Redelivered[seq] = dc
+		}
+	}
+
 	return state, nil
 }
 

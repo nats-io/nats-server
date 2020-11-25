@@ -2026,6 +2026,74 @@ func TestFileStorePubPerfWithSmallBlkSize(t *testing.T) {
 	fmt.Printf("%s per sec\n", FriendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
 }
 
+// Saw this manifest from a restart test with max delivered set for JetStream.
+func TestFileStoreConsumerRedeliveredLost(t *testing.T) {
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	cfg := &ConsumerConfig{AckPolicy: AckExplicit}
+	o, err := fs.ConsumerStore("o22", cfg)
+	if err != nil {
+		t.Fatalf("Unexepected error: %v", err)
+	}
+
+	restartConsumer := func() {
+		t.Helper()
+		o.Stop()
+		o, err = fs.ConsumerStore("o22", cfg)
+		if err != nil {
+			t.Fatalf("Unexepected error: %v", err)
+		}
+		// Make sure we recovered Redelivered.
+		state, err := o.State()
+		if err != nil {
+			t.Fatalf("Unexepected error: %v", err)
+		}
+		if len(state.Redelivered) == 0 {
+			t.Fatalf("Did not recover redelivered")
+		}
+	}
+
+	ts := time.Now().UnixNano()
+	o.UpdateDelivered(1, 1, 1, ts)
+	o.UpdateDelivered(2, 1, 2, ts)
+	o.UpdateDelivered(3, 1, 3, ts)
+	o.UpdateDelivered(4, 1, 4, ts)
+	o.UpdateDelivered(5, 2, 1, ts)
+
+	restartConsumer()
+
+	o.UpdateDelivered(6, 2, 2, ts)
+	o.UpdateDelivered(7, 3, 1, ts)
+
+	restartConsumer()
+	if state, _ := o.State(); len(state.Pending) != 3 {
+		t.Fatalf("Did not recover pending correctly")
+	}
+
+	o.UpdateAcks(7, 3)
+	o.UpdateAcks(6, 2)
+
+	restartConsumer()
+	o.UpdateAcks(4, 1)
+
+	state, _ := o.State()
+	if len(state.Pending) != 0 {
+		t.Fatalf("Did not clear pending correctly")
+	}
+	if len(state.Redelivered) != 0 {
+		fmt.Printf("redelivered is %+v\n", state.Redelivered)
+		t.Fatalf("Did not clear redelivered correctly")
+	}
+}
+
 func TestFileStoreConsumerFlusher(t *testing.T) {
 	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
