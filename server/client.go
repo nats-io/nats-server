@@ -2951,6 +2951,13 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 
 	// Check for internal subscriptions.
 	if sub.icb != nil {
+		if gwrply {
+			// Note that we keep track of the GW routed reply in the destination
+			// connection (`client`). The routed reply subject is in `c.pa.reply`,
+			// should that change, we would have to pass the GW routed reply as
+			// a parameter of deliverMsg().
+			srv.trackGWReply(client, c.pa.reply)
+		}
 		client.mu.Unlock()
 		// Internal account clients are for service imports and need the '\r\n'.
 		if client.kind == ACCOUNT {
@@ -2988,9 +2995,10 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 	// header (which is c.pa.reply without the GNR routing prefix).
 	if client.kind == CLIENT && len(c.pa.reply) > minReplyLen {
 		if gwrply {
-			// Note we keep track "in" the destination client (`client`) but the
-			// routed reply subject is in `c.pa.reply`. Should that change, we
-			// would have to pass the "reply" in deliverMsg().
+			// Note that we keep track of the GW routed reply in the destination
+			// connection (`client`). The routed reply subject is in `c.pa.reply`,
+			// should that change, we would have to pass the GW routed reply as
+			// a parameter of deliverMsg().
 			srv.trackGWReply(client, c.pa.reply)
 		}
 

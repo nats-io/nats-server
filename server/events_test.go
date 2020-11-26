@@ -155,7 +155,9 @@ func runTrustedGateways(t *testing.T) (*Server, *Options, *Server, *Options, nke
 
 	sb := RunServer(optsB)
 
+	waitForInboundGateways(t, sa, 1, time.Second)
 	waitForOutboundGateways(t, sa, 1, time.Second)
+	waitForInboundGateways(t, sb, 1, time.Second)
 	waitForOutboundGateways(t, sb, 1, time.Second)
 
 	return sa, optsA, sb, optsB, akp
