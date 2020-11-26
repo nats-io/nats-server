@@ -940,6 +940,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 		if sname := getExpectedStream(hdr); sname != _EMPTY_ && sname != name {
 			mset.mu.Unlock()
 			if doAck && len(reply) > 0 {
+				resp.PubAck = &PubAck{Stream: name}
 				resp.Error = &ApiError{Code: 400, Description: "expected stream does not match"}
 				b, _ := json.Marshal(resp)
 				sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0}
@@ -951,6 +952,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 			lseq := mset.lseq
 			mset.mu.Unlock()
 			if doAck && len(reply) > 0 {
+				resp.PubAck = &PubAck{Stream: name}
 				resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("wrong last sequence: %d", lseq)}
 				b, _ := json.Marshal(resp)
 				sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0}
@@ -962,6 +964,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 			last := mset.lmsgId
 			mset.mu.Unlock()
 			if doAck && len(reply) > 0 {
+				resp.PubAck = &PubAck{Stream: name}
 				resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("wrong last msg ID: %s", last)}
 				b, _ := json.Marshal(resp)
 				sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0}
@@ -990,6 +993,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 	if maxMsgSize >= 0 && len(msg) > maxMsgSize {
 		mset.mu.Unlock()
 		if doAck && len(reply) > 0 {
+			resp.PubAck = &PubAck{Stream: name}
 			resp.Error = &ApiError{Code: 400, Description: "message size exceeds maximum allowed"}
 			b, _ := json.Marshal(resp)
 			mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0}
@@ -1053,12 +1057,14 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 			c.Errorf("JetStream failed to store a msg on account: %q stream: %q -  %v", accName, name, err)
 		}
 		if doAck && len(reply) > 0 {
+			resp.PubAck = &PubAck{Stream: name}
 			resp.Error = &ApiError{Code: 400, Description: err.Error()}
 			response, _ = json.Marshal(resp)
 		}
 	} else if jsa.limitsExceeded(stype) {
 		c.Warnf("JetStream resource limits exceeded for account: %q", accName)
 		if doAck && len(reply) > 0 {
+			resp.PubAck = &PubAck{Stream: name}
 			resp.Error = &ApiError{Code: 400, Description: "resource limits exceeded for account"}
 			response, _ = json.Marshal(resp)
 		}
