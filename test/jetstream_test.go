@@ -285,8 +285,8 @@ func TestJetStreamAddStreamDiscardNew(t *testing.T) {
 			if resp == nil {
 				t.Fatalf("No response, possible timeout?")
 			}
-			if pa := getPubAckResponse(resp.Data); pa == nil || pa.Error.Description != "maximum messages exceeded" {
-				t.Fatalf("Expected to get an error about maximum messages, got %q", pa.Error)
+			if pa := getPubAckResponse(resp.Data); pa == nil || pa.Error.Description != "maximum messages exceeded" || pa.Stream != "foo" {
+				t.Fatalf("Expected to get an error about maximum messages, got %q", resp.Data)
 			}
 
 			// Now do bytes.
@@ -297,7 +297,7 @@ func TestJetStreamAddStreamDiscardNew(t *testing.T) {
 			if resp == nil {
 				t.Fatalf("No response, possible timeout?")
 			}
-			if pa := getPubAckResponse(resp.Data); pa == nil || pa.Error.Description != "maximum bytes exceeded" {
+			if pa := getPubAckResponse(resp.Data); pa == nil || pa.Error.Description != "maximum bytes exceeded" || pa.Stream != "foo" {
 				t.Fatalf("Expected to get an error about maximum bytes, got %q", resp.Data)
 			}
 		})
