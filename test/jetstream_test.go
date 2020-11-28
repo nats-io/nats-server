@@ -1210,16 +1210,6 @@ func TestJetStreamCreateConsumer(t *testing.T) {
 			defer sub.Unsubscribe()
 			nc.Flush()
 
-			// Filtered subjects can not be AckAll.
-			if _, err := mset.AddConsumer(&server.ConsumerConfig{
-				DeliverSubject: delivery,
-				FilterSubject:  "foo",
-				AckPolicy:      server.AckAll,
-			}); err == nil {
-				t.Fatalf("Expected an error on partitioned consumer with ack policy of all")
-			}
-
-			// This should work..
 			o, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: delivery})
 			if err != nil {
 				t.Fatalf("Expected no error with registered interest, got %v", err)
