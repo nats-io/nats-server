@@ -277,9 +277,6 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 			if !mset.validSubject(config.FilterSubject) {
 				return nil, fmt.Errorf("consumer filter subject is not a valid subset of the interest subjects")
 			}
-			if config.AckPolicy == AckAll {
-				return nil, fmt.Errorf("consumer with filter subject can not have an ack policy of ack all")
-			}
 		}
 	}
 
