@@ -1236,10 +1236,10 @@ func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, tra
 		if len(sub.origin) > 0 && c.route.lnoc {
 			if isSubProto {
 				buf = append(buf, lSubBytes...)
+				buf = append(buf, sub.origin...)
 			} else {
 				buf = append(buf, lUnsubBytes...)
 			}
-			buf = append(buf, sub.origin...)
 			buf = append(buf, ' ')
 		} else {
 			if isSubProto {

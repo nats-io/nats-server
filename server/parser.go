@@ -733,7 +733,12 @@ func (c *client) parse(buf []byte) error {
 					err = c.processUnsub(arg)
 				case ROUTER:
 					if trace && c.srv != nil {
-						c.traceInOp("RS-", arg)
+						switch c.op {
+						case 'R', 'r':
+							c.traceInOp("RS-", arg)
+						case 'L', 'l':
+							c.traceInOp("LS-", arg)
+						}
 					}
 					err = c.processRemoteUnsub(arg)
 				case GATEWAY:
