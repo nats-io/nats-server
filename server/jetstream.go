@@ -258,7 +258,15 @@ func (s *Server) configJetStream(acc *Account) error {
 
 // configAllJetStreamAccounts walk all configured accounts and turn on jetstream if requested.
 func (s *Server) configAllJetStreamAccounts() error {
-	var jsAccounts []*Account
+	// Check to see if system account has been enabled. We could arrive here via reload and
+	// a non-default system account.
+	if sacc := s.SystemAccount(); sacc != nil && !sacc.IsExportService(JSApiAccountInfo) {
+		for _, export := range allJsExports {
+			if err := sacc.AddServiceExport(export, nil); err != nil {
+				return fmt.Errorf("Error setting up jetstream service exports: %v", err)
+			}
+		}
+	}
 
 	// Snapshot into our own list. Might not be needed.
 	s.mu.Lock()
@@ -268,11 +276,15 @@ func (s *Server) configAllJetStreamAccounts() error {
 		s.mu.Unlock()
 		return nil
 	}
+
+	var jsAccounts []*Account
+
 	s.accounts.Range(func(k, v interface{}) bool {
 		jsAccounts = append(jsAccounts, v.(*Account))
 		return true
 	})
 	s.mu.Unlock()
+
 	// Process any jetstream enabled accounts here.
 	for _, acc := range jsAccounts {
 		if err := s.configJetStream(acc); err != nil {
