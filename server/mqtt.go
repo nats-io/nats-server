@@ -1445,7 +1445,7 @@ func (s *Server) mqttHandleWill(c *client) {
 //////////////////////////////////////////////////////////////////////////////
 
 func (c *client) mqttParsePub(r *mqttReader, pl int, pp *mqttPublish) error {
-	qos := (pp.flags & mqttPubFlagQoS) >> 1
+	qos := mqttGetQoS(pp.flags)
 	if qos > 1 {
 		return fmt.Errorf("publish QoS=%v not supported", qos)
 	}

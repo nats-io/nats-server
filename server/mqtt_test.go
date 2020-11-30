@@ -2676,6 +2676,10 @@ func TestMQTTWillRetain(t *testing.T) {
 			// Disconnect, which will cause will to be produced with retain flag.
 			mc.Close()
 
+			// Wait for the server to process the connection close, which will
+			// cause the "will" message to be published (and retained).
+			checkClientsCount(t, s, 0)
+
 			// Create subscription on will topic and expect will message.
 			mcs, rs := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
 			defer mcs.Close()
@@ -2742,6 +2746,10 @@ func TestMQTTWillRetainPermViolation(t *testing.T) {
 	// Disconnect, which will cause the Will to be sent with retain flag.
 	mc.Close()
 
+	// Wait for the server to process the connection close, which will
+	// cause the "will" message to be published (and retained).
+	checkClientsCount(t, s, 0)
+
 	// Create a subscription on the Will subject and we should receive it.
 	ci.will = nil
 	mcs, rs := testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
@@ -2772,6 +2780,10 @@ func TestMQTTWillRetainPermViolation(t *testing.T) {
 	// Disconnect, to cause Will to be produced, but in that case should not be stored
 	// since user not allowed to publish on "bar".
 	mc.Close()
+
+	// Wait for the server to process the connection close, which will
+	// cause the "will" message to be published (and retained).
+	checkClientsCount(t, s, 0)
 
 	// Create sub on "bar" which user is allowed to subscribe to.
 	ci.will = nil
