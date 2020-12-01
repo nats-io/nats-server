@@ -10226,3 +10226,42 @@ func TestJetStreamServerReload(t *testing.T) {
 	checkJSAccount()
 	sendStreamMsg(t, nc, "22", "MSG: 22")
 }
+
+func TestJetStreamConfigReloadWithGlobalAccount(t *testing.T) {
+	template := `
+		authorization {
+			users [
+				{user: anonymous}
+				{user: user1, password: %s}
+			]
+		}
+		no_auth_user: anonymous
+		jetstream: enabled
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(template, "pwd")))
+	defer os.Remove(conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: "foo"})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset.Delete()
+
+	if err := ioutil.WriteFile(conf, []byte(fmt.Sprintf(template, "pwd2")), 0666); err != nil {
+		t.Fatalf("Error writing config: %v", err)
+	}
+
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Error during config reload: %v", err)
+	}
+
+	// Try to add a new stream to the global account
+	mset2, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: "bar"})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset2.Delete()
+}
