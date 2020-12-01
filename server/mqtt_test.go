@@ -2307,20 +2307,10 @@ func TestMQTTTrackPendingOverrun(t *testing.T) {
 	}
 }
 
-func TestMQTTPreventStreamAndConsumerWithMQTTPrefix(t *testing.T) {
+func TestMQTTPreventDeleteMQTTStreamsAndConsumers(t *testing.T) {
 	o := testMQTTDefaultOptions()
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
-
-	sc := &StreamConfig{
-		Name:      mqttStreamNamePrefix + "test",
-		Storage:   FileStorage,
-		Retention: InterestPolicy,
-		Subjects:  []string{"foo.>"},
-	}
-	if _, err := s.GlobalAccount().AddStream(sc); err == nil {
-		t.Fatal("Expected error")
-	}
 
 	mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
 	defer mc.Close()
@@ -2330,15 +2320,60 @@ func TestMQTTPreventStreamAndConsumerWithMQTTPrefix(t *testing.T) {
 
 	mset, err := s.GlobalAccount().LookupStream(mqttStreamName)
 	if err != nil {
-		t.Fatalf("Error looking up MQTT Stream: %v", err)
+		t.Fatalf("Error looking up stream: %v", err)
 	}
-	cc := &ConsumerConfig{
-		Durable:        "dur",
-		AckPolicy:      AckExplicit,
-		DeliverSubject: "bar",
+	var cName string
+	mset.mu.Lock()
+	for cname := range mset.consumers {
+		cName = cname
+		break
 	}
-	if _, err := mset.AddConsumer(cc); err == nil {
-		t.Fatal("Expected error")
+	mset.mu.Unlock()
+
+	// Try first to delete the consumer with API and it should fail
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	respMsg, err := nc.Request(fmt.Sprintf(JSApiConsumerDeleteT, mqttStreamName, cName), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Error sending request: %v", err)
+	}
+	var resp JSApiConsumerDeleteResponse
+	if err = json.Unmarshal(respMsg.Data, &resp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if resp.Success || resp.Error == nil {
+		t.Fatalf("Operation should have failed")
+	}
+	delErr := resp.Error
+	if delErr.Code != 403 {
+		t.Fatalf("Expected forbidden, got %v", delErr.Code)
+	}
+	if !strings.Contains(delErr.Description, "not allowed to delete consumer of internal stream") {
+		t.Fatalf("Unexpected error description: %q", delErr.Description)
+	}
+
+	// Now try with all MQTT streams
+	streamNames := []string{mqttStreamName, mqttSessionsStreamName, mqttRetainedMsgsStreamName}
+	for _, sName := range streamNames {
+		respMsg, err := nc.Request(fmt.Sprintf(JSApiStreamDeleteT, sName), nil, time.Second)
+		if err != nil {
+			t.Fatalf("Error sending request: %v", err)
+		}
+		var resp JSApiStreamDeleteResponse
+		if err = json.Unmarshal(respMsg.Data, &resp); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if resp.Success || resp.Error == nil {
+			t.Fatalf("Operation should have failed")
+		}
+		delErr := resp.Error
+		if delErr.Code != 403 {
+			t.Fatalf("Expected forbidden, got %v", delErr.Code)
+		}
+		if !strings.Contains(delErr.Description, "not allowed to delete internal stream") {
+			t.Fatalf("Unexpected error description: %q", delErr.Description)
+		}
 	}
 }
 

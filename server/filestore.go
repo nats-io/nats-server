@@ -56,11 +56,68 @@ type FileStreamInfo struct {
 	StreamConfig
 }
 
+// Need an alias (which does not have MarshalJSON/UnmarshalJSON) to avoid
+// recursive calls which would lead to stack overflow.
+type fileStreamInfoAlias FileStreamInfo
+
+// We will use this struct definition to serialize/deserialize FileStreamInfo
+// object. This embeds FileStreamInfo (the alias to prevent recursive calls)
+// and makes the non-public options public so they can be persisted/recovered.
+type fileStreamInfoJSON struct {
+	fileStreamInfoAlias
+	Internal       bool `json:"internal,omitempty"`
+	AllowNoSubject bool `json:"allow_no_subject,omitempty"`
+}
+
+func (fsi FileStreamInfo) MarshalJSON() ([]byte, error) {
+	return json.Marshal(&fileStreamInfoJSON{
+		fileStreamInfoAlias(fsi),
+		fsi.internal,
+		fsi.allowNoSubject,
+	})
+}
+
+func (fsi *FileStreamInfo) UnmarshalJSON(b []byte) error {
+	fsiJSON := &fileStreamInfoJSON{}
+	if err := json.Unmarshal(b, &fsiJSON); err != nil {
+		return err
+	}
+	*fsi = FileStreamInfo(fsiJSON.fileStreamInfoAlias)
+	fsi.internal = fsiJSON.Internal
+	fsi.allowNoSubject = fsiJSON.AllowNoSubject
+	return nil
+}
+
 // File ConsumerInfo is used for creating consumer stores.
 type FileConsumerInfo struct {
 	Created time.Time
 	Name    string
 	ConsumerConfig
+}
+
+// See fileStreamInfoAlias, etc.. for details on how this all work.
+type fileConsumerInfoAlias FileConsumerInfo
+
+type fileConsumerInfoJSON struct {
+	fileConsumerInfoAlias
+	AllowNoInterest bool `json:"allow_no_interest,omitempty"`
+}
+
+func (fci FileConsumerInfo) MarshalJSON() ([]byte, error) {
+	return json.Marshal(&fileConsumerInfoJSON{
+		fileConsumerInfoAlias(fci),
+		fci.allowNoInterest,
+	})
+}
+
+func (fci *FileConsumerInfo) UnmarshalJSON(b []byte) error {
+	fciJSON := &fileConsumerInfoJSON{}
+	if err := json.Unmarshal(b, &fciJSON); err != nil {
+		return err
+	}
+	*fci = FileConsumerInfo(fciJSON.fileConsumerInfoAlias)
+	fci.allowNoInterest = fciJSON.AllowNoInterest
+	return nil
 }
 
 type fileStore struct {

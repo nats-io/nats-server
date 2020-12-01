@@ -27,7 +27,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -51,6 +50,12 @@ type StreamConfig struct {
 	NoAck        bool            `json:"no_ack,omitempty"`
 	Template     string          `json:"template_owner,omitempty"`
 	Duplicates   time.Duration   `json:"duplicate_window,omitempty"`
+
+	// These are non public configuration options.
+	// If you add new options, check fileStreamInfoJSON in order for them to
+	// be properly persisted/recovered, if needed.
+	internal       bool
+	allowNoSubject bool
 }
 
 const JSApiPubAckResponseType = "io.nats.jetstream.api.v1.pub_ack_response"
@@ -96,7 +101,6 @@ type Stream struct {
 	ddarr     []*ddentry
 	ddindex   int
 	ddtmr     *time.Timer
-	nosubj    bool
 }
 
 // Headers for published messages.
@@ -127,20 +131,13 @@ func (a *Account) AddStream(config *StreamConfig) (*Stream, error) {
 
 // AddStreamWithStore adds a stream for the given account with custome store config options.
 func (a *Account) AddStreamWithStore(config *StreamConfig, fsConfig *FileStoreConfig) (*Stream, error) {
-	if strings.HasPrefix(config.Name, mqttStreamNamePrefix) {
-		return nil, fmt.Errorf("prefix %q is reserved for MQTT, unable to create stream %q", mqttStreamNamePrefix, config.Name)
-	}
-	return a.addStreamWithStore(config, fsConfig, false)
-}
-
-func (a *Account) addStreamWithStore(config *StreamConfig, fsConfig *FileStoreConfig, noSubjectsOK bool) (*Stream, error) {
 	s, jsa, err := a.checkForJetStream()
 	if err != nil {
 		return nil, err
 	}
 
 	// Sensible defaults.
-	cfg, err := checkStreamCfg(config, noSubjectsOK)
+	cfg, err := checkStreamCfg(config)
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +174,7 @@ func (a *Account) addStreamWithStore(config *StreamConfig, fsConfig *FileStoreCo
 
 	// Setup the internal client.
 	c := s.createInternalJetStreamClient()
-	mset := &Stream{jsa: jsa, config: cfg, client: c, consumers: make(map[string]*Consumer), nosubj: noSubjectsOK}
+	mset := &Stream{jsa: jsa, config: cfg, client: c, consumers: make(map[string]*Consumer)}
 
 	jsa.streams[cfg.Name] = mset
 	storeDir := path.Join(jsa.storeDir, streamsDir, cfg.Name)
@@ -425,7 +422,7 @@ func (jsa *jsAccount) subjectsOverlap(subjects []string) bool {
 // Default duplicates window.
 const StreamDefaultDuplicatesWindow = 2 * time.Minute
 
-func checkStreamCfg(config *StreamConfig, noSubjectOk bool) (StreamConfig, error) {
+func checkStreamCfg(config *StreamConfig) (StreamConfig, error) {
 	if config == nil {
 		return StreamConfig{}, fmt.Errorf("stream configuration invalid")
 	}
@@ -475,7 +472,7 @@ func checkStreamCfg(config *StreamConfig, noSubjectOk bool) (StreamConfig, error
 	}
 
 	if len(cfg.Subjects) == 0 {
-		if !noSubjectOk {
+		if !cfg.allowNoSubject {
 			cfg.Subjects = append(cfg.Subjects, cfg.Name)
 		}
 	} else {
@@ -530,10 +527,7 @@ func (mset *Stream) Delete() error {
 
 // Update will allow certain configuration properties of an existing stream to be updated.
 func (mset *Stream) Update(config *StreamConfig) error {
-	mset.mu.RLock()
-	nosubj := mset.nosubj
-	mset.mu.RUnlock()
-	cfg, err := checkStreamCfg(config, nosubj)
+	cfg, err := checkStreamCfg(config)
 	if err != nil {
 		return err
 	}
@@ -915,7 +909,7 @@ func getExpectedLastSeq(hdr []byte) uint64 {
 }
 
 // processInboundJetStreamMsg handles processing messages bound for a stream.
-func (mset *Stream) processInboundJetStreamMsg(sub *subscription, pc *client, subject, reply string, msg []byte) {
+func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subject, reply string, msg []byte) {
 	mset.mu.Lock()
 	store := mset.store
 	c := mset.client

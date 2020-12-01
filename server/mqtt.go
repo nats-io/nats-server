@@ -631,12 +631,14 @@ func (as *mqttAccountSessionManager) init(acc *Account, c *client) error {
 	// Start with sessions stream
 	as.sstream, err = acc.LookupStream(mqttSessionsStreamName)
 	if err != nil {
-		as.sstream, err = acc.addStreamWithStore(&StreamConfig{
-			Subjects:  []string{},
-			Name:      mqttSessionsStreamName,
-			Storage:   FileStorage,
-			Retention: InterestPolicy,
-		}, nil, true)
+		as.sstream, err = acc.AddStream(&StreamConfig{
+			Subjects:       []string{},
+			Name:           mqttSessionsStreamName,
+			Storage:        FileStorage,
+			Retention:      InterestPolicy,
+			internal:       true,
+			allowNoSubject: true,
+		})
 		if err != nil {
 			return fmt.Errorf("unable to create sessions stream for MQTT account %q: %v", acc.GetName(), err)
 		}
@@ -644,12 +646,14 @@ func (as *mqttAccountSessionManager) init(acc *Account, c *client) error {
 	// Create the stream for the messages.
 	as.mstream, err = acc.LookupStream(mqttStreamName)
 	if err != nil {
-		as.mstream, err = acc.addStreamWithStore(&StreamConfig{
-			Subjects:  []string{},
-			Name:      mqttStreamName,
-			Storage:   FileStorage,
-			Retention: InterestPolicy,
-		}, nil, true)
+		as.mstream, err = acc.AddStream(&StreamConfig{
+			Subjects:       []string{},
+			Name:           mqttStreamName,
+			Storage:        FileStorage,
+			Retention:      InterestPolicy,
+			internal:       true,
+			allowNoSubject: true,
+		})
 		if err != nil {
 			return fmt.Errorf("unable to create messages stream for MQTT account %q: %v", acc.GetName(), err)
 		}
@@ -657,12 +661,14 @@ func (as *mqttAccountSessionManager) init(acc *Account, c *client) error {
 	// Create the stream for retained messages.
 	as.rstream, err = acc.LookupStream(mqttRetainedMsgsStreamName)
 	if err != nil {
-		as.rstream, err = acc.addStreamWithStore(&StreamConfig{
-			Subjects:  []string{},
-			Name:      mqttRetainedMsgsStreamName,
-			Storage:   FileStorage,
-			Retention: InterestPolicy,
-		}, nil, true)
+		as.rstream, err = acc.AddStream(&StreamConfig{
+			Subjects:       []string{},
+			Name:           mqttRetainedMsgsStreamName,
+			Storage:        FileStorage,
+			Retention:      InterestPolicy,
+			internal:       true,
+			allowNoSubject: true,
+		})
 		if err != nil {
 			return fmt.Errorf("unable to create retained messages stream for MQTT account %q: %v", acc.GetName(), err)
 		}
@@ -2059,15 +2065,16 @@ func (c *client) mqttProcessJSConsumer(sess *mqttSession, stream *Stream, subjec
 			maxAckPending = mqttDefaultMaxAckPending
 		}
 		cc := &ConsumerConfig{
-			DeliverSubject: inbox,
-			Durable:        durName,
-			AckPolicy:      AckExplicit,
-			DeliverPolicy:  DeliverNew,
-			FilterSubject:  subject,
-			AckWait:        ackWait,
-			MaxAckPending:  int(maxAckPending),
+			DeliverSubject:  inbox,
+			Durable:         durName,
+			AckPolicy:       AckExplicit,
+			DeliverPolicy:   DeliverNew,
+			FilterSubject:   subject,
+			AckWait:         ackWait,
+			MaxAckPending:   int(maxAckPending),
+			allowNoInterest: true,
 		}
-		cons, err = stream.addConsumerCheckInterest(cc, false)
+		cons, err = stream.AddConsumer(cc)
 		if err != nil {
 			c.Errorf("Unable to add JetStream consumer for subscription on %q: err=%v", subject, err)
 			return nil, nil, err

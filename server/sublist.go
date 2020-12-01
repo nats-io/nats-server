@@ -1393,6 +1393,13 @@ func (s *Sublist) collectAllSubs(l *level, subs *[]*subscription) {
 	}
 }
 
+// For a given subject (which may contain wildcards), this call returns all
+// subscriptions that would match that subject. For instance, suppose that
+// the sublist contains: foo.bar, foo.bar.baz and foo.baz, ReverseMatch("foo.*")
+// would return foo.bar and foo.baz.
+// This is used in situations where the sublist is likely to contain only
+// literals and one wants to get all the subjects that would have been a match
+// to a subscription on `subject`.
 func (s *Sublist) ReverseMatch(subject string) *SublistResult {
 	tsa := [32]string{}
 	tokens := tsa[:0]
