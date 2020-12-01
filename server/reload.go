@@ -1269,7 +1269,16 @@ func (s *Server) reloadAuthorization() {
 
 	// We will double check all JetStream configs on a reload.
 	if checkJetStream {
-		s.configAllJetStreamAccounts()
+		var err error
+		s.getJetStream().clearResources()
+		if s.globalAccountOnly() {
+			err = s.GlobalAccount().EnableJetStream(nil)
+		} else {
+			err = s.configAllJetStreamAccounts()
+		}
+		if err != nil {
+			s.Errorf(err.Error())
+		}
 	}
 
 	if res := s.AccountResolver(); res != nil {

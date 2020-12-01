@@ -95,6 +95,7 @@ func RunJetStreamServerOnPort(port int, sd string) *server.Server {
 }
 
 func clientConnectToServer(t *testing.T, s *server.Server) *nats.Conn {
+	t.Helper()
 	nc, err := nats.Connect(s.ClientURL(),
 		nats.Name("JS-TEST"),
 		nats.ReconnectWait(5*time.Millisecond),
@@ -10144,4 +10145,159 @@ func TestJetStreamAccountImportAll(t *testing.T) {
 	if namesResponse.Error != nil {
 		t.Fatalf("Unexpected error: %+v", namesResponse.Error)
 	}
+}
+
+// https://github.com/nats-io/nats-server/issues/1736
+func TestJetStreamServerReload(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 64GB, max_file_store: 10TB }
+		accounts: {
+			A: { users: [ {user: ua, password: pwd} ] },
+			B: {
+				jetstream: {max_mem: 1GB, max_store: 1TB, max_streams: 10, max_consumers: 1k}
+				users: [ {user: ub, password: pwd} ]
+			},
+			SYS: { users: [ {user: uc, password: pwd} ] },
+		}
+		no_auth_user: ub
+		system_account: SYS
+	`))
+	defer os.Remove(conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	if !s.JetStreamEnabled() {
+		t.Fatalf("Expected JetStream to be enabled")
+	}
+
+	// Client for API requests.
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	checkJSAccount := func() {
+		t.Helper()
+		resp, err := nc.Request(server.JSApiAccountInfo, nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var info server.JSApiAccountInfoResponse
+		if err := json.Unmarshal(resp.Data, &info); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	checkJSAccount()
+
+	acc, err := s.LookupAccount("B")
+	if err != nil {
+		t.Fatalf("Unexpected error looking up account: %v", err)
+	}
+	mset, err := acc.AddStream(&server.StreamConfig{Name: "22"})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	toSend := 10
+	for i := 0; i < toSend; i++ {
+		sendStreamMsg(t, nc, "22", fmt.Sprintf("MSG: %d", i+1))
+	}
+	if msgs := mset.State().Msgs; msgs != uint64(toSend) {
+		t.Fatalf("Expected %d messages, got %d", toSend, msgs)
+	}
+
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Error on server reload: %v", err)
+	}
+
+	// Wait to get reconnected.
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		if !nc.IsConnected() {
+			return fmt.Errorf("Not connected")
+		}
+		return nil
+	})
+
+	checkJSAccount()
+	sendStreamMsg(t, nc, "22", "MSG: 22")
+}
+
+func TestJetStreamConfigReloadWithGlobalAccount(t *testing.T) {
+	template := `
+		authorization {
+			users [
+				{user: anonymous}
+				{user: user1, password: %s}
+			]
+		}
+		no_auth_user: anonymous
+		jetstream: enabled
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(template, "pwd")))
+	defer os.Remove(conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Client for API requests.
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	checkJSAccount := func() {
+		t.Helper()
+		resp, err := nc.Request(server.JSApiAccountInfo, nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var info server.JSApiAccountInfoResponse
+		if err := json.Unmarshal(resp.Data, &info); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	checkJSAccount()
+
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: "foo"})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset.Delete()
+
+	toSend := 10
+	for i := 0; i < toSend; i++ {
+		sendStreamMsg(t, nc, "foo", fmt.Sprintf("MSG: %d", i+1))
+	}
+	if msgs := mset.State().Msgs; msgs != uint64(toSend) {
+		t.Fatalf("Expected %d messages, got %d", toSend, msgs)
+	}
+
+	if err := ioutil.WriteFile(conf, []byte(fmt.Sprintf(template, "pwd2")), 0666); err != nil {
+		t.Fatalf("Error writing config: %v", err)
+	}
+
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Error during config reload: %v", err)
+	}
+
+	// Try to add a new stream to the global account
+	mset2, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: "bar"})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset2.Delete()
+
+	// Wait to get reconnected.
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		if !nc.IsConnected() {
+			return fmt.Errorf("Not connected")
+		}
+		return nil
+	})
+
+	checkJSAccount()
 }

@@ -143,7 +143,7 @@ const (
 	jsSnapshotAckT    = "$JS.SNAPSHOT.ACK.%s.%s"
 	jsRestoreDeliverT = "$JS.SNAPSHOT.RESTORE.%s.%s"
 
-	// JetStreamAckT is the template for the ack message stream coming back from a consumer
+	// jsAckT is the template for the ack message stream coming back from a consumer
 	// when they ACK/NAK, etc a message.
 	jsAckT   = "$JS.ACK.%s.%s"
 	jsAckPre = "$JS.ACK."
