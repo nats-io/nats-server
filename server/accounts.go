@@ -1726,7 +1726,7 @@ func (a *Account) subscribeInternal(subject string, cb msgHandler) (*subscriptio
 		return nil, fmt.Errorf("no internal account client")
 	}
 
-	return c.processSub(c.createSub([]byte(subject), nil, []byte(sid), cb), false)
+	return c.processSub([]byte(subject), nil, []byte(sid), cb, false)
 }
 
 // This will add an account subscription that matches the "from" from a service import entry.
@@ -1751,7 +1751,7 @@ func (a *Account) addServiceImportSub(si *serviceImport) error {
 	cb := func(sub *subscription, c *client, subject, reply string, msg []byte) {
 		c.processServiceImport(si, a, msg)
 	}
-	_, err := c.processSub(c.createSub([]byte(subject), nil, []byte(sid), cb), true)
+	_, err := c.processSub([]byte(subject), nil, []byte(sid), cb, true)
 	return err
 }
 
@@ -1951,7 +1951,7 @@ func (a *Account) createRespWildcard() []byte {
 	a.mu.Unlock()
 
 	// Create subscription and internal callback for all the wildcard response subjects.
-	c.processSub(c.createSub(wcsub, nil, []byte(sid), a.processServiceImportResponse), false)
+	c.processSub(wcsub, nil, []byte(sid), a.processServiceImportResponse, false)
 
 	return pre
 }

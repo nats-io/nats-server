@@ -2226,30 +2226,32 @@ func (c *client) parseSub(argo []byte, noForward bool) error {
 	arg := make([]byte, len(argo))
 	copy(arg, argo)
 	args := splitArg(arg)
-	sub := &subscription{client: c}
+	var (
+		subject []byte
+		queue   []byte
+		sid     []byte
+	)
 	switch len(args) {
 	case 2:
-		sub.subject = args[0]
-		sub.queue = nil
-		sub.sid = args[1]
+		subject = args[0]
+		queue = nil
+		sid = args[1]
 	case 3:
-		sub.subject = args[0]
-		sub.queue = args[1]
-		sub.sid = args[2]
+		subject = args[0]
+		queue = args[1]
+		sid = args[2]
 	default:
 		return fmt.Errorf("processSub Parse Error: '%s'", arg)
 	}
 	// If there was an error, it has been sent to the client. We don't return an
 	// error here to not close the connection as a parsing error.
-	c.processSub(sub, noForward)
+	c.processSub(subject, queue, sid, nil, noForward)
 	return nil
 }
 
-func (c *client) createSub(subject, queue, sid []byte, cb msgHandler) *subscription {
-	return &subscription{client: c, subject: subject, queue: queue, sid: sid, icb: cb}
-}
-
-func (c *client) processSub(sub *subscription, noForward bool) (*subscription, error) {
+func (c *client) processSub(subject, queue, bsid []byte, cb msgHandler, noForward bool) (*subscription, error) {
+	// Create the subscription
+	sub := &subscription{client: c, subject: subject, queue: queue, sid: bsid, icb: cb}
 
 	c.mu.Lock()
 
@@ -2266,7 +2268,7 @@ func (c *client) processSub(sub *subscription, noForward bool) (*subscription, e
 	// This check does not apply to SYSTEM or JETSTREAM or ACCOUNT clients (because they don't have a `nc`...)
 	if c.isClosed() && (kind != SYSTEM && kind != JETSTREAM && kind != ACCOUNT) {
 		c.mu.Unlock()
-		return nil, nil
+		return nil, ErrConnectionClosed
 	}
 
 	// Check permissions if applicable.
@@ -2313,9 +2315,6 @@ func (c *client) processSub(sub *subscription, noForward bool) (*subscription, e
 				updateGWs = c.srv.gateway.enabled
 			}
 		}
-	} else if es.mqtt != nil && sub.mqtt != nil {
-		es.mqtt.prm = sub.mqtt.prm
-		es.mqtt.qos = sub.mqtt.qos
 	}
 	// Unlocked from here onward
 	c.mu.Unlock()

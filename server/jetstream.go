@@ -1115,7 +1115,7 @@ func (t *StreamTemplate) createTemplateSubscriptions() error {
 	sid := 1
 	for _, subject := range t.Config.Subjects {
 		// Now create the subscription
-		if _, err := c.processSub(c.createSub([]byte(subject), nil, []byte(strconv.Itoa(sid)), t.processInboundTemplateMsg), false); err != nil {
+		if _, err := c.processSub([]byte(subject), nil, []byte(strconv.Itoa(sid)), t.processInboundTemplateMsg, false); err != nil {
 			c.acc.DeleteStreamTemplate(t.Name)
 			return err
 		}

@@ -795,6 +795,16 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, clientID str
 		sess.cons[sid] = cons
 	}
 
+	setupSub := func(sub *subscription, qos byte) {
+		if sub.mqtt == nil {
+			sub.mqtt = &mqttSub{}
+		}
+		sub.mqtt.qos = qos
+		if fromSubProto {
+			as.serializeRetainedMsgsForSub(sess, c, sub, trace)
+		}
+	}
+
 	subs := make([]*subscription, 0, len(filters))
 	for _, f := range filters {
 		if f.qos > 1 {
@@ -810,17 +820,12 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, clientID str
 
 		var jscons *Consumer
 		var jssub *subscription
-		var err error
 
-		sub := c.mqttCreateSub(subject, sid, mqttDeliverMsgCb, f.qos)
-		if fromSubProto {
-			as.serializeRetainedMsgsForSub(sess, c, sub, trace)
-		}
 		// Note that if a subscription already exists on this subject,
-		// the sub is updated with the new qos/prm and the pointer to
-		// the existing subscription is returned.
-		sub, err = c.processSub(sub, false)
+		// the existing sub is returned. Need to update the qos.
+		sub, err := c.processSub([]byte(subject), nil, []byte(sid), mqttDeliverMsgCb, false)
 		if err == nil {
+			setupSub(sub, f.qos)
 			// This will create (if not already exist) a JS consumer for subscriptions
 			// of QoS >= 1. But if a JS consumer already exists and the subscription
 			// for same subject is now a QoS==0, then the JS consumer will be deleted.
@@ -836,18 +841,16 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, clientID str
 		if mqttNeedSubForLevelUp(subject) {
 			var fwjscons *Consumer
 			var fwjssub *subscription
+			var fwcsub *subscription
 
 			// Say subject is "foo.>", remove the ".>" so that it becomes "foo"
 			fwcsubject := subject[:len(subject)-2]
 			// Change the sid to "foo fwc"
 			fwcsid := fwcsubject + mqttMultiLevelSidSuffix
-			fwcsub := c.mqttCreateSub(fwcsubject, fwcsid, mqttDeliverMsgCb, f.qos)
-			if fromSubProto {
-				as.serializeRetainedMsgsForSub(sess, c, fwcsub, trace)
-			}
 			// See note above about existing subscription.
-			fwcsub, err = c.processSub(fwcsub, false)
+			fwcsub, err = c.processSub([]byte(fwcsubject), nil, []byte(fwcsid), mqttDeliverMsgCb, false)
 			if err == nil {
+				setupSub(fwcsub, f.qos)
 				fwjscons, fwjssub, err = c.mqttProcessJSConsumer(sess, as.mstream,
 					fwcsubject, fwcsid, f.qos, fromSubProto)
 			}
@@ -1841,10 +1844,6 @@ func mqttSubscribeTrace(filters []*mqttFilter) string {
 }
 
 func mqttDeliverMsgCb(sub *subscription, pc *client, subject, reply string, msg []byte) {
-	if sub.mqtt == nil {
-		return
-	}
-
 	var ppFlags byte
 	var pQoS byte
 	var pi uint16
@@ -1859,7 +1858,7 @@ func mqttDeliverMsgCb(sub *subscription, pc *client, subject, reply string, msg 
 	// We lock to check some of the subscription's fields and if we need to
 	// keep track of pending acks, etc..
 	sess.mu.Lock()
-	if sess.c != cc {
+	if sess.c != cc || sub.mqtt == nil {
 		sess.mu.Unlock()
 		return
 	}
@@ -1958,13 +1957,6 @@ func mqttSerializePublishMsg(w *mqttWriter, pi uint16, dup, retained bool, subje
 	w.Write(msg)
 
 	return flags
-}
-
-// Helper to create an MQTT subscription.
-func (c *client) mqttCreateSub(subject, sid string, cb msgHandler, qos byte) *subscription {
-	sub := c.createSub([]byte(subject), nil, []byte(sid), cb)
-	sub.mqtt = &mqttSub{qos: qos}
-	return sub
 }
 
 // Process the list of subscriptions and update the given filter
@@ -2080,12 +2072,10 @@ func (c *client) mqttProcessJSConsumer(sess *mqttSession, stream *Stream, subjec
 			return nil, nil, err
 		}
 	}
-	sub := c.mqttCreateSub(inbox, inbox, mqttDeliverMsgCb, qos)
-	sub.mqtt.jsCons = cons
 	// This is an internal subscription on subject like "$MQTT.sub.<nuid>" that is setup
 	// for the JS durable's deliver subject. I don't think that there is any need to
 	// forward this subscription in the cluster/super cluster.
-	sub, err = c.processSub(sub, true)
+	sub, err := c.processSub([]byte(inbox), nil, []byte(inbox), mqttDeliverMsgCb, true)
 	if err != nil {
 		if !exists {
 			cons.Delete()
@@ -2093,6 +2083,11 @@ func (c *client) mqttProcessJSConsumer(sess *mqttSession, stream *Stream, subjec
 		c.Errorf("Unable to create subscription for JetStream consumer on %q: %v", subject, err)
 		return nil, nil, err
 	}
+	if sub.mqtt == nil {
+		sub.mqtt = &mqttSub{}
+	}
+	sub.mqtt.qos = qos
+	sub.mqtt.jsCons = cons
 	return cons, sub, nil
 }
 
