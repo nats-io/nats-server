@@ -394,13 +394,13 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 
 	js.mu.Lock()
 	// Check the limits against existing reservations.
-	if err := js.sufficientResources(limits); err != nil {
-		js.mu.Unlock()
-		return err
-	}
 	if _, ok := js.accounts[a]; ok {
 		js.mu.Unlock()
 		return fmt.Errorf("jetstream already enabled for account")
+	}
+	if err := js.sufficientResources(limits); err != nil {
+		js.mu.Unlock()
+		return err
 	}
 	jsa := &jsAccount{js: js, account: a, limits: *limits, streams: make(map[string]*Stream)}
 	jsa.storeDir = path.Join(js.config.StoreDir, a.Name)
@@ -938,6 +938,7 @@ func (js *jetStream) reserveResources(limits *JetStreamAccountLimits) error {
 	return nil
 }
 
+// Lock should be held.
 func (js *jetStream) releaseResources(limits *JetStreamAccountLimits) error {
 	if limits == nil {
 		return nil
@@ -949,6 +950,17 @@ func (js *jetStream) releaseResources(limits *JetStreamAccountLimits) error {
 		js.storeReserved -= limits.MaxStore
 	}
 	return nil
+}
+
+// Will clear the resource reservations. Mostly for reload of a config.
+func (js *jetStream) clearResources() {
+	if js == nil {
+		return
+	}
+	js.mu.Lock()
+	js.memReserved = 0
+	js.storeReserved = 0
+	js.mu.Unlock()
 }
 
 const (

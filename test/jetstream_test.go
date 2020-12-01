@@ -10244,11 +10244,37 @@ func TestJetStreamConfigReloadWithGlobalAccount(t *testing.T) {
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
+	// Client for API requests.
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	checkJSAccount := func() {
+		t.Helper()
+		resp, err := nc.Request(server.JSApiAccountInfo, nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var info server.JSApiAccountInfoResponse
+		if err := json.Unmarshal(resp.Data, &info); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	checkJSAccount()
+
 	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: "foo"})
 	if err != nil {
 		t.Fatalf("Unexpected error adding stream: %v", err)
 	}
 	defer mset.Delete()
+
+	toSend := 10
+	for i := 0; i < toSend; i++ {
+		sendStreamMsg(t, nc, "foo", fmt.Sprintf("MSG: %d", i+1))
+	}
+	if msgs := mset.State().Msgs; msgs != uint64(toSend) {
+		t.Fatalf("Expected %d messages, got %d", toSend, msgs)
+	}
 
 	if err := ioutil.WriteFile(conf, []byte(fmt.Sprintf(template, "pwd2")), 0666); err != nil {
 		t.Fatalf("Error writing config: %v", err)
@@ -10264,4 +10290,14 @@ func TestJetStreamConfigReloadWithGlobalAccount(t *testing.T) {
 		t.Fatalf("Unexpected error adding stream: %v", err)
 	}
 	defer mset2.Delete()
+
+	// Wait to get reconnected.
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		if !nc.IsConnected() {
+			return fmt.Errorf("Not connected")
+		}
+		return nil
+	})
+
+	checkJSAccount()
 }
