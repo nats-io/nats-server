@@ -3745,7 +3745,48 @@ func TestMQTTConfigReload(t *testing.T) {
 	testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1, []byte("msg2"))
 }
 
+func TestMQTTStreamInfoReturnsNonEmptySubject(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer s.Shutdown()
+
+	cisub := &mqttConnInfo{clientID: "sub", cleanSess: false}
+	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	// Check that we can query all MQTT streams. MQTT streams are
+	// created without subject filter, however, if we return them like this,
+	// the 'nats' utility will fail to display them due to some xml validation.
+	for _, sname := range []string{
+		mqttStreamName,
+		mqttSessionsStreamName,
+		mqttRetainedMsgsStreamName,
+	} {
+		t.Run(sname, func(t *testing.T) {
+			resp, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, sname), nil, time.Second)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			var bResp JSApiStreamInfoResponse
+			if err = json.Unmarshal(resp.Data, &bResp); err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if len(bResp.Config.Subjects) == 0 {
+				t.Fatalf("No subject returned, which will cause nats tooling to fail: %+v", bResp.Config)
+			}
+		})
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////
+//
 // Benchmarks
+//
+//////////////////////////////////////////////////////////////////////////
 
 const (
 	mqttPubSubj     = "a"

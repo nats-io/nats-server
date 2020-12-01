@@ -952,7 +952,14 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config()}
+	config := mset.Config()
+	// MQTT streams are created without subject, but "nats" tooling would then
+	// fail to display them since it uses validation and expect the config's
+	// Subjects to not be empty.
+	if strings.HasPrefix(name, mqttStreamNamePrefix) && len(config.Subjects) == 0 {
+		config.Subjects = []string{">"}
+	}
+	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: config}
 	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
