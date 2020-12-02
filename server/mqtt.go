@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -279,8 +280,139 @@ func (s *Server) startMQTT() {
 		scheme = "tls"
 	}
 	s.Noticef("Listening for MQTT clients on %s://%s:%d", scheme, o.Host, o.Port)
-	go s.acceptConnections(hl, "MQTT", func(conn net.Conn) { s.createClient(conn, nil, &mqtt{}) }, nil)
+	go s.acceptConnections(hl, "MQTT", func(conn net.Conn) { s.createMQTTClient(conn) }, nil)
 	s.mu.Unlock()
+}
+
+// This is similar to createClient() but has some modifications specifi to MQTT clients.
+// The comments have been kept to minimum to reduce code size. Check createClient() for
+// more details.
+func (s *Server) createMQTTClient(conn net.Conn) *client {
+	opts := s.getOpts()
+
+	maxPay := int32(opts.MaxPayload)
+	maxSubs := int32(opts.MaxSubs)
+	if maxSubs == 0 {
+		maxSubs = -1
+	}
+	now := time.Now()
+
+	c := &client{srv: s, nc: conn, mpay: maxPay, msubs: maxSubs, start: now, last: now, mqtt: &mqtt{}}
+	// MQTT clients don't send NATS CONNECT protocols. So make it an "echo"
+	// client, but disable verbose and pedantic (by not setting them).
+	c.opts.Echo = true
+
+	c.registerWithAccount(s.globalAccount())
+
+	s.mu.Lock()
+	// Check auth, override if applicable.
+	authRequired := s.info.AuthRequired || s.mqtt.authOverride
+	s.totalClients++
+	s.mu.Unlock()
+
+	c.mu.Lock()
+	if authRequired {
+		c.flags.set(expectConnect)
+	}
+	c.initClient()
+	c.Debugf("Client connection created")
+	c.mu.Unlock()
+
+	s.mu.Lock()
+	if !s.running || s.ldm {
+		if s.shutdown {
+			conn.Close()
+		}
+		s.mu.Unlock()
+		return c
+	}
+
+	if opts.MaxConn > 0 && len(s.clients) >= opts.MaxConn {
+		s.mu.Unlock()
+		c.maxConnExceeded()
+		return nil
+	}
+	s.clients[c.cid] = c
+
+	tlsRequired := opts.MQTT.TLSConfig != nil
+	s.mu.Unlock()
+
+	c.mu.Lock()
+
+	isClosed := c.isClosed()
+
+	var pre []byte
+	if !isClosed && tlsRequired && opts.AllowNonTLS {
+		pre = make([]byte, 4)
+		c.nc.SetReadDeadline(time.Now().Add(secondsToDuration(opts.MQTT.TLSTimeout)))
+		n, _ := io.ReadFull(c.nc, pre[:])
+		c.nc.SetReadDeadline(time.Time{})
+		pre = pre[:n]
+		if n > 0 && pre[0] == 0x16 {
+			tlsRequired = true
+		} else {
+			tlsRequired = false
+		}
+	}
+
+	if !isClosed && tlsRequired {
+		c.Debugf("Starting TLS client connection handshake")
+		if len(pre) > 0 {
+			c.nc = &tlsMixConn{c.nc, bytes.NewBuffer(pre)}
+			pre = nil
+		}
+
+		c.nc = tls.Server(c.nc, opts.MQTT.TLSConfig)
+		conn := c.nc.(*tls.Conn)
+
+		ttl := secondsToDuration(opts.MQTT.TLSTimeout)
+		time.AfterFunc(ttl, func() { tlsTimeout(c, conn) })
+		conn.SetReadDeadline(time.Now().Add(ttl))
+
+		c.mu.Unlock()
+		if err := conn.Handshake(); err != nil {
+			c.Errorf("TLS handshake error: %v", err)
+			c.closeConnection(TLSHandshakeError)
+			return nil
+		}
+		conn.SetReadDeadline(time.Time{})
+
+		c.mu.Lock()
+
+		c.flags.set(handshakeComplete)
+
+		isClosed = c.isClosed()
+	}
+
+	if isClosed {
+		c.mu.Unlock()
+		c.closeConnection(WriteError)
+		return nil
+	}
+
+	if authRequired {
+		timeout := opts.AuthTimeout
+		// Possibly override with MQTT specific value.
+		if opts.MQTT.AuthTimeout != 0 {
+			timeout = opts.MQTT.AuthTimeout
+		}
+		c.setAuthTimer(secondsToDuration(timeout))
+	}
+
+	// No Ping timer for MQTT clients...
+
+	s.startGoRoutine(func() { c.readLoop(pre) })
+	s.startGoRoutine(func() { c.writeLoop() })
+
+	if tlsRequired {
+		c.Debugf("TLS handshake complete")
+		cs := c.nc.(*tls.Conn).ConnectionState()
+		c.Debugf("TLS version %s, cipher suite %s", tlsVersion(cs.Version), tlsCipher(cs.CipherSuite))
+	}
+
+	c.mu.Unlock()
+
+	return c
 }
 
 // Given the mqtt options, we check if any auth configuration
