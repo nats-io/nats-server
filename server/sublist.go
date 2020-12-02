@@ -1101,6 +1101,9 @@ func tokensCanMatch(t1, t2 string) bool {
 
 // SubjectsCollide will determine if two subjects could both match a single literal subject.
 func SubjectsCollide(subj1, subj2 string) bool {
+	if subj1 == subj2 {
+		return true
+	}
 	toks1 := strings.Split(subj1, tsep)
 	toks2 := strings.Split(subj2, tsep)
 	pwc1, fwc1 := analyzeTokens(toks1)

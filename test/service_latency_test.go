@@ -1303,66 +1303,6 @@ func TestServiceAndStreamStackOverflow(t *testing.T) {
 	})
 }
 
-func TestServiceCycle(t *testing.T) {
-	conf := createConfFile(t, []byte(`
-		accounts {
-		  A {
-		    exports [ { service: help } ]
-			imports [ { service { subject: help, account: B } } ]
-		  }
-		  B {
-		    exports [ { service: help } ]
-			imports [ { service { subject: help, account: A } } ]
-		  }
-		}
-	`))
-	defer os.Remove(conf)
-
-	if _, err := server.ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), server.ErrServiceImportFormsCycle.Error()) {
-		t.Fatalf("Expected an error on cycle service import, got none")
-	}
-
-	conf = createConfFile(t, []byte(`
-		accounts {
-		  A {
-		    exports [ { service: * } ]
-			imports [ { service { subject: help, account: B } } ]
-		  }
-		  B {
-		    exports [ { service: help } ]
-			imports [ { service { subject: *, account: A } } ]
-		  }
-		}
-	`))
-	defer os.Remove(conf)
-
-	if _, err := server.ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), server.ErrServiceImportFormsCycle.Error()) {
-		t.Fatalf("Expected an error on cycle service import, got none")
-	}
-
-	conf = createConfFile(t, []byte(`
-		accounts {
-		  A {
-		    exports [ { service: * } ]
-			imports [ { service { subject: help, account: B } } ]
-		  }
-		  B {
-		    exports [ { service: help } ]
-			imports [ { service { subject: help, account: C } } ]
-		  }
-		  C {
-		    exports [ { service: * } ]
-			imports [ { service { subject: *, account: A } } ]
-		  }
-		}
-	`))
-	defer os.Remove(conf)
-
-	if _, err := server.ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), server.ErrServiceImportFormsCycle.Error()) {
-		t.Fatalf("Expected an error on cycle service import, got none")
-	}
-}
-
 // Check we get the proper detailed information for the requestor when allowed.
 func TestServiceLatencyRequestorSharesDetailedInfo(t *testing.T) {
 	sc := createSuperCluster(t, 3, 3)
