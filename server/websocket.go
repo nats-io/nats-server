@@ -152,6 +152,12 @@ func wsGet(r io.Reader, buf []byte, pos, needed int) ([]byte, int, error) {
 	return b, pos + avail, nil
 }
 
+// Returns true if this connection is from a Websocket client.
+// Lock held on entry.
+func (c *client) isWebsocket() bool {
+	return c.ws != nil
+}
+
 // Returns a slice of byte slices corresponding to payload of websocket frames.
 // The byte slice `buf` is filled with bytes from the connection's read loop.
 // This function will decode the frame headers and unmask the payload(s).

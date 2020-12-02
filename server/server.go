@@ -2431,7 +2431,7 @@ func (s *Server) removeClient(c *client) {
 		if updateProtoInfoCount {
 			s.cproto--
 		}
-		mqtt := c.mqtt != nil
+		mqtt := c.isMqtt()
 		s.mu.Unlock()
 		if mqtt {
 			s.mqttHandleClosedClient(c)

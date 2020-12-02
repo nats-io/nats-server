@@ -456,6 +456,12 @@ func validateMQTTOptions(o *Options) error {
 	return nil
 }
 
+// Returns true if this connection is from a MQTT client.
+// Lock held on entry.
+func (c *client) isMqtt() bool {
+	return c.mqtt != nil
+}
+
 // Parse protocols inside the given buffer.
 // This is invoked from the readLoop.
 func (c *client) mqttParse(buf []byte) error {
@@ -2019,7 +2025,7 @@ func mqttDeliverMsgCb(sub *subscription, pc *client, subject, reply string, msg 
 		}
 		// In JS case, we need to use the pc.ca.deliver value as the subject.
 		subject = string(pc.pa.deliver)
-	} else if pc.mqtt != nil {
+	} else if pc.isMqtt() {
 		// This is a MQTT publisher...
 		ppFlags = pc.mqtt.pp.flags
 		pQoS = mqttGetQoS(ppFlags)

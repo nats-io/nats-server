@@ -2567,7 +2567,7 @@ func TestWSWebrowserClient(t *testing.T) {
 	}
 
 	c.mu.Lock()
-	ok := c.ws != nil && c.ws.browser == true
+	ok := c.isWebsocket() && c.ws.browser == true
 	c.mu.Unlock()
 	if !ok {
 		t.Fatalf("Client is not marked as webrowser client")

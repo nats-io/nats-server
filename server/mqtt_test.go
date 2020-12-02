@@ -570,7 +570,7 @@ func testMQTTGetClient(t testing.TB, s *Server, clientID string) *client {
 	s.mu.Lock()
 	for _, c := range s.clients {
 		c.mu.Lock()
-		if c.mqtt != nil && c.mqtt.cp != nil && c.mqtt.cp.clientID == clientID {
+		if c.isMqtt() && c.mqtt.cp != nil && c.mqtt.cp.clientID == clientID {
 			mc = c
 		}
 		c.mu.Unlock()
@@ -725,6 +725,30 @@ func testMQTTCheckConnAck(t testing.TB, r *mqttReader, rc byte, sessionPresent b
 	}
 }
 
+func TestMQTTRequiresJSEnabled(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	acc := NewAccount("mqtt")
+	o.Accounts = []*Account{acc}
+	o.Users = []*User{&User{Username: "mqtt", Account: acc}}
+	s := testMQTTRunServer(t, o)
+	defer s.Shutdown()
+
+	addr := fmt.Sprintf("%s:%d", o.MQTT.Host, o.MQTT.Port)
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Error creating mqtt connection: %v", err)
+	}
+	defer c.Close()
+
+	proto := mqttCreateConnectProto(&mqttConnInfo{cleanSess: true, user: "mqtt"})
+	if _, err := testMQTTWrite(c, proto); err != nil {
+		t.Fatalf("Error writing connect: %v", err)
+	}
+	if _, err := testMQTTRead(c); err == nil {
+		t.Fatal("Expected failure, did not get one")
+	}
+}
+
 func testMQTTEnableJSForAccount(t *testing.T, s *Server, accName string) {
 	t.Helper()
 	acc, err := s.LookupAccount(accName)
@@ -835,7 +859,7 @@ func TestMQTTTLSVerifyAndMap(t *testing.T) {
 			s.mu.Lock()
 			for _, sc := range s.clients {
 				sc.mu.Lock()
-				if sc.mqtt != nil {
+				if sc.isMqtt() {
 					c = sc
 				}
 				sc.mu.Unlock()
@@ -1378,6 +1402,29 @@ func TestMQTTConnKeepAlive(t *testing.T) {
 
 	time.Sleep(2 * time.Second)
 	testMQTTExpectDisconnect(t, mc)
+}
+
+func TestMQTTDontSetPinger(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.PingInterval = 15 * time.Millisecond
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	mc, r := testMQTTConnect(t, &mqttConnInfo{clientID: "mqtt", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+
+	c := testMQTTGetClient(t, s, "mqtt")
+	c.mu.Lock()
+	timerSet := c.ping.tmr != nil
+	c.mu.Unlock()
+	if timerSet {
+		t.Fatalf("Ping timer should not be set for MQTT clients")
+	}
+
+	// Wait a bit and expect nothing (and connection should still be valid)
+	testMQTTExpectNothing(t, r)
+	testMQTTPublish(t, mc, r, 0, false, false, "foo", 0, []byte("msg"))
 }
 
 func TestMQTTTopicAndSubjectConversion(t *testing.T) {

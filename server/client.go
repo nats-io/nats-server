@@ -541,9 +541,9 @@ func (c *client) initClient() {
 	switch c.kind {
 	case CLIENT:
 		name := "cid"
-		if c.ws != nil {
+		if c.isWebsocket() {
 			name = "wid"
-		} else if c.mqtt != nil {
+		} else if c.isMqtt() {
 			name = "mid"
 		}
 		c.ncs.Store(fmt.Sprintf("%s - %s:%d", conn, name, c.cid))
@@ -968,8 +968,8 @@ func (c *client) readLoop(pre []byte) {
 		return
 	}
 	nc := c.nc
-	ws := c.ws != nil
-	if c.mqtt != nil {
+	ws := c.isWebsocket()
+	if c.isMqtt() {
 		c.mqtt.r = &mqttReader{reader: nc}
 	}
 	c.in.rsz = startBufSize
@@ -991,7 +991,7 @@ func (c *client) readLoop(pre []byte) {
 	c.mu.Unlock()
 
 	defer func() {
-		if c.mqtt != nil {
+		if c.isMqtt() {
 			s.mqttHandleWill(c)
 		}
 		// These are used only in the readloop, so we can set them to nil
@@ -1155,7 +1155,7 @@ func closedStateForErr(err error) ClosedState {
 // collapsePtoNB will place primary onto nb buffer as needed in prep for WriteTo.
 // This will return a copy on purpose.
 func (c *client) collapsePtoNB() (net.Buffers, int64) {
-	if c.ws != nil {
+	if c.isWebsocket() {
 		return c.wsCollapsePtoNB()
 	}
 	if c.out.p != nil {
@@ -1169,7 +1169,7 @@ func (c *client) collapsePtoNB() (net.Buffers, int64) {
 // This will handle the fixup needed on a partial write.
 // Assume pending has been already calculated correctly.
 func (c *client) handlePartialWrite(pnb net.Buffers) {
-	if c.ws != nil {
+	if c.isWebsocket() {
 		c.ws.frames = append(pnb, c.ws.frames...)
 		return
 	}
@@ -1263,7 +1263,7 @@ func (c *client) flushOutbound() bool {
 
 	// Subtract from pending bytes and messages.
 	c.out.pb -= n
-	if c.ws != nil {
+	if c.isWebsocket() {
 		c.ws.fs -= n
 	}
 	c.out.pm -= apm // FIXME(dlc) - this will not be totally accurate on partials.
@@ -1382,7 +1382,7 @@ func (c *client) markConnAsClosed(reason ClosedState) {
 	c.flags.set(connMarkedClosed)
 	// For a websocket client, unless we are told not to flush, enqueue
 	// a websocket CloseMessage based on the reason.
-	if !skipFlush && c.ws != nil && !c.ws.closeSent {
+	if !skipFlush && c.isWebsocket() && !c.ws.closeSent {
 		c.wsEnqueueCloseMessage(reason)
 	}
 	// Be consistent with the creation: for routes and gateways,
@@ -1942,7 +1942,7 @@ func (c *client) sendRTTPing() bool {
 // the c.rtt is 0 and wants to force an update by sending a PING.
 // Client lock held on entry.
 func (c *client) sendRTTPingLocked() bool {
-	if c.mqtt != nil {
+	if c.isMqtt() {
 		return false
 	}
 	// Most client libs send a CONNECT+PING and wait for a PONG from the
@@ -1975,7 +1975,7 @@ func (c *client) generateClientInfoJSON(info Info) []byte {
 	info.CID = c.cid
 	info.ClientIP = c.host
 	info.MaxPayload = c.mpay
-	if c.ws != nil {
+	if c.isWebsocket() {
 		info.ClientConnectURLs = info.WSConnectURLs
 	}
 	info.WSConnectURLs = nil
@@ -1990,7 +1990,7 @@ func (c *client) sendErr(err string) {
 	if c.trace {
 		c.traceOutOp("-ERR", []byte(err))
 	}
-	if c.mqtt == nil {
+	if !c.isMqtt() {
 		c.enqueueProto([]byte(fmt.Sprintf(errProto, err)))
 	}
 	c.mu.Unlock()
@@ -3326,7 +3326,7 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 	}
 
 	// If MQTT client, check for retain flag now that we have passed permissions check
-	if c.mqtt != nil {
+	if c.isMqtt() {
 		c.mqttHandlePubRetain()
 	}
 
@@ -4002,7 +4002,7 @@ func (c *client) processPingTimer() {
 	c.mu.Lock()
 	c.ping.tmr = nil
 	// Check if connection is still opened
-	if c.isClosed() || c.mqtt != nil {
+	if c.isClosed() {
 		c.mu.Unlock()
 		return
 	}
@@ -4061,7 +4061,7 @@ func adjustPingIntervalForGateway(d time.Duration) time.Duration {
 
 // Lock should be held
 func (c *client) setPingTimer() {
-	if c.srv == nil || c.mqtt != nil {
+	if c.srv == nil {
 		return
 	}
 	d := c.srv.getOpts().PingInterval
@@ -4637,17 +4637,18 @@ func (c *client) connectionTypeAllowed(acts map[string]struct{}) bool {
 	if len(acts) == 0 {
 		return true
 	}
-	// Assume standard client, then update based on presence of websocket
-	// or other type.
-	want := jwt.ConnectionTypeStandard
-	if c.kind == LEAF {
+	var want string
+	switch c.kind {
+	case CLIENT:
+		if c.isWebsocket() {
+			want = jwt.ConnectionTypeWebsocket
+		} else if c.isMqtt() {
+			want = jwt.ConnectionTypeMqtt
+		} else {
+			want = jwt.ConnectionTypeStandard
+		}
+	case LEAF:
 		want = jwt.ConnectionTypeLeafnode
-	}
-	if c.ws != nil {
-		want = jwt.ConnectionTypeWebsocket
-	}
-	if c.mqtt != nil {
-		want = jwt.ConnectionTypeMqtt
 	}
 	_, ok := acts[want]
 	return ok

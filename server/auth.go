@@ -345,11 +345,10 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 	)
 	s.mu.Lock()
 	authRequired := s.info.AuthRequired
-	// c.ws/mqtt is immutable, but may need lock if we get race reports.
 	if !authRequired {
-		if c.mqtt != nil {
+		if c.isMqtt() {
 			authRequired = s.mqtt.authOverride
-		} else if c.ws != nil {
+		} else if c.isWebsocket() {
 			// If no auth required for regular clients, then check if
 			// we have an override for websocket clients.
 			authRequired = s.websocket.authOverride
@@ -367,7 +366,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 		noAuthUser string
 	)
 	tlsMap := opts.TLSMap
-	if c.mqtt != nil {
+	if c.isMqtt() {
 		mo := &opts.MQTT
 		// Always override TLSMap.
 		tlsMap = mo.TLSMap
@@ -380,7 +379,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			token = mo.Token
 			ao = true
 		}
-	} else if c.ws != nil {
+	} else if c.isWebsocket() {
 		wo := &opts.Websocket
 		// Always override TLSMap.
 		tlsMap = wo.TLSMap

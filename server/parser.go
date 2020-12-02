@@ -132,7 +132,7 @@ const (
 func (c *client) parse(buf []byte) error {
 	// Branch out to mqtt clients. c.mqtt is immutable, but should it become
 	// an issue (say data race detection), we could branch outside in readLoop
-	if c.mqtt != nil {
+	if c.isMqtt() {
 		return c.mqttParse(buf)
 	}
 	var i int
