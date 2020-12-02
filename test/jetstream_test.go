@@ -7546,8 +7546,8 @@ func TestJetStreamAPIStreamListPaging(t *testing.T) {
 		defer os.RemoveAll(config.StoreDir)
 	}
 
-	// Create 4X limit
-	streamsNum := 4 * server.JSApiNamesLimit
+	// Create 2X limit
+	streamsNum := 2 * server.JSApiNamesLimit
 	for i := 1; i <= streamsNum; i++ {
 		name := fmt.Sprintf("STREAM-%06d", i)
 		cfg := server.StreamConfig{Name: name}
@@ -7601,7 +7601,6 @@ func TestJetStreamAPIStreamListPaging(t *testing.T) {
 
 	checkResp(reqList(0), server.JSApiNamesLimit, 0)
 	checkResp(reqList(server.JSApiNamesLimit), server.JSApiNamesLimit, server.JSApiNamesLimit)
-	checkResp(reqList(2*server.JSApiNamesLimit), server.JSApiNamesLimit, 2*server.JSApiNamesLimit)
 	checkResp(reqList(streamsNum), 0, streamsNum)
 	checkResp(reqList(streamsNum-22), 22, streamsNum-22)
 	checkResp(reqList(streamsNum+22), 0, streamsNum)
@@ -8052,6 +8051,60 @@ func TestJetStreamDeleteMsg(t *testing.T) {
 				if o.StreamSeqFromReply(m.Reply) != expectedStoreSeq[i] {
 					t.Fatalf("Expected store seq of %d, got %d", expectedStoreSeq[i], o.StreamSeqFromReply(m.Reply))
 				}
+			}
+		})
+	}
+}
+
+// https://github.com/nats-io/jetstream/issues/396
+func TestJetStreamLimitLockBug(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *server.StreamConfig
+	}{
+		{name: "MemoryStore",
+			mconfig: &server.StreamConfig{
+				Name:      "foo",
+				Retention: server.LimitsPolicy,
+				MaxMsgs:   10,
+				Storage:   server.MemoryStorage,
+				Replicas:  1,
+			}},
+		{name: "FileStore",
+			mconfig: &server.StreamConfig{
+				Name:      "foo",
+				Retention: server.LimitsPolicy,
+				MaxMsgs:   10,
+				Storage:   server.FileStorage,
+				Replicas:  1,
+			}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil && config.StoreDir != "" {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().AddStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			for i := 0; i < 100; i++ {
+				sendStreamMsg(t, nc, "foo", "ok")
+			}
+
+			state := mset.State()
+			if state.Msgs != 10 {
+				t.Fatalf("Expected 10 messages, got %d", state.Msgs)
 			}
 		})
 	}
