@@ -419,7 +419,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 	} else if hasUsers {
 		// Check if we are tls verify and are mapping users from the client_certificate.
 		if tlsMap {
-			authorized := checkClientTLSCertSubject(c, func(u string, certRDN *ldap.DN, _ bool) (string, bool) {
+			authorized := checkClientTLSCertSubject(c, func(u string, certDN *ldap.DN, _ bool) (string, bool) {
 				// First do literal lookup using the resulting string representation
 				// of RDNSequence as implemented by the pkix package from Go.
 				if u != "" {
@@ -431,23 +431,36 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 					return usr.Username, ok
 				}
 
-				if certRDN == nil {
+				if certDN == nil {
 					return "", false
 				}
 
-				// Look through the accounts for an RDN that is equal to the one
+				// Look through the accounts for a DN that is equal to the one
 				// presented by the certificate.
+				dns := make(map[*User]*ldap.DN)
 				for _, usr := range s.users {
 					if !c.connectionTypeAllowed(usr.AllowedConnectionTypes) {
 						continue
 					}
 					// TODO: Use this utility to make a full validation pass
 					// on start in case tlsmap feature is being used.
-					inputRDN, err := ldap.ParseDN(usr.Username)
+					inputDN, err := ldap.ParseDN(usr.Username)
 					if err != nil {
 						continue
 					}
-					if inputRDN.Equal(certRDN) {
+					if inputDN.Equal(certDN) {
+						user = usr
+						return usr.Username, true
+					}
+
+					// In case it did not match exactly, then collect the DNs
+					// and try to match later in case the DN was reordered.
+					dns[usr] = inputDN
+				}
+
+				// Check in case the DN was reordered.
+				for usr, inputDN := range dns {
+					if inputDN.RDNsMatch(certDN) {
 						user = usr
 						return usr.Username, true
 					}
@@ -724,8 +737,9 @@ func checkClientTLSCertSubject(c *client, fn tlsMapAuthFn) bool {
 	// the domain components in case there are any.
 	rdn := cert.Subject.ToRDNSequence().String()
 
-	// Match that follows original order from the subject takes precedence.
-	dn, err := ldap.FromCertSubject(cert.Subject)
+	// Match using the raw subject to avoid ignoring attributes.
+	// https://github.com/golang/go/issues/12342
+	dn, err := ldap.FromRawCertSubject(cert.RawSubject)
 	if err == nil {
 		if match, ok := fn("", dn, false); ok {
 			c.Debugf("Using DistinguishedNameMatch for auth [%q]", match)

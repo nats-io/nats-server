@@ -5,6 +5,7 @@ package ldap
 import (
 	"bytes"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	enchex "encoding/hex"
 	"errors"
 	"fmt"
@@ -12,14 +13,14 @@ import (
 )
 
 var attributeTypeNames = map[string]string{
-	"2.5.4.6":  "C",
-	"2.5.4.10": "O",
-	"2.5.4.11": "OU",
 	"2.5.4.3":  "CN",
 	"2.5.4.5":  "SERIALNUMBER",
+	"2.5.4.6":  "C",
 	"2.5.4.7":  "L",
 	"2.5.4.8":  "ST",
 	"2.5.4.9":  "STREET",
+	"2.5.4.10": "O",
+	"2.5.4.11": "OU",
 	"2.5.4.17": "POSTALCODE",
 	// FIXME: Add others.
 	"0.9.2342.19200300.100.1.25": "DC",
@@ -44,7 +45,7 @@ type DN struct {
 }
 
 // FromCertSubject takes a pkix.Name from a cert and returns a DN
-// that uses the same set.
+// that uses the same set.  Does not support multi value RDNs.
 func FromCertSubject(subject pkix.Name) (*DN, error) {
 	dn := &DN{
 		RDNs: make([]*RelativeDN, 0),
@@ -70,6 +71,53 @@ func FromCertSubject(subject pkix.Name) (*DN, error) {
 		}
 		dn.RDNs = append(dn.RDNs, rdn)
 	}
+	return dn, nil
+}
+
+// FromRawCertSubject takes a raw subject from a certificate
+// and uses asn1.Unmarshal to get the individual RDNs in the
+// original order, including multi-value RDNs.
+func FromRawCertSubject(rawSubject []byte) (*DN, error) {
+	dn := &DN{
+		RDNs: make([]*RelativeDN, 0),
+	}
+	var rdns pkix.RDNSequence
+	_, err := asn1.Unmarshal(rawSubject, &rdns)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := len(rdns) - 1; i >= 0; i-- {
+		rdn := rdns[i]
+		if len(rdn) == 0 {
+			continue
+		}
+
+		r := &RelativeDN{}
+		attrs := make([]*AttributeTypeAndValue, 0)
+		for j := len(rdn) - 1; j >= 0; j-- {
+			atv := rdn[j]
+
+			typeName := ""
+			name := atv.Type.String()
+			typeName, ok := attributeTypeNames[name]
+			if !ok {
+				return nil, fmt.Errorf("invalid type name: %+v", name)
+			}
+			value, ok := atv.Value.(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid type value: %+v", atv.Value)
+			}
+			attr := &AttributeTypeAndValue{
+				Type:  typeName,
+				Value: value,
+			}
+			attrs = append(attrs, attr)
+		}
+		r.Attributes = attrs
+		dn.RDNs = append(dn.RDNs, r)
+	}
+
 	return dn, nil
 }
 
@@ -177,6 +225,29 @@ func (d *DN) Equal(other *DN) bool {
 		if !d.RDNs[i].Equal(other.RDNs[i]) {
 			return false
 		}
+	}
+	return true
+}
+
+// RDNsMatch returns true if the individual RDNs of the DNs
+// are the same regardless of ordering.
+func (d *DN) RDNsMatch(other *DN) bool {
+	if len(d.RDNs) != len(other.RDNs) {
+		return false
+	}
+
+CheckNextRDN:
+	for _, irdn := range d.RDNs {
+		for _, ordn := range other.RDNs {
+			if (len(irdn.Attributes) == len(ordn.Attributes)) &&
+				(irdn.hasAllAttributes(ordn.Attributes) && ordn.hasAllAttributes(irdn.Attributes)) {
+				// Found the RDN, check if next one matches.
+				continue CheckNextRDN
+			}
+		}
+
+		// Could not find a matching individual RDN, auth fails.
+		return false
 	}
 	return true
 }
