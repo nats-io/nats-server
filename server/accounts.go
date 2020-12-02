@@ -893,6 +893,7 @@ func (a *Account) AddServiceExportWithResponse(subject string, respType ServiceR
 	if a == nil {
 		return ErrMissingAccount
 	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -1344,23 +1345,82 @@ func (a *Account) AddServiceImportWithClaim(destination *Account, from, to strin
 		return ErrServiceImportAuthorization
 	}
 
-	if a.importFormsCycle(destination, from, to) {
-		return ErrServiceImportFormsCycle
+	// Check if this introduces a cycle before proceeding.
+	if a.serviceImportFormsCycle(destination, from) {
+		return ErrImportFormsCycle
 	}
 
 	_, err := a.addServiceImport(destination, from, to, imClaim)
 	return err
 }
 
-// Detects if we have a cycle.
-func (a *Account) importFormsCycle(destination *Account, from, to string) bool {
-	// Check that what we are importing is not something we also export.
-	if a.serviceExportOverlaps(to) {
-		// So at this point if destination account is also importing from us, that forms a cycle.
-		if destination.serviceImportOverlaps(from) {
+func (a *Account) serviceImportFormsCycle(dest *Account, from string) bool {
+	return dest.checkServiceImportsForCycles(from, map[string]bool{a.Name: true})
+}
+
+func (a *Account) checkServiceImportsForCycles(from string, visited map[string]bool) bool {
+	a.mu.RLock()
+	for _, si := range a.imports.services {
+		if SubjectsCollide(from, si.to) {
+			a.mu.RUnlock()
+			if visited[si.acc.Name] {
+				return true
+			}
+			// Push ourselves and check si.acc
+			visited[a.Name] = true
+			if subjectIsSubsetMatch(si.from, from) {
+				from = si.from
+			}
+			if si.acc.checkServiceImportsForCycles(from, visited) {
+				return true
+			}
+			a.mu.RLock()
+		}
+	}
+	a.mu.RUnlock()
+	return false
+}
+
+func (a *Account) streamImportFormsCycle(dest *Account, to string) bool {
+	return dest.checkStreamImportsForCycles(to, map[string]bool{a.Name: true})
+}
+
+// Lock should be held.
+func (a *Account) hasStreamExportMatching(to string) bool {
+	for subj := range a.exports.streams {
+		if subjectIsSubsetMatch(to, subj) {
 			return true
 		}
 	}
+	return false
+}
+
+func (a *Account) checkStreamImportsForCycles(to string, visited map[string]bool) bool {
+	a.mu.RLock()
+
+	if !a.hasStreamExportMatching(to) {
+		a.mu.RUnlock()
+		return false
+	}
+
+	for _, si := range a.imports.streams {
+		if SubjectsCollide(to, si.to) {
+			a.mu.RUnlock()
+			if visited[si.acc.Name] {
+				return true
+			}
+			// Push ourselves and check si.acc
+			visited[a.Name] = true
+			if subjectIsSubsetMatch(si.to, to) {
+				to = si.to
+			}
+			if si.acc.checkStreamImportsForCycles(to, visited) {
+				return true
+			}
+			a.mu.RLock()
+		}
+	}
+	a.mu.RUnlock()
 	return false
 }
 
@@ -1600,30 +1660,6 @@ func (a *Account) checkForReverseEntry(reply string, si *serviceImport, checkInt
 			}
 		}
 	}
-}
-
-// Internal check to see if the to subject overlaps with another export.
-func (a *Account) serviceExportOverlaps(to string) bool {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	for subj := range a.exports.services {
-		if to == subj || SubjectsCollide(to, subj) {
-			return true
-		}
-	}
-	return false
-}
-
-// Internal check to see if the from subject overlaps with another import.
-func (a *Account) serviceImportOverlaps(from string) bool {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	for subj := range a.imports.services {
-		if from == subj || SubjectsCollide(from, subj) {
-			return true
-		}
-	}
-	return false
 }
 
 // Internal check to see if a service import exists.
@@ -2159,6 +2195,7 @@ func (a *Account) AddStreamImportWithClaim(account *Account, from, prefix string
 			prefix = prefix + string(btsep)
 		}
 	}
+
 	return a.AddMappedStreamImportWithClaim(account, from, prefix+from, imClaim)
 }
 
@@ -2181,6 +2218,12 @@ func (a *Account) AddMappedStreamImportWithClaim(account *Account, from, to stri
 	if to == "" {
 		to = from
 	}
+
+	// Check if this forms a cycle.
+	if a.streamImportFormsCycle(account, to) {
+		return ErrImportFormsCycle
+	}
+
 	var (
 		usePub bool
 		tr     *transform
