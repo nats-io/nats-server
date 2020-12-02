@@ -122,7 +122,7 @@ func (sc *supercluster) setupLatencyTracking(t *testing.T, p int) {
 				t.Fatalf("Error adding latency tracking to 'FOO': %v", err)
 			}
 			if err := bar.AddServiceImport(foo, "ngs.usage", "ngs.usage.bar"); err != nil {
-				t.Fatalf("Error adding latency tracking to 'FOO': %v", err)
+				t.Fatalf("Error adding service import to 'ngs.usage': %v", err)
 			}
 		}
 	}

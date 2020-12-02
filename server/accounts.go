@@ -1346,42 +1346,47 @@ func (a *Account) AddServiceImportWithClaim(destination *Account, from, to strin
 	}
 
 	// Check if this introduces a cycle before proceeding.
-	if a.serviceImportFormsCycle(destination, from) {
-		return ErrImportFormsCycle
+	if err := a.serviceImportFormsCycle(destination, from); err != nil {
+		return err
 	}
 
 	_, err := a.addServiceImport(destination, from, to, imClaim)
 	return err
 }
 
-func (a *Account) serviceImportFormsCycle(dest *Account, from string) bool {
+const MaxAccountCycleSearchDepth = 1024
+
+func (a *Account) serviceImportFormsCycle(dest *Account, from string) error {
 	return dest.checkServiceImportsForCycles(from, map[string]bool{a.Name: true})
 }
 
-func (a *Account) checkServiceImportsForCycles(from string, visited map[string]bool) bool {
+func (a *Account) checkServiceImportsForCycles(from string, visited map[string]bool) error {
+	if len(visited) >= MaxAccountCycleSearchDepth {
+		return ErrCycleSearchDepth
+	}
 	a.mu.RLock()
 	for _, si := range a.imports.services {
 		if SubjectsCollide(from, si.to) {
 			a.mu.RUnlock()
 			if visited[si.acc.Name] {
-				return true
+				return ErrImportFormsCycle
 			}
 			// Push ourselves and check si.acc
 			visited[a.Name] = true
 			if subjectIsSubsetMatch(si.from, from) {
 				from = si.from
 			}
-			if si.acc.checkServiceImportsForCycles(from, visited) {
-				return true
+			if err := si.acc.checkServiceImportsForCycles(from, visited); err != nil {
+				return err
 			}
 			a.mu.RLock()
 		}
 	}
 	a.mu.RUnlock()
-	return false
+	return nil
 }
 
-func (a *Account) streamImportFormsCycle(dest *Account, to string) bool {
+func (a *Account) streamImportFormsCycle(dest *Account, to string) error {
 	return dest.checkStreamImportsForCycles(to, map[string]bool{a.Name: true})
 }
 
@@ -1395,33 +1400,37 @@ func (a *Account) hasStreamExportMatching(to string) bool {
 	return false
 }
 
-func (a *Account) checkStreamImportsForCycles(to string, visited map[string]bool) bool {
+func (a *Account) checkStreamImportsForCycles(to string, visited map[string]bool) error {
+	if len(visited) >= MaxAccountCycleSearchDepth {
+		return ErrCycleSearchDepth
+	}
+
 	a.mu.RLock()
 
 	if !a.hasStreamExportMatching(to) {
 		a.mu.RUnlock()
-		return false
+		return nil
 	}
 
 	for _, si := range a.imports.streams {
 		if SubjectsCollide(to, si.to) {
 			a.mu.RUnlock()
 			if visited[si.acc.Name] {
-				return true
+				return ErrImportFormsCycle
 			}
 			// Push ourselves and check si.acc
 			visited[a.Name] = true
 			if subjectIsSubsetMatch(si.to, to) {
 				to = si.to
 			}
-			if si.acc.checkStreamImportsForCycles(to, visited) {
-				return true
+			if err := si.acc.checkStreamImportsForCycles(to, visited); err != nil {
+				return err
 			}
 			a.mu.RLock()
 		}
 	}
 	a.mu.RUnlock()
-	return false
+	return nil
 }
 
 // SetServiceImportSharing will allow sharing of information about requests with the export account.
@@ -2220,8 +2229,8 @@ func (a *Account) AddMappedStreamImportWithClaim(account *Account, from, to stri
 	}
 
 	// Check if this forms a cycle.
-	if a.streamImportFormsCycle(account, to) {
-		return ErrImportFormsCycle
+	if err := a.streamImportFormsCycle(account, to); err != nil {
+		return err
 	}
 
 	var (

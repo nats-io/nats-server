@@ -128,6 +128,9 @@ var (
 	// ErrImportFormsCycle is returned when an import would form a cycle.
 	ErrImportFormsCycle = errors.New("import forms a cycle")
 
+	// ErrCycleSearchDepth is returned when we have exceeded our maximum search depth..
+	ErrCycleSearchDepth = errors.New("search cycle depth exhausted")
+
 	// ErrClientOrRouteConnectedToGatewayPort represents an error condition when
 	// a client or route attempted to connect to the Gateway port.
 	ErrClientOrRouteConnectedToGatewayPort = errors.New("attempted to connect to gateway port")

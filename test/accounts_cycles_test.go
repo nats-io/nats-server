@@ -14,6 +14,7 @@
 package test
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -209,5 +210,57 @@ func TestAccountCycleServiceNonCycleChain(t *testing.T) {
 
 	if _, err := server.ProcessConfigFile(conf); err != nil {
 		t.Fatalf("Expected no error but got %s", err)
+	}
+}
+
+// Go's stack are infinite sans memory, but not call depth. However its good to limit.
+func TestAccountCycleDepthLimit(t *testing.T) {
+	var last *server.Account
+	chainLen := server.MaxAccountCycleSearchDepth + 1
+
+	// Services
+	for i := 1; i <= chainLen; i++ {
+		acc := server.NewAccount(fmt.Sprintf("ACC-%d", i))
+		if err := acc.AddServiceExport("*", nil); err != nil {
+			t.Fatalf("Error adding service export to '*': %v", err)
+		}
+		if last != nil {
+			err := acc.AddServiceImport(last, "foo", "foo")
+			switch i {
+			case chainLen:
+				if err != server.ErrCycleSearchDepth {
+					t.Fatalf("Expected last import to fail with '%v', but got '%v'", server.ErrCycleSearchDepth, err)
+				}
+			default:
+				if err != nil {
+					t.Fatalf("Error adding service import to 'foo': %v", err)
+				}
+			}
+		}
+		last = acc
+	}
+
+	last = nil
+
+	// Streams
+	for i := 1; i <= chainLen; i++ {
+		acc := server.NewAccount(fmt.Sprintf("ACC-%d", i))
+		if err := acc.AddStreamExport("foo", nil); err != nil {
+			t.Fatalf("Error adding stream export to '*': %v", err)
+		}
+		if last != nil {
+			err := acc.AddStreamImport(last, "foo", "")
+			switch i {
+			case chainLen:
+				if err != server.ErrCycleSearchDepth {
+					t.Fatalf("Expected last import to fail with '%v', but got '%v'", server.ErrCycleSearchDepth, err)
+				}
+			default:
+				if err != nil {
+					t.Fatalf("Error adding stream import to 'foo': %v", err)
+				}
+			}
+		}
+		last = acc
 	}
 }
