@@ -51,6 +51,20 @@ const (
 	ACCOUNT
 )
 
+// Extended type of a CLIENT connection. This is returned by c.clientType()
+// and indicate what type of client connection we are dealing with.
+// If invoked on a non CLIENT connection, NON_CLIENT type is returned.
+const (
+	// If the connection is not a CLIENT connection.
+	NON_CLIENT = iota
+	// Regular NATS client.
+	NATS
+	// MQTT client.
+	MQTT
+	// Websocket client.
+	WS
+)
+
 const (
 	// ClientProtoZero is the original Client protocol from 2009.
 	// http://nats.io/documentation/internals/nats-protocol/
@@ -427,6 +441,26 @@ func (c *client) GetTLSConnectionState() *tls.ConnectionState {
 	return &state
 }
 
+// For CLIENT connections, this function returns the client type, that is,
+// NATS (for regular clients), MQTT or WS for websocket.
+// If this is invoked for a non CLIENT connection, NON_CLIENT is returned.
+//
+// This function does not lock the client and accesses fields that are supposed
+// to be immutable and therefore it can be invoked outside of the client's lock.
+func (c *client) clientType() int {
+	switch c.kind {
+	case CLIENT:
+		if c.isMqtt() {
+			return MQTT
+		} else if c.isWebsocket() {
+			return WS
+		}
+		return NATS
+	default:
+		return NON_CLIENT
+	}
+}
+
 // This is the main subscription struct that indicates
 // interest in published messages.
 // FIXME(dlc) - This is getting bloated for normal subs, need
@@ -540,13 +574,14 @@ func (c *client) initClient() {
 
 	switch c.kind {
 	case CLIENT:
-		name := "cid"
-		if c.isWebsocket() {
-			name = "wid"
-		} else if c.isMqtt() {
-			name = "mid"
+		switch c.clientType() {
+		case NATS:
+			c.ncs.Store(fmt.Sprintf("%s - cid:%d", conn, c.cid))
+		case WS:
+			c.ncs.Store(fmt.Sprintf("%s - wid:%d", conn, c.cid))
+		case MQTT:
+			c.ncs.Store(fmt.Sprintf("%s - mid:%d", conn, c.cid))
 		}
-		c.ncs.Store(fmt.Sprintf("%s - %s:%d", conn, name, c.cid))
 	case ROUTER:
 		c.ncs.Store(fmt.Sprintf("%s - rid:%d", conn, c.cid))
 	case GATEWAY:
@@ -4640,12 +4675,13 @@ func (c *client) connectionTypeAllowed(acts map[string]struct{}) bool {
 	var want string
 	switch c.kind {
 	case CLIENT:
-		if c.isWebsocket() {
-			want = jwt.ConnectionTypeWebsocket
-		} else if c.isMqtt() {
-			want = jwt.ConnectionTypeMqtt
-		} else {
+		switch c.clientType() {
+		case NATS:
 			want = jwt.ConnectionTypeStandard
+		case WS:
+			want = jwt.ConnectionTypeWebsocket
+		case MQTT:
+			want = jwt.ConnectionTypeMqtt
 		}
 	case LEAF:
 		want = jwt.ConnectionTypeLeafnode

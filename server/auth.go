@@ -346,11 +346,12 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 	s.mu.Lock()
 	authRequired := s.info.AuthRequired
 	if !authRequired {
-		if c.isMqtt() {
+		// If no auth required for regular clients, then check if
+		// we have an override for MQTT or Websocket clients.
+		switch c.clientType() {
+		case MQTT:
 			authRequired = s.mqtt.authOverride
-		} else if c.isWebsocket() {
-			// If no auth required for regular clients, then check if
-			// we have an override for websocket clients.
+		case WS:
 			authRequired = s.websocket.authOverride
 		}
 	}
@@ -366,33 +367,36 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 		noAuthUser string
 	)
 	tlsMap := opts.TLSMap
-	if c.isMqtt() {
-		mo := &opts.MQTT
-		// Always override TLSMap.
-		tlsMap = mo.TLSMap
-		// The rest depends on if there was any auth override in
-		// the mqtt's config.
-		if s.mqtt.authOverride {
-			noAuthUser = mo.NoAuthUser
-			username = mo.Username
-			password = mo.Password
-			token = mo.Token
-			ao = true
+	if c.kind == CLIENT {
+		switch c.clientType() {
+		case MQTT:
+			mo := &opts.MQTT
+			// Always override TLSMap.
+			tlsMap = mo.TLSMap
+			// The rest depends on if there was any auth override in
+			// the mqtt's config.
+			if s.mqtt.authOverride {
+				noAuthUser = mo.NoAuthUser
+				username = mo.Username
+				password = mo.Password
+				token = mo.Token
+				ao = true
+			}
+		case WS:
+			wo := &opts.Websocket
+			// Always override TLSMap.
+			tlsMap = wo.TLSMap
+			// The rest depends on if there was any auth override in
+			// the websocket's config.
+			if s.websocket.authOverride {
+				noAuthUser = wo.NoAuthUser
+				username = wo.Username
+				password = wo.Password
+				token = wo.Token
+				ao = true
+			}
 		}
-	} else if c.isWebsocket() {
-		wo := &opts.Websocket
-		// Always override TLSMap.
-		tlsMap = wo.TLSMap
-		// The rest depends on if there was any auth override in
-		// the websocket's config.
-		if s.websocket.authOverride {
-			noAuthUser = wo.NoAuthUser
-			username = wo.Username
-			password = wo.Password
-			token = wo.Token
-			ao = true
-		}
-	} else if c.kind == LEAF {
+	} else {
 		tlsMap = opts.LeafNode.TLSMap
 	}
 	if !ao {
