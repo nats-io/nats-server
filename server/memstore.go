@@ -254,7 +254,7 @@ func (ms *memStore) expireMsgs() {
 
 // Purge will remove all messages from this store.
 // Will return the number of purged messages.
-func (ms *memStore) Purge() uint64 {
+func (ms *memStore) Purge() (uint64, error) {
 	ms.mu.Lock()
 	purged := uint64(len(ms.msgs))
 	cb := ms.scb
@@ -270,7 +270,46 @@ func (ms *memStore) Purge() uint64 {
 		cb(-int64(purged), -bytes, 0, _EMPTY_)
 	}
 
-	return purged
+	return purged, nil
+}
+
+// Compact will remove all messages from this store up to
+// but not including the seq parameter.
+// Will return the number of purged messages.
+func (ms *memStore) Compact(seq uint64) (uint64, error) {
+	if seq == 0 {
+		return ms.Purge()
+	}
+	ms.mu.Lock()
+	sm, ok := ms.msgs[seq]
+	if !ok {
+		ms.mu.Unlock()
+		return 0, ErrStoreMsgNotFound
+	}
+	ms.state.FirstSeq = seq
+	ms.state.FirstTime = time.Unix(0, sm.ts).UTC()
+
+	var purged, bytes uint64
+	for seq := seq - 1; seq > 0; seq-- {
+		sm := ms.msgs[seq]
+		if sm == nil {
+			continue
+		}
+		bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
+		purged++
+		delete(ms.msgs, seq)
+	}
+	ms.state.Msgs -= purged
+	ms.state.Bytes -= bytes
+
+	cb := ms.scb
+	ms.mu.Unlock()
+
+	if cb != nil {
+		cb(-int64(purged), -int64(bytes), 0, _EMPTY_)
+	}
+
+	return purged, nil
 }
 
 func (ms *memStore) deleteFirstMsgOrPanic() {

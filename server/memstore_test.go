@@ -198,6 +198,54 @@ func TestMemStoreTimeStamps(t *testing.T) {
 	}
 }
 
+func TestMemStorePurge(t *testing.T) {
+	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error creating store: %v", err)
+	}
+
+	subj, msg := "foo", []byte("Hello World")
+	for i := 0; i < 10; i++ {
+		ms.StoreMsg(subj, nil, msg)
+	}
+	if state := ms.State(); state.Msgs != 10 {
+		t.Fatalf("Expected 10 msgs, got %d", state.Msgs)
+	}
+	ms.Purge()
+	if state := ms.State(); state.Msgs != 0 {
+		t.Fatalf("Expected no msgs, got %d", state.Msgs)
+	}
+}
+
+func TestMemStoreCompact(t *testing.T) {
+	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error creating store: %v", err)
+	}
+
+	subj, msg := "foo", []byte("Hello World")
+	for i := 0; i < 10; i++ {
+		ms.StoreMsg(subj, nil, msg)
+	}
+	if state := ms.State(); state.Msgs != 10 {
+		t.Fatalf("Expected 10 msgs, got %d", state.Msgs)
+	}
+	n, err := ms.Compact(6)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if n != 5 {
+		t.Fatalf("Expected to have purged 5 msgs, got %d", n)
+	}
+	state := ms.State()
+	if state.Msgs != 5 {
+		t.Fatalf("Expected 5 msgs, got %d", state.Msgs)
+	}
+	if state.FirstSeq != 6 {
+		t.Fatalf("Expected first seq of 6, got %d", state.FirstSeq)
+	}
+}
+
 func TestMemStoreEraseMsg(t *testing.T) {
 	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage})
 	if err != nil {

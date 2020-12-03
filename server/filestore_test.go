@@ -739,6 +739,40 @@ func TestFileStorePurge(t *testing.T) {
 	})
 }
 
+func TestFileStoreCompact(t *testing.T) {
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	subj, msg := "foo", []byte("Hello World")
+	for i := 0; i < 10; i++ {
+		fs.StoreMsg(subj, nil, msg)
+	}
+	if state := fs.State(); state.Msgs != 10 {
+		t.Fatalf("Expected 10 msgs, got %d", state.Msgs)
+	}
+	n, err := fs.Compact(6)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if n != 5 {
+		t.Fatalf("Expected to have purged 5 msgs, got %d", n)
+	}
+	state := fs.State()
+	if state.Msgs != 5 {
+		t.Fatalf("Expected 5 msgs, got %d", state.Msgs)
+	}
+	if state.FirstSeq != 6 {
+		t.Fatalf("Expected first seq of 6, got %d", state.FirstSeq)
+	}
+}
+
 func TestFileStoreRemovePartialRecovery(t *testing.T) {
 	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
