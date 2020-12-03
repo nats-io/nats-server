@@ -2265,13 +2265,9 @@ func (o *Consumer) incStreamPending(sseq uint64, subj string) {
 
 func (o *Consumer) decStreamPending(sseq uint64, subj string) {
 	o.mu.Lock()
-	defer o.mu.Unlock()
-
 	// Ignore if we have already seen this one.
-	if sseq < o.sseq || o.sgap == 0 {
-		return
-	}
-	if o.isFilteredMatch(subj) {
+	if sseq >= o.sseq && o.sgap > 0 && o.isFilteredMatch(subj) {
 		o.sgap--
 	}
+	o.mu.Unlock()
 }

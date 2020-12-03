@@ -775,11 +775,11 @@ func (mset *Stream) setupStore(fsCfg *FileStoreConfig) error {
 // Called for any updates to the underlying stream. We pass through the bytes to the
 // jetstream account. We do local processing for stream pending for consumers, but only
 // for removals.
-// Lock should not ne held.
+// Lock should not be held.
 func (mset *Stream) storeUpdates(md, bd int64, seq uint64, subj string) {
 	// If we have a single negative update then we will process our consumers for stream pending.
 	// Purge and Store handled separately inside individual calls.
-	if md == -1 {
+	if md == -1 && seq > 0 {
 		mset.mu.RLock()
 		for _, o := range mset.consumers {
 			o.decStreamPending(seq, subj)
@@ -1043,14 +1043,25 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 		hdr = msg[:pc.pa.hdr]
 		msg = msg[pc.pa.hdr:]
 	}
-	seq, ts, err = store.StoreMsg(subject, hdr, msg)
-	if err == nil && seq > 0 {
-		mset.lseq = seq
-		mset.lmsgId = msgId
-	}
+
+	// Assume this will succeed.
+	olseq, olmsgId := mset.lseq, mset.lmsgId
+	mset.lseq++
+	mset.lmsgId = msgId
 
 	// We hold the lock to this point to make sure nothing gets between us since we check for pre-conditions.
 	mset.mu.Unlock()
+
+	// Store actual msg.
+	seq, ts, err = store.StoreMsg(subject, hdr, msg)
+
+	// If we did not succeed put those values back.
+	if err != nil || seq == 0 {
+		mset.mu.Lock()
+		mset.lseq = olseq
+		mset.lmsgId = olmsgId
+		mset.mu.Unlock()
+	}
 
 	if err != nil {
 		if err != ErrStoreClosed {
@@ -1148,16 +1159,16 @@ func (mset *Stream) Name() string {
 }
 
 func (mset *Stream) internalSendLoop() {
-	mset.mu.Lock()
+	mset.mu.RLock()
 	c := mset.client
 	if c == nil {
-		mset.mu.Unlock()
+		mset.mu.RUnlock()
 		return
 	}
 	s := c.srv
 	sendq := mset.sendq
 	name := mset.config.Name
-	mset.mu.Unlock()
+	mset.mu.RUnlock()
 
 	// Warn when internal send queue is backed up past 75%
 	warnThresh := 3 * msetSendQSize / 4
