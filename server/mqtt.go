@@ -1480,9 +1480,12 @@ func (s *Server) mqttProcessConnect(c *client, cp *mqttConnectProto, trace bool)
 	sessp := false
 	// Do we have an existing session for this client ID
 	es, ok := asm.sessions[cp.clientID]
+	if !ok {
+		es = mqttSessionCreate(s.getOpts())
+	}
+	es.mu.Lock()
+	defer es.mu.Unlock()
 	if ok {
-		es.mu.Lock()
-		defer es.mu.Unlock()
 		// Clear the session if client wants a clean session.
 		// Also, Spec [MQTT-3.2.2-1]: don't report session present
 		if cleanSess || es.clean {
@@ -1496,13 +1499,10 @@ func (s *Server) mqttProcessConnect(c *client, cp *mqttConnectProto, trace bool)
 			// Report to the client that the session was present
 			sessp = true
 		}
-		ec := es.c
-		// Is there an actual client associated with this session.
-		if ec != nil {
-			// Spec [MQTT-3.1.4-2]. If the ClientId represents a Client already
-			// connected to the Server then the Server MUST disconnect the existing
-			// client.
-			ec := es.c
+		// Spec [MQTT-3.1.4-2]. If the ClientId represents a Client already
+		// connected to the Server then the Server MUST disconnect the existing
+		// client.
+		if ec := es.c; ec != nil {
 			ec.mu.Lock()
 			// Remove will before closing
 			ec.mqtt.cp.will = nil
@@ -1516,12 +1516,10 @@ func (s *Server) mqttProcessConnect(c *client, cp *mqttConnectProto, trace bool)
 	} else {
 		// Spec [MQTT-3.2.2-3]: if the Server does not have stored Session state,
 		// it MUST set Session Present to 0 in the CONNACK packet.
-		es = mqttSessionCreate(s.getOpts())
 		es.c, es.clean, es.stream = c, cleanSess, asm.sstream
-		es.mu.Lock()
-		defer es.mu.Unlock()
-		asm.sessions[cp.clientID] = es
 		es.save(cp.clientID)
+		// Now save this new session into the account sessions
+		asm.sessions[cp.clientID] = es
 	}
 	c.mu.Lock()
 	c.flags.set(connectReceived)
@@ -1529,11 +1527,21 @@ func (s *Server) mqttProcessConnect(c *client, cp *mqttConnectProto, trace bool)
 	c.mqtt.asm = asm
 	c.mqtt.sess = es
 	c.mu.Unlock()
-	// Spec [MQTT-3.2.0-1]: At this point we need to send the CONNACK before
-	// restoring subscriptions, because CONNACK must be the first packet sent
-	// to the client.
-	sendConnAck(mqttConnAckRCConnectionAccepted, sessp)
-	// Now process possible saved subscriptions.
+	//
+	// Spec [MQTT-3.2.0-1]: CONNACK must be the first protocol sent to the
+	// session. However, we are going to possibly restore the subscriptions
+	// first and then send the CONNACK. This will help tests that restore
+	// a MQTT connection with subs and immediately use NATS to publish.
+	// In that case, message would not be received because the pub could
+	// occur before the subscriptions are processed here. It would be
+	// easy to fix test with doing a PINGREQ/PINGRESP before doing NATS pub,
+	// but it seems better to ensure that everything is setup before sending
+	// back the CONNACK.
+	// Note that since we are under the session lock, the subs callback will
+	// have to wait to acquire the lock, so we are still guaranteed to enqueue
+	// the CONNACK before any message.
+	//
+	// Process possible saved subscriptions.
 	if l := len(es.subs); l > 0 {
 		filters := make([]*mqttFilter, 0, l)
 		for subject, qos := range es.subs {
@@ -1543,6 +1551,8 @@ func (s *Server) mqttProcessConnect(c *client, cp *mqttConnectProto, trace bool)
 			return err
 		}
 	}
+	// Now send the CONNACK
+	sendConnAck(mqttConnAckRCConnectionAccepted, sessp)
 	return nil
 }
 
