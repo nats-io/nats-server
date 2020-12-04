@@ -66,7 +66,8 @@ type StreamStore interface {
 	LoadMsg(seq uint64) (subj string, hdr, msg []byte, ts int64, err error)
 	RemoveMsg(seq uint64) (bool, error)
 	EraseMsg(seq uint64) (bool, error)
-	Purge() uint64
+	Purge() (uint64, error)
+	Compact(seq uint64) (uint64, error)
 	GetSeqFromTime(t time.Time) uint64
 	State() StreamState
 	RegisterStorageUpdates(StorageUpdateHandler)

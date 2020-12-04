@@ -2319,11 +2319,11 @@ func (fs *fileStore) dmapEntries() int {
 
 // Purge will remove all messages from this store.
 // Will return the number of purged messages.
-func (fs *fileStore) Purge() uint64 {
+func (fs *fileStore) Purge() (uint64, error) {
 	fs.mu.Lock()
 	if fs.closed {
 		fs.mu.Unlock()
-		return 0
+		return 0, ErrStoreClosed
 	}
 
 	purged := fs.state.Msgs
@@ -2370,7 +2370,43 @@ func (fs *fileStore) Purge() uint64 {
 		cb(-int64(purged), -rbytes, 0, _EMPTY_)
 	}
 
-	return purged
+	return purged, nil
+}
+
+// Compact will remove all messages from this store up to
+// but not including the seq parameter.
+// Will return the number of purged messages.
+func (fs *fileStore) Compact(seq uint64) (uint64, error) {
+	if seq == 0 {
+		return fs.Purge()
+	}
+
+	if _, err := fs.msgForSeq(seq); err != nil {
+		return 0, err
+	}
+
+	var purged uint64
+	for fseq := fs.firstSeq(); fseq < seq; fseq = fs.firstSeq() {
+		if found, err := fs.removeMsg(fseq, false); err != nil {
+			if err == ErrStoreMsgNotFound {
+				continue
+			} else if err == ErrStoreEOF {
+				err = nil
+			}
+			return purged, err
+		} else if found {
+			purged++
+		}
+	}
+
+	return purged, nil
+}
+
+func (fs *fileStore) firstSeq() uint64 {
+	fs.mu.RLock()
+	fseq := fs.state.FirstSeq
+	fs.mu.RUnlock()
+	return fseq
 }
 
 // Returns number of msg blks.
@@ -2488,7 +2524,6 @@ func (fs *fileStore) Delete() error {
 	if fs.isClosed() {
 		return ErrStoreClosed
 	}
-	// TODO(dlc) - check error here?
 	fs.Purge()
 	if err := fs.Stop(); err != nil {
 		return err

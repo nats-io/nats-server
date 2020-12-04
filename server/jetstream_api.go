@@ -1127,8 +1127,13 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	resp.Purged = mset.Purge()
-	resp.Success = true
+	purged, err := mset.Purge()
+	if err != nil {
+		resp.Error = jsError(err)
+	} else {
+		resp.Purged = purged
+		resp.Success = true
+	}
 	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
 }
 

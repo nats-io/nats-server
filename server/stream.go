@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -610,11 +611,11 @@ func (mset *Stream) Update(config *StreamConfig) error {
 }
 
 // Purge will remove all messages from the stream and underlying store.
-func (mset *Stream) Purge() uint64 {
+func (mset *Stream) Purge() (uint64, error) {
 	mset.mu.Lock()
 	if mset.client == nil {
 		mset.mu.Unlock()
-		return 0
+		return 0, errors.New("stream closed")
 	}
 	// Purge dedupe.
 	mset.ddmap = nil
@@ -625,12 +626,15 @@ func (mset *Stream) Purge() uint64 {
 	}
 	mset.mu.Unlock()
 
-	purged := mset.store.Purge()
+	purged, err := mset.store.Purge()
+	if err != nil {
+		return purged, err
+	}
 	stats := mset.store.State()
 	for _, o := range obs {
 		o.purge(stats.FirstSeq)
 	}
-	return purged
+	return purged, nil
 }
 
 // RemoveMsg will remove a message from a stream.
