@@ -457,7 +457,7 @@ func TestExpiration(t *testing.T) {
 			return
 		}
 	}
-	t.Errorf("Waited more than 4 seconds for the file with expiration 1 second to expire")
+	t.Fatalf("Waited more than 4 seconds for the file with expiration 1 second to expire")
 }
 
 func TestLimit(t *testing.T) {
@@ -886,7 +886,7 @@ func TestNotificationOnPack(t *testing.T) {
 	notificationChan := make(chan struct{}, len(jwts)) // set to same len so all extra will block
 	notification := func(pubKey string) {
 		if _, ok := jwts[pubKey]; !ok {
-			t.Errorf("Key not found: %s", pubKey)
+			t.Fatalf("Key not found: %s", pubKey)
 		}
 		notificationChan <- struct{}{}
 	}
