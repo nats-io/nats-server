@@ -83,6 +83,9 @@ const (
 	mqttConnAckRCBadUserOrPassword           = byte(0x4)
 	mqttConnAckRCNotAuthorized               = byte(0x5)
 
+	// Maximum payload size of a control packet
+	mqttMaxPayloadSize = 0xFFFFFFF
+
 	// Topic/Filter characters
 	mqttTopicLevelSep = '/'
 	mqttSingleLevelWC = '+'
@@ -245,6 +248,7 @@ type mqttPublish struct {
 	sz      int
 	pi      uint16
 	flags   byte
+	szb     [9]byte // MQTT max payload size is 268,435,455
 }
 
 func (s *Server) startMQTT() {
@@ -298,6 +302,7 @@ func (s *Server) createMQTTClient(conn net.Conn) *client {
 	now := time.Now()
 
 	c := &client{srv: s, nc: conn, mpay: maxPay, msubs: maxSubs, start: now, last: now, mqtt: &mqtt{}}
+	c.mqtt.pp = &mqttPublish{}
 	// MQTT clients don't send NATS CONNECT protocols. So make it an "echo"
 	// client, but disable verbose and pedantic (by not setting them).
 	c.opts.Echo = true
@@ -509,16 +514,17 @@ func (c *client) mqttParse(buf []byte) error {
 
 		switch pt {
 		case mqttPacketPub:
-			pp := mqttPublish{flags: b & mqttPacketFlagMask}
-			err = c.mqttParsePub(r, pl, &pp)
+			pp := c.mqtt.pp
+			pp.flags = b & mqttPacketFlagMask
+			err = c.mqttParsePub(r, pl, pp)
 			if trace {
-				c.traceInOp("PUBLISH", errOrTrace(err, mqttPubTrace(&pp)))
+				c.traceInOp("PUBLISH", errOrTrace(err, mqttPubTrace(pp)))
 				if err == nil {
-					c.traceMsg(pp.msg)
+					c.mqttTraceMsg(pp.msg)
 				}
 			}
 			if err == nil {
-				s.mqttProcessPub(c, &pp)
+				s.mqttProcessPub(c, pp)
 				if pp.pi > 0 {
 					c.mqttEnqueuePubAck(pp.pi)
 					if trace {
@@ -628,6 +634,15 @@ func (c *client) mqttParse(buf []byte) error {
 		r.reader.SetReadDeadline(time.Now().Add(rd))
 	}
 	return err
+}
+
+func (c *client) mqttTraceMsg(msg []byte) {
+	maxTrace := c.srv.getOpts().MaxTracedMsgLen
+	if maxTrace > 0 && len(msg) > maxTrace {
+		c.Tracef("<<- MSG_PAYLOAD: [\"%s...\"]", msg[:maxTrace])
+	} else {
+		c.Tracef("<<- MSG_PAYLOAD: [%q]", msg)
+	}
 }
 
 // Update the session (possibly remove it) of this disconnected client.
@@ -1034,13 +1049,13 @@ func (as *mqttAccountSessionManager) serializeRetainedMsgsForSub(sess *mqttSessi
 			pi := sess.getPubAckIdentifier(mqttGetQoS(rm.Flags), sub)
 			// Need to use the subject for the retained message, not the `sub` subject.
 			// We can find the published retained message in rm.sub.subject.
-			flags := mqttSerializePublishMsg(prm, pi, false, true, string(rm.sub.subject), rm.Msg[:len(rm.Msg)-LEN_CR_LF])
+			flags := mqttSerializePublishMsg(prm, pi, false, true, string(rm.sub.subject), rm.Msg)
 			if trace {
 				pp := mqttPublish{
 					flags:   flags,
 					pi:      pi,
 					subject: rm.sub.subject,
-					sz:      len(rm.Msg) - LEN_CR_LF,
+					sz:      len(rm.Msg),
 				}
 				c.traceOutOp("PUBLISH", []byte(mqttPubTrace(&pp)))
 			}
@@ -1397,9 +1412,8 @@ func (c *client) mqttParseConnect(r *mqttReader, pl int) (byte, *mqttConnectProt
 		if err != nil {
 			return 0, nil, err
 		}
-		cp.will.message = make([]byte, 0, len(msg)+2)
+		cp.will.message = make([]byte, 0, len(msg))
 		cp.will.message = append(cp.will.message, msg...)
-		cp.will.message = append(cp.will.message, CR_LF...)
 	}
 
 	if hasUser {
@@ -1581,12 +1595,12 @@ func (s *Server) mqttHandleWill(c *client) {
 		c.mu.Unlock()
 		return
 	}
-	pp := &mqttPublish{
-		subject: will.topic,
-		msg:     will.message,
-		sz:      len(will.message) - LEN_CR_LF,
-		flags:   will.qos << 1,
-	}
+	pp := c.mqtt.pp
+	pp.subject = will.topic
+	pp.msg = will.message
+	pp.sz = len(will.message)
+	pp.pi = 0
+	pp.flags = will.qos << 1
 	if will.retain {
 		pp.flags |= mqttPubFlagRetain
 	}
@@ -1638,18 +1652,20 @@ func (c *client) mqttParsePub(r *mqttReader, pl int, pp *mqttPublish) error {
 		if pp.pi == 0 {
 			return fmt.Errorf("with QoS=%v, packet identifier cannot be 0", qos)
 		}
+	} else {
+		pp.pi = 0
 	}
 
 	// The message payload will be the total packet length minus
 	// what we have consumed for the variable header
 	pp.sz = pl - (r.pos - start)
-	pp.msg = make([]byte, 0, pp.sz+2)
 	if pp.sz > 0 {
 		start = r.pos
 		r.pos += pp.sz
-		pp.msg = append(pp.msg, r.buf[start:r.pos]...)
+		pp.msg = r.buf[start:r.pos]
+	} else {
+		pp.msg = nil
 	}
-	pp.msg = append(pp.msg, _CRLF_...)
 	return nil
 }
 
@@ -1666,8 +1682,21 @@ func mqttPubTrace(pp *mqttPublish) string {
 }
 
 func (s *Server) mqttProcessPub(c *client, pp *mqttPublish) {
-	c.mqtt.pp = pp
-	c.pa.subject, c.pa.hdr, c.pa.size, c.pa.szb = pp.subject, -1, pp.sz, []byte(strconv.FormatInt(int64(pp.sz), 10))
+	c.pa.subject, c.pa.hdr, c.pa.size = pp.subject, -1, pp.sz
+
+	// Convert size into bytes.
+	i := len(pp.szb)
+	if pp.sz > 0 {
+		for l := pp.sz; l > 0; l /= 10 {
+			i--
+			pp.szb[i] = digits[l%10]
+		}
+	} else {
+		i--
+		pp.szb[i] = digits[0]
+	}
+	c.pa.szb = pp.szb[i:]
+
 	// This will work for QoS 0 but mqtt msg delivery callback will ignore
 	// delivery for QoS > 0 published messages (since it is handled specifically
 	// with call to directProcessInboundJetStreamMsg).
@@ -1677,10 +1706,9 @@ func (s *Server) mqttProcessPub(c *client, pp *mqttPublish) {
 	if mqttGetQoS(pp.flags) > 0 {
 		// Since this is the fast path, we access the messages stream directly here
 		// without locking. All the fields mqtt.asm.mstream are immutable.
-		c.mqtt.asm.mstream.processInboundJetStreamMsg(nil, c, string(c.pa.subject), "", pp.msg[:len(pp.msg)-LEN_CR_LF])
+		c.mqtt.asm.mstream.processInboundJetStreamMsg(nil, c, string(c.pa.subject), "", pp.msg)
 	}
 	c.pa.subject, c.pa.hdr, c.pa.size, c.pa.szb = nil, -1, 0, nil
-	c.mqtt.pp = nil
 }
 
 // Invoked when processing an inbound client message. If the "retain" flag is
@@ -2046,8 +2074,13 @@ func mqttDeliverMsgCb(sub *subscription, pc *client, subject, reply string, msg 
 			return
 		}
 		retained = mqttIsRetained(ppFlags)
+	} else {
+		// This is coming from a non MQTT publisher, so Qos 0, no dup nor retain flag, etc..
+		// Should probably reject, for now just truncate.
+		if len(msg) > mqttMaxPayloadSize {
+			msg = msg[:mqttMaxPayloadSize]
+		}
 	}
-	// else this is coming from a non MQTT publisher, so Qos 0, no dup nor retain flag, etc..
 	sess.mu.Unlock()
 
 	sw := mqttWriter{}

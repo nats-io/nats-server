@@ -2991,7 +2991,12 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 	// Update statistics
 
 	// The msg includes the CR_LF, so pull back out for accounting.
-	msgSize := int64(len(msg) - LEN_CR_LF)
+	msgSize := int64(len(msg))
+	prodIsMQTT := c.isMqtt()
+	// MQTT producers send messages without CR_LF, so don't remove it for them.
+	if !prodIsMQTT {
+		msgSize -= int64(LEN_CR_LF)
+	}
 
 	// No atomic needed since accessed under client lock.
 	// Monitor is reading those also under client's lock.
@@ -3066,6 +3071,10 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 	// Queue to outbound buffer
 	client.queueOutbound(mh)
 	client.queueOutbound(msg)
+	if prodIsMQTT {
+		// Need to add CR_LF since MQTT producers don't send CR_LF
+		client.queueOutbound([]byte(CR_LF))
+	}
 
 	client.out.pm++
 

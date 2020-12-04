@@ -2716,7 +2716,8 @@ func TestMQTTWill(t *testing.T) {
 				testMQTTDisconnect(t, mc, nil)
 				testMQTTExpectNothing(t, rs)
 				if wm, err := sub.NextMsg(100 * time.Millisecond); err == nil {
-					t.Fatalf("Should not have receive a message, got %v", wm)
+					t.Fatalf("Should not have receive a message, got subj=%q data=%q",
+						wm.Subject, wm.Data)
 				}
 			}
 		})
