@@ -686,18 +686,15 @@ func (store *DirJWTStore) startExpiring(reCheck time.Duration, limit int64, evic
 			now := time.Now()
 			store.Lock()
 			if pq.Len() > 0 {
-				if it := heap.Pop(pq).(*jwtItem); it.expiration <= now.Unix() {
+				if it := pq.heap[0]; it.expiration <= now.Unix() {
 					path := store.pathForKey(it.publicKey)
-					if err := os.Remove(path); err != nil {
-						heap.Push(pq, it) // retry later
-					} else {
+					if err := os.Remove(path); err == nil {
+						heap.Pop(pq)
 						pq.unTrack(it.publicKey)
 						xorAssign(&pq.hash, it.hash)
 						store.Unlock()
-						continue // we removed an entry, check next one
+						continue // we removed an entry, check next one right away
 					}
-				} else {
-					heap.Push(pq, it)
 				}
 			}
 			store.Unlock()
