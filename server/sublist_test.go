@@ -1258,6 +1258,74 @@ func TestSublistRegisterInterestNotification(t *testing.T) {
 	expectFalse()
 }
 
+func TestSublistReverseMatch(t *testing.T) {
+	s := NewSublistWithCache()
+	fooSub := newSub("foo")
+	barSub := newSub("bar")
+	fooBarSub := newSub("foo.bar")
+	fooBazSub := newSub("foo.baz")
+	fooBarBazSub := newSub("foo.bar.baz")
+	s.Insert(fooSub)
+	s.Insert(barSub)
+	s.Insert(fooBarSub)
+	s.Insert(fooBazSub)
+	s.Insert(fooBarBazSub)
+
+	r := s.ReverseMatch("foo")
+	verifyLen(r.psubs, 1, t)
+	verifyMember(r.psubs, fooSub, t)
+
+	r = s.ReverseMatch("bar")
+	verifyLen(r.psubs, 1, t)
+	verifyMember(r.psubs, barSub, t)
+
+	r = s.ReverseMatch("*")
+	verifyLen(r.psubs, 2, t)
+	verifyMember(r.psubs, fooSub, t)
+	verifyMember(r.psubs, barSub, t)
+
+	r = s.ReverseMatch("baz")
+	verifyLen(r.psubs, 0, t)
+
+	r = s.ReverseMatch("foo.*")
+	verifyLen(r.psubs, 2, t)
+	verifyMember(r.psubs, fooBarSub, t)
+	verifyMember(r.psubs, fooBazSub, t)
+
+	r = s.ReverseMatch("*.*")
+	verifyLen(r.psubs, 2, t)
+	verifyMember(r.psubs, fooBarSub, t)
+	verifyMember(r.psubs, fooBazSub, t)
+
+	r = s.ReverseMatch("*.bar")
+	verifyLen(r.psubs, 1, t)
+	verifyMember(r.psubs, fooBarSub, t)
+
+	r = s.ReverseMatch("*.baz")
+	verifyLen(r.psubs, 1, t)
+	verifyMember(r.psubs, fooBazSub, t)
+
+	r = s.ReverseMatch("bar.*")
+	verifyLen(r.psubs, 0, t)
+
+	r = s.ReverseMatch("*.bat")
+	verifyLen(r.psubs, 0, t)
+
+	r = s.ReverseMatch("foo.>")
+	verifyLen(r.psubs, 3, t)
+	verifyMember(r.psubs, fooBarSub, t)
+	verifyMember(r.psubs, fooBazSub, t)
+	verifyMember(r.psubs, fooBarBazSub, t)
+
+	r = s.ReverseMatch(">")
+	verifyLen(r.psubs, 5, t)
+	verifyMember(r.psubs, fooSub, t)
+	verifyMember(r.psubs, barSub, t)
+	verifyMember(r.psubs, fooBarSub, t)
+	verifyMember(r.psubs, fooBazSub, t)
+	verifyMember(r.psubs, fooBarBazSub, t)
+}
+
 // -- Benchmarks Setup --
 
 var benchSublistSubs []*subscription

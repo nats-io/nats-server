@@ -596,6 +596,25 @@ func (m *maxTracedMsgLenOption) Apply(server *Server) {
 	server.Noticef("Reloaded: max_traced_msg_len = %d", m.newValue)
 }
 
+type mqttAckWaitReload struct {
+	noopOption
+	newValue time.Duration
+}
+
+func (o *mqttAckWaitReload) Apply(s *Server) {
+	s.Noticef("Reloaded: MQTT ack_wait = %v", o.newValue)
+}
+
+type mqttMaxAckPendingReload struct {
+	noopOption
+	newValue uint16
+}
+
+func (o *mqttMaxAckPendingReload) Apply(s *Server) {
+	s.mqttUpdateMaxAckPending(o.newValue)
+	s.Noticef("Reloaded: MQTT max_ack_pending = %v", o.newValue)
+}
+
 // Reload reads the current configuration file and applies any supported
 // changes. This returns an error if the server was not started with a config
 // file or an option which doesn't support hot-swapping was changed.
@@ -633,6 +652,7 @@ func (s *Server) Reload() error {
 	gatewayOrgPort := curOpts.Gateway.Port
 	leafnodesOrgPort := curOpts.LeafNode.Port
 	websocketOrgPort := curOpts.Websocket.Port
+	mqttOrgPort := curOpts.MQTT.Port
 
 	s.mu.Unlock()
 
@@ -664,6 +684,9 @@ func (s *Server) Reload() error {
 	}
 	if newOpts.Websocket.Port == -1 {
 		newOpts.Websocket.Port = websocketOrgPort
+	}
+	if newOpts.MQTT.Port == -1 {
+		newOpts.MQTT.Port = mqttOrgPort
 	}
 
 	if err := s.reloadOptions(curOpts, newOpts); err != nil {
@@ -766,7 +789,7 @@ func imposeOrder(value interface{}) error {
 	case WebsocketOpts:
 		sort.Strings(value.AllowedOrigins)
 	case string, bool, int, int32, int64, time.Duration, float64, nil,
-		LeafNodeOpts, ClusterOpts, *tls.Config, *URLAccResolver, *MemAccResolver, *DirAccResolver, *CacheDirAccResolver, Authentication:
+		LeafNodeOpts, ClusterOpts, *tls.Config, *URLAccResolver, *MemAccResolver, *DirAccResolver, *CacheDirAccResolver, Authentication, MQTTOpts:
 		// explicitly skipped types
 	default:
 		// this will fail during unit tests
@@ -968,6 +991,20 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			tmpOld.TLSConfig = nil
 			tmpNew.TLSConfig = nil
 			// If there is really a change prevents reload.
+			if !reflect.DeepEqual(tmpOld, tmpNew) {
+				// See TODO(ik) note below about printing old/new values.
+				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
+					field.Name, oldValue, newValue)
+			}
+		case "mqtt":
+			diffOpts = append(diffOpts, &mqttAckWaitReload{newValue: newValue.(MQTTOpts).AckWait})
+			diffOpts = append(diffOpts, &mqttMaxAckPendingReload{newValue: newValue.(MQTTOpts).MaxAckPending})
+			// Nil out/set to 0 the options that we allow to be reloaded so that
+			// we only fail reload if some that we don't support are changed.
+			tmpOld := oldValue.(MQTTOpts)
+			tmpNew := newValue.(MQTTOpts)
+			tmpOld.TLSConfig, tmpOld.AckWait, tmpOld.MaxAckPending = nil, 0, 0
+			tmpNew.TLSConfig, tmpNew.AckWait, tmpNew.MaxAckPending = nil, 0, 0
 			if !reflect.DeepEqual(tmpOld, tmpNew) {
 				// See TODO(ik) note below about printing old/new values.
 				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
@@ -1233,6 +1270,8 @@ func (s *Server) reloadAuthorization() {
 		// can't hold the lock as go routine reading it may be waiting for lock as well
 		resetCh = s.sys.resetCh
 	}
+	// Check that publish retained messages sources are still allowed to publish.
+	s.mqttCheckPubRetainedPerms()
 	s.mu.Unlock()
 
 	if resetCh != nil {

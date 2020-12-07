@@ -51,6 +51,20 @@ const (
 	ACCOUNT
 )
 
+// Extended type of a CLIENT connection. This is returned by c.clientType()
+// and indicate what type of client connection we are dealing with.
+// If invoked on a non CLIENT connection, NON_CLIENT type is returned.
+const (
+	// If the connection is not a CLIENT connection.
+	NON_CLIENT = iota
+	// Regular NATS client.
+	NATS
+	// MQTT client.
+	MQTT
+	// Websocket client.
+	WS
+)
+
 const (
 	// ClientProtoZero is the original Client protocol from 2009.
 	// http://nats.io/documentation/internals/nats-protocol/
@@ -178,6 +192,7 @@ const (
 	NoRespondersRequiresHeaders
 	ClusterNameConflict
 	DuplicateRemoteLeafnodeConnection
+	DuplicateClientID
 )
 
 // Some flags passed to processMsgResults
@@ -237,6 +252,7 @@ type client struct {
 	gw    *gateway
 	leaf  *leaf
 	ws    *websocket
+	mqtt  *mqtt
 
 	// To keep track of gateway replies mapping
 	gwrm map[string]*gwReplyMap
@@ -425,6 +441,26 @@ func (c *client) GetTLSConnectionState() *tls.ConnectionState {
 	return &state
 }
 
+// For CLIENT connections, this function returns the client type, that is,
+// NATS (for regular clients), MQTT or WS for websocket.
+// If this is invoked for a non CLIENT connection, NON_CLIENT is returned.
+//
+// This function does not lock the client and accesses fields that are supposed
+// to be immutable and therefore it can be invoked outside of the client's lock.
+func (c *client) clientType() int {
+	switch c.kind {
+	case CLIENT:
+		if c.isMqtt() {
+			return MQTT
+		} else if c.isWebsocket() {
+			return WS
+		}
+		return NATS
+	default:
+		return NON_CLIENT
+	}
+}
+
 // This is the main subscription struct that indicates
 // interest in published messages.
 // FIXME(dlc) - This is getting bloated for normal subs, need
@@ -442,6 +478,7 @@ type subscription struct {
 	max     int64
 	qw      int32
 	closed  int32
+	mqtt    *mqttSub
 }
 
 // Indicate that this subscription is closed.
@@ -537,11 +574,14 @@ func (c *client) initClient() {
 
 	switch c.kind {
 	case CLIENT:
-		name := "cid"
-		if c.ws != nil {
-			name = "wid"
+		switch c.clientType() {
+		case NATS:
+			c.ncs.Store(fmt.Sprintf("%s - cid:%d", conn, c.cid))
+		case WS:
+			c.ncs.Store(fmt.Sprintf("%s - wid:%d", conn, c.cid))
+		case MQTT:
+			c.ncs.Store(fmt.Sprintf("%s - mid:%d", conn, c.cid))
 		}
-		c.ncs.Store(fmt.Sprintf("%s - %s:%d", conn, name, c.cid))
 	case ROUTER:
 		c.ncs.Store(fmt.Sprintf("%s - rid:%d", conn, c.cid))
 	case GATEWAY:
@@ -963,7 +1003,10 @@ func (c *client) readLoop(pre []byte) {
 		return
 	}
 	nc := c.nc
-	ws := c.ws != nil
+	ws := c.isWebsocket()
+	if c.isMqtt() {
+		c.mqtt.r = &mqttReader{reader: nc}
+	}
 	c.in.rsz = startBufSize
 	// Snapshot max control line since currently can not be changed on reload and we
 	// were checking it on each call to parse. If this changes and we allow MaxControlLine
@@ -983,6 +1026,9 @@ func (c *client) readLoop(pre []byte) {
 	c.mu.Unlock()
 
 	defer func() {
+		if c.isMqtt() {
+			s.mqttHandleWill(c)
+		}
 		// These are used only in the readloop, so we can set them to nil
 		// on exit of the readLoop.
 		c.in.results, c.in.pacache = nil, nil
@@ -1144,7 +1190,7 @@ func closedStateForErr(err error) ClosedState {
 // collapsePtoNB will place primary onto nb buffer as needed in prep for WriteTo.
 // This will return a copy on purpose.
 func (c *client) collapsePtoNB() (net.Buffers, int64) {
-	if c.ws != nil {
+	if c.isWebsocket() {
 		return c.wsCollapsePtoNB()
 	}
 	if c.out.p != nil {
@@ -1158,7 +1204,7 @@ func (c *client) collapsePtoNB() (net.Buffers, int64) {
 // This will handle the fixup needed on a partial write.
 // Assume pending has been already calculated correctly.
 func (c *client) handlePartialWrite(pnb net.Buffers) {
-	if c.ws != nil {
+	if c.isWebsocket() {
 		c.ws.frames = append(pnb, c.ws.frames...)
 		return
 	}
@@ -1252,7 +1298,7 @@ func (c *client) flushOutbound() bool {
 
 	// Subtract from pending bytes and messages.
 	c.out.pb -= n
-	if c.ws != nil {
+	if c.isWebsocket() {
 		c.ws.fs -= n
 	}
 	c.out.pm -= apm // FIXME(dlc) - this will not be totally accurate on partials.
@@ -1371,7 +1417,7 @@ func (c *client) markConnAsClosed(reason ClosedState) {
 	c.flags.set(connMarkedClosed)
 	// For a websocket client, unless we are told not to flush, enqueue
 	// a websocket CloseMessage based on the reason.
-	if !skipFlush && c.ws != nil && !c.ws.closeSent {
+	if !skipFlush && c.isWebsocket() && !c.ws.closeSent {
 		c.wsEnqueueCloseMessage(reason)
 	}
 	// Be consistent with the creation: for routes and gateways,
@@ -1683,7 +1729,6 @@ func (c *client) processConnect(arg []byte) error {
 			// By default register with the global account.
 			c.registerWithAccount(srv.globalAccount())
 		}
-
 	}
 
 	switch kind {
@@ -1703,7 +1748,6 @@ func (c *client) processConnect(arg []byte) error {
 			c.sendErr(ErrNoRespondersRequiresHeaders.Error())
 			c.closeConnection(NoRespondersRequiresHeaders)
 			return ErrNoRespondersRequiresHeaders
-
 		}
 		if verbose {
 			c.sendOK()
@@ -1933,6 +1977,9 @@ func (c *client) sendRTTPing() bool {
 // the c.rtt is 0 and wants to force an update by sending a PING.
 // Client lock held on entry.
 func (c *client) sendRTTPingLocked() bool {
+	if c.isMqtt() {
+		return false
+	}
 	// Most client libs send a CONNECT+PING and wait for a PONG from the
 	// server. So if firstPongSent flag is set, it is ok for server to
 	// send the PING. But in case we have client libs that don't do that,
@@ -1963,7 +2010,7 @@ func (c *client) generateClientInfoJSON(info Info) []byte {
 	info.CID = c.cid
 	info.ClientIP = c.host
 	info.MaxPayload = c.mpay
-	if c.ws != nil {
+	if c.isWebsocket() {
 		info.ClientConnectURLs = info.WSConnectURLs
 	}
 	info.WSConnectURLs = nil
@@ -1978,7 +2025,9 @@ func (c *client) sendErr(err string) {
 	if c.trace {
 		c.traceOutOp("-ERR", []byte(err))
 	}
-	c.enqueueProto([]byte(fmt.Sprintf(errProto, err)))
+	if !c.isMqtt() {
+		c.enqueueProto([]byte(fmt.Sprintf(errProto, err)))
+	}
 	c.mu.Unlock()
 }
 
@@ -2254,7 +2303,7 @@ func (c *client) processSub(subject, queue, bsid []byte, cb msgHandler, noForwar
 	// This check does not apply to SYSTEM or JETSTREAM or ACCOUNT clients (because they don't have a `nc`...)
 	if c.isClosed() && (kind != SYSTEM && kind != JETSTREAM && kind != ACCOUNT) {
 		c.mu.Unlock()
-		return sub, nil
+		return nil, ErrConnectionClosed
 	}
 
 	// Check permissions if applicable.
@@ -2942,7 +2991,12 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 	// Update statistics
 
 	// The msg includes the CR_LF, so pull back out for accounting.
-	msgSize := int64(len(msg) - LEN_CR_LF)
+	msgSize := int64(len(msg))
+	prodIsMQTT := c.isMqtt()
+	// MQTT producers send messages without CR_LF, so don't remove it for them.
+	if !prodIsMQTT {
+		msgSize -= int64(LEN_CR_LF)
+	}
 
 	// No atomic needed since accessed under client lock.
 	// Monitor is reading those also under client's lock.
@@ -3017,6 +3071,10 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 	// Queue to outbound buffer
 	client.queueOutbound(mh)
 	client.queueOutbound(msg)
+	if prodIsMQTT {
+		// Need to add CR_LF since MQTT producers don't send CR_LF
+		client.queueOutbound([]byte(CR_LF))
+	}
 
 	client.out.pm++
 
@@ -3309,6 +3367,11 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 
 	if c.opts.Verbose {
 		c.sendOK()
+	}
+
+	// If MQTT client, check for retain flag now that we have passed permissions check
+	if c.isMqtt() {
+		c.mqttHandlePubRetain()
 	}
 
 	// Check if this client's gateway replies map is not empty
@@ -4596,7 +4659,7 @@ func convertAllowedConnectionTypes(cts []string) (map[string]struct{}, error) {
 	for _, i := range cts {
 		i = strings.ToUpper(i)
 		switch i {
-		case jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket, jwt.ConnectionTypeLeafnode:
+		case jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket, jwt.ConnectionTypeLeafnode, jwt.ConnectionTypeMqtt:
 			m[i] = struct{}{}
 		default:
 			unknown = append(unknown, i)
@@ -4618,14 +4681,19 @@ func (c *client) connectionTypeAllowed(acts map[string]struct{}) bool {
 	if len(acts) == 0 {
 		return true
 	}
-	// Assume standard client, then update based on presence of websocket
-	// or other type.
-	want := jwt.ConnectionTypeStandard
-	if c.kind == LEAF {
+	var want string
+	switch c.kind {
+	case CLIENT:
+		switch c.clientType() {
+		case NATS:
+			want = jwt.ConnectionTypeStandard
+		case WS:
+			want = jwt.ConnectionTypeWebsocket
+		case MQTT:
+			want = jwt.ConnectionTypeMqtt
+		}
+	case LEAF:
 		want = jwt.ConnectionTypeLeafnode
-	}
-	if c.ws != nil {
-		want = jwt.ConnectionTypeWebsocket
 	}
 	_, ok := acts[want]
 	return ok

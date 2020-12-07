@@ -253,6 +253,8 @@ func (s *Server) configureAuthorization() {
 
 	// Do similar for websocket config
 	s.wsConfigAuth(&opts.Websocket)
+	// And for mqtt config
+	s.mqttConfigAuth(&opts.MQTT)
 }
 
 // Takes the given slices of NkeyUser and User options and build
@@ -343,11 +345,15 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 	)
 	s.mu.Lock()
 	authRequired := s.info.AuthRequired
-	// c.ws is immutable, but may need lock if we get race reports.
-	if !authRequired && c.ws != nil {
+	if !authRequired {
 		// If no auth required for regular clients, then check if
-		// we have an override for websocket clients.
-		authRequired = s.websocket.authOverride
+		// we have an override for MQTT or Websocket clients.
+		switch c.clientType() {
+		case MQTT:
+			authRequired = s.mqtt.authOverride
+		case WS:
+			authRequired = s.websocket.authOverride
+		}
 	}
 	if !authRequired {
 		// TODO(dlc) - If they send us credentials should we fail?
@@ -361,20 +367,36 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 		noAuthUser string
 	)
 	tlsMap := opts.TLSMap
-	if c.ws != nil {
-		wo := &opts.Websocket
-		// Always override TLSMap.
-		tlsMap = wo.TLSMap
-		// The rest depends on if there was any auth override in
-		// the websocket's config.
-		if s.websocket.authOverride {
-			noAuthUser = wo.NoAuthUser
-			username = wo.Username
-			password = wo.Password
-			token = wo.Token
-			ao = true
+	if c.kind == CLIENT {
+		switch c.clientType() {
+		case MQTT:
+			mo := &opts.MQTT
+			// Always override TLSMap.
+			tlsMap = mo.TLSMap
+			// The rest depends on if there was any auth override in
+			// the mqtt's config.
+			if s.mqtt.authOverride {
+				noAuthUser = mo.NoAuthUser
+				username = mo.Username
+				password = mo.Password
+				token = mo.Token
+				ao = true
+			}
+		case WS:
+			wo := &opts.Websocket
+			// Always override TLSMap.
+			tlsMap = wo.TLSMap
+			// The rest depends on if there was any auth override in
+			// the websocket's config.
+			if s.websocket.authOverride {
+				noAuthUser = wo.NoAuthUser
+				username = wo.Username
+				password = wo.Password
+				token = wo.Token
+				ao = true
+			}
 		}
-	} else if c.kind == LEAF {
+	} else {
 		tlsMap = opts.LeafNode.TLSMap
 	}
 	if !ao {
@@ -1012,7 +1034,7 @@ func validateAllowedConnectionTypes(m map[string]struct{}) error {
 	for ct := range m {
 		ctuc := strings.ToUpper(ct)
 		switch ctuc {
-		case jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket, jwt.ConnectionTypeLeafnode:
+		case jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket, jwt.ConnectionTypeLeafnode, jwt.ConnectionTypeMqtt:
 		default:
 			return fmt.Errorf("unknown connection type %q", ct)
 		}

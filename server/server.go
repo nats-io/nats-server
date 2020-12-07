@@ -222,6 +222,9 @@ type Server struct {
 	// Websocket structure
 	websocket srvWebsocket
 
+	// MQTT structure
+	mqtt srvMQTT
+
 	// exporting account name the importer experienced issues with
 	incompleteAccExporterMap sync.Map
 
@@ -531,6 +534,9 @@ func validateOptions(o *Options) error {
 	}
 	// Check that cluster name if defined matches any gateway name.
 	if err := validateClusterName(o); err != nil {
+		return err
+	}
+	if err := validateMQTTOptions(o); err != nil {
 		return err
 	}
 	// Finally check websocket options.
@@ -1516,6 +1522,11 @@ func (s *Server) Start() {
 		s.startWebsocketServer()
 	}
 
+	// MQTT
+	if opts.MQTT.Port != 0 {
+		s.startMQTT()
+	}
+
 	// Start up routing as well if needed.
 	if opts.Cluster.Port != 0 {
 		s.startGoRoutine(func() {
@@ -1609,6 +1620,13 @@ func (s *Server) Shutdown() {
 		s.websocket.server.Close()
 		s.websocket.server = nil
 		s.websocket.listener = nil
+	}
+
+	// Kick MQTT accept loop
+	if s.mqtt.listener != nil {
+		doneExpected++
+		s.mqtt.listener.Close()
+		s.mqtt.listener = nil
 	}
 
 	// Kick leafnodes AcceptLoop()
@@ -1747,7 +1765,7 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	s.clientConnectURLs = s.getClientConnectURLs()
 	s.listener = l
 
-	go s.acceptConnections(l, "Client", func(conn net.Conn) { s.createClient(conn, nil) },
+	go s.acceptConnections(l, "Client", func(conn net.Conn) { s.createClient(conn) },
 		func(_ error) bool {
 			if s.isLameDuckMode() {
 				// Signal that we are not accepting new clients
@@ -2073,7 +2091,7 @@ func (c *tlsMixConn) Read(b []byte) (int, error) {
 	return c.Conn.Read(b)
 }
 
-func (s *Server) createClient(conn net.Conn, ws *websocket) *client {
+func (s *Server) createClient(conn net.Conn) *client {
 	// Snapshot server options.
 	opts := s.getOpts()
 
@@ -2085,19 +2103,16 @@ func (s *Server) createClient(conn net.Conn, ws *websocket) *client {
 	}
 	now := time.Now()
 
-	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: maxPay, msubs: maxSubs, start: now, last: now, ws: ws}
+	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: maxPay, msubs: maxSubs, start: now, last: now}
 
 	c.registerWithAccount(s.globalAccount())
 
-	// Grab JSON info string
+	var info Info
+	var authRequired bool
+
 	s.mu.Lock()
-	info := s.copyInfo()
-	// If this is a websocket client and there is no top-level auth specified,
-	// then we use the websocket's specific boolean that will be set to true
-	// if there is any auth{} configured in websocket{}.
-	if ws != nil && !info.AuthRequired {
-		info.AuthRequired = s.websocket.authOverride
-	}
+	// Grab JSON info string
+	info = s.copyInfo()
 	if s.nonceRequired() {
 		// Nonce handling
 		var raw [nonceLen]byte
@@ -2106,12 +2121,14 @@ func (s *Server) createClient(conn net.Conn, ws *websocket) *client {
 		info.Nonce = string(nonce)
 	}
 	c.nonce = []byte(info.Nonce)
+	authRequired = info.AuthRequired
+
 	s.totalClients++
 	s.mu.Unlock()
 
 	// Grab lock
 	c.mu.Lock()
-	if info.AuthRequired {
+	if authRequired {
 		c.flags.set(expectConnect)
 	}
 
@@ -2155,6 +2172,8 @@ func (s *Server) createClient(conn net.Conn, ws *websocket) *client {
 		return nil
 	}
 	s.clients[c.cid] = c
+
+	tlsRequired := info.TLSRequired
 	s.mu.Unlock()
 
 	// Re-Grab lock
@@ -2163,7 +2182,6 @@ func (s *Server) createClient(conn net.Conn, ws *websocket) *client {
 	// Connection could have been closed while sending the INFO proto.
 	isClosed := c.isClosed()
 
-	tlsRequired := ws == nil && info.TLSRequired
 	var pre []byte
 	// If we have both TLS and non-TLS allowed we need to see which
 	// one the client wants.
@@ -2231,16 +2249,8 @@ func (s *Server) createClient(conn net.Conn, ws *websocket) *client {
 	// Check for Auth. We schedule this timer after the TLS handshake to avoid
 	// the race where the timer fires during the handshake and causes the
 	// server to write bad data to the socket. See issue #432.
-	if info.AuthRequired {
-		timeout := opts.AuthTimeout
-		// For websocket, possibly override only if set. We make sure that
-		// opts.AuthTimeout is set to a default value if not configured,
-		// but we don't do the same for websocket's one so that we know
-		// if user has explicitly set or not.
-		if ws != nil && opts.Websocket.AuthTimeout != 0 {
-			timeout = opts.Websocket.AuthTimeout
-		}
-		c.setAuthTimer(secondsToDuration(timeout))
+	if authRequired {
+		c.setAuthTimer(secondsToDuration(opts.AuthTimeout))
 	}
 
 	// Do final client initialization
@@ -2421,7 +2431,11 @@ func (s *Server) removeClient(c *client) {
 		if updateProtoInfoCount {
 			s.cproto--
 		}
+		mqtt := c.isMqtt()
 		s.mu.Unlock()
+		if mqtt {
+			s.mqttHandleClosedClient(c)
+		}
 	case ROUTER:
 		s.removeRoute(c)
 	case GATEWAY:

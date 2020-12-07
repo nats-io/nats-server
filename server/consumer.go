@@ -60,6 +60,11 @@ type ConsumerConfig struct {
 	SampleFrequency string        `json:"sample_freq,omitempty"`
 	MaxWaiting      int           `json:"max_waiting,omitempty"`
 	MaxAckPending   int           `json:"max_ack_pending,omitempty"`
+
+	// These are non public configuration options.
+	// If you add new options, check fileConsumerInfoJSON in order for them to
+	// be properly persisted/recovered, if needed.
+	allowNoInterest bool
 }
 
 type CreateConsumerRequest struct {
@@ -265,18 +270,23 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 
 	// Make sure any partition subject is also a literal.
 	if config.FilterSubject != "" {
-		// If this is a direct match for the streams only subject clear the filter.
+		var checkSubject bool
+
 		mset.mu.RLock()
-		if len(mset.config.Subjects) == 1 && mset.config.Subjects[0] == config.FilterSubject {
-			config.FilterSubject = _EMPTY_
+		// If the stream was created with no subject, then skip the checks
+		if !mset.config.allowNoSubject {
+			// If this is a direct match for the streams only subject clear the filter.
+			if len(mset.config.Subjects) == 1 && mset.config.Subjects[0] == config.FilterSubject {
+				config.FilterSubject = _EMPTY_
+			} else {
+				checkSubject = true
+			}
 		}
 		mset.mu.RUnlock()
 
-		if config.FilterSubject != "" {
-			// Make sure this is a valid partition of the interest subjects.
-			if !mset.validSubject(config.FilterSubject) {
-				return nil, fmt.Errorf("consumer filter subject is not a valid subset of the interest subjects")
-			}
+		// Make sure this is a valid partition of the interest subjects.
+		if checkSubject && !mset.validSubject(config.FilterSubject) {
+			return nil, fmt.Errorf("consumer filter subject is not a valid subset of the interest subjects")
 		}
 	}
 
@@ -350,7 +360,7 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 			} else {
 				// If we are a push mode and not active and the only difference
 				// is deliver subject then update and return.
-				if configsEqualSansDelivery(ocfg, *config) && eo.hasNoLocalInterest() {
+				if configsEqualSansDelivery(ocfg, *config) && (config.allowNoInterest || eo.hasNoLocalInterest()) {
 					eo.updateDeliverSubject(config.DeliverSubject)
 					return eo, nil
 				} else {
@@ -2166,8 +2176,8 @@ func (o *Consumer) stop(dflag, doSignal, advisory bool) error {
 // Check that we do not form a cycle by delivering to a delivery subject
 // that is part of the interest group.
 func (mset *Stream) deliveryFormsCycle(deliverySubject string) bool {
-	mset.mu.Lock()
-	defer mset.mu.Unlock()
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
 
 	for _, subject := range mset.config.Subjects {
 		if subjectIsSubsetMatch(deliverySubject, subject) {

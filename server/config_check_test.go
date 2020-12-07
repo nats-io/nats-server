@@ -1301,8 +1301,8 @@ func TestConfigCheck(t *testing.T) {
                      user: user1
                      password: pwd
                      users = [{user: user2, password: pwd}]
-									 }
-								}
+                   }
+                }
               `,
 			err:       errors.New("can not have a single user/pass and a users array"),
 			errorLine: 3,
@@ -1312,17 +1312,75 @@ func TestConfigCheck(t *testing.T) {
 			name: "duplicate usernames in leafnode authorization",
 			config: `
                 leafnodes {
-                   authorization {
-                     users = [
-                       {user: user, password: pwd}
-											 {user: user, password: pwd}
-                     ]
-									 }
-								}
+                    authorization {
+                        users = [
+                            {user: user, password: pwd}
+                            {user: user, password: pwd}
+                        ]
+                    }
+                }
               `,
 			err:       errors.New(`duplicate user "user" detected in leafnode authorization`),
 			errorLine: 3,
-			errorPos:  20,
+			errorPos:  21,
+		},
+		{
+			name: "mqtt bad type",
+			config: `
+                mqtt [
+					"wrong"
+				]
+			`,
+			err:       errors.New(`Expected mqtt to be a map, got []interface {}`),
+			errorLine: 2,
+			errorPos:  17,
+		},
+		{
+			name: "mqtt bad listen",
+			config: `
+                mqtt {
+                    listen: "xxxxxxxx"
+				}
+			`,
+			err:       errors.New(`could not parse address string "xxxxxxxx"`),
+			errorLine: 3,
+			errorPos:  21,
+		},
+		{
+			name: "mqtt bad host",
+			config: `
+                mqtt {
+                    host: 1234
+				}
+			`,
+			err:       errors.New(`interface conversion: interface {} is int64, not string`),
+			errorLine: 3,
+			errorPos:  21,
+		},
+		{
+			name: "mqtt bad port",
+			config: `
+                mqtt {
+                    port: "abc"
+				}
+			`,
+			err:       errors.New(`interface conversion: interface {} is string, not int64`),
+			errorLine: 3,
+			errorPos:  21,
+		},
+		{
+			name: "mqtt bad TLS",
+			config: `
+                mqtt {
+					port: -1
+                    tls {
+                        cert_file: "./configs/certs/server.pem"
+					}
+				}
+			`,
+			err:       errors.New(`missing 'key_file' in TLS configuration`),
+			errorLine: 4,
+			errorPos:  21,
 		},
 		{
 			name: "connection types wrong type",

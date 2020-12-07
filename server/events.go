@@ -1410,6 +1410,7 @@ func (s *Server) systemSubscribe(subject, queue string, internalOnly bool, cb ms
 	if queue != "" {
 		q = []byte(queue)
 	}
+	// Now create the subscription
 	return c.processSub([]byte(subject), q, []byte(sid), cb, internalOnly)
 }
 

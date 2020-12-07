@@ -1915,6 +1915,8 @@ func (reason ClosedState) String() string {
 		return "Cluster Name Conflict"
 	case DuplicateRemoteLeafnodeConnection:
 		return "Duplicate Remote LeafNode Connection"
+	case DuplicateClientID:
+		return "Duplicate Client ID"
 	}
 
 	return "Unknown State"

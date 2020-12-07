@@ -1245,6 +1245,8 @@ func TestServerShutdownDuringStart(t *testing.T) {
 	o.Websocket.Port = -1
 	o.Websocket.HandshakeTimeout = 1
 	o.Websocket.NoTLS = true
+	o.MQTT.Host = "127.0.0.1"
+	o.MQTT.Port = -1
 
 	// We are going to test that if the server is shutdown
 	// while Start() runs (in this case, before), we don't
@@ -1285,6 +1287,9 @@ func TestServerShutdownDuringStart(t *testing.T) {
 	}
 	if s.websocket.listener != nil {
 		listeners = append(listeners, "websocket")
+	}
+	if s.mqtt.listener != nil {
+		listeners = append(listeners, "mqtt")
 	}
 	s.mu.Unlock()
 	if len(listeners) > 0 {
