@@ -1464,7 +1464,7 @@ func TestMQTTTopicAndSubjectConversion(t *testing.T) {
 		{"foo.bar", "foo.bar", "", "not supported"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, res, err := mqttTopicToNATSPubSubject([]byte(test.mqttTopic))
+			res, err := mqttTopicToNATSPubSubject([]byte(test.mqttTopic))
 			if test.err != _EMPTY_ {
 				if err == nil || !strings.Contains(err.Error(), test.err) {
 					t.Fatalf("Expected error %q, got %q", test.err, err.Error())
@@ -1476,7 +1476,7 @@ func TestMQTTTopicAndSubjectConversion(t *testing.T) {
 				t.Fatalf("Expected subject %q got %q", test.natsSubject, toNATS)
 			}
 
-			res = natsSubjectToMQTTTopic(toNATS)
+			res = natsSubjectToMQTTTopic(string(res))
 			backToMQTT := string(res)
 			if backToMQTT != test.mqttTopic {
 				t.Fatalf("Expected topic %q got %q (NATS conversion was %q)", test.mqttTopic, backToMQTT, toNATS)
@@ -1503,15 +1503,22 @@ func TestMQTTFilterConversion(t *testing.T) {
 		{"single level wildcard", "foo/+/+", "foo.*.*"},
 		{"single level wildcard", "foo/+/+/", "foo.*.*./"},
 		{"single level wildcard", "foo/+/+/bar", "foo.*.*.bar"},
+		{"single level wildcard", "foo//+", "foo./.*"},
+		{"single level wildcard", "foo//+/", "foo./.*./"},
+		{"single level wildcard", "foo//+//", "foo./.*././"},
+		{"single level wildcard", "foo//+//bar", "foo./.*./.bar"},
+		{"single level wildcard", "foo///+///bar", "foo././.*././.bar"},
 
 		{"multi level wildcard", "#", ">"},
 		{"multi level wildcard", "/#", "/.>"},
 		{"multi level wildcard", "/foo/#", "/.foo.>"},
 		{"multi level wildcard", "foo/#", "foo.>"},
+		{"multi level wildcard", "foo//#", "foo./.>"},
+		{"multi level wildcard", "foo///#", "foo././.>"},
 		{"multi level wildcard", "foo/bar/#", "foo.bar.>"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, res, err := mqttFilterToNATSSubject([]byte(test.mqttTopic))
+			res, err := mqttFilterToNATSSubject([]byte(test.mqttTopic))
 			if err != nil {
 				t.Fatalf("Error: %v", err)
 			}
