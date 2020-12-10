@@ -175,6 +175,7 @@ type mqttPersistedSession struct {
 }
 
 type mqttRetainedMsg struct {
+	Topic  []byte `json:"topic,omitempty"`
 	Msg    []byte `json:"msg,omitempty"`
 	Flags  byte   `json:"flags,omitempty"`
 	Source string `json:"source,omitempty"`
@@ -232,6 +233,7 @@ type mqttWriter struct {
 
 type mqttWill struct {
 	topic   []byte
+	subject []byte
 	message []byte
 	qos     byte
 	retain  bool
@@ -240,9 +242,12 @@ type mqttWill struct {
 type mqttFilter struct {
 	filter string
 	qos    byte
+	// Used only for tracing and should not be used after parsing of (un)sub protocols.
+	ttopic []byte
 }
 
 type mqttPublish struct {
+	topic   []byte
 	subject []byte
 	msg     []byte
 	sz      int
@@ -547,12 +552,12 @@ func (c *client) mqttParse(buf []byte) error {
 			var subs []*subscription
 			pi, filters, err = c.mqttParseSubs(r, b, pl)
 			if trace {
-				c.traceInOp("SUBSCRIBE", errOrTrace(err, mqttSubscribeTrace(filters)))
+				c.traceInOp("SUBSCRIBE", errOrTrace(err, mqttSubscribeTrace(pi, filters)))
 			}
 			if err == nil {
 				subs, err = c.mqttProcessSubs(filters)
 				if err == nil && trace {
-					c.traceOutOp("SUBACK", []byte(mqttSubscribeTrace(filters)))
+					c.traceOutOp("SUBACK", []byte(fmt.Sprintf("pi=%v", pi)))
 				}
 			}
 			if err == nil {
@@ -564,12 +569,12 @@ func (c *client) mqttParse(buf []byte) error {
 			var filters []*mqttFilter
 			pi, filters, err = c.mqttParseUnsubs(r, b, pl)
 			if trace {
-				c.traceInOp("UNSUBSCRIBE", errOrTrace(err, mqttUnsubscribeTrace(filters)))
+				c.traceInOp("UNSUBSCRIBE", errOrTrace(err, mqttUnsubscribeTrace(pi, filters)))
 			}
 			if err == nil {
 				err = c.mqttProcessUnsubs(filters)
 				if err == nil && trace {
-					c.traceOutOp("UNSUBACK", []byte(strconv.FormatInt(int64(pi), 10)))
+					c.traceOutOp("UNSUBACK", []byte(fmt.Sprintf("pi=%v", pi)))
 				}
 			}
 			if err == nil {
@@ -1049,13 +1054,13 @@ func (as *mqttAccountSessionManager) serializeRetainedMsgsForSub(sess *mqttSessi
 			pi := sess.getPubAckIdentifier(mqttGetQoS(rm.Flags), sub)
 			// Need to use the subject for the retained message, not the `sub` subject.
 			// We can find the published retained message in rm.sub.subject.
-			flags := mqttSerializePublishMsg(prm, pi, false, true, string(rm.sub.subject), rm.Msg)
+			flags := mqttSerializePublishMsg(prm, pi, false, true, rm.Topic, rm.Msg)
 			if trace {
 				pp := mqttPublish{
-					flags:   flags,
-					pi:      pi,
-					subject: rm.sub.subject,
-					sz:      len(rm.Msg),
+					topic: rm.Topic,
+					flags: flags,
+					pi:    pi,
+					sz:    len(rm.Msg),
 				}
 				c.traceOutOp("PUBLISH", []byte(mqttPubTrace(&pp)))
 			}
@@ -1386,7 +1391,9 @@ func (c *client) mqttParseConnect(r *mqttReader, pl int) (byte, *mqttConnectProt
 			retain: wretain,
 		}
 		var topic []byte
-		topic, err = r.readBytes("Will topic", false)
+		// Need to make a copy since we need to hold to this topic after the
+		// parsing of this protocol.
+		topic, err = r.readBytes("Will topic", true)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -1396,24 +1403,17 @@ func (c *client) mqttParseConnect(r *mqttReader, pl int) (byte, *mqttConnectProt
 		if !utf8.Valid(topic) {
 			return 0, nil, fmt.Errorf("invalide utf8 for Will topic %q", topic)
 		}
-		// Convert MQTT topic to NATS subject
-		var copied bool
-		copied, topic, err = mqttTopicToNATSPubSubject(topic)
-		if err != nil {
-			return 0, nil, err
-		}
-		if !copied {
-			topic = copyBytes(topic)
-		}
 		cp.will.topic = topic
-		// Now will message
-		var msg []byte
-		msg, err = r.readBytes("Will message", false)
+		// Convert MQTT topic to NATS subject
+		if cp.will.subject, err = mqttTopicToNATSPubSubject(topic); err != nil {
+			return 0, nil, err
+		}
+		// Now "will" message.
+		// Ask for a copy since we need to hold to this after parsing of this protocol.
+		cp.will.message, err = r.readBytes("Will message", true)
 		if err != nil {
 			return 0, nil, err
 		}
-		cp.will.message = make([]byte, 0, len(msg))
-		cp.will.message = append(cp.will.message, msg...)
 	}
 
 	if hasUser {
@@ -1596,7 +1596,8 @@ func (s *Server) mqttHandleWill(c *client) {
 		return
 	}
 	pp := c.mqtt.pp
-	pp.subject = will.topic
+	pp.topic = will.topic
+	pp.subject = will.subject
 	pp.msg = will.message
 	pp.sz = len(will.message)
 	pp.pi = 0
@@ -1627,19 +1628,19 @@ func (c *client) mqttParsePub(r *mqttReader, pl int, pp *mqttPublish) error {
 	start := r.pos
 
 	var err error
-	pp.subject, err = r.readBytes("topic", false)
+	pp.topic, err = r.readBytes("topic", false)
 	if err != nil {
 		return err
 	}
-	if len(pp.subject) == 0 {
+	if len(pp.topic) == 0 {
 		return fmt.Errorf("topic cannot be empty")
 	}
 	// Convert the topic to a NATS subject. This call will also check that
 	// there is no MQTT wildcards (Spec [MQTT-3.3.2-2] and [MQTT-4.7.1-1])
-	// Note that this may not result in a copy if there is no special
-	// conversion. It is good because after the message is processed we
-	// won't have a reference to the buffer and we save a copy.
-	_, pp.subject, err = mqttTopicToNATSPubSubject(pp.subject)
+	// Note that this may not result in a copy if there is no conversion.
+	// It is good because after the message is processed we won't have a
+	// reference to the buffer and we save a copy.
+	pp.subject, err = mqttTopicToNATSPubSubject(pp.topic)
 	if err != nil {
 		return err
 	}
@@ -1678,7 +1679,7 @@ func mqttPubTrace(pp *mqttPublish) string {
 		piStr = fmt.Sprintf(" pi=%v", pp.pi)
 	}
 	return fmt.Sprintf("%s dup=%v QoS=%v retain=%v size=%v%s",
-		pp.subject, dup, qos, retain, pp.sz, piStr)
+		pp.topic, dup, qos, retain, pp.sz, piStr)
 }
 
 func (s *Server) mqttProcessPub(c *client, pp *mqttPublish) {
@@ -1706,7 +1707,7 @@ func (s *Server) mqttProcessPub(c *client, pp *mqttPublish) {
 	if mqttGetQoS(pp.flags) > 0 {
 		// Since this is the fast path, we access the messages stream directly here
 		// without locking. All the fields mqtt.asm.mstream are immutable.
-		c.mqtt.asm.mstream.processInboundJetStreamMsg(nil, c, string(c.pa.subject), "", pp.msg)
+		c.mqtt.asm.mstream.processInboundJetStreamMsg(nil, c, string(c.pa.subject), _EMPTY_, pp.msg)
 	}
 	c.pa.subject, c.pa.hdr, c.pa.size, c.pa.szb = nil, -1, 0, nil
 }
@@ -1739,6 +1740,7 @@ func (c *client) mqttHandlePubRetain() {
 			// When coming from a publish protocol, `pp` is referencing a stack
 			// variable that itself possibly references the read buffer.
 			rm := &mqttRetainedMsg{
+				Topic:  copyBytes(pp.topic),
 				Msg:    copyBytes(pp.msg),
 				Flags:  pp.flags,
 				Source: c.opts.Username,
@@ -1984,9 +1986,10 @@ func (c *client) mqttParseSubsOrUnsubs(r *mqttReader, b byte, pl int, sub bool) 
 			return 0, nil, fmt.Errorf("invalid utf8 for topic filter %q", filter)
 		}
 		var qos byte
+		topic := filter
 		// This won't return an error. We will find out if the subject
 		// is valid or not when trying to create the subscription.
-		_, filter, _ = mqttFilterToNATSSubject(filter)
+		filter, _ = mqttFilterToNATSSubject(filter)
 		if sub {
 			qos, err = r.readByte("QoS")
 			if err != nil {
@@ -1997,7 +2000,8 @@ func (c *client) mqttParseSubsOrUnsubs(r *mqttReader, b byte, pl int, sub bool) 
 				return 0, nil, fmt.Errorf("subscribe QoS value must be 0, 1 or 2, got %v", qos)
 			}
 		}
-		filters = append(filters, &mqttFilter{string(filter), qos})
+		f := &mqttFilter{ttopic: topic, filter: string(filter), qos: qos}
+		filters = append(filters, f)
 	}
 	// Spec [MQTT-3.8.3-3], [MQTT-3.10.3-2]
 	if len(filters) == 0 {
@@ -2006,17 +2010,23 @@ func (c *client) mqttParseSubsOrUnsubs(r *mqttReader, b byte, pl int, sub bool) 
 	return pi, filters, nil
 }
 
-func mqttSubscribeTrace(filters []*mqttFilter) string {
+func mqttSubscribeTrace(pi uint16, filters []*mqttFilter) string {
 	var sep string
-	trace := "["
+	sb := &strings.Builder{}
+	sb.WriteString("[")
 	for i, f := range filters {
-		trace += sep + fmt.Sprintf("%s QoS=%v", f.filter, f.qos)
+		sb.WriteString(sep)
+		sb.Write(f.ttopic)
+		sb.WriteString(" (")
+		sb.WriteString(f.filter)
+		sb.WriteString(") QoS=")
+		sb.WriteString(fmt.Sprintf("%v", f.qos))
 		if i == 0 {
 			sep = ", "
 		}
 	}
-	trace += "]"
-	return trace
+	sb.WriteString(fmt.Sprintf("] pi=%v", pi))
+	return sb.String()
 }
 
 func mqttDeliverMsgCb(sub *subscription, pc *client, subject, reply string, msg []byte) {
@@ -2025,6 +2035,7 @@ func mqttDeliverMsgCb(sub *subscription, pc *client, subject, reply string, msg 
 	var pi uint16
 	var dup bool
 	var retained bool
+	var topic []byte
 
 	// This is the client associated with the subscription.
 	cc := sub.client
@@ -2061,10 +2072,13 @@ func mqttDeliverMsgCb(sub *subscription, pc *client, subject, reply string, msg 
 			sess.mu.Unlock()
 			return
 		}
-		// In JS case, we need to use the pc.ca.deliver value as the subject.
-		subject = string(pc.pa.deliver)
+		// TODO: We hae to conver the subject back to topic. One approach
+		// was the pass the parsed MQTT topic in jsPubMsg but it was decided
+		// to not do that for now.
+		topic = natsSubjectToMQTTTopic(string(pc.pa.deliver))
 	} else if pc.isMqtt() {
 		// This is a MQTT publisher...
+		topic = pc.mqtt.pp.topic
 		ppFlags = pc.mqtt.pp.flags
 		pQoS = mqttGetQoS(ppFlags)
 		// If the QoS of published message and subscription is 1, then we return here to
@@ -2080,13 +2094,16 @@ func mqttDeliverMsgCb(sub *subscription, pc *client, subject, reply string, msg 
 		if len(msg) > mqttMaxPayloadSize {
 			msg = msg[:mqttMaxPayloadSize]
 		}
+		// See TODO for JS producer. Right now, we need to do the conversion
+		// back to a subject everytime.
+		topic = natsSubjectToMQTTTopic(subject)
 	}
 	sess.mu.Unlock()
 
 	sw := mqttWriter{}
 	w := &sw
 
-	flags := mqttSerializePublishMsg(w, pi, dup, retained, subject, msg)
+	flags := mqttSerializePublishMsg(w, pi, dup, retained, topic, msg)
 
 	cc.mu.Lock()
 	if sub.mqtt.prm != nil {
@@ -2097,10 +2114,10 @@ func mqttDeliverMsgCb(sub *subscription, pc *client, subject, reply string, msg 
 	pc.addToPCD(cc)
 	if cc.trace {
 		pp := mqttPublish{
-			flags:   flags,
-			pi:      pi,
-			subject: []byte(subject),
-			sz:      len(msg),
+			topic: topic,
+			flags: flags,
+			pi:    pi,
+			sz:    len(msg),
 		}
 		cc.traceOutOp("PUBLISH", []byte(mqttPubTrace(&pp)))
 	}
@@ -2108,8 +2125,7 @@ func mqttDeliverMsgCb(sub *subscription, pc *client, subject, reply string, msg 
 }
 
 // Serializes to the given writer the message for the given subject.
-func mqttSerializePublishMsg(w *mqttWriter, pi uint16, dup, retained bool, subject string, msg []byte) byte {
-	topic := natsSubjectToMQTTTopic(subject)
+func mqttSerializePublishMsg(w *mqttWriter, pi uint16, dup, retained bool, topic, msg []byte) byte {
 
 	// Compute len (will have to add packet id if message is sent as QoS>=1)
 	pkLen := 2 + len(topic) + len(msg)
@@ -2368,17 +2384,22 @@ func (c *client) mqttEnqueueUnsubAck(pi uint16) {
 	c.mu.Unlock()
 }
 
-func mqttUnsubscribeTrace(filters []*mqttFilter) string {
+func mqttUnsubscribeTrace(pi uint16, filters []*mqttFilter) string {
 	var sep string
-	trace := "["
+	sb := strings.Builder{}
+	sb.WriteString("[")
 	for i, f := range filters {
-		trace += sep + f.filter
+		sb.WriteString(sep)
+		sb.Write(f.ttopic)
+		sb.WriteString(" (")
+		sb.WriteString(f.filter)
+		sb.WriteString(")")
 		if i == 0 {
 			sep = ", "
 		}
 	}
-	trace += "]"
-	return trace
+	sb.WriteString(fmt.Sprintf("] pi=%v", pi))
+	return sb.String()
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -2414,17 +2435,17 @@ func errOrTrace(err error, trace string) []byte {
 
 // Converts an MQTT Topic Name to a NATS Subject (used by PUBLISH)
 // See mqttToNATSSubjectConversion() for details.
-func mqttTopicToNATSPubSubject(mt []byte) (bool, []byte, error) {
+func mqttTopicToNATSPubSubject(mt []byte) ([]byte, error) {
 	return mqttToNATSSubjectConversion(mt, false)
 }
 
 // Converts an MQTT Topic Filter to a NATS Subject (used by SUBSCRIBE)
 // See mqttToNATSSubjectConversion() for details.
-func mqttFilterToNATSSubject(filter []byte) (bool, []byte, error) {
+func mqttFilterToNATSSubject(filter []byte) ([]byte, error) {
 	return mqttToNATSSubjectConversion(filter, true)
 }
 
-// Converts an MQTT Topic Name or Filter to a NATS Subject
+// Converts an MQTT Topic Name or Filter to a NATS Subject.
 // In MQTT:
 // - a Topic Name does not have wildcard (PUBLISH uses only topic names).
 // - a Topic Filter can include wildcards (SUBSCRIBE uses those).
@@ -2438,67 +2459,72 @@ func mqttFilterToNATSSubject(filter []byte) (bool, []byte, error) {
 // - '/' is replaced with '.' for all other conditions (foo/bar -> foo.bar)
 // - '.' and ' ' cause an error to be returned.
 //
-// If a copy occurred, the returned boolean will indicate this condition.
-func mqttToNATSSubjectConversion(mt []byte, wcOk bool) (bool, []byte, error) {
-	var res = mt
-	var newSlice bool
+// If there is no need to convert anything (say "foo" remains "foo"), then
+// the no memory is allocated and the returned slice is the original `mt`.
+func mqttToNATSSubjectConversion(mt []byte, wcOk bool) ([]byte, error) {
+	var cp bool
+	var j int
+	res := mt
 
-	copyTopic := func(pos int) []byte {
-		if newSlice && cap(res) > pos+2 {
-			return res
+	makeCopy := func(i int) {
+		cp = true
+		res = make([]byte, 0, len(mt)+10)
+		if i > 0 {
+			res = append(res, mt[:i]...)
 		}
-		newSlice = true
-		b := make([]byte, len(res)+10)
-		copy(b, res[:pos])
-		res = b
-		return res
 	}
 
-	var j int
 	end := len(mt) - 1
 	for i := 0; i < len(mt); i++ {
 		switch mt[i] {
 		case mqttTopicLevelSep:
 			if i == 0 || res[j-1] == btsep {
-				res = copyTopic(0)
-				res[j] = mqttTopicLevelSep
+				if !cp {
+					makeCopy(0)
+				}
+				res = append(res, mqttTopicLevelSep, btsep)
 				j++
-				res[j] = btsep
 			} else if i == end || mt[i+1] == mqttTopicLevelSep {
-				res = copyTopic(j)
-				res[j] = btsep
+				if !cp {
+					makeCopy(i)
+				}
+				res = append(res, btsep, mqttTopicLevelSep)
 				j++
-				res[j] = mqttTopicLevelSep
 			} else {
-				res[j] = btsep
+				if !cp {
+					makeCopy(i)
+				}
+				res = append(res, btsep)
 			}
 		case btsep, ' ':
 			// As of now, we cannot support '.' or ' ' in the MQTT topic/filter.
-			return false, nil, fmt.Errorf("characters ' ' and '.' not supported for MQTT topics")
+			return nil, fmt.Errorf("characters ' ' and '.' not supported for MQTT topics")
 		case mqttSingleLevelWC, mqttMultiLevelWC:
 			if !wcOk {
 				// Spec [MQTT-3.3.2-2] and [MQTT-4.7.1-1]
 				// The wildcard characters can be used in Topic Filters, but MUST NOT be used within a Topic Name
-				return false, nil, fmt.Errorf("wildcards not allowed in publish's topic: %q", mt)
+				return nil, fmt.Errorf("wildcards not allowed in publish's topic: %q", mt)
+			}
+			if !cp {
+				makeCopy(i)
 			}
 			if mt[i] == mqttSingleLevelWC {
-				res[j] = pwc
+				res = append(res, pwc)
 			} else {
-				res[j] = fwc
+				res = append(res, fwc)
 			}
 		default:
-			if newSlice {
-				res[j] = mt[i]
+			if cp {
+				res = append(res, mt[i])
 			}
 		}
 		j++
 	}
-	if newSlice && res[j-1] == btsep {
-		res = copyTopic(j)
-		res[j] = mqttTopicLevelSep
+	if cp && res[j-1] == btsep {
+		res = append(res, mqttTopicLevelSep)
 		j++
 	}
-	return newSlice, res[:j], nil
+	return res[:j], nil
 }
 
 // Converts a NATS subject to MQTT topic. This is for publish
