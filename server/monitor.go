@@ -447,7 +447,7 @@ func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time) {
 	ci.LastActivity = client.last
 	ci.Uptime = myUptime(now.Sub(client.start))
 	ci.Idle = myUptime(now.Sub(client.last))
-	ci.RTT = client.getRTT()
+	ci.RTT = client.getRTT().String()
 	ci.OutMsgs = client.outMsgs
 	ci.OutBytes = client.outBytes
 	ci.NumSubs = uint32(len(client.subs))
@@ -477,14 +477,14 @@ func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time) {
 }
 
 // Assume lock is held
-func (c *client) getRTT() string {
+func (c *client) getRTT() time.Duration {
 	if c.rtt == 0 {
 		// If a real client, go ahead and send ping now to get a value
 		// for RTT. For tests and telnet, or if client is closing, etc skip.
 		if c.opts.Lang != "" {
 			c.sendRTTPingLocked()
 		}
-		return ""
+		return 0
 	}
 	var rtt time.Duration
 	if c.rtt > time.Microsecond && c.rtt < time.Millisecond {
@@ -492,7 +492,7 @@ func (c *client) getRTT() string {
 	} else {
 		rtt = c.rtt.Truncate(time.Nanosecond)
 	}
-	return rtt.String()
+	return rtt
 }
 
 func decodeBool(w http.ResponseWriter, r *http.Request, param string) (bool, error) {
@@ -703,7 +703,7 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 			NumSubs:      uint32(len(r.subs)),
 			Import:       r.opts.Import,
 			Export:       r.opts.Export,
-			RTT:          r.getRTT(),
+			RTT:          r.getRTT().String(),
 		}
 
 		if len(r.subs) > 0 {
@@ -1787,7 +1787,7 @@ func (s *Server) Leafz(opts *LeafzOptions) (*Leafz, error) {
 				Account:  ln.acc.Name,
 				IP:       ln.host,
 				Port:     int(ln.port),
-				RTT:      ln.getRTT(),
+				RTT:      ln.getRTT().String(),
 				InMsgs:   atomic.LoadInt64(&ln.inMsgs),
 				OutMsgs:  ln.outMsgs,
 				InBytes:  atomic.LoadInt64(&ln.inBytes),

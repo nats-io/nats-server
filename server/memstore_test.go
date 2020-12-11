@@ -1,4 +1,4 @@
-// Copyright 2019-2020 The NATS Authors
+// Copyright 2019-2021 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -16,6 +16,7 @@ package server
 import (
 	"bytes"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -244,6 +245,17 @@ func TestMemStoreCompact(t *testing.T) {
 	if state.FirstSeq != 6 {
 		t.Fatalf("Expected first seq of 6, got %d", state.FirstSeq)
 	}
+	// Now test that compact will also reset first if seq > last
+	n, err = ms.Compact(100)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if n != 5 {
+		t.Fatalf("Expected to have purged 5 msgs, got %d", n)
+	}
+	if state = ms.State(); state.FirstSeq != 100 {
+		t.Fatalf("Expected first seq of 100, got %d", state.FirstSeq)
+	}
 }
 
 func TestMemStoreEraseMsg(t *testing.T) {
@@ -287,5 +299,94 @@ func TestMemStoreMsgHeaders(t *testing.T) {
 	}
 	if removed, _ := ms.EraseMsg(1); !removed {
 		t.Fatalf("Expected erase msg to return success")
+	}
+}
+
+func TestMemStoreStreamStateDeleted(t *testing.T) {
+	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error creating store: %v", err)
+	}
+
+	subj, toStore := "foo", uint64(10)
+	for i := uint64(1); i <= toStore; i++ {
+		msg := []byte(fmt.Sprintf("[%08d] Hello World!", i))
+		if _, _, err := ms.StoreMsg(subj, nil, msg); err != nil {
+			t.Fatalf("Error storing msg: %v", err)
+		}
+	}
+	state := ms.State()
+	if len(state.Deleted) != 0 {
+		t.Fatalf("Expected deleted to be empty")
+	}
+	// Now remove some interior messages.
+	var expected []uint64
+	for seq := uint64(2); seq < toStore; seq += 2 {
+		ms.RemoveMsg(seq)
+		expected = append(expected, seq)
+	}
+	state = ms.State()
+	if !reflect.DeepEqual(state.Deleted, expected) {
+		t.Fatalf("Expected deleted to be %+v, got %+v\n", expected, state.Deleted)
+	}
+	// Now fill the gap by deleting 1 and 3
+	ms.RemoveMsg(1)
+	ms.RemoveMsg(3)
+	expected = expected[2:]
+	state = ms.State()
+	if !reflect.DeepEqual(state.Deleted, expected) {
+		t.Fatalf("Expected deleted to be %+v, got %+v\n", expected, state.Deleted)
+	}
+	if state.FirstSeq != 5 {
+		t.Fatalf("Expected first seq to be 5, got %d", state.FirstSeq)
+	}
+	ms.Purge()
+	if state = ms.State(); len(state.Deleted) != 0 {
+		t.Fatalf("Expected no deleted after purge, got %+v\n", state.Deleted)
+	}
+}
+
+func TestMemStoreStreamTruncate(t *testing.T) {
+	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error creating store: %v", err)
+	}
+
+	subj, toStore := "foo", uint64(100)
+	for i := uint64(1); i <= toStore; i++ {
+		if _, _, err := ms.StoreMsg(subj, nil, []byte("ok")); err != nil {
+			t.Fatalf("Error storing msg: %v", err)
+		}
+	}
+	if state := ms.State(); state.Msgs != toStore {
+		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
+	}
+
+	// Check that sequence has to be interior.
+	if err := ms.Truncate(toStore + 1); err != ErrInvalidSequence {
+		t.Fatalf("Expected err of '%v', got '%v'", ErrInvalidSequence, err)
+	}
+
+	tseq := uint64(50)
+	if err := ms.Truncate(tseq); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if state := ms.State(); state.Msgs != tseq {
+		t.Fatalf("Expected %d msgs, got %d", tseq, state.Msgs)
+	}
+
+	// Now make sure we report properly if we have some deleted interior messages.
+	ms.RemoveMsg(10)
+	ms.RemoveMsg(20)
+	ms.RemoveMsg(30)
+	ms.RemoveMsg(40)
+
+	tseq = uint64(25)
+	if err := ms.Truncate(tseq); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	expected := []uint64{10, 20}
+	if state := ms.State(); !reflect.DeepEqual(state.Deleted, expected) {
+		t.Fatalf("Expected deleted to be %+v, got %+v\n", expected, state.Deleted)
 	}
 }

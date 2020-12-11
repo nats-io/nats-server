@@ -1,4 +1,4 @@
-// Copyright 2019-2020 The NATS Authors
+// Copyright 2019-2021 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -26,10 +26,12 @@ import (
 type StorageType int
 
 const (
+	// File specifies on disk, designated by the JetStream config StoreDir.
+	FileStorage = StorageType(22)
 	// MemoryStorage specifies in memory only.
-	MemoryStorage StorageType = iota
-	// FileStorage specifies on disk, designated by the JetStream config StoreDir.
-	FileStorage
+	MemoryStorage = StorageType(33)
+	// Any is for internals.
+	AnyStorage = StorageType(44)
 )
 
 var (
@@ -38,12 +40,10 @@ var (
 	// ErrStoreMsgNotFound when message was not found but was expected to be.
 	ErrStoreMsgNotFound = errors.New("no message found")
 	// ErrStoreEOF is returned when message seq is greater than the last sequence.
-	ErrStoreEOF = errors.New("stream EOF")
-	// ErrMaxMsgs is returned when we have discard new as a policy and we reached
-	// the message limit.
+	ErrStoreEOF = errors.New("stream store EOF")
+	// ErrMaxMsgs is returned when we have discard new as a policy and we reached the message limit.
 	ErrMaxMsgs = errors.New("maximum messages exceeded")
-	// ErrMaxBytes is returned when we have discard new as a policy and we reached
-	// the bytes limit.
+	// ErrMaxBytes is returned when we have discard new as a policy and we reached the bytes limit.
 	ErrMaxBytes = errors.New("maximum bytes exceeded")
 	// ErrStoreSnapshotInProgress is returned when RemoveMsg or EraseMsg is called
 	// while a snapshot is in progress.
@@ -54,6 +54,10 @@ var (
 	ErrStoreWrongType = errors.New("wrong storage type")
 	// ErrNoAckPolicy is returned when trying to update a consumer's acks with no ack policy.
 	ErrNoAckPolicy = errors.New("ack policy is none")
+	// ErrInvalidSequence is returned when the sequence is not present in the stream store.
+	ErrInvalidSequence = errors.New("invalid sequence")
+	// ErrSequenceMismatch is returned when storing a raw message and the expected sequence is wrong.
+	ErrSequenceMismatch = errors.New("expected sequence does not match store")
 )
 
 // Used to call back into the upper layers to report on changes in storage resources.
@@ -61,13 +65,15 @@ var (
 type StorageUpdateHandler func(msgs, bytes int64, seq uint64, subj string)
 
 type StreamStore interface {
-	StoreMsg(subj string, hdr, msg []byte) (uint64, int64, error)
+	StoreMsg(subject string, hdr, msg []byte) (uint64, int64, error)
+	StoreRawMsg(subject string, hdr, msg []byte, seq uint64, ts int64) error
 	SkipMsg() uint64
-	LoadMsg(seq uint64) (subj string, hdr, msg []byte, ts int64, err error)
+	LoadMsg(seq uint64) (subject string, hdr, msg []byte, ts int64, err error)
 	RemoveMsg(seq uint64) (bool, error)
 	EraseMsg(seq uint64) (bool, error)
 	Purge() (uint64, error)
 	Compact(seq uint64) (uint64, error)
+	Truncate(seq uint64) error
 	GetSeqFromTime(t time.Time) uint64
 	State() StreamState
 	RegisterStorageUpdates(StorageUpdateHandler)
@@ -102,7 +108,7 @@ const (
 	DiscardNew
 )
 
-// StreamStats is information about the given stream.
+// StreamState is information about the given stream.
 type StreamState struct {
 	Msgs      uint64    `json:"messages"`
 	Bytes     uint64    `json:"bytes"`
@@ -110,6 +116,7 @@ type StreamState struct {
 	FirstTime time.Time `json:"first_ts"`
 	LastSeq   uint64    `json:"last_seq"`
 	LastTime  time.Time `json:"last_ts"`
+	Deleted   []uint64  `json:"deleted,omitempty"`
 	Consumers int       `json:"consumer_count"`
 }
 
@@ -250,6 +257,7 @@ func (dp *DiscardPolicy) UnmarshalJSON(data []byte) error {
 const (
 	memoryStorageString = "memory"
 	fileStorageString   = "file"
+	anyStorageString    = "any"
 )
 
 func (st StorageType) String() string {
@@ -258,6 +266,8 @@ func (st StorageType) String() string {
 		return strings.Title(memoryStorageString)
 	case FileStorage:
 		return strings.Title(fileStorageString)
+	case AnyStorage:
+		return strings.Title(anyStorageString)
 	default:
 		return "Unknown Storage Type"
 	}
@@ -269,6 +279,8 @@ func (st StorageType) MarshalJSON() ([]byte, error) {
 		return json.Marshal(memoryStorageString)
 	case FileStorage:
 		return json.Marshal(fileStorageString)
+	case AnyStorage:
+		return json.Marshal(anyStorageString)
 	default:
 		return nil, fmt.Errorf("can not marshal %v", st)
 	}
@@ -280,6 +292,8 @@ func (st *StorageType) UnmarshalJSON(data []byte) error {
 		*st = MemoryStorage
 	case jsonString(fileStorageString):
 		*st = FileStorage
+	case jsonString(anyStorageString):
+		*st = AnyStorage
 	default:
 		return fmt.Errorf("can not unmarshal %q", data)
 	}

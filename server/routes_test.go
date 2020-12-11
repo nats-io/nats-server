@@ -1347,7 +1347,7 @@ func TestRouteDuplicateServerName(t *testing.T) {
 	s := RunServer(o)
 	defer s.Shutdown()
 
-	l := &captureWarnLogger{warn: make(chan string, 1)}
+	l := &captureErrorLogger{errCh: make(chan string, 1)}
 	s.SetLogger(l, false, false)
 
 	o2 := DefaultOptions()
@@ -1357,14 +1357,13 @@ func TestRouteDuplicateServerName(t *testing.T) {
 	s2 := RunServer(o2)
 	defer s2.Shutdown()
 
-	checkClusterFormed(t, s, s2)
-
+	// This is an error now so can't wait on cluster formed.
 	select {
-	case w := <-l.warn:
+	case w := <-l.errCh:
 		if !strings.Contains(w, "Remote server has a duplicate name") {
 			t.Fatalf("Expected warning about same name, got %q", w)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("Should have gotten a warning regarding duplicate server name")
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright 2018-2020 The NATS Authors
+// Copyright 2018-2021 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -110,6 +110,8 @@ type streamImport struct {
 	invalid bool
 }
 
+const ClientInfoHdr = "Nats-Request-Info"
+
 // Import service mapping struct
 type serviceImport struct {
 	acc         *Account
@@ -130,7 +132,6 @@ type serviceImport struct {
 	share       bool
 	tracking    bool
 	didDeliver  bool
-	isSysAcc    bool
 	trackingHdr http.Header // header from request
 }
 
@@ -1096,11 +1097,10 @@ func (a *Account) IsExportServiceTracking(service string) bool {
 // designate to share the additional information in the service import.
 type ServiceLatency struct {
 	TypedEvent
-
 	Status         int           `json:"status"`
 	Error          string        `json:"description,omitempty"`
-	Requestor      LatencyClient `json:"requestor,omitempty"`
-	Responder      LatencyClient `json:"responder,omitempty"`
+	Requestor      *ClientInfo   `json:"requestor,omitempty"`
+	Responder      *ClientInfo   `json:"responder,omitempty"`
 	RequestHeader  http.Header   `json:"header,omitempty"` // only contains header(s) triggering the measurement
 	RequestStart   time.Time     `json:"start"`
 	ServiceLatency time.Duration `json:"service"`
@@ -1110,23 +1110,6 @@ type ServiceLatency struct {
 
 // ServiceLatencyType is the NATS Event Type for ServiceLatency
 const ServiceLatencyType = "io.nats.server.metric.v1.service_latency"
-
-// LatencyClient is the JSON message structure assigned to requestors and responders.
-// Note that for a requestor, the only information shared by default is the RTT used
-// to calculate the total latency. The requestor's account can designate to share
-// the additional information in the service import.
-type LatencyClient struct {
-	Account string        `json:"acc"`
-	RTT     time.Duration `json:"rtt"`
-	Start   time.Time     `json:"start,omitempty"`
-	User    string        `json:"user,omitempty"`
-	Name    string        `json:"name,omitempty"`
-	Lang    string        `json:"lang,omitempty"`
-	Version string        `json:"ver,omitempty"`
-	IP      string        `json:"ip,omitempty"`
-	CID     uint64        `json:"cid,omitempty"`
-	Server  string        `json:"server,omitempty"`
-}
 
 // NATSTotalTime is a helper function that totals the NATS latencies.
 func (nl *ServiceLatency) NATSTotalTime() time.Duration {
@@ -1225,7 +1208,11 @@ func (a *Account) sendBackendErrorTrackingLatency(si *serviceImport, reason rsiR
 	if rc != nil {
 		sl.Requestor = rc.getClientInfo(share)
 	}
-	sl.RequestStart = time.Unix(0, ts-int64(sl.Requestor.RTT)).UTC()
+	var reqRTT time.Duration
+	if sl.Requestor != nil {
+		reqRTT = sl.Requestor.RTT
+	}
+	sl.RequestStart = time.Unix(0, ts-int64(reqRTT)).UTC()
 	if reason == rsiNoDelivery {
 		sl.Status = 503
 		sl.Error = "Service Unavailable"
@@ -1254,10 +1241,17 @@ func (a *Account) sendTrackingLatency(si *serviceImport, responder *client) bool
 		Requestor: requestor.getClientInfo(si.share),
 		Responder: responder.getClientInfo(true),
 	}
-	sl.RequestStart = time.Unix(0, si.ts-int64(sl.Requestor.RTT)).UTC()
-	sl.ServiceLatency = serviceRTT - sl.Responder.RTT
+	var respRTT, reqRTT time.Duration
+	if sl.Responder != nil {
+		respRTT = sl.Responder.RTT
+	}
+	if sl.Requestor != nil {
+		reqRTT = sl.Requestor.RTT
+	}
+	sl.RequestStart = time.Unix(0, si.ts-int64(reqRTT)).UTC()
+	sl.ServiceLatency = serviceRTT - respRTT
 	sl.TotalLatency = sl.Requestor.RTT + serviceRTT
-	if sl.Responder.RTT > 0 {
+	if respRTT > 0 {
 		sl.SystemLatency = time.Since(ts)
 		sl.TotalLatency += sl.SystemLatency
 	}
@@ -1350,6 +1344,7 @@ func (a *Account) AddServiceImportWithClaim(destination *Account, from, to strin
 	}
 
 	_, err := a.addServiceImport(destination, from, to, imClaim)
+
 	return err
 }
 
@@ -1679,8 +1674,8 @@ func (a *Account) serviceImportExists(dest *Account, from string) bool {
 }
 
 // Add a service import.
-// This does no checks and should only be called by the msg processing code. Use
-// AddServiceImport from above if responding to user input or config changes, etc.
+// This does no checks and should only be called by the msg processing code.
+// Use AddServiceImport from above if responding to user input or config changes, etc.
 func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Import) (*serviceImport, error) {
 	rt := Singleton
 	var lat *serviceLatency
@@ -1695,6 +1690,7 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 	dest.mu.RUnlock()
 
 	// Track if this maps us to the system account.
+	// We will always share information with them.
 	var isSysAcc bool
 	if s != nil {
 		s.mu.Lock()
@@ -1740,12 +1736,17 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 			}
 		}
 	}
+
 	share := false
 	if claim != nil {
 		share = claim.Share
 	}
-	si := &serviceImport{dest, claim, se, nil, from, to, tr, 0, rt, lat, nil, nil, usePub, false, false, share, false, false, isSysAcc, nil}
+
+	si := &serviceImport{dest, claim, se, nil, from, to, tr, 0, rt, lat, nil, nil, usePub, false, false, share, false, false, nil}
 	a.imports.services[from] = si
+
+	// Turn on sharing by default if importing from system services.
+	si.share = isSysAcc
 	a.mu.Unlock()
 
 	if err := a.addServiceImportSub(si); err != nil {
@@ -2159,7 +2160,7 @@ func (a *Account) addRespServiceImport(dest *Account, to string, osi *serviceImp
 
 	// dest is the requestor's account. a is the service responder with the export.
 	// Marked as internal here, that is how we distinguish.
-	si := &serviceImport{dest, nil, osi.se, nil, nrr, to, nil, 0, rt, nil, nil, nil, false, true, false, osi.share, false, false, false, nil}
+	si := &serviceImport{dest, nil, osi.se, nil, nrr, to, nil, 0, rt, nil, nil, nil, false, true, false, osi.share, false, false, nil}
 
 	if a.exports.responses == nil {
 		a.exports.responses = make(map[string]*serviceImport)

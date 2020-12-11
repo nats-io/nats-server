@@ -1,4 +1,4 @@
-// Copyright 2020 The NATS Authors
+// Copyright 2020-2021 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"net"
 	"os"
 	"sort"
 	"strconv"
@@ -459,10 +458,13 @@ type JSApiStreamTemplateNamesResponse struct {
 const JSApiStreamTemplateNamesResponseType = "io.nats.jetstream.api.v1.stream_template_names_response"
 
 var (
-	jsNotEnabledErr      = &ApiError{Code: 503, Description: "jetstream not enabled for account"}
+	jsNotEnabledErr      = &ApiError{Code: 503, Description: "JetStream not enabled for account"}
 	jsBadRequestErr      = &ApiError{Code: 400, Description: "bad request"}
 	jsNotEmptyRequestErr = &ApiError{Code: 400, Description: "expected an empty request payload"}
-	jsInvalidJSONErr     = &ApiError{Code: 400, Description: "invalid JSON received in request"}
+	jsInvalidJSONErr     = &ApiError{Code: 400, Description: "invalid JSON request"}
+	jsInsufficientErr    = &ApiError{Code: 503, Description: "insufficient Resources"}
+	jsNoConsumerErr      = &ApiError{Code: 404, Description: "consumer not found"}
+	jsStreamMismatchErr  = &ApiError{Code: 400, Description: "stream name in subject does not match request"}
 )
 
 // For easier handling of exports and imports.
@@ -528,29 +530,58 @@ func (s *Server) setJetStreamExportSubs() error {
 	return nil
 }
 
-func (s *Server) sendAPIResponse(c *client, subject, reply, request, response string) {
+func (s *Server) sendAPIResponse(ci *ClientInfo, acc *Account, subject, reply, request, response string) {
 	s.sendInternalAccountMsg(nil, reply, response)
-	s.sendJetStreamAPIAuditAdvisory(c, subject, request, response)
+	s.sendJetStreamAPIAuditAdvisory(ci, acc, subject, request, response)
 }
 
+func (s *Server) getRequestInfo(c *client, raw []byte) (pci *ClientInfo, acc *Account, hdr, msg []byte, err error) {
+	hdr, msg = c.msgParts(raw)
+	var ci ClientInfo
+	if len(hdr) > 0 {
+		if err := json.Unmarshal(getHdrVal(ClientInfoHdr, hdr), &ci); err != nil {
+			return nil, nil, nil, nil, err
+		}
+	}
+	if c.pa.proxy != nil {
+		acc = c.pa.proxy
+	} else if ci.Account != _EMPTY_ {
+		acc, _ = s.LookupAccount(ci.Account)
+	} else {
+		// Direct $SYS access.
+		acc = c.acc
+	}
+	if acc == nil {
+		return nil, nil, nil, nil, ErrMissingAccount
+	}
+	return &ci, acc, hdr, msg, nil
+}
+
+const badAPIRequestT = "Malformed JetStream API Request: %q"
+
 // Request for current usage and limits for this account.
-func (s *Server) jsAccountInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c == nil || c.acc == nil {
+func (s *Server) jsAccountInfoRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil || !s.jetStreamReadAllowed() {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
 		return
 	}
 
 	var resp = JSApiAccountInfoResponse{ApiResponse: ApiResponse{Type: JSApiAccountInfoResponseType}}
-	if !c.acc.JetStreamEnabled() {
+	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 	} else {
-		stats := c.acc.JetStreamUsage()
+		stats := acc.JetStreamUsage()
 		resp.JetStreamAccountStats = &stats
 	}
 	b, err := json.MarshalIndent(resp, "", "  ")
 	if err != nil {
 		return
 	}
-	s.sendAPIResponse(c, subject, reply, string(msg), string(b))
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), string(b))
 }
 
 // Helpers for token extraction.
@@ -567,34 +598,39 @@ func consumerNameFromSubject(subject string) string {
 }
 
 // Request to create a new template.
-func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c == nil || c.acc == nil {
+func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
 		return
 	}
 
 	var resp = JSApiStreamTemplateCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateCreateResponseType}}
-	if !c.acc.JetStreamEnabled() {
+	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	var cfg StreamTemplateConfig
 	if err := json.Unmarshal(msg, &cfg); err != nil {
 		resp.Error = jsInvalidJSONErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	templateName := templateNameFromSubject(subject)
 	if templateName != cfg.Name {
 		resp.Error = &ApiError{Code: 400, Description: "template name in subject does not match request"}
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
-	t, err := c.acc.AddStreamTemplate(&cfg)
+	t, err := acc.AddStreamTemplate(&cfg)
 	if err != nil {
 		resp.Error = jsError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	t.mu.Lock()
@@ -605,19 +641,24 @@ func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, subject, 
 	}
 	t.mu.Unlock()
 	resp.StreamTemplateInfo = &StreamTemplateInfo{Config: tcfg, Streams: streams}
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // Request for the list of all template names.
-func (s *Server) jsTemplateNamesRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c == nil || c.acc == nil {
+func (s *Server) jsTemplateNamesRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
 		return
 	}
 
 	var resp = JSApiStreamTemplateNamesResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateNamesResponseType}}
-	if !c.acc.JetStreamEnabled() {
+	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	var offset int
@@ -625,13 +666,13 @@ func (s *Server) jsTemplateNamesRequest(sub *subscription, c *client, subject, r
 		var req JSApiStreamTemplatesRequest
 		if err := json.Unmarshal(msg, &req); err != nil {
 			resp.Error = jsInvalidJSONErr
-			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
 		offset = req.Offset
 	}
 
-	ts := c.acc.Templates()
+	ts := acc.Templates()
 	sort.Slice(ts, func(i, j int) bool {
 		return strings.Compare(ts[i].StreamTemplateConfig.Name, ts[j].StreamTemplateConfig.Name) < 0
 	})
@@ -656,31 +697,36 @@ func (s *Server) jsTemplateNamesRequest(sub *subscription, c *client, subject, r
 	if resp.Templates == nil {
 		resp.Templates = []string{}
 	}
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // Request for information about a stream template.
-func (s *Server) jsTemplateInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c == nil || c.acc == nil {
+func (s *Server) jsTemplateInfoRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
 		return
 	}
 
 	var resp = JSApiStreamTemplateInfoResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateInfoResponseType}}
-	if !c.acc.JetStreamEnabled() {
+	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	if !isEmptyRequest(msg) {
 		resp.Error = jsNotEmptyRequestErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	name := templateNameFromSubject(subject)
-	t, err := c.acc.LookupStreamTemplate(name)
+	t, err := acc.LookupStreamTemplate(name)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	t.mu.Lock()
@@ -692,35 +738,40 @@ func (s *Server) jsTemplateInfoRequest(sub *subscription, c *client, subject, re
 	t.mu.Unlock()
 
 	resp.StreamTemplateInfo = &StreamTemplateInfo{Config: cfg, Streams: streams}
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // Request to delete a stream template.
-func (s *Server) jsTemplateDeleteRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c == nil || c.acc == nil {
+func (s *Server) jsTemplateDeleteRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
 		return
 	}
 
 	var resp = JSApiStreamTemplateDeleteResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateDeleteResponseType}}
-	if !c.acc.JetStreamEnabled() {
+	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	if !isEmptyRequest(msg) {
 		resp.Error = jsNotEmptyRequestErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	name := templateNameFromSubject(subject)
-	err := c.acc.DeleteStreamTemplate(name)
+	err = acc.DeleteStreamTemplate(name)
 	if err != nil {
 		resp.Error = jsError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	resp.Success = true
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 func (s *Server) jsonResponse(v interface{}) string {
@@ -747,90 +798,110 @@ func jsNotFoundError(err error) *ApiError {
 }
 
 // Request to create a stream.
-func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c == nil || c.acc == nil {
+func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil || !s.JetStreamIsLeader() {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
 		return
 	}
 
 	var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
-	if !c.acc.JetStreamEnabled() {
+	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	var cfg StreamConfig
 	if err := json.Unmarshal(msg, &cfg); err != nil {
 		resp.Error = jsInvalidJSONErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	streamName := streamNameFromSubject(subject)
 	if streamName != cfg.Name {
-		resp.Error = &ApiError{Code: 400, Description: "stream name in subject does not match request"}
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		resp.Error = jsStreamMismatchErr
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
-	mset, err := c.acc.AddStream(&cfg)
+	if s.JetStreamIsClustered() {
+		s.jsClusteredStreamRequest(ci, subject, reply, rmsg, &cfg)
+		return
+	}
+
+	mset, err := acc.AddStream(&cfg)
 	if err != nil {
 		resp.Error = jsError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config()}
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // Request to update a stream.
-func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c == nil || c.acc == nil {
+func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
 		return
 	}
 
 	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
-	if !c.acc.JetStreamEnabled() {
+	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	var cfg StreamConfig
 	if err := json.Unmarshal(msg, &cfg); err != nil {
 		resp.Error = jsInvalidJSONErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	streamName := streamNameFromSubject(subject)
 	if streamName != cfg.Name {
-		resp.Error = &ApiError{Code: 400, Description: "stream name in subject does not match request"}
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		resp.Error = jsStreamMismatchErr
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	mset, err := c.acc.LookupStream(streamName)
+	mset, err := acc.LookupStream(streamName)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 	}
 
 	if err := mset.Update(&cfg); err != nil {
 		resp.Error = jsError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
 	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config()}
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // Request for the list of all stream names.
-func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c == nil || c.acc == nil {
+func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil || !s.JetStreamIsLeader() {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
 		return
 	}
 
 	var resp = JSApiStreamNamesResponse{ApiResponse: ApiResponse{Type: JSApiStreamNamesResponseType}}
-	if !c.acc.JetStreamEnabled() {
+	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
@@ -841,7 +912,7 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, rep
 		var req JSApiStreamNamesRequest
 		if err := json.Unmarshal(msg, &req); err != nil {
 			resp.Error = jsInvalidJSONErr
-			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
 		offset = req.Offset
@@ -852,33 +923,82 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, rep
 
 	// TODO(dlc) - Maybe hold these results for large results that we expect to be paged.
 	// TODO(dlc) - If this list is long maybe do this in a Go routine?
-	msets := c.acc.filteredStreams(filter)
-	// Since we page results order matters.
-	sort.Slice(msets, func(i, j int) bool {
-		return strings.Compare(msets[i].config.Name, msets[j].config.Name) < 0
-	})
+	var numStreams int
+	if s.JetStreamIsClustered() {
+		// FIXME(dlc) - Do this or scatter/gather?
+		js, cc := s.getJetStreamCluster()
+		if js == nil || cc == nil {
+			// TODO(dlc) - Debug or Warn?
+			return
+		}
+		js.mu.RLock()
+		for stream, sa := range cc.streams[acc.Name] {
+			if sa.err == ErrJetStreamNotAssigned {
+				continue
+			}
+			if filter != _EMPTY_ {
+				// These could not have subjects auto-filled in since they are raw and unprocessed.
+				if len(sa.Config.Subjects) == 0 {
+					if SubjectsCollide(filter, sa.Config.Name) {
+						resp.Streams = append(resp.Streams, stream)
+					}
+				} else {
+					for _, subj := range sa.Config.Subjects {
+						if SubjectsCollide(filter, subj) {
+							resp.Streams = append(resp.Streams, stream)
+							break
+						}
+					}
+				}
+			} else {
+				resp.Streams = append(resp.Streams, stream)
+			}
+		}
+		js.mu.RUnlock()
+		if len(resp.Streams) > 1 {
+			sort.Slice(resp.Streams, func(i, j int) bool { return strings.Compare(resp.Streams[i], resp.Streams[j]) < 0 })
+		}
+		numStreams = len(resp.Streams)
+		if offset > numStreams {
+			offset = numStreams
+			resp.Streams = resp.Streams[:offset]
+		}
+	} else {
+		msets := acc.filteredStreams(filter)
+		// Since we page results order matters.
+		if len(msets) > 1 {
+			sort.Slice(msets, func(i, j int) bool {
+				return strings.Compare(msets[i].config.Name, msets[j].config.Name) < 0
+			})
+		}
 
-	scnt := len(msets)
-	if offset > scnt {
-		offset = scnt
-	}
+		numStreams = len(msets)
+		if offset > numStreams {
+			offset = numStreams
+		}
 
-	for _, mset := range msets[offset:] {
-		resp.Streams = append(resp.Streams, mset.config.Name)
-		if len(resp.Streams) >= JSApiNamesLimit {
-			break
+		for _, mset := range msets[offset:] {
+			resp.Streams = append(resp.Streams, mset.config.Name)
+			if len(resp.Streams) >= JSApiNamesLimit {
+				break
+			}
 		}
 	}
-	resp.Total = scnt
+	resp.Total = numStreams
 	resp.Limit = JSApiNamesLimit
 	resp.Offset = offset
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // Request for the list of all detailed stream info.
 // TODO(dlc) - combine with above long term
-func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c == nil || c.acc == nil {
+func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
 		return
 	}
 
@@ -887,9 +1007,9 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 		Streams:     []*StreamInfo{},
 	}
 
-	if !c.acc.JetStreamEnabled() {
+	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
@@ -898,7 +1018,7 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 		var req JSApiStreamNamesRequest
 		if err := json.Unmarshal(msg, &req); err != nil {
 			resp.Error = jsInvalidJSONErr
-			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
 		offset = req.Offset
@@ -906,7 +1026,7 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 
 	// TODO(dlc) - Maybe hold these results for large results that we expect to be paged.
 	// TODO(dlc) - If this list is long maybe do this in a Go routine?
-	msets := c.acc.Streams()
+	msets := acc.Streams()
 	sort.Slice(msets, func(i, j int) bool {
 		return strings.Compare(msets[i].config.Name, msets[j].config.Name) < 0
 	})
@@ -925,31 +1045,47 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 	resp.Total = scnt
 	resp.Limit = JSApiListLimit
 	resp.Offset = offset
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // Request for information about a stream.
-func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c == nil || c.acc == nil {
+func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+
+	name := streamNameFromSubject(subject)
+
+	// If we are in clustered mode we need to be the stream leader to proceed.
+	if s.JetStreamIsClustered() && !acc.JetStreamIsStreamLeader(name) {
+		return
+	}
+
+	if !acc.jetStreamReadAllowedForStream(name) {
 		return
 	}
 
 	var resp = JSApiStreamInfoResponse{ApiResponse: ApiResponse{Type: JSApiStreamInfoResponseType}}
-	if !c.acc.JetStreamEnabled() {
+	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	if !isEmptyRequest(msg) {
 		resp.Error = jsNotEmptyRequestErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	name := streamNameFromSubject(subject)
-	mset, err := c.acc.LookupStream(name)
+
+	mset, err := acc.LookupStream(name)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	config := mset.Config()
@@ -960,7 +1096,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 		config.Subjects = []string{">"}
 	}
 	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: config}
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 func isEmptyRequest(req []byte) bool {
@@ -983,126 +1119,156 @@ func isEmptyRequest(req []byte) bool {
 }
 
 // Request to delete a stream.
-func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c == nil || c.acc == nil {
+func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil || !s.JetStreamIsLeader() {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
 		return
 	}
 
 	var resp = JSApiStreamDeleteResponse{ApiResponse: ApiResponse{Type: JSApiStreamDeleteResponseType}}
-	if !c.acc.JetStreamEnabled() {
+	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	if !isEmptyRequest(msg) {
 		resp.Error = jsNotEmptyRequestErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	stream := streamNameFromSubject(subject)
-	mset, err := c.acc.LookupStream(stream)
+
+	if s.JetStreamIsClustered() {
+		s.jsClusteredStreamDeleteRequest(ci, stream, subject, reply, rmsg)
+		return
+	}
+
+	mset, err := acc.LookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	if mset.Config().internal {
 		resp.Error = &ApiError{Code: 403, Description: "not allowed to delete internal stream"}
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+
 	if err := mset.Delete(); err != nil {
 		resp.Error = jsError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	resp.Success = true
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // Request to delete a message.
 // This expects a stream sequence number as the msg body.
-func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c == nil || c.acc == nil {
+func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+
+	stream := tokenAt(subject, 6)
+
+	// If we are in clustered mode we need to be the stream leader to proceed.
+	if s.JetStreamIsClustered() && !acc.JetStreamIsStreamLeader(stream) {
 		return
 	}
 
 	var resp = JSApiMsgDeleteResponse{ApiResponse: ApiResponse{Type: JSApiMsgDeleteResponseType}}
-	if !c.acc.JetStreamEnabled() {
+	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	if isEmptyRequest(msg) {
 		resp.Error = jsBadRequestErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	var req JSApiMsgDeleteRequest
 	if err := json.Unmarshal(msg, &req); err != nil {
 		resp.Error = jsInvalidJSONErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
-	stream := tokenAt(subject, 6)
-	mset, err := c.acc.LookupStream(stream)
+	mset, err := acc.LookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	if s.JetStreamIsClustered() {
+		s.jsClusteredMsgDeleteRequest(ci, stream, subject, reply, req.Seq, rmsg)
 		return
 	}
 
 	removed, err := mset.EraseMsg(req.Seq)
 	if err != nil {
 		resp.Error = jsError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
 	} else if !removed {
 		resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("sequence [%d] not found", req.Seq)}
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
+	} else {
+		resp.Success = true
 	}
-	resp.Success = true
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // Request to get a raw stream message.
-func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c == nil || c.acc == nil {
+func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
 		return
 	}
 
 	var resp = JSApiMsgGetResponse{ApiResponse: ApiResponse{Type: JSApiMsgGetResponseType}}
-	if !c.acc.JetStreamEnabled() {
+	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	if isEmptyRequest(msg) {
 		resp.Error = jsBadRequestErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	var req JSApiMsgGetRequest
 	if err := json.Unmarshal(msg, &req); err != nil {
 		resp.Error = jsInvalidJSONErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
 	stream := tokenAt(subject, 6)
-	mset, err := c.acc.LookupStream(stream)
+	mset, err := acc.LookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
 	subj, hdr, msg, ts, err := mset.store.LoadMsg(req.Seq)
 	if err != nil {
 		resp.Error = jsError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	resp.Message = &StoredMsg{
@@ -1112,33 +1278,50 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 		Data:     msg,
 		Time:     time.Unix(0, ts),
 	}
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // Request to purge a stream.
-func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c == nil || c.acc == nil {
+func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+
+	stream := streamNameFromSubject(subject)
+
+	// If we are in clustered mode we need to be the stream leader to proceed.
+	if s.JetStreamIsClustered() && !acc.JetStreamIsStreamLeader(stream) {
 		return
 	}
 
 	var resp = JSApiStreamPurgeResponse{ApiResponse: ApiResponse{Type: JSApiStreamPurgeResponseType}}
-	if !c.acc.JetStreamEnabled() {
+	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	if !isEmptyRequest(msg) {
 		resp.Error = jsNotEmptyRequestErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	stream := streamNameFromSubject(subject)
-	mset, err := c.acc.LookupStream(stream)
+	mset, err := acc.LookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+
+	if s.JetStreamIsClustered() {
+		s.jsClusteredStreamPurgeRequest(ci, stream, subject, reply, rmsg)
+		return
+	}
+
 	purged, err := mset.Purge()
 	if err != nil {
 		resp.Error = jsError(err)
@@ -1146,31 +1329,35 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 		resp.Purged = purged
 		resp.Success = true
 	}
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // Request to restore a stream.
-func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c.acc == nil {
+func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil || !s.jetStreamReadAllowed() {
 		return
 	}
-	acc := c.acc
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
 
 	var resp = JSApiStreamRestoreResponse{ApiResponse: ApiResponse{Type: JSApiStreamRestoreResponseType}}
 	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	if !isEmptyRequest(msg) {
 		resp.Error = jsNotEmptyRequestErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	stream := streamNameFromSubject(subject)
 	if _, err := acc.LookupStream(stream); err == nil {
 		resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("stream [%q] already exists", stream)}
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
@@ -1178,24 +1365,23 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 	// TODO(dlc) - Might need to make configurable or stream direct to storage dir.
 	tfile, err := ioutil.TempFile("", "jetstream-restore-")
 	if err != nil {
-		resp.Error = &ApiError{Code: 500, Description: "jetstream unable to open temp storage for restore"}
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		resp.Error = &ApiError{Code: 500, Description: "JetStream unable to open temp storage for restore"}
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
-	s.Noticef("Starting restore for stream %q in account %q", stream, c.acc.Name)
+	s.Noticef("Starting restore for stream %q in account %q", stream, acc.Name)
 	start := time.Now()
 	received := 0
 
-	caudit := c.apiAuditClient()
-	s.publishAdvisory(c.acc, JSAdvisoryStreamRestoreCreatePre+"."+stream, &JSRestoreCreateAdvisory{
+	s.publishAdvisory(acc, JSAdvisoryStreamRestoreCreatePre+"."+stream, &JSRestoreCreateAdvisory{
 		TypedEvent: TypedEvent{
 			Type: JSRestoreCreateAdvisoryType,
 			ID:   nuid.Next(),
 			Time: time.Now().UTC(),
 		},
 		Stream: stream,
-		Client: caudit,
+		Client: ci,
 	})
 
 	// Create our internal subscription to accept the snapshot.
@@ -1210,7 +1396,7 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 			tfile.Close()
 			os.Remove(tfile.Name())
 			sub.client.processUnsub(sub.sid)
-			s.Warnf("Restore for stream %q in account %q requires reply subject for each chunk", stream, c.acc.Name)
+			s.Warnf("Restore for stream %q in account %q requires reply subject for each chunk", stream, acc.Name)
 			return
 		}
 		// Account client messages have \r\n on end.
@@ -1229,7 +1415,7 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 			end := time.Now()
 
 			// TODO(rip) - Should this have the error code in it??
-			s.publishAdvisory(c.acc, JSAdvisoryStreamRestoreCompletePre+"."+stream, &JSRestoreCompleteAdvisory{
+			s.publishAdvisory(acc, JSAdvisoryStreamRestoreCompletePre+"."+stream, &JSRestoreCompleteAdvisory{
 				TypedEvent: TypedEvent{
 					Type: JSRestoreCompleteAdvisoryType,
 					ID:   nuid.Next(),
@@ -1239,11 +1425,11 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 				Start:  start.UTC(),
 				End:    end.UTC(),
 				Bytes:  int64(received),
-				Client: caudit,
+				Client: ci,
 			})
 
 			s.Noticef("Completed %s restore for stream %q in account %q in %v",
-				FriendlyBytes(int64(received)), stream, c.acc.Name, end.Sub(start))
+				FriendlyBytes(int64(received)), stream, acc.Name, end.Sub(start))
 
 			// On the last EOF, send back the stream info or error status.
 			var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
@@ -1259,7 +1445,7 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 		// Append chunk to temp file. Mark as issue if we encounter an error.
 		if n, err := tfile.Write(msg); n != len(msg) || err != nil {
 			s.Warnf("Storage failure for restore at %s for stream in account %q: %v",
-				FriendlyBytes(int64(received)), stream, c.acc.Name, err)
+				FriendlyBytes(int64(received)), stream, acc.Name, err)
 			tfile.Close()
 			os.Remove(tfile.Name())
 			sub.client.processUnsub(sub.sid)
@@ -1273,45 +1459,49 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 	})
 
 	resp.DeliverSubject = restoreSubj
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // Process a snapshot request.
-func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c.acc == nil {
+func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil {
 		return
 	}
-	acc := c.acc
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
 	smsg := string(msg)
 
 	var resp = JSApiStreamSnapshotResponse{ApiResponse: ApiResponse{Type: JSApiStreamSnapshotResponseType}}
 	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, smsg, s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
 		return
 	}
 	if isEmptyRequest(msg) {
 		resp.Error = jsBadRequestErr
-		s.sendAPIResponse(c, subject, reply, smsg, s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
 		return
 	}
 	stream := streamNameFromSubject(subject)
 	mset, err := acc.LookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
-		s.sendAPIResponse(c, subject, reply, smsg, s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
 		return
 	}
 
 	var req JSApiStreamSnapshotRequest
 	if err := json.Unmarshal(msg, &req); err != nil {
 		resp.Error = jsInvalidJSONErr
-		s.sendAPIResponse(c, subject, reply, smsg, s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
 		return
 	}
 	if !IsValidSubject(req.DeliverSubject) {
 		resp.Error = &ApiError{Code: 400, Description: "deliver subject not valid"}
-		s.sendAPIResponse(c, subject, reply, smsg, s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
 		return
 	}
 
@@ -1330,17 +1520,16 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 		if err != nil {
 			s.Noticef("Snapshot of %q in account %q failed: %s", mset.Name(), mset.jsa.account.Name, err)
 			resp.Error = jsError(err)
-			s.sendAPIResponse(c, subject, reply, smsg, s.jsonResponse(&resp))
+			s.sendAPIResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
 			return
 		}
 
 		resp.NumBlks = sr.NumBlks
 		resp.BlkSize = sr.BlkSize
 
-		s.sendAPIResponse(c, subject, reply, smsg, s.jsonResponse(resp))
+		s.sendAPIResponse(ci, acc, subject, reply, smsg, s.jsonResponse(resp))
 
-		caudit := c.apiAuditClient()
-		s.publishAdvisory(c.acc, JSAdvisoryStreamSnapshotCreatePre+"."+mset.Name(), &JSSnapshotCreateAdvisory{
+		s.publishAdvisory(acc, JSAdvisoryStreamSnapshotCreatePre+"."+mset.Name(), &JSSnapshotCreateAdvisory{
 			TypedEvent: TypedEvent{
 				Type: JSSnapshotCreatedAdvisoryType,
 				ID:   nuid.Next(),
@@ -1349,15 +1538,15 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 			Stream:  mset.Name(),
 			NumBlks: sr.NumBlks,
 			BlkSize: sr.BlkSize,
-			Client:  caudit,
+			Client:  ci,
 		})
 
 		// Now do the real streaming.
-		s.streamSnapshot(c, mset, sr, &req)
+		s.streamSnapshot(ci, acc, mset, sr, &req)
 
 		end := time.Now()
 
-		s.publishAdvisory(c.acc, JSAdvisoryStreamSnapshotCompletePre+"."+mset.Name(), &JSSnapshotCompleteAdvisory{
+		s.publishAdvisory(acc, JSAdvisoryStreamSnapshotCompletePre+"."+mset.Name(), &JSSnapshotCompleteAdvisory{
 			TypedEvent: TypedEvent{
 				Type: JSSnapshotCompleteAdvisoryType,
 				ID:   nuid.Next(),
@@ -1366,7 +1555,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 			Stream: mset.Name(),
 			Start:  start.UTC(),
 			End:    end.UTC(),
-			Client: caudit,
+			Client: ci,
 		})
 
 		s.Noticef("Completed %s snapshot for stream %q in account %q in %v",
@@ -1382,13 +1571,12 @@ const defaultSnapshotChunkSize = 128 * 1024
 const defaultSnapshotWindowSize = 16 * 1024 * 1024 // 16MB
 
 // streamSnapshot will stream out our snapshot to the reply subject.
-func (s *Server) streamSnapshot(c *client, mset *Stream, sr *SnapshotResult, req *JSApiStreamSnapshotRequest) {
+func (s *Server) streamSnapshot(ci *ClientInfo, acc *Account, mset *Stream, sr *SnapshotResult, req *JSApiStreamSnapshotRequest) {
 	chunkSize := req.ChunkSize
 	if chunkSize == 0 {
 		chunkSize = defaultSnapshotChunkSize
 	}
 	// Setup for the chunk stream.
-	acc := c.acc
 	reply := req.DeliverSubject
 	r := sr.Reader
 	defer r.Close()
@@ -1471,85 +1659,103 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, subject, 
 	s.jsConsumerCreate(sub, c, subject, reply, msg, false)
 }
 
-func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply string, msg []byte, expectDurable bool) {
-	if c == nil || c.acc == nil {
+func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply string, rmsg []byte, expectDurable bool) {
+	if c == nil || !s.JetStreamIsLeader() {
 		return
 	}
 
-	var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
-	if !c.acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
 		return
 	}
-	var req CreateConsumerRequest
-	if err := json.Unmarshal(msg, &req); err != nil {
-		resp.Error = jsInvalidJSONErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
+
 	var streamName string
 	if expectDurable {
 		streamName = tokenAt(subject, 6)
 	} else {
 		streamName = tokenAt(subject, 5)
 	}
-	if streamName != req.Stream {
-		resp.Error = &ApiError{Code: 400, Description: "stream name in subject does not match request"}
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+
+	var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
+	if !acc.JetStreamEnabled() {
+		resp.Error = jsNotEnabledErr
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	stream, err := c.acc.LookupStream(req.Stream)
-	if err != nil {
-		resp.Error = jsNotFoundError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+	var req CreateConsumerRequest
+	if err := json.Unmarshal(msg, &req); err != nil {
+		resp.Error = jsInvalidJSONErr
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	if streamName != req.Stream {
+		resp.Error = jsStreamMismatchErr
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
 	if expectDurable {
 		if numTokens(subject) != 7 {
 			resp.Error = &ApiError{Code: 400, Description: "consumer expected to be durable but no durable name set in subject"}
-			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
 		// Now check on requirements for durable request.
 		if req.Config.Durable == _EMPTY_ {
 			resp.Error = &ApiError{Code: 400, Description: "consumer expected to be durable but a durable name was not set"}
-			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
 		consumerName := tokenAt(subject, 7)
 		if consumerName != req.Config.Durable {
 			resp.Error = &ApiError{Code: 400, Description: "consumer name in subject does not match durable name in request"}
-			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
 	} else {
 		if numTokens(subject) != 5 {
 			resp.Error = &ApiError{Code: 400, Description: "consumer expected to be ephemeral but detected a durable name set in subject"}
-			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
 		if req.Config.Durable != _EMPTY_ {
 			resp.Error = &ApiError{Code: 400, Description: "consumer expected to be ephemeral but a durable name was set in request"}
-			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
+	}
+
+	if s.JetStreamIsClustered() {
+		s.jsClusteredConsumerRequest(ci, subject, reply, rmsg, req.Stream, &req.Config)
+		return
+	}
+
+	stream, err := acc.LookupStream(req.Stream)
+	if err != nil {
+		resp.Error = jsNotFoundError(err)
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
 	}
 
 	o, err := stream.AddConsumer(&req.Config)
 	if err != nil {
 		resp.Error = jsError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	resp.ConsumerInfo = o.Info()
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // Request for the list of all consumer names.
-func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c == nil || c.acc == nil {
+func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
 		return
 	}
 
@@ -1558,9 +1764,9 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 		Consumers:   []string{},
 	}
 
-	if !c.acc.JetStreamEnabled() {
+	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
@@ -1569,17 +1775,17 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 		var req JSApiConsumersRequest
 		if err := json.Unmarshal(msg, &req); err != nil {
 			resp.Error = jsInvalidJSONErr
-			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
 		offset = req.Offset
 	}
 
 	streamName := streamNameFromSubject(subject)
-	mset, err := c.acc.LookupStream(streamName)
+	mset, err := acc.LookupStream(streamName)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
@@ -1602,12 +1808,17 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 	resp.Total = ocnt
 	resp.Limit = JSApiNamesLimit
 	resp.Offset = offset
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // Request for the list of all detailed consumer information.
-func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c == nil || c.acc == nil {
+func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
 		return
 	}
 
@@ -1616,9 +1827,9 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 		Consumers:   []*ConsumerInfo{},
 	}
 
-	if !c.acc.JetStreamEnabled() {
+	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
@@ -1627,17 +1838,17 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 		var req JSApiConsumersRequest
 		if err := json.Unmarshal(msg, &req); err != nil {
 			resp.Error = jsInvalidJSONErr
-			s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
 		offset = req.Offset
 	}
 
 	streamName := streamNameFromSubject(subject)
-	mset, err := c.acc.LookupStream(streamName)
+	mset, err := acc.LookupStream(streamName)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
@@ -1660,144 +1871,126 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 	resp.Total = ocnt
 	resp.Limit = JSApiListLimit
 	resp.Offset = offset
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // Request for information about an consumer.
-func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c == nil || c.acc == nil {
+func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+
+	stream := streamNameFromSubject(subject)
+	consumer := consumerNameFromSubject(subject)
+
+	// If we are in clustered mode we need to be the stream leader to proceed.
+	if s.JetStreamIsClustered() && !acc.JetStreamIsConsumerLeader(stream, consumer) {
 		return
 	}
 
 	var resp = JSApiConsumerInfoResponse{ApiResponse: ApiResponse{Type: JSApiConsumerInfoResponseType}}
-	if !c.acc.JetStreamEnabled() {
+	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	if !isEmptyRequest(msg) {
 		resp.Error = jsNotEmptyRequestErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
-	stream := streamNameFromSubject(subject)
-	mset, err := c.acc.LookupStream(stream)
+	mset, err := acc.LookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	consumer := consumerNameFromSubject(subject)
+
 	obs := mset.LookupConsumer(consumer)
 	if obs == nil {
-		resp.Error = &ApiError{Code: 404, Description: "consumer not found"}
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		resp.Error = jsNoConsumerErr
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	resp.ConsumerInfo = obs.Info()
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // Request to delete an Consumer.
-func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	if c == nil || c.acc == nil {
+func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil || !s.JetStreamIsLeader() {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
 		return
 	}
 
 	var resp = JSApiConsumerDeleteResponse{ApiResponse: ApiResponse{Type: JSApiConsumerDeleteResponseType}}
-	if !c.acc.JetStreamEnabled() {
+	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	if !isEmptyRequest(msg) {
 		resp.Error = jsNotEmptyRequestErr
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	stream := streamNameFromSubject(subject)
-	mset, err := c.acc.LookupStream(stream)
+	consumer := consumerNameFromSubject(subject)
+
+	if s.JetStreamIsClustered() {
+		s.jsClusteredConsumerDeleteRequest(ci, stream, consumer, subject, reply, rmsg)
+		return
+	}
+
+	mset, err := acc.LookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	if mset.Config().internal {
 		resp.Error = &ApiError{Code: 403, Description: "not allowed to delete consumer of internal stream"}
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	consumer := consumerNameFromSubject(subject)
+
 	obs := mset.LookupConsumer(consumer)
 	if obs == nil {
-		resp.Error = &ApiError{Code: 404, Description: "consumer not found"}
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		resp.Error = jsNoConsumerErr
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	if err := obs.Delete(); err != nil {
 		resp.Error = jsError(err)
-		s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(&resp))
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	resp.Success = true
-	s.sendAPIResponse(c, subject, reply, string(msg), s.jsonResponse(resp))
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // sendJetStreamAPIAuditAdvisor will send the audit event for a given event.
-func (s *Server) sendJetStreamAPIAuditAdvisory(c *client, subject, request, response string) {
-	s.publishAdvisory(c.acc, JSAuditAdvisory, JSAPIAudit{
+func (s *Server) sendJetStreamAPIAuditAdvisory(ci *ClientInfo, acc *Account, subject, request, response string) {
+	s.publishAdvisory(acc, JSAuditAdvisory, JSAPIAudit{
 		TypedEvent: TypedEvent{
 			Type: JSAPIAuditType,
 			ID:   nuid.Next(),
 			Time: time.Now().UTC(),
 		},
 		Server:   s.Name(),
-		Client:   *c.apiAuditClient(),
+		Client:   ci,
 		Subject:  subject,
 		Request:  request,
 		Response: response,
 	})
-}
-
-func (c *client) apiAuditClient() *ClientAPIAudit {
-	c.mu.Lock()
-	auditUser := c.auditUser()
-	h, p := c.auditClient()
-	appName := c.opts.Name
-	lang := c.opts.Lang
-	version := c.opts.Version
-	cid := c.cid
-	c.mu.Unlock()
-
-	return &ClientAPIAudit{
-		Host:     h,
-		Port:     p,
-		CID:      cid,
-		Account:  c.Account().Name,
-		User:     auditUser,
-		Name:     appName,
-		Language: lang,
-		Version:  version,
-	}
-}
-
-// Returns a string identifying the user for an audit event. Returns empty string when no user is present.
-func (c *client) auditUser() string {
-	switch {
-	case c.opts.Nkey != "":
-		return c.opts.Nkey
-	case c.opts.Username != "":
-		return c.opts.Username
-	default:
-		return ""
-	}
-}
-
-// Returns the audit client name, which will just be IP:Port
-func (c *client) auditClient() (string, int) {
-	parts := strings.Split(c.String(), " ")
-	h, p, _ := net.SplitHostPort(parts[0])
-	port, _ := strconv.Atoi(p)
-	return h, port
 }

@@ -212,7 +212,7 @@ func checkServiceLatency(t *testing.T, sl server.ServiceLatency, start time.Time
 	}
 }
 
-func extendedCheck(t *testing.T, lc *server.LatencyClient, eUser, appName, eServer string) {
+func extendedCheck(t *testing.T, lc *server.ClientInfo, eUser, appName, eServer string) {
 	t.Helper()
 	if lc.User != eUser {
 		t.Fatalf("Expected user of %q, got %q", eUser, lc.User)
@@ -220,18 +220,18 @@ func extendedCheck(t *testing.T, lc *server.LatencyClient, eUser, appName, eServ
 	if appName != "" && appName != lc.Name {
 		t.Fatalf("Expected appname of %q, got %q\n", appName, lc.Name)
 	}
-	if lc.IP == "" {
+	if lc.Host == "" {
 		t.Fatalf("Expected non-empty IP")
 	}
-	if lc.CID < 1 || lc.CID > 20 {
-		t.Fatalf("Expected a CID in range, got %d", lc.CID)
+	if lc.ID < 1 || lc.ID > 20 {
+		t.Fatalf("Expected a ID in range, got %d", lc.ID)
 	}
 	if eServer != "" && eServer != lc.Server {
 		t.Fatalf("Expected server of %q, got %q", eServer, lc.Server)
 	}
 }
 
-func noShareCheck(t *testing.T, lc *server.LatencyClient) {
+func noShareCheck(t *testing.T, lc *server.ClientInfo) {
 	t.Helper()
 	if lc.Name != "" {
 		t.Fatalf("appname should not have been shared, got %q", lc.Name)
@@ -239,11 +239,11 @@ func noShareCheck(t *testing.T, lc *server.LatencyClient) {
 	if lc.User != "" {
 		t.Fatalf("user should not have been shared, got %q", lc.User)
 	}
-	if lc.IP != "" {
-		t.Fatalf("client ip should not have been shared, got %q", lc.IP)
+	if lc.Host != "" {
+		t.Fatalf("client ip should not have been shared, got %q", lc.Host)
 	}
-	if lc.CID != 0 {
-		t.Fatalf("client id should not have been shared, got %d", lc.CID)
+	if lc.ID != 0 {
+		t.Fatalf("client id should not have been shared, got %d", lc.ID)
 	}
 	if lc.Server != "" {
 		t.Fatalf("client' server should not have been shared, got %q", lc.Server)
@@ -289,9 +289,9 @@ func TestServiceLatencySingleServerConnect(t *testing.T) {
 	checkServiceLatency(t, sl, start, serviceTime)
 
 	rs := sc.clusters[0].servers[0]
-	extendedCheck(t, &sl.Responder, "foo", "service22", rs.Name())
+	extendedCheck(t, sl.Responder, "foo", "service22", rs.Name())
 	// Normally requestor's don't share
-	noShareCheck(t, &sl.Requestor)
+	noShareCheck(t, sl.Requestor)
 
 	// Now make sure normal use case works with old request style.
 	nc3 := clientConnectOldRequest(t, sc.clusters[0].opts[0], "bar")
@@ -304,9 +304,9 @@ func TestServiceLatencySingleServerConnect(t *testing.T) {
 	nc3.Close()
 
 	checkServiceLatency(t, sl, start, serviceTime)
-	extendedCheck(t, &sl.Responder, "foo", "service22", rs.Name())
+	extendedCheck(t, sl.Responder, "foo", "service22", rs.Name())
 	// Normally requestor's don't share
-	noShareCheck(t, &sl.Requestor)
+	noShareCheck(t, sl.Requestor)
 }
 
 // If a client has a longer RTT that the effective RTT for NATS + responder
@@ -385,9 +385,9 @@ func TestServiceLatencyClientRTTSlowerVsServiceRTT(t *testing.T) {
 		}
 
 		rs := sc.clusters[0].servers[0]
-		extendedCheck(t, &sl.Responder, "foo", "", rs.Name())
+		extendedCheck(t, sl.Responder, "foo", "", rs.Name())
 		// Normally requestor's don't share
-		noShareCheck(t, &sl.Requestor)
+		noShareCheck(t, sl.Requestor)
 
 		// Check for trailing duplicates..
 		rmsg, err = rsub.NextMsg(100 * time.Millisecond)
@@ -463,9 +463,9 @@ func TestServiceLatencyRemoteConnect(t *testing.T) {
 	json.Unmarshal(rmsg.Data, &sl)
 	checkServiceLatency(t, sl, start, serviceTime)
 	rs := sc.clusters[0].servers[0]
-	extendedCheck(t, &sl.Responder, "foo", "", rs.Name())
+	extendedCheck(t, sl.Responder, "foo", "", rs.Name())
 	// Normally requestor's don't share
-	noShareCheck(t, &sl.Requestor)
+	noShareCheck(t, sl.Requestor)
 
 	// Lastly here, we need to make sure we are properly tracking the extra hops.
 	// We will make sure that NATS latency is close to what we see from the outside in terms of RTT.
@@ -490,9 +490,9 @@ func TestServiceLatencyRemoteConnect(t *testing.T) {
 	}
 	json.Unmarshal(rmsg.Data, &sl)
 	checkServiceLatency(t, sl, start, serviceTime)
-	extendedCheck(t, &sl.Responder, "foo", "", rs.Name())
+	extendedCheck(t, sl.Responder, "foo", "", rs.Name())
 	// Normally requestor's don't share
-	noShareCheck(t, &sl.Requestor)
+	noShareCheck(t, sl.Requestor)
 
 	// Lastly here, we need to make sure we are properly tracking the extra hops.
 	// We will make sure that NATS latency is close to what we see from the outside in terms of RTT.
@@ -642,9 +642,9 @@ func TestServiceLatencyWithName(t *testing.T) {
 
 	// Make sure we have AppName set.
 	rs := sc.clusters[0].servers[0]
-	extendedCheck(t, &sl.Responder, "foo", "dlc22", rs.Name())
+	extendedCheck(t, sl.Responder, "foo", "dlc22", rs.Name())
 	// Normally requestor's don't share
-	noShareCheck(t, &sl.Requestor)
+	noShareCheck(t, sl.Requestor)
 }
 
 func TestServiceLatencyWithNameMultiServer(t *testing.T) {
@@ -676,9 +676,9 @@ func TestServiceLatencyWithNameMultiServer(t *testing.T) {
 
 	// Make sure we have AppName set.
 	rs := sc.clusters[0].servers[1]
-	extendedCheck(t, &sl.Responder, "foo", "dlc22", rs.Name())
+	extendedCheck(t, sl.Responder, "foo", "dlc22", rs.Name())
 	// Normally requestor's don't share
-	noShareCheck(t, &sl.Requestor)
+	noShareCheck(t, sl.Requestor)
 }
 
 func createAccountWithJWT(t *testing.T) (string, nkeys.KeyPair, *jwt.AccountClaims) {
@@ -829,9 +829,9 @@ func TestServiceLatencyWithJWT(t *testing.T) {
 	}
 	json.Unmarshal(rmsg.Data, &sl)
 	checkServiceLatency(t, sl, start, serviceTime)
-	extendedCheck(t, &sl.Responder, pubUser, "fooService", s.Name())
+	extendedCheck(t, sl.Responder, pubUser, "fooService", s.Name())
 	// Normally requestor's don't share
-	noShareCheck(t, &sl.Requestor)
+	noShareCheck(t, sl.Requestor)
 
 	// Now we will remove tracking. Do this by simulating a JWT update.
 	serviceExport.Latency = nil
@@ -1218,8 +1218,8 @@ func TestServiceLatencyOldRequestStyleSingleServer(t *testing.T) {
 	json.Unmarshal(rmsg.Data, &sl)
 
 	checkServiceLatency(t, sl, start, serviceTime)
-	extendedCheck(t, &sl.Responder, "svc", "", srv.Name())
-	noShareCheck(t, &sl.Requestor)
+	extendedCheck(t, sl.Responder, "svc", "", srv.Name())
+	noShareCheck(t, sl.Requestor)
 }
 
 // To test a bug wally@nats.io is seeing.
@@ -1358,7 +1358,7 @@ func TestServiceLatencyRequestorSharesDetailedInfo(t *testing.T) {
 		if sl.Status != 400 {
 			t.Fatalf("Test %q, Expected to get a bad request status [400], got %d", cs.desc, sl.Status)
 		}
-		extendedCheck(t, &sl.Requestor, "bar", "", rs.Name())
+		extendedCheck(t, sl.Requestor, "bar", "", rs.Name())
 
 		// We wait here for the gateways to report no interest b/c optimistic mode.
 		time.Sleep(50 * time.Millisecond)
@@ -1369,7 +1369,7 @@ func TestServiceLatencyRequestorSharesDetailedInfo(t *testing.T) {
 		if sl.Status != 503 {
 			t.Fatalf("Test %q, Expected to get a service unavailable status [503], got %d", cs.desc, sl.Status)
 		}
-		extendedCheck(t, &sl.Requestor, "bar", "", rs.Name())
+		extendedCheck(t, sl.Requestor, "bar", "", rs.Name())
 
 		// The service listener. Make it slow. 10ms is respThreshold, so take 2.5X
 		sub, _ := nc.Subscribe("ngs.usage.bar", func(msg *nats.Msg) {
@@ -1386,7 +1386,7 @@ func TestServiceLatencyRequestorSharesDetailedInfo(t *testing.T) {
 		if sl.Status != 504 {
 			t.Fatalf("Test %q, Expected to get a service timeout status [504], got %d", cs.desc, sl.Status)
 		}
-		extendedCheck(t, &sl.Requestor, "bar", "", rs.Name())
+		extendedCheck(t, sl.Requestor, "bar", "", rs.Name())
 
 		// Clean up subscriber and requestor
 		nc2.Close()
@@ -1463,8 +1463,8 @@ func TestServiceLatencyRequestorSharesConfig(t *testing.T) {
 	json.Unmarshal(rmsg.Data, &sl)
 
 	checkServiceLatency(t, sl, start, serviceTime)
-	extendedCheck(t, &sl.Responder, "svc", "", srv.Name())
-	extendedCheck(t, &sl.Requestor, "client", "", srv.Name())
+	extendedCheck(t, sl.Responder, "svc", "", srv.Name())
+	extendedCheck(t, sl.Requestor, "client", "", srv.Name())
 
 	// Check reload.
 	newConf := []byte(`
@@ -1505,7 +1505,7 @@ func TestServiceLatencyRequestorSharesConfig(t *testing.T) {
 	var sl2 server.ServiceLatency
 	rmsg, _ = rsub.NextMsg(time.Second)
 	json.Unmarshal(rmsg.Data, &sl2)
-	noShareCheck(t, &sl2.Requestor)
+	noShareCheck(t, sl2.Requestor)
 }
 
 func TestServiceLatencyLossTest(t *testing.T) {
@@ -1644,12 +1644,12 @@ func TestServiceLatencyHeaderTriggered(t *testing.T) {
 			t.Fatalf("Expected different status %d != %d", status, sl.Status)
 		}
 		if status == http.StatusOK {
-			extendedCheck(t, &sl.Responder, "svc", "", srvName)
+			extendedCheck(t, sl.Responder, "svc", "", srvName)
 		}
 		if shared {
-			extendedCheck(t, &sl.Requestor, "client", "", srvName)
+			extendedCheck(t, sl.Requestor, "client", "", srvName)
 		} else {
-			noShareCheck(t, &sl.Requestor)
+			noShareCheck(t, sl.Requestor)
 		}
 		// header are always included
 		if v := sl.RequestHeader.Get("Some-Other"); v != "" {

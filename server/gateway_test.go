@@ -155,12 +155,25 @@ func waitCh(t *testing.T, ch chan bool, errTxt string) {
 	}
 }
 
+var noOpErrHandler = func(_ *nats.Conn, _ *nats.Subscription, _ error) {}
+
 func natsConnect(t testing.TB, url string, options ...nats.Option) *nats.Conn {
 	t.Helper()
+	opts := nats.GetDefaultOptions()
+	for _, opt := range options {
+		if err := opt(&opts); err != nil {
+			t.Fatalf("Error applying client option: %v", err)
+		}
+	}
 	nc, err := nats.Connect(url, options...)
 	if err != nil {
 		t.Fatalf("Error on connect: %v", err)
 	}
+	if opts.AsyncErrorCB == nil {
+		// Set this up to not pollute the logs when running tests.
+		nc.SetErrorHandler(noOpErrHandler)
+	}
+
 	return nc
 }
 
@@ -3623,7 +3636,7 @@ func TestGatewayServiceImport(t *testing.T) {
 	subB := natsSubSync(t, clientB, "reply")
 	natsFlush(t, clientB)
 
-	for i := 0; i < 2; i++ {
+	for i := 1; i <= 2; i++ {
 		// Send the request from clientB on foo.request,
 		natsPubReq(t, clientB, "foo.request", "reply", []byte("hi"))
 		natsFlush(t, clientB)
@@ -3641,7 +3654,7 @@ func TestGatewayServiceImport(t *testing.T) {
 		}
 
 		// Check for duplicate message
-		if msg, err := subA.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		if msg, err := subA.NextMsg(250 * time.Millisecond); err != nats.ErrTimeout {
 			t.Fatalf("Unexpected msg: %v", msg)
 		}
 
@@ -3662,7 +3675,7 @@ func TestGatewayServiceImport(t *testing.T) {
 			t.Fatalf("Unexpected msg: %v", msg)
 		}
 
-		expected := int64((i + 1) * 2)
+		expected := int64(i * 2)
 		vz, _ := sa.Varz(nil)
 		if vz.OutMsgs != expected {
 			t.Fatalf("Expected %d outMsgs for A, got %v", expected, vz.OutMsgs)
@@ -3670,13 +3683,13 @@ func TestGatewayServiceImport(t *testing.T) {
 
 		// For B, we expect it to send to gateway on the two subjects: test.request
 		// and foo.request then send the reply to the client and optimistically
-		// to the other gateway. Also send on _R_
-		if i == 0 {
-			expected = 5
+		// to the other gateway.
+		if i == 1 {
+			expected = 4
 		} else {
 			// The second time, one of the accounts will be suppressed and the reply going
-			// back so we should get only 2 more messages.
-			expected = 7
+			// back so we should only get 2 more messages.
+			expected = 6
 		}
 		vz, _ = sb.Varz(nil)
 		if vz.OutMsgs != expected {

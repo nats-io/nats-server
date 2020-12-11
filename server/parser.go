@@ -48,6 +48,7 @@ type pubArg struct {
 	size    int
 	hdr     int
 	psi     *serviceImport
+	proxy   *Account
 }
 
 // Parser constants
@@ -1127,7 +1128,7 @@ func (c *client) parse(buf []byte) error {
 		// read buffer and we are not able to process the msg.
 
 		if c.argBuf == nil {
-			// Works also for MSG_ARG, when message comes from ROUTE.
+			// Works also for MSG_ARG, when message comes from ROUTE or GATEWAY.
 			if err := c.clonePubArg(lmsg); err != nil {
 				goto parseErr
 			}
@@ -1160,8 +1161,7 @@ authErr:
 parseErr:
 	c.sendErr("Unknown Protocol Operation")
 	snip := protoSnippet(i, buf)
-	err := fmt.Errorf("%s parser ERROR, state=%d, i=%d: proto='%s...'",
-		c.typeString(), c.state, i, snip)
+	err := fmt.Errorf("%s parser ERROR, state=%d, i=%d: proto='%s...'", c.typeString(), c.state, i, snip)
 	return err
 }
 
