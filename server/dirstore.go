@@ -607,7 +607,7 @@ func (pq *expirationTracker) updateTrack(publicKey string) {
 		i := e.Value.(*jwtItem)
 		if pq.ttl != 0 {
 			// only update expiration when set
-			i.expiration = time.Now().Round(time.Second).Add(pq.ttl).Unix()
+			i.expiration = time.Now().Add(pq.ttl).UnixNano()
 			heap.Fix(pq, i.index)
 		}
 		if pq.evictOnLimit {
@@ -631,11 +631,11 @@ func (pq *expirationTracker) track(publicKey string, hash *[sha256.Size]byte, th
 		if pq.ttl == time.Duration(math.MaxInt64) {
 			exp = math.MaxInt64
 		} else {
-			exp = time.Now().Round(time.Second).Add(pq.ttl).Unix()
+			exp = time.Now().Add(pq.ttl).UnixNano()
 		}
 	} else {
 		if g, err := jwt.DecodeGeneric(theJWT); err == nil {
-			exp = g.Expires
+			exp = time.Unix(g.Expires, 0).UnixNano()
 		}
 		if exp == 0 {
 			exp = math.MaxInt64 // default to indefinite
@@ -683,10 +683,10 @@ func (store *DirJWTStore) startExpiring(reCheck time.Duration, limit int64, evic
 		defer t.Stop()
 		defer pq.wg.Done()
 		for {
-			now := time.Now()
+			now := time.Now().UnixNano()
 			store.Lock()
 			if pq.Len() > 0 {
-				if it := pq.heap[0]; it.expiration <= now.Unix() {
+				if it := pq.heap[0]; it.expiration <= now {
 					path := store.pathForKey(it.publicKey)
 					if err := os.Remove(path); err == nil {
 						heap.Pop(pq)
