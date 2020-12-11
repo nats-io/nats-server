@@ -2146,3 +2146,140 @@ func TestLeafNodeOperatorBadCfg(t *testing.T) {
 		})
 	}
 }
+
+func TestLeafNodeTLSConfigReload(t *testing.T) {
+	template := `
+		listen: 127.0.0.1:-1
+		leaf {
+			listen: "127.0.0.1:-1"
+			tls {
+				cert_file: "../test/configs/certs/server-cert.pem"
+				key_file:  "../test/configs/certs/server-key.pem"
+				%s
+				timeout: 2
+				verify: true
+			}
+		}
+	`
+	confA := createConfFile(t, []byte(fmt.Sprintf(template, "")))
+	defer os.Remove(confA)
+
+	srvA, optsA := RunServerWithConfig(confA)
+	defer srvA.Shutdown()
+
+	lg := &captureErrorLogger{errCh: make(chan string, 10)}
+	srvA.SetLogger(lg, false, false)
+
+	confB := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		leaf {
+			remotes [
+				{
+					url: "tls://127.0.0.1:%d"
+					tls {
+						cert_file: "../test/configs/certs/server-cert.pem"
+						key_file:  "../test/configs/certs/server-key.pem"
+						ca_file:   "../test/configs/certs/ca.pem"
+					}
+				}
+			]
+		}
+	`, optsA.LeafNode.Port)))
+	defer os.Remove(confB)
+
+	optsB, err := ProcessConfigFile(confB)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+	optsB.LeafNode.ReconnectInterval = 50 * time.Millisecond
+	optsB.NoLog, optsB.NoSigs = true, true
+
+	srvB := RunServer(optsB)
+	defer srvB.Shutdown()
+
+	// Wait for the error
+	select {
+	case err := <-lg.errCh:
+		if !strings.Contains(err, "unknown") {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Did not get TLS error")
+	}
+
+	// Add the CA to srvA
+	reloadUpdateConfig(t, srvA, confA, fmt.Sprintf(template, `ca_file: "../test/configs/certs/ca.pem"`))
+
+	// Now make sure that srvB can create a LN connection.
+	checkFor(t, 3*time.Second, 10*time.Millisecond, func() error {
+		if nln := srvB.NumLeafNodes(); nln != 1 {
+			return fmt.Errorf("Number of leaf nodes is %d", nln)
+		}
+		return nil
+	})
+}
+
+func TestLeafNodeTLSConfigReloadForRemote(t *testing.T) {
+	confA := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		leaf {
+			listen: "127.0.0.1:-1"
+			tls {
+				cert_file: "../test/configs/certs/server-cert.pem"
+				key_file:  "../test/configs/certs/server-key.pem"
+				ca_file: "../test/configs/certs/ca.pem"
+				timeout: 2
+				verify: true
+			}
+		}
+	`))
+	defer os.Remove(confA)
+
+	srvA, optsA := RunServerWithConfig(confA)
+	defer srvA.Shutdown()
+
+	lg := &captureErrorLogger{errCh: make(chan string, 10)}
+	srvA.SetLogger(lg, false, false)
+
+	template := `
+		listen: -1
+		leaf {
+			remotes [
+				{
+					url: "tls://127.0.0.1:%d"
+					tls {
+						cert_file: "../test/configs/certs/server-cert.pem"
+						key_file:  "../test/configs/certs/server-key.pem"
+						%s
+					}
+				}
+			]
+		}
+	`
+	confB := createConfFile(t, []byte(fmt.Sprintf(template, optsA.LeafNode.Port, "")))
+	defer os.Remove(confB)
+
+	srvB, _ := RunServerWithConfig(confB)
+	defer srvB.Shutdown()
+
+	// Wait for the error
+	select {
+	case err := <-lg.errCh:
+		if !strings.Contains(err, "bad certificate") {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Did not get TLS error")
+	}
+
+	// Add the CA to srvB
+	reloadUpdateConfig(t, srvB, confB, fmt.Sprintf(template, optsA.LeafNode.Port, `ca_file: "../test/configs/certs/ca.pem"`))
+
+	// Now make sure that srvB can create a LN connection.
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if nln := srvB.NumLeafNodes(); nln != 1 {
+			return fmt.Errorf("Number of leaf nodes is %d", nln)
+		}
+		return nil
+	})
+}

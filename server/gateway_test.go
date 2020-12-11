@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -6247,4 +6248,87 @@ func TestGatewayPings(t *testing.T) {
 			t.Fatalf("Did not send PING")
 		}
 	}
+}
+
+func TestGatewayTLSConfigReload(t *testing.T) {
+	template := `
+		listen: 127.0.0.1:-1
+		gateway {
+			name: "A"
+			listen: "127.0.0.1:-1"
+			tls {
+				cert_file: "../test/configs/certs/server-cert.pem"
+				key_file:  "../test/configs/certs/server-key.pem"
+				%s
+				timeout: 2
+			}
+		}
+	`
+	confA := createConfFile(t, []byte(fmt.Sprintf(template, "")))
+	defer os.Remove(confA)
+
+	srvA, optsA := RunServerWithConfig(confA)
+	defer srvA.Shutdown()
+
+	optsB := testGatewayOptionsFromToWithTLS(t, "B", "A", []string{fmt.Sprintf("nats://127.0.0.1:%d", optsA.Gateway.Port)})
+	srvB := runGatewayServer(optsB)
+	defer srvB.Shutdown()
+
+	waitForGatewayFailedConnect(t, srvB, "A", true, time.Second)
+
+	reloadUpdateConfig(t, srvA, confA, fmt.Sprintf(template, `ca_file:   "../test/configs/certs/ca.pem"`))
+
+	waitForInboundGateways(t, srvA, 1, time.Second)
+	waitForOutboundGateways(t, srvA, 1, time.Second)
+	waitForInboundGateways(t, srvB, 1, time.Second)
+	waitForOutboundGateways(t, srvB, 1, time.Second)
+}
+
+func TestGatewayTLSConfigReloadForRemote(t *testing.T) {
+	SetGatewaysSolicitDelay(5 * time.Millisecond)
+	defer ResetGatewaysSolicitDelay()
+
+	optsA := testGatewayOptionsWithTLS(t, "A")
+	srvA := runGatewayServer(optsA)
+	defer srvA.Shutdown()
+
+	template := `
+		listen: 127.0.0.1:-1
+		gateway {
+			name: "B"
+			listen: "127.0.0.1:-1"
+			tls {
+				cert_file: "../test/configs/certs/server-cert.pem"
+				key_file:  "../test/configs/certs/server-key.pem"
+				ca_file:   "../test/configs/certs/ca.pem"
+				timeout: 2
+			}
+			gateways [
+				{
+					name: "A"
+					url: "nats://127.0.0.1:%d"
+					tls {
+						cert_file: "../test/configs/certs/server-cert.pem"
+						key_file:  "../test/configs/certs/server-key.pem"
+						%s
+						timeout: 2
+					}
+				}
+			]
+		}
+	`
+	confB := createConfFile(t, []byte(fmt.Sprintf(template, optsA.Gateway.Port, "")))
+	defer os.Remove(confB)
+
+	srvB, _ := RunServerWithConfig(confB)
+	defer srvB.Shutdown()
+
+	waitForGatewayFailedConnect(t, srvB, "A", true, time.Second)
+
+	reloadUpdateConfig(t, srvB, confB, fmt.Sprintf(template, optsA.Gateway.Port, `ca_file: "../test/configs/certs/ca.pem"`))
+
+	waitForInboundGateways(t, srvA, 1, time.Second)
+	waitForOutboundGateways(t, srvA, 1, time.Second)
+	waitForInboundGateways(t, srvB, 1, time.Second)
+	waitForOutboundGateways(t, srvB, 1, time.Second)
 }
