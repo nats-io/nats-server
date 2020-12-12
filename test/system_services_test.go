@@ -65,11 +65,19 @@ func numSubs(t *testing.T, msg *nats.Msg) int {
 	return n
 }
 
-func checkNumSubs(t *testing.T, msg *nats.Msg, expected int) {
+func checkDbgNumSubs(t *testing.T, nc *nats.Conn, subj string, expected int) {
 	t.Helper()
-	if n := numSubs(t, msg); n != expected {
-		t.Fatalf("Expected %d subscribers, got %d", expected, n)
+	var n int
+	for i := 0; i < 3; i++ {
+		response, err := nc.Request(dbgSubs, []byte(subj), 250*time.Millisecond)
+		if err != nil {
+			continue
+		}
+		if n = numSubs(t, response); n == expected {
+			return
+		}
 	}
+	t.Fatalf("Expected %d subscribers, got %d", expected, n)
 }
 
 func TestSystemServiceSubscribers(t *testing.T) {
@@ -84,8 +92,7 @@ func TestSystemServiceSubscribers(t *testing.T) {
 
 	checkInterest := func(expected int) {
 		t.Helper()
-		response, _ := nc.Request(dbgSubs, []byte("foo.bar"), time.Second)
-		checkNumSubs(t, response, expected)
+		checkDbgNumSubs(t, nc, "foo.bar", expected)
 	}
 
 	checkInterest(0)
@@ -131,20 +138,16 @@ func TestSystemServiceSubscribersWildcards(t *testing.T) {
 		nc.Flush()
 	}
 
-	response, _ := nc.Request(dbgSubs, []byte("foo.bar.*"), time.Second)
-	checkNumSubs(t, response, 50)
+	checkDbgNumSubs(t, nc, "foo.bar.*", 50)
 
-	response, _ = nc.Request(dbgSubs, []byte("foo.>"), time.Second)
-	checkNumSubs(t, response, 50)
+	checkDbgNumSubs(t, nc, "foo.>", 50)
 
-	response, _ = nc.Request(dbgSubs, []byte("foo.bar.22"), time.Second)
-	checkNumSubs(t, response, 1)
+	checkDbgNumSubs(t, nc, "foo.bar.22", 1)
 
-	response, _ = nc.Request(dbgSubs, []byte("_INBOX.*.*"), time.Second)
+	response, _ := nc.Request(dbgSubs, []byte("_INBOX.*.*"), time.Second)
 	hasInbox := numSubs(t, response)
 
-	response, _ = nc.Request(dbgSubs, []byte(">"), time.Second)
-	checkNumSubs(t, response, 100+hasInbox)
+	checkDbgNumSubs(t, nc, ">", 100+hasInbox)
 }
 
 // Test that we can match on queue groups as well. Separate request payload with any whitespace.
@@ -176,30 +179,22 @@ func TestSystemServiceSubscribersQueueGroups(t *testing.T) {
 		nc.Flush()
 	}
 
-	response, _ := nc.Request(dbgSubs, []byte("foo.bar.*"), time.Second)
-	checkNumSubs(t, response, 33)
+	checkDbgNumSubs(t, nc, "foo.bar.*", 33)
 
-	response, _ = nc.Request(dbgSubs, []byte("foo.bar.22 QG.22"), time.Second)
-	checkNumSubs(t, response, 1)
+	checkDbgNumSubs(t, nc, "foo.bar.22 QG.22", 1)
 
-	response, _ = nc.Request(dbgSubs, []byte("foo.bar.2"), time.Second)
-	checkNumSubs(t, response, 2)
+	checkDbgNumSubs(t, nc, "foo.bar.2", 2)
 
-	response, _ = nc.Request(dbgSubs, []byte("foo.baz"), time.Second)
-	checkNumSubs(t, response, 33)
+	checkDbgNumSubs(t, nc, "foo.baz", 33)
 
-	response, _ = nc.Request(dbgSubs, []byte("foo.baz QG.22"), time.Second)
-	checkNumSubs(t, response, 23)
+	checkDbgNumSubs(t, nc, "foo.baz QG.22", 23)
 
 	// Now check qfilters work on wildcards too.
-	response, _ = nc.Request(dbgSubs, []byte("foo.bar.> QG.11"), time.Second)
-	checkNumSubs(t, response, 10)
+	checkDbgNumSubs(t, nc, "foo.bar.> QG.11", 10)
 
-	response, _ = nc.Request(dbgSubs, []byte("*.baz QG.22"), time.Second)
-	checkNumSubs(t, response, 23)
+	checkDbgNumSubs(t, nc, "*.baz QG.22", 23)
 
-	response, _ = nc.Request(dbgSubs, []byte("foo.*.2 QG.22"), time.Second)
-	checkNumSubs(t, response, 1)
+	checkDbgNumSubs(t, nc, "foo.*.22 QG.22", 1)
 }
 
 func TestSystemServiceSubscribersLeafNodesWithoutSystem(t *testing.T) {
@@ -246,11 +241,9 @@ func TestSystemServiceSubscribersLeafNodesWithoutSystem(t *testing.T) {
 	nc := clientConnect(t, sc.clusters[0].opts[0], "foo")
 	defer nc.Close()
 
-	response, _ := nc.Request(dbgSubs, []byte("foo.bar.*"), time.Second)
-	checkNumSubs(t, response, 20)
+	checkDbgNumSubs(t, nc, "foo.bar.*", 20)
 
-	response, _ = nc.Request(dbgSubs, []byte("foo.bar.3"), time.Second)
-	checkNumSubs(t, response, 1)
+	checkDbgNumSubs(t, nc, "foo.bar.3", 1)
 
 	lnc.SubscribeSync("foo.bar.3")
 	lnc.QueueSubscribeSync("foo.bar.baz", "QG.22")
@@ -258,22 +251,18 @@ func TestSystemServiceSubscribersLeafNodesWithoutSystem(t *testing.T) {
 	// We could flush here but that does not guarantee we have flushed through to the supercluster.
 	flushLeaf()
 
-	response, _ = nc.Request(dbgSubs, []byte("foo.bar.3"), time.Second)
-	checkNumSubs(t, response, 2)
+	checkDbgNumSubs(t, nc, "foo.bar.3", 2)
 
-	response, _ = nc.Request(dbgSubs, []byte("foo.bar.baz QG.22"), time.Second)
-	checkNumSubs(t, response, 11)
+	checkDbgNumSubs(t, nc, "foo.bar.baz QG.22", 11)
 
 	lnc.SubscribeSync("foo.bar.3")
 	lnc.QueueSubscribeSync("foo.bar.baz", "QG.22")
 	flushLeaf()
 
 	// For now we do not see all the details behind a leafnode if the leafnode is not enabled.
-	response, _ = nc.Request(dbgSubs, []byte("foo.bar.3"), time.Second)
-	checkNumSubs(t, response, 2)
+	checkDbgNumSubs(t, nc, "foo.bar.3", 2)
 
-	response, _ = nc.Request(dbgSubs, []byte("foo.bar.baz QG.22"), time.Second)
-	checkNumSubs(t, response, 11)
+	checkDbgNumSubs(t, nc, "foo.bar.baz QG.22", 11)
 }
 
 func runSolicitLeafServerWithSystemToURL(surl string) (*server.Server, *server.Options) {
@@ -350,11 +339,9 @@ func TestSystemServiceSubscribersLeafNodesWithSystem(t *testing.T) {
 	nc := clientConnect(t, sc.clusters[0].opts[0], "foo")
 	defer nc.Close()
 
-	response, _ := nc.Request(dbgSubs, []byte("foo.bar.3"), time.Second)
-	checkNumSubs(t, response, 1)
+	checkDbgNumSubs(t, nc, "foo.bar.3", 1)
 
-	response, _ = nc.Request(dbgSubs, []byte("foo.bar.*"), time.Second)
-	checkNumSubs(t, response, 20)
+	checkDbgNumSubs(t, nc, "foo.bar.*", 20)
 
 	lnc.SubscribeSync("foo.bar.3")
 	lnc.QueueSubscribeSync("foo.bar.baz", "QG.22")
@@ -362,9 +349,7 @@ func TestSystemServiceSubscribersLeafNodesWithSystem(t *testing.T) {
 
 	// Since we are doing real tracking now on the other side, this will be off by 1 since we are counting
 	// the leaf and the real sub.
-	response, _ = nc.Request(dbgSubs, []byte("foo.bar.3"), time.Second)
-	checkNumSubs(t, response, 3)
+	checkDbgNumSubs(t, nc, "foo.bar.3", 3)
 
-	response, _ = nc.Request(dbgSubs, []byte("foo.bar.baz QG.22"), time.Second)
-	checkNumSubs(t, response, 12)
+	checkDbgNumSubs(t, nc, "foo.bar.baz QG.22", 12)
 }
