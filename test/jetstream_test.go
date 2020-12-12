@@ -3764,13 +3764,13 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 	streamCreated := mset.Created()
 
 	dsubj := "D.TO"
-	max := 4
+	max := 3
 
 	o, err := mset.AddConsumer(&server.ConsumerConfig{
 		Durable:        "TO",
 		DeliverSubject: dsubj,
 		AckPolicy:      server.AckExplicit,
-		AckWait:        20 * time.Millisecond,
+		AckWait:        100 * time.Millisecond,
 		MaxDeliver:     max,
 	})
 	defer o.Delete()

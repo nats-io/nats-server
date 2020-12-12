@@ -746,6 +746,21 @@ func TestLeafNodeBasicAuthMultiple(t *testing.T) {
 	defer s3.Shutdown()
 }
 
+type loopDetectedLogger struct {
+	DummyLogger
+	ch chan string
+}
+
+func (l *loopDetectedLogger) Errorf(format string, v ...interface{}) {
+	msg := fmt.Sprintf(format, v...)
+	if strings.Contains(msg, "Loop") {
+		select {
+		case l.ch <- msg:
+		default:
+		}
+	}
+}
+
 func TestLeafNodeLoop(t *testing.T) {
 	// This test requires that we set the port to known value because
 	// we want A point to B and B to A.
@@ -758,7 +773,7 @@ func TestLeafNodeLoop(t *testing.T) {
 	sa := RunServer(oa)
 	defer sa.Shutdown()
 
-	l := &captureErrorLogger{errCh: make(chan string, 10)}
+	l := &loopDetectedLogger{ch: make(chan string, 1)}
 	sa.SetLogger(l, false, false)
 
 	ob := DefaultOptions()
@@ -771,15 +786,15 @@ func TestLeafNodeLoop(t *testing.T) {
 	defer sb.Shutdown()
 
 	select {
-	case e := <-l.errCh:
-		if !strings.Contains(e, "Loop") {
-			t.Fatalf("Expected error about loop, got %v", e)
-		}
+	case <-l.ch:
+		// OK!
 	case <-time.After(2 * time.Second):
 		t.Fatalf("Did not get any error regarding loop")
 	}
 
 	sb.Shutdown()
+	ob.Port = -1
+	ob.Cluster.Port = -1
 	ob.LeafNode.Remotes = nil
 	sb = RunServer(ob)
 	defer sb.Shutdown()
@@ -824,15 +839,13 @@ func TestLeafNodeLoopFromDAG(t *testing.T) {
 	oc.Cluster = ClusterOpts{}
 	sc := RunServer(oc)
 
-	lc := &captureErrorLogger{errCh: make(chan string, 10)}
+	lc := &loopDetectedLogger{ch: make(chan string, 1)}
 	sc.SetLogger(lc, false, false)
 
 	// We should get an error.
 	select {
-	case e := <-lc.errCh:
-		if !strings.Contains(e, "Loop") {
-			t.Fatalf("Expected error about loop, got %v", e)
-		}
+	case <-lc.ch:
+		// OK
 	case <-time.After(2 * time.Second):
 		t.Fatalf("Did not get any error regarding loop")
 	}
@@ -1279,7 +1292,7 @@ func TestLeafNodeLoopDetectedOnAcceptSide(t *testing.T) {
 	b := RunServer(bo)
 	defer b.Shutdown()
 
-	l := &captureErrorLogger{errCh: make(chan string, 10)}
+	l := &loopDetectedLogger{ch: make(chan string, 1)}
 	b.SetLogger(l, false, false)
 
 	u, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", bo.LeafNode.Port))
@@ -1312,10 +1325,8 @@ func TestLeafNodeLoopDetectedOnAcceptSide(t *testing.T) {
 
 	for i := 0; i < 2; i++ {
 		select {
-		case e := <-l.errCh:
-			if !strings.Contains(e, "Loop detected") {
-				t.Fatalf("Unexpected error: %q", e)
-			}
+		case <-l.ch:
+			// OK
 		case <-time.After(200 * time.Millisecond):
 			// We are likely to detect from each A and C servers,
 			// but consider a failure if we did not receive any.
@@ -1329,7 +1340,7 @@ func TestLeafNodeLoopDetectedOnAcceptSide(t *testing.T) {
 	// is 30 seconds, so we should not get any new error for that long.
 	// Check if we are getting more errors..
 	select {
-	case e := <-l.errCh:
+	case e := <-l.ch:
 		t.Fatalf("Should not have gotten another error, got %q", e)
 	case <-time.After(50 * time.Millisecond):
 		// OK!

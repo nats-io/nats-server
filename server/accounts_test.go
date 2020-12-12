@@ -1704,9 +1704,12 @@ func TestAccountTrackLatencyRemoteLeaks(t *testing.T) {
 
 	expectTracking := func(expected int) {
 		t.Helper()
-		if numTracking := tracking(); numTracking != expected {
-			t.Fatalf("Expected to have %d tracking replies, got %d", expected, numTracking)
-		}
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			if numTracking := tracking(); numTracking != expected {
+				return fmt.Errorf("Expected to have %d tracking replies, got %d", expected, numTracking)
+			}
+			return nil
+		})
 	}
 
 	expectTracking(2)
