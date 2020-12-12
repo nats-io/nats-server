@@ -916,6 +916,13 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			tmpNew := newValue.(GatewayOpts)
 			tmpOld.TLSConfig = nil
 			tmpNew.TLSConfig = nil
+
+			// Need to do the same for remote gateways' TLS configs.
+			// But we can't just set remotes' TLSConfig to nil otherwise this
+			// would lose the real TLS configuration.
+			tmpOld.Gateways = copyRemoteGWConfigsWithoutTLSConfig(tmpOld.Gateways)
+			tmpNew.Gateways = copyRemoteGWConfigsWithoutTLSConfig(tmpNew.Gateways)
+
 			// If there is really a change prevents reload.
 			if !reflect.DeepEqual(tmpOld, tmpNew) {
 				// See TODO(ik) note below about printing old/new values.
@@ -928,6 +935,12 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			tmpNew := newValue.(LeafNodeOpts)
 			tmpOld.TLSConfig = nil
 			tmpNew.TLSConfig = nil
+
+			// Need to do the same for remote leafnodes' TLS configs.
+			// But we can't just set remotes' TLSConfig to nil otherwise this
+			// would lose the real TLS configuration.
+			tmpOld.Remotes = copyRemoteLNConfigWithoutTLSConfig(tmpOld.Remotes)
+			tmpNew.Remotes = copyRemoteLNConfigWithoutTLSConfig(tmpNew.Remotes)
 
 			// Special check for leafnode remotes changes which are not supported right now.
 			leafRemotesChanged := func(a, b LeafNodeOpts) bool {
@@ -1045,6 +1058,37 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 	return diffOpts, nil
 }
 
+func copyRemoteGWConfigsWithoutTLSConfig(current []*RemoteGatewayOpts) []*RemoteGatewayOpts {
+	l := len(current)
+	if l == 0 {
+		return nil
+	}
+	rgws := make([]*RemoteGatewayOpts, 0, l)
+	for _, rcfg := range current {
+		cp := *rcfg
+		cp.TLSConfig = nil
+		rgws = append(rgws, &cp)
+	}
+	return rgws
+}
+
+func copyRemoteLNConfigWithoutTLSConfig(current []*RemoteLeafOpts) []*RemoteLeafOpts {
+	l := len(current)
+	if l == 0 {
+		return nil
+	}
+	rlns := make([]*RemoteLeafOpts, 0, l)
+	for _, rcfg := range current {
+		cp := *rcfg
+		cp.TLSConfig = nil
+		// This is set only when processing a CONNECT, so reset here so that we
+		// don't fail the DeepEqual comparison.
+		cp.TLS = false
+		rlns = append(rlns, &cp)
+	}
+	return rlns
+}
+
 func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 	var (
 		reloadLogging      = false
@@ -1079,6 +1123,16 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 	}
 	if reloadClusterPerms {
 		s.reloadClusterPermissions(ctx.oldClusterPerms)
+	}
+	// For remote gateways and leafnodes, make sure that their TLS configuration
+	// is updated (since the config is "captured" early and changes would otherwise
+	// not be visible).
+	newOpts := s.getOpts()
+	if s.gateway.enabled {
+		s.gateway.updateRemotesTLSConfig(newOpts)
+	}
+	if len(newOpts.LeafNode.Remotes) > 0 {
+		s.updateRemoteLeafNodesTLSConfig(newOpts)
 	}
 
 	s.Noticef("Reloaded server configuration")
@@ -1209,7 +1263,9 @@ func (s *Server) reloadAuthorization() {
 			s.accounts.Store(s.sys.account.Name, s.sys.account)
 		}
 		// Double check any JetStream configs.
-		checkJetStream = true
+		// For now, seems like JS as a whole cannot be enabled/disabled with
+		// config reload, so check only if was started with JS enabled.
+		checkJetStream = s.js != nil
 	} else if s.opts.AccountResolver != nil {
 		s.configureResolver()
 		if _, ok := s.accResolver.(*MemAccResolver); ok {

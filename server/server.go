@@ -151,6 +151,7 @@ type Server struct {
 		resolver    netResolver
 		dialTimeout time.Duration
 	}
+	leafRemoteCfgs []*leafNodeCfg
 
 	quitCh           chan struct{}
 	shutdownComplete chan struct{}

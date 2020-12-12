@@ -105,7 +105,10 @@ func (c *client) isHubLeafNode() bool {
 // This will spin up go routines to solicit the remote leaf node connections.
 func (s *Server) solicitLeafNodeRemotes(remotes []*RemoteLeafOpts) {
 	for _, r := range remotes {
+		s.mu.Lock()
 		remote := newLeafNodeCfg(r)
+		s.leafRemoteCfgs = append(s.leafRemoteCfgs, remote)
+		s.mu.Unlock()
 		s.startGoRoutine(func() { s.connectToRemoteLeafNode(remote, true) })
 	}
 }
@@ -207,6 +210,32 @@ func validateLeafNodeAuthOptions(o *Options) error {
 		users[u.Username] = struct{}{}
 	}
 	return nil
+}
+
+// Update remote LeafNode TLS configurations after a config reload.
+func (s *Server) updateRemoteLeafNodesTLSConfig(opts *Options) {
+	max := len(opts.LeafNode.Remotes)
+	if max == 0 {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Changes in the list of remote leaf nodes is not supported.
+	// However, make sure that we don't go over the arrays.
+	if len(s.leafRemoteCfgs) < max {
+		max = len(s.leafRemoteCfgs)
+	}
+	for i := 0; i < max; i++ {
+		ro := opts.LeafNode.Remotes[i]
+		cfg := s.leafRemoteCfgs[i]
+		if ro.TLSConfig != nil {
+			cfg.Lock()
+			cfg.TLSConfig = ro.TLSConfig.Clone()
+			cfg.Unlock()
+		}
+	}
 }
 
 func (s *Server) reConnectToRemoteLeafNode(remote *leafNodeCfg) {
@@ -724,13 +753,16 @@ func (s *Server) createLeafNode(conn net.Conn, remote *leafNodeCfg) *client {
 		}
 
 		// Do TLS here as needed.
-		tlsRequired := remote.TLS || remote.TLSConfig != nil
+		remote.RLock()
+		remoteTLSConfig := remote.TLSConfig
+		tlsRequired := remote.TLS || remoteTLSConfig != nil
+		remote.RUnlock()
 		if tlsRequired {
 			c.Debugf("Starting TLS leafnode client handshake")
 			// Specify the ServerName we are expecting.
 			var tlsConfig *tls.Config
-			if remote.TLSConfig != nil {
-				tlsConfig = remote.TLSConfig.Clone()
+			if remoteTLSConfig != nil {
+				tlsConfig = remoteTLSConfig.Clone()
 			} else {
 				tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 			}

@@ -370,6 +370,29 @@ func (s *Server) newGateway(opts *Options) error {
 	return nil
 }
 
+// Update remote gateways TLS configurations after a config reload.
+func (g *srvGateway) updateRemotesTLSConfig(opts *Options) {
+	g.Lock()
+	defer g.Unlock()
+
+	for _, ro := range opts.Gateway.Gateways {
+		if ro.Name == g.name {
+			continue
+		}
+		if cfg, ok := g.remotes[ro.Name]; ok {
+			cfg.Lock()
+			// If TLS config is in remote, use that one, otherwise,
+			// use the TLS config from the main block.
+			if ro.TLSConfig != nil {
+				cfg.TLSConfig = ro.TLSConfig.Clone()
+			} else if opts.Gateway.TLSConfig != nil {
+				cfg.TLSConfig = opts.Gateway.TLSConfig.Clone()
+			}
+			cfg.Unlock()
+		}
+	}
+}
+
 // Returns the Gateway's name of this server.
 func (g *srvGateway) getName() string {
 	g.RLock()
