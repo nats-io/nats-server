@@ -185,8 +185,8 @@ func checkServiceLatency(t *testing.T, sl server.ServiceLatency, start time.Time
 
 	startDelta := sl.RequestStart.Sub(start)
 	// Original test was 5ms, but got GitHub Action failure with "Bad start delta 5.033929ms",
-	// so be more generous.
-	if startDelta > 10*time.Millisecond {
+	// and Travis will get something like: "Bad start delta 15.046059ms", so be more generous.
+	if startDelta > 20*time.Millisecond {
 		t.Fatalf("Bad start delta %v", startDelta)
 	}
 	// Since RTT during tests is estimate we remove from calculation.
