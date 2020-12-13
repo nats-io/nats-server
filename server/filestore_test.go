@@ -17,6 +17,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -2409,4 +2411,17 @@ func TestFileStoreConsumerPerf(t *testing.T) {
 	start = time.Now()
 	oc.syncStateFile()
 	fmt.Printf("time to sync is %v\n", time.Since(start))
+}
+
+func TestFileStoreStreamIndexBug(t *testing.T) {
+	// https://github.com/nats-io/jetstream/issues/406
+	badIdxBytes, _ := base64.StdEncoding.DecodeString("FgGBkw7D/f8/772iDPDIgbU=")
+	dir, _ := ioutil.TempDir("", "js-bad-idx-")
+	defer os.RemoveAll(dir)
+	fn := path.Join(dir, "1.idx")
+	ioutil.WriteFile(fn, badIdxBytes, 0644)
+	mb := &msgBlock{index: 1, ifn: fn}
+	if err := mb.readIndexInfo(); err == nil || !strings.Contains(err.Error(), "short index") {
+		t.Fatalf("Expected error during readIndexInfo(): %v", err)
+	}
 }
