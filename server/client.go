@@ -3554,7 +3554,14 @@ func (c *client) setupResponseServiceImport(acc *Account, si *serviceImport, tra
 // processServiceImport is an internal callback when a subscription matches an imported service
 // from another account. This includes response mappings as well.
 func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byte) {
-	if c.kind == GATEWAY && !si.isRespServiceImport() {
+	// If we are a GW and this is not a direct serviceImport ignore.
+	isResponse := si.isRespServiceImport()
+	if c.kind == GATEWAY && !isResponse {
+		return
+	}
+	// If we are here and we are a serviceImport response make sure we are not matching back
+	// to the import/export pair that started the request. If so ignore.
+	if isResponse && c.pa.psi != nil && c.pa.psi.se == si.se {
 		return
 	}
 
@@ -3606,8 +3613,11 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// so we only lock once.
 	to, _ = si.acc.selectMappedSubject(to)
 
-	oreply, oacc := c.pa.reply, c.acc
+	// Save off some of our state.
+	oreply, oacc, opsi := c.pa.reply, c.acc, c.pa.psi
 	c.pa.reply = nrr
+	c.pa.psi = si
+
 	if !si.isSysAcc {
 		c.mu.Lock()
 		c.acc = si.acc
@@ -3648,6 +3658,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// Put what was there back now.
 	c.in.rts = orts
 	c.pa.reply = oreply
+	c.pa.psi = opsi
 
 	if !si.isSysAcc {
 		c.mu.Lock()
@@ -3817,7 +3828,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			}
 		}
 
-		// Remap to original if internal.
+		// Remap to the original subject if internal.
 		if sub.icb != nil {
 			subj = subject
 		}
