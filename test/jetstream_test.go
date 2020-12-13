@@ -1679,9 +1679,12 @@ func TestJetStreamWorkQueueWrapWaiting(t *testing.T) {
 			}
 			expectWaiting(0)
 
-			if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != maxWaiting+2 {
-				t.Fatalf("Expected sub to have %d pending, got %d", maxWaiting+2, nmsgs)
-			}
+			checkFor(t, 200*time.Millisecond, 10*time.Millisecond, func() error {
+				if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != maxWaiting+2 {
+					return fmt.Errorf("Expected sub to have %d pending, got %d", maxWaiting+2, nmsgs)
+				}
+				return nil
+			})
 		})
 	}
 }
