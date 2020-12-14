@@ -2289,6 +2289,12 @@ func (mb *msgBlock) readIndexInfo() error {
 	mb.last.ts = readTimeStamp()
 	dmapLen := readCount()
 
+	// Check if this is a short write index file.
+	if bi < 0 || bi+checksumSize > len(buf) {
+		defer os.Remove(mb.ifn)
+		return fmt.Errorf("short index file")
+	}
+
 	// Checksum
 	copy(mb.lchk[0:], buf[bi:bi+checksumSize])
 	bi += checksumSize
