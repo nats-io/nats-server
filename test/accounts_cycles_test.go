@@ -18,8 +18,10 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
 )
 
 func TestAccountCycleService(t *testing.T) {
@@ -210,6 +212,91 @@ func TestAccountCycleServiceNonCycleChain(t *testing.T) {
 
 	if _, err := server.ProcessConfigFile(conf); err != nil {
 		t.Fatalf("Expected no error but got %s", err)
+	}
+}
+
+// bug: https://github.com/nats-io/nats-server/issues/1769
+func TestServiceImportReplyMatchCycle(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		port: -1
+		accounts {
+		  A {
+			users: [{user: d,  pass: x}]
+			imports [ {service: {account: B, subject: ">" }}]
+		  }
+		  B {
+			users: [{user: x,  pass: x}]
+		    exports [ { service: ">" } ]
+		  }
+		}
+		no_auth_user: d
+	`))
+	defer os.Remove(conf)
+
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc1 := clientConnectToServerWithUP(t, opts, "x", "x")
+	defer nc1.Close()
+
+	msg := []byte("HELLO")
+	nc1.Subscribe("foo", func(m *nats.Msg) {
+		m.Respond(msg)
+	})
+
+	nc2 := clientConnectToServer(t, s)
+	defer nc2.Close()
+
+	resp, err := nc2.Request("foo", nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if resp == nil || string(resp.Data) != string(msg) {
+		t.Fatalf("Wrong or empty response")
+	}
+}
+
+func TestServiceImportReplyMatchCycleMultiHops(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		port: -1
+		accounts {
+		  A {
+			users: [{user: d,  pass: x}]
+			imports [ {service: {account: B, subject: ">" }}]
+		  }
+		  B {
+		    exports [ { service: ">" } ]
+			imports [ {service: {account: C, subject: ">" }}]
+		  }
+		  C {
+			users: [{user: x,  pass: x}]
+		    exports [ { service: ">" } ]
+		  }
+		}
+		no_auth_user: d
+	`))
+	defer os.Remove(conf)
+
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc1 := clientConnectToServerWithUP(t, opts, "x", "x")
+	defer nc1.Close()
+
+	msg := []byte("HELLO")
+	nc1.Subscribe("foo", func(m *nats.Msg) {
+		m.Respond(msg)
+	})
+
+	nc2 := clientConnectToServer(t, s)
+	defer nc2.Close()
+
+	resp, err := nc2.Request("foo", nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if resp == nil || string(resp.Data) != string(msg) {
+		t.Fatalf("Wrong or empty response")
 	}
 }
 

@@ -118,7 +118,6 @@ type serviceImport struct {
 	sid         []byte
 	from        string
 	to          string
-	exsub       string
 	tr          *transform
 	ts          int64
 	rt          ServiceRespType
@@ -1737,7 +1736,7 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 			}
 		}
 	}
-	si := &serviceImport{dest, claim, se, nil, from, to, "", tr, 0, rt, lat, nil, nil, usePub, false, false, false, false, false, isSysAcc, nil}
+	si := &serviceImport{dest, claim, se, nil, from, to, tr, 0, rt, lat, nil, nil, usePub, false, false, false, false, false, isSysAcc, nil}
 	a.imports.services[from] = si
 	a.mu.Unlock()
 
@@ -2152,7 +2151,7 @@ func (a *Account) addRespServiceImport(dest *Account, to string, osi *serviceImp
 
 	// dest is the requestor's account. a is the service responder with the export.
 	// Marked as internal here, that is how we distinguish.
-	si := &serviceImport{dest, nil, osi.se, nil, nrr, to, osi.to, nil, 0, rt, nil, nil, nil, false, true, false, osi.share, false, false, false, nil}
+	si := &serviceImport{dest, nil, osi.se, nil, nrr, to, nil, 0, rt, nil, nil, nil, false, true, false, osi.share, false, false, false, nil}
 
 	if a.exports.responses == nil {
 		a.exports.responses = make(map[string]*serviceImport)
