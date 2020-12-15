@@ -2802,7 +2802,7 @@ func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, ac
 			if rt.sub.im.tr != nil {
 				to, _ := rt.sub.im.tr.transformSubject(string(subj))
 				subj = []byte(to)
-			} else {
+			} else if !rt.sub.im.usePub {
 				subj = []byte(rt.sub.im.to)
 			}
 		}
