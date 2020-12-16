@@ -59,7 +59,10 @@ func DecodeGeneric(token string) (*GenericClaims, error) {
 		return nil, err
 	}
 
-	var gc GenericClaims
+	gc := struct {
+		GenericClaims
+		GenericFields
+	}{}
 	if err := json.Unmarshal(data, &gc); err != nil {
 		return nil, err
 	}
@@ -74,12 +77,19 @@ func DecodeGeneric(token string) (*GenericClaims, error) {
 		if !gc.verify(chunks[1], sig) {
 			return nil, errors.New("claim failed V1 signature verification")
 		}
+		if tp := gc.GenericFields.Type; tp != "" {
+			gc.GenericClaims.Data["type"] = tp
+		}
+		if tp := gc.GenericFields.Tags; len(tp) != 0 {
+			gc.GenericClaims.Data["tags"] = tp
+		}
+
 	} else {
 		if !gc.verify(token[:len(chunks[0])+len(chunks[1])+1], sig) {
 			return nil, errors.New("claim failed V2 signature verification")
 		}
 	}
-	return &gc, nil
+	return &gc.GenericClaims, nil
 }
 
 // Claims returns the standard part of the generic claim
@@ -122,11 +132,14 @@ func (gc *GenericClaims) ClaimType() ClaimType {
 			}
 		}
 	}
-	ct, ctok := v.(string)
-	if ctok {
+	switch ct := v.(type) {
+	case string:
 		return ClaimType(ct)
+	case ClaimType:
+		return ct
+	default:
+		return ""
 	}
-	return ""
 }
 
 func (gc *GenericClaims) updateVersion() {

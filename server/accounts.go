@@ -1736,7 +1736,11 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 			}
 		}
 	}
-	si := &serviceImport{dest, claim, se, nil, from, to, tr, 0, rt, lat, nil, nil, usePub, false, false, false, false, false, isSysAcc, nil}
+	share := false
+	if claim != nil {
+		share = claim.Share
+	}
+	si := &serviceImport{dest, claim, se, nil, from, to, tr, 0, rt, lat, nil, nil, usePub, false, false, share, false, false, isSysAcc, nil}
 	a.imports.services[from] = si
 	a.mu.Unlock()
 
@@ -2540,7 +2544,7 @@ func (a *Account) checkActivation(importAcc *Account, claim *jwt.Import, expTime
 		clone.Token = fetchActivation(url.String())
 	}
 	vr := jwt.CreateValidationResults()
-	clone.Validate(a.Name, vr)
+	clone.Validate(importAcc.Name, vr)
 	if vr.IsBlocking(true) {
 		return false
 	}
@@ -2897,8 +2901,12 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 				s.Debugf("Error adding service export to account [%s]: %v", a.Name, err)
 			}
 			if e.Latency != nil {
-				if err := a.TrackServiceExportWithSampling(string(e.Subject), string(e.Latency.Results), e.Latency.Sampling); err != nil {
-					s.Debugf("Error adding latency tracking for service export to account [%s]: %v", a.Name, err)
+				if err := a.TrackServiceExportWithSampling(string(e.Subject), string(e.Latency.Results), int(e.Latency.Sampling)); err != nil {
+					hdrNote := ""
+					if e.Latency.Sampling == jwt.Headers {
+						hdrNote = " (using headers)"
+					}
+					s.Debugf("Error adding latency tracking%s for service export to account [%s]: %v", hdrNote, a.Name, err)
 				}
 			}
 		}

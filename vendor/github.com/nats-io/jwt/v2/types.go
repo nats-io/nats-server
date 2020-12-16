@@ -19,9 +19,35 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/url"
 	"strings"
 	"time"
 )
+
+const MaxInfoLength = 255
+
+type Info struct {
+	Description string `json:"description,omitempty"`
+	InfoURL     string `json:"info_url,omitempty"`
+}
+
+func (s Info) Validate(vr *ValidationResults) {
+	if len(s.Description) > MaxInfoLength {
+		vr.AddError("Description is too long")
+	}
+	if s.InfoURL != "" {
+		if len(s.InfoURL) > MaxInfoLength {
+			vr.AddError("Info URL is too long")
+		}
+		u, err := url.Parse(s.InfoURL)
+		if err == nil && (u.Hostname() == "" || u.Scheme == "") {
+			err = fmt.Errorf("no hostname or scheme")
+		}
+		if err != nil {
+			vr.AddError("error parsing info url: %v", err)
+		}
+	}
+}
 
 // ExportType defines the type of import/export.
 type ExportType int
