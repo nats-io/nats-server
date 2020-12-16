@@ -105,7 +105,14 @@ func (a *ActivationClaims) Payload() interface{} {
 
 // Validate checks the claims
 func (a *ActivationClaims) Validate(vr *ValidationResults) {
-	a.ClaimsData.Validate(vr)
+	a.validateWithTimeChecks(vr, true)
+}
+
+// Validate checks the claims
+func (a *ActivationClaims) validateWithTimeChecks(vr *ValidationResults, timeChecks bool) {
+	if timeChecks {
+		a.ClaimsData.Validate(vr)
+	}
 	a.Activation.Validate(vr)
 	if a.IssuerAccount != "" && !nkeys.IsValidPublicAccountKey(a.IssuerAccount) {
 		vr.AddError("account_id is not an account public key")

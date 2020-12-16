@@ -735,6 +735,13 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error generating account JWT: %v", err)
 	}
+
+	vr := jwt.ValidationResults{}
+	barAC.Validate(&vr)
+	if vr.IsBlocking(true) {
+		t.Fatalf("Error generating account JWT: %v", vr)
+	}
+
 	addAccountToMemResolver(s, barPub, barJWT)
 	s.UpdateAccountClaims(acc, barAC)
 	// Our service import should have succeeded.
@@ -2642,17 +2649,10 @@ func TestJWTAccountImportWrongIssuerAccount(t *testing.T) {
 	client, clientReader, clientCS := createClient(t, s, clientKP)
 	defer client.close()
 	client.parseAsync(clientCS)
-	expectPong(t, clientReader)
-
-	for i := 0; i < 2; i++ {
-		select {
-		case e := <-l.errCh:
-			if !strings.HasPrefix(e, fmt.Sprintf("Invalid issuer account %q in activation claim", clientPK)) {
-				t.Fatalf("Unexpected error: %v", e)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatalf("Did not get error regarding issuer account")
-		}
+	if l, _, err := clientReader.ReadLine(); err != nil {
+		t.Fatalf("Expected no Error, got: %v", err)
+	} else if !strings.Contains(string(l), "-ERR 'Authorization Violation'") {
+		t.Fatalf("Expected Error, got: %v", l)
 	}
 }
 
@@ -3282,7 +3282,7 @@ func TestExpiredUserCredentialsRenewal(t *testing.T) {
 	}
 }
 
-func updateJwt(t *testing.T, url string, creds string, pubKey string, jwt string, respCnt int) int {
+func updateJwt(t *testing.T, url string, creds string, jwt string, respCnt int) int {
 	t.Helper()
 	require_NextMsg := func(sub *nats.Subscription) bool {
 		t.Helper()
@@ -3566,7 +3566,7 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 	connect(sC.ClientURL(), sysCreds, "")
 	checkClusterFormed(t, sA, sB, sC)
 	// upload system account and require a response from each server
-	passCnt := updateJwt(t, sA.ClientURL(), sysCreds, syspub, sysjwt, 3)
+	passCnt := updateJwt(t, sA.ClientURL(), sysCreds, sysjwt, 3)
 	require_True(t, passCnt == 3)
 	require_JWTPresent(t, dirA, syspub) // was just received
 	require_JWTPresent(t, dirB, syspub) // was just received
@@ -3584,7 +3584,7 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 		require_1Connection(sA.ClientURL(), v.creds, v.pub, sA, sB, sC)
 		require_1Connection(sB.ClientURL(), v.creds, v.pub, sA, sB, sC)
 		require_1Connection(sC.ClientURL(), v.creds, v.pub, sA, sB, sC)
-		passCnt := updateJwt(t, port, sysCreds, v.pub, v.jwt, 3)
+		passCnt := updateJwt(t, port, sysCreds, v.jwt, 3)
 		require_True(t, passCnt == 3)
 		require_2Connection(sA.ClientURL(), v.creds, v.pub, sA, sB, sC)
 		require_2Connection(sB.ClientURL(), v.creds, v.pub, sA, sB, sC)
@@ -3631,7 +3631,7 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 	require_2Connection(sC.ClientURL(), aCreds, apub, sA, sB, sC)
 	// Test exceeding limit. For the exclusive directory resolver, limit is a stop gap measure.
 	// It is not expected to be hit. When hit the administrator is supposed to take action.
-	passCnt = updateJwt(t, sA.ClientURL(), sysCreds, dpub, djwt1, 3)
+	passCnt = updateJwt(t, sA.ClientURL(), sysCreds, djwt1, 3)
 	require_True(t, passCnt == 1) // Only Server C updated
 	for _, srv := range []*Server{sA, sB, sC} {
 		if a, ok := srv.accounts.Load(syspub); ok {
@@ -3823,41 +3823,41 @@ func TestAccountNATSResolverCrossClusterFetch(t *testing.T) {
 	waitForOutboundGateways(t, sAB, 1, 5*time.Second)
 	waitForOutboundGateways(t, sBA, 1, 5*time.Second)
 	waitForOutboundGateways(t, sBB, 1, 5*time.Second)
-	time.Sleep(500 * time.Millisecond)                         // wait for the protocol to converge
-	updateJwt(t, sAA.ClientURL(), sysCreds, syspub, sysjwt, 4) // update system account jwt on all server
-	require_JWTEqual(t, dirAA, syspub, sysjwt)                 // assure this update made it to every server
-	require_JWTEqual(t, dirAB, syspub, sysjwt)                 // assure this update made it to every server
-	require_JWTEqual(t, dirBA, syspub, sysjwt)                 // assure this update made it to every server
-	require_JWTEqual(t, dirBB, syspub, sysjwt)                 // assure this update made it to every server
-	require_JWTAbsent(t, dirAA, bpub)                          // assure that jwt are not synced across cluster
-	require_JWTAbsent(t, dirAB, bpub)                          // assure that jwt are not synced across cluster
-	require_JWTAbsent(t, dirBA, apub)                          // assure that jwt are not synced across cluster
-	require_JWTAbsent(t, dirBB, apub)                          // assure that jwt are not synced across cluster
-	connect(sAA.ClientURL(), aCreds)                           // connect to cluster where jwt was initially stored
-	connect(sAB.ClientURL(), aCreds)                           // connect to cluster where jwt was initially stored
-	connect(sBA.ClientURL(), bCreds)                           // connect to cluster where jwt was initially stored
-	connect(sBB.ClientURL(), bCreds)                           // connect to cluster where jwt was initially stored
-	time.Sleep(500 * time.Millisecond)                         // wait for the protocol to (NOT) converge
-	require_JWTAbsent(t, dirAA, bpub)                          // assure that jwt are still not synced across cluster
-	require_JWTAbsent(t, dirAB, bpub)                          // assure that jwt are still not synced across cluster
-	require_JWTAbsent(t, dirBA, apub)                          // assure that jwt are still not synced across cluster
-	require_JWTAbsent(t, dirBB, apub)                          // assure that jwt are still not synced across cluster
+	time.Sleep(500 * time.Millisecond)                 // wait for the protocol to converge
+	updateJwt(t, sAA.ClientURL(), sysCreds, sysjwt, 4) // update system account jwt on all server
+	require_JWTEqual(t, dirAA, syspub, sysjwt)         // assure this update made it to every server
+	require_JWTEqual(t, dirAB, syspub, sysjwt)         // assure this update made it to every server
+	require_JWTEqual(t, dirBA, syspub, sysjwt)         // assure this update made it to every server
+	require_JWTEqual(t, dirBB, syspub, sysjwt)         // assure this update made it to every server
+	require_JWTAbsent(t, dirAA, bpub)                  // assure that jwt are not synced across cluster
+	require_JWTAbsent(t, dirAB, bpub)                  // assure that jwt are not synced across cluster
+	require_JWTAbsent(t, dirBA, apub)                  // assure that jwt are not synced across cluster
+	require_JWTAbsent(t, dirBB, apub)                  // assure that jwt are not synced across cluster
+	connect(sAA.ClientURL(), aCreds)                   // connect to cluster where jwt was initially stored
+	connect(sAB.ClientURL(), aCreds)                   // connect to cluster where jwt was initially stored
+	connect(sBA.ClientURL(), bCreds)                   // connect to cluster where jwt was initially stored
+	connect(sBB.ClientURL(), bCreds)                   // connect to cluster where jwt was initially stored
+	time.Sleep(500 * time.Millisecond)                 // wait for the protocol to (NOT) converge
+	require_JWTAbsent(t, dirAA, bpub)                  // assure that jwt are still not synced across cluster
+	require_JWTAbsent(t, dirAB, bpub)                  // assure that jwt are still not synced across cluster
+	require_JWTAbsent(t, dirBA, apub)                  // assure that jwt are still not synced across cluster
+	require_JWTAbsent(t, dirBB, apub)                  // assure that jwt are still not synced across cluster
 	// We have verified that account B does not exist in cluster A, neither does account A in cluster B
 	// Despite that clients from account B can connect to server A, same for account A in cluster B
-	connect(sAA.ClientURL(), bCreds)                        // connect to cluster where jwt was not initially stored
-	connect(sAB.ClientURL(), bCreds)                        // connect to cluster where jwt was not initially stored
-	connect(sBA.ClientURL(), aCreds)                        // connect to cluster where jwt was not initially stored
-	connect(sBB.ClientURL(), aCreds)                        // connect to cluster where jwt was not initially stored
-	require_JWTEqual(t, dirAA, bpub, bjwt1)                 // assure that now jwt used in connect is stored
-	require_JWTEqual(t, dirAB, bpub, bjwt1)                 // assure that now jwt used in connect is stored
-	require_JWTEqual(t, dirBA, apub, ajwt1)                 // assure that now jwt used in connect is stored
-	require_JWTEqual(t, dirBB, apub, ajwt1)                 // assure that now jwt used in connect is stored
-	updateJwt(t, sAA.ClientURL(), sysCreds, bpub, bjwt2, 4) // update bjwt, expect updates from everywhere
-	updateJwt(t, sBA.ClientURL(), sysCreds, apub, ajwt2, 4) // update ajwt, expect updates from everywhere
-	require_JWTEqual(t, dirAA, bpub, bjwt2)                 // assure that jwt got updated accordingly
-	require_JWTEqual(t, dirAB, bpub, bjwt2)                 // assure that jwt got updated accordingly
-	require_JWTEqual(t, dirBA, apub, ajwt2)                 // assure that jwt got updated accordingly
-	require_JWTEqual(t, dirBB, apub, ajwt2)                 // assure that jwt got updated accordingly
+	connect(sAA.ClientURL(), bCreds)                  // connect to cluster where jwt was not initially stored
+	connect(sAB.ClientURL(), bCreds)                  // connect to cluster where jwt was not initially stored
+	connect(sBA.ClientURL(), aCreds)                  // connect to cluster where jwt was not initially stored
+	connect(sBB.ClientURL(), aCreds)                  // connect to cluster where jwt was not initially stored
+	require_JWTEqual(t, dirAA, bpub, bjwt1)           // assure that now jwt used in connect is stored
+	require_JWTEqual(t, dirAB, bpub, bjwt1)           // assure that now jwt used in connect is stored
+	require_JWTEqual(t, dirBA, apub, ajwt1)           // assure that now jwt used in connect is stored
+	require_JWTEqual(t, dirBB, apub, ajwt1)           // assure that now jwt used in connect is stored
+	updateJwt(t, sAA.ClientURL(), sysCreds, bjwt2, 4) // update bjwt, expect updates from everywhere
+	updateJwt(t, sBA.ClientURL(), sysCreds, ajwt2, 4) // update ajwt, expect updates from everywhere
+	require_JWTEqual(t, dirAA, bpub, bjwt2)           // assure that jwt got updated accordingly
+	require_JWTEqual(t, dirAB, bpub, bjwt2)           // assure that jwt got updated accordingly
+	require_JWTEqual(t, dirBA, apub, ajwt2)           // assure that jwt got updated accordingly
+	require_JWTEqual(t, dirBB, apub, ajwt2)           // assure that jwt got updated accordingly
 }
 
 func newTimeRange(start time.Time, dur time.Duration) jwt.TimeRange {
@@ -4428,8 +4428,8 @@ func TestJWTUserRevocation(t *testing.T) {
 	defer os.Remove(conf)
 	srv, _ := RunServerWithConfig(conf)
 	defer srv.Shutdown()
-	updateJwt(t, srv.ClientURL(), sysCreds, syspub, sysjwt, 1) // update system account jwt
-	updateJwt(t, srv.ClientURL(), sysCreds, apub, ajwt1, 1)    // set account jwt without revocation
+	updateJwt(t, srv.ClientURL(), sysCreds, sysjwt, 1) // update system account jwt
+	updateJwt(t, srv.ClientURL(), sysCreds, ajwt1, 1)  // set account jwt without revocation
 	// use credentials that will be revoked ans assure that the connection will be disconnected
 	nc := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aCreds1),
 		nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
@@ -4439,7 +4439,7 @@ func TestJWTUserRevocation(t *testing.T) {
 		}))
 	defer nc.Close()
 	// update account jwt to contain revocation
-	if passCnt := updateJwt(t, srv.ClientURL(), sysCreds, apub, ajwt2, 1); passCnt != 1 {
+	if passCnt := updateJwt(t, srv.ClientURL(), sysCreds, ajwt2, 1); passCnt != 1 {
 		t.Fatalf("Expected jwt update to pass")
 	}
 	// assure that nc got disconnected due to the revocation
@@ -4515,9 +4515,9 @@ func TestJWTAccountOps(t *testing.T) {
 			defer os.Remove(conf)
 			srv, _ := RunServerWithConfig(conf)
 			defer srv.Shutdown()
-			updateJwt(t, srv.ClientURL(), sysCreds, syspub, sysjwt, 1) // update system account jwt
+			updateJwt(t, srv.ClientURL(), sysCreds, sysjwt, 1) // update system account jwt
 			// push jwt (for full resolver)
-			updateJwt(t, srv.ClientURL(), sysCreds, apub, ajwt1, 1) // set jwt
+			updateJwt(t, srv.ClientURL(), sysCreds, ajwt1, 1) // set jwt
 			nc := natsConnect(t, srv.ClientURL(), nats.UserCredentials(sysCreds))
 			defer nc.Close()
 			// simulate nas resolver in case of a lookup request (cache)
@@ -4547,4 +4547,134 @@ func TestJWTAccountOps(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestJWTHeader(t *testing.T) {
+	createKey := func() (nkeys.KeyPair, string) {
+		t.Helper()
+		kp, _ := nkeys.CreateAccount()
+		syspub, _ := kp.PublicKey()
+		return kp, syspub
+	}
+	encode := func(claim *jwt.AccountClaims, pub string) string {
+		t.Helper()
+		theJWT, err := claim.Encode(oKp)
+		require_NoError(t, err)
+		return theJWT
+	}
+	newUser := func(accKp nkeys.KeyPair) string {
+		ukp, _ := nkeys.CreateUser()
+		seed, _ := ukp.Seed()
+		upub, _ := ukp.PublicKey()
+		uclaim := newJWTTestUserClaims()
+		uclaim.Subject = upub
+		ujwt, err := uclaim.Encode(accKp)
+		require_NoError(t, err)
+		return genCredsFile(t, ujwt, seed)
+	}
+	sysKp, syspub := createKey()
+	sysJwt := encode(jwt.NewAccountClaims(syspub), syspub)
+	sysCreds := newUser(sysKp)
+	defer os.Remove(sysCreds)
+
+	test := func(share bool) {
+		aExpKp, aExpPub := createKey()
+		aExpClaim := jwt.NewAccountClaims(aExpPub)
+		aExpClaim.Exports.Add(&jwt.Export{
+			Name:     "test",
+			Subject:  "srvc",
+			Type:     jwt.Service,
+			TokenReq: false,
+			Latency: &jwt.ServiceLatency{
+				Sampling: jwt.Headers,
+				Results:  "res",
+			},
+		})
+		aExpJwt := encode(aExpClaim, aExpPub)
+		aExpCreds := newUser(aExpKp)
+		defer os.Remove(aExpCreds)
+
+		aImpKp, aImpPub := createKey()
+		aImpClaim := jwt.NewAccountClaims(aImpPub)
+		aImpClaim.Imports.Add(&jwt.Import{
+			Name:    "test",
+			Subject: "srvc",
+			Account: aExpPub,
+			Type:    jwt.Service,
+			Share:   share,
+		})
+		aImpJwt := encode(aImpClaim, aImpPub)
+		aImpCreds := newUser(aImpKp)
+		defer os.Remove(aImpCreds)
+
+		dirSrv := createDir(t, "srv")
+		defer os.RemoveAll(dirSrv)
+		conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: full
+			dir: %s
+		}
+    `, ojwt, syspub, dirSrv)))
+		defer os.Remove(conf)
+		srv, _ := RunServerWithConfig(conf)
+		defer srv.Shutdown()
+		updateJwt(t, srv.ClientURL(), sysCreds, sysJwt, 1) // update system account jwt
+		updateJwt(t, srv.ClientURL(), sysCreds, aExpJwt, 1)
+		updateJwt(t, srv.ClientURL(), sysCreds, aImpJwt, 1)
+
+		expNc := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aExpCreds))
+		defer expNc.Close()
+		resChan := make(chan *nats.Msg, 1)
+		expNc.ChanSubscribe("res", resChan)
+		sub, err := expNc.Subscribe("srvc", func(msg *nats.Msg) {
+			msg.Respond(nil)
+		})
+		require_NoError(t, err)
+		defer sub.Unsubscribe()
+
+		impNc := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aImpCreds))
+		defer impNc.Close()
+		// send request w/o header
+		_, err = impNc.Request("srvc", []byte("msg1"), time.Second)
+		require_NoError(t, err)
+		require_True(t, len(resChan) == 0)
+
+		_, err = impNc.RequestMsg(&nats.Msg{
+			Subject: "srvc", Data: []byte("msg2"), Header: http.Header{
+				"X-B3-Sampled": []string{"1"},
+				"Share":        []string{"Me"}}}, time.Second)
+		require_NoError(t, err)
+		select {
+		case <-time.After(time.Second):
+			t.Fatalf("should have received a response")
+		case m := <-resChan:
+			obj := map[string]interface{}{}
+			err = json.Unmarshal(m.Data, &obj)
+			require_NoError(t, err)
+			// test if shared is honored
+			reqInfo := obj["requestor"].(map[string]interface{})
+			// fields always set
+			require_True(t, reqInfo["acc"] != nil)
+			require_True(t, reqInfo["rtt"] != nil)
+			require_True(t, reqInfo["start"] != nil)
+			// fields only set when shared
+			_, ok1 := reqInfo["lang"]
+			_, ok2 := reqInfo["ver"]
+			_, ok3 := reqInfo["ip"]
+			if !share {
+				ok1 = !ok1
+				ok2 = !ok2
+				ok3 = !ok3
+			}
+			require_True(t, ok1)
+			require_True(t, ok2)
+			require_True(t, ok3)
+		}
+		require_True(t, len(resChan) == 0)
+	}
+	test(true)
+	test(false)
 }

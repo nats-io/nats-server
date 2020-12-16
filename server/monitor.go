@@ -1933,7 +1933,7 @@ func newExtServiceLatency(l *serviceLatency) *jwt.ServiceLatency {
 		return nil
 	}
 	return &jwt.ServiceLatency{
-		Sampling: int(l.sampling),
+		Sampling: jwt.SamplingRate(l.sampling),
 		Results:  jwt.Subject(l.subject),
 	}
 }

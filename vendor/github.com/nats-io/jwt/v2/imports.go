@@ -37,8 +37,9 @@ type Import struct {
 	// from the perspective of a service, it is the subscription waiting for
 	// requests (the exporter). If the field is empty, it will default to the
 	// value in the Subject field.
-	To   Subject    `json:"to,omitempty"`
-	Type ExportType `json:"type,omitempty"`
+	To    Subject    `json:"to,omitempty"`
+	Type  ExportType `json:"type,omitempty"`
+	Share bool       `json:"share,omitempty"`
 }
 
 // IsService returns true if the import is of type service
@@ -73,7 +74,9 @@ func (i *Import) Validate(actPubKey string, vr *ValidationResults) {
 	if i.IsStream() && i.To.HasWildCards() {
 		vr.AddError("streams cannot have wildcard to subject: %q", i.Subject)
 	}
-
+	if i.Share && !i.IsService() {
+		vr.AddError("sharing information (for latency tracking) is only valid for services: %q", i.Subject)
+	}
 	var act *ActivationClaims
 
 	if i.Token != "" {
@@ -107,13 +110,14 @@ func (i *Import) Validate(actPubKey string, vr *ValidationResults) {
 	}
 
 	if act != nil {
-		if act.Issuer != i.Account {
-			vr.AddWarning("activation token doesn't match account for import %q", i.Subject)
+		if !(act.Issuer == i.Account || act.IssuerAccount == i.Account) {
+			vr.AddError("activation token doesn't match account for import %q", i.Subject)
 		}
 
 		if act.ClaimsData.Subject != actPubKey {
-			vr.AddWarning("activation token doesn't match account it is being included in, %q", i.Subject)
+			vr.AddError("activation token doesn't match account it is being included in, %q", i.Subject)
 		}
+		act.validateWithTimeChecks(vr, false)
 	} else {
 		vr.AddWarning("no activation provided for import %s", i.Subject)
 	}
