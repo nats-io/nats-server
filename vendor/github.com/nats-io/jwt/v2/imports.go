@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 The NATS Authors
+ * Copyright 2018-2020 The NATS Authors
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -68,12 +68,6 @@ func (i *Import) Validate(actPubKey string, vr *ValidationResults) {
 
 	i.Subject.Validate(vr)
 
-	if i.IsService() && i.Subject.HasWildCards() {
-		vr.AddError("services cannot have wildcard subject: %q", i.Subject)
-	}
-	if i.IsStream() && i.To.HasWildCards() {
-		vr.AddError("streams cannot have wildcard to subject: %q", i.Subject)
-	}
 	if i.Share && !i.IsService() {
 		vr.AddError("sharing information (for latency tracking) is only valid for services: %q", i.Subject)
 	}
@@ -118,10 +112,7 @@ func (i *Import) Validate(actPubKey string, vr *ValidationResults) {
 			vr.AddError("activation token doesn't match account it is being included in, %q", i.Subject)
 		}
 		act.validateWithTimeChecks(vr, false)
-	} else {
-		vr.AddWarning("no activation provided for import %s", i.Subject)
 	}
-
 }
 
 // Imports is a list of import structs

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"reflect"
 	"strings"
 	"time"
 )
@@ -97,7 +98,7 @@ func (t *ExportType) UnmarshalJSON(b []byte) error {
 		*t = Service
 		return nil
 	}
-	return fmt.Errorf("unknown export type")
+	return fmt.Errorf("unknown export type %q", j)
 }
 
 // Subject is a string that represents a NATS subject
@@ -189,6 +190,10 @@ type UserLimits struct {
 	Locale string      `json:"times_location,omitempty"`
 }
 
+func (u *UserLimits) Empty() bool {
+	return reflect.DeepEqual(*u, UserLimits{})
+}
+
 func (u *UserLimits) IsUnlimited() bool {
 	return len(u.Src) == 0 && len(u.Times) == 0
 }
@@ -231,6 +236,10 @@ func (l *Limits) Validate(vr *ValidationResults) {
 type Permission struct {
 	Allow StringList `json:"allow,omitempty"`
 	Deny  StringList `json:"deny,omitempty"`
+}
+
+func (p *Permission) Empty() bool {
+	return len(p.Allow) == 0 && len(p.Deny) == 0
 }
 
 // Validate the allow, deny elements of a permission
