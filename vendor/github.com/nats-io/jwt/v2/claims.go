@@ -31,15 +31,34 @@ import (
 type ClaimType string
 
 const (
-	//OperatorClaim is the type of an operator JWT
+	// OperatorClaim is the type of an operator JWT
 	OperatorClaim = "operator"
 	// AccountClaim is the type of an Account JWT
 	AccountClaim = "account"
-	//UserClaim is the type of an user JWT
+	// UserClaim is the type of an user JWT
 	UserClaim = "user"
-	//ActivationClaim is the type of an activation JWT
+	// ActivationClaim is the type of an activation JWT
 	ActivationClaim = "activation"
+	// GenericClaim is a type that doesn't match Operator/Account/User/ActionClaim
+	GenericClaim = "generic"
 )
+
+func IsGenericClaimType(s string) bool {
+	switch s {
+	case OperatorClaim:
+		fallthrough
+	case AccountClaim:
+		fallthrough
+	case UserClaim:
+		fallthrough
+	case ActivationClaim:
+		return false
+	case GenericClaim:
+		return true
+	default:
+		return true
+	}
+}
 
 // Claims is a JWT claims
 type Claims interface {

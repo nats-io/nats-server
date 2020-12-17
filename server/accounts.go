@@ -2844,11 +2844,10 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	// update account signing keys
 	a.signingKeys = nil
 	signersChanged := false
-	if len(ac.SigningKeys) > 0 {
-		// insure copy the new keys and sort
-		a.signingKeys = append(a.signingKeys, ac.SigningKeys...)
-		sort.Strings(a.signingKeys)
+	for k := range ac.SigningKeys {
+		a.signingKeys = append(a.signingKeys, k)
 	}
+	sort.Strings(a.signingKeys)
 	if len(a.signingKeys) != len(old.signingKeys) {
 		signersChanged = true
 	} else {

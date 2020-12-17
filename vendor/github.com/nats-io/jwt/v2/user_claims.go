@@ -17,6 +17,7 @@ package jwt
 
 import (
 	"errors"
+	"reflect"
 
 	"github.com/nats-io/nkeys"
 )
@@ -28,12 +29,16 @@ const (
 	ConnectionTypeMqtt      = "MQTT"
 )
 
-// User defines the user specific data in a user JWT
-type User struct {
+type UserPermissionLimits struct {
 	Permissions
 	Limits
 	BearerToken            bool       `json:"bearer_token,omitempty"`
 	AllowedConnectionTypes StringList `json:"allowed_connection_types,omitempty"`
+}
+
+// User defines the user specific data in a user JWT
+type User struct {
+	UserPermissionLimits
 	// IssuerAccount stores the public key for the account the issuer represents.
 	// When set, the claim was issued by a signing key.
 	IssuerAccount string `json:"issuer_account,omitempty"`
@@ -65,6 +70,21 @@ func NewUserClaims(subject string) *UserClaims {
 		NatsLimits{NoLimit, NoLimit, NoLimit},
 	}
 	return c
+}
+
+func (u *UserClaims) SetScoped(t bool) {
+	if t {
+		u.UserPermissionLimits = UserPermissionLimits{}
+	} else {
+		u.Limits = Limits{
+			UserLimits{CIDRList{}, nil, ""},
+			NatsLimits{NoLimit, NoLimit, NoLimit},
+		}
+	}
+}
+
+func (u *UserClaims) HasEmptyPermissions() bool {
+	return reflect.DeepEqual(u.UserPermissionLimits, UserPermissionLimits{})
 }
 
 // Encode tries to turn the user claims into a JWT string
