@@ -2844,7 +2844,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	// update account signing keys
 	a.signingKeys = nil
 	signersChanged := false
-	for k, _ := range ac.SigningKeys {
+	for k := range ac.SigningKeys {
 		a.signingKeys = append(a.signingKeys, k)
 	}
 	sort.Strings(a.signingKeys)

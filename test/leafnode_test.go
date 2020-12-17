@@ -1612,7 +1612,7 @@ func TestLeafNodeSignerUser(t *testing.T) {
 	if len(ac2.SigningKeys) != 1 {
 		t.Fatal("signing key is not added")
 	}
-	if  _, ok := ac2.SigningKeys[apk2]; !ok {
+	if _, ok := ac2.SigningKeys[apk2]; !ok {
 		t.Fatal("signing key is not added")
 	}
 
