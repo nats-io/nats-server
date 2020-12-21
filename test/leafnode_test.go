@@ -4240,3 +4240,61 @@ func TestLeafNodeStreamAndShadowSubs(t *testing.T) {
 		t.Fatalf("Did not receive message: %v", err)
 	}
 }
+
+func TestLeafnodeHeaders(t *testing.T) {
+	srv, opts := runLeafServer()
+	defer srv.Shutdown()
+	leaf, _ := runSolicitLeafServer(opts)
+	defer leaf.Shutdown()
+
+	snc, err := nats.Connect(srv.ClientURL())
+	if err != nil {
+		t.Fatalf(err.Error())
+	}
+	defer snc.Close()
+	ssub, err := snc.SubscribeSync("test")
+	if err != nil {
+		t.Fatalf("subscribe failed: %s", err)
+	}
+
+	lnc, err := nats.Connect(leaf.ClientURL())
+	if err != nil {
+		t.Fatalf(err.Error())
+	}
+	defer lnc.Close()
+	lsub, err := lnc.SubscribeSync("test")
+	if err != nil {
+		t.Fatalf("subscribe failed: %s", err)
+	}
+	lnc.Flush()
+
+	checkLeafNodeConnected(t, srv)
+	checkLeafNodeConnected(t, leaf)
+	checkSubInterest(t, srv, "$G", "test", time.Second)
+
+	msg := nats.NewMsg("test")
+	msg.Header.Add("Test", "Header")
+	if len(msg.Header) == 0 {
+		t.Fatalf("msg header is empty")
+	}
+	err = snc.PublishMsg(msg)
+	if err != nil {
+		t.Fatalf(err.Error())
+	}
+
+	smsg, err := ssub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("next failed: %s", err)
+	}
+	if len(smsg.Header) == 0 {
+		t.Fatalf("server msgs header is empty")
+	}
+
+	lmsg, err := lsub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("next failed: %s", err)
+	}
+	if len(lmsg.Header) == 0 {
+		t.Fatalf("leaf msg header is empty")
+	}
+}
