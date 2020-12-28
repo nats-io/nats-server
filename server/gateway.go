@@ -679,7 +679,7 @@ func (s *Server) solicitGateway(cfg *gatewayCfg, firstConnect bool) {
 				s.gateway.Lock()
 				// We could have just accepted an inbound for this remote gateway.
 				// So if there is an inbound, let's try again to connect.
-				if len(s.gateway.in) > 0 {
+				if s.gateway.hasInbound(cfg.Name) {
 					s.gateway.Unlock()
 					continue
 				}
@@ -695,6 +695,20 @@ func (s *Server) solicitGateway(cfg *gatewayCfg, firstConnect bool) {
 			continue
 		}
 	}
+}
+
+// Returns true if there is an inbound for the given `name`.
+// Lock held on entry.
+func (g *srvGateway) hasInbound(name string) bool {
+	for _, ig := range g.in {
+		ig.mu.Lock()
+		igname := ig.gw.name
+		ig.mu.Unlock()
+		if igname == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Called when a gateway connection is either accepted or solicited.
