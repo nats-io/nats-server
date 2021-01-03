@@ -80,7 +80,7 @@ func (l *SysLogger) Noticef(format string, v ...interface{}) {
 	l.writer.Info(1, formatMsg("NOTICE", format, v...))
 }
 
-// Noticef logs a notice statement
+// Warnf logs a warning statement
 func (l *SysLogger) Warnf(format string, v ...interface{}) {
 	l.writer.Info(1, formatMsg("WARN", format, v...))
 }
