@@ -78,7 +78,10 @@ func DecodeGeneric(token string) (*GenericClaims, error) {
 			return nil, errors.New("claim failed V1 signature verification")
 		}
 		if tp := gc.GenericFields.Type; tp != "" {
-			gc.GenericClaims.Data["type"] = tp
+			// the conversion needs to be from a string because
+			// on custom types the type is not going to be one of
+			// the constants
+			gc.GenericClaims.Data["type"] = string(tp)
 		}
 		if tp := gc.GenericFields.Tags; len(tp) != 0 {
 			gc.GenericClaims.Data["tags"] = tp

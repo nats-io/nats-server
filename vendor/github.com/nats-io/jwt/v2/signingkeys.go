@@ -165,6 +165,14 @@ func (sk SigningKeys) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+func (sk SigningKeys) Keys() []string {
+	var keys []string
+	for k := range sk {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // GetScope returns nil if the key is not associated
 func (sk SigningKeys) GetScope(k string) (Scope, bool) {
 	v, ok := sk[k]

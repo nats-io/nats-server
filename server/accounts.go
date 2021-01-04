@@ -1727,12 +1727,16 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 		if to == from {
 			usePub = true
 		} else {
-			from, _ = transformUntokenize(from)
-			// Create a transform
-			if tr, err = newTransform(from, transformTokenize(to)); err != nil {
+			to, _ = transformUntokenize(to)
+			// Create a transform. Do so in reverse such that $ symbols only exist in to
+			if tr, err = newTransform(to, transformTokenize(from)); err != nil {
 				a.mu.Unlock()
 				return nil, fmt.Errorf("failed to create mapping transform for service import subject %q to %q: %v",
 					from, to, err)
+			} else {
+				// un-tokenize and reverse transform so we get the transform needed
+				from, _ = transformUntokenize(from)
+				tr = tr.reverse()
 			}
 		}
 	}
@@ -2250,6 +2254,7 @@ func (a *Account) AddMappedStreamImportWithClaim(account *Account, from, to stri
 				return fmt.Errorf("failed to create mapping transform for stream import subject %q to %q: %v",
 					from, to, err)
 			}
+			to, _ = transformUntokenize(to)
 		}
 	}
 
@@ -2813,7 +2818,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	if a == nil {
 		return
 	}
-	s.Debugf("Updating account claims: %s", a.Name)
+	s.Debugf("Updating account claims: %s/%s", a.Name, ac.Name)
 	a.checkExpiration(ac.Claims())
 
 	a.mu.Lock()
@@ -2936,17 +2941,33 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			incompleteImports = append(incompleteImports, i)
 			continue
 		}
+		from := string(i.Subject)
+		to := i.GetTo()
 		switch i.Type {
 		case jwt.Stream:
-			s.Debugf("Adding stream import %s:%q for %s:%q", acc.Name, i.Subject, a.Name, i.To)
-			if err := a.AddStreamImportWithClaim(acc, string(i.Subject), string(i.To), i); err != nil {
-				s.Debugf("Error adding stream import to account [%s]: %v", a.Name, err.Error())
-				incompleteImports = append(incompleteImports, i)
+			if i.LocalSubject != "" {
+				// set local subject implies to is empty
+				to = string(i.LocalSubject)
+				s.Debugf("Adding stream import %s:%q for %s:%q", acc.Name, from, a.Name, to)
+				if err := a.AddMappedStreamImportWithClaim(acc, from, to, i); err != nil {
+					s.Debugf("Error adding stream import to account [%s]: %v", a.Name, err.Error())
+					incompleteImports = append(incompleteImports, i)
+				}
+			} else {
+				s.Debugf("Adding stream import %s:%q for %s:%q", acc.Name, from, a.Name, to)
+				if err := a.AddStreamImportWithClaim(acc, from, to, i); err != nil {
+					s.Debugf("Error adding stream import to account [%s]: %v", a.Name, err.Error())
+					incompleteImports = append(incompleteImports, i)
+				}
 			}
 		case jwt.Service:
 			// FIXME(dlc) - need to add in respThresh here eventually.
-			s.Debugf("Adding service import %s:%q for %s:%q", acc.Name, i.Subject, a.Name, i.To)
-			if err := a.AddServiceImportWithClaim(acc, string(i.Subject), string(i.To), i); err != nil {
+			if i.LocalSubject != "" {
+				from = string(i.LocalSubject)
+				to = string(i.Subject)
+			}
+			s.Debugf("Adding service import %s:%q for %s:%q", acc.Name, from, a.Name, to)
+			if err := a.AddServiceImportWithClaim(acc, from, to, i); err != nil {
 				s.Debugf("Error adding service import to account [%s]: %v", a.Name, err.Error())
 				incompleteImports = append(incompleteImports, i)
 			}

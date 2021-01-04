@@ -2857,6 +2857,72 @@ func TestAccountImportsWithWildcardSupport(t *testing.T) {
 	}
 }
 
+// duplicates TestJWTAccountImportsWithWildcardSupport (jwt_test.go) in config
+func TestAccountImportsWithWildcardSupportStreamAndService(t *testing.T) {
+	cf := createConfFile(t, []byte(`
+    accounts {
+      foo {
+        users = [{user: derek, password: foo}]
+        exports = [
+          { service: "$request.*.$in.*.>" }
+          { stream: "$events.*.$in.*.>" }
+        ]
+      }
+      bar {
+        users = [{user: ivan, password: bar}]
+        imports = [
+          { service: {account: "foo", subject:"$request.*.$in.*.>"}, to:"my.request.$2.$1.>"}
+          { stream:  {account: "foo", subject:"$events.*.$in.*.>"}, to:"my.events.$2.$1.>"}
+        ]
+      }
+    }
+    `))
+	defer os.Remove(cf)
+
+	s, opts := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	ncFoo := natsConnect(t, fmt.Sprintf("nats://derek:foo@%s:%d", opts.Host, opts.Port))
+	defer ncFoo.Close()
+
+	ncBar := natsConnect(t, fmt.Sprintf("nats://ivan:bar@%s:%d", opts.Host, opts.Port))
+	defer ncBar.Close()
+
+	// Create subscriber for the service endpoint in foo.
+	_, err := ncFoo.Subscribe("$request.>", func(m *nats.Msg) {
+		if m.Subject != "$request.2.$in.1.bar" {
+			t.Fatalf("Expected literal subject for request, got %q", m.Subject)
+		}
+		m.Respond([]byte("yes!"))
+	})
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	ncFoo.Flush()
+
+	// Now test service import.
+	if resp, err := ncBar.Request("my.request.1.2.bar", []byte("yes?"), time.Second); err != nil {
+		t.Fatalf("Expected a response")
+	} else if string(resp.Data) != "yes!" {
+		t.Fatalf("Expected a response of %q, got %q", "yes!", resp.Data)
+	}
+	subBar, err := ncBar.SubscribeSync("my.events.>")
+	if err != nil {
+		t.Fatalf("Expected a response")
+	}
+	ncBar.Flush()
+
+	ncFoo.Publish("$events.1.$in.2.bar", nil)
+
+	m, err := subBar.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Expected a response")
+	}
+	if m.Subject != "my.events.2.1.bar" {
+		t.Fatalf("Expected literal subject for request, got %q", m.Subject)
+	}
+}
+
 func BenchmarkNewRouteReply(b *testing.B) {
 	opts := defaultServerOptions
 	s := New(&opts)

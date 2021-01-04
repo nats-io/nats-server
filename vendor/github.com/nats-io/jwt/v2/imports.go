@@ -32,14 +32,21 @@ type Import struct {
 	Subject Subject `json:"subject,omitempty"`
 	Account string  `json:"account,omitempty"`
 	Token   string  `json:"token,omitempty"`
+	// Deprecated: use LocalSubject instead
 	// To field in an import is always from the perspective of the subscriber
 	// in the case of a stream it is the client of the stream (the importer),
 	// from the perspective of a service, it is the subscription waiting for
 	// requests (the exporter). If the field is empty, it will default to the
 	// value in the Subject field.
-	To    Subject    `json:"to,omitempty"`
-	Type  ExportType `json:"type,omitempty"`
-	Share bool       `json:"share,omitempty"`
+	To Subject `json:"to,omitempty"`
+	// Local subject used to subscribe (for streams) and publish (for services) to.
+	// This value only needs setting if you want to change the value of Subject.
+	// If the value of Subject ends in > then LocalSubject needs to end in > as well.
+	// LocalSubject can contain $<number> wildcard references where number references the nth wildcard in Subject.
+	// The sum of wildcard reference and * tokens needs to match the number of * token in Subject.
+	LocalSubject RenamingSubject `json:"local_subject,omitempty"`
+	Type         ExportType      `json:"type,omitempty"`
+	Share        bool            `json:"share,omitempty"`
 }
 
 // IsService returns true if the import is of type service
@@ -50,6 +57,11 @@ func (i *Import) IsService() bool {
 // IsStream returns true if the import is of type stream
 func (i *Import) IsStream() bool {
 	return i.Type == Stream
+}
+
+// Returns the value of To without triggering the deprecation warning for a read
+func (i *Import) GetTo() string {
+	return string(i.To)
 }
 
 // Validate checks if an import is valid for the wrapping account
@@ -67,6 +79,12 @@ func (i *Import) Validate(actPubKey string, vr *ValidationResults) {
 	}
 
 	i.Subject.Validate(vr)
+	if i.LocalSubject != "" {
+		i.LocalSubject.Validate(i.Subject, vr)
+		if i.To != "" {
+			vr.AddError("Local Subject replaces To")
+		}
+	}
 
 	if i.Share && !i.IsService() {
 		vr.AddError("sharing information (for latency tracking) is only valid for services: %q", i.Subject)
@@ -120,17 +138,29 @@ type Imports []*Import
 
 // Validate checks if an import is valid for the wrapping account
 func (i *Imports) Validate(acctPubKey string, vr *ValidationResults) {
-	toSet := make(map[Subject]bool, len(*i))
+	toSet := make(map[Subject]struct{}, len(*i))
 	for _, v := range *i {
 		if v == nil {
 			vr.AddError("null import is not allowed")
 			continue
 		}
 		if v.Type == Service {
-			if _, ok := toSet[v.To]; ok {
-				vr.AddError("Duplicate To subjects for %q", v.To)
+			sub := v.To
+			if sub == "" {
+				sub = v.LocalSubject.ToSubject()
 			}
-			toSet[v.To] = true
+			if sub == "" {
+				sub = v.Subject
+			}
+			for k := range toSet {
+				if sub.IsContainedIn(k) || k.IsContainedIn(sub) {
+					vr.AddError("overlapping subject namespace for %q and %q", sub, k)
+				}
+			}
+			if _, ok := toSet[sub]; ok {
+				vr.AddError("overlapping subject namespace for %q", v.To)
+			}
+			toSet[sub] = struct{}{}
 		}
 		v.Validate(acctPubKey, vr)
 	}
