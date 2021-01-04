@@ -2903,14 +2903,22 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			}
 			if err := a.AddServiceExportWithResponse(string(e.Subject), rt, authAccounts(e.TokenReq)); err != nil {
 				s.Debugf("Error adding service export to account [%s]: %v", a.Name, err)
+				continue
 			}
+			sub := string(e.Subject)
 			if e.Latency != nil {
-				if err := a.TrackServiceExportWithSampling(string(e.Subject), string(e.Latency.Results), int(e.Latency.Sampling)); err != nil {
+				if err := a.TrackServiceExportWithSampling(sub, string(e.Latency.Results), int(e.Latency.Sampling)); err != nil {
 					hdrNote := ""
 					if e.Latency.Sampling == jwt.Headers {
 						hdrNote = " (using headers)"
 					}
 					s.Debugf("Error adding latency tracking%s for service export to account [%s]: %v", hdrNote, a.Name, err)
+				}
+			}
+			if e.ResponseThreshold != 0 {
+				// Response threshold was set in options.
+				if err := a.SetServiceExportResponseThreshold(sub, e.ResponseThreshold); err != nil {
+					s.Debugf("Error adding service export response threshold for [%s]: %v", a.Name, err)
 				}
 			}
 		}
@@ -2945,7 +2953,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		to := i.GetTo()
 		switch i.Type {
 		case jwt.Stream:
-			if i.LocalSubject != "" {
+			if i.LocalSubject != _EMPTY_ {
 				// set local subject implies to is empty
 				to = string(i.LocalSubject)
 				s.Debugf("Adding stream import %s:%q for %s:%q", acc.Name, from, a.Name, to)
@@ -2959,7 +2967,6 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 				incompleteImports = append(incompleteImports, i)
 			}
 		case jwt.Service:
-			// FIXME(dlc) - need to add in respThresh here eventually.
 			if i.LocalSubject != _EMPTY_ {
 				from = string(i.LocalSubject)
 				to = string(i.Subject)
