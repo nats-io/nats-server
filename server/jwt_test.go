@@ -4818,3 +4818,75 @@ func TestJWTAccountImportsWithWildcardSupport(t *testing.T) {
 			"my.request.1.2.bar", "my.events.2.1.bar")
 	})
 }
+
+func TestJWTResponseThreshold(t *testing.T) {
+	respThresh := 20 * time.Millisecond
+	aExpKp, aExpPub := createKey(t)
+	aExpClaim := jwt.NewAccountClaims(aExpPub)
+	aExpClaim.Name = "Export"
+	aExpClaim.Exports.Add(&jwt.Export{
+		Subject:           "srvc",
+		Type:              jwt.Service,
+		ResponseThreshold: respThresh,
+	})
+	aExpJwt := encodeClaim(t, aExpClaim, aExpPub)
+	aExpCreds := newUser(t, aExpKp)
+
+	defer os.Remove(aExpCreds)
+	aImpKp, aImpPub := createKey(t)
+	aImpClaim := jwt.NewAccountClaims(aImpPub)
+	aImpClaim.Name = "Import"
+	aImpClaim.Imports.Add(&jwt.Import{
+		Subject: "srvc",
+		Type:    jwt.Service,
+		Account: aExpPub,
+	})
+	aImpJwt := encodeClaim(t, aImpClaim, aImpPub)
+	aImpCreds := newUser(t, aImpKp)
+	defer os.Remove(aImpCreds)
+
+	cf := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		operator = %s
+		resolver = MEMORY
+		resolver_preload = {
+			%s : "%s"
+			%s : "%s"
+		}
+		`, ojwt, aExpPub, aExpJwt, aImpPub, aImpJwt)))
+	defer os.Remove(cf)
+
+	s, opts := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	ncExp := natsConnect(t, fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port), nats.UserCredentials(aExpCreds))
+	defer ncExp.Close()
+
+	ncImp := natsConnect(t, fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port), nats.UserCredentials(aImpCreds))
+	defer ncImp.Close()
+
+	delayChan := make(chan time.Duration, 1)
+
+	// Create subscriber for the service endpoint in foo.
+	_, err := ncExp.Subscribe("srvc", func(m *nats.Msg) {
+		time.Sleep(<-delayChan)
+		m.Respond([]byte("yes!"))
+	})
+	require_NoError(t, err)
+	ncExp.Flush()
+
+	t.Run("No-Timeout", func(t *testing.T) {
+		delayChan <- respThresh / 2
+		if resp, err := ncImp.Request("srvc", []byte("yes?"), 4*respThresh); err != nil {
+			t.Fatalf("Expected a response to request srvc got: %v", err)
+		} else if string(resp.Data) != "yes!" {
+			t.Fatalf("Expected a response of %q, got %q", "yes!", resp.Data)
+		}
+	})
+	t.Run("Timeout", func(t *testing.T) {
+		delayChan <- 2 * respThresh
+		if _, err := ncImp.Request("srvc", []byte("yes?"), 4*respThresh); err == nil || err != nats.ErrTimeout {
+			t.Fatalf("Expected a timeout")
+		}
+	})
+}
