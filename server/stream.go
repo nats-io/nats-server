@@ -878,12 +878,19 @@ func getHdrVal(key string, hdr []byte) []byte {
 	if index < 0 {
 		return nil
 	}
+
 	var value []byte
-	for i := index + len(key) + 2; i > 0 && i < len(hdr); i++ {
-		if hdr[i] == '\r' && i < len(hdr)-1 && hdr[i+1] == '\n' {
+	hdrLen := len(hdr)
+	index += len(key) + 1
+	for hdr[index] == ' ' && index < hdrLen {
+		index++
+	}
+	for index < hdrLen {
+		if hdr[index] == '\r' && index < hdrLen-1 && hdr[index+1] == '\n' {
 			break
 		}
-		value = append(value, hdr[i])
+		value = append(value, hdr[index])
+		index++
 	}
 	return value
 }
@@ -948,6 +955,7 @@ func (mset *Stream) processInboundJetStreamMsg(_ *subscription, pc *client, subj
 			}
 			return
 		}
+
 		// Expected stream.
 		if sname := getExpectedStream(hdr); sname != _EMPTY_ && sname != name {
 			mset.mu.Unlock()
