@@ -783,6 +783,9 @@ func (lx *lexer) isBool() bool {
 
 // Check if the unquoted string is a variable reference, starting with $.
 func (lx *lexer) isVariable() bool {
+	if lx.start >= len(lx.input) {
+		return false
+	}
 	if lx.input[lx.start] == '$' {
 		lx.start += 1
 		return true
@@ -984,6 +987,7 @@ func lexNumberOrDateOrStringOrIP(lx *lexer) stateFn {
 	case !(isNL(r) || r == eof || r == mapEnd || r == optValTerm || r == mapValTerm || isWhitespace(r) || unicode.IsDigit(r)):
 		// Treat it as a string value once we get a rune that
 		// is not a number.
+		lx.stringStateFn = lexString
 		return lexString
 	}
 	lx.backup()
