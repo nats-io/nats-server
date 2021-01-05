@@ -2949,16 +2949,14 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 				// set local subject implies to is empty
 				to = string(i.LocalSubject)
 				s.Debugf("Adding stream import %s:%q for %s:%q", acc.Name, from, a.Name, to)
-				if err := a.AddMappedStreamImportWithClaim(acc, from, to, i); err != nil {
-					s.Debugf("Error adding stream import to account [%s]: %v", a.Name, err.Error())
-					incompleteImports = append(incompleteImports, i)
-				}
+				err = a.AddMappedStreamImportWithClaim(acc, from, to, i)
 			} else {
 				s.Debugf("Adding stream import %s:%q for %s:%q", acc.Name, from, a.Name, to)
-				if err := a.AddStreamImportWithClaim(acc, from, to, i); err != nil {
-					s.Debugf("Error adding stream import to account [%s]: %v", a.Name, err.Error())
-					incompleteImports = append(incompleteImports, i)
-				}
+				err = a.AddStreamImportWithClaim(acc, from, to, i)
+			}
+			if err != nil {
+				s.Debugf("Error adding stream import to account [%s]: %v", a.Name, err.Error())
+				incompleteImports = append(incompleteImports, i)
 			}
 		case jwt.Service:
 			// FIXME(dlc) - need to add in respThresh here eventually.
