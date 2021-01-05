@@ -2960,7 +2960,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			}
 		case jwt.Service:
 			// FIXME(dlc) - need to add in respThresh here eventually.
-			if i.LocalSubject != "" {
+			if i.LocalSubject != _EMPTY_ {
 				from = string(i.LocalSubject)
 				to = string(i.Subject)
 			}
