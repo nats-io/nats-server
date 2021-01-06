@@ -4549,36 +4549,39 @@ func TestJWTAccountOps(t *testing.T) {
 	}
 }
 
+func createKey(t *testing.T) (nkeys.KeyPair, string) {
+	t.Helper()
+	kp, _ := nkeys.CreateAccount()
+	syspub, _ := kp.PublicKey()
+	return kp, syspub
+}
+
+func encodeClaim(t *testing.T, claim *jwt.AccountClaims, pub string) string {
+	t.Helper()
+	theJWT, err := claim.Encode(oKp)
+	require_NoError(t, err)
+	return theJWT
+}
+
+func newUser(t *testing.T, accKp nkeys.KeyPair) string {
+	ukp, _ := nkeys.CreateUser()
+	seed, _ := ukp.Seed()
+	upub, _ := ukp.PublicKey()
+	uclaim := newJWTTestUserClaims()
+	uclaim.Subject = upub
+	ujwt, err := uclaim.Encode(accKp)
+	require_NoError(t, err)
+	return genCredsFile(t, ujwt, seed)
+}
+
 func TestJWTHeader(t *testing.T) {
-	createKey := func() (nkeys.KeyPair, string) {
-		t.Helper()
-		kp, _ := nkeys.CreateAccount()
-		syspub, _ := kp.PublicKey()
-		return kp, syspub
-	}
-	encode := func(claim *jwt.AccountClaims, pub string) string {
-		t.Helper()
-		theJWT, err := claim.Encode(oKp)
-		require_NoError(t, err)
-		return theJWT
-	}
-	newUser := func(accKp nkeys.KeyPair) string {
-		ukp, _ := nkeys.CreateUser()
-		seed, _ := ukp.Seed()
-		upub, _ := ukp.PublicKey()
-		uclaim := newJWTTestUserClaims()
-		uclaim.Subject = upub
-		ujwt, err := uclaim.Encode(accKp)
-		require_NoError(t, err)
-		return genCredsFile(t, ujwt, seed)
-	}
-	sysKp, syspub := createKey()
-	sysJwt := encode(jwt.NewAccountClaims(syspub), syspub)
-	sysCreds := newUser(sysKp)
+	sysKp, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	sysCreds := newUser(t, sysKp)
 	defer os.Remove(sysCreds)
 
 	test := func(share bool) {
-		aExpKp, aExpPub := createKey()
+		aExpKp, aExpPub := createKey(t)
 		aExpClaim := jwt.NewAccountClaims(aExpPub)
 		aExpClaim.Exports.Add(&jwt.Export{
 			Name:     "test",
@@ -4590,11 +4593,11 @@ func TestJWTHeader(t *testing.T) {
 				Results:  "res",
 			},
 		})
-		aExpJwt := encode(aExpClaim, aExpPub)
-		aExpCreds := newUser(aExpKp)
+		aExpJwt := encodeClaim(t, aExpClaim, aExpPub)
+		aExpCreds := newUser(t, aExpKp)
 		defer os.Remove(aExpCreds)
 
-		aImpKp, aImpPub := createKey()
+		aImpKp, aImpPub := createKey(t)
 		aImpClaim := jwt.NewAccountClaims(aImpPub)
 		aImpClaim.Imports.Add(&jwt.Import{
 			Name:    "test",
@@ -4603,8 +4606,8 @@ func TestJWTHeader(t *testing.T) {
 			Type:    jwt.Service,
 			Share:   share,
 		})
-		aImpJwt := encode(aImpClaim, aImpPub)
-		aImpCreds := newUser(aImpKp)
+		aImpJwt := encodeClaim(t, aImpClaim, aImpPub)
+		aImpCreds := newUser(t, aImpKp)
 		defer os.Remove(aImpCreds)
 
 		dirSrv := createDir(t, "srv")
@@ -4677,4 +4680,141 @@ func TestJWTHeader(t *testing.T) {
 	}
 	test(true)
 	test(false)
+}
+
+func TestJWTAccountImportsWithWildcardSupport(t *testing.T) {
+	test := func(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds, exSubExpect, exPub, imReq, imSubExpect string) {
+		cf := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		operator = %s
+		resolver = MEMORY
+		resolver_preload = {
+			%s : "%s"
+			%s : "%s"
+		}
+		`, ojwt, aExpPub, aExpJwt, aImpPub, aImpJwt)))
+		defer os.Remove(cf)
+
+		s, opts := RunServerWithConfig(cf)
+		defer s.Shutdown()
+
+		ncExp := natsConnect(t, fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port), nats.UserCredentials(aExpCreds))
+		defer ncExp.Close()
+
+		ncImp := natsConnect(t, fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port), nats.UserCredentials(aImpCreds))
+		defer ncImp.Close()
+
+		// Create subscriber for the service endpoint in foo.
+		_, err := ncExp.Subscribe(exSubExpect, func(m *nats.Msg) {
+			m.Respond([]byte("yes!"))
+		})
+		require_NoError(t, err)
+		ncExp.Flush()
+
+		// Now test service import.
+		if resp, err := ncImp.Request(imReq, []byte("yes?"), time.Second); err != nil {
+			t.Fatalf("Expected a response to request %s got: %v", imReq, err)
+		} else if string(resp.Data) != "yes!" {
+			t.Fatalf("Expected a response of %q, got %q", "yes!", resp.Data)
+		}
+		subBar, err := ncImp.SubscribeSync(imSubExpect)
+		require_NoError(t, err)
+		ncImp.Flush()
+
+		ncExp.Publish(exPub, []byte("event!"))
+
+		if m, err := subBar.NextMsg(time.Second); err != nil {
+			t.Fatalf("Expected a stream message got %v", err)
+		} else if string(m.Data) != "event!" {
+			t.Fatalf("Expected a response of %q, got %q", "event!", m.Data)
+		}
+	}
+	createExporter := func() (string, string, string) {
+		t.Helper()
+		aExpKp, aExpPub := createKey(t)
+		aExpClaim := jwt.NewAccountClaims(aExpPub)
+		aExpClaim.Name = "Export"
+		aExpClaim.Exports.Add(&jwt.Export{
+			Subject: "$request.*.$in.*.>",
+			Type:    jwt.Service,
+		}, &jwt.Export{
+			Subject: "$events.*.$in.*.>",
+			Type:    jwt.Stream,
+		})
+		aExpJwt := encodeClaim(t, aExpClaim, aExpPub)
+		aExpCreds := newUser(t, aExpKp)
+		return aExpPub, aExpJwt, aExpCreds
+	}
+	t.Run("To", func(t *testing.T) {
+		aExpPub, aExpJwt, aExpCreds := createExporter()
+		defer os.Remove(aExpCreds)
+		aImpKp, aImpPub := createKey(t)
+		aImpClaim := jwt.NewAccountClaims(aImpPub)
+		aImpClaim.Name = "Import"
+		aImpClaim.Imports.Add(&jwt.Import{
+			Subject: "my.request.*.*.>",
+			Type:    jwt.Service,
+			To:      "$request.*.$in.*.>", // services have local and remote switched between Subject and To
+			Account: aExpPub,
+		}, &jwt.Import{
+			Subject: "$events.*.$in.*.>",
+			Type:    jwt.Stream,
+			To:      "prefix",
+			Account: aExpPub,
+		})
+		aImpJwt := encodeClaim(t, aImpClaim, aImpPub)
+		aImpCreds := newUser(t, aImpKp)
+		defer os.Remove(aImpCreds)
+		test(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds,
+			"$request.1.$in.2.bar", "$events.1.$in.2.bar",
+			"my.request.1.2.bar", "prefix.$events.1.$in.2.bar")
+	})
+	t.Run("LocalSubject-No-Reorder", func(t *testing.T) {
+		aExpPub, aExpJwt, aExpCreds := createExporter()
+		defer os.Remove(aExpCreds)
+		aImpKp, aImpPub := createKey(t)
+		aImpClaim := jwt.NewAccountClaims(aImpPub)
+		aImpClaim.Name = "Import"
+		aImpClaim.Imports.Add(&jwt.Import{
+			Subject:      "$request.*.$in.*.>",
+			Type:         jwt.Service,
+			LocalSubject: "my.request.*.*.>",
+			Account:      aExpPub,
+		}, &jwt.Import{
+			Subject:      "$events.*.$in.*.>",
+			Type:         jwt.Stream,
+			LocalSubject: "my.events.*.*.>",
+			Account:      aExpPub,
+		})
+		aImpJwt := encodeClaim(t, aImpClaim, aImpPub)
+		aImpCreds := newUser(t, aImpKp)
+		defer os.Remove(aImpCreds)
+		test(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds,
+			"$request.1.$in.2.bar", "$events.1.$in.2.bar",
+			"my.request.1.2.bar", "my.events.1.2.bar")
+	})
+	t.Run("LocalSubject-Reorder", func(t *testing.T) {
+		aExpPub, aExpJwt, aExpCreds := createExporter()
+		defer os.Remove(aExpCreds)
+		aImpKp, aImpPub := createKey(t)
+		aImpClaim := jwt.NewAccountClaims(aImpPub)
+		aImpClaim.Name = "Import"
+		aImpClaim.Imports.Add(&jwt.Import{
+			Subject:      "$request.*.$in.*.>",
+			Type:         jwt.Service,
+			LocalSubject: "my.request.$2.$1.>",
+			Account:      aExpPub,
+		}, &jwt.Import{
+			Subject:      "$events.*.$in.*.>",
+			Type:         jwt.Stream,
+			LocalSubject: "my.events.$2.$1.>",
+			Account:      aExpPub,
+		})
+		aImpJwt := encodeClaim(t, aImpClaim, aImpPub)
+		aImpCreds := newUser(t, aImpKp)
+		defer os.Remove(aImpCreds)
+		test(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds,
+			"$request.2.$in.1.bar", "$events.1.$in.2.bar",
+			"my.request.1.2.bar", "my.events.2.1.bar")
+	})
 }
