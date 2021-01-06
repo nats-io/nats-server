@@ -666,8 +666,9 @@ func lexMapKeyStart(lx *lexer) stateFn {
 
 // lexMapQuotedKey consumes the text of a key between quotes.
 func lexMapQuotedKey(lx *lexer) stateFn {
-	r := lx.peek()
-	if r == sqStringEnd {
+	if r := lx.peek(); r == eof {
+		return lx.errorf("Unexpected EOF processing quoted map key.")
+	} else if r == sqStringEnd {
 		lx.emit(itemKey)
 		lx.next()
 		return lexSkip(lx, lexMapKeyEnd)
@@ -678,8 +679,9 @@ func lexMapQuotedKey(lx *lexer) stateFn {
 
 // lexMapQuotedKey consumes the text of a key between quotes.
 func lexMapDubQuotedKey(lx *lexer) stateFn {
-	r := lx.peek()
-	if r == dqStringEnd {
+	if r := lx.peek(); r == eof {
+		return lx.errorf("Unexpected EOF processing double quoted map key.")
+	} else if r == dqStringEnd {
 		lx.emit(itemKey)
 		lx.next()
 		return lexSkip(lx, lexMapKeyEnd)
@@ -691,8 +693,9 @@ func lexMapDubQuotedKey(lx *lexer) stateFn {
 // lexMapKey consumes the text of a key. Assumes that the first character (which
 // is not whitespace) has already been consumed.
 func lexMapKey(lx *lexer) stateFn {
-	r := lx.peek()
-	if unicode.IsSpace(r) {
+	if r := lx.peek(); r == eof {
+		return lx.errorf("Unexpected EOF processing map key.")
+	} else if unicode.IsSpace(r) {
 		// Spaces signal we could be looking at a keyword, e.g. include.
 		// Keywords will eat the keyword and set the appropriate return stateFn.
 		return lx.keyCheckKeyword(lexMapKeyEnd, lexMapValueEnd)

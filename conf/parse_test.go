@@ -383,3 +383,7 @@ func TestIncludeVariablesWithChecks(t *testing.T) {
 	expectKeyVal(t, m, "BOB_PASS", "$2a$11$dZM98SpGeI7dCFFGSpt.JObQcix8YHml4TBUZoge9R1uxnMIln5ly", 3, 1)
 	expectKeyVal(t, m, "CAROL_PASS", "foo", 6, 3)
 }
+
+func TestParser(t *testing.T) {
+	Parse(`A@@Føøøø?˛ø:{øøøø˙˙`)
+}
