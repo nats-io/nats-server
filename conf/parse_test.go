@@ -384,6 +384,10 @@ func TestIncludeVariablesWithChecks(t *testing.T) {
 	expectKeyVal(t, m, "CAROL_PASS", "foo", 6, 3)
 }
 
-func TestParser(t *testing.T) {
-	Parse(`A@@Føøøø?˛ø:{øøøø˙˙`)
+func TestParserNoInfiniteLoop(t *testing.T) {
+	if _, err := Parse(`A@@Føøøø?˛ø:{øøøø˙˙`); err == nil {
+		t.Fatal("expected an error")
+	} else if !strings.Contains(err.Error(), "Unexpected EOF") {
+		t.Fatal("expected unexpected eof error")
+	}
 }
