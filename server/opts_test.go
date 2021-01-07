@@ -2832,60 +2832,65 @@ func TestQueuePermissions(t *testing.T) {
 		listen: 127.0.0.1:-1
 		no_auth_user: u
 		authorization {
-			users [{ user: u, password: pwd, permissions: {
-						sub: { %s: ["foo.> *.dev"] }
-					}
-				}]}`
+			users [{ 
+				user: u, password: pwd, permissions: { sub: { %s: ["foo.> *.dev"] } }
+			}]
+		}`
 	errChan := make(chan error, 1)
 	defer close(errChan)
-	for permType, tests := range map[string][][2]interface{}{
-		"allow": {{"queue.dev", false}, {"", true}, {"bad", true}},
-		"deny":  {{"", false}, {"queue.dev", true}},
+	for _, test := range []struct {
+		permType    string
+		queue       string
+		errExpected bool
+	}{
+		{"allow", "queue.dev", false},
+		{"allow", "", true},
+		{"allow", "bad", true},
+		{"deny", "", false},
+		{"deny", "queue.dev", true},
 	} {
-		for _, test := range tests {
-			queue := test[0].(string)
-			errExpected := test[1].(bool)
-			t.Run(permType+queue, func(t *testing.T) {
-				confFileName := createConfFile(t, []byte(fmt.Sprintf(cfgFmt, permType)))
-				defer os.Remove(confFileName)
-				opts, err := ProcessConfigFile(confFileName)
-				if err != nil {
-					t.Fatalf("Received unexpected error %s", err)
+		t.Run(test.permType+test.queue, func(t *testing.T) {
+			confFileName := createConfFile(t, []byte(fmt.Sprintf(cfgFmt, test.permType)))
+			defer os.Remove(confFileName)
+			opts, err := ProcessConfigFile(confFileName)
+			if err != nil {
+				t.Fatalf("Received unexpected error %s", err)
+			}
+			opts.NoLog, opts.NoSigs = true, true
+			s := RunServer(opts)
+			defer s.Shutdown()
+			nc, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", opts.Port),
+				nats.ErrorHandler(func(conn *nats.Conn, s *nats.Subscription, err error) {
+					errChan <- err
+				}))
+			if err != nil {
+				t.Fatalf("No error expected: %v", err)
+			}
+			defer nc.Close()
+			if test.queue == "" {
+				if _, err := nc.Subscribe("foo.bar", func(msg *nats.Msg) {}); err != nil {
+					t.Fatalf("no error expected: %v", err)
 				}
-				s := RunServer(opts)
-				defer s.Shutdown()
-				nc, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", opts.Port),
-					nats.ErrorHandler(func(conn *nats.Conn, s *nats.Subscription, err error) {
-						errChan <- err
-					}))
-				if err != nil {
-					t.Fatalf("No error expected: %v", err)
+			} else {
+				if _, err := nc.QueueSubscribe("foo.bar", test.queue, func(msg *nats.Msg) {}); err != nil {
+					t.Fatalf("no error expected: %v", err)
 				}
-				defer nc.Close()
-				if queue == "" {
-					if _, err := nc.Subscribe("foo.bar", func(msg *nats.Msg) {}); err != nil {
-						t.Fatalf("no error expected: %v", err)
-					}
-				} else {
-					if _, err := nc.QueueSubscribe("foo.bar", queue, func(msg *nats.Msg) {}); err != nil {
-						t.Fatalf("no error expected: %v", err)
-					}
+			}
+			nc.Flush()
+			select {
+			case err := <-errChan:
+				if !test.errExpected {
+					t.Fatalf("Expected no error, got %v", err)
 				}
-				nc.Flush()
-				select {
-				case err := <-errChan:
-					if !errExpected {
-						t.Fatalf("Expected no error, got %v", err)
-					}
-					if !strings.Contains(err.Error(), `Permissions Violation for Subscription to "foo.bar"`) {
-						t.Fatalf("error %v", err)
-					}
-				case <-time.After(150 * time.Millisecond):
-					if errExpected {
-						t.Fatal("Expected an error")
-					}
+				if !strings.Contains(err.Error(), `Permissions Violation for Subscription to "foo.bar"`) {
+					t.Fatalf("error %v", err)
 				}
-			})
-		}
+			case <-time.After(150 * time.Millisecond):
+				if test.errExpected {
+					t.Fatal("Expected an error")
+				}
+			}
+		})
+
 	}
 }
