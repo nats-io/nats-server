@@ -385,9 +385,11 @@ func TestIncludeVariablesWithChecks(t *testing.T) {
 }
 
 func TestParserNoInfiniteLoop(t *testing.T) {
-	if _, err := Parse(`A@@Føøøø?˛ø:{øøøø˙˙`); err == nil {
-		t.Fatal("expected an error")
-	} else if !strings.Contains(err.Error(), "Unexpected EOF") {
-		t.Fatal("expected unexpected eof error")
+	for _, test := range []string{`A@@Føøøø?˛ø:{øøøø˙˙`, `include "9/�`} {
+		if _, err := Parse(test); err == nil {
+			t.Fatal("expected an error")
+		} else if !strings.Contains(err.Error(), "Unexpected EOF") {
+			t.Fatal("expected unexpected eof error")
+		}
 	}
 }
