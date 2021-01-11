@@ -3688,3 +3688,96 @@ func TestMonitorAccountz(t *testing.T) {
 		t.Fatalf("Body missing value. Contains: %s", body)
 	}
 }
+
+func TestMonitorAuthorizedUsers(t *testing.T) {
+	kp, _ := nkeys.FromSeed(seed)
+	usrNKey, _ := kp.PublicKey()
+	opts := DefaultMonitorOptions()
+	opts.Nkeys = []*NkeyUser{{Nkey: string(usrNKey)}}
+	opts.Users = []*User{{Username: "user", Password: "pwd"}}
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	checkAuthUser := func(expected string) {
+		t.Helper()
+		resetPreviousHTTPConnections()
+		url := fmt.Sprintf("http://127.0.0.1:%d/connz?auth=true", s.MonitorAddr().Port)
+		for mode := 0; mode < 2; mode++ {
+			connz := pollConz(t, s, mode, url, &ConnzOptions{Username: true})
+			if l := len(connz.Conns); l != 1 {
+				t.Fatalf("Expected 1, got %v", l)
+			}
+			conn := connz.Conns[0]
+			au := conn.AuthorizedUser
+			if au == _EMPTY_ {
+				t.Fatal("AuthorizedUser is empty!")
+			}
+			if au != expected {
+				t.Fatalf("Expected %q, got %q", expected, au)
+			}
+		}
+	}
+
+	c := natsConnect(t, fmt.Sprintf("nats://user:pwd@127.0.0.1:%d", opts.Port))
+	defer c.Close()
+	checkAuthUser("user")
+	c.Close()
+
+	c = natsConnect(t, fmt.Sprintf("nats://127.0.0.1:%d", opts.Port),
+		nats.Nkey(usrNKey, func(nonce []byte) ([]byte, error) {
+			return kp.Sign(nonce)
+		}))
+	defer c.Close()
+	// we should get the user's NKey
+	checkAuthUser(usrNKey)
+	c.Close()
+
+	s.Shutdown()
+	opts = DefaultMonitorOptions()
+	opts.Authorization = "sometoken"
+	s = RunServer(opts)
+	defer s.Shutdown()
+
+	c = natsConnect(t, fmt.Sprintf("nats://127.0.0.1:%d", opts.Port),
+		nats.Token("sometoken"))
+	defer c.Close()
+	// We should get the token specified by the user
+	checkAuthUser("sometoken")
+	c.Close()
+	s.Shutdown()
+
+	opts = DefaultMonitorOptions()
+	// User an operator seed
+	kp, _ = nkeys.FromSeed(oSeed)
+	pub, _ := kp.PublicKey()
+	opts.TrustedKeys = []string{pub}
+	s = RunServer(opts)
+	defer s.Shutdown()
+
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	ajwt, err := nac.Encode(oKp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+
+	nkp, _ := nkeys.CreateUser()
+	upub, _ := nkp.PublicKey()
+	nuc := jwt.NewUserClaims(upub)
+	jwt, err := nuc.Encode(akp)
+	if err != nil {
+		t.Fatalf("Error generating user JWT: %v", err)
+	}
+
+	buildMemAccResolver(s)
+	addAccountToMemResolver(s, apub, ajwt)
+
+	c = natsConnect(t, fmt.Sprintf("nats://127.0.0.1:%d", opts.Port),
+		nats.UserJWT(
+			func() (string, error) { return jwt, nil },
+			func(nonce []byte) ([]byte, error) { return nkp.Sign(nonce) }))
+	defer c.Close()
+	// we should get the user's pubkey
+	checkAuthUser(upub)
+}
