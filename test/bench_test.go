@@ -938,9 +938,10 @@ func doFanIn(b *testing.B, numServers, numPublishers, numSubscribers int, subjec
 	if b.N < numPublishers {
 		return
 	}
-	if numSubscribers > numPublishers {
-		b.Fatalf("Fan in tests should have numPublishers (%d) > numSubscribers (%d)", numPublishers, numSubscribers)
-	}
+	// Don't check for number of subscribers being lower than the number of publishers.
+	// We also use this bench to show the performance impact of increased number of publishers,
+	// and for those tests, the number of publishers will start at 1 and increase to 10,
+	// while the number of subscribers will always be 3.
 	if numSubscribers > 10 {
 		b.Fatalf("numSubscribers should be <= 10")
 	}
@@ -1057,6 +1058,22 @@ func Benchmark____FanIn_64kx100x1(b *testing.B) {
 
 func Benchmark___FanIn_128kx100x1(b *testing.B) {
 	doFanIn(b, 1, 100, 1, sub, sizedString(65536*2))
+}
+
+func Benchmark___BumpPubCount_1x3(b *testing.B) {
+	doFanIn(b, 1, 1, 3, sub, sizedString(128))
+}
+
+func Benchmark___BumpPubCount_2x3(b *testing.B) {
+	doFanIn(b, 1, 2, 3, sub, sizedString(128))
+}
+
+func Benchmark___BumpPubCount_5x3(b *testing.B) {
+	doFanIn(b, 1, 5, 3, sub, sizedString(128))
+}
+
+func Benchmark__BumpPubCount_10x3(b *testing.B) {
+	doFanIn(b, 1, 10, 3, sub, sizedString(128))
 }
 
 func testDefaultBenchOptionsForGateway(name string) *server.Options {
