@@ -1,8 +1,8 @@
-//+build !noasm
-
 // Copyright (c) 2017 Minio Inc. All rights reserved.
 // Use of this source code is governed by a license that can be
 // found in the LICENSE file.
+
+//+build !noasm,!appengine
 
 package highwayhash
 
@@ -14,10 +14,20 @@ var (
 )
 
 //go:noescape
+func initializeArm64(state *[16]uint64, key []byte)
+
+//go:noescape
 func updateArm64(state *[16]uint64, msg []byte)
 
+//go:noescape
+func finalizeArm64(out []byte, state *[16]uint64)
+
 func initialize(state *[16]uint64, key []byte) {
-	initializeGeneric(state, key)
+	if useNEON {
+		initializeArm64(state, key)
+	} else {
+		initializeGeneric(state, key)
+	}
 }
 
 func update(state *[16]uint64, msg []byte) {
@@ -29,5 +39,9 @@ func update(state *[16]uint64, msg []byte) {
 }
 
 func finalize(out []byte, state *[16]uint64) {
-	finalizeGeneric(out, state)
+	if useNEON {
+		finalizeArm64(out, state)
+	} else {
+		finalizeGeneric(out, state)
+	}
 }

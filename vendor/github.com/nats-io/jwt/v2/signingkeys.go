@@ -110,10 +110,7 @@ func (sk SigningKeys) Validate(vr *ValidationResults) {
 	for k, v := range sk {
 		// regular signing keys won't have a scope
 		if v != nil {
-			sv, ok := v.(Scope)
-			if ok {
-				sv.Validate(vr)
-			}
+			v.Validate(vr)
 		} else {
 			if !nkeys.IsValidPublicAccountKey(k) {
 				vr.AddError("%q is not a valid account signing key", k)

@@ -34,7 +34,6 @@
 //	- R_TMP0	scratch
 //	- R_TMP1	scratch
 //	- R_LEN	    length or x (shared)
-//	- R_X	    length or x (shared)
 //	- R_OFF	    offset
 //	- R_SRC	    &src[s]
 //	- R_DST	    &dst[d]
@@ -172,6 +171,7 @@ callMemmove:
 	MOVQ R_DST, 24(SP)
 	MOVQ R_SRC, 32(SP)
 	MOVQ R_LEN, 40(SP)
+	MOVQ R_OFF, 48(SP)
 	CALL runtime·memmove(SB)
 
 	// Restore local variables: unspill registers from the stack and
@@ -179,6 +179,7 @@ callMemmove:
 	MOVQ 24(SP), R_DST
 	MOVQ 32(SP), R_SRC
 	MOVQ 40(SP), R_LEN
+	MOVQ 48(SP), R_OFF
 	MOVQ dst_base+0(FP), R_DBASE
 	MOVQ dst_len+8(FP), R_DLEN
 	MOVQ R_DBASE, R_DEND

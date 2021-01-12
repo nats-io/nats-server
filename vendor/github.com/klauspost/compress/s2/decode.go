@@ -82,7 +82,12 @@ func NewReader(r io.Reader, opts ...ReaderOption) *Reader {
 			return &nr
 		}
 	}
-	nr.buf = make([]byte, MaxEncodedLen(nr.maxBlock)+checksumSize)
+	nr.maxBufSize = MaxEncodedLen(nr.maxBlock) + checksumSize
+	if nr.lazyBuf > 0 {
+		nr.buf = make([]byte, MaxEncodedLen(nr.lazyBuf)+checksumSize)
+	} else {
+		nr.buf = make([]byte, MaxEncodedLen(defaultBlockSize)+checksumSize)
+	}
 	nr.paramsOK = true
 	return &nr
 }
@@ -95,13 +100,33 @@ type ReaderOption func(*Reader) error
 // Blocks must be this size or smaller to decompress,
 // otherwise the decoder will return ErrUnsupported.
 //
+// For streams compressed with Snappy this can safely be set to 64KB (64 << 10).
+//
 // Default is the maximum limit of 4MB.
-func ReaderMaxBlockSize(n int) ReaderOption {
+func ReaderMaxBlockSize(blockSize int) ReaderOption {
 	return func(r *Reader) error {
-		if n > maxBlockSize || n <= 0 {
+		if blockSize > maxBlockSize || blockSize <= 0 {
 			return errors.New("s2: block size too large. Must be <= 4MB and > 0")
 		}
-		r.maxBlock = n
+		if r.lazyBuf == 0 && blockSize < defaultBlockSize {
+			r.lazyBuf = blockSize
+		}
+		r.maxBlock = blockSize
+		return nil
+	}
+}
+
+// ReaderAllocBlock allows to control upfront stream allocations
+// and not allocate for frames bigger than this initially.
+// If frames bigger than this is seen a bigger buffer will be allocated.
+//
+// Default is 1MB, which is default output size.
+func ReaderAllocBlock(blockSize int) ReaderOption {
+	return func(r *Reader) error {
+		if blockSize > maxBlockSize || blockSize < 1024 {
+			return errors.New("s2: invalid ReaderAllocBlock. Must be <= 4MB and >= 1024")
+		}
+		r.lazyBuf = blockSize
 		return nil
 	}
 }
@@ -113,10 +138,30 @@ type Reader struct {
 	decoded []byte
 	buf     []byte
 	// decoded[i:j] contains decoded bytes that have not yet been passed on.
-	i, j       int
-	maxBlock   int
+	i, j int
+	// maximum block size allowed.
+	maxBlock int
+	// maximum expected buffer size.
+	maxBufSize int
+	// alloc a buffer this size if > 0.
+	lazyBuf    int
 	readHeader bool
 	paramsOK   bool
+}
+
+// ensureBufferSize will ensure that the buffe can take at least n bytes.
+// If false is returned the buffer exceeds maximum allowed size.
+func (r *Reader) ensureBufferSize(n int) bool {
+	if len(r.buf) >= n {
+		return true
+	}
+	if n > r.maxBufSize {
+		r.err = ErrCorrupt
+		return false
+	}
+	// Realloc buffer.
+	r.buf = make([]byte, n)
+	return true
 }
 
 // Reset discards any buffered data, resets all state, and switches the Snappy
@@ -206,7 +251,7 @@ func (r *Reader) Read(p []byte) (int, error) {
 				r.err = ErrCorrupt
 				return 0, r.err
 			}
-			if chunkLen > len(r.buf) {
+			if !r.ensureBufferSize(chunkLen) {
 				r.err = ErrUnsupported
 				return 0, r.err
 			}
@@ -246,7 +291,7 @@ func (r *Reader) Read(p []byte) (int, error) {
 				r.err = ErrCorrupt
 				return 0, r.err
 			}
-			if chunkLen > len(r.buf) {
+			if !r.ensureBufferSize(chunkLen) {
 				r.err = ErrUnsupported
 				return 0, r.err
 			}
@@ -362,7 +407,7 @@ func (r *Reader) Skip(n int64) error {
 				r.err = ErrCorrupt
 				return r.err
 			}
-			if chunkLen > len(r.buf) {
+			if !r.ensureBufferSize(chunkLen) {
 				r.err = ErrUnsupported
 				return r.err
 			}
@@ -408,7 +453,7 @@ func (r *Reader) Skip(n int64) error {
 				r.err = ErrCorrupt
 				return r.err
 			}
-			if chunkLen > len(r.buf) {
+			if !r.ensureBufferSize(chunkLen) {
 				r.err = ErrUnsupported
 				return r.err
 			}

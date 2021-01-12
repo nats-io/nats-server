@@ -2,8 +2,7 @@
 // Use of this source code is governed by a license that can be
 // found in the LICENSE file.
 
-// +build !go1.8
-// +build amd64 !gccgo !appengine !nacl
+// +build amd64,!gccgo,!appengine,!nacl,!noasm
 
 package highwayhash
 
@@ -11,7 +10,7 @@ import "golang.org/x/sys/cpu"
 
 var (
 	useSSE4 = cpu.X86.HasSSE41
-	useAVX2 = false
+	useAVX2 = cpu.X86.HasAVX2
 	useNEON = false
 	useVMX  = false
 )
@@ -20,31 +19,49 @@ var (
 func initializeSSE4(state *[16]uint64, key []byte)
 
 //go:noescape
+func initializeAVX2(state *[16]uint64, key []byte)
+
+//go:noescape
 func updateSSE4(state *[16]uint64, msg []byte)
+
+//go:noescape
+func updateAVX2(state *[16]uint64, msg []byte)
 
 //go:noescape
 func finalizeSSE4(out []byte, state *[16]uint64)
 
+//go:noescape
+func finalizeAVX2(out []byte, state *[16]uint64)
+
 func initialize(state *[16]uint64, key []byte) {
-	if useSSE4 {
+	switch {
+	case useAVX2:
+		initializeAVX2(state, key)
+	case useSSE4:
 		initializeSSE4(state, key)
-	} else {
+	default:
 		initializeGeneric(state, key)
 	}
 }
 
 func update(state *[16]uint64, msg []byte) {
-	if useSSE4 {
+	switch {
+	case useAVX2:
+		updateAVX2(state, msg)
+	case useSSE4:
 		updateSSE4(state, msg)
-	} else {
+	default:
 		updateGeneric(state, msg)
 	}
 }
 
 func finalize(out []byte, state *[16]uint64) {
-	if useSSE4 {
+	switch {
+	case useAVX2:
+		finalizeAVX2(out, state)
+	case useSSE4:
 		finalizeSSE4(out, state)
-	} else {
+	default:
 		finalizeGeneric(out, state)
 	}
 }

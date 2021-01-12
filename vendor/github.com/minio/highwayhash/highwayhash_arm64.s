@@ -1,5 +1,3 @@
-//+build !noasm !appengine
-
 //
 // Minio Cloud Storage, (C) 2017 Minio, Inc.
 //
@@ -16,8 +14,113 @@
 // limitations under the License.
 //
 
+//+build !noasm,!appengine
+
 // Use github.com/minio/asm2plan9s on this file to assemble ARM instructions to
 // the opcodes of their Plan9 equivalents
+
+#define REDUCE_MOD(x0, x1, x2, x3, tmp0, tmp1, y0, y1) \
+	MOVD $0x3FFFFFFFFFFFFFFF, tmp0 \
+	AND  tmp0, x3                  \
+	MOVD x2, y0                    \
+	MOVD x3, y1                    \
+	                               \
+	MOVD x2, tmp0                  \
+	MOVD x3, tmp1                  \
+	LSL  $1, tmp1                  \
+	LSR  $63, tmp0                 \
+	MOVD tmp1, x3                  \
+	ORR  tmp0, x3                  \
+	                               \
+	LSL  $1, x2                    \
+	                               \
+	MOVD y0, tmp0                  \
+	MOVD y1, tmp1                  \
+	LSL  $2, tmp1                  \
+	LSR  $62, tmp0                 \
+	MOVD tmp1, y1                  \
+	ORR  tmp0, y1                  \
+	                               \
+	LSL  $2, y0                    \
+	                               \
+	EOR  x0, y0                    \
+	EOR  x2, y0                    \
+	EOR  x1, y1                    \
+	EOR  x3, y1
+
+#define UPDATE(MSG1, MSG2)                  \
+	\ // Add message
+	VADD MSG1.D2, V2.D2, V2.D2              \
+	VADD MSG2.D2, V3.D2, V3.D2              \
+	\
+	\ // v1 += mul0
+	VADD V4.D2, V2.D2, V2.D2                \
+	VADD V5.D2, V3.D2, V3.D2                \
+	\
+	\ // First pair of multiplies
+	VTBL V29.B16, [V0.B16, V1.B16], V10.B16 \
+	VTBL V30.B16, [V2.B16, V3.B16], V11.B16 \
+	\
+    \ // VUMULL  V10.S2, V11.S2, V12.D2 /* assembler support missing */
+    \ // VUMULL2 V10.S4, V11.S4, V13.D2 /* assembler support missing */
+	WORD $0x2eaac16c \ // umull  v12.2d, v11.2s, v10.2s
+	WORD $0x6eaac16d \ // umull2 v13.2d, v11.4s, v10.4s
+	\
+	\ // v0 += mul1
+	VADD V6.D2, V0.D2, V0.D2                \
+	VADD V7.D2, V1.D2, V1.D2                \
+	\
+	\ // Second pair of multiplies
+	VTBL V29.B16, [V2.B16, V3.B16], V15.B16 \
+	VTBL V30.B16, [V0.B16, V1.B16], V14.B16 \
+	\
+	\ // EOR multiplication result in
+	VEOR V12.B16, V4.B16, V4.B16            \
+	VEOR V13.B16, V5.B16, V5.B16            \
+	\
+	\ // VUMULL  V14.S2, V15.S2, V16.D2 /* assembler support missing */
+	\ // VUMULL2 V14.S4, V15.S4, V17.D2 /* assembler support missing */
+	WORD $0x2eaec1f0 \ // umull  v16.2d, v15.2s, v14.2s
+	WORD $0x6eaec1f1 \ // umull2 v17.2d, v15.4s, v14.4s
+	\
+	\ // First pair of zipper-merges
+	VTBL V28.B16, [V2.B16], V18.B16         \
+	VADD V18.D2, V0.D2, V0.D2               \
+	VTBL V28.B16, [V3.B16], V19.B16         \
+	VADD V19.D2, V1.D2, V1.D2               \
+	\
+	\ // Second pair of zipper-merges
+	VTBL V28.B16, [V0.B16], V20.B16         \
+	VADD V20.D2, V2.D2, V2.D2               \
+	VTBL V28.B16, [V1.B16], V21.B16         \
+	VADD V21.D2, V3.D2, V3.D2               \
+	\
+	\ // EOR multiplication result in
+	VEOR V16.B16, V6.B16, V6.B16            \
+	VEOR V17.B16, V7.B16, V7.B16
+
+
+// func initializeArm64(state *[16]uint64, key []byte)
+TEXT ·initializeArm64(SB), 7, $0
+	MOVD state+0(FP), R0
+	MOVD key_base+8(FP), R1
+
+	VLD1 (R1), [V1.S4, V2.S4]
+
+	VREV64 V1.S4, V3.S4
+	VREV64 V2.S4, V4.S4
+
+	MOVD $·constants(SB), R3
+	VLD1 (R3), [V5.S4, V6.S4, V7.S4, V8.S4]
+	VEOR V5.B16, V1.B16, V1.B16
+	VEOR V6.B16, V2.B16, V2.B16
+	VEOR V7.B16, V3.B16, V3.B16
+	VEOR V8.B16, V4.B16, V4.B16
+
+	VST1.P [V1.D2, V2.D2, V3.D2, V4.D2], 64(R0)
+	VST1   [V5.D2, V6.D2, V7.D2, V8.D2], (R0)
+	RET
+
 
 TEXT ·updateArm64(SB), 7, $0
 	MOVD state+0(FP), R0
@@ -36,81 +139,188 @@ TEXT ·updateArm64(SB), 7, $0
 	//  v6 = mul1.lo
 	//  v7 = mul1.hi
 
-	// Load constants table pointer
-	MOVD $·constants(SB), R3
+	// Load zipper merge constants table pointer
+	MOVD $·zipperMerge(SB), R3
 
-	// and load constants into v28, v29, and v30
-	WORD $0x4c40607c // ld1    {v28.16b-v30.16b}, [x3]
+	// and load zipper merge constants into v28, v29, and v30
+	VLD1 (R3), [V28.B16, V29.B16, V30.B16]
 
-	WORD $0x4cdf2c00 // ld1   {v0.2d-v3.2d}, [x0], #64
-	WORD $0x4c402c04 // ld1   {v4.2d-v7.2d}, [x0]
-	SUBS $64, R0
+	VLD1.P 64(R0), [V0.D2, V1.D2, V2.D2, V3.D2]
+	VLD1   (R0), [V4.D2, V5.D2, V6.D2, V7.D2]
+	SUBS   $64, R0
 
 loop:
 	// Main loop
-	WORD $0x4cdfa83a // ld1   {v26.4s-v27.4s}, [x1], #32
+	VLD1.P 32(R1), [V26.S4, V27.S4]
 
-	// Add message
-	WORD $0x4efa8442 // add   v2.2d, v2.2d, v26.2d
-	WORD $0x4efb8463 // add   v3.2d, v3.2d, v27.2d
-
-	// v1 += mul0
-	WORD $0x4ee48442 // add   v2.2d, v2.2d, v4.2d
-	WORD $0x4ee58463 // add   v3.2d, v3.2d, v5.2d
-
-	// First pair of multiplies
-	WORD $0x4e1d200a // tbl    v10.16b,{v0.16b,v1.16b},v29.16b
-	WORD $0x4e1e204b // tbl    v11.16b,{v2.16b,v3.16b},v30.16b
-	WORD $0x2eaac16c // umull  v12.2d, v11.2s, v10.2s
-	WORD $0x6eaac16d // umull2 v13.2d, v11.4s, v10.4s
-
-	// v0 += mul1
-	WORD $0x4ee68400 // add   v0.2d, v0.2d, v6.2d
-	WORD $0x4ee78421 // add   v1.2d, v1.2d, v7.2d
-
-	// Second pair of multiplies
-	WORD $0x4e1d204f // tbl    v15.16b,{v2.16b,v3.16b},v29.16b
-	WORD $0x4e1e200e // tbl    v14.16b,{v0.16b,v1.16b},v30.16b
-
-	// EOR multiplication result in
-	WORD $0x6e2c1c84 // eor    v4.16b,v4.16b,v12.16b
-	WORD $0x6e2d1ca5 // eor    v5.16b,v5.16b,v13.16b
-
-	WORD $0x2eaec1f0 // umull  v16.2d, v15.2s, v14.2s
-	WORD $0x6eaec1f1 // umull2 v17.2d, v15.4s, v14.4s
-
-	// First pair of zipper-merges
-	WORD $0x4e1c0052 // tbl v18.16b,{v2.16b},v28.16b
-	WORD $0x4ef28400 // add v0.2d, v0.2d, v18.2d
-	WORD $0x4e1c0073 // tbl v19.16b,{v3.16b},v28.16b
-	WORD $0x4ef38421 // add v1.2d, v1.2d, v19.2d
-
-	// Second pair of zipper-merges
-	WORD $0x4e1c0014 // tbl v20.16b,{v0.16b},v28.16b
-	WORD $0x4ef48442 // add v2.2d, v2.2d, v20.2d
-	WORD $0x4e1c0035 // tbl v21.16b,{v1.16b},v28.16b
-	WORD $0x4ef58463 // add v3.2d, v3.2d, v21.2d
-
-	// EOR multiplication result in
-	WORD $0x6e301cc6 // eor    v6.16b,v6.16b,v16.16b
-	WORD $0x6e311ce7 // eor    v7.16b,v7.16b,v17.16b
+	UPDATE(V26, V27)
 
 	SUBS $32, R2
 	BPL  loop
 
 	// Store result
-	WORD $0x4c9f2c00 // st1    {v0.2d-v3.2d}, [x0], #64
-	WORD $0x4c002c04 // st1    {v4.2d-v7.2d}, [x0]
+	VST1.P [V0.D2, V1.D2, V2.D2, V3.D2], 64(R0)
+	VST1   [V4.D2, V5.D2, V6.D2, V7.D2], (R0)
 
 complete:
 	RET
 
-// Constants for TBL instructions
-DATA ·constants+0x0(SB)/8, $0x000f010e05020c03 // zipper merge constant
-DATA ·constants+0x8(SB)/8, $0x070806090d0a040b
-DATA ·constants+0x10(SB)/8, $0x0f0e0d0c07060504 // setup first register for multiply
-DATA ·constants+0x18(SB)/8, $0x1f1e1d1c17161514
-DATA ·constants+0x20(SB)/8, $0x0b0a090803020100 // setup second register for multiply
-DATA ·constants+0x28(SB)/8, $0x1b1a191813121110
 
-GLOBL ·constants(SB), 8, $48
+// func finalizeArm64(out []byte, state *[16]uint64)
+TEXT ·finalizeArm64(SB), 4, $0-32
+	MOVD state+24(FP), R0
+	MOVD out_base+0(FP), R1
+	MOVD out_len+8(FP), R2
+
+	// Load zipper merge constants table pointer
+	MOVD $·zipperMerge(SB), R3
+
+	// and load zipper merge constants into v28, v29, and v30
+	VLD1 (R3), [V28.B16, V29.B16, V30.B16]
+
+	VLD1.P 64(R0), [V0.D2, V1.D2, V2.D2, V3.D2]
+	VLD1   (R0), [V4.D2, V5.D2, V6.D2, V7.D2]
+	SUB    $64, R0
+
+	VREV64 V1.S4, V26.S4
+	VREV64 V0.S4, V27.S4
+	UPDATE(V26, V27)
+
+	VREV64 V1.S4, V26.S4
+	VREV64 V0.S4, V27.S4
+	UPDATE(V26, V27)
+
+	VREV64 V1.S4, V26.S4
+	VREV64 V0.S4, V27.S4
+	UPDATE(V26, V27)
+
+	VREV64 V1.S4, V26.S4
+	VREV64 V0.S4, V27.S4
+	UPDATE(V26, V27)
+
+	CMP  $8, R2
+	BEQ  skipUpdate // Just 4 rounds for 64-bit checksum
+
+	VREV64 V1.S4, V26.S4
+	VREV64 V0.S4, V27.S4
+	UPDATE(V26, V27)
+
+	VREV64 V1.S4, V26.S4
+	VREV64 V0.S4, V27.S4
+	UPDATE(V26, V27)
+
+	CMP  $16, R2
+	BEQ  skipUpdate // 6 rounds for 128-bit checksum
+
+	VREV64 V1.S4, V26.S4
+	VREV64 V0.S4, V27.S4
+	UPDATE(V26, V27)
+
+	VREV64 V1.S4, V26.S4
+	VREV64 V0.S4, V27.S4
+	UPDATE(V26, V27)
+
+	VREV64 V1.S4, V26.S4
+	VREV64 V0.S4, V27.S4
+	UPDATE(V26, V27)
+
+	VREV64 V1.S4, V26.S4
+	VREV64 V0.S4, V27.S4
+	UPDATE(V26, V27)
+
+skipUpdate:
+	// Store result
+	VST1.P [V0.D2, V1.D2, V2.D2, V3.D2], 64(R0)
+	VST1   [V4.D2, V5.D2, V6.D2, V7.D2], (R0)
+	SUB    $64, R0
+
+	CMP $8, R2
+	BEQ hash64
+	CMP $16, R2
+	BEQ hash128
+
+	// 256-bit checksum
+	MOVD 0*8(R0), R8
+	MOVD 1*8(R0), R9
+	MOVD 4*8(R0), R10
+	MOVD 5*8(R0), R11
+	MOVD 8*8(R0), R4
+	MOVD 9*8(R0), R5
+	MOVD 12*8(R0), R6
+	MOVD 13*8(R0), R7
+	ADD  R4, R8
+	ADD  R5, R9
+	ADD  R6, R10
+	ADD  R7, R11
+
+	REDUCE_MOD(R8, R9, R10, R11, R4, R5, R6, R7)
+	MOVD R6, 0(R1)
+	MOVD R7, 8(R1)
+
+	MOVD 2*8(R0), R8
+	MOVD 3*8(R0), R9
+	MOVD 6*8(R0), R10
+	MOVD 7*8(R0), R11
+	MOVD 10*8(R0), R4
+	MOVD 11*8(R0), R5
+	MOVD 14*8(R0), R6
+	MOVD 15*8(R0), R7
+	ADD  R4, R8
+	ADD  R5, R9
+	ADD  R6, R10
+	ADD  R7, R11
+
+	REDUCE_MOD(R8, R9, R10, R11, R4, R5, R6, R7)
+	MOVD R6, 16(R1)
+	MOVD R7, 24(R1)
+	RET
+
+hash128:
+	MOVD 0*8(R0), R8
+	MOVD 1*8(R0), R9
+	MOVD 6*8(R0), R10
+	MOVD 7*8(R0), R11
+	ADD R10, R8
+	ADD R11, R9
+	MOVD 8*8(R0), R10
+	MOVD 9*8(R0), R11
+	ADD R10, R8
+	ADD R11, R9
+	MOVD 14*8(R0), R10
+	MOVD 15*8(R0), R11
+	ADD R10, R8
+	ADD R11, R9
+	MOVD R8, 0(R1)
+	MOVD R9, 8(R1)
+	RET
+
+hash64:
+	MOVD 0*8(R0), R4
+	MOVD 4*8(R0), R5
+	MOVD 8*8(R0), R6
+	MOVD 12*8(R0), R7
+	ADD  R5, R4
+	ADD  R7, R6
+	ADD  R6, R4
+	MOVD R4, (R1)
+	RET
+
+
+DATA ·constants+0x00(SB)/8, $0xdbe6d5d5fe4cce2f
+DATA ·constants+0x08(SB)/8, $0xa4093822299f31d0
+DATA ·constants+0x10(SB)/8, $0x13198a2e03707344
+DATA ·constants+0x18(SB)/8, $0x243f6a8885a308d3
+DATA ·constants+0x20(SB)/8, $0x3bd39e10cb0ef593
+DATA ·constants+0x28(SB)/8, $0xc0acf169b5f18a8c
+DATA ·constants+0x30(SB)/8, $0xbe5466cf34e90c6c
+DATA ·constants+0x38(SB)/8, $0x452821e638d01377
+GLOBL ·constants(SB), 8, $64
+
+// Constants for TBL instructions
+DATA ·zipperMerge+0x0(SB)/8, $0x000f010e05020c03 // zipper merge constant
+DATA ·zipperMerge+0x8(SB)/8, $0x070806090d0a040b
+DATA ·zipperMerge+0x10(SB)/8, $0x0f0e0d0c07060504 // setup first register for multiply
+DATA ·zipperMerge+0x18(SB)/8, $0x1f1e1d1c17161514
+DATA ·zipperMerge+0x20(SB)/8, $0x0b0a090803020100 // setup second register for multiply
+DATA ·zipperMerge+0x28(SB)/8, $0x1b1a191813121110
+GLOBL ·zipperMerge(SB), 8, $48

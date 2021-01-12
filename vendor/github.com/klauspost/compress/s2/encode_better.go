@@ -44,7 +44,7 @@ func hash8(u uint64, h uint8) uint32 {
 // It also assumes that:
 //	len(dst) >= MaxEncodedLen(len(src)) &&
 // 	minNonLiteralBlockSize <= len(src) && len(src) <= maxBlockSize
-func encodeBlockBetter(dst, src []byte) (d int) {
+func encodeBlockBetterGo(dst, src []byte) (d int) {
 	// Initialize the hash tables.
 	const (
 		// Long hash matches.
@@ -68,7 +68,7 @@ func encodeBlockBetter(dst, src []byte) (d int) {
 	}
 
 	// Bail if we can't compress to at least this.
-	dstLimit := len(src) - len(src)>>5 - 5
+	dstLimit := len(src) - len(src)>>5 - 6
 
 	// nextEmit is where in src the next emitLiteral should start from.
 	nextEmit := 0
@@ -78,14 +78,15 @@ func encodeBlockBetter(dst, src []byte) (d int) {
 	s := 1
 	cv := load64(src, s)
 
-	// We search for a repeat at -1, but don't output repeats when nextEmit == 0
-	repeat := 1
+	// We initialize repeat to 0, so we never match on first attempt
+	repeat := 0
 
 	for {
 		candidateL := 0
+		nextS := 0
 		for {
 			// Next src position to check
-			nextS := s + (s-nextEmit)>>7 + 1
+			nextS = s + (s-nextEmit)>>7 + 1
 			if nextS > sLimit {
 				goto emitRemainder
 			}
@@ -98,7 +99,7 @@ func encodeBlockBetter(dst, src []byte) (d int) {
 
 			// Check repeat at offset checkRep.
 			const checkRep = 1
-			if uint32(cv>>(checkRep*8)) == load32(src, s-repeat+checkRep) {
+			if false && uint32(cv>>(checkRep*8)) == load32(src, s-repeat+checkRep) {
 				base := s + checkRep
 				// Extend back
 				for i := base - repeat; base > nextEmit && i > 0 && src[i-1] == src[base-1]; {
@@ -183,18 +184,22 @@ func encodeBlockBetter(dst, src []byte) (d int) {
 			candidateL += 8
 		}
 
-		if offset > 65535 && s-base <= 5 {
+		if offset > 65535 && s-base <= 5 && repeat != offset {
 			// Bail if the match is equal or worse to the encoding.
-			s = base + 3
+			s = nextS + 1
 			if s >= sLimit {
 				goto emitRemainder
 			}
 			cv = load64(src, s)
 			continue
 		}
-		repeat = offset
 		d += emitLiteral(dst[d:], src[nextEmit:base])
-		d += emitCopy(dst[d:], offset, s-base)
+		if repeat == offset {
+			d += emitRepeat(dst[d:], offset, s-base)
+		} else {
+			d += emitCopy(dst[d:], offset, s-base)
+			repeat = offset
+		}
 
 		nextEmit = s
 		if s >= sLimit {

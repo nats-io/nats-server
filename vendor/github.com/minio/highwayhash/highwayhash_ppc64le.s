@@ -1,5 +1,3 @@
-//+build !noasm !appengine
-
 //
 // Minio Cloud Storage, (C) 2018 Minio, Inc.
 //
@@ -15,6 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
+
+//+build !noasm,!appengine
 
 #include "textflag.h"
 

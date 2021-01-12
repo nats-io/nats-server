@@ -4829,6 +4829,140 @@ func TestJWTAccountImportsWithWildcardSupport(t *testing.T) {
 	})
 }
 
+func TestJWTAccountTokenImportMisuse(t *testing.T) {
+	sysKp, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	sysCreds := newUser(t, sysKp)
+	defer os.Remove(sysCreds)
+
+	aExpKp, aExpPub := createKey(t)
+	aExpClaim := jwt.NewAccountClaims(aExpPub)
+	aExpClaim.Name = "Export"
+	aExpClaim.Exports.Add(&jwt.Export{
+		Subject:  "$events.*.$in.*.>",
+		Type:     jwt.Stream,
+		TokenReq: true,
+	}, &jwt.Export{
+		Subject:  "foo",
+		Type:     jwt.Stream,
+		TokenReq: true,
+	})
+	aExpJwt := encodeClaim(t, aExpClaim, aExpPub)
+	aExpCreds := newUser(t, aExpKp)
+	defer os.Remove(aExpCreds)
+
+	createImportingAccountClaim := func(aImpKp nkeys.KeyPair, aExpPub string, ac *jwt.ActivationClaims) (string, string) {
+		t.Helper()
+		token, err := ac.Encode(aExpKp)
+		require_NoError(t, err)
+
+		aImpPub, err := aImpKp.PublicKey()
+		require_NoError(t, err)
+		aImpClaim := jwt.NewAccountClaims(aImpPub)
+		aImpClaim.Name = "Import"
+		aImpClaim.Imports.Add(&jwt.Import{
+			Subject: "$events.*.$in.*.>",
+			Type:    jwt.Stream,
+			Account: aExpPub,
+			Token:   token,
+		})
+		aImpJwt := encodeClaim(t, aImpClaim, aImpPub)
+		aImpCreds := newUser(t, aImpKp)
+		return aImpJwt, aImpCreds
+	}
+
+	testConnect := func(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds string) {
+		t.Helper()
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/A/" {
+				// Server startup
+				w.Write(nil)
+			} else if r.URL.Path == "/A/"+aExpPub {
+				w.Write([]byte(aExpJwt))
+			} else if r.URL.Path == "/A/"+aImpPub {
+				w.Write([]byte(aImpJwt))
+			} else {
+				t.Fatal("not expected")
+			}
+		}))
+		defer ts.Close()
+		cf := createConfFile(t, []byte(fmt.Sprintf(`
+			listen: -1
+			operator: %s
+			resolver: URL("%s/A/")
+		`, ojwt, ts.URL)))
+		defer os.Remove(cf)
+
+		s, opts := RunServerWithConfig(cf)
+		defer s.Shutdown()
+
+		ncImp, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port), nats.UserCredentials(aImpCreds))
+		require_Error(t, err) // misuse needs to result in an error
+		defer ncImp.Close()
+	}
+
+	testNatsResolver := func(aImpJwt string) {
+		t.Helper()
+		dirSrv := createDir(t, "srv")
+		defer os.RemoveAll(dirSrv)
+		cf := createConfFile(t, []byte(fmt.Sprintf(`
+			listen: -1
+			operator: %s
+			system_account: %s
+			resolver: {
+				type: full
+				dir: %s
+			}
+		`, ojwt, syspub, dirSrv)))
+
+		s, _ := RunServerWithConfig(cf)
+		defer s.Shutdown()
+
+		require_True(t, updateJwt(t, s.ClientURL(), sysCreds, sysJwt, 1) == 1)
+		require_True(t, updateJwt(t, s.ClientURL(), sysCreds, aExpJwt, 1) == 1)
+		require_True(t, updateJwt(t, s.ClientURL(), sysCreds, aImpJwt, 1) == 0) // assure this did not succeed
+	}
+
+	t.Run("wrong-account", func(t *testing.T) {
+		aImpKp, aImpPub := createKey(t)
+		ac := &jwt.ActivationClaims{}
+		_, ac.Subject = createKey(t) // on purpose issue this token for another account
+		ac.ImportSubject = "$events.*.$in.*.>"
+		ac.ImportType = jwt.Stream
+
+		aImpJwt, aImpCreds := createImportingAccountClaim(aImpKp, aExpPub, ac)
+		defer os.Remove(aImpCreds)
+		testConnect(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds)
+		testNatsResolver(aImpJwt)
+	})
+
+	t.Run("different-subject", func(t *testing.T) {
+		aImpKp, aImpPub := createKey(t)
+		ac := &jwt.ActivationClaims{}
+		ac.Subject = aImpPub
+		ac.ImportSubject = "foo" // on purpose use a subject from another export
+		ac.ImportType = jwt.Stream
+
+		aImpJwt, aImpCreds := createImportingAccountClaim(aImpKp, aExpPub, ac)
+		defer os.Remove(aImpCreds)
+		testConnect(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds)
+		testNatsResolver(aImpJwt)
+	})
+
+	t.Run("non-existing-subject", func(t *testing.T) {
+		aImpKp, aImpPub := createKey(t)
+		ac := &jwt.ActivationClaims{}
+		ac.Subject = aImpPub
+		ac.ImportSubject = "does-not-exist-or-from-different-export" // on purpose use a non exported subject
+		ac.ImportType = jwt.Stream
+
+		aImpJwt, aImpCreds := createImportingAccountClaim(aImpKp, aExpPub, ac)
+		defer os.Remove(aImpCreds)
+		testConnect(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds)
+		testNatsResolver(aImpJwt)
+	})
+}
+
 func TestJWTResponseThreshold(t *testing.T) {
 	respThresh := 20 * time.Millisecond
 	aExpKp, aExpPub := createKey(t)
