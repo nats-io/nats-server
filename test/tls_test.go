@@ -32,6 +32,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+var noOpErrHandler = func(_ *nats.Conn, _ *nats.Subscription, _ error) {}
+
 func TestTLSConnection(t *testing.T) {
 	srv, opts := RunServerWithConfig("./configs/tls.conf")
 	defer srv.Shutdown()
@@ -1497,7 +1499,7 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			`
 				port: -1
 				%s
-		
+
 				authorization {
 				  users = [
 				    { user = "DC=com, DC=example, CN=*.example.com, O=NATS, OU=NATS, L=Los Angeles, ST=CA, C=US" }
@@ -1516,7 +1518,7 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			`
 				port: -1
 				%s
-		
+
 				authorization {
 				  users = [
 				    { user = "CN=*.example.com,OU=NATS,O=NATS,L=Los Angeles,ST=CA,C=US,DC=example,DC=com" }
@@ -1659,6 +1661,7 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 			nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port),
 				test.certs,
 				nats.RootCAs("./configs/certs/rdns/ca.pem"),
+				nats.ErrorHandler(noOpErrHandler),
 			)
 			if test.err == nil && err != nil {
 				t.Errorf("Expected to connect, got %v", err)
@@ -1911,6 +1914,7 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 			nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port),
 				test.certs,
 				nats.RootCAs("./configs/certs/svid/ca.pem"),
+				nats.ErrorHandler(noOpErrHandler),
 			)
 			if test.err == nil && err != nil {
 				t.Errorf("Expected to connect, got %v", err)
