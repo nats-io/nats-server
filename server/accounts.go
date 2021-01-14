@@ -1736,17 +1736,13 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 			}
 		}
 	}
-
-	share := false
+	// Turn on sharing by default if importing from system services.
+	share := isSysAcc
 	if claim != nil {
 		share = claim.Share
 	}
-
 	si := &serviceImport{dest, claim, se, nil, from, to, tr, 0, rt, lat, nil, nil, usePub, false, false, share, false, false, nil}
 	a.imports.services[from] = si
-
-	// Turn on sharing by default if importing from system services.
-	si.share = isSysAcc
 	a.mu.Unlock()
 
 	if err := a.addServiceImportSub(si); err != nil {

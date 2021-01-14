@@ -4664,24 +4664,22 @@ func TestJWTHeader(t *testing.T) {
 			require_True(t, reqInfo["acc"] != nil)
 			require_True(t, reqInfo["rtt"] != nil)
 
-			// FIXME(dlc) - Do we no longer place start by default?
-			//require_True(t, reqInfo["start"] != nil)
+			// fields only set when shared
+			_, ok1 := reqInfo["lang"]
+			_, ok2 := reqInfo["ver"]
+			_, ok3 := reqInfo["host"]
+			_, ok4 := reqInfo["start"]
+			if !share {
+				ok1 = !ok1
+				ok2 = !ok2
+				ok3 = !ok3
+				ok4 = !ok4
+			}
+			require_True(t, ok1)
+			require_True(t, ok2)
+			require_True(t, ok3)
+			require_True(t, ok4)
 
-			// FIXME(dlc) - Changes here, double check these.
-			/*
-				// fields only set when shared
-				_, ok1 := reqInfo["lang"]
-				_, ok2 := reqInfo["ver"]
-				_, ok3 := reqInfo["ip"]
-				if !share {
-					ok1 = !ok1
-					ok2 = !ok2
-					ok3 = !ok3
-				}
-					require_True(t, ok1)
-					require_True(t, ok2)
-					require_True(t, ok3)
-			*/
 		}
 		require_True(t, len(resChan) == 0)
 	}
