@@ -349,7 +349,6 @@ func (s *Sublist) Insert(sub *subscription) error {
 			}
 		}
 		if n == nil {
-			isnew = true
 			n = newNode()
 			if lt > 1 {
 				l.nodes[t] = n
@@ -371,6 +370,7 @@ func (s *Sublist) Insert(sub *subscription) error {
 	}
 	if sub.queue == nil {
 		n.psubs[sub] = sub
+		isnew = len(n.psubs) == 1
 		if n.plist != nil {
 			n.plist = append(n.plist, sub)
 		} else if len(n.psubs) > plistMin {
@@ -383,6 +383,7 @@ func (s *Sublist) Insert(sub *subscription) error {
 	} else {
 		if n.qsubs == nil {
 			n.qsubs = make(map[string]map[*subscription]*subscription)
+			isnew = true
 		}
 		qname := string(sub.queue)
 		// This is a queue subscription
@@ -685,7 +686,7 @@ func (s *Sublist) remove(sub *subscription, shouldLock bool, doCacheUpdates bool
 		defer s.Unlock()
 	}
 
-	var sfwc, haswc, last bool
+	var sfwc, haswc bool
 	var n *node
 	l := s.root
 
@@ -722,7 +723,8 @@ func (s *Sublist) remove(sub *subscription, shouldLock bool, doCacheUpdates bool
 			l = nil
 		}
 	}
-	if !s.removeFromNode(n, sub) {
+	removed, last := s.removeFromNode(n, sub)
+	if !removed {
 		return ErrNotFound
 	}
 
@@ -732,7 +734,6 @@ func (s *Sublist) remove(sub *subscription, shouldLock bool, doCacheUpdates bool
 	for i := len(levels) - 1; i >= 0; i-- {
 		l, n, t := levels[i].l, levels[i].n, levels[i].t
 		if n.isEmpty() {
-			last = true
 			l.pruneNode(n, t)
 		}
 	}
@@ -820,9 +821,9 @@ func (l *level) numNodes() int {
 }
 
 // Remove the sub for the given node.
-func (s *Sublist) removeFromNode(n *node, sub *subscription) (found bool) {
+func (s *Sublist) removeFromNode(n *node, sub *subscription) (found, last bool) {
 	if n == nil {
-		return false
+		return false, true
 	}
 	if sub.queue == nil {
 		_, found = n.psubs[sub]
@@ -833,7 +834,7 @@ func (s *Sublist) removeFromNode(n *node, sub *subscription) (found bool) {
 			// to Match as needed.
 			n.plist = nil
 		}
-		return found
+		return found, len(n.psubs) == 0
 	}
 
 	// We have a queue group subscription here
@@ -842,8 +843,9 @@ func (s *Sublist) removeFromNode(n *node, sub *subscription) (found bool) {
 	delete(qsub, sub)
 	if len(qsub) == 0 {
 		delete(n.qsubs, string(sub.queue))
+		last = len(n.qsubs) == 0
 	}
-	return found
+	return found, last
 }
 
 // Count returns the number of subscriptions.
