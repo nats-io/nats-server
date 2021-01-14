@@ -567,7 +567,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 				return false
 			} else if scope != nil {
 				if err := scope.ValidateScopedSigner(juc); err != nil {
-					c.Debugf("User JWT is not valid")
+					c.Debugf("User JWT is not valid: %v", err)
 					return false
 				} else if uSc, ok := scope.(*jwt.UserScope); !ok {
 					c.Debugf("User JWT is not valid")

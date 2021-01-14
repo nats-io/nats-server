@@ -5035,6 +5035,7 @@ func TestJWScopedSigningKeys(t *testing.T) {
 
 	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
 	errChan := make(chan error, 1)
+	defer close(errChan)
 	awaitError := func(expected bool) {
 		t.Helper()
 		select {
@@ -5048,7 +5049,7 @@ func TestJWScopedSigningKeys(t *testing.T) {
 			}
 		}
 	}
-	errHdlr := nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
+	errHdlr := nats.ErrorHandler(func(conn *nats.Conn, s *nats.Subscription, err error) {
 		errChan <- err
 	})
 	if updateJwt(t, url, sysCreds, sysJwt, 1) != 1 {
@@ -5063,22 +5064,27 @@ func TestJWScopedSigningKeys(t *testing.T) {
 	t.Run("regular-signing-key", func(t *testing.T) {
 		nc := natsConnect(t, url, nats.UserCredentials(aNonScopedCreds), errHdlr)
 		defer nc.Close()
+		nc.Flush()
 		err := nc.Publish("denied", nil)
 		require_NoError(t, err)
+		nc.Flush()
 		awaitError(false)
 	})
-	t.Run("scoped-signing-key-1", func(t *testing.T) {
+	t.Run("scoped-signing-key-client-side", func(t *testing.T) {
 		nc := natsConnect(t, url, nats.UserCredentials(aScopedCreds), errHdlr)
 		defer nc.Close()
+		nc.Flush()
 		err := nc.Publish("too-long", []byte("way.too.long.for.payload.limit"))
-		require_NoError(t, err)
-		awaitError(true)
+		require_Error(t, err)
+		require_True(t, strings.Contains(err.Error(), ErrMaxPayload.Error()))
 	})
-	t.Run("scoped-signing-key-2", func(t *testing.T) {
+	t.Run("scoped-signing-key-server-side", func(t *testing.T) {
 		nc := natsConnect(t, url, nats.UserCredentials(aScopedCreds), errHdlr)
 		defer nc.Close()
+		nc.Flush()
 		err := nc.Publish("denied", nil)
 		require_NoError(t, err)
+		nc.Flush()
 		awaitError(true)
 	})
 	t.Run("scoped-signing-key-reload", func(t *testing.T) {
@@ -5087,6 +5093,11 @@ func TestJWScopedSigningKeys(t *testing.T) {
 		msgChan := make(chan *nats.Msg, 2)
 		defer close(msgChan)
 		nc := natsConnect(t, url, nats.UserCredentials(aScopedCreds), errHdlr,
+			nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
+				if err != nil {
+					errChan <- err
+				}
+			}),
 			nats.ReconnectHandler(func(conn *nats.Conn) {
 				reconChan <- struct{}{}
 			}),
@@ -5094,6 +5105,7 @@ func TestJWScopedSigningKeys(t *testing.T) {
 		defer nc.Close()
 		_, err := nc.ChanSubscribe("denied", msgChan)
 		require_NoError(t, err)
+		nc.Flush()
 		err = nc.Publish("denied", nil)
 		require_NoError(t, err)
 		awaitError(true)
@@ -5109,12 +5121,13 @@ func TestJWScopedSigningKeys(t *testing.T) {
 		// disconnect triggered by update
 		awaitError(true)
 		<-reconChan
-		if err := nc.Publish("denied", []byte("way.too.long.for.old.payload.limit")); err != nil {
-			t.Fatalf("Expected no error %v", err)
-		}
+		nc.Flush()
+		err = nc.Publish("denied", []byte("way.too.long.for.old.payload.limit"))
+		require_NoError(t, err)
 		awaitError(false)
 		msg := <-msgChan
 		require_Equal(t, string(msg.Data), "way.too.long.for.old.payload.limit")
 		require_Len(t, len(msgChan), 0)
 	})
+	require_Len(t, len(errChan), 0)
 }

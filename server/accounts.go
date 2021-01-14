@@ -2857,14 +2857,13 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	}
 	if len(a.signingKeys) != len(old.signingKeys) {
 		signersChanged = true
-	} else {
-		for k, scope := range a.signingKeys {
-			if oldScope, ok := old.signingKeys[k]; !ok {
-				signersChanged = true
-			} else if !reflect.DeepEqual(scope, oldScope) {
-				signersChanged = true
-				alteredScope[k] = struct{}{}
-			}
+	}
+	for k, scope := range a.signingKeys {
+		if oldScope, ok := old.signingKeys[k]; !ok {
+			signersChanged = true
+		} else if !reflect.DeepEqual(scope, oldScope) {
+			signersChanged = true
+			alteredScope[k] = struct{}{}
 		}
 	}
 	a.mu.Unlock()
