@@ -4571,7 +4571,7 @@ func newUserEx(t *testing.T, accKp nkeys.KeyPair, scoped bool, issuerAccount str
 	uclaim := newJWTTestUserClaims()
 	uclaim.Subject = upub
 	uclaim.SetScoped(scoped)
-	if issuerAccount != "" {
+	if issuerAccount != _EMPTY_ {
 		uclaim.IssuerAccount = issuerAccount
 	}
 	ujwt, err := uclaim.Encode(accKp)

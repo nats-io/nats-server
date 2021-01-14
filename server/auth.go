@@ -561,7 +561,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			return false
 		}
 		// this only executes IF there's an issuer on the Juc - otherwise the account is already vetted
-		if juc.IssuerAccount != "" {
+		if juc.IssuerAccount != _EMPTY_ {
 			if scope, ok := acc.hasIssuer(juc.Issuer); !ok {
 				c.Debugf("User JWT issuer is not known")
 				return false

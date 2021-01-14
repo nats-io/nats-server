@@ -2849,7 +2849,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	// update account signing keys
 	a.signingKeys = nil
 	if len(ac.SigningKeys) > 0 {
-		a.signingKeys = map[string]jwt.Scope{}
+		a.signingKeys = make(map[string]jwt.Scope, len(ac.SigningKeys))
 	}
 	signersChanged := false
 	for k, scope := range ac.SigningKeys {
@@ -3157,7 +3157,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			c.mu.Lock()
 			sk := c.user.SigningKey
 			c.mu.Unlock()
-			if sk == "" {
+			if sk == _EMPTY_ {
 				continue
 			}
 			if _, ok := alteredScope[sk]; ok {
