@@ -3632,6 +3632,8 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// Copy our pubArg and account
 	pacopy := c.pa
 	oacc := c.acc
+	// Change this so that we detect recursion
+	c.pa.psi = si
 
 	// Place our client info for the request in the message.
 	// This will survive going across routes, etc.
