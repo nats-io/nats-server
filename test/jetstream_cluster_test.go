@@ -811,8 +811,6 @@ func TestJetStreamClusterStreamNormalCatchup(t *testing.T) {
 	sl.Shutdown()
 	c.waitOnNewStreamLeader("$G", "TEST")
 
-	time.Sleep(50 * time.Millisecond)
-
 	// Send 10 more while one replica offline.
 	for i := toSend; i <= toSend*2; i++ {
 		msg := []byte(fmt.Sprintf("HELLO JSC-%d", i))

@@ -1335,8 +1335,8 @@ func (n *raft) runAsCandidate() {
 			} else {
 				n.Lock()
 				n.term = vresp.term
-				n.Unlock()
 				n.writeTermVote()
+				n.Unlock()
 				n.switchToFollower(noLeader)
 				return
 			}
