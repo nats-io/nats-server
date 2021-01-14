@@ -451,14 +451,22 @@ func TestJetStreamClusterConsumerState(t *testing.T) {
 		m.Ack()
 	}
 
-	ci, _ := sub.ConsumerInfo()
+	ci, err := sub.ConsumerInfo()
+	if err != nil {
+		t.Fatalf("Unexpected error getting consumer info: %v", err)
+	}
 	if ci.AckFloor.Consumer != 5 {
 		t.Fatalf("Expected ack floor of %d, got %d", 5, ci.AckFloor.Consumer)
 	}
+
 	c.consumerLeader("$G", "TEST", "dlc").Shutdown()
 	c.waitOnNewConsumerLeader("$G", "TEST", "dlc")
 
-	nci, _ := sub.ConsumerInfo()
+	nci, err := sub.ConsumerInfo()
+	if err != nil {
+		t.Fatalf("Unexpected error getting consumer info: %v", err)
+	}
+
 	if nci.Delivered != ci.Delivered {
 		t.Fatalf("Consumer delivered did not match after leader switch, wanted %+v, got %+v", ci.Delivered, nci.Delivered)
 	}

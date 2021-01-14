@@ -995,11 +995,11 @@ const (
 // Dynamically create a config with a tmp based directory (repeatable) and 75% of system memory.
 func (s *Server) dynJetStreamConfig(storeDir string, maxStore int64) *JetStreamConfig {
 	jsc := &JetStreamConfig{}
-	if storeDir != "" {
+	if storeDir != _EMPTY_ {
 		jsc.StoreDir = filepath.Join(storeDir, JetStreamStoreDir)
 	} else {
-		// Create one in temp directory, but make it consistent for restarts.
-		jsc.StoreDir = filepath.Join(os.TempDir(), JetStreamStoreDir)
+		// Create one in tmp directory, but make it consistent for restarts.
+		jsc.StoreDir = filepath.Join(os.TempDir(), "nats", JetStreamStoreDir)
 	}
 
 	if maxStore > 0 {

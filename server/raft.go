@@ -1790,8 +1790,9 @@ func (n *raft) handleVoteResponse(sub *subscription, c *client, _, reply string,
 }
 
 func (n *raft) processVoteRequest(vr *voteRequest) error {
+	n.RLock()
 	vresp := voteResponse{n.term, n.id, false}
-	var err error
+	n.RUnlock()
 
 	n.debug("Received a voteRequest %+v", vr)
 
@@ -1819,7 +1820,7 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 
 	n.sendReply(vr.reply, vresp.encode())
 
-	return err
+	return nil
 }
 
 func (n *raft) handleVoteRequest(sub *subscription, c *client, subject, reply string, msg []byte) {

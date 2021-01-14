@@ -4964,10 +4964,7 @@ func TestJWTQueuePermissions(t *testing.T) {
 					t.Fatalf("no error expected: %v", err)
 				}
 			} else {
-				if _, err := nc.
-        
-        
-        Subscribe("foo.bar", test.queue, func(msg *nats.Msg) {}); err != nil {
+				if _, err := nc.QueueSubscribe("foo.bar", test.queue, func(msg *nats.Msg) {}); err != nil {
 					t.Fatalf("no error expected: %v", err)
 				}
 			}

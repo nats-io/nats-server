@@ -1060,7 +1060,7 @@ func (js *jetStream) applyStreamEntries(mset *Stream, ce *CommittedEntry) (bool,
 
 func (js *jetStream) processStreamLeaderChange(mset *Stream, sa *streamAssignment, isLeader bool) {
 	if isLeader {
-		js.srv.Noticef("JetStream cluster new stream leader for %q - %q! %v", sa.Client.Account, mset.Name())
+		js.srv.Noticef("JetStream cluster new stream leader for '%s > %s'", sa.Client.Account, mset.Name())
 	}
 
 	mset.setLeader(isLeader)
@@ -1637,7 +1637,7 @@ func decodeDeliveredUpdate(buf []byte) (dseq, sseq, dc uint64, ts int64, err err
 
 func (js *jetStream) processConsumerLeaderChange(o *Consumer, ca *consumerAssignment, isLeader bool) {
 	if isLeader {
-		js.srv.Noticef("JetStream cluster new consumer leader for %q - %q - %q", ca.Client.Account, ca.Stream, ca.Name)
+		js.srv.Noticef("JetStream cluster new consumer leader for '%s > %s > %s'", ca.Client.Account, ca.Stream, ca.Name)
 	}
 
 	o.setLeader(isLeader)
