@@ -907,6 +907,13 @@ func (mset *Stream) raftNode() RaftNode {
 
 func (js *jetStream) monitorStreamRaftGroup(mset *Stream, sa *streamAssignment) {
 	s, cc, n := js.server(), js.cluster, mset.raftNode()
+	defer s.grWG.Done()
+
+	if n == nil {
+		s.Warnf("No RAFT group for stream")
+		return
+	}
+
 	qch, lch, ach := n.QuitC(), n.LeadChangeC(), n.ApplyC()
 
 	const (
@@ -914,8 +921,6 @@ func (js *jetStream) monitorStreamRaftGroup(mset *Stream, sa *streamAssignment) 
 		compactSizeLimit = 64 * 1024 * 1024
 		compactMinWait   = 5 * time.Second
 	)
-
-	defer s.grWG.Done()
 
 	s.Debugf("Starting consumer monitor for '%s - %s", sa.Client.Account, sa.Config.Name)
 	defer s.Debugf("Exiting consumer monitor for '%s - %s'", sa.Client.Account, sa.Config.Name)
