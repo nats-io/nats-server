@@ -182,8 +182,20 @@ var (
 	// ErrJetStreamStreamNotFound is returned when a stream can not be found.
 	ErrJetStreamStreamNotFound = errors.New("stream not found")
 
+	// ErrJetStreamStreamAlreadyUsed is returned when a stream name has already been taken.
+	ErrJetStreamStreamAlreadyUsed = errors.New("stream name already in use")
+
 	// ErrJetStreamNotEnabledForAccount is returned JetStream is not enabled for this account.
 	ErrJetStreamNotEnabledForAccount = errors.New("jetstream not enabled for account")
+
+	// ErrJetStreamNotLeader is returned when issuing commands to a cluster on the wrong server.
+	ErrJetStreamNotLeader = errors.New("jetstream cluster can not handle request")
+
+	// ErrJetStreamNotAssigned is returned when the resource (stream or consumer) is not assigned.
+	ErrJetStreamNotAssigned = errors.New("jetstream cluster not assigned to this server")
+
+	// ErrJetStreamNotClustered is returned when a call requires clustering and we are not.
+	ErrJetStreamNotClustered = errors.New("jetstream not in clustered mode")
 )
 
 // configErr is a configuration error.

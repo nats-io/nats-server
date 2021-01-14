@@ -88,6 +88,13 @@ func (s *Server) ConfigureLogger() {
 	s.SetLoggerV2(log, opts.Debug, opts.Trace, opts.TraceVerbose)
 }
 
+// Returns our current logger.
+func (s *Server) Logger() Logger {
+	s.logging.Lock()
+	defer s.logging.Unlock()
+	return s.logging.logger
+}
+
 // SetLogger sets the logger of the server
 func (s *Server) SetLogger(logger Logger, debugFlag, traceFlag bool) {
 	s.SetLoggerV2(logger, debugFlag, traceFlag, false)

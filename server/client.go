@@ -1,4 +1,4 @@
-// Copyright 2012-2020 The NATS Authors
+// Copyright 2012-2021 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -2091,6 +2091,14 @@ func (c *client) processPong() {
 	}
 }
 
+// Will return the parts from the raw wire msg.
+func (c *client) msgParts(data []byte) (hdr []byte, msg []byte) {
+	if c != nil && c.pa.hdr > 0 {
+		return data[:c.pa.hdr], data[c.pa.hdr:]
+	}
+	return nil, data
+}
+
 // Header pubs take form HPUB <subject> [reply] <hdr_len> <total_len>\r\n
 func (c *client) processHeaderPub(arg []byte) error {
 	if !c.headers {
@@ -3531,6 +3539,35 @@ func (c *client) setupResponseServiceImport(acc *Account, si *serviceImport, tra
 	return rsi
 }
 
+// This will set a header for the message.
+// Lock does not need to be held but this should only be called
+// from the inbound go routine. We will update the pubArgs.
+func (c *client) setHeader(key, value string, msg []byte) []byte {
+	const hdrLine = "NATS/1.0\r\n"
+	var bb bytes.Buffer
+	var omi int
+	// Write original header if present.
+	if c.pa.hdr > LEN_CR_LF {
+		omi = c.pa.hdr
+		bb.Write(msg[:c.pa.hdr-LEN_CR_LF])
+	} else {
+		bb.WriteString(hdrLine)
+	}
+	http.Header{key: []string{value}}.Write(&bb)
+	bb.WriteString(CR_LF)
+	nhdr := bb.Len()
+	// Put the original message back.
+	bb.Write(msg[omi:])
+	nsize := bb.Len() - LEN_CR_LF
+	// Update pubArgs
+	// If others will use this later we need to save and restore original.
+	c.pa.hdr = nhdr
+	c.pa.size = nsize
+	c.pa.hdb = []byte(strconv.Itoa(nhdr))
+	c.pa.szb = []byte(strconv.Itoa(nsize))
+	return bb.Bytes()
+}
+
 // processServiceImport is an internal callback when a subscription matches an imported service
 // from another account. This includes response mappings as well.
 func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byte) {
@@ -3587,22 +3624,35 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	} else if si.usePub {
 		to = string(c.pa.subject)
 	}
-
 	// Now check to see if this account has mappings that could affect the service import.
 	// Can't use non-locked trick like in processInboundClientMsg, so just call into selectMappedSubject
 	// so we only lock once.
 	to, _ = si.acc.selectMappedSubject(to)
 
-	// Save off some of our state.
-	oreply, oacc, opsi := c.pa.reply, c.acc, c.pa.psi
-	c.pa.reply = nrr
-	c.pa.psi = si
+	// Copy our pubArg and account
+	pacopy := c.pa
+	oacc := c.acc
 
-	if !si.isSysAcc {
-		c.mu.Lock()
-		c.acc = si.acc
-		c.mu.Unlock()
+	// Place our client info for the request in the message.
+	// This will survive going across routes, etc.
+	if c.pa.proxy == nil && !si.response {
+		if ci := c.getClientInfo(si.share); ci != nil {
+			if b, _ := json.Marshal(ci); b != nil {
+				msg = c.setHeader(ClientInfoHdr, string(b), msg)
+			}
+		}
 	}
+
+	// Set our reply.
+	c.pa.reply = nrr
+	// For processing properly across routes, etc.
+	if c.kind == CLIENT || c.kind == LEAF {
+		c.pa.proxy = c.acc
+	}
+	c.mu.Lock()
+	c.acc = si.acc
+	c.mu.Unlock()
+
 	// FIXME(dlc) - Do L1 cache trick like normal client?
 	rr := si.acc.sl.Match(to)
 
@@ -3637,14 +3687,10 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 
 	// Put what was there back now.
 	c.in.rts = orts
-	c.pa.reply = oreply
-	c.pa.psi = opsi
-
-	if !si.isSysAcc {
-		c.mu.Lock()
-		c.acc = oacc
-		c.mu.Unlock()
-	}
+	c.pa = pacopy
+	c.mu.Lock()
+	c.acc = oacc
+	c.mu.Unlock()
 
 	// Determine if we should remove this service import. This is for response service imports.
 	// We will remove if we did not deliver, or if we are a response service import and we are
@@ -4577,31 +4623,36 @@ func (c *client) pruneClosedSubFromPerAccountCache() {
 }
 
 // Grabs the information for this client.
-func (c *client) getClientInfo(detailed bool) LatencyClient {
-	var lc LatencyClient
-	if c == nil || c.kind != CLIENT {
-		return lc
+func (c *client) getClientInfo(detailed bool) *ClientInfo {
+	if c == nil || (c.kind != CLIENT && c.kind != LEAF) {
+		return nil
 	}
 	// Server name. Defaults to server ID if not set explicitly.
-	sn := c.srv.Name()
+	var sn string
+	if c.kind == LEAF {
+		sn = c.leaf.remoteServer
+	} else {
+		sn = c.srv.Name()
+	}
 
 	c.mu.Lock()
-	// Defaults for all are RTT and Account.
-	lc.Account = accForClient(c)
-	lc.RTT = c.rtt
-	// Detailed is opt in.
+	var ci ClientInfo
+	// RTT and Account are always added.
+	ci.Account = accForClient(c)
+	ci.RTT = c.rtt
+	// Detailed signals additional opt in.
 	if detailed {
-		lc.Start = c.start.UTC()
-		lc.IP = c.host
-		lc.CID = c.cid
-		lc.Name = c.opts.Name
-		lc.User = c.getRawAuthUser()
-		lc.Lang = c.opts.Lang
-		lc.Version = c.opts.Version
-		lc.Server = sn
+		ci.Start = &c.start
+		ci.Host = c.host
+		ci.ID = c.cid
+		ci.Name = c.opts.Name
+		ci.User = c.getRawAuthUser()
+		ci.Lang = c.opts.Lang
+		ci.Version = c.opts.Version
+		ci.Server = sn
 	}
 	c.mu.Unlock()
-	return lc
+	return &ci
 }
 
 // getRAwAuthUser returns the raw auth user for the client.

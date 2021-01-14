@@ -731,7 +731,7 @@ func TestMQTTRequiresJSEnabled(t *testing.T) {
 	o.Accounts = []*Account{acc}
 	o.Users = []*User{&User{Username: "mqtt", Account: acc}}
 	s := testMQTTRunServer(t, o)
-	defer s.Shutdown()
+	defer testMQTTShutdownServer(s)
 
 	addr := fmt.Sprintf("%s:%d", o.MQTT.Host, o.MQTT.Port)
 	c, err := net.Dial("tcp", addr)
@@ -3739,7 +3739,7 @@ func TestMQTTMaxAckPendingForMultipleSubs(t *testing.T) {
 	o := testMQTTDefaultOptions()
 	o.MQTT.MaxAckPending = 1
 	s := testMQTTRunServer(t, o)
-	defer s.Shutdown()
+	defer testMQTTShutdownServer(s)
 
 	cisub := &mqttConnInfo{clientID: "sub", cleanSess: false}
 	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
@@ -3784,7 +3784,7 @@ func TestMQTTConfigReload(t *testing.T) {
 	defer os.Remove(conf)
 
 	s, o := RunServerWithConfig(conf)
-	defer s.Shutdown()
+	defer testMQTTShutdownServer(s)
 
 	if val := o.MQTT.AckWait; val != 5*time.Second {
 		t.Fatalf("Invalid ackwait: %v", val)
@@ -3820,11 +3820,11 @@ func TestMQTTConfigReload(t *testing.T) {
 	}
 	c.Close()
 	cp.Close()
-	s.Shutdown()
+	testMQTTShutdownServer(s)
 
 	changeCurrentConfigContentWithNewContent(t, conf, []byte(fmt.Sprintf(template, `"30s"`, `1`)))
 	s, o = RunServerWithConfig(conf)
-	defer s.Shutdown()
+	defer testMQTTShutdownServer(s)
 
 	c, r = testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
 	defer c.Close()
@@ -3856,7 +3856,7 @@ func TestMQTTConfigReload(t *testing.T) {
 func TestMQTTStreamInfoReturnsNonEmptySubject(t *testing.T) {
 	o := testMQTTDefaultOptions()
 	s := testMQTTRunServer(t, o)
-	defer s.Shutdown()
+	defer testMQTTShutdownServer(s)
 
 	cisub := &mqttConnInfo{clientID: "sub", cleanSess: false}
 	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)

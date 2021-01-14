@@ -75,6 +75,7 @@ type route struct {
 	url          *url.URL
 	authRequired bool
 	tlsRequired  bool
+	jetstream    bool
 	connectURLs  []string
 	wsConnURLs   []string
 	replySubs    map[*subscription]*time.Timer
@@ -581,8 +582,11 @@ func (c *client) processRouteInfo(info *Info) {
 
 	// Check if remote has same server name than this server.
 	if !c.route.didSolicit && info.Name == srvName {
-		// For now simply report as a warning.
-		c.Warnf("Remote server has a duplicate name: %q", info.Name)
+		c.mu.Unlock()
+		// This is now an error and we close the connection. We need unique names for JetStream clustering.
+		c.Errorf("Remote server has a duplicate name: %q", info.Name)
+		c.closeConnection(DuplicateRoute)
+		return
 	}
 
 	// Mark that the INFO protocol has been received, so we can detect updates.
@@ -601,13 +605,14 @@ func (c *client) processRouteInfo(info *Info) {
 	c.route.gatewayURL = info.GatewayURL
 	c.route.remoteName = info.Name
 	c.route.lnoc = info.LNOC
+	c.route.jetstream = info.JetStream
 
 	// When sent through route INFO, if the field is set, it should be of size 1.
 	if len(info.LeafNodeURLs) == 1 {
 		c.route.leafnodeURL = info.LeafNodeURLs[0]
 	}
 	// Compute the hash of this route based on remoteID
-	c.route.hash = string(getHash(info.ID))
+	c.route.hash = string(getHash(info.Name))
 
 	// Copy over permissions as well.
 	c.opts.Import = info.Import
@@ -1714,6 +1719,7 @@ func (s *Server) startRouteAcceptLoop() {
 		TLSRequired:  tlsReq,
 		TLSVerify:    tlsReq,
 		MaxPayload:   s.info.MaxPayload,
+		JetStream:    s.info.JetStream,
 		Proto:        proto,
 		GatewayURL:   s.getGatewayURL(),
 		Headers:      s.supportsHeaders(),

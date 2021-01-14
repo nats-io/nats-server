@@ -1,4 +1,4 @@
-// Copyright 2019-2020 The NATS Authors
+// Copyright 2019-2021 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -27,6 +27,7 @@ type memStore struct {
 	cfg       StreamConfig
 	state     StreamState
 	msgs      map[uint64]*storedMsg
+	dmap      map[uint64]struct{}
 	scb       StorageUpdateHandler
 	ageChk    *time.Timer
 	consumers int
@@ -47,7 +48,7 @@ func newMemStore(cfg *StreamConfig) (*memStore, error) {
 	if cfg.Storage != MemoryStorage {
 		return nil, fmt.Errorf("memStore requires memory storage type in config")
 	}
-	return &memStore{msgs: make(map[uint64]*storedMsg), cfg: *cfg}, nil
+	return &memStore{msgs: make(map[uint64]*storedMsg), dmap: make(map[uint64]struct{}), cfg: *cfg}, nil
 }
 
 func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
@@ -79,30 +80,28 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 	return nil
 }
 
-// Store stores a message.
-func (ms *memStore) StoreMsg(subj string, hdr, msg []byte) (uint64, int64, error) {
-	ms.mu.Lock()
-
+// Stores a raw message with expected sequence number and timestamp.
+// Lock should be held.
+func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int64) error {
 	// Check if we are discarding new messages when we reach the limit.
 	if ms.cfg.Discard == DiscardNew {
 		if ms.cfg.MaxMsgs > 0 && ms.state.Msgs >= uint64(ms.cfg.MaxMsgs) {
-			ms.mu.Unlock()
-			return 0, 0, ErrMaxMsgs
+			return ErrMaxMsgs
 		}
 		if ms.cfg.MaxBytes > 0 && ms.state.Bytes+uint64(len(msg)) >= uint64(ms.cfg.MaxBytes) {
-			ms.mu.Unlock()
-			return 0, 0, ErrMaxBytes
+			return ErrMaxBytes
 		}
 	}
 
-	// Grab time.
-	now := time.Now()
-	ts := now.UnixNano()
+	if seq != ms.state.LastSeq+1 {
+		return ErrSequenceMismatch
+	}
 
-	seq := ms.state.LastSeq + 1
+	// Adjust first if needed.
+	now := time.Unix(0, ts).UTC()
 	if ms.state.Msgs == 0 {
 		ms.state.FirstSeq = seq
-		ms.state.FirstTime = now.UTC()
+		ms.state.FirstTime = now
 	}
 
 	// Make copies - https://github.com/go101/go101/wiki
@@ -114,12 +113,11 @@ func (ms *memStore) StoreMsg(subj string, hdr, msg []byte) (uint64, int64, error
 		hdr = append(hdr[:0:0], hdr...)
 	}
 
-	startBytes := int64(ms.state.Bytes)
 	ms.msgs[seq] = &storedMsg{subj, hdr, msg, seq, ts}
 	ms.state.Msgs++
 	ms.state.Bytes += memStoreMsgSize(subj, hdr, msg)
 	ms.state.LastSeq = seq
-	ms.state.LastTime = now.UTC()
+	ms.state.LastTime = now
 
 	// Limits checks and enforcement.
 	ms.enforceMsgLimit()
@@ -129,15 +127,39 @@ func (ms *memStore) StoreMsg(subj string, hdr, msg []byte) (uint64, int64, error
 	if ms.ageChk == nil && ms.cfg.MaxAge != 0 {
 		ms.startAgeChk()
 	}
+
+	return nil
+}
+
+// StoreRawMsg stores a raw message with expected sequence number and timestamp.
+func (ms *memStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts int64) error {
+	ms.mu.Lock()
+	err := ms.storeRawMsg(subj, hdr, msg, seq, ts)
 	cb := ms.scb
-	stopBytes := int64(ms.state.Bytes)
 	ms.mu.Unlock()
 
-	if cb != nil {
-		cb(1, stopBytes-startBytes, seq, subj)
+	if err == nil && cb != nil {
+		cb(1, int64(memStoreMsgSize(subj, hdr, msg)), seq, subj)
 	}
 
-	return seq, ts, nil
+	return err
+}
+
+// Store stores a message.
+func (ms *memStore) StoreMsg(subj string, hdr, msg []byte) (uint64, int64, error) {
+	ms.mu.Lock()
+	seq, ts := ms.state.LastSeq+1, time.Now().UnixNano()
+	err := ms.storeRawMsg(subj, hdr, msg, seq, ts)
+	cb := ms.scb
+	ms.mu.Unlock()
+
+	if err != nil {
+		seq, ts = 0, 0
+	} else if cb != nil {
+		cb(1, int64(memStoreMsgSize(subj, hdr, msg)), seq, subj)
+	}
+
+	return seq, ts, err
 }
 
 // SkipMsg will use the next sequence number but not store anything.
@@ -264,6 +286,7 @@ func (ms *memStore) Purge() (uint64, error) {
 	ms.state.Bytes = 0
 	ms.state.Msgs = 0
 	ms.msgs = make(map[uint64]*storedMsg)
+	ms.dmap = make(map[uint64]struct{})
 	ms.mu.Unlock()
 
 	if cb != nil {
@@ -280,29 +303,43 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 	if seq == 0 {
 		return ms.Purge()
 	}
-	ms.mu.Lock()
-	sm, ok := ms.msgs[seq]
-	if !ok {
-		ms.mu.Unlock()
-		return 0, ErrStoreMsgNotFound
-	}
-	ms.state.FirstSeq = seq
-	ms.state.FirstTime = time.Unix(0, sm.ts).UTC()
 
 	var purged, bytes uint64
-	for seq := seq - 1; seq > 0; seq-- {
-		sm := ms.msgs[seq]
-		if sm == nil {
-			continue
-		}
-		bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
-		purged++
-		delete(ms.msgs, seq)
-	}
-	ms.state.Msgs -= purged
-	ms.state.Bytes -= bytes
 
+	ms.mu.Lock()
 	cb := ms.scb
+	if seq <= ms.state.LastSeq {
+		sm, ok := ms.msgs[seq]
+		if !ok {
+			ms.mu.Unlock()
+			return 0, ErrStoreMsgNotFound
+		}
+		ms.state.FirstSeq = seq
+		ms.state.FirstTime = time.Unix(0, sm.ts).UTC()
+
+		for seq := seq - 1; seq > 0; seq-- {
+			if sm := ms.msgs[seq]; sm != nil {
+				bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
+				purged++
+				delete(ms.msgs, seq)
+			} else {
+				delete(ms.dmap, seq)
+			}
+		}
+		ms.state.Msgs -= purged
+		ms.state.Bytes -= bytes
+	} else {
+		// We are compacting past the end of our range. Do purge and set sequences correctly
+		// such that the next message placed will have seq.
+		purged = uint64(len(ms.msgs))
+		bytes = ms.state.Bytes
+		ms.state.Bytes = 0
+		ms.state.Msgs = 0
+		ms.state.FirstSeq = seq
+		ms.state.FirstTime = time.Time{}
+		ms.state.LastSeq = seq - 1
+		ms.msgs = make(map[uint64]*storedMsg)
+	}
 	ms.mu.Unlock()
 
 	if cb != nil {
@@ -310,6 +347,42 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 	}
 
 	return purged, nil
+}
+
+// Truncate will truncate a stream store up to and including seq. Sequence needs to be valid.
+func (ms *memStore) Truncate(seq uint64) error {
+	var purged, bytes uint64
+
+	ms.mu.Lock()
+	lsm, ok := ms.msgs[seq]
+	if !ok {
+		ms.mu.Unlock()
+		return ErrInvalidSequence
+	}
+
+	for i := ms.state.LastSeq; i > seq; i-- {
+		if sm := ms.msgs[i]; sm != nil {
+			purged++
+			bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
+			delete(ms.msgs, seq)
+		} else {
+			delete(ms.dmap, i)
+		}
+	}
+	// Reset last.
+	ms.state.LastSeq = lsm.seq
+	ms.state.LastTime = time.Unix(0, lsm.ts).UTC()
+	// Update msgs and bytes.
+	ms.state.Msgs -= purged
+	ms.state.Bytes -= bytes
+	cb := ms.scb
+	ms.mu.Unlock()
+
+	if cb != nil {
+		cb(-int64(purged), -int64(bytes), 0, _EMPTY_)
+	}
+
+	return nil
 }
 
 func (ms *memStore) deleteFirstMsgOrPanic() {
@@ -360,11 +433,14 @@ func (ms *memStore) EraseMsg(seq uint64) (bool, error) {
 // Lock should be held.
 func (ms *memStore) updateFirstSeq(seq uint64) {
 	if seq != ms.state.FirstSeq {
+		// Interior delete.
+		ms.dmap[seq] = struct{}{}
 		return
 	}
 	var nsm *storedMsg
 	var ok bool
 	for nseq := ms.state.FirstSeq + 1; nseq <= ms.state.LastSeq; nseq++ {
+		delete(ms.dmap, nseq)
 		if nsm, ok = ms.msgs[nseq]; ok {
 			break
 		}
@@ -376,6 +452,7 @@ func (ms *memStore) updateFirstSeq(seq uint64) {
 		// Like purge.
 		ms.state.FirstSeq = ms.state.LastSeq + 1
 		ms.state.FirstTime = time.Time{}
+		ms.dmap = make(map[uint64]struct{})
 	}
 }
 
@@ -408,10 +485,8 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 	}
 
 	if ms.scb != nil {
-		ms.mu.Unlock()
 		delta := int64(ss)
 		ms.scb(-1, -delta, seq, sm.subj)
-		ms.mu.Lock()
 	}
 
 	return ok
@@ -421,7 +496,16 @@ func (ms *memStore) State() StreamState {
 	ms.mu.RLock()
 	state := ms.state
 	state.Consumers = ms.consumers
+	state.Deleted = nil
+	for seq := range ms.dmap {
+		state.Deleted = append(state.Deleted, seq)
+	}
 	ms.mu.RUnlock()
+	if len(state.Deleted) > 0 {
+		sort.Slice(state.Deleted, func(i, j int) bool {
+			return state.Deleted[i] < state.Deleted[j]
+		})
+	}
 	return state
 }
 

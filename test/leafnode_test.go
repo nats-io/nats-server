@@ -621,6 +621,7 @@ type cluster struct {
 	servers []*server.Server
 	opts    []*server.Options
 	name    string
+	t       *testing.T
 }
 
 func testDefaultClusterOptionsForLeafNodes() *server.Options {
@@ -635,13 +636,27 @@ func testDefaultClusterOptionsForLeafNodes() *server.Options {
 	return &o
 }
 
-func shutdownCluster(c *cluster) {
+func (c *cluster) shutdown() {
 	if c == nil {
 		return
 	}
-	for _, s := range c.servers {
+	for i, s := range c.servers {
+		if cf := c.opts[i].ConfigFile; cf != "" {
+			os.RemoveAll(cf)
+		}
+		if sd := s.StoreDir(); sd != "" {
+			os.RemoveAll(sd)
+		}
 		s.Shutdown()
 	}
+}
+
+func shutdownCluster(c *cluster) {
+	c.shutdown()
+}
+
+func (c *cluster) randomServer() *server.Server {
+	return c.servers[rand.Intn(len(c.servers))]
 }
 
 func (c *cluster) totalSubs() int {
@@ -748,7 +763,7 @@ func createClusterEx(t *testing.T, doAccounts bool, gwSolicit time.Duration, wai
 	s := RunServer(o)
 	bindGlobal(s)
 
-	c := &cluster{servers: make([]*server.Server, 0, 3), opts: make([]*server.Options, 0, 3), name: clusterName}
+	c := &cluster{servers: make([]*server.Server, 0, numServers), opts: make([]*server.Options, 0, numServers), name: clusterName}
 	c.servers = append(c.servers, s)
 	c.opts = append(c.opts, o)
 
@@ -782,7 +797,7 @@ func createClusterEx(t *testing.T, doAccounts bool, gwSolicit time.Duration, wai
 			}
 		}
 	}
-
+	c.t = t
 	return c
 }
 
