@@ -811,10 +811,12 @@ func TestJetStreamClusterStreamNormalCatchup(t *testing.T) {
 	sl.Shutdown()
 	c.waitOnNewStreamLeader("$G", "TEST")
 
+	time.Sleep(50 * time.Millisecond)
+
 	// Send 10 more while one replica offline.
 	for i := toSend; i <= toSend*2; i++ {
 		msg := []byte(fmt.Sprintf("HELLO JSC-%d", i))
-		if _, err = js.Publish("foo", msg); err != nil {
+		if _, err = js.Publish("foo", msg, nats.MaxWait(5*time.Second)); err != nil {
 			t.Fatalf("Unexpected publish error: %v", err)
 		}
 	}
@@ -1174,9 +1176,10 @@ func (c *cluster) waitOnNewConsumerLeader(account, stream, consumer string) {
 	expires := time.Now().Add(5 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.consumerLeader(account, stream, consumer); leader != nil {
+			time.Sleep(25 * time.Millisecond)
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	c.t.Fatalf("Expected a consumer leader for %q %q %q, got none", account, stream, consumer)
 }
@@ -1196,6 +1199,7 @@ func (c *cluster) waitOnNewStreamLeader(account, stream string) {
 	expires := time.Now().Add(5 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.streamLeader(account, stream); leader != nil {
+			time.Sleep(25 * time.Millisecond)
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -1218,6 +1222,7 @@ func (c *cluster) waitOnStreamCurrent(s *server.Server, account, stream string) 
 	expires := time.Now().Add(5 * time.Second)
 	for time.Now().Before(expires) {
 		if s.JetStreamIsStreamCurrent(account, stream) {
+			time.Sleep(25 * time.Millisecond)
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -1230,6 +1235,7 @@ func (c *cluster) waitOnServerCurrent(s *server.Server) {
 	expires := time.Now().Add(5 * time.Second)
 	for time.Now().Before(expires) {
 		if s.JetStreamIsCurrent() {
+			time.Sleep(25 * time.Millisecond)
 			return
 		}
 		time.Sleep(50 * time.Millisecond)

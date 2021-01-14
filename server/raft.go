@@ -1414,8 +1414,8 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		n.vote = noVote
 		n.writeTermVote()
 		if n.state != Follower {
-			n.Unlock()
 			n.debug("Term higher than ours and we are not a follower: %v, stepping down to %q", n.state, ae.leader)
+			n.Unlock()
 			n.stepdown <- ae.leader
 			return
 		}

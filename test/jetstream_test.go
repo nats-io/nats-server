@@ -7853,7 +7853,7 @@ func TestJetStreamUpdateStream(t *testing.T) {
 				t.Fatalf("Unexpected error %v", err)
 			}
 			// Just wait a bit for expiration.
-			time.Sleep(5 * time.Millisecond)
+			time.Sleep(25 * time.Millisecond)
 			if mset.Config().MaxAge != cfg.MaxAge {
 				t.Fatalf("Expected the change to take effect, %d vs %d", mset.Config().MaxAge, cfg.MaxAge)
 			}

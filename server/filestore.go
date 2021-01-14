@@ -2537,7 +2537,10 @@ func (fs *fileStore) Purge() (uint64, error) {
 	os.MkdirAll(mdir, 0755)
 
 	// Make sure we have a lmb to write to.
-	fs.newMsgBlockForWrite()
+	if _, err := fs.newMsgBlockForWrite(); err != nil {
+		fs.mu.Unlock()
+		return purged, err
+	}
 
 	fs.lmb.first.seq = fs.state.FirstSeq
 	fs.lmb.last.seq = fs.state.LastSeq

@@ -1545,13 +1545,13 @@ func (mset *Stream) LookupConsumer(name string) *Consumer {
 // State will return the current state for this stream.
 func (mset *Stream) State() StreamState {
 	mset.mu.RLock()
-	c := mset.client
+	c, store := mset.client, mset.store
 	mset.mu.RUnlock()
-	if c == nil {
+	if c == nil || store == nil {
 		return StreamState{}
 	}
 	// Currently rely on store.
-	return mset.store.State()
+	return store.State()
 }
 
 // Determines if the new proposed partition is unique amongst all observables.
