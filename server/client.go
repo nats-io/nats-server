@@ -688,6 +688,15 @@ func (c *client) applyAccountLimits() {
 		if uc, _ := jwt.DecodeUserClaims(c.opts.JWT); uc != nil {
 			c.mpay = int32(uc.Limits.Payload)
 			c.msubs = int32(uc.Limits.Subs)
+			if uc.IssuerAccount != _EMPTY_ && uc.IssuerAccount != uc.Issuer {
+				if scope, ok := c.acc.signingKeys[uc.Issuer]; ok {
+					if userScope, ok := scope.(*jwt.UserScope); ok {
+						// if signing key disappeared or changed and we don't get here, the client will be disconnected
+						c.mpay = int32(userScope.Template.Limits.Payload)
+						c.msubs = int32(userScope.Template.Limits.Subs)
+					}
+				}
+			}
 		}
 	}
 	minLimit(&c.mpay, c.acc.mpay)

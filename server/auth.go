@@ -561,9 +561,21 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			return false
 		}
 		// this only executes IF there's an issuer on the Juc - otherwise the account is already vetted
-		if juc.IssuerAccount != "" && !acc.hasIssuer(juc.Issuer) {
-			c.Debugf("User JWT issuer is not known")
-			return false
+		if juc.IssuerAccount != _EMPTY_ {
+			if scope, ok := acc.hasIssuer(juc.Issuer); !ok {
+				c.Debugf("User JWT issuer is not known")
+				return false
+			} else if scope != nil {
+				if err := scope.ValidateScopedSigner(juc); err != nil {
+					c.Debugf("User JWT is not valid: %v", err)
+					return false
+				} else if uSc, ok := scope.(*jwt.UserScope); !ok {
+					c.Debugf("User JWT is not valid")
+					return false
+				} else {
+					juc.UserPermissionLimits = uSc.Template
+				}
+			}
 		}
 		if acc.IsExpired() {
 			c.Debugf("Account JWT has expired")
