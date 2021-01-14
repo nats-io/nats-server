@@ -1219,13 +1219,13 @@ func (c *cluster) streamLeader(account, stream string) *server.Server {
 
 func (c *cluster) waitOnStreamCurrent(s *server.Server, account, stream string) {
 	c.t.Helper()
-	expires := time.Now().Add(5 * time.Second)
+	expires := time.Now().Add(10 * time.Second)
 	for time.Now().Before(expires) {
 		if s.JetStreamIsStreamCurrent(account, stream) {
 			time.Sleep(25 * time.Millisecond)
 			return
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	c.t.Fatalf("Expected server %q to eventually be current for stream %q", s, stream)
 }
@@ -1238,7 +1238,7 @@ func (c *cluster) waitOnServerCurrent(s *server.Server) {
 			time.Sleep(25 * time.Millisecond)
 			return
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	c.t.Fatalf("Expected server %q to eventually be current", s)
 }
@@ -1291,19 +1291,19 @@ func (c *cluster) waitOnLeader() {
 func (c *cluster) waitOnClusterReady() {
 	c.t.Helper()
 	var leader *server.Server
-	expires := time.Now().Add(5 * time.Second)
+	expires := time.Now().Add(10 * time.Second)
 	for time.Now().Before(expires) {
 		if leader = c.leader(); leader != nil {
 			break
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	// Now make sure we have all peers.
 	for leader != nil && time.Now().Before(expires) {
 		if len(leader.JetStreamClusterPeers()) == len(c.servers) {
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	c.t.Fatalf("Expected a cluster leader and fully formed cluster")
 }
