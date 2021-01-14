@@ -74,7 +74,7 @@ type Account struct {
 	limits
 	expired      bool
 	incomplete   bool
-	signingKeys  []string
+	signingKeys  map[string]jwt.Scope
 	srv          *Server // server this account is registered with (possibly nil)
 	lds          string  // loop detection subject for leaf nodes
 	siReply      []byte  // service reply prefix, will form wildcard subscription.
@@ -2596,7 +2596,8 @@ func (a *Account) isIssuerClaimTrusted(claims *jwt.ActivationClaims) bool {
 		}
 		return false
 	}
-	return a.hasIssuerNoLock(claims.Issuer)
+	_, ok := a.hasIssuerNoLock(claims.Issuer)
+	return ok
 }
 
 // Returns true if `a` and `b` stream imports are the same. Note that the
@@ -2742,26 +2743,23 @@ func (a *Account) checkExpiration(claims *jwt.ClaimsData) {
 }
 
 // hasIssuer returns true if the issuer matches the account
+// If the issuer is a scoped signing key, the scope will be returned as well
 // issuer or it is a signing key for the account.
-func (a *Account) hasIssuer(issuer string) bool {
+func (a *Account) hasIssuer(issuer string) (jwt.Scope, bool) {
 	a.mu.RLock()
-	hi := a.hasIssuerNoLock(issuer)
+	scope, ok := a.hasIssuerNoLock(issuer)
 	a.mu.RUnlock()
-	return hi
+	return scope, ok
 }
 
 // hasIssuerNoLock is the unlocked version of hasIssuer
-func (a *Account) hasIssuerNoLock(issuer string) bool {
+func (a *Account) hasIssuerNoLock(issuer string) (jwt.Scope, bool) {
 	// same issuer -- keep this for safety on the calling code
 	if a.Name == issuer {
-		return true
+		return nil, true
 	}
-	for i := 0; i < len(a.signingKeys); i++ {
-		if a.signingKeys[i] == issuer {
-			return true
-		}
-	}
-	return false
+	scope, ok := a.signingKeys[issuer]
+	return scope, ok
 }
 
 // Returns the loop detection subject used for leafnodes
@@ -2846,20 +2844,26 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	// Reset any notion of export revocations.
 	a.actsRevoked = nil
 
+	alteredScope := map[string]struct{}{}
+
 	// update account signing keys
 	a.signingKeys = nil
-	signersChanged := false
-	for k := range ac.SigningKeys {
-		a.signingKeys = append(a.signingKeys, k)
+	if len(ac.SigningKeys) > 0 {
+		a.signingKeys = map[string]jwt.Scope{}
 	}
-	sort.Strings(a.signingKeys)
+	signersChanged := false
+	for k, scope := range ac.SigningKeys {
+		a.signingKeys[k] = scope
+	}
 	if len(a.signingKeys) != len(old.signingKeys) {
 		signersChanged = true
 	} else {
-		for i := 0; i < len(old.signingKeys); i++ {
-			if a.signingKeys[i] != old.signingKeys[i] {
+		for k, scope := range a.signingKeys {
+			if oldScope, ok := old.signingKeys[k]; !ok {
 				signersChanged = true
-				break
+			} else if !reflect.DeepEqual(scope, oldScope) {
+				signersChanged = true
+				alteredScope[k] = struct{}{}
 			}
 		}
 	}
@@ -3153,7 +3157,12 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			c.mu.Lock()
 			sk := c.user.SigningKey
 			c.mu.Unlock()
-			if sk != "" && !a.hasIssuer(sk) {
+			if sk == "" {
+				continue
+			}
+			if _, ok := alteredScope[sk]; ok {
+				c.closeConnection(AuthenticationViolation)
+			} else if _, ok := a.hasIssuer(sk); !ok {
 				c.closeConnection(AuthenticationViolation)
 			}
 		}
