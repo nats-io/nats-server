@@ -175,7 +175,6 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 
 	// If we are in clustered mode go ahead and start the meta controller.
 	if !s.standAloneMode() {
-		s.Warnf("JetStream Cluster is ALPHA")
 		if err := s.enableJetStreamClustering(); err != nil {
 			s.Errorf("Could not create JetStream cluster: %v", err)
 			return err
