@@ -288,7 +288,7 @@ type outbound struct {
 	pb  int64         // Total pending/queued bytes.
 	pm  int32         // Total pending/queued messages.
 	fsp int32         // Flush signals that are pending per producer from readLoop's pcd.
-	sch chan struct{} // To signal writeLoop that there is data to flush.
+	sg  *sync.Cond    // To signal writeLoop that there is data to flush.
 	wdl time.Duration // Snapshot of write deadline.
 	mp  int64         // Snapshot of max pending for client.
 	lft time.Duration // Last flush time for Write.
@@ -536,7 +536,7 @@ func (c *client) initClient() {
 
 	// Outbound data structure setup
 	c.out.sz = startBufSize
-	c.out.sch = make(chan struct{}, 1)
+	c.out.sg = sync.NewCond(&(c.mu))
 	opts := s.getOpts()
 	// Snapshots to avoid mutex access in fast paths.
 	c.out.wdl = opts.WriteDeadline
@@ -899,16 +899,10 @@ func (c *client) writeLoop() {
 		return
 	}
 	c.flags.set(writeLoopStarted)
-	ch := c.out.sch
 	c.mu.Unlock()
 
 	// Used to check that we did flush from last wake up.
 	waitOk := true
-
-	// Used to limit the wait for a signal
-	const maxWait = time.Second
-	t := time.NewTimer(maxWait)
-
 	var close bool
 
 	// Main loop. Will wait to be signaled and then will use
@@ -918,18 +912,9 @@ func (c *client) writeLoop() {
 		if close = c.isClosed(); !close {
 			owtf := c.out.fsp > 0 && c.out.pb < maxBufSize && c.out.fsp < maxFlushPending
 			if waitOk && (c.out.pb == 0 || owtf) {
-				c.mu.Unlock()
-
-				// Reset our timer
-				t.Reset(maxWait)
-
-				// Wait on pending data.
-				select {
-				case <-ch:
-				case <-t.C:
-				}
-
-				c.mu.Lock()
+				c.out.sg.Wait()
+				// Check that connection has not been closed while lock was released
+				// in the conditional wait.
 				close = c.isClosed()
 			}
 		}
@@ -1456,13 +1441,8 @@ func (c *client) markConnAsClosed(reason ClosedState) {
 
 // flushSignal will use server to queue the flush IO operation to a pool of flushers.
 // Lock must be held.
-func (c *client) flushSignal() bool {
-	select {
-	case c.out.sch <- struct{}{}:
-		return true
-	default:
-	}
-	return false
+func (c *client) flushSignal() {
+	c.out.sg.Signal()
 }
 
 // Traces a message.

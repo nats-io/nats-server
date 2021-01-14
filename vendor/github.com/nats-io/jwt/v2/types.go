@@ -325,13 +325,29 @@ func (p *Permission) Empty() bool {
 	return len(p.Allow) == 0 && len(p.Deny) == 0
 }
 
+func checkPermission(vr *ValidationResults, subj string, permitQueue bool) {
+	tk := strings.Split(subj, " ")
+	switch len(tk) {
+	case 1:
+		Subject(tk[0]).Validate(vr)
+	case 2:
+		Subject(tk[0]).Validate(vr)
+		Subject(tk[1]).Validate(vr)
+		if !permitQueue {
+			vr.AddError(`Permission Subject "%s" is not allowed to contain queue`, subj)
+		}
+	default:
+		vr.AddError(`Permission Subject "%s" contains too many spaces`, subj)
+	}
+}
+
 // Validate the allow, deny elements of a permission
-func (p *Permission) Validate(vr *ValidationResults) {
+func (p *Permission) Validate(vr *ValidationResults, permitQueue bool) {
 	for _, subj := range p.Allow {
-		Subject(subj).Validate(vr)
+		checkPermission(vr, subj, permitQueue)
 	}
 	for _, subj := range p.Deny {
-		Subject(subj).Validate(vr)
+		checkPermission(vr, subj, permitQueue)
 	}
 }
 
@@ -359,6 +375,8 @@ func (p *Permissions) Validate(vr *ValidationResults) {
 	if p.Resp != nil {
 		p.Resp.Validate(vr)
 	}
+	p.Sub.Validate(vr, true)
+	p.Pub.Validate(vr, false)
 }
 
 // StringList is a wrapper for an array of strings

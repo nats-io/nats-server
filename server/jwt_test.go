@@ -4897,3 +4897,95 @@ func TestJWTResponseThreshold(t *testing.T) {
 		}
 	})
 }
+
+func TestJWTQueuePermissions(t *testing.T) {
+	aExpKp, aExpPub := createKey(t)
+	aExpClaim := jwt.NewAccountClaims(aExpPub)
+	aExpJwt := encodeClaim(t, aExpClaim, aExpPub)
+	newUser := func(t *testing.T, permType string) string {
+		ukp, _ := nkeys.CreateUser()
+		seed, _ := ukp.Seed()
+		upub, _ := ukp.PublicKey()
+		uclaim := newJWTTestUserClaims()
+		uclaim.Subject = upub
+		switch permType {
+		case "allow":
+			uclaim.Permissions.Sub.Allow.Add("foo.> *.dev")
+		case "deny":
+			uclaim.Permissions.Sub.Deny.Add("foo.> *.dev")
+		}
+		ujwt, err := uclaim.Encode(aExpKp)
+		require_NoError(t, err)
+		return genCredsFile(t, ujwt, seed)
+	}
+	confFileName := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		operator = %s
+		resolver = MEMORY
+		resolver_preload = {
+			%s : %s
+		}`, ojwt, aExpPub, aExpJwt)))
+	defer os.Remove(confFileName)
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
+		t.Fatalf("Received unexpected error %s", err)
+	}
+	opts.NoLog, opts.NoSigs = true, true
+	errChan := make(chan error, 1)
+	defer close(errChan)
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	for _, test := range []struct {
+		permType    string
+		queue       string
+		errExpected bool
+	}{
+		{"allow", "queue.dev", false},
+		{"allow", "", true},
+		{"allow", "bad", true},
+		{"deny", "", false},
+		{"deny", "queue.dev", true},
+	} {
+		t.Run(test.permType+test.queue, func(t *testing.T) {
+			usrCreds := newUser(t, test.permType)
+			defer os.Remove(usrCreds)
+			nc, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", opts.Port),
+				nats.ErrorHandler(func(conn *nats.Conn, s *nats.Subscription, err error) {
+					errChan <- err
+				}),
+				nats.UserCredentials(usrCreds))
+			if err != nil {
+				t.Fatalf("No error expected: %v", err)
+			}
+			defer nc.Close()
+			if test.queue == "" {
+				if _, err := nc.Subscribe("foo.bar", func(msg *nats.Msg) {}); err != nil {
+					t.Fatalf("no error expected: %v", err)
+				}
+			} else {
+				if _, err := nc.
+        
+        
+        Subscribe("foo.bar", test.queue, func(msg *nats.Msg) {}); err != nil {
+					t.Fatalf("no error expected: %v", err)
+				}
+			}
+			nc.Flush()
+			select {
+			case err := <-errChan:
+				if !test.errExpected {
+					t.Fatalf("Expected no error, got %v", err)
+				}
+				if !strings.Contains(err.Error(), `Permissions Violation for Subscription to "foo.bar"`) {
+					t.Fatalf("error %v", err)
+				}
+			case <-time.After(150 * time.Millisecond):
+				if test.errExpected {
+					t.Fatal("Expected an error")
+				}
+			}
+		})
+
+	}
+}

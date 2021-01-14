@@ -329,7 +329,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		}
 		// Fill in user if auth requested.
 		if auth {
-			ci.AuthorizedUser = client.opts.Username
+			ci.AuthorizedUser = client.getRawAuthUser()
 			// Add in account iff not the global account.
 			if client.acc != nil && (client.acc.Name != globalAccountName) {
 				ci.Account = client.acc.Name

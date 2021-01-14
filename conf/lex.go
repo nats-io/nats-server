@@ -413,6 +413,8 @@ func lexIncludeQuotedString(lx *lexer) stateFn {
 		lx.next()
 		lx.ignore()
 		return lx.pop()
+	case r == eof:
+		return lx.errorf("Unexpected EOF in quoted include")
 	}
 	return lexIncludeQuotedString
 }
@@ -429,6 +431,8 @@ func lexIncludeDubQuotedString(lx *lexer) stateFn {
 		lx.next()
 		lx.ignore()
 		return lx.pop()
+	case r == eof:
+		return lx.errorf("Unexpected EOF in double quoted include")
 	}
 	return lexIncludeDubQuotedString
 }
