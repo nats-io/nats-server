@@ -1211,6 +1211,8 @@ func (js *jetStream) processClusterCreateStream(sa *streamAssignment) {
 	// This is an error condition.
 	if err != nil {
 		js.srv.Debugf("Stream create failed for %q - %q: %v\n", sa.Client.Account, sa.Config.Name, err)
+
+		js.mu.Lock()
 		sa.err = err
 		sa.responded = true
 		if rg.node != nil {
@@ -1222,6 +1224,8 @@ func (js *jetStream) processClusterCreateStream(sa *streamAssignment) {
 			Response: &JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}},
 		}
 		result.Response.Error = jsError(err)
+		js.mu.Unlock()
+
 		// Send response to the metadata leader. They will forward to the user as needed.
 		b, _ := json.Marshal(result) // Avoids auto-processing and doing fancy json with newlines.
 		s.sendInternalMsgLocked(streamAssignmentSubj, _EMPTY_, nil, b)

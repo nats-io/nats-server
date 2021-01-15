@@ -310,29 +310,33 @@ func (s *Server) JetStreamEnabled() bool {
 // Shutdown jetstream for this server.
 func (s *Server) shutdownJetStream() {
 	s.mu.Lock()
-	if s.js == nil {
-		s.mu.Unlock()
+	js := s.js
+	s.mu.Unlock()
+
+	if js == nil {
 		return
 	}
-	js := s.js
+
 	var _jsa [512]*jsAccount
 	jsas := _jsa[:0]
+
+	js.mu.RLock()
 	// Collect accounts.
 	for _, jsa := range js.accounts {
 		jsas = append(jsas, jsa)
 	}
-	s.mu.Unlock()
+	js.mu.RUnlock()
 
 	for _, jsa := range jsas {
 		js.disableJetStream(jsa)
 	}
 
 	s.mu.Lock()
-	s.js.accounts = nil
 	s.js = nil
 	s.mu.Unlock()
 
 	js.mu.Lock()
+	js.accounts = nil
 	if cc := js.cluster; cc != nil {
 		js.stopUpdatesSub()
 		if cc.meta != nil {
