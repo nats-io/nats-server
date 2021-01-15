@@ -1178,7 +1178,7 @@ type leafConnectInfo struct {
 	TLS     bool   `json:"tls_required"`
 	Comp    bool   `json:"compression,omitempty"`
 	ID      string `json:"server_id,omitempty"`
-	Name    string `json:"server_name,omitempty"`
+	Name    string `json:"name,omitempty"`
 	Hub     bool   `json:"is_hub,omitempty"`
 	Cluster string `json:"cluster,omitempty"`
 	Headers bool   `json:"headers,omitempty"`
@@ -1229,15 +1229,7 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	c.headers = supportHeaders && proto.Headers
 
 	// Remember the remote server.
-	// We changed the leafnode CONNECT.Name json tag from "name" to "server_name",
-	// so for pre 2.2.0 servers, proto.Name (which is json "server_name") will be empty.
-	// However, CONNECT goes through common processing and the old json tag "name" is
-	// decoded into c.opts.Name (clientOpts struct), so use that if proto.Name is empty.
-	if proto.Name == _EMPTY_ {
-		c.leaf.remoteServer = c.opts.Name
-	} else {
-		c.leaf.remoteServer = proto.Name
-	}
+	c.leaf.remoteServer = proto.Name
 
 	// If the other side has declared itself a hub, so we will take on the spoke role.
 	if proto.Hub {
