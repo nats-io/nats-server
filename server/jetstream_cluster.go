@@ -131,7 +131,7 @@ func validateJetStreamOptions(o *Options) error {
 		return fmt.Errorf("jetstream cluster requires `server_name` to be set")
 	}
 	if o.Cluster.Name == _EMPTY_ {
-		return fmt.Errorf("jetstream cluster requires `cluster_name` to be set")
+		return fmt.Errorf("jetstream cluster requires `cluster.name` to be set")
 	}
 	return nil
 }

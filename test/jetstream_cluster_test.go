@@ -58,7 +58,7 @@ func TestJetStreamClusterConfig(t *testing.T) {
 	`))
 	defer os.Remove(conf)
 
-	check("requires `cluster_name`")
+	check("requires `cluster.name`")
 }
 
 func TestJetStreamClusterLeader(t *testing.T) {
