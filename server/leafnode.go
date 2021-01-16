@@ -993,7 +993,14 @@ func (c *client) processLeafnodeInfo(info *Info) error {
 		c.headers = supportsHeaders && info.Headers
 
 		// Remember the remote server.
-		c.leaf.remoteServer = info.Name
+		// Pre 2.2.0 servers are not sending their server name.
+		// In that case, use info.ID, which, for those servers, matches
+		// the content of the field `Name` in the leafnode CONNECT protocol.
+		if info.Name == _EMPTY_ {
+			c.leaf.remoteServer = info.ID
+		} else {
+			c.leaf.remoteServer = info.Name
+		}
 	}
 	// For both initial INFO and async INFO protocols, Possibly
 	// update our list of remote leafnode URLs we can connect to.
@@ -1098,7 +1105,7 @@ func (s *Server) setLeafNodeInfoHostPortAndIP() error {
 
 // Add the connection to the map of leaf nodes.
 // If `checkForDup` is true (invoked when a leafnode is accepted), then we check
-// if a connection already exists for the same server name (ID) and account.
+// if a connection already exists for the same server name and account.
 // That can happen when the remote is attempting to reconnect while the accepting
 // side did not detect the connection as broken yet.
 // But it can also happen when there is a misconfiguration and the remote is
@@ -1119,11 +1126,15 @@ func (s *Server) addLeafNodeConnection(c *client, srvName string, checkForDup bo
 
 	var old *client
 	s.mu.Lock()
-	if checkForDup {
+	// We check for empty because in some test we may send empty CONNECT{}
+	if checkForDup && srvName != _EMPTY_ {
 		for _, ol := range s.leafs {
 			ol.mu.Lock()
-			// We check for empty because in some test we may send empty CONNECT{}
-			if srvName != _EMPTY_ && ol.leaf.remoteServer == srvName && ol.acc.Name == accName {
+			// We care here only about non solicited Leafnode. This function
+			// is more about replacing stale connections than detecting loops.
+			// We have code for the loop detection elsewhere, which also delays
+			// attempt to reconnect.
+			if !ol.isSolicitedLeafNode() && ol.leaf.remoteServer == srvName && ol.acc.Name == accName {
 				old = ol
 			}
 			ol.mu.Unlock()
@@ -1167,7 +1178,7 @@ type leafConnectInfo struct {
 	TLS     bool   `json:"tls_required"`
 	Comp    bool   `json:"compression,omitempty"`
 	ID      string `json:"server_id,omitempty"`
-	Name    string `json:"server_name,omitempty"`
+	Name    string `json:"name,omitempty"`
 	Hub     bool   `json:"is_hub,omitempty"`
 	Cluster string `json:"cluster,omitempty"`
 	Headers bool   `json:"headers,omitempty"`

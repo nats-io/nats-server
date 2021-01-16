@@ -4640,9 +4640,7 @@ func (c *client) getClientInfo(detailed bool) *ClientInfo {
 	}
 	// Server name. Defaults to server ID if not set explicitly.
 	var sn string
-	if c.kind == LEAF {
-		sn = c.leaf.remoteServer
-	} else {
+	if detailed && c.kind != LEAF {
 		sn = c.srv.Name()
 	}
 
@@ -4653,6 +4651,9 @@ func (c *client) getClientInfo(detailed bool) *ClientInfo {
 	ci.RTT = c.rtt
 	// Detailed signals additional opt in.
 	if detailed {
+		if c.kind == LEAF {
+			sn = c.leaf.remoteServer
+		}
 		ci.Start = &c.start
 		ci.Host = c.host
 		ci.ID = c.cid

@@ -4262,30 +4262,34 @@ func TestLeafnodeHeaders(t *testing.T) {
 	leaf, _ := runSolicitLeafServer(opts)
 	defer leaf.Shutdown()
 
+	checkLeafNodeConnected(t, srv)
+	checkLeafNodeConnected(t, leaf)
+
 	snc, err := nats.Connect(srv.ClientURL())
 	if err != nil {
 		t.Fatalf(err.Error())
 	}
 	defer snc.Close()
-	ssub, err := snc.SubscribeSync("test")
-	if err != nil {
-		t.Fatalf("subscribe failed: %s", err)
-	}
 
 	lnc, err := nats.Connect(leaf.ClientURL())
 	if err != nil {
 		t.Fatalf(err.Error())
 	}
 	defer lnc.Close()
+
+	// Start with subscription on leaf so that we check that srv has the interest
+	// (since we are going to publish from srv)
 	lsub, err := lnc.SubscribeSync("test")
 	if err != nil {
 		t.Fatalf("subscribe failed: %s", err)
 	}
 	lnc.Flush()
-
-	checkLeafNodeConnected(t, srv)
-	checkLeafNodeConnected(t, leaf)
 	checkSubInterest(t, srv, "$G", "test", time.Second)
+
+	ssub, err := snc.SubscribeSync("test")
+	if err != nil {
+		t.Fatalf("subscribe failed: %s", err)
+	}
 
 	msg := nats.NewMsg("test")
 	msg.Header.Add("Test", "Header")

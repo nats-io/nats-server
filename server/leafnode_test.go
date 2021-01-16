@@ -762,9 +762,6 @@ func (l *loopDetectedLogger) Errorf(format string, v ...interface{}) {
 }
 
 func TestLeafNodeLoop(t *testing.T) {
-	// FIXME(dlc) - Broken for some reason.
-	t.SkipNow()
-
 	// This test requires that we set the port to known value because
 	// we want A point to B and B to A.
 	oa := DefaultOptions()
@@ -1892,17 +1889,16 @@ func TestLeafNodeNoDuplicateWithinCluster(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error parsing url: %v", err)
 	}
-	remoteLeafs := []*RemoteLeafOpts{&RemoteLeafOpts{URLs: []*url.URL{u}}}
 
 	oLeaf1 := DefaultOptions()
-	oLeaf1.LeafNode.Remotes = remoteLeafs
+	oLeaf1.LeafNode.Remotes = []*RemoteLeafOpts{&RemoteLeafOpts{URLs: []*url.URL{u}}}
 	leaf1 := RunServer(oLeaf1)
 	defer leaf1.Shutdown()
 
 	leaf1ClusterURL := fmt.Sprintf("nats://127.0.0.1:%d", oLeaf1.Cluster.Port)
 
 	oLeaf2 := DefaultOptions()
-	oLeaf2.LeafNode.Remotes = remoteLeafs
+	oLeaf2.LeafNode.Remotes = []*RemoteLeafOpts{&RemoteLeafOpts{URLs: []*url.URL{u}}}
 	oLeaf2.Routes = RoutesFromStr(leaf1ClusterURL)
 	leaf2 := RunServer(oLeaf2)
 	defer leaf2.Shutdown()
