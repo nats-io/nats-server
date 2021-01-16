@@ -228,13 +228,13 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 
 func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, node RaftNode) (*Consumer, error) {
 	mset.mu.RLock()
-	jsa := mset.jsa
+	s, jsa := mset.srv, mset.jsa
 	mset.mu.RUnlock()
 
 	// If we do not have the consumer assigned to us in cluster mode we can not proceed.
 	// Running in single server mode this always returns true.
 	if oname != _EMPTY_ && !jsa.consumerAssigned(mset.Name(), oname) {
-		return nil, ErrJetStreamNotAssigned
+		s.Debugf("Consumer %q > %q does not seem to be assigned to this server", mset.Name(), oname)
 	}
 
 	if config == nil {

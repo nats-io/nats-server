@@ -24,7 +24,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats-server/v2/logger"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 )
@@ -116,17 +115,8 @@ func TestJetStreamClusterSingleReplicaStreams(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R1S", 3)
 	defer c.shutdown()
 
-	sc := &server.StreamConfig{
-		Name:     "TEST",
-		Subjects: []string{"foo", "bar"},
-	}
-	// Make sure non-leaders error if directly called.
-	s := c.randomNonLeader()
-	if _, err := s.GlobalAccount().AddStream(sc); err == nil {
-		t.Fatalf("Expected an error from a non-leader")
-	}
-
 	// Client based API
+	s := c.randomNonLeader()
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
@@ -298,7 +288,10 @@ func TestJetStreamClusterDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	resp, _ := nc.Request(fmt.Sprintf(server.JSApiStreamCreateT, cfg.Name), req, time.Second)
+	resp, err := nc.Request(fmt.Sprintf(server.JSApiStreamCreateT, cfg.Name), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
 	var scResp server.JSApiStreamCreateResponse
 	if err := json.Unmarshal(resp.Data, &scResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -619,6 +612,7 @@ func TestJetStreamClusterMetaSnapshotsMultiChange(t *testing.T) {
 
 	// Shut it down.
 	rs.Shutdown()
+	time.Sleep(250 * time.Millisecond)
 
 	// We want to make changes here that test each delta scenario for the meta snapshots.
 	// Add new stream and consumer.
@@ -1065,10 +1059,6 @@ func createJetStreamClusterExplicit(t *testing.T, clusterName string, numServers
 		sn := fmt.Sprintf("S-%d", cp-startClusterPort+1)
 		conf := fmt.Sprintf(jsClusterTempl, sn, storeDir, clusterName, cp, routeConfig)
 		s, o := RunServerWithConfig(createConfFile(t, []byte(conf)))
-		if doLog {
-			pre := fmt.Sprintf("[S-%d] - ", cp-startClusterPort+1)
-			s.SetLogger(logger.NewTestLogger(pre, true), true, true)
-		}
 		c.servers = append(c.servers, s)
 		c.opts = append(c.opts, o)
 	}
@@ -1088,10 +1078,6 @@ func (c *cluster) addInNewServer() *server.Server {
 	seedRoute := fmt.Sprintf("nats-route://127.0.0.1:%d", c.opts[0].Cluster.Port)
 	conf := fmt.Sprintf(jsClusterTempl, sn, storeDir, c.name, -1, seedRoute)
 	s, o := RunServerWithConfig(createConfFile(c.t, []byte(conf)))
-	if doLog {
-		pre := fmt.Sprintf("[%s] - ", sn)
-		s.SetLogger(logger.NewTestLogger(pre, true), true, true)
-	}
 	c.servers = append(c.servers, s)
 	c.opts = append(c.opts, o)
 	c.checkClusterFormed()
@@ -1141,10 +1127,6 @@ func (c *cluster) restartServer(rs *server.Server) *server.Server {
 	}
 	opts = c.opts[index]
 	s, o := RunServerWithConfig(opts.ConfigFile)
-	if doLog {
-		pre := fmt.Sprintf("[%s] - ", s.Name())
-		s.SetLogger(logger.NewTestLogger(pre, true), true, true)
-	}
 	c.servers[index] = s
 	c.opts[index] = o
 	return s

@@ -22,6 +22,7 @@ import (
 	"os"
 	"path"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -118,6 +119,7 @@ type raft struct {
 	hash    string
 	s       *Server
 	c       *client
+	dflag   bool
 
 	// Subjects for votes, updates, replays.
 	vsubj  string
@@ -126,9 +128,7 @@ type raft struct {
 	areply string
 
 	// For when we need to catch up as a follower.
-	catchup *subscription
-	cterm   uint64
-	cindex  uint64
+	catchup *catchupState
 
 	// For leader or server catching up a follower.
 	progress map[string]chan uint64
@@ -148,6 +148,17 @@ type raft struct {
 	resp     chan *appendEntryResponse
 	leadc    chan bool
 	stepdown chan string
+}
+
+// cacthupState structure that holds our subscription, and catchup term and index
+// as well as starting term and index and how many updates we have seen.
+type catchupState struct {
+	sub    *subscription
+	cterm  uint64
+	cindex uint64
+	pterm  uint64
+	pindex uint64
+	hbs    int
 }
 
 // lps holds peer state of last time and last index replicated.
@@ -217,6 +228,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		return nil, ErrNoSysAccount
 	}
 	sendq := s.sys.sendq
+	sacc := s.sys.account
 	hash := s.sys.shash
 	s.mu.Unlock()
 
@@ -250,6 +262,11 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		leadc:    make(chan bool, 4),
 		stepdown: make(chan string),
 	}
+	n.c.registerWithAccount(sacc)
+
+	if atomic.LoadInt32(&s.logging.debug) > 0 {
+		n.dflag = true
+	}
 
 	if term, vote, err := n.readTermVote(); err != nil && term > 0 {
 		n.term = term
@@ -266,18 +283,24 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		}
 		// Replay the log.
 		// Since doing this in place we need to make sure we have enough room on the applyc.
-		if uint64(cap(n.applyc)) < state.Msgs {
-			n.applyc = make(chan *CommittedEntry, state.Msgs)
+		needed := state.Msgs + 1 // 1 is for nil to mark end of replay.
+		if uint64(cap(n.applyc)) < needed {
+			n.applyc = make(chan *CommittedEntry, needed)
 		}
+
 		for index := state.FirstSeq; index <= state.LastSeq; index++ {
 			ae, err := n.loadEntry(index)
 			if err != nil {
-				panic("err loading index")
+				panic("err loading entry from WAL")
 			}
 			n.processAppendEntry(ae, nil)
 		}
 	}
 
+	// Send nil entry to signal the upper layers we are done doing replay/restore.
+	n.applyc <- nil
+
+	// Setup our internal subscriptions.
 	if err := n.createInternalSubs(); err != nil {
 		n.shutdown(true)
 		return nil, err
@@ -535,6 +558,12 @@ func (n *raft) isCurrent() bool {
 	if n.state == Leader {
 		return true
 	}
+
+	// Check here on catchup status.
+	if cs := n.catchup; cs != nil && n.pterm >= cs.cterm && n.pindex >= cs.cindex {
+		n.cancelCatchup()
+	}
+
 	// Check to see that we have heard from the current leader lately.
 	if n.leader != noLeader && n.leader != n.id && n.catchup == nil {
 		const okInterval = int64(hbInterval) * 2
@@ -721,13 +750,13 @@ func (n *raft) newInbox(cn string) string {
 		b[i] = digits[l%base]
 		l /= base
 	}
-	return fmt.Sprintf(raftReplySubj, n.group, n.hash, b[:])
+	return fmt.Sprintf(raftReplySubj, b[:])
 }
 
 const (
-	raftVoteSubj   = "$SYS.NRG.%s.%s.V"
-	raftAppendSubj = "$SYS.NRG.%s.%s.A"
-	raftReplySubj  = "$SYS.NRG.%s.%s.%s"
+	raftVoteSubj   = "$NRG.V.%s.%s"
+	raftAppendSubj = "$NRG.E.%s.%s"
+	raftReplySubj  = "$NRG.R.%s"
 )
 
 func (n *raft) createInternalSubs() error {
@@ -795,8 +824,10 @@ func (n *raft) run() {
 }
 
 func (n *raft) debug(format string, args ...interface{}) {
-	nf := fmt.Sprintf("RAFT [%s - %s] %s", n.id, n.group, format)
-	n.s.Debugf(nf, args...)
+	if n.dflag {
+		nf := fmt.Sprintf("RAFT [%s - %s] %s", n.id, n.group, format)
+		n.s.Debugf(nf, args...)
+	}
 }
 
 func (n *raft) error(format string, args ...interface{}) {
@@ -1211,8 +1242,6 @@ func (n *raft) applyCommit(index uint64) {
 	}
 	// Pass to the upper layers if we have normal entries.
 	if len(committed) > 0 {
-		// We will block here placing the commit entry on purpose.
-		// FIXME(dlc) - We should not block here.
 		select {
 		case n.applyc <- &CommittedEntry{index, committed}:
 		default:
@@ -1359,6 +1388,49 @@ func (n *raft) handleAppendEntry(sub *subscription, c *client, subject, reply st
 	n.processAppendEntry(ae, sub)
 }
 
+// Lock should be held.
+func (n *raft) cancelCatchup() {
+	n.debug("Canceling catchup subscription since we are now up to date")
+	n.s.sysUnsubscribe(n.catchup.sub)
+	n.catchup = nil
+}
+
+// catchupStalled will try to determine if we are stalled. This is called
+// on a new entry from our leader.
+// Lock should be held.
+func (n *raft) catchupStalled() bool {
+	if n.catchup == nil {
+		return false
+	}
+	const maxHBs = 3
+	if n.catchup.pindex == n.pindex {
+		n.catchup.hbs++
+	} else {
+		n.catchup.pindex = n.pindex
+		n.catchup.hbs = 0
+	}
+	return n.catchup.hbs >= maxHBs
+}
+
+// Lock should be held.
+func (n *raft) createCatchup(ae *appendEntry) string {
+	// Cleanup any old ones.
+	if n.catchup != nil {
+		n.s.sysUnsubscribe(n.catchup.sub)
+	}
+	// Snapshot term and index.
+	n.catchup = &catchupState{
+		cterm:  ae.pterm,
+		cindex: ae.pindex,
+		pterm:  n.pterm,
+		pindex: n.pindex,
+	}
+	inbox := n.newInbox(n.s.ClusterName())
+	sub, _ := n.s.sysSubscribe(inbox, n.handleAppendEntry)
+	n.catchup.sub = sub
+	return inbox
+}
+
 // processAppendEntry will process an appendEntry.
 func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	n.Lock()
@@ -1368,10 +1440,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		return
 	}
 
-	// Is this a new entry or a replay on startup?
-	isNew := sub != nil && sub != n.catchup
 	// Catching up state.
 	catchingUp := n.catchup != nil
+	// Is this a new entry or a replay on startup?
+	isNew := sub != nil && (!catchingUp || sub != n.catchup.sub)
 
 	if isNew {
 		n.resetElectionTimeout()
@@ -1394,18 +1466,24 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 
 	// Check state if we are catching up.
 	if catchingUp && isNew {
-		if n.pterm >= n.cterm && n.pindex >= n.cindex {
-			// If we are here we are good, so if we have a catchup we can shut that down.
-			n.debug("Canceling catchup subscription since we are now up to date")
-			n.s.sysUnsubscribe(n.catchup)
-			n.catchup = nil
+		if cs := n.catchup; cs != nil && n.pterm >= cs.cterm && n.pindex >= cs.cindex {
+			// If we are here we are good, so if we have a catchup pending we can cancel.
+			n.cancelCatchup()
 			catchingUp = false
-			n.cterm, n.cindex = 0, 0
 		} else {
+			var ar *appendEntryResponse
+			var inbox string
+			// Check to see if we are stalled. If so recreate our catchup state and resend response.
+			if n.catchupStalled() {
+				n.debug("Catchup may be stalled, will request again")
+				inbox = n.createCatchup(ae)
+				ar = &appendEntryResponse{n.pterm, n.pindex, n.id, false, _EMPTY_}
+			}
 			// Ignore new while catching up or replaying.
-			// This is ok since builtin catchup should be small.
-			// For larger items will do this outside.
 			n.Unlock()
+			if ar != nil {
+				n.sendRPC(ae.reply, inbox, ar.encode())
+			}
 			return
 		}
 	}
@@ -1443,23 +1521,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.debug("AppendEntry did not match %d %d with %d %d", ae.pterm, ae.pindex, n.pterm, n.pindex)
 			// Reset our term.
 			n.term = n.pterm
-			// Snapshot term and index
-			n.cterm, n.cindex = ae.pterm, ae.pindex
-			// Setup our subscription for catching up.
-			// Cleanup any old ones.
-			if n.catchup != nil {
-				n.s.sysUnsubscribe(n.catchup)
-			}
-			inbox := n.newInbox(n.s.ClusterName())
-			var err error
-			if n.catchup, err = n.s.sysSubscribe(inbox, n.handleAppendEntry); err != nil {
-				n.Unlock()
-				n.debug("Error subscribing to our inbox for catchup: %v", err)
-				return
-			}
+			// Setup our state for catching up.
+			inbox := n.createCatchup(ae)
 			ar := appendEntryResponse{n.pterm, n.pindex, n.id, false, _EMPTY_}
 			n.Unlock()
-
 			n.sendRPC(ae.reply, inbox, ar.encode())
 			return
 		}

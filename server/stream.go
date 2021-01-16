@@ -153,7 +153,7 @@ func (a *Account) addStream(config *StreamConfig, fsConfig *FileStoreConfig, sa 
 	// If we do not have the stream assigned to us in cluster mode we can not proceed.
 	// Running in single server mode this always returns true.
 	if !jsa.streamAssigned(config.Name) {
-		return nil, ErrJetStreamNotAssigned
+		s.Debugf("Stream %q does not seem to be assigned to this server", config.Name)
 	}
 
 	// Sensible defaults.

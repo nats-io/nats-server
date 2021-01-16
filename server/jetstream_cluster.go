@@ -293,7 +293,7 @@ func (cc *jetStreamCluster) isStreamCurrent(account, stream string) bool {
 
 	isCurrent := rg.node.Current()
 	if isCurrent {
-		// Check if we are processing a snapshot catchup.
+		// Check if we are processing a snapshot and are catching up.
 		acc, err := cc.s.LookupAccount(account)
 		if err != nil {
 			return false
@@ -505,8 +505,9 @@ func (jsa *jsAccount) streamAssigned(stream string) bool {
 		return false
 	}
 	js.mu.RLock()
-	defer js.mu.RUnlock()
-	return js.cluster.isStreamAssigned(acc, stream)
+	assigned := js.cluster.isStreamAssigned(acc, stream)
+	js.mu.RUnlock()
+	return assigned
 }
 
 // Read lock should be held.
@@ -639,6 +640,12 @@ func (js *jetStream) monitorCluster() {
 		case <-qch:
 			return
 		case ce := <-ach:
+			if ce == nil {
+				// Signals we have replayed all of our metadata.
+				// No-op for now.
+				s.Debugf("Recovered JetStream cluster metadata")
+				continue
+			}
 			// FIXME(dlc) - Deal with errors.
 			if hadSnapshot, err := js.applyMetaEntries(ce.Entries); err == nil {
 				n.Applied(ce.Index)
@@ -965,6 +972,10 @@ func (js *jetStream) monitorStreamRaftGroup(mset *Stream, sa *streamAssignment) 
 		case <-qch:
 			return
 		case ce := <-ach:
+			// No special processing needed for when we are caught up on restart.
+			if ce == nil {
+				continue
+			}
 			// FIXME(dlc) - capture errors.
 			if hadSnapshot, err := js.applyStreamEntries(mset, ce); err == nil {
 				n.Applied(ce.Index)
@@ -1001,10 +1012,10 @@ func (js *jetStream) applyStreamEntries(mset *Stream, ce *CommittedEntry) (bool,
 				if err != nil {
 					panic(err.Error())
 				}
-				if lseq == 0 && mset.lastSeq() != 0 { // Very first msg
+				// Skip by hand here since first msg special case.
+				if lseq == 0 && mset.lastSeq() != 0 {
 					continue
 				}
-
 				if err := mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts); err != nil {
 					js.srv.Debugf("Got error processing JetStream msg: %v", err)
 				}
@@ -1211,7 +1222,6 @@ func (js *jetStream) processClusterCreateStream(sa *streamAssignment) {
 	// This is an error condition.
 	if err != nil {
 		js.srv.Debugf("Stream create failed for %q - %q: %v\n", sa.Client.Account, sa.Config.Name, err)
-
 		js.mu.Lock()
 		sa.err = err
 		sa.responded = true
@@ -1557,6 +1567,10 @@ func (js *jetStream) monitorConsumerRaftGroup(o *Consumer, ca *consumerAssignmen
 		case <-qch:
 			return
 		case ce := <-ach:
+			// No special processing needed for when we are caught up on restart.
+			if ce == nil {
+				continue
+			}
 			if _, err := js.applyConsumerEntries(o, ce); err == nil {
 				n.Applied(ce.Index)
 				last = ce.Index
@@ -1706,7 +1720,7 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 		// Check if this failed.
 		// TODO(dlc) - Could have mixed results, should track per peer.
 		if result.Response.Error != nil {
-			// So while we are delting we will not respond to list/names requests.
+			// Set sa.err while we are deleting so we will not respond to list/names requests.
 			sa.err = ErrJetStreamNotAssigned
 			cc.meta.Propose(encodeDeleteStreamAssignment(sa))
 		}
