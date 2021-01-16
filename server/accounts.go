@@ -878,7 +878,9 @@ func (a *Account) randomClient() *client {
 	}
 	var c *client
 	for c = range a.clients {
-		break
+		if c.acc == a {
+			break
+		}
 	}
 	return c
 }
