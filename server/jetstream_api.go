@@ -844,9 +844,10 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 
 // Request to update a stream.
 func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil {
+	if c == nil || !s.JetStreamIsLeader() {
 		return
 	}
+
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
 	if err != nil {
 		s.Warnf(badAPIRequestT, msg)

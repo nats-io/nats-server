@@ -710,9 +710,8 @@ func TestJetStreamClusterStreamOverlapSubjects(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R32", 2)
 	defer c.shutdown()
 
-	s := c.randomServer()
-
 	// Client based API
+	s := c.randomServer()
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
@@ -742,6 +741,86 @@ func TestJetStreamClusterStreamOverlapSubjects(t *testing.T) {
 	var listResponse server.JSApiStreamListResponse
 	if err = json.Unmarshal(resp.Data, &listResponse); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
+	}
+}
+
+func TestJetStreamClusterStreamUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R32", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	sc := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+		MaxMsgs:  10,
+		Discard:  server.DiscardNew,
+	}
+
+	if _, err := js.AddStream(sc); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	for i := 1; i <= int(sc.MaxMsgs); i++ {
+		msg := []byte(fmt.Sprintf("HELLO JSC-%d", i))
+		if _, err := js.Publish("foo", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	// Expect error here.
+	if _, err := js.Publish("foo", []byte("fail")); err == nil {
+		t.Fatalf("Expected publish to fail")
+	}
+
+	// Now update MaxMsgs, select non-leader server.
+	s = c.randomNonStreamLeader("$G", "TEST")
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	sc.MaxMsgs = 20
+	si, err := js.UpdateStream(sc)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.Config.MaxMsgs != 20 {
+		t.Fatalf("Expected to have config updated with max msgs of %d, got %d", 20, si.Config.MaxMsgs)
+	}
+
+	// Do one that will fail. Wait and make sure we only are getting one response.
+	sc.Name = "TEST22"
+
+	rsub, _ := nc.SubscribeSync(nats.NewInbox())
+	defer rsub.Unsubscribe()
+	nc.Flush()
+
+	req, _ := json.Marshal(sc)
+	if err := nc.PublishRequest(fmt.Sprintf(server.JSApiStreamUpdateT, "TEST"), rsub.Subject, req); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Wait incase more than one reply sent.
+	time.Sleep(250 * time.Millisecond)
+
+	if nmsgs, _, _ := rsub.Pending(); err != nil || nmsgs != 1 {
+		t.Fatalf("Expected only one response, got %d", nmsgs)
+	}
+
+	m, err := rsub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Error getting message: %v", err)
+	}
+
+	var scResp server.JSApiStreamCreateResponse
+	if err := json.Unmarshal(m.Data, &scResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if scResp.StreamInfo != nil || scResp.Error == nil {
+		t.Fatalf("Did not receive correct response: %+v", scResp)
 	}
 }
 
@@ -1185,6 +1264,16 @@ func (c *cluster) waitOnNewStreamLeader(account, stream string) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	c.t.Fatalf("Expected a stream leader for %q %q, got none", account, stream)
+}
+
+func (c *cluster) randomNonStreamLeader(account, stream string) *server.Server {
+	c.t.Helper()
+	for _, s := range c.servers {
+		if s.JetStreamIsStreamAssigned(account, stream) && !s.JetStreamIsStreamLeader(account, stream) {
+			return s
+		}
+	}
+	return nil
 }
 
 func (c *cluster) streamLeader(account, stream string) *server.Server {

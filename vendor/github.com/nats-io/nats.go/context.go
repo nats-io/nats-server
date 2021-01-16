@@ -11,7 +11,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// A Go client for the NATS messaging system (https://nats.io).
 package nats
 
 import (
