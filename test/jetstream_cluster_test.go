@@ -737,15 +737,168 @@ func TestJetStreamClusterStreamOverlapSubjects(t *testing.T) {
 	}
 
 	// Now do detailed version.
-	resp, _ = nc.Request(server.JSApiStreamList, nil, time.Second)
+	resp, err = nc.Request(server.JSApiStreamList, nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
 	var listResponse server.JSApiStreamListResponse
 	if err = json.Unmarshal(resp.Data, &listResponse); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 }
 
+func TestJetStreamClusterStreamInfoList(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	createStream := func(name string) {
+		t.Helper()
+		if _, err := js.AddStream(&nats.StreamConfig{Name: name}); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	createStream("foo")
+	createStream("bar")
+	createStream("baz")
+
+	sendBatch := func(subject string, n int) {
+		t.Helper()
+		// Send a batch to a given subject.
+		for i := 0; i < n; i++ {
+			if _, err := js.Publish(subject, []byte("OK")); err != nil {
+				t.Fatalf("Unexpected publish error: %v", err)
+			}
+		}
+	}
+
+	sendBatch("foo", 10)
+	sendBatch("bar", 22)
+	sendBatch("baz", 33)
+
+	// Now get the stream list info.
+	sl := js.NewStreamLister()
+	if !sl.Next() {
+		t.Fatalf("Unexpected error: %v", sl.Err())
+	}
+	p := sl.Page()
+	if len(p) != 3 {
+		t.Fatalf("StreamInfo expected 3 results, got %d", len(p))
+	}
+	for _, si := range p {
+		switch si.Config.Name {
+		case "foo":
+			if si.State.Msgs != 10 {
+				t.Fatalf("Expected %d msgs but got %d", 10, si.State.Msgs)
+			}
+		case "bar":
+			if si.State.Msgs != 22 {
+				t.Fatalf("Expected %d msgs but got %d", 22, si.State.Msgs)
+			}
+		case "baz":
+			if si.State.Msgs != 33 {
+				t.Fatalf("Expected %d msgs but got %d", 33, si.State.Msgs)
+			}
+		}
+	}
+}
+
+func TestJetStreamClusterConsumerInfoList(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Place messages so we can generate consumer state.
+	for i := 0; i < 10; i++ {
+		if _, err := js.Publish("TEST", []byte("OK")); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	createConsumer := func(name string) *nats.Subscription {
+		t.Helper()
+		sub, err := js.SubscribeSync("TEST", nats.Durable(name), nats.Pull(2))
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		checkSubsPending(t, sub, 2)
+		return sub
+	}
+
+	subFoo := createConsumer("foo")
+	subBar := createConsumer("bar")
+	subBaz := createConsumer("baz")
+
+	// Place consumers in various states.
+	for _, ss := range []struct {
+		sub   *nats.Subscription
+		fetch int
+		ack   int
+	}{
+		{subFoo, 4, 2},
+		{subBar, 2, 0},
+		{subBaz, 8, 6},
+	} {
+		for i := 0; i < ss.fetch; i++ {
+			if m, err := ss.sub.NextMsg(time.Second); err != nil {
+				t.Fatalf("Unexpected error getting message %d: %v", i, err)
+			} else if i < ss.ack {
+				m.Ack()
+			}
+		}
+	}
+
+	// Now get the consumer list info.
+	cl := js.NewConsumerLister("TEST")
+	if !cl.Next() {
+		t.Fatalf("Unexpected error: %v", cl.Err())
+	}
+	p := cl.Page()
+	if len(p) != 3 {
+		t.Fatalf("ConsumerInfo expected 3 results, got %d", len(p))
+	}
+	for _, ci := range p {
+		switch ci.Name {
+		case "foo":
+			if ci.Delivered.Consumer != 4 {
+				t.Fatalf("Expected %d delivered but got %d", 4, ci.Delivered.Consumer)
+			}
+			if ci.AckFloor.Consumer != 2 {
+				t.Fatalf("Expected %d for ack floor but got %d", 2, ci.AckFloor.Consumer)
+			}
+		case "bar":
+			if ci.Delivered.Consumer != 2 {
+				t.Fatalf("Expected %d delivered but got %d", 2, ci.Delivered.Consumer)
+			}
+			if ci.AckFloor.Consumer != 0 {
+				t.Fatalf("Expected %d for ack floor but got %d", 0, ci.AckFloor.Consumer)
+			}
+		case "baz":
+			if ci.Delivered.Consumer != 8 {
+				t.Fatalf("Expected %d delivered but got %d", 8, ci.Delivered.Consumer)
+			}
+			if ci.AckFloor.Consumer != 6 {
+				t.Fatalf("Expected %d for ack floor but got %d", 6, ci.AckFloor.Consumer)
+			}
+		}
+	}
+}
+
 func TestJetStreamClusterStreamUpdate(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R32", 3)
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
 	// Client based API

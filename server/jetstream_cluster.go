@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/rand"
 	"path"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -1147,7 +1148,10 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) {
 	accStreams[stream] = sa
 	cc.streams[acc.Name] = accStreams
 
-	isMember := sa.Group.isMember(cc.meta.ID())
+	var isMember bool
+	if sa.Group != nil && cc.meta != nil {
+		isMember = sa.Group.isMember(cc.meta.ID())
+	}
 	js.mu.Unlock()
 
 	// Check if this is for us..
@@ -1895,7 +1899,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, subject, reply string,
 	cc.meta.Propose(encodeAddStreamAssignment(sa))
 }
 
-func (s *Server) jsClusteredStreamDeleteRequest(ci *ClientInfo, stream, subject, reply string, rmsg []byte) {
+func (s *Server) jsClusteredStreamDeleteRequest(ci *ClientInfo, stream, reply string, rmsg []byte) {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
 		return
@@ -1930,6 +1934,207 @@ func (s *Server) jsClusteredStreamPurgeRequest(ci *ClientInfo, stream, subject, 
 	n := sa.Group.node
 	sp := &streamPurge{Stream: stream, Reply: reply, Client: ci}
 	n.Propose(encodeStreamPurge(sp))
+}
+
+// This will do a scatter and gather operation for all streams for this account.
+// This will be running in a separate Go routine.
+func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, offset int, subject, reply string, rmsg []byte) {
+	defer s.grWG.Done()
+
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil {
+		return
+	}
+
+	js.mu.Lock()
+	defer js.mu.Unlock()
+
+	var streams []*streamAssignment
+	for _, sa := range cc.streams[acc.Name] {
+		streams = append(streams, sa)
+	}
+	// Needs to be sorted.
+	if len(streams) > 1 {
+		sort.Slice(streams, func(i, j int) bool {
+			return strings.Compare(streams[i].Config.Name, streams[j].Config.Name) < 0
+		})
+	}
+
+	scnt := len(streams)
+	if offset > scnt {
+		offset = scnt
+	}
+	if offset > 0 {
+		streams = streams[offset:]
+	}
+	if len(streams) > JSApiListLimit {
+		streams = streams[:JSApiListLimit]
+	}
+
+	rc := make(chan *StreamInfo, len(streams))
+
+	// Create an inbox for our responses and send out requests.
+	inbox := infoReplySubject()
+	rsub, _ := s.systemSubscribe(inbox, _EMPTY_, false, cc.c, func(_ *subscription, _ *client, _, reply string, msg []byte) {
+		var si StreamInfo
+		if err := json.Unmarshal(msg, &si); err != nil {
+			s.Warnf("Error unmarshaling clustered stream info response:%v", err)
+			return
+		}
+		select {
+		case rc <- &si:
+		default:
+			s.Warnf("Failed placing stream info result on internal chan")
+		}
+	})
+	defer s.sysUnsubscribe(rsub)
+
+	// Send out our requests here.
+	for _, sa := range streams {
+		isubj := fmt.Sprintf("$JSC.SI.%s.%s", sa.Client.Account, sa.Config.Name)
+		s.sendInternalMsgLocked(isubj, inbox, nil, nil)
+	}
+
+	const timeout = 2 * time.Second
+	notActive := time.NewTimer(timeout)
+	defer notActive.Stop()
+
+	var resp = JSApiStreamListResponse{
+		ApiResponse: ApiResponse{Type: JSApiStreamListResponseType},
+		Streams:     make([]*StreamInfo, 0, len(streams)),
+	}
+
+LOOP:
+	for {
+		select {
+		case <-s.quitCh:
+			return
+		case <-notActive.C:
+			s.Warnf("Did not receive all stream info results for %q", acc)
+			break LOOP
+		case si := <-rc:
+			resp.Streams = append(resp.Streams, si)
+			// Check to see if we are done.
+			if len(resp.Streams) == len(streams) {
+				break LOOP
+			}
+		}
+	}
+
+	// Needs to be sorted as well.
+	if len(resp.Streams) > 1 {
+		sort.Slice(resp.Streams, func(i, j int) bool {
+			return strings.Compare(resp.Streams[i].Config.Name, resp.Streams[j].Config.Name) < 0
+		})
+	}
+
+	resp.Total = len(resp.Streams)
+	resp.Limit = JSApiListLimit
+	resp.Offset = offset
+	s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(resp))
+}
+
+// This will do a scatter and gather operation for all consumers for this stream and account.
+// This will be running in a separate Go routine.
+func (s *Server) jsClusteredConsumerListRequest(acc *Account, ci *ClientInfo, offset int, stream, subject, reply string, rmsg []byte) {
+	defer s.grWG.Done()
+
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil {
+		return
+	}
+
+	js.mu.Lock()
+	defer js.mu.Unlock()
+
+	var consumers []*consumerAssignment
+	if sas := cc.streams[acc.Name]; sas != nil {
+		if sa := sas[stream]; sa != nil {
+			// Copy over since we need to sort etc.
+			for _, ca := range sa.consumers {
+				consumers = append(consumers, ca)
+			}
+		}
+	}
+	// Needs to be sorted.
+	if len(consumers) > 1 {
+		sort.Slice(consumers, func(i, j int) bool {
+			return strings.Compare(consumers[i].Name, consumers[j].Name) < 0
+		})
+	}
+
+	ocnt := len(consumers)
+	if offset > ocnt {
+		offset = ocnt
+	}
+	if offset > 0 {
+		consumers = consumers[offset:]
+	}
+	if len(consumers) > JSApiListLimit {
+		consumers = consumers[:JSApiListLimit]
+	}
+
+	rc := make(chan *ConsumerInfo, len(consumers))
+
+	// Create an inbox for our responses and send out requests.
+	inbox := infoReplySubject()
+	rsub, _ := s.systemSubscribe(inbox, _EMPTY_, false, cc.c, func(_ *subscription, _ *client, _, reply string, msg []byte) {
+		var ci ConsumerInfo
+		if err := json.Unmarshal(msg, &ci); err != nil {
+			s.Warnf("Error unmarshaling clustered consumer info response:%v", err)
+			return
+		}
+		select {
+		case rc <- &ci:
+		default:
+			s.Warnf("Failed placing consumer info result on internal chan")
+		}
+	})
+	defer s.sysUnsubscribe(rsub)
+
+	// Send out our requests here.
+	for _, ca := range consumers {
+		isubj := fmt.Sprintf("$JSC.CI.%s.%s.%s", ca.Client.Account, stream, ca.Name)
+		s.sendInternalMsgLocked(isubj, inbox, nil, nil)
+	}
+
+	const timeout = 2 * time.Second
+	notActive := time.NewTimer(timeout)
+	defer notActive.Stop()
+
+	var resp = JSApiConsumerListResponse{
+		ApiResponse: ApiResponse{Type: JSApiConsumerListResponseType},
+		Consumers:   []*ConsumerInfo{},
+	}
+
+LOOP:
+	for {
+		select {
+		case <-s.quitCh:
+			return
+		case <-notActive.C:
+			s.Warnf("Did not receive all stream info results for %q", acc)
+			break LOOP
+		case ci := <-rc:
+			resp.Consumers = append(resp.Consumers, ci)
+			// Check to see if we are done.
+			if len(resp.Consumers) == len(consumers) {
+				break LOOP
+			}
+		}
+	}
+
+	// Needs to be sorted as well.
+	if len(resp.Consumers) > 1 {
+		sort.Slice(resp.Consumers, func(i, j int) bool {
+			return strings.Compare(resp.Consumers[i].Name, resp.Consumers[j].Name) < 0
+		})
+	}
+
+	resp.Total = len(resp.Consumers)
+	resp.Limit = JSApiListLimit
+	resp.Offset = offset
+	s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(resp))
 }
 
 func encodeStreamPurge(sp *streamPurge) []byte {
@@ -2447,6 +2652,21 @@ func (mset *Stream) handleClusterSyncRequest(sub *subscription, c *client, subje
 	mset.srv.startGoRoutine(func() { mset.runCatchup(reply, &sreq) })
 }
 
+func (mset *Stream) handleClusterStreamInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	mset.mu.RLock()
+	if mset.client == nil {
+		mset.mu.RUnlock()
+		return
+	}
+	s := mset.srv
+	config := mset.config
+	mset.mu.RUnlock()
+
+	si := &StreamInfo{Created: mset.Created(), State: mset.State(), Config: config}
+	b, _ := json.Marshal(si)
+	s.sendInternalMsgLocked(reply, _EMPTY_, nil, b)
+}
+
 func (mset *Stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	s := mset.srv
 	defer s.grWG.Done()
@@ -2539,15 +2759,19 @@ func (mset *Stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 }
 
 func syncSubjForStream() string {
-	return syncSubject("$SYS.JSC.SYNC")
+	return syncSubject("$JSC.SYNC")
 }
 
 func syncReplySubject() string {
-	return syncSubject("$SYS.JSC.R")
+	return syncSubject("$JSC.R")
+}
+
+func infoReplySubject() string {
+	return syncSubject("$JSC.R")
 }
 
 func syncAckSubject() string {
-	return syncSubject("$SYS.JSC.ACK") + ".*"
+	return syncSubject("$JSC.ACK") + ".*"
 }
 
 func syncSubject(pre string) string {

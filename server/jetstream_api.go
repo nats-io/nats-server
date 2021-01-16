@@ -994,9 +994,10 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, rep
 // Request for the list of all detailed stream info.
 // TODO(dlc) - combine with above long term
 func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil {
+	if c == nil || !s.JetStreamIsLeader() {
 		return
 	}
+
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
 	if err != nil {
 		s.Warnf(badAPIRequestT, msg)
@@ -1023,6 +1024,12 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 			return
 		}
 		offset = req.Offset
+	}
+
+	// Clustered mode will invoke a scatter and gather.
+	if s.JetStreamIsClustered() {
+		s.startGoRoutine(func() { s.jsClusteredStreamListRequest(acc, ci, offset, subject, reply, msg) })
+		return
 	}
 
 	// TODO(dlc) - Maybe hold these results for large results that we expect to be paged.
@@ -1143,8 +1150,9 @@ func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, re
 	}
 	stream := streamNameFromSubject(subject)
 
+	// Clustered.
 	if s.JetStreamIsClustered() {
-		s.jsClusteredStreamDeleteRequest(ci, stream, subject, reply, rmsg)
+		s.jsClusteredStreamDeleteRequest(ci, stream, reply, msg)
 		return
 	}
 
@@ -1814,9 +1822,10 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 
 // Request for the list of all detailed consumer information.
 func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil {
+	if c == nil || !s.JetStreamIsLeader() {
 		return
 	}
+
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
 	if err != nil {
 		s.Warnf(badAPIRequestT, msg)
@@ -1846,6 +1855,13 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 	}
 
 	streamName := streamNameFromSubject(subject)
+
+	// Clustered mode will invoke a scatter and gather.
+	if s.JetStreamIsClustered() {
+		s.startGoRoutine(func() { s.jsClusteredConsumerListRequest(acc, ci, offset, streamName, subject, reply, msg) })
+		return
+	}
+
 	mset, err := acc.LookupStream(streamName)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)

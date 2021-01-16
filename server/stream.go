@@ -89,6 +89,7 @@ type Stream struct {
 	jsa       *jsAccount
 	srv       *Server
 	client    *client
+	sysc      *client
 	sid       int
 	pubAck    []byte
 	sendq     chan *jsPubMsg
@@ -110,6 +111,7 @@ type Stream struct {
 	node    RaftNode
 	catchup bool
 	syncSub *subscription
+	infoSub *subscription
 	nlseq   uint64
 }
 
@@ -192,16 +194,19 @@ func (a *Account) addStream(config *StreamConfig, fsConfig *FileStoreConfig, sa 
 		return nil, fmt.Errorf("subjects overlap with an existing stream")
 	}
 
-	// Setup the internal client.
+	// Setup the internal clients.
 	c := s.createInternalJetStreamClient()
-	mset := &Stream{jsa: jsa, config: cfg, srv: s, client: c, consumers: make(map[string]*Consumer), qch: make(chan struct{})}
+	ic := s.createInternalJetStreamClient()
+	mset := &Stream{jsa: jsa, config: cfg, srv: s, client: c, sysc: ic, consumers: make(map[string]*Consumer), qch: make(chan struct{})}
 
 	jsa.streams[cfg.Name] = mset
 	storeDir := path.Join(jsa.storeDir, streamsDir, cfg.Name)
 	jsa.mu.Unlock()
 
-	// Bind to the account.
+	// Bind to the user account.
 	c.registerWithAccount(a)
+	// Bind to the system account.
+	ic.registerWithAccount(s.SystemAccount())
 
 	// Create the appropriate storage
 	fsCfg := fsConfig
@@ -285,10 +290,10 @@ func (mset *Stream) setLeader(isLeader bool) error {
 		}
 		// Make sure we are listening for sync requests.
 		// TODO(dlc) - Original design was that all in sync members of the group would do DQ.
-		mset.startSyncSub()
+		mset.startClusterSubs()
 	} else {
 		// Stop responding to sync requests.
-		mset.stopSyncSub()
+		mset.stopClusterSubs()
 		// Unsubscribe from direct stream.
 		mset.unsubscribeToStream()
 	}
@@ -297,14 +302,25 @@ func (mset *Stream) setLeader(isLeader bool) error {
 }
 
 // Lock should be held.
-func (mset *Stream) startSyncSub() {
+func (mset *Stream) startClusterSubs() {
+	if mset.infoSub == nil {
+		if jsa := mset.jsa; jsa != nil {
+			isubj := fmt.Sprintf("$JSC.SI.%s.%s", jsa.acc(), mset.config.Name)
+			// Note below the way we subscribe here is so that we can send requests to ourselves.
+			mset.infoSub, _ = mset.srv.systemSubscribe(isubj, _EMPTY_, false, mset.sysc, mset.handleClusterStreamInfoRequest)
+		}
+	}
 	if mset.isClustered() && mset.syncSub == nil {
 		mset.syncSub, _ = mset.srv.sysSubscribe(mset.sa.Sync, mset.handleClusterSyncRequest)
 	}
 }
 
 // Lock should be held.
-func (mset *Stream) stopSyncSub() {
+func (mset *Stream) stopClusterSubs() {
+	if mset.infoSub != nil {
+		mset.srv.sysUnsubscribe(mset.infoSub)
+		mset.infoSub = nil
+	}
 	if mset.syncSub != nil {
 		mset.srv.sysUnsubscribe(mset.syncSub)
 		mset.syncSub = nil
@@ -319,10 +335,7 @@ func (mset *Stream) account() *Account {
 	if jsa == nil {
 		return nil
 	}
-	jsa.mu.RLock()
-	acc := jsa.account
-	jsa.mu.RUnlock()
-	return acc
+	return jsa.acc()
 }
 
 // Helper to determine the max msg size for this stream if file based.
@@ -1440,7 +1453,7 @@ func (mset *Stream) stop(delete bool) error {
 		} else {
 			n.Stop()
 		}
-		mset.stopSyncSub()
+		mset.stopClusterSubs()
 	}
 
 	// Send stream delete advisory after the consumers.
@@ -1467,10 +1480,17 @@ func (mset *Stream) stop(delete bool) error {
 		mset.ddmap = nil
 	}
 
+	sysc := mset.sysc
+	mset.sysc = nil
+
 	// Clustered cleanup.
 	mset.mu.Unlock()
 
 	c.closeConnection(ClientClosed)
+
+	if sysc != nil {
+		sysc.closeConnection(ClientClosed)
+	}
 
 	if mset.store == nil {
 		return nil

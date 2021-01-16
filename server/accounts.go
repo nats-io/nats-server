@@ -220,6 +220,10 @@ func NewAccount(name string) *Account {
 	return a
 }
 
+func (a *Account) String() string {
+	return a.Name
+}
+
 // Used to create shallow copies of accounts for transfer
 // from opts to real accounts in server struct.
 func (a *Account) shallowCopy() *Account {
