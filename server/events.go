@@ -562,6 +562,11 @@ func (s *Server) startRemoteServerSweepTimer() {
 // Length of our system hash used for server targeted messages.
 const sysHashLen = 8
 
+// Computes a hash of 8 characters for the name.
+func getHash(name string) []byte {
+	return getHashSize(name, sysHashLen)
+}
+
 // This will setup our system wide tracking subs.
 // For now we will setup one wildcard subscription to
 // monitor all accounts for changes in number of connections.

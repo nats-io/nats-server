@@ -45,7 +45,7 @@ const (
 	// hash of origin cluster name and <server> is 6 characters hash of origin server pub key.
 	gwReplyPrefix    = "_GR_."
 	gwReplyPrefixLen = len(gwReplyPrefix)
-	gwHashLen        = sysHashLen
+	gwHashLen        = 6
 	gwClusterOffset  = gwReplyPrefixLen
 	gwServerOffset   = gwClusterOffset + gwHashLen + 1
 	gwSubjectOffset  = gwServerOffset + gwHashLen + 1
@@ -161,6 +161,10 @@ type srvGateway struct {
 	resolver  netResolver   // Used to resolve host name before calling net.Dial()
 	sqbsz     int           // Max buffer size to send queue subs protocol. Used for testing.
 	recSubExp time.Duration // For how long do we check if there is a subscription match for a message with reply
+
+	// These are used for routing of mapped replies.
+	sIDHash        []byte   // Server ID hash (6 bytes)
+	routesIDByHash sync.Map // Route's server ID is hashed (6 bytes) and stored in this map.
 }
 
 // Subject interest tally. Also indicates if the key in the map is a
@@ -273,16 +277,21 @@ func validateGatewayOptions(o *Options) error {
 	return nil
 }
 
-// Computes a hash of 8 characters for the name.
-// This will be used for routing of replies.
-func getHash(name string) []byte {
+// Computes a hash for the given `name`. The result will be `size` characters long.
+func getHashSize(name string, size int) []byte {
 	sha := sha256.New()
 	sha.Write([]byte(name))
 	b := sha.Sum(nil)
-	for i := 0; i < gwHashLen; i++ {
+	for i := 0; i < size; i++ {
 		b[i] = digits[int(b[i]%base)]
 	}
-	return b[:gwHashLen]
+	return b[:size]
+}
+
+// Computes a hash of 6 characters for the name.
+// This will be used for routing of replies.
+func getGWHash(name string) []byte {
+	return getHashSize(name, gwHashLen)
 }
 
 func getOldHash(name string) []byte {
@@ -311,13 +320,13 @@ func (s *Server) newGateway(opts *Options) error {
 	gateway.Lock()
 	defer gateway.Unlock()
 
-	s.hash = getHash(s.info.ID)
-	clusterHash := getHash(opts.Gateway.Name)
+	gateway.sIDHash = getGWHash(s.info.ID)
+	clusterHash := getGWHash(opts.Gateway.Name)
 	prefix := make([]byte, 0, gwSubjectOffset)
 	prefix = append(prefix, gwReplyPrefix...)
 	prefix = append(prefix, clusterHash...)
 	prefix = append(prefix, '.')
-	prefix = append(prefix, s.hash...)
+	prefix = append(prefix, gateway.sIDHash...)
 	prefix = append(prefix, '.')
 	gateway.replyPfx = prefix
 
@@ -341,7 +350,7 @@ func (s *Server) newGateway(opts *Options) error {
 		}
 		cfg := &gatewayCfg{
 			RemoteGatewayOpts: rgo.clone(),
-			hash:              getHash(rgo.Name),
+			hash:              getGWHash(rgo.Name),
 			oldHash:           getOldHash(rgo.Name),
 			urls:              make(map[string]*url.URL, len(rgo.URLs)),
 		}
@@ -1329,7 +1338,7 @@ func (s *Server) processImplicitGateway(info *Info) {
 	opts := s.getOpts()
 	cfg = &gatewayCfg{
 		RemoteGatewayOpts: &RemoteGatewayOpts{Name: gwName},
-		hash:              getHash(gwName),
+		hash:              getGWHash(gwName),
 		oldHash:           getOldHash(gwName),
 		urls:              make(map[string]*url.URL, len(info.GatewayURLs)),
 		implicit:          true,
@@ -2650,6 +2659,34 @@ func (s *Server) getRouteByHash(srvHash []byte) *client {
 	return route
 }
 
+// Store this route in map with the key being the remote server's name hash
+// and the remote server's ID hash used by gateway replies mapping routing.
+func (s *Server) storeRouteByHash(srvNameHash, srvIDHash string, c *client) {
+	s.routesByHash.Store(srvNameHash, c)
+	if !s.gateway.enabled {
+		return
+	}
+	s.gateway.routesIDByHash.Store(srvIDHash, c)
+}
+
+// Remove the route with the given keys from the map.
+func (s *Server) removeRouteByHash(srvNameHash, srvIDHash string) {
+	s.routesByHash.Delete(srvNameHash)
+	if !s.gateway.enabled {
+		return
+	}
+	s.gateway.routesIDByHash.Delete(srvIDHash)
+}
+
+// Returns the route with given hash or nil if not found.
+// This is for gateways only.
+func (g *srvGateway) getRouteByHash(hash []byte) *client {
+	if v, ok := g.routesIDByHash.Load(string(hash)); ok {
+		return v.(*client)
+	}
+	return nil
+}
+
 // Returns the subject from the routed reply
 func getSubjectFromGWRoutedReply(reply []byte, isOldPrefix bool) []byte {
 	if isOldPrefix {
@@ -2705,8 +2742,8 @@ func (c *client) handleGatewayReply(msg []byte) (processed bool) {
 	var route *client
 
 	// If the origin is not this server, get the route this should be sent to.
-	if c.kind == GATEWAY && srvHash != nil && !bytes.Equal(srvHash, c.srv.hash) {
-		route = c.srv.getRouteByHash(srvHash)
+	if c.kind == GATEWAY && srvHash != nil && !bytes.Equal(srvHash, c.srv.gateway.sIDHash) {
+		route = c.srv.gateway.getRouteByHash(srvHash)
 		// This will be possibly nil, and in this case we will try to process
 		// the interest from this server.
 	}
