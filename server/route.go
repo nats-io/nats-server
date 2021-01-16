@@ -82,6 +82,7 @@ type route struct {
 	gatewayURL   string
 	leafnodeURL  string
 	hash         string
+	idHash       string
 }
 
 type connectInfo struct {
@@ -611,8 +612,12 @@ func (c *client) processRouteInfo(info *Info) {
 	if len(info.LeafNodeURLs) == 1 {
 		c.route.leafnodeURL = info.LeafNodeURLs[0]
 	}
-	// Compute the hash of this route based on remoteID
+	// Compute the hash of this route based on remote server name
 	c.route.hash = string(getHash(info.Name))
+	// Same with remote server ID (used for GW mapped replies routing).
+	// Use getGWHash since we don't use the same hash len for that
+	// for backward compatibility.
+	c.route.idHash = string(getGWHash(info.ID))
 
 	// Copy over permissions as well.
 	c.opts.Import = info.Import
@@ -1457,11 +1462,12 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 		c.route.connectURLs = info.ClientConnectURLs
 		c.route.wsConnURLs = info.WSConnectURLs
 		cid := c.cid
-		hash := string(c.route.hash)
+		hash := c.route.hash
+		idHash := c.route.idHash
 		c.mu.Unlock()
 
 		// Store this route using the hash as the key
-		s.routesByHash.Store(hash, c)
+		s.storeRouteByHash(hash, idHash, c)
 
 		// Now that we have registered the route, we can remove from the temp map.
 		s.removeFromTempClients(cid)
@@ -1499,7 +1505,7 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 		// from our list.
 		c.route.leafnodeURL = _EMPTY_
 		// Same for the route hash otherwise it would be removed from s.routesByHash.
-		c.route.hash = _EMPTY_
+		c.route.hash, c.route.idHash = _EMPTY_, _EMPTY_
 		c.mu.Unlock()
 
 		remote.mu.Lock()
@@ -2022,6 +2028,7 @@ func (s *Server) removeRoute(c *client) {
 	var lnURL string
 	var gwURL string
 	var hash string
+	var idHash string
 	c.mu.Lock()
 	cid := c.cid
 	r := c.route
@@ -2029,6 +2036,7 @@ func (s *Server) removeRoute(c *client) {
 		rID = r.remoteID
 		lnURL = r.leafnodeURL
 		hash = r.hash
+		idHash = r.idHash
 		gwURL = r.gatewayURL
 	}
 	c.mu.Unlock()
@@ -2050,7 +2058,7 @@ func (s *Server) removeRoute(c *client) {
 		if lnURL != _EMPTY_ && s.removeLeafNodeURL(lnURL) {
 			s.sendAsyncLeafNodeInfo()
 		}
-		s.routesByHash.Delete(hash)
+		s.removeRouteByHash(hash, idHash)
 	}
 	s.removeFromTempClients(cid)
 	s.mu.Unlock()

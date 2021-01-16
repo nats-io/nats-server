@@ -124,7 +124,6 @@ type Server struct {
 	clients          map[uint64]*client
 	routes           map[uint64]*client
 	routesByHash     sync.Map
-	hash             []byte
 	remotes          map[string]*client
 	leafs            map[uint64]*client
 	users            map[string]*User
