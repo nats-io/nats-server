@@ -737,7 +737,7 @@ func TestJetStreamClusterStreamOverlapSubjects(t *testing.T) {
 	}
 
 	// Now do detailed version.
-	resp, err = nc.Request(server.JSApiStreamList, nil, time.Second)
+	resp, err = nc.Request(server.JSApiStreamList, nil, 5*time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1040,7 +1040,7 @@ func TestJetStreamClusterStreamNormalCatchup(t *testing.T) {
 	// Send 10 more while one replica offline.
 	for i := toSend; i <= toSend*2; i++ {
 		msg := []byte(fmt.Sprintf("HELLO JSC-%d", i))
-		if _, err = js.Publish("foo", msg, nats.MaxWait(5*time.Second)); err != nil {
+		if _, err = js.Publish("foo", msg); err != nil {
 			t.Fatalf("Unexpected publish error: %v", err)
 		}
 	}
@@ -1092,7 +1092,7 @@ func TestJetStreamClusterStreamSnapshotCatchup(t *testing.T) {
 		// Send a batch.
 		for i := 0; i < n; i++ {
 			msg := []byte(fmt.Sprintf("HELLO JSC-%d", pseq))
-			if _, err = js.Publish("foo", msg, nats.MaxWait(5*time.Second)); err != nil {
+			if _, err = js.Publish("foo", msg); err != nil {
 				t.Fatalf("Unexpected publish error: %v", err)
 			}
 			pseq++
@@ -1162,7 +1162,7 @@ func TestJetStreamClusterStreamSnapshotCatchupWithPurge(t *testing.T) {
 
 	toSend := 10
 	for i := 0; i < toSend; i++ {
-		if _, err = js.Publish("foo", []byte("OK"), nats.MaxWait(5*time.Second)); err != nil {
+		if _, err = js.Publish("foo", []byte("OK")); err != nil {
 			t.Fatalf("Unexpected publish error: %v", err)
 		}
 	}
@@ -1327,7 +1327,7 @@ func jsClientConnect(t *testing.T, s *server.Server) (*nats.Conn, nats.JetStream
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
-	js, err := nc.JetStream()
+	js, err := nc.JetStream(nats.MaxWait(5 * time.Second))
 	if err != nil {
 		t.Fatalf("Unexpected error getting JetStream context: %v", err)
 	}
@@ -1391,7 +1391,7 @@ func (c *cluster) waitOnNewConsumerLeader(account, stream, consumer string) {
 			time.Sleep(25 * time.Millisecond)
 			return
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	c.t.Fatalf("Expected a consumer leader for %q %q %q, got none", account, stream, consumer)
 }
@@ -1411,10 +1411,10 @@ func (c *cluster) waitOnNewStreamLeader(account, stream string) {
 	expires := time.Now().Add(5 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.streamLeader(account, stream); leader != nil {
-			time.Sleep(25 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 			return
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
 	c.t.Fatalf("Expected a stream leader for %q %q, got none", account, stream)
 }
@@ -1444,10 +1444,10 @@ func (c *cluster) waitOnStreamCurrent(s *server.Server, account, stream string) 
 	expires := time.Now().Add(10 * time.Second)
 	for time.Now().Before(expires) {
 		if s.JetStreamIsStreamCurrent(account, stream) {
-			time.Sleep(25 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
 	c.t.Fatalf("Expected server %q to eventually be current for stream %q", s, stream)
 }
@@ -1457,10 +1457,10 @@ func (c *cluster) waitOnServerCurrent(s *server.Server) {
 	expires := time.Now().Add(5 * time.Second)
 	for time.Now().Before(expires) {
 		if s.JetStreamIsCurrent() {
-			time.Sleep(25 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
 	c.t.Fatalf("Expected server %q to eventually be current", s)
 }
@@ -1502,10 +1502,12 @@ func (c *cluster) waitOnLeader() {
 	expires := time.Now().Add(5 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.leader(); leader != nil {
+			time.Sleep(100 * time.Millisecond)
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
+
 	c.t.Fatalf("Expected a cluster leader, got none")
 }
 
@@ -1516,16 +1518,17 @@ func (c *cluster) waitOnClusterReady() {
 	expires := time.Now().Add(10 * time.Second)
 	for time.Now().Before(expires) {
 		if leader = c.leader(); leader != nil {
+			time.Sleep(100 * time.Millisecond)
 			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
 	// Now make sure we have all peers.
 	for leader != nil && time.Now().Before(expires) {
 		if len(leader.JetStreamClusterPeers()) == len(c.servers) {
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
 	c.t.Fatalf("Expected a cluster leader and fully formed cluster")
 }
