@@ -1673,7 +1673,9 @@ func (s *Server) debugSubscribers(sub *subscription, c *client, subject, reply s
 		}
 		// Cleanup the WC entry.
 		s.mu.Lock()
-		delete(s.sys.replies, replySubj)
+		if s.sys != nil && s.sys.replies != nil {
+			delete(s.sys.replies, replySubj)
+		}
 		s.mu.Unlock()
 		// Send the response.
 		s.sendInternalAccountMsg(nil, reply, atomic.LoadInt32(&nsubs))
