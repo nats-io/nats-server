@@ -152,8 +152,9 @@ func (a *Account) addStream(config *StreamConfig, fsConfig *FileStoreConfig, sa 
 		return nil, err
 	}
 
-	// If we do not have the stream assigned to us in cluster mode we can not proceed.
-	// Running in single server mode this always returns true.
+	// If we do not have the stream currently assigned to us in cluster mode we will proceed but warn.
+	// This can happen on startup with restored state where on meta replay we still do not have
+	// the assignment. Running in single server mode this always returns true.
 	if !jsa.streamAssigned(config.Name) {
 		s.Debugf("Stream %q does not seem to be assigned to this server", config.Name)
 	}
@@ -305,7 +306,7 @@ func (mset *Stream) setLeader(isLeader bool) error {
 func (mset *Stream) startClusterSubs() {
 	if mset.infoSub == nil {
 		if jsa := mset.jsa; jsa != nil {
-			isubj := fmt.Sprintf("$JSC.SI.%s.%s", jsa.acc(), mset.config.Name)
+			isubj := fmt.Sprintf(clusterStreamInfoT, jsa.acc(), mset.config.Name)
 			// Note below the way we subscribe here is so that we can send requests to ourselves.
 			mset.infoSub, _ = mset.srv.systemSubscribe(isubj, _EMPTY_, false, mset.sysc, mset.handleClusterStreamInfoRequest)
 		}

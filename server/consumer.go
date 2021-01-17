@@ -233,8 +233,9 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, node RaftN
 	s, jsa := mset.srv, mset.jsa
 	mset.mu.RUnlock()
 
-	// If we do not have the consumer assigned to us in cluster mode we can not proceed.
-	// Running in single server mode this always returns true.
+	// If we do not have the consumer currently assigned to us in cluster mode we will proceed but warn.
+	// This can happen on startup with restored state where on meta replay we still do not have
+	// the assignment. Running in single server mode this always returns true.
 	if oname != _EMPTY_ && !jsa.consumerAssigned(mset.Name(), oname) {
 		s.Debugf("Consumer %q > %q does not seem to be assigned to this server", mset.Name(), oname)
 	}
@@ -604,16 +605,17 @@ func (o *Consumer) setLeader(isLeader bool) {
 			return
 		}
 
+		mset.mu.RLock()
+		s, jsa, stream := mset.srv, mset.jsa, mset.config.Name
+		mset.mu.RUnlock()
+
 		o.mu.Lock()
 		// Restore our saved state. During non-leader status we just update our underlying store.
 		o.readStoredState()
 
 		// Do info sub.
-		if o.infoSub == nil && mset != nil && mset.jsa != nil {
-			mset.mu.RLock()
-			s, jsa, stream := mset.srv, mset.jsa, mset.config.Name
-			mset.mu.RUnlock()
-			isubj := fmt.Sprintf("$JSC.CI.%s.%s.%s", jsa.acc(), stream, o.name)
+		if o.infoSub == nil && jsa != nil {
+			isubj := fmt.Sprintf(clusterConsumerInfoT, jsa.acc(), stream, o.name)
 			// Note below the way we subscribe here is so that we can send requests to ourselves.
 			o.infoSub, _ = s.systemSubscribe(isubj, _EMPTY_, false, o.sysc, o.handleClusterConsumerInfoRequest)
 		}

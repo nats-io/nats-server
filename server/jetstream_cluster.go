@@ -1014,6 +1014,8 @@ func (js *jetStream) applyStreamEntries(mset *Stream, ce *CommittedEntry) (bool,
 					panic(err.Error())
 				}
 				// Skip by hand here since first msg special case.
+				// Reason is sequence is unsigned and for lseq being 0
+				// the lseq under stream would have be -1.
 				if lseq == 0 && mset.lastSeq() != 0 {
 					continue
 				}
@@ -1991,7 +1993,7 @@ func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, offs
 
 	// Send out our requests here.
 	for _, sa := range streams {
-		isubj := fmt.Sprintf("$JSC.SI.%s.%s", sa.Client.Account, sa.Config.Name)
+		isubj := fmt.Sprintf(clusterStreamInfoT, sa.Client.Account, sa.Config.Name)
 		s.sendInternalMsgLocked(isubj, inbox, nil, nil)
 	}
 
@@ -2094,7 +2096,7 @@ func (s *Server) jsClusteredConsumerListRequest(acc *Account, ci *ClientInfo, of
 
 	// Send out our requests here.
 	for _, ca := range consumers {
-		isubj := fmt.Sprintf("$JSC.CI.%s.%s.%s", ca.Client.Account, stream, ca.Name)
+		isubj := fmt.Sprintf(clusterConsumerInfoT, ca.Client.Account, stream, ca.Name)
 		s.sendInternalMsgLocked(isubj, inbox, nil, nil)
 	}
 
@@ -2789,3 +2791,6 @@ func syncSubject(pre string) string {
 	sb.Write(b[:])
 	return sb.String()
 }
+
+const clusterStreamInfoT = "$JSC.SI.%s.%s"
+const clusterConsumerInfoT = "$JSC.CI.%s.%s.%s"
