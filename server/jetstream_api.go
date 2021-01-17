@@ -1028,6 +1028,8 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 
 	// Clustered mode will invoke a scatter and gather.
 	if s.JetStreamIsClustered() {
+		// Need to copy these off before sending..
+		msg = append(msg[:0:0], msg...)
 		s.startGoRoutine(func() { s.jsClusteredStreamListRequest(acc, ci, offset, subject, reply, msg) })
 		return
 	}
@@ -1858,7 +1860,10 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 
 	// Clustered mode will invoke a scatter and gather.
 	if s.JetStreamIsClustered() {
-		s.startGoRoutine(func() { s.jsClusteredConsumerListRequest(acc, ci, offset, streamName, subject, reply, msg) })
+		msg = append(msg[:0:0], msg...)
+		s.startGoRoutine(func() {
+			s.jsClusteredConsumerListRequest(acc, ci, offset, streamName, subject, reply, msg)
+		})
 		return
 	}
 
