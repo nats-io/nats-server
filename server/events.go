@@ -1672,11 +1672,17 @@ func (s *Server) debugSubscribers(sub *subscription, c *client, subject, reply s
 		case <-time.After(500 * time.Millisecond):
 		}
 		// Cleanup the WC entry.
+		var sendResponse bool
 		s.mu.Lock()
-		delete(s.sys.replies, replySubj)
+		if s.sys != nil && s.sys.replies != nil {
+			delete(s.sys.replies, replySubj)
+			sendResponse = true
+		}
 		s.mu.Unlock()
-		// Send the response.
-		s.sendInternalAccountMsg(nil, reply, atomic.LoadInt32(&nsubs))
+		if sendResponse {
+			// Send the response.
+			s.sendInternalAccountMsg(nil, reply, atomic.LoadInt32(&nsubs))
+		}
 	}()
 }
 

@@ -25,89 +25,85 @@ import (
 	"time"
 )
 
+// Request API subjects for JetStream.
+const (
+	// defaultAPIPrefix is the default prefix for the JetStream API.
+	defaultAPIPrefix = "$JS.API."
+
+	// apiAccountInfo is for obtaining general information about JetStream.
+	apiAccountInfo = "INFO"
+
+	// apiConsumerCreateT is used to create consumers.
+	apiConsumerCreateT = "CONSUMER.CREATE.%s"
+
+	// apiDurableCreateT is used to create durable consumers.
+	apiDurableCreateT = "CONSUMER.DURABLE.CREATE.%s.%s"
+
+	// apiConsumerInfoT is used to create consumers.
+	apiConsumerInfoT = "CONSUMER.INFO.%s.%s"
+
+	// apiRequestNextT is the prefix for the request next message(s) for a consumer in worker/pull mode.
+	apiRequestNextT = "CONSUMER.MSG.NEXT.%s.%s"
+
+	// apiDeleteConsumerT is used to delete consumers.
+	apiConsumerDeleteT = "CONSUMER.DELETE.%s.%s"
+
+	// apiConsumerListT is used to return all detailed consumer information
+	apiConsumerListT = "CONSUMER.LIST.%s"
+
+	// apiStreams can lookup a stream by subject.
+	apiStreams = "STREAM.NAMES"
+
+	// apiStreamCreateT is the endpoint to create new streams.
+	apiStreamCreateT = "STREAM.CREATE.%s"
+
+	// apiStreamInfoT is the endpoint to get information on a stream.
+	apiStreamInfoT = "STREAM.INFO.%s"
+
+	// apiStreamUpdate is the endpoint to update existing streams.
+	apiStreamUpdateT = "STREAM.UPDATE.%s"
+
+	// apiStreamDeleteT is the endpoint to delete streams.
+	apiStreamDeleteT = "STREAM.DELETE.%s"
+
+	// apiPurgeStreamT is the endpoint to purge streams.
+	apiStreamPurgeT = "STREAM.PURGE.%s"
+
+	// apiStreamListT is the endpoint that will return all detailed stream information
+	apiStreamList = "STREAM.LIST"
+
+	// apiMsgDeleteT is the endpoint to remove a message.
+	apiMsgDeleteT = "STREAM.MSG.DELETE.%s"
+)
+
 // JetStream is the public interface for JetStream.
 type JetStream interface {
-	// Publishing messages to JetStream.
+	// Publish publishes a message to JetStream.
 	Publish(subj string, data []byte, opts ...PubOpt) (*PubAck, error)
+
+	// Publish publishes a Msg to JetStream.
 	PublishMsg(m *Msg, opts ...PubOpt) (*PubAck, error)
 
-	// Subscribing to messages in JetStream.
+	// Subscribe creates an async Subscription for JetStream.
 	Subscribe(subj string, cb MsgHandler, opts ...SubOpt) (*Subscription, error)
+
+	// SubscribeSync creates a Subscription that can be used to process messages synchronously.
 	SubscribeSync(subj string, opts ...SubOpt) (*Subscription, error)
 
-	// Channel versions.
+	// ChanSubscribe creates channel based Subscription.
 	ChanSubscribe(subj string, ch chan *Msg, opts ...SubOpt) (*Subscription, error)
-	// QueueSubscribe.
+
+	// QueueSubscribe creates a Subscription with a queue group.
 	QueueSubscribe(subj, queue string, cb MsgHandler, opts ...SubOpt) (*Subscription, error)
 }
 
-// JetStreamManager is the public interface for managing JetStream streams & consumers.
-type JetStreamManager interface {
-	// Create a stream.
-	AddStream(cfg *StreamConfig) (*StreamInfo, error)
-	// Update a stream.
-	UpdateStream(cfg *StreamConfig) (*StreamInfo, error)
-	// Delete a stream.
-	DeleteStream(name string) error
-	// Stream information.
-	StreamInfo(stream string) (*StreamInfo, error)
-	// Purge stream messages.
-	PurgeStream(name string) error
-	// NewStreamLister is used to return pages of StreamInfo objects.
-	NewStreamLister() *StreamLister
-	// DeleteMsg erases a message from a Stream.
-	DeleteMsg(name string, seq uint64) error
-
-	// Create a consumer.
-	AddConsumer(stream string, cfg *ConsumerConfig) (*ConsumerInfo, error)
-	// Delete a consumer.
-	DeleteConsumer(stream, consumer string) error
-	// Consumer information.
-	ConsumerInfo(stream, name string) (*ConsumerInfo, error)
-	// NewConsumerLister is used to return pages of ConsumerInfo objects.
-	NewConsumerLister(stream string) *ConsumerLister
-}
-
-// JetStream is the public interface for the JetStream context.
+// JetStreamContext is the public interface for JetStream.
 type JetStreamContext interface {
 	JetStream
 	JetStreamManager
 }
 
-// APIError is included in all API responses if there was an error.
-type APIError struct {
-	Code        int    `json:"code"`
-	Description string `json:"description,omitempty"`
-}
-
-// APIResponse is a standard response from the JetStream JSON API
-type APIResponse struct {
-	Type  string    `json:"type"`
-	Error *APIError `json:"error,omitempty"`
-}
-
-type AccountInfoResponse struct {
-	APIResponse
-	*AccountStats
-}
-
-// AccountLimits is for the information about
-type AccountLimits struct {
-	MaxMemory    int64 `json:"max_memory"`
-	MaxStore     int64 `json:"max_storage"`
-	MaxStreams   int   `json:"max_streams"`
-	MaxConsumers int   `json:"max_consumers"`
-}
-
-// AccountStats returns current statistics about the account's JetStream usage.
-type AccountStats struct {
-	Memory  uint64        `json:"memory"`
-	Store   uint64        `json:"storage"`
-	Streams int           `json:"streams"`
-	Limits  AccountLimits `json:"limits"`
-}
-
-// Internal struct for jetstream
+// js is an internal struct from a JetStreamContext.
 type js struct {
 	nc *Conn
 	// For importing JetStream from other accounts.
@@ -118,51 +114,11 @@ type js struct {
 	direct bool
 }
 
-// Request API subjects for JetStream.
-const (
-	// JSDefaultAPIPrefix is the default prefix for the JetStream API.
-	JSDefaultAPIPrefix = "$JS.API."
-	// JSApiAccountInfo is for obtaining general information about JetStream.
-	JSApiAccountInfo = "INFO"
-	// JSApiConsumerCreateT is used to create consumers.
-	JSApiConsumerCreateT = "CONSUMER.CREATE.%s"
-	// JSApiDurableCreateT is used to create durable consumers.
-	JSApiDurableCreateT = "CONSUMER.DURABLE.CREATE.%s.%s"
-	// JSApiConsumerInfoT is used to create consumers.
-	JSApiConsumerInfoT = "CONSUMER.INFO.%s.%s"
-	// JSApiRequestNextT is the prefix for the request next message(s) for a consumer in worker/pull mode.
-	JSApiRequestNextT = "CONSUMER.MSG.NEXT.%s.%s"
-	// JSApiDeleteConsumerT is used to delete consumers.
-	JSApiConsumerDeleteT = "CONSUMER.DELETE.%s.%s"
-	// JSApiConsumerListT is used to return all detailed consumer information
-	JSApiConsumerListT = "CONSUMER.LIST.%s"
-	// JSApiStreams can lookup a stream by subject.
-	JSApiStreams = "STREAM.NAMES"
-	// JSApiStreamCreateT is the endpoint to create new streams.
-	JSApiStreamCreateT = "STREAM.CREATE.%s"
-	// JSApiStreamInfoT is the endpoint to get information on a stream.
-	JSApiStreamInfoT = "STREAM.INFO.%s"
-	// JSApiStreamUpdate is the endpoint to update existing streams.
-	JSApiStreamUpdateT = "STREAM.UPDATE.%s"
-	// JSApiStreamDeleteT is the endpoint to delete streams.
-	JSApiStreamDeleteT = "STREAM.DELETE.%s"
-	// JSApiStreamSnapshotT is the endpoint to snapshot streams.
-	JSApiStreamSnapshotT = "STREAM.SNAPSHOT.%s"
-	// JSApiStreamRestoreT is the endpoint to restore a stream from a snapshot.
-	JSApiStreamRestoreT = "STREAM.RESTORE.%s"
-	// JSApiPurgeStreamT is the endpoint to purge streams.
-	JSApiStreamPurgeT = "STREAM.PURGE.%s"
-	// JSApiStreamListT is the endpoint that will return all detailed stream information
-	JSApiStreamList = "STREAM.LIST"
-	// JSApiMsgDeleteT is the endpoint to remove a message.
-	JSApiMsgDeleteT = "STREAM.MSG.DELETE.%s"
-)
-
 // JetStream returns a JetStream context for pub/sub interactions.
 func (nc *Conn) JetStream(opts ...JSOpt) (JetStreamContext, error) {
 	const defaultRequestWait = 5 * time.Second
 
-	js := &js{nc: nc, pre: JSDefaultAPIPrefix, wait: defaultRequestWait}
+	js := &js{nc: nc, pre: defaultAPIPrefix, wait: defaultRequestWait}
 
 	for _, opt := range opts {
 		if err := opt.configureJSContext(js); err != nil {
@@ -174,14 +130,14 @@ func (nc *Conn) JetStream(opts ...JSOpt) (JetStreamContext, error) {
 		return js, nil
 	}
 
-	resp, err := nc.Request(js.apiSubj(JSApiAccountInfo), nil, js.wait)
+	resp, err := nc.Request(js.apiSubj(apiAccountInfo), nil, js.wait)
 	if err != nil {
 		if err == ErrNoResponders {
 			err = ErrJetStreamNotEnabled
 		}
 		return nil, err
 	}
-	var info AccountInfoResponse
+	var info accountInfoResponse
 	if err := json.Unmarshal(resp.Data, &info); err != nil {
 		return nil, err
 	}
@@ -203,6 +159,7 @@ func (opt jsOptFn) configureJSContext(opts *js) error {
 	return opt(opts)
 }
 
+// APIPrefix changes the default prefix used for the JetStream API.
 func APIPrefix(pre string) JSOpt {
 	return jsOptFn(func(js *js) error {
 		js.pre = pre
@@ -213,6 +170,7 @@ func APIPrefix(pre string) JSOpt {
 	})
 }
 
+// DirectOnly makes a JetStream context avoid using the JetStream API altogether.
 func DirectOnly() JSOpt {
 	return jsOptFn(func(js *js) error {
 		js.direct = true
@@ -251,11 +209,13 @@ type pubOpts struct {
 	seq uint64 // Expected last sequence
 }
 
-type PubAckResponse struct {
-	APIResponse
+// pubAckResponse is the ack response from the JetStream API when of publishing a message.
+type pubAckResponse struct {
+	apiResponse
 	*PubAck
 }
 
+// PubAck is an ack received after successfully publishing a message.
 type PubAck struct {
 	Stream    string `json:"stream"`
 	Sequence  uint64 `json:"seq"`
@@ -270,6 +230,7 @@ const (
 	ExpectedLastMsgIdHdr = "Nats-Expected-Last-Msg-Id"
 )
 
+// PublishMsg publishes a Msg to a stream from JetStream.
 func (js *js) PublishMsg(m *Msg, opts ...PubOpt) (*PubAck, error) {
 	var o pubOpts
 	if len(opts) > 0 {
@@ -318,7 +279,7 @@ func (js *js) PublishMsg(m *Msg, opts ...PubOpt) (*PubAck, error) {
 		}
 		return nil, err
 	}
-	var pa PubAckResponse
+	var pa pubAckResponse
 	if err := json.Unmarshal(resp.Data, &pa); err != nil {
 		return nil, ErrInvalidJSAck
 	}
@@ -331,11 +292,10 @@ func (js *js) PublishMsg(m *Msg, opts ...PubOpt) (*PubAck, error) {
 	return pa.PubAck, nil
 }
 
+// Publish publishes a message to a stream from JetStream.
 func (js *js) Publish(subj string, data []byte, opts ...PubOpt) (*PubAck, error) {
 	return js.PublishMsg(&Msg{Subject: subj, Data: data}, opts...)
 }
-
-// Options for publishing to JetStream.
 
 // MsgId sets the message ID used for de-duplication.
 func MsgId(id string) PubOpt {
@@ -398,13 +358,8 @@ func Context(ctx context.Context) ContextOpt {
 }
 
 // Subscribe
-// We will match subjects to streams and consumers on the user's behalf.
 
-type JSApiCreateConsumerRequest struct {
-	Stream string          `json:"stream_name"`
-	Config *ConsumerConfig `json:"config"`
-}
-
+// ConsumerConfig is the configuration of a JetStream consumer.
 type ConsumerConfig struct {
 	Durable         string        `json:"durable_name,omitempty"`
 	DeliverSubject  string        `json:"deliver_subject,omitempty"`
@@ -422,11 +377,7 @@ type ConsumerConfig struct {
 	MaxAckPending   int           `json:"max_ack_pending,omitempty"`
 }
 
-type JSApiConsumerResponse struct {
-	APIResponse
-	*ConsumerInfo
-}
-
+// ConsumerInfo is the info from a JetStream consumer.
 type ConsumerInfo struct {
 	Stream         string         `json:"stream_name"`
 	Name           string         `json:"name"`
@@ -440,12 +391,13 @@ type ConsumerInfo struct {
 	NumPending     uint64         `json:"num_pending"`
 }
 
+// SequencePair includes the consumer and stream sequence info from a JetStream consumer.
 type SequencePair struct {
 	Consumer uint64 `json:"consumer_seq"`
 	Stream   uint64 `json:"stream_seq"`
 }
 
-// NextRequest is for getting next messages for pull based consumers.
+// NextRequest is for getting next messages for pull based consumers from JetStream.
 type NextRequest struct {
 	Expires *time.Time `json:"expires,omitempty"`
 	Batch   int        `json:"batch,omitempty"`
@@ -483,23 +435,6 @@ func (js *js) QueueSubscribe(subj, queue string, cb MsgHandler, opts ...SubOpt) 
 // Subscribe will create a subscription to the appropriate stream and consumer.
 func (js *js) ChanSubscribe(subj string, ch chan *Msg, opts ...SubOpt) (*Subscription, error) {
 	return js.subscribe(subj, _EMPTY_, nil, ch, opts)
-}
-
-// APIPaged includes variables used to create paged responses from the JSON API
-type APIPaged struct {
-	Total  int `json:"total"`
-	Offset int `json:"offset"`
-	Limit  int `json:"limit"`
-}
-
-type streamRequest struct {
-	Subject string `json:"subject,omitempty"`
-}
-
-type JSApiStreamNamesResponse struct {
-	APIResponse
-	APIPaged
-	Streams []string `json:"streams"`
 }
 
 func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, opts []SubOpt) (*Subscription, error) {
@@ -592,7 +527,7 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, opts []
 			cfg.MaxAckPending = maxMsgs
 		}
 
-		req := &JSApiCreateConsumerRequest{
+		req := &createConsumerRequest{
 			Stream: stream,
 			Config: &cfg,
 		}
@@ -604,9 +539,9 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, opts []
 
 		var ccSubj string
 		if cfg.Durable != _EMPTY_ {
-			ccSubj = fmt.Sprintf(JSApiDurableCreateT, stream, cfg.Durable)
+			ccSubj = fmt.Sprintf(apiDurableCreateT, stream, cfg.Durable)
 		} else {
-			ccSubj = fmt.Sprintf(JSApiConsumerCreateT, stream)
+			ccSubj = fmt.Sprintf(apiConsumerCreateT, stream)
 		}
 
 		resp, err := js.nc.Request(js.apiSubj(ccSubj), j, js.wait)
@@ -618,7 +553,7 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, opts []
 			return nil, err
 		}
 
-		var info JSApiConsumerResponse
+		var info consumerResponse
 		err = json.Unmarshal(resp.Data, &info)
 		if err != nil {
 			sub.Unsubscribe()
@@ -652,15 +587,24 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, opts []
 	return sub, nil
 }
 
+type streamRequest struct {
+	Subject string `json:"subject,omitempty"`
+}
+
+type streamNamesResponse struct {
+	apiResponse
+	apiPaged
+	Streams []string `json:"streams"`
+}
+
 func (js *js) lookupStreamBySubject(subj string) (string, error) {
-	var slr JSApiStreamNamesResponse
-	// FIXME(dlc) - prefix
+	var slr streamNamesResponse
 	req := &streamRequest{subj}
 	j, err := json.Marshal(req)
 	if err != nil {
 		return _EMPTY_, err
 	}
-	resp, err := js.nc.Request(js.apiSubj(JSApiStreams), j, js.wait)
+	resp, err := js.nc.Request(js.apiSubj(apiStreams), j, js.wait)
 	if err != nil {
 		if err == ErrNoResponders {
 			err = ErrJetStreamNotEnabled
@@ -779,7 +723,7 @@ func StartSequence(seq uint64) SubOpt {
 	})
 }
 
-// DeliverFromTime configures a Consumer to receive
+// StartTime configures a Consumer to receive
 // messages from a start time.
 func StartTime(startTime time.Time) SubOpt {
 	return subOptFn(func(opts *subOpts) error {
@@ -838,13 +782,12 @@ func (sub *Subscription) Poll() error {
 	sub.mu.Unlock()
 
 	req, _ := json.Marshal(&NextRequest{Batch: batch})
-	reqNext := js.apiSubj(fmt.Sprintf(JSApiRequestNextT, stream, consumer))
+	reqNext := js.apiSubj(fmt.Sprintf(apiRequestNextT, stream, consumer))
 	return nc.PublishRequest(reqNext, reply, req)
 }
 
 func (js *js) getConsumerInfo(stream, consumer string) (*ConsumerInfo, error) {
-	// FIXME(dlc) - prefix
-	ccInfoSubj := fmt.Sprintf(JSApiConsumerInfoT, stream, consumer)
+	ccInfoSubj := fmt.Sprintf(apiConsumerInfoT, stream, consumer)
 	resp, err := js.nc.Request(js.apiSubj(ccInfoSubj), nil, js.wait)
 	if err != nil {
 		if err == ErrNoResponders {
@@ -853,7 +796,7 @@ func (js *js) getConsumerInfo(stream, consumer string) (*ConsumerInfo, error) {
 		return nil, err
 	}
 
-	var info JSApiConsumerResponse
+	var info consumerResponse
 	if err := json.Unmarshal(resp.Data, &info); err != nil {
 		return nil, err
 	}
@@ -1152,443 +1095,6 @@ func (p DeliverPolicy) MarshalJSON() ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("unknown deliver policy %v", p)
 	}
-}
-
-// AddConsumer will add a JetStream consumer.
-func (js *js) AddConsumer(stream string, cfg *ConsumerConfig) (*ConsumerInfo, error) {
-	if stream == _EMPTY_ {
-		return nil, ErrStreamNameRequired
-	}
-	req, err := json.Marshal(&JSApiCreateConsumerRequest{Stream: stream, Config: cfg})
-	if err != nil {
-		return nil, err
-	}
-
-	var ccSubj string
-	if cfg != nil && cfg.Durable != _EMPTY_ {
-		if strings.Contains(cfg.Durable, ".") {
-			return nil, ErrInvalidDurableName
-		}
-		ccSubj = fmt.Sprintf(JSApiDurableCreateT, stream, cfg.Durable)
-	} else {
-		ccSubj = fmt.Sprintf(JSApiConsumerCreateT, stream)
-	}
-
-	resp, err := js.nc.Request(js.apiSubj(ccSubj), req, js.wait)
-	if err != nil {
-		if err == ErrNoResponders {
-			err = ErrJetStreamNotEnabled
-		}
-		return nil, err
-	}
-	var info JSApiConsumerResponse
-	err = json.Unmarshal(resp.Data, &info)
-	if err != nil {
-		return nil, err
-	}
-	if info.Error != nil {
-		return nil, errors.New(info.Error.Description)
-	}
-	return info.ConsumerInfo, nil
-}
-
-// JSAPIConsumerDeleteResponse is the response for a Consumer delete request.
-type JSAPIConsumerDeleteResponse struct {
-	APIResponse
-	Success bool `json:"success,omitempty"`
-}
-
-// DeleteConsumer deletes a Consumer.
-func (js *js) DeleteConsumer(stream, durable string) error {
-	if stream == _EMPTY_ {
-		return ErrStreamNameRequired
-	}
-
-	dcSubj := js.apiSubj(fmt.Sprintf(JSApiConsumerDeleteT, stream, durable))
-	r, err := js.nc.Request(dcSubj, nil, js.wait)
-	if err != nil {
-		return err
-	}
-	var resp JSAPIConsumerDeleteResponse
-	if err := json.Unmarshal(r.Data, &resp); err != nil {
-		return err
-	}
-	if resp.Error != nil {
-		return errors.New(resp.Error.Description)
-	}
-	return nil
-}
-
-// ConsumerInfo returns information about a Consumer.
-func (js *js) ConsumerInfo(stream, durable string) (*ConsumerInfo, error) {
-	return js.getConsumerInfo(stream, durable)
-}
-
-// APIPagedRequest includes parameters allowing specific pages to be requested
-// from APIs responding with APIPaged.
-type APIPagedRequest struct {
-	Offset int `json:"offset"`
-}
-
-// JSAPIConsumersRequest is the type used for Consumers requests.
-type JSAPIConsumersRequest struct {
-	APIPagedRequest
-}
-
-// JSAPIConsumerListResponse is the response for a Consumers List request.
-type JSAPIConsumerListResponse struct {
-	APIResponse
-	APIPaged
-	Consumers []*ConsumerInfo `json:"consumers"`
-}
-
-// ConsumerLister fetches pages of ConsumerInfo objects. This object is not
-// safe to use for multiple threads.
-type ConsumerLister struct {
-	stream string
-	js     *js
-
-	err      error
-	offset   int
-	page     []*ConsumerInfo
-	pageInfo *APIPaged
-}
-
-// Next fetches the next ConsumerInfo page.
-func (c *ConsumerLister) Next() bool {
-	if c.err != nil {
-		return false
-	}
-	if c.stream == _EMPTY_ {
-		c.err = ErrStreamNameRequired
-		return false
-	}
-	if c.pageInfo != nil && c.offset >= c.pageInfo.Total {
-		return false
-	}
-
-	req, err := json.Marshal(JSAPIConsumersRequest{
-		APIPagedRequest: APIPagedRequest{Offset: c.offset},
-	})
-	if err != nil {
-		c.err = err
-		return false
-	}
-	clSubj := c.js.apiSubj(fmt.Sprintf(JSApiConsumerListT, c.stream))
-	r, err := c.js.nc.Request(clSubj, req, c.js.wait)
-	if err != nil {
-		c.err = err
-		return false
-	}
-	var resp JSAPIConsumerListResponse
-	if err := json.Unmarshal(r.Data, &resp); err != nil {
-		c.err = err
-		return false
-	}
-	if resp.Error != nil {
-		c.err = errors.New(resp.Error.Description)
-		return false
-	}
-
-	c.pageInfo = &resp.APIPaged
-	c.page = resp.Consumers
-	c.offset += len(c.page)
-	return true
-}
-
-// Page returns the current ConsumerInfo page.
-func (c *ConsumerLister) Page() []*ConsumerInfo {
-	return c.page
-}
-
-// Err returns any errors found while fetching pages.
-func (c *ConsumerLister) Err() error {
-	return c.err
-}
-
-// NewConsumerLister is used to return pages of ConsumerInfo objects.
-func (js *js) NewConsumerLister(stream string) *ConsumerLister {
-	return &ConsumerLister{stream: stream, js: js}
-}
-
-// StreamConfig will determine the properties for a stream.
-// There are sensible defaults for most. If no subjects are
-// given the name will be used as the only subject.
-type StreamConfig struct {
-	Name         string          `json:"name"`
-	Subjects     []string        `json:"subjects,omitempty"`
-	Retention    RetentionPolicy `json:"retention"`
-	MaxConsumers int             `json:"max_consumers"`
-	MaxMsgs      int64           `json:"max_msgs"`
-	MaxBytes     int64           `json:"max_bytes"`
-	Discard      DiscardPolicy   `json:"discard"`
-	MaxAge       time.Duration   `json:"max_age"`
-	MaxMsgSize   int32           `json:"max_msg_size,omitempty"`
-	Storage      StorageType     `json:"storage"`
-	Replicas     int             `json:"num_replicas"`
-	NoAck        bool            `json:"no_ack,omitempty"`
-	Template     string          `json:"template_owner,omitempty"`
-	Duplicates   time.Duration   `json:"duplicate_window,omitempty"`
-}
-
-// JSApiStreamCreateResponse stream creation.
-type JSApiStreamCreateResponse struct {
-	APIResponse
-	*StreamInfo
-}
-
-func (js *js) AddStream(cfg *StreamConfig) (*StreamInfo, error) {
-	if cfg == nil || cfg.Name == _EMPTY_ {
-		return nil, ErrStreamNameRequired
-	}
-
-	req, err := json.Marshal(cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	csSubj := js.apiSubj(fmt.Sprintf(JSApiStreamCreateT, cfg.Name))
-	r, err := js.nc.Request(csSubj, req, js.wait)
-	if err != nil {
-		return nil, err
-	}
-	var resp JSApiStreamCreateResponse
-	if err := json.Unmarshal(r.Data, &resp); err != nil {
-		return nil, err
-	}
-	if resp.Error != nil {
-		return nil, errors.New(resp.Error.Description)
-	}
-	return resp.StreamInfo, nil
-}
-
-type JSApiStreamInfoResponse = JSApiStreamCreateResponse
-
-func (js *js) StreamInfo(stream string) (*StreamInfo, error) {
-	csSubj := js.apiSubj(fmt.Sprintf(JSApiStreamInfoT, stream))
-	r, err := js.nc.Request(csSubj, nil, js.wait)
-	if err != nil {
-		return nil, err
-	}
-	var resp JSApiStreamInfoResponse
-	if err := json.Unmarshal(r.Data, &resp); err != nil {
-		return nil, err
-	}
-	if resp.Error != nil {
-		return nil, errors.New(resp.Error.Description)
-	}
-	return resp.StreamInfo, nil
-}
-
-// StreamInfo shows config and current state for this stream.
-type StreamInfo struct {
-	Config  StreamConfig `json:"config"`
-	Created time.Time    `json:"created"`
-	State   StreamState  `json:"state"`
-}
-
-// StreamStats is information about the given stream.
-type StreamState struct {
-	Msgs      uint64    `json:"messages"`
-	Bytes     uint64    `json:"bytes"`
-	FirstSeq  uint64    `json:"first_seq"`
-	FirstTime time.Time `json:"first_ts"`
-	LastSeq   uint64    `json:"last_seq"`
-	LastTime  time.Time `json:"last_ts"`
-	Consumers int       `json:"consumer_count"`
-}
-
-// UpdateStream updates a Stream.
-func (js *js) UpdateStream(cfg *StreamConfig) (*StreamInfo, error) {
-	if cfg == nil || cfg.Name == _EMPTY_ {
-		return nil, ErrStreamNameRequired
-	}
-
-	req, err := json.Marshal(cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	usSubj := js.apiSubj(fmt.Sprintf(JSApiStreamUpdateT, cfg.Name))
-	r, err := js.nc.Request(usSubj, req, js.wait)
-	if err != nil {
-		return nil, err
-	}
-	var resp JSApiStreamInfoResponse
-	if err := json.Unmarshal(r.Data, &resp); err != nil {
-		return nil, err
-	}
-	if resp.Error != nil {
-		return nil, errors.New(resp.Error.Description)
-	}
-	return resp.StreamInfo, nil
-}
-
-// JSAPIStreamDeleteResponse is the response for a Stream delete request.
-type JSAPIStreamDeleteResponse struct {
-	APIResponse
-	Success bool `json:"success,omitempty"`
-}
-
-// DeleteStream deletes a Stream.
-func (js *js) DeleteStream(name string) error {
-	if name == _EMPTY_ {
-		return ErrStreamNameRequired
-	}
-
-	dsSubj := js.apiSubj(fmt.Sprintf(JSApiStreamDeleteT, name))
-	r, err := js.nc.Request(dsSubj, nil, js.wait)
-	if err != nil {
-		return err
-	}
-	var resp JSAPIStreamDeleteResponse
-	if err := json.Unmarshal(r.Data, &resp); err != nil {
-		return err
-	}
-	if resp.Error != nil {
-		return errors.New(resp.Error.Description)
-	}
-	return nil
-}
-
-type JSAPIMsgDeleteRequest struct {
-	Seq uint64 `json:"seq"`
-}
-
-// JSAPIMsgDeleteResponse is the response for a Stream delete request.
-type JSAPIMsgDeleteResponse struct {
-	APIResponse
-	Success bool `json:"success,omitempty"`
-}
-
-// DeleteMsg deletes a message from a stream.
-func (js *js) DeleteMsg(name string, seq uint64) error {
-	if name == _EMPTY_ {
-		return ErrStreamNameRequired
-	}
-
-	req, err := json.Marshal(&JSAPIMsgDeleteRequest{Seq: seq})
-	if err != nil {
-		return err
-	}
-
-	dsSubj := js.apiSubj(fmt.Sprintf(JSApiMsgDeleteT, name))
-	r, err := js.nc.Request(dsSubj, req, js.wait)
-	if err != nil {
-		return err
-	}
-	var resp JSAPIMsgDeleteResponse
-	if err := json.Unmarshal(r.Data, &resp); err != nil {
-		return err
-	}
-	if resp.Error != nil {
-		return errors.New(resp.Error.Description)
-	}
-	return nil
-}
-
-// JSAPIStreamPurgeResponse.
-type JSAPIStreamPurgeResponse struct {
-	APIResponse
-	Success bool   `json:"success,omitempty"`
-	Purged  uint64 `json:"purged"`
-}
-
-// PurgeStream purges messages on a Stream.
-func (js *js) PurgeStream(name string) error {
-	psSubj := js.apiSubj(fmt.Sprintf(JSApiStreamPurgeT, name))
-	r, err := js.nc.Request(psSubj, nil, js.wait)
-	if err != nil {
-		return err
-	}
-	var resp JSAPIStreamPurgeResponse
-	if err := json.Unmarshal(r.Data, &resp); err != nil {
-		return err
-	}
-	if resp.Error != nil {
-		return errors.New(resp.Error.Description)
-	}
-	return nil
-}
-
-// JSAPIStreamNamesRequest is used for Stream Name requests.
-type JSAPIStreamNamesRequest struct {
-	APIPagedRequest
-	// These are filters that can be applied to the list.
-	Subject string `json:"subject,omitempty"`
-}
-
-// JSApiStreamListResponse list of detailed stream information.
-// A nil request is valid and means all streams.
-type JSApiStreamListResponse struct {
-	APIResponse
-	APIPaged
-	Streams []*StreamInfo `json:"streams"`
-}
-
-// StreamLister fetches pages of StreamInfo objects. This object is not safe
-// to use for multiple threads.
-type StreamLister struct {
-	js   *js
-	page []*StreamInfo
-	err  error
-
-	offset   int
-	pageInfo *APIPaged
-}
-
-// Next fetches the next StreamInfo page.
-func (s *StreamLister) Next() bool {
-	if s.err != nil {
-		return false
-	}
-	if s.pageInfo != nil && s.offset >= s.pageInfo.Total {
-		return false
-	}
-
-	req, err := json.Marshal(JSAPIStreamNamesRequest{
-		APIPagedRequest: APIPagedRequest{Offset: s.offset},
-	})
-	if err != nil {
-		s.err = err
-		return false
-	}
-
-	slSubj := s.js.apiSubj(JSApiStreamList)
-	r, err := s.js.nc.Request(slSubj, req, s.js.wait)
-	if err != nil {
-		s.err = err
-		return false
-	}
-	var resp JSApiStreamListResponse
-	if err := json.Unmarshal(r.Data, &resp); err != nil {
-		s.err = err
-		return false
-	}
-	if resp.Error != nil {
-		s.err = errors.New(resp.Error.Description)
-		return false
-	}
-
-	s.pageInfo = &resp.APIPaged
-	s.page = resp.Streams
-	s.offset += len(s.page)
-	return true
-}
-
-// Page returns the current StreamInfo page.
-func (s *StreamLister) Page() []*StreamInfo {
-	return s.page
-}
-
-// Err returns any errors found while fetching pages.
-func (s *StreamLister) Err() error {
-	return s.err
-}
-
-// NewStreamLister is used to return pages of StreamInfo objects.
-func (js *js) NewStreamLister() *StreamLister {
-	return &StreamLister{js: js}
 }
 
 // RetentionPolicy determines how messages in a set are retained.

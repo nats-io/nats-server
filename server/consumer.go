@@ -171,6 +171,7 @@ type Consumer struct {
 	mset              *Stream
 	acc               *Account
 	client            *client
+	sysc              *client
 	sid               int
 	name              string
 	stream            string
@@ -211,7 +212,8 @@ type Consumer struct {
 	closed            bool
 
 	// Clustered.
-	node RaftNode
+	node    RaftNode
+	infoSub *subscription
 }
 
 const (
@@ -228,13 +230,14 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 
 func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, node RaftNode) (*Consumer, error) {
 	mset.mu.RLock()
-	jsa := mset.jsa
+	s, jsa := mset.srv, mset.jsa
 	mset.mu.RUnlock()
 
-	// If we do not have the consumer assigned to us in cluster mode we can not proceed.
-	// Running in single server mode this always returns true.
+	// If we do not have the consumer currently assigned to us in cluster mode we will proceed but warn.
+	// This can happen on startup with restored state where on meta replay we still do not have
+	// the assignment. Running in single server mode this always returns true.
 	if oname != _EMPTY_ && !jsa.consumerAssigned(mset.Name(), oname) {
-		return nil, ErrJetStreamNotAssigned
+		s.Debugf("Consumer %q > %q does not seem to be assigned to this server", mset.Name(), oname)
 	}
 
 	if config == nil {
@@ -433,6 +436,7 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, node RaftN
 		mset:    mset,
 		acc:     a,
 		client:  s.createInternalJetStreamClient(),
+		sysc:    s.createInternalJetStreamClient(),
 		config:  *config,
 		dsubj:   config.DeliverSubject,
 		active:  true,
@@ -444,8 +448,10 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, node RaftN
 		created: time.Now().UTC(),
 	}
 
-	// Bind internal client
+	// Bind internal client to the user account.
 	o.client.registerWithAccount(a)
+	// Bind to the system account.
+	o.sysc.registerWithAccount(s.SystemAccount())
 
 	if isDurableConsumer(config) {
 		if len(config.Durable) > JSMaxNameLen {
@@ -599,9 +605,20 @@ func (o *Consumer) setLeader(isLeader bool) {
 			return
 		}
 
+		mset.mu.RLock()
+		s, jsa, stream := mset.srv, mset.jsa, mset.config.Name
+		mset.mu.RUnlock()
+
 		o.mu.Lock()
 		// Restore our saved state. During non-leader status we just update our underlying store.
 		o.readStoredState()
+
+		// Do info sub.
+		if o.infoSub == nil && jsa != nil {
+			isubj := fmt.Sprintf(clusterConsumerInfoT, jsa.acc(), stream, o.name)
+			// Note below the way we subscribe here is so that we can send requests to ourselves.
+			o.infoSub, _ = s.systemSubscribe(isubj, _EMPTY_, false, o.sysc, o.handleClusterConsumerInfoRequest)
+		}
 
 		var err error
 		if o.ackSub, err = o.subscribeInternal(o.ackSubj, o.processAck); err != nil {
@@ -651,13 +668,30 @@ func (o *Consumer) setLeader(isLeader bool) {
 		o.mu.Lock()
 		o.unsubscribe(o.ackSub)
 		o.unsubscribe(o.reqSub)
+		o.unsubscribe(o.infoSub)
 		o.ackSub = nil
 		o.reqSub = nil
+		o.infoSub = nil
 		o.sendq = nil
 		close(o.qch)
 		o.qch = nil
 		o.mu.Unlock()
 	}
+}
+
+func (o *Consumer) handleClusterConsumerInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	var s *Server
+	o.mu.RLock()
+	if o.client != nil {
+		s = o.client.srv
+	}
+	o.mu.RUnlock()
+	if s == nil {
+		return
+	}
+	ci := o.Info()
+	b, _ := json.Marshal(ci)
+	s.sendInternalMsgLocked(reply, _EMPTY_, nil, b)
 }
 
 // Lock should be held.
@@ -2273,10 +2307,14 @@ func (o *Consumer) stop(dflag, doSignal, advisory bool) error {
 	o.active = false
 	o.unsubscribe(o.ackSub)
 	o.unsubscribe(o.reqSub)
+	o.unsubscribe(o.infoSub)
 	o.ackSub = nil
 	o.reqSub = nil
+	o.infoSub = nil
 	c := o.client
 	o.client = nil
+	sysc := o.sysc
+	o.sysc = nil
 	stopAndClearTimer(&o.ptmr)
 	stopAndClearTimer(&o.dtmr)
 	delivery := o.config.DeliverSubject
@@ -2290,6 +2328,9 @@ func (o *Consumer) stop(dflag, doSignal, advisory bool) error {
 
 	if c != nil {
 		c.closeConnection(ClientClosed)
+	}
+	if sysc != nil {
+		sysc.closeConnection(ClientClosed)
 	}
 
 	if delivery != "" {

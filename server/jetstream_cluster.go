@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/rand"
 	"path"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -293,7 +294,7 @@ func (cc *jetStreamCluster) isStreamCurrent(account, stream string) bool {
 
 	isCurrent := rg.node.Current()
 	if isCurrent {
-		// Check if we are processing a snapshot catchup.
+		// Check if we are processing a snapshot and are catching up.
 		acc, err := cc.s.LookupAccount(account)
 		if err != nil {
 			return false
@@ -347,6 +348,8 @@ func (s *Server) JetStreamIsStreamLeader(account, stream string) bool {
 	if js == nil || cc == nil {
 		return false
 	}
+	js.mu.RLock()
+	defer js.mu.RUnlock()
 	return cc.isStreamLeader(account, stream)
 }
 
@@ -505,8 +508,9 @@ func (jsa *jsAccount) streamAssigned(stream string) bool {
 		return false
 	}
 	js.mu.RLock()
-	defer js.mu.RUnlock()
-	return js.cluster.isStreamAssigned(acc, stream)
+	assigned := js.cluster.isStreamAssigned(acc, stream)
+	js.mu.RUnlock()
+	return assigned
 }
 
 // Read lock should be held.
@@ -639,6 +643,12 @@ func (js *jetStream) monitorCluster() {
 		case <-qch:
 			return
 		case ce := <-ach:
+			if ce == nil {
+				// Signals we have replayed all of our metadata.
+				// No-op for now.
+				s.Debugf("Recovered JetStream cluster metadata")
+				continue
+			}
 			// FIXME(dlc) - Deal with errors.
 			if hadSnapshot, err := js.applyMetaEntries(ce.Entries); err == nil {
 				n.Applied(ce.Index)
@@ -910,7 +920,7 @@ func (js *jetStream) monitorStreamRaftGroup(mset *Stream, sa *streamAssignment) 
 	defer s.grWG.Done()
 
 	if n == nil {
-		s.Warnf("No RAFT group for stream")
+		s.Warnf("No RAFT group for '%s > %s", sa.Client.Account, sa.Config.Name)
 		return
 	}
 
@@ -922,8 +932,8 @@ func (js *jetStream) monitorStreamRaftGroup(mset *Stream, sa *streamAssignment) 
 		compactMinWait   = 5 * time.Second
 	)
 
-	s.Debugf("Starting consumer monitor for '%s - %s", sa.Client.Account, sa.Config.Name)
-	defer s.Debugf("Exiting consumer monitor for '%s - %s'", sa.Client.Account, sa.Config.Name)
+	s.Debugf("Starting consumer monitor for '%s > %s", sa.Client.Account, sa.Config.Name)
+	defer s.Debugf("Exiting consumer monitor for '%s > %s'", sa.Client.Account, sa.Config.Name)
 
 	t := time.NewTicker(compactInterval)
 	defer t.Stop()
@@ -965,12 +975,18 @@ func (js *jetStream) monitorStreamRaftGroup(mset *Stream, sa *streamAssignment) 
 		case <-qch:
 			return
 		case ce := <-ach:
+			// No special processing needed for when we are caught up on restart.
+			if ce == nil {
+				continue
+			}
 			// FIXME(dlc) - capture errors.
 			if hadSnapshot, err := js.applyStreamEntries(mset, ce); err == nil {
 				n.Applied(ce.Index)
 				if hadSnapshot {
 					snapout = false
 				}
+			} else {
+				s.Warnf("Error applying entries to '%s > %s'", sa.Client.Account, sa.Config.Name)
 			}
 			if isLeader && !snapout {
 				if _, b := n.Size(); b > compactSizeLimit {
@@ -1001,10 +1017,12 @@ func (js *jetStream) applyStreamEntries(mset *Stream, ce *CommittedEntry) (bool,
 				if err != nil {
 					panic(err.Error())
 				}
-				if lseq == 0 && mset.lastSeq() != 0 { // Very first msg
+				// Skip by hand here since first msg special case.
+				// Reason is sequence is unsigned and for lseq being 0
+				// the lseq under stream would have be -1.
+				if lseq == 0 && mset.lastSeq() != 0 {
 					continue
 				}
-
 				if err := mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts); err != nil {
 					js.srv.Debugf("Got error processing JetStream msg: %v", err)
 				}
@@ -1136,7 +1154,10 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) {
 	accStreams[stream] = sa
 	cc.streams[acc.Name] = accStreams
 
-	isMember := sa.Group.isMember(cc.meta.ID())
+	var isMember bool
+	if sa.Group != nil && cc.meta != nil {
+		isMember = sa.Group.isMember(cc.meta.ID())
+	}
 	js.mu.Unlock()
 
 	// Check if this is for us..
@@ -1211,7 +1232,6 @@ func (js *jetStream) processClusterCreateStream(sa *streamAssignment) {
 	// This is an error condition.
 	if err != nil {
 		js.srv.Debugf("Stream create failed for %q - %q: %v\n", sa.Client.Account, sa.Config.Name, err)
-
 		js.mu.Lock()
 		sa.err = err
 		sa.responded = true
@@ -1541,8 +1561,8 @@ func (js *jetStream) monitorConsumerRaftGroup(o *Consumer, ca *consumerAssignmen
 		compactSizeLimit = 8 * 1024 * 1024
 	)
 
-	s.Debugf("Starting consumer monitor for '%s - %s - %s", o.acc.Name, ca.Stream, ca.Name)
-	defer s.Debugf("Exiting consumer monitor for '%s - %s - %s'", o.acc.Name, ca.Stream, ca.Name)
+	s.Debugf("Starting consumer monitor for '%s > %s > %s", o.acc.Name, ca.Stream, ca.Name)
+	defer s.Debugf("Exiting consumer monitor for '%s > %s > %s'", o.acc.Name, ca.Stream, ca.Name)
 
 	t := time.NewTicker(compactInterval)
 	defer t.Stop()
@@ -1557,6 +1577,10 @@ func (js *jetStream) monitorConsumerRaftGroup(o *Consumer, ca *consumerAssignmen
 		case <-qch:
 			return
 		case ce := <-ach:
+			// No special processing needed for when we are caught up on restart.
+			if ce == nil {
+				continue
+			}
 			if _, err := js.applyConsumerEntries(o, ce); err == nil {
 				n.Applied(ce.Index)
 				last = ce.Index
@@ -1706,7 +1730,7 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 		// Check if this failed.
 		// TODO(dlc) - Could have mixed results, should track per peer.
 		if result.Response.Error != nil {
-			// So while we are delting we will not respond to list/names requests.
+			// Set sa.err while we are deleting so we will not respond to list/names requests.
 			sa.err = ErrJetStreamNotAssigned
 			cc.meta.Propose(encodeDeleteStreamAssignment(sa))
 		}
@@ -1881,7 +1905,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, subject, reply string,
 	cc.meta.Propose(encodeAddStreamAssignment(sa))
 }
 
-func (s *Server) jsClusteredStreamDeleteRequest(ci *ClientInfo, stream, subject, reply string, rmsg []byte) {
+func (s *Server) jsClusteredStreamDeleteRequest(ci *ClientInfo, stream, reply string, rmsg []byte) {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
 		return
@@ -1916,6 +1940,207 @@ func (s *Server) jsClusteredStreamPurgeRequest(ci *ClientInfo, stream, subject, 
 	n := sa.Group.node
 	sp := &streamPurge{Stream: stream, Reply: reply, Client: ci}
 	n.Propose(encodeStreamPurge(sp))
+}
+
+// This will do a scatter and gather operation for all streams for this account.
+// This will be running in a separate Go routine.
+func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, offset int, subject, reply string, rmsg []byte) {
+	defer s.grWG.Done()
+
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil {
+		return
+	}
+
+	js.mu.Lock()
+	defer js.mu.Unlock()
+
+	var streams []*streamAssignment
+	for _, sa := range cc.streams[acc.Name] {
+		streams = append(streams, sa)
+	}
+	// Needs to be sorted.
+	if len(streams) > 1 {
+		sort.Slice(streams, func(i, j int) bool {
+			return strings.Compare(streams[i].Config.Name, streams[j].Config.Name) < 0
+		})
+	}
+
+	scnt := len(streams)
+	if offset > scnt {
+		offset = scnt
+	}
+	if offset > 0 {
+		streams = streams[offset:]
+	}
+	if len(streams) > JSApiListLimit {
+		streams = streams[:JSApiListLimit]
+	}
+
+	rc := make(chan *StreamInfo, len(streams))
+
+	// Create an inbox for our responses and send out requests.
+	inbox := infoReplySubject()
+	rsub, _ := s.systemSubscribe(inbox, _EMPTY_, false, cc.c, func(_ *subscription, _ *client, _, reply string, msg []byte) {
+		var si StreamInfo
+		if err := json.Unmarshal(msg, &si); err != nil {
+			s.Warnf("Error unmarshaling clustered stream info response:%v", err)
+			return
+		}
+		select {
+		case rc <- &si:
+		default:
+			s.Warnf("Failed placing stream info result on internal chan")
+		}
+	})
+	defer s.sysUnsubscribe(rsub)
+
+	// Send out our requests here.
+	for _, sa := range streams {
+		isubj := fmt.Sprintf(clusterStreamInfoT, sa.Client.Account, sa.Config.Name)
+		s.sendInternalMsgLocked(isubj, inbox, nil, nil)
+	}
+
+	const timeout = 2 * time.Second
+	notActive := time.NewTimer(timeout)
+	defer notActive.Stop()
+
+	var resp = JSApiStreamListResponse{
+		ApiResponse: ApiResponse{Type: JSApiStreamListResponseType},
+		Streams:     make([]*StreamInfo, 0, len(streams)),
+	}
+
+LOOP:
+	for {
+		select {
+		case <-s.quitCh:
+			return
+		case <-notActive.C:
+			s.Warnf("Did not receive all stream info results for %q", acc)
+			break LOOP
+		case si := <-rc:
+			resp.Streams = append(resp.Streams, si)
+			// Check to see if we are done.
+			if len(resp.Streams) == len(streams) {
+				break LOOP
+			}
+		}
+	}
+
+	// Needs to be sorted as well.
+	if len(resp.Streams) > 1 {
+		sort.Slice(resp.Streams, func(i, j int) bool {
+			return strings.Compare(resp.Streams[i].Config.Name, resp.Streams[j].Config.Name) < 0
+		})
+	}
+
+	resp.Total = len(resp.Streams)
+	resp.Limit = JSApiListLimit
+	resp.Offset = offset
+	s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(resp))
+}
+
+// This will do a scatter and gather operation for all consumers for this stream and account.
+// This will be running in a separate Go routine.
+func (s *Server) jsClusteredConsumerListRequest(acc *Account, ci *ClientInfo, offset int, stream, subject, reply string, rmsg []byte) {
+	defer s.grWG.Done()
+
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil {
+		return
+	}
+
+	js.mu.Lock()
+	defer js.mu.Unlock()
+
+	var consumers []*consumerAssignment
+	if sas := cc.streams[acc.Name]; sas != nil {
+		if sa := sas[stream]; sa != nil {
+			// Copy over since we need to sort etc.
+			for _, ca := range sa.consumers {
+				consumers = append(consumers, ca)
+			}
+		}
+	}
+	// Needs to be sorted.
+	if len(consumers) > 1 {
+		sort.Slice(consumers, func(i, j int) bool {
+			return strings.Compare(consumers[i].Name, consumers[j].Name) < 0
+		})
+	}
+
+	ocnt := len(consumers)
+	if offset > ocnt {
+		offset = ocnt
+	}
+	if offset > 0 {
+		consumers = consumers[offset:]
+	}
+	if len(consumers) > JSApiListLimit {
+		consumers = consumers[:JSApiListLimit]
+	}
+
+	rc := make(chan *ConsumerInfo, len(consumers))
+
+	// Create an inbox for our responses and send out requests.
+	inbox := infoReplySubject()
+	rsub, _ := s.systemSubscribe(inbox, _EMPTY_, false, cc.c, func(_ *subscription, _ *client, _, reply string, msg []byte) {
+		var ci ConsumerInfo
+		if err := json.Unmarshal(msg, &ci); err != nil {
+			s.Warnf("Error unmarshaling clustered consumer info response:%v", err)
+			return
+		}
+		select {
+		case rc <- &ci:
+		default:
+			s.Warnf("Failed placing consumer info result on internal chan")
+		}
+	})
+	defer s.sysUnsubscribe(rsub)
+
+	// Send out our requests here.
+	for _, ca := range consumers {
+		isubj := fmt.Sprintf(clusterConsumerInfoT, ca.Client.Account, stream, ca.Name)
+		s.sendInternalMsgLocked(isubj, inbox, nil, nil)
+	}
+
+	const timeout = 2 * time.Second
+	notActive := time.NewTimer(timeout)
+	defer notActive.Stop()
+
+	var resp = JSApiConsumerListResponse{
+		ApiResponse: ApiResponse{Type: JSApiConsumerListResponseType},
+		Consumers:   []*ConsumerInfo{},
+	}
+
+LOOP:
+	for {
+		select {
+		case <-s.quitCh:
+			return
+		case <-notActive.C:
+			s.Warnf("Did not receive all stream info results for %q", acc)
+			break LOOP
+		case ci := <-rc:
+			resp.Consumers = append(resp.Consumers, ci)
+			// Check to see if we are done.
+			if len(resp.Consumers) == len(consumers) {
+				break LOOP
+			}
+		}
+	}
+
+	// Needs to be sorted as well.
+	if len(resp.Consumers) > 1 {
+		sort.Slice(resp.Consumers, func(i, j int) bool {
+			return strings.Compare(resp.Consumers[i].Name, resp.Consumers[j].Name) < 0
+		})
+	}
+
+	resp.Total = len(resp.Consumers)
+	resp.Limit = JSApiListLimit
+	resp.Offset = offset
+	s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(resp))
 }
 
 func encodeStreamPurge(sp *streamPurge) []byte {
@@ -2433,6 +2658,21 @@ func (mset *Stream) handleClusterSyncRequest(sub *subscription, c *client, subje
 	mset.srv.startGoRoutine(func() { mset.runCatchup(reply, &sreq) })
 }
 
+func (mset *Stream) handleClusterStreamInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+	mset.mu.RLock()
+	if mset.client == nil {
+		mset.mu.RUnlock()
+		return
+	}
+	s := mset.srv
+	config := mset.config
+	mset.mu.RUnlock()
+
+	si := &StreamInfo{Created: mset.Created(), State: mset.State(), Config: config}
+	b, _ := json.Marshal(si)
+	s.sendInternalMsgLocked(reply, _EMPTY_, nil, b)
+}
+
 func (mset *Stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	s := mset.srv
 	defer s.grWG.Done()
@@ -2525,15 +2765,19 @@ func (mset *Stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 }
 
 func syncSubjForStream() string {
-	return syncSubject("$SYS.JSC.SYNC")
+	return syncSubject("$JSC.SYNC")
 }
 
 func syncReplySubject() string {
-	return syncSubject("$SYS.JSC.R")
+	return syncSubject("$JSC.R")
+}
+
+func infoReplySubject() string {
+	return syncSubject("$JSC.R")
 }
 
 func syncAckSubject() string {
-	return syncSubject("$SYS.JSC.ACK") + ".*"
+	return syncSubject("$JSC.ACK") + ".*"
 }
 
 func syncSubject(pre string) string {
@@ -2551,3 +2795,6 @@ func syncSubject(pre string) string {
 	sb.Write(b[:])
 	return sb.String()
 }
+
+const clusterStreamInfoT = "$JSC.SI.%s.%s"
+const clusterConsumerInfoT = "$JSC.CI.%s.%s.%s"
