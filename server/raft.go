@@ -1361,13 +1361,6 @@ func (n *raft) runAsCandidate() {
 					n.switchToLeader()
 					return
 				}
-			} else {
-				n.Lock()
-				n.term = vresp.term
-				n.writeTermVote()
-				n.Unlock()
-				n.switchToFollower(noLeader)
-				return
 			}
 		case vreq := <-n.reqs:
 			n.processVoteRequest(vreq)
@@ -1437,6 +1430,15 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	// Just return if closed.
 	if n.state == Closed {
 		n.Unlock()
+		return
+	}
+
+	// If we received an append entry as a candidate we should convert to a follower.
+	if n.state == Candidate {
+		n.debug("Received append entry in candidate state from %q, converting to follower", ae.leader)
+		n.term = ae.term
+		n.Unlock()
+		n.stepdown <- ae.leader
 		return
 	}
 
