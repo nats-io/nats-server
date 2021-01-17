@@ -173,6 +173,11 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 		}
 	}
 
+	// Enable accounts and restore state before starting clustering.
+	if err := s.enableJetStreamAccounts(); err != nil {
+		return err
+	}
+
 	// If we are in clustered mode go ahead and start the meta controller.
 	if !s.standAloneMode() {
 		if err := s.enableJetStreamClustering(); err != nil {
@@ -180,7 +185,7 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 		}
 	}
 
-	return s.enableJetStreamAccounts()
+	return nil
 }
 
 func (s *Server) enableJetStreamAccounts() error {

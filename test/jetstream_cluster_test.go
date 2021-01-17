@@ -1365,6 +1365,7 @@ func (c *cluster) restartServer(rs *server.Server) *server.Server {
 }
 
 func (c *cluster) checkClusterFormed() {
+	c.t.Helper()
 	checkClusterFormed(c.t, c.servers...)
 }
 
@@ -1518,7 +1519,6 @@ func (c *cluster) waitOnClusterReady() {
 	expires := time.Now().Add(10 * time.Second)
 	for time.Now().Before(expires) {
 		if leader = c.leader(); leader != nil {
-			time.Sleep(100 * time.Millisecond)
 			break
 		}
 		time.Sleep(25 * time.Millisecond)
@@ -1528,7 +1528,7 @@ func (c *cluster) waitOnClusterReady() {
 		if len(leader.JetStreamClusterPeers()) == len(c.servers) {
 			return
 		}
-		time.Sleep(25 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	c.t.Fatalf("Expected a cluster leader and fully formed cluster")
 }

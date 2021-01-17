@@ -171,6 +171,9 @@ func (a *Account) addStream(config *StreamConfig, fsConfig *FileStoreConfig, sa 
 		// Check to see if configs are same.
 		ocfg := mset.Config()
 		if reflect.DeepEqual(ocfg, cfg) {
+			if sa != nil {
+				mset.setStreamAssignment(sa)
+			}
 			return mset, nil
 		} else {
 			return nil, ErrJetStreamStreamAlreadyUsed
@@ -198,6 +201,7 @@ func (a *Account) addStream(config *StreamConfig, fsConfig *FileStoreConfig, sa 
 	// Setup the internal clients.
 	c := s.createInternalJetStreamClient()
 	ic := s.createInternalJetStreamClient()
+
 	mset := &Stream{jsa: jsa, config: cfg, srv: s, client: c, sysc: ic, consumers: make(map[string]*Consumer), qch: make(chan struct{})}
 
 	jsa.streams[cfg.Name] = mset
@@ -251,7 +255,11 @@ func (a *Account) addStream(config *StreamConfig, fsConfig *FileStoreConfig, sa 
 	}
 
 	// This is always true in single server mode.
-	if mset.isLeader() {
+	mset.mu.RLock()
+	isLeader := mset.isLeader()
+	mset.mu.RUnlock()
+
+	if isLeader {
 		// Send advisory.
 		mset.sendCreateAdvisory()
 	}

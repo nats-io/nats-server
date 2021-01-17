@@ -348,6 +348,8 @@ func (s *Server) JetStreamIsStreamLeader(account, stream string) bool {
 	if js == nil || cc == nil {
 		return false
 	}
+	js.mu.RLock()
+	defer js.mu.RUnlock()
 	return cc.isStreamLeader(account, stream)
 }
 
@@ -918,7 +920,7 @@ func (js *jetStream) monitorStreamRaftGroup(mset *Stream, sa *streamAssignment) 
 	defer s.grWG.Done()
 
 	if n == nil {
-		s.Warnf("No RAFT group for stream")
+		s.Warnf("No RAFT group for '%s > %s", sa.Client.Account, sa.Config.Name)
 		return
 	}
 
@@ -930,8 +932,8 @@ func (js *jetStream) monitorStreamRaftGroup(mset *Stream, sa *streamAssignment) 
 		compactMinWait   = 5 * time.Second
 	)
 
-	s.Debugf("Starting consumer monitor for '%s - %s", sa.Client.Account, sa.Config.Name)
-	defer s.Debugf("Exiting consumer monitor for '%s - %s'", sa.Client.Account, sa.Config.Name)
+	s.Debugf("Starting consumer monitor for '%s > %s", sa.Client.Account, sa.Config.Name)
+	defer s.Debugf("Exiting consumer monitor for '%s > %s'", sa.Client.Account, sa.Config.Name)
 
 	t := time.NewTicker(compactInterval)
 	defer t.Stop()
@@ -983,6 +985,8 @@ func (js *jetStream) monitorStreamRaftGroup(mset *Stream, sa *streamAssignment) 
 				if hadSnapshot {
 					snapout = false
 				}
+			} else {
+				s.Warnf("Error applying entries to '%s > %s'", sa.Client.Account, sa.Config.Name)
 			}
 			if isLeader && !snapout {
 				if _, b := n.Size(); b > compactSizeLimit {
@@ -1557,8 +1561,8 @@ func (js *jetStream) monitorConsumerRaftGroup(o *Consumer, ca *consumerAssignmen
 		compactSizeLimit = 8 * 1024 * 1024
 	)
 
-	s.Debugf("Starting consumer monitor for '%s - %s - %s", o.acc.Name, ca.Stream, ca.Name)
-	defer s.Debugf("Exiting consumer monitor for '%s - %s - %s'", o.acc.Name, ca.Stream, ca.Name)
+	s.Debugf("Starting consumer monitor for '%s > %s > %s", o.acc.Name, ca.Stream, ca.Name)
+	defer s.Debugf("Exiting consumer monitor for '%s > %s > %s'", o.acc.Name, ca.Stream, ca.Name)
 
 	t := time.NewTicker(compactInterval)
 	defer t.Stop()
