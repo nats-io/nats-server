@@ -330,19 +330,6 @@ func (a *Account) getJetStreamFromAccount() (*Server, *jetStream, *jsAccount) {
 	return s, js, jsa
 }
 
-// jetStreamReadAllowedForStream will check if we can report on any information
-// regarding this stream like info, etc.
-func (a *Account) jetStreamReadAllowedForStream(stream string) bool {
-	s, js, jsa := a.getJetStreamFromAccount()
-	if s == nil || js == nil || jsa == nil {
-		return false
-	}
-	js.mu.RLock()
-	defer js.mu.RUnlock()
-	// TODO(dlc) - make sure we are up to date.
-	return js.cluster.isStreamAssigned(a, stream)
-}
-
 func (s *Server) JetStreamIsStreamLeader(account, stream string) bool {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {

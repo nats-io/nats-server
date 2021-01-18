@@ -1077,10 +1077,6 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 		return
 	}
 
-	if !acc.jetStreamReadAllowedForStream(name) {
-		return
-	}
-
 	var resp = JSApiStreamInfoResponse{ApiResponse: ApiResponse{Type: JSApiStreamInfoResponseType}}
 	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
@@ -1484,7 +1480,14 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 		s.Warnf(badAPIRequestT, msg)
 		return
 	}
+
 	smsg := string(msg)
+	stream := streamNameFromSubject(subject)
+
+	// If we are in clustered mode we need to be the stream leader to proceed.
+	if s.JetStreamIsClustered() && !acc.JetStreamIsStreamLeader(stream) {
+		return
+	}
 
 	var resp = JSApiStreamSnapshotResponse{ApiResponse: ApiResponse{Type: JSApiStreamSnapshotResponseType}}
 	if !acc.JetStreamEnabled() {
@@ -1497,7 +1500,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 		s.sendAPIResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
 		return
 	}
-	stream := streamNameFromSubject(subject)
+
 	mset, err := acc.LookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
