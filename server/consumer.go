@@ -42,6 +42,7 @@ type ConsumerInfo struct {
 	NumRedelivered int            `json:"num_redelivered"`
 	NumWaiting     int            `json:"num_waiting"`
 	NumPending     uint64         `json:"num_pending"`
+	Cluster        *ClusterInfo   `json:"cluster,omitempty"`
 }
 
 type ConsumerConfig struct {
@@ -170,6 +171,7 @@ type Consumer struct {
 	mu                sync.RWMutex
 	mset              *Stream
 	acc               *Account
+	srv               *Server
 	client            *client
 	sysc              *client
 	sid               int
@@ -435,6 +437,7 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, node RaftN
 	o := &Consumer{
 		mset:    mset,
 		acc:     a,
+		srv:     s,
 		client:  s.createInternalJetStreamClient(),
 		sysc:    s.createInternalJetStreamClient(),
 		config:  *config,
@@ -1200,6 +1203,7 @@ func (o *Consumer) Info() *ConsumerInfo {
 		NumAckPending:  len(o.pending),
 		NumRedelivered: len(o.rdc),
 		NumPending:     o.sgap,
+		Cluster:        o.srv.clusterInfo(o.node),
 	}
 	// If we are a pull mode consumer, report on number of waiting requests.
 	if o.isPullMode() {

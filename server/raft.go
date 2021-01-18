@@ -65,9 +65,10 @@ type WAL interface {
 }
 
 type Peer struct {
-	ID    string
-	Last  time.Time
-	Index uint64
+	ID      string
+	Current bool
+	Last    time.Time
+	Index   uint64
 }
 
 type RaftState uint8
@@ -322,6 +323,14 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 	s.startGoRoutine(n.run)
 
 	return n, nil
+}
+
+// Maps node names back to server names.
+func (s *Server) serverNameForNode(node string) string {
+	s.mu.Lock()
+	sn := s.nodeToName[node]
+	s.mu.Unlock()
+	return sn
 }
 
 // Server will track all raft nodes.
@@ -690,9 +699,11 @@ func (n *raft) Peers() []*Peer {
 	if n.state != Leader {
 		return nil
 	}
+
 	var peers []*Peer
 	for id, ps := range n.peers {
-		peers = append(peers, &Peer{ID: id, Last: time.Unix(0, ps.ts)})
+		p := &Peer{ID: id, Current: id == n.leader || ps.li >= n.applied, Last: time.Unix(0, ps.ts)}
+		peers = append(peers, p)
 	}
 	return peers
 }

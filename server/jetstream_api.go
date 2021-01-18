@@ -885,7 +885,7 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 		return
 	}
 
-	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config()}
+	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config(), Cluster: s.clusterInfo(mset.raftNode())}
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -1106,7 +1106,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 	if config.allowNoSubject && len(config.Subjects) == 0 {
 		config.Subjects = []string{">"}
 	}
-	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: config}
+	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: config, Cluster: s.clusterInfo(mset.raftNode())}
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 

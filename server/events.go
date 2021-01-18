@@ -834,6 +834,8 @@ func (s *Server) processNewServer(ms *ServerInfo) {
 	// Right now we only check if we have leafnode servers and if so send another
 	// connect update to make sure they switch this account to interest only mode.
 	s.ensureGWsInterestOnlyForLeafNodes()
+	// Add to our nodeToName
+	s.nodeToName[string(getHash(ms.Name))] = ms.Name
 }
 
 // If GW is enabled on this server and there are any leaf node connections,

@@ -1191,6 +1191,162 @@ func TestJetStreamClusterStreamSnapshotCatchupWithPurge(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterExtendedStreamInfo(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	toSend := 50
+	for i := 0; i < toSend; i++ {
+		if _, err = js.Publish("foo", []byte("OK")); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	// TODO(dlc) - Change over to Go client version once it is updated.
+	resp, err := nc.Request(fmt.Sprintf(server.JSApiStreamInfoT, "TEST"), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var si server.StreamInfo
+	if err = json.Unmarshal(resp.Data, &si); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.Cluster == nil {
+		t.Fatalf("Expected cluster info")
+	}
+
+	if si.Cluster.Name != c.name {
+		t.Fatalf("Expected cluster name of %q, got %q", c.name, si.Cluster.Name)
+	}
+
+	leader := c.streamLeader("$G", "TEST").Name()
+	if si.Cluster.Leader != leader {
+		t.Fatalf("Expected leader of %q, got %q", leader, si.Cluster.Leader)
+	}
+	if len(si.Cluster.Replicas) != 2 {
+		t.Fatalf("Expected %d replicas, got %d", 2, len(si.Cluster.Replicas))
+	}
+	for _, peer := range si.Cluster.Replicas {
+		if !peer.Current {
+			t.Fatalf("Expected replica to be current: %+v", peer)
+		}
+	}
+
+	// Shutdown the leader.
+	oldLeader := c.streamLeader("$G", "TEST")
+	oldLeader.Shutdown()
+
+	c.waitOnNewStreamLeader("$G", "TEST")
+
+	// Re-request.
+	resp, err = nc.Request(fmt.Sprintf(server.JSApiStreamInfoT, "TEST"), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if err = json.Unmarshal(resp.Data, &si); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.Cluster == nil {
+		t.Fatalf("Expected cluster info")
+	}
+
+	leader = c.streamLeader("$G", "TEST").Name()
+	if si.Cluster.Leader != leader {
+		t.Fatalf("Expected leader of %q, got %q", leader, si.Cluster.Leader)
+	}
+	if len(si.Cluster.Replicas) != 2 {
+		t.Fatalf("Expected %d replicas, got %d", 2, len(si.Cluster.Replicas))
+	}
+	for _, peer := range si.Cluster.Replicas {
+		if peer.Name == oldLeader.Name() {
+			if peer.Current {
+				t.Fatalf("Expected old leader to be reported as not current: %+v", peer)
+			}
+		} else if !peer.Current {
+			t.Fatalf("Expected replica to be current: %+v", peer)
+		}
+	}
+
+	// Now send a few more messages then restart the oldLeader.
+	for i := 0; i < 10; i++ {
+		if _, err = js.Publish("foo", []byte("OK")); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	oldLeader = c.restartServer(oldLeader)
+	c.waitOnStreamCurrent(oldLeader, "$G", "TEST")
+
+	// Re-request.
+	resp, err = nc.Request(fmt.Sprintf(server.JSApiStreamInfoT, "TEST"), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if err = json.Unmarshal(resp.Data, &si); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.Cluster == nil {
+		t.Fatalf("Expected cluster info")
+	}
+
+	leader = c.streamLeader("$G", "TEST").Name()
+	if si.Cluster.Leader != leader {
+		t.Fatalf("Expected leader of %q, got %q", leader, si.Cluster.Leader)
+	}
+	if len(si.Cluster.Replicas) != 2 {
+		t.Fatalf("Expected %d replicas, got %d", 2, len(si.Cluster.Replicas))
+	}
+	for _, peer := range si.Cluster.Replicas {
+		if !peer.Current {
+			t.Fatalf("Expected replica to be current: %+v", peer)
+		}
+	}
+
+	// Now do consumer.
+	sub, err := js.SubscribeSync("foo", nats.Durable("dlc"), nats.Pull(10))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer sub.Unsubscribe()
+	checkSubsPending(t, sub, 10)
+
+	resp, err = nc.Request(fmt.Sprintf(server.JSApiConsumerInfoT, "TEST", "dlc"), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var ci server.ConsumerInfo
+	if err = json.Unmarshal(resp.Data, &ci); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	leader = c.consumerLeader("$G", "TEST", "dlc").Name()
+	if ci.Cluster.Leader != leader {
+		t.Fatalf("Expected leader of %q, got %q", leader, ci.Cluster.Leader)
+	}
+	if len(ci.Cluster.Replicas) != 2 {
+		t.Fatalf("Expected %d replicas, got %d", 2, len(ci.Cluster.Replicas))
+	}
+	for _, peer := range ci.Cluster.Replicas {
+		if !peer.Current {
+			t.Fatalf("Expected replica to be current: %+v", peer)
+		}
+	}
+}
+
 func TestJetStreamClusterStreamPerf(t *testing.T) {
 	// Comment out to run, holding place for now.
 	skip(t)

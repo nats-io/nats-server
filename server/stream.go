@@ -80,6 +80,23 @@ type StreamInfo struct {
 	Config  StreamConfig `json:"config"`
 	Created time.Time    `json:"created"`
 	State   StreamState  `json:"state"`
+	Cluster *ClusterInfo `json:"cluster,omitempty"`
+}
+
+// ClusterInfo shows information about the underlying set of servers
+// that make up the stream or consumer.
+type ClusterInfo struct {
+	Name     string      `json:"name,omitempty"`
+	Leader   string      `json:"leader,omitempty"`
+	Replicas []*PeerInfo `json:"replicas,omitempty"`
+}
+
+// PeerInfo shows information about all the peers in the cluster that
+// are supporting the stream or consumer.
+type PeerInfo struct {
+	Name    string    `json:"name"`
+	Current bool      `json:"current"`
+	Last    time.Time `json:"last"`
 }
 
 // Stream is a jetstream stream of messages. When we receive a message internally destined

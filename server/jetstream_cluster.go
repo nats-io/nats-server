@@ -2658,17 +2658,36 @@ func (mset *Stream) handleClusterSyncRequest(sub *subscription, c *client, subje
 	mset.srv.startGoRoutine(func() { mset.runCatchup(reply, &sreq) })
 }
 
+// clusterInfo will report on the status of the raft group.
+func (s *Server) clusterInfo(n RaftNode) *ClusterInfo {
+	if n == nil {
+		return nil
+	}
+
+	ci := &ClusterInfo{
+		Name:   s.ClusterName(),
+		Leader: s.serverNameForNode(n.GroupLeader()),
+	}
+
+	id, peers := n.ID(), n.Peers()
+	for _, rp := range peers {
+		if rp.ID != id {
+			ci.Replicas = append(ci.Replicas, &PeerInfo{Name: s.serverNameForNode(rp.ID), Current: rp.Current, Last: rp.Last})
+		}
+	}
+	return ci
+}
+
 func (mset *Stream) handleClusterStreamInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	mset.mu.RLock()
 	if mset.client == nil {
 		mset.mu.RUnlock()
 		return
 	}
-	s := mset.srv
-	config := mset.config
+	s, config, node := mset.srv, mset.config, mset.node
 	mset.mu.RUnlock()
 
-	si := &StreamInfo{Created: mset.Created(), State: mset.State(), Config: config}
+	si := &StreamInfo{Created: mset.Created(), State: mset.State(), Config: config, Cluster: s.clusterInfo(node)}
 	b, _ := json.Marshal(si)
 	s.sendInternalMsgLocked(reply, _EMPTY_, nil, b)
 }
