@@ -1048,14 +1048,6 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	if acc.imports.services == nil {
 		acc.imports.services = make(map[string]*serviceImport)
 	}
-
-	// Create a dummy internal client for fast lookup for
-	// randomClient used in route xfer of subs. Also will
-	// be stable with account.
-	if acc.ic == nil {
-		acc.ic = s.createInternalAccountClient()
-		acc.ic.acc = acc
-	}
 	acc.mu.Unlock()
 
 	s.sys = &internal{
