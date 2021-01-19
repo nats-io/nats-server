@@ -653,12 +653,13 @@ func (o *Consumer) setLeader(isLeader bool) {
 		o.sendq = make(chan *jsPubMsg, msetSendQSize)
 		// Recreate quit channel.
 		o.qch = make(chan struct{})
+		qch := o.qch
 		o.mu.Unlock()
 
 		// Now start up Go routine to deliver msgs.
-		go o.loopAndGatherMsgs()
+		go o.loopAndGatherMsgs(qch)
 		// Startup our deliver loop.
-		go o.loopAndDeliverMsgs()
+		go o.loopAndDeliverMsgs(qch)
 
 	} else {
 		// Shutdown the go routines and the subscriptions.
@@ -1114,9 +1115,9 @@ func (o *Consumer) writeState() {
 }
 
 // loopAndDeliverMsgs() will loop and deliver messages and watch for interest changes.
-func (o *Consumer) loopAndDeliverMsgs() {
+func (o *Consumer) loopAndDeliverMsgs(qch chan struct{}) {
 	o.mu.Lock()
-	qch, inch, sendq := o.qch, o.inch, o.sendq
+	inch, sendq := o.inch, o.sendq
 	s, acc := o.acc.srv, o.acc
 	o.mu.Unlock()
 
@@ -1695,7 +1696,7 @@ func (o *Consumer) checkWaitingForInterest() bool {
 	return o.waiting.len() > 0
 }
 
-func (o *Consumer) loopAndGatherMsgs() {
+func (o *Consumer) loopAndGatherMsgs(qch chan struct{}) {
 	// On startup check to see if we are in a a reply situtation where replay policy is not instant.
 	var (
 		lts  int64 // last time stamp seen, used for replay.
@@ -1763,7 +1764,6 @@ func (o *Consumer) loopAndGatherMsgs() {
 		// If we are in a replay scenario and have not caught up check if we need to delay here.
 		if o.replay && lts > 0 {
 			if delay = time.Duration(ts - lts); delay > time.Millisecond {
-				qch := o.qch
 				o.mu.Unlock()
 				select {
 				case <-qch:
@@ -1783,7 +1783,6 @@ func (o *Consumer) loopAndGatherMsgs() {
 			r := o.rlimit.ReserveN(now, len(msg)+len(hdr)+len(subj)+len(dsubj)+len(o.ackReplyT))
 			delay := r.DelayFrom(now)
 			if delay > 0 {
-				qch := o.qch
 				o.mu.Unlock()
 				select {
 				case <-qch:
@@ -1807,7 +1806,6 @@ func (o *Consumer) loopAndGatherMsgs() {
 
 		// We will wait here for new messages to arrive.
 		mch := o.mch
-		qch := o.qch
 		o.mu.Unlock()
 
 		select {

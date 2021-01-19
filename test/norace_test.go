@@ -785,3 +785,168 @@ func TestNoRaceSlowProxy(t *testing.T) {
 		t.Fatalf("bps is off, target is %v, actual is %v", bwTarget, bps)
 	}
 }
+
+func TestNoRaceJetStreamDeleteStreamManyConsumers(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	mname := "MYS"
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: mname, Storage: server.FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+
+	// This number needs to be higher than the internal sendq size to trigger what this test is testing.
+	for i := 0; i < 2000; i++ {
+		_, err := mset.AddConsumer(&server.ConsumerConfig{
+			Durable:        fmt.Sprintf("D-%d", i),
+			DeliverSubject: fmt.Sprintf("deliver.%d", i),
+		})
+		if err != nil {
+			t.Fatalf("Error creating consumer: %v", err)
+		}
+	}
+	// With bug this would not return and would hang.
+	mset.Delete()
+}
+
+func TestNoRaceJetStreamAPIStreamListPaging(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	// Forced cleanup of all persisted state.
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	// Create 2X limit
+	streamsNum := 2 * server.JSApiNamesLimit
+	for i := 1; i <= streamsNum; i++ {
+		name := fmt.Sprintf("STREAM-%06d", i)
+		cfg := server.StreamConfig{Name: name, Storage: server.MemoryStorage}
+		_, err := s.GlobalAccount().AddStream(&cfg)
+		if err != nil {
+			t.Fatalf("Unexpected error adding stream: %v", err)
+		}
+	}
+
+	// Client for API requests.
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	reqList := func(offset int) []byte {
+		t.Helper()
+		var req []byte
+		if offset > 0 {
+			req, _ = json.Marshal(&server.ApiPagedRequest{Offset: offset})
+		}
+		resp, err := nc.Request(server.JSApiStreams, req, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error getting stream list: %v", err)
+		}
+		return resp.Data
+	}
+
+	checkResp := func(resp []byte, expectedLen, expectedOffset int) {
+		t.Helper()
+		var listResponse server.JSApiStreamNamesResponse
+		if err := json.Unmarshal(resp, &listResponse); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if len(listResponse.Streams) != expectedLen {
+			t.Fatalf("Expected only %d streams but got %d", expectedLen, len(listResponse.Streams))
+		}
+		if listResponse.Total != streamsNum {
+			t.Fatalf("Expected total to be %d but got %d", streamsNum, listResponse.Total)
+		}
+		if listResponse.Offset != expectedOffset {
+			t.Fatalf("Expected offset to be %d but got %d", expectedOffset, listResponse.Offset)
+		}
+		if expectedLen < 1 {
+			return
+		}
+		// Make sure we get the right stream.
+		sname := fmt.Sprintf("STREAM-%06d", expectedOffset+1)
+		if listResponse.Streams[0] != sname {
+			t.Fatalf("Expected stream %q to be first, got %q", sname, listResponse.Streams[0])
+		}
+	}
+
+	checkResp(reqList(0), server.JSApiNamesLimit, 0)
+	checkResp(reqList(server.JSApiNamesLimit), server.JSApiNamesLimit, server.JSApiNamesLimit)
+	checkResp(reqList(streamsNum), 0, streamsNum)
+	checkResp(reqList(streamsNum-22), 22, streamsNum-22)
+	checkResp(reqList(streamsNum+22), 0, streamsNum)
+}
+
+func TestNoRaceJetStreamAPIConsumerListPaging(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	// Forced cleanup of all persisted state.
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	sname := "MYSTREAM"
+	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: sname})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+
+	// Client for API requests.
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	consumersNum := server.JSApiNamesLimit
+	for i := 1; i <= consumersNum; i++ {
+		dsubj := fmt.Sprintf("d.%d", i)
+		sub, _ := nc.SubscribeSync(dsubj)
+		defer sub.Unsubscribe()
+		nc.Flush()
+
+		_, err := mset.AddConsumer(&server.ConsumerConfig{DeliverSubject: dsubj})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	reqListSubject := fmt.Sprintf(server.JSApiConsumersT, sname)
+	reqList := func(offset int) []byte {
+		t.Helper()
+		var req []byte
+		if offset > 0 {
+			req, _ = json.Marshal(&server.JSApiConsumersRequest{ApiPagedRequest: server.ApiPagedRequest{Offset: offset}})
+		}
+		resp, err := nc.Request(reqListSubject, req, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error getting stream list: %v", err)
+		}
+		return resp.Data
+	}
+
+	checkResp := func(resp []byte, expectedLen, expectedOffset int) {
+		t.Helper()
+		var listResponse server.JSApiConsumerNamesResponse
+		if err := json.Unmarshal(resp, &listResponse); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if len(listResponse.Consumers) != expectedLen {
+			t.Fatalf("Expected only %d streams but got %d", expectedLen, len(listResponse.Consumers))
+		}
+		if listResponse.Total != consumersNum {
+			t.Fatalf("Expected total to be %d but got %d", consumersNum, listResponse.Total)
+		}
+		if listResponse.Offset != expectedOffset {
+			t.Fatalf("Expected offset to be %d but got %d", expectedOffset, listResponse.Offset)
+		}
+	}
+
+	checkResp(reqList(0), server.JSApiNamesLimit, 0)
+	checkResp(reqList(consumersNum-22), 22, consumersNum-22)
+	checkResp(reqList(consumersNum+22), 0, consumersNum)
+}
