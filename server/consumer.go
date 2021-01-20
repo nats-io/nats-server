@@ -1900,9 +1900,8 @@ func (o *Consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, dseq, dc, ts, o.sgap), hdr, msg, o, seq}
 	mset := o.mset
 	ap := o.config.AckPolicy
-
-	// This needs to be unlocked since the other side may need this lock on a failed delivery.
 	sendq := o.sendq
+	// This needs to be unlocked since the other side may need this lock on a failed delivery.
 	o.mu.Unlock()
 	// Send message.
 	sendq <- pmsg
