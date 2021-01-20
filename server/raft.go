@@ -171,6 +171,8 @@ type lps struct {
 const (
 	minElectionTimeout = 350 * time.Millisecond
 	maxElectionTimeout = 3 * minElectionTimeout
+	minCampaignTimeout = 5 * time.Millisecond
+	maxCampaignTimeout = 5 * minCampaignTimeout
 	hbInterval         = 200 * time.Millisecond
 )
 
@@ -653,6 +655,11 @@ func (n *raft) Campaign() error {
 	return n.campaign()
 }
 
+func randCampaignTimeout() time.Duration {
+	delta := rand.Int63n(int64(maxCampaignTimeout - minCampaignTimeout))
+	return (minCampaignTimeout + time.Duration(delta))
+}
+
 // Campaign will have our node start a leadership vote.
 // Lock should be held.
 func (n *raft) campaign() error {
@@ -660,7 +667,7 @@ func (n *raft) campaign() error {
 		return errAlreadyLeader
 	}
 	if n.state == Follower {
-		n.elect.Reset(0)
+		n.resetElect(randCampaignTimeout())
 	}
 	return nil
 }
@@ -800,7 +807,11 @@ func randElectionTimeout() time.Duration {
 
 // Lock should be held.
 func (n *raft) resetElectionTimeout() {
-	et := randElectionTimeout()
+	n.resetElect(randElectionTimeout())
+}
+
+// Lock should be held.
+func (n *raft) resetElect(et time.Duration) {
 	if n.elect == nil {
 		n.elect = time.NewTimer(et)
 	} else {
@@ -815,7 +826,9 @@ func (n *raft) run() {
 	s := n.s
 	defer s.grWG.Done()
 
+	n.Lock()
 	n.resetElectionTimeout()
+	n.Unlock()
 
 	for s.isRunning() {
 		switch n.State() {

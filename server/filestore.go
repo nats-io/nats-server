@@ -2841,7 +2841,7 @@ func (fs *fileStore) Stop() error {
 const errFile = "errors.txt"
 
 // Stream our snapshot through S2 compression and tar.
-func (fs *fileStore) streamSnapshot(w io.WriteCloser, blks []*msgBlock, includeConsumers bool) {
+func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includeConsumers bool) {
 	defer w.Close()
 
 	bw := bufio.NewWriter(w)
@@ -2885,6 +2885,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, blks []*msgBlock, includeC
 	}
 
 	fs.mu.Lock()
+	blks := fs.blks
 	// Write our general meta data.
 	if err := fs.writeStreamMeta(); err != nil {
 		fs.mu.Unlock()
@@ -3009,9 +3010,10 @@ func (fs *fileStore) Snapshot(deadline time.Duration, checkMsgs, includeConsumer
 	}
 	// Mark us as snapshotting
 	fs.sips += 1
-	blks := fs.blks
-	blkSize := int(fs.fcfg.BlockSize)
 	fs.mu.Unlock()
+
+	// We can add to our stream while snapshotting but not delete anything.
+	state := fs.State()
 
 	if checkMsgs {
 		bad := fs.checkMsgs()
@@ -3027,9 +3029,9 @@ func (fs *fileStore) Snapshot(deadline time.Duration, checkMsgs, includeConsumer
 		pw.SetWriteDeadline(time.Now().Add(deadline))
 	}
 	// Stream in separate Go routine.
-	go fs.streamSnapshot(pw, blks, includeConsumers)
+	go fs.streamSnapshot(pw, &state, includeConsumers)
 
-	return &SnapshotResult{pr, blkSize, len(blks)}, nil
+	return &SnapshotResult{pr, state}, nil
 }
 
 // Helper to return the config.

@@ -103,10 +103,9 @@ const JSConsumerDeliveryTerminatedAdvisoryType = "io.nats.jetstream.advisory.v1.
 // JSSnapshotCreateAdvisory is an advisory sent after a snapshot is successfully started
 type JSSnapshotCreateAdvisory struct {
 	TypedEvent
-	Stream  string      `json:"stream"`
-	NumBlks int         `json:"blocks"`
-	BlkSize int         `json:"block_size"`
-	Client  *ClientInfo `json:"client"`
+	Stream string      `json:"stream"`
+	State  StreamState `json:"state"`
+	Client *ClientInfo `json:"client"`
 }
 
 // JSSnapshotCreatedAdvisoryType is the schema type for JSSnapshotCreateAdvisory

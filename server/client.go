@@ -4243,6 +4243,8 @@ func (c *client) typeString() string {
 		return "JetStream"
 	case ACCOUNT:
 		return "Account"
+	case SYSTEM:
+		return "System"
 	}
 	return "Unknown Type"
 }

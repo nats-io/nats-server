@@ -337,7 +337,7 @@ func (mset *Stream) startClusterSubs() {
 		}
 	}
 	if mset.isClustered() && mset.syncSub == nil {
-		mset.syncSub, _ = mset.srv.sysSubscribe(mset.sa.Sync, mset.handleClusterSyncRequest)
+		mset.syncSub, _ = mset.srv.systemSubscribe(mset.sa.Sync, _EMPTY_, false, mset.sysc, mset.handleClusterSyncRequest)
 	}
 }
 

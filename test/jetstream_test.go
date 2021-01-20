@@ -4228,7 +4228,6 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 		t.Fatalf("Did not get correct error response: %+v", resp.Error)
 	}
 
-	req, _ = json.Marshal(sreq)
 	rmsg, err = nc.Request(fmt.Sprintf(server.JSApiStreamSnapshotT, mname), req, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error on snapshot request: %v", err)
@@ -4252,6 +4251,17 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	if resp.Error != nil {
 		t.Fatalf("Did not get correct error response: %+v", resp.Error)
 	}
+	// Check that we have the config and the state.
+	if resp.Config == nil {
+		t.Fatalf("Expected a stream config in the response, got %+v\n", resp)
+	}
+	if resp.State == nil {
+		t.Fatalf("Expected a stream state in the response, got %+v\n", resp)
+	}
+
+	// Grab state for comparison.
+	state := *resp.State
+	config := *resp.Config
 
 	// Setup to process snapshot chunks.
 	var snapshot []byte
@@ -4279,23 +4289,39 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 
 	// Now make sure this snapshot is legit.
 	var rresp server.JSApiStreamRestoreResponse
+	rreq := &server.JSApiStreamRestoreRequest{
+		Config: config,
+		State:  state,
+	}
+	req, _ = json.Marshal(rreq)
 
 	// Make sure we get an error since stream still exists.
-	rmsg, err = nc.Request(fmt.Sprintf(server.JSApiStreamRestoreT, mname), nil, time.Second)
+	rmsg, err = nc.Request(fmt.Sprintf(server.JSApiStreamRestoreT, mname), req, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error on snapshot request: %v", err)
 	}
 	json.Unmarshal(rmsg.Data, &rresp)
-	if rresp.Error == nil || rresp.Error.Code != 400 || !strings.Contains(rresp.Error.Description, "already exists") {
+	if rresp.Error == nil || rresp.Error.Code != 500 || !strings.Contains(rresp.Error.Description, "already in use") {
 		t.Fatalf("Did not get correct error response: %+v", rresp.Error)
 	}
 
-	// Grab state for comparison.
-	state := mset.State()
 	// Delete this stream.
 	mset.Delete()
 
+	// Sending no request message will error now.
 	rmsg, err = nc.Request(fmt.Sprintf(server.JSApiStreamRestoreT, mname), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on snapshot request: %v", err)
+	}
+	// Make sure to clear.
+	rresp.Error = nil
+	json.Unmarshal(rmsg.Data, &rresp)
+	if rresp.Error == nil || rresp.Error.Code != 400 || rresp.Error.Description != "bad request" {
+		t.Fatalf("Did not get correct error response: %+v", rresp.Error)
+	}
+
+	// This should work.
+	rmsg, err = nc.Request(fmt.Sprintf(server.JSApiStreamRestoreT, mname), req, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error on snapshot request: %v", err)
 	}
@@ -4372,7 +4398,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	state = mset.State()
 	mset.Delete()
 
-	rmsg, err = nc2.Request(fmt.Sprintf(server.JSApiStreamRestoreT, mname), nil, time.Second)
+	rmsg, err = nc2.Request(fmt.Sprintf(server.JSApiStreamRestoreT, mname), req, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error on snapshot request: %v", err)
 	}
@@ -4389,11 +4415,11 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	nc2.Publish(rresp.DeliverSubject, chunk[:n])
 	nc2.Flush()
 	n, _ = r.Read(chunk[:])
-	if _, err := nc2.Request(rresp.DeliverSubject, chunk[:n], 50*time.Millisecond); err == nil {
-		t.Fatalf("Expected restore subscriptionm to be closed")
+	if _, err := nc2.Request(rresp.DeliverSubject, chunk[:n], 100*time.Millisecond); err == nil {
+		t.Fatalf("Expected restore subscription to be closed")
 	}
 
-	rmsg, err = nc2.Request(fmt.Sprintf(server.JSApiStreamRestoreT, mname), nil, time.Second)
+	rmsg, err = nc2.Request(fmt.Sprintf(server.JSApiStreamRestoreT, mname), req, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error on snapshot request: %v", err)
 	}
@@ -6799,6 +6825,7 @@ type obsi struct {
 	cfg server.ConsumerConfig
 	ack int
 }
+
 type info struct {
 	cfg   server.StreamConfig
 	state server.StreamState

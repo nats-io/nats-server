@@ -14,6 +14,7 @@
 package test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -1345,6 +1346,165 @@ func TestJetStreamClusterExtendedStreamInfo(t *testing.T) {
 			t.Fatalf("Expected replica to be current: %+v", peer)
 		}
 	}
+}
+
+func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	toSend := 500
+	for i := 0; i < toSend; i++ {
+		if _, err = js.Publish("foo", []byte("OK")); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	sreq := &server.JSApiStreamSnapshotRequest{
+		DeliverSubject: nats.NewInbox(),
+		ChunkSize:      512,
+	}
+
+	req, _ := json.Marshal(sreq)
+	rmsg, err := nc.Request(fmt.Sprintf(server.JSApiStreamSnapshotT, "TEST"), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on snapshot request: %v", err)
+	}
+
+	var resp server.JSApiStreamSnapshotResponse
+	json.Unmarshal(rmsg.Data, &resp)
+	if resp.Error != nil {
+		t.Fatalf("Did not get correct error response: %+v", resp.Error)
+	}
+
+	// Grab state for comparison.
+	state := *resp.State
+	config := *resp.Config
+
+	var snapshot []byte
+	done := make(chan bool)
+
+	sub, _ := nc.Subscribe(sreq.DeliverSubject, func(m *nats.Msg) {
+		// EOF
+		if len(m.Data) == 0 {
+			done <- true
+			return
+		}
+		// Could be writing to a file here too.
+		snapshot = append(snapshot, m.Data...)
+		// Flow ack
+		m.Respond(nil)
+	})
+	defer sub.Unsubscribe()
+
+	// Wait to receive the snapshot.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive our snapshot in time")
+	}
+
+	var rresp server.JSApiStreamRestoreResponse
+	rreq := &server.JSApiStreamRestoreRequest{
+		Config: config,
+		State:  state,
+	}
+	req, _ = json.Marshal(rreq)
+
+	// Make sure a restore to an existing stream fails.
+	rmsg, err = nc.Request(fmt.Sprintf(server.JSApiStreamRestoreT, "TEST"), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	json.Unmarshal(rmsg.Data, &rresp)
+	if rresp.Error == nil || rresp.Error.Code != 500 || !strings.Contains(rresp.Error.Description, "already in use") {
+		t.Fatalf("Did not get correct error response: %+v", rresp.Error)
+	}
+
+	if _, err := js.StreamInfo("TEST"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now make sure a restore will work.
+	// Delete our stream first.
+	if err := js.DeleteStream("TEST"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// This should work properly.
+	rmsg, err = nc.Request(fmt.Sprintf(server.JSApiStreamRestoreT, "TEST"), req, 5*time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	rresp.Error = nil
+	json.Unmarshal(rmsg.Data, &rresp)
+	if rresp.Error != nil {
+		t.Fatalf("Got an unexpected error response: %+v", rresp.Error)
+	}
+
+	// Send our snapshot back in to restore the stream.
+	// Can be any size message.
+	var chunk [512]byte
+	for r := bytes.NewReader(snapshot); ; {
+		n, err := r.Read(chunk[:])
+		if err != nil {
+			break
+		}
+		nc.Request(rresp.DeliverSubject, chunk[:n], time.Second)
+	}
+	nc.Request(rresp.DeliverSubject, nil, time.Second)
+
+	si, err := js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si == nil || si.Config.Name != "TEST" || si.State.Msgs != uint64(toSend) {
+		t.Fatalf("StreamInfo is not correct %+v", si)
+	}
+
+	getExtendedStreamInfo := func() *server.StreamInfo {
+		t.Helper()
+		resp, err := nc.Request(fmt.Sprintf(server.JSApiStreamInfoT, "TEST"), nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var si server.StreamInfo
+		if err = json.Unmarshal(resp.Data, &si); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if si.Cluster == nil {
+			t.Fatalf("Expected cluster info")
+		}
+		return &si
+	}
+
+	// Make sure the replicas become current eventually. They will be doing catchup.
+	checkFor(t, 10*time.Second, 10*time.Millisecond, func() error {
+		si := getExtendedStreamInfo()
+		if si == nil || si.Cluster == nil {
+			t.Fatalf("Did not get stream info")
+		}
+		for _, pi := range si.Cluster.Replicas {
+			if !pi.Current {
+				return fmt.Errorf("Peer not current: %+v", pi)
+			}
+		}
+		return nil
+	})
 }
 
 func TestJetStreamClusterStreamPerf(t *testing.T) {

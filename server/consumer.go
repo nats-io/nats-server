@@ -1186,6 +1186,8 @@ func (o *Consumer) loopAndDeliverMsgs(qch chan struct{}) {
 
 // Info returns our current consumer state.
 func (o *Consumer) Info() *ConsumerInfo {
+	ci := o.srv.clusterInfo(o.node)
+
 	o.mu.Lock()
 	info := &ConsumerInfo{
 		Stream:  o.stream,
@@ -1203,7 +1205,7 @@ func (o *Consumer) Info() *ConsumerInfo {
 		NumAckPending:  len(o.pending),
 		NumRedelivered: len(o.rdc),
 		NumPending:     o.sgap,
-		Cluster:        o.srv.clusterInfo(o.node),
+		Cluster:        ci,
 	}
 	// If we are a pull mode consumer, report on number of waiting requests.
 	if o.isPullMode() {
