@@ -82,8 +82,11 @@ func TestNoRaceRouteSendSubs(t *testing.T) {
 
 	// total number of subscriptions per server
 	totalPerServer := 100000
-	for i := 0; i < totalPerServer; i++ {
-		proto := fmt.Sprintf("SUB foo.%d %d\r\n", i, i*2)
+	for i := 0; i < totalPerServer/2; i++ {
+		proto := fmt.Sprintf("SUB foo.%d %d\r\n", i, i*2+1)
+		clientASend(proto)
+		clientBSend(proto)
+		proto = fmt.Sprintf("SUB bar.%d queue.%d %d\r\n", i, i, i*2+2)
 		clientASend(proto)
 		clientBSend(proto)
 	}

@@ -876,19 +876,6 @@ func (a *Account) removeClient(c *client) int {
 	return n
 }
 
-func (a *Account) randomClient() *client {
-	if a.ic != nil {
-		return a.ic
-	}
-	var c *client
-	for c = range a.clients {
-		if c.acc == a {
-			break
-		}
-	}
-	return c
-}
-
 // AddServiceExport will configure the account with the defined export.
 func (a *Account) AddServiceExport(subject string, accounts []*Account) error {
 	return a.AddServiceExportWithResponse(subject, Singleton, accounts)
