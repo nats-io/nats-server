@@ -653,12 +653,13 @@ func (o *Consumer) setLeader(isLeader bool) {
 		o.sendq = make(chan *jsPubMsg, msetSendQSize)
 		// Recreate quit channel.
 		o.qch = make(chan struct{})
+		qch := o.qch
 		o.mu.Unlock()
 
 		// Now start up Go routine to deliver msgs.
-		go o.loopAndGatherMsgs()
+		go o.loopAndGatherMsgs(qch)
 		// Startup our deliver loop.
-		go o.loopAndDeliverMsgs()
+		go o.loopAndDeliverMsgs(qch)
 
 	} else {
 		// Shutdown the go routines and the subscriptions.
@@ -1114,9 +1115,9 @@ func (o *Consumer) writeState() {
 }
 
 // loopAndDeliverMsgs() will loop and deliver messages and watch for interest changes.
-func (o *Consumer) loopAndDeliverMsgs() {
+func (o *Consumer) loopAndDeliverMsgs(qch chan struct{}) {
 	o.mu.Lock()
-	qch, inch, sendq := o.qch, o.inch, o.sendq
+	inch, sendq := o.inch, o.sendq
 	s, acc := o.acc.srv, o.acc
 	o.mu.Unlock()
 
@@ -1489,16 +1490,17 @@ func (wq *waitQueue) pop() *waitingRequest {
 func (o *Consumer) processNextMsgReq(_ *subscription, c *client, _, reply string, msg []byte) {
 	o.mu.Lock()
 	mset := o.mset
-	if mset == nil || o.isPushMode() {
+	if mset == nil || o.isPushMode() || o.sendq == nil {
 		o.mu.Unlock()
 		return
 	}
 
 	sendErr := func(status int, description string) {
+		sendq := o.sendq
 		o.mu.Unlock()
 		hdr := []byte(fmt.Sprintf("NATS/1.0 %d %s\r\n\r\n", status, description))
 		pmsg := &jsPubMsg{reply, reply, _EMPTY_, hdr, nil, nil, 0}
-		o.sendq <- pmsg // Send message.
+		sendq <- pmsg // Send message.
 	}
 
 	if o.waiting.isFull() {
@@ -1659,7 +1661,7 @@ func (o *Consumer) forceExpireFirstWaiting() *waitingRequest {
 		return wr
 	}
 	// If we are expiring this and we think there is still interest, alert.
-	if rr := o.acc.sl.Match(wr.reply); len(rr.psubs)+len(rr.qsubs) > 0 && o.mset != nil {
+	if rr := o.acc.sl.Match(wr.reply); len(rr.psubs)+len(rr.qsubs) > 0 && o.mset != nil && o.sendq != nil {
 		// We still appear to have interest, so send alert as courtesy.
 		hdr := []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
 		pmsg := &jsPubMsg{wr.reply, wr.reply, _EMPTY_, hdr, nil, nil, 0}
@@ -1695,7 +1697,7 @@ func (o *Consumer) checkWaitingForInterest() bool {
 	return o.waiting.len() > 0
 }
 
-func (o *Consumer) loopAndGatherMsgs() {
+func (o *Consumer) loopAndGatherMsgs(qch chan struct{}) {
 	// On startup check to see if we are in a a reply situtation where replay policy is not instant.
 	var (
 		lts  int64 // last time stamp seen, used for replay.
@@ -1763,7 +1765,6 @@ func (o *Consumer) loopAndGatherMsgs() {
 		// If we are in a replay scenario and have not caught up check if we need to delay here.
 		if o.replay && lts > 0 {
 			if delay = time.Duration(ts - lts); delay > time.Millisecond {
-				qch := o.qch
 				o.mu.Unlock()
 				select {
 				case <-qch:
@@ -1783,7 +1784,6 @@ func (o *Consumer) loopAndGatherMsgs() {
 			r := o.rlimit.ReserveN(now, len(msg)+len(hdr)+len(subj)+len(dsubj)+len(o.ackReplyT))
 			delay := r.DelayFrom(now)
 			if delay > 0 {
-				qch := o.qch
 				o.mu.Unlock()
 				select {
 				case <-qch:
@@ -1807,7 +1807,6 @@ func (o *Consumer) loopAndGatherMsgs() {
 
 		// We will wait here for new messages to arrive.
 		mch := o.mch
-		qch := o.qch
 		o.mu.Unlock()
 
 		select {
@@ -1876,7 +1875,7 @@ func (o *Consumer) deliverCurrentMsg(subj string, hdr, msg []byte, seq uint64, t
 // Deliver a msg to the consumer.
 // Lock should be held and o.mset validated to be non-nil.
 func (o *Consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint64, ts int64) {
-	if o.mset == nil {
+	if o.mset == nil || o.sendq == nil {
 		return
 	}
 	// Update pending on first attempt
@@ -1897,9 +1896,10 @@ func (o *Consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 	ap := o.config.AckPolicy
 
 	// This needs to be unlocked since the other side may need this lock on a failed delivery.
+	sendq := o.sendq
 	o.mu.Unlock()
 	// Send message.
-	o.sendq <- pmsg
+	sendq <- pmsg
 	// If we are ack none and mset is interest only we should make sure stream removes interest.
 	if ap == AckNone && mset.config.Retention == InterestPolicy && !mset.checkInterest(seq, o) {
 		mset.store.RemoveMsg(seq)
