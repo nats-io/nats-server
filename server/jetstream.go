@@ -622,7 +622,10 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 			if !cfg.Created.IsZero() {
 				obs.setCreated(cfg.Created)
 			}
-			if err := obs.readStoredState(); err != nil {
+			obs.mu.Lock()
+			err = obs.readStoredState()
+			obs.mu.Unlock()
+			if err != nil {
 				s.Warnf("    Error restoring Consumer state: %v", err)
 			}
 		}
