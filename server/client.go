@@ -2901,7 +2901,12 @@ var needFlush = struct{}{}
 // deliverMsg will deliver a message to a matching subscription and its underlying client.
 // We process all connection/client types. mh is the part that will be protocol/client specific.
 func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, gwrply bool) bool {
+	isR := bytes.HasPrefix(subject, []byte("$NRG.R."))
+
 	if sub.client == nil {
+		if isR {
+			fmt.Printf("\n\n[%s] NO CLIENT %q\n\n", c.srv, subject)
+		}
 		return false
 	}
 	client := sub.client
@@ -2909,6 +2914,9 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 
 	// Check echo
 	if c == client && !client.echo {
+		if isR {
+			fmt.Printf("\n\n[%s] NO ECHO FOR %q\n\n", c.srv, subject)
+		}
 		client.mu.Unlock()
 		return false
 	}
@@ -2920,10 +2928,11 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 		return false
 	}
 
-	// This is set under the client lock using atomic because it can be
-	// checked with atomic without the client lock. Here, we don't need
-	// the atomic operation since we are under the lock.
-	if sub.closed == 1 {
+	// New race detector forces this now.
+	if sub.isClosed() {
+		if isR {
+			fmt.Printf("\n\n[%s] SUB CLOSED %q\n\n", c.srv, subject)
+		}
 		client.mu.Unlock()
 		return false
 	}
