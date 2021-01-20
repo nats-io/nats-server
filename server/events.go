@@ -1434,13 +1434,19 @@ func (s *Server) systemSubscribe(subject, queue string, internalOnly bool, c *cl
 }
 
 func (s *Server) sysUnsubscribe(sub *subscription) {
-	if sub == nil || !s.eventsEnabled() {
+	if sub == nil {
 		return
 	}
+
 	s.mu.Lock()
+	if !s.eventsEnabled() {
+		s.mu.Unlock()
+		return
+	}
 	acc := s.sys.account
 	c := s.sys.client
 	s.mu.Unlock()
+
 	c.unsubscribe(acc, sub, true, true)
 }
 
