@@ -956,7 +956,7 @@ func (js *jetStream) monitorStream(mset *Stream, sa *streamAssignment) {
 
 	acc, err := s.LookupAccount(sa.Client.Account)
 	if err != nil {
-		s.Warnf("Could not retrive account for stream '%s > %s", sa.Client.Account, sa.Config.Name)
+		s.Warnf("Could not retrieve account for stream '%s > %s", sa.Client.Account, sa.Config.Name)
 		return
 	}
 
