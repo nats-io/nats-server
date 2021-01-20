@@ -65,9 +65,10 @@ type WAL interface {
 }
 
 type Peer struct {
-	ID    string
-	Last  time.Time
-	Index uint64
+	ID      string
+	Current bool
+	Last    time.Time
+	Index   uint64
 }
 
 type RaftState uint8
@@ -170,6 +171,8 @@ type lps struct {
 const (
 	minElectionTimeout = 350 * time.Millisecond
 	maxElectionTimeout = 3 * minElectionTimeout
+	minCampaignTimeout = 5 * time.Millisecond
+	maxCampaignTimeout = 5 * minCampaignTimeout
 	hbInterval         = 200 * time.Millisecond
 )
 
@@ -260,7 +263,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		propc:    make(chan *Entry, 256),
 		applyc:   make(chan *CommittedEntry, 256),
 		leadc:    make(chan bool, 4),
-		stepdown: make(chan string),
+		stepdown: make(chan string, 4),
 	}
 	n.c.registerWithAccount(sacc)
 
@@ -322,6 +325,14 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 	s.startGoRoutine(n.run)
 
 	return n, nil
+}
+
+// Maps node names back to server names.
+func (s *Server) serverNameForNode(node string) string {
+	s.mu.Lock()
+	sn := s.nodeToName[node]
+	s.mu.Unlock()
+	return sn
 }
 
 // Server will track all raft nodes.
@@ -644,14 +655,20 @@ func (n *raft) Campaign() error {
 	return n.campaign()
 }
 
+func randCampaignTimeout() time.Duration {
+	delta := rand.Int63n(int64(maxCampaignTimeout - minCampaignTimeout))
+	return (minCampaignTimeout + time.Duration(delta))
+}
+
 // Campaign will have our node start a leadership vote.
 // Lock should be held.
 func (n *raft) campaign() error {
+	n.debug("Starting campaign")
 	if n.state == Leader {
 		return errAlreadyLeader
 	}
 	if n.state == Follower {
-		n.elect.Reset(0)
+		n.resetElect(randCampaignTimeout())
 	}
 	return nil
 }
@@ -690,9 +707,11 @@ func (n *raft) Peers() []*Peer {
 	if n.state != Leader {
 		return nil
 	}
+
 	var peers []*Peer
 	for id, ps := range n.peers {
-		peers = append(peers, &Peer{ID: id, Last: time.Unix(0, ps.ts)})
+		p := &Peer{ID: id, Current: id == n.leader || ps.li >= n.applied, Last: time.Unix(0, ps.ts)}
+		peers = append(peers, p)
 	}
 	return peers
 }
@@ -789,7 +808,11 @@ func randElectionTimeout() time.Duration {
 
 // Lock should be held.
 func (n *raft) resetElectionTimeout() {
-	et := randElectionTimeout()
+	n.resetElect(randElectionTimeout())
+}
+
+// Lock should be held.
+func (n *raft) resetElect(et time.Duration) {
 	if n.elect == nil {
 		n.elect = time.NewTimer(et)
 	} else {
@@ -804,7 +827,9 @@ func (n *raft) run() {
 	s := n.s
 	defer s.grWG.Done()
 
+	n.Lock()
 	n.resetElectionTimeout()
+	n.Unlock()
 
 	for s.isRunning() {
 		switch n.State() {
@@ -840,12 +865,16 @@ func (n *raft) notice(format string, args ...interface{}) {
 	n.s.Noticef(nf, args...)
 }
 
-func (n *raft) runAsFollower() {
+func (n *raft) electTimer() *time.Timer {
 	n.RLock()
 	elect := n.elect
 	n.RUnlock()
+	return elect
+}
 
+func (n *raft) runAsFollower() {
 	for {
+		elect := n.electTimer()
 		select {
 		case <-n.s.quitCh:
 			return
@@ -1330,7 +1359,6 @@ func (n *raft) trackPeer(peer string) error {
 
 func (n *raft) runAsCandidate() {
 	n.Lock()
-	elect := n.elect
 	// Drain old responses.
 	for len(n.votes) > 0 {
 		<-n.votes
@@ -1344,6 +1372,7 @@ func (n *raft) runAsCandidate() {
 	votes := 1
 
 	for {
+		elect := n.electTimer()
 		select {
 		case <-n.s.quitCh:
 			return
@@ -1508,6 +1537,9 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		n.leader = ae.leader
 		n.vote = noVote
 		n.writeTermVote()
+		if isNew {
+			n.resetElectionTimeout()
+		}
 	}
 
 	// TODO(dlc) - Do both catchup and delete new behaviors from spec.
@@ -1854,6 +1886,7 @@ func (n *raft) handleVoteResponse(sub *subscription, c *client, _, reply string,
 	select {
 	case n.votes <- vr:
 	default:
+		// FIXME(dlc)
 		n.error("Failed to place vote response on chan for %q", n.group)
 	}
 }
@@ -1864,6 +1897,7 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 	n.RUnlock()
 
 	n.debug("Received a voteRequest %+v", vr)
+	defer n.debug("Sending a voteResponse %+v -> %q", &vresp, vr.reply)
 
 	if err := n.trackPeer(vr.candidate); err != nil {
 		n.sendReply(vr.reply, vresp.encode())
@@ -1879,11 +1913,26 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 		return nil
 	}
 
+	// If this is a higher term go ahead and stepdown.
+	if vresp.term > n.term {
+		n.debug("Stepping down from candidate, detected higher term: %d vs %d", vresp.term, n.term)
+		stepdown := n.stepdown
+		n.term = vresp.term
+		n.vote = noVote
+		n.writeTermVote()
+		n.Unlock()
+
+		stepdown <- noLeader
+		n.sendReply(vr.reply, vresp.encode())
+		return nil
+	}
+
 	// Only way we get to yes is through here.
 	if vr.lastIndex >= n.pindex && n.vote == noVote || n.vote == vr.candidate {
 		vresp.granted = true
 		n.vote = vr.candidate
 		n.writeTermVote()
+		n.resetElectionTimeout()
 	}
 	n.Unlock()
 
@@ -1916,6 +1965,8 @@ func (n *raft) requestVote() {
 	vr := voteRequest{n.term, n.pterm, n.pindex, n.id, _EMPTY_}
 	subj, reply := n.vsubj, n.vreply
 	n.Unlock()
+
+	n.debug("Sending out voteRequest %+v", vr)
 
 	// Now send it out.
 	n.sendRPC(subj, reply, vr.encode())

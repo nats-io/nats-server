@@ -2920,10 +2920,8 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 		return false
 	}
 
-	// This is set under the client lock using atomic because it can be
-	// checked with atomic without the client lock. Here, we don't need
-	// the atomic operation since we are under the lock.
-	if sub.closed == 1 {
+	// New race detector forces this now.
+	if sub.isClosed() {
 		client.mu.Unlock()
 		return false
 	}
@@ -4243,6 +4241,8 @@ func (c *client) typeString() string {
 		return "JetStream"
 	case ACCOUNT:
 		return "Account"
+	case SYSTEM:
+		return "System"
 	}
 	return "Unknown Type"
 }

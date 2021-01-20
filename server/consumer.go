@@ -42,6 +42,7 @@ type ConsumerInfo struct {
 	NumRedelivered int            `json:"num_redelivered"`
 	NumWaiting     int            `json:"num_waiting"`
 	NumPending     uint64         `json:"num_pending"`
+	Cluster        *ClusterInfo   `json:"cluster,omitempty"`
 }
 
 type ConsumerConfig struct {
@@ -170,6 +171,7 @@ type Consumer struct {
 	mu                sync.RWMutex
 	mset              *Stream
 	acc               *Account
+	srv               *Server
 	client            *client
 	sysc              *client
 	sid               int
@@ -435,6 +437,7 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, node RaftN
 	o := &Consumer{
 		mset:    mset,
 		acc:     a,
+		srv:     s,
 		client:  s.createInternalJetStreamClient(),
 		sysc:    s.createInternalJetStreamClient(),
 		config:  *config,
@@ -1183,6 +1186,8 @@ func (o *Consumer) loopAndDeliverMsgs(qch chan struct{}) {
 
 // Info returns our current consumer state.
 func (o *Consumer) Info() *ConsumerInfo {
+	ci := o.srv.clusterInfo(o.node)
+
 	o.mu.Lock()
 	info := &ConsumerInfo{
 		Stream:  o.stream,
@@ -1200,6 +1205,7 @@ func (o *Consumer) Info() *ConsumerInfo {
 		NumAckPending:  len(o.pending),
 		NumRedelivered: len(o.rdc),
 		NumPending:     o.sgap,
+		Cluster:        ci,
 	}
 	// If we are a pull mode consumer, report on number of waiting requests.
 	if o.isPullMode() {
@@ -1894,9 +1900,8 @@ func (o *Consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, dseq, dc, ts, o.sgap), hdr, msg, o, seq}
 	mset := o.mset
 	ap := o.config.AckPolicy
-
-	// This needs to be unlocked since the other side may need this lock on a failed delivery.
 	sendq := o.sendq
+	// This needs to be unlocked since the other side may need this lock on a failed delivery.
 	o.mu.Unlock()
 	// Send message.
 	sendq <- pmsg

@@ -122,9 +122,8 @@ type StreamState struct {
 
 // SnapshotResult contains information about the snapshot.
 type SnapshotResult struct {
-	Reader  io.ReadCloser
-	BlkSize int
-	NumBlks int
+	Reader io.ReadCloser
+	State  StreamState
 }
 
 // ConsumerStore stores state on consumers for streams.

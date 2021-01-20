@@ -252,7 +252,7 @@ RESET:
 		s.mu.Unlock()
 		return
 	}
-	c := s.sys.client
+	sysc := s.sys.client
 	resetCh := s.sys.resetCh
 	sysacc := s.sys.account
 	sendq := s.sys.sendq
@@ -271,6 +271,10 @@ RESET:
 	warnThresh := 3 * internalSendQLen / 4
 	warnFreq := time.Second
 	last := time.Now().Add(-warnFreq)
+
+	// Internal client not generally accessible for when we
+	// need to change accounts from the system account.
+	ic := s.createInternalAccountClient()
 
 	for s.eventsRunning() {
 		// Setup information for next message
@@ -303,14 +307,21 @@ RESET:
 				}
 			}
 
+			// Setup our client. If the user wants to use a non-system account use our internal
+			// account scoped here so that we are not changing out accounts for the system client.
+			var c *client
+			if pm.acc != nil && pm.acc != sysacc {
+				c = ic
+			} else {
+				c = sysc
+				pm.acc = nil
+			}
+
 			// Grab client lock.
 			c.mu.Lock()
-
 			// We can have an override for account here.
 			if pm.acc != nil {
 				c.acc = pm.acc
-			} else {
-				c.acc = sysacc
 			}
 
 			// Prep internal structures needed to send message.
@@ -834,6 +845,8 @@ func (s *Server) processNewServer(ms *ServerInfo) {
 	// Right now we only check if we have leafnode servers and if so send another
 	// connect update to make sure they switch this account to interest only mode.
 	s.ensureGWsInterestOnlyForLeafNodes()
+	// Add to our nodeToName
+	s.nodeToName[string(getHash(ms.Name))] = ms.Name
 }
 
 // If GW is enabled on this server and there are any leaf node connections,
@@ -1421,13 +1434,19 @@ func (s *Server) systemSubscribe(subject, queue string, internalOnly bool, c *cl
 }
 
 func (s *Server) sysUnsubscribe(sub *subscription) {
-	if sub == nil || !s.eventsEnabled() {
+	if sub == nil {
 		return
 	}
+
 	s.mu.Lock()
+	if !s.eventsEnabled() {
+		s.mu.Unlock()
+		return
+	}
 	acc := s.sys.account
 	c := s.sys.client
 	s.mu.Unlock()
+
 	c.unsubscribe(acc, sub, true, true)
 }
 

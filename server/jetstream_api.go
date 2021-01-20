@@ -332,13 +332,23 @@ type JSApiStreamSnapshotRequest struct {
 // JSApiStreamSnapshotResponse is the direct response to the snapshot request.
 type JSApiStreamSnapshotResponse struct {
 	ApiResponse
-	// Estimate of number of blocks for the messages.
-	NumBlks int `json:"num_blks"`
-	// Block size limit as specified by the stream.
-	BlkSize int `json:"blk_size"`
+	// Configuration of the given stream.
+	Config *StreamConfig `json:"config,omitempty"`
+	// Current State for the given stream.
+	State *StreamState `json:"state,omitempty"`
 }
 
 const JSApiStreamSnapshotResponseType = "io.nats.jetstream.api.v1.stream_snapshot_response"
+
+// JSApiStreamRestoreRequest is the required restore request.
+type JSApiStreamRestoreRequest struct {
+	// Configuration of the given stream.
+	Config StreamConfig `json:"config"`
+	// Current State for the given stream.
+	State StreamState `json:"state"`
+}
+
+const JSApiStreamRestoreRequestType = "io.nats.jetstream.api.v1.stream_restore_request"
 
 // JSApiStreamRestoreResponse is the direct response to the restore request.
 type JSApiStreamRestoreResponse struct {
@@ -885,7 +895,7 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 		return
 	}
 
-	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config()}
+	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config(), Cluster: s.clusterInfo(mset.raftNode())}
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -1077,10 +1087,6 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 		return
 	}
 
-	if !acc.jetStreamReadAllowedForStream(name) {
-		return
-	}
-
 	var resp = JSApiStreamInfoResponse{ApiResponse: ApiResponse{Type: JSApiStreamInfoResponseType}}
 	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
@@ -1106,7 +1112,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 	if config.allowNoSubject && len(config.Subjects) == 0 {
 		config.Subjects = []string{">"}
 	}
-	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: config}
+	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: config, Cluster: s.clusterInfo(mset.raftNode())}
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -1346,7 +1352,7 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 
 // Request to restore a stream.
 func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil || !s.jetStreamReadAllowed() {
+	if c == nil || !s.JetStreamIsLeader() {
 		return
 	}
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
@@ -1361,17 +1367,37 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	if !isEmptyRequest(msg) {
-		resp.Error = jsNotEmptyRequestErr
+	if isEmptyRequest(msg) {
+		resp.Error = jsBadRequestErr
 		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+
+	var req JSApiStreamRestoreRequest
+	if err := json.Unmarshal(msg, &req); err != nil {
+		resp.Error = jsInvalidJSONErr
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
 	stream := streamNameFromSubject(subject)
+
+	if s.JetStreamIsClustered() {
+		s.jsClusteredStreamRestoreRequest(ci, acc, &req, stream, subject, reply, rmsg)
+		return
+	}
+
 	if _, err := acc.LookupStream(stream); err == nil {
-		resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("stream [%q] already exists", stream)}
+		resp.Error = jsError(ErrJetStreamStreamAlreadyUsed)
 		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+
+	s.processStreamRestore(ci, acc, stream, subject, reply, string(msg))
+}
+
+func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, stream, subject, reply, msg string) <-chan error {
+	var resp = JSApiStreamRestoreResponse{ApiResponse: ApiResponse{Type: JSApiStreamRestoreResponseType}}
 
 	// FIXME(dlc) - Need to close these up if we fail for some reason.
 	// TODO(dlc) - Might need to make configurable or stream direct to storage dir.
@@ -1379,12 +1405,12 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 	if err != nil {
 		resp.Error = &ApiError{Code: 500, Description: "JetStream unable to open temp storage for restore"}
 		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
+		return nil
 	}
 
-	s.Noticef("Starting restore for stream %q in account %q", stream, acc.Name)
+	s.Noticef("Starting restore for stream '%s > %s'", acc.Name, stream)
+
 	start := time.Now()
-	received := 0
 
 	s.publishAdvisory(acc, JSAdvisoryStreamRestoreCreatePre+"."+stream, &JSRestoreCreateAdvisory{
 		TypedEvent: TypedEvent{
@@ -1399,79 +1425,138 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 	// Create our internal subscription to accept the snapshot.
 	restoreSubj := fmt.Sprintf(jsRestoreDeliverT, stream, nuid.Next())
 
-	// FIXME(dlc) - Can't recover well here if something goes wrong. Could use channels and at least time
-	// things out. Note that this is tied to the requesting client, so if it is a tool this goes away when
-	// the client does. Only thing leaking here is the sub on strange failure.
-	acc.subscribeInternal(restoreSubj, func(sub *subscription, c *client, subject, reply string, msg []byte) {
+	type result struct {
+		err   error
+		reply string
+	}
+
+	// For signaling to upper layers.
+	resultCh := make(chan result, 8)
+	activeCh := make(chan int, 32)
+
+	processChunk := func(sub *subscription, c *client, subject, reply string, msg []byte) {
 		// We require reply subjects to communicate back failures, flow etc. If they do not have one log and cancel.
 		if reply == _EMPTY_ {
-			tfile.Close()
-			os.Remove(tfile.Name())
 			sub.client.processUnsub(sub.sid)
-			s.Warnf("Restore for stream %q in account %q requires reply subject for each chunk", stream, acc.Name)
+			resultCh <- result{
+				fmt.Errorf("restore for stream '%s > %s' requires reply subject for each chunk", acc.Name, stream),
+				reply,
+			}
 			return
 		}
-		// Account client messages have \r\n on end.
+		// Account client messages have \r\n on end. This is an error.
 		if len(msg) < LEN_CR_LF {
+			resultCh <- result{
+				fmt.Errorf("restore for stream '%s > %s' received short chunk", acc.Name, stream),
+				reply,
+			}
 			return
 		}
+		// Adjust.
 		msg = msg[:len(msg)-LEN_CR_LF]
 
+		// This means we are complete with our transfer from the client.
 		if len(msg) == 0 {
 			tfile.Seek(0, 0)
-			mset, err := acc.RestoreStream(stream, tfile)
-			tfile.Close()
-			os.Remove(tfile.Name())
-			sub.client.processUnsub(sub.sid)
-
-			end := time.Now()
-
-			// TODO(rip) - Should this have the error code in it??
-			s.publishAdvisory(acc, JSAdvisoryStreamRestoreCompletePre+"."+stream, &JSRestoreCompleteAdvisory{
-				TypedEvent: TypedEvent{
-					Type: JSRestoreCompleteAdvisoryType,
-					ID:   nuid.Next(),
-					Time: time.Now().UTC(),
-				},
-				Stream: stream,
-				Start:  start.UTC(),
-				End:    end.UTC(),
-				Bytes:  int64(received),
-				Client: ci,
-			})
-
-			s.Noticef("Completed %s restore for stream %q in account %q in %v",
-				FriendlyBytes(int64(received)), stream, acc.Name, end.Sub(start))
-
-			// On the last EOF, send back the stream info or error status.
-			var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
-			if err != nil {
-				resp.Error = jsError(err)
-			} else {
-				resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config()}
-			}
-			s.sendInternalAccountMsg(acc, reply, s.jsonResponse(&resp))
-
+			_, err := acc.RestoreStream(stream, tfile)
+			resultCh <- result{err, reply}
 			return
 		}
+
 		// Append chunk to temp file. Mark as issue if we encounter an error.
 		if n, err := tfile.Write(msg); n != len(msg) || err != nil {
-			s.Warnf("Storage failure for restore at %s for stream in account %q: %v",
-				FriendlyBytes(int64(received)), stream, acc.Name, err)
-			tfile.Close()
-			os.Remove(tfile.Name())
-			sub.client.processUnsub(sub.sid)
+			resultCh <- result{err, reply}
 			if reply != _EMPTY_ {
 				s.sendInternalAccountMsg(acc, reply, "-ERR 'storage failure during restore'")
 			}
 			return
 		}
-		received += len(msg)
-		s.sendInternalAccountMsg(acc, reply, nil)
-	})
 
+		activeCh <- len(msg)
+		s.sendInternalAccountMsg(acc, reply, nil)
+	}
+
+	sub, err := acc.subscribeInternal(restoreSubj, processChunk)
+	if err != nil {
+		resp.Error = &ApiError{Code: 500, Description: "JetStream unable to subscribe to restore snapshot"}
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return nil
+	}
+
+	// Mark the subject so the end user knows where to send the snapshot chunks.
 	resp.DeliverSubject = restoreSubj
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+
+	doneCh := make(chan error, 1)
+
+	// Monitor the progress from another Go routine.
+	s.startGoRoutine(func() {
+		defer s.grWG.Done()
+		defer func() {
+			tfile.Close()
+			os.Remove(tfile.Name())
+			sub.client.processUnsub(sub.sid)
+		}()
+
+		const activityInterval = 2 * time.Second
+		notActive := time.NewTimer(activityInterval)
+		defer notActive.Stop()
+
+		total := 0
+		for {
+			select {
+			case result := <-resultCh:
+				end := time.Now()
+
+				// TODO(rip) - Should this have the error code in it??
+				s.publishAdvisory(acc, JSAdvisoryStreamRestoreCompletePre+"."+stream, &JSRestoreCompleteAdvisory{
+					TypedEvent: TypedEvent{
+						Type: JSRestoreCompleteAdvisoryType,
+						ID:   nuid.Next(),
+						Time: time.Now().UTC(),
+					},
+					Stream: stream,
+					Start:  start.UTC(),
+					End:    end.UTC(),
+					Bytes:  int64(total),
+					Client: ci,
+				})
+
+				var mset *Stream
+				var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
+
+				err := result.err
+				if err == nil {
+					mset, err = acc.LookupStream(stream)
+				}
+				if err != nil {
+					resp.Error = jsError(err)
+					s.Warnf("Restore failed for %s for stream '%s > %s' in %v",
+						FriendlyBytes(int64(total)), stream, acc.Name, end.Sub(start))
+				} else {
+					resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config()}
+					s.Noticef("Completed restore of %s for stream '%s > %s' in %v",
+						FriendlyBytes(int64(total)), stream, acc.Name, end.Sub(start))
+				}
+
+				// On the last EOF, send back the stream info or error status.
+				s.sendInternalAccountMsg(acc, result.reply, s.jsonResponse(&resp))
+				// Signal to the upper layers.
+				doneCh <- err
+				return
+			case n := <-activeCh:
+				total += n
+				notActive.Reset(activityInterval)
+			case <-notActive.C:
+				err := fmt.Errorf("restore for stream '%s > %s' is stalled", acc, stream)
+				s.Warnf(err.Error())
+				doneCh <- err
+				return
+			}
+		}
+	})
+
+	return doneCh
 }
 
 // Process a snapshot request.
@@ -1484,7 +1569,14 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 		s.Warnf(badAPIRequestT, msg)
 		return
 	}
+
 	smsg := string(msg)
+	stream := streamNameFromSubject(subject)
+
+	// If we are in clustered mode we need to be the stream leader to proceed.
+	if s.JetStreamIsClustered() && !acc.JetStreamIsStreamLeader(stream) {
+		return
+	}
 
 	var resp = JSApiStreamSnapshotResponse{ApiResponse: ApiResponse{Type: JSApiStreamSnapshotResponseType}}
 	if !acc.JetStreamEnabled() {
@@ -1497,7 +1589,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 		s.sendAPIResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
 		return
 	}
-	stream := streamNameFromSubject(subject)
+
 	mset, err := acc.LookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
@@ -1521,23 +1613,24 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 	// stall this go routine.
 	go func() {
 		if req.CheckMsgs {
-			s.Noticef("Starting health check and snapshot for stream %q in account %q", mset.Name(), mset.jsa.account.Name)
+			s.Noticef("Starting health check and snapshot for stream '%s > %s'", mset.jsa.account.Name, mset.Name())
 		} else {
-			s.Noticef("Starting snapshot for stream %q in account %q", mset.Name(), mset.jsa.account.Name)
+			s.Noticef("Starting snapshot for stream '%s > %s'", mset.jsa.account.Name, mset.Name())
 		}
 
 		start := time.Now()
 
 		sr, err := mset.Snapshot(0, req.CheckMsgs, !req.NoConsumers)
 		if err != nil {
-			s.Noticef("Snapshot of %q in account %q failed: %s", mset.Name(), mset.jsa.account.Name, err)
+			s.Warnf("Snapshot of stream '%s > %s' failed: %v", mset.jsa.account.Name, mset.Name(), err)
 			resp.Error = jsError(err)
 			s.sendAPIResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
 			return
 		}
 
-		resp.NumBlks = sr.NumBlks
-		resp.BlkSize = sr.BlkSize
+		config := mset.Config()
+		resp.State = &sr.State
+		resp.Config = &config
 
 		s.sendAPIResponse(ci, acc, subject, reply, smsg, s.jsonResponse(resp))
 
@@ -1547,10 +1640,9 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 				ID:   nuid.Next(),
 				Time: time.Now().UTC(),
 			},
-			Stream:  mset.Name(),
-			NumBlks: sr.NumBlks,
-			BlkSize: sr.BlkSize,
-			Client:  ci,
+			Stream: mset.Name(),
+			State:  sr.State,
+			Client: ci,
 		})
 
 		// Now do the real streaming.
@@ -1570,10 +1662,10 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 			Client: ci,
 		})
 
-		s.Noticef("Completed %s snapshot for stream %q in account %q in %v",
-			FriendlyBytes(int64(resp.NumBlks*resp.BlkSize)),
-			mset.Name(),
+		s.Noticef("Completed snapshot of %s for stream '%s > %s' in %v",
+			FriendlyBytes(int64(sr.State.Bytes)),
 			mset.jsa.account.Name,
+			mset.Name(),
 			end.Sub(start))
 	}()
 }

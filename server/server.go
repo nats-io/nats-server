@@ -235,6 +235,10 @@ type Server struct {
 	// For registering raft nodes with the server.
 	rnMu      sync.RWMutex
 	raftNodes map[string]RaftNode
+
+	// For mapping from a node name back to a server name.
+	// Normal server lock here.
+	nodeToName map[string]string
 }
 
 // Make sure all are 64bits for atomic use
@@ -318,6 +322,7 @@ func NewServer(opts *Options) (*Server, error) {
 		httpBasePath: httpBasePath,
 		eventIds:     nuid.New(),
 		routesToSelf: make(map[string]struct{}),
+		nodeToName:   make(map[string]string),
 	}
 
 	// Trusted root operator keys.
@@ -327,6 +332,9 @@ func NewServer(opts *Options) (*Server, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Place ourselves.
+	s.nodeToName[string(getHash(serverName))] = serverName
 
 	s.routeResolver = opts.Cluster.resolver
 	if s.routeResolver == nil {
@@ -777,6 +785,7 @@ func (s *Server) activePeers() (peers []string) {
 	if s.sys == nil {
 		return nil
 	}
+	// FIXME(dlc) - When this spans supercluster need to adjust below.
 	for _, r := range s.routes {
 		peers = append(peers, r.route.hash)
 	}
