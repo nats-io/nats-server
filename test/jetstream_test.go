@@ -7053,6 +7053,25 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		t.Fatalf("Did not receive correct response: %+v", scResp.Error)
 	}
 
+	// Check that updating a non existing stream fails
+	cfg := server.StreamConfig{
+		Name:     "UNKNOWN_STREAM",
+		Storage:  server.FileStorage,
+		Subjects: []string{"foo"},
+	}
+	req, err = json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, _ = nc.Request(fmt.Sprintf(server.JSApiStreamUpdateT, cfg.Name), req, time.Second)
+	scResp.Error, scResp.StreamInfo = nil, nil
+	if err := json.Unmarshal(resp.Data, &scResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if scResp.StreamInfo != nil || scResp.Error == nil || scResp.Error.Code != 404 {
+		t.Fatalf("Unexpected error: %+v", scResp.Error)
+	}
+
 	// Now lookup info again and see that we can see the new stream.
 	resp, err = nc.Request(server.JSApiAccountInfo, nil, time.Second)
 	if err != nil {
