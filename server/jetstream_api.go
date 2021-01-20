@@ -876,6 +876,7 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
 		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
 	}
 
 	if err := mset.Update(&cfg); err != nil {
