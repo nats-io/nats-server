@@ -1551,6 +1551,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, stream, subj
 				err := fmt.Errorf("restore for stream '%s > %s' is stalled", acc, stream)
 				s.Warnf(err.Error())
 				doneCh <- err
+				return
 			}
 		}
 	})
