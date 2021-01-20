@@ -127,6 +127,10 @@ type ConnInfo struct {
 	Account        string      `json:"account,omitempty"`
 	Subs           []string    `json:"subscriptions_list,omitempty"`
 	SubsDetail     []SubDetail `json:"subscriptions_list_detail,omitempty"`
+	JWT            string      `json:"jwt,omitempty"`
+	IssuerKey      string      `json:"issuer_key,omitempty"`
+	NameTag        string      `json:"name_tag,omitempty"`
+	Tags           jwt.TagList `json:"tags,omitempty"`
 }
 
 // DefaultConnListSize is the default size of the connection list.
@@ -334,6 +338,10 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 			if client.acc != nil && (client.acc.Name != globalAccountName) {
 				ci.Account = client.acc.Name
 			}
+			ci.JWT = client.opts.JWT
+			ci.IssuerKey = issuerForClient(client)
+			ci.Tags = client.tags
+			ci.NameTag = client.nameTag
 		}
 		client.mu.Unlock()
 		pconns[i] = ci
@@ -1974,6 +1982,9 @@ type AccountInfo struct {
 	Exports     []ExtExport          `json:"exports,omitempty"`
 	Imports     []ExtImport          `json:"imports,omitempty"`
 	Jwt         string               `json:"jwt,omitempty"`
+	IssuerKey   string               `json:"issuer_key,omitempty"`
+	NameTag     string               `json:"name_tag,omitempty"`
+	Tags        jwt.TagList          `json:"tags,omitempty"`
 	Claim       *jwt.AccountClaims   `json:"decoded_jwt,omitempty"`
 	Vr          []ExtVrIssues        `json:"validation_result_jwt,omitempty"`
 	RevokedUser map[string]time.Time `json:"revoked_user,omitempty"`
@@ -2172,6 +2183,9 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 		exports,
 		imports,
 		a.claimJWT,
+		a.Issuer,
+		a.nameTag,
+		a.tags,
 		claim,
 		vrIssues,
 		collectRevocations(a.usersRevoked),

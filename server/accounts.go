@@ -82,6 +82,8 @@ type Account struct {
 	eventIds     *nuid.NUID
 	eventIdsMu   sync.Mutex
 	defaultPerms *Permissions
+	tags         jwt.TagList
+	nameTag      string
 }
 
 // Account based limits.
@@ -2812,6 +2814,10 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	a.mu.Lock()
 	// Clone to update, only select certain fields.
 	old := &Account{Name: a.Name, exports: a.exports, limits: a.limits, signingKeys: a.signingKeys}
+
+	// overwrite claim meta data
+	a.nameTag = ac.Name
+	a.tags = ac.Tags
 
 	// Reset exports and imports here.
 
