@@ -1493,7 +1493,7 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	}
 
 	// Make sure the replicas become current eventually. They will be doing catchup.
-	checkFor(t, 10*time.Second, 10*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 		si := getExtendedStreamInfo()
 		if si == nil || si.Cluster == nil {
 			t.Fatalf("Did not get stream info")
@@ -1846,5 +1846,6 @@ func (c *cluster) waitOnClusterReady() {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	c.shutdown()
 	c.t.Fatalf("Expected a cluster leader and fully formed cluster")
 }
