@@ -51,6 +51,7 @@ func DefaultMonitorOptions() *Options {
 		ServerName:   "monitor_server",
 		NoLog:        true,
 		NoSigs:       true,
+		Tags:         []string{"tag"},
 	}
 }
 
@@ -243,6 +244,9 @@ func TestHandleVarz(t *testing.T) {
 		}
 		if v.Name != "monitor_server" {
 			t.Fatal("Expected ServerName to be 'monitor_server'")
+		}
+		if !v.Tags.Contains("tag") {
+			t.Fatal("Expected tags to be 'tag'")
 		}
 	}
 

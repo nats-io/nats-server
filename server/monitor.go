@@ -1036,6 +1036,7 @@ type Varz struct {
 	Subscriptions     uint32            `json:"subscriptions"`
 	HTTPReqStats      map[string]uint64 `json:"http_req_stats"`
 	ConfigLoadTime    time.Time         `json:"config_load_time"`
+	Tags              jwt.TagList       `json:"tags,omitempty"`
 }
 
 // JetStreamVarz contains basic runtime information about jetstream
@@ -1228,6 +1229,7 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 		MaxSubs:  opts.MaxSubs,
 		Cores:    numCores,
 		MaxProcs: maxProcs,
+		Tags:     opts.Tags,
 	}
 	if len(opts.Routes) > 0 {
 		varz.Cluster.URLs = urlsToStrings(opts.Routes)

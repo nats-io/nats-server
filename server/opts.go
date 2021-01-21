@@ -255,6 +255,8 @@ type Options struct {
 	// private fields, used for testing
 	gatewaysSolicitDelay time.Duration
 	routeProto           int
+
+	Tags jwt.TagList `json:"-"`
 }
 
 // WebsocketOpts are options for websocket
@@ -1057,6 +1059,34 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		}
 	case "mqtt":
 		if err := parseMQTT(tk, o, errors, warnings); err != nil {
+			*errors = append(*errors, err)
+			return
+		}
+	case "server_tags":
+		var err error
+		switch v := v.(type) {
+		case string:
+			o.Tags.Add(v)
+		case []string:
+			o.Tags.Add(v...)
+		case []interface{}:
+			for _, t := range v {
+				if t, ok := t.(token); ok {
+					if t, ok := t.Value().(string); ok {
+						o.Tags.Add(t)
+						continue
+					} else {
+						err = &configErr{tk, fmt.Sprintf("error parsing tags: unsupported type %T where string is expected", t)}
+					}
+				} else {
+					err = &configErr{tk, fmt.Sprintf("error parsing tags: unsupported type %T", t)}
+				}
+				break
+			}
+		default:
+			err = &configErr{tk, fmt.Sprintf("error parsing tags: unsupported type %T", v)}
+		}
+		if err != nil {
 			*errors = append(*errors, err)
 			return
 		}

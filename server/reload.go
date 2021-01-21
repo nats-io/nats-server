@@ -788,8 +788,8 @@ func imposeOrder(value interface{}) error {
 		})
 	case WebsocketOpts:
 		sort.Strings(value.AllowedOrigins)
-	case string, bool, int, int32, int64, time.Duration, float64, nil,
-		LeafNodeOpts, ClusterOpts, *tls.Config, *URLAccResolver, *MemAccResolver, *DirAccResolver, *CacheDirAccResolver, Authentication, MQTTOpts:
+	case string, bool, int, int32, int64, time.Duration, float64, nil, LeafNodeOpts, ClusterOpts, *tls.Config,
+		*URLAccResolver, *MemAccResolver, *DirAccResolver, *CacheDirAccResolver, Authentication, MQTTOpts, jwt.TagList:
 		// explicitly skipped types
 	default:
 		// this will fail during unit tests
