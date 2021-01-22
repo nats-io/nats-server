@@ -54,6 +54,15 @@ func require_NoError(t *testing.T, err error) {
 	}
 }
 
+func require_Contains(t *testing.T, s string, subStrs ...string) {
+	t.Helper()
+	for _, subStr := range subStrs {
+		if !strings.Contains(s, subStr) {
+			t.Fatalf("require %q to be contained in %q", subStr, s)
+		}
+	}
+}
+
 func require_Error(t *testing.T, err error) {
 	t.Helper()
 	if err == nil {

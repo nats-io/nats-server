@@ -957,9 +957,10 @@ func (s *Server) leafNodeConnected(sub *subscription, _ *client, subject, reply 
 
 // Common filter options for system requests STATSZ VARZ SUBSZ CONNZ ROUTEZ GATEWAYZ LEAFZ
 type EventFilterOptions struct {
-	Name    string `json:"server_name,omitempty"` // filter by server name
-	Cluster string `json:"cluster,omitempty"`     // filter by cluster name
-	Host    string `json:"host,omitempty"`        // filter by host name
+	Name    string   `json:"server_name,omitempty"` // filter by server name
+	Cluster string   `json:"cluster,omitempty"`     // filter by cluster name
+	Host    string   `json:"host,omitempty"`        // filter by host name
+	Tags    []string `json:"tags,omitempty"`        // filter by tags (must match all tags)
 }
 
 // StatszEventOptions are options passed to Statsz
@@ -1031,6 +1032,14 @@ func (s *Server) filterRequest(fOpts *EventFilterOptions) bool {
 		s.mu.Unlock()
 		if !strings.Contains(cluster, fOpts.Cluster) {
 			return true
+		}
+	}
+	if len(fOpts.Tags) > 0 {
+		opts := s.getOpts()
+		for _, t := range fOpts.Tags {
+			if !opts.Tags.Contains(t) {
+				return true
+			}
 		}
 	}
 	return false

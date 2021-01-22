@@ -2178,3 +2178,90 @@ func TestServerEventsReceivedByQSubs(t *testing.T) {
 		t.Fatalf("Expected auth error, got %q", dem.Reason)
 	}
 }
+
+func TestServerEventsFilteredByTag(t *testing.T) {
+	confA := createConfFile(t, []byte(`
+		listen: -1
+		server_name: srv-A
+		server_tags: ["foo", "bar"]
+		cluster {
+			name: clust
+			listen: -1
+			no_advertise: true
+		}
+		system_account: SYS
+		accounts: {
+			SYS: {
+				users: [
+					{user: b, password: b}
+				]
+			}
+		}
+		no_auth_user: b
+    `))
+	defer os.Remove(confA)
+	sA, _ := RunServerWithConfig(confA)
+	defer sA.Shutdown()
+	confB := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		server_name: srv-B
+		server_tags: ["bar", "baz"]
+		cluster {
+			name: clust
+			listen: -1
+			no_advertise: true
+			routes [
+				nats-route://localhost:%d
+			]
+		}
+		system_account: SYS
+		accounts: {
+			SYS: {
+				users: [
+					{user: b, password: b}
+				]
+			}
+		}
+		no_auth_user: b
+    `, sA.opts.Cluster.Port)))
+	defer os.Remove(confB)
+	sB, _ := RunServerWithConfig(confB)
+	defer sB.Shutdown()
+	checkClusterFormed(t, sA, sB)
+	nc := natsConnect(t, sA.ClientURL())
+	defer nc.Close()
+
+	ib := nats.NewInbox()
+	req := func(tags ...string) {
+		t.Helper()
+		r, err := json.Marshal(VarzEventOptions{EventFilterOptions: EventFilterOptions{Tags: tags}})
+		require_NoError(t, err)
+		err = nc.PublishRequest(fmt.Sprintf(serverPingReqSubj, "VARZ"), ib, r)
+		require_NoError(t, err)
+	}
+
+	msgs := make(chan *nats.Msg, 10)
+	defer close(msgs)
+	_, err := nc.ChanSubscribe(ib, msgs)
+	require_NoError(t, err)
+	req("none")
+	select {
+	case <-msgs:
+		t.Fatalf("no message expected")
+	case <-time.After(200 * time.Millisecond):
+	}
+	req("foo")
+	m := <-msgs
+	require_Contains(t, string(m.Data), "srv-A", "foo", "bar")
+	req("foo", "bar")
+	m = <-msgs
+	require_Contains(t, string(m.Data), "srv-A", "foo", "bar")
+	req("baz")
+	m = <-msgs
+	require_Contains(t, string(m.Data), "srv-B", "bar", "baz")
+	req("bar")
+	m1 := <-msgs
+	m2 := <-msgs
+	require_Contains(t, string(m1.Data)+string(m2.Data), "srv-A", "srv-B", "foo", "bar", "baz")
+	require_Len(t, len(msgs), 0)
+}
