@@ -553,6 +553,7 @@ type Msg struct {
 	Sub     *Subscription
 	next    *Msg
 	barrier *barrierInfo
+	ackd    uint32
 }
 
 func (m *Msg) headerBytes() ([]byte, error) {

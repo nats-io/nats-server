@@ -776,6 +776,8 @@ func TestJetStreamClusterStreamPublishWithActiveConsumers(t *testing.T) {
 	// For slight skew in creation time.
 	ci.Created = ci.Created.Round(time.Second)
 	ci2.Created = ci2.Created.Round(time.Second)
+	ci.Cluster = nil
+	ci2.Cluster = nil
 
 	if !reflect.DeepEqual(ci, ci2) {
 		t.Fatalf("Consumer info did not match: %+v vs %+v", ci, ci2)
@@ -1318,24 +1320,19 @@ func TestJetStreamClusterExtendedStreamInfo(t *testing.T) {
 		}
 	}
 
-	// TODO(dlc) - Change over to Go client version once it is updated.
-	resp, err := nc.Request(fmt.Sprintf(server.JSApiStreamInfoT, "TEST"), nil, time.Second)
+	leader := c.streamLeader("$G", "TEST").Name()
+
+	si, err := js.StreamInfo("TEST")
 	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	var si server.StreamInfo
-	if err = json.Unmarshal(resp.Data, &si); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	if si.Cluster == nil {
 		t.Fatalf("Expected cluster info")
 	}
-
 	if si.Cluster.Name != c.name {
 		t.Fatalf("Expected cluster name of %q, got %q", c.name, si.Cluster.Name)
 	}
 
-	leader := c.streamLeader("$G", "TEST").Name()
 	if si.Cluster.Leader != leader {
 		t.Fatalf("Expected leader of %q, got %q", leader, si.Cluster.Leader)
 	}
@@ -1355,18 +1352,14 @@ func TestJetStreamClusterExtendedStreamInfo(t *testing.T) {
 	c.waitOnNewStreamLeader("$G", "TEST")
 
 	// Re-request.
-	resp, err = nc.Request(fmt.Sprintf(server.JSApiStreamInfoT, "TEST"), nil, time.Second)
+	leader = c.streamLeader("$G", "TEST").Name()
+	si, err = js.StreamInfo("TEST")
 	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if err = json.Unmarshal(resp.Data, &si); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	if si.Cluster == nil {
 		t.Fatalf("Expected cluster info")
 	}
-
-	leader = c.streamLeader("$G", "TEST").Name()
 	if si.Cluster.Leader != leader {
 		t.Fatalf("Expected leader of %q, got %q", leader, si.Cluster.Leader)
 	}
@@ -1394,18 +1387,14 @@ func TestJetStreamClusterExtendedStreamInfo(t *testing.T) {
 	c.waitOnStreamCurrent(oldLeader, "$G", "TEST")
 
 	// Re-request.
-	resp, err = nc.Request(fmt.Sprintf(server.JSApiStreamInfoT, "TEST"), nil, time.Second)
+	leader = c.streamLeader("$G", "TEST").Name()
+	si, err = js.StreamInfo("TEST")
 	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if err = json.Unmarshal(resp.Data, &si); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	if si.Cluster == nil {
 		t.Fatalf("Expected cluster info")
 	}
-
-	leader = c.streamLeader("$G", "TEST").Name()
 	if si.Cluster.Leader != leader {
 		t.Fatalf("Expected leader of %q, got %q", leader, si.Cluster.Leader)
 	}
@@ -1426,16 +1415,12 @@ func TestJetStreamClusterExtendedStreamInfo(t *testing.T) {
 	defer sub.Unsubscribe()
 	checkSubsPending(t, sub, 10)
 
-	resp, err = nc.Request(fmt.Sprintf(server.JSApiConsumerInfoT, "TEST", "dlc"), nil, time.Second)
+	leader = c.consumerLeader("$G", "TEST", "dlc").Name()
+	ci, err := sub.ConsumerInfo()
 	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	var ci server.ConsumerInfo
-	if err = json.Unmarshal(resp.Data, &ci); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
+		t.Fatalf("Unexpected error getting consumer info: %v", err)
 	}
 
-	leader = c.consumerLeader("$G", "TEST", "dlc").Name()
 	if ci.Cluster.Leader != leader {
 		t.Fatalf("Expected leader of %q, got %q", leader, ci.Cluster.Leader)
 	}

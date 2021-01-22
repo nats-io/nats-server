@@ -335,6 +335,7 @@ type StreamInfo struct {
 	Config  StreamConfig `json:"config"`
 	Created time.Time    `json:"created"`
 	State   StreamState  `json:"state"`
+	Cluster *ClusterInfo `json:"cluster,omitempty"`
 }
 
 // StreamStats is information about the given stream.
@@ -346,6 +347,22 @@ type StreamState struct {
 	LastSeq   uint64    `json:"last_seq"`
 	LastTime  time.Time `json:"last_ts"`
 	Consumers int       `json:"consumer_count"`
+}
+
+// ClusterInfo shows information about the underlying set of servers
+// that make up the stream or consumer.
+type ClusterInfo struct {
+	Name     string      `json:"name,omitempty"`
+	Leader   string      `json:"leader,omitempty"`
+	Replicas []*PeerInfo `json:"replicas,omitempty"`
+}
+
+// PeerInfo shows information about all the peers in the cluster that
+// are supporting the stream or consumer.
+type PeerInfo struct {
+	Name    string        `json:"name"`
+	Current bool          `json:"current"`
+	Active  time.Duration `json:"active"`
 }
 
 // UpdateStream updates a Stream.
