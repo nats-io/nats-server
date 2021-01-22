@@ -2343,6 +2343,10 @@ func (s *Server) saveClosedClient(c *client, nc net.Conn, reason ClosedState) {
 	if c.acc != nil && c.acc.Name != globalAccountName {
 		cc.acc = c.acc.Name
 	}
+	cc.JWT = c.opts.JWT
+	cc.IssuerKey = issuerForClient(c)
+	cc.Tags = c.tags
+	cc.NameTag = c.nameTag
 	c.mu.Unlock()
 
 	// Place in the ring buffer
