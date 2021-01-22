@@ -94,9 +94,9 @@ type ClusterInfo struct {
 // PeerInfo shows information about all the peers in the cluster that
 // are supporting the stream or consumer.
 type PeerInfo struct {
-	Name    string    `json:"name"`
-	Current bool      `json:"current"`
-	Last    time.Time `json:"last"`
+	Name    string        `json:"name"`
+	Current bool          `json:"current"`
+	Active  time.Duration `json:"active"`
 }
 
 // Stream is a jetstream stream of messages. When we receive a message internally destined
