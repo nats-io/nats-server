@@ -627,9 +627,11 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			return false
 		}
 		// Hold onto the user's public key.
+		c.mu.Lock()
 		c.pubKey = juc.Subject
 		c.tags = juc.Tags
 		c.nameTag = juc.Name
+		c.mu.Unlock()
 
 		// Generate an event if we have a system account.
 		s.accountConnectEvent(c)
@@ -638,7 +640,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 		c.setExpiration(juc.Claims(), validFor)
 
 		acc.mu.RLock()
-		c.Tracef("Authenticated JWT: %s %q (claim-name: %q, claim-tags: %q) "+
+		c.Debugf("Authenticated JWT: %s %q (claim-name: %q, claim-tags: %q) "+
 			"signed with %q by Account %q (claim-name: %q, claim-tags: %q) signed with %q",
 			c.typeString(), juc.Subject, juc.Name, juc.Tags, juc.Issuer, issuer, acc.nameTag, acc.tags, acc.Issuer)
 		acc.mu.RUnlock()
