@@ -163,17 +163,21 @@ type ServerInfo struct {
 
 // ClientInfo is detailed information about the client forming a connection.
 type ClientInfo struct {
-	Start   *time.Time    `json:"start,omitempty"`
-	Host    string        `json:"host,omitempty"`
-	ID      uint64        `json:"id,omitempty"`
-	Account string        `json:"acc"`
-	User    string        `json:"user,omitempty"`
-	Name    string        `json:"name,omitempty"`
-	Lang    string        `json:"lang,omitempty"`
-	Version string        `json:"ver,omitempty"`
-	RTT     time.Duration `json:"rtt,omitempty"`
-	Server  string        `json:"server,omitempty"`
-	Stop    *time.Time    `json:"stop,omitempty"`
+	Start     *time.Time    `json:"start,omitempty"`
+	Host      string        `json:"host,omitempty"`
+	ID        uint64        `json:"id,omitempty"`
+	Account   string        `json:"acc"`
+	User      string        `json:"user,omitempty"`
+	Name      string        `json:"name,omitempty"`
+	Lang      string        `json:"lang,omitempty"`
+	Version   string        `json:"ver,omitempty"`
+	RTT       time.Duration `json:"rtt,omitempty"`
+	Server    string        `json:"server,omitempty"`
+	Stop      *time.Time    `json:"stop,omitempty"`
+	Jwt       string        `json:"jwt,omitempty"`
+	IssuerKey string        `json:"issuer_key,omitempty"`
+	NameTag   string        `json:"name_tag,omitempty"`
+	Tags      jwt.TagList   `json:"tags,omitempty"`
 }
 
 // ServerStats hold various statistics that we will periodically send out.
@@ -967,9 +971,10 @@ func (s *Server) leafNodeConnected(sub *subscription, _ *client, subject, reply 
 
 // Common filter options for system requests STATSZ VARZ SUBSZ CONNZ ROUTEZ GATEWAYZ LEAFZ
 type EventFilterOptions struct {
-	Name    string `json:"server_name,omitempty"` // filter by server name
-	Cluster string `json:"cluster,omitempty"`     // filter by cluster name
-	Host    string `json:"host,omitempty"`        // filter by host name
+	Name    string   `json:"server_name,omitempty"` // filter by server name
+	Cluster string   `json:"cluster,omitempty"`     // filter by cluster name
+	Host    string   `json:"host,omitempty"`        // filter by host name
+	Tags    []string `json:"tags,omitempty"`        // filter by tags (must match all tags)
 }
 
 // StatszEventOptions are options passed to Statsz
@@ -1041,6 +1046,14 @@ func (s *Server) filterRequest(fOpts *EventFilterOptions) bool {
 		s.mu.Unlock()
 		if !strings.Contains(cluster, fOpts.Cluster) {
 			return true
+		}
+	}
+	if len(fOpts.Tags) > 0 {
+		opts := s.getOpts()
+		for _, t := range fOpts.Tags {
+			if !opts.Tags.Contains(t) {
+				return true
+			}
 		}
 	}
 	return false
@@ -1278,14 +1291,18 @@ func (s *Server) accountConnectEvent(c *client) {
 			Time: time.Now().UTC(),
 		},
 		Client: ClientInfo{
-			Start:   &c.start,
-			Host:    c.host,
-			ID:      c.cid,
-			Account: accForClient(c),
-			User:    c.getRawAuthUser(),
-			Name:    c.opts.Name,
-			Lang:    c.opts.Lang,
-			Version: c.opts.Version,
+			Start:     &c.start,
+			Host:      c.host,
+			ID:        c.cid,
+			Account:   accForClient(c),
+			User:      c.getRawAuthUser(),
+			Name:      c.opts.Name,
+			Lang:      c.opts.Lang,
+			Version:   c.opts.Version,
+			Jwt:       c.opts.JWT,
+			IssuerKey: issuerForClient(c),
+			Tags:      c.tags,
+			NameTag:   c.nameTag,
 		},
 	}
 	c.mu.Unlock()
@@ -1321,16 +1338,20 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 			Time: now.UTC(),
 		},
 		Client: ClientInfo{
-			Start:   &c.start,
-			Stop:    &now,
-			Host:    c.host,
-			ID:      c.cid,
-			Account: accForClient(c),
-			User:    c.getRawAuthUser(),
-			Name:    c.opts.Name,
-			Lang:    c.opts.Lang,
-			Version: c.opts.Version,
-			RTT:     c.getRTT(),
+			Start:     &c.start,
+			Stop:      &now,
+			Host:      c.host,
+			ID:        c.cid,
+			Account:   accForClient(c),
+			User:      c.getRawAuthUser(),
+			Name:      c.opts.Name,
+			Lang:      c.opts.Lang,
+			Version:   c.opts.Version,
+			RTT:       c.getRTT(),
+			Jwt:       c.opts.JWT,
+			IssuerKey: issuerForClient(c),
+			Tags:      c.tags,
+			NameTag:   c.nameTag,
 		},
 		Sent: DataStats{
 			Msgs:  atomic.LoadInt64(&c.inMsgs),
@@ -1366,16 +1387,20 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 			Time: now.UTC(),
 		},
 		Client: ClientInfo{
-			Start:   &c.start,
-			Stop:    &now,
-			Host:    c.host,
-			ID:      c.cid,
-			Account: accForClient(c),
-			User:    c.getRawAuthUser(),
-			Name:    c.opts.Name,
-			Lang:    c.opts.Lang,
-			Version: c.opts.Version,
-			RTT:     c.getRTT(),
+			Start:     &c.start,
+			Stop:      &now,
+			Host:      c.host,
+			ID:        c.cid,
+			Account:   accForClient(c),
+			User:      c.getRawAuthUser(),
+			Name:      c.opts.Name,
+			Lang:      c.opts.Lang,
+			Version:   c.opts.Version,
+			RTT:       c.getRTT(),
+			Jwt:       c.opts.JWT,
+			IssuerKey: issuerForClient(c),
+			Tags:      c.tags,
+			NameTag:   c.nameTag,
 		},
 		Sent: DataStats{
 			Msgs:  c.inMsgs,
@@ -1759,6 +1784,18 @@ func accForClient(c *client) string {
 		return c.acc.Name
 	}
 	return "N/A"
+}
+
+// Helper to grab issuer for a client.
+func issuerForClient(c *client) (issuerKey string) {
+	if c == nil || c.user == nil {
+		return
+	}
+	issuerKey = c.user.SigningKey
+	if issuerKey == "" && c.user.Account != nil {
+		issuerKey = c.user.Account.Name
+	}
+	return
 }
 
 // Helper to clear timers.

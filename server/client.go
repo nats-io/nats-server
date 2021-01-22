@@ -263,6 +263,9 @@ type client struct {
 
 	trace bool
 	echo  bool
+
+	tags    jwt.TagList
+	nameTag string
 }
 
 type rrTracking struct {
@@ -4662,6 +4665,10 @@ func (c *client) getClientInfo(detailed bool) *ClientInfo {
 		ci.Lang = c.opts.Lang
 		ci.Version = c.opts.Version
 		ci.Server = sn
+		ci.Jwt = c.opts.JWT
+		ci.IssuerKey = issuerForClient(c)
+		ci.NameTag = c.nameTag
+		ci.Tags = c.tags
 	}
 	c.mu.Unlock()
 	return &ci

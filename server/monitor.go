@@ -127,6 +127,10 @@ type ConnInfo struct {
 	Account        string      `json:"account,omitempty"`
 	Subs           []string    `json:"subscriptions_list,omitempty"`
 	SubsDetail     []SubDetail `json:"subscriptions_list_detail,omitempty"`
+	JWT            string      `json:"jwt,omitempty"`
+	IssuerKey      string      `json:"issuer_key,omitempty"`
+	NameTag        string      `json:"name_tag,omitempty"`
+	Tags           jwt.TagList `json:"tags,omitempty"`
 }
 
 // DefaultConnListSize is the default size of the connection list.
@@ -334,6 +338,10 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 			if client.acc != nil && (client.acc.Name != globalAccountName) {
 				ci.Account = client.acc.Name
 			}
+			ci.JWT = client.opts.JWT
+			ci.IssuerKey = issuerForClient(client)
+			ci.Tags = client.tags
+			ci.NameTag = client.nameTag
 		}
 		client.mu.Unlock()
 		pconns[i] = ci
@@ -1036,6 +1044,7 @@ type Varz struct {
 	Subscriptions     uint32            `json:"subscriptions"`
 	HTTPReqStats      map[string]uint64 `json:"http_req_stats"`
 	ConfigLoadTime    time.Time         `json:"config_load_time"`
+	Tags              jwt.TagList       `json:"tags,omitempty"`
 }
 
 // JetStreamVarz contains basic runtime information about jetstream
@@ -1228,6 +1237,7 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 		MaxSubs:  opts.MaxSubs,
 		Cores:    numCores,
 		MaxProcs: maxProcs,
+		Tags:     opts.Tags,
 	}
 	if len(opts.Routes) > 0 {
 		varz.Cluster.URLs = urlsToStrings(opts.Routes)
@@ -1974,6 +1984,9 @@ type AccountInfo struct {
 	Exports     []ExtExport          `json:"exports,omitempty"`
 	Imports     []ExtImport          `json:"imports,omitempty"`
 	Jwt         string               `json:"jwt,omitempty"`
+	IssuerKey   string               `json:"issuer_key,omitempty"`
+	NameTag     string               `json:"name_tag,omitempty"`
+	Tags        jwt.TagList          `json:"tags,omitempty"`
 	Claim       *jwt.AccountClaims   `json:"decoded_jwt,omitempty"`
 	Vr          []ExtVrIssues        `json:"validation_result_jwt,omitempty"`
 	RevokedUser map[string]time.Time `json:"revoked_user,omitempty"`
@@ -2172,6 +2185,9 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 		exports,
 		imports,
 		a.claimJWT,
+		a.Issuer,
+		a.nameTag,
+		a.tags,
 		claim,
 		vrIssues,
 		collectRevocations(a.usersRevoked),

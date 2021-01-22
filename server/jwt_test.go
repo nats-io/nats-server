@@ -4431,6 +4431,11 @@ func TestJWTUserRevocation(t *testing.T) {
 	defer srv.Shutdown()
 	updateJwt(t, srv.ClientURL(), sysCreds, sysjwt, 1) // update system account jwt
 	updateJwt(t, srv.ClientURL(), sysCreds, ajwt1, 1)  // set account jwt without revocation
+	ncSys := natsConnect(t, srv.ClientURL(), nats.UserCredentials(sysCreds), nats.Name("conn name"))
+	defer ncSys.Close()
+	ncChan := make(chan *nats.Msg, 10)
+	defer close(ncChan)
+	ncSys.ChanSubscribe(fmt.Sprintf(disconnectEventSubj, apub), ncChan) // observe disconnect message
 	// use credentials that will be revoked ans assure that the connection will be disconnected
 	nc := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aCreds1),
 		nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
@@ -4440,7 +4445,7 @@ func TestJWTUserRevocation(t *testing.T) {
 		}))
 	defer nc.Close()
 	// update account jwt to contain revocation
-	if passCnt := updateJwt(t, srv.ClientURL(), sysCreds, ajwt2, 1); passCnt != 1 {
+	if updateJwt(t, srv.ClientURL(), sysCreds, ajwt2, 1) != 1 {
 		t.Fatalf("Expected jwt update to pass")
 	}
 	// assure that nc got disconnected due to the revocation
@@ -4449,6 +4454,9 @@ func TestJWTUserRevocation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatalf("Expected connection to have failed")
 	}
+	m := <-ncChan
+	require_Len(t, strings.Count(string(m.Data), apub), 2)
+	require_True(t, strings.Contains(string(m.Data), `"jwt": "eyJ0`))
 	// try again with old credentials. Expected to fail
 	if nc1, err := nats.Connect(srv.ClientURL(), nats.UserCredentials(aCreds1)); err == nil {
 		nc1.Close()
