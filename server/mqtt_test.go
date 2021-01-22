@@ -30,6 +30,7 @@ import (
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nkeys"
 )
 
 type mqttErrorReader struct {
@@ -1112,6 +1113,83 @@ func TestMQTTTokenAuth(t *testing.T) {
 				user:      "ignore_use_token",
 				pass:      test.token,
 			}
+			mc, r := testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
+			defer mc.Close()
+			testMQTTCheckConnAck(t, r, test.rc, false)
+		})
+	}
+}
+
+func TestMQTTJWTWithAllowedConnectionTypes(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	// Create System Account
+	syskp, _ := nkeys.CreateAccount()
+	syspub, _ := syskp.PublicKey()
+	sysAc := jwt.NewAccountClaims(syspub)
+	sysjwt, err := sysAc.Encode(oKp)
+	if err != nil {
+		t.Fatalf("Error generating account JWT: %v", err)
+	}
+	// Create memory resolver and store system account
+	mr := &MemAccResolver{}
+	mr.Store(syspub, sysjwt)
+	if err != nil {
+		t.Fatalf("Error saving system account JWT to memory resolver: %v", err)
+	}
+	// Add system account and memory resolver to server options
+	o.SystemAccount = syspub
+	o.AccountResolver = mr
+	setupAddTrusted(o)
+
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	for _, test := range []struct {
+		name            string
+		connectionTypes []string
+		rc              byte
+	}{
+		{"not allowed", []string{jwt.ConnectionTypeStandard}, mqttConnAckRCNotAuthorized},
+		{"allowed", []string{jwt.ConnectionTypeStandard, strings.ToLower(jwt.ConnectionTypeMqtt)}, mqttConnAckRCConnectionAccepted},
+		{"allowed with unknown", []string{jwt.ConnectionTypeMqtt, "SomeNewType"}, mqttConnAckRCConnectionAccepted},
+		{"not allowed with unknown", []string{"SomeNewType"}, mqttConnAckRCNotAuthorized},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+
+			nuc := newJWTTestUserClaims()
+			nuc.AllowedConnectionTypes = test.connectionTypes
+			nuc.BearerToken = true
+
+			okp, _ := nkeys.FromSeed(oSeed)
+
+			akp, _ := nkeys.CreateAccount()
+			apub, _ := akp.PublicKey()
+			nac := jwt.NewAccountClaims(apub)
+			// Enable Jetstream on account with lax limitations
+			nac.Limits.JetStreamLimits.Consumer = -1
+			nac.Limits.JetStreamLimits.Streams = -1
+			nac.Limits.JetStreamLimits.MemoryStorage = 1024 * 1024
+			ajwt, err := nac.Encode(okp)
+			if err != nil {
+				t.Fatalf("Error generating account JWT: %v", err)
+			}
+
+			nkp, _ := nkeys.CreateUser()
+			pub, _ := nkp.PublicKey()
+			nuc.Subject = pub
+			jwt, err := nuc.Encode(akp)
+			if err != nil {
+				t.Fatalf("Error generating user JWT: %v", err)
+			}
+
+			addAccountToMemResolver(s, apub, ajwt)
+
+			ci := &mqttConnInfo{
+				cleanSess: true,
+				user:      "ignore_use_token",
+				pass:      jwt,
+			}
+
 			mc, r := testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
 			defer mc.Close()
 			testMQTTCheckConnAck(t, r, test.rc, false)
