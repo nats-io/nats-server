@@ -2636,6 +2636,7 @@ func (mset *Stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	mset.mu.RLock()
 	canRespond := !mset.config.NoAck && len(reply) > 0
 	s, jsa, st, rf, sendq := mset.srv, mset.jsa, mset.config.Storage, mset.config.Replicas, mset.sendq
+	maxMsgSize := int(mset.config.MaxMsgSize)
 	mset.mu.RUnlock()
 
 	// Check here pre-emptively if we have exceeded our account limits.
@@ -2667,16 +2668,30 @@ func (mset *Stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		return err
 	}
 
+	// Check msgSize if we have a limit set there. Again this works if it goes through but better to be pre-emptive.
+	if maxMsgSize >= 0 && (len(hdr)+len(msg)) > maxMsgSize {
+		err := fmt.Errorf("JetStream message size exceeds limits for '%s > %s'", jsa.acc().Name, mset.config.Name)
+		s.Warnf(err.Error())
+		if canRespond {
+			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: mset.Name()}}
+			resp.Error = &ApiError{Code: 400, Description: "message size exceeds maximum allowed"}
+			response, _ = json.Marshal(resp)
+			sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
+		}
+		return err
+	}
+
 	// Proceed with proposing this message.
 	mset.mu.Lock()
 
-	// We only use mset.nlseq for clustering and in case we run ahead of actual commits.
+	// We only use mset.clseq for clustering and in case we run ahead of actual commits.
 	// Check if we need to set initial value here
-	if mset.nlseq < mset.lseq {
-		mset.nlseq = mset.lseq
+	if mset.clseq < mset.lseq {
+		mset.clseq = mset.lseq
 	}
 
-	err := mset.node.Propose(encodeStreamMsg(subject, reply, hdr, msg, mset.nlseq, time.Now().UnixNano()))
+	// Do proposal.
+	err := mset.node.Propose(encodeStreamMsg(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano()))
 	if err != nil {
 		if canRespond {
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: mset.config.Name}}
@@ -2684,7 +2699,7 @@ func (mset *Stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			response, _ = json.Marshal(resp)
 		}
 	} else {
-		mset.nlseq++
+		mset.clseq++
 	}
 	mset.mu.Unlock()
 

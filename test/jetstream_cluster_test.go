@@ -20,6 +20,7 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -704,6 +705,104 @@ func TestJetStreamClusterStreamSynchedTimeStamps(t *testing.T) {
 	meta2, _ := m.MetaData()
 	if meta.Timestamp != meta2.Timestamp {
 		t.Fatalf("Expected same timestamps, got %v vs %v", meta.Timestamp, meta2.Timestamp)
+	}
+}
+
+func TestJetStreamClusterStreamPublishWithActiveConsumers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+
+	// Client based API
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 3})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if _, err = js.Publish("foo", []byte("TSS")); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+
+	sub, err := js.SubscribeSync("foo", nats.Durable("dlc"))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if m, err := sub.NextMsg(time.Second); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	} else {
+		m.Ack()
+	}
+
+	// Send 10 messages.
+	for i := 1; i <= 10; i++ {
+		payload := []byte(fmt.Sprintf("MSG-%d", i))
+		if _, err = js.Publish("foo", payload); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+	checkSubsPending(t, sub, 10)
+	// Sanity check for duplicate deliveries..
+	if nmsgs, _, _ := sub.Pending(); nmsgs > 10 {
+		t.Fatalf("Expected only %d responses, got %d more", 10, nmsgs)
+	}
+	for i := 1; i <= 10; i++ {
+		m, err := sub.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		payload := []byte(fmt.Sprintf("MSG-%d", i))
+		if !bytes.Equal(m.Data, payload) {
+			t.Fatalf("Did not get expected msg, expected %q, got %q", payload, m.Data)
+		}
+	}
+	ci, err := sub.ConsumerInfo()
+	if err != nil {
+		t.Fatalf("Unexpected error getting consumer info: %v", err)
+	}
+
+	c.consumerLeader("$G", "foo", "dlc").Shutdown()
+	c.waitOnNewConsumerLeader("$G", "foo", "dlc")
+
+	ci2, err := sub.ConsumerInfo()
+	if err != nil {
+		t.Fatalf("Unexpected error getting consumer info: %v", err)
+	}
+
+	// For slight skew in creation time.
+	ci.Created = ci.Created.Round(time.Second)
+	ci2.Created = ci2.Created.Round(time.Second)
+
+	if !reflect.DeepEqual(ci, ci2) {
+		t.Fatalf("Consumer info did not match: %+v vs %+v", ci, ci2)
+	}
+
+	// Now send more..
+	// Send 10 more messages.
+	for i := 10; i <= 20; i++ {
+		payload := []byte(fmt.Sprintf("MSG-%d", i))
+		if _, err = js.Publish("foo", payload); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+	checkSubsPending(t, sub, 10)
+	// Sanity check for duplicate deliveries..
+	if nmsgs, _, _ := sub.Pending(); nmsgs > 10 {
+		t.Fatalf("Expected only %d responses, got %d more", 10, nmsgs)
+	}
+
+	for i := 10; i <= 20; i++ {
+		m, err := sub.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		payload := []byte(fmt.Sprintf("MSG-%d", i))
+		if !bytes.Equal(m.Data, payload) {
+			t.Fatalf("Did not get expected msg, expected %q, got %q", payload, m.Data)
+		}
 	}
 }
 
@@ -1508,7 +1607,7 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 }
 
 func TestJetStreamClusterAccountInfoAndLimits(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 5)
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
 	defer c.shutdown()
 
 	// Adjust our limits.
@@ -1587,6 +1686,64 @@ func TestJetStreamClusterAccountInfoAndLimits(t *testing.T) {
 	if _, err := js.Publish("baz", []byte("JSC-NOT-OK")); err == nil {
 		t.Fatalf("Expected publish error but got none")
 	}
+
+	// Check consumers
+	_, err := js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// This should fail.
+	_, err = js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dlc22", AckPolicy: nats.AckExplicitPolicy})
+	if err == nil {
+		t.Fatalf("Expected error but got none")
+	}
+}
+
+func TestJetStreamClusterStreamLimits(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Check that large R will fail.
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 5}); err == nil {
+		t.Fatalf("Expected error but got none")
+	}
+
+	maxMsgs := 5
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:       "foo",
+		Replicas:   3,
+		Retention:  nats.LimitsPolicy,
+		Discard:    server.DiscardNew,
+		MaxMsgSize: 11,
+		MaxMsgs:    int64(maxMsgs),
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Large message should fail.
+	if _, err := js.Publish("foo", []byte("0123456789ZZZ")); err == nil {
+		t.Fatalf("Expected publish to fail")
+	}
+
+	for i := 0; i < maxMsgs; i++ {
+		if _, err := js.Publish("foo", []byte("JSC-OK")); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	// These should fail.
+	if _, err := js.Publish("foo", []byte("JSC-OK")); err == nil {
+		t.Fatalf("Expected publish to fail")
+	}
+
 }
 
 func TestJetStreamClusterStreamPerf(t *testing.T) {
