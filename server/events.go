@@ -578,6 +578,16 @@ func getHash(name string) []byte {
 	return getHashSize(name, sysHashLen)
 }
 
+// Returns the node name for this server which is a hash of the server name.
+func (s *Server) Node() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sys != nil {
+		return s.sys.shash
+	}
+	return _EMPTY_
+}
+
 // This will setup our system wide tracking subs.
 // For now we will setup one wildcard subscription to
 // monitor all accounts for changes in number of connections.

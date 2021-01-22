@@ -2008,9 +2008,6 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, subject, reply string,
 		return
 	}
 
-	js.mu.Lock()
-	defer js.mu.Unlock()
-
 	var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
 	acc, err := s.LookupAccount(ci.Account)
 	if err != nil {
@@ -2018,6 +2015,30 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, subject, reply string,
 		s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
+
+	js.mu.RLock()
+	numStreams := len(cc.streams[ci.Account])
+	js.mu.RUnlock()
+
+	// Grab our jetstream account info.
+	acc.mu.RLock()
+	jsa := acc.js
+	acc.mu.RUnlock()
+
+	// Check for stream limits here before proposing.
+	jsa.mu.RLock()
+	exceeded := jsa.limits.MaxStreams > 0 && numStreams >= jsa.limits.MaxStreams
+	jsa.mu.RUnlock()
+
+	if exceeded {
+		resp.Error = jsError(fmt.Errorf("maximum number of streams reached"))
+		s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
+	}
+
+	// Now process the request and proposal.
+	js.mu.Lock()
+	defer js.mu.Unlock()
 
 	if sa := js.streamAssignment(ci.Account, cfg.Name); sa != nil {
 		resp.Error = jsError(ErrJetStreamStreamAlreadyUsed)
@@ -2608,12 +2629,46 @@ func (mset *Stream) snapshot() []byte {
 
 // processClusteredMsg will propose the inbound message to the underlying raft group.
 func (mset *Stream) processClusteredInboundMsg(subject, reply string, hdr, msg []byte) error {
-	mset.mu.Lock()
 
 	// For possible error response.
 	var response []byte
-	canRespond := !mset.config.NoAck && len(reply) > 0 && mset.isLeader()
-	sendq := mset.sendq
+
+	mset.mu.RLock()
+	canRespond := !mset.config.NoAck && len(reply) > 0
+	s, jsa, st, rf, sendq := mset.srv, mset.jsa, mset.config.Storage, mset.config.Replicas, mset.sendq
+	mset.mu.RUnlock()
+
+	// Check here pre-emptively if we have exceeded our account limits.
+	var exceeded bool
+	jsa.mu.RLock()
+	if st == MemoryStorage {
+		total := jsa.storeTotal + int64(memStoreMsgSize(subject, hdr, msg)*uint64(rf))
+		if jsa.limits.MaxMemory > 0 && total > jsa.limits.MaxMemory {
+			exceeded = true
+		}
+	} else {
+		total := jsa.storeTotal + int64(fileStoreMsgSize(subject, hdr, msg)*uint64(rf))
+		if jsa.limits.MaxStore > 0 && total > jsa.limits.MaxStore {
+			exceeded = true
+		}
+	}
+	jsa.mu.RUnlock()
+
+	// If we have exceeded our account limits go ahead and return.
+	if exceeded {
+		err := fmt.Errorf("JetStream resource limits exceeded for account: %q", jsa.acc().Name)
+		s.Warnf(err.Error())
+		if canRespond {
+			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: mset.Name()}}
+			resp.Error = &ApiError{Code: 400, Description: "resource limits exceeded for account"}
+			response, _ = json.Marshal(resp)
+			sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
+		}
+		return err
+	}
+
+	// Proceed with proposing this message.
+	mset.mu.Lock()
 
 	// We only use mset.nlseq for clustering and in case we run ahead of actual commits.
 	// Check if we need to set initial value here
@@ -2634,7 +2689,7 @@ func (mset *Stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	mset.mu.Unlock()
 
 	// If we errored out respond here.
-	if err != nil && len(response) > 0 {
+	if err != nil && canRespond {
 		sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
 	}
 
@@ -2994,5 +3049,9 @@ func syncSubject(pre string) string {
 	return sb.String()
 }
 
-const clusterStreamInfoT = "$JSC.SI.%s.%s"
-const clusterConsumerInfoT = "$JSC.CI.%s.%s.%s"
+const (
+	clusterStreamInfoT   = "$JSC.SI.%s.%s"
+	clusterConsumerInfoT = "$JSC.CI.%s.%s.%s"
+	jsaUpdatesSubT       = "$JSC.ARU.%s.*"
+	jsaUpdatesPubT       = "$JSC.ARU.%s.%s"
+)

@@ -1507,6 +1507,88 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterAccountInfoAndLimits(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 5)
+	defer c.shutdown()
+
+	// Adjust our limits.
+	c.updateLimits("$G", &server.JetStreamAccountLimits{
+		MaxMemory:    1024,
+		MaxStore:     8000,
+		MaxStreams:   3,
+		MaxConsumers: 1,
+	})
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 2}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "baz", Replicas: 3}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sendBatch := func(subject string, n int) {
+		t.Helper()
+		for i := 0; i < n; i++ {
+			if _, err := js.Publish(subject, []byte("JSC-OK")); err != nil {
+				t.Fatalf("Unexpected publish error: %v", err)
+			}
+		}
+	}
+
+	sendBatch("foo", 25)
+	sendBatch("bar", 75)
+	sendBatch("baz", 10)
+
+	accountStats := func() *server.JetStreamAccountStats {
+		t.Helper()
+		resp, err := nc.Request(server.JSApiAccountInfo, nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var info server.JSApiAccountInfoResponse
+		if err := json.Unmarshal(resp.Data, &info); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if info.Error != nil {
+			t.Fatalf("Unexpected error: %+v", info.Error)
+		}
+		if info.JetStreamAccountStats == nil {
+			t.Fatalf("AccountStats missing")
+		}
+		return info.JetStreamAccountStats
+	}
+
+	// If subject is not 3 letters or payload not 2 this needs to change.
+	const msgSize = uint64(22 + 3 + 6 + 8)
+
+	stats := accountStats()
+	if stats.Streams != 3 {
+		t.Fatalf("Should have been tracking 3 streams, found %d", stats.Streams)
+	}
+	expectedSize := 25*msgSize + 75*msgSize*2 + 10*msgSize*3
+	if stats.Store != expectedSize {
+		t.Fatalf("Expected store size to be %d, got %+v\n", expectedSize, stats)
+	}
+
+	// Check limit enforcement.
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "fail", Replicas: 3}); err == nil {
+		t.Fatalf("Expected an error but got none")
+	}
+
+	// We should be at 7995 at the moment with a limit of 8000, so any message will go over.
+	if _, err := js.Publish("baz", []byte("JSC-NOT-OK")); err == nil {
+		t.Fatalf("Expected publish error but got none")
+	}
+}
+
 func TestJetStreamClusterStreamPerf(t *testing.T) {
 	// Comment out to run, holding place for now.
 	skip(t)
@@ -1575,7 +1657,7 @@ func TestJetStreamClusterStreamPerf(t *testing.T) {
 var jsClusterTempl = `
 	listen: 127.0.0.1:-1
 	server_name: %s
-	jetstream: {max_mem_store: 16GB, max_file_store: 10TB, store_dir: "%s"}
+	jetstream: {max_mem_store: 2GB, max_file_store: 1GB, store_dir: "%s"}
 	cluster {
 		name: %s
 		listen: 127.0.0.1:%d
@@ -1630,6 +1712,20 @@ func (c *cluster) addInNewServer() *server.Server {
 	c.opts = append(c.opts, o)
 	c.checkClusterFormed()
 	return s
+}
+
+// Adjust limits for the given account.
+func (c *cluster) updateLimits(account string, newLimits *server.JetStreamAccountLimits) {
+	c.t.Helper()
+	for _, s := range c.servers {
+		acc, err := s.LookupAccount(account)
+		if err != nil {
+			c.t.Fatalf("Unexpected error: %v", err)
+		}
+		if err := acc.UpdateJetStreamLimits(newLimits); err != nil {
+			c.t.Fatalf("Unexpected error: %v", err)
+		}
+	}
 }
 
 // Hack for staticcheck
