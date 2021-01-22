@@ -2296,7 +2296,7 @@ func (o *Consumer) stop(dflag, doSignal, advisory bool) error {
 	}
 	o.closed = true
 
-	if dflag && advisory {
+	if dflag && advisory && o.isLeader() {
 		o.sendDeleteAdvisoryLocked()
 	}
 
@@ -2338,7 +2338,7 @@ func (o *Consumer) stop(dflag, doSignal, advisory bool) error {
 		sysc.closeConnection(ClientClosed)
 	}
 
-	if delivery != "" {
+	if delivery != _EMPTY_ {
 		a.sl.ClearNotification(delivery, o.inch)
 	}
 
@@ -2348,9 +2348,14 @@ func (o *Consumer) stop(dflag, doSignal, advisory bool) error {
 	mset.mu.Unlock()
 
 	// We need to optionally remove all messages since we are interest based retention.
+	// We will do this consistently on all replicas. Note that if in clustered mode the
+	// non-leader consumers will need to restore state first.
 	if dflag && rp == InterestPolicy {
 		var seqs []uint64
 		o.mu.Lock()
+		if !o.isLeader() {
+			o.readStoredState()
+		}
 		for seq := range o.pending {
 			seqs = append(seqs, seq)
 		}

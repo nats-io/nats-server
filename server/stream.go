@@ -129,7 +129,8 @@ type Stream struct {
 	catchup bool
 	syncSub *subscription
 	infoSub *subscription
-	nlseq   uint64
+	clseq   uint64
+	clfs    uint64
 }
 
 // Headers for published messages.
@@ -1139,8 +1140,15 @@ func (mset *Stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// For clustering the lower layers will pass our expected lseq. If it is present check for that here.
 	// This is from the clustering layers so will not respond here.
-	if lseq > 0 && lseq != mset.lseq {
+	if lseq > 0 && lseq != (mset.lseq+mset.clfs) {
+		sendq := mset.sendq
 		mset.mu.Unlock()
+		if canRespond && sendq != nil {
+			resp.PubAck = &PubAck{Stream: name}
+			resp.Error = &ApiError{Code: 503, Description: "expected stream sequence does not match"}
+			b, _ := json.Marshal(resp)
+			sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0}
+		}
 		return errLastSeqMismatch
 	}
 
@@ -1150,6 +1158,7 @@ func (mset *Stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		msgId = getMsgId(hdr)
 		sendq := mset.sendq
 		if dde := mset.checkMsgId(msgId); dde != nil {
+			mset.clfs++
 			mset.mu.Unlock()
 			if canRespond {
 				response := append(pubAck, strconv.FormatUint(dde.seq, 10)...)
@@ -1161,6 +1170,7 @@ func (mset *Stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 		// Expected stream.
 		if sname := getExpectedStream(hdr); sname != _EMPTY_ && sname != name {
+			mset.clfs++
 			mset.mu.Unlock()
 			if canRespond {
 				resp.PubAck = &PubAck{Stream: name}
@@ -1173,6 +1183,7 @@ func (mset *Stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		// Expected last sequence.
 		if seq := getExpectedLastSeq(hdr); seq > 0 && seq != mset.lseq {
 			mlseq := mset.lseq
+			mset.clfs++
 			mset.mu.Unlock()
 			if canRespond {
 				resp.PubAck = &PubAck{Stream: name}
@@ -1185,6 +1196,7 @@ func (mset *Stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		// Expected last msgId.
 		if lmsgId := getExpectedLastMsgId(hdr); lmsgId != _EMPTY_ && lmsgId != mset.lmsgId {
 			last := mset.lmsgId
+			mset.clfs++
 			mset.mu.Unlock()
 			if canRespond {
 				resp.PubAck = &PubAck{Stream: name}
@@ -1206,6 +1218,7 @@ func (mset *Stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	// Check to see if we are over the max msg size.
 	if maxMsgSize >= 0 && (len(hdr)+len(msg)) > maxMsgSize {
 		mset.mu.Unlock()
+		mset.clfs++
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
 			resp.Error = &ApiError{Code: 400, Description: "message size exceeds maximum allowed"}
@@ -1276,6 +1289,7 @@ func (mset *Stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// If we did not succeed put those values back.
 	if err != nil {
+		// FIXME(dlc) - This most likely is asymmetric under clustered scenarios.
 		mset.mu.Lock()
 		mset.lseq = olseq
 		mset.lmsgId = olmsgId
@@ -1316,21 +1330,21 @@ func (mset *Stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
 	}
 
-	// FIXME(dlc) - Check leader status?
-
 	if err == nil && seq > 0 && numConsumers > 0 {
 		var _obs [4]*Consumer
 		obs := _obs[:0]
 
 		mset.mu.Lock()
 		for _, o := range mset.consumers {
-			obs = append(obs, o)
+			if o.isLeader() {
+				obs = append(obs, o)
+			}
 		}
 		mset.mu.Unlock()
 
 		for _, o := range obs {
 			o.incStreamPending(seq, subject)
-			if !o.deliverCurrentMsg(subject, hdr, msg, seq, ts) && o.isLeader() {
+			if !o.deliverCurrentMsg(subject, hdr, msg, seq, ts) {
 				o.signalNewMessages()
 			}
 		}

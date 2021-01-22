@@ -3461,10 +3461,6 @@ func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {
 		defer os.RemoveAll(config.StoreDir)
 	}
 
-	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
-	}
-
 	mname := "MYS-PULL"
 	mset, err := s.GlobalAccount().AddStream(&server.StreamConfig{Name: mname, Storage: server.MemoryStorage})
 	if err != nil {

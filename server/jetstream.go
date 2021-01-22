@@ -15,6 +15,7 @@ package server
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -77,13 +78,24 @@ type jsAccount struct {
 	account       *Account
 	limits        JetStreamAccountLimits
 	memReserved   int64
-	memUsed       int64
 	storeReserved int64
-	storeUsed     int64
+	memTotal      int64
+	storeTotal    int64
+	usage         jsaUsage
+	rusage        map[string]*jsaUsage
 	storeDir      string
 	streams       map[string]*Stream
 	templates     map[string]*StreamTemplate
 	store         TemplateStore
+
+	// Cluster support
+	updatesPub string
+	updatesSub *subscription
+}
+
+type jsaUsage struct {
+	mem   int64
+	store int64
 }
 
 // EnableJetStream will enable JetStream support on this server with the given configuration.
@@ -418,7 +430,6 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	if s == nil {
 		return fmt.Errorf("jetstream account not registered")
 	}
-	// FIXME(dlc) - cluster mode
 	js := s.getJetStream()
 	if js == nil {
 		return ErrJetStreamNotEnabled
@@ -447,6 +458,14 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	js.accounts[a] = jsa
 	js.reserveResources(limits)
 	js.mu.Unlock()
+
+	sysNode := s.Node()
+
+	// Cluster mode updates to resource usages, but we always will turn on. System internal prevents echos.
+	jsa.mu.Lock()
+	jsa.updatesPub = fmt.Sprintf(jsaUpdatesPubT, a.Name, sysNode)
+	jsa.updatesSub, _ = s.sysSubscribe(fmt.Sprintf(jsaUpdatesSubT, a.Name), jsa.remoteUpdateUsage)
+	jsa.mu.Unlock()
 
 	// Stamp inside account as well.
 	a.mu.Lock()
@@ -763,17 +782,23 @@ func diffCheckedLimits(a, b *JetStreamAccountLimits) JetStreamAccountLimits {
 // JetStreamUsage reports on JetStream usage and limits for an account.
 func (a *Account) JetStreamUsage() JetStreamAccountStats {
 	a.mu.RLock()
-	jsa := a.js
+	jsa, aname := a.js, a.Name
 	a.mu.RUnlock()
 
 	var stats JetStreamAccountStats
 	if jsa != nil {
-		jsa.mu.Lock()
-		stats.Memory = uint64(jsa.memUsed)
-		stats.Store = uint64(jsa.storeUsed)
-		stats.Streams = len(jsa.streams)
+		jsa.mu.RLock()
+		stats.Memory = uint64(jsa.memTotal)
+		stats.Store = uint64(jsa.storeTotal)
+		if cc := jsa.js.cluster; cc != nil {
+			jsa.js.mu.RLock()
+			stats.Streams = len(cc.streams[aname])
+			jsa.js.mu.RUnlock()
+		} else {
+			stats.Streams = len(jsa.streams)
+		}
 		stats.Limits = jsa.limits
-		jsa.mu.Unlock()
+		jsa.mu.RUnlock()
 	}
 	return stats
 }
@@ -829,32 +854,83 @@ func (a *Account) JetStreamEnabled() bool {
 	return enabled
 }
 
-// Updates accounting on in use memory and storage.
+func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, subject, _ string, msg []byte) {
+	const usageSize = 16
+
+	jsa.mu.Lock()
+	s := jsa.js.srv
+	if len(msg) != usageSize {
+		jsa.mu.Unlock()
+		s.Warnf("Received remote usage update that is wrong size: %d vs %d", len(msg), usageSize)
+		return
+	}
+	var rnode string
+	if li := strings.LastIndexByte(subject, btsep); li > 0 && li < len(subject) {
+		rnode = subject[li+1:]
+	}
+	if rnode == _EMPTY_ {
+		jsa.mu.Unlock()
+		s.Warnf("Received remote usage update with no remote node")
+		return
+	}
+	var le = binary.LittleEndian
+	memUsed, storeUsed := int64(le.Uint64(msg[0:])), int64(le.Uint64(msg[8:]))
+
+	if jsa.rusage == nil {
+		jsa.rusage = make(map[string]*jsaUsage)
+	}
+	// Update the usage for this remote.
+	if usage := jsa.rusage[rnode]; usage != nil {
+		// Decrement our old values.
+		jsa.memTotal -= usage.mem
+		jsa.storeTotal -= usage.store
+		usage.mem, usage.store = memUsed, storeUsed
+	} else {
+		jsa.rusage[rnode] = &jsaUsage{memUsed, storeUsed}
+	}
+	jsa.memTotal += memUsed
+	jsa.storeTotal += storeUsed
+
+	jsa.mu.Unlock()
+}
+
+// Updates accounting on in use memory and storage. This is called from locally
+// by the lower storage layers.
 func (jsa *jsAccount) updateUsage(storeType StorageType, delta int64) {
-	// TODO(dlc) - atomics? snapshot limits?
 	jsa.mu.Lock()
 	if storeType == MemoryStorage {
-		jsa.memUsed += delta
+		jsa.usage.mem += delta
+		jsa.memTotal += delta
 	} else {
-		jsa.storeUsed += delta
+		jsa.usage.store += delta
+		jsa.storeTotal += delta
+	}
+	// Publish our local updates if in clustered mode.
+	if jsa.js != nil && jsa.js.cluster != nil && jsa.js.srv != nil {
+		s, b := jsa.js.srv, make([]byte, 16)
+		var le = binary.LittleEndian
+		le.PutUint64(b[0:], uint64(jsa.usage.mem))
+		le.PutUint64(b[8:], uint64(jsa.usage.store))
+		s.sendInternalMsgLocked(jsa.updatesPub, _EMPTY_, nil, b)
 	}
 	jsa.mu.Unlock()
 }
 
 func (jsa *jsAccount) limitsExceeded(storeType StorageType) bool {
-	var exceeded bool
-	jsa.mu.Lock()
+	jsa.mu.RLock()
+	defer jsa.mu.RUnlock()
+
 	if storeType == MemoryStorage {
-		if jsa.limits.MaxMemory > 0 && jsa.memUsed > jsa.limits.MaxMemory {
-			exceeded = true
+		if jsa.limits.MaxMemory > 0 && jsa.memTotal > jsa.limits.MaxMemory {
+			return true
 		}
 	} else {
-		if jsa.limits.MaxStore > 0 && jsa.storeUsed > jsa.limits.MaxStore {
-			exceeded = true
+		if jsa.limits.MaxStore > 0 && jsa.storeTotal > jsa.limits.MaxStore {
+			return true
 		}
 	}
-	jsa.mu.Unlock()
-	return exceeded
+
+	return false
 }
 
 // Check if a new proposed msg set while exceed our account limits.
@@ -905,6 +981,13 @@ func (jsa *jsAccount) delete() {
 	var ts []string
 
 	jsa.mu.Lock()
+
+	if jsa.updatesSub != nil && jsa.js.srv != nil {
+		s := jsa.js.srv
+		s.sysUnsubscribe(jsa.updatesSub)
+		jsa.updatesSub = nil
+	}
+
 	for _, ms := range jsa.streams {
 		streams = append(streams, ms)
 	}
