@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -389,6 +390,7 @@ type ConsumerInfo struct {
 	NumRedelivered int            `json:"num_redelivered"`
 	NumWaiting     int            `json:"num_waiting"`
 	NumPending     uint64         `json:"num_pending"`
+	Cluster        *ClusterInfo   `json:"cluster,omitempty"`
 }
 
 // SequencePair includes the consumer and stream sequence info from a JetStream consumer.
@@ -827,10 +829,15 @@ func (m *Msg) checkReply() (*js, bool, error) {
 }
 
 // ackReply handles all acks. Will do the right thing for pull and sync mode.
+// It ensures that an ack is only sent a single time, regardless of
+// how many times it is being called to avoid duplicated acks.
 func (m *Msg) ackReply(ackType []byte, sync bool) error {
 	js, isPullMode, err := m.checkReply()
 	if err != nil {
 		return err
+	}
+	if atomic.LoadUint32(&m.ackd) == 1 {
+		return ErrInvalidJSAck
 	}
 	if isPullMode {
 		if bytes.Equal(ackType, AckAck) {
@@ -846,6 +853,13 @@ func (m *Msg) ackReply(ackType []byte, sync bool) error {
 	} else {
 		err = js.nc.Publish(m.Reply, ackType)
 	}
+
+	// Mark that the message has been acked unless it is AckProgress
+	// which can be sent many times.
+	if err == nil && !bytes.Equal(ackType, AckProgress) {
+		atomic.StoreUint32(&m.ackd, 1)
+	}
+
 	return err
 }
 
@@ -871,7 +885,8 @@ func (m *Msg) Term() error {
 	return m.ackReply(AckTerm, false)
 }
 
-// Indicate that this message is being worked on and reset redelkivery timer in the server.
+// InProgress indicates that this message is being worked on
+// and reset the redelivery timer in the server.
 func (m *Msg) InProgress() error {
 	return m.ackReply(AckProgress, false)
 }
