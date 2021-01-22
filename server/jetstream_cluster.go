@@ -2918,10 +2918,13 @@ func (s *Server) clusterInfo(n RaftNode) *ClusterInfo {
 		Leader: s.serverNameForNode(n.GroupLeader()),
 	}
 
+	now := time.Now()
+
 	id, peers := n.ID(), n.Peers()
 	for _, rp := range peers {
 		if rp.ID != id {
-			ci.Replicas = append(ci.Replicas, &PeerInfo{Name: s.serverNameForNode(rp.ID), Current: rp.Current, Last: rp.Last})
+			pi := &PeerInfo{Name: s.serverNameForNode(rp.ID), Current: rp.Current, Active: now.Sub(rp.Last)}
+			ci.Replicas = append(ci.Replicas, pi)
 		}
 	}
 	return ci
