@@ -247,6 +247,10 @@ type Options struct {
 	// that this applies to reconnect events.
 	ReconnectErrorReports int
 
+	// Tags describing the server. They will be included in varz
+	// and used as a filter criteria for some system requests
+	Tags jwt.TagList `json:"-"`
+
 	// private fields, used to know if bool options are explicitly
 	// defined in config and/or command line params.
 	inConfig  map[string]bool
@@ -255,8 +259,6 @@ type Options struct {
 	// private fields, used for testing
 	gatewaysSolicitDelay time.Duration
 	routeProto           int
-
-	Tags jwt.TagList `json:"-"`
 }
 
 // WebsocketOpts are options for websocket
