@@ -937,7 +937,6 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, rep
 	// TODO(dlc) - If this list is long maybe do this in a Go routine?
 	var numStreams int
 	if s.JetStreamIsClustered() {
-		// FIXME(dlc) - Do this or scatter/gather?
 		js, cc := s.getJetStreamCluster()
 		if js == nil || cc == nil {
 			// TODO(dlc) - Debug or Warn?
@@ -1854,7 +1853,7 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 
 // Request for the list of all consumer names.
 func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil {
+	if c == nil || !s.JetStreamIsLeader() {
 		return
 	}
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
@@ -1867,7 +1866,6 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 		ApiResponse: ApiResponse{Type: JSApiConsumerNamesResponseType},
 		Consumers:   []string{},
 	}
-
 	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -1886,30 +1884,68 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 	}
 
 	streamName := streamNameFromSubject(subject)
-	mset, err := acc.LookupStream(streamName)
-	if err != nil {
-		resp.Error = jsNotFoundError(err)
-		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
+	var numConsumers int
 
-	obs := mset.Consumers()
-	sort.Slice(obs, func(i, j int) bool {
-		return strings.Compare(obs[i].name, obs[j].name) < 0
-	})
+	if s.JetStreamIsClustered() {
+		js, cc := s.getJetStreamCluster()
+		if js == nil || cc == nil {
+			// TODO(dlc) - Debug or Warn?
+			return
+		}
+		js.mu.RLock()
+		sas := cc.streams[acc.Name]
+		if sas == nil {
+			js.mu.RUnlock()
+			resp.Error = jsNotFoundError(ErrJetStreamNotEnabled)
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		sa := sas[streamName]
+		if sa == nil || sa.err != nil {
+			js.mu.RUnlock()
+			resp.Error = jsNotFoundError(ErrJetStreamStreamNotFound)
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		for consumer := range sa.consumers {
+			resp.Consumers = append(resp.Consumers, consumer)
+		}
+		if len(resp.Consumers) > 1 {
+			sort.Slice(resp.Consumers, func(i, j int) bool { return strings.Compare(resp.Consumers[i], resp.Consumers[j]) < 0 })
+		}
+		numConsumers = len(resp.Consumers)
+		if offset > numConsumers {
+			offset = numConsumers
+			resp.Consumers = resp.Consumers[:offset]
+		}
+		js.mu.RUnlock()
 
-	ocnt := len(obs)
-	if offset > ocnt {
-		offset = ocnt
-	}
+	} else {
+		mset, err := acc.LookupStream(streamName)
+		if err != nil {
+			resp.Error = jsNotFoundError(err)
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
 
-	for _, o := range obs[offset:] {
-		resp.Consumers = append(resp.Consumers, o.Name())
-		if len(resp.Consumers) >= JSApiNamesLimit {
-			break
+		obs := mset.Consumers()
+		sort.Slice(obs, func(i, j int) bool {
+			return strings.Compare(obs[i].name, obs[j].name) < 0
+		})
+
+		numConsumers = len(obs)
+		if offset > numConsumers {
+			offset = numConsumers
+		}
+
+		for _, o := range obs[offset:] {
+			resp.Consumers = append(resp.Consumers, o.Name())
+			if len(resp.Consumers) >= JSApiNamesLimit {
+				break
+			}
 		}
 	}
-	resp.Total = ocnt
+	resp.Total = numConsumers
 	resp.Limit = JSApiNamesLimit
 	resp.Offset = offset
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
