@@ -1434,6 +1434,89 @@ func TestJetStreamClusterExtendedStreamInfo(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterExtendedStreamInfoSingleReplica(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	toSend := 50
+	for i := 0; i < toSend; i++ {
+		if _, err = js.Publish("foo", []byte("OK")); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	leader := c.streamLeader("$G", "TEST").Name()
+
+	si, err := js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.Cluster == nil {
+		t.Fatalf("Expected cluster info")
+	}
+	if si.Cluster.Name != c.name {
+		t.Fatalf("Expected cluster name of %q, got %q", c.name, si.Cluster.Name)
+	}
+	if si.Cluster.Leader != leader {
+		t.Fatalf("Expected leader of %q, got %q", leader, si.Cluster.Leader)
+	}
+	if len(si.Cluster.Replicas) != 0 {
+		t.Fatalf("Expected no replicas but got %d", len(si.Cluster.Replicas))
+	}
+
+	// Make sure we can grab consumer lists from any server.
+	cl := js.NewConsumerLister("TEST")
+	if !cl.Next() {
+		t.Fatalf("Unexpected error: %v", cl.Err())
+	}
+	p := cl.Page()
+	if len(p) != 0 {
+		t.Fatalf("ConsumerInfo expected no paged results, got %d", len(p))
+	}
+
+	// Now add in a consumer.
+	cfg := &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy}
+	if _, err := js.AddConsumer("TEST", cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	cl = js.NewConsumerLister("TEST")
+	if !cl.Next() {
+		t.Fatalf("Unexpected error: %v", cl.Err())
+	}
+	p = cl.Page()
+	if len(p) != 1 {
+		t.Fatalf("ConsumerInfo expected 1 result, got %d", len(p))
+	}
+
+	// Now do direct names list as well.
+	resp, err := nc.Request(fmt.Sprintf(server.JSApiConsumersT, "TEST"), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var clResponse server.JSApiConsumerNamesResponse
+	if err = json.Unmarshal(resp.Data, &clResponse); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(clResponse.Consumers) != 1 {
+		t.Fatalf("Expected only 1 consumer but got %d", len(clResponse.Consumers))
+	}
+
+}
+
 func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
