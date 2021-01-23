@@ -2910,7 +2910,10 @@ func (mset *Stream) handleClusterSyncRequest(sub *subscription, c *client, subje
 // clusterInfo will report on the status of the raft group.
 func (s *Server) clusterInfo(n RaftNode) *ClusterInfo {
 	if n == nil {
-		return nil
+		return &ClusterInfo{
+			Name:   s.ClusterName(),
+			Leader: s.Name(),
+		}
 	}
 
 	ci := &ClusterInfo{
