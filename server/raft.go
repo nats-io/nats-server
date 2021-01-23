@@ -30,6 +30,7 @@ type RaftNode interface {
 	Propose(entry []byte) error
 	PausePropose()
 	ResumePropose()
+	ForwardProposal(entry []byte) error
 	Snapshot(snap []byte) error
 	Applied(index uint64)
 	Compact(index uint64) error
@@ -123,6 +124,7 @@ type raft struct {
 	dflag   bool
 
 	// Subjects for votes, updates, replays.
+	psubj  string
 	vsubj  string
 	vreply string
 	asubj  string
@@ -410,6 +412,22 @@ func (n *raft) Propose(data []byte) error {
 	default:
 		return errProposalFailed
 	}
+	return nil
+}
+
+// ForwardProposal will forward the proposal to the leader if known.
+// If we are the leader this is the same as calling propose.
+// FIXME(dlc) - We could have a reply subject and wait for a response
+// for retries, but would need to not block and be in separate Go routine.
+func (n *raft) ForwardProposal(entry []byte) error {
+	if n.Leader() {
+		return n.Propose(entry)
+	}
+	n.RLock()
+	subj := n.psubj
+	n.RUnlock()
+
+	n.sendRPC(subj, _EMPTY_, entry)
 	return nil
 }
 
@@ -775,6 +793,7 @@ func (n *raft) newInbox(cn string) string {
 const (
 	raftVoteSubj   = "$NRG.V.%s.%s"
 	raftAppendSubj = "$NRG.E.%s.%s"
+	raftPropSubj   = "$NRG.P.%s"
 	raftReplySubj  = "$NRG.R.%s"
 )
 
@@ -782,6 +801,7 @@ func (n *raft) createInternalSubs() error {
 	cn := n.s.ClusterName()
 	n.vsubj, n.vreply = fmt.Sprintf(raftVoteSubj, cn, n.group), n.newInbox(cn)
 	n.asubj, n.areply = fmt.Sprintf(raftAppendSubj, cn, n.group), n.newInbox(cn)
+	n.psubj = fmt.Sprintf(raftPropSubj, n.group)
 
 	// Votes
 	if _, err := n.s.sysSubscribe(n.vreply, n.handleVoteResponse); err != nil {
@@ -797,6 +817,7 @@ func (n *raft) createInternalSubs() error {
 	if _, err := n.s.sysSubscribe(n.asubj, n.handleAppendEntry); err != nil {
 		return err
 	}
+
 	// TODO(dlc) change events.
 	return nil
 }
@@ -853,6 +874,11 @@ func (n *raft) debug(format string, args ...interface{}) {
 		nf := fmt.Sprintf("RAFT [%s - %s] %s", n.id, n.group, format)
 		n.s.Debugf(nf, args...)
 	}
+}
+
+func (n *raft) warn(format string, args ...interface{}) {
+	nf := fmt.Sprintf("RAFT [%s - %s] %s", n.id, n.group, format)
+	n.s.Warnf(nf, args...)
 }
 
 func (n *raft) error(format string, args ...interface{}) {
@@ -1047,7 +1073,35 @@ func (n *raft) decodeAppendEntryResponse(msg []byte) *appendEntryResponse {
 	return ar
 }
 
+// Called when a peer has forwarded a proposal.
+func (n *raft) handleForwardedProposal(sub *subscription, c *client, _, reply string, msg []byte) {
+	if !n.Leader() {
+		n.debug("Ignoring forwarded proposal, not leader")
+		return
+	}
+	if err := n.Propose(msg); err != nil {
+		n.warn("Got error processing forwarded proposal: %v", err)
+	}
+}
+
 func (n *raft) runAsLeader() {
+	n.Lock()
+	// For forwarded proposals.
+	fsub, err := n.s.sysSubscribe(n.psubj, n.handleForwardedProposal)
+	if err != nil {
+		n.warn("Error subscribing to forwarded proposals: %v", err)
+	}
+	n.Unlock()
+
+	// Cleanup our subscription when we leave.
+	defer func() {
+		n.RLock()
+		if fsub != nil {
+			n.s.sysUnsubscribe(fsub)
+		}
+		n.RUnlock()
+	}()
+
 	n.sendPeerState()
 
 	hb := time.NewTicker(hbInterval)

@@ -1517,6 +1517,81 @@ func TestJetStreamClusterExtendedStreamInfoSingleReplica(t *testing.T) {
 
 }
 
+func TestJetStreamClusterEphemeralConsumerCleanup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 2})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	sub, err := js.Subscribe("foo", func(m *nats.Msg) {})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	ci, _ := sub.ConsumerInfo()
+
+	// We will look up by hand this consumer to set inactive threshold lower for this test.
+	cl := c.consumerLeader("$G", "foo", ci.Name)
+	if cl == nil {
+		t.Fatalf("Could not find consumer leader")
+	}
+	mset, err := cl.GlobalAccount().LookupStream("foo")
+	if err != nil {
+		t.Fatalf("Expected to find a stream for %q", "foo")
+	}
+	o := mset.LookupConsumer(ci.Name)
+	if o == nil {
+		t.Fatalf("Error looking up consumer %q", ci.Name)
+	}
+	o.SetInActiveDeleteThreshold(10 * time.Millisecond)
+
+	msg, toSend := []byte("Hello JS Clustering"), 10
+	for i := 0; i < toSend; i++ {
+		if _, err = js.Publish("foo", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	getConsumers := func() []string {
+		resp, err := nc.Request(fmt.Sprintf(server.JSApiConsumersT, "foo"), nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var clResponse server.JSApiConsumerNamesResponse
+		if err = json.Unmarshal(resp.Data, &clResponse); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		return clResponse.Consumers
+	}
+
+	checkConsumer := func(expected int) {
+		consumers := getConsumers()
+		if len(consumers) != expected {
+			t.Fatalf("Expected %d consumers but got %d", expected, len(consumers))
+		}
+	}
+
+	checkConsumer(1)
+
+	// Now Unsubscribe, since this is ephemeral this will make this go away.
+	sub.Unsubscribe()
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if consumers := getConsumers(); len(consumers) == 0 {
+			return nil
+		} else {
+			return fmt.Errorf("Still %d consumers remaining", len(consumers))
+		}
+	})
+}
+
 func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()

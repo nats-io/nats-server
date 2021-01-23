@@ -855,8 +855,59 @@ func (o *Consumer) updateDeliveryInterest(localInterest bool) {
 	// If we do not have interest anymore and we are not durable start
 	// a timer to delete us. We wait for a bit in case of server reconnect.
 	if !o.isDurable() && !interest {
-		o.dtmr = time.AfterFunc(o.dthresh, func() { o.Delete() })
+		o.dtmr = time.AfterFunc(o.dthresh, func() { o.deleteNotActive() })
 	}
+}
+
+func (o *Consumer) deleteNotActive() {
+	o.mu.RLock()
+	if o.mset == nil {
+		o.mu.RUnlock()
+		return
+	}
+	s, jsa := o.mset.srv, o.mset.jsa
+	stream, name := o.stream, o.name
+	o.mu.RUnlock()
+
+	// If we are clustered, check if we still have this consumer assigned.
+	// If we do forward a proposal to delete ourselves to the metacontroller leader.
+	if s.JetStreamIsClustered() {
+		if ca := jsa.consumerAssignment(stream, name); ca != nil {
+			// We copy and clear the reply since this removal is internal.
+			jsa.mu.Lock()
+			cca := *ca
+			cca.Reply = _EMPTY_
+			js := jsa.js
+			jsa.mu.Unlock()
+
+			if js != nil {
+				js.mu.RLock()
+				if cc := js.cluster; cc != nil {
+					meta, removeEntry := cc.meta, encodeDeleteConsumerAssignment(&cca)
+					meta.ForwardProposal(removeEntry)
+
+					// Check to make sure we went away.
+					// Don't think this needs to be a monitored go routine.
+					go func() {
+						ticker := time.NewTicker(time.Second)
+						defer ticker.Stop()
+						for range ticker.C {
+							if ca := jsa.consumerAssignment(stream, name); ca != nil {
+								s.Warnf("Consumer assignment not cleaned up, retrying")
+								meta.ForwardProposal(removeEntry)
+							} else {
+								return
+							}
+						}
+					}()
+
+				}
+				js.mu.RUnlock()
+			}
+		}
+	}
+	// We will delete here regardless.
+	o.Delete()
 }
 
 // Config returns the consumer's configuration.
@@ -2422,7 +2473,7 @@ func (o *Consumer) SetInActiveDeleteThreshold(dthresh time.Duration) error {
 	stopAndClearTimer(&o.dtmr)
 	o.dthresh = dthresh
 	if deleteWasRunning {
-		o.dtmr = time.AfterFunc(o.dthresh, func() { o.Delete() })
+		o.dtmr = time.AfterFunc(o.dthresh, func() { o.deleteNotActive() })
 	}
 	return nil
 }

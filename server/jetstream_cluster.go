@@ -1610,6 +1610,11 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 		return
 	}
 
+	// Just return if no reply subject.
+	if ca.Reply == _EMPTY_ {
+		return
+	}
+
 	if err != nil {
 		if resp.Error == nil {
 			resp.Error = jsError(err)
@@ -1619,6 +1624,31 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 	}
 
 	s.sendAPIResponse(ca.Client, acc, _EMPTY_, ca.Reply, _EMPTY_, s.jsonResponse(resp))
+}
+
+// Returns the consumer assignment, or nil if not present.
+func (jsa *jsAccount) consumerAssignment(stream, consumer string) *consumerAssignment {
+	jsa.mu.RLock()
+	defer jsa.mu.RUnlock()
+
+	js, acc := jsa.js, jsa.account
+	if js == nil {
+		return nil
+	}
+	cc := js.cluster
+	if cc == nil {
+		return nil
+	}
+
+	var sa *streamAssignment
+	accStreams := cc.streams[acc.Name]
+	if accStreams != nil {
+		sa = accStreams[stream]
+	}
+	if sa == nil {
+		return nil
+	}
+	return sa.consumers[consumer]
 }
 
 // consumerAssigned informs us if this server has this consumer assigned.
