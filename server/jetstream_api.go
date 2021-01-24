@@ -1081,12 +1081,42 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 
 	name := streamNameFromSubject(subject)
 
+	var resp = JSApiStreamInfoResponse{ApiResponse: ApiResponse{Type: JSApiStreamInfoResponseType}}
+
 	// If we are in clustered mode we need to be the stream leader to proceed.
-	if s.JetStreamIsClustered() && !acc.JetStreamIsStreamLeader(name) {
-		return
+	if s.JetStreamIsClustered() {
+		// Check to make sure the consumer is assigned.
+		js, cc := s.getJetStreamCluster()
+		if js == nil || cc == nil {
+			return
+		}
+		jsEnabled := acc.JetStreamEnabled()
+
+		js.mu.RLock()
+		isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, name)
+		js.mu.RUnlock()
+
+		if isLeader && sa == nil {
+			// We can't find the stream, so mimic what would be the errors below.
+			if !jsEnabled {
+				resp.Error = jsNotEnabledErr
+				s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
+			}
+			// No stream present.
+			resp.Error = jsNotFoundError(ErrJetStreamStreamNotFound)
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		} else if sa == nil {
+			return
+		}
+
+		// We have the stream assigned, only the stream leader should answer.
+		if !acc.JetStreamIsStreamLeader(name) {
+			return
+		}
 	}
 
-	var resp = JSApiStreamInfoResponse{ApiResponse: ApiResponse{Type: JSApiStreamInfoResponseType}}
 	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -2039,12 +2069,47 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 	stream := streamNameFromSubject(subject)
 	consumer := consumerNameFromSubject(subject)
 
+	var resp = JSApiConsumerInfoResponse{ApiResponse: ApiResponse{Type: JSApiConsumerInfoResponseType}}
+
 	// If we are in clustered mode we need to be the stream leader to proceed.
-	if s.JetStreamIsClustered() && !acc.JetStreamIsConsumerLeader(stream, consumer) {
-		return
+	if s.JetStreamIsClustered() {
+		// Check to make sure the consumer is assigned.
+		js, cc := s.getJetStreamCluster()
+		if js == nil || cc == nil {
+			return
+		}
+		jsEnabled := acc.JetStreamEnabled()
+
+		js.mu.RLock()
+		isLeader, sa, ca := cc.isLeader(), js.streamAssignment(acc.Name, stream), js.consumerAssignment(acc.Name, stream, consumer)
+		js.mu.RUnlock()
+
+		if isLeader && ca == nil {
+			// We can't find the consumer, so mimic what would be the errors below.
+			if !jsEnabled {
+				resp.Error = jsNotEnabledErr
+				s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
+			}
+			if sa == nil {
+				resp.Error = jsNotFoundError(ErrJetStreamStreamNotFound)
+				s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
+			}
+			// If we are here the consumer is not present.
+			resp.Error = jsNoConsumerErr
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		} else if ca == nil {
+			return
+		}
+
+		// We have the consumer assigned, only the consumer leader should answer.
+		if !acc.JetStreamIsConsumerLeader(stream, consumer) {
+			return
+		}
 	}
 
-	var resp = JSApiConsumerInfoResponse{ApiResponse: ApiResponse{Type: JSApiConsumerInfoResponseType}}
 	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))

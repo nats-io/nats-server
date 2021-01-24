@@ -223,7 +223,7 @@ type DataStats struct {
 
 // Used for internally queueing up messages that the server wants to send.
 type pubMsg struct {
-	acc  *Account
+	c    *client
 	sub  string
 	rply string
 	si   *ServerInfo
@@ -258,7 +258,6 @@ RESET:
 	}
 	sysc := s.sys.client
 	resetCh := s.sys.resetCh
-	sysacc := s.sys.account
 	sendq := s.sys.sendq
 	id := s.info.ID
 	host := s.info.Host
@@ -275,10 +274,6 @@ RESET:
 	warnThresh := 3 * internalSendQLen / 4
 	warnFreq := time.Second
 	last := time.Now().Add(-warnFreq)
-
-	// Internal client not generally accessible for when we
-	// need to change accounts from the system account.
-	ic := s.createInternalAccountClient()
 
 	for s.eventsRunning() {
 		// Setup information for next message
@@ -314,19 +309,14 @@ RESET:
 			// Setup our client. If the user wants to use a non-system account use our internal
 			// account scoped here so that we are not changing out accounts for the system client.
 			var c *client
-			if pm.acc != nil && pm.acc != sysacc {
-				c = ic
+			if pm.c != nil {
+				c = pm.c
 			} else {
 				c = sysc
-				pm.acc = nil
 			}
 
 			// Grab client lock.
 			c.mu.Lock()
-			// We can have an override for account here.
-			if pm.acc != nil {
-				c.acc = pm.acc
-			}
 
 			// Prep internal structures needed to send message.
 			c.pa.subject = []byte(pm.sub)
@@ -392,8 +382,15 @@ func (s *Server) sendInternalAccountMsg(a *Account, subject string, msg interfac
 	}
 	sendq := s.sys.sendq
 	// Don't hold lock while placing on the channel.
+	c := s.sys.client
 	s.mu.Unlock()
-	sendq <- &pubMsg{a, subject, "", nil, msg, false}
+
+	// Replace our client with the account's internal client.
+	if a != nil {
+		c = a.internalClient()
+	}
+
+	sendq <- &pubMsg{c, subject, _EMPTY_, nil, msg, false}
 	return nil
 }
 

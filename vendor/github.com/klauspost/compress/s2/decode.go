@@ -20,8 +20,6 @@ var (
 	ErrTooLarge = errors.New("s2: decoded block is too large")
 	// ErrUnsupported reports that the input isn't supported.
 	ErrUnsupported = errors.New("s2: unsupported input")
-
-	errUnsupportedLiteralLength = errors.New("s2: unsupported literal length")
 )
 
 // DecodedLen returns the length of the decoded block.
@@ -46,8 +44,7 @@ func decodedLen(src []byte) (blockLen, headerLen int, err error) {
 }
 
 const (
-	decodeErrCodeCorrupt                  = 1
-	decodeErrCodeUnsupportedLiteralLength = 2
+	decodeErrCodeCorrupt = 1
 )
 
 // Decode returns the decoded form of src. The returned slice may be a sub-
@@ -65,22 +62,47 @@ func Decode(dst, src []byte) ([]byte, error) {
 	} else {
 		dst = make([]byte, dLen)
 	}
-	switch s2Decode(dst, src[s:]) {
-	case 0:
-		return dst, nil
-	case decodeErrCodeUnsupportedLiteralLength:
-		return nil, errUnsupportedLiteralLength
+	if s2Decode(dst, src[s:]) != 0 {
+		return nil, ErrCorrupt
 	}
-	return nil, ErrCorrupt
+	return dst, nil
 }
 
 // NewReader returns a new Reader that decompresses from r, using the framing
 // format described at
 // https://github.com/google/snappy/blob/master/framing_format.txt with S2 changes.
-func NewReader(r io.Reader) *Reader {
-	return &Reader{
-		r:   r,
-		buf: make([]byte, MaxEncodedLen(maxBlockSize)+checksumSize),
+func NewReader(r io.Reader, opts ...ReaderOption) *Reader {
+	nr := Reader{
+		r:        r,
+		maxBlock: maxBlockSize,
+	}
+	for _, opt := range opts {
+		if err := opt(&nr); err != nil {
+			nr.err = err
+			return &nr
+		}
+	}
+	nr.buf = make([]byte, MaxEncodedLen(nr.maxBlock)+checksumSize)
+	nr.paramsOK = true
+	return &nr
+}
+
+// ReaderOption is an option for creating a decoder.
+type ReaderOption func(*Reader) error
+
+// ReaderMaxBlockSize allows to control allocations if the stream
+// has been compressed with a smaller WriterBlockSize, or with the default 1MB.
+// Blocks must be this size or smaller to decompress,
+// otherwise the decoder will return ErrUnsupported.
+//
+// Default is the maximum limit of 4MB.
+func ReaderMaxBlockSize(n int) ReaderOption {
+	return func(r *Reader) error {
+		if n > maxBlockSize || n <= 0 {
+			return errors.New("s2: block size too large. Must be <= 4MB and > 0")
+		}
+		r.maxBlock = n
+		return nil
 	}
 }
 
@@ -92,13 +114,18 @@ type Reader struct {
 	buf     []byte
 	// decoded[i:j] contains decoded bytes that have not yet been passed on.
 	i, j       int
+	maxBlock   int
 	readHeader bool
+	paramsOK   bool
 }
 
 // Reset discards any buffered data, resets all state, and switches the Snappy
 // reader to read from r. This permits reusing a Reader rather than allocating
 // a new one.
 func (r *Reader) Reset(reader io.Reader) {
+	if !r.paramsOK {
+		return
+	}
 	r.r = reader
 	r.err = nil
 	r.i = 0
@@ -112,6 +139,36 @@ func (r *Reader) readFull(p []byte, allowEOF bool) (ok bool) {
 			r.err = ErrCorrupt
 		}
 		return false
+	}
+	return true
+}
+
+// skipN will skip n bytes.
+// If the supplied reader supports seeking that is used.
+// tmp is used as a temporary buffer for reading.
+// The supplied slice does not need to be the size of the read.
+func (r *Reader) skipN(tmp []byte, n int, allowEOF bool) (ok bool) {
+	if rs, ok := r.r.(io.ReadSeeker); ok {
+		_, err := rs.Seek(int64(n), io.SeekCurrent)
+		if err == nil {
+			return true
+		}
+		if err == io.ErrUnexpectedEOF || (r.err == io.EOF && !allowEOF) {
+			r.err = ErrCorrupt
+			return false
+		}
+	}
+	for n > 0 {
+		if n < len(tmp) {
+			tmp = tmp[:n]
+		}
+		if _, r.err = io.ReadFull(r.r, tmp); r.err != nil {
+			if r.err == io.ErrUnexpectedEOF || (r.err == io.EOF && !allowEOF) {
+				r.err = ErrCorrupt
+			}
+			return false
+		}
+		n -= len(tmp)
 	}
 	return true
 }
@@ -139,10 +196,6 @@ func (r *Reader) Read(p []byte) (int, error) {
 			r.readHeader = true
 		}
 		chunkLen := int(r.buf[1]) | int(r.buf[2])<<8 | int(r.buf[3])<<16
-		if chunkLen > len(r.buf) {
-			r.err = ErrUnsupported
-			return 0, r.err
-		}
 
 		// The chunk types are specified at
 		// https://github.com/google/snappy/blob/master/framing_format.txt
@@ -151,6 +204,10 @@ func (r *Reader) Read(p []byte) (int, error) {
 			// Section 4.2. Compressed data (chunk type 0x00).
 			if chunkLen < checksumSize {
 				r.err = ErrCorrupt
+				return 0, r.err
+			}
+			if chunkLen > len(r.buf) {
+				r.err = ErrUnsupported
 				return 0, r.err
 			}
 			buf := r.buf[:chunkLen]
@@ -166,7 +223,7 @@ func (r *Reader) Read(p []byte) (int, error) {
 				return 0, r.err
 			}
 			if n > len(r.decoded) {
-				if n > maxBlockSize {
+				if n > r.maxBlock {
 					r.err = ErrCorrupt
 					return 0, r.err
 				}
@@ -189,6 +246,10 @@ func (r *Reader) Read(p []byte) (int, error) {
 				r.err = ErrCorrupt
 				return 0, r.err
 			}
+			if chunkLen > len(r.buf) {
+				r.err = ErrUnsupported
+				return 0, r.err
+			}
 			buf := r.buf[:checksumSize]
 			if !r.readFull(buf, false) {
 				return 0, r.err
@@ -197,7 +258,7 @@ func (r *Reader) Read(p []byte) (int, error) {
 			// Read directly into r.decoded instead of via r.buf.
 			n := chunkLen - checksumSize
 			if n > len(r.decoded) {
-				if n > maxBlockSize {
+				if n > r.maxBlock {
 					r.err = ErrCorrupt
 					return 0, r.err
 				}
@@ -238,7 +299,12 @@ func (r *Reader) Read(p []byte) (int, error) {
 		}
 		// Section 4.4 Padding (chunk type 0xfe).
 		// Section 4.6. Reserved skippable chunks (chunk types 0x80-0xfd).
-		if !r.readFull(r.buf[:chunkLen], false) {
+		if chunkLen > maxBlockSize {
+			r.err = ErrUnsupported
+			return 0, r.err
+		}
+
+		if !r.skipN(r.buf, chunkLen, false) {
 			return 0, r.err
 		}
 	}
@@ -286,10 +352,6 @@ func (r *Reader) Skip(n int64) error {
 			r.readHeader = true
 		}
 		chunkLen := int(r.buf[1]) | int(r.buf[2])<<8 | int(r.buf[3])<<16
-		if chunkLen > len(r.buf) {
-			r.err = ErrUnsupported
-			return r.err
-		}
 
 		// The chunk types are specified at
 		// https://github.com/google/snappy/blob/master/framing_format.txt
@@ -298,6 +360,10 @@ func (r *Reader) Skip(n int64) error {
 			// Section 4.2. Compressed data (chunk type 0x00).
 			if chunkLen < checksumSize {
 				r.err = ErrCorrupt
+				return r.err
+			}
+			if chunkLen > len(r.buf) {
+				r.err = ErrUnsupported
 				return r.err
 			}
 			buf := r.buf[:chunkLen]
@@ -312,7 +378,7 @@ func (r *Reader) Skip(n int64) error {
 				r.err = err
 				return r.err
 			}
-			if dLen > maxBlockSize {
+			if dLen > r.maxBlock {
 				r.err = ErrCorrupt
 				return r.err
 			}
@@ -342,6 +408,10 @@ func (r *Reader) Skip(n int64) error {
 				r.err = ErrCorrupt
 				return r.err
 			}
+			if chunkLen > len(r.buf) {
+				r.err = ErrUnsupported
+				return r.err
+			}
 			buf := r.buf[:checksumSize]
 			if !r.readFull(buf, false) {
 				return r.err
@@ -350,7 +420,7 @@ func (r *Reader) Skip(n int64) error {
 			// Read directly into r.decoded instead of via r.buf.
 			n2 := chunkLen - checksumSize
 			if n2 > len(r.decoded) {
-				if n2 > maxBlockSize {
+				if n2 > r.maxBlock {
 					r.err = ErrCorrupt
 					return r.err
 				}
@@ -391,13 +461,15 @@ func (r *Reader) Skip(n int64) error {
 			r.err = ErrUnsupported
 			return r.err
 		}
-		// Section 4.4 Padding (chunk type 0xfe).
-		// Section 4.6. Reserved skippable chunks (chunk types 0x80-0xfd).
-		if !r.readFull(r.buf[:chunkLen], false) {
+		if chunkLen > maxBlockSize {
+			r.err = ErrUnsupported
 			return r.err
 		}
-
-		return io.ErrUnexpectedEOF
+		// Section 4.4 Padding (chunk type 0xfe).
+		// Section 4.6. Reserved skippable chunks (chunk types 0x80-0xfd).
+		if !r.skipN(r.buf, chunkLen, false) {
+			return r.err
+		}
 	}
 	return nil
 }

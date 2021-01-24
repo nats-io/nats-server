@@ -62,6 +62,8 @@ const (
 	// Consumer ops
 	updateDeliveredOp
 	updateAcksOp
+	// Compressed consumer assignments.
+	assignCompressedConsumerOp
 )
 
 // raftGroups are controlled by the metagroup controller.
@@ -89,6 +91,20 @@ type streamAssignment struct {
 	err       error
 }
 
+// consumerAssignment is what the meta controller uses to assign consumers to streams.
+type consumerAssignment struct {
+	Client *ClientInfo     `json:"client,omitempty"`
+	Name   string          `json:"name"`
+	Stream string          `json:"stream"`
+	Config *ConsumerConfig `json:"consumer"`
+	Group  *raftGroup      `json:"group"`
+	Reply  string          `json:"reply"`
+	State  *ConsumerState  `json:"state,omitempty"`
+	// Internal
+	responded bool
+	err       error
+}
+
 // streamPurge is what the stream leader will replicate when purging a stream.
 type streamPurge struct {
 	Client *ClientInfo `json:"client,omitempty"`
@@ -102,19 +118,6 @@ type streamMsgDelete struct {
 	Stream string      `json:"stream"`
 	Seq    uint64      `json:"seq"`
 	Reply  string      `json:"reply"`
-}
-
-// consumerAssignment is what the meta controller uses to assign consumers to streams.
-type consumerAssignment struct {
-	Client *ClientInfo     `json:"client,omitempty"`
-	Name   string          `json:"name"`
-	Stream string          `json:"stream"`
-	Config *ConsumerConfig `json:"consumer"`
-	Group  *raftGroup      `json:"group"`
-	Reply  string          `json:"reply"`
-	// Internal
-	responded bool
-	err       error
 }
 
 const (
@@ -376,6 +379,8 @@ func (s *Server) JetStreamIsConsumerLeader(account, stream, consumer string) boo
 	if js == nil || cc == nil {
 		return false
 	}
+	js.mu.RLock()
+	defer js.mu.RUnlock()
 	return cc.isConsumerLeader(account, stream, consumer)
 }
 
@@ -577,7 +582,7 @@ func (cc *jetStreamCluster) isConsumerLeader(account, stream, consumer string) b
 		rg := ca.Group
 		for _, peer := range rg.Peers {
 			if peer == ourID {
-				if len(rg.Peers) == 1 || rg.node.Leader() {
+				if len(rg.Peers) == 1 || (rg.node != nil && rg.node.Leader()) {
 					return true
 				}
 			}
@@ -823,6 +828,13 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 					return didSnap, err
 				}
 				js.processConsumerAssignment(ca)
+			case assignCompressedConsumerOp:
+				ca, err := decodeConsumerAssignmentCompressed(buf[1:])
+				if err != nil {
+					js.srv.Errorf("JetStream cluster failed to decode compressed consumer assigment: %q", buf[1:])
+					return didSnap, err
+				}
+				js.processConsumerAssignment(ca)
 			case removeConsumerOp:
 				ca, err := decodeConsumerAssignment(buf[1:])
 				if err != nil {
@@ -995,6 +1007,9 @@ func (js *jetStream) monitorStream(mset *Stream, sa *streamAssignment) {
 	for {
 		select {
 		case err := <-restoreDoneCh:
+			// We have completed a restore from snapshot on this server. The stream assignment has
+			// already been assigned but the replicas will need to catch up out of band. Consumers
+			// will need to be assigned by forwarding the proposal and stamping the initial state.
 			s.Debugf("Stream restore for '%s > %s' completed", sa.Client.Account, sa.Config.Name)
 			if err != nil {
 				s.Debugf("Stream restore failed: %v", err)
@@ -1036,6 +1051,47 @@ func (js *jetStream) monitorStream(mset *Stream, sa *streamAssignment) {
 			}
 			js.processStreamLeaderChange(mset, sa, isLeader)
 			attemptSnapshot()
+
+			// Check to see if we have restored consumers here.
+			// These are not currently assigned so we will need to do so here.
+			if consumers := mset.Consumers(); len(consumers) > 0 {
+				for _, o := range mset.Consumers() {
+					rg := cc.createGroupForConsumer(sa)
+					// Pick a preferred leader.
+					rg.setPreferred()
+					name, cfg := o.Name(), o.Config()
+					// Place our initial state here as well for assignment distribution.
+					ca := &consumerAssignment{
+						Group:  rg,
+						Stream: sa.Config.Name,
+						Name:   name,
+						Config: &cfg,
+						Client: sa.Client,
+						State:  o.readStoreState(),
+					}
+
+					// We make these compressed in case state is complex.
+					addEntry := encodeAddConsumerAssignmentCompressed(ca)
+					cc.meta.ForwardProposal(addEntry)
+
+					// Check to make sure we see the assignment.
+					go func() {
+						ticker := time.NewTicker(time.Second)
+						defer ticker.Stop()
+						for range ticker.C {
+							js.mu.RLock()
+							ca, meta := js.consumerAssignment(ca.Client.Account, sa.Config.Name, name), cc.meta
+							js.mu.RUnlock()
+							if ca == nil {
+								s.Warnf("Consumer assignment has not been assigned, retrying")
+								meta.ForwardProposal(addEntry)
+							} else {
+								return
+							}
+						}
+					}()
+				}
+			}
 
 		case <-s.quitCh:
 			return
@@ -1195,7 +1251,12 @@ func (js *jetStream) processStreamLeaderChange(mset *Stream, sa *streamAssignmen
 // Will lookup a stream assignment.
 // Lock should be held.
 func (js *jetStream) streamAssignment(account, stream string) (sa *streamAssignment) {
-	if as := js.cluster.streams[account]; as != nil {
+	cc := js.cluster
+	if cc == nil {
+		return nil
+	}
+
+	if as := cc.streams[account]; as != nil {
 		sa = as[stream]
 	}
 	return sa
@@ -1269,8 +1330,16 @@ func (js *jetStream) processClusterCreateStream(sa *streamAssignment) {
 
 	var mset *Stream
 
-	// Process here if not restoring.
-	if sa.Restore == nil {
+	// If we are restoring, create the stream if we are R>1 and not the preferred who handles the
+	// receipt of the snapshot itself.
+	shouldCreate := true
+	if sa.Restore != nil {
+		if len(rg.Peers) == 1 || rg.node != nil && rg.node.ID() == rg.Preferred {
+			shouldCreate = false
+		}
+	}
+	// Process here if not restoring or not the leader.
+	if shouldCreate {
 		// Go ahead and create or update the stream.
 		mset, err = acc.LookupStream(sa.Config.Name)
 		if err == nil && mset != nil {
@@ -1287,7 +1356,7 @@ func (js *jetStream) processClusterCreateStream(sa *streamAssignment) {
 
 	// This is an error condition.
 	if err != nil {
-		s.Debugf("Stream create failed for '%s > %s': %v\n", sa.Client.Account, sa.Config.Name, err)
+		s.Debugf("Stream create failed for '%s > %s': %v", sa.Client.Account, sa.Config.Name, err)
 		js.mu.Lock()
 		sa.err = err
 		sa.responded = true
@@ -1347,6 +1416,47 @@ func (js *jetStream) processClusterCreateStream(sa *streamAssignment) {
 						return
 					}
 					js.processStreamLeaderChange(mset, sa, true)
+
+					// Check to see if we have restored consumers here.
+					// These are not currently assigned so we will need to do so here.
+					if consumers := mset.Consumers(); len(consumers) > 0 {
+						js.mu.RLock()
+						cc := js.cluster
+						js.mu.RUnlock()
+
+						for _, o := range mset.Consumers() {
+							rg := cc.createGroupForConsumer(sa)
+							name, cfg := o.Name(), o.Config()
+							// Place our initial state here as well for assignment distribution.
+							ca := &consumerAssignment{
+								Group:  rg,
+								Stream: sa.Config.Name,
+								Name:   name,
+								Config: &cfg,
+								Client: sa.Client,
+							}
+
+							addEntry := encodeAddConsumerAssignment(ca)
+							cc.meta.ForwardProposal(addEntry)
+
+							// Check to make sure we see the assignment.
+							go func() {
+								ticker := time.NewTicker(time.Second)
+								defer ticker.Stop()
+								for range ticker.C {
+									js.mu.RLock()
+									ca, meta := js.consumerAssignment(ca.Client.Account, sa.Config.Name, name), cc.meta
+									js.mu.RUnlock()
+									if ca == nil {
+										s.Warnf("Consumer assignment has not been assigned, retrying")
+										meta.ForwardProposal(addEntry)
+									} else {
+										return
+									}
+								}
+							}()
+						}
+					}
 
 				case <-s.quitCh:
 					return
@@ -1445,7 +1555,18 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 
 	sa := js.streamAssignment(ca.Client.Account, ca.Stream)
 	if sa == nil {
-		// FIXME(dlc) - log.
+		s.Debugf("Consumer create failed, could not locate stream '%s > %s'", ca.Client.Account, ca.Stream)
+		ca.err = ErrJetStreamStreamNotFound
+		result := &consumerAssignmentResult{
+			Account:  ca.Client.Account,
+			Stream:   ca.Stream,
+			Consumer: ca.Name,
+			Response: &JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}},
+		}
+		result.Response.Error = jsNotFoundError(ErrJetStreamStreamNotFound)
+		// Send response to the metadata leader. They will forward to the user as needed.
+		b, _ := json.Marshal(result) // Avoids auto-processing and doing fancy json with newlines.
+		s.sendInternalMsgLocked(consumerAssignmentSubj, _EMPTY_, nil, b)
 		js.mu.Unlock()
 		return
 	}
@@ -1519,10 +1640,25 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment) {
 	// Go ahead and create or update the consumer.
 	mset, err := acc.LookupStream(ca.Stream)
 	if err != nil {
-		s.Debugf("JetStream cluster error looking up stream %q for account %q: %v", ca.Stream, acc.Name, err)
-		ca.err = err
+		js.mu.Lock()
+		s.Debugf("Consumer create failed, could not locate stream '%s > %s'", ca.Client.Account, ca.Stream)
+		ca.err = ErrJetStreamStreamNotFound
+		result := &consumerAssignmentResult{
+			Account:  ca.Client.Account,
+			Stream:   ca.Stream,
+			Consumer: ca.Name,
+			Response: &JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}},
+		}
+		result.Response.Error = jsNotFoundError(ErrJetStreamStreamNotFound)
+		// Send response to the metadata leader. They will forward to the user as needed.
+		b, _ := json.Marshal(result) // Avoids auto-processing and doing fancy json with newlines.
+		s.sendInternalMsgLocked(consumerAssignmentSubj, _EMPTY_, nil, b)
+		js.mu.Unlock()
 		return
 	}
+
+	// Process the raft group and make sure its running if needed.
+	js.createRaftGroup(rg)
 
 	// Check if we already have this consumer running.
 	o := mset.LookupConsumer(ca.Name)
@@ -1533,15 +1669,18 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment) {
 				o.updateDeliverSubject(ca.Config.DeliverSubject)
 			}
 		}
+		o.setConsumerAssignment(ca)
 		s.Debugf("JetStream cluster, consumer already running")
 	}
 
-	// Process the raft group and make sure its running if needed.
-	js.createRaftGroup(rg)
-
 	// Add in the consumer if needed.
 	if o == nil {
-		o, err = mset.addConsumer(ca.Config, ca.Name, rg.node)
+		o, err = mset.addConsumer(ca.Config, ca.Name, ca)
+	}
+
+	// If we have an initial state set apply that now.
+	if ca.State != nil && o != nil {
+		err = o.setStoreState(ca.State)
 	}
 
 	if err != nil {
@@ -1627,28 +1766,12 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 }
 
 // Returns the consumer assignment, or nil if not present.
-func (jsa *jsAccount) consumerAssignment(stream, consumer string) *consumerAssignment {
-	jsa.mu.RLock()
-	defer jsa.mu.RUnlock()
-
-	js, acc := jsa.js, jsa.account
-	if js == nil {
-		return nil
+// Lock should be held.
+func (js *jetStream) consumerAssignment(account, stream, consumer string) *consumerAssignment {
+	if sa := js.streamAssignment(account, stream); sa != nil {
+		return sa.consumers[consumer]
 	}
-	cc := js.cluster
-	if cc == nil {
-		return nil
-	}
-
-	var sa *streamAssignment
-	accStreams := cc.streams[acc.Name]
-	if accStreams != nil {
-		sa = accStreams[stream]
-	}
-	if sa == nil {
-		return nil
-	}
-	return sa.consumers[consumer]
+	return nil
 }
 
 // consumerAssigned informs us if this server has this consumer assigned.
@@ -2101,9 +2224,20 @@ func (s *Server) jsClusteredStreamDeleteRequest(ci *ClientInfo, stream, reply st
 
 	osa := js.streamAssignment(ci.Account, stream)
 	if osa == nil {
-		// TODO(dlc) - Should respond? Log?
+		acc, err := s.LookupAccount(ci.Account)
+		if err == nil {
+			var resp = JSApiStreamDeleteResponse{ApiResponse: ApiResponse{Type: JSApiStreamDeleteResponseType}}
+			resp.Error = jsNotFoundError(ErrJetStreamStreamNotFound)
+			s.sendAPIResponse(ci, acc, _EMPTY_, reply, string(rmsg), s.jsonResponse(&resp))
+		}
 		return
 	}
+	// Remove any remaining consumers as well.
+	for _, ca := range osa.consumers {
+		ca.Reply, ca.State = _EMPTY_, nil
+		cc.meta.Propose(encodeDeleteConsumerAssignment(ca))
+	}
+
 	sa := &streamAssignment{Group: osa.Group, Config: osa.Config, Reply: reply, Client: ci}
 	cc.meta.Propose(encodeDeleteStreamAssignment(sa))
 }
@@ -2399,7 +2533,12 @@ func (s *Server) jsClusteredConsumerDeleteRequest(ci *ClientInfo, stream, consum
 	}
 	oca := sa.consumers[consumer]
 	if oca == nil {
-		// TODO(dlc) - Should respond? Log?
+		acc, err := s.LookupAccount(ci.Account)
+		if err == nil {
+			var resp = JSApiConsumerDeleteResponse{ApiResponse: ApiResponse{Type: JSApiConsumerDeleteResponseType}}
+			resp.Error = jsNoConsumerErr
+			s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		}
 		return
 	}
 	ca := &consumerAssignment{Group: oca.Group, Stream: stream, Name: consumer, Config: oca.Config, Reply: reply, Client: ci}
@@ -2543,6 +2682,28 @@ func encodeDeleteConsumerAssignment(ca *consumerAssignment) []byte {
 func decodeConsumerAssignment(buf []byte) (*consumerAssignment, error) {
 	var ca consumerAssignment
 	err := json.Unmarshal(buf, &ca)
+	return &ca, err
+}
+
+func encodeAddConsumerAssignmentCompressed(ca *consumerAssignment) []byte {
+	b, err := json.Marshal(ca)
+	if err != nil {
+		return nil
+	}
+	// TODO(dlc) - Streaming better approach here probably.
+	var bb bytes.Buffer
+	bb.WriteByte(byte(assignCompressedConsumerOp))
+	bb.Write(s2.Encode(nil, b))
+	return bb.Bytes()
+}
+
+func decodeConsumerAssignmentCompressed(buf []byte) (*consumerAssignment, error) {
+	var ca consumerAssignment
+	js, err := s2.Decode(nil, buf)
+	if err != nil {
+		return nil, err
+	}
+	err = json.Unmarshal(js, &ca)
 	return &ca, err
 }
 

@@ -2844,10 +2844,7 @@ const errFile = "errors.txt"
 func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includeConsumers bool) {
 	defer w.Close()
 
-	bw := bufio.NewWriter(w)
-	defer bw.Flush()
-
-	enc := s2.NewWriter(bw)
+	enc := s2.NewWriter(w)
 	defer enc.Close()
 
 	tw := tar.NewWriter(enc)
