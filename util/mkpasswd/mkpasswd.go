@@ -11,8 +11,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +build ignore
-
 package main
 
 import (
@@ -25,7 +23,7 @@ import (
 	"syscall"
 
 	"golang.org/x/crypto/bcrypt"
-	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/term"
 )
 
 func usage() {
@@ -54,12 +52,12 @@ func main() {
 
 	if *pw {
 		fmt.Printf("Enter Password: ")
-		bytePassword, err := terminal.ReadPassword(int(syscall.Stdin))
+		bytePassword, err := term.ReadPassword(int(syscall.Stdin))
 		if err != nil {
 			log.Fatalf("Error reading password: %v\n", err)
 		}
 		fmt.Printf("\nReenter Password: ")
-		bytePassword2, err := terminal.ReadPassword(int(syscall.Stdin))
+		bytePassword2, err := term.ReadPassword(int(syscall.Stdin))
 		if err != nil {
 			log.Fatalf("Error reading password: %v\n", err)
 		}
