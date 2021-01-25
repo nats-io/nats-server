@@ -1375,7 +1375,9 @@ func TestJetStreamClusterStreamSnapshotCatchupWithPurge(t *testing.T) {
 	}
 
 	nsl := c.streamLeader("$G", "TEST")
-	nsl.JetStreamSnapshotStream("$G", "TEST")
+	if err := nsl.JetStreamSnapshotStream("$G", "TEST"); err != nil {
+		t.Fatalf("Error snapshotting stream: %v", err)
+	}
 
 	time.Sleep(200 * time.Millisecond)
 

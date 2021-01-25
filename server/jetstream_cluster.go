@@ -231,12 +231,14 @@ func (s *Server) JetStreamSnapshotStream(account, stream string) error {
 		mset.mu.RUnlock()
 		return ErrJetStreamNotLeader
 	}
-	state := mset.store.State()
-	b, _ := json.Marshal(state)
-	mset.node.Snapshot(b)
+	n := mset.node
 	mset.mu.RUnlock()
 
-	return nil
+	n.PausePropose()
+	err = n.Snapshot(mset.snapshot())
+	n.ResumePropose()
+
+	return err
 }
 
 func (s *Server) JetStreamClusterPeers() []string {
