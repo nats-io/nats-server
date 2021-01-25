@@ -540,7 +540,7 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, ca *consum
 		// Since we are here this means we have a potentially new durable so we should update here.
 		// Check that configs are the same.
 		if !configsEqualSansDelivery(o.config, eo.config) {
-			o.name = _EMPTY_ // Precent removal since same name.
+			o.name = _EMPTY_ // Prevent removal since same name.
 			o.deleteWithoutAdvisory()
 			return nil, fmt.Errorf("consumer replacement durable config not the same")
 		}
@@ -895,14 +895,14 @@ func (o *Consumer) deleteNotActive() {
 		if ca := js.consumerAssignment(acc, stream, name); ca != nil {
 			// We copy and clear the reply since this removal is internal.
 			jsa.mu.Lock()
-			cca := *ca
-			cca.Reply = _EMPTY_
 			js := jsa.js
 			jsa.mu.Unlock()
 
 			if js != nil {
 				js.mu.RLock()
 				if cc := js.cluster; cc != nil {
+					cca := *ca
+					cca.Reply = _EMPTY_
 					meta, removeEntry := cc.meta, encodeDeleteConsumerAssignment(&cca)
 					meta.ForwardProposal(removeEntry)
 

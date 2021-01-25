@@ -761,11 +761,7 @@ func TestJetStreamClusterRestoreSingleConsumer(t *testing.T) {
 	}
 
 	c.stopAll()
-	//	doLog, doDebug = true, true
-	fmt.Printf("\n\n#########\n\n")
 	c.restartAll()
-
-	//time.Sleep(time.Second)
 
 	s = c.randomServer()
 	nc, js = jsClientConnect(t, s)

@@ -1099,10 +1099,11 @@ func (n *raft) runAsLeader() {
 	n.Lock()
 	// For forwarded proposals.
 	fsub, err := n.subscribe(n.psubj, n.handleForwardedProposal)
-	if err != nil {
-		n.warn("Error subscribing to forwarded proposals: %v", err)
-	}
 	n.Unlock()
+
+	if err != nil {
+		panic(fmt.Sprintf("Error subscribing to forwarded proposals: %v", err))
+	}
 
 	// Cleanup our subscription when we leave.
 	defer func() {
