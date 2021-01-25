@@ -1532,9 +1532,9 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	if n.state == Candidate {
 		n.debug("Received append entry in candidate state from %q, converting to follower", ae.leader)
 		n.term = ae.term
-		n.Unlock()
+		n.vote = noVote
+		n.writeTermVote()
 		n.stepdown <- ae.leader
-		return
 	}
 
 	// Catching up state.
@@ -1592,9 +1592,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		n.writeTermVote()
 		if n.state != Follower {
 			n.debug("Term higher than ours and we are not a follower: %v, stepping down to %q", n.state, ae.leader)
-			n.Unlock()
 			n.stepdown <- ae.leader
-			return
 		}
 	}
 
