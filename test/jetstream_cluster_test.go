@@ -731,6 +731,93 @@ func TestJetStreamClusterStreamSynchedTimeStamps(t *testing.T) {
 	}
 }
 
+// Test to mimic what R.I. was seeing.
+func TestJetStreamClusterRestoreSingleConsumer(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "foo"})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if _, err = js.Publish("foo", []byte("TSS")); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+
+	sub, err := js.SubscribeSync("foo", nats.Durable("dlc"))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if m, err := sub.NextMsg(time.Second); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	} else {
+		m.Ack()
+	}
+
+	c.stopAll()
+	//	doLog, doDebug = true, true
+	fmt.Printf("\n\n#########\n\n")
+	c.restartAll()
+
+	//time.Sleep(time.Second)
+
+	s = c.randomServer()
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	resp, err := nc.Request(server.JSApiStreams, nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var streams server.JSApiStreamNamesResponse
+	if err = json.Unmarshal(resp.Data, &streams); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(streams.Streams) != 1 {
+		t.Fatalf("Expected only 1 stream but got %d", len(streams.Streams))
+	}
+
+	// Now do detailed version.
+	resp, err = nc.Request(server.JSApiStreamList, nil, 5*time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var listResponse server.JSApiStreamListResponse
+	if err = json.Unmarshal(resp.Data, &listResponse); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(listResponse.Streams) != 1 {
+		t.Fatalf("Expected 1 stream but got %d", len(listResponse.Streams))
+	}
+	si, err := js.StreamInfo("foo")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si == nil || si.Config.Name != "foo" {
+		t.Fatalf("StreamInfo is not correct %+v", si)
+	}
+
+	// Now check for consumer.
+	resp, err = nc.Request(fmt.Sprintf(server.JSApiConsumersT, "foo"), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var clResponse server.JSApiConsumerNamesResponse
+	if err = json.Unmarshal(resp.Data, &clResponse); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(clResponse.Consumers) != 1 {
+		t.Fatalf("Expected 1 consumer but got %d", len(clResponse.Consumers))
+	}
+
+}
+
 func TestJetStreamClusterStreamPublishWithActiveConsumers(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -796,9 +883,6 @@ func TestJetStreamClusterStreamPublishWithActiveConsumers(t *testing.T) {
 		t.Fatalf("Unexpected error getting consumer info: %v", err)
 	}
 
-	// For slight skew in creation time.
-	ci.Created = ci.Created.Round(time.Second)
-	ci2.Created = ci.Created
 	ci.Cluster = nil
 	ci2.Cluster = nil
 
@@ -2413,7 +2497,7 @@ func (c *cluster) waitOnClusterReady() {
 		if leader = c.leader(); leader != nil {
 			break
 		}
-		time.Sleep(25 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	// Now make sure we have all peers.
 	for leader != nil && time.Now().Before(expires) {
@@ -2424,4 +2508,26 @@ func (c *cluster) waitOnClusterReady() {
 	}
 	c.shutdown()
 	c.t.Fatalf("Expected a cluster leader and fully formed cluster")
+}
+
+// Helper function to check that a cluster is formed
+func (c *cluster) stopAll() {
+	c.t.Helper()
+	for _, s := range c.servers {
+		s.Shutdown()
+	}
+}
+
+func (c *cluster) restartAll() {
+	c.t.Helper()
+	for i, s := range c.servers {
+		if !s.Running() {
+			opts := c.opts[i]
+			s, o := RunServerWithConfig(opts.ConfigFile)
+			c.servers[i] = s
+			c.opts[i] = o
+		}
+	}
+	c.waitOnClusterReady()
+	c.waitOnClusterReady()
 }

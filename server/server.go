@@ -888,6 +888,11 @@ func ProcessCommandLineArgs(cmd *flag.FlagSet) (showVersion bool, showHelp bool,
 	return false, false, nil
 }
 
+// Public version.
+func (s *Server) Running() bool {
+	return s.isRunning()
+}
+
 // Protected check on running state
 func (s *Server) isRunning() bool {
 	s.mu.Lock()

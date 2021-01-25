@@ -1382,7 +1382,9 @@ func (n *raft) trackResponse(ar *appendEntryResponse) {
 		results[ar.peer] = struct{}{}
 		if nr := len(results); nr >= n.qn {
 			// We have a quorum.
-			n.applyCommit(ar.index)
+			for index := n.commit + 1; index <= ar.index; index++ {
+				n.applyCommit(index)
+			}
 			sendHB = len(n.propc) == 0
 		}
 	}

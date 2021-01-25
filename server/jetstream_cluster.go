@@ -80,6 +80,7 @@ type raftGroup struct {
 // streamAssignment is what the meta controller uses to assign streams to peers.
 type streamAssignment struct {
 	Client  *ClientInfo   `json:"client,omitempty"`
+	Created time.Time     `json:"created"`
 	Config  *StreamConfig `json:"stream"`
 	Group   *raftGroup    `json:"group"`
 	Sync    string        `json:"sync"`
@@ -93,13 +94,14 @@ type streamAssignment struct {
 
 // consumerAssignment is what the meta controller uses to assign consumers to streams.
 type consumerAssignment struct {
-	Client *ClientInfo     `json:"client,omitempty"`
-	Name   string          `json:"name"`
-	Stream string          `json:"stream"`
-	Config *ConsumerConfig `json:"consumer"`
-	Group  *raftGroup      `json:"group"`
-	Reply  string          `json:"reply"`
-	State  *ConsumerState  `json:"state,omitempty"`
+	Client  *ClientInfo     `json:"client,omitempty"`
+	Created time.Time       `json:"created"`
+	Name    string          `json:"name"`
+	Stream  string          `json:"stream"`
+	Config  *ConsumerConfig `json:"consumer"`
+	Group   *raftGroup      `json:"group"`
+	Reply   string          `json:"reply"`
+	State   *ConsumerState  `json:"state,omitempty"`
 	// Internal
 	responded bool
 	err       error
@@ -670,6 +672,7 @@ func (js *jetStream) monitorCluster() {
 // Represents our stable meta state that we can write out.
 type writeableStreamAssignment struct {
 	Client    *ClientInfo   `json:"client,omitempty"`
+	Created   time.Time     `json:"created"`
 	Config    *StreamConfig `json:"stream"`
 	Group     *raftGroup    `json:"group"`
 	Sync      string        `json:"sync"`
@@ -683,10 +686,11 @@ func (js *jetStream) metaSnapshot() []byte {
 	for _, asa := range cc.streams {
 		for _, sa := range asa {
 			wsa := writeableStreamAssignment{
-				Client: sa.Client,
-				Config: sa.Config,
-				Group:  sa.Group,
-				Sync:   sa.Sync,
+				Client:  sa.Client,
+				Created: sa.Created,
+				Config:  sa.Config,
+				Group:   sa.Group,
+				Sync:    sa.Sync,
 			}
 			for _, ca := range sa.consumers {
 				wsa.Consumers = append(wsa.Consumers, ca)
@@ -721,7 +725,7 @@ func (js *jetStream) applyMetaSnapshot(buf []byte) error {
 			as = make(map[string]*streamAssignment)
 			streams[wsa.Client.Account] = as
 		}
-		sa := &streamAssignment{Client: wsa.Client, Config: wsa.Config, Group: wsa.Group, Sync: wsa.Sync}
+		sa := &streamAssignment{Client: wsa.Client, Created: wsa.Created, Config: wsa.Config, Group: wsa.Group, Sync: wsa.Sync}
 		if len(wsa.Consumers) > 0 {
 			sa.consumers = make(map[string]*consumerAssignment)
 			for _, ca := range wsa.Consumers {
@@ -793,7 +797,6 @@ func (js *jetStream) applyMetaSnapshot(buf []byte) error {
 	return nil
 }
 
-// FIXME(dlc) - Return error. Don't apply above if err.
 func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool, error) {
 	var didSnap bool
 	for _, e := range entries {
@@ -1062,12 +1065,13 @@ func (js *jetStream) monitorStream(mset *Stream, sa *streamAssignment) {
 					name, cfg := o.Name(), o.Config()
 					// Place our initial state here as well for assignment distribution.
 					ca := &consumerAssignment{
-						Group:  rg,
-						Stream: sa.Config.Name,
-						Name:   name,
-						Config: &cfg,
-						Client: sa.Client,
-						State:  o.readStoreState(),
+						Group:   rg,
+						Stream:  sa.Config.Name,
+						Name:    name,
+						Config:  &cfg,
+						Client:  sa.Client,
+						Created: o.Created(),
+						State:   o.readStoreState(),
 					}
 
 					// We make these compressed in case state is complex.
@@ -1352,6 +1356,9 @@ func (js *jetStream) processClusterCreateStream(sa *streamAssignment) {
 			// Add in the stream here.
 			mset, err = acc.addStream(sa.Config, nil, sa)
 		}
+		if mset != nil {
+			mset.setCreated(sa.Created)
+		}
 	}
 
 	// This is an error condition.
@@ -1394,6 +1401,7 @@ func (js *jetStream) processClusterCreateStream(sa *streamAssignment) {
 						mset, err = acc.LookupStream(sa.Config.Name)
 						if mset != nil {
 							mset.setStreamAssignment(sa)
+							mset.setCreated(sa.Created)
 						}
 					}
 					if err != nil {
@@ -1429,11 +1437,12 @@ func (js *jetStream) processClusterCreateStream(sa *streamAssignment) {
 							name, cfg := o.Name(), o.Config()
 							// Place our initial state here as well for assignment distribution.
 							ca := &consumerAssignment{
-								Group:  rg,
-								Stream: sa.Config.Name,
-								Name:   name,
-								Config: &cfg,
-								Client: sa.Client,
+								Group:   rg,
+								Stream:  sa.Config.Name,
+								Name:    name,
+								Config:  &cfg,
+								Client:  sa.Client,
+								Created: o.Created(),
 							}
 
 							addEntry := encodeAddConsumerAssignment(ca)
@@ -1701,6 +1710,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment) {
 		b, _ := json.Marshal(result) // Avoids auto-processing and doing fancy json with newlines.
 		s.sendInternalMsgLocked(consumerAssignmentSubj, _EMPTY_, nil, b)
 	} else {
+		o.setCreated(ca.Created)
 		// Start our monitoring routine.
 		if rg.node != nil {
 			s.startGoRoutine(func() { js.monitorConsumer(o, ca) })
@@ -2209,7 +2219,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, subject, reply string,
 	// Pick a preferred leader.
 	rg.setPreferred()
 	// Sync subject for post snapshot sync.
-	sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: cfg, Reply: reply, Client: ci}
+	sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: cfg, Reply: reply, Client: ci, Created: time.Now()}
 	cc.meta.Propose(encodeAddStreamAssignment(sa))
 }
 
@@ -2296,8 +2306,7 @@ func (s *Server) jsClusteredStreamRestoreRequest(ci *ClientInfo, acc *Account, r
 	}
 	// Pick a preferred leader.
 	rg.setPreferred()
-	// Sync subject for post snapshot sync.
-	sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: cfg, Reply: reply, Client: ci}
+	sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: cfg, Reply: reply, Client: ci, Created: time.Now()}
 	// Now add in our restore state and pre-select a peer to handle the actual receipt of the snapshot.
 	sa.Restore = &req.State
 	cc.meta.Propose(encodeAddStreamAssignment(sa))
@@ -2661,7 +2670,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, subject, reply strin
 		}
 	}
 
-	ca := &consumerAssignment{Group: rg, Stream: stream, Name: oname, Config: cfg, Reply: reply, Client: ci}
+	ca := &consumerAssignment{Group: rg, Stream: stream, Name: oname, Config: cfg, Reply: reply, Client: ci, Created: time.Now()}
 	cc.meta.Propose(encodeAddConsumerAssignment(ca))
 }
 
