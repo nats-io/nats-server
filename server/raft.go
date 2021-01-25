@@ -692,8 +692,6 @@ func (n *raft) campaign() error {
 	if n.state == Leader {
 		return errAlreadyLeader
 	}
-	// Pre-place our vote for ourselves.
-	n.vote = n.id
 	n.resetElect(randCampaignTimeout())
 	return nil
 }
