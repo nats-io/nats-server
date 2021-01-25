@@ -6242,8 +6242,9 @@ func TestJetStreamConsumerReplayRate(t *testing.T) {
 					t.Fatalf("Unexpected error: %v", err)
 				}
 				gap := time.Since(start)
-				// 10ms is high but on macs time.Sleep(delay) does not sleep only delay.
-				gl, gh := gaps[i]-5*time.Millisecond, gaps[i]+10*time.Millisecond
+				// 15ms is high but on macs time.Sleep(delay) does not sleep only delay.
+				// Also on travis if things get bogged down this could be delayed.
+				gl, gh := gaps[i]-5*time.Millisecond, gaps[i]+15*time.Millisecond
 				if gap < gl || gap > gh {
 					t.Fatalf("Gap is off for %d, expected %v got %v", i, gaps[i], gap)
 				}

@@ -912,7 +912,10 @@ func (o *Consumer) deleteNotActive() {
 						ticker := time.NewTicker(time.Second)
 						defer ticker.Stop()
 						for range ticker.C {
-							if ca := js.consumerAssignment(acc, stream, name); ca != nil {
+							js.mu.RLock()
+							ca := js.consumerAssignment(acc, stream, name)
+							js.mu.RUnlock()
+							if ca != nil {
 								s.Warnf("Consumer assignment not cleaned up, retrying")
 								meta.ForwardProposal(removeEntry)
 							} else {
@@ -1053,9 +1056,9 @@ func (o *Consumer) updateDelivered(dseq, sseq, dc uint64, ts int64) {
 		n += binary.PutUvarint(b[n:], dc)
 		n += binary.PutVarint(b[n:], ts)
 		o.node.Propose(b[:n])
-	} else {
-		o.store.UpdateDelivered(dseq, sseq, dc, ts)
 	}
+	// Update local state always.
+	o.store.UpdateDelivered(dseq, sseq, dc, ts)
 }
 
 // Lock should be held.
