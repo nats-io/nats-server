@@ -35,6 +35,7 @@
 package s2
 
 import (
+	"bytes"
 	"hash/crc32"
 )
 
@@ -127,3 +128,9 @@ func literalExtraSize(n int64) int64 {
 		return 5
 	}
 }
+
+type byter interface {
+	Bytes() []byte
+}
+
+var _ byter = &bytes.Buffer{}

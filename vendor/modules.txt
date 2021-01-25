@@ -1,4 +1,4 @@
-# github.com/klauspost/compress v1.11.4
+# github.com/klauspost/compress v1.11.7
 ## explicit
 github.com/klauspost/compress/s2
 # github.com/minio/highwayhash v1.0.0

@@ -100,6 +100,48 @@ func EncodeBetter(dst, src []byte) []byte {
 	return dst[:d]
 }
 
+// EncodeBest returns the encoded form of src. The returned slice may be a sub-
+// slice of dst if dst was large enough to hold the entire encoded block.
+// Otherwise, a newly allocated slice will be returned.
+//
+// EncodeBest compresses as good as reasonably possible but with a
+// big speed decrease.
+//
+// The dst and src must not overlap. It is valid to pass a nil dst.
+//
+// The blocks will require the same amount of memory to decode as encoding,
+// and does not make for concurrent decoding.
+// Also note that blocks do not contain CRC information, so corruption may be undetected.
+//
+// If you need to encode larger amounts of data, consider using
+// the streaming interface which gives all of these features.
+func EncodeBest(dst, src []byte) []byte {
+	if n := MaxEncodedLen(len(src)); n < 0 {
+		panic(ErrTooLarge)
+	} else if len(dst) < n {
+		dst = make([]byte, n)
+	}
+
+	// The block starts with the varint-encoded length of the decompressed bytes.
+	d := binary.PutUvarint(dst, uint64(len(src)))
+
+	if len(src) == 0 {
+		return dst[:d]
+	}
+	if len(src) < minNonLiteralBlockSize {
+		d += emitLiteral(dst[d:], src)
+		return dst[:d]
+	}
+	n := encodeBlockBest(dst[d:], src)
+	if n > 0 {
+		d += n
+		return dst[:d]
+	}
+	// Not compressible
+	d += emitLiteral(dst[d:], src)
+	return dst[:d]
+}
+
 // EncodeSnappy returns the encoded form of src. The returned slice may be a sub-
 // slice of dst if dst was large enough to hold the entire encoded block.
 // Otherwise, a newly allocated slice will be returned.
@@ -239,6 +281,7 @@ func NewWriter(w io.Writer, opts ...WriterOption) *Writer {
 		blockSize:   defaultBlockSize,
 		concurrency: runtime.GOMAXPROCS(0),
 		randSrc:     rand.Reader,
+		level:       levelFast,
 	}
 	for _, opt := range opts {
 		if err := opt(&w2); err != nil {
@@ -279,9 +322,15 @@ type Writer struct {
 	// wroteStreamHeader is whether we have written the stream header.
 	wroteStreamHeader bool
 	paramsOK          bool
-	better            bool
-	uncompressed      bool
+	level             uint8
 }
+
+const (
+	levelUncompressed = iota + 1
+	levelFast
+	levelBetter
+	levelBest
+)
 
 type result []byte
 
@@ -399,6 +448,13 @@ func (w *Writer) ReadFrom(r io.Reader) (n int64, err error) {
 			return 0, err
 		}
 	}
+	if br, ok := r.(byter); ok {
+		buf := br.Bytes()
+		if err := w.EncodeBuffer(buf); err != nil {
+			return 0, err
+		}
+		return int64(len(buf)), w.Flush()
+	}
 	for {
 		inbuf := w.buffers.Get().([]byte)[:w.blockSize+obufHeaderLen]
 		n2, err := io.ReadFull(r, inbuf[obufHeaderLen:])
@@ -483,10 +539,13 @@ func (w *Writer) EncodeBuffer(buf []byte) (err error) {
 			// Attempt compressing.
 			n := binary.PutUvarint(obuf[obufHeaderLen:], uint64(len(uncompressed)))
 			var n2 int
-			if w.better {
-				n2 = encodeBlockBetter(obuf[obufHeaderLen+n:], uncompressed)
-			} else if !w.uncompressed {
+			switch w.level {
+			case levelFast:
 				n2 = encodeBlock(obuf[obufHeaderLen+n:], uncompressed)
+			case levelBetter:
+				n2 = encodeBlockBetter(obuf[obufHeaderLen+n:], uncompressed)
+			case levelBest:
+				n2 = encodeBlockBest(obuf[obufHeaderLen+n:], uncompressed)
 			}
 
 			// Check if we should use this, or store as uncompressed instead.
@@ -560,10 +619,13 @@ func (w *Writer) write(p []byte) (nRet int, errRet error) {
 			// Attempt compressing.
 			n := binary.PutUvarint(obuf[obufHeaderLen:], uint64(len(uncompressed)))
 			var n2 int
-			if w.better {
-				n2 = encodeBlockBetter(obuf[obufHeaderLen+n:], uncompressed)
-			} else if !w.uncompressed {
+			switch w.level {
+			case levelFast:
 				n2 = encodeBlock(obuf[obufHeaderLen+n:], uncompressed)
+			case levelBetter:
+				n2 = encodeBlockBetter(obuf[obufHeaderLen+n:], uncompressed)
+			case levelBest:
+				n2 = encodeBlockBest(obuf[obufHeaderLen+n:], uncompressed)
 			}
 
 			// Check if we should use this, or store as uncompressed instead.
@@ -636,10 +698,13 @@ func (w *Writer) writeFull(inbuf []byte) (errRet error) {
 		// Attempt compressing.
 		n := binary.PutUvarint(obuf[obufHeaderLen:], uint64(len(uncompressed)))
 		var n2 int
-		if w.better {
-			n2 = encodeBlockBetter(obuf[obufHeaderLen+n:], uncompressed)
-		} else if !w.uncompressed {
+		switch w.level {
+		case levelFast:
 			n2 = encodeBlock(obuf[obufHeaderLen+n:], uncompressed)
+		case levelBetter:
+			n2 = encodeBlockBetter(obuf[obufHeaderLen+n:], uncompressed)
+		case levelBest:
+			n2 = encodeBlockBest(obuf[obufHeaderLen+n:], uncompressed)
 		}
 
 		// Check if we should use this, or store as uncompressed instead.
@@ -705,10 +770,13 @@ func (w *Writer) writeSync(p []byte) (nRet int, errRet error) {
 		// Attempt compressing.
 		n := binary.PutUvarint(obuf[obufHeaderLen:], uint64(len(uncompressed)))
 		var n2 int
-		if w.better {
-			n2 = encodeBlockBetter(obuf[obufHeaderLen+n:], uncompressed)
-		} else if !w.uncompressed {
+		switch w.level {
+		case levelFast:
 			n2 = encodeBlock(obuf[obufHeaderLen+n:], uncompressed)
+		case levelBetter:
+			n2 = encodeBlockBetter(obuf[obufHeaderLen+n:], uncompressed)
+		case levelBest:
+			n2 = encodeBlockBest(obuf[obufHeaderLen+n:], uncompressed)
 		}
 
 		if n2 > 0 {
@@ -880,8 +948,17 @@ func WriterConcurrency(n int) WriterOption {
 // 10-40% speed decrease on both compression and decompression.
 func WriterBetterCompression() WriterOption {
 	return func(w *Writer) error {
-		w.uncompressed = false
-		w.better = true
+		w.level = levelBetter
+		return nil
+	}
+}
+
+// WriterBestCompression will enable better compression.
+// EncodeBetter compresses better than Encode but typically with a
+// big speed decrease on compression.
+func WriterBestCompression() WriterOption {
+	return func(w *Writer) error {
+		w.level = levelBest
 		return nil
 	}
 }
@@ -891,8 +968,7 @@ func WriterBetterCompression() WriterOption {
 // If concurrency is > 1 CRC and output will still be done async.
 func WriterUncompressed() WriterOption {
 	return func(w *Writer) error {
-		w.better = false
-		w.uncompressed = true
+		w.level = levelUncompressed
 		return nil
 	}
 }
@@ -907,7 +983,7 @@ func WriterUncompressed() WriterOption {
 // Default block size is 1MB.
 func WriterBlockSize(n int) WriterOption {
 	return func(w *Writer) error {
-		if w.blockSize > maxBlockSize || w.blockSize < minBlockSize {
+		if n > maxBlockSize || n < minBlockSize {
 			return errors.New("s2: block size too large. Must be <= 4MB and >=4KB")
 		}
 		w.blockSize = n

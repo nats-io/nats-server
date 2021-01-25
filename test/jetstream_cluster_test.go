@@ -122,12 +122,15 @@ func TestJetStreamClusterSingleReplicaStreams(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	si, err := js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo", "bar"},
 	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.Cluster == nil {
+		t.Fatalf("Expected si to have cluster info")
 	}
 	// Send in 10 messages.
 	msg, toSend := []byte("Hello JS Clustering"), 10
@@ -137,7 +140,7 @@ func TestJetStreamClusterSingleReplicaStreams(t *testing.T) {
 		}
 	}
 	// Now grab info for this stream.
-	si, err := js.StreamInfo("TEST")
+	si, err = js.StreamInfo("TEST")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -164,6 +167,26 @@ func TestJetStreamClusterSingleReplicaStreams(t *testing.T) {
 	}
 	if ci == nil || ci.Name != "dlc" || ci.Stream != "TEST" {
 		t.Fatalf("ConsumerInfo is not correct %+v", ci)
+	}
+
+	// Now make sure that if we kill and restart the server that is the stream and consumer leader they return.
+	sl := c.streamLeader("$G", "TEST")
+	sl.Shutdown()
+	c.restartServer(sl)
+	c.waitOnNewStreamLeader("$G", "TEST")
+
+	si, err = js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si == nil || si.Config.Name != "TEST" {
+		t.Fatalf("StreamInfo is not correct %+v", si)
+	}
+	// Now durable consumer.
+	c.waitOnNewConsumerLeader("$G", "TEST", "dlc")
+	time.Sleep(100 * time.Millisecond)
+	if _, err = js.ConsumerInfo("TEST", "dlc"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
 }
 
@@ -708,6 +731,89 @@ func TestJetStreamClusterStreamSynchedTimeStamps(t *testing.T) {
 	}
 }
 
+// Test to mimic what R.I. was seeing.
+func TestJetStreamClusterRestoreSingleConsumer(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "foo"})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if _, err = js.Publish("foo", []byte("TSS")); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+
+	sub, err := js.SubscribeSync("foo", nats.Durable("dlc"))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if m, err := sub.NextMsg(time.Second); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	} else {
+		m.Ack()
+	}
+
+	c.stopAll()
+	c.restartAll()
+
+	s = c.randomServer()
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	resp, err := nc.Request(server.JSApiStreams, nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var streams server.JSApiStreamNamesResponse
+	if err = json.Unmarshal(resp.Data, &streams); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(streams.Streams) != 1 {
+		t.Fatalf("Expected only 1 stream but got %d", len(streams.Streams))
+	}
+
+	// Now do detailed version.
+	resp, err = nc.Request(server.JSApiStreamList, nil, 5*time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var listResponse server.JSApiStreamListResponse
+	if err = json.Unmarshal(resp.Data, &listResponse); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(listResponse.Streams) != 1 {
+		t.Fatalf("Expected 1 stream but got %d", len(listResponse.Streams))
+	}
+	si, err := js.StreamInfo("foo")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si == nil || si.Config.Name != "foo" {
+		t.Fatalf("StreamInfo is not correct %+v", si)
+	}
+
+	// Now check for consumer.
+	resp, err = nc.Request(fmt.Sprintf(server.JSApiConsumersT, "foo"), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var clResponse server.JSApiConsumerNamesResponse
+	if err = json.Unmarshal(resp.Data, &clResponse); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(clResponse.Consumers) != 1 {
+		t.Fatalf("Expected 1 consumer but got %d", len(clResponse.Consumers))
+	}
+
+}
+
 func TestJetStreamClusterStreamPublishWithActiveConsumers(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -773,9 +879,6 @@ func TestJetStreamClusterStreamPublishWithActiveConsumers(t *testing.T) {
 		t.Fatalf("Unexpected error getting consumer info: %v", err)
 	}
 
-	// For slight skew in creation time.
-	ci.Created = ci.Created.Round(time.Second)
-	ci2.Created = ci2.Created.Round(time.Second)
 	ci.Cluster = nil
 	ci2.Cluster = nil
 
@@ -1272,7 +1375,9 @@ func TestJetStreamClusterStreamSnapshotCatchupWithPurge(t *testing.T) {
 	}
 
 	nsl := c.streamLeader("$G", "TEST")
-	nsl.JetStreamSnapshotStream("$G", "TEST")
+	if err := nsl.JetStreamSnapshotStream("$G", "TEST"); err != nil {
+		t.Fatalf("Error snapshotting stream: %v", err)
+	}
 
 	time.Sleep(200 * time.Millisecond)
 
@@ -1401,11 +1506,18 @@ func TestJetStreamClusterExtendedStreamInfo(t *testing.T) {
 	if len(si.Cluster.Replicas) != 2 {
 		t.Fatalf("Expected %d replicas, got %d", 2, len(si.Cluster.Replicas))
 	}
-	for _, peer := range si.Cluster.Replicas {
-		if !peer.Current {
-			t.Fatalf("Expected replica to be current: %+v", peer)
+	// We may need to wait a bit for peers to catch up.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		for _, peer := range si.Cluster.Replicas {
+			if !peer.Current {
+				if si, err = js.StreamInfo("TEST"); err != nil {
+					t.Fatalf("Could not retrieve stream info")
+				}
+				return fmt.Errorf("Expected replica to be current: %+v", peer)
+			}
 		}
-	}
+		return nil
+	})
 
 	// Now do consumer.
 	sub, err := js.SubscribeSync("foo", nats.Durable("dlc"), nats.Pull(10))
@@ -1517,6 +1629,84 @@ func TestJetStreamClusterExtendedStreamInfoSingleReplica(t *testing.T) {
 
 }
 
+func TestJetStreamClusterEphemeralConsumerCleanup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 2})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	sub, err := js.Subscribe("foo", func(m *nats.Msg) {})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	ci, _ := sub.ConsumerInfo()
+	if ci == nil {
+		t.Fatalf("Unexpected error: no consumer info")
+	}
+
+	// We will look up by hand this consumer to set inactive threshold lower for this test.
+	cl := c.consumerLeader("$G", "foo", ci.Name)
+	if cl == nil {
+		t.Fatalf("Could not find consumer leader")
+	}
+	mset, err := cl.GlobalAccount().LookupStream("foo")
+	if err != nil {
+		t.Fatalf("Expected to find a stream for %q", "foo")
+	}
+	o := mset.LookupConsumer(ci.Name)
+	if o == nil {
+		t.Fatalf("Error looking up consumer %q", ci.Name)
+	}
+	o.SetInActiveDeleteThreshold(10 * time.Millisecond)
+
+	msg, toSend := []byte("Hello JS Clustering"), 10
+	for i := 0; i < toSend; i++ {
+		if _, err = js.Publish("foo", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	getConsumers := func() []string {
+		resp, err := nc.Request(fmt.Sprintf(server.JSApiConsumersT, "foo"), nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var clResponse server.JSApiConsumerNamesResponse
+		if err = json.Unmarshal(resp.Data, &clResponse); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		return clResponse.Consumers
+	}
+
+	checkConsumer := func(expected int) {
+		consumers := getConsumers()
+		if len(consumers) != expected {
+			t.Fatalf("Expected %d consumers but got %d", expected, len(consumers))
+		}
+	}
+
+	checkConsumer(1)
+
+	// Now Unsubscribe, since this is ephemeral this will make this go away.
+	sub.Unsubscribe()
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if consumers := getConsumers(); len(consumers) == 0 {
+			return nil
+		} else {
+			return fmt.Errorf("Still %d consumers remaining", len(consumers))
+		}
+	})
+}
+
 func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -1529,17 +1719,55 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
-		Replicas: 3,
+		Replicas: 2,
 	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	toSend := 500
+	toSend, batchSize := 200, 50
+
 	for i := 0; i < toSend; i++ {
 		if _, err = js.Publish("foo", []byte("OK")); err != nil {
 			t.Fatalf("Unexpected publish error: %v", err)
 		}
+	}
+
+	// Create a consumer as well and give it a non-simplistic state.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy, AckWait: time.Second})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	jsub, err := js.SubscribeSync("foo", nats.Attach("TEST", "dlc"), nats.Pull(batchSize))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	checkSubsPending(t, jsub, batchSize)
+	// Ack first 50.
+	for i := 1; i <= 50; i++ {
+		m, err := jsub.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error getting msg %d: %v", i, err)
+		}
+		m.Ack()
+	}
+	// Now ack every third message for next 50.
+	for i := 51; i <= 100; i++ {
+		m, err := jsub.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error getting msg %d: %v", i, err)
+		}
+		if i%3 == 0 {
+			m.Ack()
+		}
+	}
+
+	// Snapshot consumer info.
+	time.Sleep(100 * time.Millisecond)
+	ci, err := jsub.ConsumerInfo()
+	if err != nil {
+		t.Fatalf("Unexpected error getting consumer info: %v", err)
 	}
 
 	sreq := &server.JSApiStreamSnapshotRequest{
@@ -1627,7 +1855,7 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 
 	// Send our snapshot back in to restore the stream.
 	// Can be any size message.
-	var chunk [512]byte
+	var chunk [1024]byte
 	for r := bytes.NewReader(snapshot); ; {
 		n, err := r.Read(chunk[:])
 		if err != nil {
@@ -1645,25 +1873,9 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 		t.Fatalf("StreamInfo is not correct %+v", si)
 	}
 
-	getExtendedStreamInfo := func() *server.StreamInfo {
-		t.Helper()
-		resp, err := nc.Request(fmt.Sprintf(server.JSApiStreamInfoT, "TEST"), nil, time.Second)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		var si server.StreamInfo
-		if err = json.Unmarshal(resp.Data, &si); err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		if si.Cluster == nil {
-			t.Fatalf("Expected cluster info")
-		}
-		return &si
-	}
-
 	// Make sure the replicas become current eventually. They will be doing catchup.
 	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
-		si := getExtendedStreamInfo()
+		si, _ := js.StreamInfo("TEST")
 		if si == nil || si.Cluster == nil {
 			t.Fatalf("Did not get stream info")
 		}
@@ -1674,6 +1886,46 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 		}
 		return nil
 	})
+
+	// Wait on the system to elect a leader for the restored consumer.
+	c.waitOnNewConsumerLeader("$G", "TEST", "dlc")
+
+	// Now check for the consumer being recreated.
+	nci, err := js.ConsumerInfo("TEST", "dlc")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if nci.Delivered != ci.Delivered {
+		t.Fatalf("Delivered states do not match %+v vs %+v", nci.Delivered, ci.Delivered)
+	}
+	if nci.AckFloor != ci.AckFloor {
+		t.Fatalf("Ack floors did not match %+v vs %+v", nci.AckFloor, ci.AckFloor)
+	}
+
+	// Make sure consumer works.
+	// It should pick up with the next delivery spot, so check for that as first message.
+	// We should have all the messages for first delivery delivered.
+	start := 101
+	end := toSend
+	for i := start; i <= end; i++ {
+		m, err := jsub.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error getting msg: %v", err)
+		}
+		meta, err := m.MetaData()
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if meta.Stream != uint64(i) {
+			t.Fatalf("Expected stream sequence of %d, but got %d", i, meta.Stream)
+		}
+		m.Ack()
+	}
+
+	// Check that redelivered come in now..
+	redelivered := 50/3 + 1
+	checkSubsPending(t, jsub, redelivered)
 }
 
 func TestJetStreamClusterAccountInfoAndLimits(t *testing.T) {
@@ -1743,9 +1995,14 @@ func TestJetStreamClusterAccountInfoAndLimits(t *testing.T) {
 		t.Fatalf("Should have been tracking 3 streams, found %d", stats.Streams)
 	}
 	expectedSize := 25*msgSize + 75*msgSize*2 + 10*msgSize*3
-	if stats.Store != expectedSize {
-		t.Fatalf("Expected store size to be %d, got %+v\n", expectedSize, stats)
-	}
+	// This may lag.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if stats.Store != expectedSize {
+			stats = accountStats()
+			return fmt.Errorf("Expected store size to be %d, got %+v\n", expectedSize, stats)
+		}
+		return nil
+	})
 
 	// Check limit enforcement.
 	if _, err := js.AddStream(&nats.StreamConfig{Name: "fail", Replicas: 3}); err == nil {
@@ -2053,7 +2310,7 @@ func jsClientConnect(t *testing.T, s *server.Server) (*nats.Conn, nats.JetStream
 
 func checkSubsPending(t *testing.T, sub *nats.Subscription, numExpected int) {
 	t.Helper()
-	checkFor(t, 500*time.Millisecond, 10*time.Millisecond, func() error {
+	checkFor(t, 3*time.Second, 10*time.Millisecond, func() error {
 		if nmsgs, _, err := sub.Pending(); err != nil || nmsgs != numExpected {
 			return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, numExpected)
 		}
@@ -2090,7 +2347,7 @@ func (c *cluster) waitOnPeerCount(n int) {
 	c.t.Helper()
 	c.waitOnLeader()
 	leader := c.leader()
-	expires := time.Now().Add(5 * time.Second)
+	expires := time.Now().Add(10 * time.Second)
 	for time.Now().Before(expires) {
 		peers := leader.JetStreamClusterPeers()
 		if len(peers) == n {
@@ -2103,10 +2360,10 @@ func (c *cluster) waitOnPeerCount(n int) {
 
 func (c *cluster) waitOnNewConsumerLeader(account, stream, consumer string) {
 	c.t.Helper()
-	expires := time.Now().Add(5 * time.Second)
+	expires := time.Now().Add(10 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.consumerLeader(account, stream, consumer); leader != nil {
-			time.Sleep(25 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -2126,13 +2383,13 @@ func (c *cluster) consumerLeader(account, stream, consumer string) *server.Serve
 
 func (c *cluster) waitOnNewStreamLeader(account, stream string) {
 	c.t.Helper()
-	expires := time.Now().Add(5 * time.Second)
+	expires := time.Now().Add(10 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.streamLeader(account, stream); leader != nil {
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 			return
 		}
-		time.Sleep(25 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	c.t.Fatalf("Expected a stream leader for %q %q, got none", account, stream)
 }
@@ -2162,10 +2419,10 @@ func (c *cluster) waitOnStreamCurrent(s *server.Server, account, stream string) 
 	expires := time.Now().Add(10 * time.Second)
 	for time.Now().Before(expires) {
 		if s.JetStreamIsStreamCurrent(account, stream) {
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 			return
 		}
-		time.Sleep(25 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	c.t.Fatalf("Expected server %q to eventually be current for stream %q", s, stream)
 }
@@ -2175,10 +2432,10 @@ func (c *cluster) waitOnServerCurrent(s *server.Server) {
 	expires := time.Now().Add(5 * time.Second)
 	for time.Now().Before(expires) {
 		if s.JetStreamIsCurrent() {
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 			return
 		}
-		time.Sleep(25 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	c.t.Fatalf("Expected server %q to eventually be current", s)
 }
@@ -2203,7 +2460,7 @@ func (c *cluster) leader() *server.Server {
 }
 
 // This needs to match raft.go:minElectionTimeout*2
-const maxElectionTimeout = 550 * time.Millisecond
+const maxElectionTimeout = 900 * time.Millisecond
 
 func (c *cluster) expectNoLeader() {
 	c.t.Helper()
@@ -2238,7 +2495,7 @@ func (c *cluster) waitOnClusterReady() {
 		if leader = c.leader(); leader != nil {
 			break
 		}
-		time.Sleep(25 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	// Now make sure we have all peers.
 	for leader != nil && time.Now().Before(expires) {
@@ -2249,4 +2506,26 @@ func (c *cluster) waitOnClusterReady() {
 	}
 	c.shutdown()
 	c.t.Fatalf("Expected a cluster leader and fully formed cluster")
+}
+
+// Helper function to check that a cluster is formed
+func (c *cluster) stopAll() {
+	c.t.Helper()
+	for _, s := range c.servers {
+		s.Shutdown()
+	}
+}
+
+func (c *cluster) restartAll() {
+	c.t.Helper()
+	for i, s := range c.servers {
+		if !s.Running() {
+			opts := c.opts[i]
+			s, o := RunServerWithConfig(opts.ConfigFile)
+			c.servers[i] = s
+			c.opts[i] = o
+		}
+	}
+	c.waitOnClusterReady()
+	c.waitOnClusterReady()
 }

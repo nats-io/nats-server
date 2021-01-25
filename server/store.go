@@ -151,9 +151,9 @@ type ConsumerState struct {
 	// These are both in stream sequence context.
 	// Pending is for all messages pending and the timestamp for the delivered time.
 	// This will only be present when the AckPolicy is ExplicitAck.
-	Pending map[uint64]*Pending `json:"pending"`
+	Pending map[uint64]*Pending `json:"pending,omitempty"`
 	// This is for messages that have been redelivered, so count > 1.
-	Redelivered map[uint64]uint64 `json:"redelivered"`
+	Redelivered map[uint64]uint64 `json:"redelivered,omitempty"`
 }
 
 // Represents a pending message for explicit ack or ack all.

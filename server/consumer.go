@@ -214,6 +214,7 @@ type Consumer struct {
 	closed            bool
 
 	// Clustered.
+	ca      *consumerAssignment
 	node    RaftNode
 	infoSub *subscription
 }
@@ -230,7 +231,7 @@ func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
 	return mset.addConsumer(config, _EMPTY_, nil)
 }
 
-func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, node RaftNode) (*Consumer, error) {
+func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, ca *consumerAssignment) (*Consumer, error) {
 	mset.mu.RLock()
 	s, jsa := mset.srv, mset.jsa
 	mset.mu.RUnlock()
@@ -507,13 +508,14 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, node RaftN
 	store, err := mset.store.ConsumerStore(o.name, config)
 	if err != nil {
 		mset.mu.Unlock()
+		o.deleteWithoutAdvisory()
 		return nil, fmt.Errorf("error creating store for observable: %v", err)
 	}
 	o.store = store
 
-	// FIXME(dlc) - Failures past this point should be consumer cleanup.
 	if !isValidName(o.name) {
 		mset.mu.Unlock()
+		o.deleteWithoutAdvisory()
 		return nil, fmt.Errorf("durable name can not contain '.', '*', '>'")
 	}
 
@@ -525,15 +527,21 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, node RaftN
 	if eo, ok := mset.consumers[o.name]; ok {
 		mset.mu.Unlock()
 		if !o.isDurable() || !o.isPushMode() {
+			o.name = _EMPTY_ // Prevent removal since same name.
+			o.deleteWithoutAdvisory()
 			return nil, fmt.Errorf("consumer already exists")
 		}
 		// If we are here we have already registered this durable. If it is still active that is an error.
 		if eo.Active() {
+			o.name = _EMPTY_ // Prevent removal since same name.
+			o.deleteWithoutAdvisory()
 			return nil, fmt.Errorf("consumer already exists and is still active")
 		}
 		// Since we are here this means we have a potentially new durable so we should update here.
 		// Check that configs are the same.
 		if !configsEqualSansDelivery(o.config, eo.config) {
+			o.name = _EMPTY_ // Prevent removal since same name.
+			o.deleteWithoutAdvisory()
 			return nil, fmt.Errorf("consumer replacement durable config not the same")
 		}
 		// Once we are here we have a replacement push-based durable.
@@ -565,8 +573,10 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, node RaftN
 		}
 	}
 
-	// Set our node.
-	o.node = node
+	// Set our ca.
+	if ca != nil {
+		o.setConsumerAssignment(ca)
+	}
 
 	mset.setConsumer(o)
 	mset.mu.Unlock()
@@ -582,6 +592,16 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, node RaftN
 	}
 
 	return o, nil
+}
+
+func (o *Consumer) setConsumerAssignment(ca *consumerAssignment) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.ca = ca
+	// Set our node.
+	if ca != nil {
+		o.node = ca.Group.node
+	}
 }
 
 // Lock should be held.
@@ -855,8 +875,62 @@ func (o *Consumer) updateDeliveryInterest(localInterest bool) {
 	// If we do not have interest anymore and we are not durable start
 	// a timer to delete us. We wait for a bit in case of server reconnect.
 	if !o.isDurable() && !interest {
-		o.dtmr = time.AfterFunc(o.dthresh, func() { o.Delete() })
+		o.dtmr = time.AfterFunc(o.dthresh, func() { o.deleteNotActive() })
 	}
+}
+
+func (o *Consumer) deleteNotActive() {
+	o.mu.RLock()
+	if o.mset == nil {
+		o.mu.RUnlock()
+		return
+	}
+	s, js, jsa := o.mset.srv, o.mset.srv.js, o.mset.jsa
+	acc, stream, name := o.acc.Name, o.stream, o.name
+	o.mu.RUnlock()
+
+	// If we are clustered, check if we still have this consumer assigned.
+	// If we do forward a proposal to delete ourselves to the metacontroller leader.
+	if s.JetStreamIsClustered() {
+		if ca := js.consumerAssignment(acc, stream, name); ca != nil {
+			// We copy and clear the reply since this removal is internal.
+			jsa.mu.Lock()
+			js := jsa.js
+			jsa.mu.Unlock()
+
+			if js != nil {
+				js.mu.RLock()
+				if cc := js.cluster; cc != nil {
+					cca := *ca
+					cca.Reply = _EMPTY_
+					meta, removeEntry := cc.meta, encodeDeleteConsumerAssignment(&cca)
+					meta.ForwardProposal(removeEntry)
+
+					// Check to make sure we went away.
+					// Don't think this needs to be a monitored go routine.
+					go func() {
+						ticker := time.NewTicker(time.Second)
+						defer ticker.Stop()
+						for range ticker.C {
+							js.mu.RLock()
+							ca := js.consumerAssignment(acc, stream, name)
+							js.mu.RUnlock()
+							if ca != nil {
+								s.Warnf("Consumer assignment not cleaned up, retrying")
+								meta.ForwardProposal(removeEntry)
+							} else {
+								return
+							}
+						}
+					}()
+
+				}
+				js.mu.RUnlock()
+			}
+		}
+	}
+	// We will delete here regardless.
+	o.Delete()
 }
 
 // Config returns the consumer's configuration.
@@ -982,9 +1056,9 @@ func (o *Consumer) updateDelivered(dseq, sseq, dc uint64, ts int64) {
 		n += binary.PutUvarint(b[n:], dc)
 		n += binary.PutVarint(b[n:], ts)
 		o.node.Propose(b[:n])
-	} else {
-		o.store.UpdateDelivered(dseq, sseq, dc, ts)
 	}
+	// Update local state always.
+	o.store.UpdateDelivered(dseq, sseq, dc, ts)
 }
 
 // Lock should be held.
@@ -1074,31 +1148,57 @@ func (o *Consumer) readStoredState() error {
 		return nil
 	}
 	state, err := o.store.State()
-
 	if err == nil && state != nil {
-		// FIXME(dlc) - re-apply state.
-		o.dseq = state.Delivered.Consumer + 1
-		o.sseq = state.Delivered.Stream + 1
-		o.adflr = state.AckFloor.Consumer
-		o.asflr = state.AckFloor.Stream
-		o.pending = state.Pending
-		o.rdc = state.Redelivered
+		o.applyState(state)
 	}
+	return err
+}
+
+// Apply the consumer stored state.
+func (o *Consumer) applyState(state *ConsumerState) {
+	if state == nil {
+		return
+	}
+
+	o.dseq = state.Delivered.Consumer + 1
+	o.sseq = state.Delivered.Stream + 1
+	o.adflr = state.AckFloor.Consumer
+	o.asflr = state.AckFloor.Stream
+	o.pending = state.Pending
+	o.rdc = state.Redelivered
 
 	// Setup tracking timer if we have restored pending.
 	if len(o.pending) > 0 && o.ptmr == nil {
 		o.ptmr = time.AfterFunc(o.ackWait(0), o.checkPending)
 	}
-	return err
+}
+
+func (o *Consumer) readStoreState() *ConsumerState {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	if o.store == nil {
+		return nil
+	}
+	state, _ := o.store.State()
+	return state
+}
+
+// Sets our store state from another source. Used in clustered mode on snapshot restore.
+func (o *Consumer) setStoreState(state *ConsumerState) error {
+	if state == nil {
+		return nil
+	}
+	o.applyState(state)
+	return o.store.Update(state)
 }
 
 // Update our state to the store.
-func (o *Consumer) writeState() {
+func (o *Consumer) writeStoreState() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
 	if o.store == nil {
-		return
+		return nil
 	}
 
 	state := ConsumerState{
@@ -1113,8 +1213,7 @@ func (o *Consumer) writeState() {
 		Pending:     o.pending,
 		Redelivered: o.rdc,
 	}
-	// FIXME(dlc) - Hold onto any errors.
-	o.store.Update(&state)
+	return o.store.Update(&state)
 }
 
 // loopAndDeliverMsgs() will loop and deliver messages and watch for interest changes.
@@ -2261,7 +2360,7 @@ func (o *Consumer) purge(sseq uint64) {
 	}
 	o.mu.Unlock()
 
-	o.writeState()
+	o.writeStoreState()
 }
 
 func stopAndClearTimer(tp **time.Timer) {
@@ -2372,8 +2471,13 @@ func (o *Consumer) stop(dflag, doSignal, advisory bool) error {
 		}
 	}
 
-	if dflag && n != nil {
-		n.Stop()
+	// Cluster cleanup.
+	if n != nil {
+		if dflag {
+			n.Delete()
+		} else {
+			n.Stop()
+		}
 	}
 
 	var err error
@@ -2422,7 +2526,7 @@ func (o *Consumer) SetInActiveDeleteThreshold(dthresh time.Duration) error {
 	stopAndClearTimer(&o.dtmr)
 	o.dthresh = dthresh
 	if deleteWasRunning {
-		o.dtmr = time.AfterFunc(o.dthresh, func() { o.Delete() })
+		o.dtmr = time.AfterFunc(o.dthresh, func() { o.deleteNotActive() })
 	}
 	return nil
 }

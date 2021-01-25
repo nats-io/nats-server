@@ -30,6 +30,7 @@ type RaftNode interface {
 	Propose(entry []byte) error
 	PausePropose()
 	ResumePropose()
+	ForwardProposal(entry []byte) error
 	Snapshot(snap []byte) error
 	Applied(index uint64)
 	Compact(index uint64) error
@@ -123,6 +124,7 @@ type raft struct {
 	dflag   bool
 
 	// Subjects for votes, updates, replays.
+	psubj  string
 	vsubj  string
 	vreply string
 	asubj  string
@@ -169,10 +171,10 @@ type lps struct {
 }
 
 const (
-	minElectionTimeout = 350 * time.Millisecond
+	minElectionTimeout = 300 * time.Millisecond
 	maxElectionTimeout = 3 * minElectionTimeout
-	minCampaignTimeout = 5 * time.Millisecond
-	maxCampaignTimeout = 5 * minCampaignTimeout
+	minCampaignTimeout = 50 * time.Millisecond
+	maxCampaignTimeout = 4 * minCampaignTimeout
 	hbInterval         = 200 * time.Millisecond
 )
 
@@ -321,6 +323,10 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 
 	n.notice("Started")
 
+	n.Lock()
+	n.resetElectionTimeout()
+	n.Unlock()
+
 	s.registerRaftNode(n.group, n)
 	s.startGoRoutine(n.run)
 
@@ -390,12 +396,14 @@ func (n *raft) Propose(data []byte) error {
 	n.RLock()
 	if n.state != Leader {
 		n.RUnlock()
+		n.debug("Proposal ignored, not leader")
 		return errNotLeader
 	}
 	propc, paused, quit := n.propc, n.pausec, n.quit
 	n.RUnlock()
 
 	if paused != nil {
+		n.debug("Proposals paused, will wait")
 		select {
 		case <-paused:
 		case <-quit:
@@ -408,8 +416,25 @@ func (n *raft) Propose(data []byte) error {
 	select {
 	case propc <- &Entry{EntryNormal, data}:
 	default:
+		n.debug("Propose failed!")
 		return errProposalFailed
 	}
+	return nil
+}
+
+// ForwardProposal will forward the proposal to the leader if known.
+// If we are the leader this is the same as calling propose.
+// FIXME(dlc) - We could have a reply subject and wait for a response
+// for retries, but would need to not block and be in separate Go routine.
+func (n *raft) ForwardProposal(entry []byte) error {
+	if n.Leader() {
+		return n.Propose(entry)
+	}
+	n.RLock()
+	subj := n.psubj
+	n.RUnlock()
+
+	n.sendRPC(subj, _EMPTY_, entry)
 	return nil
 }
 
@@ -667,9 +692,9 @@ func (n *raft) campaign() error {
 	if n.state == Leader {
 		return errAlreadyLeader
 	}
-	if n.state == Follower {
-		n.resetElect(randCampaignTimeout())
-	}
+	// Pre-place our vote for ourselves.
+	n.vote = n.id
+	n.resetElect(randCampaignTimeout())
 	return nil
 }
 
@@ -775,28 +800,37 @@ func (n *raft) newInbox(cn string) string {
 const (
 	raftVoteSubj   = "$NRG.V.%s.%s"
 	raftAppendSubj = "$NRG.E.%s.%s"
+	raftPropSubj   = "$NRG.P.%s"
 	raftReplySubj  = "$NRG.R.%s"
 )
+
+// Our internal subscribe.
+// Lock should be held.
+func (n *raft) subscribe(subject string, cb msgHandler) (*subscription, error) {
+	return n.s.systemSubscribe(subject, _EMPTY_, false, n.c, cb)
+}
 
 func (n *raft) createInternalSubs() error {
 	cn := n.s.ClusterName()
 	n.vsubj, n.vreply = fmt.Sprintf(raftVoteSubj, cn, n.group), n.newInbox(cn)
 	n.asubj, n.areply = fmt.Sprintf(raftAppendSubj, cn, n.group), n.newInbox(cn)
+	n.psubj = fmt.Sprintf(raftPropSubj, n.group)
 
 	// Votes
-	if _, err := n.s.sysSubscribe(n.vreply, n.handleVoteResponse); err != nil {
+	if _, err := n.subscribe(n.vreply, n.handleVoteResponse); err != nil {
 		return err
 	}
-	if _, err := n.s.sysSubscribe(n.vsubj, n.handleVoteRequest); err != nil {
+	if _, err := n.subscribe(n.vsubj, n.handleVoteRequest); err != nil {
 		return err
 	}
 	// AppendEntry
-	if _, err := n.s.sysSubscribe(n.areply, n.handleAppendEntryResponse); err != nil {
+	if _, err := n.subscribe(n.areply, n.handleAppendEntryResponse); err != nil {
 		return err
 	}
-	if _, err := n.s.sysSubscribe(n.asubj, n.handleAppendEntry); err != nil {
+	if _, err := n.subscribe(n.asubj, n.handleAppendEntry); err != nil {
 		return err
 	}
+
 	// TODO(dlc) change events.
 	return nil
 }
@@ -827,10 +861,6 @@ func (n *raft) run() {
 	s := n.s
 	defer s.grWG.Done()
 
-	n.Lock()
-	n.resetElectionTimeout()
-	n.Unlock()
-
 	for s.isRunning() {
 		switch n.State() {
 		case Follower:
@@ -853,6 +883,11 @@ func (n *raft) debug(format string, args ...interface{}) {
 		nf := fmt.Sprintf("RAFT [%s - %s] %s", n.id, n.group, format)
 		n.s.Debugf(nf, args...)
 	}
+}
+
+func (n *raft) warn(format string, args ...interface{}) {
+	nf := fmt.Sprintf("RAFT [%s - %s] %s", n.id, n.group, format)
+	n.s.Warnf(nf, args...)
 }
 
 func (n *raft) error(format string, args ...interface{}) {
@@ -1047,7 +1082,38 @@ func (n *raft) decodeAppendEntryResponse(msg []byte) *appendEntryResponse {
 	return ar
 }
 
+// Called when a peer has forwarded a proposal.
+func (n *raft) handleForwardedProposal(sub *subscription, c *client, _, reply string, msg []byte) {
+	if !n.Leader() {
+		n.debug("Ignoring forwarded proposal, not leader")
+		return
+	}
+	// Need to copy since this is underlying client/route buffer.
+	msg = append(msg[:0:0], msg...)
+	if err := n.Propose(msg); err != nil {
+		n.warn("Got error processing forwarded proposal: %v", err)
+	}
+}
+
 func (n *raft) runAsLeader() {
+	n.Lock()
+	// For forwarded proposals.
+	fsub, err := n.subscribe(n.psubj, n.handleForwardedProposal)
+	n.Unlock()
+
+	if err != nil {
+		panic(fmt.Sprintf("Error subscribing to forwarded proposals: %v", err))
+	}
+
+	// Cleanup our subscription when we leave.
+	defer func() {
+		n.RLock()
+		if fsub != nil {
+			n.s.sysUnsubscribe(fsub)
+		}
+		n.RUnlock()
+	}()
+
 	n.sendPeerState()
 
 	hb := time.NewTicker(hbInterval)
@@ -1193,7 +1259,7 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 		n.progress = make(map[string]chan uint64)
 	}
 	if _, ok := n.progress[ar.peer]; ok {
-		n.debug("Existing entry for catching up %q\n", ar.peer)
+		n.debug("Existing entry for catching up %q", ar.peer)
 		n.Unlock()
 		return
 	}
@@ -1317,7 +1383,9 @@ func (n *raft) trackResponse(ar *appendEntryResponse) {
 		results[ar.peer] = struct{}{}
 		if nr := len(results); nr >= n.qn {
 			// We have a quorum.
-			n.applyCommit(ar.index)
+			for index := n.commit + 1; index <= ar.index; index++ {
+				n.applyCommit(index)
+			}
 			sendHB = len(n.propc) == 0
 		}
 	}
@@ -1448,7 +1516,7 @@ func (n *raft) createCatchup(ae *appendEntry) string {
 		pindex: n.pindex,
 	}
 	inbox := n.newInbox(n.s.ClusterName())
-	sub, _ := n.s.sysSubscribe(inbox, n.handleAppendEntry)
+	sub, _ := n.subscribe(inbox, n.handleAppendEntry)
 	n.catchup.sub = sub
 	return inbox
 }
@@ -1677,7 +1745,7 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 	// If we have entries store this in our wal.
 	if len(entries) > 0 {
 		if err := n.storeToWAL(ae); err != nil {
-			panic("Error storing!\n")
+			panic("Error storing!")
 		}
 		// We count ourselves.
 		n.acks[n.pindex] = map[string]struct{}{n.id: struct{}{}}
@@ -1973,11 +2041,11 @@ func (n *raft) requestVote() {
 }
 
 func (n *raft) sendRPC(subject, reply string, msg []byte) {
-	n.sendq <- &pubMsg{nil, subject, reply, nil, msg, false}
+	n.sendq <- &pubMsg{n.c, subject, reply, nil, msg, false}
 }
 
 func (n *raft) sendReply(subject string, msg []byte) {
-	n.sendq <- &pubMsg{nil, subject, _EMPTY_, nil, msg, false}
+	n.sendq <- &pubMsg{n.c, subject, _EMPTY_, nil, msg, false}
 }
 
 func (n *raft) wonElection(votes int) bool {
@@ -2045,7 +2113,6 @@ func (n *raft) switchToCandidate() {
 	n.term++
 	// Clear current Leader.
 	n.leader = noLeader
-	n.resetElectionTimeout()
 	n.switchState(Candidate)
 }
 
