@@ -1243,7 +1243,7 @@ func (js *jetStream) processStreamLeaderChange(mset *Stream, sa *streamAssignmen
 	if err != nil {
 		resp.Error = jsError(err)
 	} else {
-		resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config()}
+		resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config(), Cluster: s.clusterInfo(nil)}
 	}
 	s.sendAPIResponse(client, acc, _EMPTY_, reply, _EMPTY_, s.jsonResponse(&resp))
 }
