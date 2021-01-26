@@ -194,6 +194,8 @@ type Server struct {
 
 	// Trusted public operator keys.
 	trustedKeys []string
+	// map of trusted keys to operator setting StrictSigningKeyUsage
+	strictSigningKeyUsage map[string]struct{}
 
 	// We use this to minimize mem copies for requests to monitoring
 	// endpoint /varz (when it comes from http).
@@ -748,7 +750,7 @@ func (s *Server) generateRouteInfoJSON() {
 func (s *Server) globalAccountOnly() bool {
 	var hasOthers bool
 
-	if len(s.trustedKeys) > 0 {
+	if s.trustedKeys != nil {
 		return false
 	}
 
@@ -798,7 +800,7 @@ func (s *Server) isTrustedIssuer(issuer string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// If we are not running in trusted mode and there is no issuer, that is ok.
-	if len(s.trustedKeys) == 0 && issuer == "" {
+	if s.trustedKeys == nil && issuer == "" {
 		return true
 	}
 	for _, tk := range s.trustedKeys {
@@ -812,6 +814,7 @@ func (s *Server) isTrustedIssuer(issuer string) bool {
 // processTrustedKeys will process binary stamped and
 // options-based trusted nkeys. Returns success.
 func (s *Server) processTrustedKeys() bool {
+	s.strictSigningKeyUsage = map[string]struct{}{}
 	if trustedKeys != "" && !s.initStampedTrustedKeys() {
 		return false
 	} else if s.opts.TrustedKeys != nil {
@@ -821,6 +824,14 @@ func (s *Server) processTrustedKeys() bool {
 			}
 		}
 		s.trustedKeys = s.opts.TrustedKeys
+		for _, claim := range s.opts.TrustedOperators {
+			if !claim.StrictSigningKeyUsage {
+				continue
+			}
+			for _, key := range claim.SigningKeys {
+				s.strictSigningKeyUsage[key] = struct{}{}
+			}
+		}
 	}
 	return true
 }

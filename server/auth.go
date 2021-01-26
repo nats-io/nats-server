@@ -238,7 +238,7 @@ func (s *Server) configureAuthorization() {
 	// This just checks and sets up the user map if we have multiple users.
 	if opts.CustomClientAuthentication != nil {
 		s.info.AuthRequired = true
-	} else if len(s.trustedKeys) > 0 {
+	} else if s.trustedKeys != nil {
 		s.info.AuthRequired = true
 	} else if opts.Nkeys != nil || opts.Users != nil {
 		s.nkeys, s.users = s.buildNkeysAndUsersFromOptions(opts.Nkeys, opts.Users)

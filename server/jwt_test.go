@@ -5144,3 +5144,121 @@ func TestJWScopedSigningKeys(t *testing.T) {
 	})
 	require_Len(t, len(errChan), 0)
 }
+
+func TestJWTStrictSigningKeys(t *testing.T) {
+	newAccount := func(opKp nkeys.KeyPair) (nkeys.KeyPair, nkeys.KeyPair, string, *jwt.AccountClaims, string) {
+		accId, err := nkeys.CreateAccount()
+		require_NoError(t, err)
+		accIdPub, err := accId.PublicKey()
+		require_NoError(t, err)
+
+		accSig, err := nkeys.CreateAccount()
+		require_NoError(t, err)
+		accSigPub, err := accSig.PublicKey()
+		require_NoError(t, err)
+
+		aClaim := jwt.NewAccountClaims(accIdPub)
+		aClaim.SigningKeys.Add(accSigPub)
+		theJwt, err := aClaim.Encode(opKp)
+		require_NoError(t, err)
+		return accId, accSig, accIdPub, aClaim, theJwt
+	}
+
+	opId, err := nkeys.CreateOperator()
+	require_NoError(t, err)
+	opIdPub, err := opId.PublicKey()
+	require_NoError(t, err)
+
+	opSig, err := nkeys.CreateOperator()
+	require_NoError(t, err)
+	opSigPub, err := opSig.PublicKey()
+	require_NoError(t, err)
+
+	aBadBadKp, aBadGoodKp, aBadPub, _, aBadJwt := newAccount(opId)
+	aGoodBadKp, aGoodGoodKp, aGoodPub, _, aGoodJwt := newAccount(opSig)
+	_, aSysKp, aSysPub, _, aSysJwt := newAccount(opSig)
+
+	oClaim := jwt.NewOperatorClaims(opIdPub)
+	oClaim.StrictSigningKeyUsage = true
+	oClaim.SigningKeys.Add(opSigPub)
+	oClaim.SystemAccount = aSysPub
+	oJwt, err := oClaim.Encode(opId)
+	require_NoError(t, err)
+
+	uBadBadCreds := newUserEx(t, aBadBadKp, false, aBadPub)
+	defer os.Remove(uBadBadCreds)
+	uBadGoodCreds := newUserEx(t, aBadGoodKp, false, aBadPub)
+	defer os.Remove(uBadGoodCreds)
+	uGoodBadCreds := newUserEx(t, aGoodBadKp, false, aGoodPub)
+	defer os.Remove(uGoodBadCreds)
+	uGoodGoodCreds := newUserEx(t, aGoodGoodKp, false, aGoodPub)
+	defer os.Remove(uGoodGoodCreds)
+	uSysCreds := newUserEx(t, aSysKp, false, aSysPub)
+	defer os.Remove(uSysCreds)
+
+	connectTest := func(url string) {
+		for _, test := range []struct {
+			creds string
+			fail  bool
+		}{
+			{uBadBadCreds, true},
+			{uBadGoodCreds, true},
+			{uGoodBadCreds, true},
+			{uGoodGoodCreds, false},
+		} {
+			nc, err := nats.Connect(url, nats.UserCredentials(test.creds))
+			nc.Close()
+			if test.fail {
+				require_Error(t, err)
+			} else {
+				require_NoError(t, err)
+			}
+		}
+	}
+
+	t.Run("resolver", func(t *testing.T) {
+		dirSrv := createDir(t, "srv")
+		defer os.RemoveAll(dirSrv)
+		cf := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		operator = %s
+		resolver: {
+			type: full
+			dir: %s
+		}
+		resolver_preload = {
+			%s : "%s"
+		}
+		`, oJwt, dirSrv, aSysPub, aSysJwt)))
+		defer os.Remove(cf)
+		s, _ := RunServerWithConfig(cf)
+		defer s.Shutdown()
+		url := s.ClientURL()
+		if updateJwt(t, url, uSysCreds, aBadJwt, 1) != 0 {
+			t.Fatal("Expected negative response")
+		}
+		if updateJwt(t, url, uSysCreds, aGoodJwt, 1) != 1 {
+			t.Fatal("Expected positive response")
+		}
+		connectTest(url)
+	})
+
+	t.Run("mem-resolver", func(t *testing.T) {
+		dirSrv := createDir(t, "srv")
+		defer os.RemoveAll(dirSrv)
+		cf := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		operator = %s
+		resolver: MEMORY
+		resolver_preload = {
+			%s : "%s"
+			%s : "%s"
+			%s : "%s"
+		}
+		`, oJwt, aSysPub, aSysJwt, aBadPub, aBadJwt, aGoodPub, aGoodJwt)))
+		defer os.Remove(cf)
+		s, _ := RunServerWithConfig(cf)
+		defer s.Shutdown()
+		connectTest(s.ClientURL())
+	})
+}

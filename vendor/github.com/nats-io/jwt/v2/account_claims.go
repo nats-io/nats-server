@@ -148,7 +148,7 @@ func NewAccountClaims(subject string) *AccountClaims {
 	c.Limits = OperatorLimits{
 		NatsLimits{NoLimit, NoLimit, NoLimit},
 		AccountLimits{NoLimit, NoLimit, true, NoLimit, NoLimit},
-		JetStreamLimits{NoLimit, NoLimit, NoLimit, NoLimit}}
+		JetStreamLimits{0, 0, 0, 0}}
 	c.Subject = subject
 	return c
 }

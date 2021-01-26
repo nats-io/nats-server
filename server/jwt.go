@@ -132,7 +132,9 @@ func validateTrustedOperators(o *Options) error {
 		if o.TrustedKeys == nil {
 			o.TrustedKeys = make([]string, 0, 4)
 		}
-		o.TrustedKeys = append(o.TrustedKeys, opc.Issuer)
+		if !opc.StrictSigningKeyUsage {
+			o.TrustedKeys = append(o.TrustedKeys, opc.Subject)
+		}
 		o.TrustedKeys = append(o.TrustedKeys, opc.SigningKeys...)
 	}
 	for _, key := range o.TrustedKeys {
