@@ -2360,6 +2360,11 @@ func TestMQTTSubWithNATSStream(t *testing.T) {
 	testMQTTSub(t, 1, mc, r, []*mqttFilter{&mqttFilter{filter: "foo/bar", qos: 1}}, []byte{1})
 	testMQTTFlush(t, mc, nil, r)
 
+	mcp, rp := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mcp.Close()
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+	testMQTTFlush(t, mcp, nil, rp)
+
 	nc := natsConnect(t, s.ClientURL())
 	defer nc.Close()
 
@@ -2405,11 +2410,11 @@ func TestMQTTSubWithNATSStream(t *testing.T) {
 	checkRecv("nats", 0)
 
 	// Send from MQTT as a QoS0
-	testMQTTPublish(t, mc, r, 0, false, false, "foo/bar", 0, []byte("qos0"))
+	testMQTTPublish(t, mcp, rp, 0, false, false, "foo/bar", 0, []byte("qos0"))
 	checkRecv("qos0", 0)
 
 	// Send from MQTT as a QoS1
-	testMQTTPublish(t, mc, r, 1, false, false, "foo/bar", 1, []byte("qos1"))
+	testMQTTPublish(t, mcp, rp, 1, false, false, "foo/bar", 1, []byte("qos1"))
 	checkRecv("qos1", mqttPubQos1)
 }
 
@@ -3747,6 +3752,9 @@ func TestMQTTMaxAckPending(t *testing.T) {
 	// Now we should receive message 2
 	testMQTTCheckPubMsg(t, c, r, "foo", mqttPubQos1, []byte("msg2"))
 	testMQTTDisconnect(t, c, nil)
+
+	// Give a chance to the server to register that this client is gone.
+	checkClientsCount(t, s, 1)
 
 	// Send 2 messages while sub is offline
 	testMQTTPublish(t, cp, rp, 1, false, false, "foo", 1, []byte("msg3"))
