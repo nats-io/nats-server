@@ -775,7 +775,7 @@ func TestProtoSnippet(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := protoSnippet(tt.input, sample)
+		got := protoSnippet(tt.input, PROTO_SNIPPET_SIZE, sample)
 		if tt.expected != got {
 			t.Errorf("Expected protocol snippet to be %s when start=%d but got %s\n", tt.expected, tt.input, got)
 		}
@@ -811,12 +811,60 @@ func TestParseOK(t *testing.T) {
 }
 
 func TestMaxControlLine(t *testing.T) {
-	c := dummyClient()
-	c.mcl = 8
+	for _, test := range []struct {
+		name       string
+		kind       int
+		shouldFail bool
+	}{
+		{"client", CLIENT, true},
+		{"leaf", LEAF, false},
+		{"route", ROUTER, false},
+		{"gateway", GATEWAY, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pub := []byte("PUB foo.bar.baz 2\r\nok\r\n")
 
-	pub := []byte("PUB foo.bar 11\r")
-	err := c.parse(pub)
-	if !ErrorIs(err, ErrMaxControlLine) {
-		t.Fatalf("Expected an error parsing longer than expected control line")
+			setupClient := func() *client {
+				c := dummyClient()
+				c.setNoReconnect()
+				c.flags.set(connectReceived)
+				c.kind = test.kind
+				if test.kind == GATEWAY {
+					c.gw = &gateway{outbound: false, connected: true, insim: make(map[string]*insie)}
+				}
+				c.mcl = 8
+				return c
+			}
+
+			c := setupClient()
+			// First try with a partial:
+			// PUB foo.bar.baz 2\r\nok\r\n
+			// .............^
+			err := c.parse(pub[:14])
+			switch test.shouldFail {
+			case true:
+				if !ErrorIs(err, ErrMaxControlLine) {
+					t.Fatalf("Expected an error parsing longer than expected control line")
+				}
+			case false:
+				if err != nil {
+					t.Fatalf("Should not have failed, got %v", err)
+				}
+			}
+
+			// Now with full protocol (no split) and we should still enforce.
+			c = setupClient()
+			err = c.parse(pub)
+			switch test.shouldFail {
+			case true:
+				if !ErrorIs(err, ErrMaxControlLine) {
+					t.Fatalf("Expected an error parsing longer than expected control line")
+				}
+			case false:
+				if err != nil {
+					t.Fatalf("Should not have failed, got %v", err)
+				}
+			}
+		})
 	}
 }
