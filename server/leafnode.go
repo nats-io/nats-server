@@ -407,9 +407,14 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 
 // Save off the tlsName for when we use TLS and mix hostnames and IPs. IPs usually
 // come from the server we connect to.
+//
+// We used to save the name only if there was a TLSConfig or scheme equal to "tls".
+// However, this was causing failures for users that did not set the scheme (and
+// their remote connections did not have a tls{} block).
+// We now save the host name regardless in case the remote returns an INFO indicating
+// that TLS is required.
 func (cfg *leafNodeCfg) saveTLSHostname(u *url.URL) {
-	isTLS := cfg.TLSConfig != nil || u.Scheme == "tls"
-	if isTLS && cfg.tlsName == "" && net.ParseIP(u.Hostname()) == nil {
+	if cfg.tlsName == _EMPTY_ && net.ParseIP(u.Hostname()) == nil {
 		cfg.tlsName = u.Hostname()
 	}
 }
