@@ -656,7 +656,17 @@ func shutdownCluster(c *cluster) {
 }
 
 func (c *cluster) randomServer() *server.Server {
-	return c.servers[rand.Intn(len(c.servers))]
+	// Since these can be randomly shutdown in certain tests make sure they are running first.
+	// Copy our servers list and shuffle then walk looking for first running server.
+	cs := append(c.servers[:0:0], c.servers...)
+	rand.Shuffle(len(cs), func(i, j int) { cs[i], cs[j] = cs[j], cs[i] })
+
+	for _, s := range cs {
+		if s.Running() {
+			return s
+		}
+	}
+	return nil
 }
 
 func (c *cluster) totalSubs() int {

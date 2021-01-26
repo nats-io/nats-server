@@ -4365,6 +4365,8 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	// Now connect through a cluster server and make sure we can get things to work this way as well.
 	nc2 := clientConnectToServer(t, ls)
 	defer nc2.Close()
+	// Wait a bit for interest to propagate.
+	time.Sleep(100 * time.Millisecond)
 
 	snapshot = snapshot[:0]
 

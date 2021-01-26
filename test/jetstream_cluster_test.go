@@ -687,9 +687,8 @@ func TestJetStreamClusterStreamSynchedTimeStamps(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 5)
 	defer c.shutdown()
 
-	s := c.randomServer()
-
 	// Client based API
+	s := c.randomServer()
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
@@ -719,6 +718,10 @@ func TestJetStreamClusterStreamSynchedTimeStamps(t *testing.T) {
 
 	sl.Shutdown()
 	c.waitOnNewStreamLeader("$G", "foo")
+
+	s = c.randomServer()
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
 
 	sub, err = js.SubscribeSync("foo")
 	if err != nil {
@@ -888,6 +891,9 @@ func TestJetStreamClusterStreamPublishWithActiveConsumers(t *testing.T) {
 	if !reflect.DeepEqual(ci, ci2) {
 		t.Fatalf("Consumer info did not match: %+v vs %+v", ci, ci2)
 	}
+
+	// In case the server above was also stream leader.
+	c.waitOnNewStreamLeader("$G", "foo")
 
 	// Now send more..
 	// Send 10 more messages.
@@ -1446,11 +1452,19 @@ func TestJetStreamClusterExtendedStreamInfo(t *testing.T) {
 	if len(si.Cluster.Replicas) != 2 {
 		t.Fatalf("Expected %d replicas, got %d", 2, len(si.Cluster.Replicas))
 	}
-	for _, peer := range si.Cluster.Replicas {
-		if !peer.Current {
-			t.Fatalf("Expected replica to be current: %+v", peer)
+
+	// We may need to wait a bit for peers to catch up.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		for _, peer := range si.Cluster.Replicas {
+			if !peer.Current {
+				if si, err = js.StreamInfo("TEST"); err != nil {
+					t.Fatalf("Could not retrieve stream info")
+				}
+				return fmt.Errorf("Expected replica to be current: %+v", peer)
+			}
 		}
-	}
+		return nil
+	})
 
 	// Shutdown the leader.
 	oldLeader := c.streamLeader("$G", "TEST")
