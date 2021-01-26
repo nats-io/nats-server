@@ -369,6 +369,31 @@ func (s *Server) lookupRaftNode(group string) RaftNode {
 	return n
 }
 
+func (s *Server) transferRaftLeaders() bool {
+	if s == nil {
+		return false
+	}
+
+	var nodes []RaftNode
+	s.rnMu.RLock()
+	if len(s.raftNodes) > 0 {
+		s.Noticef("Transferring any raft leaders")
+	}
+	for _, n := range s.raftNodes {
+		nodes = append(nodes, n)
+	}
+	s.rnMu.RUnlock()
+
+	var didTransfer bool
+	for _, node := range nodes {
+		if node.Leader() {
+			node.StepDown()
+			didTransfer = true
+		}
+	}
+	return didTransfer
+}
+
 func (s *Server) shutdownRaftNodes() {
 	if s == nil {
 		return
@@ -380,6 +405,7 @@ func (s *Server) shutdownRaftNodes() {
 		nodes = append(nodes, n)
 	}
 	s.rnMu.RUnlock()
+
 	for _, node := range nodes {
 		if node.Leader() {
 			node.StepDown()
