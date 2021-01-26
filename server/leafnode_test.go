@@ -1880,6 +1880,7 @@ func TestLeafNodeTwoRemotesBindToSameAccount(t *testing.T) {
 func TestLeafNodeNoDuplicateWithinCluster(t *testing.T) {
 	// This set the cluster name to "abc"
 	oSrv1 := DefaultOptions()
+	oSrv1.ServerName = "srv1"
 	oSrv1.LeafNode.Host = "127.0.0.1"
 	oSrv1.LeafNode.Port = -1
 	srv1 := RunServer(oSrv1)
@@ -1891,6 +1892,7 @@ func TestLeafNodeNoDuplicateWithinCluster(t *testing.T) {
 	}
 
 	oLeaf1 := DefaultOptions()
+	oLeaf1.ServerName = "leaf1"
 	oLeaf1.LeafNode.Remotes = []*RemoteLeafOpts{&RemoteLeafOpts{URLs: []*url.URL{u}}}
 	leaf1 := RunServer(oLeaf1)
 	defer leaf1.Shutdown()
@@ -1898,6 +1900,7 @@ func TestLeafNodeNoDuplicateWithinCluster(t *testing.T) {
 	leaf1ClusterURL := fmt.Sprintf("nats://127.0.0.1:%d", oLeaf1.Cluster.Port)
 
 	oLeaf2 := DefaultOptions()
+	oLeaf2.ServerName = "leaf2"
 	oLeaf2.LeafNode.Remotes = []*RemoteLeafOpts{&RemoteLeafOpts{URLs: []*url.URL{u}}}
 	oLeaf2.Routes = RoutesFromStr(leaf1ClusterURL)
 	leaf2 := RunServer(oLeaf2)
@@ -1925,9 +1928,26 @@ func TestLeafNodeNoDuplicateWithinCluster(t *testing.T) {
 	defer ncLeaf2.Close()
 
 	// Check that "foo" interest is available everywhere.
-	checkSubInterest(t, srv1, globalAccountName, "foo", time.Second)
-	checkSubInterest(t, leaf1, globalAccountName, "foo", time.Second)
-	checkSubInterest(t, leaf2, globalAccountName, "foo", time.Second)
+	// For this test, we want to make sure that the 2 queue subs are
+	// registered on all servers, so we don't use checkSubInterest
+	// which would simply return "true" if there is any interest on "foo".
+	servers := []*Server{srv1, leaf1, leaf2}
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		for _, s := range servers {
+			acc, err := s.LookupAccount(globalAccountName)
+			if err != nil {
+				return err
+			}
+			acc.mu.RLock()
+			r := acc.sl.Match("foo")
+			ok := len(r.qsubs) == 1 && len(r.qsubs[0]) == 2
+			acc.mu.RUnlock()
+			if !ok {
+				return fmt.Errorf("interest not propagated on %q", s.Name())
+			}
+		}
+		return nil
+	})
 
 	// Send requests (from leaf2). For this test to make sure that
 	// there is no duplicate, we want to make sure that we check for
@@ -1936,6 +1956,7 @@ func TestLeafNodeNoDuplicateWithinCluster(t *testing.T) {
 	sub := natsSubSync(t, ncLeaf2, "reply_subj")
 	natsFlush(t, ncLeaf2)
 
+	// Here we have a single sub on "reply_subj" so using checkSubInterest is ok.
 	checkSubInterest(t, srv1, globalAccountName, "reply_subj", time.Second)
 	checkSubInterest(t, leaf1, globalAccountName, "reply_subj", time.Second)
 	checkSubInterest(t, leaf2, globalAccountName, "reply_subj", time.Second)
