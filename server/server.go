@@ -1378,13 +1378,23 @@ func (s *Server) fetchAccount(name string) (*Account, error) {
 // Start up the server, this will block.
 // Start via a Go routine if needed.
 func (s *Server) Start() {
-	s.Noticef("Starting nats-server version %s", VERSION)
-	s.Debugf("Go build version %s", s.info.GoVersion)
+	s.Noticef("Starting nats-server")
+
 	gc := gitCommit
 	if gc == "" {
 		gc = "not set"
 	}
-	s.Noticef("Git commit [%s]", gc)
+
+	s.Noticef("  Version:  %s", VERSION)
+	s.Noticef("  Git:      [%s]", gc)
+	s.Debugf("  Go build: %s", s.info.GoVersion)
+	s.Noticef("  Name:     %s", s.info.Name)
+	if s.sys != nil {
+		s.Noticef("  Node:     %s", s.sys.shash)
+	}
+	s.Noticef("  ID:       %s", s.info.ID)
+
+	defer s.Noticef("Server is ready")
 
 	// Check for insecure configurations.
 	s.checkAuthforWarnings()
@@ -1768,13 +1778,6 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 		s.mu.Unlock()
 		return
 	}
-
-	s.Noticef("Server name: %s", s.info.Name)
-	if s.sys != nil {
-		s.Noticef("Server node: %s", s.sys.shash)
-	}
-	s.Noticef("Server ID:   %s", s.info.ID)
-	s.Noticef("Server is ready")
 
 	hp := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
 	l, e := natsListen("tcp", hp)
