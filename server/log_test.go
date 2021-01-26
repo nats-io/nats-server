@@ -251,6 +251,7 @@ func TestNoPasswordsFromConnectTrace(t *testing.T) {
 	opts.Username = "derek"
 	opts.Password = "s3cr3t"
 	opts.PingInterval = 2 * time.Minute
+	setBaselineOptions(opts)
 	s := &Server{opts: opts}
 	dl := &DummyLogger{}
 	s.SetLogger(dl, false, true)

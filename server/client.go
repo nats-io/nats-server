@@ -544,6 +544,13 @@ func (c *client) initClient() {
 	// Snapshots to avoid mutex access in fast paths.
 	c.out.wdl = opts.WriteDeadline
 	c.out.mp = opts.MaxPending
+	// Snapshot max control line since currently can not be changed on reload and we
+	// were checking it on each call to parse. If this changes and we allow MaxControlLine
+	// to be reloaded without restart, this code will need to change.
+	c.mcl = int32(opts.MaxControlLine)
+	if c.mcl == 0 {
+		c.mcl = MAX_CONTROL_LINE_SIZE
+	}
 
 	c.subs = make(map[string]*subscription)
 	c.echo = true
@@ -1005,15 +1012,6 @@ func (c *client) readLoop(pre []byte) {
 		c.mqtt.r = &mqttReader{reader: nc}
 	}
 	c.in.rsz = startBufSize
-	// Snapshot max control line since currently can not be changed on reload and we
-	// were checking it on each call to parse. If this changes and we allow MaxControlLine
-	// to be reloaded without restart, this code will need to change.
-	c.mcl = MAX_CONTROL_LINE_SIZE
-	if s != nil {
-		if opts := s.getOpts(); opts != nil {
-			c.mcl = int32(opts.MaxControlLine)
-		}
-	}
 
 	// Check the per-account-cache for closed subscriptions
 	cpacc := c.kind == ROUTER || c.kind == GATEWAY

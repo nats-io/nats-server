@@ -124,6 +124,9 @@ const (
 	// PROTO_SNIPPET_SIZE is the default size of proto to print on parse errors.
 	PROTO_SNIPPET_SIZE = 32
 
+	// MAX_CONTROL_LINE_SNIPPET_SIZE is the default size of proto to print on max control line errors.
+	MAX_CONTROL_LINE_SNIPPET_SIZE = 128
+
 	// MAX_MSG_ARGS Maximum possible number of arguments from MSG proto.
 	MAX_MSG_ARGS = 4
 
