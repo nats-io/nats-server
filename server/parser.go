@@ -1215,7 +1215,7 @@ func (c *client) overMaxControlLineLimit(arg []byte, mcl int32) error {
 	}
 	if len(arg) > int(mcl) {
 		err := NewErrorCtx(ErrMaxControlLine, "State %d, max_control_line %d, Buffer len %d (snip: %s...)",
-			c.state, int(mcl), len(c.argBuf), protoSnippet(0, MAX_CONTOL_LINE_SNIPPET_SIZE, arg))
+			c.state, int(mcl), len(c.argBuf), protoSnippet(0, MAX_CONTROL_LINE_SNIPPET_SIZE, arg))
 		c.sendErr(err.Error())
 		c.closeConnection(MaxControlLineExceeded)
 		return err
