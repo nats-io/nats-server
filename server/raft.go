@@ -265,7 +265,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		propc:    make(chan *Entry, 256),
 		applyc:   make(chan *CommittedEntry, 256),
 		leadc:    make(chan bool, 4),
-		stepdown: make(chan string, 4),
+		stepdown: make(chan string),
 	}
 	n.c.registerWithAccount(sacc)
 
@@ -1545,6 +1545,15 @@ func (n *raft) createCatchup(ae *appendEntry) string {
 	return inbox
 }
 
+// Attempt to stepdown, lock should be held.
+func (n *raft) attemptStepDown(newLeader string) {
+	select {
+	case n.stepdown <- newLeader:
+	default:
+		n.debug("Failed to place stepdown for new leader %q for %q", newLeader, n.group)
+	}
+}
+
 // processAppendEntry will process an appendEntry.
 func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	n.Lock()
@@ -1560,7 +1569,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		n.term = ae.term
 		n.vote = noVote
 		n.writeTermVote()
-		n.stepdown <- ae.leader
+		n.attemptStepDown(ae.leader)
 	}
 
 	// Catching up state.
@@ -1618,7 +1627,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		n.writeTermVote()
 		if n.state != Follower {
 			n.debug("Term higher than ours and we are not a follower: %v, stepping down to %q", n.state, ae.leader)
-			n.stepdown <- ae.leader
+			n.attemptStepDown(ae.leader)
 		}
 	}
 
@@ -2006,13 +2015,11 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 	// If this is a higher term go ahead and stepdown.
 	if vresp.term > n.term {
 		n.debug("Stepping down from candidate, detected higher term: %d vs %d", vresp.term, n.term)
-		stepdown := n.stepdown
 		n.term = vresp.term
 		n.vote = noVote
 		n.writeTermVote()
+		n.attemptStepDown(noLeader)
 		n.Unlock()
-
-		stepdown <- noLeader
 		n.sendReply(vr.reply, vresp.encode())
 		return nil
 	}
