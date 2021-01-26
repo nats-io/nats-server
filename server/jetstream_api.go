@@ -468,13 +468,14 @@ type JSApiStreamTemplateNamesResponse struct {
 const JSApiStreamTemplateNamesResponseType = "io.nats.jetstream.api.v1.stream_template_names_response"
 
 var (
-	jsNotEnabledErr      = &ApiError{Code: 503, Description: "JetStream not enabled for account"}
-	jsBadRequestErr      = &ApiError{Code: 400, Description: "bad request"}
-	jsNotEmptyRequestErr = &ApiError{Code: 400, Description: "expected an empty request payload"}
-	jsInvalidJSONErr     = &ApiError{Code: 400, Description: "invalid JSON request"}
-	jsInsufficientErr    = &ApiError{Code: 503, Description: "insufficient Resources"}
-	jsNoConsumerErr      = &ApiError{Code: 404, Description: "consumer not found"}
-	jsStreamMismatchErr  = &ApiError{Code: 400, Description: "stream name in subject does not match request"}
+	jsNotEnabledErr       = &ApiError{Code: 503, Description: "JetStream not enabled for account"}
+	jsBadRequestErr       = &ApiError{Code: 400, Description: "bad request"}
+	jsNotEmptyRequestErr  = &ApiError{Code: 400, Description: "expected an empty request payload"}
+	jsInvalidJSONErr      = &ApiError{Code: 400, Description: "invalid JSON request"}
+	jsInsufficientErr     = &ApiError{Code: 503, Description: "insufficient Resources"}
+	jsNoConsumerErr       = &ApiError{Code: 404, Description: "consumer not found"}
+	jsStreamMismatchErr   = &ApiError{Code: 400, Description: "stream name in subject does not match request"}
+	jsNoClusterSupportErr = &ApiError{Code: 503, Description: "not currently supported in clustered mode"}
 )
 
 // For easier handling of exports and imports.
@@ -624,6 +625,14 @@ func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, subject, 
 		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+
+	// Not supported for now.
+	if s.JetStreamIsClustered() {
+		resp.Error = jsNoClusterSupportErr
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
 	var cfg StreamTemplateConfig
 	if err := json.Unmarshal(msg, &cfg); err != nil {
 		resp.Error = jsInvalidJSONErr
@@ -671,6 +680,14 @@ func (s *Server) jsTemplateNamesRequest(sub *subscription, c *client, subject, r
 		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+
+	// Not supported for now.
+	if s.JetStreamIsClustered() {
+		resp.Error = jsNoClusterSupportErr
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
 	var offset int
 	if !isEmptyRequest(msg) {
 		var req JSApiStreamTemplatesRequest
