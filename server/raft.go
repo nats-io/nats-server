@@ -559,6 +559,11 @@ func (n *raft) Applied(index uint64) {
 	n.Lock()
 	defer n.Unlock()
 
+	// Ignore if already applied.
+	if index <= n.applied {
+		return
+	}
+
 	// FIXME(dlc) - Check spec on error conditions, storage
 	n.applied = index
 	// FIXME(dlc) - Can be more efficient here.
@@ -1319,6 +1324,10 @@ func (n *raft) loadEntry(index uint64) (*appendEntry, error) {
 // applyCommit will update our commit index and apply the entry to the apply chan.
 // lock should be held.
 func (n *raft) applyCommit(index uint64) {
+	if index <= n.commit {
+		n.debug("Ignoring apply commit for %d, already processed", index)
+		return
+	}
 	original := n.commit
 	n.commit = index
 
