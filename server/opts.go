@@ -4036,6 +4036,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.IntVar(&opts.Port, "p", 0, "Port to listen on.")
 	fs.StringVar(&opts.ServerName, "n", "", "Server name.")
 	fs.StringVar(&opts.ServerName, "name", "", "Server name.")
+	fs.StringVar(&opts.ServerName, "server_name", "", "Server name.")
 	fs.StringVar(&opts.Host, "addr", "", "Network host to listen on.")
 	fs.StringVar(&opts.Host, "a", "", "Network host to listen on.")
 	fs.StringVar(&opts.Host, "net", "", "Network host to listen on.")
