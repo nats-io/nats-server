@@ -825,11 +825,7 @@ func (s *Server) processTrustedKeys() bool {
 				return false
 			}
 		}
-		tk := make([]string, len(s.opts.TrustedKeys))
-		for i, k := range s.opts.TrustedKeys {
-			tk[i] = k
-		}
-		s.trustedKeys = tk
+		s.trustedKeys = append([]string(nil), s.opts.TrustedKeys...)
 		for _, claim := range s.opts.TrustedOperators {
 			if !claim.StrictSigningKeyUsage {
 				continue

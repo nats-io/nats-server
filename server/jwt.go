@@ -127,7 +127,7 @@ func validateTrustedOperators(o *Options) error {
 	}
 	// If we have operators, fill in the trusted keys.
 	// FIXME(dlc) - We had TrustedKeys before TrustedOperators. The jwt.OperatorClaims
-	// has a DidSign(). Use that longesr term. For now we can expand in place.
+	// has a DidSign(). Use that longer term. For now we can expand in place.
 	for _, opc := range o.TrustedOperators {
 		if o.TrustedKeys == nil {
 			o.TrustedKeys = make([]string, 0, 4)
