@@ -369,6 +369,31 @@ func (s *Server) lookupRaftNode(group string) RaftNode {
 	return n
 }
 
+func (s *Server) transferRaftLeaders() bool {
+	if s == nil {
+		return false
+	}
+
+	var nodes []RaftNode
+	s.rnMu.RLock()
+	if len(s.raftNodes) > 0 {
+		s.Noticef("Transferring any raft leaders")
+	}
+	for _, n := range s.raftNodes {
+		nodes = append(nodes, n)
+	}
+	s.rnMu.RUnlock()
+
+	var didTransfer bool
+	for _, node := range nodes {
+		if node.Leader() {
+			node.StepDown()
+			didTransfer = true
+		}
+	}
+	return didTransfer
+}
+
 func (s *Server) shutdownRaftNodes() {
 	if s == nil {
 		return
@@ -380,6 +405,7 @@ func (s *Server) shutdownRaftNodes() {
 		nodes = append(nodes, n)
 	}
 	s.rnMu.RUnlock()
+
 	for _, node := range nodes {
 		if node.Leader() {
 			node.StepDown()
@@ -692,8 +718,6 @@ func (n *raft) campaign() error {
 	if n.state == Leader {
 		return errAlreadyLeader
 	}
-	// Pre-place our vote for ourselves.
-	n.vote = n.id
 	n.resetElect(randCampaignTimeout())
 	return nil
 }
@@ -1534,9 +1558,9 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	if n.state == Candidate {
 		n.debug("Received append entry in candidate state from %q, converting to follower", ae.leader)
 		n.term = ae.term
-		n.Unlock()
+		n.vote = noVote
+		n.writeTermVote()
 		n.stepdown <- ae.leader
-		return
 	}
 
 	// Catching up state.
@@ -1594,9 +1618,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		n.writeTermVote()
 		if n.state != Follower {
 			n.debug("Term higher than ours and we are not a follower: %v, stepping down to %q", n.state, ae.leader)
-			n.Unlock()
 			n.stepdown <- ae.leader
-			return
 		}
 	}
 

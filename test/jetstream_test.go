@@ -6244,7 +6244,7 @@ func TestJetStreamConsumerReplayRate(t *testing.T) {
 				gap := time.Since(start)
 				// 15ms is high but on macs time.Sleep(delay) does not sleep only delay.
 				// Also on travis if things get bogged down this could be delayed.
-				gl, gh := gaps[i]-5*time.Millisecond, gaps[i]+15*time.Millisecond
+				gl, gh := gaps[i]-10*time.Millisecond, gaps[i]+15*time.Millisecond
 				if gap < gl || gap > gh {
 					t.Fatalf("Gap is off for %d, expected %v got %v", i, gaps[i], gap)
 				}
@@ -6869,7 +6869,7 @@ func TestJetStreamSimpleFileRecovery(t *testing.T) {
 		}
 		mset, err := acc.AddStream(&msetConfig)
 		if err != nil {
-			t.Fatalf("Unexpected error adding stream: %v", err)
+			t.Fatalf("Unexpected error adding stream %q: %v", msetName, err)
 		}
 		defer mset.Delete()
 

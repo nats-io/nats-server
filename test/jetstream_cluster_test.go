@@ -184,7 +184,7 @@ func TestJetStreamClusterSingleReplicaStreams(t *testing.T) {
 	}
 	// Now durable consumer.
 	c.waitOnNewConsumerLeader("$G", "TEST", "dlc")
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 	if _, err = js.ConsumerInfo("TEST", "dlc"); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -468,6 +468,9 @@ func TestJetStreamClusterConsumerState(t *testing.T) {
 		}
 		m.Ack()
 	}
+
+	// Let state propagate for exact comparison below.
+	time.Sleep(200 * time.Millisecond)
 
 	ci, err := sub.ConsumerInfo()
 	if err != nil {
@@ -1378,8 +1381,7 @@ func TestJetStreamClusterStreamSnapshotCatchupWithPurge(t *testing.T) {
 	if err := nsl.JetStreamSnapshotStream("$G", "TEST"); err != nil {
 		t.Fatalf("Error snapshotting stream: %v", err)
 	}
-
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(250 * time.Millisecond)
 
 	sl = c.restartServer(sl)
 	c.checkClusterFormed()
@@ -2151,6 +2153,63 @@ func TestJetStreamClusterStreamInterestOnlyPolicy(t *testing.T) {
 	})
 }
 
+// These are disabled for now.
+func TestJetStreamClusterStreamTemplates(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// List API
+	var tListResp server.JSApiStreamTemplateNamesResponse
+	resp, err := nc.Request(server.JSApiTemplates, nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if err := json.Unmarshal(resp.Data, &tListResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if tListResp.Error == nil {
+		t.Fatalf("Expected an unsupported error, got none")
+	}
+	if !strings.Contains(tListResp.Error.Description, "not currently supported in clustered mode") {
+		t.Fatalf("Did not get correct error response: %+v", tListResp.Error)
+	}
+
+	// Create
+	// Now do templates.
+	mcfg := &server.StreamConfig{
+		Subjects: []string{"kv.*"},
+		Storage:  server.MemoryStorage,
+	}
+	template := &server.StreamTemplateConfig{
+		Name:       "kv",
+		Config:     mcfg,
+		MaxStreams: 4,
+	}
+	req, err := json.Marshal(template)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var stResp server.JSApiStreamTemplateCreateResponse
+	resp, err = nc.Request(fmt.Sprintf(server.JSApiTemplateCreateT, template.Name), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if err = json.Unmarshal(resp.Data, &stResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if stResp.Error == nil {
+		t.Fatalf("Expected an unsupported error, got none")
+	}
+	if !strings.Contains(stResp.Error.Description, "not currently supported in clustered mode") {
+		t.Fatalf("Did not get correct error response: %+v", stResp.Error)
+	}
+}
+
 func TestJetStreamClusterStreamPerf(t *testing.T) {
 	// Comment out to run, holding place for now.
 	skip(t)
@@ -2203,7 +2262,7 @@ func TestJetStreamClusterStreamPerf(t *testing.T) {
 	}
 
 	// Wait for Go routines.
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(250 * time.Millisecond)
 
 	start := time.Now()
 	close(startCh)

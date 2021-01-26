@@ -5,7 +5,7 @@ jobs:
   test:
     strategy:
       matrix:
-        go: [1.14, 1.15]
+        go: [1.15]
 
     env:
       GOPATH: /home/runner/work/nats-server
@@ -26,9 +26,6 @@ jobs:
       - name: Install deps
         shell: bash --noprofile --norc -x -eo pipefail {0}
         run: |
-          go get github.com/nats-io/nats.go/
-          go get github.com/nats-io/nkeys
-          go get github.com/nats-io/jwt
           go get -u honnef.co/go/tools/cmd/staticcheck
           go get -u github.com/client9/misspell/cmd/misspell
 
