@@ -687,9 +687,8 @@ func TestJetStreamClusterStreamSynchedTimeStamps(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 5)
 	defer c.shutdown()
 
-	s := c.randomServer()
-
 	// Client based API
+	s := c.randomServer()
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
@@ -719,6 +718,10 @@ func TestJetStreamClusterStreamSynchedTimeStamps(t *testing.T) {
 
 	sl.Shutdown()
 	c.waitOnNewStreamLeader("$G", "foo")
+
+	s = c.randomServer()
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
 
 	sub, err = js.SubscribeSync("foo")
 	if err != nil {
