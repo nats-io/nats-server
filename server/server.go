@@ -421,6 +421,8 @@ func NewServer(opts *Options) (*Server, error) {
 			if a == nil {
 				sac := NewAccount(s.opts.SystemAccount)
 				sac.Issuer = opts.TrustedOperators[0].Issuer
+				sac.signingKeys = map[string]jwt.Scope{}
+				sac.signingKeys[s.opts.SystemAccount] = nil
 				s.registerAccountNoLock(sac)
 			}
 		}
@@ -823,7 +825,11 @@ func (s *Server) processTrustedKeys() bool {
 				return false
 			}
 		}
-		s.trustedKeys = s.opts.TrustedKeys
+		tk := make([]string, len(s.opts.TrustedKeys))
+		for i, k := range s.opts.TrustedKeys {
+			tk[i] = k
+		}
+		s.trustedKeys = tk
 		for _, claim := range s.opts.TrustedOperators {
 			if !claim.StrictSigningKeyUsage {
 				continue
