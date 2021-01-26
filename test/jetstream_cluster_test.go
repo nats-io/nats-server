@@ -889,6 +889,9 @@ func TestJetStreamClusterStreamPublishWithActiveConsumers(t *testing.T) {
 		t.Fatalf("Consumer info did not match: %+v vs %+v", ci, ci2)
 	}
 
+	// In case the server above was also stream leader.
+	c.waitOnNewStreamLeader("$G", "foo")
+
 	// Now send more..
 	// Send 10 more messages.
 	for i := 11; i <= 20; i++ {
