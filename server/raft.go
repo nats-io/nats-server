@@ -265,7 +265,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		propc:    make(chan *Entry, 256),
 		applyc:   make(chan *CommittedEntry, 256),
 		leadc:    make(chan bool, 4),
-		stepdown: make(chan string),
+		stepdown: make(chan string, 4),
 	}
 	n.c.registerWithAccount(sacc)
 
@@ -2022,15 +2022,12 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 	}
 
 	// If this is a higher term go ahead and stepdown.
-	if vresp.term > n.term {
-		n.debug("Stepping down from candidate, detected higher term: %d vs %d", vresp.term, n.term)
-		n.term = vresp.term
+	if vr.term > n.term {
+		n.debug("Stepping down from candidate, detected higher term: %d vs %d", vr.term, n.term)
+		n.term = vr.term
 		n.vote = noVote
 		n.writeTermVote()
 		n.attemptStepDown(noLeader)
-		n.Unlock()
-		n.sendReply(vr.reply, vresp.encode())
-		return nil
 	}
 
 	// Only way we get to yes is through here.
