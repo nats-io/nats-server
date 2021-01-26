@@ -1436,6 +1436,7 @@ func (c *client) mqttParseConnect(r *mqttReader, pl int) (byte, *mqttConnectProt
 			return 0, nil, err
 		}
 		c.opts.Token = c.opts.Password
+		c.opts.JWT = c.opts.Password
 	}
 	return 0, cp, nil
 }
