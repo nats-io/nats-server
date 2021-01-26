@@ -238,7 +238,7 @@ func (s *Server) configureAuthorization() {
 	// This just checks and sets up the user map if we have multiple users.
 	if opts.CustomClientAuthentication != nil {
 		s.info.AuthRequired = true
-	} else if len(s.trustedKeys) > 0 {
+	} else if s.trustedKeys != nil {
 		s.info.AuthRequired = true
 	} else if opts.Nkeys != nil || opts.Users != nil {
 		s.nkeys, s.users = s.buildNkeysAndUsersFromOptions(opts.Nkeys, opts.Users)
@@ -560,21 +560,18 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			c.Debugf("Account JWT not signed by trusted operator")
 			return false
 		}
-		// this only executes IF there's an issuer on the Juc - otherwise the account is already vetted
-		if juc.IssuerAccount != _EMPTY_ {
-			if scope, ok := acc.hasIssuer(juc.Issuer); !ok {
-				c.Debugf("User JWT issuer is not known")
+		if scope, ok := acc.hasIssuer(juc.Issuer); !ok {
+			c.Debugf("User JWT issuer is not known")
+			return false
+		} else if scope != nil {
+			if err := scope.ValidateScopedSigner(juc); err != nil {
+				c.Debugf("User JWT is not valid: %v", err)
 				return false
-			} else if scope != nil {
-				if err := scope.ValidateScopedSigner(juc); err != nil {
-					c.Debugf("User JWT is not valid: %v", err)
-					return false
-				} else if uSc, ok := scope.(*jwt.UserScope); !ok {
-					c.Debugf("User JWT is not valid")
-					return false
-				} else {
-					juc.UserPermissionLimits = uSc.Template
-				}
+			} else if uSc, ok := scope.(*jwt.UserScope); !ok {
+				c.Debugf("User JWT is not valid")
+				return false
+			} else {
+				juc.UserPermissionLimits = uSc.Template
 			}
 		}
 		if acc.IsExpired() {

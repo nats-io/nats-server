@@ -2746,10 +2746,6 @@ func (a *Account) hasIssuer(issuer string) (jwt.Scope, bool) {
 
 // hasIssuerNoLock is the unlocked version of hasIssuer
 func (a *Account) hasIssuerNoLock(issuer string) (jwt.Scope, bool) {
-	// same issuer -- keep this for safety on the calling code
-	if a.Name == issuer {
-		return nil, true
-	}
 	scope, ok := a.signingKeys[issuer]
 	return scope, ok
 }
@@ -2844,12 +2840,16 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 
 	// update account signing keys
 	a.signingKeys = nil
-	if len(ac.SigningKeys) > 0 {
-		a.signingKeys = make(map[string]jwt.Scope, len(ac.SigningKeys))
+	_, strict := s.strictSigningKeyUsage[a.Issuer]
+	if len(ac.SigningKeys) > 0 || !strict {
+		a.signingKeys = make(map[string]jwt.Scope)
 	}
 	signersChanged := false
 	for k, scope := range ac.SigningKeys {
 		a.signingKeys[k] = scope
+	}
+	if !strict {
+		a.signingKeys[a.Name] = nil
 	}
 	if len(a.signingKeys) != len(old.signingKeys) {
 		signersChanged = true
@@ -3150,6 +3150,10 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	if signersChanged {
 		for _, c := range clients {
 			c.mu.Lock()
+			if c.user == nil {
+				c.mu.Unlock()
+				continue
+			}
 			sk := c.user.SigningKey
 			c.mu.Unlock()
 			if sk == _EMPTY_ {
@@ -3506,19 +3510,21 @@ func handleDeleteRequest(store *DirJWTStore, s *Server, msg []byte, reply string
 	}
 }
 
-func getOperator(s *Server) (string, error) {
+func getOperator(s *Server) (string, bool, error) {
 	var op string
+	var strict bool
 	if opts := s.getOpts(); opts != nil && len(opts.TrustedOperators) > 0 {
 		op = opts.TrustedOperators[0].Subject
+		strict = opts.TrustedOperators[0].StrictSigningKeyUsage
 	}
 	if op == "" {
-		return "", fmt.Errorf("no operator found")
+		return "", false, fmt.Errorf("no operator found")
 	}
-	return op, nil
+	return op, strict, nil
 }
 
 func (dr *DirAccResolver) Start(s *Server) error {
-	op, err := getOperator(s)
+	op, strict, err := getOperator(s)
 	if err != nil {
 		return err
 	}
@@ -3553,6 +3559,9 @@ func (dr *DirAccResolver) Start(s *Server) error {
 			} else if claim.Subject != pubKey {
 				err := errors.New("subject does not match jwt content")
 				respondToUpdate(s, resp, pubKey, "jwt update resulted in error", err)
+			} else if claim.Issuer == op && strict {
+				err := errors.New("operator requires issuer to be a signing key")
+				respondToUpdate(s, resp, pubKey, "jwt update resulted in error", err)
 			} else if err := dr.save(pubKey, string(msg)); err != nil {
 				respondToUpdate(s, resp, pubKey, "jwt update resulted in error", err)
 			} else {
@@ -3565,6 +3574,9 @@ func (dr *DirAccResolver) Start(s *Server) error {
 	if _, err := s.sysSubscribe(accClaimsReqSubj, func(_ *subscription, _ *client, subj, resp string, msg []byte) {
 		if claim, err := jwt.DecodeAccountClaims(string(msg)); err != nil {
 			respondToUpdate(s, resp, "n/a", "jwt update resulted in error", err)
+		} else if claim.Issuer == op && strict {
+			err := errors.New("operator requires issuer to be a signing key")
+			respondToUpdate(s, resp, claim.Subject, "jwt update resulted in error", err)
 		} else if err := dr.save(claim.Subject, string(msg)); err != nil {
 			respondToUpdate(s, resp, claim.Subject, "jwt update resulted in error", err)
 		} else {
@@ -3760,7 +3772,7 @@ func NewCacheDirAccResolver(path string, limit int64, ttl time.Duration, _ ...di
 }
 
 func (dr *CacheDirAccResolver) Start(s *Server) error {
-	op, err := getOperator(s)
+	op, strict, err := getOperator(s)
 	if err != nil {
 		return err
 	}
@@ -3794,6 +3806,9 @@ func (dr *CacheDirAccResolver) Start(s *Server) error {
 			} else if claim.Subject != pubKey {
 				err := errors.New("subject does not match jwt content")
 				respondToUpdate(s, resp, pubKey, "jwt update cache resulted in error", err)
+			} else if claim.Issuer == op && strict {
+				err := errors.New("operator requires issuer to be a signing key")
+				respondToUpdate(s, resp, pubKey, "jwt update cache resulted in error", err)
 			} else if _, ok := s.accounts.Load(pubKey); !ok {
 				respondToUpdate(s, resp, pubKey, "jwt update cache skipped", nil)
 			} else if err := dr.save(pubKey, string(msg)); err != nil {
@@ -3808,6 +3823,9 @@ func (dr *CacheDirAccResolver) Start(s *Server) error {
 	if _, err := s.sysSubscribe(accClaimsReqSubj, func(_ *subscription, _ *client, subj, resp string, msg []byte) {
 		if claim, err := jwt.DecodeAccountClaims(string(msg)); err != nil {
 			respondToUpdate(s, resp, "n/a", "jwt update cache resulted in error", err)
+		} else if claim.Issuer == op && strict {
+			err := errors.New("operator requires issuer to be a signing key")
+			respondToUpdate(s, resp, claim.Subject, "jwt update cache resulted in error", err)
 		} else if _, ok := s.accounts.Load(claim.Subject); !ok {
 			respondToUpdate(s, resp, claim.Subject, "jwt update cache skipped", nil)
 		} else if err := dr.save(claim.Subject, string(msg)); err != nil {
