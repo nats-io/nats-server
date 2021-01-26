@@ -953,6 +953,51 @@ func TestLeafCloseTLSConnection(t *testing.T) {
 	ch <- true
 }
 
+func TestLeafCloseTLSSaveName(t *testing.T) {
+	opts := DefaultOptions()
+	opts.LeafNode.Host = "127.0.0.1"
+	opts.LeafNode.Port = -1
+	tc := &TLSConfigOpts{
+		CertFile: "../test/configs/certs/server-noip.pem",
+		KeyFile:  "../test/configs/certs/server-key-noip.pem",
+		Insecure: true,
+	}
+	tlsConf, err := GenTLSConfig(tc)
+	if err != nil {
+		t.Fatalf("Error generating tls config: %v", err)
+	}
+	opts.LeafNode.TLSConfig = tlsConf
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	lo := DefaultOptions()
+	u, _ := url.Parse(fmt.Sprintf("nats://localhost:%d", opts.LeafNode.Port))
+	lo.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}}}
+	lo.LeafNode.ReconnectInterval = 15 * time.Millisecond
+	ln := RunServer(lo)
+	defer ln.Shutdown()
+
+	// We know connection will fail, but it should not fail because of error such as:
+	// "cannot validate certificate for 127.0.0.1 because it doesn't contain any IP SANs"
+	// This would mean that we are not saving the hostname to use during the TLS handshake.
+
+	le := &captureErrorLogger{errCh: make(chan string, 100)}
+	ln.SetLogger(le, false, false)
+
+	tm := time.NewTimer(time.Second)
+	var done bool
+	for !done {
+		select {
+		case err := <-le.errCh:
+			if strings.Contains(err, "doesn't contain any IP SANs") {
+				t.Fatalf("Got this error: %q", err)
+			}
+		case <-tm.C:
+			done = true
+		}
+	}
+}
+
 func TestLeafNodeRemoteWrongPort(t *testing.T) {
 	for _, test1 := range []struct {
 		name              string
