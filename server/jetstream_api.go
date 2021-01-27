@@ -476,6 +476,7 @@ var (
 	jsNoConsumerErr       = &ApiError{Code: 404, Description: "consumer not found"}
 	jsStreamMismatchErr   = &ApiError{Code: 400, Description: "stream name in subject does not match request"}
 	jsNoClusterSupportErr = &ApiError{Code: 503, Description: "not currently supported in clustered mode"}
+	jsClusterNotAvailErr  = &ApiError{Code: 503, Description: "JetStream system temporarily unavailable"}
 )
 
 // For easier handling of exports and imports.
@@ -572,7 +573,7 @@ const badAPIRequestT = "Malformed JetStream API Request: %q"
 
 // Request for current usage and limits for this account.
 func (s *Server) jsAccountInfoRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil || !s.jetStreamReadAllowed() {
+	if c == nil {
 		return
 	}
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
@@ -582,6 +583,24 @@ func (s *Server) jsAccountInfoRequest(sub *subscription, c *client, subject, rep
 	}
 
 	var resp = JSApiAccountInfoResponse{ApiResponse: ApiResponse{Type: JSApiAccountInfoResponseType}}
+
+	// Determine if we should proceed here when we are in clustered mode.
+	if s.JetStreamIsClustered() {
+		js, cc := s.getJetStreamCluster()
+		if js == nil || cc == nil {
+			return
+		}
+		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+			resp.Error = jsClusterNotAvailErr
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		// Make sure we are meta leader.
+		if !s.JetStreamIsLeader() {
+			return
+		}
+	}
+
 	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 	} else {
@@ -826,7 +845,7 @@ func jsNotFoundError(err error) *ApiError {
 
 // Request to create a stream.
 func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil || !s.JetStreamIsLeader() {
+	if c == nil {
 		return
 	}
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
@@ -836,6 +855,24 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 	}
 
 	var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
+
+	// Determine if we should proceed here when we are in clustered mode.
+	if s.JetStreamIsClustered() {
+		js, cc := s.getJetStreamCluster()
+		if js == nil || cc == nil {
+			return
+		}
+		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+			resp.Error = jsClusterNotAvailErr
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		// Make sure we are meta leader.
+		if !s.JetStreamIsLeader() {
+			return
+		}
+	}
+
 	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -871,7 +908,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 
 // Request to update a stream.
 func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil || !s.JetStreamIsLeader() {
+	if c == nil {
 		return
 	}
 
@@ -882,6 +919,24 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 	}
 
 	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
+
+	// Determine if we should proceed here when we are in clustered mode.
+	if s.JetStreamIsClustered() {
+		js, cc := s.getJetStreamCluster()
+		if js == nil || cc == nil {
+			return
+		}
+		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+			resp.Error = jsClusterNotAvailErr
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		// Make sure we are meta leader.
+		if !s.JetStreamIsLeader() {
+			return
+		}
+	}
+
 	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -918,7 +973,7 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 
 // Request for the list of all stream names.
 func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil || !s.JetStreamIsLeader() {
+	if c == nil {
 		return
 	}
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
@@ -928,6 +983,24 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, rep
 	}
 
 	var resp = JSApiStreamNamesResponse{ApiResponse: ApiResponse{Type: JSApiStreamNamesResponseType}}
+
+	// Determine if we should proceed here when we are in clustered mode.
+	if s.JetStreamIsClustered() {
+		js, cc := s.getJetStreamCluster()
+		if js == nil || cc == nil {
+			return
+		}
+		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+			resp.Error = jsClusterNotAvailErr
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		// Make sure we are meta leader.
+		if !s.JetStreamIsLeader() {
+			return
+		}
+	}
+
 	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -1021,10 +1094,9 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, rep
 // Request for the list of all detailed stream info.
 // TODO(dlc) - combine with above long term
 func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil || !s.JetStreamIsLeader() {
+	if c == nil {
 		return
 	}
-
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
 	if err != nil {
 		s.Warnf(badAPIRequestT, msg)
@@ -1034,6 +1106,23 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 	var resp = JSApiStreamListResponse{
 		ApiResponse: ApiResponse{Type: JSApiStreamListResponseType},
 		Streams:     []*StreamInfo{},
+	}
+
+	// Determine if we should proceed here when we are in clustered mode.
+	if s.JetStreamIsClustered() {
+		js, cc := s.getJetStreamCluster()
+		if js == nil || cc == nil {
+			return
+		}
+		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+			resp.Error = jsClusterNotAvailErr
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		// Make sure we are meta leader.
+		if !s.JetStreamIsLeader() {
+			return
+		}
 	}
 
 	if !acc.JetStreamEnabled() {
@@ -1102,12 +1191,17 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 
 	// If we are in clustered mode we need to be the stream leader to proceed.
 	if s.JetStreamIsClustered() {
-		// Check to make sure the consumer is assigned.
+		// Check to make sure the stream is assigned.
 		js, cc := s.getJetStreamCluster()
 		if js == nil || cc == nil {
 			return
 		}
-		jsEnabled := acc.JetStreamEnabled()
+
+		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+			resp.Error = jsClusterNotAvailErr
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
 
 		js.mu.RLock()
 		isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, name)
@@ -1115,7 +1209,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 
 		if isLeader && sa == nil {
 			// We can't find the stream, so mimic what would be the errors below.
-			if !jsEnabled {
+			if !acc.JetStreamEnabled() {
 				resp.Error = jsNotEnabledErr
 				s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 				return
@@ -1128,7 +1222,14 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 			return
 		}
 
-		// We have the stream assigned, only the stream leader should answer.
+		// Check to see if we are a member of the group and if the group has no leader.
+		if js.isGroupLeaderless(sa.Group) {
+			resp.Error = jsClusterNotAvailErr
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+
+		// We have the stream assigned and a leader, so only the stream leader should answer.
 		if !acc.JetStreamIsStreamLeader(name) {
 			return
 		}
@@ -1183,7 +1284,7 @@ func isEmptyRequest(req []byte) bool {
 
 // Request to delete a stream.
 func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil || !s.JetStreamIsLeader() {
+	if c == nil {
 		return
 	}
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
@@ -1193,6 +1294,24 @@ func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, re
 	}
 
 	var resp = JSApiStreamDeleteResponse{ApiResponse: ApiResponse{Type: JSApiStreamDeleteResponseType}}
+
+	// Determine if we should proceed here when we are in clustered mode.
+	if s.JetStreamIsClustered() {
+		js, cc := s.getJetStreamCluster()
+		if js == nil || cc == nil {
+			return
+		}
+		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+			resp.Error = jsClusterNotAvailErr
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		// Make sure we are meta leader.
+		if !s.JetStreamIsLeader() {
+			return
+		}
+	}
+
 	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -1246,12 +1365,54 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 
 	stream := tokenAt(subject, 6)
 
+	var resp = JSApiMsgDeleteResponse{ApiResponse: ApiResponse{Type: JSApiMsgDeleteResponseType}}
+
 	// If we are in clustered mode we need to be the stream leader to proceed.
-	if s.JetStreamIsClustered() && !acc.JetStreamIsStreamLeader(stream) {
-		return
+	if s.JetStreamIsClustered() {
+		// Check to make sure the stream is assigned.
+		js, cc := s.getJetStreamCluster()
+		if js == nil || cc == nil {
+			return
+		}
+
+		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+			resp.Error = jsClusterNotAvailErr
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+
+		js.mu.RLock()
+		isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, stream)
+		js.mu.RUnlock()
+
+		if isLeader && sa == nil {
+			// We can't find the stream, so mimic what would be the errors below.
+			if !acc.JetStreamEnabled() {
+				resp.Error = jsNotEnabledErr
+				s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
+			}
+			// No stream present.
+			resp.Error = jsNotFoundError(ErrJetStreamStreamNotFound)
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		} else if sa == nil {
+			return
+		}
+
+		// Check to see if we are a member of the group and if the group has no leader.
+		if js.isGroupLeaderless(sa.Group) {
+			resp.Error = jsClusterNotAvailErr
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+
+		// We have the stream assigned and a leader, so only the stream leader should answer.
+		if !acc.JetStreamIsStreamLeader(stream) {
+			return
+		}
 	}
 
-	var resp = JSApiMsgDeleteResponse{ApiResponse: ApiResponse{Type: JSApiMsgDeleteResponseType}}
 	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -1358,12 +1519,54 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 
 	stream := streamNameFromSubject(subject)
 
+	var resp = JSApiStreamPurgeResponse{ApiResponse: ApiResponse{Type: JSApiStreamPurgeResponseType}}
+
 	// If we are in clustered mode we need to be the stream leader to proceed.
-	if s.JetStreamIsClustered() && !acc.JetStreamIsStreamLeader(stream) {
-		return
+	if s.JetStreamIsClustered() {
+		// Check to make sure the stream is assigned.
+		js, cc := s.getJetStreamCluster()
+		if js == nil || cc == nil {
+			return
+		}
+
+		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+			resp.Error = jsClusterNotAvailErr
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+
+		js.mu.RLock()
+		isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, stream)
+		js.mu.RUnlock()
+
+		if isLeader && sa == nil {
+			// We can't find the stream, so mimic what would be the errors below.
+			if !acc.JetStreamEnabled() {
+				resp.Error = jsNotEnabledErr
+				s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
+			}
+			// No stream present.
+			resp.Error = jsNotFoundError(ErrJetStreamStreamNotFound)
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		} else if sa == nil {
+			return
+		}
+
+		// Check to see if we are a member of the group and if the group has no leader.
+		if js.isGroupLeaderless(sa.Group) {
+			resp.Error = jsClusterNotAvailErr
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+
+		// We have the stream assigned and a leader, so only the stream leader should answer.
+		if !acc.JetStreamIsStreamLeader(stream) {
+			return
+		}
 	}
 
-	var resp = JSApiStreamPurgeResponse{ApiResponse: ApiResponse{Type: JSApiStreamPurgeResponseType}}
 	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -1810,7 +2013,7 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, subject, 
 }
 
 func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply string, rmsg []byte, expectDurable bool) {
-	if c == nil || !s.JetStreamIsLeader() {
+	if c == nil {
 		return
 	}
 
@@ -1820,6 +2023,25 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 		return
 	}
 
+	var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
+
+	// Determine if we should proceed here when we are in clustered mode.
+	if s.JetStreamIsClustered() {
+		js, cc := s.getJetStreamCluster()
+		if js == nil || cc == nil {
+			return
+		}
+		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+			resp.Error = jsClusterNotAvailErr
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		// Make sure we are meta leader.
+		if !s.JetStreamIsLeader() {
+			return
+		}
+	}
+
 	var streamName string
 	if expectDurable {
 		streamName = tokenAt(subject, 6)
@@ -1827,7 +2049,6 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 		streamName = tokenAt(subject, 5)
 	}
 
-	var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
 	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -1900,7 +2121,7 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 
 // Request for the list of all consumer names.
 func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil || !s.JetStreamIsLeader() {
+	if c == nil {
 		return
 	}
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
@@ -1913,6 +2134,24 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 		ApiResponse: ApiResponse{Type: JSApiConsumerNamesResponseType},
 		Consumers:   []string{},
 	}
+
+	// Determine if we should proceed here when we are in clustered mode.
+	if s.JetStreamIsClustered() {
+		js, cc := s.getJetStreamCluster()
+		if js == nil || cc == nil {
+			return
+		}
+		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+			resp.Error = jsClusterNotAvailErr
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		// Make sure we are meta leader.
+		if !s.JetStreamIsLeader() {
+			return
+		}
+	}
+
 	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -2000,7 +2239,7 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 
 // Request for the list of all detailed consumer information.
 func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil || !s.JetStreamIsLeader() {
+	if c == nil {
 		return
 	}
 
@@ -2013,6 +2252,23 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 	var resp = JSApiConsumerListResponse{
 		ApiResponse: ApiResponse{Type: JSApiConsumerListResponseType},
 		Consumers:   []*ConsumerInfo{},
+	}
+
+	// Determine if we should proceed here when we are in clustered mode.
+	if s.JetStreamIsClustered() {
+		js, cc := s.getJetStreamCluster()
+		if js == nil || cc == nil {
+			return
+		}
+		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+			resp.Error = jsClusterNotAvailErr
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		// Make sure we are meta leader.
+		if !s.JetStreamIsLeader() {
+			return
+		}
 	}
 
 	if !acc.JetStreamEnabled() {
@@ -2095,7 +2351,12 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 		if js == nil || cc == nil {
 			return
 		}
-		jsEnabled := acc.JetStreamEnabled()
+
+		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+			resp.Error = jsClusterNotAvailErr
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
 
 		js.mu.RLock()
 		isLeader, sa, ca := cc.isLeader(), js.streamAssignment(acc.Name, stream), js.consumerAssignment(acc.Name, stream, consumer)
@@ -2103,7 +2364,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 
 		if isLeader && ca == nil {
 			// We can't find the consumer, so mimic what would be the errors below.
-			if !jsEnabled {
+			if !acc.JetStreamEnabled() {
 				resp.Error = jsNotEnabledErr
 				s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 				return
@@ -2121,7 +2382,14 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 			return
 		}
 
-		// We have the consumer assigned, only the consumer leader should answer.
+		// Check to see if we are a member of the group and if the group has no leader.
+		if js.isGroupLeaderless(ca.Group) {
+			resp.Error = jsClusterNotAvailErr
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+
+		// We have the consumer assigned and a leader, so only the consumer leader should answer.
 		if !acc.JetStreamIsConsumerLeader(stream, consumer) {
 			return
 		}
@@ -2157,7 +2425,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 
 // Request to delete an Consumer.
 func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil || !s.JetStreamIsLeader() {
+	if c == nil {
 		return
 	}
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
@@ -2167,6 +2435,24 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, 
 	}
 
 	var resp = JSApiConsumerDeleteResponse{ApiResponse: ApiResponse{Type: JSApiConsumerDeleteResponseType}}
+
+	// Determine if we should proceed here when we are in clustered mode.
+	if s.JetStreamIsClustered() {
+		js, cc := s.getJetStreamCluster()
+		if js == nil || cc == nil {
+			return
+		}
+		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+			resp.Error = jsClusterNotAvailErr
+			s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		// Make sure we are meta leader.
+		if !s.JetStreamIsLeader() {
+			return
+		}
+	}
+
 	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))

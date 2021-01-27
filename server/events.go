@@ -417,6 +417,9 @@ func (s *Server) sendInternalMsg(sub, rply string, si *ServerInfo, msg interface
 
 // Locked version of checking if events system running. Also checks server.
 func (s *Server) eventsRunning() bool {
+	if s == nil {
+		return false
+	}
 	s.mu.Lock()
 	er := s.running && s.eventsEnabled()
 	s.mu.Unlock()

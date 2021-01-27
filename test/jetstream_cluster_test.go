@@ -2224,6 +2224,115 @@ func TestJetStreamClusterStreamTemplates(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "NO-Q", Replicas: 2}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	payload := []byte("Hello JSC")
+	for i := 0; i < 10; i++ {
+		if _, err := js.Publish("NO-Q", payload); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	sub, err := js.SubscribeSync("NO-Q")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	ci, err := sub.ConsumerInfo()
+	if err != nil || ci == nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Shutdown the non-leader.
+	c.randomNonStreamLeader("$G", "NO-Q").Shutdown()
+
+	// This should eventually have us stepdown as leader since we would have lost quorum.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if sl := c.streamLeader("$G", "NO-Q"); sl == nil {
+			return nil
+		}
+		return fmt.Errorf("Still have leader for stream")
+	})
+
+	notAvailableErr := func(err error) bool {
+		return err != nil && strings.Contains(err.Error(), "unavailable")
+	}
+
+	// Expect to get errors here.
+	if _, err := js.StreamInfo("NO-Q"); !notAvailableErr(err) {
+		t.Fatalf("Expected an 'unavailable' error, got %v", err)
+	}
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if cl := c.consumerLeader("$G", "NO-Q", ci.Name); cl == nil {
+			return nil
+		}
+		return fmt.Errorf("Still have leader for consumer")
+	})
+
+	if _, err = js.ConsumerInfo("NO-Q", ci.Name); !notAvailableErr(err) {
+		t.Fatalf("Expected an 'unavailable' error, got %v", err)
+	}
+	if _, err := sub.ConsumerInfo(); !notAvailableErr(err) {
+		t.Fatalf("Expected an 'unavailable' error, got %v", err)
+	}
+
+	// Now let's take out the other non meta-leader server.
+	// We should get same error for general API calls.
+	c.randomNonLeader().Shutdown()
+	c.expectNoLeader()
+
+	// Now make sure the general JS API responds with system unavailable.
+	if _, err = js.AccountInfo(); !notAvailableErr(err) {
+		t.Fatalf("Expected an 'unavailable' error, got %v", err)
+	}
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "NO-Q33", Replicas: 2}); !notAvailableErr(err) {
+		t.Fatalf("Expected an 'unavailable' error, got %v", err)
+	}
+	if _, err := js.UpdateStream(&nats.StreamConfig{Name: "NO-Q33", Replicas: 2}); !notAvailableErr(err) {
+		t.Fatalf("Expected an 'unavailable' error, got %v", err)
+	}
+	if err := js.DeleteStream("NO-Q"); !notAvailableErr(err) {
+		t.Fatalf("Expected an 'unavailable' error, got %v", err)
+	}
+	if _, err := js.StreamInfo("NO-Q"); !notAvailableErr(err) {
+		t.Fatalf("Expected an 'unavailable' error, got %v", err)
+	}
+	if err := js.PurgeStream("NO-Q"); !notAvailableErr(err) {
+		t.Fatalf("Expected an 'unavailable' error, got %v", err)
+	}
+	if err := js.DeleteMsg("NO-Q", 1); !notAvailableErr(err) {
+		t.Fatalf("Expected an 'unavailable' error, got %v", err)
+	}
+	// Consumer
+	if _, err := js.AddConsumer("NO-Q", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy}); !notAvailableErr(err) {
+		t.Fatalf("Expected an 'unavailable' error, got %v", err)
+	}
+	if err := js.DeleteConsumer("NO-Q", "dlc"); !notAvailableErr(err) {
+		t.Fatalf("Expected an 'unavailable' error, got %v", err)
+	}
+	if _, err := js.ConsumerInfo("NO-Q", "dlc"); !notAvailableErr(err) {
+		t.Fatalf("Expected an 'unavailable' error, got %v", err)
+	}
+	// Listers
+	if sl := js.NewStreamLister(); sl.Next() || !notAvailableErr(sl.Err()) {
+		t.Fatalf("Expected an 'unavailable' error, got %v", sl.Err())
+	}
+	if cl := js.NewConsumerLister("NO-Q"); cl.Next() || !notAvailableErr(cl.Err()) {
+		t.Fatalf("Expected an 'unavailable' error, got %v", cl.Err())
+	}
+}
+
 func TestJetStreamClusterStreamPerf(t *testing.T) {
 	// Comment out to run, holding place for now.
 	skip(t)
@@ -2516,7 +2625,7 @@ func (c *cluster) waitOnServerCurrent(s *server.Server) {
 func (c *cluster) randomNonLeader() *server.Server {
 	// range should randomize.. but..
 	for _, s := range c.servers {
-		if !s.JetStreamIsLeader() {
+		if s.Running() && !s.JetStreamIsLeader() {
 			return s
 		}
 	}
@@ -2539,10 +2648,12 @@ func (c *cluster) expectNoLeader() {
 	c.t.Helper()
 	expires := time.Now().Add(maxElectionTimeout)
 	for time.Now().Before(expires) {
-		if c.leader() != nil {
-			c.t.Fatalf("Expected no leader but have one")
+		if c.leader() == nil {
+			return
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
+	c.t.Fatalf("Expected no leader but have one")
 }
 
 func (c *cluster) waitOnLeader() {

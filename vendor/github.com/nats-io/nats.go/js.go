@@ -131,20 +131,13 @@ func (nc *Conn) JetStream(opts ...JSOpt) (JetStreamContext, error) {
 		return js, nil
 	}
 
-	resp, err := nc.Request(js.apiSubj(apiAccountInfo), nil, js.wait)
-	if err != nil {
+	if _, err := js.AccountInfo(); err != nil {
 		if err == ErrNoResponders {
 			err = ErrJetStreamNotEnabled
 		}
 		return nil, err
 	}
-	var info accountInfoResponse
-	if err := json.Unmarshal(resp.Data, &info); err != nil {
-		return nil, err
-	}
-	if info.Error != nil && info.Error.Code == 503 {
-		return nil, ErrJetStreamNotEnabled
-	}
+
 	return js, nil
 }
 

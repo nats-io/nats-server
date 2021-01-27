@@ -111,6 +111,7 @@ type raft struct {
 	peers   map[string]*lps
 	acks    map[uint64]map[string]struct{}
 	elect   *time.Timer
+	active  time.Time
 	term    uint64
 	pterm   uint64
 	pindex  uint64
@@ -177,6 +178,7 @@ const (
 	minCampaignTimeout = 50 * time.Millisecond
 	maxCampaignTimeout = 4 * minCampaignTimeout
 	hbInterval         = 200 * time.Millisecond
+	lostQuorumInterval = hbInterval * 3
 )
 
 type RaftConfig struct {
@@ -1165,7 +1167,13 @@ func (n *raft) runAsLeader() {
 			}
 			n.sendAppendEntry(entries)
 		case <-hb.C:
-			n.sendHeartbeat()
+			if n.notActive() {
+				n.sendHeartbeat()
+			}
+			if n.lostQuorum() {
+				n.switchToFollower(noLeader)
+				return
+			}
 		case vresp := <-n.votes:
 			if vresp.term > n.currentTerm() {
 				n.switchToFollower(noLeader)
@@ -1186,6 +1194,29 @@ func (n *raft) runAsLeader() {
 			}
 		}
 	}
+}
+
+func (n *raft) lostQuorum() bool {
+	n.RLock()
+	defer n.RUnlock()
+	now, nc := time.Now().UnixNano(), 1
+	for _, peer := range n.peers {
+		if now-peer.ts < int64(lostQuorumInterval) {
+			nc++
+			if nc >= n.qn {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// Check for being not active in terms of sending entries.
+// Used in determining if we need to send a heartbeat.
+func (n *raft) notActive() bool {
+	n.RLock()
+	defer n.RUnlock()
+	return time.Since(n.active) > hbInterval
 }
 
 // Return our current term.
@@ -1699,7 +1730,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 					if maybeLeader == n.id {
 						n.campaign()
 					}
-					// These will not have commits follow them. We also know this will be by itself.
+					// This will not have commits follow. We also know this will be by itself.
 					n.commit = ae.pindex + 1
 				}
 			case EntryAddPeer:
@@ -1800,6 +1831,7 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 				n.sindex = n.pindex
 			}
 		}
+		n.active = time.Now()
 	}
 	n.sendRPC(n.asubj, n.areply, ae.buf)
 }
@@ -2140,8 +2172,10 @@ func (n *raft) switchState(state RaftState) {
 	n.writeTermVote()
 }
 
-const noLeader = _EMPTY_
-const noVote = _EMPTY_
+const (
+	noLeader = _EMPTY_
+	noVote   = _EMPTY_
+)
 
 func (n *raft) switchToFollower(leader string) {
 	n.notice("Switching to follower")
@@ -2152,9 +2186,11 @@ func (n *raft) switchToFollower(leader string) {
 }
 
 func (n *raft) switchToCandidate() {
-	n.notice("Switching to candidate")
 	n.Lock()
 	defer n.Unlock()
+	if n.state != Candidate {
+		n.notice("Switching to candidate")
+	}
 	// Increment the term.
 	n.term++
 	// Clear current Leader.
