@@ -114,6 +114,7 @@ type raft struct {
 	term    uint64
 	pterm   uint64
 	pindex  uint64
+	sindex  uint64
 	commit  uint64
 	applied uint64
 	leader  string
@@ -566,16 +567,9 @@ func (n *raft) Applied(index uint64) {
 
 	// FIXME(dlc) - Check spec on error conditions, storage
 	n.applied = index
-	// FIXME(dlc) - Can be more efficient here.
-	if ae, err := n.loadEntry(index); ae != nil && err == nil {
-		// Check to see if we have a snapshot here.
-		// Snapshots will be by themselves but we range anyway.
-		for _, e := range ae.entries {
-			if e.Type == EntrySnapshot {
-				n.debug("Found snapshot entry: compacting log to index %d", index)
-				n.wal.Compact(index)
-			}
-		}
+	if index == n.sindex {
+		n.debug("Found snapshot entry: compacting log to index %d", index)
+		n.wal.Compact(index)
 	}
 }
 
@@ -1136,11 +1130,11 @@ func (n *raft) runAsLeader() {
 
 	// Cleanup our subscription when we leave.
 	defer func() {
-		n.RLock()
+		n.Lock()
 		if fsub != nil {
 			n.s.sysUnsubscribe(fsub)
 		}
-		n.RUnlock()
+		n.Unlock()
 	}()
 
 	n.sendPeerState()
@@ -1173,7 +1167,7 @@ func (n *raft) runAsLeader() {
 		case <-hb.C:
 			n.sendHeartbeat()
 		case vresp := <-n.votes:
-			if vresp.term > n.term {
+			if vresp.term > n.currentTerm() {
 				n.switchToFollower(noLeader)
 				return
 			}
@@ -1192,6 +1186,13 @@ func (n *raft) runAsLeader() {
 			}
 		}
 	}
+}
+
+// Return our current term.
+func (n *raft) currentTerm() uint64 {
+	n.RLock()
+	defer n.RUnlock()
+	return n.term
 }
 
 // Lock should be held.
@@ -1710,6 +1711,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 						n.peers[newPeer] = &lps{time.Now().UnixNano(), 0}
 					}
 				}
+			case EntrySnapshot:
+				if ae.pindex+1 > n.sindex {
+					n.sindex = ae.pindex + 1
+				}
 			}
 		}
 	}
@@ -1789,6 +1794,12 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 		}
 		// We count ourselves.
 		n.acks[n.pindex] = map[string]struct{}{n.id: struct{}{}}
+		// Check for snapshot
+		for _, e := range entries {
+			if e.Type == EntrySnapshot {
+				n.sindex = n.pindex
+			}
+		}
 	}
 	n.sendRPC(n.asubj, n.areply, ae.buf)
 }
