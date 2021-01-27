@@ -897,7 +897,7 @@ func (rg *raftGroup) setPreferred() {
 }
 
 // createRaftGroup is called to spin up this raft group if needed.
-func (js *jetStream) createRaftGroup(rg *raftGroup) {
+func (js *jetStream) createRaftGroup(rg *raftGroup) error {
 	js.mu.Lock()
 	defer js.mu.Unlock()
 
@@ -906,31 +906,31 @@ func (js *jetStream) createRaftGroup(rg *raftGroup) {
 	// If this is a single peer raft group or we are not a member return.
 	if len(rg.Peers) <= 1 || !rg.isMember(cc.meta.ID()) {
 		// Nothing to do here.
-		return
+		return nil
 	}
 
 	// We already have this assigned.
 	if node := s.lookupRaftNode(rg.Name); node != nil {
 		s.Debugf("JetStream cluster already has raft group %q assigned", rg.Name)
-		return
+		return nil
 	}
 
 	s.Debugf("JetStream cluster creating raft group:%+v", rg)
 
 	sysAcc := s.SystemAccount()
 	if sysAcc == nil {
-		s.Debugf("JetStream cluster detected shutdown processing raft group:%+v", rg)
-		return
+		s.Debugf("JetStream cluster detected shutdown processing raft group: %+v", rg)
+		return errors.New("shutting down")
 	}
 
 	stateDir := path.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, rg.Name)
 	fs, bootstrap, err := newFileStore(
 		FileStoreConfig{StoreDir: stateDir, BlockSize: 32 * 1024 * 1024},
-		StreamConfig{Name: rg.Name, Storage: rg.Storage},
+		StreamConfig{Name: rg.Name, Storage: FileStorage},
 	)
 	if err != nil {
 		s.Errorf("Error creating filestore: %v", err)
-		return
+		return err
 	}
 
 	cfg := &RaftConfig{Name: rg.Name, Store: stateDir, Log: fs}
@@ -941,7 +941,7 @@ func (js *jetStream) createRaftGroup(rg *raftGroup) {
 	n, err := s.startRaftNode(cfg)
 	if err != nil {
 		s.Debugf("Error creating raft group: %v", err)
-		return
+		return err
 	}
 	rg.node = n
 
@@ -949,6 +949,8 @@ func (js *jetStream) createRaftGroup(rg *raftGroup) {
 	if n.ID() == rg.Preferred {
 		n.Campaign()
 	}
+
+	return nil
 }
 
 func (mset *Stream) raftNode() RaftNode {
@@ -1325,32 +1327,20 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) {
 
 	// Check if this is for us..
 	if isMember {
-		js.processClusterCreateStream(sa)
+		js.processClusterCreateStream(acc, sa)
 	}
 }
 
 // processClusterCreateStream is called when we have a stream assignment that
 // has been committed and this server is a member of the peer group.
-func (js *jetStream) processClusterCreateStream(sa *streamAssignment) {
+func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignment) {
 	if sa == nil {
 		return
 	}
 
 	js.mu.RLock()
-	s := js.srv
-	acc, err := s.LookupAccount(sa.Client.Account)
-	if err != nil {
-		s.Warnf("JetStream cluster failed to lookup account %q: %v", sa.Client.Account, err)
-		js.mu.RUnlock()
-		return
-	}
-	rg := sa.Group
+	s, rg := js.srv, sa.Group
 	js.mu.RUnlock()
-
-	// Process the raft group and make sure it's running if needed.
-	js.createRaftGroup(rg)
-
-	var mset *Stream
 
 	// If we are restoring, create the stream if we are R>1 and not the preferred who handles the
 	// receipt of the snapshot itself.
@@ -1360,8 +1350,14 @@ func (js *jetStream) processClusterCreateStream(sa *streamAssignment) {
 			shouldCreate = false
 		}
 	}
+
+	var mset *Stream
+
+	// Process the raft group and make sure it's running if needed.
+	err := js.createRaftGroup(rg)
+
 	// Process here if not restoring or not the leader.
-	if shouldCreate {
+	if shouldCreate && err == nil {
 		// Go ahead and create or update the stream.
 		mset, err = acc.LookupStream(sa.Config.Name)
 		if err == nil && mset != nil {
