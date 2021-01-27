@@ -1062,6 +1062,9 @@ type ClusterOptsVarz struct {
 	Port        int      `json:"cluster_port,omitempty"`
 	AuthTimeout float64  `json:"auth_timeout,omitempty"`
 	URLs        []string `json:"urls,omitempty"`
+	TLSTimeout  float64  `json:"tls_timeout,omitempty"`
+	TLSRequired bool     `json:"tls_required,omitempty"`
+	TLSVerify   bool     `json:"tls_verify,omitempty"`
 }
 
 // GatewayOptsVarz contains monitoring gateway information
@@ -1071,6 +1074,8 @@ type GatewayOptsVarz struct {
 	Port           int                     `json:"port,omitempty"`
 	AuthTimeout    float64                 `json:"auth_timeout,omitempty"`
 	TLSTimeout     float64                 `json:"tls_timeout,omitempty"`
+	TLSRequired    bool                    `json:"tls_required,omitempty"`
+	TLSVerify      bool                    `json:"tls_verify,omitempty"`
 	Advertise      string                  `json:"advertise,omitempty"`
 	ConnectRetries int                     `json:"connect_retries,omitempty"`
 	Gateways       []RemoteGatewayOptsVarz `json:"gateways,omitempty"`
@@ -1090,6 +1095,8 @@ type LeafNodeOptsVarz struct {
 	Port        int                  `json:"port,omitempty"`
 	AuthTimeout float64              `json:"auth_timeout,omitempty"`
 	TLSTimeout  float64              `json:"tls_timeout,omitempty"`
+	TLSRequired bool                 `json:"tls_required,omitempty"`
+	TLSVerify   bool                 `json:"tls_verify,omitempty"`
 	Remotes     []RemoteLeafOptsVarz `json:"remotes,omitempty"`
 }
 
@@ -1195,6 +1202,10 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 	c := &opts.Cluster
 	gw := &opts.Gateway
 	ln := &opts.LeafNode
+	clustTlsReq := c.TLSConfig != nil
+	gatewayTlsReq := gw.TLSConfig != nil
+	leafTlsReq := ln.TLSConfig != nil
+	leafTlsVerify := leafTlsReq && ln.TLSConfig.ClientAuth == tls.RequireAndVerifyClientCert
 	varz := &Varz{
 		ID:           info.ID,
 		Version:      info.Version,
@@ -1214,6 +1225,9 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			Host:        c.Host,
 			Port:        c.Port,
 			AuthTimeout: c.AuthTimeout,
+			TLSTimeout:  c.TLSTimeout,
+			TLSRequired: clustTlsReq,
+			TLSVerify:   clustTlsReq,
 		},
 		Gateway: GatewayOptsVarz{
 			Name:           gw.Name,
@@ -1221,6 +1235,8 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			Port:           gw.Port,
 			AuthTimeout:    gw.AuthTimeout,
 			TLSTimeout:     gw.TLSTimeout,
+			TLSRequired:    gatewayTlsReq,
+			TLSVerify:      gatewayTlsReq,
 			Advertise:      gw.Advertise,
 			ConnectRetries: gw.ConnectRetries,
 			Gateways:       []RemoteGatewayOptsVarz{},
@@ -1231,6 +1247,8 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			Port:        ln.Port,
 			AuthTimeout: ln.AuthTimeout,
 			TLSTimeout:  ln.TLSTimeout,
+			TLSRequired: leafTlsReq,
+			TLSVerify:   leafTlsVerify,
 			Remotes:     []RemoteLeafOptsVarz{},
 		},
 		Start:    s.start,

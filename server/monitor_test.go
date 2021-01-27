@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -2093,6 +2094,62 @@ func TestConnzTLSInHandshake(t *testing.T) {
 	}
 }
 
+func TestConnzTLSCfg(t *testing.T) {
+	resetPreviousHTTPConnections()
+
+	tc := &TLSConfigOpts{}
+	tc.CertFile = "configs/certs/server.pem"
+	tc.KeyFile = "configs/certs/key.pem"
+
+	var err error
+	opts := DefaultMonitorOptions()
+	opts.NoSystemAccount = true
+	opts.TLSTimeout = 1.5 // 1.5 seconds
+	opts.TLSConfig, err = GenTLSConfig(tc)
+	require_NoError(t, err)
+	opts.TLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
+	opts.Gateway.TLSConfig, err = GenTLSConfig(tc)
+	require_NoError(t, err)
+	opts.Gateway.TLSTimeout = 1.5
+	opts.LeafNode.TLSConfig, err = GenTLSConfig(tc)
+	require_NoError(t, err)
+	opts.LeafNode.TLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
+	opts.LeafNode.TLSTimeout = 1.5
+	opts.Cluster.TLSConfig, err = GenTLSConfig(tc)
+	require_NoError(t, err)
+	opts.Cluster.TLSTimeout = 1.5
+
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	check := func(verify, required bool, timeout float64) {
+		t.Helper()
+		if !verify {
+			t.Fatalf("Expected tls_verify to be true")
+		}
+		if !required {
+			t.Fatalf("Expected tls_required to be true")
+		}
+		if timeout != 1.5 {
+			t.Fatalf("Expected tls_timeout to be 1.5")
+		}
+	}
+
+	start := time.Now()
+	endpoint := fmt.Sprintf("http://%s:%d/varz", opts.HTTPHost, s.MonitorAddr().Port)
+	for mode := 0; mode < 2; mode++ {
+		varz := pollVarz(t, s, mode, endpoint, nil)
+		duration := time.Since(start)
+		if duration >= 1500*time.Millisecond {
+			t.Fatalf("Looks like varz blocked on handshake, took %v", duration)
+		}
+		check(varz.TLSVerify, varz.TLSRequired, varz.TLSTimeout)
+		check(varz.Cluster.TLSVerify, varz.Cluster.TLSRequired, varz.Cluster.TLSTimeout)
+		check(varz.Gateway.TLSVerify, varz.Gateway.TLSRequired, varz.Gateway.TLSTimeout)
+		check(varz.LeafNode.TLSVerify, varz.LeafNode.TLSRequired, varz.LeafNode.TLSTimeout)
+	}
+}
+
 func TestServerIDs(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -2425,6 +2482,9 @@ func TestMonitorCluster(t *testing.T) {
 		opts.Cluster.Port,
 		opts.Cluster.AuthTimeout,
 		[]string{"127.0.0.1:1234"},
+		opts.Cluster.TLSTimeout,
+		opts.Cluster.TLSConfig != nil,
+		opts.Cluster.TLSConfig != nil,
 	}
 
 	varzURL := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
@@ -2440,7 +2500,7 @@ func TestMonitorCluster(t *testing.T) {
 
 		// Having this here to make sure that if fields are added in ClusterOptsVarz,
 		// we make sure to update this test (compiler will report an error if we don't)
-		_ = ClusterOptsVarz{"", "", 0, 0, nil}
+		_ = ClusterOptsVarz{"", "", 0, 0, nil, 2, false, false}
 
 		// Alter the fields to make sure that we have a proper deep copy
 		// of what may be stored in the server. Anything we change here
@@ -2590,6 +2650,8 @@ func TestMonitorGateway(t *testing.T) {
 		opts.Gateway.Port,
 		opts.Gateway.AuthTimeout,
 		opts.Gateway.TLSTimeout,
+		opts.Gateway.TLSConfig != nil,
+		opts.Gateway.TLSConfig != nil,
 		opts.Gateway.Advertise,
 		opts.Gateway.ConnectRetries,
 		[]RemoteGatewayOptsVarz{{"B", 1, nil}},
@@ -2631,7 +2693,7 @@ func TestMonitorGateway(t *testing.T) {
 
 		// Having this here to make sure that if fields are added in GatewayOptsVarz,
 		// we make sure to update this test (compiler will report an error if we don't)
-		_ = GatewayOptsVarz{"", "", 0, 0, 0, "", 0, []RemoteGatewayOptsVarz{{"", 0, nil}}, false}
+		_ = GatewayOptsVarz{"", "", 0, 0, 0, false, false, "", 0, []RemoteGatewayOptsVarz{{"", 0, nil}}, false}
 
 		// Alter the fields to make sure that we have a proper deep copy
 		// of what may be stored in the server. Anything we change here
@@ -2756,6 +2818,8 @@ func TestMonitorLeafNode(t *testing.T) {
 		opts.LeafNode.Port,
 		opts.LeafNode.AuthTimeout,
 		opts.LeafNode.TLSTimeout,
+		opts.LeafNode.TLSConfig != nil,
+		opts.LeafNode.TLSConfig != nil,
 		[]RemoteLeafOptsVarz{
 			{
 				"acc", 1, []string{"localhost:1234"},
@@ -2777,7 +2841,7 @@ func TestMonitorLeafNode(t *testing.T) {
 
 		// Having this here to make sure that if fields are added in ClusterOptsVarz,
 		// we make sure to update this test (compiler will report an error if we don't)
-		_ = LeafNodeOptsVarz{"", 0, 0, 0, []RemoteLeafOptsVarz{{"", 0, nil}}}
+		_ = LeafNodeOptsVarz{"", 0, 0, 0, false, false, []RemoteLeafOptsVarz{{"", 0, nil}}}
 
 		// Alter the fields to make sure that we have a proper deep copy
 		// of what may be stored in the server. Anything we change here
