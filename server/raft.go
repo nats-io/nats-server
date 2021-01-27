@@ -111,9 +111,11 @@ type raft struct {
 	peers   map[string]*lps
 	acks    map[uint64]map[string]struct{}
 	elect   *time.Timer
+	active  time.Time
 	term    uint64
 	pterm   uint64
 	pindex  uint64
+	sindex  uint64
 	commit  uint64
 	applied uint64
 	leader  string
@@ -176,6 +178,7 @@ const (
 	minCampaignTimeout = 50 * time.Millisecond
 	maxCampaignTimeout = 4 * minCampaignTimeout
 	hbInterval         = 200 * time.Millisecond
+	lostQuorumInterval = hbInterval * 3
 )
 
 type RaftConfig struct {
@@ -566,16 +569,9 @@ func (n *raft) Applied(index uint64) {
 
 	// FIXME(dlc) - Check spec on error conditions, storage
 	n.applied = index
-	// FIXME(dlc) - Can be more efficient here.
-	if ae, err := n.loadEntry(index); ae != nil && err == nil {
-		// Check to see if we have a snapshot here.
-		// Snapshots will be by themselves but we range anyway.
-		for _, e := range ae.entries {
-			if e.Type == EntrySnapshot {
-				n.debug("Found snapshot entry: compacting log to index %d", index)
-				n.wal.Compact(index)
-			}
-		}
+	if index == n.sindex {
+		n.debug("Found snapshot entry: compacting log to index %d", index)
+		n.wal.Compact(index)
 	}
 }
 
@@ -1136,11 +1132,11 @@ func (n *raft) runAsLeader() {
 
 	// Cleanup our subscription when we leave.
 	defer func() {
-		n.RLock()
+		n.Lock()
 		if fsub != nil {
 			n.s.sysUnsubscribe(fsub)
 		}
-		n.RUnlock()
+		n.Unlock()
 	}()
 
 	n.sendPeerState()
@@ -1171,9 +1167,15 @@ func (n *raft) runAsLeader() {
 			}
 			n.sendAppendEntry(entries)
 		case <-hb.C:
-			n.sendHeartbeat()
+			if n.notActive() {
+				n.sendHeartbeat()
+			}
+			if n.lostQuorum() {
+				n.switchToFollower(noLeader)
+				return
+			}
 		case vresp := <-n.votes:
-			if vresp.term > n.term {
+			if vresp.term > n.currentTerm() {
 				n.switchToFollower(noLeader)
 				return
 			}
@@ -1192,6 +1194,36 @@ func (n *raft) runAsLeader() {
 			}
 		}
 	}
+}
+
+func (n *raft) lostQuorum() bool {
+	n.RLock()
+	defer n.RUnlock()
+	now, nc := time.Now().UnixNano(), 1
+	for _, peer := range n.peers {
+		if now-peer.ts < int64(lostQuorumInterval) {
+			nc++
+			if nc >= n.qn {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// Check for being not active in terms of sending entries.
+// Used in determining if we need to send a heartbeat.
+func (n *raft) notActive() bool {
+	n.RLock()
+	defer n.RUnlock()
+	return time.Since(n.active) > hbInterval
+}
+
+// Return our current term.
+func (n *raft) currentTerm() uint64 {
+	n.RLock()
+	defer n.RUnlock()
+	return n.term
 }
 
 // Lock should be held.
@@ -1698,7 +1730,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 					if maybeLeader == n.id {
 						n.campaign()
 					}
-					// These will not have commits follow them. We also know this will be by itself.
+					// This will not have commits follow. We also know this will be by itself.
 					n.commit = ae.pindex + 1
 				}
 			case EntryAddPeer:
@@ -1709,6 +1741,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 					} else {
 						n.peers[newPeer] = &lps{time.Now().UnixNano(), 0}
 					}
+				}
+			case EntrySnapshot:
+				if ae.pindex+1 > n.sindex {
+					n.sindex = ae.pindex + 1
 				}
 			}
 		}
@@ -1789,6 +1825,13 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 		}
 		// We count ourselves.
 		n.acks[n.pindex] = map[string]struct{}{n.id: struct{}{}}
+		// Check for snapshot
+		for _, e := range entries {
+			if e.Type == EntrySnapshot {
+				n.sindex = n.pindex
+			}
+		}
+		n.active = time.Now()
 	}
 	n.sendRPC(n.asubj, n.areply, ae.buf)
 }
@@ -2129,8 +2172,10 @@ func (n *raft) switchState(state RaftState) {
 	n.writeTermVote()
 }
 
-const noLeader = _EMPTY_
-const noVote = _EMPTY_
+const (
+	noLeader = _EMPTY_
+	noVote   = _EMPTY_
+)
 
 func (n *raft) switchToFollower(leader string) {
 	n.notice("Switching to follower")
@@ -2141,9 +2186,11 @@ func (n *raft) switchToFollower(leader string) {
 }
 
 func (n *raft) switchToCandidate() {
-	n.notice("Switching to candidate")
 	n.Lock()
 	defer n.Unlock()
+	if n.state != Candidate {
+		n.notice("Switching to candidate")
+	}
 	// Increment the term.
 	n.term++
 	// Clear current Leader.

@@ -55,6 +55,9 @@ type JetStreamManager interface {
 
 	// NewConsumerLister is used to return pages of ConsumerInfo objects.
 	NewConsumerLister(stream string) *ConsumerLister
+
+	// AccountInfo retrieves info about the JetStream usage from an account.
+	AccountInfo() (*AccountInfo, error)
 }
 
 // StreamConfig will determine the properties for a stream.
@@ -102,22 +105,48 @@ type apiPagedRequest struct {
 	Offset int `json:"offset"`
 }
 
-// accountStats returns current statistics about the account's JetStream usage.
-type accountStats struct {
-	Memory  uint64 `json:"memory"`
-	Store   uint64 `json:"storage"`
-	Streams int    `json:"streams"`
-	Limits  struct {
-		MaxMemory    int64 `json:"max_memory"`
-		MaxStore     int64 `json:"max_storage"`
-		MaxStreams   int   `json:"max_streams"`
-		MaxConsumers int   `json:"max_consumers"`
-	} `json:"limits"`
+// AccountInfo contains info about the JetStream usage from the current account.
+type AccountInfo struct {
+	Memory  uint64        `json:"memory"`
+	Store   uint64        `json:"storage"`
+	Streams int           `json:"streams"`
+	Limits  AccountLimits `json:"limits"`
+}
+
+// AccountLimits includes the JetStream limits of the current account.
+type AccountLimits struct {
+	MaxMemory    int64 `json:"max_memory"`
+	MaxStore     int64 `json:"max_storage"`
+	MaxStreams   int   `json:"max_streams"`
+	MaxConsumers int   `json:"max_consumers"`
 }
 
 type accountInfoResponse struct {
 	apiResponse
-	accountStats
+	AccountInfo
+}
+
+// AccountInfo retrieves info about the JetStream usage from the current account.
+func (js *js) AccountInfo() (*AccountInfo, error) {
+	resp, err := js.nc.Request(js.apiSubj(apiAccountInfo), nil, js.wait)
+	if err != nil {
+		return nil, err
+	}
+	var info accountInfoResponse
+	if err := json.Unmarshal(resp.Data, &info); err != nil {
+		return nil, err
+	}
+	if info.Error != nil {
+		var err error
+		if strings.Contains(info.Error.Description, "not enabled for") {
+			err = ErrJetStreamNotEnabled
+		} else {
+			err = errors.New(info.Error.Description)
+		}
+		return nil, err
+	}
+
+	return &info.AccountInfo, nil
 }
 
 type createConsumerRequest struct {

@@ -388,11 +388,6 @@ func (s *Server) JetStreamIsConsumerLeader(account, stream, consumer string) boo
 	return cc.isConsumerLeader(account, stream, consumer)
 }
 
-func (s *Server) jetStreamReadAllowed() bool {
-	// FIXME(dlc) - Add in read allowed mode for readonly API.
-	return s.JetStreamIsLeader()
-}
-
 func (s *Server) enableJetStreamClustering() error {
 	if !s.isRunning() {
 		return nil
@@ -483,6 +478,27 @@ func (js *jetStream) server() *Server {
 	return s
 }
 
+// Will respond iff we are a member and we know we have no leader.
+func (js *jetStream) isGroupLeaderless(rg *raftGroup) bool {
+	if rg == nil {
+		return false
+	}
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+
+	cc := js.cluster
+
+	// If we are not a member we can not say..
+	if !rg.isMember(cc.meta.ID()) {
+		return false
+	}
+	// Single peer groups always have a leader if we are here.
+	if rg.node == nil {
+		return false
+	}
+	return rg.node.GroupLeader() == _EMPTY_
+}
+
 func (s *Server) JetStreamIsStreamAssigned(account, stream string) bool {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
@@ -559,7 +575,7 @@ func (cc *jetStreamCluster) isStreamLeader(account, stream string) bool {
 	ourID := cc.meta.ID()
 	for _, peer := range rg.Peers {
 		if peer == ourID {
-			if len(rg.Peers) == 1 || rg.node.Leader() {
+			if len(rg.Peers) == 1 || rg.node != nil && rg.node.Leader() {
 				return true
 			}
 		}
