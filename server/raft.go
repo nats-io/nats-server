@@ -37,6 +37,7 @@ type RaftNode interface {
 	State() RaftState
 	Size() (entries, bytes uint64)
 	Leader() bool
+	Quorum() bool
 	Current() bool
 	GroupLeader() string
 	StepDown() error
@@ -754,9 +755,6 @@ func (n *raft) Group() string {
 func (n *raft) Peers() []*Peer {
 	n.RLock()
 	defer n.RUnlock()
-	if n.state != Leader {
-		return nil
-	}
 
 	var peers []*Peer
 	for id, ps := range n.peers {
@@ -1194,6 +1192,23 @@ func (n *raft) runAsLeader() {
 			}
 		}
 	}
+}
+
+// Quorum reports the quorum status. Will be called on former leaders.
+func (n *raft) Quorum() bool {
+	n.RLock()
+	defer n.RUnlock()
+
+	now, nc := time.Now().UnixNano(), 1
+	for _, peer := range n.peers {
+		if now-peer.ts < int64(lostQuorumInterval) {
+			nc++
+			if nc >= n.qn {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (n *raft) lostQuorum() bool {

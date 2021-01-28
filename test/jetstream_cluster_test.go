@@ -2285,8 +2285,27 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
+	// Setup subscription for leader elected.
+	lesub, err := nc.SubscribeSync(server.JSAdvisoryStreamLeaderElectedPre + ".*")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
 	if _, err := js.AddStream(&nats.StreamConfig{Name: "NO-Q", Replicas: 2}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Make sure we received our leader elected advisory.
+	leadv, _ := lesub.NextMsg(0)
+	if leadv == nil {
+		t.Fatalf("Expected to receive a leader elected advisory")
+	}
+	var le server.JSStreamLeaderElectedAdvisory
+	if err := json.Unmarshal(leadv.Data, &le); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if ln := c.streamLeader("$G", "NO-Q").Name(); le.Leader != ln {
+		t.Fatalf("Expected to have leader %q in elect advisory, got %q", ln, le.Leader)
 	}
 
 	payload := []byte("Hello JSC")
@@ -2294,6 +2313,12 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 		if _, err := js.Publish("NO-Q", payload); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
+	}
+
+	// Setup subscription for leader elected.
+	clesub, err := nc.SubscribeSync(server.JSAdvisoryConsumerLeaderElectedPre + ".*.*")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
 
 	sub, err := js.SubscribeSync("NO-Q")
@@ -2305,10 +2330,23 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
+	// Make sure we received our consumer leader elected advisory.
+	leadv, _ = clesub.NextMsg(0)
+	if leadv == nil {
+		t.Fatalf("Expected to receive a consumer leader elected advisory")
+	}
+
+	// Setup subscription for lost quorum advisory.
+	ssub, err := nc.SubscribeSync(server.JSAdvisoryStreamQuorumLostPre + ".*")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	nc.Flush()
+
 	// Shutdown the non-leader.
 	c.randomNonStreamLeader("$G", "NO-Q").Shutdown()
 
-	// This should eventually have us stepdown as leader since we would have lost quorum.
+	// This should eventually have us stepdown as leader since we would have lost quorum with R=2.
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
 		if sl := c.streamLeader("$G", "NO-Q"); sl == nil {
 			return nil
@@ -2337,6 +2375,19 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	}
 	if _, err := sub.ConsumerInfo(); !notAvailableErr(err) {
 		t.Fatalf("Expected an 'unavailable' error, got %v", err)
+	}
+
+	// Make sure we received our lost quorum advisories.
+	adv, _ := ssub.NextMsg(0)
+	if adv == nil {
+		t.Fatalf("Expected to receive a quorum lost advisory")
+	}
+	var lqa server.JSStreamQuorumLostAdvisory
+	if err := json.Unmarshal(adv.Data, &lqa); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(lqa.Replicas) != 2 {
+		t.Fatalf("Expected reports for both replicas, only got %d", len(lqa.Replicas))
 	}
 
 	// Now let's take out the other non meta-leader server.

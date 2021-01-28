@@ -2316,6 +2316,13 @@ func (mset *Stream) DeleteConsumer(o *Consumer) error {
 	return o.Delete()
 }
 
+func (o *Consumer) Stream() string {
+	o.mu.RLock()
+	mset := o.mset
+	o.mu.RUnlock()
+	return mset.Name()
+}
+
 // Active indicates if this consumer is still active.
 func (o *Consumer) Active() bool {
 	o.mu.Lock()

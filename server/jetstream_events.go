@@ -145,3 +145,53 @@ type JSRestoreCompleteAdvisory struct {
 
 // JSRestoreCompleteAdvisoryType is the schema type for JSSnapshotCreateAdvisory
 const JSRestoreCompleteAdvisoryType = "io.nats.jetstream.advisory.v1.restore_complete"
+
+// Clustering specific.
+
+// JSStreamLeaderElectedAdvisoryType is sent when the system elects a leader for a stream.
+const JSStreamLeaderElectedAdvisoryType = "io.nats.jetstream.advisory.v1.stream_leader_elected"
+
+// JSStreamQuorumLostAdvisory indicates that a stream has lost quorum and is stalled.
+type JSStreamLeaderElectedAdvisory struct {
+	TypedEvent
+	Stream   string      `json:"stream"`
+	State    StreamState `json:"state"`
+	Leader   string      `json:"leader"`
+	Replicas []*PeerInfo `json:"replicas"`
+}
+
+// JSStreamQuorumAdvisoryType is sent when the system detects a clustered stream and
+// its consumers are stalled and unable to make progress.
+const JSStreamQuorumLostAdvisoryType = "io.nats.jetstream.advisory.v1.stream_quorum_lost"
+
+// JSStreamQuorumLostAdvisory indicates that a stream has lost quorum and is stalled.
+type JSStreamQuorumLostAdvisory struct {
+	TypedEvent
+	Stream   string      `json:"stream"`
+	State    StreamState `json:"state"`
+	Replicas []*PeerInfo `json:"replicas"`
+}
+
+// JSConsumerLeaderElectedAdvisoryType is sent when the system elects a leader for a consumer.
+const JSConsumerLeaderElectedAdvisoryType = "io.nats.jetstream.advisory.v1.consumer_leader_elected"
+
+// JSStreamQuorumLostAdvisory indicates that a stream has lost quorum and is stalled.
+type JSConsumerLeaderElectedAdvisory struct {
+	TypedEvent
+	Stream   string      `json:"stream"`
+	Consumer string      `json:"consumer"`
+	Leader   string      `json:"leader"`
+	Replicas []*PeerInfo `json:"replicas"`
+}
+
+// JSConsumerQuorumAdvisoryType is sent when the system detects a clustered consumer and
+// is stalled and unable to make progress.
+const JSConsumerQuorumLostAdvisoryType = "io.nats.jetstream.advisory.v1.consumer_quorum_lost"
+
+// JSConsumerQuorumLostAdvisory indicates that a consumer has lost quorum and is stalled.
+type JSConsumerQuorumLostAdvisory struct {
+	TypedEvent
+	Stream   string      `json:"stream"`
+	Consumer string      `json:"consumer"`
+	Replicas []*PeerInfo `json:"replicas"`
+}
