@@ -2597,7 +2597,7 @@ func (c *cluster) waitOnNewConsumerLeader(account, stream, consumer string) {
 	expires := time.Now().Add(10 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.consumerLeader(account, stream, consumer); leader != nil {
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -2620,7 +2620,7 @@ func (c *cluster) waitOnNewStreamLeader(account, stream string) {
 	expires := time.Now().Add(10 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.streamLeader(account, stream); leader != nil {
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -2653,7 +2653,7 @@ func (c *cluster) waitOnStreamCurrent(s *server.Server, account, stream string) 
 	expires := time.Now().Add(10 * time.Second)
 	for time.Now().Before(expires) {
 		if s.JetStreamIsStreamCurrent(account, stream) {
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -2666,7 +2666,7 @@ func (c *cluster) waitOnServerCurrent(s *server.Server) {
 	expires := time.Now().Add(5 * time.Second)
 	for time.Now().Before(expires) {
 		if s.JetStreamIsCurrent() {
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -2736,6 +2736,7 @@ func (c *cluster) waitOnClusterReady() {
 	// Now make sure we have all peers.
 	for leader != nil && time.Now().Before(expires) {
 		if len(leader.JetStreamClusterPeers()) == len(c.servers) {
+			time.Sleep(50 * time.Millisecond)
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
