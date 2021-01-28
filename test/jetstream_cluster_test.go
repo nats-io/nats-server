@@ -247,6 +247,56 @@ func TestJetStreamClusterMultiReplicaStreams(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterMemoryStore(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3M", 3)
+	defer c.shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// FIXME(dlc) - This should be default.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar"},
+		Replicas: 3,
+		Storage:  nats.MemoryStorage,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Send in 100 messages.
+	msg, toSend := []byte("Hello MemoryStore"), 100
+	for i := 0; i < toSend; i++ {
+		if _, err = js.Publish("foo", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+	// Now grab info for this stream.
+	si, err := js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si == nil || si.Config.Name != "TEST" {
+		t.Fatalf("StreamInfo is not correct %+v", si)
+	}
+	if si.Cluster == nil || len(si.Cluster.Replicas) != 2 {
+		t.Fatalf("Cluster info is incorrect: %+v", si.Cluster)
+	}
+	// Check active state as well, shows that the owner answered.
+	if si.State.Msgs != uint64(toSend) {
+		t.Fatalf("Expected %d msgs, got bad state: %+v", toSend, si.State)
+	}
+	// Do a normal sub.
+	sub, err := js.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	checkSubsPending(t, sub, toSend)
+}
+
 func TestJetStreamClusterCompaction(t *testing.T) {
 	// This test takes a long time to observe compactions.
 	// Once moved to server we can adjust and re-enable.
