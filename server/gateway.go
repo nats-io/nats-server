@@ -732,11 +732,6 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 	// Are we creating the gateway based on the configuration
 	solicit := cfg != nil
 	var tlsRequired bool
-	if solicit {
-		tlsRequired = cfg.TLSConfig != nil
-	} else {
-		tlsRequired = opts.Gateway.TLSConfig != nil
-	}
 
 	s.gateway.RLock()
 	infoJSON := s.gateway.infoJSON
@@ -748,19 +743,25 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 	c.gw = &gateway{}
 	if solicit {
 		// This is an outbound gateway connection
+		cfg.RLock()
+		tlsRequired = cfg.TLSConfig != nil
+		cfgName := cfg.Name
+		cfg.RUnlock()
 		c.gw.outbound = true
-		c.gw.name = cfg.Name
+		c.gw.name = cfgName
 		c.gw.cfg = cfg
 		cfg.bumpConnAttempts()
 		// Since we are delaying the connect until after receiving
 		// the remote's INFO protocol, save the URL we need to connect to.
 		c.gw.connectURL = url
 
-		c.Noticef("Creating outbound gateway connection to %q", cfg.Name)
+		c.Noticef("Creating outbound gateway connection to %q", cfgName)
 	} else {
 		c.flags.set(expectConnect)
 		// Inbound gateway connection
 		c.Noticef("Processing inbound gateway connection")
+		// Check if TLS is required for inbound GW connections.
+		tlsRequired = opts.Gateway.TLSConfig != nil
 	}
 
 	// Check for TLS

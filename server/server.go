@@ -1553,6 +1553,13 @@ func (s *Server) Start() {
 		s.startGateways()
 	}
 
+	// Start websocket server if needed. Do this before starting the routes, and
+	// leaf node because we want to resolve the gateway host:port so that this
+	// information can be sent to other routes.
+	if opts.Websocket.Port != 0 {
+		s.startWebsocketServer()
+	}
+
 	// Start up listen if we want to accept leaf node connections.
 	if opts.LeafNode.Port != 0 {
 		// Will resolve or assign the advertise address for the leafnode listener.
@@ -1577,13 +1584,6 @@ func (s *Server) Start() {
 	// The Routing routine needs to wait for the client listen
 	// port to be opened and potential ephemeral port selected.
 	clientListenReady := make(chan struct{})
-
-	// Start websocket server if needed. Do this before starting the routes,
-	// because we want to resolve the gateway host:port so that this information
-	// can be sent to other routes.
-	if opts.Websocket.Port != 0 {
-		s.startWebsocketServer()
-	}
 
 	// MQTT
 	if opts.MQTT.Port != 0 {
@@ -2899,9 +2899,9 @@ func (s *Server) PortsInfo(maxWait time.Duration) *Ports {
 		}
 
 		if wsListener != nil {
-			protocol := "ws"
+			protocol := wsSchemePrefix
 			if wss {
-				protocol = "wss"
+				protocol = wsSchemePrefixTLS
 			}
 			ports.WebSocket = formatURL(protocol, wsListener)
 		}

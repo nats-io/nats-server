@@ -161,7 +161,7 @@ func TestWSUnmask(t *testing.T) {
 		return buf
 	}
 
-	ri := &wsReadInfo{}
+	ri := &wsReadInfo{mask: true}
 	ri.init()
 	copy(ri.mkey[:], key)
 
@@ -239,7 +239,7 @@ func TestWSCreateFrameHeader(t *testing.T) {
 		{"compressed 100000", wsTextMessage, true, 100000},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			res := wsCreateFrameHeader(test.compressed, test.frameType, test.len)
+			res, _ := wsCreateFrameHeader(false, test.compressed, test.frameType, test.len)
 			// The server is always sending the message has a single frame,
 			// so the "final" bit should be set.
 			expected := byte(test.frameType) | wsFinalBit
@@ -329,7 +329,7 @@ func testWSCreateClientMsg(frameType wsOpCode, frameNum int, final, compressed b
 }
 
 func testWSSetupForRead() (*client, *wsReadInfo, *testReader) {
-	ri := &wsReadInfo{}
+	ri := &wsReadInfo{mask: true}
 	ri.init()
 	tr := &testReader{}
 	opts := DefaultOptions()
@@ -2399,147 +2399,217 @@ func TestWSAdvertise(t *testing.T) {
 }
 
 func TestWSFrameOutbound(t *testing.T) {
-	c, _, _ := testWSSetupForRead()
+	for _, test := range []struct {
+		name         string
+		maskingWrite bool
+	}{
+		{"no write masking", false},
+		{"write masking", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c, _, _ := testWSSetupForRead()
+			c.ws.maskwrite = test.maskingWrite
 
-	var bufs net.Buffers
-	bufs = append(bufs, []byte("this "))
-	bufs = append(bufs, []byte("is "))
-	bufs = append(bufs, []byte("a "))
-	bufs = append(bufs, []byte("set "))
-	bufs = append(bufs, []byte("of "))
-	bufs = append(bufs, []byte("buffers"))
-	en := 2
-	for _, b := range bufs {
-		en += len(b)
-	}
-	c.mu.Lock()
-	c.out.nb = bufs
-	res, n := c.collapsePtoNB()
-	c.mu.Unlock()
-	if n != int64(en) {
-		t.Fatalf("Expected size to be %v, got %v", en, n)
-	}
-	if eb := 1 + len(bufs); eb != len(res) {
-		t.Fatalf("Expected %v buffers, got %v", eb, len(res))
-	}
-	var ob []byte
-	for i := 1; i < len(res); i++ {
-		ob = append(ob, res[i]...)
-	}
-	if !bytes.Equal(ob, []byte("this is a set of buffers")) {
-		t.Fatalf("Unexpected outbound: %q", ob)
-	}
+			getKey := func(buf []byte) []byte {
+				return buf[len(buf)-4:]
+			}
 
-	bufs = nil
-	c.out.pb = 0
-	c.ws.fs = 0
-	c.ws.frames = nil
-	c.ws.browser = true
-	bufs = append(bufs, []byte("some smaller "))
-	bufs = append(bufs, []byte("buffers"))
-	bufs = append(bufs, make([]byte, wsFrameSizeForBrowsers+10))
-	bufs = append(bufs, []byte("then some more"))
-	en = 2 + len(bufs[0]) + len(bufs[1])
-	en += 4 + len(bufs[2]) - 10
-	en += 2 + len(bufs[3]) + 10
-	c.mu.Lock()
-	c.out.nb = bufs
-	res, n = c.collapsePtoNB()
-	c.mu.Unlock()
-	if n != int64(en) {
-		t.Fatalf("Expected size to be %v, got %v", en, n)
-	}
-	if len(res) != 8 {
-		t.Fatalf("Unexpected number of outbound buffers: %v", len(res))
-	}
-	if len(res[4]) != wsFrameSizeForBrowsers {
-		t.Fatalf("Big frame should have been limited to %v, got %v", wsFrameSizeForBrowsers, len(res[4]))
-	}
-	if len(res[6]) != 10 {
-		t.Fatalf("Frame 6 should have the partial of 10 bytes, got %v", len(res[6]))
-	}
+			var bufs net.Buffers
+			bufs = append(bufs, []byte("this "))
+			bufs = append(bufs, []byte("is "))
+			bufs = append(bufs, []byte("a "))
+			bufs = append(bufs, []byte("set "))
+			bufs = append(bufs, []byte("of "))
+			bufs = append(bufs, []byte("buffers"))
+			en := 2
+			for _, b := range bufs {
+				en += len(b)
+			}
+			if test.maskingWrite {
+				en += 4
+			}
+			c.mu.Lock()
+			c.out.nb = bufs
+			res, n := c.collapsePtoNB()
+			c.mu.Unlock()
+			if n != int64(en) {
+				t.Fatalf("Expected size to be %v, got %v", en, n)
+			}
+			if eb := 1 + len(bufs); eb != len(res) {
+				t.Fatalf("Expected %v buffers, got %v", eb, len(res))
+			}
+			var ob []byte
+			for i := 1; i < len(res); i++ {
+				ob = append(ob, res[i]...)
+			}
+			if test.maskingWrite {
+				wsMaskBuf(getKey(res[0]), ob)
+			}
+			if !bytes.Equal(ob, []byte("this is a set of buffers")) {
+				t.Fatalf("Unexpected outbound: %q", ob)
+			}
 
-	bufs = nil
-	c.out.pb = 0
-	c.ws.fs = 0
-	c.ws.frames = nil
-	c.ws.browser = true
-	bufs = append(bufs, []byte("some smaller "))
-	bufs = append(bufs, []byte("buffers"))
-	// Have one of the exact max size
-	bufs = append(bufs, make([]byte, wsFrameSizeForBrowsers))
-	bufs = append(bufs, []byte("then some more"))
-	en = 2 + len(bufs[0]) + len(bufs[1])
-	en += 4 + len(bufs[2])
-	en += 2 + len(bufs[3])
-	c.mu.Lock()
-	c.out.nb = bufs
-	res, n = c.collapsePtoNB()
-	c.mu.Unlock()
-	if n != int64(en) {
-		t.Fatalf("Expected size to be %v, got %v", en, n)
-	}
-	if len(res) != 7 {
-		t.Fatalf("Unexpected number of outbound buffers: %v", len(res))
-	}
-	if len(res[4]) != wsFrameSizeForBrowsers {
-		t.Fatalf("Big frame should have been limited to %v, got %v", wsFrameSizeForBrowsers, len(res[4]))
-	}
-	if string(res[6]) != string(bufs[3]) {
-		t.Fatalf("Frame 6 should be %q, got %q", bufs[3], res[6])
-	}
+			bufs = nil
+			c.out.pb = 0
+			c.ws.fs = 0
+			c.ws.frames = nil
+			c.ws.browser = true
+			bufs = append(bufs, []byte("some smaller "))
+			bufs = append(bufs, []byte("buffers"))
+			bufs = append(bufs, make([]byte, wsFrameSizeForBrowsers+10))
+			bufs = append(bufs, []byte("then some more"))
+			en = 2 + len(bufs[0]) + len(bufs[1])
+			en += 4 + len(bufs[2]) - 10
+			en += 2 + len(bufs[3]) + 10
+			c.mu.Lock()
+			c.out.nb = bufs
+			res, n = c.collapsePtoNB()
+			c.mu.Unlock()
+			if test.maskingWrite {
+				en += 3 * 4
+			}
+			if n != int64(en) {
+				t.Fatalf("Expected size to be %v, got %v", en, n)
+			}
+			if len(res) != 8 {
+				t.Fatalf("Unexpected number of outbound buffers: %v", len(res))
+			}
+			if len(res[4]) != wsFrameSizeForBrowsers {
+				t.Fatalf("Big frame should have been limited to %v, got %v", wsFrameSizeForBrowsers, len(res[4]))
+			}
+			if len(res[6]) != 10 {
+				t.Fatalf("Frame 6 should have the partial of 10 bytes, got %v", len(res[6]))
+			}
+			if test.maskingWrite {
+				b := &bytes.Buffer{}
+				key := getKey(res[0])
+				b.Write(res[1])
+				b.Write(res[2])
+				ud := b.Bytes()
+				wsMaskBuf(key, ud)
+				if string(ud) != "some smaller buffers" {
+					t.Fatalf("Unexpected result: %q", ud)
+				}
 
-	bufs = nil
-	c.out.pb = 0
-	c.ws.fs = 0
-	c.ws.frames = nil
-	c.ws.browser = true
-	bufs = append(bufs, []byte("some smaller "))
-	bufs = append(bufs, []byte("buffers"))
-	// Have one of the exact max size, and last in the list
-	bufs = append(bufs, make([]byte, wsFrameSizeForBrowsers))
-	en = 2 + len(bufs[0]) + len(bufs[1])
-	en += 4 + len(bufs[2])
-	c.mu.Lock()
-	c.out.nb = bufs
-	res, n = c.collapsePtoNB()
-	c.mu.Unlock()
-	if n != int64(en) {
-		t.Fatalf("Expected size to be %v, got %v", en, n)
-	}
-	if len(res) != 5 {
-		t.Fatalf("Unexpected number of outbound buffers: %v", len(res))
-	}
-	if len(res[4]) != wsFrameSizeForBrowsers {
-		t.Fatalf("Big frame should have been limited to %v, got %v", wsFrameSizeForBrowsers, len(res[4]))
-	}
+				b.Reset()
+				key = getKey(res[3])
+				b.Write(res[4])
+				ud = b.Bytes()
+				wsMaskBuf(key, ud)
+				for i := 0; i < len(ud); i++ {
+					if ud[i] != 0 {
+						t.Fatalf("Unexpected result: %v", ud)
+					}
+				}
 
-	bufs = nil
-	c.out.pb = 0
-	c.ws.fs = 0
-	c.ws.frames = nil
-	c.ws.browser = true
-	bufs = append(bufs, []byte("some smaller buffer"))
-	bufs = append(bufs, make([]byte, wsFrameSizeForBrowsers-5))
-	bufs = append(bufs, []byte("then some more"))
-	en = 2 + len(bufs[0])
-	en += 4 + len(bufs[1])
-	en += 2 + len(bufs[2])
-	c.mu.Lock()
-	c.out.nb = bufs
-	res, n = c.collapsePtoNB()
-	c.mu.Unlock()
-	if n != int64(en) {
-		t.Fatalf("Expected size to be %v, got %v", en, n)
-	}
-	if len(res) != 6 {
-		t.Fatalf("Unexpected number of outbound buffers: %v", len(res))
-	}
-	if len(res[3]) != wsFrameSizeForBrowsers-5 {
-		t.Fatalf("Big frame should have been limited to %v, got %v", wsFrameSizeForBrowsers, len(res[4]))
-	}
-	if string(res[5]) != string(bufs[2]) {
-		t.Fatalf("Frame 6 should be %q, got %q", bufs[2], res[5])
+				b.Reset()
+				key = getKey(res[5])
+				b.Write(res[6])
+				b.Write(res[7])
+				ud = b.Bytes()
+				wsMaskBuf(key, ud)
+				for i := 0; i < len(ud[:10]); i++ {
+					if ud[i] != 0 {
+						t.Fatalf("Unexpected result: %v", ud[:10])
+					}
+				}
+				if string(ud[10:]) != "then some more" {
+					t.Fatalf("Unexpected result: %q", ud[10:])
+				}
+			}
+
+			bufs = nil
+			c.out.pb = 0
+			c.ws.fs = 0
+			c.ws.frames = nil
+			c.ws.browser = true
+			bufs = append(bufs, []byte("some smaller "))
+			bufs = append(bufs, []byte("buffers"))
+			// Have one of the exact max size
+			bufs = append(bufs, make([]byte, wsFrameSizeForBrowsers))
+			bufs = append(bufs, []byte("then some more"))
+			en = 2 + len(bufs[0]) + len(bufs[1])
+			en += 4 + len(bufs[2])
+			en += 2 + len(bufs[3])
+			c.mu.Lock()
+			c.out.nb = bufs
+			res, n = c.collapsePtoNB()
+			c.mu.Unlock()
+			if test.maskingWrite {
+				en += 3 * 4
+			}
+			if n != int64(en) {
+				t.Fatalf("Expected size to be %v, got %v", en, n)
+			}
+			if len(res) != 7 {
+				t.Fatalf("Unexpected number of outbound buffers: %v", len(res))
+			}
+			if len(res[4]) != wsFrameSizeForBrowsers {
+				t.Fatalf("Big frame should have been limited to %v, got %v", wsFrameSizeForBrowsers, len(res[4]))
+			}
+			if string(res[6]) != string(bufs[3]) {
+				t.Fatalf("Frame 6 should be %q, got %q", bufs[3], res[6])
+			}
+
+			bufs = nil
+			c.out.pb = 0
+			c.ws.fs = 0
+			c.ws.frames = nil
+			c.ws.browser = true
+			bufs = append(bufs, []byte("some smaller "))
+			bufs = append(bufs, []byte("buffers"))
+			// Have one of the exact max size, and last in the list
+			bufs = append(bufs, make([]byte, wsFrameSizeForBrowsers))
+			en = 2 + len(bufs[0]) + len(bufs[1])
+			en += 4 + len(bufs[2])
+			c.mu.Lock()
+			c.out.nb = bufs
+			res, n = c.collapsePtoNB()
+			c.mu.Unlock()
+			if test.maskingWrite {
+				en += 2 * 4
+			}
+			if n != int64(en) {
+				t.Fatalf("Expected size to be %v, got %v", en, n)
+			}
+			if len(res) != 5 {
+				t.Fatalf("Unexpected number of outbound buffers: %v", len(res))
+			}
+			if len(res[4]) != wsFrameSizeForBrowsers {
+				t.Fatalf("Big frame should have been limited to %v, got %v", wsFrameSizeForBrowsers, len(res[4]))
+			}
+
+			bufs = nil
+			c.out.pb = 0
+			c.ws.fs = 0
+			c.ws.frames = nil
+			c.ws.browser = true
+			bufs = append(bufs, []byte("some smaller buffer"))
+			bufs = append(bufs, make([]byte, wsFrameSizeForBrowsers-5))
+			bufs = append(bufs, []byte("then some more"))
+			en = 2 + len(bufs[0])
+			en += 4 + len(bufs[1])
+			en += 2 + len(bufs[2])
+			c.mu.Lock()
+			c.out.nb = bufs
+			res, n = c.collapsePtoNB()
+			c.mu.Unlock()
+			if test.maskingWrite {
+				en += 3 * 4
+			}
+			if n != int64(en) {
+				t.Fatalf("Expected size to be %v, got %v", en, n)
+			}
+			if len(res) != 6 {
+				t.Fatalf("Unexpected number of outbound buffers: %v", len(res))
+			}
+			if len(res[3]) != wsFrameSizeForBrowsers-5 {
+				t.Fatalf("Big frame should have been limited to %v, got %v", wsFrameSizeForBrowsers, len(res[4]))
+			}
+			if string(res[5]) != string(bufs[2]) {
+				t.Fatalf("Frame 6 should be %q, got %q", bufs[2], res[5])
+			}
+		})
 	}
 }
 
@@ -2781,45 +2851,62 @@ func TestWSCompressionWithPartialWrite(t *testing.T) {
 }
 
 func TestWSCompressionFrameSizeLimit(t *testing.T) {
-	opts := testWSOptions()
-	opts.MaxPending = MAX_PENDING_SIZE
-	s := &Server{opts: opts}
-	c := &client{srv: s, ws: &websocket{compress: true, browser: true}}
-	c.initClient()
+	for _, test := range []struct {
+		name      string
+		maskWrite bool
+	}{
+		{"no write masking", false},
+		{"write masking", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			opts := testWSOptions()
+			opts.MaxPending = MAX_PENDING_SIZE
+			s := &Server{opts: opts}
+			c := &client{srv: s, ws: &websocket{compress: true, browser: true, maskwrite: test.maskWrite}}
+			c.initClient()
 
-	// uncompressedPayload := []byte("abcdefghijklmnopqrstuvwxyz")
-	uncompressedPayload := make([]byte, 2*wsFrameSizeForBrowsers)
-	for i := 0; i < len(uncompressedPayload); i++ {
-		uncompressedPayload[i] = byte(rand.Intn(256))
-	}
+			uncompressedPayload := make([]byte, 2*wsFrameSizeForBrowsers)
+			for i := 0; i < len(uncompressedPayload); i++ {
+				uncompressedPayload[i] = byte(rand.Intn(256))
+			}
 
-	c.mu.Lock()
-	c.out.nb = append(net.Buffers(nil), uncompressedPayload)
-	nb, _ := c.collapsePtoNB()
-	c.mu.Unlock()
+			c.mu.Lock()
+			c.out.nb = append(net.Buffers(nil), uncompressedPayload)
+			nb, _ := c.collapsePtoNB()
+			c.mu.Unlock()
 
-	bb := &bytes.Buffer{}
-	for i, b := range nb {
-		// frame header buffer are always very small. The payload should not be more
-		// than 10 bytes since that is what we passed as the limit.
-		if len(b) > wsFrameSizeForBrowsers {
-			t.Fatalf("Frame size too big: %v (%q)", len(b), b)
-		}
-		// Check frame headers for the proper formatting.
-		if i%2 == 1 {
-			bb.Write(b)
-		}
-	}
-	buf := bb.Bytes()
-	buf = append(buf, 0x00, 0x00, 0xff, 0xff, 0x01, 0x00, 0x00, 0xff, 0xff)
-	dbr := bytes.NewBuffer(buf)
-	d := flate.NewReader(dbr)
-	uncompressed, err := ioutil.ReadAll(d)
-	if err != nil {
-		t.Fatalf("Error reading frame: %v", err)
-	}
-	if !bytes.Equal(uncompressed, uncompressedPayload) {
-		t.Fatalf("Unexpected uncomressed data: %q", uncompressed)
+			bb := &bytes.Buffer{}
+			var key []byte
+			for i, b := range nb {
+				// frame header buffer are always very small. The payload should not be more
+				// than 10 bytes since that is what we passed as the limit.
+				if len(b) > wsFrameSizeForBrowsers {
+					t.Fatalf("Frame size too big: %v (%q)", len(b), b)
+				}
+				if test.maskWrite {
+					if i%2 == 0 {
+						key = b[len(b)-4:]
+					} else {
+						wsMaskBuf(key, b)
+					}
+				}
+				// Check frame headers for the proper formatting.
+				if i%2 == 1 {
+					bb.Write(b)
+				}
+			}
+			buf := bb.Bytes()
+			buf = append(buf, 0x00, 0x00, 0xff, 0xff, 0x01, 0x00, 0x00, 0xff, 0xff)
+			dbr := bytes.NewBuffer(buf)
+			d := flate.NewReader(dbr)
+			uncompressed, err := ioutil.ReadAll(d)
+			if err != nil {
+				t.Fatalf("Error reading frame: %v", err)
+			}
+			if !bytes.Equal(uncompressed, uncompressedPayload) {
+				t.Fatalf("Unexpected uncomressed data: %q", uncompressed)
+			}
+		})
 	}
 }
 

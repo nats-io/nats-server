@@ -145,6 +145,8 @@ type RemoteLeafOpts struct {
 	TLSConfig    *tls.Config `json:"-"`
 	TLSTimeout   float64     `json:"tls_timeout,omitempty"`
 	Hub          bool        `json:"hub,omitempty"`
+	Compress     bool        `json:"-"`
+	WSMasking    bool        `json:"-"`
 	DenyImports  []string    `json:"-"`
 	DenyExports  []string    `json:"-"`
 }
@@ -1798,6 +1800,10 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 					continue
 				}
 				remote.DenyExports = subjects
+			case "compress", "compression":
+				remote.Compress = v.(bool)
+			case "ws_masking", "websocket_masking":
+				remote.WSMasking = v.(bool)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
@@ -3541,7 +3547,7 @@ func parseWebsocket(v interface{}, o *Options, errors *[]error, warnings *[]erro
 				*errors = append(*errors, err)
 			}
 			o.Websocket.HandshakeTimeout = ht
-		case "compression":
+		case "compress", "compression":
 			o.Websocket.Compression = mv.(bool)
 		case "authorization", "authentication":
 			auth := parseSimpleAuth(tk, errors, warnings)

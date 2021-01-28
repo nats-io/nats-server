@@ -674,6 +674,14 @@ func (c *client) processRouteInfo(info *Info) {
 		if !s.getOpts().Cluster.NoAdvertise {
 			s.addConnectURLsAndSendINFOToClients(info.ClientConnectURLs, info.WSConnectURLs)
 		}
+		// Add the remote's leafnodeURL to our list of URLs and send the update
+		// to all LN connections. (Note that when coming from a route, LeafNodeURLs
+		// is an array of size 1 max).
+		s.mu.Lock()
+		if len(info.LeafNodeURLs) == 1 && s.addLeafNodeURL(info.LeafNodeURLs[0]) {
+			s.sendAsyncLeafNodeInfo()
+		}
+		s.mu.Unlock()
 	} else {
 		c.Debugf("Detected duplicate remote route %q", info.ID)
 		c.closeConnection(DuplicateRoute)
@@ -1429,13 +1437,6 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 		// If the INFO contains a Gateway URL, add it to the list for our cluster.
 		if info.GatewayURL != "" && s.addGatewayURL(info.GatewayURL) {
 			s.sendAsyncGatewayInfo()
-		}
-
-		// Add the remote's leafnodeURL to our list of URLs and send the update
-		// to all LN connections. (Note that when coming from a route, LeafNodeURLs
-		// is an array of size 1 max).
-		if len(info.LeafNodeURLs) == 1 && s.addLeafNodeURL(info.LeafNodeURLs[0]) {
-			s.sendAsyncLeafNodeInfo()
 		}
 	}
 	s.mu.Unlock()
