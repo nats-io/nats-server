@@ -1214,6 +1214,10 @@ func (n *raft) Quorum() bool {
 func (n *raft) lostQuorum() bool {
 	n.RLock()
 	defer n.RUnlock()
+	return n.lostQuorumLocked()
+}
+
+func (n *raft) lostQuorumLocked() bool {
 	now, nc := time.Now().UnixNano(), 1
 	for _, peer := range n.peers {
 		if now-peer.ts < int64(lostQuorumInterval) {
@@ -2205,6 +2209,9 @@ func (n *raft) switchToCandidate() {
 	defer n.Unlock()
 	if n.state != Candidate {
 		n.notice("Switching to candidate")
+	} else if n.lostQuorumLocked() {
+		// We signal to the upper layers such that can alert on quorum lost.
+		n.updateLeadChange(false)
 	}
 	// Increment the term.
 	n.term++

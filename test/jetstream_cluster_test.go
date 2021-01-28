@@ -2336,8 +2336,12 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 		t.Fatalf("Expected to receive a consumer leader elected advisory")
 	}
 
-	// Setup subscription for lost quorum advisory.
+	// Setup subscriptions for lost quorum advisory.
 	ssub, err := nc.SubscribeSync(server.JSAdvisoryStreamQuorumLostPre + ".*")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	csub, err := nc.SubscribeSync(server.JSAdvisoryConsumerQuorumLostPre + ".*.*")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2380,7 +2384,7 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	// Make sure we received our lost quorum advisories.
 	adv, _ := ssub.NextMsg(0)
 	if adv == nil {
-		t.Fatalf("Expected to receive a quorum lost advisory")
+		t.Fatalf("Expected to receive a stream quorum lost advisory")
 	}
 	var lqa server.JSStreamQuorumLostAdvisory
 	if err := json.Unmarshal(adv.Data, &lqa); err != nil {
@@ -2388,6 +2392,18 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	}
 	if len(lqa.Replicas) != 2 {
 		t.Fatalf("Expected reports for both replicas, only got %d", len(lqa.Replicas))
+	}
+	// Consumer too.
+	adv, _ = csub.NextMsg(time.Second)
+	if adv == nil {
+		t.Fatalf("Expected to receive a consumer quorum lost advisory")
+	}
+	var clqa server.JSConsumerQuorumLostAdvisory
+	if err := json.Unmarshal(adv.Data, &clqa); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(clqa.Replicas) != 2 {
+		t.Fatalf("Expected reports for both replicas, only got %d", len(clqa.Replicas))
 	}
 
 	// Now let's take out the other non meta-leader server.
