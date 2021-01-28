@@ -1273,7 +1273,6 @@ func (js *jetStream) processStreamLeaderChange(mset *Stream, sa *streamAssignmen
 					Time: time.Now().UTC(),
 				},
 				Stream:   stream,
-				State:    mset.State(),
 				Leader:   s.serverNameForNode(node.GroupLeader()),
 				Replicas: s.replicas(node),
 			})
@@ -1290,7 +1289,6 @@ func (js *jetStream) processStreamLeaderChange(mset *Stream, sa *streamAssignmen
 					Time: time.Now().UTC(),
 				},
 				Stream:   stream,
-				State:    mset.State(),
 				Replicas: s.replicas(node),
 			})
 		}

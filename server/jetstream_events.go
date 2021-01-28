@@ -155,7 +155,6 @@ const JSStreamLeaderElectedAdvisoryType = "io.nats.jetstream.advisory.v1.stream_
 type JSStreamLeaderElectedAdvisory struct {
 	TypedEvent
 	Stream   string      `json:"stream"`
-	State    StreamState `json:"state"`
 	Leader   string      `json:"leader"`
 	Replicas []*PeerInfo `json:"replicas"`
 }
@@ -168,7 +167,6 @@ const JSStreamQuorumLostAdvisoryType = "io.nats.jetstream.advisory.v1.stream_quo
 type JSStreamQuorumLostAdvisory struct {
 	TypedEvent
 	Stream   string      `json:"stream"`
-	State    StreamState `json:"state"`
 	Replicas []*PeerInfo `json:"replicas"`
 }
 
