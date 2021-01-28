@@ -37,6 +37,7 @@ type RaftNode interface {
 	State() RaftState
 	Size() (entries, bytes uint64)
 	Leader() bool
+	Quorum() bool
 	Current() bool
 	GroupLeader() string
 	StepDown() error
@@ -754,9 +755,6 @@ func (n *raft) Group() string {
 func (n *raft) Peers() []*Peer {
 	n.RLock()
 	defer n.RUnlock()
-	if n.state != Leader {
-		return nil
-	}
 
 	var peers []*Peer
 	for id, ps := range n.peers {
@@ -1196,9 +1194,30 @@ func (n *raft) runAsLeader() {
 	}
 }
 
+// Quorum reports the quorum status. Will be called on former leaders.
+func (n *raft) Quorum() bool {
+	n.RLock()
+	defer n.RUnlock()
+
+	now, nc := time.Now().UnixNano(), 1
+	for _, peer := range n.peers {
+		if now-peer.ts < int64(lostQuorumInterval) {
+			nc++
+			if nc >= n.qn {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (n *raft) lostQuorum() bool {
 	n.RLock()
 	defer n.RUnlock()
+	return n.lostQuorumLocked()
+}
+
+func (n *raft) lostQuorumLocked() bool {
 	now, nc := time.Now().UnixNano(), 1
 	for _, peer := range n.peers {
 		if now-peer.ts < int64(lostQuorumInterval) {
@@ -2190,6 +2209,9 @@ func (n *raft) switchToCandidate() {
 	defer n.Unlock()
 	if n.state != Candidate {
 		n.notice("Switching to candidate")
+	} else if n.lostQuorumLocked() {
+		// We signal to the upper layers such that can alert on quorum lost.
+		n.updateLeadChange(false)
 	}
 	// Increment the term.
 	n.term++

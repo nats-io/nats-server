@@ -162,32 +162,44 @@ const (
 	// JSAdvisoryConsumerMsgTerminatedPre is a notification published when a message has been terminated.
 	JSAdvisoryConsumerMsgTerminatedPre = "$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED"
 
-	// JSAdvisoryStreamCreatedPre notification that a stream was created
+	// JSAdvisoryStreamCreatedPre notification that a stream was created.
 	JSAdvisoryStreamCreatedPre = "$JS.EVENT.ADVISORY.STREAM.CREATED"
 
-	// JSAdvisoryStreamDeletedPre notification that a stream was deleted
+	// JSAdvisoryStreamDeletedPre notification that a stream was deleted.
 	JSAdvisoryStreamDeletedPre = "$JS.EVENT.ADVISORY.STREAM.DELETED"
 
-	// JSAdvisoryStreamUpdatedPre notification that a stream was updated
+	// JSAdvisoryStreamUpdatedPre notification that a stream was updated.
 	JSAdvisoryStreamUpdatedPre = "$JS.EVENT.ADVISORY.STREAM.UPDATED"
 
-	// JSAdvisoryConsumerCreatedPre notification that a template created
+	// JSAdvisoryConsumerCreatedPre notification that a template created.
 	JSAdvisoryConsumerCreatedPre = "$JS.EVENT.ADVISORY.CONSUMER.CREATED"
 
-	// JSAdvisoryConsumerDeletedPre notification that a template deleted
+	// JSAdvisoryConsumerDeletedPre notification that a template deleted.
 	JSAdvisoryConsumerDeletedPre = "$JS.EVENT.ADVISORY.CONSUMER.DELETED"
 
-	// JSAdvisoryStreamSnapshotCreatePre notification that a snapshot was created
+	// JSAdvisoryStreamSnapshotCreatePre notification that a snapshot was created.
 	JSAdvisoryStreamSnapshotCreatePre = "$JS.EVENT.ADVISORY.STREAM.SNAPSHOT_CREATE"
 
-	// JSAdvisoryStreamSnapshotCompletePre notification that a snapshot was completed
+	// JSAdvisoryStreamSnapshotCompletePre notification that a snapshot was completed.
 	JSAdvisoryStreamSnapshotCompletePre = "$JS.EVENT.ADVISORY.STREAM.SNAPSHOT_COMPLETE"
 
-	// JSAdvisoryStreamRestoreCreatePre notification that a restore was start
+	// JSAdvisoryStreamRestoreCreatePre notification that a restore was start.
 	JSAdvisoryStreamRestoreCreatePre = "$JS.EVENT.ADVISORY.STREAM.RESTORE_CREATE"
 
-	// JSAdvisoryStreamRestoreCompletePre notification that a restore was completed
+	// JSAdvisoryStreamRestoreCompletePre notification that a restore was completed.
 	JSAdvisoryStreamRestoreCompletePre = "$JS.EVENT.ADVISORY.STREAM.RESTORE_COMPLETE"
+
+	// JSAdvisoryStreamLeaderElectPre notification that a replicated stream has elected a leader.
+	JSAdvisoryStreamLeaderElectedPre = "$JS.EVENT.ADVISORY.STREAM.LEADER_ELECTED"
+
+	// JSAdvisoryStreamQuorumLostPre notification that a stream and its consumers are stalled.
+	JSAdvisoryStreamQuorumLostPre = "$JS.EVENT.ADVISORY.STREAM.QUORUM_LOST"
+
+	// JSAdvisoryConsumerLeaderElectPre notification that a replicated consumer has elected a leader.
+	JSAdvisoryConsumerLeaderElectedPre = "$JS.EVENT.ADVISORY.CONSUMER.LEADER_ELECTED"
+
+	// JSAdvisoryConsumerQuorumLostPre notification that a consumer is stalled.
+	JSAdvisoryConsumerQuorumLostPre = "$JS.EVENT.ADVISORY.CONSUMER.QUORUM_LOST"
 
 	// JSAuditAdvisory is a notification about JetStream API access.
 	// FIXME - Add in details about who..

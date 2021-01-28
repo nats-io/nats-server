@@ -2285,8 +2285,27 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
+	// Setup subscription for leader elected.
+	lesub, err := nc.SubscribeSync(server.JSAdvisoryStreamLeaderElectedPre + ".*")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
 	if _, err := js.AddStream(&nats.StreamConfig{Name: "NO-Q", Replicas: 2}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Make sure we received our leader elected advisory.
+	leadv, _ := lesub.NextMsg(0)
+	if leadv == nil {
+		t.Fatalf("Expected to receive a leader elected advisory")
+	}
+	var le server.JSStreamLeaderElectedAdvisory
+	if err := json.Unmarshal(leadv.Data, &le); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if ln := c.streamLeader("$G", "NO-Q").Name(); le.Leader != ln {
+		t.Fatalf("Expected to have leader %q in elect advisory, got %q", ln, le.Leader)
 	}
 
 	payload := []byte("Hello JSC")
@@ -2294,6 +2313,12 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 		if _, err := js.Publish("NO-Q", payload); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
+	}
+
+	// Setup subscription for leader elected.
+	clesub, err := nc.SubscribeSync(server.JSAdvisoryConsumerLeaderElectedPre + ".*.*")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
 
 	sub, err := js.SubscribeSync("NO-Q")
@@ -2305,10 +2330,27 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
+	// Make sure we received our consumer leader elected advisory.
+	leadv, _ = clesub.NextMsg(0)
+	if leadv == nil {
+		t.Fatalf("Expected to receive a consumer leader elected advisory")
+	}
+
+	// Setup subscriptions for lost quorum advisory.
+	ssub, err := nc.SubscribeSync(server.JSAdvisoryStreamQuorumLostPre + ".*")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	csub, err := nc.SubscribeSync(server.JSAdvisoryConsumerQuorumLostPre + ".*.*")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	nc.Flush()
+
 	// Shutdown the non-leader.
 	c.randomNonStreamLeader("$G", "NO-Q").Shutdown()
 
-	// This should eventually have us stepdown as leader since we would have lost quorum.
+	// This should eventually have us stepdown as leader since we would have lost quorum with R=2.
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
 		if sl := c.streamLeader("$G", "NO-Q"); sl == nil {
 			return nil
@@ -2337,6 +2379,31 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	}
 	if _, err := sub.ConsumerInfo(); !notAvailableErr(err) {
 		t.Fatalf("Expected an 'unavailable' error, got %v", err)
+	}
+
+	// Make sure we received our lost quorum advisories.
+	adv, _ := ssub.NextMsg(0)
+	if adv == nil {
+		t.Fatalf("Expected to receive a stream quorum lost advisory")
+	}
+	var lqa server.JSStreamQuorumLostAdvisory
+	if err := json.Unmarshal(adv.Data, &lqa); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(lqa.Replicas) != 2 {
+		t.Fatalf("Expected reports for both replicas, only got %d", len(lqa.Replicas))
+	}
+	// Consumer too.
+	adv, _ = csub.NextMsg(time.Second)
+	if adv == nil {
+		t.Fatalf("Expected to receive a consumer quorum lost advisory")
+	}
+	var clqa server.JSConsumerQuorumLostAdvisory
+	if err := json.Unmarshal(adv.Data, &clqa); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(clqa.Replicas) != 2 {
+		t.Fatalf("Expected reports for both replicas, only got %d", len(clqa.Replicas))
 	}
 
 	// Now let's take out the other non meta-leader server.
@@ -2597,7 +2664,7 @@ func (c *cluster) waitOnNewConsumerLeader(account, stream, consumer string) {
 	expires := time.Now().Add(10 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.consumerLeader(account, stream, consumer); leader != nil {
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -2620,7 +2687,7 @@ func (c *cluster) waitOnNewStreamLeader(account, stream string) {
 	expires := time.Now().Add(10 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.streamLeader(account, stream); leader != nil {
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -2653,7 +2720,7 @@ func (c *cluster) waitOnStreamCurrent(s *server.Server, account, stream string) 
 	expires := time.Now().Add(10 * time.Second)
 	for time.Now().Before(expires) {
 		if s.JetStreamIsStreamCurrent(account, stream) {
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -2666,7 +2733,7 @@ func (c *cluster) waitOnServerCurrent(s *server.Server) {
 	expires := time.Now().Add(5 * time.Second)
 	for time.Now().Before(expires) {
 		if s.JetStreamIsCurrent() {
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -2736,6 +2803,7 @@ func (c *cluster) waitOnClusterReady() {
 	// Now make sure we have all peers.
 	for leader != nil && time.Now().Before(expires) {
 		if len(leader.JetStreamClusterPeers()) == len(c.servers) {
+			time.Sleep(50 * time.Millisecond)
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
