@@ -953,7 +953,7 @@ func TestLeafCloseTLSConnection(t *testing.T) {
 	ch <- true
 }
 
-func TestLeafCloseTLSSaveName(t *testing.T) {
+func TestLeafNodeTLSSaveName(t *testing.T) {
 	opts := DefaultOptions()
 	opts.LeafNode.Host = "127.0.0.1"
 	opts.LeafNode.Port = -1

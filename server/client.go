@@ -16,12 +16,14 @@ package server
 import (
 	"bytes"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -4670,6 +4672,102 @@ func (c *client) getClientInfo(detailed bool) *ClientInfo {
 	}
 	c.mu.Unlock()
 	return &ci
+}
+
+func (c *client) doTLSServerHandshake(typ string, tlsConfig *tls.Config, timeout float64) error {
+	_, err := c.doTLSHandshake(typ, false, nil, tlsConfig, _EMPTY_, timeout)
+	return err
+}
+
+func (c *client) doTLSClientHandshake(typ string, url *url.URL, tlsConfig *tls.Config, tlsName string, timeout float64) (bool, error) {
+	return c.doTLSHandshake(typ, true, url, tlsConfig, tlsName, timeout)
+}
+
+// Performs eithe server or client side (if solicit is true) TLS Handshake.
+// On error, the TLS handshake error has been logged and the connection
+// has been closed.
+//
+// Lock is held on entry.
+func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfig *tls.Config, tlsName string, timeout float64) (bool, error) {
+	var host string
+	var resetTLSName bool
+	var err error
+
+	// Capture kind for some debug/error statements.
+	kind := c.kind
+
+	// If we solicited, we will act like the client, otherwise the server.
+	if solicit {
+		c.Debugf("Starting TLS %s client handshake", typ)
+		if tlsConfig.ServerName == _EMPTY_ {
+			// If the given url is a hostname, use this hostname for the
+			// ServerName. If it is an IP, use the cfg's tlsName. If none
+			// is available, resort to current IP.
+			host = url.Hostname()
+			if tlsName != _EMPTY_ && net.ParseIP(host) != nil {
+				host = tlsName
+			}
+			tlsConfig.ServerName = host
+		}
+		c.nc = tls.Client(c.nc, tlsConfig)
+	} else {
+		if kind == CLIENT {
+			c.Debugf("Starting TLS client connection handshake")
+		} else {
+			c.Debugf("Starting TLS %s server handshake", typ)
+		}
+		c.nc = tls.Server(c.nc, tlsConfig)
+	}
+
+	conn := c.nc.(*tls.Conn)
+
+	// Setup the timeout
+	ttl := secondsToDuration(timeout)
+	time.AfterFunc(ttl, func() { tlsTimeout(c, conn) })
+	conn.SetReadDeadline(time.Now().Add(ttl))
+
+	c.mu.Unlock()
+	if err = conn.Handshake(); err != nil {
+		if solicit {
+			// Based on type of error, possibly clear the saved tlsName
+			// See: https://github.com/nats-io/nats-server/issues/1256
+			if _, ok := err.(x509.HostnameError); ok {
+				if host == tlsName {
+					resetTLSName = true
+				}
+			}
+		}
+		if kind == CLIENT {
+			c.Errorf("TLS handshake error: %v", err)
+		} else {
+			c.Errorf("TLS %s handshake error: %v", typ, err)
+		}
+		c.closeConnection(TLSHandshakeError)
+
+		// Grab the lock before returning since the caller was holding the lock on entry
+		c.mu.Lock()
+		// Returning any error is fine. Since the connection is closed ErrConnectionClosed
+		// is appropriate.
+		return resetTLSName, ErrConnectionClosed
+	}
+
+	// Reset the read deadline
+	conn.SetReadDeadline(time.Time{})
+
+	// Re-Grab lock
+	c.mu.Lock()
+
+	// To be consistent with client, set this flag to indicate that handshake is done
+	c.flags.set(handshakeComplete)
+
+	// The connection still may have been closed on success handshake due
+	// to a race with tls timeout. If that the case, return error indicating
+	// that the connection is closed.
+	if err == nil && c.isClosed() {
+		err = ErrConnectionClosed
+	}
+
+	return false, err
 }
 
 // getRAwAuthUser returns the raw auth user for the client.
