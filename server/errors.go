@@ -185,6 +185,9 @@ var (
 	// ErrJetStreamStreamAlreadyUsed is returned when a stream name has already been taken.
 	ErrJetStreamStreamAlreadyUsed = errors.New("stream name already in use")
 
+	// ErrJetStreamConsumerAlreadyUsed is returned when a consumer name has already been taken.
+	ErrJetStreamConsumerAlreadyUsed = errors.New("consumer name already in use")
+
 	// ErrJetStreamNotEnabledForAccount is returned JetStream is not enabled for this account.
 	ErrJetStreamNotEnabledForAccount = errors.New("jetstream not enabled for account")
 

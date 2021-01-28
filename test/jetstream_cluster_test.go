@@ -169,11 +169,12 @@ func TestJetStreamClusterSingleReplicaStreams(t *testing.T) {
 		t.Fatalf("ConsumerInfo is not correct %+v", ci)
 	}
 
-	// Now make sure that if we kill and restart the server that is the stream and consumer leader they return.
+	// Now make sure that if we kill and restart the server that this stream and consumer return.
 	sl := c.streamLeader("$G", "TEST")
 	sl.Shutdown()
 	c.restartServer(sl)
 	c.waitOnNewStreamLeader("$G", "TEST")
+	time.Sleep(500 * time.Millisecond)
 
 	si, err = js.StreamInfo("TEST")
 	if err != nil {
@@ -184,7 +185,8 @@ func TestJetStreamClusterSingleReplicaStreams(t *testing.T) {
 	}
 	// Now durable consumer.
 	c.waitOnNewConsumerLeader("$G", "TEST", "dlc")
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
+
 	if _, err = js.ConsumerInfo("TEST", "dlc"); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}

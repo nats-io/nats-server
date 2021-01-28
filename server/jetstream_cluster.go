@@ -1342,6 +1342,9 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	s, rg := js.srv, sa.Group
 	js.mu.RUnlock()
 
+	// Process the raft group and make sure it's running if needed.
+	err := js.createRaftGroup(rg)
+
 	// If we are restoring, create the stream if we are R>1 and not the preferred who handles the
 	// receipt of the snapshot itself.
 	shouldCreate := true
@@ -1352,9 +1355,6 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	}
 
 	var mset *Stream
-
-	// Process the raft group and make sure it's running if needed.
-	err := js.createRaftGroup(rg)
 
 	// Process here if not restoring or not the leader.
 	if shouldCreate && err == nil {
@@ -2678,7 +2678,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, subject, reply strin
 	} else {
 		oname = cfg.Durable
 		if sa.consumers[oname] != nil {
-			resp.Error = jsError(ErrJetStreamStreamAlreadyUsed)
+			resp.Error = jsError(ErrJetStreamConsumerAlreadyUsed)
 			s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 			return
 		}
@@ -2843,7 +2843,6 @@ func (mset *Stream) snapshot() []byte {
 
 // processClusteredMsg will propose the inbound message to the underlying raft group.
 func (mset *Stream) processClusteredInboundMsg(subject, reply string, hdr, msg []byte) error {
-
 	// For possible error response.
 	var response []byte
 
