@@ -884,12 +884,8 @@ func (mset *Stream) unsubscribeInternal(subject string) error {
 	if c == nil {
 		return fmt.Errorf("invalid stream")
 	}
-	if !c.srv.eventsEnabled() {
-		return ErrNoSysAccount
-	}
 
 	var sid []byte
-
 	c.mu.Lock()
 	for _, sub := range c.subs {
 		if subject == string(sub.subject) {
