@@ -1,4 +1,4 @@
-// Copyright 2019-2020 The NATS Authors
+// Copyright 2019-2021 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -40,7 +40,6 @@ type JetStreamConfig struct {
 	StoreDir  string
 }
 
-// TODO(dlc) - need to track and rollup against server limits, etc.
 type JetStreamAccountLimits struct {
 	MaxMemory    int64 `json:"max_memory"`
 	MaxStore     int64 `json:"max_storage"`
@@ -50,10 +49,17 @@ type JetStreamAccountLimits struct {
 
 // JetStreamAccountStats returns current statistics about the account's JetStream usage.
 type JetStreamAccountStats struct {
-	Memory  uint64                 `json:"memory"`
-	Store   uint64                 `json:"storage"`
-	Streams int                    `json:"streams"`
-	Limits  JetStreamAccountLimits `json:"limits"`
+	Memory    uint64                 `json:"memory"`
+	Store     uint64                 `json:"storage"`
+	Streams   int                    `json:"streams"`
+	Consumers int                    `json:"consumers"`
+	API       JetStreamAPIStats      `json:"api"`
+	Limits    JetStreamAccountLimits `json:"limits"`
+}
+
+type JetStreamAPIStats struct {
+	Total  uint64 `json:"total"`
+	Errors uint64 `json:"errors"`
 }
 
 // This is for internal accounting for JetStream for this server.
@@ -81,6 +87,8 @@ type jsAccount struct {
 	storeReserved int64
 	memTotal      int64
 	storeTotal    int64
+	apiTotal      uint64
+	apiErrors     uint64
 	usage         jsaUsage
 	rusage        map[string]*jsaUsage
 	storeDir      string
@@ -93,9 +101,12 @@ type jsAccount struct {
 	updatesSub *subscription
 }
 
+// Track general usage for this account.
 type jsaUsage struct {
 	mem   int64
 	store int64
+	api   uint64
+	err   uint64
 }
 
 // EnableJetStream will enable JetStream support on this server with the given configuration.
@@ -787,15 +798,27 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 
 	var stats JetStreamAccountStats
 	if jsa != nil {
+		js := jsa.js
 		jsa.mu.RLock()
 		stats.Memory = uint64(jsa.memTotal)
 		stats.Store = uint64(jsa.storeTotal)
+		stats.API = JetStreamAPIStats{
+			Total:  jsa.apiTotal,
+			Errors: jsa.apiErrors,
+		}
 		if cc := jsa.js.cluster; cc != nil {
-			jsa.js.mu.RLock()
-			stats.Streams = len(cc.streams[aname])
-			jsa.js.mu.RUnlock()
+			js.mu.RLock()
+			sas := cc.streams[aname]
+			stats.Streams = len(sas)
+			for _, sa := range sas {
+				stats.Consumers += len(sa.consumers)
+			}
+			js.mu.RUnlock()
 		} else {
 			stats.Streams = len(jsa.streams)
+			for _, mset := range jsa.streams {
+				stats.Consumers += mset.NumConsumers()
+			}
 		}
 		stats.Limits = jsa.limits
 		jsa.mu.RUnlock()
@@ -855,13 +878,13 @@ func (a *Account) JetStreamEnabled() bool {
 }
 
 func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, subject, _ string, msg []byte) {
-	const usageSize = 16
+	const usageSize = 32
 
 	jsa.mu.Lock()
 	s := jsa.js.srv
-	if len(msg) != usageSize {
+	if len(msg) < usageSize {
 		jsa.mu.Unlock()
-		s.Warnf("Received remote usage update that is wrong size: %d vs %d", len(msg), usageSize)
+		s.Warnf("Ignoring remote usage update with size too short")
 		return
 	}
 	var rnode string
@@ -875,6 +898,7 @@ func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, subject, _
 	}
 	var le = binary.LittleEndian
 	memUsed, storeUsed := int64(le.Uint64(msg[0:])), int64(le.Uint64(msg[8:]))
+	apiTotal, apiErrors := le.Uint64(msg[16:]), le.Uint64(msg[24:])
 
 	if jsa.rusage == nil {
 		jsa.rusage = make(map[string]*jsaUsage)
@@ -884,13 +908,17 @@ func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, subject, _
 		// Decrement our old values.
 		jsa.memTotal -= usage.mem
 		jsa.storeTotal -= usage.store
+		jsa.apiTotal -= usage.api
+		jsa.apiErrors -= usage.err
 		usage.mem, usage.store = memUsed, storeUsed
+		usage.api, usage.err = apiTotal, apiErrors
 	} else {
-		jsa.rusage[rnode] = &jsaUsage{memUsed, storeUsed}
+		jsa.rusage[rnode] = &jsaUsage{memUsed, storeUsed, apiTotal, apiErrors}
 	}
 	jsa.memTotal += memUsed
 	jsa.storeTotal += storeUsed
-
+	jsa.apiTotal += apiTotal
+	jsa.apiErrors += apiErrors
 	jsa.mu.Unlock()
 }
 
@@ -906,14 +934,25 @@ func (jsa *jsAccount) updateUsage(storeType StorageType, delta int64) {
 		jsa.storeTotal += delta
 	}
 	// Publish our local updates if in clustered mode.
-	if jsa.js != nil && jsa.js.cluster != nil && jsa.js.srv != nil {
-		s, b := jsa.js.srv, make([]byte, 16)
-		var le = binary.LittleEndian
-		le.PutUint64(b[0:], uint64(jsa.usage.mem))
-		le.PutUint64(b[8:], uint64(jsa.usage.store))
-		s.sendInternalMsgLocked(jsa.updatesPub, _EMPTY_, nil, b)
+	if jsa.js != nil && jsa.js.cluster != nil {
+		jsa.sendClusterUsageUpdate()
 	}
 	jsa.mu.Unlock()
+}
+
+// Send updates to our account usage for this server.
+// Lock should be held.
+func (jsa *jsAccount) sendClusterUsageUpdate() {
+	if jsa.js == nil || jsa.js.srv == nil {
+		return
+	}
+	s, b := jsa.js.srv, make([]byte, 32)
+	var le = binary.LittleEndian
+	le.PutUint64(b[0:], uint64(jsa.usage.mem))
+	le.PutUint64(b[8:], uint64(jsa.usage.store))
+	le.PutUint64(b[16:], uint64(jsa.usage.api))
+	le.PutUint64(b[24:], uint64(jsa.usage.err))
+	s.sendInternalMsgLocked(jsa.updatesPub, _EMPTY_, nil, b)
 }
 
 func (jsa *jsAccount) limitsExceeded(storeType StorageType) bool {
