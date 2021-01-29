@@ -48,23 +48,23 @@ func readOperatorJWT(jwtfile string) (string, *jwt.OperatorClaims, error) {
 	}
 	defer wipeSlice(contents)
 
-	var claim string
+	var theJWT string
 	items := nscDecoratedRe.FindAllSubmatch(contents, -1)
 	if len(items) == 0 {
-		claim = string(contents)
+		theJWT = string(contents)
 	} else {
 		// First result should be the JWT.
 		// We copy here so that if the file contained a seed file too we wipe appropriately.
 		raw := items[0][1]
 		tmp := make([]byte, len(raw))
 		copy(tmp, raw)
-		claim = string(tmp)
+		theJWT = string(tmp)
 	}
-	opc, err := jwt.DecodeOperatorClaims(claim)
+	opc, err := jwt.DecodeOperatorClaims(theJWT)
 	if err != nil {
 		return "", nil, err
 	}
-	return claim, opc, nil
+	return theJWT, opc, nil
 }
 
 // Just wipe slice with 'x', for clearing contents of nkey seed file.

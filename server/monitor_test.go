@@ -3517,16 +3517,16 @@ func TestMonitorOpJWT(t *testing.T) {
 	for pollMode := 1; pollMode < 2; pollMode++ {
 		l := pollVarz(t, sa, pollMode, pollURL, nil)
 
-		if len(l.OperatorJwt) != 1 {
+		if len(l.TrustedOperatorsJwt) != 1 {
 			t.Fatalf("Expected one operator jwt")
 		}
-		if len(l.OperatorClaim) != 1 {
+		if len(l.TrustedOperatorsClaim) != 1 {
 			t.Fatalf("Expected one operator claim")
 		}
-		if l.OperatorJwt[0] != string(theJWT) {
+		if l.TrustedOperatorsJwt[0] != string(theJWT) {
 			t.Fatalf("Expected operator to be identical to configuration")
 		}
-		if !reflect.DeepEqual(l.OperatorClaim[0], claim) {
+		if !reflect.DeepEqual(l.TrustedOperatorsClaim[0], claim) {
 			t.Fatal("claims need to be equal")
 		}
 	}

@@ -992,61 +992,61 @@ func (s *Server) HandleStacksz(w http.ResponseWriter, r *http.Request) {
 
 // Varz will output server information on the monitoring port at /varz.
 type Varz struct {
-	ID                string                `json:"server_id"`
-	Name              string                `json:"server_name"`
-	Version           string                `json:"version"`
-	Proto             int                   `json:"proto"`
-	GitCommit         string                `json:"git_commit,omitempty"`
-	GoVersion         string                `json:"go"`
-	Host              string                `json:"host"`
-	Port              int                   `json:"port"`
-	AuthRequired      bool                  `json:"auth_required,omitempty"`
-	TLSRequired       bool                  `json:"tls_required,omitempty"`
-	TLSVerify         bool                  `json:"tls_verify,omitempty"`
-	IP                string                `json:"ip,omitempty"`
-	ClientConnectURLs []string              `json:"connect_urls,omitempty"`
-	WSConnectURLs     []string              `json:"ws_connect_urls,omitempty"`
-	MaxConn           int                   `json:"max_connections"`
-	MaxSubs           int                   `json:"max_subscriptions,omitempty"`
-	PingInterval      time.Duration         `json:"ping_interval"`
-	MaxPingsOut       int                   `json:"ping_max"`
-	HTTPHost          string                `json:"http_host"`
-	HTTPPort          int                   `json:"http_port"`
-	HTTPBasePath      string                `json:"http_base_path"`
-	HTTPSPort         int                   `json:"https_port"`
-	AuthTimeout       float64               `json:"auth_timeout"`
-	MaxControlLine    int32                 `json:"max_control_line"`
-	MaxPayload        int                   `json:"max_payload"`
-	MaxPending        int64                 `json:"max_pending"`
-	Cluster           ClusterOptsVarz       `json:"cluster,omitempty"`
-	Gateway           GatewayOptsVarz       `json:"gateway,omitempty"`
-	LeafNode          LeafNodeOptsVarz      `json:"leaf,omitempty"`
-	JetStream         JetStreamVarz         `json:"jetstream,omitempty"`
-	TLSTimeout        float64               `json:"tls_timeout"`
-	WriteDeadline     time.Duration         `json:"write_deadline"`
-	Start             time.Time             `json:"start"`
-	Now               time.Time             `json:"now"`
-	Uptime            string                `json:"uptime"`
-	Mem               int64                 `json:"mem"`
-	Cores             int                   `json:"cores"`
-	MaxProcs          int                   `json:"gomaxprocs"`
-	CPU               float64               `json:"cpu"`
-	Connections       int                   `json:"connections"`
-	TotalConnections  uint64                `json:"total_connections"`
-	Routes            int                   `json:"routes"`
-	Remotes           int                   `json:"remotes"`
-	Leafs             int                   `json:"leafnodes"`
-	InMsgs            int64                 `json:"in_msgs"`
-	OutMsgs           int64                 `json:"out_msgs"`
-	InBytes           int64                 `json:"in_bytes"`
-	OutBytes          int64                 `json:"out_bytes"`
-	SlowConsumers     int64                 `json:"slow_consumers"`
-	Subscriptions     uint32                `json:"subscriptions"`
-	HTTPReqStats      map[string]uint64     `json:"http_req_stats"`
-	ConfigLoadTime    time.Time             `json:"config_load_time"`
-	Tags              jwt.TagList           `json:"tags,omitempty"`
-	OperatorJwt       []string              `json:"operator_jwt,omitempty"`
-	OperatorClaim     []*jwt.OperatorClaims `json:"operator_claim,omitempty"`
+	ID                    string                `json:"server_id"`
+	Name                  string                `json:"server_name"`
+	Version               string                `json:"version"`
+	Proto                 int                   `json:"proto"`
+	GitCommit             string                `json:"git_commit,omitempty"`
+	GoVersion             string                `json:"go"`
+	Host                  string                `json:"host"`
+	Port                  int                   `json:"port"`
+	AuthRequired          bool                  `json:"auth_required,omitempty"`
+	TLSRequired           bool                  `json:"tls_required,omitempty"`
+	TLSVerify             bool                  `json:"tls_verify,omitempty"`
+	IP                    string                `json:"ip,omitempty"`
+	ClientConnectURLs     []string              `json:"connect_urls,omitempty"`
+	WSConnectURLs         []string              `json:"ws_connect_urls,omitempty"`
+	MaxConn               int                   `json:"max_connections"`
+	MaxSubs               int                   `json:"max_subscriptions,omitempty"`
+	PingInterval          time.Duration         `json:"ping_interval"`
+	MaxPingsOut           int                   `json:"ping_max"`
+	HTTPHost              string                `json:"http_host"`
+	HTTPPort              int                   `json:"http_port"`
+	HTTPBasePath          string                `json:"http_base_path"`
+	HTTPSPort             int                   `json:"https_port"`
+	AuthTimeout           float64               `json:"auth_timeout"`
+	MaxControlLine        int32                 `json:"max_control_line"`
+	MaxPayload            int                   `json:"max_payload"`
+	MaxPending            int64                 `json:"max_pending"`
+	Cluster               ClusterOptsVarz       `json:"cluster,omitempty"`
+	Gateway               GatewayOptsVarz       `json:"gateway,omitempty"`
+	LeafNode              LeafNodeOptsVarz      `json:"leaf,omitempty"`
+	JetStream             JetStreamVarz         `json:"jetstream,omitempty"`
+	TLSTimeout            float64               `json:"tls_timeout"`
+	WriteDeadline         time.Duration         `json:"write_deadline"`
+	Start                 time.Time             `json:"start"`
+	Now                   time.Time             `json:"now"`
+	Uptime                string                `json:"uptime"`
+	Mem                   int64                 `json:"mem"`
+	Cores                 int                   `json:"cores"`
+	MaxProcs              int                   `json:"gomaxprocs"`
+	CPU                   float64               `json:"cpu"`
+	Connections           int                   `json:"connections"`
+	TotalConnections      uint64                `json:"total_connections"`
+	Routes                int                   `json:"routes"`
+	Remotes               int                   `json:"remotes"`
+	Leafs                 int                   `json:"leafnodes"`
+	InMsgs                int64                 `json:"in_msgs"`
+	OutMsgs               int64                 `json:"out_msgs"`
+	InBytes               int64                 `json:"in_bytes"`
+	OutBytes              int64                 `json:"out_bytes"`
+	SlowConsumers         int64                 `json:"slow_consumers"`
+	Subscriptions         uint32                `json:"subscriptions"`
+	HTTPReqStats          map[string]uint64     `json:"http_req_stats"`
+	ConfigLoadTime        time.Time             `json:"config_load_time"`
+	Tags                  jwt.TagList           `json:"tags,omitempty"`
+	TrustedOperatorsJwt   []string              `json:"trusted_operators_jwt,omitempty"`
+	TrustedOperatorsClaim []*jwt.OperatorClaims `json:"trusted_operators_claim,omitempty"`
 }
 
 // JetStreamVarz contains basic runtime information about jetstream
@@ -1253,13 +1253,13 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			TLSVerify:   leafTlsVerify,
 			Remotes:     []RemoteLeafOptsVarz{},
 		},
-		Start:         s.start,
-		MaxSubs:       opts.MaxSubs,
-		Cores:         numCores,
-		MaxProcs:      maxProcs,
-		Tags:          opts.Tags,
-		OperatorJwt:   opts.operatorJWT,
-		OperatorClaim: opts.TrustedOperators,
+		Start:                 s.start,
+		MaxSubs:               opts.MaxSubs,
+		Cores:                 numCores,
+		MaxProcs:              maxProcs,
+		Tags:                  opts.Tags,
+		TrustedOperatorsJwt:   opts.operatorJWT,
+		TrustedOperatorsClaim: opts.TrustedOperators,
 	}
 	if len(opts.Routes) > 0 {
 		varz.Cluster.URLs = urlsToStrings(opts.Routes)

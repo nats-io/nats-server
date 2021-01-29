@@ -227,10 +227,8 @@ type Options struct {
 	// Operating a trusted NATS server
 	TrustedKeys              []string              `json:"-"`
 	TrustedOperators         []*jwt.OperatorClaims `json:"-"`
-	operatorJWT              []string
-	AccountResolver          AccountResolver `json:"-"`
-	AccountResolverTLSConfig *tls.Config     `json:"-"`
-	resolverPreloads         map[string]string
+	AccountResolver          AccountResolver       `json:"-"`
+	AccountResolverTLSConfig *tls.Config           `json:"-"`
 
 	CustomClientAuthentication Authentication `json:"-"`
 	CustomRouterAuthentication Authentication `json:"-"`
@@ -256,6 +254,10 @@ type Options struct {
 	// defined in config and/or command line params.
 	inConfig  map[string]bool
 	inCmdLine map[string]bool
+
+	// private fields for operator mode
+	operatorJWT      []string
+	resolverPreloads map[string]string
 
 	// private fields, used for testing
 	gatewaysSolicitDelay time.Duration
