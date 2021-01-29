@@ -674,6 +674,14 @@ func (c *client) processRouteInfo(info *Info) {
 		if !s.getOpts().Cluster.NoAdvertise {
 			s.addConnectURLsAndSendINFOToClients(info.ClientConnectURLs, info.WSConnectURLs)
 		}
+		// Add the remote's leafnodeURL to our list of URLs and send the update
+		// to all LN connections. (Note that when coming from a route, LeafNodeURLs
+		// is an array of size 1 max).
+		s.mu.Lock()
+		if len(info.LeafNodeURLs) == 1 && s.addLeafNodeURL(info.LeafNodeURLs[0]) {
+			s.sendAsyncLeafNodeInfo()
+		}
+		s.mu.Unlock()
 	} else {
 		c.Debugf("Detected duplicate remote route %q", info.ID)
 		c.closeConnection(DuplicateRoute)
@@ -1314,46 +1322,13 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 
 	// Check for TLS
 	if tlsRequired {
-		// Copy off the config to add in ServerName if we need to.
-		tlsConfig := opts.Cluster.TLSConfig.Clone()
-
-		// If we solicited, we will act like the client, otherwise the server.
+		tlsConfig := opts.Cluster.TLSConfig
 		if didSolicit {
-			c.Debugf("Starting TLS route client handshake")
-			// Specify the ServerName we are expecting.
-			host, _, _ := net.SplitHostPort(rURL.Host)
-			tlsConfig.ServerName = host
-			c.nc = tls.Client(c.nc, tlsConfig)
-		} else {
-			c.Debugf("Starting TLS route server handshake")
-			c.nc = tls.Server(c.nc, tlsConfig)
+			// Copy off the config to add in ServerName if we need to.
+			tlsConfig = tlsConfig.Clone()
 		}
-
-		conn := c.nc.(*tls.Conn)
-
-		// Setup the timeout
-		ttl := secondsToDuration(opts.Cluster.TLSTimeout)
-		time.AfterFunc(ttl, func() { tlsTimeout(c, conn) })
-		conn.SetReadDeadline(time.Now().Add(ttl))
-
-		c.mu.Unlock()
-		if err := conn.Handshake(); err != nil {
-			c.Errorf("TLS route handshake error: %v", err)
-			c.sendErr("Secure Connection - TLS Required")
-			c.closeConnection(TLSHandshakeError)
-			return nil
-		}
-		// Reset the read deadline
-		conn.SetReadDeadline(time.Time{})
-
-		// Re-Grab lock
-		c.mu.Lock()
-
-		// To be consistent with client, set this flag to indicate that handshake is done
-		c.flags.set(handshakeComplete)
-
-		// Verify that the connection did not go away while we released the lock.
-		if c.isClosed() {
+		// Perform (server or client side) TLS handshake.
+		if _, err := c.doTLSHandshake("route", didSolicit, rURL, tlsConfig, _EMPTY_, opts.Cluster.TLSTimeout); err != nil {
 			c.mu.Unlock()
 			return nil
 		}
@@ -1462,13 +1437,6 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 		// If the INFO contains a Gateway URL, add it to the list for our cluster.
 		if info.GatewayURL != "" && s.addGatewayURL(info.GatewayURL) {
 			s.sendAsyncGatewayInfo()
-		}
-
-		// Add the remote's leafnodeURL to our list of URLs and send the update
-		// to all LN connections. (Note that when coming from a route, LeafNodeURLs
-		// is an array of size 1 max).
-		if len(info.LeafNodeURLs) == 1 && s.addLeafNodeURL(info.LeafNodeURLs[0]) {
-			s.sendAsyncLeafNodeInfo()
 		}
 	}
 	s.mu.Unlock()

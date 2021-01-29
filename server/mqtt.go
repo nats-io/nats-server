@@ -349,10 +349,15 @@ func (s *Server) createMQTTClient(conn net.Conn) *client {
 
 	c.mu.Lock()
 
-	isClosed := c.isClosed()
+	// In case connection has already been closed
+	if c.isClosed() {
+		c.mu.Unlock()
+		c.closeConnection(WriteError)
+		return nil
+	}
 
 	var pre []byte
-	if !isClosed && tlsRequired && opts.AllowNonTLS {
+	if tlsRequired && opts.AllowNonTLS {
 		pre = make([]byte, 4)
 		c.nc.SetReadDeadline(time.Now().Add(secondsToDuration(opts.MQTT.TLSTimeout)))
 		n, _ := io.ReadFull(c.nc, pre[:])
@@ -365,39 +370,17 @@ func (s *Server) createMQTTClient(conn net.Conn) *client {
 		}
 	}
 
-	if !isClosed && tlsRequired {
-		c.Debugf("Starting TLS client connection handshake")
+	if tlsRequired {
 		if len(pre) > 0 {
 			c.nc = &tlsMixConn{c.nc, bytes.NewBuffer(pre)}
 			pre = nil
 		}
 
-		c.nc = tls.Server(c.nc, opts.MQTT.TLSConfig)
-		conn := c.nc.(*tls.Conn)
-
-		ttl := secondsToDuration(opts.MQTT.TLSTimeout)
-		time.AfterFunc(ttl, func() { tlsTimeout(c, conn) })
-		conn.SetReadDeadline(time.Now().Add(ttl))
-
-		c.mu.Unlock()
-		if err := conn.Handshake(); err != nil {
-			c.Errorf("TLS handshake error: %v", err)
-			c.closeConnection(TLSHandshakeError)
+		// Perform server-side TLS handshake.
+		if err := c.doTLSServerHandshake("mqtt", opts.MQTT.TLSConfig, opts.MQTT.TLSTimeout); err != nil {
+			c.mu.Unlock()
 			return nil
 		}
-		conn.SetReadDeadline(time.Time{})
-
-		c.mu.Lock()
-
-		c.flags.set(handshakeComplete)
-
-		isClosed = c.isClosed()
-	}
-
-	if isClosed {
-		c.mu.Unlock()
-		c.closeConnection(WriteError)
-		return nil
 	}
 
 	if authRequired {

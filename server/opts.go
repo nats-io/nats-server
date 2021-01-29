@@ -147,6 +147,15 @@ type RemoteLeafOpts struct {
 	Hub          bool        `json:"hub,omitempty"`
 	DenyImports  []string    `json:"-"`
 	DenyExports  []string    `json:"-"`
+
+	// When an URL has the "ws" (or "wss") scheme, then the server will initiate the
+	// connection as a websocket connection. By default, the websocket frames will be
+	// masked (as if this server was a websocket client to the remote server). The
+	// NoMasking option will change this behavior and will send umasked frames.
+	Websocket struct {
+		Compression bool `json:"-"`
+		NoMasking   bool `json:"-"`
+	}
 }
 
 // Options block for nats-server.
@@ -1798,6 +1807,10 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 					continue
 				}
 				remote.DenyExports = subjects
+			case "ws_compress", "ws_compression", "websocket_compress", "websocket_compression":
+				remote.Websocket.Compression = v.(bool)
+			case "ws_no_masking", "websocket_no_masking":
+				remote.Websocket.NoMasking = v.(bool)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
@@ -3541,7 +3554,7 @@ func parseWebsocket(v interface{}, o *Options, errors *[]error, warnings *[]erro
 				*errors = append(*errors, err)
 			}
 			o.Websocket.HandshakeTimeout = ht
-		case "compression":
+		case "compress", "compression":
 			o.Websocket.Compression = mv.(bool)
 		case "authorization", "authentication":
 			auth := parseSimpleAuth(tk, errors, warnings)
