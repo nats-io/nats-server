@@ -726,7 +726,7 @@ func (js *jetStream) metaSnapshot() []byte {
 	return s2.EncodeBetter(nil, b)
 }
 
-func (js *jetStream) applyMetaSnapshot(buf []byte) error {
+func (js *jetStream) applyMetaSnapshot(buf []byte, isRecovering bool) error {
 	jse, err := s2.Decode(nil, buf)
 	if err != nil {
 		return err
@@ -794,32 +794,62 @@ func (js *jetStream) applyMetaSnapshot(buf []byte) error {
 
 	// Do removals first.
 	for _, sa := range saDel {
+		if isRecovering {
+			js.setStreamAssignmentResponded(sa)
+		}
 		js.processStreamRemoval(sa)
 	}
 	// Now do add for the streams. Also add in all consumers.
 	for _, sa := range saAdd {
+		if isRecovering {
+			js.setStreamAssignmentResponded(sa)
+		}
 		js.processStreamAssignment(sa)
 		// We can simply add the consumers.
 		for _, ca := range sa.consumers {
+			if isRecovering {
+				js.setConsumerAssignmentResponded(ca)
+			}
 			js.processConsumerAssignment(ca)
 		}
 	}
 	// Now do the deltas for existing stream's consumers.
 	for _, ca := range caDel {
+		if isRecovering {
+			js.setConsumerAssignmentResponded(ca)
+		}
 		js.processConsumerRemoval(ca)
 	}
 	for _, ca := range caAdd {
+		if isRecovering {
+			js.setConsumerAssignmentResponded(ca)
+		}
 		js.processConsumerAssignment(ca)
 	}
 
 	return nil
 }
 
+// Called on recovery to make sure we do not process like original
+func (js *jetStream) setStreamAssignmentResponded(sa *streamAssignment) {
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	sa.responded = true
+	sa.Restore = nil
+}
+
+// Called on recovery to make sure we do not process like original
+func (js *jetStream) setConsumerAssignmentResponded(ca *consumerAssignment) {
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	ca.responded = true
+}
+
 func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool, error) {
 	var didSnap bool
 	for _, e := range entries {
 		if e.Type == EntrySnapshot {
-			js.applyMetaSnapshot(e.Data)
+			js.applyMetaSnapshot(e.Data, isRecovering)
 			didSnap = true
 		} else {
 			buf := e.Data
@@ -830,9 +860,8 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 					js.srv.Errorf("JetStream cluster failed to decode stream assignment: %q", buf[1:])
 					return didSnap, err
 				}
-				// We process the assignment but ignore restore on recovery.
-				if sa.Restore != nil && isRecovering {
-					sa.Restore = nil
+				if isRecovering {
+					js.setStreamAssignmentResponded(sa)
 				}
 				js.processStreamAssignment(sa)
 			case removeStreamOp:
@@ -841,12 +870,18 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 					js.srv.Errorf("JetStream cluster failed to decode stream assignment: %q", buf[1:])
 					return didSnap, err
 				}
+				if isRecovering {
+					js.setStreamAssignmentResponded(sa)
+				}
 				js.processStreamRemoval(sa)
 			case assignConsumerOp:
 				ca, err := decodeConsumerAssignment(buf[1:])
 				if err != nil {
 					js.srv.Errorf("JetStream cluster failed to decode consumer assigment: %q", buf[1:])
 					return didSnap, err
+				}
+				if isRecovering {
+					js.setConsumerAssignmentResponded(ca)
 				}
 				js.processConsumerAssignment(ca)
 			case assignCompressedConsumerOp:
@@ -855,12 +890,18 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 					js.srv.Errorf("JetStream cluster failed to decode compressed consumer assigment: %q", buf[1:])
 					return didSnap, err
 				}
+				if isRecovering {
+					js.setConsumerAssignmentResponded(ca)
+				}
 				js.processConsumerAssignment(ca)
 			case removeConsumerOp:
 				ca, err := decodeConsumerAssignment(buf[1:])
 				if err != nil {
 					js.srv.Errorf("JetStream cluster failed to decode consumer assigment: %q", buf[1:])
 					return didSnap, err
+				}
+				if isRecovering {
+					js.setConsumerAssignmentResponded(ca)
 				}
 				js.processConsumerRemoval(ca)
 			default:
@@ -1153,6 +1194,9 @@ func (js *jetStream) monitorStream(mset *Stream, sa *streamAssignment) {
 				acc, _ := s.LookupAccount(sa.Client.Account)
 				restoreDoneCh = s.processStreamRestore(sa.Client, acc, sa.Config.Name, _EMPTY_, sa.Reply, _EMPTY_)
 			} else {
+				if !isLeader && n.GroupLeader() != noLeader {
+					js.setStreamAssignmentResponded(sa)
+				}
 				js.processStreamLeaderChange(mset, sa, isLeader)
 			}
 		case <-t.C:
@@ -1466,10 +1510,9 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 		// Go ahead and create or update the stream.
 		mset, err = acc.LookupStream(sa.Config.Name)
 		if err == nil && mset != nil {
+			mset.setStreamAssignment(sa)
 			if err := mset.Update(sa.Config); err != nil {
 				s.Warnf("JetStream cluster error updating stream %q for account %q: %v", sa.Config.Name, acc.Name, err)
-			} else {
-				mset.setStreamAssignment(sa)
 			}
 		} else if err == ErrJetStreamStreamNotFound {
 			// Add in the stream here.
@@ -1799,7 +1842,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment) {
 			}
 		}
 		o.setConsumerAssignment(ca)
-		s.Debugf("JetStream cluster, consumer already running")
+		s.Debugf("JetStream cluster, consumer was already running")
 	}
 
 	// Add in the consumer if needed.
@@ -1999,6 +2042,9 @@ func (js *jetStream) monitorConsumer(o *Consumer, ca *consumerAssignment) {
 				}
 			}
 		case isLeader := <-lch:
+			if !isLeader && n.GroupLeader() != noLeader {
+				js.setConsumerAssignmentResponded(ca)
+			}
 			js.processConsumerLeaderChange(o, ca, isLeader)
 		case <-t.C:
 			// TODO(dlc) - We should have this delayed a bit to not race the invariants.

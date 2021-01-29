@@ -765,7 +765,14 @@ func (mset *Stream) Update(config *StreamConfig) error {
 	}
 	// Now update config and store's version of our config.
 	mset.config = cfg
-	mset.sendUpdateAdvisoryLocked()
+
+	var suppress bool
+	if mset.isClustered() && mset.sa != nil {
+		suppress = mset.sa.responded
+	}
+	if !suppress {
+		mset.sendUpdateAdvisoryLocked()
+	}
 	mset.mu.Unlock()
 
 	mset.store.UpdateConfig(&cfg)

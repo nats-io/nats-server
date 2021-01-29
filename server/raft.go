@@ -66,6 +66,11 @@ type WAL interface {
 	Delete() error
 }
 
+type LeadChange struct {
+	Leader   bool
+	Previous string
+}
+
 type Peer struct {
 	ID      string
 	Current bool
@@ -1698,6 +1703,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		n.writeTermVote()
 		if isNew {
 			n.resetElectionTimeout()
+			n.updateLeadChange(false)
 		}
 	}
 
