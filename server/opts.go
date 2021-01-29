@@ -238,7 +238,6 @@ type Options struct {
 	TrustedOperators         []*jwt.OperatorClaims `json:"-"`
 	AccountResolver          AccountResolver       `json:"-"`
 	AccountResolverTLSConfig *tls.Config           `json:"-"`
-	resolverPreloads         map[string]string
 
 	CustomClientAuthentication Authentication `json:"-"`
 	CustomRouterAuthentication Authentication `json:"-"`
@@ -264,6 +263,10 @@ type Options struct {
 	// defined in config and/or command line params.
 	inConfig  map[string]bool
 	inCmdLine map[string]bool
+
+	// private fields for operator mode
+	operatorJWT      []string
+	resolverPreloads map[string]string
 
 	// private fields, used for testing
 	gatewaysSolicitDelay time.Duration
@@ -862,12 +865,13 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		// Assume for now these are file names, but they can also be the JWT itself inline.
 		o.TrustedOperators = make([]*jwt.OperatorClaims, 0, len(opFiles))
 		for _, fname := range opFiles {
-			opc, err := ReadOperatorJWT(fname)
+			theJWT, opc, err := readOperatorJWT(fname)
 			if err != nil {
 				err := &configErr{tk, fmt.Sprintf("error parsing operator JWT: %v", err)}
 				*errors = append(*errors, err)
 				continue
 			}
+			o.operatorJWT = append(o.operatorJWT, theJWT)
 			o.TrustedOperators = append(o.TrustedOperators, opc)
 		}
 		if len(o.TrustedOperators) == 1 {
