@@ -596,7 +596,7 @@ func (a *Account) trackAPI() {
 	if jsa != nil {
 		jsa.mu.Lock()
 		jsa.usage.api++
-		jsa.apiOk++
+		jsa.apiTotal++
 		jsa.sendClusterUsageUpdate()
 		jsa.mu.Unlock()
 	}
@@ -608,8 +608,10 @@ func (a *Account) trackAPIErr() {
 	a.mu.RUnlock()
 	if jsa != nil {
 		jsa.mu.Lock()
+		jsa.usage.api++
+		jsa.apiTotal++
 		jsa.usage.err++
-		jsa.apiErr++
+		jsa.apiErrors++
 		jsa.sendClusterUsageUpdate()
 		jsa.mu.Unlock()
 	}

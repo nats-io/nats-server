@@ -58,8 +58,8 @@ type JetStreamAccountStats struct {
 }
 
 type JetStreamAPIStats struct {
-	Ok  uint64
-	Err uint64
+	Total  uint64 `json:"total"`
+	Errors uint64 `json:"errors"`
 }
 
 // This is for internal accounting for JetStream for this server.
@@ -87,8 +87,8 @@ type jsAccount struct {
 	storeReserved int64
 	memTotal      int64
 	storeTotal    int64
-	apiOk         uint64
-	apiErr        uint64
+	apiTotal      uint64
+	apiErrors     uint64
 	usage         jsaUsage
 	rusage        map[string]*jsaUsage
 	storeDir      string
@@ -803,8 +803,8 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 		stats.Memory = uint64(jsa.memTotal)
 		stats.Store = uint64(jsa.storeTotal)
 		stats.API = JetStreamAPIStats{
-			Ok:  jsa.apiOk,
-			Err: jsa.apiErr,
+			Total:  jsa.apiTotal,
+			Errors: jsa.apiErrors,
 		}
 		if cc := jsa.js.cluster; cc != nil {
 			js.mu.RLock()
@@ -898,7 +898,7 @@ func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, subject, _
 	}
 	var le = binary.LittleEndian
 	memUsed, storeUsed := int64(le.Uint64(msg[0:])), int64(le.Uint64(msg[8:]))
-	apiOk, apiErr := le.Uint64(msg[16:]), le.Uint64(msg[24:])
+	apiTotal, apiErrors := le.Uint64(msg[16:]), le.Uint64(msg[24:])
 
 	if jsa.rusage == nil {
 		jsa.rusage = make(map[string]*jsaUsage)
@@ -908,17 +908,17 @@ func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, subject, _
 		// Decrement our old values.
 		jsa.memTotal -= usage.mem
 		jsa.storeTotal -= usage.store
-		jsa.apiOk -= usage.api
-		jsa.apiErr -= usage.err
+		jsa.apiTotal -= usage.api
+		jsa.apiErrors -= usage.err
 		usage.mem, usage.store = memUsed, storeUsed
-		usage.api, usage.err = apiOk, apiErr
+		usage.api, usage.err = apiTotal, apiErrors
 	} else {
-		jsa.rusage[rnode] = &jsaUsage{memUsed, storeUsed, apiOk, apiErr}
+		jsa.rusage[rnode] = &jsaUsage{memUsed, storeUsed, apiTotal, apiErrors}
 	}
 	jsa.memTotal += memUsed
 	jsa.storeTotal += storeUsed
-	jsa.apiOk += apiOk
-	jsa.apiErr += apiErr
+	jsa.apiTotal += apiTotal
+	jsa.apiErrors += apiErrors
 	jsa.mu.Unlock()
 }
 
