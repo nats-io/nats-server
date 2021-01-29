@@ -154,6 +154,7 @@ const JSStreamLeaderElectedAdvisoryType = "io.nats.jetstream.advisory.v1.stream_
 // JSStreamQuorumLostAdvisory indicates that a stream has lost quorum and is stalled.
 type JSStreamLeaderElectedAdvisory struct {
 	TypedEvent
+	Account  string      `json:"account,omitempty"`
 	Stream   string      `json:"stream"`
 	Leader   string      `json:"leader"`
 	Replicas []*PeerInfo `json:"replicas"`
@@ -166,6 +167,7 @@ const JSStreamQuorumLostAdvisoryType = "io.nats.jetstream.advisory.v1.stream_quo
 // JSStreamQuorumLostAdvisory indicates that a stream has lost quorum and is stalled.
 type JSStreamQuorumLostAdvisory struct {
 	TypedEvent
+	Account  string      `json:"account,omitempty"`
 	Stream   string      `json:"stream"`
 	Replicas []*PeerInfo `json:"replicas"`
 }
@@ -176,6 +178,7 @@ const JSConsumerLeaderElectedAdvisoryType = "io.nats.jetstream.advisory.v1.consu
 // JSStreamQuorumLostAdvisory indicates that a stream has lost quorum and is stalled.
 type JSConsumerLeaderElectedAdvisory struct {
 	TypedEvent
+	Account  string      `json:"account,omitempty"`
 	Stream   string      `json:"stream"`
 	Consumer string      `json:"consumer"`
 	Leader   string      `json:"leader"`
@@ -189,6 +192,7 @@ const JSConsumerQuorumLostAdvisoryType = "io.nats.jetstream.advisory.v1.consumer
 // JSConsumerQuorumLostAdvisory indicates that a consumer has lost quorum and is stalled.
 type JSConsumerQuorumLostAdvisory struct {
 	TypedEvent
+	Account  string      `json:"account,omitempty"`
 	Stream   string      `json:"stream"`
 	Consumer string      `json:"consumer"`
 	Replicas []*PeerInfo `json:"replicas"`

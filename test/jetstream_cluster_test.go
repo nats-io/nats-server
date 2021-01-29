@@ -201,7 +201,6 @@ func TestJetStreamClusterMultiReplicaStreams(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
-	// FIXME(dlc) - This should be default.
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo", "bar"},
@@ -2393,7 +2392,8 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	if len(lqa.Replicas) != 2 {
 		t.Fatalf("Expected reports for both replicas, only got %d", len(lqa.Replicas))
 	}
-	// Consumer too.
+	// Consumer too. Since we do not know if the consumer leader was not the one shutdown
+	// we should wait for a bit for the system to detect.
 	adv, _ = csub.NextMsg(time.Second)
 	if adv == nil {
 		t.Fatalf("Expected to receive a consumer quorum lost advisory")
@@ -2405,6 +2405,10 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	if len(clqa.Replicas) != 2 {
 		t.Fatalf("Expected reports for both replicas, only got %d", len(clqa.Replicas))
 	}
+
+	// Check to make sure we do not rapid fire these.
+	time.Sleep(500 * time.Millisecond)
+	checkSubsPending(t, csub, 0)
 
 	// Now let's take out the other non meta-leader server.
 	// We should get same error for general API calls.
@@ -2520,7 +2524,7 @@ func TestJetStreamClusterStreamPerf(t *testing.T) {
 var jsClusterTempl = `
 	listen: 127.0.0.1:-1
 	server_name: %s
-	jetstream: {max_mem_store: 2GB, max_file_store: 1GB, store_dir: "%s"}
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: "%s"}
 	cluster {
 		name: %s
 		listen: 127.0.0.1:%d
