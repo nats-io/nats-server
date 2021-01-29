@@ -4706,7 +4706,14 @@ func TestJWTHeader(t *testing.T) {
 }
 
 func TestJWTAccountImportsWithWildcardSupport(t *testing.T) {
-	test := func(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds, exSubExpect, exPub, imReq, imSubExpect string) {
+	test := func(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds string, jsEnabled bool, exSubExpect, exPub, imReq, imSubExpect string) {
+		jsSetting := ""
+		if jsEnabled {
+			jsSetting = "jetstream: {max_mem_store: 10Mb, max_file_store: 10Mb}"
+		}
+		_, aSysPub := createKey(t)
+		aSysClaim := jwt.NewAccountClaims(aSysPub)
+		aSysJwt := encodeClaim(t, aSysClaim, aSysPub)
 		cf := createConfFile(t, []byte(fmt.Sprintf(`
 		port: -1
 		operator = %s
@@ -4714,8 +4721,11 @@ func TestJWTAccountImportsWithWildcardSupport(t *testing.T) {
 		resolver_preload = {
 			%s : "%s"
 			%s : "%s"
+			%s : "%s"
 		}
-		`, ojwt, aExpPub, aExpJwt, aImpPub, aImpJwt)))
+		system_account: %s
+		%s
+		`, ojwt, aExpPub, aExpJwt, aImpPub, aImpJwt, aSysPub, aSysJwt, aSysPub, jsSetting)))
 		defer os.Remove(cf)
 
 		s, opts := RunServerWithConfig(cf)
@@ -4788,7 +4798,7 @@ func TestJWTAccountImportsWithWildcardSupport(t *testing.T) {
 		aImpJwt := encodeClaim(t, aImpClaim, aImpPub)
 		aImpCreds := newUser(t, aImpKp)
 		defer os.Remove(aImpCreds)
-		test(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds,
+		test(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds, false,
 			"$request.1.$in.2.bar", "$events.1.$in.2.bar",
 			"my.request.1.2.bar", "prefix.$events.1.$in.2.bar")
 	})
@@ -4812,33 +4822,37 @@ func TestJWTAccountImportsWithWildcardSupport(t *testing.T) {
 		aImpJwt := encodeClaim(t, aImpClaim, aImpPub)
 		aImpCreds := newUser(t, aImpKp)
 		defer os.Remove(aImpCreds)
-		test(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds,
+		test(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds, false,
 			"$request.1.$in.2.bar", "$events.1.$in.2.bar",
 			"my.request.1.2.bar", "my.events.1.2.bar")
 	})
 	t.Run("LocalSubject-Reorder", func(t *testing.T) {
-		aExpPub, aExpJwt, aExpCreds := createExporter()
-		defer os.Remove(aExpCreds)
-		aImpKp, aImpPub := createKey(t)
-		aImpClaim := jwt.NewAccountClaims(aImpPub)
-		aImpClaim.Name = "Import"
-		aImpClaim.Imports.Add(&jwt.Import{
-			Subject:      "$request.*.$in.*.>",
-			Type:         jwt.Service,
-			LocalSubject: "my.request.$2.$1.>",
-			Account:      aExpPub,
-		}, &jwt.Import{
-			Subject:      "$events.*.$in.*.>",
-			Type:         jwt.Stream,
-			LocalSubject: "my.events.$2.$1.>",
-			Account:      aExpPub,
-		})
-		aImpJwt := encodeClaim(t, aImpClaim, aImpPub)
-		aImpCreds := newUser(t, aImpKp)
-		defer os.Remove(aImpCreds)
-		test(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds,
-			"$request.2.$in.1.bar", "$events.1.$in.2.bar",
-			"my.request.1.2.bar", "my.events.2.1.bar")
+		for _, jsEnabled := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%t", jsEnabled), func(t *testing.T) {
+				aExpPub, aExpJwt, aExpCreds := createExporter()
+				defer os.Remove(aExpCreds)
+				aImpKp, aImpPub := createKey(t)
+				aImpClaim := jwt.NewAccountClaims(aImpPub)
+				aImpClaim.Name = "Import"
+				aImpClaim.Imports.Add(&jwt.Import{
+					Subject:      "$request.*.$in.*.>",
+					Type:         jwt.Service,
+					LocalSubject: "my.request.$2.$1.>",
+					Account:      aExpPub,
+				}, &jwt.Import{
+					Subject:      "$events.*.$in.*.>",
+					Type:         jwt.Stream,
+					LocalSubject: "my.events.$2.$1.>",
+					Account:      aExpPub,
+				})
+				aImpJwt := encodeClaim(t, aImpClaim, aImpPub)
+				aImpCreds := newUser(t, aImpKp)
+				defer os.Remove(aImpCreds)
+				test(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds, jsEnabled,
+					"$request.2.$in.1.bar", "$events.1.$in.2.bar",
+					"my.request.1.2.bar", "my.events.2.1.bar")
+			})
+		}
 	})
 }
 
