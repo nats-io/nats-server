@@ -603,6 +603,12 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, ca *consum
 	return o, nil
 }
 
+func (o *Consumer) consumerAssignment() *consumerAssignment {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.ca
+}
+
 func (o *Consumer) setConsumerAssignment(ca *consumerAssignment) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -1294,9 +1300,26 @@ func (o *Consumer) loopAndDeliverMsgs(qch chan struct{}) {
 
 // Info returns our current consumer state.
 func (o *Consumer) Info() *ConsumerInfo {
-	ci := o.srv.clusterInfo(o.node)
+	o.mu.RLock()
+	mset := o.mset
+	if mset == nil || mset.srv == nil {
+		o.mu.RUnlock()
+		return nil
+	}
+	o.mu.RUnlock()
+	s := mset.srv
+	s.mu.Lock()
+	js := s.js
+	s.mu.Unlock()
+	if js == nil {
+		return nil
+	}
 
-	o.mu.Lock()
+	ci := js.clusterInfo(o.raftGroup())
+
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+
 	info := &ConsumerInfo{
 		Stream:  o.stream,
 		Name:    o.name,
@@ -1319,7 +1342,6 @@ func (o *Consumer) Info() *ConsumerInfo {
 	if o.isPullMode() {
 		info.NumWaiting = o.waiting.len()
 	}
-	o.mu.Unlock()
 	return info
 }
 
@@ -1602,6 +1624,8 @@ func (wq *waitQueue) pop() *waitingRequest {
 // a single message. If the payload is a formal request or a number parseable with Atoi(), then we will send a
 // batch of messages without requiring another request to this endpoint, or an ACK.
 func (o *Consumer) processNextMsgReq(_ *subscription, c *client, _, reply string, msg []byte) {
+	_, msg = c.msgParts(msg)
+
 	o.mu.Lock()
 	mset := o.mset
 	if mset == nil || o.isPushMode() || o.sendq == nil {

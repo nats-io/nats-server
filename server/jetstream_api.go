@@ -142,6 +142,21 @@ const (
 	jsSnapshotAckT    = "$JS.SNAPSHOT.ACK.%s.%s"
 	jsRestoreDeliverT = "$JS.SNAPSHOT.RESTORE.%s.%s"
 
+	// JSApiStreamRemovePeer is the endpoint to remove a peer from a clustered stream and its consumers.
+	// Will return JSON response.
+	JSApiStreamRemovePeer  = "$JS.API.STREAM.PEER.REMOVE.*"
+	JSApiStreamRemovePeerT = "$JS.API.STREAM.PEER.REMOVE.%s"
+
+	// JSApiStreamLeaderStepDown is the endpoint to have stream leader stepdown.
+	// Will return JSON response.
+	JSApiStreamLeaderStepDown  = "$JS.API.STREAM.LEADER.STEPDOWN.*"
+	JSApiStreamLeaderStepDownT = "$JS.API.STREAM.LEADER.STEPDOWN.%s"
+
+	// JSApiConsumerLeaderStepDown is the endpoint to have consumer leader stepdown.
+	// Will return JSON response.
+	JSApiConsumerLeaderStepDown  = "$JS.API.CONSUMER.LEADER.STEPDOWN.*.*"
+	JSApiConsumerLeaderStepDownT = "$JS.API.CONSUMER.LEADER.STEPDOWN.%s.%s"
+
 	// jsAckT is the template for the ack message stream coming back from a consumer
 	// when they ACK/NAK, etc a message.
 	jsAckT   = "$JS.ACK.%s.%s"
@@ -371,6 +386,36 @@ type JSApiStreamRestoreResponse struct {
 
 const JSApiStreamRestoreResponseType = "io.nats.jetstream.api.v1.stream_restore_response"
 
+// JSApiStreamRemovePeerRequest is the required remove peer request.
+type JSApiStreamRemovePeerRequest struct {
+	// Server name of the peer to be removed.
+	Peer string `json:"peer"`
+}
+
+// JSApiStreamRemovePeerResponse is the response to a remove peer request.
+type JSApiStreamRemovePeerResponse struct {
+	ApiResponse
+	Success bool `json:"success,omitempty"`
+}
+
+const JSApiStreamRemovePeerResponseType = "io.nats.jetstream.api.v1.stream_remove_peer_response"
+
+// JSApiStreamLeaderStepDownResponse is the response to a leader stepdown request.
+type JSApiStreamLeaderStepDownResponse struct {
+	ApiResponse
+	Success bool `json:"success,omitempty"`
+}
+
+const JSApiStreamLeaderStepDownResponseType = "io.nats.jetstream.api.v1.stream_leader_stepdown_response"
+
+// JSApiConsumerLeaderStepDownResponse is the response to a consumer leader stepdown request.
+type JSApiConsumerLeaderStepDownResponse struct {
+	ApiResponse
+	Success bool `json:"success,omitempty"`
+}
+
+const JSApiConsumerLeaderStepDownResponseType = "io.nats.jetstream.api.v1.consumer_leader_stepdown_response"
+
 // JSApiMsgGetRequest get a message request.
 type JSApiMsgGetRequest struct {
 	Seq uint64 `json:"seq"`
@@ -480,16 +525,18 @@ type JSApiStreamTemplateNamesResponse struct {
 const JSApiStreamTemplateNamesResponseType = "io.nats.jetstream.api.v1.stream_template_names_response"
 
 var (
-	jsNotEnabledErr       = &ApiError{Code: 503, Description: "JetStream not enabled for account"}
-	jsBadRequestErr       = &ApiError{Code: 400, Description: "bad request"}
-	jsNotEmptyRequestErr  = &ApiError{Code: 400, Description: "expected an empty request payload"}
-	jsInvalidJSONErr      = &ApiError{Code: 400, Description: "invalid JSON request"}
-	jsInsufficientErr     = &ApiError{Code: 503, Description: "insufficient Resources"}
-	jsNoAccountErr        = &ApiError{Code: 404, Description: "account not found"}
-	jsNoConsumerErr       = &ApiError{Code: 404, Description: "consumer not found"}
-	jsStreamMismatchErr   = &ApiError{Code: 400, Description: "stream name in subject does not match request"}
-	jsNoClusterSupportErr = &ApiError{Code: 503, Description: "not currently supported in clustered mode"}
-	jsClusterNotAvailErr  = &ApiError{Code: 503, Description: "JetStream system temporarily unavailable"}
+	jsNotEnabledErr        = &ApiError{Code: 503, Description: "JetStream not enabled for account"}
+	jsBadRequestErr        = &ApiError{Code: 400, Description: "bad request"}
+	jsNotEmptyRequestErr   = &ApiError{Code: 400, Description: "expected an empty request payload"}
+	jsInvalidJSONErr       = &ApiError{Code: 400, Description: "invalid JSON request"}
+	jsInsufficientErr      = &ApiError{Code: 503, Description: "insufficient resources"}
+	jsNoConsumerErr        = &ApiError{Code: 404, Description: "consumer not found"}
+	jsStreamMismatchErr    = &ApiError{Code: 400, Description: "stream name in subject does not match request"}
+	jsNoClusterSupportErr  = &ApiError{Code: 503, Description: "not currently supported in clustered mode"}
+	jsClusterNotAvailErr   = &ApiError{Code: 503, Description: "JetStream system temporarily unavailable"}
+	jsClusterRequiredErr   = &ApiError{Code: 503, Description: "JetStream clustering support required"}
+	jsPeerNotMemberErr     = &ApiError{Code: 400, Description: "peer not a member"}
+	jsClusterIncompleteErr = &ApiError{Code: 503, Description: "incomplete results"}
 )
 
 // For easier handling of exports and imports.
@@ -508,6 +555,9 @@ var allJsExports = []string{
 	JSApiStreamPurge,
 	JSApiStreamSnapshot,
 	JSApiStreamRestore,
+	JSApiStreamRemovePeer,
+	JSApiStreamLeaderStepDown,
+	JSApiConsumerLeaderStepDown,
 	JSApiMsgDelete,
 	JSApiMsgGet,
 	JSApiConsumerCreate,
@@ -537,6 +587,9 @@ func (s *Server) setJetStreamExportSubs() error {
 		{JSApiStreamPurge, s.jsStreamPurgeRequest},
 		{JSApiStreamSnapshot, s.jsStreamSnapshotRequest},
 		{JSApiStreamRestore, s.jsStreamRestoreRequest},
+		{JSApiStreamRemovePeer, s.jsStreamRemovePeerRequest},
+		{JSApiStreamLeaderStepDown, s.jsStreamLeaderStepDownRequest},
+		{JSApiConsumerLeaderStepDown, s.jsConsumerLeaderStepDownRequest},
 		{JSApiMsgDelete, s.jsMsgDeleteRequest},
 		{JSApiMsgGet, s.jsMsgGetRequest},
 		{JSApiConsumerCreate, s.jsConsumerCreateRequest},
@@ -621,7 +674,7 @@ const badAPIRequestT = "Malformed JetStream API Request: %q"
 
 // Request for current usage and limits for this account.
 func (s *Server) jsAccountInfoRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil {
+	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
@@ -893,7 +946,7 @@ func jsNotFoundError(err error) *ApiError {
 
 // Request to create a stream.
 func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil {
+	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
@@ -956,7 +1009,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 
 // Request to update a stream.
 func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil {
+	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
 
@@ -1015,13 +1068,15 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 		return
 	}
 
-	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config(), Cluster: s.clusterInfo(mset.raftNode())}
+	js, _ := s.getJetStreamCluster()
+
+	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config(), Cluster: js.clusterInfo(mset.raftGroup())}
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // Request for the list of all stream names.
 func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil {
+	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
@@ -1142,7 +1197,7 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, rep
 // Request for the list of all detailed stream info.
 // TODO(dlc) - combine with above long term
 func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil {
+	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
@@ -1224,7 +1279,7 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 
 // Request for information about a stream.
 func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil {
+	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
@@ -1307,7 +1362,297 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 	if config.allowNoSubject && len(config.Subjects) == 0 {
 		config.Subjects = []string{">"}
 	}
-	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: config, Cluster: s.clusterInfo(mset.raftNode())}
+
+	js, _ := s.getJetStreamCluster()
+
+	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: config, Cluster: js.clusterInfo(mset.raftGroup())}
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+}
+
+// Request to have a stream leader stepdown.
+func (s *Server) jsStreamLeaderStepDownRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil || !s.JetStreamEnabled() {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+
+	// Have extra token for this one.
+	name := tokenAt(subject, 6)
+
+	var resp = JSApiStreamLeaderStepDownResponse{ApiResponse: ApiResponse{Type: JSApiStreamLeaderStepDownResponseType}}
+
+	// If we are not in clustered mode this is a failed request.
+	if !s.JetStreamIsClustered() {
+		resp.Error = jsClusterRequiredErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	// If we are here we are clustered. See if we are the stream leader in order to proceed.
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil {
+		return
+	}
+
+	if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+		resp.Error = jsClusterNotAvailErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	js.mu.RLock()
+	isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, name)
+	js.mu.RUnlock()
+
+	if isLeader && sa == nil {
+		resp.Error = jsNotFoundError(ErrJetStreamStreamNotFound)
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	} else if sa == nil {
+		return
+	}
+
+	if !acc.JetStreamEnabled() {
+		resp.Error = jsNotEnabledErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	if !isEmptyRequest(msg) {
+		resp.Error = jsBadRequestErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	// Check to see if we are a member of the group and if the group has no leader.
+	if js.isGroupLeaderless(sa.Group) {
+		resp.Error = jsClusterNotAvailErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	// We have the stream assigned and a leader, so only the stream leader should answer.
+	if !acc.JetStreamIsStreamLeader(name) {
+		return
+	}
+
+	mset, err := acc.LookupStream(name)
+	if err != nil {
+		resp.Error = jsNotFoundError(err)
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	// Call actual stepdown.
+	mset.raftNode().StepDown()
+
+	resp.Success = true
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+}
+
+// Request to have a consumer leader stepdown.
+func (s *Server) jsConsumerLeaderStepDownRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil || !s.JetStreamEnabled() {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+
+	var resp = JSApiConsumerLeaderStepDownResponse{ApiResponse: ApiResponse{Type: JSApiConsumerLeaderStepDownResponseType}}
+
+	// If we are not in clustered mode this is a failed request.
+	if !s.JetStreamIsClustered() {
+		resp.Error = jsClusterRequiredErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	// If we are here we are clustered. See if we are the stream leader in order to proceed.
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil {
+		return
+	}
+
+	if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+		resp.Error = jsClusterNotAvailErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	// Have extra token for this one.
+	stream := tokenAt(subject, 6)
+	consumer := tokenAt(subject, 7)
+
+	js.mu.RLock()
+	isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, stream)
+	js.mu.RUnlock()
+
+	if isLeader && sa == nil {
+		resp.Error = jsNotFoundError(ErrJetStreamStreamNotFound)
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	} else if sa == nil {
+		return
+	}
+	var ca *consumerAssignment
+	if sa.consumers != nil {
+		ca = sa.consumers[consumer]
+	}
+	if ca == nil {
+		resp.Error = jsNoConsumerErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	// Check to see if we are a member of the group and if the group has no leader.
+	if js.isGroupLeaderless(ca.Group) {
+		resp.Error = jsClusterNotAvailErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	if !acc.JetStreamIsConsumerLeader(stream, consumer) {
+		return
+	}
+
+	if !acc.JetStreamEnabled() {
+		resp.Error = jsNotEnabledErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	if !isEmptyRequest(msg) {
+		resp.Error = jsBadRequestErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	mset, err := acc.LookupStream(stream)
+	if err != nil {
+		resp.Error = jsNotFoundError(ErrJetStreamStreamNotFound)
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	o := mset.LookupConsumer(consumer)
+	if o == nil {
+		resp.Error = jsNoConsumerErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	// Call actual stepdown.
+	o.raftNode().StepDown()
+
+	resp.Success = true
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+}
+
+// Request to remove a peer from a clustered stream.
+func (s *Server) jsStreamRemovePeerRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil || !s.JetStreamEnabled() {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+
+	// Have extra token for this one.
+	name := tokenAt(subject, 6)
+
+	var resp = JSApiStreamRemovePeerResponse{ApiResponse: ApiResponse{Type: JSApiStreamRemovePeerResponseType}}
+
+	// If we are not in clustered mode this is a failed request.
+	if !s.JetStreamIsClustered() {
+		resp.Error = jsClusterRequiredErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	// If we are here we are clustered. See if we are the stream leader in order to proceed.
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil {
+		return
+	}
+
+	if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+		resp.Error = jsClusterNotAvailErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	js.mu.RLock()
+	isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, name)
+	js.mu.RUnlock()
+
+	// Make sure we are meta leader.
+	if !isLeader {
+		return
+	}
+
+	if !acc.JetStreamEnabled() {
+		resp.Error = jsNotEnabledErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	if isEmptyRequest(msg) {
+		resp.Error = jsBadRequestErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	var req JSApiStreamRemovePeerRequest
+	if err := json.Unmarshal(msg, &req); err != nil {
+		resp.Error = jsInvalidJSONErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	if req.Peer == _EMPTY_ {
+		resp.Error = jsBadRequestErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	if sa == nil {
+		// No stream present.
+		resp.Error = jsNotFoundError(ErrJetStreamStreamNotFound)
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	// Check to see if we are a member of the group and if the group has no leader.
+	if js.isGroupLeaderless(sa.Group) {
+		resp.Error = jsClusterNotAvailErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	// Peers here is a server name, convert to node name.
+	nodeName := string(getHash(req.Peer))
+
+	js.mu.RLock()
+	rg := sa.Group
+	isMember := rg.isMember(nodeName)
+	js.mu.RUnlock()
+
+	// Make sure we are a member.
+	if !isMember {
+		resp.Error = jsPeerNotMemberErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	// If we are here we have a valid peer member set for removal.
+	js.mu.Lock()
+	js.removePeerFromStream(sa, nodeName)
+	js.mu.Unlock()
+
+	resp.Success = true
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -1332,7 +1677,7 @@ func isEmptyRequest(req []byte) bool {
 
 // Request to delete a stream.
 func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil {
+	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
@@ -1402,7 +1747,7 @@ func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, re
 // Request to delete a message.
 // This expects a stream sequence number as the msg body.
 func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil {
+	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
@@ -1503,7 +1848,7 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 
 // Request to get a raw stream message.
 func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil {
+	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
@@ -1556,7 +1901,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 
 // Request to purge a stream.
 func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil {
+	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
@@ -1858,7 +2203,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, stream, subj
 
 // Process a snapshot request.
 func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil {
+	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
@@ -2061,7 +2406,7 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, subject, 
 }
 
 func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply string, rmsg []byte, expectDurable bool) {
-	if c == nil {
+	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
 
@@ -2169,7 +2514,7 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 
 // Request for the list of all consumer names.
 func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil {
+	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
@@ -2287,7 +2632,7 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 
 // Request for the list of all detailed consumer information.
 func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil {
+	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
 
@@ -2378,7 +2723,7 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 
 // Request for information about an consumer.
 func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil {
+	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
@@ -2473,7 +2818,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 
 // Request to delete an Consumer.
 func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-	if c == nil {
+	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)

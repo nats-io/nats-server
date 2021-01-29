@@ -1527,16 +1527,15 @@ func (s *Server) Start() {
 			return
 		}
 	} else {
-		// Check to see if any configured accounts have JetStream enabled
-		// and warn if they do.
+		// Check to see if any configured accounts have JetStream enabled.
 		s.accounts.Range(func(k, v interface{}) bool {
 			acc := v.(*Account)
 			acc.mu.RLock()
 			hasJs := acc.jsLimits != nil
-			name := acc.Name
 			acc.mu.RUnlock()
 			if hasJs {
-				s.Warnf("Account [%q] has JetStream configuration but JetStream not enabled", name)
+				s.checkJetStreamExports()
+				acc.enableAllJetStreamServiceImports()
 			}
 			return true
 		})

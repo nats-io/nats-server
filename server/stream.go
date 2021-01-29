@@ -245,7 +245,7 @@ func (a *Account) addStream(config *StreamConfig, fsConfig *FileStoreConfig, sa 
 	}
 	fsCfg.StoreDir = storeDir
 	if err := mset.setupStore(fsCfg); err != nil {
-		mset.Delete()
+		mset.stop(true, false)
 		return nil, err
 	}
 
@@ -270,7 +270,7 @@ func (a *Account) addStream(config *StreamConfig, fsConfig *FileStoreConfig, sa 
 	// This can be called though before we actually setup clustering, so check both.
 	if !s.JetStreamIsClustered() && s.standAloneMode() {
 		if err := mset.setLeader(true); err != nil {
-			mset.Delete()
+			mset.stop(true, false)
 			return nil, err
 		}
 	}
@@ -294,6 +294,12 @@ func (a *Account) addStream(config *StreamConfig, fsConfig *FileStoreConfig, sa 
 	}
 
 	return mset, nil
+}
+
+func (mset *Stream) streamAssignment() *streamAssignment {
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+	return mset.sa
 }
 
 func (mset *Stream) setStreamAssignment(sa *streamAssignment) {
@@ -325,8 +331,6 @@ func (mset *Stream) setLeader(isLeader bool) error {
 		// Setup subscriptions
 		if err := mset.subscribeToStream(); err != nil {
 			mset.mu.Unlock()
-			// FIXME(dlc)
-			mset.Delete()
 			return err
 		}
 	} else {
@@ -1788,21 +1792,21 @@ func (a *Account) RestoreStream(stream string, r io.Reader) (*Stream, error) {
 		metafile := path.Join(odir, ofi.Name(), JetStreamMetaFile)
 		metasum := path.Join(odir, ofi.Name(), JetStreamMetaFileSum)
 		if _, err := os.Stat(metafile); os.IsNotExist(err) {
-			mset.Delete()
+			mset.stop(true, false)
 			return nil, fmt.Errorf("error restoring consumer [%q]: %v", ofi.Name(), err)
 		}
 		buf, err := ioutil.ReadFile(metafile)
 		if err != nil {
-			mset.Delete()
+			mset.stop(true, false)
 			return nil, fmt.Errorf("error restoring consumer [%q]: %v", ofi.Name(), err)
 		}
 		if _, err := os.Stat(metasum); os.IsNotExist(err) {
-			mset.Delete()
+			mset.stop(true, false)
 			return nil, fmt.Errorf("error restoring consumer [%q]: %v", ofi.Name(), err)
 		}
 		var cfg FileConsumerInfo
 		if err := json.Unmarshal(buf, &cfg); err != nil {
-			mset.Delete()
+			mset.stop(true, false)
 			return nil, fmt.Errorf("error restoring consumer [%q]: %v", ofi.Name(), err)
 		}
 		isEphemeral := !isDurableConsumer(&cfg.ConsumerConfig)
@@ -1813,7 +1817,7 @@ func (a *Account) RestoreStream(stream string, r io.Reader) (*Stream, error) {
 		}
 		obs, err := mset.AddConsumer(&cfg.ConsumerConfig)
 		if err != nil {
-			mset.Delete()
+			mset.stop(true, false)
 			return nil, fmt.Errorf("error restoring consumer [%q]: %v", ofi.Name(), err)
 		}
 		if isEphemeral {
@@ -1823,7 +1827,7 @@ func (a *Account) RestoreStream(stream string, r io.Reader) (*Stream, error) {
 			obs.setCreated(cfg.Created)
 		}
 		if err := obs.readStoredState(); err != nil {
-			mset.Delete()
+			mset.stop(true, false)
 			return nil, fmt.Errorf("error restoring consumer [%q]: %v", ofi.Name(), err)
 		}
 	}

@@ -130,9 +130,11 @@ type debugOption struct {
 	newValue bool
 }
 
-// Apply is a no-op because logging will be reloaded after options are applied.
+// Apply is mostly a no-op because logging will be reloaded after options are applied.
+// However we will kick the raft nodes if they exist to reload.
 func (d *debugOption) Apply(server *Server) {
 	server.Noticef("Reloaded: debug = %v", d.newValue)
+	server.reloadDebugRaftNodes()
 }
 
 // logtimeOption implements the option interface for the `logtime` setting.
@@ -552,6 +554,9 @@ type jetStreamOption struct {
 
 func (a *jetStreamOption) Apply(s *Server) {
 	s.Noticef("Reloaded: jetstream")
+	if !a.newValue {
+		s.RemoveJetStream()
+	}
 }
 
 func (jso jetStreamOption) IsJetStreamChange() bool {
@@ -985,18 +990,33 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
 					field.Name, oldValue, newValue)
 			}
-		case "storedir":
-			return nil, fmt.Errorf("config reload not supported for jetstream storage directory")
 		case "jetstream":
 			new := newValue.(bool)
 			old := oldValue.(bool)
 			if new != old {
 				diffOpts = append(diffOpts, &jetStreamOption{newValue: new})
 			}
+		case "storedir":
+			new := newValue.(string)
+			old := oldValue.(string)
+			// If they are the same, or, we have turned it off (-1) that is ok.
+			if new != _EMPTY_ && new != old {
+				return nil, fmt.Errorf("config reload not supported for jetstream storage directory")
+			}
 		case "jetstreammaxmemory":
-			return nil, fmt.Errorf("config reload not supported for jetstream max memory")
+			old := oldValue.(int64)
+			new := newValue.(int64)
+			// If they are the same, or, we have turned it off (-1) that is ok.
+			if new != -1 && new != old {
+				return nil, fmt.Errorf("config reload not supported for jetstream max memory")
+			}
 		case "jetstreammaxstore":
-			return nil, fmt.Errorf("config reload not supported for jetstream max storage")
+			old := oldValue.(int64)
+			new := newValue.(int64)
+			// If they are the same, or, we have turned it off (-1) that is ok.
+			if new != -1 && new != old {
+				return nil, fmt.Errorf("config reload not supported for jetstream max storage")
+			}
 		case "websocket":
 			// Similar to gateways
 			tmpOld := oldValue.(WebsocketOpts)

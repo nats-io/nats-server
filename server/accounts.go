@@ -3087,20 +3087,20 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		a.srv = s
 	}
 
-	if jsEnabled {
-		if ac.Limits.JetStreamLimits.DiskStorage != 0 || ac.Limits.JetStreamLimits.MemoryStorage != 0 {
-			// JetStreamAccountLimits and jwt.JetStreamLimits use same value for unlimited
-			a.jsLimits = &JetStreamAccountLimits{
-				MaxMemory:    ac.Limits.JetStreamLimits.MemoryStorage,
-				MaxStore:     ac.Limits.JetStreamLimits.DiskStorage,
-				MaxStreams:   int(ac.Limits.JetStreamLimits.Streams),
-				MaxConsumers: int(ac.Limits.JetStreamLimits.Consumer),
-			}
-		} else if a.jsLimits != nil {
-			// covers failed update followed by disable
-			a.jsLimits = nil
+	// Setup js limits regardless of whether this server has jsEnabled.
+	if ac.Limits.JetStreamLimits.DiskStorage != 0 || ac.Limits.JetStreamLimits.MemoryStorage != 0 {
+		// JetStreamAccountLimits and jwt.JetStreamLimits use same value for unlimited
+		a.jsLimits = &JetStreamAccountLimits{
+			MaxMemory:    ac.Limits.JetStreamLimits.MemoryStorage,
+			MaxStore:     ac.Limits.JetStreamLimits.DiskStorage,
+			MaxStreams:   int(ac.Limits.JetStreamLimits.Streams),
+			MaxConsumers: int(ac.Limits.JetStreamLimits.Consumer),
 		}
+	} else if a.jsLimits != nil {
+		// covers failed update followed by disable
+		a.jsLimits = nil
 	}
+
 	a.updated = time.Now()
 	a.mu.Unlock()
 
@@ -3122,6 +3122,11 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			a.incomplete = true
 			a.mu.Unlock()
 		}
+	} else if a.jsLimits != nil {
+		// We do not have JS enabled for this server, but the account has it enabled so setup
+		// our imports properly. This allows this server to proxy JS traffic correctly.
+		s.checkJetStreamExports()
+		a.enableAllJetStreamServiceImports()
 	}
 
 	for i, c := range clients {
