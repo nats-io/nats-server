@@ -2496,8 +2496,8 @@ func TestLeafNodeWSBasic(t *testing.T) {
 			defer s.Shutdown()
 
 			lo := testDefaultRemoteLeafNodeWSOptions(t, o, test.tls)
-			lo.LeafNode.Remotes[0].Compress = test.remoteCompression
-			lo.LeafNode.Remotes[0].WSMasking = test.masking
+			lo.LeafNode.Remotes[0].Websocket.Compression = test.remoteCompression
+			lo.LeafNode.Remotes[0].Websocket.NoMasking = !test.masking
 			ln := RunServer(lo)
 			defer ln.Shutdown()
 
@@ -2573,26 +2573,26 @@ func TestLeafNodeWSBasic(t *testing.T) {
 
 func TestLeafNodeWSRemoteCompressAndMaskingOptions(t *testing.T) {
 	for _, test := range []struct {
-		name     string
-		compress bool
-		compStr  string
-		masking  bool
-		maskStr  string
+		name      string
+		compress  bool
+		compStr   string
+		noMasking bool
+		noMaskStr string
 	}{
-		{"compression no masking", true, "true", false, "false"},
-		{"compression masking", true, "true", true, "true"},
-		{"no compression no masking", false, "false", false, "false"},
-		{"no compression masking", false, "false", true, "true"},
+		{"compression masking", true, "true", false, "false"},
+		{"compression no masking", true, "true", true, "true"},
+		{"no compression masking", false, "false", false, "false"},
+		{"no compression no masking", false, "false", true, "true"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(fmt.Sprintf(`
 				port: -1
 				leafnodes {
 					remotes [
-						{url: "ws://127.0.0.1:1234", compress: %s, ws_masking: %s}
+						{url: "ws://127.0.0.1:1234", ws_compression: %s, ws_no_masking: %s}
 					]
 				}
-			`, test.compStr, test.maskStr)))
+			`, test.compStr, test.noMaskStr)))
 			defer os.Remove(conf)
 			o, err := ProcessConfigFile(conf)
 			if err != nil {
@@ -2602,11 +2602,11 @@ func TestLeafNodeWSRemoteCompressAndMaskingOptions(t *testing.T) {
 				t.Fatalf("Expected 1 remote, got %v", nr)
 			}
 			r := o.LeafNode.Remotes[0]
-			if cur := r.Compress; cur != test.compress {
+			if cur := r.Websocket.Compression; cur != test.compress {
 				t.Fatalf("Expected compress to be %v, got %v", test.compress, cur)
 			}
-			if cur := r.WSMasking; cur != test.masking {
-				t.Fatalf("Expected ws_masking to be %v, got %v", test.compress, cur)
+			if cur := r.Websocket.NoMasking; cur != test.noMasking {
+				t.Fatalf("Expected ws_masking to be %v, got %v", test.noMasking, cur)
 			}
 		})
 	}

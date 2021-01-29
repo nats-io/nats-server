@@ -675,7 +675,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 	// a remote Leaf Node connection as a websocket connection.
 	if remote != nil && rURL != nil && isWSURL(rURL) {
 		remote.RLock()
-		c.ws = &websocket{compress: remote.Compress, maskwrite: remote.WSMasking}
+		c.ws = &websocket{compress: remote.Websocket.Compression, maskwrite: !remote.Websocket.NoMasking}
 		remote.RUnlock()
 	}
 
@@ -1987,9 +1987,9 @@ func (c *client) leafNodeGetTLSConfigForSolicit(remote *leafNodeCfg, needsLock b
 // Lock held on entry.
 func (c *client) leafNodeSolicitWSConnection(opts *Options, rURL *url.URL, remote *leafNodeCfg) ([]byte, ClosedState, error) {
 	remote.RLock()
-	compress := remote.Compress
-	// WSMasking will be true if the server should mask its writes and behave like a websocket client.
-	noMasking := !remote.WSMasking
+	compress := remote.Websocket.Compression
+	// By default the server will mask outbound frames, but it can be disabled with this option.
+	noMasking := remote.Websocket.NoMasking
 	tlsRequired, tlsConfig, tlsName, tlsTimeout := c.leafNodeGetTLSConfigForSolicit(remote, false)
 	remote.RUnlock()
 	// Do TLS here as needed.
