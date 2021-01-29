@@ -2276,6 +2276,82 @@ func TestJetStreamClusterStreamTemplates(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterExtendedAccountInfo(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	sendBatch := func(subject string, n int) {
+		t.Helper()
+		for i := 0; i < n; i++ {
+			if _, err := js.Publish(subject, []byte("JSC-OK")); err != nil {
+				t.Fatalf("Unexpected publish error: %v", err)
+			}
+		}
+	}
+
+	// Add in some streams with msgs and consumers.
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST-1", Replicas: 2}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if _, err := js.SubscribeSync("TEST-1"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	sendBatch("TEST-1", 25)
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST-2", Replicas: 2}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if _, err := js.SubscribeSync("TEST-2"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	sendBatch("TEST-2", 50)
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST-3", Replicas: 3, Storage: nats.MemoryStorage}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if _, err := js.SubscribeSync("TEST-3"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	sendBatch("TEST-3", 100)
+
+	// Go client will lag so use direct for now.
+	getAccountInfo := func() *server.JetStreamAccountStats {
+		resp, err := nc.Request(server.JSApiAccountInfo, nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var info server.JSApiAccountInfoResponse
+		if err := json.Unmarshal(resp.Data, &info); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		return info.JetStreamAccountStats
+	}
+
+	ai := getAccountInfo()
+	if ai.Streams != 3 || ai.Consumers != 3 {
+		t.Fatalf("AccountInfo not correct: %+v", ai)
+	}
+	if ai.API.Ok < 10 {
+		t.Fatalf("Expected at least 10 API calls to be ok, got %d", ai.API.Ok)
+	}
+
+	// Now do a failure to make sure we track API errors.
+	js.StreamInfo("NO-STREAM")
+	js.ConsumerInfo("TEST-1", "NO-CONSUMER")
+	js.ConsumerInfo("TEST-2", "NO-CONSUMER")
+	js.ConsumerInfo("TEST-3", "NO-CONSUMER")
+
+	ai = getAccountInfo()
+	if ai.API.Err != 4 {
+		t.Fatalf("Expected 4 API calls to be errors, got %d", ai.API.Err)
+	}
+}
+
 func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()

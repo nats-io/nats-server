@@ -1203,12 +1203,14 @@ func (js *jetStream) applyStreamEntries(mset *Stream, ce *CommittedEntry) (bool,
 					var resp = JSApiMsgDeleteResponse{ApiResponse: ApiResponse{Type: JSApiMsgDeleteResponseType}}
 					if err != nil {
 						resp.Error = jsError(err)
+						s.sendAPIErrResponse(md.Client, mset.account(), _EMPTY_, md.Reply, _EMPTY_, s.jsonResponse(resp))
 					} else if !removed {
 						resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("sequence [%d] not found", md.Seq)}
+						s.sendAPIErrResponse(md.Client, mset.account(), _EMPTY_, md.Reply, _EMPTY_, s.jsonResponse(resp))
 					} else {
 						resp.Success = true
+						s.sendAPIResponse(md.Client, mset.account(), _EMPTY_, md.Reply, _EMPTY_, s.jsonResponse(resp))
 					}
-					s.sendAPIResponse(md.Client, mset.account(), _EMPTY_, md.Reply, _EMPTY_, s.jsonResponse(resp))
 				}
 			case purgeStreamOp:
 				sp, err := decodeStreamPurge(buf[1:])
@@ -1227,11 +1229,12 @@ func (js *jetStream) applyStreamEntries(mset *Stream, ce *CommittedEntry) (bool,
 					var resp = JSApiStreamPurgeResponse{ApiResponse: ApiResponse{Type: JSApiStreamPurgeResponseType}}
 					if err != nil {
 						resp.Error = jsError(err)
+						s.sendAPIErrResponse(sp.Client, mset.account(), _EMPTY_, sp.Reply, _EMPTY_, s.jsonResponse(resp))
 					} else {
 						resp.Purged = purged
 						resp.Success = true
+						s.sendAPIResponse(sp.Client, mset.account(), _EMPTY_, sp.Reply, _EMPTY_, s.jsonResponse(resp))
 					}
-					s.sendAPIResponse(sp.Client, mset.account(), _EMPTY_, sp.Reply, _EMPTY_, s.jsonResponse(resp))
 				}
 			default:
 				panic("JetStream Cluster Unknown group entry op type!")
@@ -1310,10 +1313,11 @@ func (js *jetStream) processStreamLeaderChange(mset *Stream, sa *streamAssignmen
 	var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
 	if err != nil {
 		resp.Error = jsError(err)
+		s.sendAPIErrResponse(client, acc, _EMPTY_, reply, _EMPTY_, s.jsonResponse(&resp))
 	} else {
 		resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config(), Cluster: s.clusterInfo(nil)}
+		s.sendAPIResponse(client, acc, _EMPTY_, reply, _EMPTY_, s.jsonResponse(&resp))
 	}
-	s.sendAPIResponse(client, acc, _EMPTY_, reply, _EMPTY_, s.jsonResponse(&resp))
 }
 
 // Will lookup a stream assignment.
@@ -1604,10 +1608,11 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 		if resp.Error == nil {
 			resp.Error = jsError(err)
 		}
+		s.sendAPIErrResponse(sa.Client, acc, _EMPTY_, sa.Reply, _EMPTY_, s.jsonResponse(resp))
 	} else {
 		resp.Success = true
+		s.sendAPIResponse(sa.Client, acc, _EMPTY_, sa.Reply, _EMPTY_, s.jsonResponse(resp))
 	}
-	s.sendAPIResponse(sa.Client, acc, _EMPTY_, sa.Reply, _EMPTY_, s.jsonResponse(resp))
 }
 
 // processConsumerAssignment is called when followers have replicated an assignment for a consumer.
@@ -1826,11 +1831,11 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 		if resp.Error == nil {
 			resp.Error = jsError(err)
 		}
+		s.sendAPIErrResponse(ca.Client, acc, _EMPTY_, ca.Reply, _EMPTY_, s.jsonResponse(resp))
 	} else {
 		resp.Success = true
+		s.sendAPIResponse(ca.Client, acc, _EMPTY_, ca.Reply, _EMPTY_, s.jsonResponse(resp))
 	}
-
-	s.sendAPIResponse(ca.Client, acc, _EMPTY_, ca.Reply, _EMPTY_, s.jsonResponse(resp))
 }
 
 // Returns the consumer assignment, or nil if not present.
@@ -2074,10 +2079,11 @@ func (js *jetStream) processConsumerLeaderChange(o *Consumer, ca *consumerAssign
 	var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
 	if err != nil {
 		resp.Error = jsError(err)
+		s.sendAPIErrResponse(client, acc, _EMPTY_, reply, _EMPTY_, s.jsonResponse(&resp))
 	} else {
 		resp.ConsumerInfo = o.Info()
+		s.sendAPIResponse(client, acc, _EMPTY_, reply, _EMPTY_, s.jsonResponse(&resp))
 	}
-	s.sendAPIResponse(client, acc, _EMPTY_, reply, _EMPTY_, s.jsonResponse(&resp))
 }
 
 type streamAssignmentResult struct {
@@ -2114,7 +2120,7 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 		} else if result.Restore != nil {
 			resp = s.jsonResponse(result.Restore)
 		}
-		js.srv.sendAPIResponse(sa.Client, acc, _EMPTY_, sa.Reply, _EMPTY_, resp)
+		js.srv.sendAPIErrResponse(sa.Client, acc, _EMPTY_, sa.Reply, _EMPTY_, resp)
 		sa.responded = true
 		// TODO(dlc) - Could have mixed results, should track per peer.
 		// Set sa.err while we are deleting so we will not respond to list/names requests.
@@ -2142,7 +2148,7 @@ func (js *jetStream) processConsumerAssignmentResults(sub *subscription, c *clie
 
 	if sa := js.streamAssignment(result.Account, result.Stream); sa != nil && sa.consumers != nil {
 		if ca := sa.consumers[result.Consumer]; ca != nil && !ca.responded {
-			js.srv.sendAPIResponse(ca.Client, acc, _EMPTY_, ca.Reply, _EMPTY_, s.jsonResponse(result.Response))
+			js.srv.sendAPIErrResponse(ca.Client, acc, _EMPTY_, ca.Reply, _EMPTY_, s.jsonResponse(result.Response))
 			ca.responded = true
 			// Check if this failed.
 			// TODO(dlc) - Could have mixed results, should track per peer.
@@ -2266,7 +2272,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, subject, reply string,
 	acc, err := s.LookupAccount(ci.Account)
 	if err != nil {
 		resp.Error = jsError(err)
-		s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
 
@@ -2286,7 +2292,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, subject, reply string,
 
 	if exceeded {
 		resp.Error = jsError(fmt.Errorf("maximum number of streams reached"))
-		s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
 
@@ -2296,7 +2302,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, subject, reply string,
 
 	if sa := js.streamAssignment(ci.Account, cfg.Name); sa != nil {
 		resp.Error = jsError(ErrJetStreamStreamAlreadyUsed)
-		s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
 
@@ -2304,7 +2310,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, subject, reply string,
 	rg := cc.createGroupForStream(cfg)
 	if rg == nil {
 		resp.Error = jsInsufficientErr
-		s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
 	// Pick a preferred leader.
@@ -2329,7 +2335,7 @@ func (s *Server) jsClusteredStreamDeleteRequest(ci *ClientInfo, stream, reply st
 		if err == nil {
 			var resp = JSApiStreamDeleteResponse{ApiResponse: ApiResponse{Type: JSApiStreamDeleteResponseType}}
 			resp.Error = jsNotFoundError(ErrJetStreamStreamNotFound)
-			s.sendAPIResponse(ci, acc, _EMPTY_, reply, string(rmsg), s.jsonResponse(&resp))
+			s.sendAPIErrResponse(ci, acc, _EMPTY_, reply, string(rmsg), s.jsonResponse(&resp))
 		}
 		return
 	}
@@ -2361,7 +2367,7 @@ func (s *Server) jsClusteredStreamPurgeRequest(ci *ClientInfo, stream, subject, 
 		} else {
 			resp.Error = jsNotFoundError(ErrJetStreamStreamNotFound)
 		}
-		s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
 
@@ -2384,7 +2390,7 @@ func (s *Server) jsClusteredStreamRestoreRequest(ci *ClientInfo, acc *Account, r
 
 	if sa := js.streamAssignment(ci.Account, cfg.Name); sa != nil {
 		resp.Error = jsError(ErrJetStreamStreamAlreadyUsed)
-		s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
 
@@ -2392,7 +2398,7 @@ func (s *Server) jsClusteredStreamRestoreRequest(ci *ClientInfo, acc *Account, r
 	rg := cc.createGroupForStream(cfg)
 	if rg == nil {
 		resp.Error = jsInsufficientErr
-		s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
 	// Pick a preferred leader.
@@ -2636,8 +2642,8 @@ func (s *Server) jsClusteredConsumerDeleteRequest(ci *ClientInfo, stream, consum
 		acc, err := s.LookupAccount(ci.Account)
 		if err == nil {
 			var resp = JSApiConsumerDeleteResponse{ApiResponse: ApiResponse{Type: JSApiConsumerDeleteResponseType}}
-			resp.Error = jsNoConsumerErr
-			s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+			resp.Error = jsNoAccountErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		}
 		return
 	}
@@ -2719,7 +2725,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, subject, reply strin
 	acc, err := s.LookupAccount(ci.Account)
 	if err != nil {
 		resp.Error = jsError(err)
-		s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
 
@@ -2727,14 +2733,14 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, subject, reply strin
 	sa := js.streamAssignment(ci.Account, stream)
 	if sa == nil {
 		resp.Error = jsError(ErrJetStreamStreamNotFound)
-		s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
 
 	rg := cc.createGroupForConsumer(sa)
 	if rg == nil {
 		resp.Error = jsInsufficientErr
-		s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
 	// Pick a preferred leader.
@@ -2756,7 +2762,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, subject, reply strin
 		oname = cfg.Durable
 		if sa.consumers[oname] != nil {
 			resp.Error = jsError(ErrJetStreamConsumerAlreadyUsed)
-			s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 			return
 		}
 	}
