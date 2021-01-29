@@ -3495,6 +3495,43 @@ func pollLeafz(t *testing.T, s *Server, mode int, url string, opts *LeafzOptions
 	return l
 }
 
+func TestMonitorOpJWT(t *testing.T) {
+	content := `
+	listen: "127.0.0.1:-1"
+	http: "127.0.0.1:-1"
+	operator = "../test/configs/nkeys/op.jwt"
+	resolver = MEMORY
+	`
+	conf := createConfFile(t, []byte(content))
+	defer os.Remove(conf)
+	sa, _ := RunServerWithConfig(conf)
+	defer sa.Shutdown()
+
+	theJWT, err := ioutil.ReadFile("../test/configs/nkeys/op.jwt")
+	require_NoError(t, err)
+	theJWT = []byte(strings.Split(string(theJWT), "\n")[1])
+	claim, err := jwt.DecodeOperatorClaims(string(theJWT))
+	require_NoError(t, err)
+
+	pollURL := fmt.Sprintf("http://127.0.0.1:%d/varz", sa.MonitorAddr().Port)
+	for pollMode := 1; pollMode < 2; pollMode++ {
+		l := pollVarz(t, sa, pollMode, pollURL, nil)
+
+		if len(l.OperatorJwt) != 1 {
+			t.Fatalf("Expected one operator jwt")
+		}
+		if len(l.OperatorClaim) != 1 {
+			t.Fatalf("Expected one operator claim")
+		}
+		if l.OperatorJwt[0] != string(theJWT) {
+			t.Fatalf("Expected operator to be identical to configuration")
+		}
+		if !reflect.DeepEqual(l.OperatorClaim[0], claim) {
+			t.Fatal("claims need to be equal")
+		}
+	}
+}
+
 func TestMonitorLeafz(t *testing.T) {
 	content := `
 	listen: "127.0.0.1:-1"

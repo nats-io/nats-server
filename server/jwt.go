@@ -32,11 +32,16 @@ const jwtPrefix = "eyJ"
 
 // ReadOperatorJWT will read a jwt file for an operator claim. This can be a decorated file.
 func ReadOperatorJWT(jwtfile string) (*jwt.OperatorClaims, error) {
+	_, claim, err := readOperatorJWT(jwtfile)
+	return claim, err
+}
+
+func readOperatorJWT(jwtfile string) (string, *jwt.OperatorClaims, error) {
 	contents, err := ioutil.ReadFile(jwtfile)
 	if err != nil {
 		// Check to see if the JWT has been inlined.
 		if !strings.HasPrefix(jwtfile, jwtPrefix) {
-			return nil, err
+			return "", nil, err
 		}
 		// We may have an inline jwt here.
 		contents = []byte(jwtfile)
@@ -57,9 +62,9 @@ func ReadOperatorJWT(jwtfile string) (*jwt.OperatorClaims, error) {
 	}
 	opc, err := jwt.DecodeOperatorClaims(claim)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	return opc, nil
+	return claim, opc, nil
 }
 
 // Just wipe slice with 'x', for clearing contents of nkey seed file.
