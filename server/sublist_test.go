@@ -1396,6 +1396,32 @@ func TestSublistReverseMatch(t *testing.T) {
 	verifyMember(r.psubs, fooBarBazSub, t)
 }
 
+func TestSublistMatchWithEmptyTokens(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		cache bool
+	}{
+		{"cache", true},
+		{"no cache", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sl := NewSublist(true)
+			sub1 := newSub(">")
+			sub2 := newQSub(">", "queue")
+			sl.Insert(sub1)
+			sl.Insert(sub2)
+
+			for _, subj := range []string{".foo", "..foo", "foo..", "foo.", "foo..bar", "foo...bar"} {
+				t.Run(subj, func(t *testing.T) {
+					r := sl.Match(subj)
+					verifyLen(r.psubs, 0, t)
+					verifyQLen(r.qsubs, 0, t)
+				})
+			}
+		})
+	}
+}
+
 // -- Benchmarks Setup --
 
 var benchSublistSubs []*subscription
