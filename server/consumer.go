@@ -217,6 +217,7 @@ type Consumer struct {
 	ca      *consumerAssignment
 	node    RaftNode
 	infoSub *subscription
+	lqsent  time.Time
 }
 
 const (
@@ -2605,4 +2606,11 @@ func (o *Consumer) decStreamPending(sseq uint64, subj string) {
 		o.sgap--
 	}
 	o.mu.Unlock()
+}
+
+func (o *Consumer) account() *Account {
+	o.mu.RLock()
+	a := o.acc
+	o.mu.RUnlock()
+	return a
 }

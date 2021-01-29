@@ -1265,32 +1265,12 @@ func (js *jetStream) processStreamLeaderChange(mset *Stream, sa *streamAssignmen
 
 	if isLeader {
 		s.Noticef("JetStream cluster new stream leader for '%s > %s'", sa.Client.Account, stream)
-		if node := mset.raftNode(); node != nil {
-			s.publishAdvisory(mset.account(), JSAdvisoryStreamLeaderElectedPre+"."+stream, &JSStreamLeaderElectedAdvisory{
-				TypedEvent: TypedEvent{
-					Type: JSStreamLeaderElectedAdvisoryType,
-					ID:   nuid.Next(),
-					Time: time.Now().UTC(),
-				},
-				Stream:   stream,
-				Leader:   s.serverNameForNode(node.GroupLeader()),
-				Replicas: s.replicas(node),
-			})
-		}
+		s.sendStreamLeaderElectAdvisory(mset)
 	} else {
-		// We are stepping down. Make sure if we are doing so because we have lost quorum that
-		// we send the appropriate advisories.
+		// We are stepping down.
+		// Make sure if we are doing so because we have lost quorum that we send the appropriate advisories.
 		if node := mset.raftNode(); node != nil && !node.Quorum() {
-			s.Warnf("JetStream cluster stream '%s > %s' has lost quorum, stalled.", sa.Client.Account, stream)
-			s.publishAdvisory(mset.account(), JSAdvisoryStreamQuorumLostPre+"."+stream, &JSStreamQuorumLostAdvisory{
-				TypedEvent: TypedEvent{
-					Type: JSStreamQuorumLostAdvisoryType,
-					ID:   nuid.Next(),
-					Time: time.Now().UTC(),
-				},
-				Stream:   stream,
-				Replicas: s.replicas(node),
-			})
+			s.sendStreamLostQuorumAdvisory(mset)
 		}
 	}
 
@@ -1314,6 +1294,83 @@ func (js *jetStream) processStreamLeaderChange(mset *Stream, sa *streamAssignmen
 		resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config(), Cluster: s.clusterInfo(nil)}
 	}
 	s.sendAPIResponse(client, acc, _EMPTY_, reply, _EMPTY_, s.jsonResponse(&resp))
+}
+
+// Fixed value ok for now.
+const lostQuorumAdvInterval = 10 * time.Second
+
+// Determines if we should send lost quorum advisory. We throttle these after first one.
+func (mset *Stream) shouldSendLostQuorum() bool {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	if time.Since(mset.lqsent) >= lostQuorumAdvInterval {
+		mset.lqsent = time.Now()
+		return true
+	}
+	return false
+}
+
+func (s *Server) sendStreamLostQuorumAdvisory(mset *Stream) {
+	if mset == nil {
+		return
+	}
+	node, stream, acc := mset.raftNode(), mset.Name(), mset.account()
+	if node == nil {
+		return
+	}
+	if !mset.shouldSendLostQuorum() {
+		return
+	}
+
+	s.Warnf("JetStream cluster stream '%s > %s' has NO quorum, stalled.", acc.GetName(), stream)
+
+	subj := JSAdvisoryStreamQuorumLostPre + "." + stream
+	adv := &JSStreamQuorumLostAdvisory{
+		TypedEvent: TypedEvent{
+			Type: JSStreamQuorumLostAdvisoryType,
+			ID:   nuid.Next(),
+			Time: time.Now().UTC(),
+		},
+		Stream:   stream,
+		Replicas: s.replicas(node),
+	}
+
+	// Send to the user's account if not the system account.
+	if acc != s.SystemAccount() {
+		s.publishAdvisory(acc, subj, adv)
+	}
+	// Now do system level one. Place account info in adv, and nil account means system.
+	adv.Account = acc.GetName()
+	s.publishAdvisory(nil, subj, adv)
+}
+
+func (s *Server) sendStreamLeaderElectAdvisory(mset *Stream) {
+	if mset == nil {
+		return
+	}
+	node, stream, acc := mset.raftNode(), mset.Name(), mset.account()
+	if node == nil {
+		return
+	}
+	subj := JSAdvisoryStreamLeaderElectedPre + "." + stream
+	adv := &JSStreamLeaderElectedAdvisory{
+		TypedEvent: TypedEvent{
+			Type: JSStreamLeaderElectedAdvisoryType,
+			ID:   nuid.Next(),
+			Time: time.Now().UTC(),
+		},
+		Stream:   stream,
+		Leader:   s.serverNameForNode(node.GroupLeader()),
+		Replicas: s.replicas(node),
+	}
+
+	// Send to the user's account if not the system account.
+	if acc != s.SystemAccount() {
+		s.publishAdvisory(acc, subj, adv)
+	}
+	// Now do system level one. Place account info in adv, and nil account means system.
+	adv.Account = acc.GetName()
+	s.publishAdvisory(nil, subj, adv)
 }
 
 // Will lookup a stream assignment.
@@ -2033,34 +2090,12 @@ func (js *jetStream) processConsumerLeaderChange(o *Consumer, ca *consumerAssign
 
 	if isLeader {
 		s.Noticef("JetStream cluster new consumer leader for '%s > %s > %s'", ca.Client.Account, stream, consumer)
-		if node := o.raftNode(); node != nil {
-			s.publishAdvisory(acc, JSAdvisoryConsumerLeaderElectedPre+"."+stream+"."+consumer, &JSConsumerLeaderElectedAdvisory{
-				TypedEvent: TypedEvent{
-					Type: JSConsumerLeaderElectedAdvisoryType,
-					ID:   nuid.Next(),
-					Time: time.Now().UTC(),
-				},
-				Stream:   stream,
-				Consumer: consumer,
-				Leader:   s.serverNameForNode(node.GroupLeader()),
-				Replicas: s.replicas(node),
-			})
-		}
+		s.sendConsumerLeaderElectAdvisory(o)
 	} else {
-		// We are stepping down. Make sure if we are doing so because we have lost quorum that
-		// we send the appropriate advisories.
+		// We are stepping down.
+		// Make sure if we are doing so because we have lost quorum that we send the appropriate advisories.
 		if node := o.raftNode(); node != nil && !node.Quorum() {
-			s.Warnf("JetStream cluster consumer '%s > %s >%s' has lost quorum, stalled.", ca.Client.Account, stream, consumer)
-			s.publishAdvisory(acc, JSAdvisoryConsumerQuorumLostPre+"."+stream+"."+consumer, &JSConsumerQuorumLostAdvisory{
-				TypedEvent: TypedEvent{
-					Type: JSConsumerQuorumLostAdvisoryType,
-					ID:   nuid.Next(),
-					Time: time.Now().UTC(),
-				},
-				Stream:   stream,
-				Consumer: consumer,
-				Replicas: s.replicas(node),
-			})
+			s.sendConsumerLostQuorumAdvisory(o)
 		}
 	}
 
@@ -2078,6 +2113,83 @@ func (js *jetStream) processConsumerLeaderChange(o *Consumer, ca *consumerAssign
 		resp.ConsumerInfo = o.Info()
 	}
 	s.sendAPIResponse(client, acc, _EMPTY_, reply, _EMPTY_, s.jsonResponse(&resp))
+}
+
+// Determines if we should send lost quorum advisory. We throttle these after first one.
+func (o *Consumer) shouldSendLostQuorum() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if time.Since(o.lqsent) >= lostQuorumAdvInterval {
+		o.lqsent = time.Now()
+		return true
+	}
+	return false
+}
+
+func (s *Server) sendConsumerLostQuorumAdvisory(o *Consumer) {
+	if o == nil {
+		return
+	}
+	node, stream, consumer, acc := o.raftNode(), o.Stream(), o.Name(), o.account()
+	if node == nil {
+		return
+	}
+	if !o.shouldSendLostQuorum() {
+		return
+	}
+
+	s.Warnf("JetStream cluster consumer '%s > %s >%s' has NO quorum, stalled.", acc.GetName(), stream, consumer)
+
+	subj := JSAdvisoryConsumerQuorumLostPre + "." + stream + "." + consumer
+	adv := &JSConsumerQuorumLostAdvisory{
+		TypedEvent: TypedEvent{
+			Type: JSConsumerQuorumLostAdvisoryType,
+			ID:   nuid.Next(),
+			Time: time.Now().UTC(),
+		},
+		Stream:   stream,
+		Consumer: consumer,
+		Replicas: s.replicas(node),
+	}
+
+	// Send to the user's account if not the system account.
+	if acc != s.SystemAccount() {
+		s.publishAdvisory(acc, subj, adv)
+	}
+	// Now do system level one. Place account info in adv, and nil account means system.
+	adv.Account = acc.GetName()
+	s.publishAdvisory(nil, subj, adv)
+}
+
+func (s *Server) sendConsumerLeaderElectAdvisory(o *Consumer) {
+	if o == nil {
+		return
+	}
+	node, stream, consumer, acc := o.raftNode(), o.Stream(), o.Name(), o.account()
+	if node == nil {
+		return
+	}
+
+	subj := JSAdvisoryConsumerLeaderElectedPre + "." + stream + "." + consumer
+	adv := &JSConsumerLeaderElectedAdvisory{
+		TypedEvent: TypedEvent{
+			Type: JSConsumerLeaderElectedAdvisoryType,
+			ID:   nuid.Next(),
+			Time: time.Now().UTC(),
+		},
+		Stream:   stream,
+		Consumer: consumer,
+		Leader:   s.serverNameForNode(node.GroupLeader()),
+		Replicas: s.replicas(node),
+	}
+
+	// Send to the user's account if not the system account.
+	if acc != s.SystemAccount() {
+		s.publishAdvisory(acc, subj, adv)
+	}
+	// Now do system level one. Place account info in adv, and nil account means system.
+	adv.Account = acc.GetName()
+	s.publishAdvisory(nil, subj, adv)
 }
 
 type streamAssignmentResult struct {
