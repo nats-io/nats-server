@@ -2560,6 +2560,18 @@ func (s *Server) jsClusteredConsumerListRequest(acc *Account, ci *ClientInfo, of
 	defer s.sysUnsubscribe(rsub)
 
 	// Send out our requests here.
+	var resp = JSApiConsumerListResponse{
+		ApiResponse: ApiResponse{Type: JSApiConsumerListResponseType},
+		Consumers:   []*ConsumerInfo{},
+	}
+
+	if len(consumers) == 0 {
+		resp.Limit = JSApiListLimit
+		resp.Offset = offset
+		s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(resp))
+		return
+	}
+
 	for _, ca := range consumers {
 		isubj := fmt.Sprintf(clusterConsumerInfoT, ca.Client.Account, stream, ca.Name)
 		s.sendInternalMsgLocked(isubj, inbox, nil, nil)
@@ -2568,11 +2580,6 @@ func (s *Server) jsClusteredConsumerListRequest(acc *Account, ci *ClientInfo, of
 	const timeout = 2 * time.Second
 	notActive := time.NewTimer(timeout)
 	defer notActive.Stop()
-
-	var resp = JSApiConsumerListResponse{
-		ApiResponse: ApiResponse{Type: JSApiConsumerListResponseType},
-		Consumers:   []*ConsumerInfo{},
-	}
 
 LOOP:
 	for {
