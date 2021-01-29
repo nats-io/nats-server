@@ -510,9 +510,15 @@ func (s *Sublist) match(subject string, doLock bool) *SublistResult {
 	start := 0
 	for i := 0; i < len(subject); i++ {
 		if subject[i] == btsep {
+			if i-start == 0 {
+				return emptyResult
+			}
 			tokens = append(tokens, subject[start:i])
 			start = i + 1
 		}
+	}
+	if start >= len(subject) {
+		return emptyResult
 	}
 	tokens = append(tokens, subject[start:])
 
