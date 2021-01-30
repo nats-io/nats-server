@@ -207,6 +207,32 @@ func (s *Server) JetStreamSnapshotMeta() error {
 	return cc.meta.Snapshot(js.metaSnapshot())
 }
 
+func (s *Server) JetStreamStepdownStream(account, stream string) error {
+	js, cc := s.getJetStreamCluster()
+	if js == nil {
+		return ErrJetStreamNotEnabled
+	}
+	if cc == nil {
+		return ErrJetStreamNotClustered
+	}
+	// Grab account
+	acc, err := s.LookupAccount(account)
+	if err != nil {
+		return err
+	}
+	// Grab stream
+	mset, err := acc.LookupStream(stream)
+	if err != nil {
+		return err
+	}
+
+	if node := mset.raftNode(); node != nil && node.Leader() {
+		node.StepDown()
+	}
+
+	return nil
+}
+
 func (s *Server) JetStreamSnapshotStream(account, stream string) error {
 	js, cc := s.getJetStreamCluster()
 	if js == nil {
@@ -1159,7 +1185,6 @@ func (js *jetStream) monitorStream(mset *Stream, sa *streamAssignment) {
 					}()
 				}
 			}
-
 		case <-s.quitCh:
 			return
 		case <-qch:
@@ -1341,7 +1366,7 @@ func (js *jetStream) processStreamLeaderChange(mset *Stream, sa *streamAssignmen
 		resp.Error = jsError(err)
 		s.sendAPIErrResponse(client, acc, _EMPTY_, reply, _EMPTY_, s.jsonResponse(&resp))
 	} else {
-		resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config(), Cluster: s.clusterInfo(nil)}
+		resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config(), Cluster: s.clusterInfo(mset.raftNode())}
 		s.sendAPIResponse(client, acc, _EMPTY_, reply, _EMPTY_, s.jsonResponse(&resp))
 	}
 }
@@ -2050,7 +2075,9 @@ func (js *jetStream) monitorConsumer(o *Consumer, ca *consumerAssignment) {
 			js.processConsumerLeaderChange(o, ca, isLeader)
 		case <-t.C:
 			// TODO(dlc) - We should have this delayed a bit to not race the invariants.
-			n.Compact(last)
+			if last != 0 {
+				n.Compact(last)
+			}
 		}
 	}
 }
@@ -3389,7 +3416,12 @@ func (s *Server) clusterInfo(n RaftNode) *ClusterInfo {
 	id, peers := n.ID(), n.Peers()
 	for _, rp := range peers {
 		if rp.ID != id {
-			pi := &PeerInfo{Name: s.serverNameForNode(rp.ID), Current: rp.Current, Active: now.Sub(rp.Last)}
+			lastSeen := now.Sub(rp.Last)
+			current := rp.Current
+			if current && lastSeen > lostQuorumInterval {
+				current = false
+			}
+			pi := &PeerInfo{Name: s.serverNameForNode(rp.ID), Current: current, Active: lastSeen}
 			ci.Replicas = append(ci.Replicas, pi)
 		}
 	}

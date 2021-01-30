@@ -2615,10 +2615,12 @@ func TestJetStreamRestartAdvisories(t *testing.T) {
 func TestJetStreamClusterNoDuplicateOnNodeRestart(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "ND", 2)
 	defer c.shutdown()
+
 	// Client based API
 	s := c.randomServer()
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
+
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
@@ -2659,6 +2661,51 @@ func TestJetStreamClusterNoDuplicateOnNodeRestart(t *testing.T) {
 	msg, err = sub.NextMsg(250 * time.Millisecond)
 	if err == nil {
 		t.Fatalf("Should have gotten an error, got %s", msg.Data)
+	}
+}
+
+func TestJetStreamClusterNoDupePeerSelection(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "NDP", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Create 10 streams. Make sure none of them have a replica
+	// that is the same as the leader.
+	for i := 1; i <= 10; i++ {
+		si, err := js.AddStream(&nats.StreamConfig{
+			Name:     fmt.Sprintf("TEST-%d", i),
+			Replicas: 3,
+		})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if si.Cluster == nil || si.Cluster.Leader == "" || len(si.Cluster.Replicas) != 2 {
+			t.Fatalf("Unexpected cluster state for stream info: %+v\n", si.Cluster)
+		}
+		// Make sure that the replicas are not same as the leader.
+		for _, pi := range si.Cluster.Replicas {
+			if pi.Name == si.Cluster.Leader {
+				t.Fatalf("Found replica that is same as leader, meaning 2 nodes placed on same server")
+			}
+		}
+		// Now do a consumer and check same thing.
+		sub, err := js.SubscribeSync(si.Config.Name)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		ci, err := sub.ConsumerInfo()
+		if err != nil {
+			t.Fatalf("Unexpected error getting consumer info: %v", err)
+		}
+		for _, pi := range ci.Cluster.Replicas {
+			if pi.Name == ci.Cluster.Leader {
+				t.Fatalf("Found replica that is same as leader, meaning 2 nodes placed on same server")
+			}
+		}
 	}
 }
 
