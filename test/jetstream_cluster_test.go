@@ -2612,6 +2612,56 @@ func TestJetStreamRestartAdvisories(t *testing.T) {
 	checkSubsPending(t, usub, 0)
 }
 
+func TestJetStreamClusterNoDuplicateOnNodeRestart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "ND", 2)
+	defer c.shutdown()
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sub, err := js.SubscribeSync("foo", nats.Durable("dlc"))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	js.Publish("foo", []byte("msg1"))
+	if m, err := sub.NextMsg(time.Second); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	} else {
+		m.Ack()
+	}
+
+	sl := c.streamLeader("$G", "TEST")
+	sl.Shutdown()
+	c.restartServer(sl)
+	c.waitOnStreamLeader("$G", "TEST")
+
+	// Send second msg
+	js.Publish("foo", []byte("msg2"))
+	msg, err := sub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Error getting message: %v", err)
+	}
+	if string(msg.Data) != "msg2" {
+		t.Fatalf("Unexpected message: %s", msg.Data)
+	}
+	msg.Ack()
+
+	// Make sure we don't get a duplicate.
+	msg, err = sub.NextMsg(250 * time.Millisecond)
+	if err == nil {
+		t.Fatalf("Should have gotten an error, got %s", msg.Data)
+	}
+}
+
 func TestJetStreamClusterStreamPerf(t *testing.T) {
 	// Comment out to run, holding place for now.
 	skip(t)

@@ -122,6 +122,7 @@ type Stream struct {
 	ddindex   int
 	ddtmr     *time.Timer
 	qch       chan struct{}
+	active    bool
 
 	// Clustered mode.
 	sa      *streamAssignment
@@ -266,7 +267,8 @@ func (a *Account) addStream(config *StreamConfig, fsConfig *FileStoreConfig, sa 
 	}
 
 	// Call directly to set leader if not in clustered mode.
-	if !s.JetStreamIsClustered() {
+	// This can be called though before we actually setup clustering, so check both.
+	if !s.JetStreamIsClustered() && s.standAloneMode() {
 		if err := mset.setLeader(true); err != nil {
 			mset.Delete()
 			return nil, err
@@ -309,6 +311,9 @@ func (mset *Stream) setLeader(isLeader bool) error {
 	mset.mu.Lock()
 	// If we are here we have a change in leader status.
 	if isLeader {
+		// Make sure we are listening for sync requests.
+		// TODO(dlc) - Original design was that all in sync members of the group would do DQ.
+		mset.startClusterSubs()
 		// Setup subscriptions
 		if err := mset.subscribeToStream(); err != nil {
 			mset.mu.Unlock()
@@ -316,9 +321,6 @@ func (mset *Stream) setLeader(isLeader bool) error {
 			mset.Delete()
 			return err
 		}
-		// Make sure we are listening for sync requests.
-		// TODO(dlc) - Original design was that all in sync members of the group would do DQ.
-		mset.startClusterSubs()
 	} else {
 		// Stop responding to sync requests.
 		mset.stopClusterSubs()
@@ -840,11 +842,15 @@ func (mset *Stream) removeMsg(seq uint64, secure bool) (bool, error) {
 // Will create internal subscriptions for the stream.
 // Lock should be held.
 func (mset *Stream) subscribeToStream() error {
+	if mset.active {
+		return nil
+	}
 	for _, subject := range mset.config.Subjects {
 		if _, err := mset.subscribeInternal(subject, mset.processInboundJetStreamMsg); err != nil {
 			return err
 		}
 	}
+	mset.active = true
 	return nil
 }
 
@@ -854,6 +860,7 @@ func (mset *Stream) unsubscribeToStream() error {
 	for _, subject := range mset.config.Subjects {
 		mset.unsubscribeInternal(subject)
 	}
+	mset.active = false
 	return nil
 }
 
