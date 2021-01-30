@@ -1027,8 +1027,10 @@ func (js *jetStream) monitorStream(mset *Stream, sa *streamAssignment) {
 	t := time.NewTicker(compactInterval)
 	defer t.Stop()
 
+	js.mu.RLock()
 	isLeader := cc.isStreamLeader(sa.Client.Account, sa.Config.Name)
 	isRestore := sa.Restore != nil
+	js.mu.RUnlock()
 
 	acc, err := s.LookupAccount(sa.Client.Account)
 	if err != nil {

@@ -157,7 +157,7 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 
 	// JetStream is an internal service so we need to make sure we have a system account.
 	// This system account will export the JetStream service endpoints.
-	if sacc := s.SystemAccount(); sacc == nil {
+	if s.SystemAccount() == nil {
 		s.SetDefaultSystemAccount()
 	}
 
