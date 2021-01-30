@@ -646,6 +646,78 @@ func TestNoRaceJetStreamWorkQueueLoadBalance(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterLargeStreamInlineCatchup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "LSS", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sr := c.randomNonStreamLeader("$G", "TEST")
+	sr.Shutdown()
+
+	// In case sr was meta leader.
+	c.waitOnLeader()
+
+	msg, toSend := []byte("Hello JS Clustering"), 5000
+
+	// Now fill up stream.
+	for i := 0; i < toSend; i++ {
+		if _, err = js.Publish("foo", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+	si, err := js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Check active state as well, shows that the owner answered.
+	if si.State.Msgs != uint64(toSend) {
+		t.Fatalf("Expected %d msgs, got bad state: %+v", toSend, si.State)
+	}
+
+	// Kill our current leader to make just 2.
+	c.streamLeader("$G", "TEST").Shutdown()
+
+	// Now restart the shutdown peer and wait for it to be current.
+	sr = c.restartServer(sr)
+	c.waitOnStreamCurrent(sr, "$G", "TEST")
+
+	// Ask other servers to stepdown as leader so that sr becomes the leader.
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		c.waitOnStreamLeader("$G", "TEST")
+		if sl := c.streamLeader("$G", "TEST"); sl != sr {
+			sl.JetStreamStepdownStream("$G", "TEST")
+			return fmt.Errorf("Server %s is not leader yet", sr)
+		}
+		return nil
+	})
+
+	si, err = js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Check that we have all of our messsages stored.
+	// Wait for a bit for upper layers to process.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if si.State.Msgs != uint64(toSend) {
+			return fmt.Errorf("Expected %d msgs, got %d", toSend, si.State.Msgs)
+		}
+		return nil
+	})
+}
+
 func TestNoRaceLeafNodeSmapUpdate(t *testing.T) {
 	s, opts := runLeafServer()
 	defer s.Shutdown()
