@@ -1440,7 +1440,7 @@ func (n *raft) applyCommit(index uint64) error {
 		select {
 		case n.applyc <- &CommittedEntry{index, committed}:
 		default:
-			n.error("Failed to place committed entry onto our apply channel")
+			n.debug("Failed to place committed entry onto our apply channel")
 			n.commit = original
 			return errFailedToApply
 		}
