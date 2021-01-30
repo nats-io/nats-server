@@ -4707,10 +4707,13 @@ func TestJWTHeader(t *testing.T) {
 
 func TestJWTAccountImportsWithWildcardSupport(t *testing.T) {
 	test := func(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds string, jsEnabled bool, exSubExpect, exPub, imReq, imSubExpect string) {
-		jsSetting := ""
+		t.Helper()
+
+		var jsSetting string
 		if jsEnabled {
 			jsSetting = "jetstream: {max_mem_store: 10Mb, max_file_store: 10Mb}"
 		}
+
 		_, aSysPub := createKey(t)
 		aSysClaim := jwt.NewAccountClaims(aSysPub)
 		aSysJwt := encodeClaim(t, aSysClaim, aSysPub)

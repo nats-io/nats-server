@@ -1380,9 +1380,11 @@ func (s *Server) fetchAccount(name string) (*Account, error) {
 	}
 	// The sub imports may have been setup but will not have had their
 	// subscriptions properly setup. Do that here.
-	if len(acc.imports.services) > 0 && acc.ic == nil {
-		acc.ic = s.createInternalAccountClient()
-		acc.ic.acc = acc
+	if len(acc.imports.services) > 0 {
+		if acc.ic == nil {
+			acc.ic = s.createInternalAccountClient()
+			acc.ic.acc = acc
+		}
 		acc.addAllServiceImportSubs()
 	}
 	return acc, nil

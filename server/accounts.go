@@ -1796,6 +1796,7 @@ func (a *Account) addServiceImportSub(si *serviceImport) error {
 		c.processServiceImport(si, a, msg)
 	}
 	_, err := c.processSub([]byte(subject), nil, []byte(sid), cb, true)
+
 	return err
 }
 
@@ -3085,6 +3086,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	if a.srv == nil {
 		a.srv = s
 	}
+
 	if jsEnabled {
 		if ac.Limits.JetStreamLimits.DiskStorage != 0 || ac.Limits.JetStreamLimits.MemoryStorage != 0 {
 			// JetStreamAccountLimits and jwt.JetStreamLimits use same value for unlimited
@@ -3110,6 +3112,8 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		})
 	}
 
+	// If JetStream is enabled for this server we will call into configJetStream for the account
+	// regardless of enabled or disabled. It handles both cases.
 	if jsEnabled {
 		if err := s.configJetStream(a); err != nil {
 			s.Errorf("Error configuring jetstream for account [%s]: %v", a.Name, err.Error())
