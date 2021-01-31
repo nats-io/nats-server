@@ -1368,6 +1368,9 @@ func (js *jetStream) processStreamLeaderChange(mset *Stream, sa *streamAssignmen
 	} else {
 		resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config(), Cluster: s.clusterInfo(mset.raftNode())}
 		s.sendAPIResponse(client, acc, _EMPTY_, reply, _EMPTY_, s.jsonResponse(&resp))
+		if node := mset.raftNode(); node != nil {
+			mset.sendCreateAdvisory()
+		}
 	}
 }
 
@@ -1719,7 +1722,7 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 		if mset.Config().internal {
 			err = errors.New("not allowed to delete internal stream")
 		} else {
-			err = mset.Delete()
+			err = mset.stop(true, wasLeader)
 		}
 	}
 
@@ -1934,8 +1937,8 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 	} else if mset != nil {
 		if mset.Config().internal {
 			err = errors.New("not allowed to delete internal consumer")
-		} else if obs := mset.LookupConsumer(ca.Name); obs != nil {
-			err = obs.Delete()
+		} else if o := mset.LookupConsumer(ca.Name); o != nil {
+			err = o.stop(true, true, wasLeader)
 		} else {
 			resp.Error = jsNoConsumerErr
 		}
@@ -1945,12 +1948,7 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 		ca.Group.node.Delete()
 	}
 
-	if !isMember || !wasLeader && ca.Group.node != nil && ca.Group.node.GroupLeader() != noLeader {
-		return
-	}
-
-	// Just return if no reply subject.
-	if ca.Reply == _EMPTY_ {
+	if !wasLeader || ca.Reply == _EMPTY_ {
 		return
 	}
 
@@ -2193,6 +2191,9 @@ func (js *jetStream) processConsumerLeaderChange(o *Consumer, ca *consumerAssign
 	} else {
 		resp.ConsumerInfo = o.Info()
 		s.sendAPIResponse(client, acc, _EMPTY_, reply, _EMPTY_, s.jsonResponse(&resp))
+		if node := o.raftNode(); node != nil {
+			o.sendCreateAdvisory()
+		}
 	}
 }
 

@@ -582,14 +582,22 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, ca *consum
 	mset.setConsumer(o)
 	mset.mu.Unlock()
 
-	if !s.JetStreamIsClustered() {
+	if !s.JetStreamIsClustered() && s.standAloneMode() {
 		o.setLeader(true)
 	}
 
 	// This is always true in single server mode.
 	if o.isLeader() {
 		// Send advisory.
-		o.sendCreateAdvisory()
+		var suppress bool
+		if !s.standAloneMode() && ca == nil {
+			suppress = true
+		} else if ca != nil {
+			suppress = ca.responded
+		}
+		if !suppress {
+			o.sendCreateAdvisory()
+		}
 	}
 
 	return o, nil
@@ -2321,7 +2329,10 @@ func (o *Consumer) Stream() string {
 	o.mu.RLock()
 	mset := o.mset
 	o.mu.RUnlock()
-	return mset.Name()
+	if mset != nil {
+		return mset.Name()
+	}
+	return _EMPTY_
 }
 
 // Active indicates if this consumer is still active.

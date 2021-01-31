@@ -282,7 +282,15 @@ func (a *Account) addStream(config *StreamConfig, fsConfig *FileStoreConfig, sa 
 
 	if isLeader {
 		// Send advisory.
-		mset.sendCreateAdvisory()
+		var suppress bool
+		if !s.standAloneMode() && sa == nil {
+			suppress = true
+		} else if sa != nil {
+			suppress = sa.responded
+		}
+		if !suppress {
+			mset.sendCreateAdvisory()
+		}
 	}
 
 	return mset, nil
@@ -497,10 +505,12 @@ func (mset *Stream) sendCreateAdvisory() {
 	}
 
 	j, err := json.MarshalIndent(m, "", "  ")
-	if err == nil {
-		subj := JSAdvisoryStreamCreatedPre + "." + name
-		sendq <- &jsPubMsg{subj, subj, _EMPTY_, nil, j, nil, 0}
+	if err != nil {
+		return
 	}
+
+	subj := JSAdvisoryStreamCreatedPre + "." + name
+	sendq <- &jsPubMsg{subj, subj, _EMPTY_, nil, j, nil, 0}
 }
 
 func (mset *Stream) sendDeleteAdvisoryLocked() {
@@ -670,16 +680,6 @@ func (mset *Stream) FileStoreConfig() (FileStoreConfig, error) {
 
 // Delete deletes a stream from the owning account.
 func (mset *Stream) Delete() error {
-	mset.mu.Lock()
-	jsa := mset.jsa
-	mset.mu.Unlock()
-	if jsa == nil {
-		return ErrJetStreamNotEnabledForAccount
-	}
-	jsa.mu.Lock()
-	delete(jsa.streams, mset.config.Name)
-	jsa.mu.Unlock()
-
 	return mset.delete()
 }
 
@@ -1401,6 +1401,9 @@ func (mset *Stream) setupSendCapabilities() {
 
 // Name returns the stream name.
 func (mset *Stream) Name() string {
+	if mset == nil {
+		return _EMPTY_
+	}
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 	return mset.config.Name
@@ -1468,11 +1471,24 @@ func (mset *Stream) internalSendLoop() {
 
 // Internal function to delete a stream.
 func (mset *Stream) delete() error {
-	return mset.stop(true)
+	return mset.stop(true, true)
 }
 
 // Internal function to stop or delete the stream.
-func (mset *Stream) stop(delete bool) error {
+func (mset *Stream) stop(deleteFlag, advisory bool) error {
+	mset.mu.RLock()
+	jsa := mset.jsa
+	mset.mu.RUnlock()
+
+	if jsa == nil {
+		return ErrJetStreamNotEnabledForAccount
+	}
+
+	// Remove from our account map.
+	jsa.mu.Lock()
+	delete(jsa.streams, mset.config.Name)
+	jsa.mu.Unlock()
+
 	// Clean up consumers.
 	mset.mu.Lock()
 	var obs []*Consumer
@@ -1486,7 +1502,7 @@ func (mset *Stream) stop(delete bool) error {
 		// Second flag says do not broadcast to signal.
 		// TODO(dlc) - If we have an err here we don't want to stop
 		// but should we log?
-		o.stop(delete, false, delete)
+		o.stop(deleteFlag, false, advisory)
 	}
 
 	mset.mu.Lock()
@@ -1499,7 +1515,7 @@ func (mset *Stream) stop(delete bool) error {
 
 	// Cluster cleanup
 	if n := mset.node; n != nil {
-		if delete {
+		if deleteFlag {
 			n.Delete()
 		} else {
 			n.Stop()
@@ -1508,7 +1524,7 @@ func (mset *Stream) stop(delete bool) error {
 	}
 
 	// Send stream delete advisory after the consumers.
-	if delete {
+	if deleteFlag && advisory {
 		mset.sendDeleteAdvisoryLocked()
 	}
 
@@ -1547,7 +1563,7 @@ func (mset *Stream) stop(delete bool) error {
 		return nil
 	}
 
-	if delete {
+	if deleteFlag {
 		if err := mset.store.Delete(); err != nil {
 			return err
 		}
