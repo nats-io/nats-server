@@ -1930,7 +1930,15 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 		}
 		nc.Request(rresp.DeliverSubject, chunk[:n], time.Second)
 	}
-	nc.Request(rresp.DeliverSubject, nil, time.Second)
+	rmsg, err = nc.Request(rresp.DeliverSubject, nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	rresp.Error = nil
+	json.Unmarshal(rmsg.Data, &rresp)
+	if rresp.Error != nil {
+		t.Fatalf("Got an unexpected error response: %+v", rresp.Error)
+	}
 
 	si, err := js.StreamInfo("TEST")
 	if err != nil {
@@ -2532,7 +2540,7 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	}
 }
 
-func TestJetStreamRestartAdvisories(t *testing.T) {
+func TestJetStreamClusterRestartAndRemoveAdvisories(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -2546,6 +2554,12 @@ func TestJetStreamRestartAdvisories(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	defer sub.Unsubscribe()
+
+	csub, err := nc.SubscribeSync("$JS.EVENT.ADVISORY.*.CREATED.>")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer csub.Unsubscribe()
 	nc.Flush()
 
 	sendBatch := func(subject string, n int) {
@@ -2582,10 +2596,18 @@ func TestJetStreamRestartAdvisories(t *testing.T) {
 	}
 	sendBatch("TEST-3", 100)
 
+	drainSub := func(sub *nats.Subscription) {
+		for _, err := sub.NextMsg(0); err == nil; _, err = sub.NextMsg(0) {
+		}
+	}
+
 	// Wait for the advisories for all streams and consumers.
 	checkSubsPending(t, sub, 9) // 3 streams, 3 consumers, 3 stream names lookups for creating consumers.
-	for _, err := sub.NextMsg(0); err == nil; _, err = sub.NextMsg(0) {
-	}
+	drainSub(sub)
+
+	// Created audit events.
+	checkSubsPending(t, csub, 6)
+	drainSub(csub)
 
 	usub, err := nc.SubscribeSync("$JS.EVENT.ADVISORY.*.UPDATED.>")
 	if err != nil {
@@ -2604,12 +2626,38 @@ func TestJetStreamRestartAdvisories(t *testing.T) {
 			c.restartServer(cs)
 		}
 	}
-	for _, cs := range c.servers {
-		c.waitOnServerCurrent(cs)
-	}
+	c.waitOnAllCurrent()
 
+	checkSubsPending(t, csub, 0)
 	checkSubsPending(t, sub, 0)
 	checkSubsPending(t, usub, 0)
+
+	dsub, err := nc.SubscribeSync("$JS.EVENT.ADVISORY.*.DELETED.>")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer dsub.Unsubscribe()
+	nc.Flush()
+
+	c.waitOnConsumerLeader("$G", "TEST-1", "DC")
+
+	// Now check delete advisories as well.
+	if err := js.DeleteConsumer("TEST-1", "DC"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	checkSubsPending(t, csub, 0)
+	checkSubsPending(t, dsub, 1)
+	checkSubsPending(t, sub, 1)
+	checkSubsPending(t, usub, 0)
+	drainSub(dsub)
+
+	if err := js.DeleteStream("TEST-3"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	checkSubsPending(t, dsub, 2) // Stream and the consumer underneath.
+	checkSubsPending(t, sub, 4)
 }
 
 func TestJetStreamClusterNoDuplicateOnNodeRestart(t *testing.T) {
@@ -2996,6 +3044,12 @@ func (c *cluster) waitOnServerCurrent(s *server.Server) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	c.t.Fatalf("Expected server %q to eventually be current", s)
+}
+
+func (c *cluster) waitOnAllCurrent() {
+	for _, cs := range c.servers {
+		c.waitOnServerCurrent(cs)
+	}
 }
 
 func (c *cluster) randomNonLeader() *server.Server {

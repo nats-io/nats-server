@@ -1038,7 +1038,7 @@ func (jsa *jsAccount) delete() {
 	jsa.mu.Unlock()
 
 	for _, ms := range streams {
-		ms.stop(false)
+		ms.stop(false, false)
 	}
 
 	for _, t := range ts {
