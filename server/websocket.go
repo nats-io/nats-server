@@ -81,9 +81,14 @@ const (
 	wsSchemePrefix    = "ws"
 	wsSchemePrefixTLS = "wss"
 
-	wsNoMaskingExtension = "no-masking"
-	wsPMCExtension       = "permessage-deflate" // per-message compression
-	wsNoCtxTakeOver      = "; server_no_context_takeover; client_no_context_takeover; "
+	wsNoMaskingHeader       = "Nats-No-Masking"
+	wsNoMaskingValue        = "true"
+	wsNoMaskingFullResponse = wsNoMaskingHeader + ": " + wsNoMaskingValue + CR_LF
+	wsPMCExtension          = "permessage-deflate" // per-message compression
+	wsPMCSrvNoCtx           = "server_no_context_takeover"
+	wsPMCCliNoCtx           = "client_no_context_takeover"
+	wsPMCReqHeaderValue     = wsPMCExtension + "; " + wsPMCSrvNoCtx + "; " + wsPMCCliNoCtx
+	wsPMCFullResponse       = "Sec-WebSocket-Extensions: " + wsPMCExtension + "; " + wsPMCSrvNoCtx + "; " + wsPMCCliNoCtx + _CRLF_
 )
 
 var decompressorPool sync.Pool
@@ -631,12 +636,14 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 	// Point 8.
 	// We don't have protocols, so ignore.
 	// Point 9.
-	// Extensions, only support for compression and no-masking at the moment
-	wantsCompress, wantsNoMasking := wsClientWantedExtensions(r.Header)
-	// We will use compression only if both agree
-	compress := opts.Websocket.Compression && wantsCompress
+	// Extensions, only support for compression at the moment
+	compress := opts.Websocket.Compression
+	if compress {
+		// Simply check if permessage-deflate extension is present.
+		compress, _ = wsPMCExtensionSupport(r.Header, true)
+	}
 	// We will do masking if asked (unless we reject for tests)
-	noMasking := wantsNoMasking && !wsTestRejectNoMasking
+	noMasking := r.Header.Get(wsNoMaskingHeader) == wsNoMaskingValue && !wsTestRejectNoMasking
 
 	h := w.(http.Hijacker)
 	conn, brw, err := h.Hijack()
@@ -658,16 +665,11 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 	p = append(p, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "...)
 	p = append(p, wsAcceptKey(key)...)
 	p = append(p, _CRLF_...)
-	if compress || noMasking {
-		p = append(p, "Sec-WebSocket-Extensions: "...)
-		if compress {
-			p = append(p, wsPMCExtension...)
-			p = append(p, wsNoCtxTakeOver...)
-		}
-		if noMasking {
-			p = append(p, wsNoMaskingExtension...)
-		}
-		p = append(p, CR_LF...)
+	if compress {
+		p = append(p, wsPMCFullResponse...)
+	}
+	if noMasking {
+		p = append(p, wsNoMaskingFullResponse...)
 	}
 	p = append(p, _CRLF_...)
 
@@ -710,28 +712,38 @@ func wsHeaderContains(header http.Header, name string, value string) bool {
 	return false
 }
 
-// Return if known extensions are wanted by the client.
-func wsClientWantedExtensions(header http.Header) (bool, bool) {
-	var compress bool
-	var noMasking bool
-
+func wsPMCExtensionSupport(header http.Header, checkPMCOnly bool) (bool, bool) {
 	for _, extensionList := range header["Sec-Websocket-Extensions"] {
 		extensions := strings.Split(extensionList, ",")
 		for _, extension := range extensions {
 			extension = strings.Trim(extension, " \t")
 			params := strings.Split(extension, ";")
-			for _, p := range params {
-				p = strings.ToLower(strings.Trim(p, " \t"))
-				switch p {
-				case wsPMCExtension:
-					compress = true
-				case wsNoMaskingExtension:
-					noMasking = true
+			for i, p := range params {
+				p = strings.Trim(p, " \t")
+				if strings.EqualFold(p, wsPMCExtension) {
+					if checkPMCOnly {
+						return true, false
+					}
+					var snc bool
+					var cnc bool
+					for j := i + 1; j < len(params); j++ {
+						p = params[j]
+						p = strings.Trim(p, " \t")
+						if strings.EqualFold(p, wsPMCSrvNoCtx) {
+							snc = true
+						} else if strings.EqualFold(p, wsPMCCliNoCtx) {
+							cnc = true
+						}
+						if snc && cnc {
+							return true, true
+						}
+					}
+					return true, false
 				}
 			}
 		}
 	}
-	return compress, noMasking
+	return false, false
 }
 
 // Send an HTTP error with the given `status`` to the given http response writer `w`.
