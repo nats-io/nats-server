@@ -23,7 +23,6 @@ import (
 	"math/rand"
 	"net/http"
 	"net/textproto"
-	"net/url"
 	"reflect"
 	"sort"
 	"strconv"
@@ -2430,22 +2429,6 @@ func (a *Account) getWildcardServiceExport(from string) *serviceExport {
 	return nil
 }
 
-// Will fetch the activation token for an import.
-func fetchActivation(url string) string {
-	// FIXME(dlc) - Make configurable.
-	c := &http.Client{Timeout: 2 * time.Second}
-	resp, err := c.Get(url)
-	if err != nil || resp == nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return ""
-	}
-	return string(body)
-}
-
 // These are import stream specific versions for when an activation expires.
 func (a *Account) streamActivationExpired(exportAcc *Account, subject string) {
 	a.mu.RLock()
@@ -2537,10 +2520,6 @@ func (a *Account) checkActivation(importAcc *Account, claim *jwt.Import, expTime
 	// Create a quick clone so we can inline Token JWT.
 	clone := *claim
 
-	// We grab the token from a URL by hand here since we need expiration etc.
-	if url, err := url.Parse(clone.Token); err == nil && url.Scheme != "" {
-		clone.Token = fetchActivation(url.String())
-	}
 	vr := jwt.CreateValidationResults()
 	clone.Validate(importAcc.Name, vr)
 	if vr.IsBlocking(true) {

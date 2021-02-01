@@ -749,36 +749,6 @@ func TestJWTAccountBasicImportExport(t *testing.T) {
 		t.Fatalf("Expected imports services len of 1, got %d", les)
 	}
 
-	// Now test url
-	barAC = jwt.NewAccountClaims(barPub)
-	serviceImport = &jwt.Import{Account: fooPub, Subject: "req.add", Type: jwt.Service}
-
-	activation = jwt.NewActivationClaims(barPub)
-	activation.ImportSubject = "req.add"
-	activation.ImportType = jwt.Service
-	actJWT, err = activation.Encode(fooKP)
-	if err != nil {
-		t.Fatalf("Error generating activation token: %v", err)
-	}
-
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(actJWT))
-	}))
-	defer ts.Close()
-
-	serviceImport.Token = ts.URL
-	barAC.Imports.Add(serviceImport)
-	barJWT, err = barAC.Encode(okp)
-	if err != nil {
-		t.Fatalf("Error generating account JWT: %v", err)
-	}
-	addAccountToMemResolver(s, barPub, barJWT)
-	s.UpdateAccountClaims(acc, barAC)
-	// Our service import should have succeeded. Should be the only one since we reset.
-	if les := len(acc.imports.services); les != 1 {
-		t.Fatalf("Expected imports services len of 1, got %d", les)
-	}
-
 	// Now streams
 	barAC = jwt.NewAccountClaims(barPub)
 	streamImport = &jwt.Import{Account: fooPub, Subject: "private", To: "import.private", Type: jwt.Stream}
