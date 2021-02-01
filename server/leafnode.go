@@ -2047,10 +2047,10 @@ func (c *client) leafNodeSolicitWSConnection(opts *Options, rURL *url.URL, remot
 	req.Header["Sec-WebSocket-Key"] = []string{wsKey}
 	req.Header["Sec-WebSocket-Version"] = []string{"13"}
 	if compress {
-		req.Header.Add("Sec-WebSocket-Extensions", wsPMCExtension+wsNoCtxTakeOver)
+		req.Header.Add("Sec-WebSocket-Extensions", wsPMCReqHeaderValue)
 	}
 	if noMasking {
-		req.Header.Add("Sec-WebSocket-Extensions", wsNoMaskingExtension)
+		req.Header.Add(wsNoMaskingHeader, wsNoMaskingValue)
 	}
 	if err := req.Write(c.nc); err != nil {
 		return nil, WriteError, err
@@ -2069,22 +2069,24 @@ func (c *client) leafNodeSolicitWSConnection(opts *Options, rURL *url.URL, remot
 
 		err = fmt.Errorf("invalid websocket connection")
 	}
-	if err == nil && (c.ws.compress || noMasking) {
-		// Check extensions...
+	// Check compression extension...
+	if err == nil && c.ws.compress {
+		// Check that not only permessage-deflate extension is present, but that
+		// we also have server and client no context take over.
+		srvCompress, noCtxTakeover := wsPMCExtensionSupport(resp.Header, false)
 
-		srvCompress, srvNoMasking := wsClientWantedExtensions(resp.Header)
-
-		// We said to the otherside that we support compression. Now check that
-		// the other side said that it supports compression too.
-		if c.ws.compress && !srvCompress {
-			// No extension, or does not contain the indication that per-message
-			// compression is supported, so disable on our side.
+		// If server does not support compression, then simply disable it in our side.
+		if !srvCompress {
 			c.ws.compress = false
+		} else if !noCtxTakeover {
+			err = fmt.Errorf("compression negotiation error")
 		}
-
-		// Same for no masking...
-		if noMasking && !srvNoMasking {
-			// Need to mask our writes as any client would do.
+	}
+	// Same for no masking...
+	if err == nil && noMasking {
+		// Check if server accepts no masking
+		if resp.Header.Get(wsNoMaskingHeader) != wsNoMaskingValue {
+			// Nope, need to mask our writes as any client would do.
 			c.ws.maskwrite = true
 		}
 	}

@@ -2621,6 +2621,7 @@ func TestLeafNodeWSNoMaskingRejected(t *testing.T) {
 	defer s.Shutdown()
 
 	lo := testDefaultRemoteLeafNodeWSOptions(t, o, false)
+	lo.LeafNode.Remotes[0].Websocket.NoMasking = true
 	ln := RunServer(lo)
 	defer ln.Shutdown()
 
