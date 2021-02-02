@@ -1051,10 +1051,8 @@ type Varz struct {
 
 // JetStreamVarz contains basic runtime information about jetstream
 type JetStreamVarz struct {
-	MaxMemory int64  `json:"max_memory,omitempty"`
-	MaxStore  int64  `json:"max_store,omitempty"`
-	StoreDir  string `json:"store_dir,omitempty"`
-	Accounts  int    `json:"accounts,omitempty"`
+	Config JetStreamConfig `json:"config"`
+	Stats  *JetStreamStats `json:"stats"`
 }
 
 // ClusterOptsVarz contains monitoring cluster information
@@ -1288,9 +1286,7 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 	if s.js != nil {
 		s.js.mu.RLock()
 		varz.JetStream = JetStreamVarz{
-			MaxMemory: s.js.config.MaxMemory,
-			MaxStore:  s.js.config.MaxStore,
-			StoreDir:  s.js.config.StoreDir,
+			Config: s.js.config,
 		}
 		s.js.mu.RUnlock()
 	}
@@ -1403,9 +1399,7 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 	gw.RUnlock()
 
 	if s.js != nil {
-		s.js.mu.RLock()
-		v.JetStream.Accounts = len(s.js.accounts)
-		s.js.mu.RUnlock()
+		v.JetStream.Stats = s.js.usageStats()
 	}
 }
 
