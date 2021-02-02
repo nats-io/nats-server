@@ -1442,7 +1442,7 @@ func (js *jetStream) processStreamLeaderChange(mset *Stream, isLeader bool) {
 	} else {
 		// We are stepping down.
 		// Make sure if we are doing so because we have lost quorum that we send the appropriate advisories.
-		if node := mset.raftNode(); node != nil && !node.Quorum() {
+		if node := mset.raftNode(); node != nil && !node.Quorum() && time.Since(node.Created()) > time.Second {
 			s.sendStreamLostQuorumAdvisory(mset)
 		}
 	}
@@ -2339,7 +2339,7 @@ func (js *jetStream) processConsumerLeaderChange(o *Consumer, isLeader bool) {
 	} else {
 		// We are stepping down.
 		// Make sure if we are doing so because we have lost quorum that we send the appropriate advisories.
-		if node := o.raftNode(); node != nil && !node.Quorum() {
+		if node := o.raftNode(); node != nil && !node.Quorum() && time.Since(node.Created()) > time.Second {
 			s.sendConsumerLostQuorumAdvisory(o)
 		}
 	}

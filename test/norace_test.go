@@ -718,6 +718,52 @@ func TestJetStreamClusterLargeStreamInlineCatchup(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterStreamCreateAndLostQuorum(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync(server.JSAdvisoryStreamQuorumLostPre + ".*")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "NO-LQ-START", Replicas: 5}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	c.waitOnStreamLeader("$G", "NO-LQ-START")
+	checkSubsPending(t, sub, 0)
+
+	c.stopAll()
+	// Start up the one we were connected to first and wait for it to be connected.
+	s = c.restartServer(s)
+	nc, err = nats.Connect(s.ClientURL())
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	defer nc.Close()
+
+	sub, err = nc.SubscribeSync(server.JSAdvisoryStreamQuorumLostPre + ".*")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	nc.Flush()
+
+	c.restartAll()
+
+	c.waitOnStreamLeader("$G", "NO-LQ-START")
+
+	for m, err := sub.NextMsg(0); err == nil; m, err = sub.NextMsg(0) {
+		fmt.Printf("m: %s\n", m.Data)
+	}
+
+	checkSubsPending(t, sub, 0)
+}
+
 func TestNoRaceLeafNodeSmapUpdate(t *testing.T) {
 	s, opts := runLeafServer()
 	defer s.Shutdown()

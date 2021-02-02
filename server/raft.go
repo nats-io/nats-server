@@ -52,6 +52,7 @@ type RaftNode interface {
 	ResumeApply()
 	LeadChangeC() <-chan bool
 	QuitC() <-chan struct{}
+	Created() time.Time
 	Stop()
 	Delete()
 }
@@ -107,6 +108,7 @@ func (state RaftState) String() string {
 
 type raft struct {
 	sync.RWMutex
+	created time.Time
 	group   string
 	sd      string
 	id      string
@@ -260,6 +262,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		return nil, errors.New("raft: cluster too small")
 	}
 	n := &raft{
+		created:  time.Now(),
 		id:       hash[:idLen],
 		group:    cfg.Name,
 		sd:       cfg.Store,
@@ -815,6 +818,12 @@ func (n *raft) Peers() []*Peer {
 		peers = append(peers, p)
 	}
 	return peers
+}
+
+func (n *raft) Created() time.Time {
+	n.RLock()
+	defer n.RUnlock()
+	return n.created
 }
 
 func (n *raft) Stop() {
@@ -1822,7 +1831,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		}
 	}
 
-	if n.leader != ae.leader && n.state == Follower {
+	if isNew && n.leader != ae.leader && n.state == Follower {
 		n.debug("AppendEntry updating leader to %q", ae.leader)
 		n.leader = ae.leader
 		n.vote = noVote

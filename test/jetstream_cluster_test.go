@@ -2465,7 +2465,7 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	}
 
 	// Make sure we received our lost quorum advisories.
-	adv, _ := ssub.NextMsg(0)
+	adv, _ := ssub.NextMsg(2 * time.Second)
 	if adv == nil {
 		t.Fatalf("Expected to receive a stream quorum lost advisory")
 	}
