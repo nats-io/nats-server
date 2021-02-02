@@ -60,11 +60,6 @@ type ConsumerConfig struct {
 	SampleFrequency string        `json:"sample_freq,omitempty"`
 	MaxWaiting      int           `json:"max_waiting,omitempty"`
 	MaxAckPending   int           `json:"max_ack_pending,omitempty"`
-
-	// These are non public configuration options.
-	// If you add new options, check fileConsumerInfoJSON in order for them to
-	// be properly persisted/recovered, if needed.
-	allowNoInterest bool
 }
 
 type CreateConsumerRequest struct {
@@ -299,14 +294,11 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		var checkSubject bool
 
 		mset.mu.RLock()
-		// If the stream was created with no subject, then skip the checks
-		if !mset.cfg.allowNoSubject {
-			// If this is a direct match for the streams only subject clear the filter.
-			if len(mset.cfg.Subjects) == 1 && mset.cfg.Subjects[0] == config.FilterSubject {
-				config.FilterSubject = _EMPTY_
-			} else {
-				checkSubject = true
-			}
+		// If this is a direct match for the streams only subject clear the filter.
+		if len(mset.cfg.Subjects) == 1 && mset.cfg.Subjects[0] == config.FilterSubject {
+			config.FilterSubject = _EMPTY_
+		} else {
+			checkSubject = true
 		}
 		mset.mu.RUnlock()
 
@@ -386,7 +378,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			} else {
 				// If we are a push mode and not active and the only difference
 				// is deliver subject then update and return.
-				if configsEqualSansDelivery(ocfg, *config) && (config.allowNoInterest || eo.hasNoLocalInterest()) {
+				if configsEqualSansDelivery(ocfg, *config) && eo.hasNoLocalInterest() {
 					eo.updateDeliverSubject(config.DeliverSubject)
 					return eo, nil
 				} else {
@@ -1314,7 +1306,7 @@ func (o *consumer) loopAndDeliverMsgs(qch chan struct{}) {
 				msg = append(pm.msg, _CRLF_...)
 			}
 
-			didDeliver := c.processInboundClientMsg(msg)
+			didDeliver, _ := c.processInboundClientMsg(msg)
 			c.pa.szb = nil
 			c.flushClients(0)
 

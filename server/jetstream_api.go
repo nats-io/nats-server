@@ -1378,12 +1378,6 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 		return
 	}
 	config := mset.config()
-	// Some streams are created without subject (for instance MQTT streams),
-	// but "nats" tooling would then fail to display them since it uses
-	// validation and expect the config's Subjects to not be empty.
-	if config.allowNoSubject && len(config.Subjects) == 0 {
-		config.Subjects = []string{">"}
-	}
 
 	js, _ := s.getJetStreamCluster()
 
@@ -1787,11 +1781,6 @@ func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, re
 	mset, err := acc.lookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	if mset.config().internal {
-		resp.Error = &ApiError{Code: 403, Description: "not allowed to delete internal stream"}
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -2997,11 +2986,6 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, 
 	mset, err := acc.lookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	if mset.config().internal {
-		resp.Error = &ApiError{Code: 403, Description: "not allowed to delete consumer of internal stream"}
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}

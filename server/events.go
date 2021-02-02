@@ -391,7 +391,9 @@ func (s *Server) sendInternalAccountMsg(a *Account, subject string, msg interfac
 
 	// Replace our client with the account's internal client.
 	if a != nil {
+		a.mu.Lock()
 		c = a.internalClient()
+		a.mu.Unlock()
 	}
 
 	sendq <- &pubMsg{c, subject, _EMPTY_, nil, msg, false}

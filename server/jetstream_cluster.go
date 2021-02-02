@@ -2081,7 +2081,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment) {
 	if o != nil {
 		if o.isDurable() && o.isPushMode() {
 			ocfg := o.config()
-			if configsEqualSansDelivery(ocfg, *ca.Config) && (ocfg.allowNoInterest || o.hasNoLocalInterest()) {
+			if configsEqualSansDelivery(ocfg, *ca.Config) && o.hasNoLocalInterest() {
 				o.updateDeliverSubject(ca.Config.DeliverSubject)
 			}
 		}

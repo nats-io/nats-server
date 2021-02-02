@@ -1043,6 +1043,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
 					field.Name, oldValue, newValue)
 			}
+			tmpNew.AckWait = newValue.(MQTTOpts).AckWait
+			tmpNew.MaxAckPending = newValue.(MQTTOpts).MaxAckPending
 		case "connecterrorreports":
 			diffOpts = append(diffOpts, &connectErrorReports{newValue: newValue.(int)})
 		case "reconnecterrorreports":
@@ -1363,13 +1365,14 @@ func (s *Server) reloadAuthorization() {
 		// can't hold the lock as go routine reading it may be waiting for lock as well
 		resetCh = s.sys.resetCh
 	}
-	// Check that publish retained messages sources are still allowed to publish.
-	s.mqttCheckPubRetainedPerms()
 	s.mu.Unlock()
 
 	if resetCh != nil {
 		resetCh <- struct{}{}
 	}
+
+	// Check that publish retained messages sources are still allowed to publish.
+	s.mqttCheckPubRetainedPerms()
 
 	// Close clients that have moved accounts
 	for _, client := range cclients {

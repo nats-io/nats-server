@@ -52,12 +52,6 @@ type StreamConfig struct {
 	Template     string          `json:"template_owner,omitempty"`
 	Duplicates   time.Duration   `json:"duplicate_window,omitempty"`
 	Placement    *Placement      `json:"placement,omitempty"`
-
-	// These are non public configuration options.
-	// If you add new options, check fileStreamInfoJSON in order for them to
-	// be properly persisted/recovered, if needed.
-	internal       bool
-	allowNoSubject bool
 }
 
 const JSApiPubAckResponseType = "io.nats.jetstream.api.v1.pub_ack_response"
@@ -647,9 +641,7 @@ func checkStreamCfg(config *StreamConfig) (StreamConfig, error) {
 	}
 
 	if len(cfg.Subjects) == 0 {
-		if !cfg.allowNoSubject {
-			cfg.Subjects = append(cfg.Subjects, cfg.Name)
-		}
+		cfg.Subjects = append(cfg.Subjects, cfg.Name)
 	} else {
 		// We can allow overlaps, but don't allow direct duplicates.
 		dset := make(map[string]struct{}, len(cfg.Subjects))
@@ -1433,7 +1425,7 @@ func (mset *stream) internalSendLoop() {
 				msg = append(pm.msg, _CRLF_...)
 			}
 
-			didDeliver := c.processInboundClientMsg(msg)
+			didDeliver, _ := c.processInboundClientMsg(msg)
 			c.pa.szb = nil
 			c.flushClients(0)
 
