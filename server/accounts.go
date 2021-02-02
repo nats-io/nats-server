@@ -880,45 +880,46 @@ func (a *Account) removeClient(c *client) int {
 
 func setExportAuth(ea *exportAuth, subject string, accounts []*Account, accountPos uint) error {
 	if accountPos > 0 {
-		if token := strings.Split(subject, "."); len(token) < int(accountPos) {
-			return ErrInvalidSubject
-		} else if token[accountPos-1] != "*" {
+		token := strings.Split(subject, ".")
+		if len(token) < int(accountPos) || token[accountPos-1] != "*" {
 			return ErrInvalidSubject
 		}
 	}
 	ea.accountPos = accountPos
 	// empty means auth required but will be import token.
 	if accounts == nil {
-	} else if len(accounts) == 0 {
+		return nil
+	}
+	if len(accounts) == 0 {
 		ea.tokenReq = true
-	} else {
-		if ea.approved == nil {
-			ea.approved = make(map[string]*Account, len(accounts))
-		}
-		for _, acc := range accounts {
-			ea.approved[acc.Name] = acc
-		}
+		return nil
+	}
+	if ea.approved == nil {
+		ea.approved = make(map[string]*Account, len(accounts))
+	}
+	for _, acc := range accounts {
+		ea.approved[acc.Name] = acc
 	}
 	return nil
 }
 
 // AddServiceExport will configure the account with the defined export.
 func (a *Account) AddServiceExport(subject string, accounts []*Account) error {
-	return a.AddServiceExportWithResponseAndAccountPos(subject, Singleton, accounts, 0)
+	return a.addServiceExportWithResponseAndAccountPos(subject, Singleton, accounts, 0)
 }
 
 // AddServiceExport will configure the account with the defined export.
-func (a *Account) AddServiceExportWithAccountPos(subject string, accounts []*Account, accountPos uint) error {
-	return a.AddServiceExportWithResponseAndAccountPos(subject, Singleton, accounts, accountPos)
+func (a *Account) addServiceExportWithAccountPos(subject string, accounts []*Account, accountPos uint) error {
+	return a.addServiceExportWithResponseAndAccountPos(subject, Singleton, accounts, accountPos)
 }
 
 // AddServiceExportWithResponse will configure the account with the defined export and response type.
 func (a *Account) AddServiceExportWithResponse(subject string, respType ServiceRespType, accounts []*Account) error {
-	return a.AddServiceExportWithResponseAndAccountPos(subject, respType, accounts, 0)
+	return a.addServiceExportWithResponseAndAccountPos(subject, respType, accounts, 0)
 }
 
 // AddServiceExportWithresponse will configure the account with the defined export and response type.
-func (a *Account) AddServiceExportWithResponseAndAccountPos(
+func (a *Account) addServiceExportWithResponseAndAccountPos(
 	subject string, respType ServiceRespType, accounts []*Account, accountPos uint) error {
 	if a == nil {
 		return ErrMissingAccount
@@ -931,28 +932,28 @@ func (a *Account) AddServiceExportWithResponseAndAccountPos(
 		a.exports.services = make(map[string]*serviceExport)
 	}
 
-	ea := a.exports.services[subject]
+	se := a.exports.services[subject]
 	// Always  create a service export
-	if ea == nil {
-		ea = &serviceExport{}
+	if se == nil {
+		se = &serviceExport{}
 	}
 
 	if respType != Singleton {
-		ea.respType = respType
+		se.respType = respType
 	}
 
 	if accounts != nil || accountPos > 0 {
-		if ea == nil {
-			ea = &serviceExport{}
+		if se == nil {
+			se = &serviceExport{}
 		}
-		if err := setExportAuth(&ea.exportAuth, subject, accounts, accountPos); err != nil {
+		if err := setExportAuth(&se.exportAuth, subject, accounts, accountPos); err != nil {
 			return err
 		}
 	}
 	lrt := a.lowestServiceExportResponseTime()
-	ea.acc = a
-	ea.respThresh = DEFAULT_SERVICE_EXPORT_RESPONSE_THRESHOLD
-	a.exports.services[subject] = ea
+	se.acc = a
+	se.respThresh = DEFAULT_SERVICE_EXPORT_RESPONSE_THRESHOLD
+	a.exports.services[subject] = se
 	if nlrt := a.lowestServiceExportResponseTime(); nlrt != lrt {
 		a.updateAllClientsServiceExportResponseTime(nlrt)
 	}
@@ -2313,14 +2314,14 @@ var IsPublicExport = []*Account(nil)
 // AddStreamExport will add an export to the account. If accounts is nil
 // it will signify a public export, meaning anyone can import.
 func (a *Account) AddStreamExport(subject string, accounts []*Account) error {
-	return a.AddStreamExportWithAccountPos(subject, accounts, 0)
+	return a.addStreamExportWithAccountPos(subject, accounts, 0)
 }
 
 // AddStreamExport will add an export to the account. If accounts is nil
 // it will signify a public export, meaning anyone can import.
 // if accountPos is > 0, all imports will be granted where the following holds:
 // strings.Split(subject, ".")[accountPos] == account id will be granted.
-func (a *Account) AddStreamExportWithAccountPos(subject string, accounts []*Account, accountPos uint) error {
+func (a *Account) addStreamExportWithAccountPos(subject string, accounts []*Account, accountPos uint) error {
 	if a == nil {
 		return ErrMissingAccount
 	}
@@ -2366,14 +2367,15 @@ func (a *Account) checkAuth(ea *exportAuth, account *Account, imClaim *jwt.Impor
 		return true
 	}
 	// Check if the export is protected and enforces presence of importing account identity
-	if ea.accountPos > 0 && ea.accountPos <= uint(len(tokens)) {
-		if tokens[ea.accountPos-1] == account.Name {
-			return true
-		}
+	if ea.accountPos > 0 {
+		return ea.accountPos <= uint(len(tokens)) && tokens[ea.accountPos-1] == account.Name
 	}
 	// Check if token required
 	if ea.tokenReq {
 		return a.checkActivation(account, imClaim, true)
+	}
+	if ea.approved == nil {
+		return false
 	}
 	// If we have a matching account we are authorized
 	_, ok := ea.approved[account.Name]
@@ -2408,25 +2410,25 @@ func (a *Account) checkStreamExportApproved(account *Account, subject string, im
 
 func (a *Account) checkServiceExportApproved(account *Account, subject string, imClaim *jwt.Import) bool {
 	// Check direct match of subject first
-	ea, ok := a.exports.services[subject]
+	se, ok := a.exports.services[subject]
 	if ok {
 		// if ea is nil or eq.approved is nil, that denotes a public export
-		if ea == nil {
+		if se == nil {
 			return true
 		}
-		return a.checkAuth(&ea.exportAuth, account, imClaim, nil)
+		return a.checkAuth(&se.exportAuth, account, imClaim, nil)
 	}
 	// ok if we are here we did not match directly so we need to test each one.
 	// The import subject arg has to take precedence, meaning the export
 	// has to be a true subset of the import claim. We already checked for
 	// exact matches above.
 	tokens := strings.Split(subject, tsep)
-	for subj, ea := range a.exports.services {
+	for subj, se := range a.exports.services {
 		if isSubsetMatch(tokens, subj) {
-			if ea == nil {
+			if se == nil {
 				return true
 			}
-			return a.checkAuth(&ea.exportAuth, account, imClaim, tokens)
+			return a.checkAuth(&se.exportAuth, account, imClaim, tokens)
 		}
 	}
 	return false
@@ -2895,7 +2897,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		switch e.Type {
 		case jwt.Stream:
 			s.Debugf("Adding stream export %q for %s", e.Subject, a.Name)
-			if err := a.AddStreamExportWithAccountPos(
+			if err := a.addStreamExportWithAccountPos(
 				string(e.Subject), authAccounts(e.TokenReq), e.AccountTokenPosition); err != nil {
 				s.Debugf("Error adding stream export to account [%s]: %v", a.Name, err.Error())
 			}
@@ -2908,7 +2910,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			case jwt.ResponseTypeChunked:
 				rt = Chunked
 			}
-			if err := a.AddServiceExportWithResponseAndAccountPos(
+			if err := a.addServiceExportWithResponseAndAccountPos(
 				string(e.Subject), rt, authAccounts(e.TokenReq), e.AccountTokenPosition); err != nil {
 				s.Debugf("Error adding service export to account [%s]: %v", a.Name, err)
 				continue
