@@ -274,13 +274,13 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		c:        s.createInternalSystemClient(),
 		sendq:    sendq,
 		quit:     make(chan struct{}),
-		reqs:     make(chan *voteRequest, 4),
-		votes:    make(chan *voteResponse, 8),
+		reqs:     make(chan *voteRequest, 8),
+		votes:    make(chan *voteResponse, 32),
 		resp:     make(chan *appendEntryResponse, 256),
 		propc:    make(chan *Entry, 256),
 		applyc:   make(chan *CommittedEntry, 512),
-		leadc:    make(chan bool, 4),
-		stepdown: make(chan string, 4),
+		leadc:    make(chan bool, 8),
+		stepdown: make(chan string, 8),
 	}
 	n.c.registerWithAccount(sacc)
 

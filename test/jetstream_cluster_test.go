@@ -2540,6 +2540,46 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterCreateResponseAdvisoriesHaveSubject(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync("$JS.EVENT.ADVISORY.API")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer sub.Unsubscribe()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 2}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if _, err := js.SubscribeSync("TEST", nats.Durable("DLC")); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if err := js.PurgeStream("TEST"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if err := js.DeleteStream("TEST"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	checkSubsPending(t, sub, 6)
+	for m, err := sub.NextMsg(0); err == nil; m, err = sub.NextMsg(0) {
+		var audit server.JSAPIAudit
+		if err := json.Unmarshal(m.Data, &audit); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if audit.Subject == "" {
+			t.Fatalf("Expected subject, got nothing")
+		}
+	}
+}
+
 func TestJetStreamClusterRestartAndRemoveAdvisories(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()

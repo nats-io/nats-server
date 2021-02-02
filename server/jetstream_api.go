@@ -1719,7 +1719,7 @@ func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, re
 
 	// Clustered.
 	if s.JetStreamIsClustered() {
-		s.jsClusteredStreamDeleteRequest(ci, stream, reply, msg)
+		s.jsClusteredStreamDeleteRequest(ci, stream, subject, reply, msg)
 		return
 	}
 

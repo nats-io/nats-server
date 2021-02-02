@@ -84,6 +84,7 @@ type streamAssignment struct {
 	Config  *StreamConfig `json:"stream"`
 	Group   *raftGroup    `json:"group"`
 	Sync    string        `json:"sync"`
+	Subject string        `json:"subject"`
 	Reply   string        `json:"reply"`
 	Restore *StreamState  `json:"restore_state,omitempty"`
 	// Internal
@@ -100,6 +101,7 @@ type consumerAssignment struct {
 	Stream  string          `json:"stream"`
 	Config  *ConsumerConfig `json:"consumer"`
 	Group   *raftGroup      `json:"group"`
+	Subject string          `json:"subject"`
 	Reply   string          `json:"reply"`
 	State   *ConsumerState  `json:"state,omitempty"`
 	// Internal
@@ -109,17 +111,19 @@ type consumerAssignment struct {
 
 // streamPurge is what the stream leader will replicate when purging a stream.
 type streamPurge struct {
-	Client *ClientInfo `json:"client,omitempty"`
-	Stream string      `json:"stream"`
-	Reply  string      `json:"reply"`
+	Client  *ClientInfo `json:"client,omitempty"`
+	Stream  string      `json:"stream"`
+	Subject string      `json:"subject"`
+	Reply   string      `json:"reply"`
 }
 
 // streamMsgDelete is what the stream leader will replicate when deleting a message.
 type streamMsgDelete struct {
-	Client *ClientInfo `json:"client,omitempty"`
-	Stream string      `json:"stream"`
-	Seq    uint64      `json:"seq"`
-	Reply  string      `json:"reply"`
+	Client  *ClientInfo `json:"client,omitempty"`
+	Stream  string      `json:"stream"`
+	Seq     uint64      `json:"seq"`
+	Subject string      `json:"subject"`
+	Reply   string      `json:"reply"`
 }
 
 const (
@@ -1347,13 +1351,13 @@ func (js *jetStream) applyStreamEntries(mset *Stream, ce *CommittedEntry) (bool,
 					var resp = JSApiMsgDeleteResponse{ApiResponse: ApiResponse{Type: JSApiMsgDeleteResponseType}}
 					if err != nil {
 						resp.Error = jsError(err)
-						s.sendAPIErrResponse(md.Client, mset.account(), _EMPTY_, md.Reply, _EMPTY_, s.jsonResponse(resp))
+						s.sendAPIErrResponse(md.Client, mset.account(), md.Subject, md.Reply, _EMPTY_, s.jsonResponse(resp))
 					} else if !removed {
 						resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("sequence [%d] not found", md.Seq)}
-						s.sendAPIErrResponse(md.Client, mset.account(), _EMPTY_, md.Reply, _EMPTY_, s.jsonResponse(resp))
+						s.sendAPIErrResponse(md.Client, mset.account(), md.Subject, md.Reply, _EMPTY_, s.jsonResponse(resp))
 					} else {
 						resp.Success = true
-						s.sendAPIResponse(md.Client, mset.account(), _EMPTY_, md.Reply, _EMPTY_, s.jsonResponse(resp))
+						s.sendAPIResponse(md.Client, mset.account(), md.Subject, md.Reply, _EMPTY_, s.jsonResponse(resp))
 					}
 				}
 			case purgeStreamOp:
@@ -1373,11 +1377,11 @@ func (js *jetStream) applyStreamEntries(mset *Stream, ce *CommittedEntry) (bool,
 					var resp = JSApiStreamPurgeResponse{ApiResponse: ApiResponse{Type: JSApiStreamPurgeResponseType}}
 					if err != nil {
 						resp.Error = jsError(err)
-						s.sendAPIErrResponse(sp.Client, mset.account(), _EMPTY_, sp.Reply, _EMPTY_, s.jsonResponse(resp))
+						s.sendAPIErrResponse(sp.Client, mset.account(), sp.Subject, sp.Reply, _EMPTY_, s.jsonResponse(resp))
 					} else {
 						resp.Purged = purged
 						resp.Success = true
-						s.sendAPIResponse(sp.Client, mset.account(), _EMPTY_, sp.Reply, _EMPTY_, s.jsonResponse(resp))
+						s.sendAPIResponse(sp.Client, mset.account(), sp.Subject, sp.Reply, _EMPTY_, s.jsonResponse(resp))
 					}
 				}
 			default:
@@ -1423,7 +1427,7 @@ func (js *jetStream) processStreamLeaderChange(mset *Stream, isLeader bool) {
 	}
 	js.mu.Lock()
 	s, account, err := js.srv, sa.Client.Account, sa.err
-	client, reply := sa.Client, sa.Reply
+	client, subject, reply := sa.Client, sa.Subject, sa.Reply
 	hasResponded := sa.responded
 	sa.responded = true
 	js.mu.Unlock()
@@ -1459,10 +1463,10 @@ func (js *jetStream) processStreamLeaderChange(mset *Stream, isLeader bool) {
 	var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
 	if err != nil {
 		resp.Error = jsError(err)
-		s.sendAPIErrResponse(client, acc, _EMPTY_, reply, _EMPTY_, s.jsonResponse(&resp))
+		s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 	} else {
 		resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config(), Cluster: js.clusterInfo(mset.raftGroup())}
-		s.sendAPIResponse(client, acc, _EMPTY_, reply, _EMPTY_, s.jsonResponse(&resp))
+		s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 		if node := mset.raftNode(); node != nil {
 			mset.sendCreateAdvisory()
 		}
@@ -1847,10 +1851,10 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 		if resp.Error == nil {
 			resp.Error = jsError(err)
 		}
-		s.sendAPIErrResponse(sa.Client, acc, _EMPTY_, sa.Reply, _EMPTY_, s.jsonResponse(resp))
+		s.sendAPIErrResponse(sa.Client, acc, sa.Subject, sa.Reply, _EMPTY_, s.jsonResponse(resp))
 	} else {
 		resp.Success = true
-		s.sendAPIResponse(sa.Client, acc, _EMPTY_, sa.Reply, _EMPTY_, s.jsonResponse(resp))
+		s.sendAPIResponse(sa.Client, acc, sa.Subject, sa.Reply, _EMPTY_, s.jsonResponse(resp))
 	}
 }
 
@@ -2093,10 +2097,10 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 		if resp.Error == nil {
 			resp.Error = jsError(err)
 		}
-		s.sendAPIErrResponse(ca.Client, acc, _EMPTY_, ca.Reply, _EMPTY_, s.jsonResponse(resp))
+		s.sendAPIErrResponse(ca.Client, acc, ca.Subject, ca.Reply, _EMPTY_, s.jsonResponse(resp))
 	} else {
 		resp.Success = true
-		s.sendAPIResponse(ca.Client, acc, _EMPTY_, ca.Reply, _EMPTY_, s.jsonResponse(resp))
+		s.sendAPIResponse(ca.Client, acc, ca.Subject, ca.Reply, _EMPTY_, s.jsonResponse(resp))
 	}
 }
 
@@ -2315,7 +2319,7 @@ func (js *jetStream) processConsumerLeaderChange(o *Consumer, isLeader bool) {
 	}
 	js.mu.Lock()
 	s, account, err := js.srv, ca.Client.Account, ca.err
-	client, reply := ca.Client, ca.Reply
+	client, subject, reply := ca.Client, ca.Subject, ca.Reply
 	hasResponded := ca.responded
 	ca.responded = true
 	js.mu.Unlock()
@@ -2350,10 +2354,10 @@ func (js *jetStream) processConsumerLeaderChange(o *Consumer, isLeader bool) {
 	var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
 	if err != nil {
 		resp.Error = jsError(err)
-		s.sendAPIErrResponse(client, acc, _EMPTY_, reply, _EMPTY_, s.jsonResponse(&resp))
+		s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 	} else {
 		resp.ConsumerInfo = o.Info()
-		s.sendAPIResponse(client, acc, _EMPTY_, reply, _EMPTY_, s.jsonResponse(&resp))
+		s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 		if node := o.raftNode(); node != nil {
 			o.sendCreateAdvisory()
 		}
@@ -2471,7 +2475,7 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 		} else if result.Restore != nil {
 			resp = s.jsonResponse(result.Restore)
 		}
-		js.srv.sendAPIErrResponse(sa.Client, acc, _EMPTY_, sa.Reply, _EMPTY_, resp)
+		js.srv.sendAPIErrResponse(sa.Client, acc, sa.Subject, sa.Reply, _EMPTY_, resp)
 		sa.responded = true
 		// TODO(dlc) - Could have mixed results, should track per peer.
 		// Set sa.err while we are deleting so we will not respond to list/names requests.
@@ -2499,7 +2503,7 @@ func (js *jetStream) processConsumerAssignmentResults(sub *subscription, c *clie
 
 	if sa := js.streamAssignment(result.Account, result.Stream); sa != nil && sa.consumers != nil {
 		if ca := sa.consumers[result.Consumer]; ca != nil && !ca.responded {
-			js.srv.sendAPIErrResponse(ca.Client, acc, _EMPTY_, ca.Reply, _EMPTY_, s.jsonResponse(result.Response))
+			js.srv.sendAPIErrResponse(ca.Client, acc, ca.Subject, ca.Reply, _EMPTY_, s.jsonResponse(result.Response))
 			ca.responded = true
 			// Check if this failed.
 			// TODO(dlc) - Could have mixed results, should track per peer.
@@ -2687,11 +2691,11 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, subject, reply string,
 	// Pick a preferred leader.
 	rg.setPreferred()
 	// Sync subject for post snapshot sync.
-	sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: cfg, Reply: reply, Client: ci, Created: time.Now()}
+	sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: cfg, Subject: subject, Reply: reply, Client: ci, Created: time.Now()}
 	cc.meta.Propose(encodeAddStreamAssignment(sa))
 }
 
-func (s *Server) jsClusteredStreamDeleteRequest(ci *ClientInfo, stream, reply string, rmsg []byte) {
+func (s *Server) jsClusteredStreamDeleteRequest(ci *ClientInfo, stream, subject, reply string, rmsg []byte) {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
 		return
@@ -2706,7 +2710,7 @@ func (s *Server) jsClusteredStreamDeleteRequest(ci *ClientInfo, stream, reply st
 		if err == nil {
 			var resp = JSApiStreamDeleteResponse{ApiResponse: ApiResponse{Type: JSApiStreamDeleteResponseType}}
 			resp.Error = jsNotFoundError(ErrJetStreamStreamNotFound)
-			s.sendAPIErrResponse(ci, acc, _EMPTY_, reply, string(rmsg), s.jsonResponse(&resp))
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		}
 		return
 	}
@@ -2716,7 +2720,7 @@ func (s *Server) jsClusteredStreamDeleteRequest(ci *ClientInfo, stream, reply st
 		cc.meta.Propose(encodeDeleteConsumerAssignment(ca))
 	}
 
-	sa := &streamAssignment{Group: osa.Group, Config: osa.Config, Reply: reply, Client: ci}
+	sa := &streamAssignment{Group: osa.Group, Config: osa.Config, Subject: subject, Reply: reply, Client: ci}
 	cc.meta.Propose(encodeDeleteStreamAssignment(sa))
 }
 
@@ -2743,7 +2747,7 @@ func (s *Server) jsClusteredStreamPurgeRequest(ci *ClientInfo, stream, subject, 
 	}
 
 	n := sa.Group.node
-	sp := &streamPurge{Stream: stream, Reply: reply, Client: ci}
+	sp := &streamPurge{Stream: stream, Subject: subject, Reply: reply, Client: ci}
 	n.Propose(encodeStreamPurge(sp))
 }
 
@@ -2774,7 +2778,7 @@ func (s *Server) jsClusteredStreamRestoreRequest(ci *ClientInfo, acc *Account, r
 	}
 	// Pick a preferred leader.
 	rg.setPreferred()
-	sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: cfg, Reply: reply, Client: ci, Created: time.Now()}
+	sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: cfg, Subject: subject, Reply: reply, Client: ci, Created: time.Now()}
 	// Now add in our restore state and pre-select a peer to handle the actual receipt of the snapshot.
 	sa.Restore = &req.State
 	cc.meta.Propose(encodeAddStreamAssignment(sa))
@@ -3046,7 +3050,7 @@ func (s *Server) jsClusteredConsumerDeleteRequest(ci *ClientInfo, stream, consum
 		return
 	}
 
-	ca := &consumerAssignment{Group: oca.Group, Stream: stream, Name: consumer, Config: oca.Config, Reply: reply, Client: ci}
+	ca := &consumerAssignment{Group: oca.Group, Stream: stream, Name: consumer, Config: oca.Config, Subject: subject, Reply: reply, Client: ci}
 	cc.meta.Propose(encodeDeleteConsumerAssignment(ca))
 }
 
@@ -3078,7 +3082,7 @@ func (s *Server) jsClusteredMsgDeleteRequest(ci *ClientInfo, stream, subject, re
 		return
 	}
 	n := sa.Group.node
-	md := &streamMsgDelete{Seq: seq, Stream: stream, Reply: reply, Client: ci}
+	md := &streamMsgDelete{Seq: seq, Stream: stream, Subject: subject, Reply: reply, Client: ci}
 	n.Propose(encodeMsgDelete(md))
 }
 
@@ -3166,7 +3170,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, subject, reply strin
 		}
 	}
 
-	ca := &consumerAssignment{Group: rg, Stream: stream, Name: oname, Config: cfg, Reply: reply, Client: ci, Created: time.Now()}
+	ca := &consumerAssignment{Group: rg, Stream: stream, Name: oname, Config: cfg, Subject: subject, Reply: reply, Client: ci, Created: time.Now()}
 	cc.meta.Propose(encodeAddConsumerAssignment(ca))
 }
 
