@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
@@ -211,6 +212,73 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 	return nil
 }
 
+// checkStreamExports will check if we have the JS exports setup
+// on the system account, and if not go ahead and set them up.
+func (s *Server) checkJetStreamExports() {
+	sacc := s.SystemAccount()
+	if sacc.getServiceExport(allJsExports[0]) == nil {
+		s.setupJetStreamExports()
+	}
+}
+
+func (s *Server) setupJetStreamExports() {
+	// Setup our internal system exports.
+	sacc := s.SystemAccount()
+	for _, export := range allJsExports {
+		if err := sacc.AddServiceExport(export, nil); err != nil {
+			s.Warnf("Error setting up jetstream service exports: %v", err)
+		}
+	}
+}
+
+// Turns off JetStream and signals in clustered mode
+// to have the metacontroller remove us from the peer list.
+func (s *Server) RemoveJetStream() error {
+	if s.JetStreamIsClustered() {
+		s.Noticef("JetStream cluster shutting down")
+		wasLeader := s.JetStreamIsLeader()
+		js, cc := s.getJetStreamCluster()
+		js.mu.RLock()
+		meta := cc.meta
+		js.mu.RUnlock()
+
+		s.transferRaftLeaders()
+
+		if wasLeader {
+			// Wait til the new metacontroller leader is established
+			const timeout = 2 * time.Second
+			maxWait := time.NewTimer(timeout)
+			defer maxWait.Stop()
+			t := time.NewTicker(50 * time.Millisecond)
+			defer t.Stop()
+		LOOP:
+			for {
+				select {
+				case <-s.quitCh:
+					return nil
+				case <-maxWait.C:
+					break LOOP
+				case <-t.C:
+					if cc.isCurrent() {
+						break LOOP
+					}
+				}
+			}
+		}
+		// Once here we can forward our proposal to remove ourselves.
+		if meta != nil {
+			meta.ProposeRemovePeer(meta.ID())
+			meta.Delete()
+		}
+	} else {
+		s.Noticef("JetStream shutting down")
+	}
+
+	s.shutdownJetStream()
+
+	return nil
+}
+
 func (s *Server) enableJetStreamAccounts() error {
 	// If we have no configured accounts setup then setup imports on global account.
 	if s.globalAccountOnly() {
@@ -347,18 +415,20 @@ func (s *Server) shutdownJetStream() {
 		return
 	}
 
-	var _jsa [512]*jsAccount
-	jsas := _jsa[:0]
+	var _a [512]*Account
+	accounts := _a[:0]
 
 	js.mu.RLock()
 	// Collect accounts.
 	for _, jsa := range js.accounts {
-		jsas = append(jsas, jsa)
+		if a := jsa.acc(); a != nil {
+			accounts = append(accounts, a)
+		}
 	}
 	js.mu.RUnlock()
 
-	for _, jsa := range jsas {
-		js.disableJetStream(jsa)
+	for _, a := range accounts {
+		a.removeJetStream()
 	}
 
 	s.mu.Lock()
@@ -845,6 +915,26 @@ func (a *Account) DisableJetStream() error {
 	// Remove service imports.
 	for _, export := range allJsExports {
 		a.removeServiceImport(export)
+	}
+
+	return js.disableJetStream(js.lookupAccount(a))
+}
+
+// removeJetStream is called when JetStream has been disabled for this
+// server.
+func (a *Account) removeJetStream() error {
+	a.mu.Lock()
+	s := a.srv
+	a.js = nil
+	a.mu.Unlock()
+
+	if s == nil {
+		return fmt.Errorf("jetstream account not registered")
+	}
+
+	js := s.getJetStream()
+	if js == nil {
+		return ErrJetStreamNotEnabled
 	}
 
 	return js.disableJetStream(js.lookupAccount(a))
