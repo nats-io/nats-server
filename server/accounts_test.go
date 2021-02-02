@@ -594,6 +594,31 @@ func TestImportAuthorized(t *testing.T) {
 	checkBool(foo.checkStreamImportAuthorized(bar, "*.*", nil), true, t)
 	checkBool(foo.checkStreamImportAuthorized(bar, "*.>", nil), true, t)
 
+	_, foo, bar = simpleAccountServer(t)
+	foo.addStreamExportWithAccountPos("foo.*", []*Account{}, 2)
+	foo.addStreamExportWithAccountPos("bar.*.foo", []*Account{}, 2)
+	if err := foo.addStreamExportWithAccountPos("baz.*.>", []*Account{}, 3); err == nil {
+		t.Fatal("expected error")
+	}
+	checkBool(foo.checkStreamImportAuthorized(bar, fmt.Sprintf("foo.%s", bar.Name), nil), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, fmt.Sprintf("bar.%s.foo", bar.Name), nil), true, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, fmt.Sprintf("baz.foo.%s", bar.Name), nil), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "foo.X", nil), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "bar.X.foo", nil), false, t)
+	checkBool(foo.checkStreamImportAuthorized(bar, "baz.foo.X", nil), false, t)
+
+	foo.addServiceExportWithAccountPos("a.*", []*Account{}, 2)
+	foo.addServiceExportWithAccountPos("b.*.a", []*Account{}, 2)
+	if err := foo.addServiceExportWithAccountPos("c.*.>", []*Account{}, 3); err == nil {
+		t.Fatal("expected error")
+	}
+	checkBool(foo.checkServiceImportAuthorized(bar, fmt.Sprintf("a.%s", bar.Name), nil), true, t)
+	checkBool(foo.checkServiceImportAuthorized(bar, fmt.Sprintf("b.%s.a", bar.Name), nil), true, t)
+	checkBool(foo.checkServiceImportAuthorized(bar, fmt.Sprintf("c.a.%s", bar.Name), nil), false, t)
+	checkBool(foo.checkServiceImportAuthorized(bar, "a.X", nil), false, t)
+	checkBool(foo.checkServiceImportAuthorized(bar, "b.X.a", nil), false, t)
+	checkBool(foo.checkServiceImportAuthorized(bar, "c.a.X", nil), false, t)
+
 	// Reset and test pwc and fwc
 	s, foo, bar := simpleAccountServer(t)
 	foo.AddStreamExport("foo.*.baz.>", []*Account{bar})

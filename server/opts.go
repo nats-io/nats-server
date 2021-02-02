@@ -1941,6 +1941,7 @@ type export struct {
 	rt   ServiceRespType
 	lat  *serviceLatency
 	rthr time.Duration
+	tPos uint
 }
 
 type importStream struct {
@@ -2278,7 +2279,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 			}
 			accounts = append(accounts, ta)
 		}
-		if err := stream.acc.AddStreamExport(stream.sub, accounts); err != nil {
+		if err := stream.acc.addStreamExportWithAccountPos(stream.sub, accounts, stream.tPos); err != nil {
 			msg := fmt.Sprintf("Error adding stream export %q: %v", stream.sub, err)
 			*errors = append(*errors, &configErr{tk, msg})
 			continue
@@ -2296,7 +2297,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 			}
 			accounts = append(accounts, ta)
 		}
-		if err := service.acc.AddServiceExportWithResponse(service.sub, service.rt, accounts); err != nil {
+		if err := service.acc.addServiceExportWithResponseAndAccountPos(service.sub, service.rt, accounts, service.tPos); err != nil {
 			msg := fmt.Sprintf("Error adding service export %q: %v", service.sub, err)
 			*errors = append(*errors, &configErr{tk, msg})
 			continue
@@ -2497,6 +2498,7 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 		thresh     time.Duration
 		latToken   token
 		lt         token
+		accTokPos  uint
 	)
 	defer convertPanicToErrorList(&lt, errors)
 
@@ -2645,6 +2647,8 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 			if curService != nil {
 				curService.lat = lat
 			}
+		case "account_token_position":
+			accTokPos = uint(mv.(int64))
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
@@ -2656,6 +2660,12 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 				*errors = append(*errors, err)
 			}
 		}
+	}
+	if curStream != nil {
+		curStream.tPos = accTokPos
+	}
+	if curService != nil {
+		curService.tPos = accTokPos
 	}
 	return curStream, curService, nil
 }
