@@ -36,9 +36,16 @@ import (
 // JetStreamConfig determines this server's configuration.
 // MaxMemory and MaxStore are in bytes.
 type JetStreamConfig struct {
-	MaxMemory int64
-	MaxStore  int64
-	StoreDir  string
+	MaxMemory int64  `json:"max_memory"`
+	MaxStore  int64  `json:"max_storage"`
+	StoreDir  string `json:"store_dir,omitempty"`
+}
+
+type JetStreamStats struct {
+	Memory   uint64            `json:"memory"`
+	Store    uint64            `json:"storage"`
+	Accounts int               `json:"accounts,omitempty"`
+	API      JetStreamAPIStats `json:"api"`
 }
 
 type JetStreamAccountLimits struct {
@@ -1151,6 +1158,33 @@ func (js *jetStream) dynamicAccountLimits() *JetStreamAccountLimits {
 	limits := &JetStreamAccountLimits{js.config.MaxMemory, js.config.MaxStore, -1, -1}
 	js.mu.RUnlock()
 	return limits
+}
+
+// Report on JetStream stats and usage.
+func (js *jetStream) usageStats() *JetStreamStats {
+	var stats JetStreamStats
+
+	var _jsa [512]*jsAccount
+	accounts := _jsa[:0]
+
+	js.mu.RLock()
+	for _, jsa := range js.accounts {
+		accounts = append(accounts, jsa)
+	}
+	js.mu.RUnlock()
+
+	stats.Accounts = len(accounts)
+
+	// Collect account information.
+	for _, jsa := range accounts {
+		jsa.mu.RLock()
+		stats.Memory += uint64(jsa.memTotal)
+		stats.Store += uint64(jsa.storeTotal)
+		stats.API.Total += jsa.apiTotal
+		stats.API.Errors += jsa.apiErrors
+		jsa.mu.RUnlock()
+	}
+	return &stats
 }
 
 // Check to see if we have enough system resources for this account.
