@@ -1972,6 +1972,8 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 			[]string{"now", "routes"}},
 		{"ROUTEZ", json.RawMessage(`{"cluster":"TEST CLUSTER 22", "subscriptions":true}`), &Routez{},
 			[]string{"now", "routes"}},
+
+		{"JSZ", nil, &JSzOptions{}, []string{"now", "disabled"}},
 	}
 
 	for i, test := range tests {
