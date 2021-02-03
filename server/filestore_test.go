@@ -2551,3 +2551,29 @@ func TestFileStoreStreamIndexBug(t *testing.T) {
 		t.Fatalf("Expected error during readIndexInfo(): %v", err)
 	}
 }
+
+// Reported by Ivan.
+func TestFileStoreStreamDeleteCacheBug(t *testing.T) {
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	fs, _, err := newFileStore(FileStoreConfig{StoreDir: storeDir, CacheExpire: 50 * time.Millisecond}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	subj, msg := "foo", []byte("Hello World")
+
+	if _, _, err := fs.StoreMsg(subj, nil, msg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if _, _, err := fs.StoreMsg(subj, nil, msg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if _, err := fs.EraseMsg(1); err != nil {
+		t.Fatalf("Got an error on remove of %d: %v", 1, err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if _, _, _, _, err := fs.LoadMsg(2); err != nil {
+		t.Fatalf("Unexpected error looking up msg: %v", err)
+	}
+}
