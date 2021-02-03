@@ -333,7 +333,8 @@ const JSApiStreamUpdateResponseType = "io.nats.jetstream.api.v1.stream_update_re
 
 // JSApiMsgDeleteRequest delete message request.
 type JSApiMsgDeleteRequest struct {
-	Seq uint64 `json:"seq"`
+	Seq     uint64 `json:"seq"`
+	NoErase bool   `json:"no_erase,omitempty"`
 }
 
 // JSApiMsgDeleteResponse.
@@ -1835,7 +1836,12 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 		return
 	}
 
-	removed, err := mset.EraseMsg(req.Seq)
+	var removed bool
+	if req.NoErase {
+		removed, err = mset.RemoveMsg(req.Seq)
+	} else {
+		removed, err = mset.EraseMsg(req.Seq)
+	}
 	if err != nil {
 		resp.Error = jsError(err)
 	} else if !removed {
