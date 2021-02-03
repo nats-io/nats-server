@@ -1010,6 +1010,10 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 	cb := fs.scb
 	mb.mu.Unlock()
 
+	if secure {
+		mb.flushPendingMsgs()
+	}
+
 	// Kick outside of lock.
 	if shouldWriteIndex {
 		if qch == nil {
@@ -1207,6 +1211,7 @@ func (mb *msgBlock) eraseMsg(seq uint64, ri, rl int) error {
 		buf := mb.cache.buf[li : li+rl]
 		copy(buf, nbytes)
 	}
+
 	// Disk
 	if mb.cache.off+mb.cache.wp > ri {
 		mfd, err := os.OpenFile(mb.mfn, os.O_RDWR, 0644)
@@ -1879,6 +1884,8 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 			// TODO(dlc) - Add into bad list?
 			return errBadMsg
 		}
+		// Clear erase bit.
+		seq = seq &^ ebit
 		// Adjust if we guessed wrong.
 		if seq != 0 && seq < fseq {
 			fseq = seq
@@ -2090,6 +2097,7 @@ func (mb *msgBlock) fetchMsg(seq uint64) (*fileStoredMsg, error) {
 	if err := mb.loadMsgs(); err != nil {
 		return nil, err
 	}
+
 	return mb.cacheLookup(seq)
 }
 
