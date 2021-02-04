@@ -895,6 +895,10 @@ func (o *Consumer) updateDeliveryInterest(localInterest bool) {
 }
 
 func (o *Consumer) deleteNotActive() {
+	// Need to check again if there is not an interest now that the timer fires.
+	if !o.hasNoLocalInterest() {
+		return
+	}
 	o.mu.RLock()
 	if o.mset == nil {
 		o.mu.RUnlock()
@@ -2369,9 +2373,9 @@ func (o *Consumer) Active() bool {
 
 // hasNoLocalInterest return true if we have no local interest.
 func (o *Consumer) hasNoLocalInterest() bool {
-	o.mu.Lock()
+	o.mu.RLock()
 	rr := o.acc.sl.Match(o.config.DeliverSubject)
-	o.mu.Unlock()
+	o.mu.RUnlock()
 	return len(rr.psubs)+len(rr.qsubs) == 0
 }
 
