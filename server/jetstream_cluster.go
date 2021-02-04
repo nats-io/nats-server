@@ -1387,9 +1387,11 @@ func (js *jetStream) applyStreamEntries(mset *Stream, ce *CommittedEntry, isReco
 					panic(err.Error())
 				}
 				// Ignore if we are recovering and we have already processed.
-				if isRecovering && mset.State().LastSeq > sp.LastSeq {
-					// Make sure all messages from the purge are gone.
-					mset.store.Compact(sp.LastSeq)
+				if isRecovering {
+					if mset.State().FirstSeq <= sp.LastSeq {
+						// Make sure all messages from the purge are gone.
+						mset.store.Compact(sp.LastSeq + 1)
+					}
 					continue
 				}
 
