@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 )
@@ -103,6 +104,195 @@ func TestAccountIsolation(t *testing.T) {
 	}
 	if !strings.HasPrefix(l, "PONG\r\n") {
 		t.Fatalf("PONG response incorrect: %q", l)
+	}
+}
+
+func TestAccountIsolationExportImport(t *testing.T) {
+	getServer := func(t *testing.T) *Server {
+		t.Helper()
+
+		s := opTrustBasicSetup()
+		go s.Start()
+		if !s.ReadyForConnections(5 * time.Second) {
+			t.Fatal("failed to be ready for connections")
+		}
+		return s
+	}
+	getAccountConns := func(t *testing.T, s *Server, exp, imp string) (*nats.Conn, *nats.Conn) {
+		t.Helper()
+
+		buildMemAccResolver(s)
+		okp, err := nkeys.FromSeed(oSeed)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Setup exporter account.
+		accAPair, err := nkeys.CreateAccount()
+		if err != nil {
+			t.Fatal(err)
+		}
+		accAPub, err := accAPair.PublicKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		accAClaims := jwt.NewAccountClaims(accAPub)
+		if exp != "" {
+			accAClaims.Limits.WildcardExports = true
+			accAClaims.Exports.Add(&jwt.Export{
+				Name:    fmt.Sprintf("%s-stream-export", exp),
+				Subject: jwt.Subject(exp),
+				Type:    jwt.Stream,
+			})
+		}
+		accAJWT, err := accAClaims.Encode(okp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		addAccountToMemResolver(s, accAPub, accAJWT)
+
+		// Setup importer account.
+		accBPair, err := nkeys.CreateAccount()
+		if err != nil {
+			t.Fatal(err)
+		}
+		accBPub, err := accBPair.PublicKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		accBClaims := jwt.NewAccountClaims(accBPub)
+		if imp != "" {
+			accBClaims.Imports.Add(&jwt.Import{
+				Name:    fmt.Sprintf("%s-stream-import", imp),
+				Subject: jwt.Subject(imp),
+				Account: accAPub,
+				Type:    jwt.Stream,
+			})
+		}
+		accBJWT, err := accBClaims.Encode(okp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		addAccountToMemResolver(s, accBPub, accBJWT)
+
+		ncA := natsConnect(t, s.ClientURL(), createUserCreds(t, nil, accAPair),
+			nats.Name(fmt.Sprintf("nc-exporter-%s", exp)))
+		ncB := natsConnect(t, s.ClientURL(), createUserCreds(t, nil, accBPair),
+			nats.Name(fmt.Sprintf("nc-importer-%s", imp)))
+
+		return ncA, ncB
+	}
+
+	cases := []struct {
+		name     string
+		exp, imp string
+		pubSubj  string
+	}{
+		{
+			name: "export literal, import literal",
+			exp:  "foo", imp: "foo",
+			pubSubj: "foo",
+		},
+		{
+			name: "export full wildcard, import literal",
+			exp:  "foo.>", imp: "foo.bar",
+			pubSubj: "foo.bar",
+		},
+		{
+			name: "export full wildcard, import sublevel full wildcard",
+			exp:  "foo.>", imp: "foo.bar.>",
+			pubSubj: "foo.bar.whizz",
+		},
+		// FAIL - dropping "foo.bar" from different account.
+		// What is the correct behavior here?
+		// Should this be allowed?
+		// If so, probably need to edit accounts.go:2427
+		// {
+		// 	name: "export literal, import full wildcard",
+		// 	exp:  "foo.bar", imp: "foo.>",
+		// 	pubSubj: "foo.bar",
+		// },
+		{
+			name: "export full wildcard, import full wildcard",
+			exp:  "foo.>", imp: "foo.>",
+			pubSubj: "foo.bar",
+		},
+		{
+			name: "export partial wildcard, import partial wildcard",
+			exp:  "foo.*", imp: "foo.*",
+			pubSubj: "foo.bar",
+		},
+		{
+			name: "export mid partial wildcard, import mid partial wildcard",
+			exp:  "foo.*.bar", imp: "foo.*.bar",
+			pubSubj: "foo.whizz.bar",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := getServer(t)
+			defer s.Shutdown()
+			ncA, ncB := getAccountConns(t, s, c.exp, c.imp)
+			defer ncA.Close()
+			defer ncB.Close()
+
+			// ncA is the exporter account.
+			// ncB is the importer account.
+
+			// We keep track of 2 subjects.
+			// One subject (c.pubSubj) is based off the stream import.
+			// The other subject "fizz" is not imported and should be isolated.
+
+			gotSubjs := map[string]int{
+				c.pubSubj: 0,
+				"fizz":    0,
+			}
+			sub, err := ncB.Subscribe(">", func(m *nats.Msg) {
+				gotSubjs[m.Subject] += 1
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			time.Sleep(1 * time.Second)
+			if err := ncA.Publish(c.pubSubj, []byte(fmt.Sprintf("ncA pub %s", c.pubSubj))); err != nil {
+				t.Fatal(err)
+			}
+			if err := ncB.Publish(c.pubSubj, []byte(fmt.Sprintf("ncB pub %s", c.pubSubj))); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := ncA.Publish("fizz", []byte("ncA pub fizz")); err != nil {
+				t.Fatal(err)
+			}
+			if err := ncB.Publish("fizz", []byte("ncB pub fizz")); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(1 * time.Second)
+			if err := sub.Unsubscribe(); err != nil {
+				t.Fatal(err)
+			}
+
+			wantSubjs := map[string]int{
+				// Subscriber ncB should receive publishes from ncA and ncB.
+				c.pubSubj: 2,
+				// Subscriber ncB should only receive the publish from ncB.
+				"fizz": 1,
+			}
+			if got, want := len(gotSubjs), len(wantSubjs); got != want {
+				t.Fatalf("unexpected subjs len, got=%d; want=%d", got, want)
+			}
+
+			for key, gotCnt := range gotSubjs {
+				if wantCnt := wantSubjs[key]; gotCnt != wantCnt {
+					t.Errorf("unexpected receive count for subject %q, got=%d, want=%d", key, gotCnt, wantCnt)
+				}
+			}
+			if t.Failed() {
+				t.Logf("exported=%q; imported=%q", c.exp, c.imp)
+			}
+		})
 	}
 }
 
