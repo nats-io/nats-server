@@ -2003,7 +2003,7 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 
 	// Sanity checking for now.
 	if ae.pindex != seq-1 {
-		panic(fmt.Sprintf("[%s] Placed an entry at the wrong index, ae is %+v, index is %d\n\n", n.s, ae, seq))
+		panic(fmt.Sprintf("[%s-%s] Placed an entry at the wrong index, ae is %+v, index is %d\n\n", n.s, n.group, ae, seq))
 	}
 
 	n.pterm = ae.term

@@ -3169,6 +3169,53 @@ func TestJetStreamClusterRemoveServer(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterPurgeReplayAfterRestart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "P3F", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomNonLeader()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sendBatch := func(n int) {
+		t.Helper()
+		// Send a batch to a given subject.
+		for i := 0; i < n; i++ {
+			if _, err := js.Publish("TEST", []byte("OK")); err != nil {
+				t.Fatalf("Unexpected publish error: %v", err)
+			}
+		}
+	}
+
+	sendBatch(10)
+	if err := js.PurgeStream("TEST"); err != nil {
+		t.Fatalf("Unexpected purge error: %v", err)
+	}
+	sendBatch(10)
+
+	c.stopAll()
+	c.restartAll()
+
+	c.waitOnStreamLeader("$G", "TEST")
+
+	s = c.randomServer()
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err := js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.State.Msgs != 10 {
+		t.Fatalf("Expected 10 msgs after restart, got %d", si.State.Msgs)
+	}
+}
+
 func TestJetStreamClusterSuperClusterBasics(t *testing.T) {
 	sc := createJetStreamSuperCluster(t, 3, 3)
 	defer sc.shutdown()
