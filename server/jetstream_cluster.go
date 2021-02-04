@@ -1166,6 +1166,8 @@ func (js *jetStream) monitorStream(mset *Stream, sa *streamAssignment) {
 	// we replace with the restore chan.
 	restoreDoneCh := make(<-chan error)
 
+	isRecovering := true
+
 	for {
 		select {
 		case err := <-restoreDoneCh:
@@ -1262,6 +1264,7 @@ func (js *jetStream) monitorStream(mset *Stream, sa *streamAssignment) {
 		case ce := <-ach:
 			// No special processing needed for when we are caught up on restart.
 			if ce == nil {
+				isRecovering = false
 				continue
 			}
 			if mset == nil && isRestore {
@@ -1273,7 +1276,7 @@ func (js *jetStream) monitorStream(mset *Stream, sa *streamAssignment) {
 				}
 			}
 			// Apply our entries.
-			if hadSnapshot, err := js.applyStreamEntries(mset, ce); err == nil {
+			if hadSnapshot, err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
 				n.Applied(ce.Index)
 				if hadSnapshot {
 					snapout = false
@@ -1304,7 +1307,7 @@ func (js *jetStream) monitorStream(mset *Stream, sa *streamAssignment) {
 	}
 }
 
-func (js *jetStream) applyStreamEntries(mset *Stream, ce *CommittedEntry) (bool, error) {
+func (js *jetStream) applyStreamEntries(mset *Stream, ce *CommittedEntry, isRecovering bool) (bool, error) {
 	var didSnap bool
 	for _, e := range ce.Entries {
 		if e.Type == EntrySnapshot {
@@ -1351,10 +1354,12 @@ func (js *jetStream) applyStreamEntries(mset *Stream, ce *CommittedEntry) (bool,
 				if err != nil {
 					s.Warnf("JetStream cluster failed to delete msg %d from stream %q for account %q: %v", md.Seq, md.Stream, md.Client.Account, err)
 				}
+
 				js.mu.RLock()
 				isLeader := cc.isStreamLeader(md.Client.Account, md.Stream)
 				js.mu.RUnlock()
-				if isLeader {
+
+				if isLeader && !isRecovering {
 					var resp = JSApiMsgDeleteResponse{ApiResponse: ApiResponse{Type: JSApiMsgDeleteResponseType}}
 					if err != nil {
 						resp.Error = jsError(err)
@@ -1377,10 +1382,12 @@ func (js *jetStream) applyStreamEntries(mset *Stream, ce *CommittedEntry) (bool,
 				if err != nil {
 					s.Warnf("JetStream cluster failed to purge stream %q for account %q: %v", sp.Stream, sp.Client.Account, err)
 				}
+
 				js.mu.RLock()
 				isLeader := js.cluster.isStreamLeader(sp.Client.Account, sp.Stream)
 				js.mu.RUnlock()
-				if isLeader {
+
+				if isLeader && !isRecovering {
 					var resp = JSApiStreamPurgeResponse{ApiResponse: ApiResponse{Type: JSApiStreamPurgeResponseType}}
 					if err != nil {
 						resp.Error = jsError(err)
