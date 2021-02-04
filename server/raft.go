@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"math/rand"
+	"net"
 	"os"
 	"path"
 	"sync"
@@ -228,11 +229,35 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 	expected := len(knownPeers)
 	// We need to adjust this is all peers are not known.
 	if !allPeersKnown {
+		s.Debugf("Determining expected peer size for JetStream metacontroller")
 		if expected < 2 {
 			expected = 2
 		}
-		if ncr := s.configuredRoutes(); expected < ncr {
-			expected = ncr
+		opts := s.getOpts()
+		nrs := len(opts.Routes)
+
+		cn := s.ClusterName()
+		ngwps := 0
+		for _, gw := range opts.Gateway.Gateways {
+			// Ignore our own cluster if specified.
+			if gw.Name == cn {
+				continue
+			}
+			for _, u := range gw.URLs {
+				host := u.Hostname()
+				// If this is an IP just add one.
+				if net.ParseIP(host) != nil {
+					ngwps++
+				} else {
+					addrs, _ := net.LookupHost(host)
+					ngwps += len(addrs)
+				}
+			}
+		}
+
+		if expected < nrs+ngwps {
+			expected = nrs + ngwps
+			s.Debugf("Adjusting expected peer set size to %d with %d known", expected, len(knownPeers))
 		}
 	}
 
@@ -261,6 +286,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 	if ps == nil || ps.clusterSize < 2 {
 		return nil, errors.New("raft: cluster too small")
 	}
+
 	n := &raft{
 		created:  time.Now(),
 		id:       hash[:idLen],
@@ -353,10 +379,18 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 
 // Maps node names back to server names.
 func (s *Server) serverNameForNode(node string) string {
-	s.mu.Lock()
-	sn := s.nodeToName[node]
-	s.mu.Unlock()
-	return sn
+	if sn, ok := s.nodeToName.Load(node); ok {
+		return sn.(string)
+	}
+	return _EMPTY_
+}
+
+// Maps node names back to cluster names.
+func (s *Server) clusterNameForNode(node string) string {
+	if cn, ok := s.nodeToCluster.Load(node); ok {
+		return cn.(string)
+	}
+	return _EMPTY_
 }
 
 // Server will track all raft nodes.
@@ -872,7 +906,7 @@ func (n *raft) shutdown(shouldDelete bool) {
 	}
 }
 
-func (n *raft) newInbox(cn string) string {
+func (n *raft) newInbox() string {
 	var b [replySuffixLen]byte
 	rn := rand.Int63()
 	for i, l := 0, rn; i < len(b); i++ {
@@ -883,8 +917,8 @@ func (n *raft) newInbox(cn string) string {
 }
 
 const (
-	raftVoteSubj       = "$NRG.V.%s.%s"
-	raftAppendSubj     = "$NRG.E.%s.%s"
+	raftVoteSubj       = "$NRG.V.%s"
+	raftAppendSubj     = "$NRG.AE.%s"
 	raftPropSubj       = "$NRG.P.%s"
 	raftRemovePeerSubj = "$NRG.RP.%s"
 	raftReplySubj      = "$NRG.R.%s"
@@ -897,9 +931,8 @@ func (n *raft) subscribe(subject string, cb msgHandler) (*subscription, error) {
 }
 
 func (n *raft) createInternalSubs() error {
-	cn := n.s.ClusterName()
-	n.vsubj, n.vreply = fmt.Sprintf(raftVoteSubj, cn, n.group), n.newInbox(cn)
-	n.asubj, n.areply = fmt.Sprintf(raftAppendSubj, cn, n.group), n.newInbox(cn)
+	n.vsubj, n.vreply = fmt.Sprintf(raftVoteSubj, n.group), n.newInbox()
+	n.asubj, n.areply = fmt.Sprintf(raftAppendSubj, n.group), n.newInbox()
 	n.psubj = fmt.Sprintf(raftPropSubj, n.group)
 	n.rpsubj = fmt.Sprintf(raftRemovePeerSubj, n.group)
 
@@ -1732,7 +1765,7 @@ func (n *raft) createCatchup(ae *appendEntry) string {
 		pterm:  n.pterm,
 		pindex: n.pindex,
 	}
-	inbox := n.newInbox(n.s.ClusterName())
+	inbox := n.newInbox()
 	sub, _ := n.subscribe(inbox, n.handleAppendEntry)
 	n.catchup.sub = sub
 	return inbox

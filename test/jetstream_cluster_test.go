@@ -322,7 +322,6 @@ func TestJetStreamClusterCompaction(t *testing.T) {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 	}
-	nc.Flush()
 
 	if _, err := js.StreamInfo("TEST"); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -3170,6 +3169,84 @@ func TestJetStreamClusterRemoveServer(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterSuperClusterBasics(t *testing.T) {
+	sc := createJetStreamSuperCluster(t, 3, 3)
+	defer sc.shutdown()
+
+	// Client based API
+	s := sc.randomCluster().randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Send in 10 messages.
+	msg, toSend := []byte("Hello JS Clustering"), 10
+	for i := 0; i < toSend; i++ {
+		if _, err = js.Publish("TEST", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+	// Now grab info for this stream.
+	si, err := js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si == nil || si.Config.Name != "TEST" {
+		t.Fatalf("StreamInfo is not correct %+v", si)
+	}
+	// Check active state as well, shows that the owner answered.
+	if si.State.Msgs != uint64(toSend) {
+		t.Fatalf("Expected %d msgs, got bad state: %+v", toSend, si.State)
+	}
+	// Check request origin placement.
+	if si.Cluster.Name != s.ClusterName() {
+		t.Fatalf("Expected stream to be placed in %q, but got %q", s.ClusterName(), si.Cluster.Name)
+	}
+
+	// Check consumers.
+	sub, err := js.SubscribeSync("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	checkSubsPending(t, sub, toSend)
+	ci, err := sub.ConsumerInfo()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if ci.Delivered.Consumer != uint64(toSend) || ci.NumAckPending != toSend {
+		t.Fatalf("ConsumerInfo is not correct: %+v", ci)
+	}
+
+	// Now check we can place a stream.
+	// Need to do this by hand for now until Go client catches up.
+	pcn := "C3"
+	cfg := server.StreamConfig{
+		Name:      "TEST2",
+		Storage:   server.FileStorage,
+		Placement: &server.Placement{Cluster: pcn},
+	}
+	req, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, _ := nc.Request(fmt.Sprintf(server.JSApiStreamCreateT, cfg.Name), req, time.Second)
+	var scResp server.JSApiStreamCreateResponse
+	if err := json.Unmarshal(resp.Data, &scResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if scResp.StreamInfo == nil || scResp.Error != nil {
+		t.Fatalf("Did not receive correct response: %+v", scResp.Error)
+	}
+
+	if scResp.StreamInfo.Cluster.Name != pcn {
+		t.Fatalf("Expected the stream to be placed in %q, got %q", pcn, scResp.StreamInfo.Cluster.Name)
+	}
+}
+
 func TestJetStreamClusterStreamPerf(t *testing.T) {
 	// Comment out to run, holding place for now.
 	skip(t)
@@ -3239,12 +3316,121 @@ var jsClusterTempl = `
 	listen: 127.0.0.1:-1
 	server_name: %s
 	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: "%s"}
+
 	cluster {
 		name: %s
 		listen: 127.0.0.1:%d
 		routes = [%s]
 	}
 `
+
+var jsSuperClusterTempl = `
+	%s
+	gateway {
+		name: %s
+		listen: 127.0.0.1:%d
+		gateways = [%s
+		]
+	}
+`
+
+var jsGWTempl = `%s{name: %s, urls: [%s]}`
+
+func createJetStreamSuperCluster(t *testing.T, numServersPer, numClusters int) *supercluster {
+	t.Helper()
+	if numServersPer < 1 {
+		t.Fatalf("Number of servers must be >= 1")
+	}
+	if numClusters <= 1 {
+		t.Fatalf("Number of clusters must be > 1")
+	}
+
+	const (
+		startClusterPort = 33222
+		startGWPort      = 11222
+	)
+
+	// Make the GWs form faster for the tests.
+	server.SetGatewaysSolicitDelay(10 * time.Millisecond)
+	defer server.ResetGatewaysSolicitDelay()
+
+	cp, gp := startClusterPort, startGWPort
+	var clusters []*cluster
+
+	var gws []string
+	// Build GWs first, will be same for all servers.
+	for i, port := 1, gp; i <= numClusters; i++ {
+		cn := fmt.Sprintf("C%d", i)
+		var urls []string
+		for n := 0; n < numServersPer; n++ {
+			urls = append(urls, fmt.Sprintf("nats-route://127.0.0.1:%d", port))
+			port++
+		}
+		gws = append(gws, fmt.Sprintf(jsGWTempl, "\n\t\t\t", cn, strings.Join(urls, ",")))
+	}
+	gwconf := strings.Join(gws, "")
+
+	for i := 1; i <= numClusters; i++ {
+		cn := fmt.Sprintf("C%d", i)
+		// Go ahead and build configurations.
+		c := &cluster{servers: make([]*server.Server, 0, numServersPer), opts: make([]*server.Options, 0, numServersPer), name: cn}
+
+		// Build out the routes that will be shared with all configs.
+		var routes []string
+		for port := cp; port < cp+numServersPer; port++ {
+			routes = append(routes, fmt.Sprintf("nats-route://127.0.0.1:%d", port))
+		}
+		routeConfig := strings.Join(routes, ",")
+
+		for i := 0; i < numServersPer; i++ {
+			storeDir, _ := ioutil.TempDir("", server.JetStreamStoreDir)
+			sn := fmt.Sprintf("%s-S%d", cn, i+1)
+			bconf := fmt.Sprintf(jsClusterTempl, sn, storeDir, cn, cp+i, routeConfig)
+			conf := fmt.Sprintf(jsSuperClusterTempl, bconf, cn, gp, gwconf)
+			gp++
+			s, o := RunServerWithConfig(createConfFile(t, []byte(conf)))
+			c.servers = append(c.servers, s)
+			c.opts = append(c.opts, o)
+		}
+		checkClusterFormed(t, c.servers...)
+		clusters = append(clusters, c)
+		cp += numServersPer
+		c.t = t
+	}
+
+	// Wait for the supercluster to be formed.
+	egws := numClusters - 1
+	for _, c := range clusters {
+		for _, s := range c.servers {
+			waitForOutboundGateways(t, s, egws, 2*time.Second)
+		}
+	}
+
+	sc := &supercluster{t, clusters}
+	sc.waitOnLeader()
+	return sc
+}
+
+func (sc *supercluster) waitOnLeader() {
+	expires := time.Now().Add(5 * time.Second)
+	for time.Now().Before(expires) {
+		for _, c := range sc.clusters {
+			if leader := c.leader(); leader != nil {
+				time.Sleep(200 * time.Millisecond)
+				return
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	sc.t.Fatalf("Expected a cluster leader, got none")
+}
+
+func (sc *supercluster) randomCluster() *cluster {
+	clusters := append(sc.clusters[:0:0], sc.clusters...)
+	rand.Shuffle(len(clusters), func(i, j int) { clusters[i], clusters[j] = clusters[j], clusters[i] })
+	return clusters[0]
+}
 
 // This will create a cluster that is explicitly configured for the routes, etc.
 // and also has a defined clustername. All configs for routes and cluster name will be the same.

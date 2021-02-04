@@ -173,6 +173,7 @@ type ClientInfo struct {
 	Version   string        `json:"ver,omitempty"`
 	RTT       time.Duration `json:"rtt,omitempty"`
 	Server    string        `json:"server,omitempty"`
+	Cluster   string        `json:"cluster,omitempty"`
 	Stop      *time.Time    `json:"stop,omitempty"`
 	Jwt       string        `json:"jwt,omitempty"`
 	IssuerKey string        `json:"issuer_key,omitempty"`
@@ -263,7 +264,7 @@ RESET:
 	host := s.info.Host
 	servername := s.info.Name
 	seqp := &s.sys.seq
-	js := s.js != nil
+	js := s.info.JetStream
 	cluster := s.info.Cluster
 	if s.gateway.enabled {
 		cluster = s.getGatewayName()
@@ -826,6 +827,7 @@ func (s *Server) remoteServerShutdown(sub *subscription, _ *client, subject, rep
 		s.Debugf("Received remote server shutdown on bad subject %q", subject)
 		return
 	}
+
 	sid := toks[serverSubjectIndex]
 	su := s.sys.servers[sid]
 	if su != nil {
@@ -860,7 +862,9 @@ func (s *Server) processNewServer(ms *ServerInfo) {
 	// connect update to make sure they switch this account to interest only mode.
 	s.ensureGWsInterestOnlyForLeafNodes()
 	// Add to our nodeToName
-	s.nodeToName[string(getHash(ms.Name))] = ms.Name
+	node := string(getHash(ms.Name))
+	s.nodeToName.Store(node, ms.Name)
+	s.nodeToCluster.Store(node, ms.Cluster)
 }
 
 // If GW is enabled on this server and there are any leaf node connections,

@@ -46,6 +46,12 @@ type jetStreamCluster struct {
 	consumerResults *subscription
 }
 
+// Used to guide placement of streams in clustered JetStream.
+type Placement struct {
+	Cluster string   `json:"cluster"`
+	Tags    []string `json:"tags,omitempty"`
+}
+
 // Define types of the entry.
 type entryOp uint8
 
@@ -2596,22 +2602,32 @@ func (cc *jetStreamCluster) remapStreamAssignment(sa *streamAssignment, removePe
 
 // selectPeerGroup will select a group of peers to start a raft group.
 // TODO(dlc) - For now randomly select. Can be way smarter.
-func (cc *jetStreamCluster) selectPeerGroup(r int) []string {
+func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string) []string {
 	var nodes []string
 	peers := cc.meta.Peers()
-	// Make sure they are active
-	s := cc.s
-	ourID := cc.meta.ID()
+	s, ourID := cc.s, cc.meta.ID()
+
+	now := time.Now()
 	for _, p := range peers {
-		// FIXME(dlc) - cluster scoped.
-		if p.ID == ourID || s.getRouteByHash([]byte(p.ID)) != nil {
-			nodes = append(nodes, p.ID)
+		// Make sure they are active and current.
+		current, lastSeen := p.Current, now.Sub(p.Last)
+		if current && lastSeen > lostQuorumInterval {
+			current = false
+		}
+		if p.ID == ourID || current {
+			if cluster != _EMPTY_ {
+				if s.clusterNameForNode(p.ID) == cluster {
+					nodes = append(nodes, p.ID)
+				}
+			} else {
+				nodes = append(nodes, p.ID)
+			}
 		}
 	}
 	if len(nodes) < r {
 		return nil
 	}
-	// Don't depend on range.
+	// Don't depend on range to randomize.
 	rand.Shuffle(len(nodes), func(i, j int) { nodes[i], nodes[j] = nodes[j], nodes[i] })
 	return nodes[:r]
 }
@@ -2636,15 +2652,18 @@ func groupName(prefix string, peers []string, storage StorageType) string {
 
 // createGroupForStream will create a group for assignment for the stream.
 // Lock should be held.
-func (cc *jetStreamCluster) createGroupForStream(cfg *StreamConfig) *raftGroup {
+func (cc *jetStreamCluster) createGroupForStream(ci *ClientInfo, cfg *StreamConfig) *raftGroup {
 	replicas := cfg.Replicas
 	if replicas == 0 {
 		replicas = 1
 	}
-
+	cluster := ci.Cluster
+	if cfg.Placement != nil && cfg.Placement.Cluster != _EMPTY_ {
+		cluster = cfg.Placement.Cluster
+	}
 	// Need to create a group here.
 	// TODO(dlc) - Can be way smarter here.
-	peers := cc.selectPeerGroup(replicas)
+	peers := cc.selectPeerGroup(replicas, cluster)
 	if len(peers) == 0 {
 		return nil
 	}
@@ -2696,7 +2715,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, subject, reply string,
 	}
 
 	// Raft group selection and placement.
-	rg := cc.createGroupForStream(cfg)
+	rg := cc.createGroupForStream(ci, cfg)
 	if rg == nil {
 		resp.Error = jsInsufficientErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -2795,7 +2814,7 @@ func (s *Server) jsClusteredStreamRestoreRequest(ci *ClientInfo, acc *Account, r
 	}
 
 	// Raft group selection and placement.
-	rg := cc.createGroupForStream(cfg)
+	rg := cc.createGroupForStream(ci, cfg)
 	if rg == nil {
 		resp.Error = jsInsufficientErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))

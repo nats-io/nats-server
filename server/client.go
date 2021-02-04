@@ -4662,9 +4662,12 @@ func (c *client) getClientInfo(detailed bool) *ClientInfo {
 		return nil
 	}
 	// Server name. Defaults to server ID if not set explicitly.
-	var sn string
-	if detailed && c.kind != LEAF {
-		sn = c.srv.Name()
+	var cn, sn string
+	if detailed {
+		if c.kind != LEAF {
+			sn = c.srv.Name()
+		}
+		cn = c.srv.cachedClusterName()
 	}
 
 	c.mu.Lock()
@@ -4685,6 +4688,7 @@ func (c *client) getClientInfo(detailed bool) *ClientInfo {
 		ci.Lang = c.opts.Lang
 		ci.Version = c.opts.Version
 		ci.Server = sn
+		ci.Cluster = cn
 		ci.Jwt = c.opts.JWT
 		ci.IssuerKey = issuerForClient(c)
 		ci.NameTag = c.nameTag

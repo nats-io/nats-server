@@ -35,10 +35,14 @@ import (
 
 // Used to setup superclusters for tests.
 type supercluster struct {
+	t        *testing.T
 	clusters []*cluster
 }
 
 func (sc *supercluster) shutdown() {
+	if sc == nil {
+		return
+	}
 	for _, c := range sc.clusters {
 		shutdownCluster(c)
 	}
@@ -66,7 +70,7 @@ func createSuperCluster(t *testing.T, numServersPer, numClusters int) *superclus
 		c := createClusterEx(t, true, 5*time.Millisecond, true, randClusterName(), numServersPer, clusters...)
 		clusters = append(clusters, c)
 	}
-	return &supercluster{clusters}
+	return &supercluster{t, clusters}
 }
 
 func (sc *supercluster) setResponseThreshold(t *testing.T, maxTime time.Duration) {

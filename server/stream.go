@@ -51,6 +51,7 @@ type StreamConfig struct {
 	NoAck        bool            `json:"no_ack,omitempty"`
 	Template     string          `json:"template_owner,omitempty"`
 	Duplicates   time.Duration   `json:"duplicate_window,omitempty"`
+	Placement    *Placement      `json:"placement,omitempty"`
 
 	// These are non public configuration options.
 	// If you add new options, check fileStreamInfoJSON in order for them to
