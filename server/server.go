@@ -238,9 +238,9 @@ type Server struct {
 	rnMu      sync.RWMutex
 	raftNodes map[string]RaftNode
 
-	// For mapping from a node name back to a server name.
-	// Normal server lock here.
-	nodeToName map[string]string
+	// For mapping from a node name back to a server name and cluster.
+	nodeToName    sync.Map
+	nodeToCluster sync.Map
 }
 
 // Make sure all are 64bits for atomic use
@@ -324,7 +324,6 @@ func NewServer(opts *Options) (*Server, error) {
 		httpBasePath: httpBasePath,
 		eventIds:     nuid.New(),
 		routesToSelf: make(map[string]struct{}),
-		nodeToName:   make(map[string]string),
 	}
 
 	// Trusted root operator keys.
@@ -332,11 +331,20 @@ func NewServer(opts *Options) (*Server, error) {
 		return nil, fmt.Errorf("Error processing trusted operator keys")
 	}
 
+	if opts.Cluster.Name != _EMPTY_ {
+		// Also place into mapping cn with cnMu lock.
+		s.cnMu.Lock()
+		s.cn = opts.Cluster.Name
+		s.cnMu.Unlock()
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Place ourselves.
-	s.nodeToName[string(getHash(serverName))] = serverName
+	// Place ourselves in some lookup maps.
+	ourId := string(getHash(serverName))
+	s.nodeToName.Store(ourId, serverName)
+	s.nodeToCluster.Store(ourId, opts.Cluster.Name)
 
 	s.routeResolver = opts.Cluster.resolver
 	if s.routeResolver == nil {
@@ -789,10 +797,11 @@ func (s *Server) activePeers() (peers []string) {
 	if s.sys == nil {
 		return nil
 	}
-	// FIXME(dlc) - When this spans supercluster need to adjust below.
-	for _, r := range s.routes {
-		peers = append(peers, r.route.hash)
-	}
+	s.nodeToName.Range(func(k, v interface{}) bool {
+		peers = append(peers, k.(string))
+		return true
+	})
+
 	return peers
 }
 
