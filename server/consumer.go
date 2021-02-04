@@ -32,17 +32,17 @@ import (
 )
 
 type ConsumerInfo struct {
-	Stream         string         `json:"stream_name"`
-	Name           string         `json:"name"`
-	Created        time.Time      `json:"created"`
-	Config         ConsumerConfig `json:"config"`
-	Delivered      SequencePair   `json:"delivered"`
-	AckFloor       SequencePair   `json:"ack_floor"`
-	NumAckPending  int            `json:"num_ack_pending"`
-	NumRedelivered int            `json:"num_redelivered"`
-	NumWaiting     int            `json:"num_waiting"`
-	NumPending     uint64         `json:"num_pending"`
-	Cluster        *ClusterInfo   `json:"cluster,omitempty"`
+	Stream         string          `json:"stream_name"`
+	Name           string          `json:"name"`
+	Created        time.Time       `json:"created"`
+	Config         *ConsumerConfig `json:"config,omitempty"`
+	Delivered      SequencePair    `json:"delivered"`
+	AckFloor       SequencePair    `json:"ack_floor"`
+	NumAckPending  int             `json:"num_ack_pending"`
+	NumRedelivered int             `json:"num_redelivered"`
+	NumWaiting     int             `json:"num_waiting"`
+	NumPending     uint64          `json:"num_pending"`
+	Cluster        *ClusterInfo    `json:"cluster,omitempty"`
 }
 
 type ConsumerConfig struct {
@@ -1324,7 +1324,7 @@ func (o *Consumer) Info() *ConsumerInfo {
 		Stream:  o.stream,
 		Name:    o.name,
 		Created: o.created,
-		Config:  o.config,
+		Config:  &o.config,
 		Delivered: SequencePair{
 			Consumer: o.dseq - 1,
 			Stream:   o.sseq - 1,

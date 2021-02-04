@@ -2218,6 +2218,7 @@ type JSzOptions struct {
 	Accounts bool   `json:"accounts,omitempty"`
 	Streams  bool   `json:"streams,omitempty"`
 	Consumer bool   `json:"consumer,omitempty"`
+	Config   bool   `json:"config,omitempty"`
 	Offset   int    `json:"offset,omitempty"`
 	Limit    int    `json:"limit,omitempty"`
 }
@@ -2225,7 +2226,7 @@ type JSzOptions struct {
 type StreamDetail struct {
 	Name     string          `json:"name"`
 	Cluster  *ClusterInfo    `json:"cluster,omitempty"`
-	Config   StreamConfig    `json:"config,omitempty"`
+	Config   *StreamConfig   `json:"config,omitempty"`
 	State    StreamState     `json:"state,omitempty"`
 	Consumer []*ConsumerInfo `json:"consumer_detail,omitempty"`
 }
@@ -2250,16 +2251,10 @@ type JSInfo struct {
 	MessageBytes uint64       `json:"total_message_bytes,omitempty"`
 	Meta         *ClusterInfo `json:"meta_cluster,omitempty"`
 	// aggregate raft info
-	StreamsNonReplicatedCnt   uint64           `json:"total_streams_non_replicated,omitempty"`
-	StreamsInQuorumCnt        uint64           `json:"total_streams_in_quorum,omitempty"`
-	StreamsOutOfQuorumCnt     uint64           `json:"total_streams_out_quorum,omitempty"`
-	ConsumersNonReplicatedCnt uint64           `json:"total_consumers_non_replicated,omitempty"`
-	ConsumersInQuorumCnt      uint64           `json:"total_consumers_in_quorum,omitempty"`
-	ConsumersOutOfQuorumCnt   uint64           `json:"total_consumers_out_quorum,omitempty"`
-	AccountDetails            []*AccountDetail `json:"account_details,omitempty"`
+	AccountDetails []*AccountDetail `json:"account_details,omitempty"`
 }
 
-func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers bool) *AccountDetail {
+func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg bool) *AccountDetail {
 	jsa.mu.RLock()
 	defer jsa.mu.RUnlock()
 	acc := jsa.account
@@ -2284,14 +2279,23 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers bool) *A
 	if optStreams {
 		for _, stream := range jsa.streams {
 			ci := s.js.clusterInfo(stream.raftGroup())
+			var cfg *StreamConfig
+			if optCfg {
+				c := stream.Config()
+				cfg = &c
+			}
 			sdet := StreamDetail{
 				Name:    stream.Name(),
 				State:   stream.State(),
 				Cluster: ci,
-				Config:  stream.Config()}
+				Config:  cfg}
 			if optConsumers {
 				for _, consumer := range stream.consumers {
-					sdet.Consumer = append(sdet.Consumer, consumer.Info())
+					cInfo := consumer.Info()
+					if !optCfg {
+						cInfo.Config = nil
+					}
+					sdet.Consumer = append(sdet.Consumer, cInfo)
 				}
 			}
 			detail.Streams = append(detail.Streams, sdet)
@@ -2315,7 +2319,7 @@ func (s *Server) JszAccount(opts *JSzOptions) (*AccountDetail, error) {
 	if !ok {
 		return nil, fmt.Errorf("account %q not jetstream enabled", acc)
 	}
-	return s.accountDetail(jsa, opts.Streams, opts.Consumer), nil
+	return s.accountDetail(jsa, opts.Streams, opts.Consumer, opts.Config), nil
 }
 
 // Leafz returns a Leafz structure containing information about leafnodes.
@@ -2380,22 +2384,6 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 			jsi.MessageCnt += streamState.Msgs
 			jsi.MessageBytes += streamState.Bytes
 			jsi.ConsumerCnt += streamState.Consumers
-			if node := stream.raftNode(); node == nil {
-				jsi.StreamsNonReplicatedCnt++
-			} else if node.Quorum() {
-				jsi.StreamsInQuorumCnt++
-			} else {
-				jsi.StreamsOutOfQuorumCnt++
-			}
-			for _, consumer := range stream.consumers {
-				if node := consumer.raftNode(); node == nil {
-					jsi.ConsumersNonReplicatedCnt++
-				} else if node.Quorum() {
-					jsi.ConsumersInQuorumCnt++
-				} else {
-					jsi.ConsumersOutOfQuorumCnt++
-				}
-			}
 		}
 		jsa.mu.RUnlock()
 	}
@@ -2426,7 +2414,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 	}
 	// if wanted, obtain accounts/streams/consumer
 	for _, jsa := range accounts {
-		detail := s.accountDetail(jsa, opts.Streams, opts.Consumer)
+		detail := s.accountDetail(jsa, opts.Streams, opts.Consumer, opts.Config)
 		jsi.AccountDetails = append(jsi.AccountDetails, detail)
 	}
 	return jsi, nil
@@ -2449,6 +2437,10 @@ func (s *Server) HandleJsz(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	config, err := decodeBool(w, r, "config")
+	if err != nil {
+		return
+	}
 	offset, err := decodeInt(w, r, "offset")
 	if err != nil {
 		return
@@ -2457,8 +2449,14 @@ func (s *Server) HandleJsz(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	opts := &JSzOptions{r.URL.Query().Get("acc"), accounts, streams, consumers, offset, limit}
-	l, err := s.Jsz(opts)
+	l, err := s.Jsz(&JSzOptions{
+		r.URL.Query().Get("acc"),
+		accounts,
+		streams,
+		consumers,
+		config,
+		offset,
+		limit})
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(err.Error()))

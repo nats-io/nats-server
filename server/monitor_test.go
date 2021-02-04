@@ -4091,6 +4091,26 @@ func TestMonitorJsz(t *testing.T) {
 			if len(info.AccountDetails[0].Streams[0].Consumer) == 0 {
 				t.Fatalf("expected consumers to be returned by %s but got %v", url, info)
 			}
+			if info.AccountDetails[0].Streams[0].Config != nil {
+				t.Fatal("Config expected to not be present")
+			}
+			if info.AccountDetails[0].Streams[0].Consumer[0].Config != nil {
+				t.Fatal("Config expected to not be present")
+			}
+		}
+	})
+	t.Run("config", func(t *testing.T) {
+		for _, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url + "?acc=ACC&consumers=true&config=true")
+			if len(info.AccountDetails) != 1 {
+				t.Fatalf("expected account ACC to be returned by %s but got %v", url, info)
+			}
+			if info.AccountDetails[0].Streams[0].Config == nil {
+				t.Fatal("Config expected to be present")
+			}
+			if info.AccountDetails[0].Streams[0].Consumer[0].Config == nil {
+				t.Fatal("Config expected to be present")
+			}
 		}
 	})
 	t.Run("account-non-existing", func(t *testing.T) {
