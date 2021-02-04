@@ -122,6 +122,7 @@ type streamMsgDelete struct {
 	Client  *ClientInfo `json:"client,omitempty"`
 	Stream  string      `json:"stream"`
 	Seq     uint64      `json:"seq"`
+	NoErase bool        `json:"no_erase,omitempty"`
 	Subject string      `json:"subject"`
 	Reply   string      `json:"reply"`
 }
@@ -1165,6 +1166,8 @@ func (js *jetStream) monitorStream(mset *Stream, sa *streamAssignment) {
 	// we replace with the restore chan.
 	restoreDoneCh := make(<-chan error)
 
+	isRecovering := true
+
 	for {
 		select {
 		case err := <-restoreDoneCh:
@@ -1261,6 +1264,7 @@ func (js *jetStream) monitorStream(mset *Stream, sa *streamAssignment) {
 		case ce := <-ach:
 			// No special processing needed for when we are caught up on restart.
 			if ce == nil {
+				isRecovering = false
 				continue
 			}
 			if mset == nil && isRestore {
@@ -1272,7 +1276,7 @@ func (js *jetStream) monitorStream(mset *Stream, sa *streamAssignment) {
 				}
 			}
 			// Apply our entries.
-			if hadSnapshot, err := js.applyStreamEntries(mset, ce); err == nil {
+			if hadSnapshot, err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
 				n.Applied(ce.Index)
 				if hadSnapshot {
 					snapout = false
@@ -1303,7 +1307,7 @@ func (js *jetStream) monitorStream(mset *Stream, sa *streamAssignment) {
 	}
 }
 
-func (js *jetStream) applyStreamEntries(mset *Stream, ce *CommittedEntry) (bool, error) {
+func (js *jetStream) applyStreamEntries(mset *Stream, ce *CommittedEntry, isRecovering bool) (bool, error) {
 	var didSnap bool
 	for _, e := range ce.Entries {
 		if e.Type == EntrySnapshot {
@@ -1340,14 +1344,22 @@ func (js *jetStream) applyStreamEntries(mset *Stream, ce *CommittedEntry) (bool,
 					panic(err.Error())
 				}
 				s, cc := js.server(), js.cluster
-				removed, err := mset.EraseMsg(md.Seq)
+
+				var removed bool
+				if md.NoErase {
+					removed, err = mset.RemoveMsg(md.Seq)
+				} else {
+					removed, err = mset.EraseMsg(md.Seq)
+				}
 				if err != nil {
 					s.Warnf("JetStream cluster failed to delete msg %d from stream %q for account %q: %v", md.Seq, md.Stream, md.Client.Account, err)
 				}
+
 				js.mu.RLock()
 				isLeader := cc.isStreamLeader(md.Client.Account, md.Stream)
 				js.mu.RUnlock()
-				if isLeader {
+
+				if isLeader && !isRecovering {
 					var resp = JSApiMsgDeleteResponse{ApiResponse: ApiResponse{Type: JSApiMsgDeleteResponseType}}
 					if err != nil {
 						resp.Error = jsError(err)
@@ -1370,10 +1382,12 @@ func (js *jetStream) applyStreamEntries(mset *Stream, ce *CommittedEntry) (bool,
 				if err != nil {
 					s.Warnf("JetStream cluster failed to purge stream %q for account %q: %v", sp.Stream, sp.Client.Account, err)
 				}
+
 				js.mu.RLock()
 				isLeader := js.cluster.isStreamLeader(sp.Client.Account, sp.Stream)
 				js.mu.RUnlock()
-				if isLeader {
+
+				if isLeader && !isRecovering {
 					var resp = JSApiStreamPurgeResponse{ApiResponse: ApiResponse{Type: JSApiStreamPurgeResponseType}}
 					if err != nil {
 						resp.Error = jsError(err)
@@ -2724,7 +2738,7 @@ func (s *Server) jsClusteredStreamDeleteRequest(ci *ClientInfo, stream, subject,
 	cc.meta.Propose(encodeDeleteStreamAssignment(sa))
 }
 
-func (s *Server) jsClusteredStreamPurgeRequest(ci *ClientInfo, stream, subject, reply string, rmsg []byte) {
+func (s *Server) jsClusteredStreamPurgeRequest(ci *ClientInfo, mset *Stream, stream, subject, reply string, rmsg []byte) {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
 		return
@@ -2734,7 +2748,7 @@ func (s *Server) jsClusteredStreamPurgeRequest(ci *ClientInfo, stream, subject, 
 	defer js.mu.Unlock()
 
 	sa := js.streamAssignment(ci.Account, stream)
-	if sa == nil || sa.Group == nil || sa.Group.node == nil {
+	if sa == nil {
 		resp := JSApiStreamPurgeResponse{ApiResponse: ApiResponse{Type: JSApiStreamPurgeResponseType}}
 		acc, err := s.LookupAccount(ci.Account)
 		if err != nil {
@@ -2746,9 +2760,20 @@ func (s *Server) jsClusteredStreamPurgeRequest(ci *ClientInfo, stream, subject, 
 		return
 	}
 
-	n := sa.Group.node
-	sp := &streamPurge{Stream: stream, Subject: subject, Reply: reply, Client: ci}
-	n.Propose(encodeStreamPurge(sp))
+	if n := sa.Group.node; n != nil {
+		sp := &streamPurge{Stream: stream, Subject: subject, Reply: reply, Client: ci}
+		n.Propose(encodeStreamPurge(sp))
+	} else if mset != nil {
+		var resp = JSApiStreamPurgeResponse{ApiResponse: ApiResponse{Type: JSApiStreamPurgeResponseType}}
+		purged, err := mset.Purge()
+		if err != nil {
+			resp.Error = jsError(err)
+		} else {
+			resp.Purged = purged
+			resp.Success = true
+		}
+		s.sendAPIResponse(ci, mset.account(), subject, reply, string(rmsg), s.jsonResponse(resp))
+	}
 }
 
 func (s *Server) jsClusteredStreamRestoreRequest(ci *ClientInfo, acc *Account, req *JSApiStreamRestoreRequest, stream, subject, reply string, rmsg []byte) {
@@ -3067,7 +3092,7 @@ func decodeMsgDelete(buf []byte) (*streamMsgDelete, error) {
 	return &md, err
 }
 
-func (s *Server) jsClusteredMsgDeleteRequest(ci *ClientInfo, stream, subject, reply string, seq uint64, rmsg []byte) {
+func (s *Server) jsClusteredMsgDeleteRequest(ci *ClientInfo, mset *Stream, stream, subject, reply string, req *JSApiMsgDeleteRequest, rmsg []byte) {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
 		return
@@ -3077,13 +3102,32 @@ func (s *Server) jsClusteredMsgDeleteRequest(ci *ClientInfo, stream, subject, re
 	defer js.mu.Unlock()
 
 	sa := js.streamAssignment(ci.Account, stream)
-	if sa == nil || sa.Group == nil || sa.Group.node == nil {
-		// TODO(dlc) - Should respond? Log?
+	if sa == nil {
+		s.Debugf("Message delete failed, could not locate stream '%s > %s'", ci.Account, stream)
 		return
 	}
-	n := sa.Group.node
-	md := &streamMsgDelete{Seq: seq, Stream: stream, Subject: subject, Reply: reply, Client: ci}
-	n.Propose(encodeMsgDelete(md))
+	// Check for single replica items.
+	if n := sa.Group.node; n != nil {
+		md := &streamMsgDelete{Seq: req.Seq, NoErase: req.NoErase, Stream: stream, Subject: subject, Reply: reply, Client: ci}
+		n.Propose(encodeMsgDelete(md))
+	} else if mset != nil {
+		var err error
+		var removed bool
+		if req.NoErase {
+			removed, err = mset.RemoveMsg(req.Seq)
+		} else {
+			removed, err = mset.EraseMsg(req.Seq)
+		}
+		var resp = JSApiMsgDeleteResponse{ApiResponse: ApiResponse{Type: JSApiMsgDeleteResponseType}}
+		if err != nil {
+			resp.Error = jsError(err)
+		} else if !removed {
+			resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("sequence [%d] not found", req.Seq)}
+		} else {
+			resp.Success = true
+		}
+		s.sendAPIResponse(ci, mset.account(), subject, reply, string(rmsg), s.jsonResponse(resp))
+	}
 }
 
 func encodeAddStreamAssignment(sa *streamAssignment) []byte {

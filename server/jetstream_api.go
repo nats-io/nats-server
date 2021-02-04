@@ -1832,7 +1832,7 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 	}
 
 	if s.JetStreamIsClustered() {
-		s.jsClusteredMsgDeleteRequest(ci, stream, subject, reply, req.Seq, rmsg)
+		s.jsClusteredMsgDeleteRequest(ci, mset, stream, subject, reply, &req, rmsg)
 		return
 	}
 
@@ -1984,7 +1984,7 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 	}
 
 	if s.JetStreamIsClustered() {
-		s.jsClusteredStreamPurgeRequest(ci, stream, subject, reply, rmsg)
+		s.jsClusteredStreamPurgeRequest(ci, mset, stream, subject, reply, rmsg)
 		return
 	}
 

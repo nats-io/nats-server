@@ -1277,9 +1277,8 @@ func TestJetStreamClusterStreamNormalCatchup(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	s := c.randomServer()
-
 	// Client based API
+	s := c.randomServer()
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
@@ -1401,6 +1400,80 @@ func TestJetStreamClusterStreamSnapshotCatchup(t *testing.T) {
 
 	c.waitOnServerCurrent(sl)
 	c.waitOnStreamCurrent(sl, "$G", "TEST")
+}
+
+func TestJetStreamClusterDeleteMsg(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// R=1 make sure delete works.
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST"})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	toSend := 10
+	for i := 1; i <= toSend; i++ {
+		msg := []byte(fmt.Sprintf("HELLO JSC-%d", i))
+		if _, err = js.Publish("TEST", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	deleteMsg := func(seq uint64) {
+		if err := js.DeleteMsg("TEST", seq); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	deleteMsg(1)
+
+	// Also make sure purge of R=1 works too.
+	if err := js.PurgeStream("TEST"); err != nil {
+		t.Fatalf("Unexpected purge error: %v", err)
+	}
+}
+
+func TestJetStreamClusterDeleteMsgAndRestart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// R=1 make sure delete works.
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 2})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	toSend := 10
+	for i := 1; i <= toSend; i++ {
+		msg := []byte(fmt.Sprintf("HELLO JSC-%d", i))
+		if _, err = js.Publish("TEST", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	deleteMsg := func(seq uint64) {
+		if err := js.DeleteMsg("TEST", seq); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	deleteMsg(1)
+
+	c.stopAll()
+	c.restartAll()
+
+	c.waitOnStreamLeader("$G", "TEST")
 }
 
 func TestJetStreamClusterStreamSnapshotCatchupWithPurge(t *testing.T) {
