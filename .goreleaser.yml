@@ -28,6 +28,7 @@ builds:
   - arm
   - arm64
   - 386
+  - mips64le
   goarm:
   - 6
   - 7
