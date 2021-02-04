@@ -1852,11 +1852,7 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
 	} else if mset != nil {
-		if mset.Config().internal {
-			err = errors.New("not allowed to delete internal stream")
-		} else {
-			err = mset.stop(true, wasLeader)
-		}
+		err = mset.stop(true, wasLeader)
 	}
 
 	if sa.Group.node != nil {
@@ -2096,9 +2092,7 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
 	} else if mset != nil {
-		if mset.Config().internal {
-			err = errors.New("not allowed to delete internal consumer")
-		} else if o := mset.LookupConsumer(ca.Name); o != nil {
+		if o := mset.LookupConsumer(ca.Name); o != nil {
 			err = o.stop(true, true, wasLeader)
 		} else {
 			resp.Error = jsNoConsumerErr
