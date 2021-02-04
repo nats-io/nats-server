@@ -2250,13 +2250,72 @@ type JSInfo struct {
 	MessageBytes uint64       `json:"total_message_bytes,omitempty"`
 	Meta         *ClusterInfo `json:"meta_cluster,omitempty"`
 	// aggregate raft info
-	StreamsNonReplicatedCnt   uint64          `json:"total_streams_non_replicated,omitempty"`
-	StreamsInQuorumCnt        uint64          `json:"total_streams_in_quorum,omitempty"`
-	StreamsOutOfQuorumCnt     uint64          `json:"total_streams_out_quorum,omitempty"`
-	ConsumersNonReplicatedCnt uint64          `json:"total_consumers_non_replicated,omitempty"`
-	ConsumersInQuorumCnt      uint64          `json:"total_consumers_in_quorum,omitempty"`
-	ConsumersOutOfQuorumCnt   uint64          `json:"total_consumers_out_quorum,omitempty"`
-	AccountDetails            []AccountDetail `json:"account_details,omitempty"`
+	StreamsNonReplicatedCnt   uint64           `json:"total_streams_non_replicated,omitempty"`
+	StreamsInQuorumCnt        uint64           `json:"total_streams_in_quorum,omitempty"`
+	StreamsOutOfQuorumCnt     uint64           `json:"total_streams_out_quorum,omitempty"`
+	ConsumersNonReplicatedCnt uint64           `json:"total_consumers_non_replicated,omitempty"`
+	ConsumersInQuorumCnt      uint64           `json:"total_consumers_in_quorum,omitempty"`
+	ConsumersOutOfQuorumCnt   uint64           `json:"total_consumers_out_quorum,omitempty"`
+	AccountDetails            []*AccountDetail `json:"account_details,omitempty"`
+}
+
+func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers bool) *AccountDetail {
+	jsa.mu.RLock()
+	defer jsa.mu.RUnlock()
+	acc := jsa.account
+	name := acc.GetName()
+	id := name
+	if acc.nameTag != "" {
+		name = acc.nameTag
+	}
+	detail := AccountDetail{
+		Name: name,
+		Id:   id,
+		JetStreamStats: JetStreamStats{
+			Memory: uint64(jsa.memTotal),
+			Store:  uint64(jsa.storeTotal),
+			API: JetStreamAPIStats{
+				Total:  jsa.apiTotal,
+				Errors: jsa.apiErrors,
+			},
+		},
+		Streams: make([]StreamDetail, 0, len(jsa.streams)),
+	}
+	if optStreams {
+		for _, stream := range jsa.streams {
+			ci := s.js.clusterInfo(stream.raftGroup())
+			sdet := StreamDetail{
+				Name:    stream.Name(),
+				State:   stream.State(),
+				Cluster: ci,
+				Config:  stream.Config()}
+			if optConsumers {
+				for _, consumer := range stream.consumers {
+					sdet.Consumer = append(sdet.Consumer, consumer.Info())
+				}
+			}
+			detail.Streams = append(detail.Streams, sdet)
+		}
+	}
+	return &detail
+}
+
+func (s *Server) JszAccount(opts *JSzOptions) (*AccountDetail, error) {
+	if s.js == nil {
+		return nil, fmt.Errorf("jetstream not enabled")
+	}
+	acc := opts.Account
+	account, ok := s.accounts.Load(acc)
+	if !ok {
+		return nil, fmt.Errorf("account %q not found", acc)
+	}
+	s.js.mu.RLock()
+	jsa, ok := s.js.accounts[account.(*Account)]
+	s.js.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("account %q not jetstream enabled", acc)
+	}
+	return s.accountDetail(jsa, opts.Streams, opts.Consumer), nil
 }
 
 // Leafz returns a Leafz structure containing information about leafnodes.
@@ -2363,47 +2422,11 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 		accounts = []*jsAccount{}
 	}
 	if len(accounts) > 0 {
-		jsi.AccountDetails = make([]AccountDetail, 0, len(accounts))
+		jsi.AccountDetails = make([]*AccountDetail, 0, len(accounts))
 	}
 	// if wanted, obtain accounts/streams/consumer
 	for _, jsa := range accounts {
-		jsa.mu.RLock()
-		acc := jsa.account
-		name := acc.GetName()
-		id := name
-		if acc.nameTag != "" {
-			name = acc.nameTag
-		}
-		detail := AccountDetail{
-			Name: name,
-			Id:   id,
-			JetStreamStats: JetStreamStats{
-				Memory: uint64(jsa.memTotal),
-				Store:  uint64(jsa.storeTotal),
-				API: JetStreamAPIStats{
-					Total:  jsa.apiTotal,
-					Errors: jsa.apiErrors,
-				},
-			},
-			Streams: make([]StreamDetail, 0, len(jsa.streams)),
-		}
-		if opts.Streams {
-			for _, stream := range jsa.streams {
-				ci := s.js.clusterInfo(stream.raftGroup())
-				sdet := StreamDetail{
-					Name:    stream.Name(),
-					State:   stream.State(),
-					Cluster: ci,
-					Config:  stream.Config()}
-				if opts.Consumer {
-					for _, consumer := range stream.consumers {
-						sdet.Consumer = append(sdet.Consumer, consumer.Info())
-					}
-				}
-				detail.Streams = append(detail.Streams, sdet)
-			}
-		}
-		jsa.mu.RUnlock()
+		detail := s.accountDetail(jsa, opts.Streams, opts.Consumer)
 		jsi.AccountDetails = append(jsi.AccountDetails, detail)
 	}
 	return jsi, nil

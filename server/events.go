@@ -741,7 +741,7 @@ func (s *Server) initEventTracking() {
 					return nil, err
 				} else {
 					optz.Account = acc
-					return s.accountInfo(acc)
+					return s.JszAccount(&optz.JSzOptions)
 				}
 			})
 		},
