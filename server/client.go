@@ -2517,6 +2517,8 @@ func (c *client) addShadowSub(sub *subscription, ime *ime) (*subscription, error
 		} else {
 			nsub.subject = []byte(im.from)
 		}
+	} else if !ime.dyn {
+		nsub.subject = []byte(im.from)
 	}
 	c.Debugf("Creating import subscription on %q from account %q", nsub.subject, im.acc.Name)
 
