@@ -2003,6 +2003,7 @@ const (
 	SubszPath    = "/subsz"
 	StackszPath  = "/stacksz"
 	AccountzPath = "/accountz"
+	JszPath      = "/jsz"
 )
 
 func (s *Server) basePath(p string) string {
@@ -2082,7 +2083,8 @@ func (s *Server) startMonitoring(secure bool) error {
 	mux.HandleFunc(s.basePath(StackszPath), s.HandleStacksz)
 	// Accountz
 	mux.HandleFunc(s.basePath(AccountzPath), s.HandleAccountz)
-
+	// Jsz
+	mux.HandleFunc(s.basePath(JszPath), s.HandleJsz)
 	// Do not set a WriteTimeout because it could cause cURL/browser
 	// to return empty response or unable to display page if the
 	// server needs more time to build the response.

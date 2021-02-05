@@ -3789,7 +3789,7 @@ func TestMonitorAccountz(t *testing.T) {
 		t.Fatalf("Body missing value. Contains: %s", body)
 	} else if !strings.Contains(body, `"account_name": "$SYS",`) {
 		t.Fatalf("Body missing value. Contains: %s", body)
-	} else if !strings.Contains(body, `"subscriptions": 32,`) {
+	} else if !strings.Contains(body, `"subscriptions": 35,`) {
 		t.Fatalf("Body missing value. Contains: %s", body)
 	}
 }
@@ -3885,4 +3885,240 @@ func TestMonitorAuthorizedUsers(t *testing.T) {
 	defer c.Close()
 	// we should get the user's pubkey
 	checkAuthUser(upub)
+}
+
+// Helper function to check that a JS cluster is formed
+func checkForJSClusterUp(t *testing.T, servers ...*Server) {
+	t.Helper()
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range servers {
+			if !s.JetStreamEnabled() {
+				return fmt.Errorf("jetstream not enabled")
+			}
+			if !s.JetStreamIsCurrent() {
+				return fmt.Errorf("jetstream not current")
+			}
+		}
+		return nil
+	})
+}
+
+func TestMonitorJsz(t *testing.T) {
+	readJsInfo := func(url string) *JSInfo {
+		t.Helper()
+		body := readBody(t, url)
+		info := &JSInfo{}
+		err := json.Unmarshal(body, info)
+		require_NoError(t, err)
+		return info
+	}
+	srvs := []*Server{}
+	for _, test := range []struct {
+		port   int
+		mport  int
+		cport  int
+		routed int
+	}{
+		{7500, 7501, 7502, 5502},
+		{5500, 5501, 5502, 7502},
+	} {
+		tmpDir := createDir(t, fmt.Sprintf("srv_%d", test.port))
+		defer os.RemoveAll(tmpDir)
+		cf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:%d
+		http: 127.0.0.1:%d
+		system_account: SYS
+		accounts {
+			SYS {
+				users [{user: sys, password: pwd}]
+			}
+			ACC {
+				users [{user: usr, password: pwd}]
+				jetstream: enabled
+			}
+			BCC_TO_HAVE_ONE_EXTRA {
+				users [{user: usr2, password: pwd}]
+				jetstream: enabled
+			}
+		}
+		jetstream: {
+			max_mem_store: 10Mb
+			max_file_store: 10Mb
+			store_dir: %s
+		}
+		cluster {
+			name: cluster_name
+			listen: 127.0.0.1:%d
+			routes: [nats-route://127.0.0.1:%d]
+		}
+		server_name: server_%d `, test.port, test.mport, tmpDir, test.cport, test.routed, test.port)))
+		defer os.Remove(cf)
+
+		s, _ := RunServerWithConfig(cf)
+		defer s.Shutdown()
+		srvs = append(srvs, s)
+	}
+	checkClusterFormed(t, srvs...)
+	checkForJSClusterUp(t, srvs...)
+
+	nc := natsConnect(t, "nats://usr:pwd@127.0.0.1:7500")
+	defer nc.Close()
+	js, err := nc.JetStream(nats.MaxWait(5 * time.Second))
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "my-stream-replicated",
+		Subjects: []string{"foo", "bar"},
+		Replicas: 2,
+	})
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "my-stream-non-replicated",
+		Subjects: []string{"baz"},
+		Replicas: 1,
+	})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("my-stream-replicated", &nats.ConsumerConfig{
+		Durable:   "my-consumer-replicated",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("my-stream-non-replicated", &nats.ConsumerConfig{
+		Durable:   "my-consumer-non-replicated",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+	nc.Flush()
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	monUrl1 := fmt.Sprintf("http://127.0.0.1:%d/jsz", 7501)
+	monUrl2 := fmt.Sprintf("http://127.0.0.1:%d/jsz", 5501)
+
+	t.Run("default", func(t *testing.T) {
+		for _, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url)
+			if len(info.AccountDetails) != 0 {
+				t.Fatalf("expected no account to be returned by %s but got %v", url, info)
+			}
+			if info.StreamCnt == 0 {
+				t.Fatalf("expected stream count to be 2 but got %d", info.StreamCnt)
+			}
+			if info.ConsumerCnt == 0 {
+				t.Fatalf("expected consumer count to be 2 but got %d", info.ConsumerCnt)
+			}
+			if info.MessageCnt != 1 {
+				t.Fatalf("expected one message but got %d", info.MessageCnt)
+			}
+		}
+	})
+	t.Run("accounts", func(t *testing.T) {
+		for _, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url + "?accounts=true")
+			if len(info.AccountDetails) != 2 {
+				t.Fatalf("expected both accounts to be returned by %s but got %v", url, info)
+			}
+		}
+	})
+	t.Run("offset-too-big", func(t *testing.T) {
+		for _, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url + "?accounts=true&offset=10")
+			if len(info.AccountDetails) != 0 {
+				t.Fatalf("expected no accounts to be returned by %s but got %v", url, info)
+			}
+		}
+	})
+	t.Run("limit", func(t *testing.T) {
+		for _, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url + "?accounts=true&limit=1")
+			if len(info.AccountDetails) != 1 {
+				t.Fatalf("expected one account to be returned by %s but got %v", url, info)
+			}
+			if info := readJsInfo(url + "?accounts=true&offset=1&limit=1"); len(info.AccountDetails) != 1 {
+				t.Fatalf("expected one account to be returned by %s but got %v", url, info)
+			}
+		}
+	})
+	t.Run("offset-stable", func(t *testing.T) {
+		for _, url := range []string{monUrl1, monUrl2} {
+			info1 := readJsInfo(url + "?accounts=true&offset=1&limit=1")
+			if len(info1.AccountDetails) != 1 {
+				t.Fatalf("expected one account to be returned by %s but got %v", url, info1)
+			}
+			info2 := readJsInfo(url + "?accounts=true&offset=1&limit=1")
+			if len(info2.AccountDetails) != 1 {
+				t.Fatalf("expected one account to be returned by %s but got %v", url, info2)
+			}
+			if info1.AccountDetails[0].Name != info2.AccountDetails[0].Name {
+				t.Fatalf("absent changes, same offset should result in same account but gut: %v %v",
+					info1.AccountDetails[0].Name, info2.AccountDetails[0].Name)
+			}
+		}
+	})
+	t.Run("filter-account", func(t *testing.T) {
+		for _, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url + "?acc=ACC")
+			if len(info.AccountDetails) != 1 {
+				t.Fatalf("expected account ACC to be returned by %s but got %v", url, info)
+			}
+			if info.AccountDetails[0].Name != "ACC" {
+				t.Fatalf("expected account ACC to be returned by %s but got %v", url, info)
+			}
+			if len(info.AccountDetails[0].Streams) != 0 {
+				t.Fatalf("expected account ACC to be returned by %s but got %v", url, info)
+			}
+		}
+	})
+	t.Run("streams", func(t *testing.T) {
+		for _, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url + "?acc=ACC&streams=true")
+			if len(info.AccountDetails) != 1 {
+				t.Fatalf("expected account ACC to be returned by %s but got %v", url, info)
+			}
+			if len(info.AccountDetails[0].Streams) == 0 {
+				t.Fatalf("expected streams to be returned by %s but got %v", url, info)
+			}
+			if len(info.AccountDetails[0].Streams[0].Consumer) != 0 {
+				t.Fatalf("expected no consumers to be returned by %s but got %v", url, info)
+			}
+		}
+	})
+	t.Run("consumers", func(t *testing.T) {
+		for _, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url + "?acc=ACC&consumers=true")
+			if len(info.AccountDetails) != 1 {
+				t.Fatalf("expected account ACC to be returned by %s but got %v", url, info)
+			}
+			if len(info.AccountDetails[0].Streams[0].Consumer) == 0 {
+				t.Fatalf("expected consumers to be returned by %s but got %v", url, info)
+			}
+			if info.AccountDetails[0].Streams[0].Config != nil {
+				t.Fatal("Config expected to not be present")
+			}
+			if info.AccountDetails[0].Streams[0].Consumer[0].Config != nil {
+				t.Fatal("Config expected to not be present")
+			}
+		}
+	})
+	t.Run("config", func(t *testing.T) {
+		for _, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url + "?acc=ACC&consumers=true&config=true")
+			if len(info.AccountDetails) != 1 {
+				t.Fatalf("expected account ACC to be returned by %s but got %v", url, info)
+			}
+			if info.AccountDetails[0].Streams[0].Config == nil {
+				t.Fatal("Config expected to be present")
+			}
+			if info.AccountDetails[0].Streams[0].Consumer[0].Config == nil {
+				t.Fatal("Config expected to be present")
+			}
+		}
+	})
+	t.Run("account-non-existing", func(t *testing.T) {
+		for _, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url + "?acc=DOES_NOT_EXIT")
+			if len(info.AccountDetails) != 0 {
+				t.Fatalf("expected no account to be returned by %s but got %v", url, info)
+			}
+		}
+	})
 }
