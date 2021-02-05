@@ -3333,6 +3333,89 @@ func TestJetStreamClusterSuperClusterBasics(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterSuperClusterPeerReassign(t *testing.T) {
+	sc := createJetStreamSuperCluster(t, 3, 3)
+	defer sc.shutdown()
+
+	// Client based API
+	s := sc.randomCluster().randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	pcn := "C2"
+	cfg := server.StreamConfig{
+		Name:      "TEST",
+		Replicas:  3,
+		Storage:   server.FileStorage,
+		Placement: &server.Placement{Cluster: pcn},
+	}
+	req, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, err := nc.Request(fmt.Sprintf(server.JSApiStreamCreateT, cfg.Name), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var scResp server.JSApiStreamCreateResponse
+	if err := json.Unmarshal(resp.Data, &scResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if scResp.StreamInfo == nil || scResp.Error != nil {
+		t.Fatalf("Did not receive correct response: %+v", scResp.Error)
+	}
+
+	// Send in 10 messages.
+	msg, toSend := []byte("Hello JS Clustering"), 10
+	for i := 0; i < toSend; i++ {
+		if _, err = js.Publish("TEST", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+	// Now grab info for this stream.
+	si, err := js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si == nil || si.Config.Name != "TEST" {
+		t.Fatalf("StreamInfo is not correct %+v", si)
+	}
+	// Check active state as well, shows that the owner answered.
+	if si.State.Msgs != uint64(toSend) {
+		t.Fatalf("Expected %d msgs, got bad state: %+v", toSend, si.State)
+	}
+	// Check request origin placement.
+	if si.Cluster.Name != pcn {
+		t.Fatalf("Expected stream to be placed in %q, but got %q", s.ClusterName(), si.Cluster.Name)
+	}
+
+	// Now remove a peer that is assigned to the stream.
+	rc := sc.clusterForName(pcn)
+	rs := rc.randomNonStreamLeader("$G", "TEST")
+	rc.removeJetStream(rs)
+
+	// Check the stream info is eventually correct.
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		if err != nil {
+			return fmt.Errorf("Could not fetch stream info: %v", err)
+		}
+		if len(si.Cluster.Replicas) != 2 {
+			return fmt.Errorf("Expected 2 replicas, got %d", len(si.Cluster.Replicas))
+		}
+		for _, peer := range si.Cluster.Replicas {
+			if !peer.Current {
+				return fmt.Errorf("Expected replica to be current: %+v", peer)
+			}
+			if !strings.HasPrefix(peer.Name, pcn) {
+				t.Fatalf("Stream peer reassigned to wrong cluster: %q", peer.Name)
+			}
+		}
+		return nil
+	})
+
+}
+
 func TestJetStreamClusterStreamPerf(t *testing.T) {
 	// Comment out to run, holding place for now.
 	skip(t)
@@ -3494,6 +3577,7 @@ func createJetStreamSuperCluster(t *testing.T, numServersPer, numClusters int) *
 
 	sc := &supercluster{t, clusters}
 	sc.waitOnLeader()
+	sc.waitOnAllCurrent()
 	return sc
 }
 
@@ -3510,6 +3594,21 @@ func (sc *supercluster) waitOnLeader() {
 	}
 
 	sc.t.Fatalf("Expected a cluster leader, got none")
+}
+
+func (sc *supercluster) waitOnAllCurrent() {
+	for _, c := range sc.clusters {
+		c.waitOnAllCurrent()
+	}
+}
+
+func (sc *supercluster) clusterForName(name string) *cluster {
+	for _, c := range sc.clusters {
+		if c.name == name {
+			return c
+		}
+	}
+	return nil
 }
 
 func (sc *supercluster) randomCluster() *cluster {

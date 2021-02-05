@@ -2592,20 +2592,31 @@ func (js *jetStream) processLeaderChange(isLeader bool) {
 // Lock should be held.
 func (cc *jetStreamCluster) remapStreamAssignment(sa *streamAssignment, removePeer string) bool {
 	// Need to select a replacement peer
+	s, now, cluster := cc.s, time.Now(), sa.Client.Cluster
+	if sa.Config.Placement != nil && sa.Config.Placement.Cluster != _EMPTY_ {
+		cluster = sa.Config.Placement.Cluster
+	}
 	for _, p := range cc.meta.Peers() {
-		if !sa.Group.isMember(p.ID) {
-			for i, peer := range sa.Group.Peers {
-				if peer == removePeer {
-					sa.Group.Peers[i] = p.ID
-					break
-				}
+		// Make sure they are active and current and not already part of our group.
+		current, lastSeen := p.Current, now.Sub(p.Last)
+		if !current || lastSeen > lostQuorumInterval || sa.Group.isMember(p.ID) {
+			continue
+		}
+		// Make sure the correct cluster.
+		if s.clusterNameForNode(p.ID) != cluster {
+			continue
+		}
+		// If we are here we have our candidate replacement, swap out the old one.
+		for i, peer := range sa.Group.Peers {
+			if peer == removePeer {
+				sa.Group.Peers[i] = p.ID
+				// Don't influence preferred leader.
+				sa.Group.Preferred = _EMPTY_
+				return true
 			}
-			// Don't influence preferred leader.
-			sa.Group.Preferred = _EMPTY_
-			return true
 		}
 	}
-	return true
+	return false
 }
 
 // selectPeerGroup will select a group of peers to start a raft group.
