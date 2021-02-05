@@ -3216,6 +3216,45 @@ func TestJetStreamClusterPurgeReplayAfterRestart(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterStreamGetMsg(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3F", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST"}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if _, err := js.Publish("TEST", []byte("OK")); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+
+	mreq := &server.JSApiMsgGetRequest{Seq: 1}
+	req, err := json.Marshal(mreq)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	rmsg, err := nc.Request(fmt.Sprintf(server.JSApiMsgGetT, "TEST"), req, time.Second)
+	if err != nil {
+		t.Fatalf("Could not retrieve stream message: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("Could not retrieve stream message: %v", err)
+	}
+
+	var resp server.JSApiMsgGetResponse
+	err = json.Unmarshal(rmsg.Data, &resp)
+	if err != nil {
+		t.Fatalf("Could not parse stream message: %v", err)
+	}
+	if resp.Message == nil || resp.Error != nil {
+		t.Fatalf("Did not receive correct response: %+v", resp.Error)
+	}
+}
+
 func TestJetStreamClusterSuperClusterBasics(t *testing.T) {
 	sc := createJetStreamSuperCluster(t, 3, 3)
 	defer sc.shutdown()
