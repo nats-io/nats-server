@@ -1320,11 +1320,12 @@ func (o *Consumer) Info() *ConsumerInfo {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 
+	cfg := o.config
 	info := &ConsumerInfo{
 		Stream:  o.stream,
 		Name:    o.name,
 		Created: o.created,
-		Config:  &o.config,
+		Config:  &cfg,
 		Delivered: SequencePair{
 			Consumer: o.dseq - 1,
 			Stream:   o.sseq - 1,
