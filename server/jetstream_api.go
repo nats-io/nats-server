@@ -1863,7 +1863,56 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 		return
 	}
 
+	stream := tokenAt(subject, 6)
+
 	var resp = JSApiMsgGetResponse{ApiResponse: ApiResponse{Type: JSApiMsgGetResponseType}}
+
+	// If we are in clustered mode we need to be the stream leader to proceed.
+	if s.JetStreamIsClustered() {
+		// Check to make sure the stream is assigned.
+		js, cc := s.getJetStreamCluster()
+		if js == nil || cc == nil {
+			return
+		}
+
+		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+			resp.Error = jsClusterNotAvailErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+
+		js.mu.RLock()
+		isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, stream)
+		js.mu.RUnlock()
+
+		if isLeader && sa == nil {
+			// We can't find the stream, so mimic what would be the errors below.
+			if !acc.JetStreamEnabled() {
+				resp.Error = jsNotEnabledErr
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
+			}
+			// No stream present.
+			resp.Error = jsNotFoundError(ErrJetStreamStreamNotFound)
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		} else if sa == nil {
+			return
+		}
+
+		// Check to see if we are a member of the group and if the group has no leader.
+		if js.isGroupLeaderless(sa.Group) {
+			resp.Error = jsClusterNotAvailErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+
+		// We have the stream assigned and a leader, so only the stream leader should answer.
+		if !acc.JetStreamIsStreamLeader(stream) {
+			return
+		}
+	}
+
 	if !acc.JetStreamEnabled() {
 		resp.Error = jsNotEnabledErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -1881,7 +1930,6 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 		return
 	}
 
-	stream := tokenAt(subject, 6)
 	mset, err := acc.LookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
