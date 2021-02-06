@@ -371,7 +371,8 @@ func (s *Server) sendShutdownEvent() {
 	s.sys.replies = nil
 	s.mu.Unlock()
 	// Send to the internal queue and mark as last.
-	sendq <- &pubMsg{nil, subj, _EMPTY_, nil, nil, true}
+	si := &ServerInfo{}
+	sendq <- &pubMsg{nil, subj, _EMPTY_, si, si, true}
 }
 
 // Used to send an internal message to an arbitrary account.
@@ -844,10 +845,24 @@ func (s *Server) remoteServerShutdown(sub *subscription, _ *client, subject, rep
 	}
 
 	sid := toks[serverSubjectIndex]
-	su := s.sys.servers[sid]
-	if su != nil {
+	if su := s.sys.servers[sid]; su != nil {
 		s.processRemoteServerShutdown(sid)
 	}
+
+	if len(msg) == 0 {
+		return
+	}
+
+	// We have an optional serverInfo here, remove from nodeToX lookups.
+	var si ServerInfo
+	if err := json.Unmarshal(msg, &si); err != nil {
+		s.Debugf("Received bad server info for remote server shutdown")
+		return
+	}
+	// Additional processing here.
+	node := string(getHash(si.Name))
+	s.nodeToName.Delete(node)
+	s.nodeToCluster.Delete(node)
 }
 
 // updateRemoteServer is called when we have an update from a remote server.
