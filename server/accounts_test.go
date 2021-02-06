@@ -108,57 +108,56 @@ func TestAccountIsolation(t *testing.T) {
 }
 
 func TestAccountIsolationExportImport(t *testing.T) {
-	getServer := func(t *testing.T) *Server {
-		t.Helper()
+	checkIsolation := func(t *testing.T, pubSubj string, ncExp, ncImp *nats.Conn) {
+		// We keep track of 2 subjects.
+		// One subject (pubSubj) is based off the stream import.
+		// The other subject "fizz" is not imported and should be isolated.
 
-		s := opTrustBasicSetup()
-		go s.Start()
-		if !s.ReadyForConnections(5 * time.Second) {
-			t.Fatal("failed to be ready for connections")
+		gotSubjs := map[string]int{
+			pubSubj: 0,
+			"fizz":  0,
 		}
-		return s
-	}
-	getAccountConns := func(t *testing.T, s *Server, exp, imp string) (*nats.Conn, *nats.Conn) {
-		t.Helper()
-
-		buildMemAccResolver(s)
-
-		// Setup exporter account.
-		accAPair, accAPub := createKey(t)
-		accAClaims := jwt.NewAccountClaims(accAPub)
-		if exp != "" {
-			accAClaims.Limits.WildcardExports = true
-			accAClaims.Exports.Add(&jwt.Export{
-				Name:    fmt.Sprintf("%s-stream-export", exp),
-				Subject: jwt.Subject(exp),
-				Type:    jwt.Stream,
-			})
+		sub, err := ncImp.Subscribe(">", func(m *nats.Msg) {
+			gotSubjs[m.Subject] += 1
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
-		accAJWT, err := accAClaims.Encode(oKp)
-		require_NoError(t, err)
-		addAccountToMemResolver(s, accAPub, accAJWT)
 
-		// Setup importer account.
-		accBPair, accBPub := createKey(t)
-		accBClaims := jwt.NewAccountClaims(accBPub)
-		if imp != "" {
-			accBClaims.Imports.Add(&jwt.Import{
-				Name:    fmt.Sprintf("%s-stream-import", imp),
-				Subject: jwt.Subject(imp),
-				Account: accAPub,
-				Type:    jwt.Stream,
-			})
+		time.Sleep(1 * time.Second)
+		if err := ncExp.Publish(pubSubj, []byte(fmt.Sprintf("ncExp pub %s", pubSubj))); err != nil {
+			t.Fatal(err)
 		}
-		accBJWT, err := accBClaims.Encode(oKp)
-		require_NoError(t, err)
-		addAccountToMemResolver(s, accBPub, accBJWT)
+		if err := ncImp.Publish(pubSubj, []byte(fmt.Sprintf("ncImp pub %s", pubSubj))); err != nil {
+			t.Fatal(err)
+		}
 
-		ncA := natsConnect(t, s.ClientURL(), createUserCreds(t, nil, accAPair),
-			nats.Name(fmt.Sprintf("nc-exporter-%s", exp)))
-		ncB := natsConnect(t, s.ClientURL(), createUserCreds(t, nil, accBPair),
-			nats.Name(fmt.Sprintf("nc-importer-%s", imp)))
+		if err := ncExp.Publish("fizz", []byte("ncExp pub fizz")); err != nil {
+			t.Fatal(err)
+		}
+		if err := ncImp.Publish("fizz", []byte("ncImp pub fizz")); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(1 * time.Second)
+		if err := sub.Unsubscribe(); err != nil {
+			t.Fatal(err)
+		}
 
-		return ncA, ncB
+		wantSubjs := map[string]int{
+			// Subscriber ncImp should receive publishes from ncExp and ncImp.
+			pubSubj: 2,
+			// Subscriber ncImp should only receive the publish from ncImp.
+			"fizz": 1,
+		}
+		if got, want := len(gotSubjs), len(wantSubjs); got != want {
+			t.Fatalf("unexpected subjs len, got=%d; want=%d", got, want)
+		}
+
+		for key, gotCnt := range gotSubjs {
+			if wantCnt := wantSubjs[key]; gotCnt != wantCnt {
+				t.Errorf("unexpected receive count for subject %q, got=%d, want=%d", key, gotCnt, wantCnt)
+			}
+		}
 	}
 
 	cases := []struct {
@@ -198,65 +197,91 @@ func TestAccountIsolationExportImport(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			s := getServer(t)
+		t.Run(fmt.Sprintf("%s jwt", c.name), func(t *testing.T) {
+			// Setup NATS server.
+			s := opTrustBasicSetup()
 			defer s.Shutdown()
-			ncA, ncB := getAccountConns(t, s, c.exp, c.imp)
-			defer ncA.Close()
-			defer ncB.Close()
+			go s.Start()
+			if !s.ReadyForConnections(5 * time.Second) {
+				t.Fatal("failed to be ready for connections")
+			}
+			buildMemAccResolver(s)
 
-			// ncA is the exporter account.
-			// ncB is the importer account.
+			// Setup exporter account.
+			accExpPair, accExpPub := createKey(t)
+			accExpClaims := jwt.NewAccountClaims(accExpPub)
+			if c.exp != "" {
+				accExpClaims.Limits.WildcardExports = true
+				accExpClaims.Exports.Add(&jwt.Export{
+					Name:    fmt.Sprintf("%s-stream-export", c.exp),
+					Subject: jwt.Subject(c.exp),
+					Type:    jwt.Stream,
+				})
+			}
+			accExpJWT, err := accExpClaims.Encode(oKp)
+			require_NoError(t, err)
+			addAccountToMemResolver(s, accExpPub, accExpJWT)
 
-			// We keep track of 2 subjects.
-			// One subject (c.pubSubj) is based off the stream import.
-			// The other subject "fizz" is not imported and should be isolated.
+			// Setup importer account.
+			accImpPair, accImpPub := createKey(t)
+			accImpClaims := jwt.NewAccountClaims(accImpPub)
+			if c.imp != "" {
+				accImpClaims.Imports.Add(&jwt.Import{
+					Name:    fmt.Sprintf("%s-stream-import", c.imp),
+					Subject: jwt.Subject(c.imp),
+					Account: accExpPub,
+					Type:    jwt.Stream,
+				})
+			}
+			accImpJWT, err := accImpClaims.Encode(oKp)
+			require_NoError(t, err)
+			addAccountToMemResolver(s, accImpPub, accImpJWT)
 
-			gotSubjs := map[string]int{
-				c.pubSubj: 0,
-				"fizz":    0,
-			}
-			sub, err := ncB.Subscribe(">", func(m *nats.Msg) {
-				gotSubjs[m.Subject] += 1
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
+			// Connect with different accounts.
+			ncExp := natsConnect(t, s.ClientURL(), createUserCreds(t, nil, accExpPair),
+				nats.Name(fmt.Sprintf("nc-exporter-%s", c.exp)))
+			ncImp := natsConnect(t, s.ClientURL(), createUserCreds(t, nil, accImpPair),
+				nats.Name(fmt.Sprintf("nc-importer-%s", c.imp)))
+			defer ncExp.Close()
+			defer ncImp.Close()
 
-			time.Sleep(1 * time.Second)
-			if err := ncA.Publish(c.pubSubj, []byte(fmt.Sprintf("ncA pub %s", c.pubSubj))); err != nil {
-				t.Fatal(err)
+			checkIsolation(t, c.pubSubj, ncExp, ncImp)
+			if t.Failed() {
+				t.Logf("exported=%q; imported=%q", c.exp, c.imp)
 			}
-			if err := ncB.Publish(c.pubSubj, []byte(fmt.Sprintf("ncB pub %s", c.pubSubj))); err != nil {
-				t.Fatal(err)
-			}
+		})
 
-			if err := ncA.Publish("fizz", []byte("ncA pub fizz")); err != nil {
-				t.Fatal(err)
-			}
-			if err := ncB.Publish("fizz", []byte("ncB pub fizz")); err != nil {
-				t.Fatal(err)
-			}
-			time.Sleep(1 * time.Second)
-			if err := sub.Unsubscribe(); err != nil {
-				t.Fatal(err)
-			}
+		t.Run(fmt.Sprintf("%s conf", c.name), func(t *testing.T) {
+			// Setup NATS server.
+			cf := createConfFile(t, []byte(fmt.Sprintf(`
+				port: -1
 
-			wantSubjs := map[string]int{
-				// Subscriber ncB should receive publishes from ncA and ncB.
-				c.pubSubj: 2,
-				// Subscriber ncB should only receive the publish from ncB.
-				"fizz": 1,
-			}
-			if got, want := len(gotSubjs), len(wantSubjs); got != want {
-				t.Fatalf("unexpected subjs len, got=%d; want=%d", got, want)
-			}
-
-			for key, gotCnt := range gotSubjs {
-				if wantCnt := wantSubjs[key]; gotCnt != wantCnt {
-					t.Errorf("unexpected receive count for subject %q, got=%d, want=%d", key, gotCnt, wantCnt)
+				accounts: {
+					accExp: {
+						users: [{user: accExp, password: accExp}]
+						exports: [{stream: %q}]
+					}
+					accImp: {
+						users: [{user: accImp, password: accImp}]
+						imports: [{stream: {account: accExp, subject: %q}}]
+					}
 				}
-			}
+			`,
+				c.exp, c.imp,
+			)))
+			defer os.Remove(cf)
+			s, _ := RunServerWithConfig(cf)
+			defer s.Shutdown()
+
+			// Connect with different accounts.
+			ncExp := natsConnect(t, s.ClientURL(), nats.UserInfo("accExp", "accExp"),
+				nats.Name(fmt.Sprintf("nc-exporter-%s", c.exp)))
+			ncImp := natsConnect(t, s.ClientURL(), nats.UserInfo("accImp", "accImp"),
+				nats.Name(fmt.Sprintf("nc-importer-%s", c.imp)))
+			defer ncExp.Close()
+			defer ncImp.Close()
+
+			checkIsolation(t, c.pubSubj, ncExp, ncImp)
 			if t.Failed() {
 				t.Logf("exported=%q; imported=%q", c.exp, c.imp)
 			}
