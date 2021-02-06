@@ -122,20 +122,9 @@ func TestAccountIsolationExportImport(t *testing.T) {
 		t.Helper()
 
 		buildMemAccResolver(s)
-		okp, err := nkeys.FromSeed(oSeed)
-		if err != nil {
-			t.Fatal(err)
-		}
 
 		// Setup exporter account.
-		accAPair, err := nkeys.CreateAccount()
-		if err != nil {
-			t.Fatal(err)
-		}
-		accAPub, err := accAPair.PublicKey()
-		if err != nil {
-			t.Fatal(err)
-		}
+		accAPair, accAPub := createKey(t)
 		accAClaims := jwt.NewAccountClaims(accAPub)
 		if exp != "" {
 			accAClaims.Limits.WildcardExports = true
@@ -145,22 +134,12 @@ func TestAccountIsolationExportImport(t *testing.T) {
 				Type:    jwt.Stream,
 			})
 		}
-		accAJWT, err := accAClaims.Encode(okp)
-		if err != nil {
-			t.Fatal(err)
-		}
+		accAJWT, err := accAClaims.Encode(oKp)
+		require_NoError(t, err)
 		addAccountToMemResolver(s, accAPub, accAJWT)
 
 		// Setup importer account.
-		accBPair, err := nkeys.CreateAccount()
-		if err != nil {
-			t.Fatal(err)
-		}
-		accBPub, err := accBPair.PublicKey()
-		if err != nil {
-			t.Fatal(err)
-		}
-
+		accBPair, accBPub := createKey(t)
 		accBClaims := jwt.NewAccountClaims(accBPub)
 		if imp != "" {
 			accBClaims.Imports.Add(&jwt.Import{
@@ -170,10 +149,8 @@ func TestAccountIsolationExportImport(t *testing.T) {
 				Type:    jwt.Stream,
 			})
 		}
-		accBJWT, err := accBClaims.Encode(okp)
-		if err != nil {
-			t.Fatal(err)
-		}
+		accBJWT, err := accBClaims.Encode(oKp)
+		require_NoError(t, err)
 		addAccountToMemResolver(s, accBPub, accBJWT)
 
 		ncA := natsConnect(t, s.ClientURL(), createUserCreds(t, nil, accAPair),
@@ -204,15 +181,6 @@ func TestAccountIsolationExportImport(t *testing.T) {
 			exp:  "foo.>", imp: "foo.bar.>",
 			pubSubj: "foo.bar.whizz",
 		},
-		// FAIL - dropping "foo.bar" from different account.
-		// What is the correct behavior here?
-		// Should this be allowed?
-		// If so, probably need to edit accounts.go:2427
-		// {
-		// 	name: "export literal, import full wildcard",
-		// 	exp:  "foo.bar", imp: "foo.>",
-		// 	pubSubj: "foo.bar",
-		// },
 		{
 			name: "export full wildcard, import full wildcard",
 			exp:  "foo.>", imp: "foo.>",
