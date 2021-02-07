@@ -68,7 +68,7 @@ func TestJetStreamClusterLeader(t *testing.T) {
 
 	// Kill our current leader and force an election.
 	c.leader().Shutdown()
-	c.waitOnClusterReady()
+	c.waitOnLeader()
 
 	// Now killing our current leader should leave us leaderless.
 	c.leader().Shutdown()
@@ -642,7 +642,10 @@ func TestJetStreamClusterMetaSnapshotsAndCatchup(t *testing.T) {
 
 	for i := 0; i < numStreams; i++ {
 		sn := fmt.Sprintf("T-%d", i+1)
-		resp, _ := nc.Request(fmt.Sprintf(server.JSApiStreamDeleteT, sn), nil, time.Second)
+		resp, err := nc.Request(fmt.Sprintf(server.JSApiStreamDeleteT, sn), nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
 		var dResp server.JSApiStreamDeleteResponse
 		if err := json.Unmarshal(resp.Data, &dResp); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -687,9 +690,20 @@ func TestJetStreamClusterMetaSnapshotsMultiChange(t *testing.T) {
 	// Add in a new server to the group. This way we know we can delete the original streams and consumers.
 	rs := c.addInNewServer()
 	c.waitOnServerCurrent(rs)
+	rsnn := rs.NodeName()
 
 	// Shut it down.
 	rs.Shutdown()
+
+	// Wait for the peer to be removed.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		for _, p := range s.JetStreamClusterPeers() {
+			if p == rsnn {
+				return fmt.Errorf("Old server still in peer set")
+			}
+		}
+		return nil
+	})
 
 	// We want to make changes here that test each delta scenario for the meta snapshots.
 	// Add new stream and consumer.
@@ -3551,10 +3565,10 @@ func createJetStreamSuperCluster(t *testing.T, numServersPer, numClusters int) *
 		}
 		routeConfig := strings.Join(routes, ",")
 
-		for i := 0; i < numServersPer; i++ {
+		for si := 0; si < numServersPer; si++ {
 			storeDir, _ := ioutil.TempDir("", server.JetStreamStoreDir)
-			sn := fmt.Sprintf("%s-S%d", cn, i+1)
-			bconf := fmt.Sprintf(jsClusterTempl, sn, storeDir, cn, cp+i, routeConfig)
+			sn := fmt.Sprintf("%s-S%d", cn, si+1)
+			bconf := fmt.Sprintf(jsClusterTempl, sn, storeDir, cn, cp+si, routeConfig)
 			conf := fmt.Sprintf(jsSuperClusterTempl, bconf, cn, gp, gwconf)
 			gp++
 			s, o := RunServerWithConfig(createConfFile(t, []byte(conf)))
@@ -3578,7 +3592,31 @@ func createJetStreamSuperCluster(t *testing.T, numServersPer, numClusters int) *
 	sc := &supercluster{t, clusters}
 	sc.waitOnLeader()
 	sc.waitOnAllCurrent()
+
+	// Wait for all the peer nodes to be registered.
+	expires := time.Now().Add(5 * time.Second)
+	for ml := sc.leader(); ml != nil && time.Now().Before(expires); {
+		peers := ml.ActivePeers()
+		if len(peers) == numClusters*numServersPer {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	if sc.leader() == nil {
+		sc.t.Fatalf("Expected a cluster leader, got none")
+	}
+
 	return sc
+}
+
+func (sc *supercluster) leader() *server.Server {
+	for _, c := range sc.clusters {
+		if leader := c.leader(); leader != nil {
+			return leader
+		}
+	}
+	return nil
 }
 
 func (sc *supercluster) waitOnLeader() {
