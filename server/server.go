@@ -238,9 +238,15 @@ type Server struct {
 	rnMu      sync.RWMutex
 	raftNodes map[string]RaftNode
 
-	// For mapping from a node name back to a server name and cluster.
-	nodeToName    sync.Map
-	nodeToCluster sync.Map
+	// For mapping from a raft node name back to a server name and cluster.
+	nodeToInfo sync.Map
+}
+
+type nodeInfo struct {
+	name    string
+	cluster string
+	id      string
+	offline bool
 }
 
 // Make sure all are 64bits for atomic use
@@ -342,9 +348,8 @@ func NewServer(opts *Options) (*Server, error) {
 	defer s.mu.Unlock()
 
 	// Place ourselves in some lookup maps.
-	ourId := string(getHash(serverName))
-	s.nodeToName.Store(ourId, serverName)
-	s.nodeToCluster.Store(ourId, opts.Cluster.Name)
+	ourNode := string(getHash(serverName))
+	s.nodeToInfo.Store(ourNode, &nodeInfo{serverName, opts.Cluster.Name, info.ID, false})
 
 	s.routeResolver = opts.Cluster.resolver
 	if s.routeResolver == nil {
@@ -790,15 +795,20 @@ func (s *Server) configuredRoutes() int {
 }
 
 // activePeers is used in bootstrapping raft groups like the JetStream meta controller.
-func (s *Server) activePeers() (peers []string) {
+func (s *Server) ActivePeers() (peers []string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	sys := s.sys
+	s.mu.Unlock()
 
-	if s.sys == nil {
+	if sys == nil {
 		return nil
 	}
-	s.nodeToName.Range(func(k, v interface{}) bool {
-		peers = append(peers, k.(string))
+
+	s.nodeToInfo.Range(func(k, v interface{}) bool {
+		si := v.(*nodeInfo)
+		if !si.offline {
+			peers = append(peers, k.(string))
+		}
 		return true
 	})
 
@@ -2676,20 +2686,21 @@ func (s *Server) supportsHeaders() bool {
 
 // ID returns the server's ID
 func (s *Server) ID() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	return s.info.ID
+}
+
+// NodeName returns the node name for this server.
+func (s *Server) NodeName() string {
+	return string(getHash(s.info.Name))
 }
 
 // Name returns the server's name. This will be the same as the ID if it was not set.
 func (s *Server) Name() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	return s.info.Name
 }
 
 func (s *Server) String() string {
-	return s.Name()
+	return s.info.Name
 }
 
 func (s *Server) startGoRoutine(f func()) bool {

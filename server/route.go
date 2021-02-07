@@ -1416,8 +1416,7 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 	if !exists {
 		s.routes[c.cid] = c
 		s.remotes[id] = c
-		s.nodeToName.Store(c.route.hash, c.route.remoteName)
-		s.nodeToCluster.Store(c.route.hash, s.info.Cluster)
+		s.nodeToInfo.Store(c.route.hash, &nodeInfo{c.route.remoteName, s.info.Cluster, id, false})
 		c.mu.Lock()
 		c.route.connectURLs = info.ClientConnectURLs
 		c.route.wsConnURLs = info.WSConnectURLs
