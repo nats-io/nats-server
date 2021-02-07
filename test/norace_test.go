@@ -756,11 +756,6 @@ func TestJetStreamClusterStreamCreateAndLostQuorum(t *testing.T) {
 	c.restartAll()
 
 	c.waitOnStreamLeader("$G", "NO-LQ-START")
-
-	for m, err := sub.NextMsg(0); err == nil; m, err = sub.NextMsg(0) {
-		fmt.Printf("m: %s\n", m.Data)
-	}
-
 	checkSubsPending(t, sub, 0)
 }
 

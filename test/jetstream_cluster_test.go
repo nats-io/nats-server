@@ -68,7 +68,7 @@ func TestJetStreamClusterLeader(t *testing.T) {
 
 	// Kill our current leader and force an election.
 	c.leader().Shutdown()
-	c.waitOnClusterReady()
+	c.waitOnLeader()
 
 	// Now killing our current leader should leave us leaderless.
 	c.leader().Shutdown()
@@ -642,7 +642,10 @@ func TestJetStreamClusterMetaSnapshotsAndCatchup(t *testing.T) {
 
 	for i := 0; i < numStreams; i++ {
 		sn := fmt.Sprintf("T-%d", i+1)
-		resp, _ := nc.Request(fmt.Sprintf(server.JSApiStreamDeleteT, sn), nil, time.Second)
+		resp, err := nc.Request(fmt.Sprintf(server.JSApiStreamDeleteT, sn), nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
 		var dResp server.JSApiStreamDeleteResponse
 		if err := json.Unmarshal(resp.Data, &dResp); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -687,9 +690,20 @@ func TestJetStreamClusterMetaSnapshotsMultiChange(t *testing.T) {
 	// Add in a new server to the group. This way we know we can delete the original streams and consumers.
 	rs := c.addInNewServer()
 	c.waitOnServerCurrent(rs)
+	rsnn := rs.NodeName()
 
 	// Shut it down.
 	rs.Shutdown()
+
+	// Wait for the peer to be removed.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		for _, p := range s.JetStreamClusterPeers() {
+			if p == rsnn {
+				return fmt.Errorf("Old server still in peer set")
+			}
+		}
+		return nil
+	})
 
 	// We want to make changes here that test each delta scenario for the meta snapshots.
 	// Add new stream and consumer.
@@ -2537,7 +2551,7 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	}
 
 	// Make sure we received our lost quorum advisories.
-	adv, _ := ssub.NextMsg(2 * time.Second)
+	adv, _ := ssub.NextMsg(5 * time.Second)
 	if adv == nil {
 		t.Fatalf("Expected to receive a stream quorum lost advisory")
 	}
@@ -3479,6 +3493,82 @@ func TestJetStreamClusterStreamPerf(t *testing.T) {
 	fmt.Printf("%.0f msgs/sec\n\n", float64(toSend)/tt.Seconds())
 }
 
+// This test creates a queue consumer for the delivery subject,
+// and make sure it connects to the server that is not the leader
+// of the stream. A bug was not stripping the $JS.ACK reply subject
+// correctly, which means that ack sent on the reply subject was
+// droped by the routed server.
+func TestJetStreamClusterQueueSubConsumer(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R2S", 2)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.>"},
+		Replicas: 1,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	inbox := nats.NewInbox()
+	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "ivan",
+		DeliverSubject: inbox,
+		AckPolicy:      nats.AckExplicitPolicy,
+		AckWait:        100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now create a client that does NOT connect to the stream leader.
+	// Start with url from first server in the cluster.
+	u := c.servers[0].ClientURL()
+	// If leader is "S-1", then use S-2 to connect to, which is at servers[1].
+	if ci.Cluster.Leader == "S-1" {
+		u = c.servers[1].ClientURL()
+	}
+	qsubnc, err := nats.Connect(u)
+	if err != nil {
+		t.Fatalf("Error connecting: %v", err)
+	}
+	defer qsubnc.Close()
+
+	ch := make(chan struct{}, 2)
+	if _, err := qsubnc.QueueSubscribe(inbox, "queue", func(m *nats.Msg) {
+		m.Respond(nil)
+		ch <- struct{}{}
+	}); err != nil {
+		t.Fatalf("Error creating sub: %v", err)
+	}
+
+	// Use the other connection to publish a message
+	if _, err := js.Publish("foo.bar", []byte("hello")); err != nil {
+		t.Fatalf("Error on publish: %v", err)
+	}
+
+	// Wait that we receive the message first.
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("Did not receive message")
+	}
+
+	// Message should be ack'ed and not redelivered.
+	select {
+	case <-ch:
+		t.Fatal("Message redelivered!!!")
+	case <-time.After(250 * time.Millisecond):
+		// OK
+	}
+}
+
 // Support functions
 
 var jsClusterTempl = `
@@ -3551,10 +3641,10 @@ func createJetStreamSuperCluster(t *testing.T, numServersPer, numClusters int) *
 		}
 		routeConfig := strings.Join(routes, ",")
 
-		for i := 0; i < numServersPer; i++ {
+		for si := 0; si < numServersPer; si++ {
 			storeDir, _ := ioutil.TempDir("", server.JetStreamStoreDir)
-			sn := fmt.Sprintf("%s-S%d", cn, i+1)
-			bconf := fmt.Sprintf(jsClusterTempl, sn, storeDir, cn, cp+i, routeConfig)
+			sn := fmt.Sprintf("%s-S%d", cn, si+1)
+			bconf := fmt.Sprintf(jsClusterTempl, sn, storeDir, cn, cp+si, routeConfig)
 			conf := fmt.Sprintf(jsSuperClusterTempl, bconf, cn, gp, gwconf)
 			gp++
 			s, o := RunServerWithConfig(createConfFile(t, []byte(conf)))
@@ -3578,7 +3668,34 @@ func createJetStreamSuperCluster(t *testing.T, numServersPer, numClusters int) *
 	sc := &supercluster{t, clusters}
 	sc.waitOnLeader()
 	sc.waitOnAllCurrent()
+
+	// Wait for all the peer nodes to be registered.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		var peers []string
+		if ml := sc.leader(); ml != nil {
+			peers = ml.ActivePeers()
+			if len(peers) == numClusters*numServersPer {
+				return nil
+			}
+		}
+		fmt.Printf("AP is %+v\n", peers)
+		return fmt.Errorf("Not correct number of peers, expected %d, got %d", numClusters*numServersPer, len(peers))
+	})
+
+	if sc.leader() == nil {
+		sc.t.Fatalf("Expected a cluster leader, got none")
+	}
+
 	return sc
+}
+
+func (sc *supercluster) leader() *server.Server {
+	for _, c := range sc.clusters {
+		if leader := c.leader(); leader != nil {
+			return leader
+		}
+	}
+	return nil
 }
 
 func (sc *supercluster) waitOnLeader() {

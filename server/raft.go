@@ -63,6 +63,7 @@ type WAL interface {
 	LoadMsg(index uint64) (subj string, hdr, msg []byte, ts int64, err error)
 	RemoveMsg(index uint64) (bool, error)
 	Compact(index uint64) (uint64, error)
+	Truncate(seq uint64) error
 	State() StreamState
 	Stop() error
 	Delete() error
@@ -77,7 +78,7 @@ type Peer struct {
 	ID      string
 	Current bool
 	Last    time.Time
-	Index   uint64
+	Lag     uint64
 }
 
 type RaftState uint8
@@ -185,7 +186,7 @@ type lps struct {
 }
 
 const (
-	minElectionTimeout = 300 * time.Millisecond
+	minElectionTimeout = 500 * time.Millisecond
 	maxElectionTimeout = 3 * minElectionTimeout
 	minCampaignTimeout = 50 * time.Millisecond
 	maxCampaignTimeout = 4 * minCampaignTimeout
@@ -379,16 +380,16 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 
 // Maps node names back to server names.
 func (s *Server) serverNameForNode(node string) string {
-	if sn, ok := s.nodeToName.Load(node); ok {
-		return sn.(string)
+	if si, ok := s.nodeToInfo.Load(node); ok && si != nil {
+		return si.(*nodeInfo).name
 	}
 	return _EMPTY_
 }
 
 // Maps node names back to cluster names.
 func (s *Server) clusterNameForNode(node string) string {
-	if cn, ok := s.nodeToCluster.Load(node); ok {
-		return cn.(string)
+	if si, ok := s.nodeToInfo.Load(node); ok && si != nil {
+		return si.(*nodeInfo).cluster
 	}
 	return _EMPTY_
 }
@@ -848,7 +849,12 @@ func (n *raft) Peers() []*Peer {
 
 	var peers []*Peer
 	for id, ps := range n.peers {
-		p := &Peer{ID: id, Current: id == n.leader || ps.li >= n.applied, Last: time.Unix(0, ps.ts)}
+		p := &Peer{
+			ID:      id,
+			Current: id == n.leader || ps.li >= n.applied,
+			Last:    time.Unix(0, ps.ts),
+			Lag:     n.commit - ps.li,
+		}
 		peers = append(peers, p)
 	}
 	return peers
@@ -1494,7 +1500,7 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 		return
 	}
 	if ae.pindex != ar.index || ae.pterm != ar.term {
-		n.debug("Our first entry does not match")
+		n.debug("Our first entry does not match request from follower")
 	}
 	// Create a chan for delivering updates from responses.
 	indexUpdates := make(chan uint64, 1024)
@@ -1792,9 +1798,11 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	// If we received an append entry as a candidate we should convert to a follower.
 	if n.state == Candidate {
 		n.debug("Received append entry in candidate state from %q, converting to follower", ae.leader)
-		n.term = ae.term
-		n.vote = noVote
-		n.writeTermVote()
+		if n.term < ae.term {
+			n.term = ae.term
+			n.vote = noVote
+			n.writeTermVote()
+		}
 		n.attemptStepDown(ae.leader)
 	}
 
@@ -1867,7 +1875,6 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	if isNew && n.leader != ae.leader && n.state == Follower {
 		n.debug("AppendEntry updating leader to %q", ae.leader)
 		n.leader = ae.leader
-		n.vote = noVote
 		n.writeTermVote()
 		if isNew {
 			n.resetElectionTimeout()
@@ -1875,25 +1882,51 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		}
 	}
 
-	// TODO(dlc) - Do both catchup and delete new behaviors from spec.
 	if ae.pterm != n.pterm || ae.pindex != n.pindex {
-		// Check if we are catching up and this is a snapshot, if so reset our wal's index.
-		// Snapshots will always be by themselves.
-		if catchingUp && len(ae.entries) > 0 && ae.entries[0].Type == EntrySnapshot {
-			n.debug("Should reset index for wal to %d", ae.pindex+1)
-			n.wal.Compact(ae.pindex + 1)
-			n.pindex = ae.pindex
-			n.commit = ae.pindex
+		// If this is a lower index that what we were expecting.
+		if ae.pindex < n.pindex {
+			var ar *appendEntryResponse
+			if eae, err := n.loadEntry(ae.pindex); err == nil && eae != nil {
+				// If terms mismatched, delete that entry and all others past it.
+				if eae.pterm != ae.pterm {
+					n.wal.Truncate(ae.pindex)
+					n.pindex = ae.pindex
+					n.pterm = ae.pterm
+					ar = &appendEntryResponse{n.pterm, n.pindex, n.id, false, _EMPTY_}
+				} else {
+					ar = &appendEntryResponse{ae.pterm, ae.pindex, n.id, true, _EMPTY_}
+				}
+			}
+			n.Unlock()
+			if ar != nil {
+				n.sendRPC(ae.reply, _EMPTY_, ar.encode())
+			}
+			return
+		}
+
+		// Check if we are catching up. If we are here we know this is a catchup messages since we
+		// ignore new ones above while catching up. We also know it is not what we expected, so we
+		// could need to adjust our starting index since the leader does not have entries prior, or
+		// we missed some catchup messages.
+		if catchingUp {
+			if len(ae.entries) > 0 {
+				n.debug("Should reset index for wal to %d", ae.pindex+1)
+				n.wal.Compact(ae.pindex + 1)
+				n.pindex = ae.pindex
+				n.commit = ae.pindex
+			}
 		} else {
 			n.debug("AppendEntry did not match %d %d with %d %d", ae.pterm, ae.pindex, n.pterm, n.pindex)
 			// Reset our term.
 			n.term = n.pterm
-			// Setup our state for catching up.
-			inbox := n.createCatchup(ae)
-			ar := appendEntryResponse{n.pterm, n.pindex, n.id, false, _EMPTY_}
-			n.Unlock()
-			n.sendRPC(ae.reply, inbox, ar.encode())
-			return
+			if ae.pindex > n.pindex {
+				// Setup our state for catching up.
+				inbox := n.createCatchup(ae)
+				ar := appendEntryResponse{n.pterm, n.pindex, n.id, false, _EMPTY_}
+				n.Unlock()
+				n.sendRPC(ae.reply, inbox, ar.encode())
+				return
+			}
 		}
 	}
 
@@ -1966,9 +1999,14 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 func (n *raft) processPeerState(ps *peerState) {
 	// Update our version of peers to that of the leader.
 	n.csz = ps.clusterSize
+	old := n.peers
 	n.peers = make(map[string]*lps)
 	for _, peer := range ps.knownPeers {
-		n.peers[peer] = &lps{0, 0}
+		if lp := old[peer]; lp != nil {
+			n.peers[peer] = lp
+		} else {
+			n.peers[peer] = &lps{0, 0}
+		}
 	}
 	n.debug("Update peers from leader to %+v", n.peers)
 	writePeerState(n.sd, ps)
@@ -2003,6 +2041,8 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 
 	// Sanity checking for now.
 	if ae.pindex != seq-1 {
+		fmt.Printf("[%s] n is %+v\n\n", n.s, n)
+		fmt.Printf("[%s] n.cactchup is %+v\n", n.s, n.catchup)
 		panic(fmt.Sprintf("[%s-%s] Placed an entry at the wrong index, ae is %+v, index is %d\n\n", n.s, n.group, ae, seq))
 	}
 
@@ -2257,6 +2297,7 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 	}
 
 	n.Lock()
+	n.resetElectionTimeout()
 
 	// Ignore if we are newer.
 	if vr.term < n.term {
@@ -2281,7 +2322,6 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 		vresp.granted = true
 		n.vote = vr.candidate
 		n.writeTermVote()
-		n.resetElectionTimeout()
 	}
 	n.Unlock()
 
@@ -2371,7 +2411,6 @@ func (n *raft) switchState(state RaftState) {
 	}
 
 	n.state = state
-	n.vote = noVote
 	n.writeTermVote()
 }
 

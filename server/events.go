@@ -303,7 +303,7 @@ RESET:
 				case []byte:
 					b = v
 				default:
-					b, _ = json.MarshalIndent(pm.msg, _EMPTY_, "  ")
+					b, _ = json.Marshal(pm.msg)
 				}
 			}
 
@@ -371,7 +371,8 @@ func (s *Server) sendShutdownEvent() {
 	s.sys.replies = nil
 	s.mu.Unlock()
 	// Send to the internal queue and mark as last.
-	sendq <- &pubMsg{nil, subj, _EMPTY_, nil, nil, true}
+	si := &ServerInfo{}
+	sendq <- &pubMsg{nil, subj, _EMPTY_, si, si, true}
 }
 
 // Used to send an internal message to an arbitrary account.
@@ -626,6 +627,11 @@ func (s *Server) initEventTracking() {
 	if _, err := s.sysSubscribe(accNumSubsReqSubj, s.nsubsRequest); err != nil {
 		s.Errorf("Error setting up internal tracking: %v", err)
 	}
+	// Listen for statsz from others.
+	subject = fmt.Sprintf(serverStatsSubj, "*")
+	if _, err := s.sysSubscribe(subject, s.remoteServerUpdate); err != nil {
+		s.Errorf("Error setting up internal tracking: %v", err)
+	}
 	// Listen for all server shutdowns.
 	subject = fmt.Sprintf(shutdownEventSubj, "*")
 	if _, err := s.sysSubscribe(subject, s.remoteServerShutdown); err != nil {
@@ -844,10 +850,41 @@ func (s *Server) remoteServerShutdown(sub *subscription, _ *client, subject, rep
 	}
 
 	sid := toks[serverSubjectIndex]
-	su := s.sys.servers[sid]
-	if su != nil {
+	if su := s.sys.servers[sid]; su != nil {
 		s.processRemoteServerShutdown(sid)
 	}
+
+	if len(msg) == 0 {
+		return
+	}
+
+	// We have an optional serverInfo here, remove from nodeToX lookups.
+	var si ServerInfo
+	if err := json.Unmarshal(msg, &si); err != nil {
+		s.Debugf("Received bad server info for remote server shutdown")
+		return
+	}
+	// Additional processing here.
+	node := string(getHash(si.Name))
+	s.nodeToInfo.Store(node, &nodeInfo{si.Name, si.Cluster, si.ID, true})
+}
+
+// remoteServerUpdate listens for statsz updates from other servers.
+func (s *Server) remoteServerUpdate(sub *subscription, _ *client, subject, reply string, msg []byte) {
+	var ssm ServerStatsMsg
+	if err := json.Unmarshal(msg, &ssm); err != nil {
+		s.Debugf("Received bad server info for remote server update")
+		return
+	}
+	si := ssm.Server
+	node := string(getHash(si.Name))
+	if _, ok := s.nodeToInfo.Load(node); !ok {
+		// Since we have not seen this one they probably have not seen us so send out our update.
+		s.mu.Lock()
+		s.sendStatsz(fmt.Sprintf(serverStatsSubj, s.info.ID))
+		s.mu.Unlock()
+	}
+	s.nodeToInfo.Store(node, &nodeInfo{si.Name, si.Cluster, si.ID, false})
 }
 
 // updateRemoteServer is called when we have an update from a remote server.
@@ -878,8 +915,7 @@ func (s *Server) processNewServer(ms *ServerInfo) {
 	s.ensureGWsInterestOnlyForLeafNodes()
 	// Add to our nodeToName
 	node := string(getHash(ms.Name))
-	s.nodeToName.Store(node, ms.Name)
-	s.nodeToCluster.Store(node, ms.Cluster)
+	s.nodeToInfo.Store(node, &nodeInfo{ms.Name, ms.Cluster, ms.ID, false})
 }
 
 // If GW is enabled on this server and there are any leaf node connections,

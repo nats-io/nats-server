@@ -97,7 +97,9 @@ type ClusterInfo struct {
 type PeerInfo struct {
 	Name    string        `json:"name"`
 	Current bool          `json:"current"`
+	Offline bool          `json:"offline,omitempty"`
 	Active  time.Duration `json:"active"`
+	Lag     uint64        `json:"lag,omitempty"`
 }
 
 // Stream is a jetstream stream of messages. When we receive a message internally destined
@@ -509,7 +511,7 @@ func (mset *Stream) sendCreateAdvisory() {
 		Template: template,
 	}
 
-	j, err := json.MarshalIndent(m, "", "  ")
+	j, err := json.Marshal(m)
 	if err != nil {
 		return
 	}
@@ -534,7 +536,7 @@ func (mset *Stream) sendDeleteAdvisoryLocked() {
 		Template: mset.config.Template,
 	}
 
-	j, err := json.MarshalIndent(m, "", "  ")
+	j, err := json.Marshal(m)
 	if err == nil {
 		subj := JSAdvisoryStreamDeletedPre + "." + mset.config.Name
 		mset.sendq <- &jsPubMsg{subj, subj, _EMPTY_, nil, j, nil, 0}
@@ -556,7 +558,7 @@ func (mset *Stream) sendUpdateAdvisoryLocked() {
 		Action: ModifyEvent,
 	}
 
-	j, err := json.MarshalIndent(m, "", "  ")
+	j, err := json.Marshal(m)
 	if err == nil {
 		subj := JSAdvisoryStreamUpdatedPre + "." + mset.config.Name
 		mset.sendq <- &jsPubMsg{subj, subj, _EMPTY_, nil, j, nil, 0}
@@ -1314,11 +1316,11 @@ func (mset *Stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	if err != nil {
 		if err != ErrStoreClosed {
-			c.Errorf("JetStream failed to store a msg on account: %q stream: %q -  %v", accName, name, err)
+			c.Errorf("JetStream failed to store a msg on stream '%s > %s' -  %v", accName, name, err)
 		}
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
-			resp.Error = &ApiError{Code: 400, Description: err.Error()}
+			resp.Error = &ApiError{Code: 503, Description: err.Error()}
 			response, _ = json.Marshal(resp)
 		}
 	} else if jsa.limitsExceeded(stype) {
@@ -1366,7 +1368,7 @@ func (mset *Stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		}
 	}
 
-	return nil
+	return err
 }
 
 // Internal message for use by jetstream subsystem.

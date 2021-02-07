@@ -300,8 +300,8 @@ func TestSystemAccountNewConnection(t *testing.T) {
 	}
 	if !strings.HasPrefix(connsMsg.Subject, fmt.Sprintf("$SYS.ACCOUNT.%s.SERVER.CONNS", acc2.Name)) {
 		t.Fatalf("Expected subject to start with %q, got %q", "$SYS.ACCOUNT.<account>.CONNECT", msg.Subject)
-	} else if !strings.Contains(string(connsMsg.Data), `"total_conns": 0`) {
-		t.Fatalf("Expected event to reflect created connection, got: %s", string(msg.Data))
+	} else if !strings.Contains(string(connsMsg.Data), `"total_conns":0`) {
+		t.Fatalf("Expected event to reflect created connection, got: %s", string(connsMsg.Data))
 	}
 	conns = AccountNumConns{}
 	if err := json.Unmarshal(connsMsg.Data, &conns); err != nil {
@@ -1257,7 +1257,7 @@ func TestAccountReqMonitoring(t *testing.T) {
 	// query SUBSZ for account
 	if resp, err := ncSys.Request(subsz, nil, time.Second); err != nil {
 		t.Fatalf("Error on request: %v", err)
-	} else if !strings.Contains(string(resp.Data), `"num_subscriptions": 25,`) {
+	} else if !strings.Contains(string(resp.Data), `"num_subscriptions":25,`) {
 		t.Fatalf("unexpected subs count (expected 0): %v", string(resp.Data))
 	}
 	// create a subscription
@@ -1270,25 +1270,25 @@ func TestAccountReqMonitoring(t *testing.T) {
 	// query SUBSZ for account
 	if resp, err := ncSys.Request(subsz, nil, time.Second); err != nil {
 		t.Fatalf("Error on request: %v", err)
-	} else if !strings.Contains(string(resp.Data), `"num_subscriptions": 26,`) {
+	} else if !strings.Contains(string(resp.Data), `"num_subscriptions":26,`) {
 		t.Fatalf("unexpected subs count (expected 26): %v", string(resp.Data))
-	} else if !strings.Contains(string(resp.Data), `"subject": "foo"`) {
+	} else if !strings.Contains(string(resp.Data), `"subject":"foo"`) {
 		t.Fatalf("expected subscription foo: %v", string(resp.Data))
 	}
 	// query connections for account
 	if resp, err := ncSys.Request(connz, nil, time.Second); err != nil {
 		t.Fatalf("Error on request: %v", err)
-	} else if !strings.Contains(string(resp.Data), `"num_connections": 1,`) {
+	} else if !strings.Contains(string(resp.Data), `"num_connections":1,`) {
 		t.Fatalf("unexpected subs count (expected 1): %v", string(resp.Data))
-	} else if !strings.Contains(string(resp.Data), `"total": 2,`) { // includes system acc connection
+	} else if !strings.Contains(string(resp.Data), `"total":2,`) { // includes system acc connection
 		t.Fatalf("unexpected subs count (expected 1): %v", string(resp.Data))
 	}
 	// query connections for js account
 	if resp, err := ncSys.Request(jsz, nil, time.Second); err != nil {
 		t.Fatalf("Error on request: %v", err)
-	} else if !strings.Contains(string(resp.Data), `"memory": 0,`) {
+	} else if !strings.Contains(string(resp.Data), `"memory":0,`) {
 		t.Fatalf("jetstream should be enabled but empty: %v", string(resp.Data))
-	} else if !strings.Contains(string(resp.Data), `"storage": 0,`) {
+	} else if !strings.Contains(string(resp.Data), `"storage":0,`) {
 		t.Fatalf("jetstream should be enabled but empty: %v", string(resp.Data))
 	}
 }
@@ -1594,7 +1594,7 @@ func TestSystemAccountWithGateways(t *testing.T) {
 
 	// If this tests fails with wrong number after 10 seconds we may have
 	// added a new inititial subscription for the eventing system.
-	checkExpectedSubs(t, 36, sa)
+	checkExpectedSubs(t, 37, sa)
 
 	// Create a client on B and see if we receive the event
 	urlb := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)

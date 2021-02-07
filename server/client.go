@@ -4013,14 +4013,8 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				}
 			}
 
-			var rreply = reply
-			if rplyHasGWPrefix && sub.client.kind == CLIENT {
-				rreply = creply
-			}
-			// "rreply" will be stripped of the $GNR prefix (if present)
-			// for client connections only.
-			mh := c.msgHeader(dsubj, rreply, sub)
-			if c.deliverMsg(sub, subject, rreply, mh, msg, rplyHasGWPrefix) {
+			mh := c.msgHeader(dsubj, creply, sub)
+			if c.deliverMsg(sub, subject, creply, mh, msg, rplyHasGWPrefix) {
 				didDeliver = true
 				// Clear rsub
 				rsub = nil

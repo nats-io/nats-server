@@ -709,7 +709,7 @@ func (s *Server) jsAccountInfoRequest(sub *subscription, c *client, subject, rep
 		stats := acc.JetStreamUsage()
 		resp.JetStreamAccountStats = &stats
 	}
-	b, err := json.MarshalIndent(resp, "", "  ")
+	b, err := json.Marshal(resp)
 	if err != nil {
 		return
 	}
@@ -923,7 +923,7 @@ func (s *Server) jsTemplateDeleteRequest(sub *subscription, c *client, subject, 
 }
 
 func (s *Server) jsonResponse(v interface{}) string {
-	b, err := json.MarshalIndent(v, "", "  ")
+	b, err := json.Marshal(v)
 	if err != nil {
 		s.Warnf("Problem marshaling JSON for JetStream API:", err)
 		return ""

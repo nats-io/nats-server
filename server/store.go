@@ -110,14 +110,21 @@ const (
 
 // StreamState is information about the given stream.
 type StreamState struct {
-	Msgs      uint64    `json:"messages"`
-	Bytes     uint64    `json:"bytes"`
-	FirstSeq  uint64    `json:"first_seq"`
-	FirstTime time.Time `json:"first_ts"`
-	LastSeq   uint64    `json:"last_seq"`
-	LastTime  time.Time `json:"last_ts"`
-	Deleted   []uint64  `json:"deleted,omitempty"`
-	Consumers int       `json:"consumer_count"`
+	Msgs      uint64          `json:"messages"`
+	Bytes     uint64          `json:"bytes"`
+	FirstSeq  uint64          `json:"first_seq"`
+	FirstTime time.Time       `json:"first_ts"`
+	LastSeq   uint64          `json:"last_seq"`
+	LastTime  time.Time       `json:"last_ts"`
+	Deleted   []uint64        `json:"deleted,omitempty"`
+	Lost      *LostStreamData `json:"lost,omitempty"`
+	Consumers int             `json:"consumer_count"`
+}
+
+// LostStreamData indicates msgs that have been lost.
+type LostStreamData struct {
+	Msgs  []uint64 `json:"msgs"`
+	Bytes uint64   `json:"bytes"`
 }
 
 // SnapshotResult contains information about the snapshot.
