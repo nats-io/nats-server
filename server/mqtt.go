@@ -144,9 +144,9 @@ type mqttSessionManager struct {
 
 type mqttAccountSessionManager struct {
 	mu       sync.RWMutex
-	sstream  *Stream                     // stream where sessions are recorded
-	mstream  *Stream                     // messages stream
-	rstream  *Stream                     // retained messages stream
+	sstream  *stream                     // stream where sessions are recorded
+	mstream  *stream                     // messages stream
+	rstream  *stream                     // retained messages stream
 	sessions map[string]*mqttSession     // key is MQTT client ID
 	sl       *Sublist                    // sublist allowing to find retained messages for given subscription
 	retmsgs  map[string]*mqttRetainedMsg // retained messages
@@ -156,11 +156,11 @@ type mqttSession struct {
 	mu       sync.Mutex
 	c        *client
 	subs     map[string]byte
-	cons     map[string]*Consumer
-	stream   *Stream
+	cons     map[string]*consumer
+	stream   *stream
 	sseq     uint64                          // stream sequence where this sesion is recorded
 	pending  map[uint16]*mqttPending         // Key is the PUBLISH packet identifier sent to client and maps to a mqttPending record
-	cpending map[*Consumer]map[uint64]uint16 // For each JS consumer, the key is the stream sequence and maps to the PUBLISH packet identifier
+	cpending map[*consumer]map[uint64]uint16 // For each JS consumer, the key is the stream sequence and maps to the PUBLISH packet identifier
 	ppi      uint16                          // publish packet identifier
 	maxp     uint16
 	stalled  bool
@@ -191,7 +191,7 @@ type mqttSub struct {
 	prm *mqttWriter
 	// This is the corresponding JS consumer. This is applicable to a subscription that is
 	// done for QoS > 0 (the subscription attached to a JS consumer's delivery subject).
-	jsCons *Consumer
+	jsCons *consumer
 }
 
 type mqtt struct {
@@ -206,7 +206,7 @@ type mqttPending struct {
 	sseq   uint64    // stream sequence
 	dseq   uint64    // consumer delivery sequence
 	dcount uint64    // consumer delivery count
-	jsCons *Consumer // pointer to JS consumer (to which we will call ackMsg() on with above info)
+	jsCons *consumer // pointer to JS consumer (to which we will call ackMsg() on with above info)
 }
 
 type mqttConnectProto struct {
@@ -770,9 +770,9 @@ func (as *mqttAccountSessionManager) init(acc *Account, c *client) error {
 	opts := c.srv.getOpts()
 	var err error
 	// Start with sessions stream
-	as.sstream, err = acc.LookupStream(mqttSessionsStreamName)
+	as.sstream, err = acc.lookupStream(mqttSessionsStreamName)
 	if err != nil {
-		as.sstream, err = acc.AddStream(&StreamConfig{
+		as.sstream, err = acc.addStream(&StreamConfig{
 			Subjects:       []string{},
 			Name:           mqttSessionsStreamName,
 			Storage:        FileStorage,
@@ -785,9 +785,9 @@ func (as *mqttAccountSessionManager) init(acc *Account, c *client) error {
 		}
 	}
 	// Create the stream for the messages.
-	as.mstream, err = acc.LookupStream(mqttStreamName)
+	as.mstream, err = acc.lookupStream(mqttStreamName)
 	if err != nil {
-		as.mstream, err = acc.AddStream(&StreamConfig{
+		as.mstream, err = acc.addStream(&StreamConfig{
 			Subjects:       []string{},
 			Name:           mqttStreamName,
 			Storage:        FileStorage,
@@ -800,9 +800,9 @@ func (as *mqttAccountSessionManager) init(acc *Account, c *client) error {
 		}
 	}
 	// Create the stream for retained messages.
-	as.rstream, err = acc.LookupStream(mqttRetainedMsgsStreamName)
+	as.rstream, err = acc.lookupStream(mqttRetainedMsgsStreamName)
 	if err != nil {
-		as.rstream, err = acc.AddStream(&StreamConfig{
+		as.rstream, err = acc.addStream(&StreamConfig{
 			Subjects:       []string{},
 			Name:           mqttRetainedMsgsStreamName,
 			Storage:        FileStorage,
@@ -815,7 +815,7 @@ func (as *mqttAccountSessionManager) init(acc *Account, c *client) error {
 		}
 	}
 	// Now recover all sessions (in case it did already exist)
-	if state := as.sstream.State(); state.Msgs > 0 {
+	if state := as.sstream.state(); state.Msgs > 0 {
 		for seq := state.FirstSeq; seq <= state.LastSeq; seq++ {
 			_, _, content, _, err := as.sstream.store.LoadMsg(seq)
 			if err != nil {
@@ -834,7 +834,7 @@ func (as *mqttAccountSessionManager) init(acc *Account, c *client) error {
 			}
 			es, ok := as.sessions[ps.ID]
 			if ok && es.sseq != 0 {
-				as.sstream.DeleteMsg(es.sseq)
+				as.sstream.deleteMsg(es.sseq)
 			} else if !ok {
 				es = mqttSessionCreate(opts)
 				es.stream = as.sstream
@@ -845,10 +845,10 @@ func (as *mqttAccountSessionManager) init(acc *Account, c *client) error {
 			es.subs = ps.Subs
 			if l := len(ps.Cons); l > 0 {
 				if es.cons == nil {
-					es.cons = make(map[string]*Consumer, l)
+					es.cons = make(map[string]*consumer, l)
 				}
 				for sid, name := range ps.Cons {
-					if cons := as.mstream.LookupConsumer(name); cons != nil {
+					if cons := as.mstream.lookupConsumer(name); cons != nil {
 						es.cons[sid] = cons
 					}
 				}
@@ -856,7 +856,7 @@ func (as *mqttAccountSessionManager) init(acc *Account, c *client) error {
 		}
 	}
 	// Finally, recover retained messages.
-	if state := as.rstream.State(); state.Msgs > 0 {
+	if state := as.rstream.state(); state.Msgs > 0 {
 		for seq := state.FirstSeq; seq <= state.LastSeq; seq++ {
 			subject, _, content, _, err := as.rstream.store.LoadMsg(seq)
 			if err != nil {
@@ -926,12 +926,12 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, clientID str
 		}
 	}
 
-	addJSConsToSess := func(sid string, cons *Consumer) {
+	addJSConsToSess := func(sid string, cons *consumer) {
 		if cons == nil {
 			return
 		}
 		if sess.cons == nil {
-			sess.cons = make(map[string]*Consumer)
+			sess.cons = make(map[string]*consumer)
 		}
 		sess.cons[sid] = cons
 	}
@@ -959,7 +959,7 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, clientID str
 			continue
 		}
 
-		var jscons *Consumer
+		var jscons *consumer
 		var jssub *subscription
 
 		// Note that if a subscription already exists on this subject,
@@ -980,7 +980,7 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, clientID str
 			continue
 		}
 		if mqttNeedSubForLevelUp(subject) {
-			var fwjscons *Consumer
+			var fwjscons *consumer
 			var fwjssub *subscription
 			var fwcsub *subscription
 
@@ -1098,7 +1098,7 @@ func (sess *mqttSession) save(clientID string) error {
 	if l := len(sess.cons); l > 0 {
 		cons := make(map[string]string, l)
 		for sid, jscons := range sess.cons {
-			cons[sid] = jscons.Name()
+			cons[sid] = jscons.String()
 		}
 		ps.Cons = cons
 	}
@@ -1108,7 +1108,7 @@ func (sess *mqttSession) save(clientID string) error {
 		return err
 	}
 	if sess.sseq != 0 {
-		sess.stream.DeleteMsg(sess.sseq)
+		sess.stream.deleteMsg(sess.sseq)
 	}
 	sess.sseq = newSeq
 	return nil
@@ -1121,10 +1121,10 @@ func (sess *mqttSession) save(clientID string) error {
 func (sess *mqttSession) clear() {
 	for consName, cons := range sess.cons {
 		delete(sess.cons, consName)
-		cons.Delete()
+		cons.delete()
 	}
 	if sess.stream != nil && sess.sseq != 0 {
-		sess.stream.DeleteMsg(sess.sseq)
+		sess.stream.deleteMsg(sess.sseq)
 		sess.sseq = 0
 	}
 	sess.subs, sess.pending, sess.cpending = nil, nil, nil
@@ -1213,7 +1213,7 @@ func (sess *mqttSession) trackPending(pQos byte, reply string, sub *subscription
 	jsCons := sub.mqtt.jsCons
 	if sess.pending == nil {
 		sess.pending = make(map[uint16]*mqttPending)
-		sess.cpending = make(map[*Consumer]map[uint64]uint16)
+		sess.cpending = make(map[*consumer]map[uint64]uint16)
 	}
 	// Get the stream sequence and other from the ack reply subject
 	sseq, dseq, dcount := ackReplyInfo(reply)
@@ -1715,7 +1715,7 @@ func (c *client) mqttHandlePubRetain() {
 					delete(asm.retmsgs, key)
 					asm.sl.Remove(erm.sub)
 					if erm.sseq != 0 {
-						asm.rstream.DeleteMsg(erm.sseq)
+						asm.rstream.deleteMsg(erm.sseq)
 					}
 				}
 			}
@@ -1742,7 +1742,7 @@ func (c *client) mqttHandlePubRetain() {
 			}
 			// If it has been replaced, rm.sseq will be != 0
 			if rm.sseq != 0 {
-				asm.rstream.DeleteMsg(rm.sseq)
+				asm.rstream.deleteMsg(rm.sseq)
 			}
 			// Keep track of current stream sequence (possibly 0 if failed to store)
 			rm.sseq = seq
@@ -1792,7 +1792,7 @@ func (s *Server) mqttCheckPubRetainedPerms() {
 			// publish on that subject anymore: remove it from the map.
 			if u == nil {
 				delete(asm.retmsgs, subject)
-				asm.rstream.DeleteMsg(rm.sseq)
+				asm.rstream.deleteMsg(rm.sseq)
 				asm.sl.Remove(rm.sub)
 			}
 		}
@@ -2164,7 +2164,7 @@ func (c *client) mqttProcessSubs(filters []*mqttFilter) ([]*subscription, error)
 	return asm.processSubs(sess, clientID, c, filters, true, trace)
 }
 
-func (c *client) mqttCleanupFailedSub(sub *subscription, jscons *Consumer, jssub *subscription) {
+func (c *client) mqttCleanupFailedSub(sub *subscription, jscons *consumer, jssub *subscription) {
 	c.mu.Lock()
 	acc := c.acc
 	c.mu.Unlock()
@@ -2176,7 +2176,7 @@ func (c *client) mqttCleanupFailedSub(sub *subscription, jscons *Consumer, jssub
 		c.unsubscribe(acc, jssub, true, true)
 	}
 	if jscons != nil {
-		jscons.Delete()
+		jscons.delete()
 	}
 }
 
@@ -2187,8 +2187,8 @@ func (c *client) mqttCleanupFailedSub(sub *subscription, jscons *Consumer, jssub
 // its NATS subscription on a delivery subject.
 //
 // Account session manager lock held on entry.
-func (c *client) mqttProcessJSConsumer(sess *mqttSession, stream *Stream, subject,
-	sid string, qos byte, fromSubProto bool) (*Consumer, *subscription, error) {
+func (c *client) mqttProcessJSConsumer(sess *mqttSession, stream *stream, subject,
+	sid string, qos byte, fromSubProto bool) (*consumer, *subscription, error) {
 
 	// Check if we are already a JS consumer for this SID.
 	cons, exists := sess.cons[sid]
@@ -2199,9 +2199,9 @@ func (c *client) mqttProcessJSConsumer(sess *mqttSession, stream *Stream, subjec
 			// The JS durable consumer's delivery subject is on a NUID of
 			// the form: mqttSubPrefix + <nuid>. It is also used as the sid
 			// for the NATS subscription, so use that for the lookup.
-			sub := c.subs[cons.Config().DeliverSubject]
+			sub := c.subs[cons.config().DeliverSubject]
 			delete(sess.cons, sid)
-			cons.Delete()
+			cons.delete()
 			if sub != nil {
 				c.mu.Lock()
 				acc := c.acc
@@ -2247,7 +2247,7 @@ func (c *client) mqttProcessJSConsumer(sess *mqttSession, stream *Stream, subjec
 			MaxAckPending:   int(maxAckPending),
 			allowNoInterest: true,
 		}
-		cons, err = stream.AddConsumer(cc)
+		cons, err = stream.addConsumer(cc)
 		if err != nil {
 			c.Errorf("Unable to add JetStream consumer for subscription on %q: err=%v", subject, err)
 			return nil, nil, err
@@ -2259,7 +2259,7 @@ func (c *client) mqttProcessJSConsumer(sess *mqttSession, stream *Stream, subjec
 	sub, err := c.processSub([]byte(inbox), nil, []byte(inbox), mqttDeliverMsgCb, true)
 	if err != nil {
 		if !exists {
-			cons.Delete()
+			cons.delete()
 		}
 		c.Errorf("Unable to create subscription for JetStream consumer on %q: %v", subject, err)
 		return nil, nil, err
@@ -2327,7 +2327,7 @@ func (c *client) mqttProcessUnsubs(filters []*mqttFilter) error {
 	removeJSCons := func(sid string) {
 		if jscons, ok := sess.cons[sid]; ok {
 			delete(sess.cons, sid)
-			jscons.Delete()
+			jscons.delete()
 			if seqPis, ok := sess.cpending[jscons]; ok {
 				delete(sess.cpending, jscons)
 				for _, pi := range seqPis {

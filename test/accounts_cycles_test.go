@@ -351,3 +351,24 @@ func TestAccountCycleDepthLimit(t *testing.T) {
 		last = acc
 	}
 }
+
+func clientConnectToServer(t *testing.T, s *server.Server) *nats.Conn {
+	t.Helper()
+	nc, err := nats.Connect(s.ClientURL(),
+		nats.Name("JS-TEST"),
+		nats.ReconnectWait(5*time.Millisecond),
+		nats.MaxReconnects(-1))
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	return nc
+}
+
+func clientConnectToServerWithUP(t *testing.T, opts *server.Options, user, pass string) *nats.Conn {
+	curl := fmt.Sprintf("nats://%s:%s@%s:%d", user, pass, opts.Host, opts.Port)
+	nc, err := nats.Connect(curl, nats.Name("JS-UP-TEST"), nats.ReconnectWait(5*time.Millisecond), nats.MaxReconnects(-1))
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	return nc
+}

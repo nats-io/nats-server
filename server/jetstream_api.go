@@ -767,7 +767,7 @@ func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, subject, 
 		return
 	}
 
-	t, err := acc.AddStreamTemplate(&cfg)
+	t, err := acc.addStreamTemplate(&cfg)
 	if err != nil {
 		resp.Error = jsError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -820,7 +820,7 @@ func (s *Server) jsTemplateNamesRequest(sub *subscription, c *client, subject, r
 		offset = req.Offset
 	}
 
-	ts := acc.Templates()
+	ts := acc.templates()
 	sort.Slice(ts, func(i, j int) bool {
 		return strings.Compare(ts[i].StreamTemplateConfig.Name, ts[j].StreamTemplateConfig.Name) < 0
 	})
@@ -871,7 +871,7 @@ func (s *Server) jsTemplateInfoRequest(sub *subscription, c *client, subject, re
 		return
 	}
 	name := templateNameFromSubject(subject)
-	t, err := acc.LookupStreamTemplate(name)
+	t, err := acc.lookupStreamTemplate(name)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -912,7 +912,7 @@ func (s *Server) jsTemplateDeleteRequest(sub *subscription, c *client, subject, 
 		return
 	}
 	name := templateNameFromSubject(subject)
-	err = acc.DeleteStreamTemplate(name)
+	err = acc.deleteStreamTemplate(name)
 	if err != nil {
 		resp.Error = jsError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -998,13 +998,13 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 		return
 	}
 
-	mset, err := acc.AddStream(&cfg)
+	mset, err := acc.addStream(&cfg)
 	if err != nil {
 		resp.Error = jsError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config()}
+	resp.StreamInfo = &StreamInfo{Created: mset.createdTime(), State: mset.state(), Config: mset.config()}
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -1056,14 +1056,14 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	mset, err := acc.LookupStream(streamName)
+	mset, err := acc.lookupStream(streamName)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
-	if err := mset.Update(&cfg); err != nil {
+	if err := mset.update(&cfg); err != nil {
 		resp.Error = jsError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -1071,7 +1071,7 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 
 	js, _ := s.getJetStreamCluster()
 
-	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config(), Cluster: js.clusterInfo(mset.raftGroup())}
+	resp.StreamInfo = &StreamInfo{Created: mset.createdTime(), State: mset.state(), Config: mset.config(), Cluster: js.clusterInfo(mset.raftGroup())}
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -1173,7 +1173,7 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, rep
 		// Since we page results order matters.
 		if len(msets) > 1 {
 			sort.Slice(msets, func(i, j int) bool {
-				return strings.Compare(msets[i].config.Name, msets[j].config.Name) < 0
+				return strings.Compare(msets[i].cfg.Name, msets[j].cfg.Name) < 0
 			})
 		}
 
@@ -1183,7 +1183,7 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, rep
 		}
 
 		for _, mset := range msets[offset:] {
-			resp.Streams = append(resp.Streams, mset.config.Name)
+			resp.Streams = append(resp.Streams, mset.cfg.Name)
 			if len(resp.Streams) >= JSApiNamesLimit {
 				break
 			}
@@ -1256,9 +1256,9 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 
 	// TODO(dlc) - Maybe hold these results for large results that we expect to be paged.
 	// TODO(dlc) - If this list is long maybe do this in a Go routine?
-	msets := acc.Streams()
+	msets := acc.streams()
 	sort.Slice(msets, func(i, j int) bool {
-		return strings.Compare(msets[i].config.Name, msets[j].config.Name) < 0
+		return strings.Compare(msets[i].cfg.Name, msets[j].cfg.Name) < 0
 	})
 
 	scnt := len(msets)
@@ -1267,7 +1267,7 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 	}
 
 	for _, mset := range msets[offset:] {
-		resp.Streams = append(resp.Streams, &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config()})
+		resp.Streams = append(resp.Streams, &StreamInfo{Created: mset.createdTime(), State: mset.state(), Config: mset.config()})
 		if len(resp.Streams) >= JSApiListLimit {
 			break
 		}
@@ -1350,13 +1350,13 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 		return
 	}
 
-	mset, err := acc.LookupStream(name)
+	mset, err := acc.lookupStream(name)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	config := mset.Config()
+	config := mset.config()
 	// Some streams are created without subject (for instance MQTT streams),
 	// but "nats" tooling would then fail to display them since it uses
 	// validation and expect the config's Subjects to not be empty.
@@ -1366,7 +1366,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 
 	js, _ := s.getJetStreamCluster()
 
-	resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: config, Cluster: js.clusterInfo(mset.raftGroup())}
+	resp.StreamInfo = &StreamInfo{Created: mset.createdTime(), State: mset.state(), Config: config, Cluster: js.clusterInfo(mset.raftGroup())}
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -1440,7 +1440,7 @@ func (s *Server) jsStreamLeaderStepDownRequest(sub *subscription, c *client, sub
 		return
 	}
 
-	mset, err := acc.LookupStream(name)
+	mset, err := acc.lookupStream(name)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -1532,13 +1532,13 @@ func (s *Server) jsConsumerLeaderStepDownRequest(sub *subscription, c *client, s
 		return
 	}
 
-	mset, err := acc.LookupStream(stream)
+	mset, err := acc.lookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(ErrJetStreamStreamNotFound)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	o := mset.LookupConsumer(consumer)
+	o := mset.lookupConsumer(consumer)
 	if o == nil {
 		resp.Error = jsNoConsumerErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -1724,19 +1724,19 @@ func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, re
 		return
 	}
 
-	mset, err := acc.LookupStream(stream)
+	mset, err := acc.lookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	if mset.Config().internal {
+	if mset.config().internal {
 		resp.Error = &ApiError{Code: 403, Description: "not allowed to delete internal stream"}
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
-	if err := mset.Delete(); err != nil {
+	if err := mset.delete(); err != nil {
 		resp.Error = jsError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -1824,7 +1824,7 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 		return
 	}
 
-	mset, err := acc.LookupStream(stream)
+	mset, err := acc.lookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -1838,9 +1838,9 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 
 	var removed bool
 	if req.NoErase {
-		removed, err = mset.RemoveMsg(req.Seq)
+		removed, err = mset.removeMsg(req.Seq)
 	} else {
-		removed, err = mset.EraseMsg(req.Seq)
+		removed, err = mset.eraseMsg(req.Seq)
 	}
 	if err != nil {
 		resp.Error = jsError(err)
@@ -1930,7 +1930,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 		return
 	}
 
-	mset, err := acc.LookupStream(stream)
+	mset, err := acc.lookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -2024,7 +2024,7 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	mset, err := acc.LookupStream(stream)
+	mset, err := acc.lookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -2036,7 +2036,7 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 		return
 	}
 
-	purged, err := mset.Purge()
+	purged, err := mset.purge()
 	if err != nil {
 		resp.Error = jsError(err)
 	} else {
@@ -2083,7 +2083,7 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 		return
 	}
 
-	if _, err := acc.LookupStream(stream); err == nil {
+	if _, err := acc.lookupStream(stream); err == nil {
 		resp.Error = jsError(ErrJetStreamStreamAlreadyUsed)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -2092,7 +2092,7 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 	s.processStreamRestore(ci, acc, stream, subject, reply, string(msg))
 }
 
-func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, stream, subject, reply, msg string) <-chan error {
+func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, streamName, subject, reply, msg string) <-chan error {
 	var resp = JSApiStreamRestoreResponse{ApiResponse: ApiResponse{Type: JSApiStreamRestoreResponseType}}
 
 	// FIXME(dlc) - Need to close these up if we fail for some reason.
@@ -2104,22 +2104,22 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, stream, subj
 		return nil
 	}
 
-	s.Noticef("Starting restore for stream '%s > %s'", acc.Name, stream)
+	s.Noticef("Starting restore for stream '%s > %s'", acc.Name, streamName)
 
 	start := time.Now()
 
-	s.publishAdvisory(acc, JSAdvisoryStreamRestoreCreatePre+"."+stream, &JSRestoreCreateAdvisory{
+	s.publishAdvisory(acc, JSAdvisoryStreamRestoreCreatePre+"."+streamName, &JSRestoreCreateAdvisory{
 		TypedEvent: TypedEvent{
 			Type: JSRestoreCreateAdvisoryType,
 			ID:   nuid.Next(),
 			Time: time.Now().UTC(),
 		},
-		Stream: stream,
+		Stream: streamName,
 		Client: ci,
 	})
 
 	// Create our internal subscription to accept the snapshot.
-	restoreSubj := fmt.Sprintf(jsRestoreDeliverT, stream, nuid.Next())
+	restoreSubj := fmt.Sprintf(jsRestoreDeliverT, streamName, nuid.Next())
 
 	type result struct {
 		err   error
@@ -2135,7 +2135,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, stream, subj
 		if reply == _EMPTY_ {
 			sub.client.processUnsub(sub.sid)
 			resultCh <- result{
-				fmt.Errorf("restore for stream '%s > %s' requires reply subject for each chunk", acc.Name, stream),
+				fmt.Errorf("restore for stream '%s > %s' requires reply subject for each chunk", acc.Name, streamName),
 				reply,
 			}
 			return
@@ -2143,7 +2143,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, stream, subj
 		// Account client messages have \r\n on end. This is an error.
 		if len(msg) < LEN_CR_LF {
 			resultCh <- result{
-				fmt.Errorf("restore for stream '%s > %s' received short chunk", acc.Name, stream),
+				fmt.Errorf("restore for stream '%s > %s' received short chunk", acc.Name, streamName),
 				reply,
 			}
 			return
@@ -2154,7 +2154,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, stream, subj
 		// This means we are complete with our transfer from the client.
 		if len(msg) == 0 {
 			tfile.Seek(0, 0)
-			_, err := acc.RestoreStream(stream, tfile)
+			_, err := acc.RestoreStream(streamName, tfile)
 			resultCh <- result{err, reply}
 			return
 		}
@@ -2205,34 +2205,34 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, stream, subj
 				end := time.Now()
 
 				// TODO(rip) - Should this have the error code in it??
-				s.publishAdvisory(acc, JSAdvisoryStreamRestoreCompletePre+"."+stream, &JSRestoreCompleteAdvisory{
+				s.publishAdvisory(acc, JSAdvisoryStreamRestoreCompletePre+"."+streamName, &JSRestoreCompleteAdvisory{
 					TypedEvent: TypedEvent{
 						Type: JSRestoreCompleteAdvisoryType,
 						ID:   nuid.Next(),
 						Time: time.Now().UTC(),
 					},
-					Stream: stream,
+					Stream: streamName,
 					Start:  start.UTC(),
 					End:    end.UTC(),
 					Bytes:  int64(total),
 					Client: ci,
 				})
 
-				var mset *Stream
+				var mset *stream
 				var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
 
 				err := result.err
 				if err == nil {
-					mset, err = acc.LookupStream(stream)
+					mset, err = acc.lookupStream(streamName)
 				}
 				if err != nil {
 					resp.Error = jsError(err)
 					s.Warnf("Restore failed for %s for stream '%s > %s' in %v",
-						FriendlyBytes(int64(total)), stream, acc.Name, end.Sub(start))
+						friendlyBytes(int64(total)), streamName, acc.Name, end.Sub(start))
 				} else {
-					resp.StreamInfo = &StreamInfo{Created: mset.Created(), State: mset.State(), Config: mset.Config()}
+					resp.StreamInfo = &StreamInfo{Created: mset.createdTime(), State: mset.state(), Config: mset.config()}
 					s.Noticef("Completed restore of %s for stream '%s > %s' in %v",
-						FriendlyBytes(int64(total)), stream, acc.Name, end.Sub(start))
+						friendlyBytes(int64(total)), streamName, acc.Name, end.Sub(start))
 				}
 
 				// On the last EOF, send back the stream info or error status.
@@ -2244,7 +2244,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, stream, subj
 				total += n
 				notActive.Reset(activityInterval)
 			case <-notActive.C:
-				err := fmt.Errorf("restore for stream '%s > %s' is stalled", acc, stream)
+				err := fmt.Errorf("restore for stream '%s > %s' is stalled", acc, streamName)
 				s.Warnf(err.Error())
 				doneCh <- err
 				return
@@ -2286,7 +2286,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 		return
 	}
 
-	mset, err := acc.LookupStream(stream)
+	mset, err := acc.lookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
@@ -2309,34 +2309,34 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 	// stall this go routine.
 	go func() {
 		if req.CheckMsgs {
-			s.Noticef("Starting health check and snapshot for stream '%s > %s'", mset.jsa.account.Name, mset.Name())
+			s.Noticef("Starting health check and snapshot for stream '%s > %s'", mset.jsa.account.Name, mset.name())
 		} else {
-			s.Noticef("Starting snapshot for stream '%s > %s'", mset.jsa.account.Name, mset.Name())
+			s.Noticef("Starting snapshot for stream '%s > %s'", mset.jsa.account.Name, mset.name())
 		}
 
 		start := time.Now()
 
-		sr, err := mset.Snapshot(0, req.CheckMsgs, !req.NoConsumers)
+		sr, err := mset.snapshot(0, req.CheckMsgs, !req.NoConsumers)
 		if err != nil {
-			s.Warnf("Snapshot of stream '%s > %s' failed: %v", mset.jsa.account.Name, mset.Name(), err)
+			s.Warnf("Snapshot of stream '%s > %s' failed: %v", mset.jsa.account.Name, mset.name(), err)
 			resp.Error = jsError(err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
 			return
 		}
 
-		config := mset.Config()
+		config := mset.config()
 		resp.State = &sr.State
 		resp.Config = &config
 
 		s.sendAPIResponse(ci, acc, subject, reply, smsg, s.jsonResponse(resp))
 
-		s.publishAdvisory(acc, JSAdvisoryStreamSnapshotCreatePre+"."+mset.Name(), &JSSnapshotCreateAdvisory{
+		s.publishAdvisory(acc, JSAdvisoryStreamSnapshotCreatePre+"."+mset.name(), &JSSnapshotCreateAdvisory{
 			TypedEvent: TypedEvent{
 				Type: JSSnapshotCreatedAdvisoryType,
 				ID:   nuid.Next(),
 				Time: time.Now().UTC(),
 			},
-			Stream: mset.Name(),
+			Stream: mset.name(),
 			State:  sr.State,
 			Client: ci,
 		})
@@ -2346,22 +2346,22 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 
 		end := time.Now()
 
-		s.publishAdvisory(acc, JSAdvisoryStreamSnapshotCompletePre+"."+mset.Name(), &JSSnapshotCompleteAdvisory{
+		s.publishAdvisory(acc, JSAdvisoryStreamSnapshotCompletePre+"."+mset.name(), &JSSnapshotCompleteAdvisory{
 			TypedEvent: TypedEvent{
 				Type: JSSnapshotCompleteAdvisoryType,
 				ID:   nuid.Next(),
 				Time: time.Now().UTC(),
 			},
-			Stream: mset.Name(),
+			Stream: mset.name(),
 			Start:  start.UTC(),
 			End:    end.UTC(),
 			Client: ci,
 		})
 
 		s.Noticef("Completed snapshot of %s for stream '%s > %s' in %v",
-			FriendlyBytes(int64(sr.State.Bytes)),
+			friendlyBytes(int64(sr.State.Bytes)),
 			mset.jsa.account.Name,
-			mset.Name(),
+			mset.name(),
 			end.Sub(start))
 	}()
 }
@@ -2371,7 +2371,7 @@ const defaultSnapshotChunkSize = 128 * 1024
 const defaultSnapshotWindowSize = 16 * 1024 * 1024 // 16MB
 
 // streamSnapshot will stream out our snapshot to the reply subject.
-func (s *Server) streamSnapshot(ci *ClientInfo, acc *Account, mset *Stream, sr *SnapshotResult, req *JSApiStreamSnapshotRequest) {
+func (s *Server) streamSnapshot(ci *ClientInfo, acc *Account, mset *stream, sr *SnapshotResult, req *JSApiStreamSnapshotRequest) {
 	chunkSize := req.ChunkSize
 	if chunkSize == 0 {
 		chunkSize = defaultSnapshotChunkSize
@@ -2403,7 +2403,7 @@ func (s *Server) streamSnapshot(ci *ClientInfo, acc *Account, mset *Stream, sr *
 	var out int32
 
 	// We will place sequence number and size of chunk sent in the reply.
-	ackSubj := fmt.Sprintf(jsSnapshotAckT, mset.Name(), nuid.Next())
+	ackSubj := fmt.Sprintf(jsSnapshotAckT, mset.name(), nuid.Next())
 	ackSub, _ := mset.subscribeInternalUnlocked(ackSubj+".>", func(_ *subscription, _ *client, subject, _ string, _ []byte) {
 		// This is very crude and simple, but ok for now.
 		// This only matters when sending multiple chunks.
@@ -2549,20 +2549,20 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 		return
 	}
 
-	stream, err := acc.LookupStream(req.Stream)
+	stream, err := acc.lookupStream(req.Stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
-	o, err := stream.AddConsumer(&req.Config)
+	o, err := stream.addConsumer(&req.Config)
 	if err != nil {
 		resp.Error = jsError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	resp.ConsumerInfo = o.Info()
+	resp.ConsumerInfo = o.info()
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -2654,14 +2654,14 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 		js.mu.RUnlock()
 
 	} else {
-		mset, err := acc.LookupStream(streamName)
+		mset, err := acc.lookupStream(streamName)
 		if err != nil {
 			resp.Error = jsNotFoundError(err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
 
-		obs := mset.Consumers()
+		obs := mset.getConsumers()
 		sort.Slice(obs, func(i, j int) bool {
 			return strings.Compare(obs[i].name, obs[j].name) < 0
 		})
@@ -2672,7 +2672,7 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 		}
 
 		for _, o := range obs[offset:] {
-			resp.Consumers = append(resp.Consumers, o.Name())
+			resp.Consumers = append(resp.Consumers, o.String())
 			if len(resp.Consumers) >= JSApiNamesLimit {
 				break
 			}
@@ -2746,14 +2746,14 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 		return
 	}
 
-	mset, err := acc.LookupStream(streamName)
+	mset, err := acc.lookupStream(streamName)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
-	obs := mset.Consumers()
+	obs := mset.getConsumers()
 	sort.Slice(obs, func(i, j int) bool {
 		return strings.Compare(obs[i].name, obs[j].name) < 0
 	})
@@ -2764,7 +2764,7 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 	}
 
 	for _, o := range obs[offset:] {
-		resp.Consumers = append(resp.Consumers, o.Info())
+		resp.Consumers = append(resp.Consumers, o.info())
 		if len(resp.Consumers) >= JSApiListLimit {
 			break
 		}
@@ -2853,20 +2853,20 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 		return
 	}
 
-	mset, err := acc.LookupStream(stream)
+	mset, err := acc.lookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
-	obs := mset.LookupConsumer(consumer)
+	obs := mset.lookupConsumer(consumer)
 	if obs == nil {
 		resp.Error = jsNoConsumerErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	resp.ConsumerInfo = obs.Info()
+	resp.ConsumerInfo = obs.info()
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -2918,25 +2918,25 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, 
 		return
 	}
 
-	mset, err := acc.LookupStream(stream)
+	mset, err := acc.lookupStream(stream)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	if mset.Config().internal {
+	if mset.config().internal {
 		resp.Error = &ApiError{Code: 403, Description: "not allowed to delete consumer of internal stream"}
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
-	obs := mset.LookupConsumer(consumer)
+	obs := mset.lookupConsumer(consumer)
 	if obs == nil {
 		resp.Error = jsNoConsumerErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	if err := obs.Delete(); err != nil {
+	if err := obs.delete(); err != nil {
 		resp.Error = jsError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return

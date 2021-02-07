@@ -265,7 +265,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		fcfg.BlockSize = dynBlkSize(cfg.Retention, cfg.MaxBytes)
 	}
 	if fcfg.BlockSize > maxBlockSize {
-		return nil, false, fmt.Errorf("filestore max block size is %s", FriendlyBytes(maxBlockSize))
+		return nil, false, fmt.Errorf("filestore max block size is %s", friendlyBytes(maxBlockSize))
 	}
 	if fcfg.CacheExpire == 0 {
 		fcfg.CacheExpire = defaultCacheBufferExpiration
@@ -3885,7 +3885,7 @@ func newTemplateFileStore(storeDir string) *templateFileStore {
 	return &templateFileStore{dir: tdir, hh: hh}
 }
 
-func (ts *templateFileStore) Store(t *StreamTemplate) error {
+func (ts *templateFileStore) Store(t *streamTemplate) error {
 	dir := path.Join(ts.dir, t.Name)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("could not create templates storage directory for %q- %v", t.Name, err)
@@ -3914,6 +3914,6 @@ func (ts *templateFileStore) Store(t *StreamTemplate) error {
 	return nil
 }
 
-func (ts *templateFileStore) Delete(t *StreamTemplate) error {
+func (ts *templateFileStore) Delete(t *streamTemplate) error {
 	return os.RemoveAll(path.Join(ts.dir, t.Name))
 }

@@ -555,7 +555,7 @@ type jetStreamOption struct {
 func (a *jetStreamOption) Apply(s *Server) {
 	s.Noticef("Reloaded: jetstream")
 	if !a.newValue {
-		s.RemoveJetStream()
+		s.DisableJetStream()
 	}
 }
 

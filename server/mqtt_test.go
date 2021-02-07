@@ -2374,7 +2374,7 @@ func TestMQTTSubWithNATSStream(t *testing.T) {
 		Retention: InterestPolicy,
 		Subjects:  []string{"foo.>"},
 	}
-	mset, err := s.GlobalAccount().AddStream(sc)
+	mset, err := s.GlobalAccount().addStream(sc)
 	if err != nil {
 		t.Fatalf("Unable to create stream: %v", err)
 	}
@@ -2385,7 +2385,7 @@ func TestMQTTSubWithNATSStream(t *testing.T) {
 		AckPolicy:      AckExplicit,
 		DeliverSubject: "bar",
 	}
-	if _, err := mset.AddConsumer(cc); err != nil {
+	if _, err := mset.addConsumer(cc); err != nil {
 		t.Fatalf("Unable to add consumer: %v", err)
 	}
 
@@ -2455,7 +2455,7 @@ func TestMQTTPreventDeleteMQTTStreamsAndConsumers(t *testing.T) {
 	testMQTTSub(t, 1, mc, r, []*mqttFilter{&mqttFilter{filter: "foo/bar", qos: 1}}, []byte{1})
 	testMQTTFlush(t, mc, nil, r)
 
-	mset, err := s.GlobalAccount().LookupStream(mqttStreamName)
+	mset, err := s.GlobalAccount().lookupStream(mqttStreamName)
 	if err != nil {
 		t.Fatalf("Error looking up stream: %v", err)
 	}

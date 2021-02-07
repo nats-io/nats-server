@@ -1,4 +1,4 @@
-// Copyright 2018-2020 The NATS Authors
+// Copyright 2018-2021 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -17,10 +17,12 @@ package server
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net"
 	"net/url"
+	"os"
 	"runtime"
 	"runtime/debug"
 	"sync"
@@ -1070,4 +1072,367 @@ func TestNoRaceAcceptLoopsDoNotLeaveOpenedConn(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNoRaceJetStreamDeleteStreamManyConsumers(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	mname := "MYS"
+	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: mname, Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+
+	// This number needs to be higher than the internal sendq size to trigger what this test is testing.
+	for i := 0; i < 2000; i++ {
+		_, err := mset.addConsumer(&ConsumerConfig{
+			Durable:        fmt.Sprintf("D-%d", i),
+			DeliverSubject: fmt.Sprintf("deliver.%d", i),
+		})
+		if err != nil {
+			t.Fatalf("Error creating consumer: %v", err)
+		}
+	}
+	// With bug this would not return and would hang.
+	mset.delete()
+}
+
+func TestNoRaceJetStreamAPIStreamListPaging(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	// Forced cleanup of all persisted state.
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	// Create 2X limit
+	streamsNum := 2 * JSApiNamesLimit
+	for i := 1; i <= streamsNum; i++ {
+		name := fmt.Sprintf("STREAM-%06d", i)
+		cfg := StreamConfig{Name: name, Storage: MemoryStorage}
+		_, err := s.GlobalAccount().addStream(&cfg)
+		if err != nil {
+			t.Fatalf("Unexpected error adding stream: %v", err)
+		}
+	}
+
+	// Client for API requests.
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	reqList := func(offset int) []byte {
+		t.Helper()
+		var req []byte
+		if offset > 0 {
+			req, _ = json.Marshal(&ApiPagedRequest{Offset: offset})
+		}
+		resp, err := nc.Request(JSApiStreams, req, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error getting stream list: %v", err)
+		}
+		return resp.Data
+	}
+
+	checkResp := func(resp []byte, expectedLen, expectedOffset int) {
+		t.Helper()
+		var listResponse JSApiStreamNamesResponse
+		if err := json.Unmarshal(resp, &listResponse); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if len(listResponse.Streams) != expectedLen {
+			t.Fatalf("Expected only %d streams but got %d", expectedLen, len(listResponse.Streams))
+		}
+		if listResponse.Total != streamsNum {
+			t.Fatalf("Expected total to be %d but got %d", streamsNum, listResponse.Total)
+		}
+		if listResponse.Offset != expectedOffset {
+			t.Fatalf("Expected offset to be %d but got %d", expectedOffset, listResponse.Offset)
+		}
+		if expectedLen < 1 {
+			return
+		}
+		// Make sure we get the right stream.
+		sname := fmt.Sprintf("STREAM-%06d", expectedOffset+1)
+		if listResponse.Streams[0] != sname {
+			t.Fatalf("Expected stream %q to be first, got %q", sname, listResponse.Streams[0])
+		}
+	}
+
+	checkResp(reqList(0), JSApiNamesLimit, 0)
+	checkResp(reqList(JSApiNamesLimit), JSApiNamesLimit, JSApiNamesLimit)
+	checkResp(reqList(streamsNum), 0, streamsNum)
+	checkResp(reqList(streamsNum-22), 22, streamsNum-22)
+	checkResp(reqList(streamsNum+22), 0, streamsNum)
+}
+
+func TestNoRaceJetStreamAPIConsumerListPaging(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	// Forced cleanup of all persisted state.
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	sname := "MYSTREAM"
+	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: sname})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+
+	// Client for API requests.
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	consumersNum := JSApiNamesLimit
+	for i := 1; i <= consumersNum; i++ {
+		dsubj := fmt.Sprintf("d.%d", i)
+		sub, _ := nc.SubscribeSync(dsubj)
+		defer sub.Unsubscribe()
+		nc.Flush()
+
+		_, err := mset.addConsumer(&ConsumerConfig{DeliverSubject: dsubj})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	reqListSubject := fmt.Sprintf(JSApiConsumersT, sname)
+	reqList := func(offset int) []byte {
+		t.Helper()
+		var req []byte
+		if offset > 0 {
+			req, _ = json.Marshal(&JSApiConsumersRequest{ApiPagedRequest: ApiPagedRequest{Offset: offset}})
+		}
+		resp, err := nc.Request(reqListSubject, req, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error getting stream list: %v", err)
+		}
+		return resp.Data
+	}
+
+	checkResp := func(resp []byte, expectedLen, expectedOffset int) {
+		t.Helper()
+		var listResponse JSApiConsumerNamesResponse
+		if err := json.Unmarshal(resp, &listResponse); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if len(listResponse.Consumers) != expectedLen {
+			t.Fatalf("Expected only %d streams but got %d", expectedLen, len(listResponse.Consumers))
+		}
+		if listResponse.Total != consumersNum {
+			t.Fatalf("Expected total to be %d but got %d", consumersNum, listResponse.Total)
+		}
+		if listResponse.Offset != expectedOffset {
+			t.Fatalf("Expected offset to be %d but got %d", expectedOffset, listResponse.Offset)
+		}
+	}
+
+	checkResp(reqList(0), JSApiNamesLimit, 0)
+	checkResp(reqList(consumersNum-22), 22, consumersNum-22)
+	checkResp(reqList(consumersNum+22), 0, consumersNum)
+}
+
+func TestNoRaceJetStreamWorkQueueLoadBalance(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	mname := "MY_MSG_SET"
+	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: mname, Subjects: []string{"foo", "bar"}})
+	if err != nil {
+		t.Fatalf("Unexpected error adding message set: %v", err)
+	}
+	defer mset.delete()
+
+	// Create basic work queue mode consumer.
+	oname := "WQ"
+	o, err := mset.addConsumer(&ConsumerConfig{Durable: oname, AckPolicy: AckExplicit})
+	if err != nil {
+		t.Fatalf("Expected no error with durable, got %v", err)
+	}
+	defer o.delete()
+
+	// To send messages.
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	// For normal work queue semantics, you send requests to the subject with stream and consumer name.
+	reqMsgSubj := o.requestNextMsgSubject()
+
+	numWorkers := 25
+	counts := make([]int32, numWorkers)
+	var received int32
+
+	rwg := &sync.WaitGroup{}
+	rwg.Add(numWorkers)
+
+	wg := &sync.WaitGroup{}
+	wg.Add(numWorkers)
+	ch := make(chan bool)
+
+	toSend := 1000
+
+	for i := 0; i < numWorkers; i++ {
+		nc := clientConnectToServer(t, s)
+		defer nc.Close()
+
+		go func(index int32) {
+			rwg.Done()
+			defer wg.Done()
+			<-ch
+
+			for counter := &counts[index]; ; {
+				m, err := nc.Request(reqMsgSubj, nil, 100*time.Millisecond)
+				if err != nil {
+					return
+				}
+				m.Respond(nil)
+				atomic.AddInt32(counter, 1)
+				if total := atomic.AddInt32(&received, 1); total >= int32(toSend) {
+					return
+				}
+			}
+		}(int32(i))
+	}
+
+	// Wait for requestors to be ready
+	rwg.Wait()
+	close(ch)
+
+	sendSubj := "bar"
+	for i := 0; i < toSend; i++ {
+		sendStreamMsg(t, nc, sendSubj, "Hello World!")
+	}
+
+	// Wait for test to complete.
+	wg.Wait()
+
+	target := toSend / numWorkers
+	delta := target/2 + 5
+	low, high := int32(target-delta), int32(target+delta)
+
+	for i := 0; i < numWorkers; i++ {
+		if msgs := atomic.LoadInt32(&counts[i]); msgs < low || msgs > high {
+			t.Fatalf("Messages received for worker [%d] too far off from target of %d, got %d", i, target, msgs)
+		}
+	}
+}
+
+func TestJetStreamClusterLargeStreamInlineCatchup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "LSS", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sr := c.randomNonStreamLeader("$G", "TEST")
+	sr.Shutdown()
+
+	// In case sr was meta leader.
+	c.waitOnLeader()
+
+	msg, toSend := []byte("Hello JS Clustering"), 5000
+
+	// Now fill up stream.
+	for i := 0; i < toSend; i++ {
+		if _, err = js.Publish("foo", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+	si, err := js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Check active state as well, shows that the owner answered.
+	if si.State.Msgs != uint64(toSend) {
+		t.Fatalf("Expected %d msgs, got bad state: %+v", toSend, si.State)
+	}
+
+	// Kill our current leader to make just 2.
+	c.streamLeader("$G", "TEST").Shutdown()
+
+	// Now restart the shutdown peer and wait for it to be current.
+	sr = c.restartServer(sr)
+	c.waitOnStreamCurrent(sr, "$G", "TEST")
+
+	// Ask other servers to stepdown as leader so that sr becomes the leader.
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		c.waitOnStreamLeader("$G", "TEST")
+		if sl := c.streamLeader("$G", "TEST"); sl != sr {
+			sl.JetStreamStepdownStream("$G", "TEST")
+			return fmt.Errorf("Server %s is not leader yet", sr)
+		}
+		return nil
+	})
+
+	si, err = js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Check that we have all of our messsages stored.
+	// Wait for a bit for upper layers to process.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if si.State.Msgs != uint64(toSend) {
+			return fmt.Errorf("Expected %d msgs, got %d", toSend, si.State.Msgs)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterStreamCreateAndLostQuorum(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync(JSAdvisoryStreamQuorumLostPre + ".*")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "NO-LQ-START", Replicas: 5}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	c.waitOnStreamLeader("$G", "NO-LQ-START")
+	checkSubsPending(t, sub, 0)
+
+	c.stopAll()
+	// Start up the one we were connected to first and wait for it to be connected.
+	s = c.restartServer(s)
+	nc, err = nats.Connect(s.ClientURL())
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	defer nc.Close()
+
+	sub, err = nc.SubscribeSync(JSAdvisoryStreamQuorumLostPre + ".*")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	nc.Flush()
+
+	c.restartAll()
+
+	c.waitOnStreamLeader("$G", "NO-LQ-START")
+	checkSubsPending(t, sub, 0)
 }
