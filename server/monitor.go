@@ -2281,17 +2281,17 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg 
 			ci := s.js.clusterInfo(stream.raftGroup())
 			var cfg *StreamConfig
 			if optCfg {
-				c := stream.Config()
+				c := stream.config()
 				cfg = &c
 			}
 			sdet := StreamDetail{
-				Name:    stream.Name(),
-				State:   stream.State(),
+				Name:    stream.name(),
+				State:   stream.state(),
 				Cluster: ci,
 				Config:  cfg}
 			if optConsumers {
 				for _, consumer := range stream.consumers {
-					cInfo := consumer.Info()
+					cInfo := consumer.info()
 					if !optCfg {
 						cInfo.Config = nil
 					}
@@ -2380,7 +2380,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 		jsi.API.Total += jsa.apiTotal
 		jsi.API.Errors += jsa.apiErrors
 		for _, stream := range jsa.streams {
-			streamState := stream.State()
+			streamState := stream.state()
 			jsi.MessageCnt += streamState.Msgs
 			jsi.MessageBytes += streamState.Bytes
 			jsi.ConsumerCnt += streamState.Consumers

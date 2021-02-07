@@ -100,8 +100,8 @@ type jsAccount struct {
 	usage         jsaUsage
 	rusage        map[string]*jsaUsage
 	storeDir      string
-	streams       map[string]*Stream
-	templates     map[string]*StreamTemplate
+	streams       map[string]*stream
+	templates     map[string]*streamTemplate
 	store         TemplateStore
 
 	// Cluster support
@@ -135,7 +135,7 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 			maxStore = config.MaxStore
 		}
 		config = s.dynJetStreamConfig(storeDir, maxStore)
-		s.Debugf("JetStream creating dynamic configuration - %s memory, %s disk", FriendlyBytes(config.MaxMemory), FriendlyBytes(config.MaxStore))
+		s.Debugf("JetStream creating dynamic configuration - %s memory, %s disk", friendlyBytes(config.MaxMemory), friendlyBytes(config.MaxStore))
 	}
 	// Copy, don't change callers version.
 	cfg := *config
@@ -183,8 +183,8 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 	s.Warnf("    https://github.com/nats-io/jetstream")
 	s.Noticef("")
 	s.Noticef("----------- JETSTREAM -----------")
-	s.Noticef("  Max Memory:      %s", FriendlyBytes(cfg.MaxMemory))
-	s.Noticef("  Max Storage:     %s", FriendlyBytes(cfg.MaxStore))
+	s.Noticef("  Max Memory:      %s", friendlyBytes(cfg.MaxMemory))
+	s.Noticef("  Max Storage:     %s", friendlyBytes(cfg.MaxStore))
 	s.Noticef("  Store Directory: %q", cfg.StoreDir)
 	s.Noticef("---------------------------------")
 
@@ -238,9 +238,9 @@ func (s *Server) setupJetStreamExports() {
 	}
 }
 
-// Turns off JetStream and signals in clustered mode
+// DisableJetStream will turn off JetStream and signals in clustered mode
 // to have the metacontroller remove us from the peer list.
-func (s *Server) RemoveJetStream() error {
+func (s *Server) DisableJetStream() error {
 	if s.JetStreamIsClustered() {
 		s.Noticef("JetStream cluster shutting down")
 		wasLeader := s.JetStreamIsLeader()
@@ -541,7 +541,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		js.mu.Unlock()
 		return err
 	}
-	jsa := &jsAccount{js: js, account: a, limits: *limits, streams: make(map[string]*Stream)}
+	jsa := &jsAccount{js: js, account: a, limits: *limits, streams: make(map[string]*stream)}
 	jsa.storeDir = path.Join(js.config.StoreDir, a.Name)
 	js.accounts[a] = jsa
 	js.reserveResources(limits)
@@ -566,8 +566,8 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	}
 
 	s.Debugf("Enabled JetStream for account %q", a.Name)
-	s.Debugf("  Max Memory:      %s", FriendlyBytes(limits.MaxMemory))
-	s.Debugf("  Max Storage:     %s", FriendlyBytes(limits.MaxStore))
+	s.Debugf("  Max Memory:      %s", friendlyBytes(limits.MaxMemory))
+	s.Debugf("  Max Storage:     %s", friendlyBytes(limits.MaxStore))
 
 	sdir := path.Join(jsa.storeDir, streamsDir)
 	if _, err := os.Stat(sdir); os.IsNotExist(err) {
@@ -619,7 +619,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 				continue
 			}
 			cfg.Config.Name = _EMPTY_
-			if _, err := a.AddStreamTemplate(&cfg); err != nil {
+			if _, err := a.addStreamTemplate(&cfg); err != nil {
 				s.Warnf("  Error recreating StreamTemplate %q: %v", cfg.Name, err)
 				continue
 			}
@@ -673,16 +673,16 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 				s.Warnf("  Error adding Stream %q to Template %q: %v", cfg.Name, cfg.Template, err)
 			}
 		}
-		mset, err := a.AddStream(&cfg.StreamConfig)
+		mset, err := a.addStream(&cfg.StreamConfig)
 		if err != nil {
 			s.Warnf("  Error recreating Stream %q: %v", cfg.Name, err)
 			continue
 		}
 		if !cfg.Created.IsZero() {
-			mset.setCreated(cfg.Created)
+			mset.setCreatedTime(cfg.Created)
 		}
 
-		stats := mset.State()
+		stats := mset.state()
 		s.Noticef("  Restored %s messages for Stream %q", comma(int64(stats.Msgs)), fi.Name())
 
 		// Now do the consumers.
@@ -718,7 +718,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 				// the consumer can reconnect. We will create it as a durable and switch it.
 				cfg.ConsumerConfig.Durable = ofi.Name()
 			}
-			obs, err := mset.AddConsumer(&cfg.ConsumerConfig)
+			obs, err := mset.addConsumer(&cfg.ConsumerConfig)
 			if err != nil {
 				s.Warnf("    Error adding Consumer: %v", err)
 				continue
@@ -727,7 +727,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 				obs.switchToEphemeral()
 			}
 			if !cfg.Created.IsZero() {
-				obs.setCreated(cfg.Created)
+				obs.setCreatedTime(cfg.Created)
 			}
 			obs.mu.Lock()
 			err = obs.readStoredState()
@@ -747,7 +747,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 }
 
 // NumStreams will return how many streams we have.
-func (a *Account) NumStreams() int {
+func (a *Account) numStreams() int {
 	a.mu.RLock()
 	jsa := a.js
 	a.mu.RUnlock()
@@ -761,11 +761,11 @@ func (a *Account) NumStreams() int {
 }
 
 // Streams will return all known streams.
-func (a *Account) Streams() []*Stream {
+func (a *Account) streams() []*stream {
 	return a.filteredStreams(_EMPTY_)
 }
 
-func (a *Account) filteredStreams(filter string) []*Stream {
+func (a *Account) filteredStreams(filter string) []*stream {
 	a.mu.RLock()
 	jsa := a.js
 	a.mu.RUnlock()
@@ -777,10 +777,10 @@ func (a *Account) filteredStreams(filter string) []*Stream {
 	jsa.mu.Lock()
 	defer jsa.mu.Unlock()
 
-	var msets []*Stream
+	var msets []*stream
 	for _, mset := range jsa.streams {
 		if filter != _EMPTY_ {
-			for _, subj := range mset.config.Subjects {
+			for _, subj := range mset.cfg.Subjects {
 				if SubjectsCollide(filter, subj) {
 					msets = append(msets, mset)
 					break
@@ -794,8 +794,8 @@ func (a *Account) filteredStreams(filter string) []*Stream {
 	return msets
 }
 
-// LookupStream will lookup a stream by name.
-func (a *Account) LookupStream(name string) (*Stream, error) {
+// lookupStream will lookup a stream by name.
+func (a *Account) lookupStream(name string) (*stream, error) {
 	a.mu.RLock()
 	jsa := a.js
 	a.mu.RUnlock()
@@ -894,7 +894,7 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 		} else {
 			stats.Streams = len(jsa.streams)
 			for _, mset := range jsa.streams {
-				stats.Consumers += mset.NumConsumers()
+				stats.Consumers += mset.numConsumers()
 			}
 		}
 		stats.Limits = jsa.limits
@@ -1113,7 +1113,7 @@ func (jsa *jsAccount) acc() *Account {
 
 // Delete the JetStream resources.
 func (jsa *jsAccount) delete() {
-	var streams []*Stream
+	var streams []*stream
 	var ts []string
 
 	jsa.mu.Lock()
@@ -1139,7 +1139,7 @@ func (jsa *jsAccount) delete() {
 	}
 
 	for _, t := range ts {
-		acc.DeleteStreamTemplate(t)
+		acc.deleteStreamTemplate(t)
 	}
 }
 
@@ -1303,8 +1303,8 @@ type StreamTemplateInfo struct {
 	Streams []string              `json:"streams"`
 }
 
-// StreamTemplate
-type StreamTemplate struct {
+// streamTemplate
+type streamTemplate struct {
 	mu  sync.Mutex
 	tc  *client
 	jsa *jsAccount
@@ -1319,8 +1319,8 @@ func (t *StreamTemplateConfig) deepCopy() *StreamTemplateConfig {
 	return &copy
 }
 
-// AddStreamTemplate will add a stream template to this account that allows auto-creation of streams.
-func (a *Account) AddStreamTemplate(tc *StreamTemplateConfig) (*StreamTemplate, error) {
+// addStreamTemplate will add a stream template to this account that allows auto-creation of streams.
+func (a *Account) addStreamTemplate(tc *StreamTemplateConfig) (*streamTemplate, error) {
 	s, jsa, err := a.checkForJetStream()
 	if err != nil {
 		return nil, err
@@ -1340,7 +1340,7 @@ func (a *Account) AddStreamTemplate(tc *StreamTemplateConfig) (*StreamTemplate, 
 		return nil, err
 	}
 	tcopy.Config = &cfg
-	t := &StreamTemplate{
+	t := &streamTemplate{
 		StreamTemplateConfig: tcopy,
 		tc:                   s.createInternalJetStreamClient(),
 		jsa:                  jsa,
@@ -1349,7 +1349,7 @@ func (a *Account) AddStreamTemplate(tc *StreamTemplateConfig) (*StreamTemplate, 
 
 	jsa.mu.Lock()
 	if jsa.templates == nil {
-		jsa.templates = make(map[string]*StreamTemplate)
+		jsa.templates = make(map[string]*streamTemplate)
 		// Create the appropriate store
 		if cfg.Storage == FileStorage {
 			jsa.store = newTemplateFileStore(jsa.storeDir)
@@ -1370,13 +1370,13 @@ func (a *Account) AddStreamTemplate(tc *StreamTemplateConfig) (*StreamTemplate, 
 		return nil, err
 	}
 	if err := jsa.store.Store(t); err != nil {
-		t.Delete()
+		t.delete()
 		return nil, err
 	}
 	return t, nil
 }
 
-func (t *StreamTemplate) createTemplateSubscriptions() error {
+func (t *streamTemplate) createTemplateSubscriptions() error {
 	if t == nil {
 		return fmt.Errorf("no template")
 	}
@@ -1391,7 +1391,7 @@ func (t *StreamTemplate) createTemplateSubscriptions() error {
 	for _, subject := range t.Config.Subjects {
 		// Now create the subscription
 		if _, err := c.processSub([]byte(subject), nil, []byte(strconv.Itoa(sid)), t.processInboundTemplateMsg, false); err != nil {
-			c.acc.DeleteStreamTemplate(t.Name)
+			c.acc.deleteStreamTemplate(t.Name)
 			return err
 		}
 		sid++
@@ -1399,12 +1399,12 @@ func (t *StreamTemplate) createTemplateSubscriptions() error {
 	return nil
 }
 
-func (t *StreamTemplate) processInboundTemplateMsg(_ *subscription, pc *client, subject, reply string, msg []byte) {
+func (t *streamTemplate) processInboundTemplateMsg(_ *subscription, pc *client, subject, reply string, msg []byte) {
 	if t == nil || t.jsa == nil {
 		return
 	}
 	jsa := t.jsa
-	cn := CanonicalName(subject)
+	cn := canonicalName(subject)
 
 	jsa.mu.Lock()
 	// If we already are registered then we can just return here.
@@ -1435,7 +1435,7 @@ func (t *StreamTemplate) processInboundTemplateMsg(_ *subscription, pc *client, 
 	// Change the config from the template and only use literal subject.
 	cfg.Name = cn
 	cfg.Subjects = []string{subject}
-	mset, err := acc.AddStream(&cfg)
+	mset, err := acc.addStream(&cfg)
 	if err != nil {
 		acc.validateStreams(t)
 		c.Warnf("JetStream could not create stream for account %q on subject %q", acc.Name, subject)
@@ -1446,8 +1446,8 @@ func (t *StreamTemplate) processInboundTemplateMsg(_ *subscription, pc *client, 
 	mset.processInboundJetStreamMsg(nil, pc, subject, reply, msg)
 }
 
-// LookupStreamTemplate looks up the names stream template.
-func (a *Account) LookupStreamTemplate(name string) (*StreamTemplate, error) {
+// lookupStreamTemplate looks up the names stream template.
+func (a *Account) lookupStreamTemplate(name string) (*streamTemplate, error) {
 	_, jsa, err := a.checkForJetStream()
 	if err != nil {
 		return nil, err
@@ -1465,11 +1465,11 @@ func (a *Account) LookupStreamTemplate(name string) (*StreamTemplate, error) {
 }
 
 // This function will check all named streams and make sure they are valid.
-func (a *Account) validateStreams(t *StreamTemplate) {
+func (a *Account) validateStreams(t *streamTemplate) {
 	t.mu.Lock()
 	var vstreams []string
 	for _, sname := range t.streams {
-		if _, err := a.LookupStream(sname); err == nil {
+		if _, err := a.lookupStream(sname); err == nil {
 			vstreams = append(vstreams, sname)
 		}
 	}
@@ -1477,7 +1477,7 @@ func (a *Account) validateStreams(t *StreamTemplate) {
 	t.mu.Unlock()
 }
 
-func (t *StreamTemplate) Delete() error {
+func (t *streamTemplate) delete() error {
 	if t == nil {
 		return fmt.Errorf("nil stream template")
 	}
@@ -1511,10 +1511,10 @@ func (t *StreamTemplate) Delete() error {
 	jsa.mu.Unlock()
 
 	// Remove streams associated with this template.
-	var streams []*Stream
+	var streams []*stream
 	t.mu.Lock()
 	for _, name := range t.streams {
-		if mset, err := acc.LookupStream(name); err == nil {
+		if mset, err := acc.lookupStream(name); err == nil {
 			streams = append(streams, mset)
 		}
 	}
@@ -1528,23 +1528,23 @@ func (t *StreamTemplate) Delete() error {
 
 	var lastErr error
 	for _, mset := range streams {
-		if err := mset.Delete(); err != nil {
+		if err := mset.delete(); err != nil {
 			lastErr = err
 		}
 	}
 	return lastErr
 }
 
-func (a *Account) DeleteStreamTemplate(name string) error {
-	t, err := a.LookupStreamTemplate(name)
+func (a *Account) deleteStreamTemplate(name string) error {
+	t, err := a.lookupStreamTemplate(name)
 	if err != nil {
 		return err
 	}
-	return t.Delete()
+	return t.delete()
 }
 
-func (a *Account) Templates() []*StreamTemplate {
-	var ts []*StreamTemplate
+func (a *Account) templates() []*streamTemplate {
+	var ts []*streamTemplate
 	_, jsa, err := a.checkForJetStream()
 	if err != nil {
 		return nil
@@ -1595,9 +1595,9 @@ func (jsa *jsAccount) checkTemplateOwnership(tname, sname string) bool {
 	return false
 }
 
-// FriendlyBytes returns a string with the given bytes int64
+// friendlyBytes returns a string with the given bytes int64
 // represented as a size, such as 1KB, 10MB, etc...
-func FriendlyBytes(bytes int64) string {
+func friendlyBytes(bytes int64) string {
 	fbytes := float64(bytes)
 	base := 1024
 	pre := []string{"K", "M", "G", "T", "P", "E"}
@@ -1618,6 +1618,6 @@ func isValidName(name string) bool {
 
 // CanonicalName will replace all token separators '.' with '_'.
 // This can be used when naming streams or consumers with multi-token subjects.
-func CanonicalName(name string) string {
+func canonicalName(name string) string {
 	return strings.ReplaceAll(name, ".", "_")
 }

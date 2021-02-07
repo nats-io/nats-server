@@ -167,9 +167,9 @@ var (
 )
 
 // Consumer is a jetstream consumer.
-type Consumer struct {
+type consumer struct {
 	mu                sync.RWMutex
-	mset              *Stream
+	mset              *stream
 	acc               *Account
 	srv               *Server
 	client            *client
@@ -197,7 +197,7 @@ type Consumer struct {
 	rdc               map[uint64]uint64
 	maxdc             uint64
 	waiting           *waitQueue
-	config            ConsumerConfig
+	cfg               ConsumerConfig
 	store             ConsumerStore
 	active            bool
 	replay            bool
@@ -228,11 +228,11 @@ const (
 	JsDeleteWaitTimeDefault = 5 * time.Second
 )
 
-func (mset *Stream) AddConsumer(config *ConsumerConfig) (*Consumer, error) {
-	return mset.addConsumer(config, _EMPTY_, nil)
+func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
+	return mset.addConsumerWithAssignment(config, _EMPTY_, nil)
 }
 
-func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, ca *consumerAssignment) (*Consumer, error) {
+func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment) (*consumer, error) {
 	mset.mu.RLock()
 	s, jsa := mset.srv, mset.jsa
 	mset.mu.RUnlock()
@@ -240,8 +240,8 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, ca *consum
 	// If we do not have the consumer currently assigned to us in cluster mode we will proceed but warn.
 	// This can happen on startup with restored state where on meta replay we still do not have
 	// the assignment. Running in single server mode this always returns true.
-	if oname != _EMPTY_ && !jsa.consumerAssigned(mset.Name(), oname) {
-		s.Debugf("Consumer %q > %q does not seem to be assigned to this server", mset.Name(), oname)
+	if oname != _EMPTY_ && !jsa.consumerAssigned(mset.name(), oname) {
+		s.Debugf("Consumer %q > %q does not seem to be assigned to this server", mset.name(), oname)
 	}
 
 	if config == nil {
@@ -300,9 +300,9 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, ca *consum
 
 		mset.mu.RLock()
 		// If the stream was created with no subject, then skip the checks
-		if !mset.config.allowNoSubject {
+		if !mset.cfg.allowNoSubject {
 			// If this is a direct match for the streams only subject clear the filter.
-			if len(mset.config.Subjects) == 1 && mset.config.Subjects[0] == config.FilterSubject {
+			if len(mset.cfg.Subjects) == 1 && mset.cfg.Subjects[0] == config.FilterSubject {
 				config.FilterSubject = _EMPTY_
 			} else {
 				checkSubject = true
@@ -380,7 +380,7 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, ca *consum
 	if isDurableConsumer(config) {
 		if eo, ok := mset.consumers[config.Durable]; ok {
 			mset.mu.Unlock()
-			ocfg := eo.Config()
+			ocfg := eo.config()
 			if reflect.DeepEqual(&ocfg, config) {
 				return eo, nil
 			} else {
@@ -400,8 +400,8 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, ca *consum
 	// but if not we use the value from account limits, if account limits is more restrictive
 	// than stream config we prefer the account limits to handle cases where account limits are
 	// updated during the lifecycle of the stream
-	maxc := mset.config.MaxConsumers
-	if mset.config.MaxConsumers <= 0 || mset.jsa.limits.MaxConsumers < mset.config.MaxConsumers {
+	maxc := mset.cfg.MaxConsumers
+	if mset.cfg.MaxConsumers <= 0 || mset.jsa.limits.MaxConsumers < mset.cfg.MaxConsumers {
 		maxc = mset.jsa.limits.MaxConsumers
 	}
 
@@ -411,7 +411,7 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, ca *consum
 	}
 
 	// Check on stream type conflicts.
-	switch mset.config.Retention {
+	switch mset.cfg.Retention {
 	case WorkQueuePolicy:
 		// Force explicit acks here.
 		if config.AckPolicy != AckExplicit {
@@ -436,13 +436,13 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, ca *consum
 	}
 
 	// Set name, which will be durable name if set, otherwise we create one at random.
-	o := &Consumer{
+	o := &consumer{
 		mset:    mset,
 		acc:     a,
 		srv:     s,
 		client:  s.createInternalJetStreamClient(),
 		sysc:    s.createInternalJetStreamClient(),
-		config:  *config,
+		cfg:     *config,
 		dsubj:   config.DeliverSubject,
 		active:  true,
 		qch:     make(chan struct{}),
@@ -485,8 +485,8 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, ca *consum
 		rl := rate.Limit(config.RateLimit / 8)
 		// Burst should be set to maximum msg size for this account, etc.
 		var burst int
-		if mset.config.MaxMsgSize > 0 {
-			burst = int(mset.config.MaxMsgSize)
+		if mset.cfg.MaxMsgSize > 0 {
+			burst = int(mset.cfg.MaxMsgSize)
 		} else if mset.jsa.account.limits.mpay > 0 {
 			burst = int(mset.jsa.account.limits.mpay)
 		} else {
@@ -502,7 +502,7 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, ca *consum
 	}
 
 	// already under lock, mset.Name() would deadlock
-	o.stream = mset.config.Name
+	o.stream = mset.cfg.Name
 	o.ackEventT = JSMetricConsumerAckPre + "." + o.stream + "." + o.name
 	o.deliveryExcEventT = JSAdvisoryConsumerMaxDeliveryExceedPre + "." + o.stream + "." + o.name
 
@@ -533,27 +533,27 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, ca *consum
 			return nil, fmt.Errorf("consumer already exists")
 		}
 		// If we are here we have already registered this durable. If it is still active that is an error.
-		if eo.Active() {
+		if eo.isActive() {
 			o.name = _EMPTY_ // Prevent removal since same name.
 			o.deleteWithoutAdvisory()
 			return nil, fmt.Errorf("consumer already exists and is still active")
 		}
 		// Since we are here this means we have a potentially new durable so we should update here.
 		// Check that configs are the same.
-		if !configsEqualSansDelivery(o.config, eo.config) {
+		if !configsEqualSansDelivery(o.cfg, eo.cfg) {
 			o.name = _EMPTY_ // Prevent removal since same name.
 			o.deleteWithoutAdvisory()
 			return nil, fmt.Errorf("consumer replacement durable config not the same")
 		}
 		// Once we are here we have a replacement push-based durable.
-		eo.updateDeliverSubject(o.config.DeliverSubject)
+		eo.updateDeliverSubject(o.cfg.DeliverSubject)
 		return eo, nil
 	}
 
 	// Set up the ack subscription for this observable. Will use wildcard for all acks.
 	// We will remember the template to generate replies with sequence numbers and use
 	// that to scanf them back in.
-	mn := mset.config.Name
+	mn := mset.cfg.Name
 	pre := fmt.Sprintf(jsAckT, mn, o.name)
 	o.ackReplyT = fmt.Sprintf("%s.%%d.%%d.%%d.%%d.%%d", pre)
 	o.ackSubj = fmt.Sprintf("%s.*.*.*.*.*", pre)
@@ -565,7 +565,7 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, ca *consum
 		if !o.isDurable() {
 			// Check if we are not durable that the delivery subject has interest.
 			// Check in place here for interest. Will setup properly in setLeader.
-			r := o.acc.sl.Match(o.config.DeliverSubject)
+			r := o.acc.sl.Match(o.cfg.DeliverSubject)
 			if !o.hasDeliveryInterest(len(r.psubs)+len(r.qsubs) > 0) {
 				mset.mu.Unlock()
 				o.deleteWithoutAdvisory()
@@ -603,13 +603,13 @@ func (mset *Stream) addConsumer(config *ConsumerConfig, oname string, ca *consum
 	return o, nil
 }
 
-func (o *Consumer) consumerAssignment() *consumerAssignment {
+func (o *consumer) consumerAssignment() *consumerAssignment {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	return o.ca
 }
 
-func (o *Consumer) setConsumerAssignment(ca *consumerAssignment) {
+func (o *consumer) setConsumerAssignment(ca *consumerAssignment) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.ca = ca
@@ -620,14 +620,14 @@ func (o *Consumer) setConsumerAssignment(ca *consumerAssignment) {
 }
 
 // Lock should be held.
-func (o *Consumer) isLeader() bool {
+func (o *consumer) isLeader() bool {
 	if o.node != nil {
 		return o.node.Leader()
 	}
 	return true
 }
 
-func (o *Consumer) setLeader(isLeader bool) {
+func (o *consumer) setLeader(isLeader bool) {
 	o.mu.RLock()
 	mset := o.mset
 	isRunning := o.ackSub != nil
@@ -644,7 +644,7 @@ func (o *Consumer) setLeader(isLeader bool) {
 		}
 
 		mset.mu.RLock()
-		s, jsa, stream := mset.srv, mset.jsa, mset.config.Name
+		s, jsa, stream := mset.srv, mset.jsa, mset.cfg.Name
 		mset.mu.RUnlock()
 
 		o.mu.Lock()
@@ -678,12 +678,12 @@ func (o *Consumer) setLeader(isLeader bool) {
 		// If push mode, register for notifications on interest.
 		if o.isPushMode() {
 			o.inch = make(chan bool, 8)
-			o.acc.sl.RegisterNotification(o.config.DeliverSubject, o.inch)
+			o.acc.sl.RegisterNotification(o.cfg.DeliverSubject, o.inch)
 			o.active = <-o.inch
 		}
 
 		// If we are not in ReplayInstant mode mark us as in replay state until resolved.
-		if o.config.ReplayPolicy != ReplayInstant {
+		if o.cfg.ReplayPolicy != ReplayInstant {
 			o.replay = true
 		}
 
@@ -718,7 +718,7 @@ func (o *Consumer) setLeader(isLeader bool) {
 	}
 }
 
-func (o *Consumer) handleClusterConsumerInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+func (o *consumer) handleClusterConsumerInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	var s *Server
 	o.mu.RLock()
 	if o.client != nil {
@@ -728,13 +728,13 @@ func (o *Consumer) handleClusterConsumerInfoRequest(sub *subscription, c *client
 	if s == nil {
 		return
 	}
-	ci := o.Info()
+	ci := o.info()
 	b, _ := json.Marshal(ci)
 	s.sendInternalMsgLocked(reply, _EMPTY_, nil, b)
 }
 
 // Lock should be held.
-func (o *Consumer) subscribeInternal(subject string, cb msgHandler) (*subscription, error) {
+func (o *consumer) subscribeInternal(subject string, cb msgHandler) (*subscription, error) {
 	c := o.client
 	if c == nil {
 		return nil, fmt.Errorf("invalid consumer")
@@ -754,7 +754,7 @@ func (o *Consumer) subscribeInternal(subject string, cb msgHandler) (*subscripti
 
 // Unsubscribe from our subscription.
 // Lock should be held.
-func (o *Consumer) unsubscribe(sub *subscription) {
+func (o *consumer) unsubscribe(sub *subscription) {
 	if sub == nil || o.client == nil {
 		return
 	}
@@ -764,7 +764,7 @@ func (o *Consumer) unsubscribe(sub *subscription) {
 // We need to make sure we protect access to the sendq.
 // Do all advisory sends here.
 // Lock should be held on entry but will be released.
-func (o *Consumer) sendAdvisory(subj string, msg []byte) {
+func (o *consumer) sendAdvisory(subj string, msg []byte) {
 	sendq := o.sendq
 	o.mu.Unlock()
 	if sendq != nil {
@@ -773,7 +773,7 @@ func (o *Consumer) sendAdvisory(subj string, msg []byte) {
 	o.mu.Lock()
 }
 
-func (o *Consumer) sendDeleteAdvisoryLocked() {
+func (o *consumer) sendDeleteAdvisoryLocked() {
 	e := JSConsumerActionAdvisory{
 		TypedEvent: TypedEvent{
 			Type: JSConsumerActionAdvisoryType,
@@ -794,7 +794,7 @@ func (o *Consumer) sendDeleteAdvisoryLocked() {
 	o.sendAdvisory(subj, j)
 }
 
-func (o *Consumer) sendCreateAdvisory() {
+func (o *consumer) sendCreateAdvisory() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -819,7 +819,7 @@ func (o *Consumer) sendCreateAdvisory() {
 }
 
 // Created returns created time.
-func (o *Consumer) Created() time.Time {
+func (o *consumer) createdTime() time.Time {
 	o.mu.Lock()
 	created := o.created
 	o.mu.Unlock()
@@ -827,7 +827,7 @@ func (o *Consumer) Created() time.Time {
 }
 
 // Internal to allow creation time to be restored.
-func (o *Consumer) setCreated(created time.Time) {
+func (o *consumer) setCreatedTime(created time.Time) {
 	o.mu.Lock()
 	o.created = created
 	o.mu.Unlock()
@@ -836,7 +836,7 @@ func (o *Consumer) setCreated(created time.Time) {
 // This will check for extended interest in a subject. If we have local interest we just return
 // that, but in the absence of local interest and presence of gateways or service imports we need
 // to check those as well.
-func (o *Consumer) hasDeliveryInterest(localInterest bool) bool {
+func (o *consumer) hasDeliveryInterest(localInterest bool) bool {
 	o.mu.Lock()
 	mset := o.mset
 	if mset == nil {
@@ -844,7 +844,7 @@ func (o *Consumer) hasDeliveryInterest(localInterest bool) bool {
 		return false
 	}
 	acc := o.acc
-	deliver := o.config.DeliverSubject
+	deliver := o.cfg.DeliverSubject
 	o.mu.Unlock()
 
 	if localInterest {
@@ -868,7 +868,7 @@ func (o *Consumer) hasDeliveryInterest(localInterest bool) bool {
 }
 
 // This processes an update to the local interest for a deliver subject.
-func (o *Consumer) updateDeliveryInterest(localInterest bool) {
+func (o *consumer) updateDeliveryInterest(localInterest bool) {
 	interest := o.hasDeliveryInterest(localInterest)
 
 	o.mu.Lock()
@@ -894,7 +894,7 @@ func (o *Consumer) updateDeliveryInterest(localInterest bool) {
 	}
 }
 
-func (o *Consumer) deleteNotActive() {
+func (o *consumer) deleteNotActive() {
 	// Need to check again if there is not an interest now that the timer fires.
 	if !o.hasNoLocalInterest() {
 		return
@@ -949,19 +949,19 @@ func (o *Consumer) deleteNotActive() {
 		}
 	}
 	// We will delete here regardless.
-	o.Delete()
+	o.delete()
 }
 
 // Config returns the consumer's configuration.
-func (o *Consumer) Config() ConsumerConfig {
+func (o *consumer) config() ConsumerConfig {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return o.config
+	return o.cfg
 }
 
 // Force expiration of all pending.
 // Lock should be held.
-func (o *Consumer) forceExpirePending() {
+func (o *consumer) forceExpirePending() {
 	now := time.Now().UnixNano()
 	var expired []uint64
 	for seq := range o.pending {
@@ -987,12 +987,12 @@ func (o *Consumer) forceExpirePending() {
 
 // This is a config change for the delivery subject for a
 // push based consumer.
-func (o *Consumer) updateDeliverSubject(newDeliver string) {
+func (o *consumer) updateDeliverSubject(newDeliver string) {
 	// Update the config and the dsubj
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	if o.closed || o.isPullMode() || o.config.DeliverSubject == newDeliver {
+	if o.closed || o.isPullMode() || o.cfg.DeliverSubject == newDeliver {
 		return
 	}
 
@@ -1002,7 +1002,7 @@ func (o *Consumer) updateDeliverSubject(newDeliver string) {
 	}
 
 	o.acc.sl.ClearNotification(o.dsubj, o.inch)
-	o.dsubj, o.config.DeliverSubject = newDeliver, newDeliver
+	o.dsubj, o.cfg.DeliverSubject = newDeliver, newDeliver
 	// When we register new one it will deliver to update state loop.
 	o.acc.sl.RegisterNotification(newDeliver, o.inch)
 }
@@ -1015,14 +1015,14 @@ func configsEqualSansDelivery(a, b ConsumerConfig) bool {
 }
 
 // Helper to send a reply to an ack.
-func (o *Consumer) sendAckReply(subj string) {
+func (o *consumer) sendAckReply(subj string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.sendAdvisory(subj, nil)
 }
 
 // Process a message for the ack reply subject delivered with a message.
-func (o *Consumer) processAck(_ *subscription, c *client, subject, reply string, rmsg []byte) {
+func (o *consumer) processAck(_ *subscription, c *client, subject, reply string, rmsg []byte) {
 	_, msg := c.msgParts(rmsg)
 	sseq, dseq, dc := ackReplyInfo(subject)
 
@@ -1050,7 +1050,7 @@ func (o *Consumer) processAck(_ *subscription, c *client, subject, reply string,
 }
 
 // Used to process a working update to delay redelivery.
-func (o *Consumer) progressUpdate(seq uint64) {
+func (o *consumer) progressUpdate(seq uint64) {
 	o.mu.Lock()
 	if len(o.pending) > 0 {
 		if p, ok := o.pending[seq]; ok {
@@ -1063,7 +1063,7 @@ func (o *Consumer) progressUpdate(seq uint64) {
 }
 
 // Lock should be held.
-func (o *Consumer) updateDelivered(dseq, sseq, dc uint64, ts int64) {
+func (o *consumer) updateDelivered(dseq, sseq, dc uint64, ts int64) {
 	// Clustered mode and R>1.
 	if o.node != nil {
 		// Inline for now, use variable compression.
@@ -1081,7 +1081,7 @@ func (o *Consumer) updateDelivered(dseq, sseq, dc uint64, ts int64) {
 }
 
 // Lock should be held.
-func (o *Consumer) updateAcks(dseq, sseq uint64) {
+func (o *consumer) updateAcks(dseq, sseq uint64) {
 	if o.node != nil {
 		// Inline for now, use variable compression.
 		var b [2*binary.MaxVarintLen64 + 1]byte
@@ -1096,7 +1096,7 @@ func (o *Consumer) updateAcks(dseq, sseq uint64) {
 }
 
 // Process a NAK.
-func (o *Consumer) processNak(sseq, dseq uint64) {
+func (o *consumer) processNak(sseq, dseq uint64) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -1119,7 +1119,7 @@ func (o *Consumer) processNak(sseq, dseq uint64) {
 }
 
 // Process a TERM
-func (o *Consumer) processTerm(sseq, dseq, dc uint64) {
+func (o *consumer) processTerm(sseq, dseq, dc uint64) {
 	// Treat like an ack to suppress redelivery.
 	o.processAckMsg(sseq, dseq, dc, false)
 
@@ -1154,15 +1154,15 @@ func (o *Consumer) processTerm(sseq, dseq, dc uint64) {
 const ackWaitDelay = time.Millisecond
 
 // ackWait returns how long to wait to fire the pending timer.
-func (o *Consumer) ackWait(next time.Duration) time.Duration {
+func (o *consumer) ackWait(next time.Duration) time.Duration {
 	if next > 0 {
 		return next + ackWaitDelay
 	}
-	return o.config.AckWait + ackWaitDelay
+	return o.cfg.AckWait + ackWaitDelay
 }
 
 // This will restore the state from disk.
-func (o *Consumer) readStoredState() error {
+func (o *consumer) readStoredState() error {
 	if o.store == nil {
 		return nil
 	}
@@ -1174,7 +1174,7 @@ func (o *Consumer) readStoredState() error {
 }
 
 // Apply the consumer stored state.
-func (o *Consumer) applyState(state *ConsumerState) {
+func (o *consumer) applyState(state *ConsumerState) {
 	if state == nil {
 		return
 	}
@@ -1192,7 +1192,7 @@ func (o *Consumer) applyState(state *ConsumerState) {
 	}
 }
 
-func (o *Consumer) readStoreState() *ConsumerState {
+func (o *consumer) readStoreState() *ConsumerState {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	if o.store == nil {
@@ -1203,7 +1203,7 @@ func (o *Consumer) readStoreState() *ConsumerState {
 }
 
 // Sets our store state from another source. Used in clustered mode on snapshot restore.
-func (o *Consumer) setStoreState(state *ConsumerState) error {
+func (o *consumer) setStoreState(state *ConsumerState) error {
 	if state == nil {
 		return nil
 	}
@@ -1212,7 +1212,7 @@ func (o *Consumer) setStoreState(state *ConsumerState) error {
 }
 
 // Update our state to the store.
-func (o *Consumer) writeStoreState() error {
+func (o *consumer) writeStoreState() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -1236,7 +1236,7 @@ func (o *Consumer) writeStoreState() error {
 }
 
 // loopAndDeliverMsgs() will loop and deliver messages and watch for interest changes.
-func (o *Consumer) loopAndDeliverMsgs(qch chan struct{}) {
+func (o *consumer) loopAndDeliverMsgs(qch chan struct{}) {
 	o.mu.Lock()
 	inch, sendq := o.inch, o.sendq
 	s, acc := o.acc.srv, o.acc
@@ -1256,7 +1256,7 @@ func (o *Consumer) loopAndDeliverMsgs(qch chan struct{}) {
 
 	for {
 		if len(sendq) > warnThresh && time.Since(last) >= warnFreq {
-			s.Warnf("Jetstream internal consumer send queue > 75%% for account: %q consumer: %q", acc.Name, o.Name())
+			s.Warnf("Jetstream internal consumer send queue > 75%% for account: %q consumer: %q", acc.Name, o)
 			last = time.Now()
 		}
 
@@ -1303,7 +1303,7 @@ func (o *Consumer) loopAndDeliverMsgs(qch chan struct{}) {
 }
 
 // Info returns our current consumer state.
-func (o *Consumer) Info() *ConsumerInfo {
+func (o *consumer) info() *ConsumerInfo {
 	o.mu.RLock()
 	mset := o.mset
 	if mset == nil || mset.srv == nil {
@@ -1324,7 +1324,7 @@ func (o *Consumer) Info() *ConsumerInfo {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 
-	cfg := o.config
+	cfg := o.cfg
 	info := &ConsumerInfo{
 		Stream:  o.stream,
 		Name:    o.name,
@@ -1351,7 +1351,7 @@ func (o *Consumer) Info() *ConsumerInfo {
 }
 
 // Will signal us that new messages are available. Will break out of waiting.
-func (o *Consumer) signalNewMessages() {
+func (o *consumer) signalNewMessages() {
 	// Kick our new message channel
 	select {
 	case o.mch <- struct{}{}:
@@ -1360,7 +1360,7 @@ func (o *Consumer) signalNewMessages() {
 }
 
 // shouldSample lets us know if we are sampling metrics on acks.
-func (o *Consumer) shouldSample() bool {
+func (o *consumer) shouldSample() bool {
 	switch {
 	case o.sfreq <= 0:
 		return false
@@ -1373,7 +1373,7 @@ func (o *Consumer) shouldSample() bool {
 	return rand.Int31n(100) <= o.sfreq
 }
 
-func (o *Consumer) sampleAck(sseq, dseq, dc uint64) {
+func (o *consumer) sampleAck(sseq, dseq, dc uint64) {
 	if !o.shouldSample() {
 		return
 	}
@@ -1404,16 +1404,16 @@ func (o *Consumer) sampleAck(sseq, dseq, dc uint64) {
 }
 
 // Process an ack for a message.
-func (o *Consumer) ackMsg(sseq, dseq, dc uint64) {
+func (o *consumer) ackMsg(sseq, dseq, dc uint64) {
 	o.processAckMsg(sseq, dseq, dc, true)
 }
 
-func (o *Consumer) processAckMsg(sseq, dseq, dc uint64, doSample bool) {
+func (o *consumer) processAckMsg(sseq, dseq, dc uint64, doSample bool) {
 	o.mu.Lock()
 	var sagap uint64
 	var needSignal bool
 
-	switch o.config.AckPolicy {
+	switch o.cfg.AckPolicy {
 	case AckExplicit:
 		if p, ok := o.pending[sseq]; ok {
 			if doSample {
@@ -1475,7 +1475,7 @@ func (o *Consumer) processAckMsg(sseq, dseq, dc uint64, doSample bool) {
 	o.mu.Unlock()
 
 	// Let the owning stream know if we are interest or workqueue retention based.
-	if mset != nil && mset.config.Retention != LimitsPolicy {
+	if mset != nil && mset.cfg.Retention != LimitsPolicy {
 		if sagap > 1 {
 			// FIXME(dlc) - This is very inefficient, will need to fix.
 			for seq := sseq; seq > sseq-sagap; seq-- {
@@ -1494,10 +1494,10 @@ func (o *Consumer) processAckMsg(sseq, dseq, dc uint64, doSample bool) {
 
 // Check if we need an ack for this store seq.
 // This is called for interest based retention streams to remove messages.
-func (o *Consumer) needAck(sseq uint64) bool {
+func (o *consumer) needAck(sseq uint64) bool {
 	var needAck bool
 	o.mu.Lock()
-	switch o.config.AckPolicy {
+	switch o.cfg.AckPolicy {
 	case AckNone, AckAll:
 		needAck = sseq > o.asflr
 	case AckExplicit:
@@ -1628,7 +1628,7 @@ func (wq *waitQueue) pop() *waitingRequest {
 // processNextMsgReq will process a request for the next message available. A nil message payload means deliver
 // a single message. If the payload is a formal request or a number parseable with Atoi(), then we will send a
 // batch of messages without requiring another request to this endpoint, or an ACK.
-func (o *Consumer) processNextMsgReq(_ *subscription, c *client, _, reply string, msg []byte) {
+func (o *consumer) processNextMsgReq(_ *subscription, c *client, _, reply string, msg []byte) {
 	_, msg = c.msgParts(msg)
 
 	o.mu.Lock()
@@ -1698,7 +1698,7 @@ func (o *Consumer) processNextMsgReq(_ *subscription, c *client, _, reply string
 // Increase the delivery count for this message.
 // ONLY used on redelivery semantics.
 // Lock should be held.
-func (o *Consumer) incDeliveryCount(sseq uint64) uint64 {
+func (o *consumer) incDeliveryCount(sseq uint64) uint64 {
 	if o.rdc == nil {
 		o.rdc = make(map[uint64]uint64)
 	}
@@ -1707,7 +1707,7 @@ func (o *Consumer) incDeliveryCount(sseq uint64) uint64 {
 }
 
 // send a delivery exceeded advisory.
-func (o *Consumer) notifyDeliveryExceeded(sseq, dc uint64) {
+func (o *consumer) notifyDeliveryExceeded(sseq, dc uint64) {
 	e := JSConsumerDeliveryExceededAdvisory{
 		TypedEvent: TypedEvent{
 			Type: JSConsumerDeliveryExceededAdvisoryType,
@@ -1730,17 +1730,17 @@ func (o *Consumer) notifyDeliveryExceeded(sseq, dc uint64) {
 
 // Check to see if the candidate subject matches a filter if its present.
 // Lock should be held.
-func (o *Consumer) isFilteredMatch(subj string) bool {
+func (o *consumer) isFilteredMatch(subj string) bool {
 	// No filter is automatic match.
-	if o.config.FilterSubject == _EMPTY_ {
+	if o.cfg.FilterSubject == _EMPTY_ {
 		return true
 	}
 	if !o.filterWC {
-		return subj == o.config.FilterSubject
+		return subj == o.cfg.FilterSubject
 	}
 	// If we are here we have a wildcard filter subject.
 	// TODO(dlc) at speed might be better to just do a sublist with L2 and/or possibly L1.
-	return subjectIsSubsetMatch(subj, o.config.FilterSubject)
+	return subjectIsSubsetMatch(subj, o.cfg.FilterSubject)
 }
 
 var errMaxAckPending = errors.New("max ack pending reached")
@@ -1749,7 +1749,7 @@ var errBadConsumer = errors.New("consumer not valid")
 // Get next available message from underlying store.
 // Is partition aware and redeliver aware.
 // Lock should be held.
-func (o *Consumer) getNextMsg() (subj string, hdr, msg []byte, seq uint64, dc uint64, ts int64, err error) {
+func (o *consumer) getNextMsg() (subj string, hdr, msg []byte, seq uint64, dc uint64, ts int64, err error) {
 	if o.mset == nil || o.mset.store == nil {
 		return _EMPTY_, nil, nil, 0, 0, 0, errBadConsumer
 	}
@@ -1778,7 +1778,7 @@ func (o *Consumer) getNextMsg() (subj string, hdr, msg []byte, seq uint64, dc ui
 		if err == nil {
 			if dc == 1 { // First delivery.
 				o.sseq++
-				if o.config.FilterSubject != _EMPTY_ && !o.isFilteredMatch(subj) {
+				if o.cfg.FilterSubject != _EMPTY_ && !o.isFilteredMatch(subj) {
 					continue
 				}
 			}
@@ -1797,7 +1797,7 @@ func (o *Consumer) getNextMsg() (subj string, hdr, msg []byte, seq uint64, dc ui
 
 // forceExpireFirstWaiting will force expire the first waiting.
 // Lock should be held.
-func (o *Consumer) forceExpireFirstWaiting() *waitingRequest {
+func (o *consumer) forceExpireFirstWaiting() *waitingRequest {
 	// FIXME(dlc) - Should we do advisory here as well?
 	wr := o.waiting.pop()
 	if wr == nil {
@@ -1814,7 +1814,7 @@ func (o *Consumer) forceExpireFirstWaiting() *waitingRequest {
 }
 
 // Will check for expiration and lack of interest on waiting requests.
-func (o *Consumer) expireWaiting() int {
+func (o *consumer) expireWaiting() int {
 	var expired int
 	now := time.Now()
 	for wr := o.waiting.peek(); wr != nil; wr = o.waiting.peek() {
@@ -1835,12 +1835,12 @@ func (o *Consumer) expireWaiting() int {
 }
 
 // Will check to make sure those waiting still have registered interest.
-func (o *Consumer) checkWaitingForInterest() bool {
+func (o *consumer) checkWaitingForInterest() bool {
 	o.expireWaiting()
 	return o.waiting.len() > 0
 }
 
-func (o *Consumer) loopAndGatherMsgs(qch chan struct{}) {
+func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 	// On startup check to see if we are in a a reply situtation where replay policy is not instant.
 	var (
 		lts  int64 // last time stamp seen, used for replay.
@@ -1854,7 +1854,7 @@ func (o *Consumer) loopAndGatherMsgs(qch chan struct{}) {
 			o.mu.Unlock()
 			return
 		}
-		lseq = o.mset.State().LastSeq
+		lseq = o.mset.state().LastSeq
 	}
 	o.mu.Unlock()
 
@@ -1960,13 +1960,13 @@ func (o *Consumer) loopAndGatherMsgs(qch chan struct{}) {
 	}
 }
 
-func (o *Consumer) ackReply(sseq, dseq, dc uint64, ts int64, pending uint64) string {
+func (o *consumer) ackReply(sseq, dseq, dc uint64, ts int64, pending uint64) string {
 	return fmt.Sprintf(o.ackReplyT, dc, sseq, dseq, ts, pending)
 }
 
 // deliverCurrentMsg is the hot path to deliver a message that was just received.
 // Will return if the message was delivered or not.
-func (o *Consumer) deliverCurrentMsg(subj string, hdr, msg []byte, seq uint64, ts int64) bool {
+func (o *consumer) deliverCurrentMsg(subj string, hdr, msg []byte, seq uint64, ts int64) bool {
 	o.mu.Lock()
 	if seq != o.sseq {
 		o.mu.Unlock()
@@ -1997,7 +1997,7 @@ func (o *Consumer) deliverCurrentMsg(subj string, hdr, msg []byte, seq uint64, t
 
 	// If we are partitioned and we do not match, do not consider this a failure.
 	// Go ahead and return true.
-	if o.config.FilterSubject != _EMPTY_ && !o.isFilteredMatch(subj) {
+	if o.cfg.FilterSubject != _EMPTY_ && !o.isFilteredMatch(subj) {
 		o.mu.Unlock()
 		return true
 	}
@@ -2017,7 +2017,7 @@ func (o *Consumer) deliverCurrentMsg(subj string, hdr, msg []byte, seq uint64, t
 
 // Deliver a msg to the consumer.
 // Lock should be held and o.mset validated to be non-nil.
-func (o *Consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint64, ts int64) {
+func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint64, ts int64) {
 	if o.mset == nil || o.sendq == nil {
 		return
 	}
@@ -2036,14 +2036,14 @@ func (o *Consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 	dseq := o.dseq
 	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, dseq, dc, ts, o.sgap), hdr, msg, o, seq}
 	mset := o.mset
-	ap := o.config.AckPolicy
+	ap := o.cfg.AckPolicy
 	sendq := o.sendq
 	// This needs to be unlocked since the other side may need this lock on a failed delivery.
 	o.mu.Unlock()
 	// Send message.
 	sendq <- pmsg
 	// If we are ack none and mset is interest only we should make sure stream removes interest.
-	if ap == AckNone && mset.config.Retention == InterestPolicy && !mset.checkInterest(seq, o) {
+	if ap == AckNone && mset.cfg.Retention == InterestPolicy && !mset.checkInterest(seq, o) {
 		mset.store.RemoveMsg(seq)
 	}
 	// Re-acquire lock.
@@ -2064,7 +2064,7 @@ func (o *Consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 
 // Tracks our outstanding pending acks. Only applicable to AckExplicit mode.
 // Lock should be held.
-func (o *Consumer) trackPending(sseq, dseq uint64) {
+func (o *consumer) trackPending(sseq, dseq uint64) {
 	if o.pending == nil {
 		o.pending = make(map[uint64]*Pending)
 	}
@@ -2080,7 +2080,7 @@ func (o *Consumer) trackPending(sseq, dseq uint64) {
 
 // didNotDeliver is called when a delivery for a consumer message failed.
 // Depending on our state, we will process the failure.
-func (o *Consumer) didNotDeliver(seq uint64) {
+func (o *consumer) didNotDeliver(seq uint64) {
 	o.mu.Lock()
 	mset := o.mset
 	if mset == nil {
@@ -2108,7 +2108,7 @@ func (o *Consumer) didNotDeliver(seq uint64) {
 // This checks if we already have this sequence queued for redelivery.
 // FIXME(dlc) - This is O(n) but should be fast with small redeliver size.
 // Lock should be held.
-func (o *Consumer) onRedeliverQueue(seq uint64) bool {
+func (o *consumer) onRedeliverQueue(seq uint64) bool {
 	for _, rseq := range o.rdq {
 		if rseq == seq {
 			return true
@@ -2119,7 +2119,7 @@ func (o *Consumer) onRedeliverQueue(seq uint64) bool {
 
 // Remove a sequence from the redelivery queue.
 // Lock should be held.
-func (o *Consumer) removeFromRedeliverQueue(seq uint64) bool {
+func (o *consumer) removeFromRedeliverQueue(seq uint64) bool {
 	for i, rseq := range o.rdq {
 		if rseq == seq {
 			o.rdq = append(o.rdq[:i], o.rdq[i+1:]...)
@@ -2130,7 +2130,7 @@ func (o *Consumer) removeFromRedeliverQueue(seq uint64) bool {
 }
 
 // Checks the pending messages.
-func (o *Consumer) checkPending() {
+func (o *consumer) checkPending() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -2138,7 +2138,7 @@ func (o *Consumer) checkPending() {
 	if mset == nil {
 		return
 	}
-	ttl := int64(o.config.AckWait)
+	ttl := int64(o.cfg.AckWait)
 	next := int64(o.ackWait(0))
 	now := time.Now().UnixNano()
 
@@ -2181,13 +2181,13 @@ func (o *Consumer) checkPending() {
 }
 
 // SeqFromReply will extract a sequence number from a reply subject.
-func (o *Consumer) SeqFromReply(reply string) uint64 {
+func (o *consumer) seqFromReply(reply string) uint64 {
 	_, dseq, _ := ackReplyInfo(reply)
 	return dseq
 }
 
 // StreamSeqFromReply will extract the stream sequence from the reply subject.
-func (o *Consumer) StreamSeqFromReply(reply string) uint64 {
+func (o *consumer) streamSeqFromReply(reply string) uint64 {
 	sseq, _, _ := ackReplyInfo(reply)
 	return sseq
 }
@@ -2209,7 +2209,7 @@ func parseAckReplyNum(d string) (n int64) {
 const expectedNumReplyTokens = 9
 
 // Grab encoded information in the reply subject for a delivered message.
-func (o *Consumer) ReplyInfo(subject string) (sseq, dseq, dc uint64, ts int64, pending uint64) {
+func (o *consumer) replyInfo(subject string) (sseq, dseq, dc uint64, ts int64, pending uint64) {
 	tsa := [expectedNumReplyTokens]string{}
 	start, tokens := 0, tsa[:0]
 	for i := 0; i < len(subject); i++ {
@@ -2252,7 +2252,7 @@ func ackReplyInfo(subject string) (sseq, dseq, dc uint64) {
 }
 
 // NextSeq returns the next delivered sequence number for this observable.
-func (o *Consumer) NextSeq() uint64 {
+func (o *consumer) nextSeq() uint64 {
 	o.mu.Lock()
 	dseq := o.dseq
 	o.mu.Unlock()
@@ -2261,7 +2261,7 @@ func (o *Consumer) NextSeq() uint64 {
 
 // This will select the store seq to start with based on the
 // partition subject.
-func (o *Consumer) selectSubjectLast() {
+func (o *consumer) selectSubjectLast() {
 	stats := o.mset.store.State()
 	if stats.LastSeq == 0 {
 		o.sseq = stats.LastSeq
@@ -2281,27 +2281,27 @@ func (o *Consumer) selectSubjectLast() {
 }
 
 // Will select the starting sequence.
-func (o *Consumer) selectStartingSeqNo() {
+func (o *consumer) selectStartingSeqNo() {
 	stats := o.mset.store.State()
-	if o.config.OptStartSeq == 0 {
-		if o.config.DeliverPolicy == DeliverAll {
+	if o.cfg.OptStartSeq == 0 {
+		if o.cfg.DeliverPolicy == DeliverAll {
 			o.sseq = stats.FirstSeq
-		} else if o.config.DeliverPolicy == DeliverLast {
+		} else if o.cfg.DeliverPolicy == DeliverLast {
 			o.sseq = stats.LastSeq
 			// If we are partitioned here we may need to walk backwards.
-			if o.config.FilterSubject != _EMPTY_ {
+			if o.cfg.FilterSubject != _EMPTY_ {
 				o.selectSubjectLast()
 			}
-		} else if o.config.OptStartTime != nil {
+		} else if o.cfg.OptStartTime != nil {
 			// If we are here we are time based.
 			// TODO(dlc) - Once clustered can't rely on this.
-			o.sseq = o.mset.store.GetSeqFromTime(*o.config.OptStartTime)
+			o.sseq = o.mset.store.GetSeqFromTime(*o.cfg.OptStartTime)
 		} else {
 			// Default is deliver new only.
 			o.sseq = stats.LastSeq + 1
 		}
 	} else {
-		o.sseq = o.config.OptStartSeq
+		o.sseq = o.cfg.OptStartSeq
 	}
 
 	if stats.FirstSeq == 0 {
@@ -2324,24 +2324,24 @@ func isDurableConsumer(config *ConsumerConfig) bool {
 	return config != nil && config.Durable != _EMPTY_
 }
 
-func (o *Consumer) isDurable() bool {
-	return o.config.Durable != _EMPTY_
+func (o *consumer) isDurable() bool {
+	return o.cfg.Durable != _EMPTY_
 }
 
 // Are we in push mode, delivery subject, etc.
-func (o *Consumer) isPushMode() bool {
-	return o.config.DeliverSubject != _EMPTY_
+func (o *consumer) isPushMode() bool {
+	return o.cfg.DeliverSubject != _EMPTY_
 }
 
-func (o *Consumer) isPullMode() bool {
-	return o.config.DeliverSubject == _EMPTY_
+func (o *consumer) isPullMode() bool {
+	return o.cfg.DeliverSubject == _EMPTY_
 }
 
 // Name returns the name of this observable.
-func (o *Consumer) Name() string {
-	o.mu.Lock()
+func (o *consumer) String() string {
+	o.mu.RLock()
 	n := o.name
-	o.mu.Unlock()
+	o.mu.RUnlock()
 	return n
 }
 
@@ -2349,23 +2349,23 @@ func createConsumerName() string {
 	return string(getHash(nuid.Next()))
 }
 
-// DeleteConsumer will delete the consumer from this stream.
-func (mset *Stream) DeleteConsumer(o *Consumer) error {
-	return o.Delete()
+// deleteConsumer will delete the consumer from this stream.
+func (mset *stream) deleteConsumer(o *consumer) error {
+	return o.delete()
 }
 
-func (o *Consumer) Stream() string {
+func (o *consumer) streamName() string {
 	o.mu.RLock()
 	mset := o.mset
 	o.mu.RUnlock()
 	if mset != nil {
-		return mset.Name()
+		return mset.name()
 	}
 	return _EMPTY_
 }
 
 // Active indicates if this consumer is still active.
-func (o *Consumer) Active() bool {
+func (o *consumer) isActive() bool {
 	o.mu.Lock()
 	active := o.active && o.mset != nil
 	o.mu.Unlock()
@@ -2373,15 +2373,15 @@ func (o *Consumer) Active() bool {
 }
 
 // hasNoLocalInterest return true if we have no local interest.
-func (o *Consumer) hasNoLocalInterest() bool {
+func (o *consumer) hasNoLocalInterest() bool {
 	o.mu.RLock()
-	rr := o.acc.sl.Match(o.config.DeliverSubject)
+	rr := o.acc.sl.Match(o.cfg.DeliverSubject)
 	o.mu.RUnlock()
 	return len(rr.psubs)+len(rr.qsubs) == 0
 }
 
 // This is when the underlying stream has been purged.
-func (o *Consumer) purge(sseq uint64) {
+func (o *consumer) purge(sseq uint64) {
 	o.mu.Lock()
 	o.sseq = sseq
 	o.asflr = sseq - 1
@@ -2422,20 +2422,20 @@ func stopAndClearTimer(tp **time.Timer) {
 }
 
 // Stop will shutdown  the consumer for the associated stream.
-func (o *Consumer) Stop() error {
-	return o.stop(false, true, false)
+func (o *consumer) stop() error {
+	return o.stopWithFlags(false, true, false)
 }
 
-func (o *Consumer) deleteWithoutAdvisory() error {
-	return o.stop(true, true, false)
+func (o *consumer) deleteWithoutAdvisory() error {
+	return o.stopWithFlags(true, true, false)
 }
 
 // Delete will delete the consumer for the associated stream and send advisories.
-func (o *Consumer) Delete() error {
-	return o.stop(true, true, true)
+func (o *consumer) delete() error {
+	return o.stopWithFlags(true, true, true)
 }
 
-func (o *Consumer) stop(dflag, doSignal, advisory bool) error {
+func (o *consumer) stopWithFlags(dflag, doSignal, advisory bool) error {
 	o.mu.Lock()
 	if o.closed {
 		o.mu.Unlock()
@@ -2469,7 +2469,7 @@ func (o *Consumer) stop(dflag, doSignal, advisory bool) error {
 	o.sysc = nil
 	stopAndClearTimer(&o.ptmr)
 	stopAndClearTimer(&o.dtmr)
-	delivery := o.config.DeliverSubject
+	delivery := o.cfg.DeliverSubject
 	o.waiting = nil
 	// Break us out of the readLoop.
 	if doSignal {
@@ -2490,8 +2490,8 @@ func (o *Consumer) stop(dflag, doSignal, advisory bool) error {
 	}
 
 	mset.mu.Lock()
-	mset.deleteConsumer(o)
-	rp := mset.config.Retention
+	mset.removeConsumer(o)
+	rp := mset.cfg.Retention
 	mset.mu.Unlock()
 
 	// We need to optionally remove all messages since we are interest based retention.
@@ -2541,11 +2541,11 @@ func (o *Consumer) stop(dflag, doSignal, advisory bool) error {
 
 // Check that we do not form a cycle by delivering to a delivery subject
 // that is part of the interest group.
-func (mset *Stream) deliveryFormsCycle(deliverySubject string) bool {
+func (mset *stream) deliveryFormsCycle(deliverySubject string) bool {
 	mset.mu.RLock()
 	defer mset.mu.RUnlock()
 
-	for _, subject := range mset.config.Subjects {
+	for _, subject := range mset.cfg.Subjects {
 		if subjectIsSubsetMatch(deliverySubject, subject) {
 			return true
 		}
@@ -2554,13 +2554,13 @@ func (mset *Stream) deliveryFormsCycle(deliverySubject string) bool {
 }
 
 // This is same as check for delivery cycle.
-func (mset *Stream) validSubject(partitionSubject string) bool {
+func (mset *stream) validSubject(partitionSubject string) bool {
 	return mset.deliveryFormsCycle(partitionSubject)
 }
 
 // SetInActiveDeleteThreshold sets the delete threshold for how long to wait
 // before deleting an inactive ephemeral observable.
-func (o *Consumer) SetInActiveDeleteThreshold(dthresh time.Duration) error {
+func (o *consumer) setInActiveDeleteThreshold(dthresh time.Duration) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -2580,36 +2580,36 @@ func (o *Consumer) SetInActiveDeleteThreshold(dthresh time.Duration) error {
 }
 
 // switchToEphemeral is called on startup when recovering ephemerals.
-func (o *Consumer) switchToEphemeral() {
+func (o *consumer) switchToEphemeral() {
 	o.mu.Lock()
-	o.config.Durable = _EMPTY_
+	o.cfg.Durable = _EMPTY_
 	store, ok := o.store.(*consumerFileStore)
-	rr := o.acc.sl.Match(o.config.DeliverSubject)
+	rr := o.acc.sl.Match(o.cfg.DeliverSubject)
 	o.mu.Unlock()
 
 	// Update interest
 	o.updateDeliveryInterest(len(rr.psubs)+len(rr.qsubs) > 0)
 	// Write out new config
 	if ok {
-		store.updateConfig(o.config)
+		store.updateConfig(o.cfg)
 	}
 }
 
 // RequestNextMsgSubject returns the subject to request the next message when in pull or worker mode.
 // Returns empty otherwise.
-func (o *Consumer) RequestNextMsgSubject() string {
+func (o *consumer) requestNextMsgSubject() string {
 	return o.nextMsgSubj
 }
 
 // Will set the initial pending.
 // mset lock should be held.
-func (o *Consumer) setInitialPending() {
+func (o *consumer) setInitialPending() {
 	mset := o.mset
 	if mset == nil {
 		return
 	}
 	// Non-filtering, means we want all messages.
-	if o.config.FilterSubject == _EMPTY_ {
+	if o.cfg.FilterSubject == _EMPTY_ {
 		state := mset.store.State()
 		if state.Msgs > 0 {
 			o.sgap = state.Msgs - (o.sseq - state.FirstSeq)
@@ -2631,7 +2631,7 @@ func (o *Consumer) setInitialPending() {
 }
 
 // addStreamPending will add to the stream pending.
-func (o *Consumer) incStreamPending(sseq uint64, subj string) {
+func (o *consumer) incStreamPending(sseq uint64, subj string) {
 	o.mu.Lock()
 	if o.isFilteredMatch(subj) {
 		o.sgap++
@@ -2639,7 +2639,7 @@ func (o *Consumer) incStreamPending(sseq uint64, subj string) {
 	o.mu.Unlock()
 }
 
-func (o *Consumer) decStreamPending(sseq uint64, subj string) {
+func (o *consumer) decStreamPending(sseq uint64, subj string) {
 	o.mu.Lock()
 	// Ignore if we have already seen this one.
 	if sseq >= o.sseq && o.sgap > 0 && o.isFilteredMatch(subj) {
@@ -2648,7 +2648,7 @@ func (o *Consumer) decStreamPending(sseq uint64, subj string) {
 	o.mu.Unlock()
 }
 
-func (o *Consumer) account() *Account {
+func (o *consumer) account() *Account {
 	o.mu.RLock()
 	a := o.acc
 	o.mu.RUnlock()

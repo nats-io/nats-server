@@ -583,5 +583,5 @@ func newTemplateMemStore() *templateMemStore {
 }
 
 // No-ops for memstore.
-func (ts *templateMemStore) Store(t *StreamTemplate) error  { return nil }
-func (ts *templateMemStore) Delete(t *StreamTemplate) error { return nil }
+func (ts *templateMemStore) Store(t *streamTemplate) error  { return nil }
+func (ts *templateMemStore) Delete(t *streamTemplate) error { return nil }

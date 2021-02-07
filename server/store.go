@@ -172,8 +172,8 @@ type Pending struct {
 
 // TemplateStore stores templates.
 type TemplateStore interface {
-	Store(*StreamTemplate) error
-	Delete(*StreamTemplate) error
+	Store(*streamTemplate) error
+	Delete(*streamTemplate) error
 }
 
 func jsonString(s string) string {

@@ -416,7 +416,7 @@ func TestFileStoreWriteExpireWrite(t *testing.T) {
 	// Wait for write cache portion to go to zero.
 	checkFor(t, time.Second, 20*time.Millisecond, func() error {
 		if csz := fs.cacheSize(); csz != 0 {
-			return fmt.Errorf("cache size not 0, got %s", FriendlyBytes(int64(csz)))
+			return fmt.Errorf("cache size not 0, got %s", friendlyBytes(int64(csz)))
 		}
 		return nil
 	})
@@ -1454,7 +1454,7 @@ func TestFileStoreReadCache(t *testing.T) {
 	// Wait for cache to go to zero.
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
 		if csz := fs.cacheSize(); csz != 0 {
-			return fmt.Errorf("cache size not 0, got %s", FriendlyBytes(int64(csz)))
+			return fmt.Errorf("cache size not 0, got %s", friendlyBytes(int64(csz)))
 		}
 		return nil
 	})
@@ -1466,7 +1466,7 @@ func TestFileStoreReadCache(t *testing.T) {
 	// Should expire and be removed.
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
 		if csz := fs.cacheSize(); csz != 0 {
-			return fmt.Errorf("cache size not 0, got %s", FriendlyBytes(int64(csz)))
+			return fmt.Errorf("cache size not 0, got %s", friendlyBytes(int64(csz)))
 		}
 		return nil
 	})
@@ -1953,8 +1953,8 @@ func TestFileStorePerf(t *testing.T) {
 
 	fmt.Printf("storing %d msgs of %s each, totalling %s\n",
 		toStore,
-		FriendlyBytes(int64(storedMsgSize)),
-		FriendlyBytes(int64(toStore*storedMsgSize)),
+		friendlyBytes(int64(storedMsgSize)),
+		friendlyBytes(int64(toStore*storedMsgSize)),
 	)
 
 	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
@@ -1978,7 +1978,7 @@ func TestFileStorePerf(t *testing.T) {
 	tt := time.Since(start)
 	fmt.Printf("time to store is %v\n", tt)
 	fmt.Printf("%.0f msgs/sec\n", float64(toStore)/tt.Seconds())
-	fmt.Printf("%s per sec\n", FriendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
+	fmt.Printf("%s per sec\n", friendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
 
 	fmt.Printf("Filesystem cache flush, paused 5 seconds.\n\n")
 	time.Sleep(5 * time.Second)
@@ -1996,8 +1996,8 @@ func TestFileStorePerf(t *testing.T) {
 
 	fmt.Printf("LOAD: reading %d msgs of %s each, totalling %s\n",
 		toStore,
-		FriendlyBytes(int64(storedMsgSize)),
-		FriendlyBytes(int64(toStore*storedMsgSize)),
+		friendlyBytes(int64(storedMsgSize)),
+		friendlyBytes(int64(toStore*storedMsgSize)),
 	)
 
 	start = time.Now()
@@ -2010,13 +2010,13 @@ func TestFileStorePerf(t *testing.T) {
 	tt = time.Since(start)
 	fmt.Printf("time to read all back messages is %v\n", tt)
 	fmt.Printf("%.0f msgs/sec\n", float64(toStore)/tt.Seconds())
-	fmt.Printf("%s per sec\n", FriendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
+	fmt.Printf("%s per sec\n", friendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
 
 	// Do again to test skip for hash..
 	fmt.Printf("\nSKIP CHECKSUM: reading %d msgs of %s each, totalling %s\n",
 		toStore,
-		FriendlyBytes(int64(storedMsgSize)),
-		FriendlyBytes(int64(toStore*storedMsgSize)),
+		friendlyBytes(int64(storedMsgSize)),
+		friendlyBytes(int64(toStore*storedMsgSize)),
 	)
 
 	start = time.Now()
@@ -2029,7 +2029,7 @@ func TestFileStorePerf(t *testing.T) {
 	tt = time.Since(start)
 	fmt.Printf("time to read all back messages is %v\n", tt)
 	fmt.Printf("%.0f msgs/sec\n", float64(toStore)/tt.Seconds())
-	fmt.Printf("%s per sec\n", FriendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
+	fmt.Printf("%s per sec\n", friendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
 
 	fs.Stop()
 
@@ -2043,8 +2043,8 @@ func TestFileStorePerf(t *testing.T) {
 
 	fmt.Printf("\nremoving [in order] %d msgs of %s each, totalling %s\n",
 		toStore,
-		FriendlyBytes(int64(storedMsgSize)),
-		FriendlyBytes(int64(toStore*storedMsgSize)),
+		friendlyBytes(int64(storedMsgSize)),
+		friendlyBytes(int64(toStore*storedMsgSize)),
 	)
 
 	start = time.Now()
@@ -2058,7 +2058,7 @@ func TestFileStorePerf(t *testing.T) {
 	tt = time.Since(start)
 	fmt.Printf("time to remove all messages is %v\n", tt)
 	fmt.Printf("%.0f msgs/sec\n", float64(toStore)/tt.Seconds())
-	fmt.Printf("%s per sec\n", FriendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
+	fmt.Printf("%s per sec\n", friendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
 
 	fs, _, err = newFileStore(
 		FileStoreConfig{StoreDir: storeDir},
@@ -2092,8 +2092,8 @@ func TestFileStoreReadBackMsgPerf(t *testing.T) {
 
 	fmt.Printf("storing %d msgs of %s each, totalling %s\n",
 		toStore,
-		FriendlyBytes(int64(storedMsgSize)),
-		FriendlyBytes(int64(toStore*storedMsgSize)),
+		friendlyBytes(int64(storedMsgSize)),
+		friendlyBytes(int64(toStore*storedMsgSize)),
 	)
 
 	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
@@ -2117,7 +2117,7 @@ func TestFileStoreReadBackMsgPerf(t *testing.T) {
 	tt := time.Since(start)
 	fmt.Printf("time to store is %v\n", tt)
 	fmt.Printf("%.0f msgs/sec\n", float64(toStore)/tt.Seconds())
-	fmt.Printf("%s per sec\n", FriendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
+	fmt.Printf("%s per sec\n", friendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
 
 	// We should not have cached here with no reads.
 	// Pick something towards end of the block.
@@ -2163,8 +2163,8 @@ func TestFileStoreStoreLimitRemovePerf(t *testing.T) {
 
 	fmt.Printf("storing and removing (limit 1) %d msgs of %s each, totalling %s\n",
 		toStore,
-		FriendlyBytes(int64(storedMsgSize)),
-		FriendlyBytes(int64(toStore*storedMsgSize)),
+		friendlyBytes(int64(storedMsgSize)),
+		friendlyBytes(int64(toStore*storedMsgSize)),
 	)
 
 	start := time.Now()
@@ -2182,7 +2182,7 @@ func TestFileStoreStoreLimitRemovePerf(t *testing.T) {
 	tt := time.Since(start)
 	fmt.Printf("time to store and remove all messages is %v\n", tt)
 	fmt.Printf("%.0f msgs/sec\n", float64(toStore)/tt.Seconds())
-	fmt.Printf("%s per sec\n", FriendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
+	fmt.Printf("%s per sec\n", friendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
 }
 
 func TestFileStorePubPerfWithSmallBlkSize(t *testing.T) {
@@ -2200,8 +2200,8 @@ func TestFileStorePubPerfWithSmallBlkSize(t *testing.T) {
 
 	fmt.Printf("storing %d msgs of %s each, totalling %s\n",
 		toStore,
-		FriendlyBytes(int64(storedMsgSize)),
-		FriendlyBytes(int64(toStore*storedMsgSize)),
+		friendlyBytes(int64(storedMsgSize)),
+		friendlyBytes(int64(toStore*storedMsgSize)),
 	)
 
 	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
@@ -2225,7 +2225,7 @@ func TestFileStorePubPerfWithSmallBlkSize(t *testing.T) {
 	tt := time.Since(start)
 	fmt.Printf("time to store is %v\n", tt)
 	fmt.Printf("%.0f msgs/sec\n", float64(toStore)/tt.Seconds())
-	fmt.Printf("%s per sec\n", FriendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
+	fmt.Printf("%s per sec\n", friendlyBytes(int64(float64(toStore*storedMsgSize)/tt.Seconds())))
 }
 
 // Saw this manifest from a restart test with max delivered set for JetStream.
