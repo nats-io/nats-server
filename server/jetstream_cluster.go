@@ -1363,6 +1363,12 @@ func (js *jetStream) applyStreamEntries(mset *Stream, ce *CommittedEntry, isReco
 					if err != errLastSeqMismatch || !isRecovering {
 						js.srv.Debugf("Got error processing JetStream msg: %v", err)
 					}
+					if strings.Contains(err.Error(), "no space left") {
+						s := js.srv
+						s.Errorf("JetStream out of space, will be DISABLED")
+						js.srv.RemoveJetStream()
+						return didSnap, didRemove, err
+					}
 				}
 			case deleteMsgOp:
 				md, err := decodeMsgDelete(buf[1:])

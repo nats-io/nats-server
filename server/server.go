@@ -796,14 +796,6 @@ func (s *Server) configuredRoutes() int {
 
 // activePeers is used in bootstrapping raft groups like the JetStream meta controller.
 func (s *Server) ActivePeers() (peers []string) {
-	s.mu.Lock()
-	sys := s.sys
-	s.mu.Unlock()
-
-	if sys == nil {
-		return nil
-	}
-
 	s.nodeToInfo.Range(func(k, v interface{}) bool {
 		si := v.(*nodeInfo)
 		if !si.offline {
@@ -811,7 +803,6 @@ func (s *Server) ActivePeers() (peers []string) {
 		}
 		return true
 	})
-
 	return peers
 }
 

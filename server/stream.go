@@ -1316,11 +1316,11 @@ func (mset *Stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	if err != nil {
 		if err != ErrStoreClosed {
-			c.Errorf("JetStream failed to store a msg on account: %q stream: %q -  %v", accName, name, err)
+			c.Errorf("JetStream failed to store a msg on stream '%s > %s' -  %v", accName, name, err)
 		}
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
-			resp.Error = &ApiError{Code: 400, Description: err.Error()}
+			resp.Error = &ApiError{Code: 503, Description: err.Error()}
 			response, _ = json.Marshal(resp)
 		}
 	} else if jsa.limitsExceeded(stype) {
@@ -1368,7 +1368,7 @@ func (mset *Stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		}
 	}
 
-	return nil
+	return err
 }
 
 // Internal message for use by jetstream subsystem.

@@ -2122,7 +2122,7 @@ func (mb *msgBlock) flushPendingMsgs() error {
 		mb.cache.buf = buf
 	}
 
-	return nil
+	return mb.werr
 }
 
 //  Lock should be held.
@@ -2157,9 +2157,11 @@ checkCache:
 	// FIXME(dlc) - We could be smarter here.
 	if mb.cache != nil && len(mb.cache.buf)-mb.cache.wp > 0 {
 		mb.mu.Unlock()
-		mb.flushPendingMsgsAndWait()
-		mb.writeIndexInfo()
+		err := mb.flushPendingMsgsAndWait()
 		mb.mu.Lock()
+		if err != nil && err != errFlushRunning {
+			return err
+		}
 		goto checkCache
 	}
 
