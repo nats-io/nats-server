@@ -878,6 +878,12 @@ func (s *Server) remoteServerUpdate(sub *subscription, _ *client, subject, reply
 	}
 	si := ssm.Server
 	node := string(getHash(si.Name))
+	if _, ok := s.nodeToInfo.Load(node); !ok {
+		// Since we have not seen this one they probably have not seen us so send out our update.
+		s.mu.Lock()
+		s.sendStatsz(fmt.Sprintf(serverStatsSubj, s.info.ID))
+		s.mu.Unlock()
+	}
 	s.nodeToInfo.Store(node, &nodeInfo{si.Name, si.Cluster, si.ID, false})
 }
 

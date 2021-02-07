@@ -3594,14 +3594,17 @@ func createJetStreamSuperCluster(t *testing.T, numServersPer, numClusters int) *
 	sc.waitOnAllCurrent()
 
 	// Wait for all the peer nodes to be registered.
-	expires := time.Now().Add(5 * time.Second)
-	for ml := sc.leader(); ml != nil && time.Now().Before(expires); {
-		peers := ml.ActivePeers()
-		if len(peers) == numClusters*numServersPer {
-			break
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		var peers []string
+		if ml := sc.leader(); ml != nil {
+			peers = ml.ActivePeers()
+			if len(peers) == numClusters*numServersPer {
+				return nil
+			}
 		}
-		time.Sleep(25 * time.Millisecond)
-	}
+		fmt.Printf("AP is %+v\n", peers)
+		return fmt.Errorf("Not correct number of peers, expected %d, got %d", numClusters*numServersPer, len(peers))
+	})
 
 	if sc.leader() == nil {
 		sc.t.Fatalf("Expected a cluster leader, got none")
