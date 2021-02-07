@@ -1039,8 +1039,8 @@ func TestFileStoreBitRot(t *testing.T) {
 		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
 
-	if badSeqs := len(fs.checkMsgs()); badSeqs > 0 {
-		t.Fatalf("Expected to have no corrupt msgs, got %d", badSeqs)
+	if ld := fs.checkMsgs(); ld != nil && len(ld.Msgs) > 0 {
+		t.Fatalf("Expected to have no corrupt msgs, got %d", len(ld.Msgs))
 	}
 
 	// Now twiddle some bits.
@@ -1060,8 +1060,8 @@ func TestFileStoreBitRot(t *testing.T) {
 	ioutil.WriteFile(lmb.mfn, contents, 0644)
 	fs.mu.Unlock()
 
-	bseqs := fs.checkMsgs()
-	if badSeqs := len(bseqs); badSeqs == 0 {
+	ld := fs.checkMsgs()
+	if ld == nil || len(ld.Msgs) == 0 {
 		t.Fatalf("Expected to have corrupt msgs got none: changed [%d]", index)
 	}
 
@@ -1074,8 +1074,9 @@ func TestFileStoreBitRot(t *testing.T) {
 	}
 	defer fs.Stop()
 
-	if !reflect.DeepEqual(bseqs, fs.checkMsgs()) {
-		t.Fatalf("Different reporting on bad msgs: %+v vs %+v", bseqs, fs.checkMsgs())
+	// checkMsgs will repair the underlying store, so checkMsgs should be clean now.
+	if ld := fs.checkMsgs(); ld != nil {
+		t.Fatalf("Expected no errors restoring checked and fixed filestore, got %+v", ld)
 	}
 }
 
@@ -1620,6 +1621,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 	// This will unzip the snapshot and create a new filestore that will recover the state.
 	// We will compare the states for this vs the original one.
 	verifySnapshot := func(snap []byte) {
+		t.Helper()
 		r := bytes.NewReader(snap)
 		tr := tar.NewReader(s2.NewReader(r))
 
@@ -1668,7 +1670,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 		// work through that problem too. The test below will pass but if you try to extract a
 		// message that will most likely fail.
 		if !reflect.DeepEqual(rstate, state) {
-			t.Fatalf("Restored state does not match, %+v vs %+v", rstate, state)
+			t.Fatalf("Restored state does not match:\n%+v\n\n%+v", rstate, state)
 		}
 	}
 
@@ -1724,7 +1726,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 	}
 
 	// Cause snapshot to timeout.
-	time.Sleep(30 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	// Read should fail
 	var buf [32]byte
 	if _, err := sr.Reader.Read(buf[:]); err != io.EOF {
@@ -1847,6 +1849,93 @@ func TestFileStoreConsumer(t *testing.T) {
 	state.AckFloor.Consumer = 10000
 	state.AckFloor.Stream = 10000
 	updateAndCheck()
+}
+
+func TestFileStoreWriteFailures(t *testing.T) {
+	// This test should be run inside an environment where this directory
+	// has a limited size.
+	// E.g. Docker
+	// docker run -ti --tmpfs /jswf_test:rw,size=32k --rm -v ~/Development/go/src:/go/src -w /go/src/github.com/nats-io/nats-server/ golang:1.15 /bin/bash
+	tdir := path.Join("/", "jswf_test")
+	if stat, err := os.Stat(tdir); err != nil || !stat.IsDir() {
+		t.SkipNow()
+	}
+
+	storeDir := path.Join(tdir, JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
+	subj, msg := "foo", []byte("Hello Write Failures!")
+	fs, _, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	var lseq uint64
+	// msz about will be ~54 bytes, so if limit is 32k trying to send 1000 will fail at some point.
+	for i := 1; i <= 1000; i++ {
+		if _, _, err := fs.StoreMsg(subj, nil, msg); err != nil {
+			lseq = uint64(i)
+			break
+		}
+	}
+	if lseq == 0 {
+		t.Fatalf("Expected to get a failure but did not")
+	}
+
+	state := fs.State()
+	if state.LastSeq != lseq-1 {
+		t.Fatalf("Expected last seq to be %d, got %d\n", lseq-1, state.LastSeq)
+	}
+	if state.Msgs != lseq-1 {
+		t.Fatalf("Expected total msgs to be %d, got %d\n", lseq-1, state.Msgs)
+	}
+	if _, _, _, _, err := fs.LoadMsg(lseq); err == nil {
+		t.Fatalf("Expected error loading seq that failed, got none")
+	}
+	// Loading should still work.
+	if _, _, _, _, err := fs.LoadMsg(2); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Make sure we recover same state.
+	fs.Stop()
+
+	fs, _, err = newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	state2 := fs.State()
+	// Ignore lost state.
+	state.Lost, state2.Lost = nil, nil
+	if !reflect.DeepEqual(state2, state) {
+		t.Fatalf("Expected recovered state to be the same, got %+v vs %+v\n", state2, state)
+	}
+
+	// We should still fail here.
+	if _, _, err = fs.StoreMsg(subj, nil, msg); err == nil {
+		t.Fatalf("Expected to get a failure but did not")
+	}
+
+	// Purge should help.
+	if _, err := fs.Purge(); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Wait for purge to complete its out of band processing.
+	time.Sleep(50 * time.Millisecond)
+
+	// Check we will fail again in same spot.
+	for i := 1; i <= 1000; i++ {
+		if _, _, err := fs.StoreMsg(subj, nil, msg); err != nil {
+			if i != int(lseq) {
+				t.Fatalf("Expected to fail after purge about the same spot, wanted %d got %d", lseq, i)
+			}
+			break
+		}
+	}
 }
 
 func TestFileStorePerf(t *testing.T) {
