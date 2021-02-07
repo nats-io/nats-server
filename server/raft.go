@@ -1909,20 +1909,11 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		// could need to adjust our starting index since the leader does not have entries prior, or
 		// we missed some catchup messages.
 		if catchingUp {
-			if len(ae.entries) > 0 && ae.entries[0].Type != EntryNormal {
+			if len(ae.entries) > 0 {
 				n.debug("Should reset index for wal to %d", ae.pindex+1)
 				n.wal.Compact(ae.pindex + 1)
 				n.pindex = ae.pindex
 				n.commit = ae.pindex
-			} else {
-				fmt.Printf("[%s - %s] pterm is %d, pindex is %d, ae.pterm is %d, ae.pindex is %d\n", n.s, n.group, n.pterm, n.pindex, ae.pterm, ae.pindex)
-				fmt.Printf("[%s] numEntries is %d\n", n.s, len(ae.entries))
-				if len(ae.entries) > 0 {
-					fmt.Printf("[%s] entry is %q\n", n.s, ae.entries[0].Data)
-				}
-				fmt.Printf("[%s] is cacthup sub? %v\n", n.s, sub == n.catchup.sub)
-				fmt.Printf("[%s] cactchup is %+v\n", n.s, n.catchup)
-				panic("Catchup mismatch!")
 			}
 		} else {
 			n.debug("AppendEntry did not match %d %d with %d %d", ae.pterm, ae.pindex, n.pterm, n.pindex)
