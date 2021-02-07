@@ -3789,7 +3789,7 @@ func TestMonitorAccountz(t *testing.T) {
 		t.Fatalf("Body missing value. Contains: %s", body)
 	} else if !strings.Contains(body, `"account_name": "$SYS",`) {
 		t.Fatalf("Body missing value. Contains: %s", body)
-	} else if !strings.Contains(body, `"subscriptions": 35,`) {
+	} else if !strings.Contains(body, `"subscriptions": 36,`) {
 		t.Fatalf("Body missing value. Contains: %s", body)
 	}
 }

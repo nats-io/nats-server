@@ -4426,7 +4426,7 @@ func TestJWTUserRevocation(t *testing.T) {
 	}
 	m := <-ncChan
 	require_Len(t, strings.Count(string(m.Data), apub), 2)
-	require_True(t, strings.Contains(string(m.Data), `"jwt": "eyJ0`))
+	require_True(t, strings.Contains(string(m.Data), `"jwt":"eyJ0`))
 	// try again with old credentials. Expected to fail
 	if nc1, err := nats.Connect(srv.ClientURL(), nats.UserCredentials(aCreds1)); err == nil {
 		nc1.Close()
@@ -4513,12 +4513,12 @@ func TestJWTAccountOps(t *testing.T) {
 			// delete nothing
 			resp, err = nc.Request(accDeleteReqSubj, generateRequest([]string{}), time.Second)
 			require_NoError(t, err)
-			require_True(t, strings.Contains(string(resp.Data), `"message": "deleted 0 accounts"`))
+			require_True(t, strings.Contains(string(resp.Data), `"message":"deleted 0 accounts"`))
 			// issue delete, twice to also delete a non existing account
 			for i := 0; i < 2; i++ {
 				resp, err = nc.Request(accDeleteReqSubj, generateRequest([]string{apub}), time.Second)
 				require_NoError(t, err)
-				require_True(t, strings.Contains(string(resp.Data), `"message": "deleted 1 accounts"`))
+				require_True(t, strings.Contains(string(resp.Data), `"message":"deleted 1 accounts"`))
 				resp, err = nc.Request(accListReqSubj, nil, time.Second)
 				require_False(t, strings.Contains(string(resp.Data), apub))
 				require_True(t, strings.Contains(string(resp.Data), syspub))
@@ -5373,7 +5373,7 @@ func TestJWTAccountProtectedImport(t *testing.T) {
 		require_NoError(t, err)
 		sysUsrCreds := newUserEx(t, sysAcc, false, sysPub)
 		defer os.Remove(sysUsrCreds)
-		cf := createConfFile(t, []byte(fmt.Sprintf(`		
+		cf := createConfFile(t, []byte(fmt.Sprintf(`
 		port: -1
 		operator = %s
 		system_account = %s
