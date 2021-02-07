@@ -2306,6 +2306,7 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 	}
 
 	n.Lock()
+	n.resetElectionTimeout()
 
 	// Ignore if we are newer.
 	if vr.term < n.term {
@@ -2330,7 +2331,6 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 		vresp.granted = true
 		n.vote = vr.candidate
 		n.writeTermVote()
-		n.resetElectionTimeout()
 	}
 	n.Unlock()
 
