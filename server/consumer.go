@@ -785,7 +785,7 @@ func (o *Consumer) sendDeleteAdvisoryLocked() {
 		Action:   DeleteEvent,
 	}
 
-	j, err := json.MarshalIndent(e, "", "  ")
+	j, err := json.Marshal(e)
 	if err != nil {
 		return
 	}
@@ -809,7 +809,7 @@ func (o *Consumer) sendCreateAdvisory() {
 		Action:   CreateEvent,
 	}
 
-	j, err := json.MarshalIndent(e, "", "  ")
+	j, err := json.Marshal(e)
 	if err != nil {
 		return
 	}
@@ -1140,7 +1140,7 @@ func (o *Consumer) processTerm(sseq, dseq, dc uint64) {
 		Deliveries:  dc,
 	}
 
-	j, err := json.MarshalIndent(e, "", "  ")
+	j, err := json.Marshal(e)
 	if err != nil {
 		return
 	}
@@ -1395,7 +1395,7 @@ func (o *Consumer) sampleAck(sseq, dseq, dc uint64) {
 		Deliveries:  dc,
 	}
 
-	j, err := json.MarshalIndent(e, "", "  ")
+	j, err := json.Marshal(e)
 	if err != nil {
 		return
 	}
@@ -1720,7 +1720,7 @@ func (o *Consumer) notifyDeliveryExceeded(sseq, dc uint64) {
 		Deliveries: dc,
 	}
 
-	j, err := json.MarshalIndent(e, "", "  ")
+	j, err := json.Marshal(e)
 	if err != nil {
 		return
 	}

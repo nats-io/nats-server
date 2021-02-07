@@ -97,7 +97,9 @@ type ClusterInfo struct {
 type PeerInfo struct {
 	Name    string        `json:"name"`
 	Current bool          `json:"current"`
+	Offline bool          `json:"offline,omitempty"`
 	Active  time.Duration `json:"active"`
+	Lag     uint64        `json:"lag,omitempty"`
 }
 
 // Stream is a jetstream stream of messages. When we receive a message internally destined
@@ -509,7 +511,7 @@ func (mset *Stream) sendCreateAdvisory() {
 		Template: template,
 	}
 
-	j, err := json.MarshalIndent(m, "", "  ")
+	j, err := json.Marshal(m)
 	if err != nil {
 		return
 	}
@@ -534,7 +536,7 @@ func (mset *Stream) sendDeleteAdvisoryLocked() {
 		Template: mset.config.Template,
 	}
 
-	j, err := json.MarshalIndent(m, "", "  ")
+	j, err := json.Marshal(m)
 	if err == nil {
 		subj := JSAdvisoryStreamDeletedPre + "." + mset.config.Name
 		mset.sendq <- &jsPubMsg{subj, subj, _EMPTY_, nil, j, nil, 0}
@@ -556,7 +558,7 @@ func (mset *Stream) sendUpdateAdvisoryLocked() {
 		Action: ModifyEvent,
 	}
 
-	j, err := json.MarshalIndent(m, "", "  ")
+	j, err := json.Marshal(m)
 	if err == nil {
 		subj := JSAdvisoryStreamUpdatedPre + "." + mset.config.Name
 		mset.sendq <- &jsPubMsg{subj, subj, _EMPTY_, nil, j, nil, 0}

@@ -6,7 +6,7 @@ import (
 )
 
 func (s *Server) publishAdvisory(acc *Account, subject string, adv interface{}) {
-	ej, err := json.MarshalIndent(adv, "", "  ")
+	ej, err := json.Marshal(adv)
 	if err == nil {
 		err = s.sendInternalAccountMsg(acc, subject, ej)
 		if err != nil {
