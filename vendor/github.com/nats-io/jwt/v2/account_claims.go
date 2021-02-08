@@ -86,9 +86,16 @@ func (o *OperatorLimits) Validate(_ *ValidationResults) {
 
 // Mapping for publishes
 type WeightedMapping struct {
-	Subject    Subject `json:"subject"`
-	Weight     uint8   `json:"weight,omitempty"`
-	OptCluster string  `json:"cluster,omitempty"`
+	Subject Subject `json:"subject"`
+	Weight  uint8   `json:"weight,omitempty"`
+	Cluster string  `json:"cluster,omitempty"`
+}
+
+func (m *WeightedMapping) GetWeight() uint8 {
+	if m.Weight == 0 {
+		return 100
+	}
+	return m.Weight
 }
 
 type Mapping map[Subject][]WeightedMapping
@@ -103,11 +110,7 @@ func (m *Mapping) Validate(vr *ValidationResults) {
 				vr.AddError("Subject %q in weighted mapping %q is not allowed to contains wildcard",
 					string(wm.Subject), ubFrom)
 			}
-			weight := wm.Weight
-			if wm.Weight == 0 {
-				weight += 100
-			}
-			total += weight
+			total += wm.GetWeight()
 		}
 		if total > 100 {
 			vr.AddError("Mapping %q exceeds 100%% among all of it's weighted to mappings", ubFrom)
@@ -127,7 +130,7 @@ type Account struct {
 	SigningKeys        SigningKeys    `json:"signing_keys,omitempty"`
 	Revocations        RevocationList `json:"revocations,omitempty"`
 	DefaultPermissions Permissions    `json:"default_permissions,omitempty"`
-	Mappings           Mapping      `json:"mappings,omitempty"`
+	Mappings           Mapping        `json:"mappings,omitempty"`
 	Info
 	GenericFields
 }

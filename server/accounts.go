@@ -506,9 +506,9 @@ func (a *Account) TotalSubs() int {
 
 // MapDest is for mapping published subjects for clients.
 type MapDest struct {
-	Subject    string `json:"subject"`
-	Weight     uint8  `json:"weight"`
-	OptCluster string `json:"cluster,omitempty"`
+	Subject string `json:"subject"`
+	Weight  uint8  `json:"weight"`
+	Cluster string `json:"cluster,omitempty"`
 }
 
 func NewMapDest(subject string, weight uint8) *MapDest {
@@ -573,16 +573,16 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 		if err != nil {
 			return err
 		}
-		if d.OptCluster == "" {
+		if d.Cluster == "" {
 			m.dests = append(m.dests, &destination{tr, d.Weight})
 		} else {
 			// We have a cluster scoped filter.
 			if m.cdests == nil {
 				m.cdests = make(map[string][]*destination)
 			}
-			ad := m.cdests[d.OptCluster]
+			ad := m.cdests[d.Cluster]
 			ad = append(ad, &destination{tr, d.Weight})
-			m.cdests[d.OptCluster] = ad
+			m.cdests[d.Cluster] = ad
 		}
 	}
 
@@ -2883,13 +2883,10 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	for sub, wm := range ac.Mappings {
 		mappings := make([]*MapDest, len(wm))
 		for i, m := range wm {
-			if m.Weight == 0 {
-				m.Weight = 100
-			}
 			mappings[i] = &MapDest{
-				Subject:    string(m.Subject),
-				Weight:     m.Weight,
-				OptCluster: m.OptCluster,
+				Subject: string(m.Subject),
+				Weight:  m.GetWeight(),
+				Cluster: m.Cluster,
 			}
 		}
 		// This will overwrite existing entries
