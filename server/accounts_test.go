@@ -3253,3 +3253,29 @@ func TestSubjectTransforms(t *testing.T) {
 	shouldMatch("baz.>", "foo.bar.>", "baz.1.2.3", "foo.bar.1.2.3")
 	shouldMatch("*", "foo.bar.$1", "foo", "foo.bar.foo")
 }
+
+func TestAccountSystemPermsWithGlobalAccess(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		accounts {
+			$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+		}
+	`))
+	defer os.Remove(conf)
+
+	s, _ := RunServerWithConfig(conf)
+
+	// Make sure we can connect with no auth to global account as normal.
+	nc, err := nats.Connect(s.ClientURL())
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	defer nc.Close()
+
+	// Make sure we can connect to the system account with correct credentials.
+	sc, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	if err != nil {
+		t.Fatalf("Failed to create system client: %v", err)
+	}
+	defer sc.Close()
+}

@@ -157,6 +157,11 @@ const (
 	JSApiConsumerLeaderStepDown  = "$JS.API.CONSUMER.LEADER.STEPDOWN.*.*"
 	JSApiConsumerLeaderStepDownT = "$JS.API.CONSUMER.LEADER.STEPDOWN.%s.%s"
 
+	// JSApiLeaderStepDown is the endpoint to have our metaleader stepdown.
+	// Only works from system account.
+	// Will return JSON response.
+	JSApiLeaderStepDown = "$JS.API.META.LEADER.STEPDOWN"
+
 	// jsAckT is the template for the ack message stream coming back from a consumer
 	// when they ACK/NAK, etc a message.
 	jsAckT   = "$JS.ACK.%s.%s"
@@ -417,6 +422,14 @@ type JSApiConsumerLeaderStepDownResponse struct {
 
 const JSApiConsumerLeaderStepDownResponseType = "io.nats.jetstream.api.v1.consumer_leader_stepdown_response"
 
+// JSApiLeaderStepDownResponse is the response to a meta leader stepdown request.
+type JSApiLeaderStepDownResponse struct {
+	ApiResponse
+	Success bool `json:"success,omitempty"`
+}
+
+const JSApiLeaderStepDownResponseType = "io.nats.jetstream.api.v1.meta_leader_stepdown_response"
+
 // JSApiMsgGetRequest get a message request.
 type JSApiMsgGetRequest struct {
 	Seq uint64 `json:"seq"`
@@ -636,6 +649,9 @@ func (s *Server) getRequestInfo(c *client, raw []byte) (pci *ClientInfo, acc *Ac
 	} else {
 		// Direct $SYS access.
 		acc = c.acc
+		if acc == nil {
+			acc = s.SystemAccount()
+		}
 	}
 	if acc == nil {
 		return nil, nil, nil, nil, ErrMissingAccount
@@ -1653,6 +1669,41 @@ func (s *Server) jsStreamRemovePeerRequest(sub *subscription, c *client, subject
 	js.removePeerFromStream(sa, nodeName)
 	js.mu.Unlock()
 
+	resp.Success = true
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+}
+
+// Request to have the meta leader stepdown.
+// These will only be received the the meta leaders, so less checking needed.
+func (s *Server) jsLeaderStepDownRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil || !s.JetStreamEnabled() {
+		return
+	}
+
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil || cc.meta == nil {
+		return
+	}
+
+	// Extra checks here but only leader is listening.
+	js.mu.RLock()
+	isLeader := cc.isLeader()
+	js.mu.RUnlock()
+
+	if !isLeader {
+		return
+	}
+
+	// Call actual stepdown.
+	cc.meta.StepDown()
+
+	var resp = JSApiLeaderStepDownResponse{ApiResponse: ApiResponse{Type: JSApiLeaderStepDownResponseType}}
 	resp.Success = true
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }

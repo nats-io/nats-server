@@ -44,6 +44,8 @@ type jetStreamCluster struct {
 	// Processing assignment results.
 	streamResults   *subscription
 	consumerResults *subscription
+	// For asking for leader to stepdown.
+	stepdown *subscription
 }
 
 // Used to guide placement of streams in clustered JetStream.
@@ -2602,6 +2604,9 @@ func (js *jetStream) startUpdatesSub() {
 	if cc.consumerResults == nil {
 		cc.consumerResults, _ = s.systemSubscribe(consumerAssignmentSubj, _EMPTY_, false, c, js.processConsumerAssignmentResults)
 	}
+	if cc.stepdown == nil {
+		cc.stepdown, _ = s.systemSubscribe(JSApiLeaderStepDown, _EMPTY_, false, c, s.jsLeaderStepDownRequest)
+	}
 }
 
 // Lock should be held.
@@ -2614,6 +2619,10 @@ func (js *jetStream) stopUpdatesSub() {
 	if cc.consumerResults != nil {
 		cc.s.sysUnsubscribe(cc.consumerResults)
 		cc.consumerResults = nil
+	}
+	if cc.stepdown != nil {
+		cc.s.sysUnsubscribe(cc.stepdown)
+		cc.stepdown = nil
 	}
 }
 

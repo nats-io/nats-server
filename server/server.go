@@ -625,6 +625,11 @@ func (s *Server) configureAccounts() error {
 		acc.sl = nil
 		acc.clients = nil
 		s.registerAccountNoLock(a)
+
+		// If we see an account defined using $SYS we will make sure that is set as system account.
+		if acc.Name == DEFAULT_SYSTEM_ACCOUNT && opts.SystemAccount == _EMPTY_ {
+			s.opts.SystemAccount = DEFAULT_SYSTEM_ACCOUNT
+		}
 	}
 
 	// Now that we have this we need to remap any referenced accounts in
@@ -638,7 +643,9 @@ func (s *Server) configureAccounts() error {
 			ea.approved[sub] = acc
 		}
 	}
+	var numAccounts int
 	s.accounts.Range(func(k, v interface{}) bool {
+		numAccounts++
 		acc := v.(*Account)
 		// Exports
 		for _, se := range acc.exports.streams {
@@ -696,6 +703,22 @@ func (s *Server) configureAccounts() error {
 		}
 		if err != nil {
 			return fmt.Errorf("error resolving system account: %v", err)
+		}
+
+		// If we have defined a system account here check to see if its just us and the $G account.
+		// We would do this to add user/pass to the system account. If this is the case add in
+		// no-auth-user for $G.
+		if numAccounts == 2 && s.opts.NoAuthUser == _EMPTY_ {
+			// Create a unique name so we do not collide.
+			var b [8]byte
+			rn := rand.Int63()
+			for i, l := 0, rn; i < len(b); i++ {
+				b[i] = digits[l%base]
+				l /= base
+			}
+			uname := fmt.Sprintf("nats-%s", b[:])
+			s.opts.Users = append(s.opts.Users, &User{Username: uname, Password: string(b[:]), Account: s.gacc})
+			s.opts.NoAuthUser = uname
 		}
 	}
 
