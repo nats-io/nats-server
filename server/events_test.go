@@ -1933,7 +1933,7 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 		respField []string
 	}{
 		{"VARZ", nil, &Varz{},
-			[]string{"now", "cpu"}},
+			[]string{"now", "cpu", "system_account"}},
 		{"SUBSZ", nil, &Subsz{},
 			[]string{"num_subscriptions", "num_cache"}},
 		{"CONNZ", nil, &Connz{},
