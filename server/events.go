@@ -1,4 +1,4 @@
-// Copyright 2018-2020 The NATS Authors
+// Copyright 2018-2021 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -567,7 +567,8 @@ func (s *Server) heartbeatStatsz() {
 
 // This should be wrapChk() to setup common locking.
 func (s *Server) startStatszTimer() {
-	s.sys.stmr = time.AfterFunc(s.sys.statsz, s.wrapChk(s.heartbeatStatsz))
+	// Send out the first one only after a second.
+	s.sys.stmr = time.AfterFunc(time.Second, s.wrapChk(s.heartbeatStatsz))
 }
 
 // Start a ticker that will fire periodically and check for orphaned servers.

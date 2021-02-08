@@ -3097,7 +3097,7 @@ func TestJetStreamClusterStepDown(t *testing.T) {
 	}
 
 	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
-		ci, err := sub.ConsumerInfo()
+		ci, err := js.ConsumerInfo("TEST", "cat")
 		if err != nil {
 			return fmt.Errorf("Could not fetch consumer info: %v", err)
 		}

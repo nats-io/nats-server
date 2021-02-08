@@ -539,7 +539,14 @@ func (js *jetStream) isGroupLeaderless(rg *raftGroup) bool {
 	if rg.node == nil {
 		return false
 	}
-	return rg.node.GroupLeader() == _EMPTY_
+	// If we don't have a leader.
+	if rg.node.GroupLeader() == _EMPTY_ {
+		// Make sure we have been running for enough time.
+		if time.Since(rg.node.Created()) > lostQuorumInterval {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) JetStreamIsStreamAssigned(account, stream string) bool {
@@ -747,6 +754,7 @@ type writeableStreamAssignment struct {
 
 func (js *jetStream) metaSnapshot() []byte {
 	var streams []writeableStreamAssignment
+
 	js.mu.RLock()
 	cc := js.cluster
 	for _, asa := range cc.streams {
@@ -764,13 +772,15 @@ func (js *jetStream) metaSnapshot() []byte {
 			streams = append(streams, wsa)
 		}
 	}
-	js.mu.RUnlock()
 
 	if len(streams) == 0 {
+		js.mu.RUnlock()
 		return nil
 	}
 
 	b, _ := json.Marshal(streams)
+	js.mu.RUnlock()
+
 	return s2.EncodeBetter(nil, b)
 }
 
