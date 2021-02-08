@@ -610,6 +610,10 @@ func (cc *jetStreamCluster) isStreamLeader(account, stream string) bool {
 	if cc == nil {
 		return true
 	}
+	if cc.meta == nil {
+		return false
+	}
+
 	var sa *streamAssignment
 	if as := cc.streams[account]; as != nil {
 		sa = as[stream]
@@ -639,6 +643,10 @@ func (cc *jetStreamCluster) isConsumerLeader(account, stream, consumer string) b
 	if cc == nil {
 		return true
 	}
+	if cc.meta == nil {
+		return false
+	}
+
 	var sa *streamAssignment
 	if as := cc.streams[account]; as != nil {
 		sa = as[stream]
