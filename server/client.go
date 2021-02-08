@@ -2503,21 +2503,19 @@ func (c *client) addShadowSub(sub *subscription, ime *ime) (*subscription, error
 	nsub := *sub // copy
 	nsub.im = im
 
-	// Check if we need to change shadow subscription's subject.
-	if !im.usePub {
-		if ime.dyn {
-			if im.rtr == nil {
-				im.rtr = im.tr.reverse()
-			}
-			subj, err := im.rtr.transformSubject(string(nsub.subject))
-			if err != nil {
-				return nil, err
-			}
-			nsub.subject = []byte(subj)
-		} else {
-			nsub.subject = []byte(im.from)
+	if !im.usePub && ime.dyn {
+		if im.rtr == nil {
+			im.rtr = im.tr.reverse()
 		}
+		subj, err := im.rtr.transformSubject(string(nsub.subject))
+		if err != nil {
+			return nil, err
+		}
+		nsub.subject = []byte(subj)
+	} else if !im.usePub || !ime.dyn {
+		nsub.subject = []byte(im.from)
 	}
+	// Else use original subject
 	c.Debugf("Creating import subscription on %q from account %q", nsub.subject, im.acc.Name)
 
 	if err := im.acc.sl.Insert(&nsub); err != nil {
