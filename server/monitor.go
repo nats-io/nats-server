@@ -1047,6 +1047,7 @@ type Varz struct {
 	Tags                  jwt.TagList           `json:"tags,omitempty"`
 	TrustedOperatorsJwt   []string              `json:"trusted_operators_jwt,omitempty"`
 	TrustedOperatorsClaim []*jwt.OperatorClaims `json:"trusted_operators_claim,omitempty"`
+	SystemAccount         string                `json:"system_account,omitempty"`
 }
 
 // JetStreamVarz contains basic runtime information about jetstream
@@ -1333,6 +1334,9 @@ func (s *Server) updateVarzConfigReloadableFields(v *Varz) {
 	if s.varzUpdateRouteURLs {
 		v.Cluster.URLs = urlsToStrings(opts.Routes)
 		s.varzUpdateRouteURLs = false
+	}
+	if s.sys != nil && s.sys.account != nil {
+		v.SystemAccount = s.sys.account.GetName()
 	}
 }
 
@@ -1989,6 +1993,7 @@ type ExtMap map[string][]*MapDest
 type AccountInfo struct {
 	AccountName string               `json:"account_name"`
 	LastUpdate  time.Time            `json:"update_time,omitempty"`
+	IsSystem    bool                 `json:"is_system,omitempty"`
 	Expired     bool                 `json:"expired"`
 	Complete    bool                 `json:"complete"`
 	JetStream   bool                 `json:"jetstream_enabled"`
@@ -2011,10 +2016,11 @@ type AccountInfo struct {
 }
 
 type Accountz struct {
-	ID       string       `json:"server_id"`
-	Now      time.Time    `json:"now"`
-	Accounts []string     `json:"accounts,omitempty"`
-	Account  *AccountInfo `json:"account_detail,omitempty"`
+	ID            string       `json:"server_id"`
+	Now           time.Time    `json:"now"`
+	SystemAccount string       `json:"system_account,omitempty"`
+	Accounts      []string     `json:"accounts,omitempty"`
+	Account       *AccountInfo `json:"account_detail,omitempty"`
 }
 
 // HandleAccountz process HTTP requests for account information.
@@ -2038,6 +2044,9 @@ func (s *Server) Accountz(optz *AccountzOptions) (*Accountz, error) {
 	a := &Accountz{
 		ID:  s.ID(),
 		Now: time.Now(),
+	}
+	if sacc := s.SystemAccount(); sacc != nil {
+		a.SystemAccount = sacc.GetName()
 	}
 	if optz.Account == "" {
 		a.Accounts = []string{}
@@ -2086,6 +2095,7 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 	} else {
 		a = v.(*Account)
 	}
+	isSys := a == s.SystemAccount()
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	var vrIssues []ExtVrIssues
@@ -2190,6 +2200,7 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 	return &AccountInfo{
 		accName,
 		a.updated,
+		isSys,
 		a.expired,
 		!a.incomplete,
 		a.js != nil,

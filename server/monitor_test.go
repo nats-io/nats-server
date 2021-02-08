@@ -3783,6 +3783,8 @@ func TestMonitorAccountz(t *testing.T) {
 		t.Fatalf("Body missing value. Contains: %s", body)
 	} else if !strings.Contains(body, `"accounts": [`) {
 		t.Fatalf("Body missing value. Contains: %s", body)
+	} else if !strings.Contains(body, `"system_account": "$SYS"`) {
+		t.Fatalf("Body missing value. Contains: %s", body)
 	}
 	body = string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d/accountz?acc=$SYS", s.MonitorAddr().Port)))
 	if !strings.Contains(body, `"account_detail": {`) {
@@ -3790,6 +3792,10 @@ func TestMonitorAccountz(t *testing.T) {
 	} else if !strings.Contains(body, `"account_name": "$SYS",`) {
 		t.Fatalf("Body missing value. Contains: %s", body)
 	} else if !strings.Contains(body, `"subscriptions": 36,`) {
+		t.Fatalf("Body missing value. Contains: %s", body)
+	} else if !strings.Contains(body, `"is_system": true,`) {
+		t.Fatalf("Body missing value. Contains: %s", body)
+	} else if !strings.Contains(body, `"system_account": "$SYS"`) {
 		t.Fatalf("Body missing value. Contains: %s", body)
 	}
 }
