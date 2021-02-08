@@ -26,7 +26,7 @@ import (
 	"time"
 )
 
-const MaxInfoLength = 255
+const MaxInfoLength = 8 * 1024
 
 type Info struct {
 	Description string `json:"description,omitempty"`

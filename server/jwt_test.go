@@ -5429,3 +5429,66 @@ func TestJWTAccountProtectedImport(t *testing.T) {
 		require_True(t, len(msgChan) == 0)
 	})
 }
+
+func TestJWTMappings(t *testing.T) {
+	sysKp, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	sysCreds := newUser(t, sysKp)
+	defer os.Remove(sysCreds)
+
+	// create two jwt, one with and one without mapping
+	aKp, aPub := createKey(t)
+	aClaim := jwt.NewAccountClaims(aPub)
+	aJwtNoM := encodeClaim(t, aClaim, aPub)
+	aClaim.AddMapping("foo1", jwt.WeightedMapping{Subject: "bar1"})
+	aJwtMap1 := encodeClaim(t, aClaim, aPub)
+
+	aClaim.Mappings = map[jwt.Subject][]jwt.WeightedMapping{}
+	aClaim.AddMapping("foo2", jwt.WeightedMapping{Subject: "bar2"})
+	aJwtMap2 := encodeClaim(t, aClaim, aPub)
+
+	dirSrv := createDir(t, "srv")
+	defer os.RemoveAll(dirSrv)
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: full
+			dir: %s
+		}
+    `, ojwt, syspub, dirSrv)))
+	defer os.Remove(conf)
+	srv, _ := RunServerWithConfig(conf)
+	defer srv.Shutdown()
+	updateJwt(t, srv.ClientURL(), sysCreds, sysJwt, 1) // update system account jwt
+
+	test := func(pub, sub string, fail bool) {
+		t.Helper()
+		nc := natsConnect(t, srv.ClientURL(), createUserCreds(t, srv, aKp))
+		defer nc.Close()
+		s, err := nc.SubscribeSync(sub)
+		require_NoError(t, err)
+		nc.Flush()
+		err = nc.Publish(pub, nil)
+		require_NoError(t, err)
+		_, err = s.NextMsg(500 * time.Millisecond)
+		switch {
+		case fail && err == nil:
+			t.Fatal("expected error, got none")
+		case !fail && err != nil:
+			t.Fatalf("expected no error, got %v", err)
+		}
+	}
+
+	// turn mappings on
+	require_Len(t, 1, updateJwt(t, srv.ClientURL(), sysCreds, aJwtMap1, 1))
+	test("foo1", "bar1", false)
+	// alter mappings
+	require_Len(t, 1, updateJwt(t, srv.ClientURL(), sysCreds, aJwtMap2, 1))
+	test("foo1", "bar1", true)
+	test("foo2", "bar2", false)
+	// turn mappings off
+	require_Len(t, 1, updateJwt(t, srv.ClientURL(), sysCreds, aJwtNoM, 1))
+	test("foo2", "bar2", true)
+}

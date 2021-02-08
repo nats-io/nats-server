@@ -2871,7 +2871,34 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			alteredScope[k] = struct{}{}
 		}
 	}
+	// collect mappings that need to be removed
+	removeList := []string{}
+	for _, m := range a.mappings {
+		if _, ok := ac.Mappings[jwt.Subject(m.src)]; !ok {
+			removeList = append(removeList, m.src)
+		}
+	}
 	a.mu.Unlock()
+
+	for sub, wm := range ac.Mappings {
+		mappings := make([]*MapDest, len(wm))
+		for i, m := range wm {
+			if m.Weight == 0 {
+				m.Weight = 100
+			}
+			mappings[i] = &MapDest{
+				Subject:    string(m.Subject),
+				Weight:     m.Weight,
+				OptCluster: m.OptCluster,
+			}
+		}
+		// This will overwrite existing entries
+		a.AddWeightedMappings(string(sub), mappings...)
+	}
+	// remove mappings
+	for _, rmMapping := range removeList {
+		a.RemoveMapping(rmMapping)
+	}
 
 	gatherClients := func() []*client {
 		a.mu.RLock()
