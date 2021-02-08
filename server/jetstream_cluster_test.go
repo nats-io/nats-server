@@ -2563,7 +2563,7 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	}
 	// Consumer too. Since we do not know if the consumer leader was not the one shutdown
 	// we should wait for a bit for the system to detect.
-	adv, _ = csub.NextMsg(time.Second)
+	adv, _ = csub.NextMsg(5 * time.Second)
 	if adv == nil {
 		t.Fatalf("Expected to receive a consumer quorum lost advisory")
 	}
@@ -2989,7 +2989,7 @@ func TestJetStreamClusterRemovePeer(t *testing.T) {
 
 	// Now check consumer info as well.
 	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
-		ci, err := sub.ConsumerInfo()
+		ci, err := js.ConsumerInfo("TEST", "cat")
 		if err != nil {
 			return fmt.Errorf("Could not fetch consumer info: %v", err)
 		}
@@ -3097,7 +3097,7 @@ func TestJetStreamClusterStepDown(t *testing.T) {
 	}
 
 	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
-		ci, err := sub.ConsumerInfo()
+		ci, err := js.ConsumerInfo("TEST", "cat")
 		if err != nil {
 			return fmt.Errorf("Could not fetch consumer info: %v", err)
 		}

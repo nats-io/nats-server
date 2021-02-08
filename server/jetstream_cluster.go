@@ -539,7 +539,14 @@ func (js *jetStream) isGroupLeaderless(rg *raftGroup) bool {
 	if rg.node == nil {
 		return false
 	}
-	return rg.node.GroupLeader() == _EMPTY_
+	// If we don't have a leader.
+	if rg.node.GroupLeader() == _EMPTY_ {
+		// Make sure we have been running for enough time.
+		if time.Since(rg.node.Created()) > lostQuorumInterval {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) JetStreamIsStreamAssigned(account, stream string) bool {
@@ -603,6 +610,10 @@ func (cc *jetStreamCluster) isStreamLeader(account, stream string) bool {
 	if cc == nil {
 		return true
 	}
+	if cc.meta == nil {
+		return false
+	}
+
 	var sa *streamAssignment
 	if as := cc.streams[account]; as != nil {
 		sa = as[stream]
@@ -632,6 +643,10 @@ func (cc *jetStreamCluster) isConsumerLeader(account, stream, consumer string) b
 	if cc == nil {
 		return true
 	}
+	if cc.meta == nil {
+		return false
+	}
+
 	var sa *streamAssignment
 	if as := cc.streams[account]; as != nil {
 		sa = as[stream]
@@ -747,6 +762,7 @@ type writeableStreamAssignment struct {
 
 func (js *jetStream) metaSnapshot() []byte {
 	var streams []writeableStreamAssignment
+
 	js.mu.RLock()
 	cc := js.cluster
 	for _, asa := range cc.streams {
@@ -764,13 +780,15 @@ func (js *jetStream) metaSnapshot() []byte {
 			streams = append(streams, wsa)
 		}
 	}
-	js.mu.RUnlock()
 
 	if len(streams) == 0 {
+		js.mu.RUnlock()
 		return nil
 	}
 
 	b, _ := json.Marshal(streams)
+	js.mu.RUnlock()
+
 	return s2.EncodeBetter(nil, b)
 }
 
@@ -1918,7 +1936,7 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	js.mu.Lock()
 	s, cc := js.srv, js.cluster
-	if s == nil || cc == nil {
+	if s == nil || cc == nil || cc.meta == nil {
 		// TODO(dlc) - debug at least
 		js.mu.Unlock()
 		return
