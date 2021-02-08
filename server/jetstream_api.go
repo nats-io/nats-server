@@ -1701,10 +1701,14 @@ func (s *Server) jsLeaderStepDownRequest(sub *subscription, c *client, subject, 
 	}
 
 	// Call actual stepdown.
-	cc.meta.StepDown()
+	err = cc.meta.StepDown()
 
 	var resp = JSApiLeaderStepDownResponse{ApiResponse: ApiResponse{Type: JSApiLeaderStepDownResponseType}}
-	resp.Success = true
+	if err != nil {
+		resp.Error = jsError(err)
+	} else {
+		resp.Success = true
+	}
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
