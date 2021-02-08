@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -117,14 +118,20 @@ func TestAccountIsolationExportImport(t *testing.T) {
 			pubSubj: 0,
 			"fizz":  0,
 		}
-		sub, err := ncImp.Subscribe(">", func(m *nats.Msg) {
+		count := int32(0)
+		ch := make(chan struct{}, 1)
+		if _, err := ncImp.Subscribe(">", func(m *nats.Msg) {
 			gotSubjs[m.Subject] += 1
-		})
-		if err != nil {
-			t.Fatal(err)
+			if n := atomic.AddInt32(&count, 1); n == 3 {
+				ch <- struct{}{}
+			}
+		}); err != nil {
+			t.Fatalf("Error on subscribe: %v", err)
 		}
+		// Since both prod and cons use same server, flushing here will ensure
+		// that the interest is registered and known at the time we publish.
+		ncImp.Flush()
 
-		time.Sleep(1 * time.Second)
 		if err := ncExp.Publish(pubSubj, []byte(fmt.Sprintf("ncExp pub %s", pubSubj))); err != nil {
 			t.Fatal(err)
 		}
@@ -138,10 +145,6 @@ func TestAccountIsolationExportImport(t *testing.T) {
 		if err := ncImp.Publish("fizz", []byte("ncImp pub fizz")); err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(1 * time.Second)
-		if err := sub.Unsubscribe(); err != nil {
-			t.Fatal(err)
-		}
 
 		wantSubjs := map[string]int{
 			// Subscriber ncImp should receive publishes from ncExp and ncImp.
@@ -149,6 +152,16 @@ func TestAccountIsolationExportImport(t *testing.T) {
 			// Subscriber ncImp should only receive the publish from ncImp.
 			"fizz": 1,
 		}
+
+		// Wait for at least the 3 expected messages
+		select {
+		case <-ch:
+		case <-time.After(time.Second):
+			t.Fatalf("Expected 3 messages, got %v", atomic.LoadInt32(&count))
+		}
+		// But now wait a bit to see if subscription receives more than expected.
+		time.Sleep(50 * time.Millisecond)
+
 		if got, want := len(gotSubjs), len(wantSubjs); got != want {
 			t.Fatalf("unexpected subjs len, got=%d; want=%d", got, want)
 		}
