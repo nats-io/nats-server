@@ -2212,15 +2212,16 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 	}, nil
 }
 
-// LeafzOptions are options passed to Jsz
+// JSzOptions are options passed to Jsz
 type JSzOptions struct {
-	Account  string `json:"account,omitempty"`
-	Accounts bool   `json:"accounts,omitempty"`
-	Streams  bool   `json:"streams,omitempty"`
-	Consumer bool   `json:"consumer,omitempty"`
-	Config   bool   `json:"config,omitempty"`
-	Offset   int    `json:"offset,omitempty"`
-	Limit    int    `json:"limit,omitempty"`
+	Account    string `json:"account,omitempty"`
+	Accounts   bool   `json:"accounts,omitempty"`
+	Streams    bool   `json:"streams,omitempty"`
+	Consumer   bool   `json:"consumer,omitempty"`
+	Config     bool   `json:"config,omitempty"`
+	LeaderOnly bool   `json:"leader_only,omitempty"`
+	Offset     int    `json:"offset,omitempty"`
+	Limit      int    `json:"limit,omitempty"`
 }
 
 type StreamDetail struct {
@@ -2337,6 +2338,25 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 	if opts.Streams {
 		opts.Accounts = true
 	}
+
+	// Check if we want a response from the leader only.
+	if opts.LeaderOnly {
+		js, cc := s.getJetStreamCluster()
+		if js == nil {
+			// Ignore
+			return nil, ErrJetStreamNotEnabled
+		}
+		// So if we have JS but no clustering, we are the leader so allow.
+		if cc != nil {
+			js.mu.RLock()
+			isLeader := cc.isLeader()
+			js.mu.RUnlock()
+			if !isLeader {
+				return nil, errNotLeader
+			}
+		}
+	}
+
 	// helper to get cluster info from node via dummy group
 	toClusterInfo := func(node RaftNode) *ClusterInfo {
 		peers := node.Peers()
@@ -2449,12 +2469,18 @@ func (s *Server) HandleJsz(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	leader, err := decodeBool(w, r, "leader-only")
+	if err != nil {
+		return
+	}
+
 	l, err := s.Jsz(&JSzOptions{
 		r.URL.Query().Get("acc"),
 		accounts,
 		streams,
 		consumers,
 		config,
+		leader,
 		offset,
 		limit})
 	if err != nil {
