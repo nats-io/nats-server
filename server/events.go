@@ -94,6 +94,7 @@ type internal struct {
 	orphMax  time.Duration
 	chkOrph  time.Duration
 	statsz   time.Duration
+	cstatsz  time.Duration
 	shash    string
 	inboxPre string
 }
@@ -560,15 +561,22 @@ func (s *Server) sendStatsz(subj string) {
 // This should be wrapChk() to setup common locking.
 func (s *Server) heartbeatStatsz() {
 	if s.sys.stmr != nil {
-		s.sys.stmr.Reset(s.sys.statsz)
+		// Increase after startup to our max.
+		s.sys.cstatsz *= 4
+		if s.sys.cstatsz > s.sys.statsz {
+			s.sys.cstatsz = s.sys.statsz
+		}
+		s.sys.stmr.Reset(s.sys.cstatsz)
 	}
 	s.sendStatsz(fmt.Sprintf(serverStatsSubj, s.info.ID))
 }
 
 // This should be wrapChk() to setup common locking.
 func (s *Server) startStatszTimer() {
+	// We will start by sending out more of these and trail off to the statsz being the max.
+	s.sys.cstatsz = time.Second
 	// Send out the first one only after a second.
-	s.sys.stmr = time.AfterFunc(time.Second, s.wrapChk(s.heartbeatStatsz))
+	s.sys.stmr = time.AfterFunc(s.sys.cstatsz, s.wrapChk(s.heartbeatStatsz))
 }
 
 // Start a ticker that will fire periodically and check for orphaned servers.
