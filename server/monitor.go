@@ -1991,28 +1991,28 @@ type ExtVrIssues struct {
 type ExtMap map[string][]*MapDest
 
 type AccountInfo struct {
-	AccountName     string               `json:"account_name"`
-	LastUpdate      time.Time            `json:"update_time,omitempty"`
-	IsSystemAccount bool                 `json:"is_system_account,omitempty"`
-	Expired         bool                 `json:"expired"`
-	Complete        bool                 `json:"complete"`
-	JetStream       bool                 `json:"jetstream_enabled"`
-	LeafCnt         int                  `json:"leafnode_connections"`
-	ClientCnt       int                  `json:"client_connections"`
-	SubCnt          uint32               `json:"subscriptions"`
-	Mappings        ExtMap               `json:"mappings,omitempty"`
-	Exports         []ExtExport          `json:"exports,omitempty"`
-	Imports         []ExtImport          `json:"imports,omitempty"`
-	Jwt             string               `json:"jwt,omitempty"`
-	IssuerKey       string               `json:"issuer_key,omitempty"`
-	NameTag         string               `json:"name_tag,omitempty"`
-	Tags            jwt.TagList          `json:"tags,omitempty"`
-	Claim           *jwt.AccountClaims   `json:"decoded_jwt,omitempty"`
-	Vr              []ExtVrIssues        `json:"validation_result_jwt,omitempty"`
-	RevokedUser     map[string]time.Time `json:"revoked_user,omitempty"`
-	RevokedAct      map[string]time.Time `json:"revoked_activations,omitempty"`
-	Sublist         *SublistStats        `json:"sublist_stats,omitempty"`
-	Responses       map[string]ExtImport `json:"responses,omitempty"`
+	AccountName string               `json:"account_name"`
+	LastUpdate  time.Time            `json:"update_time,omitempty"`
+	IsSystem    bool                 `json:"is_system,omitempty"`
+	Expired     bool                 `json:"expired"`
+	Complete    bool                 `json:"complete"`
+	JetStream   bool                 `json:"jetstream_enabled"`
+	LeafCnt     int                  `json:"leafnode_connections"`
+	ClientCnt   int                  `json:"client_connections"`
+	SubCnt      uint32               `json:"subscriptions"`
+	Mappings    ExtMap               `json:"mappings,omitempty"`
+	Exports     []ExtExport          `json:"exports,omitempty"`
+	Imports     []ExtImport          `json:"imports,omitempty"`
+	Jwt         string               `json:"jwt,omitempty"`
+	IssuerKey   string               `json:"issuer_key,omitempty"`
+	NameTag     string               `json:"name_tag,omitempty"`
+	Tags        jwt.TagList          `json:"tags,omitempty"`
+	Claim       *jwt.AccountClaims   `json:"decoded_jwt,omitempty"`
+	Vr          []ExtVrIssues        `json:"validation_result_jwt,omitempty"`
+	RevokedUser map[string]time.Time `json:"revoked_user,omitempty"`
+	RevokedAct  map[string]time.Time `json:"revoked_activations,omitempty"`
+	Sublist     *SublistStats        `json:"sublist_stats,omitempty"`
+	Responses   map[string]ExtImport `json:"responses,omitempty"`
 }
 
 type Accountz struct {
