@@ -1936,7 +1936,7 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	js.mu.Lock()
 	s, cc := js.srv, js.cluster
-	if s == nil || cc == nil {
+	if s == nil || cc == nil || cc.meta == nil {
 		// TODO(dlc) - debug at least
 		js.mu.Unlock()
 		return
