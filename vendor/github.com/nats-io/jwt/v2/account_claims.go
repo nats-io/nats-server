@@ -84,6 +84,44 @@ func (o *OperatorLimits) Validate(_ *ValidationResults) {
 	// negative values mean unlimited, so all numbers are valid
 }
 
+// Mapping for publishes
+type WeightedMapping struct {
+	Subject Subject `json:"subject"`
+	Weight  uint8   `json:"weight,omitempty"`
+	Cluster string  `json:"cluster,omitempty"`
+}
+
+func (m *WeightedMapping) GetWeight() uint8 {
+	if m.Weight == 0 {
+		return 100
+	}
+	return m.Weight
+}
+
+type Mapping map[Subject][]WeightedMapping
+
+func (m *Mapping) Validate(vr *ValidationResults) {
+	for ubFrom, wm := range (map[Subject][]WeightedMapping)(*m) {
+		ubFrom.Validate(vr)
+		total := uint8(0)
+		for _, wm := range wm {
+			wm.Subject.Validate(vr)
+			if wm.Subject.HasWildCards() {
+				vr.AddError("Subject %q in weighted mapping %q is not allowed to contains wildcard",
+					string(wm.Subject), ubFrom)
+			}
+			total += wm.GetWeight()
+		}
+		if total > 100 {
+			vr.AddError("Mapping %q exceeds 100%% among all of it's weighted to mappings", ubFrom)
+		}
+	}
+}
+
+func (a *Account) AddMapping(sub Subject, to ...WeightedMapping) {
+	a.Mappings[sub] = to
+}
+
 // Account holds account specific claims data
 type Account struct {
 	Imports            Imports        `json:"imports,omitempty"`
@@ -92,6 +130,7 @@ type Account struct {
 	SigningKeys        SigningKeys    `json:"signing_keys,omitempty"`
 	Revocations        RevocationList `json:"revocations,omitempty"`
 	DefaultPermissions Permissions    `json:"default_permissions,omitempty"`
+	Mappings           Mapping        `json:"mappings,omitempty"`
 	Info
 	GenericFields
 }
@@ -102,6 +141,7 @@ func (a *Account) Validate(acct *AccountClaims, vr *ValidationResults) {
 	a.Exports.Validate(vr)
 	a.Limits.Validate(vr)
 	a.DefaultPermissions.Validate(vr)
+	a.Mappings.Validate(vr)
 
 	if !a.Limits.IsEmpty() && a.Limits.Imports >= 0 && int64(len(a.Imports)) > a.Limits.Imports {
 		vr.AddError("the account contains more imports than allowed by the operator")
@@ -150,6 +190,7 @@ func NewAccountClaims(subject string) *AccountClaims {
 		AccountLimits{NoLimit, NoLimit, true, NoLimit, NoLimit},
 		JetStreamLimits{0, 0, 0, 0}}
 	c.Subject = subject
+	c.Mappings = Mapping{}
 	return c
 }
 

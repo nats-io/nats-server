@@ -15,13 +15,6 @@
 
 package jwt
 
-import (
-	"io/ioutil"
-	"net/http"
-	"net/url"
-	"time"
-)
-
 // Import describes a mapping from another account into this one
 type Import struct {
 	Name string `json:"name,omitempty"`
@@ -92,32 +85,10 @@ func (i *Import) Validate(actPubKey string, vr *ValidationResults) {
 	var act *ActivationClaims
 
 	if i.Token != "" {
-		// Check to see if its an embedded JWT or a URL.
-		if u, err := url.Parse(i.Token); err == nil && u.Scheme != "" {
-			c := &http.Client{Timeout: 5 * time.Second}
-			resp, err := c.Get(u.String())
-			if err != nil {
-				vr.AddWarning("import %s contains an unreachable token URL %q", i.Subject, i.Token)
-			}
-
-			if resp != nil {
-				defer resp.Body.Close()
-				body, err := ioutil.ReadAll(resp.Body)
-				if err != nil {
-					vr.AddWarning("import %s contains an unreadable token URL %q", i.Subject, i.Token)
-				} else {
-					act, err = DecodeActivationClaims(string(body))
-					if err != nil {
-						vr.AddWarning("import %s contains a URL %q with an invalid activation token", i.Subject, i.Token)
-					}
-				}
-			}
-		} else {
-			var err error
-			act, err = DecodeActivationClaims(i.Token)
-			if err != nil {
-				vr.AddWarning("import %q contains an invalid activation token", i.Subject)
-			}
+		var err error
+		act, err = DecodeActivationClaims(i.Token)
+		if err != nil {
+			vr.AddWarning("import %q contains an invalid activation token", i.Subject)
 		}
 	}
 

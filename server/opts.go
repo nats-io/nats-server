@@ -2018,7 +2018,7 @@ func parseAccountMapDest(v interface{}, tk token, errors *[]error, warnings *[]e
 				return nil, err
 			}
 		case "cluster":
-			mdest.OptCluster = dmv.(string)
+			mdest.Cluster = dmv.(string)
 		default:
 			err := &configErr{tk, fmt.Sprintf("Unknown field %q for mapping destination", k)}
 			*errors = append(*errors, err)

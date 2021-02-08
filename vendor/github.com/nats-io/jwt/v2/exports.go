@@ -118,6 +118,7 @@ type Export struct {
 	ResponseThreshold    time.Duration   `json:"response_threshold,omitempty"`
 	Latency              *ServiceLatency `json:"service_latency,omitempty"`
 	AccountTokenPosition uint            `json:"account_token_position,omitempty"`
+	Advertise            bool            `json:"advertise,omitempty"`
 	Info
 }
 
