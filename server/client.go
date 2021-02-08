@@ -472,7 +472,8 @@ func (c *client) clientType() int {
 // to optionally have an opts section for non-normal stuff.
 type subscription struct {
 	client  *client
-	im      *streamImport   // This is for import stream support.
+	im      *streamImport // This is for import stream support.
+	rsi     bool
 	shadow  []*subscription // This is to track shadowed accounts.
 	icb     msgHandler
 	subject []byte
@@ -3885,7 +3886,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		}
 
 		// Remap to the original subject if internal.
-		if sub.icb != nil {
+		if sub.icb != nil && sub.rsi {
 			subj = subject
 		}
 

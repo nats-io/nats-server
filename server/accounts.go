@@ -2027,7 +2027,9 @@ func (a *Account) createRespWildcard() []byte {
 	a.mu.Unlock()
 
 	// Create subscription and internal callback for all the wildcard response subjects.
-	c.processSub(wcsub, nil, []byte(sid), a.processServiceImportResponse, false)
+	if sub, err := c.processSub(wcsub, nil, []byte(sid), a.processServiceImportResponse, false); err == nil {
+		sub.rsi = true
+	}
 
 	return pre
 }
