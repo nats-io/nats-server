@@ -1163,6 +1163,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	<a href=.%s>leafz</a><br/>
 	<a href=.%s>subsz</a><br/>
 	<a href=.%s>accountz</a><br/>
+	<a href=.%s>jsz</a><br/>
     <br/>
     <a href=https://docs.nats.io/nats-server/configuration/monitoring.html>help</a>
   </body>
@@ -1174,6 +1175,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 		s.basePath(LeafzPath),
 		s.basePath(SubszPath),
 		s.basePath(AccountzPath),
+		s.basePath(JszPath),
 	)
 }
 
@@ -2370,6 +2372,9 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 
 	// helper to get cluster info from node via dummy group
 	toClusterInfo := func(node RaftNode) *ClusterInfo {
+		if node == nil {
+			return nil
+		}
 		peers := node.Peers()
 		peerList := make([]string, len(peers))
 		for i, p := range node.Peers() {
@@ -2454,7 +2459,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 // HandleJSz process HTTP requests for jetstream information.
 func (s *Server) HandleJsz(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
-	s.httpReqStats[LeafzPath]++
+	s.httpReqStats[JszPath]++
 	s.mu.Unlock()
 	accounts, err := decodeBool(w, r, "accounts")
 	if err != nil {
