@@ -3000,7 +3000,7 @@ func TestLeafNodeAndGatewayGlobalRouting(t *testing.T) {
 	// its outbound GW connection to the requestor's server.
 	for i := 0; i < 3; i++ {
 		opts := cb.opts[i]
-		url := fmt.Sprintf("nats://ngs:pass@%s:%d", opts.Host, opts.Port)
+		url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
 		nc, err := nats.Connect(url)
 		if err != nil {
 			t.Fatalf("Error on connect: %v", err)
