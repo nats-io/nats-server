@@ -2357,7 +2357,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 		js, cc := s.getJetStreamCluster()
 		if js == nil {
 			// Ignore
-			return nil, ErrJetStreamNotEnabled
+			return nil, fmt.Errorf("%w: no cluster", errSkipZreq)
 		}
 		// So if we have JS but no clustering, we are the leader so allow.
 		if cc != nil {
@@ -2365,7 +2365,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 			isLeader := cc.isLeader()
 			js.mu.RUnlock()
 			if !isLeader {
-				return nil, errNotLeader
+				return nil, fmt.Errorf("%w: not leader", errSkipZreq)
 			}
 		}
 	}

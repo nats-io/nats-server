@@ -1155,6 +1155,8 @@ func (s *Server) statszReq(sub *subscription, _ *client, subject, reply string, 
 	s.mu.Unlock()
 }
 
+var errSkipZreq = errors.New("filtered response")
+
 func (s *Server) zReq(reply string, msg []byte, fOpts *EventFilterOptions, optz interface{}, respf func() (interface{}, error)) {
 	if !s.EventsEnabled() || reply == _EMPTY_ {
 		return
@@ -1172,6 +1174,9 @@ func (s *Server) zReq(reply string, msg []byte, fOpts *EventFilterOptions, optz 
 	}
 	if err == nil {
 		response["data"], err = respf()
+		if errors.Is(err, errSkipZreq) {
+			return
+		}
 		status = http.StatusInternalServerError
 	}
 	if err != nil {
