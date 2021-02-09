@@ -1063,6 +1063,23 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				continue
 			}
 			fallthrough
+		case "noauthuser":
+			if oldValue != _EMPTY_ && newValue == _EMPTY_ {
+				for _, user := range newOpts.Users {
+					if user.Username == oldValue {
+						return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
+							field.Name, oldValue, newValue)
+					}
+				}
+			} else {
+				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
+					field.Name, oldValue, newValue)
+			}
+		case "systemaccount":
+			if oldValue != DEFAULT_SYSTEM_ACCOUNT || newValue != _EMPTY_ {
+				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
+					field.Name, oldValue, newValue)
+			}
 		default:
 			// TODO(ik): Implement String() on those options to have a nice print.
 			// %v is difficult to figure what's what, %+v print private fields and

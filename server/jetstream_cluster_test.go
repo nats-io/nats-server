@@ -3568,6 +3568,38 @@ func TestJetStreamClusterQueueSubConsumer(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterLeaderStepdown(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	c.waitOnLeader()
+	cl := c.leader()
+	// Now ask the system account to have the leader stepdown.
+	s := c.randomNonLeader()
+	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	if err != nil {
+		t.Fatalf("Failed to create system client: %v", err)
+	}
+	defer nc.Close()
+
+	resp, err := nc.Request(JSApiLeaderStepDown, nil, time.Second)
+	if err != nil {
+		t.Fatalf("Error on stepdown request: %v", err)
+	}
+	var sdr JSApiLeaderStepDownResponse
+	if err := json.Unmarshal(resp.Data, &sdr); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if sdr.Error != nil || !sdr.Success {
+		t.Fatalf("Unexpected error for leader stepdown: %+v", sdr.Error)
+	}
+
+	c.waitOnLeader()
+	if cl == c.leader() {
+		t.Fatalf("Expected a new metaleader, got same")
+	}
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
@@ -3595,6 +3627,9 @@ var jsClusterTempl = `
 		listen: 127.0.0.1:%d
 		routes = [%s]
 	}
+
+	# For access to system account.
+	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
 `
 
 var jsSuperClusterTempl = `
@@ -3692,7 +3727,6 @@ func createJetStreamSuperCluster(t *testing.T, numServersPer, numClusters int) *
 				return nil
 			}
 		}
-		fmt.Printf("AP is %+v\n", peers)
 		return fmt.Errorf("Not correct number of peers, expected %d, got %d", numClusters*numServersPer, len(peers))
 	})
 
