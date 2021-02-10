@@ -169,7 +169,7 @@ func TestPasswordClientGoodConnect(t *testing.T) {
 // The bcrypt username/password version
 ////////////////////////////////////////////////////////////
 
-// Generated with util/mkpasswd (Cost 4 because of cost of --race, default is 11)
+// Generated with nats server passwd (Cost 4 because of cost of --race, default is 11)
 const BCRYPT_AUTH_PASS = "IW@$6v(y1(t@fhPDvf!5^%"
 const BCRYPT_AUTH_HASH = "$2a$04$Q.CgCP2Sl9pkcTXEZHazaeMwPaAkSHk7AI51HkyMt5iJQQyUA4qxq"
 
