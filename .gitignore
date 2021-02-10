@@ -42,7 +42,6 @@ _testmain.go
 # bin
 nats-server
 gnatsd
-/util/mkpasswd
 
 # coverage
 coverage.out
