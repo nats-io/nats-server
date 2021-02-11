@@ -996,7 +996,6 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 					return didSnap, didRemove, err
 				}
 				if isRecovering {
-					panic("winner")
 					js.setStreamAssignmentResponded(sa)
 				}
 				js.processStreamRemoval(sa)
