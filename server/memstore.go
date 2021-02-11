@@ -83,6 +83,10 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 // Stores a raw message with expected sequence number and timestamp.
 // Lock should be held.
 func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int64) error {
+	if ms.msgs == nil {
+		return ErrStoreClosed
+	}
+
 	// Check if we are discarding new messages when we reach the limit.
 	if ms.cfg.Discard == DiscardNew {
 		if ms.cfg.MaxMsgs > 0 && ms.state.Msgs >= uint64(ms.cfg.MaxMsgs) {
