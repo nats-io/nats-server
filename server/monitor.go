@@ -2411,10 +2411,10 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 			filterIdx = i
 		}
 		jsi.StreamCnt += len(jsa.streams)
-		jsi.Memory += uint64(jsa.memTotal)
-		jsi.Store += uint64(jsa.storeTotal)
-		jsi.API.Total += jsa.apiTotal
-		jsi.API.Errors += jsa.apiErrors
+		jsi.Memory += uint64(jsa.usage.mem)
+		jsi.Store += uint64(jsa.usage.store)
+		jsi.API.Total += jsa.usage.api
+		jsi.API.Errors += jsa.usage.err
 		for _, stream := range jsa.streams {
 			streamState := stream.state()
 			jsi.MessageCnt += streamState.Msgs
