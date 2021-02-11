@@ -589,6 +589,11 @@ func (mb *msgBlock) rebuildState() (*LostStreamData, error) {
 		seq := le.Uint64(hdr[4:])
 		ts := int64(le.Uint64(hdr[12:]))
 
+		// If the first seq we read does not match our indexed first seq, reset.
+		if index == 0 && seq > mb.first.seq {
+			mb.first.seq = seq
+		}
+
 		// This is an old erased message, or a new one that we can track.
 		if seq == 0 || seq&ebit != 0 || seq < mb.first.seq {
 			seq = seq &^ ebit
@@ -972,6 +977,19 @@ func (fs *fileStore) SkipMsg() uint64 {
 	return seq
 }
 
+// Lock should be held.
+func (fs *fileStore) rebuildFirst() {
+	if len(fs.blks) == 0 {
+		return
+	}
+	if fmb := fs.blks[0]; fmb != nil {
+		fmb.removeIndexFile()
+		fmb.rebuildState()
+		fmb.writeIndexInfo()
+		fs.selectNextFirst()
+	}
+}
+
 // Will check the msg limit and drop firstSeq msg if needed.
 // Lock should be held.
 func (fs *fileStore) enforceMsgLimit() {
@@ -979,7 +997,10 @@ func (fs *fileStore) enforceMsgLimit() {
 		return
 	}
 	for nmsgs := fs.state.Msgs; nmsgs > uint64(fs.cfg.MaxMsgs); nmsgs = fs.state.Msgs {
-		fs.deleteFirstMsgLocked()
+		if removed, err := fs.deleteFirstMsgLocked(); err != nil || !removed {
+			fs.rebuildFirst()
+			return
+		}
 	}
 }
 
@@ -990,7 +1011,10 @@ func (fs *fileStore) enforceBytesLimit() {
 		return
 	}
 	for bs := fs.state.Bytes; bs > uint64(fs.cfg.MaxBytes); bs = fs.state.Bytes {
-		fs.deleteFirstMsgLocked()
+		if removed, err := fs.deleteFirstMsgLocked(); err != nil || !removed {
+			fs.rebuildFirst()
+			return
+		}
 	}
 }
 
@@ -1055,7 +1079,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 	mb.mu.Lock()
 
 	// Check cache. This should be very rare.
-	if mb.cache == nil || mb.cache.idx == nil {
+	if mb.cache == nil || mb.cache.idx == nil || seq < mb.cache.fseq && mb.cache.off > 0 {
 		mb.mu.Unlock()
 		fs.mu.Unlock()
 		if err := mb.loadMsgs(); err != nil {
@@ -1140,12 +1164,16 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 
 	// Kick outside of lock.
 	if shouldWriteIndex {
-		if qch == nil && !fs.fip {
-			mb.spinUpFlushLoop()
-		}
-		select {
-		case fch <- struct{}{}:
-		default:
+		if !fs.fip {
+			if qch == nil {
+				mb.spinUpFlushLoop()
+			}
+			select {
+			case fch <- struct{}{}:
+			default:
+			}
+		} else {
+			mb.writeIndexInfo()
 		}
 	}
 
@@ -3469,9 +3497,6 @@ func encodeConsumerState(state *ConsumerState) []byte {
 
 func (o *consumerFileStore) Update(state *ConsumerState) error {
 	// Sanity checks.
-	if state.Delivered.Consumer < 1 || state.Delivered.Stream < 1 {
-		return fmt.Errorf("bad delivered sequences")
-	}
 	if state.AckFloor.Consumer > state.Delivered.Consumer {
 		return fmt.Errorf("bad ack floor for consumer")
 	}

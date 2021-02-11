@@ -496,6 +496,29 @@ func TestFileStoreMsgLimit(t *testing.T) {
 	}
 }
 
+func TestFileStoreMsgLimitBug(t *testing.T) {
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage, MaxMsgs: 1})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	subj, msg := "foo", []byte("Hello World")
+	fs.StoreMsg(subj, nil, msg)
+	fs.StoreMsg(subj, nil, msg)
+	fs.Stop()
+
+	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage, MaxMsgs: 1})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	fs.StoreMsg(subj, nil, msg)
+}
+
 func TestFileStoreBytesLimit(t *testing.T) {
 	subj, msg := "foo", make([]byte, 512)
 	storedMsgSize := fileStoreMsgSize(subj, nil, msg)
@@ -1752,10 +1775,8 @@ func TestFileStoreConsumer(t *testing.T) {
 	if state, err := o.State(); state != nil || err != nil {
 		t.Fatalf("Unexpected state or error: %v", err)
 	}
+
 	state := &ConsumerState{}
-	if err := o.Update(state); err == nil {
-		t.Fatalf("Expected an error and got none")
-	}
 
 	updateAndCheck := func() {
 		t.Helper()
