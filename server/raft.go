@@ -14,25 +14,30 @@
 package server
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash"
 	"io/ioutil"
 	"math/rand"
 	"net"
 	"os"
 	"path"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/minio/highwayhash"
 )
 
 type RaftNode interface {
 	Propose(entry []byte) error
-	PausePropose()
-	ResumePropose()
 	ForwardProposal(entry []byte) error
-	Snapshot(snap []byte) error
+	InstallSnapshot(snap []byte) error
+	SendSnapshot(snap []byte) error
 	Applied(index uint64)
 	Compact(index uint64) error
 	State() RaftState
@@ -110,30 +115,31 @@ func (state RaftState) String() string {
 
 type raft struct {
 	sync.RWMutex
-	created time.Time
-	group   string
-	sd      string
-	id      string
-	wal     WAL
-	state   RaftState
-	csz     int
-	qn      int
-	peers   map[string]*lps
-	acks    map[uint64]map[string]struct{}
-	elect   *time.Timer
-	active  time.Time
-	term    uint64
-	pterm   uint64
-	pindex  uint64
-	sindex  uint64
-	commit  uint64
-	applied uint64
-	leader  string
-	vote    string
-	hash    string
-	s       *Server
-	c       *client
-	dflag   bool
+	created  time.Time
+	group    string
+	sd       string
+	id       string
+	wal      WAL
+	state    RaftState
+	hh       hash.Hash64
+	snapfile string
+	csz      int
+	qn       int
+	peers    map[string]*lps
+	acks     map[uint64]map[string]struct{}
+	elect    *time.Timer
+	active   time.Time
+	term     uint64
+	pterm    uint64
+	pindex   uint64
+	commit   uint64
+	applied  uint64
+	leader   string
+	vote     string
+	hash     string
+	s        *Server
+	c        *client
+	dflag    bool
 
 	// Subjects for votes, updates, replays.
 	psubj  string
@@ -157,7 +163,6 @@ type raft struct {
 
 	// Channels
 	propc    chan *Entry
-	pausec   chan struct{}
 	applyc   chan *CommittedEntry
 	sendq    chan *pubMsg
 	quit     chan struct{}
@@ -202,18 +207,18 @@ type RaftConfig struct {
 
 var (
 	errProposalFailed  = errors.New("raft: proposal failed")
-	errProposalsPaused = errors.New("raft: proposals paused")
 	errNotLeader       = errors.New("raft: not leader")
 	errAlreadyLeader   = errors.New("raft: already leader")
-	errNotCurrent      = errors.New("raft: not current")
 	errNilCfg          = errors.New("raft: no config given")
 	errUnknownPeer     = errors.New("raft: unknown peer")
 	errCorruptPeers    = errors.New("raft: corrupt peer state")
 	errStepdownFailed  = errors.New("raft: stepdown failed")
-	errPeersNotCurrent = errors.New("raft: all peers are not current")
 	errFailedToApply   = errors.New("raft: could not place apply entry")
 	errEntryLoadFailed = errors.New("raft: could not load entry from WAL")
 	errNodeClosed      = errors.New("raft: node is closed")
+	errBadSnapName     = errors.New("raft: snapshot name could not be parsed")
+	errNoSnapAvailable = errors.New("raft: no snapshot available")
+	errSnapshotCorrupt = errors.New("raft: snapshot corrupt")
 )
 
 // This will bootstrap a raftNode by writing its config into the store directory.
@@ -262,6 +267,20 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 		}
 	}
 
+	// Check the store directory. If we have a memory based WAL we need to make sure the directory is setup.
+	if stat, err := os.Stat(cfg.Store); os.IsNotExist(err) {
+		if err := os.MkdirAll(cfg.Store, 0755); err != nil {
+			return fmt.Errorf("raft: could not create storage directory - %v", err)
+		}
+	} else if stat == nil || !stat.IsDir() {
+		return fmt.Errorf("raft: storage directory is not a directory")
+	}
+	tmpfile, err := ioutil.TempFile(cfg.Store, "_test_")
+	if err != nil {
+		return fmt.Errorf("raft: storage directory is not writable")
+	}
+	os.Remove(tmpfile.Name())
+
 	return writePeerState(cfg.Store, &peerState{knownPeers, expected})
 }
 
@@ -279,6 +298,10 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 	sacc := s.sys.account
 	hash := s.sys.shash
 	s.mu.Unlock()
+
+	if err := os.MkdirAll(path.Join(cfg.Store, snapshotsDir), 0755); err != nil {
+		return nil, fmt.Errorf("could not create snapshots directory - %v", err)
+	}
 
 	ps, err := readPeerState(cfg.Store)
 	if err != nil {
@@ -318,10 +341,16 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		n.dflag = true
 	}
 
+	key := sha256.Sum256([]byte(n.group))
+	n.hh, _ = highwayhash.New64(key[:])
+
 	if term, vote, err := n.readTermVote(); err != nil && term > 0 {
 		n.term = term
 		n.vote = vote
 	}
+
+	// See if we have any snapshots and if so load and process on startup.
+	n.setupLastSnapshot()
 
 	if state := n.wal.State(); state.Msgs > 0 {
 		// TODO(dlc) - Recover our state here.
@@ -492,24 +521,13 @@ func (n *raft) Propose(data []byte) error {
 		n.debug("Proposal ignored, not leader")
 		return errNotLeader
 	}
-	propc, paused, quit := n.propc, n.pausec, n.quit
+	propc := n.propc
 	n.RUnlock()
-
-	if paused != nil {
-		n.debug("Proposals paused, will wait")
-		select {
-		case <-paused:
-		case <-quit:
-			return errProposalFailed
-		case <-time.After(422 * time.Millisecond):
-			return errProposalsPaused
-		}
-	}
 
 	select {
 	case propc <- &Entry{EntryNormal, data}:
 	default:
-		n.debug("Propose failed!")
+		n.warn("Propose failed to be placed on internal channel")
 		return errProposalFailed
 	}
 	return nil
@@ -529,27 +547,6 @@ func (n *raft) ForwardProposal(entry []byte) error {
 
 	n.sendRPC(subj, _EMPTY_, entry)
 	return nil
-}
-
-// PausePropose will pause new proposals.
-func (n *raft) PausePropose() {
-	n.Lock()
-	if n.pausec == nil {
-		n.pausec = make(chan struct{})
-	}
-	n.Unlock()
-}
-
-// ResumePropose will resum new proposals.
-func (n *raft) ResumePropose() {
-	n.Lock()
-	paused := n.pausec
-	n.pausec = nil
-	n.Unlock()
-
-	if paused != nil {
-		close(paused)
-	}
 }
 
 // ProposeAddPeer is called to add a peer to the group.
@@ -621,68 +618,238 @@ func (n *raft) ResumeApply() {
 	n.hcommit = 0
 }
 
-// Compact will compact our WAL. If this node is a leader we will want
-// all our peers to be at least to the same index. Non-leaders just compact
-// directly. This is for when we know we have our state on stable storage.
-// E.g JS Consumers.
+// Compact will compact our WAL.
+// This is for when we know we have our state on stable storage.
+// E.g. snapshots.
 func (n *raft) Compact(index uint64) error {
 	n.Lock()
-	defer n.Unlock()
-	// If we are not the leader compact at will.
-	if n.state != Leader {
-		_, err := n.wal.Compact(index)
-		return err
-	}
-	// We are the leader so we need to make sure all peers are at least up to this index.
-	for peer, ps := range n.peers {
-		if peer != n.id && ps.li < index {
-			return errPeersNotCurrent
-		}
-	}
-	return nil
+	_, err := n.wal.Compact(index)
+	n.Unlock()
+	return err
 }
 
 // Applied is to be called when the FSM has applied the committed entries.
 func (n *raft) Applied(index uint64) {
 	n.Lock()
-	defer n.Unlock()
-
 	// Ignore if already applied.
-	if index <= n.applied {
+	if index > n.applied {
+		n.applied = index
+	}
+	n.Unlock()
+}
+
+// For capturing data needed by snapshot.
+type snapshot struct {
+	lastTerm  uint64
+	lastIndex uint64
+	peerstate []byte
+	data      []byte
+}
+
+const minSnapshotLen = 28
+
+// Encodes a snapshot into a buffer for storage.
+// Lock should be held.
+func (n *raft) encodeSnapshot(snap *snapshot) []byte {
+	if snap == nil {
+		return nil
+	}
+	var le = binary.LittleEndian
+	buf := make([]byte, minSnapshotLen+len(snap.peerstate)+len(snap.data))
+	le.PutUint64(buf[0:], snap.lastTerm)
+	le.PutUint64(buf[8:], snap.lastIndex)
+	// Peer state
+	le.PutUint32(buf[16:], uint32(len(snap.peerstate)))
+	wi := 20
+	copy(buf[wi:], snap.peerstate)
+	wi += len(snap.peerstate)
+	// data itself.
+	copy(buf[wi:], snap.data)
+	wi += len(snap.data)
+
+	// Now do the hash for the end.
+	n.hh.Reset()
+	n.hh.Write(buf[:wi])
+	checksum := n.hh.Sum(nil)
+	copy(buf[wi:], checksum)
+	wi += len(checksum)
+	return buf[:wi]
+}
+
+// SendSnapshot will send the latest snapshot as a normal AE.
+// Should only be used when the upper layers know this is most recent.
+// Used when restoring streams etc.
+func (n *raft) SendSnapshot(data []byte) error {
+	n.sendAppendEntry([]*Entry{&Entry{EntrySnapshot, data}})
+	return nil
+}
+
+// Used to install a snapshot for the given term and applied index. This will release
+// all of the log entries up to and including index. This should not be called with
+// entries that have been applied to the FSM but have not been applied to the raft state.
+func (n *raft) InstallSnapshot(data []byte) error {
+	n.Lock()
+	if n.state == Closed {
+		n.Unlock()
+		return errNodeClosed
+	}
+
+	ae, err := n.loadEntry(n.applied)
+	if err != nil {
+		n.Unlock()
+		return err
+	}
+
+	snap := &snapshot{
+		lastTerm:  ae.term,
+		lastIndex: n.applied,
+		peerstate: encodePeerState(&peerState{n.peerNames(), n.csz}),
+		data:      data,
+	}
+
+	snapDir := path.Join(n.sd, snapshotsDir)
+	sn := fmt.Sprintf(snapFileT, snap.lastTerm, snap.lastIndex)
+	sfile := path.Join(snapDir, sn)
+
+	if err := ioutil.WriteFile(sfile, n.encodeSnapshot(snap), 0644); err != nil {
+		n.Unlock()
+		return err
+	}
+
+	// Remember our latest snapshot file.
+	n.snapfile = sfile
+	_, err = n.wal.Compact(snap.lastIndex + 1)
+	n.Unlock()
+
+	psnaps, _ := ioutil.ReadDir(snapDir)
+	// Remove any old snapshots.
+	for _, fi := range psnaps {
+		pn := fi.Name()
+		if pn != sn {
+			os.Remove(path.Join(snapDir, pn))
+		}
+	}
+
+	return err
+}
+
+const (
+	snapshotsDir = "snapshots"
+	snapFileT    = "snap.%d.%d"
+)
+
+func termAndIndexFromSnapFile(sn string) (term, index uint64, err error) {
+	if sn == _EMPTY_ {
+		return 0, 0, errBadSnapName
+	}
+	fn := filepath.Base(sn)
+	if n, err := fmt.Sscanf(fn, snapFileT, &term, &index); err != nil || n != 2 {
+		return 0, 0, errBadSnapName
+	}
+	return term, index, nil
+}
+
+func (n *raft) setupLastSnapshot() {
+	snapDir := path.Join(n.sd, snapshotsDir)
+	psnaps, err := ioutil.ReadDir(snapDir)
+	if err != nil {
 		return
 	}
 
-	// FIXME(dlc) - Check spec on error conditions, storage
-	n.applied = index
-	if index == n.sindex {
-		n.debug("Found snapshot entry: compacting log to index %d", index)
-		n.wal.Compact(index)
+	var lterm, lindex uint64
+	var latest string
+	for _, sf := range psnaps {
+		sfile := path.Join(snapDir, sf.Name())
+		var term, index uint64
+		term, index, err := termAndIndexFromSnapFile(sf.Name())
+		if err == nil {
+			if term > lterm {
+				lterm, lindex = term, index
+				latest = sfile
+			} else if term == lterm && index > lindex {
+				lindex = index
+				latest = sfile
+			}
+		} else {
+			// Clean this up, can't parse the name.
+			// TODO(dlc) - We could read in and check actual contents.
+			n.debug("Removing snapshot, can't parse name: %q", sf.Name())
+			os.Remove(sfile)
+		}
 	}
+
+	// Now cleanup any old entries
+	for _, sf := range psnaps {
+		sfile := path.Join(snapDir, sf.Name())
+		if sfile != latest {
+			n.debug("Removing old snapshot: %q", sfile)
+			os.Remove(sfile)
+		}
+	}
+
+	if latest == _EMPTY_ {
+		return
+	}
+
+	// Set latest snapshot we have.
+	n.Lock()
+	n.snapfile = latest
+	snap, err := n.loadLastSnapshot()
+	if err != nil {
+		os.Remove(n.snapfile)
+		n.snapfile = _EMPTY_
+	} else {
+		n.pindex = snap.lastIndex
+		n.pterm = snap.lastTerm
+		n.commit = snap.lastIndex
+		n.applyc <- &CommittedEntry{n.commit, []*Entry{&Entry{EntrySnapshot, snap.data}}}
+		n.wal.Compact(snap.lastIndex + 1)
+	}
+	n.Unlock()
 }
 
-// Snapshot is used to snapshot the fsm. This can only be called from a leader.
-// For now these are assumed to be small and will be placed into the log itself.
-// TODO(dlc) - For meta and consumers this is straightforward, and for streams sans the messages this is as well.
-func (n *raft) Snapshot(snap []byte) error {
-	n.Lock()
-	defer n.Unlock()
-
-	n.debug("Snapshot called with %d bytes, applied is %d", len(snap), n.applied)
-
-	if n.state != Leader {
-		return errNotLeader
+// loadLastSnapshot will load and return our last snapshot.
+// Lock should be held.
+func (n *raft) loadLastSnapshot() (*snapshot, error) {
+	if n.snapfile == _EMPTY_ {
+		return nil, errNoSnapAvailable
 	}
-	if !n.isCurrent() {
-		return errNotCurrent
+	buf, err := ioutil.ReadFile(n.snapfile)
+	if err != nil {
+		n.warn("Error reading snapshot: %v", err)
+		os.Remove(n.snapfile)
+		n.snapfile = _EMPTY_
+		return nil, err
 	}
-
-	select {
-	case n.propc <- &Entry{EntrySnapshot, snap}:
-	default:
-		return errProposalFailed
+	if len(buf) < minSnapshotLen {
+		n.warn("Snapshot corrupt, too short")
+		os.Remove(n.snapfile)
+		n.snapfile = _EMPTY_
+		return nil, errSnapshotCorrupt
 	}
 
-	return nil
+	// Check to make sure hash is consistent.
+	hoff := len(buf) - 8
+	lchk := buf[hoff:]
+	n.hh.Reset()
+	n.hh.Write(buf[:hoff])
+	if !bytes.Equal(lchk[:], n.hh.Sum(nil)) {
+		n.warn("Snapshot corrupt, checksums did not match")
+		os.Remove(n.snapfile)
+		n.snapfile = _EMPTY_
+		return nil, errSnapshotCorrupt
+	}
+
+	var le = binary.LittleEndian
+	lps := le.Uint32(buf[16:])
+	snap := &snapshot{
+		lastTerm:  le.Uint64(buf[0:]),
+		lastIndex: le.Uint64(buf[8:]),
+		peerstate: buf[20 : 20+lps],
+		data:      buf[20+lps : hoff],
+	}
+
+	return snap, nil
 }
 
 // Leader returns if we are the leader for our group.
@@ -889,12 +1056,12 @@ func (n *raft) shutdown(shouldDelete bool) {
 	n.state = Closed
 	s, g, wal := n.s, n.group, n.wal
 
-	// Delete our peer state and vote state.
+	// Delete our peer state and vote state and any snapshots.
 	if shouldDelete {
 		os.Remove(path.Join(n.sd, peerStateFile))
 		os.Remove(path.Join(n.sd, termVoteFile))
+		os.RemoveAll(path.Join(n.sd, snapshotsDir))
 	}
-
 	n.Unlock()
 
 	s.unregisterRaftNode(g)
@@ -1076,19 +1243,20 @@ type EntryType uint8
 
 const (
 	EntryNormal EntryType = iota
-	EntrySnapshot
+	EntryOldSnapshot
 	EntryPeerState
 	EntryAddPeer
 	EntryRemovePeer
 	EntryLeaderTransfer
+	EntrySnapshot
 )
 
 func (t EntryType) String() string {
 	switch t {
 	case EntryNormal:
 		return "Normal"
-	case EntrySnapshot:
-		return "Snapshot"
+	case EntryOldSnapshot:
+		return "OldSnapshot"
 	case EntryPeerState:
 		return "PeerState"
 	case EntryAddPeer:
@@ -1097,6 +1265,8 @@ func (t EntryType) String() string {
 		return "RemovePeer"
 	case EntryLeaderTransfer:
 		return "LeaderTransfer"
+	case EntrySnapshot:
+		return "Snapshot"
 	}
 	return fmt.Sprintf("Unknown [%d]", uint8(t))
 }
@@ -1479,6 +1649,19 @@ func (n *raft) runCatchup(peer, subj string, indexUpdatesC <-chan uint64) {
 	}
 }
 
+// Lock should be held.
+func (n *raft) sendSnapshotToFollower(subject string) (uint64, error) {
+	snap, err := n.loadLastSnapshot()
+	if err != nil {
+		return 0, err
+	}
+	// Go ahead and send the snapshot and peerstate here as first append entry to the catchup follower.
+	ae := n.buildAppendEntry([]*Entry{&Entry{EntrySnapshot, snap.data}, &Entry{EntryPeerState, snap.peerstate}})
+	ae.pterm, ae.pindex = snap.lastTerm, snap.lastIndex
+	n.sendRPC(subject, n.areply, ae.encode())
+	return snap.lastIndex, nil
+}
+
 func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	n.debug("Being asked to catch up follower: %q", ar.peer)
 	n.Lock()
@@ -1490,7 +1673,22 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 		delete(n.progress, ar.peer)
 		ch <- n.pindex
 	}
-	ae, err := n.loadEntry(ar.index + 1)
+	// Check to make sure we have this entry.
+	start := ar.index + 1
+	state := n.wal.State()
+
+	if start < state.FirstSeq {
+		n.debug("Need to send snapshot to follower")
+		var err error
+		if _, err = n.sendSnapshotToFollower(ar.reply); err != nil {
+			n.error("Error sending snapshot to followers: %v", err)
+			n.attemptStepDown(noLeader)
+			n.Unlock()
+			return
+		}
+	}
+
+	ae, err := n.loadEntry(start)
 	if err != nil {
 		ae, err = n.loadFirstEntry()
 	}
@@ -1552,6 +1750,9 @@ func (n *raft) applyCommit(index uint64) error {
 		switch e.Type {
 		case EntryNormal:
 			committed = append(committed, e)
+		case EntryOldSnapshot:
+			// For old snapshots in our WAL.
+			committed = append(committed, &Entry{EntrySnapshot, e.Data})
 		case EntrySnapshot:
 			committed = append(committed, e)
 		case EntryPeerState:
@@ -1813,14 +2014,12 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	// Is this a new entry?
 	isNew := sub == n.aesub
 
-	if isNew {
-		// Track leader directly
-		if ae.leader != noLeader {
-			if ps := n.peers[ae.leader]; ps != nil {
-				ps.ts = time.Now().UnixNano()
-			} else {
-				n.peers[ae.leader] = &lps{time.Now().UnixNano(), 0}
-			}
+	// Track leader directly
+	if isNew && ae.leader != noLeader {
+		if ps := n.peers[ae.leader]; ps != nil {
+			ps.ts = time.Now().UnixNano()
+		} else {
+			n.peers[ae.leader] = &lps{time.Now().UnixNano(), 0}
 		}
 	}
 
@@ -1832,18 +2031,18 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	}
 
 	// If we are catching up ignore old catchup subs.
-	// This can happen when we stall a cacthup.
-	if catchingUp && !isNew && sub != n.catchup.sub {
+	// This could happen when we stall or cancel a catchup.
+	if !isNew && sub != n.catchup.sub {
 		return
 	}
 
 	// Check state if we are catching up.
-	if catchingUp && isNew {
+	if catchingUp {
 		if cs := n.catchup; cs != nil && n.pterm >= cs.cterm && n.pindex >= cs.cindex {
 			// If we are here we are good, so if we have a catchup pending we can cancel.
 			n.cancelCatchup()
 			catchingUp = false
-		} else {
+		} else if isNew {
 			var ar *appendEntryResponse
 			var inbox string
 			// Check to see if we are stalled. If so recreate our catchup state and resend response.
@@ -1883,7 +2082,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	}
 
 	if ae.pterm != n.pterm || ae.pindex != n.pindex {
-		// If this is a lower index that what we were expecting.
+		// If this is a lower index than what we were expecting.
 		if ae.pindex < n.pindex {
 			var ar *appendEntryResponse
 			if eae, err := n.loadEntry(ae.pindex); err == nil && eae != nil {
@@ -1904,17 +2103,42 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			return
 		}
 
-		// Check if we are catching up. If we are here we know this is a catchup messages since we
-		// ignore new ones above while catching up. We also know it is not what we expected, so we
-		// could need to adjust our starting index since the leader does not have entries prior, or
-		// we missed some catchup messages.
+		// Check if we are catching up. If we are here we know the leader did not have all of the entries
+		// so make sure this is a snapshot entry. If it is not start the catchup process again since it
+		// means we missed additional messages.
 		if catchingUp {
-			if len(ae.entries) > 0 {
-				n.debug("Should reset index for wal to %d", ae.pindex+1)
-				n.wal.Compact(ae.pindex + 1)
-				n.pindex = ae.pindex
-				n.commit = ae.pindex
+			// Snapshots and peerstate will always be together when a leader is catching us up.
+			if len(ae.entries) != 2 || ae.entries[0].Type != EntrySnapshot || ae.entries[1].Type != EntryPeerState {
+				n.warn("Expected first catchup entry to be a snapshot and peerstate, will retry")
+				n.cancelCatchup()
+				n.Unlock()
+				return
 			}
+			if ps, err := decodePeerState(ae.entries[1].Data); err == nil {
+				n.processPeerState(ps)
+				// Also need to copy from client's buffer.
+				ae.entries[0].Data = append(ae.entries[0].Data[:0:0], ae.entries[0].Data...)
+			} else {
+				n.warn("Could not parse snapshot peerstate correctly")
+				n.cancelCatchup()
+				n.Unlock()
+				return
+			}
+			n.pindex = ae.pindex
+			n.pterm = ae.pterm
+			n.commit = ae.commit
+			n.wal.Compact(n.pindex + 1)
+
+			// Now send snapshot to upper levels. Only send the snapshot, not the peerstate entry.
+			select {
+			case n.applyc <- &CommittedEntry{n.commit, ae.entries[:1]}:
+			default:
+				n.debug("Failed to place snapshot entry onto our apply channel")
+				n.commit--
+			}
+			n.Unlock()
+			return
+
 		} else {
 			n.debug("AppendEntry did not match %d %d with %d %d", ae.pterm, ae.pindex, n.pterm, n.pindex)
 			// Reset our term.
@@ -1940,6 +2164,9 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 					return
 				}
 				n.debug("Error storing to WAL: %v", err)
+
+				//FIXME(dlc)!!, WARN AT LEAST, RESPOND FALSE, return etc!
+
 			}
 		} else {
 			// This is a replay on startup so just take the appendEntry version.
@@ -1965,10 +2192,6 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 					} else {
 						n.peers[newPeer] = &lps{time.Now().UnixNano(), 0}
 					}
-				}
-			case EntrySnapshot:
-				if ae.pindex+1 > n.sindex {
-					n.sindex = ae.pindex + 1
 				}
 			}
 		}
@@ -2042,8 +2265,8 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 	// Sanity checking for now.
 	if ae.pindex != seq-1 {
 		fmt.Printf("[%s] n is %+v\n\n", n.s, n)
-		fmt.Printf("[%s] n.cactchup is %+v\n", n.s, n.catchup)
-		panic(fmt.Sprintf("[%s-%s] Placed an entry at the wrong index, ae is %+v, index is %d\n\n", n.s, n.group, ae, seq))
+		fmt.Printf("[%s] n.catchup is %+v\n", n.s, n.catchup)
+		panic(fmt.Sprintf("[%s-%s] Placed an entry at the wrong index, ae is %+v, seq is %d, n.pindex is %d\n\n", n.s, n.group, ae, seq, n.pindex))
 	}
 
 	n.pterm = ae.term
@@ -2066,12 +2289,6 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 		}
 		// We count ourselves.
 		n.acks[n.pindex] = map[string]struct{}{n.id: struct{}{}}
-		// Check for snapshot
-		for _, e := range entries {
-			if e.Type == EntrySnapshot {
-				n.sindex = n.pindex
-			}
-		}
 		n.active = time.Now()
 	}
 	n.sendRPC(n.asubj, n.areply, ae.buf)
@@ -2082,9 +2299,13 @@ type peerState struct {
 	clusterSize int
 }
 
+func peerStateBufSize(ps *peerState) int {
+	return 4 + 4 + (8 * len(ps.knownPeers))
+}
+
 func encodePeerState(ps *peerState) []byte {
 	var le = binary.LittleEndian
-	buf := make([]byte, 4+4+(8*len(ps.knownPeers)))
+	buf := make([]byte, peerStateBufSize(ps))
 	le.PutUint32(buf[0:], uint32(ps.clusterSize))
 	le.PutUint32(buf[4:], uint32(len(ps.knownPeers)))
 	wi := 8

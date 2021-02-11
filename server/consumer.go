@@ -665,7 +665,7 @@ func (o *consumer) setLeader(isLeader bool) {
 			return
 		}
 		// Setup the internal sub for next message requests.
-		if !o.isPushMode() {
+		if o.isPullMode() {
 			if o.reqSub, err = o.subscribeInternal(o.nextMsgSubj, o.processNextMsgReq); err != nil {
 				o.mu.Unlock()
 				o.deleteWithoutAdvisory()

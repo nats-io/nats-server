@@ -218,7 +218,8 @@ func (s *Server) JetStreamSnapshotMeta() error {
 	if !cc.isLeader() {
 		return errNotLeader
 	}
-	return cc.meta.Snapshot(js.metaSnapshot())
+
+	return cc.meta.InstallSnapshot(js.metaSnapshot())
 }
 
 func (s *Server) JetStreamStepdownStream(account, stream string) error {
@@ -274,11 +275,7 @@ func (s *Server) JetStreamSnapshotStream(account, stream string) error {
 	n := mset.node
 	mset.mu.RUnlock()
 
-	n.PausePropose()
-	err = n.Snapshot(mset.stateSnapshot())
-	n.ResumePropose()
-
-	return err
+	return n.InstallSnapshot(mset.stateSnapshot())
 }
 
 func (s *Server) JetStreamClusterPeers() []string {
@@ -460,9 +457,10 @@ func (js *jetStream) setupMetaGroup() error {
 
 	// Setup our WAL for the metagroup.
 	sysAcc := s.SystemAccount()
-	stateDir := path.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, defaultMetaGroupName)
-	fs, bootstrap, err := newFileStore(
-		FileStoreConfig{StoreDir: stateDir, BlockSize: defaultMetaFSBlkSize},
+	storeDir := path.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, defaultMetaGroupName)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMetaFSBlkSize},
 		StreamConfig{Name: defaultMetaGroupName, Storage: FileStorage},
 	)
 	if err != nil {
@@ -470,11 +468,10 @@ func (js *jetStream) setupMetaGroup() error {
 		return err
 	}
 
-	cfg := &RaftConfig{Name: defaultMetaGroupName, Store: stateDir, Log: fs}
+	cfg := &RaftConfig{Name: defaultMetaGroupName, Store: storeDir, Log: fs}
 
-	if bootstrap {
+	if _, err := readPeerState(storeDir); err != nil {
 		s.Noticef("JetStream cluster bootstrapping")
-		// FIXME(dlc) - Make this real.
 		peers := s.ActivePeers()
 		s.Debugf("JetStream cluster initial peers: %+v", peers)
 		if err := s.bootstrapRaftNode(cfg, peers, false); err != nil {
@@ -483,6 +480,7 @@ func (js *jetStream) setupMetaGroup() error {
 	} else {
 		s.Noticef("JetStream cluster recovering state")
 	}
+
 	// Start up our meta node.
 	n, err := s.startRaftNode(cfg)
 	if err != nil {
@@ -521,6 +519,26 @@ func (js *jetStream) server() *Server {
 	s := js.srv
 	js.mu.RUnlock()
 	return s
+}
+
+// Will respond if we do not think we have a metacontroller leader.
+func (js *jetStream) isLeaderless() bool {
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+
+	cc := js.cluster
+	if cc == nil {
+		return false
+	}
+
+	// If we don't have a leader.
+	if cc.meta.GroupLeader() == _EMPTY_ {
+		// Make sure we have been running for enough time.
+		if time.Since(cc.meta.Created()) > lostQuorumInterval {
+			return true
+		}
+	}
+	return false
 }
 
 // Will respond iff we are a member and we know we have no leader.
@@ -657,14 +675,16 @@ func (cc *jetStreamCluster) isConsumerLeader(account, stream, consumer string) b
 		return false
 	}
 	// Check if we are the leader of this raftGroup assigned to this consumer.
+	ca := sa.consumers[consumer]
+	if ca == nil {
+		return false
+	}
+	rg := ca.Group
 	ourID := cc.meta.ID()
-	for _, ca := range sa.consumers {
-		rg := ca.Group
-		for _, peer := range rg.Peers {
-			if peer == ourID {
-				if len(rg.Peers) == 1 || (rg.node != nil && rg.node.Leader()) {
-					return true
-				}
+	for _, peer := range rg.Peers {
+		if peer == ourID {
+			if len(rg.Peers) == 1 || (rg.node != nil && rg.node.Leader()) {
+				return true
 			}
 		}
 	}
@@ -672,12 +692,7 @@ func (cc *jetStreamCluster) isConsumerLeader(account, stream, consumer string) b
 }
 
 func (js *jetStream) monitorCluster() {
-	const (
-		compactInterval  = 5 * time.Minute
-		compactSizeLimit = 64 * 1024
-	)
-
-	s, cc, n := js.server(), js.cluster, js.getMetaGroup()
+	s, n := js.server(), js.getMetaGroup()
 	qch, lch, ach := n.QuitC(), n.LeadChangeC(), n.ApplyC()
 
 	defer s.grWG.Done()
@@ -685,25 +700,17 @@ func (js *jetStream) monitorCluster() {
 	s.Debugf("Starting metadata monitor")
 	defer s.Debugf("Exiting metadata monitor")
 
+	const compactInterval = 2 * time.Minute
 	t := time.NewTicker(compactInterval)
 	defer t.Stop()
 
-	isLeader := cc.isLeader()
-
+	var isLeader bool
 	var lastSnap []byte
-	var snapout bool
 
-	// Only to be called from leader.
-	attemptSnapshot := func() {
-		if snapout {
-			return
-		}
-		n.PausePropose()
-		defer n.ResumePropose()
+	doSnapshot := func() {
 		if snap := js.metaSnapshot(); !bytes.Equal(lastSnap, snap) {
-			if err := n.Snapshot(snap); err == nil {
+			if err := n.InstallSnapshot(snap); err == nil {
 				lastSnap = snap
-				snapout = true
 			}
 		}
 	}
@@ -726,28 +733,22 @@ func (js *jetStream) monitorCluster() {
 			// FIXME(dlc) - Deal with errors.
 			if hadSnapshot, didRemoval, err := js.applyMetaEntries(ce.Entries, isRecovering); err == nil {
 				n.Applied(ce.Index)
-				if hadSnapshot {
-					snapout = false
-					if !isRecovering {
-						n.Compact(ce.Index)
-					}
-				}
-				if didRemoval {
-					attemptSnapshot()
+				if (hadSnapshot && !isRecovering) || didRemoval {
+					// Since we received one make sure we have our own since we do not store
+					// our meta state outside of raft.
+					doSnapshot()
 				}
 			}
-			if isLeader && !snapout {
-				_, b := n.Size()
-				if b > compactSizeLimit {
-					attemptSnapshot()
+			// See if we could save some memory here.
+			if lastSnap != nil {
+				if _, b := n.Size(); b > uint64(len(lastSnap)*4) {
+					doSnapshot()
 				}
 			}
 		case isLeader = <-lch:
 			js.processLeaderChange(isLeader)
 		case <-t.C:
-			if isLeader && !snapout {
-				attemptSnapshot()
-			}
+			doSnapshot()
 		}
 	}
 }
@@ -795,6 +796,9 @@ func (js *jetStream) metaSnapshot() []byte {
 }
 
 func (js *jetStream) applyMetaSnapshot(buf []byte, isRecovering bool) error {
+	if len(buf) == 0 {
+		return nil
+	}
 	jse, err := s2.Decode(nil, buf)
 	if err != nil {
 		return err
@@ -803,6 +807,7 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, isRecovering bool) error {
 	if err = json.Unmarshal(jse, &wsas); err != nil {
 		return err
 	}
+
 	// Build our new version here outside of js.
 	streams := make(map[string]map[string]*streamAssignment)
 	for _, wsa := range wsas {
@@ -991,6 +996,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 					return didSnap, didRemove, err
 				}
 				if isRecovering {
+					panic("winner")
 					js.setStreamAssignmentResponded(sa)
 				}
 				js.processStreamRemoval(sa)
@@ -1087,21 +1093,18 @@ func (js *jetStream) createRaftGroup(rg *raftGroup) error {
 		return errors.New("shutting down")
 	}
 
-	stateDir := path.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, rg.Name)
-	fs, bootstrap, err := newFileStore(
-		FileStoreConfig{StoreDir: stateDir, BlockSize: 32 * 1024 * 1024},
-		StreamConfig{Name: rg.Name, Storage: FileStorage, Replicas: 2},
-	)
+	storeDir := path.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, rg.Name)
+	ms, err := newMemStore(&StreamConfig{Name: rg.Name, Storage: MemoryStorage})
 	if err != nil {
-		s.Errorf("Error creating filestore: %v", err)
+		s.Errorf("Error creating memstore: %v", err)
 		return err
 	}
+	cfg := &RaftConfig{Name: rg.Name, Store: storeDir, Log: ms}
 
-	cfg := &RaftConfig{Name: rg.Name, Store: stateDir, Log: fs}
-
-	if bootstrap {
+	if _, err := readPeerState(storeDir); err != nil {
 		s.bootstrapRaftNode(cfg, rg.Peers, true)
 	}
+
 	n, err := s.startRaftNode(cfg)
 	if err != nil {
 		s.Debugf("Error creating raft group: %v", err)
@@ -1150,14 +1153,14 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 
 	qch, lch, ach := n.QuitC(), n.LeadChangeC(), n.ApplyC()
 
-	const (
-		compactInterval  = 10 * time.Minute
-		compactSizeLimit = 64 * 1024 * 1024
-		compactMinWait   = 5 * time.Second
-	)
-
 	s.Debugf("Starting stream monitor for '%s > %s'", sa.Client.Account, sa.Config.Name)
 	defer s.Debugf("Exiting stream monitor for '%s > %s'", sa.Client.Account, sa.Config.Name)
+
+	const (
+		compactInterval  = 2 * time.Minute
+		compactSizeLimit = 32 * 1024 * 1024
+		compactNumLimit  = 4096
+	)
 
 	t := time.NewTicker(compactInterval)
 	defer t.Stop()
@@ -1173,30 +1176,16 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 		return
 	}
 
-	var (
-		lastSnap   []byte
-		snapout    bool
-		lastFailed time.Time
-	)
+	var lastSnap []byte
 
-	// Only to be called from leader.
-	attemptSnapshot := func() {
-		if mset == nil || isRestore || snapout {
+	// Should only to be called from leader.
+	doSnapshot := func() {
+		if mset == nil || isRestore {
 			return
 		}
-		n.PausePropose()
-		defer n.ResumePropose()
 		if snap := mset.stateSnapshot(); !bytes.Equal(lastSnap, snap) {
-			if !lastFailed.IsZero() && time.Since(lastFailed) <= compactMinWait {
-				s.Debugf("Stream compaction delayed")
-				return
-			}
-			if err := n.Snapshot(snap); err != nil {
-				lastFailed = time.Now()
-			} else {
+			if err := n.InstallSnapshot(snap); err == nil {
 				lastSnap = snap
-				snapout = true
-				lastFailed = time.Time{}
 			}
 		}
 	}
@@ -1204,11 +1193,52 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 	// We will establish a restoreDoneCh no matter what. Will never be triggered unless
 	// we replace with the restore chan.
 	restoreDoneCh := make(<-chan error)
-
 	isRecovering := true
 
 	for {
 		select {
+		case <-s.quitCh:
+			return
+		case <-qch:
+			return
+		case ce := <-ach:
+			// No special processing needed for when we are caught up on restart.
+			if ce == nil {
+				isRecovering = false
+				continue
+			}
+			// Apply our entries.
+			if err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
+				n.Applied(ce.Index)
+				if !isLeader {
+					// If over 32MB go ahead and compact if not the leader.
+					if m, b := n.Size(); m > compactNumLimit || b > compactSizeLimit {
+						n.Compact(ce.Index)
+					}
+				}
+			} else {
+				s.Warnf("Error applying entries to '%s > %s'", sa.Client.Account, sa.Config.Name)
+			}
+			if isLeader && lastSnap != nil {
+				// If over 32MB go ahead and compact if not the leader.
+				if m, b := n.Size(); m > compactNumLimit || b > compactSizeLimit {
+					doSnapshot()
+				}
+			}
+		case isLeader = <-lch:
+			if isLeader && isRestore {
+				acc, _ := s.LookupAccount(sa.Client.Account)
+				restoreDoneCh = s.processStreamRestore(sa.Client, acc, sa.Config.Name, _EMPTY_, sa.Reply, _EMPTY_)
+			} else {
+				if !isLeader && n.GroupLeader() != noLeader {
+					js.setStreamAssignmentResponded(sa)
+				}
+				js.processStreamLeaderChange(mset, isLeader)
+			}
+		case <-t.C:
+			if isLeader {
+				doSnapshot()
+			}
 		case err := <-restoreDoneCh:
 			// We have completed a restore from snapshot on this server. The stream assignment has
 			// already been assigned but the replicas will need to catch up out of band. Consumers
@@ -1252,8 +1282,11 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 			if !isLeader {
 				panic("Finished restore but not leader")
 			}
+			// Trigger the stream followers to catchup.
+			if n := mset.raftNode(); n != nil {
+				n.SendSnapshot(mset.stateSnapshot())
+			}
 			js.processStreamLeaderChange(mset, isLeader)
-			attemptSnapshot()
 
 			// Check to see if we have restored consumers here.
 			// These are not currently assigned so we will need to do so here.
@@ -1288,7 +1321,11 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 							js.mu.RUnlock()
 							if ca == nil {
 								s.Warnf("Consumer assignment has not been assigned, retrying")
-								meta.ForwardProposal(addEntry)
+								if meta != nil {
+									meta.ForwardProposal(addEntry)
+								} else {
+									return
+								}
 							} else {
 								return
 							}
@@ -1296,67 +1333,20 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 					}()
 				}
 			}
-		case <-s.quitCh:
-			return
-		case <-qch:
-			return
-		case ce := <-ach:
-			// No special processing needed for when we are caught up on restart.
-			if ce == nil {
-				isRecovering = false
-				continue
-			}
-			if mset == nil && isRestore {
-				isRestore = false
-				sa.Restore = nil
-				if mset, err = acc.addStreamWithAssignment(sa.Config, nil, sa); err != nil {
-					s.Warnf("Could not add stream after restore '%s > %s': %v", sa.Client.Account, sa.Config.Name, err)
-					return
-				}
-			}
-			// Apply our entries.
-			if hadSnapshot, didRemove, err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
-				n.Applied(ce.Index)
-				if hadSnapshot {
-					snapout = false
-				}
-				if isLeader && didRemove {
-					attemptSnapshot()
-				}
-			} else {
-				s.Warnf("Error applying entries to '%s > %s'", sa.Client.Account, sa.Config.Name)
-			}
-			if isLeader && !snapout {
-				if _, b := n.Size(); b > compactSizeLimit {
-					attemptSnapshot()
-				}
-			}
-		case isLeader = <-lch:
-			if isLeader && isRestore {
-				acc, _ := s.LookupAccount(sa.Client.Account)
-				restoreDoneCh = s.processStreamRestore(sa.Client, acc, sa.Config.Name, _EMPTY_, sa.Reply, _EMPTY_)
-			} else {
-				if !isLeader && n.GroupLeader() != noLeader {
-					js.setStreamAssignmentResponded(sa)
-				}
-				js.processStreamLeaderChange(mset, isLeader)
-			}
-		case <-t.C:
-			if isLeader {
-				attemptSnapshot()
-			}
 		}
 	}
 }
 
-func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isRecovering bool) (bool, bool, error) {
-	var didSnap, didRemove bool
+func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isRecovering bool) error {
 	for _, e := range ce.Entries {
 		if e.Type == EntrySnapshot {
 			if !isRecovering {
-				mset.processSnapshot(e.Data)
+				var snap streamSnapshot
+				if err := json.Unmarshal(e.Data, &snap); err != nil {
+					return err
+				}
+				mset.processSnapshot(&snap)
 			}
-			didSnap = true
 		} else if e.Type == EntryRemovePeer {
 			js.mu.RLock()
 			ourID := js.cluster.meta.ID()
@@ -1364,7 +1354,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 			if peer := string(e.Data); peer == ourID {
 				mset.stop(true, false)
 			}
-			return false, false, nil
+			return nil
 		} else {
 			buf := e.Data
 			switch entryOp(buf[0]) {
@@ -1387,7 +1377,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						s := js.srv
 						s.Errorf("JetStream out of space, will be DISABLED")
 						js.srv.DisableJetStream()
-						return didSnap, didRemove, err
+						return err
 					}
 				}
 			case deleteMsgOp:
@@ -1406,7 +1396,6 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				if err != nil && !isRecovering {
 					s.Debugf("JetStream cluster failed to delete msg %d from stream %q for account %q: %v", md.Seq, md.Stream, md.Client.Account, err)
 				}
-				didRemove = removed
 
 				js.mu.RLock()
 				isLeader := cc.isStreamLeader(md.Client.Account, md.Stream)
@@ -1444,7 +1433,6 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				if err != nil {
 					s.Warnf("JetStream cluster failed to purge stream %q for account %q: %v", sp.Stream, sp.Client.Account, err)
 				}
-				didRemove = purged > 0
 
 				js.mu.RLock()
 				isLeader := js.cluster.isStreamLeader(sp.Client.Account, sp.Stream)
@@ -1466,7 +1454,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 			}
 		}
 	}
-	return didSnap, didRemove, nil
+	return nil
 }
 
 // Returns the PeerInfo for all replicas of a raft node. This is different than node.Peers()
@@ -2101,7 +2089,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment) {
 	}
 
 	if err != nil {
-		js.srv.Debugf("Consumer create failed for '%s > %s > %s': %v\n", ca.Client.Account, ca.Stream, ca.Name, err)
+		s.Debugf("Consumer create failed for '%s > %s > %s': %v\n", ca.Client.Account, ca.Stream, ca.Name, err)
 		ca.err = err
 		if rg.node != nil {
 			rg.node.Delete()
@@ -2251,7 +2239,7 @@ func (o *consumer) raftNode() RaftNode {
 }
 
 func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
-	s, n := js.server(), o.raftNode()
+	s, cc, n := js.server(), js.cluster, o.raftNode()
 	defer s.grWG.Done()
 
 	if n == nil {
@@ -2261,19 +2249,34 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 
 	qch, lch, ach := n.QuitC(), n.LeadChangeC(), n.ApplyC()
 
-	const (
-		compactInterval  = 1 * time.Minute
-		compactSizeLimit = 8 * 1024 * 1024
-	)
-
 	s.Debugf("Starting consumer monitor for '%s > %s > %s", o.acc.Name, ca.Stream, ca.Name)
 	defer s.Debugf("Exiting consumer monitor for '%s > %s > %s'", o.acc.Name, ca.Stream, ca.Name)
+
+	js.mu.RLock()
+	isLeader := cc.isConsumerLeader(ca.Client.Account, ca.Stream, ca.Name)
+	js.mu.RUnlock()
+
+	const (
+		compactInterval  = 2 * time.Minute
+		compactSizeLimit = 4 * 1024 * 1024
+		compactNumLimit  = 4096
+	)
 
 	t := time.NewTicker(compactInterval)
 	defer t.Stop()
 
-	// Our last applied.
-	last := uint64(0)
+	var lastSnap []byte
+
+	// Should only to be called from leader.
+	doSnapshot := func() {
+		if state, err := o.store.State(); err == nil && state != nil {
+			if snap := encodeConsumerState(state); !bytes.Equal(lastSnap, snap) {
+				if err := n.InstallSnapshot(snap); err == nil {
+					lastSnap = snap
+				}
+			}
+		}
+	}
 
 	for {
 		select {
@@ -2288,9 +2291,16 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			}
 			if _, err := js.applyConsumerEntries(o, ce); err == nil {
 				n.Applied(ce.Index)
-				last = ce.Index
-				if _, b := n.Size(); b > compactSizeLimit {
-					n.Compact(last)
+				// If over 4MB go ahead and compact if not the leader.
+				if !isLeader {
+					if m, b := n.Size(); m > compactNumLimit || b > compactSizeLimit {
+						n.Compact(ce.Index)
+					}
+				}
+			}
+			if isLeader && lastSnap != nil {
+				if _, b := n.Size(); b > uint64(len(lastSnap)*4) {
+					doSnapshot()
 				}
 			}
 		case isLeader := <-lch:
@@ -2299,9 +2309,8 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			}
 			js.processConsumerLeaderChange(o, isLeader)
 		case <-t.C:
-			// TODO(dlc) - We should have this delayed a bit to not race the invariants.
-			if last != 0 {
-				n.Compact(last)
+			if isLeader {
+				doSnapshot()
 			}
 		}
 	}
@@ -3598,19 +3607,13 @@ func (mset *stream) isCatchingUp() bool {
 }
 
 // Process a stream snapshot.
-func (mset *stream) processSnapshot(buf []byte) {
-	var snap streamSnapshot
-	if err := json.Unmarshal(buf, &snap); err != nil {
-		// Log error.
-		return
-	}
-
+func (mset *stream) processSnapshot(snap *streamSnapshot) {
 	// Update any deletes, etc.
-	mset.processSnapshotDeletes(&snap)
+	mset.processSnapshotDeletes(snap)
 
 	mset.mu.Lock()
 	state := mset.store.State()
-	sreq := mset.calculateSyncRequest(&state, &snap)
+	sreq := mset.calculateSyncRequest(&state, snap)
 	s, subject, n := mset.srv, mset.sa.Sync, mset.node
 	mset.mu.Unlock()
 
@@ -3654,7 +3657,8 @@ RETRY:
 	if sreq == nil {
 		mset.mu.Lock()
 		state := mset.store.State()
-		sreq = mset.calculateSyncRequest(&state, &snap)
+		sreq = mset.calculateSyncRequest(&state, snap)
+
 		mset.mu.Unlock()
 		if sreq == nil {
 			return
