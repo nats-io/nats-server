@@ -1488,6 +1488,9 @@ func (js *jetStream) checkPeers(rg *raftGroup) {
 }
 
 func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
+	if mset == nil {
+		return
+	}
 	sa := mset.streamAssignment()
 	if sa == nil {
 		return
@@ -1707,6 +1710,8 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	if sa.Restore != nil {
 		if len(rg.Peers) == 1 || rg.node != nil && rg.node.ID() == rg.Preferred {
 			shouldCreate = false
+		} else {
+			sa.Restore = nil
 		}
 	}
 
@@ -1830,7 +1835,11 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 									js.mu.RUnlock()
 									if ca == nil {
 										s.Warnf("Consumer assignment has not been assigned, retrying")
-										meta.ForwardProposal(addEntry)
+										if meta != nil {
+											meta.ForwardProposal(addEntry)
+										} else {
+											return
+										}
 									} else {
 										return
 									}
@@ -1838,7 +1847,6 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 							}()
 						}
 					}
-
 				case <-s.quitCh:
 					return
 				}
@@ -1853,7 +1861,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 func (js *jetStream) processStreamRemoval(sa *streamAssignment) {
 	js.mu.Lock()
 	s, cc := js.srv, js.cluster
-	if s == nil || cc == nil {
+	if s == nil || cc == nil || cc.meta == nil {
 		// TODO(dlc) - debug at least
 		js.mu.Unlock()
 		return

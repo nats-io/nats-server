@@ -1347,7 +1347,10 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 		mset.mu.Lock()
 		for _, o := range mset.consumers {
-			if o.isLeader() {
+			o.mu.RLock()
+			isLeader := o.isLeader()
+			o.mu.RUnlock()
+			if isLeader {
 				obs = append(obs, o)
 			}
 		}

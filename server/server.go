@@ -1647,8 +1647,9 @@ func (s *Server) Start() {
 // Shutdown will shutdown the server instance by kicking out the AcceptLoop
 // and closing all associated clients.
 func (s *Server) Shutdown() {
-	// Shutdown our raftnodes. If we are the leader we will attempt to transfer.
-	s.shutdownRaftNodes()
+	// Transfer off any raft nodes that we are a leader.
+	s.transferRaftLeaders()
+
 	// Shutdown the eventing system as needed.
 	// This is done first to send out any messages for
 	// account status. We will also clean up any

@@ -2774,6 +2774,7 @@ func TestJetStreamClusterRestartAndRemoveAdvisories(t *testing.T) {
 	defer usub.Unsubscribe()
 	nc.Flush()
 
+	checkSubsPending(t, csub, 0)
 	checkSubsPending(t, sub, 0)
 	checkSubsPending(t, usub, 0)
 
@@ -3495,7 +3496,7 @@ func TestJetStreamClusterStreamPerf(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	numConnections := 2
+	numConnections := 4
 	var conns []nats.JetStream
 	for i := 0; i < numConnections; i++ {
 		s := c.randomServer()
@@ -3504,7 +3505,7 @@ func TestJetStreamClusterStreamPerf(t *testing.T) {
 	}
 
 	toSend := 100000
-	numProducers := 10
+	numProducers := 8
 
 	payload := []byte("Hello JSC")
 

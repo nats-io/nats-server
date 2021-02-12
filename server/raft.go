@@ -490,26 +490,6 @@ func (s *Server) transferRaftLeaders() bool {
 	return didTransfer
 }
 
-func (s *Server) shutdownRaftNodes() {
-	if s == nil {
-		return
-	}
-
-	var nodes []RaftNode
-	s.rnMu.RLock()
-	for _, n := range s.raftNodes {
-		nodes = append(nodes, n)
-	}
-	s.rnMu.RUnlock()
-
-	for _, node := range nodes {
-		if node.Leader() {
-			node.StepDown()
-		}
-		node.Stop()
-	}
-}
-
 // Formal API
 
 // Propose will propose a new entry to the group.
@@ -718,7 +698,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 
 	// Remember our latest snapshot file.
 	n.snapfile = sfile
-	_, err = n.wal.Compact(snap.lastIndex + 1)
+	_, err = n.wal.Compact(snap.lastIndex)
 	n.Unlock()
 
 	psnaps, _ := ioutil.ReadDir(snapDir)
@@ -803,7 +783,7 @@ func (n *raft) setupLastSnapshot() {
 		n.pterm = snap.lastTerm
 		n.commit = snap.lastIndex
 		n.applyc <- &CommittedEntry{n.commit, []*Entry{&Entry{EntrySnapshot, snap.data}}}
-		n.wal.Compact(snap.lastIndex + 1)
+		n.wal.Compact(snap.lastIndex)
 	}
 	n.Unlock()
 }
@@ -1027,6 +1007,10 @@ func (n *raft) Peers() []*Peer {
 	return peers
 }
 
+func (n *raft) ApplyC() <-chan *CommittedEntry { return n.applyc }
+func (n *raft) LeadChangeC() <-chan bool       { return n.leadc }
+func (n *raft) QuitC() <-chan struct{}         { return n.quit }
+
 func (n *raft) Created() time.Time {
 	n.RLock()
 	defer n.RUnlock()
@@ -1040,10 +1024,6 @@ func (n *raft) Stop() {
 func (n *raft) Delete() {
 	n.shutdown(true)
 }
-
-func (n *raft) ApplyC() <-chan *CommittedEntry { return n.applyc }
-func (n *raft) LeadChangeC() <-chan bool       { return n.leadc }
-func (n *raft) QuitC() <-chan struct{}         { return n.quit }
 
 func (n *raft) shutdown(shouldDelete bool) {
 	n.Lock()
