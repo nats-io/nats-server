@@ -500,13 +500,15 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			// but we set it here to be able to identify it in the logs.
 			c.opts.Username = user.Username
 		} else {
-			if c.kind == CLIENT && c.opts.Username == "" && noAuthUser != "" {
+			if c.kind == CLIENT && c.opts.Username == _EMPTY_ && noAuthUser != _EMPTY_ {
 				if u, exists := s.users[noAuthUser]; exists {
+					c.mu.Lock()
 					c.opts.Username = u.Username
 					c.opts.Password = u.Password
+					c.mu.Unlock()
 				}
 			}
-			if c.opts.Username != "" {
+			if c.opts.Username != _EMPTY_ {
 				user, ok = s.users[c.opts.Username]
 				if !ok || !c.connectionTypeAllowed(user.AllowedConnectionTypes) {
 					s.mu.Unlock()

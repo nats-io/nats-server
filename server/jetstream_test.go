@@ -5941,6 +5941,87 @@ func TestJetStreamInterestRetentionStream(t *testing.T) {
 	}
 }
 
+func TestJetStreamInterestRetentionStreamWithFilteredConsumers(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *StreamConfig
+	}{
+		{"MemoryStore", &StreamConfig{Name: "DC", Subjects: []string{"*"}, Storage: MemoryStorage, Retention: InterestPolicy}},
+		{"FileStore", &StreamConfig{Name: "DC", Subjects: []string{"*"}, Storage: FileStorage, Retention: InterestPolicy}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer os.RemoveAll(config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().addStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.delete()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			fsub, err := js.SubscribeSync("foo")
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			defer fsub.Unsubscribe()
+
+			bsub, err := js.SubscribeSync("bar")
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			defer bsub.Unsubscribe()
+
+			msg := []byte("FILTERED")
+			sendMsg := func(subj string) {
+				t.Helper()
+				if _, err = js.Publish(subj, msg); err != nil {
+					t.Fatalf("Unexpected publish error: %v", err)
+				}
+			}
+
+			getAndAck := func(sub *nats.Subscription) {
+				t.Helper()
+				m, err := sub.NextMsg(time.Second)
+				if err != nil {
+					t.Fatalf("Unexpected error getting msg: %v", err)
+				}
+				m.Ack()
+			}
+
+			checkState := func(expected uint64) {
+				t.Helper()
+				si, err := js.StreamInfo("DC")
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				if si.State.Msgs != expected {
+					t.Fatalf("Expected %d msgs, got %d", expected, si.State.Msgs)
+				}
+			}
+
+			sendMsg("foo")
+			checkState(1)
+			getAndAck(fsub)
+			checkState(0)
+			sendMsg("bar")
+			sendMsg("foo")
+			checkState(2)
+			getAndAck(bsub)
+			checkState(1)
+			getAndAck(fsub)
+			checkState(0)
+		})
+	}
+}
+
 func TestJetStreamInterestRetentionWithWildcardsAndFilteredConsumers(t *testing.T) {
 	msc := StreamConfig{
 		Name:      "DCWC",

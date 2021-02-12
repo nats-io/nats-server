@@ -4576,7 +4576,12 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 	// Check our cache.
 	if pac, ok = c.in.pacache[string(c.pa.pacache)]; ok {
 		// Check the genid to see if it's still valid.
-		if genid := atomic.LoadUint64(&pac.acc.sl.genid); genid != pac.genid {
+		// sl could be swapped out on reload so need to lock.
+		pac.acc.mu.RLock()
+		sl := pac.acc.sl
+		pac.acc.mu.RUnlock()
+
+		if genid := atomic.LoadUint64(&sl.genid); genid != pac.genid {
 			ok = false
 			delete(c.in.pacache, string(c.pa.pacache))
 		} else {
@@ -4591,11 +4596,16 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 			return nil, nil
 		}
 
+		// sl could be swapped out on reload so need to lock.
+		acc.mu.RLock()
+		sl := acc.sl
+		acc.mu.RUnlock()
+
 		// Match against the account sublist.
-		r = acc.sl.Match(string(c.pa.subject))
+		r = sl.Match(string(c.pa.subject))
 
 		// Store in our cache
-		c.in.pacache[string(c.pa.pacache)] = &perAccountCache{acc, r, atomic.LoadUint64(&acc.sl.genid)}
+		c.in.pacache[string(c.pa.pacache)] = &perAccountCache{acc, r, atomic.LoadUint64(&sl.genid)}
 
 		// Check if we need to prune.
 		if len(c.in.pacache) > maxPerAccountCacheSize {

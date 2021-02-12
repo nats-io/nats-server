@@ -1305,7 +1305,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 		return
 	}
 
-	name := streamNameFromSubject(subject)
+	streamName := streamNameFromSubject(subject)
 
 	var resp = JSApiStreamInfoResponse{ApiResponse: ApiResponse{Type: JSApiStreamInfoResponseType}}
 
@@ -1317,14 +1317,8 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 			return
 		}
 
-		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
-			resp.Error = jsClusterNotAvailErr
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-
 		js.mu.RLock()
-		isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, name)
+		isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, streamName)
 		js.mu.RUnlock()
 
 		if isLeader && sa == nil {
@@ -1339,6 +1333,10 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		} else if sa == nil {
+			if js.isLeaderless() {
+				resp.Error = jsClusterNotAvailErr
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			}
 			return
 		}
 
@@ -1350,7 +1348,11 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 		}
 
 		// We have the stream assigned and a leader, so only the stream leader should answer.
-		if !acc.JetStreamIsStreamLeader(name) {
+		if !acc.JetStreamIsStreamLeader(streamName) {
+			if js.isLeaderless() {
+				resp.Error = jsClusterNotAvailErr
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			}
 			return
 		}
 	}
@@ -1366,7 +1368,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 		return
 	}
 
-	mset, err := acc.lookupStream(name)
+	mset, err := acc.lookupStream(streamName)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -2031,12 +2033,6 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 			return
 		}
 
-		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
-			resp.Error = jsClusterNotAvailErr
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-
 		js.mu.RLock()
 		isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, stream)
 		js.mu.RUnlock()
@@ -2053,6 +2049,10 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		} else if sa == nil {
+			if js.isLeaderless() {
+				resp.Error = jsClusterNotAvailErr
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			}
 			return
 		}
 
@@ -2065,6 +2065,10 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 
 		// We have the stream assigned and a leader, so only the stream leader should answer.
 		if !acc.JetStreamIsStreamLeader(stream) {
+			if js.isLeaderless() {
+				resp.Error = jsClusterNotAvailErr
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			}
 			return
 		}
 	}
@@ -2841,8 +2845,8 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 		return
 	}
 
-	stream := streamNameFromSubject(subject)
-	consumer := consumerNameFromSubject(subject)
+	streamName := streamNameFromSubject(subject)
+	consumerName := consumerNameFromSubject(subject)
 
 	var resp = JSApiConsumerInfoResponse{ApiResponse: ApiResponse{Type: JSApiConsumerInfoResponseType}}
 
@@ -2854,14 +2858,8 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 			return
 		}
 
-		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
-			resp.Error = jsClusterNotAvailErr
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-
 		js.mu.RLock()
-		isLeader, sa, ca := cc.isLeader(), js.streamAssignment(acc.Name, stream), js.consumerAssignment(acc.Name, stream, consumer)
+		isLeader, sa, ca := cc.isLeader(), js.streamAssignment(acc.Name, streamName), js.consumerAssignment(acc.Name, streamName, consumerName)
 		js.mu.RUnlock()
 
 		if isLeader && ca == nil {
@@ -2881,6 +2879,10 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		} else if ca == nil {
+			if js.isLeaderless() {
+				resp.Error = jsClusterNotAvailErr
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			}
 			return
 		}
 
@@ -2892,7 +2894,11 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 		}
 
 		// We have the consumer assigned and a leader, so only the consumer leader should answer.
-		if !acc.JetStreamIsConsumerLeader(stream, consumer) {
+		if !acc.JetStreamIsConsumerLeader(streamName, consumerName) {
+			if js.isLeaderless() {
+				resp.Error = jsClusterNotAvailErr
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			}
 			return
 		}
 	}
@@ -2908,14 +2914,14 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 		return
 	}
 
-	mset, err := acc.lookupStream(stream)
+	mset, err := acc.lookupStream(streamName)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
-	obs := mset.lookupConsumer(consumer)
+	obs := mset.lookupConsumer(consumerName)
 	if obs == nil {
 		resp.Error = jsNoConsumerErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))

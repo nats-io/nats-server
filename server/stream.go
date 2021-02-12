@@ -943,7 +943,7 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 		}
 		mset.store = ms
 	case FileStorage:
-		fs, _, err := newFileStoreWithCreated(*fsCfg, mset.cfg, mset.created)
+		fs, err := newFileStoreWithCreated(*fsCfg, mset.cfg, mset.created)
 		if err != nil {
 			mset.mu.Unlock()
 			return err
@@ -1347,7 +1347,10 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 		mset.mu.Lock()
 		for _, o := range mset.consumers {
-			if o.isLeader() {
+			o.mu.RLock()
+			isLeader := o.isLeader()
+			o.mu.RUnlock()
+			if isLeader {
 				obs = append(obs, o)
 			}
 		}
