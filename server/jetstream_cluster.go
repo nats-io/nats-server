@@ -2296,7 +2296,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			if ce == nil {
 				continue
 			}
-			if _, err := js.applyConsumerEntries(o, ce); err == nil {
+			if err := js.applyConsumerEntries(o, ce); err == nil {
 				n.Applied(ce.Index)
 				// If over 4MB go ahead and compact if not the leader.
 				if !isLeader {
@@ -2323,8 +2323,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	}
 }
 
-func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry) (bool, error) {
-	var didSnap bool
+func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry) error {
 	for _, e := range ce.Entries {
 		if e.Type == EntrySnapshot {
 			// No-op needed?
@@ -2333,7 +2332,6 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry) (bool
 				panic(err.Error())
 			}
 			o.store.Update(state)
-			didSnap = true
 		} else if e.Type == EntryRemovePeer {
 			js.mu.RLock()
 			ourID := js.cluster.meta.ID()
@@ -2341,7 +2339,7 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry) (bool
 			if peer := string(e.Data); peer == ourID {
 				o.stopWithFlags(true, false, false)
 			}
-			return false, nil
+			return nil
 		} else {
 			buf := e.Data
 			switch entryOp(buf[0]) {
@@ -2358,13 +2356,46 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry) (bool
 				if err != nil {
 					panic(err.Error())
 				}
-				o.store.UpdateAcks(dseq, sseq)
+				o.processReplicatedAck(dseq, sseq)
 			default:
 				panic(fmt.Sprintf("JetStream Cluster Unknown group entry op type! %v", entryOp(buf[0])))
 			}
 		}
 	}
-	return didSnap, nil
+	return nil
+}
+
+func (o *consumer) processReplicatedAck(dseq, sseq uint64) {
+	o.store.UpdateAcks(dseq, sseq)
+
+	var sagap uint64
+	o.mu.RLock()
+	if o.cfg.AckPolicy == AckAll {
+		if o.isLeader() {
+			sagap = sseq - o.asflr
+		} else {
+			// We are a follower so only have the store state, so read that in.
+			state, err := o.store.State()
+			if err != nil {
+				o.mu.RUnlock()
+				return
+			}
+			sagap = sseq - state.AckFloor.Stream
+		}
+	}
+	mset := o.mset
+	o.mu.RUnlock()
+
+	if mset != nil && mset.cfg.Retention != LimitsPolicy {
+		if sagap > 1 {
+			// FIXME(dlc) - This is very inefficient, will need to fix.
+			for seq := sseq; seq > sseq-sagap; seq-- {
+				mset.ackMsg(o, seq)
+			}
+		} else {
+			mset.ackMsg(o, sseq)
+		}
+	}
 }
 
 var errBadAckUpdate = errors.New("jetstream cluster bad replicated ack update")
