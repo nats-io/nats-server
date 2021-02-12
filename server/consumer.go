@@ -295,7 +295,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	}
 
 	// Make sure any partition subject is also a literal.
-	if config.FilterSubject != "" {
+	if config.FilterSubject != _EMPTY_ {
 		var checkSubject bool
 
 		mset.mu.RLock()
@@ -1063,6 +1063,19 @@ func (o *consumer) progressUpdate(seq uint64) {
 }
 
 // Lock should be held.
+func (o *consumer) updateSkipped() {
+	// Clustered mode and R>1 only.
+	if o.node == nil || !o.isLeader() {
+		return
+	}
+	var b [1 + 8]byte
+	b[0] = byte(updateSkipOp)
+	var le = binary.LittleEndian
+	le.PutUint64(b[1:], o.sseq)
+	o.node.Propose(b[:])
+}
+
+// Lock should be held.
 func (o *consumer) updateDelivered(dseq, sseq, dc uint64, ts int64) {
 	// Clustered mode and R>1.
 	if o.node != nil {
@@ -1499,20 +1512,38 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, doSample bool) {
 // This is called for interest based retention streams to remove messages.
 func (o *consumer) needAck(sseq uint64) bool {
 	var needAck bool
-	o.mu.Lock()
+	var asflr, osseq uint64
+	var pending map[uint64]*Pending
+	o.mu.RLock()
+	if o.isLeader() {
+		asflr, osseq = o.asflr, o.sseq
+		pending = o.pending
+	} else {
+		state, err := o.store.State()
+		if err != nil || state == nil {
+			o.mu.RUnlock()
+			return false
+		}
+		asflr, osseq = state.AckFloor.Stream, o.sseq
+		pending = state.Pending
+	}
 	switch o.cfg.AckPolicy {
 	case AckNone, AckAll:
-		needAck = sseq > o.asflr
+		needAck = sseq > asflr
 	case AckExplicit:
-		if sseq > o.asflr {
+		if sseq > asflr {
 			// Generally this means we need an ack, but just double check pending acks.
 			needAck = true
-			if len(o.pending) > 0 && sseq < o.sseq {
-				_, needAck = o.pending[sseq]
+			if sseq < osseq {
+				if len(pending) == 0 {
+					needAck = false
+				} else {
+					_, needAck = pending[sseq]
+				}
 			}
 		}
 	}
-	o.mu.Unlock()
+	o.mu.RUnlock()
 	return needAck
 }
 
@@ -1782,6 +1813,7 @@ func (o *consumer) getNextMsg() (subj string, hdr, msg []byte, seq uint64, dc ui
 			if dc == 1 { // First delivery.
 				o.sseq++
 				if o.cfg.FilterSubject != _EMPTY_ && !o.isFilteredMatch(subj) {
+					o.updateSkipped()
 					continue
 				}
 			}
@@ -2001,6 +2033,7 @@ func (o *consumer) deliverCurrentMsg(subj string, hdr, msg []byte, seq uint64, t
 	// If we are partitioned and we do not match, do not consider this a failure.
 	// Go ahead and return true.
 	if o.cfg.FilterSubject != _EMPTY_ && !o.isFilteredMatch(subj) {
+		o.updateSkipped()
 		o.mu.Unlock()
 		return true
 	}
@@ -2278,6 +2311,7 @@ func (o *consumer) selectSubjectLast() {
 		}
 		if o.isFilteredMatch(subj) {
 			o.sseq = seq
+			o.updateSkipped()
 			return
 		}
 	}

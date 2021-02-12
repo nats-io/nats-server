@@ -72,6 +72,8 @@ const (
 	updateAcksOp
 	// Compressed consumer assignments.
 	assignCompressedConsumerOp
+	// Filtered Consumer skip.
+	updateSkipOp
 )
 
 // raftGroups are controlled by the metagroup controller.
@@ -2357,6 +2359,13 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry) error
 					panic(err.Error())
 				}
 				o.processReplicatedAck(dseq, sseq)
+			case updateSkipOp:
+				o.mu.Lock()
+				if !o.isLeader() {
+					var le = binary.LittleEndian
+					o.sseq = le.Uint64(buf[1:])
+				}
+				o.mu.Unlock()
 			default:
 				panic(fmt.Sprintf("JetStream Cluster Unknown group entry op type! %v", entryOp(buf[0])))
 			}
@@ -2368,8 +2377,15 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry) error
 func (o *consumer) processReplicatedAck(dseq, sseq uint64) {
 	o.store.UpdateAcks(dseq, sseq)
 
-	var sagap uint64
 	o.mu.RLock()
+
+	mset := o.mset
+	if mset == nil || mset.cfg.Retention != InterestPolicy {
+		o.mu.RUnlock()
+		return
+	}
+
+	var sagap uint64
 	if o.cfg.AckPolicy == AckAll {
 		if o.isLeader() {
 			sagap = sseq - o.asflr
@@ -2383,18 +2399,15 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) {
 			sagap = sseq - state.AckFloor.Stream
 		}
 	}
-	mset := o.mset
 	o.mu.RUnlock()
 
-	if mset != nil && mset.cfg.Retention != LimitsPolicy {
-		if sagap > 1 {
-			// FIXME(dlc) - This is very inefficient, will need to fix.
-			for seq := sseq; seq > sseq-sagap; seq-- {
-				mset.ackMsg(o, seq)
-			}
-		} else {
-			mset.ackMsg(o, sseq)
+	if sagap > 1 {
+		// FIXME(dlc) - This is very inefficient, will need to fix.
+		for seq := sseq; seq > sseq-sagap; seq-- {
+			mset.ackMsg(o, seq)
 		}
+	} else {
+		mset.ackMsg(o, sseq)
 	}
 }
 

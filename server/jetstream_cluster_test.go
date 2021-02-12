@@ -1832,6 +1832,81 @@ func TestJetStreamClusterInterestRetention(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterInterestRetentionWithFilteredConsumers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"*"}, Retention: nats.InterestPolicy, Replicas: 3})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	fsub, err := js.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fsub.Unsubscribe()
+
+	bsub, err := js.SubscribeSync("bar")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer bsub.Unsubscribe()
+
+	msg := []byte("FILTERED")
+	sendMsg := func(subj string) {
+		t.Helper()
+		if _, err = js.Publish(subj, msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	getAndAck := func(sub *nats.Subscription) {
+		t.Helper()
+		m, err := sub.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error getting msg: %v", err)
+		}
+		m.Ack()
+	}
+
+	jsq, err := nc.JetStream(nats.MaxWait(10 * time.Millisecond))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	checkState := func(expected uint64) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+			si, err := jsq.StreamInfo("TEST")
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if si.State.Msgs != expected {
+				return fmt.Errorf("Expected %d msgs, got %d", expected, si.State.Msgs)
+			}
+			return nil
+		})
+	}
+
+	sendMsg("foo")
+	checkState(1)
+	getAndAck(fsub)
+	checkState(0)
+	sendMsg("bar")
+	sendMsg("foo")
+	checkState(2)
+	getAndAck(bsub)
+	checkState(1)
+	getAndAck(fsub)
+	checkState(0)
+}
+
 func TestJetStreamClusterEphemeralConsumerCleanup(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
