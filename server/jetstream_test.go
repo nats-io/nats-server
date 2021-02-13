@@ -8822,7 +8822,7 @@ func TestJetStreamPubPerf(t *testing.T) {
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
 
-	toSend := 5000000
+	toSend := 5_000_000
 	numProducers := 1
 
 	payload := []byte("Hello World")
@@ -8870,7 +8870,7 @@ func TestJetStreamPubWithAsyncResponsePerf(t *testing.T) {
 
 	msetConfig := StreamConfig{
 		Name:     "sr33",
-		Storage:  MemoryStorage,
+		Storage:  FileStorage,
 		Subjects: []string{"foo"},
 	}
 
@@ -8881,7 +8881,7 @@ func TestJetStreamPubWithAsyncResponsePerf(t *testing.T) {
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
 
-	toSend := 1000000
+	toSend := 1_000_000
 	payload := []byte("Hello World")
 
 	start := time.Now()
@@ -8889,6 +8889,38 @@ func TestJetStreamPubWithAsyncResponsePerf(t *testing.T) {
 		nc.PublishRequest("foo", "bar", payload)
 	}
 	nc.Flush()
+
+	tt := time.Since(start)
+	fmt.Printf("time is %v\n", tt)
+	fmt.Printf("%.0f msgs/sec\n", float64(toSend)/tt.Seconds())
+}
+
+func TestJetStreamPubWithSyncPerf(t *testing.T) {
+	// Comment out to run, holding place for now.
+	//t.SkipNow()
+
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "foo"})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	toSend := 1_000_000
+	payload := []byte("Hello World")
+
+	start := time.Now()
+	for i := 0; i < toSend; i++ {
+		js.Publish("foo", payload)
+	}
 
 	tt := time.Since(start)
 	fmt.Printf("time is %v\n", tt)

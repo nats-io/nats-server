@@ -360,6 +360,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 				n.commit = first.commit
 			}
 		}
+
 		// Replay the log.
 		// Since doing this in place we need to make sure we have enough room on the applyc.
 		needed := state.Msgs + 1 // 1 is for nil to mark end of replay.
@@ -788,7 +789,7 @@ func (n *raft) setupLastSnapshot() {
 		n.pterm = snap.lastTerm
 		n.commit = snap.lastIndex
 		n.applyc <- &CommittedEntry{n.commit, []*Entry{&Entry{EntrySnapshot, snap.data}}}
-		n.wal.Compact(snap.lastIndex)
+		n.wal.Compact(snap.lastIndex + 1)
 	}
 	n.Unlock()
 }
@@ -2256,6 +2257,7 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 	if ae.pindex != seq-1 {
 		fmt.Printf("[%s] n is %+v\n\n", n.s, n)
 		fmt.Printf("[%s] n.catchup is %+v\n", n.s, n.catchup)
+		fmt.Printf("[%s] n.wal is %+v\n", n.s, n.wal.State())
 		panic(fmt.Sprintf("[%s-%s] Placed an entry at the wrong index, ae is %+v, seq is %d, n.pindex is %d\n\n", n.s, n.group, ae, seq, n.pindex))
 	}
 
