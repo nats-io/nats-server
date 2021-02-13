@@ -637,13 +637,15 @@ func (s *Server) sendAPIErrResponse(ci *ClientInfo, acc *Account, subject, reply
 func (s *Server) getRequestInfo(c *client, raw []byte) (pci *ClientInfo, acc *Account, hdr, msg []byte, err error) {
 	hdr, msg = c.msgParts(raw)
 	var ci ClientInfo
+
 	if len(hdr) > 0 {
-		if err := json.Unmarshal(getHdrVal(ClientInfoHdr, hdr), &ci); err != nil {
+		if err := json.Unmarshal(getHeader(ClientInfoHdr, hdr), &ci); err != nil {
 			return nil, nil, nil, nil, err
 		}
 	}
-	if c.pa.proxy != nil {
-		acc = c.pa.proxy
+
+	if ci.Service != _EMPTY_ {
+		acc, _ = s.LookupAccount(ci.Service)
 	} else if ci.Account != _EMPTY_ {
 		acc, _ = s.LookupAccount(ci.Account)
 	} else {
@@ -1010,7 +1012,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 	}
 
 	if s.JetStreamIsClustered() {
-		s.jsClusteredStreamRequest(ci, subject, reply, rmsg, &cfg)
+		s.jsClusteredStreamRequest(ci, acc, subject, reply, rmsg, &cfg)
 		return
 	}
 
@@ -1777,7 +1779,7 @@ func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, re
 
 	// Clustered.
 	if s.JetStreamIsClustered() {
-		s.jsClusteredStreamDeleteRequest(ci, stream, subject, reply, msg)
+		s.jsClusteredStreamDeleteRequest(ci, acc, stream, subject, reply, msg)
 		return
 	}
 
@@ -1889,7 +1891,7 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 	}
 
 	if s.JetStreamIsClustered() {
-		s.jsClusteredMsgDeleteRequest(ci, mset, stream, subject, reply, &req, rmsg)
+		s.jsClusteredMsgDeleteRequest(ci, acc, mset, stream, subject, reply, &req, rmsg)
 		return
 	}
 
@@ -2091,7 +2093,7 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 	}
 
 	if s.JetStreamIsClustered() {
-		s.jsClusteredStreamPurgeRequest(ci, mset, stream, subject, reply, rmsg)
+		s.jsClusteredStreamPurgeRequest(ci, acc, mset, stream, subject, reply, rmsg)
 		return
 	}
 
@@ -2604,7 +2606,7 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 	}
 
 	if s.JetStreamIsClustered() {
-		s.jsClusteredConsumerRequest(ci, subject, reply, rmsg, req.Stream, &req.Config)
+		s.jsClusteredConsumerRequest(ci, acc, subject, reply, rmsg, req.Stream, &req.Config)
 		return
 	}
 
@@ -2975,7 +2977,7 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, 
 	consumer := consumerNameFromSubject(subject)
 
 	if s.JetStreamIsClustered() {
-		s.jsClusteredConsumerDeleteRequest(ci, stream, consumer, subject, reply, rmsg)
+		s.jsClusteredConsumerDeleteRequest(ci, acc, stream, consumer, subject, reply, rmsg)
 		return
 	}
 

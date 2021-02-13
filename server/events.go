@@ -168,6 +168,7 @@ type ClientInfo struct {
 	Host      string        `json:"host,omitempty"`
 	ID        uint64        `json:"id,omitempty"`
 	Account   string        `json:"acc"`
+	Service   string        `json:"svc,omitempty"`
 	User      string        `json:"user,omitempty"`
 	Name      string        `json:"name,omitempty"`
 	Lang      string        `json:"lang,omitempty"`

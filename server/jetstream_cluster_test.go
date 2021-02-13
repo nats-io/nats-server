@@ -3776,6 +3776,45 @@ func TestJetStreamClusterLeaderStepdown(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterJSAPIImport(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterImportsTempl, "C1", 3)
+	defer c.shutdown()
+
+	// Client based API - This will connect to the non-js account which imports JS.
+	// Connect below does an AccountInfo call.
+	s := c.randomNonLeader()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 2}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Note if this was ephemeral we would need to setup export/import for that subject.
+	sub, err := js.SubscribeSync("TEST", nats.Durable("dlc"))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Make sure we can look up both.
+	if _, err := js.StreamInfo("TEST"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if _, err := sub.ConsumerInfo(); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Names list..
+	resp, err := nc.Request(JSApiStreams, nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var streams JSApiStreamNamesResponse
+	if err = json.Unmarshal(resp.Data, &streams); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(streams.Streams) != 1 {
+		t.Fatalf("Expected only 1 stream but got %d", len(streams.Streams))
+	}
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
@@ -3958,9 +3997,40 @@ func (sc *supercluster) randomCluster() *cluster {
 	return clusters[0]
 }
 
+var jsClusterImportsTempl = `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: "%s"}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	no_auth_user: dlc
+
+	accounts {
+		JS {
+			jetstream: enabled
+			users = [ { user: "rip", pass: "pass" } ]
+			exports [ { service: "$JS.API.>" } ]
+		}
+		IA {
+			users = [ { user: "dlc", pass: "pass" } ]
+			imports [ { service: { subject: "$JS.API.>", account: JS }} ]
+		}
+		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+	}
+`
+
 // This will create a cluster that is explicitly configured for the routes, etc.
 // and also has a defined clustername. All configs for routes and cluster name will be the same.
 func createJetStreamClusterExplicit(t *testing.T, clusterName string, numServers int) *cluster {
+	return createJetStreamClusterWithTemplate(t, jsClusterTempl, clusterName, numServers)
+}
+
+func createJetStreamClusterWithTemplate(t *testing.T, tmpl string, clusterName string, numServers int) *cluster {
 	t.Helper()
 	if clusterName == "" || numServers < 1 {
 		t.Fatalf("Bad params")
@@ -3980,7 +4050,7 @@ func createJetStreamClusterExplicit(t *testing.T, clusterName string, numServers
 	for cp := startClusterPort; cp < startClusterPort+numServers; cp++ {
 		storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
 		sn := fmt.Sprintf("S-%d", cp-startClusterPort+1)
-		conf := fmt.Sprintf(jsClusterTempl, sn, storeDir, clusterName, cp, routeConfig)
+		conf := fmt.Sprintf(tmpl, sn, storeDir, clusterName, cp, routeConfig)
 		s, o := RunServerWithConfig(createConfFile(t, []byte(conf)))
 		c.servers = append(c.servers, s)
 		c.opts = append(c.opts, o)

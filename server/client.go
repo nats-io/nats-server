@@ -3568,9 +3568,23 @@ func (c *client) setupResponseServiceImport(acc *Account, si *serviceImport, tra
 	return rsi
 }
 
+// Will remove a header if present.
+func removeHeaderIfPresent(hdr []byte, key string) []byte {
+	start := bytes.Index(hdr, []byte(key))
+	if start < 0 {
+		return hdr
+	}
+	end := bytes.Index(hdr[start:], []byte(_CRLF_))
+	if end < 0 {
+		return hdr
+	}
+	return append(hdr[:start], hdr[start+end+len(_CRLF_):]...)
+}
+
 // This will set a header for the message.
 // Lock does not need to be held but this should only be called
 // from the inbound go routine. We will update the pubArgs.
+// This will replace any previously set header and not add to it per normal spec.
 func (c *client) setHeader(key, value string, msg []byte) []byte {
 	const hdrLine = "NATS/1.0\r\n"
 	var bb bytes.Buffer
@@ -3578,7 +3592,8 @@ func (c *client) setHeader(key, value string, msg []byte) []byte {
 	// Write original header if present.
 	if c.pa.hdr > LEN_CR_LF {
 		omi = c.pa.hdr
-		bb.Write(msg[:c.pa.hdr-LEN_CR_LF])
+		hdr := removeHeaderIfPresent(msg[:c.pa.hdr-LEN_CR_LF], key)
+		bb.Write(hdr)
 	} else {
 		bb.WriteString(hdrLine)
 	}
@@ -3586,6 +3601,7 @@ func (c *client) setHeader(key, value string, msg []byte) []byte {
 	bb.WriteString(CR_LF)
 	nhdr := bb.Len()
 	// Put the original message back.
+	// FIXME(dlc) - This is inefficient.
 	bb.Write(msg[omi:])
 	nsize := bb.Len() - LEN_CR_LF
 	// Update pubArgs
@@ -3595,6 +3611,33 @@ func (c *client) setHeader(key, value string, msg []byte) []byte {
 	c.pa.hdb = []byte(strconv.Itoa(nhdr))
 	c.pa.szb = []byte(strconv.Itoa(nsize))
 	return bb.Bytes()
+}
+
+// Will return the value for the header denoted by key or nil if it does not exists.
+// This function ignores errors and tries to achieve speed and no additional allocations.
+func getHeader(key string, hdr []byte) []byte {
+	if len(hdr) == 0 {
+		return nil
+	}
+	index := bytes.Index(hdr, []byte(key))
+	if index < 0 {
+		return nil
+	}
+
+	var value []byte
+	hdrLen := len(hdr)
+	index += len(key) + 1
+	for hdr[index] == ' ' && index < hdrLen {
+		index++
+	}
+	for index < hdrLen {
+		if hdr[index] == '\r' && index < hdrLen-1 && hdr[index+1] == '\n' {
+			break
+		}
+		value = append(value, hdr[index])
+		index++
+	}
+	return value
 }
 
 // processServiceImport is an internal callback when a subscription matches an imported service
@@ -3661,13 +3704,30 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// Copy our pubArg and account
 	pacopy := c.pa
 	oacc := c.acc
+
 	// Change this so that we detect recursion
+	// Remember prior.
+	share := si.share
+	hadPrevSi := c.pa.psi != nil
+	if hadPrevSi {
+		share = c.pa.psi.share
+	}
 	c.pa.psi = si
 
-	// Place our client info for the request in the message.
+	// Place our client info for the request in the original message.
 	// This will survive going across routes, etc.
-	if c.pa.proxy == nil && !si.response {
-		if ci := c.getClientInfo(si.share); ci != nil {
+	if !si.response {
+		var ci *ClientInfo
+		if hadPrevSi {
+			var cis ClientInfo
+			if err := json.Unmarshal(getHeader(ClientInfoHdr, msg[:c.pa.hdr]), &cis); err == nil {
+				ci = &cis
+				ci.Service = c.acc.Name
+			}
+		} else {
+			ci = c.getClientInfo(share)
+		}
+		if ci != nil {
 			if b, _ := json.Marshal(ci); b != nil {
 				msg = c.setHeader(ClientInfoHdr, string(b), msg)
 			}
@@ -3676,10 +3736,6 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 
 	// Set our reply.
 	c.pa.reply = nrr
-	// For processing properly across routes, etc.
-	if c.kind == CLIENT || c.kind == LEAF {
-		c.pa.proxy = c.acc
-	}
 	c.mu.Lock()
 	c.acc = si.acc
 	c.mu.Unlock()
@@ -4659,11 +4715,23 @@ func (c *client) pruneClosedSubFromPerAccountCache() {
 	}
 }
 
+// Returns our service account for this request.
+func (ci *ClientInfo) serviceAccount() string {
+	if ci == nil {
+		return _EMPTY_
+	}
+	if ci.Service != _EMPTY_ {
+		return ci.Service
+	}
+	return ci.Account
+}
+
 // Grabs the information for this client.
 func (c *client) getClientInfo(detailed bool) *ClientInfo {
 	if c == nil || (c.kind != CLIENT && c.kind != LEAF) {
 		return nil
 	}
+
 	// Server name. Defaults to server ID if not set explicitly.
 	var cn, sn string
 	if detailed {

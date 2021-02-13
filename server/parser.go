@@ -48,7 +48,6 @@ type pubArg struct {
 	size    int
 	hdr     int
 	psi     *serviceImport
-	proxy   *Account
 }
 
 // Parser constants
