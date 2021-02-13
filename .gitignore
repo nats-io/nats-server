@@ -42,6 +42,7 @@ _testmain.go
 # bin
 nats-server
 gnatsd
+check
 
 # coverage
 coverage.out

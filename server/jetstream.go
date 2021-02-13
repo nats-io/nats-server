@@ -313,7 +313,7 @@ func (a *Account) enableAllJetStreamServiceImports() error {
 
 	sys := s.SystemAccount()
 	for _, export := range allJsExports {
-		if !a.serviceImportExists(sys, export) {
+		if !a.serviceImportExists(export) {
 			if err := a.AddServiceImport(sys, export, _EMPTY_); err != nil {
 				return fmt.Errorf("Error setting up jetstream service imports for account: %v", err)
 			}
@@ -332,8 +332,14 @@ func (a *Account) enableJetStreamInfoServiceImportOnly() error {
 	if s == nil {
 		return fmt.Errorf("jetstream account not registered")
 	}
-	sys := s.SystemAccount()
-	if err := a.AddServiceImport(sys, JSApiAccountInfo, _EMPTY_); err != nil {
+
+	// Check if this import would be overshadowed. This can happen when accounts
+	// are importing from another account for JS access.
+	if a.serviceImportShadowed(JSApiAccountInfo) {
+		return nil
+	}
+
+	if err := a.AddServiceImport(s.SystemAccount(), JSApiAccountInfo, _EMPTY_); err != nil {
 		return fmt.Errorf("Error setting up jetstream service imports for account: %v", err)
 	}
 	return nil

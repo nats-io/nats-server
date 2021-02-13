@@ -1691,8 +1691,24 @@ func (a *Account) checkForReverseEntry(reply string, si *serviceImport, checkInt
 	}
 }
 
+// Checks to see if a potential service import subject is already overshadowed.
+func (a *Account) serviceImportShadowed(from string) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.imports.services[from] != nil {
+		return true
+	}
+	// We did not find a direct match, so check individually.
+	for subj := range a.imports.services {
+		if subjectIsSubsetMatch(from, subj) {
+			return true
+		}
+	}
+	return false
+}
+
 // Internal check to see if a service import exists.
-func (a *Account) serviceImportExists(dest *Account, from string) bool {
+func (a *Account) serviceImportExists(from string) bool {
 	a.mu.RLock()
 	dup := a.imports.services[from]
 	a.mu.RUnlock()

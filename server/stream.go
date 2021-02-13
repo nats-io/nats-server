@@ -1044,48 +1044,24 @@ func (mset *stream) storeMsgId(dde *ddentry) {
 	mset.mu.Unlock()
 }
 
-// Will return the value for the header denoted by key or nil if it does not exists.
-// This function ignores errors and tries to achieve speed and no additional allocations.
-func getHdrVal(key string, hdr []byte) []byte {
-	index := bytes.Index(hdr, []byte(key))
-	if index < 0 {
-		return nil
-	}
-
-	var value []byte
-	hdrLen := len(hdr)
-	index += len(key) + 1
-	for hdr[index] == ' ' && index < hdrLen {
-		index++
-	}
-	for index < hdrLen {
-		if hdr[index] == '\r' && index < hdrLen-1 && hdr[index+1] == '\n' {
-			break
-		}
-		value = append(value, hdr[index])
-		index++
-	}
-	return value
-}
-
 // Fast lookup of msgId.
 func getMsgId(hdr []byte) string {
-	return string(getHdrVal(JSMsgId, hdr))
+	return string(getHeader(JSMsgId, hdr))
 }
 
 // Fast lookup of expected last msgId.
 func getExpectedLastMsgId(hdr []byte) string {
-	return string(getHdrVal(JSExpectedLastMsgId, hdr))
+	return string(getHeader(JSExpectedLastMsgId, hdr))
 }
 
 // Fast lookup of expected stream.
 func getExpectedStream(hdr []byte) string {
-	return string(getHdrVal(JSExpectedStream, hdr))
+	return string(getHeader(JSExpectedStream, hdr))
 }
 
 // Fast lookup of expected stream.
 func getExpectedLastSeq(hdr []byte) uint64 {
-	bseq := getHdrVal(JSExpectedLastSeq, hdr)
+	bseq := getHeader(JSExpectedLastSeq, hdr)
 	if len(bseq) == 0 {
 		return 0
 	}
