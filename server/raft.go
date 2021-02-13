@@ -578,6 +578,7 @@ func (n *raft) PauseApply() {
 	n.Lock()
 	defer n.Unlock()
 
+	n.debug("Pausing apply channel")
 	n.paused = true
 	n.hcommit = n.commit
 }
@@ -586,15 +587,17 @@ func (n *raft) ResumeApply() {
 	n.Lock()
 	defer n.Unlock()
 
+	n.debug("Resuming apply channel")
+	n.paused = false
 	// Run catchup..
 	if n.hcommit > n.commit {
+		n.debug("Resuming %d replays", n.hcommit+1-n.commit)
 		for index := n.commit + 1; index <= n.hcommit; index++ {
 			if err := n.applyCommit(index); err != nil {
 				break
 			}
 		}
 	}
-	n.paused = false
 	n.hcommit = 0
 }
 
@@ -668,6 +671,8 @@ func (n *raft) SendSnapshot(data []byte) error {
 // all of the log entries up to and including index. This should not be called with
 // entries that have been applied to the FSM but have not been applied to the raft state.
 func (n *raft) InstallSnapshot(data []byte) error {
+	n.debug("Installing snapshot of %d bytes", len(data))
+
 	n.Lock()
 	if n.state == Closed {
 		n.Unlock()
@@ -1659,12 +1664,14 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 
 	if start < state.FirstSeq {
 		n.debug("Need to send snapshot to follower")
-		var err error
-		if _, err = n.sendSnapshotToFollower(ar.reply); err != nil {
-			n.error("Error sending snapshot to followers: %v", err)
+		if lastIndex, err := n.sendSnapshotToFollower(ar.reply); err != nil {
+			n.error("Error sending snapshot to follower [%s]: %v", ar.peer, err)
 			n.attemptStepDown(noLeader)
 			n.Unlock()
 			return
+		} else {
+			n.debug("Snapshot sent, reset first entry to %d", lastIndex)
+			start = lastIndex
 		}
 	}
 
@@ -1673,7 +1680,7 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 		ae, err = n.loadFirstEntry()
 	}
 	if err != nil || ae == nil {
-		n.debug("Could not find a starting entry for us: %v", err)
+		n.debug("Could not find a starting entry: %v", err)
 		n.Unlock()
 		return
 	}
@@ -1736,8 +1743,10 @@ func (n *raft) applyCommit(index uint64) error {
 		case EntrySnapshot:
 			committed = append(committed, e)
 		case EntryPeerState:
-			if ps, err := decodePeerState(e.Data); err == nil {
-				n.processPeerState(ps)
+			if n.state != Leader {
+				if ps, err := decodePeerState(e.Data); err == nil {
+					n.processPeerState(ps)
+				}
 			}
 		case EntryAddPeer:
 			newPeer := string(e.Data)
@@ -1916,6 +1925,7 @@ func (n *raft) handleAppendEntry(sub *subscription, c *client, subject, reply st
 // Lock should be held.
 func (n *raft) cancelCatchup() {
 	n.debug("Canceling catchup subscription since we are now up to date")
+
 	if n.catchup != nil && n.catchup.sub != nil {
 		n.s.sysUnsubscribe(n.catchup.sub)
 	}
@@ -2106,7 +2116,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			}
 			n.pindex = ae.pindex
 			n.pterm = ae.pterm
-			n.commit = ae.commit
+			n.commit = ae.pindex
 			n.wal.Compact(n.pindex + 1)
 
 			// Now send snapshot to upper levels. Only send the snapshot, not the peerstate entry.

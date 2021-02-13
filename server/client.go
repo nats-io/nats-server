@@ -3725,7 +3725,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// This will survive going across routes, etc.
 	if !si.response {
 		var ci *ClientInfo
-		if hadPrevSi {
+		if hadPrevSi && c.pa.hdr >= 0 {
 			var cis ClientInfo
 			if err := json.Unmarshal(getHeader(ClientInfoHdr, msg[:c.pa.hdr]), &cis); err == nil {
 				ci = &cis

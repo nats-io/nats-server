@@ -1214,7 +1214,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 				if !isLeader {
 					// If over 32MB go ahead and compact if not the leader.
 					if m, b := n.Size(); m > compactNumLimit || b > compactSizeLimit {
-						n.Compact(ce.Index)
+						doSnapshot()
 					}
 				}
 			} else {
@@ -1370,6 +1370,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				if lseq == 0 && mset.lastSeq() != 0 {
 					continue
 				}
+
 				if err := mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts); err != nil {
 					if err != errLastSeqMismatch || !isRecovering {
 						js.srv.Debugf("Got error processing JetStream msg: %v", err)
@@ -3694,7 +3695,6 @@ RETRY:
 		mset.mu.Lock()
 		state := mset.store.State()
 		sreq = mset.calculateSyncRequest(&state, snap)
-
 		mset.mu.Unlock()
 		if sreq == nil {
 			return
@@ -3768,9 +3768,10 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	if err != nil {
 		return 0, errors.New("bad catchup msg")
 	}
+
 	// Put into our store
 	// Messages to be skipped have no subject or timestamp.
-	// TODO(dlc) - formalize witrh skipMsgOp
+	// TODO(dlc) - formalize with skipMsgOp
 	if subj == _EMPTY_ && ts == 0 {
 		lseq := mset.store.SkipMsg()
 		if lseq != seq {
