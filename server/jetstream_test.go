@@ -8897,7 +8897,7 @@ func TestJetStreamPubWithAsyncResponsePerf(t *testing.T) {
 
 func TestJetStreamPubWithSyncPerf(t *testing.T) {
 	// Comment out to run, holding place for now.
-	//t.SkipNow()
+	t.SkipNow()
 
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
