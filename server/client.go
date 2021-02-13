@@ -3623,10 +3623,17 @@ func getHeader(key string, hdr []byte) []byte {
 	if index < 0 {
 		return nil
 	}
+	index += len(key)
+	if index >= len(hdr) {
+		return nil
+	}
+	if hdr[index] != ':' {
+		return nil
+	}
+	index++
 
 	var value []byte
 	hdrLen := len(hdr)
-	index += len(key) + 1
 	for hdr[index] == ' ' && index < hdrLen {
 		index++
 	}
