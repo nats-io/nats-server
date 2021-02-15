@@ -3753,6 +3753,7 @@ RETRY:
 			return
 		case isLeader := <-lch:
 			js.processStreamLeaderChange(mset, isLeader)
+			return
 		}
 	}
 }
@@ -3855,7 +3856,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	s := mset.srv
 	defer s.grWG.Done()
 
-	const maxOut = int64(48 * 1024 * 1024) // 48MB for now.
+	const maxOut = int64(32 * 1024 * 1024) // 32MB for now.
 	out := int64(0)
 
 	// Flow control processing.

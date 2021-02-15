@@ -844,9 +844,8 @@ func (n *raft) Leader() bool {
 		return false
 	}
 	n.RLock()
-	isLeader := n.state == Leader
-	n.RUnlock()
-	return isLeader
+	defer n.RUnlock()
+	return n.state == Leader
 }
 
 // Lock should be held.
@@ -888,7 +887,6 @@ func (n *raft) Current() bool {
 	}
 	n.RLock()
 	defer n.RUnlock()
-
 	return n.isCurrent()
 }
 
@@ -968,9 +966,8 @@ func (n *raft) campaign() error {
 // State return the current state for this node.
 func (n *raft) State() RaftState {
 	n.RLock()
-	state := n.state
-	n.RUnlock()
-	return state
+	defer n.RUnlock()
+	return n.state
 }
 
 // Size returns number of entries and total bytes for our WAL.
@@ -1182,9 +1179,8 @@ func (n *raft) notice(format string, args ...interface{}) {
 
 func (n *raft) electTimer() *time.Timer {
 	n.RLock()
-	elect := n.elect
-	n.RUnlock()
-	return elect
+	defer n.RUnlock()
+	return n.elect
 }
 
 func (n *raft) runAsFollower() {
@@ -2024,6 +2020,8 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	// If we are catching up ignore old catchup subs.
 	// This could happen when we stall or cancel a catchup.
 	if !isNew && sub != n.catchup.sub {
+		n.Unlock()
+		n.debug("AppendEntry ignoring old entry from previous catchup")
 		return
 	}
 
