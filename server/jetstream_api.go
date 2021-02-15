@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/nats-io/nuid"
 )
@@ -2188,7 +2189,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, streamName, 
 	}
 
 	// For signaling to upper layers.
-	resultCh := make(chan result, 8)
+	resultCh := make(chan result, 1)
 	activeCh := make(chan int, 32)
 
 	processChunk := func(sub *subscription, c *client, subject, reply string, msg []byte) {
@@ -2203,6 +2204,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, streamName, 
 		}
 		// Account client messages have \r\n on end. This is an error.
 		if len(msg) < LEN_CR_LF {
+			sub.client.processUnsub(sub.sid)
 			resultCh <- result{
 				fmt.Errorf("restore for stream '%s > %s' received short chunk", acc.Name, streamName),
 				reply,
@@ -2214,8 +2216,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, streamName, 
 
 		// This means we are complete with our transfer from the client.
 		if len(msg) == 0 {
-			tfile.Seek(0, 0)
-			_, err := acc.RestoreStream(streamName, tfile)
+			s.Debugf("Finished staging restore for stream '%s > %s'", acc.Name, streamName)
 			resultCh <- result{err, reply}
 			return
 		}
@@ -2230,6 +2231,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, streamName, 
 		}
 
 		activeCh <- len(msg)
+
 		s.sendInternalAccountMsg(acc, reply, nil)
 	}
 
@@ -2255,7 +2257,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, streamName, 
 			sub.client.processUnsub(sub.sid)
 		}()
 
-		const activityInterval = 2 * time.Second
+		const activityInterval = 5 * time.Second
 		notActive := time.NewTimer(activityInterval)
 		defer notActive.Stop()
 
@@ -2263,6 +2265,21 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, streamName, 
 		for {
 			select {
 			case result := <-resultCh:
+				err := result.err
+				var mset *stream
+
+				// If we staged properly go ahead and do restore now.
+				if err == nil {
+					s.Debugf("Finalizing restore for  stream '%s > %s'", acc.Name, streamName)
+					tfile.Seek(0, 0)
+					mset, err = acc.RestoreStream(streamName, tfile)
+				} else {
+					errStr := err.Error()
+					tmp := []rune(errStr)
+					tmp[0] = unicode.ToUpper(tmp[0])
+					s.Warnf(errStr)
+				}
+
 				end := time.Now()
 
 				// TODO(rip) - Should this have the error code in it??
@@ -2279,13 +2296,8 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, streamName, 
 					Client: ci,
 				})
 
-				var mset *stream
 				var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
 
-				err := result.err
-				if err == nil {
-					mset, err = acc.lookupStream(streamName)
-				}
 				if err != nil {
 					resp.Error = jsError(err)
 					s.Warnf("Restore failed for %s for stream '%s > %s' in %v",
@@ -2306,7 +2318,6 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, streamName, 
 				notActive.Reset(activityInterval)
 			case <-notActive.C:
 				err := fmt.Errorf("restore for stream '%s > %s' is stalled", acc, streamName)
-				s.Warnf(err.Error())
 				doneCh <- err
 				return
 			}
