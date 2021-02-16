@@ -843,7 +843,7 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 }
 
 // Builds and sends the CONNECT protocol for a gateway.
-func (c *client) sendGatewayConnect() {
+func (c *client) sendGatewayConnect(opts *Options) {
 	tlsRequired := c.gw.cfg.TLSConfig != nil
 	url := c.gw.connectURL
 	c.gw.connectURL = nil
@@ -851,6 +851,9 @@ func (c *client) sendGatewayConnect() {
 	if userInfo := url.User; userInfo != nil {
 		user = userInfo.Username()
 		pass, _ = userInfo.Password()
+	} else if opts != nil {
+		user = opts.Gateway.Username
+		pass = opts.Gateway.Password
 	}
 	cinfo := connectInfo{
 		Verbose:  false,
@@ -1000,12 +1003,13 @@ func (c *client) processGatewayInfo(info *Info) {
 			s.gateway.RUnlock()
 
 			supportsHeaders := s.supportsHeaders()
+			opts := s.getOpts()
 
 			// Note, if we want to support NKeys, then we would get the nonce
 			// from this INFO protocol and can sign it in the CONNECT we are
 			// going to send now.
 			c.mu.Lock()
-			c.sendGatewayConnect()
+			c.sendGatewayConnect(opts)
 			c.Debugf("Gateway connect protocol sent to %q", gwName)
 			// Send INFO too
 			c.enqueueProto(infoJSON)
