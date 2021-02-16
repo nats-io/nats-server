@@ -2230,8 +2230,13 @@ func (n *raft) processPeerState(ps *peerState) {
 	writePeerState(n.sd, ps)
 }
 
-// handleAppendEntryResponse just places the decoded response on the appropriate channel.
+// handleAppendEntryResponse processes responses to append entries.
 func (n *raft) handleAppendEntryResponse(sub *subscription, c *client, subject, reply string, msg []byte) {
+	// Ignore if not the leader.
+	if !n.Leader() {
+		n.debug("Ignoring append entry response, no longer leader")
+		return
+	}
 	ar := n.decodeAppendEntryResponse(msg)
 	if reply != _EMPTY_ {
 		ar.reply = reply
