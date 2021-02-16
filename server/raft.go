@@ -42,6 +42,7 @@ type RaftNode interface {
 	Compact(index uint64) error
 	State() RaftState
 	Size() (entries, bytes uint64)
+	Progress() (index, commit, applied uint64)
 	Leader() bool
 	Quorum() bool
 	Current() bool
@@ -168,7 +169,6 @@ type raft struct {
 	quit     chan struct{}
 	reqs     chan *voteRequest
 	votes    chan *voteResponse
-	resp     chan *appendEntryResponse
 	leadc    chan bool
 	stepdown chan string
 }
@@ -329,7 +329,6 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		quit:     make(chan struct{}),
 		reqs:     make(chan *voteRequest, 8),
 		votes:    make(chan *voteResponse, 32),
-		resp:     make(chan *appendEntryResponse, 256),
 		propc:    make(chan *Entry, 256),
 		applyc:   make(chan *CommittedEntry, 512),
 		leadc:    make(chan bool, 8),
@@ -680,14 +679,20 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		return errNodeClosed
 	}
 
-	ae, err := n.loadEntry(n.applied)
-	if err != nil {
+	if state := n.wal.State(); state.LastSeq == n.applied {
 		n.Unlock()
-		return err
+		return nil
+	}
+
+	var term uint64
+	if ae, err := n.loadEntry(n.applied); err != nil && ae != nil {
+		term = ae.term
+	} else {
+		term = n.term
 	}
 
 	snap := &snapshot{
-		lastTerm:  ae.term,
+		lastTerm:  term,
 		lastIndex: n.applied,
 		peerstate: encodePeerState(&peerState{n.peerNames(), n.csz}),
 		data:      data,
@@ -704,7 +709,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 
 	// Remember our latest snapshot file.
 	n.snapfile = sfile
-	_, err = n.wal.Compact(snap.lastIndex)
+	_, err := n.wal.Compact(snap.lastIndex)
 	n.Unlock()
 
 	psnaps, _ := ioutil.ReadDir(snapDir)
@@ -963,11 +968,18 @@ func (n *raft) campaign() error {
 	return nil
 }
 
-// State return the current state for this node.
+// State returns the current state for this node.
 func (n *raft) State() RaftState {
 	n.RLock()
 	defer n.RUnlock()
 	return n.state
+}
+
+// Progress returns the current index, commit and applied values.
+func (n *raft) Progress() (index, commit, applied uint64) {
+	n.RLock()
+	defer n.RUnlock()
+	return n.pindex + 1, n.commit, n.applied
 }
 
 // Size returns number of entries and total bytes for our WAL.
@@ -1474,13 +1486,6 @@ func (n *raft) runAsLeader() {
 		case newLeader := <-n.stepdown:
 			n.switchToFollower(newLeader)
 			return
-		case ar := <-n.resp:
-			n.trackPeer(ar.peer)
-			if ar.success {
-				n.trackResponse(ar)
-			} else if ar.reply != _EMPTY_ {
-				n.catchupFollower(ar)
-			}
 		}
 	}
 }
@@ -1565,7 +1570,7 @@ func (n *raft) runCatchup(peer, subj string, indexUpdatesC <-chan uint64) {
 
 	n.debug("Running catchup for %q", peer)
 
-	const maxOutstanding = 48 * 1024 * 1024 // 48MB for now.
+	const maxOutstanding = 2 * 1024 * 1024 // 2MB for now.
 	next, total, om := uint64(0), 0, make(map[uint64]int)
 
 	sendNext := func() {
@@ -2103,6 +2108,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				n.Unlock()
 				return
 			}
+
 			if ps, err := decodePeerState(ae.entries[1].Data); err == nil {
 				n.processPeerState(ps)
 				// Also need to copy from client's buffer.
@@ -2226,14 +2232,15 @@ func (n *raft) processPeerState(ps *peerState) {
 
 // handleAppendEntryResponse just places the decoded response on the appropriate channel.
 func (n *raft) handleAppendEntryResponse(sub *subscription, c *client, subject, reply string, msg []byte) {
-	aer := n.decodeAppendEntryResponse(msg)
+	ar := n.decodeAppendEntryResponse(msg)
 	if reply != _EMPTY_ {
-		aer.reply = reply
+		ar.reply = reply
 	}
-	select {
-	case n.resp <- aer:
-	default:
-		n.error("Failed to place add entry response on chan for %q", n.group)
+	n.trackPeer(ar.peer)
+	if ar.success {
+		n.trackResponse(ar)
+	} else if ar.reply != _EMPTY_ {
+		n.catchupFollower(ar)
 	}
 }
 
