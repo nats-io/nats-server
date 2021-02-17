@@ -739,11 +739,7 @@ func (js *jetStream) monitorCluster() {
 					// Since we received one make sure we have our own since we do not store
 					// our meta state outside of raft.
 					doSnapshot()
-				}
-			}
-			// See if we could save some memory here.
-			if lastSnap != nil {
-				if _, b := n.Size(); b > uint64(len(lastSnap)*4) {
+				} else if _, b := n.Size(); lastSnap != nil && b > uint64(len(lastSnap)*4) {
 					doSnapshot()
 				}
 			}
@@ -1158,9 +1154,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 	defer s.Debugf("Exiting stream monitor for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
 
 	const (
-		compactInterval  = 2 * time.Minute
-		compactSizeLimit = 32 * 1024 * 1024
-		compactNumLimit  = 4096
+		compactInterval = 2 * time.Minute
+		compactSizeMin  = 4 * 1024 * 1024
+		compactNumMin   = 32
 	)
 
 	t := time.NewTicker(compactInterval)
@@ -1178,6 +1174,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 	}
 
 	var lastSnap []byte
+	var lastApplied uint64
 
 	// Should only to be called from leader.
 	doSnapshot := func() {
@@ -1211,20 +1208,15 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 			// Apply our entries.
 			if err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
 				n.Applied(ce.Index)
-				if !isLeader {
-					// If over 32MB go ahead and compact if not the leader.
-					if m, b := n.Size(); m > compactNumLimit || b > compactSizeLimit {
-						doSnapshot()
-					}
+				ne := ce.Index - lastApplied
+				lastApplied = ce.Index
+
+				// If over our compact min and we have at least min entries to compact, go ahead and snapshot/compact.
+				if _, b := n.Size(); lastSnap == nil || (b > compactSizeMin && ne > compactNumMin) {
+					doSnapshot()
 				}
 			} else {
 				s.Warnf("Error applying entries to '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
-			}
-			if isLeader && lastSnap != nil {
-				// If over 32MB go ahead and compact if not the leader.
-				if m, b := n.Size(); m > compactNumLimit || b > compactSizeLimit {
-					doSnapshot()
-				}
 			}
 		case isLeader = <-lch:
 			if isLeader && isRestore {
@@ -1235,6 +1227,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 					js.setStreamAssignmentResponded(sa)
 				}
 				js.processStreamLeaderChange(mset, isLeader)
+				if isLeader {
+					lastSnap = nil
+				}
 			}
 		case <-t.C:
 			if isLeader {
@@ -1341,7 +1336,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isRecovering bool) error {
 	for _, e := range ce.Entries {
 		if e.Type == EntrySnapshot {
-			if !isRecovering {
+			if !isRecovering && mset != nil {
 				var snap streamSnapshot
 				if err := json.Unmarshal(e.Data, &snap); err != nil {
 					return err
@@ -2271,15 +2266,16 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	js.mu.RUnlock()
 
 	const (
-		compactInterval  = 2 * time.Minute
-		compactSizeLimit = 4 * 1024 * 1024
-		compactNumLimit  = 4096
+		compactInterval = 2 * time.Minute
+		compactSizeMin  = 8 * 1024 * 1024
+		compactNumMin   = 256
 	)
 
 	t := time.NewTicker(compactInterval)
 	defer t.Stop()
 
 	var lastSnap []byte
+	var lastApplied uint64
 
 	// Should only to be called from leader.
 	doSnapshot := func() {
@@ -2305,23 +2301,24 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			}
 			if err := js.applyConsumerEntries(o, ce); err == nil {
 				n.Applied(ce.Index)
-				// If over 4MB go ahead and compact if not the leader.
-				if !isLeader {
-					if m, b := n.Size(); m > compactNumLimit || b > compactSizeLimit {
-						n.Compact(ce.Index)
-					}
-				}
-			}
-			if isLeader && lastSnap != nil {
-				if _, b := n.Size(); b > uint64(len(lastSnap)*4) {
+				ne := ce.Index - lastApplied
+				lastApplied = ce.Index
+
+				// If over our compact min and we have at least min entries to compact, go ahead and snapshot/compact.
+				if _, b := n.Size(); lastSnap == nil || (b > compactSizeMin && ne > compactNumMin) {
 					doSnapshot()
 				}
+			} else {
+				s.Warnf("Error applying consumer entries to '%s > %s'", ca.Client.serviceAccount(), ca.Name)
 			}
 		case isLeader := <-lch:
 			if !isLeader && n.GroupLeader() != noLeader {
 				js.setConsumerAssignmentResponded(ca)
 			}
 			js.processConsumerLeaderChange(o, isLeader)
+			if isLeader {
+				lastSnap = nil
+			}
 		case <-t.C:
 			if isLeader {
 				doSnapshot()
@@ -3650,6 +3647,7 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) {
 
 	mset.mu.Lock()
 	state := mset.store.State()
+
 	sreq := mset.calculateSyncRequest(&state, snap)
 	s, subject, n := mset.srv, mset.sa.Sync, mset.node
 	mset.mu.Unlock()
@@ -3701,22 +3699,27 @@ RETRY:
 		}
 	}
 
-	msgsC := make(chan []byte, 8*1024)
+	type mr struct {
+		msg   []byte
+		reply string
+	}
+	msgsC := make(chan *mr, 32768)
 
 	// Send our catchup request here.
 	reply := syncReplySubject()
 	sub, err = s.sysSubscribe(reply, func(_ *subscription, _ *client, _, reply string, msg []byte) {
 		// Make copies - https://github.com/go101/go101/wiki
 		// TODO(dlc) - Since we are using a buffer from the inbound client/route.
-		if len(msg) > 0 {
-			msg = append(msg[:0:0], msg...)
+		select {
+		case msgsC <- &mr{msg: append(msg[:0:0], msg...), reply: reply}:
+		default:
+			s.Warnf("Failed to place catchup message onto internal channel: %d pending", len(msgsC))
+			return
 		}
-		msgsC <- msg
-		if reply != _EMPTY_ {
-			s.sendInternalMsgLocked(reply, _EMPTY_, nil, nil)
-		}
+
 	})
 	if err != nil {
+		s.Errorf("Could not subscribe to stream catchup: %v", err)
 		return
 	}
 
@@ -3730,8 +3733,9 @@ RETRY:
 	// Run our own select loop here.
 	for qch, lch := n.QuitC(), n.LeadChangeC(); ; {
 		select {
-		case msg := <-msgsC:
+		case mrec := <-msgsC:
 			notActive.Reset(activityInterval)
+			msg := mrec.msg
 			// Check eof signaling.
 			if len(msg) == 0 {
 				goto RETRY
@@ -3743,6 +3747,9 @@ RETRY:
 			} else {
 				goto RETRY
 			}
+			if mrec.reply != _EMPTY_ {
+				s.sendInternalMsgLocked(mrec.reply, _EMPTY_, nil, nil)
+			}
 		case <-notActive.C:
 			s.Warnf("Catchup for stream '%s > %s' stalled", mset.account(), mset.name())
 			notActive.Reset(activityInterval)
@@ -3753,7 +3760,6 @@ RETRY:
 			return
 		case isLeader := <-lch:
 			js.processStreamLeaderChange(mset, isLeader)
-			return
 		}
 	}
 }
@@ -3856,8 +3862,10 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	s := mset.srv
 	defer s.grWG.Done()
 
-	const maxOut = int64(32 * 1024 * 1024) // 32MB for now.
-	out := int64(0)
+	const maxOutBytes = int64(2 * 1024 * 1024) // 2MB for now.
+	const maxOutMsgs = int32(16384)
+	outb := int64(0)
+	outm := int32(0)
 
 	// Flow control processing.
 	ackReplySize := func(subj string) int64 {
@@ -3874,7 +3882,8 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	ackReply := syncAckSubject()
 	ackSub, _ := s.sysSubscribe(ackReply, func(sub *subscription, c *client, subject, reply string, msg []byte) {
 		sz := ackReplySize(subject)
-		atomic.AddInt64(&out, -sz)
+		atomic.AddInt64(&outb, -sz)
+		atomic.AddInt32(&outm, -1)
 		select {
 		case nextBatchC <- struct{}{}:
 		default:
@@ -3894,7 +3903,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	seq, last := sreq.FirstSeq, sreq.LastSeq
 
 	sendNextBatch := func() {
-		for ; seq <= last && atomic.LoadInt64(&out) <= maxOut; seq++ {
+		for ; seq <= last && atomic.LoadInt64(&outb) <= maxOutBytes && atomic.LoadInt32(&outm) <= maxOutMsgs; seq++ {
 			subj, hdr, msg, ts, err := mset.store.LoadMsg(seq)
 			// if this is not a deleted msg, bail out.
 			if err != nil && err != ErrStoreMsgNotFound && err != errDeletedMsg {
@@ -3906,7 +3915,8 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 			em := encodeStreamMsg(subj, _EMPTY_, hdr, msg, seq, ts)
 			// Place size in reply subject for flow control.
 			reply := fmt.Sprintf(ackReplyT, len(em))
-			atomic.AddInt64(&out, int64(len(em)))
+			atomic.AddInt64(&outb, int64(len(em)))
+			atomic.AddInt32(&outm, 1)
 			s.sendInternalMsgLocked(sendSubject, reply, nil, em)
 		}
 	}

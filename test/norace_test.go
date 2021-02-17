@@ -331,11 +331,11 @@ func TestNoRaceLargeClusterMem(t *testing.T) {
 	checkClusterFormed(t, servers...)
 
 	// Calculate in MB what we are using now.
-	const max = 50 * 1024 * 1024 // 50MB
+	const max = 60 * 1024 * 1024 // 60MB
 	runtime.ReadMemStats(&m)
 	used := m.TotalAlloc - pta
 	if used > max {
-		t.Fatalf("Cluster using too much memory, expect < 50MB, got %dMB", used/(1024*1024))
+		t.Fatalf("Cluster using too much memory, expect < 60MB, got %dMB", used/(1024*1024))
 	}
 
 	for _, s := range servers {

@@ -6,6 +6,12 @@ import (
 )
 
 func (s *Server) publishAdvisory(acc *Account, subject string, adv interface{}) {
+	if acc == nil {
+		acc = s.SystemAccount()
+		if acc == nil {
+			return
+		}
+	}
 	ej, err := json.Marshal(adv)
 	if err == nil {
 		err = s.sendInternalAccountMsg(acc, subject, ej)

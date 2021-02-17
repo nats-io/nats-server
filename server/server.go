@@ -1076,7 +1076,7 @@ func (s *Server) SetDefaultSystemAccount() error {
 }
 
 // For internal sends.
-const internalSendQLen = 8192
+const internalSendQLen = 256 * 1024
 
 // Assign a system account. Should only be called once.
 // This sets up a server to send and receive messages from
