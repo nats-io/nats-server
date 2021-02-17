@@ -3647,7 +3647,6 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) {
 
 	mset.mu.Lock()
 	state := mset.store.State()
-
 	sreq := mset.calculateSyncRequest(&state, snap)
 	s, subject, n := mset.srv, mset.sa.Sync, mset.node
 	mset.mu.Unlock()
@@ -3736,9 +3735,9 @@ RETRY:
 		case mrec := <-msgsC:
 			notActive.Reset(activityInterval)
 			msg := mrec.msg
-			// Check eof signaling.
+			// Check for eof signaling.
 			if len(msg) == 0 {
-				goto RETRY
+				return
 			}
 			if lseq, err := mset.processCatchupMsg(msg); err == nil {
 				if lseq >= last {
