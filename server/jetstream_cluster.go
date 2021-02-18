@@ -1091,12 +1091,15 @@ func (js *jetStream) createRaftGroup(rg *raftGroup) error {
 	}
 
 	storeDir := path.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, rg.Name)
-	ms, err := newMemStore(&StreamConfig{Name: rg.Name, Storage: MemoryStorage})
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 8_000_000, AsyncFlush: true},
+		StreamConfig{Name: rg.Name, Storage: FileStorage},
+	)
 	if err != nil {
-		s.Errorf("Error creating memstore: %v", err)
+		s.Errorf("Error creating filestore: %v", err)
 		return err
 	}
-	cfg := &RaftConfig{Name: rg.Name, Store: storeDir, Log: ms}
+	cfg := &RaftConfig{Name: rg.Name, Store: storeDir, Log: fs}
 
 	if _, err := readPeerState(storeDir); err != nil {
 		s.bootstrapRaftNode(cfg, rg.Peers, true)

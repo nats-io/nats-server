@@ -47,6 +47,8 @@ type FileStoreConfig struct {
 	CacheExpire time.Duration
 	// SyncInterval is how often we sync to disk in the background.
 	SyncInterval time.Duration
+	// AsyncFlush allows async flush to batch write operations.
+	AsyncFlush bool
 }
 
 // FileStreamInfo allows us to remember created time.
@@ -294,10 +296,8 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		qch:  make(chan struct{}),
 	}
 
-	// Although originally designed to be able to flush multiple writes to disk
-	// for now we will suppress this behavior and at least flush in place and call
-	// into the OS. Sync is still handled async.
-	fs.fip = true
+	// Set flush in place to AsyncFlush which by default is false.
+	fs.fip = fcfg.AsyncFlush
 
 	// Check if this is a new setup.
 	mdir := path.Join(fcfg.StoreDir, msgDir)
