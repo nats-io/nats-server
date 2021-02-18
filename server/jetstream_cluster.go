@@ -1158,8 +1158,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 
 	const (
 		compactInterval = 2 * time.Minute
-		compactSizeMin  = 4 * 1024 * 1024
-		compactNumMin   = 32
+		compactSizeMin  = 64 * 1024 * 1024
+		compactNumMin   = 8
 	)
 
 	t := time.NewTicker(compactInterval)
@@ -1187,6 +1187,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 		if snap := mset.stateSnapshot(); !bytes.Equal(lastSnap, snap) {
 			if err := n.InstallSnapshot(snap); err == nil {
 				lastSnap = snap
+				_, _, lastApplied = n.Progress()
 			}
 		}
 	}
@@ -1212,10 +1213,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 			if err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
 				n.Applied(ce.Index)
 				ne := ce.Index - lastApplied
-				lastApplied = ce.Index
-
 				// If over our compact min and we have at least min entries to compact, go ahead and snapshot/compact.
-				if _, b := n.Size(); lastSnap == nil || (b > compactSizeMin && ne > compactNumMin) {
+				if _, b := n.Size(); lastSnap == nil || (b > compactSizeMin && ne >= compactNumMin) {
 					doSnapshot()
 				}
 			} else {
@@ -2271,7 +2270,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	const (
 		compactInterval = 2 * time.Minute
 		compactSizeMin  = 8 * 1024 * 1024
-		compactNumMin   = 256
+		compactNumMin   = 64
 	)
 
 	t := time.NewTicker(compactInterval)
@@ -2286,6 +2285,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			if snap := encodeConsumerState(state); !bytes.Equal(lastSnap, snap) {
 				if err := n.InstallSnapshot(snap); err == nil {
 					lastSnap = snap
+					_, _, lastApplied = n.Progress()
 				}
 			}
 		}
@@ -2305,8 +2305,6 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			if err := js.applyConsumerEntries(o, ce); err == nil {
 				n.Applied(ce.Index)
 				ne := ce.Index - lastApplied
-				lastApplied = ce.Index
-
 				// If over our compact min and we have at least min entries to compact, go ahead and snapshot/compact.
 				if _, b := n.Size(); lastSnap == nil || (b > compactSizeMin && ne > compactNumMin) {
 					doSnapshot()
@@ -3680,6 +3678,16 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) {
 		if sub != nil {
 			s.sysUnsubscribe(sub)
 		}
+		// Make sure any consumers are updated for the pending amounts.
+		mset.mu.Lock()
+		for _, o := range mset.consumers {
+			o.mu.Lock()
+			if o.isLeader() {
+				o.setInitialPending()
+			}
+			o.mu.Unlock()
+		}
+		mset.mu.Unlock()
 	}()
 
 RETRY:

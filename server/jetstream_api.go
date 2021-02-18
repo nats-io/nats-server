@@ -2439,8 +2439,8 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 }
 
 // Default chunk size for now.
-const defaultSnapshotChunkSize = 128 * 1024
-const defaultSnapshotWindowSize = 16 * 1024 * 1024 // 16MB
+const defaultSnapshotChunkSize = 256 * 1024
+const defaultSnapshotWindowSize = 32 * 1024 * 1024 // 32MB
 
 // streamSnapshot will stream out our snapshot to the reply subject.
 func (s *Server) streamSnapshot(ci *ClientInfo, acc *Account, mset *stream, sr *SnapshotResult, req *JSApiStreamSnapshotRequest) {
@@ -2477,13 +2477,15 @@ func (s *Server) streamSnapshot(ci *ClientInfo, acc *Account, mset *stream, sr *
 	// We will place sequence number and size of chunk sent in the reply.
 	ackSubj := fmt.Sprintf(jsSnapshotAckT, mset.name(), nuid.Next())
 	ackSub, _ := mset.subscribeInternalUnlocked(ackSubj+".>", func(_ *subscription, _ *client, subject, _ string, _ []byte) {
+		cs, _ := strconv.Atoi(tokenAt(subject, 6))
 		// This is very crude and simple, but ok for now.
 		// This only matters when sending multiple chunks.
-		if atomic.LoadInt32(&out) > defaultSnapshotWindowSize {
-			acks <- struct{}{}
+		if atomic.AddInt32(&out, int32(-cs)) < defaultSnapshotWindowSize {
+			select {
+			case acks <- struct{}{}:
+			default:
+			}
 		}
-		cs, _ := strconv.Atoi(tokenAt(subject, 6))
-		atomic.AddInt32(&out, int32(-cs))
 	})
 	defer mset.unsubscribeUnlocked(ackSub)
 
@@ -2507,7 +2509,7 @@ func (s *Server) streamSnapshot(ci *ClientInfo, acc *Account, mset *stream, sr *
 			case <-acks:
 			case <-inch: // Lost interest
 				goto done
-			case <-time.After(time.Millisecond):
+			case <-time.After(10 * time.Millisecond):
 			}
 		}
 		// TODO(dlc) - Might want these moved off sendq if we have contention.
