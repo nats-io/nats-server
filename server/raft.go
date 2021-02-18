@@ -355,7 +355,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		// TODO(dlc) - Recover our state here.
 		if first, err := n.loadFirstEntry(); err == nil {
 			n.pterm, n.pindex = first.pterm, first.pindex
-			if first.commit > 0 {
+			if first.commit > 0 && first.commit > n.commit {
 				n.commit = first.commit
 			}
 		}
@@ -684,7 +684,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		return errNodeClosed
 	}
 
-	if state := n.wal.State(); state.LastSeq == n.applied {
+	if state := n.wal.State(); state.FirstSeq == n.applied {
 		n.Unlock()
 		return nil
 	}
@@ -1588,7 +1588,7 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesC <-chan uint64) 
 			ae, err := n.loadEntry(next)
 			if err != nil {
 				if err != ErrStoreEOF {
-					n.debug("Got an error loading %d index: %v", next, err)
+					n.warn("Got an error loading %d index: %v", next, err)
 				}
 				return true
 			}
@@ -1735,7 +1735,7 @@ func (n *raft) applyCommit(index uint64) error {
 	ae, err := n.loadEntry(index)
 	if err != nil {
 		if err != ErrStoreClosed {
-			n.debug("Got an error loading %d index: %v", index, err)
+			n.warn("Got an error loading %d index: %v", index, err)
 		}
 		n.commit = original
 		return errEntryLoadFailed
@@ -2166,7 +2166,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 					n.Unlock()
 					return
 				}
-				n.debug("Error storing to WAL: %v", err)
+				n.warn("Error storing to WAL: %v", err)
 
 				//FIXME(dlc)!!, WARN AT LEAST, RESPOND FALSE, return etc!
 
