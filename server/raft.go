@@ -181,7 +181,7 @@ type catchupState struct {
 	cindex uint64
 	pterm  uint64
 	pindex uint64
-	hbs    int
+	active time.Time
 }
 
 // lps holds peer state of last time and last index replicated.
@@ -1551,9 +1551,10 @@ func (n *raft) loadFirstEntry() (ae *appendEntry, err error) {
 	return n.loadEntry(n.wal.State().FirstSeq)
 }
 
-func (n *raft) runCatchup(peer, subj string, indexUpdatesC <-chan uint64) {
+func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesC <-chan uint64) {
 	n.RLock()
 	s, reply := n.s, n.areply
+	peer, subj, last := ar.peer, ar.reply, n.pindex
 	n.RUnlock()
 
 	defer s.grWG.Done()
@@ -1565,9 +1566,9 @@ func (n *raft) runCatchup(peer, subj string, indexUpdatesC <-chan uint64) {
 			n.progress = nil
 		}
 		// Check if this is a new peer and if so go ahead and propose adding them.
-		_, ok := n.peers[peer]
+		_, exists := n.peers[peer]
 		n.Unlock()
-		if !ok {
+		if !exists {
 			n.debug("Catchup done for %q, will add into peers", peer)
 			n.ProposeAddPeer(peer)
 		}
@@ -1578,21 +1579,25 @@ func (n *raft) runCatchup(peer, subj string, indexUpdatesC <-chan uint64) {
 	const maxOutstanding = 2 * 1024 * 1024 // 2MB for now.
 	next, total, om := uint64(0), 0, make(map[uint64]int)
 
-	sendNext := func() {
+	sendNext := func() bool {
 		for total <= maxOutstanding {
 			next++
+			if next > last {
+				return true
+			}
 			ae, err := n.loadEntry(next)
 			if err != nil {
 				if err != ErrStoreEOF {
 					n.debug("Got an error loading %d index: %v", next, err)
 				}
-				return
+				return true
 			}
 			// Update our tracking total.
 			om[next] = len(ae.buf)
 			total += len(ae.buf)
 			n.sendRPC(subj, reply, ae.buf)
 		}
+		return false
 	}
 
 	const activityInterval = 2 * time.Second
@@ -1623,20 +1628,17 @@ func (n *raft) runCatchup(peer, subj string, indexUpdatesC <-chan uint64) {
 			// Update outstanding total.
 			total -= om[index]
 			delete(om, index)
-			n.RLock()
-			finished := index >= n.pindex
-			n.RUnlock()
-			// Check if we are done.
-			if finished {
-				n.debug("Finished catching up")
-				return
-			}
 			// Still have more catching up to do.
 			if next < index {
 				n.debug("Adjusting next to %d from %d", index, next)
 				next = index
 			}
-			sendNext()
+			// Check if we are done.
+			finished := index > last
+			if finished || sendNext() {
+				n.debug("Finished catching up")
+				return
+			}
 		}
 	}
 }
@@ -1660,6 +1662,7 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	if n.progress == nil {
 		n.progress = make(map[string]chan uint64)
 	}
+
 	if ch, ok := n.progress[ar.peer]; ok {
 		n.debug("Will cancel existing entry for catching up %q", ar.peer)
 		delete(n.progress, ar.peer)
@@ -1700,7 +1703,7 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	n.progress[ar.peer] = indexUpdates
 	n.Unlock()
 
-	n.s.startGoRoutine(func() { n.runCatchup(ar.peer, ar.reply, indexUpdates) })
+	n.s.startGoRoutine(func() { n.runCatchup(ar, indexUpdates) })
 }
 
 func (n *raft) loadEntry(index uint64) (*appendEntry, error) {
@@ -1946,14 +1949,12 @@ func (n *raft) catchupStalled() bool {
 	if n.catchup == nil {
 		return false
 	}
-	const maxHBs = 3
 	if n.catchup.pindex == n.pindex {
-		n.catchup.hbs++
-	} else {
-		n.catchup.pindex = n.pindex
-		n.catchup.hbs = 0
+		return time.Since(n.catchup.active) > 2*time.Second
 	}
-	return n.catchup.hbs >= maxHBs
+	n.catchup.pindex = n.pindex
+	n.catchup.active = time.Now()
+	return false
 }
 
 // Lock should be held.
@@ -1968,6 +1969,7 @@ func (n *raft) createCatchup(ae *appendEntry) string {
 		cindex: ae.pindex,
 		pterm:  n.pterm,
 		pindex: n.pindex,
+		active: time.Now(),
 	}
 	inbox := n.newInbox()
 	sub, _ := n.subscribe(inbox, n.handleAppendEntry)
@@ -2042,7 +2044,6 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		if cs := n.catchup; cs != nil && n.pterm >= cs.cterm && n.pindex >= cs.cindex {
 			// If we are here we are good, so if we have a catchup pending we can cancel.
 			n.cancelCatchup()
-			catchingUp = false
 		} else if isNew {
 			var ar *appendEntryResponse
 			var inbox string
@@ -2088,7 +2089,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			var ar *appendEntryResponse
 			if eae, err := n.loadEntry(ae.pindex); err == nil && eae != nil {
 				// If terms mismatched, delete that entry and all others past it.
-				if eae.pterm != ae.pterm {
+				if ae.pterm > eae.pterm {
 					n.wal.Truncate(ae.pindex - 1)
 					n.pindex = ae.pindex
 					n.pterm = ae.pterm
@@ -2148,7 +2149,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			if ae.pindex > n.pindex {
 				// Setup our state for catching up.
 				inbox := n.createCatchup(ae)
-				ar := appendEntryResponse{n.pterm, n.pindex, n.id, false, _EMPTY_}
+				ar := &appendEntryResponse{n.pterm, n.pindex, n.id, false, _EMPTY_}
 				n.Unlock()
 				n.sendRPC(ae.reply, inbox, ar.encode())
 				return
@@ -2277,10 +2278,11 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 		fmt.Printf("[%s] n.wal is %+v\n", n.s, n.wal.State())
 		if state := n.wal.State(); state.Msgs > 0 {
 			for index := state.FirstSeq; index <= state.LastSeq; index++ {
-				nae, _ := n.loadEntry(index)
-				fmt.Printf("INDEX %d is %+v\n", index, nae)
-				for _, e := range nae.entries {
-					fmt.Printf("Entry type is %v\n", e.Type)
+				if nae, _ := n.loadEntry(index); nae != nil {
+					fmt.Printf("INDEX %d is %+v\n", index, nae)
+					for _, e := range nae.entries {
+						fmt.Printf("Entry type is %v\n", e.Type)
+					}
 				}
 			}
 		}

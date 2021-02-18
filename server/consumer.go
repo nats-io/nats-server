@@ -712,8 +712,10 @@ func (o *consumer) setLeader(isLeader bool) {
 		o.reqSub = nil
 		o.infoSub = nil
 		o.sendq = nil
-		close(o.qch)
-		o.qch = nil
+		if o.qch != nil {
+			close(o.qch)
+			o.qch = nil
+		}
 		o.mu.Unlock()
 	}
 }
