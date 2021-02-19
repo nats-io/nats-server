@@ -2023,7 +2023,7 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	jsub, err := js.SubscribeSync("foo", nats.Attach("TEST", "dlc"), nats.Pull(batchSize))
+	jsub, err := js.SubscribeSync("foo", nats.Durable("dlc"), nats.Pull(batchSize))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2457,8 +2457,9 @@ func TestJetStreamClusterStreamInterestOnlyPolicy(t *testing.T) {
 
 	// Now delete the consumer.
 	sub.Unsubscribe()
-	if err := js.DeleteConsumer("foo", "dlc"); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
+	// That should make it go away.
+	if _, err := js.ConsumerInfo("foo", "dlc"); err == nil {
+		t.Fatalf("Expected not found error, got none")
 	}
 
 	// Wait for the messages to be purged.
@@ -3522,6 +3523,49 @@ func TestJetStreamClusterSuperClusterBasics(t *testing.T) {
 	}
 }
 
+// Test that consumer interest across gateways and superclusters is properly identitifed in a remote cluster.
+func TestJetStreamClusterSuperClusterCrossClusterConsumerInterest(t *testing.T) {
+	sc := createJetStreamSuperCluster(t, 3, 3)
+	defer sc.shutdown()
+
+	// Client based API - Connect to Cluster C1. Stream and consumer will live in C2.
+	s := sc.clusterForName("C1").randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	pcn := "C2"
+	_, err := js.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 3, Placement: &nats.Placement{Cluster: pcn}})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Pull based first.
+	sub, err := js.SubscribeSync("foo", nats.Durable("dlc"), nats.Pull(1))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Send a message.
+	if _, err = js.Publish("foo", []byte("CCI")); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+
+	checkSubsPending(t, sub, 1)
+
+	// Now check push based delivery.
+	sub, err = js.SubscribeSync("foo", nats.Durable("rip"))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	checkSubsPending(t, sub, 1)
+
+	// Send another message.
+	if _, err = js.Publish("foo", []byte("CCI")); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+	checkSubsPending(t, sub, 2)
+}
+
 func TestJetStreamClusterSuperClusterPeerReassign(t *testing.T) {
 	sc := createJetStreamSuperCluster(t, 3, 3)
 	defer sc.shutdown()
@@ -3602,7 +3646,6 @@ func TestJetStreamClusterSuperClusterPeerReassign(t *testing.T) {
 		}
 		return nil
 	})
-
 }
 
 func TestJetStreamClusterStreamPerf(t *testing.T) {

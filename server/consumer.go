@@ -679,7 +679,10 @@ func (o *consumer) setLeader(isLeader bool) {
 		if o.isPushMode() {
 			o.inch = make(chan bool, 8)
 			o.acc.sl.RegisterNotification(o.cfg.DeliverSubject, o.inch)
-			o.active = <-o.inch
+			if o.active = <-o.inch; !o.active {
+				// Check gateways in case they are enabled.
+				o.active = s.hasGatewayInterest(o.acc.Name, o.cfg.DeliverSubject)
+			}
 		}
 
 		// If we are not in ReplayInstant mode mark us as in replay state until resolved.
@@ -854,17 +857,24 @@ func (o *consumer) hasDeliveryInterest(localInterest bool) bool {
 	}
 
 	// If we are here check gateways.
-	if acc.srv != nil && acc.srv.gateway.enabled {
-		gw := acc.srv.gateway
-		gw.RLock()
-		for _, gwc := range gw.outo {
-			psi, qr := gwc.gatewayInterest(acc.Name, deliver)
-			if psi || qr != nil {
-				gw.RUnlock()
-				return true
-			}
+	if s := acc.srv; s != nil && s.hasGatewayInterest(acc.Name, deliver) {
+		return true
+	}
+	return false
+}
+
+func (s *Server) hasGatewayInterest(account, subject string) bool {
+	gw := s.gateway
+	if !gw.enabled {
+		return false
+	}
+	gw.RLock()
+	defer gw.RUnlock()
+	for _, gwc := range gw.outo {
+		psi, qr := gwc.gatewayInterest(account, subject)
+		if psi || qr != nil {
+			return true
 		}
-		gw.RUnlock()
 	}
 	return false
 }
@@ -1860,8 +1870,13 @@ func (o *consumer) expireWaiting() int {
 			expired++
 			continue
 		}
-		rr := o.acc.sl.Match(wr.reply)
+		s, acc := o.acc.srv, o.acc
+		rr := acc.sl.Match(wr.reply)
 		if len(rr.psubs)+len(rr.qsubs) > 0 {
+			break
+		}
+		// If we are here check on gateways.
+		if s != nil && s.hasGatewayInterest(acc.Name, wr.reply) {
 			break
 		}
 		// No more interest so go ahead and remove this one from our list.
