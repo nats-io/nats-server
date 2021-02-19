@@ -48,7 +48,7 @@ type jetStreamCluster struct {
 	stepdown *subscription
 }
 
-// Used to guide placement of streams in clustered JetStream.
+// Used to guide placement of streams and meta controllers in clustered JetStream.
 type Placement struct {
 	Cluster string   `json:"cluster"`
 	Tags    []string `json:"tags,omitempty"`
@@ -295,10 +295,11 @@ func (s *Server) JetStreamClusterPeers() []string {
 	peers := cc.meta.Peers()
 	var nodes []string
 	for _, p := range peers {
-		if si, ok := s.nodeToInfo.Load(p.ID); !ok || si.(*nodeInfo).offline {
+		si, ok := s.nodeToInfo.Load(p.ID)
+		if !ok || si.(*nodeInfo).offline {
 			continue
 		}
-		nodes = append(nodes, p.ID)
+		nodes = append(nodes, si.(*nodeInfo).name)
 	}
 	return nodes
 }

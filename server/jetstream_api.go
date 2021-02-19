@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"sort"
 	"strconv"
@@ -423,6 +424,11 @@ type JSApiConsumerLeaderStepDownResponse struct {
 
 const JSApiConsumerLeaderStepDownResponseType = "io.nats.jetstream.api.v1.consumer_leader_stepdown_response"
 
+// JSApiLeaderStepdownRequest allows placement control over the meta leader placement.
+type JSApiLeaderStepdownRequest struct {
+	Placement *Placement `json:"placement,omitempty"`
+}
+
 // JSApiLeaderStepDownResponse is the response to a meta leader stepdown request.
 type JSApiLeaderStepDownResponse struct {
 	ApiResponse
@@ -552,6 +558,8 @@ var (
 	jsClusterRequiredErr   = &ApiError{Code: 503, Description: "JetStream clustering support required"}
 	jsPeerNotMemberErr     = &ApiError{Code: 400, Description: "peer not a member"}
 	jsClusterIncompleteErr = &ApiError{Code: 503, Description: "incomplete results"}
+	jsClusterTagsErr       = &ApiError{Code: 400, Description: "tags placement not supported for operation"}
+	jsClusterNoPeersErr    = &ApiError{Code: 400, Description: "no suitable peers for placement"}
 )
 
 // For easier handling of exports and imports.
@@ -1699,10 +1707,47 @@ func (s *Server) jsLeaderStepDownRequest(sub *subscription, c *client, subject, 
 		return
 	}
 
-	// Call actual stepdown.
-	err = cc.meta.StepDown()
-
+	var preferredLeader string
 	var resp = JSApiLeaderStepDownResponse{ApiResponse: ApiResponse{Type: JSApiLeaderStepDownResponseType}}
+
+	if !isEmptyRequest(msg) {
+		var req JSApiLeaderStepdownRequest
+		if err := json.Unmarshal(msg, &req); err != nil {
+			resp.Error = jsInvalidJSONErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		if len(req.Placement.Tags) > 0 {
+			// Tags currently not supported.
+			resp.Error = jsClusterTagsErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		cn := req.Placement.Cluster
+		var peers []string
+		for _, p := range cc.meta.Peers() {
+			si, ok := s.nodeToInfo.Load(p.ID)
+			ni := si.(*nodeInfo)
+			if !ok || ni.offline || ni.cluster != cn {
+				continue
+			}
+			peers = append(peers, p.ID)
+		}
+		if len(peers) == 0 {
+			resp.Error = jsClusterNoPeersErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		// Randomize and select.
+		if len(peers) > 1 {
+			rand.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
+		}
+		preferredLeader = peers[0]
+	}
+
+	// Call actual stepdown.
+	err = cc.meta.StepDown(preferredLeader)
+
 	if err != nil {
 		resp.Error = jsError(err)
 	} else {
