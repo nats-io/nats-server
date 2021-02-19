@@ -1726,12 +1726,12 @@ func (s *Server) jsLeaderStepDownRequest(sub *subscription, c *client, subject, 
 		cn := req.Placement.Cluster
 		var peers []string
 		for _, p := range cc.meta.Peers() {
-			si, ok := s.nodeToInfo.Load(p.ID)
-			ni := si.(*nodeInfo)
-			if !ok || ni.offline || ni.cluster != cn {
-				continue
+			if si, ok := s.nodeToInfo.Load(p.ID); ok && si != nil {
+				if ni := si.(*nodeInfo); ni.offline || ni.cluster != cn {
+					continue
+				}
+				peers = append(peers, p.ID)
 			}
-			peers = append(peers, p.ID)
 		}
 		if len(peers) == 0 {
 			resp.Error = jsClusterNoPeersErr
