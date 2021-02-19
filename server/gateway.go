@@ -2622,15 +2622,6 @@ func (g *srvGateway) getClusterHash() []byte {
 	return clusterHash
 }
 
-// Returns the route with given hash or nil if not found.
-func (s *Server) getRouteByHash(srvHash []byte) *client {
-	var route *client
-	if v, ok := s.routesByHash.Load(string(srvHash)); ok {
-		route = v.(*client)
-	}
-	return route
-}
-
 // Store this route in map with the key being the remote server's name hash
 // and the remote server's ID hash used by gateway replies mapping routing.
 func (s *Server) storeRouteByHash(srvNameHash, srvIDHash string, c *client) {

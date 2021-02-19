@@ -47,7 +47,7 @@ type RaftNode interface {
 	Quorum() bool
 	Current() bool
 	GroupLeader() string
-	StepDown() error
+	StepDown(preferred ...string) error
 	Campaign() error
 	ID() string
 	Group() string
@@ -219,6 +219,8 @@ var (
 	errBadSnapName     = errors.New("raft: snapshot name could not be parsed")
 	errNoSnapAvailable = errors.New("raft: no snapshot available")
 	errSnapshotCorrupt = errors.New("raft: snapshot corrupt")
+	errTooManyPrefs    = errors.New("raft: stepdown requires at most one preferred new leader")
+	errStepdownNoPeer  = errors.New("raft: stepdown failed, could not match new leader")
 )
 
 // This will bootstrap a raftNode by writing its config into the store directory.
@@ -911,8 +913,12 @@ func (n *raft) GroupLeader() string {
 }
 
 // StepDown will have a leader stepdown and optionally do a leader transfer.
-func (n *raft) StepDown() error {
+func (n *raft) StepDown(preferred ...string) error {
 	n.Lock()
+
+	if len(preferred) > 1 {
+		return errTooManyPrefs
+	}
 
 	if n.state != Leader {
 		n.Unlock()
@@ -924,18 +930,29 @@ func (n *raft) StepDown() error {
 	// See if we have up to date followers.
 	nowts := time.Now().UnixNano()
 	maybeLeader := noLeader
+	if len(preferred) > 0 {
+		maybeLeader = preferred[0]
+	}
 	for peer, ps := range n.peers {
 		// If not us and alive and caughtup.
-		if peer != n.id && (nowts-ps.ts) < int64(hbInterval*2) {
-			if n.s.getRouteByHash([]byte(peer)) != nil {
-				n.debug("Looking at %q which is %v behind", peer, time.Duration(nowts-ps.ts))
-				maybeLeader = peer
-				break
+		if peer != n.id && (nowts-ps.ts) < int64(hbInterval*3) {
+			if maybeLeader != noLeader && maybeLeader != peer {
+				continue
 			}
+			if si, ok := n.s.nodeToInfo.Load(peer); !ok || si.(*nodeInfo).offline {
+				continue
+			}
+			n.debug("Looking at %q which is %v behind", peer, time.Duration(nowts-ps.ts))
+			maybeLeader = peer
+			break
 		}
 	}
 	stepdown := n.stepdown
 	n.Unlock()
+
+	if len(preferred) > 0 && maybeLeader == noLeader {
+		return errStepdownNoPeer
+	}
 
 	if maybeLeader != noLeader {
 		n.debug("Stepping down, selected %q for new leader", maybeLeader)

@@ -678,7 +678,7 @@ func TestJetStreamClusterMetaSnapshotsMultiChange(t *testing.T) {
 	// Add in a new server to the group. This way we know we can delete the original streams and consumers.
 	rs := c.addInNewServer()
 	c.waitOnServerCurrent(rs)
-	rsnn := rs.NodeName()
+	rsn := rs.Name()
 
 	// Shut it down.
 	rs.Shutdown()
@@ -686,7 +686,7 @@ func TestJetStreamClusterMetaSnapshotsMultiChange(t *testing.T) {
 	// Wait for the peer to be removed.
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
 		for _, p := range s.JetStreamClusterPeers() {
-			if p == rsnn {
+			if p == rsn {
 				return fmt.Errorf("Old server still in peer set")
 			}
 		}
@@ -3442,6 +3442,68 @@ func TestJetStreamClusterStreamGetMsg(t *testing.T) {
 	}
 	if resp.Message == nil || resp.Error != nil {
 		t.Fatalf("Did not receive correct response: %+v", resp.Error)
+	}
+}
+
+func TestJetStreamClusterMetaPlacement(t *testing.T) {
+	sc := createJetStreamSuperCluster(t, 3, 3)
+	defer sc.shutdown()
+
+	// We want to influence where the meta leader will place itself when we ask the
+	// current leader to stepdown.
+	ml := sc.leader()
+	cn := ml.ClusterName()
+	var pcn string
+	for _, c := range sc.clusters {
+		if c.name != cn {
+			pcn = c.name
+			break
+		}
+	}
+
+	// Client based API
+	s := sc.randomCluster().randomServer()
+	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	if err != nil {
+		t.Fatalf("Failed to create system client: %v", err)
+	}
+	defer nc.Close()
+
+	stepdown := func(cn string) *JSApiLeaderStepDownResponse {
+		req := &JSApiLeaderStepdownRequest{Placement: &Placement{Cluster: cn}}
+		jreq, err := json.Marshal(req)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		resp, err := nc.Request(JSApiLeaderStepDown, jreq, time.Second)
+		if err != nil {
+			t.Fatalf("Error on stepdown request: %v", err)
+		}
+		var sdr JSApiLeaderStepDownResponse
+		if err := json.Unmarshal(resp.Data, &sdr); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		return &sdr
+	}
+
+	// Make sure we get correct errors for tags and bad or unavailable cluster placement.
+	sdr := stepdown("C22")
+	if sdr.Error == nil || !strings.Contains(sdr.Error.Description, "no suitable peers") {
+		t.Fatalf("Got incorrect error result: %+v", sdr.Error)
+	}
+	// Should work.
+	sdr = stepdown(pcn)
+	if sdr.Error != nil {
+		t.Fatalf("Got an error on stepdown: %+v", sdr.Error)
+	}
+
+	sc.waitOnLeader()
+	ml = sc.leader()
+	cn = ml.ClusterName()
+
+	if cn != pcn {
+		t.Fatalf("Expected new metaleader to be in cluster %q, got %q", pcn, cn)
 	}
 }
 
