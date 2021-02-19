@@ -3606,10 +3606,10 @@ func (c *client) setHeader(key, value string, msg []byte) []byte {
 	// Put the original message back.
 	// FIXME(dlc) - This is inefficient.
 	bb.Write(msg[omi:])
-	nsize := bb.Len()
-	// MQTT producers don't have CRLF
-	if !c.isMqtt() {
-		nsize -= LEN_CR_LF
+	nsize := bb.Len() - LEN_CR_LF
+	// MQTT producers don't have CRLF, so add it back.
+	if c.isMqtt() {
+		nsize += LEN_CR_LF
 	}
 	// Update pubArgs
 	// If others will use this later we need to save and restore original.
