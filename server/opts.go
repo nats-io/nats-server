@@ -364,15 +364,20 @@ type MQTTOpts struct {
 	// a client is redelivered as a DUPLICATE if the server has not
 	// received the PUBACK on the original Packet Identifier.
 	// The value has to be positive.
-	// Zero will cause the server to use the default value (1 hour).
+	// Zero will cause the server to use the default value (30 seconds).
 	// Note that changes to this option is applied only to new MQTT subscriptions.
 	AckWait time.Duration
 
 	// MaxAckPending is the amount of QoS 1 messages the server can send to
-	// a session without receiving any PUBACK for those messages.
+	// a subscription without receiving any PUBACK for those messages.
 	// The valid range is [0..65535].
-	// Zero will cause the server to use the default value (1024).
-	// Note that changes to this option is applied only to new MQTT sessions.
+	// The total of subscriptions' MaxAckPending on a given session cannot
+	// exceed 65535. Attempting to create a subscription that would bring
+	// the total above the limit would result in the server returning 0x80
+	// in the SUBACK for this subscription.
+	// Due to how the NATS Server handles the MQTT "#" wildcard, each
+	// subscription ending with "#" will use 2 times the MaxAckPending value.
+	// Note that changes to this option is applied only to new subscriptions.
 	MaxAckPending uint16
 }
 

@@ -117,6 +117,8 @@ var readLoopReportThreshold = readLoopReport
 // Represent client booleans with a bitmask
 type clientFlag uint16
 
+const hdrLine = "NATS/1.0\r\n"
+
 // Some client state represented as flags
 const (
 	connectReceived   clientFlag = 1 << iota // The CONNECT proto has been received
@@ -1033,7 +1035,7 @@ func (c *client) readLoop(pre []byte) {
 
 	defer func() {
 		if c.isMqtt() {
-			s.mqttHandleWill(c)
+			s.mqttHandleClosedClient(c)
 		}
 		// These are used only in the readloop, so we can set them to nil
 		// on exit of the readLoop.
@@ -3353,7 +3355,9 @@ func (c *client) selectMappedSubject() bool {
 }
 
 // processInboundClientMsg is called to process an inbound msg from a client.
-func (c *client) processInboundClientMsg(msg []byte) bool {
+// Return if the message was delivered, and if the message was not delivered
+// due to a permission issue.
+func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 	// Update statistics
 	// The msg includes the CR_LF, so pull back out for accounting.
 	c.in.msgs++
@@ -3362,24 +3366,24 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 	// Check that client (could be here with SYSTEM) is not publishing on reserved "$GNR" prefix.
 	if c.kind == CLIENT && hasGWRoutedReplyPrefix(c.pa.subject) {
 		c.pubPermissionViolation(c.pa.subject)
-		return false
+		return false, true
 	}
 
 	// Mostly under testing scenarios.
 	if c.srv == nil || c.acc == nil {
-		return false
+		return false, false
 	}
 
 	// Check pub permissions
 	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) && !c.pubAllowed(string(c.pa.subject)) {
 		c.pubPermissionViolation(c.pa.subject)
-		return false
+		return false, true
 	}
 
 	// Now check for reserved replies. These are used for service imports.
 	if len(c.pa.reply) > 0 && isReservedReply(c.pa.reply) {
 		c.replySubjectViolation(c.pa.reply)
-		return false
+		return false, true
 	}
 
 	if c.opts.Verbose {
@@ -3393,7 +3397,7 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 
 	// Check if this client's gateway replies map is not empty
 	if atomic.LoadInt32(&c.cgwrt) > 0 && c.handleGWReplyMap(msg) {
-		return true
+		return true, false
 	}
 
 	// If we have an exported service and we are doing remote tracking, check this subject
@@ -3489,7 +3493,7 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 		c.mu.Unlock()
 	}
 
-	return didDeliver
+	return didDeliver, false
 }
 
 // Return the subscription for this reply subject. Only look at normal subs for this client.
@@ -3586,7 +3590,6 @@ func removeHeaderIfPresent(hdr []byte, key string) []byte {
 // from the inbound go routine. We will update the pubArgs.
 // This will replace any previously set header and not add to it per normal spec.
 func (c *client) setHeader(key, value string, msg []byte) []byte {
-	const hdrLine = "NATS/1.0\r\n"
 	var bb bytes.Buffer
 	var omi int
 	// Write original header if present.
@@ -3604,6 +3607,10 @@ func (c *client) setHeader(key, value string, msg []byte) []byte {
 	// FIXME(dlc) - This is inefficient.
 	bb.Write(msg[omi:])
 	nsize := bb.Len() - LEN_CR_LF
+	// MQTT producers don't have CRLF, so add it back.
+	if c.isMqtt() {
+		nsize += LEN_CR_LF
+	}
 	// Update pubArgs
 	// If others will use this later we need to save and restore original.
 	c.pa.hdr = nhdr

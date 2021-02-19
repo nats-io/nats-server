@@ -2305,10 +2305,12 @@ func hasGWRoutedReplyPrefix(subj []byte) bool {
 // Evaluates if the given reply should be mapped or not.
 func (g *srvGateway) shouldMapReplyForGatewaySend(c *client, acc *Account, reply []byte) bool {
 	// If the reply is a service reply (_R_), we will use the account's internal
-	// clientinstead of the client handed to us. This client holds the wildcard
+	// client instead of the client handed to us. This client holds the wildcard
 	// for all service replies.
 	if isServiceReply(reply) {
+		acc.mu.Lock()
 		c = acc.internalClient()
+		acc.mu.Unlock()
 	}
 	// If for this client there is a recent matching subscription interest
 	// then we will map.
