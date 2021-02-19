@@ -2891,7 +2891,7 @@ func TestJetStreamClusterRestartAndRemoveAdvisories(t *testing.T) {
 	}
 
 	// Wait for the advisories for all streams and consumers.
-	checkSubsPending(t, sub, 9) // 3 streams, 3 consumers, 3 stream names lookups for creating consumers.
+	checkSubsPending(t, sub, 12) // 3 streams, 3*2 consumers, 3 stream names lookups for creating consumers.
 	drainSub(sub)
 
 	// Created audit events.
