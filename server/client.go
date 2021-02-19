@@ -3887,7 +3887,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		c.kind != CLIENT && c.kind != SYSTEM && c.kind != JETSTREAM && c.kind != ACCOUNT &&
 		bytes.HasPrefix(creply, []byte(jsAckPre)) {
 		// We need to rewrite the subject and the reply.
-		if li := bytes.LastIndex(creply, []byte("@")); li != 0 && li < len(creply)-1 {
+		if li := bytes.LastIndex(creply, []byte("@")); li != -1 && li < len(creply)-1 {
 			subj, creply = creply[li+1:], creply[:li]
 		}
 	}
