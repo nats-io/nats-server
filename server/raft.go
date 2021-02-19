@@ -1189,11 +1189,6 @@ func (n *raft) error(format string, args ...interface{}) {
 	n.s.Errorf(nf, args...)
 }
 
-func (n *raft) notice(format string, args ...interface{}) {
-	nf := fmt.Sprintf("RAFT [%s - %s] %s", n.id, n.group, format)
-	n.s.Noticef(nf, args...)
-}
-
 func (n *raft) electTimer() *time.Timer {
 	n.RLock()
 	defer n.RUnlock()
