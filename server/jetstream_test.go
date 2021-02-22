@@ -1748,6 +1748,8 @@ func TestJetStreamWorkQueueRequest(t *testing.T) {
 			// Create a formal request object.
 			req := &JSApiConsumerGetNextRequest{Batch: toSend}
 			jreq, _ := json.Marshal(req)
+
+			// Request that next message is delivered to subscriber inbox.
 			nc.PublishRequest(getSubj, reply, jreq)
 
 			checkSubPending(toSend)
@@ -1779,6 +1781,40 @@ func TestJetStreamWorkQueueRequest(t *testing.T) {
 				sub.NextMsg(time.Millisecond)
 			}
 			checkSubPending(0)
+
+			// Send another message which we will poll synchronously.
+			expected := "Last one"
+			sendStreamMsg(t, nc, "foo", expected)
+			syncReq := &JSApiConsumerGetNextRequest{Batch: 1, DeliverTo: reply}
+			syncjrq, _ := json.Marshal(syncReq)
+			_, err = nc.Request(getSubj, syncjrq, 50*time.Millisecond)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			toSend += 1
+			checkSubPending(1)
+			msg, err := sub.NextMsg(time.Millisecond)
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
+			got := string(msg.Data)
+			if got != expected {
+				t.Fatalf("Expected %q, got: %q", expected, got)
+			}
+			msg.AckSync()
+			checkSubPending(0)
+
+			// No more messages so now expect a sync error with NoWait.
+			syncReq = &JSApiConsumerGetNextRequest{Batch: 1, NoWait: true, DeliverTo: reply}
+			syncjrq, _ = json.Marshal(syncReq)
+			resp, err = nc.Request(getSubj, syncjrq, 50*time.Millisecond)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if status := resp.Header.Get("Status"); !strings.HasPrefix(status, "404") {
+				t.Fatalf("Expected status code of 404")
+			}
+
 			mset.purge()
 
 			// Now do expiration

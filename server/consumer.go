@@ -1540,27 +1540,27 @@ func (o *consumer) needAck(sseq uint64) bool {
 }
 
 // Helper for the next message requests.
-func nextReqFromMsg(msg []byte) (time.Time, int, bool, error) {
+func nextReqFromMsg(msg []byte) (time.Time, int, bool, string, error) {
 	req := bytes.TrimSpace(msg)
 
 	switch {
 	case len(req) == 0:
-		return time.Time{}, 1, false, nil
+		return time.Time{}, 1, false, "", nil
 
 	case req[0] == '{':
 		var cr JSApiConsumerGetNextRequest
 		if err := json.Unmarshal(req, &cr); err != nil {
-			return time.Time{}, -1, false, err
+			return time.Time{}, -1, false, "", err
 		}
-		return cr.Expires, cr.Batch, cr.NoWait, nil
+		return cr.Expires, cr.Batch, cr.NoWait, cr.DeliverTo, nil
 
 	default:
 		if n, err := strconv.Atoi(string(req)); err == nil {
-			return time.Time{}, n, false, nil
+			return time.Time{}, n, false, "", nil
 		}
 	}
 
-	return time.Time{}, 1, false, nil
+	return time.Time{}, 1, false, "", nil
 }
 
 // Represents a request that is on the internal waiting queue
@@ -1664,14 +1664,6 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _, reply string
 		return
 	}
 
-	sendErr := func(status int, description string) {
-		sendq := o.sendq
-		o.mu.Unlock()
-		hdr := []byte(fmt.Sprintf("NATS/1.0 %d %s\r\n\r\n", status, description))
-		pmsg := &jsPubMsg{reply, reply, _EMPTY_, hdr, nil, nil, 0}
-		sendq <- pmsg // Send message.
-	}
-
 	if o.waiting.isFull() {
 		// Try to expire some of the requests.
 		if expired := o.expireWaiting(); expired == 0 {
@@ -1680,8 +1672,16 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _, reply string
 		}
 	}
 
+	sendErr := func(status int, description string) {
+		sendq := o.sendq
+		o.mu.Unlock()
+		hdr := []byte(fmt.Sprintf("NATS/1.0 %d %s\r\n\r\n", status, description))
+		pmsg := &jsPubMsg{reply, reply, _EMPTY_, hdr, nil, nil, 0}
+		sendq <- pmsg // Send message.
+	}
+
 	// Check payload here to see if they sent in batch size or a formal request.
-	expires, batchSize, noWait, err := nextReqFromMsg(msg)
+	expires, batchSize, noWait, deliverTo, err := nextReqFromMsg(msg)
 	if err != nil {
 		sendErr(400, fmt.Sprintf("Bad Request - %v", err))
 		return
@@ -1698,18 +1698,29 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _, reply string
 		return
 	}
 
+	// When making a pull request, a client can choose the subject to
+	// where the messages should be delivered and get a response on
+	// whether there were any errors in the pull request.
+	shouldRespond := true
+	if deliverTo == "" {
+		deliverTo = reply
+		shouldRespond = false
+	}
+
 	for i := 0; i < batchSize; i++ {
 		// See if we have more messages available.
 		if subj, hdr, msg, seq, dc, ts, err := o.getNextMsg(); err == nil {
-			o.deliverMsg(reply, subj, hdr, msg, seq, dc, ts)
+			o.deliverMsg(deliverTo, subj, hdr, msg, seq, dc, ts)
 			// Need to discount this from the total n for the request.
 			wr.n--
 		} else {
 			if wr.noWait {
 				switch err {
 				case errMaxAckPending:
+					shouldRespond = false
 					sendErr(409, "Exceeded MaxAckPending")
 				default:
+					shouldRespond = false
 					sendErr(404, "No Messages")
 				}
 				return
@@ -1718,7 +1729,14 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _, reply string
 			break
 		}
 	}
+	sendq := o.sendq
 	o.mu.Unlock()
+
+	if shouldRespond {
+		// Empty message meaning that there were no errors.
+		pmsg := &jsPubMsg{reply, reply, _EMPTY_, nil, nil, nil, 0}
+		sendq <- pmsg // Send message.
+	}
 }
 
 // Increase the delivery count for this message.
