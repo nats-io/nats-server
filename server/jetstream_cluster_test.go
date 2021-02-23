@@ -821,6 +821,7 @@ func TestJetStreamClusterRestoreSingleConsumer(t *testing.T) {
 
 	c.stopAll()
 	c.restartAll()
+	c.waitOnLeader()
 
 	s = c.randomServer()
 	nc, js = jsClientConnect(t, s)
@@ -2048,6 +2049,7 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 		}
 	}
 	nc.Flush()
+	time.Sleep(200 * time.Millisecond)
 
 	// Snapshot consumer info.
 	ci, err := jsub.ConsumerInfo()
@@ -2819,6 +2821,7 @@ func TestJetStreamClusterCreateResponseAdvisoriesHaveSubject(t *testing.T) {
 	}
 
 	checkSubsPending(t, sub, 6)
+
 	for m, err := sub.NextMsg(0); err == nil; m, err = sub.NextMsg(0) {
 		var audit JSAPIAudit
 		if err := json.Unmarshal(m.Data, &audit); err != nil {
@@ -4217,7 +4220,7 @@ func jsClientConnect(t *testing.T, s *Server) (*nats.Conn, nats.JetStreamContext
 
 func checkSubsPending(t *testing.T, sub *nats.Subscription, numExpected int) {
 	t.Helper()
-	checkFor(t, 3*time.Second, 10*time.Millisecond, func() error {
+	checkFor(t, 4*time.Second, 20*time.Millisecond, func() error {
 		if nmsgs, _, err := sub.Pending(); err != nil || nmsgs != numExpected {
 			return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, numExpected)
 		}

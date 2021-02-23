@@ -2041,6 +2041,7 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 	}
 	js.mu.RLock()
 	s := js.srv
+	hadLeader := sa.Group.node == nil || sa.Group.node.GroupLeader() != noLeader
 	js.mu.RUnlock()
 
 	acc, err := s.LookupAccount(sa.Client.serviceAccount())
@@ -2056,14 +2057,14 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
 	} else if mset != nil {
-		err = mset.stop(true, wasLeader)
+		err = mset.stop(true, false)
 	}
 
 	if sa.Group.node != nil {
 		sa.Group.node.Delete()
 	}
 
-	if !isMember || !wasLeader && sa.Group.node != nil && sa.Group.node.GroupLeader() != noLeader {
+	if !isMember || !wasLeader && hadLeader {
 		return
 	}
 

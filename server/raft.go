@@ -1449,6 +1449,10 @@ func (n *raft) handleForwardedProposal(sub *subscription, c *client, _, reply st
 
 func (n *raft) runAsLeader() {
 	n.RLock()
+	if n.state == Closed {
+		n.RUnlock()
+		return
+	}
 	psubj, rpsubj := n.psubj, n.rpsubj
 	n.RUnlock()
 
