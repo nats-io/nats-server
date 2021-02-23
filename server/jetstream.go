@@ -223,7 +223,7 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 // on the system account, and if not go ahead and set them up.
 func (s *Server) checkJetStreamExports() {
 	sacc := s.SystemAccount()
-	if sacc.getServiceExport(allJsExports[0]) == nil {
+	if sacc != nil && sacc.getServiceExport(allJsExports[0]) == nil {
 		s.setupJetStreamExports()
 	}
 }
