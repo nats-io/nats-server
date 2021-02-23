@@ -294,51 +294,6 @@ func TestJetStreamClusterMemoryStore(t *testing.T) {
 	checkSubsPending(t, sub, toSend)
 }
 
-func TestJetStreamClusterCompaction(t *testing.T) {
-	// This test takes a long time to observe compactions.
-	// Once moved to server we can adjust and re-enable.
-	skip(t)
-
-	c := createJetStreamClusterExplicit(t, "JSC", 3)
-	defer c.shutdown()
-
-	// Client based API
-	s := c.randomServer()
-	nc, js := jsClientConnect(t, s)
-	defer nc.Close()
-
-	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 2}); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-
-	toSend := 1000
-	payload := []byte("Hello JSC")
-	for i := 0; i < toSend; i++ {
-		if _, err := js.Publish("TEST", payload); err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-	}
-
-	if _, err := js.StreamInfo("TEST"); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	sub, err := js.SubscribeSync("TEST")
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	defer sub.Unsubscribe()
-
-	checkSubsPending(t, sub, toSend)
-
-	for i := 0; i < toSend; i++ {
-		m, err := sub.NextMsg(time.Second)
-		if err != nil {
-			t.Fatalf("Unexpected error getting msg %d: %v", i+1, err)
-		}
-		m.Ack()
-	}
-}
-
 func TestJetStreamClusterDelete(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "RNS", 3)
 	defer c.shutdown()
@@ -471,6 +426,52 @@ func TestJetStreamClusterStreamPurge(t *testing.T) {
 
 	if si.State.Msgs != 0 || si.State.FirstSeq != uint64(toSend+1) {
 		t.Fatalf("Expected no msgs, got: %+v", si.State)
+	}
+}
+
+func TestJetStreamClusterStreamUpdateSubjects(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar"},
+		Replicas: 3,
+	}
+
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Make sure we can update subjects.
+	cfg.Subjects = []string{"bar", "baz"}
+
+	si, err := js.UpdateStream(cfg)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si == nil {
+		t.Fatalf("Expected a stream info, got none")
+	}
+	if !reflect.DeepEqual(si.Config.Subjects, cfg.Subjects) {
+		t.Fatalf("Expected subjects to be updated: got %+v", si.Config.Subjects)
+	}
+	// Make sure it registered
+	js2, err := nc.JetStream(nats.MaxWait(50 * time.Millisecond))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if _, err = js2.Publish("foo", nil); err == nil {
+		t.Fatalf("Expected this to fail")
+	}
+	if _, err = js2.Publish("baz", nil); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
 	}
 }
 
@@ -1579,7 +1580,7 @@ func TestJetStreamClusterExtendedStreamInfo(t *testing.T) {
 	}
 
 	// Faster timeout since we loop below checking for condition.
-	js2, err := nc.JetStream(nats.MaxWait(10 * time.Millisecond))
+	js2, err := nc.JetStream(nats.MaxWait(50 * time.Millisecond))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1815,7 +1816,7 @@ func TestJetStreamClusterInterestRetention(t *testing.T) {
 	}
 	m.Ack()
 
-	js, err = nc.JetStream(nats.MaxWait(10 * time.Millisecond))
+	js, err = nc.JetStream(nats.MaxWait(50 * time.Millisecond))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1875,7 +1876,7 @@ func TestJetStreamClusterInterestRetentionWithFilteredConsumers(t *testing.T) {
 		m.Ack()
 	}
 
-	jsq, err := nc.JetStream(nats.MaxWait(10 * time.Millisecond))
+	jsq, err := nc.JetStream(nats.MaxWait(50 * time.Millisecond))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -3123,7 +3124,7 @@ func TestJetStreamClusterRemovePeer(t *testing.T) {
 	}
 
 	// Grab shorter timeout jetstream context.
-	js, err = nc.JetStream(nats.MaxWait(100 * time.Millisecond))
+	js, err = nc.JetStream(nats.MaxWait(50 * time.Millisecond))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -3221,7 +3222,7 @@ func TestJetStreamClusterStreamLeaderStepDown(t *testing.T) {
 	}
 
 	// Grab shorter timeout jetstream context.
-	js, err = nc.JetStream(nats.MaxWait(100 * time.Millisecond))
+	js, err = nc.JetStream(nats.MaxWait(50 * time.Millisecond))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -3318,7 +3319,7 @@ func TestJetStreamClusterRemoveServer(t *testing.T) {
 	c.waitOnStreamLeader("$G", "TEST")
 
 	// Faster timeout since we loop below checking for condition.
-	js, err = nc.JetStream(nats.MaxWait(10 * time.Millisecond))
+	js, err = nc.JetStream(nats.MaxWait(50 * time.Millisecond))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
