@@ -247,13 +247,14 @@ func (s *Sublist) addRemoveNotify(subject string, notify chan<- bool) error {
 func (s *Sublist) addNotify(m map[string][]chan<- bool, subject string, notify chan<- bool) error {
 	chs := m[subject]
 	if len(chs) > 0 {
-		// Check to see if this chan is alredy registered.
+		// Check to see if this chan is already registered.
 		for _, ch := range chs {
 			if ch == notify {
 				return ErrAlreadyRegistered
 			}
 		}
 	}
+
 	m[subject] = append(chs, notify)
 	return nil
 }
