@@ -3476,7 +3476,12 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 
 	// Now deal with gateways
 	if c.srv.gateway.enabled {
-		didDeliver = c.sendMsgToGateways(c.acc, msg, c.pa.subject, c.pa.reply, qnames) || didDeliver
+		reply := c.pa.reply
+		if len(c.pa.deliver) > 0 && c.kind == JETSTREAM && len(c.pa.reply) > 0 {
+			reply = append(reply, '@')
+			reply = append(reply, c.pa.deliver...)
+		}
+		didDeliver = c.sendMsgToGateways(c.acc, msg, c.pa.subject, reply, qnames) || didDeliver
 	}
 
 	// Check to see if we did not deliver to anyone and the client has a reply subject set
@@ -3583,6 +3588,21 @@ func removeHeaderIfPresent(hdr []byte, key string) []byte {
 		return hdr
 	}
 	return append(hdr[:start], hdr[start+end+len(_CRLF_):]...)
+}
+
+// Generate a new header based on optional original header and key value.
+// More used in JetStream layers.
+func genHeader(hdr []byte, key, value string) []byte {
+	var bb *bytes.Buffer
+	if len(hdr) > LEN_CR_LF {
+		bb = bytes.NewBuffer(hdr[:len(hdr)-LEN_CR_LF])
+	} else {
+		bb = &bytes.Buffer{}
+		bb.WriteString(hdrLine)
+	}
+	http.Header{key: []string{value}}.Write(bb)
+	bb.WriteString(CR_LF)
+	return bb.Bytes()
 }
 
 // This will set a header for the message.
@@ -4742,7 +4762,7 @@ func (ci *ClientInfo) serviceAccount() string {
 
 // Grabs the information for this client.
 func (c *client) getClientInfo(detailed bool) *ClientInfo {
-	if c == nil || (c.kind != CLIENT && c.kind != LEAF) {
+	if c == nil || (c.kind != CLIENT && c.kind != LEAF && c.kind != JETSTREAM) {
 		return nil
 	}
 
