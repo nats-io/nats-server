@@ -3586,15 +3586,19 @@ func removeHeaderIfPresent(hdr []byte, key string) []byte {
 	if start < 0 {
 		return hdr
 	}
+	index := start + len(key)
+	if index >= len(hdr) || hdr[index] != ':' {
+		return hdr
+	}
 	end := bytes.Index(hdr[start:], []byte(_CRLF_))
 	if end < 0 {
 		return hdr
 	}
-	nhdr := append(hdr[:start], hdr[start+end+len(_CRLF_):]...)
-	if len(nhdr) <= len(emptyHdrLine) {
+	hdr = append(hdr[:start], hdr[start+end+len(_CRLF_):]...)
+	if len(hdr) <= len(emptyHdrLine) {
 		return nil
 	}
-	return nhdr
+	return hdr
 }
 
 // Generate a new header based on optional original header and key value.
