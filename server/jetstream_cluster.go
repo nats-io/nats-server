@@ -739,13 +739,13 @@ func (js *jetStream) monitorCluster() {
 				continue
 			}
 			// FIXME(dlc) - Deal with errors.
-			if hadSnapshot, didRemoval, err := js.applyMetaEntries(ce.Entries, isRecovering); err == nil {
+			if _, didRemoval, err := js.applyMetaEntries(ce.Entries, isRecovering); err == nil {
 				n.Applied(ce.Index)
-				if (hadSnapshot && !isRecovering) || didRemoval {
+				if didRemoval {
 					// Since we received one make sure we have our own since we do not store
 					// our meta state outside of raft.
 					doSnapshot()
-				} else if _, b := n.Size(); lastSnap != nil && b > uint64(len(lastSnap)*4) {
+				} else if _, b := n.Size(); b > uint64(len(lastSnap)*4) {
 					doSnapshot()
 				}
 			}
@@ -1230,7 +1230,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 				n.Applied(ce.Index)
 				ne := ce.Index - lastApplied
 				// If over our compact min and we have at least min entries to compact, go ahead and snapshot/compact.
-				if _, b := n.Size(); lastSnap == nil || (b > compactSizeMin && ne >= compactNumMin) {
+				if _, b := n.Size(); b > compactSizeMin && ne >= compactNumMin {
 					doSnapshot()
 				}
 			} else {
@@ -1245,9 +1245,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 					js.setStreamAssignmentResponded(sa)
 				}
 				js.processStreamLeaderChange(mset, isLeader)
-				if isLeader {
-					lastSnap = nil
-				}
 			}
 		case <-t.C:
 			if isLeader {
@@ -2452,7 +2449,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				n.Applied(ce.Index)
 				ne := ce.Index - lastApplied
 				// If over our compact min and we have at least min entries to compact, go ahead and snapshot/compact.
-				if _, b := n.Size(); lastSnap == nil || (b > compactSizeMin && ne > compactNumMin) {
+				if _, b := n.Size(); b > compactSizeMin && ne > compactNumMin {
 					doSnapshot()
 				}
 			} else {
@@ -2463,9 +2460,6 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				js.setConsumerAssignmentResponded(ca)
 			}
 			js.processConsumerLeaderChange(o, isLeader)
-			if isLeader {
-				lastSnap = nil
-			}
 		case <-t.C:
 			if isLeader {
 				doSnapshot()

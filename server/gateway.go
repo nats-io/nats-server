@@ -401,14 +401,6 @@ func (g *srvGateway) updateRemotesTLSConfig(opts *Options) {
 	}
 }
 
-// Returns the Gateway's name of this server.
-func (g *srvGateway) getName() string {
-	g.RLock()
-	n := g.name
-	g.RUnlock()
-	return n
-}
-
 // Returns if this server rejects connections from gateways that are not
 // explicitly configured.
 func (g *srvGateway) rejectUnknown() bool {
@@ -843,6 +835,7 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 }
 
 // Builds and sends the CONNECT protocol for a gateway.
+// Client lock held on entry.
 func (c *client) sendGatewayConnect(opts *Options) {
 	tlsRequired := c.gw.cfg.TLSConfig != nil
 	url := c.gw.connectURL
@@ -862,7 +855,7 @@ func (c *client) sendGatewayConnect(opts *Options) {
 		Pass:     pass,
 		TLS:      tlsRequired,
 		Name:     c.srv.info.ID,
-		Gateway:  c.srv.getGatewayName(),
+		Gateway:  c.srv.gateway.name,
 	}
 	b, err := json.Marshal(cinfo)
 	if err != nil {
@@ -1524,7 +1517,8 @@ func (s *Server) getGatewayURL() string {
 // Returns this server gateway name.
 // Same than calling s.gateway.getName()
 func (s *Server) getGatewayName() string {
-	return s.gateway.getName()
+	// This is immutable
+	return s.gateway.name
 }
 
 // All gateway connections (outbound and inbound) are put in the given map.
@@ -2957,7 +2951,7 @@ func (c *client) gatewaySwitchAccountToSendAllSubs(e *insie, accName string) {
 		// Use bare server info and simply set the
 		// gateway name and command
 		info := Info{
-			Gateway:           s.getGatewayName(),
+			Gateway:           s.gateway.name,
 			GatewayCmd:        cmd,
 			GatewayCmdPayload: []byte(accName),
 		}
