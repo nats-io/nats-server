@@ -2934,6 +2934,7 @@ func TestJetStreamClusterRestartAndRemoveAdvisories(t *testing.T) {
 	nc.Flush()
 
 	c.waitOnConsumerLeader("$G", "TEST-1", "DC")
+	c.waitOnLeader()
 
 	// Now check delete advisories as well.
 	if err := js.DeleteConsumer("TEST-1", "DC"); err != nil {
@@ -2951,7 +2952,7 @@ func TestJetStreamClusterRestartAndRemoveAdvisories(t *testing.T) {
 	}
 
 	checkSubsPending(t, dsub, 2) // Stream and the consumer underneath.
-	checkSubsPending(t, sub, 4)
+	checkSubsPending(t, sub, 2)
 }
 
 func TestJetStreamClusterNoDuplicateOnNodeRestart(t *testing.T) {

@@ -2057,7 +2057,7 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
 	} else if mset != nil {
-		err = mset.stop(true, false)
+		err = mset.stop(true, wasLeader)
 	}
 
 	if sa.Group.node != nil {
