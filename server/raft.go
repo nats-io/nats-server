@@ -130,6 +130,7 @@ type raft struct {
 	acks     map[uint64]map[string]struct{}
 	elect    *time.Timer
 	active   time.Time
+	llqrt    time.Time
 	term     uint64
 	pterm    uint64
 	pindex   uint64
@@ -371,13 +372,13 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 
 		for index := state.FirstSeq; index <= state.LastSeq; index++ {
 			ae, err := n.loadEntry(index)
-			if ae.pindex != index-1 {
-				n.warn("Corrupt WAL, truncating")
-				n.wal.Truncate(index - 1)
-				break
-			}
 			if err != nil {
 				panic("err loading entry from WAL")
+			}
+			if ae.pindex != index-1 {
+				n.warn("Corrupt WAL, truncating and fixing")
+				n.truncateWal(ae)
+				break
 			}
 			n.processAppendEntry(ae, nil)
 		}
@@ -471,6 +472,28 @@ func (s *Server) reloadDebugRaftNodes() {
 		n.Unlock()
 	}
 	s.rnMu.RUnlock()
+}
+
+func (s *Server) shutdownRaftNodes() {
+	if s == nil {
+		return
+	}
+	var nodes []RaftNode
+	s.rnMu.RLock()
+	if len(s.raftNodes) > 0 {
+		s.Debugf("Shutting down all raft nodes")
+	}
+	for _, n := range s.raftNodes {
+		nodes = append(nodes, n)
+	}
+	s.rnMu.RUnlock()
+
+	for _, node := range nodes {
+		if node.Leader() {
+			node.StepDown()
+		}
+		node.Stop()
+	}
 }
 
 func (s *Server) transferRaftLeaders() bool {
@@ -1619,7 +1642,7 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesC <-chan uint64) 
 			ae, err := n.loadEntry(next)
 			if err != nil {
 				if err != ErrStoreEOF {
-					n.warn("Got an error loading %d index: %v", next, err)
+					n.debug("Got an error loading %d index: %v", next, err)
 				}
 				return true
 			}
@@ -1765,6 +1788,10 @@ func (n *raft) applyCommit(index uint64) error {
 	// FIXME(dlc) - Can keep this in memory if this too slow.
 	ae, err := n.loadEntry(index)
 	if err != nil {
+		state := n.wal.State()
+		if index < state.FirstSeq {
+			return nil
+		}
 		if err != ErrStoreClosed {
 			n.warn("Got an error loading %d index: %v", index, err)
 		}
@@ -2017,6 +2044,18 @@ func (n *raft) attemptStepDown(newLeader string) {
 	}
 }
 
+func (n *raft) truncateWal(ae *appendEntry) {
+	n.debug("Truncating and repairing WAL")
+	tindex := ae.pindex - 1
+	n.wal.Truncate(tindex)
+	n.pindex = tindex
+	if nae, _ := n.loadEntry(tindex); nae != nil {
+		n.pterm = nae.term
+	} else {
+		n.pterm = ae.term
+	}
+}
+
 // processAppendEntry will process an appendEntry.
 func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	n.Lock()
@@ -2140,9 +2179,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			if eae, err := n.loadEntry(ae.pindex); err == nil && eae != nil {
 				// If terms mismatched, delete that entry and all others past it.
 				if ae.pterm > eae.pterm {
-					n.wal.Truncate(ae.pindex)
-					n.pindex = ae.pindex
-					n.pterm = ae.pterm
+					n.truncateWal(ae)
 					ar = &appendEntryResponse{n.pterm, n.pindex, n.id, false, _EMPTY_}
 				} else {
 					ar = &appendEntryResponse{ae.pterm, ae.pindex, n.id, true, _EMPTY_}
@@ -2159,6 +2196,13 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		// so make sure this is a snapshot entry. If it is not start the catchup process again since it
 		// means we may have missed additional messages.
 		if catchingUp {
+			// Check if only our terms do not match here.
+			if ae.pindex == n.pindex {
+				n.truncateWal(ae)
+				n.cancelCatchup()
+				n.Unlock()
+				return
+			}
 			// Snapshots and peerstate will always be together when a leader is catching us up.
 			if len(ae.entries) != 2 || ae.entries[0].Type != EntrySnapshot || ae.entries[1].Type != EntryPeerState {
 				n.warn("Expected first catchup entry to be a snapshot and peerstate, will retry")
@@ -2743,8 +2787,11 @@ func (n *raft) switchToCandidate() {
 	if n.state != Candidate {
 		n.debug("Switching to candidate")
 	} else if n.lostQuorumLocked() {
-		// We signal to the upper layers such that can alert on quorum lost.
-		n.updateLeadChange(false)
+		if time.Since(n.llqrt) > 20*time.Second {
+			// We signal to the upper layers such that can alert on quorum lost.
+			n.updateLeadChange(false)
+			n.llqrt = time.Now()
+		}
 	}
 	// Increment the term.
 	n.term++

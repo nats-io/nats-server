@@ -1551,16 +1551,17 @@ func (s *Server) sysUnsubscribe(sub *subscription) {
 	if sub == nil {
 		return
 	}
-
 	s.mu.Lock()
 	if !s.eventsEnabled() {
 		s.mu.Unlock()
 		return
 	}
-	c := s.sys.client
+	c := sub.client
 	s.mu.Unlock()
 
-	c.processUnsub(sub.sid)
+	if c != nil {
+		c.processUnsub(sub.sid)
+	}
 }
 
 // This will generate the tracking subject for remote latency from the response subject.

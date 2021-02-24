@@ -428,6 +428,9 @@ func (s *Server) shutdownJetStream() {
 		return
 	}
 
+	s.Noticef("Initiating JetStream Shutdown...")
+	defer s.Noticef("JetStream shutdown")
+
 	var _a [512]*Account
 	accounts := _a[:0]
 
@@ -450,7 +453,6 @@ func (s *Server) shutdownJetStream() {
 
 	js.mu.Lock()
 	js.accounts = nil
-	var n RaftNode
 
 	if cc := js.cluster; cc != nil {
 		js.stopUpdatesSub()
@@ -458,18 +460,9 @@ func (s *Server) shutdownJetStream() {
 			cc.c.closeConnection(ClientClosed)
 			cc.c = nil
 		}
-		n = cc.meta
 		cc.meta = nil
 	}
 	js.mu.Unlock()
-
-	// If we still have our raft group, do a snapshot on exit.
-	if n != nil {
-		if snap := js.metaSnapshot(); len(snap) > 0 {
-			n.InstallSnapshot(snap)
-		}
-		n.Stop()
-	}
 }
 
 // JetStreamConfig will return the current config. Useful if the system

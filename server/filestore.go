@@ -2903,7 +2903,7 @@ func (fs *fileStore) Stop() error {
 	fs.lmb = nil
 
 	fs.checkAndFlushAllBlocks()
-	fs.closeAllMsgBlocks(true)
+	fs.closeAllMsgBlocks(false)
 
 	if fs.syncTmr != nil {
 		fs.syncTmr.Stop()
@@ -3781,7 +3781,6 @@ func (o *consumerFileStore) Stop() error {
 	o.mu.Unlock()
 
 	if ifd != nil {
-		ifd.Sync()
 		ifd.Close()
 	}
 
