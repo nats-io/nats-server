@@ -1726,7 +1726,13 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		}
 	}
 
-	// Process msg headers if present.
+	// If we have received this message across an account we may have request information attached.
+	// For now remove. TODO(dlc) - Should this be opt-in or opt-out?
+	if len(hdr) > 0 {
+		hdr = removeHeaderIfPresent(hdr, ClientInfoHdr)
+	}
+
+	// Process additional msg headers if still present.
 	var msgId string
 	if len(hdr) > 0 {
 		msgId = getMsgId(hdr)

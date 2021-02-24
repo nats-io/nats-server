@@ -117,7 +117,10 @@ var readLoopReportThreshold = readLoopReport
 // Represent client booleans with a bitmask
 type clientFlag uint16
 
-const hdrLine = "NATS/1.0\r\n"
+const (
+	hdrLine      = "NATS/1.0\r\n"
+	emptyHdrLine = "NATS/1.0\r\n\r\n"
+)
 
 // Some client state represented as flags
 const (
@@ -3587,7 +3590,11 @@ func removeHeaderIfPresent(hdr []byte, key string) []byte {
 	if end < 0 {
 		return hdr
 	}
-	return append(hdr[:start], hdr[start+end+len(_CRLF_):]...)
+	nhdr := append(hdr[:start], hdr[start+end+len(_CRLF_):]...)
+	if len(nhdr) <= len(emptyHdrLine) {
+		return nil
+	}
+	return nhdr
 }
 
 // Generate a new header based on optional original header and key value.
@@ -3703,8 +3710,15 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// TODO(dlc) - restrict to configured service imports and not responses?
 	tracking, headers := shouldSample(si.latency, c)
 	if len(c.pa.reply) > 0 {
-		if rsi = c.setupResponseServiceImport(acc, si, tracking, headers); rsi != nil {
-			nrr = []byte(rsi.from)
+		// Special case for now, need to formalize.
+		// TODO(dlc) - Formalize as a service import option for reply rewrite.
+		// For now we can't do $JS.ACK since that breaks pull consumers across accounts.
+		if !bytes.HasPrefix(c.pa.reply, []byte(jsAckPre)) {
+			if rsi = c.setupResponseServiceImport(acc, si, tracking, headers); rsi != nil {
+				nrr = []byte(rsi.from)
+			}
+		} else {
+			nrr = c.pa.reply
 		}
 	} else {
 		// Check to see if this was a bad request with no reply and we were supposed to be tracking.

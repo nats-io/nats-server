@@ -3910,6 +3910,34 @@ func TestJetStreamClusterJSAPIImport(t *testing.T) {
 	if len(streams.Streams) != 1 {
 		t.Fatalf("Expected only 1 stream but got %d", len(streams.Streams))
 	}
+
+	// Now send to stream.
+	if _, err := js.Publish("TEST", []byte("OK")); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+
+	sub, err = js.SubscribeSync("TEST", nats.Durable("tr"), nats.Pull(1))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	checkSubsPending(t, sub, 1)
+	m, err := sub.NextMsg(0)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if m.Subject != "TEST" {
+		t.Fatalf("Expected subject of %q, got %q", "TEST", m.Subject)
+	}
+	if m.Header != nil {
+		t.Fatalf("Expected no header on the message, got: %v", m.Header)
+	}
+	meta, err := m.MetaData()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if meta.Consumer != 1 || meta.Stream != 1 || meta.Delivered != 1 || meta.Pending != 0 {
+		t.Fatalf("Bad meta: %+v", meta)
+	}
 }
 
 // Support functions
@@ -4111,11 +4139,17 @@ var jsClusterImportsTempl = `
 		JS {
 			jetstream: enabled
 			users = [ { user: "rip", pass: "pass" } ]
-			exports [ { service: "$JS.API.>" } ]
+			exports [
+				{ service: "$JS.API.>" }
+				{ service: "TEST" } # For publishing to the stream.
+			]
 		}
 		IA {
 			users = [ { user: "dlc", pass: "pass" } ]
-			imports [ { service: { subject: "$JS.API.>", account: JS }} ]
+			imports [
+				{ service: { subject: "$JS.API.>", account: JS }}
+				{ service: { subject: "TEST", account: JS }}
+			]
 		}
 		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
 	}
