@@ -1526,7 +1526,7 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 	} else {
 		// We are stepping down.
 		// Make sure if we are doing so because we have lost quorum that we send the appropriate advisories.
-		if node := mset.raftNode(); node != nil && !node.Quorum() && time.Since(node.Created()) > time.Second {
+		if node := mset.raftNode(); node != nil && !node.Quorum() && time.Since(node.Created()) > 5*time.Second {
 			s.sendStreamLostQuorumAdvisory(mset)
 		}
 	}
@@ -2616,7 +2616,7 @@ func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) {
 	} else {
 		// We are stepping down.
 		// Make sure if we are doing so because we have lost quorum that we send the appropriate advisories.
-		if node := o.raftNode(); node != nil && !node.Quorum() && time.Since(node.Created()) > time.Second {
+		if node := o.raftNode(); node != nil && !node.Quorum() && time.Since(node.Created()) > 5*time.Second {
 			s.sendConsumerLostQuorumAdvisory(o)
 		}
 	}
@@ -2664,7 +2664,7 @@ func (s *Server) sendConsumerLostQuorumAdvisory(o *consumer) {
 		return
 	}
 
-	s.Warnf("JetStream cluster consumer '%s > %s >%s' has NO quorum, stalled.", acc.GetName(), stream, consumer)
+	s.Warnf("JetStream cluster consumer '%s > %s > %s' has NO quorum, stalled.", acc.GetName(), stream, consumer)
 
 	subj := JSAdvisoryConsumerQuorumLostPre + "." + stream + "." + consumer
 	adv := &JSConsumerQuorumLostAdvisory{

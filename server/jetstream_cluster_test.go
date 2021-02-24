@@ -2717,7 +2717,7 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	}
 
 	// Make sure we received our lost quorum advisories.
-	adv, _ := ssub.NextMsg(5 * time.Second)
+	adv, _ := ssub.NextMsg(10 * time.Second)
 	if adv == nil {
 		t.Fatalf("Expected to receive a stream quorum lost advisory")
 	}
@@ -2727,19 +2727,6 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	}
 	if len(lqa.Replicas) != 2 {
 		t.Fatalf("Expected reports for both replicas, only got %d", len(lqa.Replicas))
-	}
-	// Consumer too. Since we do not know if the consumer leader was not the one shutdown
-	// we should wait for a bit for the system to detect.
-	adv, _ = csub.NextMsg(5 * time.Second)
-	if adv == nil {
-		t.Fatalf("Expected to receive a consumer quorum lost advisory")
-	}
-	var clqa JSConsumerQuorumLostAdvisory
-	if err := json.Unmarshal(adv.Data, &clqa); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if len(clqa.Replicas) != 2 {
-		t.Fatalf("Expected reports for both replicas, only got %d", len(clqa.Replicas))
 	}
 
 	// Check to make sure we do not rapid fire these.

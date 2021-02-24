@@ -1647,17 +1647,14 @@ func (s *Server) Start() {
 // Shutdown will shutdown the server instance by kicking out the AcceptLoop
 // and closing all associated clients.
 func (s *Server) Shutdown() {
-	// Transfer off any raft nodes that we are a leader.
-	s.transferRaftLeaders()
+	// Transfer off any raft nodes that we are a leader by shutting them all down.
+	s.shutdownRaftNodes()
 
 	// Shutdown the eventing system as needed.
 	// This is done first to send out any messages for
 	// account status. We will also clean up any
 	// eventing items associated with accounts.
 	s.shutdownEventing()
-
-	// Now check jetstream.
-	s.shutdownJetStream()
 
 	s.mu.Lock()
 	// Prevent issues with multiple calls.
@@ -1678,7 +1675,12 @@ func (s *Server) Shutdown() {
 	s.grMu.Lock()
 	s.grRunning = false
 	s.grMu.Unlock()
+	s.mu.Unlock()
 
+	// Now check jetstream.
+	s.shutdownJetStream()
+
+	s.mu.Lock()
 	conns := make(map[uint64]*client)
 
 	// Copy off the clients

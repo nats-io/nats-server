@@ -755,7 +755,7 @@ func (o *consumer) unsubscribe(sub *subscription) {
 	if sub == nil || o.client == nil {
 		return
 	}
-	o.client.unsubscribe(o.client.acc, sub, true, true)
+	o.client.processUnsub(sub.sid)
 }
 
 // We need to make sure we protect access to the sendq.
@@ -2582,6 +2582,7 @@ func (o *consumer) stopWithFlags(dflag, doSignal, advisory bool) error {
 			err = store.Stop()
 		}
 	}
+
 	return err
 }
 
