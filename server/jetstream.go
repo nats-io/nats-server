@@ -529,6 +529,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	a.mu.RLock()
 	s := a.srv
 	a.mu.RUnlock()
+
 	if s == nil {
 		return fmt.Errorf("jetstream account not registered")
 	}

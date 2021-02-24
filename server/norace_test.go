@@ -1436,3 +1436,300 @@ func TestJetStreamClusterStreamCreateAndLostQuorum(t *testing.T) {
 	c.waitOnStreamLeader("$G", "NO-LQ-START")
 	checkSubsPending(t, sub, 0)
 }
+
+func TestJetStreamClusterMirrors(t *testing.T) {
+	sc := createJetStreamSuperCluster(t, 3, 3)
+	defer sc.shutdown()
+
+	// Client based API
+	s := sc.clusterForName("C2").randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Create source stream.
+	_, err := js.AddStream(&nats.StreamConfig{Name: "S1", Subjects: []string{"foo", "bar"}, Replicas: 3, Placement: &nats.Placement{Cluster: "C2"}})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Needed while Go client does not have mirror support.
+	createStream := func(cfg *StreamConfig) {
+		t.Helper()
+		req, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		rm, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var resp JSApiStreamCreateResponse
+		if err := json.Unmarshal(rm.Data, &resp); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if resp.Error != nil {
+			t.Fatalf("Unexpected error: %+v", resp.Error)
+		}
+	}
+
+	// Send 100 messages.
+	for i := 0; i < 100; i++ {
+		if _, err := js.Publish("foo", []byte("MIRRORS!")); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	createStream(&StreamConfig{
+		Name:      "M1",
+		Storage:   FileStorage,
+		Mirror:    &StreamSource{Name: "S1"},
+		Placement: &Placement{Cluster: "C1"},
+	})
+
+	// Faster timeout since we loop below checking for condition.
+	js2, err := nc.JetStream(nats.MaxWait(50 * time.Millisecond))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := js2.StreamInfo("M1")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if si.State.Msgs != 100 {
+			return fmt.Errorf("Expected 100 msgs, got state: %+v", si.State)
+		}
+		return nil
+	})
+
+	// Purge the source stream.
+	if err := js.PurgeStream("S1"); err != nil {
+		t.Fatalf("Unexpected purge error: %v", err)
+	}
+	// Send 50 more msgs now.
+	for i := 0; i < 50; i++ {
+		if _, err := js.Publish("bar", []byte("OK")); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	createStream(&StreamConfig{
+		Name:      "M2",
+		Storage:   FileStorage,
+		Mirror:    &StreamSource{Name: "S1"},
+		Replicas:  3,
+		Placement: &Placement{Cluster: "C3"},
+	})
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := js2.StreamInfo("M2")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if si.State.Msgs != 50 {
+			return fmt.Errorf("Expected 50 msgs, got state: %+v", si.State)
+		}
+		if si.State.FirstSeq != 101 {
+			return fmt.Errorf("Expected start seq of 101, got state: %+v", si.State)
+		}
+		return nil
+	})
+
+	sl := sc.clusterForName("C3").streamLeader("$G", "M2")
+	doneCh := make(chan bool)
+
+	// Now test that if the mirror get's interrupted that it picks up where it left off etc.
+	go func() {
+		// Send 100 more messages.
+		for i := 0; i < 100; i++ {
+			if _, err := js.Publish("foo", []byte("MIRRORS!")); err != nil {
+				t.Errorf("Unexpected publish on %d error: %v", i, err)
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+		doneCh <- true
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	sl.Shutdown()
+
+	<-doneCh
+	sc.clusterForName("C3").waitOnStreamLeader("$G", "M2")
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := js2.StreamInfo("M2")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if si.State.Msgs != 150 {
+			return fmt.Errorf("Expected 150 msgs, got state: %+v", si.State)
+		}
+		if si.State.FirstSeq != 101 {
+			return fmt.Errorf("Expected start seq of 101, got state: %+v", si.State)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterSources(t *testing.T) {
+	sc := createJetStreamSuperCluster(t, 3, 3)
+	defer sc.shutdown()
+
+	// Client based API
+	s := sc.clusterForName("C1").randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Create our source streams.
+	for _, sname := range []string{"foo", "bar", "baz"} {
+		if _, err := js.AddStream(&nats.StreamConfig{Name: sname, Replicas: 1}); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	sendBatch := func(subject string, n int) {
+		for i := 0; i < n; i++ {
+			msg := fmt.Sprintf("MSG-%d", i+1)
+			if _, err := js.Publish(subject, []byte(msg)); err != nil {
+				t.Fatalf("Unexpected publish error: %v", err)
+			}
+		}
+	}
+	// Populate each one.
+	sendBatch("foo", 10)
+	sendBatch("bar", 15)
+	sendBatch("baz", 25)
+
+	// Needed while Go client does not have mirror support for creating mirror or source streams.
+	createStream := func(cfg *StreamConfig) {
+		t.Helper()
+		req, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		rm, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var resp JSApiStreamCreateResponse
+		if err := json.Unmarshal(rm.Data, &resp); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if resp.Error != nil {
+			t.Fatalf("Unexpected error: %+v", resp.Error)
+		}
+	}
+
+	cfg := &StreamConfig{
+		Name:    "MS",
+		Storage: FileStorage,
+		Sources: []*StreamSource{
+			&StreamSource{Name: "foo"},
+			&StreamSource{Name: "bar"},
+			&StreamSource{Name: "baz"},
+		},
+	}
+
+	createStream(cfg)
+	time.Sleep(time.Second)
+
+	// Faster timeout since we loop below checking for condition.
+	js2, err := nc.JetStream(nats.MaxWait(50 * time.Millisecond))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		si, err := js2.StreamInfo("MS")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 50 {
+			return fmt.Errorf("Expected 50 msgs, got state: %+v", si.State)
+		}
+		return nil
+	})
+
+	// Purge the source streams.
+	for _, sname := range []string{"foo", "bar", "baz"} {
+		if err := js.PurgeStream(sname); err != nil {
+			t.Fatalf("Unexpected purge error: %v", err)
+		}
+	}
+
+	if err := js.DeleteStream("MS"); err != nil {
+		t.Fatalf("Unexpected delete error: %v", err)
+	}
+
+	// Send more msgs now.
+	sendBatch("foo", 10)
+	sendBatch("bar", 15)
+	sendBatch("baz", 25)
+
+	cfg = &StreamConfig{
+		Name:    "MS2",
+		Storage: FileStorage,
+		Sources: []*StreamSource{
+			&StreamSource{Name: "foo"},
+			&StreamSource{Name: "bar"},
+			&StreamSource{Name: "baz"},
+		},
+		Replicas:  3,
+		Placement: &Placement{Cluster: "C3"},
+	}
+
+	createStream(cfg)
+
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		si, err := js2.StreamInfo("MS2")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if si.State.Msgs != 50 {
+			return fmt.Errorf("Expected 50 msgs, got state: %+v", si.State)
+		}
+		if si.State.FirstSeq != 1 {
+			return fmt.Errorf("Expected start seq of 1, got state: %+v", si.State)
+		}
+		return nil
+	})
+
+	sl := sc.clusterForName("C3").streamLeader("$G", "MS2")
+	doneCh := make(chan bool)
+
+	if sl == sc.leader() {
+		nc.Request(JSApiLeaderStepDown, nil, time.Second)
+		sc.waitOnLeader()
+	}
+
+	// Now test that if the mirror get's interrupted that it picks up where it left off etc.
+	go func() {
+		// Send 50 more messages each.
+		for i := 0; i < 50; i++ {
+			msg := fmt.Sprintf("R-MSG-%d", i+1)
+			for _, sname := range []string{"foo", "bar", "baz"} {
+				if _, err := js.Publish(sname, []byte(msg)); err != nil {
+					t.Errorf("Unexpected publish error: %v", err)
+				}
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+		doneCh <- true
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	sl.Shutdown()
+
+	sc.clusterForName("C3").waitOnStreamLeader("$G", "MS2")
+	<-doneCh
+
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		si, err := js2.StreamInfo("MS2")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 200 {
+			return fmt.Errorf("Expected 200 msgs, got state: %+v", si.State)
+		}
+		return nil
+	})
+}

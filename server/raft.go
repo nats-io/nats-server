@@ -191,11 +191,11 @@ type lps struct {
 }
 
 const (
-	minElectionTimeout = 500 * time.Millisecond
+	minElectionTimeout = 1500 * time.Millisecond
 	maxElectionTimeout = 3 * minElectionTimeout
 	minCampaignTimeout = 50 * time.Millisecond
 	maxCampaignTimeout = 4 * minCampaignTimeout
-	hbInterval         = 200 * time.Millisecond
+	hbInterval         = 250 * time.Millisecond
 	lostQuorumInterval = hbInterval * 3
 )
 
@@ -1069,7 +1069,18 @@ func (n *raft) shutdown(shouldDelete bool) {
 		return
 	}
 	close(n.quit)
-	n.c.closeConnection(InternalClient)
+	if c := n.c; c != nil {
+		var subs []*subscription
+		c.mu.Lock()
+		for _, sub := range c.subs {
+			subs = append(subs, sub)
+		}
+		c.mu.Unlock()
+		for _, sub := range subs {
+			n.unsubscribe(sub)
+		}
+		c.closeConnection(InternalClient)
+	}
 	n.state = Closed
 	s, g, wal := n.s, n.group, n.wal
 
@@ -1118,6 +1129,13 @@ const (
 // Lock should be held.
 func (n *raft) subscribe(subject string, cb msgHandler) (*subscription, error) {
 	return n.s.systemSubscribe(subject, _EMPTY_, false, n.c, cb)
+}
+
+// Lock should be held.
+func (n *raft) unsubscribe(sub *subscription) {
+	if sub != nil {
+		n.c.processUnsub(sub.sid)
+	}
 }
 
 func (n *raft) createInternalSubs() error {
@@ -1431,28 +1449,30 @@ func (n *raft) handleForwardedProposal(sub *subscription, c *client, _, reply st
 
 func (n *raft) runAsLeader() {
 	n.RLock()
+	if n.state == Closed {
+		n.RUnlock()
+		return
+	}
 	psubj, rpsubj := n.psubj, n.rpsubj
 	n.RUnlock()
 
 	// For forwarded proposals, both normal and remove peer proposals.
 	fsub, err := n.subscribe(psubj, n.handleForwardedProposal)
 	if err != nil {
-		panic(fmt.Sprintf("Error subscribing to forwarded proposals: %v", err))
+		n.debug("Error subscribing to forwarded proposals: %v", err)
+		return
 	}
 	rpsub, err := n.subscribe(rpsubj, n.handleForwardedRemovePeerProposal)
 	if err != nil {
-		panic(fmt.Sprintf("Error subscribing to forwarded proposals: %v", err))
+		n.debug("Error subscribing to forwarded proposals: %v", err)
+		return
 	}
 
 	// Cleanup our subscription when we leave.
 	defer func() {
 		n.Lock()
-		if fsub != nil {
-			n.s.sysUnsubscribe(fsub)
-		}
-		if rpsub != nil {
-			n.s.sysUnsubscribe(rpsub)
-		}
+		n.unsubscribe(fsub)
+		n.unsubscribe(rpsub)
 		n.Unlock()
 	}()
 
@@ -1946,9 +1966,8 @@ func (n *raft) handleAppendEntry(sub *subscription, c *client, subject, reply st
 // Lock should be held.
 func (n *raft) cancelCatchup() {
 	n.debug("Canceling catchup subscription since we are now up to date")
-
 	if n.catchup != nil && n.catchup.sub != nil {
-		n.s.sysUnsubscribe(n.catchup.sub)
+		n.unsubscribe(n.catchup.sub)
 	}
 	n.catchup = nil
 }
@@ -1972,7 +1991,7 @@ func (n *raft) catchupStalled() bool {
 func (n *raft) createCatchup(ae *appendEntry) string {
 	// Cleanup any old ones.
 	if n.catchup != nil && n.catchup.sub != nil {
-		n.s.sysUnsubscribe(n.catchup.sub)
+		n.unsubscribe(n.catchup.sub)
 	}
 	// Snapshot term and index.
 	n.catchup = &catchupState{

@@ -549,7 +549,7 @@ var (
 	jsNotEnabledErr        = &ApiError{Code: 503, Description: "JetStream not enabled for account"}
 	jsBadRequestErr        = &ApiError{Code: 400, Description: "bad request"}
 	jsNotEmptyRequestErr   = &ApiError{Code: 400, Description: "expected an empty request payload"}
-	jsInvalidJSONErr       = &ApiError{Code: 400, Description: "invalid JSON request"}
+	jsInvalidJSONErr       = &ApiError{Code: 400, Description: "invalid JSON"}
 	jsInsufficientErr      = &ApiError{Code: 503, Description: "insufficient resources"}
 	jsNoConsumerErr        = &ApiError{Code: 404, Description: "consumer not found"}
 	jsStreamMismatchErr    = &ApiError{Code: 400, Description: "stream name in subject does not match request"}
@@ -633,13 +633,17 @@ func (s *Server) setJetStreamExportSubs() error {
 
 func (s *Server) sendAPIResponse(ci *ClientInfo, acc *Account, subject, reply, request, response string) {
 	acc.trackAPI()
-	s.sendInternalAccountMsg(nil, reply, response)
+	if reply != _EMPTY_ {
+		s.sendInternalAccountMsg(nil, reply, response)
+	}
 	s.sendJetStreamAPIAuditAdvisory(ci, acc, subject, request, response)
 }
 
 func (s *Server) sendAPIErrResponse(ci *ClientInfo, acc *Account, subject, reply, request, response string) {
 	acc.trackAPIErr()
-	s.sendInternalAccountMsg(nil, reply, response)
+	if reply != _EMPTY_ {
+		s.sendInternalAccountMsg(nil, reply, response)
+	}
 	s.sendJetStreamAPIAuditAdvisory(ci, acc, subject, request, response)
 }
 
@@ -1020,6 +1024,55 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 		return
 	}
 
+	// Do some pre-checking for mirror config to avoid cycles in clustered mode.
+	if cfg.Mirror != nil {
+		if len(cfg.Subjects) > 0 {
+			resp.Error = &ApiError{Code: 400, Description: "stream mirrors can not also contain subjects"}
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		if len(cfg.Sources) > 0 {
+			resp.Error = &ApiError{Code: 400, Description: "stream mirrors can not also contain other sources"}
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		if cfg.Mirror.FilterSubject != _EMPTY_ {
+			resp.Error = &ApiError{Code: 400, Description: "stream mirrors can not contain filtered subjects"}
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		if cfg.Mirror.OptStartSeq > 0 && cfg.Mirror.OptStartTime != nil {
+			resp.Error = &ApiError{Code: 400, Description: "stream mirrors can not have both start seq and start time configured"}
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+
+		// Now make sure the other stream exists.
+		var exists bool
+		var maxMsgSize int32
+
+		if s.JetStreamIsClustered() {
+			js, _ := s.getJetStreamCluster()
+			if sa := js.streamAssignment(acc.Name, cfg.Mirror.Name); sa != nil {
+				maxMsgSize = sa.Config.MaxMsgSize
+				exists = true
+			}
+		} else if mset, err := acc.lookupStream(cfg.Mirror.Name); err == nil {
+			maxMsgSize = mset.cfg.MaxMsgSize
+			exists = true
+		}
+		if !exists {
+			resp.Error = &ApiError{Code: 400, Description: "stream mirror source must exist"}
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		if cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
+			resp.Error = &ApiError{Code: 400, Description: "stream mirror must have max message size >= source"}
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+	}
+
 	if s.JetStreamIsClustered() {
 		s.jsClusteredStreamRequest(ci, acc, subject, reply, rmsg, &cfg)
 		return
@@ -1083,6 +1136,12 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+
+	if s.JetStreamIsClustered() {
+		s.jsClusteredStreamUpdateRequest(ci, acc, subject, reply, rmsg, &cfg)
+		return
+	}
+
 	mset, err := acc.lookupStream(streamName)
 	if err != nil {
 		resp.Error = jsNotFoundError(err)
@@ -1390,6 +1449,11 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 	js, _ := s.getJetStreamCluster()
 
 	resp.StreamInfo = &StreamInfo{Created: mset.createdTime(), State: mset.state(), Config: config, Cluster: js.clusterInfo(mset.raftGroup())}
+	if mset.isMirror() {
+		resp.StreamInfo.Mirror = mset.mirrorInfo()
+	} else if mset.hasSources() {
+		resp.StreamInfo.Sources = mset.sourcesInfo()
+	}
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -1725,9 +1789,10 @@ func (s *Server) jsLeaderStepDownRequest(sub *subscription, c *client, subject, 
 		}
 		cn := req.Placement.Cluster
 		var peers []string
+		ourID := cc.meta.ID()
 		for _, p := range cc.meta.Peers() {
 			if si, ok := s.nodeToInfo.Load(p.ID); ok && si != nil {
-				if ni := si.(*nodeInfo); ni.offline || ni.cluster != cn {
+				if ni := si.(*nodeInfo); ni.offline || ni.cluster != cn || p.ID == ourID {
 					continue
 				}
 				peers = append(peers, p.ID)
