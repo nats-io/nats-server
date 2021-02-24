@@ -136,6 +136,7 @@ type stream struct {
 	numFilter int
 	cfg       StreamConfig
 	created   time.Time
+	stype     StorageType
 	ddmap     map[string]*ddentry
 	ddarr     []*ddentry
 	ddindex   int
@@ -283,7 +284,17 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	c := s.createInternalJetStreamClient()
 	ic := s.createInternalJetStreamClient()
 
-	mset := &stream{acc: a, jsa: jsa, cfg: cfg, srv: s, client: c, sysc: ic, consumers: make(map[string]*consumer), qch: make(chan struct{})}
+	mset := &stream{
+		acc:       a,
+		jsa:       jsa,
+		cfg:       cfg,
+		srv:       s,
+		client:    c,
+		sysc:      ic,
+		stype:     cfg.Storage,
+		consumers: make(map[string]*consumer),
+		qch:       make(chan struct{}),
+	}
 
 	jsa.streams[cfg.Name] = mset
 	storeDir := path.Join(jsa.storeDir, streamsDir, cfg.Name)
@@ -1539,7 +1550,7 @@ func (mset *stream) storeUpdates(md, bd int64, seq uint64, subj string) {
 	}
 
 	if mset.jsa != nil {
-		mset.jsa.updateUsage(mset.cfg.Storage, bd)
+		mset.jsa.updateUsage(mset.stype, bd)
 	}
 }
 
