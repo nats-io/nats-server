@@ -1079,9 +1079,6 @@ func (c *client) processGatewayInfo(info *Info) {
 		// connect events to switch those accounts into interest only mode.
 		s.mu.Lock()
 		s.ensureGWsInterestOnlyForLeafNodes()
-		if s.sys != nil {
-			s.switchAccountToInterestMode(s.sys.account.Name)
-		}
 		s.mu.Unlock()
 	}
 }

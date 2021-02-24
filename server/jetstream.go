@@ -528,7 +528,6 @@ func (s *Server) getJetStream() *jetStream {
 func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	a.mu.RLock()
 	s := a.srv
-	accName := a.Name
 	a.mu.RUnlock()
 
 	if s == nil {
@@ -540,11 +539,6 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	}
 	if s.SystemAccount() == a {
 		return fmt.Errorf("jetstream can not be enabled on the system account")
-	}
-
-	// If we have gateways, switch to interest only mode.
-	if s.gateway.enabled {
-		s.switchAccountToInterestMode(accName)
 	}
 
 	// No limits means we dynamically set up limits.
