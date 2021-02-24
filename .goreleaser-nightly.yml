@@ -19,6 +19,8 @@ dockers:
     goarch: amd64
     skip_push: true
     dockerfile: docker/Dockerfile.nightly
+    build_flag_templates:
+      - '--build-arg=VERSION=nightly-{{ time "20060102" }}'
     image_templates:
       - synadia/nats-server:{{.Version}}
       - synadia/nats-server:nightly
