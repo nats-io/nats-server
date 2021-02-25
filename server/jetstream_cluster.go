@@ -1108,7 +1108,7 @@ func (js *jetStream) createRaftGroup(rg *raftGroup) error {
 
 	storeDir := path.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, rg.Name)
 	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: storeDir, BlockSize: 8_000_000, AsyncFlush: true},
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 4_000_000, AsyncFlush: true, SyncInterval: 2 * time.Minute},
 		StreamConfig{Name: rg.Name, Storage: FileStorage},
 	)
 	if err != nil {
@@ -1174,8 +1174,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 
 	const (
 		compactInterval = 2 * time.Minute
-		compactSizeMin  = 64 * 1024 * 1024
-		compactNumMin   = 8
+		compactSizeMin  = 32 * 1024 * 1024
+		compactNumMin   = 4
 	)
 
 	t := time.NewTicker(compactInterval)
@@ -1208,6 +1208,11 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 		}
 	}
 
+	// Check on startup if we should compact.
+	if _, b := n.Size(); b > compactSizeMin {
+		doSnapshot()
+	}
+
 	// We will establish a restoreDoneCh no matter what. Will never be triggered unless
 	// we replace with the restore chan.
 	restoreDoneCh := make(<-chan error)
@@ -1237,19 +1242,21 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 				s.Warnf("Error applying entries to '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
 			}
 		case isLeader = <-lch:
-			if isLeader && isRestore {
-				acc, _ := s.LookupAccount(sa.Client.serviceAccount())
-				restoreDoneCh = s.processStreamRestore(sa.Client, acc, sa.Config.Name, _EMPTY_, sa.Reply, _EMPTY_)
-			} else {
-				if !isLeader && n.GroupLeader() != noLeader {
-					js.setStreamAssignmentResponded(sa)
-				}
-				js.processStreamLeaderChange(mset, isLeader)
-			}
-		case <-t.C:
 			if isLeader {
-				doSnapshot()
+				if isRestore {
+					acc, _ := s.LookupAccount(sa.Client.serviceAccount())
+					restoreDoneCh = s.processStreamRestore(sa.Client, acc, sa.Config.Name, _EMPTY_, sa.Reply, _EMPTY_)
+					continue
+				} else {
+					doSnapshot()
+				}
+			} else if n.GroupLeader() != noLeader {
+				js.setStreamAssignmentResponded(sa)
 			}
+			js.processStreamLeaderChange(mset, isLeader)
+
+		case <-t.C:
+			doSnapshot()
 		case err := <-restoreDoneCh:
 			// We have completed a restore from snapshot on this server. The stream assignment has
 			// already been assigned but the replicas will need to catch up out of band. Consumers
@@ -2393,7 +2400,7 @@ func (o *consumer) raftNode() RaftNode {
 }
 
 func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
-	s, cc, n := js.server(), js.cluster, o.raftNode()
+	s, n := js.server(), o.raftNode()
 	defer s.grWG.Done()
 
 	if n == nil {
@@ -2406,14 +2413,10 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	s.Debugf("Starting consumer monitor for '%s > %s > %s", o.acc.Name, ca.Stream, ca.Name)
 	defer s.Debugf("Exiting consumer monitor for '%s > %s > %s'", o.acc.Name, ca.Stream, ca.Name)
 
-	js.mu.RLock()
-	isLeader := cc.isConsumerLeader(ca.Client.serviceAccount(), ca.Stream, ca.Name)
-	js.mu.RUnlock()
-
 	const (
 		compactInterval = 2 * time.Minute
-		compactSizeMin  = 8 * 1024 * 1024
-		compactNumMin   = 64
+		compactSizeMin  = 4 * 1024 * 1024
+		compactNumMin   = 4
 	)
 
 	t := time.NewTicker(compactInterval)
@@ -2461,9 +2464,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			}
 			js.processConsumerLeaderChange(o, isLeader)
 		case <-t.C:
-			if isLeader {
-				doSnapshot()
-			}
+			doSnapshot()
 		}
 	}
 }
