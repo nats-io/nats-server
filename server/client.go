@@ -3583,7 +3583,8 @@ func (c *client) setupResponseServiceImport(acc *Account, si *serviceImport, tra
 // Will remove a header if present.
 func removeHeaderIfPresent(hdr []byte, key string) []byte {
 	start := bytes.Index(hdr, []byte(key))
-	if start < 0 {
+	// key can't be first and we want to check that it is preceded by a '\n'
+	if start < 1 || hdr[start-1] != '\n' {
 		return hdr
 	}
 	index := start + len(key)
