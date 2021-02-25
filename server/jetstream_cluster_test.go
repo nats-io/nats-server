@@ -106,7 +106,7 @@ func TestJetStreamClusterAccountInfo(t *testing.T) {
 		t.Fatalf("Did not receive correct response: %+v", info.Error)
 	}
 	// Make sure we only got 1 response.
-	// Technicall this will always work since its a singelton service export.
+	// Technically this will always work since its a singelton service export.
 	if nmsgs, _, _ := sub.Pending(); nmsgs > 0 {
 		t.Fatalf("Expected only a single response, got %d more", nmsgs)
 	}
@@ -3921,6 +3921,7 @@ func TestJetStreamClusterJSAPIImport(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	checkSubsPending(t, sub, 1)
+
 	m, err := sub.NextMsg(0)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
