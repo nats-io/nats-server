@@ -173,7 +173,7 @@ const (
 	// cache idx expiration
 	defaultCacheIdxExpiration = 5 * time.Minute
 	// default sync interval
-	defaultSyncInterval = 10 * time.Second
+	defaultSyncInterval = 60 * time.Second
 	// coalesceMinimum
 	coalesceMinimum = 16 * 1024
 	// maxFlushWait is maximum we will wait to gather messages to flush.
