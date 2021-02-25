@@ -477,8 +477,10 @@ func (js *jetStream) setupMetaGroup() error {
 
 	cfg := &RaftConfig{Name: defaultMetaGroupName, Store: storeDir, Log: fs}
 
+	var bootstrap bool
 	if _, err := readPeerState(storeDir); err != nil {
 		s.Noticef("JetStream cluster bootstrapping")
+		bootstrap = true
 		peers := s.ActivePeers()
 		s.Debugf("JetStream cluster initial peers: %+v", peers)
 		if err := s.bootstrapRaftNode(cfg, peers, false); err != nil {
@@ -494,7 +496,11 @@ func (js *jetStream) setupMetaGroup() error {
 		s.Warnf("Could not start metadata controller: %v", err)
 		return err
 	}
-	n.Campaign()
+
+	// If we are bootstrapped with no state, start campaign early.
+	if bootstrap {
+		n.Campaign()
+	}
 
 	c := s.createInternalJetStreamClient()
 	sacc := s.SystemAccount()
@@ -872,20 +878,20 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, isRecovering bool) error {
 	// Do removals first.
 	for _, sa := range saDel {
 		if isRecovering {
-			js.setStreamAssignmentResponded(sa)
+			js.setStreamAssignmentRecovering(sa)
 		}
 		js.processStreamRemoval(sa)
 	}
 	// Now do add for the streams. Also add in all consumers.
 	for _, sa := range saAdd {
 		if isRecovering {
-			js.setStreamAssignmentResponded(sa)
+			js.setStreamAssignmentRecovering(sa)
 		}
 		js.processStreamAssignment(sa)
 		// We can simply add the consumers.
 		for _, ca := range sa.consumers {
 			if isRecovering {
-				js.setConsumerAssignmentResponded(ca)
+				js.setConsumerAssignmentRecovering(ca)
 			}
 			js.processConsumerAssignment(ca)
 		}
@@ -893,13 +899,13 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, isRecovering bool) error {
 	// Now do the deltas for existing stream's consumers.
 	for _, ca := range caDel {
 		if isRecovering {
-			js.setConsumerAssignmentResponded(ca)
+			js.setConsumerAssignmentRecovering(ca)
 		}
 		js.processConsumerRemoval(ca)
 	}
 	for _, ca := range caAdd {
 		if isRecovering {
-			js.setConsumerAssignmentResponded(ca)
+			js.setConsumerAssignmentRecovering(ca)
 		}
 		js.processConsumerAssignment(ca)
 	}
@@ -907,19 +913,25 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, isRecovering bool) error {
 	return nil
 }
 
-// Called on recovery to make sure we do not process like original
-func (js *jetStream) setStreamAssignmentResponded(sa *streamAssignment) {
+// Called on recovery to make sure we do not process like original.
+func (js *jetStream) setStreamAssignmentRecovering(sa *streamAssignment) {
 	js.mu.Lock()
 	defer js.mu.Unlock()
 	sa.responded = true
 	sa.Restore = nil
+	if sa.Group != nil {
+		sa.Group.Preferred = _EMPTY_
+	}
 }
 
-// Called on recovery to make sure we do not process like original
-func (js *jetStream) setConsumerAssignmentResponded(ca *consumerAssignment) {
+// Called on recovery to make sure we do not process like original.
+func (js *jetStream) setConsumerAssignmentRecovering(ca *consumerAssignment) {
 	js.mu.Lock()
 	defer js.mu.Unlock()
 	ca.responded = true
+	if ca.Group != nil {
+		ca.Group.Preferred = _EMPTY_
+	}
 }
 
 // Just copied over and changes out the group so it can be encoded.
@@ -990,7 +1002,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 					return didSnap, didRemove, err
 				}
 				if isRecovering {
-					js.setStreamAssignmentResponded(sa)
+					js.setStreamAssignmentRecovering(sa)
 				}
 				js.processStreamAssignment(sa)
 			case removeStreamOp:
@@ -1000,7 +1012,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 					return didSnap, didRemove, err
 				}
 				if isRecovering {
-					js.setStreamAssignmentResponded(sa)
+					js.setStreamAssignmentRecovering(sa)
 				}
 				js.processStreamRemoval(sa)
 				didRemove = true
@@ -1011,7 +1023,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 					return didSnap, didRemove, err
 				}
 				if isRecovering {
-					js.setConsumerAssignmentResponded(ca)
+					js.setConsumerAssignmentRecovering(ca)
 				}
 				js.processConsumerAssignment(ca)
 			case assignCompressedConsumerOp:
@@ -1021,7 +1033,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 					return didSnap, didRemove, err
 				}
 				if isRecovering {
-					js.setConsumerAssignmentResponded(ca)
+					js.setConsumerAssignmentRecovering(ca)
 				}
 				js.processConsumerAssignment(ca)
 			case removeConsumerOp:
@@ -1031,7 +1043,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 					return didSnap, didRemove, err
 				}
 				if isRecovering {
-					js.setConsumerAssignmentResponded(ca)
+					js.setConsumerAssignmentRecovering(ca)
 				}
 				js.processConsumerRemoval(ca)
 				didRemove = true
@@ -1042,7 +1054,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 					return didSnap, didRemove, err
 				}
 				if isRecovering {
-					js.setStreamAssignmentResponded(sa)
+					js.setStreamAssignmentRecovering(sa)
 				}
 				js.processUpdateStreamAssignment(sa)
 			default:
@@ -1251,7 +1263,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 					doSnapshot()
 				}
 			} else if n.GroupLeader() != noLeader {
-				js.setStreamAssignmentResponded(sa)
+				js.setStreamAssignmentRecovering(sa)
 			}
 			js.processStreamLeaderChange(mset, isLeader)
 
@@ -2460,7 +2472,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			}
 		case isLeader := <-lch:
 			if !isLeader && n.GroupLeader() != noLeader {
-				js.setConsumerAssignmentResponded(ca)
+				js.setConsumerAssignmentRecovering(ca)
 			}
 			js.processConsumerLeaderChange(o, isLeader)
 		case <-t.C:

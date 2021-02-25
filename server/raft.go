@@ -201,7 +201,7 @@ type lps struct {
 
 const (
 	minElectionTimeout = 1500 * time.Millisecond
-	maxElectionTimeout = 3 * minElectionTimeout
+	maxElectionTimeout = 5 * minElectionTimeout
 	minCampaignTimeout = 100 * time.Millisecond
 	maxCampaignTimeout = 4 * minCampaignTimeout
 	hbInterval         = 250 * time.Millisecond
