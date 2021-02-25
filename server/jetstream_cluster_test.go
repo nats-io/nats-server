@@ -2671,17 +2671,6 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 		t.Fatalf("Expected to receive a consumer leader elected advisory")
 	}
 
-	// Setup subscriptions for lost quorum advisory.
-	ssub, err := nc.SubscribeSync(JSAdvisoryStreamQuorumLostPre + ".*")
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	csub, err := nc.SubscribeSync(JSAdvisoryConsumerQuorumLostPre + ".*.*")
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	nc.Flush()
-
 	// Shutdown the non-leader.
 	c.randomNonStreamLeader("$G", "NO-Q").Shutdown()
 
@@ -2715,23 +2704,6 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	if _, err := sub.ConsumerInfo(); !notAvailableErr(err) {
 		t.Fatalf("Expected an 'unavailable' error, got %v", err)
 	}
-
-	// Make sure we received our lost quorum advisories.
-	adv, _ := ssub.NextMsg(10 * time.Second)
-	if adv == nil {
-		t.Fatalf("Expected to receive a stream quorum lost advisory")
-	}
-	var lqa JSStreamQuorumLostAdvisory
-	if err := json.Unmarshal(adv.Data, &lqa); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if len(lqa.Replicas) != 2 {
-		t.Fatalf("Expected reports for both replicas, only got %d", len(lqa.Replicas))
-	}
-
-	// Check to make sure we do not rapid fire these.
-	time.Sleep(500 * time.Millisecond)
-	checkSubsPending(t, csub, 0)
 
 	// Now let's take out the other non meta-leader
 	// We should get same error for general API calls.
