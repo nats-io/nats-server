@@ -9283,9 +9283,9 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 }
 
 // This test is in support fo clients that want to match on subject, they
-// can set the filter subject always and if the stream only has one subject
-// and they match the filter is cleared automatically. This eliminates us
-// needing to know if a subject is a subset of a stream when looking it up.
+// can set the filter subject always. We always store the subject so that
+// should the stream later be edited to expand into more subjects the consumer
+// still gets what was actually requested
 func TestJetStreamConsumerFilterSubject(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
@@ -9310,8 +9310,8 @@ func TestJetStreamConsumerFilterSubject(t *testing.T) {
 	}
 	defer o.delete()
 
-	if o.info().Config.FilterSubject != "" {
-		t.Fatalf("Expected the filter to be cleared")
+	if o.info().Config.FilterSubject != "foo" {
+		t.Fatalf("Expected the filter to be stored")
 	}
 
 	// Now use the original cfg with updated delivery subject and make sure that works ok.

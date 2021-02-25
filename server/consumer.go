@@ -291,19 +291,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 
 	// Make sure any partition subject is also a literal.
 	if config.FilterSubject != _EMPTY_ {
-		var checkSubject bool
-
-		mset.mu.RLock()
-		// If this is a direct match for the streams only subject clear the filter.
-		if len(mset.cfg.Subjects) == 1 && mset.cfg.Subjects[0] == config.FilterSubject {
-			config.FilterSubject = _EMPTY_
-		} else {
-			checkSubject = true
-		}
-		mset.mu.RUnlock()
-
-		// Make sure this is a valid partition of the interest subjects.
-		if checkSubject && !mset.validSubject(config.FilterSubject) {
+		if !mset.validSubject(config.FilterSubject) {
 			return nil, fmt.Errorf("consumer filter subject is not a valid subset of the interest subjects")
 		}
 	}
