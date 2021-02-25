@@ -1353,7 +1353,7 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 	}
 
 	for _, mset := range msets[offset:] {
-		resp.Streams = append(resp.Streams, &StreamInfo{Created: mset.createdTime(), State: mset.state(), Config: mset.config()})
+		resp.Streams = append(resp.Streams, &StreamInfo{Created: mset.createdTime(), State: mset.state(), Config: mset.config(), Mirror: mset.mirrorInfo(), Sources: mset.sourcesInfo()})
 		if len(resp.Streams) >= JSApiListLimit {
 			break
 		}
