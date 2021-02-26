@@ -316,6 +316,9 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		}
 	}
 	fsCfg.StoreDir = storeDir
+	fsCfg.AsyncFlush = false
+	fsCfg.SyncInterval = 2 * time.Minute
+
 	if err := mset.setupStore(fsCfg); err != nil {
 		mset.stop(true, false)
 		return nil, err
@@ -1261,7 +1264,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, sub *subscription, c
 	sendq := mset.sendq
 	mset.mu.Unlock()
 
-	// Hold onto the origin reply which has all he metadata.
+	// Hold onto the origin reply which has all the metadata.
 	hdr, msg := c.msgParts(rmsg)
 	hdr = genHeader(hdr, JSStreamSource, reply)
 
