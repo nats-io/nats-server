@@ -10441,11 +10441,8 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 
 	// Clear subjects.
 	cfg.Subjects = nil
-	scr = createStream(cfg)
-	if scr.Error == nil || !strings.Contains(scr.Error.Description, "stream mirror source must exist") {
-		t.Fatalf("Expected error, got %+v", scr.Error)
-	}
 
+	// Source
 	scfg := &StreamConfig{
 		Name:     "S1",
 		Storage:  FileStorage,

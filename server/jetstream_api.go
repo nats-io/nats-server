@@ -1050,7 +1050,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 			return
 		}
 
-		// Now make sure the other stream exists.
+		// We do not require other stream to exist anymore, but if we can see it check payloads.
 		var exists bool
 		var maxMsgSize int32
 
@@ -1064,12 +1064,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 			maxMsgSize = mset.cfg.MaxMsgSize
 			exists = true
 		}
-		if !exists {
-			resp.Error = &ApiError{Code: 400, Description: "stream mirror source must exist"}
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-		if cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
+		if exists && cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
 			resp.Error = &ApiError{Code: 400, Description: "stream mirror must have max message size >= source"}
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return

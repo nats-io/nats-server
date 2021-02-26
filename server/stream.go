@@ -214,7 +214,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	// This can happen on startup with restored state where on meta replay we still do not have
 	// the assignment. Running in single server mode this always returns true.
 	if !jsa.streamAssigned(config.Name) {
-		s.Debugf("Stream %q does not seem to be assigned to this server", config.Name)
+		s.Debugf("Stream '%s > %s' does not seem to be assigned to this server", a.Name, config.Name)
 	}
 
 	// Sensible defaults.
@@ -1015,6 +1015,15 @@ func (mset *stream) cancelMirrorConsumer() {
 	}
 }
 
+func (mset *stream) retryMirrorConsumer() {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	mset.srv.Debugf("Retrying mirror consumer for '%s > %s'", mset.acc.Name, mset.cfg.Name)
+	if mset.mirror != nil && mset.mirror.sub == nil {
+		mset.setupMirrorConsumer()
+	}
+}
+
 func (mset *stream) resetMirrorConsumer() error {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
@@ -1106,6 +1115,8 @@ func (mset *stream) setupMirrorConsumer() error {
 			if ccr.Error != nil {
 				mset.cancelMirrorConsumer()
 				shouldRetry = false
+				// We will retry every 5 seconds or so
+				time.AfterFunc(5*time.Second, mset.retryMirrorConsumer)
 			}
 			mset.setMirrorErr(ccr.Error)
 		case <-time.After(2 * time.Second):
@@ -1130,6 +1141,32 @@ func (mset *stream) streamSource(sname string) *StreamSource {
 		}
 	}
 	return nil
+}
+
+func (mset *stream) retrySourceConsumer(sname string) {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	if mset.client == nil {
+		return
+	}
+	s := mset.srv
+	s.Debugf("Retrying source consumer for '%s > %s'", mset.acc.Name, mset.cfg.Name)
+	si := mset.sources[sname]
+	// No longer configured or still active.
+	if si == nil || si.sub != nil {
+		return
+	}
+	mset.setStartingSequenceForSource(sname)
+	mset.setSourceConsumer(sname, si.sseq+1)
+}
+
+// Locl should be held.
+func (mset *stream) cancelSourceConsumer(sname string) {
+	if si := mset.sources[sname]; si != nil && si.sub != nil {
+		mset.unsubscribe(si.sub)
+		si.sub = nil
+		si.sseq, si.dseq = 0, 0
+	}
 }
 
 // Lock should be held.
@@ -1213,10 +1250,14 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 		case ccr := <-respCh:
 			mset.mu.Lock()
 			if si := mset.sources[sname]; si != nil {
+				si.err = nil
 				if ccr.Error != nil {
 					mset.srv.Warnf("JetStream error response for create source consumer: %+v", ccr.Error)
 					si.err = ccr.Error
 					shouldRetry = false
+					// We will retry every 5 seconds or so
+					mset.cancelSourceConsumer(sname)
+					time.AfterFunc(5*time.Second, func() { mset.retrySourceConsumer(sname) })
 				}
 			}
 			mset.mu.Unlock()
@@ -1266,6 +1307,10 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, sub *subscription, c
 
 	// Hold onto the origin reply which has all the metadata.
 	hdr, msg := c.msgParts(rmsg)
+	// If we are daisy chained here make sure to remove the original one.
+	if len(hdr) > 0 {
+		hdr = removeHeaderIfPresent(hdr, JSStreamSource)
+	}
 	hdr = genHeader(hdr, JSStreamSource, reply)
 
 	var err error
@@ -1299,6 +1344,37 @@ func streamAndSeq(subject string) (string, uint64) {
 		return _EMPTY_, 0
 	}
 	return tokens[2], uint64(parseAckReplyNum(tokens[5]))
+}
+
+// Lock should be held.
+func (mset *stream) setStartingSequenceForSource(sname string) {
+	si := mset.sources[sname]
+	if si == nil {
+		return
+	}
+
+	state := mset.store.State()
+	if state.Msgs == 0 {
+		si.sseq, si.dseq = 0, 1
+		return
+	}
+
+	for seq := state.LastSeq; seq >= state.FirstSeq; seq-- {
+		_, hdr, _, _, err := mset.store.LoadMsg(seq)
+		if err != nil || len(hdr) == 0 {
+			continue
+		}
+		reply := getHeader(JSStreamSource, hdr)
+		if len(reply) == 0 {
+			continue
+		}
+		name, sseq := streamAndSeq(string(reply))
+		if name == sname {
+			si.sseq = sseq
+			si.dseq = 1
+			return
+		}
+	}
 }
 
 // Lock should be held.
