@@ -3975,6 +3975,9 @@ RETRY:
 				if lseq >= last {
 					return
 				}
+			} else if isOutOfSpaceErr(err) {
+				s.handleOutOfSpace()
+				return
 			} else {
 				goto RETRY
 			}

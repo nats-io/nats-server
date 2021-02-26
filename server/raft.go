@@ -749,9 +749,9 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	n.debug("Installing snapshot of %d bytes", len(data))
 
 	var term uint64
-	if ae, err := n.loadEntry(n.applied); err != nil && ae != nil {
+	if ae, _ := n.loadEntry(n.applied); ae != nil {
 		term = ae.term
-	} else if ae, err = n.loadFirstEntry(); err != nil && ae != nil {
+	} else if ae, _ = n.loadFirstEntry(); ae != nil {
 		term = ae.term
 	} else {
 		term = n.pterm
