@@ -240,7 +240,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	}
 
 	// Set flush in place to AsyncFlush which by default is false.
-	fs.fip = fcfg.AsyncFlush
+	fs.fip = !fcfg.AsyncFlush
 
 	// Check if this is a new setup.
 	mdir := path.Join(fcfg.StoreDir, msgDir)
