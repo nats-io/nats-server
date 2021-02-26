@@ -3814,21 +3814,15 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 
 	var didDeliver bool
 
-	// Remap to local deliver subject if set.
-	dsubj := []byte(to)
-	if len(c.pa.deliver) > 0 {
-		dsubj = c.pa.deliver
-	}
-
 	// If this is not a gateway connection but gateway is enabled,
 	// try to send this converted message to all gateways.
 	if c.srv.gateway.enabled {
 		flags |= pmrCollectQueueNames
 		var queues [][]byte
-		didDeliver, queues = c.processMsgResults(si.acc, rr, msg, nil, dsubj, nrr, flags)
-		didDeliver = c.sendMsgToGateways(si.acc, msg, dsubj, nrr, queues) || didDeliver
+		didDeliver, queues = c.processMsgResults(si.acc, rr, msg, c.pa.deliver, []byte(to), nrr, flags)
+		didDeliver = c.sendMsgToGateways(si.acc, msg, []byte(to), nrr, queues) || didDeliver
 	} else {
-		didDeliver, _ = c.processMsgResults(si.acc, rr, msg, nil, dsubj, nrr, flags)
+		didDeliver, _ = c.processMsgResults(si.acc, rr, msg, c.pa.deliver, []byte(to), nrr, flags)
 	}
 
 	// Put what was there back now.
