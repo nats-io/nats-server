@@ -438,7 +438,7 @@ func TestJetStreamConsumerWithStartTime(t *testing.T) {
 			}
 
 			time.Sleep(10 * time.Millisecond)
-			startTime := time.Now()
+			startTime := time.Now().UTC()
 
 			for i := 0; i < toSend; i++ {
 				sendStreamMsg(t, nc, subj, fmt.Sprintf("MSG: %d", i+1))
@@ -1181,7 +1181,7 @@ func TestJetStreamCreateConsumer(t *testing.T) {
 			}
 
 			// StartPosition conflicts
-			now := time.Now()
+			now := time.Now().UTC()
 			if _, err := mset.addConsumer(&ConsumerConfig{
 				DeliverSubject: "A",
 				OptStartSeq:    1,
@@ -10534,7 +10534,7 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 	})
 
 	// Make sure setting time works ok.
-	start := time.Now().Add(-2 * time.Hour)
+	start := time.Now().UTC().Add(-2 * time.Hour)
 	cfg = &StreamConfig{
 		Name:    "M4",
 		Storage: FileStorage,

@@ -610,7 +610,7 @@ func TestJWTAccountRenewFromResolver(t *testing.T) {
 	addAccountToMemResolver(s, apub, ajwt)
 	// Make sure the too quick update suppression does not bite us.
 	acc.mu.Lock()
-	acc.updated = time.Now().Add(-1 * time.Hour)
+	acc.updated = time.Now().UTC().Add(-1 * time.Hour)
 	acc.mu.Unlock()
 
 	// Do not update the account directly. The resolver should
@@ -2964,7 +2964,7 @@ func TestJWTAccountLimitsMaxConnsAfterExpired(t *testing.T) {
 	acc, _ := s.LookupAccount(fooPub)
 	acc.mu.Lock()
 	acc.expired = true
-	acc.updated = time.Now().Add(-2 * time.Second) // work around updating to quickly
+	acc.updated = time.Now().UTC().Add(-2 * time.Second) // work around updating to quickly
 	acc.mu.Unlock()
 
 	// Now update with new expiration and max connections lowered to 2

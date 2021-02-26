@@ -3153,7 +3153,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		a.jsLimits = nil
 	}
 
-	a.updated = time.Now()
+	a.updated = time.Now().UTC()
 	a.mu.Unlock()
 
 	clients := gatherClients()

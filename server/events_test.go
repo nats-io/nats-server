@@ -1635,7 +1635,7 @@ func TestSystemAccountWithGateways(t *testing.T) {
 }
 func TestServerEventsStatsZ(t *testing.T) {
 	serverStatsReqSubj := "$SYS.REQ.SERVER.%s.STATSZ"
-	preStart := time.Now()
+	preStart := time.Now().UTC()
 	// Add little bit of delay to make sure that time check
 	// between pre-start and actual start does not fail.
 	time.Sleep(5 * time.Millisecond)
@@ -1644,7 +1644,7 @@ func TestServerEventsStatsZ(t *testing.T) {
 	defer sb.Shutdown()
 	// Same between actual start and post start.
 	time.Sleep(5 * time.Millisecond)
-	postStart := time.Now()
+	postStart := time.Now().UTC()
 
 	url := fmt.Sprintf("nats://%s:%d", optsA.Host, optsA.Port)
 	ncs, err := nats.Connect(url, createUserCreds(t, sa, akp))
