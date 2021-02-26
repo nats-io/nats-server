@@ -145,7 +145,7 @@ type streamMsgDelete struct {
 const (
 	defaultStoreDirName  = "_js_"
 	defaultMetaGroupName = "_meta_"
-	defaultMetaFSBlkSize = 64 * 1024
+	defaultMetaFSBlkSize = 1024 * 1024
 )
 
 // For validating clusters.
@@ -324,6 +324,9 @@ func (cc *jetStreamCluster) isCurrent() bool {
 		// Non-clustered mode
 		return true
 	}
+	if cc.meta == nil {
+		return false
+	}
 	return cc.meta.Current()
 }
 
@@ -467,7 +470,7 @@ func (js *jetStream) setupMetaGroup() error {
 	storeDir := path.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, defaultMetaGroupName)
 
 	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMetaFSBlkSize},
+		FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMetaFSBlkSize, AsyncFlush: false},
 		StreamConfig{Name: defaultMetaGroupName, Storage: FileStorage},
 	)
 	if err != nil {
@@ -477,8 +480,10 @@ func (js *jetStream) setupMetaGroup() error {
 
 	cfg := &RaftConfig{Name: defaultMetaGroupName, Store: storeDir, Log: fs}
 
+	var bootstrap bool
 	if _, err := readPeerState(storeDir); err != nil {
 		s.Noticef("JetStream cluster bootstrapping")
+		bootstrap = true
 		peers := s.ActivePeers()
 		s.Debugf("JetStream cluster initial peers: %+v", peers)
 		if err := s.bootstrapRaftNode(cfg, peers, false); err != nil {
@@ -494,7 +499,11 @@ func (js *jetStream) setupMetaGroup() error {
 		s.Warnf("Could not start metadata controller: %v", err)
 		return err
 	}
-	n.Campaign()
+
+	// If we are bootstrapped with no state, start campaign early.
+	if bootstrap {
+		n.Campaign()
+	}
 
 	c := s.createInternalJetStreamClient()
 	sacc := s.SystemAccount()
@@ -872,20 +881,20 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, isRecovering bool) error {
 	// Do removals first.
 	for _, sa := range saDel {
 		if isRecovering {
-			js.setStreamAssignmentResponded(sa)
+			js.setStreamAssignmentRecovering(sa)
 		}
 		js.processStreamRemoval(sa)
 	}
 	// Now do add for the streams. Also add in all consumers.
 	for _, sa := range saAdd {
 		if isRecovering {
-			js.setStreamAssignmentResponded(sa)
+			js.setStreamAssignmentRecovering(sa)
 		}
 		js.processStreamAssignment(sa)
 		// We can simply add the consumers.
 		for _, ca := range sa.consumers {
 			if isRecovering {
-				js.setConsumerAssignmentResponded(ca)
+				js.setConsumerAssignmentRecovering(ca)
 			}
 			js.processConsumerAssignment(ca)
 		}
@@ -893,13 +902,13 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, isRecovering bool) error {
 	// Now do the deltas for existing stream's consumers.
 	for _, ca := range caDel {
 		if isRecovering {
-			js.setConsumerAssignmentResponded(ca)
+			js.setConsumerAssignmentRecovering(ca)
 		}
 		js.processConsumerRemoval(ca)
 	}
 	for _, ca := range caAdd {
 		if isRecovering {
-			js.setConsumerAssignmentResponded(ca)
+			js.setConsumerAssignmentRecovering(ca)
 		}
 		js.processConsumerAssignment(ca)
 	}
@@ -907,19 +916,25 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, isRecovering bool) error {
 	return nil
 }
 
-// Called on recovery to make sure we do not process like original
-func (js *jetStream) setStreamAssignmentResponded(sa *streamAssignment) {
+// Called on recovery to make sure we do not process like original.
+func (js *jetStream) setStreamAssignmentRecovering(sa *streamAssignment) {
 	js.mu.Lock()
 	defer js.mu.Unlock()
 	sa.responded = true
 	sa.Restore = nil
+	if sa.Group != nil {
+		sa.Group.Preferred = _EMPTY_
+	}
 }
 
-// Called on recovery to make sure we do not process like original
-func (js *jetStream) setConsumerAssignmentResponded(ca *consumerAssignment) {
+// Called on recovery to make sure we do not process like original.
+func (js *jetStream) setConsumerAssignmentRecovering(ca *consumerAssignment) {
 	js.mu.Lock()
 	defer js.mu.Unlock()
 	ca.responded = true
+	if ca.Group != nil {
+		ca.Group.Preferred = _EMPTY_
+	}
 }
 
 // Just copied over and changes out the group so it can be encoded.
@@ -990,7 +1005,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 					return didSnap, didRemove, err
 				}
 				if isRecovering {
-					js.setStreamAssignmentResponded(sa)
+					js.setStreamAssignmentRecovering(sa)
 				}
 				js.processStreamAssignment(sa)
 			case removeStreamOp:
@@ -1000,7 +1015,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 					return didSnap, didRemove, err
 				}
 				if isRecovering {
-					js.setStreamAssignmentResponded(sa)
+					js.setStreamAssignmentRecovering(sa)
 				}
 				js.processStreamRemoval(sa)
 				didRemove = true
@@ -1011,7 +1026,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 					return didSnap, didRemove, err
 				}
 				if isRecovering {
-					js.setConsumerAssignmentResponded(ca)
+					js.setConsumerAssignmentRecovering(ca)
 				}
 				js.processConsumerAssignment(ca)
 			case assignCompressedConsumerOp:
@@ -1021,7 +1036,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 					return didSnap, didRemove, err
 				}
 				if isRecovering {
-					js.setConsumerAssignmentResponded(ca)
+					js.setConsumerAssignmentRecovering(ca)
 				}
 				js.processConsumerAssignment(ca)
 			case removeConsumerOp:
@@ -1031,7 +1046,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 					return didSnap, didRemove, err
 				}
 				if isRecovering {
-					js.setConsumerAssignmentResponded(ca)
+					js.setConsumerAssignmentRecovering(ca)
 				}
 				js.processConsumerRemoval(ca)
 				didRemove = true
@@ -1042,7 +1057,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 					return didSnap, didRemove, err
 				}
 				if isRecovering {
-					js.setStreamAssignmentResponded(sa)
+					js.setStreamAssignmentRecovering(sa)
 				}
 				js.processUpdateStreamAssignment(sa)
 			default:
@@ -1079,7 +1094,7 @@ func (rg *raftGroup) setPreferred() {
 }
 
 // createRaftGroup is called to spin up this raft group if needed.
-func (js *jetStream) createRaftGroup(rg *raftGroup) error {
+func (js *jetStream) createRaftGroup(rg *raftGroup, storage StorageType) error {
 	js.mu.Lock()
 	defer js.mu.Unlock()
 
@@ -1107,15 +1122,26 @@ func (js *jetStream) createRaftGroup(rg *raftGroup) error {
 	}
 
 	storeDir := path.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, rg.Name)
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: storeDir, BlockSize: 8_000_000, AsyncFlush: true},
-		StreamConfig{Name: rg.Name, Storage: FileStorage},
-	)
-	if err != nil {
-		s.Errorf("Error creating filestore: %v", err)
-		return err
+	var store StreamStore
+	if storage == FileStorage {
+		fs, err := newFileStore(
+			FileStoreConfig{StoreDir: storeDir, BlockSize: 4_000_000, AsyncFlush: false, SyncInterval: 5 * time.Minute},
+			StreamConfig{Name: rg.Name, Storage: FileStorage},
+		)
+		if err != nil {
+			s.Errorf("Error creating filestore WAL: %v", err)
+			return err
+		}
+		store = fs
+	} else {
+		ms, err := newMemStore(&StreamConfig{Name: rg.Name, Storage: MemoryStorage})
+		if err != nil {
+			s.Errorf("Error creating memstore WAL: %v", err)
+			return err
+		}
+		store = ms
 	}
-	cfg := &RaftConfig{Name: rg.Name, Store: storeDir, Log: fs}
+	cfg := &RaftConfig{Name: rg.Name, Store: storeDir, Log: store}
 
 	if _, err := readPeerState(storeDir); err != nil {
 		s.bootstrapRaftNode(cfg, rg.Peers, true)
@@ -1174,8 +1200,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 
 	const (
 		compactInterval = 2 * time.Minute
-		compactSizeMin  = 64 * 1024 * 1024
-		compactNumMin   = 8
+		compactSizeMin  = 32 * 1024 * 1024
+		compactNumMin   = 4
 	)
 
 	t := time.NewTicker(compactInterval)
@@ -1208,6 +1234,11 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 		}
 	}
 
+	// Check on startup if we should compact.
+	if _, b := n.Size(); b > compactSizeMin {
+		doSnapshot()
+	}
+
 	// We will establish a restoreDoneCh no matter what. Will never be triggered unless
 	// we replace with the restore chan.
 	restoreDoneCh := make(<-chan error)
@@ -1237,19 +1268,21 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 				s.Warnf("Error applying entries to '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
 			}
 		case isLeader = <-lch:
-			if isLeader && isRestore {
-				acc, _ := s.LookupAccount(sa.Client.serviceAccount())
-				restoreDoneCh = s.processStreamRestore(sa.Client, acc, sa.Config.Name, _EMPTY_, sa.Reply, _EMPTY_)
-			} else {
-				if !isLeader && n.GroupLeader() != noLeader {
-					js.setStreamAssignmentResponded(sa)
-				}
-				js.processStreamLeaderChange(mset, isLeader)
-			}
-		case <-t.C:
 			if isLeader {
-				doSnapshot()
+				if isRestore {
+					acc, _ := s.LookupAccount(sa.Client.serviceAccount())
+					restoreDoneCh = s.processStreamRestore(sa.Client, acc, sa.Config.Name, _EMPTY_, sa.Reply, _EMPTY_)
+					continue
+				} else {
+					doSnapshot()
+				}
+			} else if n.GroupLeader() != noLeader {
+				js.setStreamAssignmentRecovering(sa)
 			}
+			js.processStreamLeaderChange(mset, isLeader)
+
+		case <-t.C:
+			doSnapshot()
 		case err := <-restoreDoneCh:
 			// We have completed a restore from snapshot on this server. The stream assignment has
 			// already been assigned but the replicas will need to catch up out of band. Consumers
@@ -1386,9 +1419,8 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					if err != errLastSeqMismatch || !isRecovering {
 						s.Debugf("Got error processing JetStream msg: %v", err)
 					}
-					if strings.Contains(err.Error(), "no space left") {
-						s.Errorf("JetStream out of space, will be DISABLED")
-						s.DisableJetStream()
+					if isOutOfSpaceErr(err) {
+						s.handleOutOfSpace()
 						return err
 					}
 				}
@@ -1846,10 +1878,11 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	js.mu.RLock()
 	s, rg := js.srv, sa.Group
 	alreadyRunning := rg.node != nil
+	storage := sa.Config.Storage
 	js.mu.RUnlock()
 
 	// Process the raft group and make sure it's running if needed.
-	err := js.createRaftGroup(rg)
+	err := js.createRaftGroup(rg, storage)
 
 	// If we are restoring, create the stream if we are R>1 and not the preferred who handles the
 	// receipt of the snapshot itself.
@@ -2217,7 +2250,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment) {
 	}
 
 	// Process the raft group and make sure its running if needed.
-	js.createRaftGroup(rg)
+	js.createRaftGroup(rg, mset.config().Storage)
 
 	// Check if we already have this consumer running.
 	o := mset.lookupConsumer(ca.Name)
@@ -2393,7 +2426,7 @@ func (o *consumer) raftNode() RaftNode {
 }
 
 func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
-	s, cc, n := js.server(), js.cluster, o.raftNode()
+	s, n := js.server(), o.raftNode()
 	defer s.grWG.Done()
 
 	if n == nil {
@@ -2406,14 +2439,10 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	s.Debugf("Starting consumer monitor for '%s > %s > %s", o.acc.Name, ca.Stream, ca.Name)
 	defer s.Debugf("Exiting consumer monitor for '%s > %s > %s'", o.acc.Name, ca.Stream, ca.Name)
 
-	js.mu.RLock()
-	isLeader := cc.isConsumerLeader(ca.Client.serviceAccount(), ca.Stream, ca.Name)
-	js.mu.RUnlock()
-
 	const (
 		compactInterval = 2 * time.Minute
-		compactSizeMin  = 8 * 1024 * 1024
-		compactNumMin   = 64
+		compactSizeMin  = 4 * 1024 * 1024
+		compactNumMin   = 4
 	)
 
 	t := time.NewTicker(compactInterval)
@@ -2457,13 +2486,11 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			}
 		case isLeader := <-lch:
 			if !isLeader && n.GroupLeader() != noLeader {
-				js.setConsumerAssignmentResponded(ca)
+				js.setConsumerAssignmentRecovering(ca)
 			}
 			js.processConsumerLeaderChange(o, isLeader)
 		case <-t.C:
-			if isLeader {
-				doSnapshot()
-			}
+			doSnapshot()
 		}
 	}
 }
@@ -3788,6 +3815,10 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
 	}
 
+	if err != nil && isOutOfSpaceErr(err) {
+		s.handleOutOfSpace()
+	}
+
 	return err
 }
 
@@ -3956,6 +3987,9 @@ RETRY:
 				if lseq >= last {
 					return
 				}
+			} else if isOutOfSpaceErr(err) {
+				s.handleOutOfSpace()
+				return
 			} else {
 				goto RETRY
 			}

@@ -173,7 +173,7 @@ const (
 	// cache idx expiration
 	defaultCacheIdxExpiration = 5 * time.Minute
 	// default sync interval
-	defaultSyncInterval = 10 * time.Second
+	defaultSyncInterval = 60 * time.Second
 	// coalesceMinimum
 	coalesceMinimum = 16 * 1024
 	// maxFlushWait is maximum we will wait to gather messages to flush.
@@ -240,7 +240,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	}
 
 	// Set flush in place to AsyncFlush which by default is false.
-	fs.fip = fcfg.AsyncFlush
+	fs.fip = !fcfg.AsyncFlush
 
 	// Check if this is a new setup.
 	mdir := path.Join(fcfg.StoreDir, msgDir)
@@ -1370,6 +1370,7 @@ func (mb *msgBlock) truncate(sm *fileStoredMsg) (nmsgs, nbytes uint64, err error
 		mb.mfd.ReadAt(lchk[:], eof-8)
 		copy(mb.lchk[0:], lchk[:])
 	} else {
+		mb.mu.Unlock()
 		return 0, 0, fmt.Errorf("failed to truncate msg block %d, file not open", mb.index)
 	}
 
@@ -1632,7 +1633,6 @@ func (fs *fileStore) checkMsgs() *LostStreamData {
 // filestore lock will be held.
 func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte, ts int64, flush bool) error {
 	mb.mu.Lock()
-
 	// Make sure we have a cache setup.
 	if mb.cache == nil {
 		mb.cache = &cache{}
@@ -1725,7 +1725,9 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 			return err
 		}
 		if writeIndex {
-			mb.writeIndexInfo()
+			if err := mb.writeIndexInfo(); err != nil {
+				return err
+			}
 		}
 	} else {
 		// Kick the flusher here.
@@ -2028,11 +2030,16 @@ func (mb *msgBlock) flushPendingMsgs() error {
 		if err != nil {
 			mb.removeIndexFile()
 			mb.dirtyClose()
-			if ld, err := mb.rebuildState(); err != nil && ld != nil {
-				// Rebuild fs state too.
-				mb.fs.rebuildState(ld)
+			if !isOutOfSpaceErr(err) {
+				if ld, err := mb.rebuildState(); err != nil && ld != nil {
+					// Rebuild fs state too.
+					fs := mb.fs
+					fs.mu.Lock()
+					fs.rebuildState(ld)
+					fs.mu.Unlock()
+				}
 			}
-			break
+			return err
 		}
 
 		woff += int64(n)
