@@ -210,5 +210,8 @@ const JSServerOutOfStorageAdvisoryType = "io.nats.jetstream.advisory.v1.server_o
 // JSServerOutOfSpaceAdvisory indicates that a stream has lost quorum and is stalled.
 type JSServerOutOfSpaceAdvisory struct {
 	TypedEvent
-	Server string `json:"server"`
+	Server   string `json:"server"`
+	ServerID string `json:"server_id"`
+	Stream   string `json:"stream,omitempty"`
+	Cluster  string `json:"cluster"`
 }

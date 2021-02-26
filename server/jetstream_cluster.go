@@ -1420,7 +1420,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						s.Debugf("Got error processing JetStream msg: %v", err)
 					}
 					if isOutOfSpaceErr(err) {
-						s.handleOutOfSpace()
+						s.handleOutOfSpace(mset.name())
 						return err
 					}
 				}
@@ -3744,6 +3744,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	canRespond := !mset.cfg.NoAck && len(reply) > 0
 	s, jsa, st, rf, sendq := mset.srv, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.sendq
 	maxMsgSize := int(mset.cfg.MaxMsgSize)
+	msetName := mset.cfg.Name
 	mset.mu.RUnlock()
 
 	// Check here pre-emptively if we have exceeded our account limits.
@@ -3816,7 +3817,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	}
 
 	if err != nil && isOutOfSpaceErr(err) {
-		s.handleOutOfSpace()
+		s.handleOutOfSpace(msetName)
 	}
 
 	return err
@@ -3883,6 +3884,7 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) {
 	state := mset.store.State()
 	sreq := mset.calculateSyncRequest(&state, snap)
 	s, subject, n := mset.srv, mset.sa.Sync, mset.node
+	msetName := mset.cfg.Name
 	mset.mu.Unlock()
 
 	// Just return if up to date..
@@ -3988,7 +3990,7 @@ RETRY:
 					return
 				}
 			} else if isOutOfSpaceErr(err) {
-				s.handleOutOfSpace()
+				s.handleOutOfSpace(msetName)
 				return
 			} else {
 				goto RETRY
