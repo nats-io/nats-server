@@ -1094,7 +1094,7 @@ func (rg *raftGroup) setPreferred() {
 }
 
 // createRaftGroup is called to spin up this raft group if needed.
-func (js *jetStream) createRaftGroup(rg *raftGroup) error {
+func (js *jetStream) createRaftGroup(rg *raftGroup, storage StorageType) error {
 	js.mu.Lock()
 	defer js.mu.Unlock()
 
@@ -1122,15 +1122,26 @@ func (js *jetStream) createRaftGroup(rg *raftGroup) error {
 	}
 
 	storeDir := path.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, rg.Name)
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: storeDir, BlockSize: 4_000_000, AsyncFlush: false, SyncInterval: 5 * time.Minute},
-		StreamConfig{Name: rg.Name, Storage: FileStorage},
-	)
-	if err != nil {
-		s.Errorf("Error creating filestore: %v", err)
-		return err
+	var store StreamStore
+	if storage == FileStorage {
+		fs, err := newFileStore(
+			FileStoreConfig{StoreDir: storeDir, BlockSize: 4_000_000, AsyncFlush: false, SyncInterval: 5 * time.Minute},
+			StreamConfig{Name: rg.Name, Storage: FileStorage},
+		)
+		if err != nil {
+			s.Errorf("Error creating filestore WAL: %v", err)
+			return err
+		}
+		store = fs
+	} else {
+		ms, err := newMemStore(&StreamConfig{Name: rg.Name, Storage: MemoryStorage})
+		if err != nil {
+			s.Errorf("Error creating memstore WAL: %v", err)
+			return err
+		}
+		store = ms
 	}
-	cfg := &RaftConfig{Name: rg.Name, Store: storeDir, Log: fs}
+	cfg := &RaftConfig{Name: rg.Name, Store: storeDir, Log: store}
 
 	if _, err := readPeerState(storeDir); err != nil {
 		s.bootstrapRaftNode(cfg, rg.Peers, true)
@@ -1867,10 +1878,11 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	js.mu.RLock()
 	s, rg := js.srv, sa.Group
 	alreadyRunning := rg.node != nil
+	storage := sa.Config.Storage
 	js.mu.RUnlock()
 
 	// Process the raft group and make sure it's running if needed.
-	err := js.createRaftGroup(rg)
+	err := js.createRaftGroup(rg, storage)
 
 	// If we are restoring, create the stream if we are R>1 and not the preferred who handles the
 	// receipt of the snapshot itself.
@@ -2238,7 +2250,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment) {
 	}
 
 	// Process the raft group and make sure its running if needed.
-	js.createRaftGroup(rg)
+	js.createRaftGroup(rg, mset.config().Storage)
 
 	// Check if we already have this consumer running.
 	o := mset.lookupConsumer(ca.Name)

@@ -310,10 +310,6 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 	hash := s.sys.shash
 	s.mu.Unlock()
 
-	if err := os.MkdirAll(path.Join(cfg.Store, snapshotsDir), 0750); err != nil {
-		return nil, fmt.Errorf("could not create snapshots directory - %v", err)
-	}
-
 	ps, err := readPeerState(cfg.Store)
 	if err != nil {
 		return nil, err
@@ -361,8 +357,18 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		n.vote = vote
 	}
 
-	// See if we have any snapshots and if so load and process on startup.
-	n.setupLastSnapshot()
+	if err := os.MkdirAll(path.Join(cfg.Store, snapshotsDir), 0750); err != nil {
+		return nil, fmt.Errorf("could not create snapshots directory - %v", err)
+	}
+
+	// Can't recover snapshots if memory based.
+	if _, ok := n.wal.(*memStore); ok {
+		snapDir := path.Join(n.sd, snapshotsDir, "*")
+		os.RemoveAll(snapDir)
+	} else {
+		// See if we have any snapshots and if so load and process on startup.
+		n.setupLastSnapshot()
+	}
 
 	if state := n.wal.State(); state.Msgs > 0 {
 		// TODO(dlc) - Recover our state here.
