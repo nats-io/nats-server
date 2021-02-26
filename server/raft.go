@@ -338,8 +338,8 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		c:        s.createInternalSystemClient(),
 		sendq:    sendq,
 		quit:     make(chan struct{}),
-		wtvch:    make(chan struct{}),
-		wpsch:    make(chan struct{}),
+		wtvch:    make(chan struct{}, 1),
+		wpsch:    make(chan struct{}, 1),
 		reqs:     make(chan *voteRequest, 8),
 		votes:    make(chan *voteResponse, 32),
 		propc:    make(chan *Entry, 256),
@@ -417,6 +417,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 
 	n.Lock()
 	n.resetElectionTimeout()
+	n.llqrt = time.Now()
 	n.Unlock()
 
 	s.registerRaftNode(n.group, n)
@@ -542,6 +543,11 @@ func (n *raft) Propose(data []byte) error {
 		n.debug("Proposal ignored, not leader")
 		return errNotLeader
 	}
+	// Error if we had a previous write error.
+	if werr := n.werr; werr != nil {
+		n.RUnlock()
+		return werr
+	}
 	propc := n.propc
 	n.RUnlock()
 
@@ -577,6 +583,11 @@ func (n *raft) ProposeAddPeer(peer string) error {
 		n.RUnlock()
 		return errNotLeader
 	}
+	// Error if we had a previous write error.
+	if werr := n.werr; werr != nil {
+		n.RUnlock()
+		return werr
+	}
 	propc := n.propc
 	n.RUnlock()
 
@@ -604,8 +615,8 @@ func (n *raft) ProposeRemovePeer(peer string) error {
 			default:
 				return errProposalFailed
 			}
-			return nil
 		}
+		return nil
 	}
 
 	// Need to forward.
@@ -647,8 +658,15 @@ func (n *raft) ResumeApply() {
 // E.g. snapshots.
 func (n *raft) Compact(index uint64) error {
 	n.Lock()
+	defer n.Unlock()
+	// Error if we had a previous write error.
+	if n.werr != nil {
+		return n.werr
+	}
 	_, err := n.wal.Compact(index)
-	n.Unlock()
+	if err != nil {
+		n.setWriteErrLocked(err)
+	}
 	return err
 }
 
@@ -712,24 +730,31 @@ func (n *raft) SendSnapshot(data []byte) error {
 // all of the log entries up to and including index. This should not be called with
 // entries that have been applied to the FSM but have not been applied to the raft state.
 func (n *raft) InstallSnapshot(data []byte) error {
-	n.debug("Installing snapshot of %d bytes", len(data))
-
 	n.Lock()
 	if n.state == Closed {
 		n.Unlock()
 		return errNodeClosed
 	}
 
-	if state := n.wal.State(); state.FirstSeq == n.applied {
+	if werr := n.werr; werr != nil {
+		n.Unlock()
+		return werr
+	}
+
+	if state := n.wal.State(); state.FirstSeq >= n.applied {
 		n.Unlock()
 		return nil
 	}
 
+	n.debug("Installing snapshot of %d bytes", len(data))
+
 	var term uint64
 	if ae, err := n.loadEntry(n.applied); err != nil && ae != nil {
 		term = ae.term
+	} else if ae, err = n.loadFirstEntry(); err != nil && ae != nil {
+		term = ae.term
 	} else {
-		term = n.term
+		term = n.pterm
 	}
 
 	snap := &snapshot{
@@ -744,6 +769,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	sfile := path.Join(snapDir, sn)
 
 	if err := ioutil.WriteFile(sfile, n.encodeSnapshot(snap), 0640); err != nil {
+		n.setWriteErrLocked(err)
 		n.Unlock()
 		return err
 	}
@@ -751,6 +777,11 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	// Remember our latest snapshot file.
 	n.snapfile = sfile
 	_, err := n.wal.Compact(snap.lastIndex)
+	if err != nil {
+		n.setWriteErrLocked(err)
+		n.Unlock()
+		return err
+	}
 	n.Unlock()
 
 	psnaps, _ := ioutil.ReadDir(snapDir)
@@ -835,7 +866,9 @@ func (n *raft) setupLastSnapshot() {
 		n.pterm = snap.lastTerm
 		n.commit = snap.lastIndex
 		n.applyc <- &CommittedEntry{n.commit, []*Entry{&Entry{EntrySnapshot, snap.data}}}
-		n.wal.Compact(snap.lastIndex + 1)
+		if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
+			n.setWriteErrLocked(err)
+		}
 	}
 	n.Unlock()
 }
@@ -951,6 +984,7 @@ func (n *raft) StepDown(preferred ...string) error {
 	n.Lock()
 
 	if len(preferred) > 1 {
+		n.Unlock()
 		return errTooManyPrefs
 	}
 
@@ -1803,7 +1837,10 @@ func (n *raft) applyCommit(index uint64) error {
 		if index < state.FirstSeq {
 			return nil
 		}
-		if err != ErrStoreClosed {
+		if err != ErrStoreClosed && err != ErrStoreEOF {
+			if err == errBadMsg {
+				n.setWriteErrLocked(err)
+			}
 			n.warn("Got an error loading %d index: %v", index, err)
 		}
 		n.commit = original
@@ -2067,7 +2104,10 @@ func (n *raft) truncateWal(ae *appendEntry) {
 	}
 
 	tindex := ae.pindex - 1
-	n.wal.Truncate(tindex)
+	if err := n.wal.Truncate(tindex); err != nil {
+		n.setWriteErrLocked(err)
+		return
+	}
 	n.pindex = tindex
 	if nae, _ := n.loadEntry(tindex); nae != nil {
 		n.pterm = nae.term
@@ -2080,8 +2120,8 @@ func (n *raft) truncateWal(ae *appendEntry) {
 func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	n.Lock()
 
-	// Just return if closed.
-	if n.state == Closed {
+	// Just return if closed or we had previous write error.
+	if n.state == Closed || n.werr != nil {
 		n.Unlock()
 		return
 	}
@@ -2244,7 +2284,12 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.pindex = ae.pindex
 			n.pterm = ae.pterm
 			n.commit = ae.pindex
-			n.wal.Compact(n.pindex + 1)
+			_, err := n.wal.Compact(n.pindex + 1)
+			if err != nil {
+				n.setWriteErrLocked(err)
+				n.Unlock()
+				return
+			}
 
 			// Now send snapshot to upper levels. Only send the snapshot, not the peerstate entry.
 			select {
@@ -2276,14 +2321,11 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		// Only store if an original which will have sub != nil
 		if sub != nil {
 			if err := n.storeToWAL(ae); err != nil {
-				if err == ErrStoreClosed {
-					n.Unlock()
-					return
+				if err != ErrStoreClosed {
+					n.warn("Error storing entry to WAL: %v", err)
 				}
-				n.warn("Error storing to WAL: %v", err)
-
-				//FIXME(dlc)!!, WARN AT LEAST, RESPOND FALSE, return etc!
-
+				n.Unlock()
+				return
 			}
 		} else {
 			// This is a replay on startup so just take the appendEntry version.
@@ -2385,13 +2427,18 @@ func (n *raft) buildAppendEntry(entries []*Entry) *appendEntry {
 	return &appendEntry{n.id, n.term, n.commit, n.pterm, n.pindex, entries, _EMPTY_, nil}
 }
 
+// Store our append entry to our WAL.
 // lock should be held.
 func (n *raft) storeToWAL(ae *appendEntry) error {
-	if ae.buf == nil {
-		panic("nil buffer for appendEntry!")
+	if ae == nil {
+		return fmt.Errorf("raft: Missing append entry for storage")
+	}
+	if n.werr != nil {
+		return n.werr
 	}
 	seq, _, err := n.wal.StoreMsg(_EMPTY_, nil, ae.buf)
 	if err != nil {
+		n.setWriteErrLocked(err)
 		return err
 	}
 
@@ -2410,6 +2457,7 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 				}
 			}
 		}
+		n.Unlock()
 		panic(fmt.Sprintf("[%s-%s] Placed an entry at the wrong index, ae is %+v, seq is %d, n.pindex is %d\n\n", n.s, n.group, ae, seq, n.pindex))
 	}
 
@@ -2426,10 +2474,8 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 	// If we have entries store this in our wal.
 	if len(entries) > 0 {
 		if err := n.storeToWAL(ae); err != nil {
-			if err == ErrStoreClosed {
-				return
-			}
-			panic(fmt.Sprintf("Error storing to WAL: %v", err))
+			n.setWriteErrLocked(err)
+			return
 		}
 		// We count ourselves.
 		n.acks[n.pindex] = map[string]struct{}{n.id: struct{}{}}
@@ -2597,10 +2643,27 @@ func (n *raft) readTermVote() (term uint64, voted string, err error) {
 	return term, voted, nil
 }
 
+// Lock should be held.
+func (n *raft) setWriteErrLocked(err error) {
+	// Ignore non-write errors.
+	if err != nil {
+		if err == ErrStoreClosed || err == ErrStoreEOF || err == ErrInvalidSequence || err == ErrStoreMsgNotFound || err == errNoPending {
+			return
+		}
+	}
+	n.werr = err
+
+	// For now since this can be happening all under the covers, we will call up and disable JetStream.
+	n.Unlock()
+	n.s.handleOutOfSpace()
+	n.Lock()
+}
+
+// Capture our write error if any and hold.
 func (n *raft) setWriteErr(err error) {
 	n.Lock()
 	defer n.Unlock()
-	n.werr = err
+	n.setWriteErrLocked(err)
 }
 
 func (n *raft) fileWriter() {
@@ -2719,7 +2782,7 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 	n.resetElectionTimeout()
 
 	vresp := &voteResponse{n.term, n.id, false}
-	defer n.debug("Sending a voteResponse %+v -> %q", &vresp, vr.reply)
+	defer n.debug("Sending a voteResponse %+v -> %q", vresp, vr.reply)
 
 	// Ignore if we are newer.
 	if vr.term < n.term {
