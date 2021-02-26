@@ -203,3 +203,12 @@ type JSConsumerQuorumLostAdvisory struct {
 	Consumer string      `json:"consumer"`
 	Replicas []*PeerInfo `json:"replicas"`
 }
+
+// JSServerOutOfStorageAdvisoryType is sent when the server is out of storage space.
+const JSServerOutOfStorageAdvisoryType = "io.nats.jetstream.advisory.v1.server_out_of_space"
+
+// JSServerOutOfSpaceAdvisory indicates that a stream has lost quorum and is stalled.
+type JSServerOutOfSpaceAdvisory struct {
+	TypedEvent
+	Server string `json:"server"`
+}

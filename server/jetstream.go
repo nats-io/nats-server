@@ -31,6 +31,7 @@ import (
 
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
+	"github.com/nats-io/nuid"
 )
 
 // JetStreamConfig determines this server's configuration.
@@ -79,6 +80,7 @@ type jetStream struct {
 	accounts      map[*Account]*jsAccount
 	memReserved   int64
 	storeReserved int64
+	disabled      bool
 }
 
 // This represents a jetstream enabled account.
@@ -238,11 +240,42 @@ func (s *Server) setupJetStreamExports() {
 	}
 }
 
+func (s *Server) setJetStreamDisabled() {
+	s.mu.Lock()
+	js := s.js
+	s.mu.Unlock()
+	js.mu.Lock()
+	js.disabled = true
+	js.mu.Unlock()
+}
+
+func (s *Server) handleOutOfSpace() {
+	if s.JetStreamEnabled() {
+		s.Errorf("JetStream out of space, will be DISABLED")
+		go s.DisableJetStream()
+
+		adv := &JSServerOutOfSpaceAdvisory{
+			TypedEvent: TypedEvent{
+				Type: JSServerOutOfStorageAdvisoryType,
+				ID:   nuid.Next(),
+				Time: time.Now().UTC(),
+			},
+			Server: s.Name(),
+		}
+		s.publishAdvisory(nil, JSAdvisoryServerOutOfStorage, adv)
+	}
+}
+
 // DisableJetStream will turn off JetStream and signals in clustered mode
 // to have the metacontroller remove us from the peer list.
 func (s *Server) DisableJetStream() error {
+	if !s.JetStreamEnabled() {
+		return nil
+	}
+
+	s.setJetStreamDisabled()
+
 	if s.JetStreamIsClustered() {
-		s.Noticef("JetStream cluster shutting down")
 		wasLeader := s.JetStreamIsLeader()
 		js, cc := s.getJetStreamCluster()
 		js.mu.RLock()
@@ -252,7 +285,7 @@ func (s *Server) DisableJetStream() error {
 		s.transferRaftLeaders()
 
 		if wasLeader {
-			// Wait til the new metacontroller leader is established
+			// Wait until the new metacontroller leader is established
 			const timeout = 2 * time.Second
 			maxWait := time.NewTimer(timeout)
 			defer maxWait.Stop()
@@ -266,7 +299,10 @@ func (s *Server) DisableJetStream() error {
 				case <-maxWait.C:
 					break LOOP
 				case <-t.C:
-					if cc.isCurrent() {
+					js.mu.RLock()
+					isCurrent := cc.isCurrent()
+					js.mu.RUnlock()
+					if isCurrent {
 						break LOOP
 					}
 				}
@@ -277,10 +313,9 @@ func (s *Server) DisableJetStream() error {
 			meta.ProposeRemovePeer(meta.ID())
 			meta.Delete()
 		}
-	} else {
-		s.Noticef("JetStream shutting down")
 	}
 
+	// Normal shutdown.
 	s.shutdownJetStream()
 
 	return nil
@@ -413,7 +448,7 @@ func (s *Server) configAllJetStreamAccounts() error {
 // JetStreamEnabled reports if jetstream is enabled.
 func (s *Server) JetStreamEnabled() bool {
 	s.mu.Lock()
-	enabled := s.js != nil
+	enabled := s.js != nil && !s.js.disabled
 	s.mu.Unlock()
 	return enabled
 }

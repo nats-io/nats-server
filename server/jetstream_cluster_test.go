@@ -252,7 +252,6 @@ func TestJetStreamClusterMemoryStore(t *testing.T) {
 	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
-	// FIXME(dlc) - This should be default.
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo", "bar"},
@@ -770,6 +769,8 @@ func TestJetStreamClusterStreamSynchedTimeStamps(t *testing.T) {
 	sl := c.streamLeader("$G", "foo")
 
 	sl.Shutdown()
+
+	c.waitOnLeader()
 	c.waitOnStreamLeader("$G", "foo")
 
 	s = c.randomServer()
@@ -1884,7 +1885,7 @@ func TestJetStreamClusterInterestRetentionWithFilteredConsumers(t *testing.T) {
 
 	checkState := func(expected uint64) {
 		t.Helper()
-		checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 			si, err := jsq.StreamInfo("TEST")
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
@@ -3087,12 +3088,12 @@ func TestJetStreamClusterRemovePeer(t *testing.T) {
 	}
 
 	// Grab shorter timeout jetstream context.
-	js, err = nc.JetStream(nats.MaxWait(50 * time.Millisecond))
+	js, err = nc.JetStream(nats.MaxWait(100 * time.Millisecond))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 		si, err := js.StreamInfo("TEST")
 		if err != nil {
 			return fmt.Errorf("Could not fetch stream info: %v", err)
@@ -3117,7 +3118,7 @@ func TestJetStreamClusterRemovePeer(t *testing.T) {
 	})
 
 	// Now check consumer info as well.
-	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 		ci, err := js.ConsumerInfo("TEST", "cat")
 		if err != nil {
 			return fmt.Errorf("Could not fetch consumer info: %v", err)
@@ -3288,7 +3289,7 @@ func TestJetStreamClusterRemoveServer(t *testing.T) {
 	}
 
 	// Check the stream info is eventually correct.
-	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 		si, err := js.StreamInfo("TEST")
 		if err != nil {
 			return fmt.Errorf("Could not fetch stream info: %v", err)
@@ -4410,7 +4411,7 @@ func (c *cluster) waitOnClusterReady() {
 	// Now make sure we have all peers.
 	for leader != nil && time.Now().Before(expires) {
 		if len(leader.JetStreamClusterPeers()) == len(c.servers) {
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 			return
 		}
 		time.Sleep(50 * time.Millisecond)

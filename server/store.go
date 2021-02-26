@@ -411,3 +411,7 @@ func (p DeliverPolicy) MarshalJSON() ([]byte, error) {
 		return json.Marshal(deliverUndefinedString)
 	}
 }
+
+func isOutOfSpaceErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no space left")
+}

@@ -223,6 +223,9 @@ const (
 	// JSAdvisoryConsumerQuorumLostPre notification that a consumer is stalled.
 	JSAdvisoryConsumerQuorumLostPre = "$JS.EVENT.ADVISORY.CONSUMER.QUORUM_LOST"
 
+	// JSAdvisoryServerOutOfStorage notification that a server has no more storage.
+	JSAdvisoryServerOutOfStorage = "$JS.EVENT.ADVISORY.SERVER.OUT_OF_STORAGE"
+
 	// JSAuditAdvisory is a notification about JetStream API access.
 	// FIXME - Add in details about who..
 	JSAuditAdvisory = "$JS.EVENT.ADVISORY.API"

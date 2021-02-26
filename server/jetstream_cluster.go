@@ -145,7 +145,7 @@ type streamMsgDelete struct {
 const (
 	defaultStoreDirName  = "_js_"
 	defaultMetaGroupName = "_meta_"
-	defaultMetaFSBlkSize = 64 * 1024
+	defaultMetaFSBlkSize = 1024 * 1024
 )
 
 // For validating clusters.
@@ -324,6 +324,9 @@ func (cc *jetStreamCluster) isCurrent() bool {
 		// Non-clustered mode
 		return true
 	}
+	if cc.meta == nil {
+		return false
+	}
 	return cc.meta.Current()
 }
 
@@ -467,7 +470,7 @@ func (js *jetStream) setupMetaGroup() error {
 	storeDir := path.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, defaultMetaGroupName)
 
 	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMetaFSBlkSize},
+		FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMetaFSBlkSize, AsyncFlush: false},
 		StreamConfig{Name: defaultMetaGroupName, Storage: FileStorage},
 	)
 	if err != nil {
@@ -1120,7 +1123,7 @@ func (js *jetStream) createRaftGroup(rg *raftGroup) error {
 
 	storeDir := path.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, rg.Name)
 	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: storeDir, BlockSize: 4_000_000, AsyncFlush: true, SyncInterval: 2 * time.Minute},
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 4_000_000, AsyncFlush: false, SyncInterval: 5 * time.Minute},
 		StreamConfig{Name: rg.Name, Storage: FileStorage},
 	)
 	if err != nil {
@@ -1405,9 +1408,8 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					if err != errLastSeqMismatch || !isRecovering {
 						s.Debugf("Got error processing JetStream msg: %v", err)
 					}
-					if strings.Contains(err.Error(), "no space left") {
-						s.Errorf("JetStream out of space, will be DISABLED")
-						s.DisableJetStream()
+					if isOutOfSpaceErr(err) {
+						s.handleOutOfSpace()
 						return err
 					}
 				}
@@ -3799,6 +3801,10 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// If we errored out respond here.
 	if err != nil && canRespond {
 		sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
+	}
+
+	if err != nil && isOutOfSpaceErr(err) {
+		s.handleOutOfSpace()
 	}
 
 	return err
