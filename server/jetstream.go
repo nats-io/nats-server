@@ -249,7 +249,7 @@ func (s *Server) setJetStreamDisabled() {
 	js.mu.Unlock()
 }
 
-func (s *Server) handleOutOfSpace() {
+func (s *Server) handleOutOfSpace(stream string) {
 	if s.JetStreamEnabled() {
 		s.Errorf("JetStream out of space, will be DISABLED")
 		go s.DisableJetStream()
@@ -260,7 +260,10 @@ func (s *Server) handleOutOfSpace() {
 				ID:   nuid.Next(),
 				Time: time.Now().UTC(),
 			},
-			Server: s.Name(),
+			Server:   s.Name(),
+			ServerID: s.ID(),
+			Stream:   stream,
+			Cluster:  s.cachedClusterName(),
 		}
 		s.publishAdvisory(nil, JSAdvisoryServerOutOfStorage, adv)
 	}
