@@ -1552,8 +1552,10 @@ func nextReqFromMsg(msg []byte) (time.Time, int, bool, error) {
 		if err := json.Unmarshal(req, &cr); err != nil {
 			return time.Time{}, -1, false, err
 		}
-		return cr.Expires, cr.Batch, cr.NoWait, nil
-
+		if cr.Expires == time.Duration(0) {
+			return time.Time{}, cr.Batch, cr.NoWait, nil
+		}
+		return time.Now().Add(cr.Expires), cr.Batch, cr.NoWait, nil
 	default:
 		if n, err := strconv.Atoi(string(req)); err == nil {
 			return time.Time{}, n, false, nil
