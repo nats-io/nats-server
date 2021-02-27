@@ -3596,6 +3596,16 @@ func TestJetStreamClusterSuperClusterCrossClusterConsumerInterest(t *testing.T) 
 	checkSubsPending(t, sub, 2)
 }
 
+func TestJetStreamNextReqFromMsg(t *testing.T) {
+	bef := time.Now()
+	expires, _, _, err := nextReqFromMsg([]byte(`{"expires":5000000000}`)) // nanoseconds
+	require_NoError(t, err)
+	now := time.Now()
+	if expires.Before(bef.Add(5*time.Second)) || expires.After(now.Add(5*time.Second)) {
+		t.Fatal("Expires out of expected range")
+	}
+}
+
 func TestJetStreamClusterSuperClusterPeerReassign(t *testing.T) {
 	sc := createJetStreamSuperCluster(t, 3, 3)
 	defer sc.shutdown()
