@@ -1271,7 +1271,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 			if isLeader {
 				if isRestore {
 					acc, _ := s.LookupAccount(sa.Client.serviceAccount())
-					restoreDoneCh = s.processStreamRestore(sa.Client, acc, sa.Config.Name, _EMPTY_, sa.Reply, _EMPTY_)
+					restoreDoneCh = s.processStreamRestore(sa.Client, acc, sa.Config, _EMPTY_, sa.Reply, _EMPTY_)
 					continue
 				} else {
 					doSnapshot()
@@ -1383,29 +1383,17 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 
 func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isRecovering bool) error {
 	for _, e := range ce.Entries {
-		if e.Type == EntrySnapshot {
-			if !isRecovering && mset != nil {
-				var snap streamSnapshot
-				if err := json.Unmarshal(e.Data, &snap); err != nil {
-					return err
-				}
-				mset.processSnapshot(&snap)
-			}
-		} else if e.Type == EntryRemovePeer {
-			js.mu.RLock()
-			ourID := js.cluster.meta.ID()
-			js.mu.RUnlock()
-			if peer := string(e.Data); peer == ourID {
-				mset.stop(true, false)
-			}
-			return nil
-		} else {
+		if e.Type == EntryNormal {
 			buf := e.Data
 			switch entryOp(buf[0]) {
 			case streamMsgOp:
 				subject, reply, hdr, msg, lseq, ts, err := decodeStreamMsg(buf[1:])
 				if err != nil {
 					panic(err.Error())
+				}
+				// We can skip if we know this is less than what we already have.
+				if isRecovering && lseq <= mset.lastSeq() {
+					continue
 				}
 				// Skip by hand here since first msg special case.
 				// Reason is sequence is unsigned and for lseq being 0
@@ -1497,6 +1485,22 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 			default:
 				panic("JetStream Cluster Unknown group entry op type!")
 			}
+		} else if e.Type == EntrySnapshot {
+			if !isRecovering && mset != nil {
+				var snap streamSnapshot
+				if err := json.Unmarshal(e.Data, &snap); err != nil {
+					return err
+				}
+				mset.processSnapshot(&snap)
+			}
+		} else if e.Type == EntryRemovePeer {
+			js.mu.RLock()
+			ourID := js.cluster.meta.ID()
+			js.mu.RUnlock()
+			if peer := string(e.Data); peer == ourID {
+				mset.stop(true, false)
+			}
+			return nil
 		}
 	}
 	return nil
@@ -1948,7 +1952,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 		// If we are restoring, process that first.
 		if sa.Restore != nil {
 			// We are restoring a stream here.
-			restoreDoneCh := s.processStreamRestore(sa.Client, acc, sa.Config.Name, _EMPTY_, sa.Reply, _EMPTY_)
+			restoreDoneCh := s.processStreamRestore(sa.Client, acc, sa.Config, _EMPTY_, sa.Reply, _EMPTY_)
 			s.startGoRoutine(func() {
 				defer s.grWG.Done()
 				select {
@@ -3944,11 +3948,13 @@ RETRY:
 		}
 	}
 
-	type mr struct {
+	// Used to transfer message from the wire to another Go routine internally.
+	type im struct {
 		msg   []byte
 		reply string
 	}
-	msgsC := make(chan *mr, 32768)
+
+	msgsC := make(chan *im, 32768)
 
 	// Send our catchup request here.
 	reply := syncReplySubject()
@@ -3956,7 +3962,7 @@ RETRY:
 		// Make copies - https://github.com/go101/go101/wiki
 		// TODO(dlc) - Since we are using a buffer from the inbound client/route.
 		select {
-		case msgsC <- &mr{msg: append(msg[:0:0], msg...), reply: reply}:
+		case msgsC <- &im{append(msg[:0:0], msg...), reply}:
 		default:
 			s.Warnf("Failed to place catchup message onto internal channel: %d pending", len(msgsC))
 			return
