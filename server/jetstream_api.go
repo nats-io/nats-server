@@ -2237,6 +2237,10 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 
 	stream := streamNameFromSubject(subject)
 
+	if stream != req.Config.Name {
+		req.Config.Name = stream
+	}
+
 	if s.JetStreamIsClustered() {
 		s.jsClusteredStreamRestoreRequest(ci, acc, &req, stream, subject, reply, rmsg)
 		return
@@ -2248,10 +2252,10 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 		return
 	}
 
-	s.processStreamRestore(ci, acc, stream, subject, reply, string(msg))
+	s.processStreamRestore(ci, acc, &req.Config, subject, reply, string(msg))
 }
 
-func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, streamName, subject, reply, msg string) <-chan error {
+func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamConfig, subject, reply, msg string) <-chan error {
 	var resp = JSApiStreamRestoreResponse{ApiResponse: ApiResponse{Type: JSApiStreamRestoreResponseType}}
 
 	// FIXME(dlc) - Need to close these up if we fail for some reason.
@@ -2263,6 +2267,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, streamName, 
 		return nil
 	}
 
+	streamName := cfg.Name
 	s.Noticef("Starting restore for stream '%s > %s'", acc.Name, streamName)
 
 	start := time.Now()
