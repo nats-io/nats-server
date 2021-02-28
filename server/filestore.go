@@ -801,7 +801,10 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 
 	// Check sequence.
 	if seq != fs.state.LastSeq+1 {
-		return ErrSequenceMismatch
+		if seq > 0 {
+			return ErrSequenceMismatch
+		}
+		seq = fs.state.LastSeq + 1
 	}
 
 	// Write msg record.
@@ -2720,10 +2723,12 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 
 		if sm != nil {
 			// Reset our version of first.
+			fs.mu.Lock()
 			fs.state.FirstSeq = sm.seq
 			fs.state.FirstTime = time.Unix(0, sm.ts).UTC()
 			fs.state.Msgs -= purged
 			fs.state.Bytes -= bytes
+			fs.mu.Unlock()
 		}
 	}
 

@@ -785,7 +785,7 @@ func TestJetStreamClusterStreamSynchedTimeStamps(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 3})
+	_, err := js.AddStream(&nats.StreamConfig{Name: "foo", Storage: nats.MemoryStorage, Replicas: 3})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}

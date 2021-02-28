@@ -2075,9 +2075,10 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	mset.mu.Unlock()
 
 	// Store actual msg.
-	if seq == 0 {
+	if lseq == 0 && ts == 0 {
 		seq, ts, err = store.StoreMsg(subject, hdr, msg)
 	} else {
+		seq = lseq + 1
 		err = store.StoreRawMsg(subject, hdr, msg, seq, ts)
 	}
 

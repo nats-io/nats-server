@@ -3225,11 +3225,13 @@ func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, offs
 		return
 	}
 
-	// Create an inbox for our responses and send out requests.
-	inbox := infoReplySubject()
+	// Create an inbox for our responses and send out our requests.
+	s.mu.Lock()
+	inbox := s.newRespInbox()
 	rc := make(chan *StreamInfo, len(streams))
 
-	rsub, _ := s.systemSubscribe(inbox, _EMPTY_, false, cc.c, func(_ *subscription, _ *client, _, reply string, msg []byte) {
+	// Store our handler.
+	s.sys.replies[inbox] = func(sub *subscription, _ *client, subject, _ string, msg []byte) {
 		var si StreamInfo
 		if err := json.Unmarshal(msg, &si); err != nil {
 			s.Warnf("Error unmarshaling clustered stream info response:%v", err)
@@ -3240,8 +3242,17 @@ func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, offs
 		default:
 			s.Warnf("Failed placing remote stream info result on internal channel")
 		}
-	})
-	defer s.sysUnsubscribe(rsub)
+	}
+	s.mu.Unlock()
+
+	// Cleanup after.
+	defer func() {
+		s.mu.Lock()
+		if s.sys != nil && s.sys.replies != nil {
+			delete(s.sys.replies, inbox)
+		}
+		s.mu.Unlock()
+	}()
 
 	// Send out our requests here.
 	for _, sa := range streams {
@@ -3340,9 +3351,12 @@ func (s *Server) jsClusteredConsumerListRequest(acc *Account, ci *ClientInfo, of
 	}
 
 	// Create an inbox for our responses and send out requests.
-	inbox := infoReplySubject()
+	s.mu.Lock()
+	inbox := s.newRespInbox()
 	rc := make(chan *ConsumerInfo, len(consumers))
-	rsub, _ := s.systemSubscribe(inbox, _EMPTY_, false, cc.c, func(_ *subscription, _ *client, _, reply string, msg []byte) {
+
+	// Store our handler.
+	s.sys.replies[inbox] = func(sub *subscription, _ *client, subject, _ string, msg []byte) {
 		var ci ConsumerInfo
 		if err := json.Unmarshal(msg, &ci); err != nil {
 			s.Warnf("Error unmarshaling clustered consumer info response:%v", err)
@@ -3353,8 +3367,17 @@ func (s *Server) jsClusteredConsumerListRequest(acc *Account, ci *ClientInfo, of
 		default:
 			s.Warnf("Failed placing consumer info result on internal chan")
 		}
-	})
-	defer s.sysUnsubscribe(rsub)
+	}
+	s.mu.Unlock()
+
+	// Cleanup after.
+	defer func() {
+		s.mu.Lock()
+		if s.sys != nil && s.sys.replies != nil {
+			delete(s.sys.replies, inbox)
+		}
+		s.mu.Unlock()
+	}()
 
 	for _, ca := range consumers {
 		isubj := fmt.Sprintf(clusterConsumerInfoT, ca.Client.serviceAccount(), stream, ca.Name)
@@ -4100,16 +4123,18 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 
 func (mset *stream) handleClusterStreamInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	mset.mu.RLock()
-	if mset.client == nil {
-		mset.mu.RUnlock()
-		return
-	}
-	s, js, config := mset.srv, mset.srv.js, mset.cfg
+	sysc, js, config := mset.sysc, mset.srv.js, mset.cfg
 	mset.mu.RUnlock()
 
-	si := &StreamInfo{Created: mset.createdTime(), State: mset.state(), Config: config, Cluster: js.clusterInfo(mset.raftGroup()), Sources: mset.sourcesInfo(), Mirror: mset.mirrorInfo()}
-	b, _ := json.Marshal(si)
-	s.sendInternalMsgLocked(reply, _EMPTY_, nil, b)
+	si := &StreamInfo{
+		Created: mset.createdTime(),
+		State:   mset.state(),
+		Config:  config,
+		Cluster: js.clusterInfo(mset.raftGroup()),
+		Sources: mset.sourcesInfo(),
+		Mirror:  mset.mirrorInfo(),
+	}
+	sysc.sendInternalMsg(reply, _EMPTY_, nil, si)
 }
 
 func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {

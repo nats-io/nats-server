@@ -704,18 +704,10 @@ func (o *consumer) setLeader(isLeader bool) {
 }
 
 func (o *consumer) handleClusterConsumerInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
-	var s *Server
 	o.mu.RLock()
-	if o.client != nil {
-		s = o.client.srv
-	}
+	sysc := o.sysc
 	o.mu.RUnlock()
-	if s == nil {
-		return
-	}
-	ci := o.info()
-	b, _ := json.Marshal(ci)
-	s.sendInternalMsgLocked(reply, _EMPTY_, nil, b)
+	sysc.sendInternalMsg(reply, _EMPTY_, nil, o.info())
 }
 
 // Lock should be held.
