@@ -2489,7 +2489,16 @@ func (mset *stream) snapshot(deadline time.Duration, checkMsgs, includeConsumers
 const snapsDir = "__snapshots__"
 
 // RestoreStream will restore a stream from a snapshot.
-func (a *Account) RestoreStream(stream string, r io.Reader) (*stream, error) {
+func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error) {
+	if ncfg == nil {
+		return nil, errors.New("nil config on stream restore")
+	}
+
+	cfg, err := checkStreamCfg(ncfg)
+	if err != nil {
+		return nil, err
+	}
+
 	_, jsa, err := a.checkForJetStream()
 	if err != nil {
 		return nil, err
@@ -2536,18 +2545,16 @@ func (a *Account) RestoreStream(stream string, r io.Reader) (*stream, error) {
 		}
 	}
 
-	// Check metadata
-	var cfg FileStreamInfo
+	// Check metadata.
+	// The cfg passed in will be the new identity for the stream.
+
+	var fcfg FileStreamInfo
 	b, err := ioutil.ReadFile(path.Join(sdir, JetStreamMetaFile))
 	if err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal(b, &cfg); err != nil {
+	if err := json.Unmarshal(b, &fcfg); err != nil {
 		return nil, err
-	}
-	// See if names match
-	if cfg.Name != stream {
-		return nil, fmt.Errorf("stream name [%q] does not match snapshot stream [%q]", stream, cfg.Name)
 	}
 
 	// See if this stream already exists.
@@ -2564,12 +2571,12 @@ func (a *Account) RestoreStream(stream string, r io.Reader) (*stream, error) {
 			return nil, err
 		}
 	}
-	mset, err := a.addStream(&cfg.StreamConfig)
+	mset, err := a.addStream(&cfg)
 	if err != nil {
 		return nil, err
 	}
-	if !cfg.Created.IsZero() {
-		mset.setCreatedTime(cfg.Created)
+	if !fcfg.Created.IsZero() {
+		mset.setCreatedTime(fcfg.Created)
 	}
 
 	// Now do consumers.

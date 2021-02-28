@@ -2237,7 +2237,7 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 
 	stream := streamNameFromSubject(subject)
 
-	if stream != req.Config.Name {
+	if stream != req.Config.Name && req.Config.Name == _EMPTY_ {
 		req.Config.Name = stream
 	}
 
@@ -2294,6 +2294,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 	resultCh := make(chan result, 1)
 	activeCh := make(chan int, 32)
 
+	// FIXM(dlc) - Probably take out of network path eventually do to disk I/O?
 	processChunk := func(sub *subscription, c *client, subject, reply string, msg []byte) {
 		// We require reply subjects to communicate back failures, flow etc. If they do not have one log and cancel.
 		if reply == _EMPTY_ {
@@ -2374,7 +2375,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 				if err == nil {
 					s.Debugf("Finalizing restore for  stream '%s > %s'", acc.Name, streamName)
 					tfile.Seek(0, 0)
-					mset, err = acc.RestoreStream(streamName, tfile)
+					mset, err = acc.RestoreStream(cfg, tfile)
 				} else {
 					errStr := err.Error()
 					tmp := []rune(errStr)

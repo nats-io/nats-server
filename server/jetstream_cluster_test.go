@@ -2296,6 +2296,162 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterUserSnapshotAndRestoreConfigChanges(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// FIXME(dlc) - Do case with R=1
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 2,
+	}
+
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	toSend := 10
+	for i := 0; i < toSend; i++ {
+		if _, err := js.Publish("foo", []byte("OK")); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	getSnapshot := func() ([]byte, *StreamState) {
+		t.Helper()
+		sreq := &JSApiStreamSnapshotRequest{
+			DeliverSubject: nats.NewInbox(),
+			ChunkSize:      1024,
+		}
+
+		req, _ := json.Marshal(sreq)
+		rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamSnapshotT, "TEST"), req, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error on snapshot request: %v", err)
+		}
+
+		var resp JSApiStreamSnapshotResponse
+		json.Unmarshal(rmsg.Data, &resp)
+		if resp.Error != nil {
+			t.Fatalf("Did not get correct error response: %+v", resp.Error)
+		}
+
+		var snapshot []byte
+		done := make(chan bool)
+
+		sub, _ := nc.Subscribe(sreq.DeliverSubject, func(m *nats.Msg) {
+			// EOF
+			if len(m.Data) == 0 {
+				done <- true
+				return
+			}
+			// Could be writing to a file here too.
+			snapshot = append(snapshot, m.Data...)
+			// Flow ack
+			m.Respond(nil)
+		})
+		defer sub.Unsubscribe()
+
+		// Wait to receive the snapshot.
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("Did not receive our snapshot in time")
+		}
+		return snapshot, resp.State
+	}
+
+	restore := func(cfg *StreamConfig, state *StreamState, snap []byte) *nats.StreamInfo {
+		rreq := &JSApiStreamRestoreRequest{
+			Config: *cfg,
+			State:  *state,
+		}
+		req, err := json.Marshal(rreq)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamRestoreT, cfg.Name), req, 5*time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var rresp JSApiStreamRestoreResponse
+		json.Unmarshal(rmsg.Data, &rresp)
+		if rresp.Error != nil {
+			t.Fatalf("Got an unexpected error response: %+v", rresp.Error)
+		}
+		// Send our snapshot back in to restore the stream.
+		// Can be any size message.
+		var chunk [1024]byte
+		for r := bytes.NewReader(snap); ; {
+			n, err := r.Read(chunk[:])
+			if err != nil {
+				break
+			}
+			nc.Request(rresp.DeliverSubject, chunk[:n], time.Second)
+		}
+		rmsg, err = nc.Request(rresp.DeliverSubject, nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		rresp.Error = nil
+		json.Unmarshal(rmsg.Data, &rresp)
+		if rresp.Error != nil {
+			t.Fatalf("Got an unexpected error response: %+v", rresp.Error)
+		}
+		si, err := js.StreamInfo(cfg.Name)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		return si
+	}
+
+	snap, state := getSnapshot()
+
+	if err := js.DeleteStream("TEST"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Change name.
+	ncfg := &StreamConfig{
+		Name:     "TEST2",
+		Subjects: []string{"foo"},
+		Storage:  FileStorage,
+		Replicas: 2,
+	}
+	if si := restore(ncfg, state, snap); si.Config.Name != "TEST2" {
+		t.Fatalf("Did not get expected stream info: %+v", si)
+	}
+	if err := js.DeleteStream("TEST2"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Now change subjects.
+	ncfg.Subjects = []string{"bar", "baz"}
+	if si := restore(ncfg, state, snap); !reflect.DeepEqual(si.Config.Subjects, ncfg.Subjects) {
+		t.Fatalf("Did not get expected stream info: %+v", si)
+	}
+	if err := js.DeleteStream("TEST2"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Storage
+	ncfg.Storage = MemoryStorage
+	if si := restore(ncfg, state, snap); !reflect.DeepEqual(si.Config.Subjects, ncfg.Subjects) {
+		t.Fatalf("Did not get expected stream info: %+v", si)
+	}
+	if err := js.DeleteStream("TEST2"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Now replicas
+	ncfg.Replicas = 3
+	if si := restore(ncfg, state, snap); !reflect.DeepEqual(si.Config.Subjects, ncfg.Subjects) {
+		t.Fatalf("Did not get expected stream info: %+v", si)
+	}
+}
+
 func TestJetStreamClusterAccountInfoAndLimits(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R5S", 5)
 	defer c.shutdown()
