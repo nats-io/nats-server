@@ -45,8 +45,10 @@ type jetStreamCluster struct {
 	// Processing assignment results.
 	streamResults   *subscription
 	consumerResults *subscription
-	// For asking for leader to stepdown.
+	// System level request to have the leader stepdown.
 	stepdown *subscription
+	// System level requests to remove a peer.
+	peerRemove *subscription
 }
 
 // Used to guide placement of streams and meta controllers in clustered JetStream.
@@ -948,23 +950,41 @@ func (sa *streamAssignment) copyGroup() *streamAssignment {
 
 func (js *jetStream) processRemovePeer(peer string) {
 	js.mu.Lock()
-	defer js.mu.Unlock()
-	cc := js.cluster
+	s, cc := js.srv, js.cluster
 
-	// Only leader should process and re-assign mappings.
-	if !cc.isLeader() {
-		return
-	}
-
-	// Grab our nodes.
-	// FIXME(dlc) - Make sure these are live.
-	// Need to search for this peer in our stream assignments for potential remapping.
-	for _, as := range cc.streams {
-		for _, sa := range as {
-			if sa.Group.isMember(peer) {
-				js.removePeerFromStream(sa, peer)
+	// Only leader will do remappings for streams and consumers.
+	if cc.isLeader() {
+		// Grab our nodes.
+		// Need to search for this peer in our stream assignments for potential remapping.
+		for _, as := range cc.streams {
+			for _, sa := range as {
+				if sa.Group.isMember(peer) {
+					js.removePeerFromStream(sa, peer)
+				}
 			}
 		}
+
+	}
+
+	// All nodes will check if this is them.
+	isUs := cc.meta.ID() == peer
+	js.mu.Unlock()
+
+	if isUs {
+		s.Errorf("JetStream being DISABLED, our server was removed from the cluster")
+		adv := &JSServerRemovedAdvisory{
+			TypedEvent: TypedEvent{
+				Type: JSServerRemovedAdvisoryType,
+				ID:   nuid.Next(),
+				Time: time.Now().UTC(),
+			},
+			Server:   s.Name(),
+			ServerID: s.ID(),
+			Cluster:  s.cachedClusterName(),
+		}
+		s.publishAdvisory(nil, JSAdvisoryServerRemoved, adv)
+
+		go s.DisableJetStream()
 	}
 }
 
@@ -2848,6 +2868,9 @@ func (js *jetStream) startUpdatesSub() {
 	if cc.stepdown == nil {
 		cc.stepdown, _ = s.systemSubscribe(JSApiLeaderStepDown, _EMPTY_, false, c, s.jsLeaderStepDownRequest)
 	}
+	if cc.peerRemove == nil {
+		cc.peerRemove, _ = s.systemSubscribe(JSApiRemoveServer, _EMPTY_, false, c, s.jsLeaderServerRemoveRequest)
+	}
 }
 
 // Lock should be held.
@@ -2864,6 +2887,10 @@ func (js *jetStream) stopUpdatesSub() {
 	if cc.stepdown != nil {
 		cc.s.sysUnsubscribe(cc.stepdown)
 		cc.stepdown = nil
+	}
+	if cc.peerRemove != nil {
+		cc.s.sysUnsubscribe(cc.peerRemove)
+		cc.peerRemove = nil
 	}
 }
 

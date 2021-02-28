@@ -215,3 +215,14 @@ type JSServerOutOfSpaceAdvisory struct {
 	Stream   string `json:"stream,omitempty"`
 	Cluster  string `json:"cluster"`
 }
+
+// JSServerRemovedAdvisoryType is sent when the server has been removed and JS disabled.
+const JSServerRemovedAdvisoryType = "io.nats.jetstream.advisory.v1.server_removed"
+
+// JSServerOutOfSpaceAdvisory indicates that a stream has lost quorum and is stalled.
+type JSServerRemovedAdvisory struct {
+	TypedEvent
+	Server   string `json:"server"`
+	ServerID string `json:"server_id"`
+	Cluster  string `json:"cluster"`
+}

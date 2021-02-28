@@ -814,8 +814,7 @@ func TestJetStreamClusterStreamSynchedTimeStamps(t *testing.T) {
 	c.waitOnLeader()
 	c.waitOnStreamLeader("$G", "foo")
 
-	s = c.randomServer()
-	nc, js = jsClientConnect(t, s)
+	nc, js = jsClientConnect(t, c.leader())
 	defer nc.Close()
 
 	sub, err = js.SubscribeSync("foo")
@@ -1318,8 +1317,6 @@ func TestJetStreamClusterStreamExtendedUpdates(t *testing.T) {
 	expectError := func() {
 		if _, err := js.UpdateStream(cfg); err == nil {
 			t.Fatalf("Expected error and got none")
-		} else {
-			fmt.Printf("Error is %+v\n", err)
 		}
 	}
 
@@ -2856,6 +2853,78 @@ func TestJetStreamClusterExtendedAccountInfo(t *testing.T) {
 	if ai.API.Errors != 4 {
 		t.Fatalf("Expected 4 API calls to be errors, got %d", ai.API.Errors)
 	}
+}
+
+func TestJetStreamClusterPeerRemovalAPI(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	// Client based API
+	ml := c.leader()
+	nc, err := nats.Connect(ml.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	if err != nil {
+		t.Fatalf("Failed to create system client: %v", err)
+	}
+	defer nc.Close()
+
+	// Expect error if unknown peer
+	req := &JSApiLeaderServerRemoveRequest{Server: "S-9"}
+	jsreq, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	rmsg, err := nc.Request(JSApiRemoveServer, jsreq, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var resp JSApiLeaderServerRemoveResponse
+	if err := json.Unmarshal(rmsg.Data, &resp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatalf("Expected an error, got none")
+	}
+
+	sub, err := nc.SubscribeSync(JSAdvisoryServerRemoved)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	req = &JSApiLeaderServerRemoveRequest{Server: "S-2"}
+	jsreq, err = json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	rmsg, err = nc.Request(JSApiRemoveServer, jsreq, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp.Error = nil
+	if err := json.Unmarshal(rmsg.Data, &resp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("Unexpected error: %+v", resp.Error)
+	}
+	c.waitOnLeader()
+	ml = c.leader()
+
+	checkSubsPending(t, sub, 1)
+	madv, _ := sub.NextMsg(0)
+	var adv JSServerRemovedAdvisory
+	if err := json.Unmarshal(madv.Data, &adv); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if adv.Server != "S-2" {
+		t.Fatalf("Expected advisory about S-2 being removed, got %+v", adv)
+	}
+
+	for _, s := range ml.JetStreamClusterPeers() {
+		if s == "S-2" {
+			t.Fatalf("Still in the peer list")
+		}
+	}
+
 }
 
 func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {

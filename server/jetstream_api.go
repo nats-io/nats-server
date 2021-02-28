@@ -164,6 +164,11 @@ const (
 	// Will return JSON response.
 	JSApiLeaderStepDown = "$JS.API.META.LEADER.STEPDOWN"
 
+	// JSApiRemoveServer is the endpoint to remove a peer server from the cluster.
+	// Only works from system account.
+	// Will return JSON response.
+	JSApiRemoveServer = "$JS.API.SERVER.REMOVE"
+
 	// jsAckT is the template for the ack message stream coming back from a consumer
 	// when they ACK/NAK, etc a message.
 	jsAckT   = "$JS.ACK.%s.%s"
@@ -225,6 +230,9 @@ const (
 
 	// JSAdvisoryServerOutOfStorage notification that a server has no more storage.
 	JSAdvisoryServerOutOfStorage = "$JS.EVENT.ADVISORY.SERVER.OUT_OF_STORAGE"
+
+	// JSAdvisoryServerRemoved notification that a server has been removed from the system.
+	JSAdvisoryServerRemoved = "$JS.EVENT.ADVISORY.SERVER.REMOVED"
 
 	// JSAuditAdvisory is a notification about JetStream API access.
 	// FIXME - Add in details about who..
@@ -440,6 +448,20 @@ type JSApiLeaderStepDownResponse struct {
 
 const JSApiLeaderStepDownResponseType = "io.nats.jetstream.api.v1.meta_leader_stepdown_response"
 
+// JSApiLeaderServerRemoveRequest will remove a peer from the system.
+type JSApiLeaderServerRemoveRequest struct {
+	// Server name of the peer to be removed.
+	Server string `json:"peer"`
+}
+
+// JSApiLeaderServerRemoveResponse is the response to a metaleader peer removal request.
+type JSApiLeaderServerRemoveResponse struct {
+	ApiResponse
+	Success bool `json:"success,omitempty"`
+}
+
+const JSApiLeaderServerRemovalResponseType = "io.nats.jetstream.api.v1.meta_leader_server_removal"
+
 // JSApiMsgGetRequest get a message request.
 type JSApiMsgGetRequest struct {
 	Seq uint64 `json:"seq"`
@@ -563,6 +585,7 @@ var (
 	jsClusterIncompleteErr = &ApiError{Code: 503, Description: "incomplete results"}
 	jsClusterTagsErr       = &ApiError{Code: 400, Description: "tags placement not supported for operation"}
 	jsClusterNoPeersErr    = &ApiError{Code: 400, Description: "no suitable peers for placement"}
+	jsServerNotMemberErr   = &ApiError{Code: 400, Description: "server is not a member of the cluster"}
 )
 
 // For easier handling of exports and imports.
@@ -1748,6 +1771,73 @@ func (s *Server) jsStreamRemovePeerRequest(sub *subscription, c *client, subject
 
 	resp.Success = true
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+}
+
+// Request to have the metaleader remove a peer from the system.
+func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil || !s.JetStreamEnabled() {
+		return
+	}
+
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil || cc.meta == nil {
+		return
+	}
+
+	// Extra checks here but only leader is listening.
+	js.mu.RLock()
+	isLeader := cc.isLeader()
+	js.mu.RUnlock()
+
+	if !isLeader {
+		return
+	}
+
+	var resp = JSApiLeaderServerRemoveResponse{ApiResponse: ApiResponse{Type: JSApiLeaderServerRemovalResponseType}}
+
+	if isEmptyRequest(msg) {
+		resp.Error = jsBadRequestErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	var req JSApiLeaderServerRemoveRequest
+	if err := json.Unmarshal(msg, &req); err != nil {
+		resp.Error = jsInvalidJSONErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	var found string
+	js.mu.RLock()
+	for _, p := range cc.meta.Peers() {
+		si, ok := s.nodeToInfo.Load(p.ID)
+		if ok && si.(*nodeInfo).name == req.Server {
+			found = p.ID
+			break
+		}
+	}
+	js.mu.RUnlock()
+
+	if found == _EMPTY_ {
+		resp.Error = jsServerNotMemberErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	// So we have a valid peer.
+	js.mu.Lock()
+	cc.meta.ProposeRemovePeer(found)
+	js.mu.Unlock()
+
+	resp.Success = true
+	s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 }
 
 // Request to have the meta leader stepdown.
