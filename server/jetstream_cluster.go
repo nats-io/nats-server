@@ -1867,7 +1867,14 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, sa *streamAssignme
 		resp.Error = jsError(err)
 		s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 	} else {
-		resp.StreamInfo = &StreamInfo{Created: mset.createdTime(), State: mset.state(), Config: mset.config(), Cluster: js.clusterInfo(mset.raftGroup()), Mirror: mset.mirrorInfo(), Sources: mset.sourcesInfo()}
+		resp.StreamInfo = &StreamInfo{
+			Created: mset.createdTime(),
+			State:   mset.state(),
+			Config:  mset.config(),
+			Cluster: js.clusterInfo(mset.raftGroup()),
+			Mirror:  mset.mirrorInfo(),
+			Sources: mset.sourcesInfo(),
+		}
 		s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 	}
 }
@@ -3062,6 +3069,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
 
 	osa := js.streamAssignment(acc.Name, cfg.Name)
+
 	if osa == nil {
 		resp.Error = jsNotFoundError(ErrJetStreamStreamNotFound)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -3078,6 +3086,17 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		}
 	} else {
 		resp.Error = jsNotEnabledErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
+	}
+	// Check for cluster changes that we want to error on.
+	if newCfg.Replicas != len(osa.Group.Peers) {
+		resp.Error = &ApiError{Code: 400, Description: "Replicas configuration can not be updated"}
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
+	}
+	if !reflect.DeepEqual(newCfg.Mirror, osa.Config.Mirror) {
+		resp.Error = &ApiError{Code: 400, Description: "Mirror configuration can not be updated"}
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}

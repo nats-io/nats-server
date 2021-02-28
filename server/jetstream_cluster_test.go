@@ -1289,6 +1289,55 @@ func TestJetStreamClusterStreamUpdate(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterStreamExtendedUpdates(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	}
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	updateStream := func() *nats.StreamInfo {
+		si, err := js.UpdateStream(cfg)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		return si
+	}
+
+	expectError := func() {
+		if _, err := js.UpdateStream(cfg); err == nil {
+			t.Fatalf("Expected error and got none")
+		} else {
+			fmt.Printf("Error is %+v\n", err)
+		}
+	}
+
+	// Subjects
+	cfg.Subjects = []string{"bar", "baz"}
+	if si := updateStream(); !reflect.DeepEqual(si.Config.Subjects, cfg.Subjects) {
+		t.Fatalf("Did not get expected stream info: %+v", si)
+	}
+	// Make sure these error for now.
+	// R factor changes
+	cfg.Replicas = 1
+	expectError()
+	// Mirror changes
+	cfg.Replicas = 3
+	cfg.Mirror = &nats.StreamSource{Name: "ORDERS"}
+	expectError()
+}
+
 func TestJetStreamClusterDoubleAdd(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R32", 2)
 	defer c.shutdown()

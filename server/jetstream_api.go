@@ -1122,12 +1122,20 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	var cfg StreamConfig
-	if err := json.Unmarshal(msg, &cfg); err != nil {
+	var ncfg StreamConfig
+	if err := json.Unmarshal(msg, &ncfg); err != nil {
 		resp.Error = jsInvalidJSONErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+
+	cfg, err := checkStreamCfg(&ncfg)
+	if err != nil {
+		resp.Error = jsError(err)
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
 	streamName := streamNameFromSubject(subject)
 	if streamName != cfg.Name {
 		resp.Error = jsStreamMismatchErr
