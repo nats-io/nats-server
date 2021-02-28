@@ -338,8 +338,8 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		wpsch:    make(chan struct{}, 1),
 		reqs:     make(chan *voteRequest, 8),
 		votes:    make(chan *voteResponse, 32),
-		propc:    make(chan *Entry, 256),
-		applyc:   make(chan *CommittedEntry, 512),
+		propc:    make(chan *Entry, 4096),
+		applyc:   make(chan *CommittedEntry, 4096),
 		leadc:    make(chan bool, 8),
 		stepdown: make(chan string, 8),
 	}
@@ -782,13 +782,13 @@ func (n *raft) InstallSnapshot(data []byte) error {
 
 	// Remember our latest snapshot file.
 	n.snapfile = sfile
+	n.Unlock()
+
 	_, err := n.wal.Compact(snap.lastIndex)
 	if err != nil {
-		n.setWriteErrLocked(err)
-		n.Unlock()
+		n.setWriteErr(err)
 		return err
 	}
-	n.Unlock()
 
 	psnaps, _ := ioutil.ReadDir(snapDir)
 	// Remove any old snapshots.
@@ -2041,7 +2041,12 @@ func (n *raft) handleAppendEntry(sub *subscription, c *client, subject, reply st
 	if ae == nil {
 		return
 	}
+	start := time.Now()
 	n.processAppendEntry(ae, sub)
+	d := time.Since(start)
+	if d > 20*time.Millisecond {
+		n.debug("INLINE PAE TOOK TOO LONG %v\n\n", d)
+	}
 }
 
 // Lock should be held.
