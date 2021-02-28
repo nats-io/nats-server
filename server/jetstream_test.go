@@ -10639,6 +10639,20 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		return nil
 	})
 
+	// Test Source Updates
+	ncfg := &nats.StreamConfig{
+		Name: "MS",
+		Sources: []*nats.StreamSource{
+			// Keep foo, bar, remove baz, add dlc
+			&nats.StreamSource{Name: "foo"},
+			&nats.StreamSource{Name: "bar"},
+			&nats.StreamSource{Name: "dlc"},
+		},
+	}
+	if _, err := js.UpdateStream(ncfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
 	// Test optional start times, filtered subjects etc.
 	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"dlc", "rip"}}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)

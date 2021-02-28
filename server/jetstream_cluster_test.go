@@ -474,6 +474,47 @@ func TestJetStreamClusterStreamUpdateSubjects(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterConsumerRedeliveredInfo(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{Name: "TEST"}
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if _, err := js.Publish("TEST", []byte("CI")); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+
+	sub, _ := nc.SubscribeSync("R")
+	sub.AutoUnsubscribe(2)
+
+	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		DeliverSubject: "R",
+		AckPolicy:      nats.AckExplicitPolicy,
+		AckWait:        100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	checkSubsPending(t, sub, 2)
+	sub.Unsubscribe()
+
+	ci, err = js.ConsumerInfo("TEST", ci.Name)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if ci.NumRedelivered != 1 {
+		t.Fatalf("Expected 1 redelivered, got %d", ci.NumRedelivered)
+	}
+}
+
 func TestJetStreamClusterConsumerState(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
