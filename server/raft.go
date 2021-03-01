@@ -174,6 +174,7 @@ type raft struct {
 	// Channels
 	propc    chan *Entry
 	entryc   chan *appendEntry
+	respc    chan *appendEntryResponse
 	applyc   chan *CommittedEntry
 	sendq    chan *pubMsg
 	quit     chan struct{}
@@ -341,6 +342,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		votes:    make(chan *voteResponse, 32),
 		propc:    make(chan *Entry, 8192),
 		entryc:   make(chan *appendEntry, 8192),
+		respc:    make(chan *appendEntryResponse, 32768),
 		applyc:   make(chan *CommittedEntry, 8192),
 		leadc:    make(chan bool, 8),
 		stepdown: make(chan string, 8),
@@ -1316,6 +1318,8 @@ func (n *raft) runAsFollower() {
 		case <-elect.C:
 			n.switchToCandidate()
 			return
+		case <-n.respc:
+			// Ignore
 		case vreq := <-n.reqs:
 			n.processVoteRequest(vreq)
 		case newLeader := <-n.stepdown:
@@ -1564,6 +1568,8 @@ func (n *raft) runAsLeader() {
 			return
 		case <-n.quit:
 			return
+		case ar := <-n.respc:
+			n.processAppendEntryResponse(ar)
 		case b := <-n.propc:
 			entries := []*Entry{b}
 			if b.Type == EntryNormal {
@@ -2013,6 +2019,10 @@ func (n *raft) runAsCandidate() {
 	for {
 		elect := n.electTimer()
 		select {
+		case ae := <-n.entryc:
+			n.processAppendEntry(ae, ae.sub)
+		case <-n.respc:
+			// Ignore
 		case <-n.s.quitCh:
 			return
 		case <-n.quit:
@@ -2032,8 +2042,6 @@ func (n *raft) runAsCandidate() {
 			}
 		case vreq := <-n.reqs:
 			n.processVoteRequest(vreq)
-		case ae := <-n.entryc:
-			n.processAppendEntry(ae, ae.sub)
 		case newLeader := <-n.stepdown:
 			n.switchToFollower(newLeader)
 			return
@@ -2409,18 +2417,10 @@ func (n *raft) processPeerState(ps *peerState) {
 	n.writePeerState(ps)
 }
 
-// handleAppendEntryResponse processes responses to append entries.
-func (n *raft) handleAppendEntryResponse(sub *subscription, c *client, subject, reply string, msg []byte) {
-	// Ignore if not the leader.
-	if !n.Leader() {
-		n.debug("Ignoring append entry response, no longer leader")
-		return
-	}
-	ar := n.decodeAppendEntryResponse(msg)
-	if reply != _EMPTY_ {
-		ar.reply = reply
-	}
+// Process a response.
+func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 	n.trackPeer(ar.peer)
+
 	if ar.success {
 		n.trackResponse(ar)
 	} else {
@@ -2435,6 +2435,19 @@ func (n *raft) handleAppendEntryResponse(sub *subscription, c *client, subject, 
 		} else if ar.reply != _EMPTY_ {
 			n.catchupFollower(ar)
 		}
+	}
+}
+
+// handleAppendEntryResponse processes responses to append entries.
+func (n *raft) handleAppendEntryResponse(sub *subscription, c *client, subject, reply string, msg []byte) {
+	msg = append(msg[:0:0], msg...)
+	ar := n.decodeAppendEntryResponse(msg)
+	ar.reply = reply
+
+	select {
+	case n.respc <- ar:
+	default:
+		n.warn("AppendEntryResponse failed to be placed on internal channel")
 	}
 }
 
