@@ -98,7 +98,10 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 	}
 
 	if seq != ms.state.LastSeq+1 {
-		return ErrSequenceMismatch
+		if seq > 0 {
+			return ErrSequenceMismatch
+		}
+		seq = ms.state.LastSeq + 1
 	}
 
 	// Adjust first if needed.

@@ -456,6 +456,63 @@ func (s *Server) JetStreamEnabled() bool {
 	return enabled
 }
 
+// Will migrate off ephemerals if possible.
+// This means parent stream needs to be replicated.
+func (s *Server) migrateEphemerals() {
+	js, cc := s.getJetStreamCluster()
+	// Make sure JetStream is enabled and we are clustered.
+	if js == nil || cc == nil {
+		return
+	}
+
+	var consumers []*consumerAssignment
+
+	js.mu.Lock()
+	ourID := cc.meta.ID()
+	for _, asa := range cc.streams {
+		for _, sa := range asa {
+			if rg := sa.Group; rg != nil && len(rg.Peers) > 1 && rg.isMember(ourID) && len(sa.consumers) > 0 {
+				for _, ca := range sa.consumers {
+					if ca.Group != nil && len(ca.Group.Peers) == 1 && ca.Group.isMember(ourID) {
+						// Need to select possible new peer from parent stream.
+						for _, p := range rg.Peers {
+							if p != ourID {
+								ca.Group.Peers = []string{p}
+								ca.Group.Preferred = p
+								consumers = append(consumers, ca)
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	js.mu.Unlock()
+
+	// Process the consumers.
+	for _, ca := range consumers {
+		// Locate the consumer itself.
+		if acc, err := s.LookupAccount(ca.Client.Account); err == nil && acc != nil {
+			if mset, err := acc.lookupStream(ca.Stream); err == nil && mset != nil {
+				if o := mset.lookupConsumer(ca.Name); o != nil {
+					state := o.readStoreState()
+					o.deleteWithoutAdvisory()
+					js.mu.Lock()
+					// Delete old one.
+					cc.meta.Propose(encodeDeleteConsumerAssignment(ca))
+					// Encode state and new name.
+					ca.State = state
+					ca.Name = createConsumerName()
+					addEntry := encodeAddConsumerAssignmentCompressed(ca)
+					cc.meta.ForwardProposal(addEntry)
+					js.mu.Unlock()
+				}
+			}
+		}
+	}
+}
+
 // Shutdown jetstream for this server.
 func (s *Server) shutdownJetStream() {
 	s.mu.Lock()

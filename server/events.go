@@ -421,6 +421,26 @@ func (s *Server) sendInternalMsg(sub, rply string, si *ServerInfo, msg interface
 	s.mu.Lock()
 }
 
+// Used to send internal messages from other system clients to avoid no echo issues.
+func (c *client) sendInternalMsg(sub, rply string, si *ServerInfo, msg interface{}) {
+	if c == nil {
+		return
+	}
+	s := c.srv
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.sys == nil || s.sys.sendq == nil {
+		return
+	}
+	sendq := s.sys.sendq
+	// Don't hold lock while placing on the channel.
+	s.mu.Unlock()
+
+	sendq <- &pubMsg{c, sub, rply, si, msg, false}
+}
+
 // Locked version of checking if events system running. Also checks server.
 func (s *Server) eventsRunning() bool {
 	if s == nil {

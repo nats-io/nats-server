@@ -1650,6 +1650,10 @@ func (s *Server) Shutdown() {
 	// Transfer off any raft nodes that we are a leader by shutting them all down.
 	s.shutdownRaftNodes()
 
+	// This is for clustered JetStream and ephemeral consumers.
+	// No-op if not clustered or not running JetStream.
+	s.migrateEphemerals()
+
 	// Shutdown the eventing system as needed.
 	// This is done first to send out any messages for
 	// account status. We will also clean up any

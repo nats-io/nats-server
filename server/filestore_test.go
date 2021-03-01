@@ -810,6 +810,45 @@ func TestFileStoreCompact(t *testing.T) {
 	}
 }
 
+func TestFileStoreCompactPerf(t *testing.T) {
+	t.SkipNow()
+
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 8192, AsyncFlush: true}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	subj, msg := "foo", []byte("Hello World")
+	for i := 0; i < 100_000; i++ {
+		fs.StoreMsg(subj, nil, msg)
+	}
+	if state := fs.State(); state.Msgs != 100_000 {
+		t.Fatalf("Expected 1000000 msgs, got %d", state.Msgs)
+	}
+	start := time.Now()
+	n, err := fs.Compact(90_001)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	t.Logf("Took %v to compact\n", time.Since(start))
+
+	if n != 90_000 {
+		t.Fatalf("Expected to have purged 90_000 msgs, got %d", n)
+	}
+	state := fs.State()
+	if state.Msgs != 10_000 {
+		t.Fatalf("Expected 10_000 msgs, got %d", state.Msgs)
+	}
+	if state.FirstSeq != 90_001 {
+		t.Fatalf("Expected first seq of 90_001, got %d", state.FirstSeq)
+	}
+}
+
 func TestFileStoreStreamTruncate(t *testing.T) {
 	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)

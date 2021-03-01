@@ -4061,7 +4061,7 @@ func TestJetStreamSnapshots(t *testing.T) {
 	}
 	// Try to restore from snapshot with current stream present, should error.
 	r := bytes.NewReader(snapshot)
-	if _, err := acc.RestoreStream(mname, r); err == nil {
+	if _, err := acc.RestoreStream(&info.cfg, r); err == nil {
 		t.Fatalf("Expected an error trying to restore existing stream")
 	} else if !strings.Contains(err.Error(), "name already in use") {
 		t.Fatalf("Incorrect error received: %v", err)
@@ -4071,13 +4071,7 @@ func TestJetStreamSnapshots(t *testing.T) {
 	mset.delete()
 	r.Reset(snapshot)
 
-	// Now send in wrong name
-	if _, err := acc.RestoreStream("foo", r); err == nil {
-		t.Fatalf("Expected an error trying to restore stream with wrong name")
-	}
-
-	r.Reset(snapshot)
-	mset, err = acc.RestoreStream(mname, r)
+	mset, err = acc.RestoreStream(&info.cfg, r)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4114,7 +4108,7 @@ func TestJetStreamSnapshots(t *testing.T) {
 	}
 	acc = s2.GlobalAccount()
 	r.Reset(snapshot)
-	mset, err = acc.RestoreStream(mname, r)
+	mset, err = acc.RestoreStream(&info.cfg, r)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -10638,6 +10632,20 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		}
 		return nil
 	})
+
+	// Test Source Updates
+	ncfg := &nats.StreamConfig{
+		Name: "MS",
+		Sources: []*nats.StreamSource{
+			// Keep foo, bar, remove baz, add dlc
+			&nats.StreamSource{Name: "foo"},
+			&nats.StreamSource{Name: "bar"},
+			&nats.StreamSource{Name: "dlc"},
+		},
+	}
+	if _, err := js.UpdateStream(ncfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
 
 	// Test optional start times, filtered subjects etc.
 	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"dlc", "rip"}}); err != nil {

@@ -164,6 +164,11 @@ const (
 	// Will return JSON response.
 	JSApiLeaderStepDown = "$JS.API.META.LEADER.STEPDOWN"
 
+	// JSApiRemoveServer is the endpoint to remove a peer server from the cluster.
+	// Only works from system account.
+	// Will return JSON response.
+	JSApiRemoveServer = "$JS.API.SERVER.REMOVE"
+
 	// jsAckT is the template for the ack message stream coming back from a consumer
 	// when they ACK/NAK, etc a message.
 	jsAckT   = "$JS.ACK.%s.%s"
@@ -225,6 +230,9 @@ const (
 
 	// JSAdvisoryServerOutOfStorage notification that a server has no more storage.
 	JSAdvisoryServerOutOfStorage = "$JS.EVENT.ADVISORY.SERVER.OUT_OF_STORAGE"
+
+	// JSAdvisoryServerRemoved notification that a server has been removed from the system.
+	JSAdvisoryServerRemoved = "$JS.EVENT.ADVISORY.SERVER.REMOVED"
 
 	// JSAuditAdvisory is a notification about JetStream API access.
 	// FIXME - Add in details about who..
@@ -440,6 +448,20 @@ type JSApiLeaderStepDownResponse struct {
 
 const JSApiLeaderStepDownResponseType = "io.nats.jetstream.api.v1.meta_leader_stepdown_response"
 
+// JSApiLeaderServerRemoveRequest will remove a peer from the system.
+type JSApiLeaderServerRemoveRequest struct {
+	// Server name of the peer to be removed.
+	Server string `json:"peer"`
+}
+
+// JSApiLeaderServerRemoveResponse is the response to a metaleader peer removal request.
+type JSApiLeaderServerRemoveResponse struct {
+	ApiResponse
+	Success bool `json:"success,omitempty"`
+}
+
+const JSApiLeaderServerRemovalResponseType = "io.nats.jetstream.api.v1.meta_leader_server_removal"
+
 // JSApiMsgGetRequest get a message request.
 type JSApiMsgGetRequest struct {
 	Seq uint64 `json:"seq"`
@@ -563,6 +585,7 @@ var (
 	jsClusterIncompleteErr = &ApiError{Code: 503, Description: "incomplete results"}
 	jsClusterTagsErr       = &ApiError{Code: 400, Description: "tags placement not supported for operation"}
 	jsClusterNoPeersErr    = &ApiError{Code: 400, Description: "no suitable peers for placement"}
+	jsServerNotMemberErr   = &ApiError{Code: 400, Description: "server is not a member of the cluster"}
 )
 
 // For easier handling of exports and imports.
@@ -1122,12 +1145,20 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	var cfg StreamConfig
-	if err := json.Unmarshal(msg, &cfg); err != nil {
+	var ncfg StreamConfig
+	if err := json.Unmarshal(msg, &ncfg); err != nil {
 		resp.Error = jsInvalidJSONErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+
+	cfg, err := checkStreamCfg(&ncfg)
+	if err != nil {
+		resp.Error = jsError(err)
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
 	streamName := streamNameFromSubject(subject)
 	if streamName != cfg.Name {
 		resp.Error = jsStreamMismatchErr
@@ -1742,6 +1773,73 @@ func (s *Server) jsStreamRemovePeerRequest(sub *subscription, c *client, subject
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
+// Request to have the metaleader remove a peer from the system.
+func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	if c == nil || !s.JetStreamEnabled() {
+		return
+	}
+
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil || cc.meta == nil {
+		return
+	}
+
+	// Extra checks here but only leader is listening.
+	js.mu.RLock()
+	isLeader := cc.isLeader()
+	js.mu.RUnlock()
+
+	if !isLeader {
+		return
+	}
+
+	var resp = JSApiLeaderServerRemoveResponse{ApiResponse: ApiResponse{Type: JSApiLeaderServerRemovalResponseType}}
+
+	if isEmptyRequest(msg) {
+		resp.Error = jsBadRequestErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	var req JSApiLeaderServerRemoveRequest
+	if err := json.Unmarshal(msg, &req); err != nil {
+		resp.Error = jsInvalidJSONErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	var found string
+	js.mu.RLock()
+	for _, p := range cc.meta.Peers() {
+		si, ok := s.nodeToInfo.Load(p.ID)
+		if ok && si.(*nodeInfo).name == req.Server {
+			found = p.ID
+			break
+		}
+	}
+	js.mu.RUnlock()
+
+	if found == _EMPTY_ {
+		resp.Error = jsServerNotMemberErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	// So we have a valid peer.
+	js.mu.Lock()
+	cc.meta.ProposeRemovePeer(found)
+	js.mu.Unlock()
+
+	resp.Success = true
+	s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+}
+
 // Request to have the meta leader stepdown.
 // These will only be received the the meta leaders, so less checking needed.
 func (s *Server) jsLeaderStepDownRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
@@ -2237,6 +2335,10 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 
 	stream := streamNameFromSubject(subject)
 
+	if stream != req.Config.Name && req.Config.Name == _EMPTY_ {
+		req.Config.Name = stream
+	}
+
 	if s.JetStreamIsClustered() {
 		s.jsClusteredStreamRestoreRequest(ci, acc, &req, stream, subject, reply, rmsg)
 		return
@@ -2248,10 +2350,10 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 		return
 	}
 
-	s.processStreamRestore(ci, acc, stream, subject, reply, string(msg))
+	s.processStreamRestore(ci, acc, &req.Config, subject, reply, string(msg))
 }
 
-func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, streamName, subject, reply, msg string) <-chan error {
+func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamConfig, subject, reply, msg string) <-chan error {
 	var resp = JSApiStreamRestoreResponse{ApiResponse: ApiResponse{Type: JSApiStreamRestoreResponseType}}
 
 	// FIXME(dlc) - Need to close these up if we fail for some reason.
@@ -2263,6 +2365,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, streamName, 
 		return nil
 	}
 
+	streamName := cfg.Name
 	s.Noticef("Starting restore for stream '%s > %s'", acc.Name, streamName)
 
 	start := time.Now()
@@ -2289,6 +2392,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, streamName, 
 	resultCh := make(chan result, 1)
 	activeCh := make(chan int, 32)
 
+	// FIXM(dlc) - Probably take out of network path eventually do to disk I/O?
 	processChunk := func(sub *subscription, c *client, subject, reply string, msg []byte) {
 		// We require reply subjects to communicate back failures, flow etc. If they do not have one log and cancel.
 		if reply == _EMPTY_ {
@@ -2369,7 +2473,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, streamName, 
 				if err == nil {
 					s.Debugf("Finalizing restore for  stream '%s > %s'", acc.Name, streamName)
 					tfile.Seek(0, 0)
-					mset, err = acc.RestoreStream(streamName, tfile)
+					mset, err = acc.RestoreStream(cfg, tfile)
 				} else {
 					errStr := err.Error()
 					tmp := []rune(errStr)

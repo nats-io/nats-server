@@ -857,11 +857,11 @@ func (js *js) getConsumerInfo(stream, consumer string) (*ConsumerInfo, error) {
 }
 
 func (m *Msg) checkReply() (*js, bool, error) {
-	if m.Reply == "" {
-		return nil, false, ErrMsgNoReply
-	}
 	if m == nil || m.Sub == nil {
 		return nil, false, ErrMsgNotBound
+	}
+	if m.Reply == "" {
+		return nil, false, ErrMsgNoReply
 	}
 	sub := m.Sub
 	sub.mu.Lock()
