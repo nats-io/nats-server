@@ -2075,6 +2075,49 @@ func TestJetStreamClusterEphemeralConsumerCleanup(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterEphemeralConsumersNotReplicated(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 3})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	sub, err := js.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	ci, _ := sub.ConsumerInfo()
+	if ci == nil {
+		t.Fatalf("Unexpected error: no consumer info")
+	}
+
+	if _, err = js.Publish("foo", []byte("OK")); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+	checkSubsPending(t, sub, 1)
+
+	if ci.Cluster == nil || len(ci.Cluster.Replicas) != 0 {
+		t.Fatalf("Expected ephemeral to be R=1, got %+v", ci.Cluster)
+	}
+	scl := c.serverByName(ci.Cluster.Leader)
+	if scl == nil {
+		t.Fatalf("Could not select server where ephemeral consumer is running")
+	}
+	// Test migrations.
+	scl.Shutdown()
+
+	if _, err = js.Publish("foo", []byte("OK")); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+	checkSubsPending(t, sub, 2)
+}
+
 func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -2972,7 +3015,8 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	sub, err := js.SubscribeSync("NO-Q")
+	// Make durable to have R match Stream.
+	sub, err := js.SubscribeSync("NO-Q", nats.Durable("rr"))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4678,6 +4722,15 @@ func (c *cluster) waitOnAllCurrent() {
 	for _, cs := range c.servers {
 		c.waitOnServerCurrent(cs)
 	}
+}
+
+func (c *cluster) serverByName(sname string) *Server {
+	for _, s := range c.servers {
+		if s.Name() == sname {
+			return s
+		}
+	}
+	return nil
 }
 
 func (c *cluster) randomNonLeader() *Server {
