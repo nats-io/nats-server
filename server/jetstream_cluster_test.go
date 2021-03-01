@@ -821,7 +821,7 @@ func TestJetStreamClusterStreamSynchedTimeStamps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if sm.Time != meta.Timestamp {
+	if !sm.Time.Equal(meta.Timestamp) {
 		t.Fatalf("Expected same timestamps, got %v vs %v", sm.Time, meta.Timestamp)
 	}
 }
