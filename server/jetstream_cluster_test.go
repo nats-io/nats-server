@@ -777,7 +777,7 @@ func TestJetStreamClusterMetaSnapshotsMultiChange(t *testing.T) {
 }
 
 func TestJetStreamClusterStreamSynchedTimeStamps(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 5)
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
 	// Client based API
@@ -817,17 +817,12 @@ func TestJetStreamClusterStreamSynchedTimeStamps(t *testing.T) {
 	nc, js = jsClientConnect(t, c.leader())
 	defer nc.Close()
 
-	sub, err = js.SubscribeSync("foo")
+	sm, err := js.GetMsg("foo", 1)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	m, err = sub.NextMsg(time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	meta2, _ := m.MetaData()
-	if meta.Timestamp != meta2.Timestamp {
-		t.Fatalf("Expected same timestamps, got %v vs %v", meta.Timestamp, meta2.Timestamp)
+	if sm.Time != meta.Timestamp {
+		t.Fatalf("Expected same timestamps, got %v vs %v", sm.Time, meta.Timestamp)
 	}
 }
 
@@ -1936,13 +1931,13 @@ func TestJetStreamClusterInterestRetentionWithFilteredConsumers(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	fsub, err := js.SubscribeSync("foo")
+	fsub, err := js.SubscribeSync("foo", nats.Durable("d1"))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	defer fsub.Unsubscribe()
 
-	bsub, err := js.SubscribeSync("bar")
+	bsub, err := js.SubscribeSync("bar", nats.Durable("d2"))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2109,8 +2104,14 @@ func TestJetStreamClusterEphemeralConsumersNotReplicated(t *testing.T) {
 	if scl == nil {
 		t.Fatalf("Could not select server where ephemeral consumer is running")
 	}
-	// Test migrations.
+
+	// Test migrations. If we are also metadata leader will not work so skip.
+	if scl == c.leader() {
+		return
+	}
+
 	scl.Shutdown()
+	c.waitOnStreamLeader("$G", "foo")
 
 	if _, err = js.Publish("foo", []byte("OK")); err != nil {
 		t.Fatalf("Unexpected publish error: %v", err)
