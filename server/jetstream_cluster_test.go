@@ -2610,7 +2610,7 @@ func TestJetStreamClusterAccountInfoAndLimits(t *testing.T) {
 	}
 	expectedSize := 25*msgSize + 75*msgSize*2 + 10*msgSize*3
 	// This may lag.
-	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {
 		if stats.Store != expectedSize {
 			stats = accountStats()
 			return fmt.Errorf("Expected store size to be %d, got %+v\n", expectedSize, stats)
