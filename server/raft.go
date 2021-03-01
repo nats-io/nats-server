@@ -1782,7 +1782,11 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	if ch, ok := n.progress[ar.peer]; ok {
 		n.debug("Will cancel existing entry for catching up %q", ar.peer)
 		delete(n.progress, ar.peer)
-		ch <- n.pindex
+		// Try to pop them out but make sure to not block.
+		select {
+		case ch <- n.pindex:
+		default:
+		}
 	}
 	// Check to make sure we have this entry.
 	start := ar.index + 1
@@ -1814,7 +1818,11 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 		n.debug("Our first entry does not match request from follower")
 	}
 	// Create a chan for delivering updates from responses.
-	indexUpdates := make(chan uint64, 1024)
+	isz := 64
+	if ar.index > ae.pindex && ar.index-ae.pindex > uint64(isz) {
+		isz = int(ar.index - ae.pindex)
+	}
+	indexUpdates := make(chan uint64, isz)
 	indexUpdates <- ae.pindex
 	n.progress[ar.peer] = indexUpdates
 	n.Unlock()
@@ -1939,10 +1947,7 @@ func (n *raft) trackResponse(ar *appendEntryResponse) {
 		select {
 		case indexUpdateC <- ar.index:
 		default:
-			n.debug("Failed to place tracking response for catchup, will try again")
-			n.Unlock()
-			indexUpdateC <- ar.index
-			n.Lock()
+			n.warn("TrackResponse failed to place progress update on internal channel")
 		}
 	}
 
