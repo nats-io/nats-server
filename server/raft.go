@@ -775,19 +775,16 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	snapDir := path.Join(n.sd, snapshotsDir)
 	sn := fmt.Sprintf(snapFileT, snap.lastTerm, snap.lastIndex)
 	sfile := path.Join(snapDir, sn)
-
-	if err := ioutil.WriteFile(sfile, n.encodeSnapshot(snap), 0640); err != nil {
-		n.setWriteErrLocked(err)
-		n.Unlock()
-		return err
-	}
-
 	// Remember our latest snapshot file.
 	n.snapfile = sfile
 	n.Unlock()
 
-	_, err := n.wal.Compact(snap.lastIndex)
-	if err != nil {
+	if err := ioutil.WriteFile(sfile, n.encodeSnapshot(snap), 0640); err != nil {
+		n.setWriteErr(err)
+		return err
+	}
+
+	if _, err := n.wal.Compact(snap.lastIndex); err != nil {
 		n.setWriteErr(err)
 		return err
 	}
@@ -801,7 +798,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		}
 	}
 
-	return err
+	return nil
 }
 
 const (
