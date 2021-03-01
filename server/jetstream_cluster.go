@@ -4274,7 +4274,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 			notActive.Reset(activityInterval)
 			sendNextBatch()
 			// Check if we are finished.
-			if seq >= last {
+			if seq > last {
 				s.Debugf("Done resync for stream '%s > %s'", mset.account(), mset.name())
 				return
 			}
