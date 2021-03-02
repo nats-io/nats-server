@@ -109,6 +109,10 @@ type jsAccount struct {
 	// Cluster support
 	updatesPub string
 	updatesSub *subscription
+	// From server
+	sendq   chan *pubMsg
+	lupdate time.Time
+	utimer  *time.Timer
 }
 
 // Track general usage for this account.
@@ -621,6 +625,11 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	if s == nil {
 		return fmt.Errorf("jetstream account not registered")
 	}
+
+	s.mu.Lock()
+	sendq := s.sys.sendq
+	s.mu.Unlock()
+
 	js := s.getJetStream()
 	if js == nil {
 		return ErrJetStreamNotEnabled
@@ -644,8 +653,10 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		js.mu.Unlock()
 		return err
 	}
-	jsa := &jsAccount{js: js, account: a, limits: *limits, streams: make(map[string]*stream)}
+	jsa := &jsAccount{js: js, account: a, limits: *limits, streams: make(map[string]*stream), sendq: sendq}
+	jsa.utimer = time.AfterFunc(usageTick, jsa.sendClusterUsageUpdateTimer)
 	jsa.storeDir = path.Join(js.config.StoreDir, a.Name)
+
 	js.accounts[a] = jsa
 	js.reserveResources(limits)
 	js.mu.Unlock()
@@ -1140,19 +1151,39 @@ func (jsa *jsAccount) updateUsage(storeType StorageType, delta int64) {
 	jsa.mu.Unlock()
 }
 
+const usageTick = 1500 * time.Millisecond
+
+func (jsa *jsAccount) sendClusterUsageUpdateTimer() {
+	jsa.sendClusterUsageUpdate()
+	jsa.mu.Lock()
+	if jsa.utimer != nil {
+		jsa.utimer.Reset(usageTick)
+	}
+	jsa.mu.Unlock()
+}
+
 // Send updates to our account usage for this server.
 // Lock should be held.
 func (jsa *jsAccount) sendClusterUsageUpdate() {
 	if jsa.js == nil || jsa.js.srv == nil {
 		return
 	}
-	s, b := jsa.js.srv, make([]byte, 32)
+	// These values are absolute so we can limit send rates.
+	now := time.Now()
+	if now.Sub(jsa.lupdate) < 250*time.Millisecond {
+		return
+	}
+	jsa.lupdate = now
+
+	b := make([]byte, 32)
 	var le = binary.LittleEndian
 	le.PutUint64(b[0:], uint64(jsa.usage.mem))
 	le.PutUint64(b[8:], uint64(jsa.usage.store))
 	le.PutUint64(b[16:], uint64(jsa.usage.api))
 	le.PutUint64(b[24:], uint64(jsa.usage.err))
-	s.sendInternalMsgLocked(jsa.updatesPub, _EMPTY_, nil, b)
+	if jsa.sendq != nil {
+		jsa.sendq <- &pubMsg{nil, jsa.updatesPub, _EMPTY_, nil, b, false}
+	}
 }
 
 func (jsa *jsAccount) limitsExceeded(storeType StorageType) bool {
@@ -1220,6 +1251,10 @@ func (jsa *jsAccount) delete() {
 	var ts []string
 
 	jsa.mu.Lock()
+	if jsa.utimer != nil {
+		jsa.utimer.Stop()
+		jsa.utimer = nil
+	}
 
 	if jsa.updatesSub != nil && jsa.js.srv != nil {
 		s := jsa.js.srv

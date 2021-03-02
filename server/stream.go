@@ -1163,7 +1163,7 @@ func (mset *stream) setupMirrorConsumer() error {
 			AckPolicy:      AckNone,
 			AckWait:        48 * time.Hour,
 			MaxDeliver:     1,
-			RateLimit:      1 * 1024 * 1024 * 1024, // 1 Gbit
+			RateLimit:      100 * 1024 * 1024, // 100Mbit
 		},
 	}
 	// Only use start optionals on first time.
@@ -1310,7 +1310,7 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 			AckPolicy:      AckNone,
 			AckWait:        48 * time.Hour,
 			MaxDeliver:     1,
-			RateLimit:      1 * 1024 * 1024 * 1024, // 1 Gbit
+			RateLimit:      100 * 1024 * 1024, // 100Mbit
 		},
 	}
 	// If starting, check any configs.
