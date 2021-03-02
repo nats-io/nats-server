@@ -111,10 +111,17 @@ type StreamSourceInfo struct {
 
 // StreamSource dictates how streams can source from other streams.
 type StreamSource struct {
-	Name          string     `json:"name"`
-	OptStartSeq   uint64     `json:"opt_start_seq,omitempty"`
-	OptStartTime  *time.Time `json:"opt_start_time,omitempty"`
-	FilterSubject string     `json:"filter_subject,omitempty"`
+	Name          string          `json:"name"`
+	OptStartSeq   uint64          `json:"opt_start_seq,omitempty"`
+	OptStartTime  *time.Time      `json:"opt_start_time,omitempty"`
+	FilterSubject string          `json:"filter_subject,omitempty"`
+	External      *ExternalStream `json:"external,omitempty"`
+}
+
+// ExternalStream allows you to qualify access to a stream source in another account.
+type ExternalStream struct {
+	ApiPrefix     string `json:"api"`
+	DeliverPrefix string `json:"deliver"`
 }
 
 // Stream is a jetstream stream of messages. When we receive a message internally destined
@@ -1122,11 +1129,21 @@ func (mset *stream) setupMirrorConsumer() error {
 		}
 	}
 
+	// Determine subjects etc.
+	var deliverSubject string
+	ext := mset.cfg.Mirror.External
+
+	if ext != nil {
+		deliverSubject = strings.ReplaceAll(ext.DeliverPrefix+syncSubject(".M"), "..", ".")
+	} else {
+		deliverSubject = syncSubject("$JS.M")
+	}
+
 	mset.mirror = &sourceInfo{name: mset.cfg.Mirror.Name, msgsC: make(chan *imr, sourceMaxAckPending)}
-	sub, err := mset.subscribeInternal(syncSubject("$JS.M"), func(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, subject, reply string, rmsg []byte) {
 		mset.mu.RLock()
 		// Ignore anything not current.
-		if mset.mirror == nil || sub != mset.mirror.sub || mset.mirror.msgsC == nil {
+		if mset.mirror == nil || !bytes.Equal(sub.subject, mset.mirror.sub.subject) || mset.mirror.msgsC == nil {
 			mset.mu.RUnlock()
 			return
 		}
@@ -1151,6 +1168,10 @@ func (mset *stream) setupMirrorConsumer() error {
 
 	// Make sure to delete any prior durable consumers.
 	subject := fmt.Sprintf(JSApiConsumerDeleteT, mset.cfg.Mirror.Name, durable)
+	if ext != nil {
+		subject = strings.Replace(subject, JSApiPrefix, ext.ApiPrefix, 1)
+		subject = strings.ReplaceAll(subject, "..", ".")
+	}
 	mset.sendq <- &jsPubMsg{subject, _EMPTY_, _EMPTY_, nil, nil, nil, 0}
 
 	req := &CreateConsumerRequest{
@@ -1197,6 +1218,11 @@ func (mset *stream) setupMirrorConsumer() error {
 
 	b, _ := json.Marshal(req)
 	subject = fmt.Sprintf(JSApiDurableCreateT, mset.cfg.Mirror.Name, durable)
+	if ext != nil {
+		subject = strings.Replace(subject, JSApiPrefix, ext.ApiPrefix, 1)
+		subject = strings.ReplaceAll(subject, "..", ".")
+	}
+
 	mset.sendq <- &jsPubMsg{subject, _EMPTY_, reply, nil, b, nil, 0}
 
 	go func() {
@@ -1276,17 +1302,32 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 	si.sseq, si.dseq = 0, 0
 
 	durable := mset.sourceDurable(sname)
+	ssi := mset.streamSource(sname)
+
+	// Determine subjects etc.
+	var deliverSubject string
+	ext := ssi.External
 
 	// Need to delete the old one.
 	subject := fmt.Sprintf(JSApiConsumerDeleteT, sname, durable)
+	if ext != nil {
+		subject = strings.Replace(subject, JSApiPrefix, ext.ApiPrefix, 1)
+		subject = strings.ReplaceAll(subject, "..", ".")
+	}
 	mset.sendq <- &jsPubMsg{subject, _EMPTY_, _EMPTY_, nil, nil, nil, 0}
 
+	if ext != nil {
+		deliverSubject = strings.ReplaceAll(ext.DeliverPrefix+syncSubject(".S"), "..", ".")
+	} else {
+		deliverSubject = syncSubject("$JS.S")
+	}
+
 	si.msgsC = make(chan *imr, sourceMaxAckPending)
-	sub, err := mset.subscribeInternal(syncSubject("$JS.S"), func(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, subject, reply string, rmsg []byte) {
 		mset.mu.RLock()
 		defer mset.mu.RUnlock()
 		// Ignore anything not current.
-		if sub != si.sub || si.msgsC == nil {
+		if si.msgsC == nil || !bytes.Equal(sub.subject, si.sub.subject) {
 			return
 		}
 		hdr, msg := c.msgParts(append(rmsg[:0:0], rmsg...)) // Need to copy.
@@ -1314,7 +1355,6 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 		},
 	}
 	// If starting, check any configs.
-	ssi := mset.streamSource(sname)
 	if seq <= 1 {
 		if ssi.OptStartSeq > 0 {
 			req.Config.OptStartSeq = ssi.OptStartSeq
@@ -1347,6 +1387,11 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 
 	b, _ := json.Marshal(req)
 	subject = fmt.Sprintf(JSApiDurableCreateT, sname, durable)
+	if ext != nil {
+		subject = strings.Replace(subject, JSApiPrefix, ext.ApiPrefix, 1)
+		subject = strings.ReplaceAll(subject, "..", ".")
+	}
+
 	mset.sendq <- &jsPubMsg{subject, _EMPTY_, reply, nil, b, nil, 0}
 
 	go func() {

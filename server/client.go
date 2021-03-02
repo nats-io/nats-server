@@ -3035,6 +3035,7 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 			srv.trackGWReply(client, c.pa.reply)
 		}
 		client.mu.Unlock()
+
 		// Internal account clients are for service imports and need the '\r\n'.
 		if client.kind == ACCOUNT {
 			sub.icb(sub, c, string(subject), string(reply), msg)
@@ -3743,11 +3744,17 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 
 	// Pick correct to subject. If we matched on a wildcard use the literal publish subject.
 	to, subject := si.to, string(c.pa.subject)
+
+	hadPrevSi := c.pa.psi != nil
 	if si.tr != nil {
 		// FIXME(dlc) - This could be slow, may want to look at adding cache to bare transforms?
 		to, _ = si.tr.transformSubject(subject)
 	} else if si.usePub {
-		to = subject
+		if hadPrevSi && c.pa.psi.tr != nil {
+			to, _ = c.pa.psi.tr.transformSubject(subject)
+		} else {
+			to = subject
+		}
 	}
 	// Now check to see if this account has mappings that could affect the service import.
 	// Can't use non-locked trick like in processInboundClientMsg, so just call into selectMappedSubject
@@ -3761,7 +3768,6 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// Change this so that we detect recursion
 	// Remember prior.
 	share := si.share
-	hadPrevSi := c.pa.psi != nil
 	if hadPrevSi {
 		share = c.pa.psi.share
 	}
