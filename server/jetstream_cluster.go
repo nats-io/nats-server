@@ -2546,17 +2546,20 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 				o.stopWithFlags(true, false, false)
 			}
 			return nil
-		} else if !isLeader {
+		} else {
 			// Consumer leaders process these already.
 			buf := e.Data
 			switch entryOp(buf[0]) {
 			case updateDeliveredOp:
-				dseq, sseq, dc, ts, err := decodeDeliveredUpdate(buf[1:])
-				if err != nil {
-					panic(err.Error())
-				}
-				if err := o.store.UpdateDelivered(dseq, sseq, dc, ts); err != nil {
-					panic(err.Error())
+				// These are handled in place in leaders.
+				if !isLeader {
+					dseq, sseq, dc, ts, err := decodeDeliveredUpdate(buf[1:])
+					if err != nil {
+						panic(err.Error())
+					}
+					if err := o.store.UpdateDelivered(dseq, sseq, dc, ts); err != nil {
+						panic(err.Error())
+					}
 				}
 			case updateAcksOp:
 				dseq, sseq, err := decodeAckUpdate(buf[1:])
