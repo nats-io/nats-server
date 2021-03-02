@@ -2920,7 +2920,7 @@ func TestJetStreamClusterPeerRemovalAPI(t *testing.T) {
 	defer nc.Close()
 
 	// Expect error if unknown peer
-	req := &JSApiLeaderServerRemoveRequest{Server: "S-9"}
+	req := &JSApiMetaServerRemoveRequest{Server: "S-9"}
 	jsreq, err := json.Marshal(req)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -2929,7 +2929,7 @@ func TestJetStreamClusterPeerRemovalAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	var resp JSApiLeaderServerRemoveResponse
+	var resp JSApiMetaServerRemoveResponse
 	if err := json.Unmarshal(rmsg.Data, &resp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2942,7 +2942,7 @@ func TestJetStreamClusterPeerRemovalAPI(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	req = &JSApiLeaderServerRemoveRequest{Server: "S-2"}
+	req = &JSApiMetaServerRemoveRequest{Server: c.serverByName("S-2").ID()}
 	jsreq, err = json.Marshal(req)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
