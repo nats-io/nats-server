@@ -2113,6 +2113,9 @@ func TestJetStreamClusterEphemeralConsumersNotReplicated(t *testing.T) {
 	scl.Shutdown()
 	c.waitOnStreamLeader("$G", "foo")
 
+	// Let the consumer migrate and spin up.
+	time.Sleep(250 * time.Millisecond)
+
 	if _, err = js.Publish("foo", []byte("OK")); err != nil {
 		t.Fatalf("Unexpected publish error: %v", err)
 	}
