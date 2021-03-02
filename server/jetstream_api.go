@@ -448,19 +448,19 @@ type JSApiLeaderStepDownResponse struct {
 
 const JSApiLeaderStepDownResponseType = "io.nats.jetstream.api.v1.meta_leader_stepdown_response"
 
-// JSApiLeaderServerRemoveRequest will remove a peer from the system.
-type JSApiLeaderServerRemoveRequest struct {
-	// Server name of the peer to be removed.
+// JSApiMetaServerRemoveRequest will remove a peer from the meta group.
+type JSApiMetaServerRemoveRequest struct {
+	// Server ID of the peer to be removed.
 	Server string `json:"peer"`
 }
 
-// JSApiLeaderServerRemoveResponse is the response to a metaleader peer removal request.
-type JSApiLeaderServerRemoveResponse struct {
+// JSApiMetaServerRemoveResponse is the response to a peer removal request in the meta group.
+type JSApiMetaServerRemoveResponse struct {
 	ApiResponse
 	Success bool `json:"success,omitempty"`
 }
 
-const JSApiLeaderServerRemovalResponseType = "io.nats.jetstream.api.v1.meta_leader_server_removal"
+const JSApiMetaServerRemoveResponseType = "io.nats.jetstream.api.v1.meta_server_remove_response"
 
 // JSApiMsgGetRequest get a message request.
 type JSApiMsgGetRequest struct {
@@ -1799,7 +1799,7 @@ func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, subje
 		return
 	}
 
-	var resp = JSApiLeaderServerRemoveResponse{ApiResponse: ApiResponse{Type: JSApiLeaderServerRemovalResponseType}}
+	var resp = JSApiMetaServerRemoveResponse{ApiResponse: ApiResponse{Type: JSApiMetaServerRemoveResponseType}}
 
 	if isEmptyRequest(msg) {
 		resp.Error = jsBadRequestErr
@@ -1807,7 +1807,7 @@ func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, subje
 		return
 	}
 
-	var req JSApiLeaderServerRemoveRequest
+	var req JSApiMetaServerRemoveRequest
 	if err := json.Unmarshal(msg, &req); err != nil {
 		resp.Error = jsInvalidJSONErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -1818,7 +1818,7 @@ func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, subje
 	js.mu.RLock()
 	for _, p := range cc.meta.Peers() {
 		si, ok := s.nodeToInfo.Load(p.ID)
-		if ok && si.(*nodeInfo).name == req.Server {
+		if ok && si.(*nodeInfo).id == req.Server {
 			found = p.ID
 			break
 		}
