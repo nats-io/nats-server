@@ -515,6 +515,11 @@ func (s *Server) migrateEphemerals() {
 			}
 		}
 	}
+
+	// Gove time for migration information to make it out of our server.
+	if len(consumers) > 0 {
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // Shutdown jetstream for this server.
