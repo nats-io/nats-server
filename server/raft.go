@@ -2210,7 +2210,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 
 	// If we are catching up ignore old catchup subs.
 	// This could happen when we stall or cancel a catchup.
-	if !isNew && n.catchup != nil && sub != n.catchup.sub {
+	if !isNew && catchingUp && sub != n.catchup.sub {
 		n.Unlock()
 		n.debug("AppendEntry ignoring old entry from previous catchup")
 		return
@@ -2344,8 +2344,11 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		}
 	}
 
+	// Heartbeat or do we have entries.
+	isHeartbeat := len(ae.entries) == 0
+
 	// Save to our WAL if we have entries.
-	if len(ae.entries) > 0 {
+	if !isHeartbeat {
 		// Only store if an original which will have sub != nil
 		if sub != nil {
 			if err := n.storeToWAL(ae); err != nil {

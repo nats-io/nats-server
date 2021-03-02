@@ -4227,6 +4227,119 @@ func TestJetStreamClusterLeaderStepdown(t *testing.T) {
 	}
 }
 
+func TestJetStreamCrossAccountMirrorsAndSources(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterMirrorSourceImportsTempl, "C1", 3)
+	defer c.shutdown()
+
+	// Create source stream under RI account.
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s, nats.UserInfo("rip", "pass"))
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 2}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	toSend := 100
+	for i := 0; i < toSend; i++ {
+		if _, err := js.Publish("TEST", []byte("OK")); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	nc2, _ := jsClientConnect(t, s)
+	defer nc2.Close()
+
+	// Have to do this direct until we get Go client support.
+	// Need to match jsClusterMirrorSourceImportsTempl imports.
+	cfg := StreamConfig{
+		Name:    "MY_MIRROR_TEST",
+		Storage: FileStorage,
+		Mirror: &StreamSource{
+			Name: "TEST",
+			External: &ExternalStream{
+				ApiPrefix:     "RI.JS.API",
+				DeliverPrefix: "RI.DELIVER.SYNC.MIRRORS",
+			},
+		},
+	}
+
+	req, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, err := nc2.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var scResp JSApiStreamCreateResponse
+	if err := json.Unmarshal(resp.Data, &scResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if scResp.StreamInfo == nil || scResp.Error != nil {
+		t.Fatalf("Did not receive correct response: %+v", scResp.Error)
+	}
+
+	js2, err := nc2.JetStream(nats.MaxWait(50 * time.Millisecond))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := js2.StreamInfo("MY_MIRROR_TEST")
+		if err != nil {
+			t.Fatalf("Could not retrieve stream info")
+		}
+		if si.State.Msgs != uint64(toSend) {
+			return fmt.Errorf("Expected %d msgs, got state: %+v", toSend, si.State)
+		}
+		return nil
+	})
+
+	// Now do sources as well.
+	cfg = StreamConfig{
+		Name:    "MY_SOURCE_TEST",
+		Storage: FileStorage,
+		Sources: []*StreamSource{
+			&StreamSource{
+				Name: "TEST",
+				External: &ExternalStream{
+					ApiPrefix:     "RI.JS.API",
+					DeliverPrefix: "RI.DELIVER.SYNC.SOURCES",
+				},
+			},
+		},
+	}
+
+	req, err = json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, err = nc2.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	scResp.Error = nil
+	if err := json.Unmarshal(resp.Data, &scResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if scResp.StreamInfo == nil || scResp.Error != nil {
+		t.Fatalf("Did not receive correct response: %+v", scResp.Error)
+	}
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := js2.StreamInfo("MY_SOURCE_TEST")
+		if err != nil {
+			t.Fatalf("Could not retrieve stream info")
+		}
+		if si.State.Msgs != uint64(toSend) {
+			return fmt.Errorf("Expected %d msgs, got state: %+v", toSend, si.State)
+		}
+		return nil
+	})
+
+}
+
 func TestJetStreamClusterJSAPIImport(t *testing.T) {
 	c := createJetStreamClusterWithTemplate(t, jsClusterImportsTempl, "C1", 3)
 	defer c.shutdown()
@@ -4477,6 +4590,40 @@ func (sc *supercluster) randomCluster() *cluster {
 	return clusters[0]
 }
 
+var jsClusterMirrorSourceImportsTempl = `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: "%s"}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	no_auth_user: dlc
+
+	accounts {
+		JS {
+			jetstream: enabled
+			users = [ { user: "rip", pass: "pass" } ]
+			exports [
+				{ service: "$JS.API.CONSUMER.>" } # To create internal consumers to mirror/source.
+				{ stream: "RI.DELIVER.SYNC.>" }   # For the mirror/source consumers sending to IA via delivery subject.
+			]
+		}
+		IA {
+			jetstream: enabled
+			users = [ { user: "dlc", pass: "pass" } ]
+			imports [
+				{ service: { account: JS, subject: "$JS.API.CONSUMER.>"}, to: "RI.JS.API.CONSUMER.>" }
+				{ stream: { account: JS, subject: "RI.DELIVER.SYNC.>"} }
+			]
+		}
+		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+	}
+`
+
 var jsClusterImportsTempl = `
 	listen: 127.0.0.1:-1
 	server_name: %s
@@ -4582,9 +4729,9 @@ var skip = func(t *testing.T) {
 	t.SkipNow()
 }
 
-func jsClientConnect(t *testing.T, s *Server) (*nats.Conn, nats.JetStreamContext) {
+func jsClientConnect(t *testing.T, s *Server, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
 	t.Helper()
-	nc, err := nats.Connect(s.ClientURL())
+	nc, err := nats.Connect(s.ClientURL(), opts...)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}

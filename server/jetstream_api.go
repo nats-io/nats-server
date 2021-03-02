@@ -32,6 +32,9 @@ import (
 
 // Request API subjects for JetStream.
 const (
+	// JSApiPrefix
+	JSApiPrefix = "$JS.API"
+
 	// JSApiInfo is for obtaining general information about JetStream for this account.
 	// Will return JSON response.
 	JSApiAccountInfo = "$JS.API.INFO"

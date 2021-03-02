@@ -613,13 +613,9 @@ func (o *consumer) setLeader(isLeader bool) {
 	isRunning := o.ackSub != nil
 	o.mu.RUnlock()
 
-	if mset == nil {
-		return
-	}
-
 	// If we are here we have a change in leader status.
 	if isLeader {
-		if isRunning {
+		if mset == nil || isRunning {
 			return
 		}
 
@@ -684,9 +680,6 @@ func (o *consumer) setLeader(isLeader bool) {
 
 	} else {
 		// Shutdown the go routines and the subscriptions.
-		if !isRunning {
-			return
-		}
 		o.mu.Lock()
 		o.unsubscribe(o.ackSub)
 		o.unsubscribe(o.reqSub)
