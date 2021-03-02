@@ -1918,6 +1918,8 @@ func TestJetStreamClusterInterestRetention(t *testing.T) {
 }
 
 func TestJetStreamClusterInterestRetentionWithFilteredConsumers(t *testing.T) {
+	// Flaky for the time being.
+	skip(t)
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
