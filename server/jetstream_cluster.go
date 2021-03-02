@@ -2494,6 +2494,9 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 		}
 	}
 
+	// Track if we are leader.
+	var isLeader bool
+
 	for {
 		select {
 		case <-s.quitCh:
@@ -2505,7 +2508,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			if ce == nil {
 				continue
 			}
-			if err := js.applyConsumerEntries(o, ce); err == nil {
+			if err := js.applyConsumerEntries(o, ce, isLeader); err == nil {
 				n.Applied(ce.Index)
 				ne := ce.Index - lastApplied
 				// If over our compact min and we have at least min entries to compact, go ahead and snapshot/compact.
@@ -2515,7 +2518,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			} else {
 				s.Warnf("Error applying consumer entries to '%s > %s'", ca.Client.serviceAccount(), ca.Name)
 			}
-		case isLeader := <-lch:
+		case isLeader = <-lch:
 			if !isLeader && n.GroupLeader() != noLeader {
 				js.setConsumerAssignmentRecovering(ca)
 			}
@@ -2526,7 +2529,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	}
 }
 
-func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry) error {
+func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLeader bool) error {
 	for _, e := range ce.Entries {
 		if e.Type == EntrySnapshot {
 			// No-op needed?
@@ -2543,7 +2546,8 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry) error
 				o.stopWithFlags(true, false, false)
 			}
 			return nil
-		} else {
+		} else if !isLeader {
+			// Consumer leaders process these already.
 			buf := e.Data
 			switch entryOp(buf[0]) {
 			case updateDeliveredOp:
