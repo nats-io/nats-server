@@ -1154,12 +1154,12 @@ func (jsa *jsAccount) updateUsage(storeType StorageType, delta int64) {
 const usageTick = 1500 * time.Millisecond
 
 func (jsa *jsAccount) sendClusterUsageUpdateTimer() {
-	jsa.sendClusterUsageUpdate()
 	jsa.mu.Lock()
+	defer jsa.mu.Unlock()
+	jsa.sendClusterUsageUpdate()
 	if jsa.utimer != nil {
 		jsa.utimer.Reset(usageTick)
 	}
-	jsa.mu.Unlock()
 }
 
 // Send updates to our account usage for this server.
