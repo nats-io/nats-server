@@ -10490,7 +10490,7 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 	// Now create our second mirror stream.
 	createStreamOk(cfg)
 
-	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 		si, err := js2.StreamInfo("M2")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
