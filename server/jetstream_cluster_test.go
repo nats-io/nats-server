@@ -2945,7 +2945,9 @@ func TestJetStreamClusterPeerRemovalAPI(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	req = &JSApiMetaServerRemoveRequest{Server: c.serverByName("S-2").ID()}
+	rs := c.randomNonLeader()
+
+	req = &JSApiMetaServerRemoveRequest{Server: rs.ID()}
 	jsreq, err = json.Marshal(req)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -2970,12 +2972,12 @@ func TestJetStreamClusterPeerRemovalAPI(t *testing.T) {
 	if err := json.Unmarshal(madv.Data, &adv); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if adv.Server != "S-2" {
-		t.Fatalf("Expected advisory about S-2 being removed, got %+v", adv)
+	if adv.Server != rs.Name() {
+		t.Fatalf("Expected advisory about %s being removed, got %+v", rs.Name(), adv)
 	}
 
 	for _, s := range ml.JetStreamClusterPeers() {
-		if s == "S-2" {
+		if s == rs.Name() {
 			t.Fatalf("Still in the peer list")
 		}
 	}
