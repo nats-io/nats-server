@@ -352,8 +352,10 @@ func (a *Account) enableAllJetStreamServiceImports() error {
 	// In case the enabled import exists here.
 	a.removeServiceImport(JSApiAccountInfo)
 
-	if err := a.AddServiceImport(s.SystemAccount(), jsAllApi, _EMPTY_); err != nil {
-		return fmt.Errorf("Error setting up jetstream service imports for account: %v", err)
+	if !a.serviceImportExists(jsAllApi) {
+		if err := a.AddServiceImport(s.SystemAccount(), jsAllApi, _EMPTY_); err != nil {
+			return fmt.Errorf("Error setting up jetstream service imports for account: %v", err)
+		}
 	}
 
 	return nil

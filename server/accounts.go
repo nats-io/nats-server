@@ -1704,6 +1704,14 @@ func (a *Account) serviceImportShadowed(from string) bool {
 	return false
 }
 
+// Internal check to see if a service import exists.
+func (a *Account) serviceImportExists(from string) bool {
+	a.mu.RLock()
+	dup := a.imports.services[from]
+	a.mu.RUnlock()
+	return dup != nil
+}
+
 // Add a service import.
 // This does no checks and should only be called by the msg processing code.
 // Use AddServiceImport from above if responding to user input or config changes, etc.
