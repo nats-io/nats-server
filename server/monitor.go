@@ -2259,11 +2259,12 @@ type JSInfo struct {
 	Disabled bool            `json:"disabled,omitempty"`
 	Config   JetStreamConfig `json:"config,omitempty"`
 	JetStreamStats
-	StreamCnt    int          `json:"total_streams,omitempty"`
-	ConsumerCnt  int          `json:"total_consumers,omitempty"`
-	MessageCnt   uint64       `json:"total_messages,omitempty"`
-	MessageBytes uint64       `json:"total_message_bytes,omitempty"`
-	Meta         *ClusterInfo `json:"meta_cluster,omitempty"`
+	APICalls  int64        `json:"current_api_calls"`
+	Streams   int          `json:"total_streams,omitempty"`
+	Consumers int          `json:"total_consumers,omitempty"`
+	Messages  uint64       `json:"total_messages,omitempty"`
+	Bytes     uint64       `json:"total_message_bytes,omitempty"`
+	Meta      *ClusterInfo `json:"meta_cluster,omitempty"`
 	// aggregate raft info
 	AccountDetails []*AccountDetail `json:"account_details,omitempty"`
 }
@@ -2396,11 +2397,13 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 		return jsi, nil
 	}
 	accounts := []*jsAccount{}
+
 	s.js.mu.RLock()
 	jsi.Config = s.js.config
 	for _, info := range s.js.accounts {
 		accounts = append(accounts, info)
 	}
+	jsi.APICalls = atomic.LoadInt64(&s.js.apiCalls)
 	s.js.mu.RUnlock()
 
 	jsi.Meta = toClusterInfo(s.js.getMetaGroup())
@@ -2410,19 +2413,20 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 		if jsa.acc().GetName() == opts.Account {
 			filterIdx = i
 		}
-		jsi.StreamCnt += len(jsa.streams)
+		jsi.Streams += len(jsa.streams)
 		jsi.Memory += uint64(jsa.usage.mem)
 		jsi.Store += uint64(jsa.usage.store)
 		jsi.API.Total += jsa.usage.api
 		jsi.API.Errors += jsa.usage.err
 		for _, stream := range jsa.streams {
 			streamState := stream.state()
-			jsi.MessageCnt += streamState.Msgs
-			jsi.MessageBytes += streamState.Bytes
-			jsi.ConsumerCnt += streamState.Consumers
+			jsi.Messages += streamState.Msgs
+			jsi.Bytes += streamState.Bytes
+			jsi.Consumers += streamState.Consumers
 		}
 		jsa.mu.RUnlock()
 	}
+
 	// filter logic
 	if filterIdx != -1 {
 		accounts = []*jsAccount{accounts[filterIdx]}
