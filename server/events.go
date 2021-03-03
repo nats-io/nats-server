@@ -866,6 +866,15 @@ func (s *Server) processRemoteServerShutdown(sid string) {
 		v.(*Account).removeRemoteServer(sid)
 		return true
 	})
+	// Update any state in nodeInfo.
+	s.nodeToInfo.Range(func(k, v interface{}) bool {
+		si := v.(*nodeInfo)
+		if si.id == sid {
+			si.offline = true
+			return false
+		}
+		return true
+	})
 }
 
 // remoteServerShutdownEvent is called when we get an event from another server shutting down.

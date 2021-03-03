@@ -2187,7 +2187,7 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 		}
 	}
 	nc.Flush()
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 
 	// Snapshot consumer info.
 	ci, err := jsub.ConsumerInfo()
@@ -2945,7 +2945,8 @@ func TestJetStreamClusterPeerRemovalAPI(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	req = &JSApiMetaServerRemoveRequest{Server: "S-2"}
+	rs := c.randomNonLeader()
+	req = &JSApiMetaServerRemoveRequest{Server: rs.Name()}
 	jsreq, err = json.Marshal(req)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -2970,12 +2971,12 @@ func TestJetStreamClusterPeerRemovalAPI(t *testing.T) {
 	if err := json.Unmarshal(madv.Data, &adv); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if adv.Server != "S-2" {
-		t.Fatalf("Expected advisory about S-2 being removed, got %+v", adv)
+	if adv.Server != rs.Name() {
+		t.Fatalf("Expected advisory about %s being removed, got %+v", rs.Name(), adv)
 	}
 
 	for _, s := range ml.JetStreamClusterPeers() {
-		if s == "S-2" {
+		if s == rs.Name() {
 			t.Fatalf("Still in the peer list")
 		}
 	}
@@ -4956,8 +4957,13 @@ func (c *cluster) waitOnClusterReady() {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+
 	c.shutdown()
-	c.t.Fatalf("Expected a cluster leader and fully formed cluster")
+	if leader == nil {
+		c.t.Fatalf("Expected a cluster leader and fully formed cluster, no leader")
+	} else {
+		c.t.Fatalf("Expected a fully formed cluster, only %d of %d peers seen", len(leader.JetStreamClusterPeers()), len(c.servers))
+	}
 }
 
 // Helper function to check that a cluster is formed
@@ -5006,5 +5012,4 @@ func (c *cluster) restartAll() {
 		}
 	}
 	c.waitOnClusterReady()
-	c.waitOnLeader()
 }

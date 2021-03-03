@@ -1397,7 +1397,7 @@ func TestJetStreamClusterLargeStreamInlineCatchup(t *testing.T) {
 }
 
 func TestJetStreamClusterStreamCreateAndLostQuorum(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	c := createJetStreamClusterExplicit(t, "R5S", 3)
 	defer c.shutdown()
 
 	// Client based API
@@ -1410,7 +1410,7 @@ func TestJetStreamClusterStreamCreateAndLostQuorum(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	if _, err := js.AddStream(&nats.StreamConfig{Name: "NO-LQ-START", Replicas: 5}); err != nil {
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "NO-LQ-START", Replicas: 3}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	c.waitOnStreamLeader("$G", "NO-LQ-START")
@@ -1432,8 +1432,8 @@ func TestJetStreamClusterStreamCreateAndLostQuorum(t *testing.T) {
 	nc.Flush()
 
 	c.restartAll()
-
 	c.waitOnStreamLeader("$G", "NO-LQ-START")
+
 	checkSubsPending(t, sub, 0)
 }
 

@@ -662,7 +662,7 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, subject, reply st
 		} else {
 			s.Warnf(badAPIRequestT, rmsg)
 		}
-		s.Warnf("JetStream API Overloaded: %d calls outstanding", apiOut)
+		s.Warnf("JetStream API limit exceeded: %d calls outstanding", apiOut)
 		return
 	}
 
@@ -678,8 +678,8 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, subject, reply st
 
 	// Dispatch the API call to its own Go routine.
 	go func() {
-		defer atomic.AddInt64(&js.apiCalls, -1)
 		jsub.icb(sub, client, subject, reply, rmsg)
+		atomic.AddInt64(&js.apiCalls, -1)
 	}()
 }
 

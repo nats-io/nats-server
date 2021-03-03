@@ -202,15 +202,9 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 	}
 
 	// Setup our internal system exports.
-	sacc := s.SystemAccount()
-	// FIXME(dlc) - Should we lock these down?
 	s.Debugf("  Exports:")
-	for _, export := range allJsExports {
-		s.Debugf("     %s", export)
-		if err := sacc.AddServiceExport(export, nil); err != nil {
-			return fmt.Errorf("Error setting up jetstream service exports: %v", err)
-		}
-	}
+	s.Debugf("     %s", jsAllApi)
+	s.setupJetStreamExports()
 
 	// Enable accounts and restore state before starting clustering.
 	if err := s.enableJetStreamAccounts(); err != nil {
@@ -349,9 +343,6 @@ func (a *Account) enableAllJetStreamServiceImports() error {
 		return fmt.Errorf("jetstream account not registered")
 	}
 
-	// In case the enabled import exists here.
-	a.removeServiceImport(JSApiAccountInfo)
-
 	if !a.serviceImportExists(jsAllApi) {
 		if err := a.AddServiceImport(s.SystemAccount(), jsAllApi, _EMPTY_); err != nil {
 			return fmt.Errorf("Error setting up jetstream service imports for account: %v", err)
@@ -364,25 +355,13 @@ func (a *Account) enableAllJetStreamServiceImports() error {
 // enableJetStreamEnabledServiceImportOnly will enable the single service import responder.
 // Should we do them all regardless?
 func (a *Account) enableJetStreamInfoServiceImportOnly() error {
-	a.mu.RLock()
-	s := a.srv
-	a.mu.RUnlock()
-
-	if s == nil {
-		return fmt.Errorf("jetstream account not registered")
-	}
-
 	// Check if this import would be overshadowed. This can happen when accounts
 	// are importing from another account for JS access.
 	if a.serviceImportShadowed(JSApiAccountInfo) {
 		return nil
 	}
 
-	if err := a.AddServiceImport(s.SystemAccount(), JSApiAccountInfo, _EMPTY_); err != nil {
-		return fmt.Errorf("Error setting up jetstream service imports for account: %v", err)
-	}
-
-	return nil
+	return a.enableAllJetStreamServiceImports()
 }
 
 func (s *Server) configJetStream(acc *Account) error {
@@ -416,13 +395,7 @@ func (s *Server) configJetStream(acc *Account) error {
 func (s *Server) configAllJetStreamAccounts() error {
 	// Check to see if system account has been enabled. We could arrive here via reload and
 	// a non-default system account.
-	if sacc := s.SystemAccount(); sacc != nil && !sacc.IsExportService(JSApiAccountInfo) {
-		for _, export := range allJsExports {
-			if err := sacc.AddServiceExport(export, nil); err != nil {
-				return fmt.Errorf("Error setting up jetstream service exports: %v", err)
-			}
-		}
-	}
+	s.checkJetStreamExports()
 
 	// Snapshot into our own list. Might not be needed.
 	s.mu.Lock()
