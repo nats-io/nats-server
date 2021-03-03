@@ -8999,6 +8999,23 @@ func TestJetStreamPushConsumersPullError(t *testing.T) {
 	if m.Header.Get("Status") != "409" {
 		t.Fatalf("Expected a 409 status code, got %q", m.Header.Get("Status"))
 	}
+
+	// Should not be possible to ask for more messages than MaxAckPending limit.
+	ci, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:       "test",
+		AckPolicy:     nats.AckExplicitPolicy,
+		MaxAckPending: 5,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	m, err = nc.Request(fmt.Sprintf(JSApiRequestNextT, "TEST", ci.Name), []byte(`10`), time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if m.Header.Get("Status") != "409" {
+		t.Fatalf("Expected a 409 status code, got %q", m.Header.Get("Status"))
+	}
 }
 
 ////////////////////////////////////////
@@ -10020,7 +10037,7 @@ func TestJetStreamPullConsumerMaxAckPending(t *testing.T) {
 				})
 			}
 
-			req = &JSApiConsumerGetNextRequest{Batch: toSend}
+			req = &JSApiConsumerGetNextRequest{Batch: maxAckPending}
 			jreq, _ = json.Marshal(req)
 			nc.PublishRequest(getSubj, sub.Subject, jreq)
 

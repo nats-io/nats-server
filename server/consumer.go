@@ -1637,6 +1637,11 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _, reply string
 		return
 	}
 
+	if o.maxp > 0 && batchSize > o.maxp {
+		sendErr(409, "Exceeded MaxAckPending")
+		return
+	}
+
 	// In case we have to queue up this request.
 	wr := waitingRequest{client: c, reply: reply, n: batchSize, noWait: noWait, expires: expires}
 
