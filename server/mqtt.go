@@ -2748,20 +2748,20 @@ func generatePubPerms(perms *Permissions) *perm {
 	if perms.Publish.Allow != nil {
 		p = &perm{}
 		p.allow = NewSublistWithCache()
-	}
-	for _, pubSubject := range perms.Publish.Allow {
-		sub := &subscription{subject: []byte(pubSubject)}
-		p.allow.Insert(sub)
+		for _, pubSubject := range perms.Publish.Allow {
+			sub := &subscription{subject: []byte(pubSubject)}
+			p.allow.Insert(sub)
+		}
 	}
 	if len(perms.Publish.Deny) > 0 {
 		if p == nil {
 			p = &perm{}
 		}
 		p.deny = NewSublistWithCache()
-	}
-	for _, pubSubject := range perms.Publish.Deny {
-		sub := &subscription{subject: []byte(pubSubject)}
-		p.deny.Insert(sub)
+		for _, pubSubject := range perms.Publish.Deny {
+			sub := &subscription{subject: []byte(pubSubject)}
+			p.deny.Insert(sub)
+		}
 	}
 	return p
 }

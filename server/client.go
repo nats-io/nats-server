@@ -1881,7 +1881,7 @@ func (c *client) queueOutbound(data []byte) bool {
 		atomic.AddInt64(&c.srv.slowConsumers, 1)
 		c.Noticef("Slow Consumer Detected: MaxPending of %d Exceeded", c.out.mp)
 		c.markConnAsClosed(SlowConsumerPendingBytes)
-		return referenced
+		return false
 	}
 
 	if c.out.p == nil && len(data) < maxBufSize {
@@ -4568,7 +4568,7 @@ func (c *client) closeConnection(reason ClosedState) {
 				srv.updateRouteSubscriptionMap(acc, esub.sub, -(esub.n))
 				srv.updateLeafNodes(acc, esub.sub, -(esub.n))
 			}
-			if prev := acc.removeClient(c); prev == 1 && srv != nil {
+			if prev := acc.removeClient(c); prev == 1 {
 				srv.decActiveAccounts()
 			}
 		}
@@ -4917,7 +4917,7 @@ func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfi
 	// The connection still may have been closed on success handshake due
 	// to a race with tls timeout. If that the case, return error indicating
 	// that the connection is closed.
-	if err == nil && c.isClosed() {
+	if c.isClosed() {
 		err = ErrConnectionClosed
 	}
 

@@ -568,7 +568,7 @@ type expirationTracker struct {
 	wg           sync.WaitGroup
 }
 
-func (pq *expirationTracker) Len() int { return len(pq.heap) }
+func (q *expirationTracker) Len() int { return len(q.heap) }
 
 func (q *expirationTracker) Less(i, j int) bool {
 	pq := q.heap

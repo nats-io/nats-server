@@ -2154,10 +2154,10 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 		if v != nil {
 			imp.Invalid = v.invalid
 			imp.Import = jwt.Import{
-				Subject: jwt.Subject(v.from),
-				Account: v.acc.Name,
-				Type:    jwt.Stream,
-				To:      jwt.Subject(v.to),
+				Subject:      jwt.Subject(v.from),
+				Account:      v.acc.Name,
+				Type:         jwt.Stream,
+				LocalSubject: jwt.RenamingSubject(v.to),
 			}
 		}
 		imports = append(imports, imp)
