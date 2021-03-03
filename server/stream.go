@@ -2550,8 +2550,6 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 	}
 
 	sd := path.Join(jsa.storeDir, snapsDir)
-	defer os.RemoveAll(sd)
-
 	if _, err := os.Stat(sd); os.IsNotExist(err) {
 		if err := os.MkdirAll(sd, 0755); err != nil {
 			return nil, fmt.Errorf("could not create snapshots directory - %v", err)
@@ -2566,6 +2564,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 			return nil, fmt.Errorf("could not create snapshots directory - %v", err)
 		}
 	}
+	defer os.RemoveAll(sdir)
 
 	tr := tar.NewReader(s2.NewReader(r))
 	for {
@@ -2608,6 +2607,11 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 	}
 	// Move into the correct place here.
 	ndir := path.Join(jsa.storeDir, streamsDir, cfg.Name)
+	// Remove old one if for some reason is here.
+	if _, err := os.Stat(ndir); !os.IsNotExist(err) {
+		os.RemoveAll(ndir)
+	}
+	// Move into new location.
 	if err := os.Rename(sdir, ndir); err != nil {
 		return nil, err
 	}

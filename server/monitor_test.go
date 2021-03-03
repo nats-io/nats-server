@@ -4006,14 +4006,14 @@ func TestMonitorJsz(t *testing.T) {
 			if len(info.AccountDetails) != 0 {
 				t.Fatalf("expected no account to be returned by %s but got %v", url, info)
 			}
-			if info.StreamCnt == 0 {
-				t.Fatalf("expected stream count to be 2 but got %d", info.StreamCnt)
+			if info.Streams == 0 {
+				t.Fatalf("expected stream count to be 2 but got %d", info.Streams)
 			}
-			if info.ConsumerCnt == 0 {
-				t.Fatalf("expected consumer count to be 2 but got %d", info.ConsumerCnt)
+			if info.Consumers == 0 {
+				t.Fatalf("expected consumer count to be 2 but got %d", info.Consumers)
 			}
-			if info.MessageCnt != 1 {
-				t.Fatalf("expected one message but got %d", info.MessageCnt)
+			if info.Messages != 1 {
+				t.Fatalf("expected one message but got %d", info.Messages)
 			}
 		}
 	})

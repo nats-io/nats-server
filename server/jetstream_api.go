@@ -32,6 +32,9 @@ import (
 
 // Request API subjects for JetStream.
 const (
+	// All API endpoints.
+	jsAllApi = "$JS.API.>"
+
 	// JSApiPrefix
 	JSApiPrefix = "$JS.API"
 
@@ -259,6 +262,8 @@ type ApiResponse struct {
 	Type  string    `json:"type"`
 	Error *ApiError `json:"error,omitempty"`
 }
+
+const JSApiOverloadedType = "io.nats.jetstream.api.v1.system_overloaded"
 
 // ApiPaged includes variables used to create paged responses from the JSON API
 type ApiPaged struct {
@@ -620,7 +625,74 @@ var allJsExports = []string{
 	JSApiConsumerDelete,
 }
 
+func (js *jetStream) apiDispatch(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	js.mu.RLock()
+	s := js.srv
+	rr := js.apiSubs.Match(subject)
+	js.mu.RUnlock()
+
+	// We should only have psubs and only 1 per result.
+	// FIXME(dlc) - Should we respond here with NoResponders or error?
+	if len(rr.psubs) != 1 {
+		s.Warnf("Malformed JetStream API Request: [%s] %q", subject, rmsg)
+		return
+	}
+	jsub := rr.psubs[0]
+
+	// If this is directly from a client connection ok to do in place.
+	if c.kind == CLIENT {
+		jsub.icb(sub, c, subject, reply, rmsg)
+		return
+	}
+
+	// If we are here we have received this request over a non client connection.
+	// We need to make sure not to block. We will spin a Go routine per but also make
+	// sure we do not have too many outstanding.
+	if apiOut := atomic.AddInt64(&js.apiCalls, 1); apiOut > 1024 {
+		atomic.AddInt64(&js.apiCalls, -1)
+		ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+		if err == nil {
+			resp := &ApiResponse{Type: JSApiOverloadedType, Error: jsInsufficientErr}
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		} else {
+			s.Warnf(badAPIRequestT, rmsg)
+		}
+		s.Warnf("JetStream API Overloaded: %d calls outstanding", apiOut)
+		return
+	}
+
+	// If we are here we can properly dispatch this API call.
+	// Copy the message and the client. Client for the pubArgs.
+	// FIXME(dlc) - Should cleanup eventually and make sending
+	// and receiving internal messages more formal.
+	rmsg = append(rmsg[:0:0], rmsg...)
+	client := &client{srv: s, kind: JETSTREAM}
+	client.pa = c.pa
+
+	// Dispatch the API call to its own Go routine.
+	go func() {
+		defer atomic.AddInt64(&js.apiCalls, -1)
+		jsub.icb(sub, client, subject, reply, rmsg)
+	}()
+}
+
 func (s *Server) setJetStreamExportSubs() error {
+	js := s.getJetStream()
+	if js == nil {
+		return ErrJetStreamNotEnabled
+	}
+
+	// This is the catch all now for all JetStream API calls.
+	if _, err := s.sysSubscribe(jsAllApi, js.apiDispatch); err != nil {
+		return err
+	}
+
+	if err := s.SystemAccount().AddServiceExport(jsAllApi, nil); err != nil {
+		s.Warnf("Error setting up jetstream service exports: %v", err)
+		return err
+	}
+
+	// API handles themselves.
 	pairs := []struct {
 		subject string
 		handler msgHandler
@@ -652,11 +724,16 @@ func (s *Server) setJetStreamExportSubs() error {
 		{JSApiConsumerDelete, s.jsConsumerDeleteRequest},
 	}
 
+	js.mu.Lock()
+	defer js.mu.Unlock()
+
 	for _, p := range pairs {
-		if _, err := s.sysSubscribe(p.subject, p.handler); err != nil {
+		sub := &subscription{subject: []byte(p.subject), icb: p.handler}
+		if err := js.apiSubs.Insert(sub); err != nil {
 			return err
 		}
 	}
+
 	return nil
 }
 

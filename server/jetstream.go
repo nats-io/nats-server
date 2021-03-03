@@ -80,6 +80,8 @@ type jetStream struct {
 	accounts      map[*Account]*jsAccount
 	memReserved   int64
 	storeReserved int64
+	apiCalls      int64
+	apiSubs       *Sublist
 	disabled      bool
 }
 
@@ -149,7 +151,7 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 		cfg.StoreDir = filepath.Join(os.TempDir(), JetStreamStoreDir)
 	}
 
-	s.js = &jetStream{srv: s, config: cfg, accounts: make(map[*Account]*jsAccount)}
+	s.js = &jetStream{srv: s, config: cfg, accounts: make(map[*Account]*jsAccount), apiSubs: NewSublistNoCache()}
 	s.mu.Unlock()
 
 	// FIXME(dlc) - Allow memory only operation?
@@ -229,18 +231,15 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 // on the system account, and if not go ahead and set them up.
 func (s *Server) checkJetStreamExports() {
 	sacc := s.SystemAccount()
-	if sacc != nil && sacc.getServiceExport(allJsExports[0]) == nil {
+	if sacc != nil && sacc.getServiceExport(jsAllApi) == nil {
 		s.setupJetStreamExports()
 	}
 }
 
 func (s *Server) setupJetStreamExports() {
-	// Setup our internal system exports.
-	sacc := s.SystemAccount()
-	for _, export := range allJsExports {
-		if err := sacc.AddServiceExport(export, nil); err != nil {
-			s.Warnf("Error setting up jetstream service exports: %v", err)
-		}
+	// Setup our internal system export.
+	if err := s.SystemAccount().AddServiceExport(jsAllApi, nil); err != nil {
+		s.Warnf("Error setting up jetstream service exports: %v", err)
 	}
 }
 
@@ -353,14 +352,10 @@ func (a *Account) enableAllJetStreamServiceImports() error {
 	// In case the enabled import exists here.
 	a.removeServiceImport(JSApiAccountInfo)
 
-	sys := s.SystemAccount()
-	for _, export := range allJsExports {
-		if !a.serviceImportExists(export) {
-			if err := a.AddServiceImport(sys, export, _EMPTY_); err != nil {
-				return fmt.Errorf("Error setting up jetstream service imports for account: %v", err)
-			}
-		}
+	if err := a.AddServiceImport(s.SystemAccount(), jsAllApi, _EMPTY_); err != nil {
+		return fmt.Errorf("Error setting up jetstream service imports for account: %v", err)
 	}
+
 	return nil
 }
 
@@ -384,6 +379,7 @@ func (a *Account) enableJetStreamInfoServiceImportOnly() error {
 	if err := a.AddServiceImport(s.SystemAccount(), JSApiAccountInfo, _EMPTY_); err != nil {
 		return fmt.Errorf("Error setting up jetstream service imports for account: %v", err)
 	}
+
 	return nil
 }
 
@@ -516,7 +512,7 @@ func (s *Server) migrateEphemerals() {
 		}
 	}
 
-	// Gove time for migration information to make it out of our server.
+	// Give time for migration information to make it out of our server.
 	if len(consumers) > 0 {
 		time.Sleep(50 * time.Millisecond)
 	}
