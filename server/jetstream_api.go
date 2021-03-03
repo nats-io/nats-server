@@ -631,6 +631,11 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, subject, reply st
 	rr := js.apiSubs.Match(subject)
 	js.mu.RUnlock()
 
+	// Shortcircuit.
+	if len(rr.psubs)+len(rr.qsubs) == 0 {
+		return
+	}
+
 	// We should only have psubs and only 1 per result.
 	// FIXME(dlc) - Should we respond here with NoResponders or error?
 	if len(rr.psubs) != 1 {
