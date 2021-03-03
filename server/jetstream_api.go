@@ -1905,7 +1905,7 @@ func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, subje
 	js.mu.RLock()
 	for _, p := range cc.meta.Peers() {
 		si, ok := s.nodeToInfo.Load(p.ID)
-		if ok && si.(*nodeInfo).name == req.Server {
+		if ok && si.(nodeInfo).name == req.Server {
 			found = p.ID
 			break
 		}
@@ -1975,7 +1975,7 @@ func (s *Server) jsLeaderStepDownRequest(sub *subscription, c *client, subject, 
 		ourID := cc.meta.ID()
 		for _, p := range cc.meta.Peers() {
 			if si, ok := s.nodeToInfo.Load(p.ID); ok && si != nil {
-				if ni := si.(*nodeInfo); ni.offline || ni.cluster != cn || p.ID == ourID {
+				if ni := si.(nodeInfo); ni.offline || ni.cluster != cn || p.ID == ourID {
 					continue
 				}
 				peers = append(peers, p.ID)
