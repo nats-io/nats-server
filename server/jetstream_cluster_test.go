@@ -4958,8 +4958,13 @@ func (c *cluster) waitOnClusterReady() {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+
 	c.shutdown()
-	c.t.Fatalf("Expected a cluster leader and fully formed cluster")
+	if leader == nil {
+		c.t.Fatalf("Expected a cluster leader and fully formed cluster, no leader")
+	} else {
+		c.t.Fatalf("Expected a fully formed cluster, only %d of %d peers seen", len(leader.JetStreamClusterPeers()), len(c.servers))
+	}
 }
 
 // Helper function to check that a cluster is formed
@@ -5008,5 +5013,4 @@ func (c *cluster) restartAll() {
 		}
 	}
 	c.waitOnClusterReady()
-	c.waitOnLeader()
 }
