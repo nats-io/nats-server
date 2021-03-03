@@ -191,6 +191,7 @@ type consumer struct {
 	pending           map[uint64]*Pending
 	ptmr              *time.Timer
 	rdq               []uint64
+	rdqi              map[uint64]struct{}
 	rdc               map[uint64]uint64
 	maxdc             uint64
 	waiting           *waitQueue
@@ -950,7 +951,7 @@ func (o *consumer) forceExpirePending() {
 	}
 	if len(expired) > 0 {
 		sort.Slice(expired, func(i, j int) bool { return expired[i] < expired[j] })
-		o.rdq = append(o.rdq, expired...)
+		o.addToRedeliverQueue(expired...)
 		// Now we should update the timestamp here since we are redelivering.
 		// We will use an incrementing time to preserve order for any other redelivery.
 		off := time.Now().UnixNano() - o.pending[expired[0]].Timestamp
@@ -1104,7 +1105,7 @@ func (o *consumer) processNak(sseq, dseq uint64) {
 	}
 	// If already queued up also ignore.
 	if !o.onRedeliverQueue(sseq) {
-		o.rdq = append(o.rdq, sseq)
+		o.addToRedeliverQueue(sseq)
 	}
 
 	o.signalNewMessages()
@@ -1789,9 +1790,8 @@ func (o *consumer) getNextMsg() (subj string, hdr, msg []byte, seq uint64, dc ui
 	}
 	for {
 		seq, dc := o.sseq, uint64(1)
-		if len(o.rdq) > 0 {
-			seq = o.rdq[0]
-			o.rdq = append(o.rdq[:0], o.rdq[1:]...)
+		if o.hasRedeliveries() {
+			seq = o.getNextToRedeliver()
 			dc = o.incDeliveryCount(seq)
 			if o.maxdc > 0 && dc > o.maxdc {
 				// Only send once
@@ -2087,7 +2087,7 @@ func (o *consumer) didNotDeliver(seq uint64) {
 			// to queue it up for immediate redelivery since
 			// we know it was not delivered.
 			if !o.onRedeliverQueue(seq) {
-				o.rdq = append(o.rdq, seq)
+				o.addToRedeliverQueue(seq)
 				o.signalNewMessages()
 			}
 		}
@@ -2095,24 +2095,61 @@ func (o *consumer) didNotDeliver(seq uint64) {
 	o.mu.Unlock()
 }
 
+// Lock should be held.
+func (o *consumer) addToRedeliverQueue(seqs ...uint64) {
+	if o.rdqi == nil {
+		o.rdqi = make(map[uint64]struct{})
+	}
+	o.rdq = append(o.rdq, seqs...)
+	for _, seq := range seqs {
+		o.rdqi[seq] = struct{}{}
+	}
+}
+
+// Lock should be held.
+func (o *consumer) hasRedeliveries() bool {
+	return len(o.rdq) > 0
+}
+
+func (o *consumer) getNextToRedeliver() uint64 {
+	if len(o.rdq) == 0 {
+		return 0
+	}
+	seq := o.rdq[0]
+	if len(o.rdq) == 1 {
+		o.rdq, o.rdqi = nil, nil
+	} else {
+		o.rdq = append(o.rdq[:0], o.rdq[1:]...)
+		delete(o.rdqi, seq)
+	}
+	return seq
+}
+
 // This checks if we already have this sequence queued for redelivery.
 // FIXME(dlc) - This is O(n) but should be fast with small redeliver size.
 // Lock should be held.
 func (o *consumer) onRedeliverQueue(seq uint64) bool {
-	for _, rseq := range o.rdq {
-		if rseq == seq {
-			return true
-		}
+	if o.rdqi == nil {
+		return false
 	}
-	return false
+	_, ok := o.rdqi[seq]
+	return ok
 }
 
 // Remove a sequence from the redelivery queue.
 // Lock should be held.
 func (o *consumer) removeFromRedeliverQueue(seq uint64) bool {
+	if !o.onRedeliverQueue(seq) {
+		return false
+	}
 	for i, rseq := range o.rdq {
 		if rseq == seq {
-			o.rdq = append(o.rdq[:i], o.rdq[i+1:]...)
+			if len(o.rdq) == 1 {
+				o.rdq, o.rdqi = nil, nil
+			} else {
+				o.rdq = append(o.rdq[:i], o.rdq[i+1:]...)
+				delete(o.rdqi, seq)
+			}
 			return true
 		}
 	}
@@ -2151,7 +2188,7 @@ func (o *consumer) checkPending() {
 	if len(expired) > 0 {
 		// We need to sort.
 		sort.Slice(expired, func(i, j int) bool { return expired[i] < expired[j] })
-		o.rdq = append(o.rdq, expired...)
+		o.addToRedeliverQueue(expired...)
 		// Now we should update the timestamp here since we are redelivering.
 		// We will use an incrementing time to preserve order for any other redelivery.
 		off := now - o.pending[expired[0]].Timestamp
@@ -2388,14 +2425,13 @@ func (o *consumer) purge(sseq uint64) {
 	}
 	// We need to remove all those being queued for redelivery under o.rdq
 	if len(o.rdq) > 0 {
-		var newRDQ []uint64
-		for _, sseq := range o.rdq {
+		rdq := o.rdq
+		o.rdq, o.rdqi = nil, nil
+		for _, sseq := range rdq {
 			if sseq >= o.sseq {
-				newRDQ = append(newRDQ, sseq)
+				o.addToRedeliverQueue(sseq)
 			}
 		}
-		// Replace with new list. Most of the time this will be nil.
-		o.rdq = newRDQ
 	}
 	o.mu.Unlock()
 
