@@ -541,10 +541,9 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	pre := fmt.Sprintf(jsAckT, mn, o.name)
 	o.ackReplyT = fmt.Sprintf("%s.%%d.%%d.%%d.%%d.%%d", pre)
 	o.ackSubj = fmt.Sprintf("%s.*.*.*.*.*", pre)
+	o.nextMsgSubj = fmt.Sprintf(JSApiRequestNextT, mn, o.name)
 
-	if o.isPullMode() {
-		o.nextMsgSubj = fmt.Sprintf(JSApiRequestNextT, mn, o.name)
-	} else {
+	if o.isPushMode() {
 		o.dthresh = JsDeleteWaitTimeDefault
 		if !o.isDurable() {
 			// Check if we are not durable that the delivery subject has interest.
@@ -644,14 +643,15 @@ func (o *consumer) setLeader(isLeader bool) {
 			o.deleteWithoutAdvisory()
 			return
 		}
-		// Setup the internal sub for next message requests.
-		if o.isPullMode() {
-			if o.reqSub, err = o.subscribeInternal(o.nextMsgSubj, o.processNextMsgReq); err != nil {
-				o.mu.Unlock()
-				o.deleteWithoutAdvisory()
-				return
-			}
+
+		// Setup the internal sub for next message requests regardless.
+		// Will error if wrong mode to provide feedback to users.
+		if o.reqSub, err = o.subscribeInternal(o.nextMsgSubj, o.processNextMsgReq); err != nil {
+			o.mu.Unlock()
+			o.deleteWithoutAdvisory()
+			return
 		}
+
 		// Setup initial pending.
 		o.setInitialPending()
 
@@ -1643,7 +1643,7 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _, reply string
 	defer o.mu.Unlock()
 
 	s, mset, js := o.srv, o.mset, o.js
-	if mset == nil || o.isPushMode() || o.sendq == nil {
+	if mset == nil || o.sendq == nil {
 		return
 	}
 	sendq := o.sendq
@@ -1655,6 +1655,11 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _, reply string
 		hdr := []byte(fmt.Sprintf("NATS/1.0 %d %s\r\n\r\n", status, description))
 		pmsg := &jsPubMsg{reply, reply, _EMPTY_, hdr, nil, nil, 0}
 		sendq <- pmsg // Send error message.
+	}
+
+	if o.isPushMode() {
+		sendErr(409, "Consumer is push based")
+		return
 	}
 
 	if o.waiting.isFull() {

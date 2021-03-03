@@ -8785,6 +8785,43 @@ func TestJetStreamServerResourcesConfig(t *testing.T) {
 	}
 }
 
+func TestJetStreamPushConsumersPullError(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST"}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if _, err := js.Publish("TEST", []byte("TSS")); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+	// Push based.
+	sub, err := js.SubscribeSync("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer sub.Unsubscribe()
+	ci, err := sub.ConsumerInfo()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now do a pull. Make sure we get an error.
+	m, err := nc.Request(fmt.Sprintf(JSApiRequestNextT, "TEST", ci.Name), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if m.Header.Get("Status") != "409" {
+		t.Fatalf("Expected a 409 status code, got %q", m.Header.Get("Status"))
+	}
+}
+
 ////////////////////////////////////////
 // Benchmark placeholders
 // TODO(dlc) - move
