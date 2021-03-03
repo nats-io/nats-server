@@ -667,7 +667,9 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, subject, reply st
 	}
 
 	// If we are here we can properly dispatch this API call.
-	// Copy the message and the client. Client for the pubArgs.
+	// Copy the message and the client. Client for the pubArgs
+	// but note the JSAPI only uses the hdr index to piece apart
+	// the header from the msg body. No other references are needed.
 	// FIXME(dlc) - Should cleanup eventually and make sending
 	// and receiving internal messages more formal.
 	rmsg = append(rmsg[:0:0], rmsg...)
