@@ -2891,8 +2891,8 @@ func TestJetStreamClusterExtendedAccountInfo(t *testing.T) {
 	if ai.Streams != 3 || ai.Consumers != 3 {
 		t.Fatalf("AccountInfo not correct: %+v", ai)
 	}
-	if ai.API.Total < 10 {
-		t.Fatalf("Expected at least 10 total API calls, got %d", ai.API.Total)
+	if ai.API.Total < 9 {
+		t.Fatalf("Expected at least 9 total API calls, got %d", ai.API.Total)
 	}
 
 	// Now do a failure to make sure we track API errors.
