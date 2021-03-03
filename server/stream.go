@@ -87,8 +87,7 @@ type StreamInfo struct {
 // that make up the stream or consumer.
 type ClusterInfo struct {
 	Name     string      `json:"name,omitempty"`
-	Leader   string      `json:"leader,omitempty"`
-	LeaderID string      `json:"leader_id,omitempty"`
+	Leader   *PeerInfo   `json:"leader,omitempty"`
 	Replicas []*PeerInfo `json:"replicas,omitempty"`
 }
 

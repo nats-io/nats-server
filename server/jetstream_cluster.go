@@ -4143,18 +4143,16 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 
 	if rg == nil || rg.node == nil {
 		return &ClusterInfo{
-			Name:     s.ClusterName(),
-			Leader:   s.Name(),
-			LeaderID: s.ID(),
+			Name:   s.ClusterName(),
+			Leader: &PeerInfo{Name: s.Name(), ID: s.ID(), Active: 0, Current: true},
 		}
 	}
 	n := rg.node
 
 	leader := n.GroupLeader()
 	ci := &ClusterInfo{
-		Name:     s.ClusterName(),
-		Leader:   s.serverNameForNode(leader),
-		LeaderID: s.serverIdForNode(leader),
+		Name:   s.ClusterName(),
+		Leader: &PeerInfo{Name: s.serverNameForNode(leader), ID: s.serverIdForNode(leader), Active: 0, Current: true},
 	}
 
 	now := time.Now()
