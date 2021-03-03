@@ -2187,7 +2187,7 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 		}
 	}
 	nc.Flush()
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 
 	// Snapshot consumer info.
 	ci, err := jsub.ConsumerInfo()
