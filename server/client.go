@@ -975,7 +975,7 @@ func (c *client) writeLoop() {
 // will normally be called in the readLoop of the client who sent the
 // message that now is being delivered.
 func (c *client) flushClients(budget time.Duration) time.Time {
-	last := time.Now()
+	last := time.Now().UTC()
 
 	// Check pending clients for flush.
 	for cp := range c.pcd {
@@ -1615,7 +1615,7 @@ func (c *client) processConnect(arg []byte) error {
 		c.mu.Unlock()
 		return nil
 	}
-	c.last = time.Now()
+	c.last = time.Now().UTC()
 	// Estimate RTT to start.
 	if c.kind == CLIENT {
 		c.rtt = computeRTT(c.start)
@@ -2013,7 +2013,7 @@ func (c *client) sendRTTPingLocked() bool {
 
 // Assume the lock is held upon entry.
 func (c *client) sendPing() {
-	c.rttStart = time.Now()
+	c.rttStart = time.Now().UTC()
 	c.ping.out++
 	if c.trace {
 		c.traceOutOp("PING", nil)

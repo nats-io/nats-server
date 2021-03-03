@@ -315,7 +315,7 @@ func NewServer(opts *Options) (*Server, error) {
 		info.TLSAvailable = true
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 
 	s := &Server{
 		kp:           kp,
@@ -682,7 +682,7 @@ func (s *Server) configureAccounts() error {
 			acc.ic.acc = acc
 			acc.addAllServiceImportSubs()
 		}
-		acc.updated = time.Now()
+		acc.updated = time.Now().UTC()
 		return true
 	})
 
@@ -1177,7 +1177,7 @@ func (s *Server) createInternalClient(kind int) *client {
 	if kind != SYSTEM && kind != JETSTREAM && kind != ACCOUNT {
 		return nil
 	}
-	now := time.Now()
+	now := time.Now().UTC()
 	c := &client{srv: s, kind: kind, opts: internalOpts, msubs: -1, mpay: -1, start: now, last: now}
 	c.initClient()
 	c.echo = false
@@ -1246,7 +1246,7 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 		acc.lqws = make(map[string]int32)
 	}
 	acc.srv = s
-	acc.updated = time.Now()
+	acc.updated = time.Now().UTC()
 	acc.mu.Unlock()
 	s.accounts.Store(acc.Name, acc)
 	s.tmpAccounts.Delete(acc.Name)
@@ -2206,7 +2206,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	if maxSubs == 0 {
 		maxSubs = -1
 	}
-	now := time.Now()
+	now := time.Now().UTC()
 
 	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: maxPay, msubs: maxSubs, start: now, last: now}
 
@@ -2360,7 +2360,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 // This will save off a closed client in a ring buffer such that
 // /connz can inspect. Useful for debugging, etc.
 func (s *Server) saveClosedClient(c *client, nc net.Conn, reason ClosedState) {
-	now := time.Now()
+	now := time.Now().UTC()
 
 	s.accountDisconnectEvent(c, now, reason.String())
 

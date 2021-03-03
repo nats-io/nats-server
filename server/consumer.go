@@ -939,7 +939,6 @@ func (o *consumer) config() ConsumerConfig {
 // Force expiration of all pending.
 // Lock should be held.
 func (o *consumer) forceExpirePending() {
-	now := time.Now().UnixNano()
 	var expired []uint64
 	for seq := range o.pending {
 		if !o.onRedeliverQueue(seq) {
@@ -951,7 +950,7 @@ func (o *consumer) forceExpirePending() {
 		o.rdq = append(o.rdq, expired...)
 		// Now we should update the timestamp here since we are redelivering.
 		// We will use an incrementing time to preserve order for any other redelivery.
-		off := now - o.pending[expired[0]].Timestamp
+		off := time.Now().UnixNano() - o.pending[expired[0]].Timestamp
 		for _, seq := range expired {
 			if p, ok := o.pending[seq]; ok && p != nil {
 				p.Timestamp += off

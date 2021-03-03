@@ -294,7 +294,7 @@ RESET:
 				pm.si.ID = id
 				pm.si.Seq = atomic.AddUint64(seqp, 1)
 				pm.si.Version = VERSION
-				pm.si.Time = time.Now()
+				pm.si.Time = time.Now().UTC()
 				pm.si.JetStream = js
 			}
 			var b []byte
@@ -1434,7 +1434,7 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 		TypedEvent: TypedEvent{
 			Type: DisconnectEventMsgType,
 			ID:   eid,
-			Time: now.UTC(),
+			Time: now,
 		},
 		Client: ClientInfo{
 			Start:     &c.start,
@@ -1477,13 +1477,13 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 	}
 	eid := s.nextEventID()
 	s.mu.Unlock()
-	now := time.Now()
+	now := time.Now().UTC()
 	c.mu.Lock()
 	m := DisconnectEventMsg{
 		TypedEvent: TypedEvent{
 			Type: DisconnectEventMsgType,
 			ID:   eid,
-			Time: now.UTC(),
+			Time: now,
 		},
 		Client: ClientInfo{
 			Start:     &c.start,

@@ -223,7 +223,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	c := &Connz{
 		Offset: offset,
 		Limit:  limit,
-		Now:    time.Now(),
+		Now:    time.Now().UTC(),
 	}
 
 	// Open clients
@@ -678,7 +678,7 @@ type RouteInfo struct {
 // Routez returns a Routez struct containing information about routes.
 func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 	rs := &Routez{Routes: []*RouteInfo{}}
-	rs.Now = time.Now()
+	rs.Now = time.Now().UTC()
 
 	if routezOpts == nil {
 		routezOpts = &RoutezOptions{}
@@ -859,7 +859,7 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 	slStats := &SublistStats{}
 
 	// FIXME(dlc) - Make account aware.
-	sz := &Subsz{s.info.ID, time.Now(), slStats, 0, offset, limit, nil}
+	sz := &Subsz{s.info.ID, time.Now().UTC(), slStats, 0, offset, limit, nil}
 
 	if subdetail {
 		var raw [4096]*subscription
@@ -1347,7 +1347,7 @@ func (s *Server) updateVarzConfigReloadableFields(v *Varz) {
 // is done.
 // Server lock is held on entry.
 func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64, rss int64) {
-	v.Now = time.Now()
+	v.Now = time.Now().UTC()
 	v.Uptime = myUptime(time.Since(s.start))
 	v.Mem = rss
 	v.CPU = pcpu
@@ -1491,7 +1491,7 @@ type AccountGatewayz struct {
 // Gatewayz returns a Gatewayz struct containing information about gateways.
 func (s *Server) Gatewayz(opts *GatewayzOptions) (*Gatewayz, error) {
 	srvID := s.ID()
-	now := time.Now()
+	now := time.Now().UTC()
 	gw := s.gateway
 	gw.RLock()
 	if !gw.enabled {
@@ -1837,7 +1837,7 @@ func (s *Server) Leafz(opts *LeafzOptions) (*Leafz, error) {
 	}
 	return &Leafz{
 		ID:       s.ID(),
-		Now:      time.Now(),
+		Now:      time.Now().UTC(),
 		NumLeafs: len(leafnodes),
 		Leafs:    leafnodes,
 	}, nil
@@ -2045,7 +2045,7 @@ func (s *Server) HandleAccountz(w http.ResponseWriter, r *http.Request) {
 func (s *Server) Accountz(optz *AccountzOptions) (*Accountz, error) {
 	a := &Accountz{
 		ID:  s.ID(),
-		Now: time.Now(),
+		Now: time.Now().UTC(),
 	}
 	if sacc := s.SystemAccount(); sacc != nil {
 		a.SystemAccount = sacc.GetName()
@@ -2389,7 +2389,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 	}
 	jsi := &JSInfo{
 		ID:  s.ID(),
-		Now: time.Now(),
+		Now: time.Now().UTC(),
 	}
 	if !s.JetStreamEnabled() {
 		jsi.Disabled = true

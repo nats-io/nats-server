@@ -195,7 +195,7 @@ const (
 )
 
 func newFileStore(fcfg FileStoreConfig, cfg StreamConfig) (*fileStore, error) {
-	return newFileStoreWithCreated(fcfg, cfg, time.Now())
+	return newFileStoreWithCreated(fcfg, cfg, time.Now().UTC())
 }
 
 func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created time.Time) (*fileStore, error) {
@@ -3440,8 +3440,6 @@ func encodeConsumerState(state *ConsumerState) []byte {
 		buf = make([]byte, maxSize)
 	}
 
-	now := time.Now()
-
 	// Write header
 	buf[0] = magic
 	buf[1] = 2
@@ -3459,7 +3457,7 @@ func encodeConsumerState(state *ConsumerState) []byte {
 	// These are optional, but always write len. This is to avoid a truncate inline.
 	if len(state.Pending) > 0 {
 		// To save space we will use now rounded to seconds to be base timestamp.
-		mints := now.Round(time.Second).Unix()
+		mints := time.Now().Round(time.Second).Unix()
 		// Write minimum timestamp we found from above.
 		n += binary.PutVarint(buf[n:], mints)
 

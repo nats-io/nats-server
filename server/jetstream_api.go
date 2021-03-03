@@ -2206,7 +2206,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 		Sequence: req.Seq,
 		Header:   hdr,
 		Data:     msg,
-		Time:     time.Unix(0, ts),
+		Time:     time.Unix(0, ts).UTC(),
 	}
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
@@ -2371,13 +2371,13 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 	streamName := cfg.Name
 	s.Noticef("Starting restore for stream '%s > %s'", acc.Name, streamName)
 
-	start := time.Now()
+	start := time.Now().UTC()
 
 	s.publishAdvisory(acc, JSAdvisoryStreamRestoreCreatePre+"."+streamName, &JSRestoreCreateAdvisory{
 		TypedEvent: TypedEvent{
 			Type: JSRestoreCreateAdvisoryType,
 			ID:   nuid.Next(),
-			Time: time.Now().UTC(),
+			Time: start,
 		},
 		Stream: streamName,
 		Client: ci,
@@ -2484,18 +2484,18 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 					s.Warnf(errStr)
 				}
 
-				end := time.Now()
+				end := time.Now().UTC()
 
 				// TODO(rip) - Should this have the error code in it??
 				s.publishAdvisory(acc, JSAdvisoryStreamRestoreCompletePre+"."+streamName, &JSRestoreCompleteAdvisory{
 					TypedEvent: TypedEvent{
 						Type: JSRestoreCompleteAdvisoryType,
 						ID:   nuid.Next(),
-						Time: time.Now().UTC(),
+						Time: end,
 					},
 					Stream: streamName,
-					Start:  start.UTC(),
-					End:    end.UTC(),
+					Start:  start,
+					End:    end,
 					Bytes:  int64(total),
 					Client: ci,
 				})
@@ -2590,7 +2590,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 			s.Noticef("Starting snapshot for stream '%s > %s'", mset.jsa.account.Name, mset.name())
 		}
 
-		start := time.Now()
+		start := time.Now().UTC()
 
 		sr, err := mset.snapshot(0, req.CheckMsgs, !req.NoConsumers)
 		if err != nil {
@@ -2620,17 +2620,17 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 		// Now do the real streaming.
 		s.streamSnapshot(ci, acc, mset, sr, &req)
 
-		end := time.Now()
+		end := time.Now().UTC()
 
 		s.publishAdvisory(acc, JSAdvisoryStreamSnapshotCompletePre+"."+mset.name(), &JSSnapshotCompleteAdvisory{
 			TypedEvent: TypedEvent{
 				Type: JSSnapshotCompleteAdvisoryType,
 				ID:   nuid.Next(),
-				Time: time.Now().UTC(),
+				Time: end,
 			},
 			Stream: mset.name(),
-			Start:  start.UTC(),
-			End:    end.UTC(),
+			Start:  start,
+			End:    end,
 			Client: ci,
 		})
 

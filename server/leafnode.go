@@ -662,7 +662,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 	if maxSubs == 0 {
 		maxSubs = -1
 	}
-	now := time.Now()
+	now := time.Now().UTC()
 
 	c := &client{srv: s, nc: conn, kind: LEAF, opts: defaultOpts, mpay: maxPay, msubs: maxSubs, start: now, last: now}
 	// Do not update the smap here, we need to do it in initLeafNodeSmapAndSendSubs

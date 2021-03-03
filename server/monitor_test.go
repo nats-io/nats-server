@@ -1068,7 +1068,7 @@ func TestConnzSortedByStopTimeClosedConn(t *testing.T) {
 
 	//Now adjust the Stop times for these with some random values.
 	s.mu.Lock()
-	now := time.Now()
+	now := time.Now().UTC()
 	ccs := s.closed.closedClients()
 	for _, cc := range ccs {
 		newStop := now.Add(time.Duration(rand.Int()%120) * -time.Minute)

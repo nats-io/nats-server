@@ -3086,7 +3086,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	// Pick a preferred leader.
 	rg.setPreferred()
 	// Sync subject for post snapshot sync.
-	sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: cfg, Subject: subject, Reply: reply, Client: ci, Created: time.Now()}
+	sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: cfg, Subject: subject, Reply: reply, Client: ci, Created: time.Now().UTC()}
 	cc.meta.Propose(encodeAddStreamAssignment(sa))
 }
 
@@ -3225,7 +3225,7 @@ func (s *Server) jsClusteredStreamRestoreRequest(ci *ClientInfo, acc *Account, r
 	}
 	// Pick a preferred leader.
 	rg.setPreferred()
-	sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: cfg, Subject: subject, Reply: reply, Client: ci, Created: time.Now()}
+	sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: cfg, Subject: subject, Reply: reply, Client: ci, Created: time.Now().UTC()}
 	// Now add in our restore state and pre-select a peer to handle the actual receipt of the snapshot.
 	sa.Restore = &req.State
 	cc.meta.Propose(encodeAddStreamAssignment(sa))
