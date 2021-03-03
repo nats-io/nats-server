@@ -2927,6 +2927,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 				s.Errorf("Error setting up jetstream service exports: %v", err)
 			}
 		}
+		s.checkJetStreamExports()
 	}
 
 	for _, e := range ac.Exports {
