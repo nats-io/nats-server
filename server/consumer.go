@@ -1680,12 +1680,14 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _, reply string
 	if wr.noWait {
 		if o.maxp > 0 && len(o.pending) >= o.maxp {
 			sendErr(409, "Exceeded MaxAckPending")
+			return
 		}
 		o.mu.Unlock()
 		empty := mset.state().Msgs == 0
 		o.mu.Lock()
 		if empty {
 			sendErr(404, "No Messages")
+			return
 		}
 	}
 
