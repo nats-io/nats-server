@@ -1917,6 +1917,7 @@ func (c *client) processRouteConnect(srv *Server, arg []byte, lang string) error
 		return ErrWrongGateway
 	}
 	var perms *RoutePermissions
+	//TODO this check indicates srv may be nil. see srv usage below
 	if srv != nil {
 		perms = srv.getOpts().Cluster.Permissions
 	}
@@ -1939,7 +1940,7 @@ func (c *client) processRouteConnect(srv *Server, arg []byte, lang string) error
 			}
 		}
 		if shouldReject {
-			errTxt := fmt.Sprintf("Rejecting connection, cluster name %q does not match %q", proto.Cluster, srv.info.Cluster)
+			errTxt := fmt.Sprintf("Rejecting connection, cluster name %q does not match %q", proto.Cluster, clusterName)
 			c.Errorf(errTxt)
 			c.sendErr(errTxt)
 			c.closeConnection(ClusterNameConflict)

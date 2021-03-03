@@ -765,6 +765,7 @@ func (s *Server) checkResolvePreloads() {
 		claims, err := jwt.DecodeAccountClaims(v)
 		if err != nil {
 			s.Errorf("Preloaded account [%s] not valid", k)
+			continue
 		}
 		// Check if it is expired.
 		vr := jwt.CreateValidationResults()
@@ -1954,13 +1955,13 @@ func (s *Server) StartProfiler() {
 	hp := net.JoinHostPort(opts.Host, strconv.Itoa(port))
 
 	l, err := net.Listen("tcp", hp)
-	s.Noticef("profiling port: %d", l.Addr().(*net.TCPAddr).Port)
 
 	if err != nil {
 		s.mu.Unlock()
 		s.Fatalf("error starting profiler: %s", err)
 		return
 	}
+	s.Noticef("profiling port: %d", l.Addr().(*net.TCPAddr).Port)
 
 	srv := &http.Server{
 		Addr:           hp,

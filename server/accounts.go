@@ -943,9 +943,6 @@ func (a *Account) addServiceExportWithResponseAndAccountPos(
 	}
 
 	if accounts != nil || accountPos > 0 {
-		if se == nil {
-			se = &serviceExport{}
-		}
 		if err := setExportAuth(&se.exportAuth, subject, accounts, accountPos); err != nil {
 			return err
 		}
@@ -1138,8 +1135,8 @@ type ServiceLatency struct {
 const ServiceLatencyType = "io.nats.server.metric.v1.service_latency"
 
 // NATSTotalTime is a helper function that totals the NATS latencies.
-func (nl *ServiceLatency) NATSTotalTime() time.Duration {
-	return nl.Requestor.RTT + nl.Responder.RTT + nl.SystemLatency
+func (m1 *ServiceLatency) NATSTotalTime() time.Duration {
+	return m1.Requestor.RTT + m1.Responder.RTT + m1.SystemLatency
 }
 
 // Merge function to merge m1 and m2 (requestor and responder) measurements
@@ -1337,7 +1334,7 @@ func (a *Account) updateAllClientsServiceExportResponseTime(lrt time.Duration) {
 // Read lock should be held.
 func (a *Account) lowestServiceExportResponseTime() time.Duration {
 	// Lowest we will allow is 5 minutes. Its an upper bound for this function.
-	lrt := time.Duration(5 * time.Minute)
+	lrt := 5 * time.Minute
 	for _, se := range a.exports.services {
 		if se.respThresh < lrt {
 			lrt = se.respThresh
@@ -1992,7 +1989,6 @@ func shouldSample(l *serviceLatency, c *client) (bool, http.Header) {
 // Used to mimic client like replies.
 const (
 	replyPrefix    = "_R_."
-	trackSuffix    = ".T"
 	replyPrefixLen = len(replyPrefix)
 	baseServerLen  = 10
 	replyLen       = 6
@@ -2118,9 +2114,7 @@ func (se *serviceExport) clearResponseThresholdTimer() bool {
 func (se *serviceExport) checkExpiredResponses() {
 	acc := se.acc
 	if acc == nil {
-		acc.mu.Lock()
 		se.clearResponseThresholdTimer()
-		acc.mu.Unlock()
 		return
 	}
 
@@ -3284,9 +3278,7 @@ func buildPermissionsFromJwt(uc *jwt.Permissions) *Permissions {
 	}
 	var p *Permissions
 	if len(uc.Pub.Allow) > 0 || len(uc.Pub.Deny) > 0 {
-		if p == nil {
-			p = &Permissions{}
-		}
+		p = &Permissions{}
 		p.Publish = &SubjectPermission{}
 		p.Publish.Allow = uc.Pub.Allow
 		p.Publish.Deny = uc.Pub.Deny
@@ -3371,7 +3363,7 @@ func (*resolverDefaultsOpsImpl) Close() {
 }
 
 func (*resolverDefaultsOpsImpl) Store(_, _ string) error {
-	return fmt.Errorf("Store operation not supported for URL Resolver")
+	return fmt.Errorf("store operation not supported for URL Resolver")
 }
 
 // MemAccResolver is a memory only resolver.
@@ -3395,7 +3387,7 @@ func (m *MemAccResolver) Store(name, jwt string) error {
 	return nil
 }
 
-func (ur *MemAccResolver) IsReadOnly() bool {
+func (m *MemAccResolver) IsReadOnly() bool {
 	return false
 }
 
@@ -3595,9 +3587,9 @@ func (dr *DirAccResolver) Start(s *Server) error {
 	dr.operator = op
 	dr.DirJWTStore.changed = func(pubKey string) {
 		if v, ok := s.accounts.Load(pubKey); !ok {
-		} else if jwt, err := dr.LoadAcc(pubKey); err != nil {
+		} else if theJwt, err := dr.LoadAcc(pubKey); err != nil {
 			s.Errorf("update got error on load: %v", err)
-		} else if err := s.updateAccountWithClaimJWT(v.(*Account), jwt); err != nil {
+		} else if err := s.updateAccountWithClaimJWT(v.(*Account), theJwt); err != nil {
 			s.Errorf("update resulted in error %v", err)
 		}
 	}
@@ -3843,9 +3835,9 @@ func (dr *CacheDirAccResolver) Start(s *Server) error {
 	dr.operator = op
 	dr.DirJWTStore.changed = func(pubKey string) {
 		if v, ok := s.accounts.Load(pubKey); !ok {
-		} else if jwt, err := dr.LoadAcc(pubKey); err != nil {
+		} else if theJwt, err := dr.LoadAcc(pubKey); err != nil {
 			s.Errorf("update got error on load: %v", err)
-		} else if err := s.updateAccountWithClaimJWT(v.(*Account), jwt); err != nil {
+		} else if err := s.updateAccountWithClaimJWT(v.(*Account), theJwt); err != nil {
 			s.Errorf("update resulted in error %v", err)
 		}
 	}

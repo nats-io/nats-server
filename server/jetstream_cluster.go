@@ -1277,6 +1277,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 				continue
 			}
 			// Apply our entries.
+			//TODO mset may be nil see doSnapshot(). applyStreamEntries is sensitive to this
 			if err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
 				n.Applied(ce.Index)
 				ne := ce.Index - lastApplied
@@ -1843,7 +1844,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, sa *streamAssignme
 	js.mu.RUnlock()
 
 	mset, err := acc.lookupStream(sa.Config.Name)
-	if err == nil || mset != nil {
+	if err == nil && mset != nil {
 		if rg.node != nil && !alreadyRunning {
 			s.startGoRoutine(func() { js.monitorStream(mset, sa) })
 		}
@@ -1883,20 +1884,15 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, sa *streamAssignme
 
 	// Send our response.
 	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
-	if err != nil {
-		resp.Error = jsError(err)
-		s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
-	} else {
-		resp.StreamInfo = &StreamInfo{
-			Created: mset.createdTime(),
-			State:   mset.state(),
-			Config:  mset.config(),
-			Cluster: js.clusterInfo(mset.raftGroup()),
-			Mirror:  mset.mirrorInfo(),
-			Sources: mset.sourcesInfo(),
-		}
-		s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+	resp.StreamInfo = &StreamInfo{
+		Created: mset.createdTime(),
+		State:   mset.state(),
+		Config:  mset.config(),
+		Cluster: js.clusterInfo(mset.raftGroup()),
+		Mirror:  mset.mirrorInfo(),
+		Sources: mset.sourcesInfo(),
 	}
+	s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 }
 
 // processClusterCreateStream is called when we have a stream assignment that
