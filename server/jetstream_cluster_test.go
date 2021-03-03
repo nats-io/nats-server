@@ -2945,7 +2945,7 @@ func TestJetStreamClusterPeerRemovalAPI(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	req = &JSApiMetaServerRemoveRequest{Server: c.serverByName("S-2").ID()}
+	req = &JSApiMetaServerRemoveRequest{Server: "S-2"}
 	jsreq, err = json.Marshal(req)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
