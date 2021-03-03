@@ -1535,7 +1535,7 @@ func (s *Server) replicas(node RaftNode) []*PeerInfo {
 	for _, rp := range node.Peers() {
 		if sir, ok := s.nodeToInfo.Load(rp.ID); ok && sir != nil {
 			si := sir.(*nodeInfo)
-			pi := &PeerInfo{Name: si.name, Current: rp.Current, Active: now.Sub(rp.Last), Offline: si.offline, Lag: rp.Lag}
+			pi := &PeerInfo{Name: si.name, ID: si.id, Current: rp.Current, Active: now.Sub(rp.Last), Offline: si.offline, Lag: rp.Lag}
 			replicas = append(replicas, pi)
 		}
 	}
@@ -4143,15 +4143,18 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 
 	if rg == nil || rg.node == nil {
 		return &ClusterInfo{
-			Name:   s.ClusterName(),
-			Leader: s.Name(),
+			Name:     s.ClusterName(),
+			Leader:   s.Name(),
+			LeaderID: s.ID(),
 		}
 	}
 	n := rg.node
 
+	leader := n.GroupLeader()
 	ci := &ClusterInfo{
-		Name:   s.ClusterName(),
-		Leader: s.serverNameForNode(n.GroupLeader()),
+		Name:     s.ClusterName(),
+		Leader:   s.serverNameForNode(leader),
+		LeaderID: s.serverIdForNode(leader),
 	}
 
 	now := time.Now()
@@ -4166,7 +4169,7 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 			}
 			if sir, ok := s.nodeToInfo.Load(rp.ID); ok && sir != nil {
 				si := sir.(*nodeInfo)
-				pi := &PeerInfo{Name: si.name, Current: current, Offline: si.offline, Active: lastSeen, Lag: rp.Lag}
+				pi := &PeerInfo{Name: si.name, ID: si.id, Current: current, Offline: si.offline, Active: lastSeen, Lag: rp.Lag}
 				ci.Replicas = append(ci.Replicas, pi)
 			}
 		}

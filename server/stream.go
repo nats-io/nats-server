@@ -88,6 +88,7 @@ type StreamInfo struct {
 type ClusterInfo struct {
 	Name     string      `json:"name,omitempty"`
 	Leader   string      `json:"leader,omitempty"`
+	LeaderID string      `json:"leader_id,omitempty"`
 	Replicas []*PeerInfo `json:"replicas,omitempty"`
 }
 
@@ -95,6 +96,7 @@ type ClusterInfo struct {
 // are supporting the stream or consumer.
 type PeerInfo struct {
 	Name    string        `json:"name"`
+	ID      string        `json:"id"`
 	Current bool          `json:"current"`
 	Offline bool          `json:"offline,omitempty"`
 	Active  time.Duration `json:"active"`

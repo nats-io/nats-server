@@ -2388,6 +2388,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 		}
 		return s.js.clusterInfo(group)
 	}
+
 	jsi := &JSInfo{
 		ID:  s.ID(),
 		Now: time.Now().UTC(),

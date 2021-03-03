@@ -437,6 +437,15 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 	return n, nil
 }
 
+// Maps node names back to server ids.
+func (s *Server) serverIdForNode(node string) string {
+	if si, ok := s.nodeToInfo.Load(node); ok && si != nil {
+		return si.(*nodeInfo).id
+	}
+
+	return _EMPTY_
+}
+
 // Maps node names back to server names.
 func (s *Server) serverNameForNode(node string) string {
 	if si, ok := s.nodeToInfo.Load(node); ok && si != nil {

@@ -4330,7 +4330,7 @@ func TestJetStreamCrossAccountMirrorsAndSources(t *testing.T) {
 		t.Fatalf("Did not receive correct response: %+v", scResp.Error)
 	}
 
-	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 4*time.Second, 100*time.Millisecond, func() error {
 		si, err := js2.StreamInfo("MY_SOURCE_TEST")
 		if err != nil {
 			t.Fatalf("Could not retrieve stream info")
