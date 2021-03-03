@@ -868,9 +868,10 @@ func (s *Server) processRemoteServerShutdown(sid string) {
 	})
 	// Update any state in nodeInfo.
 	s.nodeToInfo.Range(func(k, v interface{}) bool {
-		si := v.(*nodeInfo)
+		si := v.(nodeInfo)
 		if si.id == sid {
 			si.offline = true
+			s.nodeToInfo.Store(k, si)
 			return false
 		}
 		return true
@@ -907,7 +908,7 @@ func (s *Server) remoteServerShutdown(sub *subscription, _ *client, subject, rep
 	}
 	// Additional processing here.
 	node := string(getHash(si.Name))
-	s.nodeToInfo.Store(node, &nodeInfo{si.Name, si.Cluster, si.ID, true})
+	s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Cluster, si.ID, true})
 }
 
 // remoteServerUpdate listens for statsz updates from other servers.
@@ -925,7 +926,7 @@ func (s *Server) remoteServerUpdate(sub *subscription, _ *client, subject, reply
 		s.sendStatsz(fmt.Sprintf(serverStatsSubj, s.info.ID))
 		s.mu.Unlock()
 	}
-	s.nodeToInfo.Store(node, &nodeInfo{si.Name, si.Cluster, si.ID, false})
+	s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Cluster, si.ID, false})
 }
 
 // updateRemoteServer is called when we have an update from a remote server.
@@ -956,7 +957,7 @@ func (s *Server) processNewServer(ms *ServerInfo) {
 	s.ensureGWsInterestOnlyForLeafNodes()
 	// Add to our nodeToName
 	node := string(getHash(ms.Name))
-	s.nodeToInfo.Store(node, &nodeInfo{ms.Name, ms.Cluster, ms.ID, false})
+	s.nodeToInfo.Store(node, nodeInfo{ms.Name, ms.Cluster, ms.ID, false})
 }
 
 // If GW is enabled on this server and there are any leaf node connections,

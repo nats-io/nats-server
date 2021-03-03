@@ -2980,7 +2980,79 @@ func TestJetStreamClusterPeerRemovalAPI(t *testing.T) {
 			t.Fatalf("Still in the peer list")
 		}
 	}
+}
 
+func TestJetStreamClusterPeerOffline(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	ml := c.leader()
+	rs := c.randomNonLeader()
+
+	checkPeer := func(ml, rs *Server, shouldBeOffline bool) {
+		t.Helper()
+
+		var found bool
+		for _, s := range ml.JetStreamClusterPeers() {
+			if s == rs.Name() {
+				if shouldBeOffline {
+					t.Fatalf("Server %q still in the peer list", rs.Name())
+				} else {
+					found = true
+					break
+				}
+			}
+		}
+		if !shouldBeOffline && !found {
+			t.Fatalf("Server %q not in the peers list", rs.Name())
+		}
+
+		checkFor(t, time.Second, 15*time.Millisecond, func() error {
+			var ok bool
+			ml.nodeToInfo.Range(func(k, v interface{}) bool {
+				if si := v.(nodeInfo); si.name == rs.Name() {
+					if shouldBeOffline && si.offline || !shouldBeOffline && !si.offline {
+						ok = true
+						return false
+					}
+				}
+				return true
+			})
+			if !ok {
+				if shouldBeOffline {
+					return fmt.Errorf("Server %q should be marked as online", rs.Name())
+				}
+				return fmt.Errorf("Server %q is still marked as online", rs.Name())
+			}
+			return nil
+		})
+	}
+
+	// Shutdown the server and make sure that it is now showing as offline.
+	rs.Shutdown()
+	checkPeer(ml, rs, true)
+
+	// Now restart that server and check that is no longer offline.
+	oldrs := rs
+	rs, _ = RunServerWithConfig(rs.getOpts().ConfigFile)
+	defer rs.Shutdown()
+
+	// Replaced old with new server
+	for i := 0; i < len(c.servers); i++ {
+		if c.servers[i] == oldrs {
+			c.servers[i] = rs
+		}
+	}
+
+	// Wait for cluster to be formed
+	checkClusterFormed(t, c.servers...)
+
+	// Make sure that we have a leader (there can always be a re-election)
+	c.waitOnLeader()
+	ml = c.leader()
+
+	// Now check that rs is not offline
+	checkPeer(ml, rs, false)
 }
 
 func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {

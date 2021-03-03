@@ -302,10 +302,10 @@ func (s *Server) JetStreamClusterPeers() []string {
 	var nodes []string
 	for _, p := range peers {
 		si, ok := s.nodeToInfo.Load(p.ID)
-		if !ok || si.(*nodeInfo).offline {
+		if !ok || si.(nodeInfo).offline {
 			continue
 		}
-		nodes = append(nodes, si.(*nodeInfo).name)
+		nodes = append(nodes, si.(nodeInfo).name)
 	}
 	return nodes
 }
@@ -1534,7 +1534,7 @@ func (s *Server) replicas(node RaftNode) []*PeerInfo {
 	var replicas []*PeerInfo
 	for _, rp := range node.Peers() {
 		if sir, ok := s.nodeToInfo.Load(rp.ID); ok && sir != nil {
-			si := sir.(*nodeInfo)
+			si := sir.(nodeInfo)
 			pi := &PeerInfo{Name: si.name, Current: rp.Current, Active: now.Sub(rp.Last), Offline: si.offline, Lag: rp.Lag}
 			replicas = append(replicas, pi)
 		}
@@ -2922,7 +2922,7 @@ func (cc *jetStreamCluster) remapStreamAssignment(sa *streamAssignment, removePe
 	}
 	for _, p := range cc.meta.Peers() {
 		// If it is not in our list it probably shutdown, so don't consider.
-		if si, ok := s.nodeToInfo.Load(p.ID); !ok || si.(*nodeInfo).offline {
+		if si, ok := s.nodeToInfo.Load(p.ID); !ok || si.(nodeInfo).offline {
 			continue
 		}
 		// Make sure they are active and current and not already part of our group.
@@ -2956,7 +2956,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string) []string {
 
 	for _, p := range peers {
 		// If we know its offline or it is not in our list it probably shutdown, so don't consider.
-		if si, ok := s.nodeToInfo.Load(p.ID); !ok || si.(*nodeInfo).offline {
+		if si, ok := s.nodeToInfo.Load(p.ID); !ok || si.(nodeInfo).offline {
 			continue
 		}
 		if cluster != _EMPTY_ {
@@ -4165,7 +4165,7 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 				current = false
 			}
 			if sir, ok := s.nodeToInfo.Load(rp.ID); ok && sir != nil {
-				si := sir.(*nodeInfo)
+				si := sir.(nodeInfo)
 				pi := &PeerInfo{Name: si.name, Current: current, Offline: si.offline, Active: lastSeen, Lag: rp.Lag}
 				ci.Replicas = append(ci.Replicas, pi)
 			}

@@ -349,7 +349,7 @@ func NewServer(opts *Options) (*Server, error) {
 
 	// Place ourselves in some lookup maps.
 	ourNode := string(getHash(serverName))
-	s.nodeToInfo.Store(ourNode, &nodeInfo{serverName, opts.Cluster.Name, info.ID, false})
+	s.nodeToInfo.Store(ourNode, nodeInfo{serverName, opts.Cluster.Name, info.ID, false})
 
 	s.routeResolver = opts.Cluster.resolver
 	if s.routeResolver == nil {
@@ -821,7 +821,7 @@ func (s *Server) configuredRoutes() int {
 // activePeers is used in bootstrapping raft groups like the JetStream meta controller.
 func (s *Server) ActivePeers() (peers []string) {
 	s.nodeToInfo.Range(func(k, v interface{}) bool {
-		si := v.(*nodeInfo)
+		si := v.(nodeInfo)
 		if !si.offline {
 			peers = append(peers, k.(string))
 		}

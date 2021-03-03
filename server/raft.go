@@ -440,7 +440,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 // Maps node names back to server names.
 func (s *Server) serverNameForNode(node string) string {
 	if si, ok := s.nodeToInfo.Load(node); ok && si != nil {
-		return si.(*nodeInfo).name
+		return si.(nodeInfo).name
 	}
 	return _EMPTY_
 }
@@ -448,7 +448,7 @@ func (s *Server) serverNameForNode(node string) string {
 // Maps node names back to cluster names.
 func (s *Server) clusterNameForNode(node string) string {
 	if si, ok := s.nodeToInfo.Load(node); ok && si != nil {
-		return si.(*nodeInfo).cluster
+		return si.(nodeInfo).cluster
 	}
 	return _EMPTY_
 }
@@ -1014,7 +1014,7 @@ func (n *raft) StepDown(preferred ...string) error {
 			if maybeLeader != noLeader && maybeLeader != peer {
 				continue
 			}
-			if si, ok := n.s.nodeToInfo.Load(peer); !ok || si.(*nodeInfo).offline {
+			if si, ok := n.s.nodeToInfo.Load(peer); !ok || si.(nodeInfo).offline {
 				continue
 			}
 			n.debug("Looking at %q which is %v behind", peer, time.Duration(nowts-ps.ts))
