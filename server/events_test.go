@@ -1257,8 +1257,8 @@ func TestAccountReqMonitoring(t *testing.T) {
 	// query SUBSZ for account
 	if resp, err := ncSys.Request(subsz, nil, time.Second); err != nil {
 		t.Fatalf("Error on request: %v", err)
-	} else if !strings.Contains(string(resp.Data), `"num_subscriptions":25,`) {
-		t.Fatalf("unexpected subs count (expected 0): %v", string(resp.Data))
+	} else if !strings.Contains(string(resp.Data), `"num_subscriptions":1,`) {
+		t.Fatalf("unexpected subs count (expected 1): %v", string(resp.Data))
 	}
 	// create a subscription
 	if sub, err := nc.Subscribe("foo", func(msg *nats.Msg) {}); err != nil {
@@ -1270,8 +1270,8 @@ func TestAccountReqMonitoring(t *testing.T) {
 	// query SUBSZ for account
 	if resp, err := ncSys.Request(subsz, nil, time.Second); err != nil {
 		t.Fatalf("Error on request: %v", err)
-	} else if !strings.Contains(string(resp.Data), `"num_subscriptions":26,`) {
-		t.Fatalf("unexpected subs count (expected 26): %v", string(resp.Data))
+	} else if !strings.Contains(string(resp.Data), `"num_subscriptions":2,`) {
+		t.Fatalf("unexpected subs count (expected 2): %v", string(resp.Data))
 	} else if !strings.Contains(string(resp.Data), `"subject":"foo"`) {
 		t.Fatalf("expected subscription foo: %v", string(resp.Data))
 	}
