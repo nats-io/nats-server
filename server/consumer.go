@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nuid"
@@ -164,6 +165,7 @@ var (
 // Consumer is a jetstream consumer.
 type consumer struct {
 	mu                sync.RWMutex
+	js                *jetStream
 	mset              *stream
 	acc               *Account
 	srv               *Server
@@ -418,6 +420,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	// Set name, which will be durable name if set, otherwise we create one at random.
 	o := &consumer{
 		mset:    mset,
+		js:      s.getJetStream(),
 		acc:     a,
 		srv:     s,
 		client:  s.createInternalJetStreamClient(),
@@ -1009,7 +1012,7 @@ func (o *consumer) processAck(_ *subscription, c *client, subject, reply string,
 		o.ackMsg(sseq, dseq, dc)
 	case bytes.HasPrefix(msg, AckNext):
 		o.ackMsg(sseq, dseq, dc)
-		o.processNextMsgReq(nil, nil, subject, reply, msg[len(AckNext):])
+		o.processNextMsgReq(nil, c, subject, reply, msg[len(AckNext):])
 		skipAckReply = true
 	case bytes.Equal(msg, AckNak):
 		o.processNak(sseq, dseq)
@@ -1299,11 +1302,9 @@ func (o *consumer) info() *ConsumerInfo {
 		o.mu.RUnlock()
 		return nil
 	}
+	js := o.js
 	o.mu.RUnlock()
-	s := mset.srv
-	s.mu.Lock()
-	js := s.js
-	s.mu.Unlock()
+
 	if js == nil {
 		return nil
 	}
@@ -1414,13 +1415,7 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, doSample bool) {
 			delete(o.pending, sseq)
 			// Use the original deliver sequence from our pending record.
 			dseq = p.Sequence
-			// Consumers sequence numbers can skip during re-delivery since
-			// they always increment. So if we do not have any pending treat
-			// as all scenario below. Otherwise check that we filled in a gap.
-			if len(o.pending) == 0 {
-				o.adflr, o.asflr = o.dseq-1, o.sseq-1
-				o.pending = nil
-			} else if dseq == o.adflr+1 {
+			if dseq == o.adflr+1 {
 				o.adflr, o.asflr = dseq, sseq
 				for ss := sseq + 1; ss < o.sseq; ss++ {
 					if p, ok := o.pending[ss]; ok {
@@ -1644,18 +1639,21 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _, reply string
 	_, msg = c.msgParts(msg)
 
 	o.mu.Lock()
-	mset := o.mset
+	defer o.mu.Unlock()
+
+	s, mset, js := o.srv, o.mset, o.js
 	if mset == nil || o.isPushMode() || o.sendq == nil {
-		o.mu.Unlock()
 		return
 	}
+	sendq := o.sendq
 
 	sendErr := func(status int, description string) {
-		sendq := o.sendq
+		// Needs to be unlocked to send err.
 		o.mu.Unlock()
+		defer o.mu.Lock()
 		hdr := []byte(fmt.Sprintf("NATS/1.0 %d %s\r\n\r\n", status, description))
 		pmsg := &jsPubMsg{reply, reply, _EMPTY_, hdr, nil, nil, 0}
-		sendq <- pmsg // Send message.
+		sendq <- pmsg // Send error message.
 	}
 
 	if o.waiting.isFull() {
@@ -1673,7 +1671,7 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _, reply string
 		return
 	}
 
-	// In case we have to queue up this request. This is all on stack pre-allocated.
+	// In case we have to queue up this request.
 	wr := waitingRequest{client: c, reply: reply, n: batchSize, noWait: noWait, expires: expires}
 
 	// If we are in replay mode, defer to processReplay for delivery.
@@ -1681,30 +1679,54 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _, reply string
 		o.waiting.add(&wr)
 		o.mu.Unlock()
 		o.signalNewMessages()
+		o.mu.Lock()
 		return
 	}
 
-	for i := 0; i < batchSize; i++ {
-		// See if we have more messages available.
-		if subj, hdr, msg, seq, dc, ts, err := o.getNextMsg(); err == nil {
-			o.deliverMsg(reply, subj, hdr, msg, seq, dc, ts)
-			// Need to discount this from the total n for the request.
-			wr.n--
-		} else {
-			if wr.noWait {
-				switch err {
-				case errMaxAckPending:
-					sendErr(409, "Exceeded MaxAckPending")
-				default:
-					sendErr(404, "No Messages")
+	sendBatch := func(wr *waitingRequest) {
+		for i, batchSize := 0, wr.n; i < batchSize; i++ {
+			// See if we have more messages available.
+			if subj, hdr, msg, seq, dc, ts, err := o.getNextMsg(); err == nil {
+				o.deliverMsg(reply, subj, hdr, msg, seq, dc, ts)
+				// Need to discount this from the total n for the request.
+				wr.n--
+			} else {
+				if wr.noWait {
+					switch err {
+					case errMaxAckPending:
+						sendErr(409, "Exceeded MaxAckPending")
+					default:
+						sendErr(404, "No Messages")
+					}
+				} else {
+					o.waiting.add(wr)
 				}
 				return
 			}
-			o.waiting.add(&wr)
-			break
 		}
 	}
-	o.mu.Unlock()
+
+	// If this is direct from a client can proceed inline.
+	if c.kind == CLIENT {
+		sendBatch(&wr)
+	} else {
+		// Check for API outstanding requests.
+		if apiOut := atomic.AddInt64(&js.apiCalls, 1); apiOut > 1024 {
+			atomic.AddInt64(&js.apiCalls, -1)
+			o.mu.Unlock()
+			sendErr(503, "JetStream API limit exceeded")
+			s.Warnf("JetStream API limit exceeded: %d calls outstanding", apiOut)
+			return
+		}
+
+		// Dispatch the API call to its own Go routine.
+		go func() {
+			o.mu.Lock()
+			sendBatch(&wr)
+			o.mu.Unlock()
+			atomic.AddInt64(&js.apiCalls, -1)
+		}()
+	}
 }
 
 // Increase the delivery count for this message.
