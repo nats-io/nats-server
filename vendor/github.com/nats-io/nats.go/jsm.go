@@ -95,10 +95,18 @@ type Placement struct {
 
 // StreamSource dictates how streams can source from other streams.
 type StreamSource struct {
-	Name          string     `json:"name"`
-	OptStartSeq   uint64     `json:"opt_start_seq,omitempty"`
-	OptStartTime  *time.Time `json:"opt_start_time,omitempty"`
-	FilterSubject string     `json:"filter_subject,omitempty"`
+	Name          string          `json:"name"`
+	OptStartSeq   uint64          `json:"opt_start_seq,omitempty"`
+	OptStartTime  *time.Time      `json:"opt_start_time,omitempty"`
+	FilterSubject string          `json:"filter_subject,omitempty"`
+	External      *ExternalStream `json:"external,omitempty"`
+}
+
+// ExternalStream allows you to qualify access to a stream source in another
+// account.
+type ExternalStream struct {
+	APIPrefix     string `json:"api"`
+	DeliverPrefix string `json:"deliver"`
 }
 
 // apiError is included in all API responses if there was an error.

@@ -3966,28 +3966,18 @@ func TestJetStreamClusterSuperClusterBasics(t *testing.T) {
 	}
 
 	// Now check we can place a stream.
-	// Need to do this by hand for now until Go client catches up.
 	pcn := "C3"
-	cfg := StreamConfig{
+	scResp, err := js.AddStream(&nats.StreamConfig{
 		Name:      "TEST2",
-		Storage:   FileStorage,
-		Placement: &Placement{Cluster: pcn},
-	}
-	req, err := json.Marshal(cfg)
+		Storage:   nats.FileStorage,
+		Placement: &nats.Placement{Cluster: pcn},
+	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	resp, _ := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
-	var scResp JSApiStreamCreateResponse
-	if err := json.Unmarshal(resp.Data, &scResp); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if scResp.StreamInfo == nil || scResp.Error != nil {
-		t.Fatalf("Did not receive correct response: %+v", scResp.Error)
-	}
 
-	if scResp.StreamInfo.Cluster.Name != pcn {
-		t.Fatalf("Expected the stream to be placed in %q, got %q", pcn, scResp.StreamInfo.Cluster.Name)
+	if scResp.Cluster.Name != pcn {
+		t.Fatalf("Expected the stream to be placed in %q, got %q", pcn, scResp.Cluster.Name)
 	}
 }
 
@@ -4322,32 +4312,19 @@ func TestJetStreamCrossAccountMirrorsAndSources(t *testing.T) {
 
 	// Have to do this direct until we get Go client support.
 	// Need to match jsClusterMirrorSourceImportsTempl imports.
-	cfg := StreamConfig{
+	_, err := js.AddStream(&nats.StreamConfig{
 		Name:    "MY_MIRROR_TEST",
-		Storage: FileStorage,
-		Mirror: &StreamSource{
+		Storage: nats.FileStorage,
+		Mirror: &nats.StreamSource{
 			Name: "TEST",
-			External: &ExternalStream{
-				ApiPrefix:     "RI.JS.API",
+			External: &nats.ExternalStream{
+				APIPrefix:     "RI.JS.API",
 				DeliverPrefix: "RI.DELIVER.SYNC.MIRRORS",
 			},
 		},
-	}
-
-	req, err := json.Marshal(cfg)
+	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
-	}
-	resp, err := nc2.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	var scResp JSApiStreamCreateResponse
-	if err := json.Unmarshal(resp.Data, &scResp); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if scResp.StreamInfo == nil || scResp.Error != nil {
-		t.Fatalf("Did not receive correct response: %+v", scResp.Error)
 	}
 
 	js2, err := nc2.JetStream(nats.MaxWait(50 * time.Millisecond))
@@ -4367,34 +4344,21 @@ func TestJetStreamCrossAccountMirrorsAndSources(t *testing.T) {
 	})
 
 	// Now do sources as well.
-	cfg = StreamConfig{
+	_, err = js.AddStream(&nats.StreamConfig{
 		Name:    "MY_SOURCE_TEST",
-		Storage: FileStorage,
-		Sources: []*StreamSource{
-			&StreamSource{
+		Storage: nats.FileStorage,
+		Sources: []*nats.StreamSource{
+			&nats.StreamSource{
 				Name: "TEST",
-				External: &ExternalStream{
-					ApiPrefix:     "RI.JS.API",
+				External: &nats.ExternalStream{
+					APIPrefix:     "RI.JS.API",
 					DeliverPrefix: "RI.DELIVER.SYNC.SOURCES",
 				},
 			},
 		},
-	}
-
-	req, err = json.Marshal(cfg)
+	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
-	}
-	resp, err = nc2.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	scResp.Error = nil
-	if err := json.Unmarshal(resp.Data, &scResp); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if scResp.StreamInfo == nil || scResp.Error != nil {
-		t.Fatalf("Did not receive correct response: %+v", scResp.Error)
 	}
 
 	checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
