@@ -556,6 +556,10 @@ func (a *jetStreamOption) Apply(s *Server) {
 	s.Noticef("Reloaded: jetstream")
 	if !a.newValue {
 		s.DisableJetStream()
+	} else if !s.JetStreamEnabled() {
+		if err := s.restartJetStream(); err != nil {
+			s.Warnf("Can't start JetStream: %v", err)
+		}
 	}
 }
 
@@ -831,6 +835,12 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			return nil, err
 		}
 		if changed := !reflect.DeepEqual(oldValue, newValue); !changed {
+			// Check to make sure we are running JetStream if we think we should be.
+			if strings.ToLower(field.Name) == "jetstream" && newValue.(bool) {
+				if !s.JetStreamEnabled() {
+					diffOpts = append(diffOpts, &jetStreamOption{newValue: true})
+				}
+			}
 			continue
 		}
 		switch strings.ToLower(field.Name) {

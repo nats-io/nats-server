@@ -207,7 +207,7 @@ const (
 	minCampaignTimeout = 100 * time.Millisecond
 	maxCampaignTimeout = 4 * minCampaignTimeout
 	hbInterval         = 250 * time.Millisecond
-	lostQuorumInterval = hbInterval * 3
+	lostQuorumInterval = hbInterval * 5
 )
 
 type RaftConfig struct {

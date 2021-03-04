@@ -1042,7 +1042,7 @@ func TestJetStreamClusterStreamOverlapSubjects(t *testing.T) {
 		t.Fatalf("Expected only 1 stream but got %d", len(streams.Streams))
 	}
 
-	// Now do detailed version.
+	// Now do a detailed version.
 	resp, err = nc.Request(JSApiStreamList, nil, 5*time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)

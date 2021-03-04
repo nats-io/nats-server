@@ -1936,7 +1936,7 @@ var errLastSeqMismatch = errors.New("last sequence mismatch")
 func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64) error {
 	mset.mu.Lock()
 	store := mset.store
-	c := mset.client
+	c, s := mset.client, mset.srv
 	if c == nil {
 		mset.mu.Unlock()
 		return nil
@@ -2129,14 +2129,13 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	if err != nil {
 		// If we did not succeed put those values back.
-		// FIXME(dlc) - This most likely is asymmetric under clustered scenarios.
 		mset.mu.Lock()
 		mset.lseq = olseq
 		mset.lmsgId = olmsgId
 		mset.mu.Unlock()
 
 		if err != ErrStoreClosed {
-			c.Errorf("JetStream failed to store a msg on stream '%s > %s' -  %v", accName, name, err)
+			s.Errorf("JetStream failed to store a msg on stream '%s > %s' -  %v", accName, name, err)
 		}
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
@@ -2144,7 +2143,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			response, _ = json.Marshal(resp)
 		}
 	} else if jsa.limitsExceeded(stype) {
-		c.Warnf("JetStream resource limits exceeded for account: %q", accName)
+		s.Warnf("JetStream resource limits exceeded for account: %q", accName)
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
 			resp.Error = &ApiError{Code: 400, Description: "resource limits exceeded for account"}
