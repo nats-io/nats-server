@@ -1072,7 +1072,26 @@ func (c *client) processGatewayInfo(info *Info) {
 		// connect events to switch those accounts into interest only mode.
 		s.mu.Lock()
 		s.ensureGWsInterestOnlyForLeafNodes()
+		js := s.js
 		s.mu.Unlock()
+
+		// Switch JetStream accounts to interest-only mode.
+		if js != nil {
+			var accounts []*Account
+			js.mu.Lock()
+			if len(js.accounts) > 0 {
+				accounts = make([]*Account, 0, len(js.accounts))
+				for acc := range js.accounts {
+					accounts = append(accounts, acc)
+				}
+			}
+			js.mu.Unlock()
+			for _, acc := range accounts {
+				if acc.JetStreamEnabled() {
+					s.switchAccountToInterestMode(acc.GetName())
+				}
+			}
+		}
 	}
 }
 

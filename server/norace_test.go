@@ -1324,7 +1324,7 @@ func TestNoRaceJetStreamWorkQueueLoadBalance(t *testing.T) {
 	}
 }
 
-func TestJetStreamClusterLargeStreamInlineCatchup(t *testing.T) {
+func TestNoRaceJetStreamClusterLargeStreamInlineCatchup(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "LSS", 3)
 	defer c.shutdown()
 
@@ -1396,7 +1396,7 @@ func TestJetStreamClusterLargeStreamInlineCatchup(t *testing.T) {
 	})
 }
 
-func TestJetStreamClusterStreamCreateAndLostQuorum(t *testing.T) {
+func TestNoRaceJetStreamClusterStreamCreateAndLostQuorum(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R5S", 3)
 	defer c.shutdown()
 
@@ -1437,7 +1437,7 @@ func TestJetStreamClusterStreamCreateAndLostQuorum(t *testing.T) {
 	checkSubsPending(t, sub, 0)
 }
 
-func TestJetStreamClusterMirrors(t *testing.T) {
+func TestNoRaceJetStreamClusterSuperClusterMirrors(t *testing.T) {
 	sc := createJetStreamSuperCluster(t, 3, 3)
 	defer sc.shutdown()
 
@@ -1571,7 +1571,7 @@ func TestJetStreamClusterMirrors(t *testing.T) {
 	})
 }
 
-func TestJetStreamClusterSources(t *testing.T) {
+func TestNoRaceJetStreamClusterSuperClusterSources(t *testing.T) {
 	sc := createJetStreamSuperCluster(t, 3, 3)
 	defer sc.shutdown()
 
