@@ -153,6 +153,7 @@ type raft struct {
 	asubj  string
 	areply string
 
+	sq    *sendq
 	aesub *subscription
 
 	// For holding term and vote and peerstate to be written.
@@ -176,7 +177,6 @@ type raft struct {
 	entryc   chan *appendEntry
 	respc    chan *appendEntryResponse
 	applyc   chan *CommittedEntry
-	sendq    chan *pubMsg
 	quit     chan struct{}
 	reqs     chan *voteRequest
 	votes    chan *voteResponse
@@ -206,7 +206,7 @@ const (
 	maxElectionTimeout = 5 * minElectionTimeout
 	minCampaignTimeout = 100 * time.Millisecond
 	maxCampaignTimeout = 4 * minCampaignTimeout
-	hbInterval         = 250 * time.Millisecond
+	hbInterval         = 500 * time.Millisecond
 	lostQuorumInterval = hbInterval * 5
 )
 
@@ -303,11 +303,11 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		return nil, errNilCfg
 	}
 	s.mu.Lock()
-	if s.sys == nil || s.sys.sendq == nil {
+	if s.sys == nil {
 		s.mu.Unlock()
 		return nil, ErrNoSysAccount
 	}
-	sendq := s.sys.sendq
+	sq := s.sys.sq
 	sacc := s.sys.account
 	hash := s.sys.shash
 	s.mu.Unlock()
@@ -334,7 +334,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		acks:     make(map[uint64]map[string]struct{}),
 		s:        s,
 		c:        s.createInternalSystemClient(),
-		sendq:    sendq,
+		sq:       sq,
 		quit:     make(chan struct{}),
 		wtvch:    make(chan struct{}, 1),
 		wpsch:    make(chan struct{}, 1),
@@ -2884,11 +2884,11 @@ func (n *raft) requestVote() {
 }
 
 func (n *raft) sendRPC(subject, reply string, msg []byte) {
-	n.sendq <- &pubMsg{n.c, subject, reply, nil, msg, false}
+	n.sq.send(subject, reply, nil, msg)
 }
 
 func (n *raft) sendReply(subject string, msg []byte) {
-	n.sendq <- &pubMsg{n.c, subject, _EMPTY_, nil, msg, false}
+	n.sq.send(subject, _EMPTY_, nil, msg)
 }
 
 func (n *raft) wonElection(votes int) bool {

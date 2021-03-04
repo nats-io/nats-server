@@ -1651,7 +1651,11 @@ func (s *Server) jsStreamLeaderStepDownRequest(sub *subscription, c *client, sub
 	}
 
 	// Call actual stepdown.
-	mset.raftNode().StepDown()
+	if mset != nil {
+		if node := mset.raftNode(); node != nil {
+			node.StepDown()
+		}
+	}
 
 	resp.Success = true
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))

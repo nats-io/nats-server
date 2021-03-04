@@ -136,6 +136,8 @@ type stream struct {
 	sid       int
 	pubAck    []byte
 	sendq     chan *jsPubMsg
+	mch       chan struct{}
+	msgs      *inbound
 	store     StreamStore
 	lseq      uint64
 	lmsgId    string
@@ -301,6 +303,8 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		sysc:      ic,
 		stype:     cfg.Storage,
 		consumers: make(map[string]*consumer),
+		mch:       make(chan struct{}, 1),
+		msgs:      &inbound{},
 		qch:       make(chan struct{}),
 	}
 
@@ -1909,16 +1913,77 @@ func (mset *stream) isClustered() bool {
 	return mset.node != nil
 }
 
-// processInboundJetStreamMsg handles processing messages bound for a stream.
-func (mset *stream) processInboundJetStreamMsg(_ *subscription, pc *client, subject, reply string, rmsg []byte) {
-	hdr, msg := pc.msgParts(rmsg)
+// Used if we have to queue things internally to avoid the route/gw path.
+type inMsg struct {
+	subj string
+	rply string
+	hdr  []byte
+	msg  []byte
+	next *inMsg
+}
 
+// Linked list for inbound messages.
+type inbound struct {
+	head  *inMsg
+	tail  *inMsg
+	msgs  int
+	bytes int
+}
+
+func (mset *stream) pending() *inMsg {
+	mset.mu.Lock()
+	head := mset.msgs.head
+	mset.msgs.head, mset.msgs.tail = nil, nil
+	mset.msgs.msgs, mset.msgs.bytes = 0, 0
+	mset.mu.Unlock()
+	return head
+}
+
+func (mset *stream) queueInboundMsg(subj, rply string, hdr, msg []byte) {
+	m := &inMsg{subj, rply, nil, nil, nil}
+	// Copy these.
+	if len(hdr) > 0 {
+		hdr = append(hdr[:0:0], hdr...)
+		m.hdr = hdr
+	}
+	if len(msg) > 0 {
+		msg = append(msg[:0:0], msg...)
+		m.msg = msg
+	}
+
+	mset.mu.Lock()
+	if mset.msgs.head == nil {
+		mset.msgs.head = m
+	} else {
+		mset.msgs.tail.next = m
+	}
+	mset.msgs.tail = m
+	mset.msgs.msgs++
+	mset.msgs.bytes += len(subj) + len(rply) + len(hdr) + len(msg)
+	mset.mu.Unlock()
+
+	select {
+	case mset.mch <- struct{}{}:
+	default:
+	}
+}
+
+// processInboundJetStreamMsg handles processing messages bound for a stream.
+func (mset *stream) processInboundJetStreamMsg(_ *subscription, c *client, subject, reply string, rmsg []byte) {
 	mset.mu.RLock()
 	isLeader, isClustered := mset.isLeader(), mset.node != nil
 	mset.mu.RUnlock()
 
 	// If we are not the leader just ignore.
 	if !isLeader {
+		return
+	}
+
+	hdr, msg := c.msgParts(rmsg)
+
+	// If we are not receiving directly from a client we should move this this Go routine.
+	if c.kind != CLIENT {
+		mset.queueInboundMsg(subject, reply, hdr, msg)
 		return
 	}
 
@@ -2222,7 +2287,7 @@ func (mset *stream) setupSendCapabilities() {
 		return
 	}
 	mset.sendq = make(chan *jsPubMsg, msetSendQSize)
-	go mset.internalSendLoop()
+	go mset.internalLoop()
 }
 
 // Name returns the stream name.
@@ -2235,14 +2300,15 @@ func (mset *stream) name() string {
 	return mset.cfg.Name
 }
 
-func (mset *stream) internalSendLoop() {
+func (mset *stream) internalLoop() {
 	mset.mu.RLock()
 	s := mset.srv
 	c := s.createInternalJetStreamClient()
 	c.registerWithAccount(mset.acc)
 	defer c.closeConnection(ClientClosed)
-	sendq := mset.sendq
+	sendq, mch := mset.sendq, mset.mch
 	name := mset.cfg.Name
+	isClustered := mset.node != nil
 	mset.mu.RUnlock()
 
 	// Warn when internal send queue is backed up past 75%
@@ -2286,6 +2352,21 @@ func (mset *stream) internalSendLoop() {
 			// we failed to deliver the message. If so alert the observable.
 			if pm.o != nil && pm.seq > 0 && !didDeliver {
 				pm.o.didNotDeliver(pm.seq)
+			}
+		case <-mch:
+			for im := mset.pending(); im != nil; {
+				// If we are clustered we need to propose this message to the underlying raft group.
+				if isClustered {
+					mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg)
+				} else {
+					mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0)
+				}
+				// Do this here to nil out below vs up in for loop.
+				next := im.next
+				im.next, im.hdr, im.msg = nil, nil, nil
+				if im = next; im == nil {
+					im = mset.pending()
+				}
 			}
 		case <-s.quitCh:
 			return
