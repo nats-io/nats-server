@@ -3857,7 +3857,7 @@ func TestJetStreamClusterStreamGetMsg(t *testing.T) {
 	}
 }
 
-func TestJetStreamClusterMetaPlacement(t *testing.T) {
+func TestJetStreamClusterSuperClusterMetaPlacement(t *testing.T) {
 	sc := createJetStreamSuperCluster(t, 3, 3)
 	defer sc.shutdown()
 
@@ -4482,6 +4482,106 @@ func TestJetStreamClusterJSAPIImport(t *testing.T) {
 	if meta.Consumer != 1 || meta.Stream != 1 || meta.Delivered != 1 || meta.Pending != 0 {
 		t.Fatalf("Bad meta: %+v", meta)
 	}
+}
+
+func TestJetStreamClusterSuperClusterInterestOnlyMode(t *testing.T) {
+	template := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: "%s"}
+		accounts {
+			one {
+				jetstream: enabled
+				users [{user: one, password: password}]
+			}
+			two {
+				%s
+				users [{user: two, password: password}]
+			}
+		}
+		cluster {
+			listen: 127.0.0.1:%d
+			name: %s
+			routes = ["nats://127.0.0.1:%d"]
+		}
+		gateway {
+			name: %s
+			listen: 127.0.0.1:%d
+			gateways = [{name: %s, urls: ["nats://127.0.0.1:%d"]}]
+		}
+	`
+	storeDir1, _ := ioutil.TempDir("", JetStreamStoreDir)
+	conf1 := createConfFile(t, []byte(fmt.Sprintf(template,
+		"S1", storeDir1, "", 33222, "A", 33222, "A", 11222, "B", 11223)))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	storeDir2, _ := ioutil.TempDir("", JetStreamStoreDir)
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(template,
+		"S2", storeDir2, "", 33223, "B", 33223, "B", 11223, "A", 11222)))
+	s2, o2 := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	waitForInboundGateways(t, s1, 1, 2*time.Second)
+	waitForInboundGateways(t, s2, 1, 2*time.Second)
+	waitForOutboundGateways(t, s1, 1, 2*time.Second)
+	waitForOutboundGateways(t, s2, 1, 2*time.Second)
+
+	nc1 := natsConnect(t, fmt.Sprintf("nats://two:password@127.0.0.1:%d", o1.Port))
+	defer nc1.Close()
+	nc1.Publish("foo", []byte("some message"))
+	nc1.Flush()
+
+	nc2 := natsConnect(t, fmt.Sprintf("nats://two:password@127.0.0.1:%d", o2.Port))
+	defer nc2.Close()
+	nc2.Publish("bar", []byte("some message"))
+	nc2.Flush()
+
+	checkMode := func(accName string, expectedMode GatewayInterestMode) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+			servers := []*Server{s1, s2}
+			for _, s := range servers {
+				var gws []*client
+				s.getInboundGatewayConnections(&gws)
+				for _, gw := range gws {
+					var mode GatewayInterestMode
+					gw.mu.Lock()
+					ie := gw.gw.insim[accName]
+					if ie != nil {
+						mode = ie.mode
+					}
+					gw.mu.Unlock()
+					if ie == nil {
+						return fmt.Errorf("Account %q not in map", accName)
+					}
+					if mode != expectedMode {
+						return fmt.Errorf("Expected account %q mode to be %v, got: %v", accName, expectedMode, mode)
+					}
+				}
+			}
+			return nil
+		})
+	}
+
+	checkMode("one", InterestOnly)
+	checkMode("two", Optimistic)
+
+	// Now change account "two" to enable JS
+	changeCurrentConfigContentWithNewContent(t, conf1, []byte(fmt.Sprintf(template,
+		"S1", storeDir1, "jetstream: enabled", 33222, "A", 33222, "A", 11222, "B", 11223)))
+	changeCurrentConfigContentWithNewContent(t, conf2, []byte(fmt.Sprintf(template,
+		"S2", storeDir2, "jetstream: enabled", 33223, "B", 33223, "B", 11223, "A", 11222)))
+
+	if err := s1.Reload(); err != nil {
+		t.Fatalf("Error on s1 reload: %v", err)
+	}
+	if err := s2.Reload(); err != nil {
+		t.Fatalf("Error on s2 reload: %v", err)
+	}
+
+	checkMode("one", InterestOnly)
+	checkMode("two", InterestOnly)
 }
 
 // Support functions

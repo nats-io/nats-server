@@ -374,8 +374,13 @@ func (s *Server) configJetStream(acc *Account) error {
 			if err := acc.UpdateJetStreamLimits(acc.jsLimits); err != nil {
 				return err
 			}
-		} else if err := acc.EnableJetStream(acc.jsLimits); err != nil {
-			return err
+		} else {
+			if err := acc.EnableJetStream(acc.jsLimits); err != nil {
+				return err
+			}
+			if s.gateway.enabled {
+				s.switchAccountToInterestMode(acc.GetName())
+			}
 		}
 		acc.jsLimits = nil
 	} else if acc != s.SystemAccount() {

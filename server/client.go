@@ -3629,7 +3629,11 @@ func (c *client) setHeader(key, value string, msg []byte) []byte {
 	if c.pa.hdr > LEN_CR_LF {
 		omi = c.pa.hdr
 		hdr := removeHeaderIfPresent(msg[:c.pa.hdr-LEN_CR_LF], key)
-		bb.Write(hdr)
+		if len(hdr) == 0 {
+			bb.WriteString(hdrLine)
+		} else {
+			bb.Write(hdr)
+		}
 	} else {
 		bb.WriteString(hdrLine)
 	}
@@ -4349,12 +4353,18 @@ func (c *client) flushAndClose(minimalFlush bool) {
 	}
 	c.out.p, c.out.s = nil, nil
 
-	// Close the low level connection. WriteDeadline need to be set
-	// in case this is a TLS connection.
+	// Close the low level connection.
 	if c.nc != nil {
-		c.nc.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
-		c.nc.Close()
+		// Starting with Go 1.16, the low level close will set its own deadline
+		// of 5 seconds, so setting our own deadline does not work. Instead,
+		// we will close the TLS connection in separate go routine.
+		nc := c.nc
 		c.nc = nil
+		if _, ok := nc.(*tls.Conn); ok {
+			go func() { nc.Close() }()
+		} else {
+			nc.Close()
+		}
 	}
 }
 
