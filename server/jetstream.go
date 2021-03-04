@@ -127,13 +127,11 @@ type jsaUsage struct {
 
 // EnableJetStream will enable JetStream support on this server with the given configuration.
 // A nil configuration will dynamically choose the limits and temporary file storage directory.
-// If this server is part of a cluster, a system account will need to be defined.
 func (s *Server) EnableJetStream(config *JetStreamConfig) error {
-	s.mu.Lock()
-	if s.js != nil {
-		s.mu.Unlock()
+	if s.JetStreamEnabled() {
 		return fmt.Errorf("jetstream already enabled")
 	}
+
 	s.Noticef("Starting JetStream")
 	if config == nil || config.MaxMemory <= 0 || config.MaxStore <= 0 {
 		var storeDir string
@@ -151,6 +149,12 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 		cfg.StoreDir = filepath.Join(os.TempDir(), JetStreamStoreDir)
 	}
 
+	return s.enableJetStream(cfg)
+}
+
+// enableJetStream will start up the JetStream subsystem.
+func (s *Server) enableJetStream(cfg JetStreamConfig) error {
+	s.mu.Lock()
 	s.js = &jetStream{srv: s, config: cfg, accounts: make(map[*Account]*jsAccount), apiSubs: NewSublistNoCache()}
 	s.mu.Unlock()
 
@@ -221,6 +225,18 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 	return nil
 }
 
+// restartJetStream will try to re-enable JetStream during a reload if it had been disabled during runtime.
+func (s *Server) restartJetStream() error {
+	opts := s.getOpts()
+	cfg := JetStreamConfig{
+		StoreDir:  opts.StoreDir,
+		MaxMemory: opts.JetStreamMaxMemory,
+		MaxStore:  opts.JetStreamMaxStore,
+	}
+	s.Noticef("Restarting JetStream")
+	return s.enableJetStream(cfg)
+}
+
 // checkStreamExports will check if we have the JS exports setup
 // on the system account, and if not go ahead and set them up.
 func (s *Server) checkJetStreamExports() {
@@ -276,41 +292,28 @@ func (s *Server) DisableJetStream() error {
 	s.setJetStreamDisabled()
 
 	if s.JetStreamIsClustered() {
-		wasLeader := s.JetStreamIsLeader()
+		isLeader := s.JetStreamIsLeader()
 		js, cc := s.getJetStreamCluster()
 		js.mu.RLock()
 		meta := cc.meta
 		js.mu.RUnlock()
 
-		s.transferRaftLeaders()
-
-		if wasLeader {
-			// Wait until the new metacontroller leader is established
-			const timeout = 2 * time.Second
-			maxWait := time.NewTimer(timeout)
-			defer maxWait.Stop()
-			t := time.NewTicker(50 * time.Millisecond)
-			defer t.Stop()
-		LOOP:
-			for {
+		if meta != nil {
+			if isLeader {
+				js.remapStreams(meta.ID())
+				s.Warnf("JetStream initiating meta leader transfer")
 				select {
 				case <-s.quitCh:
 					return nil
-				case <-maxWait.C:
-					break LOOP
-				case <-t.C:
-					js.mu.RLock()
-					isCurrent := cc.isCurrent()
-					js.mu.RUnlock()
-					if isCurrent {
-						break LOOP
-					}
+				case <-time.After(2 * time.Second):
+				}
+				if !s.JetStreamIsCurrent() {
+					s.Warnf("JetStream timeout waiting for meta leader transfer")
 				}
 			}
-		}
-		// Once here we can forward our proposal to remove ourselves.
-		if meta != nil {
+			// Once here we can forward our proposal to remove ourselves.
 			meta.ProposeRemovePeer(meta.ID())
+			time.Sleep(250 * time.Millisecond)
 			meta.Delete()
 		}
 	}
@@ -509,7 +512,7 @@ func (s *Server) shutdownJetStream() {
 	}
 
 	s.Noticef("Initiating JetStream Shutdown...")
-	defer s.Noticef("JetStream shutdown")
+	defer s.Noticef("JetStream Shutdown")
 
 	var _a [512]*Account
 	accounts := _a[:0]

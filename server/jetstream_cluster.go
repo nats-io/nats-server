@@ -723,13 +723,17 @@ func (js *jetStream) monitorCluster() {
 	t := time.NewTicker(compactInterval)
 	defer t.Stop()
 
-	var isLeader bool
-	var lastSnap []byte
+	var (
+		isLeader     bool
+		lastSnap     []byte
+		lastSnapTime time.Time
+	)
 
 	doSnapshot := func() {
 		if snap := js.metaSnapshot(); !bytes.Equal(lastSnap, snap) {
 			if err := n.InstallSnapshot(snap); err == nil {
 				lastSnap = snap
+				lastSnapTime = time.Now()
 			}
 		}
 	}
@@ -752,7 +756,7 @@ func (js *jetStream) monitorCluster() {
 			// FIXME(dlc) - Deal with errors.
 			if _, didRemoval, err := js.applyMetaEntries(ce.Entries, isRecovering); err == nil {
 				n.Applied(ce.Index)
-				if didRemoval {
+				if didRemoval && time.Since(lastSnapTime) > 2*time.Second {
 					// Since we received one make sure we have our own since we do not store
 					// our meta state outside of raft.
 					doSnapshot()
@@ -948,27 +952,45 @@ func (sa *streamAssignment) copyGroup() *streamAssignment {
 	return &csa
 }
 
+func (js *jetStream) remapStreams(peer string) {
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	js.remapStreamsLocked(peer)
+}
+
+// Lock should be held.
+func (js *jetStream) remapStreamsLocked(peer string) {
+	cc := js.cluster
+
+	// Grab our nodes.
+	// Need to search for this peer in our stream assignments for potential remapping.
+	for _, as := range cc.streams {
+		for _, sa := range as {
+			if sa.Group.isMember(peer) {
+				js.removePeerFromStream(sa, peer)
+			}
+		}
+	}
+}
+
 func (js *jetStream) processRemovePeer(peer string) {
 	js.mu.Lock()
 	s, cc := js.srv, js.cluster
 
 	// Only leader will do remappings for streams and consumers.
 	if cc.isLeader() {
-		// Grab our nodes.
-		// Need to search for this peer in our stream assignments for potential remapping.
-		for _, as := range cc.streams {
-			for _, sa := range as {
-				if sa.Group.isMember(peer) {
-					js.removePeerFromStream(sa, peer)
-				}
-			}
-		}
-
+		js.remapStreamsLocked(peer)
 	}
 
 	// All nodes will check if this is them.
 	isUs := cc.meta.ID() == peer
+	disabled := js.disabled
 	js.mu.Unlock()
+
+	// We may be already disabled.
+	if disabled {
+		return
+	}
 
 	if isUs {
 		s.Errorf("JetStream being DISABLED, our server was removed from the cluster")
@@ -1014,7 +1036,10 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 			js.applyMetaSnapshot(e.Data, isRecovering)
 			didSnap = true
 		} else if e.Type == EntryRemovePeer {
-			js.processRemovePeer(string(e.Data))
+			if !isRecovering {
+				js.processRemovePeer(string(e.Data))
+				didRemove = true
+			}
 		} else {
 			buf := e.Data
 			switch entryOp(buf[0]) {
@@ -1327,7 +1352,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 				}
 				js.mu.Lock()
 				sa.err = err
-				sa.responded = true
 				if n != nil {
 					n.Delete()
 				}
@@ -1606,7 +1630,14 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 		resp.Error = jsError(err)
 		s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 	} else {
-		resp.StreamInfo = &StreamInfo{Created: mset.createdTime(), State: mset.state(), Config: mset.config(), Cluster: js.clusterInfo(mset.raftGroup()), Sources: mset.sourcesInfo(), Mirror: mset.mirrorInfo()}
+		resp.StreamInfo = &StreamInfo{
+			Created: mset.createdTime(),
+			State:   mset.state(),
+			Config:  mset.config(),
+			Cluster: js.clusterInfo(mset.raftGroup()),
+			Sources: mset.sourcesInfo(),
+			Mirror:  mset.mirrorInfo(),
+		}
 		s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 		if node := mset.raftNode(); node != nil {
 			mset.sendCreateAdvisory()
@@ -1840,7 +1871,6 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, sa *streamAssignme
 	client, subject, reply := sa.Client, sa.Subject, sa.Reply
 	alreadyRunning := rg.node != nil
 	hasResponded := sa.responded
-	sa.responded = true
 	js.mu.RUnlock()
 
 	mset, err := acc.lookupStream(sa.Config.Name)
@@ -1857,7 +1887,6 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, sa *streamAssignme
 	if err != nil {
 		js.mu.Lock()
 		sa.err = err
-		sa.responded = true
 		if rg.node != nil {
 			rg.node.Delete()
 		}
@@ -1877,6 +1906,10 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, sa *streamAssignme
 	mset.mu.RLock()
 	isLeader := mset.isLeader()
 	mset.mu.RUnlock()
+
+	js.mu.Lock()
+	sa.responded = true
+	js.mu.Unlock()
 
 	if !isLeader || hasResponded {
 		return
@@ -1945,23 +1978,36 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 
 	// This is an error condition.
 	if err != nil {
-		s.Debugf("Stream create failed for '%s > %s': %v", sa.Client.serviceAccount(), sa.Config.Name, err)
+		s.Warnf("Stream create failed for '%s > %s': %v", sa.Client.serviceAccount(), sa.Config.Name, err)
 		js.mu.Lock()
+
 		sa.err = err
-		sa.responded = true
+		hasResponded := sa.responded
+
+		// If out of space do nothing for now.
+		if isOutOfSpaceErr(err) {
+			hasResponded = true
+		}
+
 		if rg.node != nil {
 			rg.node.Delete()
 		}
-		result := &streamAssignmentResult{
-			Account:  sa.Client.serviceAccount(),
-			Stream:   sa.Config.Name,
-			Response: &JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}},
+
+		var result *streamAssignmentResult
+		if !hasResponded {
+			result = &streamAssignmentResult{
+				Account:  sa.Client.serviceAccount(),
+				Stream:   sa.Config.Name,
+				Response: &JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}},
+			}
+			result.Response.Error = jsError(err)
 		}
-		result.Response.Error = jsError(err)
 		js.mu.Unlock()
 
 		// Send response to the metadata leader. They will forward to the user as needed.
-		s.sendInternalMsgLocked(streamAssignmentSubj, _EMPTY_, nil, result)
+		if result != nil {
+			s.sendInternalMsgLocked(streamAssignmentSubj, _EMPTY_, nil, result)
+		}
 		return
 	}
 
@@ -1993,7 +2039,6 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 						}
 						js.mu.Lock()
 						sa.err = err
-						sa.responded = true
 						result := &streamAssignmentResult{
 							Account: sa.Client.serviceAccount(),
 							Stream:  sa.Config.Name,
@@ -2303,22 +2348,38 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment) {
 	}
 
 	if err != nil {
-		s.Debugf("Consumer create failed for '%s > %s > %s': %v\n", ca.Client.serviceAccount(), ca.Stream, ca.Name, err)
+		s.Warnf("Consumer create failed for '%s > %s > %s': %v\n", ca.Client.serviceAccount(), ca.Stream, ca.Name, err)
+		js.mu.Lock()
+
 		ca.err = err
+		hasResponded := ca.responded
+
+		// If out of space do nothing for now.
+		if isOutOfSpaceErr(err) {
+			hasResponded = true
+		}
+
 		if rg.node != nil {
 			rg.node.Delete()
 		}
-		result := &consumerAssignmentResult{
-			Account:  ca.Client.serviceAccount(),
-			Stream:   ca.Stream,
-			Consumer: ca.Name,
-			Response: &JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}},
-		}
-		result.Response.Error = jsError(err)
 
-		// Send response to the metadata leader. They will forward to the user as needed.
-		b, _ := json.Marshal(result) // Avoids auto-processing and doing fancy json with newlines.
-		s.sendInternalMsgLocked(consumerAssignmentSubj, _EMPTY_, nil, b)
+		var result *consumerAssignmentResult
+		if !hasResponded {
+			result = &consumerAssignmentResult{
+				Account:  ca.Client.serviceAccount(),
+				Stream:   ca.Stream,
+				Consumer: ca.Name,
+				Response: &JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}},
+			}
+			result.Response.Error = jsError(err)
+		}
+		js.mu.Unlock()
+
+		if result != nil {
+			// Send response to the metadata leader. They will forward to the user as needed.
+			b, _ := json.Marshal(result) // Avoids auto-processing and doing fancy json with newlines.
+			s.sendInternalMsgLocked(consumerAssignmentSubj, _EMPTY_, nil, b)
+		}
 	} else {
 		o.setCreatedTime(ca.Created)
 		// Start our monitoring routine.
@@ -2813,12 +2874,14 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 		} else if result.Restore != nil {
 			resp = s.jsonResponse(result.Restore)
 		}
-		js.srv.sendAPIErrResponse(sa.Client, acc, sa.Subject, sa.Reply, _EMPTY_, resp)
-		sa.responded = true
-		// TODO(dlc) - Could have mixed results, should track per peer.
-		// Set sa.err while we are deleting so we will not respond to list/names requests.
-		sa.err = ErrJetStreamNotAssigned
-		cc.meta.Propose(encodeDeleteStreamAssignment(sa))
+		if !sa.responded {
+			sa.responded = true
+			js.srv.sendAPIErrResponse(sa.Client, acc, sa.Subject, sa.Reply, _EMPTY_, resp)
+			// TODO(dlc) - Could have mixed results, should track per peer.
+			// Set sa.err while we are deleting so we will not respond to list/names requests.
+			sa.err = ErrJetStreamNotAssigned
+			cc.meta.Propose(encodeDeleteStreamAssignment(sa))
+		}
 	}
 }
 
@@ -2920,13 +2983,19 @@ func (cc *jetStreamCluster) remapStreamAssignment(sa *streamAssignment, removePe
 	if sa.Config.Placement != nil && sa.Config.Placement.Cluster != _EMPTY_ {
 		cluster = sa.Config.Placement.Cluster
 	}
+	ourID := cc.meta.ID()
+
 	for _, p := range cc.meta.Peers() {
-		// If it is not in our list it probably shutdown, so don't consider.
+		// If it is not in our list it's probably shutdown, so don't consider.
 		if si, ok := s.nodeToInfo.Load(p.ID); !ok || si.(nodeInfo).offline {
 			continue
 		}
 		// Make sure they are active and current and not already part of our group.
 		current, lastSeen := p.Current, now.Sub(p.Last)
+		// We do not track activity of ourselves so ignore.
+		if p.ID == ourID {
+			lastSeen = 0
+		}
 		if !current || lastSeen > lostQuorumInterval || sa.Group.isMember(p.ID) {
 			continue
 		}

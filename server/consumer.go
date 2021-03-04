@@ -687,10 +687,12 @@ func (o *consumer) setLeader(isLeader bool) {
 		o.mu.Lock()
 		o.unsubscribe(o.ackSub)
 		o.unsubscribe(o.reqSub)
-		o.unsubscribe(o.infoSub)
 		o.ackSub = nil
 		o.reqSub = nil
-		o.infoSub = nil
+		if o.infoSub != nil {
+			o.srv.sysUnsubscribe(o.infoSub)
+			o.infoSub = nil
+		}
 		o.sendq = nil
 		if o.qch != nil {
 			close(o.qch)

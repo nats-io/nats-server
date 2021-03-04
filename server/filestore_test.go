@@ -1920,10 +1920,10 @@ func TestFileStoreWriteFailures(t *testing.T) {
 	if stat, err := os.Stat(tdir); err != nil || !stat.IsDir() {
 		t.SkipNow()
 	}
+	defer os.RemoveAll(tdir)
 
 	storeDir := path.Join(tdir, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
-	defer os.RemoveAll(storeDir)
 
 	subj, msg := "foo", []byte("Hello Write Failures!")
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
@@ -1945,6 +1945,7 @@ func TestFileStoreWriteFailures(t *testing.T) {
 	}
 
 	state := fs.State()
+
 	if state.LastSeq != lseq-1 {
 		t.Fatalf("Expected last seq to be %d, got %d\n", lseq-1, state.LastSeq)
 	}
@@ -1955,7 +1956,7 @@ func TestFileStoreWriteFailures(t *testing.T) {
 		t.Fatalf("Expected error loading seq that failed, got none")
 	}
 	// Loading should still work.
-	if _, _, _, _, err := fs.LoadMsg(2); err != nil {
+	if _, _, _, _, err := fs.LoadMsg(1); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
@@ -1969,6 +1970,7 @@ func TestFileStoreWriteFailures(t *testing.T) {
 	defer fs.Stop()
 
 	state2 := fs.State()
+
 	// Ignore lost state.
 	state.Lost, state2.Lost = nil, nil
 	if !reflect.DeepEqual(state2, state) {
