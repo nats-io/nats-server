@@ -2992,18 +2992,20 @@ func TestJetStreamClusterPeerOffline(t *testing.T) {
 	checkPeer := func(ml, rs *Server, shouldBeOffline bool) {
 		t.Helper()
 
-		var found bool
-		for _, s := range ml.JetStreamClusterPeers() {
-			if s == rs.Name() {
-				found = true
-				break
-			}
-		}
-		if !shouldBeOffline && !found {
-			t.Fatalf("Server %q not in the peers list", rs.Name())
-		}
-
 		checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+			var found bool
+			for _, s := range ml.JetStreamClusterPeers() {
+				if s == rs.Name() {
+					found = true
+					break
+				}
+			}
+			if !shouldBeOffline && !found {
+				return fmt.Errorf("Server %q not in the peers list", rs.Name())
+			} else if shouldBeOffline && found {
+				return fmt.Errorf("Server %q should not be in the peers list", rs.Name())
+			}
+
 			var ok bool
 			ml.nodeToInfo.Range(func(k, v interface{}) bool {
 				if si := v.(nodeInfo); si.name == rs.Name() {
