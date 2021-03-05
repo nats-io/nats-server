@@ -108,19 +108,19 @@ func (sq *sendq) send(subj, rply string, hdr, msg []byte) {
 		msg = append(msg[:0:0], msg...)
 		out.msg = msg
 	}
-	sq.mu.Lock()
 
-	var doKick bool
+	sq.mu.Lock()
+	var notify bool
 	if sq.head == nil {
 		sq.head = out
-		doKick = true
+		notify = true
 	} else {
 		sq.tail.next = out
 	}
 	sq.tail = out
 	sq.mu.Unlock()
 
-	if doKick {
+	if notify {
 		select {
 		case sq.mch <- struct{}{}:
 		default:

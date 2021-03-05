@@ -3891,7 +3891,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 
 	mset.mu.RLock()
 	canRespond := !mset.cfg.NoAck && len(reply) > 0
-	s, jsa, st, rf, sendq := mset.srv, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.sendq
+	s, jsa, st, rf, outq := mset.srv, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.outq
 	maxMsgSize := int(mset.cfg.MaxMsgSize)
 	msetName := mset.cfg.Name
 	mset.mu.RUnlock()
@@ -3920,7 +3920,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: mset.name()}}
 			resp.Error = &ApiError{Code: 400, Description: "resource limits exceeded for account"}
 			response, _ = json.Marshal(resp)
-			sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
+			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
 		}
 		return err
 	}
@@ -3933,7 +3933,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: mset.name()}}
 			resp.Error = &ApiError{Code: 400, Description: "message size exceeds maximum allowed"}
 			response, _ = json.Marshal(resp)
-			sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
+			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
 		}
 		return err
 	}
@@ -3962,7 +3962,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 
 	// If we errored out respond here.
 	if err != nil && canRespond {
-		sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0}
+		outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
 	}
 
 	if err != nil && isOutOfSpaceErr(err) {
