@@ -270,8 +270,7 @@ type client struct {
 
 	trace bool
 	echo  bool
-
-	internal bool
+	noIcb bool
 
 	tags    jwt.TagList
 	nameTag string
@@ -564,7 +563,6 @@ func (c *client) initClient() {
 
 	c.subs = make(map[string]*subscription)
 	c.echo = true
-	c.internal = true
 
 	c.setTraceLevel()
 
@@ -3029,7 +3027,7 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 	client.outBytes += msgSize
 
 	// Check for internal subscriptions.
-	if sub.icb != nil && c.internal {
+	if sub.icb != nil && !c.noIcb {
 		if gwrply {
 			// Note that we keep track of the GW routed reply in the destination
 			// connection (`client`). The routed reply subject is in `c.pa.reply`,

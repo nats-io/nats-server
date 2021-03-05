@@ -1924,17 +1924,14 @@ type inMsg struct {
 
 // Linked list for inbound messages.
 type inbound struct {
-	head  *inMsg
-	tail  *inMsg
-	msgs  int
-	bytes int
+	head *inMsg
+	tail *inMsg
 }
 
 func (mset *stream) pending() *inMsg {
 	mset.mu.Lock()
 	head := mset.msgs.head
 	mset.msgs.head, mset.msgs.tail = nil, nil
-	mset.msgs.msgs, mset.msgs.bytes = 0, 0
 	mset.mu.Unlock()
 	return head
 }
@@ -1952,19 +1949,21 @@ func (mset *stream) queueInboundMsg(subj, rply string, hdr, msg []byte) {
 	}
 
 	mset.mu.Lock()
+	var doKick bool
 	if mset.msgs.head == nil {
 		mset.msgs.head = m
+		doKick = true
 	} else {
 		mset.msgs.tail.next = m
 	}
 	mset.msgs.tail = m
-	mset.msgs.msgs++
-	mset.msgs.bytes += len(subj) + len(rply) + len(hdr) + len(msg)
 	mset.mu.Unlock()
 
-	select {
-	case mset.mch <- struct{}{}:
-	default:
+	if doKick {
+		select {
+		case mset.mch <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -2364,9 +2363,7 @@ func (mset *stream) internalLoop() {
 				// Do this here to nil out below vs up in for loop.
 				next := im.next
 				im.next, im.hdr, im.msg = nil, nil, nil
-				if im = next; im == nil {
-					im = mset.pending()
-				}
+				im = next
 			}
 		case <-s.quitCh:
 			return

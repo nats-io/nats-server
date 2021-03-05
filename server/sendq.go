@@ -28,13 +28,11 @@ type outMsg struct {
 }
 
 type sendq struct {
-	mu    sync.Mutex
-	mch   chan struct{}
-	head  *outMsg
-	tail  *outMsg
-	s     *Server
-	msgs  int
-	bytes int
+	mu   sync.Mutex
+	mch  chan struct{}
+	head *outMsg
+	tail *outMsg
+	s    *Server
 }
 
 func (s *Server) newSendQ() *sendq {
@@ -52,7 +50,7 @@ func (sq *sendq) internalLoop() {
 
 	c := s.createInternalSystemClient()
 	c.registerWithAccount(s.SystemAccount())
-	c.internal = false
+	c.noIcb = true
 
 	defer c.closeConnection(ClientClosed)
 
@@ -95,12 +93,11 @@ func (sq *sendq) pending() *outMsg {
 	sq.mu.Lock()
 	head := sq.head
 	sq.head, sq.tail = nil, nil
-	sq.msgs, sq.bytes = 0, 0
 	sq.mu.Unlock()
 	return head
 }
 
-func (sq *sendq) send(subj, rply string, hdr, msg []byte) (int, int) {
+func (sq *sendq) send(subj, rply string, hdr, msg []byte) {
 	out := &outMsg{subj, rply, nil, nil, nil}
 	// We will copy these for now.
 	if len(hdr) > 0 {
@@ -113,22 +110,20 @@ func (sq *sendq) send(subj, rply string, hdr, msg []byte) (int, int) {
 	}
 	sq.mu.Lock()
 
-	sq.msgs++
-	sq.bytes += len(subj) + len(rply) + len(hdr) + len(msg)
-
+	var doKick bool
 	if sq.head == nil {
 		sq.head = out
+		doKick = true
 	} else {
 		sq.tail.next = out
 	}
 	sq.tail = out
-	msgs, bytes := sq.msgs, sq.bytes
 	sq.mu.Unlock()
 
-	select {
-	case sq.mch <- struct{}{}:
-	default:
+	if doKick {
+		select {
+		case sq.mch <- struct{}{}:
+		default:
+		}
 	}
-
-	return msgs, bytes
 }
