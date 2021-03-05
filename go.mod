@@ -13,3 +13,5 @@ require (
 	golang.org/x/sys v0.0.0-20200930185726-fdedc70b468f
 	golang.org/x/time v0.0.0-20200416051211-89c76fbcd5d1
 )
+
+replace github.com/nats-io/nats.go => ../nats.go

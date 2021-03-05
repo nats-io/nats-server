@@ -7,7 +7,7 @@ github.com/minio/highwayhash
 # github.com/nats-io/jwt/v2 v2.0.0-20210208203759-ff814ca5f813
 ## explicit
 github.com/nats-io/jwt/v2
-# github.com/nats-io/nats.go v1.10.1-0.20210228004050-ed743748acac
+# github.com/nats-io/nats.go v1.10.1-0.20210228004050-ed743748acac => ../nats.go
 ## explicit
 github.com/nats-io/nats.go
 github.com/nats-io/nats.go/encoders/builtin
@@ -37,3 +37,4 @@ golang.org/x/sys/windows/svc/mgr
 # golang.org/x/time v0.0.0-20200416051211-89c76fbcd5d1
 ## explicit
 golang.org/x/time/rate
+# github.com/nats-io/nats.go => ../nats.go

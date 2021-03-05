@@ -52,6 +52,9 @@ const (
 	// apiConsumerListT is used to return all detailed consumer information
 	apiConsumerListT = "CONSUMER.LIST.%s"
 
+	// apiConsumerNamesT is used to return a list with all consumer names for the stream.
+	apiConsumerNamesT = "CONSUMER.NAMES.%s"
+
 	// apiStreams can lookup a stream by subject.
 	apiStreams = "STREAM.NAMES"
 
@@ -332,13 +335,21 @@ func ExpectLastMsgId(id string) PubOpt {
 // MaxWait sets the maximum amount of time we will wait for a response.
 type MaxWait time.Duration
 
-func (ttl MaxWait) configurePublish(opts *pubOpts) error {
+func (ttl MaxWait) configureJSContext(js *js) error {
+	js.wait = time.Duration(ttl)
+	return nil
+}
+
+// AckWait sets the maximum amount of time we will wait for an ack.
+type AckWait time.Duration
+
+func (ttl AckWait) configurePublish(opts *pubOpts) error {
 	opts.ttl = time.Duration(ttl)
 	return nil
 }
 
-func (ttl MaxWait) configureJSContext(js *js) error {
-	js.wait = time.Duration(ttl)
+func (ttl AckWait) configureSubscribe(opts *subOpts) error {
+	opts.cfg.AckWait = time.Duration(ttl)
 	return nil
 }
 
@@ -485,6 +496,11 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, opts []
 	isPullMode := o.pull > 0
 	if cb != nil && isPullMode {
 		return nil, ErrPullModeNotAllowed
+	}
+
+	badPullAck := o.cfg.AckPolicy == AckNonePolicy || o.cfg.AckPolicy == AckAllPolicy
+	if isPullMode && badPullAck {
+		return nil, fmt.Errorf("invalid ack mode for pull consumers: %s", o.cfg.AckPolicy)
 	}
 
 	var (
@@ -686,18 +702,6 @@ type subOpts struct {
 	cfg *ConsumerConfig
 }
 
-// Durable defines the consumer name for JetStream durable subscribers.
-func Durable(name string) SubOpt {
-	return subOptFn(func(opts *subOpts) error {
-		if strings.Contains(name, ".") {
-			return ErrInvalidDurableName
-		}
-
-		opts.cfg.Durable = name
-		return nil
-	})
-}
-
 // Pull defines the batch size of messages that will be received
 // when using pull based JetStream consumers.
 func Pull(batchSize int) SubOpt {
@@ -726,6 +730,18 @@ func PullDirect(stream, consumer string, batchSize int) SubOpt {
 func ManualAck() SubOpt {
 	return subOptFn(func(opts *subOpts) error {
 		opts.mack = true
+		return nil
+	})
+}
+
+// Durable defines the consumer name for JetStream durable subscribers.
+func Durable(name string) SubOpt {
+	return subOptFn(func(opts *subOpts) error {
+		if strings.Contains(name, ".") {
+			return ErrInvalidDurableName
+		}
+
+		opts.cfg.Durable = name
 		return nil
 	})
 }
@@ -794,6 +810,20 @@ func AckAll() SubOpt {
 func AckExplicit() SubOpt {
 	return subOptFn(func(opts *subOpts) error {
 		opts.cfg.AckPolicy = AckExplicitPolicy
+		return nil
+	})
+}
+
+func MaxDeliver(n int) SubOpt {
+	return subOptFn(func(opts *subOpts) error {
+		opts.cfg.MaxDeliver = n
+		return nil
+	})
+}
+
+func MaxAckPending(n int) SubOpt {
+	return subOptFn(func(opts *subOpts) error {
+		opts.cfg.MaxAckPending = n
 		return nil
 	})
 }
