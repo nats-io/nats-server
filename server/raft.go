@@ -1254,8 +1254,11 @@ func (n *raft) resetElect(et time.Duration) {
 	if n.elect == nil {
 		n.elect = time.NewTimer(et)
 	} else {
-		if !n.elect.Stop() && len(n.elect.C) > 0 {
-			<-n.elect.C
+		if !n.elect.Stop() {
+			select {
+			case <-n.elect.C:
+			default:
+			}
 		}
 		n.elect.Reset(et)
 	}

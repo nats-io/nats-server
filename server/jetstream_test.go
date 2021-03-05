@@ -7031,6 +7031,81 @@ func TestJetStreamSimpleFileRecovery(t *testing.T) {
 	}
 }
 
+func TestJetStreamPushConsumerIdleHeartbeats(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	// Forced cleanup of all persisted state.
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST"}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sub, err := nc.SubscribeSync(nats.NewInbox())
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer sub.Unsubscribe()
+
+	// Test errors first
+	obsReq := CreateConsumerRequest{
+		Stream: "TEST",
+		Config: ConsumerConfig{
+			DeliverSubject: sub.Subject,
+			Heartbeat:      time.Millisecond,
+		},
+	}
+	req, err := json.Marshal(obsReq)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, err := nc.Request(fmt.Sprintf(JSApiConsumerCreateT, "TEST"), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var ccResp JSApiConsumerCreateResponse
+	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if ccResp.Error == nil {
+		t.Fatalf("Expected an error, got none")
+	}
+	// Set acceptable heartbeat.
+	obsReq.Config.Heartbeat = 100 * time.Millisecond
+	req, err = json.Marshal(obsReq)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, err = nc.Request(fmt.Sprintf(JSApiConsumerCreateT, "TEST"), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	ccResp.Error = nil
+	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	checkFor(t, time.Second, 20*time.Millisecond, func() error {
+		if nmsgs, _, err := sub.Pending(); err != nil || nmsgs < 9 {
+			return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, 9)
+		}
+		return nil
+	})
+	m, _ := sub.NextMsg(0)
+	if m.Header.Get("Status") != "200" {
+		t.Fatalf("Expected a 200 status code, got %q", m.Header.Get("Status"))
+	}
+	if m.Header.Get("Description") != "Idle Heartbeat" {
+		t.Fatalf("Wrong description , got %q", m.Header.Get("Description"))
+	}
+}
+
 func TestJetStreamInfoAPIWithHeaders(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()

@@ -61,6 +61,7 @@ type ConsumerConfig struct {
 	SampleFrequency string        `json:"sample_freq,omitempty"`
 	MaxWaiting      int           `json:"max_waiting,omitempty"`
 	MaxAckPending   int           `json:"max_ack_pending,omitempty"`
+	Heartbeat       time.Duration `json:"idle_heartbeat,omitempty"`
 }
 
 type CreateConsumerRequest struct {
@@ -261,6 +262,9 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		if config.MaxAckPending > 0 && config.AckPolicy == AckNone {
 			return nil, fmt.Errorf("consumer requires ack policy for max ack pending")
 		}
+		if config.Heartbeat > 0 && config.Heartbeat < 100*time.Millisecond {
+			return nil, fmt.Errorf("consumer idle heartbeat needs to be > 100ms")
+		}
 	} else {
 		// Pull mode / work queue mode require explicit ack.
 		if config.AckPolicy != AckExplicit {
@@ -280,6 +284,9 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		// Set to default if not specified.
 		if config.MaxWaiting == 0 {
 			config.MaxWaiting = JSWaitQueueDefaultMax
+		}
+		if config.Heartbeat > 0 {
+			return nil, fmt.Errorf("consumer idle heartbeat requires a push based consumer")
 		}
 	}
 
@@ -1804,6 +1811,14 @@ func (o *consumer) checkWaitingForInterest() bool {
 	return o.waiting.len() > 0
 }
 
+// Lock should be held.
+func (o *consumer) hbTimer() (time.Duration, *time.Timer) {
+	if o.cfg.Heartbeat == 0 {
+		return 0, nil
+	}
+	return o.cfg.Heartbeat, time.NewTimer(o.cfg.Heartbeat)
+}
+
 func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 	// On startup check to see if we are in a a reply situtation where replay policy is not instant.
 	var (
@@ -1819,6 +1834,11 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			return
 		}
 		lseq = o.mset.state().LastSeq
+	}
+	var hbc <-chan time.Time
+	hbd, hb := o.hbTimer()
+	if hb != nil {
+		hbc = hb.C
 	}
 	inch := o.inch
 	o.mu.Unlock()
@@ -1913,8 +1933,19 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			o.replay = false
 		}
 
+		// Reset our idle heartbeat timer if set.
+		if hb != nil {
+			if !hb.Stop() {
+				select {
+				case <-hbc:
+				default:
+				}
+			}
+			hb.Reset(hbd)
+		}
+
 		// We will wait here for new messages to arrive.
-		mch := o.mch
+		mch, outq, odsubj := o.mch, o.outq, o.cfg.DeliverSubject
 		o.mu.Unlock()
 
 		select {
@@ -1926,6 +1957,9 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			return
 		case <-mch:
 			// Messages are waiting.
+		case <-hbc:
+			hdr := []byte("NATS/1.0 200 Idle Heartbeat\r\n\r\n")
+			outq.send(&jsPubMsg{odsubj, odsubj, _EMPTY_, hdr, nil, nil, 0, nil})
 		}
 	}
 }
