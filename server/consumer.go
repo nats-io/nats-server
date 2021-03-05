@@ -187,7 +187,7 @@ type consumer struct {
 	ackSubj           string
 	nextMsgSubj       string
 	maxp              int
-	sendq             chan *jsPubMsg
+	outq              *jsOutQ
 	pending           map[uint64]*Pending
 	ptmr              *time.Timer
 	rdq               []uint64
@@ -428,6 +428,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		sysc:    s.createInternalJetStreamClient(),
 		cfg:     *config,
 		dsubj:   config.DeliverSubject,
+		outq:    mset.outq,
 		active:  true,
 		qch:     make(chan struct{}),
 		mch:     make(chan struct{}, 1),
@@ -670,8 +671,6 @@ func (o *consumer) setLeader(isLeader bool) {
 			o.replay = true
 		}
 
-		// Recreate internal sendq
-		o.sendq = make(chan *jsPubMsg, msetSendQSize)
 		// Recreate quit channel.
 		o.qch = make(chan struct{})
 		qch := o.qch
@@ -679,8 +678,6 @@ func (o *consumer) setLeader(isLeader bool) {
 
 		// Now start up Go routine to deliver msgs.
 		go o.loopAndGatherMsgs(qch)
-		// Startup our deliver loop.
-		go o.loopAndDeliverMsgs(qch)
 
 	} else {
 		// Shutdown the go routines and the subscriptions.
@@ -693,7 +690,6 @@ func (o *consumer) setLeader(isLeader bool) {
 			o.srv.sysUnsubscribe(o.infoSub)
 			o.infoSub = nil
 		}
-		o.sendq = nil
 		if o.qch != nil {
 			close(o.qch)
 			o.qch = nil
@@ -737,16 +733,10 @@ func (o *consumer) unsubscribe(sub *subscription) {
 	o.client.processUnsub(sub.sid)
 }
 
-// We need to make sure we protect access to the sendq.
+// We need to make sure we protect access to the outq.
 // Do all advisory sends here.
-// Lock should be held on entry but will be released.
 func (o *consumer) sendAdvisory(subj string, msg []byte) {
-	sendq := o.sendq
-	o.mu.Unlock()
-	if sendq != nil {
-		sendq <- &jsPubMsg{subj, subj, _EMPTY_, nil, msg, nil, 0}
-	}
-	o.mu.Lock()
+	o.outq.send(&jsPubMsg{subj, subj, _EMPTY_, nil, msg, nil, 0, nil})
 }
 
 func (o *consumer) sendDeleteAdvisoryLocked() {
@@ -1230,73 +1220,6 @@ func (o *consumer) writeStoreState() error {
 	return o.store.Update(&state)
 }
 
-// loopAndDeliverMsgs() will loop and deliver messages and watch for interest changes.
-func (o *consumer) loopAndDeliverMsgs(qch chan struct{}) {
-	o.mu.Lock()
-	inch, sendq := o.inch, o.sendq
-	s, acc := o.acc.srv, o.acc
-	o.mu.Unlock()
-
-	// Create our client used to send messages.
-	c := s.createInternalJetStreamClient()
-	// Bind to the account.
-	c.registerWithAccount(acc)
-	// Clean up on exit.
-	defer c.closeConnection(ClientClosed)
-
-	// Warn when internal send queue is backed up past 75%
-	warnThresh := cap(sendq) * 3 / 4
-	warnFreq := time.Second
-	last := time.Now().Add(-warnFreq)
-
-	for {
-		if len(sendq) > warnThresh && time.Since(last) >= warnFreq {
-			s.Warnf("Jetstream internal consumer send queue > 75%% for account: %q consumer: %q", acc.Name, o)
-			last = time.Now()
-		}
-
-		select {
-		case <-qch:
-			return
-		case interest := <-inch:
-			// inch can be nil on pull-based, but then this will
-			// just block and not fire.
-			o.updateDeliveryInterest(interest)
-		case pm := <-sendq:
-			if pm == nil {
-				return
-			}
-			c.pa.subject = []byte(pm.subj)
-			c.pa.deliver = []byte(pm.dsubj)
-			c.pa.size = len(pm.msg) + len(pm.hdr)
-			c.pa.szb = []byte(strconv.Itoa(c.pa.size))
-			c.pa.reply = []byte(pm.reply)
-
-			var msg []byte
-			if len(pm.hdr) > 0 {
-				c.pa.hdr = len(pm.hdr)
-				c.pa.hdb = []byte(strconv.Itoa(c.pa.hdr))
-				msg = append(pm.hdr, pm.msg...)
-				msg = append(msg, _CRLF_...)
-			} else {
-				c.pa.hdr = -1
-				c.pa.hdb = nil
-				msg = append(pm.msg, _CRLF_...)
-			}
-
-			didDeliver, _ := c.processInboundClientMsg(msg)
-			c.pa.szb = nil
-			c.flushClients(0)
-
-			// Check to see if this is a delivery for an observable and
-			// we failed to deliver the message. If so alert the observable.
-			if !didDeliver && pm.o != nil && pm.seq > 0 {
-				pm.o.didNotDeliver(pm.seq)
-			}
-		}
-	}
-}
-
 // Info returns our current consumer state.
 func (o *consumer) info() *ConsumerInfo {
 	o.mu.RLock()
@@ -1645,18 +1568,13 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _, reply string
 	defer o.mu.Unlock()
 
 	s, mset, js := o.srv, o.mset, o.js
-	if mset == nil || o.sendq == nil {
+	if mset == nil {
 		return
 	}
-	sendq := o.sendq
 
 	sendErr := func(status int, description string) {
-		// Needs to be unlocked to send err.
-		o.mu.Unlock()
-		defer o.mu.Lock()
 		hdr := []byte(fmt.Sprintf("NATS/1.0 %d %s\r\n\r\n", status, description))
-		pmsg := &jsPubMsg{reply, reply, _EMPTY_, hdr, nil, nil, 0}
-		sendq <- pmsg // Send error message.
+		o.outq.send(&jsPubMsg{reply, reply, _EMPTY_, hdr, nil, nil, 0, nil})
 	}
 
 	if o.isPushMode() {
@@ -1846,11 +1764,10 @@ func (o *consumer) forceExpireFirstWaiting() *waitingRequest {
 		return wr
 	}
 	// If we are expiring this and we think there is still interest, alert.
-	if rr := o.acc.sl.Match(wr.reply); len(rr.psubs)+len(rr.qsubs) > 0 && o.mset != nil && o.sendq != nil {
+	if rr := o.acc.sl.Match(wr.reply); len(rr.psubs)+len(rr.qsubs) > 0 && o.mset != nil {
 		// We still appear to have interest, so send alert as courtesy.
 		hdr := []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
-		pmsg := &jsPubMsg{wr.reply, wr.reply, _EMPTY_, hdr, nil, nil, 0}
-		o.sendq <- pmsg // Send message.
+		o.outq.send(&jsPubMsg{wr.reply, wr.reply, _EMPTY_, hdr, nil, nil, 0, nil})
 	}
 	return wr
 }
@@ -1903,6 +1820,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		}
 		lseq = o.mset.state().LastSeq
 	}
+	inch := o.inch
 	o.mu.Unlock()
 
 	// Deliver all the msgs we have now, once done or on a condition, we wait for new ones.
@@ -2000,9 +1918,14 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		o.mu.Unlock()
 
 		select {
+		case interest := <-inch:
+			// inch can be nil on pull-based, but then this will
+			// just block and not fire.
+			o.updateDeliveryInterest(interest)
 		case <-qch:
 			return
 		case <-mch:
+			// Messages are waiting.
 		}
 	}
 }
@@ -2014,7 +1937,7 @@ func (o *consumer) ackReply(sseq, dseq, dc uint64, ts int64, pending uint64) str
 // Deliver a msg to the consumer.
 // Lock should be held and o.mset validated to be non-nil.
 func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint64, ts int64) {
-	if o.mset == nil || o.sendq == nil {
+	if o.mset == nil {
 		return
 	}
 	// Update pending on first attempt
@@ -2032,21 +1955,17 @@ func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 	dseq := o.dseq
 	o.dseq++
 
-	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, dseq, dc, ts, o.sgap), hdr, msg, o, seq}
+	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, dseq, dc, ts, o.sgap), hdr, msg, o, seq, nil}
 	mset := o.mset
 	ap := o.cfg.AckPolicy
-	sendq := o.sendq
 
-	// This needs to be unlocked since the other side may need this lock on a failed delivery.
-	o.mu.Unlock()
 	// Send message.
-	sendq <- pmsg
+	o.outq.send(pmsg)
+
 	// If we are ack none and mset is interest only we should make sure stream removes interest.
 	if ap == AckNone && mset.cfg.Retention == InterestPolicy && !mset.checkInterest(seq, o) {
-		mset.store.RemoveMsg(seq)
+		mset.rmch <- seq
 	}
-	// Re-acquire lock.
-	o.mu.Lock()
 
 	if ap == AckExplicit || ap == AckAll {
 		o.trackPending(seq, dseq)
@@ -2541,6 +2460,7 @@ func (o *consumer) stopWithFlags(dflag, doSignal, advisory bool) error {
 			seqs = append(seqs, seq)
 		}
 		o.mu.Unlock()
+
 		// Sort just to keep pending sparse array state small.
 		sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
 		for _, seq := range seqs {

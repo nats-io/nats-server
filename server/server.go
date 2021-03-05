@@ -1120,6 +1120,7 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		replies: make(map[string]msgHandler),
 		sendq:   make(chan *pubMsg, internalSendQLen),
 		resetCh: make(chan struct{}),
+		sq:      s.newSendQ(),
 		statsz:  eventsHBInterval,
 		orphMax: 5 * eventsHBInterval,
 		chkOrph: 3 * eventsHBInterval,

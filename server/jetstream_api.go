@@ -1651,7 +1651,11 @@ func (s *Server) jsStreamLeaderStepDownRequest(sub *subscription, c *client, sub
 	}
 
 	// Call actual stepdown.
-	mset.raftNode().StepDown()
+	if mset != nil {
+		if node := mset.raftNode(); node != nil {
+			node.StepDown()
+		}
+	}
 
 	resp.Success = true
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
@@ -2785,7 +2789,7 @@ func (s *Server) streamSnapshot(ci *ClientInfo, acc *Account, mset *stream, sr *
 		chunk = chunk[:n]
 		if err != nil {
 			if n > 0 {
-				mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, chunk, nil, 0}
+				mset.outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, chunk, nil, 0, nil})
 			}
 			break
 		}
@@ -2800,15 +2804,14 @@ func (s *Server) streamSnapshot(ci *ClientInfo, acc *Account, mset *stream, sr *
 			case <-time.After(10 * time.Millisecond):
 			}
 		}
-		// TODO(dlc) - Might want these moved off sendq if we have contention.
 		ackReply := fmt.Sprintf("%s.%d.%d", ackSubj, len(chunk), index)
-		mset.sendq <- &jsPubMsg{reply, _EMPTY_, ackReply, nil, chunk, nil, 0}
+		mset.outq.send(&jsPubMsg{reply, _EMPTY_, ackReply, nil, chunk, nil, 0, nil})
 		atomic.AddInt32(&out, int32(len(chunk)))
 	}
 done:
 	// Send last EOF
 	// TODO(dlc) - place hash in header
-	mset.sendq <- &jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, nil, nil, 0}
+	mset.outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
 }
 
 // Request to create a durable consumer.

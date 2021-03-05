@@ -270,6 +270,7 @@ type client struct {
 
 	trace bool
 	echo  bool
+	noIcb bool
 
 	tags    jwt.TagList
 	nameTag string
@@ -3026,7 +3027,7 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 	client.outBytes += msgSize
 
 	// Check for internal subscriptions.
-	if sub.icb != nil {
+	if sub.icb != nil && !c.noIcb {
 		if gwrply {
 			// Note that we keep track of the GW routed reply in the destination
 			// connection (`client`). The routed reply subject is in `c.pa.reply`,

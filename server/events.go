@@ -91,6 +91,7 @@ type internal struct {
 	sendq    chan *pubMsg
 	resetCh  chan struct{}
 	wg       sync.WaitGroup
+	sq       *sendq
 	orphMax  time.Duration
 	chkOrph  time.Duration
 	statsz   time.Duration
