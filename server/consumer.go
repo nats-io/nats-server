@@ -1958,7 +1958,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		case <-mch:
 			// Messages are waiting.
 		case <-hbc:
-			hdr := []byte("NATS/1.0 200 Idle Heartbeat\r\n\r\n")
+			hdr := []byte("NATS/1.0 100 Idle Heartbeat\r\n\r\n")
 			outq.send(&jsPubMsg{odsubj, odsubj, _EMPTY_, hdr, nil, nil, 0, nil})
 		}
 	}

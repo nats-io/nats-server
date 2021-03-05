@@ -7098,8 +7098,8 @@ func TestJetStreamPushConsumerIdleHeartbeats(t *testing.T) {
 		return nil
 	})
 	m, _ := sub.NextMsg(0)
-	if m.Header.Get("Status") != "200" {
-		t.Fatalf("Expected a 200 status code, got %q", m.Header.Get("Status"))
+	if m.Header.Get("Status") != "100" {
+		t.Fatalf("Expected a 100 status code, got %q", m.Header.Get("Status"))
 	}
 	if m.Header.Get("Description") != "Idle Heartbeat" {
 		t.Fatalf("Wrong description , got %q", m.Header.Get("Description"))
@@ -10558,6 +10558,9 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 	createStreamOk(scfg)
 	// Now create our mirror stream.
 	createStreamOk(cfg)
+
+	// For now wait for the consumer state to register.
+	time.Sleep(250 * time.Millisecond)
 
 	// Send 100 messages.
 	for i := 0; i < 100; i++ {
