@@ -7110,7 +7110,7 @@ func TestJetStreamPushConsumerFlowControl(t *testing.T) {
 	}
 
 	sendBatch(100)
-	checkSubPending(4) // First two and two flowcontrol from slow start pause.
+	checkSubPending(2) // First and flowcontrol from slow start pause.
 
 	var n int
 	for m, err := sub.NextMsg(time.Second); err == nil; m, err = sub.NextMsg(time.Second) {
