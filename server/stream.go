@@ -139,6 +139,7 @@ type stream struct {
 	mch       chan struct{}
 	msgs      *inbound
 	store     StreamStore
+	rmch      chan uint64
 	lseq      uint64
 	lmsgId    string
 	consumers map[string]*consumer
@@ -305,6 +306,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		consumers: make(map[string]*consumer),
 		mch:       make(chan struct{}, 1),
 		msgs:      &inbound{},
+		rmch:      make(chan uint64, 8192),
 		qch:       make(chan struct{}),
 	}
 
@@ -2339,7 +2341,7 @@ func (mset *stream) internalLoop() {
 	c := s.createInternalJetStreamClient()
 	c.registerWithAccount(mset.acc)
 	defer c.closeConnection(ClientClosed)
-	outq, qch, mch := mset.outq, mset.qch, mset.mch
+	outq, qch, mch, rmch := mset.outq, mset.qch, mset.mch, mset.rmch
 	isClustered := mset.node != nil
 	mset.mu.RUnlock()
 
@@ -2380,7 +2382,6 @@ func (mset *stream) internalLoop() {
 				pm = next
 			}
 			c.flushClients(10 * time.Millisecond)
-
 		case <-mch:
 			for im := mset.pending(); im != nil; {
 				// If we are clustered we need to propose this message to the underlying raft group.
@@ -2394,6 +2395,8 @@ func (mset *stream) internalLoop() {
 				im.next, im.hdr, im.msg = nil, nil, nil
 				im = next
 			}
+		case seq := <-rmch:
+			mset.store.RemoveMsg(seq)
 		case <-qch:
 			return
 		case <-s.quitCh:

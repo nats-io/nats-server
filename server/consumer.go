@@ -1964,7 +1964,7 @@ func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 
 	// If we are ack none and mset is interest only we should make sure stream removes interest.
 	if ap == AckNone && mset.cfg.Retention == InterestPolicy && !mset.checkInterest(seq, o) {
-		mset.store.RemoveMsg(seq)
+		mset.rmch <- seq
 	}
 
 	if ap == AckExplicit || ap == AckAll {
@@ -2460,6 +2460,7 @@ func (o *consumer) stopWithFlags(dflag, doSignal, advisory bool) error {
 			seqs = append(seqs, seq)
 		}
 		o.mu.Unlock()
+
 		// Sort just to keep pending sparse array state small.
 		sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
 		for _, seq := range seqs {
