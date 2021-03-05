@@ -40,7 +40,7 @@ func (s *Server) handleSignals() {
 	}
 	c := make(chan os.Signal, 1)
 
-	signal.Notify(c, syscall.SIGINT, syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGHUP)
+	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGHUP)
 
 	go func() {
 		for {
@@ -48,7 +48,7 @@ func (s *Server) handleSignals() {
 			case sig := <-c:
 				s.Debugf("Trapped %q signal", sig)
 				switch sig {
-				case syscall.SIGINT:
+				case syscall.SIGINT, syscall.SIGTERM:
 					s.Shutdown()
 					os.Exit(0)
 				case syscall.SIGUSR1:

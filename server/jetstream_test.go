@@ -7031,6 +7031,108 @@ func TestJetStreamSimpleFileRecovery(t *testing.T) {
 	}
 }
 
+func TestJetStreamPushConsumerFlowControl(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	// Forced cleanup of all persisted state.
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST"}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sub, err := nc.SubscribeSync(nats.NewInbox())
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer sub.Unsubscribe()
+
+	obsReq := CreateConsumerRequest{
+		Stream: "TEST",
+		Config: ConsumerConfig{
+			Durable:        "dlc",
+			DeliverSubject: sub.Subject,
+			FlowControl:    true,
+		},
+	}
+	req, err := json.Marshal(obsReq)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, "TEST", "dlc"), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var ccResp JSApiConsumerCreateResponse
+	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if ccResp.Error != nil {
+		t.Fatalf("Unexpected error: %+v", ccResp.Error)
+	}
+
+	// Grab the low level consumer so we can manually set the fc max.
+	if mset, err := s.GlobalAccount().lookupStream("TEST"); err != nil {
+		t.Fatalf("Error looking up stream: %v", err)
+	} else if obs := mset.lookupConsumer("dlc"); obs == nil {
+		t.Fatalf("Error looking up stream: %v", err)
+	} else {
+		obs.setMaxPendingBytes(16 * 1024)
+	}
+
+	msgSize := 1024
+	msg := make([]byte, msgSize)
+	rand.Read(msg)
+
+	sendBatch := func(n int) {
+		for i := 0; i < n; i++ {
+			if _, err := js.Publish("TEST", msg); err != nil {
+				t.Fatalf("Unexpected publish error: %v", err)
+			}
+		}
+	}
+
+	checkSubPending := func(numExpected int) {
+		t.Helper()
+		checkFor(t, time.Second, 100*time.Millisecond, func() error {
+			if nmsgs, _, err := sub.Pending(); err != nil || nmsgs != numExpected {
+				return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, numExpected)
+			}
+			return nil
+		})
+	}
+
+	sendBatch(100)
+	checkSubPending(4) // First two and two flowcontrol from slow start pause.
+
+	var n int
+	for m, err := sub.NextMsg(time.Second); err == nil; m, err = sub.NextMsg(time.Second) {
+		if m.Subject == "TEST" {
+			n++
+		} else {
+			// This should be a FC control message.
+			if m.Header.Get("Status") != "100" {
+				t.Fatalf("Expected a 100 status code, got %q", m.Header.Get("Status"))
+			}
+			if m.Header.Get("Description") != "FlowControl Request" {
+				t.Fatalf("Wrong description, got %q", m.Header.Get("Description"))
+			}
+			m.Respond(nil)
+		}
+	}
+
+	if n != 100 {
+		t.Fatalf("Expected to receive all 100 messages but got %d", n)
+	}
+}
+
 func TestJetStreamPushConsumerIdleHeartbeats(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
@@ -7102,7 +7204,7 @@ func TestJetStreamPushConsumerIdleHeartbeats(t *testing.T) {
 		t.Fatalf("Expected a 100 status code, got %q", m.Header.Get("Status"))
 	}
 	if m.Header.Get("Description") != "Idle Heartbeat" {
-		t.Fatalf("Wrong description , got %q", m.Header.Get("Description"))
+		t.Fatalf("Wrong description, got %q", m.Header.Get("Description"))
 	}
 }
 

@@ -2268,6 +2268,13 @@ type jsPubMsg struct {
 	next  *jsPubMsg
 }
 
+func (pm *jsPubMsg) size() int {
+	if pm == nil {
+		return 0
+	}
+	return len(pm.subj) + len(pm.reply) + len(pm.hdr) + len(pm.msg)
+}
+
 // Forms a linked list for sending internal system messages.
 type jsOutQ struct {
 	mu   sync.Mutex

@@ -62,6 +62,7 @@ type ConsumerConfig struct {
 	MaxWaiting      int           `json:"max_waiting,omitempty"`
 	MaxAckPending   int           `json:"max_ack_pending,omitempty"`
 	Heartbeat       time.Duration `json:"idle_heartbeat,omitempty"`
+	FlowControl     bool          `json:"flow_control,omitempty"`
 }
 
 type CreateConsumerRequest struct {
@@ -188,6 +189,11 @@ type consumer struct {
 	ackSubj           string
 	nextMsgSubj       string
 	maxp              int
+	pblimit           int
+	maxpb             int
+	pbytes            int
+	pfcs              int
+	fcSub             *subscription
 	outq              *jsOutQ
 	pending           map[uint64]*Pending
 	ptmr              *time.Timer
@@ -225,6 +231,9 @@ const (
 	// JsDeleteWaitTimeDefault is the default amount of time we will wait for non-durable
 	// observables to be in an inactive state before deleting them.
 	JsDeleteWaitTimeDefault = 5 * time.Second
+	// JsFlowControlMaxPending specifies default pending bytes during flow control that can be
+	// outstanding.
+	JsFlowControlMaxPending = 64 * 1024 * 1024
 )
 
 func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
@@ -287,6 +296,9 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		}
 		if config.Heartbeat > 0 {
 			return nil, fmt.Errorf("consumer idle heartbeat requires a push based consumer")
+		}
+		if config.FlowControl {
+			return nil, fmt.Errorf("consumer flow control requires a push based consumer")
 		}
 	}
 
@@ -660,6 +672,16 @@ func (o *consumer) setLeader(isLeader bool) {
 			return
 		}
 
+		// Check on flow control settings.
+		if o.cfg.FlowControl {
+			o.setMaxPendingBytes(JsFlowControlMaxPending)
+			if o.fcSub, err = o.subscribeInternal(jsFlowControl, o.processFlowControl); err != nil {
+				o.mu.Unlock()
+				o.deleteWithoutAdvisory()
+				return
+			}
+		}
+
 		// Setup initial pending.
 		o.setInitialPending()
 
@@ -691,8 +713,10 @@ func (o *consumer) setLeader(isLeader bool) {
 		o.mu.Lock()
 		o.unsubscribe(o.ackSub)
 		o.unsubscribe(o.reqSub)
+		o.unsubscribe(o.fcSub)
 		o.ackSub = nil
 		o.reqSub = nil
+		o.fcSub = nil
 		if o.infoSub != nil {
 			o.srv.sysUnsubscribe(o.infoSub)
 			o.infoSub = nil
@@ -1862,9 +1886,14 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			return
 		}
 
-		// If we are in push mode and not active let's stop sending.
-		if o.isPushMode() && !o.active {
-			goto waitForMsgs
+		// If we are in push mode and not active or under flowcontrol let's stop sending.
+		if o.isPushMode() {
+			if !o.active {
+				goto waitForMsgs
+			}
+			if o.maxpb > 0 && o.pbytes > o.maxpb {
+				goto waitForMsgs
+			}
 		}
 
 		// If we are in pull mode and no one is waiting already break and wait.
@@ -1922,6 +1951,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			}
 		}
 
+		// Do actual delivery.
 		o.deliverMsg(dsubj, subj, hdr, msg, seq, dc, ts)
 
 		o.mu.Unlock()
@@ -1968,6 +1998,15 @@ func (o *consumer) ackReply(sseq, dseq, dc uint64, ts int64, pending uint64) str
 	return fmt.Sprintf(o.ackReplyT, dc, sseq, dseq, ts, pending)
 }
 
+// Used mostly for testing. Sets max pending bytes for flow control setups.
+func (o *consumer) setMaxPendingBytes(limit int) {
+	o.pblimit = limit
+	o.maxpb = limit / 8
+	if o.maxpb == 0 {
+		o.maxpb = 1
+	}
+}
+
 // Deliver a msg to the consumer.
 // Lock should be held and o.mset validated to be non-nil.
 func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint64, ts int64) {
@@ -1977,13 +2016,6 @@ func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 	// Update pending on first attempt
 	if dc == 1 && o.sgap > 0 {
 		o.sgap--
-	}
-
-	if len(hdr) > 0 {
-		hdr = append(hdr[:0:0], hdr...)
-	}
-	if len(msg) > 0 {
-		msg = append(msg[:0:0], msg...)
 	}
 
 	dseq := o.dseq
@@ -2008,8 +2040,83 @@ func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 		o.asflr = seq
 	}
 
+	// Flow control.
+	if o.maxpb > 0 {
+		o.pbytes += pmsg.size()
+		if o.needFlowControl() {
+			o.sendFlowControl()
+		}
+	}
+
 	// FIXME(dlc) - Capture errors?
 	o.updateDelivered(dseq, seq, dc, ts)
+}
+
+func (o *consumer) needFlowControl() bool {
+	if o.maxpb == 0 {
+		return false
+	}
+	// Decide whether to send a flow control message which we will need the user to respond.
+	// We send if we are at the limit or over, and at 25%, 50% and 75%.
+	if o.pbytes >= o.maxpb {
+		return true
+	} else if o.pfcs == 0 && o.pbytes > o.maxpb/4 {
+		return true
+	} else if o.pfcs == 1 && o.pbytes > o.maxpb/2 {
+		return true
+	} else if o.pfcs == 2 && o.pbytes > o.maxpb*3/4 {
+		return true
+	}
+	return false
+}
+
+func (o *consumer) processFlowControl(_ *subscription, c *client, subj, _ string, _ []byte) {
+	sz, err := strconv.Atoi(tokenAt(subj, 5))
+	if err != nil {
+		o.srv.Warnf("Bad flow control response subject: %q", subj)
+		return
+	}
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	wasBlocked := o.pbytes >= o.maxpb
+
+	// For slow starts and ramping up.
+	if o.maxpb < o.pblimit {
+		o.maxpb *= 2
+		if o.maxpb > o.pblimit {
+			o.maxpb = o.pblimit
+		}
+	}
+
+	// Update accounting.
+	o.pbytes -= sz
+	o.pfcs--
+
+	// In case they are sent out of order or we get duplicates etc.
+	if o.pbytes < 0 {
+		o.pbytes = 0
+	}
+	if o.pfcs < 0 {
+		o.pfcs = 0
+	}
+
+	if wasBlocked {
+		o.signalNewMessages()
+	}
+}
+
+// sendFlowControl will send a flow control packet to the consumer.
+// Lock should be held.
+func (o *consumer) sendFlowControl() {
+	if !o.isPushMode() {
+		return
+	}
+	subj := o.cfg.DeliverSubject
+	o.pfcs++
+	reply := fmt.Sprintf(jsFlowControlT, o.stream, o.name, o.pbytes)
+	hdr := []byte("NATS/1.0 100 FlowControl Request\r\n\r\n")
+	o.outq.send(&jsPubMsg{subj, subj, reply, hdr, nil, nil, 0, nil})
 }
 
 // Tracks our outstanding pending acks. Only applicable to AckExplicit mode.
@@ -2622,7 +2729,7 @@ func (o *consumer) setInitialPending() {
 func (o *consumer) decStreamPending(sseq uint64, subj string) {
 	o.mu.Lock()
 	// Ignore if we have already seen this one.
-	if sseq >= o.sseq && o.sgap > 0 && o.isFilteredMatch(subj) {
+	if sseq >= o.sseq && o.sgap > 0 && o.isFilteredMatch(subj) && o.sgap > 0 {
 		o.sgap--
 	}
 	o.mu.Unlock()
