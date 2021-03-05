@@ -756,7 +756,7 @@ func (js *jetStream) monitorCluster() {
 			// FIXME(dlc) - Deal with errors.
 			if _, didRemoval, err := js.applyMetaEntries(ce.Entries, isRecovering); err == nil {
 				n.Applied(ce.Index)
-				if didRemoval && time.Since(lastSnapTime) > 2*time.Second {
+				if js.hasPeerEntries(ce.Entries) || (didRemoval && time.Since(lastSnapTime) > 2*time.Second) {
 					// Since we received one make sure we have our own since we do not store
 					// our meta state outside of raft.
 					doSnapshot()
@@ -1029,6 +1029,16 @@ func (js *jetStream) removePeerFromStream(sa *streamAssignment, peer string) {
 	}
 }
 
+// Check if we have peer related entries.
+func (js *jetStream) hasPeerEntries(entries []*Entry) bool {
+	for _, e := range entries {
+		if e.Type == EntryRemovePeer || e.Type == EntryAddPeer {
+			return true
+		}
+	}
+	return false
+}
+
 func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool, bool, error) {
 	var didSnap, didRemove bool
 	for _, e := range entries {
@@ -1038,7 +1048,6 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 		} else if e.Type == EntryRemovePeer {
 			if !isRecovering {
 				js.processRemovePeer(string(e.Data))
-				didRemove = true
 			}
 		} else {
 			buf := e.Data
