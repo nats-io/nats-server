@@ -579,6 +579,7 @@ func (mb *msgBlock) rebuildState() (*LostStreamData, error) {
 					truncate(index)
 					return gatherLost(lbuf - index), errBadMsg
 				}
+				copy(mb.lchk[0:], checksum)
 			}
 
 			if mb.first.seq == 0 {
