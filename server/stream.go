@@ -347,13 +347,13 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	// Rebuild dedupe as needed.
 	mset.rebuildDedupe()
 
-	// Setup our internal send go routine.
-	mset.setupSendCapabilities()
-
 	// Set our stream assignment if in clustered mode.
 	if sa != nil {
 		mset.setStreamAssignment(sa)
 	}
+
+	// Setup our internal send go routine.
+	mset.setupSendCapabilities()
 
 	// Call directly to set leader if not in clustered mode.
 	// This can be called though before we actually setup clustering, so check both.
@@ -2176,7 +2176,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// If here we will attempt to store the message.
 	// Assume this will succeed.
-	olseq, olmsgId := mset.lseq, mset.lmsgId
+	olmsgId := mset.lmsgId
 	mset.lmsgId = msgId
 	mset.lseq++
 
@@ -2196,7 +2196,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	if err != nil {
 		// If we did not succeed put those values back.
 		mset.mu.Lock()
-		mset.lseq = olseq
+		mset.lseq = mset.store.State().LastSeq
 		mset.lmsgId = olmsgId
 		mset.mu.Unlock()
 
@@ -2217,7 +2217,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		}
 		// If we did not succeed put those values back.
 		mset.mu.Lock()
-		mset.lseq = olseq
+		mset.lseq = mset.store.State().LastSeq
 		mset.lmsgId = olmsgId
 		mset.mu.Unlock()
 		store.RemoveMsg(seq)
@@ -2349,7 +2349,7 @@ func (mset *stream) internalLoop() {
 	c.registerWithAccount(mset.acc)
 	defer c.closeConnection(ClientClosed)
 	outq, qch, mch, rmch := mset.outq, mset.qch, mset.mch, mset.rmch
-	isClustered := mset.node != nil
+	isClustered := mset.cfg.Replicas > 1
 	mset.mu.RUnlock()
 
 	for {

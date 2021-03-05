@@ -3952,7 +3952,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 
 	// We only use mset.clseq for clustering and in case we run ahead of actual commits.
 	// Check if we need to set initial value here
-	if mset.clseq < mset.lseq {
+	if mset.clseq == 0 {
 		mset.clseq = mset.lseq
 	}
 
