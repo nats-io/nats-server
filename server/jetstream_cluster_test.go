@@ -4480,6 +4480,28 @@ func TestJetStreamClusterJSAPIImport(t *testing.T) {
 	if meta.Consumer != 1 || meta.Stream != 1 || meta.Delivered != 1 || meta.Pending != 0 {
 		t.Fatalf("Bad meta: %+v", meta)
 	}
+
+	js.Publish("TEST", []byte("Second"))
+	js.Publish("TEST", []byte("Third"))
+
+	// Ack across accounts.
+	m, err = nc.Request("$JS.API.CONSUMER.MSG.NEXT.TEST.tr", []byte("+NXT"), 2*time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	meta, err = m.MetaData()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if meta.Consumer != 2 || meta.Stream != 2 || meta.Delivered != 1 || meta.Pending != 1 {
+		t.Fatalf("Bad meta: %+v", meta)
+	}
+
+	// AckNext
+	_, err = nc.Request(m.Reply, []byte("+NXT"), 2*time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
 }
 
 func TestJetStreamClusterSuperClusterInterestOnlyMode(t *testing.T) {
@@ -4816,8 +4838,9 @@ var jsClusterImportsTempl = `
 			jetstream: enabled
 			users = [ { user: "rip", pass: "pass" } ]
 			exports [
-				{ service: "$JS.API.>" }
+				{ service: "$JS.API.>", response: stream }
 				{ service: "TEST" } # For publishing to the stream.
+				{ service: "$JS.ACK.TEST.*.>" }
 			]
 		}
 		IA {
@@ -4825,6 +4848,7 @@ var jsClusterImportsTempl = `
 			imports [
 				{ service: { subject: "$JS.API.>", account: JS }}
 				{ service: { subject: "TEST", account: JS }}
+				{ service: { subject: "$JS.ACK.TEST.*.>", account: JS }}
 			]
 		}
 		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
