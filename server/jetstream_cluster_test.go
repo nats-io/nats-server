@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -1088,15 +1089,16 @@ func TestJetStreamClusterStreamInfoList(t *testing.T) {
 	sendBatch("baz", 33)
 
 	// Now get the stream list info.
-	sl := js.NewStreamLister()
-	if !sl.Next() {
-		t.Fatalf("Unexpected error: %v", sl.Err())
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	var infos []*nats.StreamInfo
+	for info := range js.StreamsInfo(ctx) {
+		infos = append(infos, info)
 	}
-	p := sl.Page()
-	if len(p) != 3 {
-		t.Fatalf("StreamInfo expected 3 results, got %d", len(p))
+	cancel()
+	if len(infos) != 3 {
+		t.Fatalf("StreamInfo expected 3 results, got %d", len(infos))
 	}
-	for _, si := range p {
+	for _, si := range infos {
 		switch si.Config.Name {
 		case "foo":
 			if si.State.Msgs != 10 {
@@ -1168,15 +1170,16 @@ func TestJetStreamClusterConsumerInfoList(t *testing.T) {
 	}
 
 	// Now get the consumer list info.
-	cl := js.NewConsumerLister("TEST")
-	if !cl.Next() {
-		t.Fatalf("Unexpected error: %v", cl.Err())
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	var infos []*nats.ConsumerInfo
+	for info := range js.ConsumersInfo(ctx, "TEST") {
+		infos = append(infos, info)
 	}
-	p := cl.Page()
-	if len(p) != 3 {
-		t.Fatalf("ConsumerInfo expected 3 results, got %d", len(p))
+	cancel()
+	if len(infos) != 3 {
+		t.Fatalf("ConsumerInfo expected 3 results, got %d", len(infos))
 	}
-	for _, ci := range p {
+	for _, ci := range infos {
 		switch ci.Name {
 		case "foo":
 			if ci.Delivered.Consumer != 4 {
@@ -1823,13 +1826,14 @@ func TestJetStreamClusterExtendedStreamInfoSingleReplica(t *testing.T) {
 	}
 
 	// Make sure we can grab consumer lists from any
-	cl := js.NewConsumerLister("TEST")
-	if !cl.Next() {
-		t.Fatalf("Unexpected error: %v", cl.Err())
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	var infos []*nats.ConsumerInfo
+	for info := range js.ConsumersInfo(ctx, "TEST") {
+		infos = append(infos, info)
 	}
-	p := cl.Page()
-	if len(p) != 0 {
-		t.Fatalf("ConsumerInfo expected no paged results, got %d", len(p))
+	cancel()
+	if len(infos) != 0 {
+		t.Fatalf("ConsumerInfo expected no paged results, got %d", len(infos))
 	}
 
 	// Now add in a consumer.
@@ -1838,13 +1842,14 @@ func TestJetStreamClusterExtendedStreamInfoSingleReplica(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	cl = js.NewConsumerLister("TEST")
-	if !cl.Next() {
-		t.Fatalf("Unexpected error: %v", cl.Err())
+	ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
+	infos = infos[:0]
+	for info := range js.ConsumersInfo(ctx, "TEST") {
+		infos = append(infos, info)
 	}
-	p = cl.Page()
-	if len(p) != 1 {
-		t.Fatalf("ConsumerInfo expected 1 result, got %d", len(p))
+	cancel()
+	if len(infos) != 1 {
+		t.Fatalf("ConsumerInfo expected 1 result, got %d", len(infos))
 	}
 
 	// Now do direct names list as well.
@@ -3184,13 +3189,6 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	}
 	if _, err := js.ConsumerInfo("NO-Q", "dlc"); !notAvailableErr(err) {
 		t.Fatalf("Expected an 'unavailable' error, got %v", err)
-	}
-	// Listers
-	if sl := js.NewStreamLister(); sl.Next() || !notAvailableErr(sl.Err()) {
-		t.Fatalf("Expected an 'unavailable' error, got %v", sl.Err())
-	}
-	if cl := js.NewConsumerLister("NO-Q"); cl.Next() || !notAvailableErr(cl.Err()) {
-		t.Fatalf("Expected an 'unavailable' error, got %v", cl.Err())
 	}
 }
 
