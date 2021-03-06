@@ -913,9 +913,11 @@ func (mset *stream) purge() (uint64, error) {
 	if err != nil {
 		return purged, err
 	}
-	stats := mset.store.State()
+
+	var state StreamState
+	mset.store.FastState(&state)
 	for _, o := range obs {
-		o.purge(stats.FirstSeq)
+		o.purge(state.FirstSeq)
 	}
 	return purged, nil
 }
@@ -1182,8 +1184,8 @@ func (mset *stream) setupMirrorConsumer() error {
 
 	// Now send off request to create/update our consumer. This will be all API based even in single server mode.
 	// We calculate durable names apriori so we do not need to save them off.
-
-	state := mset.store.State()
+	var state StreamState
+	mset.store.FastState(&state)
 
 	req := &CreateConsumerRequest{
 		Stream: mset.cfg.Mirror.Name,
@@ -1569,7 +1571,8 @@ func (mset *stream) setStartingSequenceForSource(sname string) {
 		return
 	}
 
-	state := mset.store.State()
+	var state StreamState
+	mset.store.FastState(&state)
 	if state.Msgs == 0 {
 		si.sseq, si.dseq = 0, 1
 		return
@@ -1608,7 +1611,8 @@ func (mset *stream) startingSequenceForSources() {
 		mset.sources[ssi.Name] = si
 	}
 
-	state := mset.store.State()
+	var state StreamState
+	mset.store.FastState(&state)
 	if state.Msgs == 0 {
 		return
 	}
@@ -2090,7 +2094,9 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		isMisMatch := true
 		// If our first message for this mirror, see if we have to adjust our starting sequence.
 		if mset.cfg.Mirror != nil {
-			if state := mset.store.State(); state.FirstSeq == 0 {
+			var state StreamState
+			mset.store.FastState(&state)
+			if state.FirstSeq == 0 {
 				mset.store.Compact(lseq + 1)
 				mset.lseq = lseq
 				isMisMatch = false
@@ -2254,7 +2260,9 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	if err != nil {
 		// If we did not succeed put those values back.
 		mset.mu.Lock()
-		mset.lseq = mset.store.State().LastSeq
+		var state StreamState
+		mset.store.FastState(&state)
+		mset.lseq = state.LastSeq
 		mset.lmsgId = olmsgId
 		mset.mu.Unlock()
 
@@ -2275,7 +2283,9 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		}
 		// If we did not succeed put those values back.
 		mset.mu.Lock()
-		mset.lseq = mset.store.State().LastSeq
+		var state StreamState
+		mset.store.FastState(&state)
+		mset.lseq = state.LastSeq
 		mset.lmsgId = olmsgId
 		mset.mu.Unlock()
 		store.RemoveMsg(seq)

@@ -774,8 +774,8 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 			mset.setCreatedTime(cfg.Created)
 		}
 
-		stats := mset.state()
-		s.Noticef("  Restored %s messages for Stream %q", comma(int64(stats.Msgs)), fi.Name())
+		state := mset.state()
+		s.Noticef("  Restored %s messages for Stream %q", comma(int64(state.Msgs)), fi.Name())
 
 		// Now do the consumers.
 		odir := path.Join(sdir, fi.Name(), consumerDir)
