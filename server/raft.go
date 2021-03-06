@@ -697,7 +697,9 @@ func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 	var state StreamState
 	n.wal.FastState(&state)
 	entries = n.applied - state.FirstSeq
-	bytes = entries * state.Bytes / state.Msgs
+	if state.Msgs > 0 {
+		bytes = entries * state.Bytes / state.Msgs
+	}
 	n.Unlock()
 	return entries, bytes
 }
