@@ -1605,7 +1605,7 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _, reply string
 
 	sendErr := func(status int, description string) {
 		hdr := []byte(fmt.Sprintf("NATS/1.0 %d %s\r\n\r\n", status, description))
-		o.outq.send(&jsPubMsg{reply, reply, _EMPTY_, hdr, nil, nil, 0, nil})
+		o.outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0, nil})
 	}
 
 	if o.isPushMode() {
@@ -1798,7 +1798,7 @@ func (o *consumer) forceExpireFirstWaiting() *waitingRequest {
 	if rr := o.acc.sl.Match(wr.reply); len(rr.psubs)+len(rr.qsubs) > 0 && o.mset != nil {
 		// We still appear to have interest, so send alert as courtesy.
 		hdr := []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
-		o.outq.send(&jsPubMsg{wr.reply, wr.reply, _EMPTY_, hdr, nil, nil, 0, nil})
+		o.outq.send(&jsPubMsg{wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0, nil})
 	}
 	return wr
 }
@@ -1989,7 +1989,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			// Messages are waiting.
 		case <-hbc:
 			hdr := []byte("NATS/1.0 100 Idle Heartbeat\r\n\r\n")
-			outq.send(&jsPubMsg{odsubj, odsubj, _EMPTY_, hdr, nil, nil, 0, nil})
+			outq.send(&jsPubMsg{odsubj, _EMPTY_, _EMPTY_, hdr, nil, nil, 0, nil})
 		}
 	}
 }
@@ -2001,7 +2001,7 @@ func (o *consumer) ackReply(sseq, dseq, dc uint64, ts int64, pending uint64) str
 // Used mostly for testing. Sets max pending bytes for flow control setups.
 func (o *consumer) setMaxPendingBytes(limit int) {
 	o.pblimit = limit
-	o.maxpb = limit / 8
+	o.maxpb = limit / 16
 	if o.maxpb == 0 {
 		o.maxpb = 1
 	}
@@ -2022,6 +2022,10 @@ func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 	o.dseq++
 
 	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, dseq, dc, ts, o.sgap), hdr, msg, o, seq, nil}
+	if o.maxpb > 0 {
+		o.pbytes += pmsg.size()
+	}
+
 	mset := o.mset
 	ap := o.cfg.AckPolicy
 
@@ -2041,11 +2045,8 @@ func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 	}
 
 	// Flow control.
-	if o.maxpb > 0 {
-		o.pbytes += pmsg.size()
-		if o.needFlowControl() {
-			o.sendFlowControl()
-		}
+	if o.maxpb > 0 && o.needFlowControl() {
+		o.sendFlowControl()
 	}
 
 	// FIXME(dlc) - Capture errors?
@@ -2079,7 +2080,6 @@ func (o *consumer) processFlowControl(_ *subscription, c *client, subj, _ string
 
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	wasBlocked := o.pbytes >= o.maxpb
 
 	// For slow starts and ramping up.
 	if o.maxpb < o.pblimit {
@@ -2101,9 +2101,7 @@ func (o *consumer) processFlowControl(_ *subscription, c *client, subj, _ string
 		o.pfcs = 0
 	}
 
-	if wasBlocked {
-		o.signalNewMessages()
-	}
+	o.signalNewMessages()
 }
 
 // sendFlowControl will send a flow control packet to the consumer.
@@ -2116,7 +2114,7 @@ func (o *consumer) sendFlowControl() {
 	o.pfcs++
 	reply := fmt.Sprintf(jsFlowControlT, o.stream, o.name, o.pbytes)
 	hdr := []byte("NATS/1.0 100 FlowControl Request\r\n\r\n")
-	o.outq.send(&jsPubMsg{subj, subj, reply, hdr, nil, nil, 0, nil})
+	o.outq.send(&jsPubMsg{subj, _EMPTY_, reply, hdr, nil, nil, 0, nil})
 }
 
 // Tracks our outstanding pending acks. Only applicable to AckExplicit mode.

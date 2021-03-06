@@ -186,19 +186,13 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	s.Warnf("| || | _|  | | \\__ \\ | | |   / _| / _ \\| |\\/| |")
 	s.Warnf(" \\__/|___| |_| |___/ |_| |_|_\\___/_/ \\_\\_|  |_|")
 	s.Warnf("")
-	s.Warnf("               _         _")
-	s.Warnf("              | |__  ___| |_ __ _")
-	s.Warnf("              | '_ \\/ -_)  _/ _` |")
-	s.Warnf("              |_.__/\\___|\\__\\__,_|")
-	s.Warnf("")
-	s.Warnf("         JetStream is a Beta feature")
-	s.Warnf("    https://github.com/nats-io/jetstream")
+	s.Warnf("      https://github.com/nats-io/jetstream")
 	s.Noticef("")
-	s.Noticef("----------- JETSTREAM -----------")
+	s.Noticef("---------------- JETSTREAM ----------------")
 	s.Noticef("  Max Memory:      %s", friendlyBytes(cfg.MaxMemory))
 	s.Noticef("  Max Storage:     %s", friendlyBytes(cfg.MaxStore))
 	s.Noticef("  Store Directory: %q", cfg.StoreDir)
-	s.Noticef("---------------------------------")
+	s.Noticef("-------------------------------------------")
 
 	// Setup our internal subscriptions.
 	if err := s.setJetStreamExportSubs(); err != nil {

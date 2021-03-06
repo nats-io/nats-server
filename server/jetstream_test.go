@@ -7084,7 +7084,9 @@ func TestJetStreamPushConsumerFlowControl(t *testing.T) {
 	} else if obs := mset.lookupConsumer("dlc"); obs == nil {
 		t.Fatalf("Error looking up stream: %v", err)
 	} else {
+		obs.mu.Lock()
 		obs.setMaxPendingBytes(16 * 1024)
+		obs.mu.Unlock()
 	}
 
 	msgSize := 1024
@@ -7110,7 +7112,7 @@ func TestJetStreamPushConsumerFlowControl(t *testing.T) {
 	}
 
 	sendBatch(100)
-	checkSubPending(4) // First two and two flowcontrol from slow start pause.
+	checkSubPending(2) // First and flowcontrol from slow start pause.
 
 	var n int
 	for m, err := sub.NextMsg(time.Second); err == nil; m, err = sub.NextMsg(time.Second) {
