@@ -38,7 +38,7 @@ type RaftNode interface {
 	ForwardProposal(entry []byte) error
 	InstallSnapshot(snap []byte) error
 	SendSnapshot(snap []byte) error
-	Applied(index uint64)
+	Applied(index uint64) (entries uint64, bytes uint64)
 	Compact(index uint64) error
 	State() RaftState
 	Size() (entries, bytes uint64)
@@ -72,6 +72,7 @@ type WAL interface {
 	Purge() (uint64, error)
 	Truncate(seq uint64) error
 	State() StreamState
+	FastState(*StreamState)
 	Stop() error
 	Delete() error
 }
@@ -376,7 +377,9 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		n.setupLastSnapshot()
 	}
 
-	if state := n.wal.State(); state.Msgs > 0 {
+	var state StreamState
+	n.wal.FastState(&state)
+	if state.Msgs > 0 {
 		// TODO(dlc) - Recover our state here.
 		if first, err := n.loadFirstEntry(); err == nil {
 			n.pterm, n.pindex = first.pterm, first.pindex
@@ -683,13 +686,20 @@ func (n *raft) Compact(index uint64) error {
 }
 
 // Applied is to be called when the FSM has applied the committed entries.
-func (n *raft) Applied(index uint64) {
+// Applied will return the number of entries and an estimation of the
+// byte size that could be removed with a snapshot/compact.
+func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 	n.Lock()
 	// Ignore if already applied.
 	if index > n.applied {
 		n.applied = index
 	}
+	var state StreamState
+	n.wal.FastState(&state)
+	entries = n.applied - state.FirstSeq
+	bytes = entries * state.Bytes / state.Msgs
 	n.Unlock()
+	return entries, bytes
 }
 
 // For capturing data needed by snapshot.
@@ -753,7 +763,9 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		return werr
 	}
 
-	if state := n.wal.State(); state.FirstSeq >= n.applied {
+	var state StreamState
+	n.wal.FastState(&state)
+	if state.FirstSeq >= n.applied {
 		n.Unlock()
 		return nil
 	}
@@ -1084,7 +1096,8 @@ func (n *raft) Progress() (index, commit, applied uint64) {
 // Size returns number of entries and total bytes for our WAL.
 func (n *raft) Size() (uint64, uint64) {
 	n.RLock()
-	state := n.wal.State()
+	var state StreamState
+	n.wal.FastState(&state)
 	n.RUnlock()
 	return state.Msgs, state.Bytes
 }
@@ -1669,7 +1682,9 @@ func (n *raft) currentTerm() uint64 {
 
 // Lock should be held.
 func (n *raft) loadFirstEntry() (ae *appendEntry, err error) {
-	return n.loadEntry(n.wal.State().FirstSeq)
+	var state StreamState
+	n.wal.FastState(&state)
+	return n.loadEntry(state.FirstSeq)
 }
 
 func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesC <-chan uint64) {
@@ -1795,7 +1810,8 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	}
 	// Check to make sure we have this entry.
 	start := ar.index + 1
-	state := n.wal.State()
+	var state StreamState
+	n.wal.FastState(&state)
 
 	if start < state.FirstSeq {
 		n.debug("Need to send snapshot to follower")

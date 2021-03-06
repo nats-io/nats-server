@@ -2402,6 +2402,17 @@ func (fs *fileStore) LoadMsg(seq uint64) (string, []byte, []byte, int64, error) 
 	return "", nil, nil, 0, err
 }
 
+// FastState will fill in state with only the following.
+// Msgs, Bytes, FirstSeq, LastSeq
+func (fs *fileStore) FastState(state *StreamState) {
+	fs.mu.RLock()
+	state.Msgs = fs.state.Msgs
+	state.Bytes = fs.state.Bytes
+	state.FirstSeq = fs.state.FirstSeq
+	state.LastSeq = fs.state.LastSeq
+	fs.mu.RUnlock()
+}
+
 // State returns the current state of the stream.
 func (fs *fileStore) State() StreamState {
 	fs.mu.RLock()

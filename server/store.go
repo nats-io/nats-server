@@ -76,6 +76,7 @@ type StreamStore interface {
 	Truncate(seq uint64) error
 	GetSeqFromTime(t time.Time) uint64
 	State() StreamState
+	FastState(*StreamState)
 	RegisterStorageUpdates(StorageUpdateHandler)
 	UpdateConfig(cfg *StreamConfig) error
 	Delete() error
