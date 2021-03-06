@@ -341,9 +341,9 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		reqs:     make(chan *voteRequest, 8),
 		votes:    make(chan *voteResponse, 32),
 		propc:    make(chan *Entry, 8192),
-		entryc:   make(chan *appendEntry, 8192),
+		entryc:   make(chan *appendEntry, 32768),
 		respc:    make(chan *appendEntryResponse, 32768),
-		applyc:   make(chan *CommittedEntry, 8192),
+		applyc:   make(chan *CommittedEntry, 32768),
 		leadc:    make(chan bool, 8),
 		stepdown: make(chan string, 8),
 	}
@@ -1975,6 +1975,7 @@ func (n *raft) trackResponse(ar *appendEntryResponse) {
 			sendHB = len(n.propc) == 0
 		}
 	}
+
 	n.Unlock()
 
 	if sendHB {

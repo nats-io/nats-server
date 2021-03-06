@@ -1254,8 +1254,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 
 	const (
 		compactInterval = 2 * time.Minute
-		compactSizeMin  = 32 * 1024 * 1024
-		compactNumMin   = 4
+		compactSizeMin  = 64 * 1024 * 1024
+		compactNumMin   = 8192
 	)
 
 	t := time.NewTicker(compactInterval)
@@ -1315,8 +1315,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 			if err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
 				n.Applied(ce.Index)
 				ne := ce.Index - lastApplied
-				// If over our compact min and we have at least min entries to compact, go ahead and snapshot/compact.
-				if _, b := n.Size(); b > compactSizeMin && ne >= compactNumMin {
+				// If we have at least min entries to compact, go ahead and snapshot/compact.
+				if ne >= compactNumMin {
 					doSnapshot()
 				}
 			} else {

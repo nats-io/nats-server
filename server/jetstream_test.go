@@ -7084,7 +7084,9 @@ func TestJetStreamPushConsumerFlowControl(t *testing.T) {
 	} else if obs := mset.lookupConsumer("dlc"); obs == nil {
 		t.Fatalf("Error looking up stream: %v", err)
 	} else {
+		obs.mu.Lock()
 		obs.setMaxPendingBytes(16 * 1024)
+		obs.mu.Unlock()
 	}
 
 	msgSize := 1024

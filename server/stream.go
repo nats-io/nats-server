@@ -987,11 +987,17 @@ func (mset *stream) mirrorInfo() *StreamSourceInfo {
 
 // processClusteredMirrorMsg will propose the inbound mirrored message to the underlying raft group.
 func (mset *stream) processClusteredMirrorMsg(subject string, hdr, msg []byte, seq uint64, ts int64) error {
-	mset.mu.Lock()
-	defer mset.mu.Unlock()
+	mset.mu.RLock()
+	node := mset.node
+	mset.mu.RUnlock()
 	// Do proposal.
-	return mset.node.Propose(encodeStreamMsg(subject, _EMPTY_, hdr, msg, seq, ts))
+	if node == nil {
+		return nil
+	}
+	return node.Propose(encodeStreamMsg(subject, _EMPTY_, hdr, msg, seq, ts))
 }
+
+const sourceHealthCheckInterval = 10 * time.Second
 
 // Will run as a Go routine to process messages.
 func (mset *stream) processMirrorMsgs() {
@@ -1005,6 +1011,9 @@ func (mset *stream) processMirrorMsgs() {
 	qch := mset.qch
 	mset.mu.RUnlock()
 
+	t := time.NewTicker(sourceHealthCheckInterval)
+	defer t.Stop()
+
 	for {
 		select {
 		case <-s.quitCh:
@@ -1012,12 +1021,15 @@ func (mset *stream) processMirrorMsgs() {
 		case <-qch:
 			return
 		case <-mch:
-			for im := mset.pending(msgs); im != nil; {
+			for im := mset.pending(msgs); im != nil; im = im.next {
 				mset.processInboundMirrorMsg(im)
-				// Do this here to nil out below vs up in for loop.
-				next := im.next
-				im.next, im.hdr, im.msg = nil, nil, nil
-				im = next
+			}
+		case <-t.C:
+			mset.mu.RLock()
+			stalled := mset.mirror != nil && time.Since(mset.mirror.last) > 3*sourceHealthCheckInterval
+			mset.mu.RUnlock()
+			if stalled {
+				mset.resetMirrorConsumer()
 			}
 		}
 	}
@@ -1025,8 +1037,6 @@ func (mset *stream) processMirrorMsgs() {
 
 // processInboundMirrorMsg handles processing messages bound for a stream.
 func (mset *stream) processInboundMirrorMsg(m *inMsg) {
-	sseq, _, _, ts, pending := replyInfo(m.rply)
-
 	mset.mu.Lock()
 	if mset.mirror == nil {
 		mset.mu.Unlock()
@@ -1043,6 +1053,8 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) {
 		mset.mu.Unlock()
 		return
 	}
+
+	sseq, _, _, ts, pending := replyInfo(m.rply)
 
 	// Mirror info tracking.
 	olag := mset.mirror.lag
@@ -1119,8 +1131,10 @@ func (mset *stream) setupMirrorConsumer() error {
 		return errors.New("outq required")
 	}
 
+	isReset := mset.mirror != nil
+
 	// Reset
-	if mset.mirror != nil {
+	if isReset {
 		if mset.mirror.sub != nil {
 			mset.unsubscribe(mset.mirror.sub)
 			mset.mirror.sub = nil
@@ -1139,7 +1153,9 @@ func (mset *stream) setupMirrorConsumer() error {
 		deliverSubject = syncSubject("$JS.M")
 	}
 
-	mset.mirror = &sourceInfo{name: mset.cfg.Mirror.Name, msgs: &inbound{mch: make(chan struct{}, 1)}}
+	if !isReset {
+		mset.mirror = &sourceInfo{name: mset.cfg.Mirror.Name, msgs: &inbound{mch: make(chan struct{}, 1)}}
+	}
 
 	// Process inbound mirror messages from the wire.
 	sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, subject, reply string, rmsg []byte) {
@@ -1159,7 +1175,10 @@ func (mset *stream) setupMirrorConsumer() error {
 	}
 
 	mset.mirror.sub = sub
-	mset.srv.startGoRoutine(func() { mset.processMirrorMsgs() })
+
+	if !isReset {
+		mset.srv.startGoRoutine(func() { mset.processMirrorMsgs() })
+	}
 
 	// Now send off request to create/update our consumer. This will be all API based even in single server mode.
 	// We calculate durable names apriori so we do not need to save them off.
@@ -1179,6 +1198,7 @@ func (mset *stream) setupMirrorConsumer() error {
 			FlowControl:    true,
 		},
 	}
+
 	// Only use start optionals on first time.
 	if state.Msgs == 0 {
 		if mset.cfg.Mirror.OptStartSeq > 0 {
@@ -1229,7 +1249,9 @@ func (mset *stream) setupMirrorConsumer() error {
 			} else {
 				// Capture consumer name.
 				mset.mu.Lock()
-				mset.mirror.cname = ccr.ConsumerInfo.Name
+				if mset.mirror != nil {
+					mset.mirror.cname = ccr.ConsumerInfo.Name
+				}
 				mset.mu.Unlock()
 			}
 			mset.setMirrorErr(ccr.Error)
@@ -1242,10 +1264,6 @@ func (mset *stream) setupMirrorConsumer() error {
 	}()
 
 	return nil
-}
-
-func (mset *stream) sourceDurable(streamName string) string {
-	return string(getHash(fmt.Sprintf("SOURCE:%s:%s", streamName, mset.cfg.Name)))
 }
 
 func (mset *stream) streamSource(sname string) *StreamSource {
@@ -1426,6 +1444,9 @@ func (mset *stream) processSourceMsgs(si *sourceInfo) {
 	qch := mset.qch
 	mset.mu.RUnlock()
 
+	t := time.NewTicker(sourceHealthCheckInterval)
+	defer t.Stop()
+
 	for {
 		select {
 		case <-s.quitCh:
@@ -1433,12 +1454,16 @@ func (mset *stream) processSourceMsgs(si *sourceInfo) {
 		case <-qch:
 			return
 		case <-mch:
-			for im := mset.pending(msgs); im != nil; {
+			for im := mset.pending(msgs); im != nil; im = im.next {
 				mset.processInboundSourceMsg(si, im)
-				// Do this here to nil out below vs up in for loop.
-				next := im.next
-				im.next, im.hdr, im.msg = nil, nil, nil
-				im = next
+			}
+		case <-t.C:
+			mset.mu.RLock()
+			stalled := time.Since(si.last) > 3*sourceHealthCheckInterval
+			sname := si.name
+			mset.mu.RUnlock()
+			if stalled {
+				mset.retrySourceConsumer(sname)
 			}
 		}
 	}
@@ -1446,11 +1471,6 @@ func (mset *stream) processSourceMsgs(si *sourceInfo) {
 
 // processInboundSourceMsg handles processing other stream messages bound for this stream.
 func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) {
-	sseq, dseq, dc, _, pending := replyInfo(m.rply)
-
-	if dc > 1 {
-		return
-	}
 
 	mset.mu.Lock()
 
@@ -1461,6 +1481,13 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) {
 		if m.rply != _EMPTY_ {
 			mset.outq.send(&jsPubMsg{m.rply, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
 		}
+		mset.mu.Unlock()
+		return
+	}
+
+	sseq, dseq, dc, _, pending := replyInfo(m.rply)
+
+	if dc > 1 {
 		mset.mu.Unlock()
 		return
 	}
@@ -2386,7 +2413,7 @@ func (mset *stream) internalLoop() {
 	for {
 		select {
 		case <-outq.mch:
-			for pm := outq.pending(); pm != nil; {
+			for pm := outq.pending(); pm != nil; pm = pm.next {
 				c.pa.subject = []byte(pm.subj)
 				c.pa.deliver = []byte(pm.dsubj)
 				c.pa.size = len(pm.msg) + len(pm.hdr)
@@ -2413,25 +2440,16 @@ func (mset *stream) internalLoop() {
 				if pm.o != nil && pm.seq > 0 && !didDeliver {
 					pm.o.didNotDeliver(pm.seq)
 				}
-
-				// Do this here to nil out below vs up in for loop.
-				next := pm.next
-				pm.next, pm.hdr, pm.msg = nil, nil, nil
-				pm = next
 			}
 			c.flushClients(10 * time.Millisecond)
 		case <-mch:
-			for im := mset.pending(mset.msgs); im != nil; {
+			for im := mset.pending(mset.msgs); im != nil; im = im.next {
 				// If we are clustered we need to propose this message to the underlying raft group.
 				if isClustered {
 					mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg)
 				} else {
 					mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0)
 				}
-				// Do this here to nil out below vs up in for loop.
-				next := im.next
-				im.next, im.hdr, im.msg = nil, nil, nil
-				im = next
 			}
 		case seq := <-rmch:
 			mset.store.RemoveMsg(seq)

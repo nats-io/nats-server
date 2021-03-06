@@ -2022,6 +2022,10 @@ func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 	o.dseq++
 
 	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, dseq, dc, ts, o.sgap), hdr, msg, o, seq, nil}
+	if o.maxpb > 0 {
+		o.pbytes += pmsg.size()
+	}
+
 	mset := o.mset
 	ap := o.cfg.AckPolicy
 
@@ -2041,11 +2045,8 @@ func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 	}
 
 	// Flow control.
-	if o.maxpb > 0 {
-		o.pbytes += pmsg.size()
-		if o.needFlowControl() {
-			o.sendFlowControl()
-		}
+	if o.maxpb > 0 && o.needFlowControl() {
+		o.sendFlowControl()
 	}
 
 	// FIXME(dlc) - Capture errors?
