@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats-server/v2/logger"
+	"github.com/nats-io/nats.go"
 )
 
 func TestSignalToReOpenLogFile(t *testing.T) {
@@ -261,6 +262,32 @@ func TestProcessSignalQuitProcess(t *testing.T) {
 	}
 }
 
+func TestProcessSignalTermProcess(t *testing.T) {
+	killBefore := kill
+	called := false
+	kill = func(pid int, signal syscall.Signal) error {
+		called = true
+		if pid != 123 {
+			t.Fatalf("pid is incorrect.\nexpected: 123\ngot: %d", pid)
+		}
+		if signal != syscall.SIGTERM {
+			t.Fatalf("signal is incorrect.\nexpected: interrupt\ngot: %v", signal)
+		}
+		return nil
+	}
+	defer func() {
+		kill = killBefore
+	}()
+
+	if err := ProcessSignal(commandTerm, "123"); err != nil {
+		t.Fatalf("ProcessSignal failed: %v", err)
+	}
+
+	if !called {
+		t.Fatal("Expected kill to be called")
+	}
+}
+
 func TestProcessSignalReopenProcess(t *testing.T) {
 	killBefore := kill
 	called := false
@@ -336,5 +363,64 @@ func TestProcessSignalLameDuckMode(t *testing.T) {
 
 	if !called {
 		t.Fatal("Expected kill to be called")
+	}
+}
+
+func TestProcessSignalTermDuringLameDuckMode(t *testing.T) {
+	opts := &Options{
+		Host:                "127.0.0.1",
+		Port:                -1,
+		NoSigs:              false,
+		NoLog:               true,
+		LameDuckDuration:    2 * time.Second,
+		LameDuckGracePeriod: 1 * time.Second,
+	}
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	// Create single NATS Connection which will cause the server
+	// to delay the shutdown.
+	doneCh := make(chan struct{})
+	nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port),
+		nats.DisconnectHandler(func(*nats.Conn) {
+			close(doneCh)
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	// Trigger lame duck based shutdown.
+	go s.lameDuckMode()
+
+	// Wait for client to be disconnected.
+	select {
+	case <-doneCh:
+		break
+	case <-time.After(3 * time.Second):
+		t.Fatalf("Timed out waiting for client to disconnect")
+	}
+
+	// Termination signal should not cause server to shutdown
+	// while in lame duck mode already.
+	syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
+
+	// Wait for server shutdown due to lame duck shutdown.
+	timeoutCh := make(chan error)
+	timer := time.AfterFunc(3*time.Second, func() {
+		timeoutCh <- errors.New("Timed out waiting for server shutdown")
+	})
+	for range time.NewTicker(1 * time.Millisecond).C {
+		select {
+		case err := <-timeoutCh:
+			t.Fatal(err)
+		default:
+		}
+
+		if !s.isRunning() {
+			timer.Stop()
+			break
+		}
 	}
 }

@@ -29,6 +29,7 @@ const (
 
 	// private for now
 	commandLDMode = Command("ldm")
+	commandTerm   = Command("term")
 )
 
 var (
