@@ -1254,7 +1254,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 
 	const (
 		compactInterval = 2 * time.Minute
-		compactSizeMin  = 64 * 1024 * 1024
+		compactSizeMin  = 32 * 1024 * 1024
 		compactNumMin   = 8192
 	)
 
@@ -2538,8 +2538,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 
 	const (
 		compactInterval = 2 * time.Minute
-		compactSizeMin  = 4 * 1024 * 1024
-		compactNumMin   = 4
+		compactNumMin   = 8192
 	)
 
 	t := time.NewTicker(compactInterval)
@@ -2577,8 +2576,8 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			if err := js.applyConsumerEntries(o, ce, isLeader); err == nil {
 				n.Applied(ce.Index)
 				ne := ce.Index - lastApplied
-				// If over our compact min and we have at least min entries to compact, go ahead and snapshot/compact.
-				if _, b := n.Size(); b > compactSizeMin && ne > compactNumMin {
+				// If we have at least min entries to compact, go ahead and snapshot/compact.
+				if ne >= compactNumMin {
 					doSnapshot()
 				}
 			} else {
