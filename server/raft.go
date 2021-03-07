@@ -1880,9 +1880,22 @@ func (n *raft) applyCommit(index uint64) error {
 
 	ae := n.pae[index]
 	if ae == nil {
-		n.warn("Could not load append entry %d", index)
-		n.commit = original
-		return errEntryLoadFailed
+		var state StreamState
+		n.wal.FastState(&state)
+		if index < state.FirstSeq {
+			return nil
+		}
+		var err error
+		if ae, err = n.loadEntry(index); err != nil {
+			if err != ErrStoreClosed && err != ErrStoreEOF {
+				if err == errBadMsg {
+					n.setWriteErrLocked(err)
+				}
+				n.warn("Got an error loading %d index: %v", index, err)
+			}
+			n.commit = original
+			return errEntryLoadFailed
+		}
 	}
 	delete(n.pae, index)
 	ae.buf = nil
@@ -2523,7 +2536,7 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 	return nil
 }
 
-const paeWarnThreshold = 1024
+const paeWarnThreshold = 16 * 1024
 
 func (n *raft) sendAppendEntry(entries []*Entry) {
 	n.Lock()
