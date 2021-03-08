@@ -477,7 +477,7 @@ func (s *Server) migrateEphemerals() {
 					o.deleteWithoutAdvisory()
 					js.mu.Lock()
 					// Delete old one.
-					cc.meta.Propose(encodeDeleteConsumerAssignment(ca))
+					cc.meta.ForwardProposal(encodeDeleteConsumerAssignment(ca))
 					// Encode state and new name.
 					ca.State = state
 					ca.Name = createConsumerName()

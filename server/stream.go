@@ -184,6 +184,7 @@ type sourceInfo struct {
 	lag   uint64
 	err   *ApiError
 	last  time.Time
+	grr   bool
 }
 
 // Headers for published messages.
@@ -996,6 +997,13 @@ const sourceHealthCheckInterval = 10 * time.Second
 func (mset *stream) processMirrorMsgs() {
 	s := mset.srv
 	defer s.grWG.Done()
+	defer func() {
+		mset.mu.Lock()
+		if mset.mirror != nil {
+			mset.mirror.grr = false
+		}
+		mset.mu.Unlock()
+	}()
 
 	// Grab stream quit channel.
 	mset.mu.RLock()
@@ -1186,7 +1194,8 @@ func (mset *stream) setupMirrorConsumer() error {
 
 	mset.mirror.sub = sub
 
-	if !isReset {
+	if !mset.mirror.grr {
+		mset.mirror.grr = true
 		mset.srv.startGoRoutine(func() { mset.processMirrorMsgs() })
 	}
 
@@ -1263,7 +1272,7 @@ func (mset *stream) setupMirrorConsumer() error {
 				mset.mu.Unlock()
 			}
 			mset.setMirrorErr(ccr.Error)
-		case <-time.After(2 * time.Second):
+		case <-time.After(5 * time.Second):
 			mset.resetMirrorConsumer()
 		}
 	}()
@@ -1343,7 +1352,10 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 	}
 
 	si.sub = sub
-	mset.srv.startGoRoutine(func() { mset.processSourceMsgs(si) })
+	if !si.grr {
+		si.grr = true
+		mset.srv.startGoRoutine(func() { mset.processSourceMsgs(si) })
+	}
 
 	req := &CreateConsumerRequest{
 		Stream: sname,
@@ -1414,10 +1426,10 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 				}
 			}
 			mset.mu.Unlock()
-		case <-time.After(2 * time.Second):
+		case <-time.After(5 * time.Second):
 			// Make sure things have not changed.
 			mset.mu.Lock()
-			if si := mset.sources[sname]; si != nil {
+			if si := mset.sources[sname]; si != nil && si.cname == _EMPTY_ {
 				mset.setSourceConsumer(sname, seq)
 			}
 			mset.mu.Unlock()
@@ -1428,6 +1440,11 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 func (mset *stream) processSourceMsgs(si *sourceInfo) {
 	s := mset.srv
 	defer s.grWG.Done()
+	defer func() {
+		mset.mu.Lock()
+		si.grr = false
+		mset.mu.Unlock()
+	}()
 
 	if si == nil {
 		return
@@ -1505,14 +1522,15 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) {
 	// Tracking is done here.
 	if dseq == si.dseq+1 {
 		si.dseq++
-		si.sseq++
-		if dseq == 1 {
-			si.sseq = sseq
-		}
+		si.sseq = sseq
 	} else {
+		cname := tokenAt(m.rply, 4)
 		// Check to see if we know this is from an old consumer.
-		if si.cname != _EMPTY_ && dseq > si.dseq && si.cname == tokenAt(m.rply, 4) {
+		if dseq > si.dseq && si.cname == cname {
 			mset.setSourceConsumer(si.name, si.sseq+1)
+		} else if dseq > si.dseq {
+			si.cname = cname
+			si.dseq, si.sseq = dseq, sseq
 		}
 		mset.mu.Unlock()
 		return
@@ -1583,7 +1601,7 @@ func (mset *stream) setStartingSequenceForSource(sname string) {
 	var state StreamState
 	mset.store.FastState(&state)
 	if state.Msgs == 0 {
-		si.sseq, si.dseq = 0, 1
+		si.sseq, si.dseq = 0, 0
 		return
 	}
 
@@ -1599,7 +1617,7 @@ func (mset *stream) setStartingSequenceForSource(sname string) {
 		name, sseq := streamAndSeq(string(reply))
 		if name == sname {
 			si.sseq = sseq
-			si.dseq = 1
+			si.dseq = 0
 			return
 		}
 	}
@@ -1634,7 +1652,7 @@ func (mset *stream) startingSequenceForSources() {
 		for sname, seq := range seqs {
 			if si := mset.sources[sname]; si != nil {
 				si.sseq = seq
-				si.dseq = 1
+				si.dseq = 0
 			}
 		}
 	}()

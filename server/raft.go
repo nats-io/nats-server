@@ -2536,7 +2536,7 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 	return nil
 }
 
-const paeWarnThreshold = 16 * 1024
+const paeWarnThreshold = 32 * 1024
 
 func (n *raft) sendAppendEntry(entries []*Entry) {
 	n.Lock()
