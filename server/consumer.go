@@ -1036,7 +1036,16 @@ func (o *consumer) processAck(_ *subscription, c *client, subject, reply string,
 		o.ackMsg(sseq, dseq, dc)
 	case bytes.HasPrefix(msg, AckNext):
 		o.ackMsg(sseq, dseq, dc)
+		// processNextMsgReq can be invoked from an internal subscription or from here.
+		// Therefore, it has to call msgParts(), so we can't simply pass msg[len(AckNext):]
+		// with current c.pa.hdr because it would cause a panic.  We will save the current
+		// c.pa.hdr value and disable headers before calling processNextMsgReq and then
+		// restore so that we don't mess with the calling stack in case it is used
+		// somewhere else.
+		phdr := c.pa.hdr
+		c.pa.hdr = -1
 		o.processNextMsgReq(nil, c, subject, reply, msg[len(AckNext):])
+		c.pa.hdr = phdr
 		skipAckReply = true
 	case bytes.Equal(msg, AckNak):
 		o.processNak(sseq, dseq)
