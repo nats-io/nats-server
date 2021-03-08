@@ -343,7 +343,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		reqs:     make(chan *voteRequest, 8),
 		votes:    make(chan *voteResponse, 32),
 		propc:    make(chan *Entry, 8192),
-		entryc:   make(chan *appendEntry, 8192),
+		entryc:   make(chan *appendEntry, 32768),
 		respc:    make(chan *appendEntryResponse, 32768),
 		applyc:   make(chan *CommittedEntry, 8192),
 		leadc:    make(chan bool, 8),
