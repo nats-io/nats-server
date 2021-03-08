@@ -5048,7 +5048,7 @@ func (c *cluster) streamLeader(account, stream string) *Server {
 
 func (c *cluster) waitOnStreamCurrent(s *Server, account, stream string) {
 	c.t.Helper()
-	expires := time.Now().Add(10 * time.Second)
+	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
 		if s.JetStreamIsStreamCurrent(account, stream) {
 			time.Sleep(100 * time.Millisecond)
