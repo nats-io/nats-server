@@ -755,12 +755,12 @@ func (js *jetStream) monitorCluster() {
 			}
 			// FIXME(dlc) - Deal with errors.
 			if _, didRemoval, err := js.applyMetaEntries(ce.Entries, isRecovering); err == nil {
-				n.Applied(ce.Index)
+				_, nb := n.Applied(ce.Index)
 				if js.hasPeerEntries(ce.Entries) || (didRemoval && time.Since(lastSnapTime) > 2*time.Second) {
 					// Since we received one make sure we have our own since we do not store
 					// our meta state outside of raft.
 					doSnapshot()
-				} else if _, b := n.Size(); b > uint64(len(lastSnap)*4) {
+				} else if nb > uint64(len(lastSnap)*4) {
 					doSnapshot()
 				}
 			}
@@ -1273,7 +1273,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 	}
 
 	var lastSnap []byte
-	var lastApplied uint64
 
 	// Should only to be called from leader.
 	doSnapshot := func() {
@@ -1283,7 +1282,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 		if snap := mset.stateSnapshot(); !bytes.Equal(lastSnap, snap) {
 			if err := n.InstallSnapshot(snap); err == nil {
 				lastSnap = snap
-				_, _, lastApplied = n.Progress()
 			}
 		}
 	}
@@ -1311,12 +1309,11 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 				continue
 			}
 			// Apply our entries.
-			//TODO mset may be nil see doSnapshot(). applyStreamEntries is sensitive to this
+			// TODO mset may be nil see doSnapshot(). applyStreamEntries is sensitive to this.
 			if err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
-				n.Applied(ce.Index)
-				ne := ce.Index - lastApplied
+				ne, nb := n.Applied(ce.Index)
 				// If we have at least min entries to compact, go ahead and snapshot/compact.
-				if ne >= compactNumMin {
+				if ne >= compactNumMin || nb > compactSizeMin {
 					doSnapshot()
 				}
 			} else {
@@ -1466,6 +1463,17 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						return err
 					}
 				}
+
+				// Check for flowcontrol here.
+				mset.mu.Lock()
+				if mset.fcr != nil {
+					if rply := mset.fcr[ce.Index]; rply != _EMPTY_ {
+						delete(mset.fcr, ce.Index)
+						mset.outq.send(&jsPubMsg{rply, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
+					}
+				}
+				mset.mu.Unlock()
+
 			case deleteMsgOp:
 				md, err := decodeMsgDelete(buf[1:])
 				if err != nil {
@@ -2381,6 +2389,10 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment) {
 				Response: &JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}},
 			}
 			result.Response.Error = jsError(err)
+		} else if err == errNoInterest {
+			// This is a stranded ephemeral, let's clean this one up.
+			subject := fmt.Sprintf(JSApiConsumerDeleteT, ca.Stream, ca.Name)
+			mset.outq.send(&jsPubMsg{subject, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
 		}
 		js.mu.Unlock()
 
@@ -2538,6 +2550,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 
 	const (
 		compactInterval = 2 * time.Minute
+		compactSizeMin  = 8 * 1024 * 1024
 		compactNumMin   = 8192
 	)
 
@@ -2545,7 +2558,6 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	defer t.Stop()
 
 	var lastSnap []byte
-	var lastApplied uint64
 
 	// Should only to be called from leader.
 	doSnapshot := func() {
@@ -2553,7 +2565,6 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			if snap := encodeConsumerState(state); !bytes.Equal(lastSnap, snap) {
 				if err := n.InstallSnapshot(snap); err == nil {
 					lastSnap = snap
-					_, _, lastApplied = n.Progress()
 				}
 			}
 		}
@@ -2574,10 +2585,9 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				continue
 			}
 			if err := js.applyConsumerEntries(o, ce, isLeader); err == nil {
-				n.Applied(ce.Index)
-				ne := ce.Index - lastApplied
+				ne, nb := n.Applied(ce.Index)
 				// If we have at least min entries to compact, go ahead and snapshot/compact.
-				if ne >= compactNumMin {
+				if ne >= compactNumMin || nb > compactNumMin {
 					doSnapshot()
 				}
 			} else {
@@ -3954,19 +3964,22 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	if mset.clseq == 0 {
 		mset.clseq = mset.lseq
 	}
+	esm := encodeStreamMsg(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano())
+	mset.clseq++
 
 	// Do proposal.
-	err := mset.node.Propose(encodeStreamMsg(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano()))
+	mset.mu.Unlock()
+	err := mset.node.Propose(esm)
 	if err != nil {
+		mset.mu.Lock()
+		mset.clseq--
+		mset.mu.Unlock()
 		if canRespond {
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: mset.cfg.Name}}
 			resp.Error = &ApiError{Code: 503, Description: err.Error()}
 			response, _ = json.Marshal(resp)
 		}
-	} else {
-		mset.clseq++
 	}
-	mset.mu.Unlock()
 
 	// If we errored out respond here.
 	if err != nil && canRespond {

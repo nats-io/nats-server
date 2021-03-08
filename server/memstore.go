@@ -499,6 +499,17 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 	return ok
 }
 
+// FastState will fill in state with only the following.
+// Msgs, Bytes, FirstSeq, LastSeq
+func (ms *memStore) FastState(state *StreamState) {
+	ms.mu.RLock()
+	state.Msgs = ms.state.Msgs
+	state.Bytes = ms.state.Bytes
+	state.FirstSeq = ms.state.FirstSeq
+	state.LastSeq = ms.state.LastSeq
+	ms.mu.RUnlock()
+}
+
 func (ms *memStore) State() StreamState {
 	ms.mu.RLock()
 	state := ms.state

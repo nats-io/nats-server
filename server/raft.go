@@ -38,7 +38,7 @@ type RaftNode interface {
 	ForwardProposal(entry []byte) error
 	InstallSnapshot(snap []byte) error
 	SendSnapshot(snap []byte) error
-	Applied(index uint64)
+	Applied(index uint64) (entries uint64, bytes uint64)
 	Compact(index uint64) error
 	State() RaftState
 	Size() (entries, bytes uint64)
@@ -72,6 +72,7 @@ type WAL interface {
 	Purge() (uint64, error)
 	Truncate(seq uint64) error
 	State() StreamState
+	FastState(*StreamState)
 	Stop() error
 	Delete() error
 }
@@ -130,6 +131,7 @@ type raft struct {
 	qn       int
 	peers    map[string]*lps
 	acks     map[uint64]map[string]struct{}
+	pae      map[uint64]*appendEntry
 	elect    *time.Timer
 	active   time.Time
 	llqrt    time.Time
@@ -224,7 +226,6 @@ var (
 	errUnknownPeer     = errors.New("raft: unknown peer")
 	errCorruptPeers    = errors.New("raft: corrupt peer state")
 	errStepdownFailed  = errors.New("raft: stepdown failed")
-	errFailedToApply   = errors.New("raft: could not place apply entry")
 	errEntryLoadFailed = errors.New("raft: could not load entry from WAL")
 	errNodeClosed      = errors.New("raft: node is closed")
 	errBadSnapName     = errors.New("raft: snapshot name could not be parsed")
@@ -332,6 +333,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		hash:     hash,
 		peers:    make(map[string]*lps),
 		acks:     make(map[uint64]map[string]struct{}),
+		pae:      make(map[uint64]*appendEntry),
 		s:        s,
 		c:        s.createInternalSystemClient(),
 		sq:       sq,
@@ -343,7 +345,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		propc:    make(chan *Entry, 8192),
 		entryc:   make(chan *appendEntry, 32768),
 		respc:    make(chan *appendEntryResponse, 32768),
-		applyc:   make(chan *CommittedEntry, 32768),
+		applyc:   make(chan *CommittedEntry, 8192),
 		leadc:    make(chan bool, 8),
 		stepdown: make(chan string, 8),
 	}
@@ -374,7 +376,9 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		n.setupLastSnapshot()
 	}
 
-	if state := n.wal.State(); state.Msgs > 0 {
+	var state StreamState
+	n.wal.FastState(&state)
+	if state.Msgs > 0 {
 		// TODO(dlc) - Recover our state here.
 		if first, err := n.loadFirstEntry(); err == nil {
 			n.pterm, n.pindex = first.pterm, first.pindex
@@ -561,12 +565,9 @@ func (n *raft) Propose(data []byte) error {
 	propc := n.propc
 	n.RUnlock()
 
-	select {
-	case propc <- &Entry{EntryNormal, data}:
-	default:
-		n.warn("Propose failed to be placed on internal channel")
-		return errProposalFailed
-	}
+	// For entering and exiting the system, proposals and apply we
+	// will block.
+	propc <- &Entry{EntryNormal, data}
 	return nil
 }
 
@@ -578,11 +579,8 @@ func (n *raft) ForwardProposal(entry []byte) error {
 	if n.Leader() {
 		return n.Propose(entry)
 	}
-	n.RLock()
-	subj := n.psubj
-	n.RUnlock()
 
-	n.sendRPC(subj, _EMPTY_, entry)
+	n.sendRPC(n.psubj, _EMPTY_, entry)
 	return nil
 }
 
@@ -681,13 +679,23 @@ func (n *raft) Compact(index uint64) error {
 }
 
 // Applied is to be called when the FSM has applied the committed entries.
-func (n *raft) Applied(index uint64) {
+// Applied will return the number of entries and an estimation of the
+// byte size that could be removed with a snapshot/compact.
+func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 	n.Lock()
+	defer n.Unlock()
+
 	// Ignore if already applied.
 	if index > n.applied {
 		n.applied = index
 	}
-	n.Unlock()
+	var state StreamState
+	n.wal.FastState(&state)
+	entries = n.applied - state.FirstSeq
+	if state.Msgs > 0 {
+		bytes = entries * state.Bytes / state.Msgs
+	}
+	return entries, bytes
 }
 
 // For capturing data needed by snapshot.
@@ -751,7 +759,9 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		return werr
 	}
 
-	if state := n.wal.State(); state.FirstSeq >= n.applied {
+	var state StreamState
+	n.wal.FastState(&state)
+	if state.FirstSeq >= n.applied {
 		n.Unlock()
 		return nil
 	}
@@ -863,6 +873,8 @@ func (n *raft) setupLastSnapshot() {
 
 	// Set latest snapshot we have.
 	n.Lock()
+	defer n.Unlock()
+
 	n.snapfile = latest
 	snap, err := n.loadLastSnapshot()
 	if err != nil {
@@ -877,7 +889,6 @@ func (n *raft) setupLastSnapshot() {
 			n.setWriteErrLocked(err)
 		}
 	}
-	n.Unlock()
 }
 
 // loadLastSnapshot will load and return our last snapshot.
@@ -930,8 +941,9 @@ func (n *raft) Leader() bool {
 		return false
 	}
 	n.RLock()
-	defer n.RUnlock()
-	return n.state == Leader
+	isLeader := n.state == Leader
+	n.RUnlock()
+	return isLeader
 }
 
 // Lock should be held.
@@ -1082,7 +1094,8 @@ func (n *raft) Progress() (index, commit, applied uint64) {
 // Size returns number of entries and total bytes for our WAL.
 func (n *raft) Size() (uint64, uint64) {
 	n.RLock()
-	state := n.wal.State()
+	var state StreamState
+	n.wal.FastState(&state)
 	n.RUnlock()
 	return state.Msgs, state.Bytes
 }
@@ -1514,7 +1527,7 @@ func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _
 	select {
 	case propc <- &Entry{EntryRemovePeer, []byte(peer)}:
 	default:
-		n.warn("Failed to place peer removal proposal onto propose chan")
+		n.warn("Failed to place peer removal proposal onto propose channel")
 	}
 }
 
@@ -1667,7 +1680,9 @@ func (n *raft) currentTerm() uint64 {
 
 // Lock should be held.
 func (n *raft) loadFirstEntry() (ae *appendEntry, err error) {
-	return n.loadEntry(n.wal.State().FirstSeq)
+	var state StreamState
+	n.wal.FastState(&state)
+	return n.loadEntry(state.FirstSeq)
 }
 
 func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesC <-chan uint64) {
@@ -1753,8 +1768,7 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesC <-chan uint64) 
 				next = index
 			}
 			// Check if we are done.
-			finished := index > last
-			if finished || sendNext() {
+			if index > last || sendNext() {
 				n.debug("Finished catching up")
 				return
 			}
@@ -1793,7 +1807,8 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	}
 	// Check to make sure we have this entry.
 	start := ar.index + 1
-	state := n.wal.State()
+	var state StreamState
+	n.wal.FastState(&state)
 
 	if start < state.FirstSeq {
 		n.debug("Need to send snapshot to follower")
@@ -1858,22 +1873,30 @@ func (n *raft) applyCommit(index uint64) error {
 		delete(n.acks, index)
 	}
 
-	// FIXME(dlc) - Can keep this in memory if this too slow.
-	ae, err := n.loadEntry(index)
-	if err != nil {
-		state := n.wal.State()
+	var fpae bool
+
+	ae := n.pae[index]
+	if ae == nil {
+		var state StreamState
+		n.wal.FastState(&state)
 		if index < state.FirstSeq {
 			return nil
 		}
-		if err != ErrStoreClosed && err != ErrStoreEOF {
-			if err == errBadMsg {
-				n.setWriteErrLocked(err)
+		var err error
+		if ae, err = n.loadEntry(index); err != nil {
+			if err != ErrStoreClosed && err != ErrStoreEOF {
+				if err == errBadMsg {
+					n.setWriteErrLocked(err)
+				}
+				n.warn("Got an error loading %d index: %v", index, err)
 			}
-			n.warn("Got an error loading %d index: %v", index, err)
+			n.commit = original
+			return errEntryLoadFailed
 		}
-		n.commit = original
-		return errEntryLoadFailed
+	} else {
+		fpae = true
 	}
+
 	ae.buf = nil
 
 	var committed []*Entry
@@ -1922,13 +1945,14 @@ func (n *raft) applyCommit(index uint64) error {
 	}
 	// Pass to the upper layers if we have normal entries.
 	if len(committed) > 0 {
-		select {
-		case n.applyc <- &CommittedEntry{index, committed}:
-		default:
-			n.debug("Failed to place committed entry onto our apply channel")
-			n.commit = original
-			return errFailedToApply
+		if fpae {
+			delete(n.pae, index)
 		}
+		// For entering and exiting the system, proposals and apply we
+		// will block.
+		n.Unlock()
+		n.applyc <- &CommittedEntry{index, committed}
+		n.Lock()
 	} else {
 		// If we processed inline update our applied index.
 		n.applied = index
@@ -2362,6 +2386,12 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				n.Unlock()
 				return
 			}
+			// Save in memory for faster processing during applyCommit.
+			n.pae[n.pindex] = ae
+			if len(n.pae) > paeWarnThreshold {
+				n.warn("%d append entries pending", len(n.pae))
+			}
+
 		} else {
 			// This is a replay on startup so just take the appendEntry version.
 			n.pterm = ae.term
@@ -2506,6 +2536,8 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 	return nil
 }
 
+const paeWarnThreshold = 32 * 1024
+
 func (n *raft) sendAppendEntry(entries []*Entry) {
 	n.Lock()
 	defer n.Unlock()
@@ -2520,6 +2552,12 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 		// We count ourselves.
 		n.acks[n.pindex] = map[string]struct{}{n.id: struct{}{}}
 		n.active = time.Now()
+
+		// Save in memory for faster processing during applyCommit.
+		n.pae[n.pindex] = ae
+		if len(n.pae) > paeWarnThreshold {
+			n.warn("%d append entries pending", len(n.pae))
+		}
 	}
 	n.sendRPC(n.asubj, n.areply, ae.buf)
 }
@@ -2933,6 +2971,9 @@ func (n *raft) switchState(state RaftState) {
 	if n.state == Leader && state != Leader {
 		n.updateLeadChange(false)
 	} else if state == Leader && n.state != Leader {
+		if len(n.pae) > 0 {
+			n.pae = make(map[uint64]*appendEntry)
+		}
 		n.updateLeadChange(true)
 	}
 
