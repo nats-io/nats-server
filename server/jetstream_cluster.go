@@ -1309,7 +1309,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 				continue
 			}
 			// Apply our entries.
-			//TODO mset may be nil see doSnapshot(). applyStreamEntries is sensitive to this
+			// TODO mset may be nil see doSnapshot(). applyStreamEntries is sensitive to this.
 			if err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
 				ne, nb := n.Applied(ce.Index)
 				// If we have at least min entries to compact, go ahead and snapshot/compact.
@@ -1463,6 +1463,17 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						return err
 					}
 				}
+
+				// Check for flowcontrol here.
+				mset.mu.Lock()
+				if mset.fcr != nil {
+					if rply := mset.fcr[ce.Index]; rply != _EMPTY_ {
+						delete(mset.fcr, ce.Index)
+						mset.outq.send(&jsPubMsg{rply, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
+					}
+				}
+				mset.mu.Unlock()
+
 			case deleteMsgOp:
 				md, err := decodeMsgDelete(buf[1:])
 				if err != nil {
@@ -2378,6 +2389,10 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment) {
 				Response: &JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}},
 			}
 			result.Response.Error = jsError(err)
+		} else if err == errNoInterest {
+			// This is a stranded ephemeral, let's clean this one up.
+			subject := fmt.Sprintf(JSApiConsumerDeleteT, ca.Stream, ca.Name)
+			mset.outq.send(&jsPubMsg{subject, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
 		}
 		js.mu.Unlock()
 
@@ -3949,19 +3964,22 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	if mset.clseq == 0 {
 		mset.clseq = mset.lseq
 	}
+	esm := encodeStreamMsg(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano())
+	mset.clseq++
 
 	// Do proposal.
-	err := mset.node.Propose(encodeStreamMsg(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano()))
+	mset.mu.Unlock()
+	err := mset.node.Propose(esm)
 	if err != nil {
+		mset.mu.Lock()
+		mset.clseq--
+		mset.mu.Unlock()
 		if canRespond {
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: mset.cfg.Name}}
 			resp.Error = &ApiError{Code: 503, Description: err.Error()}
 			response, _ = json.Marshal(resp)
 		}
-	} else {
-		mset.clseq++
 	}
-	mset.mu.Unlock()
 
 	// If we errored out respond here.
 	if err != nil && canRespond {

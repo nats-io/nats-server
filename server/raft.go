@@ -226,7 +226,6 @@ var (
 	errUnknownPeer     = errors.New("raft: unknown peer")
 	errCorruptPeers    = errors.New("raft: corrupt peer state")
 	errStepdownFailed  = errors.New("raft: stepdown failed")
-	errFailedToApply   = errors.New("raft: could not place apply entry")
 	errEntryLoadFailed = errors.New("raft: could not load entry from WAL")
 	errNodeClosed      = errors.New("raft: node is closed")
 	errBadSnapName     = errors.New("raft: snapshot name could not be parsed")
@@ -344,9 +343,9 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		reqs:     make(chan *voteRequest, 8),
 		votes:    make(chan *voteResponse, 32),
 		propc:    make(chan *Entry, 8192),
-		entryc:   make(chan *appendEntry, 32768),
+		entryc:   make(chan *appendEntry, 8192),
 		respc:    make(chan *appendEntryResponse, 32768),
-		applyc:   make(chan *CommittedEntry, 32768),
+		applyc:   make(chan *CommittedEntry, 8192),
 		leadc:    make(chan bool, 8),
 		stepdown: make(chan string, 8),
 	}
@@ -566,12 +565,9 @@ func (n *raft) Propose(data []byte) error {
 	propc := n.propc
 	n.RUnlock()
 
-	select {
-	case propc <- &Entry{EntryNormal, data}:
-	default:
-		n.warn("Propose failed to be placed on internal channel")
-		return errProposalFailed
-	}
+	// For entering and exiting the system, proposals and apply we
+	// will block.
+	propc <- &Entry{EntryNormal, data}
 	return nil
 }
 
@@ -583,11 +579,8 @@ func (n *raft) ForwardProposal(entry []byte) error {
 	if n.Leader() {
 		return n.Propose(entry)
 	}
-	n.RLock()
-	subj := n.psubj
-	n.RUnlock()
 
-	n.sendRPC(subj, _EMPTY_, entry)
+	n.sendRPC(n.psubj, _EMPTY_, entry)
 	return nil
 }
 
@@ -690,6 +683,8 @@ func (n *raft) Compact(index uint64) error {
 // byte size that could be removed with a snapshot/compact.
 func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 	n.Lock()
+	defer n.Unlock()
+
 	// Ignore if already applied.
 	if index > n.applied {
 		n.applied = index
@@ -700,7 +695,6 @@ func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 	if state.Msgs > 0 {
 		bytes = entries * state.Bytes / state.Msgs
 	}
-	n.Unlock()
 	return entries, bytes
 }
 
@@ -879,6 +873,8 @@ func (n *raft) setupLastSnapshot() {
 
 	// Set latest snapshot we have.
 	n.Lock()
+	defer n.Unlock()
+
 	n.snapfile = latest
 	snap, err := n.loadLastSnapshot()
 	if err != nil {
@@ -893,7 +889,6 @@ func (n *raft) setupLastSnapshot() {
 			n.setWriteErrLocked(err)
 		}
 	}
-	n.Unlock()
 }
 
 // loadLastSnapshot will load and return our last snapshot.
@@ -946,8 +941,9 @@ func (n *raft) Leader() bool {
 		return false
 	}
 	n.RLock()
-	defer n.RUnlock()
-	return n.state == Leader
+	isLeader := n.state == Leader
+	n.RUnlock()
+	return isLeader
 }
 
 // Lock should be held.
@@ -1531,7 +1527,7 @@ func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _
 	select {
 	case propc <- &Entry{EntryRemovePeer, []byte(peer)}:
 	default:
-		n.warn("Failed to place peer removal proposal onto propose chan")
+		n.warn("Failed to place peer removal proposal onto propose channel")
 	}
 }
 
@@ -1772,8 +1768,7 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesC <-chan uint64) 
 				next = index
 			}
 			// Check if we are done.
-			finished := index > last
-			if finished || sendNext() {
+			if index > last || sendNext() {
 				n.debug("Finished catching up")
 				return
 			}
@@ -1878,6 +1873,8 @@ func (n *raft) applyCommit(index uint64) error {
 		delete(n.acks, index)
 	}
 
+	var fpae bool
+
 	ae := n.pae[index]
 	if ae == nil {
 		var state StreamState
@@ -1896,8 +1893,10 @@ func (n *raft) applyCommit(index uint64) error {
 			n.commit = original
 			return errEntryLoadFailed
 		}
+	} else {
+		fpae = true
 	}
-	delete(n.pae, index)
+
 	ae.buf = nil
 
 	var committed []*Entry
@@ -1946,13 +1945,14 @@ func (n *raft) applyCommit(index uint64) error {
 	}
 	// Pass to the upper layers if we have normal entries.
 	if len(committed) > 0 {
-		select {
-		case n.applyc <- &CommittedEntry{index, committed}:
-		default:
-			n.debug("Failed to place committed entry onto our apply channel")
-			n.commit = original
-			return errFailedToApply
+		if fpae {
+			delete(n.pae, index)
 		}
+		// For entering and exiting the system, proposals and apply we
+		// will block.
+		n.Unlock()
+		n.applyc <- &CommittedEntry{index, committed}
+		n.Lock()
 	} else {
 		// If we processed inline update our applied index.
 		n.applied = index
@@ -2971,6 +2971,9 @@ func (n *raft) switchState(state RaftState) {
 	if n.state == Leader && state != Leader {
 		n.updateLeadChange(false)
 	} else if state == Leader && n.state != Leader {
+		if len(n.pae) > 0 {
+			n.pae = make(map[uint64]*appendEntry)
+		}
 		n.updateLeadChange(true)
 	}
 

@@ -159,6 +159,9 @@ type stream struct {
 	// Sources
 	sources map[string]*sourceInfo
 
+	// For flowcontrol processing for source and mirror internal consumers.
+	fcr map[uint64]string
+
 	// TODO(dlc) - Hide everything below behind two pointers.
 	// Clustered mode.
 	sa      *streamAssignment
@@ -987,30 +990,16 @@ func (mset *stream) mirrorInfo() *StreamSourceInfo {
 	return mset.sourceInfo(mset.mirror)
 }
 
-// processClusteredMirrorMsg will propose the inbound mirrored message to the underlying raft group.
-func (mset *stream) processClusteredMirrorMsg(subject string, hdr, msg []byte, seq uint64, ts int64) error {
-	mset.mu.RLock()
-	node := mset.node
-	mset.mu.RUnlock()
-	// Do proposal.
-	if node == nil {
-		return nil
-	}
-	return node.Propose(encodeStreamMsg(subject, _EMPTY_, hdr, msg, seq, ts))
-}
-
 const sourceHealthCheckInterval = 10 * time.Second
 
-// Will run as a Go routine to process messages.
+// Will run as a Go routine to process mirror consumer messages.
 func (mset *stream) processMirrorMsgs() {
 	s := mset.srv
 	defer s.grWG.Done()
 
 	// Grab stream quit channel.
 	mset.mu.RLock()
-	msgs := mset.mirror.msgs
-	mch := msgs.mch
-	qch := mset.qch
+	msgs, mch, qch := mset.mirror.msgs, mset.mirror.msgs.mch, mset.qch
 	mset.mu.RUnlock()
 
 	t := time.NewTicker(sourceHealthCheckInterval)
@@ -1044,30 +1033,54 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) {
 		mset.mu.Unlock()
 		return
 	}
+	if !mset.isLeader() {
+		mset.mu.Unlock()
+		mset.cancelMirrorConsumer()
+		return
+	}
 
 	mset.mirror.last = time.Now()
+	node := mset.node
 
 	// Check for heartbeats and flow control messages.
 	if len(m.msg) == 0 && len(m.hdr) > 0 && bytes.HasPrefix(m.hdr, []byte("NATS/1.0 100 ")) {
+		// Flow controls have reply subjects.
 		if m.rply != _EMPTY_ {
-			mset.outq.send(&jsPubMsg{m.rply, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
+			// If we are clustered we want to delay signaling back the the upstream consumer.
+			if node != nil {
+				index, _, _ := node.Progress()
+				if mset.fcr == nil {
+					mset.fcr = make(map[uint64]string)
+				}
+				mset.fcr[index] = m.rply
+			} else {
+				mset.outq.send(&jsPubMsg{m.rply, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
+			}
 		}
 		mset.mu.Unlock()
 		return
 	}
 
-	sseq, _, _, ts, pending := replyInfo(m.rply)
+	sseq, _, dc, ts, pending := replyInfo(m.rply)
+
+	if dc > 1 {
+		mset.mu.Unlock()
+		return
+	}
 
 	// Mirror info tracking.
 	olag := mset.mirror.lag
-	mset.mirror.lag = pending
-	isClustered := mset.node != nil
+	if pending == 0 {
+		mset.mirror.lag = 0
+	} else {
+		mset.mirror.lag = pending - 1
+	}
 	mset.mu.Unlock()
 
 	s := mset.srv
 	var err error
-	if isClustered {
-		err = mset.processClusteredMirrorMsg(m.subj, m.hdr, m.msg, sseq-1, ts)
+	if node != nil {
+		err = node.Propose(encodeStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts))
 	} else {
 		err = mset.processJetStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts)
 	}
@@ -1240,12 +1253,10 @@ func (mset *stream) setupMirrorConsumer() error {
 	mset.outq.send(&jsPubMsg{subject, _EMPTY_, reply, nil, b, nil, 0, nil})
 
 	go func() {
-		var shouldRetry bool
 		select {
 		case ccr := <-respCh:
 			if ccr.Error != nil {
 				mset.cancelMirrorConsumer()
-				shouldRetry = false
 				// We will retry every 10 seconds or so
 				time.AfterFunc(10*time.Second, mset.retryMirrorConsumer)
 			} else {
@@ -1258,9 +1269,6 @@ func (mset *stream) setupMirrorConsumer() error {
 			}
 			mset.setMirrorErr(ccr.Error)
 		case <-time.After(2 * time.Second):
-			shouldRetry = true
-		}
-		if shouldRetry {
 			mset.resetMirrorConsumer()
 		}
 	}()
@@ -1398,7 +1406,6 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 	mset.outq.send(&jsPubMsg{subject, _EMPTY_, reply, nil, b, nil, 0, nil})
 
 	go func() {
-		var shouldRetry bool
 		select {
 		case ccr := <-respCh:
 			mset.mu.Lock()
@@ -1407,10 +1414,9 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 				if ccr.Error != nil {
 					mset.srv.Warnf("JetStream error response for create source consumer: %+v", ccr.Error)
 					si.err = ccr.Error
-					shouldRetry = false
-					// We will retry every 5 seconds or so
+					// We will retry every 10 seconds or so
 					mset.cancelSourceConsumer(sname)
-					time.AfterFunc(5*time.Second, func() { mset.retrySourceConsumer(sname) })
+					time.AfterFunc(10*time.Second, func() { mset.retrySourceConsumer(sname) })
 				} else {
 					// Capture consumer name.
 					si.cname = ccr.ConsumerInfo.Name
@@ -1418,9 +1424,6 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 			}
 			mset.mu.Unlock()
 		case <-time.After(2 * time.Second):
-			shouldRetry = true
-		}
-		if shouldRetry {
 			// Make sure things have not changed.
 			mset.mu.Lock()
 			if si := mset.sources[sname]; si != nil {
@@ -1441,9 +1444,7 @@ func (mset *stream) processSourceMsgs(si *sourceInfo) {
 
 	// Grab stream quit channel.
 	mset.mu.RLock()
-	msgs := si.msgs
-	mch := msgs.mch
-	qch := mset.qch
+	msgs, mch, qch := si.msgs, si.msgs.mch, mset.qch
 	mset.mu.RUnlock()
 
 	t := time.NewTicker(sourceHealthCheckInterval)
@@ -1473,15 +1474,31 @@ func (mset *stream) processSourceMsgs(si *sourceInfo) {
 
 // processInboundSourceMsg handles processing other stream messages bound for this stream.
 func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) {
-
 	mset.mu.Lock()
 
+	if !mset.isLeader() {
+		mset.mu.Unlock()
+		mset.cancelSourceConsumer(si.name)
+		return
+	}
+
 	si.last = time.Now()
+	node := mset.node
 
 	// Check for heartbeats and flow control messages.
 	if len(m.msg) == 0 && len(m.hdr) > 0 && bytes.HasPrefix(m.hdr, []byte("NATS/1.0 100 ")) {
+		// Flow controls have reply subjects.
 		if m.rply != _EMPTY_ {
-			mset.outq.send(&jsPubMsg{m.rply, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
+			// If we are clustered we want to delay signaling back the the upstream consumer.
+			if node != nil {
+				index, _, _ := node.Progress()
+				if mset.fcr == nil {
+					mset.fcr = make(map[uint64]string)
+				}
+				mset.fcr[index] = m.rply
+			} else {
+				mset.outq.send(&jsPubMsg{m.rply, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
+			}
 		}
 		mset.mu.Unlock()
 		return
@@ -1503,6 +1520,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) {
 		}
 	} else {
 		if dseq > si.dseq {
+			// FIXME(dlc) - No rapid fire.
 			mset.setSourceConsumer(si.name, si.sseq+1)
 		}
 		mset.mu.Unlock()
@@ -1514,7 +1532,6 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) {
 	} else {
 		si.lag = pending - 1
 	}
-	isClustered := mset.node != nil
 	mset.mu.Unlock()
 
 	hdr, msg := m.hdr, m.msg
@@ -1528,11 +1545,12 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) {
 
 	var err error
 	// If we are clustered we need to propose this message to the underlying raft group.
-	if isClustered {
+	if node != nil {
 		err = mset.processClusteredInboundMsg(m.subj, _EMPTY_, hdr, msg)
 	} else {
 		err = mset.processJetStreamMsg(m.subj, _EMPTY_, hdr, msg, 0, 0)
 	}
+
 	if err != nil {
 		s := mset.srv
 		if err == errLastSeqMismatch {
@@ -2405,8 +2423,8 @@ func (mset *stream) name() string {
 	if mset == nil {
 		return _EMPTY_
 	}
-	mset.mu.Lock()
-	defer mset.mu.Unlock()
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
 	return mset.cfg.Name
 }
 

@@ -233,7 +233,7 @@ const (
 	JsDeleteWaitTimeDefault = 5 * time.Second
 	// JsFlowControlMaxPending specifies default pending bytes during flow control that can be
 	// outstanding.
-	JsFlowControlMaxPending = 64 * 1024 * 1024
+	JsFlowControlMaxPending = 32 * 1024 * 1024
 )
 
 func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
@@ -572,7 +572,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			if !o.hasDeliveryInterest(len(r.psubs)+len(r.qsubs) > 0) {
 				mset.mu.Unlock()
 				o.deleteWithoutAdvisory()
-				return nil, fmt.Errorf("consumer requires interest for delivery subject when ephemeral")
+				return nil, errNoInterest
 			}
 		}
 	}
@@ -1734,8 +1734,11 @@ func (o *consumer) isFilteredMatch(subj string) bool {
 	return subjectIsSubsetMatch(subj, o.cfg.FilterSubject)
 }
 
-var errMaxAckPending = errors.New("max ack pending reached")
-var errBadConsumer = errors.New("consumer not valid")
+var (
+	errMaxAckPending = errors.New("max ack pending reached")
+	errBadConsumer   = errors.New("consumer not valid")
+	errNoInterest    = errors.New("consumer requires interest for delivery subject when ephemeral")
+)
 
 // Get next available message from underlying store.
 // Is partition aware and redeliver aware.
