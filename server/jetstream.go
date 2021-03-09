@@ -288,6 +288,10 @@ func (s *Server) DisableJetStream() error {
 	if s.JetStreamIsClustered() {
 		isLeader := s.JetStreamIsLeader()
 		js, cc := s.getJetStreamCluster()
+		if js == nil {
+			s.shutdownJetStream()
+			return nil
+		}
 		js.mu.RLock()
 		meta := cc.meta
 		js.mu.RUnlock()
