@@ -2473,8 +2473,8 @@ func (mset *stream) internalLoop() {
 				didDeliver, _ := c.processInboundClientMsg(msg)
 				c.pa.szb = nil
 
-				// Check to see if this is a delivery for an observable and
-				// we failed to deliver the message. If so alert the observable.
+				// Check to see if this is a delivery for a consumer and
+				// we failed to deliver the message. If so alert the consumer.
 				if pm.o != nil && pm.seq > 0 && !didDeliver {
 					pm.o.didNotDeliver(pm.seq)
 				}
@@ -2635,7 +2635,7 @@ func (mset *stream) getConsumers() []*consumer {
 	return obs
 }
 
-// NumConsumers reports on number of active observables for this stream.
+// NumConsumers reports on number of active consumers for this stream.
 func (mset *stream) numConsumers() int {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
@@ -2675,7 +2675,7 @@ func (mset *stream) state() StreamState {
 	return store.State()
 }
 
-// Determines if the new proposed partition is unique amongst all observables.
+// Determines if the new proposed partition is unique amongst all consumers.
 // Lock should be held.
 func (mset *stream) partitionUnique(partition string) bool {
 	for _, o := range mset.consumers {
