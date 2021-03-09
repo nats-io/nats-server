@@ -1007,9 +1007,11 @@ func (mset *stream) processMirrorMsgs() {
 	}()
 
 	// Grab stream quit channel.
-	mset.mu.RLock()
+	mset.mu.Lock()
 	msgs, mch, qch := mset.mirror.msgs, mset.mirror.msgs.mch, mset.qch
-	mset.mu.RUnlock()
+	// Set the last seen as now so that we don't fail at the first check.
+	mset.mirror.last = time.Now()
+	mset.mu.Unlock()
 
 	t := time.NewTicker(sourceHealthCheckInterval)
 	defer t.Stop()
@@ -1452,9 +1454,11 @@ func (mset *stream) processSourceMsgs(si *sourceInfo) {
 	}
 
 	// Grab stream quit channel.
-	mset.mu.RLock()
+	mset.mu.Lock()
 	msgs, mch, qch := si.msgs, si.msgs.mch, mset.qch
-	mset.mu.RUnlock()
+	// Set the last seen as now so that we don't fail at the first check.
+	si.last = time.Now()
+	mset.mu.Unlock()
 
 	t := time.NewTicker(sourceHealthCheckInterval)
 	defer t.Stop()
