@@ -92,7 +92,7 @@ const (
 	// LimitsPolicy (default) means that messages are retained until any given limit is reached.
 	// This could be one of MaxMsgs, MaxBytes, or MaxAge.
 	LimitsPolicy RetentionPolicy = iota
-	// InterestPolicy specifies that when all known observables have acknowledged a message it can be removed.
+	// InterestPolicy specifies that when all known consumers have acknowledged a message it can be removed.
 	InterestPolicy
 	// WorkQueuePolicy specifies that when the first worker or subscriber acknowledges the message it can be removed.
 	WorkQueuePolicy

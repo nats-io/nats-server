@@ -1302,7 +1302,7 @@ func TestFileStoreMeta(t *testing.T) {
 		t.Fatalf("Checksums do not match, got %q vs %q", mychecksum, checksum)
 	}
 
-	// Now create an observable. Same deal for them.
+	// Now create a consumer. Same deal for them.
 	oconfig := ConsumerConfig{
 		DeliverSubject: "d",
 		FilterSubject:  "foo",
