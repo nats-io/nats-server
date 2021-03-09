@@ -1950,8 +1950,11 @@ func (n *raft) applyCommit(index uint64) error {
 		}
 		// For entering and exiting the system, proposals and apply we
 		// will block.
+		closed := n.state == Closed
 		n.Unlock()
-		n.applyc <- &CommittedEntry{index, committed}
+		if !closed {
+			n.applyc <- &CommittedEntry{index, committed}
+		}
 		n.Lock()
 	} else {
 		// If we processed inline update our applied index.

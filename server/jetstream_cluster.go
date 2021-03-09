@@ -3957,19 +3957,21 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	}
 
 	// Proceed with proposing this message.
-	mset.mu.Lock()
 
 	// We only use mset.clseq for clustering and in case we run ahead of actual commits.
 	// Check if we need to set initial value here
+	mset.clMu.Lock()
 	if mset.clseq == 0 {
+		mset.mu.RLock()
 		mset.clseq = mset.lseq
+		mset.mu.RUnlock()
 	}
 	esm := encodeStreamMsg(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano())
 	mset.clseq++
-
 	// Do proposal.
-	mset.mu.Unlock()
 	err := mset.node.Propose(esm)
+	mset.clMu.Unlock()
+
 	if err != nil {
 		mset.mu.Lock()
 		mset.clseq--
