@@ -5136,7 +5136,7 @@ func (c *cluster) waitOnLeader() {
 func (c *cluster) waitOnClusterReady() {
 	c.t.Helper()
 	var leader *Server
-	expires := time.Now().Add(10 * time.Second)
+	expires := time.Now().Add(20 * time.Second)
 	for time.Now().Before(expires) {
 		if leader = c.leader(); leader != nil {
 			break
