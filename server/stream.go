@@ -169,6 +169,7 @@ type stream struct {
 	catchup bool
 	syncSub *subscription
 	infoSub *subscription
+	clMu    sync.Mutex
 	clseq   uint64
 	clfs    uint64
 	lqsent  time.Time
