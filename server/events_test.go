@@ -1585,8 +1585,9 @@ func TestSystemAccountWithGateways(t *testing.T) {
 
 	// Create a client on A that will subscribe on $SYS.ACCOUNT.>
 	urla := fmt.Sprintf("nats://%s:%d", oa.Host, oa.Port)
-	nca := natsConnect(t, urla, createUserCreds(t, sa, akp))
+	nca := natsConnect(t, urla, createUserCreds(t, sa, akp), nats.Name("SYS"))
 	defer nca.Close()
+	nca.Flush()
 
 	sub, _ := nca.SubscribeSync("$SYS.ACCOUNT.>")
 	defer sub.Unsubscribe()
@@ -1601,36 +1602,50 @@ func TestSystemAccountWithGateways(t *testing.T) {
 	ncb := natsConnect(t, urlb, createUserCreds(t, sb, akp), nats.Name("TEST EVENTS"))
 	defer ncb.Close()
 
-	msg, err := sub.NextMsg(time.Second)
-	if err != nil {
-		t.Fatalf("Error receiving msg: %v", err)
+	// space for .CONNECT and .CONNS from SYS and $G as well as one extra message
+	msgs := [3]*nats.Msg{}
+	var err error
+	msgs[0], err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	msgs[1], err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	msgs[2], err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	_, err = sub.NextMsg(250 * time.Millisecond) // rule out extra messages
+	require_Error(t, err)
+
+	findMsgs := func(sub string) []*nats.Msg {
+		rMsgs := []*nats.Msg{}
+		for _, m := range msgs {
+			if m == nil {
+				continue
+			}
+			if m.Subject == sub {
+				rMsgs = append(rMsgs, m)
+			}
+		}
+		return rMsgs
 	}
-	connsMsgA, err := sub.NextMsg(time.Second)
-	if err != nil {
-		t.Fatalf("Error receiving msg: %v", err)
+
+	msg := findMsgs(fmt.Sprintf("$SYS.ACCOUNT.%s.CONNECT", sa.SystemAccount().Name))
+	var bMsg *nats.Msg
+	if len(msg) != 1 {
+		t.Fatal("Expected one message")
+	} else {
+		bMsg = msg[0]
 	}
-	connsMsgG, err := sub.NextMsg(time.Second)
-	if err != nil {
-		t.Fatalf("Error receiving msg: %v", err)
+
+	require_Contains(t, string(bMsg.Data), sb.ID())
+	require_Contains(t, string(bMsg.Data), `"cluster":"B"`)
+	require_Contains(t, string(bMsg.Data), `"name":"TEST EVENTS"`)
+
+	connsMsgA := findMsgs(fmt.Sprintf("$SYS.ACCOUNT.%s.SERVER.CONNS", sa.SystemAccount().Name))
+	if len(connsMsgA) != 1 {
+		t.Fatal("Expected a message")
 	}
-	if strings.HasSuffix(connsMsgA.Subject, ".CONNECT") {
-		msg, connsMsgA = connsMsgA, msg
-	} else if strings.HasSuffix(connsMsgG.Subject, ".CONNECT") {
-		msg, connsMsgG = connsMsgG, msg
-	}
-	if connsMsgG.Subject != "$SYS.ACCOUNT.$G.SERVER.CONNS" {
-		connsMsgA, connsMsgG = connsMsgG, connsMsgA
-	}
-	if connsMsgG.Subject != "$SYS.ACCOUNT.$G.SERVER.CONNS" {
-		t.Fatalf("Expected subject $SYS.ACCOUNT.$G.SERVER.CONNS but got %s", connsMsgG.Subject)
-	}
-	// Basic checks, could expand on that...
-	accName := sa.SystemAccount().Name
-	if connsMsgA.Subject != fmt.Sprintf("$SYS.ACCOUNT.%s.SERVER.CONNS", accName) {
-		t.Fatalf("Expected subject to be $SYS.ACCOUNT.%s.SERVER.CONNS but got: %s", accName, connsMsgA.Subject)
-	}
-	if msg.Subject != fmt.Sprintf("$SYS.ACCOUNT.%s.CONNECT", accName) {
-		t.Fatalf("Expected subject to be $SYS.ACCOUNT.%s.CONNECT but got: %s", accName, msg.Subject)
+	connsMsgG := findMsgs("$SYS.ACCOUNT.$G.SERVER.CONNS")
+	if len(connsMsgG) != 1 {
+		t.Fatal("Expected a message")
 	}
 }
 func TestServerEventsStatsZ(t *testing.T) {
