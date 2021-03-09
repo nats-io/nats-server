@@ -1427,7 +1427,7 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 				}
 			}
 			mset.mu.Unlock()
-		case <-time.After(5 * time.Second):
+		case <-time.After(10 * time.Second):
 			// Make sure things have not changed.
 			mset.mu.Lock()
 			if si := mset.sources[sname]; si != nil && si.cname == _EMPTY_ {
