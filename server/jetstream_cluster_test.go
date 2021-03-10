@@ -5015,7 +5015,7 @@ func (c *cluster) consumerLeader(account, stream, consumer string) *Server {
 
 func (c *cluster) waitOnStreamLeader(account, stream string) {
 	c.t.Helper()
-	expires := time.Now().Add(10 * time.Second)
+	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.streamLeader(account, stream); leader != nil {
 			time.Sleep(100 * time.Millisecond)
