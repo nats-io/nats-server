@@ -1278,7 +1278,7 @@ func (mset *stream) setupMirrorConsumer() error {
 			}
 			mset.setMirrorErr(ccr.Error)
 		case <-time.After(10 * time.Second):
-			mset.resetMirrorConsumer()
+			return
 		}
 	}()
 
@@ -1434,12 +1434,7 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 			}
 			mset.mu.Unlock()
 		case <-time.After(10 * time.Second):
-			// Make sure things have not changed.
-			mset.mu.Lock()
-			if si := mset.sources[sname]; si != nil && si.cname == _EMPTY_ {
-				mset.setSourceConsumer(sname, seq)
-			}
-			mset.mu.Unlock()
+			return
 		}
 	}()
 }
@@ -2545,10 +2540,6 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		} else {
 			n.Stop()
 		}
-	}
-
-	if deleteFlag {
-		mset.stopSourceConsumers()
 	}
 
 	// Send stream delete advisory after the consumers.

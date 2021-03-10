@@ -2018,6 +2018,12 @@ func (c *client) gatewayInterest(acc, subj string) (bool, *SublistResult) {
 			}
 		}
 		e.RUnlock()
+		// Since callers may just check if the sublist result is nil or not,
+		// make sure that if what is returned by sl.Match() is the emptyResult, then
+		// we return nil to the caller.
+		if r == emptyResult {
+			r = nil
+		}
 	}
 	return psi, r
 }
