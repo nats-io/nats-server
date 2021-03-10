@@ -228,7 +228,13 @@ func (s *Server) restartJetStream() error {
 		MaxStore:  opts.JetStreamMaxStore,
 	}
 	s.Noticef("Restarting JetStream")
-	return s.enableJetStream(cfg)
+	err := s.enableJetStream(cfg)
+	if err != nil {
+		s.Warnf("Can't start JetStream: %v", err)
+		return s.DisableJetStream()
+	}
+
+	return nil
 }
 
 // checkStreamExports will check if we have the JS exports setup
