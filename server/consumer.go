@@ -63,6 +63,9 @@ type ConsumerConfig struct {
 	MaxAckPending   int           `json:"max_ack_pending,omitempty"`
 	Heartbeat       time.Duration `json:"idle_heartbeat,omitempty"`
 	FlowControl     bool          `json:"flow_control,omitempty"`
+
+	// Don't add to general clients.
+	Direct bool `json:"direct,omitempty"`
 }
 
 type CreateConsumerRequest struct {
@@ -299,6 +302,19 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		}
 		if config.FlowControl {
 			return nil, fmt.Errorf("consumer flow control requires a push based consumer")
+		}
+	}
+
+	// Direct need to be non-mapped ephemerals.
+	if config.Direct {
+		if config.DeliverSubject == _EMPTY_ {
+			return nil, fmt.Errorf("consumer direct requires a push based consumer")
+		}
+		if isDurableConsumer(config) {
+			return nil, fmt.Errorf("consumer direct requires an ephemeral consumer")
+		}
+		if ca != nil {
+			return nil, fmt.Errorf("consumer direct on a mapped consumer")
 		}
 	}
 
@@ -585,7 +601,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	mset.setConsumer(o)
 	mset.mu.Unlock()
 
-	if !s.JetStreamIsClustered() && s.standAloneMode() {
+	if config.Direct || (!s.JetStreamIsClustered() && s.standAloneMode()) {
 		o.setLeader(true)
 	}
 

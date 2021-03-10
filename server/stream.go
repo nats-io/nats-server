@@ -992,7 +992,7 @@ func (mset *stream) mirrorInfo() *StreamSourceInfo {
 	return mset.sourceInfo(mset.mirror)
 }
 
-const sourceHealthCheckInterval = 10 * time.Second
+const sourceHealthCheckInterval = 2 * time.Second
 
 // Will run as a Go routine to process mirror consumer messages.
 func (mset *stream) processMirrorMsgs() {
@@ -1196,6 +1196,7 @@ func (mset *stream) setupMirrorConsumer() error {
 	}
 
 	mset.mirror.sub = sub
+	mset.mirror.last = time.Now()
 
 	if !mset.mirror.grr {
 		mset.mirror.grr = true
@@ -1216,8 +1217,9 @@ func (mset *stream) setupMirrorConsumer() error {
 			AckPolicy:      AckNone,
 			AckWait:        48 * time.Hour,
 			MaxDeliver:     1,
-			Heartbeat:      10 * time.Second,
+			Heartbeat:      sourceHealthCheckInterval,
 			FlowControl:    true,
+			Direct:         true,
 		},
 	}
 
@@ -1275,7 +1277,7 @@ func (mset *stream) setupMirrorConsumer() error {
 				mset.mu.Unlock()
 			}
 			mset.setMirrorErr(ccr.Error)
-		case <-time.After(5 * time.Second):
+		case <-time.After(10 * time.Second):
 			mset.resetMirrorConsumer()
 		}
 	}()
@@ -1332,6 +1334,7 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 	mset.removeInternalConsumer(si)
 
 	si.sseq, si.dseq = 0, 0
+	si.last = time.Now()
 	ssi := mset.streamSource(sname)
 
 	// Determine subjects etc.
@@ -1367,8 +1370,9 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 			AckPolicy:      AckNone,
 			AckWait:        48 * time.Hour,
 			MaxDeliver:     1,
-			Heartbeat:      10 * time.Second,
+			Heartbeat:      sourceHealthCheckInterval,
 			FlowControl:    true,
+			Direct:         true,
 		},
 	}
 	// If starting, check any configs.

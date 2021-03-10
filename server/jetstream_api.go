@@ -2842,23 +2842,6 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 
 	var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
 
-	// Determine if we should proceed here when we are in clustered mode.
-	if s.JetStreamIsClustered() {
-		js, cc := s.getJetStreamCluster()
-		if js == nil || cc == nil {
-			return
-		}
-		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
-			resp.Error = jsClusterNotAvailErr
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-		// Make sure we are meta leader.
-		if !s.JetStreamIsLeader() {
-			return
-		}
-	}
-
 	var streamName string
 	if expectDurable {
 		streamName = tokenAt(subject, 6)
@@ -2866,14 +2849,39 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 		streamName = tokenAt(subject, 5)
 	}
 
-	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
 	var req CreateConsumerRequest
 	if err := json.Unmarshal(msg, &req); err != nil {
 		resp.Error = jsInvalidJSONErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	// Determine if we should proceed here when we are in clustered mode.
+	if s.JetStreamIsClustered() {
+		if req.Config.Direct {
+			// Check to see if we have this stream and are the stream leader.
+			if !acc.JetStreamIsStreamLeader(streamName) {
+				return
+			}
+		} else {
+			js, cc := s.getJetStreamCluster()
+			if js == nil || cc == nil {
+				return
+			}
+			if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+				resp.Error = jsClusterNotAvailErr
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
+			}
+			// Make sure we are meta leader.
+			if !s.JetStreamIsLeader() {
+				return
+			}
+		}
+	}
+
+	if !acc.JetStreamEnabled() {
+		resp.Error = jsNotEnabledErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -2914,7 +2922,7 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 		}
 	}
 
-	if s.JetStreamIsClustered() {
+	if s.JetStreamIsClustered() && !req.Config.Direct {
 		s.jsClusteredConsumerRequest(ci, acc, subject, reply, rmsg, req.Stream, &req.Config)
 		return
 	}
