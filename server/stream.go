@@ -1757,24 +1757,6 @@ func (mset *stream) removeInternalConsumer(si *sourceInfo) {
 	if si == nil || si.cname == _EMPTY_ {
 		return
 	}
-
-	var ext *ExternalStream
-	if si == mset.mirror {
-		ext = mset.cfg.Mirror.External
-	} else {
-		ssi := mset.streamSource(si.name)
-		if ssi == nil {
-			return
-		}
-		ext = ssi.External
-	}
-
-	subject := fmt.Sprintf(JSApiConsumerDeleteT, si.name, si.cname)
-	if ext != nil {
-		subject = strings.Replace(subject, JSApiPrefix, ext.ApiPrefix, 1)
-		subject = strings.ReplaceAll(subject, "..", ".")
-	}
-	mset.outq.send(&jsPubMsg{subject, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
 	si.cname = _EMPTY_
 }
 
