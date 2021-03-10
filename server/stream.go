@@ -1031,7 +1031,7 @@ func (mset *stream) processMirrorMsgs() {
 			stalled := mset.mirror != nil && time.Since(mset.mirror.last) > 3*sourceHealthCheckInterval
 			mset.mu.RUnlock()
 			if stalled {
-				mset.resetMirrorConsumer()
+				mset.retryMirrorConsumer()
 			}
 		}
 	}
@@ -1266,8 +1266,6 @@ func (mset *stream) setupMirrorConsumer() error {
 		case ccr := <-respCh:
 			if ccr.Error != nil {
 				mset.cancelMirrorConsumer()
-				// We will retry every 10 seconds or so
-				time.AfterFunc(10*time.Second, mset.retryMirrorConsumer)
 			} else {
 				// Capture consumer name.
 				mset.mu.Lock()
@@ -1426,7 +1424,6 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 					si.err = ccr.Error
 					// We will retry every 10 seconds or so
 					mset.cancelSourceConsumer(sname)
-					time.AfterFunc(10*time.Second, func() { mset.retrySourceConsumer(sname) })
 				} else {
 					// Capture consumer name.
 					si.cname = ccr.ConsumerInfo.Name
