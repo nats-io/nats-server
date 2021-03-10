@@ -236,7 +236,7 @@ const (
 	JsDeleteWaitTimeDefault = 5 * time.Second
 	// JsFlowControlMaxPending specifies default pending bytes during flow control that can be
 	// outstanding.
-	JsFlowControlMaxPending = 32 * 1024 * 1024
+	JsFlowControlMaxPending = 16 * 1024 * 1024
 )
 
 func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
@@ -2091,14 +2091,8 @@ func (o *consumer) needFlowControl() bool {
 		return false
 	}
 	// Decide whether to send a flow control message which we will need the user to respond.
-	// We send if we are at the limit or over, and at 25%, 50% and 75%.
-	if o.pbytes >= o.maxpb {
-		return true
-	} else if o.pfcs == 0 && o.pbytes > o.maxpb/4 {
-		return true
-	} else if o.pfcs == 1 && o.pbytes > o.maxpb/2 {
-		return true
-	} else if o.pfcs == 2 && o.pbytes > o.maxpb*3/4 {
+	// We send when we are over 50% of the current window.
+	if o.pfcs == 0 && o.pbytes > o.maxpb/2 {
 		return true
 	}
 	return false
