@@ -3563,7 +3563,7 @@ func TestJetStreamClusterRemovePeer(t *testing.T) {
 	})
 
 	// Now check consumer info as well.
-	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
 		ci, err := js.ConsumerInfo("TEST", "cat")
 		if err != nil {
 			return fmt.Errorf("Could not fetch consumer info: %v", err)
