@@ -63,6 +63,9 @@ type ConsumerConfig struct {
 	MaxAckPending   int           `json:"max_ack_pending,omitempty"`
 	Heartbeat       time.Duration `json:"idle_heartbeat,omitempty"`
 	FlowControl     bool          `json:"flow_control,omitempty"`
+
+	// Don't add to general clients.
+	Direct bool `json:"direct,omitempty"`
 }
 
 type CreateConsumerRequest struct {
@@ -233,7 +236,7 @@ const (
 	JsDeleteWaitTimeDefault = 5 * time.Second
 	// JsFlowControlMaxPending specifies default pending bytes during flow control that can be
 	// outstanding.
-	JsFlowControlMaxPending = 32 * 1024 * 1024
+	JsFlowControlMaxPending = 16 * 1024 * 1024
 )
 
 func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
@@ -299,6 +302,19 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		}
 		if config.FlowControl {
 			return nil, fmt.Errorf("consumer flow control requires a push based consumer")
+		}
+	}
+
+	// Direct need to be non-mapped ephemerals.
+	if config.Direct {
+		if config.DeliverSubject == _EMPTY_ {
+			return nil, fmt.Errorf("consumer direct requires a push based consumer")
+		}
+		if isDurableConsumer(config) {
+			return nil, fmt.Errorf("consumer direct requires an ephemeral consumer")
+		}
+		if ca != nil {
+			return nil, fmt.Errorf("consumer direct on a mapped consumer")
 		}
 	}
 
@@ -585,7 +601,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	mset.setConsumer(o)
 	mset.mu.Unlock()
 
-	if !s.JetStreamIsClustered() && s.standAloneMode() {
+	if config.Direct || (!s.JetStreamIsClustered() && s.standAloneMode()) {
 		o.setLeader(true)
 	}
 
@@ -2075,14 +2091,8 @@ func (o *consumer) needFlowControl() bool {
 		return false
 	}
 	// Decide whether to send a flow control message which we will need the user to respond.
-	// We send if we are at the limit or over, and at 25%, 50% and 75%.
-	if o.pbytes >= o.maxpb {
-		return true
-	} else if o.pfcs == 0 && o.pbytes > o.maxpb/4 {
-		return true
-	} else if o.pfcs == 1 && o.pbytes > o.maxpb/2 {
-		return true
-	} else if o.pfcs == 2 && o.pbytes > o.maxpb*3/4 {
+	// We send when we are over 50% of the current window.
+	if o.pfcs == 0 && o.pbytes > o.maxpb/2 {
 		return true
 	}
 	return false

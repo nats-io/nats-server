@@ -992,7 +992,7 @@ func (mset *stream) mirrorInfo() *StreamSourceInfo {
 	return mset.sourceInfo(mset.mirror)
 }
 
-const sourceHealthCheckInterval = 10 * time.Second
+const sourceHealthCheckInterval = 2 * time.Second
 
 // Will run as a Go routine to process mirror consumer messages.
 func (mset *stream) processMirrorMsgs() {
@@ -1031,7 +1031,7 @@ func (mset *stream) processMirrorMsgs() {
 			stalled := mset.mirror != nil && time.Since(mset.mirror.last) > 3*sourceHealthCheckInterval
 			mset.mu.RUnlock()
 			if stalled {
-				mset.resetMirrorConsumer()
+				mset.retryMirrorConsumer()
 			}
 		}
 	}
@@ -1196,6 +1196,7 @@ func (mset *stream) setupMirrorConsumer() error {
 	}
 
 	mset.mirror.sub = sub
+	mset.mirror.last = time.Now()
 
 	if !mset.mirror.grr {
 		mset.mirror.grr = true
@@ -1216,8 +1217,9 @@ func (mset *stream) setupMirrorConsumer() error {
 			AckPolicy:      AckNone,
 			AckWait:        48 * time.Hour,
 			MaxDeliver:     1,
-			Heartbeat:      10 * time.Second,
+			Heartbeat:      sourceHealthCheckInterval,
 			FlowControl:    true,
+			Direct:         true,
 		},
 	}
 
@@ -1264,8 +1266,6 @@ func (mset *stream) setupMirrorConsumer() error {
 		case ccr := <-respCh:
 			if ccr.Error != nil {
 				mset.cancelMirrorConsumer()
-				// We will retry every 10 seconds or so
-				time.AfterFunc(10*time.Second, mset.retryMirrorConsumer)
 			} else {
 				// Capture consumer name.
 				mset.mu.Lock()
@@ -1275,8 +1275,8 @@ func (mset *stream) setupMirrorConsumer() error {
 				mset.mu.Unlock()
 			}
 			mset.setMirrorErr(ccr.Error)
-		case <-time.After(5 * time.Second):
-			mset.resetMirrorConsumer()
+		case <-time.After(10 * time.Second):
+			return
 		}
 	}()
 
@@ -1332,6 +1332,7 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 	mset.removeInternalConsumer(si)
 
 	si.sseq, si.dseq = 0, 0
+	si.last = time.Now()
 	ssi := mset.streamSource(sname)
 
 	// Determine subjects etc.
@@ -1367,8 +1368,9 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 			AckPolicy:      AckNone,
 			AckWait:        48 * time.Hour,
 			MaxDeliver:     1,
-			Heartbeat:      10 * time.Second,
+			Heartbeat:      sourceHealthCheckInterval,
 			FlowControl:    true,
+			Direct:         true,
 		},
 	}
 	// If starting, check any configs.
@@ -1422,7 +1424,6 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 					si.err = ccr.Error
 					// We will retry every 10 seconds or so
 					mset.cancelSourceConsumer(sname)
-					time.AfterFunc(10*time.Second, func() { mset.retrySourceConsumer(sname) })
 				} else {
 					// Capture consumer name.
 					si.cname = ccr.ConsumerInfo.Name
@@ -1430,12 +1431,7 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 			}
 			mset.mu.Unlock()
 		case <-time.After(10 * time.Second):
-			// Make sure things have not changed.
-			mset.mu.Lock()
-			if si := mset.sources[sname]; si != nil && si.cname == _EMPTY_ {
-				mset.setSourceConsumer(sname, seq)
-			}
-			mset.mu.Unlock()
+			return
 		}
 	}()
 }
@@ -1753,24 +1749,6 @@ func (mset *stream) removeInternalConsumer(si *sourceInfo) {
 	if si == nil || si.cname == _EMPTY_ {
 		return
 	}
-
-	var ext *ExternalStream
-	if si == mset.mirror {
-		ext = mset.cfg.Mirror.External
-	} else {
-		ssi := mset.streamSource(si.name)
-		if ssi == nil {
-			return
-		}
-		ext = ssi.External
-	}
-
-	subject := fmt.Sprintf(JSApiConsumerDeleteT, si.name, si.cname)
-	if ext != nil {
-		subject = strings.Replace(subject, JSApiPrefix, ext.ApiPrefix, 1)
-		subject = strings.ReplaceAll(subject, "..", ".")
-	}
-	mset.outq.send(&jsPubMsg{subject, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
 	si.cname = _EMPTY_
 }
 
@@ -2559,10 +2537,6 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		} else {
 			n.Stop()
 		}
-	}
-
-	if deleteFlag {
-		mset.stopSourceConsumers()
 	}
 
 	// Send stream delete advisory after the consumers.

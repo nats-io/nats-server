@@ -2615,7 +2615,10 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 			o.store.Update(state)
 		} else if e.Type == EntryRemovePeer {
 			js.mu.RLock()
-			ourID := js.cluster.meta.ID()
+			var ourID string
+			if js.cluster != nil && js.cluster.meta != nil {
+				ourID = js.cluster.meta.ID()
+			}
 			js.mu.RUnlock()
 			if peer := string(e.Data); peer == ourID {
 				o.stopWithFlags(true, false, false)
