@@ -1532,14 +1532,10 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 		}
 
 		// Check to see if we are a member of the group and if the group has no leader.
-		if js.isGroupLeaderless(sa.Group) {
-			resp.Error = jsClusterNotAvailErr
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
+		isLeaderless := js.isGroupLeaderless(sa.Group)
 
 		// We have the stream assigned and a leader, so only the stream leader should answer.
-		if !acc.JetStreamIsStreamLeader(streamName) {
+		if !acc.JetStreamIsStreamLeader(streamName) && !isLeaderless {
 			if js.isLeaderless() {
 				resp.Error = jsClusterNotAvailErr
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -1839,12 +1835,6 @@ func (s *Server) jsStreamRemovePeerRequest(sub *subscription, c *client, subject
 	}
 
 	// Check to see if we are a member of the group and if the group has no leader.
-	if js.isGroupLeaderless(sa.Group) {
-		resp.Error = jsClusterNotAvailErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-
 	// Peers here is a server name, convert to node name.
 	nodeName := string(getHash(req.Peer))
 
