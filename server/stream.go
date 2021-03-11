@@ -399,9 +399,18 @@ func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 	mset.sa = sa
+	if sa == nil {
+		return
+	}
+
 	// Set our node.
-	if sa != nil {
-		mset.node = sa.Group.node
+	mset.node = sa.Group.node
+
+	// Setup our info sub here as well for all stream members. This is now by design.
+	if mset.infoSub == nil {
+		isubj := fmt.Sprintf(clusterStreamInfoT, mset.jsa.acc(), mset.cfg.Name)
+		// Note below the way we subscribe here is so that we can send requests to ourselves.
+		mset.infoSub, _ = mset.srv.systemSubscribe(isubj, _EMPTY_, false, mset.sysc, mset.handleClusterStreamInfoRequest)
 	}
 }
 
@@ -438,13 +447,6 @@ func (mset *stream) setLeader(isLeader bool) error {
 
 // Lock should be held.
 func (mset *stream) startClusterSubs() {
-	if mset.infoSub == nil {
-		if jsa := mset.jsa; jsa != nil {
-			isubj := fmt.Sprintf(clusterStreamInfoT, jsa.acc(), mset.cfg.Name)
-			// Note below the way we subscribe here is so that we can send requests to ourselves.
-			mset.infoSub, _ = mset.srv.systemSubscribe(isubj, _EMPTY_, false, mset.sysc, mset.handleClusterStreamInfoRequest)
-		}
-	}
 	if mset.isClustered() && mset.syncSub == nil {
 		mset.syncSub, _ = mset.srv.systemSubscribe(mset.sa.Sync, _EMPTY_, false, mset.sysc, mset.handleClusterSyncRequest)
 	}
@@ -452,10 +454,6 @@ func (mset *stream) startClusterSubs() {
 
 // Lock should be held.
 func (mset *stream) stopClusterSubs() {
-	if mset.infoSub != nil {
-		mset.srv.sysUnsubscribe(mset.infoSub)
-		mset.infoSub = nil
-	}
 	if mset.syncSub != nil {
 		mset.srv.sysUnsubscribe(mset.syncSub)
 		mset.syncSub = nil
@@ -2523,6 +2521,12 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	mset.stopClusterSubs()
 	// Unsubscribe from direct stream.
 	mset.unsubscribeToStream()
+
+	// Our info sub if we spun it up.
+	if mset.infoSub != nil {
+		mset.srv.sysUnsubscribe(mset.infoSub)
+		mset.infoSub = nil
+	}
 
 	// Quit channel.
 	if mset.qch != nil {

@@ -977,11 +977,6 @@ func (js *jetStream) processRemovePeer(peer string) {
 	js.mu.Lock()
 	s, cc := js.srv, js.cluster
 
-	// Only leader will do remappings for streams and consumers.
-	if cc.isLeader() {
-		js.remapStreamsLocked(peer)
-	}
-
 	// All nodes will check if this is them.
 	isUs := cc.meta.ID() == peer
 	disabled := js.disabled
@@ -4252,6 +4247,12 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 	now := time.Now()
 
 	id, peers := n.ID(), n.Peers()
+
+	// If we are leaderless, do not suppress putting us in the peer list.
+	if ci.Leader == _EMPTY_ {
+		id = _EMPTY_
+	}
+
 	for _, rp := range peers {
 		if rp.ID != id && rg.isMember(rp.ID) {
 			lastSeen := now.Sub(rp.Last)
@@ -4271,8 +4272,14 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 
 func (mset *stream) handleClusterStreamInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	mset.mu.RLock()
-	sysc, js, config := mset.sysc, mset.srv.js, mset.cfg
+	sysc, js, sa, config := mset.sysc, mset.srv.js, mset.sa, mset.cfg
 	mset.mu.RUnlock()
+
+	// By design all members will receive this. Normally we only want the leader answering.
+	// But if we have stalled and lost quorom all can respond.
+	if sa != nil && !js.isGroupLeaderless(sa.Group) && !mset.isLeader() {
+		return
+	}
 
 	si := &StreamInfo{
 		Created: mset.createdTime(),

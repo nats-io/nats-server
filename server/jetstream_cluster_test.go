@@ -3129,11 +3129,6 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 		return err != nil && strings.Contains(err.Error(), "unavailable")
 	}
 
-	// Expect to get errors here.
-	if _, err := js.StreamInfo("NO-Q"); !notAvailableErr(err) {
-		t.Fatalf("Expected an 'unavailable' error, got %v", err)
-	}
-
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
 		if cl := c.consumerLeader("$G", "NO-Q", ci.Name); cl == nil {
 			return nil
@@ -3164,9 +3159,6 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 		t.Fatalf("Expected an 'unavailable' error, got %v", err)
 	}
 	if err := js.DeleteStream("NO-Q"); !notAvailableErr(err) {
-		t.Fatalf("Expected an 'unavailable' error, got %v", err)
-	}
-	if _, err := js.StreamInfo("NO-Q"); !notAvailableErr(err) {
 		t.Fatalf("Expected an 'unavailable' error, got %v", err)
 	}
 	if err := js.PurgeStream("NO-Q"); !notAvailableErr(err) {
