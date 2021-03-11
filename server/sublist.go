@@ -223,6 +223,21 @@ func (s *Sublist) ClearNotification(subject string, notify chan<- bool) bool {
 	return didRemove
 }
 
+func (s *Sublist) clearAllNotifications() {
+	s.Lock()
+	if s.notify == nil {
+		s.Unlock()
+		return
+	}
+	for subj, chs := range s.notify.remove {
+		for _, ch := range chs {
+			sendNotification(ch, false)
+		}
+		delete(s.notify.remove, subj)
+	}
+	s.Unlock()
+}
+
 func sendNotification(ch chan<- bool, hasInterest bool) {
 	select {
 	case ch <- hasInterest:

@@ -1669,6 +1669,22 @@ func (s *Server) removeRemoteGatewayConnection(c *client) {
 				qSubsRemoved++
 			}
 		}
+		// Clear possible registered sublist notifications
+		if c.gw.outsim != nil {
+			c.gw.outsim.Range(func(_, v interface{}) bool {
+				if v == nil {
+					return true
+				}
+				e := v.(*outsie)
+				e.RLock()
+				sl := e.sl
+				e.RUnlock()
+				if sl != nil {
+					sl.clearAllNotifications()
+				}
+				return true
+			})
+		}
 		c.mu.Unlock()
 		// Update total count of qsubs in remote gateways.
 		atomic.AddInt64(&c.srv.gateway.totalQSubs, -qSubsRemoved)

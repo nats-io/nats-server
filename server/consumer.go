@@ -704,7 +704,7 @@ func (o *consumer) setLeader(isLeader bool) {
 		// If push mode, register for notifications on interest.
 		if o.isPushMode() {
 			o.inch = make(chan bool, 8)
-			o.acc.sl.RegisterNotification(o.cfg.DeliverSubject, o.inch)
+			o.registerNotification(s, o.acc, o.cfg.DeliverSubject)
 			if o.active = <-o.inch; !o.active {
 				// Check gateways in case they are enabled.
 				o.active = s.hasGatewayInterest(o.acc.Name, o.cfg.DeliverSubject)
@@ -742,6 +742,47 @@ func (o *consumer) setLeader(isLeader bool) {
 			o.qch = nil
 		}
 		o.mu.Unlock()
+	}
+}
+
+func (o *consumer) registerNotification(s *Server, acc *Account, subject string) {
+	o.registerOrClearNotification(s, acc, subject, true)
+}
+
+func (o *consumer) clearNotification(s *Server, acc *Account, subject string) {
+	o.registerOrClearNotification(s, acc, subject, false)
+}
+
+func (o *consumer) registerOrClearNotification(s *Server, acc *Account, subject string, register bool) {
+	if register {
+		acc.sl.RegisterNotification(subject, o.inch)
+	} else {
+		acc.sl.ClearNotification(subject, o.inch)
+	}
+	if s == nil {
+		return
+	}
+	gw := s.gateway
+	if !gw.enabled {
+		return
+	}
+	gw.RLock()
+	defer gw.RUnlock()
+	for _, c := range gw.outo {
+		c.mu.Lock()
+		if ei, ok := c.gw.outsim.Load(acc.Name); ok && ei != nil {
+			e := ei.(*outsie)
+			e.RLock()
+			if e.sl != nil {
+				if register {
+					e.sl.RegisterNotification(subject, o.inch)
+				} else {
+					e.sl.ClearNotification(subject, o.inch)
+				}
+			}
+			e.RUnlock()
+		}
+		c.mu.Unlock()
 	}
 }
 
@@ -1020,10 +1061,14 @@ func (o *consumer) updateDeliverSubject(newDeliver string) {
 		o.forceExpirePending()
 	}
 
-	o.acc.sl.ClearNotification(o.dsubj, o.inch)
+	var s *Server
+	if o.mset != nil {
+		s = o.mset.srv
+	}
+	o.clearNotification(s, o.acc, o.dsubj)
 	o.dsubj, o.cfg.DeliverSubject = newDeliver, newDeliver
 	// When we register new one it will deliver to update state loop.
-	o.acc.sl.RegisterNotification(newDeliver, o.inch)
+	o.registerNotification(s, o.acc, newDeliver)
 }
 
 // Check that configs are equal but allow delivery subjects to be different.
@@ -2595,6 +2640,7 @@ func (o *consumer) stopWithFlags(dflag, doSignal, advisory bool) error {
 		o.signalNewMessages()
 	}
 	n := o.node
+	s := mset.srv
 	o.mu.Unlock()
 
 	if c != nil {
@@ -2605,7 +2651,7 @@ func (o *consumer) stopWithFlags(dflag, doSignal, advisory bool) error {
 	}
 
 	if delivery != _EMPTY_ {
-		a.sl.ClearNotification(delivery, o.inch)
+		o.clearNotification(s, a, delivery)
 	}
 
 	mset.mu.Lock()
