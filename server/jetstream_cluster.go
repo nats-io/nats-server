@@ -952,27 +952,6 @@ func (sa *streamAssignment) copyGroup() *streamAssignment {
 	return &csa
 }
 
-func (js *jetStream) remapStreams(peer string) {
-	js.mu.Lock()
-	defer js.mu.Unlock()
-	js.remapStreamsLocked(peer)
-}
-
-// Lock should be held.
-func (js *jetStream) remapStreamsLocked(peer string) {
-	cc := js.cluster
-
-	// Grab our nodes.
-	// Need to search for this peer in our stream assignments for potential remapping.
-	for _, as := range cc.streams {
-		for _, sa := range as {
-			if sa.Group.isMember(peer) {
-				js.removePeerFromStream(sa, peer)
-			}
-		}
-	}
-}
-
 func (js *jetStream) processRemovePeer(peer string) {
 	js.mu.Lock()
 	s, cc := js.srv, js.cluster
