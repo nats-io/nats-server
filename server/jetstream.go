@@ -228,7 +228,7 @@ func (s *Server) restartJetStream() error {
 		MaxStore:  opts.JetStreamMaxStore,
 	}
 	s.Noticef("Restarting JetStream")
-	err := s.enableJetStream(cfg)
+	err := s.EnableJetStream(&cfg)
 	if err != nil {
 		s.Warnf("Can't start JetStream: %v", err)
 		return s.DisableJetStream()

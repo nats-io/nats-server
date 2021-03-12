@@ -816,6 +816,14 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		oldConfig = reflect.ValueOf(s.getOpts()).Elem()
 		newConfig = reflect.ValueOf(newOpts).Elem()
 		diffOpts  = []option{}
+
+		// Need to keep track of whether JS is being disabled
+		// to prevent changing limits at runtime.
+		jsEnabled           = s.JetStreamEnabled()
+		disableJS           bool
+		jsMemLimitsChanged  bool
+		jsFileLimitsChanged bool
+		jsStoreDirChanged   bool
 	)
 	for i := 0; i < oldConfig.NumField(); i++ {
 		field := oldConfig.Type().Field(i)
@@ -834,16 +842,17 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		if err := imposeOrder(newValue); err != nil {
 			return nil, err
 		}
+
 		if changed := !reflect.DeepEqual(oldValue, newValue); !changed {
 			// Check to make sure we are running JetStream if we think we should be.
 			if strings.ToLower(field.Name) == "jetstream" && newValue.(bool) {
-				if !s.JetStreamEnabled() {
+				if !jsEnabled {
 					diffOpts = append(diffOpts, &jetStreamOption{newValue: true})
 				}
 			}
 			continue
 		}
-		switch strings.ToLower(field.Name) {
+		switch optName := strings.ToLower(field.Name); optName {
 		case "traceverbose":
 			diffOpts = append(diffOpts, &traceVerboseOption{newValue: newValue.(bool)})
 		case "trace":
@@ -1006,26 +1015,56 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			if new != old {
 				diffOpts = append(diffOpts, &jetStreamOption{newValue: new})
 			}
+
+			// Mark whether JS will be disabled.
+			disableJS = !new
 		case "storedir":
 			new := newValue.(string)
 			old := oldValue.(string)
-			// If they are the same, or, we have turned it off (-1) that is ok.
-			if new != _EMPTY_ && new != old {
-				return nil, fmt.Errorf("config reload not supported for jetstream storage directory")
+			modified := new != old
+
+			// Check whether JS is being disabled and/or storage dir attempted to change.
+			if jsEnabled && modified {
+				if new == _EMPTY_ {
+					// This means that either JS is being disabled or it is using an temp dir.
+					// Allow the change but error in case JS was not disabled.
+					jsStoreDirChanged = true
+				} else {
+					return nil, fmt.Errorf("config reload not supported for jetstream storage directory")
+				}
 			}
-		case "jetstreammaxmemory":
+		case "jetstreammaxmemory", "jetstreammaxstore":
 			old := oldValue.(int64)
 			new := newValue.(int64)
-			// If they are the same, or, we have turned it off (-1) that is ok.
-			if new != -1 && new != old {
-				return nil, fmt.Errorf("config reload not supported for jetstream max memory")
-			}
-		case "jetstreammaxstore":
-			old := oldValue.(int64)
-			new := newValue.(int64)
-			// If they are the same, or, we have turned it off (-1) that is ok.
-			if new != -1 && new != old {
-				return nil, fmt.Errorf("config reload not supported for jetstream max storage")
+
+			// Check whether JS is being disabled and/or limits are being changed.
+			var (
+				modified  = new != old
+				fromUnset = old == -1
+				fromSet   = !fromUnset
+				toUnset   = new == -1
+				toSet     = !toUnset
+			)
+			if jsEnabled && modified {
+				// Cannot change limits from dynamic storage at runtime.
+				switch {
+				case fromSet && toUnset:
+					// Limits changed but it may mean that JS is being disabled,
+					// keep track of the change and error in case it is not.
+					switch optName {
+					case "jetstreammaxmemory":
+						jsMemLimitsChanged = true
+					case "jetstreammaxstore":
+						jsFileLimitsChanged = true
+					default:
+						return nil, fmt.Errorf("config reload not supported for jetstream max memory and store")
+					}
+				case fromUnset && toSet:
+					// Prevent changing from dynamic max memory / file at runtime.
+					return nil, fmt.Errorf("config reload not supported for jetstream dynamic max memory and store")
+				default:
+					return nil, fmt.Errorf("config reload not supported for jetstream max memory and store")
+				}
 			}
 		case "websocket":
 			// Similar to gateways
@@ -1101,6 +1140,16 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			// Bail out if attempting to reload any unsupported options.
 			return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
 				field.Name, oldValue, newValue)
+		}
+	}
+
+	// If not disabling JS but limits have changed then it is an error.
+	if !disableJS {
+		if jsMemLimitsChanged || jsFileLimitsChanged {
+			return nil, fmt.Errorf("config reload not supported for jetstream max memory and max store")
+		}
+		if jsStoreDirChanged {
+			return nil, fmt.Errorf("config reload not supported for jetstream storage dir")
 		}
 	}
 
