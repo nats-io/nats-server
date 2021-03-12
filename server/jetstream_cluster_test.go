@@ -3726,7 +3726,7 @@ func TestJetStreamClusterRemoveServer(t *testing.T) {
 	}
 
 	// Check the stream info is eventually correct.
-	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
 		si, err := js.StreamInfo("TEST")
 		if err != nil {
 			return fmt.Errorf("Could not fetch stream info: %v", err)
@@ -3744,7 +3744,7 @@ func TestJetStreamClusterRemoveServer(t *testing.T) {
 
 	// Now do consumer.
 	c.waitOnConsumerLeader("$G", "TEST", cname)
-	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+	checkFor(t, 20*time.Second, 50*time.Millisecond, func() error {
 		ci, err := js.ConsumerInfo("TEST", cname)
 		if err != nil {
 			return fmt.Errorf("Could not fetch consumer info: %v", err)
@@ -4971,7 +4971,7 @@ func (c *cluster) waitOnPeerCount(n int) {
 	c.t.Helper()
 	c.waitOnLeader()
 	leader := c.leader()
-	expires := time.Now().Add(10 * time.Second)
+	expires := time.Now().Add(20 * time.Second)
 	for time.Now().Before(expires) {
 		peers := leader.JetStreamClusterPeers()
 		if len(peers) == n {
@@ -4984,7 +4984,7 @@ func (c *cluster) waitOnPeerCount(n int) {
 
 func (c *cluster) waitOnConsumerLeader(account, stream, consumer string) {
 	c.t.Helper()
-	expires := time.Now().Add(10 * time.Second)
+	expires := time.Now().Add(20 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.consumerLeader(account, stream, consumer); leader != nil {
 			time.Sleep(100 * time.Millisecond)
@@ -5053,7 +5053,7 @@ func (c *cluster) waitOnStreamCurrent(s *Server, account, stream string) {
 
 func (c *cluster) waitOnServerCurrent(s *Server) {
 	c.t.Helper()
-	expires := time.Now().Add(5 * time.Second)
+	expires := time.Now().Add(20 * time.Second)
 	for time.Now().Before(expires) {
 		if s.JetStreamIsCurrent() {
 			time.Sleep(100 * time.Millisecond)
@@ -5112,7 +5112,7 @@ func (c *cluster) expectNoLeader() {
 
 func (c *cluster) waitOnLeader() {
 	c.t.Helper()
-	expires := time.Now().Add(5 * time.Second)
+	expires := time.Now().Add(20 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.leader(); leader != nil {
 			time.Sleep(100 * time.Millisecond)
