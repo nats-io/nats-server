@@ -1721,6 +1721,7 @@ func TestJetStreamClusterExtendedStreamInfo(t *testing.T) {
 	}
 
 	oldLeader = c.restartServer(oldLeader)
+	c.waitOnStreamLeader("$G", "TEST")
 	c.waitOnStreamCurrent(oldLeader, "$G", "TEST")
 
 	// Re-request.
@@ -3717,6 +3718,7 @@ func TestJetStreamClusterRemoveServer(t *testing.T) {
 	sl := c.streamLeader("$G", "TEST")
 	c.removeJetStream(sl)
 
+	c.waitOnLeader()
 	c.waitOnStreamLeader("$G", "TEST")
 
 	// Faster timeout since we loop below checking for condition.
@@ -5112,7 +5114,7 @@ func (c *cluster) expectNoLeader() {
 
 func (c *cluster) waitOnLeader() {
 	c.t.Helper()
-	expires := time.Now().Add(20 * time.Second)
+	expires := time.Now().Add(40 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.leader(); leader != nil {
 			time.Sleep(100 * time.Millisecond)
