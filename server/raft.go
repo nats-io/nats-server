@@ -2051,6 +2051,7 @@ func (n *raft) runAsCandidate() {
 
 	// We vote for ourselves.
 	votes := 1
+	won := false
 
 	for {
 		elect := n.electTimer()
@@ -2064,17 +2065,39 @@ func (n *raft) runAsCandidate() {
 		case <-n.quit:
 			return
 		case <-elect.C:
-			n.switchToCandidate()
+			if won {
+				// we are here if we won the election but some server did not respond
+				n.switchToLeader()
+			} else {
+				n.switchToCandidate()
+			}
 			return
 		case vresp := <-n.votes:
-			n.trackPeer(vresp.peer)
 			if vresp.granted && n.term >= vresp.term {
+				// only track peers that would be our followers
+				n.trackPeer(vresp.peer)
 				votes++
 				if n.wonElection(votes) {
-					// Become LEADER if we have won.
-					n.switchToLeader()
-					return
+					// TODO If this server was also leader in n.term-1, then we could skip the timer as well.
+					// This would be ok as we'd be guaranteed to have the latest history.
+					if len(n.peers) == votes {
+						// Become LEADER if we have won and gotten a quorum with everyone
+						n.switchToLeader()
+						return
+					} else {
+						// Not everyone is in this quorum, yet?
+						// Wait for the remaining responses and become leader once everyone did.
+						// Or Wait until after the election timeout and become leader then.
+						// In case another server responds with vresp.granted==false and vresp.term > n.term,
+						// we will start all over again.
+						won = true
+					}
 				}
+			} else if vresp.term > n.term {
+				// if we observe a bigger term, we should start over again or risk forming a quorum fully knowing
+				// someone with a better term exists. This is even the right thing to do if won == true.
+				n.switchToCandidate()
+				return
 			}
 		case vreq := <-n.reqs:
 			n.processVoteRequest(vreq)

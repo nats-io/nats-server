@@ -1373,7 +1373,7 @@ func TestNoRaceJetStreamClusterLargeStreamInlineCatchup(t *testing.T) {
 	c.waitOnStreamCurrent(sr, "$G", "TEST")
 
 	// Ask other servers to stepdown as leader so that sr becomes the leader.
-	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+	checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
 		c.waitOnStreamLeader("$G", "TEST")
 		if sl := c.streamLeader("$G", "TEST"); sl != sr {
 			sl.JetStreamStepdownStream("$G", "TEST")
