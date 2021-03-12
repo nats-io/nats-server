@@ -304,8 +304,8 @@ func (s *Server) DisableJetStream() error {
 
 		if meta != nil {
 			if isLeader {
-				js.remapStreams(meta.ID())
 				s.Warnf("JetStream initiating meta leader transfer")
+				meta.StepDown()
 				select {
 				case <-s.quitCh:
 					return nil
