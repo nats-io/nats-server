@@ -158,6 +158,9 @@ type raft struct {
 	sq    *sendq
 	aesub *subscription
 
+	// Are we doing a leadership transfer.
+	lxfer bool
+
 	// For holding term and vote and peerstate to be written.
 	wtv   []byte
 	wps   []byte
@@ -204,7 +207,7 @@ type lps struct {
 }
 
 const (
-	minElectionTimeout = 1500 * time.Millisecond
+	minElectionTimeout = 1000 * time.Millisecond
 	maxElectionTimeout = 5 * minElectionTimeout
 	minCampaignTimeout = 100 * time.Millisecond
 	maxCampaignTimeout = 4 * minCampaignTimeout
@@ -317,8 +320,8 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	if ps == nil || (len(ps.knownPeers) < 2 && ps.clusterSize < 2) {
-		return nil, errors.New("raft: cluster too small")
+	if ps == nil {
+		return nil, errors.New("raft: no peerstate")
 	}
 
 	n := &raft{
@@ -1073,6 +1076,7 @@ func (n *raft) campaign() error {
 	if n.state == Leader {
 		return errAlreadyLeader
 	}
+	n.lxfer = true
 	n.resetElect(randCampaignTimeout())
 	return nil
 }
@@ -2084,7 +2088,7 @@ func (n *raft) runAsCandidate() {
 				if n.wonElection(votes) {
 					// TODO If this server was also leader in n.term-1, then we could skip the timer as well.
 					// This would be ok as we'd be guaranteed to have the latest history.
-					if len(n.peers) == votes {
+					if len(n.peers) == votes || n.lxfer {
 						// Become LEADER if we have won and gotten a quorum with everyone
 						n.switchToLeader()
 						return
@@ -3023,6 +3027,7 @@ func (n *raft) switchToFollower(leader string) {
 		return
 	}
 	n.debug("Switching to follower")
+	n.lxfer = false
 	n.leader = leader
 	n.switchState(Follower)
 }
@@ -3035,11 +3040,14 @@ func (n *raft) switchToCandidate() {
 	}
 	if n.state != Candidate {
 		n.debug("Switching to candidate")
-	} else if n.lostQuorumLocked() {
-		if time.Since(n.llqrt) > 20*time.Second {
-			// We signal to the upper layers such that can alert on quorum lost.
-			n.updateLeadChange(false)
-			n.llqrt = time.Now()
+	} else {
+		n.lxfer = false
+		if n.lostQuorumLocked() {
+			if time.Since(n.llqrt) > 20*time.Second {
+				// We signal to the upper layers such that can alert on quorum lost.
+				n.updateLeadChange(false)
+				n.llqrt = time.Now()
+			}
 		}
 	}
 	// Increment the term.
@@ -3057,5 +3065,6 @@ func (n *raft) switchToLeader() {
 	}
 	n.debug("Switching to leader")
 	n.leader = n.id
+	n.lxfer = false
 	n.switchState(Leader)
 }
