@@ -317,7 +317,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	if ps == nil || ps.clusterSize < 2 {
+	if ps == nil || (len(ps.knownPeers) < 2 && ps.clusterSize < 2) {
 		return nil, errors.New("raft: cluster too small")
 	}
 
@@ -1933,9 +1933,13 @@ func (n *raft) applyCommit(index uint64) error {
 			// FIXME(dlc) - Check if this is us??
 			if _, ok := n.peers[oldPeer]; ok {
 				// We should decrease our cluster size since we are tracking this peer.
-				n.debug("Decreasing our clustersize: %d -> %d", n.csz, n.csz-1)
-				n.csz--
-				n.qn = n.csz/2 + 1
+				if n.csz > 1 {
+					n.debug("Decreasing our clustersize: %d -> %d", n.csz, n.csz-1)
+					n.csz--
+					n.qn = n.csz/2 + 1
+				} else {
+					n.warn("Not decreasing further our clustersize: %d", n.csz)
+				}
 				delete(n.peers, oldPeer)
 			}
 			n.writePeerState(&peerState{n.peerNames(), n.csz})
