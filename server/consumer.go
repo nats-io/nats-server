@@ -211,6 +211,7 @@ type consumer struct {
 	replay            bool
 	filterWC          bool
 	dtmr              *time.Timer
+	gwdtmr            *time.Timer
 	dthresh           time.Duration
 	mch               chan struct{}
 	qch               chan struct{}
@@ -708,6 +709,13 @@ func (o *consumer) setLeader(isLeader bool) {
 			if o.active = <-o.inch; !o.active {
 				// Check gateways in case they are enabled.
 				o.active = s.hasGatewayInterest(o.acc.Name, o.cfg.DeliverSubject)
+				if o.active {
+					// There is no local interest, but there is GW interest, we
+					// will watch for interest disappearing.
+					// TODO: may need to revisit...
+					stopAndClearTimer(&o.gwdtmr)
+					o.gwdtmr = time.AfterFunc(o.dthresh, func() { o.watchGWinterest() })
+				}
 			}
 		}
 
@@ -888,7 +896,7 @@ func (s *Server) hasGatewayInterest(account, subject string) bool {
 }
 
 // This processes an update to the local interest for a deliver subject.
-func (o *consumer) updateDeliveryInterest(localInterest bool) {
+func (o *consumer) updateDeliveryInterest(localInterest bool) bool {
 	interest := o.hasDeliveryInterest(localInterest)
 
 	o.mu.Lock()
@@ -896,7 +904,7 @@ func (o *consumer) updateDeliveryInterest(localInterest bool) {
 
 	mset := o.mset
 	if mset == nil || o.isPullMode() {
-		return
+		return false
 	}
 
 	if interest && !o.active {
@@ -911,7 +919,9 @@ func (o *consumer) updateDeliveryInterest(localInterest bool) {
 	// a timer to delete us. We wait for a bit in case of server reconnect.
 	if !o.isDurable() && !interest {
 		o.dtmr = time.AfterFunc(o.dthresh, func() { o.deleteNotActive() })
+		return true
 	}
+	return false
 }
 
 func (o *consumer) deleteNotActive() {
@@ -970,6 +980,25 @@ func (o *consumer) deleteNotActive() {
 	}
 	// We will delete here regardless.
 	o.delete()
+}
+
+func (o *consumer) watchGWinterest() {
+	var delete bool
+	// If there is no local interest...
+	if o.hasNoLocalInterest() {
+		// then call this which will check for GW interest and if none,
+		// will start the delete timer. This will return if the delete
+		// timer was set.
+		delete = o.updateDeliveryInterest(false)
+	}
+	o.mu.Lock()
+	// Now either clear the gwdtmr or reset for next try.
+	if delete {
+		stopAndClearTimer(&o.gwdtmr)
+	} else if o.gwdtmr != nil {
+		o.gwdtmr.Reset(o.dthresh)
+	}
+	o.mu.Unlock()
 }
 
 // Config returns the consumer's configuration.
@@ -2588,6 +2617,7 @@ func (o *consumer) stopWithFlags(dflag, doSignal, advisory bool) error {
 	o.sysc = nil
 	stopAndClearTimer(&o.ptmr)
 	stopAndClearTimer(&o.dtmr)
+	stopAndClearTimer(&o.gwdtmr)
 	delivery := o.cfg.DeliverSubject
 	o.waiting = nil
 	// Break us out of the readLoop.
