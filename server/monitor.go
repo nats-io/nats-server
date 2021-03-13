@@ -2409,10 +2409,10 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 	jsi.Meta = toClusterInfo(s.js.getMetaGroup())
 	filterIdx := -1
 	for i, jsa := range accounts {
-		jsa.mu.RLock()
 		if jsa.acc().GetName() == opts.Account {
 			filterIdx = i
 		}
+		jsa.mu.RLock()
 		jsi.Streams += len(jsa.streams)
 		jsi.Memory += uint64(jsa.usage.mem)
 		jsi.Store += uint64(jsa.usage.store)
