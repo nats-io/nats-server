@@ -183,9 +183,9 @@ const (
 	JetStreamMetaFileSum = "meta.sum"
 
 	// Default stream block size.
-	defaultStreamBlockSize = 32 * 1024 * 1024 // 32MB
+	defaultStreamBlockSize = 16 * 1024 * 1024 // 16MB
 	// Default for workqueue or interest based.
-	defaultOtherBlockSize = 16 * 1024 * 1024 // 16MB
+	defaultOtherBlockSize = 8 * 1024 * 1024 // 8MB
 	// max block size for now.
 	maxBlockSize = defaultStreamBlockSize
 	// FileStoreMinBlkSize is minimum size we will do for a blk size.
