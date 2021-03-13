@@ -147,9 +147,6 @@ type raft struct {
 	c        *client
 	dflag    bool
 
-	// last term this node was leader
-	llterm uint64
-
 	// Subjects for votes, updates, replays.
 	psubj  string
 	rpsubj string
@@ -2051,7 +2048,6 @@ func (n *raft) runAsCandidate() {
 	for len(n.votes) > 0 {
 		<-n.votes
 	}
-	lastTermAsLeader := n.llterm
 	n.Unlock()
 
 	// Send out our request for votes.
@@ -2084,7 +2080,6 @@ func (n *raft) runAsCandidate() {
 		case <-tikChan:
 			// disable timeout and receipt of more votes
 			voteChan = nil
-			tikChan = nil
 			if won {
 				// we are here if we won the election but some server did not respond
 				n.switchToLeader()
@@ -2098,9 +2093,8 @@ func (n *raft) runAsCandidate() {
 				votes++
 				if n.wonElection(votes) {
 					// This would be ok as we'd be guaranteed to have the latest history.
-					if len(n.peers) == votes || lastTermAsLeader+1 == n.term {
-						// Become LEADER if we have won and gotten a quorum with everyone or if we have been leader
-						// in the previous round and thus already waited
+					if len(n.peers) == votes {
+						// Become LEADER if we have won and gotten a quorum with everyone
 						n.switchToLeader()
 						return
 					} else {
@@ -3072,6 +3066,5 @@ func (n *raft) switchToLeader() {
 	}
 	n.debug("Switching to leader")
 	n.leader = n.id
-	n.llterm = n.term
 	n.switchState(Leader)
 }
