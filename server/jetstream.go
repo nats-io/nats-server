@@ -181,12 +181,12 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 		s.SetDefaultSystemAccount()
 	}
 
-	s.Warnf("    _ ___ _____ ___ _____ ___ ___   _   __  __")
-	s.Warnf(" _ | | __|_   _/ __|_   _| _ \\ __| /_\\ |  \\/  |")
-	s.Warnf("| || | _|  | | \\__ \\ | | |   / _| / _ \\| |\\/| |")
-	s.Warnf(" \\__/|___| |_| |___/ |_| |_|_\\___/_/ \\_\\_|  |_|")
-	s.Warnf("")
-	s.Warnf("      https://github.com/nats-io/jetstream")
+	s.Noticef("    _ ___ _____ ___ _____ ___ ___   _   __  __")
+	s.Noticef(" _ | | __|_   _/ __|_   _| _ \\ __| /_\\ |  \\/  |")
+	s.Noticef("| || | _|  | | \\__ \\ | | |   / _| / _ \\| |\\/| |")
+	s.Noticef(" \\__/|___| |_| |___/ |_| |_|_\\___/_/ \\_\\_|  |_|")
+	s.Noticef("")
+	s.Noticef("      https://github.com/nats-io/jetstream")
 	s.Noticef("")
 	s.Noticef("---------------- JETSTREAM ----------------")
 	s.Noticef("  Max Memory:      %s", friendlyBytes(cfg.MaxMemory))

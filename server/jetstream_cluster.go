@@ -1035,7 +1035,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 				if isRecovering {
 					js.setStreamAssignmentRecovering(sa)
 				}
-				js.processStreamAssignment(sa)
+				didRemove = js.processStreamAssignment(sa)
 			case removeStreamOp:
 				sa, err := decodeStreamAssignment(buf[1:])
 				if err != nil {
@@ -1260,11 +1260,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 		}
 	}
 
-	// Check on startup if we should compact.
-	if _, b := n.Size(); b > compactSizeMin {
-		doSnapshot()
-	}
-
 	// We will establish a restoreDoneCh no matter what. Will never be triggered unless
 	// we replace with the restore chan.
 	restoreDoneCh := make(<-chan error)
@@ -1280,6 +1275,10 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 			// No special processing needed for when we are caught up on restart.
 			if ce == nil {
 				isRecovering = false
+				// Check on startup if we should snapshot/compact.
+				if _, b := n.Size(); b > compactSizeMin || n.NeedSnapshot() {
+					doSnapshot()
+				}
 				continue
 			}
 			// Apply our entries.
@@ -1534,7 +1533,25 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 			ourID := js.cluster.meta.ID()
 			js.mu.RUnlock()
 			if peer := string(e.Data); peer == ourID {
-				mset.stop(true, false)
+				shouldDelete := true
+				if sa := mset.streamAssignment(); sa != nil {
+					js.mu.Lock()
+					// Make sure we are not part of this assignment. If we are
+					// we need to ignore this remove.
+					if sa.Group.isMember(ourID) {
+						shouldDelete = false
+					} else {
+						if node := sa.Group.node; node != nil {
+							node.ProposeRemovePeer(ourID)
+						}
+						sa.Group.node = nil
+						sa.err = nil
+					}
+					js.mu.Unlock()
+				}
+				if shouldDelete {
+					mset.stop(true, false)
+				}
 			}
 			return nil
 		}
@@ -1728,26 +1745,26 @@ func (js *jetStream) streamAssignment(account, stream string) (sa *streamAssignm
 }
 
 // processStreamAssignment is called when followers have replicated an assignment.
-func (js *jetStream) processStreamAssignment(sa *streamAssignment) {
+func (js *jetStream) processStreamAssignment(sa *streamAssignment) bool {
 	js.mu.RLock()
 	s, cc := js.srv, js.cluster
 	js.mu.RUnlock()
 	if s == nil || cc == nil {
 		// TODO(dlc) - debug at least
-		return
+		return false
 	}
 
 	acc, err := s.LookupAccount(sa.Client.serviceAccount())
 	if err != nil {
 		// TODO(dlc) - log error
-		return
+		return false
 	}
 	stream := sa.Config.Name
 
 	js.mu.Lock()
 	if cc.meta == nil {
 		js.mu.Unlock()
-		return
+		return false
 	}
 	ourID := cc.meta.ID()
 
@@ -1770,20 +1787,34 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) {
 	// Update our state.
 	accStreams[stream] = sa
 	cc.streams[acc.Name] = accStreams
-
 	js.mu.Unlock()
+
+	var didRemove bool
 
 	// Check if this is for us..
 	if isMember {
 		js.processClusterCreateStream(acc, sa)
-	} else if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
-		// We have one here even though we are not a member. This can happen on re-assignment.
-		s.Debugf("JetStream removing stream '%s > %s' from this server, re-assigned", sa.Client.serviceAccount(), sa.Config.Name)
-		if node := mset.raftNode(); node != nil {
+	} else {
+		// Clear our raft node here.
+		// TODO(dlc) - This might be better if done by leader, not the one who is being removed
+		// since we are most likely offline.
+		js.mu.Lock()
+		if node := sa.Group.node; node != nil {
 			node.ProposeRemovePeer(ourID)
+			didRemove = true
 		}
-		mset.stop(true, false)
+		sa.Group.node = nil
+		sa.err = nil
+		js.mu.Unlock()
+
+		if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
+			// We have one here even though we are not a member. This can happen on re-assignment.
+			s.Debugf("JetStream removing stream '%s > %s' from this server, reassigned", sa.Client.serviceAccount(), sa.Config.Name)
+			mset.stop(true, false)
+		}
 	}
+
+	return didRemove
 }
 
 // processUpdateStreamAssignment is called when followers have replicated an updated assignment.
@@ -1866,7 +1897,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, sa *streamAssignme
 
 	mset, err := acc.lookupStream(sa.Config.Name)
 	if err == nil && mset != nil {
-		if rg.node != nil && !alreadyRunning {
+		if !alreadyRunning {
 			s.startGoRoutine(func() { js.monitorStream(mset, sa) })
 		}
 		mset.setStreamAssignment(sa)
@@ -2227,15 +2258,23 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	if isMember {
 		js.processClusterCreateConsumer(ca)
 	} else {
+		// Clear our raft node here.
+		// TODO(dlc) - This might be better if done by leader, not the one who is being removed
+		// since we are most likely offline.
+		js.mu.Lock()
+		if node := ca.Group.node; node != nil {
+			node.ProposeRemovePeer(ourID)
+		}
+		ca.Group.node = nil
+		ca.err = nil
+		js.mu.Unlock()
+
 		// We are not a member, if we have this consumer on this
 		// server remove it.
 		if mset, _ := acc.lookupStream(ca.Stream); mset != nil {
 			if o := mset.lookupConsumer(ca.Name); o != nil {
 				s.Debugf("JetStream removing consumer '%s > %s > %s' from this server, re-assigned",
 					ca.Client.serviceAccount(), ca.Stream, ca.Name)
-				if node := o.raftNode(); node != nil {
-					node.ProposeRemovePeer(ourID)
-				}
 				o.stopWithFlags(true, false, false)
 			}
 		}
@@ -2556,6 +2595,9 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 		case ce := <-ach:
 			// No special processing needed for when we are caught up on restart.
 			if ce == nil {
+				if n.NeedSnapshot() {
+					doSnapshot()
+				}
 				continue
 			}
 			if err := js.applyConsumerEntries(o, ce, isLeader); err == nil {
@@ -2595,7 +2637,23 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 			}
 			js.mu.RUnlock()
 			if peer := string(e.Data); peer == ourID {
-				o.stopWithFlags(true, false, false)
+				shouldDelete := true
+				if ca := o.consumerAssignment(); ca != nil {
+					js.mu.Lock()
+					if ca.Group.isMember(ourID) {
+						shouldDelete = false
+					} else {
+						if node := ca.Group.node; node != nil {
+							node.ProposeRemovePeer(ourID)
+						}
+						ca.Group.node = nil
+						ca.err = nil
+					}
+					js.mu.Unlock()
+				}
+				if shouldDelete {
+					o.stopWithFlags(true, false, false)
+				}
 			}
 			return nil
 		} else {

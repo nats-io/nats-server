@@ -38,6 +38,7 @@ type RaftNode interface {
 	ForwardProposal(entry []byte) error
 	InstallSnapshot(snap []byte) error
 	SendSnapshot(snap []byte) error
+	NeedSnapshot() bool
 	Applied(index uint64) (entries uint64, bytes uint64)
 	Compact(index uint64) error
 	State() RaftState
@@ -799,7 +800,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		return err
 	}
 
-	if _, err := n.wal.Compact(snap.lastIndex); err != nil {
+	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 		n.setWriteErr(err)
 		return err
 	}
@@ -814,6 +815,12 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	}
 
 	return nil
+}
+
+func (n *raft) NeedSnapshot() bool {
+	n.RLock()
+	defer n.RUnlock()
+	return n.snapfile == _EMPTY_ && n.applied > 0
 }
 
 const (
@@ -1784,6 +1791,8 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesC <-chan uint64) 
 func (n *raft) sendSnapshotToFollower(subject string) (uint64, error) {
 	snap, err := n.loadLastSnapshot()
 	if err != nil {
+		// We need to stepdown here when this happens.
+		n.attemptStepDown(noLeader)
 		return 0, err
 	}
 	// Go ahead and send the snapshot and peerstate here as first append entry to the catchup follower.
@@ -1937,14 +1946,12 @@ func (n *raft) applyCommit(index uint64) error {
 			// FIXME(dlc) - Check if this is us??
 			if _, ok := n.peers[oldPeer]; ok {
 				// We should decrease our cluster size since we are tracking this peer.
-				if n.csz > 1 {
-					n.debug("Decreasing our clustersize: %d -> %d", n.csz, n.csz-1)
-					n.csz--
-					n.qn = n.csz/2 + 1
-				} else {
-					n.warn("Not decreasing further our clustersize: %d", n.csz)
-				}
 				delete(n.peers, oldPeer)
+				if n.csz != len(n.peers) {
+					n.debug("Decreasing our clustersize: %d -> %d", n.csz, len(n.peers))
+					n.csz = len(n.peers)
+					n.qn = n.csz/2 + 1
+				}
 			}
 			n.writePeerState(&peerState{n.peerNames(), n.csz})
 			// We pass these up as well.
@@ -2046,6 +2053,22 @@ func (n *raft) trackPeer(peer string) error {
 	return nil
 }
 
+// Return the number of active peers for this group. We use this when we
+// are running as a candidate.
+// Lock should be held.
+func (n *raft) numActivePeers() int {
+	nap := 0
+	for id := range n.peers {
+		if sir, ok := n.s.nodeToInfo.Load(id); ok && sir != nil {
+			si := sir.(nodeInfo)
+			if !si.offline {
+				nap++
+			}
+		}
+	}
+	return nap
+}
+
 func (n *raft) runAsCandidate() {
 	n.Lock()
 	// Drain old responses.
@@ -2086,10 +2109,8 @@ func (n *raft) runAsCandidate() {
 				n.trackPeer(vresp.peer)
 				votes++
 				if n.wonElection(votes) {
-					// TODO If this server was also leader in n.term-1, then we could skip the timer as well.
-					// This would be ok as we'd be guaranteed to have the latest history.
-					if len(n.peers) == votes || n.lxfer {
-						// Become LEADER if we have won and gotten a quorum with everyone
+					if votes == n.numActivePeers() || n.lxfer {
+						// Become LEADER if we have won and gotten a quorum with everyone we should hear from.
 						n.switchToLeader()
 						return
 					} else {
@@ -2104,7 +2125,11 @@ func (n *raft) runAsCandidate() {
 			} else if vresp.term > n.term {
 				// if we observe a bigger term, we should start over again or risk forming a quorum fully knowing
 				// someone with a better term exists. This is even the right thing to do if won == true.
-				n.switchToCandidate()
+				n.term = vresp.term
+				n.vote = noVote
+				n.writeTermVote()
+				n.debug("Stepping down from candidate, detected higher term: %d vs %d", vresp.term, n.term)
+				n.attemptStepDown(noLeader)
 				return
 			}
 		case vreq := <-n.reqs:
@@ -2905,13 +2930,13 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 
 	// If this is a higher term go ahead and stepdown.
 	if vr.term > n.term {
-		n.term = vr.term
-		n.vote = noVote
-		n.writeTermVote()
 		if n.state != Follower {
 			n.debug("Stepping down from candidate, detected higher term: %d vs %d", vr.term, n.term)
 			n.attemptStepDown(noLeader)
 		}
+		n.term = vr.term
+		n.vote = noVote
+		n.writeTermVote()
 	}
 
 	// Only way we get to yes is through here.
@@ -3042,12 +3067,10 @@ func (n *raft) switchToCandidate() {
 		n.debug("Switching to candidate")
 	} else {
 		n.lxfer = false
-		if n.lostQuorumLocked() {
-			if time.Since(n.llqrt) > 20*time.Second {
-				// We signal to the upper layers such that can alert on quorum lost.
-				n.updateLeadChange(false)
-				n.llqrt = time.Now()
-			}
+		if n.lostQuorumLocked() && time.Since(n.llqrt) > 20*time.Second {
+			// We signal to the upper layers such that can alert on quorum lost.
+			n.updateLeadChange(false)
+			n.llqrt = time.Now()
 		}
 	}
 	// Increment the term.
