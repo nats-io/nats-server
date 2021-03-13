@@ -3685,6 +3685,8 @@ func TestJetStreamClusterStreamLeaderStepDown(t *testing.T) {
 }
 
 func TestJetStreamClusterRemoveServer(t *testing.T) {
+	skip(t)
+
 	c := createJetStreamClusterExplicit(t, "RNS", 5)
 	defer c.shutdown()
 
@@ -3717,6 +3719,8 @@ func TestJetStreamClusterRemoveServer(t *testing.T) {
 
 	sl := c.streamLeader("$G", "TEST")
 	c.removeJetStream(sl)
+
+	fmt.Printf("Will remove %q\n", sl)
 
 	c.waitOnLeader()
 	c.waitOnStreamLeader("$G", "TEST")
