@@ -713,6 +713,7 @@ func (o *consumer) setLeader(isLeader bool) {
 					// There is no local interest, but there is GW interest, we
 					// will watch for interest disappearing.
 					// TODO: may need to revisit...
+					stopAndClearTimer(&o.gwdtmr)
 					o.gwdtmr = time.AfterFunc(o.dthresh, func() { o.watchGWinterest() })
 				}
 			}
