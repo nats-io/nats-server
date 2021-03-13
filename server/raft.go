@@ -147,6 +147,9 @@ type raft struct {
 	c        *client
 	dflag    bool
 
+	// last term this node was leader
+	llterm uint64
+
 	// Subjects for votes, updates, replays.
 	psubj  string
 	rpsubj string
@@ -2048,6 +2051,7 @@ func (n *raft) runAsCandidate() {
 	for len(n.votes) > 0 {
 		<-n.votes
 	}
+	lastTermAsLeader := n.llterm
 	n.Unlock()
 
 	// Send out our request for votes.
@@ -2056,6 +2060,12 @@ func (n *raft) runAsCandidate() {
 	// We vote for ourselves.
 	votes := 1
 	won := false
+
+	// Used to nil out and thus cancel once timeout is over.
+	voteChan := n.votes
+	// No matter what, every server needs to be able to respond within minElectionTimeout
+	// minElectionTimeout is a value that the elect timer can have too
+	tikChan := time.After(minElectionTimeout)
 
 	for {
 		elect := n.electTimer()
@@ -2069,23 +2079,28 @@ func (n *raft) runAsCandidate() {
 		case <-n.quit:
 			return
 		case <-elect.C:
+			n.switchToCandidate()
+			return
+		case <-tikChan:
+			// disable timeout and receipt of more votes
+			voteChan = nil
+			tikChan = nil
 			if won {
 				// we are here if we won the election but some server did not respond
 				n.switchToLeader()
-			} else {
-				n.switchToCandidate()
+				return
 			}
-			return
-		case vresp := <-n.votes:
+			// else wait for the election timer to kick in and start all over again
+		case vresp := <-voteChan:
 			if vresp.granted && n.term >= vresp.term {
 				// only track peers that would be our followers
 				n.trackPeer(vresp.peer)
 				votes++
 				if n.wonElection(votes) {
-					// TODO If this server was also leader in n.term-1, then we could skip the timer as well.
 					// This would be ok as we'd be guaranteed to have the latest history.
-					if len(n.peers) == votes {
-						// Become LEADER if we have won and gotten a quorum with everyone
+					if len(n.peers) == votes || lastTermAsLeader+1 == n.term {
+						// Become LEADER if we have won and gotten a quorum with everyone or if we have been leader
+						// in the previous round and thus already waited
 						n.switchToLeader()
 						return
 					} else {
@@ -3057,5 +3072,6 @@ func (n *raft) switchToLeader() {
 	}
 	n.debug("Switching to leader")
 	n.leader = n.id
+	n.llterm = n.term
 	n.switchState(Leader)
 }
