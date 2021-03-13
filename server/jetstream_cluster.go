@@ -1298,14 +1298,13 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 					acc, _ := s.LookupAccount(sa.Client.serviceAccount())
 					restoreDoneCh = s.processStreamRestore(sa.Client, acc, sa.Config, _EMPTY_, sa.Reply, _EMPTY_)
 					continue
-				} else {
+				} else if n.NeedSnapshot() {
 					doSnapshot()
 				}
 			} else if n.GroupLeader() != noLeader {
 				js.setStreamAssignmentRecovering(sa)
 			}
 			js.processStreamLeaderChange(mset, isLeader)
-
 		case <-t.C:
 			doSnapshot()
 		case err := <-restoreDoneCh:
