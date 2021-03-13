@@ -83,6 +83,7 @@ type jetStream struct {
 	apiCalls      int64
 	apiSubs       *Sublist
 	disabled      bool
+	oos           bool
 }
 
 // This represents a jetstream enabled account.
@@ -253,17 +254,32 @@ func (s *Server) setupJetStreamExports() {
 	}
 }
 
+func (s *Server) jetStreamOOSPending() (wasPending bool) {
+	s.mu.Lock()
+	js := s.js
+	s.mu.Unlock()
+	if js != nil {
+		js.mu.Lock()
+		wasPending = js.oos
+		js.oos = true
+		js.mu.Unlock()
+	}
+	return wasPending
+}
+
 func (s *Server) setJetStreamDisabled() {
 	s.mu.Lock()
 	js := s.js
 	s.mu.Unlock()
-	js.mu.Lock()
-	js.disabled = true
-	js.mu.Unlock()
+	if js != nil {
+		js.mu.Lock()
+		js.disabled = true
+		js.mu.Unlock()
+	}
 }
 
 func (s *Server) handleOutOfSpace(stream string) {
-	if s.JetStreamEnabled() {
+	if s.JetStreamEnabled() && !s.jetStreamOOSPending() {
 		s.Errorf("JetStream out of space, will be DISABLED")
 		go s.DisableJetStream()
 
