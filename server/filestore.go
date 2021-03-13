@@ -2679,6 +2679,10 @@ func (fs *fileStore) dmapEntries() int {
 // Purge will remove all messages from this store.
 // Will return the number of purged messages.
 func (fs *fileStore) Purge() (uint64, error) {
+	return fs.purge(0)
+}
+
+func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	fs.mu.Lock()
 	if fs.closed {
 		fs.mu.Unlock()
@@ -2721,6 +2725,11 @@ func (fs *fileStore) Purge() (uint64, error) {
 		return purged, err
 	}
 
+	// Check if we need to set the first seq to a new number.
+	if fseq > fs.state.FirstSeq {
+		fs.state.FirstSeq = fseq
+		fs.state.LastSeq = fseq - 1
+	}
 	fs.lmb.first.seq = fs.state.FirstSeq
 	fs.lmb.last.seq = fs.state.LastSeq
 	fs.lmb.writeIndexInfo()
@@ -2739,72 +2748,62 @@ func (fs *fileStore) Purge() (uint64, error) {
 // but not including the seq parameter.
 // Will return the number of purged messages.
 func (fs *fileStore) Compact(seq uint64) (uint64, error) {
-	if seq == 0 {
-		return fs.Purge()
+	if seq == 0 || seq > fs.lastSeq() {
+		return fs.purge(seq)
 	}
 
 	var purged uint64
 	var bytes uint64
 
-	if last := fs.lastSeq(); seq > last {
-		// We are compacting past the end of our range. Do purge and set sequences correctly
-		// such that the next message placed will have seq.
-		var err error
-		if purged, err = fs.Purge(); err != nil {
-			return 0, err
-		}
-		fs.resetFirst(seq)
-	} else {
-		// We have to delete interior messages.
-		fs.mu.Lock()
-		smb := fs.selectMsgBlock(seq)
-		if smb == nil {
-			fs.mu.Unlock()
-			return 0, nil
-		}
-		// All msgblocks up to this one can be thrown away.
-		for i, mb := range fs.blks {
-			if mb == smb {
-				fs.blks = append(fs.blks[:0:0], fs.blks[i:]...)
-				break
-			}
-			mb.mu.Lock()
-			purged += mb.msgs
-			bytes += mb.bytes
-			mb.dirtyCloseWithRemove(true)
-			mb.mu.Unlock()
-		}
+	// We have to delete interior messages.
+	fs.mu.Lock()
+	smb := fs.selectMsgBlock(seq)
+	if smb == nil {
 		fs.mu.Unlock()
+		return 0, nil
+	}
+	// All msgblocks up to this one can be thrown away.
+	for i, mb := range fs.blks {
+		if mb == smb {
+			fs.blks = append(fs.blks[:0:0], fs.blks[i:]...)
+			break
+		}
+		mb.mu.Lock()
+		purged += mb.msgs
+		bytes += mb.bytes
+		mb.dirtyCloseWithRemove(true)
+		mb.mu.Unlock()
+	}
+	fs.mu.Unlock()
 
-		if err := smb.loadMsgs(); err != nil {
-			return purged, err
-		}
+	if err := smb.loadMsgs(); err != nil {
+		return purged, err
+	}
 
-		smb.mu.Lock()
-		for mseq := smb.first.seq; mseq < seq; mseq++ {
-			if _, rl, _, err := smb.slotInfo(int(mseq - smb.cache.fseq)); err != nil {
-				smb.bytes -= uint64(rl)
-			}
-			smb.msgs--
-			purged++
+	smb.mu.Lock()
+	for mseq := smb.first.seq; mseq < seq; mseq++ {
+		if _, rl, _, err := smb.slotInfo(int(mseq - smb.cache.fseq)); err != nil {
+			smb.bytes -= uint64(rl)
 		}
-		// Update first entry.
-		sm, _ := smb.cacheLookupWithLock(seq)
-		if sm != nil {
-			smb.first.seq = sm.seq
-			smb.first.ts = sm.ts
-		}
-		smb.mu.Unlock()
+		smb.msgs--
+		purged++
+	}
+	// Update first entry.
+	sm, _ := smb.cacheLookupWithLock(seq)
+	if sm != nil {
+		smb.first.seq = sm.seq
+		smb.first.ts = sm.ts
+	}
+	smb.mu.Unlock()
 
-		if sm != nil {
-			// Reset our version of first.
-			fs.mu.Lock()
-			fs.state.FirstSeq = sm.seq
-			fs.state.FirstTime = time.Unix(0, sm.ts).UTC()
-			fs.state.Msgs -= purged
-			fs.state.Bytes -= bytes
-			fs.mu.Unlock()
-		}
+	if sm != nil {
+		// Reset our version of first.
+		fs.mu.Lock()
+		fs.state.FirstSeq = sm.seq
+		fs.state.FirstTime = time.Unix(0, sm.ts).UTC()
+		fs.state.Msgs -= purged
+		fs.state.Bytes -= bytes
+		fs.mu.Unlock()
 	}
 
 	return purged, nil
@@ -2875,16 +2874,6 @@ func (fs *fileStore) Truncate(seq uint64) error {
 	}
 
 	return nil
-}
-
-func (fs *fileStore) resetFirst(newFirst uint64) {
-	fs.mu.Lock()
-	fs.state.FirstSeq = newFirst
-	fs.state.LastSeq = newFirst - 1
-	fs.lmb.first.seq = fs.state.FirstSeq
-	fs.lmb.last.seq = fs.state.LastSeq
-	fs.lmb.writeIndexInfo()
-	fs.mu.Unlock()
 }
 
 func (fs *fileStore) lastSeq() uint64 {
