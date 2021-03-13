@@ -1741,7 +1741,7 @@ func TestJetStreamClusterExtendedStreamInfo(t *testing.T) {
 	}
 
 	// We may need to wait a bit for peers to catch up.
-	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
 		for _, peer := range si.Cluster.Replicas {
 			if !peer.Current {
 				if si, err = js2.StreamInfo("TEST"); err != nil {
