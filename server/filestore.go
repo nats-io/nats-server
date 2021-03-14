@@ -463,7 +463,7 @@ func (mb *msgBlock) rebuildState() (*LostStreamData, error) {
 	// Clear state we need to rebuild.
 	mb.msgs, mb.bytes = 0, 0
 	mb.last.seq, mb.last.ts = 0, 0
-	mb.first.seq, mb.first.ts = 0, 0
+	firstNeedsSet := true
 
 	buf, err := ioutil.ReadFile(mb.mfn)
 	if err != nil {
@@ -515,8 +515,6 @@ func (mb *msgBlock) rebuildState() (*LostStreamData, error) {
 		return &ld
 	}
 
-	firstNeedsSet := true
-
 	for index, lbuf := uint32(0), uint32(len(buf)); index < lbuf; {
 		if index+msgHdrSize >= lbuf {
 			truncate(index)
@@ -551,6 +549,15 @@ func (mb *msgBlock) rebuildState() (*LostStreamData, error) {
 			addToDmap(seq)
 			index += rl
 			continue
+		}
+
+		// This is for when we have index info that adjusts for deleted messages
+		// at the head. So the first.seq will be already set here. If this is larger
+		// replace what we have with this seq.
+		if firstNeedsSet && seq > mb.first.seq {
+			firstNeedsSet = false
+			mb.first.seq = seq
+			mb.first.ts = ts
 		}
 
 		var deleted bool
@@ -1081,8 +1088,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 	mb.msgs--
 	mb.bytes -= msz
 
-	var shouldWriteIndex bool
-	var firstSeqNeedsUpdate bool
+	var shouldWriteIndex, firstSeqNeedsUpdate bool
 
 	if secure {
 		mb.eraseMsg(seq, int(ri), int(rl))
