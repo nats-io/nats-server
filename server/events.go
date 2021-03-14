@@ -828,6 +828,9 @@ func (s *Server) addSystemAccountExports(sacc *Account) {
 	if err := sacc.AddServiceExport(accSubsSubj, nil); err != nil {
 		s.Errorf("Error adding system service export for %q: %v", accSubsSubj, err)
 	}
+	if s.JetStreamEnabled() {
+		s.checkJetStreamExports()
+	}
 }
 
 // accountClaimUpdate will receive claim updates for accounts.
