@@ -4030,6 +4030,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 // For requesting messages post raft snapshot to catch up streams post server restart.
 // Any deleted msgs etc will be handled inline on catchup.
 type streamSyncRequest struct {
+	Peer     string `json:"peer,omitempty"`
 	FirstSeq uint64 `json:"first_seq"`
 	LastSeq  uint64 `json:"last_seq"`
 }
@@ -4040,7 +4041,7 @@ func (mset *stream) calculateSyncRequest(state *StreamState, snap *streamSnapsho
 	if state.LastSeq >= snap.LastSeq {
 		return nil
 	}
-	return &streamSyncRequest{FirstSeq: state.LastSeq + 1, LastSeq: snap.LastSeq}
+	return &streamSyncRequest{FirstSeq: state.LastSeq + 1, LastSeq: snap.LastSeq, Peer: mset.node.ID()}
 }
 
 // processSnapshotDeletes will update our current store based on the snapshot
@@ -4059,6 +4060,60 @@ func (mset *stream) processSnapshotDeletes(snap *streamSnapshot) {
 			mset.store.RemoveMsg(dseq)
 		}
 	}
+}
+
+func (mset *stream) setCatchupPeer(peer string, lag uint64) {
+	if peer == _EMPTY_ {
+		return
+	}
+	mset.mu.Lock()
+	if mset.catchups == nil {
+		mset.catchups = make(map[string]uint64)
+	}
+	mset.catchups[peer] = lag
+	mset.mu.Unlock()
+}
+
+// Will decrement by one.
+func (mset *stream) updateCatchupPeer(peer string) {
+	if peer == _EMPTY_ {
+		return
+	}
+	mset.mu.Lock()
+	if lag := mset.catchups[peer]; lag > 0 {
+		mset.catchups[peer] = lag - 1
+	}
+	mset.mu.Unlock()
+}
+
+func (mset *stream) clearCatchupPeer(peer string) {
+	mset.mu.Lock()
+	if mset.catchups != nil {
+		delete(mset.catchups, peer)
+	}
+	mset.mu.Unlock()
+}
+
+// Lock should be held.
+func (mset *stream) clearAllCatchupPeers() {
+	if mset.catchups != nil {
+		mset.catchups = nil
+	}
+}
+
+func (mset *stream) lagForCatchupPeer(peer string) uint64 {
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+	if mset.catchups == nil {
+		return 0
+	}
+	return mset.catchups[peer]
+}
+
+func (mset *stream) hasCatchupPeers() bool {
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+	return len(mset.catchups) > 0
 }
 
 func (mset *stream) setCatchingUp() {
@@ -4304,6 +4359,16 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 	return ci
 }
 
+func (mset *stream) checkClusterInfo(si *StreamInfo) {
+	for _, r := range si.Cluster.Replicas {
+		peer := string(getHash(r.Name))
+		if lag := mset.lagForCatchupPeer(peer); lag > 0 {
+			r.Current = false
+			r.Lag = lag
+		}
+	}
+}
+
 func (mset *stream) handleClusterStreamInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	mset.mu.RLock()
 	sysc, js, sa, config := mset.sysc, mset.srv.js, mset.sa, mset.cfg
@@ -4323,6 +4388,12 @@ func (mset *stream) handleClusterStreamInfoRequest(sub *subscription, c *client,
 		Sources: mset.sourcesInfo(),
 		Mirror:  mset.mirrorInfo(),
 	}
+
+	// Check for out of band catchups.
+	if mset.hasCatchupPeers() {
+		mset.checkClusterInfo(si)
+	}
+
 	sysc.sendInternalMsg(reply, _EMPTY_, nil, si)
 }
 
@@ -4330,7 +4401,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	s := mset.srv
 	defer s.grWG.Done()
 
-	const maxOutBytes = int64(2 * 1024 * 1024) // 2MB for now.
+	const maxOutBytes = int64(4 * 1024 * 1024) // 4MB for now.
 	const maxOutMsgs = int32(16384)
 	outb := int64(0)
 	outm := int32(0)
@@ -4352,6 +4423,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 		sz := ackReplySize(subject)
 		atomic.AddInt64(&outb, -sz)
 		atomic.AddInt32(&outm, -1)
+		mset.updateCatchupPeer(sreq.Peer)
 		select {
 		case nextBatchC <- struct{}{}:
 		default:
@@ -4369,6 +4441,8 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 
 	// Setup sequences to walk through.
 	seq, last := sreq.FirstSeq, sreq.LastSeq
+	mset.setCatchupPeer(sreq.Peer, last-seq)
+	defer mset.clearCatchupPeer(sreq.Peer)
 
 	sendNextBatch := func() {
 		for ; seq <= last && atomic.LoadInt64(&outb) <= maxOutBytes && atomic.LoadInt32(&outm) <= maxOutMsgs; seq++ {

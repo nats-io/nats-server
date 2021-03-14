@@ -1571,6 +1571,12 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 	} else if mset.hasSources() {
 		resp.StreamInfo.Sources = mset.sourcesInfo()
 	}
+
+	// Check for out of band catchups.
+	if mset.hasCatchupPeers() {
+		mset.checkClusterInfo(resp.StreamInfo)
+	}
+
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 

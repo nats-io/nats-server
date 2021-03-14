@@ -1435,14 +1435,17 @@ func (s *Server) Start() {
 		gc = "not set"
 	}
 
+	// Snapshot server options.
+	opts := s.getOpts()
+
 	s.Noticef("  Version:  %s", VERSION)
 	s.Noticef("  Git:      [%s]", gc)
 	s.Debugf("  Go build: %s", s.info.GoVersion)
 	s.Noticef("  Name:     %s", s.info.Name)
-	if s.sys != nil {
-		s.Noticef("  Node:     %s", s.sys.shash)
-	}
 	s.Noticef("  ID:       %s", s.info.ID)
+	if opts.JetStream {
+		s.Noticef("  Node:     %s", getHash(s.info.Name))
+	}
 
 	defer s.Noticef("Server is ready")
 
@@ -1457,9 +1460,6 @@ func (s *Server) Start() {
 	s.grMu.Lock()
 	s.grRunning = true
 	s.grMu.Unlock()
-
-	// Snapshot server options.
-	opts := s.getOpts()
 
 	if opts.ConfigFile != _EMPTY_ {
 		s.Noticef("Using configuration file: %s", opts.ConfigFile)
