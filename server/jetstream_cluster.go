@@ -546,16 +546,14 @@ func (js *jetStream) isLeaderless() bool {
 	defer js.mu.RUnlock()
 
 	cc := js.cluster
-	if cc == nil {
+	if cc == nil || cc.meta == nil {
 		return false
 	}
 
 	// If we don't have a leader.
-	if cc.meta.GroupLeader() == _EMPTY_ {
-		// Make sure we have been running for enough time.
-		if time.Since(cc.meta.Created()) > lostQuorumInterval {
-			return true
-		}
+	// Make sure we have been running for enough time.
+	if cc.meta.GroupLeader() == _EMPTY_ && time.Since(cc.meta.Created()) > lostQuorumInterval {
+		return true
 	}
 	return false
 }
