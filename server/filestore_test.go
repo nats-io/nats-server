@@ -810,6 +810,40 @@ func TestFileStoreCompact(t *testing.T) {
 	}
 }
 
+func TestFileStoreCompactLastPlusOne(t *testing.T) {
+	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	os.MkdirAll(storeDir, 0755)
+	defer os.RemoveAll(storeDir)
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 8192, AsyncFlush: false}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	subj, msg := "foo", make([]byte, 10_000)
+	for i := 0; i < 10_000; i++ {
+		if _, _, err := fs.StoreMsg(subj, nil, msg); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+	if state := fs.State(); state.Msgs != 10_000 {
+		t.Fatalf("Expected 1000000 msgs, got %d", state.Msgs)
+	}
+	if _, err := fs.Compact(10_001); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	state := fs.State()
+	if state.Msgs != 0 {
+		t.Fatalf("Expected no message but got %d", state.Msgs)
+	}
+	fmt.Printf("state is %+v\n", state)
+
+	fs.StoreMsg(subj, nil, msg)
+	state = fs.State()
+	fmt.Printf("state is %+v\n", state)
+}
+
 func TestFileStoreCompactPerf(t *testing.T) {
 	t.SkipNow()
 

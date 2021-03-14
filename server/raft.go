@@ -2210,25 +2210,12 @@ func (n *raft) attemptStepDown(newLeader string) {
 func (n *raft) truncateWal(ae *appendEntry) {
 	n.debug("Truncating and repairing WAL")
 
-	// Special case if already at 0.
-	if ae.pindex == 0 {
-		n.pindex = ae.pindex
-		n.pterm = ae.pterm
-		n.wal.Purge()
-		return
-	}
-
-	tindex := ae.pindex - 1
-	if err := n.wal.Truncate(tindex); err != nil {
+	if err := n.wal.Truncate(ae.pindex); err != nil {
 		n.setWriteErrLocked(err)
 		return
 	}
-	n.pindex = tindex
-	if nae, _ := n.loadEntry(tindex); nae != nil {
-		n.pterm = nae.term
-	} else {
-		n.pterm = ae.term
-	}
+	n.pindex = ae.pindex
+	n.pterm = ae.term
 }
 
 // processAppendEntry will process an appendEntry.
