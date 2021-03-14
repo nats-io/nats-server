@@ -2063,7 +2063,7 @@ func (n *raft) trackPeer(peer string) error {
 	n.Unlock()
 
 	if needPeerUpdate {
-		n.sendPeerState()
+		n.ProposeAddPeer(peer)
 	}
 	return nil
 }
