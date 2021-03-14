@@ -2887,7 +2887,7 @@ func (c *client) gatewayAllSubsReceiveStart(info *Info) {
 		return
 	}
 
-	c.Noticef("Gateway %q: switching account %q to %s mode",
+	c.Debugf("Gateway %q: switching account %q to %s mode",
 		info.Gateway, account, InterestOnly)
 
 	// Since the remote would send us this start command
@@ -2932,7 +2932,7 @@ func (c *client) gatewayAllSubsReceiveComplete(info *Info) {
 		e.mode = InterestOnly
 		e.Unlock()
 
-		c.Noticef("Gateway %q: switching account %q to %s mode complete",
+		c.Debugf("Gateway %q: switching account %q to %s mode complete",
 			info.Gateway, account, InterestOnly)
 	}
 }
@@ -2967,7 +2967,7 @@ func (c *client) gatewaySwitchAccountToSendAllSubs(e *insie, accName string) {
 	s := c.srv
 
 	remoteGWName := c.gw.name
-	c.Noticef("Gateway %q: switching account %q to %s mode",
+	c.Debugf("Gateway %q: switching account %q to %s mode",
 		remoteGWName, accName, InterestOnly)
 
 	// Function that will create an INFO protocol
@@ -3009,7 +3009,7 @@ func (c *client) gatewaySwitchAccountToSendAllSubs(e *insie, accName string) {
 		// matching sub from us.
 		sendCmd(gatewayCmdAllSubsComplete, true)
 
-		c.Noticef("Gateway %q: switching account %q to %s mode complete",
+		c.Debugf("Gateway %q: switching account %q to %s mode complete",
 			remoteGWName, accName, InterestOnly)
 	})
 }
