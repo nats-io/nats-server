@@ -234,6 +234,7 @@ var (
 	errNodeClosed      = errors.New("raft: node is closed")
 	errBadSnapName     = errors.New("raft: snapshot name could not be parsed")
 	errNoSnapAvailable = errors.New("raft: no snapshot available")
+	errCatchupsRunning = errors.New("raft: snapshot can not be installed while catchups running")
 	errSnapshotCorrupt = errors.New("raft: snapshot corrupt")
 	errTooManyPrefs    = errors.New("raft: stepdown requires at most one preferred new leader")
 	errStepdownNoPeer  = errors.New("raft: stepdown failed, could not match new leader")
@@ -763,6 +764,11 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		return werr
 	}
 
+	if len(n.progress) > 0 {
+		n.Unlock()
+		return errCatchupsRunning
+	}
+
 	var state StreamState
 	n.wal.FastState(&state)
 	if state.FirstSeq >= n.applied {
@@ -793,17 +799,19 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	sfile := path.Join(snapDir, sn)
 	// Remember our latest snapshot file.
 	n.snapfile = sfile
-	n.Unlock()
 
 	if err := ioutil.WriteFile(sfile, n.encodeSnapshot(snap), 0640); err != nil {
+		n.Unlock()
 		n.setWriteErr(err)
 		return err
 	}
 
 	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
+		n.Unlock()
 		n.setWriteErr(err)
 		return err
 	}
+	n.Unlock()
 
 	psnaps, _ := ioutil.ReadDir(snapDir)
 	// Remove any old snapshots.
@@ -1733,7 +1741,7 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesC <-chan uint64) 
 			ae, err := n.loadEntry(next)
 			if err != nil {
 				if err != ErrStoreEOF {
-					n.debug("Got an error loading %d index: %v", next, err)
+					n.warn("Got an error loading %d index: %v", next, err)
 				}
 				return true
 			}
@@ -1773,11 +1781,12 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesC <-chan uint64) 
 			// Update outstanding total.
 			total -= om[index]
 			delete(om, index)
-			// Still have more catching up to do.
-			if next < index {
-				n.debug("Adjusting next to %d from %d", index, next)
+			if next == 0 {
 				next = index
+			} else {
+				next++
 			}
+
 			// Check if we are done.
 			if index > last || sendNext() {
 				n.debug("Finished catching up")
@@ -1798,6 +1807,12 @@ func (n *raft) sendSnapshotToFollower(subject string) (uint64, error) {
 	// Go ahead and send the snapshot and peerstate here as first append entry to the catchup follower.
 	ae := n.buildAppendEntry([]*Entry{&Entry{EntrySnapshot, snap.data}, &Entry{EntryPeerState, snap.peerstate}})
 	ae.pterm, ae.pindex = snap.lastTerm, snap.lastIndex
+	var state StreamState
+	n.wal.FastState(&state)
+	if snap.lastIndex+1 != state.FirstSeq && state.FirstSeq != 0 {
+		snap.lastIndex = state.FirstSeq - 1
+		ae.pindex = snap.lastIndex
+	}
 	n.sendRPC(subject, n.areply, ae.encode())
 	return snap.lastIndex, nil
 }
@@ -1850,8 +1865,8 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	}
 	// Create a chan for delivering updates from responses.
 	isz := 64
-	if ar.index > ae.pindex && ar.index-ae.pindex > uint64(isz) {
-		isz = int(ar.index - ae.pindex)
+	if ae.pindex > ar.index && ae.pindex-ar.index > uint64(isz) {
+		isz = int(ae.pindex - ar.index)
 	}
 	indexUpdates := make(chan uint64, isz)
 	indexUpdates <- ae.pindex
