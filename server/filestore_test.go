@@ -837,11 +837,12 @@ func TestFileStoreCompactLastPlusOne(t *testing.T) {
 	if state.Msgs != 0 {
 		t.Fatalf("Expected no message but got %d", state.Msgs)
 	}
-	fmt.Printf("state is %+v\n", state)
 
 	fs.StoreMsg(subj, nil, msg)
 	state = fs.State()
-	fmt.Printf("state is %+v\n", state)
+	if state.Msgs != 1 {
+		t.Fatalf("Expected one message but got %d", state.Msgs)
+	}
 }
 
 func TestFileStoreCompactPerf(t *testing.T) {

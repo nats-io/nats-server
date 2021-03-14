@@ -331,7 +331,7 @@ func TestNoRaceLargeClusterMem(t *testing.T) {
 	checkClusterFormed(t, servers...)
 
 	// Calculate in MB what we are using now.
-	const max = 60 * 1024 * 1024 // 60MB
+	const max = 64 * 1024 * 1024 // 64MB
 	runtime.ReadMemStats(&m)
 	used := m.TotalAlloc - pta
 	if used > max {

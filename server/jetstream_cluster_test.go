@@ -3720,8 +3720,6 @@ func TestJetStreamClusterRemoveServer(t *testing.T) {
 	sl := c.streamLeader("$G", "TEST")
 	c.removeJetStream(sl)
 
-	fmt.Printf("Will remove %q\n", sl)
-
 	c.waitOnLeader()
 	c.waitOnStreamLeader("$G", "TEST")
 
