@@ -2734,7 +2734,7 @@ func (o *consumer) setInitialPending() {
 	if !notFiltered {
 		// Check to see if we directly match the configured stream.
 		// Many clients will always send a filtered subject.
-		cfg := mset.config()
+		cfg := mset.cfg
 		if len(cfg.Subjects) == 1 && cfg.Subjects[0] == o.cfg.FilterSubject {
 			notFiltered = true
 		}
