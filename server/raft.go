@@ -1948,10 +1948,12 @@ func (n *raft) applyCommit(index uint64) error {
 			n.debug("Added peer %q", newPeer)
 			if _, ok := n.peers[newPeer]; !ok {
 				// We are not tracking this one automatically so we need to bump cluster size.
-				n.debug("Expanding our clustersize: %d -> %d", n.csz, n.csz+1)
-				n.csz++
-				n.qn = n.csz/2 + 1
 				n.peers[newPeer] = &lps{time.Now().UnixNano(), 0}
+				if n.csz < len(n.peers) {
+					n.debug("Expanding our clustersize: %d -> %d", n.csz, len(n.peers))
+					n.csz = len(n.peers)
+					n.qn = n.csz/2 + 1
+				}
 			}
 			n.writePeerState(&peerState{n.peerNames(), n.csz})
 		case EntryRemovePeer:
@@ -2575,19 +2577,6 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 
 	// Sanity checking for now.
 	if ae.pindex != seq-1 {
-		fmt.Printf("[%s] n is %+v\n\n", n.s, n)
-		fmt.Printf("[%s] n.catchup is %+v\n", n.s, n.catchup)
-		fmt.Printf("[%s] n.wal is %+v\n", n.s, n.wal.State())
-		if state := n.wal.State(); state.Msgs > 0 {
-			for index := state.FirstSeq; index <= state.LastSeq; index++ {
-				if nae, _ := n.loadEntry(index); nae != nil {
-					fmt.Printf("INDEX %d is %+v\n", index, nae)
-					for _, e := range nae.entries {
-						fmt.Printf("Entry type is %v\n", e.Type)
-					}
-				}
-			}
-		}
 		n.Unlock()
 		panic(fmt.Sprintf("[%s-%s] Placed an entry at the wrong index, ae is %+v, seq is %d, n.pindex is %d\n\n", n.s, n.group, ae, seq, n.pindex))
 	}
