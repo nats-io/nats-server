@@ -333,7 +333,6 @@ func (s *Server) DisableJetStream() error {
 			}
 			// Once here we can forward our proposal to remove ourselves.
 			meta.ProposeRemovePeer(meta.ID())
-			time.Sleep(250 * time.Millisecond)
 			meta.Delete()
 		}
 	}
