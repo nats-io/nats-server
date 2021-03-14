@@ -5725,7 +5725,7 @@ type captureGWInterestSwitchLogger struct {
 	imss []string
 }
 
-func (l *captureGWInterestSwitchLogger) Noticef(format string, args ...interface{}) {
+func (l *captureGWInterestSwitchLogger) Debugf(format string, args ...interface{}) {
 	l.Lock()
 	msg := fmt.Sprintf(format, args...)
 	if strings.Contains(msg, fmt.Sprintf("switching account %q to %s mode", globalAccountName, InterestOnly)) ||
