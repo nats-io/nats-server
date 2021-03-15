@@ -1052,8 +1052,8 @@ type Varz struct {
 
 // JetStreamVarz contains basic runtime information about jetstream
 type JetStreamVarz struct {
-	Config JetStreamConfig `json:"config"`
-	Stats  *JetStreamStats `json:"stats"`
+	Config *JetStreamConfig `json:"config,omitempty"`
+	Stats  *JetStreamStats  `json:"stats,omitempty"`
 }
 
 // ClusterOptsVarz contains monitoring cluster information
@@ -1288,8 +1288,9 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 	}
 	if s.js != nil {
 		s.js.mu.RLock()
+		cfg := s.js.config
 		varz.JetStream = JetStreamVarz{
-			Config: s.js.config,
+			Config: &cfg,
 		}
 		s.js.mu.RUnlock()
 	}
