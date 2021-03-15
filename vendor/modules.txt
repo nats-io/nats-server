@@ -4,14 +4,11 @@ github.com/klauspost/compress/s2
 # github.com/minio/highwayhash v1.0.1
 ## explicit
 github.com/minio/highwayhash
+# github.com/nats-io/jwt v1.2.2
+github.com/nats-io/jwt
 # github.com/nats-io/jwt/v2 v2.0.1
 ## explicit
 github.com/nats-io/jwt/v2
-# github.com/nats-io/nats.go v1.10.1-0.20210228004050-ed743748acac
-## explicit
-github.com/nats-io/nats.go
-github.com/nats-io/nats.go/encoders/builtin
-github.com/nats-io/nats.go/util
 # github.com/nats-io/nkeys v0.3.0
 ## explicit
 github.com/nats-io/nkeys
