@@ -66,6 +66,22 @@ func DefaultOptions() *Options {
 	}
 }
 
+func allStacks() string {
+	var defaultBuf [defaultStackBufSize]byte
+	size := defaultStackBufSize
+	buf := defaultBuf[:size]
+	n := 0
+	for {
+		n = runtime.Stack(buf, true)
+		if n < size {
+			break
+		}
+		size *= 2
+		buf = make([]byte, size)
+	}
+	return string(buf)
+}
+
 // New Go Routine based server
 func RunServer(opts *Options) *Server {
 	if opts == nil {
@@ -85,7 +101,7 @@ func RunServer(opts *Options) *Server {
 
 	// Wait for accept loop(s) to be started
 	if !s.ReadyForConnections(10 * time.Second) {
-		panic("Unable to start NATS Server in Go Routine")
+		panic("Unable to start NATS Server in Go Routine. Available stacks: \n" + allStacks())
 	}
 	return s
 }
