@@ -331,8 +331,6 @@ func (s *Server) DisableJetStream() error {
 					s.Warnf("JetStream timeout waiting for meta leader transfer")
 				}
 			}
-			// Once here we can forward our proposal to remove ourselves.
-			meta.ProposeRemovePeer(meta.ID())
 			meta.Delete()
 		}
 	}

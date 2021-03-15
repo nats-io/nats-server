@@ -553,14 +553,7 @@ type jetStreamOption struct {
 }
 
 func (a *jetStreamOption) Apply(s *Server) {
-	s.Noticef("Reloaded: jetstream")
-	if !a.newValue {
-		s.DisableJetStream()
-	} else if !s.JetStreamEnabled() {
-		if err := s.restartJetStream(); err != nil {
-			s.Warnf("Can't start JetStream: %v", err)
-		}
-	}
+	s.Noticef("Reloaded: JetStream")
 }
 
 func (jso jetStreamOption) IsJetStreamChange() bool {
@@ -1193,6 +1186,8 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 		reloadAuth         = false
 		reloadClusterPerms = false
 		reloadClientTrcLvl = false
+		reloadJetstream    = false
+		jsEnabled          = false
 	)
 	for _, opt := range opts {
 		opt.Apply(s)
@@ -1208,6 +1203,10 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 		if opt.IsClusterPermsChange() {
 			reloadClusterPerms = true
 		}
+		if opt.IsJetStreamChange() {
+			reloadJetstream = true
+			jsEnabled = opt.(*jetStreamOption).newValue
+		}
 	}
 
 	if reloadLogging {
@@ -1222,6 +1221,17 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 	if reloadClusterPerms {
 		s.reloadClusterPermissions(ctx.oldClusterPerms)
 	}
+
+	if reloadJetstream {
+		if !jsEnabled {
+			s.DisableJetStream()
+		} else if !s.JetStreamEnabled() {
+			if err := s.restartJetStream(); err != nil {
+				s.Warnf("Can't start JetStream: %v", err)
+			}
+		}
+	}
+
 	// For remote gateways and leafnodes, make sure that their TLS configuration
 	// is updated (since the config is "captured" early and changes would otherwise
 	// not be visible).
