@@ -18,19 +18,28 @@ install:
 - go get github.com/nats-io/jwt
 - go get -u honnef.co/go/tools/cmd/staticcheck
 - go get -u github.com/client9/misspell/cmd/misspell
+
 before_script:
-- GO_LIST=$(go list ./...)
+
+# NOTE: -mod=readonly -modfile=go_test.mod here so that modules are not changed.
+- GO_LIST=$(go list -mod=readonly -modfile=go_test.mod ./...)
+
+# Build with what is in vendor and not fetch new deps.
 - go build
+
 - $(exit $(go fmt $GO_LIST | wc -l))
-- go vet $GO_LIST
+
+# Include test deps for go vet
+- go vet -mod=readonly -modfile=go_test.mod $GO_LIST
+
 - find . -type f -name "*.go" | grep -v "/vendor/" | xargs misspell -error -locale US
 - staticcheck $GO_LIST
 script:
 - set -e
-- go test -race -v -run=TestVersionMatchesTag ./server -count=1
+- go test -mod=readonly -modfile=go_test.mod -race -v -run=TestVersionMatchesTag ./server -count=1
 # Disable for release.
-#- go test -i ./...
-#- go test -v -run=TestNoRace --failfast -p=1 ./...
+#- go test -mod=readonly -modfile=go_test.mod -i ./...
+#- go test -mod=readonly -modfile=go_test.mod -v -run=TestNoRace --failfast -p=1 ./...
 #- if [[ "$TRAVIS_GO_VERSION" =~ 1.15 ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race -p=1 --failfast ./...; fi
 - set +e
 
