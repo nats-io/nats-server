@@ -27,9 +27,11 @@ before_script:
 - staticcheck $GO_LIST
 script:
 - set -e
-- go test -i ./...
-- go test -v -run=TestNoRace --failfast -p=1 ./...
-- if [[ "$TRAVIS_GO_VERSION" =~ 1.15 ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race -p=1 --failfast ./...; fi
+- go test -race -v -run=TestVersionMatchesTag ./server -count=1
+# Disable for release.
+#- go test -i ./...
+#- go test -v -run=TestNoRace --failfast -p=1 ./...
+#- if [[ "$TRAVIS_GO_VERSION" =~ 1.15 ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race -p=1 --failfast ./...; fi
 - set +e
 
 deploy:
