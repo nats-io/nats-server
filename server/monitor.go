@@ -1405,7 +1405,10 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 	gw.RUnlock()
 
 	if s.js != nil {
+		// FIXME(dlc) - We have lock inversion that needs to be fixed up properly.
+		s.mu.Unlock()
 		v.JetStream.Stats = s.js.usageStats()
+		s.mu.Lock()
 	}
 }
 
@@ -2271,7 +2274,6 @@ type JSInfo struct {
 
 func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg bool) *AccountDetail {
 	jsa.mu.RLock()
-	defer jsa.mu.RUnlock()
 	acc := jsa.account
 	name := acc.GetName()
 	id := name
@@ -2291,8 +2293,16 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg 
 		},
 		Streams: make([]StreamDetail, 0, len(jsa.streams)),
 	}
+	var streams []*stream
 	if optStreams {
 		for _, stream := range jsa.streams {
+			streams = append(streams, stream)
+		}
+	}
+	jsa.mu.RUnlock()
+
+	if optStreams {
+		for _, stream := range streams {
 			ci := s.js.clusterInfo(stream.raftGroup())
 			var cfg *StreamConfig
 			if optCfg {
@@ -2303,9 +2313,10 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg 
 				Name:    stream.name(),
 				State:   stream.state(),
 				Cluster: ci,
-				Config:  cfg}
+				Config:  cfg,
+			}
 			if optConsumers {
-				for _, consumer := range stream.consumers {
+				for _, consumer := range stream.getConsumers() {
 					cInfo := consumer.info()
 					if !optCfg {
 						cInfo.Config = nil
