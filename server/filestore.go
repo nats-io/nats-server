@@ -183,11 +183,11 @@ const (
 	JetStreamMetaFileSum = "meta.sum"
 
 	// Default stream block size.
-	defaultStreamBlockSize = 64 * 1024 * 1024 // 64MB
+	defaultStreamBlockSize = 16 * 1024 * 1024 // 16MB
 	// Default for workqueue or interest based.
-	defaultOtherBlockSize = 32 * 1024 * 1024 // 32MB
+	defaultOtherBlockSize = 8 * 1024 * 1024 // 8MB
 	// max block size for now.
-	maxBlockSize = 2 * defaultStreamBlockSize
+	maxBlockSize = defaultStreamBlockSize
 	// FileStoreMinBlkSize is minimum size we will do for a blk size.
 	FileStoreMinBlkSize = 32 * 1000 // 32kib
 	// FileStoreMaxBlkSize is maximum size we will do for a blk size.
@@ -463,6 +463,7 @@ func (mb *msgBlock) rebuildState() (*LostStreamData, error) {
 	// Clear state we need to rebuild.
 	mb.msgs, mb.bytes = 0, 0
 	mb.last.seq, mb.last.ts = 0, 0
+	firstNeedsSet := true
 
 	buf, err := ioutil.ReadFile(mb.mfn)
 	if err != nil {
@@ -542,18 +543,21 @@ func (mb *msgBlock) rebuildState() (*LostStreamData, error) {
 		seq := le.Uint64(hdr[4:])
 		ts := int64(le.Uint64(hdr[12:]))
 
-		// If the first seq we read does not match our indexed first seq, reset.
-		if index == 0 && seq > mb.first.seq {
-			mb.first.seq = seq
-			mb.first.ts = ts
-		}
-
 		// This is an old erased message, or a new one that we can track.
 		if seq == 0 || seq&ebit != 0 || seq < mb.first.seq {
 			seq = seq &^ ebit
 			addToDmap(seq)
 			index += rl
 			continue
+		}
+
+		// This is for when we have index info that adjusts for deleted messages
+		// at the head. So the first.seq will be already set here. If this is larger
+		// replace what we have with this seq.
+		if firstNeedsSet && seq > mb.first.seq {
+			firstNeedsSet = false
+			mb.first.seq = seq
+			mb.first.ts = ts
 		}
 
 		var deleted bool
@@ -582,7 +586,8 @@ func (mb *msgBlock) rebuildState() (*LostStreamData, error) {
 				copy(mb.lchk[0:], checksum)
 			}
 
-			if mb.first.seq == 0 {
+			if firstNeedsSet {
+				firstNeedsSet = false
 				mb.first.seq = seq
 				mb.first.ts = ts
 			}
@@ -1083,8 +1088,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 	mb.msgs--
 	mb.bytes -= msz
 
-	var shouldWriteIndex bool
-	var firstSeqNeedsUpdate bool
+	var shouldWriteIndex, firstSeqNeedsUpdate bool
 
 	if secure {
 		mb.eraseMsg(seq, int(ri), int(rl))
@@ -1279,6 +1283,16 @@ func (mb *msgBlock) flushLoop(fch, qch chan struct{}) {
 					ts *= 2
 				}
 				mb.flushPendingMsgs()
+				// Check if we are no longer the last message block. If we are
+				// not we can close FDs and exit.
+				mb.fs.mu.RLock()
+				notLast := mb != mb.fs.lmb
+				mb.fs.mu.RUnlock()
+				if notLast {
+					if err := mb.closeFDs(); err == nil {
+						return
+					}
+				}
 			}
 			if infoChanged() {
 				mb.writeIndexInfo()
@@ -1784,6 +1798,25 @@ func (mb *msgBlock) setFlushing() {
 	}
 }
 
+// Try to close our FDs if we can.
+func (mb *msgBlock) closeFDs() error {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	if buf, err := mb.bytesPending(); err == errFlushRunning || len(buf) > 0 {
+		return errPendingData
+	}
+	if mb.mfd != nil {
+		mb.mfd.Close()
+		mb.mfd = nil
+	}
+	if mb.ifd != nil {
+		mb.ifd.Close()
+		mb.ifd = nil
+	}
+	return nil
+}
+
 // bytesPending returns the buffer to be used for writing to the underlying file.
 // This marks we are in flush and will return nil if asked again until cleared.
 // Lock should be held.
@@ -1838,6 +1871,9 @@ func (fs *fileStore) writeMsgRecord(seq uint64, ts int64, subj string, hdr, msg 
 	// Grab our current last message block.
 	mb := fs.lmb
 	if mb == nil || mb.numBytes()+rl > fs.fcfg.BlockSize {
+		if fs.fip {
+			mb.closeFDs()
+		}
 		if mb, err = fs.newMsgBlockForWrite(); err != nil {
 			return 0, err
 		}
@@ -2042,9 +2078,7 @@ func (mb *msgBlock) flushPendingMsgs() error {
 	mfd := mb.mfd
 	mb.mu.Unlock()
 
-	var tn int
-
-	var n int
+	var n, tn int
 
 	// Append new data to the message block file.
 	for lbb := lob; lbb > 0; lbb = len(buf) {
@@ -2231,6 +2265,7 @@ var (
 	errNotReadable  = errors.New("storage directory not readable")
 	errFlushRunning = errors.New("flush is already running")
 	errCorruptState = errors.New("corrupt state file")
+	errPendingData  = errors.New("pending data still present")
 )
 
 // Used for marking messages that have had their checksums checked.
@@ -2648,6 +2683,10 @@ func (fs *fileStore) dmapEntries() int {
 // Purge will remove all messages from this store.
 // Will return the number of purged messages.
 func (fs *fileStore) Purge() (uint64, error) {
+	return fs.purge(0)
+}
+
+func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	fs.mu.Lock()
 	if fs.closed {
 		fs.mu.Unlock()
@@ -2690,6 +2729,11 @@ func (fs *fileStore) Purge() (uint64, error) {
 		return purged, err
 	}
 
+	// Check if we need to set the first seq to a new number.
+	if fseq > fs.state.FirstSeq {
+		fs.state.FirstSeq = fseq
+		fs.state.LastSeq = fseq - 1
+	}
 	fs.lmb.first.seq = fs.state.FirstSeq
 	fs.lmb.last.seq = fs.state.LastSeq
 	fs.lmb.writeIndexInfo()
@@ -2708,72 +2752,62 @@ func (fs *fileStore) Purge() (uint64, error) {
 // but not including the seq parameter.
 // Will return the number of purged messages.
 func (fs *fileStore) Compact(seq uint64) (uint64, error) {
-	if seq == 0 {
-		return fs.Purge()
+	if seq == 0 || seq > fs.lastSeq() {
+		return fs.purge(seq)
 	}
 
 	var purged uint64
 	var bytes uint64
 
-	if last := fs.lastSeq(); seq > last {
-		// We are compacting past the end of our range. Do purge and set sequences correctly
-		// such that the next message placed will have seq.
-		var err error
-		if purged, err = fs.Purge(); err != nil {
-			return 0, err
-		}
-		fs.resetFirst(seq)
-	} else {
-		// We have to delete interior messages.
-		fs.mu.Lock()
-		smb := fs.selectMsgBlock(seq)
-		if smb == nil {
-			fs.mu.Unlock()
-			return 0, nil
-		}
-		// All msgblocks up to this one can be thrown away.
-		for i, mb := range fs.blks {
-			if mb == smb {
-				fs.blks = append(fs.blks[:0:0], fs.blks[i:]...)
-				break
-			}
-			mb.mu.Lock()
-			purged += mb.msgs
-			bytes += mb.bytes
-			mb.dirtyCloseWithRemove(true)
-			mb.mu.Unlock()
-		}
+	// We have to delete interior messages.
+	fs.mu.Lock()
+	smb := fs.selectMsgBlock(seq)
+	if smb == nil {
 		fs.mu.Unlock()
+		return 0, nil
+	}
+	// All msgblocks up to this one can be thrown away.
+	for i, mb := range fs.blks {
+		if mb == smb {
+			fs.blks = append(fs.blks[:0:0], fs.blks[i:]...)
+			break
+		}
+		mb.mu.Lock()
+		purged += mb.msgs
+		bytes += mb.bytes
+		mb.dirtyCloseWithRemove(true)
+		mb.mu.Unlock()
+	}
+	fs.mu.Unlock()
 
-		if err := smb.loadMsgs(); err != nil {
-			return purged, err
-		}
+	if err := smb.loadMsgs(); err != nil {
+		return purged, err
+	}
 
-		smb.mu.Lock()
-		for mseq := smb.first.seq; mseq < seq; mseq++ {
-			if _, rl, _, err := smb.slotInfo(int(mseq - smb.cache.fseq)); err != nil {
-				smb.bytes -= uint64(rl)
-			}
-			smb.msgs--
-			purged++
+	smb.mu.Lock()
+	for mseq := smb.first.seq; mseq < seq; mseq++ {
+		if _, rl, _, err := smb.slotInfo(int(mseq - smb.cache.fseq)); err != nil {
+			smb.bytes -= uint64(rl)
 		}
-		// Update first entry.
-		sm, _ := smb.cacheLookupWithLock(seq)
-		if sm != nil {
-			smb.first.seq = sm.seq
-			smb.first.ts = sm.ts
-		}
-		smb.mu.Unlock()
+		smb.msgs--
+		purged++
+	}
+	// Update first entry.
+	sm, _ := smb.cacheLookupWithLock(seq)
+	if sm != nil {
+		smb.first.seq = sm.seq
+		smb.first.ts = sm.ts
+	}
+	smb.mu.Unlock()
 
-		if sm != nil {
-			// Reset our version of first.
-			fs.mu.Lock()
-			fs.state.FirstSeq = sm.seq
-			fs.state.FirstTime = time.Unix(0, sm.ts).UTC()
-			fs.state.Msgs -= purged
-			fs.state.Bytes -= bytes
-			fs.mu.Unlock()
-		}
+	if sm != nil {
+		// Reset our version of first.
+		fs.mu.Lock()
+		fs.state.FirstSeq = sm.seq
+		fs.state.FirstTime = time.Unix(0, sm.ts).UTC()
+		fs.state.Msgs -= purged
+		fs.state.Bytes -= bytes
+		fs.mu.Unlock()
 	}
 
 	return purged, nil
@@ -2846,16 +2880,6 @@ func (fs *fileStore) Truncate(seq uint64) error {
 	return nil
 }
 
-func (fs *fileStore) resetFirst(newFirst uint64) {
-	fs.mu.Lock()
-	fs.state.FirstSeq = newFirst
-	fs.state.LastSeq = newFirst - 1
-	fs.lmb.first.seq = fs.state.FirstSeq
-	fs.lmb.last.seq = fs.state.LastSeq
-	fs.lmb.writeIndexInfo()
-	fs.mu.Unlock()
-}
-
 func (fs *fileStore) lastSeq() uint64 {
 	fs.mu.RLock()
 	seq := fs.state.LastSeq
@@ -2902,7 +2926,7 @@ func (fs *fileStore) removeMsgBlock(mb *msgBlock) {
 	}
 }
 
-// Called by purge to simply get rid of the cache and close and fds.
+// Called by purge to simply get rid of the cache and close our fds.
 // Lock should not be held.
 func (mb *msgBlock) dirtyClose() {
 	mb.mu.Lock()

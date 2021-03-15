@@ -841,7 +841,7 @@ func (s *Server) jsAccountInfoRequest(sub *subscription, c *client, subject, rep
 		if js == nil || cc == nil {
 			return
 		}
-		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+		if js.isLeaderless() {
 			resp.Error = jsClusterNotAvailErr
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -1113,7 +1113,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 		if js == nil || cc == nil {
 			return
 		}
-		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+		if js.isLeaderless() {
 			resp.Error = jsClusterNotAvailErr
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -1221,7 +1221,7 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 		if js == nil || cc == nil {
 			return
 		}
-		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+		if js.isLeaderless() {
 			resp.Error = jsClusterNotAvailErr
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -1301,7 +1301,7 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, rep
 		if js == nil || cc == nil {
 			return
 		}
-		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+		if js.isLeaderless() {
 			resp.Error = jsClusterNotAvailErr
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -1425,7 +1425,7 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 		if js == nil || cc == nil {
 			return
 		}
-		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+		if js.isLeaderless() {
 			resp.Error = jsClusterNotAvailErr
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -1571,6 +1571,12 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 	} else if mset.hasSources() {
 		resp.StreamInfo.Sources = mset.sourcesInfo()
 	}
+
+	// Check for out of band catchups.
+	if mset.hasCatchupPeers() {
+		mset.checkClusterInfo(resp.StreamInfo)
+	}
+
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -1602,8 +1608,7 @@ func (s *Server) jsStreamLeaderStepDownRequest(sub *subscription, c *client, sub
 	if js == nil || cc == nil {
 		return
 	}
-
-	if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+	if js.isLeaderless() {
 		resp.Error = jsClusterNotAvailErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -1687,8 +1692,7 @@ func (s *Server) jsConsumerLeaderStepDownRequest(sub *subscription, c *client, s
 	if js == nil || cc == nil {
 		return
 	}
-
-	if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+	if js.isLeaderless() {
 		resp.Error = jsClusterNotAvailErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -1788,8 +1792,7 @@ func (s *Server) jsStreamRemovePeerRequest(sub *subscription, c *client, subject
 	if js == nil || cc == nil {
 		return
 	}
-
-	if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+	if js.isLeaderless() {
 		resp.Error = jsClusterNotAvailErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -2041,7 +2044,7 @@ func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, re
 		if js == nil || cc == nil {
 			return
 		}
-		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+		if js.isLeaderless() {
 			resp.Error = jsClusterNotAvailErr
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -2109,8 +2112,7 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 		if js == nil || cc == nil {
 			return
 		}
-
-		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+		if js.isLeaderless() {
 			resp.Error = jsClusterNotAvailErr
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -2215,8 +2217,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 		if js == nil || cc == nil {
 			return
 		}
-
-		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+		if js.isLeaderless() {
 			resp.Error = jsClusterNotAvailErr
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -2858,7 +2859,7 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 			if js == nil || cc == nil {
 				return
 			}
-			if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+			if js.isLeaderless() {
 				resp.Error = jsClusterNotAvailErr
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 				return
@@ -2956,7 +2957,7 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 		if js == nil || cc == nil {
 			return
 		}
-		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+		if js.isLeaderless() {
 			resp.Error = jsClusterNotAvailErr
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -3075,7 +3076,7 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 		if js == nil || cc == nil {
 			return
 		}
-		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+		if js.isLeaderless() {
 			resp.Error = jsClusterNotAvailErr
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -3259,7 +3260,7 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, 
 		if js == nil || cc == nil {
 			return
 		}
-		if cc.meta != nil && cc.meta.GroupLeader() == _EMPTY_ {
+		if js.isLeaderless() {
 			resp.Error = jsClusterNotAvailErr
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return

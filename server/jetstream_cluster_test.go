@@ -1741,7 +1741,7 @@ func TestJetStreamClusterExtendedStreamInfo(t *testing.T) {
 	}
 
 	// We may need to wait a bit for peers to catch up.
-	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
 		for _, peer := range si.Cluster.Replicas {
 			if !peer.Current {
 				if si, err = js2.StreamInfo("TEST"); err != nil {
@@ -3556,7 +3556,7 @@ func TestJetStreamClusterRemovePeer(t *testing.T) {
 	})
 
 	// Now check consumer info as well.
-	checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 30*time.Second, 100*time.Millisecond, func() error {
 		ci, err := js.ConsumerInfo("TEST", "cat")
 		if err != nil {
 			return fmt.Errorf("Could not fetch consumer info: %v", err)
@@ -3685,6 +3685,8 @@ func TestJetStreamClusterStreamLeaderStepDown(t *testing.T) {
 }
 
 func TestJetStreamClusterRemoveServer(t *testing.T) {
+	skip(t)
+
 	c := createJetStreamClusterExplicit(t, "RNS", 5)
 	defer c.shutdown()
 

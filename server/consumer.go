@@ -2759,8 +2759,18 @@ func (o *consumer) setInitialPending() {
 	if mset == nil {
 		return
 	}
-	// Non-filtering, means we want all messages.
-	if o.cfg.FilterSubject == _EMPTY_ {
+	// notFiltered means we want all messages.
+	notFiltered := o.cfg.FilterSubject == _EMPTY_
+	if !notFiltered {
+		// Check to see if we directly match the configured stream.
+		// Many clients will always send a filtered subject.
+		cfg := mset.cfg
+		if len(cfg.Subjects) == 1 && cfg.Subjects[0] == o.cfg.FilterSubject {
+			notFiltered = true
+		}
+	}
+
+	if notFiltered {
 		state := mset.store.State()
 		if state.Msgs > 0 {
 			o.sgap = state.Msgs - (o.sseq - state.FirstSeq)

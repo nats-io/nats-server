@@ -38,6 +38,7 @@ type RaftNode interface {
 	ForwardProposal(entry []byte) error
 	InstallSnapshot(snap []byte) error
 	SendSnapshot(snap []byte) error
+	NeedSnapshot() bool
 	Applied(index uint64) (entries uint64, bytes uint64)
 	Compact(index uint64) error
 	State() RaftState
@@ -158,6 +159,9 @@ type raft struct {
 	sq    *sendq
 	aesub *subscription
 
+	// Are we doing a leadership transfer.
+	lxfer bool
+
 	// For holding term and vote and peerstate to be written.
 	wtv   []byte
 	wps   []byte
@@ -204,7 +208,7 @@ type lps struct {
 }
 
 const (
-	minElectionTimeout = 1500 * time.Millisecond
+	minElectionTimeout = 1000 * time.Millisecond
 	maxElectionTimeout = 5 * minElectionTimeout
 	minCampaignTimeout = 100 * time.Millisecond
 	maxCampaignTimeout = 4 * minCampaignTimeout
@@ -230,6 +234,7 @@ var (
 	errNodeClosed      = errors.New("raft: node is closed")
 	errBadSnapName     = errors.New("raft: snapshot name could not be parsed")
 	errNoSnapAvailable = errors.New("raft: no snapshot available")
+	errCatchupsRunning = errors.New("raft: snapshot can not be installed while catchups running")
 	errSnapshotCorrupt = errors.New("raft: snapshot corrupt")
 	errTooManyPrefs    = errors.New("raft: stepdown requires at most one preferred new leader")
 	errStepdownNoPeer  = errors.New("raft: stepdown failed, could not match new leader")
@@ -317,8 +322,8 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	if ps == nil || (len(ps.knownPeers) < 2 && ps.clusterSize < 2) {
-		return nil, errors.New("raft: cluster too small")
+	if ps == nil {
+		return nil, errors.New("raft: no peerstate")
 	}
 
 	n := &raft{
@@ -759,6 +764,11 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		return werr
 	}
 
+	if len(n.progress) > 0 {
+		n.Unlock()
+		return errCatchupsRunning
+	}
+
 	var state StreamState
 	n.wal.FastState(&state)
 	if state.FirstSeq >= n.applied {
@@ -789,17 +799,19 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	sfile := path.Join(snapDir, sn)
 	// Remember our latest snapshot file.
 	n.snapfile = sfile
-	n.Unlock()
 
 	if err := ioutil.WriteFile(sfile, n.encodeSnapshot(snap), 0640); err != nil {
+		n.Unlock()
 		n.setWriteErr(err)
 		return err
 	}
 
-	if _, err := n.wal.Compact(snap.lastIndex); err != nil {
+	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
+		n.Unlock()
 		n.setWriteErr(err)
 		return err
 	}
+	n.Unlock()
 
 	psnaps, _ := ioutil.ReadDir(snapDir)
 	// Remove any old snapshots.
@@ -811,6 +823,12 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	}
 
 	return nil
+}
+
+func (n *raft) NeedSnapshot() bool {
+	n.RLock()
+	defer n.RUnlock()
+	return n.snapfile == _EMPTY_ && n.applied > 0
 }
 
 const (
@@ -1073,6 +1091,7 @@ func (n *raft) campaign() error {
 	if n.state == Leader {
 		return errAlreadyLeader
 	}
+	n.lxfer = true
 	n.resetElect(randCampaignTimeout())
 	return nil
 }
@@ -1722,7 +1741,7 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesC <-chan uint64) 
 			ae, err := n.loadEntry(next)
 			if err != nil {
 				if err != ErrStoreEOF {
-					n.debug("Got an error loading %d index: %v", next, err)
+					n.warn("Got an error loading %d index: %v", next, err)
 				}
 				return true
 			}
@@ -1762,11 +1781,12 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesC <-chan uint64) 
 			// Update outstanding total.
 			total -= om[index]
 			delete(om, index)
-			// Still have more catching up to do.
-			if next < index {
-				n.debug("Adjusting next to %d from %d", index, next)
+			if next == 0 {
 				next = index
+			} else {
+				next++
 			}
+
 			// Check if we are done.
 			if index > last || sendNext() {
 				n.debug("Finished catching up")
@@ -1780,11 +1800,19 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesC <-chan uint64) 
 func (n *raft) sendSnapshotToFollower(subject string) (uint64, error) {
 	snap, err := n.loadLastSnapshot()
 	if err != nil {
+		// We need to stepdown here when this happens.
+		n.attemptStepDown(noLeader)
 		return 0, err
 	}
 	// Go ahead and send the snapshot and peerstate here as first append entry to the catchup follower.
 	ae := n.buildAppendEntry([]*Entry{&Entry{EntrySnapshot, snap.data}, &Entry{EntryPeerState, snap.peerstate}})
 	ae.pterm, ae.pindex = snap.lastTerm, snap.lastIndex
+	var state StreamState
+	n.wal.FastState(&state)
+	if snap.lastIndex+1 != state.FirstSeq && state.FirstSeq != 0 {
+		snap.lastIndex = state.FirstSeq - 1
+		ae.pindex = snap.lastIndex
+	}
 	n.sendRPC(subject, n.areply, ae.encode())
 	return snap.lastIndex, nil
 }
@@ -1837,8 +1865,8 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	}
 	// Create a chan for delivering updates from responses.
 	isz := 64
-	if ar.index > ae.pindex && ar.index-ae.pindex > uint64(isz) {
-		isz = int(ar.index - ae.pindex)
+	if ae.pindex > ar.index && ae.pindex-ar.index > uint64(isz) {
+		isz = int(ae.pindex - ar.index)
 	}
 	indexUpdates := make(chan uint64, isz)
 	indexUpdates <- ae.pindex
@@ -1920,10 +1948,12 @@ func (n *raft) applyCommit(index uint64) error {
 			n.debug("Added peer %q", newPeer)
 			if _, ok := n.peers[newPeer]; !ok {
 				// We are not tracking this one automatically so we need to bump cluster size.
-				n.debug("Expanding our clustersize: %d -> %d", n.csz, n.csz+1)
-				n.csz++
-				n.qn = n.csz/2 + 1
 				n.peers[newPeer] = &lps{time.Now().UnixNano(), 0}
+				if n.csz < len(n.peers) {
+					n.debug("Expanding our clustersize: %d -> %d", n.csz, len(n.peers))
+					n.csz = len(n.peers)
+					n.qn = n.csz/2 + 1
+				}
 			}
 			n.writePeerState(&peerState{n.peerNames(), n.csz})
 		case EntryRemovePeer:
@@ -1933,14 +1963,12 @@ func (n *raft) applyCommit(index uint64) error {
 			// FIXME(dlc) - Check if this is us??
 			if _, ok := n.peers[oldPeer]; ok {
 				// We should decrease our cluster size since we are tracking this peer.
-				if n.csz > 1 {
-					n.debug("Decreasing our clustersize: %d -> %d", n.csz, n.csz-1)
-					n.csz--
-					n.qn = n.csz/2 + 1
-				} else {
-					n.warn("Not decreasing further our clustersize: %d", n.csz)
-				}
 				delete(n.peers, oldPeer)
+				if n.csz != len(n.peers) {
+					n.debug("Decreasing our clustersize: %d -> %d", n.csz, len(n.peers))
+					n.csz = len(n.peers)
+					n.qn = n.csz/2 + 1
+				}
 			}
 			n.writePeerState(&peerState{n.peerNames(), n.csz})
 			// We pass these up as well.
@@ -2037,9 +2065,25 @@ func (n *raft) trackPeer(peer string) error {
 	n.Unlock()
 
 	if needPeerUpdate {
-		n.sendPeerState()
+		n.ProposeAddPeer(peer)
 	}
 	return nil
+}
+
+// Return the number of active peers for this group. We use this when we
+// are running as a candidate.
+// Lock should be held.
+func (n *raft) numActivePeers() int {
+	nap := 0
+	for id := range n.peers {
+		if sir, ok := n.s.nodeToInfo.Load(id); ok && sir != nil {
+			si := sir.(nodeInfo)
+			if !si.offline {
+				nap++
+			}
+		}
+	}
+	return nap
 }
 
 func (n *raft) runAsCandidate() {
@@ -2082,10 +2126,8 @@ func (n *raft) runAsCandidate() {
 				n.trackPeer(vresp.peer)
 				votes++
 				if n.wonElection(votes) {
-					// TODO If this server was also leader in n.term-1, then we could skip the timer as well.
-					// This would be ok as we'd be guaranteed to have the latest history.
-					if len(n.peers) == votes {
-						// Become LEADER if we have won and gotten a quorum with everyone
+					if votes == n.numActivePeers() || n.lxfer {
+						// Become LEADER if we have won and gotten a quorum with everyone we should hear from.
 						n.switchToLeader()
 						return
 					} else {
@@ -2100,7 +2142,11 @@ func (n *raft) runAsCandidate() {
 			} else if vresp.term > n.term {
 				// if we observe a bigger term, we should start over again or risk forming a quorum fully knowing
 				// someone with a better term exists. This is even the right thing to do if won == true.
-				n.switchToCandidate()
+				n.term = vresp.term
+				n.vote = noVote
+				n.writeTermVote()
+				n.debug("Stepping down from candidate, detected higher term: %d vs %d", vresp.term, n.term)
+				n.attemptStepDown(noLeader)
 				return
 			}
 		case vreq := <-n.reqs:
@@ -2181,25 +2227,12 @@ func (n *raft) attemptStepDown(newLeader string) {
 func (n *raft) truncateWal(ae *appendEntry) {
 	n.debug("Truncating and repairing WAL")
 
-	// Special case if already at 0.
-	if ae.pindex == 0 {
-		n.pindex = ae.pindex
-		n.pterm = ae.pterm
-		n.wal.Purge()
-		return
-	}
-
-	tindex := ae.pindex - 1
-	if err := n.wal.Truncate(tindex); err != nil {
+	if err := n.wal.Truncate(ae.pindex); err != nil {
 		n.setWriteErrLocked(err)
 		return
 	}
-	n.pindex = tindex
-	if nae, _ := n.loadEntry(tindex); nae != nil {
-		n.pterm = nae.term
-	} else {
-		n.pterm = ae.term
-	}
+	n.pindex = ae.pindex
+	n.pterm = ae.term
 }
 
 // processAppendEntry will process an appendEntry.
@@ -2544,19 +2577,6 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 
 	// Sanity checking for now.
 	if ae.pindex != seq-1 {
-		fmt.Printf("[%s] n is %+v\n\n", n.s, n)
-		fmt.Printf("[%s] n.catchup is %+v\n", n.s, n.catchup)
-		fmt.Printf("[%s] n.wal is %+v\n", n.s, n.wal.State())
-		if state := n.wal.State(); state.Msgs > 0 {
-			for index := state.FirstSeq; index <= state.LastSeq; index++ {
-				if nae, _ := n.loadEntry(index); nae != nil {
-					fmt.Printf("INDEX %d is %+v\n", index, nae)
-					for _, e := range nae.entries {
-						fmt.Printf("Entry type is %v\n", e.Type)
-					}
-				}
-			}
-		}
 		n.Unlock()
 		panic(fmt.Sprintf("[%s-%s] Placed an entry at the wrong index, ae is %+v, seq is %d, n.pindex is %d\n\n", n.s, n.group, ae, seq, n.pindex))
 	}
@@ -2901,13 +2921,13 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 
 	// If this is a higher term go ahead and stepdown.
 	if vr.term > n.term {
-		n.term = vr.term
-		n.vote = noVote
-		n.writeTermVote()
 		if n.state != Follower {
 			n.debug("Stepping down from candidate, detected higher term: %d vs %d", vr.term, n.term)
 			n.attemptStepDown(noLeader)
 		}
+		n.term = vr.term
+		n.vote = noVote
+		n.writeTermVote()
 	}
 
 	// Only way we get to yes is through here.
@@ -3023,6 +3043,7 @@ func (n *raft) switchToFollower(leader string) {
 		return
 	}
 	n.debug("Switching to follower")
+	n.lxfer = false
 	n.leader = leader
 	n.switchState(Follower)
 }
@@ -3035,8 +3056,9 @@ func (n *raft) switchToCandidate() {
 	}
 	if n.state != Candidate {
 		n.debug("Switching to candidate")
-	} else if n.lostQuorumLocked() {
-		if time.Since(n.llqrt) > 20*time.Second {
+	} else {
+		n.lxfer = false
+		if n.lostQuorumLocked() && time.Since(n.llqrt) > 20*time.Second {
 			// We signal to the upper layers such that can alert on quorum lost.
 			n.updateLeadChange(false)
 			n.llqrt = time.Now()
@@ -3057,5 +3079,6 @@ func (n *raft) switchToLeader() {
 	}
 	n.debug("Switching to leader")
 	n.leader = n.id
+	n.lxfer = false
 	n.switchState(Leader)
 }

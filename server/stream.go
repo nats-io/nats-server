@@ -164,15 +164,16 @@ type stream struct {
 
 	// TODO(dlc) - Hide everything below behind two pointers.
 	// Clustered mode.
-	sa      *streamAssignment
-	node    RaftNode
-	catchup bool
-	syncSub *subscription
-	infoSub *subscription
-	clMu    sync.Mutex
-	clseq   uint64
-	clfs    uint64
-	lqsent  time.Time
+	sa       *streamAssignment
+	node     RaftNode
+	catchup  bool
+	syncSub  *subscription
+	infoSub  *subscription
+	clMu     sync.Mutex
+	clseq    uint64
+	clfs     uint64
+	lqsent   time.Time
+	catchups map[string]uint64
 }
 
 type sourceInfo struct {
@@ -440,6 +441,8 @@ func (mset *stream) setLeader(isLeader bool) error {
 		mset.stopClusterSubs()
 		// Unsubscribe from direct stream.
 		mset.unsubscribeToStream()
+		// Clear catchup state
+		mset.clearAllCatchupPeers()
 	}
 	mset.mu.Unlock()
 	return nil

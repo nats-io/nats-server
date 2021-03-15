@@ -2968,6 +2968,7 @@ func TestAccountServiceImportWithRouteMappings(t *testing.T) {
 	defer ncFoo.Close()
 
 	fooSub := natsSubSync(t, ncFoo, "request.v2")
+	ncFoo.Flush()
 
 	// Requestor
 	ncBar := natsConnect(t, fmt.Sprintf("nats://ivan:bar@%s:%d", opts.Host, opts.Port))

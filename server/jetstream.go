@@ -83,6 +83,7 @@ type jetStream struct {
 	apiCalls      int64
 	apiSubs       *Sublist
 	disabled      bool
+	oos           bool
 }
 
 // This represents a jetstream enabled account.
@@ -181,12 +182,12 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 		s.SetDefaultSystemAccount()
 	}
 
-	s.Warnf("    _ ___ _____ ___ _____ ___ ___   _   __  __")
-	s.Warnf(" _ | | __|_   _/ __|_   _| _ \\ __| /_\\ |  \\/  |")
-	s.Warnf("| || | _|  | | \\__ \\ | | |   / _| / _ \\| |\\/| |")
-	s.Warnf(" \\__/|___| |_| |___/ |_| |_|_\\___/_/ \\_\\_|  |_|")
-	s.Warnf("")
-	s.Warnf("      https://github.com/nats-io/jetstream")
+	s.Noticef("    _ ___ _____ ___ _____ ___ ___   _   __  __")
+	s.Noticef(" _ | | __|_   _/ __|_   _| _ \\ __| /_\\ |  \\/  |")
+	s.Noticef("| || | _|  | | \\__ \\ | | |   / _| / _ \\| |\\/| |")
+	s.Noticef(" \\__/|___| |_| |___/ |_| |_|_\\___/_/ \\_\\_|  |_|")
+	s.Noticef("")
+	s.Noticef("      https://github.com/nats-io/jetstream")
 	s.Noticef("")
 	s.Noticef("---------------- JETSTREAM ----------------")
 	s.Noticef("  Max Memory:      %s", friendlyBytes(cfg.MaxMemory))
@@ -253,17 +254,32 @@ func (s *Server) setupJetStreamExports() {
 	}
 }
 
+func (s *Server) jetStreamOOSPending() (wasPending bool) {
+	s.mu.Lock()
+	js := s.js
+	s.mu.Unlock()
+	if js != nil {
+		js.mu.Lock()
+		wasPending = js.oos
+		js.oos = true
+		js.mu.Unlock()
+	}
+	return wasPending
+}
+
 func (s *Server) setJetStreamDisabled() {
 	s.mu.Lock()
 	js := s.js
 	s.mu.Unlock()
-	js.mu.Lock()
-	js.disabled = true
-	js.mu.Unlock()
+	if js != nil {
+		js.mu.Lock()
+		js.disabled = true
+		js.mu.Unlock()
+	}
 }
 
 func (s *Server) handleOutOfSpace(stream string) {
-	if s.JetStreamEnabled() {
+	if s.JetStreamEnabled() && !s.jetStreamOOSPending() {
 		s.Errorf("JetStream out of space, will be DISABLED")
 		go s.DisableJetStream()
 
@@ -304,8 +320,8 @@ func (s *Server) DisableJetStream() error {
 
 		if meta != nil {
 			if isLeader {
-				js.remapStreams(meta.ID())
 				s.Warnf("JetStream initiating meta leader transfer")
+				meta.StepDown()
 				select {
 				case <-s.quitCh:
 					return nil
@@ -315,9 +331,6 @@ func (s *Server) DisableJetStream() error {
 					s.Warnf("JetStream timeout waiting for meta leader transfer")
 				}
 			}
-			// Once here we can forward our proposal to remove ourselves.
-			meta.ProposeRemovePeer(meta.ID())
-			time.Sleep(250 * time.Millisecond)
 			meta.Delete()
 		}
 	}
