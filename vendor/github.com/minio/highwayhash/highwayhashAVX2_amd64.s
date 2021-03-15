@@ -2,8 +2,7 @@
 // Use of this source code is governed by a license that can be
 // found in the LICENSE file.
 
-// +build go1.8
-// +build amd64 !gccgo !appengine !nacl
+// +build amd64,!gccgo,!appengine,!nacl,!noasm
 
 #include "textflag.h"
 

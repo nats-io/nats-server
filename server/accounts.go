@@ -3577,6 +3577,15 @@ func getOperator(s *Server) (string, bool, error) {
 	return op, strict, nil
 }
 
+func claimValidate(claim *jwt.AccountClaims) error {
+	vr := &jwt.ValidationResults{}
+	claim.Validate(vr)
+	if vr.IsBlocking(false) {
+		return fmt.Errorf("validation errors: %v", vr.Errors())
+	}
+	return nil
+}
+
 func (dr *DirAccResolver) Start(s *Server) error {
 	op, strict, err := getOperator(s)
 	if err != nil {
@@ -3609,7 +3618,9 @@ func (dr *DirAccResolver) Start(s *Server) error {
 				return
 			}
 			if claim, err := jwt.DecodeAccountClaims(string(msg)); err != nil {
-				respondToUpdate(s, resp, pubKey, "jwt update resulted in error", err)
+				respondToUpdate(s, resp, "n/a", "jwt update resulted in error", err)
+			} else if err := claimValidate(claim); err != nil {
+				respondToUpdate(s, resp, claim.Subject, "jwt validation failed", err)
 			} else if claim.Subject != pubKey {
 				err := errors.New("subject does not match jwt content")
 				respondToUpdate(s, resp, pubKey, "jwt update resulted in error", err)
@@ -3631,6 +3642,8 @@ func (dr *DirAccResolver) Start(s *Server) error {
 		} else if claim.Issuer == op && strict {
 			err := errors.New("operator requires issuer to be a signing key")
 			respondToUpdate(s, resp, claim.Subject, "jwt update resulted in error", err)
+		} else if err := claimValidate(claim); err != nil {
+			respondToUpdate(s, resp, claim.Subject, "jwt validation failed", err)
 		} else if err := dr.save(claim.Subject, string(msg)); err != nil {
 			respondToUpdate(s, resp, claim.Subject, "jwt update resulted in error", err)
 		} else {
@@ -3865,6 +3878,8 @@ func (dr *CacheDirAccResolver) Start(s *Server) error {
 				respondToUpdate(s, resp, pubKey, "jwt update cache resulted in error", err)
 			} else if _, ok := s.accounts.Load(pubKey); !ok {
 				respondToUpdate(s, resp, pubKey, "jwt update cache skipped", nil)
+			} else if err := claimValidate(claim); err != nil {
+				respondToUpdate(s, resp, claim.Subject, "jwt update cache validation failed", err)
 			} else if err := dr.save(pubKey, string(msg)); err != nil {
 				respondToUpdate(s, resp, pubKey, "jwt update cache resulted in error", err)
 			} else {
@@ -3882,6 +3897,8 @@ func (dr *CacheDirAccResolver) Start(s *Server) error {
 			respondToUpdate(s, resp, claim.Subject, "jwt update cache resulted in error", err)
 		} else if _, ok := s.accounts.Load(claim.Subject); !ok {
 			respondToUpdate(s, resp, claim.Subject, "jwt update cache skipped", nil)
+		} else if err := claimValidate(claim); err != nil {
+			respondToUpdate(s, resp, claim.Subject, "jwt update cache validation failed", err)
 		} else if err := dr.save(claim.Subject, string(msg)); err != nil {
 			respondToUpdate(s, resp, claim.Subject, "jwt update cache resulted in error", err)
 		} else {

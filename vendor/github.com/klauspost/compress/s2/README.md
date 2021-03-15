@@ -8,7 +8,7 @@ Decoding is compatible with Snappy compressed content, but content compressed wi
 This means that S2 can seamlessly replace Snappy without converting compressed content.
 
 S2 is designed to have high throughput on content that cannot be compressed.
-This is important so you don't have to worry about spending CPU cycles on already compressed data. 
+This is important, so you don't have to worry about spending CPU cycles on already compressed data. 
 
 ## Benefits over Snappy
 
@@ -112,12 +112,20 @@ For big skips the decompressor is able to skip blocks without decompressing them
 ## Single Blocks
 
 Similar to Snappy S2 offers single block compression. 
-Blocks do not offer the same flexibility and safety as streams, but may be preferable for very small payloads, less than 100K.
+Blocks do not offer the same flexibility and safety as streams,
+but may be preferable for very small payloads, less than 100K.
 
-Using a simple `dst := s2.Encode(nil, src)` will compress `src` and return the compressed result. It is possible to provide a destination buffer. If the buffer has a capacity of `s2.MaxEncodedLen(len(src))` it will be used. If not a new will be allocated. Alternatively `EncodeBetter` can also be used for better, but slightly slower compression.
+Using a simple `dst := s2.Encode(nil, src)` will compress `src` and return the compressed result. 
+It is possible to provide a destination buffer. 
+If the buffer has a capacity of `s2.MaxEncodedLen(len(src))` it will be used. 
+If not a new will be allocated. 
 
-Similarly to decompress a block you can use `dst, err := s2.Decode(nil, src)`. Again an optional destination buffer can be supplied. 
-The `s2.DecodedLen(src)` can be used to get the minimum capacity needed. If that is not satisfied a new buffer will be allocated.
+Alternatively `EncodeBetter`/`EncodeBest` can also be used for better, but slightly slower compression.
+
+Similarly to decompress a block you can use `dst, err := s2.Decode(nil, src)`. 
+Again an optional destination buffer can be supplied. 
+The `s2.DecodedLen(src)` can be used to get the minimum capacity needed. 
+If that is not satisfied a new buffer will be allocated.
 
 Block function always operate on a single goroutine since it should only be used for small payloads.
 
@@ -151,23 +159,28 @@ Directories can be wildcards as well. testdir/*/*.txt will match testdir/subdir/
 
 Options:
   -bench int
-    	Run benchmark n times. No output will be written
+        Run benchmark n times. No output will be written
   -blocksize string
-    	Max  block size. Examples: 64K, 256K, 1M, 4M. Must be power of two and <= 4MB (default "4M")
-  -c	Write all output to stdout. Multiple input files will be concatenated
+        Max  block size. Examples: 64K, 256K, 1M, 4M. Must be power of two and <= 4MB (default "4M")
+  -c    Write all output to stdout. Multiple input files will be concatenated
   -cpu int
-    	Compress using this amount of threads (default CPU_THREADS])
+        Compress using this amount of threads (default 32)
   -faster
-    	Compress faster, but with a minor compression loss
+        Compress faster, but with a minor compression loss
   -help
-    	Display help
+        Display help
   -pad string
-    	Pad size to a multiple of this value, Examples: 500, 64K, 256K, 1M, 4M, etc (default "1")
-  -q	Don't write any output to terminal, except errors
+        Pad size to a multiple of this value, Examples: 500, 64K, 256K, 1M, 4M, etc (default "1")
+  -q    Don't write any output to terminal, except errors
   -rm
-    	Delete source file(s) after successful compression
+        Delete source file(s) after successful compression
   -safe
-    	Do not overwrite output files
+        Do not overwrite output files
+  -slower
+        Compress more, but a lot slower
+  -verify
+        Verify written files
+
 ```
 
 ## s2d
@@ -184,17 +197,79 @@ Directories can be wildcards as well. testdir/*/*.txt will match testdir/subdir/
 
 Options:
   -bench int
-    	Run benchmark n times. No output will be written
-  -c	Write all output to stdout. Multiple input files will be concatenated
+        Run benchmark n times. No output will be written
+  -c    Write all output to stdout. Multiple input files will be concatenated
   -help
-    	Display help
-  -q	Don't write any output to terminal, except errors
+        Display help
+  -q    Don't write any output to terminal, except errors
   -rm
-    	Delete source file(s) after successful decompression
+        Delete source file(s) after successful decompression
   -safe
-    	Do not overwrite output files
+        Do not overwrite output files
+  -verify
+        Verify files, but do not write output                                           
+```
+
+## s2sx: self-extracting archives
+
+s2sx allows creating self-extracting archives with no dependencies.
+
+By default, executables are created for the same platforms as the host os, 
+but this can be overridden with `-os` and `-arch` parameters.
+
+Extracted files have 0666 permissions, except when untar option used.
 
 ```
+Usage: s2sx [options] file1 file2
+
+Compresses all files supplied as input separately.
+If files have '.s2' extension they are assumed to be compressed already.
+Output files are written as 'filename.s2sfx' and with '.exe' for windows targets.
+By default output files will be overwritten.
+
+Wildcards are accepted: testdir/*.txt will compress all files in testdir ending with .txt
+Directories can be wildcards as well. testdir/*/*.txt will match testdir/subdir/b.txt
+
+Options:
+  -arch string
+        Destination architecture (default "amd64")
+  -c    Write all output to stdout. Multiple input files will be concatenated
+  -cpu int
+        Compress using this amount of threads (default 32)
+  -help
+        Display help
+  -os string
+        Destination operating system (default "windows")
+  -q    Don't write any output to terminal, except errors
+  -rm
+        Delete source file(s) after successful compression
+  -safe
+        Do not overwrite output files
+  -untar
+        Untar on destination
+```
+
+Available platforms are:
+
+ * darwin-amd64
+ * darwin-arm64
+ * linux-amd64
+ * linux-arm
+ * linux-arm64
+ * linux-mips64
+ * linux-ppc64le
+ * windows-386
+ * windows-amd64                                                                             
+
+### Self-extracting TAR files
+
+If you wrap a TAR file you can specify `-untar` to make it untar on the destination host.
+
+Files are extracted to the current folder with the path specified in the tar file.
+
+Note that tar files are not validated before they are wrapped.
+
+For security reasons files that move below the root folder are not allowed.
 
 # Performance
 
@@ -456,33 +531,33 @@ This will compress as much as possible with little regard to CPU usage.
 Mainly for offline compression, but where decompression speed should still
 be high and compatible with other S2 compressed data.
 
-Some examples compared on 16 core CPU:
+Some examples compared on 16 core CPU, amd64 assembly used:
 
 ```
 * enwik10
 Default... 10000000000 -> 4761467548 [47.61%]; 1.098s, 8685.6MB/s
-Better... 10000000000 -> 4225922984 [42.26%]; 2.817s, 3385.4MB/s
-Best... 10000000000 -> 3667646858 [36.68%]; 35.995s, 264.9MB/s
+Better...  10000000000 -> 4219438251 [42.19%]; 1.925s, 4954.2MB/s
+Best...    10000000000 -> 3667646858 [36.68%]; 35.995s, 264.9MB/s
 
 * github-june-2days-2019.json
 Default... 6273951764 -> 1043196283 [16.63%]; 431ms, 13882.3MB/s
-Better... 6273951764 -> 950079555 [15.14%]; 736ms, 8129.5MB/s
-Best... 6273951764 -> 846260870 [13.49%]; 8.125s, 736.4MB/s
+Better...  6273951764 -> 949146808 [15.13%]; 547ms, 10938.4MB/s
+Best...    6273951764 -> 846260870 [13.49%]; 8.125s, 736.4MB/s
 
 * nyc-taxi-data-10M.csv
 Default... 3325605752 -> 1095998837 [32.96%]; 324ms, 9788.7MB/s
-Better... 3325605752 -> 960330423 [28.88%]; 602ms, 5268.4MB/s
-Best... 3325605752 -> 794873295 [23.90%]; 6.619s, 479.1MB/s
+Better...  3325605752 -> 954776589 [28.71%]; 491ms, 6459.4MB/s
+Best...    3325605752 -> 794873295 [23.90%]; 6.619s, 479.1MB/s
 
 * 10gb.tar
 Default... 10065157632 -> 5916578242 [58.78%]; 1.028s, 9337.4MB/s
-Better... 10065157632 -> 5650133605 [56.14%]; 2.172s, 4419.4MB/s
-Best... 10065157632 -> 5246578570 [52.13%]; 25.696s, 373.6MB/s
+Better...  10065157632 -> 5649207485 [56.13%]; 1.597s, 6010.6MB/s
+Best...    10065157632 -> 5246578570 [52.13%]; 25.696s, 373.6MB/s
 
 * consensus.db.10gb
 Default... 10737418240 -> 4562648848 [42.49%]; 882ms, 11610.0MB/s
-Better... 10737418240 -> 4542443833 [42.30%]; 3.3s, 3103.5MB/s
-Best... 10737418240 -> 4272335558 [39.79%]; 38.955s, 262.9MB/s
+Better...  10737418240 -> 4542428129 [42.30%]; 1.533s, 6679.7MB/s
+Best...    10737418240 -> 4272335558 [39.79%]; 38.955s, 262.9MB/s
 ```
 
 Decompression speed should be around the same as using the 'better' compression mode. 
