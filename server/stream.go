@@ -2508,7 +2508,6 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	for _, o := range mset.consumers {
 		obs = append(obs, o)
 	}
-	mset.consumers = nil
 	mset.mu.Unlock()
 
 	for _, o := range obs {
