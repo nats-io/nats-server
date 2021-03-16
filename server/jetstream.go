@@ -73,14 +73,15 @@ type JetStreamAPIStats struct {
 
 // This is for internal accounting for JetStream for this server.
 type jetStream struct {
+	// These are here first because of atomics on 32bit systems.
+	memReserved   int64
+	storeReserved int64
+	apiCalls      int64
 	mu            sync.RWMutex
 	srv           *Server
 	config        JetStreamConfig
 	cluster       *jetStreamCluster
 	accounts      map[*Account]*jsAccount
-	memReserved   int64
-	storeReserved int64
-	apiCalls      int64
 	apiSubs       *Sublist
 	disabled      bool
 	oos           bool
