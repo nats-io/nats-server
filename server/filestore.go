@@ -86,20 +86,20 @@ type fileStore struct {
 
 // Represents a message store block and its data.
 type msgBlock struct {
-	mu    sync.RWMutex
-	fs    *fileStore
-	mfn   string
-	mfd   *os.File
-	ifn   string
-	ifd   *os.File
-	liwsz int64
-	index uint64
-	bytes uint64
-	msgs  uint64
-	first msgId
-	last  msgId
-	lwits int64
-
+	// Here for 32bit systems and atomic.
+	first   msgId
+	last    msgId
+	mu      sync.RWMutex
+	fs      *fileStore
+	mfn     string
+	mfd     *os.File
+	ifn     string
+	ifd     *os.File
+	liwsz   int64
+	index   uint64
+	bytes   uint64
+	msgs    uint64
+	lwits   int64
 	lwts    int64
 	llts    int64
 	lrts    int64
