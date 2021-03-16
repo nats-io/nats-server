@@ -978,6 +978,26 @@ func (mset *stream) sourcesInfo() (sis []*StreamSourceInfo) {
 	return sis
 }
 
+// Return the subjects for a stream source.
+func (a *Account) streamSourceSubjects(ss *StreamSource) (subjects []string) {
+	s, js, _ := a.getJetStreamFromAccount()
+	if !s.JetStreamIsClustered() {
+		if mset, err := a.lookupStream(ss.Name); err == nil {
+			subjects = mset.subjects()
+		}
+	} else {
+		// We are clustered here so need to work through stream assignments.
+		if sa := js.streamAssignment(a.Name, ss.Name); sa != nil {
+			js.mu.RLock()
+			if len(sa.Config.Subjects) > 0 {
+				subjects = append(sa.Config.Subjects[:0:0], sa.Config.Subjects...)
+			}
+			js.mu.RUnlock()
+		}
+	}
+	return subjects
+}
+
 // Lock should be held
 func (mset *stream) sourceInfo(si *sourceInfo) *StreamSourceInfo {
 	if si == nil {
@@ -2419,6 +2439,16 @@ func (mset *stream) name() string {
 	mset.mu.RLock()
 	defer mset.mu.RUnlock()
 	return mset.cfg.Name
+}
+
+// Returns a copy of the interest subjects for this stream.
+func (mset *stream) subjects() []string {
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+	if len(mset.cfg.Subjects) == 0 {
+		return nil
+	}
+	return append(mset.cfg.Subjects[:0:0], mset.cfg.Subjects...)
 }
 
 func (mset *stream) internalLoop() {

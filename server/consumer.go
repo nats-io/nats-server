@@ -246,7 +246,7 @@ func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
 
 func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment) (*consumer, error) {
 	mset.mu.RLock()
-	s, jsa := mset.srv, mset.jsa
+	s, jsa, acc := mset.srv, mset.jsa, mset.acc
 	mset.mu.RUnlock()
 
 	// If we do not have the consumer currently assigned to us in cluster mode we will proceed but warn.
@@ -330,7 +330,24 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 
 	// Make sure any partition subject is also a literal.
 	if config.FilterSubject != _EMPTY_ {
-		if !mset.validSubject(config.FilterSubject) {
+		subjects, cfg := mset.subjects(), mset.config()
+		var hasExt bool
+		if cfg.Mirror != nil {
+			if cfg.Mirror.External != nil {
+				hasExt = true
+			} else {
+				subjects = acc.streamSourceSubjects(cfg.Mirror)
+			}
+		} else if len(cfg.Sources) > 0 {
+			for _, si := range cfg.Sources {
+				if si.External != nil {
+					hasExt = true
+					break
+				}
+				subjects = append(subjects, acc.streamSourceSubjects(si)...)
+			}
+		}
+		if !validFilteredSubject(config.FilterSubject, subjects) && !hasExt {
 			return nil, fmt.Errorf("consumer filter subject is not a valid subset of the interest subjects")
 		}
 	}
@@ -2704,9 +2721,13 @@ func (mset *stream) deliveryFormsCycle(deliverySubject string) bool {
 	return false
 }
 
-// This is same as check for delivery cycle.
-func (mset *stream) validSubject(partitionSubject string) bool {
-	return mset.deliveryFormsCycle(partitionSubject)
+func validFilteredSubject(filteredSubject string, subjects []string) bool {
+	for _, subject := range subjects {
+		if subjectIsSubsetMatch(filteredSubject, subject) {
+			return true
+		}
+	}
+	return false
 }
 
 // SetInActiveDeleteThreshold sets the delete threshold for how long to wait
