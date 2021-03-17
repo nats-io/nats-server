@@ -4297,6 +4297,122 @@ func TestJetStreamClusterLeaderStepdown(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterMirrorAndSourcesFilteredConsumers(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterMirrorSourceImportsTempl, "MS5", 5)
+	defer c.shutdown()
+
+	// Client for API requests.
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Origin
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar", "baz.*"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Create Mirror now.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:   "M",
+		Mirror: &nats.StreamSource{Name: "TEST"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	dsubj := nats.NewInbox()
+	nc.SubscribeSync(dsubj)
+	nc.Flush()
+
+	createConsumer := func(sn, fs string) {
+		t.Helper()
+		_, err = js.AddConsumer(sn, &nats.ConsumerConfig{DeliverSubject: dsubj, FilterSubject: fs})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+	expectFail := func(sn, fs string) {
+		t.Helper()
+		_, err = js.AddConsumer(sn, &nats.ConsumerConfig{DeliverSubject: dsubj, FilterSubject: fs})
+		if err == nil {
+			t.Fatalf("Expected error but got none")
+		}
+	}
+
+	createConsumer("M", "foo")
+	createConsumer("M", "bar")
+	createConsumer("M", "baz.foo")
+	expectFail("M", "baz")
+	expectFail("M", "baz.1.2")
+	expectFail("M", "apple")
+
+	// Now do some sources.
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "O1", Subjects: []string{"foo.*"}}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "O2", Subjects: []string{"bar.*"}}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Create downstream now.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:    "S",
+		Sources: []*nats.StreamSource{&nats.StreamSource{Name: "O1"}, &nats.StreamSource{Name: "O2"}},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	createConsumer("S", "foo.1")
+	createConsumer("S", "bar.1")
+	expectFail("S", "baz")
+	expectFail("S", "baz.1")
+	expectFail("S", "apple")
+
+	// Now cross account stuff.
+	nc2, js2 := jsClientConnect(t, s, nats.UserInfo("rip", "pass"))
+	defer nc2.Close()
+
+	if _, err := js2.AddStream(&nats.StreamConfig{Name: "ORIGIN", Subjects: []string{"foo.*"}}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	cfg := StreamConfig{
+		Name:    "SCA",
+		Storage: FileStorage,
+		Sources: []*StreamSource{&StreamSource{
+			Name: "ORIGIN",
+			External: &ExternalStream{
+				ApiPrefix:     "RI.JS.API",
+				DeliverPrefix: "RI.DELIVER.SYNC.SOURCES",
+			},
+		}},
+	}
+	req, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var scResp JSApiStreamCreateResponse
+	if err := json.Unmarshal(resp.Data, &scResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if scResp.StreamInfo == nil || scResp.Error != nil {
+		t.Fatalf("Did not receive correct response: %+v", scResp.Error)
+	}
+
+	// Externals skip the checks for now.
+	createConsumer("SCA", "foo.1")
+	createConsumer("SCA", "bar.1")
+	createConsumer("SCA", "baz")
+}
+
 func TestJetStreamCrossAccountMirrorsAndSources(t *testing.T) {
 	c := createJetStreamClusterWithTemplate(t, jsClusterMirrorSourceImportsTempl, "C1", 3)
 	defer c.shutdown()

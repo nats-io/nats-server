@@ -10617,6 +10617,85 @@ func TestJetStreamConfigReloadWithGlobalAccount(t *testing.T) {
 	checkJSAccount()
 }
 
+func TestJetStreamMirrorAndSourcesFilteredConsumers(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Origin
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar", "baz.*"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Create Mirror now.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:   "M",
+		Mirror: &nats.StreamSource{Name: "TEST"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	dsubj := nats.NewInbox()
+	nc.SubscribeSync(dsubj)
+	nc.Flush()
+
+	createConsumer := func(sn, fs string) {
+		t.Helper()
+		_, err = js.AddConsumer(sn, &nats.ConsumerConfig{DeliverSubject: dsubj, FilterSubject: fs})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+	expectFail := func(sn, fs string) {
+		t.Helper()
+		_, err = js.AddConsumer(sn, &nats.ConsumerConfig{DeliverSubject: dsubj, FilterSubject: fs})
+		if err == nil {
+			t.Fatalf("Expected error but got none")
+		}
+	}
+
+	createConsumer("M", "foo")
+	createConsumer("M", "bar")
+	createConsumer("M", "baz.foo")
+	expectFail("M", "baz")
+	expectFail("M", "baz.1.2")
+	expectFail("M", "apple")
+
+	// Now do some sources.
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "O1", Subjects: []string{"foo.*"}}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "O2", Subjects: []string{"bar.*"}}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Create Mirror now.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:    "S",
+		Sources: []*nats.StreamSource{&nats.StreamSource{Name: "O1"}, &nats.StreamSource{Name: "O2"}},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	createConsumer("S", "foo.1")
+	createConsumer("S", "bar.1")
+	expectFail("S", "baz")
+	expectFail("S", "baz.1")
+	expectFail("S", "apple")
+}
+
 func TestJetStreamMirrorBasics(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
