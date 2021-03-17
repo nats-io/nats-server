@@ -188,7 +188,7 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	s.Noticef("| || | _|  | | \\__ \\ | | |   / _| / _ \\| |\\/| |")
 	s.Noticef(" \\__/|___| |_| |___/ |_| |_|_\\___/_/ \\_\\_|  |_|")
 	s.Noticef("")
-	s.Noticef("      https://github.com/nats-io/jetstream")
+	s.Noticef("         https://docs.nats.io/jetstream")
 	s.Noticef("")
 	s.Noticef("---------------- JETSTREAM ----------------")
 	s.Noticef("  Max Memory:      %s", friendlyBytes(cfg.MaxMemory))
