@@ -1923,7 +1923,7 @@ func (o *consumer) hbTimer() (time.Duration, *time.Timer) {
 }
 
 func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
-	// On startup check to see if we are in a a reply situtation where replay policy is not instant.
+	// On startup check to see if we are in a a reply situation where replay policy is not instant.
 	var (
 		lts  int64 // last time stamp seen, used for replay.
 		lseq uint64

@@ -639,7 +639,7 @@ func (c *client) reportErrRegisterAccount(acc *Account, err error) {
 		c.maxAccountConnExceeded()
 		return
 	}
-	c.Errorf("Problem registering with account [%s]", acc.Name)
+	c.Errorf("Problem registering with account %q: %s", acc.Name, err)
 	c.sendErr("Failed Account Registration")
 }
 
