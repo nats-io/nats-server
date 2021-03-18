@@ -4297,6 +4297,76 @@ func TestJetStreamClusterLeaderStepdown(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterMirrorAndSourcesClusterRestart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "MSR", 5)
+	defer c.shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Origin
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar", "baz.*"},
+		Replicas: 2,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Create Mirror now.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "M",
+		Mirror:   &nats.StreamSource{Name: "TEST"},
+		Replicas: 2,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sendBatch := func(subject string, n int) {
+		t.Helper()
+		// Send a batch to a given subject.
+		for i := 0; i < n; i++ {
+			if _, err := js.Publish(subject, []byte("OK")); err != nil {
+				t.Fatalf("Unexpected publish error: %v", err)
+			}
+		}
+	}
+
+	checkSync := func() {
+		checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+			tsi, err := js.StreamInfo("TEST")
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			msi, err := js.StreamInfo("M")
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if tsi.State.Msgs != msi.State.Msgs {
+				return fmt.Errorf("Total messages not the same: TEST %d vs M %d", tsi.State.Msgs, msi.State.Msgs)
+			}
+			return nil
+		})
+	}
+
+	// Send 100 msgs.
+	sendBatch("foo", 100)
+	checkSync()
+
+	c.stopAll()
+	c.restartAll()
+	c.waitOnStreamLeader("$G", "TEST")
+	c.waitOnStreamLeader("$G", "M")
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	sendBatch("bar", 100)
+	checkSync()
+}
+
 func TestJetStreamClusterMirrorAndSourcesFilteredConsumers(t *testing.T) {
 	c := createJetStreamClusterWithTemplate(t, jsClusterMirrorSourceImportsTempl, "MS5", 5)
 	defer c.shutdown()
