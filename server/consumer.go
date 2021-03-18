@@ -1938,11 +1938,13 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		}
 		lseq = o.mset.state().LastSeq
 	}
+	// For idle heartbeat support.
 	var hbc <-chan time.Time
 	hbd, hb := o.hbTimer()
 	if hb != nil {
 		hbc = hb.C
 	}
+	// Interest changes.
 	inch := o.inch
 	o.mu.Unlock()
 
@@ -2033,6 +2035,11 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		// Do actual delivery.
 		o.deliverMsg(dsubj, subj, hdr, msg, seq, dc, ts)
 
+		// Reset our idle heartbeat timer if set.
+		if hb != nil {
+			hb.Reset(hbd)
+		}
+
 		o.mu.Unlock()
 		continue
 
@@ -2040,17 +2047,6 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		// If we were in a replay state check to see if we are caught up. If so clear.
 		if o.replay && o.sseq > lseq {
 			o.replay = false
-		}
-
-		// Reset our idle heartbeat timer if set.
-		if hb != nil {
-			if !hb.Stop() {
-				select {
-				case <-hbc:
-				default:
-				}
-			}
-			hb.Reset(hbd)
 		}
 
 		// We will wait here for new messages to arrive.
@@ -2069,6 +2065,8 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		case <-hbc:
 			hdr := []byte("NATS/1.0 100 Idle Heartbeat\r\n\r\n")
 			outq.send(&jsPubMsg{odsubj, _EMPTY_, _EMPTY_, hdr, nil, nil, 0, nil})
+			// Reset our idle heartbeat timer.
+			hb.Reset(hbd)
 		}
 	}
 }

@@ -7210,6 +7210,70 @@ func TestJetStreamPushConsumerIdleHeartbeats(t *testing.T) {
 	}
 }
 
+func TestJetStreamPushConsumerIdleHeartbeatsWithFilterSubject(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	// Forced cleanup of all persisted state.
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo", "bar"}}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	hbC := make(chan *nats.Msg, 8)
+	sub, err := nc.ChanSubscribe(nats.NewInbox(), hbC)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer sub.Unsubscribe()
+
+	obsReq := CreateConsumerRequest{
+		Stream: "TEST",
+		Config: ConsumerConfig{
+			DeliverSubject: sub.Subject,
+			FilterSubject:  "bar",
+			Heartbeat:      100 * time.Millisecond,
+		},
+	}
+
+	req, err := json.Marshal(obsReq)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, err := nc.Request(fmt.Sprintf(JSApiConsumerCreateT, "TEST"), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var ccResp JSApiConsumerCreateResponse
+	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	st := time.NewTicker(10 * time.Millisecond)
+	defer st.Stop()
+
+	done := time.NewTimer(time.Second)
+	defer done.Stop()
+
+	for {
+		select {
+		case <-st.C:
+			js.Publish("foo", []byte("HELLO FOO"))
+		case <-done.C:
+			t.Fatalf("Expected to have seen idle heartbeats for consumer")
+		case <-hbC:
+			return
+		}
+	}
+}
+
 func TestJetStreamInfoAPIWithHeaders(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
