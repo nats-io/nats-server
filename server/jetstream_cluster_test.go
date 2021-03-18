@@ -4828,14 +4828,7 @@ func TestJetStreamClusterSuperClusterEphemeralCleanup(t *testing.T) {
 
 			// Check that TEST(n) has 1 consumer and that S(n) is created and has 1 message.
 			checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
-				si, err := js.StreamInfo(test.streamName)
-				if err != nil {
-					return fmt.Errorf("Could not get stream info: %v", err)
-				}
-				if si.State.Consumers != 1 {
-					return fmt.Errorf("Expected %q stream to have 1 consumer, got %v", test.streamName, si.State.Consumers)
-				}
-				si, err = js2.StreamInfo(test.sourceName)
+				si, err := js2.StreamInfo(test.sourceName)
 				if err != nil {
 					return fmt.Errorf("Could not get stream info: %v", err)
 				}
