@@ -787,7 +787,10 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 
 	// Set cache time to creation time to start.
 	ts := time.Now().UnixNano()
+	// Race detector wants these protected.
+	mb.mu.Lock()
 	mb.llts, mb.lwts = ts, ts
+	mb.mu.Unlock()
 
 	// Remember our last sequence number.
 	mb.first.seq = fs.state.LastSeq + 1
