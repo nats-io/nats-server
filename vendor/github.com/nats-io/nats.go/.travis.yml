@@ -1,7 +1,7 @@
 language: go
 go:
+- 1.16.x
 - 1.15.x
-- 1.14.x
 go_import_path: github.com/nats-io/nats.go
 install:
 - go get -t ./...
@@ -17,4 +17,4 @@ before_script:
 script:
 - go test -i -race ./...
 - go test -v -run=TestNoRace -p=1 ./...
-- if [[ "$TRAVIS_GO_VERSION" =~ 1.15 ]]; then ./scripts/cov.sh TRAVIS; else go test -race -v -p=1 ./... --failfast; fi
+- if [[ "$TRAVIS_GO_VERSION" =~ 1.16 ]]; then ./scripts/cov.sh TRAVIS; else go test -race -v -p=1 ./... --failfast; fi
