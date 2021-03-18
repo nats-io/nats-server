@@ -2383,6 +2383,9 @@ type jsOutQ struct {
 }
 
 func (q *jsOutQ) pending() *jsPubMsg {
+	if q == nil {
+		return nil
+	}
 	q.mu.Lock()
 	head := q.head
 	q.head, q.tail = nil, nil
@@ -2391,6 +2394,9 @@ func (q *jsOutQ) pending() *jsPubMsg {
 }
 
 func (q *jsOutQ) send(msg *jsPubMsg) {
+	if q == nil || msg == nil {
+		return
+	}
 	q.mu.Lock()
 	var notify bool
 	if q.head == nil {
