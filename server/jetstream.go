@@ -81,7 +81,7 @@ type jetStream struct {
 	srv           *Server
 	config        JetStreamConfig
 	cluster       *jetStreamCluster
-	accounts      map[*Account]*jsAccount
+	accounts      map[string]*jsAccount
 	apiSubs       *Sublist
 	disabled      bool
 	oos           bool
@@ -157,7 +157,7 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 // enableJetStream will start up the JetStream subsystem.
 func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	s.mu.Lock()
-	s.js = &jetStream{srv: s, config: cfg, accounts: make(map[*Account]*jsAccount), apiSubs: NewSublistNoCache()}
+	s.js = &jetStream{srv: s, config: cfg, accounts: make(map[string]*jsAccount), apiSubs: NewSublistNoCache()}
 	s.mu.Unlock()
 
 	// FIXME(dlc) - Allow memory only operation?
@@ -647,7 +647,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 
 	js.mu.Lock()
 	// Check the limits against existing reservations.
-	if _, ok := js.accounts[a]; ok {
+	if _, ok := js.accounts[a.Name]; ok {
 		js.mu.Unlock()
 		return fmt.Errorf("jetstream already enabled for account")
 	}
@@ -659,7 +659,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	jsa.utimer = time.AfterFunc(usageTick, jsa.sendClusterUsageUpdateTimer)
 	jsa.storeDir = path.Join(js.config.StoreDir, a.Name)
 
-	js.accounts[a] = jsa
+	js.accounts[a.Name] = jsa
 	js.reserveResources(limits)
 	js.mu.Unlock()
 
@@ -1065,12 +1065,12 @@ func (a *Account) removeJetStream() error {
 
 // Disable JetStream for the account.
 func (js *jetStream) disableJetStream(jsa *jsAccount) error {
-	if jsa == nil {
+	if jsa == nil || jsa.account == nil {
 		return ErrJetStreamNotEnabledForAccount
 	}
 
 	js.mu.Lock()
-	delete(js.accounts, jsa.account)
+	delete(js.accounts, jsa.account.Name)
 	js.releaseResources(&jsa.limits)
 	js.mu.Unlock()
 
@@ -1285,8 +1285,11 @@ func (jsa *jsAccount) delete() {
 
 // Lookup the jetstream account for a given account.
 func (js *jetStream) lookupAccount(a *Account) *jsAccount {
+	if a == nil {
+		return nil
+	}
 	js.mu.RLock()
-	jsa := js.accounts[a]
+	jsa := js.accounts[a.Name]
 	js.mu.RUnlock()
 	return jsa
 }

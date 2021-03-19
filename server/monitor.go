@@ -2341,7 +2341,7 @@ func (s *Server) JszAccount(opts *JSzOptions) (*AccountDetail, error) {
 		return nil, fmt.Errorf("account %q not found", acc)
 	}
 	s.js.mu.RLock()
-	jsa, ok := s.js.accounts[account.(*Account)]
+	jsa, ok := s.js.accounts[account.(*Account).Name]
 	s.js.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("account %q not jetstream enabled", acc)

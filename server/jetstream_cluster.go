@@ -3225,7 +3225,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		return
 	}
 	var newCfg *StreamConfig
-	if jsa := js.accounts[acc]; jsa != nil {
+	if jsa := js.accounts[acc.Name]; jsa != nil {
 		if ncfg, err := jsa.configUpdateCheck(osa.Config, cfg); err != nil {
 			resp.Error = jsError(err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
