@@ -1077,18 +1077,20 @@ func (c *client) processGatewayInfo(info *Info) {
 
 		// Switch JetStream accounts to interest-only mode.
 		if js != nil {
-			var accounts []*Account
+			var accounts []string
 			js.mu.Lock()
 			if len(js.accounts) > 0 {
-				accounts = make([]*Account, 0, len(js.accounts))
-				for acc := range js.accounts {
-					accounts = append(accounts, acc)
+				accounts = make([]string, 0, len(js.accounts))
+				for accName := range js.accounts {
+					accounts = append(accounts, accName)
 				}
 			}
 			js.mu.Unlock()
-			for _, acc := range accounts {
-				if acc.JetStreamEnabled() {
-					s.switchAccountToInterestMode(acc.GetName())
+			for _, accName := range accounts {
+				if acc, err := s.LookupAccount(accName); err == nil && acc != nil {
+					if acc.JetStreamEnabled() {
+						s.switchAccountToInterestMode(acc.GetName())
+					}
 				}
 			}
 		}
