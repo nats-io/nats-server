@@ -1013,7 +1013,7 @@ func TestJetStreamClusterStreamPublishWithActiveConsumers(t *testing.T) {
 }
 
 func TestJetStreamClusterStreamOverlapSubjects(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R32", 2)
+	c := createJetStreamClusterExplicit(t, "R3", 3)
 	defer c.shutdown()
 
 	// Client based API
@@ -1021,12 +1021,12 @@ func TestJetStreamClusterStreamOverlapSubjects(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
-	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 2}); err != nil {
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST2", Subjects: []string{"foo"}, Replicas: 2}); err == nil || err == nats.ErrTimeout {
-		t.Fatalf("Expected error but got none or timeout")
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST2", Subjects: []string{"foo"}}); err == nil || err == nats.ErrTimeout {
+		t.Fatalf("Expected error but got none or timeout: %v", err)
 	}
 
 	// Now grab list of streams and make sure the second is not there.
