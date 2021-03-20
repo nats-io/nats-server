@@ -2121,12 +2121,16 @@ func (n *raft) runAsCandidate() {
 			}
 			return
 		case vresp := <-n.votes:
-			if vresp.granted && n.term >= vresp.term {
+			n.RLock()
+			nterm, lxfer := n.term, n.lxfer
+			n.RUnlock()
+
+			if vresp.granted && nterm >= vresp.term {
 				// only track peers that would be our followers
 				n.trackPeer(vresp.peer)
 				votes++
 				if n.wonElection(votes) {
-					if votes == n.numActivePeers() || n.lxfer {
+					if votes == n.numActivePeers() || lxfer {
 						// Become LEADER if we have won and gotten a quorum with everyone we should hear from.
 						n.switchToLeader()
 						return
@@ -2139,12 +2143,14 @@ func (n *raft) runAsCandidate() {
 						won = true
 					}
 				}
-			} else if vresp.term > n.term {
+			} else if vresp.term > nterm {
 				// if we observe a bigger term, we should start over again or risk forming a quorum fully knowing
 				// someone with a better term exists. This is even the right thing to do if won == true.
+				n.Lock()
 				n.term = vresp.term
 				n.vote = noVote
 				n.writeTermVote()
+				n.Unlock()
 				n.debug("Stepping down from candidate, detected higher term: %d vs %d", vresp.term, n.term)
 				n.attemptStepDown(noLeader)
 				return
