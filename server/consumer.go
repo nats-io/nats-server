@@ -276,7 +276,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			return nil, fmt.Errorf("consumer requires ack policy for max ack pending")
 		}
 		if config.Heartbeat > 0 && config.Heartbeat < 100*time.Millisecond {
-			return nil, fmt.Errorf("consumer idle heartbeat needs to be > 100ms")
+			return nil, fmt.Errorf("consumer idle heartbeat needs to be >= 100ms")
 		}
 	} else {
 		// Pull mode / work queue mode require explicit ack.
@@ -2077,8 +2077,10 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		case <-mch:
 			// Messages are waiting.
 		case <-hbc:
-			hdr := []byte("NATS/1.0 100 Idle Heartbeat\r\n\r\n")
-			outq.send(&jsPubMsg{odsubj, _EMPTY_, _EMPTY_, hdr, nil, nil, 0, nil})
+			if o.isActive() {
+				hdr := []byte("NATS/1.0 100 Idle Heartbeat\r\n\r\n")
+				outq.send(&jsPubMsg{odsubj, _EMPTY_, _EMPTY_, hdr, nil, nil, 0, nil})
+			}
 			// Reset our idle heartbeat timer.
 			hb.Reset(hbd)
 		}
