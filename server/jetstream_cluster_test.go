@@ -4973,7 +4973,7 @@ func TestJetStreamSuperClusterDirectConsumersBrokenGateways(t *testing.T) {
 		t.Fatalf("Expected to have %d messages, got %d", 200, si.State.Msgs)
 	}
 
-	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+	checkFor(t, 20*time.Second, 250*time.Millisecond, func() error {
 		si, err := js.StreamInfo("S")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
