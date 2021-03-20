@@ -386,6 +386,9 @@ func (a *Account) enableJetStreamInfoServiceImportOnly() error {
 }
 
 func (s *Server) configJetStream(acc *Account) error {
+	if acc == nil {
+		return nil
+	}
 	if acc.jsLimits != nil {
 		// Check if already enabled. This can be during a reload.
 		if acc.JetStreamEnabled() {
@@ -456,7 +459,7 @@ func (s *Server) configAllJetStreamAccounts() error {
 		if accName := fi.Name(); accName != _EMPTY_ {
 			// Only load up ones not already loaded since they are processed above.
 			if _, ok := accounts.Load(accName); !ok {
-				if acc, err := s.lookupAccount(accName); err != nil {
+				if acc, err := s.lookupAccount(accName); err != nil && acc != nil {
 					if err := s.configJetStream(acc); err != nil {
 						return err
 					}

@@ -732,13 +732,12 @@ func (o *consumer) setLeader(isLeader bool) {
 			o.acc.sl.RegisterNotification(o.cfg.DeliverSubject, o.inch)
 			if o.active = <-o.inch; !o.active {
 				// Check gateways in case they are enabled.
-				o.active = s.hasGatewayInterest(o.acc.Name, o.cfg.DeliverSubject)
-				if o.active {
-					// There is no local interest, but there is GW interest, we
+				if o.active = s.hasGatewayInterest(o.acc.Name, o.cfg.DeliverSubject); o.active {
+					// There is no local interest but there is GW interest, we
 					// will watch for interest disappearing.
 					// TODO: may need to revisit...
 					stopAndClearTimer(&o.gwdtmr)
-					o.gwdtmr = time.AfterFunc(o.dthresh, func() { o.watchGWinterest() })
+					o.gwdtmr = time.AfterFunc(time.Second, func() { o.watchGWinterest() })
 				}
 			}
 		}
@@ -1007,20 +1006,22 @@ func (o *consumer) deleteNotActive() {
 }
 
 func (o *consumer) watchGWinterest() {
-	var delete bool
+	pa := o.isActive()
 	// If there is no local interest...
 	if o.hasNoLocalInterest() {
-		// then call this which will check for GW interest and if none,
-		// will start the delete timer. This will return if the delete
-		// timer was set.
-		delete = o.updateDeliveryInterest(false)
+		o.updateDeliveryInterest(false)
+		if !pa && o.isActive() {
+			o.signalNewMessages()
+		}
 	}
+
+	// We want this to always be running so we can also pick up on interest returning.
 	o.mu.Lock()
-	// Now either clear the gwdtmr or reset for next try.
-	if delete {
+	if o.gwdtmr != nil {
+		o.gwdtmr.Reset(time.Second)
+	} else {
 		stopAndClearTimer(&o.gwdtmr)
-	} else if o.gwdtmr != nil {
-		o.gwdtmr.Reset(o.dthresh)
+		o.gwdtmr = time.AfterFunc(time.Second, func() { o.watchGWinterest() })
 	}
 	o.mu.Unlock()
 }
@@ -2226,9 +2227,10 @@ func (o *consumer) didNotDeliver(seq uint64) {
 		o.mu.Unlock()
 		return
 	}
-
+	var checkDeliveryInterest bool
 	if o.isPushMode() {
 		o.active = false
+		checkDeliveryInterest = true
 	} else if o.pending != nil {
 		// pull mode and we have pending.
 		if _, ok := o.pending[seq]; ok {
@@ -2242,6 +2244,11 @@ func (o *consumer) didNotDeliver(seq uint64) {
 		}
 	}
 	o.mu.Unlock()
+
+	// If we do not have interest update that here.
+	if checkDeliveryInterest && o.hasNoLocalInterest() {
+		o.updateDeliveryInterest(false)
+	}
 }
 
 // Lock should be held.
@@ -2543,9 +2550,9 @@ func (o *consumer) streamName() string {
 
 // Active indicates if this consumer is still active.
 func (o *consumer) isActive() bool {
-	o.mu.Lock()
+	o.mu.RLock()
 	active := o.active && o.mset != nil
-	o.mu.Unlock()
+	o.mu.RUnlock()
 	return active
 }
 
