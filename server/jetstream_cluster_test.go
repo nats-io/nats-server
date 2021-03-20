@@ -4541,7 +4541,7 @@ func TestJetStreamCrossAccountMirrorsAndSources(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
 		si, err := js2.StreamInfo("MY_MIRROR_TEST")
 		if err != nil {
 			t.Fatalf("Could not retrieve stream info")
