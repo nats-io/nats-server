@@ -3160,7 +3160,22 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	cfg := &ccfg
 
 	js.mu.RLock()
-	numStreams := len(cc.streams[acc.Name])
+	asa := cc.streams[acc.Name]
+	numStreams := len(asa)
+
+	// Check for subject collisions here.
+	for _, sa := range asa {
+		for _, subj := range sa.Config.Subjects {
+			for _, tsubj := range cfg.Subjects {
+				if SubjectsCollide(tsubj, subj) {
+					js.mu.RUnlock()
+					resp.Error = jsError(fmt.Errorf("subjects overlap with an existing stream"))
+					s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+					return
+				}
+			}
+		}
+	}
 	js.mu.RUnlock()
 
 	// Check for stream limits here before proposing. These need to be tracked from meta layer, not jsa.
