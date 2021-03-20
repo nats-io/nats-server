@@ -4922,6 +4922,9 @@ func TestJetStreamSuperClusterDirectConsumersBrokenGateways(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
+	// Wait for direct consumer to get registered and detect interest across GW.
+	time.Sleep(time.Second)
+
 	// Send 100 msgs over 100ms in separate Go routine.
 	msg, toSend, done := []byte("Hello"), 100, make(chan bool)
 	go func() {
@@ -4935,15 +4938,19 @@ func TestJetStreamSuperClusterDirectConsumersBrokenGateways(t *testing.T) {
 		done <- true
 	}()
 
+	breakGW := func() {
+		s.gateway.Lock()
+		gw := s.gateway.out["C2"]
+		s.gateway.Unlock()
+		if gw != nil {
+			gw.closeConnection(ClientClosed)
+		}
+	}
+
 	// Wait til about half way through.
 	time.Sleep(20 * time.Millisecond)
 	// Now break GW connection.
-	s.gateway.Lock()
-	gw := s.gateway.out["C2"]
-	s.gateway.Unlock()
-	if gw != nil {
-		gw.closeConnection(ClientClosed)
-	}
+	breakGW()
 
 	// Wait for GW to reform.
 	for _, c := range sc.clusters {
@@ -4958,10 +4965,32 @@ func TestJetStreamSuperClusterDirectConsumersBrokenGateways(t *testing.T) {
 		t.Fatalf("Did not complete sending first batch of messages")
 	}
 
-	// Now send 100 more.
+	// Make sure we can deal with data loss at the end.
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		si, err := js.StreamInfo("S")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if si.State.Msgs != 100 {
+			return fmt.Errorf("Expected to have %d messages, got %d", 100, si.State.Msgs)
+		}
+		return nil
+	})
+
+	// Now send 100 more. Will aos break here in the middle.
 	for i := 0; i < toSend; i++ {
 		if _, err = js.Publish("TEST", msg); err != nil {
 			t.Fatalf("Unexpected publish error: %v", err)
+		}
+		if i == 50 {
+			breakGW()
+		}
+	}
+
+	// Wait for GW to reform.
+	for _, c := range sc.clusters {
+		for _, s := range c.servers {
+			waitForOutboundGateways(t, s, 1, 2*time.Second)
 		}
 	}
 
@@ -4973,10 +5002,10 @@ func TestJetStreamSuperClusterDirectConsumersBrokenGateways(t *testing.T) {
 		t.Fatalf("Expected to have %d messages, got %d", 200, si.State.Msgs)
 	}
 
-	checkFor(t, 20*time.Second, 250*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
 		si, err := js.StreamInfo("S")
 		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
+			return fmt.Errorf("Unexpected error: %v", err)
 		}
 		if si.State.Msgs != 200 {
 			return fmt.Errorf("Expected to have %d messages, got %d", 200, si.State.Msgs)

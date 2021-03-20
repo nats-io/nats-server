@@ -732,10 +732,8 @@ func (o *consumer) setLeader(isLeader bool) {
 			o.acc.sl.RegisterNotification(o.cfg.DeliverSubject, o.inch)
 			if o.active = <-o.inch; !o.active {
 				// Check gateways in case they are enabled.
-				if o.active = s.hasGatewayInterest(o.acc.Name, o.cfg.DeliverSubject); o.active {
-					// There is no local interest but there is GW interest, we
-					// will watch for interest disappearing.
-					// TODO: may need to revisit...
+				if s.gateway.enabled {
+					o.active = s.hasGatewayInterest(o.acc.Name, o.cfg.DeliverSubject)
 					stopAndClearTimer(&o.gwdtmr)
 					o.gwdtmr = time.AfterFunc(time.Second, func() { o.watchGWinterest() })
 				}
@@ -2064,7 +2062,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		}
 
 		// We will wait here for new messages to arrive.
-		mch, outq, odsubj := o.mch, o.outq, o.cfg.DeliverSubject
+		mch, outq, odsubj, dseq := o.mch, o.outq, o.cfg.DeliverSubject, o.dseq-1
 		o.mu.Unlock()
 
 		select {
@@ -2078,7 +2076,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			// Messages are waiting.
 		case <-hbc:
 			if o.isActive() {
-				hdr := []byte("NATS/1.0 100 Idle Heartbeat\r\n\r\n")
+				hdr := []byte(fmt.Sprintf("NATS/1.0 100 Idle Heartbeat\r\n%s: %d\r\n", JSLastDeliveredSeq, dseq))
 				outq.send(&jsPubMsg{odsubj, _EMPTY_, _EMPTY_, hdr, nil, nil, 0, nil})
 			}
 			// Reset our idle heartbeat timer.
