@@ -11100,6 +11100,49 @@ func TestJetStreamSourceBasics(t *testing.T) {
 	}
 }
 
+func TestJetStreamOperatorAccounts(t *testing.T) {
+	s, _ := RunServerWithConfig("./configs/js-op.conf")
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s, nats.UserCredentials("./configs/one.creds"))
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 2}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	toSend := 100
+	for i := 0; i < toSend; i++ {
+		if _, err := js.Publish("TEST", []byte("OK")); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	// Close our user for account one.
+	nc.Close()
+
+	// Restart the server.
+	s.Shutdown()
+	s, _ = RunServerWithConfig("./configs/js-op.conf")
+	defer s.Shutdown()
+
+	jsz, err := s.Jsz(nil)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if jsz.Streams != 1 {
+		t.Fatalf("Expected jsz to report our stream on restart")
+	}
+	if jsz.Messages != uint64(toSend) {
+		t.Fatalf("Expected jsz to report our %d messages on restart, got %d", toSend, jsz.Messages)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
