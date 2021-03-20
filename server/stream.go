@@ -196,7 +196,8 @@ const (
 	JSExpectedLastSeq   = "Nats-Expected-Last-Sequence"
 	JSExpectedLastMsgId = "Nats-Expected-Last-Msg-Id"
 	JSStreamSource      = "Nats-Stream-Source"
-	JSLastDeliveredSeq  = "Nats-Last-Delivered"
+	JSLastConsumerSeq   = "Nats-Last-Consumer"
+	JSLastStreamSeq     = "Nats-Last-Stream"
 )
 
 // Dedupe entry
@@ -1091,7 +1092,7 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 			mset.handleFlowControl(m)
 		} else {
 			// For idle heartbeats make sure we did not miss anything.
-			if ldseq := parseInt64(getHeader(JSLastDeliveredSeq, m.hdr)); ldseq > 0 && uint64(ldseq) != mset.mirror.dseq {
+			if ldseq := parseInt64(getHeader(JSLastConsumerSeq, m.hdr)); ldseq > 0 && uint64(ldseq) != mset.mirror.dseq {
 				needsRetry = true
 			}
 		}
@@ -1575,7 +1576,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 			mset.handleFlowControl(m)
 		} else {
 			// For idle heartbeats make sure we did not miss anything.
-			if ldseq := parseInt64(getHeader(JSLastDeliveredSeq, m.hdr)); ldseq > 0 && uint64(ldseq) != si.dseq {
+			if ldseq := parseInt64(getHeader(JSLastConsumerSeq, m.hdr)); ldseq > 0 && uint64(ldseq) != si.dseq {
 				needsRetry = true
 				mset.retrySourceConsumerAtSeq(si.name, si.sseq+1)
 			}

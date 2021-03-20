@@ -2062,7 +2062,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		}
 
 		// We will wait here for new messages to arrive.
-		mch, outq, odsubj, dseq := o.mch, o.outq, o.cfg.DeliverSubject, o.dseq-1
+		mch, outq, odsubj, sseq, dseq := o.mch, o.outq, o.cfg.DeliverSubject, o.sseq-1, o.dseq-1
 		o.mu.Unlock()
 
 		select {
@@ -2076,7 +2076,8 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			// Messages are waiting.
 		case <-hbc:
 			if o.isActive() {
-				hdr := []byte(fmt.Sprintf("NATS/1.0 100 Idle Heartbeat\r\n%s: %d\r\n", JSLastDeliveredSeq, dseq))
+				const t = "NATS/1.0 100 Idle Heartbeat\r\n%s: %d\r\n%s: %d\r\n\r\n"
+				hdr := []byte(fmt.Sprintf(t, JSLastConsumerSeq, dseq, JSLastStreamSeq, sseq))
 				outq.send(&jsPubMsg{odsubj, _EMPTY_, _EMPTY_, hdr, nil, nil, 0, nil})
 			}
 			// Reset our idle heartbeat timer.
