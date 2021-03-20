@@ -221,6 +221,12 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	return nil
 }
 
+func (s *Server) updateJetStreamInfoStatus(enabled bool) {
+	s.mu.Lock()
+	s.info.JetStream = enabled
+	s.mu.Unlock()
+}
+
 // restartJetStream will try to re-enable JetStream during a reload if it had been disabled during runtime.
 func (s *Server) restartJetStream() error {
 	opts := s.getOpts()
@@ -235,7 +241,7 @@ func (s *Server) restartJetStream() error {
 		s.Warnf("Can't start JetStream: %v", err)
 		return s.DisableJetStream()
 	}
-
+	s.updateJetStreamInfoStatus(true)
 	return nil
 }
 
@@ -335,6 +341,9 @@ func (s *Server) DisableJetStream() error {
 			meta.Delete()
 		}
 	}
+
+	// Update our info status.
+	s.updateJetStreamInfoStatus(false)
 
 	// Normal shutdown.
 	s.shutdownJetStream()
