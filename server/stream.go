@@ -1074,6 +1074,12 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) {
 	mset.mirror.last = time.Now()
 	node := mset.node
 
+	// Ignore from old subscriptions.
+	if mset.mirror.sub != m.sub {
+		mset.mu.Unlock()
+		return
+	}
+
 	// Check for heartbeats and flow control messages.
 	if len(m.msg) == 0 && len(m.hdr) > 0 && bytes.HasPrefix(m.hdr, []byte("NATS/1.0 100 ")) {
 		// Flow controls have reply subjects.
@@ -1125,9 +1131,7 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) {
 				mset.mu.Unlock()
 				return
 			} else {
-				if mset.mirror.cname != _EMPTY_ && mset.mirror.cname == tokenAt(m.rply, 4) {
-					mset.retryMirrorConsumer()
-				}
+				mset.retryMirrorConsumer()
 			}
 		} else {
 			s.Warnf("Got error processing JetStream mirror msg: %v", err)
@@ -1201,7 +1205,7 @@ func (mset *stream) setupMirrorConsumer() error {
 	// Process inbound mirror messages from the wire.
 	sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, subject, reply string, rmsg []byte) {
 		hdr, msg := c.msgParts(append(rmsg[:0:0], rmsg...)) // Need to copy.
-		mset.queueInbound(mset.mirror.msgs, subject, reply, hdr, msg)
+		mset.queueInbound(mset.mirror.msgs, sub, subject, reply, hdr, msg)
 	})
 	if err != nil {
 		mset.mirror = nil
@@ -1309,6 +1313,18 @@ func (mset *stream) streamSource(sname string) *StreamSource {
 func (mset *stream) retrySourceConsumer(sname string) {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
+
+	si := mset.sources[sname]
+	if si == nil {
+		return
+	}
+	mset.setStartingSequenceForSource(sname)
+	seq := si.sseq + 1
+	mset.retrySourceConsumerAtSeq(sname, seq)
+}
+
+// Lock should be held.
+func (mset *stream) retrySourceConsumerAtSeq(sname string, seq uint64) {
 	if mset.client == nil {
 		return
 	}
@@ -1319,8 +1335,8 @@ func (mset *stream) retrySourceConsumer(sname string) {
 	if si == nil {
 		return
 	}
-	mset.setStartingSequenceForSource(sname)
-	mset.setSourceConsumer(sname, si.sseq+1)
+	mset.unsubscribe(si.sub)
+	mset.setSourceConsumer(sname, seq)
 }
 
 // Locl should be held.
@@ -1361,7 +1377,7 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 
 	sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, subject, reply string, rmsg []byte) {
 		hdr, msg := c.msgParts(append(rmsg[:0:0], rmsg...)) // Need to copy.
-		mset.queueInbound(si.msgs, subject, reply, hdr, msg)
+		mset.queueInbound(si.msgs, sub, subject, reply, hdr, msg)
 	})
 	if err != nil {
 		si.err = jsError(err)
@@ -1508,6 +1524,12 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) {
 	si.last = time.Now()
 	node := mset.node
 
+	// Ignore from old subscriptions.
+	if si.sub != m.sub {
+		mset.mu.Unlock()
+		return
+	}
+
 	// Check for heartbeats and flow control messages.
 	if len(m.msg) == 0 && len(m.hdr) > 0 && bytes.HasPrefix(m.hdr, []byte("NATS/1.0 100 ")) {
 		// Flow controls have reply subjects.
@@ -1542,7 +1564,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) {
 		cname := tokenAt(m.rply, 4)
 		// Check to see if we know this is from an old consumer.
 		if dseq > si.dseq && si.cname == cname {
-			mset.setSourceConsumer(si.name, si.sseq+1)
+			mset.retrySourceConsumerAtSeq(si.name, si.sseq+1)
 		} else if dseq > si.dseq {
 			si.cname = cname
 			si.dseq, si.sseq = dseq, sseq
@@ -2003,6 +2025,7 @@ type inMsg struct {
 	rply string
 	hdr  []byte
 	msg  []byte
+	sub  *subscription
 	next *inMsg
 }
 
@@ -2021,8 +2044,8 @@ func (mset *stream) pending(msgs *inbound) *inMsg {
 	return head
 }
 
-func (mset *stream) queueInbound(ib *inbound, subj, rply string, hdr, msg []byte) {
-	m := &inMsg{subj, rply, hdr, msg, nil}
+func (mset *stream) queueInbound(ib *inbound, sub *subscription, subj, rply string, hdr, msg []byte) {
+	m := &inMsg{subj, rply, hdr, msg, sub, nil}
 
 	mset.mu.Lock()
 	var notify bool
@@ -2052,7 +2075,7 @@ func (mset *stream) queueInboundMsg(subj, rply string, hdr, msg []byte) {
 	if len(msg) > 0 {
 		msg = append(msg[:0:0], msg...)
 	}
-	mset.queueInbound(mset.msgs, subj, rply, hdr, msg)
+	mset.queueInbound(mset.msgs, nil, subj, rply, hdr, msg)
 }
 
 // processInboundJetStreamMsg handles processing messages bound for a stream.

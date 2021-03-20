@@ -7274,6 +7274,70 @@ func TestJetStreamPushConsumerIdleHeartbeatsWithFilterSubject(t *testing.T) {
 	}
 }
 
+func TestJetStreamPushConsumerIdleHeartbeatsWithNoInterest(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	// Forced cleanup of all persisted state.
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST"}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	dsubj := "d.22"
+	hbC := make(chan *nats.Msg, 8)
+	sub, err := nc.ChanSubscribe("d.>", hbC)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer sub.Unsubscribe()
+
+	obsReq := CreateConsumerRequest{
+		Stream: "TEST",
+		Config: ConsumerConfig{
+			DeliverSubject: dsubj,
+			Heartbeat:      100 * time.Millisecond,
+		},
+	}
+
+	req, err := json.Marshal(obsReq)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, err := nc.Request(fmt.Sprintf(JSApiConsumerCreateT, "TEST"), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var ccResp JSApiConsumerCreateResponse
+	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if ccResp.Error != nil {
+		t.Fatalf("Unexpected error: %+v", ccResp.Error)
+	}
+
+	done := time.NewTimer(400 * time.Millisecond)
+	defer done.Stop()
+
+	for {
+		select {
+		case <-done.C:
+			return
+		case m := <-hbC:
+			if m.Header.Get("Status") == "100" {
+				t.Fatalf("Did not expect to see a heartbeat with no formal interest")
+			}
+		}
+	}
+}
+
 func TestJetStreamInfoAPIWithHeaders(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
@@ -11097,6 +11161,49 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		if sseq != 11 {
 			t.Fatalf("Expected header sequence of 11, got %d", sseq)
 		}
+	}
+}
+
+func TestJetStreamOperatorAccounts(t *testing.T) {
+	s, _ := RunServerWithConfig("./configs/js-op.conf")
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s, nats.UserCredentials("./configs/one.creds"))
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 2}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	toSend := 100
+	for i := 0; i < toSend; i++ {
+		if _, err := js.Publish("TEST", []byte("OK")); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	// Close our user for account one.
+	nc.Close()
+
+	// Restart the server.
+	s.Shutdown()
+	s, _ = RunServerWithConfig("./configs/js-op.conf")
+	defer s.Shutdown()
+
+	jsz, err := s.Jsz(nil)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if jsz.Streams != 1 {
+		t.Fatalf("Expected jsz to report our stream on restart")
+	}
+	if jsz.Messages != uint64(toSend) {
+		t.Fatalf("Expected jsz to report our %d messages on restart, got %d", toSend, jsz.Messages)
 	}
 }
 

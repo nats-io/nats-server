@@ -1442,10 +1442,10 @@ func (s *Server) Start() {
 	s.Noticef("  Git:      [%s]", gc)
 	s.Debugf("  Go build: %s", s.info.GoVersion)
 	s.Noticef("  Name:     %s", s.info.Name)
-	s.Noticef("  ID:       %s", s.info.ID)
 	if opts.JetStream {
 		s.Noticef("  Node:     %s", getHash(s.info.Name))
 	}
+	s.Noticef("  ID:       %s", s.info.ID)
 
 	defer s.Noticef("Server is ready")
 

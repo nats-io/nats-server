@@ -221,6 +221,12 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	return nil
 }
 
+func (s *Server) updateJetStreamInfoStatus(enabled bool) {
+	s.mu.Lock()
+	s.info.JetStream = enabled
+	s.mu.Unlock()
+}
+
 // restartJetStream will try to re-enable JetStream during a reload if it had been disabled during runtime.
 func (s *Server) restartJetStream() error {
 	opts := s.getOpts()
@@ -235,7 +241,7 @@ func (s *Server) restartJetStream() error {
 		s.Warnf("Can't start JetStream: %v", err)
 		return s.DisableJetStream()
 	}
-
+	s.updateJetStreamInfoStatus(true)
 	return nil
 }
 
@@ -336,6 +342,9 @@ func (s *Server) DisableJetStream() error {
 		}
 	}
 
+	// Update our info status.
+	s.updateJetStreamInfoStatus(false)
+
 	// Normal shutdown.
 	s.shutdownJetStream()
 
@@ -386,6 +395,9 @@ func (a *Account) enableJetStreamInfoServiceImportOnly() error {
 }
 
 func (s *Server) configJetStream(acc *Account) error {
+	if acc == nil {
+		return nil
+	}
 	if acc.jsLimits != nil {
 		// Check if already enabled. This can be during a reload.
 		if acc.JetStreamEnabled() {
@@ -427,25 +439,44 @@ func (s *Server) configAllJetStreamAccounts() error {
 	s.mu.Lock()
 	// Bail if server not enabled. If it was enabled and a reload turns it off
 	// that will be handled elsewhere.
-	if s.js == nil {
+	js := s.js
+	if js == nil {
 		s.mu.Unlock()
 		return nil
 	}
 
 	var jsAccounts []*Account
-
 	s.accounts.Range(func(k, v interface{}) bool {
 		jsAccounts = append(jsAccounts, v.(*Account))
 		return true
 	})
+	accounts := &s.accounts
 	s.mu.Unlock()
 
-	// Process any jetstream enabled accounts here.
+	// Process any jetstream enabled accounts here. These will be accounts we are
+	// already aware of at startup etc.
 	for _, acc := range jsAccounts {
 		if err := s.configJetStream(acc); err != nil {
 			return err
 		}
 	}
+
+	// Now walk all the storage we have and resolve any accounts that we did not process already.
+	// This is important in resolver/operator models.
+	fis, _ := ioutil.ReadDir(js.config.StoreDir)
+	for _, fi := range fis {
+		if accName := fi.Name(); accName != _EMPTY_ {
+			// Only load up ones not already loaded since they are processed above.
+			if _, ok := accounts.Load(accName); !ok {
+				if acc, err := s.lookupAccount(accName); err != nil && acc != nil {
+					if err := s.configJetStream(acc); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -647,7 +678,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 
 	js.mu.Lock()
 	// Check the limits against existing reservations.
-	if _, ok := js.accounts[a.Name]; ok {
+	if _, ok := js.accounts[a.Name]; ok && a.JetStreamEnabled() {
 		js.mu.Unlock()
 		return fmt.Errorf("jetstream already enabled for account")
 	}

@@ -2349,7 +2349,7 @@ func (s *Server) JszAccount(opts *JSzOptions) (*AccountDetail, error) {
 	return s.accountDetail(jsa, opts.Streams, opts.Consumer, opts.Config), nil
 }
 
-// Leafz returns a Leafz structure containing information about leafnodes.
+// Jsz returns a Jsz structure containing information about JetStream.
 func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 	// set option defaults
 	if opts == nil {
