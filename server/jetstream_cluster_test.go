@@ -4860,10 +4860,6 @@ func TestJetStreamClusterSuperClusterEphemeralCleanup(t *testing.T) {
 			if !active || dtimerSet {
 				t.Fatalf("Invalid values for active=%v dtimerSet=%v", active, dtimerSet)
 			}
-			if gwtimerSet && test.sourceInCluster == 0 || !gwtimerSet && test.sourceInCluster == 1 {
-				t.Fatalf("test=%q timerSet=%v", test.name, gwtimerSet)
-			}
-
 			// To add to the mix, let's create a local interest on the delivery subject
 			// and stop it. This is to ensure that this does not stop timers that should
 			// still be running and monitor the GW interest.
