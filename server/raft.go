@@ -617,7 +617,13 @@ func (n *raft) ProposeRemovePeer(peer string) error {
 	n.RLock()
 	propc, subj := n.propc, n.rpsubj
 	isUs, isLeader := peer == n.id, n.state == Leader
+	werr := n.werr
 	n.RUnlock()
+
+	// Error if we had a previous write error.
+	if werr != nil {
+		return werr
+	}
 
 	if isLeader {
 		if isUs {
@@ -1540,8 +1546,13 @@ func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _
 	peer := string(append(msg[:0:0], msg...))
 
 	n.RLock()
-	propc := n.propc
+	propc, werr := n.propc, n.werr
 	n.RUnlock()
+
+	// Ignore if we have had a write error previous.
+	if werr != nil {
+		return
+	}
 
 	select {
 	case propc <- &Entry{EntryRemovePeer, []byte(peer)}:
@@ -1558,8 +1569,20 @@ func (n *raft) handleForwardedProposal(sub *subscription, c *client, _, reply st
 	}
 	// Need to copy since this is underlying client/route buffer.
 	msg = append(msg[:0:0], msg...)
-	if err := n.Propose(msg); err != nil {
-		n.warn("Got error processing forwarded proposal: %v", err)
+
+	n.RLock()
+	propc, werr := n.propc, n.werr
+	n.RUnlock()
+
+	// Ignore if we have had a write error previous.
+	if werr != nil {
+		return
+	}
+
+	select {
+	case propc <- &Entry{EntryNormal, msg}:
+	default:
+		n.warn("Failed to place forwarded proposal onto propose channel")
 	}
 }
 

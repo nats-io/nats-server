@@ -5157,6 +5157,7 @@ func (sc *supercluster) leader() *Server {
 }
 
 func (sc *supercluster) waitOnLeader() {
+	sc.t.Helper()
 	expires := time.Now().Add(5 * time.Second)
 	for time.Now().Before(expires) {
 		for _, c := range sc.clusters {
@@ -5167,7 +5168,6 @@ func (sc *supercluster) waitOnLeader() {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-
 	sc.t.Fatalf("Expected a cluster leader, got none")
 }
 

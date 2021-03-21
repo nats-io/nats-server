@@ -4416,7 +4416,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	s := mset.srv
 	defer s.grWG.Done()
 
-	const maxOutBytes = int64(4 * 1024 * 1024) // 4MB for now.
+	const maxOutBytes = int64(2 * 1024 * 1024) // 2MB for now.
 	const maxOutMsgs = int32(16384)
 	outb := int64(0)
 	outm := int32(0)
