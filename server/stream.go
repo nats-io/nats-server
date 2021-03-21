@@ -2947,7 +2947,10 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 		if !cfg.Created.IsZero() {
 			obs.setCreatedTime(cfg.Created)
 		}
-		if err := obs.readStoredState(); err != nil {
+		obs.mu.Lock()
+		err = obs.readStoredState()
+		obs.mu.Unlock()
+		if err != nil {
 			mset.stop(true, false)
 			return nil, fmt.Errorf("error restoring consumer [%q]: %v", ofi.Name(), err)
 		}
