@@ -237,7 +237,7 @@ const (
 	JsDeleteWaitTimeDefault = 5 * time.Second
 	// JsFlowControlMaxPending specifies default pending bytes during flow control that can be
 	// outstanding.
-	JsFlowControlMaxPending = 4 * 1024 * 1024
+	JsFlowControlMaxPending = 1 * 1024 * 1024
 )
 
 func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {

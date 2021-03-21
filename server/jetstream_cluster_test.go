@@ -4054,26 +4054,15 @@ func TestJetStreamClusterSuperClusterPeerReassign(t *testing.T) {
 	defer nc.Close()
 
 	pcn := "C2"
-	cfg := StreamConfig{
+
+	// Create a stream in C2 that sources TEST
+	_, err := js.AddStream(&nats.StreamConfig{
 		Name:      "TEST",
+		Placement: &nats.Placement{Cluster: pcn},
 		Replicas:  3,
-		Storage:   FileStorage,
-		Placement: &Placement{Cluster: pcn},
-	}
-	req, err := json.Marshal(cfg)
+	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
-	}
-	resp, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	var scResp JSApiStreamCreateResponse
-	if err := json.Unmarshal(resp.Data, &scResp); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if scResp.StreamInfo == nil || scResp.Error != nil {
-		t.Fatalf("Did not receive correct response: %+v", scResp.Error)
 	}
 
 	// Send in 10 messages.
@@ -5157,6 +5146,7 @@ func (sc *supercluster) leader() *Server {
 }
 
 func (sc *supercluster) waitOnLeader() {
+	sc.t.Helper()
 	expires := time.Now().Add(5 * time.Second)
 	for time.Now().Before(expires) {
 		for _, c := range sc.clusters {
@@ -5167,7 +5157,6 @@ func (sc *supercluster) waitOnLeader() {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-
 	sc.t.Fatalf("Expected a cluster leader, got none")
 }
 
