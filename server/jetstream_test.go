@@ -10822,6 +10822,23 @@ func TestJetStreamMirrorAndSourcesFilteredConsumers(t *testing.T) {
 	expectFail("S", "baz")
 	expectFail("S", "baz.1")
 	expectFail("S", "apple")
+
+	// Chaining
+	// Create Mirror now.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:   "M2",
+		Mirror: &nats.StreamSource{Name: "M"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	createConsumer("M2", "foo")
+	createConsumer("M2", "bar")
+	createConsumer("M2", "baz.foo")
+	expectFail("M2", "baz")
+	expectFail("M2", "baz.1.2")
+	expectFail("M2", "apple")
 }
 
 func TestJetStreamMirrorBasics(t *testing.T) {

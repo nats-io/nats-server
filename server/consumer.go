@@ -246,7 +246,7 @@ func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
 
 func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment) (*consumer, error) {
 	mset.mu.RLock()
-	s, jsa, acc := mset.srv, mset.jsa, mset.acc
+	s, jsa := mset.srv, mset.jsa
 	mset.mu.RUnlock()
 
 	// If we do not have the consumer currently assigned to us in cluster mode we will proceed but warn.
@@ -330,23 +330,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 
 	// Make sure any partition subject is also a literal.
 	if config.FilterSubject != _EMPTY_ {
-		subjects, cfg := mset.subjects(), mset.config()
-		var hasExt bool
-		if cfg.Mirror != nil {
-			if cfg.Mirror.External != nil {
-				hasExt = true
-			} else {
-				subjects = acc.streamSourceSubjects(cfg.Mirror)
-			}
-		} else if len(cfg.Sources) > 0 {
-			for _, si := range cfg.Sources {
-				if si.External != nil {
-					hasExt = true
-					break
-				}
-				subjects = append(subjects, acc.streamSourceSubjects(si)...)
-			}
-		}
+		subjects, hasExt := mset.allSubjects()
 		if !validFilteredSubject(config.FilterSubject, subjects) && !hasExt {
 			return nil, fmt.Errorf("consumer filter subject is not a valid subset of the interest subjects")
 		}
@@ -716,7 +700,8 @@ func (o *consumer) setLeader(isLeader bool) {
 		// Check on flow control settings.
 		if o.cfg.FlowControl {
 			o.setMaxPendingBytes(JsFlowControlMaxPending)
-			if o.fcSub, err = o.subscribeInternal(jsFlowControl, o.processFlowControl); err != nil {
+			fcsubj := fmt.Sprintf(jsFlowControl, stream, o.name)
+			if o.fcSub, err = o.subscribeInternal(fcsubj, o.processFlowControl); err != nil {
 				o.mu.Unlock()
 				o.deleteWithoutAdvisory()
 				return

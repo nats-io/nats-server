@@ -183,7 +183,7 @@ const (
 	// jsFlowControlT is the template for flow control messages.
 	jsFlowControlT = "$JS.FC.%s.%s.%d"
 	// jsFlowControl is for FC responses.
-	jsFlowControl = "$JS.FC.*.*.*"
+	jsFlowControl = "$JS.FC.%s.%s.*"
 
 	// JSAdvisoryPrefix is a prefix for all JetStream advisories.
 	JSAdvisoryPrefix = "$JS.EVENT.ADVISORY"
