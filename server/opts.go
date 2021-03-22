@@ -4624,16 +4624,28 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 	case tc.CertFile == _EMPTY_ && tc.KeyFile != _EMPTY_:
 		return nil, fmt.Errorf("missing 'cert_file' in TLS configuration")
 	case tc.CertFile != _EMPTY_ && tc.KeyFile != _EMPTY_:
-		// Now load in cert and private key
-		cert, err := tls.LoadX509KeyPair(tc.CertFile, tc.KeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("error parsing X509 certificate/key pair: %v", err)
+		// To support multiple certs (for SANs) without rearchitecting our
+		// configuration, we accept a list, separated by the platform list
+		// separator; both specs must contain the same count of entries.
+		// (So, colon-separated on Unix, semi-colon on Windows).
+		certFiles := strings.Split(tc.CertFile, string(os.PathListSeparator))
+		keyFiles := strings.Split(tc.KeyFile, string(os.PathListSeparator))
+		if len(certFiles) != len(keyFiles) {
+			return nil, fmt.Errorf("TLS configuration has %d entries in cert_file but %d in key_file", len(certFiles), len(keyFiles))
 		}
-		cert.Leaf, err = x509.ParseCertificate(cert.Certificate[0])
-		if err != nil {
-			return nil, fmt.Errorf("error parsing certificate: %v", err)
+		config.Certificates = make([]tls.Certificate, len(certFiles))
+		// Now load in cert and private keys
+		for i := range certFiles {
+			cert, err := tls.LoadX509KeyPair(certFiles[i], keyFiles[i])
+			if err != nil {
+				return nil, fmt.Errorf("error parsing X509 certificate/key pair: %v", err)
+			}
+			cert.Leaf, err = x509.ParseCertificate(cert.Certificate[0])
+			if err != nil {
+				return nil, fmt.Errorf("error parsing certificate: %v", err)
+			}
+			config.Certificates[i] = cert
 		}
-		config.Certificates = []tls.Certificate{cert}
 	case tc.CertStore != certstore.STOREEMPTY:
 		err := certstore.TLSConfig(tc.CertStore, tc.CertMatchBy, tc.CertMatch, &config)
 		if err != nil {
