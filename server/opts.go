@@ -1596,6 +1596,7 @@ func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]e
 				continue
 			}
 			opts.LeafNode.TLSTimeout = tc.Timeout
+			opts.LeafNode.TLSMap = tc.Map
 		case "leafnode_advertise", "advertise":
 			opts.LeafNode.Advertise = mv.(string)
 		case "no_advertise":
