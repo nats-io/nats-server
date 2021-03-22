@@ -5253,6 +5253,7 @@ var jsClusterImportsTempl = `
 // This will create a cluster that is explicitly configured for the routes, etc.
 // and also has a defined clustername. All configs for routes and cluster name will be the same.
 func createJetStreamClusterExplicit(t *testing.T, clusterName string, numServers int) *cluster {
+	t.Helper()
 	return createJetStreamClusterWithTemplate(t, jsClusterTempl, clusterName, numServers)
 }
 

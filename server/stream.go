@@ -980,24 +980,127 @@ func (mset *stream) sourcesInfo() (sis []*StreamSourceInfo) {
 	return sis
 }
 
-// Return the subjects for a stream source.
-func (a *Account) streamSourceSubjects(ss *StreamSource) (subjects []string) {
-	s, js, _ := a.getJetStreamFromAccount()
-	if !s.JetStreamIsClustered() {
-		if mset, err := a.lookupStream(ss.Name); err == nil {
-			subjects = mset.subjects()
+func (mset *stream) allSubjects() ([]string, bool) {
+	subjects, cfg, acc := mset.subjects(), mset.config(), mset.account()
+
+	var hasExt bool
+	var seen map[string]bool
+
+	if cfg.Mirror != nil {
+		var subjs []string
+		seen = make(map[string]bool)
+		subjs, hasExt = acc.streamSourceSubjects(cfg.Mirror, seen)
+		if len(subjs) > 0 {
+			subjects = append(subjects, subjs...)
 		}
-	} else {
-		// We are clustered here so need to work through stream assignments.
-		if sa := js.streamAssignment(a.Name, ss.Name); sa != nil {
-			js.mu.RLock()
-			if len(sa.Config.Subjects) > 0 {
-				subjects = append(sa.Config.Subjects[:0:0], sa.Config.Subjects...)
+	} else if len(cfg.Sources) > 0 {
+		var subjs []string
+		seen = make(map[string]bool)
+		for _, si := range cfg.Sources {
+			subjs, hasExt = acc.streamSourceSubjects(si, seen)
+			if len(subjs) > 0 {
+				subjects = append(subjects, subjs...)
 			}
-			js.mu.RUnlock()
 		}
 	}
-	return subjects
+
+	return subjects, hasExt
+}
+
+// Return the subjects for a stream source.
+func (a *Account) streamSourceSubjects(ss *StreamSource, seen map[string]bool) (subjects []string, hasExt bool) {
+	if ss != nil && ss.External != nil {
+		return nil, true
+	}
+
+	s, js, _ := a.getJetStreamFromAccount()
+
+	if !s.JetStreamIsClustered() {
+		return a.streamSourceSubjectsNotClustered(ss.Name, seen)
+	} else {
+		return js.streamSourceSubjectsClustered(a.Name, ss.Name, seen)
+	}
+}
+
+func (js *jetStream) streamSourceSubjectsClustered(accountName, streamName string, seen map[string]bool) (subjects []string, hasExt bool) {
+	if seen[streamName] {
+		return nil, false
+	}
+
+	// We are clustered here so need to work through stream assignments.
+	sa := js.streamAssignment(accountName, streamName)
+	if sa == nil {
+		return nil, false
+	}
+	seen[streamName] = true
+
+	js.mu.RLock()
+	cfg := sa.Config
+	if len(cfg.Subjects) > 0 {
+		subjects = append(subjects, cfg.Subjects...)
+	}
+
+	// Check if we need to keep going.
+	var sources []*StreamSource
+	if cfg.Mirror != nil {
+		sources = append(sources, cfg.Mirror)
+	} else if len(cfg.Sources) > 0 {
+		sources = append(sources, cfg.Sources...)
+	}
+	js.mu.RUnlock()
+
+	if len(sources) > 0 {
+		var subjs []string
+		if acc, err := js.srv.lookupAccount(accountName); err == nil {
+			for _, ss := range sources {
+				subjs, hasExt = acc.streamSourceSubjects(ss, seen)
+				if len(subjs) > 0 {
+					subjects = append(subjects, subjs...)
+				}
+				if hasExt {
+					break
+				}
+			}
+		}
+	}
+
+	return subjects, hasExt
+}
+
+func (a *Account) streamSourceSubjectsNotClustered(streamName string, seen map[string]bool) (subjects []string, hasExt bool) {
+	if seen[streamName] {
+		return nil, false
+	}
+
+	mset, err := a.lookupStream(streamName)
+	if err != nil {
+		return nil, false
+	}
+	seen[streamName] = true
+
+	cfg := mset.config()
+	if len(cfg.Subjects) > 0 {
+		subjects = append(subjects, cfg.Subjects...)
+	}
+
+	var subjs []string
+	if cfg.Mirror != nil {
+		subjs, hasExt = a.streamSourceSubjects(cfg.Mirror, seen)
+		if len(subjs) > 0 {
+			subjects = append(subjects, subjs...)
+		}
+	} else if len(cfg.Sources) > 0 {
+		for _, si := range cfg.Sources {
+			subjs, hasExt = a.streamSourceSubjects(si, seen)
+			if len(subjs) > 0 {
+				subjects = append(subjects, subjs...)
+			}
+			if hasExt {
+				break
+			}
+		}
+	}
+	return subjects, hasExt
 }
 
 // Lock should be held
