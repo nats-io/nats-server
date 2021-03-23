@@ -777,7 +777,8 @@ func (n *raft) InstallSnapshot(data []byte) error {
 
 	var state StreamState
 	n.wal.FastState(&state)
-	if state.FirstSeq >= n.applied {
+
+	if n.snapfile != _EMPTY_ && state.FirstSeq >= n.applied {
 		n.Unlock()
 		return nil
 	}

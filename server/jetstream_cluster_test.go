@@ -20,6 +20,7 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"os"
+	"path"
 	"reflect"
 	"strings"
 	"sync"
@@ -2308,7 +2309,7 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	}
 
 	// Make sure the replicas become current eventually. They will be doing catchup.
-	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
 		si, _ := js.StreamInfo("TEST")
 		if si == nil || si.Cluster == nil {
 			t.Fatalf("Did not get stream info")
@@ -4994,6 +4995,93 @@ func TestJetStreamSuperClusterDirectConsumersBrokenGateways(t *testing.T) {
 		}
 		if si.State.Msgs != 200 {
 			return fmt.Errorf("Expected to have %d messages, got %d", 200, si.State.Msgs)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterMultiRestartBug(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3", 3)
+	defer c.shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar"},
+		Replicas: 3,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Send in 10000 messages.
+	msg, toSend := make([]byte, 4*1024), 10000
+	rand.Read(msg)
+
+	for i := 0; i < toSend; i++ {
+		if _, err = js.Publish("foo", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		if err != nil {
+			return fmt.Errorf("Unexpected error: %v", err)
+		}
+		if si.State.Msgs != uint64(toSend) {
+			return fmt.Errorf("Expected to have %d messages, got %d", toSend, si.State.Msgs)
+		}
+		return nil
+	})
+
+	// For this bug, we will stop and remove the complete state from one server.
+	s := c.randomServer()
+	opts := s.getOpts()
+	s.Shutdown()
+	os.RemoveAll(opts.StoreDir)
+
+	// Then restart it.
+	c.restartAll()
+	c.waitOnAllCurrent()
+	c.waitOnStreamLeader("$G", "TEST")
+
+	s = c.serverByName(s.Name())
+	opts = s.getOpts()
+
+	c.waitOnStreamCurrent(s, "$G", "TEST")
+
+	snaps, err := ioutil.ReadDir(path.Join(opts.StoreDir, "$SYS", "_js_", "_meta_", "snapshots"))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(snaps) == 0 {
+		t.Fatalf("Expected a meta snapshot for the restarted server")
+	}
+
+	// Now restart them all..
+	c.stopAll()
+	c.restartAll()
+	c.waitOnLeader()
+	c.waitOnStreamLeader("$G", "TEST")
+
+	// Create new client.
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Make sure the replicas are current.
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		si, _ := js.StreamInfo("TEST")
+		if si == nil || si.Cluster == nil {
+			t.Fatalf("Did not get stream info")
+		}
+		for _, pi := range si.Cluster.Replicas {
+			if !pi.Current {
+				return fmt.Errorf("Peer not current: %+v", pi)
+			}
 		}
 		return nil
 	})
