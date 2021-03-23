@@ -112,7 +112,8 @@ func validateTrustedOperators(o *Options) error {
 			return fmt.Errorf("system_account in config and operator JWT must be identical")
 		}
 	}
-	srvMajor, srvMinor, srvUpdate, _ := jwt.ParseServerVersion(strings.Split(VERSION, "-")[0])
+	ver := strings.Split(strings.Split(VERSION, "-")[0], ".RC")[0]
+	srvMajor, srvMinor, srvUpdate, _ := jwt.ParseServerVersion(ver)
 	for _, opc := range o.TrustedOperators {
 		if major, minor, update, err := jwt.ParseServerVersion(opc.AssertServerVersion); err != nil {
 			return fmt.Errorf("operator %s expects version %s got error instead: %s",
