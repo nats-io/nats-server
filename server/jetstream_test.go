@@ -10687,36 +10687,39 @@ func TestJetStreamConfigReloadWithGlobalAccount(t *testing.T) {
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+
 	// Client for API requests.
-	nc := clientConnectToServer(t, s)
+	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
 	checkJSAccount := func() {
 		t.Helper()
-		resp, err := nc.Request(JSApiAccountInfo, nil, time.Second)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		var info JSApiAccountInfoResponse
-		if err := json.Unmarshal(resp.Data, &info); err != nil {
+		if _, err := js.AccountInfo(); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 	}
 
 	checkJSAccount()
 
-	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: "foo"})
-	if err != nil {
-		t.Fatalf("Unexpected error adding stream: %v", err)
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "foo"}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
-	defer mset.delete()
 
 	toSend := 10
 	for i := 0; i < toSend; i++ {
-		sendStreamMsg(t, nc, "foo", fmt.Sprintf("MSG: %d", i+1))
+		if _, err := js.Publish("foo", []byte(fmt.Sprintf("MSG: %d", i+1))); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
 	}
-	if msgs := mset.state().Msgs; msgs != uint64(toSend) {
-		t.Fatalf("Expected %d messages, got %d", toSend, msgs)
+	si, err := js.StreamInfo("foo")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.State.Msgs != uint64(toSend) {
+		t.Fatalf("Expected %d msgs after restart, got %d", toSend, si.State.Msgs)
 	}
 
 	if err := ioutil.WriteFile(conf, []byte(fmt.Sprintf(template, "pwd2")), 0666); err != nil {
@@ -10727,20 +10730,13 @@ func TestJetStreamConfigReloadWithGlobalAccount(t *testing.T) {
 		t.Fatalf("Error during config reload: %v", err)
 	}
 
-	// Try to add a new stream to the global account
-	mset2, err := s.GlobalAccount().addStream(&StreamConfig{Name: "bar"})
-	if err != nil {
-		t.Fatalf("Unexpected error adding stream: %v", err)
-	}
-	defer mset2.delete()
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
 
-	// Wait to get reconnected.
-	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
-		if !nc.IsConnected() {
-			return fmt.Errorf("Not connected")
-		}
-		return nil
-	})
+	// Try to add a new stream to the global account
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "bar"}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
 
 	checkJSAccount()
 }
