@@ -1428,9 +1428,17 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				// Check for flowcontrol here.
 				mset.mu.Lock()
 				if mset.fcr != nil {
-					if rply := mset.fcr[lseq]; rply != _EMPTY_ {
-						delete(mset.fcr, lseq)
+					tseq := lseq + 1
+					if rply := mset.fcr[tseq]; rply != _EMPTY_ {
+						delete(mset.fcr, tseq)
 						mset.outq.send(&jsPubMsg{rply, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
+					} else if len(mset.fcr) > 0 {
+						for seq, rply := range mset.fcr {
+							if seq < tseq {
+								delete(mset.fcr, seq)
+								mset.outq.send(&jsPubMsg{rply, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
+							}
+						}
 					}
 				}
 				mset.mu.Unlock()
@@ -4017,8 +4025,8 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	}
 
 	esm := encodeStreamMsg(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano())
-	seq := mset.clseq
 	mset.clseq++
+	seq := mset.clseq
 
 	// Do proposal.
 	err := mset.node.Propose(esm)
