@@ -1497,6 +1497,7 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 	}
 	if si.sub != nil {
 		mset.unsubscribe(si.sub)
+		si.sub = nil
 	}
 	// Need to delete the old one.
 	mset.removeInternalConsumer(si)
