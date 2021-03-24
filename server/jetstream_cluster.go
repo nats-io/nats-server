@@ -1412,16 +1412,28 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				if err != nil {
 					panic(err.Error())
 				}
+
 				// We can skip if we know this is less than what we already have.
-				if isRecovering && lseq <= mset.lastSeq() {
+				last := mset.lastSeq()
+				if mset == nil || isRecovering && lseq <= last {
 					continue
 				}
 				// Skip by hand here since first msg special case.
 				// Reason is sequence is unsigned and for lseq being 0
 				// the lseq under stream would have be -1.
-				if lseq == 0 && mset.lastSeq() != 0 {
+				if lseq == 0 && last != 0 {
 					continue
 				}
+
+				// Check for flowcontrol here.
+				mset.mu.Lock()
+				if mset.fcr != nil {
+					if rply := mset.fcr[lseq]; rply != _EMPTY_ {
+						delete(mset.fcr, lseq)
+						mset.outq.send(&jsPubMsg{rply, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
+					}
+				}
+				mset.mu.Unlock()
 
 				s := js.srv
 				if err := mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts); err != nil {
@@ -1433,16 +1445,6 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						return err
 					}
 				}
-
-				// Check for flowcontrol here.
-				mset.mu.Lock()
-				if mset.fcr != nil {
-					if rply := mset.fcr[ce.Index]; rply != _EMPTY_ {
-						delete(mset.fcr, ce.Index)
-						mset.outq.send(&jsPubMsg{rply, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
-					}
-				}
-				mset.mu.Unlock()
 
 			case deleteMsgOp:
 				md, err := decodeMsgDelete(buf[1:])
@@ -3950,7 +3952,7 @@ func (mset *stream) stateSnapshot() []byte {
 }
 
 // processClusteredMsg will propose the inbound message to the underlying raft group.
-func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg []byte) error {
+func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg []byte) (uint64, error) {
 	// For possible error response.
 	var response []byte
 
@@ -3987,7 +3989,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			response, _ = json.Marshal(resp)
 			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
 		}
-		return err
+		return 0, err
 	}
 
 	// Check msgSize if we have a limit set there. Again this works if it goes through but better to be pre-emptive.
@@ -4000,7 +4002,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			response, _ = json.Marshal(resp)
 			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
 		}
-		return err
+		return 0, err
 	}
 
 	// Proceed with proposing this message.
@@ -4013,13 +4015,17 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		mset.clseq = mset.lseq
 		mset.mu.RUnlock()
 	}
+
 	esm := encodeStreamMsg(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano())
+	seq := mset.clseq
 	mset.clseq++
+
 	// Do proposal.
 	err := mset.node.Propose(esm)
 	mset.clMu.Unlock()
 
 	if err != nil {
+		seq = 0
 		mset.mu.Lock()
 		mset.clseq--
 		mset.mu.Unlock()
@@ -4039,7 +4045,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		s.handleOutOfSpace(msetName)
 	}
 
-	return err
+	return seq, err
 }
 
 // For requesting messages post raft snapshot to catch up streams post server restart.

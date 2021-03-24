@@ -180,8 +180,8 @@ const (
 	jsAckT   = "$JS.ACK.%s.%s"
 	jsAckPre = "$JS.ACK."
 
-	// jsFlowControlT is the template for flow control messages.
-	jsFlowControlT = "$JS.FC.%s.%s.%d"
+	// jsFlowControl is for flow control subjects.
+	jsFlowControlPre = "$JS.FC."
 	// jsFlowControl is for FC responses.
 	jsFlowControl = "$JS.FC.%s.%s.*"
 

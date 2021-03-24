@@ -183,6 +183,7 @@ type sourceInfo struct {
 	msgs  *inbound
 	sseq  uint64
 	dseq  uint64
+	clseq uint64
 	lag   uint64
 	err   *ApiError
 	last  time.Time
@@ -1192,7 +1193,7 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 		mset.mirror.last = time.Now()
 		// Flow controls have reply subjects.
 		if m.rply != _EMPTY_ {
-			mset.handleFlowControl(m)
+			mset.handleFlowControl(mset.mirror, m)
 		} else {
 			// For idle heartbeats make sure we did not miss anything.
 			if ldseq := parseInt64(getHeader(JSLastConsumerSeq, m.hdr)); ldseq > 0 && uint64(ldseq) != mset.mirror.dseq {
@@ -1222,13 +1223,28 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 	}
 
 	// Mirror info tracking.
-	olag, odseq := mset.mirror.lag, mset.mirror.dseq
+	olag, odseq, oclseq := mset.mirror.lag, mset.mirror.dseq, mset.mirror.clseq
+	if dseq == mset.mirror.dseq+1 {
+		mset.mirror.dseq++
+		mset.mirror.sseq = sseq
+	} else if dseq > mset.mirror.dseq {
+		if mset.mirror.cname == _EMPTY_ {
+			mset.mirror.cname = tokenAt(m.rply, 4)
+			mset.mirror.dseq, mset.mirror.sseq = dseq, sseq
+		} else {
+			mset.retryMirrorConsumer()
+			mset.mu.Unlock()
+			return false
+		}
+	}
+
 	if pending == 0 {
 		mset.mirror.lag = 0
 	} else {
 		mset.mirror.lag = pending - 1
 	}
 	mset.mirror.dseq = dseq
+	mset.mirror.clseq = sseq - 1
 	mset.mu.Unlock()
 
 	s := mset.srv
@@ -1245,6 +1261,7 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 				mset.mu.Lock()
 				mset.mirror.lag = olag
 				mset.mirror.dseq = odseq
+				mset.mirror.clseq = oclseq
 				mset.mu.Unlock()
 				return false
 			} else {
@@ -1645,14 +1662,13 @@ func (m *inMsg) isControlMsg() bool {
 
 // handleFlowControl will properly handle flow control messages for both R1 and R>1.
 // Lock should be held.
-func (mset *stream) handleFlowControl(m *inMsg) {
+func (mset *stream) handleFlowControl(si *sourceInfo, m *inMsg) {
 	// If we are clustered we want to delay signaling back the the upstream consumer.
-	if node := mset.node; node != nil {
-		index, _, _ := node.Progress()
+	if node := mset.node; node != nil && si.clseq > 0 {
 		if mset.fcr == nil {
 			mset.fcr = make(map[uint64]string)
 		}
-		mset.fcr[index] = m.rply
+		mset.fcr[si.clseq] = m.rply
 	} else {
 		mset.outq.send(&jsPubMsg{m.rply, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
 	}
@@ -1676,7 +1692,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 		si.last = time.Now()
 		// Flow controls have reply subjects.
 		if m.rply != _EMPTY_ {
-			mset.handleFlowControl(m)
+			mset.handleFlowControl(si, m)
 		} else {
 			// For idle heartbeats make sure we did not miss anything.
 			if ldseq := parseInt64(getHeader(JSLastConsumerSeq, m.hdr)); ldseq > 0 && uint64(ldseq) != si.dseq {
@@ -1706,17 +1722,15 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	if dseq == si.dseq+1 {
 		si.dseq++
 		si.sseq = sseq
-	} else {
-		if dseq > si.dseq {
-			if si.cname == _EMPTY_ {
-				si.cname = tokenAt(m.rply, 4)
-				si.dseq, si.sseq = dseq, sseq
-			} else {
-				mset.retrySourceConsumerAtSeq(si.name, si.sseq+1)
-			}
+	} else if dseq > si.dseq {
+		if si.cname == _EMPTY_ {
+			si.cname = tokenAt(m.rply, 4)
+			si.dseq, si.sseq = dseq, sseq
+		} else {
+			mset.retrySourceConsumerAtSeq(si.name, si.sseq+1)
+			mset.mu.Unlock()
+			return false
 		}
-		mset.mu.Unlock()
-		return false
 	}
 
 	if pending == 0 {
@@ -1736,9 +1750,15 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	hdr = genHeader(hdr, JSStreamSource, m.rply)
 
 	var err error
+	var clseq uint64
 	// If we are clustered we need to propose this message to the underlying raft group.
 	if node != nil {
-		err = mset.processClusteredInboundMsg(m.subj, _EMPTY_, hdr, msg)
+		clseq, err = mset.processClusteredInboundMsg(m.subj, _EMPTY_, hdr, msg)
+		if err == nil {
+			mset.mu.Lock()
+			si.clseq = clseq
+			mset.mu.Unlock()
+		}
 	} else {
 		err = mset.processJetStreamMsg(m.subj, _EMPTY_, hdr, msg, 0, 0)
 	}

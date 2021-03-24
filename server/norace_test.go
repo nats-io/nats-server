@@ -1741,3 +1741,49 @@ func TestNoRaceJetStreamClusterSuperClusterSources(t *testing.T) {
 		return nil
 	})
 }
+
+func TestNoRaceJetStreamClusterSourcesMuxd(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "SMUX", 3)
+	defer c.shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Send in 10000 messages.
+	msg, toSend := make([]byte, 1024), 10000
+	rand.Read(msg)
+
+	var sources []*nats.StreamSource
+	// Create 10 origin streams.
+	for i := 1; i <= 10; i++ {
+		name := fmt.Sprintf("O-%d", i)
+		if _, err := js.AddStream(&nats.StreamConfig{Name: name}); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		// Load them up with a bunch of messages.
+		for n := 0; n < toSend; n++ {
+			if err := nc.Publish(name, msg); err != nil {
+				t.Fatalf("Unexpected publish error: %v", err)
+			}
+		}
+		sources = append(sources, &nats.StreamSource{Name: name})
+	}
+
+	// Now create our downstream stream that sources from all of them.
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "S", Replicas: 2, Sources: sources}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
+		si, err := js.StreamInfo("S")
+		if err != nil {
+			t.Fatalf("Could not retrieve stream info")
+		}
+		if si.State.Msgs != uint64(10*toSend) {
+			return fmt.Errorf("Expected %d msgs, got state: %+v", toSend*10, si.State)
+		}
+		return nil
+	})
+
+}
