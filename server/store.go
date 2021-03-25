@@ -77,6 +77,7 @@ type StreamStore interface {
 	GetSeqFromTime(t time.Time) uint64
 	State() StreamState
 	FastState(*StreamState)
+	Type() StorageType
 	RegisterStorageUpdates(StorageUpdateHandler)
 	UpdateConfig(cfg *StreamConfig) error
 	Delete() error

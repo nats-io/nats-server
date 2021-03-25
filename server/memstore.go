@@ -499,6 +499,11 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 	return ok
 }
 
+// Type returns the type of the underlying store.
+func (ms *memStore) Type() StorageType {
+	return MemoryStorage
+}
+
 // FastState will fill in state with only the following.
 // Msgs, Bytes, FirstSeq, LastSeq
 func (ms *memStore) FastState(state *StreamState) {

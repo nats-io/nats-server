@@ -240,6 +240,10 @@ type Server struct {
 
 	// For mapping from a raft node name back to a server name and cluster.
 	nodeToInfo sync.Map
+
+	// For out of resources to not log errors too fast.
+	rerrMu   sync.Mutex
+	rerrLast time.Time
 }
 
 type nodeInfo struct {

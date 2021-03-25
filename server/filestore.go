@@ -2489,6 +2489,11 @@ func (fs *fileStore) LoadMsg(seq uint64) (string, []byte, []byte, int64, error) 
 	return "", nil, nil, 0, err
 }
 
+// Type returns the type of the underlying store.
+func (fs *fileStore) Type() StorageType {
+	return FileStorage
+}
+
 // FastState will fill in state with only the following.
 // Msgs, Bytes, FirstSeq, LastSeq
 func (fs *fileStore) FastState(state *StreamState) {

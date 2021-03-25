@@ -66,6 +66,7 @@ type RaftNode interface {
 }
 
 type WAL interface {
+	Type() StorageType
 	StoreMsg(subj string, hdr, msg []byte) (uint64, int64, error)
 	LoadMsg(index uint64) (subj string, hdr, msg []byte, ts int64, err error)
 	RemoveMsg(index uint64) (bool, error)
@@ -124,6 +125,8 @@ type raft struct {
 	sd       string
 	id       string
 	wal      WAL
+	wtype    StorageType
+	track    bool
 	werr     error
 	state    RaftState
 	hh       hash.Hash64
@@ -146,6 +149,7 @@ type raft struct {
 	hash     string
 	s        *Server
 	c        *client
+	js       *jetStream
 	dflag    bool
 
 	// Subjects for votes, updates, replays.
@@ -220,6 +224,7 @@ type RaftConfig struct {
 	Name  string
 	Store string
 	Log   WAL
+	Track bool
 }
 
 var (
@@ -332,6 +337,8 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		group:    cfg.Name,
 		sd:       cfg.Store,
 		wal:      cfg.Log,
+		wtype:    cfg.Log.Type(),
+		track:    cfg.Track,
 		state:    Follower,
 		csz:      ps.clusterSize,
 		qn:       ps.clusterSize/2 + 1,
@@ -341,6 +348,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		pae:      make(map[uint64]*appendEntry),
 		s:        s,
 		c:        s.createInternalSystemClient(),
+		js:       s.getJetStream(),
 		sq:       sq,
 		quit:     make(chan struct{}),
 		wtvch:    make(chan struct{}, 1),
@@ -444,6 +452,14 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 	s.startGoRoutine(n.fileWriter)
 
 	return n, nil
+}
+
+// outOfResources checks to see if we are out of resources.
+func (n *raft) outOfResources() bool {
+	if !n.track || n.js == nil || n.js.disabled {
+		return false
+	}
+	return n.js.limitsExceeded(n.wtype)
 }
 
 // Maps node names back to server names.
@@ -1358,8 +1374,14 @@ func (n *raft) runAsFollower() {
 		case <-n.quit:
 			return
 		case <-elect.C:
-			n.switchToCandidate()
-			return
+			// If we are out of resources we just want to stay in this state for the moment.
+			if n.outOfResources() {
+				n.resetElectionTimeout()
+				n.debug("Not switching to candidate, no resources")
+			} else {
+				n.switchToCandidate()
+				return
+			}
 		case <-n.respc:
 			// Ignore
 		case vreq := <-n.reqs:
@@ -1807,10 +1829,7 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesC <-chan uint64) 
 			delete(om, index)
 			if next == 0 {
 				next = index
-			} else {
-				next++
 			}
-
 			// Check if we are done.
 			if index > last || sendNext() {
 				n.debug("Finished catching up")
@@ -1888,11 +1907,16 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 		n.debug("Our first entry does not match request from follower")
 	}
 	// Create a chan for delivering updates from responses.
-	isz := 64
+	isz := 256
 	if ae.pindex > ar.index && ae.pindex-ar.index > uint64(isz) {
 		isz = int(ae.pindex - ar.index)
 	}
+	// Check if we already have one in place and its bigger.
+	if preCh, ok := n.progress[ar.peer]; ok && cap(preCh) > isz {
+		isz = cap(preCh)
+	}
 	indexUpdates := make(chan uint64, isz)
+
 	indexUpdates <- ae.pindex
 	n.progress[ar.peer] = indexUpdates
 	n.Unlock()
@@ -2190,6 +2214,11 @@ func (n *raft) runAsCandidate() {
 
 // handleAppendEntry handles an append entry from the wire.
 func (n *raft) handleAppendEntry(sub *subscription, c *client, subject, reply string, msg []byte) {
+	if n.outOfResources() {
+		n.debug("AppendEntry not processing inbound, no resources")
+		return
+	}
+
 	msg = append(msg[:0:0], msg...)
 	if ae := n.decodeAppendEntry(msg, sub, reply); ae != nil {
 		select {
@@ -2382,7 +2411,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	}
 
 	if ae.pterm != n.pterm || ae.pindex != n.pindex {
-		// If this is a lower index than what we were expecting.
+		// Check if this is a lower index than what we were expecting.
 		if ae.pindex < n.pindex {
 			var ar *appendEntryResponse
 			if eae, err := n.loadEntry(ae.pindex); err == nil && eae != nil {
@@ -2558,18 +2587,16 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 
 	if ar.success {
 		n.trackResponse(ar)
-	} else {
+	} else if ar.term > n.term {
 		// False here, check to make sure they do not have a higher term.
-		if ar.term > n.term {
-			n.term = ar.term
-			n.vote = noVote
-			n.writeTermVote()
-			n.Lock()
-			n.attemptStepDown(noLeader)
-			n.Unlock()
-		} else if ar.reply != _EMPTY_ {
-			n.catchupFollower(ar)
-		}
+		n.term = ar.term
+		n.vote = noVote
+		n.writeTermVote()
+		n.Lock()
+		n.attemptStepDown(noLeader)
+		n.Unlock()
+	} else if ar.reply != _EMPTY_ {
+		n.catchupFollower(ar)
 	}
 }
 

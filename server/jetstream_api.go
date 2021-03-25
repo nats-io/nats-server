@@ -2441,6 +2441,8 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 }
 
 func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamConfig, subject, reply, msg string) <-chan error {
+	js := s.getJetStream()
+
 	var resp = JSApiStreamRestoreResponse{ApiResponse: ApiResponse{Type: JSApiStreamRestoreResponseType}}
 
 	// FIXME(dlc) - Need to close these up if we fail for some reason.
@@ -2479,6 +2481,8 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 	resultCh := make(chan result, 1)
 	activeCh := make(chan int, 32)
 
+	var total int
+
 	// FIXM(dlc) - Probably take out of network path eventually do to disk I/O?
 	processChunk := func(sub *subscription, c *client, subject, reply string, msg []byte) {
 		// We require reply subjects to communicate back failures, flow etc. If they do not have one log and cancel.
@@ -2506,6 +2510,15 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 		if len(msg) == 0 {
 			s.Debugf("Finished staging restore for stream '%s > %s'", acc.Name, streamName)
 			resultCh <- result{err, reply}
+			return
+		}
+
+		// We track total and check on server limits.
+		// TODO(dlc) - We could check apriori and cancel initial request if we know it won't fit.
+		total += len(msg)
+		if js.wouldExceedLimits(FileStorage, total) {
+			s.resourcesExeededError()
+			resultCh <- result{ErrJetStreamResourcesExceeded, reply}
 			return
 		}
 

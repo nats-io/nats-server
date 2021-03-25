@@ -1167,7 +1167,8 @@ func (js *jetStream) createRaftGroup(rg *raftGroup, storage StorageType) error {
 		}
 		store = ms
 	}
-	cfg := &RaftConfig{Name: rg.Name, Store: storeDir, Log: store}
+
+	cfg := &RaftConfig{Name: rg.Name, Store: storeDir, Log: store, Track: true}
 
 	if _, err := readPeerState(storeDir); err != nil {
 		s.bootstrapRaftNode(cfg, rg.Peers, true)
@@ -1287,6 +1288,11 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 				if ne >= compactNumMin || nb > compactSizeMin {
 					doSnapshot()
 				}
+			} else if err == errLastSeqMismatch {
+				s.Warnf("Got stream sequence mismatch for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
+				if mset.resetClusteredState() {
+					return
+				}
 			} else {
 				s.Warnf("Error applying entries to '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
 			}
@@ -1339,8 +1345,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 				result.Restore.Error = jsError(sa.err)
 				js.mu.Unlock()
 				// Send response to the metadata leader. They will forward to the user as needed.
-				b, _ := json.Marshal(result) // Avoids auto-processing and doing fancy json with newlines.
-				s.sendInternalMsgLocked(streamAssignmentSubj, _EMPTY_, nil, b)
+				s.sendInternalMsgLocked(streamAssignmentSubj, _EMPTY_, nil, result)
 				return
 			}
 
@@ -1402,12 +1407,68 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 	}
 }
 
+// resetClusteredState is called when a clustered stream had a sequence mismatch and needs to be reset.
+func (mset *stream) resetClusteredState() bool {
+	mset.mu.RLock()
+	s, js, sa, acc, node := mset.srv, mset.js, mset.sa, mset.acc, mset.node
+	stype, isLeader := mset.cfg.Storage, mset.isLeader()
+	mset.mu.RUnlock()
+
+	// Stepdown regardless if we are the leader here.
+	if isLeader && node != nil {
+		node.StepDown()
+	}
+
+	if js.limitsExceeded(stype) {
+		s.Debugf("Will not reset stream, resources exceeded")
+		return false
+	}
+
+	// We delete our raft state. Will recreate.
+	if node != nil {
+		node.Delete()
+	}
+	// Preserve our current state and messages.
+	mset.stop(false, false)
+
+	if sa != nil {
+		s.Warnf("Resetting stream '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
+		js.mu.Lock()
+		sa.Group.node = nil
+		js.mu.Unlock()
+		go js.processClusterCreateStream(acc, sa)
+	}
+	return true
+}
+
+func (mset *stream) checkForFlowControl(seq uint64) {
+	mset.mu.Lock()
+	if mset.fcr != nil {
+		if rply := mset.fcr[seq]; rply != _EMPTY_ {
+			delete(mset.fcr, seq)
+			mset.outq.send(&jsPubMsg{rply, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
+		} else if len(mset.fcr) > 0 {
+			for fseq, rply := range mset.fcr {
+				if fseq < seq {
+					delete(mset.fcr, fseq)
+					mset.outq.send(&jsPubMsg{rply, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
+				}
+			}
+		}
+	}
+	mset.mu.Unlock()
+}
+
 func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isRecovering bool) error {
 	for _, e := range ce.Entries {
 		if e.Type == EntryNormal {
 			buf := e.Data
 			switch entryOp(buf[0]) {
 			case streamMsgOp:
+				if mset == nil {
+					continue
+				}
+
 				subject, reply, hdr, msg, lseq, ts, err := decodeStreamMsg(buf[1:])
 				if err != nil {
 					panic(err.Error())
@@ -1415,7 +1476,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 				// We can skip if we know this is less than what we already have.
 				last := mset.lastSeq()
-				if mset == nil || isRecovering && lseq <= last {
+				if lseq < last {
 					continue
 				}
 				// Skip by hand here since first msg special case.
@@ -1426,26 +1487,14 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				}
 
 				// Check for flowcontrol here.
-				mset.mu.Lock()
-				if mset.fcr != nil {
-					tseq := lseq + 1
-					if rply := mset.fcr[tseq]; rply != _EMPTY_ {
-						delete(mset.fcr, tseq)
-						mset.outq.send(&jsPubMsg{rply, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
-					} else if len(mset.fcr) > 0 {
-						for seq, rply := range mset.fcr {
-							if seq < tseq {
-								delete(mset.fcr, seq)
-								mset.outq.send(&jsPubMsg{rply, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
-							}
-						}
-					}
-				}
-				mset.mu.Unlock()
+				mset.checkForFlowControl(lseq + 1)
 
 				s := js.srv
 				if err := mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts); err != nil {
-					if err != errLastSeqMismatch || !isRecovering {
+					if !isRecovering {
+						if err == errLastSeqMismatch {
+							return err
+						}
 						s.Debugf("Got error processing JetStream msg: %v", err)
 					}
 					if isOutOfSpaceErr(err) {
@@ -3993,10 +4042,25 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 
 	mset.mu.RLock()
 	canRespond := !mset.cfg.NoAck && len(reply) > 0
-	s, jsa, st, rf, outq := mset.srv, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.outq
+	name, stype := mset.cfg.Name, mset.cfg.Storage
+	s, js, jsa, st, rf, outq := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.outq
 	maxMsgSize := int(mset.cfg.MaxMsgSize)
 	msetName := mset.cfg.Name
 	mset.mu.RUnlock()
+
+	// Check here pre-emptively if we have exceeded this server limits.
+	if js.limitsExceeded(stype) {
+		s.resourcesExeededError()
+		if canRespond {
+			b, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: jsInsufficientErr})
+			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0, nil})
+		}
+		// Stepdown regardless.
+		if node := mset.raftNode(); node != nil {
+			node.StepDown()
+		}
+		return 0, ErrJetStreamResourcesExceeded
+	}
 
 	// Check here pre-emptively if we have exceeded our account limits.
 	var exceeded bool
@@ -4019,7 +4083,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		err := fmt.Errorf("JetStream resource limits exceeded for account: %q", jsa.acc().Name)
 		s.Warnf(err.Error())
 		if canRespond {
-			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: mset.name()}}
+			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 			resp.Error = &ApiError{Code: 400, Description: "resource limits exceeded for account"}
 			response, _ = json.Marshal(resp)
 			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
@@ -4032,7 +4096,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		err := fmt.Errorf("JetStream message size exceeds limits for '%s > %s'", jsa.acc().Name, mset.cfg.Name)
 		s.Warnf(err.Error())
 		if canRespond {
-			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: mset.name()}}
+			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 			resp.Error = &ApiError{Code: 400, Description: "message size exceeds maximum allowed"}
 			response, _ = json.Marshal(resp)
 			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
@@ -4309,6 +4373,9 @@ RETRY:
 			} else if isOutOfSpaceErr(err) {
 				s.handleOutOfSpace(msetName)
 				return
+			} else if err == ErrJetStreamResourcesExceeded {
+				s.resourcesExeededError()
+				return
 			} else {
 				goto RETRY
 			}
@@ -4339,6 +4406,10 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	subj, _, hdr, msg, seq, ts, err := decodeStreamMsg(msg[1:])
 	if err != nil {
 		return 0, errors.New("bad catchup msg")
+	}
+
+	if mset.js.limitsExceeded(mset.cfg.Storage) {
+		return 0, ErrJetStreamResourcesExceeded
 	}
 
 	// Put into our store
@@ -4443,11 +4514,18 @@ func (mset *stream) checkClusterInfo(si *StreamInfo) {
 func (mset *stream) handleClusterStreamInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
 	mset.mu.RLock()
 	sysc, js, sa, config := mset.sysc, mset.srv.js, mset.sa, mset.cfg
+	stype := mset.cfg.Storage
+	isLeader := mset.isLeader()
 	mset.mu.RUnlock()
 
 	// By design all members will receive this. Normally we only want the leader answering.
 	// But if we have stalled and lost quorom all can respond.
-	if sa != nil && !js.isGroupLeaderless(sa.Group) && !mset.isLeader() {
+	if sa != nil && !js.isGroupLeaderless(sa.Group) && !isLeader {
+		return
+	}
+
+	// If we are here we are in a compromised state. If we are out of resources we will not answer either.
+	if !isLeader && js.limitsExceeded(stype) {
 		return
 	}
 
@@ -4472,7 +4550,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	s := mset.srv
 	defer s.grWG.Done()
 
-	const maxOutBytes = int64(2 * 1024 * 1024) // 2MB for now.
+	const maxOutBytes = int64(1 * 1024 * 1024) // 1MB for now.
 	const maxOutMsgs = int32(16384)
 	outb := int64(0)
 	outm := int32(0)

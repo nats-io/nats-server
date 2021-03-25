@@ -4325,6 +4325,7 @@ func TestJetStreamClusterMirrorAndSourcesClusterRestart(t *testing.T) {
 	}
 
 	checkSync := func() {
+		t.Helper()
 		checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
 			tsi, err := js.StreamInfo("TEST")
 			if err != nil {
@@ -5087,6 +5088,82 @@ func TestJetStreamClusterMultiRestartBug(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterServerLimits(t *testing.T) {
+	// 2MB memory, 8MB disk
+	c := createJetStreamClusterWithTemplate(t, jsClusterLimitsTempl, "R3L", 3)
+	defer c.shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	msg, toSend := make([]byte, 4*1024), 5000
+	rand.Read(msg)
+
+	// Memory first.
+	max_mem := uint64(2*1024*1024) + uint64(len(msg))
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TM",
+		Replicas: 3,
+		Storage:  nats.MemoryStorage,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	for i := 0; i < toSend; i++ {
+		if _, err = js.Publish("TM", msg); err != nil {
+			break
+		}
+	}
+	if err == nil || !strings.HasPrefix(err.Error(), "insufficient resources") {
+		t.Fatalf("Expected a ErrJetStreamResourcesExceeded error, got %v", err)
+	}
+
+	si, err := js.StreamInfo("TM")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.State.Bytes > max_mem {
+		t.Fatalf("Expected bytes of %v to not be greater then %v",
+			friendlyBytes(int64(si.State.Bytes)),
+			friendlyBytes(int64(max_mem)),
+		)
+	}
+
+	// Now disk.
+	max_disk := uint64(8*1024*1024) + uint64(len(msg))
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TF",
+		Replicas: 3,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	for i := 0; i < toSend; i++ {
+		if _, err = js.Publish("TF", msg); err != nil {
+			break
+		}
+	}
+	if err == nil || !strings.HasPrefix(err.Error(), "insufficient resources") {
+		t.Fatalf("Expected a ErrJetStreamResourcesExceeded error, got %v", err)
+	}
+
+	si, err = js.StreamInfo("TF")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.State.Bytes > max_disk {
+		t.Fatalf("Expected bytes of %v to not be greater then %v",
+			friendlyBytes(int64(si.State.Bytes)),
+			friendlyBytes(int64(max_disk)),
+		)
+	}
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
@@ -5126,6 +5203,28 @@ var jsSuperClusterTempl = `
 		listen: 127.0.0.1:%d
 		gateways = [%s
 		]
+	}
+`
+
+var jsClusterLimitsTempl = `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {max_mem_store: 2MB, max_file_store: 8MB, store_dir: "%s"}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	no_auth_user: u
+
+	accounts {
+		ONE {
+			users = [ { user: "u", pass: "s3cr3t!" } ]
+			jetstream: enabled
+		}
+		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
 	}
 `
 

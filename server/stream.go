@@ -128,6 +128,7 @@ type ExternalStream struct {
 // for a Stream we will direct link from the client to this structure.
 type stream struct {
 	mu        sync.RWMutex
+	js        *jetStream
 	jsa       *jsAccount
 	acc       *Account
 	srv       *Server
@@ -244,6 +245,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	}
 
 	jsa.mu.Lock()
+	js := jsa.js
 	if mset, ok := jsa.streams[cfg.Name]; ok {
 		jsa.mu.Unlock()
 		// Check to see if configs are same.
@@ -308,6 +310,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		acc:       a,
 		jsa:       jsa,
 		cfg:       cfg,
+		js:        js,
 		srv:       s,
 		client:    c,
 		sysc:      ic,
@@ -1245,12 +1248,18 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 	}
 	mset.mirror.dseq = dseq
 	mset.mirror.clseq = sseq - 1
+	js, stype := mset.js, mset.cfg.Storage
 	mset.mu.Unlock()
 
 	s := mset.srv
 	var err error
 	if node != nil {
-		err = node.Propose(encodeStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts))
+		if js.limitsExceeded(stype) {
+			s.resourcesExeededError()
+			err = ErrJetStreamResourcesExceeded
+		} else {
+			err = node.Propose(encodeStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts))
+		}
 	} else {
 		err = mset.processJetStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts)
 	}
@@ -1356,7 +1365,7 @@ func (mset *stream) setupMirrorConsumer() error {
 		Config: ConsumerConfig{
 			DeliverSubject: deliverSubject,
 			DeliverPolicy:  DeliverByStartSequence,
-			OptStartSeq:    state.LastSeq,
+			OptStartSeq:    state.LastSeq + 1,
 			AckPolicy:      AckNone,
 			AckWait:        48 * time.Hour,
 			MaxDeliver:     1,
@@ -1367,7 +1376,8 @@ func (mset *stream) setupMirrorConsumer() error {
 	}
 
 	// Only use start optionals on first time.
-	if state.Msgs == 0 {
+	if state.Msgs == 0 && state.FirstSeq == 0 {
+		req.Config.OptStartSeq = 0
 		if mset.cfg.Mirror.OptStartSeq > 0 {
 			req.Config.OptStartSeq = mset.cfg.Mirror.OptStartSeq
 		} else if mset.cfg.Mirror.OptStartTime != nil {
@@ -1430,6 +1440,7 @@ func (mset *stream) setupMirrorConsumer() error {
 					mset.mirror.err = nil
 					mset.mirror.sub = sub
 					mset.mirror.last = time.Now()
+					mset.mirror.dseq = 1
 				}
 				mset.mu.Unlock()
 			}
@@ -2290,11 +2301,9 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		accName = mset.acc.Name
 	}
 
-	doAck := !mset.cfg.NoAck
-	pubAck := mset.pubAck
-	jsa := mset.jsa
-	stype := mset.cfg.Storage
-	name := mset.cfg.Name
+	doAck, pubAck := !mset.cfg.NoAck, mset.pubAck
+	js, jsa := mset.js, mset.jsa
+	name, stype := mset.cfg.Name, mset.cfg.Storage
 	maxMsgSize := int(mset.cfg.MaxMsgSize)
 	numConsumers := len(mset.consumers)
 	interestRetention := mset.cfg.Retention == InterestPolicy
@@ -2410,6 +2419,24 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			mset.outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0, nil})
 		}
 		return ErrMaxPayload
+	}
+
+	// Check to see if we have exceeded our limits.
+	if js.limitsExceeded(stype) {
+		s.resourcesExeededError()
+		mset.clfs++
+		mset.mu.Unlock()
+		if canRespond {
+			resp.PubAck = &PubAck{Stream: name}
+			resp.Error = jsInsufficientErr
+			b, _ := json.Marshal(resp)
+			mset.outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0, nil})
+		}
+		// Stepdown regardless.
+		if node := mset.raftNode(); node != nil {
+			node.StepDown()
+		}
+		return ErrJetStreamResourcesExceeded
 	}
 
 	var noInterest bool
