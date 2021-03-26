@@ -27,15 +27,15 @@ before_script:
 - staticcheck $GO_LIST
 script:
 - set -e
-- go test -i ./...
-- go test -v -run=TestNoRace --failfast -p=1 ./...
-- if [[ "$TRAVIS_GO_VERSION" =~ 1.15 ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race -p=1 --failfast ./...; fi
+- if [[ $TRAVIS_TAG ]]; then go test -v -run=TestVersionMatchesTag ./server; fi
+- if [[ ! $TRAVIS_TAG ]]; then go test -v -run=TestNoRace --failfast -p=1 ./...; fi
+- if [[ ! $TRAVIS_TAG ]]; then if [[ "$TRAVIS_GO_VERSION" =~ 1.15 ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race -p=1 --failfast ./...; fi; fi
 - set +e
 
 deploy:
   provider: script
   cleanup: true
-  script: curl -sL http://git.io/goreleaser | bash
+  script: curl -sL http://git.io/goreleaser | VERSION=v0.160.0 bash
   on:
     tags: true
     condition: $TRAVIS_GO_VERSION =~ 1.16
