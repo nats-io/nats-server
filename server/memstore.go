@@ -492,8 +492,11 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 	}
 
 	if ms.scb != nil {
+		// We do not want to hold any locks here.
+		ms.mu.Unlock()
 		delta := int64(ss)
 		ms.scb(-1, -delta, seq, sm.subj)
+		ms.mu.Lock()
 	}
 
 	return ok

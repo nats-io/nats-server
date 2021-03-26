@@ -3369,7 +3369,7 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 	}
 	connect := func(url string, credsfile string, acc string, srvs ...*Server) {
 		t.Helper()
-		nc := natsConnect(t, url, nats.UserCredentials(credsfile))
+		nc := natsConnect(t, url, nats.UserCredentials(credsfile), nats.Timeout(5*time.Second))
 		nc.Close()
 		require_NoLocalOrRemoteConnections(acc, srvs...)
 	}
