@@ -2826,6 +2826,62 @@ func TestLeafNodeWSGossip(t *testing.T) {
 	}
 }
 
+// This test was showing an issue if one set maxBufSize to very small value,
+// such as maxBufSize = 10. With such small value, we would get a corruption
+// in that LMSG would arrive with missing bytes. We are now always making
+// a copy when dealing with messages that are bigger than maxBufSize.
+func TestLeafNodeWSNoBufferCorruption(t *testing.T) {
+	o := testDefaultLeafNodeWSOptions()
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	lo1 := testDefaultRemoteLeafNodeWSOptions(t, o, false)
+	lo1.LeafNode.ReconnectInterval = 15 * time.Millisecond
+	ln1 := RunServer(lo1)
+	defer ln1.Shutdown()
+
+	lo2 := DefaultOptions()
+	lo2.Cluster.Name = "LN"
+	lo2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", lo1.Cluster.Port))
+	ln2 := RunServer(lo2)
+	defer ln2.Shutdown()
+
+	checkClusterFormed(t, ln1, ln2)
+
+	checkLeafNodeConnected(t, s)
+	checkLeafNodeConnected(t, ln1)
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+	sub := natsSubSync(t, nc, "foo")
+
+	nc1 := natsConnect(t, ln1.ClientURL())
+	defer nc1.Close()
+
+	nc2 := natsConnect(t, ln2.ClientURL())
+	defer nc2.Close()
+	sub2 := natsSubSync(t, nc2, "foo")
+
+	checkSubInterest(t, s, globalAccountName, "foo", time.Second)
+	checkSubInterest(t, ln2, globalAccountName, "foo", time.Second)
+	checkSubInterest(t, ln1, globalAccountName, "foo", time.Second)
+
+	payload := make([]byte, 100*1024)
+	for i := 0; i < len(payload); i++ {
+		payload[i] = 'A'
+	}
+	natsPub(t, nc1, "foo", payload)
+
+	checkMsgRcv := func(sub *nats.Subscription) {
+		msg := natsNexMsg(t, sub, time.Second)
+		if !bytes.Equal(msg.Data, payload) {
+			t.Fatalf("Invalid message content: %q", msg.Data)
+		}
+	}
+	checkMsgRcv(sub2)
+	checkMsgRcv(sub)
+}
+
 func TestLeafNodeStreamImport(t *testing.T) {
 	o1 := DefaultOptions()
 	o1.LeafNode.Port = -1
