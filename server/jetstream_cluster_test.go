@@ -24,6 +24,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -4176,6 +4177,71 @@ func TestJetStreamClusterStreamPerf(t *testing.T) {
 
 	tt := time.Since(start)
 	fmt.Printf("Took %v to send %d msgs with %d producers and R=3!\n", tt, toSend, numProducers)
+	fmt.Printf("%.0f msgs/sec\n\n", float64(toSend)/tt.Seconds())
+}
+
+func TestJetStreamClusterConsumerPerf(t *testing.T) {
+	// Comment out to run, holding place for now.
+	skip(t)
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	toSend := 500000
+	msg := make([]byte, 64)
+	rand.Read(msg)
+
+	for i := 0; i < toSend; i++ {
+		nc.Publish("TEST", msg)
+	}
+	nc.Flush()
+
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		if err != nil {
+			return fmt.Errorf("Unexpected error: %v", err)
+		}
+		if si.State.Msgs != uint64(toSend) {
+			return fmt.Errorf("Expected to have %d messages, got %d", toSend, si.State.Msgs)
+		}
+		return nil
+	})
+
+	received := int32(0)
+	deliverTo := "r"
+	done := make(chan bool)
+	total := int32(toSend)
+	var start time.Time
+
+	nc.Subscribe(deliverTo, func(m *nats.Msg) {
+		if r := atomic.AddInt32(&received, 1); r >= total {
+			done <- true
+		} else if r == 1 {
+			start = time.Now()
+		}
+	})
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{DeliverSubject: deliverTo, Durable: "gf"})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("Timed out?")
+	}
+	tt := time.Since(start)
+	fmt.Printf("Took %v to receive %d msgs\n", tt, toSend)
 	fmt.Printf("%.0f msgs/sec\n\n", float64(toSend)/tt.Seconds())
 }
 

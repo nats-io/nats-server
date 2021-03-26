@@ -228,6 +228,16 @@ type consumer struct {
 	node    RaftNode
 	infoSub *subscription
 	lqsent  time.Time
+
+	// R>1 proposals
+	pch   chan struct{}
+	phead *proposal
+	ptail *proposal
+}
+
+type proposal struct {
+	data []byte
+	next *proposal
 }
 
 const (
@@ -734,10 +744,19 @@ func (o *consumer) setLeader(isLeader bool) {
 		// Recreate quit channel.
 		o.qch = make(chan struct{})
 		qch := o.qch
+		node := o.node
+		if node != nil && o.pch == nil {
+			o.pch = make(chan struct{}, 1)
+		}
 		o.mu.Unlock()
 
 		// Now start up Go routine to deliver msgs.
 		go o.loopAndGatherMsgs(qch)
+
+		// If we are R>1 spin up our proposal loop.
+		if node != nil {
+			go o.loopAndForwardProposals(qch)
+		}
 
 	} else {
 		// Shutdown the go routines and the subscriptions.
@@ -1138,7 +1157,69 @@ func (o *consumer) updateSkipped() {
 	b[0] = byte(updateSkipOp)
 	var le = binary.LittleEndian
 	le.PutUint64(b[1:], o.sseq)
-	o.node.Propose(b[:])
+	o.propose(b[:])
+}
+
+func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
+	o.mu.RLock()
+	node, pch := o.node, o.pch
+	o.mu.RUnlock()
+
+	if node == nil || pch == nil {
+		return
+	}
+
+	forwardProposals := func() {
+		o.mu.Lock()
+		proposal := o.phead
+		o.phead, o.ptail = nil, nil
+		o.mu.Unlock()
+		// 256k max for now per batch.
+		const maxBatch = 256 * 1024
+		var entries []*Entry
+		for sz := 0; proposal != nil; proposal = proposal.next {
+			entries = append(entries, &Entry{EntryNormal, proposal.data})
+			sz += len(proposal.data)
+			if sz > maxBatch {
+				node.ProposeDirect(entries)
+				sz, entries = 0, entries[:0]
+			}
+		}
+		if len(entries) > 0 {
+			node.ProposeDirect(entries)
+		}
+	}
+
+	for {
+		select {
+		case <-qch:
+			forwardProposals()
+			return
+		case <-pch:
+			forwardProposals()
+		}
+	}
+}
+
+// Lock should be held.
+func (o *consumer) propose(entry []byte) {
+	var notify bool
+	p := &proposal{data: entry}
+	if o.phead == nil {
+		o.phead = p
+		notify = true
+	} else {
+		o.ptail.next = p
+	}
+	o.ptail = p
+
+	// Kick our looper routine if needed.
+	if notify {
+		select {
+		case o.pch <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // Lock should be held.
@@ -1153,7 +1234,7 @@ func (o *consumer) updateDelivered(dseq, sseq, dc uint64, ts int64) {
 		n += binary.PutUvarint(b[n:], sseq)
 		n += binary.PutUvarint(b[n:], dc)
 		n += binary.PutVarint(b[n:], ts)
-		o.node.Propose(b[:n])
+		o.propose(b[:n])
 	}
 	if o.store != nil {
 		// Update local state always.
@@ -1170,7 +1251,7 @@ func (o *consumer) updateAcks(dseq, sseq uint64) {
 		n := 1
 		n += binary.PutUvarint(b[n:], dseq)
 		n += binary.PutUvarint(b[n:], sseq)
-		o.node.Propose(b[:n])
+		o.propose(b[:n])
 	} else if o.store != nil {
 		o.store.UpdateAcks(dseq, sseq)
 	}
