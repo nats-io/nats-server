@@ -1701,9 +1701,14 @@ func TestLeafNodeTLSVerifyAndMapCfgPass(t *testing.T) {
 		return nil
 	})
 	// Make sure that the user name in the url was ignored and a warning printed
-	for w := range l.triggerChan {
-		if w == `User "user-provided-in-url" found in connect proto, but user required from cert` {
-			break
+	for {
+		select {
+		case w := <-l.triggerChan:
+			if w == `User "user-provided-in-url" found in connect proto, but user required from cert` {
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("Did not get expected warning")
 		}
 	}
 }
