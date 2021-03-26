@@ -1619,6 +1619,141 @@ func TestLeafNodeTLSVerifyAndMap(t *testing.T) {
 	}
 }
 
+type chanLogger struct {
+	DummyLogger
+	triggerChan chan string
+}
+
+func (l *chanLogger) Warnf(format string, v ...interface{}) {
+	l.triggerChan <- fmt.Sprintf(format, v...)
+}
+
+func (l *chanLogger) Errorf(format string, v ...interface{}) {
+	l.triggerChan <- fmt.Sprintf(format, v...)
+}
+
+const (
+	testLeafNodeTLSVerifyAndMapSrvA = `
+listen: 127.0.0.1:-1
+leaf {
+	listen: "127.0.0.1:-1"
+	tls {
+		cert_file: "../test/configs/certs/server-cert.pem"
+		key_file:  "../test/configs/certs/server-key.pem"
+		ca_file:   "../test/configs/certs/ca.pem"
+		timeout: 2
+		verify_and_map: true
+	}
+	authorization {
+		users [{
+			user: "%s"
+		}]
+	}
+}
+`
+	testLeafNodeTLSVerifyAndMapSrvB = `
+listen: -1
+leaf {
+	remotes [
+		{
+			url: "tls://user-provided-in-url@localhost:%d"
+			tls {
+				cert_file: "../test/configs/certs/server-cert.pem"
+				key_file:  "../test/configs/certs/server-key.pem"
+				ca_file:   "../test/configs/certs/ca.pem"
+			}
+		}
+	]
+}`
+)
+
+func TestLeafNodeTLSVerifyAndMapCfgPass(t *testing.T) {
+	l := &chanLogger{triggerChan: make(chan string, 100)}
+	defer close(l.triggerChan)
+
+	confA := createConfFile(t, []byte(fmt.Sprintf(testLeafNodeTLSVerifyAndMapSrvA, "localhost")))
+	defer os.Remove(confA)
+	srvA, optsA := RunServerWithConfig(confA)
+	defer srvA.Shutdown()
+	srvA.SetLogger(l, true, true)
+
+	confB := createConfFile(t, []byte(fmt.Sprintf(testLeafNodeTLSVerifyAndMapSrvB, optsA.LeafNode.Port)))
+	defer os.Remove(confB)
+	ob := LoadConfig(confB)
+	ob.LeafNode.ReconnectInterval = 50 * time.Millisecond
+	srvB := RunServer(ob)
+	defer srvB.Shutdown()
+
+	// Now make sure that the leaf node connection is up and the correct account was picked
+	checkFor(t, 10*time.Second, 10*time.Millisecond, func() error {
+		for _, srv := range []*Server{srvA, srvB} {
+			if nln := srv.NumLeafNodes(); nln != 1 {
+				return fmt.Errorf("Number of leaf nodes is %d", nln)
+			}
+			if leafz, err := srv.Leafz(nil); err != nil {
+				if len(leafz.Leafs) != 1 {
+					return fmt.Errorf("Number of leaf nodes returned by LEAFZ is not one: %d", len(leafz.Leafs))
+				} else if leafz.Leafs[0].Account != DEFAULT_GLOBAL_ACCOUNT {
+					return fmt.Errorf("Account used is not $G: %s", leafz.Leafs[0].Account)
+				}
+			}
+		}
+		return nil
+	})
+	// Make sure that the user name in the url was ignored and a warning printed
+	for {
+		select {
+		case w := <-l.triggerChan:
+			if w == `User "user-provided-in-url" found in connect proto, but user required from cert` {
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("Did not get expected warning")
+		}
+	}
+}
+
+func TestLeafNodeTLSVerifyAndMapCfgFail(t *testing.T) {
+	l := &chanLogger{triggerChan: make(chan string, 100)}
+	defer close(l.triggerChan)
+
+	// use certificate with SAN localhost, but configure the server to not accept it
+	// instead provide a name matching the user (to be matched by failed
+	confA := createConfFile(t, []byte(fmt.Sprintf(testLeafNodeTLSVerifyAndMapSrvA, "user-provided-in-url")))
+	defer os.Remove(confA)
+	srvA, optsA := RunServerWithConfig(confA)
+	defer srvA.Shutdown()
+	srvA.SetLogger(l, true, true)
+
+	confB := createConfFile(t, []byte(fmt.Sprintf(testLeafNodeTLSVerifyAndMapSrvB, optsA.LeafNode.Port)))
+	defer os.Remove(confB)
+	ob := LoadConfig(confB)
+	ob.LeafNode.ReconnectInterval = 50 * time.Millisecond
+	srvB := RunServer(ob)
+	defer srvB.Shutdown()
+
+	// Now make sure that the leaf node connection is down
+	checkFor(t, 10*time.Second, 10*time.Millisecond, func() error {
+		for _, srv := range []*Server{srvA, srvB} {
+			if nln := srv.NumLeafNodes(); nln != 0 {
+				return fmt.Errorf("Number of leaf nodes is %d", nln)
+			}
+		}
+		return nil
+	})
+	// Make sure that the connection was closed for the right reason
+	for {
+		select {
+		case w := <-l.triggerChan:
+			if strings.Contains(w, ErrAuthentication.Error()) {
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("Did not get expected warning")
+		}
+	}
+}
+
 func TestLeafNodeOriginClusterInfo(t *testing.T) {
 	hopts := DefaultOptions()
 	hopts.ServerName = "hub"
