@@ -240,6 +240,10 @@ type Server struct {
 
 	// For mapping from a raft node name back to a server name and cluster.
 	nodeToInfo sync.Map
+
+	// For out of resources to not log errors too fast.
+	rerrMu   sync.Mutex
+	rerrLast time.Time
 }
 
 type nodeInfo struct {
@@ -808,10 +812,10 @@ func (s *Server) globalAccountOnly() bool {
 	return !hasOthers
 }
 
-// Determines if this server is in standalone mode, meaning no routes or gateways or leafnodes.
+// Determines if this server is in standalone mode, meaning no routes or gateways.
 func (s *Server) standAloneMode() bool {
 	opts := s.getOpts()
-	return opts.Cluster.Port == 0 && opts.LeafNode.Port == 0 && opts.Gateway.Port == 0
+	return opts.Cluster.Port == 0 && opts.Gateway.Port == 0
 }
 
 func (s *Server) configuredRoutes() int {

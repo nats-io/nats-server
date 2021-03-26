@@ -1371,8 +1371,6 @@ func (s *Server) reloadAuthorization() {
 			s.accounts.Store(s.sys.account.Name, s.sys.account)
 		}
 		// Double check any JetStream configs.
-		// For now, seems like JS as a whole cannot be enabled/disabled with
-		// config reload, so check only if was started with JS enabled.
 		checkJetStream = s.js != nil
 	} else if s.opts.AccountResolver != nil {
 		s.configureResolver()
@@ -1471,22 +1469,16 @@ func (s *Server) reloadAuthorization() {
 		}
 	}
 
-	// We will double check all JetStream configs on a reload.
-	if checkJetStream {
-		var err error
-		s.getJetStream().clearResources()
-		if s.globalAccountOnly() {
-			err = s.GlobalAccount().EnableJetStream(nil)
-		} else {
-			err = s.configAllJetStreamAccounts()
-		}
-		if err != nil {
-			s.Errorf(err.Error())
-		}
-	}
-
 	if res := s.AccountResolver(); res != nil {
 		res.Reload()
+	}
+
+	// We will double check all JetStream configs on a reload.
+	if checkJetStream {
+		s.getJetStream().clearResources()
+		if err := s.enableJetStreamAccounts(); err != nil {
+			s.Errorf(err.Error())
+		}
 	}
 }
 

@@ -1553,13 +1553,15 @@ func (s *Server) sysSubscribeInternal(subject string, cb msgHandler) (*subscript
 }
 
 func (s *Server) systemSubscribe(subject, queue string, internalOnly bool, c *client, cb msgHandler) (*subscription, error) {
+	s.mu.Lock()
 	if !s.eventsEnabled() {
+		s.mu.Unlock()
 		return nil, ErrNoSysAccount
 	}
 	if cb == nil {
+		s.mu.Unlock()
 		return nil, fmt.Errorf("undefined message handler")
 	}
-	s.mu.Lock()
 	if c == nil {
 		c = s.sys.client
 	}

@@ -199,6 +199,9 @@ var (
 
 	// ErrJetStreamNotClustered is returned when a call requires clustering and we are not.
 	ErrJetStreamNotClustered = errors.New("jetstream not in clustered mode")
+
+	// ErrJetStreamResourcesExceeded is returned when a call would exceed internal resource limits.
+	ErrJetStreamResourcesExceeded = errors.New("jetstream resources exceeded for server")
 )
 
 // configErr is a configuration error.

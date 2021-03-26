@@ -195,7 +195,8 @@ type consumer struct {
 	pblimit           int
 	maxpb             int
 	pbytes            int
-	pfcs              int
+	fcsz              int
+	fcid              string
 	fcSub             *subscription
 	outq              *jsOutQ
 	pending           map[uint64]*Pending
@@ -2067,6 +2068,11 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			}
 			// Reset our idle heartbeat timer.
 			hb.Reset(hbd)
+
+			// Now check on flowcontrol if enabled. Make sure if we have any outstanding to resend.
+			if o.fcOut() {
+				o.sendFlowControl()
+			}
 		}
 	}
 }
@@ -2135,22 +2141,21 @@ func (o *consumer) needFlowControl() bool {
 		return false
 	}
 	// Decide whether to send a flow control message which we will need the user to respond.
-	// We send when we are over 50% of the current window.
-	if o.pfcs == 0 && o.pbytes > o.maxpb/2 {
+	// We send when we are over 50% of our current window limit.
+	if o.fcid == _EMPTY_ && o.pbytes > o.maxpb/2 {
 		return true
 	}
 	return false
 }
 
 func (o *consumer) processFlowControl(_ *subscription, c *client, subj, _ string, _ []byte) {
-	sz, err := strconv.Atoi(tokenAt(subj, 5))
-	if err != nil {
-		o.srv.Warnf("Bad flow control response subject: %q", subj)
-		return
-	}
-
 	o.mu.Lock()
 	defer o.mu.Unlock()
+
+	// Ignore if not the latest we have sent out.
+	if subj != o.fcid {
+		return
+	}
 
 	// For slow starts and ramping up.
 	if o.maxpb < o.pblimit {
@@ -2161,18 +2166,39 @@ func (o *consumer) processFlowControl(_ *subscription, c *client, subj, _ string
 	}
 
 	// Update accounting.
-	o.pbytes -= sz
-	o.pfcs--
+	o.pbytes -= o.fcsz
+	o.fcid, o.fcsz = _EMPTY_, 0
 
 	// In case they are sent out of order or we get duplicates etc.
 	if o.pbytes < 0 {
 		o.pbytes = 0
 	}
-	if o.pfcs < 0 {
-		o.pfcs = 0
-	}
 
 	o.signalNewMessages()
+}
+
+// Lock should be held.
+func (o *consumer) fcReply() string {
+	var sb strings.Builder
+	sb.WriteString(jsFlowControlPre)
+	sb.WriteString(o.stream)
+	sb.WriteByte(btsep)
+	sb.WriteString(o.name)
+	sb.WriteByte(btsep)
+	var b [4]byte
+	rn := rand.Int63()
+	for i, l := 0, rn; i < len(b); i++ {
+		b[i] = digits[l%base]
+		l /= base
+	}
+	sb.Write(b[:])
+	return sb.String()
+}
+
+func (o *consumer) fcOut() bool {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.fcid != _EMPTY_
 }
 
 // sendFlowControl will send a flow control packet to the consumer.
@@ -2181,11 +2207,10 @@ func (o *consumer) sendFlowControl() {
 	if !o.isPushMode() {
 		return
 	}
-	subj := o.cfg.DeliverSubject
-	o.pfcs++
-	reply := fmt.Sprintf(jsFlowControlT, o.stream, o.name, o.pbytes)
+	subj, rply := o.cfg.DeliverSubject, o.fcReply()
+	o.fcsz, o.fcid = o.pbytes, rply
 	hdr := []byte("NATS/1.0 100 FlowControl Request\r\n\r\n")
-	o.outq.send(&jsPubMsg{subj, _EMPTY_, reply, hdr, nil, nil, 0, nil})
+	o.outq.send(&jsPubMsg{subj, _EMPTY_, rply, hdr, nil, nil, 0, nil})
 }
 
 // Tracks our outstanding pending acks. Only applicable to AckExplicit mode.
