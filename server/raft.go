@@ -35,6 +35,7 @@ import (
 
 type RaftNode interface {
 	Propose(entry []byte) error
+	ProposeDirect(entries []*Entry) error
 	ForwardProposal(entry []byte) error
 	InstallSnapshot(snap []byte) error
 	SendSnapshot(snap []byte) error
@@ -588,9 +589,29 @@ func (n *raft) Propose(data []byte) error {
 	propc := n.propc
 	n.RUnlock()
 
-	// For entering and exiting the system, proposals and apply we
-	// will block.
+	// For entering and exiting the system, proposals and apply
+	// we will block.
 	propc <- &Entry{EntryNormal, data}
+	return nil
+}
+
+// ProposeDirect will propose entries directly.
+// This should only be called on the leader.
+func (n *raft) ProposeDirect(entries []*Entry) error {
+	n.RLock()
+	if n.state != Leader {
+		n.RUnlock()
+		n.debug("Proposal ignored, not leader")
+		return errNotLeader
+	}
+	// Error if we had a previous write error.
+	if werr := n.werr; werr != nil {
+		n.RUnlock()
+		return werr
+	}
+	n.RUnlock()
+
+	n.sendAppendEntry(entries)
 	return nil
 }
 
