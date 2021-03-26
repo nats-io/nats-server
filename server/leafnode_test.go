@@ -1722,7 +1722,9 @@ func TestLeafNodeTLSVerifyAndMapCfgFail(t *testing.T) {
 
 	confB := createConfFile(t, []byte(fmt.Sprintf(testLeafNodeTLSVerifyAndMapSrvB, optsA.LeafNode.Port)))
 	defer os.Remove(confB)
-	srvB, _ := RunServerWithConfig(confB)
+	ob := LoadConfig(confB)
+	ob.LeafNode.ReconnectInterval = 50 * time.Millisecond
+	srvB := RunServer(ob)
 	defer srvB.Shutdown()
 
 	// Now make sure that the leaf node connection is down
