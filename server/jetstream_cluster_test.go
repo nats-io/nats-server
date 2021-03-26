@@ -5132,6 +5132,8 @@ func TestJetStreamClusterServerLimits(t *testing.T) {
 		)
 	}
 
+	c.waitOnLeader()
+
 	// Now disk.
 	max_disk := uint64(8*1024*1024) + uint64(len(msg))
 

@@ -578,6 +578,9 @@ func (js *jetStream) isGroupLeaderless(rg *raftGroup) bool {
 	}
 	// If we don't have a leader.
 	if rg.node.GroupLeader() == _EMPTY_ {
+		if rg.node.HadPreviousLeader() {
+			return true
+		}
 		// Make sure we have been running for enough time.
 		if time.Since(rg.node.Created()) > lostQuorumInterval {
 			return true
@@ -4524,9 +4527,9 @@ func (mset *stream) handleClusterStreamInfoRequest(sub *subscription, c *client,
 		return
 	}
 
-	// If we are here we are in a compromised state. If we are out of resources we will not answer either.
+	// If we are here we are in a compromised state due to server limits let someone else answer if they can.
 	if !isLeader && js.limitsExceeded(stype) {
-		return
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	si := &StreamInfo{

@@ -48,6 +48,7 @@ type RaftNode interface {
 	Quorum() bool
 	Current() bool
 	GroupLeader() string
+	HadPreviousLeader() bool
 	StepDown(preferred ...string) error
 	Campaign() error
 	ID() string
@@ -151,6 +152,7 @@ type raft struct {
 	c        *client
 	js       *jetStream
 	dflag    bool
+	pleader  bool
 
 	// Subjects for votes, updates, replays.
 	psubj  string
@@ -1027,6 +1029,13 @@ func (n *raft) Current() bool {
 	n.RLock()
 	defer n.RUnlock()
 	return n.isCurrent()
+}
+
+// HadPreviousLeader indicates if this group ever had a leader.
+func (n *raft) HadPreviousLeader() bool {
+	n.RLock()
+	defer n.RUnlock()
+	return n.pleader
 }
 
 // GroupLeader returns the current leader of the group.
@@ -2294,6 +2303,14 @@ func (n *raft) truncateWal(ae *appendEntry) {
 	n.pterm = ae.term
 }
 
+// Lock should be held
+func (n *raft) updateLeader(newLeader string) {
+	n.leader = newLeader
+	if !n.pleader && newLeader != noLeader {
+		n.pleader = true
+	}
+}
+
 // processAppendEntry will process an appendEntry.
 func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	n.Lock()
@@ -2404,7 +2421,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 
 	if isNew && n.leader != ae.leader && n.state == Follower {
 		n.debug("AppendEntry updating leader to %q", ae.leader)
-		n.leader = ae.leader
+		n.updateLeader(ae.leader)
 		n.writeTermVote()
 		n.resetElectionTimeout()
 		n.updateLeadChange(false)
@@ -3101,7 +3118,7 @@ func (n *raft) switchToFollower(leader string) {
 	}
 	n.debug("Switching to follower")
 	n.lxfer = false
-	n.leader = leader
+	n.updateLeader(leader)
 	n.switchState(Follower)
 }
 
@@ -3124,7 +3141,7 @@ func (n *raft) switchToCandidate() {
 	// Increment the term.
 	n.term++
 	// Clear current Leader.
-	n.leader = noLeader
+	n.updateLeader(noLeader)
 	n.switchState(Candidate)
 }
 
@@ -3135,7 +3152,7 @@ func (n *raft) switchToLeader() {
 		return
 	}
 	n.debug("Switching to leader")
-	n.leader = n.id
+	n.updateLeader(n.id)
 	n.lxfer = false
 	n.switchState(Leader)
 }
