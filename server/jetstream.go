@@ -360,7 +360,11 @@ func (s *Server) DisableJetStream() error {
 func (s *Server) enableJetStreamAccounts() error {
 	// If we have no configured accounts setup then setup imports on global account.
 	if s.globalAccountOnly() {
-		if err := s.GlobalAccount().EnableJetStream(nil); err != nil {
+		gacc := s.GlobalAccount()
+		if err := s.configJetStream(gacc); err != nil {
+			return err
+		}
+		if err := gacc.EnableJetStream(nil); err != nil {
 			return fmt.Errorf("Error enabling jetstream on the global account")
 		}
 	} else if err := s.configAllJetStreamAccounts(); err != nil {
