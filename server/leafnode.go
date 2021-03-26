@@ -2007,9 +2007,6 @@ func (c *client) leafNodeSolicitWSConnection(opts *Options, rURL *url.URL, remot
 		}
 	}
 
-	var req *http.Request
-	var wsKey string
-
 	// For http request, we need the passed URL to contain either http or https scheme.
 	scheme := "http"
 	if tlsRequired {
@@ -2028,7 +2025,7 @@ func (c *client) leafNodeSolicitWSConnection(opts *Options, rURL *url.URL, remot
 	}
 	ustr := fmt.Sprintf("%s://%s%s", scheme, rURL.Host, path)
 	u, _ := url.Parse(ustr)
-	req = &http.Request{
+	req := &http.Request{
 		Method:     "GET",
 		URL:        u,
 		Proto:      "HTTP/1.1",

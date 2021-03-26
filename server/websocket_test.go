@@ -2547,8 +2547,12 @@ func TestWSFrameOutbound(t *testing.T) {
 			if len(res[4]) != wsFrameSizeForBrowsers {
 				t.Fatalf("Big frame should have been limited to %v, got %v", wsFrameSizeForBrowsers, len(res[4]))
 			}
-			if string(res[6]) != string(bufs[3]) {
-				t.Fatalf("Frame 6 should be %q, got %q", bufs[3], res[6])
+			if test.maskingWrite {
+				key := getKey(res[5])
+				wsMaskBuf(key, res[6])
+			}
+			if string(res[6]) != "then some more" {
+				t.Fatalf("Frame 6 incorrect: %q", res[6])
 			}
 
 			bufs = nil
@@ -2606,8 +2610,26 @@ func TestWSFrameOutbound(t *testing.T) {
 			if len(res[3]) != wsFrameSizeForBrowsers-5 {
 				t.Fatalf("Big frame should have been limited to %v, got %v", wsFrameSizeForBrowsers, len(res[4]))
 			}
-			if string(res[5]) != string(bufs[2]) {
-				t.Fatalf("Frame 6 should be %q, got %q", bufs[2], res[5])
+			if test.maskingWrite {
+				key := getKey(res[4])
+				wsMaskBuf(key, res[5])
+			}
+			if string(res[5]) != "then some more" {
+				t.Fatalf("Frame 6 incorrect %q", res[5])
+			}
+
+			bufs = nil
+			c.out.pb = 0
+			c.ws.fs = 0
+			c.ws.frames = nil
+			c.ws.browser = true
+			bufs = append(bufs, make([]byte, wsFrameSizeForBrowsers+100))
+			c.mu.Lock()
+			c.out.nb = bufs
+			res, _ = c.collapsePtoNB()
+			c.mu.Unlock()
+			if len(res) != 4 {
+				t.Fatalf("Unexpected number of frames: %v", len(res))
 			}
 		})
 	}

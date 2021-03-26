@@ -1859,17 +1859,13 @@ func (c *client) maxPayloadViolation(sz int, max int32) {
 }
 
 // queueOutbound queues data for a clientconnection.
-// Returns if the data is referenced or not. If referenced, the caller
-// should not reuse the `data` array.
 // Lock should be held.
-func (c *client) queueOutbound(data []byte) bool {
+func (c *client) queueOutbound(data []byte) {
 	// Do not keep going if closed
 	if c.isClosed() {
-		return false
+		return
 	}
 
-	// Assume data will not be referenced
-	referenced := false
 	// Add to pending bytes total.
 	c.out.pb += int64(len(data))
 
@@ -1882,7 +1878,7 @@ func (c *client) queueOutbound(data []byte) bool {
 		atomic.AddInt64(&c.srv.slowConsumers, 1)
 		c.Noticef("Slow Consumer Detected: MaxPending of %d Exceeded", c.out.mp)
 		c.markConnAsClosed(SlowConsumerPendingBytes)
-		return false
+		return
 	}
 
 	if c.out.p == nil && len(data) < maxBufSize {
@@ -1912,34 +1908,30 @@ func (c *client) queueOutbound(data []byte) bool {
 			c.out.nb = append(c.out.nb, c.out.p)
 			c.out.p = nil
 		}
-		// Check for a big message, and if found place directly on nb
-		// FIXME(dlc) - do we need signaling of ownership here if we want len(data) < maxBufSize
-		if len(data) > maxBufSize {
-			c.out.nb = append(c.out.nb, data)
-			referenced = true
-		} else {
-			// We will copy to primary.
-			if c.out.p == nil {
-				// Grow here
-				if (c.out.sz << 1) <= maxBufSize {
-					c.out.sz <<= 1
-				}
-				if len(data) > int(c.out.sz) {
-					c.out.p = make([]byte, 0, len(data))
+		// TODO: It was found with LeafNode and Websocket that referencing
+		// the data buffer when > maxBufSize would cause corruption
+		// (reproduced with small maxBufSize=10 and TestLeafNodeWSNoBufferCorruption).
+		// So always make a copy for now.
+
+		// We will copy to primary.
+		if c.out.p == nil {
+			// Grow here
+			if (c.out.sz << 1) <= maxBufSize {
+				c.out.sz <<= 1
+			}
+			if len(data) > int(c.out.sz) {
+				c.out.p = make([]byte, 0, len(data))
+			} else {
+				if c.out.s != nil && cap(c.out.s) >= int(c.out.sz) { // TODO(dlc) - Size mismatch?
+					c.out.p = c.out.s
+					c.out.s = nil
 				} else {
-					if c.out.s != nil && cap(c.out.s) >= int(c.out.sz) { // TODO(dlc) - Size mismatch?
-						c.out.p = c.out.s
-						c.out.s = nil
-					} else {
-						c.out.p = make([]byte, 0, c.out.sz)
-					}
+					c.out.p = make([]byte, 0, c.out.sz)
 				}
 			}
-			c.out.p = append(c.out.p, data...)
 		}
-	} else {
-		c.out.p = append(c.out.p, data...)
 	}
+	c.out.p = append(c.out.p, data...)
 
 	// Check here if we should create a stall channel if we are falling behind.
 	// We do this here since if we wait for consumer's writeLoop it could be
@@ -1947,8 +1939,6 @@ func (c *client) queueOutbound(data []byte) bool {
 	if c.out.pb > c.out.mp/2 && c.out.stc == nil {
 		c.out.stc = make(chan struct{})
 	}
-
-	return referenced
 }
 
 // Assume the lock is held upon entry.
