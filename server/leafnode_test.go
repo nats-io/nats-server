@@ -1742,9 +1742,14 @@ func TestLeafNodeTLSVerifyAndMapCfgFail(t *testing.T) {
 		return nil
 	})
 	// Make sure that the connection was closed for the right reason
-	for w := range l.triggerChan {
-		if strings.Contains(w, ErrAuthentication.Error()) {
-			break
+	for {
+		select {
+		case w := <-l.triggerChan:
+			if strings.Contains(w, ErrAuthentication.Error()) {
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("Did not get expected warning")
 		}
 	}
 }
