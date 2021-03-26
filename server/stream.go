@@ -1235,8 +1235,8 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 			mset.mirror.cname = tokenAt(m.rply, 4)
 			mset.mirror.dseq, mset.mirror.sseq = dseq, sseq
 		} else {
-			mset.retryMirrorConsumer()
 			mset.mu.Unlock()
+			mset.retryMirrorConsumer()
 			return false
 		}
 	}

@@ -1302,10 +1302,7 @@ func (jsa *jsAccount) checkBytesLimits(addBytes int64, storage StorageType) erro
 }
 
 func (jsa *jsAccount) acc() *Account {
-	//jsa.mu.RLock()
-	acc := jsa.account
-	//jsa.mu.RUnlock()
-	return acc
+	return jsa.account
 }
 
 // Delete the JetStream resources.
