@@ -4653,6 +4653,93 @@ func TestJetStreamCrossAccountMirrorsAndSources(t *testing.T) {
 
 }
 
+func TestJetStreamFailMirrorsAndSources(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterMirrorSourceImportsTempl, "C1", 3)
+	defer c.shutdown()
+
+	// Create source stream under RI account.
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s, nats.UserInfo("rip", "pass"))
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 2, Subjects: []string{"test.>"}}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	nc2, _ := jsClientConnect(t, s, nats.UserInfo("rip", "pass"))
+	defer nc2.Close()
+
+	testPrefix := func(testName, error string, cfg StreamConfig) {
+		t.Run(testName, func(t *testing.T) {
+			req, err := json.Marshal(cfg)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			resp, err := nc2.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			var scResp JSApiStreamCreateResponse
+			if err := json.Unmarshal(resp.Data, &scResp); err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if scResp.Error == nil {
+				t.Fatalf("Did expect an error but got none")
+			} else if !strings.Contains(scResp.Error.Description, error) {
+				t.Fatalf("Expected different error: %s", scResp.Error.Description)
+			}
+		})
+	}
+
+	testPrefix("mirror-bad-delierprefix", `prefix "test" overlaps with stream subject "test.>"`, StreamConfig{
+		Name:    "MY_MIRROR_TEST",
+		Storage: FileStorage,
+		Mirror: &StreamSource{
+			Name: "TEST",
+			External: &ExternalStream{
+				ApiPrefix: "RI.JS.API",
+				// this will result in test.test.> which test.> would match
+				DeliverPrefix: "test",
+			},
+		},
+	})
+	testPrefix("mirror-bad-apiprefix", `api prefix "$JS.API" must not overlap`, StreamConfig{
+		Name:    "MY_MIRROR_TEST",
+		Storage: FileStorage,
+		Mirror: &StreamSource{
+			Name: "TEST",
+			External: &ExternalStream{
+				ApiPrefix:     "$JS.API",
+				DeliverPrefix: "here",
+			},
+		},
+	})
+	testPrefix("source-bad-delierprefix", `prefix "test" overlaps with stream subject "test.>"`, StreamConfig{
+		Name:    "MY_SOURCE_TEST",
+		Storage: FileStorage,
+		Sources: []*StreamSource{{
+			Name: "TEST",
+			External: &ExternalStream{
+				ApiPrefix:     "RI.JS.API",
+				DeliverPrefix: "test",
+			},
+		},
+		},
+	})
+	testPrefix("source-bad-apiprefix", `api prefix "$JS.API" must not overlap`, StreamConfig{
+		Name:    "MY_SOURCE_TEST",
+		Storage: FileStorage,
+		Sources: []*StreamSource{{
+			Name: "TEST",
+			External: &ExternalStream{
+				ApiPrefix:     "$JS.API",
+				DeliverPrefix: "here",
+			},
+		},
+		},
+	})
+}
+
 func TestJetStreamClusterJSAPIImport(t *testing.T) {
 	c := createJetStreamClusterWithTemplate(t, jsClusterImportsTempl, "C1", 3)
 	defer c.shutdown()
