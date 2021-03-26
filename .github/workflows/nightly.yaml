@@ -28,7 +28,7 @@ jobs:
       - name: goreleaser
         uses: goreleaser/goreleaser-action@v2
         with:
-          version: latest
+          version: v0.160.0
           args: release --snapshot --config .goreleaser-nightly.yml
 
       - name: images
