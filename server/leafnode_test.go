@@ -1723,7 +1723,7 @@ func TestLeafNodeTLSVerifyAndMapCfgFail(t *testing.T) {
 	srvB, _ := RunServerWithConfig(confB)
 	defer srvB.Shutdown()
 
-	// Now make sure that the leaf node connection is up and the correct account was picked
+	// Now make sure that the leaf node connection is down
 	checkFor(t, 10*time.Second, 10*time.Millisecond, func() error {
 		for _, srv := range []*Server{srvA, srvB} {
 			if nln := srv.NumLeafNodes(); nln != 0 {
