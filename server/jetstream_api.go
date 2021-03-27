@@ -1173,11 +1173,14 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 		var exists bool
 		var maxMsgSize int32
 		if s.JetStreamIsClustered() {
-			js, _ := s.getJetStreamCluster()
-			if sa := js.streamAssignment(acc.Name, cfg.Mirror.Name); sa != nil {
-				maxMsgSize = sa.Config.MaxMsgSize
-				streamSubs = sa.Config.Subjects
-				exists = true
+			if js, _ := s.getJetStreamCluster(); js != nil {
+				js.mu.RLock()
+				if sa := js.streamAssignment(acc.Name, cfg.Mirror.Name); sa != nil {
+					maxMsgSize = sa.Config.MaxMsgSize
+					streamSubs = sa.Config.Subjects
+					exists = true
+				}
+				js.mu.RUnlock()
 			}
 		} else if mset, err := acc.lookupStream(cfg.Mirror.Name); err == nil {
 			maxMsgSize = mset.cfg.MaxMsgSize
@@ -1204,9 +1207,12 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 				continue
 			}
 			if s.JetStreamIsClustered() {
-				js, _ := s.getJetStreamCluster()
-				if sa := js.streamAssignment(acc.Name, src.Name); sa != nil {
-					streamSubs = append(streamSubs, sa.Config.Subjects...)
+				if js, _ := s.getJetStreamCluster(); js != nil {
+					js.mu.RLock()
+					if sa := js.streamAssignment(acc.Name, src.Name); sa != nil {
+						streamSubs = append(streamSubs, sa.Config.Subjects...)
+					}
+					js.mu.RUnlock()
 				}
 			} else if mset, err := acc.lookupStream(cfg.Mirror.Name); err == nil {
 				streamSubs = append(streamSubs, mset.cfg.Subjects...)
