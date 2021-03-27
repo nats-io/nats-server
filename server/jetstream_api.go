@@ -1206,22 +1206,33 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 			if src.External == nil {
 				continue
 			}
+			var exists bool
+			var maxMsgSize int32
 			if s.JetStreamIsClustered() {
 				if js, _ := s.getJetStreamCluster(); js != nil {
 					js.mu.RLock()
 					if sa := js.streamAssignment(acc.Name, src.Name); sa != nil {
+						maxMsgSize = sa.Config.MaxMsgSize
 						streamSubs = append(streamSubs, sa.Config.Subjects...)
+						exists = true
 					}
 					js.mu.RUnlock()
 				}
-			} else if mset, err := acc.lookupStream(cfg.Mirror.Name); err == nil {
+			} else if mset, err := acc.lookupStream(src.Name); err == nil {
+				maxMsgSize = mset.cfg.MaxMsgSize
 				streamSubs = append(streamSubs, mset.cfg.Subjects...)
+				exists = true
 			}
 			if src.External.DeliverPrefix != _EMPTY_ {
 				deliveryPrefixes = append(deliveryPrefixes, src.External.DeliverPrefix)
 			}
 			if src.External.ApiPrefix != _EMPTY_ {
 				apiPrefixes = append(apiPrefixes, src.External.ApiPrefix)
+			}
+			if exists && cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
+				resp.Error = &ApiError{Code: 400, Description: "stream source must have max message size >= target"}
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
 			}
 		}
 	}
