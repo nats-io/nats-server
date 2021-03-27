@@ -1234,7 +1234,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 	}
 	// check prefix overlap with subjects
 	for _, pfx := range deliveryPrefixes {
-		if pfx == "*" || pfx == ">" || strings.Contains(pfx, ".*") || strings.HasSuffix(pfx, ".>") {
+		if !IsValidPublishSubject(pfx) {
 			resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("stream external delivery prefix %q must not contain wildcards", pfx)}
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
