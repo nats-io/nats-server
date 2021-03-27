@@ -1142,6 +1142,32 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 		return
 	}
 
+	hasStream := func(streamName string) (bool, int32, []string) {
+		var exists bool
+		var maxMsgSize int32
+		var subs []string
+		if s.JetStreamIsClustered() {
+			if js, _ := s.getJetStreamCluster(); js != nil {
+				js.mu.RLock()
+				if sa := js.streamAssignment(acc.Name, streamName); sa != nil {
+					maxMsgSize = sa.Config.MaxMsgSize
+					subs = sa.Config.Subjects
+					exists = true
+				}
+				js.mu.RUnlock()
+			}
+		} else if mset, err := acc.lookupStream(streamName); err == nil {
+			maxMsgSize = mset.cfg.MaxMsgSize
+			subs = mset.cfg.Subjects
+			exists = true
+		}
+		return exists, maxMsgSize, subs
+	}
+
+	var streamSubs []string
+	var deliveryPrefixes []string
+	var apiPrefixes []string
+
 	// Do some pre-checking for mirror config to avoid cycles in clustered mode.
 	if cfg.Mirror != nil {
 		if len(cfg.Subjects) > 0 {
@@ -1166,21 +1192,65 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 		}
 
 		// We do not require other stream to exist anymore, but if we can see it check payloads.
-		var exists bool
-		var maxMsgSize int32
-
-		if s.JetStreamIsClustered() {
-			js, _ := s.getJetStreamCluster()
-			if sa := js.streamAssignment(acc.Name, cfg.Mirror.Name); sa != nil {
-				maxMsgSize = sa.Config.MaxMsgSize
-				exists = true
-			}
-		} else if mset, err := acc.lookupStream(cfg.Mirror.Name); err == nil {
-			maxMsgSize = mset.cfg.MaxMsgSize
-			exists = true
+		exists, maxMsgSize, subs := hasStream(cfg.Mirror.Name)
+		if len(subs) > 0 {
+			streamSubs = append(streamSubs, subs...)
 		}
 		if exists && cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
 			resp.Error = &ApiError{Code: 400, Description: "stream mirror must have max message size >= source"}
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		if cfg.Mirror.External != nil {
+			if cfg.Mirror.External.DeliverPrefix != _EMPTY_ {
+				deliveryPrefixes = append(deliveryPrefixes, cfg.Mirror.External.DeliverPrefix)
+			}
+			if cfg.Mirror.External.ApiPrefix != _EMPTY_ {
+				apiPrefixes = append(apiPrefixes, cfg.Mirror.External.ApiPrefix)
+			}
+		}
+	}
+	if len(cfg.Sources) > 0 {
+		for _, src := range cfg.Sources {
+			if src.External == nil {
+				continue
+			}
+			exists, maxMsgSize, subs := hasStream(src.Name)
+			if len(subs) > 0 {
+				streamSubs = append(streamSubs, subs...)
+			}
+			if src.External.DeliverPrefix != _EMPTY_ {
+				deliveryPrefixes = append(deliveryPrefixes, src.External.DeliverPrefix)
+			}
+			if src.External.ApiPrefix != _EMPTY_ {
+				apiPrefixes = append(apiPrefixes, src.External.ApiPrefix)
+			}
+			if exists && cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
+				resp.Error = &ApiError{Code: 400, Description: "stream source must have max message size >= target"}
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
+			}
+		}
+	}
+	// check prefix overlap with subjects
+	for _, pfx := range deliveryPrefixes {
+		if !IsValidPublishSubject(pfx) {
+			resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("stream external delivery prefix %q must not contain wildcards", pfx)}
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		for _, sub := range streamSubs {
+			if SubjectsCollide(sub, fmt.Sprintf("%s.%s", pfx, sub)) {
+				resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("stream external delivery prefix %q overlaps with stream subject %q", pfx, sub)}
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
+			}
+		}
+	}
+	// check if api prefixes overlap
+	for _, apiPfx := range apiPrefixes {
+		if SubjectsCollide(apiPfx, JSApiPrefix) {
+			resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("stream external api prefix %q must not overlap with %s", apiPfx, JSApiPrefix)}
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
