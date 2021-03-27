@@ -1142,6 +1142,28 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 		return
 	}
 
+	hasStream := func(streamName string) (bool, int32, []string) {
+		var exists bool
+		var maxMsgSize int32
+		var subs []string
+		if s.JetStreamIsClustered() {
+			if js, _ := s.getJetStreamCluster(); js != nil {
+				js.mu.RLock()
+				if sa := js.streamAssignment(acc.Name, streamName); sa != nil {
+					maxMsgSize = sa.Config.MaxMsgSize
+					subs = sa.Config.Subjects
+					exists = true
+				}
+				js.mu.RUnlock()
+			}
+		} else if mset, err := acc.lookupStream(streamName); err == nil {
+			maxMsgSize = mset.cfg.MaxMsgSize
+			subs = mset.cfg.Subjects
+			exists = true
+		}
+		return exists, maxMsgSize, subs
+	}
+
 	var streamSubs []string
 	var deliveryPrefixes []string
 	var apiPrefixes []string
@@ -1170,22 +1192,9 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 		}
 
 		// We do not require other stream to exist anymore, but if we can see it check payloads.
-		var exists bool
-		var maxMsgSize int32
-		if s.JetStreamIsClustered() {
-			if js, _ := s.getJetStreamCluster(); js != nil {
-				js.mu.RLock()
-				if sa := js.streamAssignment(acc.Name, cfg.Mirror.Name); sa != nil {
-					maxMsgSize = sa.Config.MaxMsgSize
-					streamSubs = sa.Config.Subjects
-					exists = true
-				}
-				js.mu.RUnlock()
-			}
-		} else if mset, err := acc.lookupStream(cfg.Mirror.Name); err == nil {
-			maxMsgSize = mset.cfg.MaxMsgSize
-			streamSubs = mset.cfg.Subjects
-			exists = true
+		exists, maxMsgSize, subs := hasStream(cfg.Mirror.Name)
+		if len(subs) > 0 {
+			streamSubs = append(streamSubs, subs...)
 		}
 		if exists && cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
 			resp.Error = &ApiError{Code: 400, Description: "stream mirror must have max message size >= source"}
@@ -1206,22 +1215,9 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 			if src.External == nil {
 				continue
 			}
-			var exists bool
-			var maxMsgSize int32
-			if s.JetStreamIsClustered() {
-				if js, _ := s.getJetStreamCluster(); js != nil {
-					js.mu.RLock()
-					if sa := js.streamAssignment(acc.Name, src.Name); sa != nil {
-						maxMsgSize = sa.Config.MaxMsgSize
-						streamSubs = append(streamSubs, sa.Config.Subjects...)
-						exists = true
-					}
-					js.mu.RUnlock()
-				}
-			} else if mset, err := acc.lookupStream(src.Name); err == nil {
-				maxMsgSize = mset.cfg.MaxMsgSize
-				streamSubs = append(streamSubs, mset.cfg.Subjects...)
-				exists = true
+			exists, maxMsgSize, subs := hasStream(src.Name)
+			if len(subs) > 0 {
+				streamSubs = append(streamSubs, subs...)
 			}
 			if src.External.DeliverPrefix != _EMPTY_ {
 				deliveryPrefixes = append(deliveryPrefixes, src.External.DeliverPrefix)
