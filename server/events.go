@@ -498,12 +498,12 @@ func (s *Server) checkRemoteServers() {
 }
 
 // Grab RSS and PCPU
-func updateServerUsage(v *ServerStats) {
-	var rss, vss int64
-	var pcpu float64
-	pse.ProcUsage(&pcpu, &rss, &vss)
-	v.Mem = rss
-	v.CPU = pcpu
+// Server lock will be held but released.
+func (s *Server) updateServerUsage(v *ServerStats) {
+	s.mu.Unlock()
+	defer s.mu.Lock()
+	var vss int64
+	pse.ProcUsage(&v.CPU, &v.Mem, &vss)
 	v.Cores = numCores
 }
 
@@ -536,7 +536,7 @@ func routeStat(r *client) *RouteStat {
 // Lock should be held.
 func (s *Server) sendStatsz(subj string) {
 	m := ServerStatsMsg{}
-	updateServerUsage(&m.Stats)
+	s.updateServerUsage(&m.Stats)
 	m.Stats.Start = s.start
 	m.Stats.Connections = len(s.clients)
 	m.Stats.TotalConnections = s.totalClients
