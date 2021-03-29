@@ -1925,6 +1925,11 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 	accStreams[stream] = sa
 	cc.streams[acc.Name] = accStreams
 
+	// Make sure we respond.
+	if isMember {
+		sa.responded = false
+	}
+
 	js.mu.Unlock()
 
 	// Check if this is for us..
@@ -1947,34 +1952,35 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, sa *streamAssignme
 		return
 	}
 
-	js.mu.RLock()
+	js.mu.Lock()
 	s, rg := js.srv, sa.Group
 	client, subject, reply := sa.Client, sa.Subject, sa.Reply
 	alreadyRunning := rg.node != nil
 	hasResponded := sa.responded
-	js.mu.RUnlock()
+	sa.responded = true
+	js.mu.Unlock()
 
 	mset, err := acc.lookupStream(sa.Config.Name)
 	if err == nil && mset != nil {
+		osa := mset.streamAssignment()
 		if !alreadyRunning {
 			s.startGoRoutine(func() { js.monitorStream(mset, sa) })
 		}
 		mset.setStreamAssignment(sa)
 		if err = mset.update(sa.Config); err != nil {
 			s.Warnf("JetStream cluster error updating stream %q for account %q: %v", sa.Config.Name, acc.Name, err)
+			mset.setStreamAssignment(osa)
 		}
 	}
 
 	if err != nil {
 		js.mu.Lock()
 		sa.err = err
-		if rg.node != nil {
-			rg.node.Delete()
-		}
 		result := &streamAssignmentResult{
 			Account:  sa.Client.serviceAccount(),
 			Stream:   sa.Config.Name,
 			Response: &JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}},
+			Update:   true,
 		}
 		result.Response.Error = jsError(err)
 		js.mu.Unlock()
@@ -1987,10 +1993,6 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, sa *streamAssignme
 	mset.mu.RLock()
 	isLeader := mset.isLeader()
 	mset.mu.RUnlock()
-
-	js.mu.Lock()
-	sa.responded = true
-	js.mu.Unlock()
 
 	if !isLeader || hasResponded {
 		return
@@ -2044,9 +2046,11 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 		// Go ahead and create or update the stream.
 		mset, err = acc.lookupStream(sa.Config.Name)
 		if err == nil && mset != nil {
+			osa := mset.streamAssignment()
 			mset.setStreamAssignment(sa)
-			if err := mset.update(sa.Config); err != nil {
+			if err = mset.update(sa.Config); err != nil {
 				s.Warnf("JetStream cluster error updating stream %q for account %q: %v", sa.Config.Name, acc.Name, err)
+				mset.setStreamAssignment(osa)
 			}
 		} else if err == ErrJetStreamStreamNotFound {
 			// Add in the stream here.
@@ -2957,6 +2961,7 @@ type streamAssignmentResult struct {
 	Stream   string                      `json:"stream"`
 	Response *JSApiStreamCreateResponse  `json:"create_response,omitempty"`
 	Restore  *JSApiStreamRestoreResponse `json:"restore_response,omitempty"`
+	Update   bool                        `json:"is_update,omitempty"`
 }
 
 // Process error results of stream and consumer assignments.
@@ -2986,11 +2991,15 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 		} else if result.Restore != nil {
 			resp = s.jsonResponse(result.Restore)
 		}
-		if !sa.responded {
+		if !sa.responded || result.Update {
 			sa.responded = true
 			js.srv.sendAPIErrResponse(sa.Client, acc, sa.Subject, sa.Reply, _EMPTY_, resp)
-			// TODO(dlc) - Could have mixed results, should track per peer.
-			// Set sa.err while we are deleting so we will not respond to list/names requests.
+		}
+		// Here we will remove this assignment, so this needs to only execute when we are sure
+		// this is what we want to do.
+		// TODO(dlc) - Could have mixed results, should track per peer.
+		// Set sa.err while we are deleting so we will not respond to list/names requests.
+		if !result.Update && time.Since(sa.Created) < 5*time.Second {
 			sa.err = ErrJetStreamNotAssigned
 			cc.meta.Propose(encodeDeleteStreamAssignment(sa))
 		}
@@ -3021,7 +3030,7 @@ func (js *jetStream) processConsumerAssignmentResults(sub *subscription, c *clie
 			// Check if this failed.
 			// TODO(dlc) - Could have mixed results, should track per peer.
 			if result.Response.Error != nil {
-				// So while we are delting we will not respond to list/names requests.
+				// So while we are deleting we will not respond to list/names requests.
 				ca.err = ErrJetStreamNotAssigned
 				cc.meta.Propose(encodeDeleteConsumerAssignment(ca))
 			}

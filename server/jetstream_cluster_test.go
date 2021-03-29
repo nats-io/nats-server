@@ -476,6 +476,48 @@ func TestJetStreamClusterStreamUpdateSubjects(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterBadStreamUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar"},
+		Replicas: 3,
+	}
+
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	msg, toSend := []byte("Keep Me"), 50
+	for i := 0; i < toSend; i++ {
+		if _, err := js.Publish("foo", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	// Make sure a bad update will not remove our stream.
+	cfg.Subjects = []string{"foo..bar"}
+	if _, err := js.UpdateStream(cfg); err == nil || err == nats.ErrTimeout {
+		t.Fatalf("Expected error but got none or timeout")
+	}
+
+	// Make sure we did not delete our original stream.
+	si, err := js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(si.Config.Subjects, []string{"foo", "bar"}) {
+		t.Fatalf("Expected subjects to be original ones, got %+v", si.Config.Subjects)
+	}
+}
+
 func TestJetStreamClusterConsumerRedeliveredInfo(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()

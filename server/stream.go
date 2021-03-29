@@ -767,8 +767,8 @@ func checkStreamCfg(config *StreamConfig) (StreamConfig, error) {
 
 // Config returns the stream's configuration.
 func (mset *stream) config() StreamConfig {
-	mset.mu.Lock()
-	defer mset.mu.Unlock()
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
 	return mset.cfg
 }
 
