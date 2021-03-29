@@ -1993,9 +1993,7 @@ func parseAccountMapDest(v interface{}, tk token, errors *[]error, warnings *[]e
 			switch vv := dmv.(type) {
 			case string:
 				ws := vv
-				if strings.HasSuffix(ws, "%") {
-					ws = ws[:len(ws)-1]
-				}
+				ws = strings.TrimSuffix(ws, "%")
 				weight, err := strconv.Atoi(ws)
 				if err != nil {
 					err := &configErr{tk, fmt.Sprintf("Invalid weight %q for mapping destination", ws)}
