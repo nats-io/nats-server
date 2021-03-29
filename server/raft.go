@@ -413,7 +413,8 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		for index := state.FirstSeq; index <= state.LastSeq; index++ {
 			ae, err := n.loadEntry(index)
 			if err != nil {
-				panic("err loading entry from WAL")
+				n.warn("Could not load %d from WAL [%+v] with error: %v", index, state, err)
+				continue
 			}
 			if ae.pindex != index-1 {
 				n.warn("Corrupt WAL, truncating and fixing")
