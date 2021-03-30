@@ -3513,8 +3513,7 @@ func handleDeleteRequest(store *DirJWTStore, s *Server, msg []byte, reply string
 	if sysAcc := s.SystemAccount(); sysAcc != nil {
 		sysAccName = sysAcc.GetName()
 	}
-	// TODO Can allow keys (issuer) to delete accounts they issued and operator key to delete all accounts.
-	//      For now only operator is allowed to delete
+	// Only operator and operator signing key are allowed to delete
 	gk, err := jwt.DecodeGeneric(string(msg))
 	if err == nil {
 		subj = gk.Subject
@@ -3522,10 +3521,8 @@ func handleDeleteRequest(store *DirJWTStore, s *Server, msg []byte, reply string
 			err = fmt.Errorf("delete must be enabled in server config")
 		} else if subj != gk.Issuer {
 			err = fmt.Errorf("not self signed")
-		} else if !s.isTrustedIssuer(gk.Issuer) {
+		} else if _, ok := store.operator[gk.Issuer]; !ok {
 			err = fmt.Errorf("not trusted")
-		} else if store.operator != gk.Issuer {
-			err = fmt.Errorf("needs to be the operator operator")
 		} else if list, ok := gk.Data["accounts"]; !ok {
 			err = fmt.Errorf("malformed request")
 		} else if accIds, ok = list.([]interface{}); !ok {
@@ -3560,21 +3557,28 @@ func handleDeleteRequest(store *DirJWTStore, s *Server, msg []byte, reply string
 		respondToUpdate(s, reply, "", fmt.Sprintf("deleted %d accounts", passCnt), nil)
 	} else {
 		respondToUpdate(s, reply, "", fmt.Sprintf("deleted %d accounts, failed for %d", passCnt, len(errs)),
-			errors.New(strings.Join(errs, "<\n")))
+			errors.New(strings.Join(errs, "\n")))
 	}
 }
 
-func getOperator(s *Server) (string, bool, error) {
+func getOperatorKeys(s *Server) (string, map[string]struct{}, bool, error) {
 	var op string
 	var strict bool
+	keys := make(map[string]struct{})
 	if opts := s.getOpts(); opts != nil && len(opts.TrustedOperators) > 0 {
 		op = opts.TrustedOperators[0].Subject
 		strict = opts.TrustedOperators[0].StrictSigningKeyUsage
+		if !strict {
+			keys[opts.TrustedOperators[0].Subject] = struct{}{}
+		}
+		for _, key := range opts.TrustedOperators[0].SigningKeys {
+			keys[key] = struct{}{}
+		}
 	}
-	if op == "" {
-		return "", false, fmt.Errorf("no operator found")
+	if len(keys) == 0 {
+		return "", nil, false, fmt.Errorf("no operator key found")
 	}
-	return op, strict, nil
+	return op, keys, strict, nil
 }
 
 func claimValidate(claim *jwt.AccountClaims) error {
@@ -3587,14 +3591,14 @@ func claimValidate(claim *jwt.AccountClaims) error {
 }
 
 func (dr *DirAccResolver) Start(s *Server) error {
-	op, strict, err := getOperator(s)
+	op, opKeys, strict, err := getOperatorKeys(s)
 	if err != nil {
 		return err
 	}
 	dr.Lock()
 	defer dr.Unlock()
 	dr.Server = s
-	dr.operator = op
+	dr.operator = opKeys
 	dr.DirJWTStore.changed = func(pubKey string) {
 		if v, ok := s.accounts.Load(pubKey); !ok {
 		} else if theJwt, err := dr.LoadAcc(pubKey); err != nil {
@@ -3839,14 +3843,14 @@ func NewCacheDirAccResolver(path string, limit int64, ttl time.Duration, _ ...di
 }
 
 func (dr *CacheDirAccResolver) Start(s *Server) error {
-	op, strict, err := getOperator(s)
+	op, opKeys, strict, err := getOperatorKeys(s)
 	if err != nil {
 		return err
 	}
 	dr.Lock()
 	defer dr.Unlock()
 	dr.Server = s
-	dr.operator = op
+	dr.operator = opKeys
 	dr.DirJWTStore.changed = func(pubKey string) {
 		if v, ok := s.accounts.Load(pubKey); !ok {
 		} else if theJwt, err := dr.LoadAcc(pubKey); err != nil {

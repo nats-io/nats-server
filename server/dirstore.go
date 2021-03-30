@@ -79,7 +79,7 @@ type DirJWTStore struct {
 	shard      bool
 	readonly   bool
 	deleteType deleteType
-	operator   string
+	operator   map[string]struct{}
 	expiration *expirationTracker
 	changed    JWTChanged
 }
