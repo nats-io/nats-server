@@ -742,7 +742,9 @@ func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 	}
 	var state StreamState
 	n.wal.FastState(&state)
-	entries = n.applied - state.FirstSeq
+	if n.applied > state.FirstSeq {
+		entries = n.applied - state.FirstSeq
+	}
 	if state.Msgs > 0 {
 		bytes = entries * state.Bytes / state.Msgs
 	}
@@ -1401,6 +1403,7 @@ func (n *raft) runAsFollower() {
 		case ae := <-n.entryc:
 			n.processAppendEntry(ae, ae.sub)
 		case <-n.s.quitCh:
+			n.shutdown(false)
 			return
 		case <-n.quit:
 			return
@@ -1677,6 +1680,7 @@ func (n *raft) runAsLeader() {
 	for {
 		select {
 		case <-n.s.quitCh:
+			n.shutdown(false)
 			return
 		case <-n.quit:
 			return
@@ -1841,6 +1845,7 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesC <-chan uint64) 
 	for n.Leader() {
 		select {
 		case <-n.s.quitCh:
+			n.shutdown(false)
 			return
 		case <-n.quit:
 			return
@@ -2188,6 +2193,7 @@ func (n *raft) runAsCandidate() {
 		case <-n.respc:
 			// Ignore
 		case <-n.s.quitCh:
+			n.shutdown(false)
 			return
 		case <-n.quit:
 			return
