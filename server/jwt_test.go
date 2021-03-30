@@ -4408,11 +4408,12 @@ func TestJWTUserRevocation(t *testing.T) {
 	ncSys.ChanSubscribe(fmt.Sprintf(disconnectEventSubj, apub), ncChan) // observe disconnect message
 	// use credentials that will be revoked ans assure that the connection will be disconnected
 	nc := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aCreds1),
-		nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
-			if lErr := conn.LastError(); lErr != nil && strings.Contains(lErr.Error(), "Authentication Revoked") {
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			if err != nil && strings.Contains(err.Error(), "authentication revoked") {
 				doneChan <- struct{}{}
 			}
-		}))
+		}),
+	)
 	defer nc.Close()
 	// update account jwt to contain revocation
 	if updateJwt(t, srv.ClientURL(), sysCreds, ajwt2, 1) != 1 {
