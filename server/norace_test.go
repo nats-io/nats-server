@@ -1457,10 +1457,22 @@ func TestNoRaceJetStreamClusterSuperClusterMirrors(t *testing.T) {
 	}
 
 	// Needed while Go client does not have mirror support.
-	createStream := func(cfg *nats.StreamConfig) {
+	createStream := func(cfg *StreamConfig) {
 		t.Helper()
-		if _, err := js.AddStream(cfg); err != nil {
-			t.Fatalf("Unexpected error: %+v", err)
+		req, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		rm, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var resp JSApiStreamCreateResponse
+		if err := json.Unmarshal(rm.Data, &resp); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if resp.Error != nil {
+			t.Fatalf("Unexpected error: %+v", resp.Error)
 		}
 	}
 
@@ -1471,10 +1483,11 @@ func TestNoRaceJetStreamClusterSuperClusterMirrors(t *testing.T) {
 		}
 	}
 
-	createStream(&nats.StreamConfig{
+	createStream(&StreamConfig{
 		Name:      "M1",
-		Mirror:    &nats.StreamSource{Name: "S1"},
-		Placement: &nats.Placement{Cluster: "C1"},
+		Storage:   FileStorage,
+		Mirror:    &StreamSource{Name: "S1"},
+		Placement: &Placement{Cluster: "C1"},
 	})
 
 	// Faster timeout since we loop below checking for condition.
@@ -1504,11 +1517,12 @@ func TestNoRaceJetStreamClusterSuperClusterMirrors(t *testing.T) {
 		}
 	}
 
-	createStream(&nats.StreamConfig{
+	createStream(&StreamConfig{
 		Name:      "M2",
-		Mirror:    &nats.StreamSource{Name: "S1"},
+		Storage:   FileStorage,
+		Mirror:    &StreamSource{Name: "S1"},
 		Replicas:  3,
-		Placement: &nats.Placement{Cluster: "C3"},
+		Placement: &Placement{Cluster: "C3"},
 	})
 
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
@@ -1595,19 +1609,32 @@ func TestNoRaceJetStreamClusterSuperClusterSources(t *testing.T) {
 	sendBatch("baz", 25)
 
 	// Needed while Go client does not have mirror support for creating mirror or source streams.
-	createStream := func(cfg *nats.StreamConfig) {
+	createStream := func(cfg *StreamConfig) {
 		t.Helper()
-		if _, err := js.AddStream(cfg); err != nil {
-			t.Fatalf("Unexpected error: %+v", err)
+		req, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		rm, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var resp JSApiStreamCreateResponse
+		if err := json.Unmarshal(rm.Data, &resp); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if resp.Error != nil {
+			t.Fatalf("Unexpected error: %+v", resp.Error)
 		}
 	}
 
-	cfg := &nats.StreamConfig{
-		Name: "MS",
-		Sources: []*nats.StreamSource{
-			{Name: "foo"},
-			{Name: "bar"},
-			{Name: "baz"},
+	cfg := &StreamConfig{
+		Name:    "MS",
+		Storage: FileStorage,
+		Sources: []*StreamSource{
+			&StreamSource{Name: "foo"},
+			&StreamSource{Name: "bar"},
+			&StreamSource{Name: "baz"},
 		},
 	}
 
@@ -1646,15 +1673,16 @@ func TestNoRaceJetStreamClusterSuperClusterSources(t *testing.T) {
 	sendBatch("bar", 15)
 	sendBatch("baz", 25)
 
-	cfg = &nats.StreamConfig{
-		Name: "MS2",
-		Sources: []*nats.StreamSource{
-			{Name: "foo"},
-			{Name: "bar"},
-			{Name: "baz"},
+	cfg = &StreamConfig{
+		Name:    "MS2",
+		Storage: FileStorage,
+		Sources: []*StreamSource{
+			&StreamSource{Name: "foo"},
+			&StreamSource{Name: "bar"},
+			&StreamSource{Name: "baz"},
 		},
 		Replicas:  3,
-		Placement: &nats.Placement{Cluster: "C3"},
+		Placement: &Placement{Cluster: "C3"},
 	}
 
 	createStream(cfg)

@@ -10849,40 +10849,54 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
-	createStream := func(cfg *nats.StreamConfig) (*nats.StreamInfo, error) {
-		return js.AddStream(cfg)
+	createStream := func(cfg *StreamConfig) *JSApiStreamCreateResponse {
+		t.Helper()
+		req, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		rm, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var resp JSApiStreamCreateResponse
+		if err := json.Unmarshal(rm.Data, &resp); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		return &resp
 	}
 
-	createStreamOk := func(cfg *nats.StreamConfig) {
+	createStreamOk := func(cfg *StreamConfig) {
 		t.Helper()
-		if _, err := createStream(cfg); err != nil {
-			t.Fatalf("Expected error, got %+v", err)
+		if scr := createStream(cfg); scr.Error != nil {
+			t.Fatalf("Expected error, got %+v", scr.Error)
 		}
 	}
 
 	// Test we get right config errors etc.
-	cfg := &nats.StreamConfig{
+	cfg := &StreamConfig{
 		Name:     "M1",
+		Storage:  FileStorage,
 		Subjects: []string{"foo", "bar", "baz"},
-		Mirror:   &nats.StreamSource{Name: "S1"},
+		Mirror:   &StreamSource{Name: "S1"},
 	}
-	_, err := createStream(cfg)
-	if err == nil || !strings.Contains(err.Error(), "stream mirrors can not") {
-		t.Fatalf("Expected error, got %+v", err)
+
+	scr := createStream(cfg)
+	if scr.Error == nil || !strings.Contains(scr.Error.Description, "stream mirrors can not") {
+		t.Fatalf("Expected error, got %+v", scr.Error)
 	}
 
 	// Clear subjects.
 	cfg.Subjects = nil
 
 	// Source
-	scfg := &nats.StreamConfig{
+	scfg := &StreamConfig{
 		Name:     "S1",
+		Storage:  FileStorage,
 		Subjects: []string{"foo", "bar", "baz"},
 	}
-
 	// Create source stream
 	createStreamOk(scfg)
-
 	// Now create our mirror stream.
 	createStreamOk(cfg)
 
@@ -10901,7 +10915,7 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
 		si, err := js2.StreamInfo("M1")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -10923,16 +10937,16 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 		}
 	}
 
-	cfg = &nats.StreamConfig{
+	cfg = &StreamConfig{
 		Name:    "M2",
-		Storage: nats.FileStorage,
-		Mirror:  &nats.StreamSource{Name: "S1"},
+		Storage: FileStorage,
+		Mirror:  &StreamSource{Name: "S1"},
 	}
 
 	// Now create our second mirror stream.
 	createStreamOk(cfg)
 
-	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 		si, err := js2.StreamInfo("M2")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -10953,14 +10967,15 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 		}
 	}
 
-	cfg = &nats.StreamConfig{
-		Name:   "M3",
-		Mirror: &nats.StreamSource{Name: "S1", OptStartSeq: 150},
+	cfg = &StreamConfig{
+		Name:    "M3",
+		Storage: FileStorage,
+		Mirror:  &StreamSource{Name: "S1", OptStartSeq: 150},
 	}
 
 	createStreamOk(cfg)
 
-	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
 		si, err := js2.StreamInfo("M3")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -10976,13 +10991,14 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 
 	// Make sure setting time works ok.
 	start := time.Now().UTC().Add(-2 * time.Hour)
-	cfg = &nats.StreamConfig{
-		Name:   "M4",
-		Mirror: &nats.StreamSource{Name: "S1", OptStartTime: &start},
+	cfg = &StreamConfig{
+		Name:    "M4",
+		Storage: FileStorage,
+		Mirror:  &StreamSource{Name: "S1", OptStartTime: &start},
 	}
 	createStreamOk(cfg)
 
-	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
 		si, err := js2.StreamInfo("M4")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
