@@ -3419,7 +3419,7 @@ func (o *consumerFileStore) flushLoop() {
 	for {
 		select {
 		case <-fch:
-			time.Sleep(5 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 			select {
 			case <-qch:
 				return

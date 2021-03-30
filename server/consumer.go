@@ -249,6 +249,8 @@ const (
 	// JsFlowControlMaxPending specifies default pending bytes during flow control that can be
 	// outstanding.
 	JsFlowControlMaxPending = 1 * 1024 * 1024
+	// JsDefaultMaxAckPending is set for consumers with explicit ack that do not set the max ack pending.
+	JsDefaultMaxAckPending = 20_000
 )
 
 func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
@@ -337,6 +339,10 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	// Setup default of -1, meaning no limit for MaxDeliver.
 	if config.MaxDeliver == 0 {
 		config.MaxDeliver = -1
+	}
+	// Set proper default for max ack pending if we are ack explicit and none has been set.
+	if config.AckPolicy == AckExplicit && config.MaxAckPending == 0 {
+		config.MaxAckPending = JsDefaultMaxAckPending
 	}
 
 	// Make sure any partition subject is also a literal.
@@ -1789,9 +1795,7 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _, reply string
 	// If we are in replay mode, defer to processReplay for delivery.
 	if o.replay {
 		o.waiting.add(&wr)
-		o.mu.Unlock()
 		o.signalNewMessages()
-		o.mu.Lock()
 		return
 	}
 

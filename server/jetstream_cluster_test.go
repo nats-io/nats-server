@@ -1403,6 +1403,33 @@ func TestJetStreamClusterDoubleAdd(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterDefaultMaxAckPending(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R32", 2)
+	defer c.shutdown()
+
+	s := c.randomServer()
+
+	// Client based API
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 2}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Do Consumers too.
+	cfg := &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy}
+	ci, err := js.AddConsumer("TEST", cfg)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Check that we have a default set now for the max ack pending.
+	if ci.Config.MaxAckPending != JsDefaultMaxAckPending {
+		t.Fatalf("Expected a default for max ack pending of %d, got %d", JsDefaultMaxAckPending, ci.Config.MaxAckPending)
+	}
+}
+
 func TestJetStreamClusterStreamNormalCatchup(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
