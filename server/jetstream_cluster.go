@@ -2666,7 +2666,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			if err := js.applyConsumerEntries(o, ce, isLeader); err == nil {
 				ne, nb := n.Applied(ce.Index)
 				// If we have at least min entries to compact, go ahead and snapshot/compact.
-				if ne >= compactNumMin || nb > compactNumMin {
+				if nb > 0 && ne >= compactNumMin || nb > compactSizeMin {
 					doSnapshot()
 				}
 			} else {
