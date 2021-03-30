@@ -892,6 +892,10 @@ func TestRemove(t *testing.T) {
 				require_Len(t, len(f), 1)
 			}
 			dirStore, err := NewExpiringDirJWTStore(dir, false, false, deleteType, 0, 10, true, 0, nil)
+			delPubKey := ""
+			dirStore.deleted = func(publicKey string) {
+				delPubKey = publicKey
+			}
 			require_NoError(t, err)
 			defer dirStore.Close()
 			accountKey, err := nkeys.CreateAccount()
@@ -901,6 +905,11 @@ func TestRemove(t *testing.T) {
 			createTestAccount(t, dirStore, 0, accountKey)
 			require_OneJWT()
 			dirStore.delete(pubKey)
+			if deleteType == NoDelete {
+				require_True(t, delPubKey == "")
+			} else {
+				require_True(t, delPubKey == pubKey)
+			}
 			f, err := filepath.Glob(dir + string(os.PathSeparator) + "/*.jwt")
 			require_NoError(t, err)
 			require_Len(t, len(f), test.expected)

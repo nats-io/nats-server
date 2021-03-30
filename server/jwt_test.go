@@ -4438,13 +4438,21 @@ func TestJWTUserRevocation(t *testing.T) {
 }
 
 func TestJWTAccountOps(t *testing.T) {
+	op, _ := nkeys.CreateOperator()
+	opPk, _ := op.PublicKey()
+	sk, _ := nkeys.CreateOperator()
+	skPk, _ := sk.PublicKey()
+	opClaim := jwt.NewOperatorClaims(opPk)
+	opClaim.SigningKeys.Add(skPk)
+	opJwt, err := opClaim.Encode(op)
+	require_NoError(t, err)
 	createAccountAndUser := func(pubKey, jwt1, creds1 *string) {
 		t.Helper()
 		kp, _ := nkeys.CreateAccount()
 		*pubKey, _ = kp.PublicKey()
 		claim := jwt.NewAccountClaims(*pubKey)
 		var err error
-		*jwt1, err = claim.Encode(oKp)
+		*jwt1, err = claim.Encode(sk)
 		require_NoError(t, err)
 
 		ukp, _ := nkeys.CreateUser()
@@ -4457,12 +4465,12 @@ func TestJWTAccountOps(t *testing.T) {
 		require_NoError(t, err)
 		*creds1 = genCredsFile(t, ujwt1, seed)
 	}
-	generateRequest := func(accs []string) []byte {
+	generateRequest := func(accs []string, kp nkeys.KeyPair) []byte {
 		t.Helper()
-		opk, _ := oKp.PublicKey()
+		opk, _ := kp.PublicKey()
 		c := jwt.NewGenericClaims(opk)
 		c.Data["accounts"] = accs
-		cJwt, err := c.Encode(oKp)
+		cJwt, err := c.Encode(kp)
 		if err != nil {
 			t.Fatalf("Expected no error %v", err)
 		}
@@ -4490,7 +4498,9 @@ func TestJWTAccountOps(t *testing.T) {
 			%s
 			dir: %s
 		}
-    `, ojwt, syspub, cfg, dirSrv)))
+    `, opJwt, syspub, cfg, dirSrv)))
+			disconnectErrChan := make(chan struct{}, 1)
+			defer close(disconnectErrChan)
 			defer os.Remove(conf)
 			srv, _ := RunServerWithConfig(conf)
 			defer srv.Shutdown()
@@ -4503,26 +4513,40 @@ func TestJWTAccountOps(t *testing.T) {
 			nc.Subscribe(fmt.Sprintf(accLookupReqSubj, apub), func(msg *nats.Msg) {
 				msg.Respond([]byte(ajwt1))
 			})
-			// connect so there is a reason to cache the request
-			ncA := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aCreds1))
-			ncA.Close()
+			// connect so there is a reason to cache the request and so disconnect can be observed
+			ncA := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aCreds1), nats.NoReconnect(),
+				nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
+					if lErr := conn.LastError(); strings.Contains(lErr.Error(), "Account Authentication Expired") {
+						disconnectErrChan <- struct{}{}
+					}
+				}))
+			defer ncA.Close()
 			resp, err := nc.Request(accListReqSubj, nil, time.Second)
 			require_NoError(t, err)
 			require_True(t, strings.Contains(string(resp.Data), apub))
 			require_True(t, strings.Contains(string(resp.Data), syspub))
 			// delete nothing
-			resp, err = nc.Request(accDeleteReqSubj, generateRequest([]string{}), time.Second)
+			resp, err = nc.Request(accDeleteReqSubj, generateRequest([]string{}, op), time.Second)
 			require_NoError(t, err)
 			require_True(t, strings.Contains(string(resp.Data), `"message":"deleted 0 accounts"`))
 			// issue delete, twice to also delete a non existing account
+			// also switch which key used to sign the request
 			for i := 0; i < 2; i++ {
-				resp, err = nc.Request(accDeleteReqSubj, generateRequest([]string{apub}), time.Second)
+				resp, err = nc.Request(accDeleteReqSubj, generateRequest([]string{apub}, sk), time.Second)
 				require_NoError(t, err)
 				require_True(t, strings.Contains(string(resp.Data), `"message":"deleted 1 accounts"`))
 				resp, err = nc.Request(accListReqSubj, nil, time.Second)
 				require_False(t, strings.Contains(string(resp.Data), apub))
 				require_True(t, strings.Contains(string(resp.Data), syspub))
 				require_NoError(t, err)
+				if i > 0 {
+					continue
+				}
+				select {
+				case <-disconnectErrChan:
+				case <-time.After(time.Second):
+					t.Fatal("Callback not executed")
+				}
 			}
 		})
 	}

@@ -3513,8 +3513,7 @@ func handleDeleteRequest(store *DirJWTStore, s *Server, msg []byte, reply string
 	if sysAcc := s.SystemAccount(); sysAcc != nil {
 		sysAccName = sysAcc.GetName()
 	}
-	// TODO Can allow keys (issuer) to delete accounts they issued and operator key to delete all accounts.
-	//      For now only operator is allowed to delete
+	// Only operator and operator signing key are allowed to delete
 	gk, err := jwt.DecodeGeneric(string(msg))
 	if err == nil {
 		subj = gk.Subject
@@ -3522,10 +3521,8 @@ func handleDeleteRequest(store *DirJWTStore, s *Server, msg []byte, reply string
 			err = fmt.Errorf("delete must be enabled in server config")
 		} else if subj != gk.Issuer {
 			err = fmt.Errorf("not self signed")
-		} else if !s.isTrustedIssuer(gk.Issuer) {
+		} else if _, ok := store.operator[gk.Issuer]; !ok {
 			err = fmt.Errorf("not trusted")
-		} else if store.operator != gk.Issuer {
-			err = fmt.Errorf("needs to be the operator operator")
 		} else if list, ok := gk.Data["accounts"]; !ok {
 			err = fmt.Errorf("malformed request")
 		} else if accIds, ok = list.([]interface{}); !ok {
@@ -3560,21 +3557,28 @@ func handleDeleteRequest(store *DirJWTStore, s *Server, msg []byte, reply string
 		respondToUpdate(s, reply, "", fmt.Sprintf("deleted %d accounts", passCnt), nil)
 	} else {
 		respondToUpdate(s, reply, "", fmt.Sprintf("deleted %d accounts, failed for %d", passCnt, len(errs)),
-			errors.New(strings.Join(errs, "<\n")))
+			errors.New(strings.Join(errs, "\n")))
 	}
 }
 
-func getOperator(s *Server) (string, bool, error) {
+func getOperatorKeys(s *Server) (string, map[string]struct{}, bool, error) {
 	var op string
 	var strict bool
+	keys := make(map[string]struct{})
 	if opts := s.getOpts(); opts != nil && len(opts.TrustedOperators) > 0 {
 		op = opts.TrustedOperators[0].Subject
 		strict = opts.TrustedOperators[0].StrictSigningKeyUsage
+		if !strict {
+			keys[opts.TrustedOperators[0].Subject] = struct{}{}
+		}
+		for _, key := range opts.TrustedOperators[0].SigningKeys {
+			keys[key] = struct{}{}
+		}
 	}
-	if op == "" {
-		return "", false, fmt.Errorf("no operator found")
+	if len(keys) == 0 {
+		return "", nil, false, fmt.Errorf("no operator key found")
 	}
-	return op, strict, nil
+	return op, keys, strict, nil
 }
 
 func claimValidate(claim *jwt.AccountClaims) error {
@@ -3586,15 +3590,37 @@ func claimValidate(claim *jwt.AccountClaims) error {
 	return nil
 }
 
+func removeCb(s *Server, pubKey string) {
+	v, ok := s.accounts.Load(pubKey)
+	if !ok {
+		return
+	}
+	a := v.(*Account)
+	s.Debugf("Disable account %s due to remove", pubKey)
+	a.mu.Lock()
+	// lock out new clients
+	a.msubs = 0
+	a.mpay = 0
+	a.mconns = 0
+	a.mleafs = 0
+	a.updated = time.Now().UTC()
+	a.mu.Unlock()
+	// set the account to be expired and disconnect clients
+	a.expiredTimeout()
+	a.mu.Lock()
+	a.clearExpirationTimer()
+	a.mu.Unlock()
+}
+
 func (dr *DirAccResolver) Start(s *Server) error {
-	op, strict, err := getOperator(s)
+	op, opKeys, strict, err := getOperatorKeys(s)
 	if err != nil {
 		return err
 	}
 	dr.Lock()
 	defer dr.Unlock()
 	dr.Server = s
-	dr.operator = op
+	dr.operator = opKeys
 	dr.DirJWTStore.changed = func(pubKey string) {
 		if v, ok := s.accounts.Load(pubKey); !ok {
 		} else if theJwt, err := dr.LoadAcc(pubKey); err != nil {
@@ -3602,6 +3628,9 @@ func (dr *DirAccResolver) Start(s *Server) error {
 		} else if err := s.updateAccountWithClaimJWT(v.(*Account), theJwt); err != nil {
 			s.Errorf("update resulted in error %v", err)
 		}
+	}
+	dr.DirJWTStore.deleted = func(pubKey string) {
+		removeCb(s, pubKey)
 	}
 	packRespIb := s.newRespInbox()
 	for _, reqSub := range []string{accUpdateEventSubjOld, accUpdateEventSubjNew} {
@@ -3839,14 +3868,14 @@ func NewCacheDirAccResolver(path string, limit int64, ttl time.Duration, _ ...di
 }
 
 func (dr *CacheDirAccResolver) Start(s *Server) error {
-	op, strict, err := getOperator(s)
+	op, opKeys, strict, err := getOperatorKeys(s)
 	if err != nil {
 		return err
 	}
 	dr.Lock()
 	defer dr.Unlock()
 	dr.Server = s
-	dr.operator = op
+	dr.operator = opKeys
 	dr.DirJWTStore.changed = func(pubKey string) {
 		if v, ok := s.accounts.Load(pubKey); !ok {
 		} else if theJwt, err := dr.LoadAcc(pubKey); err != nil {
@@ -3854,6 +3883,9 @@ func (dr *CacheDirAccResolver) Start(s *Server) error {
 		} else if err := s.updateAccountWithClaimJWT(v.(*Account), theJwt); err != nil {
 			s.Errorf("update resulted in error %v", err)
 		}
+	}
+	dr.DirJWTStore.deleted = func(pubKey string) {
+		removeCb(s, pubKey)
 	}
 	for _, reqSub := range []string{accUpdateEventSubjOld, accUpdateEventSubjNew} {
 		// subscribe to account jwt update requests
