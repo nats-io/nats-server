@@ -3590,6 +3590,28 @@ func claimValidate(claim *jwt.AccountClaims) error {
 	return nil
 }
 
+func removeCb(s *Server, pubKey string) {
+	v, ok := s.accounts.Load(pubKey)
+	if !ok {
+		return
+	}
+	a := v.(*Account)
+	s.Debugf("Disable account %s due to remove", pubKey)
+	a.mu.Lock()
+	// lock out new clients
+	a.msubs = 0
+	a.mpay = 0
+	a.mconns = 0
+	a.mleafs = 0
+	a.updated = time.Now().UTC()
+	a.mu.Unlock()
+	// set the account to be expired and disconnect clients
+	a.expiredTimeout()
+	a.mu.Lock()
+	a.clearExpirationTimer()
+	a.mu.Unlock()
+}
+
 func (dr *DirAccResolver) Start(s *Server) error {
 	op, opKeys, strict, err := getOperatorKeys(s)
 	if err != nil {
@@ -3606,6 +3628,9 @@ func (dr *DirAccResolver) Start(s *Server) error {
 		} else if err := s.updateAccountWithClaimJWT(v.(*Account), theJwt); err != nil {
 			s.Errorf("update resulted in error %v", err)
 		}
+	}
+	dr.DirJWTStore.deleted = func(pubKey string) {
+		removeCb(s, pubKey)
 	}
 	packRespIb := s.newRespInbox()
 	for _, reqSub := range []string{accUpdateEventSubjOld, accUpdateEventSubjNew} {
@@ -3858,6 +3883,9 @@ func (dr *CacheDirAccResolver) Start(s *Server) error {
 		} else if err := s.updateAccountWithClaimJWT(v.(*Account), theJwt); err != nil {
 			s.Errorf("update resulted in error %v", err)
 		}
+	}
+	dr.DirJWTStore.deleted = func(pubKey string) {
+		removeCb(s, pubKey)
 	}
 	for _, reqSub := range []string{accUpdateEventSubjOld, accUpdateEventSubjNew} {
 		// subscribe to account jwt update requests

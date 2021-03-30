@@ -82,6 +82,7 @@ type DirJWTStore struct {
 	operator   map[string]struct{}
 	expiration *expirationTracker
 	changed    JWTChanged
+	deleted    JWTChanged
 }
 
 func newDir(dirPath string, create bool) (string, error) {
@@ -454,7 +455,7 @@ func (store *DirJWTStore) delete(publicKey string) error {
 		return err
 	}
 	store.expiration.unTrack(publicKey)
-	// TODO do cb so server can evict the account and associated clients
+	store.deleted(publicKey)
 	return nil
 }
 

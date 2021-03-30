@@ -4499,6 +4499,8 @@ func TestJWTAccountOps(t *testing.T) {
 			dir: %s
 		}
     `, opJwt, syspub, cfg, dirSrv)))
+			disconnectErrChan := make(chan struct{}, 1)
+			defer close(disconnectErrChan)
 			defer os.Remove(conf)
 			srv, _ := RunServerWithConfig(conf)
 			defer srv.Shutdown()
@@ -4511,9 +4513,14 @@ func TestJWTAccountOps(t *testing.T) {
 			nc.Subscribe(fmt.Sprintf(accLookupReqSubj, apub), func(msg *nats.Msg) {
 				msg.Respond([]byte(ajwt1))
 			})
-			// connect so there is a reason to cache the request
-			ncA := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aCreds1))
-			ncA.Close()
+			// connect so there is a reason to cache the request and so disconnect can be observed
+			ncA := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aCreds1), nats.NoReconnect(),
+				nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
+					if lErr := conn.LastError(); strings.Contains(lErr.Error(), "Account Authentication Expired") {
+						disconnectErrChan <- struct{}{}
+					}
+				}))
+			defer ncA.Close()
 			resp, err := nc.Request(accListReqSubj, nil, time.Second)
 			require_NoError(t, err)
 			require_True(t, strings.Contains(string(resp.Data), apub))
@@ -4532,6 +4539,14 @@ func TestJWTAccountOps(t *testing.T) {
 				require_False(t, strings.Contains(string(resp.Data), apub))
 				require_True(t, strings.Contains(string(resp.Data), syspub))
 				require_NoError(t, err)
+				if i > 0 {
+					continue
+				}
+				select {
+				case <-disconnectErrChan:
+				case <-time.After(time.Second):
+					t.Fatal("Callback not executed")
+				}
 			}
 		})
 	}
