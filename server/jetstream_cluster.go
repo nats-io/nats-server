@@ -2278,7 +2278,8 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 
 	acc, err := s.LookupAccount(ca.Client.serviceAccount())
 	if err != nil {
-		// TODO(dlc) - log error
+		js.mu.Unlock()
+		s.Warnf("Account lookup for consumer create failed: %v", err)
 		return
 	}
 
