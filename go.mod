@@ -6,7 +6,7 @@ require (
 	github.com/klauspost/compress v1.11.12
 	github.com/minio/highwayhash v1.0.1
 	github.com/nats-io/jwt/v2 v2.0.1
-	github.com/nats-io/nats.go v1.10.1-0.20210330002604-882e98e18c99
+	github.com/nats-io/nats.go v1.10.1-0.20210330225420-a0b1f60162f8
 	github.com/nats-io/nkeys v0.3.0
 	github.com/nats-io/nuid v1.0.1
 	golang.org/x/crypto v0.0.0-20210314154223-e6e6c4f2bb5b
