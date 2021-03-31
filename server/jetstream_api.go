@@ -599,6 +599,7 @@ var (
 	jsClusterTagsErr       = &ApiError{Code: 400, Description: "tags placement not supported for operation"}
 	jsClusterNoPeersErr    = &ApiError{Code: 400, Description: "no suitable peers for placement"}
 	jsServerNotMemberErr   = &ApiError{Code: 400, Description: "server is not a member of the cluster"}
+	jsNoMessageFoundErr    = &ApiError{Code: 404, Description: "no message found"}
 )
 
 // For easier handling of exports and imports.
@@ -2351,7 +2352,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 
 	subj, hdr, msg, ts, err := mset.store.LoadMsg(req.Seq)
 	if err != nil {
-		resp.Error = jsError(err)
+		resp.Error = jsNoMessageFoundErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
