@@ -677,6 +677,15 @@ func ExpectLastMsgId(id string) PubOpt {
 	})
 }
 
+type ackOpts struct {
+	ttl time.Duration
+	ctx context.Context
+}
+
+type AckOpt interface {
+	configureAck(opts *ackOpts) error
+}
+
 // MaxWait sets the maximum amount of time we will wait for a response.
 type MaxWait time.Duration
 
@@ -703,6 +712,11 @@ func (ttl AckWait) configureSubscribe(opts *subOpts) error {
 	return nil
 }
 
+func (ttl AckWait) configureAck(opts *ackOpts) error {
+	opts.ttl = time.Duration(ttl)
+	return nil
+}
+
 // ContextOpt is an option used to set a context.Context.
 type ContextOpt struct {
 	context.Context
@@ -719,6 +733,11 @@ func (ctx ContextOpt) configurePublish(opts *pubOpts) error {
 }
 
 func (ctx ContextOpt) configurePull(opts *pullOpts) error {
+	opts.ctx = ctx
+	return nil
+}
+
+func (ctx ContextOpt) configureAck(opts *ackOpts) error {
 	opts.ctx = ctx
 	return nil
 }
@@ -814,13 +833,13 @@ func (js *js) Subscribe(subj string, cb MsgHandler, opts ...SubOpt) (*Subscripti
 	if cb == nil {
 		return nil, ErrBadSubscription
 	}
-	return js.subscribe(subj, _EMPTY_, cb, nil, opts)
+	return js.subscribe(subj, _EMPTY_, cb, nil, false, opts)
 }
 
 // SubscribeSync will create a sync subscription to the appropriate stream and consumer.
 func (js *js) SubscribeSync(subj string, opts ...SubOpt) (*Subscription, error) {
 	mch := make(chan *Msg, js.nc.Opts.SubChanLen)
-	return js.subscribe(subj, _EMPTY_, nil, mch, opts)
+	return js.subscribe(subj, _EMPTY_, nil, mch, true, opts)
 }
 
 // QueueSubscribe will create a subscription to the appropriate stream and consumer with queue semantics.
@@ -828,26 +847,26 @@ func (js *js) QueueSubscribe(subj, queue string, cb MsgHandler, opts ...SubOpt) 
 	if cb == nil {
 		return nil, ErrBadSubscription
 	}
-	return js.subscribe(subj, queue, cb, nil, opts)
+	return js.subscribe(subj, queue, cb, nil, false, opts)
 }
 
 // QueueSubscribeSync will create a sync subscription to the appropriate stream and consumer with queue semantics.
 func (js *js) QueueSubscribeSync(subj, queue string, opts ...SubOpt) (*Subscription, error) {
 	mch := make(chan *Msg, js.nc.Opts.SubChanLen)
-	return js.subscribe(subj, queue, nil, mch, opts)
+	return js.subscribe(subj, queue, nil, mch, true, opts)
 }
 
 // Subscribe will create a subscription to the appropriate stream and consumer.
 func (js *js) ChanSubscribe(subj string, ch chan *Msg, opts ...SubOpt) (*Subscription, error) {
-	return js.subscribe(subj, _EMPTY_, nil, ch, opts)
+	return js.subscribe(subj, _EMPTY_, nil, ch, false, opts)
 }
 
 // PullSubscribe creates a pull subscriber.
 func (js *js) PullSubscribe(subj, durable string, opts ...SubOpt) (*Subscription, error) {
-	return js.subscribe(subj, _EMPTY_, nil, nil, append(opts, Durable(durable)))
+	return js.subscribe(subj, _EMPTY_, nil, nil, false, append(opts, Durable(durable)))
 }
 
-func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, opts []SubOpt) (*Subscription, error) {
+func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync bool, opts []SubOpt) (*Subscription, error) {
 	cfg := ConsumerConfig{AckPolicy: ackPolicyNotSet}
 	o := subOpts{cfg: &cfg}
 	if len(opts) > 0 {
@@ -932,7 +951,7 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, opts []
 	if isPullMode {
 		sub = &Subscription{Subject: subj, conn: js.nc, typ: PullSubscription, jsi: &jsSub{js: js, pull: true}}
 	} else {
-		sub, err = js.nc.subscribe(deliver, queue, cb, ch, cb == nil, &jsSub{js: js})
+		sub, err = js.nc.subscribe(deliver, queue, cb, ch, isSync, &jsSub{js: js})
 		if err != nil {
 			return nil, err
 		}
@@ -1549,13 +1568,14 @@ func (m *Msg) checkReply() (*js, bool, error) {
 // ackReply handles all acks. Will do the right thing for pull and sync mode.
 // It ensures that an ack is only sent a single time, regardless of
 // how many times it is being called to avoid duplicated acks.
-func (m *Msg) ackReply(ackType []byte, sync bool, opts ...PubOpt) error {
-	var o pubOpts
+func (m *Msg) ackReply(ackType []byte, sync bool, opts ...AckOpt) error {
+	var o ackOpts
 	for _, opt := range opts {
-		if err := opt.configurePublish(&o); err != nil {
+		if err := opt.configureAck(&o); err != nil {
 			return err
 		}
 	}
+
 	js, _, err := m.checkReply()
 	if err != nil {
 		return err
@@ -1570,16 +1590,19 @@ func (m *Msg) ackReply(ackType []byte, sync bool, opts ...PubOpt) error {
 	nc := m.Sub.conn
 	m.Sub.mu.Unlock()
 
+	usesCtx := o.ctx != nil
+	usesWait := o.ttl > 0
+	sync = sync || usesCtx || usesWait
 	ctx := o.ctx
 	wait := defaultRequestWait
-	if o.ttl > 0 {
+	if usesWait {
 		wait = o.ttl
 	} else if js != nil {
 		wait = js.opts.wait
 	}
 
 	if sync {
-		if ctx != nil {
+		if usesCtx {
 			_, err = nc.RequestWithContext(ctx, m.Reply, ackType)
 		} else {
 			_, err = nc.Request(m.Reply, ackType, wait)
@@ -1599,33 +1622,33 @@ func (m *Msg) ackReply(ackType []byte, sync bool, opts ...PubOpt) error {
 
 // Ack acknowledges a message. This tells the server that the message was
 // successfully processed and it can move on to the next message.
-func (m *Msg) Ack() error {
-	return m.ackReply(ackAck, false)
+func (m *Msg) Ack(opts ...AckOpt) error {
+	return m.ackReply(ackAck, false, opts...)
 }
 
 // Ack is the synchronous version of Ack. This indicates successful message
 // processing.
-func (m *Msg) AckSync(opts ...PubOpt) error {
+func (m *Msg) AckSync(opts ...AckOpt) error {
 	return m.ackReply(ackAck, true, opts...)
 }
 
 // Nak negatively acknowledges a message. This tells the server to redeliver
 // the message. You can configure the number of redeliveries by passing
 // nats.MaxDeliver when you Subscribe. The default is infinite redeliveries.
-func (m *Msg) Nak() error {
-	return m.ackReply(ackNak, false)
+func (m *Msg) Nak(opts ...AckOpt) error {
+	return m.ackReply(ackNak, false, opts...)
 }
 
 // Term tells the server to not redeliver this message, regardless of the value
 // of nats.MaxDeliver.
-func (m *Msg) Term() error {
-	return m.ackReply(ackTerm, false)
+func (m *Msg) Term(opts ...AckOpt) error {
+	return m.ackReply(ackTerm, false, opts...)
 }
 
 // InProgress tells the server that this message is being worked on. It resets
 // the redelivery timer on the server.
-func (m *Msg) InProgress() error {
-	return m.ackReply(ackProgress, false)
+func (m *Msg) InProgress(opts ...AckOpt) error {
+	return m.ackReply(ackProgress, false, opts...)
 }
 
 // MsgMetadata is the JetStream metadata associated with received messages.

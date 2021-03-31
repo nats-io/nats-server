@@ -4405,7 +4405,8 @@ func TestJWTUserRevocation(t *testing.T) {
 	defer ncSys.Close()
 	ncChan := make(chan *nats.Msg, 10)
 	defer close(ncChan)
-	ncSys.ChanSubscribe(fmt.Sprintf(disconnectEventSubj, apub), ncChan) // observe disconnect message
+	sub, _ := ncSys.ChanSubscribe(fmt.Sprintf(disconnectEventSubj, apub), ncChan) // observe disconnect message
+	defer sub.Unsubscribe()
 	// use credentials that will be revoked ans assure that the connection will be disconnected
 	nc := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aCreds1),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
@@ -4516,8 +4517,8 @@ func TestJWTAccountOps(t *testing.T) {
 			})
 			// connect so there is a reason to cache the request and so disconnect can be observed
 			ncA := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aCreds1), nats.NoReconnect(),
-				nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
-					if lErr := conn.LastError(); strings.Contains(lErr.Error(), "Account Authentication Expired") {
+				nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+					if err != nil && strings.Contains(err.Error(), "account authentication expired") {
 						disconnectErrChan <- struct{}{}
 					}
 				}))
