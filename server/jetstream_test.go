@@ -9442,7 +9442,7 @@ func TestJetStreamPubSubPerf(t *testing.T) {
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
 
-	var toSend = 1000000
+	var toSend = 1_000_000
 	var received int
 	done := make(chan bool)
 

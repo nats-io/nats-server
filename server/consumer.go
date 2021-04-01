@@ -2013,6 +2013,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 	)
 
 	o.mu.Lock()
+	s := o.srv
 	if o.replay {
 		// consumer is closed when mset is set to nil.
 		if o.mset == nil {
@@ -2073,6 +2074,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 				goto waitForMsgs
 			} else {
 				o.mu.Unlock()
+				s.Errorf("Received an error looking up message for consumer: %v", err)
 				return
 			}
 		}
