@@ -5297,7 +5297,7 @@ func TestJetStreamMetadata(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Could not parse stream message: %v", err)
 			}
-			if resp.Error == nil || resp.Error.Code != 500 || resp.Error.Description != "no message found" {
+			if resp.Error == nil || resp.Error.Code != 404 || resp.Error.Description != "no message found" {
 				t.Fatalf("Did not get correct error response: %+v", resp.Error)
 			}
 		})
