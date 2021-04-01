@@ -2097,6 +2097,10 @@ func (mb *msgBlock) flushPendingMsgs() error {
 	// If we got an error back return here.
 	if err != nil {
 		mb.mu.Unlock()
+		// No pending data to be written is not an error.
+		if err == errNoPending {
+			err = nil
+		}
 		return err
 	}
 
@@ -2371,6 +2375,7 @@ func (mb *msgBlock) cacheLookupWithLock(seq uint64) (*fileStoredMsg, error) {
 		mb:   mb,
 		off:  int64(bi),
 	}
+
 	return sm, nil
 }
 
@@ -2389,7 +2394,7 @@ func (fs *fileStore) msgForSeq(seq uint64) (*fileStoredMsg, error) {
 	}
 	// Make sure to snapshot here.
 	lseq := fs.state.LastSeq
-	mb := fs.selectMsgBlock(seq)
+	mb, lmb := fs.selectMsgBlock(seq), fs.lmb
 	fs.mu.RUnlock()
 
 	if mb == nil {
@@ -2401,10 +2406,10 @@ func (fs *fileStore) msgForSeq(seq uint64) (*fileStoredMsg, error) {
 	}
 
 	// Check to see if we are the last seq for this message block and are doing
-	// a linear scan. If that is true and no other write activity is present
-	// try to expire the cache.
+	// a linear scan. If that is true and we are not the last message block we can
+	// expire try to expire the cache.
 	mb.mu.RLock()
-	shouldTryExpire := seq == mb.last.seq && mb.llseq == seq-1
+	shouldTryExpire := mb != lmb && seq == mb.last.seq && mb.llseq == seq-1
 	mb.mu.RUnlock()
 
 	// TODO(dlc) - older design had a check to prefetch when we knew we were
