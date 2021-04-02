@@ -868,7 +868,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 			return
 		}
 		for _, sub := range subs {
-			c.unsubscribe(acc, sub, true, true)
+			c.processUnsub(sub.sid)
 		}
 		close(closeCh)
 	}()
@@ -3193,15 +3193,11 @@ func (c *client) mqttProcessSubs(filters []*mqttFilter) ([]*subscription, error)
 // Runs from client's readLoop.
 // Lock not held on entry, but session is in the locked map.
 func (sess *mqttSession) cleanupFailedSub(c *client, sub *subscription, cc *ConsumerConfig, jssub *subscription) {
-	c.mu.Lock()
-	acc := c.acc
-	c.mu.Unlock()
-
 	if sub != nil {
-		c.unsubscribe(acc, sub, true, true)
+		c.processUnsub(sub.sid)
 	}
 	if jssub != nil {
-		c.unsubscribe(acc, jssub, true, true)
+		c.processUnsub(jssub.sid)
 	}
 	if cc != nil {
 		sess.deleteConsumer(cc)
@@ -3231,10 +3227,7 @@ func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
 			delete(sess.cons, sid)
 			sess.deleteConsumer(cc)
 			if sub != nil {
-				c.mu.Lock()
-				acc := c.acc
-				c.mu.Unlock()
-				c.unsubscribe(acc, sub, true, true)
+				c.processUnsub(sub.sid)
 			}
 			return nil, nil, nil
 		}
