@@ -3784,10 +3784,10 @@ func (dr *DirAccResolver) Store(name, jwt string) error {
 	return dr.saveIfNewer(name, jwt)
 }
 
-type dirResOption func(s *DirAccResolver) error
+type DirResOption func(s *DirAccResolver) error
 
 // limits the amount of time spent waiting for an account fetch to complete
-func FetchTimeout(to time.Duration) dirResOption {
+func FetchTimeout(to time.Duration) DirResOption {
 	return func(r *DirAccResolver) error {
 		if to <= time.Duration(0) {
 			return fmt.Errorf("Fetch timeout %v is too smal", to)
@@ -3797,7 +3797,7 @@ func FetchTimeout(to time.Duration) dirResOption {
 	}
 }
 
-func (dr *DirAccResolver) apply(opts ...dirResOption) error {
+func (dr *DirAccResolver) apply(opts ...DirResOption) error {
 	for _, o := range opts {
 		if err := o(dr); err != nil {
 			return err
@@ -3806,7 +3806,7 @@ func (dr *DirAccResolver) apply(opts ...dirResOption) error {
 	return nil
 }
 
-func NewDirAccResolver(path string, limit int64, syncInterval time.Duration, delete bool, opts ...dirResOption) (*DirAccResolver, error) {
+func NewDirAccResolver(path string, limit int64, syncInterval time.Duration, delete bool, opts ...DirResOption) (*DirAccResolver, error) {
 	if limit == 0 {
 		limit = math.MaxInt64
 	}
@@ -3883,7 +3883,7 @@ func (s *Server) fetch(res AccountResolver, name string, timeout time.Duration) 
 	return theJWT, err
 }
 
-func NewCacheDirAccResolver(path string, limit int64, ttl time.Duration, opts ...dirResOption) (*CacheDirAccResolver, error) {
+func NewCacheDirAccResolver(path string, limit int64, ttl time.Duration, opts ...DirResOption) (*CacheDirAccResolver, error) {
 	if limit <= 0 {
 		limit = 1_000
 	}

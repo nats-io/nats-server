@@ -924,7 +924,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			limit := int64(0)
 			ttl := time.Duration(0)
 			sync := time.Duration(0)
-			opts := []dirResOption{}
+			opts := []DirResOption{}
 			var err error
 			if v, ok := v["dir"]; ok {
 				_, v := unwrapValue(v, &lt)
