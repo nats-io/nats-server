@@ -1524,15 +1524,17 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, doSample bool) {
 			delete(o.pending, sseq)
 			// Use the original deliver sequence from our pending record.
 			dseq = p.Sequence
-			if dseq == o.adflr+1 {
-				o.adflr, o.asflr = dseq, sseq
-				for ss := sseq + 1; ss < o.sseq; ss++ {
-					if p, ok := o.pending[ss]; ok {
-						if p.Sequence > 0 {
-							o.adflr, o.asflr = p.Sequence-1, ss-1
-						}
-						break
+		}
+		if len(o.pending) == 0 {
+			o.adflr, o.asflr = o.dseq-1, o.sseq-1
+		} else if dseq == o.adflr+1 {
+			o.adflr, o.asflr = dseq, sseq
+			for ss := sseq + 1; ss < o.sseq; ss++ {
+				if p, ok := o.pending[ss]; ok {
+					if p.Sequence > 0 {
+						o.adflr, o.asflr = p.Sequence-1, ss-1
 					}
+					break
 				}
 			}
 		}
