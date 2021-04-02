@@ -31,6 +31,7 @@ import (
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
+	"github.com/nats-io/nuid"
 )
 
 var jsClusterTemplWithMQTT = `
@@ -2603,8 +2604,10 @@ func TestMQTTCluster(t *testing.T) {
 				{"qos_1", 1},
 			} {
 				t.Run(test.name, func(t *testing.T) {
+					clientID := nuid.Next()
+
 					o := cl.opts[0]
-					mc, r := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: false}, o.MQTT.Host, o.MQTT.Port)
+					mc, r := testMQTTConnect(t, &mqttConnInfo{clientID: clientID, cleanSess: false}, o.MQTT.Host, o.MQTT.Port)
 					defer mc.Close()
 					testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 
@@ -2642,7 +2645,7 @@ func TestMQTTCluster(t *testing.T) {
 					// the one connected in the first server.
 					o = cl.opts[1]
 
-					mc2, r2 := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: false}, o.MQTT.Host, o.MQTT.Port)
+					mc2, r2 := testMQTTConnect(t, &mqttConnInfo{clientID: clientID, cleanSess: false}, o.MQTT.Host, o.MQTT.Port)
 					defer mc2.Close()
 					testMQTTCheckConnAck(t, r2, mqttConnAckRCConnectionAccepted, true)
 
@@ -2655,7 +2658,7 @@ func TestMQTTCluster(t *testing.T) {
 
 					// Disconnect our sub and restart with clean session then disconnect again to clear the state.
 					testMQTTDisconnect(t, mc2, nil)
-					mc2, r2 = testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+					mc2, r2 = testMQTTConnect(t, &mqttConnInfo{clientID: clientID, cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
 					defer mc2.Close()
 					testMQTTCheckConnAck(t, r2, mqttConnAckRCConnectionAccepted, false)
 					testMQTTFlush(t, mc2, nil, r2)
@@ -2670,13 +2673,21 @@ func TestMQTTCluster(t *testing.T) {
 					sm.mu.Unlock()
 					if asm != nil {
 						asm.mu.Lock()
-						delete(asm.flappers, "sub")
+						delete(asm.flappers, clientID)
 						asm.mu.Unlock()
 					}
 				})
 			}
 			if topTest.restart {
+				cl.stopAll()
 				cl.restartAll()
+
+				streams := []string{mqttStreamName, mqttRetainedMsgsStreamName}
+				for _, sn := range streams {
+					cl.waitOnStreamLeader(globalAccountName, sn)
+				}
+				cl.waitOnConsumerLeader(globalAccountName, mqttRetainedMsgsStreamName, "$MQTT_rmsgs_esFhDys3")
+				cl.waitOnConsumerLeader(globalAccountName, mqttRetainedMsgsStreamName, "$MQTT_rmsgs_z3WIzPtj")
 			}
 		})
 	}
