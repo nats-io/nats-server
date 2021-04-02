@@ -924,6 +924,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			limit := int64(0)
 			ttl := time.Duration(0)
 			sync := time.Duration(0)
+			opts := []DirResOption{}
 			var err error
 			if v, ok := v["dir"]; ok {
 				_, v := unwrapValue(v, &lt)
@@ -949,6 +950,13 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 				_, v := unwrapValue(v, &lt)
 				sync, err = time.ParseDuration(v.(string))
 			}
+			if v, ok := v["timeout"]; err == nil && ok {
+				_, v := unwrapValue(v, &lt)
+				var to time.Duration
+				if to, err = time.ParseDuration(v.(string)); err == nil {
+					opts = append(opts, FetchTimeout(to))
+				}
+			}
 			if err != nil {
 				*errors = append(*errors, &configErr{tk, err.Error()})
 				return
@@ -970,12 +978,12 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 				if del {
 					*errors = append(*errors, &configErr{tk, "CACHE does not accept allow_delete"})
 				}
-				res, err = NewCacheDirAccResolver(dir, limit, ttl)
+				res, err = NewCacheDirAccResolver(dir, limit, ttl, opts...)
 			case "FULL":
 				if ttl != 0 {
 					*errors = append(*errors, &configErr{tk, "FULL does not accept ttl"})
 				}
-				res, err = NewDirAccResolver(dir, limit, sync, del)
+				res, err = NewDirAccResolver(dir, limit, sync, del, opts...)
 			}
 			if err != nil {
 				*errors = append(*errors, &configErr{tk, err.Error()})

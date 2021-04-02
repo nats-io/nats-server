@@ -4439,6 +4439,66 @@ func TestJWTUserRevocation(t *testing.T) {
 	defer nc2.Close()
 }
 
+func TestJWTAccountFetchTimeout(t *testing.T) {
+	createAccountAndUser := func(pubKey, jwt1, creds1 *string) {
+		t.Helper()
+		kp, _ := nkeys.CreateAccount()
+		*pubKey, _ = kp.PublicKey()
+		claim := jwt.NewAccountClaims(*pubKey)
+		var err error
+		*jwt1, err = claim.Encode(oKp)
+		require_NoError(t, err)
+		ukp, _ := nkeys.CreateUser()
+		seed, _ := ukp.Seed()
+		upub, _ := ukp.PublicKey()
+		uclaim := newJWTTestUserClaims()
+		uclaim.Subject = upub
+		ujwt1, err := uclaim.Encode(kp)
+		require_NoError(t, err)
+		*creds1 = genCredsFile(t, ujwt1, seed)
+	}
+	for _, cfg := range []string{
+		`type: full`,
+		`type: cache`,
+	} {
+		t.Run("", func(t *testing.T) {
+			var syspub, sysjwt, sysCreds string
+			createAccountAndUser(&syspub, &sysjwt, &sysCreds)
+			defer os.Remove(sysCreds)
+			var apub, ajwt1, aCreds1 string
+			createAccountAndUser(&apub, &ajwt1, &aCreds1)
+			defer os.Remove(aCreds1)
+			dirSrv := createDir(t, "srv")
+			defer os.RemoveAll(dirSrv)
+			conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		operator: %s
+		system_account: %s
+		resolver: {
+			%s
+			timeout: "100ms"
+			dir: %s
+		}
+    `, ojwt, syspub, cfg, dirSrv)))
+			defer os.Remove(conf)
+			srv, _ := RunServerWithConfig(conf)
+			defer srv.Shutdown()
+			updateJwt(t, srv.ClientURL(), sysCreds, sysjwt, 1) // update system account jwt
+			start := time.Now()
+			nc, err := nats.Connect(srv.ClientURL(), nats.UserCredentials(aCreds1))
+			if err == nil {
+				t.Fatal("expected an error, got none")
+			} else if !strings.Contains(err.Error(), "Authorization Violation") {
+				t.Fatalf("expected an authorization violation, got: %v", err)
+			}
+			if time.Since(start) > 300*time.Millisecond {
+				t.Fatal("expected timeout earlier")
+			}
+			defer nc.Close()
+		})
+	}
+}
+
 func TestJWTAccountOps(t *testing.T) {
 	op, _ := nkeys.CreateOperator()
 	opPk, _ := op.PublicKey()
