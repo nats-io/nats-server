@@ -3943,21 +3943,20 @@ func (o *consumerFileStore) Stop() error {
 		o.qch = nil
 	}
 
-	err := o.ensureStateFileOpen()
-	ifd := o.ifd
-
-	if err == nil {
-		var buf []byte
-		// Make sure to write this out..
-		if buf, err = o.encodeState(); err == nil {
-			_, err = ifd.WriteAt(buf, 0)
+	var err error
+	if !o.writing {
+		if err = o.ensureStateFileOpen(); err == nil {
+			var buf []byte
+			// Make sure to write this out..
+			if buf, err = o.encodeState(); err == nil && len(buf) > 0 {
+				_, err = o.ifd.WriteAt(buf, 0)
+			}
 		}
 	}
 
 	o.ifd, o.odir = nil, _EMPTY_
-	fs := o.fs
+	fs, ifd := o.fs, o.ifd
 	o.closed = true
-	o.kickFlusher()
 	o.mu.Unlock()
 
 	if ifd != nil {

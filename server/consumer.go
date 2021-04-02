@@ -966,50 +966,43 @@ func (o *consumer) deleteNotActive() {
 		o.mu.RUnlock()
 		return
 	}
-	s, js, jsa := o.mset.srv, o.mset.srv.js, o.mset.jsa
+	s, js := o.mset.srv, o.mset.srv.js
 	acc, stream, name := o.acc.Name, o.stream, o.name
 	o.mu.RUnlock()
 
 	// If we are clustered, check if we still have this consumer assigned.
 	// If we do forward a proposal to delete ourselves to the metacontroller leader.
 	if s.JetStreamIsClustered() {
-		if ca := js.consumerAssignment(acc, stream, name); ca != nil {
-			// We copy and clear the reply since this removal is internal.
-			jsa.mu.Lock()
-			js := jsa.js
-			jsa.mu.Unlock()
+		js.mu.RLock()
+		ca := js.consumerAssignment(acc, stream, name)
+		cc := js.cluster
+		js.mu.RUnlock()
+		if ca != nil && cc != nil {
+			cca := *ca
+			cca.Reply = _EMPTY_
+			meta, removeEntry := cc.meta, encodeDeleteConsumerAssignment(&cca)
+			meta.ForwardProposal(removeEntry)
 
-			if js != nil {
-				js.mu.RLock()
-				if cc := js.cluster; cc != nil {
-					cca := *ca
-					cca.Reply = _EMPTY_
-					meta, removeEntry := cc.meta, encodeDeleteConsumerAssignment(&cca)
-					meta.ForwardProposal(removeEntry)
-
-					// Check to make sure we went away.
-					// Don't think this needs to be a monitored go routine.
-					go func() {
-						ticker := time.NewTicker(time.Second)
-						defer ticker.Stop()
-						for range ticker.C {
-							js.mu.RLock()
-							ca := js.consumerAssignment(acc, stream, name)
-							js.mu.RUnlock()
-							if ca != nil {
-								s.Warnf("Consumer assignment not cleaned up, retrying")
-								meta.ForwardProposal(removeEntry)
-							} else {
-								return
-							}
-						}
-					}()
-
+			// Check to make sure we went away.
+			// Don't think this needs to be a monitored go routine.
+			go func() {
+				ticker := time.NewTicker(time.Second)
+				defer ticker.Stop()
+				for range ticker.C {
+					js.mu.RLock()
+					ca := js.consumerAssignment(acc, stream, name)
+					js.mu.RUnlock()
+					if ca != nil {
+						s.Warnf("Consumer assignment not cleaned up, retrying")
+						meta.ForwardProposal(removeEntry)
+					} else {
+						return
+					}
 				}
-				js.mu.RUnlock()
-			}
+			}()
 		}
 	}
+
 	// We will delete here regardless.
 	o.delete()
 }
@@ -1524,15 +1517,17 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, doSample bool) {
 			delete(o.pending, sseq)
 			// Use the original deliver sequence from our pending record.
 			dseq = p.Sequence
-			if dseq == o.adflr+1 {
-				o.adflr, o.asflr = dseq, sseq
-				for ss := sseq + 1; ss < o.sseq; ss++ {
-					if p, ok := o.pending[ss]; ok {
-						if p.Sequence > 0 {
-							o.adflr, o.asflr = p.Sequence-1, ss-1
-						}
-						break
+		}
+		if len(o.pending) == 0 {
+			o.adflr, o.asflr = o.dseq-1, o.sseq-1
+		} else if dseq == o.adflr+1 {
+			o.adflr, o.asflr = dseq, sseq
+			for ss := sseq + 1; ss < o.sseq; ss++ {
+				if p, ok := o.pending[ss]; ok {
+					if p.Sequence > 0 {
+						o.adflr, o.asflr = p.Sequence-1, ss-1
 					}
+					break
 				}
 			}
 		}

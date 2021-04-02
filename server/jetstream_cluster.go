@@ -2722,7 +2722,6 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 			}
 			return nil
 		} else {
-			// Consumer leaders process these already.
 			buf := e.Data
 			switch entryOp(buf[0]) {
 			case updateDeliveredOp:
@@ -2863,6 +2862,17 @@ func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) {
 
 	// Tell consumer to switch leader status.
 	o.setLeader(isLeader)
+
+	// Synchronize others to our version of state.
+	if isLeader {
+		if n := o.raftNode(); n != nil {
+			if state, err := o.store.State(); err == nil && state != nil {
+				if snap := encodeConsumerState(state); len(snap) > 0 {
+					n.SendSnapshot(snap)
+				}
+			}
+		}
+	}
 
 	if !isLeader || hasResponded {
 		return
