@@ -21,6 +21,7 @@ import (
 	"io/ioutil"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -103,7 +104,7 @@ func TestConfigFile(t *testing.T) {
 		Logtime:               false,
 		HTTPPort:              8222,
 		HTTPBasePath:          "/nats",
-		PidFile:               "/tmp/nats-server.pid",
+		PidFile:               filepath.Join(tempRoot, "nats-server.pid"),
 		ProfPort:              6543,
 		Syslog:                true,
 		RemoteSyslog:          "udp://foo.com:33",
@@ -260,7 +261,7 @@ func TestMergeOverrides(t *testing.T) {
 		Logtime:        false,
 		HTTPPort:       DEFAULT_HTTP_PORT,
 		HTTPBasePath:   DEFAULT_HTTP_BASE_PATH,
-		PidFile:        "/tmp/nats-server.pid",
+		PidFile:        filepath.Join(tempRoot, "nats-server.pid"),
 		ProfPort:       6789,
 		Syslog:         true,
 		RemoteSyslog:   "udp://foo.com:33",
@@ -1167,7 +1168,7 @@ func TestOptionsClone(t *testing.T) {
 		Logtime:        false,
 		HTTPPort:       DEFAULT_HTTP_PORT,
 		HTTPBasePath:   DEFAULT_HTTP_BASE_PATH,
-		PidFile:        "/tmp/nats-server.pid",
+		PidFile:        filepath.Join(tempRoot, "nats-server.pid"),
 		ProfPort:       6789,
 		Syslog:         true,
 		RemoteSyslog:   "udp://foo.com:33",
@@ -1838,7 +1839,7 @@ func TestParseExport(t *testing.T) {
 			}
 			accI1 {
 				imports [{
-					service { 
+					service {
 						account accE
 						subject foo.accI1
 					}
@@ -1852,7 +1853,7 @@ func TestParseExport(t *testing.T) {
 				users [{
 					user u1
 					password pwd
-				}], 
+				}],
 			}
 			accI2 {
 				imports [{
@@ -2950,7 +2951,7 @@ func TestQueuePermissions(t *testing.T) {
 		listen: 127.0.0.1:-1
 		no_auth_user: u
 		authorization {
-			users [{ 
+			users [{
 				user: u, password: pwd, permissions: { sub: { %s: ["foo.> *.dev"] } }
 			}]
 		}`

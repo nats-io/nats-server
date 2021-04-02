@@ -36,7 +36,7 @@ import (
 )
 
 func TestFileStoreBasics(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -102,7 +102,7 @@ func TestFileStoreBasics(t *testing.T) {
 }
 
 func TestFileStoreMsgHeaders(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -131,7 +131,7 @@ func TestFileStoreMsgHeaders(t *testing.T) {
 }
 
 func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -265,7 +265,7 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 }
 
 func TestFileStoreSelectNextFirst(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -305,7 +305,7 @@ func TestFileStoreSelectNextFirst(t *testing.T) {
 }
 
 func TestFileStoreSkipMsg(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -394,7 +394,7 @@ func TestFileStoreSkipMsg(t *testing.T) {
 }
 
 func TestFileStoreWriteExpireWrite(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -459,7 +459,7 @@ func TestFileStoreWriteExpireWrite(t *testing.T) {
 }
 
 func TestFileStoreMsgLimit(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -497,7 +497,7 @@ func TestFileStoreMsgLimit(t *testing.T) {
 }
 
 func TestFileStoreMsgLimitBug(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -526,7 +526,7 @@ func TestFileStoreBytesLimit(t *testing.T) {
 	toStore := uint64(1024)
 	maxBytes := storedMsgSize * toStore
 
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -571,7 +571,7 @@ func TestFileStoreBytesLimit(t *testing.T) {
 func TestFileStoreAgeLimit(t *testing.T) {
 	maxAge := 10 * time.Millisecond
 
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -618,7 +618,7 @@ func TestFileStoreAgeLimit(t *testing.T) {
 }
 
 func TestFileStoreTimeStamps(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -648,7 +648,7 @@ func TestFileStoreTimeStamps(t *testing.T) {
 }
 
 func TestFileStorePurge(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -766,7 +766,7 @@ func TestFileStorePurge(t *testing.T) {
 }
 
 func TestFileStoreCompact(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -811,7 +811,7 @@ func TestFileStoreCompact(t *testing.T) {
 }
 
 func TestFileStoreCompactLastPlusOne(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -848,7 +848,7 @@ func TestFileStoreCompactLastPlusOne(t *testing.T) {
 func TestFileStoreCompactPerf(t *testing.T) {
 	t.SkipNow()
 
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -885,7 +885,7 @@ func TestFileStoreCompactPerf(t *testing.T) {
 }
 
 func TestFileStoreStreamTruncate(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -955,7 +955,7 @@ func TestFileStoreStreamTruncate(t *testing.T) {
 }
 
 func TestFileStoreRemovePartialRecovery(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -1001,7 +1001,7 @@ func TestFileStoreRemovePartialRecovery(t *testing.T) {
 }
 
 func TestFileStoreRemoveOutOfOrderRecovery(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -1069,7 +1069,7 @@ func TestFileStoreRemoveOutOfOrderRecovery(t *testing.T) {
 func TestFileStoreAgeLimitRecovery(t *testing.T) {
 	maxAge := 10 * time.Millisecond
 
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -1115,7 +1115,7 @@ func TestFileStoreAgeLimitRecovery(t *testing.T) {
 }
 
 func TestFileStoreBitRot(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -1178,7 +1178,7 @@ func TestFileStoreBitRot(t *testing.T) {
 }
 
 func TestFileStoreEraseMsg(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -1237,7 +1237,7 @@ func TestFileStoreEraseMsg(t *testing.T) {
 }
 
 func TestFileStoreEraseAndNoIndexRecovery(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -1292,7 +1292,7 @@ func TestFileStoreEraseAndNoIndexRecovery(t *testing.T) {
 }
 
 func TestFileStoreMeta(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -1388,7 +1388,7 @@ func TestFileStoreMeta(t *testing.T) {
 }
 
 func TestFileStoreWriteAndReadSameBlock(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -1412,7 +1412,7 @@ func TestFileStoreWriteAndReadSameBlock(t *testing.T) {
 }
 
 func TestFileStoreAndRetrieveMultiBlock(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -1453,7 +1453,7 @@ func TestFileStoreAndRetrieveMultiBlock(t *testing.T) {
 }
 
 func TestFileStoreCollapseDmap(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -1531,7 +1531,7 @@ func TestFileStoreReadCache(t *testing.T) {
 	subj, msg := "foo.bar", make([]byte, 1024)
 	storedMsgSize := fileStoreMsgSize(subj, nil, msg)
 
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -1583,7 +1583,7 @@ func TestFileStoreReadCache(t *testing.T) {
 }
 
 func TestFileStorePartialCacheExpiration(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -1609,7 +1609,7 @@ func TestFileStorePartialCacheExpiration(t *testing.T) {
 }
 
 func TestFileStorePartialIndexes(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -1657,7 +1657,7 @@ func TestFileStorePartialIndexes(t *testing.T) {
 }
 
 func TestFileStoreSnapshot(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -1722,7 +1722,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 		r := bytes.NewReader(snap)
 		tr := tar.NewReader(s2.NewReader(r))
 
-		rstoreDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+		rstoreDir := createDir(t, JetStreamStoreDir)
 		defer os.RemoveAll(rstoreDir)
 
 		for {
@@ -1832,7 +1832,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 }
 
 func TestFileStoreConsumer(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -2054,7 +2054,7 @@ func TestFileStorePerf(t *testing.T) {
 		friendlyBytes(int64(toStore*storedMsgSize)),
 	)
 
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -2193,7 +2193,7 @@ func TestFileStoreReadBackMsgPerf(t *testing.T) {
 		friendlyBytes(int64(toStore*storedMsgSize)),
 	)
 
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 	fmt.Printf("StoreDir is %q\n", storeDir)
@@ -2244,7 +2244,7 @@ func TestFileStoreStoreLimitRemovePerf(t *testing.T) {
 	// 1GB
 	toStore := 1 * 1024 * 1024 * 1024 / storedMsgSize
 
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -2301,7 +2301,7 @@ func TestFileStorePubPerfWithSmallBlkSize(t *testing.T) {
 		friendlyBytes(int64(toStore*storedMsgSize)),
 	)
 
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -2327,7 +2327,7 @@ func TestFileStorePubPerfWithSmallBlkSize(t *testing.T) {
 
 // Saw this manifest from a restart test with max delivered set for JetStream.
 func TestFileStoreConsumerRedeliveredLost(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -2394,7 +2394,7 @@ func TestFileStoreConsumerRedeliveredLost(t *testing.T) {
 }
 
 func TestFileStoreConsumerFlusher(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -2429,7 +2429,7 @@ func TestFileStoreConsumerFlusher(t *testing.T) {
 }
 
 func TestFileStoreConsumerDeliveredUpdates(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -2487,7 +2487,7 @@ func TestFileStoreConsumerDeliveredUpdates(t *testing.T) {
 }
 
 func TestFileStoreConsumerDeliveredAndAckUpdates(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -2604,7 +2604,7 @@ func TestFileStoreConsumerDeliveredAndAckUpdates(t *testing.T) {
 }
 
 func TestFileStoreStreamStateDeleted(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -2656,7 +2656,7 @@ func TestFileStoreConsumerPerf(t *testing.T) {
 	// Comment out to run, holding place for now.
 	t.SkipNow()
 
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 	defer os.RemoveAll(storeDir)
 
@@ -2728,7 +2728,7 @@ func TestFileStoreConsumerPerf(t *testing.T) {
 func TestFileStoreStreamIndexBug(t *testing.T) {
 	// https://github.com/nats-io/jetstream/issues/406
 	badIdxBytes, _ := base64.StdEncoding.DecodeString("FgGBkw7D/f8/772iDPDIgbU=")
-	dir, _ := ioutil.TempDir("", "js-bad-idx-")
+	dir := createDir(t, "js-bad-idx-")
 	defer os.RemoveAll(dir)
 	fn := path.Join(dir, "1.idx")
 	ioutil.WriteFile(fn, badIdxBytes, 0644)
@@ -2740,7 +2740,7 @@ func TestFileStoreStreamIndexBug(t *testing.T) {
 
 // Reported by Ivan.
 func TestFileStoreStreamDeleteCacheBug(t *testing.T) {
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir := createDir(t, JetStreamStoreDir)
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, CacheExpire: 50 * time.Millisecond}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)

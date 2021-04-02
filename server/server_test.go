@@ -1577,10 +1577,7 @@ func TestConnectErrorReports(t *testing.T) {
 		t.Fatalf("Expected default value to be %v, got %v", DEFAULT_CONNECT_ERROR_REPORTS, ra)
 	}
 
-	tmpFile, err := ioutil.TempFile("", "")
-	if err != nil {
-		t.Fatalf("Error creating temp file: %v", err)
-	}
+	tmpFile := createFile(t, "")
 	log := tmpFile.Name()
 	tmpFile.Close()
 	defer os.Remove(log)
@@ -1732,10 +1729,7 @@ func TestReconnectErrorReports(t *testing.T) {
 		t.Fatalf("Expected default value to be %v, got %v", DEFAULT_RECONNECT_ERROR_REPORTS, ra)
 	}
 
-	tmpFile, err := ioutil.TempFile("", "")
-	if err != nil {
-		t.Fatalf("Error creating temp file: %v", err)
-	}
+	tmpFile := createFile(t, "")
 	log := tmpFile.Name()
 	tmpFile.Close()
 	defer os.Remove(log)
@@ -1919,16 +1913,10 @@ func TestReconnectErrorReports(t *testing.T) {
 }
 
 func TestServerLogsConfigurationFile(t *testing.T) {
-	tmpDir, err := ioutil.TempDir("", "_nats-server")
-	if err != nil {
-		t.Fatal("Could not create tmp dir")
-	}
+	tmpDir := createDir(t, "_nats-server")
 	defer os.RemoveAll(tmpDir)
 
-	file, err := ioutil.TempFile(tmpDir, "nats_server_log_")
-	if err != nil {
-		t.Fatalf("Could not create the temp file: %v", err)
-	}
+	file := createFileAtDir(t, tmpDir, "nats_server_log_")
 	file.Close()
 
 	conf := createConfFile(t, []byte(fmt.Sprintf(`

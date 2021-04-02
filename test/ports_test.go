@@ -46,7 +46,7 @@ func portFile(dirname string) string {
 }
 
 func TestPortsFile(t *testing.T) {
-	portFileDir := os.TempDir()
+	portFileDir := createDir(t, "")
 
 	opts := DefaultTestOptions
 	opts.PortsFileDir = portFileDir
@@ -124,10 +124,7 @@ func TestPortsFile(t *testing.T) {
 // the location of the ports file is changed from dir A to dir B.
 func TestPortsFileReload(t *testing.T) {
 	// make a temp dir
-	tempDir, err := ioutil.TempDir("", "")
-	if err != nil {
-		t.Fatalf("Error creating temp director (%s): %v", tempDir, err)
-	}
+	tempDir := createDir(t, "")
 	defer os.RemoveAll(tempDir)
 
 	// make child temp dir A

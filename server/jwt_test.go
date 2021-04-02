@@ -42,6 +42,8 @@ var (
 	// This matches ./configs/nkeys/op.jwt
 	ojwt = "eyJ0eXAiOiJqd3QiLCJhbGciOiJlZDI1NTE5In0.eyJhdWQiOiJURVNUUyIsImV4cCI6MTg1OTEyMTI3NSwianRpIjoiWE5MWjZYWVBIVE1ESlFSTlFPSFVPSlFHV0NVN01JNVc1SlhDWk5YQllVS0VRVzY3STI1USIsImlhdCI6MTU0Mzc2MTI3NSwiaXNzIjoiT0NBVDMzTVRWVTJWVU9JTUdOR1VOWEo2NkFIMlJMU0RBRjNNVUJDWUFZNVFNSUw2NU5RTTZYUUciLCJuYW1lIjoiU3luYWRpYSBDb21tdW5pY2F0aW9ucyBJbmMuIiwibmJmIjoxNTQzNzYxMjc1LCJzdWIiOiJPQ0FUMzNNVFZVMlZVT0lNR05HVU5YSjY2QUgyUkxTREFGM01VQkNZQVk1UU1JTDY1TlFNNlhRRyIsInR5cGUiOiJvcGVyYXRvciIsIm5hdHMiOnsic2lnbmluZ19rZXlzIjpbIk9EU0tSN01ZRlFaNU1NQUo2RlBNRUVUQ1RFM1JJSE9GTFRZUEpSTUFWVk40T0xWMllZQU1IQ0FDIiwiT0RTS0FDU1JCV1A1MzdEWkRSVko2NTdKT0lHT1BPUTZLRzdUNEhONk9LNEY2SUVDR1hEQUhOUDIiLCJPRFNLSTM2TFpCNDRPWTVJVkNSNlA1MkZaSlpZTVlXWlZXTlVEVExFWjVUSzJQTjNPRU1SVEFCUiJdfX0.hyfz6E39BMUh0GLzovFfk3wT4OfualftjdJ_eYkLfPvu5tZubYQ_Pn9oFYGCV_6yKy3KMGhWGUCyCdHaPhalBw"
 	oKp  nkeys.KeyPair
+
+	tempRoot = filepath.Join(os.TempDir(), "nats-server")
 )
 
 func init() {
@@ -3140,10 +3142,7 @@ func TestBearerWithBadIssuerToken(t *testing.T) {
 func TestExpiredUserCredentialsRenewal(t *testing.T) {
 	createTmpFile := func(t *testing.T, content []byte) string {
 		t.Helper()
-		conf, err := ioutil.TempFile("", "")
-		if err != nil {
-			t.Fatalf("Error creating conf file: %v", err)
-		}
+		conf := createFile(t, "")
 		fName := conf.Name()
 		conf.Close()
 		if err := ioutil.WriteFile(fName, content, 0666); err != nil {
@@ -3312,9 +3311,25 @@ func require_JWTEqual(t *testing.T, dir string, pub string, jwt string) {
 
 func createDir(t *testing.T, prefix string) string {
 	t.Helper()
-	dir, err := ioutil.TempDir("", prefix)
+	err := os.MkdirAll(tempRoot, 0700)
+	require_NoError(t, err)
+	dir, err := ioutil.TempDir(tempRoot, prefix)
 	require_NoError(t, err)
 	return dir
+}
+
+func createFile(t *testing.T, prefix string) *os.File {
+	t.Helper()
+	err := os.MkdirAll(tempRoot, 0700)
+	require_NoError(t, err)
+	return createFileAtDir(t, tempRoot, prefix)
+}
+
+func createFileAtDir(t *testing.T, dir, prefix string) *os.File {
+	t.Helper()
+	f, err := ioutil.TempFile(dir, prefix)
+	require_NoError(t, err)
+	return f
 }
 
 func writeJWT(t *testing.T, dir string, pub string, jwt string) {
@@ -4247,8 +4262,7 @@ func TestJWTJetStreamLimits(t *testing.T) {
 	userJwt, err := uclaim.Encode(akp)
 	require_NoError(t, err)
 	userCreds := genCredsFile(t, userJwt, uSeed)
-	dir, err := ioutil.TempDir("", "srv")
-	require_NoError(t, err)
+	dir := createDir(t, "srv")
 	defer os.RemoveAll(dir)
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: -1

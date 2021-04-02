@@ -67,10 +67,7 @@ func newOptionsFromContent(t *testing.T, content []byte) (*Options, string) {
 
 func createConfFile(t *testing.T, content []byte) string {
 	t.Helper()
-	conf, err := ioutil.TempFile("", "")
-	if err != nil {
-		t.Fatalf("Error creating conf file: %v", err)
-	}
+	conf := createFile(t, "")
 	fName := conf.Name()
 	conf.Close()
 	if err := ioutil.WriteFile(fName, content, 0666); err != nil {
