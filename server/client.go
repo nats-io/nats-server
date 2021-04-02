@@ -2976,6 +2976,7 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 						defer srv.gatewayUpdateSubInterest(client.acc.Name, sub, -1)
 					}
 					defer srv.updateRouteSubscriptionMap(client.acc, sub, -1)
+					defer srv.updateLeafNodes(client.acc, sub, -1)
 				}
 				defer client.unsubscribe(client.acc, sub, true, true)
 			} else if sub.nm > sub.max {
@@ -2987,6 +2988,7 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 					if srv.gateway.enabled {
 						srv.gatewayUpdateSubInterest(client.acc.Name, sub, -1)
 					}
+					srv.updateLeafNodes(client.acc, sub, -1)
 				}
 				return false
 			}
