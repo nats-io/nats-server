@@ -4361,23 +4361,21 @@ func (c *client) flushAndClose(minimalFlush bool) {
 	}
 }
 
+var typeStringMap = map[int]string{
+	CLIENT:    "Client",
+	ROUTER:    "Router",
+	GATEWAY:   "Gateway",
+	LEAF:      "Leafnode",
+	JETSTREAM: "JetStream",
+	ACCOUNT:   "Account",
+	SYSTEM:    "System",
+}
+
 func (c *client) typeString() string {
-	switch c.kind {
-	case CLIENT:
-		return "Client"
-	case ROUTER:
-		return "Router"
-	case GATEWAY:
-		return "Gateway"
-	case LEAF:
-		return "Leafnode"
-	case JETSTREAM:
-		return "JetStream"
-	case ACCOUNT:
-		return "Account"
-	case SYSTEM:
-		return "System"
+	if typeStringVal, ok := typeStringMap[c.kind]; ok {
+		return typeStringVal
 	}
+
 	return "Unknown Type"
 }
 
