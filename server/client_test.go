@@ -852,6 +852,54 @@ func TestSplitSubjectQueue(t *testing.T) {
 	}
 }
 
+func TestTypeString(t *testing.T) {
+	cases := []struct {
+		intType    int
+		stringType string
+	}{
+		{
+			intType:    CLIENT,
+			stringType: "Client",
+		},
+		{
+			intType:    ROUTER,
+			stringType: "Router",
+		},
+		{
+			intType:    GATEWAY,
+			stringType: "Gateway",
+		},
+		{
+			intType:    LEAF,
+			stringType: "Leafnode",
+		},
+		{
+			intType:    JETSTREAM,
+			stringType: "JetStream",
+		},
+		{
+			intType:    ACCOUNT,
+			stringType: "Account",
+		},
+		{
+			intType:    SYSTEM,
+			stringType: "System",
+		},
+		{
+			intType:    -1,
+			stringType: "Unknown Type",
+		},
+	}
+	for _, cs := range cases {
+		c := &client{kind: cs.intType}
+		typeStringVal := c.typeString()
+
+		if typeStringVal != cs.stringType {
+			t.Fatalf("Expected typeString  value  %q, but instead received %q", cs.stringType, typeStringVal)
+		}
+	}
+}
+
 func TestQueueSubscribePermissions(t *testing.T) {
 	cases := []struct {
 		name    string
