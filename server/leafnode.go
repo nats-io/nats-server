@@ -1256,10 +1256,13 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 
 	// Now walk the results and add them to our smap
 	c.mu.Lock()
+	rc := c.leaf.remoteCluster
 	c.leaf.smap = make(map[string]int32)
 	for _, sub := range subs {
 		// We ignore ourselves here.
-		if c != sub.client {
+		// Also don't add the subscription if it has a origin cluster and the
+		// cluster name matches the one of the client we are sending to.
+		if c != sub.client && (sub.origin == nil || (string(sub.origin) != rc)) {
 			c.leaf.smap[keyFromSub(sub)]++
 			if c.leaf.tsub == nil {
 				c.leaf.tsub = make(map[*subscription]struct{})
