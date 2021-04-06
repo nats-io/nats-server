@@ -26,6 +26,8 @@ import (
 	"testing"
 )
 
+var tempRoot = filepath.Join(os.TempDir(), "nats-server")
+
 func TestStdLogger(t *testing.T) {
 	logger := NewStdLogger(false, false, false, false, false)
 
@@ -103,16 +105,10 @@ func TestStdLoggerTraceWithOutDebug(t *testing.T) {
 }
 
 func TestFileLogger(t *testing.T) {
-	tmpDir, err := ioutil.TempDir("", "_nats-server")
-	if err != nil {
-		t.Fatal("Could not create tmp dir")
-	}
+	tmpDir := createDir(t, "_nats-server")
 	defer os.RemoveAll(tmpDir)
 
-	file, err := ioutil.TempFile(tmpDir, "nats-server:log_")
-	if err != nil {
-		t.Fatalf("Could not create the temp file: %v", err)
-	}
+	file := createFileAtDir(t, tmpDir, "nats-server:log_")
 	file.Close()
 
 	logger := NewFileLogger(file.Name(), false, false, false, false)
@@ -131,10 +127,7 @@ func TestFileLogger(t *testing.T) {
 		t.Fatalf("Expected '%s', received '%s'\n", "[INFO] foo", string(buf))
 	}
 
-	file, err = ioutil.TempFile(tmpDir, "nats-server:log_")
-	if err != nil {
-		t.Fatalf("Could not create the temp file: %v", err)
-	}
+	file = createFileAtDir(t, tmpDir, "nats-server:log_")
 	file.Close()
 
 	logger = NewFileLogger(file.Name(), true, true, true, true)
@@ -184,16 +177,10 @@ func TestFileLoggerSizeLimit(t *testing.T) {
 	}
 	logger.Close()
 
-	tmpDir, err := ioutil.TempDir("", "nats-server")
-	if err != nil {
-		t.Fatal("Could not create tmp dir")
-	}
+	tmpDir := createDir(t, "nats-server")
 	defer os.RemoveAll(tmpDir)
 
-	file, err := ioutil.TempFile(tmpDir, "log_")
-	if err != nil {
-		t.Fatalf("Could not create the temp file: %v", err)
-	}
+	file := createFileAtDir(t, tmpDir, "log_")
 	file.Close()
 
 	logger = NewFileLogger(file.Name(), true, false, false, true)
@@ -226,17 +213,11 @@ func TestFileLoggerSizeLimit(t *testing.T) {
 
 	// Remove all files
 	os.RemoveAll(tmpDir)
-	tmpDir, err = ioutil.TempDir("", "nats-server")
-	if err != nil {
-		t.Fatal("Could not create tmp dir")
-	}
+	tmpDir = createDir(t, "nats-server")
 	defer os.RemoveAll(tmpDir)
 
 	// Recreate logger and don't set a limit
-	file, err = ioutil.TempFile(tmpDir, "log_")
-	if err != nil {
-		t.Fatalf("Could not create the temp file: %v", err)
-	}
+	file = createFileAtDir(t, tmpDir, "log_")
 	file.Close()
 	logger = NewFileLogger(file.Name(), true, false, false, true)
 	defer logger.Close()
@@ -343,4 +324,25 @@ func expectOutput(t *testing.T, f func(), expected string) {
 	if out != expected {
 		t.Fatalf("Expected '%s', received '%s'\n", expected, out)
 	}
+}
+
+func createDir(t *testing.T, prefix string) string {
+	t.Helper()
+	if err := os.MkdirAll(tempRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := ioutil.TempDir(tempRoot, prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func createFileAtDir(t *testing.T, dir, prefix string) *os.File {
+	t.Helper()
+	f, err := ioutil.TempFile(dir, prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
 }

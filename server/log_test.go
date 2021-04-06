@@ -188,15 +188,9 @@ func TestFileLoggerSizeLimitAndReopen(t *testing.T) {
 	s := &Server{opts: &Options{}}
 	defer s.SetLogger(nil, false, false)
 
-	tmpDir, err := ioutil.TempDir("", "nats-server")
-	if err != nil {
-		t.Fatal("Could not create tmp dir")
-	}
+	tmpDir := createDir(t, "nats-server")
 	defer os.RemoveAll(tmpDir)
-	file, err := ioutil.TempFile(tmpDir, "log_")
-	if err != nil {
-		t.Fatalf("Could not create the temp file: %v", err)
-	}
+	file := createFileAtDir(t, tmpDir, "log_")
 	file.Close()
 
 	// Set a File log

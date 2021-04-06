@@ -799,10 +799,7 @@ func TestTLSRoutesCertificateImplicitAllowFail(t *testing.T) {
 func testTLSRoutesCertificateImplicitAllow(t *testing.T, pass bool) {
 	t.Helper()
 	// Base config for the servers
-	cfg, err := ioutil.TempFile("", "cfg")
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := createFile(t, "cfg")
 	defer os.Remove(cfg.Name())
 	cfg.WriteString(fmt.Sprintf(`
 		cluster {
@@ -816,7 +813,7 @@ func testTLSRoutesCertificateImplicitAllow(t *testing.T, pass bool) {
 		  }
 		}
 	`, !pass)) // set insecure to skip verification on the outgoing end
-	if err = cfg.Sync(); err != nil {
+	if err := cfg.Sync(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -870,10 +867,7 @@ func TestTLSGatewaysCertificateImplicitAllowFail(t *testing.T) {
 func testTLSGatewaysCertificateImplicitAllow(t *testing.T, pass bool) {
 	t.Helper()
 	// Base config for the servers
-	cfg, err := ioutil.TempFile("", "cfg")
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := createFile(t, "cfg")
 	defer os.Remove(cfg.Name())
 	cfg.WriteString(fmt.Sprintf(`
 		gateway {
@@ -887,7 +881,7 @@ func testTLSGatewaysCertificateImplicitAllow(t *testing.T, pass bool) {
 		  }
 		}
 	`, !pass)) // set insecure to skip verification on the outgoing end
-	if err = cfg.Sync(); err != nil {
+	if err := cfg.Sync(); err != nil {
 		t.Fatal(err)
 	}
 

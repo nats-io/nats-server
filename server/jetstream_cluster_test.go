@@ -4821,13 +4821,13 @@ func TestJetStreamClusterSuperClusterInterestOnlyMode(t *testing.T) {
 			gateways = [{name: %s, urls: ["nats://127.0.0.1:%d"]}]
 		}
 	`
-	storeDir1, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir1 := createDir(t, JetStreamStoreDir)
 	conf1 := createConfFile(t, []byte(fmt.Sprintf(template,
 		"S1", storeDir1, "", 33222, "A", 33222, "A", 11222, "B", 11223)))
 	s1, o1 := RunServerWithConfig(conf1)
 	defer s1.Shutdown()
 
-	storeDir2, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir2 := createDir(t, JetStreamStoreDir)
 	conf2 := createConfFile(t, []byte(fmt.Sprintf(template,
 		"S2", storeDir2, "", 33223, "B", 33223, "B", 11223, "A", 11222)))
 	s2, o2 := RunServerWithConfig(conf2)
@@ -5397,7 +5397,7 @@ func createJetStreamSuperCluster(t *testing.T, numServersPer, numClusters int) *
 		routeConfig := strings.Join(routes, ",")
 
 		for si := 0; si < numServersPer; si++ {
-			storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+			storeDir := createDir(t, JetStreamStoreDir)
 			sn := fmt.Sprintf("%s-S%d", cn, si+1)
 			bconf := fmt.Sprintf(jsClusterTempl, sn, storeDir, cn, cp+si, routeConfig)
 			conf := fmt.Sprintf(jsSuperClusterTempl, bconf, cn, gp, gwconf)
@@ -5582,7 +5582,7 @@ func createJetStreamClusterWithTemplate(t *testing.T, tmpl string, clusterName s
 	c := &cluster{servers: make([]*Server, 0, numServers), opts: make([]*Options, 0, numServers), name: clusterName}
 
 	for cp := startClusterPort; cp < startClusterPort+numServers; cp++ {
-		storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+		storeDir := createDir(t, JetStreamStoreDir)
 		sn := fmt.Sprintf("S-%d", cp-startClusterPort+1)
 		conf := fmt.Sprintf(tmpl, sn, storeDir, clusterName, cp, routeConfig)
 		s, o := RunServerWithConfig(createConfFile(t, []byte(conf)))
@@ -5601,7 +5601,7 @@ func createJetStreamClusterWithTemplate(t *testing.T, tmpl string, clusterName s
 func (c *cluster) addInNewServer() *Server {
 	c.t.Helper()
 	sn := fmt.Sprintf("S-%d", len(c.servers)+1)
-	storeDir, _ := ioutil.TempDir("", JetStreamStoreDir)
+	storeDir, _ := ioutil.TempDir(tempRoot, JetStreamStoreDir)
 	seedRoute := fmt.Sprintf("nats-route://127.0.0.1:%d", c.opts[0].Cluster.Port)
 	conf := fmt.Sprintf(jsClusterTempl, sn, storeDir, c.name, -1, seedRoute)
 	s, o := RunServerWithConfig(createConfFile(c.t, []byte(conf)))

@@ -19,7 +19,6 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"io/ioutil"
 	"math/rand"
 	"net"
 	"net/url"
@@ -2317,10 +2316,7 @@ func TestLeafNodeRouteParseLSUnsub(t *testing.T) {
 }
 
 func TestLeafNodeOperatorBadCfg(t *testing.T) {
-	tmpDir, err := ioutil.TempDir("", "_nats-server")
-	if err != nil {
-		t.Fatal("Could not create tmp dir")
-	}
+	tmpDir := createDir(t, "_nats-server")
 	defer os.RemoveAll(tmpDir)
 	for errorText, cfg := range map[string]string{
 		"operator mode does not allow specifying user in leafnode config": `

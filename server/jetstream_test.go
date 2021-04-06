@@ -83,7 +83,7 @@ func RunBasicJetStreamServer() *Server {
 	opts := DefaultTestOptions
 	opts.Port = -1
 	opts.JetStream = true
-	tdir, _ := ioutil.TempDir(os.TempDir(), "jstests-storedir-")
+	tdir, _ := ioutil.TempDir(tempRoot, "jstests-storedir-")
 	opts.StoreDir = tdir
 	return RunServer(&opts)
 }
@@ -4140,7 +4140,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	opts := DefaultTestOptions
 	opts.ServerName = "S"
 	opts.Port = -1
-	tdir, _ := ioutil.TempDir(os.TempDir(), "jstests-storedir-")
+	tdir := createDir(t, "jstests-storedir-")
 	opts.JetStream = true
 	opts.StoreDir = tdir
 	rurl, _ := url.Parse(fmt.Sprintf("nats-leaf://%s:%d", lopts.LeafNode.Host, lopts.LeafNode.Port))

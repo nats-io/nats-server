@@ -19,7 +19,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
+	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -29,6 +32,8 @@ import (
 
 	"github.com/nats-io/nats-server/v2/server"
 )
+
+var tempRoot = filepath.Join(os.TempDir(), "nats-server")
 
 // So we can pass tests and benchmarks..
 type tLogger interface {
@@ -553,4 +558,33 @@ func nextServerOpts(opts *server.Options) *server.Options {
 	nopts.Cluster.Port++
 	nopts.HTTPPort++
 	return nopts
+}
+
+func createDir(t *testing.T, prefix string) string {
+	t.Helper()
+	if err := os.MkdirAll(tempRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := ioutil.TempDir(tempRoot, prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func createFile(t *testing.T, prefix string) *os.File {
+	t.Helper()
+	if err := os.MkdirAll(tempRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	return createFileAtDir(t, tempRoot, prefix)
+}
+
+func createFileAtDir(t *testing.T, dir, prefix string) *os.File {
+	t.Helper()
+	f, err := ioutil.TempFile(dir, prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
 }
