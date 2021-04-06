@@ -3643,7 +3643,63 @@ func TestWSJWTCookieUser(t *testing.T) {
 		})
 	}
 	s.Shutdown()
+}
 
+func TestWSReloadTLSConfig(t *testing.T) {
+	template := `
+		listen: "127.0.0.1:-1"
+		websocket {
+			listen: "127.0.0.1:-1"
+			tls {
+				cert_file: '%s'
+				key_file: '%s'
+				ca_file: '../test/configs/certs/ca.pem'
+			}
+		}
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(template,
+		"../test/configs/certs/server-noip.pem",
+		"../test/configs/certs/server-key-noip.pem")))
+	defer removeFile(t, conf)
+
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", o.Websocket.Port)
+	wsc, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Error creating ws connection: %v", err)
+	}
+	defer wsc.Close()
+
+	tc := &TLSConfigOpts{CaFile: "../test/configs/certs/ca.pem"}
+	tlsConfig, err := GenTLSConfig(tc)
+	if err != nil {
+		t.Fatalf("Error generating TLS config: %v", err)
+	}
+	tlsConfig.ServerName = "127.0.0.1"
+	tlsConfig.RootCAs = tlsConfig.ClientCAs
+	tlsConfig.ClientCAs = nil
+	wsc = tls.Client(wsc, tlsConfig.Clone())
+	if err := wsc.(*tls.Conn).Handshake(); err == nil || !strings.Contains(err.Error(), "SAN") {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	wsc.Close()
+
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(template,
+		"../test/configs/certs/server-cert.pem",
+		"../test/configs/certs/server-key.pem"))
+
+	wsc, err = net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Error creating ws connection: %v", err)
+	}
+	defer wsc.Close()
+
+	wsc = tls.Client(wsc, tlsConfig.Clone())
+	if err := wsc.(*tls.Conn).Handshake(); err != nil {
+		t.Fatalf("Error on TLS handshake: %v", err)
+	}
 }
 
 // ==================================================================

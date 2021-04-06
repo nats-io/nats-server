@@ -955,6 +955,7 @@ func (s *Server) startWebsocketServer() {
 	if o.TLSConfig != nil {
 		proto = wsSchemePrefixTLS
 		config := o.TLSConfig.Clone()
+		config.GetConfigForClient = s.wsGetTLSConfig
 		hl, err = tls.Listen("tcp", hp, config)
 	} else {
 		proto = wsSchemePrefix
@@ -1026,6 +1027,17 @@ func (s *Server) startWebsocketServer() {
 		s.done <- true
 	}()
 	s.mu.Unlock()
+}
+
+// The TLS configuration is passed to the listener when the websocket
+// "server" is setup. That prevents TLS configuration updates on reload
+// from being used. By setting this function in tls.Config.GetConfigForClient
+// we instruct the TLS handshake to ask for the tls configuration to be
+// used for a specific client. We don't care which client, we always use
+// the same TLS configuration.
+func (s *Server) wsGetTLSConfig(_ *tls.ClientHelloInfo) (*tls.Config, error) {
+	opts := s.getOpts()
+	return opts.Websocket.TLSConfig, nil
 }
 
 // This is similar to createClient() but has some modifications
