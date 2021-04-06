@@ -1318,9 +1318,9 @@ func (s *Server) updateAccountWithClaimJWT(acc *Account, claimJWT string) error 
 	if acc == nil {
 		return ErrMissingAccount
 	}
-	acc.mu.Lock()
+	acc.mu.RLock()
 	sameClaim := acc.claimJWT != "" && acc.claimJWT == claimJWT && !acc.incomplete
-	acc.mu.Unlock()
+	acc.mu.RUnlock()
 	if sameClaim {
 		s.Debugf("Requested account update for [%s], same claims detected", acc.Name)
 		return nil
