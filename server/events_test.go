@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -464,11 +463,11 @@ func TestSystemAccountingWithLeafNodes(t *testing.T) {
 	}
 	seed, _ := kp.Seed()
 	mycreds := genCredsFile(t, ujwt, seed)
-	defer os.Remove(mycreds)
+	defer removeFile(t, mycreds)
 
 	// Create a server that solicits a leafnode connection.
 	sl, slopts, lnconf := runSolicitWithCredentials(t, opts, mycreds)
-	defer os.Remove(lnconf)
+	defer removeFile(t, lnconf)
 	defer sl.Shutdown()
 
 	checkLeafNodeConnected(t, s)
@@ -1159,7 +1158,7 @@ func TestSystemAccountFromConfig(t *testing.T) {
     `
 
 	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, opub, apub, ts.URL)))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -2229,7 +2228,7 @@ func TestServerEventsFilteredByTag(t *testing.T) {
 		}
 		no_auth_user: b
     `))
-	defer os.Remove(confA)
+	defer removeFile(t, confA)
 	sA, _ := RunServerWithConfig(confA)
 	defer sA.Shutdown()
 	confB := createConfFile(t, []byte(fmt.Sprintf(`
@@ -2254,7 +2253,7 @@ func TestServerEventsFilteredByTag(t *testing.T) {
 		}
 		no_auth_user: b
     `, sA.opts.Cluster.Port)))
-	defer os.Remove(confB)
+	defer removeFile(t, confB)
 	sB, _ := RunServerWithConfig(confB)
 	defer sB.Shutdown()
 	checkClusterFormed(t, sA, sB)

@@ -1124,7 +1124,7 @@ func TestLeafNodeBasicAuth(t *testing.T) {
 	}
 	`
 	conf := createConfFile(t, []byte(content))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -1190,7 +1190,7 @@ func TestLeafNodeTLS(t *testing.T) {
 	}
 	`
 	conf := createConfFile(t, []byte(content))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -1229,7 +1229,7 @@ func TestLeafNodeTLSConnCloseEarly(t *testing.T) {
 	}
 	`
 	conf := createConfFile(t, []byte(content))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -1278,7 +1278,7 @@ func TestLeafNodeTLSMixIP(t *testing.T) {
 	}
 	`
 	conf := createConfFile(t, []byte(content))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -1296,7 +1296,7 @@ func TestLeafNodeTLSMixIP(t *testing.T) {
 	}
 	`
 	slconf := createConfFile(t, []byte(fmt.Sprintf(slContent, opts.LeafNode.Port, opts.LeafNode.Port)))
-	defer os.Remove(slconf)
+	defer removeFile(t, slconf)
 
 	// This will fail but we want to make sure in the correct way, not with
 	// TLS issue because we used an IP for serverName.
@@ -1372,7 +1372,7 @@ func runSolicitWithCredentials(t *testing.T, opts *server.Options, creds string)
 
 func TestLeafNodeOperatorModel(t *testing.T) {
 	s, opts, conf := runLeafNodeOperatorServer(t)
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	defer s.Shutdown()
 
 	// Make sure we get disconnected without proper credentials etc.
@@ -1399,10 +1399,10 @@ func TestLeafNodeOperatorModel(t *testing.T) {
 	}
 	seed, _ := kp.Seed()
 	mycreds := genCredsFile(t, ujwt, seed)
-	defer os.Remove(mycreds)
+	defer removeFile(t, mycreds)
 
 	sl, _, lnconf := runSolicitWithCredentials(t, opts, mycreds)
-	defer os.Remove(lnconf)
+	defer removeFile(t, lnconf)
 	defer sl.Shutdown()
 
 	checkLeafNodeConnected(t, s)
@@ -1410,7 +1410,7 @@ func TestLeafNodeOperatorModel(t *testing.T) {
 
 func TestLeafNodeUserPermsForConnection(t *testing.T) {
 	s, opts, conf := runLeafNodeOperatorServer(t)
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	defer s.Shutdown()
 
 	// Setup account and a user that will be used by the remote leaf node server.
@@ -1428,7 +1428,7 @@ func TestLeafNodeUserPermsForConnection(t *testing.T) {
 	}
 	seed, _ := kp.Seed()
 	mycreds := genCredsFile(t, ujwt, seed)
-	defer os.Remove(mycreds)
+	defer removeFile(t, mycreds)
 
 	content := `
 		port: -1
@@ -1445,7 +1445,7 @@ func TestLeafNodeUserPermsForConnection(t *testing.T) {
 		`
 	config := fmt.Sprintf(content, opts.LeafNode.Port, mycreds)
 	lnconf := createConfFile(t, []byte(config))
-	defer os.Remove(lnconf)
+	defer removeFile(t, lnconf)
 	sl, _ := RunServerWithConfig(lnconf)
 	defer sl.Shutdown()
 
@@ -1508,7 +1508,7 @@ func TestLeafNodeMultipleAccounts(t *testing.T) {
 	// So we will create a main server with two accounts. The remote server, acting as a leaf node, will simply have
 	// the $G global account and no auth. Make sure things work properly here.
 	s, opts, conf := runLeafNodeOperatorServer(t)
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	defer s.Shutdown()
 
 	// Setup the two accounts for this server.
@@ -1527,10 +1527,10 @@ func TestLeafNodeMultipleAccounts(t *testing.T) {
 	// Create the leaf node server using the first account.
 	seed, _ := kp1.Seed()
 	mycreds := genCredsFile(t, ujwt1, seed)
-	defer os.Remove(mycreds)
+	defer removeFile(t, mycreds)
 
 	sl, lopts, lnconf := runSolicitWithCredentials(t, opts, mycreds)
-	defer os.Remove(lnconf)
+	defer removeFile(t, lnconf)
 	defer sl.Shutdown()
 
 	checkLeafNodeConnected(t, s)
@@ -1575,7 +1575,7 @@ func TestLeafNodeMultipleAccounts(t *testing.T) {
 
 func TestLeafNodeSignerUser(t *testing.T) {
 	s, opts, conf := runLeafNodeOperatorServer(t)
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	defer s.Shutdown()
 
 	// Setup the two accounts for this server.
@@ -1640,10 +1640,10 @@ func TestLeafNodeSignerUser(t *testing.T) {
 	// Create the leaf node server using the first account.
 	seed, _ := kp1.Seed()
 	mycreds := genCredsFile(t, ujwt1, seed)
-	defer os.Remove(mycreds)
+	defer removeFile(t, mycreds)
 
 	sl, _, lnconf := runSolicitWithCredentials(t, opts, mycreds)
-	defer os.Remove(lnconf)
+	defer removeFile(t, lnconf)
 	defer sl.Shutdown()
 
 	checkLeafNodeConnected(t, s)
@@ -1653,7 +1653,7 @@ func TestLeafNodeExportsImports(t *testing.T) {
 	// So we will create a main server with two accounts. The remote server, acting as a leaf node, will simply have
 	// the $G global account and no auth. Make sure things work properly here.
 	s, opts, conf := runLeafNodeOperatorServer(t)
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	defer s.Shutdown()
 
 	// Setup the two accounts for this server.
@@ -1704,10 +1704,10 @@ func TestLeafNodeExportsImports(t *testing.T) {
 	// Create the leaf node server using the first account.
 	seed, _ := kp1.Seed()
 	mycreds := genCredsFile(t, ujwt1, seed)
-	defer os.Remove(mycreds)
+	defer removeFile(t, mycreds)
 
 	sl, lopts, lnconf := runSolicitWithCredentials(t, opts, mycreds)
-	defer os.Remove(lnconf)
+	defer removeFile(t, lnconf)
 	defer sl.Shutdown()
 
 	checkLeafNodeConnected(t, s)
@@ -1783,7 +1783,7 @@ func TestLeafNodeExportImportComplexSetup(t *testing.T) {
 	}
 	`
 	conf := createConfFile(t, []byte(content))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	s1, s1Opts := RunServerWithConfig(conf)
 	defer s1.Shutdown()
 
@@ -1868,10 +1868,10 @@ func TestLeafNodeExportImportComplexSetup(t *testing.T) {
 	// Create the leaf node server using the first account.
 	seed, _ := kp1.Seed()
 	mycreds := genCredsFile(t, ujwt1, seed)
-	defer os.Remove(mycreds)
+	defer removeFile(t, mycreds)
 
 	sl, lopts, lnconf := runSolicitWithCredentials(t, s1Opts, mycreds)
-	defer os.Remove(lnconf)
+	defer removeFile(t, lnconf)
 	defer sl.Shutdown()
 
 	checkLeafNodeConnected(t, s1)
@@ -2205,7 +2205,7 @@ func TestLeafNodeAdvertise(t *testing.T) {
 
 func TestLeafNodeConnectionLimitsSingleServer(t *testing.T) {
 	s, opts, conf := runLeafNodeOperatorServer(t)
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	defer s.Shutdown()
 
 	// Setup account and a user that will be used by the remote leaf node server.
@@ -2235,7 +2235,7 @@ func TestLeafNodeConnectionLimitsSingleServer(t *testing.T) {
 	}
 	seed, _ := kp.Seed()
 	mycreds := genCredsFile(t, ujwt, seed)
-	defer os.Remove(mycreds)
+	defer removeFile(t, mycreds)
 
 	checkAccConnectionCounts := func(t *testing.T, expected int) {
 		t.Helper()
@@ -2263,7 +2263,7 @@ func TestLeafNodeConnectionLimitsSingleServer(t *testing.T) {
 	}
 
 	sl, _, lnconf := runSolicitWithCredentials(t, opts, mycreds)
-	defer os.Remove(lnconf)
+	defer removeFile(t, lnconf)
 	defer sl.Shutdown()
 
 	checkLeafNodeConnections(t, s, 1)
@@ -2276,7 +2276,7 @@ func TestLeafNodeConnectionLimitsSingleServer(t *testing.T) {
 	}
 
 	s2, _, lnconf2 := runSolicitWithCredentials(t, opts, mycreds)
-	defer os.Remove(lnconf2)
+	defer removeFile(t, lnconf2)
 	defer s2.Shutdown()
 	checkLeafNodeConnections(t, s, 2)
 	checkAccConnectionCounts(t, 2)
@@ -2294,7 +2294,7 @@ func TestLeafNodeConnectionLimitsSingleServer(t *testing.T) {
 
 	// Now add back the second one as #3.
 	s3, _, lnconf3 := runSolicitWithCredentials(t, opts, mycreds)
-	defer os.Remove(lnconf3)
+	defer removeFile(t, lnconf3)
 	defer s3.Shutdown()
 	checkLeafNodeConnections(t, s, 2)
 
@@ -2302,7 +2302,7 @@ func TestLeafNodeConnectionLimitsSingleServer(t *testing.T) {
 
 	// Once we are here we should not be able to create anymore. Limit == 2.
 	s4, _, lnconf4 := runSolicitWithCredentials(t, opts, mycreds)
-	defer os.Remove(lnconf4)
+	defer removeFile(t, lnconf4)
 	defer s4.Shutdown()
 
 	checkAccConnectionCounts(t, 2)
@@ -2339,7 +2339,7 @@ func TestLeafNodeConnectionLimitsCluster(t *testing.T) {
     }
 	`
 	conf := createConfFile(t, []byte(content))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	s1, s1Opts := RunServerWithConfig(conf)
 	defer s1.Shutdown()
 
@@ -2406,18 +2406,18 @@ func TestLeafNodeConnectionLimitsCluster(t *testing.T) {
 	}
 	seed, _ := kp.Seed()
 	mycreds := genCredsFile(t, ujwt, seed)
-	defer os.Remove(mycreds)
+	defer removeFile(t, mycreds)
 
 	loop := maxleafs / 2
 
 	// Now create maxleafs/2 leaf node servers on each operator server.
 	for i := 0; i < loop; i++ {
 		sl1, _, lnconf1 := runSolicitWithCredentials(t, s1Opts, mycreds)
-		defer os.Remove(lnconf1)
+		defer removeFile(t, lnconf1)
 		defer sl1.Shutdown()
 
 		sl2, _, lnconf2 := runSolicitWithCredentials(t, s2Opts, mycreds)
-		defer os.Remove(lnconf2)
+		defer removeFile(t, lnconf2)
 		defer sl2.Shutdown()
 	}
 
@@ -2448,7 +2448,7 @@ func TestLeafNodeConnectionLimitsCluster(t *testing.T) {
 
 	// Now that we are here we should not be allowed anymore leaf nodes.
 	l, _, lnconf := runSolicitWithCredentials(t, s1Opts, mycreds)
-	defer os.Remove(lnconf)
+	defer removeFile(t, lnconf)
 	defer l.Shutdown()
 
 	checkAccLFCount(acc, false, maxleafs)
@@ -2456,7 +2456,7 @@ func TestLeafNodeConnectionLimitsCluster(t *testing.T) {
 	checkLeafNodeConnections(t, s1, loop)
 
 	l, _, lnconf = runSolicitWithCredentials(t, s2Opts, mycreds)
-	defer os.Remove(lnconf)
+	defer removeFile(t, lnconf)
 	defer l.Shutdown()
 	checkAccLFCount(acc2, false, maxleafs)
 	// Should still be at loop size.
@@ -2697,7 +2697,7 @@ func TestLeafNodeServiceImportResponderOnLeaf(t *testing.T) {
 
 func TestLeafNodeSendsAccountingEvents(t *testing.T) {
 	s, opts, conf := runLeafNodeOperatorServer(t)
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	defer s.Shutdown()
 
 	// System account
@@ -2732,10 +2732,10 @@ func TestLeafNodeSendsAccountingEvents(t *testing.T) {
 	}
 	seed, _ := kp.Seed()
 	mycreds := genCredsFile(t, ujwt, seed)
-	defer os.Remove(mycreds)
+	defer removeFile(t, mycreds)
 
 	sl, _, lnconf := runSolicitWithCredentials(t, opts, mycreds)
-	defer os.Remove(lnconf)
+	defer removeFile(t, lnconf)
 	defer sl.Shutdown()
 
 	// Wait for connect event
@@ -2953,7 +2953,7 @@ func TestLeafNodeDefaultPort(t *testing.T) {
 			]
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	sl, _ := RunServerWithConfig(conf)
 	defer sl.Shutdown()
@@ -3097,7 +3097,7 @@ func TestLeafNodeMultipleRemoteURLs(t *testing.T) {
 	config := fmt.Sprintf(content, opts.LeafNode.Port, opts.LeafNode.Port)
 	conf := createConfFile(t, []byte(config))
 	sl, _ := RunServerWithConfig(conf)
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	defer sl.Shutdown()
 
 	checkLeafNodeConnected(t, s)
@@ -3545,7 +3545,7 @@ func TestServiceExportWithMultipleAccounts(t *testing.T) {
 			listen: "127.0.0.1:-1"
 		}
 	`))
-	defer os.Remove(confA)
+	defer removeFile(t, confA)
 
 	srvA, optsA := RunServerWithConfig(confA)
 	defer srvA.Shutdown()
@@ -3586,7 +3586,7 @@ func TestServiceExportWithMultipleAccounts(t *testing.T) {
 	`
 
 	confB := createConfFile(t, []byte(fmt.Sprintf(bConfigTemplate, optsA.LeafNode.Port)))
-	defer os.Remove(confB)
+	defer removeFile(t, confB)
 
 	srvB, optsB := RunServerWithConfig(confB)
 	defer srvB.Shutdown()
@@ -3666,7 +3666,7 @@ func TestServiceExportWithLeafnodeRestart(t *testing.T) {
 		    }
 		}
 	`))
-	defer os.Remove(confG)
+	defer removeFile(t, confG)
 
 	srvG, optsG := RunServerWithConfig(confG)
 	defer srvG.Shutdown()
@@ -3717,7 +3717,7 @@ func TestServiceExportWithLeafnodeRestart(t *testing.T) {
 	`
 
 	confE := createConfFile(t, []byte(fmt.Sprintf(eConfigTemplate, optsG.LeafNode.Port)))
-	defer os.Remove(confE)
+	defer removeFile(t, confE)
 
 	srvE, optsE := RunServerWithConfig(confE)
 	defer srvE.Shutdown()
@@ -3846,7 +3846,7 @@ func TestLeafNodeOriginClusterSingleHub(t *testing.T) {
 	leafnodes { remotes = [{ url: nats-leaf://127.0.0.1:%d }] }
 	`
 	lconf1 := createConfFile(t, []byte(fmt.Sprintf(c1, opts.LeafNode.Port)))
-	defer os.Remove(lconf1)
+	defer removeFile(t, lconf1)
 
 	ln1, lopts1 := RunServerWithConfig(lconf1)
 	defer ln1.Shutdown()
@@ -3857,7 +3857,7 @@ func TestLeafNodeOriginClusterSingleHub(t *testing.T) {
 	leafnodes { remotes = [{ url: nats-leaf://127.0.0.1:%d }] }
 	`
 	lconf2 := createConfFile(t, []byte(fmt.Sprintf(c2, lopts1.Cluster.Port, opts.LeafNode.Port)))
-	defer os.Remove(lconf2)
+	defer removeFile(t, lconf2)
 
 	ln2, _ := RunServerWithConfig(lconf2)
 	defer ln2.Shutdown()
@@ -3936,7 +3936,7 @@ func TestLeafNodeOriginCluster(t *testing.T) {
 	leafnodes { remotes = [{ url: nats-leaf://127.0.0.1:%d }] }
 	`
 	lconf1 := createConfFile(t, []byte(fmt.Sprintf(c1, ca.opts[0].LeafNode.Port)))
-	defer os.Remove(lconf1)
+	defer removeFile(t, lconf1)
 
 	ln1, lopts1 := RunServerWithConfig(lconf1)
 	defer ln1.Shutdown()
@@ -3948,7 +3948,7 @@ func TestLeafNodeOriginCluster(t *testing.T) {
 	leafnodes { remotes = [{ url: nats-leaf://127.0.0.1:%d }] }
 	`
 	lconf2 := createConfFile(t, []byte(fmt.Sprintf(c2, lopts1.Cluster.Port, ca.opts[1].LeafNode.Port)))
-	defer os.Remove(lconf2)
+	defer removeFile(t, lconf2)
 
 	ln2, _ := RunServerWithConfig(lconf2)
 	defer ln2.Shutdown()
@@ -3960,7 +3960,7 @@ func TestLeafNodeOriginCluster(t *testing.T) {
 	leafnodes { remotes = [{ url: nats-leaf://127.0.0.1:%d }] }
 	`
 	lconf3 := createConfFile(t, []byte(fmt.Sprintf(c3, lopts1.Cluster.Port, ca.opts[2].LeafNode.Port)))
-	defer os.Remove(lconf3)
+	defer removeFile(t, lconf3)
 
 	ln3, _ := RunServerWithConfig(lconf3)
 	defer ln3.Shutdown()
@@ -4163,7 +4163,7 @@ func TestLeafNodeStreamAndShadowSubs(t *testing.T) {
 			}
 		}
 	`))
-	defer os.Remove(conf1)
+	defer removeFile(t, conf1)
 	s1, o1 := RunServerWithConfig(conf1)
 	defer s1.Shutdown()
 
@@ -4192,7 +4192,7 @@ func TestLeafNodeStreamAndShadowSubs(t *testing.T) {
 			]
 		}
 	`, o1.Gateway.Port)))
-	defer os.Remove(conf2)
+	defer removeFile(t, conf2)
 	s2, o2 := RunServerWithConfig(conf2)
 	defer s2.Shutdown()
 
@@ -4233,7 +4233,7 @@ func TestLeafNodeStreamAndShadowSubs(t *testing.T) {
 			]
 		}
 	`, o1.LeafNode.Port)))
-	defer os.Remove(conf3)
+	defer removeFile(t, conf3)
 	s3, o3 := RunServerWithConfig(conf3)
 	defer s3.Shutdown()
 

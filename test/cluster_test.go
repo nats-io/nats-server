@@ -17,7 +17,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -543,7 +542,7 @@ func TestClusterNameOption(t *testing.T) {
 			listen: 127.0.0.1:-1
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -564,7 +563,7 @@ func TestEphemeralClusterName(t *testing.T) {
 			listen: 127.0.0.1:-1
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -601,7 +600,7 @@ func TestClusterNameConflictsDropRoutes(t *testing.T) {
 			listen: 127.0.0.1:5244
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s1, _ := RunServerWithConfig(conf)
 	defer s1.Shutdown()
@@ -615,7 +614,7 @@ func TestClusterNameConflictsDropRoutes(t *testing.T) {
 			routes = [nats-route://127.0.0.1:5244]
 		}
 	`))
-	defer os.Remove(conf2)
+	defer removeFile(t, conf2)
 
 	s2, _ := RunServerWithConfig(conf2)
 	defer s2.Shutdown()
@@ -636,7 +635,7 @@ func TestClusterNameDynamicNegotiation(t *testing.T) {
 		listen: 127.0.0.1:-1
 		cluster {listen: 127.0.0.1:5244}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	seed, _ := RunServerWithConfig(conf)
 	defer seed.Shutdown()
@@ -648,7 +647,7 @@ func TestClusterNameDynamicNegotiation(t *testing.T) {
 			routes = [nats-route://127.0.0.1:5244]
 		}
 	`))
-	defer os.Remove(oconf)
+	defer removeFile(t, oconf)
 
 	// Create a random number of additional servers, up to 20.
 	numServers := rand.Intn(20) + 1

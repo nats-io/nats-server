@@ -15,7 +15,6 @@ package test
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -37,7 +36,7 @@ func TestAccountCycleService(t *testing.T) {
 		  }
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	if _, err := server.ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), server.ErrImportFormsCycle.Error()) {
 		t.Fatalf("Expected an error on cycle service import, got none")
@@ -55,7 +54,7 @@ func TestAccountCycleService(t *testing.T) {
 		  }
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	if _, err := server.ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), server.ErrImportFormsCycle.Error()) {
 		t.Fatalf("Expected an error on cycle service import, got none")
@@ -77,7 +76,7 @@ func TestAccountCycleService(t *testing.T) {
 		  }
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	if _, err := server.ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), server.ErrImportFormsCycle.Error()) {
 		t.Fatalf("Expected an error on cycle service import, got none")
@@ -97,7 +96,7 @@ func TestAccountCycleStream(t *testing.T) {
 		  }
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	if _, err := server.ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), server.ErrImportFormsCycle.Error()) {
 		t.Fatalf("Expected an error on cyclic import, got none")
 	}
@@ -116,7 +115,7 @@ func TestAccountCycleStreamWithMapping(t *testing.T) {
 		  }
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	if _, err := server.ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), server.ErrImportFormsCycle.Error()) {
 		t.Fatalf("Expected an error on cyclic import, got none")
 	}
@@ -139,7 +138,7 @@ func TestAccountCycleNonCycleStreamWithMapping(t *testing.T) {
 		  }
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	if _, err := server.ProcessConfigFile(conf); err != nil {
 		t.Fatalf("Expected no error but got %s", err)
 	}
@@ -158,7 +157,7 @@ func TestAccountCycleServiceCycleWithMapping(t *testing.T) {
 		  }
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	if _, err := server.ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), server.ErrImportFormsCycle.Error()) {
 		t.Fatalf("Expected an error on cycle service import, got none")
 	}
@@ -181,7 +180,7 @@ func TestAccountCycleServiceNonCycle(t *testing.T) {
 		  }
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	if _, err := server.ProcessConfigFile(conf); err != nil {
 		t.Fatalf("Expected no error but got %s", err)
@@ -208,7 +207,7 @@ func TestAccountCycleServiceNonCycleChain(t *testing.T) {
 		  }
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	if _, err := server.ProcessConfigFile(conf); err != nil {
 		t.Fatalf("Expected no error but got %s", err)
@@ -231,7 +230,7 @@ func TestServiceImportReplyMatchCycle(t *testing.T) {
 		}
 		no_auth_user: d
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -275,7 +274,7 @@ func TestServiceImportReplyMatchCycleMultiHops(t *testing.T) {
 		}
 		no_auth_user: d
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()

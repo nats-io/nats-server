@@ -22,7 +22,6 @@ import (
 	"math/rand"
 	"net"
 	"net/url"
-	"os"
 	"runtime"
 	"runtime/debug"
 	"sync"
@@ -100,7 +99,8 @@ func TestNoRaceAvoidSlowConsumerBigMessages(t *testing.T) {
 }
 
 func TestNoRaceRoutedQueueAutoUnsubscribe(t *testing.T) {
-	optsA, _ := ProcessConfigFile("./configs/seed.conf")
+	optsA, err := ProcessConfigFile("./configs/seed.conf")
+	require_NoError(t, err)
 	optsA.NoSigs, optsA.NoLog = true, true
 	optsA.NoSystemAccount = true
 	srvA := RunServer(optsA)
@@ -1079,7 +1079,7 @@ func TestNoRaceJetStreamDeleteStreamManyConsumers(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	mname := "MYS"
@@ -1108,7 +1108,7 @@ func TestNoRaceJetStreamAPIStreamListPaging(t *testing.T) {
 
 	// Forced cleanup of all persisted state.
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	// Create 2X limit
@@ -1177,7 +1177,7 @@ func TestNoRaceJetStreamAPIConsumerListPaging(t *testing.T) {
 
 	// Forced cleanup of all persisted state.
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	sname := "MYSTREAM"

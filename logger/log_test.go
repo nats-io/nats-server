@@ -106,7 +106,7 @@ func TestStdLoggerTraceWithOutDebug(t *testing.T) {
 
 func TestFileLogger(t *testing.T) {
 	tmpDir := createDir(t, "_nats-server")
-	defer os.RemoveAll(tmpDir)
+	defer removeDir(t, tmpDir)
 
 	file := createFileAtDir(t, tmpDir, "nats-server:log_")
 	file.Close()
@@ -178,7 +178,7 @@ func TestFileLoggerSizeLimit(t *testing.T) {
 	logger.Close()
 
 	tmpDir := createDir(t, "nats-server")
-	defer os.RemoveAll(tmpDir)
+	defer removeDir(t, tmpDir)
 
 	file := createFileAtDir(t, tmpDir, "log_")
 	file.Close()
@@ -212,9 +212,9 @@ func TestFileLoggerSizeLimit(t *testing.T) {
 	}
 
 	// Remove all files
-	os.RemoveAll(tmpDir)
+	removeDir(t, tmpDir)
 	tmpDir = createDir(t, "nats-server")
-	defer os.RemoveAll(tmpDir)
+	defer removeDir(t, tmpDir)
 
 	// Recreate logger and don't set a limit
 	file = createFileAtDir(t, tmpDir, "log_")
@@ -345,4 +345,11 @@ func createFileAtDir(t *testing.T, dir, prefix string) *os.File {
 		t.Fatal(err)
 	}
 	return f
+}
+
+func removeDir(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
 }

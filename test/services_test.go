@@ -16,7 +16,6 @@ package test
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -43,7 +42,7 @@ var basicMASetupContents = []byte(`
 
 func TestServiceImportWithStreamed(t *testing.T) {
 	conf := createConfFile(t, basicMASetupContents)
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	srv, opts := RunServerWithConfig(conf)
 	defer srv.Shutdown()
@@ -141,7 +140,7 @@ func TestServiceImportWithStreamed(t *testing.T) {
 
 func TestServiceImportWithStreamedResponseAndEOF(t *testing.T) {
 	conf := createConfFile(t, basicMASetupContents)
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	srv, opts := RunServerWithConfig(conf)
 	defer srv.Shutdown()
@@ -225,7 +224,7 @@ func TestServiceExportsResponseFiltering(t *testing.T) {
 		    }
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	srv, opts := RunServerWithConfig(conf)
 	defer srv.Shutdown()
@@ -293,7 +292,7 @@ func TestServiceExportsAutoDirectCleanup(t *testing.T) {
 		    }
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	srv, opts := RunServerWithConfig(conf)
 	defer srv.Shutdown()
@@ -391,7 +390,7 @@ func TestServiceExportsPruningCleanup(t *testing.T) {
 		    }
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	srv, opts := RunServerWithConfig(conf)
 	defer srv.Shutdown()
@@ -480,7 +479,7 @@ func TestServiceExportsResponseThreshold(t *testing.T) {
 		    },
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	srv, opts := RunServerWithConfig(conf)
 	defer srv.Shutdown()
@@ -526,7 +525,7 @@ func TestServiceExportsResponseThresholdChunked(t *testing.T) {
 		    }
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	srv, opts := RunServerWithConfig(conf)
 	defer srv.Shutdown()
@@ -589,7 +588,7 @@ func TestServiceAllowResponsesPerms(t *testing.T) {
 		    }
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	srv, opts := RunServerWithConfig(conf)
 	defer srv.Shutdown()

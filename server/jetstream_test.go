@@ -43,7 +43,7 @@ func TestJetStreamBasicNilConfig(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	if err := s.EnableJetStream(nil); err != nil {
@@ -121,7 +121,7 @@ func TestJetStreamEnableAndDisableAccount(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	// Global in simple setup should be enabled already.
@@ -198,7 +198,7 @@ func TestJetStreamAddStream(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -266,7 +266,7 @@ func TestJetStreamAddStreamDiscardNew(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -317,7 +317,7 @@ func TestJetStreamAutoTuneFSConfig(t *testing.T) {
 	}
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	maxMsgSize := int32(512)
@@ -363,7 +363,7 @@ func TestJetStreamPubAck(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	sname := "PUBACK"
@@ -419,7 +419,7 @@ func TestJetStreamConsumerWithStartTime(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			fsCfg := &FileStoreConfig{BlockSize: 100}
@@ -490,7 +490,7 @@ func TestJetStreamConsumerWithMultipleStartOptions(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -539,7 +539,7 @@ func TestJetStreamConsumerMaxDeliveries(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -603,7 +603,7 @@ func TestJetStreamPullConsumerDelayedFirstPullWithReplayOriginal(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -652,7 +652,7 @@ func TestJetStreamConsumerAckFloorFill(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -724,7 +724,7 @@ func TestJetStreamNoPanicOnRaceBetweenShutdownAndConsumerDelete(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -790,7 +790,7 @@ func TestJetStreamAddStreamMaxMsgSize(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -845,7 +845,7 @@ func TestJetStreamAddStreamBadSubjects(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	// Client for API requests.
@@ -880,7 +880,7 @@ func TestJetStreamAddStreamMaxConsumers(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	nc := clientConnectToServer(t, s)
@@ -915,7 +915,7 @@ func TestJetStreamAddStreamOverlappingSubjects(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	acc := s.GlobalAccount()
@@ -947,7 +947,7 @@ func TestJetStreamAddStreamOverlapWithJSAPISubjects(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	acc := s.GlobalAccount()
@@ -981,7 +981,7 @@ func TestJetStreamAddStreamSameConfigOK(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	acc := s.GlobalAccount()
@@ -1024,7 +1024,7 @@ func TestJetStreamBasicAckPublish(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -1061,7 +1061,7 @@ func TestJetStreamStateTimestamps(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -1104,7 +1104,7 @@ func TestJetStreamNoAckStream(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			// We can use NoAck to suppress acks even when reply subjects are present.
@@ -1143,7 +1143,7 @@ func TestJetStreamCreateConsumer(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -1263,7 +1263,7 @@ func TestJetStreamBasicDeliverSubject(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -1423,7 +1423,7 @@ func TestJetStreamBasicWorkQueue(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -1521,7 +1521,7 @@ func TestJetStreamWorkQueueMaxWaiting(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -1620,7 +1620,7 @@ func TestJetStreamWorkQueueWrapWaiting(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -1706,7 +1706,7 @@ func TestJetStreamWorkQueueRequest(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -1819,7 +1819,7 @@ func TestJetStreamSubjectFiltering(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -1895,7 +1895,7 @@ func TestJetStreamWorkQueueSubjectFiltering(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -1968,7 +1968,7 @@ func TestJetStreamWildcardSubjectFiltering(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -2084,7 +2084,7 @@ func TestJetStreamWorkQueueAckAndNext(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -2157,7 +2157,7 @@ func TestJetStreamWorkQueueRequestBatch(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -2256,7 +2256,7 @@ func TestJetStreamWorkQueueRetentionStream(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -2378,7 +2378,7 @@ func TestJetStreamAckAllRedelivery(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -2464,7 +2464,7 @@ func TestJetStreamAckReplyStreamPending(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -2615,7 +2615,7 @@ func TestJetStreamAckReplyStreamPendingWithAcks(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -2688,7 +2688,7 @@ func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -2792,7 +2792,7 @@ func TestJetStreamWorkQueueNakRedelivery(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -2870,7 +2870,7 @@ func TestJetStreamWorkQueueWorkingIndicator(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -2957,7 +2957,7 @@ func TestJetStreamWorkQueueTerminateDelivery(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -3051,11 +3051,11 @@ func TestJetStreamConsumerAckAck(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	mname := "ACK-ACK"
@@ -3102,7 +3102,7 @@ func TestJetStreamAckNext(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	mname := "ACKNXT"
@@ -3198,7 +3198,7 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	mname := "DeDupe"
@@ -3362,7 +3362,7 @@ func TestJetStreamPublishExpect(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	mname := "EXPECT"
@@ -3458,7 +3458,7 @@ func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	mname := "MYS-PULL"
@@ -3544,7 +3544,7 @@ func TestJetStreamConsumerRateLimit(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	mname := "RATELIMIT"
@@ -3622,7 +3622,7 @@ func TestJetStreamEphemeralConsumerRecoveryAfterServerRestart(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	mname := "MYS"
@@ -3725,7 +3725,7 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	mname := "MYS"
@@ -3866,7 +3866,7 @@ func TestJetStreamDeleteConsumerAndServerRestart(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	sendSubj := "MYQ"
@@ -3917,7 +3917,7 @@ func TestJetStreamRedeliveryAfterServerRestart(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	sendSubj := "MYQ"
@@ -3994,7 +3994,7 @@ func TestJetStreamSnapshots(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	mname := "MY-STREAM"
@@ -4104,7 +4104,7 @@ func TestJetStreamSnapshots(t *testing.T) {
 	defer s2.Shutdown()
 
 	if config := s2.JetStreamConfig(); config != nil && config.StoreDir != "" {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 	acc = s2.GlobalAccount()
 	r.Reset(snapshot)
@@ -4152,7 +4152,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	checkLeafNodeConnected(t, s)
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	mname := "MY-STREAM"
@@ -4458,7 +4458,7 @@ func TestJetStreamSnapshotsAPIPerf(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	cfg := StreamConfig{
@@ -4539,7 +4539,7 @@ func TestJetStreamActiveDelivery(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil && config.StoreDir != "" {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -4598,7 +4598,7 @@ func TestJetStreamEphemeralConsumers(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -4676,7 +4676,7 @@ func TestJetStreamConsumerReconnect(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -4787,7 +4787,7 @@ func TestJetStreamDurableConsumerReconnect(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -4899,7 +4899,7 @@ func TestJetStreamDurableConsumerReconnectWithOnlyPending(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -5000,7 +5000,7 @@ func TestJetStreamDurableFilteredSubjectConsumerReconnect(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -5149,7 +5149,7 @@ func TestJetStreamConsumerInactiveNoDeadlock(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -5210,7 +5210,7 @@ func TestJetStreamMetadata(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -5317,7 +5317,7 @@ func TestJetStreamRedeliverCount(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -5380,7 +5380,7 @@ func TestJetStreamRedeliverAndLateAck(t *testing.T) {
 
 	// Forced cleanup of all persisted state.
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: "LA", Storage: MemoryStorage})
@@ -5424,7 +5424,7 @@ func TestJetStreamPendingNextTimer(t *testing.T) {
 
 	// Forced cleanup of all persisted state.
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: "NT", Storage: MemoryStorage, Subjects: []string{"ORDERS.*"}})
@@ -5481,7 +5481,7 @@ func TestJetStreamCanNotNakAckd(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -5559,7 +5559,7 @@ func TestJetStreamStreamPurge(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -5621,7 +5621,7 @@ func TestJetStreamStreamPurgeWithConsumer(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -5716,7 +5716,7 @@ func TestJetStreamStreamPurgeWithConsumerAndRedelivery(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -5804,7 +5804,7 @@ func TestJetStreamInterestRetentionStream(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -5949,7 +5949,7 @@ func TestJetStreamInterestRetentionStreamWithFilteredConsumers(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -6039,7 +6039,7 @@ func TestJetStreamInterestRetentionWithWildcardsAndFilteredConsumers(t *testing.
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -6095,7 +6095,7 @@ func TestJetStreamInterestRetentionStreamWithDurableRestart(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -6245,7 +6245,7 @@ func TestJetStreamConsumerReplayRate(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -6366,7 +6366,7 @@ func TestJetStreamConsumerReplayRateNoAck(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -6428,7 +6428,7 @@ func TestJetStreamConsumerReplayQuit(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -6479,7 +6479,7 @@ func TestJetStreamSystemLimits(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	if _, _, err := s.JetStreamReservedResources(); err == nil {
@@ -6651,7 +6651,7 @@ func TestJetStreamStreamStorageTrackingAndLimits(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	gacc := s.GlobalAccount()
@@ -6780,7 +6780,7 @@ func TestJetStreamStreamFileTrackingAndLimits(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	gacc := s.GlobalAccount()
@@ -6918,7 +6918,7 @@ func TestJetStreamSimpleFileRecovery(t *testing.T) {
 	}
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	acc := s.GlobalAccount()
@@ -7037,7 +7037,7 @@ func TestJetStreamPushConsumerFlowControl(t *testing.T) {
 
 	// Forced cleanup of all persisted state.
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	// Client for API requests.
@@ -7141,7 +7141,7 @@ func TestJetStreamPushConsumerIdleHeartbeats(t *testing.T) {
 
 	// Forced cleanup of all persisted state.
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	// Client for API requests.
@@ -7216,7 +7216,7 @@ func TestJetStreamPushConsumerIdleHeartbeatsWithFilterSubject(t *testing.T) {
 
 	// Forced cleanup of all persisted state.
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	// Client for API requests.
@@ -7280,7 +7280,7 @@ func TestJetStreamPushConsumerIdleHeartbeatsWithNoInterest(t *testing.T) {
 
 	// Forced cleanup of all persisted state.
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	// Client for API requests.
@@ -7344,7 +7344,7 @@ func TestJetStreamInfoAPIWithHeaders(t *testing.T) {
 
 	// Forced cleanup of all persisted state.
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	// Client for API requests.
@@ -7376,7 +7376,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 
 	// Forced cleanup of all persisted state.
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	// Client for API requests.
@@ -7927,7 +7927,7 @@ func TestJetStreamFilteredStreamNames(t *testing.T) {
 
 	// Forced cleanup of all persisted state.
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	// Client for API requests.
@@ -8002,7 +8002,7 @@ func TestJetStreamUpdateStream(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil && config.StoreDir != "" {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -8227,7 +8227,7 @@ func TestJetStreamDeleteMsg(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil && config.StoreDir != "" {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -8391,7 +8391,7 @@ func TestJetStreamLimitLockBug(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil && config.StoreDir != "" {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -8443,7 +8443,7 @@ func TestJetStreamNextMsgNoInterest(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			cfg := &StreamConfig{Name: "foo", Storage: FileStorage}
@@ -8531,7 +8531,7 @@ func TestJetStreamMsgHeaders(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -8611,7 +8611,7 @@ func TestJetStreamTemplateBasics(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	acc := s.GlobalAccount()
@@ -8683,7 +8683,7 @@ func TestJetStreamTemplateFileStoreRecovery(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	acc := s.GlobalAccount()
@@ -8883,7 +8883,7 @@ func TestJetStreamCanNotEnableOnSystemAccount(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	sa := s.SystemAccount()
@@ -8910,13 +8910,13 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 			},
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	if !s.JetStreamEnabled() {
@@ -9069,7 +9069,7 @@ func TestJetStreamServerResourcesConfig(t *testing.T) {
 		listen: 127.0.0.1:-1
 		jetstream: {max_mem_store: 2GB, max_file_store: 1TB}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -9079,7 +9079,7 @@ func TestJetStreamServerResourcesConfig(t *testing.T) {
 	}
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	gb := int64(1024 * 1024 * 1024)
@@ -9097,7 +9097,7 @@ func TestJetStreamPushConsumersPullError(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	nc, js := jsClientConnect(t, s)
@@ -9159,7 +9159,7 @@ func TestJetStreamPubPerf(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	acc := s.GlobalAccount()
@@ -9218,7 +9218,7 @@ func TestJetStreamPubWithAsyncResponsePerf(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	acc := s.GlobalAccount()
@@ -9258,7 +9258,7 @@ func TestJetStreamPubWithSyncPerf(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	nc, js := jsClientConnect(t, s)
@@ -9290,7 +9290,7 @@ func TestJetStreamConsumerPerf(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	acc := s.GlobalAccount()
@@ -9352,7 +9352,7 @@ func TestJetStreamConsumerAckFileStorePerf(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	acc := s.GlobalAccount()
@@ -9423,7 +9423,7 @@ func TestJetStreamPubSubPerf(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	acc := s.GlobalAccount()
@@ -9502,7 +9502,7 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -9696,7 +9696,7 @@ func TestJetStreamStoredMsgsDontDisappearAfterCacheExpiration(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	mset, err := s.GlobalAccount().addStreamWithStore(sc, &FileStoreConfig{BlockSize: 128, CacheExpire: 15 * time.Millisecond})
@@ -9793,7 +9793,7 @@ func TestJetStreamConsumerUpdateRedelivery(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -9965,7 +9965,7 @@ func TestJetStreamConsumerMaxAckPending(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -10093,7 +10093,7 @@ func TestJetStreamPullConsumerMaxAckPending(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -10200,7 +10200,7 @@ func TestJetStreamPullConsumerMaxAckPendingRedeliveries(t *testing.T) {
 			defer s.Shutdown()
 
 			if config := s.JetStreamConfig(); config != nil {
-				defer os.RemoveAll(config.StoreDir)
+				defer removeDir(t, config.StoreDir)
 			}
 
 			mset, err := s.GlobalAccount().addStream(c.mconfig)
@@ -10278,7 +10278,7 @@ func TestJetStreamDeliveryAfterServerRestart(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	mset, err := s.GlobalAccount().addStream(&StreamConfig{
@@ -10407,13 +10407,13 @@ func TestJetStreamAccountImportBasics(t *testing.T) {
 			},
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	acc, err := s.LookupAccount("JS")
@@ -10536,13 +10536,13 @@ func TestJetStreamAccountImportAll(t *testing.T) {
 			},
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	acc, err := s.LookupAccount("JS")
@@ -10606,13 +10606,13 @@ func TestJetStreamServerReload(t *testing.T) {
 		no_auth_user: ub
 		system_account: SYS
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	if !s.JetStreamEnabled() {
@@ -10682,13 +10682,13 @@ func TestJetStreamConfigReloadWithGlobalAccount(t *testing.T) {
 		jetstream: enabled
 	`
 	conf := createConfFile(t, []byte(fmt.Sprintf(template, "pwd")))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	// Client for API requests.
@@ -10746,7 +10746,7 @@ func TestJetStreamMirrorAndSourcesFilteredConsumers(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	// Client for API requests.
@@ -10842,7 +10842,7 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	// Client for API requests.
@@ -11002,7 +11002,7 @@ func TestJetStreamSourceBasics(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	// Client for API requests.
@@ -11166,7 +11166,7 @@ func TestJetStreamOperatorAccounts(t *testing.T) {
 	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
+		defer removeDir(t, config.StoreDir)
 	}
 
 	nc, js := jsClientConnect(t, s, nats.UserCredentials("./configs/one.creds"))

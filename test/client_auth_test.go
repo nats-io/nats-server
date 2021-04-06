@@ -16,7 +16,6 @@ package test
 import (
 	"fmt"
 	"io/ioutil"
-	"os"
 	"testing"
 
 	"github.com/nats-io/nats.go"
@@ -67,7 +66,7 @@ const testToken = "$2a$05$3sSWEVA1eMCbV0hWavDjXOx.ClBjI6u1CuUdLqf22cbJjXsnzz8/."
 
 func TestTokenInConfig(t *testing.T) {
 	confFileName := "test.conf"
-	defer os.Remove(confFileName)
+	defer removeFile(t, confFileName)
 	content := `
 	listen: 127.0.0.1:4567
 	authorization={

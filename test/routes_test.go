@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net"
-	"os"
 	"runtime"
 	"strconv"
 	"sync"
@@ -1087,7 +1086,7 @@ func createConfFile(t *testing.T, content []byte) string {
 	fName := conf.Name()
 	conf.Close()
 	if err := ioutil.WriteFile(fName, content, 0666); err != nil {
-		os.Remove(fName)
+		removeFile(t, fName)
 		t.Fatalf("Error writing conf file: %v", err)
 	}
 	return fName
@@ -1133,7 +1132,7 @@ func TestRoutesOnlyImportOrExport(t *testing.T) {
 				}
 			}
 		`, c)))
-		defer os.Remove(cf)
+		defer removeFile(t, cf)
 		s, _ := RunServerWithConfig(cf)
 		s.Shutdown()
 	}

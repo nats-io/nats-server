@@ -588,3 +588,17 @@ func createFileAtDir(t *testing.T, dir, prefix string) *os.File {
 	}
 	return f
 }
+
+func removeDir(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func removeFile(t *testing.T, p string) {
+	t.Helper()
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+}

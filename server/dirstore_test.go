@@ -726,7 +726,7 @@ func TestReload(t *testing.T) {
 	for k := range files {
 		hash = dirStore.Hash()
 		require_False(t, bytes.Equal(hash[:], emptyHash[:]))
-		os.Remove(k)
+		removeFile(t, k)
 		err = dirStore.Reload()
 		require_NoError(t, err)
 		assertStoreSize(t, dirStore, len(files)-1)

@@ -125,7 +125,7 @@ func TestPortsFile(t *testing.T) {
 func TestPortsFileReload(t *testing.T) {
 	// make a temp dir
 	tempDir := createDir(t, "")
-	defer os.RemoveAll(tempDir)
+	defer removeDir(t, tempDir)
 
 	// make child temp dir A
 	dirA := filepath.Join(tempDir, "A")
