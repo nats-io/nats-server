@@ -1318,9 +1318,12 @@ func (s *Server) updateAccountWithClaimJWT(acc *Account, claimJWT string) error 
 	if acc == nil {
 		return ErrMissingAccount
 	}
-	if acc.claimJWT != "" && acc.claimJWT == claimJWT && !acc.incomplete {
+	acc.mu.RLock()
+	sameClaim := acc.claimJWT != "" && acc.claimJWT == claimJWT && !acc.incomplete
+	acc.mu.RUnlock()
+	if sameClaim {
 		s.Debugf("Requested account update for [%s], same claims detected", acc.Name)
-		return ErrAccountResolverSameClaims
+		return nil
 	}
 	accClaims, _, err := s.verifyAccountClaims(claimJWT)
 	if err == nil && accClaims != nil {
@@ -1332,9 +1335,13 @@ func (s *Server) updateAccountWithClaimJWT(acc *Account, claimJWT string) error 
 			acc.mu.Unlock()
 			return ErrAccountValidation
 		}
-		acc.claimJWT = claimJWT
 		acc.mu.Unlock()
 		s.UpdateAccountClaims(acc, accClaims)
+		acc.mu.Lock()
+		// needs to be set after update completed.
+		// This causes concurrent calls to return with sameClaim=true if the change is effective.
+		acc.claimJWT = claimJWT
+		acc.mu.Unlock()
 		return nil
 	}
 	return err
@@ -1409,10 +1416,7 @@ func (s *Server) fetchAccount(name string) (*Account, error) {
 	// registered and we should use this one.
 	if racc := s.registerAccount(acc); racc != nil {
 		// Update with the new claims in case they are new.
-		// Following call will ignore ErrAccountResolverSameClaims
-		// if claims are the same.
-		err = s.updateAccountWithClaimJWT(racc, claimJWT)
-		if err != nil && err != ErrAccountResolverSameClaims {
+		if err = s.updateAccountWithClaimJWT(racc, claimJWT); err != nil {
 			return nil, err
 		}
 		return racc, nil

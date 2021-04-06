@@ -110,9 +110,6 @@ var (
 	// ErrAccountResolverUpdateTooSoon is returned when we attempt an update too soon to last request.
 	ErrAccountResolverUpdateTooSoon = errors.New("account resolver update too soon")
 
-	// ErrAccountResolverSameClaims is returned when same claims have been fetched.
-	ErrAccountResolverSameClaims = errors.New("account resolver no new claims")
-
 	// ErrStreamImportAuthorization is returned when a stream import is not authorized.
 	ErrStreamImportAuthorization = errors.New("stream import not authorized")
 
