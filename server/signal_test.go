@@ -32,8 +32,8 @@ import (
 
 func TestSignalToReOpenLogFile(t *testing.T) {
 	logFile := "test.log"
-	defer os.Remove(logFile)
-	defer os.Remove(logFile + ".bak")
+	defer removeFile(t, logFile)
+	defer removeFile(t, logFile+".bak")
 	opts := &Options{
 		Host:    "127.0.0.1",
 		Port:    -1,

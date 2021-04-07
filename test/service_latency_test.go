@@ -19,7 +19,6 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"net/http"
-	"os"
 	"path"
 	"strings"
 	"sync"
@@ -746,7 +745,7 @@ func TestServiceLatencyWithJWT(t *testing.T) {
 	`
 	contents := strings.Replace(fmt.Sprintf(cf, "", sysPub, sysPub, sysJWT, svcPub, svcJWT, accPub, accJWT), "\n\t", "\n", -1)
 	conf := createConfFile(t, []byte(contents))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -756,7 +755,7 @@ func TestServiceLatencyWithJWT(t *testing.T) {
 	contents2 := strings.Replace(fmt.Sprintf(cf, routeStr, sysPub, sysPub, sysJWT, svcPub, svcJWT, accPub, accJWT), "\n\t", "\n", -1)
 
 	conf2 := createConfFile(t, []byte(contents2))
-	defer os.Remove(conf2)
+	defer removeFile(t, conf2)
 
 	s2, opts2 := RunServerWithConfig(conf2)
 	defer s2.Shutdown()
@@ -1180,7 +1179,7 @@ func TestServiceLatencyOldRequestStyleSingleServer(t *testing.T) {
 
 		system_account: SYS
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	srv, opts := RunServerWithConfig(conf)
 	defer srv.Shutdown()
@@ -1246,7 +1245,7 @@ func TestServiceAndStreamStackOverflow(t *testing.T) {
 		  }
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	srv, opts := RunServerWithConfig(conf)
 	defer srv.Shutdown()
@@ -1425,7 +1424,7 @@ func TestServiceLatencyRequestorSharesConfig(t *testing.T) {
 
 		system_account: SYS
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	srv, opts := RunServerWithConfig(conf)
 	defer srv.Shutdown()
@@ -1537,7 +1536,7 @@ func TestServiceLatencyLossTest(t *testing.T) {
 		}
 		system_account: SYS
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	srv, opts := RunServerWithConfig(conf)
 	defer srv.Shutdown()
 
@@ -1724,7 +1723,7 @@ func TestServiceLatencyHeaderTriggered(t *testing.T) {
 
 				system_account: SYS
 			`, v.shared)))
-			defer os.Remove(conf)
+			defer removeFile(t, conf)
 			srv, opts := RunServerWithConfig(conf)
 			defer srv.Shutdown()
 
@@ -1805,7 +1804,7 @@ func TestServiceLatencyMissingResults(t *testing.T) {
 		  }
 		}
 	`))
-	defer os.Remove(accConf)
+	defer removeFile(t, accConf)
 
 	s1Conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
@@ -1813,7 +1812,7 @@ func TestServiceLatencyMissingResults(t *testing.T) {
 		cluster { port: -1 }
 		include %q
 	`, path.Base(accConf))))
-	defer os.Remove(s1Conf)
+	defer removeFile(t, s1Conf)
 
 	s1, opts1 := RunServerWithConfig(s1Conf)
 	defer s1.Shutdown()
@@ -1827,7 +1826,7 @@ func TestServiceLatencyMissingResults(t *testing.T) {
 		}
 		include %q
 	`, opts1.Cluster.Port, path.Base(accConf))))
-	defer os.Remove(s2Conf)
+	defer removeFile(t, s2Conf)
 
 	s2, opts2 := RunServerWithConfig(s2Conf)
 	defer s2.Shutdown()

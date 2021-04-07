@@ -22,7 +22,6 @@ import (
 	"math/rand"
 	"net"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -105,7 +104,7 @@ func TestLeafNodeTLSWithCerts(t *testing.T) {
 			}
 		}
 	`))
-	defer os.Remove(conf1)
+	defer removeFile(t, conf1)
 	s1, o1 := RunServerWithConfig(conf1)
 	defer s1.Shutdown()
 
@@ -129,7 +128,7 @@ func TestLeafNodeTLSWithCerts(t *testing.T) {
 			]
 		}
 	`, u.String())))
-	defer os.Remove(conf2)
+	defer removeFile(t, conf2)
 	o2, err := ProcessConfigFile(conf2)
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
@@ -160,7 +159,7 @@ func TestLeafNodeTLSRemoteWithNoCerts(t *testing.T) {
 			}
 		}
 	`))
-	defer os.Remove(conf1)
+	defer removeFile(t, conf1)
 	s1, o1 := RunServerWithConfig(conf1)
 	defer s1.Shutdown()
 
@@ -182,7 +181,7 @@ func TestLeafNodeTLSRemoteWithNoCerts(t *testing.T) {
 			]
 		}
 	`, u.String())))
-	defer os.Remove(conf2)
+	defer removeFile(t, conf2)
 	o2, err := ProcessConfigFile(conf2)
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
@@ -226,7 +225,7 @@ func TestLeafNodeTLSRemoteWithNoCerts(t *testing.T) {
 			]
 		}
 	`, u.String())))
-	defer os.Remove(conf3)
+	defer removeFile(t, conf3)
 	o3, err := ProcessConfigFile(conf3)
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
@@ -256,7 +255,7 @@ func TestLeafNodeTLSRemoteWithNoCerts(t *testing.T) {
 			]
 		}
 	`, u.String())))
-	defer os.Remove(conf4)
+	defer removeFile(t, conf4)
 	o4, err := ProcessConfigFile(conf4)
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
@@ -294,7 +293,7 @@ func TestLeafNodeAccountNotFound(t *testing.T) {
 	u, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", ob.LeafNode.Port))
 
 	logFileName := createConfFile(t, []byte(""))
-	defer os.Remove(logFileName)
+	defer removeFile(t, logFileName)
 
 	oa := DefaultOptions()
 	oa.LeafNode.ReconnectInterval = 15 * time.Millisecond
@@ -364,13 +363,13 @@ func TestLeafNodeBasicAuthFailover(t *testing.T) {
 	}
 	`
 	conf := createConfFile(t, []byte(fmt.Sprintf(content, "")))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	sb1, ob1 := RunServerWithConfig(conf)
 	defer sb1.Shutdown()
 
 	conf = createConfFile(t, []byte(fmt.Sprintf(content, fmt.Sprintf("routes: [nats://127.0.0.1:%d]", ob1.Cluster.Port))))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	sb2, _ := RunServerWithConfig(conf)
 	defer sb2.Shutdown()
@@ -393,7 +392,7 @@ func TestLeafNodeBasicAuthFailover(t *testing.T) {
 	}
 	`
 	conf = createConfFile(t, []byte(fmt.Sprintf(content, ob1.LeafNode.Port)))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	sa, _ := RunServerWithConfig(conf)
 	defer sa.Shutdown()
@@ -561,7 +560,7 @@ func TestLeafNodeBasicAuthSingleton(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 
 			conf := createConfFile(t, []byte(fmt.Sprintf(template, test.userSpec)))
-			defer os.Remove(conf)
+			defer removeFile(t, conf)
 			s1, o1 := RunServerWithConfig(conf)
 			defer s1.Shutdown()
 
@@ -585,7 +584,7 @@ func TestLeafNodeBasicAuthSingleton(t *testing.T) {
 					remotes = [ { url: "nats-leaf://%s%s:%d" } ]
 				}
 			`, test.lnURLCreds, o1.LeafNode.Host, o1.LeafNode.Port)))
-			defer os.Remove(conf)
+			defer removeFile(t, conf)
 			s2, _ := RunServerWithConfig(conf)
 			defer s2.Shutdown()
 
@@ -644,7 +643,7 @@ func TestLeafNodeBasicAuthMultiple(t *testing.T) {
             }
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	s1, o1 := RunServerWithConfig(conf)
 	defer s1.Shutdown()
 
@@ -655,7 +654,7 @@ func TestLeafNodeBasicAuthMultiple(t *testing.T) {
 			remotes = [{url: "nats-leaf://wron:user@%s:%d"}]
 		}
 	`, o1.LeafNode.Host, o1.LeafNode.Port)))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	s2, _ := RunServerWithConfig(conf)
 	defer s2.Shutdown()
 	// Give a chance for s2 to attempt to connect and make sure that s1
@@ -697,7 +696,7 @@ func TestLeafNodeBasicAuthMultiple(t *testing.T) {
 			]
 		}
 	`, o1.LeafNode.Host, o1.LeafNode.Port, o1.LeafNode.Host, o1.LeafNode.Port)))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	s2, o2 := RunServerWithConfig(conf)
 	defer s2.Shutdown()
 
@@ -743,7 +742,7 @@ func TestLeafNodeBasicAuthMultiple(t *testing.T) {
 			]
 		}
 	`, o1.LeafNode.Host, o1.LeafNode.Port)))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	s3, _ := RunServerWithConfig(conf)
 	defer s3.Shutdown()
 }
@@ -1671,13 +1670,13 @@ func TestLeafNodeTLSVerifyAndMapCfgPass(t *testing.T) {
 	defer close(l.triggerChan)
 
 	confA := createConfFile(t, []byte(fmt.Sprintf(testLeafNodeTLSVerifyAndMapSrvA, "localhost")))
-	defer os.Remove(confA)
+	defer removeFile(t, confA)
 	srvA, optsA := RunServerWithConfig(confA)
 	defer srvA.Shutdown()
 	srvA.SetLogger(l, true, true)
 
 	confB := createConfFile(t, []byte(fmt.Sprintf(testLeafNodeTLSVerifyAndMapSrvB, optsA.LeafNode.Port)))
-	defer os.Remove(confB)
+	defer removeFile(t, confB)
 	ob := LoadConfig(confB)
 	ob.LeafNode.ReconnectInterval = 50 * time.Millisecond
 	srvB := RunServer(ob)
@@ -1719,13 +1718,13 @@ func TestLeafNodeTLSVerifyAndMapCfgFail(t *testing.T) {
 	// use certificate with SAN localhost, but configure the server to not accept it
 	// instead provide a name matching the user (to be matched by failed
 	confA := createConfFile(t, []byte(fmt.Sprintf(testLeafNodeTLSVerifyAndMapSrvA, "user-provided-in-url")))
-	defer os.Remove(confA)
+	defer removeFile(t, confA)
 	srvA, optsA := RunServerWithConfig(confA)
 	defer srvA.Shutdown()
 	srvA.SetLogger(l, true, true)
 
 	confB := createConfFile(t, []byte(fmt.Sprintf(testLeafNodeTLSVerifyAndMapSrvB, optsA.LeafNode.Port)))
-	defer os.Remove(confB)
+	defer removeFile(t, confB)
 	ob := LoadConfig(confB)
 	ob.LeafNode.ReconnectInterval = 50 * time.Millisecond
 	srvB := RunServer(ob)
@@ -1768,7 +1767,7 @@ func TestLeafNodeOriginClusterInfo(t *testing.T) {
 		}
 	`, hopts.LeafNode.Port)))
 
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	opts, err := ProcessConfigFile(conf)
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
@@ -1810,7 +1809,7 @@ func TestLeafNodeOriginClusterInfo(t *testing.T) {
 		}
 	`, hopts.LeafNode.Port)))
 
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	opts, err = ProcessConfigFile(conf)
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
@@ -2025,7 +2024,7 @@ func TestLeafNodeTwoRemotesBindToSameAccount(t *testing.T) {
 	}
 	`
 	lconf := createConfFile(t, []byte(fmt.Sprintf(conf, opts.LeafNode.Port, opts.LeafNode.Port)))
-	defer os.Remove(lconf)
+	defer removeFile(t, lconf)
 
 	lopts, err := ProcessConfigFile(lconf)
 	if err != nil {
@@ -2317,7 +2316,7 @@ func TestLeafNodeRouteParseLSUnsub(t *testing.T) {
 
 func TestLeafNodeOperatorBadCfg(t *testing.T) {
 	tmpDir := createDir(t, "_nats-server")
-	defer os.RemoveAll(tmpDir)
+	defer removeDir(t, tmpDir)
 	for errorText, cfg := range map[string]string{
 		"operator mode does not allow specifying user in leafnode config": `
 			port: -1
@@ -2343,7 +2342,7 @@ func TestLeafNodeOperatorBadCfg(t *testing.T) {
 			%s
 		}
 	`, ojwt, tmpDir, cfg)))
-			defer os.Remove(conf)
+			defer removeFile(t, conf)
 			opts := LoadConfig(conf)
 			s, err := NewServer(opts)
 			if err == nil {
@@ -2372,7 +2371,7 @@ func TestLeafNodeTLSConfigReload(t *testing.T) {
 		}
 	`
 	confA := createConfFile(t, []byte(fmt.Sprintf(template, "")))
-	defer os.Remove(confA)
+	defer removeFile(t, confA)
 
 	srvA, optsA := RunServerWithConfig(confA)
 	defer srvA.Shutdown()
@@ -2395,7 +2394,7 @@ func TestLeafNodeTLSConfigReload(t *testing.T) {
 			]
 		}
 	`, optsA.LeafNode.Port)))
-	defer os.Remove(confB)
+	defer removeFile(t, confB)
 
 	optsB, err := ProcessConfigFile(confB)
 	if err != nil {
@@ -2443,7 +2442,7 @@ func TestLeafNodeTLSConfigReloadForRemote(t *testing.T) {
 			}
 		}
 	`))
-	defer os.Remove(confA)
+	defer removeFile(t, confA)
 
 	srvA, optsA := RunServerWithConfig(confA)
 	defer srvA.Shutdown()
@@ -2467,7 +2466,7 @@ func TestLeafNodeTLSConfigReloadForRemote(t *testing.T) {
 		}
 	`
 	confB := createConfFile(t, []byte(fmt.Sprintf(template, optsA.LeafNode.Port, "")))
-	defer os.Remove(confB)
+	defer removeFile(t, confB)
 
 	srvB, _ := RunServerWithConfig(confB)
 	defer srvB.Shutdown()
@@ -2724,7 +2723,7 @@ func TestLeafNodeWSRemoteCompressAndMaskingOptions(t *testing.T) {
 					]
 				}
 			`, test.compStr, test.noMaskStr)))
-			defer os.Remove(conf)
+			defer removeFile(t, conf)
 			o, err := ProcessConfigFile(conf)
 			if err != nil {
 				t.Fatalf("Error loading conf: %v", err)
@@ -2874,7 +2873,7 @@ func TestLeafNodeWSAuth(t *testing.T) {
 			port: -1
 		}
 	`, jwt.ConnectionTypeStandard, jwt.ConnectionTypeLeafnode)))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	o, err := ProcessConfigFile(conf)
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)

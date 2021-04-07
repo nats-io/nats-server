@@ -1580,7 +1580,7 @@ func TestConnectErrorReports(t *testing.T) {
 	tmpFile := createFile(t, "")
 	log := tmpFile.Name()
 	tmpFile.Close()
-	defer os.Remove(log)
+	defer removeFile(t, log)
 
 	remoteURLs := RoutesFromStr("nats://127.0.0.1:1234")
 
@@ -1633,7 +1633,7 @@ func TestConnectErrorReports(t *testing.T) {
 	}
 
 	s.Shutdown()
-	os.Remove(log)
+	removeFile(t, log)
 
 	// Now try with leaf nodes
 	opts.Cluster.Port = 0
@@ -1676,7 +1676,7 @@ func TestConnectErrorReports(t *testing.T) {
 	}
 
 	s.Shutdown()
-	os.Remove(log)
+	removeFile(t, log)
 
 	// Now try with gateways
 	opts.LeafNode.Remotes = nil
@@ -1732,7 +1732,7 @@ func TestReconnectErrorReports(t *testing.T) {
 	tmpFile := createFile(t, "")
 	log := tmpFile.Name()
 	tmpFile.Close()
-	defer os.Remove(log)
+	defer removeFile(t, log)
 
 	csOpts := DefaultOptions()
 	csOpts.Cluster.Port = -1
@@ -1797,7 +1797,7 @@ func TestReconnectErrorReports(t *testing.T) {
 	}
 
 	s.Shutdown()
-	os.Remove(log)
+	removeFile(t, log)
 
 	// Now try with leaf nodes
 	csOpts.Cluster.Port = 0
@@ -1853,7 +1853,7 @@ func TestReconnectErrorReports(t *testing.T) {
 	}
 
 	s.Shutdown()
-	os.Remove(log)
+	removeFile(t, log)
 
 	// Now try with gateways
 	csOpts.LeafNode.Port = 0
@@ -1914,7 +1914,7 @@ func TestReconnectErrorReports(t *testing.T) {
 
 func TestServerLogsConfigurationFile(t *testing.T) {
 	tmpDir := createDir(t, "_nats-server")
-	defer os.RemoveAll(tmpDir)
+	defer removeDir(t, tmpDir)
 
 	file := createFileAtDir(t, tmpDir, "nats_server_log_")
 	file.Close()
@@ -1923,7 +1923,7 @@ func TestServerLogsConfigurationFile(t *testing.T) {
 	port: -1
 	logfile: "%s"
 	`, file.Name())))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	o := LoadConfig(conf)
 	o.ConfigFile = file.Name()

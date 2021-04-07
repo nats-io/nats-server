@@ -23,7 +23,6 @@ import (
 	"math/rand"
 	"net"
 	"net/url"
-	"os"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -51,7 +50,7 @@ func TestNoRaceRouteSendSubs(t *testing.T) {
 			no_sys_acc: true
 	`
 	cfa := createConfFile(t, []byte(fmt.Sprintf(template, "")))
-	defer os.Remove(cfa)
+	defer removeFile(t, cfa)
 	srvA, optsA := RunServerWithConfig(cfa)
 	srvA.Shutdown()
 	optsA.DisableShortFirstPing = true

@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"os"
 	"regexp"
 	"testing"
 	"time"
@@ -597,7 +596,7 @@ func TestGatewayTLSMixedIPAndDNS(t *testing.T) {
 			listen: "127.0.0.1:-1"
 		}
 	`))
-	defer os.Remove(confA1)
+	defer removeFile(t, confA1)
 	srvA1, optsA1 := RunServerWithConfig(confA1)
 	defer srvA1.Shutdown()
 
@@ -622,7 +621,7 @@ func TestGatewayTLSMixedIPAndDNS(t *testing.T) {
 	`
 	confA2 := createConfFile(t, []byte(fmt.Sprintf(confA2Template,
 		optsA1.Cluster.Host, optsA1.Cluster.Port)))
-	defer os.Remove(confA2)
+	defer removeFile(t, confA2)
 	srvA2, optsA2 := RunServerWithConfig(confA2)
 	defer srvA2.Shutdown()
 

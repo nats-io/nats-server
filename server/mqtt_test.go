@@ -264,7 +264,7 @@ func TestMQTTConfig(t *testing.T) {
 			}
 		}
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)
 	if o.MQTT.TLSConfig == nil {
@@ -438,7 +438,7 @@ func TestMQTTParseOptions(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(test.content))
-			defer os.Remove(conf)
+			defer removeFile(t, conf)
 			o, err := ProcessConfigFile(conf)
 			if test.err != _EMPTY_ {
 				if err == nil || !strings.Contains(err.Error(), test.err) {
@@ -3196,7 +3196,7 @@ func TestMQTTWillRetainPermViolation(t *testing.T) {
 		}
 	`
 	conf := createConfFile(t, []byte(fmt.Sprintf(template, "foo")))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)
@@ -4410,7 +4410,7 @@ func TestMQTTConfigReload(t *testing.T) {
 		}
 	`
 	conf := createConfFile(t, []byte(fmt.Sprintf(template, `"5s"`, `10000`)))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)

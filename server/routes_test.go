@@ -109,7 +109,8 @@ func TestClusterAdvertise(t *testing.T) {
 		ch <- nil
 	}()
 
-	optsA, _ := ProcessConfigFile("./configs/seed.conf")
+	optsA, err := ProcessConfigFile("./configs/seed.conf")
+	require_NoError(t, err)
 	optsA.NoSigs, optsA.NoLog = true, true
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
@@ -153,7 +154,8 @@ func TestClusterAdvertiseErrorOnStartup(t *testing.T) {
 }
 
 func TestClientAdvertise(t *testing.T) {
-	optsA, _ := ProcessConfigFile("./configs/seed.conf")
+	optsA, err := ProcessConfigFile("./configs/seed.conf")
+	require_NoError(t, err)
 	optsA.NoSigs, optsA.NoLog = true, true
 
 	srvA := RunServer(optsA)
@@ -184,8 +186,10 @@ func TestClientAdvertise(t *testing.T) {
 }
 
 func TestServerRoutesWithClients(t *testing.T) {
-	optsA, _ := ProcessConfigFile("./configs/srv_a.conf")
-	optsB, _ := ProcessConfigFile("./configs/srv_b.conf")
+	optsA, err := ProcessConfigFile("./configs/srv_a.conf")
+	require_NoError(t, err)
+	optsB, err := ProcessConfigFile("./configs/srv_b.conf")
+	require_NoError(t, err)
 
 	optsA.NoSigs, optsA.NoLog = true, true
 	optsB.NoSigs, optsB.NoLog = true, true
@@ -226,8 +230,10 @@ func TestServerRoutesWithClients(t *testing.T) {
 }
 
 func TestServerRoutesWithAuthAndBCrypt(t *testing.T) {
-	optsA, _ := ProcessConfigFile("./configs/srv_a_bcrypt.conf")
-	optsB, _ := ProcessConfigFile("./configs/srv_b_bcrypt.conf")
+	optsA, err := ProcessConfigFile("./configs/srv_a_bcrypt.conf")
+	require_NoError(t, err)
+	optsB, err := ProcessConfigFile("./configs/srv_b_bcrypt.conf")
+	require_NoError(t, err)
 
 	optsA.NoSigs, optsA.NoLog = true, true
 	optsB.NoSigs, optsB.NoLog = true, true
@@ -305,7 +311,8 @@ func nextServerOpts(opts *Options) *Options {
 }
 
 func TestSeedSolicitWorks(t *testing.T) {
-	optsSeed, _ := ProcessConfigFile("./configs/seed.conf")
+	optsSeed, err := ProcessConfigFile("./configs/seed.conf")
+	require_NoError(t, err)
 
 	optsSeed.NoSigs, optsSeed.NoLog = true, true
 	optsSeed.NoSystemAccount = true
@@ -362,7 +369,8 @@ func TestSeedSolicitWorks(t *testing.T) {
 }
 
 func TestTLSSeedSolicitWorks(t *testing.T) {
-	optsSeed, _ := ProcessConfigFile("./configs/seed_tls.conf")
+	optsSeed, err := ProcessConfigFile("./configs/seed_tls.conf")
+	require_NoError(t, err)
 
 	optsSeed.NoSigs, optsSeed.NoLog = true, true
 	optsSeed.NoSystemAccount = true
@@ -419,7 +427,8 @@ func TestTLSSeedSolicitWorks(t *testing.T) {
 }
 
 func TestChainedSolicitWorks(t *testing.T) {
-	optsSeed, _ := ProcessConfigFile("./configs/seed.conf")
+	optsSeed, err := ProcessConfigFile("./configs/seed.conf")
+	require_NoError(t, err)
 
 	optsSeed.NoSigs, optsSeed.NoLog = true, true
 	optsSeed.NoSystemAccount = true
@@ -492,7 +501,8 @@ func checkExpectedSubs(t *testing.T, expected int, servers ...*Server) {
 }
 
 func TestTLSChainedSolicitWorks(t *testing.T) {
-	optsSeed, _ := ProcessConfigFile("./configs/seed_tls.conf")
+	optsSeed, err := ProcessConfigFile("./configs/seed_tls.conf")
+	require_NoError(t, err)
 
 	optsSeed.NoSigs, optsSeed.NoLog = true, true
 	optsSeed.NoSystemAccount = true
@@ -551,7 +561,8 @@ func TestTLSChainedSolicitWorks(t *testing.T) {
 }
 
 func TestRouteTLSHandshakeError(t *testing.T) {
-	optsSeed, _ := ProcessConfigFile("./configs/seed_tls.conf")
+	optsSeed, err := ProcessConfigFile("./configs/seed_tls.conf")
+	require_NoError(t, err)
 	optsSeed.NoLog = true
 	optsSeed.NoSigs = true
 	srvSeed := RunServer(optsSeed)
@@ -875,10 +886,12 @@ func TestServerPoolUpdatedWhenRouteGoesAway(t *testing.T) {
 }
 
 func TestRouteFailedConnRemovedFromTmpMap(t *testing.T) {
-	optsA, _ := ProcessConfigFile("./configs/srv_a.conf")
+	optsA, err := ProcessConfigFile("./configs/srv_a.conf")
+	require_NoError(t, err)
 	optsA.NoSigs, optsA.NoLog = true, true
 
-	optsB, _ := ProcessConfigFile("./configs/srv_b.conf")
+	optsB, err := ProcessConfigFile("./configs/srv_b.conf")
+	require_NoError(t, err)
 	optsB.NoSigs, optsB.NoLog = true, true
 
 	srvA := New(optsA)
@@ -935,7 +948,8 @@ func TestRoutePermsAppliedOnInboundAndOutboundRoute(t *testing.T) {
 		},
 	}
 
-	optsA, _ := ProcessConfigFile("./configs/seed.conf")
+	optsA, err := ProcessConfigFile("./configs/seed.conf")
+	require_NoError(t, err)
 	optsA.NoLog = true
 	optsA.NoSigs = true
 	optsA.Cluster.Permissions = perms

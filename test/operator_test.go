@@ -17,7 +17,6 @@ import (
 	"bytes"
 	"fmt"
 	"io/ioutil"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -364,7 +363,7 @@ func TestReloadDoesNotWipeAccountsWithOperatorMode(t *testing.T) {
 	`
 	contents := strings.Replace(fmt.Sprintf(cf, "", sysPub, sysPub, sysJWT, accPub, accJWT), "\n\t", "\n", -1)
 	conf := createConfFile(t, []byte(contents))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -374,7 +373,7 @@ func TestReloadDoesNotWipeAccountsWithOperatorMode(t *testing.T) {
 	contents2 := strings.Replace(fmt.Sprintf(cf, routeStr, sysPub, sysPub, sysJWT, accPub, accJWT), "\n\t", "\n", -1)
 
 	conf2 := createConfFile(t, []byte(contents2))
-	defer os.Remove(conf2)
+	defer removeFile(t, conf2)
 
 	s2, opts2 := RunServerWithConfig(conf2)
 	defer s2.Shutdown()
@@ -488,7 +487,7 @@ func TestReloadDoesUpdateAccountsWithMemoryResolver(t *testing.T) {
 	`
 	contents := strings.Replace(fmt.Sprintf(cf, "", sysPub, sysPub, sysJWT, accPub, accJWT), "\n\t", "\n", -1)
 	conf := createConfFile(t, []byte(contents))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -580,7 +579,7 @@ func TestReloadFailsWithBadAccountsWithMemoryResolver(t *testing.T) {
 	`
 	contents := strings.Replace(fmt.Sprintf(cf, "", sysPub, sysPub, sysJWT, apub, ajwt), "\n\t", "\n", -1)
 	conf := createConfFile(t, []byte(contents))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -644,7 +643,7 @@ func TestConnsRequestDoesNotLoadAccountCheckingConnLimits(t *testing.T) {
 	`
 	contents := strings.Replace(fmt.Sprintf(cf, "", sysPub, sysPub, sysJWT, accPub, accJWT), "\n\t", "\n", -1)
 	conf := createConfFile(t, []byte(contents))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -654,7 +653,7 @@ func TestConnsRequestDoesNotLoadAccountCheckingConnLimits(t *testing.T) {
 	contents2 := strings.Replace(fmt.Sprintf(cf, routeStr, sysPub, sysPub, sysJWT, accPub, accJWT), "\n\t", "\n", -1)
 
 	conf2 := createConfFile(t, []byte(contents2))
-	defer os.Remove(conf2)
+	defer removeFile(t, conf2)
 
 	s2, _ := RunServerWithConfig(conf2)
 	defer s2.Shutdown()

@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"math/rand"
-	"os"
 	"path"
 	"reflect"
 	"strings"
@@ -38,7 +37,7 @@ func TestJetStreamClusterConfig(t *testing.T) {
 		jetstream: {max_mem_store: 16GB, max_file_store: 10TB, store_dir: "%s"}
 		cluster { listen: 127.0.0.1:-1 }
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	check := func(errStr string) {
 		t.Helper()
@@ -59,7 +58,7 @@ func TestJetStreamClusterConfig(t *testing.T) {
 		jetstream: {max_mem_store: 16GB, max_file_store: 10TB, store_dir: "%s"}
 		cluster { listen: 127.0.0.1:-1 }
 	`))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 
 	check("requires `cluster.name`")
 }
@@ -5161,7 +5160,7 @@ func TestJetStreamClusterMultiRestartBug(t *testing.T) {
 	s := c.randomServer()
 	opts := s.getOpts()
 	s.Shutdown()
-	os.RemoveAll(opts.StoreDir)
+	removeDir(t, opts.StoreDir)
 
 	// Then restart it.
 	c.restartAll()

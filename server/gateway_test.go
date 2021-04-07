@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -6353,7 +6352,7 @@ func TestGatewayTLSConfigReload(t *testing.T) {
 		}
 	`
 	confA := createConfFile(t, []byte(fmt.Sprintf(template, "")))
-	defer os.Remove(confA)
+	defer removeFile(t, confA)
 
 	srvA, optsA := RunServerWithConfig(confA)
 	defer srvA.Shutdown()
@@ -6406,7 +6405,7 @@ func TestGatewayTLSConfigReloadForRemote(t *testing.T) {
 		}
 	`
 	confB := createConfFile(t, []byte(fmt.Sprintf(template, optsA.Gateway.Port, "")))
-	defer os.Remove(confB)
+	defer removeFile(t, confB)
 
 	srvB, _ := RunServerWithConfig(confB)
 	defer srvB.Shutdown()
@@ -6433,7 +6432,7 @@ func TestGatewayAuthDiscovered(t *testing.T) {
 			authorization: { user: gwuser, password: changeme }
 		}
 	`))
-	defer os.Remove(confA)
+	defer removeFile(t, confA)
 	srvA, optsA := RunServerWithConfig(confA)
 	defer srvA.Shutdown()
 
@@ -6448,7 +6447,7 @@ func TestGatewayAuthDiscovered(t *testing.T) {
 			]
 		}
 	`, optsA.Gateway.Port)))
-	defer os.Remove(confB)
+	defer removeFile(t, confB)
 	srvB, _ := RunServerWithConfig(confB)
 	defer srvB.Shutdown()
 

@@ -22,7 +22,6 @@ import (
 	"io/ioutil"
 	"net"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -800,7 +799,7 @@ func testTLSRoutesCertificateImplicitAllow(t *testing.T, pass bool) {
 	t.Helper()
 	// Base config for the servers
 	cfg := createFile(t, "cfg")
-	defer os.Remove(cfg.Name())
+	defer removeFile(t, cfg.Name())
 	cfg.WriteString(fmt.Sprintf(`
 		cluster {
 		  tls {
@@ -868,7 +867,7 @@ func testTLSGatewaysCertificateImplicitAllow(t *testing.T, pass bool) {
 	t.Helper()
 	// Base config for the servers
 	cfg := createFile(t, "cfg")
-	defer os.Remove(cfg.Name())
+	defer removeFile(t, cfg.Name())
 	cfg.WriteString(fmt.Sprintf(`
 		gateway {
 		  tls {
@@ -1311,7 +1310,7 @@ func TestTLSHandshakeFailureMemUsage(t *testing.T) {
 				}
 			`)
 			conf := createConfFile(t, []byte(content))
-			defer os.Remove(conf)
+			defer removeFile(t, conf)
 			s, opts := RunServerWithConfig(conf)
 			defer s.Shutdown()
 
@@ -1648,7 +1647,7 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 				}
 			`)
 			conf := createConfFile(t, []byte(content))
-			defer os.Remove(conf)
+			defer removeFile(t, conf)
 			s, opts := RunServerWithConfig(conf)
 			defer s.Shutdown()
 
@@ -1768,7 +1767,7 @@ func TestTLSClientAuthWithRDNSequenceReordered(t *testing.T) {
 				}
 			`)
 			conf := createConfFile(t, []byte(content))
-			defer os.Remove(conf)
+			defer removeFile(t, conf)
 			s, opts := RunServerWithConfig(conf)
 			defer s.Shutdown()
 
@@ -1901,7 +1900,7 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 				}
 			`)
 			conf := createConfFile(t, []byte(content))
-			defer os.Remove(conf)
+			defer removeFile(t, conf)
 			s, opts := RunServerWithConfig(conf)
 			defer s.Shutdown()
 

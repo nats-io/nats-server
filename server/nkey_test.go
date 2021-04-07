@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"fmt"
 	mrand "math/rand"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -213,7 +212,7 @@ func TestMixedClientConfig(t *testing.T) {
         {user: alice, password: foo}
       ]
     }`))
-	defer os.Remove(confFileName)
+	defer removeFile(t, confFileName)
 	opts, err := ProcessConfigFile(confFileName)
 	if err != nil {
 		t.Fatalf("Received an error processing config file: %v", err)

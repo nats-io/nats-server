@@ -144,8 +144,8 @@ func TestReOpenLogFile(t *testing.T) {
 
 	// Set a File log
 	s.opts.LogFile = "test.log"
-	defer os.Remove(s.opts.LogFile)
-	defer os.Remove(s.opts.LogFile + ".bak")
+	defer removeFile(t, s.opts.LogFile)
+	defer removeFile(t, s.opts.LogFile+".bak")
 	fileLog := logger.NewFileLogger(s.opts.LogFile, s.opts.Logtime, s.opts.Debug, s.opts.Trace, true)
 	s.SetLogger(fileLog, false, false)
 	// Add some log
@@ -189,7 +189,7 @@ func TestFileLoggerSizeLimitAndReopen(t *testing.T) {
 	defer s.SetLogger(nil, false, false)
 
 	tmpDir := createDir(t, "nats-server")
-	defer os.RemoveAll(tmpDir)
+	defer removeDir(t, tmpDir)
 	file := createFileAtDir(t, tmpDir, "log_")
 	file.Close()
 

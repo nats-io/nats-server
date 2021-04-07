@@ -23,7 +23,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"reflect"
 	"runtime"
 	"sort"
@@ -2540,7 +2539,7 @@ func TestMonitorClusterURLs(t *testing.T) {
 		}
 	`
 	conf := createConfFile(t, []byte(fmt.Sprintf(template, "nats://"+s2ClusterHostPort, "")))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	s1, _ := RunServerWithConfig(conf)
 	defer s1.Shutdown()
 
@@ -3101,7 +3100,7 @@ func TestMonitorGatewayzAccounts(t *testing.T) {
 		}
 		no_sys_acc = true
 	`, accounts)))
-	defer os.Remove(bConf)
+	defer removeFile(t, bConf)
 
 	sb, ob := RunServerWithConfig(bConf)
 	defer sb.Shutdown()
@@ -3126,7 +3125,7 @@ func TestMonitorGatewayzAccounts(t *testing.T) {
 		}
 		no_sys_acc = true
 	`, accounts, sb.GatewayAddr().Port)))
-	defer os.Remove(aConf)
+	defer removeFile(t, aConf)
 
 	sa, oa := RunServerWithConfig(aConf)
 	defer sa.Shutdown()
@@ -3503,7 +3502,7 @@ func TestMonitorOpJWT(t *testing.T) {
 	resolver = MEMORY
 	`
 	conf := createConfFile(t, []byte(content))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	sa, _ := RunServerWithConfig(conf)
 	defer sa.Shutdown()
 
@@ -3544,7 +3543,7 @@ func TestMonitorLeafz(t *testing.T) {
 	}
 	`
 	conf := createConfFile(t, []byte(content))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	sb, ob := RunServerWithConfig(conf)
 	defer sb.Shutdown()
 
@@ -3563,9 +3562,9 @@ func TestMonitorLeafz(t *testing.T) {
 		return acc, creds
 	}
 	acc1, mycreds1 := createAcc(t)
-	defer os.Remove(mycreds1)
+	defer removeFile(t, mycreds1)
 	acc2, mycreds2 := createAcc(t)
-	defer os.Remove(mycreds2)
+	defer removeFile(t, mycreds2)
 
 	content = `
 		port: -1
@@ -3603,7 +3602,7 @@ func TestMonitorLeafz(t *testing.T) {
 		acc1.Name, ob.LeafNode.Port, mycreds1,
 		acc2.Name, ob.LeafNode.Port, mycreds2)
 	conf = createConfFile(t, []byte(config))
-	defer os.Remove(conf)
+	defer removeFile(t, conf)
 	sa, oa := RunServerWithConfig(conf)
 	defer sa.Shutdown()
 
@@ -3929,7 +3928,7 @@ func TestMonitorJsz(t *testing.T) {
 		{5500, 5501, 5502, 7502},
 	} {
 		tmpDir := createDir(t, fmt.Sprintf("srv_%d", test.port))
-		defer os.RemoveAll(tmpDir)
+		defer removeDir(t, tmpDir)
 		cf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:%d
 		http: 127.0.0.1:%d
@@ -3958,7 +3957,7 @@ func TestMonitorJsz(t *testing.T) {
 			routes: [nats-route://127.0.0.1:%d]
 		}
 		server_name: server_%d `, test.port, test.mport, tmpDir, test.cport, test.routed, test.port)))
-		defer os.Remove(cf)
+		defer removeFile(t, cf)
 
 		s, _ := RunServerWithConfig(cf)
 		defer s.Shutdown()

@@ -24,7 +24,7 @@ func TestPidFile(t *testing.T) {
 	opts := DefaultTestOptions
 
 	tmpDir := createDir(t, "_nats-server")
-	defer os.RemoveAll(tmpDir)
+	defer removeDir(t, tmpDir)
 
 	file := createFileAtDir(t, tmpDir, "nats-server:pid_")
 	file.Close()
