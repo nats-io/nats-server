@@ -1368,8 +1368,16 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 	v.OutMsgs = atomic.LoadInt64(&s.outMsgs)
 	v.OutBytes = atomic.LoadInt64(&s.outBytes)
 	v.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)
-	// FIXME(dlc) - make this multi-account aware.
-	v.Subscriptions = s.gacc.sl.Count()
+
+	s.accounts.Range(func(k, val interface{}) bool {
+		acc := val.(*Account)
+		acc.sl.RLock()
+		v.Subscriptions += acc.sl.count
+		acc.sl.RUnlock()
+
+		return true
+	})
+
 	v.HTTPReqStats = make(map[string]uint64, len(s.httpReqStats))
 	for key, val := range s.httpReqStats {
 		v.HTTPReqStats[key] = val
