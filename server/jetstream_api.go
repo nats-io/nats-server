@@ -600,6 +600,7 @@ var (
 	jsClusterNoPeersErr    = &ApiError{Code: 400, Description: "no suitable peers for placement"}
 	jsServerNotMemberErr   = &ApiError{Code: 400, Description: "server is not a member of the cluster"}
 	jsNoMessageFoundErr    = &ApiError{Code: 404, Description: "no message found"}
+	jsNoAccountErr         = &ApiError{Code: 503, Description: "account not found"}
 )
 
 // For easier handling of exports and imports.

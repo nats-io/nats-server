@@ -1807,18 +1807,28 @@ func (js *jetStream) streamAssignment(account, stream string) (sa *streamAssignm
 func (js *jetStream) processStreamAssignment(sa *streamAssignment) bool {
 	js.mu.RLock()
 	s, cc := js.srv, js.cluster
+	accName, stream := sa.Client.serviceAccount(), sa.Config.Name
 	js.mu.RUnlock()
+
 	if s == nil || cc == nil {
 		// TODO(dlc) - debug at least
 		return false
 	}
 
-	acc, err := s.LookupAccount(sa.Client.serviceAccount())
+	acc, err := s.LookupAccount(accName)
 	if err != nil {
+		// If we can not lookup our account send this result back to the metacontroller leader.
+		result := &streamAssignmentResult{
+			Account:  accName,
+			Stream:   stream,
+			Response: &JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}},
+		}
+		result.Response.Error = jsNoAccountErr
+		s.sendInternalMsgLocked(streamAssignmentSubj, _EMPTY_, nil, result)
+
 		// TODO(dlc) - log error
 		return false
 	}
-	stream := sa.Config.Name
 
 	js.mu.Lock()
 	if cc.meta == nil {
