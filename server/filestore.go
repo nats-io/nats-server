@@ -2979,12 +2979,13 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 
 	smb.mu.Lock()
 	for mseq := smb.first.seq; mseq < seq; mseq++ {
-		if _, rl, _, err := smb.slotInfo(int(mseq - smb.cache.fseq)); err != nil {
-			smb.bytes -= uint64(rl)
+		if sm, _ := smb.cacheLookupWithLock(mseq); sm != nil && smb.msgs > 0 {
+			smb.bytes -= fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
+			smb.msgs--
+			purged++
 		}
-		smb.msgs--
-		purged++
 	}
+
 	// Update first entry.
 	sm, _ := smb.cacheLookupWithLock(seq)
 	if sm != nil {
