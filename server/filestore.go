@@ -875,7 +875,11 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	}
 
 	mb := &msgBlock{fs: fs, index: index, cexp: fs.fcfg.CacheExpire}
+
+	// Lock should be held to quiet race detector.
+	mb.mu.Lock()
 	mb.setupWriteCache(mbuf)
+	mb.mu.Unlock()
 
 	// Now do local hash.
 	key := sha256.Sum256(fs.hashKeyForBlock(index))
