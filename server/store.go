@@ -75,6 +75,7 @@ type StreamStore interface {
 	Compact(seq uint64) (uint64, error)
 	Truncate(seq uint64) error
 	GetSeqFromTime(t time.Time) uint64
+	NumFilteredPending(sseq uint64, subject string) uint64
 	State() StreamState
 	FastState(*StreamState)
 	Type() StorageType

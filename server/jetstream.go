@@ -893,6 +893,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 				s.Warnf("    Error restoring Consumer state: %v", err)
 			}
 		}
+		mset.clearFilterIndex()
 	}
 
 	// Make sure to cleanup and old remaining snapshots.

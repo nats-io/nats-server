@@ -536,7 +536,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	}
 
 	// Check if we have  filtered subject that is a wildcard.
-	if config.FilterSubject != _EMPTY_ && !subjectIsLiteral(config.FilterSubject) {
+	if config.FilterSubject != _EMPTY_ && subjectHasWildcard(config.FilterSubject) {
 		o.filterWC = true
 	}
 
@@ -2909,17 +2909,7 @@ func (o *consumer) setInitialPending() {
 		}
 	} else {
 		// Here we are filtered.
-		// FIXME(dlc) - This could be slow with O(n)
-		for seq := o.sseq; ; seq++ {
-			subj, _, _, _, err := o.mset.store.LoadMsg(seq)
-			if err == ErrStoreMsgNotFound {
-				continue
-			} else if err == ErrStoreEOF {
-				break
-			} else if err == nil && o.isFilteredMatch(subj) {
-				o.sgap++
-			}
-		}
+		o.sgap = o.mset.store.NumFilteredPending(o.sseq, o.cfg.FilterSubject)
 	}
 }
 

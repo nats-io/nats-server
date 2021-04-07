@@ -78,6 +78,8 @@ type fileStore struct {
 	hh       hash.Hash64
 	qch      chan struct{}
 	cfs      []*consumerFileStore
+	fsi      map[string]seqSlice
+	fsis     *simpleState
 	closed   bool
 	expiring bool
 	fip      bool
@@ -250,7 +252,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		return nil, fmt.Errorf("could not create message storage directory - %v", err)
 	}
 	if err := os.MkdirAll(odir, 0755); err != nil {
-		return nil, fmt.Errorf("could not create message storage directory - %v", err)
+		return nil, fmt.Errorf("could not create consumer storage directory - %v", err)
 	}
 
 	// Create highway hash for message blocks. Use sha256 of directory as key.
@@ -260,9 +262,21 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		return nil, fmt.Errorf("could not create hash: %v", err)
 	}
 
-	// Recover our state.
+	// Recover our message state.
 	if err := fs.recoverMsgs(); err != nil {
 		return nil, err
+	}
+
+	// Check to see if we have lots of messages and existing consumers.
+	// If they could be filtered we should generate an index here.
+	const lowWaterMarkMsgs = 8192
+	if fs.state.Msgs > lowWaterMarkMsgs {
+		// If we have one subject that is not a wildcard we can skip.
+		if !(len(cfg.Subjects) == 1 && subjectIsLiteral(cfg.Subjects[0])) {
+			if ofis, _ := ioutil.ReadDir(odir); len(ofis) > 0 {
+				fs.genFilterIndex()
+			}
+		}
 	}
 
 	// Write our meta data iff does not exist.
@@ -663,6 +677,7 @@ func (fs *fileStore) recoverMsgs() error {
 		fs.startAgeChk()
 		fs.expireMsgsLocked()
 	}
+
 	return nil
 }
 
@@ -698,6 +713,108 @@ func (fs *fileStore) GetSeqFromTime(t time.Time) uint64 {
 		}
 	}
 	return 0
+}
+
+type seqSlice []uint64
+
+func (x seqSlice) Len() int           { return len(x) }
+func (x seqSlice) Less(i, j int) bool { return x[i] < x[j] }
+func (x seqSlice) Swap(i, j int)      { x[i], x[j] = x[j], x[i] }
+
+func (x seqSlice) Search(n uint64) int {
+	return sort.Search(len(x), func(i int) bool { return x[i] >= n })
+}
+
+type simpleState struct {
+	msgs, first, last uint64
+}
+
+// This will generate an index for us on startup to determine num pending for
+// filtered consumers easier.
+func (fs *fileStore) genFilterIndex() {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	fsi := make(map[string]seqSlice)
+
+	for _, mb := range fs.blks {
+		mb.loadMsgs()
+		mb.mu.Lock()
+		fseq, lseq := mb.first.seq, mb.last.seq
+		for seq := fseq; seq <= lseq; seq++ {
+			if sm, err := mb.cacheLookupWithLock(seq); sm != nil && err == nil {
+				fsi[sm.subj] = append(fsi[sm.subj], seq)
+			}
+		}
+		// Expire this cache before moving on.
+		mb.llts = 0
+		mb.expireCacheLocked()
+		mb.mu.Unlock()
+	}
+
+	fs.fsi = fsi
+	fs.fsis = &simpleState{fs.state.Msgs, fs.state.FirstSeq, fs.state.LastSeq}
+}
+
+// Clears out the filter index.
+func (fs *fileStore) clearFilterIndex() {
+	fs.mu.Lock()
+	fs.fsi, fs.fsis = nil, nil
+	fs.mu.Unlock()
+}
+
+// Fetch our num filtered pending from our index.
+// Lock should be held.
+func (fs *fileStore) getNumFilteredPendingFromIndex(sseq uint64, subj string) (uint64, error) {
+	cstate := simpleState{fs.state.Msgs, fs.state.FirstSeq, fs.state.LastSeq}
+	if fs.fsis == nil || *fs.fsis != cstate {
+		fs.fsi, fs.fsis = nil, nil
+		return 0, errors.New("state changed, index not valid")
+	}
+	var total uint64
+	for tsubj, seqs := range fs.fsi {
+		if subjectIsSubsetMatch(tsubj, subj) {
+			total += uint64(len(seqs[seqs.Search(sseq):]))
+		}
+	}
+	return total, nil
+}
+
+// Returns number of messages matching the subject starting at sequence sseq.
+func (fs *fileStore) NumFilteredPending(sseq uint64, subj string) (total uint64) {
+	fs.mu.RLock()
+	lseq := fs.state.LastSeq
+	if sseq < fs.state.FirstSeq {
+		sseq = fs.state.FirstSeq
+	}
+	if fs.fsi != nil {
+		if np, err := fs.getNumFilteredPendingFromIndex(sseq, subj); err == nil {
+			fs.mu.RUnlock()
+			return np
+		}
+	}
+	fs.mu.RUnlock()
+
+	if subj == _EMPTY_ {
+		if sseq <= lseq {
+			return lseq - sseq
+		}
+		return 0
+	}
+
+	var eq func(string, string) bool
+	if subjectHasWildcard(subj) {
+		eq = subjectIsSubsetMatch
+	} else {
+		eq = func(a, b string) bool { return a == b }
+	}
+
+	for seq := sseq; seq <= lseq; seq++ {
+		if sm, _ := fs.msgForSeq(seq); sm != nil && eq(sm.subj, subj) {
+			total++
+		}
+	}
+	return total
 }
 
 // RegisterStorageUpdates registers a callback for updates to storage changes.
@@ -884,6 +1001,11 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 	// Check if we have and need the age expiration timer running.
 	if fs.ageChk == nil && fs.cfg.MaxAge != 0 {
 		fs.startAgeChk()
+	}
+
+	// If we had an index cache wipe that out.
+	if fs.fsi != nil {
+		fs.fsi, fs.fsis = nil, nil
 	}
 
 	return nil
@@ -1118,6 +1240,11 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 	// Global stats
 	fs.state.Msgs--
 	fs.state.Bytes -= msz
+
+	// If we had an index cache wipe that out.
+	if fs.fsi != nil {
+		fs.fsi, fs.fsis = nil, nil
+	}
 
 	// Now local mb updates.
 	mb.msgs--
@@ -2407,7 +2534,7 @@ func (fs *fileStore) msgForSeq(seq uint64) (*fileStoredMsg, error) {
 
 	// Check to see if we are the last seq for this message block and are doing
 	// a linear scan. If that is true and we are not the last message block we can
-	// expire try to expire the cache.
+	// try to expire the cache.
 	mb.mu.RLock()
 	shouldTryExpire := mb != lmb && seq == mb.last.seq && mb.llseq == seq-1
 	mb.mu.RUnlock()
