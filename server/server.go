@@ -3356,3 +3356,12 @@ func (s *Server) setFirstPingTimer(c *client) {
 	d += time.Duration(addDelay)
 	c.ping.tmr = time.AfterFunc(d, c.processPingTimer)
 }
+
+func (s *Server) updateRemoteSubscription(acc *Account, sub *subscription, delta int32) {
+	s.updateRouteSubscriptionMap(acc, sub, delta)
+	if s.gateway.enabled {
+		s.gatewayUpdateSubInterest(acc.Name, sub, delta)
+	}
+
+	s.updateLeafNodes(acc, sub, delta)
+}

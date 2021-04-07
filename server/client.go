@@ -2522,11 +2522,7 @@ func (c *client) addShadowSub(sub *subscription, ime *ime) (*subscription, error
 	}
 
 	// Update our route map here.
-	c.srv.updateRouteSubscriptionMap(im.acc, &nsub, 1)
-	if c.srv.gateway.enabled {
-		c.srv.gatewayUpdateSubInterest(im.acc.Name, &nsub, 1)
-	}
-	c.srv.updateLeafNodes(im.acc, &nsub, 1)
+	c.srv.updateRemoteSubscription(im.acc, &nsub, 1)
 
 	return &nsub, nil
 }
@@ -2972,11 +2968,7 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 				// Due to defer, reverse the code order so that execution
 				// is consistent with other cases where we unsubscribe.
 				if shouldForward {
-					if srv.gateway.enabled {
-						defer srv.gatewayUpdateSubInterest(client.acc.Name, sub, -1)
-					}
-					defer srv.updateRouteSubscriptionMap(client.acc, sub, -1)
-					defer srv.updateLeafNodes(client.acc, sub, -1)
+					defer srv.updateRemoteSubscription(client.acc, sub, -1)
 				}
 				defer client.unsubscribe(client.acc, sub, true, true)
 			} else if sub.nm > sub.max {
@@ -2984,11 +2976,7 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 				client.mu.Unlock()
 				client.unsubscribe(client.acc, sub, true, true)
 				if shouldForward {
-					srv.updateRouteSubscriptionMap(client.acc, sub, -1)
-					if srv.gateway.enabled {
-						srv.gatewayUpdateSubInterest(client.acc.Name, sub, -1)
-					}
-					srv.updateLeafNodes(client.acc, sub, -1)
+					srv.updateRemoteSubscription(client.acc, sub, -1)
 				}
 				return false
 			}
