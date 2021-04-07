@@ -222,6 +222,37 @@ func (ms *memStore) GetSeqFromTime(t time.Time) uint64 {
 	return uint64(index) + ms.state.FirstSeq
 }
 
+// Returns number of messages matching the subject starting at sequence sseq.
+func (ms *memStore) NumFilteredPending(sseq uint64, subj string) (total uint64) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+
+	if sseq < ms.state.FirstSeq {
+		sseq = ms.state.FirstSeq
+	}
+
+	if subj == _EMPTY_ {
+		if sseq <= ms.state.LastSeq {
+			return ms.state.LastSeq - sseq
+		}
+		return 0
+	}
+
+	var eq func(string, string) bool
+	if subjectHasWildcard(subj) {
+		eq = subjectIsSubsetMatch
+	} else {
+		eq = func(a, b string) bool { return a == b }
+	}
+
+	for seq := sseq; seq <= ms.state.LastSeq; seq++ {
+		if sm, ok := ms.msgs[seq]; ok && eq(sm.subj, subj) {
+			total++
+		}
+	}
+	return total
+}
+
 // Will check the msg limit and drop firstSeq msg if needed.
 // Lock should be held.
 func (ms *memStore) enforceMsgLimit() {
