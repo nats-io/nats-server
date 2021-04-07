@@ -5283,6 +5283,26 @@ func TestJetStreamClusterServerLimits(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterAccountLoadFailure(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterLimitsTempl, "R3L", 3)
+	defer c.shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.leader())
+	defer nc.Close()
+
+	// Remove the "ONE" account from non-leader
+	s := c.randomNonLeader()
+	s.mu.Lock()
+	s.accounts.Delete("ONE")
+	s.mu.Unlock()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "F", Replicas: 3})
+	if err == nil || !strings.Contains(err.Error(), "account not found") {
+		t.Fatalf("Expected an 'account not found' error but got %v", err)
+	}
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
