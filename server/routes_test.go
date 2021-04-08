@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -81,7 +80,7 @@ func TestRouteConfig(t *testing.T) {
 			NoAdvertise:    true,
 			ConnectRetries: 2,
 		},
-		PidFile: filepath.Join(tempRoot, "nats_cluster_test.pid"),
+		PidFile: "/tmp/nats-server/nats_cluster_test.pid",
 	}
 
 	// Setup URLs

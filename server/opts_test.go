@@ -21,7 +21,6 @@ import (
 	"io/ioutil"
 	"net/url"
 	"os"
-	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -104,7 +103,7 @@ func TestConfigFile(t *testing.T) {
 		Logtime:               false,
 		HTTPPort:              8222,
 		HTTPBasePath:          "/nats",
-		PidFile:               filepath.Join(tempRoot, "nats-server.pid"),
+		PidFile:               "/tmp/nats-server/nats-server.pid",
 		ProfPort:              6543,
 		Syslog:                true,
 		RemoteSyslog:          "udp://foo.com:33",
@@ -261,7 +260,7 @@ func TestMergeOverrides(t *testing.T) {
 		Logtime:        false,
 		HTTPPort:       DEFAULT_HTTP_PORT,
 		HTTPBasePath:   DEFAULT_HTTP_BASE_PATH,
-		PidFile:        filepath.Join(tempRoot, "nats-server.pid"),
+		PidFile:        "/tmp/nats-server/nats-server.pid",
 		ProfPort:       6789,
 		Syslog:         true,
 		RemoteSyslog:   "udp://foo.com:33",
@@ -1168,7 +1167,7 @@ func TestOptionsClone(t *testing.T) {
 		Logtime:        false,
 		HTTPPort:       DEFAULT_HTTP_PORT,
 		HTTPBasePath:   DEFAULT_HTTP_BASE_PATH,
-		PidFile:        filepath.Join(tempRoot, "nats-server.pid"),
+		PidFile:        "/tmp/nats-server/nats-server.pid",
 		ProfPort:       6789,
 		Syslog:         true,
 		RemoteSyslog:   "udp://foo.com:33",
