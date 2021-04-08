@@ -643,6 +643,15 @@ func (c *client) reportErrRegisterAccount(acc *Account, err error) {
 	c.sendErr("Failed Account Registration")
 }
 
+// Kind returns the client kind and will be one of the defined constants like CLIENT, ROUTER, GATEWAY, LEAF
+func (c *client) Kind() int {
+	c.mu.Lock()
+	kind := c.kind
+	c.mu.Unlock()
+
+	return kind
+}
+
 // registerWithAccount will register the given user with a specific
 // account. This will change the subject namespace.
 func (c *client) registerWithAccount(acc *Account) error {
