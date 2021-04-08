@@ -2916,10 +2916,22 @@ func (o *consumer) setInitialPending() {
 func (o *consumer) decStreamPending(sseq uint64, subj string) {
 	o.mu.Lock()
 	// Ignore if we have already seen this one.
-	if sseq >= o.sseq && o.sgap > 0 && o.isFilteredMatch(subj) && o.sgap > 0 {
+	if sseq >= o.sseq && o.sgap > 0 && o.isFilteredMatch(subj) {
 		o.sgap--
 	}
+	// Check if this message was pending.
+	p, wasPending := o.pending[sseq]
+	var rdc uint64 = 1
+	if o.rdc != nil {
+		rdc = o.rdc[sseq]
+	}
 	o.mu.Unlock()
+
+	// If it was pending process it like an ack.
+	// TODO(dlc) - we could do a term here instead with a reason to generate the advisory.
+	if wasPending {
+		o.processAckMsg(sseq, p.Sequence, rdc, false)
+	}
 }
 
 func (o *consumer) account() *Account {
