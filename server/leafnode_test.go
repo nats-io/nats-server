@@ -3280,3 +3280,84 @@ func TestLeafNodeUnsubOnRouteDisconnect(t *testing.T) {
 		return nil
 	})
 }
+
+func TestLeafNodeNoPingBeforeConnect(t *testing.T) {
+	o := DefaultOptions()
+	o.LeafNode.Port = -1
+	o.LeafNode.AuthTimeout = 0.5
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", o.LeafNode.Port)
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Error on dial: %v", err)
+	}
+	defer c.Close()
+
+	// Read the info
+	br := bufio.NewReader(c)
+	c.SetReadDeadline(time.Now().Add(time.Second))
+	l, _, err := br.ReadLine()
+	if err != nil {
+		t.Fatalf("Error on read: %v", err)
+	}
+	if !strings.HasPrefix(string(l), "INFO") {
+		t.Fatalf("Wrong proto: %q", l)
+	}
+
+	var leaf *client
+	s.grMu.Lock()
+	for _, l := range s.grTmpClients {
+		leaf = l
+		break
+	}
+	s.grMu.Unlock()
+
+	if leaf == nil {
+		t.Fatal("No leaf connection found")
+	}
+
+	// Make sure that ping timer is not set
+	leaf.mu.Lock()
+	ptmrSet := leaf.ping.tmr != nil
+	leaf.mu.Unlock()
+
+	if ptmrSet {
+		t.Fatal("Ping timer was set before CONNECT was processed")
+	}
+
+	// Send CONNECT
+	if _, err := c.Write([]byte("CONNECT {}\r\n")); err != nil {
+		t.Fatalf("Error writing connect: %v", err)
+	}
+
+	// Check that we correctly set the timer now
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		leaf.mu.Lock()
+		ptmrSet := leaf.ping.tmr != nil
+		leaf.mu.Unlock()
+		if !ptmrSet {
+			return fmt.Errorf("Timer still not set")
+		}
+		return nil
+	})
+
+	// Reduce the first ping..
+	leaf.mu.Lock()
+	leaf.ping.tmr.Reset(15 * time.Millisecond)
+	leaf.mu.Unlock()
+
+	// Now consume that PING (we may get LS+, etc..)
+	for {
+		c.SetReadDeadline(time.Now().Add(time.Second))
+		l, _, err = br.ReadLine()
+		if err != nil {
+			t.Fatalf("Error on read: %v", err)
+		}
+		if strings.HasPrefix(string(l), "PING") {
+			checkLeafNodeConnected(t, s)
+			return
+		}
+	}
+}
