@@ -47,6 +47,8 @@ type ClientAuthentication interface {
 	RegisterUser(*User)
 	// RemoteAddress expose the connection information of the client
 	RemoteAddress() net.Addr
+	// Kind indicates what type of connection this is matching defined constants like CLIENT, ROUTER, GATEWAY, LEAF etc
+	Kind() int
 }
 
 // NkeyUser is for multiple nkey based users
