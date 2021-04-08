@@ -795,9 +795,6 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 		// Leaf nodes will always require a CONNECT to let us know
 		// when we are properly bound to an account.
 		c.setAuthTimer(secondsToDuration(opts.LeafNode.AuthTimeout))
-
-		// Set the Ping timer
-		s.setFirstPingTimer(c)
 	}
 
 	// Keep track in case server is shutdown before we can successfully register.
@@ -1145,6 +1142,10 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	if proto.Cluster != "" {
 		c.leaf.remoteCluster = proto.Cluster
 	}
+
+	// Set the Ping timer
+	s.setFirstPingTimer(c)
+
 	c.mu.Unlock()
 
 	// Add in the leafnode here since we passed through auth at this point.
