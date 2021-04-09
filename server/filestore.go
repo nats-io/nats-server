@@ -960,51 +960,10 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 		return ErrStoreClosed
 	}
 
-	// Check if we are discarding new messages when we reach the limit.
-	if fs.cfg.Discard == DiscardNew {
-		if fs.cfg.MaxMsgs > 0 && fs.state.Msgs >= uint64(fs.cfg.MaxMsgs) {
-			return ErrMaxMsgs
-		}
-		if fs.cfg.MaxBytes > 0 && fs.state.Bytes+uint64(len(msg)+len(hdr)) >= uint64(fs.cfg.MaxBytes) {
-			return ErrMaxBytes
-		}
-	}
+	err := storeRawMsg(fs, fs.cfg.StreamConfig, &fs.state, fs.ageChk, subj, hdr, msg, seq, ts)
 
-	// Check sequence.
-	if seq != fs.state.LastSeq+1 {
-		if seq > 0 {
-			return ErrSequenceMismatch
-		}
-		seq = fs.state.LastSeq + 1
-	}
-
-	// Write msg record.
-	n, err := fs.writeMsgRecord(seq, ts, subj, hdr, msg)
 	if err != nil {
 		return err
-	}
-
-	// Adjust first if needed.
-	now := time.Unix(0, ts).UTC()
-	if fs.state.Msgs == 0 {
-		fs.state.FirstSeq = seq
-		fs.state.FirstTime = now
-	}
-
-	fs.state.Msgs++
-	fs.state.Bytes += n
-	fs.state.LastSeq = seq
-	fs.state.LastTime = now
-
-	// Limits checks and enforcement.
-	// If they do any deletions they will update the
-	// byte count on their own, so no need to compensate.
-	fs.enforceMsgLimit()
-	fs.enforceBytesLimit()
-
-	// Check if we have and need the age expiration timer running.
-	if fs.ageChk == nil && fs.cfg.MaxAge != 0 {
-		fs.startAgeChk()
 	}
 
 	// If we had an index cache wipe that out.

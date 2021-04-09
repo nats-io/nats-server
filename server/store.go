@@ -418,3 +418,61 @@ func (p DeliverPolicy) MarshalJSON() ([]byte, error) {
 func isOutOfSpaceErr(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "no space left")
 }
+
+type rawMessageStore interface {
+	writeMsgRecord(seq uint64, ts int64, subj string, hdr, msg []byte) (uint64, error)
+	enforceMsgLimit()
+	enforceBytesLimit()
+	startAgeChk()
+}
+
+func storeRawMsg(rms rawMessageStore, streamConfig StreamConfig, streamState *StreamState, ageChk *time.Timer, subj string, hdr, msg []byte, seq uint64, ts int64) error {
+	// Check if we are discarding new messages when we reach the limit.
+	if streamConfig.Discard == DiscardNew {
+		if streamConfig.MaxMsgs > 0 && streamState.Msgs >= uint64(streamConfig.MaxMsgs) {
+			return ErrMaxMsgs
+		}
+		if streamConfig.MaxBytes > 0 && streamState.Bytes+uint64(len(msg)+len(hdr)) >= uint64(streamConfig.MaxBytes) {
+			return ErrMaxBytes
+		}
+	}
+
+	// Check sequence.
+	if seq != streamState.LastSeq+1 {
+		if seq > 0 {
+			return ErrSequenceMismatch
+		}
+		seq = streamState.LastSeq + 1
+	}
+
+	// Write msg record.
+	n, err := rms.writeMsgRecord(seq, ts, subj, hdr, msg)
+	if err != nil {
+		return err
+	}
+
+	// Adjust first if needed.
+	now := time.Unix(0, ts).UTC()
+	if streamState.Msgs == 0 {
+		streamState.FirstSeq = seq
+		streamState.FirstTime = now
+	}
+
+	streamState.Msgs++
+	streamState.Bytes += n
+	streamState.LastSeq = seq
+	streamState.LastTime = now
+
+	// Limits checks and enforcement.
+	// If they do any deletions they will update the
+	// byte count on their own, so no need to compensate.
+	rms.enforceMsgLimit()
+	rms.enforceBytesLimit()
+
+	// Check if we have and need the age expiration timer running.
+	if ageChk == nil && streamConfig.MaxAge != 0 {
+		rms.startAgeChk()
+	}
+
+	return nil
+}

@@ -87,30 +87,11 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 		return ErrStoreClosed
 	}
 
-	// Check if we are discarding new messages when we reach the limit.
-	if ms.cfg.Discard == DiscardNew {
-		if ms.cfg.MaxMsgs > 0 && ms.state.Msgs >= uint64(ms.cfg.MaxMsgs) {
-			return ErrMaxMsgs
-		}
-		if ms.cfg.MaxBytes > 0 && ms.state.Bytes+uint64(len(msg)+len(hdr)) >= uint64(ms.cfg.MaxBytes) {
-			return ErrMaxBytes
-		}
-	}
+	err := storeRawMsg(ms, ms.cfg, &ms.state, ms.ageChk, subj, hdr, msg, seq, ts)
+	return err
+}
 
-	if seq != ms.state.LastSeq+1 {
-		if seq > 0 {
-			return ErrSequenceMismatch
-		}
-		seq = ms.state.LastSeq + 1
-	}
-
-	// Adjust first if needed.
-	now := time.Unix(0, ts).UTC()
-	if ms.state.Msgs == 0 {
-		ms.state.FirstSeq = seq
-		ms.state.FirstTime = now
-	}
-
+func (ms *memStore) writeMsgRecord(seq uint64, ts int64, subj string, hdr, msg []byte) (uint64, error) {
 	// Make copies - https://github.com/go101/go101/wiki
 	// TODO(dlc) - Maybe be smarter here.
 	if len(msg) > 0 {
@@ -121,21 +102,7 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 	}
 
 	ms.msgs[seq] = &storedMsg{subj, hdr, msg, seq, ts}
-	ms.state.Msgs++
-	ms.state.Bytes += memStoreMsgSize(subj, hdr, msg)
-	ms.state.LastSeq = seq
-	ms.state.LastTime = now
-
-	// Limits checks and enforcement.
-	ms.enforceMsgLimit()
-	ms.enforceBytesLimit()
-
-	// Check if we have and need the age expiration timer running.
-	if ms.ageChk == nil && ms.cfg.MaxAge != 0 {
-		ms.startAgeChk()
-	}
-
-	return nil
+	return memStoreMsgSize(subj, hdr, msg), nil
 }
 
 // StoreRawMsg stores a raw message with expected sequence number and timestamp.
