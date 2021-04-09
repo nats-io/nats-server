@@ -86,8 +86,8 @@ type Info struct {
 	Import        *SubjectPermission `json:"import,omitempty"`
 	Export        *SubjectPermission `json:"export,omitempty"`
 	LNOC          bool               `json:"lnoc,omitempty"`
-	InfoOnConnect bool               `json:"info_on_connect,omitempty"` // When true the server will respond connect to with an INFO
-	ConnectInfo   bool               `json:"connect_info,omitempty"`    // When true this is the servers response to CONNECT
+	InfoOnConnect bool               `json:"info_on_connect,omitempty"` // When true the server will respond to CONNECT with an INFO
+	ConnectInfo   bool               `json:"connect_info,omitempty"`    // When true this is the server INFO response to CONNECT
 
 	// Gateways Specific
 	Gateway           string   `json:"gateway,omitempty"`             // Name of the origin Gateway (sent by gateway's INFO)
