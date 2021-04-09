@@ -57,6 +57,7 @@ type RaftNode interface {
 	Peers() []*Peer
 	ProposeAddPeer(peer string) error
 	ProposeRemovePeer(peer string) error
+	AdjustClusterSize(csz int) error
 	ApplyC() <-chan *CommittedEntry
 	PauseApply()
 	ResumeApply()
@@ -680,6 +681,28 @@ func (n *raft) ProposeRemovePeer(peer string) error {
 
 	// Need to forward.
 	n.sendRPC(subj, _EMPTY_, []byte(peer))
+	return nil
+}
+
+// AdjustClusterSize will change the cluster set size.
+// Must be the leader.
+func (n *raft) AdjustClusterSize(csz int) error {
+	n.Lock()
+
+	if n.state != Leader {
+		n.Unlock()
+		return errNotLeader
+	}
+	// Same floor as bootstrap.
+	if csz < 2 {
+		csz = 2
+	}
+	// Adjust.
+	n.csz = csz
+	n.qn = n.csz/2 + 1
+	n.Unlock()
+
+	n.sendPeerState()
 	return nil
 }
 

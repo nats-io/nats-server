@@ -253,6 +253,7 @@ type nodeInfo struct {
 	cluster string
 	id      string
 	offline bool
+	js      bool
 }
 
 // Make sure all are 64bits for atomic use
@@ -355,7 +356,7 @@ func NewServer(opts *Options) (*Server, error) {
 
 	// Place ourselves in some lookup maps.
 	ourNode := string(getHash(serverName))
-	s.nodeToInfo.Store(ourNode, nodeInfo{serverName, opts.Cluster.Name, info.ID, false})
+	s.nodeToInfo.Store(ourNode, nodeInfo{serverName, opts.Cluster.Name, info.ID, false, opts.JetStream})
 
 	s.routeResolver = opts.Cluster.resolver
 	if s.routeResolver == nil {
@@ -1584,6 +1585,12 @@ func (s *Server) Start() {
 			}
 			return true
 		})
+
+		// We may be in a mixed mode here.
+		if !s.standAloneMode() && s.globalAccountOnly() {
+			s.checkJetStreamExports()
+			s.globalAccount().enableAllJetStreamServiceImports()
+		}
 	}
 
 	// Start monitoring if needed
