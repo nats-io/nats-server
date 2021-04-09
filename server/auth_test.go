@@ -108,7 +108,7 @@ func TestUserCloneNil(t *testing.T) {
 
 func TestUserUnknownAllowedConnectionType(t *testing.T) {
 	o := DefaultOptions()
-	o.Users = []*User{&User{
+	o.Users = []*User{{
 		Username:               "user",
 		Password:               "pwd",
 		AllowedConnectionTypes: testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, "someNewType"}),
@@ -133,7 +133,7 @@ func TestUserUnknownAllowedConnectionType(t *testing.T) {
 	}
 	// Same with NKey user now.
 	o.Users = nil
-	o.Nkeys = []*NkeyUser{&NkeyUser{
+	o.Nkeys = []*NkeyUser{{
 		Nkey:                   "somekey",
 		AllowedConnectionTypes: testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, "someNewType"}),
 	}}

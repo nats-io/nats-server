@@ -10807,7 +10807,7 @@ func TestJetStreamMirrorAndSourcesFilteredConsumers(t *testing.T) {
 	// Create Mirror now.
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:    "S",
-		Sources: []*nats.StreamSource{&nats.StreamSource{Name: "O1"}, &nats.StreamSource{Name: "O2"}},
+		Sources: []*nats.StreamSource{{Name: "O1"}, {Name: "O2"}},
 	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -11049,9 +11049,9 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		Name:    "MS",
 		Storage: FileStorage,
 		Sources: []*StreamSource{
-			&StreamSource{Name: "foo"},
-			&StreamSource{Name: "bar"},
-			&StreamSource{Name: "baz"},
+			{Name: "foo"},
+			{Name: "bar"},
+			{Name: "baz"},
 		},
 	}
 
@@ -11078,9 +11078,9 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		Name: "MS",
 		Sources: []*nats.StreamSource{
 			// Keep foo, bar, remove baz, add dlc
-			&nats.StreamSource{Name: "foo"},
-			&nats.StreamSource{Name: "bar"},
-			&nats.StreamSource{Name: "dlc"},
+			{Name: "foo"},
+			{Name: "bar"},
+			{Name: "dlc"},
 		},
 	}
 	if _, err := js.UpdateStream(ncfg); err != nil {
@@ -11099,7 +11099,7 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		Name:    "FMS",
 		Storage: FileStorage,
 		Sources: []*StreamSource{
-			&StreamSource{Name: "TEST", OptStartSeq: 26},
+			{Name: "TEST", OptStartSeq: 26},
 		},
 	}
 	createStream(cfg)
@@ -11132,7 +11132,7 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		Name:    "FMS2",
 		Storage: FileStorage,
 		Sources: []*StreamSource{
-			&StreamSource{Name: "TEST", OptStartSeq: 11, FilterSubject: "dlc"},
+			{Name: "TEST", OptStartSeq: 11, FilterSubject: "dlc"},
 		},
 	}
 	createStream(cfg)

@@ -506,7 +506,7 @@ func TestLeafNodeValidateAuthOptions(t *testing.T) {
 	opts := DefaultOptions()
 	opts.LeafNode.Username = "user1"
 	opts.LeafNode.Password = "pwd"
-	opts.LeafNode.Users = []*User{&User{Username: "user", Password: "pwd"}}
+	opts.LeafNode.Users = []*User{{Username: "user", Password: "pwd"}}
 	if _, err := NewServer(opts); err == nil || !strings.Contains(err.Error(),
 		"can not have a single user/pass and a users array") {
 		t.Fatalf("Expected error about mixing single/multi users, got %v", err)
@@ -1103,7 +1103,7 @@ func TestLeafNodeRemoteIsHub(t *testing.T) {
 	ob1.LeafNode.Port = -1
 	u, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", lno.LeafNode.Port))
 	ob1.LeafNode.Remotes = []*RemoteLeafOpts{
-		&RemoteLeafOpts{
+		{
 			URLs: []*url.URL{u},
 			Hub:  true,
 		},
@@ -1526,7 +1526,7 @@ func TestLeafNodeTLSVerifyAndMap(t *testing.T) {
 	accName := "MyAccount"
 	acc := NewAccount(accName)
 	certUserName := "CN=example.com,OU=NATS.io"
-	users := []*User{&User{Username: certUserName, Account: acc}}
+	users := []*User{{Username: certUserName, Account: acc}}
 
 	for _, test := range []struct {
 		name        string
@@ -1960,7 +1960,7 @@ func TestLeafNodeLoopDetectedDueToReconnect(t *testing.T) {
 	ol := DefaultOptions()
 	ol.Cluster.Name = "cde"
 	ol.LeafNode.ReconnectInterval = 50 * time.Millisecond
-	ol.LeafNode.Remotes = []*RemoteLeafOpts{&RemoteLeafOpts{URLs: []*url.URL{aurl}}}
+	ol.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{aurl}}}
 	sl := RunServer(ol)
 	defer sl.Shutdown()
 
@@ -2074,7 +2074,7 @@ func TestLeafNodeNoDuplicateWithinCluster(t *testing.T) {
 
 	oLeaf1 := DefaultOptions()
 	oLeaf1.ServerName = "leaf1"
-	oLeaf1.LeafNode.Remotes = []*RemoteLeafOpts{&RemoteLeafOpts{URLs: []*url.URL{u}}}
+	oLeaf1.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}}}
 	leaf1 := RunServer(oLeaf1)
 	defer leaf1.Shutdown()
 
@@ -2082,7 +2082,7 @@ func TestLeafNodeNoDuplicateWithinCluster(t *testing.T) {
 
 	oLeaf2 := DefaultOptions()
 	oLeaf2.ServerName = "leaf2"
-	oLeaf2.LeafNode.Remotes = []*RemoteLeafOpts{&RemoteLeafOpts{URLs: []*url.URL{u}}}
+	oLeaf2.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}}}
 	oLeaf2.Routes = RoutesFromStr(leaf1ClusterURL)
 	leaf2 := RunServer(oLeaf2)
 	defer leaf2.Shutdown()
@@ -2184,7 +2184,7 @@ func TestLeafNodeLMsgSplit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error parsing url: %v", err)
 	}
-	remoteLeafs := []*RemoteLeafOpts{&RemoteLeafOpts{URLs: []*url.URL{u1, u2}}}
+	remoteLeafs := []*RemoteLeafOpts{{URLs: []*url.URL{u1, u2}}}
 
 	oLeaf1 := DefaultOptions()
 	oLeaf1.LeafNode.Remotes = remoteLeafs
@@ -2281,7 +2281,7 @@ func TestLeafNodeRouteParseLSUnsub(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error parsing url: %v", err)
 	}
-	remoteLeafs := []*RemoteLeafOpts{&RemoteLeafOpts{URLs: []*url.URL{u2}}}
+	remoteLeafs := []*RemoteLeafOpts{{URLs: []*url.URL{u2}}}
 
 	oLeaf2 := DefaultOptions()
 	oLeaf2.LeafNode.Remotes = remoteLeafs
@@ -3017,7 +3017,7 @@ func TestLeafNodeStreamImport(t *testing.T) {
 	o1.LeafNode.Port = -1
 	accA := NewAccount("A")
 	o1.Accounts = []*Account{accA}
-	o1.Users = []*User{&User{Username: "a", Password: "a", Account: accA}}
+	o1.Users = []*User{{Username: "a", Password: "a", Account: accA}}
 	o1.LeafNode.Account = "A"
 	o1.NoAuthUser = "a"
 	s1 := RunServer(o1)
@@ -3037,13 +3037,13 @@ func TestLeafNodeStreamImport(t *testing.T) {
 	}
 
 	o2.Accounts = []*Account{accB, accC}
-	o2.Users = []*User{&User{Username: "b", Password: "b", Account: accB}, &User{Username: "c", Password: "c", Account: accC}}
+	o2.Users = []*User{{Username: "b", Password: "b", Account: accB}, {Username: "c", Password: "c", Account: accC}}
 	o2.NoAuthUser = "b"
 	u, err := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", o1.LeafNode.Port))
 	if err != nil {
 		t.Fatalf("Error parsing url: %v", err)
 	}
-	o2.LeafNode.Remotes = []*RemoteLeafOpts{&RemoteLeafOpts{URLs: []*url.URL{u}, LocalAccount: "C"}}
+	o2.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}, LocalAccount: "C"}}
 	s2 := RunServer(o2)
 	defer s2.Shutdown()
 
