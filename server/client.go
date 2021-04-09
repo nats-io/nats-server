@@ -124,17 +124,18 @@ const (
 
 // Some client state represented as flags
 const (
-	connectReceived   clientFlag = 1 << iota // The CONNECT proto has been received
-	infoReceived                             // The INFO protocol has been received
-	firstPongSent                            // The first PONG has been sent
-	handshakeComplete                        // For TLS clients, indicate that the handshake is complete
-	flushOutbound                            // Marks client as having a flushOutbound call in progress.
-	noReconnect                              // Indicate that on close, this connection should not attempt a reconnect
-	closeConnection                          // Marks that closeConnection has already been called.
-	connMarkedClosed                         // Marks that markConnAsClosed has already been called.
-	writeLoopStarted                         // Marks that the writeLoop has been started.
-	skipFlushOnClose                         // Marks that flushOutbound() should not be called on connection close.
-	expectConnect                            // Marks if this connection is expected to send a CONNECT
+	connectReceived        clientFlag = 1 << iota // The CONNECT proto has been received
+	infoReceived                                  // The INFO protocol has been received
+	firstPongSent                                 // The first PONG has been sent
+	handshakeComplete                             // For TLS clients, indicate that the handshake is complete
+	flushOutbound                                 // Marks client as having a flushOutbound call in progress.
+	noReconnect                                   // Indicate that on close, this connection should not attempt a reconnect
+	closeConnection                               // Marks that closeConnection has already been called.
+	connMarkedClosed                              // Marks that markConnAsClosed has already been called.
+	writeLoopStarted                              // Marks that the writeLoop has been started.
+	skipFlushOnClose                              // Marks that flushOutbound() should not be called on connection close.
+	expectConnect                                 // Marks if this connection is expected to send a CONNECT
+	connectProcessFinished                        // Marks if this connection has finished the connect process.
 )
 
 // set the flag (would be equivalent to set the boolean to true)
