@@ -2185,10 +2185,7 @@ func (s *Server) leafNodeResumeConnectProcess(c *client) {
 			c.mu.Unlock()
 			return
 		}
-		if !c.ping.tmr.Stop() {
-			<-c.ping.tmr.C
-			c.ping.tmr = nil
-		}
+		clearTimer(&c.ping.tmr)
 		closed := c.isClosed()
 		c.mu.Unlock()
 		if !closed {
@@ -2223,10 +2220,7 @@ func (s *Server) leafNodeFinishConnectProcess(c *client) {
 	// Capture account before releasing lock
 	acc := c.acc
 	// cancel connectProcessTimeout
-	if !c.ping.tmr.Stop() {
-		<-c.ping.tmr.C
-		c.ping.tmr = nil
-	}
+	clearTimer(&c.ping.tmr)
 	c.mu.Unlock()
 
 	// Make sure we register with the account here.
