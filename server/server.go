@@ -1585,12 +1585,6 @@ func (s *Server) Start() {
 			}
 			return true
 		})
-
-		// We may be in a mixed mode here.
-		if !s.standAloneMode() && s.globalAccountOnly() {
-			s.checkJetStreamExports()
-			s.globalAccount().enableAllJetStreamServiceImports()
-		}
 	}
 
 	// Start monitoring if needed

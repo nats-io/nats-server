@@ -786,7 +786,7 @@ func (js *jetStream) monitorCluster() {
 // This is called on first leader transition to double check the peers and cluster set size.
 func (js *jetStream) checkClusterSize() {
 	s, n := js.server(), js.getMetaGroup()
-	if n == nil || !n.Leader() {
+	if n == nil {
 		return
 	}
 	// We will check that we have a correct cluster set size by checking for any non-js servers
