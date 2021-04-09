@@ -740,6 +740,7 @@ func (js *jetStream) monitorCluster() {
 	}
 
 	isRecovering := true
+	beenLeader := false
 
 	for {
 		select {
@@ -767,8 +768,51 @@ func (js *jetStream) monitorCluster() {
 			}
 		case isLeader = <-lch:
 			js.processLeaderChange(isLeader)
+			if isLeader && !beenLeader {
+				beenLeader = true
+				if n.NeedSnapshot() {
+					if err := n.InstallSnapshot(js.metaSnapshot()); err != nil {
+						s.Warnf("Error snapshotting JetStream cluster state: %v", err)
+					}
+				}
+				js.checkClusterSize()
+			}
 		case <-t.C:
 			doSnapshot()
+		}
+	}
+}
+
+// This is called on first leader transition to double check the peers and cluster set size.
+func (js *jetStream) checkClusterSize() {
+	s, n := js.server(), js.getMetaGroup()
+	if n == nil {
+		return
+	}
+	// We will check that we have a correct cluster set size by checking for any non-js servers
+	// which can happen in mixed mode.
+	s.Debugf("Checking JetStream cluster size")
+	ps := n.(*raft).currentPeerState()
+	if len(ps.knownPeers) >= ps.clusterSize {
+		return
+	}
+
+	// If we are here our known set as the leader is not the same as the cluster size.
+	// Check to see if we have a mixed mode setup.
+	var totalJS int
+	for _, p := range s.ActivePeers() {
+		if si, ok := s.nodeToInfo.Load(p); ok && si != nil {
+			if si.(nodeInfo).js {
+				totalJS++
+			}
+		}
+	}
+	// If we have less then our cluster size adjust that here. Can not do individual peer removals since
+	// they will not be in the tracked peers.
+	if totalJS < ps.clusterSize {
+		s.Debugf("Adjusting JetStream cluster size from %d to %d", ps.clusterSize, totalJS)
+		if err := n.AdjustClusterSize(totalJS); err != nil {
+			s.Warnf("Error adjusting JetStream cluster size: %v", err)
 		}
 	}
 }
