@@ -4494,7 +4494,7 @@ func TestJetStreamClusterMirrorAndSourcesFilteredConsumers(t *testing.T) {
 	// Create downstream now.
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:    "S",
-		Sources: []*nats.StreamSource{&nats.StreamSource{Name: "O1"}, &nats.StreamSource{Name: "O2"}},
+		Sources: []*nats.StreamSource{{Name: "O1"}, {Name: "O2"}},
 	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -4517,7 +4517,7 @@ func TestJetStreamClusterMirrorAndSourcesFilteredConsumers(t *testing.T) {
 	cfg := StreamConfig{
 		Name:    "SCA",
 		Storage: FileStorage,
-		Sources: []*StreamSource{&StreamSource{
+		Sources: []*StreamSource{{
 			Name: "ORIGIN",
 			External: &ExternalStream{
 				ApiPrefix:     "RI.JS.API",
@@ -4601,7 +4601,7 @@ func TestJetStreamCrossAccountMirrorsAndSources(t *testing.T) {
 	_, err = js2.AddStream(&nats.StreamConfig{
 		Name: "MY_SOURCE_TEST",
 		Sources: []*nats.StreamSource{
-			&nats.StreamSource{
+			{
 				Name: "TEST",
 				External: &nats.ExternalStream{
 					APIPrefix:     "RI.JS.API",
@@ -4931,7 +4931,7 @@ func TestJetStreamClusterSuperClusterEphemeralCleanup(t *testing.T) {
 			if _, err := js2.AddStream(&nats.StreamConfig{
 				Name:     test.sourceName,
 				Storage:  nats.FileStorage,
-				Sources:  []*nats.StreamSource{&nats.StreamSource{Name: test.streamName}},
+				Sources:  []*nats.StreamSource{{Name: test.streamName}},
 				Replicas: 1,
 			}); err != nil {
 				t.Fatalf("Error adding source stream: %v", err)
@@ -5023,7 +5023,7 @@ func TestJetStreamSuperClusterDirectConsumersBrokenGateways(t *testing.T) {
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:      "S",
 		Placement: &nats.Placement{Cluster: "C2"},
-		Sources:   []*nats.StreamSource{&nats.StreamSource{Name: "TEST"}},
+		Sources:   []*nats.StreamSource{{Name: "TEST"}},
 	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)

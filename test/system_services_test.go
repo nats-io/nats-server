@@ -272,7 +272,7 @@ func runSolicitLeafServerWithSystemToURL(surl string) (*server.Server, *server.O
 	o.Accounts = []*server.Account{server.NewAccount("$SYS"), fooAcc}
 	o.SystemAccount = "$SYS"
 	o.Users = []*server.User{
-		&server.User{Username: "foo", Password: "pass", Permissions: nil, Account: fooAcc},
+		{Username: "foo", Password: "pass", Permissions: nil, Account: fooAcc},
 	}
 	rurl, _ := url.Parse(surl)
 	sysUrl, _ := url.Parse(strings.Replace(surl, rurl.User.Username(), "sys", -1))

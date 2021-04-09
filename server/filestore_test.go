@@ -1938,11 +1938,11 @@ func TestFileStoreConsumer(t *testing.T) {
 
 	// We should sanity check pending here as well, so will check if a pending value is below
 	// ack floor or above delivered.
-	state.Pending = map[uint64]*Pending{70: &Pending{70, tn}}
+	state.Pending = map[uint64]*Pending{70: {70, tn}}
 	shouldFail()
-	state.Pending = map[uint64]*Pending{140: &Pending{140, tn}}
+	state.Pending = map[uint64]*Pending{140: {140, tn}}
 	shouldFail()
-	state.Pending = map[uint64]*Pending{72: &Pending{72, tn}} // exact on floor should fail
+	state.Pending = map[uint64]*Pending{72: {72, tn}} // exact on floor should fail
 	shouldFail()
 
 	// Put timestamps a second apart.

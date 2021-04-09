@@ -793,7 +793,7 @@ func (n *raft) encodeSnapshot(snap *snapshot) []byte {
 // Should only be used when the upper layers know this is most recent.
 // Used when restoring streams etc.
 func (n *raft) SendSnapshot(data []byte) error {
-	n.sendAppendEntry([]*Entry{&Entry{EntrySnapshot, data}})
+	n.sendAppendEntry([]*Entry{{EntrySnapshot, data}})
 	return nil
 }
 
@@ -951,7 +951,7 @@ func (n *raft) setupLastSnapshot() {
 		n.pindex = snap.lastIndex
 		n.pterm = snap.lastTerm
 		n.commit = snap.lastIndex
-		n.applyc <- &CommittedEntry{n.commit, []*Entry{&Entry{EntrySnapshot, snap.data}}}
+		n.applyc <- &CommittedEntry{n.commit, []*Entry{{EntrySnapshot, snap.data}}}
 		if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 			n.setWriteErrLocked(err)
 		}
@@ -1117,7 +1117,7 @@ func (n *raft) StepDown(preferred ...string) error {
 
 	if maybeLeader != noLeader {
 		n.debug("Stepping down, selected %q for new leader", maybeLeader)
-		n.sendAppendEntry([]*Entry{&Entry{EntryLeaderTransfer, []byte(maybeLeader)}})
+		n.sendAppendEntry([]*Entry{{EntryLeaderTransfer, []byte(maybeLeader)}})
 	}
 	// Force us to stepdown here.
 	select {
@@ -1884,7 +1884,7 @@ func (n *raft) sendSnapshotToFollower(subject string) (uint64, error) {
 		return 0, err
 	}
 	// Go ahead and send the snapshot and peerstate here as first append entry to the catchup follower.
-	ae := n.buildAppendEntry([]*Entry{&Entry{EntrySnapshot, snap.data}, &Entry{EntryPeerState, snap.peerstate}})
+	ae := n.buildAppendEntry([]*Entry{{EntrySnapshot, snap.data}, {EntryPeerState, snap.peerstate}})
 	ae.pterm, ae.pindex = snap.lastTerm, snap.lastIndex
 	var state StreamState
 	n.wal.FastState(&state)
@@ -2702,7 +2702,7 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 			return
 		}
 		// We count ourselves.
-		n.acks[n.pindex] = map[string]struct{}{n.id: struct{}{}}
+		n.acks[n.pindex] = map[string]struct{}{n.id: {}}
 		n.active = time.Now()
 
 		// Save in memory for faster processing during applyCommit.
@@ -2772,7 +2772,7 @@ func (n *raft) currentPeerState() *peerState {
 
 // sendPeerState will send our current peer state to the cluster.
 func (n *raft) sendPeerState() {
-	n.sendAppendEntry([]*Entry{&Entry{EntryPeerState, encodePeerState(n.currentPeerState())}})
+	n.sendAppendEntry([]*Entry{{EntryPeerState, encodePeerState(n.currentPeerState())}})
 }
 
 func (n *raft) sendHeartbeat() {

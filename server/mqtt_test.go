@@ -283,14 +283,14 @@ func TestMQTTValidateOptions(t *testing.T) {
 		{"mqtt disabled", func() *Options { return nmqtto.Clone() }, ""},
 		{"mqtt username not allowed if users specified", func() *Options {
 			o := mqtto.Clone()
-			o.Users = []*User{&User{Username: "abc", Password: "pwd"}}
+			o.Users = []*User{{Username: "abc", Password: "pwd"}}
 			o.MQTT.Username = "b"
 			o.MQTT.Password = "pwd"
 			return o
 		}, "mqtt authentication username not compatible with presence of users/nkeys"},
 		{"mqtt token not allowed if users specified", func() *Options {
 			o := mqtto.Clone()
-			o.Nkeys = []*NkeyUser{&NkeyUser{Nkey: "abc"}}
+			o.Nkeys = []*NkeyUser{{Nkey: "abc"}}
 			o.MQTT.Token = "mytoken"
 			return o
 		}, "mqtt authentication token not compatible with presence of users/nkeys"},
@@ -757,7 +757,7 @@ func TestMQTTRequiresJSEnabled(t *testing.T) {
 	o := testMQTTDefaultOptions()
 	acc := NewAccount("mqtt")
 	o.Accounts = []*Account{acc}
-	o.Users = []*User{&User{Username: "mqtt", Account: acc}}
+	o.Users = []*User{{Username: "mqtt", Account: acc}}
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
 
@@ -797,7 +797,7 @@ func TestMQTTTLSVerifyAndMap(t *testing.T) {
 	accName := "MyAccount"
 	acc := NewAccount(accName)
 	certUserName := "CN=example.com,OU=NATS.io"
-	users := []*User{&User{Username: certUserName, Account: acc}}
+	users := []*User{{Username: certUserName, Account: acc}}
 
 	for _, test := range []struct {
 		name        string
@@ -1225,7 +1225,7 @@ func TestMQTTJWTWithAllowedConnectionTypes(t *testing.T) {
 }
 
 func TestMQTTUsersAuth(t *testing.T) {
-	users := []*User{&User{Username: "user", Password: "pwd"}}
+	users := []*User{{Username: "user", Password: "pwd"}}
 	for _, test := range []struct {
 		name string
 		opts func() *Options
@@ -1302,7 +1302,7 @@ func TestMQTTUsersAuth(t *testing.T) {
 
 func TestMQTTNoAuthUserValidation(t *testing.T) {
 	o := testMQTTDefaultOptions()
-	o.Users = []*User{&User{Username: "user", Password: "pwd"}}
+	o.Users = []*User{{Username: "user", Password: "pwd"}}
 	// Should fail because it is not part of o.Users.
 	o.MQTT.NoAuthUser = "notfound"
 	if _, err := NewServer(o); err == nil || !strings.Contains(err.Error(), "not present as user") {
@@ -1337,10 +1337,10 @@ func TestMQTTNoAuthUser(t *testing.T) {
 			mqttAcc := NewAccount("mqtt")
 			o.Accounts = []*Account{normalAcc, mqttAcc}
 			o.Users = []*User{
-				&User{Username: "noauth", Password: "pwd", Account: normalAcc},
-				&User{Username: "user", Password: "pwd", Account: normalAcc},
-				&User{Username: "mqttnoauth", Password: "pwd", Account: mqttAcc},
-				&User{Username: "mqttuser", Password: "pwd", Account: mqttAcc},
+				{Username: "noauth", Password: "pwd", Account: normalAcc},
+				{Username: "user", Password: "pwd", Account: normalAcc},
+				{Username: "mqttnoauth", Password: "pwd", Account: mqttAcc},
+				{Username: "mqttuser", Password: "pwd", Account: mqttAcc},
 			}
 			o.NoAuthUser = "noauth"
 			if test.override {
@@ -2053,7 +2053,7 @@ func TestMQTTSub(t *testing.T) {
 			defer mc.Close()
 			testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 
-			testMQTTSub(t, 1, mc, r, []*mqttFilter{&mqttFilter{filter: test.mqttSubTopic, qos: 0}}, []byte{0})
+			testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: test.mqttSubTopic, qos: 0}}, []byte{0})
 			testMQTTFlush(t, mc, nil, r)
 
 			natsPub(t, nc, test.natsPubSubject, []byte("msg"))
@@ -2092,8 +2092,8 @@ func TestMQTTSubQoS(t *testing.T) {
 	mqttTopic := "foo/bar"
 
 	// Subscribe with QoS 1
-	testMQTTSub(t, 1, mc, r, []*mqttFilter{&mqttFilter{filter: "foo/#", qos: 1}}, []byte{1})
-	testMQTTSub(t, 1, mc, r, []*mqttFilter{&mqttFilter{filter: mqttTopic, qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo/#", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: mqttTopic, qos: 1}}, []byte{1})
 	testMQTTFlush(t, mc, nil, r)
 
 	// Publish from NATS, which means QoS 0
@@ -2147,16 +2147,16 @@ func TestMQTTSubDups(t *testing.T) {
 
 	// Test with single SUBSCRIBE protocol but multiple filters
 	filters := []*mqttFilter{
-		&mqttFilter{filter: "foo", qos: 1},
-		&mqttFilter{filter: "foo", qos: 0},
+		{filter: "foo", qos: 1},
+		{filter: "foo", qos: 0},
 	}
 	testMQTTSub(t, 1, mc, r, filters, []byte{1, 0})
 	testMQTTFlush(t, mc, nil, r)
 
 	// And also with separate SUBSCRIBE protocols
-	testMQTTSub(t, 1, mc, r, []*mqttFilter{&mqttFilter{filter: "bar", qos: 0}}, []byte{0})
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "bar", qos: 0}}, []byte{0})
 	// Ask for QoS 2 but server will downgrade to 1
-	testMQTTSub(t, 1, mc, r, []*mqttFilter{&mqttFilter{filter: "bar", qos: 2}}, []byte{1})
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "bar", qos: 2}}, []byte{1})
 	testMQTTFlush(t, mc, nil, r)
 
 	// Publish and test msg received only once
@@ -2192,7 +2192,7 @@ func TestMQTTSubDups(t *testing.T) {
 
 	// Now subscribe on "foo/#" which means that a PUBLISH on "foo" will be received
 	// by this subscription and also the one on "foo".
-	testMQTTSub(t, 1, mc, r, []*mqttFilter{&mqttFilter{filter: "foo/#", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo/#", qos: 1}}, []byte{1})
 	testMQTTFlush(t, mc, nil, r)
 
 	// Publish and test msg received twice
@@ -2242,7 +2242,7 @@ func TestMQTTSubDups(t *testing.T) {
 	checkWCSub(1)
 
 	// Sub again on same subject with lower QoS
-	testMQTTSub(t, 1, mc, r, []*mqttFilter{&mqttFilter{filter: "foo/#", qos: 0}}, []byte{0})
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo/#", qos: 0}}, []byte{0})
 	testMQTTFlush(t, mc, nil, r)
 
 	// Publish and test msg received twice
@@ -2265,7 +2265,7 @@ func TestMQTTSubWithSpaces(t *testing.T) {
 	defer mc.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 
-	testMQTTSub(t, 1, mc, r, []*mqttFilter{&mqttFilter{filter: "foo bar", qos: 0}}, []byte{mqttSubAckFailure})
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo bar", qos: 0}}, []byte{mqttSubAckFailure})
 }
 
 func TestMQTTSubCaseSensitive(t *testing.T) {
@@ -2281,7 +2281,7 @@ func TestMQTTSubCaseSensitive(t *testing.T) {
 	defer mc.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 
-	testMQTTSub(t, 1, mc, r, []*mqttFilter{&mqttFilter{filter: "Foo/Bar", qos: 0}}, []byte{0})
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "Foo/Bar", qos: 0}}, []byte{0})
 	testMQTTFlush(t, mc, nil, r)
 
 	testMQTTPublish(t, mcp, r, 0, false, false, "Foo/Bar", 0, []byte("msg"))
@@ -2354,11 +2354,11 @@ func TestMQTTPubSubMatrix(t *testing.T) {
 				ns = natsSubSync(t, nc, "foo")
 			}
 			if test.mqttSubQoS0 {
-				testMQTTSub(t, 1, mc1, r1, []*mqttFilter{&mqttFilter{filter: "foo", qos: 0}}, []byte{0})
+				testMQTTSub(t, 1, mc1, r1, []*mqttFilter{{filter: "foo", qos: 0}}, []byte{0})
 				testMQTTFlush(t, mc1, nil, r1)
 			}
 			if test.mqttSubQoS1 {
-				testMQTTSub(t, 1, mc2, r2, []*mqttFilter{&mqttFilter{filter: "foo", qos: 1}}, []byte{1})
+				testMQTTSub(t, 1, mc2, r2, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 				testMQTTFlush(t, mc2, nil, r2)
 			}
 
@@ -2405,7 +2405,7 @@ func TestMQTTPreventSubWithMQTTSubPrefix(t *testing.T) {
 	defer mc.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 	testMQTTSub(t, 1, mc, r,
-		[]*mqttFilter{&mqttFilter{filter: strings.ReplaceAll(mqttSubPrefix, ".", "/") + "foo/bar", qos: 1}},
+		[]*mqttFilter{{filter: strings.ReplaceAll(mqttSubPrefix, ".", "/") + "foo/bar", qos: 1}},
 		[]byte{mqttSubAckFailure})
 }
 
@@ -2417,7 +2417,7 @@ func TestMQTTSubWithNATSStream(t *testing.T) {
 	mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
 	defer mc.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
-	testMQTTSub(t, 1, mc, r, []*mqttFilter{&mqttFilter{filter: "foo/bar", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo/bar", qos: 1}}, []byte{1})
 	testMQTTFlush(t, mc, nil, r)
 
 	mcp, rp := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
@@ -2517,7 +2517,7 @@ func TestMQTTSubRestart(t *testing.T) {
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 
 	// Start an MQTT subscription QoS=1 on "foo"
-	testMQTTSub(t, 1, mc, r, []*mqttFilter{&mqttFilter{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 	testMQTTFlush(t, mc, nil, r)
 
 	// Now start a NATS subscription on ">" (anything that would match the JS consumer delivery subject)
@@ -2532,7 +2532,7 @@ func TestMQTTSubRestart(t *testing.T) {
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, true)
 
 	// Restart an MQTT subscription QoS=1 on "foo"
-	testMQTTSub(t, 1, mc, r, []*mqttFilter{&mqttFilter{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 	testMQTTFlush(t, mc, nil, r)
 
 	pc, pr := testMQTTConnect(t, &mqttConnInfo{clientID: "pub", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
@@ -2545,7 +2545,7 @@ func TestMQTTSubRestart(t *testing.T) {
 	testMQTTCheckPubMsg(t, mc, r, "foo", mqttPubQos1, []byte("msg1"))
 
 	// Now "restart" the subscription but as a Qos0
-	testMQTTSub(t, 1, mc, r, []*mqttFilter{&mqttFilter{filter: "foo", qos: 0}}, []byte{0})
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo", qos: 0}}, []byte{0})
 	testMQTTFlush(t, mc, nil, r)
 
 	// Publish a message QoS
@@ -2567,7 +2567,7 @@ func TestMQTTSubPropagation(t *testing.T) {
 	defer mc.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 
-	testMQTTSub(t, 1, mc, r, []*mqttFilter{&mqttFilter{filter: "foo/#", qos: 0}}, []byte{0})
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo/#", qos: 0}}, []byte{0})
 	testMQTTFlush(t, mc, nil, r)
 
 	// Because in MQTT foo/# means foo.> but also foo, check that this is propagated
@@ -2611,7 +2611,7 @@ func TestMQTTCluster(t *testing.T) {
 					defer mc.Close()
 					testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 
-					testMQTTSub(t, 1, mc, r, []*mqttFilter{&mqttFilter{filter: "foo/#", qos: test.subQos}}, []byte{test.subQos})
+					testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo/#", qos: test.subQos}}, []byte{test.subQos})
 					testMQTTFlush(t, mc, nil, r)
 
 					check := func(mc net.Conn, r *mqttReader, o *Options, s *Server) {
@@ -2705,7 +2705,7 @@ func TestMQTTClusterRetainedMsg(t *testing.T) {
 	defer mc.Close()
 	testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, false)
 
-	testMQTTSub(t, 1, mc, rc, []*mqttFilter{&mqttFilter{filter: "foo/#", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "foo/#", qos: 1}}, []byte{1})
 	testMQTTFlush(t, mc, nil, rc)
 
 	// Create a publisher from server 2.
@@ -2722,7 +2722,7 @@ func TestMQTTClusterRetainedMsg(t *testing.T) {
 	mc2, rc2 := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, srv1Opts.MQTT.Host, srv1Opts.MQTT.Port)
 	defer mc2.Close()
 	testMQTTCheckConnAck(t, rc2, mqttConnAckRCConnectionAccepted, false)
-	testMQTTSub(t, 1, mc2, rc2, []*mqttFilter{&mqttFilter{filter: "foo/#", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, mc2, rc2, []*mqttFilter{{filter: "foo/#", qos: 1}}, []byte{1})
 	testMQTTCheckPubMsg(t, mc2, rc2, "foo/bar", mqttPubQos1|mqttPubFlagRetain, []byte("retained"))
 	testMQTTDisconnect(t, mc2, nil)
 
@@ -2738,7 +2738,7 @@ func TestMQTTClusterRetainedMsg(t *testing.T) {
 	mc, rc = testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: false}, srv2Opts.MQTT.Host, srv2Opts.MQTT.Port)
 	defer mc.Close()
 	testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, true)
-	testMQTTSub(t, 1, mc, rc, []*mqttFilter{&mqttFilter{filter: "foo/#", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "foo/#", qos: 1}}, []byte{1})
 	// The retained message should not be delivered.
 	testMQTTExpectNothing(t, rc)
 	// Now disconnect and reconnect back to first server
@@ -2750,7 +2750,7 @@ func TestMQTTClusterRetainedMsg(t *testing.T) {
 	mc, rc = testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: false}, srv1Opts.MQTT.Host, srv1Opts.MQTT.Port)
 	defer mc.Close()
 	testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, true)
-	testMQTTSub(t, 1, mc, rc, []*mqttFilter{&mqttFilter{filter: "foo/#", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "foo/#", qos: 1}}, []byte{1})
 	testMQTTExpectNothing(t, rc)
 }
 
@@ -2858,7 +2858,7 @@ func TestMQTTClusterReplicasCount(t *testing.T) {
 			mc, rc := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: false}, o.MQTT.Host, o.MQTT.Port)
 			defer mc.Close()
 			testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, false)
-			testMQTTSub(t, 1, mc, rc, []*mqttFilter{&mqttFilter{filter: "foo/#", qos: 1}}, []byte{1})
+			testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "foo/#", qos: 1}}, []byte{1})
 			testMQTTFlush(t, mc, nil, rc)
 
 			nc := natsConnect(t, s.ClientURL())
@@ -2972,7 +2972,7 @@ func TestMQTTUnsub(t *testing.T) {
 	defer mc.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 
-	testMQTTSub(t, 1, mc, r, []*mqttFilter{&mqttFilter{filter: "foo", qos: 0}}, []byte{0})
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo", qos: 0}}, []byte{0})
 	testMQTTFlush(t, mc, nil, r)
 
 	// Publish and test msg received
@@ -2980,7 +2980,7 @@ func TestMQTTUnsub(t *testing.T) {
 	testMQTTCheckPubMsg(t, mc, r, "foo", 0, []byte("msg"))
 
 	// Unsubscribe
-	testMQTTUnsub(t, 1, mc, r, []*mqttFilter{&mqttFilter{filter: "foo"}})
+	testMQTTUnsub(t, 1, mc, r, []*mqttFilter{{filter: "foo"}})
 
 	// Publish and test msg not received
 	testMQTTPublish(t, mcp, r, 0, false, false, "foo", 0, []byte("msg"))
@@ -2988,8 +2988,8 @@ func TestMQTTUnsub(t *testing.T) {
 
 	// Use of wildcards subs
 	filters := []*mqttFilter{
-		&mqttFilter{filter: "foo/bar", qos: 0},
-		&mqttFilter{filter: "foo/#", qos: 0},
+		{filter: "foo/bar", qos: 0},
+		{filter: "foo/#", qos: 0},
 	}
 	testMQTTSub(t, 1, mc, r, filters, []byte{0, 0})
 	testMQTTFlush(t, mc, nil, r)
@@ -3000,14 +3000,14 @@ func TestMQTTUnsub(t *testing.T) {
 	testMQTTCheckPubMsg(t, mc, r, "foo/bar", 0, []byte("msg"))
 
 	// Unsub the wildcard one
-	testMQTTUnsub(t, 1, mc, r, []*mqttFilter{&mqttFilter{filter: "foo/#"}})
+	testMQTTUnsub(t, 1, mc, r, []*mqttFilter{{filter: "foo/#"}})
 	// Publish and check that message received once
 	testMQTTPublish(t, mcp, r, 0, false, false, "foo/bar", 0, []byte("msg"))
 	testMQTTCheckPubMsg(t, mc, r, "foo/bar", 0, []byte("msg"))
 	testMQTTExpectNothing(t, r)
 
 	// Unsub last
-	testMQTTUnsub(t, 1, mc, r, []*mqttFilter{&mqttFilter{filter: "foo/bar"}})
+	testMQTTUnsub(t, 1, mc, r, []*mqttFilter{{filter: "foo/bar"}})
 	// Publish and test msg not received
 	testMQTTPublish(t, mcp, r, 0, false, false, "foo/bar", 0, []byte("msg"))
 	testMQTTExpectNothing(t, r)
@@ -3083,7 +3083,7 @@ func TestMQTTWill(t *testing.T) {
 			defer mcs.Close()
 			testMQTTCheckConnAck(t, rs, mqttConnAckRCConnectionAccepted, false)
 
-			testMQTTSub(t, 1, mcs, rs, []*mqttFilter{&mqttFilter{filter: "will/#", qos: 1}}, []byte{1})
+			testMQTTSub(t, 1, mcs, rs, []*mqttFilter{{filter: "will/#", qos: 1}}, []byte{1})
 			testMQTTFlush(t, mcs, nil, rs)
 
 			mc, r := testMQTTConnect(t,
@@ -3161,7 +3161,7 @@ func TestMQTTWillRetain(t *testing.T) {
 			defer mcs.Close()
 			testMQTTCheckConnAck(t, rs, mqttConnAckRCConnectionAccepted, false)
 
-			testMQTTSub(t, 1, mcs, rs, []*mqttFilter{&mqttFilter{filter: "will/#", qos: test.subQoS}}, []byte{test.subQoS})
+			testMQTTSub(t, 1, mcs, rs, []*mqttFilter{{filter: "will/#", qos: test.subQoS}}, []byte{test.subQoS})
 			pflags, _ := testMQTTGetPubMsg(t, mcs, rs, "will/topic", willMsg)
 			if pflags&mqttPubFlagRetain == 0 {
 				t.Fatalf("expected retain flag to be set, it was not: %v", pflags)
@@ -3232,7 +3232,7 @@ func TestMQTTWillRetainPermViolation(t *testing.T) {
 	defer mcs.Close()
 	testMQTTCheckConnAck(t, rs, mqttConnAckRCConnectionAccepted, false)
 
-	testMQTTSub(t, 1, mcs, rs, []*mqttFilter{&mqttFilter{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, mcs, rs, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 	pflags, _ := testMQTTGetPubMsg(t, mcs, rs, "foo", []byte("bye"))
 	if pflags&mqttPubFlagRetain == 0 {
 		t.Fatalf("expected retain flag to be set, it was not: %v", pflags)
@@ -3267,7 +3267,7 @@ func TestMQTTWillRetainPermViolation(t *testing.T) {
 	defer mcs.Close()
 	testMQTTCheckConnAck(t, rs, mqttConnAckRCConnectionAccepted, false)
 
-	testMQTTSub(t, 1, mcs, rs, []*mqttFilter{&mqttFilter{filter: "bar", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, mcs, rs, []*mqttFilter{{filter: "bar", qos: 1}}, []byte{1})
 	// No Will should be published since it should not have been stored in the first place.
 	testMQTTExpectNothing(t, rs)
 	testMQTTDisconnect(t, mcs, nil)
@@ -3281,7 +3281,7 @@ func TestMQTTWillRetainPermViolation(t *testing.T) {
 	defer mcs.Close()
 	testMQTTCheckConnAck(t, rs, mqttConnAckRCConnectionAccepted, false)
 
-	testMQTTSub(t, 1, mcs, rs, []*mqttFilter{&mqttFilter{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, mcs, rs, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 	testMQTTExpectNothing(t, rs)
 	testMQTTDisconnect(t, mcs, nil)
 }
@@ -3313,7 +3313,7 @@ func TestMQTTPublishRetain(t *testing.T) {
 			defer mc2.Close()
 			testMQTTCheckConnAck(t, rs2, mqttConnAckRCConnectionAccepted, false)
 
-			testMQTTSub(t, 1, mc2, rs2, []*mqttFilter{&mqttFilter{filter: "foo/#", qos: 1}}, []byte{1})
+			testMQTTSub(t, 1, mc2, rs2, []*mqttFilter{{filter: "foo/#", qos: 1}}, []byte{1})
 
 			if test.subGetsIt {
 				pflags, _ := testMQTTGetPubMsg(t, mc2, rs2, "foo", []byte(test.expectedValue))
@@ -3361,7 +3361,7 @@ func TestMQTTPublishRetainPermViolation(t *testing.T) {
 	defer mc2.Close()
 	testMQTTCheckConnAck(t, rs2, mqttConnAckRCConnectionAccepted, false)
 
-	testMQTTSub(t, 1, mc2, rs2, []*mqttFilter{&mqttFilter{filter: "bar", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, mc2, rs2, []*mqttFilter{{filter: "bar", qos: 1}}, []byte{1})
 	testMQTTExpectNothing(t, rs2)
 
 	testMQTTDisconnect(t, mc1, nil)
@@ -3391,7 +3391,7 @@ func TestMQTTPublishViolation(t *testing.T) {
 	mc, rc := testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
 	defer mc.Close()
 	testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, false)
-	testMQTTSub(t, 1, mc, rc, []*mqttFilter{&mqttFilter{filter: "foo/+", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "foo/+", qos: 1}}, []byte{1})
 	testMQTTFlush(t, mc, nil, rc)
 
 	ci.clientID = "pub"
@@ -3424,7 +3424,7 @@ func TestMQTTPublishViolation(t *testing.T) {
 	mc, rc = testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
 	defer mc.Close()
 	testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, true)
-	testMQTTSub(t, 1, mc, rc, []*mqttFilter{&mqttFilter{filter: "foo/+", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "foo/+", qos: 1}}, []byte{1})
 	testMQTTExpectNothing(t, rc)
 }
 
@@ -3489,9 +3489,9 @@ func TestMQTTPersistedSession(t *testing.T) {
 
 	testMQTTSub(t, 1, c, r,
 		[]*mqttFilter{
-			&mqttFilter{filter: "foo/#", qos: 1},
-			&mqttFilter{filter: "bar", qos: 1},
-			&mqttFilter{filter: "baz", qos: 0},
+			{filter: "foo/#", qos: 1},
+			{filter: "bar", qos: 1},
+			{filter: "baz", qos: 0},
 		},
 		[]byte{1, 1, 0})
 	testMQTTFlush(t, c, nil, r)
@@ -3553,7 +3553,7 @@ func TestMQTTPersistedSession(t *testing.T) {
 
 	// Now unsub "bar" and verify that message published on this topic
 	// is not received.
-	testMQTTUnsub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "bar"}})
+	testMQTTUnsub(t, 1, c, r, []*mqttFilter{{filter: "bar"}})
 	natsPub(t, nc, "bar", []byte("msg5"))
 	testMQTTExpectNothing(t, r)
 
@@ -3589,7 +3589,7 @@ func TestMQTTPersistedSession(t *testing.T) {
 	testMQTTCheckPubMsg(t, c, r, "baz", 0, []byte("msg9"))
 
 	// Have the sub client send a subscription downgrading the qos1 subscription.
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "foo/#", qos: 0}}, []byte{0})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo/#", qos: 0}}, []byte{0})
 	testMQTTFlush(t, c, nil, r)
 
 	nc.Close()
@@ -3685,7 +3685,7 @@ func TestMQTTRecoverSessionAndAddNewSub(t *testing.T) {
 	defer c.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, true)
 	// Now add sub and make sure it does not crash
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 	testMQTTFlush(t, c, nil, r)
 
 	// Now repeat with a new client but without server restart.
@@ -3699,7 +3699,7 @@ func TestMQTTRecoverSessionAndAddNewSub(t *testing.T) {
 	c2, r2 = testMQTTConnect(t, cisub2, o.MQTT.Host, o.MQTT.Port)
 	defer c2.Close()
 	testMQTTCheckConnAck(t, r2, mqttConnAckRCConnectionAccepted, true)
-	testMQTTSub(t, 1, c2, r2, []*mqttFilter{&mqttFilter{filter: "bar", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c2, r2, []*mqttFilter{{filter: "bar", qos: 1}}, []byte{1})
 	testMQTTFlush(t, c2, nil, r2)
 }
 
@@ -3714,7 +3714,7 @@ func TestMQTTRecoverSessionWithSubAndClientResendSub(t *testing.T) {
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 
 	// Have a client send a SUBSCRIBE protocol for foo, QoS1
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 	testMQTTDisconnect(t, c, nil)
 	c.Close()
 
@@ -3737,7 +3737,7 @@ func TestMQTTRecoverSessionWithSubAndClientResendSub(t *testing.T) {
 
 	// For applications that restart, it is possible (likely) that they
 	// will resend their SUBSCRIBE protocols, so do so now:
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 	testMQTTFlush(t, c, nil, r)
 
 	checkNumSub := func(clientID string) {
@@ -3778,14 +3778,14 @@ func TestMQTTRecoverSessionWithSubAndClientResendSub(t *testing.T) {
 	c, r = testMQTTConnect(t, cisub2, o.MQTT.Host, o.MQTT.Port)
 	defer c.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 	testMQTTDisconnect(t, c, nil)
 	c.Close()
 	// Restart client
 	c, r = testMQTTConnect(t, cisub2, o.MQTT.Host, o.MQTT.Port)
 	defer c.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, true)
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 	testMQTTFlush(t, c, nil, r)
 	// Check client subs
 	checkNumSub("sub2")
@@ -3941,13 +3941,13 @@ func TestMQTTPersistRetainedMsg(t *testing.T) {
 	defer c.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 	testMQTTCheckPubMsg(t, c, r, "foo", mqttPubFlagRetain|mqttPubQos1, []byte("foo2"))
 
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "baz", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "baz", qos: 1}}, []byte{1})
 	testMQTTCheckPubMsg(t, c, r, "baz", mqttPubFlagRetain, []byte("baz1"))
 
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "bar", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "bar", qos: 1}}, []byte{1})
 	testMQTTExpectNothing(t, r)
 
 	testMQTTDisconnect(t, c, nil)
@@ -3964,7 +3964,7 @@ func TestMQTTConnAckFirstPacket(t *testing.T) {
 	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
 	defer c.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "foo", qos: 0}}, []byte{0})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 0}}, []byte{0})
 	testMQTTDisconnect(t, c, nil)
 	c.Close()
 
@@ -4022,7 +4022,7 @@ func TestMQTTRedeliveryAckWait(t *testing.T) {
 	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
 	defer c.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 
 	cipub := &mqttConnInfo{clientID: "pub", cleanSess: true}
 	cp, rp := testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
@@ -4101,7 +4101,7 @@ func TestMQTTAckWaitConfigChange(t *testing.T) {
 	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
 	defer c.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 
 	sendMsg := func(topic, payload string) {
 		t.Helper()
@@ -4148,7 +4148,7 @@ func TestMQTTAckWaitConfigChange(t *testing.T) {
 	}
 
 	// Create new subscription
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "bar", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "bar", qos: 1}}, []byte{1})
 	sendMsg("bar", "msg2")
 	testMQTTCheckPubMsgNoAck(t, c, r, "bar", mqttPubQos1, []byte("msg2"))
 	start = time.Now()
@@ -4169,7 +4169,7 @@ func TestMQTTUnsubscribeWithPendingAcks(t *testing.T) {
 	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
 	defer c.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 
 	cipub := &mqttConnInfo{clientID: "pub", cleanSess: true}
 	cp, rp := testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
@@ -4188,7 +4188,7 @@ func TestMQTTUnsubscribeWithPendingAcks(t *testing.T) {
 		testMQTTCheckPubMsgNoAck(t, c, r, "foo", flags, []byte("msg"))
 	}
 
-	testMQTTUnsub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "foo"}})
+	testMQTTUnsub(t, 1, c, r, []*mqttFilter{{filter: "foo"}})
 	testMQTTFlush(t, c, nil, r)
 
 	mc := testMQTTGetClient(t, s, "sub")
@@ -4215,7 +4215,7 @@ func TestMQTTMaxAckPending(t *testing.T) {
 	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
 	defer c.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 
 	cipub := &mqttConnInfo{clientID: "pub", cleanSess: true}
 	cp, rp := testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
@@ -4314,8 +4314,8 @@ func TestMQTTMaxAckPendingForMultipleSubs(t *testing.T) {
 	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
 	defer c.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "foo", qos: 1}}, []byte{1})
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "bar", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "bar", qos: 1}}, []byte{1})
 
 	cipub := &mqttConnInfo{clientID: "pub", cleanSess: true}
 	cp, rp := testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
@@ -4367,36 +4367,36 @@ func TestMQTTMaxAckPendingOverLimit(t *testing.T) {
 	mc.mu.Unlock()
 
 	// After this one, total would be 20000
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 	checkTMax(sess, 20000)
 	// This one will count for 2, so total will be 60000
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "bar/#", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "bar/#", qos: 1}}, []byte{1})
 	checkTMax(sess, 60000)
 
 	// This should fail
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "bar", qos: 1}}, []byte{mqttSubAckFailure})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "bar", qos: 1}}, []byte{mqttSubAckFailure})
 	checkTMax(sess, 60000)
 
 	// Remove the one with wildcard
-	testMQTTUnsub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "bar/#"}})
+	testMQTTUnsub(t, 1, c, r, []*mqttFilter{{filter: "bar/#"}})
 	checkTMax(sess, 20000)
 
 	// Now we could add 2 more without wildcards
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "bar", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "bar", qos: 1}}, []byte{1})
 	checkTMax(sess, 40000)
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "baz", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "baz", qos: 1}}, []byte{1})
 	checkTMax(sess, 60000)
 
 	// Again, this one should fail
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "bat", qos: 1}}, []byte{mqttSubAckFailure})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "bat", qos: 1}}, []byte{mqttSubAckFailure})
 	checkTMax(sess, 60000)
 
 	// Now remove all and check that we are at 0
-	testMQTTUnsub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "foo"}})
+	testMQTTUnsub(t, 1, c, r, []*mqttFilter{{filter: "foo"}})
 	checkTMax(sess, 40000)
-	testMQTTUnsub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "bar"}})
+	testMQTTUnsub(t, 1, c, r, []*mqttFilter{{filter: "bar"}})
 	checkTMax(sess, 20000)
-	testMQTTUnsub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "baz"}})
+	testMQTTUnsub(t, 1, c, r, []*mqttFilter{{filter: "baz"}})
 	checkTMax(sess, 0)
 }
 
@@ -4431,7 +4431,7 @@ func TestMQTTConfigReload(t *testing.T) {
 	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
 	defer c.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 
 	cipub := &mqttConnInfo{clientID: "pub", cleanSess: true}
 	cp, rp := testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
@@ -4459,7 +4459,7 @@ func TestMQTTConfigReload(t *testing.T) {
 	c, r = testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
 	defer c.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 
 	cipub = &mqttConnInfo{clientID: "pub", cleanSess: true}
 	cp, rp = testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
@@ -4481,7 +4481,7 @@ func TestMQTTConfigReload(t *testing.T) {
 
 	// Reload will have effect only on new subscriptions.
 	// Create a new subscription, and we should not be able to get the 2 messages.
-	testMQTTSub(t, 1, c, r, []*mqttFilter{&mqttFilter{filter: "bar", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "bar", qos: 1}}, []byte{1})
 
 	testMQTTPublish(t, cp, rp, 1, false, false, "bar", 1, []byte("msg3"))
 	testMQTTPublish(t, cp, rp, 1, false, false, "bar", 1, []byte("msg4"))
@@ -4559,7 +4559,7 @@ func mqttBenchPubQoS0(b *testing.B, subject, payload string, numSubs int) {
 		cs, brs := testMQTTConnect(b, ci, o.MQTT.Host, o.MQTT.Port)
 		testMQTTCheckConnAck(b, brs, mqttConnAckRCConnectionAccepted, false)
 
-		testMQTTSub(b, 1, cs, brs, []*mqttFilter{&mqttFilter{filter: subject, qos: 0}}, []byte{0})
+		testMQTTSub(b, 1, cs, brs, []*mqttFilter{{filter: subject, qos: 0}}, []byte{0})
 		testMQTTFlush(b, cs, nil, brs)
 
 		w := &mqttWriter{}
@@ -4639,7 +4639,7 @@ func mqttBenchPubQoS1(b *testing.B, subject, payload string, numSubs int) {
 		cs, brs := testMQTTConnect(b, ci, o.MQTT.Host, o.MQTT.Port)
 		testMQTTCheckConnAck(b, brs, mqttConnAckRCConnectionAccepted, false)
 
-		testMQTTSub(b, 1, cs, brs, []*mqttFilter{&mqttFilter{filter: subject, qos: 1}}, []byte{1})
+		testMQTTSub(b, 1, cs, brs, []*mqttFilter{{filter: subject, qos: 1}}, []byte{1})
 		testMQTTFlush(b, cs, nil, brs)
 
 		w := &mqttWriter{}

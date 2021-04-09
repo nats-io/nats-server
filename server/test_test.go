@@ -95,11 +95,11 @@ func createClusterEx(t *testing.T, doAccounts bool, gwSolicit time.Duration, wai
 
 		// Setup users
 		users := []*User{
-			&User{Username: "dlc", Password: "pass", Permissions: nil, Account: dlc},
-			&User{Username: "ngs", Password: "pass", Permissions: nil, Account: ngs},
-			&User{Username: "foo", Password: "pass", Permissions: nil, Account: foo},
-			&User{Username: "bar", Password: "pass", Permissions: nil, Account: bar},
-			&User{Username: "sys", Password: "pass", Permissions: nil, Account: sys},
+			{Username: "dlc", Password: "pass", Permissions: nil, Account: dlc},
+			{Username: "ngs", Password: "pass", Permissions: nil, Account: ngs},
+			{Username: "foo", Password: "pass", Permissions: nil, Account: foo},
+			{Username: "bar", Password: "pass", Permissions: nil, Account: bar},
+			{Username: "sys", Password: "pass", Permissions: nil, Account: sys},
 		}
 		return accounts, users
 	}

@@ -1523,14 +1523,14 @@ func TestWSValidateOptions(t *testing.T) {
 		}, "keys configuration is required"},
 		{"websocket username not allowed if users specified", func() *Options {
 			o := wso.Clone()
-			o.Nkeys = []*NkeyUser{&NkeyUser{Nkey: "abc"}}
+			o.Nkeys = []*NkeyUser{{Nkey: "abc"}}
 			o.Websocket.Username = "b"
 			o.Websocket.Password = "pwd"
 			return o
 		}, "websocket authentication username not compatible with presence of users/nkeys"},
 		{"websocket token not allowed if users specified", func() *Options {
 			o := wso.Clone()
-			o.Nkeys = []*NkeyUser{&NkeyUser{Nkey: "abc"}}
+			o.Nkeys = []*NkeyUser{{Nkey: "abc"}}
 			o.Websocket.Token = "mytoken"
 			return o
 		}, "websocket authentication token not compatible with presence of users/nkeys"},
@@ -2083,7 +2083,7 @@ func TestWSTLSVerifyAndMap(t *testing.T) {
 	accName := "MyAccount"
 	acc := NewAccount(accName)
 	certUserName := "CN=example.com,OU=NATS.io"
-	users := []*User{&User{Username: certUserName, Account: acc}}
+	users := []*User{{Username: certUserName, Account: acc}}
 
 	for _, test := range []struct {
 		name        string
@@ -3217,7 +3217,7 @@ func TestWSBindToProperAccount(t *testing.T) {
 }
 
 func TestWSUsersAuth(t *testing.T) {
-	users := []*User{&User{Username: "user", Password: "pwd"}}
+	users := []*User{{Username: "user", Password: "pwd"}}
 	for _, test := range []struct {
 		name string
 		opts func() *Options
@@ -3302,7 +3302,7 @@ func TestWSUsersAuth(t *testing.T) {
 
 func TestWSNoAuthUserValidation(t *testing.T) {
 	o := testWSOptions()
-	o.Users = []*User{&User{Username: "user", Password: "pwd"}}
+	o.Users = []*User{{Username: "user", Password: "pwd"}}
 	// Should fail because it is not part of o.Users.
 	o.Websocket.NoAuthUser = "notfound"
 	if _, err := NewServer(o); err == nil || !strings.Contains(err.Error(), "not present as user") {
@@ -3336,10 +3336,10 @@ func TestWSNoAuthUser(t *testing.T) {
 			websocketAcc := NewAccount("websocket")
 			o.Accounts = []*Account{normalAcc, websocketAcc}
 			o.Users = []*User{
-				&User{Username: "noauth", Password: "pwd", Account: normalAcc},
-				&User{Username: "user", Password: "pwd", Account: normalAcc},
-				&User{Username: "wsnoauth", Password: "pwd", Account: websocketAcc},
-				&User{Username: "wsuser", Password: "pwd", Account: websocketAcc},
+				{Username: "noauth", Password: "pwd", Account: normalAcc},
+				{Username: "user", Password: "pwd", Account: normalAcc},
+				{Username: "wsnoauth", Password: "pwd", Account: websocketAcc},
+				{Username: "wsuser", Password: "pwd", Account: websocketAcc},
 			}
 			o.NoAuthUser = "noauth"
 			if test.override {
@@ -3406,7 +3406,7 @@ func TestWSNkeyAuth(t *testing.T) {
 			"no filtering, wrong nkey",
 			func() *Options {
 				o := testWSOptions()
-				o.Nkeys = []*NkeyUser{&NkeyUser{Nkey: pub}}
+				o.Nkeys = []*NkeyUser{{Nkey: pub}}
 				return o
 			},
 			badpub, badkp, "-ERR 'Authorization Violation'",
@@ -3415,7 +3415,7 @@ func TestWSNkeyAuth(t *testing.T) {
 			"no filtering, correct nkey",
 			func() *Options {
 				o := testWSOptions()
-				o.Nkeys = []*NkeyUser{&NkeyUser{Nkey: pub}}
+				o.Nkeys = []*NkeyUser{{Nkey: pub}}
 				return o
 			},
 			pub, nkp, "",
@@ -3425,11 +3425,11 @@ func TestWSNkeyAuth(t *testing.T) {
 			func() *Options {
 				o := testWSOptions()
 				o.Nkeys = []*NkeyUser{
-					&NkeyUser{
+					{
 						Nkey:                   pub,
 						AllowedConnectionTypes: testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard}),
 					},
-					&NkeyUser{
+					{
 						Nkey:                   wspub,
 						AllowedConnectionTypes: testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeWebsocket}),
 					},
@@ -3443,8 +3443,8 @@ func TestWSNkeyAuth(t *testing.T) {
 			func() *Options {
 				o := testWSOptions()
 				o.Nkeys = []*NkeyUser{
-					&NkeyUser{Nkey: pub},
-					&NkeyUser{
+					{Nkey: pub},
+					{
 						Nkey:                   wspub,
 						AllowedConnectionTypes: testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket}),
 					},
@@ -3458,7 +3458,7 @@ func TestWSNkeyAuth(t *testing.T) {
 			func() *Options {
 				o := testWSOptions()
 				o.Nkeys = []*NkeyUser{
-					&NkeyUser{
+					{
 						Nkey:                   wspub,
 						AllowedConnectionTypes: testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket}),
 					},

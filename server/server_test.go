@@ -1365,7 +1365,7 @@ func TestGetRandomIP(t *testing.T) {
 	}
 
 	// Check IP exclusions
-	excludedIPs := map[string]struct{}{"1.2.3.4:4222": struct{}{}}
+	excludedIPs := map[string]struct{}{"1.2.3.4:4222": {}}
 	for i := 0; i < 100; i++ {
 		ip, err := s.getRandomIP(resolver, "localhost:4222", excludedIPs)
 		if err != nil {
@@ -1394,7 +1394,7 @@ func TestGetRandomIP(t *testing.T) {
 
 	// Now check that exclusion takes into account the port number.
 	resolver.ips = []string{"127.0.0.1"}
-	excludedIPs = map[string]struct{}{"127.0.0.1:4222": struct{}{}}
+	excludedIPs = map[string]struct{}{"127.0.0.1:4222": {}}
 	for i := 0; i < 100; i++ {
 		if _, err := s.getRandomIP(resolver, "localhost:4223", excludedIPs); err == errNoIPAvail {
 			t.Fatal("Should not have failed")
@@ -1638,7 +1638,7 @@ func TestConnectErrorReports(t *testing.T) {
 	// Now try with leaf nodes
 	opts.Cluster.Port = 0
 	opts.Routes = nil
-	opts.LeafNode.Remotes = []*RemoteLeafOpts{&RemoteLeafOpts{URLs: []*url.URL{remoteURLs[0]}}}
+	opts.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{remoteURLs[0]}}}
 	opts.LeafNode.ReconnectInterval = 15 * time.Millisecond
 	s = RunServer(opts)
 	defer s.Shutdown()
@@ -1684,7 +1684,7 @@ func TestConnectErrorReports(t *testing.T) {
 	opts.Gateway.Name = "A"
 	opts.Gateway.Port = -1
 	opts.Gateway.Gateways = []*RemoteGatewayOpts{
-		&RemoteGatewayOpts{
+		{
 			Name: "B",
 			URLs: remoteURLs,
 		},
@@ -1810,7 +1810,7 @@ func TestReconnectErrorReports(t *testing.T) {
 	opts.Cluster.Port = 0
 	opts.Routes = nil
 	u, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", csOpts.LeafNode.Port))
-	opts.LeafNode.Remotes = []*RemoteLeafOpts{&RemoteLeafOpts{URLs: []*url.URL{u}}}
+	opts.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}}}
 	opts.LeafNode.ReconnectInterval = 15 * time.Millisecond
 	s = RunServer(opts)
 	defer s.Shutdown()
@@ -1869,7 +1869,7 @@ func TestReconnectErrorReports(t *testing.T) {
 	remoteGWPort := cs.GatewayAddr().Port
 	u, _ = url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", remoteGWPort))
 	opts.Gateway.Gateways = []*RemoteGatewayOpts{
-		&RemoteGatewayOpts{
+		{
 			Name: "B",
 			URLs: []*url.URL{u},
 		},

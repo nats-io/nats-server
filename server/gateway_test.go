@@ -5107,13 +5107,13 @@ func (c *delayedWriteConn) Write(b []byte) (int, error) {
 func TestGatewaySendReplyAcrossGateways(t *testing.T) {
 	ob := testDefaultOptionsForGateway("B")
 	ob.Accounts = []*Account{NewAccount("ACC")}
-	ob.Users = []*User{&User{Username: "user", Password: "pwd", Account: ob.Accounts[0]}}
+	ob.Users = []*User{{Username: "user", Password: "pwd", Account: ob.Accounts[0]}}
 	sb := runGatewayServer(ob)
 	defer sb.Shutdown()
 
 	oa1 := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
 	oa1.Accounts = []*Account{NewAccount("ACC")}
-	oa1.Users = []*User{&User{Username: "user", Password: "pwd", Account: oa1.Accounts[0]}}
+	oa1.Users = []*User{{Username: "user", Password: "pwd", Account: oa1.Accounts[0]}}
 	sa1 := runGatewayServer(oa1)
 	defer sa1.Shutdown()
 
@@ -5128,7 +5128,7 @@ func TestGatewaySendReplyAcrossGateways(t *testing.T) {
 	// route.
 	oa2 := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
 	oa2.Accounts = []*Account{NewAccount("ACC")}
-	oa2.Users = []*User{&User{Username: "user", Password: "pwd", Account: oa2.Accounts[0]}}
+	oa2.Users = []*User{{Username: "user", Password: "pwd", Account: oa2.Accounts[0]}}
 	oa2.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", oa1.Cluster.Host, oa1.Cluster.Port))
 	sa2 := runGatewayServer(oa2)
 	defer sa2.Shutdown()
@@ -5249,13 +5249,13 @@ func TestGatewaySendReplyAcrossGateways(t *testing.T) {
 func TestGatewayPingPongReplyAcrossGateways(t *testing.T) {
 	ob := testDefaultOptionsForGateway("B")
 	ob.Accounts = []*Account{NewAccount("ACC")}
-	ob.Users = []*User{&User{Username: "user", Password: "pwd", Account: ob.Accounts[0]}}
+	ob.Users = []*User{{Username: "user", Password: "pwd", Account: ob.Accounts[0]}}
 	sb := runGatewayServer(ob)
 	defer sb.Shutdown()
 
 	oa1 := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
 	oa1.Accounts = []*Account{NewAccount("ACC")}
-	oa1.Users = []*User{&User{Username: "user", Password: "pwd", Account: oa1.Accounts[0]}}
+	oa1.Users = []*User{{Username: "user", Password: "pwd", Account: oa1.Accounts[0]}}
 	sa1 := runGatewayServer(oa1)
 	defer sa1.Shutdown()
 
@@ -5270,7 +5270,7 @@ func TestGatewayPingPongReplyAcrossGateways(t *testing.T) {
 	// route.
 	oa2 := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
 	oa2.Accounts = []*Account{NewAccount("ACC")}
-	oa2.Users = []*User{&User{Username: "user", Password: "pwd", Account: oa2.Accounts[0]}}
+	oa2.Users = []*User{{Username: "user", Password: "pwd", Account: oa2.Accounts[0]}}
 	oa2.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", oa1.Cluster.Host, oa1.Cluster.Port))
 	sa2 := runGatewayServer(oa2)
 	defer sa2.Shutdown()

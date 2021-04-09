@@ -2631,7 +2631,7 @@ func TestMonitorGateway(t *testing.T) {
 	u1, _ := url.Parse("nats://ivan:pwd@localhost:1234")
 	u2, _ := url.Parse("nats://localhost:1235")
 	opts.Gateway.Gateways = []*RemoteGatewayOpts{
-		&RemoteGatewayOpts{
+		{
 			Name:       "B",
 			TLSTimeout: 1,
 			URLs: []*url.URL{
@@ -2803,7 +2803,7 @@ func TestMonitorLeafNode(t *testing.T) {
 	opts.Accounts = []*Account{NewAccount("acc")}
 	u, _ := url.Parse("nats://ivan:pwd@localhost:1234")
 	opts.LeafNode.Remotes = []*RemoteLeafOpts{
-		&RemoteLeafOpts{
+		{
 			LocalAccount: "acc",
 			URLs:         []*url.URL{u},
 			TLSTimeout:   1,
