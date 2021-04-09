@@ -472,17 +472,18 @@ func (s *Server) startLeafNodeAcceptLoop() {
 	tlsRequired := opts.LeafNode.TLSConfig != nil
 	tlsVerify := tlsRequired && opts.LeafNode.TLSConfig.ClientAuth == tls.RequireAndVerifyClientCert
 	info := Info{
-		ID:           s.info.ID,
-		Name:         s.info.Name,
-		Version:      s.info.Version,
-		GitCommit:    gitCommit,
-		GoVersion:    runtime.Version(),
-		AuthRequired: true,
-		TLSRequired:  tlsRequired,
-		TLSVerify:    tlsVerify,
-		MaxPayload:   s.info.MaxPayload, // TODO(dlc) - Allow override?
-		Headers:      s.supportsHeaders(),
-		Proto:        1, // Fixed for now.
+		ID:            s.info.ID,
+		Name:          s.info.Name,
+		Version:       s.info.Version,
+		GitCommit:     gitCommit,
+		GoVersion:     runtime.Version(),
+		AuthRequired:  true,
+		TLSRequired:   tlsRequired,
+		TLSVerify:     tlsVerify,
+		MaxPayload:    s.info.MaxPayload, // TODO(dlc) - Allow override?
+		Headers:       s.supportsHeaders(),
+		Proto:         1, // Fixed for now.
+		InfoOnConnect: true,
 	}
 	// If we have selected a random port...
 	if port == 0 {
@@ -902,7 +903,7 @@ func (c *client) processLeafnodeInfo(info *Info) {
 		c.setPermissions(perms)
 	}
 
-	var finishConnect bool
+	var resumeConnect bool
 	var s *Server
 
 	// If this is a remote connection and this is the first INFO protocol,
@@ -910,12 +911,19 @@ func (c *client) processLeafnodeInfo(info *Info) {
 	if firstINFO && c.leaf.remote != nil {
 		// Clear deadline that was set in createLeafNode while waiting for the INFO.
 		c.nc.SetDeadline(time.Time{})
-		finishConnect = true
-		s = c.srv
+		resumeConnect = true
 	}
+	s = c.srv
 	c.mu.Unlock()
 
-	if finishConnect && s != nil {
+	finishConnect := info.ConnectInfo && !firstINFO
+	if resumeConnect && s != nil {
+		s.leafNodeResumeConnectProcess(c)
+		if !info.InfoOnConnect {
+			finishConnect = true
+		}
+	}
+	if finishConnect {
 		s.leafNodeFinishConnectProcess(c)
 	}
 }
@@ -1177,15 +1185,13 @@ func (c *client) remoteCluster() string {
 // Sends back an info block to the soliciting leafnode to let it know about
 // its permission settings for local enforcement.
 func (s *Server) sendPermsInfo(c *client) {
-	if c.perms == nil {
-		return
-	}
 	// Copy
 	info := s.copyLeafNodeInfo()
 	c.mu.Lock()
 	info.CID = c.cid
 	info.Import = c.opts.Import
 	info.Export = c.opts.Export
+	info.ConnectInfo = true
 	b, _ := json.Marshal(info)
 	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
 	c.enqueueProto(bytes.Join(pcs, []byte(" ")))
@@ -1207,6 +1213,7 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	ims := []string{}
 	acc.mu.Lock()
 	accName := acc.Name
+	accNTag := acc.nameTag
 	// If we are solicited we only send interest for local clients.
 	if c.isSpokeLeafNode() {
 		acc.sl.localSubs(&subs)
@@ -1220,6 +1227,10 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	// Since leaf nodes only send on interest, if the bound
 	// account has import services we need to send those over.
 	for isubj := range acc.imports.services {
+		if !c.canSubscribe(isubj) {
+			c.Debugf("Not permitted to import service %s on behalf of %s/%s", isubj, accName, accNTag)
+			continue
+		}
 		ims = append(ims, isubj)
 	}
 	// Create a unique subject that will be used for loop detection.
@@ -1260,6 +1271,10 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	rc := c.leaf.remoteCluster
 	c.leaf.smap = make(map[string]int32)
 	for _, sub := range subs {
+		if !c.canSubscribe(string(sub.subject)) {
+			c.Debugf("Not permitted to subscribe to %s on behalf of %s/%s", string(sub.subject), accName, accNTag)
+			continue
+		}
 		// We ignore ourselves here.
 		// Also don't add the subscription if it has a origin cluster and the
 		// cluster name matches the one of the client we are sending to.
@@ -1348,6 +1363,8 @@ func (s *Server) updateLeafNodes(acc *Account, sub *subscription, delta int32) {
 		// Check to make sure this sub does not have an origin cluster than matches the leafnode.
 		ln.mu.Lock()
 		skip := sub.origin != nil && string(sub.origin) == ln.remoteCluster()
+		// do not skip on !ln.canSubscribe(string(sub.subject))
+		// Given allow:foo, > would be rejected. For leaf nodes filtering is done on the (soliciting) end (
 		ln.mu.Unlock()
 		if skip {
 			continue
@@ -2108,9 +2125,8 @@ func (c *client) leafNodeSolicitWSConnection(opts *Options, rURL *url.URL, remot
 }
 
 // This is invoked for remote LEAF remote connections after processing the INFO
-// protocol. This will do the TLS handshake (if needed be), send the CONNECT protocol
-// and register the leaf node.
-func (s *Server) leafNodeFinishConnectProcess(c *client) {
+// protocol. This will do the TLS handshake (if needed be)
+func (s *Server) leafNodeResumeConnectProcess(c *client) {
 	clusterName := s.ClusterName()
 
 	c.mu.Lock()
@@ -2119,11 +2135,6 @@ func (s *Server) leafNodeFinishConnectProcess(c *client) {
 		return
 	}
 	remote := c.leaf.remote
-
-	// Check if we will need to send the system connect event.
-	remote.RLock()
-	sendSysConnectEvent := remote.Hub
-	remote.RUnlock()
 
 	var tlsRequired bool
 
@@ -2164,7 +2175,43 @@ func (s *Server) leafNodeFinishConnectProcess(c *client) {
 	// Spin up the write loop.
 	s.startGoRoutine(func() { c.writeLoop() })
 
+	cid := c.cid
+	c.mu.Unlock()
 	c.Debugf("Remote leafnode connect msg sent")
+
+	// timeout leafNodeFinishConnectProcess
+	time.AfterFunc(s.getOpts().PingInterval, func() {
+		s.mu.Lock()
+		// check if addLeafNodeConnection was called by leafNodeFinishConnectProcess
+		_, found := s.leafs[cid]
+		s.mu.Unlock()
+		if !found {
+			c.mu.Lock()
+			closed := c.isClosed()
+			c.mu.Unlock()
+			if !closed {
+				c.sendErrAndDebug("Stale Leaf Node Connection - Closing")
+				c.closeConnection(StaleConnection)
+			}
+		}
+	})
+}
+
+// This is invoked for remote LEAF remote connections after processing the INFO
+// protocol and leafNodeResumeConnectProcess.
+// This will send LS+ the CONNECT protocol and register the leaf node.
+func (s *Server) leafNodeFinishConnectProcess(c *client) {
+	c.mu.Lock()
+	if c.isClosed() {
+		c.mu.Unlock()
+		s.removeLeafNodeConnection(c)
+		return
+	}
+	remote := c.leaf.remote
+	// Check if we will need to send the system connect event.
+	remote.RLock()
+	sendSysConnectEvent := remote.Hub
+	remote.RUnlock()
 
 	// Capture account before releasing lock
 	acc := c.acc

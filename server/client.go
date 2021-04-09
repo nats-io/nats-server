@@ -2953,6 +2953,7 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 	if client.kind == LEAF && client.perms != nil {
 		if !client.pubAllowed(string(subject)) {
 			client.mu.Unlock()
+			client.Debugf("Not permitted to publish to %q", subject)
 			return false
 		}
 	}

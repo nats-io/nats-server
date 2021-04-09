@@ -200,7 +200,7 @@ func setupLeaf(t *testing.T, lc net.Conn, expectedSubs int) (sendFun, expectFun)
 	send, expect := setupConn(t, lc)
 	// A loop detection subscription is sent, so consume this here, along
 	// with the ones that caller expect on setup.
-	expectNumberOfProtos(t, expect, lsubRe, expectedSubs)
+	expectNumberOfProtos(t, expect, lsubRe, expectedSubs, infoRe, pingRe)
 	return send, expect
 }
 
@@ -871,17 +871,28 @@ func TestLeafNodeGatewayInterestPropagation(t *testing.T) {
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 	_, leafExpect := setupConn(t, lc)
-	var totalBuf []byte
+	buf := leafExpect(infoRe)
+	buf = infoRe.ReplaceAll(buf, []byte(nil))
+	foundFoo := false
 	for count := 0; count != 5; {
-		buf := leafExpect(lsubRe)
-		totalBuf = append(totalBuf, buf...)
+		// skip first time if we still have data (buf from above may already have some left)
+		if count != 0 || len(buf) == 0 {
+			buf = append(buf, leafExpect(anyRe)...)
+		}
 		count += len(lsubRe.FindAllSubmatch(buf, -1))
 		if count > 5 {
-			t.Fatalf("Expected %v matches, got %v (buf=%s)", 4, count, totalBuf)
+			t.Fatalf("Expected %v matches, got %v (buf=%s)", 4, count, buf)
 		}
+		if strings.Contains(string(buf), "foo") {
+			foundFoo = true
+		}
+		buf = lsubRe.ReplaceAll(buf, []byte(nil))
 	}
-	if !strings.Contains(string(totalBuf), "foo") {
-		t.Fatalf("Expected interest for 'foo' as 'LS+ foo\\r\\n', got %q", totalBuf)
+	if len(buf) != 0 {
+		t.Fatalf("did not consume everything, left with: %q", buf)
+	}
+	if !foundFoo {
+		t.Fatalf("Expected interest for 'foo' as 'LS+ foo\\r\\n', got %q", buf)
 	}
 }
 
@@ -1156,6 +1167,7 @@ func TestLeafNodeBasicAuth(t *testing.T) {
 	lc = createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 	leafSend, leafExpect := setupConnWithUserPass(t, lc, "derek", "s3cr3t!")
+	leafExpect(infoRe)
 	leafExpect(lsubRe)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
@@ -1422,6 +1434,8 @@ func TestLeafNodeUserPermsForConnection(t *testing.T) {
 	nuc.Permissions.Pub.Allow.Add("foo.>")
 	nuc.Permissions.Pub.Allow.Add("baz.>")
 	nuc.Permissions.Sub.Allow.Add("foo.>")
+	// we would be immediately disconnected if that would not work
+	nuc.Permissions.Sub.Deny.Add("$SYS.>")
 	ujwt, err := nuc.Encode(akp)
 	if err != nil {
 		t.Fatalf("Error generating user JWT: %v", err)
