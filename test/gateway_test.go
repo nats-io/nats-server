@@ -62,14 +62,22 @@ func setupGatewayConn(t testing.TB, c net.Conn, org, dst string) (sendFun, expec
 	return sendCommand(t, c), expectCommand(t, c)
 }
 
-func expectNumberOfProtos(t *testing.T, expFn expectFun, proto *regexp.Regexp, expected int) {
+func expectNumberOfProtos(t *testing.T, expFn expectFun, proto *regexp.Regexp, expected int, ignore ...*regexp.Regexp) {
 	t.Helper()
+	buf := []byte(nil)
 	for count := 0; count != expected; {
-		buf := expFn(proto)
+		buf = append(buf, expFn(anyRe)...)
+		for _, skip := range ignore {
+			buf = skip.ReplaceAll(buf, []byte(``))
+		}
 		count += len(proto.FindAllSubmatch(buf, -1))
 		if count > expected {
 			t.Fatalf("Expected %v matches, got %v", expected, count)
 		}
+		buf = proto.ReplaceAll(buf, []byte(``))
+	}
+	if len(buf) != 0 {
+		t.Fatalf("did not consume everything, left with: %q", buf)
 	}
 }
 
