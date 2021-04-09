@@ -1005,7 +1005,8 @@ func (c *client) flushClients(budget time.Duration) time.Time {
 			continue
 		}
 
-		if budget > 0 && cp.out.lft < 2*budget && cp.flushOutbound() {
+		// Try to flush in place, if producer and consumer are client.
+		if c.kind == CLIENT && cp.kind == CLIENT && budget > 0 && cp.out.lft < 2*budget && cp.flushOutbound() {
 			budget -= cp.out.lft
 		} else {
 			cp.flushSignal()
