@@ -2298,6 +2298,9 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	if err := js.DeleteStream("TEST"); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	if _, err := js.StreamInfo("TEST"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("Expected not found error: %v", err)
+	}
 
 	// This should work properly.
 	rmsg, err = nc.Request(fmt.Sprintf(JSApiStreamRestoreT, "TEST"), req, 5*time.Second)
@@ -2906,7 +2909,7 @@ func TestJetStreamClusterExtendedAccountInfo(t *testing.T) {
 	}
 
 	// Wait to accumulate.
-	time.Sleep(250 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 
 	ai := getAccountInfo()
 	if ai.Streams != 3 || ai.Consumers != 3 {
@@ -5315,7 +5318,7 @@ func TestJetStreamClusterAckPendingWithExpired(t *testing.T) {
 		Name:     "TEST",
 		Subjects: []string{"foo", "bar"},
 		Replicas: 3,
-		MaxAge:   200 * time.Millisecond,
+		MaxAge:   500 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -5386,7 +5389,7 @@ func TestJetStreamClusterAckPendingWithMaxRedelivered(t *testing.T) {
 	}
 
 	// Send in 100 messages.
-	msg, toSend := make([]byte, 32), 100
+	msg, toSend := []byte("HELLO"), 100
 	rand.Read(msg)
 
 	for i := 0; i < toSend; i++ {
@@ -5399,20 +5402,24 @@ func TestJetStreamClusterAckPendingWithMaxRedelivered(t *testing.T) {
 		nats.MaxDeliver(2),
 		nats.Durable("dlc"),
 		nats.AckWait(10*time.Millisecond),
-		nats.MaxAckPending(10),
+		nats.MaxAckPending(50),
 	)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
 	checkSubsPending(t, sub, toSend*2)
-	ci, err := sub.ConsumerInfo()
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if ci.NumAckPending != 0 {
-		t.Fatalf("Expected nothing to be ack pending, got %d", ci.NumAckPending)
-	}
+
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		ci, err := sub.ConsumerInfo()
+		if err != nil {
+			return err
+		}
+		if ci.NumAckPending != 0 {
+			return fmt.Errorf("Expected nothing to be ack pending, got %d", ci.NumAckPending)
+		}
+		return nil
+	})
 }
 
 // Support functions
@@ -5776,7 +5783,7 @@ func jsClientConnect(t *testing.T, s *Server, opts ...nats.Option) (*nats.Conn, 
 
 func checkSubsPending(t *testing.T, sub *nats.Subscription, numExpected int) {
 	t.Helper()
-	checkFor(t, 4*time.Second, 20*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, 20*time.Millisecond, func() error {
 		if nmsgs, _, err := sub.Pending(); err != nil || nmsgs != numExpected {
 			return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, numExpected)
 		}
