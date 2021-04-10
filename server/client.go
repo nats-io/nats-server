@@ -900,6 +900,25 @@ func (c *client) setPermissions(perms *Permissions) {
 	}
 }
 
+// Merge client.perms structure with additional pub deny permissions
+// Lock is held on entry.
+func (c *client) mergePubDenyPermissions(denyPubs []string) {
+	if len(denyPubs) == 0 {
+		return
+	}
+	if c.perms == nil {
+		c.perms = &permissions{}
+		c.perms.pcache = make(map[string]bool)
+	}
+	if c.perms.pub.deny == nil {
+		c.perms.pub.deny = NewSublistWithCache()
+	}
+	for _, pubSubject := range denyPubs {
+		sub := &subscription{subject: []byte(pubSubject)}
+		c.perms.pub.deny.Insert(sub)
+	}
+}
+
 // Check to see if we have an expiration for the user JWT via base claims.
 // FIXME(dlc) - Clear on connect with new JWT.
 func (c *client) setExpiration(claims *jwt.ClaimsData, validFor time.Duration) {

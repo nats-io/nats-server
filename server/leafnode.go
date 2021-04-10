@@ -540,6 +540,7 @@ func (c *client) sendLeafConnect(clusterName string, tlsRequired, headers bool) 
 		Hub:     c.leaf.remote.Hub,
 		Cluster: clusterName,
 		Headers: headers,
+		DenyPub: c.leaf.remote.DenyImports,
 	}
 
 	// Check for credentials first, that will take precedence..
@@ -1092,9 +1093,9 @@ type leafConnectInfo struct {
 	Hub     bool   `json:"is_hub,omitempty"`
 	Cluster string `json:"cluster,omitempty"`
 	Headers bool   `json:"headers,omitempty"`
-
 	// Just used to detect wrong connection attempts.
-	Gateway string `json:"gateway,omitempty"`
+	Gateway string   `json:"gateway,omitempty"`
+	DenyPub []string `json:"deny_pub,omitempty"`
 }
 
 // processLeafNodeConnect will process the inbound connect args.
@@ -1153,6 +1154,9 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 
 	// Set the Ping timer
 	s.setFirstPingTimer(c)
+
+	// If we received pub deny permissions from the other end, merge with existing ones.
+	c.mergePubDenyPermissions(proto.DenyPub)
 
 	c.mu.Unlock()
 
@@ -1830,8 +1834,12 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 	c.in.bytes += int32(len(msg) - LEN_CR_LF)
 
 	// Check pub permissions
-	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) && c.isHubLeafNode() && !c.pubAllowed(string(c.pa.subject)) {
-		c.leafPubPermViolation(c.pa.subject)
+	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) && !c.pubAllowed(string(c.pa.subject)) {
+		if c.isHubLeafNode() {
+			c.leafPubPermViolation(c.pa.subject)
+		} else {
+			c.Debugf("Not permitted to receive from %q", c.pa.subject)
+		}
 		return
 	}
 
