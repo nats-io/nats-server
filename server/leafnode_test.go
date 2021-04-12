@@ -3307,16 +3307,18 @@ func TestLeafNodeNoPingBeforeConnect(t *testing.T) {
 	}
 
 	var leaf *client
-	s.grMu.Lock()
-	for _, l := range s.grTmpClients {
-		leaf = l
-		break
-	}
-	s.grMu.Unlock()
-
-	if leaf == nil {
-		t.Fatal("No leaf connection found")
-	}
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		s.grMu.Lock()
+		for _, l := range s.grTmpClients {
+			leaf = l
+			break
+		}
+		s.grMu.Unlock()
+		if leaf == nil {
+			return fmt.Errorf("No leaf connection found")
+		}
+		return nil
+	})
 
 	// Make sure that ping timer is not set
 	leaf.mu.Lock()
