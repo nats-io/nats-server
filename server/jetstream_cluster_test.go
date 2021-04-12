@@ -4005,6 +4005,9 @@ func TestJetStreamClusterSuperClusterCrossClusterConsumerInterest(t *testing.T) 
 	sc := createJetStreamSuperCluster(t, 3, 3)
 	defer sc.shutdown()
 
+	// Since we need all of the peers accounted for to add the stream wait for all to be present.
+	sc.waitOnPeerCount(9)
+
 	// Client based API - Connect to Cluster C1. Stream and consumer will live in C2.
 	s := sc.clusterForName("C1").randomServer()
 	nc, js := jsClientConnect(t, s)
@@ -5669,6 +5672,21 @@ func (sc *supercluster) randomCluster() *cluster {
 	clusters := append(sc.clusters[:0:0], sc.clusters...)
 	rand.Shuffle(len(clusters), func(i, j int) { clusters[i], clusters[j] = clusters[j], clusters[i] })
 	return clusters[0]
+}
+
+func (sc *supercluster) waitOnPeerCount(n int) {
+	sc.t.Helper()
+	sc.waitOnLeader()
+	leader := sc.leader()
+	expires := time.Now().Add(20 * time.Second)
+	for time.Now().Before(expires) {
+		peers := leader.JetStreamClusterPeers()
+		if len(peers) == n {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	sc.t.Fatalf("Expected a super cluster peer count of %d, got %d", n, len(leader.JetStreamClusterPeers()))
 }
 
 var jsClusterMirrorSourceImportsTempl = `

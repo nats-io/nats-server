@@ -779,6 +779,10 @@ func (js *jetStream) monitorCluster() {
 			}
 		case <-t.C:
 			doSnapshot()
+			// Periodically check the cluster size.
+			if n.Leader() {
+				js.checkClusterSize()
+			}
 		}
 	}
 }
@@ -791,16 +795,26 @@ func (js *jetStream) checkClusterSize() {
 	}
 	// We will check that we have a correct cluster set size by checking for any non-js servers
 	// which can happen in mixed mode.
-	s.Debugf("Checking JetStream cluster size")
 	ps := n.(*raft).currentPeerState()
 	if len(ps.knownPeers) >= ps.clusterSize {
 		return
 	}
 
+	// Grab our active peers.
+	peers := s.ActivePeers()
+
+	// If we have not registered all of our peers yet we can't do
+	// any adjustments based on a mixed mode. We will periodically check back.
+	if len(peers) < ps.clusterSize {
+		return
+	}
+
+	s.Debugf("Checking JetStream cluster size")
+
 	// If we are here our known set as the leader is not the same as the cluster size.
 	// Check to see if we have a mixed mode setup.
 	var totalJS int
-	for _, p := range s.ActivePeers() {
+	for _, p := range peers {
 		if si, ok := s.nodeToInfo.Load(p); ok && si != nil {
 			if si.(nodeInfo).js {
 				totalJS++
