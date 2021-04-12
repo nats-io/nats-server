@@ -5519,6 +5519,56 @@ func TestJetStreamClusterMixedMode(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterSuperClusterAndLeafNodesWithSharedSystemAccount(t *testing.T) {
+	sc := createJetStreamSuperCluster(t, 3, 2)
+	defer sc.shutdown()
+
+	lnc := sc.createLeafNodes("LNC", 2)
+	defer lnc.shutdown()
+
+	// We want to make sure there is only one leader and its always in the supercluster.
+	sc.waitOnLeader()
+
+	if ml := lnc.leader(); ml != nil {
+		t.Fatalf("Detected a meta-leader in the leafnode cluster: %s", ml)
+	}
+
+	// leafnodes should have been added into the overall peer count.
+	sc.waitOnPeerCount(8)
+
+	// Make a stream by connecting to the leafnode cluster. Make sure placement is correct.
+	// Client based API
+	nc, js := jsClientConnect(t, lnc.randomServer())
+	defer nc.Close()
+
+	si, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar"},
+		Replicas: 2,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.Cluster.Name != "LNC" {
+		t.Fatalf("Expected default placement to be %q, got %q", "LNC", si.Cluster.Name)
+	}
+
+	// Now make sure placement also works if we want to place in a cluster in the supercluster.
+	pcn := "C2"
+	si, err = js.AddStream(&nats.StreamConfig{
+		Name:      "TEST2",
+		Subjects:  []string{"baz"},
+		Replicas:  2,
+		Placement: &nats.Placement{Cluster: pcn},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.Cluster.Name != pcn {
+		t.Fatalf("Expected default placement to be %q, got %q", pcn, si.Cluster.Name)
+	}
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
@@ -5541,6 +5591,10 @@ var jsClusterTempl = `
 	server_name: %s
 	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: "%s"}
 
+	leaf {
+		listen: 127.0.0.1:-1
+	}
+
 	cluster {
 		name: %s
 		listen: 127.0.0.1:%d
@@ -5559,6 +5613,8 @@ var jsSuperClusterTempl = `
 		gateways = [%s
 		]
 	}
+
+	system_account: "$SYS"
 `
 
 var jsClusterLimitsTempl = `
@@ -5676,6 +5732,53 @@ func createJetStreamSuperCluster(t *testing.T, numServersPer, numClusters int) *
 	}
 
 	return sc
+}
+
+var jsClusterTemplWithLeafNode = `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: "%s"}
+
+	{{leaf}}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	# For access to system account.
+	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+`
+
+var jsLeafFrag = `
+	leaf {
+		remotes [
+			{ urls: [ %s ], deny_exports: ["$JS.API.>"] }
+			{ urls: [ %s ], account: "$SYS" }
+		]
+	}
+`
+
+func (sc *supercluster) createLeafNodes(clusterName string, numServers int) *cluster {
+	// Create our leafnode cluster template first.
+	c := sc.randomCluster()
+	var lns, lnss []string
+	for _, s := range c.servers {
+		ln := s.getOpts().LeafNode
+		lns = append(lns, fmt.Sprintf("nats://%s:%d", ln.Host, ln.Port))
+		lnss = append(lnss, fmt.Sprintf("nats://admin:s3cr3t!@%s:%d", ln.Host, ln.Port))
+	}
+	lnc := strings.Join(lns, ", ")
+	lnsc := strings.Join(lnss, ", ")
+	lconf := fmt.Sprintf(jsLeafFrag, lnc, lnsc)
+	tmpl := strings.Replace(jsClusterTemplWithLeafNode, "{{leaf}}", lconf, 1)
+
+	lc := createJetStreamCluster(sc.t, tmpl, clusterName, numServers, false)
+	for _, s := range lc.servers {
+		checkLeafNodeConnectedCount(sc.t, s, 2)
+	}
+	return lc
 }
 
 func (sc *supercluster) leader() *Server {
@@ -5856,6 +5959,10 @@ func createJetStreamClusterExplicit(t *testing.T, clusterName string, numServers
 }
 
 func createJetStreamClusterWithTemplate(t *testing.T, tmpl string, clusterName string, numServers int) *cluster {
+	return createJetStreamCluster(t, tmpl, clusterName, numServers, true)
+}
+
+func createJetStreamCluster(t *testing.T, tmpl string, clusterName string, numServers int, waitOnReady bool) *cluster {
 	t.Helper()
 	if clusterName == "" || numServers < 1 {
 		t.Fatalf("Bad params")
@@ -5884,7 +5991,9 @@ func createJetStreamClusterWithTemplate(t *testing.T, tmpl string, clusterName s
 
 	// Wait til we are formed and have a leader.
 	c.checkClusterFormed()
-	c.waitOnClusterReady()
+	if waitOnReady {
+		c.waitOnClusterReady()
+	}
 
 	return c
 }

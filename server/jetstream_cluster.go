@@ -482,6 +482,19 @@ func (js *jetStream) setupMetaGroup() error {
 
 	cfg := &RaftConfig{Name: defaultMetaGroupName, Store: storeDir, Log: fs}
 
+	// If we are soliciting leafnode connections and we are sharing a system account
+	// we want to move to observer mode so that we extend the solicited cluster or supercluster
+	// but do not form our own.
+	if ln := s.getOpts().LeafNode; len(ln.Remotes) > 0 {
+		sys := s.SystemAccount().GetName()
+		for _, r := range ln.Remotes {
+			if r.LocalAccount == sys {
+				cfg.Observer = true
+				break
+			}
+		}
+	}
+
 	var bootstrap bool
 	if _, err := readPeerState(storeDir); err != nil {
 		s.Noticef("JetStream cluster bootstrapping")
