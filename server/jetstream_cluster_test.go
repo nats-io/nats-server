@@ -1948,21 +1948,38 @@ func TestJetStreamClusterInterestRetention(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
-		si, err := js.StreamInfo("foo")
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
+	waitForZero := func() {
+		checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+			si, err := js.StreamInfo("foo")
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if si.State.Msgs != 0 {
+				return fmt.Errorf("Expected 0 msgs, got state: %+v", si.State)
+			}
+			return nil
+		})
+	}
+
+	waitForZero()
+
+	// Add in 50 messages.
+	for i := 0; i < 50; i++ {
+		if _, err = js.Publish("foo", []byte("more")); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
 		}
-		if si.State.Msgs != 0 {
-			return fmt.Errorf("Expected 0 msgs, got state: %+v", si.State)
-		}
-		return nil
-	})
+	}
+	checkSubsPending(t, sub, 50)
+
+	// Now delete the consumer and make sure the stream goes to zero.
+	if err := js.DeleteConsumer("foo", "dlc"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	waitForZero()
 }
 
 func TestJetStreamClusterInterestRetentionWithFilteredConsumers(t *testing.T) {
-	// Flaky for the time being.
-	skip(t)
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -2034,6 +2051,38 @@ func TestJetStreamClusterInterestRetentionWithFilteredConsumers(t *testing.T) {
 	getAndAck(bsub)
 	checkState(1)
 	getAndAck(fsub)
+	checkState(0)
+
+	// Now send a bunch of messages and then delete the consumer.
+	for i := 0; i < 10; i++ {
+		sendMsg("foo")
+		sendMsg("bar")
+	}
+	checkState(20)
+
+	if err := js.DeleteConsumer("TEST", "d1"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if err := js.DeleteConsumer("TEST", "d2"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	checkState(0)
+
+	// Now make sure pull based consumers work same.
+	if _, err := js.PullSubscribe("foo", "dlc"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now send a bunch of messages and then delete the consumer.
+	for i := 0; i < 10; i++ {
+		sendMsg("foo")
+		sendMsg("bar")
+	}
+	checkState(10)
+
+	if err := js.DeleteConsumer("TEST", "dlc"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
 	checkState(0)
 }
 

@@ -2775,25 +2775,27 @@ func (o *consumer) stopWithFlags(dflag, doSignal, advisory bool) error {
 	// We will do this consistently on all replicas. Note that if in clustered mode the
 	// non-leader consumers will need to restore state first.
 	if dflag && rp == InterestPolicy {
-		var seqs []uint64
+		stop := mset.lastSeq()
+
 		o.mu.Lock()
 		if !o.isLeader() {
 			o.readStoredState()
 		}
-		for seq := range o.pending {
-			seqs = append(seqs, seq)
-		}
+		start := o.asflr
 		o.mu.Unlock()
 
-		// Sort just to keep pending sparse array state small.
-		sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
-		for _, seq := range seqs {
-			mset.mu.Lock()
-			hasNoInterest := !mset.checkInterest(seq, o)
-			mset.mu.Unlock()
-			if hasNoInterest {
-				mset.store.RemoveMsg(seq)
+		rmseqs := make([]uint64, 0, stop-start+1)
+
+		mset.mu.RLock()
+		for seq := start; seq <= stop; seq++ {
+			if !mset.checkInterest(seq, o) {
+				rmseqs = append(rmseqs, seq)
 			}
+		}
+		mset.mu.RUnlock()
+
+		for _, seq := range rmseqs {
+			mset.store.RemoveMsg(seq)
 		}
 	}
 
