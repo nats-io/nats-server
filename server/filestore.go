@@ -617,7 +617,7 @@ func (mb *msgBlock) rebuildState() (*LostStreamData, error) {
 	}
 
 	// For empty msg blocks make sure we recover last seq correctly based off of first.
-	if mb.msgs == 0 {
+	if mb.msgs == 0 && mb.first.seq > 0 {
 		mb.last.seq = mb.first.seq - 1
 	}
 
