@@ -2914,6 +2914,10 @@ func (mset *stream) lookupConsumer(name string) *consumer {
 
 // State will return the current state for this stream.
 func (mset *stream) state() StreamState {
+	return mset.stateWithDetail(false)
+}
+
+func (mset *stream) stateWithDetail(details bool) StreamState {
 	mset.mu.RLock()
 	c, store := mset.client, mset.store
 	mset.mu.RUnlock()
@@ -2921,7 +2925,11 @@ func (mset *stream) state() StreamState {
 		return StreamState{}
 	}
 	// Currently rely on store.
-	return store.State()
+	state := store.State()
+	if !details {
+		state.Deleted = nil
+	}
+	return state
 }
 
 // Determines if the new proposed partition is unique amongst all consumers.

@@ -562,6 +562,7 @@ func (ms *memStore) State() StreamState {
 		sort.Slice(state.Deleted, func(i, j int) bool {
 			return state.Deleted[i] < state.Deleted[j]
 		})
+		state.NumDeleted = len(state.Deleted)
 	}
 	return state
 }

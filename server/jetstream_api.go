@@ -306,6 +306,11 @@ type JSApiStreamDeleteResponse struct {
 
 const JSApiStreamDeleteResponseType = "io.nats.jetstream.api.v1.stream_delete_response"
 
+// JSApiStreamInfoRequest.
+type JSApiStreamInfoRequest struct {
+	DeletedDetails bool `json:"deleted_details,omitempty"`
+}
+
 // JSApiStreamInfoResponse.
 type JSApiStreamInfoResponse struct {
 	ApiResponse
@@ -1546,7 +1551,13 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 	}
 
 	for _, mset := range msets[offset:] {
-		resp.Streams = append(resp.Streams, &StreamInfo{Created: mset.createdTime(), State: mset.state(), Config: mset.config(), Mirror: mset.mirrorInfo(), Sources: mset.sourcesInfo()})
+		resp.Streams = append(resp.Streams, &StreamInfo{
+			Created: mset.createdTime(),
+			State:   mset.state(),
+			Config:  mset.config(),
+			Mirror:  mset.mirrorInfo(),
+			Sources: mset.sourcesInfo()},
+		)
 		if len(resp.Streams) >= JSApiListLimit {
 			break
 		}
@@ -1621,10 +1632,16 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+
+	var details bool
 	if !isEmptyRequest(msg) {
-		resp.Error = jsNotEmptyRequestErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
+		var req JSApiStreamInfoRequest
+		if err := json.Unmarshal(msg, &req); err != nil {
+			resp.Error = jsInvalidJSONErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		details = req.DeletedDetails
 	}
 
 	mset, err := acc.lookupStream(streamName)
@@ -1637,7 +1654,12 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 
 	js, _ := s.getJetStreamCluster()
 
-	resp.StreamInfo = &StreamInfo{Created: mset.createdTime(), State: mset.state(), Config: config, Cluster: js.clusterInfo(mset.raftGroup())}
+	resp.StreamInfo = &StreamInfo{
+		Created: mset.createdTime(),
+		State:   mset.stateWithDetail(details),
+		Config:  config,
+		Cluster: js.clusterInfo(mset.raftGroup()),
+	}
 	if mset.isMirror() {
 		resp.StreamInfo.Mirror = mset.mirrorInfo()
 	} else if mset.hasSources() {
