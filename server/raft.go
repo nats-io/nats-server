@@ -155,6 +155,7 @@ type raft struct {
 	js       *jetStream
 	dflag    bool
 	pleader  bool
+	observer bool
 
 	// Subjects for votes, updates, replays.
 	psubj  string
@@ -225,10 +226,11 @@ const (
 )
 
 type RaftConfig struct {
-	Name  string
-	Store string
-	Log   WAL
-	Track bool
+	Name     string
+	Store    string
+	Log      WAL
+	Track    bool
+	Observer bool
 }
 
 var (
@@ -365,6 +367,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		applyc:   make(chan *CommittedEntry, 8192),
 		leadc:    make(chan bool, 8),
 		stepdown: make(chan string, 8),
+		observer: cfg.Observer,
 	}
 	n.c.registerWithAccount(sacc)
 
@@ -1419,6 +1422,12 @@ func (n *raft) electTimer() *time.Timer {
 	return n.elect
 }
 
+func (n *raft) isObserver() bool {
+	n.RLock()
+	defer n.RUnlock()
+	return n.observer
+}
+
 func (n *raft) runAsFollower() {
 	for {
 		elect := n.electTimer()
@@ -1435,6 +1444,9 @@ func (n *raft) runAsFollower() {
 			if n.outOfResources() {
 				n.resetElectionTimeout()
 				n.debug("Not switching to candidate, no resources")
+			} else if n.isObserver() {
+				n.resetElect(48 * time.Hour)
+				n.debug("Not switching to candidate, observer only")
 			} else {
 				n.switchToCandidate()
 				return

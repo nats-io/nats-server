@@ -3798,9 +3798,10 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 				ci = &cis
 				ci.Service = c.acc.Name
 			}
-		} else {
+		} else if c.kind != LEAF || c.pa.hdr < 0 || len(getHeader(ClientInfoHdr, msg[:c.pa.hdr])) == 0 {
 			ci = c.getClientInfo(share)
 		}
+
 		if ci != nil {
 			if b, _ := json.Marshal(ci); b != nil {
 				msg = c.setHeader(ClientInfoHdr, string(b), msg)
