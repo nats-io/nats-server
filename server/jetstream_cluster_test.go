@@ -5640,6 +5640,170 @@ func TestJetStreamClusterStreamInfoDeletedDetails(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterMirrorExpirationAndMissingSequences(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "MMS", 5)
+	defer c.shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Origin
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:   "TEST",
+		MaxAge: 100 * time.Millisecond,
+	})
+
+	ts := c.streamLeader("$G", "TEST")
+
+	sendBatch := func(n int) {
+		t.Helper()
+		// Send a batch to a given subject.
+		for i := 0; i < n; i++ {
+			if _, err := js.Publish("TEST", []byte("OK")); err != nil {
+				t.Fatalf("Unexpected publish error: %v", err)
+			}
+		}
+	}
+
+	checkStream := func(stream string, num uint64) {
+		t.Helper()
+		checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+			si, err := js.StreamInfo(stream)
+			if err != nil {
+				return err
+			}
+			if si.State.Msgs != num {
+				return fmt.Errorf("Expected %d msgs, got %d", num, si.State.Msgs)
+			}
+			return nil
+		})
+	}
+
+	checkMirror := func(num uint64) { t.Helper(); checkStream("M", num) }
+	checkTest := func(num uint64) { t.Helper(); checkStream("TEST", num) }
+
+	for _, test := range []struct {
+		name     string
+		replicas int
+	}{
+		{"R-1", 1},
+		{"R-2", 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// Create mirror now.
+			for ms := ts; ms == ts; {
+				_, err = js.AddStream(&nats.StreamConfig{
+					Name:     "M",
+					Mirror:   &nats.StreamSource{Name: "TEST"},
+					Replicas: test.replicas,
+				})
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				ms = c.streamLeader("$G", "M")
+				if ms == ts {
+					// Delete and retry.
+					js.DeleteStream("M")
+				} else {
+					defer js.DeleteStream("M")
+				}
+			}
+
+			sendBatch(10)
+			checkMirror(10)
+
+			// Now shutdown the server with the mirror.
+			ms := c.streamLeader("$G", "M")
+			ms.Shutdown()
+
+			// Send more messages but let them expire.
+			sendBatch(10)
+			checkTest(0)
+
+			c.restartServer(ms)
+			c.waitOnStreamLeader("$G", "M")
+
+			sendBatch(10)
+			checkMirror(20)
+		})
+	}
+}
+
+func TestJetStreamClusterMirrorAndSourceExpiration(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "MSE", 3)
+	defer c.shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Origin
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name: "TEST",
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sendBatch := func(n int) {
+		t.Helper()
+		// Send a batch to a given subject.
+		for i := 0; i < n; i++ {
+			if _, err := js.Publish("TEST", []byte("OK")); err != nil {
+				t.Fatalf("Unexpected publish error: %v", err)
+			}
+		}
+	}
+
+	checkStream := func(stream string, num uint64) {
+		t.Helper()
+		checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+			si, err := js.StreamInfo(stream)
+			if err != nil {
+				return err
+			}
+			if si.State.Msgs != num {
+				return fmt.Errorf("Expected %d msgs, got %d", num, si.State.Msgs)
+			}
+			return nil
+		})
+	}
+
+	checkSource := func(num uint64) { t.Helper(); checkStream("S", num) }
+	checkMirror := func(num uint64) { t.Helper(); checkStream("M", num) }
+	checkTest := func(num uint64) { t.Helper(); checkStream("TEST", num) }
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "M",
+		Mirror:   &nats.StreamSource{Name: "TEST"},
+		Replicas: 2,
+		MaxAge:   100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "S",
+		Sources:  []*nats.StreamSource{{Name: "TEST"}},
+		Replicas: 2,
+		MaxAge:   100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sendBatch(20)
+	checkTest(20)
+	checkMirror(20)
+	checkSource(20)
+
+	// Make sure they expire.
+	checkMirror(0)
+	checkSource(0)
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.

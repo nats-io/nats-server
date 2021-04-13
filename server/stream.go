@@ -1332,7 +1332,8 @@ func (mset *stream) setupMirrorConsumer() error {
 		if mset.mirror.sub != nil {
 			mset.unsubscribe(mset.mirror.sub)
 			mset.mirror.sub = nil
-			mset.mirror.dseq = 1
+			mset.mirror.dseq = 0
+			mset.mirror.sseq = mset.lseq
 		}
 		// Make sure to delete any prior consumers if we know about them.
 		mset.removeInternalConsumer(mset.mirror)
@@ -1431,6 +1432,19 @@ func (mset *stream) setupMirrorConsumer() error {
 					return
 				}
 
+				// When an upstream stream expires messages or in general has messages that we want
+				// that are no longer available we need to adjust here.
+				mset.store.FastState(&state)
+				if state.LastSeq != ccr.ConsumerInfo.Delivered.Stream {
+					for seq := state.LastSeq + 1; seq <= ccr.ConsumerInfo.Delivered.Stream; seq++ {
+						if mset.node != nil {
+							mset.node.Propose(encodeStreamMsg(_EMPTY_, _EMPTY_, nil, nil, seq-1, 0))
+						} else {
+							mset.lseq = mset.store.SkipMsg()
+						}
+					}
+				}
+
 				// Capture consumer name.
 				mset.mirror.cname = ccr.ConsumerInfo.Name
 				msgs := mset.mirror.msgs
@@ -1448,7 +1462,7 @@ func (mset *stream) setupMirrorConsumer() error {
 					mset.mirror.err = nil
 					mset.mirror.sub = sub
 					mset.mirror.last = time.Now()
-					mset.mirror.dseq = 1
+					mset.mirror.dseq = 0
 				}
 				mset.mu.Unlock()
 			}
@@ -2344,6 +2358,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				isMisMatch = false
 			}
 		}
+
 		if isMisMatch {
 			outq := mset.outq
 			mset.mu.Unlock()

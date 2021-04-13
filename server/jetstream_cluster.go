@@ -1363,9 +1363,13 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 					doSnapshot()
 				}
 			} else if err == errLastSeqMismatch {
-				s.Warnf("Got stream sequence mismatch for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
-				if mset.resetClusteredState() {
-					return
+				if mset.isMirror() {
+					mset.retryMirrorConsumer()
+				} else {
+					s.Warnf("Got stream sequence mismatch for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
+					if mset.resetClusteredState() {
+						return
+					}
 				}
 			} else {
 				s.Warnf("Error applying entries to '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
@@ -1564,6 +1568,14 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				mset.checkForFlowControl(lseq + 1)
 
 				s := js.srv
+
+				// Messages to be skipped have no subject or timestamp.
+				if subject == _EMPTY_ && ts == 0 {
+					// Skip and update our lseq.
+					mset.setLastSeq(mset.store.SkipMsg())
+					continue
+				}
+
 				if err := mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts); err != nil {
 					if !isRecovering {
 						if err == errLastSeqMismatch {
