@@ -5442,7 +5442,6 @@ func TestJetStreamClusterAckPendingWithMaxRedelivered(t *testing.T) {
 
 	// Send in 100 messages.
 	msg, toSend := []byte("HELLO"), 100
-	rand.Read(msg)
 
 	for i := 0; i < toSend; i++ {
 		if _, err = js.Publish("foo", msg); err != nil {
@@ -5566,6 +5565,78 @@ func TestJetStreamClusterSuperClusterAndLeafNodesWithSharedSystemAccount(t *test
 	}
 	if si.Cluster.Name != pcn {
 		t.Fatalf("Expected default placement to be %q, got %q", pcn, si.Cluster.Name)
+	}
+}
+
+func TestJetStreamClusterStreamInfoDeletedDetails(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R2", 2)
+	defer c.shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 1,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Send in 10 messages.
+	msg, toSend := []byte("HELLO"), 10
+
+	for i := 0; i < toSend; i++ {
+		if _, err = js.Publish("foo", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	// Now remove some messages.
+	deleteMsg := func(seq uint64) {
+		if err := js.DeleteMsg("TEST", seq); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+	deleteMsg(2)
+	deleteMsg(4)
+	deleteMsg(6)
+
+	// Need to do these via direct server request for now.
+	resp, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, "TEST"), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var si StreamInfo
+	if err = json.Unmarshal(resp.Data, &si); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.State.NumDeleted != 3 {
+		t.Fatalf("Expected %d deleted, got %d", 3, si.State.NumDeleted)
+	}
+	if len(si.State.Deleted) != 0 {
+		t.Fatalf("Expected not deleted details, but got %+v", si.State.Deleted)
+	}
+
+	// Now request deleted details.
+	req := JSApiStreamInfoRequest{DeletedDetails: true}
+	b, _ := json.Marshal(req)
+
+	resp, err = nc.Request(fmt.Sprintf(JSApiStreamInfoT, "TEST"), b, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if err = json.Unmarshal(resp.Data, &si); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if si.State.NumDeleted != 3 {
+		t.Fatalf("Expected %d deleted, got %d", 3, si.State.NumDeleted)
+	}
+	if len(si.State.Deleted) != 3 {
+		t.Fatalf("Expected deleted details, but got %+v", si.State.Deleted)
 	}
 }
 
