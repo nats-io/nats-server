@@ -5682,7 +5682,7 @@ func TestJetStreamClusterMirrorExpirationAndMissingSequences(t *testing.T) {
 
 	ts := c.streamLeader("$G", "TEST")
 
-	sendBatch := func(n int) {
+	sendBatch := func(t *testing.T, n int) {
 		t.Helper()
 		// Send a batch to a given subject.
 		for i := 0; i < n; i++ {
@@ -5692,7 +5692,7 @@ func TestJetStreamClusterMirrorExpirationAndMissingSequences(t *testing.T) {
 		}
 	}
 
-	checkStream := func(stream string, num uint64) {
+	checkStream := func(t *testing.T, stream string, num uint64) {
 		t.Helper()
 		checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
 			si, err := js.StreamInfo(stream)
@@ -5706,8 +5706,8 @@ func TestJetStreamClusterMirrorExpirationAndMissingSequences(t *testing.T) {
 		})
 	}
 
-	checkMirror := func(num uint64) { t.Helper(); checkStream("M", num) }
-	checkTest := func(num uint64) { t.Helper(); checkStream("TEST", num) }
+	checkMirror := func(t *testing.T, num uint64) { t.Helper(); checkStream(t, "M", num) }
+	checkTest := func(t *testing.T, num uint64) { t.Helper(); checkStream(t, "TEST", num) }
 
 	for _, test := range []struct {
 		name     string
@@ -5736,22 +5736,22 @@ func TestJetStreamClusterMirrorExpirationAndMissingSequences(t *testing.T) {
 				}
 			}
 
-			sendBatch(10)
-			checkMirror(10)
+			sendBatch(t, 10)
+			checkMirror(t, 10)
 
 			// Now shutdown the server with the mirror.
 			ms := c.streamLeader("$G", "M")
 			ms.Shutdown()
 
 			// Send more messages but let them expire.
-			sendBatch(10)
-			checkTest(0)
+			sendBatch(t, 10)
+			checkTest(t, 0)
 
 			c.restartServer(ms)
 			c.waitOnStreamLeader("$G", "M")
 
-			sendBatch(10)
-			checkMirror(20)
+			sendBatch(t, 10)
+			checkMirror(t, 20)
 		})
 	}
 }
