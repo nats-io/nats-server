@@ -6172,6 +6172,7 @@ func createJetStreamClusterExplicit(t *testing.T, clusterName string, numServers
 }
 
 func createJetStreamClusterWithTemplate(t *testing.T, tmpl string, clusterName string, numServers int) *cluster {
+	t.Helper()
 	const startClusterPort = 22332
 	return createJetStreamCluster(t, tmpl, clusterName, _EMPTY_, numServers, startClusterPort, true)
 }

@@ -2657,6 +2657,7 @@ func TestLeafNodeWSBasic(t *testing.T) {
 			checkSubInterest(t, ln, globalAccountName, "foo", time.Second)
 
 			nc2 := natsConnect(t, ln.ClientURL())
+			defer nc2.Close()
 			msg1Payload := make([]byte, 512)
 			for i := 0; i < len(msg1Payload); i++ {
 				msg1Payload[i] = 'A'
