@@ -189,6 +189,7 @@ func (c *cluster) shutdown() {
 			os.RemoveAll(sd)
 		}
 		s.Shutdown()
+		s.WaitForShutdown()
 	}
 }
 

@@ -107,6 +107,14 @@ func RunServerWithConfig(configFile string) (srv *Server, opts *Options) {
 	return
 }
 
+func RunServerWithLameDuckConfig(configFile string) (srv *Server, opts *Options) {
+	opts = LoadConfig(configFile)
+	opts.LameDuckDuration = 3 * time.Second
+	opts.LameDuckGracePeriod = 2 * time.Second
+	srv = RunServer(opts)
+	return
+}
+
 func TestVersionMatchesTag(t *testing.T) {
 	tag := os.Getenv("TRAVIS_TAG")
 	// Travis started to return '' when no tag is set. Support both now.

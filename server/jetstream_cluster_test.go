@@ -5928,7 +5928,7 @@ func createJetStreamSuperCluster(t *testing.T, numServersPer, numClusters int) *
 			bconf := fmt.Sprintf(jsClusterTempl, sn, storeDir, cn, cp+si, routeConfig)
 			conf := fmt.Sprintf(jsSuperClusterTempl, bconf, cn, gp, gwconf)
 			gp++
-			s, o := RunServerWithConfig(createConfFile(t, []byte(conf)))
+			s, o := RunServerWithLameDuckConfig(createConfFile(t, []byte(conf)))
 			c.servers = append(c.servers, s)
 			c.opts = append(c.opts, o)
 		}
@@ -6265,7 +6265,7 @@ var skip = func(t *testing.T) {
 	t.SkipNow()
 }
 
-func jsClientConnect(t *testing.T, s *Server, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
+func jsClientConnect(t *testing.T, s testJSServer, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
 	t.Helper()
 	nc, err := nats.Connect(s.ClientURL(), opts...)
 	if err != nil {

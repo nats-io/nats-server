@@ -79,24 +79,61 @@ func TestJetStreamBasicNilConfig(t *testing.T) {
 	}
 }
 
-func RunBasicJetStreamServer() *Server {
+type testJSServer interface {
+	ClientURL() string
+	Shutdown()
+}
+
+// jsServer is a specialized version of the server used for JetStreamt tests.
+type jsServer struct {
+	*Server
+	myopts  *Options
+	restart sync.Mutex
+}
+
+// Restart can be used to start again a server
+// using the same listen address as before.
+func (srv *jsServer) Restart() {
+	srv.restart.Lock()
+	defer srv.restart.Unlock()
+	srv.Server = RunServer(srv.myopts)
+}
+
+// Shutdown will graceful stop a NATS Server with JetStream.
+func (srv *jsServer) Shutdown() {
+	srv.Server.Shutdown()
+	srv.Server.WaitForShutdown()
+}
+
+// ClientURL is used to get the address to connect to a NATS Server with JetStream.
+func (srv *jsServer) ClientURL() string {
+	return srv.Server.ClientURL()
+}
+
+func RunBasicJetStreamServer() *jsServer {
 	opts := DefaultTestOptions
 	opts.Port = -1
 	opts.JetStream = true
+	opts.LameDuckDuration = 3 * time.Second
+	opts.LameDuckGracePeriod = 2 * time.Second
 	tdir, _ := ioutil.TempDir(tempRoot, "jstests-storedir-")
 	opts.StoreDir = tdir
-	return RunServer(&opts)
+	srv := RunServer(&opts)
+	return &jsServer{Server: srv, myopts: &opts}
 }
 
-func RunJetStreamServerOnPort(port int, sd string) *Server {
+func RunJetStreamServerOnPort(port int, sd string) *jsServer {
 	opts := DefaultTestOptions
 	opts.Port = port
 	opts.JetStream = true
+	opts.LameDuckDuration = 3 * time.Second
+	opts.LameDuckGracePeriod = 2 * time.Second
 	opts.StoreDir = filepath.Dir(sd)
-	return RunServer(&opts)
+	srv := RunServer(&opts)
+	return &jsServer{Server: srv, myopts: &opts}
 }
 
-func clientConnectToServer(t *testing.T, s *Server) *nats.Conn {
+func clientConnectToServer(t *testing.T, s testJSServer) *nats.Conn {
 	t.Helper()
 	nc, err := nats.Connect(s.ClientURL(),
 		nats.Name("JS-TEST"),
@@ -108,7 +145,7 @@ func clientConnectToServer(t *testing.T, s *Server) *nats.Conn {
 	return nc
 }
 
-func clientConnectWithOldRequest(t *testing.T, s *Server) *nats.Conn {
+func clientConnectWithOldRequest(t *testing.T, s testJSServer) *nats.Conn {
 	nc, err := nats.Connect(s.ClientURL(), nats.UseOldRequestStyle())
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
