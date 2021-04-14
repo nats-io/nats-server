@@ -23,7 +23,6 @@ import (
 	"math/rand"
 	"net"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -642,10 +641,10 @@ func (c *cluster) shutdown() {
 	}
 	for i, s := range c.servers {
 		if cf := c.opts[i].ConfigFile; cf != "" {
-			os.RemoveAll(cf)
+			removeDir(c.t, cf)
 		}
 		if sd := s.StoreDir(); sd != "" {
-			os.RemoveAll(sd)
+			removeDir(c.t, sd)
 		}
 		s.Shutdown()
 	}

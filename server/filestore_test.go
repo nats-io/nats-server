@@ -839,7 +839,7 @@ func TestFileStoreCompactLastPlusOne(t *testing.T) {
 
 func TestFileStoreCompactMsgCountBug(t *testing.T) {
 	storeDir := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(storeDir)
+	defer removeDir(t, storeDir)
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
