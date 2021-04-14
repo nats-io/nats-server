@@ -1188,19 +1188,21 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 		return false
 	}
 
+	isControl := m.isControlMsg()
+
 	// Ignore from old subscriptions.
 	// The reason we can not just compare subs is that on cross account imports they will not match.
-	if !mset.mirror.isCurrentSub(m.rply) {
+	if !mset.mirror.isCurrentSub(m.rply) && !isControl {
 		mset.mu.Unlock()
 		return false
 	}
 
+	mset.mirror.last = time.Now()
 	node := mset.node
 
 	// Check for heartbeats and flow control messages.
-	if m.isControlMsg() && mset.mirror.cname != _EMPTY_ {
+	if isControl {
 		var needsRetry bool
-		mset.mirror.last = time.Now()
 		// Flow controls have reply subjects.
 		if m.rply != _EMPTY_ {
 			mset.handleFlowControl(mset.mirror, m)
@@ -1217,7 +1219,6 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 		return !needsRetry
 	}
 
-	mset.mirror.last = time.Now()
 	sseq, dseq, dc, ts, pending := replyInfo(m.rply)
 
 	if dc > 1 {
@@ -1724,12 +1725,20 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 		return false
 	}
 
+	isControl := m.isControlMsg()
+
+	// Ignore from old subscriptions.
+	if !si.isCurrentSub(m.rply) && !isControl {
+		mset.mu.Unlock()
+		return false
+	}
+
+	si.last = time.Now()
 	node := mset.node
 
 	// Check for heartbeats and flow control messages.
-	if m.isControlMsg() && si.cname != _EMPTY_ {
+	if isControl {
 		var needsRetry bool
-		si.last = time.Now()
 		// Flow controls have reply subjects.
 		if m.rply != _EMPTY_ {
 			mset.handleFlowControl(si, m)
@@ -1744,13 +1753,6 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 		return !needsRetry
 	}
 
-	// Ignore from old subscriptions.
-	if !si.isCurrentSub(m.rply) {
-		mset.mu.Unlock()
-		return false
-	}
-
-	si.last = time.Now()
 	sseq, dseq, dc, _, pending := replyInfo(m.rply)
 
 	if dc > 1 {
