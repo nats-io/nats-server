@@ -1593,7 +1593,7 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 
 	respCh := make(chan *JSApiConsumerCreateResponse, 1)
 	reply := infoReplySubject()
-	mset.subscribeInternal(reply, func(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	crSub, _ := mset.subscribeInternal(reply, func(sub *subscription, c *client, subject, reply string, rmsg []byte) {
 		mset.unsubscribe(sub)
 		_, msg := c.msgParts(rmsg)
 		var ccr JSApiConsumerCreateResponse
@@ -1643,7 +1643,8 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 				}
 			}
 			mset.mu.Unlock()
-		case <-time.After(5 * time.Second):
+		case <-time.After(10 * time.Second):
+			mset.unsubscribe(crSub)
 			return
 		}
 	}()
