@@ -137,6 +137,7 @@ type raft struct {
 	csz      int
 	qn       int
 	peers    map[string]*lps
+	removed  map[string]string
 	acks     map[uint64]map[string]struct{}
 	pae      map[uint64]*appendEntry
 	elect    *time.Timer
@@ -659,7 +660,7 @@ func (n *raft) ProposeAddPeer(peer string) error {
 func (n *raft) ProposeRemovePeer(peer string) error {
 	n.RLock()
 	propc, subj := n.propc, n.rpsubj
-	isUs, isLeader := peer == n.id, n.state == Leader
+	isLeader, isUs := n.state == Leader, n.id == peer
 	werr := n.werr
 	n.RUnlock()
 
@@ -669,14 +670,13 @@ func (n *raft) ProposeRemovePeer(peer string) error {
 	}
 
 	if isLeader {
-		if isUs {
-			n.StepDown()
-		} else {
-			select {
-			case propc <- &Entry{EntryRemovePeer, []byte(peer)}:
-			default:
-				return errProposalFailed
+		select {
+		case propc <- &Entry{EntryRemovePeer, []byte(peer)}:
+			if isUs {
+				n.attemptStepDown(noLeader)
 			}
+		default:
+			return errProposalFailed
 		}
 		return nil
 	}
@@ -2065,6 +2065,11 @@ func (n *raft) applyCommit(index uint64) error {
 			newPeer := string(e.Data)
 			n.debug("Added peer %q", newPeer)
 
+			// If we were on the removed list reverse that here.
+			if n.removed != nil {
+				delete(n.removed, newPeer)
+			}
+
 			if _, ok := n.peers[newPeer]; !ok {
 				// We are not tracking this one automatically so we need to bump cluster size.
 				n.peers[newPeer] = &lps{time.Now().UnixNano(), 0}
@@ -2076,19 +2081,25 @@ func (n *raft) applyCommit(index uint64) error {
 			}
 			n.writePeerState(&peerState{n.peerNames(), n.csz})
 		case EntryRemovePeer:
-			oldPeer := string(e.Data)
-			n.debug("Removing peer %q", oldPeer)
+			peer := string(e.Data)
+			n.debug("Removing peer %q", peer)
 
-			// FIXME(dlc) - Check if this is us??
-			if _, ok := n.peers[oldPeer]; ok {
+			// Make sure we have our removed map.
+			if n.removed == nil {
+				n.removed = make(map[string]string)
+			}
+			n.removed[peer] = peer
+
+			if _, ok := n.peers[peer]; ok {
 				// We should decrease our cluster size since we are tracking this peer.
-				delete(n.peers, oldPeer)
+				delete(n.peers, peer)
 				if n.csz != len(n.peers) {
 					n.debug("Decreasing our clustersize: %d -> %d", n.csz, len(n.peers))
 					n.csz = len(n.peers)
 					n.qn = n.csz/2 + 1
 				}
 			}
+
 			n.writePeerState(&peerState{n.peerNames(), n.csz})
 			// We pass these up as well.
 			committed = append(committed, e)
@@ -2164,15 +2175,21 @@ func (n *raft) trackResponse(ar *appendEntryResponse) {
 // Track interactions with this peer.
 func (n *raft) trackPeer(peer string) error {
 	n.Lock()
-	var needPeerUpdate bool
+	var needPeerUpdate, isRemoved bool
+	if n.removed != nil {
+		_, isRemoved = n.removed[peer]
+	}
 	if n.state == Leader {
 		if _, ok := n.peers[peer]; !ok {
-			needPeerUpdate = true
+			// Check if this peer had been removed previously.
+			if !isRemoved {
+				needPeerUpdate = true
+			}
 		}
 	}
 	if ps := n.peers[peer]; ps != nil {
 		ps.ts = time.Now().UnixNano()
-	} else {
+	} else if !isRemoved {
 		n.peers[peer] = &lps{time.Now().UnixNano(), 0}
 	}
 	n.Unlock()
@@ -3107,11 +3124,15 @@ func (n *raft) requestVote() {
 }
 
 func (n *raft) sendRPC(subject, reply string, msg []byte) {
-	n.sq.send(subject, reply, nil, msg)
+	if n.sq != nil {
+		n.sq.send(subject, reply, nil, msg)
+	}
 }
 
 func (n *raft) sendReply(subject string, msg []byte) {
-	n.sq.send(subject, _EMPTY_, nil, msg)
+	if n.sq != nil {
+		n.sq.send(subject, _EMPTY_, nil, msg)
+	}
 }
 
 func (n *raft) wonElection(votes int) bool {
