@@ -1366,6 +1366,7 @@ func (mset *stream) setupMirrorConsumer() error {
 
 	// Now send off request to create/update our consumer. This will be all API based even in single server mode.
 	// We calculate durable names apriori so we do not need to save them off.
+
 	var state StreamState
 	mset.store.FastState(&state)
 
@@ -1440,7 +1441,9 @@ func (mset *stream) setupMirrorConsumer() error {
 
 				// When an upstream stream expires messages or in general has messages that we want
 				// that are no longer available we need to adjust here.
+				var state StreamState
 				mset.store.FastState(&state)
+
 				if state.LastSeq != ccr.ConsumerInfo.Delivered.Stream {
 					for seq := state.LastSeq + 1; seq <= ccr.ConsumerInfo.Delivered.Stream; seq++ {
 						if mset.node != nil {
