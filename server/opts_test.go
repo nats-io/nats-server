@@ -1888,7 +1888,7 @@ func TestParseExport(t *testing.T) {
 	nc1 := connect("u1")
 	defer nc1.Close()
 	nc2 := connect("u2")
-	defer nc1.Close()
+	defer nc2.Close()
 	subscribe := func(nc *nats.Conn, msgs int, subj string) (*sync.WaitGroup, *nats.Subscription) {
 		wg := sync.WaitGroup{}
 		wg.Add(msgs)

@@ -796,7 +796,6 @@ func TestTLSRoutesCertificateImplicitAllowFail(t *testing.T) {
 }
 
 func testTLSRoutesCertificateImplicitAllow(t *testing.T, pass bool) {
-	t.Helper()
 	// Base config for the servers
 	cfg := createFile(t, "cfg")
 	defer removeFile(t, cfg.Name())

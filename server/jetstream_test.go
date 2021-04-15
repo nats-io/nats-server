@@ -9103,6 +9103,7 @@ func TestJetStreamPushConsumersPullError(t *testing.T) {
 	}
 
 	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
 
 	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST"}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)

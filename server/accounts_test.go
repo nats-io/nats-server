@@ -3278,6 +3278,7 @@ func TestAccountSystemPermsWithGlobalAccess(t *testing.T) {
 	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
 
 	// Make sure we can connect with no auth to global account as normal.
 	nc, err := nats.Connect(s.ClientURL())

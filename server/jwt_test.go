@@ -5538,7 +5538,9 @@ func TestJWTAccountProtectedImport(t *testing.T) {
 		s, _ := RunServerWithConfig(cf)
 		defer s.Shutdown()
 		ncExp := natsConnect(t, s.ClientURL(), createUserCreds(t, s, exportKp))
+		defer ncExp.Close()
 		ncImp := natsConnect(t, s.ClientURL(), createUserCreds(t, s, importKp))
+		defer ncImp.Close()
 		t.Run("service", func(t *testing.T) {
 			sub, err := ncExp.Subscribe("service.*", func(msg *nats.Msg) {
 				msg.Respond([]byte("world"))
@@ -5573,7 +5575,9 @@ func TestJWTAccountProtectedImport(t *testing.T) {
 		s, _ := RunServerWithConfig(cf)
 		defer s.Shutdown()
 		ncExp := natsConnect(t, s.ClientURL(), createUserCreds(t, s, exportKp))
+		defer ncExp.Close()
 		ncImp := natsConnect(t, s.ClientURL(), createUserCreds(t, s, importKp))
+		defer ncImp.Close()
 		t.Run("service", func(t *testing.T) {
 			sub, err := ncExp.Subscribe("service.*", func(msg *nats.Msg) {
 				msg.Respond([]byte("world"))
@@ -5628,7 +5632,9 @@ func TestJWTAccountProtectedImport(t *testing.T) {
 		updateJwt(t, s.ClientURL(), sysUsrCreds, importJWT, 1)
 		updateJwt(t, s.ClientURL(), sysUsrCreds, exportJWTOff, 1)
 		ncExp := natsConnect(t, s.ClientURL(), createUserCreds(t, s, exportKp))
+		defer ncExp.Close()
 		ncImp := natsConnect(t, s.ClientURL(), createUserCreds(t, s, importKp))
+		defer ncImp.Close()
 		msgChan := make(chan *nats.Msg, 4)
 		defer close(msgChan)
 		// ensure service passes
