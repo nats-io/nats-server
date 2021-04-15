@@ -182,13 +182,14 @@ func (c *cluster) shutdown() {
 		return
 	}
 	for i, s := range c.servers {
+		sd := s.StoreDir()
+		s.Shutdown()
 		if cf := c.opts[i].ConfigFile; cf != "" {
 			os.RemoveAll(cf)
 		}
-		if sd := s.StoreDir(); sd != "" {
+		if sd != _EMPTY_ {
 			os.RemoveAll(sd)
 		}
-		s.Shutdown()
 	}
 }
 
