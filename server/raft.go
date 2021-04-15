@@ -238,7 +238,6 @@ var (
 	errNotLeader       = errors.New("raft: not leader")
 	errAlreadyLeader   = errors.New("raft: already leader")
 	errNilCfg          = errors.New("raft: no config given")
-	errUnknownPeer     = errors.New("raft: unknown peer")
 	errCorruptPeers    = errors.New("raft: corrupt peer state")
 	errStepdownFailed  = errors.New("raft: stepdown failed")
 	errEntryLoadFailed = errors.New("raft: could not load entry from WAL")
@@ -2065,6 +2064,7 @@ func (n *raft) applyCommit(index uint64) error {
 		case EntryAddPeer:
 			newPeer := string(e.Data)
 			n.debug("Added peer %q", newPeer)
+
 			if _, ok := n.peers[newPeer]; !ok {
 				// We are not tracking this one automatically so we need to bump cluster size.
 				n.peers[newPeer] = &lps{time.Now().UnixNano(), 0}
@@ -2167,12 +2167,6 @@ func (n *raft) trackPeer(peer string) error {
 	var needPeerUpdate bool
 	if n.state == Leader {
 		if _, ok := n.peers[peer]; !ok {
-			// This is someone new, if we have registered all of the peers already
-			// this is an error.
-			if len(n.peers) >= n.csz {
-				n.Unlock()
-				return errUnknownPeer
-			}
 			needPeerUpdate = true
 		}
 	}

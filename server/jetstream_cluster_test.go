@@ -5519,7 +5519,7 @@ func TestJetStreamClusterMixedMode(t *testing.T) {
 }
 
 func TestJetStreamClusterLeafnodeSpokes(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "HUB", 3)
+	c := createJetStreamCluster(t, jsClusterTempl, "HUB", _EMPTY_, 3, 22020, false)
 	defer c.shutdown()
 
 	lnc1 := c.createLeafNodesWithStartPort("R1", 3, 22110)
@@ -6367,7 +6367,7 @@ func (c *cluster) waitOnPeerCount(n int) {
 	c.t.Helper()
 	c.waitOnLeader()
 	leader := c.leader()
-	expires := time.Now().Add(20 * time.Second)
+	expires := time.Now().Add(10 * time.Second)
 	for time.Now().Before(expires) {
 		peers := leader.JetStreamClusterPeers()
 		if len(peers) == n {
