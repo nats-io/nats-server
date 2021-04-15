@@ -638,6 +638,10 @@ var allJsExports = []string{
 }
 
 func (js *jetStream) apiDispatch(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	hdr, _ := c.msgParts(rmsg)
+	if len(getHeader(ClientInfoHdr, hdr)) == 0 {
+		return
+	}
 	js.mu.RLock()
 	s := js.srv
 	rr := js.apiSubs.Match(subject)

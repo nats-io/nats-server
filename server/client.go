@@ -481,6 +481,7 @@ type subscription struct {
 	client  *client
 	im      *streamImport // This is for import stream support.
 	rsi     bool
+	si      bool
 	shadow  []*subscription // This is to track shadowed accounts.
 	icb     msgHandler
 	subject []byte
@@ -2331,8 +2332,12 @@ func (c *client) parseSub(argo []byte, noForward bool) error {
 }
 
 func (c *client) processSub(subject, queue, bsid []byte, cb msgHandler, noForward bool) (*subscription, error) {
+	return c.processSubEx(subject, queue, bsid, cb, noForward, false)
+}
+
+func (c *client) processSubEx(subject, queue, bsid []byte, cb msgHandler, noForward, si bool) (*subscription, error) {
 	// Create the subscription
-	sub := &subscription{client: c, subject: subject, queue: queue, sid: bsid, icb: cb}
+	sub := &subscription{client: c, subject: subject, queue: queue, sid: bsid, icb: cb, si: si}
 
 	c.mu.Lock()
 
@@ -3707,7 +3712,7 @@ func getHeader(key string, hdr []byte) []byte {
 func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byte) {
 	// If we are a GW and this is not a direct serviceImport ignore.
 	isResponse := si.isRespServiceImport()
-	if c.kind == GATEWAY && !isResponse {
+	if (c.kind == GATEWAY || c.kind == ROUTER) && !isResponse {
 		return
 	}
 	// If we are here and we are a serviceImport response make sure we are not matching back

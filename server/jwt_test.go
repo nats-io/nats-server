@@ -4235,9 +4235,6 @@ func TestJWTJetStreamLimits(t *testing.T) {
 	// create system account
 	sysKp, _ := nkeys.CreateAccount()
 	sysPub, _ := sysKp.PublicKey()
-	claim := jwt.NewAccountClaims(sysPub)
-	sysJwt, err := claim.Encode(oKp)
-	require_NoError(t, err)
 	sysUKp, _ := nkeys.CreateUser()
 	sysUSeed, _ := sysUKp.Seed()
 	uclaim := newJWTTestUserClaims()
@@ -4255,7 +4252,7 @@ func TestJWTJetStreamLimits(t *testing.T) {
 	// create account using jetstream with both limits
 	akp, _ := nkeys.CreateAccount()
 	aPub, _ := akp.PublicKey()
-	claim = jwt.NewAccountClaims(aPub)
+	claim := jwt.NewAccountClaims(aPub)
 	claim.Limits.JetStreamLimits = limits1
 	aJwt1, err := claim.Encode(oKp)
 	require_NoError(t, err)
@@ -4292,10 +4289,6 @@ func TestJWTJetStreamLimits(t *testing.T) {
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
 	port := opts.Port
-	updateJwt(s.ClientURL(), sysCreds, sysPub, sysJwt)
-	sys := natsConnect(t, s.ClientURL(), nats.UserCredentials(sysCreds))
-	expect_InfoError(sys)
-	sys.Close()
 	updateJwt(s.ClientURL(), sysCreds, aPub, aJwt1)
 	c := natsConnect(t, s.ClientURL(), nats.UserCredentials(userCreds), nats.ReconnectWait(200*time.Millisecond))
 	defer c.Close()

@@ -1839,7 +1839,7 @@ func (a *Account) addServiceImportSub(si *serviceImport) error {
 	cb := func(sub *subscription, c *client, subject, reply string, msg []byte) {
 		c.processServiceImport(si, a, msg)
 	}
-	_, err := c.processSub([]byte(subject), nil, []byte(sid), cb, true)
+	_, err := c.processSubEx([]byte(subject), nil, []byte(sid), cb, true, true)
 
 	return err
 }

@@ -1498,6 +1498,10 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 		return
 	}
 
+	if sub.si {
+		return
+	}
+
 	// Copy to hold outside acc lock.
 	var n int32
 	var ok bool

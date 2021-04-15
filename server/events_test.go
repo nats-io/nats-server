@@ -1630,11 +1630,10 @@ func TestSystemAccountWithGateways(t *testing.T) {
 
 	msg := findMsgs(fmt.Sprintf("$SYS.ACCOUNT.%s.CONNECT", sa.SystemAccount().Name))
 	var bMsg *nats.Msg
-	if len(msg) != 1 {
-		t.Fatal("Expected one message")
-	} else {
-		bMsg = msg[0]
+	if len(msg) < 1 {
+		t.Fatal("Expected at least one message")
 	}
+	bMsg = msg[len(msg)-1]
 
 	require_Contains(t, string(bMsg.Data), sb.ID())
 	require_Contains(t, string(bMsg.Data), `"cluster":"B"`)
