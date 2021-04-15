@@ -4568,6 +4568,7 @@ func (c *client) closeConnection(reason ClosedState) {
 		// Unregister
 		srv.removeClient(c)
 
+		notSpoke := !(kind == LEAF && c.isSpokeLeafNode())
 		// Update remote subscriptions.
 		if acc != nil && (kind == CLIENT || kind == LEAF) {
 			qsubs := map[string]*qsub{}
@@ -4576,7 +4577,9 @@ func (c *client) closeConnection(reason ClosedState) {
 				c.unsubscribe(acc, sub, true, false)
 				// Update route as normal for a normal subscriber.
 				if sub.queue == nil {
-					srv.updateRouteSubscriptionMap(acc, sub, -1)
+					if notSpoke {
+						srv.updateRouteSubscriptionMap(acc, sub, -1)
+					}
 					srv.updateLeafNodes(acc, sub, -1)
 				} else {
 					// We handle queue subscribers special in case we
@@ -4589,13 +4592,15 @@ func (c *client) closeConnection(reason ClosedState) {
 						qsubs[key] = &qsub{sub, 1}
 					}
 				}
-				if srv.gateway.enabled {
+				if srv.gateway.enabled && notSpoke {
 					srv.gatewayUpdateSubInterest(acc.Name, sub, -1)
 				}
 			}
 			// Process any qsubs here.
 			for _, esub := range qsubs {
-				srv.updateRouteSubscriptionMap(acc, esub.sub, -(esub.n))
+				if notSpoke {
+					srv.updateRouteSubscriptionMap(acc, esub.sub, -(esub.n))
+				}
 				srv.updateLeafNodes(acc, esub.sub, -(esub.n))
 			}
 			if prev := acc.removeClient(c); prev == 1 {
