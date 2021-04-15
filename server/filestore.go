@@ -118,6 +118,7 @@ type msgBlock struct {
 	fch     chan struct{}
 	qch     chan struct{}
 	lchk    [8]byte
+	closed  bool
 }
 
 // Write through caching layer that is also used on loading messages.
@@ -3176,9 +3177,10 @@ func (mb *msgBlock) close(sync bool) {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 
-	if mb.qch == nil {
+	if mb.closed {
 		return
 	}
+	mb.closed = true
 
 	// Close cache
 	mb.clearCacheAndOffset()
