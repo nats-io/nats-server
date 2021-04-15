@@ -2213,6 +2213,10 @@ func (s *Server) sendQueueSubOrUnsubToGateways(accName string, qsub *subscriptio
 // <Invoked from client or route connection's readLoop or when such
 // connection is closed>
 func (s *Server) gatewayUpdateSubInterest(accName string, sub *subscription, change int32) {
+	if sub.si {
+		return
+	}
+
 	var (
 		keya  [1024]byte
 		key   = keya[:0]
