@@ -1651,6 +1651,7 @@ func (c *client) processLeafUnsub(arg []byte) error {
 	}
 
 	updateGWs := false
+	spoke := c.isSpokeLeafNode()
 	// We store local subs by account and subject and optionally queue name.
 	// LS- will have the arg exactly as the key.
 	sub, ok := c.subs[string(arg)]
@@ -1661,11 +1662,13 @@ func (c *client) processLeafUnsub(arg []byte) error {
 		updateGWs = srv.gateway.enabled
 	}
 
-	// If we are routing subtract from the route map for the associated account.
-	srv.updateRouteSubscriptionMap(acc, sub, -1)
-	// Gateways
-	if updateGWs {
-		srv.gatewayUpdateSubInterest(acc.Name, sub, -1)
+	if !spoke {
+		// If we are routing subtract from the route map for the associated account.
+		srv.updateRouteSubscriptionMap(acc, sub, -1)
+		// Gateways
+		if updateGWs {
+			srv.gatewayUpdateSubInterest(acc.Name, sub, -1)
+		}
 	}
 	// Now check on leafnode updates for other leaf nodes.
 	srv.updateLeafNodes(acc, sub, -1)
