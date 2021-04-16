@@ -221,13 +221,16 @@ func (s *Server) JetStreamSnapshotMeta() error {
 		return ErrJetStreamNotEnabled
 	}
 	js.mu.RLock()
-	defer js.mu.RUnlock()
 	cc := js.cluster
-	if !cc.isLeader() {
+	isLeader := cc.isLeader()
+	meta := cc.meta
+	js.mu.RUnlock()
+
+	if !isLeader {
 		return errNotLeader
 	}
 
-	return cc.meta.InstallSnapshot(js.metaSnapshot())
+	return meta.InstallSnapshot(js.metaSnapshot())
 }
 
 func (s *Server) JetStreamStepdownStream(account, stream string) error {
@@ -4234,23 +4237,20 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 
 	// Do proposal.
 	err := mset.node.Propose(esm)
+	if err != nil {
+		mset.clseq--
+	}
 	mset.clMu.Unlock()
 
 	if err != nil {
 		seq = 0
-		mset.mu.Lock()
-		mset.clseq--
-		mset.mu.Unlock()
 		if canRespond {
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: mset.cfg.Name}}
 			resp.Error = &ApiError{Code: 503, Description: err.Error()}
 			response, _ = json.Marshal(resp)
+			// If we errored out respond here.
+			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
 		}
-	}
-
-	// If we errored out respond here.
-	if err != nil && canRespond {
-		outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
 	}
 
 	if err != nil && isOutOfSpaceErr(err) {
