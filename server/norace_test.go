@@ -1967,8 +1967,8 @@ func TestNoRaceJetStreamClusterSuperClusterRIPStress(t *testing.T) {
 
 	var jsc []nats.JetStream
 
-	// Create 16 clients.
-	for i := 0; i < 16; i++ {
+	// Create 64 clients.
+	for i := 0; i < 64; i++ {
 		s := sc.randomCluster().randomServer()
 		nc, _ := jsClientConnect(t, s)
 		defer nc.Close()
@@ -1982,7 +1982,8 @@ func TestNoRaceJetStreamClusterSuperClusterRIPStress(t *testing.T) {
 	msg := make([]byte, 1024)
 	rand.Read(msg)
 
-	expires := time.Now().Add(300 * time.Second)
+	// 10 minutes
+	expires := time.Now().Add(600 * time.Second)
 	for time.Now().Before(expires) {
 		for _, sns := range scm {
 			rand.Shuffle(len(sns), func(i, j int) { sns[i], sns[j] = sns[j], sns[i] })
