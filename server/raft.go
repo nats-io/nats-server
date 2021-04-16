@@ -364,7 +364,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		propc:    make(chan *Entry, 8192),
 		entryc:   make(chan *appendEntry, 32768),
 		respc:    make(chan *appendEntryResponse, 32768),
-		applyc:   make(chan *CommittedEntry, 8192),
+		applyc:   make(chan *CommittedEntry, 32768),
 		leadc:    make(chan bool, 8),
 		stepdown: make(chan string, 8),
 		observer: cfg.Observer,
@@ -2564,7 +2564,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			select {
 			case n.applyc <- &CommittedEntry{n.commit, ae.entries[:1]}:
 			default:
-				n.debug("Failed to place snapshot entry onto our apply channel")
+				n.warn("Failed to place snapshot entry onto our apply channel")
 				n.commit--
 			}
 			n.Unlock()
