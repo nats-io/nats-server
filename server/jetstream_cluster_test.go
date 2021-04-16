@@ -1943,12 +1943,12 @@ func TestJetStreamClusterInterestRetention(t *testing.T) {
 	}
 	m.Ack()
 
-	js, err = nc.JetStream(nats.MaxWait(50 * time.Millisecond))
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-
 	waitForZero := func() {
+		js, err := nc.JetStream(nats.MaxWait(50 * time.Millisecond))
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
 		checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
 			si, err := js.StreamInfo("foo")
 			if err != nil {
