@@ -1767,6 +1767,8 @@ func TestJetStreamClusterExtendedStreamInfo(t *testing.T) {
 	}
 
 	oldLeader = c.restartServer(oldLeader)
+	c.checkClusterFormed()
+
 	c.waitOnStreamLeader("$G", "TEST")
 	c.waitOnStreamCurrent(oldLeader, "$G", "TEST")
 
@@ -5679,11 +5681,14 @@ func TestJetStreamClusterMirrorAndSourceExpiration(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
+	bi := 1
 	sendBatch := func(n int) {
 		t.Helper()
 		// Send a batch to a given subject.
 		for i := 0; i < n; i++ {
-			if _, err := js.PublishAsync("TEST", []byte("OK")); err != nil {
+			msg := fmt.Sprintf("ID: %d", bi)
+			bi++
+			if _, err := js.PublishAsync("TEST", []byte(msg)); err != nil {
 				t.Fatalf("Unexpected publish error: %v", err)
 			}
 		}
@@ -5691,7 +5696,7 @@ func TestJetStreamClusterMirrorAndSourceExpiration(t *testing.T) {
 
 	checkStream := func(stream string, num uint64) {
 		t.Helper()
-		checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
 			si, err := js.StreamInfo(stream)
 			if err != nil {
 				return err
@@ -5713,20 +5718,28 @@ func TestJetStreamClusterMirrorAndSourceExpiration(t *testing.T) {
 		Name:     "M",
 		Mirror:   &nats.StreamSource{Name: "TEST"},
 		Replicas: 2,
-		MaxAge:   200 * time.Millisecond,
+		MaxAge:   500 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name:     "S",
-		Sources:  []*nats.StreamSource{{Name: "TEST"}},
-		Replicas: 2,
-		MaxAge:   200 * time.Millisecond,
-	})
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
+	// We want this to not be same as TEST leader for this test.
+	sl := c.streamLeader("$G", "TEST")
+	for ss := sl; ss == sl; {
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "S",
+			Sources:  []*nats.StreamSource{{Name: "TEST"}},
+			Replicas: 2,
+			MaxAge:   500 * time.Millisecond,
+		})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if ss = c.streamLeader("$G", "S"); ss == sl {
+			// Delete and retry.
+			js.DeleteStream("S")
+		}
 	}
 
 	sendBatch(100)
@@ -5739,15 +5752,33 @@ func TestJetStreamClusterMirrorAndSourceExpiration(t *testing.T) {
 	checkSource(0)
 
 	// Now stop the server housing the leader of the source stream.
-	sl := c.streamLeader("$G", "TEST")
 	sl.Shutdown()
 	c.restartServer(sl)
 	checkClusterFormed(t, c.servers...)
+	c.waitOnStreamLeader("$G", "S")
+	c.waitOnStreamLeader("$G", "M")
 
-	// Make sure can process correctluy after we have expired all of the messages.
+	// Make sure can process correctly after we have expired all of the messages.
 	sendBatch(100)
-	checkMirror(100)
-	checkSource(100)
+	// Need to check both in parallel.
+	scheck, mcheck := uint64(0), uint64(0)
+	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+		if scheck != 100 {
+			if si, _ := js.StreamInfo("S"); si != nil {
+				scheck = si.State.Msgs
+			}
+		}
+		if mcheck != 100 {
+			if si, _ := js.StreamInfo("M"); si != nil {
+				mcheck = si.State.Msgs
+			}
+		}
+		if scheck == 100 && mcheck == 100 {
+			return nil
+		}
+		return fmt.Errorf("Both not at 100 yet, S=%d, M=%d", scheck, mcheck)
+	})
+
 	checkTest(200)
 }
 
@@ -6101,8 +6132,9 @@ func createJetStreamClusterExplicit(t *testing.T, clusterName string, numServers
 
 func createJetStreamClusterWithTemplate(t *testing.T, tmpl string, clusterName string, numServers int) *cluster {
 	t.Helper()
-	const startClusterPort = 22332
-	return createJetStreamCluster(t, tmpl, clusterName, _EMPTY_, numServers, startClusterPort, true)
+	startPorts := []int{9_022, 11_022, 14_022, 16_022, 20_332, 22_332, 33_332, 44_332}
+	port := startPorts[rand.Intn(len(startPorts))]
+	return createJetStreamCluster(t, tmpl, clusterName, _EMPTY_, numServers, port, true)
 }
 
 func createJetStreamCluster(t *testing.T, tmpl string, clusterName string, snPre string, numServers int, portStart int, waitOnReady bool) *cluster {
