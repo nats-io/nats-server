@@ -1352,7 +1352,7 @@ func (mset *stream) setupMirrorConsumer() error {
 	if ext != nil {
 		deliverSubject = strings.ReplaceAll(ext.DeliverPrefix+syncSubject(".M"), "..", ".")
 	} else {
-		deliverSubject = syncSubject("$JS.M")
+		deliverSubject = syncSubject("$JSDC.M")
 	}
 
 	if !isReset {
@@ -1524,10 +1524,11 @@ func (mset *stream) retrySourceConsumerAtSeq(sname string, seq uint64) {
 		return
 	}
 	s := mset.srv
+
 	s.Debugf("Retrying source consumer for '%s > %s'", mset.acc.Name, mset.cfg.Name)
-	si := mset.sources[sname]
+
 	// No longer configured.
-	if si == nil {
+	if si := mset.sources[sname]; si == nil {
 		return
 	}
 	mset.setSourceConsumer(sname, seq)
@@ -1567,7 +1568,7 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 	if ext != nil {
 		deliverSubject = strings.ReplaceAll(ext.DeliverPrefix+syncSubject(".S"), "..", ".")
 	} else {
-		deliverSubject = syncSubject("$JS.S")
+		deliverSubject = syncSubject("$JSDC.S")
 	}
 
 	if !si.grr {
@@ -1862,8 +1863,10 @@ func (mset *stream) setStartingSequenceForSource(sname string) {
 
 	var state StreamState
 	mset.store.FastState(&state)
+
+	// Do not reset sseq here so we can remember when purge/expiration happens.
 	if state.Msgs == 0 {
-		si.sseq, si.dseq = 0, 0
+		si.dseq = 0
 		return
 	}
 
