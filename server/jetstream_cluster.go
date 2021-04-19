@@ -487,10 +487,17 @@ func (js *jetStream) setupMetaGroup() error {
 	// but do not form our own.
 	if ln := s.getOpts().LeafNode; len(ln.Remotes) > 0 {
 		sys := s.SystemAccount().GetName()
+	ENDFOR:
 		for _, r := range ln.Remotes {
 			if r.LocalAccount == sys {
+				for _, denySub := range r.DenyImports {
+					if subjectIsSubsetMatch(denySub, raftAllSubj) {
+						// raft group is denied, hence there won't be anything to observe
+						break ENDFOR
+					}
+				}
 				cfg.Observer = true
-				break
+				break ENDFOR
 			}
 		}
 	}
