@@ -216,8 +216,8 @@ func testMQTTRunServer(t testing.TB, o *Options) *Server {
 	l := &DummyLogger{}
 	s.SetLogger(l, true, true)
 	go s.Start()
-	if !s.ReadyForConnections(3 * time.Second) {
-		t.Fatal("Unable to start server")
+	if err := s.readyForConnections(3 * time.Second); err != nil {
+		t.Fatal(err)
 	}
 	return s
 }

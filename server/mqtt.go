@@ -172,6 +172,7 @@ var (
 
 type srvMQTT struct {
 	listener     net.Listener
+	listenerErr  error
 	authOverride bool
 	sessmgr      mqttSessionManager
 }
@@ -345,6 +346,7 @@ func (s *Server) startMQTT() {
 	}
 	s.mqtt.sessmgr.sessions = make(map[string]*mqttAccountSessionManager)
 	hl, err = net.Listen("tcp", hp)
+	s.mqtt.listenerErr = err
 	if err != nil {
 		s.mu.Unlock()
 		s.Fatalf("Unable to listen for MQTT connections: %v", err)
