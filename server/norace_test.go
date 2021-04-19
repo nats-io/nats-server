@@ -1507,7 +1507,7 @@ func TestNoRaceJetStreamClusterSuperClusterMirrors(t *testing.T) {
 		Placement: &nats.Placement{Cluster: "C3"},
 	})
 
-	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
 		si, err := js2.StreamInfo("M2")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -1937,6 +1937,7 @@ func TestNoRaceJetStreamClusterSuperClusterRIPStress(t *testing.T) {
 		Replicas:  3,
 		Placement: &nats.Placement{Cluster: "C1"},
 		Mirror:    &nats.StreamSource{Name: "C3-S-MUX"},
+		MaxAge:    5 * time.Minute,
 		MaxMsgs:   10_000,
 	})
 	if err != nil {
@@ -1948,6 +1949,7 @@ func TestNoRaceJetStreamClusterSuperClusterRIPStress(t *testing.T) {
 		Replicas:  3,
 		Placement: &nats.Placement{Cluster: "C2"},
 		Mirror:    &nats.StreamSource{Name: "C2-S-MUX"},
+		MaxAge:    5 * time.Minute,
 		MaxMsgs:   10_000,
 	})
 	if err != nil {
@@ -1959,6 +1961,7 @@ func TestNoRaceJetStreamClusterSuperClusterRIPStress(t *testing.T) {
 		Replicas:  3,
 		Placement: &nats.Placement{Cluster: "C3"},
 		Mirror:    &nats.StreamSource{Name: "C1-S-MUX"},
+		MaxAge:    5 * time.Minute,
 		MaxMsgs:   10_000,
 	})
 	if err != nil {
@@ -1983,7 +1986,7 @@ func TestNoRaceJetStreamClusterSuperClusterRIPStress(t *testing.T) {
 	rand.Read(msg)
 
 	// 10 minutes
-	expires := time.Now().Add(600 * time.Second)
+	expires := time.Now().Add(480 * time.Second)
 	for time.Now().Before(expires) {
 		for _, sns := range scm {
 			rand.Shuffle(len(sns), func(i, j int) { sns[i], sns[j] = sns[j], sns[i] })
@@ -1994,6 +1997,6 @@ func TestNoRaceJetStreamClusterSuperClusterRIPStress(t *testing.T) {
 				}
 			}
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 }
