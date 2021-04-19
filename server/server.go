@@ -2682,28 +2682,51 @@ func (s *Server) ProfilerAddr() *net.TCPAddr {
 	return s.profiler.Addr().(*net.TCPAddr)
 }
 
+func (s *Server) readyForConnections(d time.Duration) error {
+	// Snapshot server options.
+	opts := s.getOpts()
+
+	chk := make(map[string]bool)
+	end := time.Now().Add(d)
+	for time.Now().Before(end) {
+		s.mu.Lock()
+		chk["server"] = s.listener != nil
+		chk["route"] = (opts.Cluster.Port == 0 || s.routeListener != nil)
+		chk["gateway"] = (opts.Gateway.Name == "" || s.gatewayListener != nil)
+		chk["leafNode"] = (opts.LeafNode.Port == 0 || s.leafNodeListener != nil)
+		chk["websocket"] = (opts.Websocket.Port == 0 || s.websocket.listener != nil)
+		s.mu.Unlock()
+
+		var numOK int
+		for _, ok := range chk {
+			if ok {
+				numOK++
+			}
+		}
+		if numOK == len(chk) {
+			return nil
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	failed := make([]string, 0, len(chk))
+	for name, ok := range chk {
+		if !ok {
+			failed = append(failed, name)
+		}
+	}
+
+	return fmt.Errorf(
+		"failed to be ready for connections after %s: %s",
+		d, strings.Join(failed, ", "),
+	)
+}
+
 // ReadyForConnections returns `true` if the server is ready to accept clients
 // and, if routing is enabled, route connections. If after the duration
 // `dur` the server is still not ready, returns `false`.
 func (s *Server) ReadyForConnections(dur time.Duration) bool {
-	// Snapshot server options.
-	opts := s.getOpts()
-
-	end := time.Now().Add(dur)
-	for time.Now().Before(end) {
-		s.mu.Lock()
-		ok := s.listener != nil &&
-			(opts.Cluster.Port == 0 || s.routeListener != nil) &&
-			(opts.Gateway.Name == "" || s.gatewayListener != nil) &&
-			(opts.LeafNode.Port == 0 || s.leafNodeListener != nil) &&
-			(opts.Websocket.Port == 0 || s.websocket.listener != nil)
-		s.mu.Unlock()
-		if ok {
-			return true
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	return false
+	return s.readyForConnections(dur) == nil
 }
 
 // Quick utility to function to tell if the server supports headers.
