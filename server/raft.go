@@ -1306,6 +1306,7 @@ func (n *raft) newInbox() string {
 }
 
 const (
+	raftAllSubj        = "$NRG.>"
 	raftVoteSubj       = "$NRG.V.%s"
 	raftAppendSubj     = "$NRG.AE.%s"
 	raftPropSubj       = "$NRG.P.%s"
