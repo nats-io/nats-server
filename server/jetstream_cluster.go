@@ -1549,6 +1549,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				if mset == nil {
 					continue
 				}
+				s := js.srv
 
 				subject, reply, hdr, msg, lseq, ts, err := decodeStreamMsg(buf[1:])
 				if err != nil {
@@ -1558,8 +1559,10 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				// We can skip if we know this is less than what we already have.
 				last := mset.lastSeq()
 				if lseq < last {
+					s.Debugf("Apply stream entries skipping message with sequence %d with last of %d", lseq, last)
 					continue
 				}
+
 				// Skip by hand here since first msg special case.
 				// Reason is sequence is unsigned and for lseq being 0
 				// the lseq under stream would have be -1.
@@ -1569,8 +1572,6 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 				// Check for flowcontrol here.
 				mset.checkForFlowControl(lseq + 1)
-
-				s := js.srv
 
 				// Messages to be skipped have no subject or timestamp.
 				if subject == _EMPTY_ && ts == 0 {
@@ -4162,6 +4163,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	s, js, jsa, st, rf, outq := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.outq
 	maxMsgSize := int(mset.cfg.MaxMsgSize)
 	msetName := mset.cfg.Name
+	lseq := mset.lseq
 	mset.mu.RUnlock()
 
 	// Check here pre-emptively if we have exceeded this server limits.
@@ -4225,7 +4227,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// We only use mset.clseq for clustering and in case we run ahead of actual commits.
 	// Check if we need to set initial value here
 	mset.clMu.Lock()
-	if mset.clseq == 0 {
+	if mset.clseq == 0 || mset.clseq < lseq {
 		mset.mu.RLock()
 		mset.clseq = mset.lseq
 		mset.mu.RUnlock()
