@@ -1557,7 +1557,7 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 	// Need to delete the old one.
 	mset.removeInternalConsumer(si)
 
-	si.sseq, si.dseq = 0, 0
+	si.sseq, si.dseq = seq, 0
 	si.last = time.Now()
 	ssi := mset.streamSource(sname)
 
@@ -1640,6 +1640,10 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 					// We will retry every 10 seconds or so
 					mset.cancelSourceConsumer(sname)
 				} else {
+					if si.sseq != ccr.ConsumerInfo.Delivered.Stream {
+						si.sseq = ccr.ConsumerInfo.Delivered.Stream + 1
+					}
+
 					// Capture consumer name.
 					si.cname = ccr.ConsumerInfo.Name
 					// Now create sub to receive messages.
@@ -1915,6 +1919,10 @@ func (mset *stream) startingSequenceForSources() {
 	// Stamp our si seq records on the way out.
 	defer func() {
 		for sname, seq := range seqs {
+			// Ignore if not set.
+			if seq == 0 {
+				continue
+			}
 			if si := mset.sources[sname]; si != nil {
 				si.sseq = seq
 				si.dseq = 0
