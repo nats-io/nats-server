@@ -4719,7 +4719,7 @@ func TestJetStreamFailMirrorsAndSources(t *testing.T) {
 		})
 	}
 
-	testPrefix("mirror-bad-delierprefix", `prefix "test" overlaps with stream subject "test.>"`, StreamConfig{
+	testPrefix("mirror-bad-deliverprefix", `prefix "test" overlaps with stream subject "test.>"`, StreamConfig{
 		Name:    "MY_MIRROR_TEST",
 		Storage: FileStorage,
 		Mirror: &StreamSource{
@@ -4742,7 +4742,7 @@ func TestJetStreamFailMirrorsAndSources(t *testing.T) {
 			},
 		},
 	})
-	testPrefix("source-bad-delierprefix", `prefix "test" overlaps with stream subject "test.>"`, StreamConfig{
+	testPrefix("source-bad-deliverprefix", `prefix "test" overlaps with stream subject "test.>"`, StreamConfig{
 		Name:    "MY_SOURCE_TEST",
 		Storage: FileStorage,
 		Sources: []*StreamSource{{

@@ -1366,7 +1366,11 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 					doSnapshot()
 				}
 			} else if err == errLastSeqMismatch {
-				if mset.isMirror() {
+				mset.mu.RLock()
+				isLeader := mset.isLeader()
+				mset.mu.RUnlock()
+
+				if mset.isMirror() && isLeader {
 					mset.retryMirrorConsumer()
 				} else {
 					s.Warnf("Got stream sequence mismatch for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
