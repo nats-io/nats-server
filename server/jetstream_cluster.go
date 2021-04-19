@@ -195,6 +195,32 @@ func (s *Server) JetStreamIsClustered() bool {
 	return isClustered
 }
 
+// Lock must not be held - returns hasLeader, isLeader, leaderCurrent
+func (s *Server) JetStreamLeaderInfo() (bool, bool, bool) {
+	js := s.getJetStream()
+	if js == nil {
+		return false, false, false
+	}
+	selfLeader := s.JetStreamIsLeader()
+	if selfLeader {
+		return true, true, true
+	}
+	gl := js.getMetaGroup().GroupLeader()
+	for _, p := range js.getMetaGroup().Peers() {
+		if p == nil {
+			continue
+		}
+		if p.ID != gl {
+			continue
+		}
+		if time.Since(p.Last) <= lostQuorumInterval {
+			return true, false, true
+		}
+		return true, false, false
+	}
+	return false, false, false
+}
+
 func (s *Server) JetStreamIsLeader() bool {
 	js := s.getJetStream()
 	if js == nil {
@@ -3557,7 +3583,7 @@ func (s *Server) allPeersOffline(rg *raftGroup) bool {
 
 // This will do a scatter and gather operation for all streams for this account. This is only called from metadata leader.
 // This will be running in a separate Go routine.
-func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, offset int, subject, reply string, rmsg []byte) {
+func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, offset int, subject, reply string, rmsg []byte, respDelay time.Duration, byLdr bool) {
 	defer s.grWG.Done()
 
 	js, cc := s.getJetStreamCluster()
@@ -3592,6 +3618,8 @@ func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, offs
 	var resp = JSApiStreamListResponse{
 		ApiResponse: ApiResponse{Type: JSApiStreamListResponseType},
 		Streams:     make([]*StreamInfo, 0, len(streams)),
+		Complete:    true,
+		ByLeader:    byLdr,
 	}
 
 	if len(streams) == 0 {
@@ -3645,7 +3673,7 @@ func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, offs
 	// Don't hold lock.
 	js.mu.Unlock()
 
-	const timeout = 5 * time.Second
+	const timeout = 4 * time.Second
 	notActive := time.NewTimer(timeout)
 	defer notActive.Stop()
 
@@ -3655,8 +3683,8 @@ LOOP:
 		case <-s.quitCh:
 			return
 		case <-notActive.C:
-			s.Warnf("Did not receive all stream info results for %q", acc)
-			resp.Error = jsClusterIncompleteErr
+			s.Warnf("Did not receive all stream info results for %q (retrieved %d out of %d)", acc, len(resp.Streams), len(streams))
+			resp.Complete = false
 			break LOOP
 		case si := <-rc:
 			resp.Streams = append(resp.Streams, si)
@@ -3677,12 +3705,20 @@ LOOP:
 	resp.Total = len(resp.Streams)
 	resp.Limit = JSApiListLimit
 	resp.Offset = offset
-	s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(resp))
+	if respDelay != 0 {
+		s.startGoRoutine(func() {
+			defer s.grWG.Done()
+			time.Sleep(respDelay)
+			s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(resp))
+		})
+	} else {
+		s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(resp))
+	}
 }
 
 // This will do a scatter and gather operation for all consumers for this stream and account.
 // This will be running in a separate Go routine.
-func (s *Server) jsClusteredConsumerListRequest(acc *Account, ci *ClientInfo, offset int, stream, subject, reply string, rmsg []byte) {
+func (s *Server) jsClusteredConsumerListRequest(acc *Account, ci *ClientInfo, offset int, stream, subject, reply string, rmsg []byte, respDelay time.Duration, byLdr bool) {
 	defer s.grWG.Done()
 
 	js, cc := s.getJetStreamCluster()
@@ -3723,6 +3759,8 @@ func (s *Server) jsClusteredConsumerListRequest(acc *Account, ci *ClientInfo, of
 	var resp = JSApiConsumerListResponse{
 		ApiResponse: ApiResponse{Type: JSApiConsumerListResponseType},
 		Consumers:   []*ConsumerInfo{},
+		Complete:    true,
+		ByLeader:    byLdr,
 	}
 
 	if len(consumers) == 0 {
@@ -3774,7 +3812,7 @@ func (s *Server) jsClusteredConsumerListRequest(acc *Account, ci *ClientInfo, of
 	}
 	js.mu.Unlock()
 
-	const timeout = 2 * time.Second
+	const timeout = 4 * time.Second
 	notActive := time.NewTimer(timeout)
 	defer notActive.Stop()
 
@@ -3784,7 +3822,8 @@ LOOP:
 		case <-s.quitCh:
 			return
 		case <-notActive.C:
-			s.Warnf("Did not receive all stream info results for %q", acc)
+			s.Warnf("Did not receive all consumer info results for %q (retrieved %d out of %d)", acc, len(resp.Consumers), len(consumers))
+			resp.Complete = false
 			break LOOP
 		case ci := <-rc:
 			resp.Consumers = append(resp.Consumers, ci)
@@ -3805,7 +3844,15 @@ LOOP:
 	resp.Total = len(resp.Consumers)
 	resp.Limit = JSApiListLimit
 	resp.Offset = offset
-	s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(resp))
+	if respDelay != 0 {
+		s.startGoRoutine(func() {
+			defer s.grWG.Done()
+			time.Sleep(respDelay)
+			s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(resp))
+		})
+	} else {
+		s.sendAPIResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(resp))
+	}
 }
 
 func encodeStreamPurge(sp *streamPurge) []byte {
