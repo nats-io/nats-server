@@ -105,50 +105,53 @@ type Info struct {
 type Server struct {
 	gcid uint64
 	stats
-	mu               sync.Mutex
-	kp               nkeys.KeyPair
-	prand            *rand.Rand
-	info             Info
-	configFile       string
-	optsMu           sync.RWMutex
-	opts             *Options
-	running          bool
-	shutdown         bool
-	reloading        bool
-	listener         net.Listener
-	gacc             *Account
-	sys              *internal
-	js               *jetStream
-	accounts         sync.Map
-	tmpAccounts      sync.Map // Temporarily stores accounts that are being built
-	activeAccounts   int32
-	accResolver      AccountResolver
-	clients          map[uint64]*client
-	routes           map[uint64]*client
-	routesByHash     sync.Map
-	remotes          map[string]*client
-	leafs            map[uint64]*client
-	users            map[string]*User
-	nkeys            map[string]*NkeyUser
-	totalClients     uint64
-	closed           *closedRingBuffer
-	done             chan bool
-	start            time.Time
-	http             net.Listener
-	httpHandler      http.Handler
-	httpBasePath     string
-	profiler         net.Listener
-	httpReqStats     map[string]uint64
-	routeListener    net.Listener
-	routeInfo        Info
-	routeInfoJSON    []byte
-	routeResolver    netResolver
-	routesToSelf     map[string]struct{}
-	leafNodeListener net.Listener
-	leafNodeInfo     Info
-	leafNodeInfoJSON []byte
-	leafURLsMap      refCountedUrlSet
-	leafNodeOpts     struct {
+	mu                  sync.Mutex
+	kp                  nkeys.KeyPair
+	prand               *rand.Rand
+	info                Info
+	configFile          string
+	optsMu              sync.RWMutex
+	opts                *Options
+	running             bool
+	shutdown            bool
+	reloading           bool
+	listener            net.Listener
+	listenerErr         error
+	gacc                *Account
+	sys                 *internal
+	js                  *jetStream
+	accounts            sync.Map
+	tmpAccounts         sync.Map // Temporarily stores accounts that are being built
+	activeAccounts      int32
+	accResolver         AccountResolver
+	clients             map[uint64]*client
+	routes              map[uint64]*client
+	routesByHash        sync.Map
+	remotes             map[string]*client
+	leafs               map[uint64]*client
+	users               map[string]*User
+	nkeys               map[string]*NkeyUser
+	totalClients        uint64
+	closed              *closedRingBuffer
+	done                chan bool
+	start               time.Time
+	http                net.Listener
+	httpHandler         http.Handler
+	httpBasePath        string
+	profiler            net.Listener
+	httpReqStats        map[string]uint64
+	routeListener       net.Listener
+	routeListenerErr    error
+	routeInfo           Info
+	routeInfoJSON       []byte
+	routeResolver       netResolver
+	routesToSelf        map[string]struct{}
+	leafNodeListener    net.Listener
+	leafNodeListenerErr error
+	leafNodeInfo        Info
+	leafNodeInfoJSON    []byte
+	leafURLsMap         refCountedUrlSet
+	leafNodeOpts        struct {
 		resolver    netResolver
 		dialTimeout time.Duration
 	}
@@ -182,8 +185,9 @@ type Server struct {
 	lastCURLsUpdate int64
 
 	// For Gateways
-	gatewayListener net.Listener // Accept listener
-	gateway         *srvGateway
+	gatewayListener    net.Listener // Accept listener
+	gatewayListenerErr error
+	gateway            *srvGateway
 
 	// Used by tests to check that http.Servers do
 	// not set any timeout.
@@ -1848,6 +1852,7 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 
 	hp := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
 	l, e := natsListen("tcp", hp)
+	s.listenerErr = e
 	if e != nil {
 		s.mu.Unlock()
 		s.Fatalf("Error listening on port: %s, %q", hp, e)
@@ -2682,28 +2687,63 @@ func (s *Server) ProfilerAddr() *net.TCPAddr {
 	return s.profiler.Addr().(*net.TCPAddr)
 }
 
+func (s *Server) readyForConnections(d time.Duration) error {
+	// Snapshot server options.
+	opts := s.getOpts()
+
+	type info struct {
+		ok  bool
+		err error
+	}
+	chk := make(map[string]info)
+
+	end := time.Now().Add(d)
+	for time.Now().Before(end) {
+		s.mu.Lock()
+		chk["server"] = info{ok: s.listener != nil, err: s.listenerErr}
+		chk["route"] = info{ok: (opts.Cluster.Port == 0 || s.routeListener != nil), err: s.routeListenerErr}
+		chk["gateway"] = info{ok: (opts.Gateway.Name == "" || s.gatewayListener != nil), err: s.gatewayListenerErr}
+		chk["leafNode"] = info{ok: (opts.LeafNode.Port == 0 || s.leafNodeListener != nil), err: s.leafNodeListenerErr}
+		chk["websocket"] = info{ok: (opts.Websocket.Port == 0 || s.websocket.listener != nil), err: s.websocket.listenerErr}
+		chk["mqtt"] = info{ok: (opts.MQTT.Port == 0 || s.mqtt.listener != nil), err: s.mqtt.listenerErr}
+		s.mu.Unlock()
+
+		var numOK int
+		for _, inf := range chk {
+			if inf.ok {
+				numOK++
+			}
+		}
+		if numOK == len(chk) {
+			return nil
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	failed := make([]string, 0, len(chk))
+	for name, inf := range chk {
+		if inf.ok && inf.err != nil {
+			failed = append(failed, fmt.Sprintf("%s(ok, but %s)", name, inf.err))
+		}
+		if !inf.ok && inf.err == nil {
+			failed = append(failed, name)
+		}
+		if !inf.ok && inf.err != nil {
+			failed = append(failed, fmt.Sprintf("%s(%s)", name, inf.err))
+		}
+	}
+
+	return fmt.Errorf(
+		"failed to be ready for connections after %s: %s",
+		d, strings.Join(failed, ", "),
+	)
+}
+
 // ReadyForConnections returns `true` if the server is ready to accept clients
 // and, if routing is enabled, route connections. If after the duration
 // `dur` the server is still not ready, returns `false`.
 func (s *Server) ReadyForConnections(dur time.Duration) bool {
-	// Snapshot server options.
-	opts := s.getOpts()
-
-	end := time.Now().Add(dur)
-	for time.Now().Before(end) {
-		s.mu.Lock()
-		ok := s.listener != nil &&
-			(opts.Cluster.Port == 0 || s.routeListener != nil) &&
-			(opts.Gateway.Name == "" || s.gatewayListener != nil) &&
-			(opts.LeafNode.Port == 0 || s.leafNodeListener != nil) &&
-			(opts.Websocket.Port == 0 || s.websocket.listener != nil)
-		s.mu.Unlock()
-		if ok {
-			return true
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	return false
+	return s.readyForConnections(dur) == nil
 }
 
 // Quick utility to function to tell if the server supports headers.

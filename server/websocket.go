@@ -116,6 +116,7 @@ type srvWebsocket struct {
 	mu             sync.RWMutex
 	server         *http.Server
 	listener       net.Listener
+	listenerErr    error
 	tls            bool
 	allowedOrigins map[string]*allowedOrigin // host will be the key
 	sameOrigin     bool
@@ -961,6 +962,7 @@ func (s *Server) startWebsocketServer() {
 		proto = wsSchemePrefix
 		hl, err = net.Listen("tcp", hp)
 	}
+	s.websocket.listenerErr = err
 	if err != nil {
 		s.mu.Unlock()
 		s.Fatalf("Unable to listen for websocket connections: %v", err)

@@ -1342,8 +1342,8 @@ func TestRouteIPResolutionAndRouteToSelf(t *testing.T) {
 	go func() {
 		s.Start()
 	}()
-	if !s.ReadyForConnections(time.Second) {
-		t.Fatalf("Failed to start server")
+	if err := s.readyForConnections(time.Second); err != nil {
+		t.Fatal(err)
 	}
 
 	select {

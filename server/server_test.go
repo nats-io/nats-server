@@ -84,8 +84,8 @@ func RunServer(opts *Options) *Server {
 	go s.Start()
 
 	// Wait for accept loop(s) to be started
-	if !s.ReadyForConnections(10 * time.Second) {
-		panic("Unable to start NATS Server in Go Routine")
+	if err := s.readyForConnections(10 * time.Second); err != nil {
+		panic(err)
 	}
 	return s
 }
@@ -1481,8 +1481,8 @@ func TestInsecureSkipVerifyWarning(t *testing.T) {
 			s.Start()
 			wg.Done()
 		}()
-		if !s.ReadyForConnections(time.Second) {
-			t.Fatal("Unable to start the server")
+		if err := s.readyForConnections(time.Second); err != nil {
+			t.Fatal(err)
 		}
 		select {
 		case w := <-l.warn:

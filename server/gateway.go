@@ -454,6 +454,7 @@ func (s *Server) startGatewayAcceptLoop() {
 	}
 	hp := net.JoinHostPort(opts.Gateway.Host, strconv.Itoa(port))
 	l, e := natsListen("tcp", hp)
+	s.gatewayListenerErr = e
 	if e != nil {
 		s.mu.Unlock()
 		s.Fatalf("Error listening on gateway port: %d - %v", opts.Gateway.Port, e)
