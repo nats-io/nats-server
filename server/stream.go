@@ -1386,7 +1386,7 @@ func (mset *stream) setupMirrorConsumer() error {
 	if ext != nil {
 		deliverSubject = strings.ReplaceAll(ext.DeliverPrefix+syncSubject(".M"), "..", ".")
 	} else {
-		deliverSubject = syncSubject("$JSDC.M")
+		deliverSubject = syncSubject("$JS.M")
 	}
 
 	if !isReset {
@@ -1593,7 +1593,7 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 	if ext != nil {
 		deliverSubject = strings.ReplaceAll(ext.DeliverPrefix+syncSubject(".S"), "..", ".")
 	} else {
-		deliverSubject = syncSubject("$JSDC.S")
+		deliverSubject = syncSubject("$JS.S")
 	}
 
 	if !si.grr {
