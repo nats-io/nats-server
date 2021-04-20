@@ -5785,6 +5785,63 @@ func TestJetStreamClusterMirrorAndSourceExpiration(t *testing.T) {
 	checkTest(200)
 }
 
+func TestJetStreamClusterMirrorAndSourceSubLeaks(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "MSL", 3)
+	defer c.shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	startSubs := c.stableTotalSubs()
+
+	var ss []*nats.StreamSource
+
+	// Create 10 origin streams
+	for i := 0; i < 10; i++ {
+		sn := fmt.Sprintf("ORDERS-%d", i+1)
+		ss = append(ss, &nats.StreamSource{Name: sn})
+		if _, err := js.AddStream(&nats.StreamConfig{Name: sn}); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	// Create mux'd stream that sources all of the origin streams.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "MUX",
+		Replicas: 2,
+		Sources:  ss,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now create a mirror of the mux stream.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "MIRROR",
+		Replicas: 2,
+		Mirror:   &nats.StreamSource{Name: "MUX"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Get stable subs count.
+	afterSubs := c.stableTotalSubs()
+
+	js.DeleteStream("MIRROR")
+	js.DeleteStream("MUX")
+
+	for _, si := range ss {
+		js.DeleteStream(si.Name)
+	}
+
+	// Some subs take longer to settle out so we give ourselves a small buffer.
+	if deleteSubs := c.stableTotalSubs(); deleteSubs > startSubs+10 {
+		t.Fatalf("Expected subs to return to %d from a high of %d, but got %d", startSubs, afterSubs, deleteSubs)
+	}
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
@@ -6551,4 +6608,25 @@ func (c *cluster) restartAll() {
 		}
 	}
 	c.waitOnClusterReady()
+}
+
+func (c *cluster) totalSubs() (total int) {
+	c.t.Helper()
+	for _, s := range c.servers {
+		total += int(s.NumSubscriptions())
+	}
+	return total
+}
+
+func (c *cluster) stableTotalSubs() (total int) {
+	nsubs := -1
+	checkFor(c.t, 2*time.Second, 250*time.Millisecond, func() error {
+		subs := c.totalSubs()
+		if subs == nsubs {
+			return nil
+		}
+		nsubs = subs
+		return fmt.Errorf("Still stabilizing")
+	})
+	return nsubs
 }

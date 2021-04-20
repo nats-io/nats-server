@@ -2856,6 +2856,19 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	for _, o := range mset.consumers {
 		obs = append(obs, o)
 	}
+
+	// Check if we are a mirror.
+	if mset.mirror != nil && mset.mirror.sub != nil {
+		mset.unsubscribe(mset.mirror.sub)
+		mset.mirror.sub = nil
+		mset.removeInternalConsumer(mset.mirror)
+	}
+	// Now check for sources.
+	if len(mset.sources) > 0 {
+		for _, si := range mset.sources {
+			mset.cancelSourceConsumer(si.name)
+		}
+	}
 	mset.mu.Unlock()
 
 	for _, o := range obs {
