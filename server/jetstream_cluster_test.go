@@ -358,7 +358,10 @@ func TestJetStreamClusterDelete(t *testing.T) {
 	}
 
 	// Now delete the stream.
-	resp, _ = nc.Request(fmt.Sprintf(JSApiStreamDeleteT, cfg.Name), nil, time.Second)
+	resp, err = nc.Request(fmt.Sprintf(JSApiStreamDeleteT, cfg.Name), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
 	var dResp JSApiStreamDeleteResponse
 	if err = json.Unmarshal(resp.Data, &dResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
