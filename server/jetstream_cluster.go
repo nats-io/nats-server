@@ -221,13 +221,16 @@ func (s *Server) JetStreamSnapshotMeta() error {
 		return ErrJetStreamNotEnabled
 	}
 	js.mu.RLock()
-	defer js.mu.RUnlock()
 	cc := js.cluster
-	if !cc.isLeader() {
+	isLeader := cc.isLeader()
+	meta := cc.meta
+	js.mu.RUnlock()
+
+	if !isLeader {
 		return errNotLeader
 	}
 
-	return cc.meta.InstallSnapshot(js.metaSnapshot())
+	return meta.InstallSnapshot(js.metaSnapshot())
 }
 
 func (s *Server) JetStreamStepdownStream(account, stream string) error {
@@ -1370,7 +1373,11 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 					doSnapshot()
 				}
 			} else if err == errLastSeqMismatch {
-				if mset.isMirror() {
+				mset.mu.RLock()
+				isLeader := mset.isLeader()
+				mset.mu.RUnlock()
+
+				if mset.isMirror() && isLeader {
 					mset.retryMirrorConsumer()
 				} else {
 					s.Warnf("Got stream sequence mismatch for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
@@ -1553,6 +1560,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				if mset == nil {
 					continue
 				}
+				s := js.srv
 
 				subject, reply, hdr, msg, lseq, ts, err := decodeStreamMsg(buf[1:])
 				if err != nil {
@@ -1562,8 +1570,10 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				// We can skip if we know this is less than what we already have.
 				last := mset.lastSeq()
 				if lseq < last {
+					s.Debugf("Apply stream entries skipping message with sequence %d with last of %d", lseq, last)
 					continue
 				}
+
 				// Skip by hand here since first msg special case.
 				// Reason is sequence is unsigned and for lseq being 0
 				// the lseq under stream would have be -1.
@@ -1573,8 +1583,6 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 				// Check for flowcontrol here.
 				mset.checkForFlowControl(lseq + 1)
-
-				s := js.srv
 
 				// Messages to be skipped have no subject or timestamp.
 				if subject == _EMPTY_ && ts == 0 {
@@ -4166,6 +4174,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	s, js, jsa, st, rf, outq := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.outq
 	maxMsgSize := int(mset.cfg.MaxMsgSize)
 	msetName := mset.cfg.Name
+	lseq := mset.lseq
 	mset.mu.RUnlock()
 
 	// Check here pre-emptively if we have exceeded this server limits.
@@ -4229,7 +4238,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// We only use mset.clseq for clustering and in case we run ahead of actual commits.
 	// Check if we need to set initial value here
 	mset.clMu.Lock()
-	if mset.clseq == 0 {
+	if mset.clseq == 0 || mset.clseq < lseq {
 		mset.mu.RLock()
 		mset.clseq = mset.lseq
 		mset.mu.RUnlock()
@@ -4241,23 +4250,20 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 
 	// Do proposal.
 	err := mset.node.Propose(esm)
+	if err != nil {
+		mset.clseq--
+	}
 	mset.clMu.Unlock()
 
 	if err != nil {
 		seq = 0
-		mset.mu.Lock()
-		mset.clseq--
-		mset.mu.Unlock()
 		if canRespond {
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: mset.cfg.Name}}
 			resp.Error = &ApiError{Code: 503, Description: err.Error()}
 			response, _ = json.Marshal(resp)
+			// If we errored out respond here.
+			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
 		}
-	}
-
-	// If we errored out respond here.
-	if err != nil && canRespond {
-		outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
 	}
 
 	if err != nil && isOutOfSpaceErr(err) {

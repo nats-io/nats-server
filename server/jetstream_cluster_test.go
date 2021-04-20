@@ -358,7 +358,10 @@ func TestJetStreamClusterDelete(t *testing.T) {
 	}
 
 	// Now delete the stream.
-	resp, _ = nc.Request(fmt.Sprintf(JSApiStreamDeleteT, cfg.Name), nil, time.Second)
+	resp, err = nc.Request(fmt.Sprintf(JSApiStreamDeleteT, cfg.Name), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
 	var dResp JSApiStreamDeleteResponse
 	if err = json.Unmarshal(resp.Data, &dResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -1767,6 +1770,8 @@ func TestJetStreamClusterExtendedStreamInfo(t *testing.T) {
 	}
 
 	oldLeader = c.restartServer(oldLeader)
+	c.checkClusterFormed()
+
 	c.waitOnStreamLeader("$G", "TEST")
 	c.waitOnStreamCurrent(oldLeader, "$G", "TEST")
 
@@ -1943,12 +1948,12 @@ func TestJetStreamClusterInterestRetention(t *testing.T) {
 	}
 	m.Ack()
 
-	js, err = nc.JetStream(nats.MaxWait(50 * time.Millisecond))
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-
 	waitForZero := func() {
+		js, err := nc.JetStream(nats.MaxWait(50 * time.Millisecond))
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
 		checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
 			si, err := js.StreamInfo("foo")
 			if err != nil {
@@ -4717,7 +4722,7 @@ func TestJetStreamFailMirrorsAndSources(t *testing.T) {
 		})
 	}
 
-	testPrefix("mirror-bad-delierprefix", `prefix "test" overlaps with stream subject "test.>"`, StreamConfig{
+	testPrefix("mirror-bad-deliverprefix", `prefix "test" overlaps with stream subject "test.>"`, StreamConfig{
 		Name:    "MY_MIRROR_TEST",
 		Storage: FileStorage,
 		Mirror: &StreamSource{
@@ -4740,7 +4745,7 @@ func TestJetStreamFailMirrorsAndSources(t *testing.T) {
 			},
 		},
 	})
-	testPrefix("source-bad-delierprefix", `prefix "test" overlaps with stream subject "test.>"`, StreamConfig{
+	testPrefix("source-bad-deliverprefix", `prefix "test" overlaps with stream subject "test.>"`, StreamConfig{
 		Name:    "MY_SOURCE_TEST",
 		Storage: FileStorage,
 		Sources: []*StreamSource{{
@@ -5666,89 +5671,6 @@ func TestJetStreamClusterStreamInfoDeletedDetails(t *testing.T) {
 	}
 }
 
-func TestJetStreamClusterMirrorExpirationAndMissingSequences(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "MMS", 9)
-	defer c.shutdown()
-
-	// Client for API requests.
-	nc, js := jsClientConnect(t, c.randomServer())
-	defer nc.Close()
-
-	sendBatch := func(n int) {
-		t.Helper()
-		// Send a batch to a given subject.
-		for i := 0; i < n; i++ {
-			if _, err := js.Publish("TEST", []byte("OK")); err != nil {
-				t.Fatalf("Unexpected publish error: %v", err)
-			}
-		}
-	}
-
-	checkStream := func(stream string, num uint64) {
-		t.Helper()
-		checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
-			si, err := js.StreamInfo(stream)
-			if err != nil {
-				return err
-			}
-			if si.State.Msgs != num {
-				return fmt.Errorf("Expected %d msgs, got %d", num, si.State.Msgs)
-			}
-			return nil
-		})
-	}
-
-	checkMirror := func(num uint64) { t.Helper(); checkStream("M", num) }
-	checkTest := func(num uint64) { t.Helper(); checkStream("TEST", num) }
-
-	// Origin
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:   "TEST",
-		MaxAge: 100 * time.Millisecond,
-	})
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-
-	ts := c.streamLeader("$G", "TEST")
-	ml := c.leader()
-
-	// Create mirror now.
-	for ms := ts; ms == ts || ms == ml; {
-		_, err = js.AddStream(&nats.StreamConfig{
-			Name:     "M",
-			Mirror:   &nats.StreamSource{Name: "TEST"},
-			Replicas: 2,
-		})
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		ms = c.streamLeader("$G", "M")
-		if ts == ms || ms == ml {
-			// Delete and retry.
-			js.DeleteStream("M")
-		}
-	}
-
-	sendBatch(10)
-	checkMirror(10)
-
-	// Now shutdown the server with the mirror.
-	ms := c.streamLeader("$G", "M")
-	ms.Shutdown()
-
-	// Send more messages but let them expire.
-	sendBatch(10)
-	checkTest(0)
-
-	c.restartServer(ms)
-	c.checkClusterFormed()
-	c.waitOnStreamLeader("$G", "M")
-
-	sendBatch(10)
-	checkMirror(20)
-}
-
 func TestJetStreamClusterMirrorAndSourceExpiration(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "MSE", 3)
 	defer c.shutdown()
@@ -5758,18 +5680,18 @@ func TestJetStreamClusterMirrorAndSourceExpiration(t *testing.T) {
 	defer nc.Close()
 
 	// Origin
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name: "TEST",
-	})
-	if err != nil {
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST"}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
+	bi := 1
 	sendBatch := func(n int) {
 		t.Helper()
 		// Send a batch to a given subject.
 		for i := 0; i < n; i++ {
-			if _, err := js.Publish("TEST", []byte("OK")); err != nil {
+			msg := fmt.Sprintf("ID: %d", bi)
+			bi++
+			if _, err := js.PublishAsync("TEST", []byte(msg)); err != nil {
 				t.Fatalf("Unexpected publish error: %v", err)
 			}
 		}
@@ -5793,34 +5715,131 @@ func TestJetStreamClusterMirrorAndSourceExpiration(t *testing.T) {
 	checkMirror := func(num uint64) { t.Helper(); checkStream("M", num) }
 	checkTest := func(num uint64) { t.Helper(); checkStream("TEST", num) }
 
+	var err error
+
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     "M",
 		Mirror:   &nats.StreamSource{Name: "TEST"},
 		Replicas: 2,
-		MaxAge:   100 * time.Millisecond,
+		MaxAge:   500 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name:     "S",
-		Sources:  []*nats.StreamSource{{Name: "TEST"}},
-		Replicas: 2,
-		MaxAge:   100 * time.Millisecond,
-	})
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
+	// We want this to not be same as TEST leader for this test.
+	sl := c.streamLeader("$G", "TEST")
+	for ss := sl; ss == sl; {
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "S",
+			Sources:  []*nats.StreamSource{{Name: "TEST"}},
+			Replicas: 2,
+			MaxAge:   500 * time.Millisecond,
+		})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if ss = c.streamLeader("$G", "S"); ss == sl {
+			// Delete and retry.
+			js.DeleteStream("S")
+		}
 	}
 
-	sendBatch(20)
-	checkTest(20)
-	checkMirror(20)
-	checkSource(20)
+	sendBatch(100)
+	checkTest(100)
+	checkMirror(100)
+	checkSource(100)
 
 	// Make sure they expire.
 	checkMirror(0)
 	checkSource(0)
+
+	// Now stop the server housing the leader of the source stream.
+	sl.Shutdown()
+	c.restartServer(sl)
+	checkClusterFormed(t, c.servers...)
+	c.waitOnStreamLeader("$G", "S")
+	c.waitOnStreamLeader("$G", "M")
+
+	// Make sure can process correctly after we have expired all of the messages.
+	sendBatch(100)
+	// Need to check both in parallel.
+	scheck, mcheck := uint64(0), uint64(0)
+	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+		if scheck != 100 {
+			if si, _ := js.StreamInfo("S"); si != nil {
+				scheck = si.State.Msgs
+			}
+		}
+		if mcheck != 100 {
+			if si, _ := js.StreamInfo("M"); si != nil {
+				mcheck = si.State.Msgs
+			}
+		}
+		if scheck == 100 && mcheck == 100 {
+			return nil
+		}
+		return fmt.Errorf("Both not at 100 yet, S=%d, M=%d", scheck, mcheck)
+	})
+
+	checkTest(200)
+}
+
+func TestJetStreamClusterMirrorAndSourceSubLeaks(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "MSL", 3)
+	defer c.shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	startSubs := c.stableTotalSubs()
+
+	var ss []*nats.StreamSource
+
+	// Create 10 origin streams
+	for i := 0; i < 10; i++ {
+		sn := fmt.Sprintf("ORDERS-%d", i+1)
+		ss = append(ss, &nats.StreamSource{Name: sn})
+		if _, err := js.AddStream(&nats.StreamConfig{Name: sn}); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	// Create mux'd stream that sources all of the origin streams.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "MUX",
+		Replicas: 2,
+		Sources:  ss,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now create a mirror of the mux stream.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "MIRROR",
+		Replicas: 2,
+		Mirror:   &nats.StreamSource{Name: "MUX"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Get stable subs count.
+	afterSubs := c.stableTotalSubs()
+
+	js.DeleteStream("MIRROR")
+	js.DeleteStream("MUX")
+
+	for _, si := range ss {
+		js.DeleteStream(si.Name)
+	}
+
+	// Some subs take longer to settle out so we give ourselves a small buffer.
+	if deleteSubs := c.stableTotalSubs(); deleteSubs > startSubs+10 {
+		t.Fatalf("Expected subs to return to %d from a high of %d, but got %d", startSubs, afterSubs, deleteSubs)
+	}
 }
 
 // Support functions
@@ -5904,10 +5923,10 @@ func createJetStreamSuperCluster(t *testing.T, numServersPer, numClusters int) *
 		t.Fatalf("Number of clusters must be > 1")
 	}
 
-	const (
-		startClusterPort = 33222
-		startGWPort      = 11222
-	)
+	startClusterPorts := []int{5_022, 7_022, 10_022, 12_022, 16_332, 18_332, 40_332}
+	startGatewayPorts := []int{6_022, 8_022, 11_022, 17_332, 21_332, 42_332}
+	startClusterPort := startClusterPorts[rand.Intn(len(startClusterPorts))]
+	startGWPort := startGatewayPorts[rand.Intn(len(startGatewayPorts))]
 
 	// Make the GWs form faster for the tests.
 	SetGatewaysSolicitDelay(10 * time.Millisecond)
@@ -6173,8 +6192,9 @@ func createJetStreamClusterExplicit(t *testing.T, clusterName string, numServers
 
 func createJetStreamClusterWithTemplate(t *testing.T, tmpl string, clusterName string, numServers int) *cluster {
 	t.Helper()
-	const startClusterPort = 22332
-	return createJetStreamCluster(t, tmpl, clusterName, _EMPTY_, numServers, startClusterPort, true)
+	startPorts := []int{9_022, 11_022, 14_022, 16_022, 20_332, 22_332, 33_332, 44_332}
+	port := startPorts[rand.Intn(len(startPorts))]
+	return createJetStreamCluster(t, tmpl, clusterName, _EMPTY_, numServers, port, true)
 }
 
 func createJetStreamCluster(t *testing.T, tmpl string, clusterName string, snPre string, numServers int, portStart int, waitOnReady bool) *cluster {
@@ -6588,4 +6608,25 @@ func (c *cluster) restartAll() {
 		}
 	}
 	c.waitOnClusterReady()
+}
+
+func (c *cluster) totalSubs() (total int) {
+	c.t.Helper()
+	for _, s := range c.servers {
+		total += int(s.NumSubscriptions())
+	}
+	return total
+}
+
+func (c *cluster) stableTotalSubs() (total int) {
+	nsubs := -1
+	checkFor(c.t, 2*time.Second, 250*time.Millisecond, func() error {
+		subs := c.totalSubs()
+		if subs == nsubs {
+			return nil
+		}
+		nsubs = subs
+		return fmt.Errorf("Still stabilizing")
+	})
+	return nsubs
 }

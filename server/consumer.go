@@ -2735,10 +2735,14 @@ func (o *consumer) stopWithFlags(dflag, doSignal, advisory bool) error {
 	o.active = false
 	o.unsubscribe(o.ackSub)
 	o.unsubscribe(o.reqSub)
-	o.unsubscribe(o.infoSub)
+	o.unsubscribe(o.fcSub)
 	o.ackSub = nil
 	o.reqSub = nil
-	o.infoSub = nil
+	o.fcSub = nil
+	if o.infoSub != nil {
+		o.srv.sysUnsubscribe(o.infoSub)
+		o.infoSub = nil
+	}
 	c := o.client
 	o.client = nil
 	sysc := o.sysc
