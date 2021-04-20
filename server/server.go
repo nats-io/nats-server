@@ -1685,9 +1685,7 @@ func (s *Server) Shutdown() {
 	}
 	s.Noticef("Initiating Shutdown...")
 
-	if s.accResolver != nil {
-		s.accResolver.Close()
-	}
+	accRes := s.accResolver
 
 	opts := s.getOpts()
 
@@ -1697,6 +1695,10 @@ func (s *Server) Shutdown() {
 	s.grRunning = false
 	s.grMu.Unlock()
 	s.mu.Unlock()
+
+	if accRes != nil {
+		accRes.Close()
+	}
 
 	// Now check jetstream.
 	s.shutdownJetStream()
