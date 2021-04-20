@@ -1139,6 +1139,10 @@ func (mset *stream) processMirrorMsgs() {
 
 	// Grab stream quit channel.
 	mset.mu.Lock()
+	if mset.mirror == nil {
+		mset.mu.Unlock()
+		return
+	}
 	msgs, mch, qch := mset.mirror.msgs, mset.mirror.msgs.mch, mset.qch
 	// Set the last seen as now so that we don't fail at the first check.
 	mset.mirror.last = time.Now()
