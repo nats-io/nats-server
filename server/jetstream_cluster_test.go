@@ -5863,10 +5863,10 @@ func createJetStreamSuperCluster(t *testing.T, numServersPer, numClusters int) *
 		t.Fatalf("Number of clusters must be > 1")
 	}
 
-	const (
-		startClusterPort = 33222
-		startGWPort      = 11222
-	)
+	startClusterPorts := []int{5_022, 7_022, 10_022, 12_022, 16_332, 18_332, 40_332}
+	startGatewayPorts := []int{6_022, 8_022, 11_022, 17_332, 21_332, 42_332}
+	startClusterPort := startClusterPorts[rand.Intn(len(startClusterPorts))]
+	startGWPort := startGatewayPorts[rand.Intn(len(startGatewayPorts))]
 
 	// Make the GWs form faster for the tests.
 	SetGatewaysSolicitDelay(10 * time.Millisecond)
