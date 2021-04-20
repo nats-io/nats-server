@@ -464,10 +464,22 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 
 // outOfResources checks to see if we are out of resources.
 func (n *raft) outOfResources() bool {
-	if !n.track || n.js == nil || n.js.disabled {
+	n.RLock()
+	js := n.js
+	if !n.track || js == nil {
+		n.RUnlock()
 		return false
 	}
-	return n.js.limitsExceeded(n.wtype)
+	n.RUnlock()
+
+	js.mu.RLock()
+	jsDisabled := js.disabled
+	js.mu.RUnlock()
+	if jsDisabled {
+		return false
+	}
+
+	return js.limitsExceeded(n.wtype)
 }
 
 // Maps node names back to server names.

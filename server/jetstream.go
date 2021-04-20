@@ -493,8 +493,16 @@ func (s *Server) configAllJetStreamAccounts() error {
 // JetStreamEnabled reports if jetstream is enabled.
 func (s *Server) JetStreamEnabled() bool {
 	s.mu.Lock()
-	enabled := s.js != nil && !s.js.disabled
+	js := s.js
 	s.mu.Unlock()
+
+	var enabled bool
+	if js != nil {
+		js.mu.RLock()
+		enabled = !js.disabled
+		js.mu.RUnlock()
+	}
+
 	return enabled
 }
 
