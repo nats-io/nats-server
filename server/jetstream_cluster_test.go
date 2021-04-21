@@ -5923,8 +5923,8 @@ func createJetStreamSuperCluster(t *testing.T, numServersPer, numClusters int) *
 		t.Fatalf("Number of clusters must be > 1")
 	}
 
-	startClusterPorts := []int{50_022, 52_022, 55_022, 57_022, 59_332, 61_332}
-	startGatewayPorts := []int{50_122, 52_122, 55_122, 57_122, 59_432, 61_432}
+	startClusterPorts := []int{20_022, 22_022, 24_022}
+	startGatewayPorts := []int{20_122, 22_122, 24_122}
 	startClusterPort := startClusterPorts[rand.Intn(len(startClusterPorts))]
 	startGWPort := startGatewayPorts[rand.Intn(len(startGatewayPorts))]
 
@@ -6192,7 +6192,7 @@ func createJetStreamClusterExplicit(t *testing.T, clusterName string, numServers
 
 func createJetStreamClusterWithTemplate(t *testing.T, tmpl string, clusterName string, numServers int) *cluster {
 	t.Helper()
-	startPorts := []int{49_222, 51_022, 54_022, 56_022, 60_332, 62_332}
+	startPorts := []int{7_022, 9_022, 11_022, 15_022}
 	port := startPorts[rand.Intn(len(startPorts))]
 	return createJetStreamCluster(t, tmpl, clusterName, _EMPTY_, numServers, port, true)
 }
