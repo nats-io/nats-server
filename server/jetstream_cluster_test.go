@@ -5839,13 +5839,8 @@ func TestJetStreamClusterCreateConcurrentDurableConsumers(t *testing.T) {
 	defer c.shutdown()
 
 	// Client for API requests.
-	nc, _ := jsClientConnect(t, c.randomServer())
+	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
-
-	js, err := nc.JetStream(nats.MaxWait(10 * time.Second))
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
 
 	// Create origin stream, muct be R > 1
 	if _, err := js.AddStream(&nats.StreamConfig{Name: "ORDERS", Replicas: 3}); err != nil {
