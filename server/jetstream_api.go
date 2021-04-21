@@ -776,6 +776,28 @@ func (s *Server) sendAPIErrResponse(ci *ClientInfo, acc *Account, subject, reply
 	s.sendJetStreamAPIAuditAdvisory(ci, acc, subject, request, response)
 }
 
+const errRespDelay = 500 * time.Millisecond
+
+func (s *Server) sendDelayedAPIErrResponse(ci *ClientInfo, acc *Account, subject, reply, request, response string, rg *raftGroup) {
+	var quitCh <-chan struct{}
+	if rg != nil && rg.node != nil {
+		quitCh = rg.node.QuitC()
+	}
+	s.startGoRoutine(func() {
+		defer s.grWG.Done()
+		select {
+		case <-quitCh:
+		case <-s.quitCh:
+		case <-time.After(errRespDelay):
+			acc.trackAPIErr()
+			if reply != _EMPTY_ {
+				s.sendInternalAccountMsg(nil, reply, response)
+			}
+			s.sendJetStreamAPIAuditAdvisory(ci, acc, subject, request, response)
+		}
+	})
+}
+
 func (s *Server) getRequestInfo(c *client, raw []byte) (pci *ClientInfo, acc *Account, hdr, msg []byte, err error) {
 	hdr, msg = c.msgParts(raw)
 	var ci ClientInfo
@@ -1614,7 +1636,8 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 		} else if sa == nil {
 			if js.isLeaderless() {
 				resp.Error = jsClusterNotAvailErr
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				// Delaying an error response gives the leader a chance to respond before us
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil)
 			}
 			return
 		}
@@ -1626,7 +1649,8 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 		if !acc.JetStreamIsStreamLeader(streamName) && !isLeaderless {
 			if js.isLeaderless() {
 				resp.Error = jsClusterNotAvailErr
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				// Delaying an error response gives the leader a chance to respond before us
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), sa.Group)
 			}
 			return
 		}
@@ -3307,7 +3331,8 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 		} else if ca == nil {
 			if js.isLeaderless() {
 				resp.Error = jsClusterNotAvailErr
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				// Delaying an error response gives the leader a chance to respond before us
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil)
 			}
 			return
 		}
@@ -3323,7 +3348,8 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 		if !acc.JetStreamIsConsumerLeader(streamName, consumerName) {
 			if js.isLeaderless() {
 				resp.Error = jsClusterNotAvailErr
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				// Delaying an error response gives the leader a chance to respond before us
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), ca.Group)
 			} else if rg := ca.Group; rg != nil && rg.node != nil && rg.isMember(cc.meta.ID()) {
 				// Check here if we are a member and this is just a new consumer that does not have a leader yet.
 				if rg.node.GroupLeader() == _EMPTY_ && !rg.node.HadPreviousLeader() {
