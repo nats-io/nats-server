@@ -2691,12 +2691,14 @@ func (js *jetStream) consumerAssignment(account, stream, consumer string) *consu
 // consumerAssigned informs us if this server has this consumer assigned.
 func (jsa *jsAccount) consumerAssigned(stream, consumer string) bool {
 	jsa.mu.RLock()
-	defer jsa.mu.RUnlock()
-
 	js, acc := jsa.js, jsa.account
+	jsa.mu.RUnlock()
+
 	if js == nil {
 		return false
 	}
+	js.mu.RLock()
+	defer js.mu.RUnlock()
 	return js.cluster.isConsumerAssigned(acc, stream, consumer)
 }
 
