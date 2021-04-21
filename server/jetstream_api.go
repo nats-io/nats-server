@@ -1480,6 +1480,7 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, rep
 	resp.Total = numStreams
 	resp.Limit = JSApiNamesLimit
 	resp.Offset = offset
+
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -3281,6 +3282,10 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 
 		js.mu.RLock()
 		isLeader, sa, ca := cc.isLeader(), js.streamAssignment(acc.Name, streamName), js.consumerAssignment(acc.Name, streamName, consumerName)
+		// Ignore pending consumers for now.
+		if ca != nil && ca.pending {
+			ca = nil
+		}
 		js.mu.RUnlock()
 
 		if isLeader && ca == nil {
@@ -3319,6 +3324,13 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 			if js.isLeaderless() {
 				resp.Error = jsClusterNotAvailErr
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			}
+			// Check here if we are a member and this is just a new consumer that does not have a leader yet.
+			if rg := ca.Group; rg.node != nil && rg.isMember(cc.meta.ID()) {
+				if rg.node.GroupLeader() == _EMPTY_ && !rg.node.HadPreviousLeader() {
+					resp.Error = jsNoConsumerErr
+					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				}
 			}
 			return
 		}
