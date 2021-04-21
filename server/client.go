@@ -3270,6 +3270,12 @@ func (c *client) pruneDenyCache() {
 // prunePubPermsCache will prune the cache via randomly
 // deleting items. Doing so pruneSize items at a time.
 func (c *client) prunePubPermsCache() {
+	// There is a case where we can invoke this from multiple go routines,
+	// (in deliverMsg() if sub.client is a LEAF), so we make sure to prune
+	// from only one go routine at a time.
+	if !atomic.CompareAndSwapInt32(&c.perms.prun, 0, 1) {
+		return
+	}
 	const maxPruneAtOnce = 1000
 	r := 0
 	c.perms.pcache.Range(func(k, _ interface{}) bool {
@@ -3281,7 +3287,7 @@ func (c *client) prunePubPermsCache() {
 		return true
 	})
 	atomic.AddInt32(&c.perms.pcsz, -int32(r))
-	atomic.CompareAndSwapInt32(&c.perms.prun, 1, 0)
+	atomic.StoreInt32(&c.perms.prun, 0)
 }
 
 // pubAllowed checks on publish permissioning.
@@ -3340,11 +3346,7 @@ func (c *client) pubAllowedFullCheck(subject string, fullCheck, hasLock bool) bo
 	} else {
 		// Update our cache here.
 		c.perms.pcache.Store(string(subject), allowed)
-		// There is a case where we can invoke this from multiple go routines,
-		// (in deliverMsg() if sub.client is a LEAF), so we make sure to prune
-		// from only one go routine at a time.
-		if n := atomic.AddInt32(&c.perms.pcsz, 1); n > maxPermCacheSize &&
-			atomic.CompareAndSwapInt32(&c.perms.prun, 0, 1) {
+		if n := atomic.AddInt32(&c.perms.pcsz, 1); n > maxPermCacheSize {
 			c.prunePubPermsCache()
 		}
 	}
