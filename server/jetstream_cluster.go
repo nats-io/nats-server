@@ -3466,6 +3466,22 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		return
 	}
 
+	// Check for subject collisions here.
+	for _, sa := range cc.streams[acc.Name] {
+		if sa == osa {
+			continue
+		}
+		for _, subj := range sa.Config.Subjects {
+			for _, tsubj := range newCfg.Subjects {
+				if SubjectsCollide(tsubj, subj) {
+					resp.Error = jsError(fmt.Errorf("subjects overlap with an existing stream"))
+					s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+					return
+				}
+			}
+		}
+	}
+
 	sa := &streamAssignment{Group: osa.Group, Config: newCfg, Subject: subject, Reply: reply, Client: ci}
 	cc.meta.Propose(encodeUpdateStreamAssignment(sa))
 }
