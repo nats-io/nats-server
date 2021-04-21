@@ -3324,9 +3324,8 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 			if js.isLeaderless() {
 				resp.Error = jsClusterNotAvailErr
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			}
-			// Check here if we are a member and this is just a new consumer that does not have a leader yet.
-			if rg := ca.Group; rg.node != nil && rg.isMember(cc.meta.ID()) {
+			} else if rg := ca.Group; rg != nil && rg.node != nil && rg.isMember(cc.meta.ID()) {
+				// Check here if we are a member and this is just a new consumer that does not have a leader yet.
 				if rg.node.GroupLeader() == _EMPTY_ && !rg.node.HadPreviousLeader() {
 					resp.Error = jsNoConsumerErr
 					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
