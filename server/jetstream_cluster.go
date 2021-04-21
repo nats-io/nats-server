@@ -1310,6 +1310,23 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 	s.Debugf("Starting stream monitor for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
 	defer s.Debugf("Exiting stream monitor for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
 
+	// Make sure we do not leave the apply channel to fill up and block the raft layer.
+	defer func() {
+		if n.State() != Closed {
+			if n.Leader() {
+				n.StepDown()
+			}
+			// Drain the commit channel..
+			for len(ach) > 0 {
+				select {
+				case <-ach:
+				default:
+					return
+				}
+			}
+		}
+	}()
+
 	const (
 		compactInterval = 2 * time.Minute
 		compactSizeMin  = 32 * 1024 * 1024
