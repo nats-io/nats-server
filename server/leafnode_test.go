@@ -1293,6 +1293,93 @@ func TestLeafNodePermissions(t *testing.T) {
 	}
 }
 
+func TestLeafNodePermissionsConcurrentAccess(t *testing.T) {
+	lo1 := DefaultOptions()
+	lo1.LeafNode.Host = "127.0.0.1"
+	lo1.LeafNode.Port = -1
+	ln1 := RunServer(lo1)
+	defer ln1.Shutdown()
+
+	nc1 := natsConnect(t, ln1.ClientURL())
+	defer nc1.Close()
+
+	natsSub(t, nc1, "_INBOX.>", func(_ *nats.Msg) {})
+	natsFlush(t, nc1)
+
+	ch := make(chan struct{}, 1)
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+
+	publish := func(nc *nats.Conn) {
+		defer wg.Done()
+
+		for {
+			select {
+			case <-ch:
+				return
+			default:
+				nc.Publish(nats.NewInbox(), []byte("hello"))
+			}
+		}
+	}
+
+	go publish(nc1)
+
+	u, _ := url.Parse(fmt.Sprintf("nats://%s:%d", lo1.LeafNode.Host, lo1.LeafNode.Port))
+	lo2 := DefaultOptions()
+	lo2.LeafNode.ReconnectInterval = 5 * time.Millisecond
+	lo2.LeafNode.connDelay = 500 * time.Millisecond
+	lo2.LeafNode.Remotes = []*RemoteLeafOpts{
+		{
+			URLs:        []*url.URL{u},
+			DenyExports: []string{"foo"},
+			DenyImports: []string{"bar"},
+		},
+	}
+	ln2 := RunServer(lo2)
+	defer ln2.Shutdown()
+
+	nc2 := natsConnect(t, ln2.ClientURL())
+	defer nc2.Close()
+
+	natsSub(t, nc2, "_INBOX.>", func(_ *nats.Msg) {})
+	natsFlush(t, nc2)
+
+	go publish(nc2)
+
+	checkLeafNodeConnected(t, ln1)
+	checkLeafNodeConnected(t, ln2)
+
+	time.Sleep(50 * time.Millisecond)
+	close(ch)
+	wg.Wait()
+}
+
+func TestLeafNodePubAllowedPruning(t *testing.T) {
+	c := &client{}
+	c.setPermissions(&Permissions{Publish: &SubjectPermission{Allow: []string{"foo"}}})
+
+	gr := 100
+	wg := sync.WaitGroup{}
+	wg.Add(gr)
+	for i := 0; i < gr; i++ {
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 100; i++ {
+				c.pubAllowed(nats.NewInbox())
+			}
+		}()
+	}
+
+	wg.Wait()
+	if n := int(atomic.LoadInt32(&c.perms.pcsz)); n > maxPermCacheSize {
+		t.Fatalf("Expected size to be less than %v, got %v", maxPermCacheSize, n)
+	}
+	if n := atomic.LoadInt32(&c.perms.prun); n != 0 {
+		t.Fatalf("c.perms.prun should be 0, was %v", n)
+	}
+}
+
 func TestLeafNodeExportPermissionsNotForSpecialSubs(t *testing.T) {
 	lo1 := DefaultOptions()
 	lo1.Accounts = []*Account{NewAccount("SYS")}
