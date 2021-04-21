@@ -5880,6 +5880,43 @@ func TestJetStreamClusterCreateConcurrentDurableConsumers(t *testing.T) {
 	}
 }
 
+// https://github.com/nats-io/nats-server/issues/2144
+func TestJetStreamClusterUpdateStreamToExisting(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "MSL", 3)
+	defer c.shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "ORDERS1",
+		Replicas: 3,
+		Subjects: []string{"foo"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "ORDERS2",
+		Replicas: 3,
+		Subjects: []string{"bar"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "ORDERS2",
+		Replicas: 3,
+		Subjects: []string{"foo"},
+	})
+	if err == nil {
+		t.Fatalf("Expected an error but got none")
+	}
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
