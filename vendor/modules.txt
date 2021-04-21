@@ -1,3 +1,5 @@
+# github.com/golang/protobuf v1.4.2
+## explicit
 # github.com/klauspost/compress v1.11.12
 ## explicit
 github.com/klauspost/compress/s2
@@ -7,7 +9,7 @@ github.com/minio/highwayhash
 # github.com/nats-io/jwt/v2 v2.0.1
 ## explicit
 github.com/nats-io/jwt/v2
-# github.com/nats-io/nats.go v1.10.1-0.20210330225420-a0b1f60162f8
+# github.com/nats-io/nats.go v1.10.1-0.20210419223411-20527524c393
 ## explicit
 github.com/nats-io/nats.go
 github.com/nats-io/nats.go/encoders/builtin

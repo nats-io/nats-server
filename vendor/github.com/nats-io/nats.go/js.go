@@ -97,11 +97,11 @@ type JetStream interface {
 
 	// PublishAsync publishes a message to JetStream and returns a PubAckFuture.
 	// The data should not be changed until the PubAckFuture has been processed.
-	PublishAsync(subj string, data []byte, opts ...PubOpt) (*PubAckFuture, error)
+	PublishAsync(subj string, data []byte, opts ...PubOpt) (PubAckFuture, error)
 
 	// PublishMsgAsync publishes a Msg to JetStream and returms a PubAckFuture.
 	// The message should not be changed until the PubAckFuture has been processed.
-	PublishMsgAsync(m *Msg, opts ...PubOpt) (*PubAckFuture, error)
+	PublishMsgAsync(m *Msg, opts ...PubOpt) (PubAckFuture, error)
 
 	// PublishAsyncPending returns the number of async publishes outstanding for this context.
 	PublishAsyncPending() int
@@ -143,7 +143,7 @@ type js struct {
 	mu   sync.RWMutex
 	rpre string
 	rsub *Subscription
-	pafs map[string]*PubAckFuture
+	pafs map[string]*pubAckFuture
 	stc  chan struct{}
 	dch  chan struct{}
 }
@@ -346,7 +346,18 @@ func (js *js) Publish(subj string, data []byte, opts ...PubOpt) (*PubAck, error)
 }
 
 // PubAckFuture is a future for a PubAck.
-type PubAckFuture struct {
+type PubAckFuture interface {
+	// Ok returns a receive only channel that can be used to get a PubAck.
+	Ok() <-chan *PubAck
+
+	// Err returns a receive only channel that can be used to get the error from an async publish.
+	Err() <-chan error
+
+	// Msg returns the message that was sent to the server.
+	Msg() *Msg
+}
+
+type pubAckFuture struct {
 	js     *js
 	msg    *Msg
 	pa     *PubAck
@@ -356,7 +367,7 @@ type PubAckFuture struct {
 	doneCh chan *PubAck
 }
 
-func (paf *PubAckFuture) Ok() <-chan *PubAck {
+func (paf *pubAckFuture) Ok() <-chan *PubAck {
 	paf.js.mu.Lock()
 	defer paf.js.mu.Unlock()
 
@@ -370,7 +381,7 @@ func (paf *PubAckFuture) Ok() <-chan *PubAck {
 	return paf.doneCh
 }
 
-func (paf *PubAckFuture) Err() <-chan error {
+func (paf *pubAckFuture) Err() <-chan error {
 	paf.js.mu.Lock()
 	defer paf.js.mu.Unlock()
 
@@ -384,7 +395,7 @@ func (paf *PubAckFuture) Err() <-chan error {
 	return paf.errCh
 }
 
-func (paf *PubAckFuture) Msg() *Msg {
+func (paf *pubAckFuture) Msg() *Msg {
 	paf.js.mu.RLock()
 	defer paf.js.mu.RUnlock()
 	return paf.msg
@@ -426,10 +437,10 @@ func (js *js) newAsyncReply() string {
 }
 
 // registerPAF will register for a PubAckFuture.
-func (js *js) registerPAF(id string, paf *PubAckFuture) (int, int) {
+func (js *js) registerPAF(id string, paf *pubAckFuture) (int, int) {
 	js.mu.Lock()
 	if js.pafs == nil {
-		js.pafs = make(map[string]*PubAckFuture)
+		js.pafs = make(map[string]*pubAckFuture)
 	}
 	paf.js = js
 	js.pafs[id] = paf
@@ -440,7 +451,7 @@ func (js *js) registerPAF(id string, paf *PubAckFuture) (int, int) {
 }
 
 // Lock should be held.
-func (js *js) getPAF(id string) *PubAckFuture {
+func (js *js) getPAF(id string) *pubAckFuture {
 	if js.pafs == nil {
 		return nil
 	}
@@ -565,11 +576,11 @@ func PublishAsyncMaxPending(max int) JSOpt {
 }
 
 // PublishAsync publishes a message to JetStream and returns a PubAckFuture
-func (js *js) PublishAsync(subj string, data []byte, opts ...PubOpt) (*PubAckFuture, error) {
+func (js *js) PublishAsync(subj string, data []byte, opts ...PubOpt) (PubAckFuture, error) {
 	return js.PublishMsgAsync(&Msg{Subject: subj, Data: data}, opts...)
 }
 
-func (js *js) PublishMsgAsync(m *Msg, opts ...PubOpt) (*PubAckFuture, error) {
+func (js *js) PublishMsgAsync(m *Msg, opts ...PubOpt) (PubAckFuture, error) {
 	var o pubOpts
 	if len(opts) > 0 {
 		if m.Header == nil {
@@ -610,7 +621,7 @@ func (js *js) PublishMsgAsync(m *Msg, opts ...PubOpt) (*PubAckFuture, error) {
 		return nil, errors.New("nats: error creating async reply handler")
 	}
 	id := m.Reply[aReplyPreLen:]
-	paf := &PubAckFuture{msg: m, st: time.Now()}
+	paf := &pubAckFuture{msg: m, st: time.Now()}
 	numPending, maxPending := js.registerPAF(id, paf)
 
 	if maxPending > 0 && numPending >= maxPending {
@@ -682,6 +693,7 @@ type ackOpts struct {
 	ctx context.Context
 }
 
+// AckOpt are the options that can be passed when acknowledge a message.
 type AckOpt interface {
 	configureAck(opts *ackOpts) error
 }
@@ -765,6 +777,8 @@ type ConsumerConfig struct {
 	SampleFrequency string        `json:"sample_freq,omitempty"`
 	MaxWaiting      int           `json:"max_waiting,omitempty"`
 	MaxAckPending   int           `json:"max_ack_pending,omitempty"`
+	FlowControl     bool          `json:"flow_control,omitempty"`
+	Heartbeat       time.Duration `json:"idle_heartbeat,omitempty"`
 }
 
 // ConsumerInfo is the info from a JetStream consumer.
@@ -804,6 +818,19 @@ type jsSub struct {
 	pull     bool
 	durable  bool
 	attached bool
+
+	// Heartbeats and Flow Control handling from push consumers.
+	hbs bool
+	fc  bool
+
+	// cmeta is holds metadata from a push consumer when HBs are enabled.
+	cmeta atomic.Value
+}
+
+// controlMetadata is metadata used to be able to detect sequence mismatch
+// errors in push based consumers that have heartbeats enabled.
+type controlMetadata struct {
+	meta string
 }
 
 func (jsi *jsSub) unsubscribe(drainMode bool) error {
@@ -879,6 +906,8 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync 
 
 	isPullMode := ch == nil && cb == nil
 	badPullAck := o.cfg.AckPolicy == AckNonePolicy || o.cfg.AckPolicy == AckAllPolicy
+	hasHeartbeats := o.cfg.Heartbeat > 0
+	hasFC := o.cfg.FlowControl
 	if isPullMode && badPullAck {
 		return nil, fmt.Errorf("nats: invalid ack mode for pull consumers: %s", o.cfg.AckPolicy)
 	}
@@ -887,10 +916,12 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync 
 		err          error
 		shouldCreate bool
 		ccfg         *ConsumerConfig
+		info         *ConsumerInfo
 		deliver      string
 		attached     bool
 		stream       = o.stream
 		consumer     = o.consumer
+		isDurable    = o.cfg.Durable != _EMPTY_
 	)
 
 	// Find the stream mapped to the subject if not bound to a stream already.
@@ -905,7 +936,6 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync 
 
 	// With an explicit durable name, then can lookup
 	// the consumer to which it should be attaching to.
-	var info *ConsumerInfo
 	consumer = o.cfg.Durable
 	if consumer != _EMPTY_ {
 		// Only create in case there is no consumer already.
@@ -949,9 +979,9 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync 
 	}
 
 	if isPullMode {
-		sub = &Subscription{Subject: subj, conn: js.nc, typ: PullSubscription, jsi: &jsSub{js: js, pull: true}}
+		sub = &Subscription{Subject: subj, conn: js.nc, typ: PullSubscription, jsi: &jsSub{js: js, pull: isPullMode}}
 	} else {
-		sub, err = js.nc.subscribe(deliver, queue, cb, ch, isSync, &jsSub{js: js})
+		sub, err = js.nc.subscribe(deliver, queue, cb, ch, isSync, &jsSub{js: js, hbs: hasHeartbeats, fc: hasFC})
 		if err != nil {
 			return nil, err
 		}
@@ -982,7 +1012,6 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync 
 		}
 
 		var ccSubj string
-		isDurable := cfg.Durable != _EMPTY_
 		if isDurable {
 			ccSubj = fmt.Sprintf(apiDurableCreateT, stream, cfg.Durable)
 		} else {
@@ -998,35 +1027,94 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync 
 			return nil, err
 		}
 
-		var info consumerResponse
-		err = json.Unmarshal(resp.Data, &info)
+		var cinfo consumerResponse
+		err = json.Unmarshal(resp.Data, &cinfo)
 		if err != nil {
 			sub.Unsubscribe()
 			return nil, err
 		}
-		if info.Error != nil {
+		info = cinfo.ConsumerInfo
+		if cinfo.Error != nil {
+			// Remove interest from previous subscribe since it
+			// may have an incorrect delivery subject.
 			sub.Unsubscribe()
-			return nil, fmt.Errorf("nats: %s", info.Error.Description)
+
+			// Multiple subscribers could compete in creating the first consumer
+			// that will be shared using the same durable name. If this happens, then
+			// do a lookup of the consumer info and resubscribe using the latest info.
+			if consumer != _EMPTY_ && strings.Contains(cinfo.Error.Description, `consumer already exists`) {
+				info, err = js.ConsumerInfo(stream, consumer)
+				if err != nil && err.Error() != "nats: consumer not found" {
+					return nil, err
+				}
+				ccfg = &info.Config
+
+				// Validate that the original subject does still match.
+				if ccfg.FilterSubject != _EMPTY_ && subj != ccfg.FilterSubject {
+					return nil, ErrSubjectMismatch
+				}
+
+				// Use the deliver subject from latest consumer config to attach.
+				if ccfg.DeliverSubject != _EMPTY_ {
+					sub, err = js.nc.subscribe(ccfg.DeliverSubject, queue, cb, ch, isSync,
+						&jsSub{js: js, hbs: hasHeartbeats, fc: hasFC})
+					if err != nil {
+						return nil, err
+					}
+				}
+				attached = true
+			} else {
+				return nil, fmt.Errorf("nats: %s", cinfo.Error.Description)
+			}
 		}
-
-		// Hold onto these for later.
-		sub.jsi.stream = info.Stream
-		sub.jsi.consumer = info.Name
-		sub.jsi.deliver = info.Config.DeliverSubject
-		sub.jsi.durable = isDurable
-	} else {
-		sub.jsi.stream = stream
-		sub.jsi.consumer = consumer
-		sub.jsi.deliver = ccfg.DeliverSubject
+		stream = info.Stream
+		consumer = info.Name
+		deliver = info.Config.DeliverSubject
 	}
+	sub.jsi.stream = stream
+	sub.jsi.consumer = consumer
+	sub.jsi.durable = isDurable
 	sub.jsi.attached = attached
-
-	// If we are pull based go ahead and fire off the first request to populate.
-	if isPullMode {
-		sub.jsi.pull = o.pull
-	}
+	sub.jsi.deliver = deliver
 
 	return sub, nil
+}
+
+func (nc *Conn) processControlFlow(msg *Msg, s *Subscription, jsi *jsSub) {
+	// If it is a flow control message then have to ack.
+	if msg.Reply != "" {
+		nc.publish(msg.Reply, _EMPTY_, nil, nil)
+	} else if jsi.hbs {
+		// Process heartbeat received, get latest control metadata if present.
+		var ctrl *controlMetadata
+		cmeta := jsi.cmeta.Load()
+		if cmeta == nil {
+			return
+		}
+
+		ctrl = cmeta.(*controlMetadata)
+		tokens, err := getMetadataFields(ctrl.meta)
+		if err != nil {
+			return
+		}
+		// Consumer sequence
+		dseq := tokens[6]
+		ldseq := msg.Header.Get(lastConsumerSeqHdr)
+
+		// Detect consumer sequence mismatch and whether
+		// should restart the consumer.
+		if ldseq != dseq {
+			// Dispatch async error including details such as
+			// from where the consumer could be restarted.
+			sseq := parseNum(tokens[5])
+			ecs := &ErrConsumerSequenceMismatch{
+				StreamResumeSequence: uint64(sseq),
+				ConsumerSequence:     parseNum(dseq),
+				LastConsumerSequence: parseNum(ldseq),
+			}
+			nc.handleConsumerSequenceMismatch(s, ecs)
+		}
+	}
 }
 
 type streamRequest struct {
@@ -1065,8 +1153,6 @@ func (js *js) lookupStreamBySubject(subj string) (string, error) {
 type subOpts struct {
 	// For attaching.
 	stream, consumer string
-	// For pull based consumers.
-	pull bool
 	// For manual ack
 	mack bool
 	// For creating or updating.
@@ -1209,6 +1295,22 @@ func BindStream(name string) SubOpt {
 	})
 }
 
+// EnableFlowControl enables flow control for a push based consumer.
+func EnableFlowControl() SubOpt {
+	return subOptFn(func(opts *subOpts) error {
+		opts.cfg.FlowControl = true
+		return nil
+	})
+}
+
+// IdleHeartbeat enables push based consumers to have idle heartbeats delivered.
+func IdleHeartbeat(duration time.Duration) SubOpt {
+	return subOptFn(func(opts *subOpts) error {
+		opts.cfg.Heartbeat = duration
+		return nil
+	})
+}
+
 func (sub *Subscription) ConsumerInfo() (*ConsumerInfo, error) {
 	sub.mu.Lock()
 	// TODO(dlc) - Better way to mark especially if we attach.
@@ -1230,11 +1332,12 @@ type pullOpts struct {
 	ctx context.Context
 }
 
+// PullOpt are the options that can be passed when pulling a batch of messages.
 type PullOpt interface {
 	configurePull(opts *pullOpts) error
 }
 
-// PullMaxWaiting defines the max inflight pull requests to be delivered more messages.
+// PullMaxWaiting defines the max inflight pull requests.
 func PullMaxWaiting(n int) SubOpt {
 	return subOptFn(func(opts *subOpts) error {
 		opts.cfg.MaxWaiting = n
@@ -1652,28 +1755,21 @@ func (m *Msg) InProgress(opts ...AckOpt) error {
 }
 
 // MsgMetadata is the JetStream metadata associated with received messages.
-type MsgMetaData struct {
-	Consumer   uint64
-	Stream     uint64
-	Delivered  uint64
-	Pending    uint64
-	Timestamp  time.Time
-	StreamName string
+type MsgMetadata struct {
+	Sequence     SequencePair
+	NumDelivered uint64
+	NumPending   uint64
+	Timestamp    time.Time
+	Stream       string
+	Consumer     string
 }
 
-// MetaData retrieves the metadata from a JetStream message. This method will
-// return an error for non-JetStream Msgs.
-func (m *Msg) MetaData() (*MsgMetaData, error) {
-	if _, _, err := m.checkReply(); err != nil {
-		return nil, err
-	}
-
+func getMetadataFields(subject string) ([]string, error) {
 	const expectedTokens = 9
 	const btsep = '.'
 
 	tsa := [expectedTokens]string{}
 	start, tokens := 0, tsa[:0]
-	subject := m.Reply
 	for i := 0; i < len(subject); i++ {
 		if subject[i] == btsep {
 			tokens = append(tokens, subject[start:i])
@@ -1684,16 +1780,30 @@ func (m *Msg) MetaData() (*MsgMetaData, error) {
 	if len(tokens) != expectedTokens || tokens[0] != "$JS" || tokens[1] != "ACK" {
 		return nil, ErrNotJSMessage
 	}
+	return tokens, nil
+}
 
-	meta := &MsgMetaData{
-		Delivered:  uint64(parseNum(tokens[4])),
-		Stream:     uint64(parseNum(tokens[5])),
-		Consumer:   uint64(parseNum(tokens[6])),
-		Timestamp:  time.Unix(0, parseNum(tokens[7])),
-		Pending:    uint64(parseNum(tokens[8])),
-		StreamName: tokens[2],
+// Metadata retrieves the metadata from a JetStream message. This method will
+// return an error for non-JetStream Msgs.
+func (m *Msg) Metadata() (*MsgMetadata, error) {
+	if _, _, err := m.checkReply(); err != nil {
+		return nil, err
 	}
 
+	tokens, err := getMetadataFields(m.Reply)
+	if err != nil {
+		return nil, err
+	}
+
+	meta := &MsgMetadata{
+		NumDelivered: uint64(parseNum(tokens[4])),
+		NumPending:   uint64(parseNum(tokens[8])),
+		Timestamp:    time.Unix(0, parseNum(tokens[7])),
+		Stream:       tokens[2],
+		Consumer:     tokens[3],
+	}
+	meta.Sequence.Stream = uint64(parseNum(tokens[5]))
+	meta.Sequence.Consumer = uint64(parseNum(tokens[6]))
 	return meta, nil
 }
 
