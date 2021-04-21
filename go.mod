@@ -3,10 +3,11 @@ module github.com/nats-io/nats-server/v2
 go 1.16
 
 require (
+	github.com/golang/protobuf v1.4.2 // indirect
 	github.com/klauspost/compress v1.11.12
 	github.com/minio/highwayhash v1.0.1
 	github.com/nats-io/jwt/v2 v2.0.1
-	github.com/nats-io/nats.go v1.10.1-0.20210330225420-a0b1f60162f8
+	github.com/nats-io/nats.go v1.10.1-0.20210419223411-20527524c393
 	github.com/nats-io/nkeys v0.3.0
 	github.com/nats-io/nuid v1.0.1
 	golang.org/x/crypto v0.0.0-20210314154223-e6e6c4f2bb5b

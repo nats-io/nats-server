@@ -844,7 +844,7 @@ func TestJetStreamClusterStreamSynchedTimeStamps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	meta, _ := m.MetaData()
+	meta, _ := m.Metadata()
 
 	sub.Unsubscribe()
 
@@ -2431,12 +2431,12 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	// We should have all the messages for first delivery delivered.
 	wantSeq := 101
 	for _, m := range fetchMsgs(t, jsub, 100, 5*time.Second) {
-		meta, err := m.MetaData()
+		meta, err := m.Metadata()
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
-		if meta.Stream != uint64(wantSeq) {
-			t.Fatalf("Expected stream sequence of %d, but got %d", wantSeq, meta.Stream)
+		if meta.Sequence.Stream != uint64(wantSeq) {
+			t.Fatalf("Expected stream sequence of %d, but got %d", wantSeq, meta.Sequence.Stream)
 		}
 		m.Ack()
 		wantSeq++
@@ -4823,11 +4823,11 @@ func TestJetStreamClusterJSAPIImport(t *testing.T) {
 	if m.Header != nil {
 		t.Fatalf("Expected no header on the message, got: %v", m.Header)
 	}
-	meta, err := m.MetaData()
+	meta, err := m.Metadata()
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if meta.Consumer != 1 || meta.Stream != 1 || meta.Delivered != 1 || meta.Pending != 0 {
+	if meta.Sequence.Consumer != 1 || meta.Sequence.Stream != 1 || meta.NumDelivered != 1 || meta.NumPending != 0 {
 		t.Fatalf("Bad meta: %+v", meta)
 	}
 
@@ -4839,11 +4839,11 @@ func TestJetStreamClusterJSAPIImport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	meta, err = m.MetaData()
+	meta, err = m.Metadata()
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if meta.Consumer != 2 || meta.Stream != 2 || meta.Delivered != 1 || meta.Pending != 1 {
+	if meta.Sequence.Consumer != 2 || meta.Sequence.Stream != 2 || meta.NumDelivered != 1 || meta.NumPending != 1 {
 		t.Fatalf("Bad meta: %+v", meta)
 	}
 
@@ -5516,7 +5516,7 @@ func TestJetStreamClusterMixedMode(t *testing.T) {
 		if len(ps.knownPeers) != 3 {
 			return fmt.Errorf("Expected known peers to be 3, but got %+v", ps.knownPeers)
 		}
-		if ps.clusterSize != 3 {
+		if ps.clusterSize < 3 {
 			return fmt.Errorf("Expected cluster size to be 3, but got %+v", ps)
 		}
 		return nil
@@ -5839,6 +5839,57 @@ func TestJetStreamClusterMirrorAndSourceSubLeaks(t *testing.T) {
 	// Some subs take longer to settle out so we give ourselves a small buffer.
 	if deleteSubs := c.stableTotalSubs(); deleteSubs > startSubs+10 {
 		t.Fatalf("Expected subs to return to %d from a high of %d, but got %d", startSubs, afterSubs, deleteSubs)
+	}
+}
+
+func TestJetStreamClusterCreateConcurrentDurableConsumers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "MSL", 3)
+	defer c.shutdown()
+
+	// Client for API requests.
+	nc, _ := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	js, err := nc.JetStream(nats.MaxWait(10 * time.Second))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Create origin stream, muct be R > 1
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "ORDERS", Replicas: 3}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now try to create durables concurrently.
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	created := uint32(0)
+	errs := make(chan error, 10)
+
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := js.QueueSubscribeSync("ORDERS", "wq", nats.Durable("shared"))
+			if err == nil {
+				atomic.AddUint32(&created, 1)
+			} else if !strings.Contains(err.Error(), "consumer name already") {
+				errs <- err
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+
+	if lc := atomic.LoadUint32(&created); lc != 1 {
+		t.Fatalf("Expected only 1 to be created, got %d", lc)
+	}
+
+	if len(errs) > 0 {
+		t.Fatalf("Failed to create some sub: %v", <-errs)
 	}
 }
 

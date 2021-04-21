@@ -122,6 +122,7 @@ type consumerAssignment struct {
 	// Internal
 	responded bool
 	deleted   bool
+	pending   bool
 	err       error
 }
 
@@ -2410,9 +2411,10 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 		return
 	}
 
+	// Check if we have an existing consumer assignment.
 	if sa.consumers == nil {
 		sa.consumers = make(map[string]*consumerAssignment)
-	} else if oca := sa.consumers[ca.Name]; oca != nil {
+	} else if oca := sa.consumers[ca.Name]; oca != nil && !oca.pending {
 		// Copy over private existing state from former CA.
 		ca.Group.node = oca.Group.node
 		ca.responded = oca.responded
@@ -2517,9 +2519,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment) {
 			Response: &JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}},
 		}
 		result.Response.Error = jsNotFoundError(ErrJetStreamStreamNotFound)
-		// Send response to the metadata leader. They will forward to the user as needed.
-		b, _ := json.Marshal(result) // Avoids auto-processing and doing fancy json with newlines.
-		s.sendInternalMsgLocked(consumerAssignmentSubj, _EMPTY_, nil, b)
+		s.sendInternalMsgLocked(consumerAssignmentSubj, _EMPTY_, nil, result)
 		js.mu.Unlock()
 		return
 	}
@@ -2534,6 +2534,19 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment) {
 			ocfg := o.config()
 			if configsEqualSansDelivery(ocfg, *ca.Config) && o.hasNoLocalInterest() {
 				o.updateDeliverSubject(ca.Config.DeliverSubject)
+			} else {
+				// This is essentially and update that has failed.
+				js.mu.Lock()
+				result := &consumerAssignmentResult{
+					Account:  ca.Client.serviceAccount(),
+					Stream:   ca.Stream,
+					Consumer: ca.Name,
+					Response: &JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}},
+				}
+				result.Response.Error = jsNotFoundError(ErrJetStreamConsumerAlreadyUsed)
+				s.sendInternalMsgLocked(consumerAssignmentSubj, _EMPTY_, nil, result)
+				js.mu.Unlock()
+				return
 			}
 		}
 		o.setConsumerAssignment(ca)
@@ -3950,6 +3963,7 @@ func (cc *jetStreamCluster) createGroupForConsumer(sa *streamAssignment) *raftGr
 	return &raftGroup{Name: groupNameForConsumer(peers, sa.Config.Storage), Storage: sa.Config.Storage, Peers: peers}
 }
 
+// jsClusteredConsumerRequest is first point of entry to create a consumer with R > 1.
 func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, stream string, cfg *ConsumerConfig) {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
@@ -3998,7 +4012,12 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		oname = cfg.Durable
 		if ca := sa.consumers[oname]; ca != nil && !ca.deleted {
 			// This can be ok if delivery subject update.
-			if !reflect.DeepEqual(cfg, ca.Config) && !configsEqualSansDelivery(*cfg, *ca.Config) {
+			shouldErr := !reflect.DeepEqual(cfg, ca.Config) && !configsEqualSansDelivery(*cfg, *ca.Config) || ca.pending
+			if !shouldErr {
+				rr := acc.sl.Match(ca.Config.DeliverSubject)
+				shouldErr = len(rr.psubs)+len(rr.qsubs) != 0
+			}
+			if shouldErr {
 				resp.Error = jsError(ErrJetStreamConsumerAlreadyUsed)
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 				return
@@ -4007,7 +4026,19 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	}
 
 	ca := &consumerAssignment{Group: rg, Stream: stream, Name: oname, Config: cfg, Subject: subject, Reply: reply, Client: ci, Created: time.Now().UTC()}
-	cc.meta.Propose(encodeAddConsumerAssignment(ca))
+	eca := encodeAddConsumerAssignment(ca)
+
+	// Mark this as pending if a durable.
+	if isDurableConsumer(cfg) {
+		if sa.consumers == nil {
+			sa.consumers = make(map[string]*consumerAssignment)
+		}
+		ca.pending = true
+		sa.consumers[ca.Name] = ca
+	}
+
+	// Do formal proposal.
+	cc.meta.Propose(eca)
 }
 
 func encodeAddConsumerAssignment(ca *consumerAssignment) []byte {
