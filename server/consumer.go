@@ -944,6 +944,11 @@ func (o *consumer) updateDeliveryInterest(localInterest bool) bool {
 	}
 	o.active = interest
 
+	// If the delete timer has already been set do not clear here and return.
+	if o.dtmr != nil && !o.isDurable() && !interest {
+		return true
+	}
+
 	// Stop and clear the delete timer always.
 	stopAndClearTimer(&o.dtmr)
 

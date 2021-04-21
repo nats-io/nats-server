@@ -5015,13 +5015,9 @@ func TestJetStreamClusterSuperClusterEphemeralCleanup(t *testing.T) {
 			}
 			cons := mset.getConsumers()[0]
 			cons.mu.Lock()
-			cons.dthresh = 10 * time.Millisecond
+			cons.dthresh = 1250 * time.Millisecond
 			active := cons.active
 			dtimerSet := cons.dtmr != nil
-			gwtimerSet := cons.gwdtmr != nil
-			if gwtimerSet {
-				cons.gwdtmr.Reset(cons.dthresh)
-			}
 			deliver := cons.cfg.DeliverSubject
 			cons.mu.Unlock()
 
@@ -5043,17 +5039,13 @@ func TestJetStreamClusterSuperClusterEphemeralCleanup(t *testing.T) {
 
 			// Now check that the stream S(n) is really removed and that
 			// the consumer is gone for stream TEST(n).
-			checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+			checkFor(t, 5*time.Second, 25*time.Millisecond, func() error {
 				// First, make sure that stream S(n) has disappeared.
 				if _, err := js2.StreamInfo(test.sourceName); err == nil {
 					return fmt.Errorf("Stream %q should no longer exist", test.sourceName)
 				}
-				si, err := js.StreamInfo(test.streamName)
-				if err != nil {
-					return fmt.Errorf("Could not get stream info: %v", err)
-				}
-				if si.State.Consumers != 0 {
-					return fmt.Errorf("Expected %q stream to have 0 consumer, got %v", test.streamName, si.State.Consumers)
+				if ndc := mset.numDirectConsumers(); ndc != 0 {
+					return fmt.Errorf("Expected %q stream to have 0 consumers, got %v", test.streamName, ndc)
 				}
 				return nil
 			})
