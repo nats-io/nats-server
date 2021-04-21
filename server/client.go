@@ -313,10 +313,13 @@ type perm struct {
 }
 
 type permissions struct {
+	// Have these 2 first for memory alignment due to the use of atomic.
+	pcsz   int32
+	prun   int32
 	sub    perm
 	pub    perm
 	resp   *ResponsePermission
-	pcache map[string]bool
+	pcache sync.Map
 }
 
 // This is used to dynamically track responses and reply subjects
@@ -838,7 +841,6 @@ func (c *client) setPermissions(perms *Permissions) {
 		return
 	}
 	c.perms = &permissions{}
-	c.perms.pcache = make(map[string]bool)
 
 	// Loop over publish permissions
 	if perms.Publish != nil {
@@ -914,7 +916,6 @@ func (c *client) mergePubDenyPermissions(denyPubs []string) {
 	}
 	if c.perms == nil {
 		c.perms = &permissions{}
-		c.perms.pcache = make(map[string]bool)
 	}
 	if c.perms.pub.deny == nil {
 		c.perms.pub.deny = NewSublistWithCache()
@@ -2981,7 +2982,7 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 
 	// Check if we are a leafnode and have perms to check.
 	if client.kind == LEAF && client.perms != nil {
-		if !client.pubAllowed(string(subject)) {
+		if !client.pubAllowedFullCheck(string(subject), true, true) {
 			client.mu.Unlock()
 			client.Debugf("Not permitted to publish to %q", subject)
 			return false
@@ -3269,32 +3270,44 @@ func (c *client) pruneDenyCache() {
 // prunePubPermsCache will prune the cache via randomly
 // deleting items. Doing so pruneSize items at a time.
 func (c *client) prunePubPermsCache() {
-	r := 0
-	for subject := range c.perms.pcache {
-		delete(c.perms.pcache, subject)
-		if r++; r > pruneSize {
-			break
-		}
+	// There is a case where we can invoke this from multiple go routines,
+	// (in deliverMsg() if sub.client is a LEAF), so we make sure to prune
+	// from only one go routine at a time.
+	if !atomic.CompareAndSwapInt32(&c.perms.prun, 0, 1) {
+		return
 	}
+	const maxPruneAtOnce = 1000
+	r := 0
+	c.perms.pcache.Range(func(k, _ interface{}) bool {
+		c.perms.pcache.Delete(k)
+		if r++; (r > pruneSize && atomic.LoadInt32(&c.perms.pcsz) < int32(maxPermCacheSize)) ||
+			(r > maxPruneAtOnce) {
+			return false
+		}
+		return true
+	})
+	atomic.AddInt32(&c.perms.pcsz, -int32(r))
+	atomic.StoreInt32(&c.perms.prun, 0)
 }
 
 // pubAllowed checks on publish permissioning.
 // Lock should not be held.
 func (c *client) pubAllowed(subject string) bool {
-	return c.pubAllowedFullCheck(subject, true)
+	return c.pubAllowedFullCheck(subject, true, false)
 }
 
 // pubAllowedFullCheck checks on all publish permissioning depending
 // on the flag for dynamic reply permissions.
-func (c *client) pubAllowedFullCheck(subject string, fullCheck bool) bool {
+func (c *client) pubAllowedFullCheck(subject string, fullCheck, hasLock bool) bool {
 	if c.perms == nil || (c.perms.pub.allow == nil && c.perms.pub.deny == nil) {
 		return true
 	}
 	// Check if published subject is allowed if we have permissions in place.
-	allowed, ok := c.perms.pcache[subject]
+	v, ok := c.perms.pcache.Load(subject)
 	if ok {
-		return allowed
+		return v.(bool)
 	}
+	var allowed bool
 	// Cache miss, check allow then deny as needed.
 	if c.perms.pub.allow != nil {
 		r := c.perms.pub.allow.Match(subject)
@@ -3313,7 +3326,9 @@ func (c *client) pubAllowedFullCheck(subject string, fullCheck bool) bool {
 	// dynamically, check to see if we are allowed here but avoid pcache.
 	// We need to acquire the lock though.
 	if !allowed && fullCheck && c.perms.resp != nil {
-		c.mu.Lock()
+		if !hasLock {
+			c.mu.Lock()
+		}
 		if resp := c.replies[subject]; resp != nil {
 			resp.n++
 			// Check if we have sent too many responses.
@@ -3325,12 +3340,13 @@ func (c *client) pubAllowedFullCheck(subject string, fullCheck bool) bool {
 				allowed = true
 			}
 		}
-		c.mu.Unlock()
+		if !hasLock {
+			c.mu.Unlock()
+		}
 	} else {
 		// Update our cache here.
-		c.perms.pcache[string(subject)] = allowed
-		// Prune if needed.
-		if len(c.perms.pcache) > maxPermCacheSize {
+		c.perms.pcache.Store(string(subject), allowed)
+		if n := atomic.AddInt32(&c.perms.pcsz, 1); n > maxPermCacheSize {
 			c.prunePubPermsCache()
 		}
 	}
