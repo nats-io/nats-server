@@ -2424,6 +2424,7 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	// Place into our internal map under the stream assignment.
 	// Ok to replace an existing one, we check on process call below.
 	sa.consumers[ca.Name] = ca
+
 	// See if we are a member
 	ourID := cc.meta.ID()
 	isMember := ca.Group.isMember(ourID)
@@ -2532,7 +2533,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment) {
 	if o != nil {
 		if o.isDurable() && o.isPushMode() {
 			ocfg := o.config()
-			if configsEqualSansDelivery(ocfg, *ca.Config) && o.hasNoLocalInterest() {
+			if ocfg == *ca.Config || (configsEqualSansDelivery(ocfg, *ca.Config) && o.hasNoLocalInterest()) {
 				o.updateDeliverSubject(ca.Config.DeliverSubject)
 			} else {
 				// This is essentially and update that has failed.
@@ -3981,6 +3982,19 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		resp.Error = jsError(ErrJetStreamStreamNotFound)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
+	}
+
+	// Setup proper default for ack wait if we are in explicit ack mode.
+	if cfg.AckWait == 0 && (cfg.AckPolicy == AckExplicit || cfg.AckPolicy == AckAll) {
+		cfg.AckWait = JsAckWaitDefault
+	}
+	// Setup default of -1, meaning no limit for MaxDeliver.
+	if cfg.MaxDeliver == 0 {
+		cfg.MaxDeliver = -1
+	}
+	// Set proper default for max ack pending if we are ack explicit and none has been set.
+	if cfg.AckPolicy == AckExplicit && cfg.MaxAckPending == 0 {
+		cfg.MaxAckPending = JsDefaultMaxAckPending
 	}
 
 	rg := cc.createGroupForConsumer(sa)
