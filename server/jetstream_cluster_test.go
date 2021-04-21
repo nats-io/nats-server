@@ -5044,12 +5044,8 @@ func TestJetStreamClusterSuperClusterEphemeralCleanup(t *testing.T) {
 				if _, err := js2.StreamInfo(test.sourceName); err == nil {
 					return fmt.Errorf("Stream %q should no longer exist", test.sourceName)
 				}
-				si, err := js.StreamInfo(test.streamName)
-				if err != nil {
-					return fmt.Errorf("Could not get stream info: %v", err)
-				}
-				if si.State.Consumers != 0 {
-					return fmt.Errorf("Expected %q stream to have 0 consumers, got %v", test.streamName, si.State.Consumers)
+				if ndc := mset.numDirectConsumers(); ndc != 0 {
+					return fmt.Errorf("Expected %q stream to have 0 consumers, got %v", test.streamName, ndc)
 				}
 				return nil
 			})

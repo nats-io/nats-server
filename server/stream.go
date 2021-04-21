@@ -3017,8 +3017,10 @@ func (mset *stream) state() StreamState {
 	return mset.stateWithDetail(false)
 }
 
-// Lock should be held
 func (mset *stream) numDirectConsumers() (num int) {
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+
 	// Consumers that are direct are not recorded at the store level.
 	for _, o := range mset.consumers {
 		o.mu.RLock()
@@ -3032,7 +3034,7 @@ func (mset *stream) numDirectConsumers() (num int) {
 
 func (mset *stream) stateWithDetail(details bool) StreamState {
 	mset.mu.RLock()
-	c, store, ndc := mset.client, mset.store, mset.numDirectConsumers()
+	c, store := mset.client, mset.store
 	mset.mu.RUnlock()
 	if c == nil || store == nil {
 		return StreamState{}
@@ -3042,7 +3044,6 @@ func (mset *stream) stateWithDetail(details bool) StreamState {
 	if !details {
 		state.Deleted = nil
 	}
-	state.Consumers += ndc
 	return state
 }
 
