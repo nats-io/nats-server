@@ -991,7 +991,8 @@ func (c *client) flushClients(budget time.Duration) time.Time {
 // for how much time to spend in place flushing for this client.
 // The 'clientsKindOnly' boolean indicates whether to check kind of client
 // and pending client to run flushOutbound in flushClientsWithCheck.
-// flushOutbound could be block caller when pending client is 'stuck'
+// flushOutbound() could block the caller up to the write deadline when
+// the receiving client cannot drain data from the socket fast enough.
 func (c *client) flushClientsWithCheck(budget time.Duration, clientsKindOnly bool) time.Time {
 	last := time.Now().UTC()
 
