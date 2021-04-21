@@ -92,3 +92,52 @@ Implemented and merged to master.
 ## Consequences
 
 Use of headers is possible.
+
+## Compatibility Across NATS Clients
+
+The following is a list of features to insure compatibility across NATS clients that support headers.
+Because the feature in Go client and nats-server leverage the Go implementation as described above,
+the API used will determine how header names are serialized.
+
+The Go implementation of `http.Header` is a `map[string][]string` If the `Set`, `Get`, `Values`, `Del`
+functions are used, the specified key arguments will be converted into their canonical format. This means
+that the serialized Header name will _not_ be what the application specified. Go's documentation
+motivates direct map access if the client doesn't wish to have the header modified. This has the implication
+that non-canonical Headers are invisible to `http.Header`'s API, as the API performs a canonical
+key conversion prior to any operation.
+
+In order to promote compatibility across clients, this section describes how other language clients
+should behave:
+
+- `GET` returns a `string` of the first value found matching the specified key in a case-insensitive lookup.
+- `SET` removes all case-insensitive matching headers, with the specified value stored under the key 
+  specified without any manipulation.
+- `VALUES` returns a list of all values that case-insensitively match the specified key.
+- `DELETE` removes all headers that match case-insensitively the specified key.
+
+To prevent over-designing the API, it should be noted that if clients must have case-sensitive semantics,
+they should be able to iterate over the keys and values to enable client-side filtering of the values as
+necessary.
+
+#### Go Client
+
+Note that built-in Go client does not implement the above manipulations correctly. Users requiring
+case-preservation on a headers can easily implement these operations against the underlying map.
+
+### Multiple Header Values Serialization
+
+When serializing, entries that have more than one value should be serialized one per line. 
+While the http Header standard, prefers values to be a comma separated list, this introduces additional parsing
+requirements and ambiguity from client code. HTTP itself doesn't implement this requirement on headers such 
+as `Set-Cookie`. Libraries, such as Go, do not interpret comma-separated values as lists.
+
+
+
+
+
+
+
+
+
+
+
