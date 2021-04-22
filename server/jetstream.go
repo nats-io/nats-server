@@ -180,6 +180,7 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 		if err != nil {
 			return fmt.Errorf("storage directory is not writable")
 		}
+		tmpfile.Close()
 		os.Remove(tmpfile.Name())
 	}
 
@@ -199,7 +200,7 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	s.Noticef("---------------- JETSTREAM ----------------")
 	s.Noticef("  Max Memory:      %s", friendlyBytes(cfg.MaxMemory))
 	s.Noticef("  Max Storage:     %s", friendlyBytes(cfg.MaxStore))
-	s.Noticef("  Store Directory: %q", cfg.StoreDir)
+	s.Noticef("  Store Directory: \"%s\"", cfg.StoreDir)
 	s.Noticef("-------------------------------------------")
 
 	// Setup our internal subscriptions.

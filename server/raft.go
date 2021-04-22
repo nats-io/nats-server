@@ -309,6 +309,7 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 	if err != nil {
 		return fmt.Errorf("raft: storage directory is not writable")
 	}
+	tmpfile.Close()
 	os.Remove(tmpfile.Name())
 
 	return writePeerState(cfg.Store, &peerState{knownPeers, expected})
