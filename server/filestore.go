@@ -235,6 +235,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	if err != nil {
 		return nil, fmt.Errorf("storage directory is not writable")
 	}
+	tmpfile.Close()
 	os.Remove(tmpfile.Name())
 
 	fs := &fileStore{
@@ -3192,7 +3193,12 @@ func (mb *msgBlock) close(sync bool) {
 	if sync {
 		syncAndClose(mb.mfd, mb.ifd)
 	} else {
-		go syncAndClose(mb.mfd, mb.ifd)
+		if mb.mfd != nil {
+			mb.mfd.Close()
+		}
+		if mb.ifd != nil {
+			mb.ifd.Close()
+		}
 	}
 	mb.mfd = nil
 	mb.ifd = nil
@@ -3209,6 +3215,14 @@ func (fs *fileStore) Delete() error {
 		return ErrStoreClosed
 	}
 	fs.Purge()
+
+	pdir := path.Join(fs.fcfg.StoreDir, purgeDir)
+	// If purge directory still exists then we need to wait
+	// in place and remove since rename would fail.
+	if _, err := os.Stat(pdir); err == nil {
+		os.RemoveAll(pdir)
+	}
+
 	if err := fs.Stop(); err != nil {
 		return err
 	}
