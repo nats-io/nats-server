@@ -170,6 +170,13 @@ var (
 	mqttFlapCleanItvl = mqttSessFlappingCleanupInterval
 )
 
+var (
+	errMQTTWebsocketNotSupported    = errors.New("invalid connection, websocket currently not supported")
+	errMQTTTopicFilterCannotBeEmpty = errors.New("topic filter cannot be empty")
+	errMQTTMalformedVarInt          = errors.New("malformed variable int")
+	errMQTTSecondConnectPacket      = errors.New("received a second CONNECT packet")
+)
+
 type srvMQTT struct {
 	listener     net.Listener
 	listenerErr  error
@@ -565,7 +572,13 @@ func (c *client) mqttParse(buf []byte) error {
 		// If client was not connected yet, the first packet must be
 		// a mqttPacketConnect otherwise we fail the connection.
 		if !connected && pt != mqttPacketConnect {
-			err = errors.New("not connected")
+			// Try to guess if the client is trying to connect using Websocket,
+			// which is currently not supported
+			if bytes.HasPrefix(buf, []byte("GET ")) {
+				err = errMQTTWebsocketNotSupported
+			} else {
+				err = fmt.Errorf("the first packet should be a CONNECT (%v), got %v", mqttPacketConnect, pt)
+			}
 			break
 		}
 
@@ -647,7 +660,7 @@ func (c *client) mqttParse(buf []byte) error {
 		case mqttPacketConnect:
 			// It is an error to receive a second connect packet
 			if connected {
-				err = errors.New("second connect packet")
+				err = errMQTTSecondConnectPacket
 				break
 			}
 			var rc byte
@@ -2913,7 +2926,7 @@ func (c *client) mqttParseSubsOrUnsubs(r *mqttReader, b byte, pl int, sub bool) 
 			return 0, nil, err
 		}
 		if len(topic) == 0 {
-			return 0, nil, errors.New("topic filter cannot be empty")
+			return 0, nil, errMQTTTopicFilterCannotBeEmpty
 		}
 		// Spec [MQTT-3.8.3-1], [MQTT-3.10.3-1]
 		if !utf8.Valid(topic) {
@@ -3648,7 +3661,7 @@ func (r *mqttReader) readPacketLen() (int, error) {
 		}
 		m *= 0x80
 		if m > 0x200000 {
-			return 0, errors.New("malformed variable int")
+			return 0, errMQTTMalformedVarInt
 		}
 	}
 }

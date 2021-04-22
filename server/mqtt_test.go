@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -1381,6 +1383,9 @@ func TestMQTTConnectNotFirstPacket(t *testing.T) {
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
 
+	l := &captureErrorLogger{errCh: make(chan string, 10)}
+	s.SetLogger(l, false, false)
+
 	c, err := net.Dial("tcp", fmt.Sprintf("%s:%d", o.MQTT.Host, o.MQTT.Port))
 	if err != nil {
 		t.Fatalf("Error on dial: %v", err)
@@ -1393,6 +1398,15 @@ func TestMQTTConnectNotFirstPacket(t *testing.T) {
 		t.Fatalf("Error publishing: %v", err)
 	}
 	testMQTTExpectDisconnect(t, c)
+
+	select {
+	case err := <-l.errCh:
+		if !strings.Contains(err, "should be a CONNECT") {
+			t.Fatalf("Expected error about first packet being a CONNECT, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Did not log any error")
+	}
 }
 
 func TestMQTTSecondConnect(t *testing.T) {
@@ -1691,7 +1705,7 @@ func TestMQTTParseSub(t *testing.T) {
 		{"error reading packet id", []byte{1}, mqttSubscribeFlags, 1, eofr, "reading packet identifier"},
 		{"missing filters", []byte{0, 1}, mqttSubscribeFlags, 2, nil, "subscribe protocol must contain at least 1 topic filter"},
 		{"error reading topic", []byte{0, 1, 0, 2, 'a'}, mqttSubscribeFlags, 5, eofr, "topic filter"},
-		{"empty topic", []byte{0, 1, 0, 0}, mqttSubscribeFlags, 4, nil, "topic filter cannot be empty"},
+		{"empty topic", []byte{0, 1, 0, 0}, mqttSubscribeFlags, 4, nil, errMQTTTopicFilterCannotBeEmpty.Error()},
 		{"invalid utf8 topic", []byte{0, 1, 0, 1, 241}, mqttSubscribeFlags, 5, nil, "invalid utf8 for topic filter"},
 		{"missing qos", []byte{0, 1, 0, 1, 'a'}, mqttSubscribeFlags, 5, nil, "QoS"},
 		{"invalid qos", []byte{0, 1, 0, 1, 'a', 3}, mqttSubscribeFlags, 6, nil, "subscribe QoS value must be 0, 1 or 2"},
@@ -2903,7 +2917,7 @@ func TestMQTTParseUnsub(t *testing.T) {
 		{"error reading packet id", []byte{1}, mqttUnsubscribeFlags, 1, eofr, "reading packet identifier"},
 		{"missing filters", []byte{0, 1}, mqttUnsubscribeFlags, 2, nil, "subscribe protocol must contain at least 1 topic filter"},
 		{"error reading topic", []byte{0, 1, 0, 2, 'a'}, mqttUnsubscribeFlags, 5, eofr, "topic filter"},
-		{"empty topic", []byte{0, 1, 0, 0}, mqttUnsubscribeFlags, 4, nil, "topic filter cannot be empty"},
+		{"empty topic", []byte{0, 1, 0, 0}, mqttUnsubscribeFlags, 4, nil, errMQTTTopicFilterCannotBeEmpty.Error()},
 		{"invalid utf8 topic", []byte{0, 1, 0, 1, 241}, mqttUnsubscribeFlags, 5, nil, "invalid utf8 for topic filter"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -4523,6 +4537,43 @@ func TestMQTTStreamInfoReturnsNonEmptySubject(t *testing.T) {
 				t.Fatalf("No subject returned, which will cause nats tooling to fail: %+v", bResp.Config)
 			}
 		})
+	}
+}
+
+func TestMQTTWebsocketNotSupported(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	l := &captureErrorLogger{errCh: make(chan string, 10)}
+	s.SetLogger(l, false, false)
+
+	addr := fmt.Sprintf("%s:%d", o.MQTT.Host, o.MQTT.Port)
+	wsc, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Error creating connection: %v", err)
+	}
+	req := testWSCreateValidReq()
+	req.URL, _ = url.Parse("ws://" + addr)
+	if err := req.Write(wsc); err != nil {
+		t.Fatalf("Error sending request: %v", err)
+	}
+	br := bufio.NewReader(wsc)
+	resp, err := http.ReadResponse(br, req)
+	if err == nil {
+		if resp != nil {
+			defer resp.Body.Close()
+		}
+		t.Fatalf("Expected error, got resp=%+v", resp)
+	}
+
+	select {
+	case err := <-l.errCh:
+		if !strings.Contains(err, "not supported") {
+			t.Fatalf("Expected error about websocket not supported, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Did not log any error")
 	}
 }
 
