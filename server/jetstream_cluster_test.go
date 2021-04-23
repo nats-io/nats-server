@@ -6456,6 +6456,10 @@ func (c *cluster) waitOnPeerCount(n int) {
 	c.t.Helper()
 	c.waitOnLeader()
 	leader := c.leader()
+	for leader == nil {
+		c.waitOnLeader()
+		leader = c.leader()
+	}
 	expires := time.Now().Add(10 * time.Second)
 	for time.Now().Before(expires) {
 		peers := leader.JetStreamClusterPeers()
