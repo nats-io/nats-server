@@ -1,6 +1,6 @@
 # 4. nats-headers
 
-Date: 2020-05-28
+Date: 2021-04-23
 
 ## Status
 
@@ -8,34 +8,23 @@ Accepted
 
 ## Context
 
-This document describes NATS Headers from the perspective of clients. NATS headers allow clients to specify additional meta-data in the form of headers. The headers are effectively [HTTP Headers](https://tools.ietf.org/html/rfc7230#section-3.2). The reference Go implementation internally uses `http.Header` for their serialization and parsing.
+This document describes NATS Headers from the perspective of clients. NATS headers allow clients to specify additional meta-data in the form of headers. 
 
 The salient points of the HTTP header specification are:
 
-- Each header field consists of a case-insensitive field name followed by a colon (`:`), optional leading whitespace, the field value, and optional trailing whitespace.
+- Each header entry consists of a field name followed by a colon (`:`), optional leading space (SP), the field value, optional trailing whitespace and then carriage-return/line-feed (CR/LF). It is suggested to not use leading or trailing spaces simply to reduce the number of bytes transmitted.
 - No spaces are allowed between the header field name and colon.
-- Field value may be preceded or followed by optional whitespace.
-- The specification may allow any number of strange things like comments/tokens etc.
-- The keys can repeat.
-
-More specifically from [rfc822](https://www.ietf.org/rfc/rfc822.txt) Section 3.1.2:
-> Once a field has been unfolded, it may be viewed as being composed of a field-name followed by a colon (":"), followed by a field-body, and  terminated  by  a  carriage-return/line-feed.
-> The  field-name must be composed of printable ASCII characters (i.e., characters that  have  values  between  33.  and  126., decimal, except colon).  The field-body may be composed of any ASCII characters, except CR or LF.  (While CR and/or LF may be present  in the actual text, they are removed by the action of unfolding the field.)
-
-The reference NATS Go client uses the `http.Header` which internally uses `textproto.MIMEHeader` infrastructure for serializing NATS headers. Other language clients may not be able to reuse header serialization infrastructure outside of the context of an HTTP request. Furthermore, the implementation of the native header library may diverge from the Go `http.Header` while still being standard.
-
-For example, the Go `http.Header` library, performs the following formatting which while not part of the spec, as header field names are case-insensitive, become a requirement in NATS header fields:
-- First character in a header field is capitalized if in the range of [a-z]
-- First characters following a dash (`-`) are capitalized if in the range of [a-z]
-
-_If a client doesn't serialize field names as above, it is possible that the server may ignore them._
+- Field value may be preceded or followed by optional space (SP).
+- A field value's meaning is left for interpretation by the user. NATS will make no effort to encode, decode or parse the value. All data between the colon (:) and the CR/LF, excluding leading or trailing whitespace will be consider the entire value.
+- The keys can repeat, meaning one key can have multiple values.
+- Once a field has been unfolded, it may be viewed as being composed of a field-name followed by a colon (":"), followed by a field-body, and terminated by a CR/LF.
+- Printable chracters are defined as all ASCII characters between 33 and 126 decimal, inclusive.
+- The field-name may be composed of any printable ASCII characters except colon.  
+- The field-body may be composed of any printable ASCII characters plus the HTAB character (0x09).
 
 NATS Headers:
 
-The only difference between a NATS header and HTTP is the first line. Instead of an HTTP method followed by a resource and the HTTP version (`GET / HTTP/1.1`), NATS will provide a string identifying the header version (`NATS/X.x`), currently 1.0, so it is rendered as `NATS/1.0␍␊`.
-
-Please refer to the [specification](https://tools.ietf.org/html/rfc7230#section-3.2) for information on how to encode/decode HTTP headers, and the [Go implementation](https://golang.org/src/net/http/header.go).
-
+NATS headers will be prefixed by a string identifying the header version (`NATS/X.x`), currently 1.0, so it is rendered as `NATS/1.0␍␊`.
 
 ### Enabling Message Headers
 
@@ -96,41 +85,22 @@ Use of headers is possible.
 ## Compatibility Across NATS Clients
 
 The following is a list of features to insure compatibility across NATS clients that support headers.
-Because the feature in Go client and nats-server leverage the Go implementation as described above,
-the API used will determine how header names are serialized.
 
-The Go implementation of `http.Header` is a `map[string][]string` If the `Set`, `Get`, `Values`, `Del`
-functions are used, the specified key arguments will be converted into their canonical format. This means
-that the serialized Header name will _not_ be what the application specified. Go's documentation
-motivates direct map access if the client doesn't wish to have the header modified. This has the implication
-that non-canonical Headers are invisible to `http.Header`'s API, as the API performs a canonical
-key conversion prior to any operation.
+In order to promote compatibility across clients, this section describes how NATS clients should behave:
 
-In order to promote compatibility across clients, this section describes how other language clients
-should behave:
-
-- `GET` returns a `string` of the first value found matching the specified key in a case-insensitive lookup.
-- `SET` removes all case-insensitive matching headers, with the specified value stored under the key 
-  specified without any manipulation.
-- `VALUES` returns a list of all values that case-insensitively match the specified key.
-- `DELETE` removes all headers that match case-insensitively the specified key.
-
-To prevent over-designing the API, it should be noted that if clients must have case-sensitive semantics,
-they should be able to iterate over the keys and values to enable client-side filtering of the values as
-necessary.
-
-#### Go Client
-
-Note that built-in Go client does not implement the above manipulations correctly. Users requiring
-case-preservation on a headers can easily implement these operations against the underlying map.
+- `GET` can either return a `string` of the first value found matching the specified key in a case-sensitive lookup, or it can return a list of `string`. This may vary depending on the client.
+- `VALUES` returns a list of all `string` values that case-sensitively match the specified key. This will not be present in clients where the `GET` functions like `VALUES`
+- `SET` removes all values stored under the case-sensitive key and replaces it with the new value. Some clients may refer to this a `PUT`
+- `ADD` If the case-sensitive key already has associated values, the new value is added to the list, otherwise the key is created with the new value.
+- `DELETE` removes all headers that match the specified case-sensitive key. Some clients may refer to this as `REMOVE`
+- Clients will provide case-insensitve versions of lookups such as `GET` and `VALUE`
+- Clients may optionally provide case-insensitve versions of `SET`, which would remove all values stored under the case-insensitive key, and replace it with a lowercase version of the key and the new value.
+- Clients may optionally provide a case-insensitve version of `DELETE` which would remove all headers that match the specified case-insensitve key.
+- Clients may provide addtional functionality such as the ability to iterate, to get a list of keys, etc.
 
 ### Multiple Header Values Serialization
 
 When serializing, entries that have more than one value should be serialized one per line. 
-While the http Header standard, prefers values to be a comma separated list, this introduces additional parsing
-requirements and ambiguity from client code. HTTP itself doesn't implement this requirement on headers such 
-as `Set-Cookie`. Libraries, such as Go, do not interpret comma-separated values as lists.
-
 
 
 
