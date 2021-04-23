@@ -1106,6 +1106,8 @@ type RemoteLeafOptsVarz struct {
 	LocalAccount string   `json:"local_account,omitempty"`
 	TLSTimeout   float64  `json:"tls_timeout,omitempty"`
 	URLs         []string `json:"urls,omitempty"`
+	DenyExports  []string `json:"deny_exports,omitempty"`
+	DenyImports  []string `json:"deny_imports,omitempty"`
 }
 
 // VarzOptions are the options passed to Varz().
@@ -1282,6 +1284,8 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 				LocalAccount: r.LocalAccount,
 				URLs:         urlsToStrings(r.URLs),
 				TLSTimeout:   r.TLSTimeout,
+				DenyImports:  r.DenyImports,
+				DenyExports:  r.DenyExports,
 			}
 		}
 		varz.LeafNode.Remotes = rlna
