@@ -5757,6 +5757,7 @@ func TestJWTNoSystemAccountButNatsResolver(t *testing.T) {
 			s, err := NewServer(opts)
 			s.Shutdown()
 			require_Error(t, err)
+			require_Contains(t, err.Error(), "the system account needs to be specified in configuration or the operator jwt")
 		})
 	}
 }

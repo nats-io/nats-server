@@ -114,10 +114,9 @@ func validateTrustedOperators(o *Options) error {
 	} else if o.TrustedOperators[0].SystemAccount == _EMPTY_ {
 		// In case the system account is neither defined in config nor in the first operator.
 		// If it would be needed due to the nats account resolver, raise an error.
-		_, okDir := o.AccountResolver.(*DirAccResolver)
-		_, okCAcheDir := o.AccountResolver.(*CacheDirAccResolver)
-		if okDir || okCAcheDir {
-			return fmt.Errorf("using nats based account resolver - the system account needs to be specified in config or the operator jwt")
+		switch o.AccountResolver.(type) {
+		case *DirAccResolver, *CacheDirAccResolver:
+			return fmt.Errorf("using nats based account resolver - the system account needs to be specified in configuration or the operator jwt")
 		}
 	}
 	ver := strings.Split(strings.Split(VERSION, "-")[0], ".RC")[0]
