@@ -16,6 +16,7 @@ package server
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -2381,6 +2382,66 @@ func TestParsingLeafNodeRemotes(t *testing.T) {
 		expected.URLs = append(expected.URLs, u)
 		if !reflect.DeepEqual(opts.LeafNode.Remotes[0], expected) {
 			t.Fatalf("Expected %v, got %v", expected, opts.LeafNode.Remotes[0])
+		}
+	})
+
+	t.Run("url ordering", func(t *testing.T) {
+		// 16! possible permutations.
+		orderedURLs := make([]string, 0, 16)
+		for i := 0; i < cap(orderedURLs); i++ {
+			orderedURLs = append(orderedURLs, fmt.Sprintf("nats-leaf://host%d:7422", i))
+		}
+		confURLs, err := json.Marshal(orderedURLs)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		content := `
+		leafnodes {
+			remotes = [
+				{
+					dont_randomize: true
+					urls: %[1]s
+				}
+				{
+					urls: %[1]s
+				}
+			]
+		}
+		`
+		conf := createConfFile(t, []byte(fmt.Sprintf(content, confURLs)))
+		defer removeFile(t, conf)
+
+		s, o := RunServerWithConfig(conf)
+		s.Shutdown()
+
+		gotOrdered := o.LeafNode.Remotes[0].URLs
+		if got, want := len(gotOrdered), len(orderedURLs); got != want {
+			t.Fatalf("Unexpected rem0 len URLs, got %d, want %d", got, want)
+		}
+
+		// These should be IN order.
+		for i := range orderedURLs {
+			if got, want := gotOrdered[i].String(), orderedURLs[i]; got != want {
+				t.Fatalf("Unexpected ordered url, got %s, want %s", got, want)
+			}
+		}
+
+		gotRandom := o.LeafNode.Remotes[1].URLs
+		if got, want := len(gotRandom), len(orderedURLs); got != want {
+			t.Fatalf("Unexpected rem1 len URLs, got %d, want %d", got, want)
+		}
+
+		// These should be OUT of order.
+		var random bool
+		for i := range orderedURLs {
+			if gotRandom[i].String() != orderedURLs[i] {
+				random = true
+				break
+			}
+		}
+		if !random {
+			t.Fatal("Expected urls to be random")
 		}
 	})
 }

@@ -85,6 +85,59 @@ func TestLeafNodeRandomIP(t *testing.T) {
 	}
 }
 
+func TestLeafNodeRandomRemotes(t *testing.T) {
+	// 16! possible permutations.
+	orderedURLs := make([]*url.URL, 0, 16)
+	for i := 0; i < cap(orderedURLs); i++ {
+		orderedURLs = append(orderedURLs, &url.URL{
+			Scheme: "nats-leaf",
+			Host:   fmt.Sprintf("host%d:7422", i),
+		})
+	}
+
+	o := DefaultOptions()
+	o.LeafNode.Remotes = []*RemoteLeafOpts{
+		{NoRandomize: true},
+		{NoRandomize: false},
+	}
+	o.LeafNode.Remotes[0].URLs = make([]*url.URL, cap(orderedURLs))
+	copy(o.LeafNode.Remotes[0].URLs, orderedURLs)
+	o.LeafNode.Remotes[1].URLs = make([]*url.URL, cap(orderedURLs))
+	copy(o.LeafNode.Remotes[1].URLs, orderedURLs)
+
+	s := RunServer(o)
+	s.Shutdown()
+
+	gotOrdered := o.LeafNode.Remotes[0].URLs
+	if got, want := len(gotOrdered), len(orderedURLs); got != want {
+		t.Fatalf("Unexpected rem0 len URLs, got %d, want %d", got, want)
+	}
+
+	// These should be IN order.
+	for i := range orderedURLs {
+		if got, want := gotOrdered[i].String(), orderedURLs[i].String(); got != want {
+			t.Fatalf("Unexpected ordered url, got %s, want %s", got, want)
+		}
+	}
+
+	gotRandom := o.LeafNode.Remotes[1].URLs
+	if got, want := len(gotRandom), len(orderedURLs); got != want {
+		t.Fatalf("Unexpected rem1 len URLs, got %d, want %d", got, want)
+	}
+
+	// These should be OUT of order.
+	var random bool
+	for i := range orderedURLs {
+		if gotRandom[i].String() != orderedURLs[i].String() {
+			random = true
+			break
+		}
+	}
+	if !random {
+		t.Fatal("Expected urls to be random")
+	}
+}
+
 type testLoopbackResolver struct{}
 
 func (r *testLoopbackResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
@@ -3226,16 +3279,15 @@ func TestLeafNodeLoopDetectionWithMultipleClusters(t *testing.T) {
 
 	checkClusterFormed(t, l1, l2)
 
-	u1, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", lo1.LeafNode.Port))
-	u2, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", lo2.LeafNode.Port))
-	urls := []*url.URL{u1, u2}
-
 	ro1 := DefaultOptions()
 	ro1.Cluster.Name = "remote"
 	ro1.Cluster.Host = "127.0.0.1"
 	ro1.Cluster.Port = -1
 	ro1.LeafNode.ReconnectInterval = 50 * time.Millisecond
-	ro1.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: urls}}
+	ro1.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{
+		{Scheme: "nats", Host: fmt.Sprintf("127.0.0.1:%d", lo1.LeafNode.Port)},
+		{Scheme: "nats", Host: fmt.Sprintf("127.0.0.1:%d", lo2.LeafNode.Port)},
+	}}}
 	r1 := RunServer(ro1)
 	defer r1.Shutdown()
 
@@ -3248,7 +3300,10 @@ func TestLeafNodeLoopDetectionWithMultipleClusters(t *testing.T) {
 	ro2.Cluster.Port = -1
 	ro2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", ro1.Cluster.Port))
 	ro2.LeafNode.ReconnectInterval = 50 * time.Millisecond
-	ro2.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: urls}}
+	ro2.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{
+		{Scheme: "nats", Host: fmt.Sprintf("127.0.0.1:%d", lo1.LeafNode.Port)},
+		{Scheme: "nats", Host: fmt.Sprintf("127.0.0.1:%d", lo2.LeafNode.Port)},
+	}}}
 	r2 := RunServer(ro2)
 	defer r2.Shutdown()
 

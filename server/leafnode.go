@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -133,6 +134,17 @@ func validateLeafNode(o *Options) error {
 	if err := validateLeafNodeAuthOptions(o); err != nil {
 		return err
 	}
+
+	for _, rem := range o.LeafNode.Remotes {
+		if rem.NoRandomize {
+			continue
+		}
+
+		rand.Shuffle(len(rem.URLs), func(i, j int) {
+			rem.URLs[i], rem.URLs[j] = rem.URLs[j], rem.URLs[i]
+		})
+	}
+
 	// In local config mode, check that leafnode configuration refers to accounts that exist.
 	if len(o.TrustedOperators) == 0 {
 		accNames := map[string]struct{}{}

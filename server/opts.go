@@ -139,6 +139,7 @@ type LeafNodeOpts struct {
 // RemoteLeafOpts are options for connecting to a remote server as a leaf node.
 type RemoteLeafOpts struct {
 	LocalAccount string      `json:"local_account,omitempty"`
+	NoRandomize  bool        `json:"-"`
 	URLs         []*url.URL  `json:"urls,omitempty"`
 	Credentials  string      `json:"-"`
 	TLS          bool        `json:"-"`
@@ -1761,6 +1762,8 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 		for k, v := range rm {
 			tk, v = unwrapValue(v, &lt)
 			switch strings.ToLower(k) {
+			case "no_randomize", "dont_randomize":
+				remote.NoRandomize = v.(bool)
 			case "url", "urls":
 				switch v := v.(type) {
 				case []interface{}, []string:
