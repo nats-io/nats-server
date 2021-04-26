@@ -1101,13 +1101,18 @@ type LeafNodeOptsVarz struct {
 	Remotes     []RemoteLeafOptsVarz `json:"remotes,omitempty"`
 }
 
+// Contains lists of subjects not allowed to be imported/exported through a leaf node connection
+type RemoteLeafOptDeny struct {
+	Exports []string `json:"exports,omitempty"`
+	Imports []string `json:"imports,omitempty"`
+}
+
 // RemoteLeafOptsVarz contains monitoring remote leaf node information
 type RemoteLeafOptsVarz struct {
-	LocalAccount string   `json:"local_account,omitempty"`
-	TLSTimeout   float64  `json:"tls_timeout,omitempty"`
-	URLs         []string `json:"urls,omitempty"`
-	DenyExports  []string `json:"deny_exports,omitempty"`
-	DenyImports  []string `json:"deny_imports,omitempty"`
+	LocalAccount string             `json:"local_account,omitempty"`
+	TLSTimeout   float64            `json:"tls_timeout,omitempty"`
+	URLs         []string           `json:"urls,omitempty"`
+	Deny         *RemoteLeafOptDeny `json:"deny,omitempty"`
 }
 
 // VarzOptions are the options passed to Varz().
@@ -1280,12 +1285,18 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 	if l := len(ln.Remotes); l > 0 {
 		rlna := make([]RemoteLeafOptsVarz, l)
 		for i, r := range ln.Remotes {
+			var deny *RemoteLeafOptDeny
+			if len(r.DenyImports) > 0 || len(r.DenyExports) > 0 {
+				deny = &RemoteLeafOptDeny{
+					Imports: r.DenyImports,
+					Exports: r.DenyExports,
+				}
+			}
 			rlna[i] = RemoteLeafOptsVarz{
 				LocalAccount: r.LocalAccount,
 				URLs:         urlsToStrings(r.URLs),
 				TLSTimeout:   r.TLSTimeout,
-				DenyImports:  r.DenyImports,
-				DenyExports:  r.DenyExports,
+				Deny:         deny,
 			}
 		}
 		varz.LeafNode.Remotes = rlna
