@@ -44,7 +44,7 @@ func require_False(t *testing.T, b bool) {
 	}
 }
 
-func require_NoError(t *testing.T, err error) {
+func require_NoError(t testing.TB, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatalf("require no error, but got: %v", err)

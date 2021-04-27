@@ -3309,7 +3309,7 @@ func require_JWTEqual(t *testing.T, dir string, pub string, jwt string) {
 	require_Equal(t, string(content), jwt)
 }
 
-func createDir(t *testing.T, prefix string) string {
+func createDir(t testing.TB, prefix string) string {
 	t.Helper()
 	err := os.MkdirAll(tempRoot, 0700)
 	require_NoError(t, err)
