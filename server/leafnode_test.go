@@ -28,6 +28,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nkeys"
+
 	jwt "github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 )
@@ -2455,6 +2457,10 @@ func TestLeafNodeRouteParseLSUnsub(t *testing.T) {
 }
 
 func TestLeafNodeOperatorBadCfg(t *testing.T) {
+	sysAcc, err := nkeys.CreateAccount()
+	require_NoError(t, err)
+	sysAccPk, err := sysAcc.PublicKey()
+	require_NoError(t, err)
 	tmpDir := createDir(t, "_nats-server")
 	defer removeDir(t, tmpDir)
 	for errorText, cfg := range map[string]string{
@@ -2474,6 +2480,7 @@ func TestLeafNodeOperatorBadCfg(t *testing.T) {
 			conf := createConfFile(t, []byte(fmt.Sprintf(`
 		port: -1
 		operator: %s
+		system_account: %s
 		resolver: {
 			type: cache
 			dir: %s
@@ -2481,7 +2488,7 @@ func TestLeafNodeOperatorBadCfg(t *testing.T) {
 		leafnodes: {
 			%s
 		}
-	`, ojwt, tmpDir, cfg)))
+	`, ojwt, sysAccPk, tmpDir, cfg)))
 			defer removeFile(t, conf)
 			opts := LoadConfig(conf)
 			s, err := NewServer(opts)

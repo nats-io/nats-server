@@ -5739,3 +5739,25 @@ func TestJWTMappings(t *testing.T) {
 	require_Len(t, 1, updateJwt(t, srv.ClientURL(), sysCreds, aJwtNoM, 1))
 	test("foo2", "bar2", true)
 }
+
+func TestJWTNoSystemAccountButNatsResolver(t *testing.T) {
+	dirSrv := createDir(t, "srv")
+	defer removeDir(t, dirSrv)
+	for _, resType := range []string{"full", "cache"} {
+		t.Run(resType, func(t *testing.T) {
+			conf := createConfFile(t, []byte(fmt.Sprintf(`
+			listen: -1
+			operator: %s
+			resolver: {
+				type: %s
+				dir: %s
+			}`, ojwt, resType, dirSrv)))
+			defer removeFile(t, conf)
+			opts := LoadConfig(conf)
+			s, err := NewServer(opts)
+			s.Shutdown()
+			require_Error(t, err)
+			require_Contains(t, err.Error(), "the system account needs to be specified in configuration or the operator jwt")
+		})
+	}
+}
