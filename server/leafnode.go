@@ -1592,6 +1592,7 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	key := string(sub.sid)
 	osub := c.subs[key]
 	updateGWs := false
+	delta := int32(1)
 	if osub == nil {
 		c.subs[key] = sub
 		// Now place into the account sl.
@@ -1605,6 +1606,7 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 		updateGWs = srv.gateway.enabled
 	} else if sub.queue != nil {
 		// For a queue we need to update the weight.
+		delta = sub.qw - atomic.LoadInt32(&osub.qw)
 		atomic.StoreInt32(&osub.qw, sub.qw)
 		acc.sl.UpdateRemoteQSub(osub)
 	}
@@ -1620,14 +1622,14 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	// other leaf nodes as needed.
 	if !spoke {
 		// If we are routing add to the route map for the associated account.
-		srv.updateRouteSubscriptionMap(acc, sub, 1)
+		srv.updateRouteSubscriptionMap(acc, sub, delta)
 		if updateGWs {
-			srv.gatewayUpdateSubInterest(acc.Name, sub, 1)
+			srv.gatewayUpdateSubInterest(acc.Name, sub, delta)
 		}
 	}
 	// Now check on leafnode updates for other leaf nodes. We understand solicited
 	// and non-solicited state in this call so we will do the right thing.
-	srv.updateLeafNodes(acc, sub, 1)
+	srv.updateLeafNodes(acc, sub, delta)
 
 	return nil
 }

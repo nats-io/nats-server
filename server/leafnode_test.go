@@ -3513,3 +3513,160 @@ func TestLeafNodeNoPingBeforeConnect(t *testing.T) {
 		}
 	}
 }
+
+func TestLeafNodeNoMsgLoop(t *testing.T) {
+	hubConf := `
+		listen: "127.0.0.1:-1"
+		accounts {
+			FOO {
+				users [
+					{username: leaf, password: pass}
+					{username: user, password: pass}
+				]
+			}
+		}
+		cluster {
+			name: "hub"
+			listen: "127.0.0.1:-1"
+			%s
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			authorization {
+				account: FOO
+			}
+		}
+	`
+	configS1 := createConfFile(t, []byte(fmt.Sprintf(hubConf, "")))
+	defer removeFile(t, configS1)
+	s1, o1 := RunServerWithConfig(configS1)
+	defer s1.Shutdown()
+
+	configS2S3 := createConfFile(t, []byte(fmt.Sprintf(hubConf, fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, o1.Cluster.Port))))
+	defer removeFile(t, configS2S3)
+	s2, o2 := RunServerWithConfig(configS2S3)
+	defer s2.Shutdown()
+
+	s3, _ := RunServerWithConfig(configS2S3)
+	defer s3.Shutdown()
+
+	checkClusterFormed(t, s1, s2, s3)
+
+	contentLN := `
+		listen: "127.0.0.1:%d"
+		accounts {
+			FOO {
+				users [
+					{username: leaf, password: pass}
+					{username: user, password: pass}
+				]
+			}
+		}
+		leafnodes {
+			remotes = [
+				{
+					url: "nats://leaf:pass@127.0.0.1:%d"
+					account: FOO
+				}
+			]
+		}
+	`
+	lnconf := createConfFile(t, []byte(fmt.Sprintf(contentLN, -1, o1.LeafNode.Port)))
+	defer removeFile(t, lnconf)
+	sl1, slo1 := RunServerWithConfig(lnconf)
+	defer sl1.Shutdown()
+
+	sl2, slo2 := RunServerWithConfig(lnconf)
+	defer sl2.Shutdown()
+
+	checkLeafNodeConnected(t, sl1)
+	checkLeafNodeConnected(t, sl2)
+
+	// Create users on each leafnode
+	nc1, err := nats.Connect(fmt.Sprintf("nats://user:pass@127.0.0.1:%d", slo1.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc1.Close()
+
+	rch := make(chan struct{}, 1)
+	nc2, err := nats.Connect(
+		fmt.Sprintf("nats://user:pass@127.0.0.1:%d", slo2.Port),
+		nats.ReconnectWait(50*time.Millisecond),
+		nats.ReconnectHandler(func(_ *nats.Conn) {
+			rch <- struct{}{}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+
+	// Create queue subs on sl2
+	nc2.QueueSubscribe("foo", "bar", func(_ *nats.Msg) {})
+	nc2.QueueSubscribe("foo", "bar", func(_ *nats.Msg) {})
+	nc2.Flush()
+
+	// Wait for interest to propagate to sl1
+	checkSubInterest(t, sl1, "FOO", "foo", 250*time.Millisecond)
+
+	// Create sub on sl1
+	ch := make(chan *nats.Msg, 10)
+	nc1.Subscribe("foo", func(m *nats.Msg) {
+		select {
+		case ch <- m:
+		default:
+		}
+	})
+	nc1.Flush()
+
+	checkSubInterest(t, sl2, "FOO", "foo", 250*time.Millisecond)
+
+	// Produce from sl1
+	nc1.Publish("foo", []byte("msg1"))
+
+	// Check message is received by plain sub
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatalf("Did not receive message")
+	}
+
+	// Restart leaf node, this time make sure we connect to 2nd server.
+	sl2.Shutdown()
+
+	// Use config file but this time reuse the client port and set the 2nd server for
+	// the remote leaf node port.
+	lnconf = createConfFile(t, []byte(fmt.Sprintf(contentLN, slo2.Port, o2.LeafNode.Port)))
+	defer removeFile(t, lnconf)
+	sl2, _ = RunServerWithConfig(lnconf)
+	defer sl2.Shutdown()
+
+	checkLeafNodeConnected(t, sl2)
+
+	// Wait for client to reconnect
+	select {
+	case <-rch:
+	case <-time.After(time.Second):
+		t.Fatalf("Did not reconnect")
+	}
+
+	// Produce a new messages
+	for i := 0; i < 10; i++ {
+		nc1.Publish("foo", []byte(fmt.Sprintf("msg%d", 2+i)))
+
+		// Check sub receives 1 message
+		select {
+		case <-ch:
+		case <-time.After(time.Second):
+			t.Fatalf("Did not receive message")
+		}
+		// Check that there is no more...
+		select {
+		case m := <-ch:
+			t.Fatalf("Loop: received second message %s", m.Data)
+		case <-time.After(50 * time.Millisecond):
+			// OK
+		}
+	}
+}
