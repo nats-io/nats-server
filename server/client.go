@@ -4116,7 +4116,10 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			for i := 0; i < len(qsubs); i++ {
 				sub = qsubs[i]
 				if sub.client.kind == LEAF || sub.client.kind == ROUTER {
-					if rsub == nil {
+					// If we have assigned an rsub already, replace if the destination is a LEAF
+					// since we want to favor that compared to a ROUTER. We could make sure that
+					// we override only if previous was a ROUTE and not a LEAF, but we don't have to.
+					if rsub == nil || sub.client.kind == LEAF {
 						rsub = sub
 					}
 				} else {
@@ -4547,6 +4550,7 @@ func (c *client) closeConnection(reason ClosedState) {
 		srv           = c.srv
 		noReconnect   = c.flags.isSet(noReconnect)
 		acc           = c.acc
+		spoke         bool
 	)
 
 	// Snapshot for use if we are a client connection.
@@ -4562,6 +4566,7 @@ func (c *client) closeConnection(reason ClosedState) {
 			sub.close()
 			subs = append(subs, sub)
 		}
+		spoke = c.isSpokeLeafNode()
 	}
 
 	if c.route != nil {
@@ -4595,7 +4600,6 @@ func (c *client) closeConnection(reason ClosedState) {
 		// Unregister
 		srv.removeClient(c)
 
-		notSpoke := !(kind == LEAF && c.isSpokeLeafNode())
 		// Update remote subscriptions.
 		if acc != nil && (kind == CLIENT || kind == LEAF) {
 			qsubs := map[string]*qsub{}
@@ -4604,29 +4608,36 @@ func (c *client) closeConnection(reason ClosedState) {
 				c.unsubscribe(acc, sub, true, false)
 				// Update route as normal for a normal subscriber.
 				if sub.queue == nil {
-					if notSpoke {
+					if !spoke {
 						srv.updateRouteSubscriptionMap(acc, sub, -1)
+						if srv.gateway.enabled {
+							srv.gatewayUpdateSubInterest(acc.Name, sub, -1)
+						}
 					}
 					srv.updateLeafNodes(acc, sub, -1)
 				} else {
 					// We handle queue subscribers special in case we
 					// have a bunch we can just send one update to the
 					// connected routes.
+					num := int32(1)
+					if kind == LEAF {
+						num = sub.qw
+					}
 					key := string(sub.subject) + " " + string(sub.queue)
 					if esub, ok := qsubs[key]; ok {
-						esub.n++
+						esub.n += num
 					} else {
-						qsubs[key] = &qsub{sub, 1}
+						qsubs[key] = &qsub{sub, num}
 					}
-				}
-				if srv.gateway.enabled && notSpoke {
-					srv.gatewayUpdateSubInterest(acc.Name, sub, -1)
 				}
 			}
 			// Process any qsubs here.
 			for _, esub := range qsubs {
-				if notSpoke {
+				if !spoke {
 					srv.updateRouteSubscriptionMap(acc, esub.sub, -(esub.n))
+					if srv.gateway.enabled {
+						srv.gatewayUpdateSubInterest(acc.Name, esub.sub, -(esub.n))
+					}
 				}
 				srv.updateLeafNodes(acc, esub.sub, -(esub.n))
 			}
