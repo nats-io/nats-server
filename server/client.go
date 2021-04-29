@@ -4114,9 +4114,9 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			for i := 0; i < len(qsubs); i++ {
 				sub = qsubs[i]
 				if sub.client.kind == LEAF || sub.client.kind == ROUTER {
-					// If we have assigned an rsub already, replace if the destination is LEAF
+					// If we have assigned an rsub already, replace if the destination is a LEAF
 					// since we want to favor that compared to a ROUTER. We could make sure that
-					// we override only if previous was a ROUTER and not a LEAF, but we don't have to.
+					// we override only if previous was a ROUTE and not a LEAF, but we don't have to.
 					if rsub == nil || sub.client.kind == LEAF {
 						rsub = sub
 					}
