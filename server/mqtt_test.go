@@ -36,6 +36,8 @@ import (
 	"github.com/nats-io/nuid"
 )
 
+var testMQTTTimeout = 4 * time.Second
+
 var jsClusterTemplWithMQTT = `
 	listen: 127.0.0.1:-1
 	server_name: %s
@@ -211,6 +213,9 @@ func testMQTTDefaultOptions() *Options {
 func testMQTTRunServer(t testing.TB, o *Options) *Server {
 	t.Helper()
 	o.NoLog = false
+	if o.StoreDir == _EMPTY_ {
+		o.StoreDir = createDir(t, "mqtt_js")
+	}
 	s, err := NewServer(o)
 	if err != nil {
 		t.Fatalf("Error creating server: %v", err)
@@ -256,8 +261,29 @@ func testMQTTDefaultTLSOptions(t *testing.T, verify bool) *Options {
 	return o
 }
 
+func TestMQTTStandaloneRequiresJetStream(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		mqtt {
+			port: -1
+			tls {
+				cert_file: "./configs/certs/server.pem"
+				key_file: "./configs/certs/key.pem"
+			}
+		}
+	`))
+	defer removeFile(t, conf)
+	o, err := ProcessConfigFile(conf)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+	if _, err := NewServer(o); err == nil || !strings.Contains(err.Error(), "standalone") {
+		t.Fatalf("Expected error about requiring JetStream in standalone mode, got %v", err)
+	}
+}
+
 func TestMQTTConfig(t *testing.T) {
 	conf := createConfFile(t, []byte(`
+		jetstream: enabled
 		mqtt {
 			port: -1
 			tls {
@@ -618,7 +644,7 @@ func testMQTTGetClient(t testing.TB, s *Server, clientID string) *client {
 func testMQTTRead(c net.Conn) ([]byte, error) {
 	var buf [512]byte
 	// Make sure that test does not block
-	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	c.SetReadDeadline(time.Now().Add(testMQTTTimeout))
 	n, err := c.Read(buf[:])
 	if err != nil {
 		return nil, err
@@ -628,7 +654,7 @@ func testMQTTRead(c net.Conn) ([]byte, error) {
 }
 
 func testMQTTWrite(c net.Conn, buf []byte) (int, error) {
-	c.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	c.SetWriteDeadline(time.Now().Add(testMQTTTimeout))
 	n, err := c.Write(buf)
 	c.SetWriteDeadline(time.Time{})
 	return n, err
@@ -716,7 +742,7 @@ func mqttCreateConnectProto(ci *mqttConnInfo) []byte {
 
 func testMQTTCheckConnAck(t testing.TB, r *mqttReader, rc byte, sessionPresent bool) {
 	t.Helper()
-	r.reader.SetReadDeadline(time.Now().Add(2 * time.Second))
+	r.reader.SetReadDeadline(time.Now().Add(testMQTTTimeout))
 	if err := r.ensurePacketInBuffer(4); err != nil {
 		t.Fatalf("Error ensuring packet in buffer: %v", err)
 	}
@@ -1683,7 +1709,7 @@ func TestMQTTFilterConversion(t *testing.T) {
 
 func testMQTTReaderHasAtLeastOne(t testing.TB, r *mqttReader) {
 	t.Helper()
-	r.reader.SetReadDeadline(time.Now().Add(2 * time.Second))
+	r.reader.SetReadDeadline(time.Now().Add(testMQTTTimeout))
 	if err := r.ensurePacketInBuffer(1); err != nil {
 		t.Fatal(err)
 	}
@@ -2899,6 +2925,58 @@ func TestMQTTClusterReplicasCount(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestMQTTClusterPlacement(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "HUB", 3)
+	defer c.shutdown()
+
+	lnc := c.createLeafNodesWithStartPortAndMQTT("SPOKE", 3, 22111, `mqtt { listen: 127.0.0.1:-1 }`)
+	defer lnc.shutdown()
+
+	c.waitOnPeerCount(6)
+	c.waitOnLeader()
+
+	for i := 0; i < 10; i++ {
+		mc, rc := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, lnc.opts[i%3].MQTT.Host, lnc.opts[i%3].MQTT.Port)
+		defer mc.Close()
+		testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, false)
+	}
+
+	// Now check that MQTT assets have been created in the LEAF node's side, not the Hub.
+	nc := natsConnect(t, lnc.servers[0].ClientURL())
+	defer nc.Close()
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("Unable to get JetStream: %v", err)
+	}
+	count := 0
+	for si := range js.StreamsInfo() {
+		if si.Cluster == nil || si.Cluster.Name != "SPOKE" {
+			t.Fatalf("Expected asset %q to be placed on spoke cluster, was placed on %+v", si.Config.Name, si.Cluster)
+		}
+		for _, repl := range si.Cluster.Replicas {
+			if !strings.HasPrefix(repl.Name, "SPOKE-") {
+				t.Fatalf("Replica on the wrong cluster: %+v", repl)
+			}
+		}
+		if si.State.Consumers > 0 {
+			for ci := range js.ConsumersInfo(si.Config.Name) {
+				if ci.Cluster == nil || ci.Cluster.Name != "SPOKE" {
+					t.Fatalf("Expected asset %q to be placed on spoke cluster, was placed on %+v", ci.Name, si.Cluster)
+				}
+				for _, repl := range ci.Cluster.Replicas {
+					if !strings.HasPrefix(repl.Name, "SPOKE-") {
+						t.Fatalf("Replica on the wrong cluster: %+v", repl)
+					}
+				}
+			}
+		}
+		count++
+	}
+	if count == 0 {
+		t.Fatal("No stream found!")
 	}
 }
 

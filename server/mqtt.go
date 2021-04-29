@@ -526,6 +526,10 @@ func validateMQTTOptions(o *Options) error {
 	if mo.AckWait < 0 {
 		return fmt.Errorf("ack wait must be a positive value")
 	}
+	// If standalone and there is no JS enabled, then it won't work...
+	if o.Cluster.Port == 0 && o.Gateway.Port == 0 && !o.JetStream {
+		return fmt.Errorf("mqtt requires JetStream to be enabled if running in standalone mode")
+	}
 	return nil
 }
 
@@ -825,14 +829,6 @@ func (s *Server) getOrCreateMQTTAccountSessionManager(clientID string, c *client
 	if ok {
 		return asm, nil
 	}
-	// First check that we have JS enabled for this account.
-	// TODO: Since we check only when creating a session manager for this
-	// account, would probably need to do some cleanup if JS can be disabled
-	// on config reload.
-	if !acc.JetStreamEnabled() {
-		return nil, fmt.Errorf("JetStream must be enabled for account %q used by MQTT client ID %q",
-			accName, clientID)
-	}
 	// Need to create one here.
 	asm, err := s.mqttCreateAccountSessionManager(acc, quitCh)
 	if err != nil {
@@ -908,7 +904,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	// Start the go routine that will send JS API requests.
 	s.startGoRoutine(func() {
 		defer s.grWG.Done()
-		as.sendJSAPIrequests(sc, accName, closeCh)
+		as.sendJSAPIrequests(s, sc, accName, closeCh)
 	})
 
 	// Create the stream for the messages.
@@ -1412,11 +1408,12 @@ func (as *mqttAccountSessionManager) createSubscription(subject string, cb msgHa
 // only used when the server shutdown.
 //
 // No lock held on entry.
-func (as *mqttAccountSessionManager) sendJSAPIrequests(c *client, accName string, closeCh chan struct{}) {
+func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, accName string, closeCh chan struct{}) {
+	cluster := s.cachedClusterName()
 	as.mu.RLock()
 	sendq := as.jsa.sendq
 	quitCh := as.jsa.quitCh
-	ci := ClientInfo{Account: accName}
+	ci := ClientInfo{Account: accName, Cluster: cluster}
 	as.mu.RUnlock()
 
 	// The account session manager does not have a suhtdown API per-se, instead,
