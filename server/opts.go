@@ -4342,6 +4342,7 @@ func overrideTLS(opts *Options) error {
 	tc.KeyFile = opts.TLSKey
 	tc.CaFile = opts.TLSCaCert
 	tc.Verify = opts.TLSVerify
+	tc.Ciphers = defaultCipherSuites()
 
 	var err error
 	opts.TLSConfig, err = GenTLSConfig(&tc)

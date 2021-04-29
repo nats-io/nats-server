@@ -1522,6 +1522,10 @@ func TestConfigureOptions(t *testing.T) {
 	if opts.TLSConfig == nil || !opts.TLS {
 		t.Fatal("Expected TLSConfig to be set")
 	}
+	// Check that we use default TLS ciphers
+	if !reflect.DeepEqual(opts.TLSConfig.CipherSuites, defaultCipherSuites()) {
+		t.Fatalf("Default ciphers not set, expected %v, got %v", defaultCipherSuites(), opts.TLSConfig.CipherSuites)
+	}
 }
 
 func TestClusterPermissionsConfig(t *testing.T) {
