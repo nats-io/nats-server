@@ -125,11 +125,11 @@ func (s *Server) addInJSDeny(r *RemoteLeafOpts) {
 		}
 	}
 	if !hasDE {
-		s.Warnf("Adding deny export of %q for leafnode configuration on %q that bridges system account", jsAllApi, r.LocalAccount)
+		s.Noticef("Adding deny export of %q for leafnode configuration on %q that bridges system account", jsAllApi, r.LocalAccount)
 		r.DenyExports = append(r.DenyExports, jsAllApi)
 	}
 	if !hasDI {
-		s.Warnf("Adding deny import of %q for leafnode configuration on %q that bridges system account", jsAllApi, r.LocalAccount)
+		s.Noticef("Adding deny import of %q for leafnode configuration on %q that bridges system account", jsAllApi, r.LocalAccount)
 		r.DenyImports = append(r.DenyImports, jsAllApi)
 	}
 }
@@ -148,7 +148,7 @@ func (s *Server) checkForSystemRemoteLeaf(remotes []*RemoteLeafOpts) {
 		return
 	}
 
-	s.Warnf("Sharing the system account across a leafnode remote")
+	s.Noticef("Detected sharing of the system account across a leafnode")
 	for _, r := range remotes {
 		if r.LocalAccount != sysAcc {
 			s.addInJSDeny(r)
