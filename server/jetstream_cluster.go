@@ -460,8 +460,13 @@ func (s *Server) enableJetStreamClustering() error {
 	s.Noticef("Starting JetStream cluster")
 	// We need to determine if we have a stable cluster name and expected number of servers.
 	s.Debugf("JetStream cluster checking for stable cluster name and peers")
-	if s.isClusterNameDynamic() || s.configuredRoutes() == 0 {
-		return errors.New("JetStream cluster requires cluster name and explicit routes")
+
+	hasLeafNodeSystemShare := s.hasSolicitLeafNodeSystemShare()
+	if s.isClusterNameDynamic() && !hasLeafNodeSystemShare {
+		return errors.New("JetStream cluster requires cluster name")
+	}
+	if s.configuredRoutes() == 0 && !hasLeafNodeSystemShare {
+		return errors.New("JetStream cluster requires configured routes or solicited leafnode for the system account")
 	}
 
 	return js.setupMetaGroup()
@@ -489,22 +494,7 @@ func (js *jetStream) setupMetaGroup() error {
 	// If we are soliciting leafnode connections and we are sharing a system account
 	// we want to move to observer mode so that we extend the solicited cluster or supercluster
 	// but do not form our own.
-	if ln := s.getOpts().LeafNode; len(ln.Remotes) > 0 {
-		sys := s.SystemAccount().GetName()
-	ENDFOR:
-		for _, r := range ln.Remotes {
-			if r.LocalAccount == sys {
-				for _, denySub := range r.DenyImports {
-					if subjectIsSubsetMatch(denySub, raftAllSubj) {
-						// raft group is denied, hence there won't be anything to observe
-						break ENDFOR
-					}
-				}
-				cfg.Observer = true
-				break ENDFOR
-			}
-		}
-	}
+	cfg.Observer = s.hasSolicitLeafNodeSystemShare()
 
 	var bootstrap bool
 	if _, err := readPeerState(storeDir); err != nil {

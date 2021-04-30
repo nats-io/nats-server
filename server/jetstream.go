@@ -219,13 +219,29 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	}
 
 	// If we are in clustered mode go ahead and start the meta controller.
-	if !s.standAloneMode() {
+	if !s.standAloneMode() || s.hasSolicitLeafNodeSystemShare() {
 		if err := s.enableJetStreamClustering(); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// This will check if we have the a solicited leafnode that shares the system account.
+func (s *Server) hasSolicitLeafNodeSystemShare() bool {
+	sysAcc := s.SystemAccount().GetName()
+	for _, r := range s.getOpts().LeafNode.Remotes {
+		if r.LocalAccount == sysAcc {
+			for _, denySub := range r.DenyImports {
+				if subjectIsSubsetMatch(denySub, raftAllSubj) {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) updateJetStreamInfoStatus(enabled bool) {

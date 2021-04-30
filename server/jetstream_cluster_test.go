@@ -5629,6 +5629,20 @@ func TestJetStreamClusterSuperClusterAndLeafNodesWithSharedSystemAccount(t *test
 	}
 }
 
+func TestJetStreamClusterSuperClusterAndSingleLeafNodeWithSharedSystemAccount(t *testing.T) {
+	sc := createJetStreamSuperCluster(t, 3, 2)
+	defer sc.shutdown()
+
+	ln := sc.createSingleLeafNode()
+	defer ln.Shutdown()
+
+	// We want to make sure there is only one leader and its always in the supercluster.
+	sc.waitOnLeader()
+
+	// leafnodes should have been added into the overall peer count.
+	sc.waitOnPeerCount(7)
+}
+
 func TestJetStreamClusterLeafDifferentAccounts(t *testing.T) {
 	c := createJetStreamCluster(t, jsClusterAccountsTempl, "HUB", _EMPTY_, 2, 33133, false)
 	defer c.shutdown()
@@ -6172,6 +6186,11 @@ func (sc *supercluster) createLeafNodes(clusterName string, numServers int) *clu
 	return c.createLeafNodes(clusterName, numServers)
 }
 
+func (sc *supercluster) createSingleLeafNode() *Server {
+	c := sc.randomCluster()
+	return c.createLeafNode()
+}
+
 func (sc *supercluster) leader() *Server {
 	for _, c := range sc.clusters {
 		if leader := c.leader(); leader != nil {
@@ -6423,6 +6442,17 @@ var jsClusterTemplWithLeafNode = `
 	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
 `
 
+var jsClusterTemplWithSingleLeafNode = `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: "%s"}
+
+	{{leaf}}
+
+	# For access to system account.
+	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+`
+
 var jsLeafFrag = `
 	leaf {
 		remotes [
@@ -6441,7 +6471,17 @@ func (c *cluster) createLeafNodesWithStartPort(clusterName string, numServers in
 	return c.createLeafNodesWithStartPortAndMQTT(clusterName, numServers, portStart, _EMPTY_)
 }
 
-func (c *cluster) createLeafNodesWithStartPortAndMQTT(clusterName string, numServers int, portStart int, mqtt string) *cluster {
+func (c *cluster) createLeafNode() *Server {
+	tmpl := c.createLeafSolicit(jsClusterTemplWithSingleLeafNode)
+	conf := fmt.Sprintf(tmpl, "LNS", createDir(c.t, JetStreamStoreDir))
+	s, o := RunServerWithConfig(createConfFile(c.t, []byte(conf)))
+	c.servers = append(c.servers, s)
+	c.opts = append(c.opts, o)
+	return s
+}
+
+// Helper to generate the leaf solicit configs.
+func (c *cluster) createLeafSolicit(tmpl string) string {
 	// Create our leafnode cluster template first.
 	var lns, lnss []string
 	for _, s := range c.servers {
@@ -6452,7 +6492,12 @@ func (c *cluster) createLeafNodesWithStartPortAndMQTT(clusterName string, numSer
 	lnc := strings.Join(lns, ", ")
 	lnsc := strings.Join(lnss, ", ")
 	lconf := fmt.Sprintf(jsLeafFrag, lnc, lnsc)
-	tmpl := strings.Replace(jsClusterTemplWithLeafNode, "{{leaf}}", lconf, 1)
+	return strings.Replace(tmpl, "{{leaf}}", lconf, 1)
+}
+
+func (c *cluster) createLeafNodesWithStartPortAndMQTT(clusterName string, numServers int, portStart int, mqtt string) *cluster {
+	// Create our leafnode cluster template first.
+	tmpl := c.createLeafSolicit(jsClusterTemplWithLeafNode)
 	tmpl = strings.Replace(tmpl, "{{mqtt}}", mqtt, 1)
 
 	pre := clusterName + "-"

@@ -524,7 +524,7 @@ func (s *Server) setClusterName(name string) {
 
 // Return whether the cluster name is dynamic.
 func (s *Server) isClusterNameDynamic() bool {
-	return s.getOpts().Cluster.Name == ""
+	return s.getOpts().Cluster.Name == _EMPTY_
 }
 
 // ClientURL returns the URL used to connect clients. Helpful in testing
