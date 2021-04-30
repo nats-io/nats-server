@@ -1702,17 +1702,17 @@ func (c *client) processConnect(arg []byte) error {
 
 	if c.kind == CLIENT {
 		var ncs string
-		if c.opts.Version != "" {
+		if c.opts.Version != _EMPTY_ {
 			ncs = fmt.Sprintf("v%s", c.opts.Version)
 		}
-		if c.opts.Lang != "" {
+		if c.opts.Lang != _EMPTY_ {
 			if c.opts.Version == _EMPTY_ {
 				ncs = c.opts.Lang
 			} else {
 				ncs = fmt.Sprintf("%s:%s", ncs, c.opts.Lang)
 			}
 		}
-		if c.opts.Name != "" {
+		if c.opts.Name != _EMPTY_ {
 			if c.opts.Version == _EMPTY_ && c.opts.Lang == _EMPTY_ {
 				ncs = c.opts.Name
 			} else {
@@ -1730,7 +1730,7 @@ func (c *client) processConnect(arg []byte) error {
 	}
 	// when not in operator mode, discard the jwt
 	if srv != nil && srv.trustedKeys == nil {
-		c.opts.JWT = ""
+		c.opts.JWT = _EMPTY_
 	}
 	ujwt := c.opts.JWT
 
@@ -1753,7 +1753,7 @@ func (c *client) processConnect(arg []byte) error {
 		// Check for Auth
 		if ok := srv.checkAuthentication(c); !ok {
 			// We may fail here because we reached max limits on an account.
-			if ujwt != "" {
+			if ujwt != _EMPTY_ {
 				c.mu.Lock()
 				acc := c.acc
 				c.mu.Unlock()
@@ -1769,7 +1769,7 @@ func (c *client) processConnect(arg []byte) error {
 		}
 
 		// Check for Account designation, this section should be only used when there is not a jwt.
-		if account != "" {
+		if account != _EMPTY_ {
 			var acc *Account
 			var wasNew bool
 			var err error
@@ -3772,7 +3772,6 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	var rsi *serviceImport
 
 	// Check if there is a reply present and set up a response.
-	// TODO(dlc) - restrict to configured service imports and not responses?
 	tracking, headers := shouldSample(si.latency, c)
 	if len(c.pa.reply) > 0 {
 		// Special case for now, need to formalize.
@@ -3785,11 +3784,9 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		} else {
 			nrr = c.pa.reply
 		}
-	} else {
+	} else if !si.response && si.latency != nil && tracking {
 		// Check to see if this was a bad request with no reply and we were supposed to be tracking.
-		if !si.response && si.latency != nil && tracking {
-			si.acc.sendBadRequestTrackingLatency(si, c, headers)
-		}
+		si.acc.sendBadRequestTrackingLatency(si, c, headers)
 	}
 
 	// Send tracking info here if we are tracking this response.
@@ -4228,33 +4225,81 @@ sendToRoutesOrLeafs:
 		reply = append(reply, deliver...)
 	}
 
+	// Copy off original pa in case it changes.
+	pa := c.pa
+
 	// We address by index to avoid struct copy.
 	// We have inline structs for memory layout and cache coherency.
 	for i := range c.in.rts {
 		rt := &c.in.rts[i]
+		dc := rt.sub.client
+		dmsg, hset := msg, false
+
 		// Check if we have an origin cluster set from a leafnode message.
 		// If so make sure we do not send it back to the same cluster for a different
 		// leafnode. Cluster wide no echo.
-		if rt.sub.client.kind == LEAF {
+		if dc.kind == LEAF {
 			// Check two scenarios. One is inbound from a route (c.pa.origin)
 			if c.kind == ROUTER && len(c.pa.origin) > 0 {
-				if string(c.pa.origin) == rt.sub.client.remoteCluster() {
+				if string(c.pa.origin) == dc.remoteCluster() {
 					continue
 				}
 			}
 			// The other is leaf to leaf.
 			if c.kind == LEAF {
-				src, dest := c.remoteCluster(), rt.sub.client.remoteCluster()
+				src, dest := c.remoteCluster(), dc.remoteCluster()
 				if src != _EMPTY_ && src == dest {
 					continue
 				}
 			}
+
+			// We need to check if this is a request that has a stamped client information header.
+			// This will contain an account but will represent the account from the leafnode. If
+			// they are not named the same this would cause an account lookup failure trying to
+			// process the request for something like JetStream or other system services that rely
+			// on the client info header. We can just check for reply and the presence of a header
+			// to avoid slow downs for all traffic.
+			if len(c.pa.reply) > 0 && c.pa.hdr >= 0 {
+				dmsg, hset = c.checkLeafClientInfoHeader(msg)
+			}
 		}
 
 		mh := c.msgHeaderForRouteOrLeaf(subject, reply, rt, acc)
-		didDeliver = c.deliverMsg(rt.sub, subject, reply, mh, msg, false) || didDeliver
+		didDeliver = c.deliverMsg(rt.sub, subject, reply, mh, dmsg, false) || didDeliver
+
+		// If we set the header reset the origin pub args.
+		if hset {
+			c.pa = pa
+		}
 	}
 	return didDeliver, queues
+}
+
+// Check and swap accounts on a client info header destined across a leafnode.
+func (c *client) checkLeafClientInfoHeader(msg []byte) (dmsg []byte, setHdr bool) {
+	if c.pa.hdr < 0 || len(msg) < c.pa.hdr {
+		return msg, false
+	}
+	cir := getHeader(ClientInfoHdr, msg[:c.pa.hdr])
+	if len(cir) == 0 {
+		return msg, false
+	}
+
+	dmsg = msg
+
+	var ci ClientInfo
+	if err := json.Unmarshal(cir, &ci); err == nil {
+		if v, _ := c.srv.leafRemoteAccounts.Load(ci.Account); v != nil {
+			remoteAcc := v.(string)
+			if ci.Account != remoteAcc {
+				ci.Account = remoteAcc
+				if b, _ := json.Marshal(ci); b != nil {
+					dmsg, setHdr = c.setHeader(ClientInfoHdr, string(b), msg), true
+				}
+			}
+		}
+	}
+	return dmsg, setHdr
 }
 
 func (c *client) pubPermissionViolation(subject []byte) {

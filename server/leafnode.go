@@ -108,8 +108,59 @@ func (c *client) isHubLeafNode() bool {
 	return c.kind == LEAF && !c.leaf.isSpoke
 }
 
+// Will add in the deny exports and imports for JetStream on solicited connections if we
+// are sharing the system account and wanting to extend the JS domain.
+func (s *Server) addInJSDeny(r *RemoteLeafOpts) {
+	var hasDE, hasDI bool
+	for _, dsubj := range r.DenyExports {
+		if dsubj == jsAllApi {
+			hasDE = true
+			break
+		}
+	}
+	for _, dsubj := range r.DenyImports {
+		if dsubj == jsAllApi {
+			hasDI = true
+			break
+		}
+	}
+	if !hasDE {
+		s.Warnf("Adding deny export of %q for leafnode configuration on %q that bridges system account", jsAllApi, r.LocalAccount)
+		r.DenyExports = append(r.DenyExports, jsAllApi)
+	}
+	if !hasDI {
+		s.Warnf("Adding deny import of %q for leafnode configuration on %q that bridges system account", jsAllApi, r.LocalAccount)
+		r.DenyImports = append(r.DenyImports, jsAllApi)
+	}
+}
+
+// If we detect that this server is trying to solicit and bind the system account we
+// want to make sure that we direct all JetStream traffic through the system account.
+func (s *Server) checkForSystemRemoteLeaf(remotes []*RemoteLeafOpts) {
+	sysShared, sysAcc := false, s.SystemAccount().GetName()
+	for _, r := range remotes {
+		if r.LocalAccount == sysAcc {
+			sysShared = true
+			break
+		}
+	}
+	if !sysShared {
+		return
+	}
+
+	s.Warnf("Sharing the system account across a leafnode remote")
+	for _, r := range remotes {
+		if r.LocalAccount != sysAcc {
+			s.addInJSDeny(r)
+		}
+	}
+}
+
 // This will spin up go routines to solicit the remote leaf node connections.
 func (s *Server) solicitLeafNodeRemotes(remotes []*RemoteLeafOpts) {
+	// Check to see if we are trying to solicit the system account.
+	s.checkForSystemRemoteLeaf(remotes)
+
 	for _, r := range remotes {
 		s.mu.Lock()
 		remote := newLeafNodeCfg(r)
@@ -706,7 +757,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 		remote.Lock()
 		// Users can bind to any local account, if its empty
 		// we will assume the $G account.
-		if remote.LocalAccount == "" {
+		if remote.LocalAccount == _EMPTY_ {
 			remote.LocalAccount = globalAccountName
 		}
 		c.leaf.remote = remote
@@ -918,7 +969,6 @@ func (c *client) processLeafnodeInfo(info *Info) {
 	}
 
 	var resumeConnect bool
-	var s *Server
 
 	// If this is a remote connection and this is the first INFO protocol,
 	// then we need to finish the connect process by sending CONNECT, etc..
@@ -927,7 +977,12 @@ func (c *client) processLeafnodeInfo(info *Info) {
 		c.nc.SetDeadline(time.Time{})
 		resumeConnect = true
 	}
-	s = c.srv
+
+	s := c.srv
+	// Check if we have the remote account information and if so make sure it's stored.
+	if info.RemoteAccount != _EMPTY_ {
+		s.leafRemoteAccounts.Store(c.acc.Name, info.RemoteAccount)
+	}
 	c.mu.Unlock()
 
 	finishConnect := info.ConnectInfo
@@ -1117,7 +1172,7 @@ type leafConnectInfo struct {
 func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) error {
 	// Way to detect clients that incorrectly connect to the route listen
 	// port. Client provided "lang" in the CONNECT protocol while LEAFNODEs don't.
-	if lang != "" {
+	if lang != _EMPTY_ {
 		c.sendErrAndErr(ErrClientConnectedToLeafNodePort.Error())
 		c.closeConnection(WrongPort)
 		return ErrClientConnectedToLeafNodePort
@@ -1161,7 +1216,7 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	}
 
 	// The soliciting side is part of a cluster.
-	if proto.Cluster != "" {
+	if proto.Cluster != _EMPTY_ {
 		c.leaf.remoteCluster = proto.Cluster
 	}
 
@@ -1178,7 +1233,7 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 
 	// If we have permissions bound to this leafnode we need to send then back to the
 	// origin server for local enforcement.
-	s.sendPermsInfo(c)
+	s.sendPermsAndAccountInfo(c)
 
 	// Create and initialize the smap since we know our bound account now.
 	// This will send all registered subs too.
@@ -1201,13 +1256,14 @@ func (c *client) remoteCluster() string {
 
 // Sends back an info block to the soliciting leafnode to let it know about
 // its permission settings for local enforcement.
-func (s *Server) sendPermsInfo(c *client) {
+func (s *Server) sendPermsAndAccountInfo(c *client) {
 	// Copy
 	info := s.copyLeafNodeInfo()
 	c.mu.Lock()
 	info.CID = c.cid
 	info.Import = c.opts.Import
 	info.Export = c.opts.Export
+	info.RemoteAccount = c.acc.Name
 	info.ConnectInfo = true
 	b, _ := json.Marshal(info)
 	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}

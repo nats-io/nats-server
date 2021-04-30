@@ -5558,6 +5558,44 @@ func TestJetStreamClusterSuperClusterAndLeafNodesWithSharedSystemAccount(t *test
 	// leafnodes should have been added into the overall peer count.
 	sc.waitOnPeerCount(8)
 
+	// Check here that we auto detect sharing system account as well and auto place the correct
+	// deny imports and exports.
+	ls := lnc.randomServer()
+	if ls == nil {
+		t.Fatalf("Expected a leafnode server, got none")
+	}
+	gacc := ls.globalAccount().GetName()
+
+	ls.mu.Lock()
+	var hasDE, hasDI bool
+	for _, ln := range ls.leafs {
+		ln.mu.Lock()
+		if ln.leaf.remote.RemoteLeafOpts.LocalAccount == gacc {
+			// Make sure we have the $JS.API denied in both.
+			for _, dsubj := range ln.leaf.remote.RemoteLeafOpts.DenyExports {
+				if dsubj == jsAllApi {
+					hasDE = true
+					break
+				}
+			}
+			for _, dsubj := range ln.leaf.remote.RemoteLeafOpts.DenyImports {
+				if dsubj == jsAllApi {
+					hasDI = true
+					break
+				}
+			}
+		}
+		ln.mu.Unlock()
+	}
+	ls.mu.Unlock()
+
+	if !hasDE {
+		t.Fatalf("No deny export on system account")
+	}
+	if !hasDI {
+		t.Fatalf("No deny import on system account")
+	}
+
 	// Make a stream by connecting to the leafnode cluster. Make sure placement is correct.
 	// Client based API
 	nc, js := jsClientConnect(t, lnc.randomServer())
@@ -5588,6 +5626,26 @@ func TestJetStreamClusterSuperClusterAndLeafNodesWithSharedSystemAccount(t *test
 	}
 	if si.Cluster.Name != pcn {
 		t.Fatalf("Expected default placement to be %q, got %q", pcn, si.Cluster.Name)
+	}
+}
+
+func TestJetStreamClusterLeafDifferentAccounts(t *testing.T) {
+	c := createJetStreamCluster(t, jsClusterAccountsTempl, "HUB", _EMPTY_, 2, 33133, false)
+	defer c.shutdown()
+
+	ln := c.createLeafNodesWithStartPort("LN", 2, 22110)
+	defer ln.shutdown()
+
+	// Wait on all peers.
+	c.waitOnPeerCount(4)
+
+	nc, js := jsClientConnect(t, ln.randomServer())
+	defer nc.Close()
+
+	// Make sure we can properly indentify the right account when the leader received the request.
+	// We need to map the client info header to the new account once received by the hub.
+	if _, err := js.AccountInfo(); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
 }
 
@@ -5933,6 +5991,32 @@ func (sc *supercluster) shutdown() {
 		shutdownCluster(c)
 	}
 }
+
+var jsClusterAccountsTempl = `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: "%s"}
+
+	leaf {
+		listen: 127.0.0.1:-1
+	}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	no_auth_user: u
+
+	accounts {
+		ONE {
+			users = [ { user: "u", pass: "s3cr3t!" } ]
+			jetstream: enabled
+		}
+		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+	}
+`
 
 var jsClusterTempl = `
 	listen: 127.0.0.1:-1
@@ -6342,7 +6426,7 @@ var jsClusterTemplWithLeafNode = `
 var jsLeafFrag = `
 	leaf {
 		remotes [
-			{ urls: [ %s ], deny_exports: ["$JS.API.>"], deny_imports: ["$JS.API.>"] }
+			{ urls: [ %s ] }
 			{ urls: [ %s ], account: "$SYS" }
 		]
 	}
