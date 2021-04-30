@@ -13,6 +13,8 @@
 
 package main
 
+//go:generate go run server/errors_gen.go
+
 import (
 	"flag"
 	"fmt"

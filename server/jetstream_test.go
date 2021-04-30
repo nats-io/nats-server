@@ -827,7 +827,7 @@ func TestJetStreamAddStreamCanonicalNames(t *testing.T) {
 
 	expectErr := func(_ *stream, err error) {
 		t.Helper()
-		if err == nil || !strings.Contains(err.Error(), "can not contain") {
+		if !IsNatsErr(err, JSStreamInvalidConfigF) {
 			t.Fatalf("Expected error but got none")
 		}
 	}
@@ -4292,7 +4292,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 		t.Fatalf("Unexpected error on snapshot request: %v", err)
 	}
 	json.Unmarshal(rmsg.Data, &rresp)
-	if rresp.Error == nil || rresp.Error.Code != 500 || !strings.Contains(rresp.Error.Description, "already in use") {
+	if !IsNatsErr(rresp.Error, JSStreamNameExistErr) {
 		t.Fatalf("Did not get correct error response: %+v", rresp.Error)
 	}
 
@@ -7417,34 +7417,13 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		t.Fatalf("Created time seems wrong: %v\n", scResp.Created)
 	}
 
-	checkBadRequest := func(e *ApiError, description string) {
-		t.Helper()
-		if e == nil || e.Code != 400 || e.Description != description {
-			t.Fatalf("Did not get proper error: %+v", e)
-		}
-	}
-
-	checkServerError := func(e *ApiError, description string) {
-		t.Helper()
-		if e == nil || e.Code != 500 || e.Description != description {
-			t.Fatalf("Did not get proper server error: %+v\n", e)
-		}
-	}
-
-	checkNotFound := func(e *ApiError, description string) {
-		t.Helper()
-		if e == nil || e.Code != 404 || e.Description != description {
-			t.Fatalf("Did not get proper server error: %+v\n", e)
-		}
-	}
-
 	// Check that the name in config has to match the name in the subject
 	resp, _ = nc.Request(fmt.Sprintf(JSApiStreamCreateT, "BOB"), req, time.Second)
 	scResp.Error, scResp.StreamInfo = nil, nil
 	if err := json.Unmarshal(resp.Data, &scResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	checkBadRequest(scResp.Error, "stream name in subject does not match request")
+	checkNatsError(t, scResp.Error, JSStreamMismatchErr)
 
 	// Check that update works.
 	msetCfg.Subjects = []string{"foo", "bar", "baz"}
@@ -7569,7 +7548,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err = json.Unmarshal(resp.Data, &bResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	checkNotFound(bResp.Error, "stream not found")
+	checkNatsError(t, bResp.Error, JSStreamNotFoundErr)
 
 	// Now create a consumer.
 	delivery := nats.NewInbox()
@@ -7589,7 +7568,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	checkServerError(ccResp.Error, "consumer requires interest for delivery subject when ephemeral")
+	checkNatsError(t, ccResp.Error, JSConsumerCreateErrF)
 
 	// Now create subscription and make sure we get proper response.
 	sub, _ := nc.SubscribeSync(delivery)
@@ -7627,7 +7606,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	// Since we do not have interest this should have failed.
-	checkBadRequest(ccResp.Error, "stream name in subject does not match request")
+	checkNatsError(t, ccResp.Error, JSStreamMismatchErr)
 
 	// Get the list of all of the consumers for our stream.
 	resp, err = nc.Request(fmt.Sprintf(JSApiConsumersT, msetCfg.Name), nil, time.Second)
@@ -7697,7 +7676,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	checkBadRequest(ccResp.Error, "consumer expected to be ephemeral but a durable name was set in request")
+	checkNatsError(t, ccResp.Error, JSConsumerEphemeralWithDurableNameErr)
 
 	// Now make sure we can create a durable on the subject with the proper name.
 	resp, err = nc.Request(fmt.Sprintf(JSApiDurableCreateT, msetCfg.Name, obsReq.Config.Durable), req, time.Second)
@@ -7726,7 +7705,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	checkBadRequest(ccResp.Error, "consumer expected to be durable but a durable name was not set")
+	checkNatsError(t, ccResp.Error, JSConsumerDurableNameNotSetErr)
 
 	// Now delete a msg.
 	dreq := JSApiMsgDeleteRequest{Seq: 2}
@@ -7804,7 +7783,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err = json.Unmarshal(resp.Data, &stResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	checkBadRequest(stResp.Error, "template name in subject does not match request")
+	checkNatsError(t, stResp.Error, JSTemplateNameNotMatchSubjectErr)
 
 	resp, _ = nc.Request(fmt.Sprintf(JSApiTemplateCreateT, template.Name), req, time.Second)
 	stResp.Error, stResp.StreamTemplateInfo = nil, nil
@@ -7857,7 +7836,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err = json.Unmarshal(resp.Data, &tDeleteResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	checkServerError(tDeleteResp.Error, "template not found")
+	checkNatsError(t, tDeleteResp.Error, JSStreamTemplateNotFoundErr)
 
 	resp, _ = nc.Request(fmt.Sprintf(JSApiTemplateDeleteT, "ss"), nil, time.Second)
 	tDeleteResp.Error = nil

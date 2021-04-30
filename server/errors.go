@@ -171,46 +171,10 @@ var (
 	ErrMalformedSubject = errors.New("malformed subject")
 
 	// ErrSubscribePermissionViolation is returned when processing of a subscription fails due to permissions.
-	ErrSubscribePermissionViolation = errors.New("subscribe permission viloation")
+	ErrSubscribePermissionViolation = errors.New("subscribe permission violation")
 
 	// ErrNoTransforms signals no subject transforms are available to map this subject.
 	ErrNoTransforms = errors.New("no matching transforms available")
-
-	// ErrJetStreamNotEnabled is returned when JetStream is not enabled.
-	ErrJetStreamNotEnabled = errors.New("jetstream not enabled")
-
-	// ErrJetStreamStreamNotFound is returned when a stream can not be found.
-	ErrJetStreamStreamNotFound = errors.New("stream not found")
-
-	// ErrJetStreamStreamAlreadyUsed is returned when a stream name has already been taken.
-	ErrJetStreamStreamAlreadyUsed = errors.New("stream name already in use")
-
-	// ErrJetStreamConsumerAlreadyUsed is returned when a consumer name has already been taken.
-	ErrJetStreamConsumerAlreadyUsed = errors.New("consumer name already in use")
-
-	// ErrJetStreamNotEnabledForAccount is returned JetStream is not enabled for this account.
-	ErrJetStreamNotEnabledForAccount = errors.New("jetstream not enabled for account")
-
-	// ErrJetStreamNotLeader is returned when issuing commands to a cluster on the wrong server.
-	ErrJetStreamNotLeader = errors.New("jetstream cluster can not handle request")
-
-	// ErrJetStreamNotAssigned is returned when the resource (stream or consumer) is not assigned.
-	ErrJetStreamNotAssigned = errors.New("jetstream cluster not assigned to this server")
-
-	// ErrJetStreamNotClustered is returned when a call requires clustering and we are not.
-	ErrJetStreamNotClustered = errors.New("jetstream not in clustered mode")
-
-	// ErrJetStreamResourcesExceeded is returned when a call would exceed internal resource limits.
-	ErrJetStreamResourcesExceeded = errors.New("jetstream resources exceeded for server")
-
-	// ErrStorageResourcesExceeded is returned when storage resources would be exceeded.
-	ErrStorageResourcesExceeded = errors.New("insufficient storage resources available")
-
-	// ErrMemoryResourcesExceeded is returned when memory resources would be exceeded.
-	ErrMemoryResourcesExceeded = errors.New("insufficient memory resources available")
-
-	// ErrReplicasNotSupported is returned when a stream with replicas > 1 in non-clustered mode.
-	ErrReplicasNotSupported = errors.New("replicas > 1 not supported in non-clustered mode")
 
 	// ErrCertNotPinned is returned when pinned certs are set and the certificate is not in it
 	ErrCertNotPinned = errors.New("certificate not pinned")
@@ -297,7 +261,7 @@ func NewErrorCtx(err error, format string, args ...interface{}) error {
 	return &errCtx{err, fmt.Sprintf(format, args...)}
 }
 
-// implement to work with errors.Is and errors.As
+// Unwrap implement to work with errors.Is and errors.As
 func (e *errCtx) Unwrap() error {
 	if e == nil {
 		return nil
@@ -313,7 +277,7 @@ func (e *errCtx) Context() string {
 	return e.ctx
 }
 
-// Return Error or, if type is right error and context
+// UnpackIfErrorCtx return Error or, if type is right error and context
 func UnpackIfErrorCtx(err error) string {
 	if e, ok := err.(*errCtx); ok {
 		if _, ok := e.error.(*errCtx); ok {
@@ -336,7 +300,7 @@ func errorsUnwrap(err error) error {
 	return u.Unwrap()
 }
 
-// implements: go 1.13 errors.Is(err, target error) bool
+// ErrorIs implements: go 1.13 errors.Is(err, target error) bool
 // TODO replace with native code once we no longer support go1.12
 func ErrorIs(err, target error) bool {
 	// this is an outright copy of go 1.13 errors.Is(err, target error) bool

@@ -58,6 +58,18 @@ type cluster struct {
 	t       *testing.T
 }
 
+func checkNatsError(t *testing.T, e *ApiError, id ErrorIdentifier) {
+	t.Helper()
+	ae, ok := ApiErrors[id]
+	if !ok {
+		t.Fatalf("Unknown error ID identifier: %d", id)
+	}
+
+	if e.ErrCode != ae.ErrCode {
+		t.Fatalf("Did not get NATS Error %d: %+v", e.ErrCode, e)
+	}
+}
+
 // Creates a full cluster with numServers and given name and makes sure its well formed.
 // Will have Gateways and Leaf Node connections active.
 func createClusterWithName(t *testing.T, clusterName string, numServers int, connectTo ...*cluster) *cluster {

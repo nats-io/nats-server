@@ -7,24 +7,9 @@ Author: @ripienaar
 
 Partially Implemented
 
-The JSON API has been updated, however the urlencoded replies have not been adopted.
-
 ## Context
 
 At present, the API encoding consists of mixed text and JSON, we should improve consistency and error handling.
-
-## Decision
-
-We anticipate many types of consumer for JetStream including very small devices via MQTT and those written in 
-languages without easy to use JSON support like C.
-
-We will make it easy for light-weight clients by using `+OK` and `-ERR` style prefixes for client interactions,
-but the server management API will be JSON all the time. The rationale being that such small devices will most
-likely have their Consumers and Streams provisioned as part of the platform and often might not care for the
-additional context.
-
-In client responses we will use URL Encoding to provide additional context so multiple fields worth of
-context can be provided. URL Encoding has [broad language support](https://www.rosettacode.org/wiki/URL_decoding).
 
 ### Admin APIs
 
@@ -72,14 +57,15 @@ Successful Stream Info:
 }
 ```
 
-Stream Info Error:
+Consumer Info Error:
 
 ```json
 {
-  "type": "io.nats.jetstream.api.v1.stream_info",
+  "type": "io.nats.jetstream.api.v1.consumer_info",
   "error": {
-    "description": "unknown stream bob",
-    "code": 400
+    "description": "consumer not found",
+    "code": 404,
+    "error_code": 10059
   }
 }
 ```
@@ -88,7 +74,12 @@ Here we have a minimally correct response with the additional error object.
 
 In the `error` struct we have `description` as a short human friendly explanation that should include enough context to
 identify what Stream or Consumer acted on and whatever else we feel will help the user while not sharing privileged account
-information.  `code` will be HTTP like, 400 human error, 500 server error etc.
+information.  These strings are not part of the API promises, we can update and re-word or translate them at any time. Programmatic
+error handling should look at the `code` which will be HTTP like, 4xx human error, 5xx server error etc. Finally, the `error_code`
+indicates the specific reason for the 404 - here `10059` means the stream did not exist, helping developers identify the
+real underlying cause. 
+
+More information about the `error_code` system can be found in [ADR-7](0007-error-codes.md).
 
 Ideally the error response includes a minimally valid body of what was requested but this can be very hard to implement correctly.
 
@@ -106,17 +97,6 @@ Today the list API's just return `["ORDERS"]`, these will become:
 
 With the same `error` treatment when some error happens.
 
-### Client Interactions
-
-To keep clients on small devices viable we will standardise our responses as in the examples below. 
-
- * `+OK` everything is fine no additional context 
- * `+OK "stream=ORDERS&sequence=10"` everything is fine, we have additional data to pass using standard URL encoding
- * `-ERR` something failed, we have no reason
- * `-ERR "reason=reason%20for%20failure&stream=STREAM"` something failed, we have additional context to provide using standard URL encoding
-
-Additional information will be needed for example when there are overlapping Streams and one of them fail. 
-
 ## Implementation
 
 While implementing this in JetStream the following pattern emerged:
@@ -128,8 +108,11 @@ type JSApiResponse struct {
 }
 
 type ApiError struct {
-	Code        int    `json:"code"`
-	Description string `json:"description,omitempty"`
+    Code        int    `json:"code"`
+    ErrCode     int    `json:"err_code,omitempty"`
+    Description string `json:"description,omitempty"`
+    URL         string `json:"-"`
+    Help        string `json:"-"`
 }
 
 type JSApiConsumerCreateResponse struct {
@@ -169,4 +152,4 @@ Validating this in JSON Schema draft 7 is a bit awkward, not impossible and spec
 
 ## Consequences
 
-URL Encoding does not carry data types and the response fields will need documenting.
+URL Encoding does not carry data types, and the response fields will need documenting.
