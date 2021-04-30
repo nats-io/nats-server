@@ -793,10 +793,17 @@ func (c *client) RegisterUser(user *User) {
 	} else {
 		c.setPermissions(user.Permissions)
 	}
+
+	// allows custom authenticators to set a username to be reported in
+	// server events and more
+	if user.Username != _EMPTY_ {
+		c.opts.Username = user.Username
+	}
+
 	c.mu.Unlock()
 }
 
-// RegisterNkey allows auth to call back into a new nkey
+// RegisterNkeyUser allows auth to call back into a new nkey
 // client with the authenticated user. This is used to map
 // any permissions into the client and setup accounts.
 func (c *client) RegisterNkeyUser(user *NkeyUser) error {
