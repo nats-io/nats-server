@@ -350,6 +350,12 @@ func NewServer(opts *Options) (*Server, error) {
 		return nil, fmt.Errorf("Error processing trusted operator keys")
 	}
 
+	// If we have solicited leafnodes but no clustering and no clustername.
+	// However we may need a stable clustername so use the server name.
+	if len(opts.LeafNode.Remotes) > 0 && opts.Cluster.Port == 0 && opts.Cluster.Name == _EMPTY_ {
+		opts.Cluster.Name = opts.ServerName
+	}
+
 	if opts.Cluster.Name != _EMPTY_ {
 		// Also place into mapping cn with cnMu lock.
 		s.cnMu.Lock()
@@ -387,6 +393,9 @@ func NewServer(opts *Options) (*Server, error) {
 	// If we have a cluster definition but do not have a cluster name, create one.
 	if opts.Cluster.Port != 0 && opts.Cluster.Name == _EMPTY_ {
 		s.info.Cluster = nuid.Next()
+	} else if opts.Cluster.Name != _EMPTY_ {
+		// Likewise here if we have a cluster name set.
+		s.info.Cluster = opts.Cluster.Name
 	}
 
 	// This is normally done in the AcceptLoop, once the

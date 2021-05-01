@@ -5641,6 +5641,37 @@ func TestJetStreamClusterSuperClusterAndSingleLeafNodeWithSharedSystemAccount(t 
 
 	// leafnodes should have been added into the overall peer count.
 	sc.waitOnPeerCount(7)
+
+	// Now make sure we can place a stream in the leaf node.
+	// First connect to the leafnode server itself.
+	nc, js := jsClientConnect(t, ln)
+	defer nc.Close()
+
+	si, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST1",
+		Subjects: []string{"foo"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.Cluster.Name != "LNS" {
+		t.Fatalf("Expected to be placed in leafnode with %q as cluster name, got %q", "LNS", si.Cluster.Name)
+	}
+	// Now check we can place on here as well but connect to the hub.
+	nc, js = jsClientConnect(t, sc.randomCluster().randomServer())
+	defer nc.Close()
+
+	si, err = js.AddStream(&nats.StreamConfig{
+		Name:      "TEST2",
+		Subjects:  []string{"bar"},
+		Placement: &nats.Placement{Cluster: "LNS"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.Cluster.Name != "LNS" {
+		t.Fatalf("Expected to be placed in leafnode with %q as cluster name, got %q", "LNS", si.Cluster.Name)
+	}
 }
 
 func TestJetStreamClusterLeafDifferentAccounts(t *testing.T) {

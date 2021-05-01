@@ -228,7 +228,7 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	return nil
 }
 
-// This will check if we have the a solicited leafnode that shares the system account.
+// This will check if we have a solicited leafnode that shares the system account.
 func (s *Server) hasSolicitLeafNodeSystemShare() bool {
 	sysAcc := s.SystemAccount().GetName()
 	for _, r := range s.getOpts().LeafNode.Remotes {
