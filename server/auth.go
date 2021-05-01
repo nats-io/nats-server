@@ -511,7 +511,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			// but we set it here to be able to identify it in the logs.
 			c.opts.Username = user.Username
 		} else {
-			if c.kind == CLIENT && c.opts.Username == _EMPTY_ && noAuthUser != _EMPTY_ {
+			if (c.kind == CLIENT || c.kind == LEAF) && c.opts.Username == _EMPTY_ && noAuthUser != _EMPTY_ {
 				if u, exists := s.users[noAuthUser]; exists {
 					c.mu.Lock()
 					c.opts.Username = u.Username
@@ -970,7 +970,7 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 	}
 
 	// If leafnodes config has an authorization{} stanza, this takes precedence.
-	// The user in CONNECT mutch match. We will bind to the account associated
+	// The user in CONNECT must match. We will bind to the account associated
 	// with that user (from the leafnode's authorization{} config).
 	if opts.LeafNode.Username != _EMPTY_ {
 		return isAuthorized(opts.LeafNode.Username, opts.LeafNode.Password, opts.LeafNode.Account)
@@ -985,12 +985,12 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 						return u, true
 					}
 				}
-				return "", false
+				return _EMPTY_, false
 			})
 			if !found {
 				return false
 			}
-			if c.opts.Username != "" {
+			if c.opts.Username != _EMPTY_ {
 				s.Warnf("User %q found in connect proto, but user required from cert", c.opts.Username)
 			}
 			c.opts.Username = user.Username

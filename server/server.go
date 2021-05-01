@@ -98,7 +98,8 @@ type Info struct {
 	GatewayNRP        bool     `json:"gateway_nrp,omitempty"`         // Uses new $GNR. prefix for mapped replies
 
 	// LeafNode Specific
-	LeafNodeURLs []string `json:"leafnode_urls,omitempty"` // LeafNode URLs that the server can reconnect to.
+	LeafNodeURLs  []string `json:"leafnode_urls,omitempty"`  // LeafNode URLs that the server can reconnect to.
+	RemoteAccount string   `json:"remote_account,omitempty"` // Lets the other side know the remote account that they bind to.
 }
 
 // Server is our main struct.
@@ -155,7 +156,8 @@ type Server struct {
 		resolver    netResolver
 		dialTimeout time.Duration
 	}
-	leafRemoteCfgs []*leafNodeCfg
+	leafRemoteCfgs     []*leafNodeCfg
+	leafRemoteAccounts sync.Map
 
 	quitCh           chan struct{}
 	shutdownComplete chan struct{}
@@ -348,6 +350,12 @@ func NewServer(opts *Options) (*Server, error) {
 		return nil, fmt.Errorf("Error processing trusted operator keys")
 	}
 
+	// If we have solicited leafnodes but no clustering and no clustername.
+	// However we may need a stable clustername so use the server name.
+	if len(opts.LeafNode.Remotes) > 0 && opts.Cluster.Port == 0 && opts.Cluster.Name == _EMPTY_ {
+		opts.Cluster.Name = opts.ServerName
+	}
+
 	if opts.Cluster.Name != _EMPTY_ {
 		// Also place into mapping cn with cnMu lock.
 		s.cnMu.Lock()
@@ -383,8 +391,11 @@ func NewServer(opts *Options) (*Server, error) {
 	}
 
 	// If we have a cluster definition but do not have a cluster name, create one.
-	if opts.Cluster.Port != 0 && opts.Cluster.Name == "" {
+	if opts.Cluster.Port != 0 && opts.Cluster.Name == _EMPTY_ {
 		s.info.Cluster = nuid.Next()
+	} else if opts.Cluster.Name != _EMPTY_ {
+		// Likewise here if we have a cluster name set.
+		s.info.Cluster = opts.Cluster.Name
 	}
 
 	// This is normally done in the AcceptLoop, once the
@@ -522,7 +533,7 @@ func (s *Server) setClusterName(name string) {
 
 // Return whether the cluster name is dynamic.
 func (s *Server) isClusterNameDynamic() bool {
-	return s.getOpts().Cluster.Name == ""
+	return s.getOpts().Cluster.Name == _EMPTY_
 }
 
 // ClientURL returns the URL used to connect clients. Helpful in testing
