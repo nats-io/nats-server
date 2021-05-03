@@ -1304,7 +1304,7 @@ func (s *Server) lookupAccount(name string) (*Account, error) {
 	}
 	// If we have a resolver see if it can fetch the account.
 	if s.AccountResolver() == nil {
-		return nil, ErrNoAccountResolver
+		return nil, ErrMissingAccount
 	}
 	return s.fetchAccount(name)
 }

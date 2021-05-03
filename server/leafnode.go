@@ -140,18 +140,26 @@ func (s *Server) checkForSystemRemoteLeaf(remotes []*RemoteLeafOpts) {
 	sysShared, sysAcc := false, s.SystemAccount().GetName()
 	for _, r := range remotes {
 		if r.LocalAccount == sysAcc {
+			s.Noticef("Detected sharing of the system account across a leafnode")
 			sysShared = true
 			break
 		}
 	}
-	if !sysShared {
-		return
-	}
 
-	s.Noticef("Detected sharing of the system account across a leafnode")
 	for _, r := range remotes {
-		if r.LocalAccount != sysAcc {
+		if r.LocalAccount == sysAcc {
+			continue
+		}
+
+		// We want to deny normal JS API if we share the system account or our local account has JS enabled.
+		if sysShared {
 			s.addInJSDeny(r)
+		} else {
+			// Here we want to suppress if this local account has JS enabled.
+			// This is regardless of whether or not this server is actually running JS.
+			if acc, _ := s.lookupAccount(r.LocalAccount); acc != nil && acc.jetStreamConfigured() {
+				s.addInJSDeny(r)
+			}
 		}
 	}
 }
@@ -1284,6 +1292,7 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	_subs := [32]*subscription{}
 	subs := _subs[:0]
 	ims := []string{}
+
 	acc.mu.Lock()
 	accName := acc.Name
 	accNTag := acc.nameTag
@@ -1306,6 +1315,11 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 		}
 		ims = append(ims, isubj)
 	}
+	// Likewise for mappings.
+	for _, m := range acc.mappings {
+		ims = append(ims, m.src)
+	}
+
 	// Create a unique subject that will be used for loop detection.
 	lds := acc.lds
 	if lds == _EMPTY_ {
@@ -1492,6 +1506,20 @@ func (c *client) updateSmap(sub *subscription, delta int32) {
 		c.sendLeafNodeSubUpdate(key, n)
 	}
 	c.mu.Unlock()
+}
+
+// Used to force add subjects to the subject map.
+func (c *client) forceAddToSmap(subj string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	n := c.leaf.smap[subj]
+	if n != 0 {
+		return
+	}
+	// Place into the map since it was not there.
+	c.leaf.smap[subj] = 1
+	c.sendLeafNodeSubUpdate(subj, 1)
 }
 
 // Send the subscription interest change to the other side.
@@ -1908,13 +1936,20 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 	c.in.bytes += int32(len(msg) - LEN_CR_LF)
 
 	// Check pub permissions
-	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) && !c.pubAllowed(string(c.pa.subject)) {
-		if c.isHubLeafNode() {
-			c.leafPubPermViolation(c.pa.subject)
-		} else {
-			c.Debugf("Not permitted to receive from %q", c.pa.subject)
+	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) {
+		subject := c.pa.subject
+		// If this subject was mapped we need to check the original subject, not the new one.
+		if len(c.pa.mapped) > 0 {
+			subject = c.pa.mapped
 		}
-		return
+		if !c.pubAllowed(string(subject)) {
+			if c.isHubLeafNode() {
+				c.leafPubPermViolation(subject)
+			} else {
+				c.Debugf("Not permitted to receive from %q", subject)
+			}
+			return
+		}
 	}
 
 	srv := c.srv

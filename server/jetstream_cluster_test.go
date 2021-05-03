@@ -3972,7 +3972,7 @@ func TestJetStreamClusterSuperClusterMetaPlacement(t *testing.T) {
 	}
 
 	// Client based API
-	s := sc.randomCluster().randomServer()
+	s := sc.randomServer()
 	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
 	if err != nil {
 		t.Fatalf("Failed to create system client: %v", err)
@@ -4022,7 +4022,7 @@ func TestJetStreamClusterSuperClusterBasics(t *testing.T) {
 	defer sc.shutdown()
 
 	// Client based API
-	s := sc.randomCluster().randomServer()
+	s := sc.randomServer()
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
@@ -4145,7 +4145,7 @@ func TestJetStreamClusterSuperClusterPeerReassign(t *testing.T) {
 	defer sc.shutdown()
 
 	// Client based API
-	s := sc.randomCluster().randomServer()
+	s := sc.randomServer()
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
@@ -5688,7 +5688,7 @@ func TestJetStreamClusterSuperClusterAndSingleLeafNodeWithSharedSystemAccount(t 
 		t.Fatalf("Expected to be placed in leafnode with %q as cluster name, got %q", "LNS", si.Cluster.Name)
 	}
 	// Now check we can place on here as well but connect to the hub.
-	nc, js = jsClientConnect(t, sc.randomCluster().randomServer())
+	nc, js = jsClientConnect(t, sc.randomServer())
 	defer nc.Close()
 
 	si, err = js.AddStream(&nats.StreamConfig{
@@ -5702,6 +5702,133 @@ func TestJetStreamClusterSuperClusterAndSingleLeafNodeWithSharedSystemAccount(t 
 	if si.Cluster.Name != "LNS" {
 		t.Fatalf("Expected to be placed in leafnode with %q as cluster name, got %q", "LNS", si.Cluster.Name)
 	}
+}
+
+// Multiple JS domains.
+func TestJetStreamClusterSingleLeafNodeWithoutSharedSystemAccount(t *testing.T) {
+	c := createJetStreamCluster(t, jsClusterAccountsTempl, "HUB", _EMPTY_, 3, 14333, true)
+	defer c.shutdown()
+
+	ln := c.createSingleLeafNodeNoSystemAccount()
+	defer ln.Shutdown()
+
+	// The setup here has a single leafnode server with two accounts. One has JS, the other does not.
+	// We want to to test the following.
+	// 1. For the account without JS, we simply will pass through to the HUB. Meaning since our local account
+	//    does not have it, we simply inherit the hub's by default.
+	// 2. For the JS enabled account, we are isolated and use our local one only.
+
+	// Check behavior of the account without JS.
+	// Normally this should fail since our local account is not enabled. However, since we are bridging
+	// via the leafnode we expect this to work here.
+	nc, js := jsClientConnect(t, ln, nats.UserInfo("n", "p"))
+	defer nc.Close()
+
+	si, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 2,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.Cluster == nil || si.Cluster.Name != "HUB" {
+		t.Fatalf("Expected stream to be placed in the \"HUB\"")
+	}
+	// Do some other API calls.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C1", AckPolicy: nats.AckExplicitPolicy})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	seen := 0
+	for name := range js.StreamNames() {
+		seen++
+		if name != "TEST" {
+			t.Fatalf("Expected only %q but got %q", "TEST", name)
+		}
+	}
+	if seen != 1 {
+		t.Fatalf("Expected only 1 stream, got %d", seen)
+	}
+	if _, err := js.StreamInfo("TEST"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if err := js.PurgeStream("TEST"); err != nil {
+		t.Fatalf("Unexpected purge error: %v", err)
+	}
+	if err := js.DeleteConsumer("TEST", "C1"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if _, err := js.UpdateStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"bar"}, Replicas: 2}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if err := js.DeleteStream("TEST"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now check the enabled account.
+	// Check the enabled account only talks to its local JS domain by default.
+	nc, js = jsClientConnect(t, ln, nats.UserInfo("y", "p"))
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync(JSAdvisoryStreamCreatedPre + ".>")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	si, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.Cluster != nil {
+		t.Fatalf("Expected no cluster designation for stream since created on single LN server")
+	}
+
+	// Wait for a bit and make sure we only get one of these.
+	// The HUB domain should be cut off by default.
+	time.Sleep(200 * time.Millisecond)
+	checkSubsPending(t, sub, 1)
+	// Drain.
+	for _, err := sub.NextMsg(0); err == nil; _, err = sub.NextMsg(0) {
+	}
+
+	// Now try to talk to the HUB JS domain through a new context that uses a different mapped subject.
+	// This is similar to how we let users cross JS domains between accounts as well.
+	js, err = nc.JetStream(nats.APIPrefix("$JS.HUB.API"))
+	if err != nil {
+		t.Fatalf("Unexpected error getting JetStream context: %v", err)
+	}
+	// This should fail here with no responders.
+	if _, err := js.AccountInfo(); err != nats.ErrNoResponders {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now add in a mapping to the connected account in the HUB.
+	// This aligns with the APIPrefix context above and works across leafnodes.
+	// TODO(dlc) - Should we have a mapping section for leafnode solicit?
+	c.addSubjectMapping("ONE", "$JS.HUB.API.>", "$JS.API.>")
+
+	// How it should work.
+	if _, err := js.AccountInfo(); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Make sure we can add a stream, etc.
+	si, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 2,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.Cluster == nil || si.Cluster.Name != "HUB" {
+		t.Fatalf("Expected stream to be placed in the \"HUB\"")
+	}
+
 }
 
 func TestJetStreamClusterLeafDifferentAccounts(t *testing.T) {
@@ -6067,6 +6194,10 @@ func (sc *supercluster) shutdown() {
 	}
 }
 
+func (sc *supercluster) randomServer() *Server {
+	return sc.randomCluster().randomServer()
+}
+
 var jsClusterAccountsTempl = `
 	listen: 127.0.0.1:-1
 	server_name: %s
@@ -6082,13 +6213,11 @@ var jsClusterAccountsTempl = `
 		routes = [%s]
 	}
 
-	no_auth_user: u
+	no_auth_user: one
 
 	accounts {
-		ONE {
-			users = [ { user: "u", pass: "s3cr3t!" } ]
-			jetstream: enabled
-		}
+		ONE { users = [ { user: "one", pass: "p" } ]; jetstream: enabled }
+		TWO { users = [ { user: "two", pass: "p" } ]; jetstream: enabled }
 		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
 	}
 `
@@ -6243,13 +6372,11 @@ func createJetStreamSuperCluster(t *testing.T, numServersPer, numClusters int) *
 
 func (sc *supercluster) createLeafNodes(clusterName string, numServers int) *cluster {
 	// Create our leafnode cluster template first.
-	c := sc.randomCluster()
-	return c.createLeafNodes(clusterName, numServers)
+	return sc.randomCluster().createLeafNodes(clusterName, numServers)
 }
 
 func (sc *supercluster) createSingleLeafNode() *Server {
-	c := sc.randomCluster()
-	return c.createLeafNode()
+	return sc.randomCluster().createLeafNode()
 }
 
 func (sc *supercluster) leader() *Server {
@@ -6425,12 +6552,10 @@ func createMixedModeCluster(t *testing.T, clusterName string, numJsServers, numN
 // This will create a cluster that is explicitly configured for the routes, etc.
 // and also has a defined clustername. All configs for routes and cluster name will be the same.
 func createJetStreamClusterExplicit(t *testing.T, clusterName string, numServers int) *cluster {
-	t.Helper()
 	return createJetStreamClusterWithTemplate(t, jsClusterTempl, clusterName, numServers)
 }
 
 func createJetStreamClusterWithTemplate(t *testing.T, tmpl string, clusterName string, numServers int) *cluster {
-	t.Helper()
 	startPorts := []int{7_022, 9_022, 11_022, 15_022}
 	port := startPorts[rand.Intn(len(startPorts))]
 	return createJetStreamCluster(t, tmpl, clusterName, _EMPTY_, numServers, port, true)
@@ -6484,6 +6609,39 @@ func (c *cluster) addInNewServer() *Server {
 	return s
 }
 
+// This is tied to jsClusterAccountsTempl, so changes there to users needs to be reflected here.
+func (c *cluster) createSingleLeafNodeNoSystemAccount() *Server {
+	as := c.randomServer()
+	lno := as.getOpts().LeafNode
+	ln1 := fmt.Sprintf("nats://one:p@%s:%d", lno.Host, lno.Port)
+	ln2 := fmt.Sprintf("nats://two:p@%s:%d", lno.Host, lno.Port)
+	conf := fmt.Sprintf(jsClusterSingleLeafNodeTempl, createDir(c.t, JetStreamStoreDir), ln1, ln2)
+	s, o := RunServerWithConfig(createConfFile(c.t, []byte(conf)))
+	c.servers = append(c.servers, s)
+	c.opts = append(c.opts, o)
+
+	checkLeafNodeConnectedCount(c.t, as, 2)
+
+	return s
+}
+
+var jsClusterSingleLeafNodeTempl = `
+	listen: 127.0.0.1:-1
+	server_name: LNJS
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: "%s"}
+
+	leaf { remotes [
+		{ urls: [ %s ], account: "JSY" }
+		{ urls: [ %s ], account: "JSN" } ]
+	}
+
+	accounts {
+		JSY { users = [ { user: "y", pass: "p" } ]; jetstream: true }
+		JSN { users = [ { user: "n", pass: "p" } ] }
+		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+	}
+`
+
 var jsClusterTemplWithLeafNode = `
 	listen: 127.0.0.1:-1
 	server_name: %s
@@ -6524,8 +6682,7 @@ var jsLeafFrag = `
 `
 
 func (c *cluster) createLeafNodes(clusterName string, numServers int) *cluster {
-	const startClusterPort = 22111
-	return c.createLeafNodesWithStartPort(clusterName, numServers, startClusterPort)
+	return c.createLeafNodesWithStartPort(clusterName, numServers, 22111)
 }
 
 func (c *cluster) createLeafNodesWithStartPort(clusterName string, numServers int, portStart int) *cluster {
@@ -6567,6 +6724,24 @@ func (c *cluster) createLeafNodesWithStartPortAndMQTT(clusterName string, numSer
 		checkLeafNodeConnectedCount(c.t, s, 2)
 	}
 	return lc
+}
+
+// Will add in the mapping for the account to each server.
+func (c *cluster) addSubjectMapping(account, src, dest string) {
+	for _, s := range c.servers {
+		if s.ClusterName() != c.name {
+			continue
+		}
+		acc, err := s.LookupAccount(account)
+		if err != nil {
+			c.t.Fatalf("Unexpected error on %v: %v", s, err)
+		}
+		if err := acc.AddMapping(src, dest); err != nil {
+			c.t.Fatalf("Error adding mapping: %v", err)
+		}
+	}
+	// Make sure interest propagates.
+	time.Sleep(200 * time.Millisecond)
 }
 
 // Adjust limits for the given account.

@@ -443,7 +443,6 @@ func (s *Server) configJetStream(acc *Account) error {
 				s.switchAccountToInterestMode(acc.GetName())
 			}
 		}
-		acc.jsLimits = nil
 	} else if acc != s.SystemAccount() {
 		if acc.JetStreamEnabled() {
 			acc.DisableJetStream()
@@ -684,6 +683,12 @@ func (s *Server) getJetStream() *jetStream {
 	return js
 }
 
+func (a *Account) assignJetStreamLimits(limits *JetStreamAccountLimits) {
+	a.mu.Lock()
+	a.jsLimits = limits
+	a.mu.Unlock()
+}
+
 // EnableJetStream will enable JetStream on this account with the defined limits.
 // This is a helper for JetStreamEnableAccount.
 func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
@@ -700,9 +705,16 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	s.mu.Unlock()
 
 	js := s.getJetStream()
+
 	if js == nil {
+		// Place limits here so we know that the account is configured for JetStream.
+		if limits == nil {
+			limits = dynamicJSAccountLimits
+		}
+		a.assignJetStreamLimits(limits)
 		return ErrJetStreamNotEnabled
 	}
+
 	if s.SystemAccount() == a {
 		return fmt.Errorf("jetstream can not be enabled on the system account")
 	}
@@ -711,6 +723,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	if limits == nil {
 		limits = js.dynamicAccountLimits()
 	}
+	a.assignJetStreamLimits(limits)
 
 	js.mu.Lock()
 	// Check the limits against existing reservations.
@@ -1145,6 +1158,14 @@ func (js *jetStream) disableJetStream(jsa *jsAccount) error {
 	jsa.delete()
 
 	return nil
+}
+
+// jetStreamConfigured reports whether the account has JetStream configured, regardless of this
+// servers JetStream status.
+func (a *Account) jetStreamConfigured() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.jsLimits != nil
 }
 
 // JetStreamEnabled is a helper to determine if jetstream is enabled for an account.

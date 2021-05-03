@@ -1141,7 +1141,7 @@ func (c *client) readLoop(pre []byte) {
 
 		// Check if the account has mappings and if so set the local readcache flag.
 		// We check here to make sure any changes such as config reload are reflected here.
-		if c.kind == CLIENT {
+		if c.kind == CLIENT || c.kind == LEAF {
 			if acc.hasMappings() {
 				c.in.flags.set(hasMappings)
 			} else {
@@ -3397,6 +3397,7 @@ func (c *client) processInboundMsg(msg []byte) {
 func (c *client) selectMappedSubject() bool {
 	nsubj, changed := c.acc.selectMappedSubject(string(c.pa.subject))
 	if changed {
+		c.pa.mapped = c.pa.subject
 		c.pa.subject = []byte(nsubj)
 	}
 	return changed

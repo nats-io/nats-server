@@ -886,6 +886,11 @@ func (s *Server) jsAccountInfoRequest(sub *subscription, c *client, subject, rep
 	}
 
 	if !acc.JetStreamEnabled() {
+		// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+		// this account and if so not answer locally.
+		if acc.NumLeafNodes() > 0 {
+			return
+		}
 		resp.Error = jsNotEnabledErr
 	} else {
 		stats := acc.JetStreamUsage()
@@ -1158,8 +1163,12 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 	}
 
 	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+		// this account and if so not answer locally.
+		if acc.NumLeafNodes() == 0 {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 	var cfg StreamConfig
@@ -1336,8 +1345,12 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 	}
 
 	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+		// this account and if so not answer locally.
+		if acc.NumLeafNodes() == 0 {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 	var ncfg StreamConfig
@@ -1416,8 +1429,12 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, rep
 	}
 
 	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+		// this account and if so not answer locally.
+		if acc.NumLeafNodes() == 0 {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 
@@ -1541,8 +1558,12 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 	}
 
 	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+		// this account and if so not answer locally.
+		if acc.NumLeafNodes() == 0 {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 
@@ -1625,8 +1646,12 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 		if isLeader && sa == nil {
 			// We can't find the stream, so mimic what would be the errors below.
 			if !acc.JetStreamEnabled() {
-				resp.Error = jsNotEnabledErr
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+				// this account and if so not answer locally.
+				if acc.NumLeafNodes() == 0 {
+					resp.Error = jsNotEnabledErr
+					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				}
 				return
 			}
 			// No stream present.
@@ -1657,8 +1682,12 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 	}
 
 	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+		// this account and if so not answer locally.
+		if acc.NumLeafNodes() == 0 {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 
@@ -1750,8 +1779,12 @@ func (s *Server) jsStreamLeaderStepDownRequest(sub *subscription, c *client, sub
 	}
 
 	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+		// this account and if so not answer locally.
+		if acc.NumLeafNodes() == 0 {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 	if !isEmptyRequest(msg) {
@@ -1857,8 +1890,12 @@ func (s *Server) jsConsumerLeaderStepDownRequest(sub *subscription, c *client, s
 	}
 
 	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+		// this account and if so not answer locally.
+		if acc.NumLeafNodes() == 0 {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 	if !isEmptyRequest(msg) {
@@ -1931,8 +1968,12 @@ func (s *Server) jsStreamRemovePeerRequest(sub *subscription, c *client, subject
 	}
 
 	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+		// this account and if so not answer locally.
+		if acc.NumLeafNodes() == 0 {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 	if isEmptyRequest(msg) {
@@ -2179,8 +2220,12 @@ func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, re
 	}
 
 	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+		// this account and if so not answer locally.
+		if acc.NumLeafNodes() == 0 {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 	if !isEmptyRequest(msg) {
@@ -2248,8 +2293,12 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 		if isLeader && sa == nil {
 			// We can't find the stream, so mimic what would be the errors below.
 			if !acc.JetStreamEnabled() {
-				resp.Error = jsNotEnabledErr
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+				// this account and if so not answer locally.
+				if acc.NumLeafNodes() == 0 {
+					resp.Error = jsNotEnabledErr
+					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				}
 				return
 			}
 			// No stream present.
@@ -2274,8 +2323,12 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 	}
 
 	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+		// this account and if so not answer locally.
+		if acc.NumLeafNodes() == 0 {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 	if isEmptyRequest(msg) {
@@ -2353,8 +2406,12 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 		if isLeader && sa == nil {
 			// We can't find the stream, so mimic what would be the errors below.
 			if !acc.JetStreamEnabled() {
-				resp.Error = jsNotEnabledErr
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+				// this account and if so not answer locally.
+				if acc.NumLeafNodes() == 0 {
+					resp.Error = jsNotEnabledErr
+					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				}
 				return
 			}
 			// No stream present.
@@ -2379,8 +2436,12 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 	}
 
 	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+		// this account and if so not answer locally.
+		if acc.NumLeafNodes() == 0 {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 	if isEmptyRequest(msg) {
@@ -2448,8 +2509,12 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 		if isLeader && sa == nil {
 			// We can't find the stream, so mimic what would be the errors below.
 			if !acc.JetStreamEnabled() {
-				resp.Error = jsNotEnabledErr
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+				// this account and if so not answer locally.
+				if acc.NumLeafNodes() == 0 {
+					resp.Error = jsNotEnabledErr
+					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				}
 				return
 			}
 			// No stream present.
@@ -2482,10 +2547,15 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 	}
 
 	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+		// this account and if so not answer locally.
+		if acc.NumLeafNodes() == 0 {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
+
 	if !isEmptyRequest(msg) {
 		resp.Error = jsNotEmptyRequestErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -2557,6 +2627,16 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 	if _, err := acc.lookupStream(stream); err == nil {
 		resp.Error = jsError(ErrJetStreamStreamAlreadyUsed)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	if !acc.JetStreamEnabled() {
+		// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+		// this account and if so not answer locally.
+		if acc.NumLeafNodes() == 0 {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 
@@ -2789,6 +2869,16 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 		return
 	}
 
+	if !acc.JetStreamEnabled() {
+		// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+		// this account and if so not answer locally.
+		if acc.NumLeafNodes() == 0 {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
+		}
+		return
+	}
+
 	var req JSApiStreamSnapshotRequest
 	if err := json.Unmarshal(msg, &req); err != nil {
 		resp.Error = jsInvalidJSONErr
@@ -3008,8 +3098,12 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 	}
 
 	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+		// this account and if so not answer locally.
+		if acc.NumLeafNodes() == 0 {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 	if streamName != req.Stream {
@@ -3105,8 +3199,12 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 	}
 
 	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+		// this account and if so not answer locally.
+		if acc.NumLeafNodes() == 0 {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 
@@ -3224,8 +3322,12 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 	}
 
 	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+		// this account and if so not answer locally.
+		if acc.NumLeafNodes() == 0 {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 
@@ -3315,8 +3417,12 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 		if isLeader && ca == nil {
 			// We can't find the consumer, so mimic what would be the errors below.
 			if !acc.JetStreamEnabled() {
-				resp.Error = jsNotEnabledErr
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+				// this account and if so not answer locally.
+				if acc.NumLeafNodes() == 0 {
+					resp.Error = jsNotEnabledErr
+					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				}
 				return
 			}
 			if sa == nil {
@@ -3420,8 +3526,12 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, 
 	}
 
 	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		// This local account is not enabled, but we need to check of we are using leafnodes to bridge
+		// this account and if so not answer locally.
+		if acc.NumLeafNodes() == 0 {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 	if !isEmptyRequest(msg) {
