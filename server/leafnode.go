@@ -110,7 +110,8 @@ func (c *client) isHubLeafNode() bool {
 
 // Will add in the deny exports and imports for JetStream on solicited connections if we
 // are sharing the system account and wanting to extend the JS domain.
-func (s *Server) addInJSDeny(r *RemoteLeafOpts) {
+// r lock should be held.
+func (s *Server) addInJSDeny(r *leafNodeCfg) {
 	var hasDE, hasDI bool
 	for _, dsubj := range r.DenyExports {
 		if dsubj == jsAllApi {
@@ -124,51 +125,46 @@ func (s *Server) addInJSDeny(r *RemoteLeafOpts) {
 			break
 		}
 	}
+
+	var addedDeny bool
 	if !hasDE {
 		s.Noticef("Adding deny export of %q for leafnode configuration on %q that bridges system account", jsAllApi, r.LocalAccount)
 		r.DenyExports = append(r.DenyExports, jsAllApi)
+		addedDeny = true
 	}
 	if !hasDI {
 		s.Noticef("Adding deny import of %q for leafnode configuration on %q that bridges system account", jsAllApi, r.LocalAccount)
 		r.DenyImports = append(r.DenyImports, jsAllApi)
+		addedDeny = true
+	}
+
+	// We added in some deny clauses here so need to regenerate the permissions etc.
+	if addedDeny {
+		perms := &Permissions{}
+		if len(r.DenyExports) > 0 {
+			perms.Publish = &SubjectPermission{Deny: r.DenyExports}
+		}
+		if len(r.DenyImports) > 0 {
+			perms.Subscribe = &SubjectPermission{Deny: r.DenyImports}
+		}
+		r.perms = perms
 	}
 }
 
-// If we detect that this server is trying to solicit and bind the system account we
-// want to make sure that we direct all JetStream traffic through the system account.
-func (s *Server) checkForSystemRemoteLeaf(remotes []*RemoteLeafOpts) {
-	sysShared, sysAcc := false, s.SystemAccount().GetName()
+// Determine if we are sharing our local system account with the remote.
+func (s *Server) hasSystemRemoteLeaf() bool {
+	remotes := s.getOpts().LeafNode.Remotes
+	sysAcc := s.SystemAccount().GetName()
 	for _, r := range remotes {
 		if r.LocalAccount == sysAcc {
-			s.Noticef("Detected sharing of the system account across a leafnode")
-			sysShared = true
-			break
+			return true
 		}
 	}
-
-	for _, r := range remotes {
-		if r.LocalAccount == sysAcc {
-			continue
-		}
-
-		// We want to deny normal JS API if we share the system account or our local account has JS enabled.
-		if sysShared {
-			s.addInJSDeny(r)
-		} else {
-			// Here we want to suppress if this local account has JS enabled.
-			// This is regardless of whether or not this server is actually running JS.
-			if acc, _ := s.lookupAccount(r.LocalAccount); acc != nil && acc.jetStreamConfigured() {
-				s.addInJSDeny(r)
-			}
-		}
-	}
+	return false
 }
 
 // This will spin up go routines to solicit the remote leaf node connections.
 func (s *Server) solicitLeafNodeRemotes(remotes []*RemoteLeafOpts) {
-	// Check to see if we are trying to solicit the system account.
-	s.checkForSystemRemoteLeaf(remotes)
-
 	for _, r := range remotes {
 		s.mu.Lock()
 		remote := newLeafNodeCfg(r)
@@ -745,6 +741,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 	// For accepted LN connections, ws will be != nil if it was accepted
 	// through the Websocket port.
 	c.ws = ws
+
 	// For remote, check if the scheme starts with "ws", if so, we will initiate
 	// a remote Leaf Node connection as a websocket connection.
 	if remote != nil && rURL != nil && isWSURL(rURL) {
@@ -755,38 +752,58 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 
 	// Determines if we are soliciting the connection or not.
 	var solicited bool
-	var acc *Account
+	var acc, sysAcc *Account
+	var hasSysShared bool
 
-	c.mu.Lock()
-	c.initClient()
-	c.Noticef("Leafnode connection created")
 	if remote != nil {
-		solicited = true
+		hasSysShared, sysAcc = s.hasSystemRemoteLeaf(), s.SystemAccount()
+		// TODO: Decide what should be the optimal behavior here.
+		// For now, if lookup fails, we will constantly try
+		// to recreate this LN connection.
+
 		remote.Lock()
 		// Users can bind to any local account, if its empty
 		// we will assume the $G account.
 		if remote.LocalAccount == _EMPTY_ {
 			remote.LocalAccount = globalAccountName
 		}
+		lacc := remote.LocalAccount
+		remote.Unlock()
+
+		var err error
+		acc, err = s.LookupAccount(lacc)
+		if err != nil {
+			s.Errorf("No local account %q for leafnode: %v", lacc, err)
+			return nil
+		}
+	}
+
+	c.mu.Lock()
+	c.initClient()
+	c.Noticef("Leafnode connection created")
+
+	if remote != nil {
+		solicited = true
+		remote.Lock()
+		// Check for JetStream semantics to deny the JetStream API as needed.
+		// This is so that if JetStream is enabled on both sides we can separately address both.
+		if acc != sysAcc {
+			if hasSysShared {
+				s.addInJSDeny(remote)
+			} else {
+				// Here we want to suppress if this local account has JS enabled.
+				// This is regardless of whether or not this server is actually running JS.
+				if acc != nil && acc.jetStreamConfigured() {
+					s.addInJSDeny(remote)
+				}
+			}
+		}
 		c.leaf.remote = remote
 		c.setPermissions(remote.perms)
 		if !c.leaf.remote.Hub {
 			c.leaf.isSpoke = true
 		}
-		lacc := remote.LocalAccount
 		remote.Unlock()
-		c.mu.Unlock()
-		// TODO: Decide what should be the optimal behavior here.
-		// For now, if lookup fails, we will constantly try
-		// to recreate this LN connection.
-		var err error
-		acc, err = s.LookupAccount(lacc)
-		if err != nil {
-			c.Errorf("No local account %q for leafnode: %v", lacc, err)
-			c.closeConnection(MissingAccount)
-			return nil
-		}
-		c.mu.Lock()
 		c.acc = acc
 	} else {
 		c.flags.set(expectConnect)
