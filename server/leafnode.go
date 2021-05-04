@@ -153,10 +153,19 @@ func (s *Server) addInJSDeny(r *leafNodeCfg) {
 
 // Determine if we are sharing our local system account with the remote.
 func (s *Server) hasSystemRemoteLeaf() bool {
-	remotes := s.getOpts().LeafNode.Remotes
-	sysAcc := s.SystemAccount().GetName()
-	for _, r := range remotes {
-		if r.LocalAccount == sysAcc {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var sacc string
+	if s.sys != nil {
+		sacc = s.sys.account.Name
+	}
+
+	for _, r := range s.leafRemoteCfgs {
+		r.RLock()
+		lacc := r.LocalAccount
+		r.RUnlock()
+		if lacc == sacc {
 			return true
 		}
 	}
