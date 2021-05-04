@@ -198,6 +198,25 @@ func pollVarz(t *testing.T, s *Server, mode int, url string, opts *VarzOptions) 
 	return v
 }
 
+// https://github.com/nats-io/nats-server/issues/2170
+// Just the ever increasing subs part.
+func TestVarzSubscriptionsResetProperly(t *testing.T) {
+	// Run with JS to create a bunch of subs to start.
+	resetPreviousHTTPConnections()
+	opts := DefaultMonitorOptions()
+	opts.JetStream = true
+	s := RunServer(opts)
+
+	// This bug seems to only happen via the http endpoint, not direct calls.
+	// Every time you call it doubles.
+	url := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+	osubs := pollVarz(t, s, 0, url, nil).Subscriptions
+	// Make sure we get same number back.
+	if v := pollVarz(t, s, 0, url, nil); v.Subscriptions != osubs {
+		t.Fatalf("Expected subs to stay the same, %d vs %d", osubs, v.Subscriptions)
+	}
+}
+
 func TestHandleVarz(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
