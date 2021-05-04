@@ -2792,6 +2792,55 @@ func TestMQTTClusterRetainedMsg(t *testing.T) {
 	testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, true)
 	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "foo/#", qos: 1}}, []byte{1})
 	testMQTTExpectNothing(t, rc)
+	testMQTTDisconnect(t, mc, nil)
+	mc.Close()
+
+	// Will now test network deletes
+
+	// Create a subscription on server 1 and server 2
+	mc, rc = testMQTTConnect(t, &mqttConnInfo{clientID: "sub_one", cleanSess: false}, srv1Opts.MQTT.Host, srv1Opts.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "bar", qos: 1}}, []byte{1})
+	testMQTTFlush(t, mc, nil, rc)
+
+	mc2, rc2 = testMQTTConnect(t, &mqttConnInfo{clientID: "sub_two", cleanSess: false}, srv2Opts.MQTT.Host, srv2Opts.MQTT.Port)
+	defer mc2.Close()
+	testMQTTCheckConnAck(t, rc2, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, mc2, rc2, []*mqttFilter{{filter: "bar", qos: 1}}, []byte{1})
+	testMQTTFlush(t, mc2, nil, rc2)
+
+	// Publish 1 retained message (producer is connected to server 2)
+	testMQTTPublish(t, mp, rp, 1, false, true, "bar", 1, []byte("msg1"))
+
+	// Make sure messages are received by both
+	testMQTTCheckPubMsg(t, mc, rc, "bar", mqttPubQos1, []byte("msg1"))
+	testMQTTCheckPubMsg(t, mc2, rc2, "bar", mqttPubQos1, []byte("msg1"))
+
+	// Now send an empty retained message that should delete it. For the one on server 1,
+	// this will be a network delete.
+	testMQTTPublish(t, mp, rp, 1, false, true, "bar", 1, []byte(""))
+	testMQTTCheckPubMsg(t, mc, rc, "bar", mqttPubQos1, []byte(""))
+	testMQTTCheckPubMsg(t, mc2, rc2, "bar", mqttPubQos1, []byte(""))
+
+	// Now send a new retained message
+	testMQTTPublish(t, mp, rp, 1, false, true, "bar", 1, []byte("msg2"))
+
+	// Again, verify that they all receive it.
+	testMQTTCheckPubMsg(t, mc, rc, "bar", mqttPubQos1, []byte("msg2"))
+	testMQTTCheckPubMsg(t, mc2, rc2, "bar", mqttPubQos1, []byte("msg2"))
+
+	// But now, restart the consumer that was in the server that processed the
+	// original network delete.
+	testMQTTDisconnect(t, mc, nil)
+	mc.Close()
+
+	mc, rc = testMQTTConnect(t, &mqttConnInfo{clientID: "sub_one", cleanSess: false}, srv1Opts.MQTT.Host, srv1Opts.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, true)
+	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "bar", qos: 1}}, []byte{1})
+	// Expect the message to be delivered as retained
+	testMQTTCheckPubMsg(t, mc, rc, "bar", mqttPubQos1|mqttPubFlagRetain, []byte("msg2"))
 }
 
 func TestMQTTRetainedMsgNetworkUpdates(t *testing.T) {

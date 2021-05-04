@@ -1516,6 +1516,12 @@ func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rm *mqttRetai
 			erm.sseq = rm.sseq
 			// Clear the floor
 			erm.floor = 0
+			// If sub is nil, it means that it was removed from sublist following a
+			// network delete. So need to add it now.
+			if erm.sub == nil {
+				erm.sub = &subscription{subject: []byte(key)}
+				as.sl.Insert(erm.sub)
+			}
 			return oldSeq
 		}
 	}
@@ -1541,6 +1547,7 @@ func (as *mqttAccountSessionManager) handleRetainedMsgDel(subject string, seq ui
 	if erm, ok := as.retmsgs[subject]; ok {
 		if erm.sub != nil {
 			as.sl.Remove(erm.sub)
+			erm.sub = nil
 		}
 		// If processing a delete request from the network, then seq will be > 0.
 		// If that is the case and it is greater or equal to what we have, we need
