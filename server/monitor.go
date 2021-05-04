@@ -1384,12 +1384,11 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 	v.OutBytes = atomic.LoadInt64(&s.outBytes)
 	v.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)
 
+	// Make sure to reset in case we are re-using.
+	v.Subscriptions = 0
 	s.accounts.Range(func(k, val interface{}) bool {
 		acc := val.(*Account)
-		acc.sl.RLock()
-		v.Subscriptions += acc.sl.count
-		acc.sl.RUnlock()
-
+		v.Subscriptions += acc.sl.Count()
 		return true
 	})
 
