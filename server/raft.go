@@ -218,8 +218,8 @@ type lps struct {
 }
 
 const (
-	minElectionTimeout = 1000 * time.Millisecond
-	maxElectionTimeout = 5 * minElectionTimeout
+	minElectionTimeout = 2 * time.Second
+	maxElectionTimeout = 5 * time.Second
 	minCampaignTimeout = 100 * time.Millisecond
 	maxCampaignTimeout = 4 * minCampaignTimeout
 	hbInterval         = 500 * time.Millisecond
@@ -2707,6 +2707,10 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 
 // handleAppendEntryResponse processes responses to append entries.
 func (n *raft) handleAppendEntryResponse(sub *subscription, c *client, subject, reply string, msg []byte) {
+	// Ignore if not the leader.
+	if !n.Leader() {
+		return
+	}
 	msg = append(msg[:0:0], msg...)
 	ar := n.decodeAppendEntryResponse(msg)
 	ar.reply = reply
@@ -3186,6 +3190,10 @@ func (n *raft) switchState(state RaftState) {
 
 	if n.state == Leader && state != Leader {
 		n.updateLeadChange(false)
+		// Drain our responses channel.
+		for len(n.respc) > 0 {
+			<-n.respc
+		}
 	} else if state == Leader && n.state != Leader {
 		if len(n.pae) > 0 {
 			n.pae = make(map[uint64]*appendEntry)
