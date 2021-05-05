@@ -5975,10 +5975,10 @@ func TestGatewayReplyMapTracking(t *testing.T) {
 	check := func(t *testing.T, expectedIndicator int32, expectLenMap int, expectedSrvMapEmpty bool) {
 		t.Helper()
 		bc.mu.Lock()
-		mapIndicator := atomic.LoadInt32(&bc.cgwrt)
+		mapIndicator := atomic.LoadInt32(&bc.gwReplyMapping.check)
 		var lenMap int
-		if bc.gwrm != nil {
-			lenMap = len(bc.gwrm)
+		if bc.gwReplyMapping.mapping != nil {
+			lenMap = len(bc.gwReplyMapping.mapping)
 		}
 		bc.mu.Unlock()
 		if mapIndicator != expectedIndicator {

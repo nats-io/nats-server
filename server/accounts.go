@@ -42,6 +42,7 @@ const globalAccountName = DEFAULT_GLOBAL_ACCOUNT
 // Account are subject namespace definitions. By default no messages are shared between accounts.
 // You can share via Exports and Imports of Streams and Services.
 type Account struct {
+	gwReplyMapping
 	Name         string
 	Nkey         string
 	Issuer       string
@@ -1839,7 +1840,7 @@ func (a *Account) addServiceImportSub(si *serviceImport) error {
 	cb := func(sub *subscription, c *client, subject, reply string, msg []byte) {
 		c.processServiceImport(si, a, msg)
 	}
-	_, err := c.processSubEx([]byte(subject), nil, []byte(sid), cb, true, true)
+	_, err := c.processSubEx([]byte(subject), nil, []byte(sid), cb, true, true, false)
 
 	return err
 }
@@ -2039,9 +2040,7 @@ func (a *Account) createRespWildcard() []byte {
 	a.mu.Unlock()
 
 	// Create subscription and internal callback for all the wildcard response subjects.
-	if sub, err := c.processSub(wcsub, nil, []byte(sid), a.processServiceImportResponse, false); err == nil {
-		sub.rsi = true
-	}
+	c.processSubEx(wcsub, nil, []byte(sid), a.processServiceImportResponse, false, false, true)
 
 	return pre
 }

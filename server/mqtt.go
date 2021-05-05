@@ -168,6 +168,7 @@ var (
 	mqttNatsHeaderB   = []byte(mqttNatsHeader)
 	mqttSessJailDur   = mqttSessFlappingJailDur
 	mqttFlapCleanItvl = mqttSessFlappingCleanupInterval
+	mqttJSAPITimeout  = 4 * time.Second
 )
 
 var (
@@ -208,10 +209,10 @@ type mqttJSA struct {
 	mu      sync.Mutex
 	id      string
 	c       *client
-	rid     int64
 	sendq   chan *mqttJSPubMsg
 	rplyr   string
 	replies sync.Map
+	nuid    *nuid.NUID
 	quitCh  chan struct{}
 }
 
@@ -849,9 +850,6 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	c := s.createInternalAccountClient()
 	c.acc = acc
 
-	sc := s.createInternalAccountClient()
-	sc.acc = acc
-
 	id := string(getHash(s.Name()))
 	replicas := s.mqttDetermineReplicas()
 	s.Noticef("Creating MQTT streams/consumers with replicas %v for account %q", replicas, accName)
@@ -866,6 +864,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 			c:      c,
 			rplyr:  mqttJSARepliesPrefix + id + ".",
 			sendq:  make(chan *mqttJSPubMsg, 8192),
+			nuid:   nuid.New(),
 			quitCh: quitCh,
 		},
 	}
@@ -884,6 +883,13 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		close(closeCh)
 	}()
 
+	// We create all subscriptions before starting the go routine that will do
+	// sends otherwise we could get races.
+	// Note that using two different clients (one for the subs, one for the
+	// sends) would cause other issues such as registration of recent subs in
+	// the "sub" client would be invisible to the check for GW routed replies
+	// (shouldMapReplyForGatewaySend) since the client there would be the "sender".
+
 	jsa := &as.jsa
 	sid := int64(1)
 	// This is a subscription that will process all JS API replies. We could split to
@@ -901,10 +907,25 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		return nil, err
 	}
 
+	// We create the subscription on "$MQTT.sub.<nuid>" to limit the subjects
+	// that a user would allow permissions on.
+	rmsubj := mqttSubPrefix + nuid.Next()
+	if err := as.createSubscription(rmsubj, as.processRetainedMsg, &sid, &subs); err != nil {
+		return nil, err
+	}
+
+	// Create a subscription to be notified of retained messages delete requests.
+	rmdelsubj := mqttJSARepliesPrefix + "*." + mqttJSARetainedMsgDel
+	if err := as.createSubscription(rmdelsubj, as.processRetainedMsgDel, &sid, &subs); err != nil {
+		return nil, err
+	}
+
+	// No more creation of subscriptions past this point otherwise RACEs may happen.
+
 	// Start the go routine that will send JS API requests.
 	s.startGoRoutine(func() {
 		defer s.grWG.Done()
-		as.sendJSAPIrequests(s, sc, accName, closeCh)
+		as.sendJSAPIrequests(s, c, accName, closeCh)
 	})
 
 	// Create the stream for the messages.
@@ -949,18 +970,6 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 			as.rrmDoneCh = rmDoneCh
 		}
 	}
-	// We create the subscription on "$MQTT.sub.<nuid>" to limit the subjects
-	// that a user would allow permissions on.
-	rmsubj := mqttSubPrefix + nuid.Next()
-	if err := as.createSubscription(rmsubj, as.processRetainedMsg, &sid, &subs); err != nil {
-		return nil, err
-	}
-
-	// Create a subscription to be notified of retained messages delete requests.
-	rmdelsubj := mqttJSARepliesPrefix + "*." + mqttJSARetainedMsgDel
-	if err := as.createSubscription(rmdelsubj, as.processRetainedMsgDel, &sid, &subs); err != nil {
-		return nil, err
-	}
 
 	// Using ephemeral consumer is too risky because if this server were to be
 	// disconnected from the rest for few seconds, then the leader would remove
@@ -998,7 +1007,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	if lastSeq > 0 {
 		select {
 		case <-rmDoneCh:
-		case <-time.After(2 * time.Second):
+		case <-time.After(mqttJSAPITimeout):
 			s.Warnf("Timing out waiting to load %v retained messages", st.Msgs)
 		case <-quitCh:
 			return nil, ErrServerNotRunning
@@ -1043,13 +1052,15 @@ func (s *Server) mqttDetermineReplicas() int {
 //////////////////////////////////////////////////////////////////////////////
 
 func (jsa *mqttJSA) newRequest(kind, subject string, hdr int, msg []byte) (interface{}, error) {
-	return jsa.newRequestEx(kind, subject, hdr, msg, 2*time.Second)
+	return jsa.newRequestEx(kind, subject, hdr, msg, mqttJSAPITimeout)
 }
 
 func (jsa *mqttJSA) newRequestEx(kind, subject string, hdr int, msg []byte, timeout time.Duration) (interface{}, error) {
 	jsa.mu.Lock()
-	jsa.rid++
-	reply := jsa.rplyr + kind + "." + strconv.FormatInt(jsa.rid, 10)
+	// Either we use nuid.Next() which uses a global lock, or our own nuid object, but
+	// then it needs to be "write" protected. This approach will reduce across account
+	// contention since we won't use the global nuid's lock.
+	reply := jsa.rplyr + kind + "." + jsa.nuid.Next()
 	jsa.mu.Unlock()
 
 	ch := make(chan interface{}, 1)
@@ -1063,13 +1074,18 @@ func (jsa *mqttJSA) newRequestEx(kind, subject string, hdr int, msg []byte, time
 	}
 
 	var i interface{}
+	// We don't want to use time.After() which causes memory growth because the timer
+	// can't be stopped and will need to expire to then be garbage collected.
+	t := time.NewTimer(timeout)
 	select {
 	case i = <-ch:
+		// Ensure we stop the timer so it can be quickly garbage collected.
+		t.Stop()
 	case <-jsa.quitCh:
 		return nil, ErrServerNotRunning
-	case <-time.After(timeout):
+	case <-t.C:
 		jsa.replies.Delete(reply)
-		return nil, fmt.Errorf("timeout for request type %q on %q", kind, subject)
+		return nil, fmt.Errorf("timeout for request type %q on %q (reply=%q)", kind, subject, reply)
 	}
 	return i, nil
 }
@@ -1409,7 +1425,10 @@ func (as *mqttAccountSessionManager) createSubscription(subject string, cb msgHa
 //
 // No lock held on entry.
 func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, accName string, closeCh chan struct{}) {
-	cluster := s.cachedClusterName()
+	var cluster string
+	if s.JetStreamEnabled() {
+		cluster = s.cachedClusterName()
+	}
 	as.mu.RLock()
 	sendq := as.jsa.sendq
 	quitCh := as.jsa.quitCh
@@ -2667,7 +2686,7 @@ func (c *client) mqttHandlePubRetain() {
 		rm := &mqttRetainedMsg{
 			Origin:  asm.jsa.id,
 			Subject: key,
-			Topic:   string(copyBytes(pp.topic)),
+			Topic:   string(pp.topic),
 			Msg:     copyBytes(pp.msg),
 			Flags:   pp.flags,
 			Source:  c.opts.Username,
@@ -3002,7 +3021,7 @@ func mqttSubscribeTrace(pi uint16, filters []*mqttFilter) string {
 // message and this is the callback for a QoS1 subscription because in
 // that case, it will be handled by the other callback. This avoid getting
 // duplicate deliveries.
-func mqttDeliverMsgCbQos0(sub *subscription, pc *client, subject, reply string, rmsg []byte) {
+func mqttDeliverMsgCbQos0(sub *subscription, pc *client, subject, _ string, rmsg []byte) {
 	if pc.kind == JETSTREAM {
 		return
 	}

@@ -2978,14 +2978,15 @@ func TestMQTTClusterReplicasCount(t *testing.T) {
 }
 
 func TestMQTTClusterPlacement(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "HUB", 3)
-	defer c.shutdown()
+	sc := createJetStreamSuperCluster(t, 3, 2)
+	defer sc.shutdown()
 
+	c := sc.randomCluster()
 	lnc := c.createLeafNodesWithStartPortAndMQTT("SPOKE", 3, 22111, `mqtt { listen: 127.0.0.1:-1 }`)
 	defer lnc.shutdown()
 
-	c.waitOnPeerCount(6)
-	c.waitOnLeader()
+	sc.waitOnPeerCount(9)
+	sc.waitOnLeader()
 
 	for i := 0; i < 10; i++ {
 		mc, rc := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, lnc.opts[i%3].MQTT.Host, lnc.opts[i%3].MQTT.Port)
@@ -4446,12 +4447,12 @@ func TestMQTTMaxAckPending(t *testing.T) {
 
 func TestMQTTMaxAckPendingForMultipleSubs(t *testing.T) {
 	o := testMQTTDefaultOptions()
-	o.MQTT.AckWait = 500 * time.Millisecond
+	o.MQTT.AckWait = time.Second
 	o.MQTT.MaxAckPending = 1
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
 
-	cisub := &mqttConnInfo{clientID: "sub", cleanSess: false}
+	cisub := &mqttConnInfo{clientID: "sub", cleanSess: true}
 	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
 	defer c.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)

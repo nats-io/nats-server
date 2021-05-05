@@ -238,6 +238,29 @@ type gwReplyMap struct {
 	exp int64
 }
 
+type gwReplyMapping struct {
+	// Indicate if we should check the map or not. Since checking the map is done
+	// when processing inbound messages and requires the lock we want to
+	// check only when needed. This is set/get using atomic, so needs to
+	// be memory aligned.
+	check int32
+	// To keep track of gateway replies mapping
+	mapping map[string]*gwReplyMap
+}
+
+// Returns the corresponding gw routed subject, and `true` to indicate that a
+// mapping was found. If no entry is found, the passed subject is returned
+// as-is and `false` is returned to indicate that no mapping was found.
+// Caller is responsible to ensure the locking.
+func (g *gwReplyMapping) get(subject []byte) ([]byte, bool) {
+	rm, ok := g.mapping[string(subject)]
+	if !ok {
+		return subject, false
+	}
+	subj := []byte(rm.ms)
+	return subj, true
+}
+
 // clone returns a deep copy of the RemoteGatewayOpts object
 func (r *RemoteGatewayOpts) clone() *RemoteGatewayOpts {
 	if r == nil {
@@ -2332,8 +2355,9 @@ func hasGWRoutedReplyPrefix(subj []byte) bool {
 func (g *srvGateway) shouldMapReplyForGatewaySend(c *client, acc *Account, reply []byte) bool {
 	// If the reply is a service reply (_R_), we will use the account's internal
 	// client instead of the client handed to us. This client holds the wildcard
-	// for all service replies.
-	if isServiceReply(reply) {
+	// for all service replies. For other kind of connections, we still use the
+	// given `client` object.
+	if isServiceReply(reply) && c.kind == CLIENT {
 		acc.mu.Lock()
 		c = acc.internalClient()
 		acc.mu.Unlock()
@@ -2495,7 +2519,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 				mh = append(mh, "| "...) // Only queues
 			}
 			mh = append(mh, queues...)
-		} else if reply != nil {
+		} else if len(reply) > 0 {
 			mh = append(mh, mreply...)
 			mh = append(mh, ' ')
 		}
@@ -2863,7 +2887,10 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 			// make sure we send the proper no interest if the service import is the only interest.
 			noInterest = true
 			for _, sub := range r.psubs {
-				if sub.client.kind != ACCOUNT {
+				// sub.si indicates that this is a subscription for service import, and is immutable.
+				// So sub.si is false, then this is a subscription for something else, so there is
+				// actually proper interest.
+				if !sub.si {
 					noInterest = false
 					break
 				}
@@ -3021,33 +3048,50 @@ func (c *client) gatewaySwitchAccountToSendAllSubs(e *insie, accName string) {
 	})
 }
 
-// Keeps track of the routed reply to be used when/if application
-// sends back a message on the reply without the prefix.
-// Client lock held on entry. This is a server receiver because
-// we use a timer interval that is avail in Server.gateway object.
-func (s *Server) trackGWReply(c *client, reply []byte) {
-	ttl := s.gateway.recSubExp
-	rm := c.gwrm
-	var we bool // will be true if map was empty on entry
-	if rm == nil {
-		rm = make(map[string]*gwReplyMap)
-		c.gwrm = rm
-		we = true
+// Keeps track of the routed reply to be used when/if application sends back a
+// message on the reply without the prefix.
+// If `client` is not nil, it will be stored in the client gwReplyMapping structure,
+// and client lock is held on entry.
+// If `client` is nil, the mapping is stored in the client's account's gwReplyMapping
+// structure. Account lock will be explicitly acquired.
+// This is a server receiver because we use a timer interval that is avail in
+/// Server.gateway object.
+func (s *Server) trackGWReply(c *client, acc *Account, reply, routedReply []byte) {
+	var l sync.Locker
+	var g *gwReplyMapping
+	if acc != nil {
+		acc.mu.Lock()
+		defer acc.mu.Unlock()
+		g = &acc.gwReplyMapping
+		l = &acc.mu
 	} else {
-		we = len(rm) == 0
+		g = &c.gwReplyMapping
+		l = &c.mu
 	}
+	ttl := s.gateway.recSubExp
+	wasEmpty := len(g.mapping) == 0
+	if g.mapping == nil {
+		g.mapping = make(map[string]*gwReplyMap)
+	}
+	// The reason we pass both `reply` and `routedReply`, is that in some cases,
+	// `routedReply` may have a deliver subject appended, something look like:
+	// "_GR_.xxx.yyy.$JS.ACK.$MQTT_msgs.someid.1.1.1.1620086713306484000.0@$MQTT.msgs.foo"
+	// but `reply` has already been cleaned up (delivery subject removed from tail):
+	// "$JS.ACK.$MQTT_msgs.someid.1.1.1.1620086713306484000.0"
+	// So we will use that knowledge so we don't have to make any cleaning here.
+	routedReply = routedReply[:gwSubjectOffset+len(reply)]
 	// We need to make a copy so that we don't reference the underlying
 	// read buffer.
-	ms := string(reply)
+	ms := string(routedReply)
 	grm := &gwReplyMap{ms: ms, exp: time.Now().Add(ttl).UnixNano()}
 	// If we are here with the same key but different mapped replies
 	// (say $GNR._.A.srv1.bar and then $GNR._.B.srv2.bar), we need to
 	// store it otherwise we would take the risk of the reply not
 	// making it back.
-	rm[ms[gwSubjectOffset:]] = grm
-	if we {
-		atomic.StoreInt32(&c.cgwrt, 1)
-		s.gwrm.m.Store(c, nil)
+	g.mapping[ms[gwSubjectOffset:]] = grm
+	if wasEmpty {
+		atomic.StoreInt32(&g.check, 1)
+		s.gwrm.m.Store(g, l)
 		if atomic.CompareAndSwapInt32(&s.gwrm.w, 0, 1) {
 			select {
 			case s.gwrm.ch <- ttl:
@@ -3077,19 +3121,20 @@ func (s *Server) startGWReplyMapExpiration() {
 				}
 				now := time.Now().UnixNano()
 				mapEmpty := true
-				s.gwrm.m.Range(func(k, _ interface{}) bool {
-					c := k.(*client)
-					c.mu.Lock()
-					for k, grm := range c.gwrm {
+				s.gwrm.m.Range(func(k, v interface{}) bool {
+					g := k.(*gwReplyMapping)
+					l := v.(sync.Locker)
+					l.Lock()
+					for k, grm := range g.mapping {
 						if grm.exp <= now {
-							delete(c.gwrm, k)
-							if len(c.gwrm) == 0 {
-								atomic.StoreInt32(&c.cgwrt, 0)
-								s.gwrm.m.Delete(c)
+							delete(g.mapping, k)
+							if len(g.mapping) == 0 {
+								atomic.StoreInt32(&g.check, 0)
+								s.gwrm.m.Delete(g)
 							}
 						}
 					}
-					c.mu.Unlock()
+					l.Unlock()
 					mapEmpty = false
 					return true
 				})
