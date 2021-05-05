@@ -17,15 +17,12 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"
 )
-
-var nscDecoratedRe = regexp.MustCompile(`\s*(?:(?:[-]{3,}[^\n]*[-]{3,}\n)(.+)(?:\n\s*[-]{3,}[^\n]*[-]{3,}[\n]*))`)
 
 // All JWTs once encoded start with this
 const jwtPrefix = "eyJ"
@@ -48,17 +45,9 @@ func readOperatorJWT(jwtfile string) (string, *jwt.OperatorClaims, error) {
 	}
 	defer wipeSlice(contents)
 
-	var theJWT string
-	items := nscDecoratedRe.FindAllSubmatch(contents, -1)
-	if len(items) == 0 {
-		theJWT = string(contents)
-	} else {
-		// First result should be the JWT.
-		// We copy here so that if the file contained a seed file too we wipe appropriately.
-		raw := items[0][1]
-		tmp := make([]byte, len(raw))
-		copy(tmp, raw)
-		theJWT = string(tmp)
+	theJWT, err := jwt.ParseDecoratedJWT(contents)
+	if err != nil {
+		return "", nil, err
 	}
 	opc, err := jwt.DecodeOperatorClaims(theJWT)
 	if err != nil {

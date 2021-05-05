@@ -97,7 +97,7 @@ NKEYs are sensitive and should be treated as secrets.
 	return w.Bytes(), nil
 }
 
-var userConfigRE = regexp.MustCompile(`\s*(?:(?:[-]{3,}.*[-]{3,}\r?\n)([\w\-.=]+)(?:\r?\n[-]{3,}.*[-]{3,}\r?\n))`)
+var userConfigRE = regexp.MustCompile(`\s*(?:(?:[-]{3,}.*[-]{3,}\r?\n)([\w\-.=]+)(?:\r?\n[-]{3,}.*[-]{3,}(\r?\n|\z)))`)
 
 // An user config file looks like this:
 //  -----BEGIN NATS USER JWT-----
