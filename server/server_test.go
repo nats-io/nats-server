@@ -1230,6 +1230,7 @@ func TestAcceptError(t *testing.T) {
 
 func TestServerShutdownDuringStart(t *testing.T) {
 	o := DefaultOptions()
+	o.ServerName = "server"
 	o.DisableShortFirstPing = true
 	o.Accounts = []*Account{NewAccount("$SYS")}
 	o.SystemAccount = "$SYS"

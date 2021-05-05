@@ -215,11 +215,7 @@ const (
 type client struct {
 	// Here first because of use of atomics, and memory alignment.
 	stats
-	// Indicate if we should check gwrm or not. Since checking gwrm is done
-	// when processing inbound messages and requires the lock we want to
-	// check only when needed. This is set/get using atomic, so needs to
-	// be memory aligned.
-	cgwrt int32
+	gwReplyMapping
 	kind  int
 	srv   *Server
 	acc   *Account
@@ -261,9 +257,6 @@ type client struct {
 	leaf  *leaf
 	ws    *websocket
 	mqtt  *mqtt
-
-	// To keep track of gateway replies mapping
-	gwrm map[string]*gwReplyMap
 
 	flags clientFlag // Compact booleans into a single field. Size will be increased when needed.
 
@@ -2354,12 +2347,12 @@ func (c *client) parseSub(argo []byte, noForward bool) error {
 }
 
 func (c *client) processSub(subject, queue, bsid []byte, cb msgHandler, noForward bool) (*subscription, error) {
-	return c.processSubEx(subject, queue, bsid, cb, noForward, false)
+	return c.processSubEx(subject, queue, bsid, cb, noForward, false, false)
 }
 
-func (c *client) processSubEx(subject, queue, bsid []byte, cb msgHandler, noForward, si bool) (*subscription, error) {
+func (c *client) processSubEx(subject, queue, bsid []byte, cb msgHandler, noForward, si, rsi bool) (*subscription, error) {
 	// Create the subscription
-	sub := &subscription{client: c, subject: subject, queue: queue, sid: bsid, icb: cb, si: si}
+	sub := &subscription{client: c, subject: subject, queue: queue, sid: bsid, icb: cb, si: si, rsi: rsi}
 
 	c.mu.Lock()
 
@@ -3065,22 +3058,18 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 
 	// Check for internal subscriptions.
 	if sub.icb != nil && !c.noIcb {
-		ireply := string(reply)
-		// For internal callbacks we don't want to rely on the GW routed reply tracking
-		// since clients can change for who receives vs sends response. GW routed
-		// currently pins to a destination client connection. Also for internal its
-		// ok if we do not hide the raw reply like we do for external clients. We
-		// will not remap service import replies since they are handled different.
-		if gwrply && !isServiceReply(reply) {
-			ireply = string(c.pa.reply)
+		if gwrply {
+			// We will store in the account, not the client since it will likely
+			// be a different client that will send the reply.
+			srv.trackGWReply(nil, client.acc, reply, c.pa.reply)
 		}
 		client.mu.Unlock()
 
 		// Internal account clients are for service imports and need the '\r\n'.
 		if client.kind == ACCOUNT {
-			sub.icb(sub, c, string(subject), ireply, msg)
+			sub.icb(sub, c, string(subject), string(reply), msg)
 		} else {
-			sub.icb(sub, c, string(subject), ireply, msg[:msgSize])
+			sub.icb(sub, c, string(subject), string(reply), msg[:msgSize])
 		}
 		return true
 	}
@@ -3116,7 +3105,7 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 			// connection (`client`). The routed reply subject is in `c.pa.reply`,
 			// should that change, we would have to pass the GW routed reply as
 			// a parameter of deliverMsg().
-			srv.trackGWReply(client, c.pa.reply)
+			srv.trackGWReply(client, nil, reply, c.pa.reply)
 		}
 
 		// If we do not have a registered RTT queue that up now.
@@ -3454,9 +3443,19 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 		c.mqttHandlePubRetain()
 	}
 
-	// Check if this client's gateway replies map is not empty
-	if atomic.LoadInt32(&c.cgwrt) > 0 && c.handleGWReplyMap(msg) {
-		return true, false
+	// Doing this inline as opposed to create a function (which otherwise has a measured
+	// performance impact reported in our bench)
+	var isGWRouted bool
+	if c.kind != CLIENT {
+		if atomic.LoadInt32(&c.acc.gwReplyMapping.check) > 0 {
+			c.acc.mu.RLock()
+			c.pa.subject, isGWRouted = c.acc.gwReplyMapping.get(c.pa.subject)
+			c.acc.mu.RUnlock()
+		}
+	} else if atomic.LoadInt32(&c.gwReplyMapping.check) > 0 {
+		c.mu.Lock()
+		c.pa.subject, isGWRouted = c.gwReplyMapping.get(c.pa.subject)
+		c.mu.Unlock()
 	}
 
 	// If we have an exported service and we are doing remote tracking, check this subject
@@ -3480,6 +3479,13 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 			lsub := remoteLatencySubjectForResponse(c.pa.subject)
 			c.srv.sendInternalAccountMsg(nil, lsub, rl) // Send to SYS account
 		}
+	}
+
+	// If the subject was converted to the gateway routed subject, then handle it now
+	// and be done with the rest of this function.
+	if isGWRouted {
+		c.handleGWReplyMap(msg)
+		return true, false
 	}
 
 	// Match the subscriptions. We will use our own L1 map if
@@ -3571,43 +3577,10 @@ func (c *client) subForReply(reply []byte) *subscription {
 	return nil
 }
 
-// This is invoked knowing that this client has some GW replies
-// in its map. It will check if one is find for the c.pa.subject
-// and if so will process it directly (send to GWs and LEAFs) and
-// return true to notify the caller that the message was handled.
-// If there is no mapping for the subject, false is returned.
+// This is invoked knowing that c.pa.subject has been set to the gateway routed subject.
+// This function will send the message to possibly LEAFs and directly back to the origin
+// gateway.
 func (c *client) handleGWReplyMap(msg []byte) bool {
-	c.mu.Lock()
-	rm, ok := c.gwrm[string(c.pa.subject)]
-	if !ok {
-		c.mu.Unlock()
-		return false
-	}
-	// Set subject to the mapped reply subject
-	c.pa.subject = []byte(rm.ms)
-
-	var rl *remoteLatency
-
-	if c.rrTracking != nil {
-		rl = c.rrTracking.rmap[string(c.pa.subject)]
-		if rl != nil {
-			delete(c.rrTracking.rmap, string(c.pa.subject))
-		}
-	}
-	c.mu.Unlock()
-
-	if rl != nil {
-		sl := &rl.M2
-		// Fill this in and send it off to the other side.
-		sl.Status = 200
-		sl.Responder = c.getClientInfo(true)
-		sl.ServiceLatency = time.Since(sl.RequestStart) - sl.Responder.RTT
-		sl.TotalLatency = sl.ServiceLatency + sl.Responder.RTT
-		sanitizeLatencyMetric(sl)
-		lsub := remoteLatencySubjectForResponse(c.pa.subject)
-		c.srv.sendInternalAccountMsg(nil, lsub, rl) // Send to SYS account
-	}
-
 	// Check for leaf nodes
 	if c.srv.gwLeafSubs.Count() > 0 {
 		if r := c.srv.gwLeafSubs.Match(string(c.pa.subject)); len(r.psubs) > 0 {
@@ -3617,7 +3590,6 @@ func (c *client) handleGWReplyMap(msg []byte) bool {
 	if c.srv.gateway.enabled {
 		c.sendMsgToGateways(c.acc, msg, c.pa.subject, c.pa.reply, nil)
 	}
-
 	return true
 }
 
