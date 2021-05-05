@@ -206,7 +206,7 @@ var (
 	// ErrStorageResourcesExceeded is returned when storage resources would be exceeded.
 	ErrStorageResourcesExceeded = errors.New("insufficient storage resources available")
 
-	// ErrMemeoryResourcesExceeded is returned when storage resources would be exceeded.
+	// ErrMemoryResourcesExceeded is returned when memory resources would be exceeded.
 	ErrMemoryResourcesExceeded = errors.New("insufficient memory resources available")
 )
 

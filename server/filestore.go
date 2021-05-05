@@ -99,6 +99,7 @@ type msgBlock struct {
 	liwsz   int64
 	index   uint64
 	bytes   uint64
+	rbytes  uint64
 	msgs    uint64
 	lwits   int64
 	lwts    int64
@@ -410,6 +411,12 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) *msgBlock {
 	}
 	defer file.Close()
 
+	if fi, _ := file.Stat(); fi != nil {
+		mb.rbytes = uint64(fi.Size())
+	} else {
+		return nil
+	}
+
 	// Read our index file. Use this as source of truth if possible.
 	if err := mb.readIndexInfo(); err == nil {
 		// Quick sanity check here.
@@ -479,7 +486,7 @@ func (mb *msgBlock) rebuildState() (*LostStreamData, error) {
 	startLastSeq := mb.last.seq
 
 	// Clear state we need to rebuild.
-	mb.msgs, mb.bytes = 0, 0
+	mb.msgs, mb.bytes, mb.rbytes = 0, 0, 0
 	mb.last.seq, mb.last.ts = 0, 0
 	firstNeedsSet := true
 
@@ -487,6 +494,7 @@ func (mb *msgBlock) rebuildState() (*LostStreamData, error) {
 	if err != nil {
 		return nil, err
 	}
+	mb.rbytes = uint64(len(buf))
 
 	addToDmap := func(seq uint64) {
 		if seq == 0 {
@@ -614,6 +622,7 @@ func (mb *msgBlock) rebuildState() (*LostStreamData, error) {
 
 			mb.msgs++
 			mb.bytes += uint64(rl)
+			mb.rbytes += uint64(rl)
 		}
 
 		index += rl
@@ -1579,6 +1588,8 @@ func (mb *msgBlock) truncate(sm *fileStoredMsg) (nmsgs, nbytes uint64, err error
 	// Do local mb stat updates.
 	mb.msgs -= purged
 	mb.bytes -= bytes
+	mb.rbytes -= bytes
+
 	// Update our last msg.
 	mb.last.seq = sm.seq
 	mb.last.ts = sm.ts
@@ -2002,10 +2013,10 @@ func (mb *msgBlock) bytesPending() ([]byte, error) {
 	return buf, nil
 }
 
-// Return the number of bytes in this message block.
-func (mb *msgBlock) numBytes() uint64 {
+// Returns the current blkSize including deleted msgs etc.
+func (mb *msgBlock) blkSize() uint64 {
 	mb.mu.RLock()
-	nb := mb.bytes
+	nb := mb.rbytes
 	mb.mu.RUnlock()
 	return nb
 }
@@ -2021,6 +2032,7 @@ func (mb *msgBlock) updateAccounting(seq uint64, ts int64, rl uint64) {
 	atomic.StoreUint64(&mb.last.seq, seq)
 	mb.last.ts = ts
 	mb.bytes += rl
+	mb.rbytes += rl
 	mb.msgs++
 }
 
@@ -2035,7 +2047,7 @@ func (fs *fileStore) writeMsgRecord(seq uint64, ts int64, subj string, hdr, msg 
 	}
 	// Grab our current last message block.
 	mb := fs.lmb
-	if mb == nil || mb.numBytes()+rl > fs.fcfg.BlockSize {
+	if mb == nil || mb.blkSize()+rl > fs.fcfg.BlockSize {
 		if mb, err = fs.newMsgBlockForWrite(); err != nil {
 			return 0, err
 		}
