@@ -97,9 +97,9 @@ type msgBlock struct {
 	ifn     string
 	ifd     *os.File
 	liwsz   int64
-	index   uint64
-	bytes   uint64
-	rbytes  uint64
+	index   uint64 // User visible message count.
+	bytes   uint64 // User visible bytes count.
+	rbytes  uint64 // Total bytes (raw) including deleted. Used for rolling to new blk.
 	msgs    uint64
 	lwits   int64
 	lwts    int64
