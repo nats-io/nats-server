@@ -566,12 +566,15 @@ func TestFileStoreBytesLimit(t *testing.T) {
 }
 
 func TestFileStoreAgeLimit(t *testing.T) {
-	maxAge := 10 * time.Millisecond
+	maxAge := 100 * time.Millisecond
 
 	storeDir := createDir(t, JetStreamStoreDir)
 	defer removeDir(t, storeDir)
 
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage, MaxAge: maxAge})
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 256},
+		StreamConfig{Name: "zzz", Storage: FileStorage, MaxAge: maxAge},
+	)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -579,7 +582,7 @@ func TestFileStoreAgeLimit(t *testing.T) {
 
 	// Store some messages. Does not really matter how many.
 	subj, msg := "foo", []byte("Hello World")
-	toStore := 100
+	toStore := 500
 	for i := 0; i < toStore; i++ {
 		fs.StoreMsg(subj, nil, msg)
 	}
@@ -589,7 +592,7 @@ func TestFileStoreAgeLimit(t *testing.T) {
 	}
 	checkExpired := func(t *testing.T) {
 		t.Helper()
-		checkFor(t, time.Second, maxAge, func() error {
+		checkFor(t, 5*time.Second, maxAge, func() error {
 			state = fs.State()
 			if state.Msgs != 0 {
 				return fmt.Errorf("Expected no msgs, got %d", state.Msgs)
@@ -602,6 +605,7 @@ func TestFileStoreAgeLimit(t *testing.T) {
 	}
 	// Let them expire
 	checkExpired(t)
+
 	// Now add some more and make sure that timer will fire again.
 	for i := 0; i < toStore; i++ {
 		fs.StoreMsg(subj, nil, msg)
