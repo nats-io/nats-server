@@ -2833,3 +2833,52 @@ func TestFileStoreStreamPurgeAndDirtyRestartBug(t *testing.T) {
 		t.Fatalf("Unexpected state: %+v", state)
 	}
 }
+
+// rip
+func TestFileStoreStreamFailToRollBug(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 512},
+		StreamConfig{Name: "zzz", Storage: FileStorage, MaxBytes: 300},
+	)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	// Make sure we properly roll underlying blocks.
+	n, msg := 200, bytes.Repeat([]byte("ABC"), 33) // ~100bytes
+	for i := 0; i < n; i++ {
+		if _, _, err := fs.StoreMsg("zzz", nil, msg); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	// Grab some info for introspection.
+	fs.mu.RLock()
+	numBlks := len(fs.blks)
+	var index uint64
+	var blkSize int64
+	if numBlks > 0 {
+		mb := fs.blks[0]
+		mb.mu.RLock()
+		index = mb.index
+		if fi, _ := os.Stat(mb.mfn); fi != nil {
+			blkSize = fi.Size()
+		}
+		mb.mu.RUnlock()
+	}
+	fs.mu.RUnlock()
+
+	if numBlks != 1 {
+		t.Fatalf("Expected only one block, got %d", numBlks)
+	}
+	if index < 60 {
+		t.Fatalf("Expected a block index > 60, got %d", index)
+	}
+	if blkSize > 512 {
+		t.Fatalf("Expected block to be <= 512, got %d", blkSize)
+	}
+}
