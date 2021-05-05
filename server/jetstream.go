@@ -1317,14 +1317,33 @@ func (jsa *jsAccount) checkLimits(config *StreamConfig) error {
 func (jsa *jsAccount) checkBytesLimits(addBytes int64, storage StorageType) error {
 	switch storage {
 	case MemoryStorage:
-		if jsa.memReserved+addBytes > jsa.limits.MaxMemory {
-			return fmt.Errorf("insufficient memory resources available")
+		// Account limits defined.
+		if jsa.limits.MaxMemory > 0 {
+			if jsa.memReserved+addBytes > jsa.limits.MaxMemory {
+				return ErrMemoryResourcesExceeded
+			}
+		} else {
+			// Account is unlimited, check if this server can handle request.
+			js := jsa.js
+			if js.memReserved+addBytes > js.config.MaxMemory {
+				return ErrMemoryResourcesExceeded
+			}
 		}
 	case FileStorage:
-		if jsa.storeReserved+addBytes > jsa.limits.MaxStore {
-			return fmt.Errorf("insufficient storage resources available")
+		// Account limits defined.
+		if jsa.limits.MaxStore > 0 {
+			if jsa.storeReserved+addBytes > jsa.limits.MaxStore {
+				return ErrStorageResourcesExceeded
+			}
+		} else {
+			// Account is unlimited, check if this server can handle request.
+			js := jsa.js
+			if js.storeReserved+addBytes > js.config.MaxStore {
+				return ErrStorageResourcesExceeded
+			}
 		}
 	}
+
 	return nil
 }
 
@@ -1421,11 +1440,12 @@ func (js *jetStream) sufficientResources(limits *JetStreamAccountLimits) error {
 	if limits == nil {
 		return nil
 	}
+
 	if js.memReserved+limits.MaxMemory > js.config.MaxMemory {
-		return fmt.Errorf("insufficient memory resources available")
+		return ErrMemoryResourcesExceeded
 	}
 	if js.storeReserved+limits.MaxStore > js.config.MaxStore {
-		return fmt.Errorf("insufficient storage resources available")
+		return ErrStorageResourcesExceeded
 	}
 	return nil
 }

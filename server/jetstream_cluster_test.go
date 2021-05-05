@@ -114,6 +114,36 @@ func TestJetStreamClusterAccountInfo(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterStreamLimitWithAccountDefaults(t *testing.T) {
+	// 2MB memory, 8MB disk
+	c := createJetStreamClusterWithTemplate(t, jsClusterLimitsTempl, "R3L", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomNonLeader()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar"},
+		Replicas: 2,
+		MaxBytes: 4 * 1024 * 1024,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST2",
+		Replicas: 2,
+		MaxBytes: 15 * 1024 * 1024,
+	})
+	if err == nil || !strings.Contains(err.Error(), "insufficient storage") {
+		t.Fatalf("Expected %v but got %v", ErrStorageResourcesExceeded, err)
+	}
+}
+
 func TestJetStreamClusterSingleReplicaStreams(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R1S", 3)
 	defer c.shutdown()

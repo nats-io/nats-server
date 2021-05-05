@@ -1,4 +1,4 @@
-// Copyright 2012-2020 The NATS Authors
+// Copyright 2012-2021 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -202,6 +202,12 @@ var (
 
 	// ErrJetStreamResourcesExceeded is returned when a call would exceed internal resource limits.
 	ErrJetStreamResourcesExceeded = errors.New("jetstream resources exceeded for server")
+
+	// ErrStorageResourcesExceeded is returned when storage resources would be exceeded.
+	ErrStorageResourcesExceeded = errors.New("insufficient storage resources available")
+
+	// ErrMemeoryResourcesExceeded is returned when storage resources would be exceeded.
+	ErrMemoryResourcesExceeded = errors.New("insufficient memory resources available")
 )
 
 // configErr is a configuration error.
