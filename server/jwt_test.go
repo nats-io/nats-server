@@ -4742,7 +4742,7 @@ func TestJWTHeader(t *testing.T) {
 		require_True(t, len(resChan) == 0)
 
 		_, err = impNc.RequestMsg(&nats.Msg{
-			Subject: "srvc", Data: []byte("msg2"), Header: http.Header{
+			Subject: "srvc", Data: []byte("msg2"), Header: nats.Header{
 				"X-B3-Sampled": []string{"1"},
 				"Share":        []string{"Me"}}}, time.Second)
 		require_NoError(t, err)

@@ -461,7 +461,7 @@ func (s *Server) enableJetStreamClustering() error {
 	// We need to determine if we have a stable cluster name and expected number of servers.
 	s.Debugf("JetStream cluster checking for stable cluster name and peers")
 
-	hasLeafNodeSystemShare := s.hasSolicitLeafNodeSystemShare()
+	hasLeafNodeSystemShare := s.wantsToExtendOtherDomain()
 	if s.isClusterNameDynamic() && !hasLeafNodeSystemShare {
 		return errors.New("JetStream cluster requires cluster name")
 	}
@@ -494,7 +494,7 @@ func (js *jetStream) setupMetaGroup() error {
 	// If we are soliciting leafnode connections and we are sharing a system account
 	// we want to move to observer mode so that we extend the solicited cluster or supercluster
 	// but do not form our own.
-	cfg.Observer = s.hasSolicitLeafNodeSystemShare()
+	cfg.Observer = s.wantsToExtendOtherDomain()
 
 	var bootstrap bool
 	if _, err := readPeerState(storeDir); err != nil {
@@ -1914,40 +1914,41 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) bool {
 	js.mu.RLock()
 	s, cc := js.srv, js.cluster
 	accName, stream := sa.Client.serviceAccount(), sa.Config.Name
+	noMeta := cc == nil || cc.meta == nil
+	var ourID string
+	if !noMeta {
+		ourID = cc.meta.ID()
+	}
+	var isMember bool
+	if sa.Group != nil && ourID != _EMPTY_ {
+		isMember = sa.Group.isMember(ourID)
+	}
 	js.mu.RUnlock()
 
-	if s == nil || cc == nil {
-		// TODO(dlc) - debug at least
+	if s == nil || noMeta {
 		return false
 	}
 
 	acc, err := s.LookupAccount(accName)
 	if err != nil {
-		// If we can not lookup our account send this result back to the metacontroller leader.
-		result := &streamAssignmentResult{
-			Account:  accName,
-			Stream:   stream,
-			Response: &JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}},
+		ll := fmt.Sprintf("Account [%s] lookup for stream create failed: %v", accName, err)
+		if isMember {
+			// If we can not lookup the account and we are a member, send this result back to the metacontroller leader.
+			result := &streamAssignmentResult{
+				Account:  accName,
+				Stream:   stream,
+				Response: &JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}},
+			}
+			result.Response.Error = jsNoAccountErr
+			s.sendInternalMsgLocked(streamAssignmentSubj, _EMPTY_, nil, result)
+			s.Warnf(ll)
+		} else {
+			s.Debugf(ll)
 		}
-		result.Response.Error = jsNoAccountErr
-		s.sendInternalMsgLocked(streamAssignmentSubj, _EMPTY_, nil, result)
-
-		// TODO(dlc) - log error
 		return false
 	}
 
 	js.mu.Lock()
-	if cc.meta == nil {
-		js.mu.Unlock()
-		return false
-	}
-	ourID := cc.meta.ID()
-
-	var isMember bool
-	if sa.Group != nil {
-		isMember = sa.Group.isMember(ourID)
-	}
-
 	accStreams := cc.streams[acc.Name]
 	if accStreams == nil {
 		accStreams = make(map[string]*streamAssignment)
@@ -2384,41 +2385,52 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 
 // processConsumerAssignment is called when followers have replicated an assignment for a consumer.
 func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
-	js.mu.Lock()
+	js.mu.RLock()
 	s, cc := js.srv, js.cluster
-	if s == nil || cc == nil || cc.meta == nil {
-		// TODO(dlc) - debug at least
-		js.mu.Unlock()
+	accName, stream, consumer := ca.Client.serviceAccount(), ca.Stream, ca.Name
+	noMeta := cc == nil || cc.meta == nil
+	var ourID string
+	if !noMeta {
+		ourID = cc.meta.ID()
+	}
+	var isMember bool
+	if ca.Group != nil && ourID != _EMPTY_ {
+		isMember = ca.Group.isMember(ourID)
+	}
+	js.mu.RUnlock()
+
+	if s == nil || noMeta {
 		return
 	}
 
-	accName := ca.Client.serviceAccount()
 	acc, err := s.LookupAccount(accName)
 	if err != nil {
-		js.mu.Unlock()
-		s.Warnf("Account [%s] lookup for consumer create failed: %v", accName, err)
+		ll := fmt.Sprintf("Account [%s] lookup for consumer create failed: %v", accName, err)
+		if isMember {
+			// If we can not lookup the account and we are a member, send this result back to the metacontroller leader.
+			result := &consumerAssignmentResult{
+				Account:  accName,
+				Stream:   stream,
+				Consumer: consumer,
+				Response: &JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}},
+			}
+			result.Response.Error = jsNoAccountErr
+			s.sendInternalMsgLocked(consumerAssignmentSubj, _EMPTY_, nil, result)
+			s.Warnf(ll)
+		} else {
+			s.Debugf(ll)
+		}
 		return
 	}
 
-	sa := js.streamAssignment(ca.Client.serviceAccount(), ca.Stream)
+	sa := js.streamAssignment(accName, stream)
 	if sa == nil {
-		s.Debugf("Consumer create failed, could not locate stream '%s > %s'", ca.Client.serviceAccount(), ca.Stream)
-		ca.err = ErrJetStreamStreamNotFound
-		result := &consumerAssignmentResult{
-			Account:  ca.Client.serviceAccount(),
-			Stream:   ca.Stream,
-			Consumer: ca.Name,
-			Response: &JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}},
-		}
-		result.Response.Error = jsNotFoundError(ErrJetStreamStreamNotFound)
-		// Send response to the metadata leader. They will forward to the user as needed.
-		b, _ := json.Marshal(result) // Avoids auto-processing and doing fancy json with newlines.
-		s.sendInternalMsgLocked(consumerAssignmentSubj, _EMPTY_, nil, b)
-		js.mu.Unlock()
+		s.Debugf("Consumer create failed, could not locate stream '%s > %s'", accName, stream)
 		return
 	}
 
 	// Check if we have an existing consumer assignment.
+	js.mu.Lock()
 	if sa.consumers == nil {
 		sa.consumers = make(map[string]*consumerAssignment)
 	} else if oca := sa.consumers[ca.Name]; oca != nil && !oca.pending {
@@ -2436,10 +2448,6 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	// Place into our internal map under the stream assignment.
 	// Ok to replace an existing one, we check on process call below.
 	sa.consumers[ca.Name] = ca
-
-	// See if we are a member
-	ourID := cc.meta.ID()
-	isMember := ca.Group.isMember(ourID)
 	js.mu.Unlock()
 
 	// Check if this is for us..
@@ -2459,10 +2467,10 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 
 		// We are not a member, if we have this consumer on this
 		// server remove it.
-		if mset, _ := acc.lookupStream(ca.Stream); mset != nil {
-			if o := mset.lookupConsumer(ca.Name); o != nil {
+		if mset, _ := acc.lookupStream(stream); mset != nil {
+			if o := mset.lookupConsumer(consumer); o != nil {
 				s.Debugf("JetStream removing consumer '%s > %s > %s' from this server, re-assigned",
-					ca.Client.serviceAccount(), ca.Stream, ca.Name)
+					ca.Client.serviceAccount(), stream, consumer)
 				o.stopWithFlags(true, false, false)
 			}
 		}
@@ -4847,6 +4855,8 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 		}
 	}
 }
+
+const jscAllSubj = "$JSC.>"
 
 func syncSubjForStream() string {
 	return syncSubject("$JSC.SYNC")

@@ -1600,7 +1600,7 @@ func TestServiceLatencyLossTest(t *testing.T) {
 	// use dedicated send that publishes requests using same reply subject
 	send := func(msg string) {
 		if err := nc2.PublishMsg(&nats.Msg{Subject: "SVC", Data: []byte(msg), Reply: reply,
-			Header: http.Header{"X-B3-Sampled": []string{"1"}}}); err != nil {
+			Header: nats.Header{"X-B3-Sampled": []string{"1"}}}); err != nil {
 			t.Fatalf("Expected a response got: %v", err)
 		}
 	}
@@ -1634,7 +1634,7 @@ func TestServiceLatencyLossTest(t *testing.T) {
 }
 
 func TestServiceLatencyHeaderTriggered(t *testing.T) {
-	receiveAndTest := func(t *testing.T, rsub *nats.Subscription, shared bool, header http.Header, status int, srvName string) server.ServiceLatency {
+	receiveAndTest := func(t *testing.T, rsub *nats.Subscription, shared bool, header nats.Header, status int, srvName string) server.ServiceLatency {
 		t.Helper()
 		var sl server.ServiceLatency
 		rmsg, _ := rsub.NextMsg(time.Second)
@@ -1660,41 +1660,41 @@ func TestServiceLatencyHeaderTriggered(t *testing.T) {
 		}
 		for k, value := range header {
 			if v := sl.RequestHeader.Get(k); v != value[0] {
-				t.Fatalf("Expected header set")
+				t.Fatalf("Expected header %q to be set", k)
 			}
 		}
 		return sl
 	}
 	for _, v := range []struct {
 		shared bool
-		header http.Header
+		header nats.Header
 	}{
-		{true, http.Header{"Uber-Trace-Id": []string{"479fefe9525eddb:479fefe9525eddb:0:1"}}},
-		{true, http.Header{"X-B3-Sampled": []string{"1"}}},
-		{true, http.Header{"X-B3-TraceId": []string{"80f198ee56343ba864fe8b2a57d3eff7"}}},
-		{true, http.Header{"B3": []string{"80f198ee56343ba864fe8b2a57d3eff7-e457b5a2e4d86bd1-1-05e3ac9a4f6e3b90"}}},
-		{true, http.Header{"Traceparent": []string{"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}},
-		{false, http.Header{"Uber-Trace-Id": []string{"479fefe9525eddb:479fefe9525eddb:0:1"}}},
-		{false, http.Header{"X-B3-Sampled": []string{"1"}}},
-		{false, http.Header{"X-B3-TraceId": []string{"80f198ee56343ba864fe8b2a57d3eff7"}}},
-		{false, http.Header{"B3": []string{"80f198ee56343ba864fe8b2a57d3eff7-e457b5a2e4d86bd1-1-05e3ac9a4f6e3b90"}}},
-		{false, http.Header{"Traceparent": []string{"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}},
-		{false, http.Header{
+		{true, nats.Header{"Uber-Trace-Id": []string{"479fefe9525eddb:479fefe9525eddb:0:1"}}},
+		{true, nats.Header{"X-B3-Sampled": []string{"1"}}},
+		{true, nats.Header{"X-B3-TraceId": []string{"80f198ee56343ba864fe8b2a57d3eff7"}}},
+		{true, nats.Header{"B3": []string{"80f198ee56343ba864fe8b2a57d3eff7-e457b5a2e4d86bd1-1-05e3ac9a4f6e3b90"}}},
+		{true, nats.Header{"Traceparent": []string{"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}},
+		{false, nats.Header{"Uber-Trace-Id": []string{"479fefe9525eddb:479fefe9525eddb:0:1"}}},
+		{false, nats.Header{"X-B3-Sampled": []string{"1"}}},
+		{false, nats.Header{"X-B3-TraceId": []string{"80f198ee56343ba864fe8b2a57d3eff7"}}},
+		{false, nats.Header{"B3": []string{"80f198ee56343ba864fe8b2a57d3eff7-e457b5a2e4d86bd1-1-05e3ac9a4f6e3b90"}}},
+		{false, nats.Header{"Traceparent": []string{"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}},
+		{false, nats.Header{
 			"X-B3-TraceId":      []string{"80f198ee56343ba864fe8b2a57d3eff7"},
 			"X-B3-ParentSpanId": []string{"05e3ac9a4f6e3b90"},
 			"X-B3-SpanId":       []string{"e457b5a2e4d86bd1"},
 			"X-B3-Sampled":      []string{"1"},
 		}},
-		{false, http.Header{
+		{false, nats.Header{
 			"X-B3-TraceId":      []string{"80f198ee56343ba864fe8b2a57d3eff7"},
 			"X-B3-ParentSpanId": []string{"05e3ac9a4f6e3b90"},
 			"X-B3-SpanId":       []string{"e457b5a2e4d86bd1"},
 		}},
-		{false, http.Header{
+		{false, nats.Header{
 			"Uber-Trace-Id": []string{"479fefe9525eddb:479fefe9525eddb:0:1"},
 			"Uberctx-X":     []string{"foo"},
 		}},
-		{false, http.Header{
+		{false, nats.Header{
 			"Traceparent": []string{"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"},
 			"Tracestate":  []string{"rojo=00f067aa0ba902b7,congo=t61rcWkgMzE"},
 		}},
@@ -1759,7 +1759,12 @@ func TestServiceLatencyHeaderTriggered(t *testing.T) {
 			msg := &nats.Msg{
 				Subject: "SVC",
 				Data:    []byte("1h"),
-				Header:  v.header.Clone(),
+				Header:  make(nats.Header),
+			}
+			for k, v := range v.header {
+				for _, val := range v {
+					msg.Header.Add(k, val)
+				}
 			}
 			msg.Header.Add("Some-Other", "value")
 			if _, err := nc2.RequestMsg(msg, 50*time.Millisecond); err != nil {

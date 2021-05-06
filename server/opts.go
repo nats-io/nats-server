@@ -205,6 +205,7 @@ type Options struct {
 	JetStream             bool          `json:"jetstream"`
 	JetStreamMaxMemory    int64         `json:"-"`
 	JetStreamMaxStore     int64         `json:"-"`
+	JetStreamDomain       string        `json:"-"`
 	StoreDir              string        `json:"-"`
 	Websocket             WebsocketOpts `json:"-"`
 	MQTT                  MQTTOpts      `json:"-"`
@@ -1509,6 +1510,7 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 			return &configErr{tk, fmt.Sprintf("Expected 'enabled' or 'disabled' for string value, got '%s'", vv)}
 		}
 	case map[string]interface{}:
+		doEnable := true
 		for mk, mv := range vv {
 			tk, mv = unwrapValue(mv, &lt)
 			switch strings.ToLower(mk) {
@@ -1518,6 +1520,10 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 				opts.JetStreamMaxMemory = mv.(int64)
 			case "max_file_store", "max_file":
 				opts.JetStreamMaxStore = mv.(int64)
+			case "domain":
+				opts.JetStreamDomain = mv.(string)
+			case "enable", "enabled":
+				doEnable = mv.(bool)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
@@ -1531,7 +1537,7 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 				}
 			}
 		}
-		opts.JetStream = true
+		opts.JetStream = doEnable
 	default:
 		return &configErr{tk, fmt.Sprintf("Expected map, bool or string to define JetStream, got %T", v)}
 	}

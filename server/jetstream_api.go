@@ -33,7 +33,10 @@ import (
 // Request API subjects for JetStream.
 const (
 	// All API endpoints.
-	jsAllApi = "$JS.API.>"
+	jsAllAPI = "$JS.API.>"
+
+	// For constructing JetStream domain prefixes.
+	jsDomainAPI = "$JS.%s.API.>"
 
 	// JSApiPrefix
 	JSApiPrefix = "$JS.API"
@@ -706,11 +709,11 @@ func (s *Server) setJetStreamExportSubs() error {
 	}
 
 	// This is the catch all now for all JetStream API calls.
-	if _, err := s.sysSubscribe(jsAllApi, js.apiDispatch); err != nil {
+	if _, err := s.sysSubscribe(jsAllAPI, js.apiDispatch); err != nil {
 		return err
 	}
 
-	if err := s.SystemAccount().AddServiceExport(jsAllApi, nil); err != nil {
+	if err := s.SystemAccount().AddServiceExport(jsAllAPI, nil); err != nil {
 		s.Warnf("Error setting up jetstream service exports: %v", err)
 		return err
 	}
@@ -3424,7 +3427,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 				// Check here if we are a member and this is just a new consumer that does not have a leader yet.
 				if rg.node.GroupLeader() == _EMPTY_ && !rg.node.HadPreviousLeader() {
 					resp.Error = jsNoConsumerErr
-					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+					s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil)
 				}
 			}
 			return

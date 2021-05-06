@@ -114,13 +114,13 @@ func (c *client) isHubLeafNode() bool {
 func (s *Server) addInJSDeny(r *leafNodeCfg) {
 	var hasDE, hasDI bool
 	for _, dsubj := range r.DenyExports {
-		if dsubj == jsAllApi {
+		if dsubj == jsAllAPI {
 			hasDE = true
 			break
 		}
 	}
 	for _, dsubj := range r.DenyImports {
-		if dsubj == jsAllApi {
+		if dsubj == jsAllAPI {
 			hasDI = true
 			break
 		}
@@ -128,13 +128,13 @@ func (s *Server) addInJSDeny(r *leafNodeCfg) {
 
 	var addedDeny bool
 	if !hasDE {
-		s.Noticef("Adding deny export of %q for leafnode configuration on %q that bridges system account", jsAllApi, r.LocalAccount)
-		r.DenyExports = append(r.DenyExports, jsAllApi)
+		s.Noticef("Adding deny export of %q for leafnode configuration on %q that bridges system account", jsAllAPI, r.LocalAccount)
+		r.DenyExports = append(r.DenyExports, jsAllAPI)
 		addedDeny = true
 	}
 	if !hasDI {
-		s.Noticef("Adding deny import of %q for leafnode configuration on %q that bridges system account", jsAllApi, r.LocalAccount)
-		r.DenyImports = append(r.DenyImports, jsAllApi)
+		s.Noticef("Adding deny import of %q for leafnode configuration on %q that bridges system account", jsAllAPI, r.LocalAccount)
+		r.DenyImports = append(r.DenyImports, jsAllAPI)
 		addedDeny = true
 	}
 
@@ -149,6 +149,27 @@ func (s *Server) addInJSDeny(r *leafNodeCfg) {
 		}
 		r.perms = perms
 	}
+}
+
+// Used for $SYS accounts when sharing but using separate JS domains.
+// r lock should be held.
+func (s *Server) addInJSDenyAll(r *leafNodeCfg) {
+	denyAll := []string{jscAllSubj, raftAllSubj, jsAllAPI}
+
+	s.Noticef("Sharing system account but utilizing separate JetStream Domains")
+	s.Noticef("Adding deny of %+v for leafnode configuration that bridges system account", denyAll, r.LocalAccount)
+
+	r.DenyExports = append(r.DenyExports, denyAll...)
+	r.DenyImports = append(r.DenyImports, denyAll...)
+
+	perms := &Permissions{}
+	if len(r.DenyExports) > 0 {
+		perms.Publish = &SubjectPermission{Deny: r.DenyExports}
+	}
+	if len(r.DenyImports) > 0 {
+		perms.Subscribe = &SubjectPermission{Deny: r.DenyImports}
+	}
+	r.perms = perms
 }
 
 // Determine if we are sharing our local system account with the remote.
@@ -806,6 +827,16 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 					s.addInJSDeny(remote)
 				}
 			}
+			// If we have a specified JetStream domain we will want to add a mapping to
+			// allow access cross domain for each non-system account.
+			if opts.JetStreamDomain != _EMPTY_ && acc != sysAcc && acc.jetStreamConfigured() {
+				src := fmt.Sprintf(jsDomainAPI, opts.JetStreamDomain)
+				if err := acc.AddMapping(src, jsAllAPI); err != nil {
+					c.Debugf("Error adding JetStream domain mapping: %v", err)
+				}
+			}
+		} else if opts.JetStreamDomain != _EMPTY_ {
+			s.addInJSDenyAll(remote)
 		}
 		c.leaf.remote = remote
 		c.setPermissions(remote.perms)
@@ -1231,6 +1262,9 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	// Check if this server supports headers.
 	supportHeaders := c.srv.supportsHeaders()
 
+	// Grab system account and server options.
+	sysAcc, opts := s.SystemAccount(), s.getOpts()
+
 	c.mu.Lock()
 	// Leaf Nodes do not do echo or verbose or pedantic.
 	c.opts.Verbose = false
@@ -1254,12 +1288,16 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 		c.leaf.remoteCluster = proto.Cluster
 	}
 
+	// Check for JetStream domain
+	doDomainMappings := opts.JetStreamDomain != _EMPTY_ && c.acc != sysAcc && c.acc.jetStreamConfigured()
+
 	// Set the Ping timer
 	s.setFirstPingTimer(c)
 
 	// If we received pub deny permissions from the other end, merge with existing ones.
 	c.mergePubDenyPermissions(proto.DenyPub)
 
+	acc := c.acc
 	c.mu.Unlock()
 
 	// Add in the leafnode here since we passed through auth at this point.
@@ -1276,6 +1314,15 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	// Announce the account connect event for a leaf node.
 	// This will no-op as needed.
 	s.sendLeafNodeConnect(c.acc)
+
+	// If we have a specified JetStream domain we will want to add a mapping to
+	// allow access cross domain for each non-system account.
+	if doDomainMappings {
+		src := fmt.Sprintf(jsDomainAPI, opts.JetStreamDomain)
+		if err := acc.AddMapping(src, jsAllAPI); err != nil {
+			c.Debugf("Error adding JetStream domain mapping: %v", err)
+		}
+	}
 
 	return nil
 }

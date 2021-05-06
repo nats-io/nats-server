@@ -41,6 +41,7 @@ type JetStreamConfig struct {
 	MaxMemory int64  `json:"max_memory"`
 	MaxStore  int64  `json:"max_storage"`
 	StoreDir  string `json:"store_dir,omitempty"`
+	Domain    string `json:"domain,omitempty"`
 }
 
 type JetStreamStats struct {
@@ -139,21 +140,24 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 
 	s.Noticef("Starting JetStream")
 	if config == nil || config.MaxMemory <= 0 || config.MaxStore <= 0 {
-		var storeDir string
+		var storeDir, domain string
 		var maxStore, maxMem int64
 		if config != nil {
-			storeDir = config.StoreDir
+			storeDir, domain = config.StoreDir, config.Domain
 			maxStore, maxMem = config.MaxStore, config.MaxMemory
 		}
 		config = s.dynJetStreamConfig(storeDir, maxStore)
 		if maxMem > 0 {
 			config.MaxMemory = maxMem
 		}
+		if domain != _EMPTY_ {
+			config.Domain = domain
+		}
 		s.Debugf("JetStream creating dynamic configuration - %s memory, %s disk", friendlyBytes(config.MaxMemory), friendlyBytes(config.MaxStore))
 	}
 	// Copy, don't change callers version.
 	cfg := *config
-	if cfg.StoreDir == "" {
+	if cfg.StoreDir == _EMPTY_ {
 		cfg.StoreDir = filepath.Join(os.TempDir(), JetStreamStoreDir)
 	}
 
@@ -210,7 +214,7 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 
 	// Setup our internal system exports.
 	s.Debugf("  Exports:")
-	s.Debugf("     %s", jsAllApi)
+	s.Debugf("     %s", jsAllAPI)
 	s.setupJetStreamExports()
 
 	// Enable accounts and restore state before starting clustering.
@@ -219,7 +223,7 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	}
 
 	// If we are in clustered mode go ahead and start the meta controller.
-	if !s.standAloneMode() || s.hasSolicitLeafNodeSystemShare() {
+	if !s.standAloneMode() || s.wantsToExtendOtherDomain() {
 		if err := s.enableJetStreamClustering(); err != nil {
 			return err
 		}
@@ -229,8 +233,14 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 }
 
 // This will check if we have a solicited leafnode that shares the system account
-// and is not denying subjects that would prevent extending JetStream.
-func (s *Server) hasSolicitLeafNodeSystemShare() bool {
+// and we are not our own domain and we are not denying subjects that would prevent
+// extending JetStream.
+func (s *Server) wantsToExtendOtherDomain() bool {
+	opts := s.getOpts()
+	// If we have a domain name set we want to be our own domain.
+	if opts.JetStreamDomain != _EMPTY_ {
+		return false
+	}
 	sysAcc := s.SystemAccount().GetName()
 	for _, r := range s.getOpts().LeafNode.Remotes {
 		if r.LocalAccount == sysAcc {
@@ -258,6 +268,7 @@ func (s *Server) restartJetStream() error {
 		StoreDir:  opts.StoreDir,
 		MaxMemory: opts.JetStreamMaxMemory,
 		MaxStore:  opts.JetStreamMaxStore,
+		Domain:    opts.JetStreamDomain,
 	}
 	s.Noticef("Restarting JetStream")
 	err := s.EnableJetStream(&cfg)
@@ -273,14 +284,14 @@ func (s *Server) restartJetStream() error {
 // on the system account, and if not go ahead and set them up.
 func (s *Server) checkJetStreamExports() {
 	sacc := s.SystemAccount()
-	if sacc != nil && sacc.getServiceExport(jsAllApi) == nil {
+	if sacc != nil && sacc.getServiceExport(jsAllAPI) == nil {
 		s.setupJetStreamExports()
 	}
 }
 
 func (s *Server) setupJetStreamExports() {
 	// Setup our internal system export.
-	if err := s.SystemAccount().AddServiceExport(jsAllApi, nil); err != nil {
+	if err := s.SystemAccount().AddServiceExport(jsAllAPI, nil); err != nil {
 		s.Warnf("Error setting up jetstream service exports: %v", err)
 	}
 }
@@ -401,8 +412,8 @@ func (a *Account) enableAllJetStreamServiceImports() error {
 		return fmt.Errorf("jetstream account not registered")
 	}
 
-	if !a.serviceImportExists(jsAllApi) {
-		if err := a.AddServiceImport(s.SystemAccount(), jsAllApi, _EMPTY_); err != nil {
+	if !a.serviceImportExists(jsAllAPI) {
+		if err := a.AddServiceImport(s.SystemAccount(), jsAllAPI, _EMPTY_); err != nil {
 			return fmt.Errorf("Error setting up jetstream service imports for account: %v", err)
 		}
 	}
@@ -764,6 +775,17 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	s.Debugf("Enabled JetStream for account %q", a.Name)
 	s.Debugf("  Max Memory:      %s", friendlyBytes(limits.MaxMemory))
 	s.Debugf("  Max Storage:     %s", friendlyBytes(limits.MaxStore))
+
+	// Check if we have a Domain specified.
+	// If so add in a subject mapping that will allow local connected clients to reach us here as well.
+	opts := s.getOpts()
+	if opts.JetStreamDomain != _EMPTY_ {
+		s.Debugf("  Enable Domain:   %s", opts.JetStreamDomain)
+		src := fmt.Sprintf(jsDomainAPI, opts.JetStreamDomain)
+		if err := a.AddMapping(src, jsAllAPI); err != nil {
+			s.Debugf("Error adding JetStream domain mapping: %v", err)
+		}
+	}
 
 	sdir := path.Join(jsa.storeDir, streamsDir)
 	if _, err := os.Stat(sdir); os.IsNotExist(err) {

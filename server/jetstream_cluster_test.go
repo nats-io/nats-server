@@ -5603,13 +5603,13 @@ func TestJetStreamClusterSuperClusterAndLeafNodesWithSharedSystemAccount(t *test
 		if ln.leaf.remote.RemoteLeafOpts.LocalAccount == gacc {
 			// Make sure we have the $JS.API denied in both.
 			for _, dsubj := range ln.leaf.remote.RemoteLeafOpts.DenyExports {
-				if dsubj == jsAllApi {
+				if dsubj == jsAllAPI {
 					hasDE = true
 					break
 				}
 			}
 			for _, dsubj := range ln.leaf.remote.RemoteLeafOpts.DenyImports {
-				if dsubj == jsAllApi {
+				if dsubj == jsAllAPI {
 					hasDI = true
 					break
 				}
@@ -5733,7 +5733,7 @@ func TestJetStreamClusterSingleLeafNodeWithoutSharedSystemAccount(t *testing.T) 
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	if si.Cluster == nil || si.Cluster.Name != "HUB" {
-		t.Fatalf("Expected stream to be placed in the \"HUB\"")
+		t.Fatalf("Expected stream to be placed in %q", "HUB")
 	}
 	// Do some other API calls.
 	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C1", AckPolicy: nats.AckExplicitPolicy})
@@ -5811,7 +5811,7 @@ func TestJetStreamClusterSingleLeafNodeWithoutSharedSystemAccount(t *testing.T) 
 	// TODO(dlc) - Should we have a mapping section for leafnode solicit?
 	c.addSubjectMapping("ONE", "$JS.HUB.API.>", "$JS.API.>")
 
-	// How it should work.
+	// Now it should work.
 	if _, err := js.AccountInfo(); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -5826,7 +5826,7 @@ func TestJetStreamClusterSingleLeafNodeWithoutSharedSystemAccount(t *testing.T) 
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	if si.Cluster == nil || si.Cluster.Name != "HUB" {
-		t.Fatalf("Expected stream to be placed in the \"HUB\"")
+		t.Fatalf("Expected stream to be placed in %q", "HUB")
 	}
 
 	jsLocal, err := nc.JetStream()
@@ -5896,6 +5896,204 @@ func TestJetStreamClusterSingleLeafNodeWithoutSharedSystemAccount(t *testing.T) 
 		}
 		return nil
 	})
+}
+
+// JetStream Domains
+func TestJetStreamClusterDomains(t *testing.T) {
+	// This adds in domain config option to template.
+	// jetstream: {max_mem_store: 256MB, max_file_store: 2GB, domain: CORE, store_dir: "%s"}
+	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: CORE, store_dir:", 1)
+	c := createJetStreamCluster(t, tmpl, "CORE", _EMPTY_, 3, 12232, true)
+	defer c.shutdown()
+
+	// This leafnode is a single server with no domain but sharing the system account.
+	// This extends the CORE domain through this leafnode.
+	ln := c.createLeafNodeWithTemplate("LN-SYS", jsClusterTemplWithSingleLeafNode)
+	defer ln.Shutdown()
+
+	// This shows we have extended this system.
+	c.waitOnPeerCount(4)
+	if ml := c.leader(); ml == ln {
+		t.Fatalf("Detected a meta-leader in the leafnode: %s", ml)
+	}
+
+	// Now create another LN but with a domain defined.
+	tmpl = strings.Replace(jsClusterTemplWithSingleLeafNode, "store_dir:", "domain: SPOKE, store_dir:", 1)
+	spoke := c.createLeafNodeWithTemplate("LN-SPOKE", tmpl)
+	defer spoke.Shutdown()
+
+	// Should be the same, should not extend the CORE domain.
+	c.waitOnPeerCount(4)
+
+	// The domain signals to the system that we are our own JetStream domain and should not extend CORE.
+	// We want to check to make sure we have all the deny properly setup.
+	spoke.mu.Lock()
+	//var hasDE, hasDI bool
+	for _, ln := range spoke.leafs {
+		ln.mu.Lock()
+		remote := ln.leaf.remote
+		ln.mu.Unlock()
+		remote.RLock()
+		if remote.RemoteLeafOpts.LocalAccount == "$SYS" {
+			if len(remote.RemoteLeafOpts.DenyExports) != 3 {
+				t.Fatalf("Expected to have deny exports, got %+v", remote.RemoteLeafOpts.DenyExports)
+			}
+			if len(remote.RemoteLeafOpts.DenyImports) != 3 {
+				t.Fatalf("Expected to have deny imports, got %+v", remote.RemoteLeafOpts.DenyImports)
+			}
+		}
+		remote.RUnlock()
+	}
+	spoke.mu.Unlock()
+
+	// Now do some operations.
+	// Check the enabled account only talks to its local JS domain by default.
+	nc, js := jsClientConnect(t, spoke)
+	defer nc.Close()
+
+	si, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.Cluster != nil {
+		t.Fatalf("Expected no cluster designation for stream since created on single LN server")
+	}
+
+	// Now try to talk to the CORE JS domain through a new context that uses a different mapped subject.
+	jsCore, err := nc.JetStream(nats.APIPrefix("$JS.CORE.API"))
+	if err != nil {
+		t.Fatalf("Unexpected error getting JetStream context: %v", err)
+	}
+	if _, err := jsCore.AccountInfo(); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Make sure we can add a stream, etc.
+	si, err = jsCore.AddStream(&nats.StreamConfig{
+		Name:     "TEST22",
+		Subjects: []string{"bar"},
+		Replicas: 2,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.Cluster == nil || si.Cluster.Name != "CORE" {
+		t.Fatalf("Expected stream to be placed in %q, got %q", "CORE", si.Cluster.Name)
+	}
+
+	jsLocal, err := nc.JetStream()
+	if err != nil {
+		t.Fatalf("Unexpected error getting JetStream context: %v", err)
+	}
+
+	// Create a mirror on our local leafnode for stream TEST22.
+	_, err = jsLocal.AddStream(&nats.StreamConfig{
+		Name: "M",
+		Mirror: &nats.StreamSource{
+			Name:     "TEST22",
+			External: &nats.ExternalStream{APIPrefix: "$JS.CORE.API"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Publish a message to the CORE's TEST22 stream.
+	if _, err := jsCore.Publish("bar", []byte("OK")); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+
+	// Make sure the message arrives in our mirror.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := jsLocal.StreamInfo("M")
+		if err != nil {
+			return fmt.Errorf("Could not get stream info: %v", err)
+		}
+		if si.State.Msgs != 1 {
+			return fmt.Errorf("Expected 1 msg, got state: %+v", si.State)
+		}
+		return nil
+	})
+
+	// jsCore is the CORE JetStream domain.
+	// Create a sourced stream in the CORE that is sourced from our mirror stream in our leafnode.
+	_, err = jsCore.AddStream(&nats.StreamConfig{
+		Name: "S",
+		Sources: []*nats.StreamSource{{
+			Name:     "M",
+			External: &nats.ExternalStream{APIPrefix: "$JS.SPOKE.API"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Make sure the message arrives in our sourced stream.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := jsCore.StreamInfo("S")
+		if err != nil {
+			return fmt.Errorf("Could not get stream info: %v", err)
+		}
+		if si.State.Msgs != 1 {
+			return fmt.Errorf("Expected 1 msg, got state: %+v", si.State)
+		}
+		return nil
+	})
+
+	// Now connect directly to the CORE cluster and make sure we can operate there.
+	nc, jsLocal = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Create the js contexts again.
+	jsSpoke, err := nc.JetStream(nats.APIPrefix("$JS.SPOKE.API"))
+	if err != nil {
+		t.Fatalf("Unexpected error getting JetStream context: %v", err)
+	}
+
+	// Publish a message to the CORE's TEST22 stream.
+	if _, err := jsLocal.Publish("bar", []byte("OK")); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+
+	// Make sure the message arrives in our mirror.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := jsSpoke.StreamInfo("M")
+		if err != nil {
+			return fmt.Errorf("Could not get stream info: %v", err)
+		}
+		if si.State.Msgs != 2 {
+			return fmt.Errorf("Expected 2 msgs, got state: %+v", si.State)
+		}
+		return nil
+	})
+
+	// Make sure the message arrives in our sourced stream.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := jsLocal.StreamInfo("S")
+		if err != nil {
+			return fmt.Errorf("Could not get stream info: %v", err)
+		}
+		if si.State.Msgs != 2 {
+			return fmt.Errorf("Expected 2 msgs, got state: %+v", si.State)
+		}
+		return nil
+	})
+
+	// We are connected to the CORE domain/system. Create a JetStream context referencing ourselves.
+	jsCore, err = nc.JetStream(nats.APIPrefix("$JS.CORE.API"))
+	if err != nil {
+		t.Fatalf("Unexpected error getting JetStream context: %v", err)
+	}
+
+	si, err = jsCore.StreamInfo("S")
+	if err != nil {
+		t.Fatalf("Could not get stream info: %v", err)
+	}
+	if si.State.Msgs != 2 {
+		t.Fatalf("Expected 2 msgs, got state: %+v", si.State)
+	}
 }
 
 func TestJetStreamClusterLeafDifferentAccounts(t *testing.T) {
@@ -6169,8 +6367,12 @@ func TestJetStreamClusterCreateConcurrentDurableConsumers(t *testing.T) {
 	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
-	// Create origin stream, muct be R > 1
+	// Create origin stream, must be R > 1
 	if _, err := js.AddStream(&nats.StreamConfig{Name: "ORDERS", Replicas: 3}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if _, err := js.QueueSubscribeSync("ORDERS", "wq", nats.Durable("shared")); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
@@ -6198,10 +6400,9 @@ func TestJetStreamClusterCreateConcurrentDurableConsumers(t *testing.T) {
 	close(start)
 	wg.Wait()
 
-	if lc := atomic.LoadUint32(&created); lc != 1 {
-		t.Fatalf("Expected only 1 to be created, got %d", lc)
+	if lc := atomic.LoadUint32(&created); lc != 10 {
+		t.Fatalf("Expected all 10 to be created, got %d", lc)
 	}
-
 	if len(errs) > 0 {
 		t.Fatalf("Failed to create some sub: %v", <-errs)
 	}
@@ -6757,8 +6958,12 @@ func (c *cluster) createLeafNodesWithStartPort(clusterName string, numServers in
 }
 
 func (c *cluster) createLeafNode() *Server {
-	tmpl := c.createLeafSolicit(jsClusterTemplWithSingleLeafNode)
-	conf := fmt.Sprintf(tmpl, "LNS", createDir(c.t, JetStreamStoreDir))
+	return c.createLeafNodeWithTemplate("LNS", jsClusterTemplWithSingleLeafNode)
+}
+
+func (c *cluster) createLeafNodeWithTemplate(name, template string) *Server {
+	tmpl := c.createLeafSolicit(template)
+	conf := fmt.Sprintf(tmpl, name, createDir(c.t, JetStreamStoreDir))
 	s, o := RunServerWithConfig(createConfFile(c.t, []byte(conf)))
 	c.servers = append(c.servers, s)
 	c.opts = append(c.opts, o)
@@ -6770,6 +6975,9 @@ func (c *cluster) createLeafSolicit(tmpl string) string {
 	// Create our leafnode cluster template first.
 	var lns, lnss []string
 	for _, s := range c.servers {
+		if s.ClusterName() != c.name {
+			continue
+		}
 		ln := s.getOpts().LeafNode
 		lns = append(lns, fmt.Sprintf("nats://%s:%d", ln.Host, ln.Port))
 		lnss = append(lnss, fmt.Sprintf("nats://admin:s3cr3t!@%s:%d", ln.Host, ln.Port))
