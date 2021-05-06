@@ -347,11 +347,8 @@ func TestLeafNodeAccountNotFound(t *testing.T) {
 
 	u, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", ob.LeafNode.Port))
 
-	logFileName := createConfFile(t, []byte(""))
-	defer removeFile(t, logFileName)
-
 	oa := DefaultOptions()
-	oa.LeafNode.ReconnectInterval = 15 * time.Millisecond
+	oa.LeafNode.ReconnectInterval = 10 * time.Millisecond
 	oa.LeafNode.Remotes = []*RemoteLeafOpts{
 		{
 			LocalAccount: "foo",
@@ -391,11 +388,12 @@ func TestLeafNodeAccountNotFound(t *testing.T) {
 
 	// For now, sa would try to recreate the connection for ever.
 	// Check that lid is increasing...
-	time.Sleep(100 * time.Millisecond)
-	lid := atomic.LoadUint64(&sa.gcid)
-	if lid < 4 {
-		t.Fatalf("Seems like connection was not retried")
-	}
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if lid := atomic.LoadUint64(&sa.gcid); lid < 3 {
+			return fmt.Errorf("Seems like connection was not retried, lid currently only at %d", lid)
+		}
+		return nil
+	})
 }
 
 // This test ensures that we can connect using proper user/password
