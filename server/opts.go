@@ -268,6 +268,10 @@ type Options struct {
 	// and used as a filter criteria for some system requests
 	Tags jwt.TagList `json:"-"`
 
+	// OCSPConfig enables OCSP Stapling in the server.
+	OCSPConfig    *OCSPConfig
+	tlsConfigOpts *TLSConfigOpts
+
 	// private fields, used to know if bool options are explicitly
 	// defined in config and/or command line params.
 	inConfig  map[string]bool
@@ -483,6 +487,15 @@ type TLSConfigOpts struct {
 	Ciphers           []uint16
 	CurvePreferences  []tls.CurveID
 	PinnedCerts       PinnedCertSet
+}
+
+// OCSPConfig represents the options of OCSP stapling options.
+type OCSPConfig struct {
+	// Mode defines the policy for OCSP stapling.
+	Mode OCSPMode
+
+	// OverrideURLs is the http URL endpoint used to get OCSP staples.
+	OverrideURLs []string
 }
 
 var tlsUsage = `
@@ -841,6 +854,21 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		o.TLSTimeout = tc.Timeout
 		o.TLSMap = tc.Map
 		o.TLSPinnedCerts = tc.PinnedCerts
+
+		// Need to keep track of path of the original TLS config
+		// and certs path for OCSP Stapling monitoring.
+		o.tlsConfigOpts = tc
+	case "ocsp":
+		switch v.(type) {
+		case bool:
+			// Default is Auto which honors Must Staple status request
+			// but does not shutdown the server in case it is revoked,
+			// letting the client choose whether to trust or not the server.
+			o.OCSPConfig = &OCSPConfig{Mode: OCSPModeAuto}
+		default:
+			*errors = append(*errors, &configErr{tk, fmt.Sprintf("error parsing ocsp config: unsupported type %T", v)})
+			return
+		}
 	case "allow_non_tls":
 		o.AllowNonTLS = v.(bool)
 	case "write_deadline":
