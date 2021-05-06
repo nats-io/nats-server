@@ -5789,7 +5789,7 @@ func TestJetStreamClusterSingleLeafNodeWithoutSharedSystemAccount(t *testing.T) 
 
 	// Wait for a bit and make sure we only get one of these.
 	// The HUB domain should be cut off by default.
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(250 * time.Millisecond)
 	checkSubsPending(t, sub, 1)
 	// Drain.
 	for _, err := sub.NextMsg(0); err == nil; _, err = sub.NextMsg(0) {

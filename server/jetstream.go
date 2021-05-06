@@ -780,7 +780,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	// If so add in a subject mapping that will allow local connected clients to reach us here as well.
 	opts := s.getOpts()
 	if opts.JetStreamDomain != _EMPTY_ {
-		s.Debugf("  Enable Domain:   %s", opts.JetStreamDomain)
+		s.Noticef("  Enable Domain:   %s", opts.JetStreamDomain)
 		src := fmt.Sprintf(jsDomainAPI, opts.JetStreamDomain)
 		if err := a.AddMapping(src, jsAllAPI); err != nil {
 			s.Debugf("Error adding JetStream domain mapping: %v", err)
