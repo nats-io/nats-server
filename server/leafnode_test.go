@@ -2496,6 +2496,9 @@ func TestLeafNodeOperatorBadCfg(t *testing.T) {
 				s.Shutdown()
 				t.Fatal("Expected an error")
 			}
+			// Since the server cannot be stopped, since it did not start,
+			// let's manually close the account resolver to avoid leaking go routines.
+			opts.AccountResolver.Close()
 			if err.Error() != errorText {
 				t.Fatalf("Expected error %s but got %s", errorText, err)
 			}

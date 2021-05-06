@@ -5755,6 +5755,9 @@ func TestJWTNoSystemAccountButNatsResolver(t *testing.T) {
 			defer removeFile(t, conf)
 			opts := LoadConfig(conf)
 			s, err := NewServer(opts)
+			// Since the server cannot be stopped, since it did not start,
+			// let's manually close the account resolver to avoid leaking go routines.
+			opts.AccountResolver.Close()
 			s.Shutdown()
 			require_Error(t, err)
 			require_Contains(t, err.Error(), "the system account needs to be specified in configuration or the operator jwt")
