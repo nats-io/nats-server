@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 )
@@ -532,6 +531,10 @@ func (js *js) AddStream(cfg *StreamConfig, opts ...JSOpt) (*StreamInfo, error) {
 		return nil, ErrStreamNameRequired
 	}
 
+	if strings.Contains(cfg.Name, ".") {
+		return nil, ErrInvalidStreamName
+	}
+
 	req, err := json.Marshal(cfg)
 	if err != nil {
 		return nil, err
@@ -555,6 +558,10 @@ func (js *js) AddStream(cfg *StreamConfig, opts ...JSOpt) (*StreamInfo, error) {
 type streamInfoResponse = streamCreateResponse
 
 func (js *js) StreamInfo(stream string, opts ...JSOpt) (*StreamInfo, error) {
+	if strings.Contains(stream, ".") {
+		return nil, ErrInvalidStreamName
+	}
+
 	o, cancel, err := getJSContextOpts(js.opts, opts...)
 	if err != nil {
 		return nil, err
@@ -701,7 +708,7 @@ type apiMsgGetRequest struct {
 type RawStreamMsg struct {
 	Subject  string
 	Sequence uint64
-	Header   http.Header
+	Header   Header
 	Data     []byte
 	Time     time.Time
 }
@@ -757,7 +764,7 @@ func (js *js) GetMsg(name string, seq uint64, opts ...JSOpt) (*RawStreamMsg, err
 
 	msg := resp.Message
 
-	var hdr http.Header
+	var hdr Header
 	if msg.Header != nil {
 		hdr, err = decodeHeadersMsg(msg.Header)
 		if err != nil {
