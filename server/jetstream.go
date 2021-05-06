@@ -154,8 +154,10 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 			config.Domain = domain
 		}
 		s.Debugf("JetStream creating dynamic configuration - %s memory, %s disk", friendlyBytes(config.MaxMemory), friendlyBytes(config.MaxStore))
+	} else if config != nil && config.StoreDir != _EMPTY_ {
+		config.StoreDir = filepath.Join(config.StoreDir, JetStreamStoreDir)
 	}
-	// Copy, don't change callers version.
+
 	cfg := *config
 	if cfg.StoreDir == _EMPTY_ {
 		cfg.StoreDir = filepath.Join(os.TempDir(), JetStreamStoreDir)
