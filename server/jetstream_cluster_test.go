@@ -5254,7 +5254,7 @@ func TestJetStreamClusterMultiRestartBug(t *testing.T) {
 
 	c.waitOnStreamCurrent(s, "$G", "TEST")
 
-	snaps, err := ioutil.ReadDir(path.Join(opts.StoreDir, "$SYS", "_js_", "_meta_", "snapshots"))
+	snaps, err := ioutil.ReadDir(path.Join(opts.StoreDir, JetStreamStoreDir, "$SYS", "_js_", "_meta_", "snapshots"))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
