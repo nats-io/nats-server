@@ -149,6 +149,7 @@ func TestTLSConfigFile(t *testing.T) {
 		t.Fatal("Expected opts.TLSConfig to be non-nil")
 	}
 	opts.TLSConfig = nil
+	opts.tlsConfigOpts = nil
 	checkOptionsEqual(t, golden, opts)
 
 	// Now check TLSConfig a bit more closely

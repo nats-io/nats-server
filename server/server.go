@@ -236,6 +236,9 @@ type Server struct {
 	// MQTT structure
 	mqtt srvMQTT
 
+	// OCSP monitoring
+	ocsps []*OCSPMonitor
+
 	// exporting account name the importer experienced issues with
 	incompleteAccExporterMap sync.Map
 
@@ -1467,6 +1470,29 @@ func (s *Server) fetchAccount(name string) (*Account, error) {
 	return acc, nil
 }
 
+func (s *Server) enableOCSP() error {
+	opts := s.getOpts()
+
+	// Start OCSP Stapling for client connections.
+	if config := opts.TLSConfig; config != nil {
+		tc, mon, err := s.NewOCSPMonitor(config)
+		if err != nil {
+			return err
+		}
+		// Check if an OCSP stapling monitor is required for this certificate.
+		if mon != nil {
+			s.ocsps = append(s.ocsps, mon)
+			// Override the TLS config with one that follows OCSP.
+			opts.TLSConfig = tc
+			s.startGoRoutine(func() { mon.run() })
+		}
+		s.Noticef("OCSP Stapling enabled for client connections")
+	}
+	// FIXME: Add support for leafnodes, routes, MQTT, WebSocket
+
+	return nil
+}
+
 // Start up the server, this will block.
 // Start via a Go routine if needed.
 func (s *Server) Start() {
@@ -1617,6 +1643,13 @@ func (s *Server) Start() {
 			}
 			return true
 		})
+	}
+
+	// Setup OCSP Stapling. This will abort server from starting if there
+	// are no valid staples and OCSP policy is to Always or MustStaple.
+	if err := s.enableOCSP(); err != nil {
+		s.Fatalf("Can't enable OCSP Stapling: %v", err)
+		return
 	}
 
 	// Start monitoring if needed
