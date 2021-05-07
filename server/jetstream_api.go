@@ -2638,7 +2638,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 	s.Noticef("Starting restore for stream '%s > %s'", acc.Name, streamName)
 
 	start := time.Now().UTC()
-
+	domain := s.getOpts().JetStreamDomain
 	s.publishAdvisory(acc, JSAdvisoryStreamRestoreCreatePre+"."+streamName, &JSRestoreCreateAdvisory{
 		TypedEvent: TypedEvent{
 			Type: JSRestoreCreateAdvisoryType,
@@ -2647,6 +2647,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 		},
 		Stream: streamName,
 		Client: ci,
+		Domain: domain,
 	})
 
 	// Create our internal subscription to accept the snapshot.
@@ -2718,7 +2719,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 
 	sub, err := acc.subscribeInternal(restoreSubj, processChunk)
 	if err != nil {
-		resp.Error = &ApiError{Code: 500, Description: "JetStream unable to subscribe to restore snapshot"}
+		resp.Error = &ApiError{Code: 500, Description: "JetStream unable to subscribe to restore snapshot " + restoreSubj + ": " + err.Error()}
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return nil
 	}
@@ -2751,7 +2752,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 
 				// If we staged properly go ahead and do restore now.
 				if err == nil {
-					s.Debugf("Finalizing restore for  stream '%s > %s'", acc.Name, streamName)
+					s.Debugf("Finalizing restore for stream '%s > %s'", acc.Name, streamName)
 					tfile.Seek(0, 0)
 					mset, err = acc.RestoreStream(cfg, tfile)
 				} else {
@@ -2775,6 +2776,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 					End:    end,
 					Bytes:  int64(total),
 					Client: ci,
+					Domain: domain,
 				})
 
 				var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
@@ -2900,6 +2902,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 			Stream: mset.name(),
 			State:  sr.State,
 			Client: ci,
+			Domain: s.getOpts().JetStreamDomain,
 		})
 
 		// Now do the real streaming.
@@ -2917,6 +2920,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 			Start:  start,
 			End:    end,
 			Client: ci,
+			Domain: s.getOpts().JetStreamDomain,
 		})
 
 		s.Noticef("Completed snapshot of %s for stream '%s > %s' in %v",
@@ -3547,5 +3551,6 @@ func (s *Server) sendJetStreamAPIAuditAdvisory(ci *ClientInfo, acc *Account, sub
 		Subject:  subject,
 		Request:  request,
 		Response: response,
+		Domain:   s.getOpts().JetStreamDomain,
 	})
 }

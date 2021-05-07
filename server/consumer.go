@@ -835,6 +835,7 @@ func (o *consumer) sendDeleteAdvisoryLocked() {
 		Stream:   o.stream,
 		Consumer: o.name,
 		Action:   DeleteEvent,
+		Domain:   o.srv.getOpts().JetStreamDomain,
 	}
 
 	j, err := json.Marshal(e)
@@ -859,6 +860,7 @@ func (o *consumer) sendCreateAdvisory() {
 		Stream:   o.stream,
 		Consumer: o.name,
 		Action:   CreateEvent,
+		Domain:   o.srv.getOpts().JetStreamDomain,
 	}
 
 	j, err := json.Marshal(e)
@@ -1303,6 +1305,7 @@ func (o *consumer) processTerm(sseq, dseq, dc uint64) {
 		ConsumerSeq: dseq,
 		StreamSeq:   sseq,
 		Deliveries:  dc,
+		Domain:      o.srv.getOpts().JetStreamDomain,
 	}
 
 	j, err := json.Marshal(e)
@@ -1489,6 +1492,7 @@ func (o *consumer) sampleAck(sseq, dseq, dc uint64) {
 		StreamSeq:   sseq,
 		Delay:       unow - o.pending[sseq].Timestamp,
 		Deliveries:  dc,
+		Domain:      o.srv.getOpts().JetStreamDomain,
 	}
 
 	j, err := json.Marshal(e)
@@ -1867,6 +1871,7 @@ func (o *consumer) notifyDeliveryExceeded(sseq, dc uint64) {
 		Consumer:   o.name,
 		StreamSeq:  sseq,
 		Deliveries: dc,
+		Domain:     o.srv.getOpts().JetStreamDomain,
 	}
 
 	j, err := json.Marshal(e)
