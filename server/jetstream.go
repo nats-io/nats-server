@@ -1911,7 +1911,7 @@ func isValidName(name string) bool {
 	if name == "" {
 		return false
 	}
-	return !strings.ContainsAny(name, ".*>")
+	return !strings.ContainsAny(name, " \t\r\n\f.*>")
 }
 
 // CanonicalName will replace all token separators '.' with '_'.
