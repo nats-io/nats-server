@@ -11225,6 +11225,7 @@ func TestJetStreamServerDomainBadConfig(t *testing.T) {
 	shouldFail("CORE.")
 	shouldFail(".CORE")
 	shouldFail("C.*.O. RE")
+	shouldFail("C.ORE")
 }
 
 func TestJetStreamServerDomainConfig(t *testing.T) {

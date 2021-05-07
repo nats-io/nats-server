@@ -64,6 +64,7 @@ type JetStreamAccountStats struct {
 	Store     uint64                 `json:"storage"`
 	Streams   int                    `json:"streams"`
 	Consumers int                    `json:"consumers"`
+	Domain    string                 `json:"domain,omitempty"`
 	API       JetStreamAPIStats      `json:"api"`
 	Limits    JetStreamAccountLimits `json:"limits"`
 }
@@ -207,11 +208,14 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	s.Noticef("  Max Memory:      %s", friendlyBytes(cfg.MaxMemory))
 	s.Noticef("  Max Storage:     %s", friendlyBytes(cfg.MaxStore))
 	s.Noticef("  Store Directory: \"%s\"", cfg.StoreDir)
+	if cfg.Domain != _EMPTY_ {
+		s.Noticef("  Domain:          %s", cfg.Domain)
+	}
 	s.Noticef("-------------------------------------------")
 
 	// Setup our internal subscriptions.
 	if err := s.setJetStreamExportSubs(); err != nil {
-		return fmt.Errorf("Error setting up internal jetstream subscriptions: %v", err)
+		return fmt.Errorf("setting up internal jetstream subscriptions failed: %v", err)
 	}
 
 	// Setup our internal system exports.
@@ -244,7 +248,7 @@ func (s *Server) wantsToExtendOtherDomain() bool {
 		return false
 	}
 	sysAcc := s.SystemAccount().GetName()
-	for _, r := range s.getOpts().LeafNode.Remotes {
+	for _, r := range opts.LeafNode.Remotes {
 		if r.LocalAccount == sysAcc {
 			for _, denySub := range r.DenyImports {
 				if subjectIsSubsetMatch(denySub, raftAllSubj) {
@@ -782,7 +786,6 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	// If so add in a subject mapping that will allow local connected clients to reach us here as well.
 	opts := s.getOpts()
 	if opts.JetStreamDomain != _EMPTY_ {
-		s.Noticef("  Enable Domain:   %s", opts.JetStreamDomain)
 		src := fmt.Sprintf(jsDomainAPI, opts.JetStreamDomain)
 		if err := a.AddMapping(src, jsAllAPI); err != nil {
 			s.Debugf("Error adding JetStream domain mapping: %v", err)
@@ -1100,6 +1103,7 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 		jsa.mu.RLock()
 		stats.Memory = uint64(jsa.memTotal)
 		stats.Store = uint64(jsa.storeTotal)
+		stats.Domain = js.config.Domain
 		stats.API = JetStreamAPIStats{
 			Total:  jsa.apiTotal,
 			Errors: jsa.apiErrors,
@@ -1944,6 +1948,10 @@ func validateJetStreamOptions(o *Options) error {
 	if o.JetStreamDomain != _EMPTY_ {
 		if subj := fmt.Sprintf(jsDomainAPI, o.JetStreamDomain); !IsValidSubject(subj) {
 			return fmt.Errorf("invalid domain name: derived %q is not a valid subject", subj)
+		}
+
+		if !isValidName(o.JetStreamDomain) {
+			return fmt.Errorf("invalid domain name: may not contain ., * or >")
 		}
 	}
 	// If not clustered no checks needed past here.
