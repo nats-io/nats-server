@@ -1821,14 +1821,14 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 			case "hub":
 				remote.Hub = v.(bool)
 			case "deny_imports", "deny_import":
-				subjects, err := parseSubjects(tk, errors, warnings)
+				subjects, err := parsePermSubjects(tk, errors, warnings)
 				if err != nil {
 					*errors = append(*errors, err)
 					continue
 				}
 				remote.DenyImports = subjects
 			case "deny_exports", "deny_export":
-				subjects, err := parseSubjects(tk, errors, warnings)
+				subjects, err := parsePermSubjects(tk, errors, warnings)
 				if err != nil {
 					*errors = append(*errors, err)
 					continue
@@ -3161,7 +3161,7 @@ func parseVariablePermissions(v interface{}, errors, warnings *[]error) (*Subjec
 }
 
 // Helper function to parse subject singletons and/or arrays
-func parseSubjects(v interface{}, errors, warnings *[]error) ([]string, error) {
+func parsePermSubjects(v interface{}, errors, warnings *[]error) ([]string, error) {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
@@ -3186,7 +3186,7 @@ func parseSubjects(v interface{}, errors, warnings *[]error) ([]string, error) {
 	default:
 		return nil, &configErr{tk, fmt.Sprintf("Expected subject permissions to be a subject, or array of subjects, got %T", v)}
 	}
-	if err := checkSubjectArray(subjects); err != nil {
+	if err := checkPermSubjectArray(subjects); err != nil {
 		return nil, &configErr{tk, err.Error()}
 	}
 	return subjects, nil
@@ -3252,7 +3252,7 @@ func parseAllowResponses(v interface{}, errors, warnings *[]error) *ResponsePerm
 
 // Helper function to parse old style authorization configs.
 func parseOldPermissionStyle(v interface{}, errors, warnings *[]error) (*SubjectPermission, error) {
-	subjects, err := parseSubjects(v, errors, warnings)
+	subjects, err := parsePermSubjects(v, errors, warnings)
 	if err != nil {
 		return nil, err
 	}
@@ -3273,14 +3273,14 @@ func parseSubjectPermission(v interface{}, errors, warnings *[]error) (*SubjectP
 		tk, _ := unwrapValue(v, &lt)
 		switch strings.ToLower(k) {
 		case "allow":
-			subjects, err := parseSubjects(tk, errors, warnings)
+			subjects, err := parsePermSubjects(tk, errors, warnings)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
 			}
 			p.Allow = subjects
 		case "deny":
-			subjects, err := parseSubjects(tk, errors, warnings)
+			subjects, err := parsePermSubjects(tk, errors, warnings)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
@@ -3296,11 +3296,17 @@ func parseSubjectPermission(v interface{}, errors, warnings *[]error) (*SubjectP
 	return p, nil
 }
 
-// Helper function to validate subjects, etc for account permissioning.
-func checkSubjectArray(sa []string) error {
+// Helper function to validate permissions subjects.
+func checkPermSubjectArray(sa []string) error {
 	for _, s := range sa {
 		if !IsValidSubject(s) {
-			return fmt.Errorf("subject %q is not a valid subject", s)
+			// Check here if this is a queue group qualified subject.
+			elements := strings.Fields(s)
+			if len(elements) != 2 {
+				return fmt.Errorf("subject %q is not a valid subject", s)
+			} else if !IsValidSubject(elements[0]) {
+				return fmt.Errorf("subject %q is not a valid subject", elements[0])
+			}
 		}
 	}
 	return nil
