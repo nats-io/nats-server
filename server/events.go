@@ -1077,6 +1077,7 @@ type EventFilterOptions struct {
 	Cluster string   `json:"cluster,omitempty"`     // filter by cluster name
 	Host    string   `json:"host,omitempty"`        // filter by host name
 	Tags    []string `json:"tags,omitempty"`        // filter by tags (must match all tags)
+	Domain  string   `json:"domain,omitempty"`      // filter by JS domain
 }
 
 // StatszEventOptions are options passed to Statsz
@@ -1142,13 +1143,13 @@ type JszEventOptions struct {
 // returns true if the request does NOT apply to this server and can be ignored.
 // DO NOT hold the server lock when
 func (s *Server) filterRequest(fOpts *EventFilterOptions) bool {
-	if fOpts.Name != "" && !strings.Contains(s.info.Name, fOpts.Name) {
+	if fOpts.Name != _EMPTY_ && !strings.Contains(s.info.Name, fOpts.Name) {
 		return true
 	}
-	if fOpts.Host != "" && !strings.Contains(s.info.Host, fOpts.Host) {
+	if fOpts.Host != _EMPTY_ && !strings.Contains(s.info.Host, fOpts.Host) {
 		return true
 	}
-	if fOpts.Cluster != "" {
+	if fOpts.Cluster != _EMPTY_ {
 		s.mu.Lock()
 		cluster := s.info.Cluster
 		s.mu.Unlock()
@@ -1163,6 +1164,9 @@ func (s *Server) filterRequest(fOpts *EventFilterOptions) bool {
 				return true
 			}
 		}
+	}
+	if fOpts.Domain != _EMPTY_ && s.getOpts().JetStreamDomain != fOpts.Domain {
+		return true
 	}
 	return false
 }
