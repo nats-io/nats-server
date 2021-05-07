@@ -1387,7 +1387,7 @@ func (mset *stream) setupMirrorConsumer() error {
 	var deliverSubject string
 	ext := mset.cfg.Mirror.External
 
-	if ext != nil {
+	if ext != nil && ext.DeliverPrefix != _EMPTY_ {
 		deliverSubject = strings.ReplaceAll(ext.DeliverPrefix+syncSubject(".M"), "..", ".")
 	} else {
 		deliverSubject = syncSubject("$JS.M")
@@ -1594,7 +1594,7 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 	var deliverSubject string
 	ext := ssi.External
 
-	if ext != nil {
+	if ext != nil && ext.DeliverPrefix != _EMPTY_ {
 		deliverSubject = strings.ReplaceAll(ext.DeliverPrefix+syncSubject(".S"), "..", ".")
 	} else {
 		deliverSubject = syncSubject("$JS.S")

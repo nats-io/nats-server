@@ -1304,7 +1304,7 @@ func (s *Server) lookupAccount(name string) (*Account, error) {
 	}
 	// If we have a resolver see if it can fetch the account.
 	if s.AccountResolver() == nil {
-		return nil, ErrNoAccountResolver
+		return nil, ErrMissingAccount
 	}
 	return s.fetchAccount(name)
 }
@@ -1582,6 +1582,7 @@ func (s *Server) Start() {
 			StoreDir:  opts.StoreDir,
 			MaxMemory: opts.JetStreamMaxMemory,
 			MaxStore:  opts.JetStreamMaxStore,
+			Domain:    opts.JetStreamDomain,
 		}
 		if err := s.EnableJetStream(cfg); err != nil {
 			s.Fatalf("Can't start JetStream: %v", err)

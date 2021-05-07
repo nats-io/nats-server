@@ -204,7 +204,7 @@ func (c *cluster) randomServer() *Server {
 	rand.Shuffle(len(cs), func(i, j int) { cs[i], cs[j] = cs[j], cs[i] })
 
 	for _, s := range cs {
-		if s.Running() {
+		if s.Running() && s.ClusterName() == c.name {
 			return s
 		}
 	}

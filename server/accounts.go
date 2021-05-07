@@ -574,7 +574,7 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 		if err != nil {
 			return err
 		}
-		if d.Cluster == "" {
+		if d.Cluster == _EMPTY_ {
 			m.dests = append(m.dests, &destination{tr, d.Weight})
 		} else {
 			// We have a cluster scoped filter.
@@ -644,6 +644,12 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 	// If we did not replace add to the end.
 	a.mappings = append(a.mappings, m)
 
+	// If we have connected leafnodes make sure to update.
+	if len(a.lleafs) > 0 {
+		for _, lc := range a.lleafs {
+			lc.forceAddToSmap(src)
+		}
+	}
 	return nil
 }
 

@@ -33,7 +33,10 @@ import (
 // Request API subjects for JetStream.
 const (
 	// All API endpoints.
-	jsAllApi = "$JS.API.>"
+	jsAllAPI = "$JS.API.>"
+
+	// For constructing JetStream domain prefixes.
+	jsDomainAPI = "$JS.%s.API.>"
 
 	// JSApiPrefix
 	JSApiPrefix = "$JS.API"
@@ -706,11 +709,11 @@ func (s *Server) setJetStreamExportSubs() error {
 	}
 
 	// This is the catch all now for all JetStream API calls.
-	if _, err := s.sysSubscribe(jsAllApi, js.apiDispatch); err != nil {
+	if _, err := s.sysSubscribe(jsAllAPI, js.apiDispatch); err != nil {
 		return err
 	}
 
-	if err := s.SystemAccount().AddServiceExport(jsAllApi, nil); err != nil {
+	if err := s.SystemAccount().AddServiceExport(jsAllAPI, nil); err != nil {
 		s.Warnf("Error setting up jetstream service exports: %v", err)
 		return err
 	}
@@ -855,6 +858,15 @@ func (a *Account) trackAPIErr() {
 
 const badAPIRequestT = "Malformed JetStream API Request: %q"
 
+// Helper function to check on JetStream being enabled but also on status of leafnodes
+// If the local account is not enabled but does have leafnode connectivity we will not
+// want to error immediately and let the other side decide.
+func (a *Account) checkJetStream() (enabled, shouldError bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.js != nil, a.nleafs == 0
+}
+
 // Request for current usage and limits for this account.
 func (s *Server) jsAccountInfoRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
 	if c == nil || !s.JetStreamEnabled() {
@@ -885,7 +897,10 @@ func (s *Server) jsAccountInfoRequest(sub *subscription, c *client, subject, rep
 		}
 	}
 
-	if !acc.JetStreamEnabled() {
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if !doErr {
+			return
+		}
 		resp.Error = jsNotEnabledErr
 	} else {
 		stats := acc.JetStreamUsage()
@@ -1157,9 +1172,11 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 		}
 	}
 
-	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 	var cfg StreamConfig
@@ -1335,9 +1352,11 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 		}
 	}
 
-	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 	var ncfg StreamConfig
@@ -1415,9 +1434,11 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, rep
 		}
 	}
 
-	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 
@@ -1540,9 +1561,11 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 		}
 	}
 
-	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 
@@ -1624,9 +1647,11 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 
 		if isLeader && sa == nil {
 			// We can't find the stream, so mimic what would be the errors below.
-			if !acc.JetStreamEnabled() {
-				resp.Error = jsNotEnabledErr
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			if hasJS, doErr := acc.checkJetStream(); !hasJS {
+				if doErr {
+					resp.Error = jsNotEnabledErr
+					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				}
 				return
 			}
 			// No stream present.
@@ -1656,9 +1681,11 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 		}
 	}
 
-	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 
@@ -1749,9 +1776,11 @@ func (s *Server) jsStreamLeaderStepDownRequest(sub *subscription, c *client, sub
 		return
 	}
 
-	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 	if !isEmptyRequest(msg) {
@@ -1856,9 +1885,11 @@ func (s *Server) jsConsumerLeaderStepDownRequest(sub *subscription, c *client, s
 		return
 	}
 
-	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 	if !isEmptyRequest(msg) {
@@ -1930,9 +1961,11 @@ func (s *Server) jsStreamRemovePeerRequest(sub *subscription, c *client, subject
 		return
 	}
 
-	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 	if isEmptyRequest(msg) {
@@ -2178,11 +2211,14 @@ func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, re
 		}
 	}
 
-	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
+
 	if !isEmptyRequest(msg) {
 		resp.Error = jsNotEmptyRequestErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -2247,9 +2283,11 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 
 		if isLeader && sa == nil {
 			// We can't find the stream, so mimic what would be the errors below.
-			if !acc.JetStreamEnabled() {
-				resp.Error = jsNotEnabledErr
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			if hasJS, doErr := acc.checkJetStream(); !hasJS {
+				if doErr {
+					resp.Error = jsNotEnabledErr
+					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				}
 				return
 			}
 			// No stream present.
@@ -2273,9 +2311,11 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 		}
 	}
 
-	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 	if isEmptyRequest(msg) {
@@ -2352,9 +2392,11 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 
 		if isLeader && sa == nil {
 			// We can't find the stream, so mimic what would be the errors below.
-			if !acc.JetStreamEnabled() {
-				resp.Error = jsNotEnabledErr
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			if hasJS, doErr := acc.checkJetStream(); !hasJS {
+				if doErr {
+					resp.Error = jsNotEnabledErr
+					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				}
 				return
 			}
 			// No stream present.
@@ -2378,9 +2420,11 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 		}
 	}
 
-	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 	if isEmptyRequest(msg) {
@@ -2447,9 +2491,11 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 
 		if isLeader && sa == nil {
 			// We can't find the stream, so mimic what would be the errors below.
-			if !acc.JetStreamEnabled() {
-				resp.Error = jsNotEnabledErr
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			if hasJS, doErr := acc.checkJetStream(); !hasJS {
+				if doErr {
+					resp.Error = jsNotEnabledErr
+					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				}
 				return
 			}
 			// No stream present.
@@ -2481,11 +2527,14 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 		}
 	}
 
-	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
+
 	if !isEmptyRequest(msg) {
 		resp.Error = jsNotEmptyRequestErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -2557,6 +2606,14 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 	if _, err := acc.lookupStream(stream); err == nil {
 		resp.Error = jsError(ErrJetStreamStreamAlreadyUsed)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 
@@ -2789,6 +2846,14 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 		return
 	}
 
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
+		}
+		return
+	}
+
 	var req JSApiStreamSnapshotRequest
 	if err := json.Unmarshal(msg, &req); err != nil {
 		resp.Error = jsInvalidJSONErr
@@ -3007,9 +3072,11 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 		}
 	}
 
-	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 	if streamName != req.Stream {
@@ -3104,9 +3171,11 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 		}
 	}
 
-	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 
@@ -3223,9 +3292,11 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 		}
 	}
 
-	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 
@@ -3314,9 +3385,11 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 
 		if isLeader && ca == nil {
 			// We can't find the consumer, so mimic what would be the errors below.
-			if !acc.JetStreamEnabled() {
-				resp.Error = jsNotEnabledErr
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			if hasJS, doErr := acc.checkJetStream(); !hasJS {
+				if doErr {
+					resp.Error = jsNotEnabledErr
+					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				}
 				return
 			}
 			if sa == nil {
@@ -3354,7 +3427,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 				// Check here if we are a member and this is just a new consumer that does not have a leader yet.
 				if rg.node.GroupLeader() == _EMPTY_ && !rg.node.HadPreviousLeader() {
 					resp.Error = jsNoConsumerErr
-					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+					s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil)
 				}
 			}
 			return
@@ -3419,9 +3492,11 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, 
 		}
 	}
 
-	if !acc.JetStreamEnabled() {
-		resp.Error = jsNotEnabledErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = jsNotEnabledErr
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 	if !isEmptyRequest(msg) {

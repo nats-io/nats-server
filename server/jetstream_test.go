@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"math/rand"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -8569,7 +8570,7 @@ func TestJetStreamMsgHeaders(t *testing.T) {
 			// Calculate the []byte version of the headers.
 			var b bytes.Buffer
 			b.WriteString("NATS/1.0\r\n")
-			m.Header.Write(&b)
+			http.Header(m.Header).Write(&b)
 			b.WriteString("\r\n")
 			hdr := b.Bytes()
 
@@ -11204,6 +11205,49 @@ func TestJetStreamOperatorAccounts(t *testing.T) {
 	}
 	if jsz.Messages != uint64(toSend) {
 		t.Fatalf("Expected jsz to report our %d messages on restart, got %d", toSend, jsz.Messages)
+	}
+}
+
+func TestJetStreamServerDomainConfig(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		jetstream: {domain: "HUB"}
+	`))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	if !s.JetStreamEnabled() {
+		t.Fatalf("Expected JetStream to be enabled")
+	}
+
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	if config.Domain != "HUB" {
+		t.Fatalf("Expected %q as domain name, got %q", "HUB", config.Domain)
+	}
+}
+
+func TestJetStreamServerDomainConfigButDisabled(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		jetstream: {domain: "HUB", enabled: false}
+	`))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	if s.JetStreamEnabled() {
+		t.Fatalf("Expected JetStream NOT to be enabled")
+	}
+
+	opts := s.getOpts()
+	if opts.JetStreamDomain != "HUB" {
+		t.Fatalf("Expected %q as opts domain name, got %q", "HUB", opts.JetStreamDomain)
 	}
 }
 
