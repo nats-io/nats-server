@@ -2064,7 +2064,6 @@ func TestJetStreamClusterMirrorAndSourceWorkQueues(t *testing.T) {
 			return fmt.Errorf("Expected 1 msg for %q, got %d", "M", si.State.Msgs)
 		}
 		if si, _ := js.StreamInfo("S"); si.State.Msgs != 1 {
-			fmt.Printf("si.State is %+v\n", si.State)
 			return fmt.Errorf("Expected 1 msg for %q, got %d", "S", si.State.Msgs)
 		}
 		return nil
