@@ -489,7 +489,7 @@ func TestClientConnect(t *testing.T) {
 	if c.state != OP_START {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
-	if !reflect.DeepEqual(c.opts, clientOpts{Verbose: true, Pedantic: true, Echo: false}) {
+	if !reflect.DeepEqual(c.opts, ClientOpts{Verbose: true, Pedantic: true, Echo: false}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 
@@ -503,7 +503,7 @@ func TestClientConnect(t *testing.T) {
 	if c.state != OP_START {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
-	if !reflect.DeepEqual(c.opts, clientOpts{Echo: true, Verbose: true, Pedantic: true, Username: "derek", Password: "foo"}) {
+	if !reflect.DeepEqual(c.opts, ClientOpts{Echo: true, Verbose: true, Pedantic: true, Username: "derek", Password: "foo"}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 
@@ -518,7 +518,7 @@ func TestClientConnect(t *testing.T) {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
 
-	if !reflect.DeepEqual(c.opts, clientOpts{Echo: true, Verbose: true, Pedantic: true, Username: "derek", Password: "foo", Name: "router"}) {
+	if !reflect.DeepEqual(c.opts, ClientOpts{Echo: true, Verbose: true, Pedantic: true, Username: "derek", Password: "foo", Name: "router"}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 
@@ -533,7 +533,7 @@ func TestClientConnect(t *testing.T) {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
 
-	if !reflect.DeepEqual(c.opts, clientOpts{Echo: true, Verbose: true, Pedantic: true, Token: "YZZ222", Name: "router"}) {
+	if !reflect.DeepEqual(c.opts, ClientOpts{Echo: true, Verbose: true, Pedantic: true, Token: "YZZ222", Name: "router"}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 }
@@ -551,7 +551,7 @@ func TestClientConnectProto(t *testing.T) {
 	if c.state != OP_START {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
-	if !reflect.DeepEqual(c.opts, clientOpts{Echo: true, Verbose: true, Pedantic: true, Protocol: ClientProtoZero}) {
+	if !reflect.DeepEqual(c.opts, ClientOpts{Echo: true, Verbose: true, Pedantic: true, Protocol: ClientProtoZero}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 
@@ -564,7 +564,7 @@ func TestClientConnectProto(t *testing.T) {
 	if c.state != OP_START {
 		t.Fatalf("Expected state of OP_START vs %d\n", c.state)
 	}
-	if !reflect.DeepEqual(c.opts, clientOpts{Echo: true, Verbose: true, Pedantic: true, Protocol: ClientProtoInfo}) {
+	if !reflect.DeepEqual(c.opts, ClientOpts{Echo: true, Verbose: true, Pedantic: true, Protocol: ClientProtoInfo}) {
 		t.Fatalf("Did not parse connect options correctly: %+v\n", c.opts)
 	}
 	if c.opts.Protocol != ClientProtoInfo {
@@ -1685,7 +1685,7 @@ func TestClientUserInfo(t *testing.T) {
 	pnkey := "UD6AYQSOIN2IN5OGC6VQZCR4H3UFMIOXSW6NNS6N53CLJA4PB56CEJJI"
 	c := &client{
 		cid: 1024,
-		opts: clientOpts{
+		opts: ClientOpts{
 			Nkey: pnkey,
 		},
 	}
@@ -1697,7 +1697,7 @@ func TestClientUserInfo(t *testing.T) {
 
 	c = &client{
 		cid: 1024,
-		opts: clientOpts{
+		opts: ClientOpts{
 			Username: "foo",
 		},
 	}
@@ -1709,7 +1709,7 @@ func TestClientUserInfo(t *testing.T) {
 
 	c = &client{
 		cid:  1024,
-		opts: clientOpts{},
+		opts: ClientOpts{},
 	}
 	got = c.getAuthUser()
 	expected = `User "N/A"`

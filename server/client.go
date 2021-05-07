@@ -222,7 +222,7 @@ type client struct {
 	perms *permissions
 	in    readCache
 	parseState
-	opts       clientOpts
+	opts       ClientOpts
 	rrTracking *rrTracking
 	mpay       int32
 	msubs      int32
@@ -434,7 +434,7 @@ func (c *client) GetName() string {
 }
 
 // GetOpts returns the client options provided by the application.
-func (c *client) GetOpts() *clientOpts {
+func (c *client) GetOpts() *ClientOpts {
 	return &c.opts
 }
 
@@ -508,7 +508,7 @@ func (s *subscription) isClosed() bool {
 	return atomic.LoadInt32(&s.closed) == 1
 }
 
-type clientOpts struct {
+type ClientOpts struct {
 	Echo         bool   `json:"echo"`
 	Verbose      bool   `json:"verbose"`
 	Pedantic     bool   `json:"pedantic"`
@@ -533,8 +533,8 @@ type clientOpts struct {
 	Export *SubjectPermission `json:"export,omitempty"`
 }
 
-var defaultOpts = clientOpts{Verbose: true, Pedantic: true, Echo: true}
-var internalOpts = clientOpts{Verbose: false, Pedantic: false, Echo: false}
+var defaultOpts = ClientOpts{Verbose: true, Pedantic: true, Echo: true}
+var internalOpts = ClientOpts{Verbose: false, Pedantic: false, Echo: false}
 
 func (c *client) setTraceLevel() {
 	if c.kind == SYSTEM && !(atomic.LoadInt32(&c.srv.logging.traceSysAcc) != 0) {
