@@ -1522,6 +1522,9 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 				opts.JetStreamMaxStore = mv.(int64)
 			case "domain":
 				opts.JetStreamDomain = mv.(string)
+				if subj := fmt.Sprintf(jsDomainAPI, opts.JetStreamDomain); !IsValidSubject(subj) {
+					return &configErr{tk, fmt.Sprintf("Invalid domain name: %q is not a valid subject", subj)}
+				}
 			case "enable", "enabled":
 				doEnable = mv.(bool)
 			default:
@@ -4220,14 +4223,14 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	})
 
 	// Process signal control.
-	if signal != "" {
+	if signal != _EMPTY_ {
 		if err := processSignal(signal); err != nil {
 			return nil, err
 		}
 	}
 
 	// Parse config if given
-	if configFile != "" {
+	if configFile != _EMPTY_ {
 		// This will update the options with values from the config file.
 		err := opts.ProcessConfigFile(configFile)
 		if err != nil {
