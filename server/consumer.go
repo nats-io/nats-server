@@ -1599,9 +1599,10 @@ func (o *consumer) needAck(sseq uint64) bool {
 		}
 		state, err := o.store.State()
 		if err != nil || state == nil {
-			o.mu.RUnlock()
 			// Fall back to what we track internally for now.
-			return sseq > o.asflr
+			needsAck := sseq > o.asflr
+			o.mu.RUnlock()
+			return needsAck
 		}
 		asflr, osseq = state.AckFloor.Stream, o.sseq
 		pending = state.Pending
