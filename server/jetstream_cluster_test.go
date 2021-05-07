@@ -2014,13 +2014,143 @@ func TestJetStreamClusterInterestRetention(t *testing.T) {
 	waitForZero()
 }
 
+func TestJetStreamClusterMirrorAndSourceWorkQueues(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "WQ", 3)
+	defer c.shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "WQ22",
+		Subjects:  []string{"foo"},
+		Replicas:  2,
+		Retention: nats.WorkQueuePolicy,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "M",
+		Replicas: 2,
+		Mirror:   &nats.StreamSource{Name: "WQ22"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "S",
+		Replicas: 2,
+		Sources:  []*nats.StreamSource{{Name: "WQ22"}},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if _, err = js.Publish("foo", []byte("ok")); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+
+	time.Sleep(250 * time.Millisecond)
+
+	if si, _ := js.StreamInfo("WQ22"); si.State.Msgs != 0 {
+		t.Fatalf("Expected no msgs, got %d", si.State.Msgs)
+	}
+	if si, _ := js.StreamInfo("M"); si.State.Msgs != 1 {
+		t.Fatalf("Expected 1 msg, got %d", si.State.Msgs)
+	}
+	if si, _ := js.StreamInfo("S"); si.State.Msgs != 1 {
+		t.Fatalf("Expected 1 msg, got %d", si.State.Msgs)
+	}
+}
+
+func TestJetStreamClusterMirrorAndSourceInterestPolicyStream(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "WQ", 3)
+	defer c.shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "WQ22",
+		Subjects:  []string{"foo"},
+		Replicas:  2,
+		Retention: nats.InterestPolicy,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "M",
+		Replicas: 2,
+		Mirror:   &nats.StreamSource{Name: "WQ22"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "S",
+		Replicas: 2,
+		Sources:  []*nats.StreamSource{{Name: "WQ22"}},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if _, err = js.Publish("foo", []byte("ok")); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+
+	time.Sleep(250 * time.Millisecond)
+
+	// This one will be 0 since no other interest exists.
+	if si, _ := js.StreamInfo("WQ22"); si.State.Msgs != 0 {
+		t.Fatalf("Expected no msgs, got %d", si.State.Msgs)
+	}
+	if si, _ := js.StreamInfo("M"); si.State.Msgs != 1 {
+		t.Fatalf("Expected 1 msg, got %d", si.State.Msgs)
+	}
+	if si, _ := js.StreamInfo("S"); si.State.Msgs != 1 {
+		t.Fatalf("Expected 1 msg, got %d", si.State.Msgs)
+	}
+
+	// Now create other interest on WQ22.
+	sub, err := js.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer sub.Unsubscribe()
+
+	if _, err = js.Publish("foo", []byte("ok")); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+
+	time.Sleep(250 * time.Millisecond)
+
+	// This one should be 1 now since we will hold for the other subscriber.
+	if si, _ := js.StreamInfo("WQ22"); si.State.Msgs != 1 {
+		t.Fatalf("Expected 1 msg, got %d", si.State.Msgs)
+	}
+	if si, _ := js.StreamInfo("M"); si.State.Msgs != 2 {
+		t.Fatalf("Expected 2 msgs, got %d", si.State.Msgs)
+	}
+	if si, _ := js.StreamInfo("S"); si.State.Msgs != 2 {
+		t.Fatalf("Expected 2 msgs, got %d", si.State.Msgs)
+	}
+}
+
 func TestJetStreamClusterInterestRetentionWithFilteredConsumers(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
 	// Client based API
-	s := c.randomServer()
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
 	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"*"}, Retention: nats.InterestPolicy, Replicas: 3})

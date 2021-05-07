@@ -447,9 +447,8 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		return nil, fmt.Errorf("maximum consumers limit reached")
 	}
 
-	// Check on stream type conflicts.
-	switch mset.cfg.Retention {
-	case WorkQueuePolicy:
+	// Check on stream type conflicts with WorkQueues.
+	if mset.cfg.Retention == WorkQueuePolicy && !config.Direct {
 		// Force explicit acks here.
 		if config.AckPolicy != AckExplicit {
 			mset.mu.Unlock()
@@ -2203,8 +2202,8 @@ func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 	o.outq.send(pmsg)
 
 	// If we are ack none and mset is interest only we should make sure stream removes interest.
-	if ap == AckNone && mset.cfg.Retention == InterestPolicy && !mset.checkInterest(seq, o) {
-		mset.rmch <- seq
+	if ap == AckNone && mset.cfg.Retention != LimitsPolicy {
+		mset.amch <- seq
 	}
 
 	if ap == AckExplicit || ap == AckAll {
