@@ -139,7 +139,7 @@ type stream struct {
 	outq      *jsOutQ
 	msgs      *inbound
 	store     StreamStore
-	rmch      chan uint64
+	amch      chan uint64
 	lseq      uint64
 	lmsgId    string
 	consumers map[string]*consumer
@@ -318,8 +318,12 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		stype:     cfg.Storage,
 		consumers: make(map[string]*consumer),
 		msgs:      &inbound{mch: make(chan struct{}, 1)},
-		rmch:      make(chan uint64, 8192),
 		qch:       make(chan struct{}),
+	}
+
+	// For no-ack consumers when we are interest retention.
+	if cfg.Retention != LimitsPolicy {
+		mset.amch = make(chan uint64, 8192)
 	}
 
 	jsa.streams[cfg.Name] = mset
@@ -2779,7 +2783,7 @@ func (mset *stream) internalLoop() {
 	c := s.createInternalJetStreamClient()
 	c.registerWithAccount(mset.acc)
 	defer c.closeConnection(ClientClosed)
-	outq, qch, mch, rmch := mset.outq, mset.qch, mset.msgs.mch, mset.rmch
+	outq, qch, mch, amch := mset.outq, mset.qch, mset.msgs.mch, mset.amch
 	isClustered := mset.cfg.Replicas > 1
 	mset.mu.RUnlock()
 
@@ -2824,8 +2828,8 @@ func (mset *stream) internalLoop() {
 					mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0)
 				}
 			}
-		case seq := <-rmch:
-			mset.store.RemoveMsg(seq)
+		case seq := <-amch:
+			mset.ackMsg(nil, seq)
 		case <-qch:
 			return
 		case <-s.quitCh:
@@ -3071,7 +3075,7 @@ func (mset *stream) checkInterest(seq uint64, obs *consumer) bool {
 	return false
 }
 
-// ackMsg is called into from a consumer when we have a WorkQueue or Interest retention policy.
+// ackMsg is called into from a consumer when we have a WorkQueue or Interest Retention Policy.
 func (mset *stream) ackMsg(obs *consumer, seq uint64) {
 	switch mset.cfg.Retention {
 	case LimitsPolicy:
