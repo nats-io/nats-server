@@ -4220,14 +4220,14 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	})
 
 	// Process signal control.
-	if signal != "" {
+	if signal != _EMPTY_ {
 		if err := processSignal(signal); err != nil {
 			return nil, err
 		}
 	}
 
 	// Parse config if given
-	if configFile != "" {
+	if configFile != _EMPTY_ {
 		// This will update the options with values from the config file.
 		err := opts.ProcessConfigFile(configFile)
 		if err != nil {

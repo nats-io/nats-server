@@ -11208,6 +11208,25 @@ func TestJetStreamOperatorAccounts(t *testing.T) {
 	}
 }
 
+func TestJetStreamServerDomainBadConfig(t *testing.T) {
+	shouldFail := func(domain string) {
+		t.Helper()
+		opts := DefaultTestOptions
+		opts.JetStreamDomain = domain
+		if err := validateOptions(&opts); err == nil || !strings.Contains(err.Error(), "invalid domain name") {
+			t.Fatalf("Expected bad domain error, got %v", err)
+		}
+	}
+
+	shouldFail("HU..B")
+	shouldFail("HU B")
+	shouldFail(" ")
+	shouldFail("\t")
+	shouldFail("CORE.")
+	shouldFail(".CORE")
+	shouldFail("C.*.O. RE")
+}
+
 func TestJetStreamServerDomainConfig(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		listen: 127.0.0.1:-1

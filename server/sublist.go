@@ -1012,7 +1012,7 @@ func IsValidPublishSubject(subject string) bool {
 
 // IsValidSubject returns true if a subject is valid, false otherwise
 func IsValidSubject(subject string) bool {
-	if subject == "" {
+	if subject == _EMPTY_ {
 		return false
 	}
 	sfwc := false
@@ -1022,11 +1022,16 @@ func IsValidSubject(subject string) bool {
 			return false
 		}
 		if len(t) > 1 {
+			if strings.ContainsAny(t, "\t\n\f\r ") {
+				return false
+			}
 			continue
 		}
 		switch t[0] {
 		case fwc:
 			sfwc = true
+		case ' ', '\t', '\n', '\r', '\f':
+			return false
 		}
 	}
 	return true
