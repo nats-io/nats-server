@@ -209,7 +209,7 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	s.Noticef("  Max Storage:     %s", friendlyBytes(cfg.MaxStore))
 	s.Noticef("  Store Directory: \"%s\"", cfg.StoreDir)
 	if cfg.Domain != _EMPTY_ {
-		s.Noticef("  Enable Domain:   %s", cfg.Domain)
+		s.Noticef("  Domain:          %s", cfg.Domain)
 	}
 	s.Noticef("-------------------------------------------")
 
@@ -1948,6 +1948,10 @@ func validateJetStreamOptions(o *Options) error {
 	if o.JetStreamDomain != _EMPTY_ {
 		if subj := fmt.Sprintf(jsDomainAPI, o.JetStreamDomain); !IsValidSubject(subj) {
 			return fmt.Errorf("invalid domain name: derived %q is not a valid subject", subj)
+		}
+
+		if !isValidName(o.JetStreamDomain) {
+			return fmt.Errorf("invalid domain name: may not contain ., * or >")
 		}
 	}
 	// If not clustered no checks needed past here.
