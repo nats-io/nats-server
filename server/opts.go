@@ -1522,9 +1522,6 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 				opts.JetStreamMaxStore = mv.(int64)
 			case "domain":
 				opts.JetStreamDomain = mv.(string)
-				if subj := fmt.Sprintf(jsDomainAPI, opts.JetStreamDomain); !IsValidSubject(subj) {
-					return &configErr{tk, fmt.Sprintf("Invalid domain name: %q is not a valid subject", subj)}
-				}
 			case "enable", "enabled":
 				doEnable = mv.(bool)
 			default:

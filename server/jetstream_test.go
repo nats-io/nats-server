@@ -11211,12 +11211,13 @@ func TestJetStreamOperatorAccounts(t *testing.T) {
 func TestJetStreamServerDomainBadConfig(t *testing.T) {
 	shouldFail := func(domain string) {
 		t.Helper()
-		conf := createConfFile(t, []byte(fmt.Sprintf("jetstream: {domain: \"%s\"}", domain)))
-		defer removeFile(t, conf)
-		if _, err := ProcessConfigFile(conf); err == nil {
+		opts := DefaultTestOptions
+		opts.JetStreamDomain = domain
+		if err := validateOptions(&opts); err == nil || !strings.Contains(err.Error(), "invalid domain name") {
 			t.Fatalf("Expected bad domain error, got %v", err)
 		}
 	}
+
 	shouldFail("HU..B")
 	shouldFail("HU B")
 	shouldFail(" ")
