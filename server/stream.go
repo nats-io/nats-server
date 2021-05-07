@@ -3075,16 +3075,33 @@ func (mset *stream) checkInterest(seq uint64, obs *consumer) bool {
 	return false
 }
 
+// Helper function to see if we have "real" consumers for a workqueue.
+// Used in mixed mode where we have direct/no ack consumers for sync.
+func (mset *stream) hasExplicitAckConsumers() bool {
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+	for _, o := range mset.consumers {
+		if o.cfg.AckPolicy == AckExplicit {
+			return true
+		}
+	}
+	return false
+}
+
 // ackMsg is called into from a consumer when we have a WorkQueue or Interest Retention Policy.
-func (mset *stream) ackMsg(obs *consumer, seq uint64) {
+func (mset *stream) ackMsg(o *consumer, seq uint64) {
 	switch mset.cfg.Retention {
 	case LimitsPolicy:
 		return
 	case WorkQueuePolicy:
-		mset.store.RemoveMsg(seq)
+		// Consumer is nil this is signaling from an AckNone.
+		// Meaning a sync consumer for a mirror or a source.
+		if o != nil || !mset.hasExplicitAckConsumers() {
+			mset.store.RemoveMsg(seq)
+		}
 	case InterestPolicy:
 		mset.mu.Lock()
-		hasInterest := mset.checkInterest(seq, obs)
+		hasInterest := mset.checkInterest(seq, o)
 		mset.mu.Unlock()
 		if !hasInterest {
 			mset.store.RemoveMsg(seq)

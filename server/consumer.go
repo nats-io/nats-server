@@ -1109,9 +1109,9 @@ func (o *consumer) processAck(_ *subscription, c *client, subject, reply string,
 
 	switch {
 	case len(msg) == 0, bytes.Equal(msg, AckAck), bytes.Equal(msg, AckOK):
-		o.ackMsg(sseq, dseq, dc)
+		o.processAckMsg(sseq, dseq, dc, true)
 	case bytes.HasPrefix(msg, AckNext):
-		o.ackMsg(sseq, dseq, dc)
+		o.processAckMsg(sseq, dseq, dc, true)
 		// processNextMsgReq can be invoked from an internal subscription or from here.
 		// Therefore, it has to call msgParts(), so we can't simply pass msg[len(AckNext):]
 		// with current c.pa.hdr because it would cause a panic.  We will save the current
@@ -1497,11 +1497,6 @@ func (o *consumer) sampleAck(sseq, dseq, dc uint64) {
 	}
 
 	o.sendAdvisory(o.ackEventT, j)
-}
-
-// Process an ack for a message.
-func (o *consumer) ackMsg(sseq, dseq, dc uint64) {
-	o.processAckMsg(sseq, dseq, dc, true)
 }
 
 func (o *consumer) processAckMsg(sseq, dseq, dc uint64, doSample bool) {
