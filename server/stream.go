@@ -160,6 +160,9 @@ type stream struct {
 	// Sources
 	sources map[string]*sourceInfo
 
+	// Indicates we have direct consumers.
+	directs int
+
 	// For flowcontrol processing for source and mirror internal consumers.
 	fcr map[uint64]string
 
@@ -3004,11 +3007,17 @@ func (mset *stream) setConsumer(o *consumer) {
 	if o.cfg.FilterSubject != _EMPTY_ {
 		mset.numFilter++
 	}
+	if o.cfg.Direct {
+		mset.directs++
+	}
 }
 
 func (mset *stream) removeConsumer(o *consumer) {
 	if o.cfg.FilterSubject != _EMPTY_ {
 		mset.numFilter--
+	}
+	if o.cfg.Direct {
+		mset.directs--
 	}
 	delete(mset.consumers, o.name)
 }
@@ -3080,16 +3089,23 @@ func (mset *stream) checkInterest(seq uint64, obs *consumer) bool {
 }
 
 // ackMsg is called into from a consumer when we have a WorkQueue or Interest Retention Policy.
-func (mset *stream) ackMsg(obs *consumer, seq uint64) {
+func (mset *stream) ackMsg(o *consumer, seq uint64) {
 	switch mset.cfg.Retention {
 	case LimitsPolicy:
 		return
 	case WorkQueuePolicy:
-		mset.store.RemoveMsg(seq)
+		// Normally we just remove a message when its ack'd here but if we have direct consumers
+		// from sources and/or mirrors we need to make sure they have delivered the msg.
+		mset.mu.RLock()
+		shouldRemove := mset.directs <= 0 || !mset.checkInterest(seq, o)
+		mset.mu.RUnlock()
+		if shouldRemove {
+			mset.store.RemoveMsg(seq)
+		}
 	case InterestPolicy:
-		mset.mu.Lock()
-		hasInterest := mset.checkInterest(seq, obs)
-		mset.mu.Unlock()
+		mset.mu.RLock()
+		hasInterest := mset.checkInterest(seq, o)
+		mset.mu.RUnlock()
 		if !hasInterest {
 			mset.store.RemoveMsg(seq)
 		}

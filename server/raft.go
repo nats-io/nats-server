@@ -893,7 +893,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		return err
 	}
 
-	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
+	if _, err := n.wal.Compact(snap.lastIndex); err != nil {
 		n.Unlock()
 		n.setWriteErr(err)
 		return err
@@ -989,6 +989,7 @@ func (n *raft) setupLastSnapshot() {
 		n.pindex = snap.lastIndex
 		n.pterm = snap.lastTerm
 		n.commit = snap.lastIndex
+		n.applied = snap.lastIndex
 		n.applyc <- &CommittedEntry{n.commit, []*Entry{{EntrySnapshot, snap.data}}}
 		if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 			n.setWriteErrLocked(err)
@@ -1936,8 +1937,8 @@ func (n *raft) sendSnapshotToFollower(subject string) (uint64, error) {
 	ae.pterm, ae.pindex = snap.lastTerm, snap.lastIndex
 	var state StreamState
 	n.wal.FastState(&state)
-	if snap.lastIndex+1 != state.FirstSeq && state.FirstSeq != 0 {
-		snap.lastIndex = state.FirstSeq - 1
+	if snap.lastIndex < state.FirstSeq && state.FirstSeq != 0 {
+		snap.lastIndex = state.FirstSeq
 		ae.pindex = snap.lastIndex
 	}
 	n.sendRPC(subject, n.areply, ae.encode())
@@ -1965,14 +1966,19 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	var state StreamState
 	n.wal.FastState(&state)
 
-	if start < state.FirstSeq {
+	if start < state.FirstSeq || state.Msgs == 0 && start <= state.LastSeq {
 		n.debug("Need to send snapshot to follower")
 		if lastIndex, err := n.sendSnapshotToFollower(ar.reply); err != nil {
 			n.error("Error sending snapshot to follower [%s]: %v", ar.peer, err)
-			n.attemptStepDown(noLeader)
 			n.Unlock()
 			return
 		} else {
+			// If no other entries can just return here.
+			if state.Msgs == 0 {
+				n.debug("Finished catching up")
+				n.Unlock()
+				return
+			}
 			n.debug("Snapshot sent, reset first entry to %d", lastIndex)
 			start = lastIndex
 		}
