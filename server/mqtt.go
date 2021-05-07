@@ -228,6 +228,7 @@ type mqttJSA struct {
 	replies sync.Map
 	nuid    *nuid.NUID
 	quitCh  chan struct{}
+	domain  string
 }
 
 type mqttJSPubMsg struct {
@@ -889,6 +890,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 			sendq:  make(chan *mqttJSPubMsg, 8192),
 			nuid:   nuid.New(),
 			quitCh: quitCh,
+			domain: s.getOpts().JetStreamDomain,
 		},
 	}
 
@@ -1860,7 +1862,12 @@ func (as *mqttAccountSessionManager) getRetainedPublishMsgs(subject string, rms 
 // Runs from the client's readLoop.
 // Lock not held on entry, but session is in the locked map.
 func (as *mqttAccountSessionManager) createOrRestoreSession(clientID string, opts *Options) (*mqttSession, bool, error) {
-	hash := string(getHash(clientID))
+	// Add the JS domain (possibly empty) to the client ID, which will make
+	// session stream/filter subject be unique per domain. So if an application
+	// with the same client ID moves to the other domain, then there won't be
+	// conflict of session message in one domain updating the session's stream
+	// in others.
+	hash := string(getHash(as.jsa.domain + clientID))
 	sname := mqttSessionsStreamNamePrefix + hash
 	cfg := &StreamConfig{
 		Name:      sname,

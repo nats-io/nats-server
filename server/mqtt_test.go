@@ -38,10 +38,12 @@ import (
 
 var testMQTTTimeout = 4 * time.Second
 
-var jsClusterTemplWithMQTT = `
+var jsClusterTemplWithLeafAndMQTT = `
 	listen: 127.0.0.1:-1
 	server_name: %s
 	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: "%s"}
+
+	{{leaf}}
 
 	cluster {
 		name: %s
@@ -2614,8 +2616,12 @@ func TestMQTTSubRestart(t *testing.T) {
 	testMQTTCheckPubMsg(t, mc, r, "foo", 0, []byte("msg2"))
 }
 
+func testMQTTGetClusterTemplaceNoLeaf() string {
+	return strings.Replace(jsClusterTemplWithLeafAndMQTT, "{{leaf}}", "", 1)
+}
+
 func TestMQTTSubPropagation(t *testing.T) {
-	cl := createJetStreamClusterWithTemplate(t, jsClusterTemplWithMQTT, "MQTT", 2)
+	cl := createJetStreamClusterWithTemplate(t, testMQTTGetClusterTemplaceNoLeaf(), "MQTT", 2)
 	defer cl.shutdown()
 
 	o := cl.opts[0]
@@ -2645,7 +2651,7 @@ func TestMQTTSubPropagation(t *testing.T) {
 }
 
 func TestMQTTCluster(t *testing.T) {
-	cl := createJetStreamClusterWithTemplate(t, jsClusterTemplWithMQTT, "MQTT", 2)
+	cl := createJetStreamClusterWithTemplate(t, testMQTTGetClusterTemplaceNoLeaf(), "MQTT", 2)
 	defer cl.shutdown()
 
 	for _, topTest := range []struct {
@@ -2754,7 +2760,7 @@ func TestMQTTCluster(t *testing.T) {
 }
 
 func TestMQTTClusterRetainedMsg(t *testing.T) {
-	cl := createJetStreamClusterWithTemplate(t, jsClusterTemplWithMQTT, "MQTT", 2)
+	cl := createJetStreamClusterWithTemplate(t, testMQTTGetClusterTemplaceNoLeaf(), "MQTT", 2)
 	defer cl.shutdown()
 
 	srv1Opts := cl.opts[0]
@@ -2958,7 +2964,7 @@ func TestMQTTClusterReplicasCount(t *testing.T) {
 				s = testMQTTRunServer(t, o)
 				defer testMQTTShutdownServer(s)
 			} else {
-				cl := createJetStreamClusterWithTemplate(t, jsClusterTemplWithMQTT, "MQTT", test.size)
+				cl := createJetStreamClusterWithTemplate(t, testMQTTGetClusterTemplaceNoLeaf(), "MQTT", test.size)
 				defer cl.shutdown()
 				o = cl.opts[0]
 				s = cl.randomServer()
@@ -3002,7 +3008,7 @@ func TestMQTTClusterPlacement(t *testing.T) {
 	defer sc.shutdown()
 
 	c := sc.randomCluster()
-	lnc := c.createLeafNodesWithStartPortAndMQTT("SPOKE", 3, 22111, `mqtt { listen: 127.0.0.1:-1 }`)
+	lnc := c.createLeafNodesWithTemplateAndStartPort(jsClusterTemplWithLeafAndMQTT, "SPOKE", 3, 22111)
 	defer lnc.shutdown()
 
 	sc.waitOnPeerCount(9)
@@ -3132,6 +3138,46 @@ func TestMQTTLeafnodeWithoutJSToClusterWithJS(t *testing.T) {
 	// Connect from one server in the cluster check it works from there too.
 	connectAndPublish(o1)
 	testMQTTCheckPubMsg(t, mc2, rc2, "foo", mqttPubQos1, []byte("msg"))
+}
+
+func TestMQTTSessionMovingDomains(t *testing.T) {
+	tmpl := strings.Replace(jsClusterTemplWithLeafAndMQTT, "{{leaf}}", `leafnodes { listen: 127.0.0.1:-1 }`, 1)
+	tmpl = strings.Replace(tmpl, "store_dir:", "domain: HUB, store_dir:", 1)
+	c := createJetStreamCluster(t, tmpl, "HUB", _EMPTY_, 3, 22020, true)
+	defer c.shutdown()
+	c.waitOnLeader()
+
+	tmpl = strings.Replace(jsClusterTemplWithLeafAndMQTT, "store_dir:", "domain: SPOKE, store_dir:", 1)
+	lnc := c.createLeafNodesWithTemplateAndStartPort(tmpl, "SPOKE", 3, 22111)
+	defer lnc.shutdown()
+	lnc.waitOnPeerCount(3)
+
+	connectSubAndDisconnect := func(host string, port int, present bool) {
+		t.Helper()
+		mc, rc := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: false}, host, port)
+		defer mc.Close()
+		testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, present)
+		testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+		testMQTTFlush(t, mc, nil, rc)
+		testMQTTDisconnect(t, mc, nil)
+	}
+
+	// Create a session on the HUB. Make sure we don't use "clean" session so that
+	// it is not removed when the client connection closes.
+	for i := 0; i < 7; i++ {
+		var present bool
+		if i > 0 {
+			present = true
+		}
+		connectSubAndDisconnect(c.opts[0].MQTT.Host, c.opts[0].MQTT.Port, present)
+	}
+
+	// Now move to the SPOKE cluster, this is a brand new session there, so should not be present.
+	connectSubAndDisconnect(lnc.opts[1].MQTT.Host, lnc.opts[1].MQTT.Port, false)
+
+	// Move back to HUB cluster. Make it interesting by connecting to a different
+	// server in that cluster. This should work, and present flag should be true.
+	connectSubAndDisconnect(c.opts[2].MQTT.Host, c.opts[2].MQTT.Port, true)
 }
 
 func TestMQTTParseUnsub(t *testing.T) {

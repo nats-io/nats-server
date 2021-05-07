@@ -6923,8 +6923,6 @@ var jsClusterTemplWithLeafNode = `
 		routes = [%s]
 	}
 
-	{{mqtt}}
-
 	# For access to system account.
 	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
 `
@@ -6954,7 +6952,7 @@ func (c *cluster) createLeafNodes(clusterName string, numServers int) *cluster {
 }
 
 func (c *cluster) createLeafNodesWithStartPort(clusterName string, numServers int, portStart int) *cluster {
-	return c.createLeafNodesWithStartPortAndMQTT(clusterName, numServers, portStart, _EMPTY_)
+	return c.createLeafNodesWithTemplateAndStartPort(jsClusterTemplWithLeafNode, clusterName, numServers, portStart)
 }
 
 func (c *cluster) createLeafNode() *Server {
@@ -6988,11 +6986,9 @@ func (c *cluster) createLeafSolicit(tmpl string) string {
 	return strings.Replace(tmpl, "{{leaf}}", lconf, 1)
 }
 
-func (c *cluster) createLeafNodesWithStartPortAndMQTT(clusterName string, numServers int, portStart int, mqtt string) *cluster {
+func (c *cluster) createLeafNodesWithTemplateAndStartPort(template, clusterName string, numServers int, portStart int) *cluster {
 	// Create our leafnode cluster template first.
-	tmpl := c.createLeafSolicit(jsClusterTemplWithLeafNode)
-	tmpl = strings.Replace(tmpl, "{{mqtt}}", mqtt, 1)
-
+	tmpl := c.createLeafSolicit(template)
 	pre := clusterName + "-"
 	lc := createJetStreamCluster(c.t, tmpl, clusterName, pre, numServers, portStart, false)
 	for _, s := range lc.servers {
