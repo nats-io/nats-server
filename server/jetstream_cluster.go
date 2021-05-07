@@ -1035,6 +1035,7 @@ func (js *jetStream) processRemovePeer(peer string) {
 			Server:   s.Name(),
 			ServerID: s.ID(),
 			Cluster:  s.cachedClusterName(),
+			Domain:   s.getOpts().JetStreamDomain,
 		}
 		s.publishAdvisory(nil, JSAdvisoryServerRemoved, adv)
 
@@ -1840,6 +1841,7 @@ func (s *Server) sendStreamLostQuorumAdvisory(mset *stream) {
 		},
 		Stream:   stream,
 		Replicas: s.replicas(node),
+		Domain:   s.getOpts().JetStreamDomain,
 	}
 
 	// Send to the user's account if not the system account.
@@ -1869,6 +1871,7 @@ func (s *Server) sendStreamLeaderElectAdvisory(mset *stream) {
 		Stream:   stream,
 		Leader:   s.serverNameForNode(node.GroupLeader()),
 		Replicas: s.replicas(node),
+		Domain:   s.getOpts().JetStreamDomain,
 	}
 
 	// Send to the user's account if not the system account.
@@ -3055,6 +3058,7 @@ func (s *Server) sendConsumerLostQuorumAdvisory(o *consumer) {
 		Stream:   stream,
 		Consumer: consumer,
 		Replicas: s.replicas(node),
+		Domain:   s.getOpts().JetStreamDomain,
 	}
 
 	// Send to the user's account if not the system account.
@@ -3086,6 +3090,7 @@ func (s *Server) sendConsumerLeaderElectAdvisory(o *consumer) {
 		Consumer: consumer,
 		Leader:   s.serverNameForNode(node.GroupLeader()),
 		Replicas: s.replicas(node),
+		Domain:   s.getOpts().JetStreamDomain,
 	}
 
 	// Send to the user's account if not the system account.

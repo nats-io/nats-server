@@ -341,6 +341,7 @@ func (s *Server) handleOutOfSpace(stream string) {
 			ServerID: s.ID(),
 			Stream:   stream,
 			Cluster:  s.cachedClusterName(),
+			Domain:   s.getOpts().JetStreamDomain,
 		}
 		s.publishAdvisory(nil, JSAdvisoryServerOutOfStorage, adv)
 	}

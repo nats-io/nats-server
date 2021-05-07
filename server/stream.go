@@ -595,6 +595,7 @@ func (mset *stream) sendCreateAdvisory() {
 	name := mset.cfg.Name
 	template := mset.cfg.Template
 	outq := mset.outq
+	srv := mset.srv
 	mset.mu.Unlock()
 
 	if outq == nil {
@@ -611,6 +612,7 @@ func (mset *stream) sendCreateAdvisory() {
 		Stream:   name,
 		Action:   CreateEvent,
 		Template: template,
+		Domain:   srv.getOpts().JetStreamDomain,
 	}
 
 	j, err := json.Marshal(m)
@@ -636,6 +638,7 @@ func (mset *stream) sendDeleteAdvisoryLocked() {
 		Stream:   mset.cfg.Name,
 		Action:   DeleteEvent,
 		Template: mset.cfg.Template,
+		Domain:   mset.srv.getOpts().JetStreamDomain,
 	}
 
 	j, err := json.Marshal(m)
@@ -658,6 +661,7 @@ func (mset *stream) sendUpdateAdvisoryLocked() {
 		},
 		Stream: mset.cfg.Name,
 		Action: ModifyEvent,
+		Domain: mset.srv.getOpts().JetStreamDomain,
 	}
 
 	j, err := json.Marshal(m)
