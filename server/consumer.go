@@ -2202,7 +2202,7 @@ func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 	o.outq.send(pmsg)
 
 	// If we are ack none and mset is interest only we should make sure stream removes interest.
-	if ap == AckNone && mset.cfg.Retention != LimitsPolicy {
+	if ap == AckNone && mset.cfg.Retention != LimitsPolicy && mset.amch != nil {
 		mset.amch <- seq
 	}
 
