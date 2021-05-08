@@ -34,6 +34,7 @@ gt              = ">"
 word            = (all printable ascii (33 to 126 inclusive) except period, asterisk or gt)+
 message-subject = word (period word | asterisk)* (period gt)?
 reply-to        = word (period word | asterisk)* (period gt)?
+reply-to        = word (period word)*
 stream-name     = word
 queue-name      = word
 durable-name    = word
