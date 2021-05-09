@@ -28,14 +28,38 @@ A subject is comprised of 1 or more tokens. Tokens are separated by "." and can 
 ## Specification
 
 ```
-period          = "."
-asterisk        = "*"
-gt              = ">"
-word            = (all printable ascii (33 to 126 inclusive) except period, asterisk or gt)+
-message-subject = word (period word | asterisk)* (period gt)?
-reply-to        = word (period word | asterisk)* (period gt)?
-reply-to        = word (period word)*
-stream-name     = word
-queue-name      = word
-durable-name    = word
+period           = "."
+asterisk         = "*"
+gt               = ">"
+dollar           = "$"
+printable        = all printable ascii (33 to 126 inclusive)
+word             = (printable except period, asterisk or gt)+
+prefix           = (printable except period, asterisk, gt or dollar)+
+message-subject  = word (period word | asterisk)* (period gt)?
+reply-to         = word (period word | asterisk)* (period gt)?
+reply-to         = word (period word)*
+stream-name      = word
+queue-name       = word
+durable-name     = word
+jetstream-prefix = prefix
+```
+
+## Alternate Unicode Support Specification
+
+```
+period           = "."
+asterisk         = "*"
+gt               = ">"
+dollar           = "$"
+printable        = all printable ascii (33 to 126 inclusive)
+unicode          = all characters > 127 /and unicode
+word             = (printable except period, asterisk or gt | unicode)+
+prefix           = (printable except period, asterisk, gt or dollar | unicode)+
+message-subject  = word (period word | asterisk)* (period gt)?
+reply-to         = word (period word | asterisk)* (period gt)?
+reply-to         = word (period word)*
+stream-name      = word
+queue-name       = word
+durable-name     = word
+jetstream-prefix = prefix
 ```
