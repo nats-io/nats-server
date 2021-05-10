@@ -40,7 +40,7 @@ type Authentication interface {
 // ClientAuthentication is an interface for client authentication
 type ClientAuthentication interface {
 	// Get options associated with a client
-	GetOpts() *clientOpts
+	GetOpts() *ClientOpts
 	// If TLS is enabled, TLS ConnectionState, nil otherwise
 	GetTLSConnectionState() *tls.ConnectionState
 	// Optionally map a user after auth.
