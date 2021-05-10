@@ -1852,9 +1852,13 @@ func TestServiceLatencyMissingResults(t *testing.T) {
 	defer sub.Unsubscribe()
 
 	// Create sync listener for latency.
-	lsub, _ := nc1.SubscribeSync("service.weather.latency")
+	latSubj := "service.weather.latency"
+	lsub, _ := nc1.SubscribeSync(latSubj)
 	defer lsub.Unsubscribe()
 	nc1.Flush()
+
+	// Make sure the subscription propagates to s2 server.
+	checkSubInterest(t, s2, "weather", latSubj, time.Second)
 
 	// Create requestor on s2.
 	nc2, err := nats.Connect(fmt.Sprintf("nats://%s:%s@%s:%d", "one", "password", opts2.Host, opts2.Port), nats.UseOldRequestStyle())
