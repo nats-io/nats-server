@@ -15,6 +15,7 @@ This document describes naming conventions for these protocol components:
 * reply to
 * queue name
 * durable name
+* account name
 
 ## Prior Work
 
@@ -28,17 +29,32 @@ A subject is comprised of 1 or more tokens. Tokens are separated by "." and can 
 ## Specification
 
 ```
-period           = "."
+dot              = "."
 asterisk         = "*"
+lt               = "<"
 gt               = ">"
 dollar           = "$"
+colon            = ":"
+double-quote     = ["]
+fwd-slash        = "/"
+backslash        = "\"
+pipe             = "|"
+question-mark    = "?"
+ampersand        = "&"
 printable        = all printable ascii (33 to 126 inclusive)
-term             = (printable except period, asterisk or gt)+
-prefix           = (printable except period, asterisk, gt or dollar)+
-message-subject  = term (period term | asterisk)* (period gt)?
-reply-to         = term (period term)*
+term             = (printable except dot, asterisk or gt)+
+prefix           = (printable except dot, asterisk, gt or dollar)+
+
+message-subject  = term (dot term | asterisk)* (dot gt)?
+reply-to         = term (dot term)*
 stream-name      = term
 queue-name       = term
 durable-name     = term
 jetstream-prefix = prefix
+account-name     = (printable except dot, asterisk, lt, gt, colon, double-quote, fwd-slash, backslash, pipe, question-mark, ampersand)+
+                   maximum 255 characters
 ```
+
+
+  
+
