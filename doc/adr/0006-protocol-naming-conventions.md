@@ -43,23 +43,3 @@ queue-name       = word
 durable-name     = word
 jetstream-prefix = prefix
 ```
-
-## Alternate UTF-8 Support Specification
-
-```
-period           = "."
-asterisk         = "*"
-gt               = ">"
-dollar           = "$"
-printable        = all printable ascii (33 to 126 inclusive)
-utf8             = all characters > 127
-word             = (printable except period, asterisk or gt | utf8)+
-prefix           = (printable except period, asterisk, gt or dollar | utf8)+
-message-subject  = word (period word | asterisk)* (period gt)?
-reply-to         = word (period word | asterisk)* (period gt)?
-reply-to         = word (period word)*
-stream-name      = word
-queue-name       = word
-durable-name     = word
-jetstream-prefix = prefix
-```
