@@ -2072,9 +2072,6 @@ func TestJetStreamClusterMirrorAndSourceWorkQueues(t *testing.T) {
 }
 
 func TestJetStreamClusterMirrorAndSourceInterestPolicyStream(t *testing.T) {
-	// FIXME(dlc) - Flaky on Travis, skip for now.
-	skip(t)
-
 	c := createJetStreamClusterExplicit(t, "WQ", 3)
 	defer c.shutdown()
 
@@ -2083,9 +2080,9 @@ func TestJetStreamClusterMirrorAndSourceInterestPolicyStream(t *testing.T) {
 	defer nc.Close()
 
 	_, err := js.AddStream(&nats.StreamConfig{
-		Name:      "WQ22",
+		Name:      "IP22",
 		Subjects:  []string{"foo"},
-		Replicas:  2,
+		Replicas:  3,
 		Retention: nats.InterestPolicy,
 	})
 	if err != nil {
@@ -2095,7 +2092,7 @@ func TestJetStreamClusterMirrorAndSourceInterestPolicyStream(t *testing.T) {
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     "M",
 		Replicas: 2,
-		Mirror:   &nats.StreamSource{Name: "WQ22"},
+		Mirror:   &nats.StreamSource{Name: "IP22"},
 	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -2104,7 +2101,7 @@ func TestJetStreamClusterMirrorAndSourceInterestPolicyStream(t *testing.T) {
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     "S",
 		Replicas: 2,
-		Sources:  []*nats.StreamSource{{Name: "WQ22"}},
+		Sources:  []*nats.StreamSource{{Name: "IP22"}},
 	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -2118,8 +2115,8 @@ func TestJetStreamClusterMirrorAndSourceInterestPolicyStream(t *testing.T) {
 
 	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
 		// This one will be 0 since no other interest exists.
-		if si, _ := js.StreamInfo("WQ22"); si.State.Msgs != 0 {
-			return fmt.Errorf("Expected no msgs for %q, got %d", "WQ22", si.State.Msgs)
+		if si, _ := js.StreamInfo("IP22"); si.State.Msgs != 0 {
+			return fmt.Errorf("Expected no msgs for %q, got %d", "IP22", si.State.Msgs)
 		}
 		if si, _ := js.StreamInfo("M"); si.State.Msgs != 1 {
 			return fmt.Errorf("Expected 1 msg for %q, got %d", "M", si.State.Msgs)
@@ -2130,7 +2127,7 @@ func TestJetStreamClusterMirrorAndSourceInterestPolicyStream(t *testing.T) {
 		return nil
 	})
 
-	// Now create other interest on WQ22.
+	// Now create other interest on IP22.
 	sub, err := js.SubscribeSync("foo")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -2145,8 +2142,8 @@ func TestJetStreamClusterMirrorAndSourceInterestPolicyStream(t *testing.T) {
 
 	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
 		// This one will be 0 since no other interest exists.
-		if si, _ := js.StreamInfo("WQ22"); si.State.Msgs != 1 {
-			return fmt.Errorf("Expected 1 msg for %q, got %d", "WQ22", si.State.Msgs)
+		if si, _ := js.StreamInfo("IP22"); si.State.Msgs != 1 {
+			return fmt.Errorf("Expected 1 msg for %q, got %d", "IP22", si.State.Msgs)
 		}
 		if si, _ := js.StreamInfo("M"); si.State.Msgs != 2 {
 			return fmt.Errorf("Expected 2 msgs for %q, got %d", "M", si.State.Msgs)

@@ -1586,6 +1586,25 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, doSample bool) {
 	}
 }
 
+// Determine if this is a truly filtered consumer. Modern clients will place filtered subjects
+// even if the stream only has a single non-wildcard subject designation.
+// Read lock should be held.
+func (o *consumer) isFiltered() bool {
+	if o.cfg.FilterSubject == _EMPTY_ {
+		return false
+	}
+	// If we are here we want to check if the filtered subject is
+	// a direct match for our only listed subject.
+	mset := o.mset
+	if mset == nil {
+		return true
+	}
+	if len(mset.cfg.Subjects) > 1 {
+		return true
+	}
+	return o.cfg.FilterSubject != mset.cfg.Subjects[0]
+}
+
 // Check if we need an ack for this store seq.
 // This is called for interest based retention streams to remove messages.
 func (o *consumer) needAck(sseq uint64) bool {
@@ -1604,9 +1623,9 @@ func (o *consumer) needAck(sseq uint64) bool {
 		state, err := o.store.State()
 		if err != nil || state == nil {
 			// Fall back to what we track internally for now.
-			needsAck := sseq > o.asflr && o.cfg.FilterSubject == _EMPTY_
+			needAck := sseq > o.asflr && !o.isFiltered()
 			o.mu.RUnlock()
-			return needsAck
+			return needAck
 		}
 		asflr, osseq = state.AckFloor.Stream, o.sseq
 		pending = state.Pending
@@ -2908,7 +2927,7 @@ func (o *consumer) setInitialPending() {
 	if !notFiltered {
 		// Check to see if we directly match the configured stream.
 		// Many clients will always send a filtered subject.
-		cfg := mset.cfg
+		cfg := &mset.cfg
 		if len(cfg.Subjects) == 1 && cfg.Subjects[0] == o.cfg.FilterSubject {
 			notFiltered = true
 		}
