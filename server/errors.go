@@ -208,6 +208,9 @@ var (
 
 	// ErrMemoryResourcesExceeded is returned when memory resources would be exceeded.
 	ErrMemoryResourcesExceeded = errors.New("insufficient memory resources available")
+
+	// ErrReplicasNotSupported is returned when a stream with replicas > 1 in non-clustered mode.
+	ErrReplicasNotSupported = errors.New("replicas > 1 not supported in non-clustered mode")
 )
 
 // configErr is a configuration error.

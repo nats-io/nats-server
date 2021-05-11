@@ -11122,13 +11122,10 @@ func TestJetStreamSourceBasics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if reply := m.Header.Get(JSStreamSource); reply == _EMPTY_ {
+	if shdr := m.Header.Get(JSStreamSource); shdr == _EMPTY_ {
 		t.Fatalf("Expected a header, got none")
-	} else {
-		sseq, _, _, _, _ := replyInfo(reply)
-		if sseq != 26 {
-			t.Fatalf("Expected header sequence of 26, got %d", sseq)
-		}
+	} else if _, sseq := streamAndSeq(shdr); sseq != 26 {
+		t.Fatalf("Expected header sequence of 26, got %d", sseq)
 	}
 
 	// Test Filters
@@ -11155,13 +11152,10 @@ func TestJetStreamSourceBasics(t *testing.T) {
 	if m, err = js.GetMsg("FMS2", 1); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if reply := m.Header.Get(JSStreamSource); reply == _EMPTY_ {
+	if shdr := m.Header.Get(JSStreamSource); shdr == _EMPTY_ {
 		t.Fatalf("Expected a header, got none")
-	} else {
-		sseq, _, _, _, _ := replyInfo(reply)
-		if sseq != 11 {
-			t.Fatalf("Expected header sequence of 11, got %d", sseq)
-		}
+	} else if _, sseq := streamAndSeq(shdr); sseq != 11 {
+		t.Fatalf("Expected header sequence of 11, got %d", sseq)
 	}
 }
 
@@ -11176,7 +11170,7 @@ func TestJetStreamOperatorAccounts(t *testing.T) {
 	nc, js := jsClientConnect(t, s, nats.UserCredentials("./configs/one.creds"))
 	defer nc.Close()
 
-	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 2}); err != nil {
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST"}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
