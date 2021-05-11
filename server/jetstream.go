@@ -32,6 +32,7 @@ import (
 
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
+	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
 )
 
@@ -172,7 +173,7 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 }
 
 // Check to make sure directory has the jetstream directory.
-// We will have ot properly configured here now regardless, so need to look inside.
+// We will have it properly configured here now regardless, so need to look inside.
 func (s *Server) checkStoreDir(cfg *JetStreamConfig) {
 	fis, _ := ioutil.ReadDir(cfg.StoreDir)
 	// If we have nothing underneath us, could be just starting new, but if we see this we can check.
@@ -187,8 +188,6 @@ func (s *Server) checkStoreDir(cfg *JetStreamConfig) {
 		return
 	}
 
-	s.Warnf("JetStream store being migrated to a new directory structure")
-
 	for _, fi := range fis {
 		// Skip the 'jetstream' directory.
 		if fi.Name() == JetStreamStoreDir {
@@ -197,8 +196,10 @@ func (s *Server) checkStoreDir(cfg *JetStreamConfig) {
 		// Let's see if this is an account.
 		if accName := fi.Name(); accName != _EMPTY_ {
 			_, ok := s.accounts.Load(accName)
-			if !ok {
-				if acc, err := s.lookupAccount(accName); err != nil && acc != nil {
+			if !ok && s.AccountResolver() != nil && nkeys.IsValidPublicAccountKey(accName) {
+				if _, err := s.fetchAccount(accName); err != nil {
+					s.Errorf("Unable to resolve account %q: %v", accName, err)
+				} else {
 					ok = true
 				}
 			}
@@ -207,7 +208,7 @@ func (s *Server) checkStoreDir(cfg *JetStreamConfig) {
 			if ok {
 				old := filepath.Join(filepath.Dir(cfg.StoreDir), fi.Name())
 				new := filepath.Join(cfg.StoreDir, fi.Name())
-				s.Debugf("JetStream relocated %q to %q", old, new)
+				s.Noticef("JetStream relocated account %q to %q", old, new)
 				os.Rename(old, new)
 			}
 		}

@@ -1370,7 +1370,7 @@ func (s *Server) updateAccountWithClaimJWT(acc *Account, claimJWT string) error 
 func (s *Server) fetchRawAccountClaims(name string) (string, error) {
 	accResolver := s.AccountResolver()
 	if accResolver == nil {
-		return "", ErrNoAccountResolver
+		return _EMPTY_, ErrNoAccountResolver
 	}
 	// Need to do actual Fetch
 	start := time.Now()
