@@ -3378,9 +3378,12 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	cfg := &ccfg
 
 	// Check for stream limits here before proposing. These need to be tracked from meta layer, not jsa.
-	jsa.mu.RLock()
+	js.mu.RLock()
 	asa := cc.streams[acc.Name]
 	numStreams := len(asa)
+	js.mu.RUnlock()
+
+	jsa.mu.RLock()
 	exceeded := jsa.limits.MaxStreams > 0 && numStreams >= jsa.limits.MaxStreams
 	jsa.mu.RUnlock()
 
