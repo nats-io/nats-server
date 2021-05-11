@@ -164,7 +164,54 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 		cfg.StoreDir = filepath.Join(os.TempDir(), JetStreamStoreDir)
 	}
 
+	// We will consistently place the 'jetstream' directory under the storedir that was handed to us. Prior to 2.2.3 though
+	// we could have a directory on disk without the 'jetstream' directory. This will check and fix if needed.
+	s.checkStoreDir(&cfg)
+
 	return s.enableJetStream(cfg)
+}
+
+// Check to make sure directory has the jetstream directory.
+// We will have ot properly configured here now regardless, so need to look inside.
+func (s *Server) checkStoreDir(cfg *JetStreamConfig) {
+	fis, _ := ioutil.ReadDir(cfg.StoreDir)
+	// If we have nothing underneath us, could be just starting new, but if we see this we can check.
+	if len(fis) != 0 {
+		return
+	}
+	// Let's check the directory above. If it has us 'jetstream' but also other stuff that we can
+	// identify as accounts then we can fix.
+	fis, _ = ioutil.ReadDir(filepath.Dir(cfg.StoreDir))
+	// If just one that is us 'jetstream' and all is ok.
+	if len(fis) == 1 {
+		return
+	}
+
+	s.Warnf("JetStream store being migrated to a new directory structure")
+
+	for _, fi := range fis {
+		// Skip the 'jetstream' directory.
+		if fi.Name() == JetStreamStoreDir {
+			continue
+		}
+		// Let's see if this is an account.
+		if accName := fi.Name(); accName != _EMPTY_ {
+			_, ok := s.accounts.Load(accName)
+			if !ok {
+				if acc, err := s.lookupAccount(accName); err != nil && acc != nil {
+					ok = true
+				}
+			}
+			// If this seems to be an account go ahead and move the directory. This will include all assets
+			// like streams and consumers.
+			if ok {
+				old := filepath.Join(filepath.Dir(cfg.StoreDir), fi.Name())
+				new := filepath.Join(cfg.StoreDir, fi.Name())
+				s.Debugf("JetStream relocated %q to %q", old, new)
+				os.Rename(old, new)
+			}
+		}
+	}
 }
 
 // enableJetStream will start up the JetStream subsystem.
