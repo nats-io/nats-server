@@ -1240,7 +1240,11 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-
+		if cfg.Duplicates != time.Duration(0) {
+			resp.Error = &ApiError{Code: 400, Description: "stream mirrors do not make use of a de-duplication window"}
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
 		// We do not require other stream to exist anymore, but if we can see it check payloads.
 		exists, maxMsgSize, subs := hasStream(cfg.Mirror.Name)
 		if len(subs) > 0 {
