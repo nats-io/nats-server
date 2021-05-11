@@ -6236,6 +6236,90 @@ func TestJetStreamClusterDomains(t *testing.T) {
 	}
 }
 
+// Issue #2202
+func TestJetStreamClusterDomainsAndSameNameSources(t *testing.T) {
+	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: CORE, store_dir:", 1)
+	c := createJetStreamCluster(t, tmpl, "CORE", _EMPTY_, 3, 9323, true)
+	defer c.shutdown()
+
+	tmpl = strings.Replace(jsClusterTemplWithSingleLeafNode, "store_dir:", "domain: SPOKE-1, store_dir:", 1)
+	spoke1 := c.createLeafNodeWithTemplate("LN-SPOKE-1", tmpl)
+	defer spoke1.Shutdown()
+
+	tmpl = strings.Replace(jsClusterTemplWithSingleLeafNode, "store_dir:", "domain: SPOKE-2, store_dir:", 1)
+	spoke2 := c.createLeafNodeWithTemplate("LN-SPOKE-2", tmpl)
+	defer spoke2.Shutdown()
+
+	subjFor := func(s *Server) string {
+		switch s {
+		case spoke1:
+			return "foo"
+		case spoke2:
+			return "bar"
+		}
+		return "TEST"
+	}
+
+	// Create the same name stream in both spoke domains.
+	for _, s := range []*Server{spoke1, spoke2} {
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{subjFor(s)},
+		})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		nc.Close()
+	}
+
+	// Now connect to the hub and create a sourced stream from both leafnode streams.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name: "S",
+		Sources: []*nats.StreamSource{
+			{
+				Name:     "TEST",
+				External: &nats.ExternalStream{APIPrefix: "$JS.SPOKE-1.API"},
+			},
+			{
+				Name:     "TEST",
+				External: &nats.ExternalStream{APIPrefix: "$JS.SPOKE-2.API"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Publish a message to each spoke stream and we will check that our sourced stream gets both.
+	for _, s := range []*Server{spoke1, spoke2} {
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+		js.Publish(subjFor(s), []byte("DOUBLE TROUBLE"))
+		si, err := js.StreamInfo("TEST")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if si.State.Msgs != 1 {
+			t.Fatalf("Expected 1 msg, got %d", si.State.Msgs)
+		}
+		nc.Close()
+	}
+
+	// Now make sure we have 2 msgs in our sourced stream.
+	si, err := js.StreamInfo("S")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.State.Msgs != 2 {
+		t.Fatalf("Expected 2 msgs, got %d", si.State.Msgs)
+	}
+}
+
 func TestJetStreamClusterLeafDifferentAccounts(t *testing.T) {
 	c := createJetStreamCluster(t, jsClusterAccountsTempl, "HUB", _EMPTY_, 2, 33133, false)
 	defer c.shutdown()

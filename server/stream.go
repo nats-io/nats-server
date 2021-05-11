@@ -116,6 +116,9 @@ type StreamSource struct {
 	OptStartTime  *time.Time      `json:"opt_start_time,omitempty"`
 	FilterSubject string          `json:"filter_subject,omitempty"`
 	External      *ExternalStream `json:"external,omitempty"`
+
+	// Internal
+	iname string // For indexing when stream names are the same for multiple sources.
 }
 
 // ExternalStream allows you to qualify access to a stream source in another account.
@@ -182,6 +185,7 @@ type stream struct {
 
 type sourceInfo struct {
 	name  string
+	iname string
 	cname string
 	sub   *subscription
 	msgs  *inbound
@@ -248,6 +252,11 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		return nil, err
 	}
 
+	singleServerMode := !s.JetStreamIsClustered() && s.standAloneMode()
+	if singleServerMode && cfg.Replicas > 1 {
+		return nil, ErrReplicasNotSupported
+	}
+
 	jsa.mu.Lock()
 	js := jsa.js
 	if mset, ok := jsa.streams[cfg.Name]; ok {
@@ -298,6 +307,13 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	} else if len(cfg.Subjects) == 0 && len(cfg.Sources) == 0 {
 		jsa.mu.Unlock()
 		return nil, fmt.Errorf("stream needs at least one configured subject or mirror")
+	}
+
+	// Setup our internal indexed names here for sources.
+	if len(cfg.Sources) > 0 {
+		for _, ssi := range cfg.Sources {
+			ssi.setIndexName()
+		}
 	}
 
 	// Check for overlapping subjects. These are not allowed for now.
@@ -376,7 +392,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 
 	// Call directly to set leader if not in clustered mode.
 	// This can be called though before we actually setup clustering, so check both.
-	if !s.JetStreamIsClustered() && s.standAloneMode() {
+	if singleServerMode {
 		if err := mset.setLeader(true); err != nil {
 			mset.stop(true, false)
 			return nil, err
@@ -402,6 +418,16 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	}
 
 	return mset, nil
+}
+
+// Sets the index name. Usually just the stream name but when the stream is external we will
+// use additional information in case the stream names are the same.
+func (ssi *StreamSource) setIndexName() {
+	if ssi.External != nil {
+		ssi.iname = ssi.Name + ":" + string(getHash(ssi.External.ApiPrefix))
+	} else {
+		ssi.iname = ssi.Name
+	}
 }
 
 func (mset *stream) streamAssignment() *streamAssignment {
@@ -880,22 +906,23 @@ func (mset *stream) update(config *StreamConfig) error {
 				current[s.Name] = struct{}{}
 			}
 			for _, s := range cfg.Sources {
-				if _, ok := current[s.Name]; !ok {
+				s.setIndexName()
+				if _, ok := current[s.iname]; !ok {
 					if mset.sources == nil {
 						mset.sources = make(map[string]*sourceInfo)
 					}
 					mset.cfg.Sources = append(mset.cfg.Sources, s)
-					si := &sourceInfo{name: s.Name, msgs: &inbound{mch: make(chan struct{}, 1)}}
-					mset.sources[s.Name] = si
-					mset.setStartingSequenceForSource(s.Name)
-					mset.setSourceConsumer(s.Name, si.sseq+1)
+					si := &sourceInfo{name: s.Name, iname: s.iname, msgs: &inbound{mch: make(chan struct{}, 1)}}
+					mset.sources[s.iname] = si
+					mset.setStartingSequenceForSource(s.iname)
+					mset.setSourceConsumer(s.iname, si.sseq+1)
 				}
 				delete(current, s.Name)
 			}
 			// What is left in current needs to be deleted.
-			for sname := range current {
-				mset.cancelSourceConsumer(sname)
-				delete(mset.sources, sname)
+			for iname := range current {
+				mset.cancelSourceConsumer(iname)
+				delete(mset.sources, iname)
 			}
 		}
 	}
@@ -1585,8 +1612,8 @@ func (mset *stream) cancelSourceConsumer(sname string) {
 }
 
 // Lock should be held.
-func (mset *stream) setSourceConsumer(sname string, seq uint64) {
-	si := mset.sources[sname]
+func (mset *stream) setSourceConsumer(iname string, seq uint64) {
+	si := mset.sources[iname]
 	if si == nil {
 		return
 	}
@@ -1599,7 +1626,7 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 
 	si.sseq, si.dseq = seq, 0
 	si.last = time.Now()
-	ssi := mset.streamSource(sname)
+	ssi := mset.streamSource(si.name)
 
 	// Determine subjects etc.
 	var deliverSubject string
@@ -1623,7 +1650,7 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 	si.lreq = time.Now()
 
 	req := &CreateConsumerRequest{
-		Stream: sname,
+		Stream: si.name,
 		Config: ConsumerConfig{
 			DeliverSubject: deliverSubject,
 			AckPolicy:      AckNone,
@@ -1666,7 +1693,7 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 	})
 
 	b, _ := json.Marshal(req)
-	subject := fmt.Sprintf(JSApiConsumerCreateT, sname)
+	subject := fmt.Sprintf(JSApiConsumerCreateT, si.name)
 	if ext != nil {
 		subject = strings.Replace(subject, JSApiPrefix, ext.ApiPrefix, 1)
 		subject = strings.ReplaceAll(subject, "..", ".")
@@ -1678,13 +1705,13 @@ func (mset *stream) setSourceConsumer(sname string, seq uint64) {
 		select {
 		case ccr := <-respCh:
 			mset.mu.Lock()
-			if si := mset.sources[sname]; si != nil {
+			if si := mset.sources[iname]; si != nil {
 				si.err = nil
 				if ccr.Error != nil || ccr.ConsumerInfo == nil {
 					mset.srv.Warnf("JetStream error response for create source consumer: %+v", ccr.Error)
 					si.err = ccr.Error
 					// We will retry every 10 seconds or so
-					mset.cancelSourceConsumer(sname)
+					mset.cancelSourceConsumer(iname)
 				} else {
 					if si.sseq != ccr.ConsumerInfo.Delivered.Stream {
 						si.sseq = ccr.ConsumerInfo.Delivered.Stream + 1
@@ -1753,10 +1780,10 @@ func (mset *stream) processSourceMsgs(si *sourceInfo) {
 		case <-t.C:
 			mset.mu.RLock()
 			stalled := time.Since(si.last) > 3*sourceHealthCheckInterval
-			sname := si.name
+			iname := si.iname
 			mset.mu.RUnlock()
 			if stalled {
-				mset.retrySourceConsumer(sname)
+				mset.retrySourceConsumer(iname)
 			}
 		}
 	}
@@ -1812,7 +1839,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 			// For idle heartbeats make sure we did not miss anything.
 			if ldseq := parseInt64(getHeader(JSLastConsumerSeq, m.hdr)); ldseq > 0 && uint64(ldseq) != si.dseq {
 				needsRetry = true
-				mset.retrySourceConsumerAtSeq(si.name, si.sseq+1)
+				mset.retrySourceConsumerAtSeq(si.iname, si.sseq+1)
 			}
 		}
 		mset.mu.Unlock()
@@ -1835,7 +1862,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 			si.cname = tokenAt(m.rply, 4)
 			si.dseq, si.sseq = dseq, sseq
 		} else {
-			mset.retrySourceConsumerAtSeq(si.name, si.sseq+1)
+			mset.retrySourceConsumerAtSeq(si.iname, si.sseq+1)
 			mset.mu.Unlock()
 			return false
 		}
@@ -1858,7 +1885,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 		hdr = removeHeaderIfPresent(hdr, JSStreamSource)
 	}
 	// Hold onto the origin reply which has all the metadata.
-	hdr = genHeader(hdr, JSStreamSource, m.rply)
+	hdr = genHeader(hdr, JSStreamSource, si.genSourceHeader(m.rply))
 
 	var err error
 	var clseq uint64
@@ -1877,8 +1904,8 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	if err != nil {
 		s := mset.srv
 		if err == errLastSeqMismatch {
-			mset.cancelSourceConsumer(si.name)
-			mset.retrySourceConsumer(si.name)
+			mset.cancelSourceConsumer(si.iname)
+			mset.retrySourceConsumer(si.iname)
 		} else {
 			s.Warnf("JetStream got an error processing inbound source msg: %v", err)
 		}
@@ -1891,20 +1918,55 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	return true
 }
 
-func streamAndSeq(subject string) (string, uint64) {
-	tsa := [expectedNumReplyTokens]string{}
+// Generate a new style source header.
+func (si *sourceInfo) genSourceHeader(reply string) string {
+	var b strings.Builder
+	b.WriteString(si.iname)
+	b.WriteByte(' ')
+	// Grab sequence as text here from reply subject.
+	var tsa [expectedNumReplyTokens]string
 	start, tokens := 0, tsa[:0]
-	for i := 0; i < len(subject); i++ {
-		if subject[i] == btsep {
-			tokens = append(tokens, subject[start:i])
-			start = i + 1
+	for i := 0; i < len(reply); i++ {
+		if reply[i] == btsep {
+			tokens, start = append(tokens, reply[start:i]), i+1
 		}
 	}
-	tokens = append(tokens, subject[start:])
+	tokens = append(tokens, reply[start:])
+	seq := "1" // Default
+	if len(tokens) == expectedNumReplyTokens && tokens[0] == "$JS" && tokens[1] == "ACK" {
+		seq = tokens[5]
+	}
+	b.WriteString(seq)
+	return b.String()
+}
+
+// Original version of header that stored ack reply direct.
+func streamAndSeqFromAckReply(reply string) (string, uint64) {
+	tsa := [expectedNumReplyTokens]string{}
+	start, tokens := 0, tsa[:0]
+	for i := 0; i < len(reply); i++ {
+		if reply[i] == btsep {
+			tokens, start = append(tokens, reply[start:i]), i+1
+		}
+	}
+	tokens = append(tokens, reply[start:])
 	if len(tokens) != expectedNumReplyTokens || tokens[0] != "$JS" || tokens[1] != "ACK" {
 		return _EMPTY_, 0
 	}
 	return tokens[2], uint64(parseAckReplyNum(tokens[5]))
+}
+
+// Extract the stream (indexed name) and sequence from the source header.
+func streamAndSeq(shdr string) (string, uint64) {
+	if strings.HasPrefix(shdr, jsAckPre) {
+		return streamAndSeqFromAckReply(shdr)
+	}
+	// New version which is stream index name <SPC> sequence
+	fields := strings.Fields(shdr)
+	if len(fields) != 2 {
+		return _EMPTY_, 0
+	}
+	return fields[0], uint64(parseAckReplyNum(fields[1]))
 }
 
 // Lock should be held.
@@ -1928,12 +1990,12 @@ func (mset *stream) setStartingSequenceForSource(sname string) {
 		if err != nil || len(hdr) == 0 {
 			continue
 		}
-		reply := getHeader(JSStreamSource, hdr)
-		if len(reply) == 0 {
+		ss := getHeader(JSStreamSource, hdr)
+		if len(ss) == 0 {
 			continue
 		}
-		name, sseq := streamAndSeq(string(reply))
-		if name == sname {
+		iname, sseq := streamAndSeq(string(ss))
+		if iname == sname {
 			si.sseq = sseq
 			si.dseq = 0
 			return
@@ -1947,13 +2009,18 @@ func (mset *stream) setStartingSequenceForSource(sname string) {
 // This can be slow in degenerative cases.
 // Lock should be held.
 func (mset *stream) startingSequenceForSources() {
-	mset.sources = make(map[string]*sourceInfo)
 	if len(mset.cfg.Sources) == 0 {
 		return
 	}
+	// Always reset here.
+	mset.sources = make(map[string]*sourceInfo)
+
 	for _, ssi := range mset.cfg.Sources {
-		si := &sourceInfo{name: ssi.Name, msgs: &inbound{mch: make(chan struct{}, 1)}}
-		mset.sources[ssi.Name] = si
+		if ssi.iname == _EMPTY_ {
+			ssi.setIndexName()
+		}
+		si := &sourceInfo{name: ssi.Name, iname: ssi.iname, msgs: &inbound{mch: make(chan struct{}, 1)}}
+		mset.sources[ssi.iname] = si
 	}
 
 	var state StreamState
@@ -1984,11 +2051,11 @@ func (mset *stream) startingSequenceForSources() {
 		if err != nil || len(hdr) == 0 {
 			continue
 		}
-		reply := getHeader(JSStreamSource, hdr)
-		if len(reply) == 0 {
+		ss := getHeader(JSStreamSource, hdr)
+		if len(ss) == 0 {
 			continue
 		}
-		name, sseq := streamAndSeq(string(reply))
+		name, sseq := streamAndSeq(string(ss))
 		// Only update active in case we have older ones in here that got configured out.
 		if si := mset.sources[name]; si != nil {
 			if _, ok := seqs[name]; !ok {
@@ -2019,8 +2086,8 @@ func (mset *stream) setupSourceConsumers() error {
 
 	// Setup our consumers at the proper starting position.
 	for _, ssi := range mset.cfg.Sources {
-		if si := mset.sources[ssi.Name]; si != nil {
-			mset.setSourceConsumer(ssi.Name, si.sseq+1)
+		if si := mset.sources[ssi.iname]; si != nil {
+			mset.setSourceConsumer(ssi.iname, si.sseq+1)
 		}
 	}
 
@@ -2881,7 +2948,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	// Now check for sources.
 	if len(mset.sources) > 0 {
 		for _, si := range mset.sources {
-			mset.cancelSourceConsumer(si.name)
+			mset.cancelSourceConsumer(si.iname)
 		}
 	}
 	mset.mu.Unlock()
