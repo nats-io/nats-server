@@ -167,25 +167,35 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 
 	// We will consistently place the 'jetstream' directory under the storedir that was handed to us. Prior to 2.2.3 though
 	// we could have a directory on disk without the 'jetstream' directory. This will check and fix if needed.
-	s.checkStoreDir(&cfg)
+	if err := s.checkStoreDir(&cfg); err != nil {
+		return err
+	}
 
 	return s.enableJetStream(cfg)
 }
 
 // Check to make sure directory has the jetstream directory.
 // We will have it properly configured here now regardless, so need to look inside.
-func (s *Server) checkStoreDir(cfg *JetStreamConfig) {
+func (s *Server) checkStoreDir(cfg *JetStreamConfig) error {
 	fis, _ := ioutil.ReadDir(cfg.StoreDir)
 	// If we have nothing underneath us, could be just starting new, but if we see this we can check.
 	if len(fis) != 0 {
-		return
+		return nil
 	}
 	// Let's check the directory above. If it has us 'jetstream' but also other stuff that we can
 	// identify as accounts then we can fix.
 	fis, _ = ioutil.ReadDir(filepath.Dir(cfg.StoreDir))
 	// If just one that is us 'jetstream' and all is ok.
 	if len(fis) == 1 {
-		return
+		return nil
+	}
+
+	haveJetstreamDir := false
+	for _, fi := range fis {
+		if fi.Name() == JetStreamStoreDir {
+			haveJetstreamDir = true
+			break
+		}
 	}
 
 	for _, fi := range fis {
@@ -206,13 +216,24 @@ func (s *Server) checkStoreDir(cfg *JetStreamConfig) {
 			// If this seems to be an account go ahead and move the directory. This will include all assets
 			// like streams and consumers.
 			if ok {
+				if !haveJetstreamDir {
+					err := os.Mkdir(filepath.Join(filepath.Dir(cfg.StoreDir), JetStreamStoreDir), 0750)
+					if err != nil {
+						return err
+					}
+					haveJetstreamDir = true
+				}
 				old := filepath.Join(filepath.Dir(cfg.StoreDir), fi.Name())
 				new := filepath.Join(cfg.StoreDir, fi.Name())
 				s.Noticef("JetStream relocated account %q to %q", old, new)
-				os.Rename(old, new)
+				if err := os.Rename(old, new); err != nil {
+					return err
+				}
 			}
 		}
 	}
+
+	return nil
 }
 
 // enableJetStream will start up the JetStream subsystem.
@@ -223,7 +244,7 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 
 	// FIXME(dlc) - Allow memory only operation?
 	if stat, err := os.Stat(cfg.StoreDir); os.IsNotExist(err) {
-		if err := os.MkdirAll(cfg.StoreDir, 0755); err != nil {
+		if err := os.MkdirAll(cfg.StoreDir, 0750); err != nil {
 			return fmt.Errorf("could not create storage directory - %v", err)
 		}
 	} else {
