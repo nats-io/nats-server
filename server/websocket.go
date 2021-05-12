@@ -769,11 +769,16 @@ func (w *srvWebsocket) checkOrigin(r *http.Request) error {
 		return nil
 	}
 	origin := r.Header.Get("Origin")
-	if origin == "" {
+	if origin == _EMPTY_ {
 		origin = r.Header.Get("Sec-Websocket-Origin")
 	}
-	if origin == "" {
-		return errors.New("origin not provided")
+	// If theader is not present, we will accept.
+	// From https://datatracker.ietf.org/doc/html/rfc6455#section-1.6
+	// "Naturally, when the WebSocket Protocol is used by a dedicated client
+	// directly (i.e., not from a web page through a web browser), the origin
+	// model is not useful, as the client can provide any arbitrary origin string."
+	if origin == _EMPTY_ {
+		return nil
 	}
 	u, err := url.ParseRequestURI(origin)
 	if err != nil {
