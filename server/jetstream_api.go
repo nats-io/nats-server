@@ -3243,7 +3243,7 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 			return
 		}
 
-		obs := mset.getConsumers()
+		obs := mset.getPublicConsumers()
 		sort.Slice(obs, func(i, j int) bool {
 			return strings.Compare(obs[i].name, obs[j].name) < 0
 		})
@@ -3337,7 +3337,7 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 		return
 	}
 
-	obs := mset.getConsumers()
+	obs := mset.getPublicConsumers()
 	sort.Slice(obs, func(i, j int) bool {
 		return strings.Compare(obs[i].name, obs[j].name) < 0
 	})

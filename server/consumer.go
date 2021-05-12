@@ -2584,35 +2584,40 @@ func (o *consumer) selectSubjectLast() {
 
 // Will select the starting sequence.
 func (o *consumer) selectStartingSeqNo() {
-	stats := o.mset.store.State()
-	if o.cfg.OptStartSeq == 0 {
-		if o.cfg.DeliverPolicy == DeliverAll {
-			o.sseq = stats.FirstSeq
-		} else if o.cfg.DeliverPolicy == DeliverLast {
-			o.sseq = stats.LastSeq
-			// If we are partitioned here we may need to walk backwards.
-			if o.cfg.FilterSubject != _EMPTY_ {
-				o.selectSubjectLast()
+	if o.mset == nil || o.mset.store == nil {
+		o.sseq = 1
+	} else {
+		stats := o.mset.store.State()
+		if o.cfg.OptStartSeq == 0 {
+			if o.cfg.DeliverPolicy == DeliverAll {
+				o.sseq = stats.FirstSeq
+			} else if o.cfg.DeliverPolicy == DeliverLast {
+				o.sseq = stats.LastSeq
+				// If we are partitioned here we may need to walk backwards.
+				if o.cfg.FilterSubject != _EMPTY_ {
+					o.selectSubjectLast()
+				}
+			} else if o.cfg.OptStartTime != nil {
+				// If we are here we are time based.
+				// TODO(dlc) - Once clustered can't rely on this.
+				o.sseq = o.mset.store.GetSeqFromTime(*o.cfg.OptStartTime)
+			} else {
+				// Default is deliver new only.
+				o.sseq = stats.LastSeq + 1
 			}
-		} else if o.cfg.OptStartTime != nil {
-			// If we are here we are time based.
-			// TODO(dlc) - Once clustered can't rely on this.
-			o.sseq = o.mset.store.GetSeqFromTime(*o.cfg.OptStartTime)
 		} else {
-			// Default is deliver new only.
+			o.sseq = o.cfg.OptStartSeq
+		}
+
+		if stats.FirstSeq == 0 {
+			o.sseq = 1
+		} else if o.sseq < stats.FirstSeq {
+			o.sseq = stats.FirstSeq
+		} else if o.sseq > stats.LastSeq {
 			o.sseq = stats.LastSeq + 1
 		}
-	} else {
-		o.sseq = o.cfg.OptStartSeq
 	}
 
-	if stats.FirstSeq == 0 {
-		o.sseq = 1
-	} else if o.sseq < stats.FirstSeq {
-		o.sseq = stats.FirstSeq
-	} else if o.sseq > stats.LastSeq {
-		o.sseq = stats.LastSeq + 1
-	}
 	// Always set delivery sequence to 1.
 	o.dseq = 1
 	// Set ack delivery floor to delivery-1
@@ -2919,7 +2924,7 @@ func (o *consumer) requestNextMsgSubject() string {
 // mset lock should be held.
 func (o *consumer) setInitialPending() {
 	mset := o.mset
-	if mset == nil {
+	if mset == nil || mset.store == nil {
 		return
 	}
 	// notFiltered means we want all messages.

@@ -1446,8 +1446,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 
 			// Check to see if we have restored consumers here.
 			// These are not currently assigned so we will need to do so here.
-			if consumers := mset.getConsumers(); len(consumers) > 0 {
-				for _, o := range mset.getConsumers() {
+			if consumers := mset.getPublicConsumers(); len(consumers) > 0 {
+				for _, o := range consumers {
 					rg := cc.createGroupForConsumer(sa)
 					// Pick a preferred leader.
 					rg.setPreferred()
@@ -2245,7 +2245,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 
 					// Check to see if we have restored consumers here.
 					// These are not currently assigned so we will need to do so here.
-					if consumers := mset.getConsumers(); len(consumers) > 0 {
+					if consumers := mset.getPublicConsumers(); len(consumers) > 0 {
 						js.mu.RLock()
 						cc := js.cluster
 						js.mu.RUnlock()
