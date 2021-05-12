@@ -9095,6 +9095,72 @@ func TestJetStreamServerResourcesConfig(t *testing.T) {
 	}
 }
 
+// From 2.2.2 to 2.2.3 we fixed a bug that would not consistently place a jetstream directory
+// under the store directory configured. However there were some cases where the directory was
+// created that way and therefore 2.2.3 would start and not recognize the existing accounts,
+// streams and consumers.
+func TestJetStreamStoreDirectoryFix(t *testing.T) {
+	sd := filepath.Join(os.TempDir(), "sd_test")
+	defer removeDir(t, sd)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf("listen: 127.0.0.1:-1\njetstream: {store_dir: %q}\n", sd)))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST"}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if _, err := js.Publish("TEST", []byte("TSS")); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+	// Push based.
+	sub, err := js.SubscribeSync("TEST", nats.Durable("dlc"))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer sub.Unsubscribe()
+
+	// Now shutdown the server.
+	nc.Close()
+	s.Shutdown()
+
+	// Now move stuff up from the jetstream directory etc.
+	jssd := filepath.Join(sd, JetStreamStoreDir)
+	fis, _ := ioutil.ReadDir(jssd)
+	// This will be accounts, move them up one directory.
+	for _, fi := range fis {
+		os.Rename(filepath.Join(jssd, fi.Name()), filepath.Join(sd, fi.Name()))
+	}
+	removeDir(t, jssd)
+
+	// Restart our server. Make sure our assets got moved.
+	s, _ = RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	var names []string
+	for name := range js.StreamNames() {
+		names = append(names, name)
+	}
+	if len(names) != 1 {
+		t.Fatalf("Expected only 1 stream but got %d", len(names))
+	}
+	names = names[:0]
+	for name := range js.ConsumerNames("TEST") {
+		names = append(names, name)
+	}
+	if len(names) != 1 {
+		t.Fatalf("Expected only 1 consumer but got %d", len(names))
+	}
+}
+
 func TestJetStreamPushConsumersPullError(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
