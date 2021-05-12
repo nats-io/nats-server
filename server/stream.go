@@ -103,10 +103,11 @@ type PeerInfo struct {
 
 // StreamSourceInfo shows information about an upstream stream source.
 type StreamSourceInfo struct {
-	Name   string        `json:"name"`
-	Lag    uint64        `json:"lag"`
-	Active time.Duration `json:"active"`
-	Error  *ApiError     `json:"error,omitempty"`
+	Name     string          `json:"name"`
+	External *ExternalStream `json:"external,omitempty"`
+	Lag      uint64          `json:"lag"`
+	Active   time.Duration   `json:"active"`
+	Error    *ApiError       `json:"error,omitempty"`
 }
 
 // StreamSource dictates how streams can source from other streams.
@@ -117,7 +118,7 @@ type StreamSource struct {
 	FilterSubject string          `json:"filter_subject,omitempty"`
 	External      *ExternalStream `json:"external,omitempty"`
 
-	// Internal
+	// Internale
 	iname string // For indexing when stream names are the same for multiple sources.
 }
 
@@ -1151,7 +1152,20 @@ func (mset *stream) sourceInfo(si *sourceInfo) *StreamSourceInfo {
 	if si == nil {
 		return nil
 	}
-	return &StreamSourceInfo{Name: si.name, Lag: si.lag, Active: time.Since(si.last), Error: si.err}
+	ssi := &StreamSourceInfo{Name: si.name, Lag: si.lag, Active: time.Since(si.last), Error: si.err}
+	var ext *ExternalStream
+	if mset.cfg.Mirror != nil {
+		ext = mset.cfg.Mirror.External
+	} else if ss := mset.streamSource(si.iname); ss != nil && ss.External != nil {
+		ext = ss.External
+	}
+	if ext != nil {
+		ssi.External = &ExternalStream{
+			ApiPrefix:     ext.ApiPrefix,
+			DeliverPrefix: ext.DeliverPrefix,
+		}
+	}
+	return ssi
 }
 
 // Return our source info for our mirror.
@@ -1563,9 +1577,9 @@ func (mset *stream) setupMirrorConsumer() error {
 	return nil
 }
 
-func (mset *stream) streamSource(sname string) *StreamSource {
+func (mset *stream) streamSource(iname string) *StreamSource {
 	for _, ssi := range mset.cfg.Sources {
-		if ssi.Name == sname {
+		if ssi.iname == iname {
 			return ssi
 		}
 	}
@@ -1626,7 +1640,7 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64) {
 
 	si.sseq, si.dseq = seq, 0
 	si.last = time.Now()
-	ssi := mset.streamSource(si.name)
+	ssi := mset.streamSource(iname)
 
 	// Determine subjects etc.
 	var deliverSubject string
