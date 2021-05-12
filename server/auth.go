@@ -247,6 +247,7 @@ func (s *Server) configureAuthorization() {
 	// This just checks and sets up the user map if we have multiple users.
 	if opts.CustomClientAuthentication != nil {
 		s.info.AuthRequired = true
+		opts.Websocket.BearerAuth = bearerAuth
 	} else if s.trustedKeys != nil {
 		s.info.AuthRequired = true
 	} else if opts.Nkeys != nil || opts.Users != nil {
