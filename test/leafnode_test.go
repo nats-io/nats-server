@@ -427,11 +427,15 @@ func TestLeafNodeMsgDelivery(t *testing.T) {
 }
 
 func TestLeafNodeAndRoutes(t *testing.T) {
-	srvA, optsA := RunServerWithConfig("./configs/srv_a_leaf.conf")
-	srvB, optsB := RunServerWithConfig("./configs/srv_b.conf")
-	checkClusterFormed(t, srvA, srvB)
+	optsA := LoadConfig("./configs/srv_a_leaf.conf")
+	optsA.DisableShortFirstPing = true
+	optsB := LoadConfig("./configs/srv_b.conf")
+	optsB.DisableShortFirstPing = true
+	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
+	srvB := RunServer(optsB)
 	defer srvB.Shutdown()
+	checkClusterFormed(t, srvA, srvB)
 
 	lc := createLeafConn(t, optsA.LeafNode.Host, optsA.LeafNode.Port)
 	defer lc.Close()

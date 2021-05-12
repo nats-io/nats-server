@@ -3358,6 +3358,7 @@ func TestMQTTWill(t *testing.T) {
 	defer nc.Close()
 
 	sub := natsSubSync(t, nc, "will.topic")
+	natsFlush(t, nc)
 
 	willMsg := []byte("bye")
 

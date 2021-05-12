@@ -757,8 +757,9 @@ func wsReturnHTTPError(w http.ResponseWriter, status int, reason string) error {
 }
 
 // If the server is configured to accept any origin, then this function returns
-// `nil` without checking if the Origin is present and valid.
-// Otherwise, this will check that the Origin matches the same origine or
+// `nil` without checking if the Origin is present and valid. This is also
+// the case if the request does not have the Origin header.
+// Otherwise, this will check that the Origin matches the same origin or
 // any origin in the allowed list.
 func (w *srvWebsocket) checkOrigin(r *http.Request) error {
 	w.mu.RLock()
@@ -772,7 +773,7 @@ func (w *srvWebsocket) checkOrigin(r *http.Request) error {
 	if origin == _EMPTY_ {
 		origin = r.Header.Get("Sec-Websocket-Origin")
 	}
-	// If theader is not present, we will accept.
+	// If the header is not present, we will accept.
 	// From https://datatracker.ietf.org/doc/html/rfc6455#section-1.6
 	// "Naturally, when the WebSocket Protocol is used by a dedicated client
 	// directly (i.e., not from a web page through a web browser), the origin
