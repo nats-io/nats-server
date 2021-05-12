@@ -11265,6 +11265,80 @@ func TestJetStreamServerDomainConfigButDisabled(t *testing.T) {
 	}
 }
 
+// Issue #2213
+func TestJetStreamDirectConsumersBeingReported(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name: "S",
+		Sources: []*nats.StreamSource{{
+			Name: "TEST",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if _, err = js.Publish("foo", nil); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("S")
+		if err != nil {
+			return fmt.Errorf("Could not get stream info: %v", err)
+		}
+		if si.State.Msgs != 1 {
+			return fmt.Errorf("Expected 1 msg, got state: %+v", si.State)
+		}
+		return nil
+	})
+
+	si, err := js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Direct consumers should not be reported
+	if si.State.Consumers != 0 {
+		t.Fatalf("Did not expect any consumers, got %d", si.State.Consumers)
+	}
+
+	// Now check for consumer in consumer names list.
+	var names []string
+	for name := range js.ConsumerNames("TEST") {
+		names = append(names, name)
+	}
+	if len(names) != 0 {
+		t.Fatalf("Expected no consumers but got %+v", names)
+	}
+
+	// Now check detailed list.
+	var cis []*nats.ConsumerInfo
+	for ci := range js.ConsumersInfo("TEST") {
+		cis = append(cis, ci)
+	}
+	if len(cis) != 0 {
+		t.Fatalf("Expected no consumers but got %+v", cis)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////

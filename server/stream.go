@@ -3050,7 +3050,7 @@ func (mset *stream) getMsg(seq uint64) (*StoredMsg, error) {
 	return sm, nil
 }
 
-// Consunmers will return all the current consumers for this stream.
+// getConsumers will return all the current consumers for this stream.
 func (mset *stream) getConsumers() []*consumer {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
@@ -3058,6 +3058,20 @@ func (mset *stream) getConsumers() []*consumer {
 	var obs []*consumer
 	for _, o := range mset.consumers {
 		obs = append(obs, o)
+	}
+	return obs
+}
+
+// This returns all consumers that are not DIRECT.
+func (mset *stream) getPublicConsumers() []*consumer {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+
+	var obs []*consumer
+	for _, o := range mset.consumers {
+		if !o.cfg.Direct {
+			obs = append(obs, o)
+		}
 	}
 	return obs
 }

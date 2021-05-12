@@ -2339,7 +2339,7 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg 
 				Config:  cfg,
 			}
 			if optConsumers {
-				for _, consumer := range stream.getConsumers() {
+				for _, consumer := range stream.getPublicConsumers() {
 					cInfo := consumer.info()
 					if !optCfg {
 						cInfo.Config = nil
