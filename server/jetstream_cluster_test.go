@@ -6367,6 +6367,51 @@ func TestJetStreamClusterDomainsAndSameNameSources(t *testing.T) {
 	if si.State.Msgs != 2 {
 		t.Fatalf("Expected 2 msgs, got %d", si.State.Msgs)
 	}
+
+	// Make sure we can see our external information.
+	// This not in the Go client yet so manual for now.
+	resp, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, "S"), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var ssi StreamInfo
+	if err = json.Unmarshal(resp.Data, &ssi); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(ssi.Sources) != 2 {
+		t.Fatalf("Expected 2 source streams, got %d", len(ssi.Sources))
+	}
+	if ssi.Sources[0].External == nil {
+		t.Fatalf("Expected a non-nil external designation")
+	}
+	if ssi.Sources[0].External.ApiPrefix != "$JS.SPOKE-1.API" {
+		t.Fatalf("Expected external api of %q, got %q", "$JS.SPOKE-1.API", ssi.Sources[0].External.ApiPrefix)
+	}
+
+	// Also create a mirror.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name: "M",
+		Mirror: &nats.StreamSource{
+			Name:     "TEST",
+			External: &nats.ExternalStream{APIPrefix: "$JS.SPOKE-1.API"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, err = nc.Request(fmt.Sprintf(JSApiStreamInfoT, "M"), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if err = json.Unmarshal(resp.Data, &ssi); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if ssi.Mirror == nil || ssi.Mirror.External == nil {
+		t.Fatalf("Expected a non-nil external designation for our mirror")
+	}
+	if ssi.Mirror.External.ApiPrefix != "$JS.SPOKE-1.API" {
+		t.Fatalf("Expected external api of %q, got %q", "$JS.SPOKE-1.API", ssi.Sources[0].External.ApiPrefix)
+	}
 }
 
 func TestJetStreamClusterLeafDifferentAccounts(t *testing.T) {
