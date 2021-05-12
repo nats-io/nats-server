@@ -184,8 +184,8 @@ func (c *cluster) shutdown() {
 	for i, s := range c.servers {
 		sd := s.StoreDir()
 		s.Shutdown()
-		if cf := c.opts[i].ConfigFile; cf != "" {
-			os.RemoveAll(cf)
+		if cf := c.opts[i].ConfigFile; cf != _EMPTY_ {
+			os.Remove(cf)
 		}
 		if sd != _EMPTY_ {
 			os.RemoveAll(sd)
@@ -198,13 +198,17 @@ func shutdownCluster(c *cluster) {
 }
 
 func (c *cluster) randomServer() *Server {
+	return c.randomServerFromCluster(c.name)
+}
+
+func (c *cluster) randomServerFromCluster(cname string) *Server {
 	// Since these can be randomly shutdown in certain tests make sure they are running first.
 	// Copy our servers list and shuffle then walk looking for first running server.
 	cs := append(c.servers[:0:0], c.servers...)
 	rand.Shuffle(len(cs), func(i, j int) { cs[i], cs[j] = cs[j], cs[i] })
 
 	for _, s := range cs {
-		if s.Running() && s.ClusterName() == c.name {
+		if s.Running() && s.ClusterName() == cname {
 			return s
 		}
 	}

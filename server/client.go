@@ -3998,8 +3998,9 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			// We handle similarly to routes and use the same data structures.
 			// Leaf node delivery audience is different however.
 			// Also leaf nodes are always no echo, so we make sure we are not
-			// going to send back to ourselves here.
-			if c != sub.client && (c.kind != ROUTER || sub.client.isHubLeafNode()) {
+			// going to send back to ourselves here. For messages from routes we want
+			// to suppress in general unless we know from the hub or its a service reply.
+			if c != sub.client && (c.kind != ROUTER || sub.client.isHubLeafNode() || isServiceReply(c.pa.subject)) {
 				c.addSubToRouteTargets(sub)
 			}
 			continue

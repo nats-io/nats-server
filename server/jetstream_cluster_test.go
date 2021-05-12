@@ -6236,6 +6236,55 @@ func TestJetStreamClusterDomains(t *testing.T) {
 	}
 }
 
+// Issue #2205
+func TestJetStreamClusterDomainsAndAPIResponses(t *testing.T) {
+	// This adds in domain config option to template.
+	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: CORE, store_dir:", 1)
+	c := createJetStreamCluster(t, tmpl, "CORE", _EMPTY_, 3, 12232, true)
+	defer c.shutdown()
+
+	// Now create spoke LN cluster.
+	tmpl = strings.Replace(jsClusterTemplWithLeafNode, "store_dir:", "domain: SPOKE, store_dir:", 1)
+	lnc := c.createLeafNodesWithTemplateAndStartPort(tmpl, "SPOKE", 5, 33113)
+	defer lnc.shutdown()
+
+	lnc.waitOnClusterReady()
+
+	// Make the physical connection to the CORE.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 2,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now create JS domain context and try to do same in LN cluster.
+	// The issue referenced above details a bug where we can not receive a positive response.
+	nc, _ = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	jsSpoke, err := nc.JetStream(nats.APIPrefix("$JS.SPOKE.API"))
+	if err != nil {
+		t.Fatalf("Unexpected error getting JetStream context: %v", err)
+	}
+	si, err := jsSpoke.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 2,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.Cluster.Name != "SPOKE" {
+		t.Fatalf("Expected %q as the cluster, got %q", "SPOKE", si.Cluster.Name)
+	}
+}
+
 // Issue #2202
 func TestJetStreamClusterDomainsAndSameNameSources(t *testing.T) {
 	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: CORE, store_dir:", 1)
@@ -7534,7 +7583,6 @@ func (c *cluster) removeJetStream(s *Server) {
 	time.Sleep(100 * time.Millisecond)
 }
 
-// Helper function to check that a cluster is formed
 func (c *cluster) stopAll() {
 	c.t.Helper()
 	for _, s := range c.servers {
