@@ -207,11 +207,10 @@ func (s *Server) checkStoreDir(cfg *JetStreamConfig) error {
 		if accName := fi.Name(); accName != _EMPTY_ {
 			_, ok := s.accounts.Load(accName)
 			if !ok && s.AccountResolver() != nil && nkeys.IsValidPublicAccountKey(accName) {
-				if _, err := s.fetchAccount(accName); err != nil {
-					s.Errorf("Unable to resolve account %q: %v", accName, err)
-				} else {
-					ok = true
-				}
+				// Account is not local but matches the NKEY account public key,
+				// this is enough indication to move this directory, no need to
+				// fetch the account.
+				ok = true
 			}
 			// If this seems to be an account go ahead and move the directory. This will include all assets
 			// like streams and consumers.
