@@ -118,7 +118,7 @@ type StreamSource struct {
 	FilterSubject string          `json:"filter_subject,omitempty"`
 	External      *ExternalStream `json:"external,omitempty"`
 
-	// Internale
+	// Internal
 	iname string // For indexing when stream names are the same for multiple sources.
 }
 
