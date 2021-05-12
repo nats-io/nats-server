@@ -217,7 +217,7 @@ func (s *Server) checkStoreDir(cfg *JetStreamConfig) error {
 			// like streams and consumers.
 			if ok {
 				if !haveJetstreamDir {
-					err := os.Mkdir(filepath.Join(filepath.Dir(cfg.StoreDir), JetStreamStoreDir), 0750)
+					err := os.Mkdir(filepath.Join(filepath.Dir(cfg.StoreDir), JetStreamStoreDir), 0755)
 					if err != nil {
 						return err
 					}
@@ -244,7 +244,7 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 
 	// FIXME(dlc) - Allow memory only operation?
 	if stat, err := os.Stat(cfg.StoreDir); os.IsNotExist(err) {
-		if err := os.MkdirAll(cfg.StoreDir, 0750); err != nil {
+		if err := os.MkdirAll(cfg.StoreDir, 0755); err != nil {
 			return fmt.Errorf("could not create storage directory - %v", err)
 		}
 	} else {
