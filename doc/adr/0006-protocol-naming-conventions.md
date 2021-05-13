@@ -10,12 +10,10 @@ Under Review
 
 This document describes naming conventions for these protocol components:
 
-* message subject
-* stream name
-* reply to
-* queue name
-* durable name
-* account name
+* Subjects (including Reply Subjects)
+* Stream Names
+* Consumer Names
+* Account Names
 
 ## Prior Work
 
