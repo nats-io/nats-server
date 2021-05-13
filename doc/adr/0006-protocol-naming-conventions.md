@@ -44,11 +44,12 @@ term             = (printable except dot, asterisk or gt)+
 prefix           = (printable except dot, asterisk, gt or dollar)+
 filename-safe    = (printable except dot, asterisk, lt, gt, colon, double-quote, fwd-slash, backslash, pipe, question-mark, ampersand)
 
-message-subject  = term (dot term | asterisk)* (dot gt)?
-reply-to         = term (dot term)*
-stream-name      = term
-queue-name       = term
-durable-name     = term
-jetstream-prefix = prefix
-account-name     = (filename-safe)+ maximum 255 characters
+message-subject    = term (dot term | asterisk)* (dot gt)?
+reply-to           = term (dot term)*
+stream-name        = term
+queue-name         = term
+durable-name       = term
+js-internal-prefix = dollar (prefix dot)+
+js-user-prefix     = (prefix dot)+
+account-name       = (filename-safe)+ maximum 255 characters
 ```
