@@ -4099,12 +4099,9 @@ func decodeConsumerState(buf []byte) (*ConsumerState, error) {
 	if numRedelivered := readLen(); numRedelivered > 0 {
 		state.Redelivered = make(map[uint64]uint64, numRedelivered)
 		for i := 0; i < int(numRedelivered); i++ {
-			seq := readSeq()
-			n := readCount()
-			if seq == 0 || n == 0 {
-				return nil, errCorruptState
+			if seq, n := readSeq(), readCount(); seq > 0 && n > 0 {
+				state.Redelivered[seq] = n
 			}
-			state.Redelivered[seq] = n
 		}
 	}
 

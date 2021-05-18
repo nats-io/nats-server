@@ -2882,3 +2882,12 @@ func TestFileStoreStreamFailToRollBug(t *testing.T) {
 		t.Fatalf("Expected block to be <= 512, got %d", blkSize)
 	}
 }
+
+// We had a case where a consumer state had a redelivered record that had seq of 0.
+// This was causing the server to panic.
+func TestBadConsumerState(t *testing.T) {
+	bs := []byte("\x16\x02\x01\x01\x03\x02\x01\x98\xf4\x8a\x8a\f\x01\x03\x86\xfa\n\x01\x00\x01")
+	if cs, err := decodeConsumerState(bs); err != nil || cs == nil {
+		t.Fatalf("Expected to not throw error, got %v and %+v", err, cs)
+	}
+}
