@@ -6768,7 +6768,7 @@ func TestJetStreamClusterCrossAccountInterop(t *testing.T) {
 	template := `
 	listen: 127.0.0.1:-1
 	server_name: %s
-	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: "%s"}
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, domain: HUB, store_dir: "%s"}
 
 	cluster {
 		name: %s
@@ -6782,6 +6782,8 @@ func TestJetStreamClusterCrossAccountInterop(t *testing.T) {
 			users = [ { user: "rip", pass: "pass" } ]
 			exports [
 				{ service: "$JS.API.CONSUMER.INFO.>" }
+				{ service: "$JS.HUB.API.CONSUMER.>", response: stream }
+				{ stream: "M.SYNC.>" } # For the mirror
 			]
 		}
 		IA {
@@ -6789,13 +6791,15 @@ func TestJetStreamClusterCrossAccountInterop(t *testing.T) {
 			users = [ { user: "dlc", pass: "pass" } ]
 			imports [
 				{ service: { account: JS, subject: "$JS.API.CONSUMER.INFO.TEST.DLC"}, to: "FROM.DLC" }
+				{ service: { account: JS, subject: "$JS.HUB.API.CONSUMER.>"}, to: "js.xacc.API.CONSUMER.>" }
+				{ stream: { account: JS, subject: "M.SYNC.>"} }
 			]
 		}
 		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
 	}
 	`
 
-	c := createJetStreamClusterWithTemplate(t, template, "C22", 3)
+	c := createJetStreamClusterWithTemplate(t, template, "HUB", 3)
 	defer c.shutdown()
 
 	// Create the stream and the consumer under the JS/rip user.
@@ -6811,13 +6815,57 @@ func TestJetStreamClusterCrossAccountInterop(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	// Now we want to access the consumer info from IA/dlc.
-	nc, _ = jsClientConnect(t, c.randomServer(), nats.UserInfo("dlc", "pass"))
-	defer nc.Close()
-
-	if _, err := nc.Request("FROM.DLC", nil, time.Second); err != nil {
+	// Also create a stream via the domain qualified API.
+	js, err = nc.JetStream(nats.APIPrefix("$JS.HUB.API"))
+	if err != nil {
+		t.Fatalf("Unexpected error getting JetStream context: %v", err)
+	}
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "ORDERS", Replicas: 2}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+
+	// Now we want to access the consumer info from IA/dlc.
+	nc2, js2 := jsClientConnect(t, c.randomServer(), nats.UserInfo("dlc", "pass"))
+	defer nc2.Close()
+
+	if _, err := nc2.Request("FROM.DLC", nil, time.Second); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Make sure domain mappings etc work across accounts.
+	// Setup a mirror.
+	_, err = js2.AddStream(&nats.StreamConfig{
+		Name: "MIRROR",
+		Mirror: &nats.StreamSource{
+			Name: "ORDERS",
+			External: &nats.ExternalStream{
+				APIPrefix:     "js.xacc.API",
+				DeliverPrefix: "M.SYNC",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Send 10 messages..
+	msg, toSend := []byte("Hello mapped domains"), 10
+	for i := 0; i < toSend; i++ {
+		if _, err = js.Publish("ORDERS", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := js2.StreamInfo("MIRROR")
+		if err != nil {
+			return fmt.Errorf("Unexpected error: %v", err)
+		}
+		if si.State.Msgs != 10 {
+			return fmt.Errorf("Expected 10 msgs, got state: %+v", si.State)
+		}
+		return nil
+	})
 }
 
 // Support functions
