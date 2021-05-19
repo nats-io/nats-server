@@ -6272,6 +6272,7 @@ func TestJetStreamClusterDomainsAndAPIResponses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error getting JetStream context: %v", err)
 	}
+
 	si, err := jsSpoke.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
@@ -6760,6 +6761,62 @@ func TestJetStreamClusterUpdateStreamToExisting(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("Expected an error but got none")
+	}
+}
+
+func TestJetStreamClusterCrossAccountInterop(t *testing.T) {
+	template := `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: "%s"}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	accounts {
+		JS {
+			jetstream: enabled
+			users = [ { user: "rip", pass: "pass" } ]
+			exports [
+				{ service: "$JS.API.CONSUMER.INFO.>" }
+			]
+		}
+		IA {
+			jetstream: enabled
+			users = [ { user: "dlc", pass: "pass" } ]
+			imports [
+				{ service: { account: JS, subject: "$JS.API.CONSUMER.INFO.TEST.DLC"}, to: "FROM.DLC" }
+			]
+		}
+		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+	}
+	`
+
+	c := createJetStreamClusterWithTemplate(t, template, "C22", 3)
+	defer c.shutdown()
+
+	// Create the stream and the consumer under the JS/rip user.
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s, nats.UserInfo("rip", "pass"))
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 2}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	_, err := js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "DLC", AckPolicy: nats.AckExplicitPolicy})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now we want to access the consumer info from IA/dlc.
+	nc, _ = jsClientConnect(t, c.randomServer(), nats.UserInfo("dlc", "pass"))
+	defer nc.Close()
+
+	if _, err := nc.Request("FROM.DLC", nil, time.Second); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
 }
 

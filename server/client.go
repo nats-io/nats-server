@@ -3771,7 +3771,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		didSendTL = acc.sendTrackingLatency(si, c)
 	}
 
-	// Pick correct to subject. If we matched on a wildcard use the literal publish subject.
+	// Pick correct "to" subject. If we matched on a wildcard use the literal publish subject.
 	to, subject := si.to, string(c.pa.subject)
 
 	hadPrevSi := c.pa.psi != nil
@@ -3779,20 +3779,20 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		// FIXME(dlc) - This could be slow, may want to look at adding cache to bare transforms?
 		to, _ = si.tr.transformSubject(subject)
 	} else if si.usePub {
-		if hadPrevSi && c.pa.psi.tr != nil {
-			to, _ = c.pa.psi.tr.transformSubject(subject)
-		} else {
-			to = subject
-		}
+		to = subject
 	}
-	// Now check to see if this account has mappings that could affect the service import.
-	// Can't use non-locked trick like in processInboundClientMsg, so just call into selectMappedSubject
-	// so we only lock once.
-	to, _ = si.acc.selectMappedSubject(to)
 
 	// Copy our pubArg and account
 	pacopy := c.pa
 	oacc := c.acc
+
+	// Now check to see if this account has mappings that could affect the service import.
+	// Can't use non-locked trick like in processInboundClientMsg, so just call into selectMappedSubject
+	// so we only lock once.
+	if nsubj, changed := si.acc.selectMappedSubject(to); changed {
+		c.pa.mapped = []byte(to)
+		to = nsubj
+	}
 
 	// Change this so that we detect recursion
 	// Remember prior.
@@ -3823,7 +3823,10 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		}
 	}
 
-	// Set our reply.
+	// Set our optional subject(to) and reply.
+	if !si.response && to != subject {
+		c.pa.subject = []byte(to)
+	}
 	c.pa.reply = nrr
 	c.mu.Lock()
 	c.acc = si.acc
