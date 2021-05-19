@@ -20,6 +20,7 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"os"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -2629,9 +2630,16 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 
 	var resp = JSApiStreamRestoreResponse{ApiResponse: ApiResponse{Type: JSApiStreamRestoreResponseType}}
 
-	// FIXME(dlc) - Need to close these up if we fail for some reason.
-	// TODO(dlc) - Might need to make configurable or stream direct to storage dir.
-	tfile, err := ioutil.TempFile("", "jetstream-restore-")
+	snapDir := path.Join(js.config.StoreDir, snapStagingDir)
+	if _, err := os.Stat(snapDir); os.IsNotExist(err) {
+		if err := os.MkdirAll(snapDir, 0755); err != nil {
+			resp.Error = &ApiError{Code: 503, Description: "JetStream unable to create temp storage for restore"}
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return nil
+		}
+	}
+
+	tfile, err := ioutil.TempFile(snapDir, "js-restore-")
 	if err != nil {
 		resp.Error = &ApiError{Code: 500, Description: "JetStream unable to open temp storage for restore"}
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -2668,7 +2676,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 
 	var total int
 
-	// FIXM(dlc) - Probably take out of network path eventually do to disk I/O?
+	// FIXM(dlc) - Probably take out of network path eventually due to disk I/O?
 	processChunk := func(sub *subscription, c *client, subject, reply string, msg []byte) {
 		// We require reply subjects to communicate back failures, flow etc. If they do not have one log and cancel.
 		if reply == _EMPTY_ {
@@ -2723,6 +2731,8 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 
 	sub, err := acc.subscribeInternal(restoreSubj, processChunk)
 	if err != nil {
+		tfile.Close()
+		os.Remove(tfile.Name())
 		resp.Error = &ApiError{Code: 500, Description: "JetStream unable to subscribe to restore snapshot " + restoreSubj + ": " + err.Error()}
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return nil
@@ -2730,7 +2740,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 
 	// Mark the subject so the end user knows where to send the snapshot chunks.
 	resp.DeliverSubject = restoreSubj
-	s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 
 	doneCh := make(chan error, 1)
 

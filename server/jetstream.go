@@ -861,6 +861,9 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		}
 	}
 
+	// Clean up any old snapshots that were orphaned while staging.
+	os.RemoveAll(path.Join(js.config.StoreDir, snapStagingDir))
+
 	sdir := path.Join(jsa.storeDir, streamsDir)
 	if _, err := os.Stat(sdir); os.IsNotExist(err) {
 		if err := os.MkdirAll(sdir, 0755); err != nil {
@@ -1615,6 +1618,8 @@ const (
 	JetStreamMaxStoreDefault = 1024 * 1024 * 1024 * 1024
 	// JetStreamMaxMemDefault is only used when we can't determine system memory. 256MB
 	JetStreamMaxMemDefault = 1024 * 1024 * 256
+	// snapshot staging for restores.
+	snapStagingDir = ".snap-staging"
 )
 
 // Dynamically create a config with a tmp based directory (repeatable) and 75% of system memory.
