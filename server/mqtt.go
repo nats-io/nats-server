@@ -1880,12 +1880,21 @@ func (as *mqttAccountSessionManager) createOrRestoreSession(clientID string, opt
 		accName := jsa.c.acc.GetName()
 		return nil, false, fmt.Errorf("%s for account %q, session %q: %v", errTxt, accName, clientID, err)
 	}
+CREATE_STREAM:
 	// Send a request to create the stream for this session.
 	si, err := jsa.createStream(cfg)
-	// If there is an error and not simply "already used" (which means that the
-	// stream already exists) then we fail.
-	if isErrorOtherThan(err, ErrJetStreamStreamAlreadyUsed) {
-		return formatError("create session stream", err)
+	if err != nil {
+		// Check for insufficient resources. If that is the case, and if possible, try
+		// again with a lower replicas value.
+		if cfg.Replicas > 1 && err.Error() == jsInsufficientErr.Description {
+			cfg.Replicas--
+			goto CREATE_STREAM
+		}
+		// If there is an error and not simply "already used" (which means that the
+		// stream already exists) then we fail.
+		if isErrorOtherThan(err, ErrJetStreamStreamAlreadyUsed) {
+			return formatError("create session stream", err)
+		}
 	}
 	if err != nil {
 		// Since we have returned if error is not "stream already exist", then
