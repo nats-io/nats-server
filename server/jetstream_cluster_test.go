@@ -6379,8 +6379,9 @@ func TestJetStreamClusterDomainsAndSameNameSources(t *testing.T) {
 	if ssi.Sources[0].External == nil {
 		t.Fatalf("Expected a non-nil external designation")
 	}
-	if ssi.Sources[0].External.ApiPrefix != "$JS.SPOKE-1.API" {
-		t.Fatalf("Expected external api of %q, got %q", "$JS.SPOKE-1.API", ssi.Sources[0].External.ApiPrefix)
+	pre := ssi.Sources[0].External.ApiPrefix
+	if pre != "$JS.SPOKE-1.API" && pre != "$JS.SPOKE-2.API" {
+		t.Fatalf("Expected external api of %q, got %q", "$JS.SPOKE-[1|2].API", ssi.Sources[0].External.ApiPrefix)
 	}
 
 	// Also create a mirror.
