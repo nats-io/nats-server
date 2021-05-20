@@ -1291,7 +1291,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 	// check prefix overlap with subjects
 	for _, pfx := range deliveryPrefixes {
 		if !IsValidPublishSubject(pfx) {
-			resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("stream external delivery prefix %q must not contain wildcards", pfx)}
+			resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("stream external delivery prefix %q must be a valid subject without wildcards", pfx)}
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
@@ -1305,6 +1305,11 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 	}
 	// check if api prefixes overlap
 	for _, apiPfx := range apiPrefixes {
+		if !IsValidPublishSubject(apiPfx) {
+			resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("stream external api prefix %q must be a valid subject without wildcards", apiPfx)}
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
 		if SubjectsCollide(apiPfx, JSApiPrefix) {
 			resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("stream external api prefix %q must not overlap with %s", apiPfx, JSApiPrefix)}
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
