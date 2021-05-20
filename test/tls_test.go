@@ -1935,3 +1935,48 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 		})
 	}
 }
+
+func TestTLSPinnedCerts(t *testing.T) {
+	tmpl := `
+	host: localhost
+	port: -1
+	tls {
+		ca_file: "configs/certs/ca.pem"
+		cert_file: "configs/certs/server-cert.pem"
+		key_file: "configs/certs/server-key.pem"
+		# Require a client certificate and map user id from certificate
+		verify: true
+		pinned_certs: ["%s"]
+	}`
+
+	confFileName := createConfFile(t, []byte(fmt.Sprintf(tmpl, "aaaaaaaa09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9")))
+	defer removeFile(t, confFileName)
+	srv, o := RunServerWithConfig(confFileName)
+	defer srv.Shutdown()
+
+	if len(o.TLSPinnedCerts) != 1 {
+		t.Fatal("expected one pinned cert")
+	}
+
+	opts := []nats.Option{
+		nats.RootCAs("configs/certs/ca.pem"),
+		nats.ClientCert("./configs/certs/client-cert.pem", "./configs/certs/client-key.pem"),
+	}
+
+	nc, err := nats.Connect(srv.ClientURL(), opts...)
+	if err == nil {
+		nc.Close()
+		t.Fatalf("Expected error trying to connect without a certificate in pinned_certs")
+	}
+
+	ioutil.WriteFile(confFileName, []byte(fmt.Sprintf(tmpl, "bf6f821f09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9")), 0660)
+	if err := srv.Reload(); err != nil {
+		t.Fatalf("on Reload got %v", err)
+	}
+	// reload pinned to the certs used
+	nc, err = nats.Connect(srv.ClientURL(), opts...)
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	nc.Close()
+}

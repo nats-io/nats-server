@@ -53,6 +53,9 @@ func NoErrOnUnknownFields(noError bool) {
 	atomic.StoreInt32(&allowUnknownTopLevelField, val)
 }
 
+// Set of lower case hex-encoded sha256 of DER encoded SubjectPublicKeyInfo
+type PinnedCertSet map[string]struct{}
+
 // ClusterOpts are options for clusters.
 // NOTE: This structure is no longer used for monitoring endpoints
 // and json tags are deprecated and may be removed in the future.
@@ -68,6 +71,7 @@ type ClusterOpts struct {
 	TLSConfig         *tls.Config       `json:"-"`
 	TLSMap            bool              `json:"-"`
 	TLSCheckKnownURLs bool              `json:"-"`
+	TLSPinnedCerts    PinnedCertSet     `json:"-"`
 	ListenStr         string            `json:"-"`
 	Advertise         string            `json:"-"`
 	NoAdvertise       bool              `json:"-"`
@@ -91,6 +95,7 @@ type GatewayOpts struct {
 	TLSTimeout        float64              `json:"tls_timeout,omitempty"`
 	TLSMap            bool                 `json:"-"`
 	TLSCheckKnownURLs bool                 `json:"-"`
+	TLSPinnedCerts    PinnedCertSet        `json:"-"`
 	Advertise         string               `json:"advertise,omitempty"`
 	ConnectRetries    int                  `json:"connect_retries,omitempty"`
 	Gateways          []*RemoteGatewayOpts `json:"gateways,omitempty"`
@@ -123,6 +128,7 @@ type LeafNodeOpts struct {
 	TLSConfig         *tls.Config   `json:"-"`
 	TLSTimeout        float64       `json:"tls_timeout,omitempty"`
 	TLSMap            bool          `json:"-"`
+	TLSPinnedCerts    PinnedCertSet `json:"-"`
 	Advertise         string        `json:"-"`
 	NoAdvertise       bool          `json:"-"`
 	ReconnectInterval time.Duration `json:"-"`
@@ -226,6 +232,7 @@ type Options struct {
 	TLSKey                string        `json:"-"`
 	TLSCaCert             string        `json:"-"`
 	TLSConfig             *tls.Config   `json:"-"`
+	TLSPinnedCerts        PinnedCertSet `json:"-"`
 	AllowNonTLS           bool          `json:"-"`
 	WriteDeadline         time.Duration `json:"-"`
 	MaxClosedClients      int           `json:"-"`
@@ -316,6 +323,9 @@ type WebsocketOpts struct {
 	// If true, map certificate values for authentication purposes.
 	TLSMap bool
 
+	// When present, accepted client certificates (verify/verify_and_map) must be in this list
+	TLSPinnedCerts PinnedCertSet
+
 	// If true, the Origin header must match the request's host.
 	SameOrigin bool
 
@@ -361,6 +371,8 @@ type MQTTOpts struct {
 	TLSMap bool
 	// Timeout for the TLS handshake
 	TLSTimeout float64
+	// Set of allowable certificates
+	TLSPinnedCerts PinnedCertSet
 
 	// AckWait is the amount of time after which a QoS 1 message sent to
 	// a client is redelivered as a DUPLICATE if the server has not
@@ -470,6 +482,7 @@ type TLSConfigOpts struct {
 	Timeout           float64
 	Ciphers           []uint16
 	CurvePreferences  []tls.CurveID
+	PinnedCerts       PinnedCertSet
 }
 
 var tlsUsage = `
@@ -827,7 +840,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		}
 		o.TLSTimeout = tc.Timeout
 		o.TLSMap = tc.Map
-
+		o.TLSPinnedCerts = tc.PinnedCerts
 	case "allow_non_tls":
 		o.AllowNonTLS = v.(bool)
 	case "write_deadline":
@@ -1272,6 +1285,7 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 			opts.Cluster.TLSConfig = config
 			opts.Cluster.TLSTimeout = tlsopts.Timeout
 			opts.Cluster.TLSMap = tlsopts.Map
+			opts.Cluster.TLSPinnedCerts = tlsopts.PinnedCerts
 			opts.Cluster.TLSCheckKnownURLs = tlsopts.TLSCheckKnownURLs
 		case "cluster_advertise", "advertise":
 			opts.Cluster.Advertise = mv.(string)
@@ -1389,6 +1403,7 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 			o.Gateway.TLSTimeout = tlsopts.Timeout
 			o.Gateway.TLSMap = tlsopts.Map
 			o.Gateway.TLSCheckKnownURLs = tlsopts.TLSCheckKnownURLs
+			o.Gateway.TLSPinnedCerts = tlsopts.PinnedCerts
 		case "advertise":
 			o.Gateway.Advertise = mv.(string)
 		case "connect_retries":
@@ -1612,6 +1627,7 @@ func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]e
 			}
 			opts.LeafNode.TLSTimeout = tc.Timeout
 			opts.LeafNode.TLSMap = tc.Map
+			opts.LeafNode.TLSPinnedCerts = tc.PinnedCerts
 		case "leafnode_advertise", "advertise":
 			opts.LeafNode.Advertise = mv.(string)
 		case "no_advertise":
@@ -3444,6 +3460,24 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 				at = mv
 			}
 			tc.Timeout = at
+		case "pinned_certs":
+			ra, ok := mv.([]interface{})
+			if !ok {
+				return nil, &configErr{tk, "error parsing tls config, expected 'pinned_certs' to be a list of hex-encoded sha256 of DER encoded SubjectPublicKeyInfo"}
+			}
+			if len(ra) != 0 {
+				wl := PinnedCertSet{}
+				re := regexp.MustCompile("^[A-Fa-f0-9]{64}$")
+				for _, r := range ra {
+					tk, r := unwrapValue(r, &lt)
+					entry := strings.ToLower(r.(string))
+					if !re.MatchString(entry) {
+						return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, 'pinned_certs' key %s does not look like hex-encoded sha256 of DER encoded SubjectPublicKeyInfo", entry)}
+					}
+					wl[entry] = struct{}{}
+				}
+				tc.PinnedCerts = wl
+			}
 		default:
 			return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, unknown field [%q]", mk)}
 		}
@@ -3573,6 +3607,7 @@ func parseWebsocket(v interface{}, o *Options, errors *[]error, warnings *[]erro
 				continue
 			}
 			o.Websocket.TLSMap = tc.Map
+			o.Websocket.TLSPinnedCerts = tc.PinnedCerts
 		case "same_origin":
 			o.Websocket.SameOrigin = mv.(bool)
 		case "allowed_origins", "allowed_origin", "allow_origins", "allow_origin", "origins", "origin":
@@ -3662,6 +3697,7 @@ func parseMQTT(v interface{}, o *Options, errors *[]error, warnings *[]error) er
 			}
 			o.MQTT.TLSTimeout = tc.Timeout
 			o.MQTT.TLSMap = tc.Map
+			o.MQTT.TLSPinnedCerts = tc.PinnedCerts
 		case "authorization", "authentication":
 			auth := parseSimpleAuth(tk, errors, warnings)
 			o.MQTT.Username = auth.user

@@ -890,6 +890,94 @@ func TestNkeyUsersConfig(t *testing.T) {
 	}
 }
 
+// Test pinned certificates
+func TestTlsPinnedCertificates(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+	tls {
+		cert_file: "./configs/certs/server.pem"
+		key_file: "./configs/certs/key.pem"
+		# Require a client certificate and map user id from certificate
+		verify: true
+		pinned_certs: ["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069", 
+			"a8f407340dcc719864214b85ed96f98d16cbffa8f509d9fa4ca237b7bb3f9c32"]
+	}
+	cluster {
+		port -1
+		name cluster-hub
+		tls {
+			cert_file: "./configs/certs/server.pem"
+			key_file: "./configs/certs/key.pem"
+			# Require a client certificate and map user id from certificate
+			verify: true
+			pinned_certs: ["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069", 
+				"a8f407340dcc719864214b85ed96f98d16cbffa8f509d9fa4ca237b7bb3f9c32"]
+		}
+	}
+	leafnodes {
+		port -1
+		tls {
+			cert_file: "./configs/certs/server.pem"
+			key_file: "./configs/certs/key.pem"
+			# Require a client certificate and map user id from certificate
+			verify: true
+			pinned_certs: ["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069", 
+				"a8f407340dcc719864214b85ed96f98d16cbffa8f509d9fa4ca237b7bb3f9c32"]
+		}
+	}
+	gateway {
+		name: "A"
+		port -1
+		tls {
+			cert_file: "./configs/certs/server.pem"
+			key_file: "./configs/certs/key.pem"
+			# Require a client certificate and map user id from certificate
+			verify: true
+			pinned_certs: ["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069", 
+				"a8f407340dcc719864214b85ed96f98d16cbffa8f509d9fa4ca237b7bb3f9c32"]
+		}
+	}
+	websocket {
+		port -1
+		tls {
+			cert_file: "./configs/certs/server.pem"
+			key_file: "./configs/certs/key.pem"
+			# Require a client certificate and map user id from certificate
+			verify: true
+			pinned_certs: ["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069", 
+				"a8f407340dcc719864214b85ed96f98d16cbffa8f509d9fa4ca237b7bb3f9c32"]
+		}
+	}
+	mqtt {
+		port -1
+		tls {
+			cert_file: "./configs/certs/server.pem"
+			key_file: "./configs/certs/key.pem"
+			# Require a client certificate and map user id from certificate
+			verify: true
+			pinned_certs: ["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069", 
+				"a8f407340dcc719864214b85ed96f98d16cbffa8f509d9fa4ca237b7bb3f9c32"]
+		}
+	}`))
+	defer removeFile(t, confFileName)
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v", err)
+	}
+	check := func(set PinnedCertSet) {
+		t.Helper()
+		if l := len(set); l != 2 {
+			t.Fatalf("Expected 2 pinned certificates, got got %d", l)
+		}
+	}
+
+	check(opts.TLSPinnedCerts)
+	check(opts.LeafNode.TLSPinnedCerts)
+	check(opts.Cluster.TLSPinnedCerts)
+	check(opts.MQTT.TLSPinnedCerts)
+	check(opts.Gateway.TLSPinnedCerts)
+	check(opts.Websocket.TLSPinnedCerts)
+}
+
 func TestNkeyUsersDefaultPermissionsConfig(t *testing.T) {
 	confFileName := createConfFile(t, []byte(`
 	authorization {
