@@ -23,7 +23,7 @@ import (
 func diskAvailable(storeDir string) int64 {
 	var ba int64
 	if _, err := os.Stat(storeDir); os.IsNotExist(err) {
-		os.MkdirAll(storeDir, 0755)
+		os.MkdirAll(storeDir, defaultDirPerms)
 	}
 	var fs syscall.Statfs_t
 	if err := syscall.Statfs(storeDir, &fs); err == nil {

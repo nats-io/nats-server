@@ -64,6 +64,12 @@ type FileConsumerInfo struct {
 	ConsumerConfig
 }
 
+// Default file and directory permissions.
+const (
+	defaultDirPerms  = os.FileMode(0750)
+	defaultFilePerms = os.FileMode(0640)
+)
+
 type fileStore struct {
 	mu      sync.RWMutex
 	state   StreamState
@@ -225,7 +231,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 
 	// Check the directory
 	if stat, err := os.Stat(fcfg.StoreDir); os.IsNotExist(err) {
-		if err := os.MkdirAll(fcfg.StoreDir, 0755); err != nil {
+		if err := os.MkdirAll(fcfg.StoreDir, defaultDirPerms); err != nil {
 			return nil, fmt.Errorf("could not create storage directory - %v", err)
 		}
 	} else if stat == nil || !stat.IsDir() {
@@ -250,10 +256,10 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	// Check if this is a new setup.
 	mdir := path.Join(fcfg.StoreDir, msgDir)
 	odir := path.Join(fcfg.StoreDir, consumerDir)
-	if err := os.MkdirAll(mdir, 0755); err != nil {
+	if err := os.MkdirAll(mdir, defaultDirPerms); err != nil {
 		return nil, fmt.Errorf("could not create message storage directory - %v", err)
 	}
-	if err := os.MkdirAll(odir, 0755); err != nil {
+	if err := os.MkdirAll(odir, defaultDirPerms); err != nil {
 		return nil, fmt.Errorf("could not create consumer storage directory - %v", err)
 	}
 
@@ -372,14 +378,14 @@ func (fs *fileStore) writeStreamMeta() error {
 	if err != nil {
 		return err
 	}
-	if err := ioutil.WriteFile(meta, b, 0644); err != nil {
+	if err := ioutil.WriteFile(meta, b, defaultFilePerms); err != nil {
 		return err
 	}
 	fs.hh.Reset()
 	fs.hh.Write(b)
 	checksum := hex.EncodeToString(fs.hh.Sum(nil))
 	sum := path.Join(fs.fcfg.StoreDir, JetStreamMetaFileSum)
-	if err := ioutil.WriteFile(sum, []byte(checksum), 0644); err != nil {
+	if err := ioutil.WriteFile(sum, []byte(checksum), defaultFilePerms); err != nil {
 		return err
 	}
 	return nil
@@ -513,7 +519,7 @@ func (mb *msgBlock) rebuildState() (*LostStreamData, error) {
 		if mb.mfd != nil {
 			fd = mb.mfd
 		} else {
-			fd, err = os.OpenFile(mb.mfn, os.O_RDWR, 0644)
+			fd, err = os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
 			if err != nil {
 				defer fd.Close()
 			}
@@ -911,7 +917,7 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 
 	mdir := path.Join(fs.fcfg.StoreDir, msgDir)
 	mb.mfn = path.Join(mdir, fmt.Sprintf(blkScan, mb.index))
-	mfd, err := os.OpenFile(mb.mfn, os.O_CREATE|os.O_RDWR, 0644)
+	mfd, err := os.OpenFile(mb.mfn, os.O_CREATE|os.O_RDWR, defaultFilePerms)
 	if err != nil {
 		mb.dirtyCloseWithRemove(true)
 		return nil, fmt.Errorf("Error creating msg block file [%q]: %v", mb.mfn, err)
@@ -919,7 +925,7 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	mb.mfd = mfd
 
 	mb.ifn = path.Join(mdir, fmt.Sprintf(indexScan, mb.index))
-	ifd, err := os.OpenFile(mb.ifn, os.O_CREATE|os.O_RDWR, 0644)
+	ifd, err := os.OpenFile(mb.ifn, os.O_CREATE|os.O_RDWR, defaultFilePerms)
 	if err != nil {
 		mb.dirtyCloseWithRemove(true)
 		return nil, fmt.Errorf("Error creating msg index file [%q]: %v", mb.mfn, err)
@@ -959,7 +965,7 @@ func (fs *fileStore) enableLastMsgBlockForWriting() error {
 	if mb.mfd != nil {
 		return nil
 	}
-	mfd, err := os.OpenFile(mb.mfn, os.O_CREATE|os.O_RDWR, 0644)
+	mfd, err := os.OpenFile(mb.mfn, os.O_CREATE|os.O_RDWR, defaultFilePerms)
 	if err != nil {
 		return fmt.Errorf("error opening msg block file [%q]: %v", mb.mfn, err)
 	}
@@ -1520,7 +1526,7 @@ func (mb *msgBlock) eraseMsg(seq uint64, ri, rl int) error {
 
 	// Disk
 	if mb.cache.off+mb.cache.wp > ri {
-		mfd, err := os.OpenFile(mb.mfn, os.O_RDWR, 0644)
+		mfd, err := os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
 		if err != nil {
 			return err
 		}
@@ -2740,7 +2746,7 @@ func (mb *msgBlock) writeIndexInfo() error {
 	}
 	var err error
 	if mb.ifd == nil {
-		ifd, err := os.OpenFile(mb.ifn, os.O_CREATE|os.O_RDWR, 0644)
+		ifd, err := os.OpenFile(mb.ifn, os.O_CREATE|os.O_RDWR, defaultFilePerms)
 		if err != nil {
 			return err
 		}
@@ -2939,7 +2945,7 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	os.Rename(mdir, pdir)
 	go os.RemoveAll(pdir)
 	// Create new one.
-	os.MkdirAll(mdir, 0755)
+	os.MkdirAll(mdir, defaultDirPerms)
 
 	// Make sure we have a lmb to write to.
 	if _, err := fs.newMsgBlockForWrite(); err != nil {
@@ -3521,7 +3527,7 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 		return nil, fmt.Errorf("bad consumer config")
 	}
 	odir := path.Join(fs.fcfg.StoreDir, consumerDir, name)
-	if err := os.MkdirAll(odir, 0755); err != nil {
+	if err := os.MkdirAll(odir, defaultDirPerms); err != nil {
 		return nil, fmt.Errorf("could not create consumer directory - %v", err)
 	}
 	csi := &FileConsumerInfo{ConsumerConfig: *cfg}
@@ -3886,14 +3892,14 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 	if err != nil {
 		return err
 	}
-	if err := ioutil.WriteFile(meta, b, 0644); err != nil {
+	if err := ioutil.WriteFile(meta, b, defaultFilePerms); err != nil {
 		return err
 	}
 	cfs.hh.Reset()
 	cfs.hh.Write(b)
 	checksum := hex.EncodeToString(cfs.hh.Sum(nil))
 	sum := path.Join(cfs.odir, JetStreamMetaFileSum)
-	if err := ioutil.WriteFile(sum, []byte(checksum), 0644); err != nil {
+	if err := ioutil.WriteFile(sum, []byte(checksum), defaultFilePerms); err != nil {
 		return err
 	}
 	return nil
@@ -3912,7 +3918,7 @@ func (o *consumerFileStore) syncStateFile() {
 // Lock should be held.
 func (o *consumerFileStore) ensureStateFileOpen() error {
 	if o.ifd == nil {
-		ifd, err := os.OpenFile(o.ifn, os.O_CREATE|os.O_RDWR, 0644)
+		ifd, err := os.OpenFile(o.ifn, os.O_CREATE|os.O_RDWR, defaultFilePerms)
 		if err != nil {
 			return err
 		}
@@ -4206,7 +4212,7 @@ func newTemplateFileStore(storeDir string) *templateFileStore {
 
 func (ts *templateFileStore) Store(t *streamTemplate) error {
 	dir := path.Join(ts.dir, t.Name)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, defaultDirPerms); err != nil {
 		return fmt.Errorf("could not create templates storage directory for %q- %v", t.Name, err)
 	}
 	meta := path.Join(dir, JetStreamMetaFile)
@@ -4219,7 +4225,7 @@ func (ts *templateFileStore) Store(t *streamTemplate) error {
 	if err != nil {
 		return err
 	}
-	if err := ioutil.WriteFile(meta, b, 0644); err != nil {
+	if err := ioutil.WriteFile(meta, b, defaultFilePerms); err != nil {
 		return err
 	}
 	// FIXME(dlc) - Do checksum
@@ -4227,7 +4233,7 @@ func (ts *templateFileStore) Store(t *streamTemplate) error {
 	ts.hh.Write(b)
 	checksum := hex.EncodeToString(ts.hh.Sum(nil))
 	sum := path.Join(dir, JetStreamMetaFileSum)
-	if err := ioutil.WriteFile(sum, []byte(checksum), 0644); err != nil {
+	if err := ioutil.WriteFile(sum, []byte(checksum), defaultFilePerms); err != nil {
 		return err
 	}
 	return nil

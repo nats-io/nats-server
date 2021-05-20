@@ -91,7 +91,7 @@ func newDir(dirPath string, create bool) (string, error) {
 		if !create {
 			return "", err
 		}
-		if err = os.MkdirAll(dirPath, 0755); err != nil {
+		if err = os.MkdirAll(dirPath, defaultDirPerms); err != nil {
 			return "", err
 		}
 		if fullPath, err = validateDirPath(dirPath); err != nil {
@@ -424,7 +424,7 @@ func (store *DirJWTStore) write(path string, publicKey string, theJWT string) (b
 			}
 		}
 	}
-	if err := ioutil.WriteFile(path, []byte(theJWT), 0644); err != nil {
+	if err := ioutil.WriteFile(path, []byte(theJWT), defaultFilePerms); err != nil {
 		return false, err
 	} else if store.expiration != nil {
 		store.expiration.track(publicKey, newHash, theJWT)
@@ -473,7 +473,7 @@ func (store *DirJWTStore) save(publicKey string, theJWT string) error {
 	}
 	dirPath := filepath.Dir(path)
 	if _, err := validateDirPath(dirPath); err != nil {
-		if err := os.MkdirAll(dirPath, 0755); err != nil {
+		if err := os.MkdirAll(dirPath, defaultDirPerms); err != nil {
 			store.Unlock()
 			return err
 		}
@@ -499,7 +499,7 @@ func (store *DirJWTStore) saveIfNewer(publicKey string, theJWT string) error {
 	}
 	dirPath := filepath.Dir(path)
 	if _, err := validateDirPath(dirPath); err != nil {
-		if err := os.MkdirAll(dirPath, 0755); err != nil {
+		if err := os.MkdirAll(dirPath, defaultDirPerms); err != nil {
 			return err
 		}
 	}

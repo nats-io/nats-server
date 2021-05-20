@@ -3240,7 +3240,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 
 	sd := path.Join(jsa.storeDir, snapsDir)
 	if _, err := os.Stat(sd); os.IsNotExist(err) {
-		if err := os.MkdirAll(sd, 0755); err != nil {
+		if err := os.MkdirAll(sd, defaultDirPerms); err != nil {
 			return nil, fmt.Errorf("could not create snapshots directory - %v", err)
 		}
 	}
@@ -3249,7 +3249,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 		return nil, err
 	}
 	if _, err := os.Stat(sdir); os.IsNotExist(err) {
-		if err := os.MkdirAll(sdir, 0755); err != nil {
+		if err := os.MkdirAll(sdir, defaultDirPerms); err != nil {
 			return nil, fmt.Errorf("could not create snapshots directory - %v", err)
 		}
 	}
@@ -3266,7 +3266,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 		}
 		fpath := path.Join(sdir, filepath.Clean(hdr.Name))
 		pdir := filepath.Dir(fpath)
-		os.MkdirAll(pdir, 0750)
+		os.MkdirAll(pdir, defaultDirPerms)
 		fd, err := os.OpenFile(fpath, os.O_CREATE|os.O_RDWR, 0600)
 		if err != nil {
 			return nil, err
