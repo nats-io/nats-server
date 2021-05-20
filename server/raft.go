@@ -673,7 +673,7 @@ func (n *raft) ProposeAddPeer(peer string) error {
 func (n *raft) ProposeRemovePeer(peer string) error {
 	n.RLock()
 	propc, subj := n.propc, n.rpsubj
-	isLeader, isUs := n.state == Leader, n.id == peer
+	isLeader := n.state == Leader
 	werr := n.werr
 	n.RUnlock()
 
@@ -685,9 +685,6 @@ func (n *raft) ProposeRemovePeer(peer string) error {
 	if isLeader {
 		select {
 		case propc <- &Entry{EntryRemovePeer, []byte(peer)}:
-			if isUs {
-				n.attemptStepDown(noLeader)
-			}
 		default:
 			return errProposalFailed
 		}
@@ -1109,6 +1106,19 @@ func (n *raft) GroupLeader() string {
 	n.RLock()
 	defer n.RUnlock()
 	return n.leader
+}
+
+// Guess the best next leader. Stepdown will check more thoroughly.
+func (n *raft) selectNextLeader() string {
+	nextLeader, hli := noLeader, uint64(0)
+	for peer, ps := range n.peers {
+		if peer == n.id || ps.li <= hli {
+			continue
+		}
+		hli = ps.li
+		nextLeader = peer
+	}
+	return nextLeader
 }
 
 // StepDown will have a leader stepdown and optionally do a leader transfer.
@@ -2120,6 +2130,12 @@ func (n *raft) applyCommit(index uint64) error {
 				}
 			}
 
+			// If this is us and we are the leader we should attempt to stepdown.
+			if peer == n.id && n.state == Leader {
+				n.attemptStepDown(n.selectNextLeader())
+			}
+
+			// Write out our new state.
 			n.writePeerState(&peerState{n.peerNames(), n.csz})
 			// We pass these up as well.
 			committed = append(committed, e)
