@@ -683,21 +683,47 @@ func testMQTTWrite(c net.Conn, buf []byte) (int, error) {
 }
 
 func testMQTTConnect(t testing.TB, ci *mqttConnInfo, host string, port int) (net.Conn, *mqttReader) {
+	return testMQTTConnectRetry(t, ci, host, port, 0)
+}
+
+func testMQTTConnectRetry(t testing.TB, ci *mqttConnInfo, host string, port int, retryCount int) (net.Conn, *mqttReader) {
 	t.Helper()
 
+	retry := func(c net.Conn) bool {
+		if retryCount == 0 {
+			return false
+		}
+		if c != nil {
+			c.Close()
+		}
+		time.Sleep(time.Second)
+		retryCount--
+		return true
+	}
+
 	addr := fmt.Sprintf("%s:%d", host, port)
+RETRY:
 	c, err := net.Dial("tcp", addr)
 	if err != nil {
+		if retry(c) {
+			goto RETRY
+		}
 		t.Fatalf("Error creating mqtt connection: %v", err)
 	}
 
 	proto := mqttCreateConnectProto(ci)
 	if _, err := testMQTTWrite(c, proto); err != nil {
+		if retry(c) {
+			goto RETRY
+		}
 		t.Fatalf("Error writing connect: %v", err)
 	}
 
 	buf, err := testMQTTRead(c)
 	if err != nil {
+		if retry(c) {
+			goto RETRY
+		}
 		t.Fatalf("Error reading: %v", err)
 	}
 	br := &mqttReader{reader: c}
@@ -3001,6 +3027,33 @@ func TestMQTTClusterReplicasCount(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMQTTClusterSessionReplicasAdjustment(t *testing.T) {
+	cl := createJetStreamClusterWithTemplate(t, testMQTTGetClusterTemplaceNoLeaf(), "MQTT", 3)
+	defer cl.shutdown()
+	o := cl.opts[0]
+
+	mc, rc := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, false)
+	mc.Close()
+
+	// Shutdown one of the server.
+	cl.servers[1].Shutdown()
+
+	// Make sure there is a meta leader
+	cl.waitOnPeerCount(2)
+	cl.waitOnLeader()
+
+	// Now try to create a new session. With R(3) this would fail, but now server will
+	// adjust it down to R(2).
+	o = cl.opts[2]
+	// We may still get failures because of some JS APIs may timeout while things
+	// settle, so try again for a certain amount of times.
+	mc, rc = testMQTTConnectRetry(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, false)
 }
 
 func TestMQTTClusterPlacement(t *testing.T) {
