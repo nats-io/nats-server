@@ -890,8 +890,8 @@ func TestNkeyUsersConfig(t *testing.T) {
 	}
 }
 
-// Test new nkey users
-func TestTlsWhitelist(t *testing.T) {
+// Test pinned certificates
+func TestTlsPinnedCertificates(t *testing.T) {
 	confFileName := createConfFile(t, []byte(`
 	tls {
 		cert_file: "./configs/certs/server.pem"
@@ -902,7 +902,7 @@ func TestTlsWhitelist(t *testing.T) {
 			"a8f407340dcc719864214b85ed96f98d16cbffa8f509d9fa4ca237b7bb3f9c32"]
 	}
 	cluster {
-		listen localhost:4223
+		port -1
 		name cluster-hub
 		tls {
 			cert_file: "./configs/certs/server.pem"
@@ -914,7 +914,7 @@ func TestTlsWhitelist(t *testing.T) {
 		}
 	}
 	leafnodes {
-		listen localhost:4224
+		port -1
 		tls {
 			cert_file: "./configs/certs/server.pem"
 			key_file: "./configs/certs/key.pem"
@@ -926,7 +926,7 @@ func TestTlsWhitelist(t *testing.T) {
 	}
 	gateway {
 		name: "A"
-		listen: localhost:4224
+		port -1
 		tls {
 			cert_file: "./configs/certs/server.pem"
 			key_file: "./configs/certs/key.pem"
@@ -937,7 +937,7 @@ func TestTlsWhitelist(t *testing.T) {
 		}
 	}
 	websocket {
-		port: 4226
+		port -1
 		tls {
 			cert_file: "./configs/certs/server.pem"
 			key_file: "./configs/certs/key.pem"
@@ -948,7 +948,7 @@ func TestTlsWhitelist(t *testing.T) {
 		}
 	}
 	mqtt {
-		port: 4225
+		port -1
 		tls {
 			cert_file: "./configs/certs/server.pem"
 			key_file: "./configs/certs/key.pem"

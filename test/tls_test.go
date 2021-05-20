@@ -1971,7 +1971,7 @@ func TestTLSPinnedCerts(t *testing.T) {
 
 	ioutil.WriteFile(confFileName, []byte(fmt.Sprintf(tmpl, "bf6f821f09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9")), 0660)
 	if err := srv.Reload(); err != nil {
-		t.Fatalf("on releaod got %v", err)
+		t.Fatalf("on Reload got %v", err)
 	}
 	// reload pinned to the certs used
 	nc, err = nats.Connect(srv.ClientURL(), opts...)

@@ -1105,6 +1105,9 @@ func comparePasswords(serverPassword, clientPassword string) bool {
 }
 
 func validateAuth(o *Options) error {
+	if err := validatePinnedCerts(o.TLSPinnedCerts); err != nil {
+		return err
+	}
 	for _, u := range o.Users {
 		if err := validateAllowedConnectionTypes(u.AllowedConnectionTypes); err != nil {
 			return err

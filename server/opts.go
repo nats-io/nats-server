@@ -53,7 +53,7 @@ func NoErrOnUnknownFields(noError bool) {
 	atomic.StoreInt32(&allowUnknownTopLevelField, val)
 }
 
-// a set of sha256(DER encoded SubjectPublicKeyInfo)
+// Set of lower case hex-encoded sha256 of DER encoded SubjectPublicKeyInfo
 type PinnedCertSet map[string]struct{}
 
 // ClusterOpts are options for clusters.
@@ -3463,7 +3463,7 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 		case "pinned_certs":
 			ra, ok := mv.([]interface{})
 			if !ok {
-				return nil, &configErr{tk, "error parsing tls config, expected 'pinned_certs' to be a list of sha256(DER encoded SubjectPublicKeyInfo)"}
+				return nil, &configErr{tk, "error parsing tls config, expected 'pinned_certs' to be a list of hex-encoded sha256 of DER encoded SubjectPublicKeyInfo"}
 			}
 			if len(ra) != 0 {
 				wl := PinnedCertSet{}
@@ -3472,7 +3472,7 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 					tk, r := unwrapValue(r, &lt)
 					entry := strings.ToLower(r.(string))
 					if !re.MatchString(entry) {
-						return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, 'pinned_certs' key %s does not look like sha256", entry)}
+						return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, 'pinned_certs' key %s does not look like hex-encoded sha256 of DER encoded SubjectPublicKeyInfo", entry)}
 					}
 					wl[entry] = struct{}{}
 				}

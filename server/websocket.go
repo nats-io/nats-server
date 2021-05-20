@@ -886,6 +886,9 @@ func validateWebsocketOptions(o *Options) error {
 			return fmt.Errorf("trusted operators or trusted keys configuration is required for JWT authentication via cookie %q", wo.JWTCookie)
 		}
 	}
+	if err := validatePinnedCerts(wo.TLSPinnedCerts); err != nil {
+		return fmt.Errorf("websocket: %v", err)
+	}
 	return nil
 }
 

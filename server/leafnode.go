@@ -308,6 +308,9 @@ func validateLeafNode(o *Options) error {
 	if o.SystemAccount == "" {
 		return fmt.Errorf("leaf nodes and gateways (both being defined) require a system account to also be configured")
 	}
+	if err := validatePinnedCerts(o.LeafNode.TLSPinnedCerts); err != nil {
+		return fmt.Errorf("leafnode: %v", err)
+	}
 	return nil
 }
 

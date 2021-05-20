@@ -554,6 +554,9 @@ func validateMQTTOptions(o *Options) error {
 		o.LeafNode.Port == 0 && len(o.LeafNode.Remotes) == 0 {
 		return errMQTTStandaloneNeedsJetStream
 	}
+	if err := validatePinnedCerts(mo.TLSPinnedCerts); err != nil {
+		return fmt.Errorf("mqtt: %v", err)
+	}
 	return nil
 }
 
