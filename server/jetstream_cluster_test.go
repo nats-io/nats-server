@@ -3769,13 +3769,7 @@ func TestJetStreamClusterRemovePeer(t *testing.T) {
 		t.Fatalf("Unexpected error: %+v", rpResp.Error)
 	}
 
-	// Grab shorter timeout jetstream context.
-	js, err = nc.JetStream(nats.MaxWait(100 * time.Millisecond))
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-
-	checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
 		si, err := js.StreamInfo("TEST")
 		if err != nil {
 			return fmt.Errorf("Could not fetch stream info: %v", err)

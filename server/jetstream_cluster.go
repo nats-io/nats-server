@@ -305,7 +305,7 @@ func (cc *jetStreamCluster) isLeader() bool {
 		// Non-clustered mode
 		return true
 	}
-	return cc.meta.Leader()
+	return cc.meta != nil && cc.meta.Leader()
 }
 
 // isCurrent will determine if this node is a leader or an up to date follower.
@@ -1044,14 +1044,16 @@ func (js *jetStream) processRemovePeer(peer string) {
 }
 
 // Assumes all checks have already been done.
-// Lock should be held.
-func (js *jetStream) removePeerFromStream(sa *streamAssignment, peer string) {
-	s, cc := js.srv, js.cluster
+func (js *jetStream) removePeerFromStream(sa *streamAssignment, peer string) bool {
+	js.mu.Lock()
+	defer js.mu.Unlock()
 
-	csa := sa.copyGroup()
+	s, cc, csa := js.srv, js.cluster, sa.copyGroup()
 	if !cc.remapStreamAssignment(csa, peer) {
 		s.Warnf("JetStream cluster could not remap stream '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
+		return false
 	}
+
 	// Send our proposal for this csa. Also use same group definition for all the consumers as well.
 	cc.meta.Propose(encodeAddStreamAssignment(csa))
 	rg := csa.Group
@@ -1060,6 +1062,7 @@ func (js *jetStream) removePeerFromStream(sa *streamAssignment, peer string) {
 		cca.Group.Peers = rg.Peers
 		cc.meta.Propose(encodeAddConsumerAssignment(&cca))
 	}
+	return true
 }
 
 // Check if we have peer related entries.
@@ -1681,28 +1684,14 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 			}
 		} else if e.Type == EntryRemovePeer {
 			js.mu.RLock()
-			ourID := js.cluster.meta.ID()
+			var ourID string
+			if js.cluster != nil && js.cluster.meta != nil {
+				ourID = js.cluster.meta.ID()
+			}
 			js.mu.RUnlock()
+			// We only need to do processing if this is us.
 			if peer := string(e.Data); peer == ourID {
-				shouldDelete := true
-				if sa := mset.streamAssignment(); sa != nil {
-					js.mu.Lock()
-					// Make sure we are not part of this assignment. If we are
-					// we need to ignore this remove.
-					if sa.Group.isMember(ourID) {
-						shouldDelete = false
-					} else {
-						if node := sa.Group.node; node != nil {
-							node.ProposeRemovePeer(ourID)
-						}
-						sa.Group.node = nil
-						sa.err = nil
-					}
-					js.mu.Unlock()
-				}
-				if shouldDelete {
-					mset.stop(true, false)
-				}
+				mset.stop(true, false)
 			}
 			return nil
 		}
@@ -1959,23 +1948,14 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) bool {
 	if isMember {
 		js.processClusterCreateStream(acc, sa)
 	} else {
-		// Clear our raft node here.
-		// TODO(dlc) - This might be better if done by leader, not the one who is being removed
-		// since we are most likely offline.
+		// Check if we have a raft node running, meaning we are no longer part of the group but were.
 		js.mu.Lock()
 		if node := sa.Group.node; node != nil {
 			node.ProposeRemovePeer(ourID)
-			didRemove = true
 		}
 		sa.Group.node = nil
 		sa.err = nil
 		js.mu.Unlock()
-
-		if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
-			// We have one here even though we are not a member. This can happen on re-assignment.
-			s.Debugf("JetStream removing stream '%s > %s' from this server, reassigned", sa.Client.serviceAccount(), sa.Config.Name)
-			mset.stop(true, false)
-		}
 	}
 
 	return didRemove
@@ -2392,8 +2372,7 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 		return
 	}
 
-	acc, err := s.LookupAccount(accName)
-	if err != nil {
+	if _, err := s.LookupAccount(accName); err != nil {
 		ll := fmt.Sprintf("Account [%s] lookup for consumer create failed: %v", accName, err)
 		if isMember {
 			// If we can not lookup the account and we are a member, send this result back to the metacontroller leader.
@@ -2443,9 +2422,7 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	if isMember {
 		js.processClusterCreateConsumer(ca, state)
 	} else {
-		// Clear our raft node here.
-		// TODO(dlc) - This might be better if done by leader, not the one who is being removed
-		// since we are most likely offline.
+		// Check if we have a raft node running, meaning we are no longer part of the group but were.
 		js.mu.Lock()
 		if node := ca.Group.node; node != nil {
 			node.ProposeRemovePeer(ourID)
@@ -2453,16 +2430,6 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 		ca.Group.node = nil
 		ca.err = nil
 		js.mu.Unlock()
-
-		// We are not a member, if we have this consumer on this
-		// server remove it.
-		if mset, _ := acc.lookupStream(stream); mset != nil {
-			if o := mset.lookupConsumer(consumer); o != nil {
-				s.Debugf("JetStream removing consumer '%s > %s > %s' from this server, re-assigned",
-					ca.Client.serviceAccount(), stream, consumer)
-				o.stopWithFlags(true, false, false)
-			}
-		}
 	}
 }
 
@@ -2835,23 +2802,7 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 			}
 			js.mu.RUnlock()
 			if peer := string(e.Data); peer == ourID {
-				shouldDelete := true
-				if ca := o.consumerAssignment(); ca != nil {
-					js.mu.Lock()
-					if ca.Group.isMember(ourID) {
-						shouldDelete = false
-					} else {
-						if node := ca.Group.node; node != nil {
-							node.ProposeRemovePeer(ourID)
-						}
-						ca.Group.node = nil
-						ca.err = nil
-					}
-					js.mu.Unlock()
-				}
-				if shouldDelete {
-					o.stopWithFlags(true, false, false)
-				}
+				o.stopWithFlags(true, false, false)
 			}
 			return nil
 		} else {

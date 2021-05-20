@@ -603,6 +603,7 @@ var (
 	jsClusterNotAvailErr   = &ApiError{Code: 503, Description: "JetStream system temporarily unavailable"}
 	jsClusterRequiredErr   = &ApiError{Code: 503, Description: "JetStream clustering support required"}
 	jsPeerNotMemberErr     = &ApiError{Code: 400, Description: "peer not a member"}
+	jsPeerRemapErr         = &ApiError{Code: 503, Description: "peer remap failed"}
 	jsClusterIncompleteErr = &ApiError{Code: 503, Description: "incomplete results"}
 	jsClusterTagsErr       = &ApiError{Code: 400, Description: "tags placement not supported for operation"}
 	jsClusterNoPeersErr    = &ApiError{Code: 400, Description: "no suitable peers for placement"}
@@ -2014,9 +2015,11 @@ func (s *Server) jsStreamRemovePeerRequest(sub *subscription, c *client, subject
 	}
 
 	// If we are here we have a valid peer member set for removal.
-	js.mu.Lock()
-	js.removePeerFromStream(sa, nodeName)
-	js.mu.Unlock()
+	if !js.removePeerFromStream(sa, nodeName) {
+		resp.Error = jsPeerRemapErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
 
 	resp.Success = true
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
