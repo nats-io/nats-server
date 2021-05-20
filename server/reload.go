@@ -215,6 +215,17 @@ func (t *tlsTimeoutOption) Apply(server *Server) {
 	server.Noticef("Reloaded: tls timeout = %v", t.newValue)
 }
 
+// tlsPinnedCertOption implements the option interface for the tls `pinned_certs` setting.
+type tlsPinnedCertOption struct {
+	noopOption
+	newValue PinnedCertSet
+}
+
+// Apply is a no-op because the pinned certs will be reloaded after options are  applied.
+func (t *tlsPinnedCertOption) Apply(server *Server) {
+	server.Noticef("Reloaded: %d pinned_certs", len(t.newValue))
+}
+
 // authOption is a base struct that provides default option behaviors.
 type authOption struct {
 	noopOption
@@ -790,7 +801,7 @@ func imposeOrder(value interface{}) error {
 		})
 	case WebsocketOpts:
 		sort.Strings(value.AllowedOrigins)
-	case string, bool, int, int32, int64, time.Duration, float64, nil, LeafNodeOpts, ClusterOpts, *tls.Config,
+	case string, bool, int, int32, int64, time.Duration, float64, nil, LeafNodeOpts, ClusterOpts, *tls.Config, PinnedCertSet,
 		*URLAccResolver, *MemAccResolver, *DirAccResolver, *CacheDirAccResolver, Authentication, MQTTOpts, jwt.TagList:
 		// explicitly skipped types
 	default:
@@ -864,6 +875,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &tlsOption{newValue: newValue.(*tls.Config)})
 		case "tlstimeout":
 			diffOpts = append(diffOpts, &tlsTimeoutOption{newValue: newValue.(float64)})
+		case "tlspinnedcerts":
+			diffOpts = append(diffOpts, &tlsPinnedCertOption{newValue: newValue.(PinnedCertSet)})
 		case "username":
 			diffOpts = append(diffOpts, &usernameOption{})
 		case "password":
