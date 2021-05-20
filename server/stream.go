@@ -1499,7 +1499,7 @@ func (mset *stream) setupMirrorConsumer() error {
 	respCh := make(chan *JSApiConsumerCreateResponse, 1)
 	reply := infoReplySubject()
 	crSub, _ := mset.subscribeInternal(reply, func(sub *subscription, c *client, subject, reply string, rmsg []byte) {
-		mset.unsubscribe(sub)
+		mset.unsubscribeUnlocked(sub)
 		_, msg := c.msgParts(rmsg)
 
 		var ccr JSApiConsumerCreateResponse
@@ -1569,7 +1569,7 @@ func (mset *stream) setupMirrorConsumer() error {
 			}
 			mset.setMirrorErr(ccr.Error)
 		case <-time.After(10 * time.Second):
-			mset.unsubscribe(crSub)
+			mset.unsubscribeUnlocked(crSub)
 			return
 		}
 	}()
