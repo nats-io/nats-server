@@ -793,6 +793,13 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			*errors = append(*errors, err)
 			return
 		}
+	case "store_dir", "storedir":
+		// Check if JetStream configuration is also setting the storage directory.
+		if o.StoreDir != "" {
+			*errors = append(*errors, &configErr{tk, "Duplicate 'store_dir' configuration"})
+			return
+		}
+		o.StoreDir = v.(string)
 	case "jetstream":
 		err := parseJetStream(tk, o, errors, warnings)
 		if err != nil {
@@ -1558,6 +1565,10 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 			tk, mv = unwrapValue(mv, &lt)
 			switch strings.ToLower(mk) {
 			case "store_dir", "storedir":
+				// StoreDir can be set at the top level as well so have to prevent ambiguous declarations.
+				if opts.StoreDir != "" {
+					return &configErr{tk, "Duplicate 'store_dir' configuration"}
+				}
 				opts.StoreDir = mv.(string)
 			case "max_memory_store", "max_mem_store", "max_mem":
 				opts.JetStreamMaxMemory = mv.(int64)

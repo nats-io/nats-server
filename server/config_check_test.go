@@ -1464,6 +1464,16 @@ func TestConfigCheck(t *testing.T) {
 			errorLine: 6,
 			errorPos:  10,
 		},
+		{
+			name: "ambiguous store dir",
+			config: `
+                                store_dir: "foo"
+                                jetstream {
+                                  store_dir: "bar"
+                                }
+                        `,
+			err: fmt.Errorf(`Duplicate 'store_dir' configuration`),
+		},
 	}
 
 	checkConfig := func(config string) error {
@@ -1499,10 +1509,17 @@ func TestConfigCheck(t *testing.T) {
 			}
 
 			if err != nil && expectedErr != nil {
-				msg := fmt.Sprintf("%s:%d:%d: %s", conf, test.errorLine, test.errorPos, expectedErr.Error())
-				if test.reason != "" {
-					msg += ": " + test.reason
+				var msg string
+
+				if test.errorPos > 0 {
+					msg = fmt.Sprintf("%s:%d:%d: %s", conf, test.errorLine, test.errorPos, expectedErr.Error())
+					if test.reason != "" {
+						msg += ": " + test.reason
+					}
+				} else {
+					msg = test.reason
 				}
+
 				if !strings.Contains(err.Error(), msg) {
 					t.Errorf("Expected:\n%q\ngot:\n%q", msg, err.Error())
 				}

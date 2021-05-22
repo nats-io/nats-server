@@ -1470,6 +1470,24 @@ func (s *Server) fetchAccount(name string) (*Account, error) {
 	return acc, nil
 }
 
+func (s *Server) setupOCSPStapleStoreDir() error {
+	opts := s.getOpts()
+	storeDir := opts.StoreDir
+	if storeDir == _EMPTY_ {
+		s.Warnf("OCSP Stapling disk cache is disabled (missing 'store_dir')")
+		return nil
+	}
+	storeDir = filepath.Join(storeDir, defaultOCSPStoreDir)
+	if stat, err := os.Stat(storeDir); os.IsNotExist(err) {
+		if err := os.MkdirAll(storeDir, defaultDirPerms); err != nil {
+			return fmt.Errorf("could not create OCSP storage directory - %v", err)
+		}
+	} else if stat == nil || !stat.IsDir() {
+		return fmt.Errorf("OCSP storage directory is not a directory")
+	}
+	return nil
+}
+
 func (s *Server) enableOCSP() error {
 	opts := s.getOpts()
 
@@ -1481,14 +1499,15 @@ func (s *Server) enableOCSP() error {
 		}
 		// Check if an OCSP stapling monitor is required for this certificate.
 		if mon != nil {
+			s.Noticef("OCSP Stapling enabled for client connections")
+
 			s.ocsps = append(s.ocsps, mon)
 			// Override the TLS config with one that follows OCSP.
 			opts.TLSConfig = tc
 			s.startGoRoutine(func() { mon.run() })
 		}
-		s.Noticef("OCSP Stapling enabled for client connections")
 	}
-	// FIXME: Add support for leafnodes, routes, MQTT, WebSocket
+	// FIXME: Add support for leafnodes, routes, gateways, MQTT, WebSocket
 
 	return nil
 }

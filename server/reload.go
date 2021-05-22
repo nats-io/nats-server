@@ -1285,12 +1285,18 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 func (s *Server) reloadOCSP() error {
 	opts := s.getOpts()
 
+	if err := s.setupOCSPStapleStoreDir(); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	ocsps := s.ocsps
 	s.mu.Unlock()
 
 	// Stop all OCSP Stapling monitors in case there were any running.
+	var wasEnabled bool
 	for _, oc := range ocsps {
+		wasEnabled = true
 		oc.stop()
 	}
 
@@ -1303,15 +1309,17 @@ func (s *Server) reloadOCSP() error {
 		}
 		// Check if an OCSP stapling monitor is required for this certificate.
 		if mon != nil {
+			s.Noticef("OCSP Stapling enabled for client connections")
 			ocspm = append(ocspm, mon)
 
-			// Override the TLS config with one that follows OCSP.
+			// Override the TLS config with one that has OCSP enabled.
 			s.optsMu.Lock()
 			s.opts.TLSConfig = tc
 			s.optsMu.Unlock()
 			s.startGoRoutine(func() { mon.run() })
+		} else if wasEnabled {
+			s.Warnf("OCSP Stapling disabled for client connections")
 		}
-		s.Noticef("OCSP Stapling enabled for client connections")
 	}
 	// Replace stopped monitors with the new ones.
 	s.mu.Lock()

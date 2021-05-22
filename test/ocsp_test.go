@@ -14,6 +14,7 @@
 package test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rsa"
 	"crypto/tls"
@@ -23,6 +24,8 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,7 +53,11 @@ func TestOCSPAlwaysMustStapleAndShutdown(t *testing.T) {
 	addr := fmt.Sprintf("http://%s", ocspr.Addr)
 	setOCSPStatus(t, addr, serverCert, ocsp.Good)
 
-	opts := DefaultTestOptions
+	opts := server.Options{}
+	opts.Host = "127.0.0.1"
+	opts.NoLog = true
+	opts.NoSigs = true
+	opts.MaxControlLine = 4096
 	opts.Port = -1
 	opts.TLSCert = serverCert
 	opts.TLSKey = serverKey
@@ -140,7 +147,11 @@ func TestOCSPMustStapleShutdown(t *testing.T) {
 	addr := fmt.Sprintf("http://%s", ocspr.Addr)
 	setOCSPStatus(t, addr, serverCert, ocsp.Good)
 
-	opts := DefaultTestOptions
+	opts := server.Options{}
+	opts.Host = "127.0.0.1"
+	opts.NoLog = true
+	opts.NoSigs = true
+	opts.MaxControlLine = 4096
 	opts.Port = -1
 	opts.TLSCert = serverCert
 	opts.TLSKey = serverKey
@@ -321,7 +332,11 @@ func TestOCSPAutoWithoutMustStapleDoesNotShutdownOnRevoke(t *testing.T) {
 	addr := fmt.Sprintf("http://%s", ocspr.Addr)
 	setOCSPStatus(t, addr, serverCert, ocsp.Good)
 
-	opts := DefaultTestOptions
+	opts := server.Options{}
+	opts.Host = "127.0.0.1"
+	opts.NoLog = true
+	opts.NoSigs = true
+	opts.MaxControlLine = 4096
 	opts.Port = -1
 	opts.TLSCert = serverCert
 	opts.TLSKey = serverKey
@@ -663,8 +678,13 @@ func TestOCSPReloadRotateTLSCertDisableMustStaple(t *testing.T) {
 	addr := fmt.Sprintf("http://%s", ocspr.Addr)
 	setOCSPStatus(t, addr, serverCert, ocsp.Good)
 
-	content := `
+	storeDir := createDir(t, "_ocsp")
+	defer removeDir(t, storeDir)
+
+	originalContent := `
 		port: -1
+
+		store_dir: "%s"
 
 		tls {
 			cert_file: "configs/certs/ocsp/server-status-request-url-cert.pem"
@@ -673,14 +693,18 @@ func TestOCSPReloadRotateTLSCertDisableMustStaple(t *testing.T) {
 			timeout: 5
 		}
 	`
+
+	content := fmt.Sprintf(originalContent, storeDir)
 	conf := createConfFile(t, []byte(content))
 	defer removeFile(t, conf)
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
+	var staple []byte
 	nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port),
 		nats.Secure(&tls.Config{
 			VerifyConnection: func(s tls.ConnectionState) error {
+				staple = s.OCSPResponse
 				resp, err := getOCSPStatus(s)
 				if err != nil {
 					return err
@@ -710,9 +734,36 @@ func TestOCSPReloadRotateTLSCertDisableMustStaple(t *testing.T) {
 	}
 	nc.Close()
 
+	files := []string{}
+	err = filepath.Walk(storeDir+"/ocsp/", func(path string, info os.FileInfo, err error) error {
+		if info.IsDir() {
+			return nil
+		}
+		files = append(files, path)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, file := range files {
+		data, err := ioutil.ReadFile(file)
+		if err != nil {
+			t.Error(err)
+		}
+		if bytes.Equal(staple, data) {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Could not find OCSP Staple")
+	}
+
 	// Change the contents with another that has OCSP Stapling disabled.
-	content = `
+	updatedContent := `
 		port: -1
+
+		store_dir: "%s"
 
 		tls {
 			cert_file: "configs/certs/ocsp/server-cert.pem"
@@ -721,6 +772,7 @@ func TestOCSPReloadRotateTLSCertDisableMustStaple(t *testing.T) {
 			timeout: 5
 		}
 	`
+	content = fmt.Sprintf(updatedContent, storeDir)
 	if err := ioutil.WriteFile(conf, []byte(content), 0666); err != nil {
 		t.Fatalf("Error writing config: %v", err)
 	}
@@ -729,7 +781,7 @@ func TestOCSPReloadRotateTLSCertDisableMustStaple(t *testing.T) {
 	}
 
 	// The new certificate does not have must staple so they will be missing.
-	time.Sleep(2 * time.Second)
+	time.Sleep(4 * time.Second)
 
 	nc, err = nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port),
 		nats.Secure(&tls.Config{
@@ -747,6 +799,67 @@ func TestOCSPReloadRotateTLSCertDisableMustStaple(t *testing.T) {
 		t.Fatal(err)
 	}
 	nc.Close()
+
+	// Re-enable OCSP Stapling
+	content = fmt.Sprintf(originalContent, storeDir)
+	if err := ioutil.WriteFile(conf, []byte(content), 0666); err != nil {
+		t.Fatalf("Error writing config: %v", err)
+	}
+	if err := s.Reload(); err != nil {
+		t.Fatal(err)
+	}
+
+	var newStaple []byte
+	nc, err = nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port),
+		nats.Secure(&tls.Config{
+			VerifyConnection: func(s tls.ConnectionState) error {
+				newStaple = s.OCSPResponse
+				resp, err := getOCSPStatus(s)
+				if err != nil {
+					return err
+				}
+				if resp.Status != ocsp.Good {
+					t.Errorf("Expected valid OCSP staple status")
+				}
+				return nil
+			},
+		}),
+		nats.RootCAs(caCert),
+		nats.ErrorHandler(noOpErrHandler),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc.Close()
+
+	// Confirm that it got a new staple.
+	files = []string{}
+	err = filepath.Walk(storeDir+"/ocsp/", func(path string, info os.FileInfo, err error) error {
+		if info.IsDir() {
+			return nil
+		}
+		files = append(files, path)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found = false
+	for _, file := range files {
+		data, err := ioutil.ReadFile(file)
+		if err != nil {
+			t.Error(err)
+		}
+		if bytes.Equal(newStaple, data) {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Could not find OCSP Staple")
+	}
+	if bytes.Equal(staple, newStaple) {
+		t.Error("Expected new OCSP Staple")
+	}
 }
 
 func TestOCSPReloadRotateTLSCertEnableMustStaple(t *testing.T) {

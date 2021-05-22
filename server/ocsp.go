@@ -14,6 +14,7 @@
 package server
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/asn1"
@@ -22,6 +23,8 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +33,7 @@ import (
 )
 
 const (
+	defaultOCSPStoreDir      = "ocsp"
 	defaultOCSPCheckInterval = 24 * time.Hour
 	minOCSPCheckInterval     = 2 * time.Minute
 )
@@ -92,8 +96,17 @@ func (oc *OCSPMonitor) getNextRun() time.Duration {
 func (oc *OCSPMonitor) getStatus() ([]byte, *ocsp.Response, error) {
 	raw, resp := oc.getCacheStatus()
 	if len(raw) > 0 && resp != nil {
+		// Check if the OCSP is still valid.
+		if err := validOCSPResponse(resp); err == nil {
+			return raw, resp, nil
+		}
+	}
+	var err error
+	raw, resp, err = oc.getLocalStatus()
+	if err == nil {
 		return raw, resp, nil
 	}
+
 	return oc.getRemoteStatus()
 }
 
@@ -101,6 +114,41 @@ func (oc *OCSPMonitor) getCacheStatus() ([]byte, *ocsp.Response) {
 	oc.mu.Lock()
 	defer oc.mu.Unlock()
 	return oc.raw, oc.resp
+}
+
+func (oc *OCSPMonitor) getLocalStatus() ([]byte, *ocsp.Response, error) {
+	opts := oc.srv.getOpts()
+	storeDir := opts.StoreDir
+	if storeDir == _EMPTY_ {
+		return nil, nil, fmt.Errorf("store_dir not set")
+	}
+
+	// This key must be based upon the current full certificate, not the public key,
+	// so MUST be on the full raw certificate and not an SPKI or other reduced form.
+	key := fmt.Sprintf("%x", sha256.Sum256(oc.Leaf.Raw))
+
+	oc.mu.Lock()
+	raw, err := ioutil.ReadFile(filepath.Join(storeDir, defaultOCSPStoreDir, key))
+	oc.mu.Unlock()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	resp, err := ocsp.ParseResponse(raw, oc.Issuer)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := validOCSPResponse(resp); err != nil {
+		return nil, nil, err
+	}
+
+	// Cache the response.
+	oc.mu.Lock()
+	oc.raw = raw
+	oc.resp = resp
+	oc.mu.Unlock()
+
+	return raw, resp, nil
 }
 
 func (oc *OCSPMonitor) getRemoteStatus() ([]byte, *ocsp.Response, error) {
@@ -163,6 +211,13 @@ func (oc *OCSPMonitor) getRemoteStatus() ([]byte, *ocsp.Response, error) {
 		return nil, nil, err
 	}
 
+	if storeDir := opts.StoreDir; storeDir != _EMPTY_ {
+		key := fmt.Sprintf("%x", sha256.Sum256(oc.Leaf.Raw))
+		if err := oc.writeOCSPStatus(storeDir, key, raw); err != nil {
+			return nil, nil, fmt.Errorf("failed to write ocsp status: %w", err)
+		}
+	}
+
 	oc.mu.Lock()
 	oc.raw = raw
 	oc.resp = resp
@@ -201,7 +256,7 @@ func (oc *OCSPMonitor) run() {
 		return
 	}
 
-	for s.Running() {
+	for {
 		// On reload, if the certificate changes then need to stop this monitor.
 		select {
 		case <-time.After(nextRun):
@@ -294,6 +349,10 @@ func (srv *Server) NewOCSPMonitor(tc *tls.Config) (*tls.Config, *OCSPMonitor, er
 			return tc, nil, nil
 		}
 
+		if err := srv.setupOCSPStapleStoreDir(); err != nil {
+			return nil, nil, err
+		}
+
 		// TODO: Add OCSP 'responder_cert' option in case CA cert not available.
 		issuer, err := getOCSPIssuer(caFile, cert.Certificate)
 		if err != nil {
@@ -382,6 +441,35 @@ func hasOCSPStatusRequest(cert *x509.Certificate) bool {
 	}
 
 	return false
+}
+
+// writeOCSPStatus writes an OCSP status to a temporary file then moves it to a
+// new path, in an attempt to avoid corrupting existing data.
+func (oc *OCSPMonitor) writeOCSPStatus(storeDir, file string, data []byte) error {
+	storeDir = filepath.Join(storeDir, defaultOCSPStoreDir)
+	tmp, err := ioutil.TempFile(storeDir, "tmp-cert-status")
+	if err != nil {
+		return err
+	}
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	oc.mu.Lock()
+	err = os.Rename(tmp.Name(), filepath.Join(storeDir, file))
+	oc.mu.Unlock()
+	if err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+
+	return nil
 }
 
 func parseCertPEM(name string) (*x509.Certificate, error) {
