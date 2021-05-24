@@ -7012,6 +7012,54 @@ func TestJetStreamClusterNilMsgWithHeaderThroughSourcedStream(t *testing.T) {
 	}
 }
 
+// Make sure varz reports the server usage not replicated usage etc.
+func TestJetStreamClusterVarzReporting(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Replicas: 3,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// ~100k per message.
+	msg := []byte(strings.Repeat("A", 99_960))
+	msz := fileStoreMsgSize("TEST", nil, msg)
+	total := msz * 10
+
+	for i := 0; i < 10; i++ {
+		if _, err := js.Publish("TEST", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+	// To show the bug we need this to allow remote usage to replicate.
+	time.Sleep(2 * usageTick)
+
+	v, err := s.Varz(nil)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if v.JetStream.Stats.Store > total {
+		t.Fatalf("Single server varz JetStream store usage should be <= %d, got %d", total, v.JetStream.Stats.Store)
+	}
+
+	info, err := js.AccountInfo()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if info.Store < total*3 {
+		t.Fatalf("Expected account information to show usage ~%d, got %d", total*3, info.Store)
+	}
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.

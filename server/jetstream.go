@@ -1538,7 +1538,7 @@ func (js *jetStream) dynamicAccountLimits() *JetStreamAccountLimits {
 	return limits
 }
 
-// Report on JetStream stats and usage.
+// Report on JetStream stats and usage for this server.
 func (js *jetStream) usageStats() *JetStreamStats {
 	var stats JetStreamStats
 
@@ -1556,10 +1556,10 @@ func (js *jetStream) usageStats() *JetStreamStats {
 	// Collect account information.
 	for _, jsa := range accounts {
 		jsa.mu.RLock()
-		stats.Memory += uint64(jsa.memTotal)
-		stats.Store += uint64(jsa.storeTotal)
-		stats.API.Total += jsa.apiTotal
-		stats.API.Errors += jsa.apiErrors
+		stats.Memory += uint64(jsa.usage.mem)
+		stats.Store += uint64(jsa.usage.store)
+		stats.API.Total += jsa.usage.api
+		stats.API.Errors += jsa.usage.err
 		jsa.mu.RUnlock()
 	}
 	return &stats
