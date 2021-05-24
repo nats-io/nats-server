@@ -1014,6 +1014,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			tmpNew := newValue.(GatewayOpts)
 			tmpOld.TLSConfig = nil
 			tmpNew.TLSConfig = nil
+			tmpOld.tlsConfigOpts = nil
+			tmpNew.tlsConfigOpts = nil
 
 			// Need to do the same for remote gateways' TLS configs.
 			// But we can't just set remotes' TLSConfig to nil otherwise this
@@ -1033,6 +1035,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			tmpNew := newValue.(LeafNodeOpts)
 			tmpOld.TLSConfig = nil
 			tmpNew.TLSConfig = nil
+			tmpOld.tlsConfigOpts = nil
+			tmpNew.tlsConfigOpts = nil
 
 			// Need to do the same for remote leafnodes' TLS configs.
 			// But we can't just set remotes' TLSConfig to nil otherwise this
@@ -1339,7 +1343,7 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 }
 
 func (s *Server) reloadOCSP() error {
-	opts := s.getOpts()
+	sopts := s.getOpts()
 
 	if err := s.setupOCSPStapleStoreDir(); err != nil {
 		return err
@@ -1350,22 +1354,61 @@ func (s *Server) reloadOCSP() error {
 	s.mu.Unlock()
 
 	// Stop all OCSP Stapling monitors in case there were any running.
-	var wasEnabled bool
 	for _, oc := range ocsps {
-		wasEnabled = true
 		oc.stop()
+	}
+
+	type ocspState struct {
+		config     *tls.Config
+		wasEnabled bool
+	}
+	withOCSP := make(map[string]ocspState)
+
+	// Start OCSP Stapling for client connections.
+	if config := sopts.TLSConfig; config != nil {
+		withOCSP[typeStringMap[CLIENT]] = ocspState{config, true}
+	}
+	if config := sopts.Cluster.TLSConfig; config != nil {
+		withOCSP[typeStringMap[ROUTER]] = ocspState{config, true}
+	}
+	if config := sopts.LeafNode.TLSConfig; config != nil {
+		withOCSP[typeStringMap[LEAF]] = ocspState{config, true}
+	}
+	if config := sopts.Gateway.TLSConfig; config != nil {
+		withOCSP[typeStringMap[GATEWAY]] = ocspState{config, true}
+	}
+	if config := sopts.Websocket.TLSConfig; config != nil {
+		withOCSP["WebSocket"] = ocspState{config, true}
+	}
+	if config := sopts.MQTT.TLSConfig; config != nil {
+		withOCSP["MQTT"] = ocspState{config, true}
 	}
 
 	// Restart the monitors under the new configuration.
 	ocspm := make([]*OCSPMonitor, 0)
-	if config := opts.TLSConfig; config != nil {
-		tc, mon, err := s.NewOCSPMonitor(config)
+	for kind, config := range withOCSP {
+		tc, mon, err := s.NewOCSPMonitor(kind, config.config)
 		if err != nil {
 			return err
 		}
 		// Check if an OCSP stapling monitor is required for this certificate.
 		if mon != nil {
-			s.Noticef("OCSP Stapling enabled for client connections")
+			s.Noticef("OCSP Stapling enabled for %s connections", kind)
+			switch kind {
+			case typeStringMap[CLIENT]:
+				sopts.TLSConfig = tc
+			case typeStringMap[ROUTER]:
+				sopts.Cluster.TLSConfig = tc
+			case typeStringMap[LEAF]:
+				sopts.LeafNode.TLSConfig = tc
+			case typeStringMap[GATEWAY]:
+				sopts.Gateway.TLSConfig = tc
+			case "WebSocket":
+				sopts.Websocket.TLSConfig = tc
+			case "MQTT":
+				sopts.MQTT.TLSConfig = tc
+			}
+
 			ocspm = append(ocspm, mon)
 
 			// Override the TLS config with one that has OCSP enabled.
@@ -1373,8 +1416,8 @@ func (s *Server) reloadOCSP() error {
 			s.opts.TLSConfig = tc
 			s.optsMu.Unlock()
 			s.startGoRoutine(func() { mon.run() })
-		} else if wasEnabled {
-			s.Warnf("OCSP Stapling disabled for client connections")
+		} else if config.wasEnabled {
+			s.Warnf("OCSP Stapling disabled for %s connections", kind)
 		}
 	}
 	// Replace stopped monitors with the new ones.

@@ -2151,6 +2151,7 @@ func TestParsingGateways(t *testing.T) {
 		t.Fatalf("Expected TLSConfig, got none")
 	}
 	opts.Gateway.TLSConfig = nil
+	opts.Gateway.tlsConfigOpts = nil
 	if !reflect.DeepEqual(&opts.Gateway, expected) {
 		t.Fatalf("Expected %v, got %v", expected, opts.Gateway)
 	}
