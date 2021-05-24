@@ -388,6 +388,12 @@ func NewServer(opts *Options) (*Server, error) {
 	// Ensure that non-exported options (used in tests) are properly set.
 	s.setLeafNodeNonExportedOptions()
 
+	// Setup OCSP Stapling. This will abort server from starting if there
+	// are no valid staples and OCSP policy is to Always or MustStaple.
+	if err := s.enableOCSP(); err != nil {
+		return nil, err
+	}
+
 	// Call this even if there is no gateway defined. It will
 	// initialize the structure so we don't have to check for
 	// it to be nil or not in various places in the code.
@@ -1470,48 +1476,6 @@ func (s *Server) fetchAccount(name string) (*Account, error) {
 	return acc, nil
 }
 
-func (s *Server) setupOCSPStapleStoreDir() error {
-	opts := s.getOpts()
-	storeDir := opts.StoreDir
-	if storeDir == _EMPTY_ {
-		s.Warnf("OCSP Stapling disk cache is disabled (missing 'store_dir')")
-		return nil
-	}
-	storeDir = filepath.Join(storeDir, defaultOCSPStoreDir)
-	if stat, err := os.Stat(storeDir); os.IsNotExist(err) {
-		if err := os.MkdirAll(storeDir, defaultDirPerms); err != nil {
-			return fmt.Errorf("could not create OCSP storage directory - %v", err)
-		}
-	} else if stat == nil || !stat.IsDir() {
-		return fmt.Errorf("OCSP storage directory is not a directory")
-	}
-	return nil
-}
-
-func (s *Server) enableOCSP() error {
-	opts := s.getOpts()
-
-	// Start OCSP Stapling for client connections.
-	if config := opts.TLSConfig; config != nil {
-		tc, mon, err := s.NewOCSPMonitor(config)
-		if err != nil {
-			return err
-		}
-		// Check if an OCSP stapling monitor is required for this certificate.
-		if mon != nil {
-			s.Noticef("OCSP Stapling enabled for client connections")
-
-			s.ocsps = append(s.ocsps, mon)
-			// Override the TLS config with one that follows OCSP.
-			opts.TLSConfig = tc
-			s.startGoRoutine(func() { mon.run() })
-		}
-	}
-	// FIXME: Add support for leafnodes, routes, gateways, MQTT, WebSocket
-
-	return nil
-}
-
 // Start up the server, this will block.
 // Start via a Go routine if needed.
 func (s *Server) Start() {
@@ -1664,14 +1628,10 @@ func (s *Server) Start() {
 		})
 	}
 
-	// Setup OCSP Stapling. This will abort server from starting if there
-	// are no valid staples and OCSP policy is to Always or MustStaple.
-	if err := s.enableOCSP(); err != nil {
-		s.Fatalf("Can't enable OCSP Stapling: %v", err)
-		return
-	}
+	// Start OCSP Stapling monitoring for TLS certificates if enabled.
+	s.startOCSPMonitoring()
 
-	// Start monitoring if needed
+	// Start monitoring if needed.
 	if err := s.StartMonitoring(); err != nil {
 		s.Fatalf("Can't start monitoring: %v", err)
 		return

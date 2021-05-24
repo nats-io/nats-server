@@ -2151,6 +2151,7 @@ func TestParsingGateways(t *testing.T) {
 		t.Fatalf("Expected TLSConfig, got none")
 	}
 	opts.Gateway.TLSConfig = nil
+	opts.Gateway.tlsConfigOpts = nil
 	if !reflect.DeepEqual(&opts.Gateway, expected) {
 		t.Fatalf("Expected %v, got %v", expected, opts.Gateway)
 	}
@@ -2412,7 +2413,11 @@ func TestParsingLeafNodesListener(t *testing.T) {
 	if opts.LeafNode.TLSConfig == nil {
 		t.Fatalf("Expected TLSConfig, got none")
 	}
+	if opts.LeafNode.tlsConfigOpts == nil {
+		t.Fatalf("Expected TLSConfig snapshot, got none")
+	}
 	opts.LeafNode.TLSConfig = nil
+	opts.LeafNode.tlsConfigOpts = nil
 	if !reflect.DeepEqual(&opts.LeafNode, expected) {
 		t.Fatalf("Expected %v, got %v", expected, opts.LeafNode)
 	}
