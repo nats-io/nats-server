@@ -387,6 +387,11 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			authRequired = s.websocket.authOverride
 		}
 	}
+	if !authRequired {
+		// TODO(dlc) - If they send us credentials should we fail?
+		s.mu.Unlock()
+		return true
+	}
 	var (
 		username   string
 		password   string
@@ -425,11 +430,6 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 		}
 	} else {
 		tlsMap = opts.LeafNode.TLSMap
-	}
-	if !authRequired {
-		// TODO(dlc) - If they send us credentials should we fail?
-		s.mu.Unlock()
-		return true
 	}
 
 	if !ao {

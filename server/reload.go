@@ -710,13 +710,13 @@ func (s *Server) Reload() error {
 	disconnectClients := []*client{}
 	checkClients := func(kind int, clients map[uint64]*client, set PinnedCertSet) {
 		for _, c := range clients {
-			if c.kind == kind && !c.matchesPinnedCert(set) {
+			if (c.kind == kind || (c.kind == CLIENT && c.clientType() == kind)) && !c.matchesPinnedCert(set) {
 				disconnectClients = append(disconnectClients, c)
 			}
 		}
 	}
 	if !reflect.DeepEqual(newOpts.TLSPinnedCerts, curOpts.TLSPinnedCerts) {
-		checkClients(CLIENT, s.clients, newOpts.TLSPinnedCerts)
+		checkClients(NATS, s.clients, newOpts.TLSPinnedCerts)
 	}
 	if !reflect.DeepEqual(newOpts.MQTT.TLSPinnedCerts, curOpts.MQTT.TLSPinnedCerts) {
 		checkClients(MQTT, s.clients, newOpts.MQTT.TLSPinnedCerts)

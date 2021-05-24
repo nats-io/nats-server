@@ -2360,7 +2360,7 @@ func (s *Server) leafNodeResumeConnectProcess(c *client) {
 			rURL := remote.getCurrentURL()
 
 			// Perform the client-side TLS handshake.
-			if resetTLSName, err := c.doTLSClientHandshake("leafnode", rURL, tlsConfig, tlsName, tlsTimeout, c.srv.getOpts().TLSPinnedCerts); err != nil {
+			if resetTLSName, err := c.doTLSClientHandshake("leafnode", rURL, tlsConfig, tlsName, tlsTimeout, c.srv.getOpts().LeafNode.TLSPinnedCerts); err != nil {
 				// Check if we need to reset the remote's TLS name.
 				if resetTLSName {
 					remote.Lock()
