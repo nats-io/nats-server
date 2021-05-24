@@ -2850,7 +2850,7 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) {
 	o.mu.RLock()
 
 	mset := o.mset
-	if mset == nil || mset.cfg.Retention != InterestPolicy {
+	if mset == nil || mset.cfg.Retention == LimitsPolicy {
 		o.mu.RUnlock()
 		return
 	}
