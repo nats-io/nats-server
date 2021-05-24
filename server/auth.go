@@ -187,19 +187,6 @@ func (s *Server) checkAuthforWarnings() {
 		// Warning about using plaintext passwords.
 		s.Warnf("Plaintext passwords detected, use nkeys or bcrypt")
 	}
-	// only warn about client connections others use bidirectional TLS
-	if len(s.opts.TLSPinnedCerts) > 0 && !(s.opts.TLSVerify || s.opts.TLSMap) {
-		s.Warnf("Pinned Certs specified but no verify or verify_and_map that would require presenting a client cert")
-	}
-	if len(s.opts.Websocket.TLSPinnedCerts) > 0 && !(s.opts.Websocket.TLSMap) {
-		s.Warnf("Websocket Pinned Certs specified but no verify_and_map that would require presenting a client cert")
-	}
-	if len(s.opts.MQTT.TLSPinnedCerts) > 0 && !(s.opts.MQTT.TLSMap) {
-		s.Warnf("MQTT Pinned Certs specified but no verify_and_map that would require presenting a client cert")
-	}
-	if len(s.opts.LeafNode.TLSPinnedCerts) > 0 && !(s.opts.LeafNode.TLSMap) {
-		s.Warnf("Leaf Pinned Certs specified but verify_and_map that would require presenting a client cert")
-	}
 }
 
 // If Users or Nkeys options have definitions without an account defined,
@@ -360,7 +347,7 @@ func (s *Server) isClientAuthorized(c *client) bool {
 }
 
 // returns false if the client needs to be disconnected
-func (s *Server) matchesPinnedCert(c *client, tlsPinnedCerts PinnedCertSet) bool {
+func (c *client) matchesPinnedCert(tlsPinnedCerts PinnedCertSet) bool {
 	if tlsPinnedCerts == nil {
 		return true
 	}
@@ -400,6 +387,11 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			authRequired = s.websocket.authOverride
 		}
 	}
+	if !authRequired {
+		// TODO(dlc) - If they send us credentials should we fail?
+		s.mu.Unlock()
+		return true
+	}
 	var (
 		username   string
 		password   string
@@ -407,14 +399,12 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 		noAuthUser string
 	)
 	tlsMap := opts.TLSMap
-	tlsPinnedCerts := opts.TLSPinnedCerts
 	if c.kind == CLIENT {
 		switch c.clientType() {
 		case MQTT:
 			mo := &opts.MQTT
 			// Always override TLSMap.
 			tlsMap = mo.TLSMap
-			tlsPinnedCerts = mo.TLSPinnedCerts
 			// The rest depends on if there was any auth override in
 			// the mqtt's config.
 			if s.mqtt.authOverride {
@@ -428,7 +418,6 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			wo := &opts.Websocket
 			// Always override TLSMap.
 			tlsMap = wo.TLSMap
-			tlsPinnedCerts = wo.TLSPinnedCerts
 			// The rest depends on if there was any auth override in
 			// the websocket's config.
 			if s.websocket.authOverride {
@@ -441,16 +430,6 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 		}
 	} else {
 		tlsMap = opts.LeafNode.TLSMap
-		tlsPinnedCerts = opts.LeafNode.TLSPinnedCerts
-	}
-	if !s.matchesPinnedCert(c, tlsPinnedCerts) {
-		s.mu.Unlock()
-		return false
-	}
-	if !authRequired {
-		// TODO(dlc) - If they send us credentials should we fail?
-		s.mu.Unlock()
-		return true
 	}
 
 	if !ao {
@@ -915,10 +894,6 @@ func (s *Server) isRouterAuthorized(c *client) bool {
 		return s.opts.CustomRouterAuthentication.Check(c)
 	}
 
-	if !s.matchesPinnedCert(c, opts.Cluster.TLSPinnedCerts) {
-		return false
-	}
-
 	if opts.Cluster.TLSMap || opts.Cluster.TLSCheckKnownURLs {
 		return checkClientTLSCertSubject(c, func(user string, _ *ldap.DN, isDNSAltName bool) (string, bool) {
 			if user == "" {
@@ -953,10 +928,6 @@ func (s *Server) isRouterAuthorized(c *client) bool {
 func (s *Server) isGatewayAuthorized(c *client) bool {
 	// Snapshot server options.
 	opts := s.getOpts()
-
-	if !s.matchesPinnedCert(c, opts.Gateway.TLSPinnedCerts) {
-		return false
-	}
 
 	// Check whether TLS map is enabled, otherwise use single user/pass.
 	if opts.Gateway.TLSMap || opts.Gateway.TLSCheckKnownURLs {
@@ -1018,10 +989,6 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 			return false
 		}
 		return s.registerLeafWithAccount(c, account)
-	}
-
-	if !s.matchesPinnedCert(c, opts.LeafNode.TLSPinnedCerts) {
-		return false
 	}
 
 	// If leafnodes config has an authorization{} stanza, this takes precedence.

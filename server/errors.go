@@ -211,6 +211,9 @@ var (
 
 	// ErrReplicasNotSupported is returned when a stream with replicas > 1 in non-clustered mode.
 	ErrReplicasNotSupported = errors.New("replicas > 1 not supported in non-clustered mode")
+
+	// ErrCertNotPinned is returned when pinned certs are set and the certificate is not in it
+	ErrCertNotPinned = errors.New("certificate not pinned")
 )
 
 // configErr is a configuration error.

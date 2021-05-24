@@ -2353,7 +2353,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 			pre = nil
 		}
 		// Performs server-side TLS handshake.
-		if err := c.doTLSServerHandshake(_EMPTY_, opts.TLSConfig, opts.TLSTimeout); err != nil {
+		if err := c.doTLSServerHandshake(_EMPTY_, opts.TLSConfig, opts.TLSTimeout, opts.TLSPinnedCerts); err != nil {
 			c.mu.Unlock()
 			return nil
 		}

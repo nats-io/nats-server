@@ -801,7 +801,7 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 		}
 
 		// Perform (either server or client side) TLS handshake.
-		if resetTLSName, err := c.doTLSHandshake("gateway", solicit, url, tlsConfig, tlsName, timeout); err != nil {
+		if resetTLSName, err := c.doTLSHandshake("gateway", solicit, url, tlsConfig, tlsName, timeout, opts.Gateway.TLSPinnedCerts); err != nil {
 			if resetTLSName {
 				cfg.Lock()
 				cfg.tlsName = _EMPTY_
