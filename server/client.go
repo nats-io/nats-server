@@ -4993,7 +4993,7 @@ func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfi
 			}
 		}
 	} else if !c.matchesPinnedCert(pCerts) {
-		err = ErrConnectionClosed
+		err = ErrCertNotPinned
 	}
 
 	if err != nil {
