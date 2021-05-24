@@ -6863,6 +6863,45 @@ func TestJetStreamClusterCrossAccountInterop(t *testing.T) {
 	})
 }
 
+// https://github.com/nats-io/nats-server/issues/2242
+func TestJetStreamClusterMsgIdDuplicateBug(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "MSL", 3)
+	defer c.shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 2,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sendMsgID := func(id string) (*nats.PubAck, error) {
+		t.Helper()
+		m := nats.NewMsg("foo")
+		m.Header.Add(JSMsgId, id)
+		m.Data = []byte("HELLO WORLD")
+		return js.PublishMsg(m)
+	}
+
+	if _, err := sendMsgID("1"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// This should fail with duplicate detected.
+	if pa, _ := sendMsgID("1"); pa == nil || !pa.Duplicate {
+		t.Fatalf("Expected duplicate but got none: %+v", pa)
+	}
+	// This should be fine.
+	if _, err := sendMsgID("2"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.

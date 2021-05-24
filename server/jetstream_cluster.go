@@ -1190,6 +1190,10 @@ func (js *jetStream) createRaftGroup(rg *raftGroup, storage StorageType) error {
 
 	s, cc := js.srv, js.cluster
 
+	if cc == nil || cc.meta == nil {
+		return ErrJetStreamNotClustered
+	}
+
 	// If this is a single peer raft group or we are not a member return.
 	if len(rg.Peers) <= 1 || !rg.isMember(cc.meta.ID()) {
 		// Nothing to do here.

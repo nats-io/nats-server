@@ -2480,7 +2480,10 @@ func (mset *stream) processInboundJetStreamMsg(_ *subscription, c *client, subje
 	}
 }
 
-var errLastSeqMismatch = errors.New("last sequence mismatch")
+var (
+	errLastSeqMismatch = errors.New("last sequence mismatch")
+	errMsgIdDuplicate  = errors.New("msgid is duplicate")
+)
 
 // processJetStreamMsg is where we try to actually process the stream msg.
 func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64) error {
@@ -2555,7 +2558,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				response = append(response, ",\"duplicate\": true}"...)
 				outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
 			}
-			return errors.New("msgid is duplicate")
+			return errMsgIdDuplicate
 		}
 
 		// Expected stream.
@@ -2681,6 +2684,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	// Assume this will succeed.
 	olmsgId := mset.lmsgId
 	mset.lmsgId = msgId
+	clfs := mset.clfs
 	mset.lseq++
 
 	// We hold the lock to this point to make sure nothing gets between us since we check for pre-conditions.
@@ -2692,7 +2696,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	if lseq == 0 && ts == 0 {
 		seq, ts, err = store.StoreMsg(subject, hdr, msg)
 	} else {
-		seq = lseq + 1
+		// Make sure to take into account any message assignments that we had to skip (clfs).
+		seq = lseq + 1 - clfs
 		err = store.StoreRawMsg(subject, hdr, msg, seq, ts)
 	}
 
