@@ -3178,7 +3178,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		// We do not have JS enabled for this server, but the account has it enabled so setup
 		// our imports properly. This allows this server to proxy JS traffic correctly.
 		s.checkJetStreamExports()
-		a.enableAllJetStreamServiceImports()
+		a.enableAllJetStreamServiceImportsAndMappings()
 	}
 
 	for i, c := range clients {

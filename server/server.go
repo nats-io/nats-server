@@ -1613,7 +1613,7 @@ func (s *Server) Start() {
 			acc.mu.RUnlock()
 			if hasJs {
 				s.checkJetStreamExports()
-				acc.enableAllJetStreamServiceImports()
+				acc.enableAllJetStreamServiceImportsAndMappings()
 			}
 			return true
 		})
