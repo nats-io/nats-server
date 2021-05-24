@@ -705,6 +705,46 @@ func (s *Server) Reload() error {
 	if err := s.reloadOptions(curOpts, newOpts); err != nil {
 		return err
 	}
+
+	s.mu.Lock()
+	disconnectClients := []*client{}
+	checkClients := func(kind int, clients map[uint64]*client, set PinnedCertSet) {
+		for _, c := range clients {
+			if c.kind == kind && !c.matchesPinnedCert(set) {
+				disconnectClients = append(disconnectClients, c)
+			}
+		}
+	}
+	if !reflect.DeepEqual(newOpts.TLSPinnedCerts, curOpts.TLSPinnedCerts) {
+		checkClients(CLIENT, s.clients, newOpts.TLSPinnedCerts)
+	}
+	if !reflect.DeepEqual(newOpts.MQTT.TLSPinnedCerts, curOpts.MQTT.TLSPinnedCerts) {
+		checkClients(MQTT, s.clients, newOpts.MQTT.TLSPinnedCerts)
+	}
+	if !reflect.DeepEqual(newOpts.Websocket.TLSPinnedCerts, curOpts.Websocket.TLSPinnedCerts) {
+		checkClients(WS, s.clients, newOpts.Websocket.TLSPinnedCerts)
+	}
+	if !reflect.DeepEqual(newOpts.LeafNode.TLSPinnedCerts, curOpts.LeafNode.TLSPinnedCerts) {
+		checkClients(LEAF, s.leafs, newOpts.LeafNode.TLSPinnedCerts)
+	}
+	if !reflect.DeepEqual(newOpts.Cluster.TLSPinnedCerts, curOpts.Cluster.TLSPinnedCerts) {
+		checkClients(ROUTER, s.routes, newOpts.Cluster.TLSPinnedCerts)
+	}
+	if reflect.DeepEqual(newOpts.Gateway.TLSPinnedCerts, curOpts.Gateway.TLSPinnedCerts) {
+		for _, c := range s.remotes {
+			if !c.matchesPinnedCert(newOpts.Gateway.TLSPinnedCerts) {
+				disconnectClients = append(disconnectClients, c)
+			}
+		}
+	}
+	s.mu.Unlock()
+	if len(disconnectClients) > 0 {
+		s.Noticef("Disconnect %d clients due to pinned certs reload", len(disconnectClients))
+		for _, c := range disconnectClients {
+			c.closeConnection(TLSHandshakeError)
+		}
+	}
+
 	s.mu.Lock()
 	s.configTime = time.Now().UTC()
 	s.updateVarzConfigReloadableFields(s.varz)
