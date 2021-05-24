@@ -4992,6 +4992,11 @@ func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfi
 				}
 			}
 		}
+	} else if !c.matchesPinnedCert(pCerts) {
+		err = ErrConnectionClosed
+	}
+
+	if err != nil {
 		if kind == CLIENT {
 			c.Errorf("TLS handshake error: %v", err)
 		} else {
@@ -5004,13 +5009,6 @@ func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfi
 		// Returning any error is fine. Since the connection is closed ErrConnectionClosed
 		// is appropriate.
 		return resetTLSName, ErrConnectionClosed
-	}
-
-	if !c.matchesPinnedCert(pCerts) {
-		c.closeConnection(TLSHandshakeError)
-		// Grab the lock before returning since the caller was holding the lock on entry
-		c.mu.Lock()
-		return false, ErrConnectionClosed
 	}
 
 	// Reset the read deadline

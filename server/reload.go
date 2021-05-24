@@ -628,6 +628,59 @@ func (o *mqttMaxAckPendingReload) Apply(s *Server) {
 	s.Noticef("Reloaded: MQTT max_ack_pending = %v", o.newValue)
 }
 
+// Compares options and disconnects clients that are no longer listed in pinned certs. Lock must not be held.
+func (s *Server) recheckPinnedCerts(curOpts *Options, newOpts *Options) {
+	s.mu.Lock()
+	disconnectClients := []*client{}
+	protoToPinned := map[int]PinnedCertSet{}
+	if !reflect.DeepEqual(newOpts.TLSPinnedCerts, curOpts.TLSPinnedCerts) {
+		protoToPinned[NATS] = curOpts.TLSPinnedCerts
+	}
+	if !reflect.DeepEqual(newOpts.MQTT.TLSPinnedCerts, curOpts.MQTT.TLSPinnedCerts) {
+		protoToPinned[MQTT] = curOpts.MQTT.TLSPinnedCerts
+	}
+	if !reflect.DeepEqual(newOpts.Websocket.TLSPinnedCerts, curOpts.Websocket.TLSPinnedCerts) {
+		protoToPinned[WS] = curOpts.Websocket.TLSPinnedCerts
+	}
+	for _, c := range s.clients {
+		if c.kind != CLIENT {
+			continue
+		}
+		if pinned, ok := protoToPinned[c.clientType()]; ok {
+			if !c.matchesPinnedCert(pinned) {
+				disconnectClients = append(disconnectClients, c)
+			}
+		}
+	}
+	checkClients := func(kind int, clients map[uint64]*client, set PinnedCertSet) {
+		for _, c := range clients {
+			if c.kind == kind && !c.matchesPinnedCert(set) {
+				disconnectClients = append(disconnectClients, c)
+			}
+		}
+	}
+	if !reflect.DeepEqual(newOpts.LeafNode.TLSPinnedCerts, curOpts.LeafNode.TLSPinnedCerts) {
+		checkClients(LEAF, s.leafs, newOpts.LeafNode.TLSPinnedCerts)
+	}
+	if !reflect.DeepEqual(newOpts.Cluster.TLSPinnedCerts, curOpts.Cluster.TLSPinnedCerts) {
+		checkClients(ROUTER, s.routes, newOpts.Cluster.TLSPinnedCerts)
+	}
+	if reflect.DeepEqual(newOpts.Gateway.TLSPinnedCerts, curOpts.Gateway.TLSPinnedCerts) {
+		for _, c := range s.remotes {
+			if !c.matchesPinnedCert(newOpts.Gateway.TLSPinnedCerts) {
+				disconnectClients = append(disconnectClients, c)
+			}
+		}
+	}
+	s.mu.Unlock()
+	if len(disconnectClients) > 0 {
+		s.Noticef("Disconnect %d clients due to pinned certs reload", len(disconnectClients))
+		for _, c := range disconnectClients {
+			c.closeConnection(TLSHandshakeError)
+		}
+	}
+}
+
 // Reload reads the current configuration file and applies any supported
 // changes. This returns an error if the server was not started with a config
 // file or an option which doesn't support hot-swapping was changed.
@@ -706,44 +759,7 @@ func (s *Server) Reload() error {
 		return err
 	}
 
-	s.mu.Lock()
-	disconnectClients := []*client{}
-	checkClients := func(kind int, clients map[uint64]*client, set PinnedCertSet) {
-		for _, c := range clients {
-			if (c.kind == kind || (c.kind == CLIENT && c.clientType() == kind)) && !c.matchesPinnedCert(set) {
-				disconnectClients = append(disconnectClients, c)
-			}
-		}
-	}
-	if !reflect.DeepEqual(newOpts.TLSPinnedCerts, curOpts.TLSPinnedCerts) {
-		checkClients(NATS, s.clients, newOpts.TLSPinnedCerts)
-	}
-	if !reflect.DeepEqual(newOpts.MQTT.TLSPinnedCerts, curOpts.MQTT.TLSPinnedCerts) {
-		checkClients(MQTT, s.clients, newOpts.MQTT.TLSPinnedCerts)
-	}
-	if !reflect.DeepEqual(newOpts.Websocket.TLSPinnedCerts, curOpts.Websocket.TLSPinnedCerts) {
-		checkClients(WS, s.clients, newOpts.Websocket.TLSPinnedCerts)
-	}
-	if !reflect.DeepEqual(newOpts.LeafNode.TLSPinnedCerts, curOpts.LeafNode.TLSPinnedCerts) {
-		checkClients(LEAF, s.leafs, newOpts.LeafNode.TLSPinnedCerts)
-	}
-	if !reflect.DeepEqual(newOpts.Cluster.TLSPinnedCerts, curOpts.Cluster.TLSPinnedCerts) {
-		checkClients(ROUTER, s.routes, newOpts.Cluster.TLSPinnedCerts)
-	}
-	if reflect.DeepEqual(newOpts.Gateway.TLSPinnedCerts, curOpts.Gateway.TLSPinnedCerts) {
-		for _, c := range s.remotes {
-			if !c.matchesPinnedCert(newOpts.Gateway.TLSPinnedCerts) {
-				disconnectClients = append(disconnectClients, c)
-			}
-		}
-	}
-	s.mu.Unlock()
-	if len(disconnectClients) > 0 {
-		s.Noticef("Disconnect %d clients due to pinned certs reload", len(disconnectClients))
-		for _, c := range disconnectClients {
-			c.closeConnection(TLSHandshakeError)
-		}
-	}
+	s.recheckPinnedCerts(curOpts, newOpts)
 
 	s.mu.Lock()
 	s.configTime = time.Now().UTC()
