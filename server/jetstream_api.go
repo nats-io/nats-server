@@ -867,7 +867,7 @@ func (s *Server) jsAccountInfoRequest(sub *subscription, c *client, subject, rep
 		if !doErr {
 			return
 		}
-		resp.Error = ApiErrors[JSNotEnabledErr]
+		resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 	} else {
 		stats := acc.JetStreamUsage()
 		resp.JetStreamAccountStats = &stats
@@ -905,7 +905,7 @@ func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, subject, 
 
 	var resp = JSApiStreamTemplateCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateCreateResponseType}}
 	if !acc.JetStreamEnabled() {
-		resp.Error = ApiErrors[JSNotEnabledErr]
+		resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -932,7 +932,7 @@ func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, subject, 
 
 	t, err := acc.addStreamTemplate(&cfg)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamTemplateCreateErrF].ErrOrNew(err)
+		resp.Error = ApiErrors[JSStreamTemplateCreateErrF].ErrOr(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -960,7 +960,7 @@ func (s *Server) jsTemplateNamesRequest(sub *subscription, c *client, subject, r
 
 	var resp = JSApiStreamTemplateNamesResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateNamesResponseType}}
 	if !acc.JetStreamEnabled() {
-		resp.Error = ApiErrors[JSNotEnabledErr]
+		resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -1024,7 +1024,7 @@ func (s *Server) jsTemplateInfoRequest(sub *subscription, c *client, subject, re
 
 	var resp = JSApiStreamTemplateInfoResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateInfoResponseType}}
 	if !acc.JetStreamEnabled() {
-		resp.Error = ApiErrors[JSNotEnabledErr]
+		resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -1065,7 +1065,7 @@ func (s *Server) jsTemplateDeleteRequest(sub *subscription, c *client, subject, 
 
 	var resp = JSApiStreamTemplateDeleteResponse{ApiResponse: ApiResponse{Type: JSApiStreamTemplateDeleteResponseType}}
 	if !acc.JetStreamEnabled() {
-		resp.Error = ApiErrors[JSNotEnabledErr]
+		resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -1077,7 +1077,7 @@ func (s *Server) jsTemplateDeleteRequest(sub *subscription, c *client, subject, 
 	name := templateNameFromSubject(subject)
 	err = acc.deleteStreamTemplate(name)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamTemplateDeleteErrF].ErrOrNew(err)
+		resp.Error = ApiErrors[JSStreamTemplateDeleteErrF].ErrOr(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -1126,7 +1126,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
-			resp.Error = ApiErrors[JSNotEnabledErr]
+			resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		}
 		return
@@ -1315,7 +1315,7 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
-			resp.Error = ApiErrors[JSNotEnabledErr]
+			resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		}
 		return
@@ -1348,13 +1348,13 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 
 	mset, err := acc.lookupStream(streamName)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNew(err)
+		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
 	if err := mset.update(&cfg); err != nil {
-		resp.Error = ApiErrors[JSStreamUpdateErrF].ErrOrNew(err)
+		resp.Error = ApiErrors[JSStreamUpdateErrF].ErrOr(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -1397,7 +1397,7 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, subject, rep
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
-			resp.Error = ApiErrors[JSNotEnabledErr]
+			resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		}
 		return
@@ -1524,7 +1524,7 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, subject, repl
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
-			resp.Error = ApiErrors[JSNotEnabledErr]
+			resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		}
 		return
@@ -1610,7 +1610,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 			// We can't find the stream, so mimic what would be the errors below.
 			if hasJS, doErr := acc.checkJetStream(); !hasJS {
 				if doErr {
-					resp.Error = ApiErrors[JSNotEnabledErr]
+					resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 				}
 				return
@@ -1644,7 +1644,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
-			resp.Error = ApiErrors[JSNotEnabledErr]
+			resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		}
 		return
@@ -1663,7 +1663,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, subject, repl
 
 	mset, err := acc.lookupStream(streamName)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNew(err)
+		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -1739,7 +1739,7 @@ func (s *Server) jsStreamLeaderStepDownRequest(sub *subscription, c *client, sub
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
-			resp.Error = ApiErrors[JSNotEnabledErr]
+			resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		}
 		return
@@ -1764,7 +1764,7 @@ func (s *Server) jsStreamLeaderStepDownRequest(sub *subscription, c *client, sub
 
 	mset, err := acc.lookupStream(name)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNew(err)
+		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -1848,7 +1848,7 @@ func (s *Server) jsConsumerLeaderStepDownRequest(sub *subscription, c *client, s
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
-			resp.Error = ApiErrors[JSNotEnabledErr]
+			resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		}
 		return
@@ -1924,7 +1924,7 @@ func (s *Server) jsStreamRemovePeerRequest(sub *subscription, c *client, subject
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
-			resp.Error = ApiErrors[JSNotEnabledErr]
+			resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		}
 		return
@@ -2117,7 +2117,7 @@ func (s *Server) jsLeaderStepDownRequest(sub *subscription, c *client, subject, 
 	// Call actual stepdown.
 	err = cc.meta.StepDown(preferredLeader)
 	if err != nil {
-		resp.Error = ApiErrors[JSRaftGeneralErrF].ErrOrNew(err)
+		resp.Error = ApiErrors[JSRaftGeneralErrF].ErrOr(err)
 	} else {
 		resp.Success = true
 	}
@@ -2175,7 +2175,7 @@ func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, re
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
-			resp.Error = ApiErrors[JSNotEnabledErr]
+			resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		}
 		return
@@ -2196,13 +2196,13 @@ func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, re
 
 	mset, err := acc.lookupStream(stream)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNew(err)
+		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
 	if err := mset.delete(); err != nil {
-		resp.Error = ApiErrors[JSStreamDeleteErrF].ErrOrNew(err)
+		resp.Error = ApiErrors[JSStreamDeleteErrF].ErrOr(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -2247,7 +2247,7 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 			// We can't find the stream, so mimic what would be the errors below.
 			if hasJS, doErr := acc.checkJetStream(); !hasJS {
 				if doErr {
-					resp.Error = ApiErrors[JSNotEnabledErr]
+					resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 				}
 				return
@@ -2275,7 +2275,7 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
-			resp.Error = ApiErrors[JSNotEnabledErr]
+			resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		}
 		return
@@ -2294,7 +2294,7 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 
 	mset, err := acc.lookupStream(stream)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNew(err)
+		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -2311,7 +2311,7 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 		removed, err = mset.eraseMsg(req.Seq)
 	}
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamMsgDeleteFailedF].ErrOrNew(err)
+		resp.Error = ApiErrors[JSStreamMsgDeleteFailedF].ErrOr(err)
 	} else if !removed {
 		resp.Error = ApiErrors[JSSequenceNotFoundErrF].NewT("{seq}", req.Seq)
 	} else {
@@ -2356,7 +2356,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 			// We can't find the stream, so mimic what would be the errors below.
 			if hasJS, doErr := acc.checkJetStream(); !hasJS {
 				if doErr {
-					resp.Error = ApiErrors[JSNotEnabledErr]
+					resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 				}
 				return
@@ -2384,7 +2384,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
-			resp.Error = ApiErrors[JSNotEnabledErr]
+			resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		}
 		return
@@ -2455,7 +2455,7 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 			// We can't find the stream, so mimic what would be the errors below.
 			if hasJS, doErr := acc.checkJetStream(); !hasJS {
 				if doErr {
-					resp.Error = ApiErrors[JSNotEnabledErr]
+					resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 				}
 				return
@@ -2491,7 +2491,7 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
-			resp.Error = ApiErrors[JSNotEnabledErr]
+			resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		}
 		return
@@ -2504,7 +2504,7 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 	}
 	mset, err := acc.lookupStream(stream)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNew(err)
+		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -2516,7 +2516,7 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 
 	purged, err := mset.purge()
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamGeneralErrorF].ErrOrNew(err)
+		resp.Error = ApiErrors[JSStreamGeneralErrorF].ErrOr(err)
 	} else {
 		resp.Purged = purged
 		resp.Success = true
@@ -2537,7 +2537,7 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 
 	var resp = JSApiStreamRestoreResponse{ApiResponse: ApiResponse{Type: JSApiStreamRestoreResponseType}}
 	if !acc.JetStreamEnabled() {
-		resp.Error = ApiErrors[JSNotEnabledErr]
+		resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -2573,7 +2573,7 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, subject, r
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
-			resp.Error = ApiErrors[JSNotEnabledErr]
+			resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		}
 		return
@@ -2802,7 +2802,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 
 	var resp = JSApiStreamSnapshotResponse{ApiResponse: ApiResponse{Type: JSApiStreamSnapshotResponseType}}
 	if !acc.JetStreamEnabled() {
-		resp.Error = ApiErrors[JSNotEnabledErr]
+		resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 		s.sendAPIErrResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
 		return
 	}
@@ -2814,14 +2814,14 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 
 	mset, err := acc.lookupStream(stream)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNew(err)
+		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
 		return
 	}
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
-			resp.Error = ApiErrors[JSNotEnabledErr]
+			resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 			s.sendAPIErrResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
 		}
 		return
@@ -2853,7 +2853,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 		sr, err := mset.snapshot(0, req.CheckMsgs, !req.NoConsumers)
 		if err != nil {
 			s.Warnf("Snapshot of stream '%s > %s' failed: %v", mset.jsa.account.Name, mset.name(), err)
-			resp.Error = ApiErrors[JSStreamSnapshotErrF].ErrOrNew(err)
+			resp.Error = ApiErrors[JSStreamSnapshotErrF].ErrOr(err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
 			return
 		}
@@ -3049,7 +3049,7 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
-			resp.Error = ApiErrors[JSNotEnabledErr]
+			resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		}
 		return
@@ -3098,14 +3098,14 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 
 	stream, err := acc.lookupStream(req.Stream)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNew(err)
+		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
 	o, err := stream.addConsumer(&req.Config)
 	if err != nil {
-		resp.Error = ApiErrors[JSConsumerCreateErrF].ErrOrNew(err)
+		resp.Error = ApiErrors[JSConsumerCreateErrF].ErrOr(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -3148,7 +3148,7 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
-			resp.Error = ApiErrors[JSNotEnabledErr]
+			resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		}
 		return
@@ -3205,7 +3205,7 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 	} else {
 		mset, err := acc.lookupStream(streamName)
 		if err != nil {
-			resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNew(err)
+			resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
@@ -3269,7 +3269,7 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
-			resp.Error = ApiErrors[JSNotEnabledErr]
+			resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		}
 		return
@@ -3299,7 +3299,7 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 
 	mset, err := acc.lookupStream(streamName)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNew(err)
+		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -3362,7 +3362,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 			// We can't find the consumer, so mimic what would be the errors below.
 			if hasJS, doErr := acc.checkJetStream(); !hasJS {
 				if doErr {
-					resp.Error = ApiErrors[JSNotEnabledErr]
+					resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 				}
 				return
@@ -3410,7 +3410,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 	}
 
 	if !acc.JetStreamEnabled() {
-		resp.Error = ApiErrors[JSNotEnabledErr]
+		resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -3422,7 +3422,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 
 	mset, err := acc.lookupStream(streamName)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNew(err)
+		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -3469,7 +3469,7 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, 
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
-			resp.Error = ApiErrors[JSNotEnabledErr]
+			resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		}
 		return
@@ -3489,7 +3489,7 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, 
 
 	mset, err := acc.lookupStream(stream)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNew(err)
+		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -3501,7 +3501,7 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, 
 		return
 	}
 	if err := obs.delete(); err != nil {
-		resp.Error = ApiErrors[JSStreamGeneralErrorF].ErrOrNew(err)
+		resp.Error = ApiErrors[JSStreamGeneralErrorF].ErrOr(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}

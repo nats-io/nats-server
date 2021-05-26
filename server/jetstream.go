@@ -775,7 +775,7 @@ func (s *Server) JetStreamNumAccounts() int {
 func (s *Server) JetStreamReservedResources() (int64, int64, error) {
 	js := s.getJetStream()
 	if js == nil {
-		return -1, -1, ApiErrors[JSNotEnabledErr]
+		return -1, -1, ApiErrors[JSNotEnabledForAccountErr]
 	}
 	js.mu.RLock()
 	defer js.mu.RUnlock()
@@ -1107,7 +1107,7 @@ func (a *Account) lookupStream(name string) (*stream, error) {
 	a.mu.RUnlock()
 
 	if jsa == nil {
-		return nil, ApiErrors[JSNotEnabledErr]
+		return nil, ApiErrors[JSNotEnabledForAccountErr]
 	}
 	jsa.mu.Lock()
 	defer jsa.mu.Unlock()
@@ -1134,7 +1134,7 @@ func (a *Account) UpdateJetStreamLimits(limits *JetStreamAccountLimits) error {
 		return ApiErrors[JSNotEnabledErr]
 	}
 	if jsa == nil {
-		return ApiErrors[JSNotEnabledErr]
+		return ApiErrors[JSNotEnabledForAccountErr]
 	}
 
 	if limits == nil {
@@ -1223,7 +1223,7 @@ func (a *Account) DisableJetStream() error {
 
 	js := s.getJetStream()
 	if js == nil {
-		return ApiErrors[JSNotEnabledErr]
+		return ApiErrors[JSNotEnabledForAccountErr]
 	}
 
 	// Remove service imports.
@@ -1248,7 +1248,7 @@ func (a *Account) removeJetStream() error {
 
 	js := s.getJetStream()
 	if js == nil {
-		return ApiErrors[JSNotEnabledErr]
+		return ApiErrors[JSNotEnabledForAccountErr]
 	}
 
 	return js.disableJetStream(js.lookupAccount(a))
@@ -1257,7 +1257,7 @@ func (a *Account) removeJetStream() error {
 // Disable JetStream for the account.
 func (js *jetStream) disableJetStream(jsa *jsAccount) error {
 	if jsa == nil || jsa.account == nil {
-		return ApiErrors[JSNotEnabledErr]
+		return ApiErrors[JSNotEnabledForAccountErr]
 	}
 
 	js.mu.Lock()
@@ -1664,7 +1664,7 @@ func (a *Account) checkForJetStream() (*Server, *jsAccount, error) {
 	a.mu.RUnlock()
 
 	if s == nil || jsa == nil {
-		return nil, nil, ApiErrors[JSNotEnabledErr]
+		return nil, nil, ApiErrors[JSNotEnabledForAccountErr]
 	}
 
 	return s, jsa, nil
@@ -1875,7 +1875,7 @@ func (t *streamTemplate) delete() error {
 	t.mu.Unlock()
 
 	if jsa == nil {
-		return ApiErrors[JSNotEnabledErr]
+		return ApiErrors[JSNotEnabledForAccountErr]
 	}
 
 	jsa.mu.Lock()

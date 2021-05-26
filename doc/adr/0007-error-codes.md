@@ -77,7 +77,8 @@ if err != nil {
 ```
 
 If we have to do string interpolation of the error body, here the `JSStreamRestoreErrF` has the body 
-`"restore failed: {err}"`, the `NewT()` will simply use `strings.Replaces()` to create a new `ApiError` with the full string:
+`"restore failed: {err}"`, the `NewT()` will simply use `strings.Replaces()` to create a new `ApiError` with the full string,
+note this is a new instance of ApiError so normal compare of `err == ApiErrors[x]` won't match:
 
 ```go
 err = doRestore()
@@ -86,9 +87,9 @@ if err != nil {
 }
 ```
 
-If we had to handle an error that may be an `ApiError` or a traditional go error we can use the `ErrOrNew` function, 
-this will look at the result from `lookupConsumer()`, if it's an `ApiError` that error will be set else a `JSConsumerNotFoundErr`
-will be created. Essentially the `lookupConsumer()` would return a `JSStreamNotFoundErr` if the stream does not exist else
+If we had to handle an error that may be an `ApiError` or a traditional go error we can use the `ErrOr` function, 
+this will look at the result from `lookupConsumer()`, if it's an `ApiError` that error will be set else `JSConsumerNotFoundErr` be 
+returned. Essentially the `lookupConsumer()` would return a `JSStreamNotFoundErr` if the stream does not exist else
 a `JSConsumerNotFoundErr` or go error on I/O failure for example.
 
 ```go
@@ -96,9 +97,12 @@ var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiStrea
 
 _, err = lookupConsumer(stream, consumer)
 if err != nil {
-    resp.Error = ApiErrors[JSConsumerNotFoundErr].ErrOrNew(err)
+    resp.Error = ApiErrors[JSConsumerNotFoundErr].ErrOr(err)
 }
 ```
+
+While the `ErrOr` function returns the `ApiErrors` pointer exactly - meaning `err == ApiErrors[x]`, the counterpart
+`ErrOrNewT` will create a new instance.
 
 ### Testing Errors
 

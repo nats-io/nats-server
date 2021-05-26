@@ -8,23 +8,23 @@ import (
 )
 
 func TestIsNatsErr(t *testing.T) {
-	if !IsNatsErr(ApiErrors[JSNotEnabledErr], JSNotEnabledErr) {
+	if !IsNatsErr(ApiErrors[JSNotEnabledForAccountErr], JSNotEnabledForAccountErr) {
 		t.Fatalf("Expected error match")
 	}
 
-	if IsNatsErr(ApiErrors[JSNotEnabledErr], JSClusterNotActiveErr) {
+	if IsNatsErr(ApiErrors[JSNotEnabledForAccountErr], JSClusterNotActiveErr) {
 		t.Fatalf("Expected error mismatch")
 	}
 
-	if IsNatsErr(ApiErrors[JSNotEnabledErr], JSClusterNotActiveErr, JSClusterNotAvailErr) {
+	if IsNatsErr(ApiErrors[JSNotEnabledForAccountErr], JSClusterNotActiveErr, JSClusterNotAvailErr) {
 		t.Fatalf("Expected error mismatch")
 	}
 
-	if !IsNatsErr(ApiErrors[JSNotEnabledErr], JSClusterNotActiveErr, JSNotEnabledErr) {
+	if !IsNatsErr(ApiErrors[JSNotEnabledForAccountErr], JSClusterNotActiveErr, JSNotEnabledForAccountErr) {
 		t.Fatalf("Expected error match")
 	}
 
-	if !IsNatsErr(&ApiError{ErrCode: 10039}, 1, JSClusterNotActiveErr, JSNotEnabledErr) {
+	if !IsNatsErr(&ApiError{ErrCode: 10039}, 1, JSClusterNotActiveErr, JSNotEnabledForAccountErr) {
 		t.Fatalf("Expected error match")
 	}
 
@@ -59,8 +59,8 @@ func TestApiError_NewF(t *testing.T) {
 }
 
 func TestApiError_ErrOrNewF(t *testing.T) {
-	if ne := ApiErrors[JSStreamRestoreErrF].ErrOrNewT(ApiErrors[JSNotEnabledErr], "{err}", errors.New("failed error")); !IsNatsErr(ne, JSNotEnabledErr) {
-		t.Fatalf("Expected JSNotEnabledErr got %s", ne)
+	if ne := ApiErrors[JSStreamRestoreErrF].ErrOrNewT(ApiErrors[JSNotEnabledForAccountErr], "{err}", errors.New("failed error")); !IsNatsErr(ne, JSNotEnabledForAccountErr) {
+		t.Fatalf("Expected JSNotEnabledForAccountErr got %s", ne)
 	}
 
 	if ne := ApiErrors[JSStreamRestoreErrF].ErrOrNewT(nil, "{err}", errors.New("failed error")); !IsNatsErr(ne, JSStreamRestoreErrF) {
@@ -72,16 +72,16 @@ func TestApiError_ErrOrNewF(t *testing.T) {
 	}
 }
 
-func TestApiError_ErrOrNew(t *testing.T) {
-	if ne := ApiErrors[JSPeerRemapErr].ErrOrNew(ApiErrors[JSNotEnabledErr]); !IsNatsErr(ne, JSNotEnabledErr) {
-		t.Fatalf("Expected JSNotEnabledErr got %s", ne)
+func TestApiError_ErrOr(t *testing.T) {
+	if ne := ApiErrors[JSPeerRemapErr].ErrOr(ApiErrors[JSNotEnabledForAccountErr]); !IsNatsErr(ne, JSNotEnabledForAccountErr) {
+		t.Fatalf("Expected JSNotEnabledForAccountErr got %s", ne)
 	}
 
-	if ne := ApiErrors[JSPeerRemapErr].ErrOrNew(nil); !IsNatsErr(ne, JSPeerRemapErr) {
+	if ne := ApiErrors[JSPeerRemapErr].ErrOr(nil); !IsNatsErr(ne, JSPeerRemapErr) {
 		t.Fatalf("Expected JSPeerRemapErr got %s", ne)
 	}
 
-	if ne := ApiErrors[JSPeerRemapErr].ErrOrNew(errors.New("other error")); !IsNatsErr(ne, JSPeerRemapErr) {
+	if ne := ApiErrors[JSPeerRemapErr].ErrOr(errors.New("other error")); !IsNatsErr(ne, JSPeerRemapErr) {
 		t.Fatalf("Expected JSPeerRemapErr got %s", ne)
 	}
 }

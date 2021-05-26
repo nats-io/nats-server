@@ -108,8 +108,11 @@ const (
 	// JSNotEmptyRequestErr expected an empty request payload
 	JSNotEmptyRequestErr ErrorIdentifier = 10038
 
-	// JSNotEnabledErr JetStream not enabled for account
-	JSNotEnabledErr ErrorIdentifier = 10039
+	// JSNotEnabledErr JetStream not enabled
+	JSNotEnabledErr ErrorIdentifier = 10076
+
+	// JSNotEnabledForAccountErr JetStream not enabled for account
+	JSNotEnabledForAccountErr ErrorIdentifier = 10039
 
 	// JSPeerRemapErr peer remap failed
 	JSPeerRemapErr ErrorIdentifier = 10075
@@ -263,7 +266,8 @@ var (
 		JSNoAccountErr:                             {Code: 503, ErrCode: 10035, Description: "account not found"},
 		JSNoMessageFoundErr:                        {Code: 404, ErrCode: 10037, Description: "no message found"},
 		JSNotEmptyRequestErr:                       {Code: 400, ErrCode: 10038, Description: "expected an empty request payload"},
-		JSNotEnabledErr:                            {Code: 503, ErrCode: 10039, Description: "JetStream not enabled for account", Help: "This error indicates that JetStream is not enabled either at a global level or at global and account level"},
+		JSNotEnabledErr:                            {Code: 503, ErrCode: 10076, Description: "JetStream not enabled", Help: "This error indicates that JetStream is not enabled at a global level"},
+		JSNotEnabledForAccountErr:                  {Code: 503, ErrCode: 10039, Description: "JetStream not enabled for account", Help: "This error indicates that JetStream is not enabled for an account account level"},
 		JSPeerRemapErr:                             {Code: 503, ErrCode: 10075, Description: "peer remap failed"},
 		JSRaftGeneralErrF:                          {Code: 500, ErrCode: 10041, Description: "{err}"},
 		JSRestoreSubscribeFailedErrF:               {Code: 500, ErrCode: 10042, Description: "JetStream unable to subscribe to restore snapshot {subject}: {err}"},
@@ -303,4 +307,24 @@ var (
 		JSTempStorageFailedErr:                     {Code: 500, ErrCode: 10072, Description: "JetStream unable to open temp storage for restore"},
 		JSTemplateNameNotMatchSubjectErr:           {Code: 400, ErrCode: 10073, Description: "template name in subject does not match request"},
 	}
+	// ErrJetStreamNotClustered Deprecated by JSClusterNotActiveErr ApiError, use IsNatsError() for comparisons
+	ErrJetStreamNotClustered = ApiErrors[JSClusterNotActiveErr]
+	// ErrJetStreamNotAssigned Deprecated by JSClusterNotAssignedErr ApiError, use IsNatsError() for comparisons
+	ErrJetStreamNotAssigned = ApiErrors[JSClusterNotAssignedErr]
+	// ErrJetStreamNotLeader Deprecated by JSClusterNotLeaderErr ApiError, use IsNatsError() for comparisons
+	ErrJetStreamNotLeader = ApiErrors[JSClusterNotLeaderErr]
+	// ErrJetStreamConsumerAlreadyUsed Deprecated by JSConsumerNameExistErr ApiError, use IsNatsError() for comparisons
+	ErrJetStreamConsumerAlreadyUsed = ApiErrors[JSConsumerNameExistErr]
+	// ErrJetStreamResourcesExceeded Deprecated by JSInsufficientResourcesErr ApiError, use IsNatsError() for comparisons
+	ErrJetStreamResourcesExceeded = ApiErrors[JSInsufficientResourcesErr]
+	// ErrMemoryResourcesExceeded Deprecated by JSMemoryResourcesExceededErr ApiError, use IsNatsError() for comparisons
+	ErrMemoryResourcesExceeded = ApiErrors[JSMemoryResourcesExceededErr]
+	// ErrStorageResourcesExceeded Deprecated by JSStorageResourcesExceededErr ApiError, use IsNatsError() for comparisons
+	ErrStorageResourcesExceeded = ApiErrors[JSStorageResourcesExceededErr]
+	// ErrJetStreamStreamAlreadyUsed Deprecated by JSStreamNameExistErr ApiError, use IsNatsError() for comparisons
+	ErrJetStreamStreamAlreadyUsed = ApiErrors[JSStreamNameExistErr]
+	// ErrJetStreamStreamNotFound Deprecated by JSStreamNotFoundErr ApiError, use IsNatsError() for comparisons
+	ErrJetStreamStreamNotFound = ApiErrors[JSStreamNotFoundErr]
+	// ErrReplicasNotSupported Deprecated by JSStreamReplicasNotSupportedErr ApiError, use IsNatsError() for comparisons
+	ErrReplicasNotSupported = ApiErrors[JSStreamReplicasNotSupportedErr]
 )

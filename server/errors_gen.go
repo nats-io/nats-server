@@ -33,7 +33,14 @@ var (
 	ApiErrors = map[ErrorIdentifier]*ApiError{
 {{- range $i, $error := . }}
 		{{ .Constant }}: {Code: {{ .Code }},ErrCode: {{ .ErrCode }},Description: {{ .Description | printf "%q" }},{{- if .Help }}Help: {{ .Help | printf "%q" }},{{- end }}{{- if .URL }}URL: {{ .URL | printf "%q" }},{{- end }}	},{{- end }}
-		}
+	}
+
+{{- range $i, $error := . }}
+{{- if .Deprecates }}
+// {{ .Deprecates }} Deprecated by {{ .Constant }} ApiError, use IsNatsError() for comparisons
+{{ .Deprecates }} = ApiErrors[{{ .Constant }}]
+{{- end }}
+{{- end }}
 )
 `
 
@@ -52,6 +59,7 @@ type Errors struct {
 	Comment     string `json:"comment"`
 	Help        string `json:"help"`
 	URL         string `json:"url"`
+	Deprecates  string `json:"deprecates"`
 }
 
 func goFmt(file string) error {

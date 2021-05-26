@@ -63,7 +63,8 @@
     "constant": "JSInsufficientResourcesErr",
     "code": 503,
     "error_code": 10023,
-    "description": "insufficient resources"
+    "description": "insufficient resources",
+    "deprecates": "ErrJetStreamResourcesExceeded"
   },
   {
     "constant": "JSMirrorMaxMessageSizeTooBigErr",
@@ -187,9 +188,17 @@
   {
     "constant": "JSNotEnabledErr",
     "code": 503,
+    "error_code": 10076,
+    "description": "JetStream not enabled",
+    "help": "This error indicates that JetStream is not enabled at a global level",
+    "deprectes": "ErrJetStreamNotEnabled"
+  },
+  {
+    "constant": "JSNotEnabledForAccountErr",
+    "code": 503,
     "error_code": 10039,
     "description": "JetStream not enabled for account",
-    "help": "This error indicates that JetStream is not enabled either at a global level or at global and account level"
+    "help": "This error indicates that JetStream is not enabled for an account account level"
   },
   {
     "constant": "JSSequenceNotFoundErrF",
@@ -225,7 +234,8 @@
     "constant": "JSStorageResourcesExceededErr",
     "code": 500,
     "error_code": 10047,
-    "description": "insufficient storage resources available"
+    "description": "insufficient storage resources available",
+    "deprecates": "ErrStorageResourcesExceeded"
   },
   {
     "constant": "JSStreamMismatchErr",
@@ -256,7 +266,8 @@
     "constant": "JSStreamNameExistErr",
     "code": 400,
     "error_code": 10058,
-    "description": "stream name already in use"
+    "description": "stream name already in use",
+    "deprecates": "ErrJetStreamStreamAlreadyUsed"
   },
   {
     "constant": "JSClusterTagsErr",
@@ -313,19 +324,22 @@
     "constant": "JSClusterNotAssignedErr",
     "code": 500,
     "error_code": 10007,
-    "description": "JetStream cluster not assigned to this server"
+    "description": "JetStream cluster not assigned to this server",
+    "deprecates": "ErrJetStreamNotAssigned"
   },
   {
     "constant": "JSClusterNotLeaderErr",
     "code": 500,
     "error_code": 10009,
-    "description": "JetStream cluster can not handle request"
+    "description": "JetStream cluster can not handle request",
+    "deprecates": "ErrJetStreamNotLeader"
   },
   {
     "constant": "JSConsumerNameExistErr",
     "code": 400,
     "error_code": 10013,
-    "description": "consumer name already in use"
+    "description": "consumer name already in use",
+    "deprecates": "ErrJetStreamConsumerAlreadyUsed"
   },
   {
     "constant": "JSMirrorWithSourcesErr",
@@ -337,7 +351,8 @@
     "constant": "JSStreamNotFoundErr",
     "code": 404,
     "error_code": 10059,
-    "description": "stream not found"
+    "description": "stream not found",
+    "deprecates": "ErrJetStreamStreamNotFound"
   },
   {
     "constant": "JSClusterRequiredErr",
@@ -380,7 +395,8 @@
     "constant": "JSClusterNotActiveErr",
     "code": 500,
     "error_code": 10006,
-    "description": "JetStream not in clustered mode"
+    "description": "JetStream not in clustered mode",
+    "deprecates": "ErrJetStreamNotClustered"
   },
   {
     "constant": "JSConsumerDurableNameNotMatchSubjectErr",
@@ -392,7 +408,8 @@
     "constant": "JSMemoryResourcesExceededErr",
     "code": 500,
     "error_code": 10028,
-    "description": "insufficient memory resources available"
+    "description": "insufficient memory resources available",
+    "deprecates": "ErrMemoryResourcesExceeded"
   },
   {
     "constant": "JSMirrorWithSubjectFiltersErr",
@@ -442,7 +459,8 @@
     "constant": "JSStreamReplicasNotSupportedErr",
     "code": 500,
     "error_code": 10074,
-    "description": "replicas > 1 not supported in non-clustered mode"
+    "description": "replicas > 1 not supported in non-clustered mode",
+    "deprecates": "ErrReplicasNotSupported"
   },
   {
     "constant": "JSStreamMsgDeleteFailedF",

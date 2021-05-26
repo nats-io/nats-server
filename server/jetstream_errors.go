@@ -55,13 +55,13 @@ func (e *ApiError) ErrOrNewT(err error, replacements ...interface{}) *ApiError {
 	return e.NewT(replacements...)
 }
 
-// ErrOrNew returns err if it's an ApiError else creates a new error
-func (e *ApiError) ErrOrNew(err error) *ApiError {
+// ErrOr returns err if it's an ApiError else creates a new error
+func (e *ApiError) ErrOr(err error) *ApiError {
 	if ae, ok := err.(*ApiError); ok {
 		return ae
 	}
 
-	return e.NewT()
+	return e
 }
 
 // NewT creates a new error using strings.Replacer on the Description field, arguments must be an even number like NewT("{err}", err)

@@ -248,7 +248,7 @@ func (s *Server) JetStreamStepdownStream(account, stream string) error {
 func (s *Server) JetStreamSnapshotStream(account, stream string) error {
 	js, cc := s.getJetStreamCluster()
 	if js == nil {
-		return ApiErrors[JSNotEnabledErr]
+		return ApiErrors[JSNotEnabledForAccountErr]
 	}
 	if cc == nil {
 		return ApiErrors[JSClusterNotActiveErr]
@@ -267,7 +267,7 @@ func (s *Server) JetStreamSnapshotStream(account, stream string) error {
 	mset.mu.RLock()
 	if !mset.node.Leader() {
 		mset.mu.RUnlock()
-		return ApiErrors[JSNotEnabledErr]
+		return ApiErrors[JSNotEnabledForAccountErr]
 	}
 	n := mset.node
 	mset.mu.RUnlock()
@@ -435,7 +435,7 @@ func (s *Server) enableJetStreamClustering() error {
 	}
 	js := s.getJetStream()
 	if js == nil {
-		return ApiErrors[JSNotEnabledErr]
+		return ApiErrors[JSNotEnabledForAccountErr]
 	}
 	// Already set.
 	if js.cluster != nil {
@@ -3319,7 +3319,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	acc.mu.RUnlock()
 
 	if jsa == nil {
-		resp.Error = ApiErrors[JSNotEnabledErr]
+		resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
@@ -3421,7 +3421,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 			newCfg = ncfg
 		}
 	} else {
-		resp.Error = ApiErrors[JSNotEnabledErr]
+		resp.Error = ApiErrors[JSNotEnabledForAccountErr]
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}

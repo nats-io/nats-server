@@ -2949,7 +2949,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	mset.mu.RUnlock()
 
 	if jsa == nil {
-		return ApiErrors[JSNotEnabledErr]
+		return ApiErrors[JSNotEnabledForAccountErr]
 	}
 
 	// Remove from our account map.
