@@ -191,7 +191,7 @@
     "error_code": 10076,
     "description": "JetStream not enabled",
     "help": "This error indicates that JetStream is not enabled at a global level",
-    "deprectes": "ErrJetStreamNotEnabled"
+    "deprecates": "ErrJetStreamNotEnabled"
   },
   {
     "constant": "JSNotEnabledForAccountErr",

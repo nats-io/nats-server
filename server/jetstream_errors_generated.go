@@ -319,6 +319,8 @@ var (
 	ErrJetStreamResourcesExceeded = ApiErrors[JSInsufficientResourcesErr]
 	// ErrMemoryResourcesExceeded Deprecated by JSMemoryResourcesExceededErr ApiError, use IsNatsError() for comparisons
 	ErrMemoryResourcesExceeded = ApiErrors[JSMemoryResourcesExceededErr]
+	// ErrJetStreamNotEnabled Deprecated by JSNotEnabledErr ApiError, use IsNatsError() for comparisons
+	ErrJetStreamNotEnabled = ApiErrors[JSNotEnabledErr]
 	// ErrStorageResourcesExceeded Deprecated by JSStorageResourcesExceededErr ApiError, use IsNatsError() for comparisons
 	ErrStorageResourcesExceeded = ApiErrors[JSStorageResourcesExceededErr]
 	// ErrJetStreamStreamAlreadyUsed Deprecated by JSStreamNameExistErr ApiError, use IsNatsError() for comparisons

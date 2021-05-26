@@ -74,8 +74,12 @@ func goFmt(file string) error {
 
 func checkDupes(errs []Errors) error {
 	codes := []int{}
+	highest := 0
 	for _, err := range errs {
 		codes = append(codes, err.ErrCode)
+		if highest < err.ErrCode {
+			highest = err.ErrCode
+		}
 	}
 
 	codeKeys := make(map[int]bool)
@@ -83,7 +87,7 @@ func checkDupes(errs []Errors) error {
 
 	for _, entry := range errs {
 		if _, found := codeKeys[entry.ErrCode]; found {
-			return fmt.Errorf("duplicate error code %+v", entry)
+			return fmt.Errorf("duplicate error code %+v, highest code is %d", entry, highest)
 		}
 
 		if _, found := constKeys[entry.Constant]; found {
