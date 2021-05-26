@@ -50,6 +50,9 @@ type option interface {
 	// IsAuthChange indicates if this option requires reloading authorization.
 	IsAuthChange() bool
 
+	// IsTLSChange indicates if this option requires reloading TLS.
+	IsTLSChange() bool
+
 	// IsClusterPermsChange indicates if this option requires reloading
 	// cluster permissions.
 	IsClusterPermsChange() bool
@@ -71,6 +74,10 @@ func (n noopOption) IsTraceLevelChange() bool {
 }
 
 func (n noopOption) IsAuthChange() bool {
+	return false
+}
+
+func (n noopOption) IsTLSChange() bool {
 	return false
 }
 
@@ -200,6 +207,10 @@ func (t *tlsOption) Apply(server *Server) {
 	}
 	server.mu.Unlock()
 	server.Noticef("Reloaded: tls = %s", message)
+}
+
+func (t *tlsOption) IsTLSChange() bool {
+	return true
 }
 
 // tlsTimeoutOption implements the option interface for the tls `timeout`
@@ -858,7 +869,8 @@ func imposeOrder(value interface{}) error {
 	case WebsocketOpts:
 		sort.Strings(value.AllowedOrigins)
 	case string, bool, int, int32, int64, time.Duration, float64, nil, LeafNodeOpts, ClusterOpts, *tls.Config, PinnedCertSet,
-		*URLAccResolver, *MemAccResolver, *DirAccResolver, *CacheDirAccResolver, Authentication, MQTTOpts, jwt.TagList:
+		*URLAccResolver, *MemAccResolver, *DirAccResolver, *CacheDirAccResolver, Authentication, MQTTOpts, jwt.TagList,
+		*OCSPConfig:
 		// explicitly skipped types
 	default:
 		// this will fail during unit tests
@@ -1257,6 +1269,7 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 		reloadClientTrcLvl = false
 		reloadJetstream    = false
 		jsEnabled          = false
+		reloadTLS          = false
 	)
 	for _, opt := range opts {
 		opt.Apply(s)
@@ -1268,6 +1281,9 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 		}
 		if opt.IsAuthChange() {
 			reloadAuth = true
+		}
+		if opt.IsTLSChange() {
+			reloadTLS = true
 		}
 		if opt.IsClusterPermsChange() {
 			reloadClusterPerms = true
@@ -1312,7 +1328,61 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 		s.updateRemoteLeafNodesTLSConfig(newOpts)
 	}
 
+	if reloadTLS {
+		// Restart OCSP monitoring.
+		if err := s.reloadOCSP(); err != nil {
+			s.Warnf("Can't restart OCSP Stapling: %v", err)
+		}
+	}
+
 	s.Noticef("Reloaded server configuration")
+}
+
+func (s *Server) reloadOCSP() error {
+	opts := s.getOpts()
+
+	if err := s.setupOCSPStapleStoreDir(); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	ocsps := s.ocsps
+	s.mu.Unlock()
+
+	// Stop all OCSP Stapling monitors in case there were any running.
+	var wasEnabled bool
+	for _, oc := range ocsps {
+		wasEnabled = true
+		oc.stop()
+	}
+
+	// Restart the monitors under the new configuration.
+	ocspm := make([]*OCSPMonitor, 0)
+	if config := opts.TLSConfig; config != nil {
+		tc, mon, err := s.NewOCSPMonitor(config)
+		if err != nil {
+			return err
+		}
+		// Check if an OCSP stapling monitor is required for this certificate.
+		if mon != nil {
+			s.Noticef("OCSP Stapling enabled for client connections")
+			ocspm = append(ocspm, mon)
+
+			// Override the TLS config with one that has OCSP enabled.
+			s.optsMu.Lock()
+			s.opts.TLSConfig = tc
+			s.optsMu.Unlock()
+			s.startGoRoutine(func() { mon.run() })
+		} else if wasEnabled {
+			s.Warnf("OCSP Stapling disabled for client connections")
+		}
+	}
+	// Replace stopped monitors with the new ones.
+	s.mu.Lock()
+	s.ocsps = ocspm
+	s.mu.Unlock()
+
+	return nil
 }
 
 // Update all cached debug and trace settings for every client
