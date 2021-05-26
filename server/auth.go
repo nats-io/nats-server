@@ -374,6 +374,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 		ok   bool
 		err  error
 		ao   bool // auth override
+		mqtt bool
 	)
 	s.mu.Lock()
 	authRequired := s.info.AuthRequired
@@ -382,6 +383,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 		// we have an override for MQTT or Websocket clients.
 		switch c.clientType() {
 		case MQTT:
+			mqtt = true
 			authRequired = s.mqtt.authOverride
 		case WS:
 			authRequired = s.websocket.authOverride
@@ -402,6 +404,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 	if c.kind == CLIENT {
 		switch c.clientType() {
 		case MQTT:
+			mqtt = true
 			mo := &opts.MQTT
 			// Always override TLSMap.
 			tlsMap = mo.TLSMap
@@ -613,9 +616,8 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			c.Debugf("Account JWT has expired")
 			return false
 		}
-		// skip validation of nonce when presented with a bearer token
-		// FIXME: if BearerToken is only for WSS, need check for server with that port enabled
-		if !juc.BearerToken {
+		// skip validation of nonce when presented with a bearer token or MQTT clients.
+		if !juc.BearerToken && !mqtt {
 			// Verify the signature against the nonce.
 			if c.opts.Sig == "" {
 				c.Debugf("Signature missing")

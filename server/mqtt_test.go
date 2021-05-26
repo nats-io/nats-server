@@ -1247,55 +1247,59 @@ func TestMQTTJWTWithAllowedConnectionTypes(t *testing.T) {
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
 
-	for _, test := range []struct {
-		name            string
-		connectionTypes []string
-		rc              byte
-	}{
-		{"not allowed", []string{jwt.ConnectionTypeStandard}, mqttConnAckRCNotAuthorized},
-		{"allowed", []string{jwt.ConnectionTypeStandard, strings.ToLower(jwt.ConnectionTypeMqtt)}, mqttConnAckRCConnectionAccepted},
-		{"allowed with unknown", []string{jwt.ConnectionTypeMqtt, "SomeNewType"}, mqttConnAckRCConnectionAccepted},
-		{"not allowed with unknown", []string{"SomeNewType"}, mqttConnAckRCNotAuthorized},
-	} {
-		t.Run(test.name, func(t *testing.T) {
+	for _, bearer := range []bool{true, false} {
+		t.Run(fmt.Sprintf("Bearer=%v", bearer), func(t *testing.T) {
+			for _, test := range []struct {
+				name            string
+				connectionTypes []string
+				rc              byte
+			}{
+				{"not allowed", []string{jwt.ConnectionTypeStandard}, mqttConnAckRCNotAuthorized},
+				{"allowed", []string{jwt.ConnectionTypeStandard, strings.ToLower(jwt.ConnectionTypeMqtt)}, mqttConnAckRCConnectionAccepted},
+				{"allowed with unknown", []string{jwt.ConnectionTypeMqtt, "SomeNewType"}, mqttConnAckRCConnectionAccepted},
+				{"not allowed with unknown", []string{"SomeNewType"}, mqttConnAckRCNotAuthorized},
+			} {
+				t.Run(test.name, func(t *testing.T) {
 
-			nuc := newJWTTestUserClaims()
-			nuc.AllowedConnectionTypes = test.connectionTypes
-			nuc.BearerToken = true
+					nuc := newJWTTestUserClaims()
+					nuc.AllowedConnectionTypes = test.connectionTypes
+					nuc.BearerToken = bearer
 
-			okp, _ := nkeys.FromSeed(oSeed)
+					okp, _ := nkeys.FromSeed(oSeed)
 
-			akp, _ := nkeys.CreateAccount()
-			apub, _ := akp.PublicKey()
-			nac := jwt.NewAccountClaims(apub)
-			// Enable Jetstream on account with lax limitations
-			nac.Limits.JetStreamLimits.Consumer = -1
-			nac.Limits.JetStreamLimits.Streams = -1
-			nac.Limits.JetStreamLimits.MemoryStorage = 1024 * 1024
-			ajwt, err := nac.Encode(okp)
-			if err != nil {
-				t.Fatalf("Error generating account JWT: %v", err)
+					akp, _ := nkeys.CreateAccount()
+					apub, _ := akp.PublicKey()
+					nac := jwt.NewAccountClaims(apub)
+					// Enable Jetstream on account with lax limitations
+					nac.Limits.JetStreamLimits.Consumer = -1
+					nac.Limits.JetStreamLimits.Streams = -1
+					nac.Limits.JetStreamLimits.MemoryStorage = 1024 * 1024
+					ajwt, err := nac.Encode(okp)
+					if err != nil {
+						t.Fatalf("Error generating account JWT: %v", err)
+					}
+
+					nkp, _ := nkeys.CreateUser()
+					pub, _ := nkp.PublicKey()
+					nuc.Subject = pub
+					jwt, err := nuc.Encode(akp)
+					if err != nil {
+						t.Fatalf("Error generating user JWT: %v", err)
+					}
+
+					addAccountToMemResolver(s, apub, ajwt)
+
+					ci := &mqttConnInfo{
+						cleanSess: true,
+						user:      "ignore_use_token",
+						pass:      jwt,
+					}
+
+					mc, r := testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
+					defer mc.Close()
+					testMQTTCheckConnAck(t, r, test.rc, false)
+				})
 			}
-
-			nkp, _ := nkeys.CreateUser()
-			pub, _ := nkp.PublicKey()
-			nuc.Subject = pub
-			jwt, err := nuc.Encode(akp)
-			if err != nil {
-				t.Fatalf("Error generating user JWT: %v", err)
-			}
-
-			addAccountToMemResolver(s, apub, ajwt)
-
-			ci := &mqttConnInfo{
-				cleanSess: true,
-				user:      "ignore_use_token",
-				pass:      jwt,
-			}
-
-			mc, r := testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
-			defer mc.Close()
-			testMQTTCheckConnAck(t, r, test.rc, false)
 		})
 	}
 }
