@@ -962,7 +962,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		Retention: InterestPolicy,
 		Replicas:  as.replicas,
 	}
-	if _, err := jsa.createStream(cfg); isErrorOtherThan(err, ErrJetStreamStreamAlreadyUsed) {
+	if _, err := jsa.createStream(cfg); isErrorOtherThan(err, JSStreamNameExistErr) {
 		return nil, fmt.Errorf("create messages stream for account %q: %v", acc.GetName(), err)
 	}
 
@@ -975,7 +975,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		Replicas:  as.replicas,
 	}
 	si, err := jsa.createStream(cfg)
-	if isErrorOtherThan(err, ErrJetStreamStreamAlreadyUsed) {
+	if isErrorOtherThan(err, JSStreamNameExistErr) {
 		return nil, fmt.Errorf("create retained messages stream for account %q: %v", acc.GetName(), err)
 	}
 	if err != nil {
@@ -1110,18 +1110,6 @@ func (jsa *mqttJSA) newRequestEx(kind, subject string, hdr int, msg []byte, time
 	return i, nil
 }
 
-// If `e` is not nil, returns an error corresponding to e.Description, if not empty,
-// or an error of the form: "code %d".
-func convertApiErrorToError(e *ApiError) error {
-	if e == nil {
-		return nil
-	}
-	if e.Description == _EMPTY_ {
-		return fmt.Errorf("code %d", e.Code)
-	}
-	return errors.New(e.Description)
-}
-
 func (jsa *mqttJSA) createConsumer(cfg *CreateConsumerRequest) (*JSApiConsumerCreateResponse, error) {
 	cfgb, err := json.Marshal(cfg)
 	if err != nil {
@@ -1138,7 +1126,7 @@ func (jsa *mqttJSA) createConsumer(cfg *CreateConsumerRequest) (*JSApiConsumerCr
 		return nil, err
 	}
 	ccr := ccri.(*JSApiConsumerCreateResponse)
-	return ccr, convertApiErrorToError(ccr.Error)
+	return ccr, ccr.ToError()
 }
 
 func (jsa *mqttJSA) deleteConsumer(streamName, consName string) (*JSApiConsumerDeleteResponse, error) {
@@ -1148,7 +1136,7 @@ func (jsa *mqttJSA) deleteConsumer(streamName, consName string) (*JSApiConsumerD
 		return nil, err
 	}
 	cdr := cdri.(*JSApiConsumerDeleteResponse)
-	return cdr, convertApiErrorToError(cdr.Error)
+	return cdr, cdr.ToError()
 }
 
 func (jsa *mqttJSA) createStream(cfg *StreamConfig) (*StreamInfo, error) {
@@ -1161,7 +1149,7 @@ func (jsa *mqttJSA) createStream(cfg *StreamConfig) (*StreamInfo, error) {
 		return nil, err
 	}
 	scr := scri.(*JSApiStreamCreateResponse)
-	return scr.StreamInfo, convertApiErrorToError(scr.Error)
+	return scr.StreamInfo, scr.ToError()
 }
 
 func (jsa *mqttJSA) lookupStream(name string) (*StreamInfo, error) {
@@ -1170,7 +1158,7 @@ func (jsa *mqttJSA) lookupStream(name string) (*StreamInfo, error) {
 		return nil, err
 	}
 	slr := slri.(*JSApiStreamInfoResponse)
-	return slr.StreamInfo, convertApiErrorToError(slr.Error)
+	return slr.StreamInfo, slr.ToError()
 }
 
 func (jsa *mqttJSA) deleteStream(name string) (bool, error) {
@@ -1179,7 +1167,7 @@ func (jsa *mqttJSA) deleteStream(name string) (bool, error) {
 		return false, err
 	}
 	sdr := sdri.(*JSApiStreamDeleteResponse)
-	return sdr.Success, convertApiErrorToError(sdr.Error)
+	return sdr.Success, sdr.ToError()
 }
 
 func (jsa *mqttJSA) loadMsg(streamName string, seq uint64) (*StoredMsg, error) {
@@ -1193,7 +1181,7 @@ func (jsa *mqttJSA) loadMsg(streamName string, seq uint64) (*StoredMsg, error) {
 		return nil, err
 	}
 	lmr := lmri.(*JSApiMsgGetResponse)
-	return lmr.Message, convertApiErrorToError(lmr.Error)
+	return lmr.Message, lmr.ToError()
 }
 
 func (jsa *mqttJSA) storeMsg(subject string, headers int, msg []byte) (*JSPubAckResponse, error) {
@@ -1206,7 +1194,7 @@ func (jsa *mqttJSA) storeMsgWithKind(kind, subject string, headers int, msg []by
 		return nil, err
 	}
 	smr := smri.(*JSPubAckResponse)
-	return smr, convertApiErrorToError(smr.Error)
+	return smr, smr.ToError()
 }
 
 func (jsa *mqttJSA) deleteMsg(stream string, seq uint64) {
@@ -1224,11 +1212,9 @@ func (jsa *mqttJSA) deleteMsg(stream string, seq uint64) {
 //
 //////////////////////////////////////////////////////////////////////////////
 
-// Returns true if `err1` is not nil and does not match `err2`, that is
-// their error strings are different.
-// Assumes that `err2` is never nil.
-func isErrorOtherThan(err1, err2 error) bool {
-	return err1 != nil && err1.Error() != err2.Error()
+// Returns true if `err` is not nil and does not match the api error with ErrorIdentifier id
+func isErrorOtherThan(err error, id ErrorIdentifier) bool {
+	return err != nil && !IsNatsErr(err, id)
 }
 
 // Process JS API replies.
@@ -1250,43 +1236,43 @@ func (as *mqttAccountSessionManager) processJSAPIReplies(_ *subscription, pc *cl
 	case mqttJSAStreamCreate:
 		var resp = &JSApiStreamCreateResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
-			resp.Error = jsInvalidJSONErr
+			resp.Error = ApiErrors[JSInvalidJSONErr]
 		}
 		ch <- resp
 	case mqttJSAStreamLookup:
 		var resp = &JSApiStreamInfoResponse{}
 		if err := json.Unmarshal(msg, &resp); err != nil {
-			resp.Error = jsInvalidJSONErr
+			resp.Error = ApiErrors[JSInvalidJSONErr]
 		}
 		ch <- resp
 	case mqttJSAStreamDel:
 		var resp = &JSApiStreamDeleteResponse{}
 		if err := json.Unmarshal(msg, &resp); err != nil {
-			resp.Error = jsInvalidJSONErr
+			resp.Error = ApiErrors[JSInvalidJSONErr]
 		}
 		ch <- resp
 	case mqttJSAConsumerCreate:
 		var resp = &JSApiConsumerCreateResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
-			resp.Error = jsInvalidJSONErr
+			resp.Error = ApiErrors[JSInvalidJSONErr]
 		}
 		ch <- resp
 	case mqttJSAConsumerDel:
 		var resp = &JSApiConsumerDeleteResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
-			resp.Error = jsInvalidJSONErr
+			resp.Error = ApiErrors[JSInvalidJSONErr]
 		}
 		ch <- resp
 	case mqttJSAMsgStore, mqttJSASessPersist:
 		var resp = &JSPubAckResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
-			resp.Error = jsInvalidJSONErr
+			resp.Error = ApiErrors[JSInvalidJSONErr]
 		}
 		ch <- resp
 	case mqttJSAMsgLoad:
 		var resp = &JSApiMsgGetResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
-			resp.Error = jsInvalidJSONErr
+			resp.Error = ApiErrors[JSInvalidJSONErr]
 		}
 		ch <- resp
 	default:
@@ -1361,7 +1347,7 @@ func (as *mqttAccountSessionManager) processSessionPersist(_ *subscription, pc *
 	if err := json.Unmarshal(msg, par); err != nil {
 		return
 	}
-	if err := convertApiErrorToError(par.Error); err != nil {
+	if err := par.Error; err != nil {
 		return
 	}
 	cIDHash := strings.TrimPrefix(par.Stream, mqttSessionsStreamNamePrefix)
@@ -1889,13 +1875,13 @@ CREATE_STREAM:
 	if err != nil {
 		// Check for insufficient resources. If that is the case, and if possible, try
 		// again with a lower replicas value.
-		if cfg.Replicas > 1 && err.Error() == jsInsufficientErr.Description {
+		if cfg.Replicas > 1 && IsNatsErr(err, JSInsufficientResourcesErr) {
 			cfg.Replicas--
 			goto CREATE_STREAM
 		}
 		// If there is an error and not simply "already used" (which means that the
 		// stream already exists) then we fail.
-		if isErrorOtherThan(err, ErrJetStreamStreamAlreadyUsed) {
+		if isErrorOtherThan(err, JSStreamNameExistErr) {
 			return formatError("create session stream", err)
 		}
 	}

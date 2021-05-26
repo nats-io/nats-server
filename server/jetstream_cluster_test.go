@@ -140,7 +140,7 @@ func TestJetStreamClusterStreamLimitWithAccountDefaults(t *testing.T) {
 		MaxBytes: 15 * 1024 * 1024,
 	})
 	if err == nil || !strings.Contains(err.Error(), "insufficient storage") {
-		t.Fatalf("Expected %v but got %v", ErrStorageResourcesExceeded, err)
+		t.Fatalf("Expected %v but got %v", ApiErrors[JSStorageResourcesExceededErr], err)
 	}
 }
 
@@ -2559,7 +2559,7 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	json.Unmarshal(rmsg.Data, &rresp)
-	if rresp.Error == nil || rresp.Error.Code != 500 || !strings.Contains(rresp.Error.Description, "already in use") {
+	if !IsNatsErr(rresp.Error, JSStreamNameExistErr) {
 		t.Fatalf("Did not get correct error response: %+v", rresp.Error)
 	}
 
@@ -4914,7 +4914,7 @@ func TestJetStreamFailMirrorsAndSources(t *testing.T) {
 	nc2, _ := jsClientConnect(t, s, nats.UserInfo("rip", "pass"))
 	defer nc2.Close()
 
-	testPrefix := func(testName, error string, cfg StreamConfig) {
+	testPrefix := func(testName string, id ErrorIdentifier, cfg StreamConfig) {
 		t.Run(testName, func(t *testing.T) {
 			req, err := json.Marshal(cfg)
 			if err != nil {
@@ -4930,13 +4930,13 @@ func TestJetStreamFailMirrorsAndSources(t *testing.T) {
 			}
 			if scResp.Error == nil {
 				t.Fatalf("Did expect an error but got none")
-			} else if !strings.Contains(scResp.Error.Description, error) {
+			} else if !IsNatsErr(scResp.Error, id) {
 				t.Fatalf("Expected different error: %s", scResp.Error.Description)
 			}
 		})
 	}
 
-	testPrefix("mirror-bad-deliverprefix", `prefix "test" overlaps with stream subject "test.>"`, StreamConfig{
+	testPrefix("mirror-bad-deliverprefix", JSStreamExternalDelPrefixOverlapsErrF, StreamConfig{
 		Name:    "MY_MIRROR_TEST",
 		Storage: FileStorage,
 		Mirror: &StreamSource{
@@ -4948,7 +4948,7 @@ func TestJetStreamFailMirrorsAndSources(t *testing.T) {
 			},
 		},
 	})
-	testPrefix("mirror-bad-apiprefix", `api prefix "$JS.API" must not overlap`, StreamConfig{
+	testPrefix("mirror-bad-apiprefix", JSStreamExternalApiOverlapErrF, StreamConfig{
 		Name:    "MY_MIRROR_TEST",
 		Storage: FileStorage,
 		Mirror: &StreamSource{
@@ -4959,7 +4959,7 @@ func TestJetStreamFailMirrorsAndSources(t *testing.T) {
 			},
 		},
 	})
-	testPrefix("source-bad-deliverprefix", `prefix "test" overlaps with stream subject "test.>"`, StreamConfig{
+	testPrefix("source-bad-deliverprefix", JSStreamExternalDelPrefixOverlapsErrF, StreamConfig{
 		Name:    "MY_SOURCE_TEST",
 		Storage: FileStorage,
 		Sources: []*StreamSource{{
@@ -4971,7 +4971,7 @@ func TestJetStreamFailMirrorsAndSources(t *testing.T) {
 		},
 		},
 	})
-	testPrefix("source-bad-apiprefix", `api prefix "$JS.API" must not overlap`, StreamConfig{
+	testPrefix("source-bad-apiprefix", JSStreamExternalApiOverlapErrF, StreamConfig{
 		Name:    "MY_SOURCE_TEST",
 		Storage: FileStorage,
 		Sources: []*StreamSource{{
@@ -6112,7 +6112,7 @@ func TestJetStreamClusterDomains(t *testing.T) {
 	// The domain signals to the system that we are our own JetStream domain and should not extend CORE.
 	// We want to check to make sure we have all the deny properly setup.
 	spoke.mu.Lock()
-	//var hasDE, hasDI bool
+	// var hasDE, hasDI bool
 	for _, ln := range spoke.leafs {
 		ln.mu.Lock()
 		remote := ln.leaf.remote

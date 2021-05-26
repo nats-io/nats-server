@@ -18,4 +18,4 @@ good starting point. We do not have a fixed format at present.
 
 ## ADR Statuses
 
-Each ADR has a status, let's try to use `Proposed`, `Approved` and `Rejected`.
+Each ADR has a status, let's try to use `Proposed`, `Approved` `Partially Implemented`, `Implemented` and `Rejected`.
