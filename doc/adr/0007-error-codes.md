@@ -119,7 +119,8 @@ if IsNatsErr(err, JSStreamNotFoundErr, JSConsumerNotFoundErr) {
 
 ## Maintaining the errors
 
-The file `errors.json` holds the data used to generate the error constants, lists etc
+The file `server/errors.json` holds the data used to generate the error constants, lists etc. This is JSON versions of
+`server.ErrorsData`.
 
 ```json
 [
@@ -139,6 +140,9 @@ The file `errors.json` holds the data used to generate the error constants, list
   }
 ]
 ```
+
+The `nats` CLI allow you to edit, add and view these files using the `nats errors` command, use the `--errors` flag to
+view your local file during development.
 
 After editing this file run `go generate` in the top of the `nats-server` repo, and it will update the needed files.  Check
 in the result.
