@@ -138,7 +138,7 @@ const (
 	// JSStorageResourcesExceededErr insufficient storage resources available
 	JSStorageResourcesExceededErr ErrorIdentifier = 10047
 
-	// JSStreamAssignmentErrF {err}
+	// JSStreamAssignmentErrF Generic stream assignment error string ({err})
 	JSStreamAssignmentErrF ErrorIdentifier = 10048
 
 	// JSStreamCreateErrF Generic stream creation error string ({err})
@@ -174,7 +174,7 @@ const (
 	// JSStreamMismatchErr stream name in subject does not match request
 	JSStreamMismatchErr ErrorIdentifier = 10056
 
-	// JSStreamMsgDeleteFailedF Generic message deletion failure error string (%s)
+	// JSStreamMsgDeleteFailedF Generic message deletion failure error string ({err})
 	JSStreamMsgDeleteFailedF ErrorIdentifier = 10057
 
 	// JSStreamNameExistErr stream name already in use
@@ -288,7 +288,7 @@ var (
 		JSStreamMessageExceedsMaximumErr:           {Code: 400, ErrCode: 10054, Description: "message size exceeds maximum allowed"},
 		JSStreamMirrorNotUpdatableErr:              {Code: 400, ErrCode: 10055, Description: "Mirror configuration can not be updated"},
 		JSStreamMismatchErr:                        {Code: 400, ErrCode: 10056, Description: "stream name in subject does not match request"},
-		JSStreamMsgDeleteFailedF:                   {Code: 500, ErrCode: 10057, Description: "%s"},
+		JSStreamMsgDeleteFailedF:                   {Code: 500, ErrCode: 10057, Description: "{err}"},
 		JSStreamNameExistErr:                       {Code: 400, ErrCode: 10058, Description: "stream name already in use"},
 		JSStreamNotFoundErr:                        {Code: 404, ErrCode: 10059, Description: "stream not found"},
 		JSStreamNotMatchErr:                        {Code: 400, ErrCode: 10060, Description: "expected stream does not match"},
