@@ -1722,7 +1722,7 @@ func (c *client) processConnect(arg []byte) error {
 		c.opts.JWT = ws.cookieJwt
 	}
 	// when not in operator mode, discard the jwt
-	if srv != nil && srv.trustedKeys == nil {
+	if srv != nil && srv.trustedKeys == nil && srv.getOpts().CustomClientAuthentication == nil {
 		c.opts.JWT = _EMPTY_
 	}
 	ujwt := c.opts.JWT

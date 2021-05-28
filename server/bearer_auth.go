@@ -60,10 +60,19 @@ func (bearer *BearerAuth) Check(c ClientAuthentication) bool {
 		var kid *string
 		if kidhdr, ok := _jwtToken.Header["kid"].(string); ok {
 			kid = &kidhdr
+		} else if len(bearer.jwks) == 1 {
+			// HACK-- use first configured jwk
+			for keyID := range bearer.jwks {
+				kid = &keyID
+				bearer.server.Tracef(fmt.Sprintf("using default public verifier: %s", *kid))
+				break
+			}
 		}
 
 		if kid != nil {
 			publicKey = bearer.jwks[*kid]
+		} else {
+			return nil, fmt.Errorf("failed to resolve public verifier")
 		}
 
 		if publicKey == nil {
@@ -85,8 +94,19 @@ func (bearer *BearerAuth) Check(c ClientAuthentication) bool {
 		return false
 	}
 
+	var permissionsClaim map[string]interface{}
+
+	nats, natsOk := claims["nats"].(map[string]interface{})
+	if natsOk {
+		if perms, permsOk := nats["permissions"].(map[string]interface{}); permsOk {
+			permissionsClaim = perms
+		}
+	} else if perms, permsOk := claims["permissions"].(map[string]interface{}); permsOk {
+		permissionsClaim = perms
+	}
+
 	permissions := &Permissions{}
-	if permissionsClaim, permissionsClaimOk := claims["permissions"].(map[string]interface{}); permissionsClaimOk {
+	if permissionsClaim != nil {
 		if _, pubOk := permissionsClaim["publish"]; !pubOk {
 			permissionsClaim["publish"] = map[string]interface{}{
 				"allow": []string{},
