@@ -38,8 +38,18 @@ type ApiError struct {
 	Code        int    `json:"code"`
 	ErrCode     uint16 `json:"err_code,omitempty"`
 	Description string `json:"description,omitempty"`
-	URL         string `json:"-"`
-	Help        string `json:"-"`
+}
+
+// ErrorsData is the source data for generated errors as found in errors.json
+type ErrorsData struct {
+	Constant    string `json:"constant"`
+	Code        int    `json:"code"`
+	ErrCode     uint16 `json:"error_code"`
+	Description string `json:"description"`
+	Comment     string `json:"comment"`
+	Help        string `json:"help"`
+	URL         string `json:"url"`
+	Deprecates  string `json:"deprecates"`
 }
 
 func (e *ApiError) Error() string {

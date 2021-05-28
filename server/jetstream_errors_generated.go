@@ -138,7 +138,7 @@ const (
 	// JSStorageResourcesExceededErr insufficient storage resources available
 	JSStorageResourcesExceededErr ErrorIdentifier = 10047
 
-	// JSStreamAssignmentErrF {err}
+	// JSStreamAssignmentErrF Generic stream assignment error string ({err})
 	JSStreamAssignmentErrF ErrorIdentifier = 10048
 
 	// JSStreamCreateErrF Generic stream creation error string ({err})
@@ -174,7 +174,7 @@ const (
 	// JSStreamMismatchErr stream name in subject does not match request
 	JSStreamMismatchErr ErrorIdentifier = 10056
 
-	// JSStreamMsgDeleteFailedF Generic message deletion failure error string (%s)
+	// JSStreamMsgDeleteFailedF Generic message deletion failure error string ({err})
 	JSStreamMsgDeleteFailedF ErrorIdentifier = 10057
 
 	// JSStreamNameExistErr stream name already in use
@@ -266,8 +266,8 @@ var (
 		JSNoAccountErr:                             {Code: 503, ErrCode: 10035, Description: "account not found"},
 		JSNoMessageFoundErr:                        {Code: 404, ErrCode: 10037, Description: "no message found"},
 		JSNotEmptyRequestErr:                       {Code: 400, ErrCode: 10038, Description: "expected an empty request payload"},
-		JSNotEnabledErr:                            {Code: 503, ErrCode: 10076, Description: "JetStream not enabled", Help: "This error indicates that JetStream is not enabled at a global level"},
-		JSNotEnabledForAccountErr:                  {Code: 503, ErrCode: 10039, Description: "JetStream not enabled for account", Help: "This error indicates that JetStream is not enabled for an account account level"},
+		JSNotEnabledErr:                            {Code: 503, ErrCode: 10076, Description: "JetStream not enabled"},
+		JSNotEnabledForAccountErr:                  {Code: 503, ErrCode: 10039, Description: "JetStream not enabled for account"},
 		JSPeerRemapErr:                             {Code: 503, ErrCode: 10075, Description: "peer remap failed"},
 		JSRaftGeneralErrF:                          {Code: 500, ErrCode: 10041, Description: "{err}"},
 		JSRestoreSubscribeFailedErrF:               {Code: 500, ErrCode: 10042, Description: "JetStream unable to subscribe to restore snapshot {subject}: {err}"},
@@ -288,7 +288,7 @@ var (
 		JSStreamMessageExceedsMaximumErr:           {Code: 400, ErrCode: 10054, Description: "message size exceeds maximum allowed"},
 		JSStreamMirrorNotUpdatableErr:              {Code: 400, ErrCode: 10055, Description: "Mirror configuration can not be updated"},
 		JSStreamMismatchErr:                        {Code: 400, ErrCode: 10056, Description: "stream name in subject does not match request"},
-		JSStreamMsgDeleteFailedF:                   {Code: 500, ErrCode: 10057, Description: "%s"},
+		JSStreamMsgDeleteFailedF:                   {Code: 500, ErrCode: 10057, Description: "{err}"},
 		JSStreamNameExistErr:                       {Code: 400, ErrCode: 10058, Description: "stream name already in use"},
 		JSStreamNotFoundErr:                        {Code: 404, ErrCode: 10059, Description: "stream not found"},
 		JSStreamNotMatchErr:                        {Code: 400, ErrCode: 10060, Description: "expected stream does not match"},

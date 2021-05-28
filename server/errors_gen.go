@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"sort"
 	"text/template"
+
+	"github.com/nats-io/nats-server/v2/server"
 )
 
 var templ = `
@@ -32,7 +34,7 @@ const (
 var (
 	ApiErrors = map[ErrorIdentifier]*ApiError{
 {{- range $i, $error := . }}
-		{{ .Constant }}: {Code: {{ .Code }},ErrCode: {{ .ErrCode }},Description: {{ .Description | printf "%q" }},{{- if .Help }}Help: {{ .Help | printf "%q" }},{{- end }}{{- if .URL }}URL: {{ .URL | printf "%q" }},{{- end }}	},{{- end }}
+		{{ .Constant }}: {Code: {{ .Code }},ErrCode: {{ .ErrCode }},Description: {{ .Description | printf "%q" }}},{{- end }}
 	}
 
 {{- range $i, $error := . }}
@@ -51,17 +53,6 @@ func panicIfErr(err error) {
 	panic(err)
 }
 
-type Errors struct {
-	Constant    string `json:"constant"`
-	Code        int    `json:"code"`
-	ErrCode     int    `json:"error_code"`
-	Description string `json:"description"`
-	Comment     string `json:"comment"`
-	Help        string `json:"help"`
-	URL         string `json:"url"`
-	Deprecates  string `json:"deprecates"`
-}
-
 func goFmt(file string) error {
 	c := exec.Command("go", "fmt", file)
 	out, err := c.CombinedOutput()
@@ -72,9 +63,9 @@ func goFmt(file string) error {
 	return err
 }
 
-func checkDupes(errs []Errors) error {
-	codes := []int{}
-	highest := 0
+func checkDupes(errs []server.ErrorsData) error {
+	codes := []uint16{}
+	highest := uint16(0)
 	for _, err := range errs {
 		codes = append(codes, err.ErrCode)
 		if highest < err.ErrCode {
@@ -82,7 +73,7 @@ func checkDupes(errs []Errors) error {
 		}
 	}
 
-	codeKeys := make(map[int]bool)
+	codeKeys := make(map[uint16]bool)
 	constKeys := make(map[string]bool)
 
 	for _, entry := range errs {
@@ -105,7 +96,7 @@ func main() {
 	ej, err := os.ReadFile("server/errors.json")
 	panicIfErr(err)
 
-	errs := []Errors{}
+	errs := []server.ErrorsData{}
 	panicIfErr(json.Unmarshal(ej, &errs))
 	panicIfErr(checkDupes(errs))
 

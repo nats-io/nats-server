@@ -108,7 +108,7 @@
     "code": 500,
     "error_code": 10048,
     "description": "{err}",
-    "commend": "Generic stream assignment error string"
+    "comment": "Generic stream assignment error string"
   },
   {
     "constant": "JSStreamMessageExceedsMaximumErr",
@@ -466,7 +466,7 @@
     "constant": "JSStreamMsgDeleteFailedF",
     "code": 500,
     "error_code": 10057,
-    "description": "%s",
+    "description": "{err}",
     "comment": "Generic message deletion failure error string"
   },
   {
