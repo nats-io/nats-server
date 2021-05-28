@@ -119,7 +119,7 @@ if IsNatsErr(err, JSStreamNotFoundErr, JSConsumerNotFoundErr) {
 
 ## Maintaining the errors
 
-The file `server/fs/errors.json` holds the data used to generate the error constants, lists etc. This is JSON versions of
+The file `server/errors.json` holds the data used to generate the error constants, lists etc. This is JSON versions of
 `server.ErrorsData`.
 
 ```json

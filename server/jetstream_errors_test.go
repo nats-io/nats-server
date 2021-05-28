@@ -7,6 +7,22 @@ import (
 	"time"
 )
 
+func TestErrorsDataSource(t *testing.T) {
+	dat, err := ErrorsDataSource()
+	if err != nil {
+		t.Fatalf("Unexpected error: %s", err)
+	}
+	if len(dat) == 0 {
+		t.Fatalf("Expected > 0 errors")
+	}
+
+	errorsDataSource = "{"
+	_, err = ErrorsDataSource()
+	if err == nil {
+		t.Fatalf("expected decoding error")
+	}
+}
+
 func TestIsNatsErr(t *testing.T) {
 	if !IsNatsErr(ApiErrors[JSNotEnabledForAccountErr], JSNotEnabledForAccountErr) {
 		t.Fatalf("Expected error match")

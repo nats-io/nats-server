@@ -1,6 +1,8 @@
 package server
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -53,6 +55,19 @@ type ErrorsData struct {
 	Help        string `json:"help"`
 	URL         string `json:"url"`
 	Deprecates  string `json:"deprecates"`
+}
+
+// ErrorsDataSource provides the data used to construct various coded error messages
+func ErrorsDataSource() ([]*ErrorsData, error) {
+	e, err := base64.StdEncoding.DecodeString(errorsDataSource)
+	if err != nil {
+		return nil, err
+	}
+
+	var res []*ErrorsData
+	err = json.Unmarshal(e, &res)
+
+	return res, err
 }
 
 func (e *ApiError) Error() string {

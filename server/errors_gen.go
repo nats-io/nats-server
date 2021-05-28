@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -43,6 +44,8 @@ var (
 {{ .Deprecates }} = ApiErrors[{{ .Constant }}]
 {{- end }}
 {{- end }}
+
+  	errorsDataSource = "{{ . | json64 }}"
 )
 `
 
@@ -93,7 +96,7 @@ func checkDupes(errs []server.ErrorsData) error {
 }
 
 func main() {
-	ej, err := os.ReadFile("server/fs/errors.json")
+	ej, err := os.ReadFile("server/errors.json")
 	panicIfErr(err)
 
 	errs := []server.ErrorsData{}
@@ -104,7 +107,17 @@ func main() {
 		return errs[i].Constant < errs[j].Constant
 	})
 
-	t := template.New("errors").Funcs(template.FuncMap{"inc": func(i int) int { return i + 1 }})
+	t := template.New("errors").Funcs(template.FuncMap{
+		"inc": func(i int) int { return i + 1 },
+		"json64": func(i interface{}) string {
+			j, err := json.Marshal(i)
+			if err != nil {
+				panic(err)
+			}
+
+			return base64.StdEncoding.EncodeToString(j)
+		},
+	})
 	p, err := t.Parse(templ)
 	panicIfErr(err)
 
