@@ -6460,6 +6460,34 @@ func TestJetStreamClusterDomainsAndSameNameSources(t *testing.T) {
 	}
 }
 
+// When a leafnode enables JS on an account that is not enabled on the remote cluster account this should
+// still work. Early NGS beta testers etc.
+func TestJetStreamClusterSingleLeafNodeEnablingJetStream(t *testing.T) {
+	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: HUB, store_dir:", 1)
+	c := createJetStreamCluster(t, tmpl, "HUB", _EMPTY_, 3, 11322, true)
+	defer c.shutdown()
+
+	ln := c.createSingleLeafNodeNoSystemAccountAndEnablesJetStream()
+	defer ln.Shutdown()
+
+	// Check that we have JS in the $G account on the leafnode.
+	nc, js := jsClientConnect(t, ln)
+	defer nc.Close()
+
+	if _, err := js.AccountInfo(); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Connect our client to the "nojs" account in the cluster but make sure JS works since its enabled via the leafnode.
+	s := c.randomServer()
+	nc, js = jsClientConnect(t, s, nats.UserInfo("nojs", "p"))
+	defer nc.Close()
+
+	if _, err := js.AccountInfo(); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+}
+
 func TestJetStreamClusterLeafDifferentAccounts(t *testing.T) {
 	c := createJetStreamCluster(t, jsClusterAccountsTempl, "HUB", _EMPTY_, 2, 33133, false)
 	defer c.shutdown()
@@ -7101,6 +7129,7 @@ var jsClusterAccountsTempl = `
 	accounts {
 		ONE { users = [ { user: "one", pass: "p" } ]; jetstream: enabled }
 		TWO { users = [ { user: "two", pass: "p" } ]; jetstream: enabled }
+		NOJS { users = [ { user: "nojs", pass: "p" } ] }
 		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
 	}
 `
@@ -7507,6 +7536,29 @@ func (c *cluster) createSingleLeafNodeNoSystemAccount() *Server {
 
 	return s
 }
+
+// This is tied to jsClusterAccountsTempl, so changes there to users needs to be reflected here.
+func (c *cluster) createSingleLeafNodeNoSystemAccountAndEnablesJetStream() *Server {
+	as := c.randomServer()
+	lno := as.getOpts().LeafNode
+	ln := fmt.Sprintf("nats://nojs:p@%s:%d", lno.Host, lno.Port)
+	conf := fmt.Sprintf(jsClusterSingleLeafNodeLikeNGSTempl, createDir(c.t, JetStreamStoreDir), ln)
+	s, o := RunServerWithConfig(createConfFile(c.t, []byte(conf)))
+	c.servers = append(c.servers, s)
+	c.opts = append(c.opts, o)
+
+	checkLeafNodeConnectedCount(c.t, as, 1)
+
+	return s
+}
+
+var jsClusterSingleLeafNodeLikeNGSTempl = `
+	listen: 127.0.0.1:-1
+	server_name: LNJS
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: "%s"}
+
+	leaf { remotes [ { urls: [ %s ] } ] }
+`
 
 var jsClusterSingleLeafNodeTempl = `
 	listen: 127.0.0.1:-1

@@ -830,7 +830,7 @@ const badAPIRequestT = "Malformed JetStream API Request: %q"
 func (a *Account) checkJetStream() (enabled, shouldError bool) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.js != nil, a.nleafs == 0
+	return a.js != nil, a.nleafs+a.nrleafs == 0
 }
 
 // Request for current usage and limits for this account.
@@ -876,6 +876,7 @@ func (s *Server) jsAccountInfoRequest(sub *subscription, c *client, subject, rep
 	if err != nil {
 		return
 	}
+
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), string(b))
 }
 

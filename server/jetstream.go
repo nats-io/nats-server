@@ -1273,6 +1273,9 @@ func (js *jetStream) disableJetStream(jsa *jsAccount) error {
 // jetStreamConfigured reports whether the account has JetStream configured, regardless of this
 // servers JetStream status.
 func (a *Account) jetStreamConfigured() bool {
+	if a == nil {
+		return false
+	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.jsLimits != nil
