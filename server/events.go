@@ -199,6 +199,7 @@ type ServerStats struct {
 	SlowConsumers    int64          `json:"slow_consumers"`
 	Routes           []*RouteStat   `json:"routes,omitempty"`
 	Gateways         []*GatewayStat `json:"gateways,omitempty"`
+	JetStream        *JetStreamStat `json:"jetstream,omitempty"`
 }
 
 // RouteStat holds route statistics.
@@ -217,6 +218,13 @@ type GatewayStat struct {
 	Sent       DataStats `json:"sent"`
 	Received   DataStats `json:"received"`
 	NumInbound int       `json:"inbound_connections"`
+}
+
+// JetStreamStat holds Jetstream statistics and process information.
+type JetStreamStat struct {
+	Config JetStreamConfig `json:"config,omitempty"`
+	Meta   *ClusterInfo    `json:"meta_cluster,omitempty"`
+	JetStreamStats
 }
 
 // DataStats reports how may msg and bytes. Applicable for both sent and received.
@@ -548,6 +556,27 @@ func (s *Server) sendStatsz(subj string) {
 	m.Stats.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)
 	m.Stats.NumSubs = s.numSubscriptions()
 
+	if js := s.js; js != nil {
+		jStat := &JetStreamStat{}
+		s.mu.Unlock()
+		js.mu.RLock()
+		jStat.Config = js.config
+		js.mu.RUnlock()
+		jStat.JetStreamStats = *js.usageStats()
+		if mg := js.getMetaGroup(); mg != nil {
+			if mg.Leader() {
+				jStat.Meta = s.raftNodeToClusterInfo(mg)
+			} else {
+				// non leader only include a shortened version without peers
+				jStat.Meta = &ClusterInfo{
+					Name:   s.ClusterName(),
+					Leader: s.serverNameForNode(mg.GroupLeader()),
+				}
+			}
+		}
+		m.Stats.JetStream = jStat
+		s.mu.Lock()
+	}
 	for _, r := range s.routes {
 		m.Stats.Routes = append(m.Stats.Routes, routeStat(r))
 	}
