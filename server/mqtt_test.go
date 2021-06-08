@@ -683,6 +683,7 @@ func testMQTTWrite(c net.Conn, buf []byte) (int, error) {
 }
 
 func testMQTTConnect(t testing.TB, ci *mqttConnInfo, host string, port int) (net.Conn, *mqttReader) {
+	t.Helper()
 	return testMQTTConnectRetry(t, ci, host, port, 0)
 }
 
@@ -3191,6 +3192,56 @@ func TestMQTTLeafnodeWithoutJSToClusterWithJS(t *testing.T) {
 	// Connect from one server in the cluster check it works from there too.
 	connectAndPublish(o1)
 	testMQTTCheckPubMsg(t, mc2, rc2, "foo", mqttPubQos1, []byte("msg"))
+}
+
+func TestMQTTImportExport(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		server_name: "mqtt"
+		jetstream {
+			store_dir=org_dir
+		}
+		accounts {
+			org {
+				jetstream: enabled
+				users: [{user: org, password: pwd}]
+				imports = [{stream: {account: "device", subject: "foo"}, prefix: "org"}]
+			}
+			device {
+				users: [{user: device, password: pwd}]
+				exports = [{stream: "foo"}]
+			}
+		}
+		mqtt {
+			listen: "127.0.0.1:-1"
+		}
+		no_auth_user: device
+	`))
+	defer os.Remove(conf)
+	defer os.RemoveAll("org_dir")
+
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	mc1, rc1 := testMQTTConnect(t, &mqttConnInfo{clientID: "sub1", user: "org", pass: "pwd", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mc1.Close()
+	testMQTTCheckConnAck(t, rc1, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, mc1, rc1, []*mqttFilter{{filter: "org/foo", qos: 0}}, []byte{0})
+	testMQTTFlush(t, mc1, nil, rc1)
+
+	mc2, rc2 := testMQTTConnect(t, &mqttConnInfo{clientID: "sub2", user: "org", pass: "pwd", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mc2.Close()
+	testMQTTCheckConnAck(t, rc2, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, mc2, rc2, []*mqttFilter{{filter: "org/foo", qos: 1}}, []byte{1})
+	testMQTTFlush(t, mc2, nil, rc2)
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+	natsPub(t, nc, "foo", []byte("msg"))
+
+	// Verify message is received on receiver side.
+	testMQTTCheckPubMsg(t, mc1, rc1, "org/foo", 0, []byte("msg"))
+	testMQTTCheckPubMsg(t, mc2, rc2, "org/foo", 0, []byte("msg"))
 }
 
 func TestMQTTSessionMovingDomains(t *testing.T) {
