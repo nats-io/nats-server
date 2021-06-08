@@ -1698,12 +1698,18 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 	// Helper that sets the sub's mqtt fields and possibly serialize retained messages.
 	// Assumes account manager and session lock held.
 	setupSub := func(sub *subscription, qos byte) {
-		if sub.mqtt == nil {
-			sub.mqtt = &mqttSub{}
+		subs := []*subscription{sub}
+		if len(sub.shadow) > 0 {
+			subs = append(subs, sub.shadow...)
 		}
-		sub.mqtt.qos = qos
-		if fromSubProto {
-			as.serializeRetainedMsgsForSub(sess, c, sub, trace)
+		for _, sub := range subs {
+			if sub.mqtt == nil {
+				sub.mqtt = &mqttSub{}
+			}
+			sub.mqtt.qos = qos
+			if fromSubProto {
+				as.serializeRetainedMsgsForSub(sess, c, sub, trace)
+			}
 		}
 	}
 
