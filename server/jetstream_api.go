@@ -1275,7 +1275,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, subject, re
 
 	mset, err := acc.addStream(&cfg)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamCreateErrF].NewT("{err}", err)
+		resp.Error = ApiErrors[JSStreamCreateErrF].ErrOrNewT(err, "{err}", err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
