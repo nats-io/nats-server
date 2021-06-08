@@ -2824,7 +2824,7 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 
 func (a *Account) traceLabel() string {
 	if a == nil {
-		return ""
+		return _EMPTY_
 	}
 	if a.nameTag != _EMPTY_ {
 		return fmt.Sprintf("%s/%s", a.Name, a.nameTag)
@@ -2948,13 +2948,13 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	for _, e := range ac.Exports {
 		switch e.Type {
 		case jwt.Stream:
-			s.Debugf("Adding stream export %q for %s", e.Subject, a.traceLabel)
+			s.Debugf("Adding stream export %q for %s", e.Subject, a.traceLabel())
 			if err := a.addStreamExportWithAccountPos(
 				string(e.Subject), authAccounts(e.TokenReq), e.AccountTokenPosition); err != nil {
-				s.Debugf("Error adding stream export to account [%s]: %v", a.traceLabel, err.Error())
+				s.Debugf("Error adding stream export to account [%s]: %v", a.traceLabel(), err.Error())
 			}
 		case jwt.Service:
-			s.Debugf("Adding service export %q for %s", e.Subject, a.traceLabel)
+			s.Debugf("Adding service export %q for %s", e.Subject, a.traceLabel())
 			rt := Singleton
 			switch e.ResponseType {
 			case jwt.ResponseTypeStream:
@@ -2964,7 +2964,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			}
 			if err := a.addServiceExportWithResponseAndAccountPos(
 				string(e.Subject), rt, authAccounts(e.TokenReq), e.AccountTokenPosition); err != nil {
-				s.Debugf("Error adding service export to account [%s]: %v", a.traceLabel, err)
+				s.Debugf("Error adding service export to account [%s]: %v", a.traceLabel(), err)
 				continue
 			}
 			sub := string(e.Subject)
@@ -2974,13 +2974,13 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 					if e.Latency.Sampling == jwt.Headers {
 						hdrNote = " (using headers)"
 					}
-					s.Debugf("Error adding latency tracking%s for service export to account [%s]: %v", hdrNote, a.traceLabel, err)
+					s.Debugf("Error adding latency tracking%s for service export to account [%s]: %v", hdrNote, a.traceLabel(), err)
 				}
 			}
 			if e.ResponseThreshold != 0 {
 				// Response threshold was set in options.
 				if err := a.SetServiceExportResponseThreshold(sub, e.ResponseThreshold); err != nil {
-					s.Debugf("Error adding service export response threshold for [%s]: %v", a.traceLabel, err)
+					s.Debugf("Error adding service export response threshold for [%s]: %v", a.traceLabel(), err)
 				}
 			}
 		}
