@@ -81,7 +81,7 @@ type jetStream struct {
 	memReserved   int64
 	storeReserved int64
 	apiCalls      int64
-	apiErrorCalls int64
+	apiErrors     int64
 	memTotal      int64
 	storeTotal    int64
 	mu            sync.RWMutex
@@ -1549,7 +1549,7 @@ func (js *jetStream) usageStats() *JetStreamStats {
 	stats.Accounts = len(js.accounts)
 	js.mu.RUnlock()
 	stats.API.Total = (uint64)(atomic.LoadInt64(&js.apiCalls))
-	stats.API.Errors = (uint64)(atomic.LoadInt64(&js.apiErrorCalls))
+	stats.API.Errors = (uint64)(atomic.LoadInt64(&js.apiErrors))
 	stats.Memory = (uint64)(atomic.LoadInt64(&js.memTotal))
 	stats.Store = (uint64)(atomic.LoadInt64(&js.storeTotal))
 	return &stats

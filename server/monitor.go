@@ -2382,7 +2382,7 @@ func (s *Server) raftNodeToClusterInfo(node RaftNode) *ClusterInfo {
 		peerList[i] = p.ID
 	}
 	group := &raftGroup{
-		Name:  "",
+		Name:  _EMPTY_,
 		Peers: peerList,
 		node:  node,
 	}
