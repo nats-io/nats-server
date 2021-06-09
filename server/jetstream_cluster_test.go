@@ -6488,6 +6488,43 @@ func TestJetStreamClusterSingleLeafNodeEnablingJetStream(t *testing.T) {
 	}
 }
 
+// Issue reported with superclusters and leafnodes where first few get next requests for pull susbcribers
+// have the wrong subject.
+func TestJetStreamClusterSuperClusterGetNextRewrite(t *testing.T) {
+	sc := createJetStreamSuperClusterWithTemplate(t, jsClusterAccountsTempl, 2, 2)
+	defer sc.shutdown()
+
+	// Will connect the leafnode to cluster C1. We will then connect the "client" to cluster C2 to cross gateways.
+	ln := sc.clusterForName("C1").createSingleLeafNodeNoSystemAccountAndEnablesJetStream()
+	defer ln.Shutdown()
+
+	c2 := sc.clusterForName("C2")
+	nc, js := jsClientConnect(t, c2.randomServer(), nats.UserInfo("nojs", "p"))
+	defer nc.Close()
+
+	// Create a stream and add messages.
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "foo"}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	for i := 0; i < 10; i++ {
+		if _, err := js.Publish("foo", []byte("ok")); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	// Pull messages and make sure subject rewrite works.
+	sub, err := js.PullSubscribe("foo", "dlc")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	for _, m := range fetchMsgs(t, sub, 5, time.Second) {
+		if m.Subject != "foo" {
+			t.Fatalf("Expected %q as subject but got %q", "foo", m.Subject)
+		}
+	}
+}
+
 func TestJetStreamClusterLeafDifferentAccounts(t *testing.T) {
 	c := createJetStreamCluster(t, jsClusterAccountsTempl, "HUB", _EMPTY_, 2, 33133, false)
 	defer c.shutdown()
@@ -7190,6 +7227,10 @@ var jsClusterLimitsTempl = `
 var jsGWTempl = `%s{name: %s, urls: [%s]}`
 
 func createJetStreamSuperCluster(t *testing.T, numServersPer, numClusters int) *supercluster {
+	return createJetStreamSuperClusterWithTemplate(t, jsClusterTempl, numServersPer, numClusters)
+}
+
+func createJetStreamSuperClusterWithTemplate(t *testing.T, tmpl string, numServersPer, numClusters int) *supercluster {
 	t.Helper()
 	if numServersPer < 1 {
 		t.Fatalf("Number of servers must be >= 1")
@@ -7238,7 +7279,7 @@ func createJetStreamSuperCluster(t *testing.T, numServersPer, numClusters int) *
 		for si := 0; si < numServersPer; si++ {
 			storeDir := createDir(t, JetStreamStoreDir)
 			sn := fmt.Sprintf("%s-S%d", cn, si+1)
-			bconf := fmt.Sprintf(jsClusterTempl, sn, storeDir, cn, cp+si, routeConfig)
+			bconf := fmt.Sprintf(tmpl, sn, storeDir, cn, cp+si, routeConfig)
 			conf := fmt.Sprintf(jsSuperClusterTempl, bconf, cn, gp, gwconf)
 			gp++
 			s, o := RunServerWithConfig(createConfFile(t, []byte(conf)))

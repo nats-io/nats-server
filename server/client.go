@@ -3536,7 +3536,6 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 			atomic.LoadInt64(&c.srv.gateway.totalQSubs) > 0 {
 			flag |= pmrCollectQueueNames
 		}
-
 		didDeliver, qnames = c.processMsgResults(c.acc, r, msg, c.pa.deliver, c.pa.subject, c.pa.reply, flag)
 	}
 
@@ -3585,11 +3584,16 @@ func (c *client) handleGWReplyMap(msg []byte) bool {
 	// Check for leaf nodes
 	if c.srv.gwLeafSubs.Count() > 0 {
 		if r := c.srv.gwLeafSubs.Match(string(c.pa.subject)); len(r.psubs) > 0 {
-			c.processMsgResults(c.acc, r, msg, nil, c.pa.subject, c.pa.reply, pmrNoFlag)
+			c.processMsgResults(c.acc, r, msg, c.pa.deliver, c.pa.subject, c.pa.reply, pmrNoFlag)
 		}
 	}
 	if c.srv.gateway.enabled {
-		c.sendMsgToGateways(c.acc, msg, c.pa.subject, c.pa.reply, nil)
+		reply := c.pa.reply
+		if len(c.pa.deliver) > 0 && c.kind == JETSTREAM && len(c.pa.reply) > 0 {
+			reply = append(reply, '@')
+			reply = append(reply, c.pa.deliver...)
+		}
+		c.sendMsgToGateways(c.acc, msg, c.pa.subject, reply, nil)
 	}
 	return true
 }
