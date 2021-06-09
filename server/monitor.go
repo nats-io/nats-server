@@ -1054,6 +1054,7 @@ type Varz struct {
 type JetStreamVarz struct {
 	Config *JetStreamConfig `json:"config,omitempty"`
 	Stats  *JetStreamStats  `json:"stats,omitempty"`
+	Meta   *ClusterInfo     `json:"meta,omitempty"`
 }
 
 // ClusterOptsVarz contains monitoring cluster information
@@ -1431,6 +1432,9 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 		// FIXME(dlc) - We have lock inversion that needs to be fixed up properly.
 		s.mu.Unlock()
 		v.JetStream.Stats = s.js.usageStats()
+		if mg := s.js.getMetaGroup(); mg != nil {
+			v.JetStream.Meta = s.raftNodeToClusterInfo(mg)
+		}
 		s.mu.Lock()
 	}
 }

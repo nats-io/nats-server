@@ -199,7 +199,7 @@ type ServerStats struct {
 	SlowConsumers    int64          `json:"slow_consumers"`
 	Routes           []*RouteStat   `json:"routes,omitempty"`
 	Gateways         []*GatewayStat `json:"gateways,omitempty"`
-	JetStream        *JetStreamStat `json:"jetstream,omitempty"`
+	JetStream        *JetStreamVarz `json:"jetstream,omitempty"`
 }
 
 // RouteStat holds route statistics.
@@ -218,13 +218,6 @@ type GatewayStat struct {
 	Sent       DataStats `json:"sent"`
 	Received   DataStats `json:"received"`
 	NumInbound int       `json:"inbound_connections"`
-}
-
-// JetStreamStat holds Jetstream statistics and process information.
-type JetStreamStat struct {
-	Config JetStreamConfig `json:"config,omitempty"`
-	Meta   *ClusterInfo    `json:"meta_cluster,omitempty"`
-	JetStreamStats
 }
 
 // DataStats reports how may msg and bytes. Applicable for both sent and received.
@@ -557,12 +550,14 @@ func (s *Server) sendStatsz(subj string) {
 	m.Stats.NumSubs = s.numSubscriptions()
 
 	if js := s.js; js != nil {
-		jStat := &JetStreamStat{}
+		jStat := &JetStreamVarz{}
 		s.mu.Unlock()
 		js.mu.RLock()
-		jStat.Config = js.config
+		c := js.config
+		c.StoreDir = _EMPTY_
+		jStat.Config = &c
 		js.mu.RUnlock()
-		jStat.JetStreamStats = *js.usageStats()
+		jStat.Stats = js.usageStats()
 		if mg := js.getMetaGroup(); mg != nil {
 			if mg.Leader() {
 				jStat.Meta = s.raftNodeToClusterInfo(mg)
