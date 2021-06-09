@@ -1,4 +1,4 @@
-// Copyright 2019-2020 The NATS Authors
+// Copyright 2019-2021 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -231,16 +231,6 @@ func validateLeafNode(o *Options) error {
 		return err
 	}
 
-	for _, rem := range o.LeafNode.Remotes {
-		if rem.NoRandomize {
-			continue
-		}
-
-		rand.Shuffle(len(rem.URLs), func(i, j int) {
-			rem.URLs[i], rem.URLs[j] = rem.URLs[j], rem.URLs[i]
-		})
-	}
-
 	// In local config mode, check that leafnode configuration refers to accounts that exist.
 	if len(o.TrustedOperators) == 0 {
 		accNames := map[string]struct{}{}
@@ -401,6 +391,12 @@ func newLeafNodeCfg(remote *RemoteLeafOpts) *leafNodeCfg {
 	// Start with the one that is configured. We will add to this
 	// array when receiving async leafnode INFOs.
 	cfg.urls = append(cfg.urls, cfg.URLs...)
+	// If allowed to randomize, do it on our copy of URLs
+	if !remote.NoRandomize {
+		rand.Shuffle(len(cfg.urls), func(i, j int) {
+			cfg.urls[i], cfg.urls[j] = cfg.urls[j], cfg.urls[i]
+		})
+	}
 	// If we are TLS make sure we save off a proper servername if possible.
 	// Do same for user/password since we may need them to connect to
 	// a bare URL that we get from INFO protocol.

@@ -1,4 +1,4 @@
-// Copyright 2017-2020 The NATS Authors
+// Copyright 2017-2021 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -3842,58 +3842,41 @@ func TestConfigReloadLeafNodeWithTLS(t *testing.T) {
 
 func TestConfigReloadLeafNodeWithRemotesNoChanges(t *testing.T) {
 	template := `
-          port: -1
-	  %s
-	  leaf {
-	    listen: "127.0.0.1:-1"
-	  }
-	`
-	conf1 := createConfFile(t, []byte(fmt.Sprintf(template, "")))
-	defer removeFile(t, conf1)
-	s1, o1 := RunServerWithConfig(conf1)
-	defer s1.Shutdown()
-
-	u, err := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", o1.LeafNode.Port))
-	if err != nil {
-		t.Fatalf("Error creating url: %v", err)
-	}
-
-	template2 := `
-          port: -1
-          cluster {
+        port: -1
+        cluster {
             port: -1
             name: "%s"
-          }
-          leaf {
+        }
+        leaf {
             remotes [
-              {
-                url: "%s"
-              }
+                {
+                    urls: [
+                        "nats://127.0.0.1:1234",
+                        "nats://127.0.0.1:1235",
+                        "nats://127.0.0.1:1236",
+                        "nats://127.0.0.1:1237",
+                        "nats://127.0.0.1:1238",
+                        "nats://127.0.0.1:1239",
+                    ]
+                }
             ]
-          }
+        }
 	`
-	config := fmt.Sprintf(template2, "A", u.String())
-	conf2 := createConfFile(t, []byte(config))
-	defer removeFile(t, conf2)
-	o2, err := ProcessConfigFile(conf2)
+	config := fmt.Sprintf(template, "A")
+	conf := createConfFile(t, []byte(config))
+	defer removeFile(t, conf)
+	o, err := ProcessConfigFile(conf)
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
 	}
-	o2.NoLog, o2.NoSigs = true, false
-	s2 := RunServer(o2)
-	defer s2.Shutdown()
+	o.NoLog, o.NoSigs = true, false
+	s := RunServer(o)
+	defer s.Shutdown()
 
-	checkFor(t, 3*time.Second, 15*time.Millisecond, func() error {
-		if n := s1.NumLeafNodes(); n != 1 {
-			return fmt.Errorf("Expected 1 leaf node, got %v", n)
-		}
-		return nil
-	})
+	config = fmt.Sprintf(template, "B")
+	changeCurrentConfigContentWithNewContent(t, conf, []byte(config))
 
-	config = fmt.Sprintf(template2, "B", u.String())
-	changeCurrentConfigContentWithNewContent(t, conf2, []byte(config))
-
-	if err := s2.Reload(); err != nil {
+	if err := s.Reload(); err != nil {
 		t.Fatalf("Error during reload: %v", err)
 	}
 }

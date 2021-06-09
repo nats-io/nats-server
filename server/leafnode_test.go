@@ -1,4 +1,4 @@
-// Copyright 2019-2020 The NATS Authors
+// Copyright 2019-2021 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -108,9 +108,16 @@ func TestLeafNodeRandomRemotes(t *testing.T) {
 	copy(o.LeafNode.Remotes[1].URLs, orderedURLs)
 
 	s := RunServer(o)
-	s.Shutdown()
+	defer s.Shutdown()
 
-	gotOrdered := o.LeafNode.Remotes[0].URLs
+	s.mu.Lock()
+	r1 := s.leafRemoteCfgs[0]
+	r2 := s.leafRemoteCfgs[1]
+	s.mu.Unlock()
+
+	r1.RLock()
+	gotOrdered := r1.urls
+	r1.RUnlock()
 	if got, want := len(gotOrdered), len(orderedURLs); got != want {
 		t.Fatalf("Unexpected rem0 len URLs, got %d, want %d", got, want)
 	}
@@ -122,7 +129,9 @@ func TestLeafNodeRandomRemotes(t *testing.T) {
 		}
 	}
 
-	gotRandom := o.LeafNode.Remotes[1].URLs
+	r2.RLock()
+	gotRandom := r2.urls
+	r2.RUnlock()
 	if got, want := len(gotRandom), len(orderedURLs); got != want {
 		t.Fatalf("Unexpected rem1 len URLs, got %d, want %d", got, want)
 	}
