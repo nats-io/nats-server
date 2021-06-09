@@ -1041,8 +1041,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			// Need to do the same for remote leafnodes' TLS configs.
 			// But we can't just set remotes' TLSConfig to nil otherwise this
 			// would lose the real TLS configuration.
-			tmpOld.Remotes = copyRemoteLNConfigWithoutTLSConfig(tmpOld.Remotes)
-			tmpNew.Remotes = copyRemoteLNConfigWithoutTLSConfig(tmpNew.Remotes)
+			tmpOld.Remotes = copyRemoteLNConfigForReloadCompare(tmpOld.Remotes)
+			tmpNew.Remotes = copyRemoteLNConfigForReloadCompare(tmpNew.Remotes)
 
 			// Special check for leafnode remotes changes which are not supported right now.
 			leafRemotesChanged := func(a, b LeafNodeOpts) bool {
@@ -1053,6 +1053,10 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				// Check whether all remotes URLs are still the same.
 				for _, oldRemote := range tmpOld.Remotes {
 					var found bool
+
+					if oldRemote.LocalAccount == _EMPTY_ {
+						oldRemote.LocalAccount = globalAccountName
+					}
 
 					for _, newRemote := range tmpNew.Remotes {
 						// Bind to global account in case not defined.
@@ -1249,7 +1253,7 @@ func copyRemoteGWConfigsWithoutTLSConfig(current []*RemoteGatewayOpts) []*Remote
 	return rgws
 }
 
-func copyRemoteLNConfigWithoutTLSConfig(current []*RemoteLeafOpts) []*RemoteLeafOpts {
+func copyRemoteLNConfigForReloadCompare(current []*RemoteLeafOpts) []*RemoteLeafOpts {
 	l := len(current)
 	if l == 0 {
 		return nil
@@ -1262,6 +1266,9 @@ func copyRemoteLNConfigWithoutTLSConfig(current []*RemoteLeafOpts) []*RemoteLeaf
 		// This is set only when processing a CONNECT, so reset here so that we
 		// don't fail the DeepEqual comparison.
 		cp.TLS = false
+		// For now, remove DenyImports/Exports since those get modified at runtime
+		// to add JS APIs.
+		cp.DenyImports, cp.DenyExports = nil, nil
 		rlns = append(rlns, &cp)
 	}
 	return rlns

@@ -899,7 +899,7 @@ func TestTlsPinnedCertificates(t *testing.T) {
 		key_file: "./configs/certs/key.pem"
 		# Require a client certificate and map user id from certificate
 		verify: true
-		pinned_certs: ["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069", 
+		pinned_certs: ["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069",
 			"a8f407340dcc719864214b85ed96f98d16cbffa8f509d9fa4ca237b7bb3f9c32"]
 	}
 	cluster {
@@ -910,7 +910,7 @@ func TestTlsPinnedCertificates(t *testing.T) {
 			key_file: "./configs/certs/key.pem"
 			# Require a client certificate and map user id from certificate
 			verify: true
-			pinned_certs: ["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069", 
+			pinned_certs: ["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069",
 				"a8f407340dcc719864214b85ed96f98d16cbffa8f509d9fa4ca237b7bb3f9c32"]
 		}
 	}
@@ -921,7 +921,7 @@ func TestTlsPinnedCertificates(t *testing.T) {
 			key_file: "./configs/certs/key.pem"
 			# Require a client certificate and map user id from certificate
 			verify: true
-			pinned_certs: ["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069", 
+			pinned_certs: ["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069",
 				"a8f407340dcc719864214b85ed96f98d16cbffa8f509d9fa4ca237b7bb3f9c32"]
 		}
 	}
@@ -933,7 +933,7 @@ func TestTlsPinnedCertificates(t *testing.T) {
 			key_file: "./configs/certs/key.pem"
 			# Require a client certificate and map user id from certificate
 			verify: true
-			pinned_certs: ["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069", 
+			pinned_certs: ["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069",
 				"a8f407340dcc719864214b85ed96f98d16cbffa8f509d9fa4ca237b7bb3f9c32"]
 		}
 	}
@@ -944,7 +944,7 @@ func TestTlsPinnedCertificates(t *testing.T) {
 			key_file: "./configs/certs/key.pem"
 			# Require a client certificate and map user id from certificate
 			verify: true
-			pinned_certs: ["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069", 
+			pinned_certs: ["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069",
 				"a8f407340dcc719864214b85ed96f98d16cbffa8f509d9fa4ca237b7bb3f9c32"]
 		}
 	}
@@ -955,7 +955,7 @@ func TestTlsPinnedCertificates(t *testing.T) {
 			key_file: "./configs/certs/key.pem"
 			# Require a client certificate and map user id from certificate
 			verify: true
-			pinned_certs: ["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069", 
+			pinned_certs: ["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069",
 				"a8f407340dcc719864214b85ed96f98d16cbffa8f509d9fa4ca237b7bb3f9c32"]
 		}
 	}`))
@@ -2520,10 +2520,17 @@ func TestParsingLeafNodeRemotes(t *testing.T) {
 		conf := createConfFile(t, []byte(fmt.Sprintf(content, confURLs)))
 		defer removeFile(t, conf)
 
-		s, o := RunServerWithConfig(conf)
-		s.Shutdown()
+		s, _ := RunServerWithConfig(conf)
+		defer s.Shutdown()
 
-		gotOrdered := o.LeafNode.Remotes[0].URLs
+		s.mu.Lock()
+		r1 := s.leafRemoteCfgs[0]
+		r2 := s.leafRemoteCfgs[1]
+		s.mu.Unlock()
+
+		r1.RLock()
+		gotOrdered := r1.urls
+		r1.RUnlock()
 		if got, want := len(gotOrdered), len(orderedURLs); got != want {
 			t.Fatalf("Unexpected rem0 len URLs, got %d, want %d", got, want)
 		}
@@ -2535,7 +2542,9 @@ func TestParsingLeafNodeRemotes(t *testing.T) {
 			}
 		}
 
-		gotRandom := o.LeafNode.Remotes[1].URLs
+		r2.RLock()
+		gotRandom := r2.urls
+		r2.RUnlock()
 		if got, want := len(gotRandom), len(orderedURLs); got != want {
 			t.Fatalf("Unexpected rem1 len URLs, got %d, want %d", got, want)
 		}
