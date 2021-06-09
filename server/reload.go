@@ -1014,6 +1014,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			tmpNew := newValue.(GatewayOpts)
 			tmpOld.TLSConfig = nil
 			tmpNew.TLSConfig = nil
+			tmpOld.tlsConfigOpts = nil
+			tmpNew.tlsConfigOpts = nil
 
 			// Need to do the same for remote gateways' TLS configs.
 			// But we can't just set remotes' TLSConfig to nil otherwise this
@@ -1033,6 +1035,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			tmpNew := newValue.(LeafNodeOpts)
 			tmpOld.TLSConfig = nil
 			tmpNew.TLSConfig = nil
+			tmpOld.tlsConfigOpts = nil
+			tmpNew.tlsConfigOpts = nil
 
 			// Need to do the same for remote leafnodes' TLS configs.
 			// But we can't just set remotes' TLSConfig to nil otherwise this
@@ -1239,6 +1243,7 @@ func copyRemoteGWConfigsWithoutTLSConfig(current []*RemoteGatewayOpts) []*Remote
 	for _, rcfg := range current {
 		cp := *rcfg
 		cp.TLSConfig = nil
+		cp.tlsConfigOpts = nil
 		rgws = append(rgws, &cp)
 	}
 	return rgws
@@ -1253,6 +1258,7 @@ func copyRemoteLNConfigWithoutTLSConfig(current []*RemoteLeafOpts) []*RemoteLeaf
 	for _, rcfg := range current {
 		cp := *rcfg
 		cp.TLSConfig = nil
+		cp.tlsConfigOpts = nil
 		// This is set only when processing a CONNECT, so reset here so that we
 		// don't fail the DeepEqual comparison.
 		cp.TLS = false
@@ -1336,53 +1342,6 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 	}
 
 	s.Noticef("Reloaded server configuration")
-}
-
-func (s *Server) reloadOCSP() error {
-	opts := s.getOpts()
-
-	if err := s.setupOCSPStapleStoreDir(); err != nil {
-		return err
-	}
-
-	s.mu.Lock()
-	ocsps := s.ocsps
-	s.mu.Unlock()
-
-	// Stop all OCSP Stapling monitors in case there were any running.
-	var wasEnabled bool
-	for _, oc := range ocsps {
-		wasEnabled = true
-		oc.stop()
-	}
-
-	// Restart the monitors under the new configuration.
-	ocspm := make([]*OCSPMonitor, 0)
-	if config := opts.TLSConfig; config != nil {
-		tc, mon, err := s.NewOCSPMonitor(config)
-		if err != nil {
-			return err
-		}
-		// Check if an OCSP stapling monitor is required for this certificate.
-		if mon != nil {
-			s.Noticef("OCSP Stapling enabled for client connections")
-			ocspm = append(ocspm, mon)
-
-			// Override the TLS config with one that has OCSP enabled.
-			s.optsMu.Lock()
-			s.opts.TLSConfig = tc
-			s.optsMu.Unlock()
-			s.startGoRoutine(func() { mon.run() })
-		} else if wasEnabled {
-			s.Warnf("OCSP Stapling disabled for client connections")
-		}
-	}
-	// Replace stopped monitors with the new ones.
-	s.mu.Lock()
-	s.ocsps = ocspm
-	s.mu.Unlock()
-
-	return nil
 }
 
 // Update all cached debug and trace settings for every client

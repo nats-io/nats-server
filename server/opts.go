@@ -79,6 +79,8 @@ type ClusterOpts struct {
 
 	// Not exported (used in tests)
 	resolver netResolver
+	// Snapshot of configured TLS options.
+	tlsConfigOpts *TLSConfigOpts
 }
 
 // GatewayOpts are options for gateways.
@@ -104,16 +106,20 @@ type GatewayOpts struct {
 	// Not exported, for tests.
 	resolver         netResolver
 	sendQSubsBufSize int
+
+	// Snapshot of configured TLS options.
+	tlsConfigOpts *TLSConfigOpts
 }
 
 // RemoteGatewayOpts are options for connecting to a remote gateway
 // NOTE: This structure is no longer used for monitoring endpoints
 // and json tags are deprecated and may be removed in the future.
 type RemoteGatewayOpts struct {
-	Name       string      `json:"name"`
-	TLSConfig  *tls.Config `json:"-"`
-	TLSTimeout float64     `json:"tls_timeout,omitempty"`
-	URLs       []*url.URL  `json:"urls,omitempty"`
+	Name          string      `json:"name"`
+	TLSConfig     *tls.Config `json:"-"`
+	TLSTimeout    float64     `json:"tls_timeout,omitempty"`
+	URLs          []*url.URL  `json:"urls,omitempty"`
+	tlsConfigOpts *TLSConfigOpts
 }
 
 // LeafNodeOpts are options for a given server to accept leaf node connections and/or connect to a remote cluster.
@@ -140,6 +146,9 @@ type LeafNodeOpts struct {
 	resolver    netResolver
 	dialTimeout time.Duration
 	connDelay   time.Duration
+
+	// Snapshot of configured TLS options.
+	tlsConfigOpts *TLSConfigOpts
 }
 
 // RemoteLeafOpts are options for connecting to a remote server as a leaf node.
@@ -163,6 +172,8 @@ type RemoteLeafOpts struct {
 		Compression bool `json:"-"`
 		NoMasking   bool `json:"-"`
 	}
+
+	tlsConfigOpts *TLSConfigOpts
 }
 
 // Options block for nats-server.
@@ -1322,6 +1333,7 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 			opts.Cluster.TLSMap = tlsopts.Map
 			opts.Cluster.TLSPinnedCerts = tlsopts.PinnedCerts
 			opts.Cluster.TLSCheckKnownURLs = tlsopts.TLSCheckKnownURLs
+			opts.Cluster.tlsConfigOpts = tlsopts
 		case "cluster_advertise", "advertise":
 			opts.Cluster.Advertise = mv.(string)
 		case "no_advertise":
@@ -1439,6 +1451,7 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 			o.Gateway.TLSMap = tlsopts.Map
 			o.Gateway.TLSCheckKnownURLs = tlsopts.TLSCheckKnownURLs
 			o.Gateway.TLSPinnedCerts = tlsopts.PinnedCerts
+			o.Gateway.tlsConfigOpts = tlsopts
 		case "advertise":
 			o.Gateway.Advertise = mv.(string)
 		case "connect_retries":
@@ -1667,6 +1680,7 @@ func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]e
 			opts.LeafNode.TLSTimeout = tc.Timeout
 			opts.LeafNode.TLSMap = tc.Map
 			opts.LeafNode.TLSPinnedCerts = tc.PinnedCerts
+			opts.LeafNode.tlsConfigOpts = tc
 		case "leafnode_advertise", "advertise":
 			opts.LeafNode.Advertise = mv.(string)
 		case "no_advertise":
@@ -1873,6 +1887,7 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 				} else {
 					remote.TLSTimeout = float64(DEFAULT_LEAF_TLS_TIMEOUT)
 				}
+				remote.tlsConfigOpts = tc
 			case "hub":
 				remote.Hub = v.(bool)
 			case "deny_imports", "deny_import":
@@ -1964,6 +1979,7 @@ func parseGateways(v interface{}, errors *[]error, warnings *[]error) ([]*Remote
 				}
 				gateway.TLSConfig = tls
 				gateway.TLSTimeout = tlsopts.Timeout
+				gateway.tlsConfigOpts = tlsopts
 			case "url":
 				url, err := parseURL(v.(string), "gateway")
 				if err != nil {
