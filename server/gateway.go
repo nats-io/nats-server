@@ -2718,11 +2718,11 @@ func getSubjectFromGWRoutedReply(reply []byte, isOldPrefix bool) []byte {
 
 // This should be invoked only from processInboundGatewayMsg() or
 // processInboundRoutedMsg() and is checking if the subject
-// (c.pa.subject) has the $GNR prefix. If so, this is processed
+// (c.pa.subject) has the _GR_ prefix. If so, this is processed
 // as a GW reply and `true` is returned to indicate to the caller
 // that it should stop processing.
 // If gateway is not enabled on this server or if the subject
-// does not start with $GR, `false` is returned and caller should
+// does not start with _GR_, `false` is returned and caller should
 // process message as usual.
 func (c *client) handleGatewayReply(msg []byte) (processed bool) {
 	// Do not handle GW prefixed messages if this server does not have
@@ -2830,7 +2830,18 @@ func (c *client) handleGatewayReply(msg []byte) (processed bool) {
 			buf = append(buf, c.pa.reply...)
 			buf = append(buf, ' ')
 		}
-		buf = append(buf, c.pa.szb...)
+		szb := c.pa.szb
+		if c.pa.hdr >= 0 {
+			if route.headers {
+				buf[0] = 'H'
+				buf = append(buf, c.pa.hdb...)
+				buf = append(buf, ' ')
+			} else {
+				szb = []byte(strconv.Itoa(c.pa.size - c.pa.hdr))
+				msg = msg[c.pa.hdr:]
+			}
+		}
+		buf = append(buf, szb...)
 		mhEnd := len(buf)
 		buf = append(buf, _CRLF_...)
 		buf = append(buf, msg...)

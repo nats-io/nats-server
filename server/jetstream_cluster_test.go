@@ -6525,6 +6525,66 @@ func TestJetStreamClusterSuperClusterGetNextRewrite(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterSuperClusterPullConsumerAndHeaders(t *testing.T) {
+	sc := createJetStreamSuperCluster(t, 3, 2)
+	defer sc.shutdown()
+
+	c1 := sc.clusterForName("C1")
+	c2 := sc.clusterForName("C2")
+
+	nc, js := jsClientConnect(t, c1.randomServer())
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "ORIGIN"}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	toSend := 50
+	for i := 0; i < toSend; i++ {
+		if _, err := js.Publish("ORIGIN", []byte("ok")); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	nc2, js2 := jsClientConnect(t, c2.randomServer())
+	defer nc2.Close()
+
+	_, err := js2.AddStream(&nats.StreamConfig{
+		Name:    "S",
+		Sources: []*nats.StreamSource{{Name: "ORIGIN"}},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Wait for them to be in the sourced stream.
+	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		if si, _ := js2.StreamInfo("S"); si.State.Msgs != uint64(toSend) {
+			return fmt.Errorf("Expected %d msgs for %q, got %d", toSend, "S", si.State.Msgs)
+		}
+		return nil
+	})
+
+	// Now create a pull consumers for the sourced stream.
+	_, err = js2.AddConsumer("S", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now we will connect and request the next message from each server in C1 cluster and check that headers remain in place.
+	for _, s := range c1.servers {
+		nc, err := nats.Connect(s.ClientURL())
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		m, err := nc.Request("$JS.API.CONSUMER.MSG.NEXT.S.dlc", nil, 2*time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if len(m.Header) != 1 {
+			t.Fatalf("Expected 1 header element, got %+v", m.Header)
+		}
+	}
+}
+
 func TestJetStreamClusterLeafDifferentAccounts(t *testing.T) {
 	c := createJetStreamCluster(t, jsClusterAccountsTempl, "HUB", _EMPTY_, 2, 33133, false)
 	defer c.shutdown()
