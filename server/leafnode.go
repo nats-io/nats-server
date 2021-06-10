@@ -795,7 +795,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 	// Determines if we are soliciting the connection or not.
 	var solicited bool
 	var acc *Account
-
+	var remoteSuffix string
 	if remote != nil {
 		// TODO: Decide what should be the optimal behavior here.
 		// For now, if lookup fails, we will constantly try
@@ -814,13 +814,15 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 		acc, err = s.LookupAccount(lacc)
 		if err != nil {
 			s.Errorf("No local account %q for leafnode: %v", lacc, err)
+			c.closeConnection(MissingAccount)
 			return nil
 		}
+		remoteSuffix = fmt.Sprintf(" for account: %s", acc.traceLabel())
 	}
 
 	c.mu.Lock()
 	c.initClient()
-	c.Noticef("Leafnode connection created")
+	c.Noticef("Leafnode connection created%s", remoteSuffix)
 
 	if remote != nil {
 		solicited = true
