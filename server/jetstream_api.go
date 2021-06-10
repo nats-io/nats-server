@@ -818,7 +818,9 @@ func (a *Account) trackAPIErr() {
 		jsa.usage.err++
 		jsa.apiErrors++
 		jsa.sendClusterUsageUpdate()
+		js := jsa.js
 		jsa.mu.Unlock()
+		atomic.AddInt64(&js.apiErrors, 1)
 	}
 }
 

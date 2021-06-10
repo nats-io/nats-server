@@ -1054,6 +1054,7 @@ type Varz struct {
 type JetStreamVarz struct {
 	Config *JetStreamConfig `json:"config,omitempty"`
 	Stats  *JetStreamStats  `json:"stats,omitempty"`
+	Meta   *ClusterInfo     `json:"meta,omitempty"`
 }
 
 // ClusterOptsVarz contains monitoring cluster information
@@ -1431,6 +1432,9 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 		// FIXME(dlc) - We have lock inversion that needs to be fixed up properly.
 		s.mu.Unlock()
 		v.JetStream.Stats = s.js.usageStats()
+		if mg := s.js.getMetaGroup(); mg != nil {
+			v.JetStream.Meta = s.raftNodeToClusterInfo(mg)
+		}
 		s.mu.Lock()
 	}
 }
@@ -2371,6 +2375,24 @@ func (s *Server) JszAccount(opts *JSzOptions) (*AccountDetail, error) {
 	return s.accountDetail(jsa, opts.Streams, opts.Consumer, opts.Config), nil
 }
 
+// helper to get cluster info from node via dummy group
+func (s *Server) raftNodeToClusterInfo(node RaftNode) *ClusterInfo {
+	if node == nil {
+		return nil
+	}
+	peers := node.Peers()
+	peerList := make([]string, len(peers))
+	for i, p := range node.Peers() {
+		peerList[i] = p.ID
+	}
+	group := &raftGroup{
+		Name:  _EMPTY_,
+		Peers: peerList,
+		node:  node,
+	}
+	return s.js.clusterInfo(group)
+}
+
 // Jsz returns a Jsz structure containing information about JetStream.
 func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 	// set option defaults
@@ -2405,23 +2427,6 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 		}
 	}
 
-	// helper to get cluster info from node via dummy group
-	toClusterInfo := func(node RaftNode) *ClusterInfo {
-		if node == nil {
-			return nil
-		}
-		peers := node.Peers()
-		peerList := make([]string, len(peers))
-		for i, p := range node.Peers() {
-			peerList[i] = p.ID
-		}
-		group := &raftGroup{
-			Name:  "",
-			Peers: peerList,
-			node:  node,
-		}
-		return s.js.clusterInfo(group)
-	}
 	jsi := &JSInfo{
 		ID:  s.ID(),
 		Now: time.Now().UTC(),
@@ -2437,10 +2442,12 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 	for _, info := range s.js.accounts {
 		accounts = append(accounts, info)
 	}
-	jsi.APICalls = atomic.LoadInt64(&s.js.apiCalls)
 	s.js.mu.RUnlock()
+	jsi.APICalls = atomic.LoadInt64(&s.js.apiCalls)
 
-	jsi.Meta = toClusterInfo(s.js.getMetaGroup())
+	jsi.Meta = s.raftNodeToClusterInfo(s.js.getMetaGroup())
+	jsi.JetStreamStats = *s.js.usageStats()
+
 	filterIdx := -1
 	for i, jsa := range accounts {
 		if jsa.acc().GetName() == opts.Account {
@@ -2448,10 +2455,6 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 		}
 		jsa.mu.RLock()
 		jsi.Streams += len(jsa.streams)
-		jsi.Memory += uint64(jsa.usage.mem)
-		jsi.Store += uint64(jsa.usage.store)
-		jsi.API.Total += jsa.usage.api
-		jsi.API.Errors += jsa.usage.err
 		for _, stream := range jsa.streams {
 			streamState := stream.state()
 			jsi.Messages += streamState.Msgs

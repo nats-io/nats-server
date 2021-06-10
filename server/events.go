@@ -199,6 +199,7 @@ type ServerStats struct {
 	SlowConsumers    int64          `json:"slow_consumers"`
 	Routes           []*RouteStat   `json:"routes,omitempty"`
 	Gateways         []*GatewayStat `json:"gateways,omitempty"`
+	JetStream        *JetStreamVarz `json:"jetstream,omitempty"`
 }
 
 // RouteStat holds route statistics.
@@ -548,6 +549,29 @@ func (s *Server) sendStatsz(subj string) {
 	m.Stats.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)
 	m.Stats.NumSubs = s.numSubscriptions()
 
+	if js := s.js; js != nil {
+		jStat := &JetStreamVarz{}
+		s.mu.Unlock()
+		js.mu.RLock()
+		c := js.config
+		c.StoreDir = _EMPTY_
+		jStat.Config = &c
+		js.mu.RUnlock()
+		jStat.Stats = js.usageStats()
+		if mg := js.getMetaGroup(); mg != nil {
+			if mg.Leader() {
+				jStat.Meta = s.raftNodeToClusterInfo(mg)
+			} else {
+				// non leader only include a shortened version without peers
+				jStat.Meta = &ClusterInfo{
+					Name:   s.ClusterName(),
+					Leader: s.serverNameForNode(mg.GroupLeader()),
+				}
+			}
+		}
+		m.Stats.JetStream = jStat
+		s.mu.Lock()
+	}
 	for _, r := range s.routes {
 		m.Stats.Routes = append(m.Stats.Routes, routeStat(r))
 	}
