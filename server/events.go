@@ -585,7 +585,7 @@ func (s *Server) sendStatsz(subj string) {
 	if s.sys != nil {
 		m.Stats.ActiveServers += len(s.sys.servers)
 	}
-  // JetStream
+	// JetStream
 	if js := s.js; js != nil {
 		jStat := &JetStreamVarz{}
 		s.mu.Unlock()
@@ -609,6 +609,7 @@ func (s *Server) sendStatsz(subj string) {
 		m.Stats.JetStream = jStat
 		s.mu.Lock()
 	}
+	// Send message.
 	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
 }
 
