@@ -657,7 +657,7 @@ func (mset *stream) sendCreateAdvisory() {
 	}
 
 	subj := JSAdvisoryStreamCreatedPre + "." + name
-	outq.send(&jsPubMsg{subj, subj, _EMPTY_, nil, j, nil, 0, nil})
+	outq.send(&jsPubMsg{subj, _EMPTY_, _EMPTY_, nil, j, nil, 0, nil})
 }
 
 func (mset *stream) sendDeleteAdvisoryLocked() {
@@ -680,7 +680,7 @@ func (mset *stream) sendDeleteAdvisoryLocked() {
 	j, err := json.Marshal(m)
 	if err == nil {
 		subj := JSAdvisoryStreamDeletedPre + "." + mset.cfg.Name
-		mset.outq.send(&jsPubMsg{subj, subj, _EMPTY_, nil, j, nil, 0, nil})
+		mset.outq.send(&jsPubMsg{subj, _EMPTY_, _EMPTY_, nil, j, nil, 0, nil})
 	}
 }
 
@@ -703,7 +703,7 @@ func (mset *stream) sendUpdateAdvisoryLocked() {
 	j, err := json.Marshal(m)
 	if err == nil {
 		subj := JSAdvisoryStreamUpdatedPre + "." + mset.cfg.Name
-		mset.outq.send(&jsPubMsg{subj, subj, _EMPTY_, nil, j, nil, 0, nil})
+		mset.outq.send(&jsPubMsg{subj, _EMPTY_, _EMPTY_, nil, j, nil, 0, nil})
 	}
 }
 
@@ -1765,15 +1765,16 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64) {
 func (mset *stream) processSourceMsgs(si *sourceInfo) {
 	s := mset.srv
 	defer s.grWG.Done()
+
+	if si == nil {
+		return
+	}
+
 	defer func() {
 		mset.mu.Lock()
 		si.grr = false
 		mset.mu.Unlock()
 	}()
-
-	if si == nil {
-		return
-	}
 
 	// Grab stream quit channel.
 	mset.mu.Lock()
