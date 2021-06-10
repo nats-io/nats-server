@@ -7125,6 +7125,44 @@ func TestJetStreamClusterVarzReporting(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterStatszActiveServers(t *testing.T) {
+	sc := createJetStreamSuperCluster(t, 2, 2)
+	defer sc.shutdown()
+
+	checkActive := func(expected int) {
+		t.Helper()
+		checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+			s := sc.randomServer()
+			nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+			if err != nil {
+				t.Fatalf("Failed to create system client: %v", err)
+			}
+			defer nc.Close()
+
+			resp, err := nc.Request(serverStatsPingReqSubj, nil, time.Second)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			var ssm ServerStatsMsg
+			if err := json.Unmarshal(resp.Data, &ssm); err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if ssm.Stats.ActiveServers != expected {
+				return fmt.Errorf("Wanted %d, got %d", expected, ssm.Stats.ActiveServers)
+			}
+			return nil
+		})
+	}
+
+	checkActive(4)
+	c := sc.randomCluster()
+	ss := c.randomServer()
+	ss.Shutdown()
+	checkActive(3)
+	c.restartServer(ss)
+	checkActive(4)
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
