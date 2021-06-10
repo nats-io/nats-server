@@ -81,6 +81,7 @@ type jetStream struct {
 	memReserved   int64
 	storeReserved int64
 	apiCalls      int64
+	apiErrors     int64
 	memTotal      int64
 	storeTotal    int64
 	mu            sync.RWMutex
@@ -1544,27 +1545,13 @@ func (js *jetStream) dynamicAccountLimits() *JetStreamAccountLimits {
 // Report on JetStream stats and usage for this server.
 func (js *jetStream) usageStats() *JetStreamStats {
 	var stats JetStreamStats
-
-	var _jsa [512]*jsAccount
-	accounts := _jsa[:0]
-
 	js.mu.RLock()
-	for _, jsa := range js.accounts {
-		accounts = append(accounts, jsa)
-	}
+	stats.Accounts = len(js.accounts)
 	js.mu.RUnlock()
-
-	stats.Accounts = len(accounts)
-
-	// Collect account information.
-	for _, jsa := range accounts {
-		jsa.mu.RLock()
-		stats.Memory += uint64(jsa.usage.mem)
-		stats.Store += uint64(jsa.usage.store)
-		stats.API.Total += jsa.usage.api
-		stats.API.Errors += jsa.usage.err
-		jsa.mu.RUnlock()
-	}
+	stats.API.Total = (uint64)(atomic.LoadInt64(&js.apiCalls))
+	stats.API.Errors = (uint64)(atomic.LoadInt64(&js.apiErrors))
+	stats.Memory = (uint64)(atomic.LoadInt64(&js.memTotal))
+	stats.Store = (uint64)(atomic.LoadInt64(&js.storeTotal))
 	return &stats
 }
 
