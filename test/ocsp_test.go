@@ -964,7 +964,7 @@ func TestOCSPReloadRotateTLSCertEnableMustStaple(t *testing.T) {
 	nc.Close()
 }
 
-func TestOCSPClusterReload(t *testing.T) {
+func TestOCSPCluster(t *testing.T) {
 	const (
 		caCert = "configs/certs/ocsp/ca-cert.pem"
 		caKey  = "configs/certs/ocsp/ca-key.pem"
@@ -1780,6 +1780,476 @@ func TestOCSPGateway(t *testing.T) {
 	if err != nil {
 		t.Errorf("%v", err)
 	}
+}
+
+func TestOCSPCustomConfig(t *testing.T) {
+	const (
+		caCert     = "configs/certs/ocsp/ca-cert.pem"
+		caKey      = "configs/certs/ocsp/ca-key.pem"
+		serverCert = "configs/certs/ocsp/server-cert.pem"
+		serverKey  = "configs/certs/ocsp/server-key.pem"
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ocspr := newOCSPResponder(t, caCert, caKey)
+	ocspURL := fmt.Sprintf("http://%s", ocspr.Addr)
+	defer ocspr.Shutdown(ctx)
+
+	var (
+		errExpectedNoStaple = fmt.Errorf("expected no staple")
+		errMissingStaple    = fmt.Errorf("missing OCSP Staple from server")
+	)
+
+	for _, test := range []struct {
+		name      string
+		config    string
+		opts      []nats.Option
+		err       error
+		rerr      error
+		configure func()
+	}{
+		{
+			"OCSP Stapling in auto mode makes server fail to boot if status is revoked",
+			`
+				port: -1
+
+				ocsp {
+					mode: auto
+				}
+
+				tls {
+					cert_file: "configs/certs/ocsp/server-cert.pem"
+					key_file: "configs/certs/ocsp/server-key.pem"
+					ca_file: "configs/certs/ocsp/ca-cert.pem"
+					timeout: 5
+				}
+			`,
+			[]nats.Option{
+				nats.Secure(&tls.Config{
+					VerifyConnection: func(s tls.ConnectionState) error {
+						if s.OCSPResponse != nil {
+							return errExpectedNoStaple
+						}
+						return nil
+					},
+				}),
+				nats.ClientCert("./configs/certs/ocsp/client-cert.pem", "./configs/certs/ocsp/client-key.pem"),
+				nats.RootCAs(caCert),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			nil,
+			nil,
+			func() { setOCSPStatus(t, ocspURL, serverCert, ocsp.Revoked) },
+		},
+		{
+			"OCSP Stapling must staple ignored if disabled with ocsp: false",
+			`
+				port: -1
+
+				ocsp: false
+
+				tls {
+					cert_file: "configs/certs/ocsp/server-status-request-url-01-cert.pem"
+					key_file: "configs/certs/ocsp/server-status-request-url-01-key.pem"
+					ca_file: "configs/certs/ocsp/ca-cert.pem"
+					timeout: 5
+				}
+			`,
+			[]nats.Option{
+				nats.Secure(&tls.Config{
+					VerifyConnection: func(s tls.ConnectionState) error {
+						if s.OCSPResponse != nil {
+							return errExpectedNoStaple
+						}
+						return nil
+					},
+				}),
+				nats.ClientCert("./configs/certs/ocsp/client-cert.pem", "./configs/certs/ocsp/client-key.pem"),
+				nats.RootCAs(caCert),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			nil,
+			nil,
+			func() {
+				setOCSPStatus(t, ocspURL, "configs/certs/ocsp/server-status-request-url-01-cert.pem", ocsp.Good)
+			},
+		},
+		{
+			"OCSP Stapling must staple ignored if disabled with ocsp mode never",
+			`
+				port: -1
+
+				ocsp: { mode: never }
+
+				tls {
+					cert_file: "configs/certs/ocsp/server-status-request-url-01-cert.pem"
+					key_file: "configs/certs/ocsp/server-status-request-url-01-key.pem"
+					ca_file: "configs/certs/ocsp/ca-cert.pem"
+					timeout: 5
+				}
+			`,
+			[]nats.Option{
+				nats.Secure(&tls.Config{
+					VerifyConnection: func(s tls.ConnectionState) error {
+						if s.OCSPResponse != nil {
+							return errExpectedNoStaple
+						}
+						return nil
+					},
+				}),
+				nats.ClientCert("./configs/certs/ocsp/client-cert.pem", "./configs/certs/ocsp/client-key.pem"),
+				nats.RootCAs(caCert),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			nil,
+			nil,
+			func() {
+				setOCSPStatus(t, ocspURL, "configs/certs/ocsp/server-status-request-url-01-cert.pem", ocsp.Good)
+			},
+		},
+		{
+			"OCSP Stapling in always mode fetches a staple even if cert does not have one",
+			`
+				port: -1
+
+				ocsp {
+					mode: always
+					url: "http://127.0.0.1:8888"
+				}
+
+				tls {
+					cert_file: "configs/certs/ocsp/server-cert.pem"
+					key_file: "configs/certs/ocsp/server-key.pem"
+					ca_file: "configs/certs/ocsp/ca-cert.pem"
+					timeout: 5
+				}
+			`,
+			[]nats.Option{
+				nats.Secure(&tls.Config{
+					VerifyConnection: func(s tls.ConnectionState) error {
+						if s.OCSPResponse == nil {
+							return errMissingStaple
+						}
+						return nil
+					},
+				}),
+				nats.ClientCert("./configs/certs/ocsp/client-cert.pem", "./configs/certs/ocsp/client-key.pem"),
+				nats.RootCAs(caCert),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			nil,
+			nil,
+			func() { setOCSPStatus(t, ocspURL, serverCert, ocsp.Good) },
+		},
+		{
+			"OCSP Stapling in must staple mode does not fetch staple if there is no must staple flag",
+			`
+				port: -1
+
+				ocsp {
+					mode: must
+					url: "http://127.0.0.1:8888"
+				}
+
+				tls {
+					cert_file: "configs/certs/ocsp/server-cert.pem"
+					key_file: "configs/certs/ocsp/server-key.pem"
+					ca_file: "configs/certs/ocsp/ca-cert.pem"
+					timeout: 5
+				}
+			`,
+			[]nats.Option{
+				nats.Secure(&tls.Config{
+					VerifyConnection: func(s tls.ConnectionState) error {
+						if s.OCSPResponse != nil {
+							return errExpectedNoStaple
+						}
+						return nil
+					},
+				}),
+				nats.ClientCert("./configs/certs/ocsp/client-cert.pem", "./configs/certs/ocsp/client-key.pem"),
+				nats.RootCAs(caCert),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			nil,
+			nil,
+			func() { setOCSPStatus(t, ocspURL, serverCert, ocsp.Good) },
+		},
+		{
+			"OCSP Stapling in must staple mode fetches staple if there is a must staple flag",
+			`
+				port: -1
+
+				ocsp {
+					mode: must
+					url: "http://127.0.0.1:8888"
+				}
+
+				tls {
+					cert_file: "configs/certs/ocsp/server-status-request-url-01-cert.pem"
+					key_file: "configs/certs/ocsp/server-status-request-url-01-key.pem"
+					ca_file: "configs/certs/ocsp/ca-cert.pem"
+					timeout: 5
+				}
+			`,
+			[]nats.Option{
+				nats.Secure(&tls.Config{
+					VerifyConnection: func(s tls.ConnectionState) error {
+						if s.OCSPResponse == nil {
+							return errMissingStaple
+						}
+						return nil
+					},
+				}),
+				nats.ClientCert("./configs/certs/ocsp/client-cert.pem", "./configs/certs/ocsp/client-key.pem"),
+				nats.RootCAs(caCert),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			nil,
+			nil,
+			func() {
+				setOCSPStatus(t, ocspURL, "configs/certs/ocsp/server-status-request-url-01-cert.pem", ocsp.Good)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			test.configure()
+			content := test.config
+			conf := createConfFile(t, []byte(content))
+			defer removeFile(t, conf)
+			s, opts := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port), test.opts...)
+			if test.err == nil && err != nil {
+				t.Errorf("Expected to connect, got %v", err)
+			} else if test.err != nil && err == nil {
+				t.Errorf("Expected error on connect")
+			} else if test.err != nil && err != nil {
+				// Error on connect was expected
+				if test.err.Error() != err.Error() {
+					t.Errorf("Expected error %s, got: %s", test.err, err)
+				}
+				return
+			}
+			defer nc.Close()
+
+			nc.Subscribe("ping", func(m *nats.Msg) {
+				m.Respond([]byte("pong"))
+			})
+			nc.Flush()
+
+			_, err = nc.Request("ping", []byte("ping"), 250*time.Millisecond)
+			if test.rerr != nil && err == nil {
+				t.Errorf("Expected error getting response")
+			} else if test.rerr == nil && err != nil {
+				t.Errorf("Expected response")
+			}
+		})
+	}
+}
+
+func TestOCSPCustomConfigReloadDisable(t *testing.T) {
+	const (
+		caCert            = "configs/certs/ocsp/ca-cert.pem"
+		caKey             = "configs/certs/ocsp/ca-key.pem"
+		serverCert        = "configs/certs/ocsp/server-cert.pem"
+		updatedServerCert = "configs/certs/ocsp/server-status-request-url-01-cert.pem"
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ocspr := newOCSPResponder(t, caCert, caKey)
+	defer ocspr.Shutdown(ctx)
+	addr := fmt.Sprintf("http://%s", ocspr.Addr)
+	setOCSPStatus(t, addr, serverCert, ocsp.Good)
+	setOCSPStatus(t, addr, updatedServerCert, ocsp.Good)
+
+	// Start with server without OCSP Stapling MustStaple
+	content := `
+		port: -1
+
+		ocsp: { mode: always, url: "http://127.0.0.1:8888" }
+
+		tls {
+			cert_file: "configs/certs/ocsp/server-cert.pem"
+			key_file: "configs/certs/ocsp/server-key.pem"
+			ca_file: "configs/certs/ocsp/ca-cert.pem"
+			timeout: 5
+		}
+	`
+	conf := createConfFile(t, []byte(content))
+	defer removeFile(t, conf)
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port),
+		nats.Secure(&tls.Config{
+			VerifyConnection: func(s tls.ConnectionState) error {
+				if s.OCSPResponse == nil {
+					return fmt.Errorf("missing OCSP Staple!")
+				}
+				return nil
+			},
+		}),
+		nats.RootCAs(caCert),
+		nats.ErrorHandler(noOpErrHandler),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, err := nc.SubscribeSync("foo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc.Publish("foo", []byte("hello world"))
+	nc.Flush()
+
+	_, err = sub.NextMsg(1 * time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc.Close()
+
+	// Change and disable OCSP Stapling.
+	content = `
+		port: -1
+
+		ocsp: { mode: never }
+
+		tls {
+			cert_file: "configs/certs/ocsp/server-status-request-url-01-cert.pem"
+			key_file: "configs/certs/ocsp/server-status-request-url-01-key.pem"
+			ca_file: "configs/certs/ocsp/ca-cert.pem"
+			timeout: 5
+		}
+	`
+	if err := ioutil.WriteFile(conf, []byte(content), 0666); err != nil {
+		t.Fatalf("Error writing config: %v", err)
+	}
+	if err := s.Reload(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The new certificate has must staple but OCSP Stapling is disabled.
+	time.Sleep(2 * time.Second)
+
+	nc, err = nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port),
+		nats.Secure(&tls.Config{
+			VerifyConnection: func(s tls.ConnectionState) error {
+				if s.OCSPResponse != nil {
+					return fmt.Errorf("unexpected OCSP Staple!")
+				}
+				return nil
+			},
+		}),
+		nats.RootCAs(caCert),
+		nats.ErrorHandler(noOpErrHandler),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc.Close()
+}
+
+func TestOCSPCustomConfigReloadEnable(t *testing.T) {
+	const (
+		caCert            = "configs/certs/ocsp/ca-cert.pem"
+		caKey             = "configs/certs/ocsp/ca-key.pem"
+		serverCert        = "configs/certs/ocsp/server-cert.pem"
+		updatedServerCert = "configs/certs/ocsp/server-status-request-url-01-cert.pem"
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ocspr := newOCSPResponder(t, caCert, caKey)
+	defer ocspr.Shutdown(ctx)
+	addr := fmt.Sprintf("http://%s", ocspr.Addr)
+	setOCSPStatus(t, addr, serverCert, ocsp.Good)
+	setOCSPStatus(t, addr, updatedServerCert, ocsp.Good)
+
+	// Start with server without OCSP Stapling MustStaple
+	content := `
+		port: -1
+
+		ocsp: { mode: never, url: "http://127.0.0.1:8888" }
+
+		tls {
+			cert_file: "configs/certs/ocsp/server-status-request-url-01-cert.pem"
+			key_file: "configs/certs/ocsp/server-status-request-url-01-key.pem"
+			ca_file: "configs/certs/ocsp/ca-cert.pem"
+			timeout: 5
+		}
+	`
+	conf := createConfFile(t, []byte(content))
+	defer removeFile(t, conf)
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port),
+		nats.Secure(&tls.Config{
+			VerifyConnection: func(s tls.ConnectionState) error {
+				if s.OCSPResponse != nil {
+					return fmt.Errorf("unexpected OCSP Staple!")
+				}
+				return nil
+			},
+		}),
+		nats.RootCAs(caCert),
+		nats.ErrorHandler(noOpErrHandler),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, err := nc.SubscribeSync("foo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc.Publish("foo", []byte("hello world"))
+	nc.Flush()
+
+	_, err = sub.NextMsg(1 * time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc.Close()
+
+	// Change and disable OCSP Stapling.
+	content = `
+		port: -1
+
+		ocsp: { mode: always, url: "http://127.0.0.1:8888" }
+
+		tls {
+			cert_file: "configs/certs/ocsp/server-status-request-url-01-cert.pem"
+			key_file: "configs/certs/ocsp/server-status-request-url-01-key.pem"
+			ca_file: "configs/certs/ocsp/ca-cert.pem"
+			timeout: 5
+		}
+	`
+	if err := ioutil.WriteFile(conf, []byte(content), 0666); err != nil {
+		t.Fatalf("Error writing config: %v", err)
+	}
+	if err := s.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Second)
+
+	nc, err = nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port),
+		nats.Secure(&tls.Config{
+			VerifyConnection: func(s tls.ConnectionState) error {
+				if s.OCSPResponse == nil {
+					return fmt.Errorf("missing OCSP Staple!")
+				}
+				return nil
+			},
+		}),
+		nats.RootCAs(caCert),
+		nats.ErrorHandler(noOpErrHandler),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc.Close()
 }
 
 func newOCSPResponder(t *testing.T, issuerCertPEM, issuerKeyPEM string) *http.Server {

@@ -877,12 +877,48 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		// and certs path for OCSP Stapling monitoring.
 		o.tlsConfigOpts = tc
 	case "ocsp":
-		switch v.(type) {
+		switch vv := v.(type) {
 		case bool:
-			// Default is Auto which honors Must Staple status request
-			// but does not shutdown the server in case it is revoked,
-			// letting the client choose whether to trust or not the server.
-			o.OCSPConfig = &OCSPConfig{Mode: OCSPModeAuto}
+			if vv {
+				// Default is Auto which honors Must Staple status request
+				// but does not shutdown the server in case it is revoked,
+				// letting the client choose whether to trust or not the server.
+				o.OCSPConfig = &OCSPConfig{Mode: OCSPModeAuto}
+			} else {
+				o.OCSPConfig = &OCSPConfig{Mode: OCSPModeNever}
+			}
+		case map[string]interface{}:
+			ocsp := &OCSPConfig{Mode: OCSPModeAuto}
+
+			for kk, kv := range vv {
+				_, v = unwrapValue(kv, &tk)
+				switch kk {
+				case "mode":
+					mode := v.(string)
+					switch {
+					case strings.EqualFold(mode, "always"):
+						ocsp.Mode = OCSPModeAlways
+					case strings.EqualFold(mode, "must"):
+						ocsp.Mode = OCSPModeMust
+					case strings.EqualFold(mode, "never"):
+						ocsp.Mode = OCSPModeNever
+					case strings.EqualFold(mode, "auto"):
+						ocsp.Mode = OCSPModeAuto
+					default:
+						*errors = append(*errors, &configErr{tk, fmt.Sprintf("error parsing ocsp config: unsupported ocsp mode %T", mode)})
+					}
+				case "urls":
+					urls := v.([]string)
+					ocsp.OverrideURLs = urls
+				case "url":
+					url := v.(string)
+					ocsp.OverrideURLs = []string{url}
+				default:
+					*errors = append(*errors, &configErr{tk, fmt.Sprintf("error parsing ocsp config: unsupported field %T", kk)})
+					return
+				}
+			}
+			o.OCSPConfig = ocsp
 		default:
 			*errors = append(*errors, &configErr{tk, fmt.Sprintf("error parsing ocsp config: unsupported type %T", v)})
 			return

@@ -582,6 +582,15 @@ func (jso jetStreamOption) IsJetStreamChange() bool {
 	return true
 }
 
+type ocspOption struct {
+	noopOption
+	newValue *OCSPConfig
+}
+
+func (a *ocspOption) Apply(s *Server) {
+	s.Noticef("Reloaded: OCSP")
+}
+
 // connectErrorReports implements the option interface for the `connect_error_reports`
 // setting.
 type connectErrorReports struct {
@@ -1213,6 +1222,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
 					field.Name, oldValue, newValue)
 			}
+		case "ocspconfig":
+			diffOpts = append(diffOpts, &ocspOption{newValue: newValue.(*OCSPConfig)})
 		default:
 			// TODO(ik): Implement String() on those options to have a nice print.
 			// %v is difficult to figure what's what, %+v print private fields and
