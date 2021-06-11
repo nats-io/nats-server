@@ -7223,6 +7223,90 @@ func TestJetStreamClusterStatszActiveServers(t *testing.T) {
 	checkActive(4)
 }
 
+func TestJetStreamClusterSourceAndMirrorConsumersLeaderChange(t *testing.T) {
+	sc := createJetStreamSuperCluster(t, 3, 2)
+	defer sc.shutdown()
+
+	c1 := sc.clusterForName("C1")
+	c2 := sc.clusterForName("C2")
+
+	nc, js := jsClientConnect(t, c1.randomServer())
+	defer nc.Close()
+
+	var sources []*nats.StreamSource
+	numStreams := 10
+
+	for i := 1; i <= numStreams; i++ {
+		name := fmt.Sprintf("O%d", i)
+		sources = append(sources, &nats.StreamSource{Name: name})
+		if _, err := js.AddStream(&nats.StreamConfig{Name: name}); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	// Place our new stream that will source all the others in different cluster.
+	nc, js = jsClientConnect(t, c2.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "S",
+		Replicas: 2,
+		Sources:  sources,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Force leader change twice.
+	nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "S"), nil, time.Second)
+	c2.waitOnStreamLeader("$G", "S")
+	nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "S"), nil, time.Second)
+	c2.waitOnStreamLeader("$G", "S")
+
+	// Now make sure we only have a single direct consumer on our origin streams.
+	// Pick one at random.
+	name := fmt.Sprintf("O%d", rand.Intn(numStreams))
+	c1.waitOnStreamLeader("$G", name)
+	s := c1.streamLeader("$G", name)
+	a, err := s.lookupAccount("$G")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	mset, err := a.lookupStream(name)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		if ndc := mset.numDirectConsumers(); ndc != 1 {
+			return fmt.Errorf("Stream %q wanted 1 direct consumer, got %d", name, ndc)
+		}
+		return nil
+	})
+
+	// Now create a mirror of selected from above. Will test same scenario.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "M",
+		Replicas: 2,
+		Mirror:   &nats.StreamSource{Name: name},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Force leader change twice.
+	nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "M"), nil, time.Second)
+	c2.waitOnStreamLeader("$G", "M")
+	nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "M"), nil, time.Second)
+	c2.waitOnStreamLeader("$G", "M")
+
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		if ndc := mset.numDirectConsumers(); ndc != 2 {
+			return fmt.Errorf("Stream %q wanted 2 direct consumers, got %d", name, ndc)
+		}
+		return nil
+	})
+
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
