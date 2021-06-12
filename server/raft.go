@@ -1960,9 +1960,7 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	n.Lock()
 	if n.progress == nil {
 		n.progress = make(map[string]chan uint64)
-	}
-
-	if ch, ok := n.progress[ar.peer]; ok {
+	} else if ch, ok := n.progress[ar.peer]; ok {
 		n.debug("Will cancel existing entry for catching up %q", ar.peer)
 		delete(n.progress, ar.peer)
 		// Try to pop them out but make sure to not block.
@@ -2565,6 +2563,9 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			if ae.pindex == n.pindex {
 				n.truncateWal(ae)
 				n.cancelCatchup()
+				// Make sure pterms match and we take on the leader's.
+				// This prevents constant spinning.
+				n.pterm = ae.pterm
 				n.Unlock()
 				return
 			}
