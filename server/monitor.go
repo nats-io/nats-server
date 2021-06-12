@@ -2382,7 +2382,7 @@ func (s *Server) raftNodeToClusterInfo(node RaftNode) *ClusterInfo {
 	}
 	peers := node.Peers()
 	peerList := make([]string, len(peers))
-	for i, p := range node.Peers() {
+	for i, p := range peers {
 		peerList[i] = p.ID
 	}
 	group := &raftGroup{
