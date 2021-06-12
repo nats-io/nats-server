@@ -968,6 +968,42 @@ func TestJetStreamClusterRestoreSingleConsumer(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterMaxBytesForStream(t *testing.T) {
+	// Has max_file_store of 2GB
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	info, err := js.AccountInfo()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Make sure we still are dynamic.
+	if info.Limits.MaxStore != -1 || info.Limits.MaxMemory != -1 {
+		t.Fatalf("Expected dynamic limits for the account, got %+v\n", info.Limits)
+	}
+	// Stream config.
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar"},
+		Replicas: 2,
+	}
+	// 2GB
+	cfg.MaxBytes = 2 * 1024 * 1024 * 1024
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Make sure going over the single server limit though is enforced (for now).
+	cfg.MaxBytes *= 2
+	_, err = js.AddStream(cfg)
+	if err == nil || !strings.Contains(err.Error(), "insufficient storage resources") {
+		t.Fatalf("Expected %q error, got %q", "insufficient storage resources", err.Error())
+	}
+}
+
 func TestJetStreamClusterStreamPublishWithActiveConsumers(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
