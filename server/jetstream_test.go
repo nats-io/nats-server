@@ -2310,9 +2310,6 @@ func TestJetStreamWorkQueueRetentionStream(t *testing.T) {
 			defer o2.delete()
 
 			// Anything that would overlap should fail though.
-			if _, err := mset.addConsumer(pConfig(">")); err == nil {
-				t.Fatalf("Expected an error on attempt for partitioned consumer for a workqueue")
-			}
 			if _, err := mset.addConsumer(pConfig("MY_WORK_QUEUE.A")); err == nil {
 				t.Fatalf("Expected an error on attempt for partitioned consumer for a workqueue")
 			}
@@ -10788,6 +10785,62 @@ func TestJetStreamConfigReloadWithGlobalAccount(t *testing.T) {
 	}
 
 	checkJSAccount()
+}
+
+func TestJetStreamFilteredConsumersWithWiderFilter(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Origin
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar", "baz", "N.*"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Add in some messages.
+	js.Publish("foo", []byte("OK"))
+	js.Publish("bar", []byte("OK"))
+	js.Publish("baz", []byte("OK"))
+	for i := 0; i < 12; i++ {
+		js.Publish(fmt.Sprintf("N.%d", i+1), []byte("OK"))
+	}
+
+	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if si.State.Msgs != 15 {
+			return fmt.Errorf("Expected 15 msgs, got state: %+v", si.State)
+		}
+		return nil
+	})
+
+	checkWider := func(subj string, numExpected int) {
+		sub, err := js.SubscribeSync(subj)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		defer sub.Unsubscribe()
+		checkSubsPending(t, sub, numExpected)
+	}
+
+	checkWider("*", 3)
+	checkWider("N.*", 12)
+	checkWider("*.*", 12)
+	checkWider("N.>", 12)
+	checkWider(">", 15)
 }
 
 func TestJetStreamMirrorAndSourcesFilteredConsumers(t *testing.T) {

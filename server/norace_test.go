@@ -2000,3 +2000,154 @@ func TestNoRaceJetStreamClusterSuperClusterRIPStress(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestJetStreamSlowFilteredInititalPendingAndFirstMsg(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Create directly here to force multiple blocks, etc.
+	a, err := s.LookupAccount("$G")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	mset, err := a.addStreamWithStore(
+		&StreamConfig{
+			Name:     "S",
+			Subjects: []string{"foo", "bar", "baz", "foo.bar.baz", "foo.*"},
+		},
+		&FileStoreConfig{
+			BlockSize:  4 * 1024 * 1024,
+			AsyncFlush: true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	toSend := 100_000 // 500k total though.
+
+	// Messages will be 'foo' 'bar' 'baz' repeated 100k times.
+	// Then 'foo.bar.baz' all contigous for 100k.
+	// Then foo.N for 1-100000
+	for i := 0; i < toSend; i++ {
+		js.PublishAsync("foo", []byte("HELLO"))
+		js.PublishAsync("bar", []byte("WORLD"))
+		js.PublishAsync("baz", []byte("AGAIN"))
+	}
+	// Make contiguous block of same subject.
+	for i := 0; i < toSend; i++ {
+		js.PublishAsync("foo.bar.baz", []byte("ALL-TOGETHER"))
+	}
+	// Now add some more at the end.
+	for i := 0; i < toSend; i++ {
+		js.PublishAsync(fmt.Sprintf("foo.%d", i+1), []byte("LATER"))
+	}
+
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		si, err := js.StreamInfo("S")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != uint64(5*toSend) {
+			return fmt.Errorf("Expected %d msgs, got %d", 5*toSend, si.State.Msgs)
+		}
+		return nil
+	})
+
+	// Threshold for taking too long.
+	const thresh = 20 * time.Millisecond
+
+	var dindex int
+	testConsumerCreate := func(subj string, startSeq, expectedNumPending uint64) {
+		t.Helper()
+		dindex++
+		dname := fmt.Sprintf("dur-%d", dindex)
+		cfg := ConsumerConfig{FilterSubject: subj, Durable: dname, AckPolicy: AckExplicit}
+		if startSeq > 1 {
+			cfg.OptStartSeq, cfg.DeliverPolicy = startSeq, DeliverByStartSequence
+		}
+		start := time.Now()
+		o, err := mset.addConsumer(&cfg)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if delta := time.Since(start); delta > thresh {
+			t.Fatalf("Creating consumer for %q and start: %d took too long: %v", subj, startSeq, delta)
+		}
+		if ci := o.info(); ci.NumPending != expectedNumPending {
+			t.Fatalf("Expected NumPending of %d, got %d", expectedNumPending, ci.NumPending)
+		}
+	}
+
+	testConsumerCreate("foo.100000", 1, 1)
+	testConsumerCreate("foo.100000", 222_000, 1)
+	testConsumerCreate("foo", 1, 100_000)
+	testConsumerCreate("foo", 4, 100_000-1)
+	testConsumerCreate("foo.bar.baz", 1, 100_000)
+	testConsumerCreate("foo.bar.baz", 350_001, 50_000)
+	testConsumerCreate("*", 1, 300_000)
+	testConsumerCreate("*", 4, 300_000-3)
+	testConsumerCreate(">", 1, 500_000)
+	testConsumerCreate(">", 50_000, 500_000-50_000+1)
+	testConsumerCreate("foo.10", 1, 1)
+
+	// Also test that we do not take long if the start sequence is later in the stream.
+	sub, err := js.PullSubscribe("foo.100000", "dlc")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	start := time.Now()
+	fetchMsgs(t, sub, 1, time.Second)
+	if delta := time.Since(start); delta > thresh {
+		t.Fatalf("Took too long for pull subscriber to fetch the message: %v", delta)
+	}
+
+	// Now do some deletes and make sure these are handled correctly.
+	// Delete 3 foo messages.
+	mset.removeMsg(1)
+	mset.removeMsg(4)
+	mset.removeMsg(7)
+	testConsumerCreate("foo", 1, 100_000-3)
+
+	// Make sure wider scoped subjects do the right thing from a pending perspective.
+	o, err := mset.addConsumer(&ConsumerConfig{FilterSubject: ">", Durable: "cat", AckPolicy: AckExplicit})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	ci, expected := o.info(), uint64(500_000-3)
+	if ci.NumPending != expected {
+		t.Fatalf("Expected NumPending of %d, got %d", expected, ci.NumPending)
+	}
+	// Send another and make sure its captured by our wide scope consumer.
+	js.Publish("foo", []byte("HELLO AGAIN"))
+	if ci = o.info(); ci.NumPending != expected+1 {
+		t.Fatalf("Expected the consumer to recognize the wide scoped consumer, wanted pending of %d, got %d", expected+1, ci.NumPending)
+	}
+
+	// Stop current server and test restart..
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+	// Restart.
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	a, err = s.LookupAccount("$G")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	mset, err = a.lookupStream("S")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Make sure we recovered our per subject state on restart.
+	testConsumerCreate("foo.100000", 1, 1)
+	testConsumerCreate("foo", 1, 100_000-2)
+}

@@ -2322,16 +2322,6 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 	return nil
 }
 
-// Clears out any filtered index from filestores.
-func (mset *stream) clearFilterIndex() {
-	mset.mu.Lock()
-	defer mset.mu.Unlock()
-
-	if fs, ok := mset.store.(*fileStore); ok {
-		fs.clearFilterIndex()
-	}
-}
-
 // Called for any updates to the underlying stream. We pass through the bytes to the
 // jetstream account. We do local processing for stream pending for consumers, but only
 // for removals.

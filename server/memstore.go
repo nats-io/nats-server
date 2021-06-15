@@ -222,35 +222,36 @@ func (ms *memStore) GetSeqFromTime(t time.Time) uint64 {
 	return uint64(index) + ms.state.FirstSeq
 }
 
-// Returns number of messages matching the subject starting at sequence sseq.
-func (ms *memStore) NumFilteredPending(sseq uint64, subj string) (total uint64) {
+// FilteredState will return the SimpleState associated with the filtered subject and a proposed starting sequence.
+func (ms *memStore) FilteredState(sseq uint64, subj string) SimpleState {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
+
+	var ss SimpleState
 
 	if sseq < ms.state.FirstSeq {
 		sseq = ms.state.FirstSeq
 	}
 
-	if subj == _EMPTY_ {
-		if sseq <= ms.state.LastSeq {
-			return ms.state.LastSeq - sseq
-		}
-		return 0
-	}
-
+	// FIXME(dlc) - Optimize like filestore.
 	var eq func(string, string) bool
-	if subjectHasWildcard(subj) {
+	if subj == _EMPTY_ {
+		eq = func(a, b string) bool { return true }
+	} else if subjectHasWildcard(subj) {
 		eq = subjectIsSubsetMatch
 	} else {
 		eq = func(a, b string) bool { return a == b }
 	}
-
 	for seq := sseq; seq <= ms.state.LastSeq; seq++ {
 		if sm, ok := ms.msgs[seq]; ok && eq(sm.subj, subj) {
-			total++
+			ss.Msgs++
+			if ss.First == 0 {
+				ss.First = seq
+			}
+			ss.Last = seq
 		}
 	}
-	return total
+	return ss
 }
 
 // Will check the msg limit and drop firstSeq msg if needed.
