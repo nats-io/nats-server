@@ -1756,7 +1756,7 @@ func TestNoRaceJetStreamClusterSourcesMuxd(t *testing.T) {
 
 }
 
-func TestJetStreamClusterMirrorExpirationAndMissingSequences(t *testing.T) {
+func TestNoRaceJetStreamClusterMirrorExpirationAndMissingSequences(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "MMS", 9)
 	defer c.shutdown()
 
@@ -2001,7 +2001,7 @@ func TestNoRaceJetStreamClusterSuperClusterRIPStress(t *testing.T) {
 	}
 }
 
-func TestJetStreamSlowFilteredInititalPendingAndFirstMsg(t *testing.T) {
+func TestNoRaceJetStreamSlowFilteredInititalPendingAndFirstMsg(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
