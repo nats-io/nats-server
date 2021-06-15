@@ -45,6 +45,8 @@ var (
 	ErrMaxMsgs = errors.New("maximum messages exceeded")
 	// ErrMaxBytes is returned when we have discard new as a policy and we reached the bytes limit.
 	ErrMaxBytes = errors.New("maximum bytes exceeded")
+	// ErrMaxMsgsPerSubject is returned when we have discard new as a policy and we reached the message limit per subject.
+	ErrMaxMsgsPerSubject = errors.New("maximum messages per subject exceeded")
 	// ErrStoreSnapshotInProgress is returned when RemoveMsg or EraseMsg is called
 	// while a snapshot is in progress.
 	ErrStoreSnapshotInProgress = errors.New("snapshot in progress")

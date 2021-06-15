@@ -957,6 +957,26 @@ func (fs *fileStore) FilteredState(sseq uint64, subj string) SimpleState {
 	return ss
 }
 
+// Will gather complete filtered state for the subject.
+// Lock should be held.
+func (fs *fileStore) perSubjectState(subj string) (total, first, last uint64) {
+	if !fs.tms {
+		return
+	}
+	wc := subjectHasWildcard(subj)
+	for _, mb := range fs.blks {
+		t, f, l := mb.filteredPending(subj, wc, 1)
+		total += t
+		if first == 0 || (f > 0 && f < first) {
+			first = f
+		}
+		if l > last {
+			last = l
+		}
+	}
+	return total, first, last
+}
+
 // RegisterStorageUpdates registers a callback for updates to storage changes.
 // It will present number of messages and bytes as a signed integer and an
 // optional sequence number of the message if a single.
@@ -1117,6 +1137,11 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 		if fs.cfg.MaxBytes > 0 && fs.state.Bytes+uint64(len(msg)+len(hdr)) >= uint64(fs.cfg.MaxBytes) {
 			return ErrMaxBytes
 		}
+		if fs.cfg.MaxMsgsPer > 0 && len(subj) > 0 {
+			if msgs, _, _ := fs.perSubjectState(subj); msgs >= uint64(fs.cfg.MaxMsgsPer) {
+				return ErrMaxMsgsPerSubject
+			}
+		}
 	}
 
 	// Check sequence.
@@ -1144,6 +1169,11 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 	fs.state.Bytes += n
 	fs.state.LastSeq = seq
 	fs.state.LastTime = now
+
+	// Enforce per message limits.
+	if fs.cfg.MaxMsgsPer > 0 && len(subj) > 0 {
+		fs.enforcePerSubjectLimit(subj)
+	}
 
 	// Limits checks and enforcement.
 	// If they do any deletions they will update the
@@ -1262,6 +1292,23 @@ func (fs *fileStore) rebuildFirst() {
 	}
 }
 
+// Will check the msg limit for this tracked subject.
+// Lock should be held.
+func (fs *fileStore) enforcePerSubjectLimit(subj string) {
+	if fs.closed || fs.sips > 0 || fs.cfg.MaxMsgsPer < 0 || !fs.tms {
+		return
+	}
+	for {
+		msgs, first, _ := fs.perSubjectState(subj)
+		if msgs <= uint64(fs.cfg.MaxMsgsPer) {
+			return
+		}
+		if ok, _ := fs.removeMsg(first, false, false); !ok {
+			break
+		}
+	}
+}
+
 // Will check the msg limit and drop firstSeq msg if needed.
 // Lock should be held.
 func (fs *fileStore) enforceMsgLimit() {
@@ -1294,29 +1341,40 @@ func (fs *fileStore) enforceBytesLimit() {
 func (fs *fileStore) deleteFirstMsg() (bool, error) {
 	fs.mu.Unlock()
 	defer fs.mu.Lock()
-	return fs.removeMsg(fs.state.FirstSeq, false)
+	return fs.removeMsg(fs.state.FirstSeq, false, true)
 }
 
 // RemoveMsg will remove the message from this store.
 // Will return the number of bytes removed.
 func (fs *fileStore) RemoveMsg(seq uint64) (bool, error) {
-	return fs.removeMsg(seq, false)
+	return fs.removeMsg(seq, false, true)
 }
 
 func (fs *fileStore) EraseMsg(seq uint64) (bool, error) {
-	return fs.removeMsg(seq, true)
+	return fs.removeMsg(seq, true, true)
 }
 
 // Remove a message, optionally rewriting the mb file.
-func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
-	fs.mu.Lock()
+func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error) {
+	fsLock := func() {
+		if needFSLock {
+			fs.mu.Lock()
+		}
+	}
+	fsUnlock := func() {
+		if needFSLock {
+			fs.mu.Unlock()
+		}
+	}
+
+	fsLock()
 
 	if fs.closed {
-		fs.mu.Unlock()
+		fsUnlock()
 		return false, ErrStoreClosed
 	}
 	if fs.sips > 0 {
-		fs.mu.Unlock()
+		fsUnlock()
 		return false, ErrStoreSnapshotInProgress
 	}
 
@@ -1326,7 +1384,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 		if seq <= fs.state.LastSeq {
 			err = ErrStoreMsgNotFound
 		}
-		fs.mu.Unlock()
+		fsUnlock()
 		return false, err
 	}
 
@@ -1345,18 +1403,18 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 	// Check cache. This should be very rare.
 	if mb.cache == nil || mb.cache.idx == nil || seq < mb.cache.fseq && mb.cache.off > 0 {
 		mb.mu.Unlock()
-		fs.mu.Unlock()
+		fsUnlock()
 		if err := mb.loadMsgs(); err != nil {
 			return false, err
 		}
-		fs.mu.Lock()
+		fsLock()
 		mb.mu.Lock()
 	}
 
 	// See if the sequence numbers is still relevant. Check first and cache first.
 	if seq < mb.first.seq || seq < mb.cache.fseq || (seq-mb.cache.fseq) >= uint64(len(mb.cache.idx)) {
 		mb.mu.Unlock()
-		fs.mu.Unlock()
+		fsUnlock()
 		return false, nil
 	}
 
@@ -1364,7 +1422,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 	if mb.dmap != nil {
 		if _, ok := mb.dmap[seq]; ok {
 			mb.mu.Unlock()
-			fs.mu.Unlock()
+			fsUnlock()
 			return false, nil
 		}
 	}
@@ -1428,8 +1486,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 
 	var qch, fch chan struct{}
 	if shouldWriteIndex {
-		qch = mb.qch
-		fch = mb.fch
+		qch, fch = mb.qch, mb.fch
 	}
 	cb := fs.scb
 	mb.mu.Unlock()
@@ -1468,6 +1525,10 @@ func (fs *fileStore) removeMsg(seq uint64, secure bool) (bool, error) {
 		}
 		delta := int64(msz)
 		cb(-1, -delta, seq, subj)
+	}
+
+	if !needFSLock {
+		fs.mu.Lock()
 	}
 
 	return true, nil
@@ -1937,7 +1998,7 @@ func (fs *fileStore) expireMsgs() {
 	var sm *fileStoredMsg
 	minAge := time.Now().UnixNano() - int64(fs.cfg.MaxAge)
 	for sm, _ = fs.msgForSeq(0); sm != nil && sm.ts <= minAge; sm, _ = fs.msgForSeq(0) {
-		fs.removeMsg(sm.seq, false)
+		fs.removeMsg(sm.seq, false, true)
 	}
 
 	fs.mu.Lock()

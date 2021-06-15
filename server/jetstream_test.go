@@ -10787,6 +10787,82 @@ func TestJetStreamConfigReloadWithGlobalAccount(t *testing.T) {
 	checkJSAccount()
 }
 
+// Test that we properly enfore per subject msg limits.
+func TestJetStreamMaxMsgsPerSubject(t *testing.T) {
+	const maxPer = 5
+	msc := StreamConfig{
+		Name:       "TEST",
+		Subjects:   []string{"foo", "bar", "baz.*"},
+		Storage:    MemoryStorage,
+		MaxMsgsPer: maxPer,
+	}
+	fsc := msc
+	fsc.Storage = FileStorage
+
+	cases := []struct {
+		name    string
+		mconfig *StreamConfig
+	}{
+		{"MemoryStore", &msc},
+		{"FileStore", &fsc},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer removeDir(t, config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().addStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error adding stream: %v", err)
+			}
+			defer mset.delete()
+
+			// Client for API requests.
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			pubAndCheck := func(subj string, num int, expectedNumMsgs uint64) {
+				t.Helper()
+				for i := 0; i < num; i++ {
+					if _, err = js.Publish(subj, []byte("TSLA")); err != nil {
+						t.Fatalf("Unexpected publish error: %v", err)
+					}
+				}
+				si, err := js.StreamInfo("TEST")
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				if si.State.Msgs != expectedNumMsgs {
+					t.Fatalf("Expected %d msgs, got %d", expectedNumMsgs, si.State.Msgs)
+				}
+			}
+
+			pubAndCheck("foo", 1, 1)
+			pubAndCheck("foo", 4, 5)
+			// Now make sure our per subject limits kick in..
+			pubAndCheck("foo", 2, 5)
+			pubAndCheck("baz.22", 5, 10)
+			pubAndCheck("baz.33", 5, 15)
+			// We are maxed so totals should be same no matter what we add here.
+			pubAndCheck("baz.22", 5, 15)
+			pubAndCheck("baz.33", 5, 15)
+
+			// Now purge and make sure all is still good.
+			mset.purge()
+			pubAndCheck("foo", 1, 1)
+			pubAndCheck("foo", 4, 5)
+			pubAndCheck("baz.22", 5, 10)
+			pubAndCheck("baz.33", 5, 15)
+		})
+	}
+
+}
+
 func TestJetStreamFilteredConsumersWithWiderFilter(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
