@@ -2848,7 +2848,6 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) {
 	o.store.UpdateAcks(dseq, sseq)
 
 	o.mu.RLock()
-
 	mset := o.mset
 	if mset == nil || mset.cfg.Retention == LimitsPolicy {
 		o.mu.RUnlock()
@@ -4457,7 +4456,7 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) {
 		for _, o := range mset.consumers {
 			o.mu.Lock()
 			if o.isLeader() {
-				o.setInitialPending()
+				o.setInitialPendingAndStart()
 			}
 			o.mu.Unlock()
 		}

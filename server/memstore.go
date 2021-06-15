@@ -28,6 +28,8 @@ type memStore struct {
 	state     StreamState
 	msgs      map[uint64]*storedMsg
 	dmap      map[uint64]struct{}
+	fss       map[string]*SimpleState
+	maxp      int64
 	scb       StorageUpdateHandler
 	ageChk    *time.Timer
 	consumers int
@@ -48,7 +50,15 @@ func newMemStore(cfg *StreamConfig) (*memStore, error) {
 	if cfg.Storage != MemoryStorage {
 		return nil, fmt.Errorf("memStore requires memory storage type in config")
 	}
-	return &memStore{msgs: make(map[uint64]*storedMsg), dmap: make(map[uint64]struct{}), cfg: *cfg}, nil
+	ms := &memStore{
+		msgs: make(map[uint64]*storedMsg),
+		fss:  make(map[string]*SimpleState),
+		dmap: make(map[uint64]struct{}),
+		maxp: cfg.MaxMsgsPer,
+		cfg:  *cfg,
+	}
+
+	return ms, nil
 }
 
 func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
@@ -95,6 +105,11 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 		if ms.cfg.MaxBytes > 0 && ms.state.Bytes+uint64(len(msg)+len(hdr)) >= uint64(ms.cfg.MaxBytes) {
 			return ErrMaxBytes
 		}
+		if ms.maxp > 0 && len(subj) > 0 {
+			if ss := ms.fss[subj]; ss != nil && ss.Msgs >= uint64(ms.maxp) {
+				return ErrMaxMsgsPerSubject
+			}
+		}
 	}
 
 	if seq != ms.state.LastSeq+1 {
@@ -125,6 +140,20 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 	ms.state.Bytes += memStoreMsgSize(subj, hdr, msg)
 	ms.state.LastSeq = seq
 	ms.state.LastTime = now
+
+	// Track per subject.
+	if len(subj) > 0 {
+		if ss := ms.fss[subj]; ss != nil {
+			ss.Msgs++
+			ss.Last = seq
+			// Check per subject limits.
+			if ms.maxp > 0 && ss.Msgs > uint64(ms.maxp) {
+				ms.enforcePerSubjectLimit(ss)
+			}
+		} else {
+			ms.fss[subj] = &SimpleState{Msgs: 1, First: seq, Last: seq}
+		}
+	}
 
 	// Limits checks and enforcement.
 	ms.enforceMsgLimit()
@@ -222,35 +251,60 @@ func (ms *memStore) GetSeqFromTime(t time.Time) uint64 {
 	return uint64(index) + ms.state.FirstSeq
 }
 
-// Returns number of messages matching the subject starting at sequence sseq.
-func (ms *memStore) NumFilteredPending(sseq uint64, subj string) (total uint64) {
+// FilteredState will return the SimpleState associated with the filtered subject and a proposed starting sequence.
+func (ms *memStore) FilteredState(sseq uint64, subj string) SimpleState {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
+
+	var ss SimpleState
 
 	if sseq < ms.state.FirstSeq {
 		sseq = ms.state.FirstSeq
 	}
 
-	if subj == _EMPTY_ {
-		if sseq <= ms.state.LastSeq {
-			return ms.state.LastSeq - sseq
-		}
-		return 0
+	// If past the end no results.
+	if sseq > ms.state.LastSeq {
+		return ss
 	}
 
+	// If we want everything.
+	if subj == _EMPTY_ || subj == ">" {
+		ss.Msgs, ss.First, ss.Last = ms.state.Msgs, ms.state.FirstSeq, ms.state.LastSeq
+		return ss
+	}
+
+	// FIXME(dlc) - Optimize like filestore.
 	var eq func(string, string) bool
-	if subjectHasWildcard(subj) {
+	if subj == _EMPTY_ {
+		eq = func(a, b string) bool { return true }
+	} else if subjectHasWildcard(subj) {
 		eq = subjectIsSubsetMatch
 	} else {
 		eq = func(a, b string) bool { return a == b }
 	}
-
 	for seq := sseq; seq <= ms.state.LastSeq; seq++ {
 		if sm, ok := ms.msgs[seq]; ok && eq(sm.subj, subj) {
-			total++
+			ss.Msgs++
+			if ss.First == 0 {
+				ss.First = seq
+			}
+			ss.Last = seq
 		}
 	}
-	return total
+	return ss
+}
+
+// Will check the msg limit for this tracked subject.
+// Lock should be held.
+func (ms *memStore) enforcePerSubjectLimit(ss *SimpleState) {
+	if ms.maxp <= 0 {
+		return
+	}
+	for nmsgs := ss.Msgs; nmsgs > uint64(ms.maxp); nmsgs = ss.Msgs {
+		if !ms.removeMsg(ss.First, false) {
+			break
+		}
+	}
 }
 
 // Will check the msg limit and drop firstSeq msg if needed.
@@ -324,6 +378,7 @@ func (ms *memStore) Purge() (uint64, error) {
 	ms.state.Bytes = 0
 	ms.state.Msgs = 0
 	ms.msgs = make(map[uint64]*storedMsg)
+	ms.fss = make(map[string]*SimpleState)
 	ms.dmap = make(map[uint64]struct{})
 	ms.mu.Unlock()
 
@@ -494,6 +549,30 @@ func (ms *memStore) updateFirstSeq(seq uint64) {
 	}
 }
 
+// Remove a seq from the fss and select new first.
+// Lock should be held.
+func (ms *memStore) removeSeqPerSubject(subj string, seq uint64) {
+	ss := ms.fss[subj]
+	if ss == nil {
+		return
+	}
+	if ss.Msgs == 1 {
+		delete(ms.fss, subj)
+		return
+	}
+	ss.Msgs--
+	if seq != ss.First {
+		return
+	}
+	// TODO(dlc) - Might want to optimize this.
+	for tseq := seq + 1; tseq < ss.Last; tseq++ {
+		if sm := ms.msgs[tseq]; sm != nil && sm.subj == subj {
+			ss.First = tseq
+			return
+		}
+	}
+}
+
 // Removes the message referenced by seq.
 // Lock should he held.
 func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
@@ -521,6 +600,9 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 		}
 		sm.seq, sm.ts = 0, 0
 	}
+
+	// Remove any per subject tracking.
+	ms.removeSeqPerSubject(sm.subj, seq)
 
 	if ms.scb != nil {
 		// We do not want to hold any locks here.

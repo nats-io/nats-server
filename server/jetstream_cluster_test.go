@@ -2087,7 +2087,7 @@ func TestJetStreamClusterWorkQueueRetention(t *testing.T) {
 	}
 
 	// Make sure the messages are removed.
-	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 		si, err := js.StreamInfo("FOO")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -4789,6 +4789,10 @@ func TestJetStreamClusterMirrorAndSourcesFilteredConsumers(t *testing.T) {
 	expectFail("M", "baz")
 	expectFail("M", "baz.1.2")
 	expectFail("M", "apple")
+
+	// Make sure wider scoped subjects work as well.
+	createConsumer("M", "*")
+	createConsumer("M", ">")
 
 	// Now do some sources.
 	if _, err := js.AddStream(&nats.StreamConfig{Name: "O1", Subjects: []string{"foo.*"}}); err != nil {
@@ -7975,7 +7979,7 @@ func jsClientConnect(t *testing.T, s *Server, opts ...nats.Option) (*nats.Conn, 
 
 func checkSubsPending(t *testing.T, sub *nats.Subscription, numExpected int) {
 	t.Helper()
-	checkFor(t, 5*time.Second, 20*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 20*time.Millisecond, func() error {
 		if nmsgs, _, err := sub.Pending(); err != nil || nmsgs != numExpected {
 			return fmt.Errorf("Did not receive correct number of messages: %d vs %d", nmsgs, numExpected)
 		}

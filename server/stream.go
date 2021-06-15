@@ -44,9 +44,10 @@ type StreamConfig struct {
 	MaxConsumers int             `json:"max_consumers"`
 	MaxMsgs      int64           `json:"max_msgs"`
 	MaxBytes     int64           `json:"max_bytes"`
-	Discard      DiscardPolicy   `json:"discard"`
 	MaxAge       time.Duration   `json:"max_age"`
+	MaxMsgsPer   int64           `json:"max_msgs_per_subject"`
 	MaxMsgSize   int32           `json:"max_msg_size,omitempty"`
+	Discard      DiscardPolicy   `json:"discard"`
 	Storage      StorageType     `json:"storage"`
 	Replicas     int             `json:"num_replicas"`
 	NoAck        bool            `json:"no_ack,omitempty"`
@@ -2320,16 +2321,6 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 	mset.store.RegisterStorageUpdates(mset.storeUpdates)
 
 	return nil
-}
-
-// Clears out any filtered index from filestores.
-func (mset *stream) clearFilterIndex() {
-	mset.mu.Lock()
-	defer mset.mu.Unlock()
-
-	if fs, ok := mset.store.(*fileStore); ok {
-		fs.clearFilterIndex()
-	}
 }
 
 // Called for any updates to the underlying stream. We pass through the bytes to the

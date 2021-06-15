@@ -45,6 +45,8 @@ var (
 	ErrMaxMsgs = errors.New("maximum messages exceeded")
 	// ErrMaxBytes is returned when we have discard new as a policy and we reached the bytes limit.
 	ErrMaxBytes = errors.New("maximum bytes exceeded")
+	// ErrMaxMsgsPerSubject is returned when we have discard new as a policy and we reached the message limit per subject.
+	ErrMaxMsgsPerSubject = errors.New("maximum messages per subject exceeded")
 	// ErrStoreSnapshotInProgress is returned when RemoveMsg or EraseMsg is called
 	// while a snapshot is in progress.
 	ErrStoreSnapshotInProgress = errors.New("snapshot in progress")
@@ -75,7 +77,7 @@ type StreamStore interface {
 	Compact(seq uint64) (uint64, error)
 	Truncate(seq uint64) error
 	GetSeqFromTime(t time.Time) uint64
-	NumFilteredPending(sseq uint64, subject string) uint64
+	FilteredState(sseq uint64, subject string) SimpleState
 	State() StreamState
 	FastState(*StreamState)
 	Type() StorageType
@@ -123,6 +125,13 @@ type StreamState struct {
 	Deleted    []uint64        `json:"deleted,omitempty"`
 	Lost       *LostStreamData `json:"lost,omitempty"`
 	Consumers  int             `json:"consumer_count"`
+}
+
+// SimpleState for filtered subject specific state.
+type SimpleState struct {
+	Msgs  uint64 `json:"messages"`
+	First uint64 `json:"first_seq"`
+	Last  uint64 `json:"last_seq"`
 }
 
 // LostStreamData indicates msgs that have been lost.
