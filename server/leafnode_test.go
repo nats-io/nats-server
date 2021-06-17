@@ -388,7 +388,7 @@ func TestLeafNodeAccountNotFound(t *testing.T) {
 	// Wait for report of error
 	select {
 	case e := <-l.errCh:
-		if !strings.Contains(e, "No local account") {
+		if !strings.Contains(e, "Unable to lookup account") {
 			t.Fatalf("Expected error about no local account, got %s", e)
 		}
 	case <-time.After(2 * time.Second):

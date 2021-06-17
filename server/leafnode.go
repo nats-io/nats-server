@@ -817,7 +817,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 			// remote needs to be set or retry won't happen
 			c.leaf.remote = remote
 			c.closeConnection(MissingAccount)
-			s.Errorf("No local account %s found for solicited leaf node connection", lacc)
+			s.Errorf("Unable to lookup account %s for solicited leafnode connection: %v", lacc, err)
 			return nil
 		}
 		remoteSuffix = fmt.Sprintf(" for account: %s", acc.traceLabel())
