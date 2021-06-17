@@ -1846,9 +1846,16 @@ func (a *Account) addServiceImportSub(si *serviceImport) error {
 	cb := func(sub *subscription, c *client, subject, reply string, msg []byte) {
 		c.processServiceImport(si, a, msg)
 	}
-	_, err := c.processSubEx([]byte(subject), nil, []byte(sid), cb, true, true, false)
-
-	return err
+	sub, err := c.processSubEx([]byte(subject), nil, []byte(sid), cb, true, true, false)
+	if err != nil {
+		return err
+	}
+	// Leafnodes introduce a new way to introduce messages into the system. Therefore forward import subscription
+	// This is similar to what initLeafNodeSmapAndSendSubs does
+	// TODO we need to consider performing this update as we get client subscriptions.
+	//      This behavior would result in subscription propagation only where actually used.
+	a.srv.updateLeafNodes(a, sub, 1)
+	return nil
 }
 
 // Remove all the subscriptions associated with service imports.

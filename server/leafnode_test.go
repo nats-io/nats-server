@@ -388,12 +388,14 @@ func TestLeafNodeAccountNotFound(t *testing.T) {
 	// Wait for report of error
 	select {
 	case e := <-l.errCh:
-		if !strings.Contains(e, "No local account") {
+		if !strings.Contains(e, "Unable to lookup account") {
 			t.Fatalf("Expected error about no local account, got %s", e)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("Did not get the error")
 	}
+
+	// TODO below test is bogus. Instead add the account, do a reload, and make sure the connection works.
 
 	// For now, sa would try to recreate the connection for ever.
 	// Check that lid is increasing...
