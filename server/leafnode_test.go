@@ -395,6 +395,8 @@ func TestLeafNodeAccountNotFound(t *testing.T) {
 		t.Fatalf("Did not get the error")
 	}
 
+	// TODO below test is bogus. Instead add the account, do a reload, and make sure the connection works.
+
 	// For now, sa would try to recreate the connection for ever.
 	// Check that lid is increasing...
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {

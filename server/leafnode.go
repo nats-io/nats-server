@@ -797,7 +797,6 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 	var acc *Account
 	var remoteSuffix string
 	if remote != nil {
-		// TODO: Decide what should be the optimal behavior here.
 		// For now, if lookup fails, we will constantly try
 		// to recreate this LN connection.
 
@@ -813,8 +812,12 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 		var err error
 		acc, err = s.LookupAccount(lacc)
 		if err != nil {
-			s.Errorf("No local account %q for leafnode: %v", lacc, err)
-			c.closeConnection(MissingAccount)
+			// An account not existing is something that can happen with nats/http account resolver and the account
+			// has not yet been pushed, or the request failed for other reasons.
+			// remote needs to be set or retry won't happen
+			c.leaf.remote = remote
+			c.closeConnection(AuthenticationViolation)
+			s.Errorf("No local account %s found for solicited leaf node connection", lacc)
 			return nil
 		}
 		remoteSuffix = fmt.Sprintf(" for account: %s", acc.traceLabel())
