@@ -816,7 +816,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 			// has not yet been pushed, or the request failed for other reasons.
 			// remote needs to be set or retry won't happen
 			c.leaf.remote = remote
-			c.closeConnection(AuthenticationViolation)
+			c.closeConnection(MissingAccount)
 			s.Errorf("No local account %s found for solicited leaf node connection", lacc)
 			return nil
 		}
