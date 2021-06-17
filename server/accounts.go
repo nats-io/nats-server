@@ -1853,7 +1853,7 @@ func (a *Account) addServiceImportSub(si *serviceImport) error {
 	// Leafnodes introduce a new way to introduce messages into the system. Therefore forward import subscription
 	// This is similar to what initLeafNodeSmapAndSendSubs does
 	// TODO we need to consider performing this update as we get client subscriptions.
-	//      This behaviour would result in subscription propagation only where actually used.
+	//      This behavior would result in subscription propagation only where actually used.
 	a.srv.updateLeafNodes(a, sub, 1)
 	return nil
 }
