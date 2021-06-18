@@ -1837,7 +1837,9 @@ func (mset *stream) processSourceMsgs(si *sourceInfo) {
 			mset.mu.RUnlock()
 			// No longer leader.
 			if !isLeader {
+				mset.mu.Lock()
 				mset.cancelSourceConsumer(iname)
+				mset.mu.Unlock()
 				return
 			}
 			// We are stalled.
