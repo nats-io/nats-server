@@ -47,7 +47,7 @@ func TestApiError_Error(t *testing.T) {
 	}
 }
 
-func TestApiError_NewF(t *testing.T) {
+func TestApiError_NewT(t *testing.T) {
 	ne := ApiErrors[JSRestoreSubscribeFailedErrF].NewT("{subject}", "the.subject", "{err}", errors.New("failed error"))
 	if ne.Description != "JetStream unable to subscribe to restore snapshot the.subject: failed error" {
 		t.Fatalf("Expected 'JetStream unable to subscribe to restore snapshot the.subject: failed error' got %q", ne.Description)
@@ -56,9 +56,18 @@ func TestApiError_NewF(t *testing.T) {
 	if ne == ApiErrors[JSRestoreSubscribeFailedErrF] {
 		t.Fatalf("Expected a new instance")
 	}
+
+	aerr := ApiError{
+		Code:        999,
+		Description: "thing {string} failed on attempt {int} after {duration} with {float}: {err}",
+	}
+
+	if ne := aerr.NewT("{float}", 1.1, "{err}", fmt.Errorf("simulated error"), "{string}", "hello world", "{int}", 10, "{duration}", 456*time.Millisecond); ne.Description != "thing hello world failed on attempt 10 after 456ms with 1.1: simulated error" {
+		t.Fatalf("Expected formatted error, got: %q", ne.Description)
+	}
 }
 
-func TestApiError_ErrOrNewF(t *testing.T) {
+func TestApiError_ErrOrNewT(t *testing.T) {
 	if ne := ApiErrors[JSStreamRestoreErrF].ErrOrNewT(ApiErrors[JSNotEnabledForAccountErr], "{err}", errors.New("failed error")); !IsNatsErr(ne, JSNotEnabledForAccountErr) {
 		t.Fatalf("Expected JSNotEnabledForAccountErr got %s", ne)
 	}
@@ -69,6 +78,13 @@ func TestApiError_ErrOrNewF(t *testing.T) {
 
 	if ne := ApiErrors[JSStreamRestoreErrF].ErrOrNewT(errors.New("other error"), "{err}", errors.New("failed error")); !IsNatsErr(ne, JSStreamRestoreErrF) {
 		t.Fatalf("Expected JSStreamRestoreErrF got %s", ne)
+	}
+
+	// ensure that mistakenly passing a non tagged error to this function is harmless
+	if ne := ApiErrors[JSStreamNotFoundErr].ErrOrNewT(errors.New("other error"), "{err}", errors.New("failed error")); !IsNatsErr(ne, JSStreamNotFoundErr) {
+		t.Fatalf("Expected JSStreamNotFoundErr got %s", ne)
+	} else if ne.Description != ApiErrors[JSStreamNotFoundErr].Description {
+		t.Fatalf("Expected JSStreamNotFoundErr description got: %s", ne.Description)
 	}
 }
 
@@ -83,16 +99,5 @@ func TestApiError_ErrOr(t *testing.T) {
 
 	if ne := ApiErrors[JSPeerRemapErr].ErrOr(errors.New("other error")); !IsNatsErr(ne, JSPeerRemapErr) {
 		t.Fatalf("Expected JSPeerRemapErr got %s", ne)
-	}
-}
-
-func TestApiError_NewT(t *testing.T) {
-	aerr := ApiError{
-		Code:        999,
-		Description: "thing {string} failed on attempt {int} after {duration} with {float}: {err}",
-	}
-
-	if ne := aerr.NewT("{float}", 1.1, "{err}", fmt.Errorf("simulated error"), "{string}", "hello world", "{int}", 10, "{duration}", 456*time.Millisecond); ne.Description != "thing hello world failed on attempt 10 after 456ms with 1.1: simulated error" {
-		t.Fatalf("Expected formatted error, got: %q", ne.Description)
 	}
 }
