@@ -1,10 +1,10 @@
 # 6. protocol-naming-conventions
 
-Date: 2021-05-08
+Date: 2021-06-28
 
 ## Status
 
-Under Review
+Accepted
 
 ## Context
 
