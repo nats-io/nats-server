@@ -935,7 +935,7 @@ func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, subject, 
 
 	t, err := acc.addStreamTemplate(&cfg)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamTemplateCreateErrF].ErrOr(err)
+		resp.Error = ApiErrors[JSStreamTemplateCreateErrF].ErrOrNewT(err, "{err}", err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -1080,7 +1080,7 @@ func (s *Server) jsTemplateDeleteRequest(sub *subscription, c *client, subject, 
 	name := templateNameFromSubject(subject)
 	err = acc.deleteStreamTemplate(name)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamTemplateDeleteErrF].ErrOr(err)
+		resp.Error = ApiErrors[JSStreamTemplateDeleteErrF].ErrOrNewT(err, "{err}", err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -1351,13 +1351,13 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, subject, re
 
 	mset, err := acc.lookupStream(streamName)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
+		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNewT(err, "{err}", err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
 	if err := mset.update(&cfg); err != nil {
-		resp.Error = ApiErrors[JSStreamUpdateErrF].ErrOr(err)
+		resp.Error = ApiErrors[JSStreamUpdateErrF].ErrOrNewT(err, "{err}", err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -2120,7 +2120,7 @@ func (s *Server) jsLeaderStepDownRequest(sub *subscription, c *client, subject, 
 	// Call actual stepdown.
 	err = cc.meta.StepDown(preferredLeader)
 	if err != nil {
-		resp.Error = ApiErrors[JSRaftGeneralErrF].ErrOr(err)
+		resp.Error = ApiErrors[JSRaftGeneralErrF].ErrOrNewT(err, "{err}", err)
 	} else {
 		resp.Success = true
 	}
@@ -2199,13 +2199,13 @@ func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, re
 
 	mset, err := acc.lookupStream(stream)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
+		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNewT(err, "{err}", err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
 	if err := mset.delete(); err != nil {
-		resp.Error = ApiErrors[JSStreamDeleteErrF].ErrOr(err)
+		resp.Error = ApiErrors[JSStreamDeleteErrF].ErrOrNewT(err, "{err}", err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -2856,7 +2856,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, subject, 
 		sr, err := mset.snapshot(0, req.CheckMsgs, !req.NoConsumers)
 		if err != nil {
 			s.Warnf("Snapshot of stream '%s > %s' failed: %v", mset.jsa.account.Name, mset.name(), err)
-			resp.Error = ApiErrors[JSStreamSnapshotErrF].ErrOr(err)
+			resp.Error = ApiErrors[JSStreamSnapshotErrF].ErrOrNewT(err, "{err}", err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
 			return
 		}
@@ -3101,14 +3101,14 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, subject, reply s
 
 	stream, err := acc.lookupStream(req.Stream)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
+		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNewT(err, "{err}", err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
 	o, err := stream.addConsumer(&req.Config)
 	if err != nil {
-		resp.Error = ApiErrors[JSConsumerCreateErrF].ErrOr(err)
+		resp.Error = ApiErrors[JSConsumerCreateErrF].ErrOrNewT(err, "{err}", err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -3208,7 +3208,7 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, subject, r
 	} else {
 		mset, err := acc.lookupStream(streamName)
 		if err != nil {
-			resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
+			resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNewT(err, "{err}", err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
@@ -3302,7 +3302,7 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, subject, re
 
 	mset, err := acc.lookupStream(streamName)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
+		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNewT(err, "{err}", err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -3425,7 +3425,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 
 	mset, err := acc.lookupStream(streamName)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
+		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNewT(err, "{err}", err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -3492,7 +3492,7 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, 
 
 	mset, err := acc.lookupStream(stream)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
+		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNewT(err, "{err}", err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -3504,7 +3504,7 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, subject, 
 		return
 	}
 	if err := obs.delete(); err != nil {
-		resp.Error = ApiErrors[JSStreamGeneralErrorF].ErrOr(err)
+		resp.Error = ApiErrors[JSStreamGeneralErrorF].ErrOrNewT(err, "{err}", err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}

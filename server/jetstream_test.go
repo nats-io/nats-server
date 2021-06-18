@@ -11513,6 +11513,33 @@ func TestJetStreamDirectConsumersBeingReported(t *testing.T) {
 	}
 }
 
+// https://github.com/nats-io/nats-server/issues/2290
+func TestJetStreamTemplatedErrorsBug(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	_, err = js.PullSubscribe("foo", "")
+	if err != nil && strings.Contains(err.Error(), "{err}") {
+		t.Fatalf("Error is not filled in: %v", err)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
