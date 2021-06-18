@@ -936,13 +936,7 @@ func (fs *fileStore) FilteredState(sseq uint64, subj string) SimpleState {
 		}
 	} else {
 		// Fallback to linear scan.
-		var eq func(string, string) bool
-		if wc {
-			eq = subjectIsSubsetMatch
-		} else {
-			eq = func(a, b string) bool { return a == b }
-		}
-
+		eq := compareFn(subj)
 		for seq := sseq; seq <= lseq; seq++ {
 			if sm, _ := fs.msgForSeq(seq); sm != nil && eq(sm.subj, subj) {
 				ss.Msgs++
@@ -3107,6 +3101,57 @@ func (fs *fileStore) dmapEntries() int {
 	}
 	fs.mu.RUnlock()
 	return total
+}
+
+// Fixed helper for iterating.
+func subjectsEqual(a, b string) bool {
+	return a == b
+}
+
+func subjectsAll(a, b string) bool {
+	return true
+}
+
+func compareFn(subject string) func(string, string) bool {
+	if subject == _EMPTY_ || subject == ">" {
+		return subjectsAll
+	}
+	if subjectHasWildcard(subject) {
+		return subjectIsSubsetMatch
+	}
+	return subjectsEqual
+}
+
+// PurgeEx will remove messages based on subject filters, sequence and number of messages to keep.
+// Will return the number of purged messages.
+func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint64, err error) {
+	if subject == _EMPTY_ || subject == ">" && keep == 0 {
+		return fs.Purge()
+	}
+	eq := compareFn(subject)
+	if ss := fs.FilteredState(1, subject); ss.Msgs > 0 {
+		if keep > 0 {
+			if keep > ss.Msgs {
+				return 0, nil
+			}
+			ss.Msgs -= keep
+		}
+		last := ss.Last
+		if sequence > 0 {
+			last = sequence + 1
+		}
+		for seq := ss.First; seq <= last; seq++ {
+			if sm, _ := fs.msgForSeq(seq); sm != nil && eq(sm.subj, subject) {
+				if ok, _ := fs.removeMsg(sm.seq, false, true); ok {
+					purged++
+					if purged >= ss.Msgs {
+						break
+					}
+				}
+			}
+		}
+	}
+	return purged, nil
 }
 
 // Purge will remove all messages from this store.

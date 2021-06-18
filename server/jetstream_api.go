@@ -352,6 +352,20 @@ type JSApiStreamListResponse struct {
 
 const JSApiStreamListResponseType = "io.nats.jetstream.api.v1.stream_list_response"
 
+// JSApiStreamPurgeRequest is optional request information to the purge API.
+// Subject will filter the purge request to only messages that match the subject, which can have wildcards.
+// Sequence will purge up to but not including this sequence and can be combined with subject filtering.
+// Keep will specify how many messages to keep. This can also be combined with subject filtering.
+// Note that Sequence and Keep are mutually exclusive, so both can not be set at the same time.
+type JSApiStreamPurgeRequest struct {
+	// Purge up to but not including sequence.
+	Sequence uint64 `json:"seq,omitempty"`
+	// Subject to match against messages for the purge command.
+	Subject string `json:"filter,omitempty"`
+	// Number of messages to keep.
+	Keep uint64 `json:"keep,omitempty"`
+}
+
 type JSApiStreamPurgeResponse struct {
 	ApiResponse
 	Success bool   `json:"success,omitempty"`
@@ -2500,11 +2514,22 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 		return
 	}
 
+	var purgeRequest *JSApiStreamPurgeRequest
 	if !isEmptyRequest(msg) {
-		resp.Error = ApiErrors[JSNotEmptyRequestErr]
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
+		var req JSApiStreamPurgeRequest
+		if err := json.Unmarshal(msg, &req); err != nil {
+			resp.Error = ApiErrors[JSInvalidJSONErr]
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		if req.Sequence > 0 && req.Keep > 0 {
+			resp.Error = ApiErrors[JSBadRequestErr]
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		purgeRequest = &req
 	}
+
 	mset, err := acc.lookupStream(stream)
 	if err != nil {
 		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
@@ -2513,11 +2538,11 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 	}
 
 	if s.JetStreamIsClustered() {
-		s.jsClusteredStreamPurgeRequest(ci, acc, mset, stream, subject, reply, rmsg)
+		s.jsClusteredStreamPurgeRequest(ci, acc, mset, stream, subject, reply, rmsg, purgeRequest)
 		return
 	}
 
-	purged, err := mset.purge()
+	purged, err := mset.purge(purgeRequest)
 	if err != nil {
 		resp.Error = ApiErrors[JSStreamGeneralErrorF].ErrOrNewT(err, "{err}", err)
 	} else {

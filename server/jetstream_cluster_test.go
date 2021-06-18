@@ -7344,6 +7344,121 @@ func TestJetStreamClusterSourceAndMirrorConsumersLeaderChange(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestJetStreamClusterExtendedStreamPurge(t *testing.T) {
+	for _, st := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(st.String(), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "JSC", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			cfg := StreamConfig{
+				Name:       "KV",
+				Subjects:   []string{"kv.>"},
+				Storage:    st,
+				Replicas:   2,
+				MaxMsgsPer: 100,
+			}
+			req, err := json.Marshal(cfg)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			// Do manually for now.
+			nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+
+			si, err := js.StreamInfo("KV")
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if si == nil || si.Config.Name != "KV" {
+				t.Fatalf("StreamInfo is not correct %+v", si)
+			}
+
+			for i := 0; i < 1000; i++ {
+				js.PublishAsync("kv.foo", []byte("OK")) // 1 * i
+				js.PublishAsync("kv.bar", []byte("OK")) // 2 * i
+				js.PublishAsync("kv.baz", []byte("OK")) // 3 * i, so after first is 2700, last is 3000
+			}
+			for i := 0; i < 700; i++ {
+				js.PublishAsync(fmt.Sprintf("kv.%d", i+1), []byte("OK"))
+			}
+
+			checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+				si, err := js.StreamInfo("KV")
+				if err != nil {
+					return err
+				}
+				if si.State.Msgs != 1000 {
+					return fmt.Errorf("Expected %d msgs, got %d", 300, si.State.Msgs)
+				}
+				return nil
+			})
+
+			shouldFail := func(preq *JSApiStreamPurgeRequest) {
+				req, _ := json.Marshal(preq)
+				resp, err := nc.Request(fmt.Sprintf(JSApiStreamPurgeT, "KV"), req, time.Second)
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				var pResp JSApiStreamPurgeResponse
+				if err = json.Unmarshal(resp.Data, &pResp); err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				if pResp.Success || pResp.Error == nil {
+					t.Fatalf("Expected an error response but got none")
+				}
+			}
+
+			// Sequence and Keep should be mutually exclusive.
+			shouldFail(&JSApiStreamPurgeRequest{Sequence: 10, Keep: 10})
+
+			purge := func(preq *JSApiStreamPurgeRequest, newTotal uint64) {
+				req, _ := json.Marshal(preq)
+				resp, err := nc.Request(fmt.Sprintf(JSApiStreamPurgeT, "KV"), req, time.Second)
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				var pResp JSApiStreamPurgeResponse
+				if err = json.Unmarshal(resp.Data, &pResp); err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				if !pResp.Success || pResp.Error != nil {
+					t.Fatalf("Got a bad response %+v", pResp)
+				}
+				si, err = js.StreamInfo("KV")
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				if si.State.Msgs != newTotal {
+					t.Fatalf("Expected total after purge to be %d but got %d", newTotal, si.State.Msgs)
+				}
+			}
+			expectLeft := func(subject string, expected uint64) {
+				ci, err := js.AddConsumer("KV", &nats.ConsumerConfig{Durable: "dlc", FilterSubject: subject, AckPolicy: nats.AckExplicitPolicy})
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				defer js.DeleteConsumer("KV", "dlc")
+				if ci.NumPending != expected {
+					t.Fatalf("Expected %d remaining but got %d", expected, ci.NumPending)
+				}
+			}
+
+			purge(&JSApiStreamPurgeRequest{Subject: "kv.foo"}, 900)
+			expectLeft("kv.foo", 0)
+
+			purge(&JSApiStreamPurgeRequest{Subject: "kv.bar", Keep: 1}, 801)
+			expectLeft("kv.bar", 1)
+
+			purge(&JSApiStreamPurgeRequest{Subject: "kv.baz", Sequence: 2850}, 751)
+			expectLeft("kv.baz", 50)
+
+			purge(&JSApiStreamPurgeRequest{Subject: "kv.*"}, 0)
+		})
+	}
 
 }
 

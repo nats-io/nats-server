@@ -74,6 +74,7 @@ type StreamStore interface {
 	RemoveMsg(seq uint64) (bool, error)
 	EraseMsg(seq uint64) (bool, error)
 	Purge() (uint64, error)
+	PurgeEx(subject string, seq, keep uint64) (uint64, error)
 	Compact(seq uint64) (uint64, error)
 	Truncate(seq uint64) error
 	GetSeqFromTime(t time.Time) uint64

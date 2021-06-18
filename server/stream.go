@@ -954,7 +954,7 @@ func (mset *stream) update(config *StreamConfig) error {
 }
 
 // Purge will remove all messages from the stream and underlying store.
-func (mset *stream) purge() (uint64, error) {
+func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err error) {
 	mset.mu.Lock()
 	if mset.client == nil {
 		mset.mu.Unlock()
@@ -969,7 +969,11 @@ func (mset *stream) purge() (uint64, error) {
 	}
 	mset.mu.Unlock()
 
-	purged, err := mset.store.Purge()
+	if preq != nil {
+		purged, err = mset.store.PurgeEx(preq.Subject, preq.Sequence, preq.Keep)
+	} else {
+		purged, err = mset.store.Purge()
+	}
 	if err != nil {
 		return purged, err
 	}
