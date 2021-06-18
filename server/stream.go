@@ -3281,7 +3281,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 
 	cfg, err := checkStreamCfg(ncfg)
 	if err != nil {
-		return nil, ApiErrors[JSStreamNotFoundErr].ErrOrNewT(err, "{err}", err)
+		return nil, ApiErrors[JSStreamNotFoundErr].ErrOr(err)
 	}
 
 	_, jsa, err := a.checkForJetStream()
