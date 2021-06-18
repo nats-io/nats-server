@@ -2331,7 +2331,7 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 	// Go ahead and delete the stream.
 	mset, err := acc.lookupStream(sa.Config.Name)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNewT(err, "{err}", err)
+		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
 	} else if mset != nil {
 		err = mset.stop(true, wasLeader)
 	}
@@ -2614,7 +2614,7 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 	// Go ahead and delete the consumer.
 	mset, err := acc.lookupStream(ca.Stream)
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNewT(err, "{err}", err)
+		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
 	} else if mset != nil {
 		if o := mset.lookupConsumer(ca.Name); o != nil {
 			err = o.stopWithFlags(true, true, wasLeader)
@@ -2633,7 +2633,7 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 
 	if err != nil {
 		if resp.Error == nil {
-			resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOrNewT(err, "{err}", err)
+			resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
 		}
 		s.sendAPIErrResponse(ca.Client, acc, ca.Subject, ca.Reply, _EMPTY_, s.jsonResponse(resp))
 	} else {
