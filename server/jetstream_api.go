@@ -2205,7 +2205,7 @@ func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, subject, re
 	}
 
 	if err := mset.delete(); err != nil {
-		resp.Error = ApiErrors[JSStreamDeleteErrF].ErrOr(err)
+		resp.Error = ApiErrors[JSStreamDeleteErrF].ErrOrNewT(err, "{err}", err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -2314,7 +2314,7 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, subject, reply
 		removed, err = mset.eraseMsg(req.Seq)
 	}
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamMsgDeleteFailedF].ErrOr(err)
+		resp.Error = ApiErrors[JSStreamMsgDeleteFailedF].ErrOrNewT(err, "{err}", err)
 	} else if !removed {
 		resp.Error = ApiErrors[JSSequenceNotFoundErrF].NewT("{seq}", req.Seq)
 	} else {
@@ -2519,7 +2519,7 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, subject, rep
 
 	purged, err := mset.purge()
 	if err != nil {
-		resp.Error = ApiErrors[JSStreamGeneralErrorF].ErrOr(err)
+		resp.Error = ApiErrors[JSStreamGeneralErrorF].ErrOrNewT(err, "{err}", err)
 	} else {
 		resp.Purged = purged
 		resp.Success = true

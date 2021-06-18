@@ -153,7 +153,7 @@ const (
 	// JSStreamExternalDelPrefixOverlapsErrF stream external delivery prefix {prefix} overlaps with stream subject {subject}
 	JSStreamExternalDelPrefixOverlapsErrF ErrorIdentifier = 10022
 
-	// JSStreamGeneralErrorF General stream failure string
+	// JSStreamGeneralErrorF General stream failure string ({err})
 	JSStreamGeneralErrorF ErrorIdentifier = 10051
 
 	// JSStreamInvalidConfigF Stream configuration validation error string ({err})
@@ -281,7 +281,7 @@ var (
 		JSStreamDeleteErrF:                         {Code: 500, ErrCode: 10050, Description: "{err}"},
 		JSStreamExternalApiOverlapErrF:             {Code: 400, ErrCode: 10021, Description: "stream external api prefix {prefix} must not overlap with {subject}"},
 		JSStreamExternalDelPrefixOverlapsErrF:      {Code: 400, ErrCode: 10022, Description: "stream external delivery prefix {prefix} overlaps with stream subject {subject}"},
-		JSStreamGeneralErrorF:                      {Code: 500, ErrCode: 10051, Description: "General stream failure string"},
+		JSStreamGeneralErrorF:                      {Code: 500, ErrCode: 10051, Description: "{err}"},
 		JSStreamInvalidConfigF:                     {Code: 500, ErrCode: 10052, Description: "{err}"},
 		JSStreamInvalidExternalDeliverySubjErrF:    {Code: 400, ErrCode: 10024, Description: "stream external delivery prefix {prefix} must not contain wildcards"},
 		JSStreamLimitsErrF:                         {Code: 500, ErrCode: 10053, Description: "{err}"},

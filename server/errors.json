@@ -446,7 +446,8 @@
     "constant": "JSStreamGeneralErrorF",
     "code": 500,
     "error_code": 10051,
-    "description": "General stream failure string"
+    "description": "{err}",
+    "comment": "General stream failure string"
   },
   {
     "constant": "JSStreamInvalidConfigF",
