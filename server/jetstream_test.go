@@ -294,7 +294,7 @@ func TestJetStreamAddStreamDiscardNew(t *testing.T) {
 			}
 
 			// Now do bytes.
-			mset.purge()
+			mset.purge(nil)
 
 			big := make([]byte, 8192)
 			resp, _ = nc.Request(subj, big, 100*time.Millisecond)
@@ -1780,7 +1780,7 @@ func TestJetStreamWorkQueueRequest(t *testing.T) {
 				sub.NextMsg(time.Millisecond)
 			}
 			checkSubPending(0)
-			mset.purge()
+			mset.purge(nil)
 
 			// Now do expiration
 			req.Batch = 1
@@ -2213,7 +2213,7 @@ func TestJetStreamWorkQueueRequestBatch(t *testing.T) {
 			// Now queue up the request without messages and add them after.
 			sub, _ = nc.SubscribeSync(nats.NewInbox())
 			defer sub.Unsubscribe()
-			mset.purge()
+			mset.purge(nil)
 
 			nc.PublishRequest(o.requestNextMsgSubject(), sub.Subject, []byte(strconv.Itoa(batchSize)))
 			nc.Flush() // Make sure its registered.
@@ -2520,7 +2520,7 @@ func TestJetStreamAckReplyStreamPending(t *testing.T) {
 
 			expectPending(toSend*2 - 2)
 			// Purge and send a new one.
-			mset.purge()
+			mset.purge(nil)
 			nc.Flush()
 
 			sendStreamMsg(t, nc, "foo.1", "Hello World!")
@@ -2537,7 +2537,7 @@ func TestJetStreamAckReplyStreamPending(t *testing.T) {
 			expectPending(toSend - 4) // 203
 
 			// Test Expiration.
-			mset.purge()
+			mset.purge(nil)
 			for i := 0; i < toSend; i++ {
 				sendStreamMsg(t, nc, "foo.1", "Hello World!")
 			}
@@ -2584,7 +2584,7 @@ func TestJetStreamAckReplyStreamPending(t *testing.T) {
 			}
 			nc.Flush()
 			expectPending(100)
-			mset.purge()
+			mset.purge(nil)
 			sendStreamMsg(t, nc, "foo.22", "Hello World!")
 			expectPending(0)
 		})
@@ -3298,7 +3298,7 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 	if err := mset.update(&cfg); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	mset.purge()
+	mset.purge(nil)
 
 	// Send 5 new messages.
 	sendMsg(10, "AAAA", "Hello DeDupe!")
@@ -3343,7 +3343,7 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 	}
 
 	// Purge should wipe the msgIds as well.
-	mset.purge()
+	mset.purge(nil)
 	nmids(0)
 }
 
@@ -5577,7 +5577,7 @@ func TestJetStreamStreamPurge(t *testing.T) {
 			if state := mset.state(); state.Msgs != 100 {
 				t.Fatalf("Expected %d messages, got %d", 100, state.Msgs)
 			}
-			mset.purge()
+			mset.purge(nil)
 			state := mset.state()
 			if state.Msgs != 0 {
 				t.Fatalf("Expected %d messages, got %d", 0, state.Msgs)
@@ -5668,7 +5668,7 @@ func TestJetStreamStreamPurgeWithConsumer(t *testing.T) {
 				t.Fatalf("Expected len(pending) to be 25, got %d", state.NumAckPending)
 			}
 			// Now do purge.
-			mset.purge()
+			mset.purge(nil)
 			if state := mset.state(); state.Msgs != 0 {
 				t.Fatalf("Expected %d messages, got %d", 0, state.Msgs)
 			}
@@ -5756,7 +5756,7 @@ func TestJetStreamStreamPurgeWithConsumerAndRedelivery(t *testing.T) {
 			// Now wait to make sure we are in a redelivered state.
 			time.Sleep(wcfg.AckWait * 2)
 			// Now do purge.
-			mset.purge()
+			mset.purge(nil)
 			if state := mset.state(); state.Msgs != 0 {
 				t.Fatalf("Expected %d messages, got %d", 0, state.Msgs)
 			}
@@ -8274,7 +8274,7 @@ func TestJetStreamDeleteMsg(t *testing.T) {
 			deleteAndCheck(3, 2)
 			deleteAndCheck(2, 4)
 
-			mset.purge()
+			mset.purge(nil)
 			// Put ten more one.
 			pubTen()
 			deleteAndCheck(11, 12)
@@ -10084,7 +10084,7 @@ func TestJetStreamConsumerMaxAckPending(t *testing.T) {
 			checkSubPending(maxAckPending)
 
 			o.stop()
-			mset.purge()
+			mset.purge(nil)
 
 			// Now test a consumer that is live while we publish messages to the stream.
 			o, err = mset.addConsumer(&ConsumerConfig{
@@ -10853,7 +10853,7 @@ func TestJetStreamMaxMsgsPerSubject(t *testing.T) {
 			pubAndCheck("baz.33", 5, 15)
 
 			// Now purge and make sure all is still good.
-			mset.purge()
+			mset.purge(nil)
 			pubAndCheck("foo", 1, 1)
 			pubAndCheck("foo", 4, 5)
 			pubAndCheck("baz.22", 5, 10)
