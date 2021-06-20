@@ -268,7 +268,7 @@ func (ms *memStore) FilteredState(sseq uint64, subj string) SimpleState {
 	}
 
 	// If we want everything.
-	if subj == _EMPTY_ || subj == ">" {
+	if subj == _EMPTY_ || subj == fwcs {
 		ss.Msgs, ss.First, ss.Last = ms.state.Msgs, ms.state.FirstSeq, ms.state.LastSeq
 		return ss
 	}
@@ -389,13 +389,28 @@ func (ms *memStore) expireMsgs() {
 // PurgeEx will remove messages based on subject filters, sequence and number of messages to keep.
 // Will return the number of purged messages.
 func (ms *memStore) PurgeEx(subject string, sequence, keep uint64) (purged uint64, err error) {
-	if subject == _EMPTY_ || subject == ">" && keep == 0 {
-		return ms.Purge()
+	if subject == _EMPTY_ || subject == fwcs {
+		if keep == 0 && (sequence == 0 || sequence == 1) {
+			return ms.Purge()
+		}
+		if sequence > 1 {
+			return ms.Compact(sequence)
+		} else if keep > 0 {
+			ms.mu.RLock()
+			msgs, lseq := ms.state.Msgs, ms.state.LastSeq
+			ms.mu.RUnlock()
+			if keep >= msgs {
+				return 0, nil
+			}
+			return ms.Compact(lseq - keep + 1)
+		}
+		return 0, nil
+
 	}
 	eq := compareFn(subject)
 	if ss := ms.FilteredState(1, subject); ss.Msgs > 0 {
 		if keep > 0 {
-			if keep > ss.Msgs {
+			if keep >= ss.Msgs {
 				return 0, nil
 			}
 			ss.Msgs -= keep

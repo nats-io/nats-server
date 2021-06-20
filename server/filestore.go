@@ -904,7 +904,7 @@ func (fs *fileStore) FilteredState(sseq uint64, subj string) SimpleState {
 	}
 
 	// If subj is empty or we are not tracking multiple subjects.
-	if subj == _EMPTY_ || subj == ">" || !fs.tms {
+	if subj == _EMPTY_ || subj == fwcs || !fs.tms {
 		total := lseq - sseq + 1
 		if state := fs.State(); len(state.Deleted) > 0 {
 			for _, dseq := range state.Deleted {
@@ -3113,7 +3113,7 @@ func subjectsAll(a, b string) bool {
 }
 
 func compareFn(subject string) func(string, string) bool {
-	if subject == _EMPTY_ || subject == ">" {
+	if subject == _EMPTY_ || subject == fwcs {
 		return subjectsAll
 	}
 	if subjectHasWildcard(subject) {
@@ -3125,13 +3125,27 @@ func compareFn(subject string) func(string, string) bool {
 // PurgeEx will remove messages based on subject filters, sequence and number of messages to keep.
 // Will return the number of purged messages.
 func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint64, err error) {
-	if subject == _EMPTY_ || subject == ">" && keep == 0 {
-		return fs.Purge()
+	if subject == _EMPTY_ || subject == fwcs {
+		if keep == 0 && (sequence == 0 || sequence == 1) {
+			return fs.Purge()
+		}
+		if sequence > 1 {
+			return fs.Compact(sequence)
+		} else if keep > 0 {
+			fs.mu.RLock()
+			msgs, lseq := fs.state.Msgs, fs.state.LastSeq
+			fs.mu.RUnlock()
+			if keep >= msgs {
+				return 0, nil
+			}
+			return fs.Compact(lseq - keep + 1)
+		}
+		return 0, nil
 	}
 	eq := compareFn(subject)
 	if ss := fs.FilteredState(1, subject); ss.Msgs > 0 {
 		if keep > 0 {
-			if keep > ss.Msgs {
+			if keep >= ss.Msgs {
 				return 0, nil
 			}
 			ss.Msgs -= keep

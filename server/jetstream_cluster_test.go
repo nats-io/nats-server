@@ -7368,7 +7368,6 @@ func TestJetStreamClusterExtendedStreamPurge(t *testing.T) {
 			}
 			// Do manually for now.
 			nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
-
 			si, err := js.StreamInfo("KV")
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
@@ -7416,6 +7415,7 @@ func TestJetStreamClusterExtendedStreamPurge(t *testing.T) {
 			shouldFail(&JSApiStreamPurgeRequest{Sequence: 10, Keep: 10})
 
 			purge := func(preq *JSApiStreamPurgeRequest, newTotal uint64) {
+				t.Helper()
 				req, _ := json.Marshal(preq)
 				resp, err := nc.Request(fmt.Sprintf(JSApiStreamPurgeT, "KV"), req, time.Second)
 				if err != nil {
@@ -7437,6 +7437,7 @@ func TestJetStreamClusterExtendedStreamPurge(t *testing.T) {
 				}
 			}
 			expectLeft := func(subject string, expected uint64) {
+				t.Helper()
 				ci, err := js.AddConsumer("KV", &nats.ConsumerConfig{Durable: "dlc", FilterSubject: subject, AckPolicy: nats.AckExplicitPolicy})
 				if err != nil {
 					t.Fatalf("Unexpected error: %v", err)
@@ -7457,6 +7458,36 @@ func TestJetStreamClusterExtendedStreamPurge(t *testing.T) {
 			expectLeft("kv.baz", 50)
 
 			purge(&JSApiStreamPurgeRequest{Subject: "kv.*"}, 0)
+
+			// RESET
+			js.DeleteStream("KV")
+			// Do manually for now.
+			nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+			if _, err := js.StreamInfo("KV"); err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			// Put in 100.
+			for i := 0; i < 100; i++ {
+				js.Publish("kv.foo", []byte("OK"))
+			}
+			purge(&JSApiStreamPurgeRequest{Subject: "kv.foo", Keep: 10}, 10)
+			purge(&JSApiStreamPurgeRequest{Subject: "kv.foo", Keep: 10}, 10)
+			expectLeft("kv.foo", 10)
+
+			// RESET AGAIN
+			js.DeleteStream("KV")
+			// Do manually for now.
+			nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+			if _, err := js.StreamInfo("KV"); err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			// Put in 100.
+			for i := 0; i < 100; i++ {
+				js.Publish("kv.foo", []byte("OK"))
+			}
+			purge(&JSApiStreamPurgeRequest{Keep: 10}, 10)
+			expectLeft(">", 10)
+
 		})
 	}
 
