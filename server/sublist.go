@@ -30,6 +30,7 @@ import (
 const (
 	pwc   = '*'
 	fwc   = '>'
+	fwcs  = ">"
 	tsep  = "."
 	btsep = '.'
 )
