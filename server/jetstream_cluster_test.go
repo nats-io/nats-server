@@ -7488,6 +7488,19 @@ func TestJetStreamClusterExtendedStreamPurge(t *testing.T) {
 			purge(&JSApiStreamPurgeRequest{Keep: 10}, 10)
 			expectLeft(">", 10)
 
+			// RESET AGAIN
+			js.DeleteStream("KV")
+			// Do manually for now.
+			nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+			if _, err := js.StreamInfo("KV"); err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			// Put in 100.
+			for i := 0; i < 100; i++ {
+				js.Publish("kv.foo", []byte("OK"))
+			}
+			purge(&JSApiStreamPurgeRequest{Sequence: 90}, 11) // Up to 90 so we keep that, hence the 11.
+			expectLeft(">", 11)
 		})
 	}
 
