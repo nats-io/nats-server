@@ -17,6 +17,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -1754,6 +1755,89 @@ func TestNoRaceJetStreamClusterSourcesMuxd(t *testing.T) {
 		return nil
 	})
 
+}
+
+func TestNoRaceJetStreamClusterExtendedStreamPurgeStall(t *testing.T) {
+	t.Skip("fails always")
+
+	cerr := func(t *testing.T, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("unexepected err: %s", err)
+		}
+	}
+
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := StreamConfig{
+		Name:     "KV",
+		Subjects: []string{"kv.>"},
+		Storage:  FileStorage,
+	}
+	req, err := json.Marshal(cfg)
+	cerr(t, err)
+
+	_, err = nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+	cerr(t, err)
+
+	si, err := js.StreamInfo("KV")
+	cerr(t, err)
+
+	// 10kb messages spread over 1000 subjects
+	body := make([]byte, 101024)
+	for i := 0; i < 100000; i++ {
+		err := nc.Publish(fmt.Sprintf("kv.%d", i%1000), body)
+		cerr(t, err)
+	}
+	si, err = js.StreamInfo("KV")
+	cerr(t, err)
+	if si == nil || si.Config.Name != "KV" {
+		t.Fatalf("StreamInfo is not correct %+v", si)
+	}
+
+	func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		ticker := time.NewTicker(200 * time.Millisecond)
+		ready := false
+		for {
+			select {
+			case <-ticker.C:
+				si, err = js.StreamInfo("KV")
+				cerr(t, err)
+				if si.State.Msgs == 100000 {
+					cancel()
+					ticker.Stop()
+					return
+				}
+
+			case <-ctx.Done():
+				ticker.Stop()
+				if !ready {
+					t.Fatalf("timeout waiting for messages")
+				}
+			}
+		}
+	}()
+
+	jp, _ := json.Marshal(&JSApiStreamPurgeRequest{Subject: "kv.20"})
+	start := time.Now()
+	res, err := nc.Request(fmt.Sprintf(JSApiStreamPurgeT, "KV"), jp, time.Minute)
+	elapsed := time.Since(start)
+	cerr(t, err)
+	pres := JSApiStreamPurgeResponse{}
+	err = json.Unmarshal(res.Data, &pres)
+	cerr(t, err)
+	if !pres.Success {
+		t.Fatalf("purge failed: %#v", pres)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("Purge took %s", elapsed)
+	}
 }
 
 func TestNoRaceJetStreamClusterMirrorExpirationAndMissingSequences(t *testing.T) {
