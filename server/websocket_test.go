@@ -434,7 +434,10 @@ func TestWSReadCompressedFrames(t *testing.T) {
 	// Stress the fact that we use a pool and want to make sure
 	// that if we get a decompressor from the pool, it is properly reset
 	// with the buffer to decompress.
-	for i := 0; i < 9; i++ {
+	// Since we unmask the read buffer, reset it now and fill it
+	// with 10 compressed frames.
+	rb = nil
+	for i := 0; i < 10; i++ {
 		rb = append(rb, wsmsg1...)
 	}
 	bufs, err = c.wsRead(ri, tr, rb)
@@ -443,6 +446,31 @@ func TestWSReadCompressedFrames(t *testing.T) {
 	}
 	if n := len(bufs); n != 10 {
 		t.Fatalf("Unexpected buffer returned: %v", n)
+	}
+
+	// Compress a message and send it in several frames.
+	buf := &bytes.Buffer{}
+	compressor, _ := flate.NewWriter(buf, 1)
+	compressor.Write(uncompressed)
+	compressor.Flush()
+	compressed := buf.Bytes()
+	// The last 4 bytes are dropped
+	compressed = compressed[:len(compressed)-4]
+	ncomp := 10
+	frag1 := testWSCreateClientMsg(wsBinaryMessage, 1, false, false, compressed[:ncomp])
+	frag1[0] |= wsRsv1Bit
+	frag2 := testWSCreateClientMsg(wsBinaryMessage, 2, true, false, compressed[ncomp:])
+	rb = append([]byte(nil), frag1...)
+	rb = append(rb, frag2...)
+	bufs, err = c.wsRead(ri, tr, rb)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if n := len(bufs); n != 1 {
+		t.Fatalf("Unexpected buffer returned: %v", n)
+	}
+	if !bytes.Equal(bufs[0], uncompressed) {
+		t.Fatalf("Unexpected content: %s", bufs[0])
 	}
 }
 
@@ -827,14 +855,19 @@ func TestWSReadErrors(t *testing.T) {
 		},
 		{
 			func() []byte {
-				frag1 := testWSCreateClientMsg(wsBinaryMessage, 1, false, true, []byte("frag1"))
-				frag2 := testWSCreateClientMsg(wsBinaryMessage, 2, false, true, []byte("frag2"))
-				frag2[0] |= wsRsv1Bit
-				all := append([]byte(nil), frag1...)
-				all = append(all, frag2...)
+				frame := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("frame"))
+				frag := testWSCreateClientMsg(wsBinaryMessage, 2, false, false, []byte("continuation"))
+				all := append([]byte(nil), frame...)
+				all = append(all, frag...)
 				return all
 			},
 			"invalid continuation frame", 2,
+		},
+		{
+			func() []byte {
+				return testWSCreateClientMsg(wsBinaryMessage, 2, false, true, []byte("frame"))
+			},
+			"invalid continuation frame", 1,
 		},
 		{
 			func() []byte {
@@ -2914,7 +2947,17 @@ func TestWSCompressionFrameSizeLimit(t *testing.T) {
 					}
 				}
 				// Check frame headers for the proper formatting.
-				if i%2 == 1 {
+				if i%2 == 0 {
+					// Only the first frame should have the compress bit set.
+					if b[0]&wsRsv1Bit != 0 {
+						if i > 0 {
+							t.Fatalf("Compressed bit should not be in continuation frame")
+						}
+					} else if i == 0 {
+						t.Fatalf("Compressed bit missing")
+					}
+				} else {
+					// Collect the payload
 					bb.Write(b)
 				}
 			}
