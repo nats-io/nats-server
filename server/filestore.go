@@ -575,6 +575,7 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) (*msgBlock, e
 		}
 		if err := mb.indexCacheBuf(buf); err != nil {
 			// This likely indicates this was already encrypted or corrupt.
+			mb.cache = nil
 			return nil, err
 		}
 		// Undo cache from above for later.
@@ -587,6 +588,7 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) (*msgBlock, e
 		if err := ioutil.WriteFile(mb.mfn, buf, defaultFilePerms); err != nil {
 			return nil, err
 		}
+		freeBlkBuffer(buf)
 		// Remove the index file here since it will be in plaintext as well so we just rebuild.
 		os.Remove(mb.ifn)
 	}
@@ -685,6 +687,7 @@ func (mb *msgBlock) rebuildState() (*LostStreamData, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer freeBlkBuffer(buf)
 
 	// Check if we need to decrypt.
 	if mb.bek != nil && len(buf) > 0 {
@@ -4188,6 +4191,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includ
 		if writeFile(msgPre+fmt.Sprintf(blkScan, mb.index), buf) != nil {
 			return
 		}
+		freeBlkBuffer(buf)
 	}
 
 	// Bail if no consumers requested.
