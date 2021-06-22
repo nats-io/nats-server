@@ -4522,3 +4522,39 @@ func TestConfigReloadAccountMappings(t *testing.T) {
 	checkPending(fsub, 1)
 	checkPending(sub, 0)
 }
+
+func TestConfigReloadWithSysAccountOnly(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		accounts {
+			$SYS {
+				users = [{user: "system",pass: "password"}, {user: "system2",pass: "password2"}]
+			}
+		}
+	`))
+	defer os.Remove(conf)
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	dch := make(chan struct{}, 1)
+	nc := natsConnect(t,
+		s.ClientURL(),
+		nats.DisconnectErrHandler(func(_ *nats.Conn, _ error) {
+			dch <- struct{}{}
+		}),
+		nats.NoCallbacksAfterClientClose())
+	defer nc.Close()
+
+	// Just reload...
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Error on reload: %v", err)
+	}
+
+	// Make sure we did not get disconnected
+	select {
+	case <-dch:
+		t.Fatal("Got disconnected!")
+	case <-time.After(500 * time.Millisecond):
+		// ok
+	}
+}
