@@ -3152,7 +3152,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 		}
 		last := ss.Last
 		if sequence > 0 {
-			last = sequence + 1
+			last = sequence - 1
 		}
 		for seq := ss.First; seq <= last; seq++ {
 			if sm, _ := fs.msgForSeq(seq); sm != nil && eq(sm.subj, subject) {
