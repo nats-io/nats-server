@@ -1757,8 +1757,6 @@ func TestNoRaceJetStreamClusterSourcesMuxd(t *testing.T) {
 }
 
 func TestNoRaceJetStreamClusterExtendedStreamPurgeStall(t *testing.T) {
-	t.Skip("fails always")
-
 	cerr := func(t *testing.T, err error) {
 		t.Helper()
 		if err != nil {
@@ -1768,6 +1766,10 @@ func TestNoRaceJetStreamClusterExtendedStreamPurgeStall(t *testing.T) {
 
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
 
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
@@ -1779,28 +1781,20 @@ func TestNoRaceJetStreamClusterExtendedStreamPurgeStall(t *testing.T) {
 	})
 	cerr(t, err)
 
-	// 100kb messages spread over 1000 subjects
+	// 100kb messages spread over 1000 different subjects
 	body := make([]byte, 100*1024)
-	for i := 0; i < 100000; i++ {
-		err := nc.Publish(fmt.Sprintf("kv.%d", i%1000), body)
-		cerr(t, err)
+	for i := 0; i < 50000; i++ {
+		if _, err := js.PublishAsync(fmt.Sprintf("kv.%d", i%1000), body); err != nil {
+			cerr(t, err)
+		}
 	}
-	si, err = js.StreamInfo("KV")
-	cerr(t, err)
-	if si == nil || si.Config.Name != "KV" {
-		t.Fatalf("StreamInfo is not correct %+v", si)
-	}
-
 	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
-		si, err = js.StreamInfo("KV")
-		if err != nil {
+		if si, err = js.StreamInfo("KV"); err != nil {
 			return err
 		}
-
-		if si.State.Msgs == 100000 {
+		if si.State.Msgs == 50000 {
 			return nil
 		}
-
 		return fmt.Errorf("waiting for more")
 	})
 
@@ -1815,8 +1809,12 @@ func TestNoRaceJetStreamClusterExtendedStreamPurgeStall(t *testing.T) {
 	if !pres.Success {
 		t.Fatalf("purge failed: %#v", pres)
 	}
-	if elapsed > time.Second {
-		t.Fatalf("Purge took %s", elapsed)
+	if elapsed > 5*time.Second {
+		t.Fatalf("Purge took too long %s", elapsed)
+	}
+	v, _ := s.Varz(nil)
+	if v.Mem > 600*1024*1024 { // 600MB limit nbut in practice < 100MB -> Was ~7GB when failing.
+		t.Fatalf("Used too much memory: %v", friendlyBytes(v.Mem))
 	}
 }
 
