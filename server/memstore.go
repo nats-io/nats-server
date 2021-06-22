@@ -417,7 +417,7 @@ func (ms *memStore) PurgeEx(subject string, sequence, keep uint64) (purged uint6
 		}
 		last := ss.Last
 		if sequence > 0 {
-			last = sequence + 1
+			last = sequence - 1
 		}
 		ms.mu.Lock()
 		for seq := ss.First; seq <= last; seq++ {
