@@ -17,7 +17,6 @@ package server
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -1773,22 +1772,15 @@ func TestNoRaceJetStreamClusterExtendedStreamPurgeStall(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
-	cfg := StreamConfig{
+	si, err := js.AddStream(&nats.StreamConfig{
 		Name:     "KV",
 		Subjects: []string{"kv.>"},
-		Storage:  FileStorage,
-	}
-	req, err := json.Marshal(cfg)
+		Storage:  nats.FileStorage,
+	})
 	cerr(t, err)
 
-	_, err = nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
-	cerr(t, err)
-
-	si, err := js.StreamInfo("KV")
-	cerr(t, err)
-
-	// 10kb messages spread over 1000 subjects
-	body := make([]byte, 101024)
+	// 100kb messages spread over 1000 subjects
+	body := make([]byte, 100*1024)
 	for i := 0; i < 100000; i++ {
 		err := nc.Publish(fmt.Sprintf("kv.%d", i%1000), body)
 		cerr(t, err)
@@ -1799,30 +1791,18 @@ func TestNoRaceJetStreamClusterExtendedStreamPurgeStall(t *testing.T) {
 		t.Fatalf("StreamInfo is not correct %+v", si)
 	}
 
-	func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		ticker := time.NewTicker(200 * time.Millisecond)
-		ready := false
-		for {
-			select {
-			case <-ticker.C:
-				si, err = js.StreamInfo("KV")
-				cerr(t, err)
-				if si.State.Msgs == 100000 {
-					cancel()
-					ticker.Stop()
-					return
-				}
-
-			case <-ctx.Done():
-				ticker.Stop()
-				if !ready {
-					t.Fatalf("timeout waiting for messages")
-				}
-			}
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		si, err = js.StreamInfo("KV")
+		if err != nil {
+			return err
 		}
-	}()
+
+		if si.State.Msgs == 100000 {
+			return nil
+		}
+
+		return fmt.Errorf("waiting for more")
+	})
 
 	jp, _ := json.Marshal(&JSApiStreamPurgeRequest{Subject: "kv.20"})
 	start := time.Now()
