@@ -2315,7 +2315,8 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 		}
 		mset.store = ms
 	case FileStorage:
-		fs, err := newFileStoreWithCreated(*fsCfg, mset.cfg, mset.created)
+		s := mset.srv
+		fs, err := newFileStoreWithCreated(*fsCfg, mset.cfg, mset.created, s.jsKeyGen(mset.acc.Name))
 		if err != nil {
 			mset.mu.Unlock()
 			return err
@@ -3320,8 +3321,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 			return nil, err
 		}
 		fpath := path.Join(sdir, filepath.Clean(hdr.Name))
-		pdir := filepath.Dir(fpath)
-		os.MkdirAll(pdir, defaultDirPerms)
+		os.MkdirAll(filepath.Dir(fpath), defaultDirPerms)
 		fd, err := os.OpenFile(fpath, os.O_CREATE|os.O_RDWR, 0600)
 		if err != nil {
 			return nil, err
@@ -3335,7 +3335,6 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 
 	// Check metadata.
 	// The cfg passed in will be the new identity for the stream.
-
 	var fcfg FileStreamInfo
 	b, err := ioutil.ReadFile(path.Join(sdir, JetStreamMetaFile))
 	if err != nil {
@@ -3351,9 +3350,13 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 	}
 	// Move into the correct place here.
 	ndir := path.Join(jsa.storeDir, streamsDir, cfg.Name)
-	// Remove old one if for some reason is here.
-	if _, err := os.Stat(ndir); !os.IsNotExist(err) {
+	// Remove old one if for some reason it is still here.
+	if _, err := os.Stat(ndir); err == nil {
 		os.RemoveAll(ndir)
+	}
+	// Make sure our destination streams directory exists.
+	if err := os.MkdirAll(path.Join(jsa.storeDir, streamsDir), defaultDirPerms); err != nil {
+		return nil, err
 	}
 	// Move into new location.
 	if err := os.Rename(sdir, ndir); err != nil {

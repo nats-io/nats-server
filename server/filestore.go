@@ -16,6 +16,8 @@ package server
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -25,7 +27,6 @@ import (
 	"hash"
 	"io"
 	"io/ioutil"
-	"math/rand"
 	"net"
 	"os"
 	"path"
@@ -36,6 +37,8 @@ import (
 
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
+	"golang.org/x/crypto/chacha20"
+	"golang.org/x/crypto/chacha20poly1305"
 )
 
 type FileStoreConfig struct {
@@ -79,6 +82,8 @@ type fileStore struct {
 	syncTmr *time.Timer
 	cfg     FileStreamInfo
 	fcfg    FileStoreConfig
+	prf     keyGen
+	aek     cipher.AEAD
 	lmb     *msgBlock
 	blks    []*msgBlock
 	hh      hash.Hash64
@@ -97,6 +102,10 @@ type msgBlock struct {
 	last    msgId
 	mu      sync.RWMutex
 	fs      *fileStore
+	aek     cipher.AEAD
+	bek     *chacha20.Cipher
+	seed    []byte
+	nonce   []byte
 	mfn     string
 	mfd     *os.File
 	ifn     string
@@ -173,6 +182,8 @@ const (
 	indexScan = "%d.idx"
 	// used to load per subject meta information.
 	fssScan = "%d.fss"
+	// used to store our block encryption key.
+	keyScan = "%d.key"
 	// This is where we keep state on consumers.
 	consumerDir = "obs"
 	// Index file for a consumer.
@@ -191,9 +202,15 @@ const (
 	coalesceMinimum = 16 * 1024
 	// maxFlushWait is maximum we will wait to gather messages to flush.
 	maxFlushWait = 8 * time.Millisecond
+
 	// Metafiles for streams and consumers.
 	JetStreamMetaFile    = "meta.inf"
 	JetStreamMetaFileSum = "meta.sum"
+	JetStreamMetaFileKey = "meta.key"
+
+	// AEK key sizes
+	metaKeySize = 72
+	blkKeySize  = 72
 
 	// Default stream block size.
 	defaultStreamBlockSize = 16 * 1024 * 1024 // 16MB
@@ -208,10 +225,10 @@ const (
 )
 
 func newFileStore(fcfg FileStoreConfig, cfg StreamConfig) (*fileStore, error) {
-	return newFileStoreWithCreated(fcfg, cfg, time.Now().UTC())
+	return newFileStoreWithCreated(fcfg, cfg, time.Now().UTC(), nil)
 }
 
-func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created time.Time) (*fileStore, error) {
+func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created time.Time, prf keyGen) (*fileStore, error) {
 	if cfg.Name == _EMPTY_ {
 		return nil, fmt.Errorf("name required")
 	}
@@ -250,6 +267,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	fs := &fileStore{
 		fcfg: fcfg,
 		cfg:  FileStreamInfo{Created: created, StreamConfig: cfg},
+		prf:  prf,
 		qch:  make(chan struct{}),
 	}
 
@@ -291,6 +309,16 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	if _, err := os.Stat(meta); err != nil && os.IsNotExist(err) {
 		if err := fs.writeStreamMeta(); err != nil {
 			return nil, err
+		}
+	}
+	// If we expect to be encrypted check that what we are restoring is not plaintext.
+	// This can happen on snapshot restores or conversions.
+	if fs.prf != nil {
+		keyFile := path.Join(fs.fcfg.StoreDir, JetStreamMetaFileKey)
+		if _, err := os.Stat(keyFile); err != nil && os.IsNotExist(err) {
+			if err := fs.writeStreamMeta(); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -366,9 +394,53 @@ func dynBlkSize(retention RetentionPolicy, maxBytes int64) uint64 {
 	}
 }
 
+// Generate an asset encryption key from the context and server PRF.
+func (fs *fileStore) genEncryptionKeys(context string) (aek cipher.AEAD, bek *chacha20.Cipher, seed, encrypted []byte, err error) {
+	if fs.prf == nil {
+		return nil, nil, nil, nil, errNoEncryption
+	}
+	// Generate key encryption key.
+	kek, err := chacha20poly1305.NewX(fs.prf([]byte(context)))
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	// Generate random asset encryption key seed.
+	seed = make([]byte, 32)
+	rand.Read(seed)
+	aek, err = chacha20poly1305.NewX(seed)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	// Generate our nonce. Use same buffer to hold encrypted seed.
+	nonce := make([]byte, kek.NonceSize(), kek.NonceSize()+len(seed)+kek.Overhead())
+	rand.Read(nonce)
+	bek, err = chacha20.NewUnauthenticatedCipher(seed[:], nonce)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	return aek, bek, seed, kek.Seal(nonce, nonce, seed, nil), nil
+}
+
 // Write out meta and the checksum.
 // Lock should be held.
 func (fs *fileStore) writeStreamMeta() error {
+	if fs.prf != nil && fs.aek == nil {
+		key, _, _, encrypted, err := fs.genEncryptionKeys(fs.cfg.Name)
+		if err != nil {
+			return err
+		}
+		fs.aek = key
+		keyFile := path.Join(fs.fcfg.StoreDir, JetStreamMetaFileKey)
+		if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if err := ioutil.WriteFile(keyFile, encrypted, defaultFilePerms); err != nil {
+			return err
+		}
+	}
+
 	meta := path.Join(fs.fcfg.StoreDir, JetStreamMetaFile)
 	if _, err := os.Stat(meta); err != nil && !os.IsNotExist(err) {
 		return err
@@ -377,6 +449,13 @@ func (fs *fileStore) writeStreamMeta() error {
 	if err != nil {
 		return err
 	}
+	// Encrypt if needed.
+	if fs.aek != nil {
+		nonce := make([]byte, fs.aek.NonceSize(), fs.aek.NonceSize()+len(b)+fs.aek.Overhead())
+		rand.Read(nonce)
+		b = fs.aek.Seal(nonce, nonce, b, nil)
+	}
+
 	if err := ioutil.WriteFile(meta, b, defaultFilePerms); err != nil {
 		return err
 	}
@@ -396,7 +475,7 @@ const checksumSize = 8
 // This is the max room needed for index header.
 const indexHdrSize = 7*binary.MaxVarintLen64 + hdrLen + checksumSize
 
-func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) *msgBlock {
+func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) (*msgBlock, error) {
 	mb := &msgBlock{fs: fs, index: index, cexp: fs.fcfg.CacheExpire}
 
 	mdir := path.Join(fs.fcfg.StoreDir, msgDir)
@@ -409,18 +488,78 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) *msgBlock {
 		mb.hh, _ = highwayhash.New64(key[:])
 	}
 
+	var createdKeys bool
+
+	// Check if encryption is enabled.
+	if fs.prf != nil {
+		ekey, err := ioutil.ReadFile(path.Join(mdir, fmt.Sprintf(keyScan, mb.index)))
+		if err != nil {
+			// We do not seem to have keys even though we should. Could be a plaintext conversion.
+			// Create the keys and we will doubel check below.
+			if err := fs.genEncryptionKeysForBlock(mb); err != nil {
+				return nil, err
+			}
+			createdKeys = true
+		} else {
+			if len(ekey) != blkKeySize {
+				return nil, errBadKeySize
+			}
+			// Recover key encryption key.
+			kek, err := chacha20poly1305.NewX(fs.prf([]byte(fmt.Sprintf("%s:%d", fs.cfg.Name, mb.index))))
+			if err != nil {
+				return nil, err
+			}
+			ns := kek.NonceSize()
+			seed, err := kek.Open(nil, ekey[:ns], ekey[ns:], nil)
+			if err != nil {
+				return nil, err
+			}
+			mb.seed, mb.nonce = seed, ekey[:ns]
+			if mb.aek, err = chacha20poly1305.NewX(seed); err != nil {
+				return nil, err
+			}
+			if mb.bek, err = chacha20.NewUnauthenticatedCipher(seed, ekey[:ns]); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	// If we created keys here, let's check the data and if it is plaintext convert here.
+	if createdKeys {
+		buf, err := ioutil.ReadFile(mb.mfn)
+		if err != nil {
+			return nil, err
+		}
+		if err := mb.indexCacheBuf(buf); err != nil {
+			// This likely indicates this was already encrypted or corrupt.
+			return nil, err
+		}
+		// Undo cache from above for later.
+		mb.cache = nil
+		wbek, err := chacha20.NewUnauthenticatedCipher(mb.seed, mb.nonce)
+		if err != nil {
+			return nil, err
+		}
+		wbek.XORKeyStream(buf, buf)
+		if err := ioutil.WriteFile(mb.mfn, buf, defaultFilePerms); err != nil {
+			return nil, err
+		}
+		// Remove the index file here since it will be in plaintext as well so we just rebuild.
+		os.Remove(mb.ifn)
+	}
+
 	// Open up the message file, but we will try to recover from the index file.
 	// We will check that the last checksums match.
 	file, err := os.Open(mb.mfn)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer file.Close()
 
-	if fi, _ := file.Stat(); fi != nil {
+	if fi, err := file.Stat(); fi != nil {
 		mb.rbytes = uint64(fi.Size())
 	} else {
-		return nil
+		return nil, err
 	}
 	// Grab last checksum from main block file.
 	var lchk [8]byte
@@ -436,7 +575,7 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) *msgBlock {
 				mb.readPerSubjectInfo()
 			}
 			fs.blks = append(fs.blks, mb)
-			return mb
+			return mb, nil
 		}
 	}
 
@@ -444,11 +583,12 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) *msgBlock {
 	if ld, _ := mb.rebuildState(); ld != nil {
 		fs.rebuildState(ld)
 	}
+
 	// Rewrite this to make sure we are sync'd.
 	mb.writeIndexInfo()
 	fs.blks = append(fs.blks, mb)
 	fs.lmb = mb
-	return mb
+	return mb, nil
 }
 
 func (fs *fileStore) lostData() *LostStreamData {
@@ -502,6 +642,17 @@ func (mb *msgBlock) rebuildState() (*LostStreamData, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Check if we need to decrypt.
+	if mb.bek != nil && len(buf) > 0 {
+		// Recreate to reset counter.
+		mb.bek, err = chacha20.NewUnauthenticatedCipher(mb.seed, mb.nonce)
+		if err != nil {
+			return nil, err
+		}
+		mb.bek.XORKeyStream(buf, buf)
+	}
+
 	mb.rbytes = uint64(len(buf))
 
 	addToDmap := func(seq uint64) {
@@ -648,7 +799,7 @@ func (mb *msgBlock) rebuildState() (*LostStreamData, error) {
 				}
 			}
 		}
-
+		// Advance to next record.
 		index += rl
 	}
 
@@ -681,7 +832,7 @@ func (fs *fileStore) recoverMsgs() error {
 	for _, fi := range fis {
 		var index uint64
 		if n, err := fmt.Sscanf(fi.Name(), blkScan, &index); err == nil && n == 1 {
-			if mb := fs.recoverMsgBlock(fi, index); mb != nil {
+			if mb, err := fs.recoverMsgBlock(fi, index); err == nil && mb != nil {
 				if fs.state.FirstSeq == 0 || mb.first.seq < fs.state.FirstSeq {
 					fs.state.FirstSeq = mb.first.seq
 					fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
@@ -692,6 +843,8 @@ func (fs *fileStore) recoverMsgs() error {
 				}
 				fs.state.Msgs += mb.msgs
 				fs.state.Bytes += mb.bytes
+			} else {
+				return err
 			}
 		}
 	}
@@ -1069,6 +1222,13 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	// For subject based info.
 	mb.sfn = path.Join(mdir, fmt.Sprintf(fssScan, mb.index))
 
+	// Check if encryption is enabled.
+	if fs.prf != nil {
+		if err := fs.genEncryptionKeysForBlock(mb); err != nil {
+			return nil, err
+		}
+	}
+
 	// Set cache time to creation time to start.
 	ts := time.Now().UnixNano()
 	// Race detector wants these protected.
@@ -1090,6 +1250,27 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	fs.lmb = mb
 
 	return mb, nil
+}
+
+// Generate the keys for this message block and write them out.
+func (fs *fileStore) genEncryptionKeysForBlock(mb *msgBlock) error {
+	if mb == nil {
+		return nil
+	}
+	key, bek, seed, encrypted, err := fs.genEncryptionKeys(fmt.Sprintf("%s:%d", fs.cfg.Name, mb.index))
+	if err != nil {
+		return err
+	}
+	mb.aek, mb.bek, mb.seed, mb.nonce = key, bek, seed, encrypted[:key.NonceSize()]
+	mdir := path.Join(fs.fcfg.StoreDir, msgDir)
+	keyFile := path.Join(mdir, fmt.Sprintf(keyScan, mb.index))
+	if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := ioutil.WriteFile(keyFile, encrypted, defaultFilePerms); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Make sure we can write to the last message block.
@@ -1371,7 +1552,10 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 		fsUnlock()
 		return false, ErrStoreSnapshotInProgress
 	}
-
+	// If in encrypted mode negate secure rewrite here.
+	if secure && fs.prf != nil {
+		secure = false
+	}
 	mb := fs.selectMsgBlock(seq)
 	if mb == nil {
 		var err = ErrStoreEOF
@@ -2370,11 +2554,10 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 
 		// Clear any headers bit that could be set.
 		rl &^= hbit
-
 		dlen := int(rl) - msgHdrSize
 
 		// Do some quick sanity checks here.
-		if dlen < 0 || int(slen) > dlen || dlen > int(rl) {
+		if dlen < 0 || int(slen) > dlen || dlen > int(rl) || rl > 32*1024*1024 {
 			// This means something is off.
 			// TODO(dlc) - Add into bad list?
 			return errCorruptState
@@ -2464,7 +2647,22 @@ func (mb *msgBlock) flushPendingMsgs() error {
 	mfd := mb.mfd
 	mb.mu.Unlock()
 
-	var n, tn int
+	var n int
+
+	// Check if we need to encrypt.
+	if mb.bek != nil && lob > 0 {
+		const rsz = 32 * 1024 // 32k
+		var rdst [rsz]byte
+		var dst []byte
+		if lob > rsz {
+			dst = make([]byte, lob)
+		} else {
+			dst = rdst[:lob]
+		}
+		// Need to leave original alone.
+		mb.bek.XORKeyStream(dst, buf)
+		buf = dst
+	}
 
 	// Append new data to the message block file.
 	for lbb := lob; lbb > 0; lbb = len(buf) {
@@ -2482,10 +2680,6 @@ func (mb *msgBlock) flushPendingMsgs() error {
 			}
 			return err
 		}
-
-		woff += int64(n)
-		tn += n
-
 		// Partial write.
 		if n != lbb {
 			buf = buf[n:]
@@ -2494,6 +2688,9 @@ func (mb *msgBlock) flushPendingMsgs() error {
 			break
 		}
 	}
+
+	// Update our write offset.
+	woff += int64(lob)
 
 	// We did a successful write.
 	// Re-acquire lock to update.
@@ -2514,7 +2711,7 @@ func (mb *msgBlock) flushPendingMsgs() error {
 	// Decide what we want to do with the buffer in hand. If we have load interest
 	// we will hold onto the whole thing, otherwise empty the buffer, possibly reusing it.
 	if ts := time.Now().UnixNano(); ts < mb.llts || (ts-mb.llts) <= int64(mb.cexp) {
-		mb.cache.wp += tn
+		mb.cache.wp += lob
 	} else {
 		if cap(buf) <= maxBufReuse {
 			buf = buf[:0]
@@ -2606,6 +2803,15 @@ checkCache:
 	// Make sure this is cleared in case we had a partial when we started.
 	mb.clearCacheAndOffset()
 
+	// Check if we need to decrypt.
+	if mb.bek != nil && len(buf) > 0 {
+		rbek, err := chacha20.NewUnauthenticatedCipher(mb.seed, mb.nonce)
+		if err != nil {
+			return err
+		}
+		rbek.XORKeyStream(buf, buf)
+	}
+
 	if err := mb.indexCacheBuf(buf); err != nil {
 		if err == errCorruptState {
 			fs := mb.fs
@@ -2660,6 +2866,8 @@ var (
 	errFlushRunning = errors.New("flush is already running")
 	errCorruptState = errors.New("corrupt state file")
 	errPendingData  = errors.New("pending data still present")
+	errNoEncryption = errors.New("encryption not enabled")
+	errBadKeySize   = errors.New("encryption bad key size")
 )
 
 // Used for marking messages that have had their checksums checked.
@@ -2954,6 +3162,11 @@ func (mb *msgBlock) writeIndexInfo() error {
 
 	mb.lwits = time.Now().UnixNano()
 
+	// Encrypt if needed.
+	if mb.aek != nil {
+		buf = mb.aek.Seal(buf[:0], mb.nonce, buf, nil)
+	}
+
 	if n, err = mb.ifd.WriteAt(buf, 0); err == nil {
 		mb.liwsz = int64(n)
 		mb.werr = nil
@@ -2969,6 +3182,14 @@ func (mb *msgBlock) readIndexInfo() error {
 	buf, err := ioutil.ReadFile(mb.ifn)
 	if err != nil {
 		return err
+	}
+
+	// Decrypt if needed.
+	if mb.aek != nil {
+		buf, err = mb.aek.Open(buf[:0], mb.nonce, buf, nil)
+		if err != nil {
+			return err
+		}
 	}
 
 	if err := checkHeader(buf); err != nil {
@@ -3758,24 +3979,17 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includ
 
 	fs.mu.Lock()
 	blks := fs.blks
-	// Write our general meta data.
-	if err := fs.writeStreamMeta(); err != nil {
-		fs.mu.Unlock()
-		writeErr(fmt.Sprintf("Could not write stream meta file: %v", err))
-		return
-	}
-	meta, err := ioutil.ReadFile(path.Join(fs.fcfg.StoreDir, JetStreamMetaFile))
+	// Grab our general meta data.
+	// We do this now instead of pulling from files since they could be encrypted.
+	meta, err := json.Marshal(fs.cfg)
 	if err != nil {
 		fs.mu.Unlock()
-		writeErr(fmt.Sprintf("Could not read stream meta file: %v", err))
+		writeErr(fmt.Sprintf("Could not gather stream meta file: %v", err))
 		return
 	}
-	sum, err := ioutil.ReadFile(path.Join(fs.fcfg.StoreDir, JetStreamMetaFileSum))
-	if err != nil {
-		fs.mu.Unlock()
-		writeErr(fmt.Sprintf("Could not read stream checksum file: %v", err))
-		return
-	}
+	fs.hh.Reset()
+	fs.hh.Write(meta)
+	sum := []byte(hex.EncodeToString(fs.hh.Sum(nil)))
 	fs.mu.Unlock()
 
 	// Meta first.
@@ -3799,8 +4013,17 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includ
 		buf, err := ioutil.ReadFile(mb.ifn)
 		if err != nil {
 			mb.mu.Unlock()
-			writeErr(fmt.Sprintf("Could not read message block [%d] meta file: %v", mb.index, err))
+			writeErr(fmt.Sprintf("Could not read message block [%d] index file: %v", mb.index, err))
 			return
+		}
+		// Check for encryption.
+		if mb.aek != nil && len(buf) > 0 {
+			buf, err = mb.aek.Open(buf[:0], mb.nonce, buf, nil)
+			if err != nil {
+				mb.mu.Unlock()
+				writeErr(fmt.Sprintf("Could not decrypt message block [%d] index file: %v", mb.index, err))
+				return
+			}
 		}
 		if writeFile(msgPre+fmt.Sprintf(indexScan, mb.index), buf) != nil {
 			mb.mu.Unlock()
@@ -3814,6 +4037,16 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includ
 			mb.mu.Unlock()
 			writeErr(fmt.Sprintf("Could not read message block [%d]: %v", mb.index, err))
 			return
+		}
+		// Check for encryption.
+		if mb.bek != nil && len(buf) > 0 {
+			rbek, err := chacha20.NewUnauthenticatedCipher(mb.seed, mb.nonce)
+			if err != nil {
+				mb.mu.Unlock()
+				writeErr(fmt.Sprintf("Could not create encryption key for message block [%d]: %v", mb.index, err))
+				return
+			}
+			rbek.XORKeyStream(buf, buf)
 		}
 		mb.mu.Unlock()
 		// Do this one unlocked.
@@ -3834,18 +4067,17 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includ
 
 	for _, o := range cfs {
 		o.mu.Lock()
-		meta, err := ioutil.ReadFile(path.Join(o.odir, JetStreamMetaFile))
+		// Grab our general meta data.
+		// We do this now instead of pulling from files since they could be encrypted.
+		meta, err := json.Marshal(o.cfg)
 		if err != nil {
 			o.mu.Unlock()
-			writeErr(fmt.Sprintf("Could not read consumer meta file for %q: %v", o.name, err))
+			writeErr(fmt.Sprintf("Could not gather consumer meta file for %q: %v", o.name, err))
 			return
 		}
-		sum, err := ioutil.ReadFile(path.Join(o.odir, JetStreamMetaFileSum))
-		if err != nil {
-			o.mu.Unlock()
-			writeErr(fmt.Sprintf("Could not read consumer checksum file for %q: %v", o.name, err))
-			return
-		}
+		o.hh.Reset()
+		o.hh.Write(meta)
+		sum := []byte(hex.EncodeToString(o.hh.Sum(nil)))
 
 		// We can have the running state directly encoded now.
 		state, err := o.encodeState()
@@ -3921,6 +4153,8 @@ type consumerFileStore struct {
 	mu      sync.Mutex
 	fs      *fileStore
 	cfg     *FileConsumerInfo
+	prf     keyGen
+	aek     cipher.AEAD
 	name    string
 	odir    string
 	ifn     string
@@ -3953,6 +4187,7 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 	o := &consumerFileStore{
 		fs:   fs,
 		cfg:  csi,
+		prf:  fs.prf,
 		name: name,
 		odir: odir,
 		ifn:  path.Join(odir, consumerState),
@@ -3964,12 +4199,50 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 	}
 	o.hh = hh
 
+	// Check for encryption.
+	if o.prf != nil {
+		if ekey, err := ioutil.ReadFile(path.Join(odir, JetStreamMetaFileKey)); err == nil {
+			// Recover key encryption key.
+			kek, err := chacha20poly1305.NewX(fs.prf([]byte(fs.cfg.Name + tsep + o.name)))
+			if err != nil {
+				return nil, err
+			}
+			ns := kek.NonceSize()
+			seed, err := kek.Open(nil, ekey[:ns], ekey[ns:], nil)
+			if err != nil {
+				return nil, err
+			}
+			if o.aek, err = chacha20poly1305.NewX(seed); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	// Write our meta data iff does not exist.
 	meta := path.Join(odir, JetStreamMetaFile)
 	if _, err := os.Stat(meta); err != nil && os.IsNotExist(err) {
 		csi.Created = time.Now().UTC()
 		if err := o.writeConsumerMeta(); err != nil {
 			return nil, err
+		}
+	}
+
+	// If we expect to be encrypted check that what we are restoring is not plaintext.
+	// This can happen on snapshot restores or conversions.
+	if o.prf != nil {
+		keyFile := path.Join(odir, JetStreamMetaFileKey)
+		if _, err := os.Stat(keyFile); err != nil && os.IsNotExist(err) {
+			if err := o.writeConsumerMeta(); err != nil {
+				return nil, err
+			}
+			// Redo the state file as well here if we have one and we can tell it was plaintext.
+			if buf, err := ioutil.ReadFile(o.ifn); err == nil {
+				if _, err := decodeConsumerState(buf); err == nil {
+					if err := ioutil.WriteFile(o.ifn, o.encryptState(buf), defaultFilePerms); err != nil {
+						return nil, err
+					}
+				}
+			}
 		}
 	}
 
@@ -4265,6 +4538,18 @@ func (o *consumerFileStore) Update(state *ConsumerState) error {
 	return nil
 }
 
+// Will encrypt the state with our asset key. Will be a no-op if encryption not enabled.
+// Lock should be held.
+func (o *consumerFileStore) encryptState(buf []byte) []byte {
+	if o.aek == nil {
+		return buf
+	}
+	// TODO(dlc) - Optimize on space usage a bit?
+	nonce := make([]byte, o.aek.NonceSize(), o.aek.NonceSize()+len(buf)+o.aek.Overhead())
+	rand.Read(nonce)
+	return o.aek.Seal(nonce, nonce, buf, nil)
+}
+
 func (o *consumerFileStore) writeState(buf []byte) error {
 	// Check if we have the index file open.
 	o.mu.Lock()
@@ -4278,6 +4563,10 @@ func (o *consumerFileStore) writeState(buf []byte) error {
 	}
 	o.writing = true
 	ifd := o.ifd
+
+	if o.aek != nil {
+		buf = o.encryptState(buf)
+	}
 	o.mu.Unlock()
 
 	n, err := ifd.WriteAt(buf, 0)
@@ -4304,13 +4593,37 @@ func (o *consumerFileStore) updateConfig(cfg ConsumerConfig) error {
 // Lock should be held.
 func (cfs *consumerFileStore) writeConsumerMeta() error {
 	meta := path.Join(cfs.odir, JetStreamMetaFile)
-	if _, err := os.Stat(meta); (err != nil && !os.IsNotExist(err)) || err == nil {
+	if _, err := os.Stat(meta); err != nil && !os.IsNotExist(err) {
 		return err
 	}
+
+	if cfs.prf != nil && cfs.aek == nil {
+		fs := cfs.fs
+		key, _, _, encrypted, err := fs.genEncryptionKeys(fs.cfg.Name + tsep + cfs.name)
+		if err != nil {
+			return err
+		}
+		cfs.aek = key
+		keyFile := path.Join(cfs.odir, JetStreamMetaFileKey)
+		if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if err := ioutil.WriteFile(keyFile, encrypted, defaultFilePerms); err != nil {
+			return err
+		}
+	}
+
 	b, err := json.Marshal(cfs.cfg)
 	if err != nil {
 		return err
 	}
+	// Encrypt if needed.
+	if cfs.aek != nil {
+		nonce := make([]byte, cfs.aek.NonceSize(), cfs.aek.NonceSize()+len(b)+cfs.aek.Overhead())
+		rand.Read(nonce)
+		b = cfs.aek.Seal(nonce, nonce, b, nil)
+	}
+
 	if err := ioutil.WriteFile(meta, b, defaultFilePerms); err != nil {
 		return err
 	}
@@ -4412,6 +4725,15 @@ func (o *consumerFileStore) State() (*ConsumerState, error) {
 
 	if len(buf) == 0 {
 		return state, nil
+	}
+
+	// Check on encryption.
+	if o.aek != nil {
+		ns := o.aek.NonceSize()
+		buf, err = o.aek.Open(nil, buf[:ns], buf[ns:], nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	state, err = decodeConsumerState(buf)
@@ -4551,6 +4873,9 @@ func (o *consumerFileStore) Stop() error {
 			var buf []byte
 			// Make sure to write this out..
 			if buf, err = o.encodeState(); err == nil && len(buf) > 0 {
+				if o.aek != nil {
+					buf = o.encryptState(buf)
+				}
 				_, err = o.ifd.WriteAt(buf, 0)
 			}
 		}

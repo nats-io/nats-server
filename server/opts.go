@@ -223,6 +223,7 @@ type Options struct {
 	JetStreamMaxMemory    int64         `json:"-"`
 	JetStreamMaxStore     int64         `json:"-"`
 	JetStreamDomain       string        `json:"-"`
+	JetStreamKey          string        `json:"-"`
 	StoreDir              string        `json:"-"`
 	Websocket             WebsocketOpts `json:"-"`
 	MQTT                  MQTTOpts      `json:"-"`
@@ -1613,7 +1614,7 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 		for mk, mv := range vv {
 			tk, mv = unwrapValue(mv, &lt)
 			switch strings.ToLower(mk) {
-			case "store_dir", "storedir":
+			case "store", "store_dir", "storedir":
 				// StoreDir can be set at the top level as well so have to prevent ambiguous declarations.
 				if opts.StoreDir != "" {
 					return &configErr{tk, "Duplicate 'store_dir' configuration"}
@@ -1627,6 +1628,8 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 				opts.JetStreamDomain = mv.(string)
 			case "enable", "enabled":
 				doEnable = mv.(bool)
+			case "key", "ek", "encryption_key":
+				opts.JetStreamKey = mv.(string)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{

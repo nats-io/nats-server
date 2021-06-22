@@ -14,10 +14,12 @@
 package server
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"math"
@@ -34,6 +36,7 @@ import (
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
+	"golang.org/x/crypto/chacha20poly1305"
 )
 
 // JetStreamConfig determines this server's configuration.
@@ -172,7 +175,58 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 		return err
 	}
 
+	if ek := s.getOpts().JetStreamKey; ek != _EMPTY_ {
+		s.Warnf("JetStream Encryption is Beta")
+	}
+
 	return s.enableJetStream(cfg)
+}
+
+// Function signature to generate a key encryption key.
+type keyGen func(context []byte) []byte
+
+// Return a key generation function or nil if encryption not enabled.
+// keyGen defined in filestore.go - keyGen func(iv, context []byte) []byte
+func (s *Server) jsKeyGen(info string) keyGen {
+	if ek := s.getOpts().JetStreamKey; ek != _EMPTY_ {
+		return func(context []byte) []byte {
+			h := hmac.New(sha256.New, []byte(ek))
+			h.Write([]byte(info))
+			h.Write(context)
+			return h.Sum(nil)
+		}
+	}
+	return nil
+}
+
+// Decode the encrypted metafile.
+func (s *Server) decryptMeta(ekey, buf []byte, acc, context string) ([]byte, error) {
+	if len(ekey) != metaKeySize {
+		return nil, errors.New("bad encryption key")
+	}
+	prf := s.jsKeyGen(acc)
+	if prf == nil {
+		return nil, errNoEncryption
+	}
+	kek, err := chacha20poly1305.NewX(prf([]byte(context)))
+	if err != nil {
+		return nil, err
+	}
+	ns := kek.NonceSize()
+	seed, err := kek.Open(nil, ekey[:ns], ekey[ns:], nil)
+	if err != nil {
+		return nil, err
+	}
+	aek, err := chacha20poly1305.NewX(seed[:])
+	if err != nil {
+		return nil, err
+	}
+	ns = kek.NonceSize()
+	plain, err := aek.Open(nil, buf[:ns], buf[ns:], nil)
+	if err != nil {
+		return nil, err
+	}
+	return plain, nil
 }
 
 // Check to make sure directory has the jetstream directory.
@@ -819,7 +873,6 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 
 	js := s.getJetStream()
 	if js == nil {
-
 		a.assignJetStreamLimits(limits)
 		return ApiErrors[JSNotEnabledErr]
 	}
@@ -881,10 +934,14 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		if err := os.MkdirAll(sdir, defaultDirPerms); err != nil {
 			return fmt.Errorf("could not create storage streams directory - %v", err)
 		}
-	}
+		// Just need to make sure we can write to the directory.
+		// Remove the directory will create later if needed.
+		os.RemoveAll(sdir)
 
-	// Restore any state here.
-	s.Debugf("Recovering JetStream state for account %q", a.Name)
+	} else {
+		// Restore any state here.
+		s.Debugf("Recovering JetStream state for account %q", a.Name)
+	}
 
 	// Check templates first since messsage sets will need proper ownership.
 	// FIXME(dlc) - Make this consistent.
@@ -945,7 +1002,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		metafile := path.Join(mdir, JetStreamMetaFile)
 		metasum := path.Join(mdir, JetStreamMetaFileSum)
 		if _, err := os.Stat(metafile); os.IsNotExist(err) {
-			s.Warnf("  Missing Stream metafile for %q", metafile)
+			s.Warnf("  Missing stream metafile for %q", metafile)
 			continue
 		}
 		buf, err := ioutil.ReadFile(metafile)
@@ -954,7 +1011,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 			continue
 		}
 		if _, err := os.Stat(metasum); os.IsNotExist(err) {
-			s.Warnf("  Missing Stream checksum for %q", metasum)
+			s.Warnf("  Missing stream checksum for %q", metasum)
 			continue
 		}
 		sum, err := ioutil.ReadFile(metasum)
@@ -969,20 +1026,34 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 			continue
 		}
 
+		// Check if we are encrypted.
+		if key, err := ioutil.ReadFile(path.Join(mdir, JetStreamMetaFileKey)); err == nil {
+			s.Debugf("  Stream metafile is encrypted, reading encrypted keyfile")
+			if len(key) != metaKeySize {
+				s.Warnf("  Bad stream encryption key length of %d", len(key))
+				continue
+			}
+			// Decode the buffer before proceeding.
+			if buf, err = s.decryptMeta(key, buf, a.Name, fi.Name()); err != nil {
+				s.Warnf("  Error decrypting our stream metafile: %v", err)
+				continue
+			}
+		}
+
 		var cfg FileStreamInfo
 		if err := json.Unmarshal(buf, &cfg); err != nil {
-			s.Warnf("  Error unmarshalling Stream metafile: %v", err)
+			s.Warnf("  Error unmarshalling stream metafile: %v", err)
 			continue
 		}
 
 		if cfg.Template != _EMPTY_ {
 			if err := jsa.addStreamNameToTemplate(cfg.Template, cfg.Name); err != nil {
-				s.Warnf("  Error adding Stream %q to Template %q: %v", cfg.Name, cfg.Template, err)
+				s.Warnf("  Error adding stream %q to template %q: %v", cfg.Name, cfg.Template, err)
 			}
 		}
 		mset, err := a.addStream(&cfg.StreamConfig)
 		if err != nil {
-			s.Warnf("  Error recreating Stream %q: %v", cfg.Name, err)
+			s.Warnf("  Error recreating stream %q: %v", cfg.Name, err)
 			continue
 		}
 		if !cfg.Created.IsZero() {
@@ -990,19 +1061,19 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		}
 
 		state := mset.state()
-		s.Noticef("  Restored %s messages for Stream %q", comma(int64(state.Msgs)), fi.Name())
+		s.Noticef("  Restored %s messages for stream %q", comma(int64(state.Msgs)), fi.Name())
 
 		// Now do the consumers.
 		odir := path.Join(sdir, fi.Name(), consumerDir)
 		ofis, _ := ioutil.ReadDir(odir)
 		if len(ofis) > 0 {
-			s.Noticef("  Recovering %d Consumers for Stream - %q", len(ofis), fi.Name())
+			s.Noticef("  Recovering %d consumers for stream - %q", len(ofis), fi.Name())
 		}
 		for _, ofi := range ofis {
 			metafile := path.Join(odir, ofi.Name(), JetStreamMetaFile)
 			metasum := path.Join(odir, ofi.Name(), JetStreamMetaFileSum)
 			if _, err := os.Stat(metafile); os.IsNotExist(err) {
-				s.Warnf("    Missing Consumer Metafile %q", metafile)
+				s.Warnf("    Missing consumer metafile %q", metafile)
 				continue
 			}
 			buf, err := ioutil.ReadFile(metafile)
@@ -1011,12 +1082,23 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 				continue
 			}
 			if _, err := os.Stat(metasum); os.IsNotExist(err) {
-				s.Warnf("    Missing Consumer checksum for %q", metasum)
+				s.Warnf("    Missing consumer checksum for %q", metasum)
 				continue
 			}
+
+			// Check if we are encrypted.
+			if key, err := ioutil.ReadFile(path.Join(odir, ofi.Name(), JetStreamMetaFileKey)); err == nil {
+				s.Debugf("  Consumer metafile is encrypted, reading encrypted keyfile")
+				// Decode the buffer before proceeding.
+				if buf, err = s.decryptMeta(key, buf, a.Name, fi.Name()+tsep+ofi.Name()); err != nil {
+					s.Warnf("  Error decrypting our consumer metafile: %v", err)
+					continue
+				}
+			}
+
 			var cfg FileConsumerInfo
 			if err := json.Unmarshal(buf, &cfg); err != nil {
-				s.Warnf("    Error unmarshalling Consumer metafile: %v", err)
+				s.Warnf("    Error unmarshalling consumer metafile: %v", err)
 				continue
 			}
 			isEphemeral := !isDurableConsumer(&cfg.ConsumerConfig)
@@ -1027,7 +1109,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 			}
 			obs, err := mset.addConsumer(&cfg.ConsumerConfig)
 			if err != nil {
-				s.Warnf("    Error adding Consumer: %v", err)
+				s.Warnf("    Error adding consumer: %v", err)
 				continue
 			}
 			if isEphemeral {
@@ -1040,7 +1122,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 			err = obs.readStoredState()
 			obs.mu.Unlock()
 			if err != nil {
-				s.Warnf("    Error restoring Consumer state: %v", err)
+				s.Warnf("    Error restoring consumer state: %v", err)
 			}
 		}
 	}
