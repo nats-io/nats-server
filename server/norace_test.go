@@ -1757,6 +1757,9 @@ func TestNoRaceJetStreamClusterSourcesMuxd(t *testing.T) {
 }
 
 func TestNoRaceJetStreamClusterExtendedStreamPurgeStall(t *testing.T) {
+	// Uncomment to run. Needs to be on a big machine. Do not want as part of Travis tests atm.
+	skip(t)
+
 	cerr := func(t *testing.T, err error) {
 		t.Helper()
 		if err != nil {
@@ -1809,11 +1812,11 @@ func TestNoRaceJetStreamClusterExtendedStreamPurgeStall(t *testing.T) {
 	if !pres.Success {
 		t.Fatalf("purge failed: %#v", pres)
 	}
-	if elapsed > 5*time.Second {
+	if elapsed > time.Second {
 		t.Fatalf("Purge took too long %s", elapsed)
 	}
 	v, _ := s.Varz(nil)
-	if v.Mem > 700*1024*1024 { // 700MB limit but in practice < 100MB -> Was ~7GB when failing.
+	if v.Mem > 100*1024*1024 { // 100MB limit but in practice < 100MB -> Was ~7GB when failing.
 		t.Fatalf("Used too much memory: %v", friendlyBytes(v.Mem))
 	}
 }
