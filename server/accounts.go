@@ -39,6 +39,10 @@ import (
 // account will be grouped in the default global account.
 const globalAccountName = DEFAULT_GLOBAL_ACCOUNT
 
+const defaultMaxSubLimitReportThreshold = int64(2 * time.Second)
+
+var maxSubLimitReportThreshold = defaultMaxSubLimitReportThreshold
+
 // Account are subject namespace definitions. By default no messages are shared between accounts.
 // You can share via Exports and Imports of Streams and Services.
 type Account struct {
@@ -84,6 +88,7 @@ type Account struct {
 	defaultPerms *Permissions
 	tags         jwt.TagList
 	nameTag      string
+	lastLimErr   int64
 }
 
 // Account based limits.
@@ -503,6 +508,22 @@ func (a *Account) TotalSubs() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return int(a.sl.Count())
+}
+
+func (a *Account) shouldLogMaxSubErr() bool {
+	if a == nil {
+		return true
+	}
+	a.mu.RLock()
+	last := a.lastLimErr
+	a.mu.RUnlock()
+	if now := time.Now().UnixNano(); now-last >= maxSubLimitReportThreshold {
+		a.mu.Lock()
+		a.lastLimErr = now
+		a.mu.Unlock()
+		return true
+	}
+	return false
 }
 
 // MapDest is for mapping published subjects for clients.

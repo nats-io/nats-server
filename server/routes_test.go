@@ -14,11 +14,13 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1379,5 +1381,52 @@ func TestRouteDuplicateServerName(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Should have gotten a warning regarding duplicate server name")
+	}
+}
+
+func TestRouteLockReleasedOnTLSFailure(t *testing.T) {
+	o1 := DefaultOptions()
+	o1.Cluster.Name = "abc"
+	o1.Cluster.Host = "127.0.0.1"
+	o1.Cluster.Port = -1
+	o1.Cluster.TLSTimeout = 0.25
+	tc := &TLSConfigOpts{
+		CertFile: "./configs/certs/server.pem",
+		KeyFile:  "./configs/certs/key.pem",
+		Insecure: true,
+	}
+	tlsConf, err := GenTLSConfig(tc)
+	if err != nil {
+		t.Fatalf("Error generating tls config: %v", err)
+	}
+	o1.Cluster.TLSConfig = tlsConf
+	s1 := RunServer(o1)
+	defer s1.Shutdown()
+
+	l := &captureErrorLogger{errCh: make(chan string, 10)}
+	s1.SetLogger(l, false, false)
+
+	o2 := DefaultOptions()
+	o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	select {
+	case err := <-l.errCh:
+		if !strings.Contains(err, "TLS") {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	case <-time.After(time.Second):
+	}
+
+	s2.Shutdown()
+
+	// Wait for longer than the TLS timeout and check that tlsTimeout is not stuck
+	time.Sleep(500 * time.Millisecond)
+
+	buf := make([]byte, 10000)
+	n := runtime.Stack(buf, true)
+	if bytes.Contains(buf[:n], []byte("tlsTimeout")) {
+		t.Fatal("Seem connection lock was not released")
 	}
 }

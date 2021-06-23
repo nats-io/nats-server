@@ -1333,6 +1333,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		}
 		// Perform (server or client side) TLS handshake.
 		if _, err := c.doTLSHandshake("route", didSolicit, rURL, tlsConfig, _EMPTY_, opts.Cluster.TLSTimeout, opts.Cluster.TLSPinnedCerts); err != nil {
+			c.mu.Unlock()
 			return nil
 		}
 	}

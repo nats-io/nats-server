@@ -256,6 +256,11 @@ type Server struct {
 	// For out of resources to not log errors too fast.
 	rerrMu   sync.Mutex
 	rerrLast time.Time
+
+	// If there is a system account configured, to still support the $G account,
+	// the server will create a fake user and add it to the list of users.
+	// Keep track of what that user name is for config reload purposes.
+	sysAccOnlyNoAuthUser string
 }
 
 type nodeInfo struct {
@@ -756,15 +761,21 @@ func (s *Server) configureAccounts() error {
 		// We would do this to add user/pass to the system account. If this is the case add in
 		// no-auth-user for $G.
 		if numAccounts == 2 && s.opts.NoAuthUser == _EMPTY_ {
-			// Create a unique name so we do not collide.
-			var b [8]byte
-			rn := rand.Int63()
-			for i, l := 0, rn; i < len(b); i++ {
-				b[i] = digits[l%base]
-				l /= base
+			// If we come here from config reload, let's not recreate the fake user name otherwise
+			// it will cause currently clients to be disconnected.
+			uname := s.sysAccOnlyNoAuthUser
+			if uname == _EMPTY_ {
+				// Create a unique name so we do not collide.
+				var b [8]byte
+				rn := rand.Int63()
+				for i, l := 0, rn; i < len(b); i++ {
+					b[i] = digits[l%base]
+					l /= base
+				}
+				uname = fmt.Sprintf("nats-%s", b[:])
+				s.sysAccOnlyNoAuthUser = uname
 			}
-			uname := fmt.Sprintf("nats-%s", b[:])
-			s.opts.Users = append(s.opts.Users, &User{Username: uname, Password: string(b[:]), Account: s.gacc})
+			s.opts.Users = append(s.opts.Users, &User{Username: uname, Password: uname[6:], Account: s.gacc})
 			s.opts.NoAuthUser = uname
 		}
 	}

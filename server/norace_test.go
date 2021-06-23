@@ -1756,6 +1756,68 @@ func TestNoRaceJetStreamClusterSourcesMuxd(t *testing.T) {
 
 }
 
+func TestNoRaceJetStreamClusterExtendedStreamPurgeStall(t *testing.T) {
+	cerr := func(t *testing.T, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("unexepected err: %s", err)
+		}
+	}
+
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err := js.AddStream(&nats.StreamConfig{
+		Name:     "KV",
+		Subjects: []string{"kv.>"},
+		Storage:  nats.FileStorage,
+	})
+	cerr(t, err)
+
+	// 100kb messages spread over 1000 different subjects
+	body := make([]byte, 100*1024)
+	for i := 0; i < 50000; i++ {
+		if _, err := js.PublishAsync(fmt.Sprintf("kv.%d", i%1000), body); err != nil {
+			cerr(t, err)
+		}
+	}
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		if si, err = js.StreamInfo("KV"); err != nil {
+			return err
+		}
+		if si.State.Msgs == 50000 {
+			return nil
+		}
+		return fmt.Errorf("waiting for more")
+	})
+
+	jp, _ := json.Marshal(&JSApiStreamPurgeRequest{Subject: "kv.20"})
+	start := time.Now()
+	res, err := nc.Request(fmt.Sprintf(JSApiStreamPurgeT, "KV"), jp, time.Minute)
+	elapsed := time.Since(start)
+	cerr(t, err)
+	pres := JSApiStreamPurgeResponse{}
+	err = json.Unmarshal(res.Data, &pres)
+	cerr(t, err)
+	if !pres.Success {
+		t.Fatalf("purge failed: %#v", pres)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("Purge took too long %s", elapsed)
+	}
+	v, _ := s.Varz(nil)
+	if v.Mem > 700*1024*1024 { // 700MB limit but in practice < 100MB -> Was ~7GB when failing.
+		t.Fatalf("Used too much memory: %v", friendlyBytes(v.Mem))
+	}
+}
+
 func TestNoRaceJetStreamClusterMirrorExpirationAndMissingSequences(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "MMS", 9)
 	defer c.shutdown()

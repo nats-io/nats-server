@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -294,7 +295,7 @@ func TestJetStreamAddStreamDiscardNew(t *testing.T) {
 			}
 
 			// Now do bytes.
-			mset.purge()
+			mset.purge(nil)
 
 			big := make([]byte, 8192)
 			resp, _ = nc.Request(subj, big, 100*time.Millisecond)
@@ -1780,7 +1781,7 @@ func TestJetStreamWorkQueueRequest(t *testing.T) {
 				sub.NextMsg(time.Millisecond)
 			}
 			checkSubPending(0)
-			mset.purge()
+			mset.purge(nil)
 
 			// Now do expiration
 			req.Batch = 1
@@ -2213,7 +2214,7 @@ func TestJetStreamWorkQueueRequestBatch(t *testing.T) {
 			// Now queue up the request without messages and add them after.
 			sub, _ = nc.SubscribeSync(nats.NewInbox())
 			defer sub.Unsubscribe()
-			mset.purge()
+			mset.purge(nil)
 
 			nc.PublishRequest(o.requestNextMsgSubject(), sub.Subject, []byte(strconv.Itoa(batchSize)))
 			nc.Flush() // Make sure its registered.
@@ -2520,7 +2521,7 @@ func TestJetStreamAckReplyStreamPending(t *testing.T) {
 
 			expectPending(toSend*2 - 2)
 			// Purge and send a new one.
-			mset.purge()
+			mset.purge(nil)
 			nc.Flush()
 
 			sendStreamMsg(t, nc, "foo.1", "Hello World!")
@@ -2537,7 +2538,7 @@ func TestJetStreamAckReplyStreamPending(t *testing.T) {
 			expectPending(toSend - 4) // 203
 
 			// Test Expiration.
-			mset.purge()
+			mset.purge(nil)
 			for i := 0; i < toSend; i++ {
 				sendStreamMsg(t, nc, "foo.1", "Hello World!")
 			}
@@ -2584,7 +2585,7 @@ func TestJetStreamAckReplyStreamPending(t *testing.T) {
 			}
 			nc.Flush()
 			expectPending(100)
-			mset.purge()
+			mset.purge(nil)
 			sendStreamMsg(t, nc, "foo.22", "Hello World!")
 			expectPending(0)
 		})
@@ -3298,7 +3299,7 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 	if err := mset.update(&cfg); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	mset.purge()
+	mset.purge(nil)
 
 	// Send 5 new messages.
 	sendMsg(10, "AAAA", "Hello DeDupe!")
@@ -3343,7 +3344,7 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 	}
 
 	// Purge should wipe the msgIds as well.
-	mset.purge()
+	mset.purge(nil)
 	nmids(0)
 }
 
@@ -5577,7 +5578,7 @@ func TestJetStreamStreamPurge(t *testing.T) {
 			if state := mset.state(); state.Msgs != 100 {
 				t.Fatalf("Expected %d messages, got %d", 100, state.Msgs)
 			}
-			mset.purge()
+			mset.purge(nil)
 			state := mset.state()
 			if state.Msgs != 0 {
 				t.Fatalf("Expected %d messages, got %d", 0, state.Msgs)
@@ -5668,7 +5669,7 @@ func TestJetStreamStreamPurgeWithConsumer(t *testing.T) {
 				t.Fatalf("Expected len(pending) to be 25, got %d", state.NumAckPending)
 			}
 			// Now do purge.
-			mset.purge()
+			mset.purge(nil)
 			if state := mset.state(); state.Msgs != 0 {
 				t.Fatalf("Expected %d messages, got %d", 0, state.Msgs)
 			}
@@ -5756,7 +5757,7 @@ func TestJetStreamStreamPurgeWithConsumerAndRedelivery(t *testing.T) {
 			// Now wait to make sure we are in a redelivered state.
 			time.Sleep(wcfg.AckWait * 2)
 			// Now do purge.
-			mset.purge()
+			mset.purge(nil)
 			if state := mset.state(); state.Msgs != 0 {
 				t.Fatalf("Expected %d messages, got %d", 0, state.Msgs)
 			}
@@ -8274,7 +8275,7 @@ func TestJetStreamDeleteMsg(t *testing.T) {
 			deleteAndCheck(3, 2)
 			deleteAndCheck(2, 4)
 
-			mset.purge()
+			mset.purge(nil)
 			// Put ten more one.
 			pubTen()
 			deleteAndCheck(11, 12)
@@ -10084,7 +10085,7 @@ func TestJetStreamConsumerMaxAckPending(t *testing.T) {
 			checkSubPending(maxAckPending)
 
 			o.stop()
-			mset.purge()
+			mset.purge(nil)
 
 			// Now test a consumer that is live while we publish messages to the stream.
 			o, err = mset.addConsumer(&ConsumerConfig{
@@ -10853,14 +10854,13 @@ func TestJetStreamMaxMsgsPerSubject(t *testing.T) {
 			pubAndCheck("baz.33", 5, 15)
 
 			// Now purge and make sure all is still good.
-			mset.purge()
+			mset.purge(nil)
 			pubAndCheck("foo", 1, 1)
 			pubAndCheck("foo", 4, 5)
 			pubAndCheck("baz.22", 5, 10)
 			pubAndCheck("baz.33", 5, 15)
 		})
 	}
-
 }
 
 func TestJetStreamFilteredConsumersWithWiderFilter(t *testing.T) {
@@ -11538,6 +11538,200 @@ func TestJetStreamTemplatedErrorsBug(t *testing.T) {
 	if err != nil && strings.Contains(err.Error(), "{err}") {
 		t.Fatalf("Error is not filled in: %v", err)
 	}
+}
+
+func TestJetStreamServerEncryption(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		jetstream: {key: $JS_KEY}
+	`))
+	defer removeFile(t, conf)
+
+	os.Setenv("JS_KEY", "s3cr3t!!")
+	defer os.Unsetenv("JS_KEY")
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config == nil {
+		t.Fatalf("Expected config but got none")
+	}
+	defer removeDir(t, config.StoreDir)
+
+	// Client based API
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar", "baz"},
+	}
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	msg := []byte("ENCRYPTED PAYLOAD!!")
+	sendMsg := func(subj string) {
+		t.Helper()
+		if _, err := js.Publish(subj, msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+	// Send 10 msgs
+	for i := 0; i < 10; i++ {
+		sendMsg("foo")
+	}
+
+	// Now create a consumer.
+	sub, err := js.PullSubscribe("foo", "dlc")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	for i, m := range fetchMsgs(t, sub, 10, 5*time.Second) {
+		if i < 5 {
+			m.Ack()
+		}
+	}
+
+	// Grab our state to compare after restart.
+	si, _ := js.StreamInfo("TEST")
+	ci, _ := js.ConsumerInfo("TEST", "dlc")
+
+	// Quick check to make sure everything not just plaintext still.
+	sdir := path.Join(config.StoreDir, "$G", "streams", "TEST")
+	// Make sure we can not find any plaintext strings in the target file.
+	checkFor := func(fn string, strs ...string) {
+		t.Helper()
+		data, err := ioutil.ReadFile(fn)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		for _, str := range strs {
+			if bytes.Contains(data, []byte(str)) {
+				t.Fatalf("Found %q in body of file contents", str)
+			}
+		}
+	}
+	checkKeyFile := func(fn string) {
+		t.Helper()
+		if _, err := os.Stat(fn); err != nil {
+			t.Fatalf("Expected a key file at %q", fn)
+		}
+	}
+
+	// Check stream meta.
+	checkEncrypted := func() {
+		checkKeyFile(path.Join(sdir, JetStreamMetaFileKey))
+		checkFor(path.Join(sdir, JetStreamMetaFile), "TEST", "foo", "bar", "baz", "max_msgs", "max_bytes")
+		// Check a message block.
+		checkKeyFile(path.Join(sdir, "msgs", "1.key"))
+		checkFor(path.Join(sdir, "msgs", "1.blk"), "ENCRYPTED PAYLOAD!!", "foo", "bar", "baz")
+
+		// Check consumer meta and state.
+		checkKeyFile(path.Join(sdir, "obs", "dlc", JetStreamMetaFileKey))
+		checkFor(path.Join(sdir, "obs", "dlc", JetStreamMetaFile), "TEST", "dlc", "foo", "bar", "baz", "max_msgs", "ack_policy")
+		// Load and see if we can parse the consumer state.
+		state, err := ioutil.ReadFile(path.Join(sdir, "obs", "dlc", "o.dat"))
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if _, err := decodeConsumerState(state); err == nil {
+			t.Fatalf("Expected decoding consumer state to fail")
+		}
+	}
+
+	// Stop current
+	s.Shutdown()
+
+	checkEncrypted()
+
+	// Restart.
+	s, _ = RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Connect again.
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	si2, err := js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(si, si2) {
+		t.Fatalf("Stream infos did not match\n%+v\nvs\n%+v", si, si2)
+	}
+
+	ci2, _ := js.ConsumerInfo("TEST", "dlc")
+	// Consumer create times can be slightly off after restore from disk.
+	now := time.Now()
+	ci.Created, ci2.Created = now, now
+	// Also clusters will be different.
+	ci.Cluster, ci2.Cluster = nil, nil
+	if !reflect.DeepEqual(ci, ci2) {
+		t.Fatalf("Consumer infos did not match\n%+v\nvs\n%+v", ci, ci2)
+	}
+
+	// Send 10 more msgs
+	for i := 0; i < 10; i++ {
+		sendMsg("foo")
+	}
+	if si, err = js.StreamInfo("TEST"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.State.Msgs != 20 {
+		t.Fatalf("Expected 20 msgs total, got %d", si.State.Msgs)
+	}
+
+	// Now test snapshots etc.
+	acc := s.GlobalAccount()
+	mset, err := acc.lookupStream("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	scfg := mset.config()
+	sr, err := mset.snapshot(5*time.Second, false, true)
+	if err != nil {
+		t.Fatalf("Error getting snapshot: %v", err)
+	}
+	snapshot, err := ioutil.ReadAll(sr.Reader)
+	if err != nil {
+		t.Fatalf("Error reading snapshot")
+	}
+
+	// Run new server w/o encryption. Make sure we can restore properly (meaning encryption was stripped etc).
+	ns := RunBasicJetStreamServer()
+	defer ns.Shutdown()
+
+	nacc := ns.GlobalAccount()
+	r := bytes.NewReader(snapshot)
+	mset, err = nacc.RestoreStream(&scfg, r)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	ss := mset.store.State()
+	if ss.Msgs != si.State.Msgs || ss.FirstSeq != si.State.FirstSeq || ss.LastSeq != si.State.LastSeq {
+		t.Fatalf("Stream states do not match: %+v vs %+v", ss, si.State)
+	}
+
+	// Now restore to our encrypted server as well.
+	if err := js.DeleteStream("TEST"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	acc = s.GlobalAccount()
+	r.Reset(snapshot)
+	mset, err = acc.RestoreStream(&scfg, r)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	ss = mset.store.State()
+	if ss.Msgs != si.State.Msgs || ss.FirstSeq != si.State.FirstSeq || ss.LastSeq != si.State.LastSeq {
+		t.Fatalf("Stream states do not match: %+v vs %+v", ss, si.State)
+	}
+
+	// Check that all is encrypted like above since we know we need to convert since snapshots always plaintext.
+	checkEncrypted()
 }
 
 ///////////////////////////////////////////////////////////////////////////

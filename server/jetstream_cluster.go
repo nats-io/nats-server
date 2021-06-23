@@ -128,11 +128,12 @@ type consumerAssignment struct {
 
 // streamPurge is what the stream leader will replicate when purging a stream.
 type streamPurge struct {
-	Client  *ClientInfo `json:"client,omitempty"`
-	Stream  string      `json:"stream"`
-	LastSeq uint64      `json:"last_seq"`
-	Subject string      `json:"subject"`
-	Reply   string      `json:"reply"`
+	Client  *ClientInfo              `json:"client,omitempty"`
+	Stream  string                   `json:"stream"`
+	LastSeq uint64                   `json:"last_seq"`
+	Subject string                   `json:"subject"`
+	Reply   string                   `json:"reply"`
+	Request *JSApiStreamPurgeRequest `json:"request,omitempty"`
 }
 
 // streamMsgDelete is what the stream leader will replicate when deleting a message.
@@ -1655,7 +1656,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				}
 
 				s := js.server()
-				purged, err := mset.purge()
+				purged, err := mset.purge(sp.Request)
 				if err != nil {
 					s.Warnf("JetStream cluster failed to purge stream %q for account %q: %v", sp.Stream, sp.Client.serviceAccount(), err)
 				}
@@ -3482,7 +3483,16 @@ func (s *Server) jsClusteredStreamDeleteRequest(ci *ClientInfo, acc *Account, st
 	cc.meta.Propose(encodeDeleteStreamAssignment(sa))
 }
 
-func (s *Server) jsClusteredStreamPurgeRequest(ci *ClientInfo, acc *Account, mset *stream, stream, subject, reply string, rmsg []byte) {
+// Process a clustered purge request.
+func (s *Server) jsClusteredStreamPurgeRequest(
+	ci *ClientInfo,
+	acc *Account,
+	mset *stream,
+	stream, subject, reply string,
+	rmsg []byte,
+	preq *JSApiStreamPurgeRequest,
+) {
+
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
 		return
@@ -3500,11 +3510,11 @@ func (s *Server) jsClusteredStreamPurgeRequest(ci *ClientInfo, acc *Account, mse
 	}
 
 	if n := sa.Group.node; n != nil {
-		sp := &streamPurge{Stream: stream, LastSeq: mset.state().LastSeq, Subject: subject, Reply: reply, Client: ci}
+		sp := &streamPurge{Stream: stream, LastSeq: mset.state().LastSeq, Subject: subject, Reply: reply, Client: ci, Request: preq}
 		n.Propose(encodeStreamPurge(sp))
 	} else if mset != nil {
 		var resp = JSApiStreamPurgeResponse{ApiResponse: ApiResponse{Type: JSApiStreamPurgeResponseType}}
-		purged, err := mset.purge()
+		purged, err := mset.purge(preq)
 		if err != nil {
 			resp.Error = ApiErrors[JSStreamGeneralErrorF].ErrOrNewT(err, "{err}", err)
 		} else {

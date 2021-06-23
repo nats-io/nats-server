@@ -268,21 +268,41 @@ func (ms *memStore) FilteredState(sseq uint64, subj string) SimpleState {
 	}
 
 	// If we want everything.
-	if subj == _EMPTY_ || subj == ">" {
+	if subj == _EMPTY_ || subj == fwcs {
 		ss.Msgs, ss.First, ss.Last = ms.state.Msgs, ms.state.FirstSeq, ms.state.LastSeq
 		return ss
 	}
 
-	// FIXME(dlc) - Optimize like filestore.
-	var eq func(string, string) bool
-	if subj == _EMPTY_ {
-		eq = func(a, b string) bool { return true }
-	} else if subjectHasWildcard(subj) {
-		eq = subjectIsSubsetMatch
-	} else {
-		eq = func(a, b string) bool { return a == b }
+	wc := subjectHasWildcard(subj)
+	subs := []string{subj}
+	if wc {
+		subs = subs[:0]
+		for fsubj := range ms.fss {
+			if subjectIsSubsetMatch(fsubj, subj) {
+				subs = append(subs, fsubj)
+			}
+		}
 	}
-	for seq := sseq; seq <= ms.state.LastSeq; seq++ {
+	fseq, lseq := ms.state.LastSeq, uint64(0)
+	for _, subj := range subs {
+		ss := ms.fss[subj]
+		if ss == nil {
+			continue
+		}
+		if ss.First < fseq {
+			fseq = ss.First
+		}
+		if ss.Last > lseq {
+			lseq = ss.Last
+		}
+	}
+	if fseq < sseq {
+		fseq = sseq
+	}
+
+	// FIXME(dlc) - Optimize better like filestore.
+	eq := compareFn(subj)
+	for seq := fseq; seq <= lseq; seq++ {
 		if sm, ok := ms.msgs[seq]; ok && eq(sm.subj, subj) {
 			ss.Msgs++
 			if ss.First == 0 {
@@ -364,6 +384,55 @@ func (ms *memStore) expireMsgs() {
 			return
 		}
 	}
+}
+
+// PurgeEx will remove messages based on subject filters, sequence and number of messages to keep.
+// Will return the number of purged messages.
+func (ms *memStore) PurgeEx(subject string, sequence, keep uint64) (purged uint64, err error) {
+	if subject == _EMPTY_ || subject == fwcs {
+		if keep == 0 && (sequence == 0 || sequence == 1) {
+			return ms.Purge()
+		}
+		if sequence > 1 {
+			return ms.Compact(sequence)
+		} else if keep > 0 {
+			ms.mu.RLock()
+			msgs, lseq := ms.state.Msgs, ms.state.LastSeq
+			ms.mu.RUnlock()
+			if keep >= msgs {
+				return 0, nil
+			}
+			return ms.Compact(lseq - keep + 1)
+		}
+		return 0, nil
+
+	}
+	eq := compareFn(subject)
+	if ss := ms.FilteredState(1, subject); ss.Msgs > 0 {
+		if keep > 0 {
+			if keep >= ss.Msgs {
+				return 0, nil
+			}
+			ss.Msgs -= keep
+		}
+		last := ss.Last
+		if sequence > 0 {
+			last = sequence - 1
+		}
+		ms.mu.Lock()
+		for seq := ss.First; seq <= last; seq++ {
+			if sm, ok := ms.msgs[seq]; ok && eq(sm.subj, subject) {
+				if ok := ms.removeMsg(sm.seq, false); ok {
+					purged++
+					if purged >= ss.Msgs {
+						break
+					}
+				}
+			}
+		}
+		ms.mu.Unlock()
+	}
+	return purged, nil
 }
 
 // Purge will remove all messages from this store.

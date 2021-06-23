@@ -1896,7 +1896,10 @@ func (c *client) maxConnExceeded() {
 }
 
 func (c *client) maxSubsExceeded() {
-	c.sendErrAndErr(ErrTooManySubs.Error())
+	if c.acc.shouldLogMaxSubErr() {
+		c.Errorf(ErrTooManySubs.Error())
+	}
+	c.sendErr(ErrTooManySubs.Error())
 }
 
 func (c *client) maxPayloadViolation(sz int, max int32) {
