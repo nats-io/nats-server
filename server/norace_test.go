@@ -1813,7 +1813,7 @@ func TestNoRaceJetStreamClusterExtendedStreamPurgeStall(t *testing.T) {
 		t.Fatalf("Purge took too long %s", elapsed)
 	}
 	v, _ := s.Varz(nil)
-	if v.Mem > 600*1024*1024 { // 600MB limit nbut in practice < 100MB -> Was ~7GB when failing.
+	if v.Mem > 700*1024*1024 { // 700MB limit but in practice < 100MB -> Was ~7GB when failing.
 		t.Fatalf("Used too much memory: %v", friendlyBytes(v.Mem))
 	}
 }
