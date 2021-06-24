@@ -255,7 +255,10 @@ func (ms *memStore) GetSeqFromTime(t time.Time) uint64 {
 func (ms *memStore) FilteredState(sseq uint64, subj string) SimpleState {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
+	return ms.filteredStateLocked(sseq, subj)
+}
 
+func (ms *memStore) filteredStateLocked(sseq uint64, subj string) SimpleState {
 	var ss SimpleState
 
 	if sseq < ms.state.FirstSeq {
@@ -569,9 +572,29 @@ func (ms *memStore) LoadMsg(seq uint64) (string, []byte, []byte, int64, error) {
 		if seq <= last {
 			err = ErrStoreMsgNotFound
 		}
-		return "", nil, nil, 0, err
+		return _EMPTY_, nil, nil, 0, err
 	}
 	return sm.subj, sm.hdr, sm.msg, sm.ts, nil
+}
+
+// LoadLastMsg will return the last message we have that matches a given subject.
+// The subject can be a wildcard.
+func (ms *memStore) LoadLastMsg(subject string) (subj string, seq uint64, hdr, msg []byte, ts int64, err error) {
+	var sm *storedMsg
+	var ok bool
+
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+
+	if subject == _EMPTY_ || subject == fwcs {
+		sm, ok = ms.msgs[ms.state.LastSeq]
+	} else if ss := ms.filteredStateLocked(1, subject); ss.Msgs > 0 {
+		sm, ok = ms.msgs[ss.Last]
+	}
+	if !ok || sm == nil {
+		return _EMPTY_, 0, nil, nil, 0, ErrStoreMsgNotFound
+	}
+	return sm.subj, sm.seq, sm.hdr, sm.msg, sm.ts, nil
 }
 
 // RemoveMsg will remove the message from this store.

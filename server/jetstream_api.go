@@ -494,7 +494,8 @@ const JSApiMetaServerRemoveResponseType = "io.nats.jetstream.api.v1.meta_server_
 
 // JSApiMsgGetRequest get a message request.
 type JSApiMsgGetRequest struct {
-	Seq uint64 `json:"seq"`
+	Seq     uint64 `json:"seq,omitempty"`
+	LastFor string `json:"last_by_subj,omitempty"`
 }
 
 type JSApiMsgGetResponse struct {
@@ -2418,6 +2419,13 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 		return
 	}
 
+	// Check that we do not have both options set.
+	if req.Seq > 0 && req.LastFor != _EMPTY_ || req.Seq == 0 && req.LastFor == _EMPTY_ {
+		resp.Error = ApiErrors[JSBadRequestErr]
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
 	mset, err := acc.lookupStream(stream)
 	if err != nil {
 		resp.Error = ApiErrors[JSStreamNotFoundErr]
@@ -2425,7 +2433,16 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 		return
 	}
 
-	subj, hdr, msg, ts, err := mset.store.LoadMsg(req.Seq)
+	var subj string
+	var hdr []byte
+	var ts int64
+	seq := req.Seq
+
+	if req.Seq > 0 {
+		subj, hdr, msg, ts, err = mset.store.LoadMsg(req.Seq)
+	} else {
+		subj, seq, hdr, msg, ts, err = mset.store.LoadLastMsg(req.LastFor)
+	}
 	if err != nil {
 		resp.Error = ApiErrors[JSNoMessageFoundErr]
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -2433,7 +2450,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, subject, reply st
 	}
 	resp.Message = &StoredMsg{
 		Subject:  subj,
-		Sequence: req.Seq,
+		Sequence: seq,
 		Header:   hdr,
 		Data:     msg,
 		Time:     time.Unix(0, ts).UTC(),
