@@ -649,7 +649,7 @@ func getHash(name string) []byte {
 	return getHashSize(name, sysHashLen)
 }
 
-// Returns the node name for this server which is a hash of the server name.
+// Node Returns the node name for this server which is a hash of the server name.
 func (s *Server) Node() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -104,7 +104,7 @@ func newDir(dirPath string, create bool) (string, error) {
 // future proofing in case new options will be added
 type dirJWTStoreOption interface{}
 
-// Creates a directory based jwt store.
+// NewImmutableDirJWTStore Creates a directory based jwt store.
 // Reads files only, does NOT watch directories and files.
 func NewImmutableDirJWTStore(dirPath string, shard bool, _ ...dirJWTStoreOption) (*DirJWTStore, error) {
 	theStore, err := NewDirJWTStore(dirPath, shard, false, nil)
@@ -115,7 +115,7 @@ func NewImmutableDirJWTStore(dirPath string, shard bool, _ ...dirJWTStoreOption)
 	return theStore, nil
 }
 
-// Creates a directory based jwt store.
+// NewDirJWTStore Creates a directory based jwt store.
 // Operates on files only, does NOT watch directories and files.
 func NewDirJWTStore(dirPath string, shard bool, create bool, _ ...dirJWTStoreOption) (*DirJWTStore, error) {
 	fullPath, err := newDir(dirPath, create)
