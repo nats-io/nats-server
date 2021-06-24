@@ -10863,6 +10863,106 @@ func TestJetStreamMaxMsgsPerSubject(t *testing.T) {
 	}
 }
 
+func TestJetStreamGetLastMsgBySubject(t *testing.T) {
+	for _, st := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(st.String(), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "JSC", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			cfg := StreamConfig{
+				Name:       "KV",
+				Subjects:   []string{"kv.>"},
+				Storage:    st,
+				Replicas:   2,
+				MaxMsgsPer: 20,
+			}
+
+			req, err := json.Marshal(cfg)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			// Do manually for now.
+			nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+			si, err := js.StreamInfo("KV")
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if si == nil || si.Config.Name != "KV" {
+				t.Fatalf("StreamInfo is not correct %+v", si)
+			}
+
+			for i := 0; i < 1000; i++ {
+				msg := []byte(fmt.Sprintf("VAL-%d", i+1))
+				js.PublishAsync("kv.foo", msg)
+				js.PublishAsync("kv.bar", msg)
+				js.PublishAsync("kv.baz", msg)
+			}
+			select {
+			case <-js.PublishAsyncComplete():
+			case <-time.After(5 * time.Second):
+				t.Fatalf("Did not receive completion signal")
+			}
+
+			// Check that if both set that errors.
+			b, _ := json.Marshal(JSApiMsgGetRequest{LastFor: "kv.foo", Seq: 950})
+			rmsg, err := nc.Request(fmt.Sprintf(JSApiMsgGetT, "KV"), b, time.Second)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			var resp JSApiMsgGetResponse
+			err = json.Unmarshal(rmsg.Data, &resp)
+			if err != nil {
+				t.Fatalf("Could not parse stream message: %v", err)
+			}
+			if resp.Error == nil {
+				t.Fatalf("Expected an error when both are set, got %+v", resp.Error)
+			}
+
+			// Need to do stream GetMsg by hand for now until Go client support lands.
+			getLast := func(subject string) *StoredMsg {
+				t.Helper()
+				req := &JSApiMsgGetRequest{LastFor: subject}
+				b, _ := json.Marshal(req)
+				rmsg, err := nc.Request(fmt.Sprintf(JSApiMsgGetT, "KV"), b, time.Second)
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				var resp JSApiMsgGetResponse
+				err = json.Unmarshal(rmsg.Data, &resp)
+				if err != nil {
+					t.Fatalf("Could not parse stream message: %v", err)
+				}
+				if resp.Message == nil || resp.Error != nil {
+					t.Fatalf("Did not receive correct response: %+v", resp.Error)
+				}
+				return resp.Message
+			}
+			// Do basic checks.
+			basicCheck := func(subject string, expectedSeq uint64) {
+				sm := getLast(subject)
+				if sm == nil {
+					t.Fatalf("Expected a message but got none")
+				} else if string(sm.Data) != "VAL-1000" {
+					t.Fatalf("Wrong message payload, wanted %q but got %q", "VAL-1000", sm.Data)
+				} else if sm.Sequence != expectedSeq {
+					t.Fatalf("Wrong message sequence, wanted %d but got %d", expectedSeq, sm.Sequence)
+				} else if !subjectIsSubsetMatch(sm.Subject, subject) {
+					t.Fatalf("Wrong subject, wanted %q but got %q", subject, sm.Subject)
+				}
+			}
+
+			basicCheck("kv.foo", 2998)
+			basicCheck("kv.bar", 2999)
+			basicCheck("kv.baz", 3000)
+			basicCheck("kv.*", 3000)
+			basicCheck(">", 3000)
+		})
+	}
+}
+
 func TestJetStreamFilteredConsumersWithWiderFilter(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()

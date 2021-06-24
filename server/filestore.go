@@ -3143,6 +3143,21 @@ func (fs *fileStore) LoadMsg(seq uint64) (string, []byte, []byte, int64, error) 
 	return _EMPTY_, nil, nil, 0, err
 }
 
+// LoadLastMsg will return the last message we have that matches a given subject.
+// The subject can be a wildcard.
+func (fs *fileStore) LoadLastMsg(subject string) (subj string, seq uint64, hdr, msg []byte, ts int64, err error) {
+	var sm *fileStoredMsg
+	if subject == _EMPTY_ || subject == fwcs {
+		sm, _ = fs.msgForSeq(fs.lastSeq())
+	} else if ss := fs.FilteredState(1, subject); ss.Msgs > 0 {
+		sm, _ = fs.msgForSeq(ss.Last)
+	}
+	if sm == nil {
+		return _EMPTY_, 0, nil, nil, 0, ErrStoreMsgNotFound
+	}
+	return sm.subj, sm.seq, sm.hdr, sm.msg, sm.ts, nil
+}
+
 // Type returns the type of the underlying store.
 func (fs *fileStore) Type() StorageType {
 	return FileStorage
