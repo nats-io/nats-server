@@ -279,7 +279,7 @@
     "constant": "JSMaximumConsumersLimitErr",
     "code": 400,
     "error_code": 10026,
-    "description": "maximum consumers exceeds account limit"
+    "description": "maximum consumers limit reached"
   },
   {
     "constant": "JSSourceConsumerSetupFailedErrF",

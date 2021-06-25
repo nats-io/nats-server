@@ -438,10 +438,9 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	// than stream config we prefer the account limits to handle cases where account limits are
 	// updated during the lifecycle of the stream
 	maxc := mset.cfg.MaxConsumers
-	if mset.cfg.MaxConsumers <= 0 || mset.jsa.limits.MaxConsumers < mset.cfg.MaxConsumers {
+	if maxc <= 0 || (mset.jsa.limits.MaxConsumers > 0 && mset.jsa.limits.MaxConsumers < maxc) {
 		maxc = mset.jsa.limits.MaxConsumers
 	}
-
 	if maxc > 0 && len(mset.consumers) >= maxc {
 		mset.mu.Unlock()
 		return nil, fmt.Errorf("maximum consumers limit reached")

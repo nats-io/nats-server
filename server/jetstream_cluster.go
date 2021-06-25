@@ -3980,6 +3980,13 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		return
 	}
 
+	// Check for max consumers here to short circuit if possible.
+	if maxc := sa.Config.MaxConsumers; maxc > 0 && len(sa.consumers) >= maxc {
+		resp.Error = ApiErrors[JSMaximumConsumersLimitErr]
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
+	}
+
 	// Setup proper default for ack wait if we are in explicit ack mode.
 	if cfg.AckWait == 0 && (cfg.AckPolicy == AckExplicit || cfg.AckPolicy == AckAll) {
 		cfg.AckWait = JsAckWaitDefault

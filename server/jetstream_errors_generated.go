@@ -72,7 +72,7 @@ const (
 	// JSInvalidJSONErr invalid JSON
 	JSInvalidJSONErr ErrorIdentifier = 10025
 
-	// JSMaximumConsumersLimitErr maximum consumers exceeds account limit
+	// JSMaximumConsumersLimitErr maximum consumers limit reached
 	JSMaximumConsumersLimitErr ErrorIdentifier = 10026
 
 	// JSMaximumStreamsLimitErr maximum number of streams reached
@@ -254,7 +254,7 @@ var (
 		JSConsumerNotFoundErr:                      {Code: 404, ErrCode: 10014, Description: "consumer not found"},
 		JSInsufficientResourcesErr:                 {Code: 503, ErrCode: 10023, Description: "insufficient resources"},
 		JSInvalidJSONErr:                           {Code: 400, ErrCode: 10025, Description: "invalid JSON"},
-		JSMaximumConsumersLimitErr:                 {Code: 400, ErrCode: 10026, Description: "maximum consumers exceeds account limit"},
+		JSMaximumConsumersLimitErr:                 {Code: 400, ErrCode: 10026, Description: "maximum consumers limit reached"},
 		JSMaximumStreamsLimitErr:                   {Code: 400, ErrCode: 10027, Description: "maximum number of streams reached"},
 		JSMemoryResourcesExceededErr:               {Code: 500, ErrCode: 10028, Description: "insufficient memory resources available"},
 		JSMirrorConsumerSetupFailedErrF:            {Code: 500, ErrCode: 10029, Description: "{err}"},

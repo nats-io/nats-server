@@ -877,7 +877,7 @@ func TestJetStreamAddStreamBadSubjects(t *testing.T) {
 	expectAPIErr(StreamConfig{Name: "MyStream", Storage: MemoryStorage, Subjects: []string{".>"}})
 }
 
-func TestJetStreamAddStreamMaxConsumers(t *testing.T) {
+func TestJetStreamMaxConsumers(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
@@ -885,24 +885,32 @@ func TestJetStreamAddStreamMaxConsumers(t *testing.T) {
 		defer removeDir(t, config.StoreDir)
 	}
 
-	nc := clientConnectToServer(t, s)
+	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
-	cfg := &StreamConfig{
+	cfg := &nats.StreamConfig{
 		Name:         "MAXC",
-		Storage:      MemoryStorage,
+		Storage:      nats.MemoryStorage,
 		Subjects:     []string{"in.maxc.>"},
 		MaxConsumers: 1,
 	}
-
-	acc := s.GlobalAccount()
-	mset, err := acc.addStream(cfg)
-	if err != nil {
-		t.Fatalf("Unexpected error adding stream: %v", err)
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
-
-	if mset.config().MaxConsumers != 1 {
-		t.Fatalf("Expected 1 MaxConsumers, got %d", mset.config().MaxConsumers)
+	si, err := js.StreamInfo("MAXC")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.Config.MaxConsumers != 1 {
+		t.Fatalf("Expected max of 1, got %d", si.Config.MaxConsumers)
+	}
+	// Make sure we get the right error.
+	// This should succeed.
+	if _, err := js.SubscribeSync("in.maxc.foo"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if _, err := js.SubscribeSync("in.maxc.bar"); err == nil {
+		t.Fatalf("Eexpected error but got none")
 	}
 }
 
