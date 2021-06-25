@@ -2753,12 +2753,13 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	}
 
 	if err != nil {
-		// If we did not succeed put those values back.
+		// If we did not succeed put those values back and increment clfs in case we are clustered.
 		mset.mu.Lock()
 		var state StreamState
 		mset.store.FastState(&state)
 		mset.lseq = state.LastSeq
 		mset.lmsgId = olmsgId
+		mset.clfs++
 		mset.mu.Unlock()
 
 		if err != ErrStoreClosed {

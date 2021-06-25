@@ -3005,6 +3005,7 @@ func TestJetStreamClusterStreamLimits(t *testing.T) {
 		Discard:    DiscardNew,
 		MaxMsgSize: 11,
 		MaxMsgs:    int64(maxMsgs),
+		MaxAge:     250 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -3026,6 +3027,21 @@ func TestJetStreamClusterStreamLimits(t *testing.T) {
 		t.Fatalf("Expected publish to fail")
 	}
 
+	// Make sure when space frees up we can send more.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("foo")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if si.State.Msgs != 0 {
+			return fmt.Errorf("Expected 0 msgs, got state: %+v", si.State)
+		}
+		return nil
+	})
+
+	if _, err := js.Publish("foo", []byte("ROUND2")); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
 }
 
 func TestJetStreamClusterStreamInterestOnlyPolicy(t *testing.T) {
