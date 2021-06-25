@@ -7572,6 +7572,39 @@ func TestPurgeBySequence(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterMaxConsumers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:         "MAXC",
+		Storage:      nats.MemoryStorage,
+		Subjects:     []string{"in.maxc.>"},
+		MaxConsumers: 1,
+	}
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	si, err := js.StreamInfo("MAXC")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.Config.MaxConsumers != 1 {
+		t.Fatalf("Expected max of 1, got %d", si.Config.MaxConsumers)
+	}
+	// Make sure we get the right error.
+	// This should succeed.
+	if _, err := js.SubscribeSync("in.maxc.foo"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if _, err := js.SubscribeSync("in.maxc.bar"); err == nil {
+		t.Fatalf("Eexpected error but got none")
+	}
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
