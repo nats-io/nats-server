@@ -146,9 +146,12 @@ var (
 	ErrInvalidJSAck                 = errors.New("nats: invalid jetstream publish response")
 	ErrMultiStreamUnsupported       = errors.New("nats: multiple streams are not supported")
 	ErrStreamNameRequired           = errors.New("nats: stream name is required")
+	ErrConsumerNameRequired         = errors.New("nats: consumer name is required")
 	ErrConsumerConfigRequired       = errors.New("nats: consumer configuration is required")
 	ErrStreamSnapshotConfigRequired = errors.New("nats: stream snapshot configuration is required")
 	ErrDeliverSubjectRequired       = errors.New("nats: deliver subject is required")
+	ErrPullSubscribeToPushConsumer  = errors.New("nats: cannot pull subscribe to push based consumer")
+	ErrPullSubscribeRequired        = errors.New("nats: must use pull subscribe to bind to pull based consumer")
 )
 
 func init() {
@@ -496,9 +499,6 @@ type Conn struct {
 	respMux   *Subscription        // A single response subscription
 	respMap   map[string]chan *Msg // Request map for the response msg channels
 	respRand  *rand.Rand           // Used for generating suffix
-
-	// JetStream Contexts last account check.
-	jsLastCheck time.Time
 }
 
 type natsReader struct {
@@ -2482,6 +2482,13 @@ func (nc *Conn) readLoop() {
 	for {
 		buf, err := br.Read()
 		if err == nil {
+			// With websocket, it is possible that there is no error but
+			// also no buffer returned (either WS control message or read of a
+			// partial compressed message). We could call parse(buf) which
+			// would ignore an empty buffer, but simply go back to top of the loop.
+			if len(buf) == 0 {
+				continue
+			}
 			err = nc.parse(buf)
 		}
 		if err != nil {

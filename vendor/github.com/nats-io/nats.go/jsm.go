@@ -146,6 +146,7 @@ type AccountInfo struct {
 	Store     uint64        `json:"storage"`
 	Streams   int           `json:"streams"`
 	Consumers int           `json:"consumers"`
+	Domain    string        `json:"domain"`
 	API       APIStats      `json:"api"`
 	Limits    AccountLimits `json:"limits"`
 }
@@ -170,6 +171,8 @@ type accountInfoResponse struct {
 }
 
 // AccountInfo retrieves info about the JetStream usage from the current account.
+// If JetStream is not enabled, this will return ErrJetStreamNotEnabled
+// Other errors can happen but are generally considered retryable
 func (js *js) AccountInfo(opts ...JSOpt) (*AccountInfo, error) {
 	o, cancel, err := getJSContextOpts(js.opts, opts...)
 	if err != nil {
@@ -181,6 +184,10 @@ func (js *js) AccountInfo(opts ...JSOpt) (*AccountInfo, error) {
 
 	resp, err := js.nc.RequestWithContext(o.ctx, js.apiSubj(apiAccountInfo), nil)
 	if err != nil {
+		// todo maybe nats server should never have no responder on this subject and always respond if they know there is no js to be had
+		if err == ErrNoResponders {
+			err = ErrJetStreamNotEnabled
+		}
 		return nil, err
 	}
 	var info accountInfoResponse
