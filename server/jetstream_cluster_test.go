@@ -6041,8 +6041,8 @@ func TestJetStreamClusterSingleLeafNodeWithoutSharedSystemAccount(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Unexpected error getting JetStream context: %v", err)
 	}
-	// This should fail here with no responders.
-	if _, err := js.AccountInfo(); err != nats.ErrNoResponders {
+	// This should fail here with jetstream not enabled.
+	if _, err := js.AccountInfo(); err != nats.ErrJetStreamNotEnabled {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
