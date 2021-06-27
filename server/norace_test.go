@@ -2127,7 +2127,7 @@ func TestNoRaceJetStreamSlowFilteredInititalPendingAndFirstMsg(t *testing.T) {
 	})
 
 	// Threshold for taking too long.
-	const thresh = 30 * time.Millisecond
+	const thresh = 50 * time.Millisecond
 
 	var dindex int
 	testConsumerCreate := func(subj string, startSeq, expectedNumPending uint64) {
