@@ -201,6 +201,9 @@ const (
 	// JSStreamSnapshotErrF snapshot failed: {err}
 	JSStreamSnapshotErrF ErrorIdentifier = 10064
 
+	// JSStreamStoreFailedF Generic error when storing a message failed ({err})
+	JSStreamStoreFailedF ErrorIdentifier = 10077
+
 	// JSStreamSubjectOverlapErr subjects overlap with an existing stream
 	JSStreamSubjectOverlapErr ErrorIdentifier = 10065
 
@@ -297,6 +300,7 @@ var (
 		JSStreamRestoreErrF:                        {Code: 500, ErrCode: 10062, Description: "restore failed: {err}"},
 		JSStreamSequenceNotMatchErr:                {Code: 503, ErrCode: 10063, Description: "expected stream sequence does not match"},
 		JSStreamSnapshotErrF:                       {Code: 500, ErrCode: 10064, Description: "snapshot failed: {err}"},
+		JSStreamStoreFailedF:                       {Code: 503, ErrCode: 10077, Description: "{err}"},
 		JSStreamSubjectOverlapErr:                  {Code: 500, ErrCode: 10065, Description: "subjects overlap with an existing stream"},
 		JSStreamTemplateCreateErrF:                 {Code: 500, ErrCode: 10066, Description: "{err}"},
 		JSStreamTemplateDeleteErrF:                 {Code: 500, ErrCode: 10067, Description: "{err}"},

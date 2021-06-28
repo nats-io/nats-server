@@ -3,194 +3,310 @@
     "constant": "JSClusterPeerNotMemberErr",
     "code": 400,
     "error_code": 10040,
-    "description": "peer not a member"
+    "description": "peer not a member",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSConsumerEphemeralWithDurableInSubjectErr",
     "code": 400,
     "error_code": 10019,
-    "description": "consumer expected to be ephemeral but detected a durable name set in subject"
+    "description": "consumer expected to be ephemeral but detected a durable name set in subject",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamExternalDelPrefixOverlapsErrF",
     "code": 400,
     "error_code": 10022,
-    "description": "stream external delivery prefix {prefix} overlaps with stream subject {subject}"
+    "description": "stream external delivery prefix {prefix} overlaps with stream subject {subject}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSAccountResourcesExceededErr",
     "code": 400,
     "error_code": 10002,
-    "description": "resource limits exceeded for account"
+    "description": "resource limits exceeded for account",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSClusterNotAvailErr",
     "code": 503,
     "error_code": 10008,
-    "description": "JetStream system temporarily unavailable"
+    "description": "JetStream system temporarily unavailable",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamSubjectOverlapErr",
     "code": 500,
     "error_code": 10065,
-    "description": "subjects overlap with an existing stream"
+    "description": "subjects overlap with an existing stream",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamWrongLastSequenceErrF",
     "code": 400,
     "error_code": 10071,
-    "description": "wrong last sequence: {seq}"
+    "description": "wrong last sequence: {seq}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSTemplateNameNotMatchSubjectErr",
     "code": 400,
     "error_code": 10073,
-    "description": "template name in subject does not match request"
+    "description": "template name in subject does not match request",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSClusterNoPeersErr",
     "code": 400,
     "error_code": 10005,
-    "description": "no suitable peers for placement"
+    "description": "no suitable peers for placement",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSConsumerEphemeralWithDurableNameErr",
     "code": 400,
     "error_code": 10020,
-    "description": "consumer expected to be ephemeral but a durable name was set in request"
+    "description": "consumer expected to be ephemeral but a durable name was set in request",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSInsufficientResourcesErr",
     "code": 503,
     "error_code": 10023,
     "description": "insufficient resources",
+    "comment": "",
+    "help": "",
+    "url": "",
     "deprecates": "ErrJetStreamResourcesExceeded"
   },
   {
     "constant": "JSMirrorMaxMessageSizeTooBigErr",
     "code": 400,
     "error_code": 10030,
-    "description": "stream mirror must have max message size >= source"
+    "description": "stream mirror must have max message size \u003e= source",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamTemplateDeleteErrF",
     "code": 500,
     "error_code": 10067,
     "description": "{err}",
-    "comment": "Generic stream template deletion failed error string"
+    "comment": "Generic stream template deletion failed error string",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSBadRequestErr",
     "code": 400,
     "error_code": 10003,
-    "description": "bad request"
+    "description": "bad request",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSClusterUnSupportFeatureErr",
     "code": 503,
     "error_code": 10036,
-    "description": "not currently supported in clustered mode"
+    "description": "not currently supported in clustered mode",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSConsumerNotFoundErr",
     "code": 404,
     "error_code": 10014,
-    "description": "consumer not found"
+    "description": "consumer not found",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSSourceMaxMessageSizeTooBigErr",
     "code": 400,
     "error_code": 10046,
-    "description": "stream source must have max message size >= target"
+    "description": "stream source must have max message size \u003e= target",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamAssignmentErrF",
     "code": 500,
     "error_code": 10048,
     "description": "{err}",
-    "comment": "Generic stream assignment error string"
+    "comment": "Generic stream assignment error string",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamMessageExceedsMaximumErr",
     "code": 400,
     "error_code": 10054,
-    "description": "message size exceeds maximum allowed"
+    "description": "message size exceeds maximum allowed",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamTemplateCreateErrF",
     "code": 500,
     "error_code": 10066,
     "description": "{err}",
-    "comment": "Generic template creation failed string"
+    "comment": "Generic template creation failed string",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSInvalidJSONErr",
     "code": 400,
     "error_code": 10025,
-    "description": "invalid JSON"
+    "description": "invalid JSON",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamInvalidExternalDeliverySubjErrF",
     "code": 400,
     "error_code": 10024,
-    "description": "stream external delivery prefix {prefix} must not contain wildcards"
+    "description": "stream external delivery prefix {prefix} must not contain wildcards",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamRestoreErrF",
     "code": 500,
     "error_code": 10062,
-    "description": "restore failed: {err}"
+    "description": "restore failed: {err}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSClusterIncompleteErr",
     "code": 503,
     "error_code": 10004,
-    "description": "incomplete results"
+    "description": "incomplete results",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSNoAccountErr",
     "code": 503,
     "error_code": 10035,
-    "description": "account not found"
+    "description": "account not found",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSRaftGeneralErrF",
     "code": 500,
     "error_code": 10041,
     "description": "{err}",
-    "comment": "General RAFT error string"
+    "comment": "General RAFT error string",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSRestoreSubscribeFailedErrF",
     "code": 500,
     "error_code": 10042,
-    "description": "JetStream unable to subscribe to restore snapshot {subject}: {err}"
+    "description": "JetStream unable to subscribe to restore snapshot {subject}: {err}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamDeleteErrF",
     "code": 500,
     "error_code": 10050,
     "description": "{err}",
-    "comment": "General stream deletion error string"
+    "comment": "General stream deletion error string",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamExternalApiOverlapErrF",
     "code": 400,
     "error_code": 10021,
-    "description": "stream external api prefix {prefix} must not overlap with {subject}"
+    "description": "stream external api prefix {prefix} must not overlap with {subject}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSMirrorWithSubjectsErr",
     "code": 400,
     "error_code": 10034,
-    "description": "stream mirrors can not also contain subjects"
+    "description": "stream mirrors can not also contain subjects",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSNotEnabledErr",
     "code": 503,
     "error_code": 10076,
     "description": "JetStream not enabled",
+    "comment": "",
     "help": "This error indicates that JetStream is not enabled at a global level",
+    "url": "",
     "deprecates": "ErrJetStreamNotEnabled"
   },
   {
@@ -198,133 +314,209 @@
     "code": 503,
     "error_code": 10039,
     "description": "JetStream not enabled for account",
-    "help": "This error indicates that JetStream is not enabled for an account account level"
+    "comment": "",
+    "help": "This error indicates that JetStream is not enabled for an account account level",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSSequenceNotFoundErrF",
     "code": 400,
     "error_code": 10043,
-    "description": "sequence {seq} not found"
+    "description": "sequence {seq} not found",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamMirrorNotUpdatableErr",
     "code": 400,
     "error_code": 10055,
-    "description": "Mirror configuration can not be updated"
+    "description": "Mirror configuration can not be updated",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamSequenceNotMatchErr",
     "code": 503,
     "error_code": 10063,
-    "description": "expected stream sequence does not match"
+    "description": "expected stream sequence does not match",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamWrongLastMsgIDErrF",
     "code": 400,
     "error_code": 10070,
-    "description": "wrong last msg ID: {id}"
+    "description": "wrong last msg ID: {id}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSTempStorageFailedErr",
     "code": 500,
     "error_code": 10072,
-    "description": "JetStream unable to open temp storage for restore"
+    "description": "JetStream unable to open temp storage for restore",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStorageResourcesExceededErr",
     "code": 500,
     "error_code": 10047,
     "description": "insufficient storage resources available",
+    "comment": "",
+    "help": "",
+    "url": "",
     "deprecates": "ErrStorageResourcesExceeded"
   },
   {
     "constant": "JSStreamMismatchErr",
     "code": 400,
     "error_code": 10056,
-    "description": "stream name in subject does not match request"
+    "description": "stream name in subject does not match request",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamNotMatchErr",
     "code": 400,
     "error_code": 10060,
-    "description": "expected stream does not match"
+    "description": "expected stream does not match",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSMirrorConsumerSetupFailedErrF",
     "code": 500,
     "error_code": 10029,
     "description": "{err}",
-    "comment": "Generic mirror consumer setup failure string"
+    "comment": "Generic mirror consumer setup failure string",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSNotEmptyRequestErr",
     "code": 400,
     "error_code": 10038,
-    "description": "expected an empty request payload"
+    "description": "expected an empty request payload",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamNameExistErr",
     "code": 400,
     "error_code": 10058,
     "description": "stream name already in use",
+    "comment": "",
+    "help": "",
+    "url": "",
     "deprecates": "ErrJetStreamStreamAlreadyUsed"
   },
   {
     "constant": "JSClusterTagsErr",
     "code": 400,
     "error_code": 10011,
-    "description": "tags placement not supported for operation"
+    "description": "tags placement not supported for operation",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSMaximumConsumersLimitErr",
     "code": 400,
     "error_code": 10026,
-    "description": "maximum consumers limit reached"
+    "description": "maximum consumers limit reached",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSSourceConsumerSetupFailedErrF",
     "code": 500,
     "error_code": 10045,
     "description": "{err}",
-    "comment": "General source consumer setup failure string"
+    "comment": "General source consumer setup failure string",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSConsumerCreateErrF",
     "code": 500,
     "error_code": 10012,
     "description": "{err}",
-    "comment": "General consumer creation failure string"
+    "comment": "General consumer creation failure string",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSConsumerDurableNameNotInSubjectErr",
     "code": 400,
     "error_code": 10016,
-    "description": "consumer expected to be durable but no durable name set in subject"
+    "description": "consumer expected to be durable but no durable name set in subject",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamLimitsErrF",
     "code": 500,
     "error_code": 10053,
     "description": "{err}",
-    "comment": "General stream limits exceeded error string"
+    "comment": "General stream limits exceeded error string",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamReplicasNotUpdatableErr",
     "code": 400,
     "error_code": 10061,
-    "description": "Replicas configuration can not be updated"
+    "description": "Replicas configuration can not be updated",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamTemplateNotFoundErr",
     "code": 404,
     "error_code": 10068,
-    "description": "template not found"
+    "description": "template not found",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSClusterNotAssignedErr",
     "code": 500,
     "error_code": 10007,
     "description": "JetStream cluster not assigned to this server",
+    "comment": "",
+    "help": "",
+    "url": "",
     "deprecates": "ErrJetStreamNotAssigned"
   },
   {
@@ -332,6 +524,9 @@
     "code": 500,
     "error_code": 10009,
     "description": "JetStream cluster can not handle request",
+    "comment": "",
+    "help": "",
+    "url": "",
     "deprecates": "ErrJetStreamNotLeader"
   },
   {
@@ -339,128 +534,199 @@
     "code": 400,
     "error_code": 10013,
     "description": "consumer name already in use",
+    "comment": "",
+    "help": "",
+    "url": "",
     "deprecates": "ErrJetStreamConsumerAlreadyUsed"
   },
   {
     "constant": "JSMirrorWithSourcesErr",
     "code": 400,
     "error_code": 10031,
-    "description": "stream mirrors can not also contain other sources"
+    "description": "stream mirrors can not also contain other sources",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamNotFoundErr",
     "code": 404,
     "error_code": 10059,
     "description": "stream not found",
+    "comment": "",
+    "help": "",
+    "url": "",
     "deprecates": "ErrJetStreamStreamNotFound"
   },
   {
     "constant": "JSClusterRequiredErr",
     "code": 503,
     "error_code": 10010,
-    "description": "JetStream clustering support required"
+    "description": "JetStream clustering support required",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSConsumerDurableNameNotSetErr",
     "code": 400,
     "error_code": 10018,
-    "description": "consumer expected to be durable but a durable name was not set"
+    "description": "consumer expected to be durable but a durable name was not set",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSMaximumStreamsLimitErr",
     "code": 400,
     "error_code": 10027,
-    "description": "maximum number of streams reached"
+    "description": "maximum number of streams reached",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSMirrorWithStartSeqAndTimeErr",
     "code": 400,
     "error_code": 10032,
-    "description": "stream mirrors can not have both start seq and start time configured"
+    "description": "stream mirrors can not have both start seq and start time configured",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamSnapshotErrF",
     "code": 500,
     "error_code": 10064,
-    "description": "snapshot failed: {err}"
+    "description": "snapshot failed: {err}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamUpdateErrF",
     "code": 500,
     "error_code": 10069,
     "description": "{err}",
-    "comment": "Generic stream update error string"
+    "comment": "Generic stream update error string",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSClusterNotActiveErr",
     "code": 500,
     "error_code": 10006,
     "description": "JetStream not in clustered mode",
+    "comment": "",
+    "help": "",
+    "url": "",
     "deprecates": "ErrJetStreamNotClustered"
   },
   {
     "constant": "JSConsumerDurableNameNotMatchSubjectErr",
     "code": 400,
     "error_code": 10017,
-    "description": "consumer name in subject does not match durable name in request"
+    "description": "consumer name in subject does not match durable name in request",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSMemoryResourcesExceededErr",
     "code": 500,
     "error_code": 10028,
     "description": "insufficient memory resources available",
+    "comment": "",
+    "help": "",
+    "url": "",
     "deprecates": "ErrMemoryResourcesExceeded"
   },
   {
     "constant": "JSMirrorWithSubjectFiltersErr",
     "code": 400,
     "error_code": 10033,
-    "description": "stream mirrors can not contain filtered subjects"
+    "description": "stream mirrors can not contain filtered subjects",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamCreateErrF",
     "code": 500,
     "error_code": 10049,
     "description": "{err}",
-    "comment": "Generic stream creation error string"
+    "comment": "Generic stream creation error string",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSClusterServerNotMemberErr",
     "code": 400,
     "error_code": 10044,
-    "description": "server is not a member of the cluster"
+    "description": "server is not a member of the cluster",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSNoMessageFoundErr",
     "code": 404,
     "error_code": 10037,
-    "description": "no message found"
+    "description": "no message found",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSSnapshotDeliverSubjectInvalidErr",
     "code": 400,
     "error_code": 10015,
-    "description": "deliver subject not valid"
+    "description": "deliver subject not valid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamGeneralErrorF",
     "code": 500,
     "error_code": 10051,
     "description": "{err}",
-    "comment": "General stream failure string"
+    "comment": "General stream failure string",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamInvalidConfigF",
     "code": 500,
     "error_code": 10052,
     "description": "{err}",
-    "comment": "Stream configuration validation error string"
+    "comment": "Stream configuration validation error string",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSStreamReplicasNotSupportedErr",
     "code": 500,
     "error_code": 10074,
-    "description": "replicas > 1 not supported in non-clustered mode",
+    "description": "replicas \u003e 1 not supported in non-clustered mode",
+    "comment": "",
+    "help": "",
+    "url": "",
     "deprecates": "ErrReplicasNotSupported"
   },
   {
@@ -468,12 +734,29 @@
     "code": 500,
     "error_code": 10057,
     "description": "{err}",
-    "comment": "Generic message deletion failure error string"
+    "comment": "Generic message deletion failure error string",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   },
   {
     "constant": "JSPeerRemapErr",
     "code": 503,
     "error_code": 10075,
-    "description": "peer remap failed"
+    "description": "peer remap failed",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSStreamStoreFailedF",
+    "code": 503,
+    "error_code": 10077,
+    "description": "{err}",
+    "comment": "Generic error when storing a message failed",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

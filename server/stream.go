@@ -2762,12 +2762,17 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		mset.clfs++
 		mset.mu.Unlock()
 
-		if err != ErrStoreClosed {
-			s.Errorf("JetStream failed to store a msg on stream '%s > %s' -  %v", accName, name, err)
+		switch err {
+		case ErrMaxMsgs, ErrMaxBytes, ErrMaxMsgsPerSubject, ErrMsgTooLarge:
+			s.Debugf("JetStream failed to store a msg on stream '%s > %s': %v", accName, name, err)
+		case ErrStoreClosed:
+		default:
+			s.Errorf("JetStream failed to store a msg on stream '%s > %s': %v", accName, name, err)
 		}
+
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
-			resp.Error = &ApiError{Code: 503, Description: err.Error()}
+			resp.Error = ApiErrors[JSStreamStoreFailedF].ErrOrNewT(err, "{err}", err)
 			response, _ = json.Marshal(resp)
 		}
 	} else if jsa.limitsExceeded(stype) {
