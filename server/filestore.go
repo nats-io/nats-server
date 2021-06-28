@@ -3857,7 +3857,7 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64) {
 		return
 	}
 	// TODO(dlc) - Might want to optimize this.
-	for tseq := seq + 1; tseq < ss.Last; tseq++ {
+	for tseq := seq + 1; tseq <= ss.Last; tseq++ {
 		if sm, _ := mb.cacheLookupWithLock(tseq); sm != nil {
 			if sm.subj == subj {
 				ss.First = tseq
