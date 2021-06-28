@@ -211,13 +211,14 @@ type sourceInfo struct {
 
 // Headers for published messages.
 const (
-	JSMsgId             = "Nats-Msg-Id"
-	JSExpectedStream    = "Nats-Expected-Stream"
-	JSExpectedLastSeq   = "Nats-Expected-Last-Sequence"
-	JSExpectedLastMsgId = "Nats-Expected-Last-Msg-Id"
-	JSStreamSource      = "Nats-Stream-Source"
-	JSLastConsumerSeq   = "Nats-Last-Consumer"
-	JSLastStreamSeq     = "Nats-Last-Stream"
+	JSMsgId               = "Nats-Msg-Id"
+	JSExpectedStream      = "Nats-Expected-Stream"
+	JSExpectedLastSeq     = "Nats-Expected-Last-Sequence"
+	JSExpectedLastSubjSeq = "Nats-Expected-Last-Subject-Sequence"
+	JSExpectedLastMsgId   = "Nats-Expected-Last-Msg-Id"
+	JSStreamSource        = "Nats-Stream-Source"
+	JSLastConsumerSeq     = "Nats-Last-Consumer"
+	JSLastStreamSeq       = "Nats-Last-Stream"
 )
 
 // Dedupe entry
@@ -2441,6 +2442,15 @@ func getExpectedLastSeq(hdr []byte) uint64 {
 	return uint64(parseInt64(bseq))
 }
 
+// Fast lookup of expected stream sequence per subject.
+func getExpectedLastSeqPerSubject(hdr []byte) uint64 {
+	bseq := getHeader(JSExpectedLastSubjSeq, hdr)
+	if len(bseq) == 0 {
+		return 0
+	}
+	return uint64(parseInt64(bseq))
+}
+
 // Lock should be held.
 func (mset *stream) isClustered() bool {
 	return mset.node != nil
@@ -2649,6 +2659,22 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0, nil})
 			}
 			return fmt.Errorf("last msgid mismatch: %q vs %q", lmsgId, last)
+		}
+		// Expected last sequence per subject.
+		if seq := getExpectedLastSeqPerSubject(hdr); seq > 0 {
+			// TODO(dlc) - We could make a new store func that does this all in one.
+			_, lseq, _, _, _, err := mset.store.LoadLastMsg(subject)
+			if err != nil || lseq != seq {
+				mset.clfs++
+				mset.mu.Unlock()
+				if canRespond {
+					resp.PubAck = &PubAck{Stream: name}
+					resp.Error = ApiErrors[JSStreamWrongLastSequenceErrF].NewT("{seq}", lseq)
+					b, _ := json.Marshal(resp)
+					outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0, nil})
+				}
+				return fmt.Errorf("last sequence by subject mismatch: %d vs %d", seq, lseq)
+			}
 		}
 	}
 

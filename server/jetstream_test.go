@@ -10971,6 +10971,71 @@ func TestJetStreamGetLastMsgBySubject(t *testing.T) {
 	}
 }
 
+func TestJetStreamLastSequenceBySubject(t *testing.T) {
+	for _, st := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(st.String(), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "JSC", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			cfg := StreamConfig{
+				Name:       "KV",
+				Subjects:   []string{"kv.>"},
+				Storage:    st,
+				Replicas:   3,
+				MaxMsgsPer: 1,
+			}
+
+			req, err := json.Marshal(cfg)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			// Do manually for now.
+			nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+			si, err := js.StreamInfo("KV")
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if si == nil || si.Config.Name != "KV" {
+				t.Fatalf("StreamInfo is not correct %+v", si)
+			}
+
+			js.PublishAsync("kv.foo", []byte("1"))
+			js.PublishAsync("kv.bar", []byte("2"))
+			js.PublishAsync("kv.baz", []byte("3"))
+
+			select {
+			case <-js.PublishAsyncComplete():
+			case <-time.After(time.Second):
+				t.Fatalf("Did not receive completion signal")
+			}
+
+			// Now make sure we get an error if the last sequence is not correct per subject.
+			pubAndCheck := func(subj, seq string, ok bool) {
+				t.Helper()
+				m := nats.NewMsg(subj)
+				m.Data = []byte("HELLO")
+				m.Header.Set(JSExpectedLastSubjSeq, seq)
+				_, err := js.PublishMsg(m)
+				if ok && err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				if !ok && err == nil {
+					t.Fatalf("Expected to get an error and got none")
+				}
+			}
+
+			pubAndCheck("kv.foo", "1", true)  // So last is now 4.
+			pubAndCheck("kv.foo", "1", false) // This should fail.
+			pubAndCheck("kv.bar", "2", true)
+			pubAndCheck("kv.bar", "5", true)
+			pubAndCheck("kv.xxx", "5", false)
+		})
+	}
+}
+
 // https://github.com/nats-io/nats-server/issues/2314
 func TestJetStreamMaxMsgsPerAndDiscardNew(t *testing.T) {
 	for _, st := range []StorageType{FileStorage, MemoryStorage} {
