@@ -50,7 +50,7 @@ var (
 	// ErrStoreSnapshotInProgress is returned when RemoveMsg or EraseMsg is called
 	// while a snapshot is in progress.
 	ErrStoreSnapshotInProgress = errors.New("snapshot in progress")
-	// ErrMsgTooBig is returned when a message is considered too large.
+	// ErrMsgTooLarge is returned when a message is considered too large.
 	ErrMsgTooLarge = errors.New("message to large")
 	// ErrStoreWrongType is for when you access the wrong storage type.
 	ErrStoreWrongType = errors.New("wrong storage type")
