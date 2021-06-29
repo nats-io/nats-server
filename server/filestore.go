@@ -5013,7 +5013,7 @@ func (o *consumerFileStore) Stop() error {
 	}
 
 	var err error
-	if o.dirty && !o.writing {
+	if o.dirty {
 		var buf []byte
 		// Make sure to write this out..
 		if buf, err = o.encodeState(); err == nil && len(buf) > 0 {
