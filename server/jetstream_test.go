@@ -6986,10 +6986,10 @@ func TestJetStreamSimpleFileRecovery(t *testing.T) {
 	}
 	pusage := acc.JetStreamUsage()
 
-	// Shutdown the  Restart and make sure things come back.
+	// Shutdown and restart and make sure things come back.
 	s.Shutdown()
 
-	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
 		delta := (runtime.NumGoroutine() - base)
 		if delta > 3 {
 			return fmt.Errorf("%d Go routines still exist post Shutdown()", delta)

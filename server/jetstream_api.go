@@ -21,6 +21,7 @@ import (
 	"math/rand"
 	"os"
 	"path"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -147,6 +148,9 @@ const (
 
 	// JSApiRequestNextT is the prefix for the request next message(s) for a consumer in worker/pull mode.
 	JSApiRequestNextT = "$JS.API.CONSUMER.MSG.NEXT.%s.%s"
+
+	// jsRequestNextPre
+	jsRequestNextPre = "$JS.API.CONSUMER.MSG.NEXT."
 
 	// For snapshots and restores. The ack will have additional tokens.
 	jsSnapshotAckT    = "$JS.SNAPSHOT.ACK.%s.%s"
@@ -592,35 +596,6 @@ type JSApiStreamTemplateNamesResponse struct {
 
 const JSApiStreamTemplateNamesResponseType = "io.nats.jetstream.api.v1.stream_template_names_response"
 
-// For easier handling of exports and imports.
-var allJsExports = []string{
-	JSApiAccountInfo,
-	JSApiTemplateCreate,
-	JSApiTemplates,
-	JSApiTemplateInfo,
-	JSApiTemplateDelete,
-	JSApiStreamCreate,
-	JSApiStreamUpdate,
-	JSApiStreams,
-	JSApiStreamList,
-	JSApiStreamInfo,
-	JSApiStreamDelete,
-	JSApiStreamPurge,
-	JSApiStreamSnapshot,
-	JSApiStreamRestore,
-	JSApiStreamRemovePeer,
-	JSApiStreamLeaderStepDown,
-	JSApiConsumerLeaderStepDown,
-	JSApiMsgDelete,
-	JSApiMsgGet,
-	JSApiConsumerCreate,
-	JSApiDurableCreate,
-	JSApiConsumers,
-	JSApiConsumerList,
-	JSApiConsumerInfo,
-	JSApiConsumerDelete,
-}
-
 func (js *jetStream) apiDispatch(sub *subscription, c *client, subject, reply string, rmsg []byte) {
 	hdr, _ := c.msgParts(rmsg)
 	if len(getHeader(ClientInfoHdr, hdr)) == 0 {
@@ -633,6 +608,7 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, subject, reply st
 
 	// Shortcircuit.
 	if len(rr.psubs)+len(rr.qsubs) == 0 {
+		debug.PrintStack()
 		return
 	}
 

@@ -804,6 +804,9 @@ func (os *consumerMemStore) Stop() error {
 func (os *consumerMemStore) Delete() error {
 	return os.Stop()
 }
+func (os *consumerMemStore) StreamDelete() error {
+	return os.Stop()
+}
 
 func (os *consumerMemStore) State() (*ConsumerState, error) { return nil, nil }
 

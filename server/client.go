@@ -3743,8 +3743,18 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 
 	acc.mu.RLock()
 	shouldReturn := si.invalid || acc.sl == nil
+	checkJSGetNext := !isResponse && si.to == jsAllAPI && strings.HasPrefix(string(c.pa.subject), jsRequestNextPre)
 	acc.mu.RUnlock()
 
+	// We have a special case where JetStream pulls in all service imports through one export.
+	// However the GetNext for consumers is a no-op and causes buildups of service imports,
+	// response service imports and rrMap entries which all will need to simply expire.
+	// TODO(dlc) - Come up with something better.
+	if checkJSGetNext && si.se != nil && si.se.acc == c.srv.SystemAccount() {
+		shouldReturn = true
+	}
+
+	// Check for short circuit return.
 	if shouldReturn {
 		return
 	}
@@ -3765,7 +3775,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		} else {
 			nrr = c.pa.reply
 		}
-	} else if !si.response && si.latency != nil && tracking {
+	} else if !isResponse && si.latency != nil && tracking {
 		// Check to see if this was a bad request with no reply and we were supposed to be tracking.
 		si.acc.sendBadRequestTrackingLatency(si, c, headers)
 	}
@@ -3812,7 +3822,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 
 	// Place our client info for the request in the original message.
 	// This will survive going across routes, etc.
-	if !si.response {
+	if !isResponse {
 		var ci *ClientInfo
 		if hadPrevSi && c.pa.hdr >= 0 {
 			var cis ClientInfo
@@ -3832,7 +3842,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	}
 
 	// Set our optional subject(to) and reply.
-	if !si.response && to != subject {
+	if !isResponse && to != subject {
 		c.pa.subject = []byte(to)
 	}
 	c.pa.reply = nrr
@@ -3882,7 +3892,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// Determine if we should remove this service import. This is for response service imports.
 	// We will remove if we did not deliver, or if we are a response service import and we are
 	// a singleton, or we have an EOF message.
-	shouldRemove := !didDeliver || (si.response && (si.rt == Singleton || len(msg) == LEN_CR_LF))
+	shouldRemove := !didDeliver || (isResponse && (si.rt == Singleton || len(msg) == LEN_CR_LF))
 	// If we are tracking and we did not actually send the latency info we need to suppress the removal.
 	if si.tracking && !didSendTL {
 		shouldRemove = false
@@ -3900,7 +3910,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		if !didDeliver {
 			reason = rsiNoDelivery
 		}
-		if si.isRespServiceImport() {
+		if isResponse {
 			acc.removeRespServiceImport(si, reason)
 		} else {
 			// This is a main import and since we could not even deliver to the exporting account

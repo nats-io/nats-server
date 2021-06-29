@@ -3053,15 +3053,14 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 			mset.cancelSourceConsumer(si.iname)
 		}
 	}
-	mset.mu.Unlock()
 
+	mset.mu.Unlock()
 	for _, o := range obs {
-		// Second flag says do not broadcast to signal.
+		// Third flag says do not broadcast a signal.
 		// TODO(dlc) - If we have an err here we don't want to stop
 		// but should we log?
-		o.stopWithFlags(deleteFlag, false, advisory)
+		o.stopWithFlags(deleteFlag, deleteFlag, false, advisory)
 	}
-
 	mset.mu.Lock()
 
 	// Stop responding to sync requests.
@@ -3196,10 +3195,10 @@ func (mset *stream) setConsumer(o *consumer) {
 }
 
 func (mset *stream) removeConsumer(o *consumer) {
-	if o.cfg.FilterSubject != _EMPTY_ {
+	if o.cfg.FilterSubject != _EMPTY_ && mset.numFilter > 0 {
 		mset.numFilter--
 	}
-	if o.cfg.Direct {
+	if o.cfg.Direct && mset.directs > 0 {
 		mset.directs--
 	}
 	delete(mset.consumers, o.name)

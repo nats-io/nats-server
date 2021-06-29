@@ -1295,30 +1295,10 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 
 // DisableJetStream will disable JetStream for this account.
 func (a *Account) DisableJetStream() error {
-	a.mu.Lock()
-	s := a.srv
-	a.js = nil
-	a.mu.Unlock()
-
-	if s == nil {
-		return fmt.Errorf("jetstream account not registered")
-	}
-
-	js := s.getJetStream()
-	if js == nil {
-		return ApiErrors[JSNotEnabledForAccountErr]
-	}
-
-	// Remove service imports.
-	for _, export := range allJsExports {
-		a.removeServiceImport(export)
-	}
-
-	return js.disableJetStream(js.lookupAccount(a))
+	return a.removeJetStream()
 }
 
-// removeJetStream is called when JetStream has been disabled for this
-// server.
+// removeJetStream is called when JetStream has been disabled for this account.
 func (a *Account) removeJetStream() error {
 	a.mu.Lock()
 	s := a.srv
