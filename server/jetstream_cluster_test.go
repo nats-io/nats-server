@@ -6345,7 +6345,7 @@ func TestJetStreamClusterDomainsAndAPIResponses(t *testing.T) {
 
 	// Now create spoke LN cluster.
 	tmpl = strings.Replace(jsClusterTemplWithLeafNode, "store_dir:", "domain: SPOKE, store_dir:", 1)
-	lnc := c.createLeafNodesWithTemplateAndStartPort(tmpl, "SPOKE", 5, 33113)
+	lnc := c.createLeafNodesWithTemplateAndStartPort(tmpl, "SPOKE", 5, 33913)
 	defer lnc.shutdown()
 
 	lnc.waitOnClusterReady()
