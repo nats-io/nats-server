@@ -2512,15 +2512,6 @@ func (fs *fileStore) syncBlocks() {
 		}
 	}
 
-	fs.mu.RLock()
-	cfs := append([]*consumerFileStore(nil), fs.cfs...)
-	fs.mu.RUnlock()
-
-	// Do consumers.
-	for _, o := range cfs {
-		o.syncStateFile()
-	}
-
 	fs.mu.Lock()
 	fs.syncTmr = time.AfterFunc(fs.fcfg.SyncInterval, fs.syncBlocks)
 	fs.mu.Unlock()
@@ -4312,14 +4303,13 @@ type consumerFileStore struct {
 	name    string
 	odir    string
 	ifn     string
-	ifd     *os.File
-	lwsz    int64
 	hh      hash.Hash64
 	state   ConsumerState
 	fch     chan struct{}
 	qch     chan struct{}
 	flusher bool
 	writing bool
+	dirty   bool
 	closed  bool
 }
 
@@ -4421,6 +4411,7 @@ func (o *consumerFileStore) kickFlusher() {
 		default:
 		}
 	}
+	o.dirty = true
 }
 
 // Set in flusher status
@@ -4453,14 +4444,35 @@ func (o *consumerFileStore) flushLoop() {
 	o.setInFlusher()
 	defer o.clearInFlusher()
 
+	// Maintain approximately 10 updates per second per consumer under load.
+	const minTime = 100 * time.Millisecond
+	var lastWrite time.Time
+	var dt *time.Timer
+
+	setDelayTimer := func(addWait time.Duration) {
+		if dt == nil {
+			dt = time.NewTimer(addWait)
+			return
+		}
+		if !dt.Stop() {
+			select {
+			case <-dt.C:
+			default:
+			}
+		}
+		dt.Reset(addWait)
+	}
+
 	for {
 		select {
 		case <-fch:
-			time.Sleep(10 * time.Millisecond)
-			select {
-			case <-qch:
-				return
-			default:
+			if ts := time.Since(lastWrite); ts < minTime {
+				setDelayTimer(minTime - ts)
+				select {
+				case <-dt.C:
+				case <-qch:
+					return
+				}
 			}
 			o.mu.Lock()
 			if o.closed {
@@ -4474,6 +4486,7 @@ func (o *consumerFileStore) flushLoop() {
 			}
 			// TODO(dlc) - if we error should start failing upwards.
 			o.writeState(buf)
+			lastWrite = time.Now()
 		case <-qch:
 			return
 		}
@@ -4686,9 +4699,9 @@ func (o *consumerFileStore) Update(state *ConsumerState) error {
 	o.state.AckFloor = state.AckFloor
 	o.state.Pending = pending
 	o.state.Redelivered = redelivered
+	o.kickFlusher()
 	o.mu.Unlock()
 
-	o.kickFlusher()
 	return nil
 }
 
@@ -4711,23 +4724,22 @@ func (o *consumerFileStore) writeState(buf []byte) error {
 		o.mu.Unlock()
 		return nil
 	}
-	if err := o.ensureStateFileOpen(); err != nil {
-		o.mu.Unlock()
-		return err
-	}
-	o.writing = true
-	ifd := o.ifd
 
+	// Check on encryption.
 	if o.aek != nil {
 		buf = o.encryptState(buf)
 	}
+
+	o.writing = true
+	o.dirty = false
+	ifn := o.ifn
 	o.mu.Unlock()
 
-	n, err := ifd.WriteAt(buf, 0)
+	err := ioutil.WriteFile(ifn, buf, defaultFilePerms)
 
 	o.mu.Lock()
-	if err == nil {
-		o.lwsz = int64(n)
+	if err != nil {
+		o.dirty = true
 	}
 	o.writing = false
 	o.mu.Unlock()
@@ -4791,28 +4803,6 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 	return nil
 }
 
-func (o *consumerFileStore) syncStateFile() {
-	// FIXME(dlc) - Hold last error?
-	o.mu.Lock()
-	if o.ifd != nil {
-		o.ifd.Sync()
-		o.ifd.Truncate(o.lwsz)
-	}
-	o.mu.Unlock()
-}
-
-// Lock should be held.
-func (o *consumerFileStore) ensureStateFileOpen() error {
-	if o.ifd == nil {
-		ifd, err := os.OpenFile(o.ifn, os.O_CREATE|os.O_RDWR, defaultFilePerms)
-		if err != nil {
-			return err
-		}
-		o.ifd = ifd
-	}
-	return nil
-}
-
 // Make sure the header is correct.
 func checkHeader(hdr []byte) error {
 	if hdr == nil || len(hdr) < 2 || hdr[0] != magic || hdr[1] != version {
@@ -4821,6 +4811,7 @@ func checkHeader(hdr []byte) error {
 	return nil
 }
 
+// Consumer version.
 func checkConsumerHeader(hdr []byte) (uint8, error) {
 	if hdr == nil || len(hdr) < 2 || hdr[0] != magic {
 		return 0, errCorruptState
@@ -5022,27 +5013,21 @@ func (o *consumerFileStore) Stop() error {
 	}
 
 	var err error
-	if !o.writing {
-		if err = o.ensureStateFileOpen(); err == nil {
-			var buf []byte
-			// Make sure to write this out..
-			if buf, err = o.encodeState(); err == nil && len(buf) > 0 {
-				if o.aek != nil {
-					buf = o.encryptState(buf)
-				}
-				_, err = o.ifd.WriteAt(buf, 0)
+	if o.dirty && !o.writing {
+		var buf []byte
+		// Make sure to write this out..
+		if buf, err = o.encodeState(); err == nil && len(buf) > 0 {
+			if o.aek != nil {
+				buf = o.encryptState(buf)
 			}
+			err = ioutil.WriteFile(o.ifn, buf, defaultFilePerms)
 		}
 	}
 
-	o.ifd, o.odir = nil, _EMPTY_
-	fs, ifd := o.fs, o.ifd
+	o.odir = _EMPTY_
 	o.closed = true
+	fs := o.fs
 	o.mu.Unlock()
-
-	if ifd != nil {
-		ifd.Close()
-	}
 
 	fs.removeConsumer(o)
 	return err
@@ -5050,8 +5035,15 @@ func (o *consumerFileStore) Stop() error {
 
 // Delete the consumer.
 func (o *consumerFileStore) Delete() error {
-	o.mu.Lock()
+	return o.delete(false)
+}
 
+func (o *consumerFileStore) StreamDelete() error {
+	return o.delete(true)
+}
+
+func (o *consumerFileStore) delete(streamDeleted bool) error {
+	o.mu.Lock()
 	if o.closed {
 		o.mu.Unlock()
 		return nil
@@ -5061,20 +5053,20 @@ func (o *consumerFileStore) Delete() error {
 		o.qch = nil
 	}
 
-	if o.ifd != nil {
-		o.ifd.Close()
-		o.ifd = nil
-	}
 	var err error
-	if o.odir != _EMPTY_ {
+	// If our stream was deleted it will remove the directories.
+	if o.odir != _EMPTY_ && !streamDeleted {
 		err = os.RemoveAll(o.odir)
 	}
-	o.ifd, o.odir = nil, _EMPTY_
+	o.odir = _EMPTY_
 	o.closed = true
 	fs := o.fs
 	o.mu.Unlock()
 
-	fs.removeConsumer(o)
+	if !streamDeleted {
+		fs.removeConsumer(o)
+	}
+
 	return err
 }
 

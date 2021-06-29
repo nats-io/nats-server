@@ -1625,9 +1625,8 @@ func (a *Account) checkForReverseEntries(reply string, checkInterest bool) {
 		return
 	}
 
-	var _rs [32]string
+	var _rs [64]string
 	rs := _rs[:0]
-
 	for k := range a.imports.rrMap {
 		if subjectIsSubsetMatch(k, reply) {
 			rs = append(rs, k)
@@ -1650,8 +1649,14 @@ func (a *Account) checkForReverseEntry(reply string, si *serviceImport, checkInt
 	}
 
 	if subjectHasWildcard(reply) {
+		doInline := len(a.imports.rrMap) <= 64
 		a.mu.RUnlock()
-		go a.checkForReverseEntries(reply, checkInterest)
+
+		if doInline {
+			a.checkForReverseEntries(reply, checkInterest)
+		} else {
+			go a.checkForReverseEntries(reply, checkInterest)
+		}
 		return
 	}
 
@@ -2964,12 +2969,6 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 
 	jsEnabled := s.JetStreamEnabled()
 	if jsEnabled && a == s.SystemAccount() {
-		for _, export := range allJsExports {
-			s.Debugf("Adding jetstream service export %q for %s", export, a.traceLabel())
-			if err := a.AddServiceExport(export, nil); err != nil {
-				s.Errorf("Error setting up jetstream service exports: %v", err)
-			}
-		}
 		s.checkJetStreamExports()
 	}
 

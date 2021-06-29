@@ -156,6 +156,7 @@ type ConsumerStore interface {
 	State() (*ConsumerState, error)
 	Stop() error
 	Delete() error
+	StreamDelete() error
 }
 
 // SequencePair has both the consumer and the stream sequence. They point to same message.

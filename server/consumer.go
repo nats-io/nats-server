@@ -2709,19 +2709,19 @@ func stopAndClearTimer(tp **time.Timer) {
 
 // Stop will shutdown  the consumer for the associated stream.
 func (o *consumer) stop() error {
-	return o.stopWithFlags(false, true, false)
+	return o.stopWithFlags(false, false, true, false)
 }
 
 func (o *consumer) deleteWithoutAdvisory() error {
-	return o.stopWithFlags(true, true, false)
+	return o.stopWithFlags(true, false, true, false)
 }
 
 // Delete will delete the consumer for the associated stream and send advisories.
 func (o *consumer) delete() error {
-	return o.stopWithFlags(true, true, true)
+	return o.stopWithFlags(true, false, true, true)
 }
 
-func (o *consumer) stopWithFlags(dflag, doSignal, advisory bool) error {
+func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	o.mu.Lock()
 	if o.closed {
 		o.mu.Unlock()
@@ -2822,10 +2822,15 @@ func (o *consumer) stopWithFlags(dflag, doSignal, advisory bool) error {
 		}
 	}
 
+	// Clean up our store.
 	var err error
 	if store != nil {
 		if dflag {
-			err = store.Delete()
+			if sdflag {
+				err = store.StreamDelete()
+			} else {
+				err = store.Delete()
+			}
 		} else {
 			err = store.Stop()
 		}

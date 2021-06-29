@@ -2728,9 +2728,6 @@ func TestFileStoreConsumerPerf(t *testing.T) {
 	start = time.Now()
 	oc.writeState(buf)
 	fmt.Printf("time to write is %v\n", time.Since(start))
-	start = time.Now()
-	oc.syncStateFile()
-	fmt.Printf("time to sync is %v\n", time.Since(start))
 }
 
 func TestFileStoreStreamIndexBug(t *testing.T) {

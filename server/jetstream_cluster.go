@@ -2618,7 +2618,7 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 		resp.Error = ApiErrors[JSStreamNotFoundErr].ErrOr(err)
 	} else if mset != nil {
 		if o := mset.lookupConsumer(ca.Name); o != nil {
-			err = o.stopWithFlags(true, true, wasLeader)
+			err = o.stopWithFlags(true, false, true, wasLeader)
 		} else {
 			resp.Error = ApiErrors[JSConsumerNotFoundErr]
 		}
@@ -2807,7 +2807,7 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 			}
 			js.mu.RUnlock()
 			if peer := string(e.Data); peer == ourID {
-				o.stopWithFlags(true, false, false)
+				o.stopWithFlags(true, false, false, false)
 			}
 			return nil
 		} else {
