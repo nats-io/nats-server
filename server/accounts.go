@@ -2060,7 +2060,7 @@ func (a *Account) createRespWildcard() []byte {
 		a.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
 	}
 	var b = [baseServerLen]byte{'_', 'R', '_', '.'}
-	rn := a.prand.Int63()
+	rn := a.prand.Uint64()
 	for i, l := replyPrefixLen, rn; i < len(b); i++ {
 		b[i] = digits[l%base]
 		l /= base
@@ -2088,17 +2088,19 @@ func isTrackedReply(reply []byte) bool {
 // Generate a new service reply from the wildcard prefix.
 // FIXME(dlc) - probably do not have to use rand here. about 25ns per.
 func (a *Account) newServiceReply(tracking bool) []byte {
-	a.mu.RLock()
-	replyPre := a.siReply
-	s := a.srv
-	a.mu.RUnlock()
+	a.mu.Lock()
+	s, replyPre := a.srv, a.siReply
+	if a.prand == nil {
+		a.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+	rn := a.prand.Uint64()
+	a.mu.Unlock()
 
 	if replyPre == nil {
 		replyPre = a.createRespWildcard()
 	}
 
 	var b [replyLen]byte
-	rn := a.prand.Int63()
 	for i, l := 0, rn; i < len(b); i++ {
 		b[i] = digits[l%base]
 		l /= base
