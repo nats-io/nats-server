@@ -2243,9 +2243,6 @@ func (mset *stream) subscribeInternal(subject string, cb msgHandler) (*subscript
 	if c == nil {
 		return nil, fmt.Errorf("invalid stream")
 	}
-	if !c.srv.eventsEnabled() {
-		return nil, ErrNoSysAccount
-	}
 	if cb == nil {
 		return nil, fmt.Errorf("undefined message handler")
 	}
