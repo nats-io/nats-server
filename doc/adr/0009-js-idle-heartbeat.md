@@ -47,6 +47,6 @@ recovered elsewhere.
 
 ## Consequences
 
-In the future, clients will use this information to set client-side timers that
-track how many heartbeats have been missed and perhaps take some action such as
-re-create a subscription to resume messages.
+Clients can use this information to set client-side timers that track how many
+heartbeats have been missed and perhaps take some action such as re-create a
+subscription to resume messages.
