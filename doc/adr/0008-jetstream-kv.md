@@ -48,6 +48,12 @@ Planned features:
 
 ## Data Types
 
+Below are some guidance around types, I think it's important that we all have a method called `Put()` but if your language
+is predominantly `[]byte` based, then adjust to taste from the `string` shown here.
+
+Some of these uses go `context.Context` other language might not have an equivalent and need to handle timeouts or cancellations
+in another way, thats fine, this is a rough guide, go ahead and adjust to what is idiomatic in your language.
+
 ### Result
 
 This is the result made available over watchers, `Get()` etc. All backends must return an implementation providing at least this information.
@@ -86,7 +92,7 @@ type Status interface {
 	Values() uint64
 
 	// History returns the configured history kept per key
-	History() int64
+	History() uint64
 
 	// TTL is how long the bucket keeps values for
 	TTL() time.Duration
@@ -94,23 +100,23 @@ type Status interface {
 	// Cluster returns the name of the cluster holding the read replica of the data
 	Cluster() string
 
-	// Replicas returns how many times data in the bucket is replicated at storage
-	Replicas() (ok int, failed int)
-
 	// Keys returns a list of all keys in the bucket - not possible now
 	Keys() ([]string, error)
 
 	// BackingStore is a backend specific name for the underlying storage - eg. stream name
 	BackingStore() string
-
-	// MirrorStatus is the status of a read replica, error when not accessing a replica (planned)
-	MirrorStatus() (lag int64, active bool, err error)
 }
 ```
 
 ## RoKV
 
-This is a read-only KV store handle, every backend should implement a language equivalent interface
+This is a read-only KV store handle, I call this out here to demonstrate that we need to be sure to support a read-only 
+variant of the client. One that will only function against a read replica and cannot support `Put()` etc. 
+
+That capability is important, how you implement this in your language is your choice. You can throw exceptions on `Put()`
+when read-only or whatever you like.
+
+The interface here is a guide of what should function in read-only mode.
 
 ```go
 // RoKV is a read-only interface to a single key-value store bucket
@@ -130,9 +136,6 @@ type RoKV interface {
 	// Close releases in-memory resources held by the KV, called automatically if the context used to create it is canceled
 	Close() error
 
-	// JSON dumps the entire KV as k=v values in JSON format
-	JSON(ctx context.Context) ([]byte, error)
-
 	// Status retrieves the status of the bucket
 	Status() (Status, error)
 }
@@ -140,7 +143,8 @@ type RoKV interface {
 
 ## KV
 
-This is the read-write KV store handle, every backend should implement a language equivalent interface.
+This is the read-write KV store handle, every backend should implement a language equivalent interface. But note the comments
+by `RoKV` for why I call these out separately.
 
 ```go
 // KV is a read-write interface to a single key-value store bucket
@@ -186,6 +190,9 @@ A bucket is a Stream with these properties:
  * Write replicas are File backed and can have a varying R value
  * Key TTL is managed using the `max_age` key
  * Duplicate window must be same as `max_age` when `max_age` is less than 2 minutes
+ * Maximum value sizes can be capped using `max_msg_size`
+ * Maximum number of keys cannot currently be limited - we will add something to the server
+ * Overall bucket size can be limited using `max_bytes`
 
 Here is a full example of the `CONFIGURATION` bucket:
 
