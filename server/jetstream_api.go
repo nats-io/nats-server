@@ -3419,11 +3419,13 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 				resp.Error = ApiErrors[JSClusterNotAvailErr]
 				// Delaying an error response gives the leader a chance to respond before us
 				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), ca.Group)
-			} else if rg := ca.Group; rg != nil && rg.node != nil && rg.isMember(cc.meta.ID()) {
-				// Check here if we are a member and this is just a new consumer that does not have a leader yet.
-				if rg.node.GroupLeader() == _EMPTY_ && !rg.node.HadPreviousLeader() {
-					resp.Error = ApiErrors[JSConsumerNotFoundErr]
-					s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil)
+			} else if ca != nil {
+				if rg := ca.Group; rg != nil && rg.node != nil && rg.isMember(cc.meta.ID()) {
+					// Check here if we are a member and this is just a new consumer that does not have a leader yet.
+					if rg.node.GroupLeader() == _EMPTY_ && !rg.node.HadPreviousLeader() {
+						resp.Error = ApiErrors[JSConsumerNotFoundErr]
+						s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil)
+					}
 				}
 			}
 			return
