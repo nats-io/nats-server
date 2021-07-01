@@ -10971,6 +10971,68 @@ func TestJetStreamGetLastMsgBySubject(t *testing.T) {
 	}
 }
 
+// https://github.com/nats-io/nats-server/issues/2329
+func TestJetStreamGetLastMsgBySubjectAfterUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	sc := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 2,
+	}
+	if _, err := js.AddStream(sc); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Now Update and add in other subjects.
+	sc.Subjects = append(sc.Subjects, "bar", "baz")
+	if _, err := js.UpdateStream(sc); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	js.Publish("foo", []byte("OK1")) // 1
+	js.Publish("bar", []byte("OK1")) // 2
+	js.Publish("foo", []byte("OK2")) // 3
+	js.Publish("bar", []byte("OK2")) // 4
+
+	// Need to do stream GetMsg by hand for now until Go client support lands.
+	getLast := func(subject string) *StoredMsg {
+		t.Helper()
+		req := &JSApiMsgGetRequest{LastFor: subject}
+		b, _ := json.Marshal(req)
+		rmsg, err := nc.Request(fmt.Sprintf(JSApiMsgGetT, "TEST"), b, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var resp JSApiMsgGetResponse
+		err = json.Unmarshal(rmsg.Data, &resp)
+		if err != nil {
+			t.Fatalf("Could not parse stream message: %v", err)
+		}
+		if resp.Message == nil || resp.Error != nil {
+			t.Fatalf("Did not receive correct response: %+v", resp.Error)
+		}
+		return resp.Message
+	}
+	// Do basic checks.
+	basicCheck := func(subject string, expectedSeq uint64) {
+		sm := getLast(subject)
+		if sm == nil {
+			t.Fatalf("Expected a message but got none")
+		} else if sm.Sequence != expectedSeq {
+			t.Fatalf("Wrong message sequence, wanted %d but got %d", expectedSeq, sm.Sequence)
+		} else if !subjectIsSubsetMatch(sm.Subject, subject) {
+			t.Fatalf("Wrong subject, wanted %q but got %q", subject, sm.Subject)
+		}
+	}
+
+	basicCheck("foo", 3)
+	basicCheck("bar", 4)
+}
+
 func TestJetStreamLastSequenceBySubject(t *testing.T) {
 	for _, st := range []StorageType{FileStorage, MemoryStorage} {
 		t.Run(st.String(), func(t *testing.T) {
