@@ -15,18 +15,13 @@ the following JSON:
 ```typescript
 {
     type: "io.nats.jetstream.api.v1.stream_purge_response", 
-    error?: {
-        code: number,
-        err_code: number,
-        description: string
-    },
+    error?: ApiError,
     success: boolean,
     purged: number
 }
 ```
 
-The `error` field in the response will only be set if there was an error
-processing the request. The `success` field will be set to `true` if the request
+The `error` field is an [ApiError](0007-error-codes.md). The `success` field will be set to `true` if the request
 succeeded. The `purged` field will be set to the number of messages that were
 purged from the stream.
 
