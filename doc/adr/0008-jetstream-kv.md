@@ -22,7 +22,7 @@ We intend to hit a basic initial feature set as below, with some future facing g
 Initial feature list:
 
  * Multiple named buckets full of keys with n historical values kept per value
- * Put and Get of `string(k)=string(v)` values
+ * Put and Get of `string(k)=[]byte(v)` values
  * Put only if the sequence of the last value for a key matches an expected sequence
  * Historic values can be kept per key, setable on creation of the bucket
  * Key deletes preserves history
@@ -31,7 +31,7 @@ Initial feature list:
  * Encoders and Decoders that transforms both keys and values
  * A read-cache that builds an in-memory cache for fast reads
  * read-after-write safety unless read replicas used
- * Valid keys are `\A[-/_a-zA-Z0-9]+\z` after encoding
+ * Valid keys are `\A[-/_a-=zA-Z0-9]+\z` after encoding
  * Valid buckets are `^[a-zA-Z0-9_-]+$`
  * Custom Stream Names and Stream ingest subjects to cater for different domains, mirrors and imports
  * Key starting with `_kv` is reserved for internal use
@@ -48,11 +48,8 @@ Planned features:
 
 ## Data Types
 
-Below are some guidance around types, I think it's important that we all have a method called `Put()` but if your language
-is predominantly `[]byte` based, then adjust to taste from the `string` shown here.
-
-Some of these uses go `context.Context` other language might not have an equivalent and need to handle timeouts or cancellations
-in another way, thats fine, this is a rough guide, go ahead and adjust to what is idiomatic in your language.
+Here's rough guidance, for some clients in some places you might not want to use `[]string` but an iterator, that's
+fine, the languages should make appropriate choices based on this rough outline.
 
 ### Result
 
@@ -65,7 +62,7 @@ type Result interface {
 	// Key is the key that was retrieved
 	Key() string
 	// Value is the retrieved value
-	Value() string
+	Value() []byte
 	// Created is the time the data was received in the bucket
 	Created() time.Time
 	// Sequence is a unique sequence for this value
@@ -150,7 +147,7 @@ by `RoKV` for why I call these out separately.
 // KV is a read-write interface to a single key-value store bucket
 type KV interface {
 	// Put saves a value into a key
-	Put(key string, val string, opts ...PutOption) (seq uint64, err error)
+	Put(key string, val []byte, opts ...PutOption) (seq uint64, err error)
 
 	// Delete purges the subject
 	Delete(key string) error
@@ -286,13 +283,6 @@ ready once the full history was read.
 When a stream is empty at create time - `NumPending+Delivered.Consumer==0` - a nil is sent across the channel to signal to the
 caller that they should not expect any values.
 
-#### Dumping entire bucket as JSON
-
-A watch is set up to read the entire bucket, the data received is stored in a `map[string]Result`. Care should be taken to handle the `KV-Operation`
-header to not return deleted data.
-
-By creating a bucket watch it means the JSON dump will see all keys and all history.
-
 #### Difficult to support features
 
 JetStream does not today support asking a stream for its list of subjects, this means an iterator over keys needs to read the entire
@@ -303,7 +293,8 @@ function from a local cache since walking the entire stream is implied in how it
 
 ### Codec support
 
-We support client-side encoding and decoding, the basic interface is `func(string) string`. Users can supply a encode, a decoder or a codec.
+We support client-side encoding and decoding, the basic interface is `func([]byte) ([]byte, error)`. Users can supply a encode, a decoder 
+or a codec.
 
 Read only clients would only need a decoder - and so by extension, not need a private key.
 
