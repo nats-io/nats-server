@@ -2014,8 +2014,13 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 			reply := nc.NewRespInbox()
 			replySubj, _ := nc.SubscribeSync(reply)
 
-			destSubj := fmt.Sprintf("%s.%s", serverStatsPingReqSubj, test.endpoint)
-			nc.PublishRequest(destSubj, reply, opt)
+			// set a header to make sure request parsing knows to ignore them
+			nc.PublishMsg(&nats.Msg{
+				Subject: fmt.Sprintf("%s.%s", serverStatsPingReqSubj, test.endpoint),
+				Reply:   reply,
+				Header:  nats.Header{"header": []string{"for header sake"}},
+				Data:    opt,
+			})
 
 			// Receive both manually.
 			msg, err := replySubj.NextMsg(time.Second)

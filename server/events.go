@@ -721,37 +721,37 @@ func (s *Server) initEventTracking() {
 	}
 	monSrvc := map[string]msgHandler{
 		"STATSZ": s.statszReq,
-		"VARZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+		"VARZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
 			optz := &VarzEventOptions{}
-			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Varz(&optz.VarzOptions) })
+			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Varz(&optz.VarzOptions) })
 		},
-		"SUBSZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+		"SUBSZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
 			optz := &SubszEventOptions{}
-			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Subsz(&optz.SubszOptions) })
+			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Subsz(&optz.SubszOptions) })
 		},
-		"CONNZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+		"CONNZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
 			optz := &ConnzEventOptions{}
-			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Connz(&optz.ConnzOptions) })
+			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Connz(&optz.ConnzOptions) })
 		},
-		"ROUTEZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+		"ROUTEZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
 			optz := &RoutezEventOptions{}
-			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Routez(&optz.RoutezOptions) })
+			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Routez(&optz.RoutezOptions) })
 		},
-		"GATEWAYZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+		"GATEWAYZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
 			optz := &GatewayzEventOptions{}
-			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Gatewayz(&optz.GatewayzOptions) })
+			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Gatewayz(&optz.GatewayzOptions) })
 		},
-		"LEAFZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+		"LEAFZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
 			optz := &LeafzEventOptions{}
-			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Leafz(&optz.LeafzOptions) })
+			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Leafz(&optz.LeafzOptions) })
 		},
-		"ACCOUNTZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+		"ACCOUNTZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
 			optz := &AccountzEventOptions{}
-			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Accountz(&optz.AccountzOptions) })
+			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Accountz(&optz.AccountzOptions) })
 		},
-		"JSZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+		"JSZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
 			optz := &JszEventOptions{}
-			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Jsz(&optz.JSzOptions) })
+			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Jsz(&optz.JSzOptions) })
 		},
 	}
 	for name, req := range monSrvc {
@@ -772,9 +772,9 @@ func (s *Server) initEventTracking() {
 		}
 	}
 	monAccSrvc := map[string]msgHandler{
-		"SUBSZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+		"SUBSZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
 			optz := &SubszEventOptions{}
-			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
+			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
 				if acc, err := extractAccount(subject); err != nil {
 					return nil, err
 				} else {
@@ -784,9 +784,9 @@ func (s *Server) initEventTracking() {
 				}
 			})
 		},
-		"CONNZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+		"CONNZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
 			optz := &ConnzEventOptions{}
-			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
+			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
 				if acc, err := extractAccount(subject); err != nil {
 					return nil, err
 				} else {
@@ -795,9 +795,9 @@ func (s *Server) initEventTracking() {
 				}
 			})
 		},
-		"LEAFZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+		"LEAFZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
 			optz := &LeafzEventOptions{}
-			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
+			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
 				if acc, err := extractAccount(subject); err != nil {
 					return nil, err
 				} else {
@@ -806,9 +806,9 @@ func (s *Server) initEventTracking() {
 				}
 			})
 		},
-		"JSZ": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+		"JSZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
 			optz := &JszEventOptions{}
-			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
+			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
 				if acc, err := extractAccount(subject); err != nil {
 					return nil, err
 				} else {
@@ -817,9 +817,9 @@ func (s *Server) initEventTracking() {
 				}
 			})
 		},
-		"INFO": func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+		"INFO": func(sub *subscription, c *client, subject, reply string, msg []byte) {
 			optz := &AccInfoEventOptions{}
-			s.zReq(reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
+			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
 				if acc, err := extractAccount(subject); err != nil {
 					return nil, err
 				} else {
@@ -1227,7 +1227,7 @@ func (s *Server) statszReq(sub *subscription, _ *client, subject, reply string, 
 
 var errSkipZreq = errors.New("filtered response")
 
-func (s *Server) zReq(reply string, msg []byte, fOpts *EventFilterOptions, optz interface{}, respf func() (interface{}, error)) {
+func (s *Server) zReq(c *client, reply string, rmsg []byte, fOpts *EventFilterOptions, optz interface{}, respf func() (interface{}, error)) {
 	if !s.EventsEnabled() || reply == _EMPTY_ {
 		return
 	}
@@ -1235,6 +1235,7 @@ func (s *Server) zReq(reply string, msg []byte, fOpts *EventFilterOptions, optz 
 	response := map[string]interface{}{"server": server}
 	var err error
 	status := 0
+	_, msg := c.msgParts(rmsg)
 	if len(msg) != 0 {
 		if err = json.Unmarshal(msg, optz); err != nil {
 			status = http.StatusBadRequest // status is only included on error, so record how far execution got
@@ -1568,7 +1569,8 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 
 // Internal message callback. If the msg is needed past the callback it is
 // required to be copied.
-type msgHandler func(sub *subscription, client *client, subject, reply string, msg []byte)
+// rmsg contains header and the message. use client.msgParts(rmsg) to split them apart
+type msgHandler func(sub *subscription, client *client, subject, reply string, rmsg []byte)
 
 // Create an internal subscription. sysSubscribeQ for queue groups.
 func (s *Server) sysSubscribe(subject string, cb msgHandler) (*subscription, error) {
