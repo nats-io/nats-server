@@ -32,11 +32,11 @@ If you are interested in contributing to NATS, read about our...
 [Fossa-Url]: https://app.fossa.io/projects/git%2Bgithub.com%2Fnats-io%2Fgnatsd?ref=badge_shield
 [Fossa-Image]: https://app.fossa.io/api/projects/git%2Bgithub.com%2Fnats-io%2Fgnatsd.svg?type=shield
 [Build-Status-Url]: https://travis-ci.com/github/nats-io/nats-server
-[Build-Status-Image]: https://travis-ci.com/nats-io/nats-server.svg?branch=master
+[Build-Status-Image]: https://travis-ci.com/nats-io/nats-server.svg?branch=main
 [Release-Url]: https://github.com/nats-io/nats-server/releases/tag/v2.3.1
 [Release-image]: https://img.shields.io/badge/release-v2.3.1-1eb0fc.svg
-[Coverage-Url]: https://coveralls.io/r/nats-io/nats-server?branch=master
-[Coverage-image]: https://coveralls.io/repos/github/nats-io/nats-server/badge.svg?branch=master
+[Coverage-Url]: https://coveralls.io/r/nats-io/nats-server?branch=main
+[Coverage-image]: https://coveralls.io/repos/github/nats-io/nats-server/badge.svg?branch=main
 [ReportCard-Url]: https://goreportcard.com/report/nats-io/nats-server
 [ReportCard-Image]: https://goreportcard.com/badge/github.com/nats-io/nats-server
 [github-release]: https://github.com/nats-io/nats-server/releases/
@@ -45,7 +45,7 @@ If you are interested in contributing to NATS, read about our...
 
 ### Security Audit
 
-A third party security audit was performed by Cure53, you can see the full report [here](https://github.com/nats-io/nats-general/blob/master/reports/Cure53_NATS_Audit.pdf).
+A third party security audit was performed by Cure53, you can see the full report [here](https://github.com/nats-io/nats-general/blob/main/reports/Cure53_NATS_Audit.pdf).
 
 ### Reporting Security Vulnerabilities
 
