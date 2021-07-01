@@ -334,13 +334,8 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		return nil, fmt.Errorf("could not create hash: %v", err)
 	}
 
-	// Determine if we should be tracking multiple subjects etc.
-	fs.tms = !(len(cfg.Subjects) == 1 && subjectIsLiteral(cfg.Subjects[0]))
-
-	// Raft usage of filestore has no subjects or mirrors or sources. No need to track.
-	if fs.tms && len(cfg.Subjects) == 0 && cfg.Mirror == nil && len(cfg.Sources) == 0 {
-		fs.tms = false
-	}
+	// Always track per subject information.
+	fs.tms = true
 
 	// Recover our message state.
 	if err := fs.recoverMsgs(); err != nil {
@@ -374,7 +369,6 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	if fs.isClosed() {
 		return ErrStoreClosed
 	}
-
 	if cfg.Name == _EMPTY_ {
 		return fmt.Errorf("name required")
 	}
@@ -836,12 +830,13 @@ func (mb *msgBlock) rebuildState() (*LostStreamData, error) {
 
 			// Do per subject info.
 			if mb.fss != nil {
-				subj := string(data[:slen])
-				if ss := mb.fss[subj]; ss != nil {
-					ss.Msgs++
-					ss.Last = seq
-				} else {
-					mb.fss[subj] = &SimpleState{Msgs: 1, First: seq, Last: seq}
+				if subj := string(data[:slen]); len(subj) > 0 {
+					if ss := mb.fss[subj]; ss != nil {
+						ss.Msgs++
+						ss.Last = seq
+					} else {
+						mb.fss[subj] = &SimpleState{Msgs: 1, First: seq, Last: seq}
+					}
 				}
 			}
 		}
@@ -3860,11 +3855,10 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64) {
 
 // generatePerSubjectInfo will generate the per subject info via the raw msg block.
 func (mb *msgBlock) generatePerSubjectInfo() error {
-	var shouldExpire bool
-
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 
+	var shouldExpire bool
 	if !mb.cacheAlreadyLoaded() {
 		mb.loadMsgsWithLock()
 		shouldExpire = true
@@ -3874,7 +3868,7 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 	}
 	fseq, lseq := mb.first.seq, mb.last.seq
 	for seq := fseq; seq <= lseq; seq++ {
-		if sm, _ := mb.cacheLookupWithLock(seq); sm != nil {
+		if sm, _ := mb.cacheLookupWithLock(seq); sm != nil && len(sm.subj) > 0 {
 			if ss := mb.fss[sm.subj]; ss != nil {
 				ss.Msgs++
 				ss.Last = seq
@@ -3903,11 +3897,8 @@ func (mb *msgBlock) readPerSubjectInfo() error {
 	)
 
 	buf, err := ioutil.ReadFile(mb.sfn)
-	if err != nil || len(buf) < minFileSize {
-		return mb.generatePerSubjectInfo()
-	}
 
-	if err := checkHeader(buf); err != nil {
+	if err != nil || len(buf) < minFileSize || checkHeader(buf) != nil {
 		return mb.generatePerSubjectInfo()
 	}
 
@@ -3955,6 +3946,10 @@ func (mb *msgBlock) readPerSubjectInfo() error {
 // writePerSubjectInfo will write out per subject information if we are tracking per subject.
 // Lock should be held.
 func (mb *msgBlock) writePerSubjectInfo() error {
+	// Raft groups do not have any subjects.
+	if len(mb.fss) == 0 {
+		return nil
+	}
 	var scratch [4 * binary.MaxVarintLen64]byte
 	var b bytes.Buffer
 	b.WriteByte(magic)
