@@ -2991,7 +2991,7 @@ func (mset *stream) internalLoop() {
 					pm.o.didNotDeliver(pm.seq)
 				}
 			}
-			c.flushClients(10 * time.Millisecond)
+			c.flushClients(0)
 		case <-mch:
 			for im := mset.pending(mset.msgs); im != nil; im = im.next {
 				// If we are clustered we need to propose this message to the underlying raft group.
