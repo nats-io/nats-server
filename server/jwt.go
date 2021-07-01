@@ -108,7 +108,7 @@ func validateTrustedOperators(o *Options) error {
 			return fmt.Errorf("using nats based account resolver - the system account needs to be specified in configuration or the operator jwt")
 		}
 	}
-	ver := strings.Split(strings.Split(VERSION, "-")[0], ".RC")[0]
+	ver := strings.Split(strings.Split(strings.Split(VERSION, "-")[0], ".RC")[0], ".beta")[0]
 	srvMajor, srvMinor, srvUpdate, _ := jwt.ParseServerVersion(ver)
 	for _, opc := range o.TrustedOperators {
 		if major, minor, update, err := jwt.ParseServerVersion(opc.AssertServerVersion); err != nil {
