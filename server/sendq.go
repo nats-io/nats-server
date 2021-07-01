@@ -16,7 +16,6 @@ package server
 import (
 	"strconv"
 	"sync"
-	"time"
 )
 
 type outMsg struct {
@@ -84,7 +83,7 @@ func (sq *sendq) internalLoop() {
 					pm = sq.pending()
 				}
 			}
-			c.flushClients(10 * time.Millisecond)
+			c.flushClients(0)
 		}
 	}
 }
