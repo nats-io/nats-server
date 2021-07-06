@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -12044,6 +12045,62 @@ func TestJetStreamServerEncryption(t *testing.T) {
 
 	// Check that all is encrypted like above since we know we need to convert since snapshots always plaintext.
 	checkEncrypted()
+}
+
+func TestJetStreamConsumerBindErr(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	js.AddStream(&nats.StreamConfig{
+		Name:     "foo",
+		Subjects: []string{"foo"},
+	})
+
+	inbox := nats.NewInbox()
+	// Avoid: 'consumer requires interest for delivery subject when ephemeral'
+	qsub, err := nc.QueueSubscribeSync(inbox, "bar")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	consumer, err := js.AddConsumer("foo", &nats.ConsumerConfig{
+		DeliverSubject: inbox,
+		AckPolicy:      nats.AckExplicitPolicy,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("%+v", consumer)
+
+	for i := 0; i < 20; i++ {
+		n := i
+		t.Logf("QueueSub: %v", n)
+		_, err = js.QueueSubscribe("foo", "bar", func(msg *nats.Msg) {
+			log.Printf("[Received n=%-2d]:\t%+v", n, string(msg.Data))
+		}, nats.Bind("foo", inbox))
+		if err != nil {
+			// context deadline exceeded error insteaf of API Error
+			t.Logf("Error: %v", err)
+		}
+	}
+
+	// Remove original subscription.
+	qsub.Unsubscribe()
+
+	for i := 0; i < 100; i++ {
+		t.Logf("Publishing: %v", i)
+		js.Publish("foo", []byte(fmt.Sprintf("i:%v", i)))
+		t.Logf("Publish: %v", i)
+	}
+	t.Logf("Done???")
 }
 
 ///////////////////////////////////////////////////////////////////////////
