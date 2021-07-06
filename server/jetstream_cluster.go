@@ -2546,7 +2546,10 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 	}
 
 	if err != nil {
-		s.Warnf("Consumer create failed for '%s > %s > %s': %v\n", ca.Client.serviceAccount(), ca.Stream, ca.Name, err)
+		if IsNatsErr(err, JSConsumerStoreFailedErrF) {
+			s.Warnf("Consumer create failed for '%s > %s > %s': %v", ca.Client.serviceAccount(), ca.Stream, ca.Name, err)
+		}
+
 		js.mu.Lock()
 
 		ca.err = err

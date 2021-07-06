@@ -758,5 +758,295 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerConfigRequiredErr",
+    "code": 400,
+    "error_code": 10078,
+    "description": "consumer config required",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerDeliverToWildcardsErr",
+    "code": 400,
+    "error_code": 10079,
+    "description": "consumer deliver subject has wildcards",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerPushMaxWaitingErr",
+    "code": 400,
+    "error_code": 10080,
+    "description": "consumer in push mode can not set max waiting",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerDeliverCycleErr",
+    "code": 400,
+    "error_code": 10081,
+    "description": "consumer deliver subject forms a cycle",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerMaxPendingAckPolicyRequiredErr",
+    "code": 400,
+    "error_code": 10082,
+    "description": "consumer requires ack policy for max ack pending",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerSmallHeartbeatErr",
+    "code": 400,
+    "error_code": 10083,
+    "description": "consumer idle heartbeat needs to be \u003e= 100ms",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerPullRequiresAckErr",
+    "code": 400,
+    "error_code": 10084,
+    "description": "consumer in pull mode requires explicit ack policy",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerPullNotDurableErr",
+    "code": 400,
+    "error_code": 10085,
+    "description": "consumer in pull mode requires a durable name",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerPullWithRateLimitErr",
+    "code": 400,
+    "error_code": 10086,
+    "description": "consumer in pull mode can not have rate limit set",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerMaxWaitingNegativeErr",
+    "code": 400,
+    "error_code": 10087,
+    "description": "consumer max waiting needs to be positive",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerHBRequiresPushErr",
+    "code": 400,
+    "error_code": 10088,
+    "description": "consumer idle heartbeat requires a push based consumer",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerFCRequiresPushErr",
+    "code": 400,
+    "error_code": 10089,
+    "description": "consumer flow control requires a push based consumer",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerDirectRequiresPushErr",
+    "code": 400,
+    "error_code": 10090,
+    "description": "consumer direct requires a push based consumer",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerDirectRequiresEphemeralErr",
+    "code": 400,
+    "error_code": 10091,
+    "description": "consumer direct requires an ephemeral consumer",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerOnMappedErr",
+    "code": 400,
+    "error_code": 10092,
+    "description": "consumer direct on a mapped consumer",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerFilterNotSubsetErr",
+    "code": 400,
+    "error_code": 10093,
+    "description": "consumer filter subject is not a valid subset of the interest subjects",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerInvalidPolicyErrF",
+    "code": 400,
+    "error_code": 10094,
+    "description": "{err}",
+    "comment": "Generic delivery policy error",
+    "help": "Error returned for impossible deliver policies when combined with start sequences etc",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerInvalidSamplingErrF",
+    "code": 400,
+    "error_code": 10095,
+    "description": "failed to parse consumer sampling configuration: {err}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSStreamInvalidErr",
+    "code": 500,
+    "error_code": 10096,
+    "description": "stream not valid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSStreamMaximumConsumersReachedErr",
+    "code": 400,
+    "error_code": 10097,
+    "description": "maximum consumers limit reached",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerWQRequiresExplicitAckErr",
+    "code": 400,
+    "error_code": 10098,
+    "description": "workqueue stream requires explicit ack",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerWQMultipleUnfilteredErr",
+    "code": 400,
+    "error_code": 10099,
+    "description": "multiple non-filtered consumers not allowed on workqueue stream",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerWQConsumerNotUniqueErr",
+    "code": 400,
+    "error_code": 10100,
+    "description": "filtered consumer not unique on workqueue stream",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerWQConsumerNotDeliverAllErr",
+    "code": 400,
+    "error_code": 10101,
+    "description": "consumer must be deliver all on workqueue stream",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerNameTooLongErrF",
+    "code": 400,
+    "error_code": 10102,
+    "description": "consumer name is too long, maximum allowed is {max}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerBadDurableNameErr",
+    "code": 400,
+    "error_code": 10103,
+    "description": "durable name can not contain '.', '*', '\u003e'",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerStoreFailedErrF",
+    "code": 500,
+    "error_code": 10104,
+    "description": "error creating store for consumer: {err}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerExistingActiveErr",
+    "code": 400,
+    "error_code": 10105,
+    "description": "consumer already exists and is still active",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerReplacementWithDifferentNameErr",
+    "code": 400,
+    "error_code": 10106,
+    "description": "consumer replacement durable config not the same",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
