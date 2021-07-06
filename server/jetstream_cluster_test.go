@@ -3917,7 +3917,7 @@ func TestJetStreamClusterRemovePeer(t *testing.T) {
 	}
 
 	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
-		si, err := js.StreamInfo("TEST")
+		si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
 		if err != nil {
 			return fmt.Errorf("Could not fetch stream info: %v", err)
 		}
@@ -3942,7 +3942,7 @@ func TestJetStreamClusterRemovePeer(t *testing.T) {
 
 	// Now check consumer info as well.
 	checkFor(t, 30*time.Second, 100*time.Millisecond, func() error {
-		ci, err := js.ConsumerInfo("TEST", "cat")
+		ci, err := js.ConsumerInfo("TEST", "cat", nats.MaxWait(time.Second))
 		if err != nil {
 			return fmt.Errorf("Could not fetch consumer info: %v", err)
 		}
