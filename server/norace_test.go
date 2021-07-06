@@ -1904,6 +1904,38 @@ func TestNoRaceJetStreamClusterMirrorExpirationAndMissingSequences(t *testing.T)
 	checkMirror(20)
 }
 
+func TestNoRaceLargeActiveOnReplica(t *testing.T) {
+	// Uncomment to run.
+	skip(t)
+
+	c := createJetStreamClusterExplicit(t, "LAG", 3)
+	defer c.shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	timeout := time.Now().Add(60 * time.Second)
+	for time.Now().Before(timeout) {
+		si, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo", "bar"},
+			Replicas: 3,
+		})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		for _, r := range si.Cluster.Replicas {
+			if r.Active > 5*time.Second {
+				t.Fatalf("Bad Active value: %+v", r)
+			}
+		}
+		if err := js.DeleteStream("TEST"); err != nil {
+			t.Fatalf("Unexpected delete error: %v", err)
+		}
+	}
+}
+
 func TestNoRaceJetStreamClusterSuperClusterRIPStress(t *testing.T) {
 	// Uncomment to run. Needs to be on a big machine.
 	skip(t)
