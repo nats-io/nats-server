@@ -5149,6 +5149,17 @@ func TestJetStreamClusterJSAPIImport(t *testing.T) {
 	js.Publish("TEST", []byte("Second"))
 	js.Publish("TEST", []byte("Third"))
 
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		ci, err := js.ConsumerInfo("TEST", "tr")
+		if err != nil {
+			return fmt.Errorf("Error getting consumer info: %v", err)
+		}
+		if ci.NumPending != 2 {
+			return fmt.Errorf("NumPending still not 1: %v", ci.NumPending)
+		}
+		return nil
+	})
+
 	// Ack across accounts.
 	m, err = nc.Request("$JS.API.CONSUMER.MSG.NEXT.TEST.tr", []byte("+NXT"), 2*time.Second)
 	if err != nil {
