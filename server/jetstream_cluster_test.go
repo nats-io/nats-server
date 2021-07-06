@@ -1027,6 +1027,10 @@ func TestJetStreamClusterStreamPublishWithActiveConsumers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+
+	// FIXME(dlc) - Need to track this down.
+	c.waitOnConsumerLeader("$G", "foo", "dlc")
+
 	if m, err := sub.NextMsg(time.Second); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	} else {
@@ -8244,7 +8248,7 @@ func jsClientConnect(t *testing.T, s *Server, opts ...nats.Option) (*nats.Conn, 
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
-	js, err := nc.JetStream(nats.MaxWait(5 * time.Second))
+	js, err := nc.JetStream(nats.MaxWait(10 * time.Second))
 	if err != nil {
 		t.Fatalf("Unexpected error getting JetStream context: %v", err)
 	}
