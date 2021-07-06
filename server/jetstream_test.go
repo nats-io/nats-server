@@ -1208,10 +1208,6 @@ func TestJetStreamCreateConsumer(t *testing.T) {
 
 			// Non-Durables need to have subscription to delivery subject.
 			delivery := nats.NewInbox()
-			if _, err := mset.addConsumer(&ConsumerConfig{DeliverSubject: delivery}); err == nil {
-				t.Fatalf("Expected an error on unsubscribed delivery subject")
-			}
-
 			// Pull-based consumers are required to be durable since we do not know when they should
 			// be cleaned up.
 			if _, err := mset.addConsumer(&ConsumerConfig{AckPolicy: AckExplicit}); err == nil {

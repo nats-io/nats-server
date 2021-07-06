@@ -2351,6 +2351,47 @@ func TestJetStreamClusterInterestRetentionWithFilteredConsumers(t *testing.T) {
 	checkState(0)
 }
 
+func TestJetStreamClusterEphemeralConsumerNoImmediateInterest(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// We want to relax the strict interest requirement.
+	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{DeliverSubject: "r"})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	cl := c.consumerLeader("$G", "TEST", ci.Name)
+	mset, err := cl.GlobalAccount().lookupStream("TEST")
+	if err != nil {
+		t.Fatalf("Expected to find a stream for %q", "TEST")
+	}
+	o := mset.lookupConsumer(ci.Name)
+	if o == nil {
+		t.Fatalf("Error looking up consumer %q", ci.Name)
+	}
+	o.setInActiveDeleteThreshold(500 * time.Millisecond)
+
+	// Make sure the consumer goes away though eventually.
+	// Should be 5 seconds wait.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		if _, err := js.ConsumerInfo("TEST", ci.Name); err != nil {
+			return nil
+		}
+		return fmt.Errorf("Consumer still present")
+	})
+}
+
 func TestJetStreamClusterEphemeralConsumerCleanup(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
