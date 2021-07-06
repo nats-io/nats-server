@@ -1245,11 +1245,15 @@ func (n *raft) Peers() []*Peer {
 
 	var peers []*Peer
 	for id, ps := range n.peers {
+		var lag uint64
+		if n.commit > ps.li {
+			lag = n.commit - ps.li
+		}
 		p := &Peer{
 			ID:      id,
 			Current: id == n.leader || ps.li >= n.applied,
 			Last:    time.Unix(0, ps.ts),
-			Lag:     n.commit - ps.li,
+			Lag:     lag,
 		}
 		peers = append(peers, p)
 	}

@@ -4665,9 +4665,9 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 
 	for _, rp := range peers {
 		if rp.ID != id && rg.isMember(rp.ID) {
-			lastSeen := now.Sub(rp.Last)
-			if lastSeen < 0 {
-				lastSeen = 1
+			var lastSeen time.Duration
+			if now.After(rp.Last) && rp.Last.Unix() != 0 {
+				lastSeen = now.Sub(rp.Last)
 			}
 			current := rp.Current
 			if current && lastSeen > lostQuorumInterval {
