@@ -329,89 +329,50 @@ func TestJetStreamClusterDelete(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "RNS", 3)
 	defer c.shutdown()
 
-	s := c.randomServer()
 	// Client for API requests.
-	nc := clientConnectToServer(t, s)
+	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
-	cfg := StreamConfig{
+	cfg := &nats.StreamConfig{
 		Name:     "C22",
 		Subjects: []string{"foo", "bar", "baz"},
 		Replicas: 2,
-		Storage:  FileStorage,
+		Storage:  nats.FileStorage,
 		MaxMsgs:  100,
 	}
-	req, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Error adding stream: %v", err)
 	}
-	resp, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	var scResp JSApiStreamCreateResponse
-	if err := json.Unmarshal(resp.Data, &scResp); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if scResp.StreamInfo == nil || scResp.Error != nil {
-		t.Fatalf("Did not receive correct response: %+v", scResp.Error)
-	}
+
 	// Now create a consumer.
-	obsReq := CreateConsumerRequest{
-		Stream: cfg.Name,
-		Config: ConsumerConfig{Durable: "dlc", AckPolicy: AckExplicit},
-	}
-	req, err = json.Marshal(obsReq)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	resp, err = nc.Request(fmt.Sprintf(JSApiDurableCreateT, cfg.Name, "dlc"), req, time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	var ccResp JSApiConsumerCreateResponse
-	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if ccResp.ConsumerInfo == nil || ccResp.Error != nil {
-		t.Fatalf("Did not receive correct response: %+v", ccResp.Error)
+	if _, err := js.AddConsumer("C22", &nats.ConsumerConfig{
+		Durable:   "dlc",
+		AckPolicy: nats.AckExplicitPolicy,
+	}); err != nil {
+		t.Fatalf("Error adding consumer: %v", err)
 	}
 
 	// Now delete the consumer.
-	resp, _ = nc.Request(fmt.Sprintf(JSApiConsumerDeleteT, cfg.Name, "dlc"), nil, time.Second)
-	var cdResp JSApiConsumerDeleteResponse
-	if err = json.Unmarshal(resp.Data, &cdResp); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if !cdResp.Success || cdResp.Error != nil {
-		t.Fatalf("Got a bad response %+v", cdResp)
+	if err := js.DeleteConsumer("C22", "dlc"); err != nil {
+		t.Fatalf("Error deleting consumer: %v", err)
 	}
 
 	// Now delete the stream.
-	resp, err = nc.Request(fmt.Sprintf(JSApiStreamDeleteT, cfg.Name), nil, time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	var dResp JSApiStreamDeleteResponse
-	if err = json.Unmarshal(resp.Data, &dResp); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if !dResp.Success || dResp.Error != nil {
-		t.Fatalf("Got a bad response %+v", dResp.Error)
+	if err := js.DeleteStream("C22"); err != nil {
+		t.Fatalf("Error deleting stream: %v", err)
 	}
 
 	// This will get the current information about usage and limits for this account.
-	resp, err = nc.Request(JSApiAccountInfo, nil, time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	var info JSApiAccountInfoResponse
-	if err := json.Unmarshal(resp.Data, &info); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if info.Streams != 0 {
-		t.Fatalf("Expected no remaining streams, got %d", info.Streams)
-	}
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		info, err := js.AccountInfo()
+		if err != nil {
+			return err
+		}
+		if info.Streams != 0 {
+			return fmt.Errorf("Expected no remaining streams, got %d", info.Streams)
+		}
+		return nil
+	})
 }
 
 func TestJetStreamClusterStreamPurge(t *testing.T) {
