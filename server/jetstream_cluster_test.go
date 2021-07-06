@@ -6955,7 +6955,9 @@ func TestJetStreamClusterMirrorAndSourceSubLeaks(t *testing.T) {
 	}
 
 	// Some subs take longer to settle out so we give ourselves a small buffer.
-	if deleteSubs := c.stableTotalSubs(); deleteSubs > startSubs+10 {
+	// There will be 1 sub for client on each server (such as _INBOX.IvVJ2DOXUotn4RUSZZCFvp.*)
+	// and 2 or 3 subs such as `_R_.xxxxx.>` on each server, so a total of 12 subs.
+	if deleteSubs := c.stableTotalSubs(); deleteSubs > startSubs+12 {
 		t.Fatalf("Expected subs to return to %d from a high of %d, but got %d", startSubs, afterSubs, deleteSubs)
 	}
 }
