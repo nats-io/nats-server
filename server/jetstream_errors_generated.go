@@ -42,8 +42,26 @@ const (
 	// JSClusterUnSupportFeatureErr not currently supported in clustered mode
 	JSClusterUnSupportFeatureErr ErrorIdentifier = 10036
 
+	// JSConsumerBadDurableNameErr durable name can not contain '.', '*', '>'
+	JSConsumerBadDurableNameErr ErrorIdentifier = 10103
+
+	// JSConsumerConfigRequiredErr consumer config required
+	JSConsumerConfigRequiredErr ErrorIdentifier = 10078
+
 	// JSConsumerCreateErrF General consumer creation failure string ({err})
 	JSConsumerCreateErrF ErrorIdentifier = 10012
+
+	// JSConsumerDeliverCycleErr consumer deliver subject forms a cycle
+	JSConsumerDeliverCycleErr ErrorIdentifier = 10081
+
+	// JSConsumerDeliverToWildcardsErr consumer deliver subject has wildcards
+	JSConsumerDeliverToWildcardsErr ErrorIdentifier = 10079
+
+	// JSConsumerDirectRequiresEphemeralErr consumer direct requires an ephemeral consumer
+	JSConsumerDirectRequiresEphemeralErr ErrorIdentifier = 10091
+
+	// JSConsumerDirectRequiresPushErr consumer direct requires a push based consumer
+	JSConsumerDirectRequiresPushErr ErrorIdentifier = 10090
 
 	// JSConsumerDurableNameNotInSubjectErr consumer expected to be durable but no durable name set in subject
 	JSConsumerDurableNameNotInSubjectErr ErrorIdentifier = 10016
@@ -60,11 +78,74 @@ const (
 	// JSConsumerEphemeralWithDurableNameErr consumer expected to be ephemeral but a durable name was set in request
 	JSConsumerEphemeralWithDurableNameErr ErrorIdentifier = 10020
 
+	// JSConsumerExistingActiveErr consumer already exists and is still active
+	JSConsumerExistingActiveErr ErrorIdentifier = 10105
+
+	// JSConsumerFCRequiresPushErr consumer flow control requires a push based consumer
+	JSConsumerFCRequiresPushErr ErrorIdentifier = 10089
+
+	// JSConsumerFilterNotSubsetErr consumer filter subject is not a valid subset of the interest subjects
+	JSConsumerFilterNotSubsetErr ErrorIdentifier = 10093
+
+	// JSConsumerHBRequiresPushErr consumer idle heartbeat requires a push based consumer
+	JSConsumerHBRequiresPushErr ErrorIdentifier = 10088
+
+	// JSConsumerInvalidPolicyErrF Generic delivery policy error ({err})
+	JSConsumerInvalidPolicyErrF ErrorIdentifier = 10094
+
+	// JSConsumerInvalidSamplingErrF failed to parse consumer sampling configuration: {err}
+	JSConsumerInvalidSamplingErrF ErrorIdentifier = 10095
+
+	// JSConsumerMaxPendingAckPolicyRequiredErr consumer requires ack policy for max ack pending
+	JSConsumerMaxPendingAckPolicyRequiredErr ErrorIdentifier = 10082
+
+	// JSConsumerMaxWaitingNegativeErr consumer max waiting needs to be positive
+	JSConsumerMaxWaitingNegativeErr ErrorIdentifier = 10087
+
 	// JSConsumerNameExistErr consumer name already in use
 	JSConsumerNameExistErr ErrorIdentifier = 10013
 
+	// JSConsumerNameTooLongErrF consumer name is too long, maximum allowed is {max}
+	JSConsumerNameTooLongErrF ErrorIdentifier = 10102
+
 	// JSConsumerNotFoundErr consumer not found
 	JSConsumerNotFoundErr ErrorIdentifier = 10014
+
+	// JSConsumerOnMappedErr consumer direct on a mapped consumer
+	JSConsumerOnMappedErr ErrorIdentifier = 10092
+
+	// JSConsumerPullNotDurableErr consumer in pull mode requires a durable name
+	JSConsumerPullNotDurableErr ErrorIdentifier = 10085
+
+	// JSConsumerPullRequiresAckErr consumer in pull mode requires explicit ack policy
+	JSConsumerPullRequiresAckErr ErrorIdentifier = 10084
+
+	// JSConsumerPullWithRateLimitErr consumer in pull mode can not have rate limit set
+	JSConsumerPullWithRateLimitErr ErrorIdentifier = 10086
+
+	// JSConsumerPushMaxWaitingErr consumer in push mode can not set max waiting
+	JSConsumerPushMaxWaitingErr ErrorIdentifier = 10080
+
+	// JSConsumerReplacementWithDifferentNameErr consumer replacement durable config not the same
+	JSConsumerReplacementWithDifferentNameErr ErrorIdentifier = 10106
+
+	// JSConsumerSmallHeartbeatErr consumer idle heartbeat needs to be >= 100ms
+	JSConsumerSmallHeartbeatErr ErrorIdentifier = 10083
+
+	// JSConsumerStoreFailedErrF error creating store for consumer: {err}
+	JSConsumerStoreFailedErrF ErrorIdentifier = 10104
+
+	// JSConsumerWQConsumerNotDeliverAllErr consumer must be deliver all on workqueue stream
+	JSConsumerWQConsumerNotDeliverAllErr ErrorIdentifier = 10101
+
+	// JSConsumerWQConsumerNotUniqueErr filtered consumer not unique on workqueue stream
+	JSConsumerWQConsumerNotUniqueErr ErrorIdentifier = 10100
+
+	// JSConsumerWQMultipleUnfilteredErr multiple non-filtered consumers not allowed on workqueue stream
+	JSConsumerWQMultipleUnfilteredErr ErrorIdentifier = 10099
+
+	// JSConsumerWQRequiresExplicitAckErr workqueue stream requires explicit ack
+	JSConsumerWQRequiresExplicitAckErr ErrorIdentifier = 10098
 
 	// JSInsufficientResourcesErr insufficient resources
 	JSInsufficientResourcesErr ErrorIdentifier = 10023
@@ -159,11 +240,17 @@ const (
 	// JSStreamInvalidConfigF Stream configuration validation error string ({err})
 	JSStreamInvalidConfigF ErrorIdentifier = 10052
 
+	// JSStreamInvalidErr stream not valid
+	JSStreamInvalidErr ErrorIdentifier = 10096
+
 	// JSStreamInvalidExternalDeliverySubjErrF stream external delivery prefix {prefix} must not contain wildcards
 	JSStreamInvalidExternalDeliverySubjErrF ErrorIdentifier = 10024
 
 	// JSStreamLimitsErrF General stream limits exceeded error string ({err})
 	JSStreamLimitsErrF ErrorIdentifier = 10053
+
+	// JSStreamMaximumConsumersReachedErr maximum consumers limit reached
+	JSStreamMaximumConsumersReachedErr ErrorIdentifier = 10097
 
 	// JSStreamMessageExceedsMaximumErr message size exceeds maximum allowed
 	JSStreamMessageExceedsMaximumErr ErrorIdentifier = 10054
@@ -247,14 +334,41 @@ var (
 		JSClusterServerNotMemberErr:                {Code: 400, ErrCode: 10044, Description: "server is not a member of the cluster"},
 		JSClusterTagsErr:                           {Code: 400, ErrCode: 10011, Description: "tags placement not supported for operation"},
 		JSClusterUnSupportFeatureErr:               {Code: 503, ErrCode: 10036, Description: "not currently supported in clustered mode"},
+		JSConsumerBadDurableNameErr:                {Code: 400, ErrCode: 10103, Description: "durable name can not contain '.', '*', '>'"},
+		JSConsumerConfigRequiredErr:                {Code: 400, ErrCode: 10078, Description: "consumer config required"},
 		JSConsumerCreateErrF:                       {Code: 500, ErrCode: 10012, Description: "{err}"},
+		JSConsumerDeliverCycleErr:                  {Code: 400, ErrCode: 10081, Description: "consumer deliver subject forms a cycle"},
+		JSConsumerDeliverToWildcardsErr:            {Code: 400, ErrCode: 10079, Description: "consumer deliver subject has wildcards"},
+		JSConsumerDirectRequiresEphemeralErr:       {Code: 400, ErrCode: 10091, Description: "consumer direct requires an ephemeral consumer"},
+		JSConsumerDirectRequiresPushErr:            {Code: 400, ErrCode: 10090, Description: "consumer direct requires a push based consumer"},
 		JSConsumerDurableNameNotInSubjectErr:       {Code: 400, ErrCode: 10016, Description: "consumer expected to be durable but no durable name set in subject"},
 		JSConsumerDurableNameNotMatchSubjectErr:    {Code: 400, ErrCode: 10017, Description: "consumer name in subject does not match durable name in request"},
 		JSConsumerDurableNameNotSetErr:             {Code: 400, ErrCode: 10018, Description: "consumer expected to be durable but a durable name was not set"},
 		JSConsumerEphemeralWithDurableInSubjectErr: {Code: 400, ErrCode: 10019, Description: "consumer expected to be ephemeral but detected a durable name set in subject"},
 		JSConsumerEphemeralWithDurableNameErr:      {Code: 400, ErrCode: 10020, Description: "consumer expected to be ephemeral but a durable name was set in request"},
+		JSConsumerExistingActiveErr:                {Code: 400, ErrCode: 10105, Description: "consumer already exists and is still active"},
+		JSConsumerFCRequiresPushErr:                {Code: 400, ErrCode: 10089, Description: "consumer flow control requires a push based consumer"},
+		JSConsumerFilterNotSubsetErr:               {Code: 400, ErrCode: 10093, Description: "consumer filter subject is not a valid subset of the interest subjects"},
+		JSConsumerHBRequiresPushErr:                {Code: 400, ErrCode: 10088, Description: "consumer idle heartbeat requires a push based consumer"},
+		JSConsumerInvalidPolicyErrF:                {Code: 400, ErrCode: 10094, Description: "{err}"},
+		JSConsumerInvalidSamplingErrF:              {Code: 400, ErrCode: 10095, Description: "failed to parse consumer sampling configuration: {err}"},
+		JSConsumerMaxPendingAckPolicyRequiredErr:   {Code: 400, ErrCode: 10082, Description: "consumer requires ack policy for max ack pending"},
+		JSConsumerMaxWaitingNegativeErr:            {Code: 400, ErrCode: 10087, Description: "consumer max waiting needs to be positive"},
 		JSConsumerNameExistErr:                     {Code: 400, ErrCode: 10013, Description: "consumer name already in use"},
+		JSConsumerNameTooLongErrF:                  {Code: 400, ErrCode: 10102, Description: "consumer name is too long, maximum allowed is {max}"},
 		JSConsumerNotFoundErr:                      {Code: 404, ErrCode: 10014, Description: "consumer not found"},
+		JSConsumerOnMappedErr:                      {Code: 400, ErrCode: 10092, Description: "consumer direct on a mapped consumer"},
+		JSConsumerPullNotDurableErr:                {Code: 400, ErrCode: 10085, Description: "consumer in pull mode requires a durable name"},
+		JSConsumerPullRequiresAckErr:               {Code: 400, ErrCode: 10084, Description: "consumer in pull mode requires explicit ack policy"},
+		JSConsumerPullWithRateLimitErr:             {Code: 400, ErrCode: 10086, Description: "consumer in pull mode can not have rate limit set"},
+		JSConsumerPushMaxWaitingErr:                {Code: 400, ErrCode: 10080, Description: "consumer in push mode can not set max waiting"},
+		JSConsumerReplacementWithDifferentNameErr:  {Code: 400, ErrCode: 10106, Description: "consumer replacement durable config not the same"},
+		JSConsumerSmallHeartbeatErr:                {Code: 400, ErrCode: 10083, Description: "consumer idle heartbeat needs to be >= 100ms"},
+		JSConsumerStoreFailedErrF:                  {Code: 500, ErrCode: 10104, Description: "error creating store for consumer: {err}"},
+		JSConsumerWQConsumerNotDeliverAllErr:       {Code: 400, ErrCode: 10101, Description: "consumer must be deliver all on workqueue stream"},
+		JSConsumerWQConsumerNotUniqueErr:           {Code: 400, ErrCode: 10100, Description: "filtered consumer not unique on workqueue stream"},
+		JSConsumerWQMultipleUnfilteredErr:          {Code: 400, ErrCode: 10099, Description: "multiple non-filtered consumers not allowed on workqueue stream"},
+		JSConsumerWQRequiresExplicitAckErr:         {Code: 400, ErrCode: 10098, Description: "workqueue stream requires explicit ack"},
 		JSInsufficientResourcesErr:                 {Code: 503, ErrCode: 10023, Description: "insufficient resources"},
 		JSInvalidJSONErr:                           {Code: 400, ErrCode: 10025, Description: "invalid JSON"},
 		JSMaximumConsumersLimitErr:                 {Code: 400, ErrCode: 10026, Description: "maximum consumers limit reached"},
@@ -286,8 +400,10 @@ var (
 		JSStreamExternalDelPrefixOverlapsErrF:      {Code: 400, ErrCode: 10022, Description: "stream external delivery prefix {prefix} overlaps with stream subject {subject}"},
 		JSStreamGeneralErrorF:                      {Code: 500, ErrCode: 10051, Description: "{err}"},
 		JSStreamInvalidConfigF:                     {Code: 500, ErrCode: 10052, Description: "{err}"},
+		JSStreamInvalidErr:                         {Code: 500, ErrCode: 10096, Description: "stream not valid"},
 		JSStreamInvalidExternalDeliverySubjErrF:    {Code: 400, ErrCode: 10024, Description: "stream external delivery prefix {prefix} must not contain wildcards"},
 		JSStreamLimitsErrF:                         {Code: 500, ErrCode: 10053, Description: "{err}"},
+		JSStreamMaximumConsumersReachedErr:         {Code: 400, ErrCode: 10097, Description: "maximum consumers limit reached"},
 		JSStreamMessageExceedsMaximumErr:           {Code: 400, ErrCode: 10054, Description: "message size exceeds maximum allowed"},
 		JSStreamMirrorNotUpdatableErr:              {Code: 400, ErrCode: 10055, Description: "Mirror configuration can not be updated"},
 		JSStreamMismatchErr:                        {Code: 400, ErrCode: 10056, Description: "stream name in subject does not match request"},

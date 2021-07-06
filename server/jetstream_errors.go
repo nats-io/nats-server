@@ -18,7 +18,6 @@ func IsNatsErr(err error, ids ...ErrorIdentifier) bool {
 		return false
 	}
 
-	found := false
 	for _, id := range ids {
 		ae, ok := ApiErrors[id]
 		if !ok || ae == nil {
@@ -26,11 +25,11 @@ func IsNatsErr(err error, ids ...ErrorIdentifier) bool {
 		}
 
 		if ce.ErrCode == ae.ErrCode {
-			found = true
+			return true
 		}
 	}
 
-	return found
+	return false
 }
 
 // ApiError is included in all responses if there was an error.
