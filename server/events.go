@@ -1043,7 +1043,7 @@ func (s *Server) shutdownEventing() {
 }
 
 // Request for our local connection count.
-func (s *Server) connsRequest(sub *subscription, _ *client, subject, reply string, msg []byte) {
+func (s *Server) connsRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
 	if !s.eventsRunning() {
 		return
 	}
@@ -1054,9 +1054,11 @@ func (s *Server) connsRequest(sub *subscription, _ *client, subject, reply strin
 	}
 	a := tk[accReqAccIndex]
 	m := accNumConnsReq{Account: a}
-	if err := json.Unmarshal(msg, &m); err != nil {
-		s.sys.client.Errorf("Error unmarshalling account connections request message: %v", err)
-		return
+	if _, msg := c.msgParts(rmsg); len(msg) > 0 {
+		if err := json.Unmarshal(msg, &m); err != nil {
+			s.sys.client.Errorf("Error unmarshalling account connections request message: %v", err)
+			return
+		}
 	}
 	if m.Account != a {
 		s.sys.client.Errorf("Error unmarshalled account does not match subject")
