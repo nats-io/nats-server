@@ -605,14 +605,8 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			// Check in place here for interest. Will setup properly in setLeader.
 			r := o.acc.sl.Match(o.cfg.DeliverSubject)
 			if !o.hasDeliveryInterest(len(r.psubs)+len(r.qsubs) > 0) {
-				// Directs can let the interest come to us eventually, but setup delete timer.
-				if config.Direct {
-					o.updateDeliveryInterest(false)
-				} else {
-					mset.mu.Unlock()
-					o.deleteWithoutAdvisory()
-					return nil, errNoInterest
-				}
+				// Let the interest come to us eventually, but setup delete timer.
+				o.updateDeliveryInterest(false)
 			}
 		}
 	}

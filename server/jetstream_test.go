@@ -1208,10 +1208,6 @@ func TestJetStreamCreateConsumer(t *testing.T) {
 
 			// Non-Durables need to have subscription to delivery subject.
 			delivery := nats.NewInbox()
-			if _, err := mset.addConsumer(&ConsumerConfig{DeliverSubject: delivery}); err == nil {
-				t.Fatalf("Expected an error on unsubscribed delivery subject")
-			}
-
 			// Pull-based consumers are required to be durable since we do not know when they should
 			// be cleaned up.
 			if _, err := mset.addConsumer(&ConsumerConfig{AckPolicy: AckExplicit}); err == nil {
@@ -7599,26 +7595,17 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	checkNatsError(t, ccResp.Error, JSConsumerCreateErrF)
-
-	// Now create subscription and make sure we get proper response.
-	sub, _ := nc.SubscribeSync(delivery)
-	nc.Flush()
-
-	resp, err = nc.Request(fmt.Sprintf(JSApiConsumerCreateT, msetCfg.Name), req, time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	ccResp.Error, ccResp.ConsumerInfo = nil, nil
-	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
+	// Ephemerals are now not rejected when there is no interest.
 	if ccResp.ConsumerInfo == nil || ccResp.Error != nil {
 		t.Fatalf("Got a bad response %+v", ccResp)
 	}
 	if time.Since(ccResp.Created) > time.Second {
 		t.Fatalf("Created time seems wrong: %v\n", ccResp.Created)
 	}
+
+	// Now create subscription and make sure we get proper response.
+	sub, _ := nc.SubscribeSync(delivery)
+	nc.Flush()
 
 	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
 		if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != toSend {
