@@ -137,49 +137,6 @@ type msgBlock struct {
 	closed  bool
 }
 
-// For handling msgBlock buffers more efficiently and be friendlier to GC.
-// Generate a new blk buffer.
-func newBlkBuffer(sz int) []byte {
-	if sz <= defaultOtherBlockSize/2 || sz > defaultStreamBlockSize {
-		return make([]byte, 0, sz)
-	}
-	var p *sync.Pool
-	if sz <= defaultOtherBlockSize {
-		p = &mb8Free
-	} else {
-		p = &mb16Free
-	}
-	bp := p.Get().(*[]byte)
-	return *bp
-}
-
-func freeBlkBuffer(buf []byte) {
-	sz := cap(buf)
-	if sz <= defaultOtherBlockSize/2 || sz > defaultStreamBlockSize {
-		return
-	}
-	buf = buf[:0]
-	if sz <= defaultOtherBlockSize {
-		mb8Free.Put(&buf)
-	} else {
-		mb16Free.Put(&buf)
-	}
-}
-
-// Just care for now about 2 cases.
-var mb16Free = sync.Pool{
-	New: func() interface{} {
-		buf := make([]byte, 0, defaultStreamBlockSize)
-		return &buf
-	},
-}
-var mb8Free = sync.Pool{
-	New: func() interface{} {
-		buf := make([]byte, 0, defaultOtherBlockSize)
-		return &buf
-	},
-}
-
 // Write through caching layer that is also used on loading messages.
 type cache struct {
 	buf   []byte
@@ -563,7 +520,7 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) (*msgBlock, e
 
 	// If we created keys here, let's check the data and if it is plaintext convert here.
 	if createdKeys {
-		buf, err := mb.loadBlock()
+		buf, err := mb.loadBlock(nil)
 		if err != nil {
 			return nil, err
 		}
@@ -582,7 +539,6 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) (*msgBlock, e
 		if err := ioutil.WriteFile(mb.mfn, buf, defaultFilePerms); err != nil {
 			return nil, err
 		}
-		freeBlkBuffer(buf)
 		// Remove the index file here since it will be in plaintext as well so we just rebuild.
 		os.Remove(mb.ifn)
 	}
@@ -677,11 +633,10 @@ func (mb *msgBlock) rebuildState() (*LostStreamData, error) {
 	mb.last.seq, mb.last.ts = 0, 0
 	firstNeedsSet := true
 
-	buf, err := mb.loadBlock()
+	buf, err := mb.loadBlock(nil)
 	if err != nil {
 		return nil, err
 	}
-	defer freeBlkBuffer(buf)
 
 	// Check if we need to decrypt.
 	if mb.bek != nil && len(buf) > 0 {
@@ -1189,12 +1144,13 @@ func (fs *fileStore) hashKeyForBlock(index uint64) []byte {
 	return []byte(fmt.Sprintf("%s-%d", fs.cfg.Name, index))
 }
 
-func (mb *msgBlock) setupWriteCache() {
+func (mb *msgBlock) setupWriteCache(buf []byte) {
 	// Make sure we have a cache setup.
 	if mb.cache != nil {
 		return
 	}
-	mb.cache = &cache{buf: newBlkBuffer(int(mb.fs.fcfg.BlockSize))}
+	// Setup simple cache.
+	mb.cache = &cache{buf: buf}
 	// Make sure we set the proper cache offset if we have existing data.
 	var fi os.FileInfo
 	if mb.mfd != nil {
@@ -1212,6 +1168,8 @@ func (mb *msgBlock) setupWriteCache() {
 // Lock should be held.
 func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	index := uint64(1)
+	var rbuf []byte
+
 	if lmb := fs.lmb; lmb != nil {
 		index = lmb.index + 1
 
@@ -1220,8 +1178,15 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 			// Reset write timestamp and see if we can expire this cache.
 			lmb.mu.Lock()
 			lmb.closeFDsLocked()
-			lmb.lwts = 0
-			lmb.expireCacheLocked()
+			if lmb.cache != nil {
+				lmb.lwts = 0
+				buf, llts := lmb.cache.buf, lmb.llts
+				lmb.expireCacheLocked()
+				// We could check for a certain time since last load, but to be safe just reuse if no loads.
+				if llts == 0 && (lmb.cache == nil || lmb.cache.buf == nil) {
+					rbuf = buf
+				}
+			}
 			lmb.mu.Unlock()
 		}
 	}
@@ -1230,7 +1195,7 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 
 	// Lock should be held to quiet race detector.
 	mb.mu.Lock()
-	mb.setupWriteCache()
+	mb.setupWriteCache(rbuf)
 	if fs.tms {
 		mb.fss = make(map[string]*SimpleState)
 	}
@@ -2161,11 +2126,9 @@ func (mb *msgBlock) expireCacheLocked() {
 
 	// If we are here we will at least expire the core msg buffer.
 	// We need to capture offset in case we do a write next before a full load.
-	buf := mb.cache.buf
 	mb.cache.off += len(mb.cache.buf)
 	mb.cache.buf = nil
 	mb.cache.wp = 0
-	freeBlkBuffer(buf)
 
 	// The idx is used in removes, and will have a longer timeframe.
 	// See if we should also remove the idx.
@@ -2262,7 +2225,7 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 	mb.mu.Lock()
 	// Make sure we have a cache setup.
 	if mb.cache == nil {
-		mb.setupWriteCache()
+		mb.setupWriteCache(nil)
 	}
 
 	// Indexing
@@ -2745,8 +2708,8 @@ func (mb *msgBlock) flushPendingMsgs() error {
 	if ts := time.Now().UnixNano(); ts < mb.llts || (ts-mb.llts) <= int64(mb.cexp) {
 		mb.cache.wp += lob
 	} else {
-		if cap(buf) <= maxBufReuse {
-			buf = buf[:0]
+		if cap(mb.cache.buf) <= maxBufReuse {
+			buf = mb.cache.buf[:0]
 		} else {
 			buf = nil
 		}
@@ -2789,7 +2752,7 @@ func (mb *msgBlock) cacheAlreadyLoaded() bool {
 
 // Used to load in the block contents.
 // Lock should be held and all conditionals satisfied prior.
-func (mb *msgBlock) loadBlock() ([]byte, error) {
+func (mb *msgBlock) loadBlock(buf []byte) ([]byte, error) {
 	f, err := os.Open(mb.mfn)
 	if err != nil {
 		return nil, err
@@ -2804,23 +2767,14 @@ func (mb *msgBlock) loadBlock() ([]byte, error) {
 		}
 	}
 
-	sz++ // one byte for final read at EOF
-	buf := newBlkBuffer(sz)
-
-	for {
-		if len(buf) >= cap(buf) {
-			d := append(buf[:cap(buf)], 0)
-			buf = d[:len(buf)]
-		}
-		n, err := f.Read(buf[len(buf):cap(buf)])
-		buf = buf[:len(buf)+n]
-		if err != nil {
-			if err == io.EOF {
-				err = nil
-			}
-			return buf, err
-		}
+	if sz > cap(buf) {
+		buf = make([]byte, sz)
+	} else {
+		buf = buf[:sz]
 	}
+
+	n, err := io.ReadFull(f, buf)
+	return buf[:n], err
 }
 
 func (mb *msgBlock) loadMsgsWithLock() error {
@@ -2861,7 +2815,7 @@ checkCache:
 
 	// Load in the whole block. We want to hold the mb lock here to avoid any changes to
 	// state.
-	buf, err := mb.loadBlock()
+	buf, err := mb.loadBlock(nil)
 	if err != nil {
 		return err
 	}
@@ -4143,6 +4097,8 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includ
 	// Can't use join path here, tar only recognizes relative paths with forward slashes.
 	msgPre := msgDir + "/"
 
+	var bbuf []byte
+
 	// Now do messages themselves.
 	for _, mb := range blks {
 		if mb.pendingWriteSize() > 0 {
@@ -4171,28 +4127,27 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includ
 		}
 		// We could stream but don't want to hold the lock and prevent changes, so just read in and
 		// release the lock for now.
-		buf, err = mb.loadBlock()
+		bbuf, err = mb.loadBlock(bbuf)
 		if err != nil {
 			mb.mu.Unlock()
 			writeErr(fmt.Sprintf("Could not read message block [%d]: %v", mb.index, err))
 			return
 		}
 		// Check for encryption.
-		if mb.bek != nil && len(buf) > 0 {
+		if mb.bek != nil && len(bbuf) > 0 {
 			rbek, err := chacha20.NewUnauthenticatedCipher(mb.seed, mb.nonce)
 			if err != nil {
 				mb.mu.Unlock()
 				writeErr(fmt.Sprintf("Could not create encryption key for message block [%d]: %v", mb.index, err))
 				return
 			}
-			rbek.XORKeyStream(buf, buf)
+			rbek.XORKeyStream(bbuf, bbuf)
 		}
 		mb.mu.Unlock()
 		// Do this one unlocked.
-		if writeFile(msgPre+fmt.Sprintf(blkScan, mb.index), buf) != nil {
+		if writeFile(msgPre+fmt.Sprintf(blkScan, mb.index), bbuf) != nil {
 			return
 		}
-		freeBlkBuffer(buf)
 	}
 
 	// Bail if no consumers requested.
@@ -4730,6 +4685,7 @@ func (o *consumerFileStore) writeState(buf []byte) error {
 	ifn := o.ifn
 	o.mu.Unlock()
 
+	// Lock not held here.
 	err := ioutil.WriteFile(ifn, buf, defaultFilePerms)
 
 	o.mu.Lock()
@@ -5008,24 +4964,43 @@ func (o *consumerFileStore) Stop() error {
 	}
 
 	var err error
+	var buf []byte
+
 	if o.dirty {
-		var buf []byte
 		// Make sure to write this out..
 		if buf, err = o.encodeState(); err == nil && len(buf) > 0 {
 			if o.aek != nil {
 				buf = o.encryptState(buf)
 			}
-			err = ioutil.WriteFile(o.ifn, buf, defaultFilePerms)
 		}
 	}
 
 	o.odir = _EMPTY_
 	o.closed = true
-	fs := o.fs
+	ifn, fs := o.ifn, o.fs
 	o.mu.Unlock()
 
 	fs.removeConsumer(o)
+
+	if len(buf) > 0 {
+		o.waitOnFlusher()
+		err = ioutil.WriteFile(ifn, buf, defaultFilePerms)
+	}
 	return err
+}
+
+func (o *consumerFileStore) waitOnFlusher() {
+	if !o.inFlusher() {
+		return
+	}
+
+	timeout := time.Now().Add(100 * time.Millisecond)
+	for time.Now().Before(timeout) {
+		if !o.inFlusher() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // Delete the consumer.

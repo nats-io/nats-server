@@ -821,7 +821,7 @@ func (o *consumer) unsubscribe(sub *subscription) {
 // We need to make sure we protect access to the outq.
 // Do all advisory sends here.
 func (o *consumer) sendAdvisory(subj string, msg []byte) {
-	o.outq.send(&jsPubMsg{subj, _EMPTY_, _EMPTY_, nil, msg, nil, 0, nil})
+	o.outq.sendMsg(subj, msg)
 }
 
 func (o *consumer) sendDeleteAdvisoryLocked() {

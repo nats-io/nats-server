@@ -2216,3 +2216,83 @@ func TestNoRaceJetStreamSlowFilteredInititalPendingAndFirstMsg(t *testing.T) {
 	testConsumerCreate("foo.100000", 1, 1)
 	testConsumerCreate("foo", 1, 100_000-2)
 }
+
+func TestNoRaceJetStreamFileStoreBufferReuse(t *testing.T) {
+	// Uncomment to run. Needs to be on a big machine.
+	skip(t)
+
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	cfg := &StreamConfig{Name: "TEST", Subjects: []string{"foo", "bar", "baz"}, Storage: FileStorage}
+	if _, err := s.GlobalAccount().addStreamWithStore(cfg, nil); err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	toSend := 200_000
+
+	m := nats.NewMsg("foo")
+	m.Data = make([]byte, 8*1024)
+	rand.Read(m.Data)
+
+	start := time.Now()
+	for i := 0; i < toSend; i++ {
+		m.Reply = _EMPTY_
+		switch i % 3 {
+		case 0:
+			m.Subject = "foo"
+		case 1:
+			m.Subject = "bar"
+		case 2:
+			m.Subject = "baz"
+		}
+		m.Header.Set("X-ID2", fmt.Sprintf("XXXXX-%d", i))
+		if _, err := js.PublishMsgAsync(m); err != nil {
+			t.Fatalf("Err on publish: %v", err)
+		}
+	}
+	<-js.PublishAsyncComplete()
+	fmt.Printf("TOOK %v to publish\n", time.Since(start))
+
+	v, err := s.Varz(nil)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	fmt.Printf("MEM AFTER PUBLISH is %v\n", friendlyBytes(v.Mem))
+
+	si, _ := js.StreamInfo("TEST")
+	fmt.Printf("si is %+v\n", si.State)
+
+	received := 0
+	done := make(chan bool)
+
+	cb := func(m *nats.Msg) {
+		received++
+		if received >= toSend {
+			done <- true
+		}
+	}
+
+	start = time.Now()
+	sub, err := js.Subscribe("*", cb, nats.EnableFlowControl(), nats.AckNone())
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer sub.Unsubscribe()
+	<-done
+	fmt.Printf("TOOK %v to consume\n", time.Since(start))
+
+	v, err = s.Varz(nil)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	fmt.Printf("MEM AFTER SUBSCRIBE is %v\n", friendlyBytes(v.Mem))
+}

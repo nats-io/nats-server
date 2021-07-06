@@ -660,7 +660,7 @@ func (mset *stream) sendCreateAdvisory() {
 	}
 
 	subj := JSAdvisoryStreamCreatedPre + "." + name
-	outq.send(&jsPubMsg{subj, _EMPTY_, _EMPTY_, nil, j, nil, 0, nil})
+	outq.sendMsg(subj, j)
 }
 
 func (mset *stream) sendDeleteAdvisoryLocked() {
@@ -683,7 +683,7 @@ func (mset *stream) sendDeleteAdvisoryLocked() {
 	j, err := json.Marshal(m)
 	if err == nil {
 		subj := JSAdvisoryStreamDeletedPre + "." + mset.cfg.Name
-		mset.outq.send(&jsPubMsg{subj, _EMPTY_, _EMPTY_, nil, j, nil, 0, nil})
+		mset.outq.sendMsg(subj, j)
 	}
 }
 
@@ -706,7 +706,7 @@ func (mset *stream) sendUpdateAdvisoryLocked() {
 	j, err := json.Marshal(m)
 	if err == nil {
 		subj := JSAdvisoryStreamUpdatedPre + "." + mset.cfg.Name
-		mset.outq.send(&jsPubMsg{subj, _EMPTY_, _EMPTY_, nil, j, nil, 0, nil})
+		mset.outq.sendMsg(subj, j)
 	}
 }
 
@@ -1870,7 +1870,7 @@ func (mset *stream) handleFlowControl(si *sourceInfo, m *inMsg) {
 		}
 		mset.fcr[si.clseq] = m.rply
 	} else {
-		mset.outq.send(&jsPubMsg{m.rply, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
+		mset.outq.sendMsg(m.rply, nil)
 	}
 }
 
@@ -2591,7 +2591,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				resp.PubAck = &PubAck{Stream: name}
 				resp.Error = ApiErrors[JSStreamSequenceNotMatchErr]
 				b, _ := json.Marshal(resp)
-				outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0, nil})
+				outq.sendMsg(reply, b)
 			}
 			return errLastSeqMismatch
 		}
@@ -2614,7 +2614,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			if canRespond {
 				response := append(pubAck, strconv.FormatUint(dde.seq, 10)...)
 				response = append(response, ",\"duplicate\": true}"...)
-				outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
+				outq.sendMsg(reply, response)
 			}
 			return errMsgIdDuplicate
 		}
@@ -2627,7 +2627,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				resp.PubAck = &PubAck{Stream: name}
 				resp.Error = ApiErrors[JSStreamNotMatchErr]
 				b, _ := json.Marshal(resp)
-				outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0, nil})
+				outq.sendMsg(reply, b)
 			}
 			return errors.New("expected stream does not match")
 		}
@@ -2640,7 +2640,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				resp.PubAck = &PubAck{Stream: name}
 				resp.Error = ApiErrors[JSStreamWrongLastSequenceErrF].NewT("{seq}", mlseq)
 				b, _ := json.Marshal(resp)
-				outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0, nil})
+				outq.sendMsg(reply, b)
 			}
 			return fmt.Errorf("last sequence mismatch: %d vs %d", seq, mlseq)
 		}
@@ -2653,7 +2653,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				resp.PubAck = &PubAck{Stream: name}
 				resp.Error = ApiErrors[JSStreamWrongLastMsgIDErrF].NewT("{id}", last)
 				b, _ := json.Marshal(resp)
-				outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0, nil})
+				outq.sendMsg(reply, b)
 			}
 			return fmt.Errorf("last msgid mismatch: %q vs %q", lmsgId, last)
 		}
@@ -2668,7 +2668,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 					resp.PubAck = &PubAck{Stream: name}
 					resp.Error = ApiErrors[JSStreamWrongLastSequenceErrF].NewT("{seq}", lseq)
 					b, _ := json.Marshal(resp)
-					outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0, nil})
+					outq.sendMsg(reply, b)
 				}
 				return fmt.Errorf("last sequence by subject mismatch: %d vs %d", seq, lseq)
 			}
@@ -2690,7 +2690,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			resp.PubAck = &PubAck{Stream: name}
 			resp.Error = ApiErrors[JSStreamMessageExceedsMaximumErr]
 			b, _ := json.Marshal(resp)
-			mset.outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0, nil})
+			mset.outq.sendMsg(reply, b)
 		}
 		return ErrMaxPayload
 	}
@@ -2704,7 +2704,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			resp.PubAck = &PubAck{Stream: name}
 			resp.Error = ApiErrors[JSInsufficientResourcesErr]
 			b, _ := json.Marshal(resp)
-			mset.outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0, nil})
+			mset.outq.sendMsg(reply, b)
 		}
 		// Stepdown regardless.
 		if node := mset.raftNode(); node != nil {
@@ -2745,7 +2745,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		if canRespond {
 			response = append(pubAck, strconv.FormatUint(mset.lseq, 10)...)
 			response = append(response, '}')
-			mset.outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
+			mset.outq.sendMsg(reply, response)
 		}
 		// If we have a msgId make sure to save.
 		if msgId != _EMPTY_ {
@@ -2815,6 +2815,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		store.RemoveMsg(seq)
 		seq = 0
 	} else {
+		// No errors, this is the normal path.
 		// If we have a msgId make sure to save.
 		if msgId != _EMPTY_ {
 			mset.storeMsgId(&ddentry{msgId, seq, ts})
@@ -2827,7 +2828,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// Send response here.
 	if canRespond {
-		mset.outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
+		mset.outq.sendMsg(reply, response)
 	}
 
 	if err == nil && seq > 0 && numConsumers > 0 {
@@ -2884,6 +2885,12 @@ func (q *jsOutQ) pending() *jsPubMsg {
 	q.head, q.tail = nil, nil
 	q.mu.Unlock()
 	return head
+}
+
+func (q *jsOutQ) sendMsg(subj string, msg []byte) {
+	if q != nil {
+		q.send(&jsPubMsg{subj, _EMPTY_, _EMPTY_, nil, msg, nil, 0, nil})
+	}
 }
 
 func (q *jsOutQ) send(msg *jsPubMsg) {
@@ -2960,6 +2967,9 @@ func (mset *stream) internalLoop() {
 	isClustered := mset.cfg.Replicas > 1
 	mset.mu.RUnlock()
 
+	// Raw scratch buffer.
+	var _r [64 * 1024]byte
+
 	for {
 		select {
 		case <-outq.mch:
@@ -2970,17 +2980,20 @@ func (mset *stream) internalLoop() {
 				c.pa.szb = []byte(strconv.Itoa(c.pa.size))
 				c.pa.reply = []byte(pm.reply)
 
-				var msg []byte
+				msg := _r[:0]
 				if len(pm.hdr) > 0 {
 					c.pa.hdr = len(pm.hdr)
 					c.pa.hdb = []byte(strconv.Itoa(c.pa.hdr))
-					msg = append(pm.hdr, pm.msg...)
-					msg = append(msg, _CRLF_...)
+					msg = append(msg, pm.hdr...)
+					msg = append(msg, pm.msg...)
 				} else {
 					c.pa.hdr = -1
 					c.pa.hdb = nil
-					msg = append(pm.msg, _CRLF_...)
+					if len(pm.msg) > 0 {
+						msg = append(msg, pm.msg...)
+					}
 				}
+				msg = append(msg, _CRLF_...)
 
 				didDeliver, _ := c.processInboundClientMsg(msg)
 				c.pa.szb = nil
