@@ -317,7 +317,7 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 		certFile string
 		caFile   string
 	)
-	if kind == typeStringMap[CLIENT] {
+	if kind == kindStringMap[CLIENT] {
 		tcOpts = opts.tlsConfigOpts
 		if opts.TLSCert != _EMPTY_ {
 			certFile = opts.TLSCert
@@ -412,7 +412,7 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 
 		// Check whether need to verify staples from a client connection depending on the type.
 		switch kind {
-		case typeStringMap[ROUTER], typeStringMap[GATEWAY], typeStringMap[LEAF]:
+		case kindStringMap[ROUTER], kindStringMap[GATEWAY], kindStringMap[LEAF]:
 			tc.VerifyConnection = func(s tls.ConnectionState) error {
 				oresp := s.OCSPResponse
 				if oresp == nil {
@@ -491,7 +491,7 @@ func (s *Server) configureOCSP() []*tlsConfigKind {
 	if config := sopts.TLSConfig; config != nil {
 		opts := sopts.tlsConfigOpts
 		o := &tlsConfigKind{
-			kind:      typeStringMap[CLIENT],
+			kind:      kindStringMap[CLIENT],
 			tlsConfig: config,
 			tlsOpts:   opts,
 			apply:     func(tc *tls.Config) { sopts.TLSConfig = tc },
@@ -501,7 +501,7 @@ func (s *Server) configureOCSP() []*tlsConfigKind {
 	if config := sopts.Cluster.TLSConfig; config != nil {
 		opts := sopts.Cluster.tlsConfigOpts
 		o := &tlsConfigKind{
-			kind:      typeStringMap[ROUTER],
+			kind:      kindStringMap[ROUTER],
 			tlsConfig: config,
 			tlsOpts:   opts,
 			apply:     func(tc *tls.Config) { sopts.Cluster.TLSConfig = tc },
@@ -511,7 +511,7 @@ func (s *Server) configureOCSP() []*tlsConfigKind {
 	if config := sopts.LeafNode.TLSConfig; config != nil {
 		opts := sopts.LeafNode.tlsConfigOpts
 		o := &tlsConfigKind{
-			kind:      typeStringMap[LEAF],
+			kind:      kindStringMap[LEAF],
 			tlsConfig: config,
 			tlsOpts:   opts,
 			apply: func(tc *tls.Config) {
@@ -531,7 +531,7 @@ func (s *Server) configureOCSP() []*tlsConfigKind {
 		opts := remote.tlsConfigOpts
 		if config := remote.TLSConfig; config != nil {
 			o := &tlsConfigKind{
-				kind:      typeStringMap[LEAF],
+				kind:      kindStringMap[LEAF],
 				tlsConfig: config,
 				tlsOpts:   opts,
 				apply: func(tc *tls.Config) {
@@ -548,7 +548,7 @@ func (s *Server) configureOCSP() []*tlsConfigKind {
 	if config := sopts.Gateway.TLSConfig; config != nil {
 		opts := sopts.Gateway.tlsConfigOpts
 		o := &tlsConfigKind{
-			kind:      typeStringMap[GATEWAY],
+			kind:      kindStringMap[GATEWAY],
 			tlsConfig: config,
 			tlsOpts:   opts,
 			apply:     func(tc *tls.Config) { sopts.Gateway.TLSConfig = tc },
@@ -559,7 +559,7 @@ func (s *Server) configureOCSP() []*tlsConfigKind {
 		opts := remote.tlsConfigOpts
 		if config := remote.TLSConfig; config != nil {
 			o := &tlsConfigKind{
-				kind:      typeStringMap[GATEWAY],
+				kind:      kindStringMap[GATEWAY],
 				tlsConfig: config,
 				tlsOpts:   opts,
 				apply: func(tc *tls.Config) {

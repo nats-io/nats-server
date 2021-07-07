@@ -893,7 +893,7 @@ func TestTypeString(t *testing.T) {
 	}
 	for _, cs := range cases {
 		c := &client{kind: cs.intType}
-		typeStringVal := c.typeString()
+		typeStringVal := c.kindString()
 
 		if typeStringVal != cs.stringType {
 			t.Fatalf("Expected typeString  value  %q, but instead received %q", cs.stringType, typeStringVal)

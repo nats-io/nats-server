@@ -474,6 +474,20 @@ func (c *client) clientType() int {
 	}
 }
 
+var clientTypeStringMap = map[int]string{
+	NON_CLIENT: _EMPTY_,
+	NATS:       "nats",
+	WS:         "websocket",
+	MQTT:       "mqtt",
+}
+
+func (c *client) clientTypeString() string {
+	if typeStringVal, ok := clientTypeStringMap[c.clientType()]; ok {
+		return typeStringVal
+	}
+	return _EMPTY_
+}
+
 // This is the main subscription struct that indicates
 // interest in published messages.
 // FIXME(dlc) - This is getting bloated for normal subs, need
@@ -1493,11 +1507,11 @@ func (c *client) markConnAsClosed(reason ClosedState) {
 	// we use Noticef on create, so use that too for delete.
 	if c.srv != nil {
 		if c.kind == LEAF {
-			c.Noticef("%s connection closed: %s account: %s", c.typeString(), reason, c.acc.traceLabel())
+			c.Noticef("%s connection closed: %s account: %s", c.kindString(), reason, c.acc.traceLabel())
 		} else if c.kind == ROUTER || c.kind == GATEWAY {
-			c.Noticef("%s connection closed: %s", c.typeString(), reason)
+			c.Noticef("%s connection closed: %s", c.kindString(), reason)
 		} else { // Client, System, Jetstream, and Account connections.
-			c.Debugf("%s connection closed: %s", c.typeString(), reason)
+			c.Debugf("%s connection closed: %s", c.kindString(), reason)
 		}
 	}
 
@@ -4331,7 +4345,7 @@ func (c *client) processPingTimer() {
 		return
 	}
 
-	c.Debugf("%s Ping Timer", c.typeString())
+	c.Debugf("%s Ping Timer", c.kindString())
 
 	var sendPing bool
 
@@ -4467,7 +4481,7 @@ func (c *client) flushAndClose(minimalFlush bool) {
 	}
 }
 
-var typeStringMap = map[int]string{
+var kindStringMap = map[int]string{
 	CLIENT:    "Client",
 	ROUTER:    "Router",
 	GATEWAY:   "Gateway",
@@ -4477,11 +4491,10 @@ var typeStringMap = map[int]string{
 	SYSTEM:    "System",
 }
 
-func (c *client) typeString() string {
-	if typeStringVal, ok := typeStringMap[c.kind]; ok {
-		return typeStringVal
+func (c *client) kindString() string {
+	if kindStringVal, ok := kindStringMap[c.kind]; ok {
+		return kindStringVal
 	}
-
 	return "Unknown Type"
 }
 
@@ -4943,6 +4956,8 @@ func (c *client) getClientInfo(detailed bool) *ClientInfo {
 		ci.IssuerKey = issuerForClient(c)
 		ci.NameTag = c.nameTag
 		ci.Tags = c.tags
+		ci.Kind = c.kindString()
+		ci.ClientType = c.clientTypeString()
 	}
 	c.mu.Unlock()
 	return &ci
