@@ -4956,6 +4956,8 @@ func (c *client) getClientInfo(detailed bool) *ClientInfo {
 		ci.IssuerKey = issuerForClient(c)
 		ci.NameTag = c.nameTag
 		ci.Tags = c.tags
+		ci.Kind = c.kindString()
+		ci.ClientType = c.clientTypeString()
 	}
 	c.mu.Unlock()
 	return &ci
