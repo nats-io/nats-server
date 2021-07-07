@@ -671,7 +671,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 		acc.mu.RLock()
 		c.Debugf("Authenticated JWT: %s %q (claim-name: %q, claim-tags: %q) "+
 			"signed with %q by Account %q (claim-name: %q, claim-tags: %q) signed with %q",
-			c.typeString(), juc.Subject, juc.Name, juc.Tags, juc.Issuer, issuer, acc.nameTag, acc.tags, acc.Issuer)
+			c.kindString(), juc.Subject, juc.Name, juc.Tags, juc.Issuer, issuer, acc.nameTag, acc.tags, acc.Issuer)
 		acc.mu.RUnlock()
 		return true
 	}

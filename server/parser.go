@@ -1190,7 +1190,7 @@ authErr:
 parseErr:
 	c.sendErr("Unknown Protocol Operation")
 	snip := protoSnippet(i, PROTO_SNIPPET_SIZE, buf)
-	err := fmt.Errorf("%s parser ERROR, state=%d, i=%d: proto='%s...'", c.typeString(), c.state, i, snip)
+	err := fmt.Errorf("%s parser ERROR, state=%d, i=%d: proto='%s...'", c.kindString(), c.state, i, snip)
 	return err
 }
 
