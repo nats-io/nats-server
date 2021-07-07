@@ -475,7 +475,7 @@ func (c *client) clientType() int {
 }
 
 var clientTypeStringMap = map[int]string{
-	NON_CLIENT: "",
+	NON_CLIENT: _EMPTY_,
 	NATS:       "nats",
 	WS:         "websocket",
 	MQTT:       "mqtt",
@@ -485,7 +485,7 @@ func (c *client) clientTypeString() string {
 	if typeStringVal, ok := clientTypeStringMap[c.clientType()]; ok {
 		return typeStringVal
 	}
-	return ""
+	return _EMPTY_
 }
 
 // This is the main subscription struct that indicates
@@ -4492,8 +4492,8 @@ var kindStringMap = map[int]string{
 }
 
 func (c *client) kindString() string {
-	if typeStringVal, ok := kindStringMap[c.kind]; ok {
-		return typeStringVal
+	if kindStringVal, ok := kindStringMap[c.kind]; ok {
+		return kindStringVal
 	}
 	return "Unknown Type"
 }
