@@ -3377,6 +3377,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 		if ca != nil && ca.pending {
 			ca = nil
 		}
+		ourID := cc.meta.ID()
 		js.mu.RUnlock()
 
 		if isLeader && ca == nil {
@@ -3420,7 +3421,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, subject, re
 				// Delaying an error response gives the leader a chance to respond before us
 				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), ca.Group)
 			} else if ca != nil {
-				if rg := ca.Group; rg != nil && rg.node != nil && rg.isMember(cc.meta.ID()) {
+				if rg := ca.Group; rg != nil && rg.node != nil && rg.isMember(ourID) {
 					// Check here if we are a member and this is just a new consumer that does not have a leader yet.
 					if rg.node.GroupLeader() == _EMPTY_ && !rg.node.HadPreviousLeader() {
 						resp.Error = ApiErrors[JSConsumerNotFoundErr]
