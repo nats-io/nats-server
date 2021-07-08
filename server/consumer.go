@@ -443,7 +443,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	}
 	if maxc > 0 && len(mset.consumers) >= maxc {
 		mset.mu.Unlock()
-		return nil, ApiErrors[JSStreamMaximumConsumersReachedErr]
+		return nil, ApiErrors[JSMaximumConsumersLimitErr]
 	}
 
 	// Check on stream type conflicts with WorkQueues.

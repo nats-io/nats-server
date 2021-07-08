@@ -950,16 +950,6 @@
     "deprecates": ""
   },
   {
-    "constant": "JSStreamMaximumConsumersReachedErr",
-    "code": 400,
-    "error_code": 10097,
-    "description": "maximum consumers limit reached",
-    "comment": "",
-    "help": "",
-    "url": "",
-    "deprecates": ""
-  },
-  {
     "constant": "JSConsumerWQRequiresExplicitAckErr",
     "code": 400,
     "error_code": 10098,
