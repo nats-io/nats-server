@@ -701,10 +701,29 @@ func (s *Server) recheckPinnedCerts(curOpts *Options, newOpts *Options) {
 	}
 }
 
-// Reload reads the current configuration file and applies any supported
-// changes. This returns an error if the server was not started with a config
-// file or an option which doesn't support hot-swapping was changed.
+// Reload reads the current configuration file and calls out to ReloadOptions
+// to apply the changes. This returns an error if the server was not started
+// with a config file or an option which doesn't support hot-swapping was changed.
 func (s *Server) Reload() error {
+	s.mu.Lock()
+	configFile := s.configFile
+	s.mu.Unlock()
+	if configFile == "" {
+		return errors.New("can only reload config when a file is provided using -c or --config")
+	}
+
+	newOpts, err := ProcessConfigFile(configFile)
+	if err != nil {
+		// TODO: Dump previous good config to a .bak file?
+		return err
+	}
+	return s.ReloadOptions(newOpts)
+}
+
+// ReloadOptions applies any supported options from the provided Option
+// type. This returns an error if an option which doesn't support
+// hot-swapping was changed.
+func (s *Server) ReloadOptions(newOpts *Options) error {
 	s.mu.Lock()
 
 	s.reloading = true
@@ -713,18 +732,6 @@ func (s *Server) Reload() error {
 		s.reloading = false
 		s.mu.Unlock()
 	}()
-
-	if s.configFile == "" {
-		s.mu.Unlock()
-		return errors.New("can only reload config when a file is provided using -c or --config")
-	}
-
-	newOpts, err := ProcessConfigFile(s.configFile)
-	if err != nil {
-		s.mu.Unlock()
-		// TODO: Dump previous good config to a .bak file?
-		return err
-	}
 
 	curOpts := s.getOpts()
 
@@ -787,7 +794,6 @@ func (s *Server) Reload() error {
 	s.mu.Unlock()
 	return nil
 }
-
 func applyBoolFlags(newOpts, flagOpts *Options) {
 	// Reset fields that may have been set to `true` in
 	// MergeOptions() when some of the flags default to `true`
