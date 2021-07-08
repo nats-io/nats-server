@@ -43,7 +43,7 @@ Planned features:
  * Ability to read from regional read replicas maintained by JS Mirroring (planned)
  * A read-only client can talk directly, and only, to a regional read replica
  * Discoverability of read replicas per cluster based on in-bucket configuration values
- * Standard encoders/decoders to deliver zero-trust end to end encryption, perhaps using nkeys
+ * Standard encoders/decoders to deliver zero-trust end-to-end encryption, perhaps using nkeys
  * Pluggable storage backends
 
 ## Data Types
@@ -69,8 +69,6 @@ type Result interface {
 	Sequence() uint64
 	// Delta is distance from the latest value. If history is enabled this is effectively the index of the historical value, 0 for latest, 1 for most recent etc.
 	Delta() uint64
-	// OriginCluster is the cluster where this data originate from, may be empty if sharing was not enabled
-	OriginCluster() string
 	// Operation is the kind of operation this result represents, enum of PUT and DEL
 	Operation() Operation
 }
@@ -215,8 +213,7 @@ Here is a full example of the `CONFIGURATION` bucket:
 
 #### Storing Values
 
-Writing a key to the bucket is a basic JetStream request, we always have to set the `KV-Origin-Cluster` header to the name
-of the cluster that the client is connected to.
+Writing a key to the bucket is a basic JetStream request.
 
 The KV key `username` in the `CONFIGURATION` bucket is written sent, using a request, to `$KV.CONFIGURATION.username`.
 
@@ -315,7 +312,6 @@ Most operations are pass-through, except:
  * `Delete()` will evict the key from local cache and pass through
  * `Put()` will evict the key from local cache and pass through
  * `Destroy()` and `Purge()` will delete all messages from local cache and pass through
- * `JSON()` will dump the local cache if ready, else pass through
 
 We specifically do not place the `Put()` value into local cache since a Result
 must know the JetStream sequence.
