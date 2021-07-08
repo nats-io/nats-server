@@ -7340,7 +7340,7 @@ func TestJetStreamClusterSourceAndMirrorConsumersLeaderChange(t *testing.T) {
 
 	// Now make sure we only have a single direct consumer on our origin streams.
 	// Pick one at random.
-	name := fmt.Sprintf("O%d", rand.Intn(numStreams))
+	name := fmt.Sprintf("O%d", rand.Intn(numStreams-1)+1)
 	c1.waitOnStreamLeader("$G", name)
 	s := c1.streamLeader("$G", name)
 	a, err := s.lookupAccount("$G")
@@ -7351,6 +7351,7 @@ func TestJetStreamClusterSourceAndMirrorConsumersLeaderChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+
 	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
 		if ndc := mset.numDirectConsumers(); ndc != 1 {
 			return fmt.Errorf("Stream %q wanted 1 direct consumer, got %d", name, ndc)
