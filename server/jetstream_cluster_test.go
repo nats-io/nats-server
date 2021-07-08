@@ -7340,7 +7340,7 @@ func TestJetStreamClusterSourceAndMirrorConsumersLeaderChange(t *testing.T) {
 
 	// Now make sure we only have a single direct consumer on our origin streams.
 	// Pick one at random.
-	name := fmt.Sprintf("O%d", rand.Intn(numStreams))
+	name := fmt.Sprintf("O%d", rand.Intn(numStreams-1)+1)
 	c1.waitOnStreamLeader("$G", name)
 	s := c1.streamLeader("$G", name)
 	a, err := s.lookupAccount("$G")
@@ -7351,6 +7351,7 @@ func TestJetStreamClusterSourceAndMirrorConsumersLeaderChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+
 	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
 		if ndc := mset.numDirectConsumers(); ndc != 1 {
 			return fmt.Errorf("Stream %q wanted 1 direct consumer, got %d", name, ndc)
@@ -7637,6 +7638,59 @@ func TestJetStreamClusterMaxConsumers(t *testing.T) {
 	}
 	if _, err := js.SubscribeSync("in.maxc.bar"); err == nil {
 		t.Fatalf("Eexpected error but got none")
+	}
+}
+
+func TestJetStreamClusterMaxConsumersMultipleConcurrentRequests(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:         "MAXCC",
+		Storage:      nats.MemoryStorage,
+		Subjects:     []string{"in.maxcc.>"},
+		MaxConsumers: 1,
+		Replicas:     3,
+	}
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	si, err := js.StreamInfo("MAXCC")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.Config.MaxConsumers != 1 {
+		t.Fatalf("Expected max of 1, got %d", si.Config.MaxConsumers)
+	}
+
+	startCh := make(chan bool)
+	var wg sync.WaitGroup
+
+	for n := 0; n < 10; n++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+			<-startCh
+			js.SubscribeSync("in.maxcc.foo")
+		}()
+	}
+	// Wait for Go routines.
+	time.Sleep(250 * time.Millisecond)
+
+	close(startCh)
+	wg.Wait()
+
+	var names []string
+	for n := range js.ConsumerNames("MAXCC") {
+		names = append(names, n)
+	}
+	if nc := len(names); nc > 1 {
+		t.Fatalf("Expected only 1 consumer, got %d", nc)
 	}
 }
 

@@ -4050,14 +4050,12 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	ca := &consumerAssignment{Group: rg, Stream: stream, Name: oname, Config: cfg, Subject: subject, Reply: reply, Client: ci, Created: time.Now().UTC()}
 	eca := encodeAddConsumerAssignment(ca)
 
-	// Mark this as pending if a durable.
-	if isDurableConsumer(cfg) {
-		if sa.consumers == nil {
-			sa.consumers = make(map[string]*consumerAssignment)
-		}
-		ca.pending = true
-		sa.consumers[ca.Name] = ca
+	// Mark this as pending.
+	if sa.consumers == nil {
+		sa.consumers = make(map[string]*consumerAssignment)
 	}
+	ca.pending = true
+	sa.consumers[ca.Name] = ca
 
 	// Do formal proposal.
 	cc.meta.Propose(eca)
