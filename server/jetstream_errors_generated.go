@@ -249,9 +249,6 @@ const (
 	// JSStreamLimitsErrF General stream limits exceeded error string ({err})
 	JSStreamLimitsErrF ErrorIdentifier = 10053
 
-	// JSStreamMaximumConsumersReachedErr maximum consumers limit reached
-	JSStreamMaximumConsumersReachedErr ErrorIdentifier = 10097
-
 	// JSStreamMessageExceedsMaximumErr message size exceeds maximum allowed
 	JSStreamMessageExceedsMaximumErr ErrorIdentifier = 10054
 
@@ -403,7 +400,6 @@ var (
 		JSStreamInvalidErr:                         {Code: 500, ErrCode: 10096, Description: "stream not valid"},
 		JSStreamInvalidExternalDeliverySubjErrF:    {Code: 400, ErrCode: 10024, Description: "stream external delivery prefix {prefix} must not contain wildcards"},
 		JSStreamLimitsErrF:                         {Code: 500, ErrCode: 10053, Description: "{err}"},
-		JSStreamMaximumConsumersReachedErr:         {Code: 400, ErrCode: 10097, Description: "maximum consumers limit reached"},
 		JSStreamMessageExceedsMaximumErr:           {Code: 400, ErrCode: 10054, Description: "message size exceeds maximum allowed"},
 		JSStreamMirrorNotUpdatableErr:              {Code: 400, ErrCode: 10055, Description: "Mirror configuration can not be updated"},
 		JSStreamMismatchErr:                        {Code: 400, ErrCode: 10056, Description: "stream name in subject does not match request"},
