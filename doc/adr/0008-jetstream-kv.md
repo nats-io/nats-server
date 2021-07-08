@@ -51,12 +51,12 @@ Planned features:
 Here's rough guidance, for some clients in some places you might not want to use `[]string` but an iterator, that's
 fine, the languages should make appropriate choices based on this rough outline.
 
-### Result
+### Entry
 
-This is the result made available over watchers, `Get()` etc. All backends must return an implementation providing at least this information.
+This is the value and associated metadata made available over watchers, `Get()` etc. All backends must return an implementation providing at least this information.
 
 ```go
-type Result interface {
+type Entry interface {
 	// Bucket is the bucket the data was loaded from
 	Bucket() string
 	// Key is the key that was retrieved
@@ -69,7 +69,7 @@ type Result interface {
 	Sequence() uint64
 	// Delta is distance from the latest value. If history is enabled this is effectively the index of the historical value, 0 for latest, 1 for most recent etc.
 	Delta() uint64
-	// Operation is the kind of operation this result represents, enum of PUT and DEL
+	// Operation is the kind of operation this entry represents, enum of PUT and DEL
 	Operation() Operation
 }
 ```
@@ -92,13 +92,13 @@ type Status interface {
 	// TTL is how long the bucket keeps values for
 	TTL() time.Duration
 
-	// Cluster returns the name of the cluster holding the read replica of the data
-	Cluster() string
+	// BucketLocation returns a string indicating where the bucket is located, meaning dependent on backend
+	BucketLocation() string
 
 	// Keys returns a list of all keys in the bucket - not possible now
 	Keys() ([]string, error)
 
-	// BackingStore is a backend specific name for the underlying storage - eg. stream name
+	// BackingStore is a backend specific name for the underlying storage - eg. stream name. Used so that ops tooling can know what to Backup for example
 	BackingStore() string
 }
 ```
@@ -117,15 +117,15 @@ The interface here is a guide of what should function in read-only mode.
 // RoKV is a read-only interface to a single key-value store bucket
 type RoKV interface {
 	// Get gets a key from the store
-	Get(key string) (Result, error)
+	Get(key string) (Entry, error)
 
 	// History retrieves historic values for a key
-	History(ctx context.Context, key string) ([]Result, error)
+	History(ctx context.Context, key string) ([]Entry, error)
 
 	// WatchBucket watches the entire bucket for changes, all keys and values will be traversed including all historic values
 	WatchBucket(ctx context.Context) (Watch, error)
 
-	// Watch a key for updates, the same Result might be delivered more than once
+	// Watch a key for updates, the same Entry might be delivered more than once
 	Watch(ctx context.Context, key string) (Watch, error)
 
 	// Close releases in-memory resources held by the KV, called automatically if the context used to create it is canceled
@@ -224,7 +224,7 @@ we use the new `Nats-Expected-Last-Subject-Sequence` header.
 
 There are different situations where messages will be retrieved using different APIs, below describes the different models.
 
-In all cases we return a generic `Result` type.
+In all cases we return a generic `Entry` type.
 
 Deleted data - (see later section on deletes) - has the `KV-Operation` header set to `DEL`, a value received from either of these
 methods with this header set indicates the data was being deleted.  If this is a pending=0 message it means the key does not exist.
@@ -313,8 +313,7 @@ Most operations are pass-through, except:
  * `Put()` will evict the key from local cache and pass through
  * `Destroy()` and `Purge()` will delete all messages from local cache and pass through
 
-We specifically do not place the `Put()` value into local cache since a Result
-must know the JetStream sequence.
+We specifically do not place the `Put()` value into local cache since an Entry  must know the JetStream sequence.
 
 This design preserves the read-after-write promises.
 
