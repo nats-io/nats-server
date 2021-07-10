@@ -1435,7 +1435,7 @@ func (o *consumer) info() *ConsumerInfo {
 		},
 		NumAckPending:  len(o.pending),
 		NumRedelivered: len(o.rdc),
-		NumPending:     o.sgap,
+		NumPending:     o.adjustedPending(),
 		Cluster:        ci,
 	}
 	// If we are a pull mode consumer, report on number of waiting requests.
@@ -2193,21 +2193,33 @@ func (o *consumer) setMaxPendingBytes(limit int) {
 	}
 }
 
+// We have the case where a consumer can become greedy and pick up a messages before the stream has incremented our pending(sgap).
+// Instead of trying to slow things down and synchronize we will allow this to wrap and go negative (biggest uint64) for a short time.
+// This functions checks for that and returns 0.
+// Lock should be held.
+func (o *consumer) adjustedPending() uint64 {
+	if o.sgap&(1<<63) != 0 {
+		return 0
+	}
+	return o.sgap
+}
+
 // Deliver a msg to the consumer.
 // Lock should be held and o.mset validated to be non-nil.
 func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint64, ts int64) {
 	if o.mset == nil {
 		return
 	}
-	// Update pending on first attempt
-	if dc == 1 && o.sgap > 0 {
+	// Update pending on first attempt. This can go upside down for a short bit, that is ok.
+	// See adjustedPending().
+	if dc == 1 {
 		o.sgap--
 	}
 
 	dseq := o.dseq
 	o.dseq++
 
-	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, dseq, dc, ts, o.sgap), hdr, msg, o, seq, nil}
+	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, dseq, dc, ts, o.adjustedPending()), hdr, msg, o, seq, nil}
 	if o.maxpb > 0 {
 		o.pbytes += pmsg.size()
 	}
