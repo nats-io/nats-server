@@ -12033,6 +12033,89 @@ func TestJetStreamServerEncryption(t *testing.T) {
 	checkEncrypted()
 }
 
+// User report of bug.
+func TestJetStreamConsumerBadNumPending(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "ORDERS",
+		Subjects: []string{"orders.*"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	newOrders := func(n int) {
+		// Queue up new orders.
+		for i := 0; i < n; i++ {
+			js.Publish("orders.created", []byte("NEW"))
+		}
+	}
+
+	newOrders(10)
+
+	// Create to subscribers.
+	process := func(m *nats.Msg) {
+		js.Publish("orders.approved", []byte("APPROVED"))
+	}
+
+	op, err := js.Subscribe("orders.created", process)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer op.Unsubscribe()
+
+	mon, err := js.SubscribeSync("orders.*")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer mon.Unsubscribe()
+
+	waitForMsgs := func(n uint64) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+			si, err := js.StreamInfo("ORDERS")
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if si.State.Msgs != n {
+				return fmt.Errorf("Expected %d msgs, got state: %+v", n, si.State)
+			}
+			return nil
+		})
+	}
+
+	checkForNoPending := func(sub *nats.Subscription) {
+		t.Helper()
+		if ci, err := sub.ConsumerInfo(); err != nil || ci == nil || ci.NumPending != 0 {
+			if ci != nil && ci.NumPending != 0 {
+				t.Fatalf("Bad consumer NumPending, expected 0 but got %d", ci.NumPending)
+			} else {
+				t.Fatalf("Bad consumer info: %+v", ci)
+			}
+		}
+	}
+
+	waitForMsgs(20)
+	checkForNoPending(op)
+	checkForNoPending(mon)
+
+	newOrders(10)
+
+	waitForMsgs(40)
+	checkForNoPending(op)
+	checkForNoPending(mon)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
