@@ -167,7 +167,6 @@ type Server struct {
 	leafNodeEnabled    bool
 
 	quitCh           chan struct{}
-	startupComplete  chan struct{}
 	shutdownComplete chan struct{}
 
 	// Tracking Go routines
@@ -496,10 +495,6 @@ func NewServer(opts *Options) (*Server, error) {
 
 	// For tracking leaf nodes.
 	s.leafs = make(map[uint64]*client)
-
-	// Closed when startup is complete. Allows WaitForStartup() to block
-	// waiting until NATS has started.
-	s.startupComplete = make(chan struct{})
 
 	// Used to kick out all go routines possibly waiting on server
 	// to shutdown.
@@ -1618,7 +1613,6 @@ func (s *Server) Start() {
 	}
 	s.Noticef("  ID:       %s", s.info.ID)
 
-	defer close(s.startupComplete)
 	defer s.Noticef("Server is ready")
 
 	// Check for insecure configurations.
@@ -2029,11 +2023,6 @@ func (s *Server) Shutdown() {
 	close(s.shutdownComplete)
 }
 
-// WaitForStartup will block until the server has been fully started.
-func (s *Server) WaitForStartup() {
-	<-s.startupComplete
-}
-
 // WaitForShutdown will block until the server has been fully shutdown.
 func (s *Server) WaitForShutdown() {
 	<-s.shutdownComplete
@@ -2119,19 +2108,12 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 // state of the DontListen option.
 func (s *Server) InProcessConn() (net.Conn, error) {
 	pl, pr := net.Pipe()
-	created := true
 	if !s.startGoRoutine(func() {
-		if c := s.createClient(pl); c == nil {
-			created = false
-		}
+		s.createClient(pl)
 	}) {
-		created = false
-	}
-	if !created {
-		s.grWG.Done()
-		_ = pl.Close()
-		_ = pr.Close()
-		return nil, fmt.Errorf("failed to make connection")
+		pl.Close()
+		pr.Close()
+		return nil, fmt.Errorf("failed to create connection")
 	}
 	return pr, nil
 }
@@ -2968,8 +2950,8 @@ func (s *Server) readyForConnections(d time.Duration) error {
 
 	end := time.Now().Add(d)
 	for time.Now().Before(end) {
-		s.mu.RLock()
-		chk["server"] = info{ok: s.listener != nil, err: s.listenerErr}
+		s.mu.Lock()
+		chk["server"] = info{ok: s.listener != nil || opts.DontListen, err: s.listenerErr}
 		chk["route"] = info{ok: (opts.Cluster.Port == 0 || s.routeListener != nil), err: s.routeListenerErr}
 		chk["gateway"] = info{ok: (opts.Gateway.Name == _EMPTY_ || s.gatewayListener != nil), err: s.gatewayListenerErr}
 		chk["leafNode"] = info{ok: (opts.LeafNode.Port == 0 || s.leafNodeListener != nil), err: s.leafNodeListenerErr}
