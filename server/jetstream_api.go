@@ -21,7 +21,6 @@ import (
 	"math/rand"
 	"os"
 	"path"
-	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -608,7 +607,6 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, subject, reply st
 
 	// Shortcircuit.
 	if len(rr.psubs)+len(rr.qsubs) == 0 {
-		debug.PrintStack()
 		return
 	}
 
