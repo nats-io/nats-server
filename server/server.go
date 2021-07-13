@@ -2113,8 +2113,10 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	clr = nil
 }
 
-// InProcessConn returns a connection to the server which can
-// be used in-process when DontListen is set.
+// InProcessConn returns an in-process connection to the server,
+// avoiding the need to use a TCP listener for local connectivity
+// within the same process. This can be used regardless of the
+// state of the DontListen option.
 func (s *Server) InProcessConn() (net.Conn, error) {
 	pl, pr := net.Pipe()
 	created := true
