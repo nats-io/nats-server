@@ -167,6 +167,7 @@ type Server struct {
 	leafNodeEnabled    bool
 
 	quitCh           chan struct{}
+	startupComplete  chan struct{}
 	shutdownComplete chan struct{}
 
 	// Tracking Go routines
@@ -495,6 +496,10 @@ func NewServer(opts *Options) (*Server, error) {
 
 	// For tracking leaf nodes.
 	s.leafs = make(map[uint64]*client)
+
+	// Closed when startup is complete. Allows WaitForStartup() to block
+	// waiting until NATS has started.
+	s.startupComplete = make(chan struct{})
 
 	// Used to kick out all go routines possibly waiting on server
 	// to shutdown.
@@ -1613,6 +1618,7 @@ func (s *Server) Start() {
 	}
 	s.Noticef("  ID:       %s", s.info.ID)
 
+	defer close(s.startupComplete)
 	defer s.Noticef("Server is ready")
 
 	// Check for insecure configurations.
@@ -1849,7 +1855,9 @@ func (s *Server) Start() {
 	}
 
 	// Wait for clients.
-	s.AcceptLoop(clientListenReady)
+	if !opts.DontListen {
+		s.AcceptLoop(clientListenReady)
+	}
 }
 
 // Shutdown will shutdown the server instance by kicking out the AcceptLoop
@@ -2021,6 +2029,11 @@ func (s *Server) Shutdown() {
 	close(s.shutdownComplete)
 }
 
+// WaitForStartup will block until the server has been fully started.
+func (s *Server) WaitForStartup() {
+	<-s.startupComplete
+}
+
 // WaitForShutdown will block until the server has been fully shutdown.
 func (s *Server) WaitForShutdown() {
 	<-s.shutdownComplete
@@ -2098,6 +2111,27 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	// Let the caller know that we are ready
 	close(clr)
 	clr = nil
+}
+
+// InProcessConn returns a connection to the server which can
+// be used in-process when DontListen is set.
+func (s *Server) InProcessConn() (net.Conn, error) {
+	pl, pr := net.Pipe()
+	created := true
+	if !s.startGoRoutine(func() {
+		if c := s.createClient(pl); c == nil {
+			created = false
+		}
+	}) {
+		created = false
+	}
+	if !created {
+		s.grWG.Done()
+		_ = pl.Close()
+		_ = pr.Close()
+		return nil, fmt.Errorf("failed to make connection")
+	}
+	return pr, nil
 }
 
 func (s *Server) acceptConnections(l net.Listener, acceptName string, createFunc func(conn net.Conn), errFunc func(err error) bool) {
