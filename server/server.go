@@ -2119,6 +2119,7 @@ func (s *Server) InProcessConn() (net.Conn, error) {
 	pl, pr := net.Pipe()
 	if !s.startGoRoutine(func() {
 		s.createClient(pl)
+		s.grWG.Done()
 	}) {
 		pl.Close()
 		pr.Close()
