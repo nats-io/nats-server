@@ -2948,6 +2948,8 @@ func (s *Server) ProfilerAddr() *net.TCPAddr {
 }
 
 func (s *Server) readyForConnections(d time.Duration) error {
+	end := time.Now().Add(d)
+
 	// Wait for startup. At this point AcceptLoop will only just be
 	// starting, so we'll still check for the presence of listeners
 	// after this.
@@ -2968,7 +2970,6 @@ func (s *Server) readyForConnections(d time.Duration) error {
 	}
 	chk := make(map[string]info)
 
-	end := time.Now().Add(d)
 	for time.Now().Before(end) {
 		s.mu.Lock()
 		chk["server"] = info{ok: s.listener != nil || opts.DontListen, err: s.listenerErr}
