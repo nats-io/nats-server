@@ -2478,8 +2478,9 @@ func (c *client) processSubEx(subject, queue, bsid []byte, cb msgHandler, noForw
 
 // Used to pass stream import matches to addShadowSub
 type ime struct {
-	im  *streamImport
-	dyn bool
+	im          *streamImport
+	overlapSubj string
+	dyn         bool
 }
 
 // If the client's account has stream imports and there are matches for
@@ -2491,47 +2492,86 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
 	}
 
 	var (
-		_ims   [16]ime
-		ims    = _ims[:0]
-		tokens []string
-		tsa    [32]string
-		hasWC  bool
+		_ims           [16]ime
+		ims            = _ims[:0]
+		imTsa          [32]string
+		tokens         []string
+		tsa            [32]string
+		hasWC          bool
+		tokensModified bool
 	)
 
 	acc.mu.RLock()
-	// Loop over the import subjects. We have 3 scenarios. If we have an
+	subj := string(sub.subject)
+	if len(acc.imports.streams) > 0 {
+		tokens = tsa[:0]
+		tokenizeSubjectIntoSlice(subj, &tokens)
+		for _, tk := range tokens {
+			if tk == pwcs {
+				hasWC = true
+			}
+		}
+		if tokens[len(tokens)-1] == fwcs {
+			hasWC = true
+		}
+	}
+	// Loop over the import subjects. We have 4 scenarios. If we have an
 	// exact match or a superset match we should use the from field from
-	// the import. If we are a subset, we have to dynamically calculate
-	// the subject.
+	// the import. If we are a subset or overlap, we have to dynamically calculate
+	// the subject. On overlap, ime requires the overlap subject.
 	for _, im := range acc.imports.streams {
 		if im.invalid {
 			continue
 		}
-		subj := string(sub.subject)
 		if subj == im.to {
-			ims = append(ims, ime{im, false})
+			ims = append(ims, ime{im, "", false})
 			continue
 		}
-		if tokens == nil {
+		if tokensModified {
+			// re-tokenize subj to overwrite modifications from a previous iteration
 			tokens = tsa[:0]
-			start := 0
-			for i := 0; i < len(subj); i++ {
-				// This is not perfect, but the test below will
-				// be more exact, this is just to trigger the
-				// additional test.
-				if subj[i] == pwc || subj[i] == fwc {
-					hasWC = true
-				} else if subj[i] == btsep {
-					tokens = append(tokens, subj[start:i])
-					start = i + 1
+			tokenizeSubjectIntoSlice(subj, &tokens)
+			tokensModified = false
+		}
+		imTokens := imTsa[:0]
+		tokenizeSubjectIntoSlice(im.to, &imTokens)
+
+		if isSubsetMatchTokenized(tokens, imTokens) {
+			ims = append(ims, ime{im, "", true})
+		} else if hasWC {
+			if isSubsetMatchTokenized(imTokens, tokens) {
+				ims = append(ims, ime{im, "", false})
+			} else {
+				imTokensLen := len(imTokens)
+				for i, t := range tokens {
+					if i >= imTokensLen {
+						break
+					}
+					if t == pwcs && imTokens[i] != fwcs {
+						tokens[i] = imTokens[i]
+						tokensModified = true
+					}
+				}
+				tokensLen := len(tokens)
+				lastIdx := tokensLen - 1
+				if tokens[lastIdx] == fwcs {
+					if imTokensLen >= tokensLen {
+						// rewrite ">" in tokens to be more specific
+						tokens[lastIdx] = imTokens[lastIdx]
+						tokensModified = true
+						if imTokensLen > tokensLen {
+							// copy even more specific parts from import
+							tokens = append(tokens, imTokens[tokensLen:]...)
+						}
+					}
+				}
+				if isSubsetMatchTokenized(tokens, imTokens) {
+					// As isSubsetMatchTokenized was already called with tokens and imTokens,
+					// we wouldn't be here if it where not for tokens being modified.
+					// Hence, Join to re compute the subject string
+					ims = append(ims, ime{im, strings.Join(tokens, tsep), true})
 				}
 			}
-			tokens = append(tokens, subj[start:])
-		}
-		if isSubsetMatch(tokens, im.to) {
-			ims = append(ims, ime{im, true})
-		} else if hasWC && subjectIsSubsetMatch(im.to, subj) {
-			ims = append(ims, ime{im, false})
 		}
 	}
 	acc.mu.RUnlock()
@@ -2572,13 +2612,21 @@ func (c *client) addShadowSub(sub *subscription, ime *ime) (*subscription, error
 		if im.rtr == nil {
 			im.rtr = im.tr.reverse()
 		}
-		subj, err := im.rtr.transformSubject(string(nsub.subject))
+		s := string(nsub.subject)
+		if ime.overlapSubj != _EMPTY_ {
+			s = ime.overlapSubj
+		}
+		subj, err := im.rtr.transformSubject(s)
 		if err != nil {
 			return nil, err
 		}
 		nsub.subject = []byte(subj)
 	} else if !im.usePub || !ime.dyn {
-		nsub.subject = []byte(im.from)
+		if ime.overlapSubj != _EMPTY_ {
+			nsub.subject = []byte(ime.overlapSubj)
+		} else {
+			nsub.subject = []byte(im.from)
+		}
 	}
 	// Else use original subject
 	c.Debugf("Creating import subscription on %q from account %q", nsub.subject, im.acc.Name)
