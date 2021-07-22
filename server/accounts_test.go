@@ -3346,7 +3346,7 @@ func TestImportSubscriptionPartialOverlapWithPrefix(t *testing.T) {
 }
 
 func TestImportSubscriptionPartialOverlapWithTransform(t *testing.T) {
-	cf := createConfFile(t, []byte(fmt.Sprintf(importSubscriptionOverlapTemplate, "*.*.>", "*.*.>", " to: myprefix.$2.$1.>")))
+	cf := createConfFile(t, []byte(fmt.Sprintf(importSubscriptionOverlapTemplate, "*.*.>", "*.*.>", "to: myprefix.$2.$1.>")))
 	defer removeFile(t, cf)
 
 	s, opts := RunServerWithConfig(cf)

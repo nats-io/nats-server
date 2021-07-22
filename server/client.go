@@ -2509,9 +2509,10 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
 		for _, tk := range tokens {
 			if tk == pwcs {
 				hasWC = true
+				break
 			}
 		}
-		if tokens[len(tokens)-1] == fwcs {
+		if !hasWC && tokens[len(tokens)-1] == fwcs {
 			hasWC = true
 		}
 	}
@@ -2524,7 +2525,7 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
 			continue
 		}
 		if subj == im.to {
-			ims = append(ims, ime{im, "", false})
+			ims = append(ims, ime{im, _EMPTY_, false})
 			continue
 		}
 		if tokensModified {
@@ -2537,10 +2538,10 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
 		tokenizeSubjectIntoSlice(im.to, &imTokens)
 
 		if isSubsetMatchTokenized(tokens, imTokens) {
-			ims = append(ims, ime{im, "", true})
+			ims = append(ims, ime{im, _EMPTY_, true})
 		} else if hasWC {
 			if isSubsetMatchTokenized(imTokens, tokens) {
-				ims = append(ims, ime{im, "", false})
+				ims = append(ims, ime{im, _EMPTY_, false})
 			} else {
 				imTokensLen := len(imTokens)
 				for i, t := range tokens {
