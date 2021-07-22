@@ -1203,8 +1203,7 @@ func tokenizeSubjectIntoSlice(tts []string, subject string) []string {
 // Calls into the function isSubsetMatch()
 func subjectIsSubsetMatch(subject, test string) bool {
 	tsa := [32]string{}
-	tts := tsa[:0]
-	tts = tokenizeSubjectIntoSlice(tts, subject)
+	tts := tokenizeSubjectIntoSlice(tsa[:0], subject)
 	return isSubsetMatch(tts, test)
 }
 
@@ -1212,8 +1211,7 @@ func subjectIsSubsetMatch(subject, test string) bool {
 // Calls into the function isSubsetMatchTokenized
 func isSubsetMatch(tokens []string, test string) bool {
 	tsa := [32]string{}
-	tts := tsa[:0]
-	tts = tokenizeSubjectIntoSlice(tts, test)
+	tts := tokenizeSubjectIntoSlice(tsa[:0], test)
 	return isSubsetMatchTokenized(tokens, tts)
 }
 
