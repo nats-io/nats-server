@@ -2504,8 +2504,7 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
 	acc.mu.RLock()
 	subj := string(sub.subject)
 	if len(acc.imports.streams) > 0 {
-		tokens = tsa[:0]
-		tokenizeSubjectIntoSlice(subj, &tokens)
+		tokens = tokenizeSubjectIntoSlice(tsa[:0], subj)
 		for _, tk := range tokens {
 			if tk == pwcs {
 				hasWC = true
@@ -2530,12 +2529,10 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
 		}
 		if tokensModified {
 			// re-tokenize subj to overwrite modifications from a previous iteration
-			tokens = tsa[:0]
-			tokenizeSubjectIntoSlice(subj, &tokens)
+			tokens = tokenizeSubjectIntoSlice(tsa[:0], subj)
 			tokensModified = false
 		}
-		imTokens := imTsa[:0]
-		tokenizeSubjectIntoSlice(im.to, &imTokens)
+		imTokens := tokenizeSubjectIntoSlice(imTsa[:0], im.to)
 
 		if isSubsetMatchTokenized(tokens, imTokens) {
 			ims = append(ims, ime{im, _EMPTY_, true})

@@ -1187,22 +1187,24 @@ func tokenAt(subject string, index uint8) string {
 	return _EMPTY_
 }
 
-func tokenizeSubjectIntoSlice(subject string, tts *[]string) {
+// use similar to append. meaning, the updated slice will be returned
+func tokenizeSubjectIntoSlice(tts []string, subject string) []string {
 	start := 0
 	for i := 0; i < len(subject); i++ {
 		if subject[i] == btsep {
-			*tts = append(*tts, subject[start:i])
+			tts = append(tts, subject[start:i])
 			start = i + 1
 		}
 	}
-	*tts = append(*tts, subject[start:])
+	tts = append(tts, subject[start:])
+	return tts
 }
 
 // Calls into the function isSubsetMatch()
 func subjectIsSubsetMatch(subject, test string) bool {
 	tsa := [32]string{}
 	tts := tsa[:0]
-	tokenizeSubjectIntoSlice(subject, &tts)
+	tts = tokenizeSubjectIntoSlice(tts, subject)
 	return isSubsetMatch(tts, test)
 }
 
@@ -1211,7 +1213,7 @@ func subjectIsSubsetMatch(subject, test string) bool {
 func isSubsetMatch(tokens []string, test string) bool {
 	tsa := [32]string{}
 	tts := tsa[:0]
-	tokenizeSubjectIntoSlice(test, &tts)
+	tts = tokenizeSubjectIntoSlice(tts, test)
 	return isSubsetMatchTokenized(tokens, tts)
 }
 
