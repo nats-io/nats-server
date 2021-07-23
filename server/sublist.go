@@ -29,6 +29,7 @@ import (
 // Common byte variables for wildcards and token separator.
 const (
 	pwc   = '*'
+	pwcs  = "*"
 	fwc   = '>'
 	fwcs  = ">"
 	tsep  = "."
@@ -1186,10 +1187,8 @@ func tokenAt(subject string, index uint8) string {
 	return _EMPTY_
 }
 
-// Calls into the function isSubsetMatch()
-func subjectIsSubsetMatch(subject, test string) bool {
-	tsa := [32]string{}
-	tts := tsa[:0]
+// use similar to append. meaning, the updated slice will be returned
+func tokenizeSubjectIntoSlice(tts []string, subject string) []string {
 	start := 0
 	for i := 0; i < len(subject); i++ {
 		if subject[i] == btsep {
@@ -1198,27 +1197,31 @@ func subjectIsSubsetMatch(subject, test string) bool {
 		}
 	}
 	tts = append(tts, subject[start:])
+	return tts
+}
+
+// Calls into the function isSubsetMatch()
+func subjectIsSubsetMatch(subject, test string) bool {
+	tsa := [32]string{}
+	tts := tokenizeSubjectIntoSlice(tsa[:0], subject)
 	return isSubsetMatch(tts, test)
 }
 
 // This will test a subject as an array of tokens against a test subject
+// Calls into the function isSubsetMatchTokenized
+func isSubsetMatch(tokens []string, test string) bool {
+	tsa := [32]string{}
+	tts := tokenizeSubjectIntoSlice(tsa[:0], test)
+	return isSubsetMatchTokenized(tokens, tts)
+}
+
+// This will test a subject as an array of tokens against a test subject (also encoded as array of tokens)
 // and determine if the tokens are matched. Both test subject and tokens
 // may contain wildcards. So foo.* is a subset match of [">", "*.*", "foo.*"],
 // but not of foo.bar, etc.
-func isSubsetMatch(tokens []string, test string) bool {
-	tsa := [32]string{}
-	tts := tsa[:0]
-	start := 0
-	for i := 0; i < len(test); i++ {
-		if test[i] == btsep {
-			tts = append(tts, test[start:i])
-			start = i + 1
-		}
-	}
-	tts = append(tts, test[start:])
-
+func isSubsetMatchTokenized(tokens, test []string) bool {
 	// Walk the target tokens
-	for i, t2 := range tts {
+	for i, t2 := range test {
 		if i >= len(tokens) {
 			return false
 		}
@@ -1241,7 +1244,7 @@ func isSubsetMatch(tokens []string, test string) bool {
 			if !m {
 				return false
 			}
-			if i >= len(tts) {
+			if i >= len(test) {
 				return true
 			}
 			continue
@@ -1250,7 +1253,7 @@ func isSubsetMatch(tokens []string, test string) bool {
 			return false
 		}
 	}
-	return len(tokens) == len(tts)
+	return len(tokens) == len(test)
 }
 
 // matchLiteral is used to test literal subjects, those that do not have any

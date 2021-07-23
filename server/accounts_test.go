@@ -3294,3 +3294,86 @@ func TestAccountSystemPermsWithGlobalAccess(t *testing.T) {
 	}
 	defer sc.Close()
 }
+
+const importSubscriptionOverlapTemplate = `
+listen: 127.0.0.1:-1
+accounts: {
+  ACCOUNT_X: {
+	users: [
+	  {user: publisher}
+	]
+	exports: [
+	  {stream: %s}
+	]
+  },
+  ACCOUNT_Y: {
+	users: [
+	  {user: subscriber}
+	]
+	imports: [
+	  {stream: {account: ACCOUNT_X, subject: %s }, %s}
+	]
+  }
+}`
+
+func TestImportSubscriptionPartialOverlapWithPrefix(t *testing.T) {
+	cf := createConfFile(t, []byte(fmt.Sprintf(importSubscriptionOverlapTemplate, ">", ">", "prefix: myprefix")))
+	defer removeFile(t, cf)
+
+	s, opts := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	ncX := natsConnect(t, fmt.Sprintf("nats://%s:%s@127.0.0.1:%d", "publisher", "", opts.Port))
+	defer ncX.Close()
+
+	ncY := natsConnect(t, fmt.Sprintf("nats://%s:%s@127.0.0.1:%d", "subscriber", "", opts.Port))
+	defer ncY.Close()
+
+	for _, subj := range []string{">", "myprefix.*", "myprefix.>", "myprefix.test", "*.>", "*.*", "*.test"} {
+		t.Run(subj, func(t *testing.T) {
+			sub, err := ncY.SubscribeSync(subj)
+			sub.AutoUnsubscribe(1)
+			require_NoError(t, err)
+			require_NoError(t, ncY.Flush())
+
+			ncX.Publish("test", []byte("hello"))
+
+			m, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_True(t, string(m.Data) == "hello")
+		})
+	}
+}
+
+func TestImportSubscriptionPartialOverlapWithTransform(t *testing.T) {
+	cf := createConfFile(t, []byte(fmt.Sprintf(importSubscriptionOverlapTemplate, "*.*.>", "*.*.>", "to: myprefix.$2.$1.>")))
+	defer removeFile(t, cf)
+
+	s, opts := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	ncX := natsConnect(t, fmt.Sprintf("nats://%s:%s@127.0.0.1:%d", "publisher", "", opts.Port))
+	defer ncX.Close()
+
+	ncY := natsConnect(t, fmt.Sprintf("nats://%s:%s@127.0.0.1:%d", "subscriber", "", opts.Port))
+	defer ncY.Close()
+
+	for _, subj := range []string{">", "*.*.*.>", "*.2.*.>", "*.*.1.>", "*.2.1.>", "*.*.*.*", "*.2.1.*", "*.*.*.test",
+		"*.*.1.test", "*.2.*.test", "*.2.1.test", "myprefix.*.*.*", "myprefix.>", "myprefix.*.>", "myprefix.*.*.>",
+		"myprefix.2.>", "myprefix.2.1.>", "myprefix.*.1.>", "myprefix.2.*.>", "myprefix.2.1.*", "myprefix.*.*.test",
+		"myprefix.2.1.test"} {
+		t.Run(subj, func(t *testing.T) {
+			sub, err := ncY.SubscribeSync(subj)
+			sub.AutoUnsubscribe(1)
+			require_NoError(t, err)
+			require_NoError(t, ncY.Flush())
+
+			ncX.Publish("1.2.test", []byte("hello"))
+
+			m, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_True(t, string(m.Data) == "hello")
+			require_Equal(t, m.Subject, "myprefix.2.1.test")
+		})
+	}
+}
