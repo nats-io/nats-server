@@ -48,6 +48,7 @@ type ConsumerInfo struct {
 
 type ConsumerConfig struct {
 	Durable         string        `json:"durable_name,omitempty"`
+	Description     string        `json:"description,omitempty"`
 	DeliverSubject  string        `json:"deliver_subject,omitempty"`
 	DeliverPolicy   DeliverPolicy `json:"deliver_policy"`
 	OptStartSeq     uint64        `json:"opt_start_seq,omitempty"`

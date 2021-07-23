@@ -39,6 +39,7 @@ import (
 // for a given stream. If subjects is empty the name will be used.
 type StreamConfig struct {
 	Name         string          `json:"name"`
+	Description  string          `json:"description,omitempty"`
 	Subjects     []string        `json:"subjects,omitempty"`
 	Retention    RetentionPolicy `json:"retention"`
 	MaxConsumers int             `json:"max_consumers"`
@@ -194,6 +195,7 @@ type stream struct {
 
 type sourceInfo struct {
 	name  string
+	descr string
 	iname string
 	cname string
 	sub   *subscription
@@ -922,7 +924,8 @@ func (mset *stream) update(config *StreamConfig) error {
 						mset.sources = make(map[string]*sourceInfo)
 					}
 					mset.cfg.Sources = append(mset.cfg.Sources, s)
-					si := &sourceInfo{name: s.Name, iname: s.iname, msgs: &inbound{mch: make(chan struct{}, 1)}}
+
+					si := &sourceInfo{name: s.Name, iname: s.iname, descr: mset.sourceConsumerDescription(), msgs: &inbound{mch: make(chan struct{}, 1)}}
 					mset.sources[s.iname] = si
 					mset.setStartingSequenceForSource(s.iname)
 					mset.setSourceConsumer(s.iname, si.sseq+1)
@@ -1165,6 +1168,7 @@ func (mset *stream) sourceInfo(si *sourceInfo) *StreamSourceInfo {
 	if si == nil {
 		return nil
 	}
+
 	ssi := &StreamSourceInfo{Name: si.name, Lag: si.lag, Active: time.Since(si.last), Error: si.err}
 	var ext *ExternalStream
 	if mset.cfg.Mirror != nil {
@@ -1440,6 +1444,15 @@ func (mset *stream) skipMsgs(start, end uint64) {
 	}
 }
 
+// lock should be held
+func (mset *stream) sourceConsumerDescription() string {
+	if mset.acc != nil {
+		return fmt.Sprintf("Stream source for %s in account %s", mset.cfg.Name, mset.acc.Name)
+	} else {
+		return fmt.Sprintf("Stream source for %s", mset.cfg.Name)
+	}
+}
+
 // Setup our mirror consumer.
 // Lock should be held.
 func (mset *stream) setupMirrorConsumer() error {
@@ -1477,7 +1490,7 @@ func (mset *stream) setupMirrorConsumer() error {
 	}
 
 	if !isReset {
-		mset.mirror = &sourceInfo{name: mset.cfg.Mirror.Name, msgs: &inbound{mch: make(chan struct{}, 1)}}
+		mset.mirror = &sourceInfo{name: mset.cfg.Mirror.Name, descr: mset.sourceConsumerDescription(), msgs: &inbound{mch: make(chan struct{}, 1)}}
 	}
 
 	if !mset.mirror.grr {
@@ -1502,6 +1515,7 @@ func (mset *stream) setupMirrorConsumer() error {
 		Stream: mset.cfg.Mirror.Name,
 		Config: ConsumerConfig{
 			DeliverSubject: deliverSubject,
+			Description:    mset.mirror.descr,
 			DeliverPolicy:  DeliverByStartSequence,
 			OptStartSeq:    state.LastSeq + 1,
 			AckPolicy:      AckNone,
@@ -1704,6 +1718,7 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64) {
 		Stream: si.name,
 		Config: ConsumerConfig{
 			DeliverSubject: deliverSubject,
+			Description:    si.descr,
 			AckPolicy:      AckNone,
 			AckWait:        22 * time.Hour,
 			MaxDeliver:     1,
@@ -2086,7 +2101,8 @@ func (mset *stream) startingSequenceForSources() {
 		if ssi.iname == _EMPTY_ {
 			ssi.setIndexName()
 		}
-		si := &sourceInfo{name: ssi.Name, iname: ssi.iname, msgs: &inbound{mch: make(chan struct{}, 1)}}
+
+		si := &sourceInfo{name: ssi.Name, iname: ssi.iname, descr: mset.sourceConsumerDescription(), msgs: &inbound{mch: make(chan struct{}, 1)}}
 		mset.sources[ssi.iname] = si
 	}
 

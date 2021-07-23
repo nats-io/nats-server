@@ -179,19 +179,21 @@ func TestJetStreamAddStream(t *testing.T) {
 	}{
 		{name: "MemoryStore",
 			mconfig: &StreamConfig{
-				Name:      "foo",
-				Retention: LimitsPolicy,
-				MaxAge:    time.Hour,
-				Storage:   MemoryStorage,
-				Replicas:  1,
+				Name:        "foo",
+				Description: "Memory Stream",
+				Retention:   LimitsPolicy,
+				MaxAge:      time.Hour,
+				Storage:     MemoryStorage,
+				Replicas:    1,
 			}},
 		{name: "FileStore",
 			mconfig: &StreamConfig{
-				Name:      "foo",
-				Retention: LimitsPolicy,
-				MaxAge:    time.Hour,
-				Storage:   FileStorage,
-				Replicas:  1,
+				Name:        "foo",
+				Description: "File Stream",
+				Retention:   LimitsPolicy,
+				MaxAge:      time.Hour,
+				Storage:     FileStorage,
+				Replicas:    1,
 			}},
 	}
 	for _, c := range cases {
@@ -214,6 +216,14 @@ func TestJetStreamAddStream(t *testing.T) {
 
 			nc.Publish("foo", []byte("Hello World!"))
 			nc.Flush()
+
+			if mset.cfg.Description == _EMPTY_ {
+				t.Fatalf("Expected a description %q but got none", c.mconfig.Description)
+			}
+
+			if mset.cfg.Description != c.mconfig.Description {
+				t.Fatalf("Description %q does not match %q", mset.cfg.Description, c.mconfig.Description)
+			}
 
 			state := mset.state()
 			if state.Msgs != 1 {
@@ -1232,15 +1242,22 @@ func TestJetStreamCreateConsumer(t *testing.T) {
 			// Now let's check that durables can be created and a duplicate call to add will be ok.
 			dcfg := &ConsumerConfig{
 				Durable:        "ddd",
+				Description:    "Test consumer",
 				DeliverSubject: delivery,
 				AckPolicy:      AckAll,
 			}
-			if _, err = mset.addConsumer(dcfg); err != nil {
+			cons, err := mset.addConsumer(dcfg)
+			if err != nil {
 				t.Fatalf("Unexpected error creating consumer: %v", err)
 			}
 			if _, err = mset.addConsumer(dcfg); err != nil {
 				t.Fatalf("Unexpected error creating second identical consumer: %v", err)
 			}
+
+			if cons.cfg.Description != "Test consumer" {
+				t.Fatalf("Expected 'Test consumer' but got %q", cons.cfg.Description)
+			}
+
 			// Not test that we can change the delivery subject if that is only thing that has not
 			// changed and we are not active.
 			sub.Unsubscribe()
