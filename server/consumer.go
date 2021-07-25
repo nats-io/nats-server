@@ -777,7 +777,7 @@ func (o *consumer) setLeader(isLeader bool) {
 	}
 }
 
-func (o *consumer) handleClusterConsumerInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+func (o *consumer) handleClusterConsumerInfoRequest(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 	o.mu.RLock()
 	sysc := o.sysc
 	o.mu.RUnlock()
@@ -1096,7 +1096,7 @@ func (o *consumer) sendAckReply(subj string) {
 }
 
 // Process a message for the ack reply subject delivered with a message.
-func (o *consumer) processAck(_ *subscription, c *client, subject, reply string, rmsg []byte) {
+func (o *consumer) processAck(_ *subscription, c *client, acc *Account, subject, reply string, rmsg []byte) {
 	_, msg := c.msgParts(rmsg)
 	sseq, dseq, dc := ackReplyInfo(subject)
 
@@ -1115,7 +1115,7 @@ func (o *consumer) processAck(_ *subscription, c *client, subject, reply string,
 		// somewhere else.
 		phdr := c.pa.hdr
 		c.pa.hdr = -1
-		o.processNextMsgReq(nil, c, subject, reply, msg[len(AckNext):])
+		o.processNextMsgReq(nil, c, acc, subject, reply, msg[len(AckNext):])
 		c.pa.hdr = phdr
 		skipAckReply = true
 	case bytes.Equal(msg, AckNak):
@@ -1763,7 +1763,7 @@ func (wq *waitQueue) pop() *waitingRequest {
 // processNextMsgReq will process a request for the next message available. A nil message payload means deliver
 // a single message. If the payload is a formal request or a number parseable with Atoi(), then we will send a
 // batch of messages without requiring another request to this endpoint, or an ACK.
-func (o *consumer) processNextMsgReq(_ *subscription, c *client, _, reply string, msg []byte) {
+func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, reply string, msg []byte) {
 	_, msg = c.msgParts(msg)
 
 	o.mu.Lock()
@@ -2263,7 +2263,7 @@ func (o *consumer) needFlowControl() bool {
 	return false
 }
 
-func (o *consumer) processFlowControl(_ *subscription, c *client, subj, _ string, _ []byte) {
+func (o *consumer) processFlowControl(_ *subscription, c *client, _ *Account, subj, _ string, _ []byte) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 

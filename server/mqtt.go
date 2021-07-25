@@ -1,4 +1,4 @@
-// Copyright 2020 The NATS Authors
+// Copyright 2020-2021 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1220,7 +1220,7 @@ func isErrorOtherThan(err error, id ErrorIdentifier) bool {
 // Process JS API replies.
 //
 // Can run from various go routines (consumer's loop, system send loop, etc..).
-func (as *mqttAccountSessionManager) processJSAPIReplies(_ *subscription, pc *client, subject, _ string, msg []byte) {
+func (as *mqttAccountSessionManager) processJSAPIReplies(_ *subscription, pc *client, _ *Account, subject, _ string, msg []byte) {
 	token := tokenAt(subject, mqttJSATokenPos)
 	if token == _EMPTY_ {
 		return
@@ -1284,7 +1284,7 @@ func (as *mqttAccountSessionManager) processJSAPIReplies(_ *subscription, pc *cl
 //
 // Run from various go routines (JS consumer, etc..).
 // No lock held on entry.
-func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *client, subject, reply string, rmsg []byte) {
+func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	_, msg := c.msgParts(rmsg)
 	rm := &mqttRetainedMsg{}
 	if err := json.Unmarshal(msg, rm); err != nil {
@@ -1310,7 +1310,7 @@ func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *clie
 	}
 }
 
-func (as *mqttAccountSessionManager) processRetainedMsgDel(_ *subscription, c *client, subject, reply string, rmsg []byte) {
+func (as *mqttAccountSessionManager) processRetainedMsgDel(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	idHash := tokenAt(subject, 3)
 	if idHash == _EMPTY_ || idHash == as.jsa.id {
 		return
@@ -1334,7 +1334,7 @@ func (as *mqttAccountSessionManager) processRetainedMsgDel(_ *subscription, c *c
 //
 // Can run from various go routines (system send loop, etc..).
 // No lock held on entry.
-func (as *mqttAccountSessionManager) processSessionPersist(_ *subscription, pc *client, subject, _ string, rmsg []byte) {
+func (as *mqttAccountSessionManager) processSessionPersist(_ *subscription, pc *client, _ *Account, subject, _ string, rmsg []byte) {
 	// Ignore our own responses here (they are handled elsewhere)
 	if tokenAt(subject, mqttJSAIdTokenPos) == as.jsa.id {
 		return
@@ -2500,7 +2500,7 @@ CHECK:
 			asm.mu.Lock()
 			asm.addSessToFlappers(cp.clientID)
 			asm.mu.Unlock()
-			c.Warnf("Replacing old client %q since both have the same client ID %q", ec.String(), cp.clientID)
+			c.Warnf("Replacing old client %q since both have the same client ID %q", ec, cp.clientID)
 			// Close old client in separate go routine
 			go ec.closeConnection(DuplicateClientID)
 		}
@@ -3047,7 +3047,7 @@ func mqttSubscribeTrace(pi uint16, filters []*mqttFilter) string {
 // message and this is the callback for a QoS1 subscription because in
 // that case, it will be handled by the other callback. This avoid getting
 // duplicate deliveries.
-func mqttDeliverMsgCbQos0(sub *subscription, pc *client, subject, _ string, rmsg []byte) {
+func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, _ string, rmsg []byte) {
 	if pc.kind == JETSTREAM {
 		return
 	}
@@ -3110,7 +3110,7 @@ func mqttDeliverMsgCbQos0(sub *subscription, pc *client, subject, _ string, rmsg
 // associated with the JS durable consumer), but in cluster mode, this can be coming
 // from a route, gw, etc... We make sure that if this is the case, the message contains
 // a NATS/MQTT header that indicates that this is a published QoS1 message.
-func mqttDeliverMsgCbQos1(sub *subscription, pc *client, subject, reply string, rmsg []byte) {
+func mqttDeliverMsgCbQos1(sub *subscription, pc *client, _ *Account, subject, reply string, rmsg []byte) {
 	var retained bool
 
 	// Message on foo.bar is stored under $MQTT.msgs.foo.bar, so the subject has to be

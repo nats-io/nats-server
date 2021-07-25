@@ -422,7 +422,7 @@ func (c *client) String() (id string) {
 		return loaded.(string)
 	}
 
-	return ""
+	return _EMPTY_
 }
 
 // GetName returns the application supplied name for the connection.
@@ -733,7 +733,7 @@ func (c *client) applyAccountLimits() {
 	}
 	c.mpay = jwt.NoLimit
 	c.msubs = jwt.NoLimit
-	if c.opts.JWT != "" { // user jwt implies account
+	if c.opts.JWT != _EMPTY_ { // user jwt implies account
 		if uc, _ := jwt.DecodeUserClaims(c.opts.JWT); uc != nil {
 			c.mpay = int32(uc.Limits.Payload)
 			c.msubs = int32(uc.Limits.Subs)
@@ -1729,7 +1729,7 @@ func (c *client) processConnect(arg []byte) error {
 			}
 		}
 		if ncs != _EMPTY_ {
-			c.ncs.Store(fmt.Sprintf("%s - %q", c.String(), ncs))
+			c.ncs.Store(fmt.Sprintf("%s - %q", c, ncs))
 		}
 	}
 
@@ -3028,7 +3028,7 @@ var needFlush = struct{}{}
 
 // deliverMsg will deliver a message to a matching subscription and its underlying client.
 // We process all connection/client types. mh is the part that will be protocol/client specific.
-func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, gwrply bool) bool {
+func (c *client) deliverMsg(sub *subscription, acc *Account, subject, reply, mh, msg []byte, gwrply bool) bool {
 	if sub.client == nil {
 		return false
 	}
@@ -3132,9 +3132,9 @@ func (c *client) deliverMsg(sub *subscription, subject, reply, mh, msg []byte, g
 
 		// Internal account clients are for service imports and need the '\r\n'.
 		if client.kind == ACCOUNT {
-			sub.icb(sub, c, string(subject), string(reply), msg)
+			sub.icb(sub, c, acc, string(subject), string(reply), msg)
 		} else {
-			sub.icb(sub, c, string(subject), string(reply), msg[:msgSize])
+			sub.icb(sub, c, acc, string(subject), string(reply), msg[:msgSize])
 		}
 		return true
 	}
@@ -3833,6 +3833,8 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 				nrr = []byte(rsi.from)
 			}
 		} else {
+			// This only happens when we do a pull subscriber that trampolines through another account.
+			// Normally this code is not called.
 			nrr = c.pa.reply
 		}
 	} else if !isResponse && si.latency != nil && tracking {
@@ -3852,7 +3854,6 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// Pick correct "to" subject. If we matched on a wildcard use the literal publish subject.
 	to, subject := si.to, string(c.pa.subject)
 
-	hadPrevSi := c.pa.psi != nil
 	if si.tr != nil {
 		// FIXME(dlc) - This could be slow, may want to look at adding cache to bare transforms?
 		to, _ = si.tr.transformSubject(subject)
@@ -3860,9 +3861,8 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		to = subject
 	}
 
-	// Copy our pubArg and account
+	// Copy our pubArg since this gets modified as we process the service import itself.
 	pacopy := c.pa
-	oacc := c.acc
 
 	// Now check to see if this account has mappings that could affect the service import.
 	// Can't use non-locked trick like in processInboundClientMsg, so just call into selectMappedSubject
@@ -3872,9 +3872,8 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		to = nsubj
 	}
 
-	// Change this so that we detect recursion
-	// Remember prior.
-	share := si.share
+	// Set previous service import to detect chaining.
+	hadPrevSi, share := c.pa.psi != nil, si.share
 	if hadPrevSi {
 		share = c.pa.psi.share
 	}
@@ -3888,7 +3887,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 			var cis ClientInfo
 			if err := json.Unmarshal(getHeader(ClientInfoHdr, msg[:c.pa.hdr]), &cis); err == nil {
 				ci = &cis
-				ci.Service = c.acc.Name
+				ci.Service = acc.Name
 			}
 		} else if c.kind != LEAF || c.pa.hdr < 0 || len(getHeader(ClientInfoHdr, msg[:c.pa.hdr])) == 0 {
 			ci = c.getClientInfo(share)
@@ -3906,9 +3905,6 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		c.pa.subject = []byte(to)
 	}
 	c.pa.reply = nrr
-	c.mu.Lock()
-	c.acc = si.acc
-	c.mu.Unlock()
 
 	// FIXME(dlc) - Do L1 cache trick like normal client?
 	rr := si.acc.sl.Match(to)
@@ -3942,12 +3938,9 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		didDeliver, _ = c.processMsgResults(si.acc, rr, msg, c.pa.deliver, []byte(to), nrr, flags)
 	}
 
-	// Put what was there back now.
+	// Restore to original values.
 	c.in.rts = orts
 	c.pa = pacopy
-	c.mu.Lock()
-	c.acc = oacc
-	c.mu.Unlock()
 
 	// Determine if we should remove this service import. This is for response service imports.
 	// We will remove if we did not deliver, or if we are a response service import and we are
@@ -4119,7 +4112,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 
 		// Normal delivery
 		mh := c.msgHeader(dsubj, creply, sub)
-		didDeliver = c.deliverMsg(sub, dsubj, creply, mh, msg, rplyHasGWPrefix) || didDeliver
+		didDeliver = c.deliverMsg(sub, acc, dsubj, creply, mh, msg, rplyHasGWPrefix) || didDeliver
 	}
 
 	// Set these up to optionally filter based on the queue lists.
@@ -4243,7 +4236,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			}
 
 			mh := c.msgHeader(dsubj, creply, sub)
-			if c.deliverMsg(sub, subject, creply, mh, msg, rplyHasGWPrefix) {
+			if c.deliverMsg(sub, acc, subject, creply, mh, msg, rplyHasGWPrefix) {
 				didDeliver = true
 				// Clear rsub
 				rsub = nil
@@ -4320,7 +4313,7 @@ sendToRoutesOrLeafs:
 		}
 
 		mh := c.msgHeaderForRouteOrLeaf(subject, reply, rt, acc)
-		didDeliver = c.deliverMsg(rt.sub, subject, reply, mh, dmsg, false) || didDeliver
+		didDeliver = c.deliverMsg(rt.sub, acc, subject, reply, mh, dmsg, false) || didDeliver
 
 		// If we set the header reset the origin pub args.
 		if hset {

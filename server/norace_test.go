@@ -1102,6 +1102,89 @@ func TestNoRaceJetStreamDeleteStreamManyConsumers(t *testing.T) {
 	mset.delete()
 }
 
+// We used to swap accounts on an inbound message when processing service imports.
+// Until JetStream this was kinda ok, but with JetStream we can have pull consumers
+// trying to access the clients account in another Go routine now which causes issues.
+// This is not limited to the case above, its just the one that exposed it.
+// This test is to show that issue and that the fix works, meaning we no longer swap c.acc.
+func TestNoRaceJetStreamServiceImportAccountSwapIssue(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Client based API
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sub, err := js.PullSubscribe("foo", "dlc")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	beforeSubs := s.NumSubscriptions()
+
+	// How long we want both sides to run.
+	timeout := time.Now().Add(3 * time.Second)
+	errs := make(chan error, 1)
+
+	// Publishing side, which will signal the consumer that is waiting and which will access c.acc. If publish
+	// operation runs concurrently we will catch c.acc being $SYS some of the time.
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		for time.Now().Before(timeout) {
+			// This will signal the delivery of the pull messages.
+			js.Publish("foo", []byte("Hello"))
+			// This will swap the account because of JetStream service import.
+			// We can get an error here with the bug or not.
+			if _, err := js.StreamInfo("TEST"); err != nil {
+				errs <- err
+				return
+			}
+		}
+		errs <- nil
+	}()
+
+	// Pull messages flow.
+	var received int
+	for time.Now().Before(timeout) {
+		if msgs, err := sub.Fetch(1, nats.MaxWait(200*time.Millisecond)); err == nil {
+			for _, m := range msgs {
+				received++
+				m.Ack()
+			}
+		} else {
+			break
+		}
+	}
+	// Wait on publisher Go routine and check for errors.
+	if err := <-errs; err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Double check all received.
+	si, err := js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if int(si.State.Msgs) != received {
+		t.Fatalf("Expected to receive %d msgs, only got %d", si.State.Msgs, received)
+	}
+	// Now check for leaked subs from the fetch call above. That is what we first saw from the bug.
+	if afterSubs := s.NumSubscriptions(); afterSubs != beforeSubs {
+		t.Fatalf("Leaked subscriptions: %d before, %d after", beforeSubs, afterSubs)
+	}
+}
+
 func TestNoRaceJetStreamAPIStreamListPaging(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()

@@ -1355,7 +1355,7 @@ func (a *Account) JetStreamEnabled() bool {
 	return enabled
 }
 
-func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, subject, _ string, msg []byte) {
+func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, _ *Account, subject, _ string, msg []byte) {
 	const usageSize = 32
 
 	jsa.mu.Lock()
@@ -1826,7 +1826,7 @@ func (t *streamTemplate) createTemplateSubscriptions() error {
 	return nil
 }
 
-func (t *streamTemplate) processInboundTemplateMsg(_ *subscription, pc *client, subject, reply string, msg []byte) {
+func (t *streamTemplate) processInboundTemplateMsg(_ *subscription, pc *client, acc *Account, subject, reply string, msg []byte) {
 	if t == nil || t.jsa == nil {
 		return
 	}
@@ -1839,7 +1839,6 @@ func (t *streamTemplate) processInboundTemplateMsg(_ *subscription, pc *client, 
 		jsa.mu.Unlock()
 		return
 	}
-	acc := jsa.account
 	jsa.mu.Unlock()
 
 	// Check if we are at the maximum and grab some variables.
@@ -1870,7 +1869,7 @@ func (t *streamTemplate) processInboundTemplateMsg(_ *subscription, pc *client, 
 	}
 
 	// Process this message directly by invoking mset.
-	mset.processInboundJetStreamMsg(nil, pc, subject, reply, msg)
+	mset.processInboundJetStreamMsg(nil, pc, acc, subject, reply, msg)
 }
 
 // lookupStreamTemplate looks up the names stream template.

@@ -635,7 +635,7 @@ func TestSysSubscribeRace(t *testing.T) {
 
 	received := make(chan struct{})
 	// Create message callback handler.
-	cb := func(sub *subscription, producer *client, subject, reply string, msg []byte) {
+	cb := func(sub *subscription, producer *client, _ *Account, subject, reply string, msg []byte) {
 		select {
 		case received <- struct{}{}:
 		default:
@@ -682,7 +682,7 @@ func TestSystemAccountInternalSubscriptions(t *testing.T) {
 
 	received := make(chan *nats.Msg)
 	// Create message callback handler.
-	cb := func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+	cb := func(sub *subscription, _ *client, _ *Account, subject, reply string, msg []byte) {
 		copy := append([]byte(nil), msg...)
 		received <- &nats.Msg{Subject: subject, Reply: reply, Data: copy}
 	}
@@ -756,7 +756,7 @@ func TestSystemAccountConnectionUpdatesStopAfterNoLocal(t *testing.T) {
 
 	// Listen for updates to the new account connection activity.
 	received := make(chan *nats.Msg, 10)
-	cb := func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+	cb := func(sub *subscription, _ *client, _ *Account, subject, reply string, msg []byte) {
 		copy := append([]byte(nil), msg...)
 		received <- &nats.Msg{Subject: subject, Reply: reply, Data: copy}
 	}
@@ -1574,7 +1574,7 @@ func TestSystemAccountWithBadRemoteLatencyUpdate(t *testing.T) {
 		ReqId:   "_INBOX.22",
 	}
 	b, _ := json.Marshal(&rl)
-	s.remoteLatencyUpdate(nil, nil, "foo", "", b)
+	s.remoteLatencyUpdate(nil, nil, nil, "foo", _EMPTY_, b)
 }
 
 func TestSystemAccountWithGateways(t *testing.T) {
@@ -2132,7 +2132,7 @@ func TestConnectionUpdatesTimerProperlySet(t *testing.T) {
 
 	// Listen for HB updates...
 	count := int32(0)
-	cb := func(sub *subscription, _ *client, subject, reply string, msg []byte) {
+	cb := func(sub *subscription, _ *client, _ *Account, subject, reply string, msg []byte) {
 		atomic.AddInt32(&count, 1)
 	}
 	subj := fmt.Sprintf(accConnsEventSubjOld, pub)
