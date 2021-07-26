@@ -3071,7 +3071,7 @@ type streamAssignmentResult struct {
 
 // Process error results of stream and consumer assignments.
 // Success will be handled by stream leader.
-func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client, subject, reply string, msg []byte) {
+func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 	var result streamAssignmentResult
 	if err := json.Unmarshal(msg, &result); err != nil {
 		// TODO(dlc) - log
@@ -3111,7 +3111,7 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 	}
 }
 
-func (js *jetStream) processConsumerAssignmentResults(sub *subscription, c *client, subject, reply string, msg []byte) {
+func (js *jetStream) processConsumerAssignmentResults(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 	var result consumerAssignmentResult
 	if err := json.Unmarshal(msg, &result); err != nil {
 		// TODO(dlc) - log
@@ -3629,7 +3629,7 @@ func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, offs
 	rc := make(chan *StreamInfo, len(streams))
 
 	// Store our handler.
-	s.sys.replies[inbox] = func(sub *subscription, _ *client, subject, _ string, msg []byte) {
+	s.sys.replies[inbox] = func(sub *subscription, _ *client, _ *Account, subject, _ string, msg []byte) {
 		var si StreamInfo
 		if err := json.Unmarshal(msg, &si); err != nil {
 			s.Warnf("Error unmarshaling clustered stream info response:%v", err)
@@ -3760,7 +3760,7 @@ func (s *Server) jsClusteredConsumerListRequest(acc *Account, ci *ClientInfo, of
 	rc := make(chan *ConsumerInfo, len(consumers))
 
 	// Store our handler.
-	s.sys.replies[inbox] = func(sub *subscription, _ *client, subject, _ string, msg []byte) {
+	s.sys.replies[inbox] = func(sub *subscription, _ *client, _ *Account, subject, _ string, msg []byte) {
 		var ci ConsumerInfo
 		if err := json.Unmarshal(msg, &ci); err != nil {
 			s.Warnf("Error unmarshaling clustered consumer info response:%v", err)
@@ -4510,7 +4510,7 @@ RETRY:
 
 	// Send our catchup request here.
 	reply := syncReplySubject()
-	sub, err = s.sysSubscribe(reply, func(_ *subscription, _ *client, _, reply string, msg []byte) {
+	sub, err = s.sysSubscribe(reply, func(_ *subscription, _ *client, _ *Account, _, reply string, msg []byte) {
 		// Make copies - https://github.com/go101/go101/wiki
 		// TODO(dlc) - Since we are using a buffer from the inbound client/route.
 		select {
@@ -4606,7 +4606,7 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	return seq, nil
 }
 
-func (mset *stream) handleClusterSyncRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+func (mset *stream) handleClusterSyncRequest(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 	var sreq streamSyncRequest
 	if err := json.Unmarshal(msg, &sreq); err != nil {
 		// Log error.
@@ -4691,7 +4691,7 @@ func (mset *stream) checkClusterInfo(si *StreamInfo) {
 	}
 }
 
-func (mset *stream) handleClusterStreamInfoRequest(sub *subscription, c *client, subject, reply string, msg []byte) {
+func (mset *stream) handleClusterStreamInfoRequest(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 	mset.mu.RLock()
 	sysc, js, sa, config := mset.sysc, mset.srv.js, mset.sa, mset.cfg
 	stype := mset.cfg.Storage
@@ -4748,7 +4748,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 
 	// Setup ackReply for flow control.
 	ackReply := syncAckSubject()
-	ackSub, _ := s.sysSubscribe(ackReply, func(sub *subscription, c *client, subject, reply string, msg []byte) {
+	ackSub, _ := s.sysSubscribe(ackReply, func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 		sz := ackReplySize(subject)
 		atomic.AddInt64(&outb, -sz)
 		atomic.AddInt32(&outm, -1)

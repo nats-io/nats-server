@@ -1530,7 +1530,7 @@ func (mset *stream) setupMirrorConsumer() error {
 
 	respCh := make(chan *JSApiConsumerCreateResponse, 1)
 	reply := infoReplySubject()
-	crSub, _ := mset.subscribeInternal(reply, func(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	crSub, _ := mset.subscribeInternal(reply, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 		mset.unsubscribeUnlocked(sub)
 		_, msg := c.msgParts(rmsg)
 
@@ -1582,7 +1582,7 @@ func (mset *stream) setupMirrorConsumer() error {
 				msgs := mset.mirror.msgs
 
 				// Process inbound mirror messages from the wire.
-				sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+				sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 					hdr, msg := c.msgParts(append(rmsg[:0:0], rmsg...)) // Need to copy.
 					mset.queueInbound(msgs, subject, reply, hdr, msg)
 				})
@@ -1732,7 +1732,7 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64) {
 
 	respCh := make(chan *JSApiConsumerCreateResponse, 1)
 	reply := infoReplySubject()
-	crSub, _ := mset.subscribeInternal(reply, func(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+	crSub, _ := mset.subscribeInternal(reply, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 		mset.unsubscribe(sub)
 		_, msg := c.msgParts(rmsg)
 		var ccr JSApiConsumerCreateResponse
@@ -1771,7 +1771,7 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64) {
 					// Capture consumer name.
 					si.cname = ccr.ConsumerInfo.Name
 					// Now create sub to receive messages.
-					sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+					sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 						hdr, msg := c.msgParts(append(rmsg[:0:0], rmsg...)) // Need to copy.
 						mset.queueInbound(si.msgs, subject, reply, hdr, msg)
 					})
@@ -2512,7 +2512,7 @@ func (mset *stream) queueInboundMsg(subj, rply string, hdr, msg []byte) {
 }
 
 // processInboundJetStreamMsg handles processing messages bound for a stream.
-func (mset *stream) processInboundJetStreamMsg(_ *subscription, c *client, subject, reply string, rmsg []byte) {
+func (mset *stream) processInboundJetStreamMsg(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	mset.mu.RLock()
 	isLeader, isClustered := mset.isLeader(), mset.node != nil
 	mset.mu.RUnlock()

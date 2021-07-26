@@ -723,35 +723,35 @@ func (s *Server) initEventTracking() {
 	}
 	monSrvc := map[string]msgHandler{
 		"STATSZ": s.statszReq,
-		"VARZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
+		"VARZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &VarzEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Varz(&optz.VarzOptions) })
 		},
-		"SUBSZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
+		"SUBSZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &SubszEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Subsz(&optz.SubszOptions) })
 		},
-		"CONNZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
+		"CONNZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &ConnzEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Connz(&optz.ConnzOptions) })
 		},
-		"ROUTEZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
+		"ROUTEZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &RoutezEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Routez(&optz.RoutezOptions) })
 		},
-		"GATEWAYZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
+		"GATEWAYZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &GatewayzEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Gatewayz(&optz.GatewayzOptions) })
 		},
-		"LEAFZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
+		"LEAFZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &LeafzEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Leafz(&optz.LeafzOptions) })
 		},
-		"ACCOUNTZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
+		"ACCOUNTZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &AccountzEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Accountz(&optz.AccountzOptions) })
 		},
-		"JSZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
+		"JSZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &JszEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Jsz(&optz.JSzOptions) })
 		},
@@ -774,7 +774,7 @@ func (s *Server) initEventTracking() {
 		}
 	}
 	monAccSrvc := map[string]msgHandler{
-		"SUBSZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
+		"SUBSZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &SubszEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
 				if acc, err := extractAccount(subject); err != nil {
@@ -786,7 +786,7 @@ func (s *Server) initEventTracking() {
 				}
 			})
 		},
-		"CONNZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
+		"CONNZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &ConnzEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
 				if acc, err := extractAccount(subject); err != nil {
@@ -797,7 +797,7 @@ func (s *Server) initEventTracking() {
 				}
 			})
 		},
-		"LEAFZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
+		"LEAFZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &LeafzEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
 				if acc, err := extractAccount(subject); err != nil {
@@ -808,7 +808,7 @@ func (s *Server) initEventTracking() {
 				}
 			})
 		},
-		"JSZ": func(sub *subscription, c *client, subject, reply string, msg []byte) {
+		"JSZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &JszEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
 				if acc, err := extractAccount(subject); err != nil {
@@ -819,7 +819,7 @@ func (s *Server) initEventTracking() {
 				}
 			})
 		},
-		"INFO": func(sub *subscription, c *client, subject, reply string, msg []byte) {
+		"INFO": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &AccInfoEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
 				if acc, err := extractAccount(subject); err != nil {
@@ -868,11 +868,11 @@ func (s *Server) addSystemAccountExports(sacc *Account) {
 }
 
 // accountClaimUpdate will receive claim updates for accounts.
-func (s *Server) accountClaimUpdate(sub *subscription, _ *client, subject, resp string, msg []byte) {
+func (s *Server) accountClaimUpdate(sub *subscription, _ *client, _ *Account, subject, resp string, msg []byte) {
 	if !s.EventsEnabled() {
 		return
 	}
-	pubKey := ""
+	var pubKey string
 	toks := strings.Split(subject, tsep)
 	if len(toks) == accUpdateTokensNew {
 		pubKey = toks[accReqAccIndex]
@@ -918,7 +918,7 @@ func (s *Server) processRemoteServerShutdown(sid string) {
 }
 
 // remoteServerShutdownEvent is called when we get an event from another server shutting down.
-func (s *Server) remoteServerShutdown(sub *subscription, _ *client, subject, reply string, msg []byte) {
+func (s *Server) remoteServerShutdown(sub *subscription, _ *client, _ *Account, subject, reply string, msg []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.eventsEnabled() {
@@ -951,7 +951,7 @@ func (s *Server) remoteServerShutdown(sub *subscription, _ *client, subject, rep
 }
 
 // remoteServerUpdate listens for statsz updates from other servers.
-func (s *Server) remoteServerUpdate(sub *subscription, _ *client, subject, reply string, msg []byte) {
+func (s *Server) remoteServerUpdate(sub *subscription, _ *client, _ *Account, subject, reply string, msg []byte) {
 	var ssm ServerStatsMsg
 	if err := json.Unmarshal(msg, &ssm); err != nil {
 		s.Debugf("Received bad server info for remote server update")
@@ -1045,7 +1045,7 @@ func (s *Server) shutdownEventing() {
 }
 
 // Request for our local connection count.
-func (s *Server) connsRequest(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+func (s *Server) connsRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	if !s.eventsRunning() {
 		return
 	}
@@ -1084,7 +1084,7 @@ func (s *Server) connsRequest(sub *subscription, c *client, subject, reply strin
 }
 
 // leafNodeConnected is an event we will receive when a leaf node for a given account connects.
-func (s *Server) leafNodeConnected(sub *subscription, _ *client, subject, reply string, msg []byte) {
+func (s *Server) leafNodeConnected(sub *subscription, _ *client, _ *Account, subject, reply string, msg []byte) {
 	m := accNumConnsReq{}
 	if err := json.Unmarshal(msg, &m); err != nil {
 		s.sys.client.Errorf("Error unmarshalling account connections request message: %v", err)
@@ -1092,7 +1092,7 @@ func (s *Server) leafNodeConnected(sub *subscription, _ *client, subject, reply 
 	}
 
 	s.mu.Lock()
-	na := m.Account == "" || !s.eventsEnabled() || !s.gateway.enabled
+	na := m.Account == _EMPTY_ || !s.eventsEnabled() || !s.gateway.enabled
 	s.mu.Unlock()
 
 	if na {
@@ -1205,7 +1205,7 @@ func (s *Server) filterRequest(fOpts *EventFilterOptions) bool {
 }
 
 // statszReq is a request for us to respond with current statsz.
-func (s *Server) statszReq(sub *subscription, _ *client, subject, reply string, msg []byte) {
+func (s *Server) statszReq(sub *subscription, _ *client, _ *Account, subject, reply string, msg []byte) {
 	if !s.EventsEnabled() || reply == _EMPTY_ {
 		return
 	}
@@ -1264,7 +1264,7 @@ func (s *Server) zReq(c *client, reply string, rmsg []byte, fOpts *EventFilterOp
 }
 
 // remoteConnsUpdate gets called when we receive a remote update from another server.
-func (s *Server) remoteConnsUpdate(sub *subscription, _ *client, subject, reply string, msg []byte) {
+func (s *Server) remoteConnsUpdate(sub *subscription, _ *client, _ *Account, subject, reply string, msg []byte) {
 	if !s.eventsRunning() {
 		return
 	}
@@ -1577,10 +1577,10 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 	s.mu.Unlock()
 }
 
-// Internal message callback. If the msg is needed past the callback it is
-// required to be copied.
+// Internal message callback.
+// If the msg is needed past the callback it is required to be copied.
 // rmsg contains header and the message. use client.msgParts(rmsg) to split them apart
-type msgHandler func(sub *subscription, client *client, subject, reply string, rmsg []byte)
+type msgHandler func(sub *subscription, client *client, acc *Account, subject, reply string, rmsg []byte)
 
 // Create an internal subscription. sysSubscribeQ for queue groups.
 func (s *Server) sysSubscribe(subject string, cb msgHandler) (*subscription, error) {
@@ -1656,7 +1656,7 @@ func remoteLatencySubjectForResponse(subject []byte) string {
 }
 
 // remoteLatencyUpdate is used to track remote latency measurements for tracking on exported services.
-func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, subject, _ string, msg []byte) {
+func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, _ *Account, subject, _ string, msg []byte) {
 	if !s.eventsRunning() {
 		return
 	}
@@ -1719,7 +1719,7 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, subject, _ st
 
 // This is used for all inbox replies so that we do not send supercluster wide interest
 // updates for every request. Same trick used in modern NATS clients.
-func (s *Server) inboxReply(sub *subscription, c *client, subject, reply string, msg []byte) {
+func (s *Server) inboxReply(sub *subscription, c *client, acc *Account, subject, reply string, msg []byte) {
 	s.mu.Lock()
 	if !s.eventsEnabled() || s.sys.replies == nil {
 		s.mu.Unlock()
@@ -1729,7 +1729,7 @@ func (s *Server) inboxReply(sub *subscription, c *client, subject, reply string,
 	s.mu.Unlock()
 
 	if ok && cb != nil {
-		cb(sub, c, subject, reply, msg)
+		cb(sub, c, acc, subject, reply, msg)
 	}
 }
 
@@ -1792,7 +1792,7 @@ func totalSubs(rr *SublistResult, qg []byte) (nsubs int32) {
 
 // Allows users of large systems to debug active subscribers for a given subject.
 // Payload should be the subject of interest.
-func (s *Server) debugSubscribers(sub *subscription, c *client, subject, reply string, rmsg []byte) {
+func (s *Server) debugSubscribers(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	// Even though this is an internal only subscription, meaning interest was not forwarded, we could
 	// get one here from a GW in optimistic mode. Ignore for now.
 	// FIXME(dlc) - Should we send no interest here back to the GW?
@@ -1859,7 +1859,7 @@ func (s *Server) debugSubscribers(sub *subscription, c *client, subject, reply s
 	// Create direct reply inbox that we multiplex under the WC replies.
 	replySubj := s.newRespInbox()
 	// Store our handler.
-	s.sys.replies[replySubj] = func(sub *subscription, _ *client, subject, _ string, msg []byte) {
+	s.sys.replies[replySubj] = func(sub *subscription, _ *client, _ *Account, subject, _ string, msg []byte) {
 		if n, err := strconv.Atoi(string(msg)); err == nil {
 			atomic.AddInt32(&nsubs, int32(n))
 		}
@@ -1902,7 +1902,7 @@ func (s *Server) debugSubscribers(sub *subscription, c *client, subject, reply s
 
 // Request for our local subscription count. This will come from a remote origin server
 // that received the initial request.
-func (s *Server) nsubsRequest(sub *subscription, _ *client, subject, reply string, msg []byte) {
+func (s *Server) nsubsRequest(sub *subscription, _ *client, _ *Account, subject, reply string, msg []byte) {
 	if !s.eventsRunning() {
 		return
 	}
