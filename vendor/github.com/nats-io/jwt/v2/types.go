@@ -188,12 +188,11 @@ func (s Subject) countTokenWildcards() int {
 	if v == "*" {
 		return 1
 	}
-	cnt := strings.Count(v, ".*.")
-	if strings.HasSuffix(v, ".*") {
-		cnt++
-	}
-	if strings.HasPrefix(v, "*.") {
-		cnt++
+	cnt := 0
+	for _, t := range strings.Split(v, ".") {
+		if t == "*" {
+			cnt++
+		}
 	}
 	return cnt
 }
