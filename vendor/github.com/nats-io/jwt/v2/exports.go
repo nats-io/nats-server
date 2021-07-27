@@ -42,7 +42,7 @@ const (
 // Results is the subject where the latency metrics are published.
 // A metric will be defined by the nats-server's ServiceLatency. Time durations
 // are in nanoseconds.
-// see https://github.com/nats-io/nats-server/blob/master/server/accounts.go#L524
+// see https://github.com/nats-io/nats-server/blob/main/server/accounts.go#L524
 // e.g.
 // {
 //  "app": "dlc22",
