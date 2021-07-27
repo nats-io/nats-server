@@ -3682,3 +3682,107 @@ func TestLeafNodeNoMsgLoop(t *testing.T) {
 		}
 	}
 }
+
+func TestLeafNodeUniqueServerNameCrossJSDomain(t *testing.T) {
+	name := "NOT-UNIQUE"
+	test := func(s *Server, sIdExpected string, srvs ...*Server) {
+		ids := map[string]string{}
+		for _, srv := range srvs {
+			checkLeafNodeConnectedCount(t, srv, 2)
+			ids[srv.ID()] = srv.opts.JetStreamDomain
+		}
+		// ensure that an update for every server was received
+		sysNc := natsConnect(t, fmt.Sprintf("nats://admin:s3cr3t!@127.0.0.1:%d", s.opts.Port))
+		sub, err := sysNc.SubscribeSync(fmt.Sprintf(serverStatsSubj, "*"))
+		require_NoError(t, err)
+		for {
+			m, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			tk := strings.Split(m.Subject, ".")
+			if domain, ok := ids[tk[2]]; ok {
+				delete(ids, tk[2])
+				require_Contains(t, string(m.Data), fmt.Sprintf(`"domain":"%s"`, domain))
+			}
+			if len(ids) == 0 {
+				break
+			}
+		}
+		cnt := 0
+		s.nodeToInfo.Range(func(key, value interface{}) bool {
+			cnt++
+			require_Equal(t, value.(nodeInfo).name, name)
+			require_Equal(t, value.(nodeInfo).id, sIdExpected)
+			return true
+		})
+		require_True(t, cnt == 1)
+	}
+	tmplA := `
+		listen: -1
+		server_name: %s
+		jetstream {
+			max_mem_store: 256MB, 
+			max_file_store: 2GB, 
+			store_dir: "%s", 
+			domain: hub
+		}
+		accounts {
+			JSY { users = [ { user: "y", pass: "p" } ]; jetstream: true }
+			$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+		}
+		leaf {
+			port: -1
+		}
+    `
+	tmplL := `
+		listen: -1
+		server_name: %s
+		jetstream {
+			max_mem_store: 256MB, 
+			max_file_store: 2GB, 
+			store_dir: "%s", 
+			domain: %s
+		}
+		accounts {
+			JSY { users = [ { user: "y", pass: "p" } ]; jetstream: true }
+			$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+		}
+		leaf {
+			remotes [
+				{ urls: [ %s ], account: "JSY" }
+				{ urls: [ %s ], account: "$SYS" }
+			]
+		}
+    `
+	t.Run("same-domain", func(t *testing.T) {
+		confA := createConfFile(t, []byte(fmt.Sprintf(tmplA, name, createDir(t, JetStreamStoreDir))))
+		defer removeFile(t, confA)
+		sA, oA := RunServerWithConfig(confA)
+		defer sA.Shutdown()
+		// using same domain as sA
+		confL := createConfFile(t, []byte(fmt.Sprintf(tmplL, name, createDir(t, JetStreamStoreDir), "hub",
+			fmt.Sprintf("nats://y:p@127.0.0.1:%d", oA.LeafNode.Port),
+			fmt.Sprintf("nats://admin:s3cr3t!@127.0.0.1:%d", oA.LeafNode.Port))))
+		defer removeFile(t, confL)
+		sL, _ := RunServerWithConfig(confL)
+		defer sL.Shutdown()
+		// as server name uniqueness is violates, sL.ID() is the expected value
+		test(sA, sL.ID(), sA, sL)
+	})
+	t.Run("different-domain", func(t *testing.T) {
+		confA := createConfFile(t, []byte(fmt.Sprintf(tmplA, name, createDir(t, JetStreamStoreDir))))
+		defer removeFile(t, confA)
+		sA, oA := RunServerWithConfig(confA)
+		defer sA.Shutdown()
+		// using different domain as sA
+		confL := createConfFile(t, []byte(fmt.Sprintf(tmplL, name, createDir(t, JetStreamStoreDir), "spoke",
+			fmt.Sprintf("nats://y:p@127.0.0.1:%d", oA.LeafNode.Port),
+			fmt.Sprintf("nats://admin:s3cr3t!@127.0.0.1:%d", oA.LeafNode.Port))))
+		defer removeFile(t, confL)
+		sL, _ := RunServerWithConfig(confL)
+		defer sL.Shutdown()
+		checkLeafNodeConnectedCount(t, sL, 2)
+		checkLeafNodeConnectedCount(t, sA, 2)
+		// ensure sA contains only sA.ID
+		test(sA, sA.ID(), sA, sL)
+	})
+}

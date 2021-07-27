@@ -79,6 +79,7 @@ type Info struct {
 	Nonce             string   `json:"nonce,omitempty"`
 	Cluster           string   `json:"cluster,omitempty"`
 	Dynamic           bool     `json:"cluster_dynamic,omitempty"`
+	Domain            string   `json:"domain,omitempty"`
 	ClientConnectURLs []string `json:"connect_urls,omitempty"`    // Contains URLs a client can connect to.
 	WSConnectURLs     []string `json:"ws_connect_urls,omitempty"` // Contains URLs a ws client can connect to.
 	LameDuckMode      bool     `json:"ldm,omitempty"`
@@ -250,7 +251,7 @@ type Server struct {
 	rnMu      sync.RWMutex
 	raftNodes map[string]RaftNode
 
-	// For mapping from a raft node name back to a server name and cluster.
+	// For mapping from a raft node name back to a server name and cluster. Node has to be in the same domain.
 	nodeToInfo sync.Map
 
 	// For out of resources to not log errors too fast.
@@ -331,6 +332,7 @@ func NewServer(opts *Options) (*Server, error) {
 		JetStream:    opts.JetStream,
 		Headers:      !opts.NoHeaderSupport,
 		Cluster:      opts.Cluster.Name,
+		Domain:       opts.JetStreamDomain,
 	}
 
 	if tlsReq && !info.TLSRequired {
