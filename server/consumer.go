@@ -374,21 +374,21 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}", "consumer delivery policy is deliver new, but optional start sequence is also set")
 		}
 		if config.OptStartTime != nil {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("consumer delivery policy is deliver new, but optional start time is also set")
+			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}", "consumer delivery policy is deliver new, but optional start time is also set")
 		}
 	case DeliverByStartSequence:
 		if config.OptStartSeq == 0 {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("consumer delivery policy is deliver by start sequence, but optional start sequence is not set")
+			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}", "consumer delivery policy is deliver by start sequence, but optional start sequence is not set")
 		}
 		if config.OptStartTime != nil {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("consumer delivery policy is deliver by start sequence, but optional start time is also set")
+			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}", "consumer delivery policy is deliver by start sequence, but optional start time is also set")
 		}
 	case DeliverByStartTime:
 		if config.OptStartTime == nil {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("consumer delivery policy is deliver by start time, but optional start time is not set")
+			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}", "consumer delivery policy is deliver by start time, but optional start time is not set")
 		}
 		if config.OptStartSeq != 0 {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("consumer delivery policy is deliver by start time, but optional start sequence is also set")
+			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}", "consumer delivery policy is deliver by start time, but optional start sequence is also set")
 		}
 	}
 
