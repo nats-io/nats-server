@@ -968,10 +968,11 @@ func (s *Server) remoteServerUpdate(sub *subscription, _ *client, _ *Account, su
 		return
 	}
 	si := ssm.Server
-	if s.sameDomain(si.Domain) {
-		node := string(getHash(si.Name))
-		s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Cluster, si.ID, false, si.JetStream})
+	if !s.sameDomain(si.Domain) {
+		return
 	}
+	node := string(getHash(si.Name))
+	s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Cluster, si.ID, false, si.JetStream})
 }
 
 // updateRemoteServer is called when we have an update from a remote server.
