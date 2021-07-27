@@ -157,6 +157,7 @@ type ServerInfo struct {
 	Host      string    `json:"host"`
 	ID        string    `json:"id"`
 	Cluster   string    `json:"cluster,omitempty"`
+	Domain    string    `json:"domain,omitempty"`
 	Version   string    `json:"ver"`
 	Seq       uint64    `json:"seq"`
 	JetStream bool      `json:"jetstream"`
@@ -270,6 +271,7 @@ RESET:
 	id := s.info.ID
 	host := s.info.Host
 	servername := s.info.Name
+	domain := s.info.Domain
 	seqp := &s.sys.seq
 	js := s.info.JetStream
 	cluster := s.info.Cluster
@@ -294,6 +296,7 @@ RESET:
 		case pm := <-sendq:
 			if pm.si != nil {
 				pm.si.Name = servername
+				pm.si.Domain = domain
 				pm.si.Host = host
 				pm.si.Cluster = cluster
 				pm.si.ID = id
@@ -917,6 +920,10 @@ func (s *Server) processRemoteServerShutdown(sid string) {
 	delete(s.sys.servers, sid)
 }
 
+func (s *Server) sameDomain(domain string) bool {
+	return domain == _EMPTY_ || s.info.Domain == _EMPTY_ || domain == s.info.Domain
+}
+
 // remoteServerShutdownEvent is called when we get an event from another server shutting down.
 func (s *Server) remoteServerShutdown(sub *subscription, _ *client, _ *Account, subject, reply string, msg []byte) {
 	s.mu.Lock()
@@ -929,13 +936,8 @@ func (s *Server) remoteServerShutdown(sub *subscription, _ *client, _ *Account, 
 		s.Debugf("Received remote server shutdown on bad subject %q", subject)
 		return
 	}
-
-	sid := toks[serverSubjectIndex]
-	if su := s.sys.servers[sid]; su != nil {
-		s.processRemoteServerShutdown(sid)
-	}
-
 	if len(msg) == 0 {
+		s.Errorf("Remote server sent invalid (empty) shutdown message to %q", subject)
 		return
 	}
 
@@ -946,8 +948,16 @@ func (s *Server) remoteServerShutdown(sub *subscription, _ *client, _ *Account, 
 		return
 	}
 	// Additional processing here.
+	if !s.sameDomain(si.Domain) {
+		return
+	}
 	node := string(getHash(si.Name))
 	s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Cluster, si.ID, true, true})
+
+	sid := toks[serverSubjectIndex]
+	if su := s.sys.servers[sid]; su != nil {
+		s.processRemoteServerShutdown(sid)
+	}
 }
 
 // remoteServerUpdate listens for statsz updates from other servers.
@@ -958,6 +968,9 @@ func (s *Server) remoteServerUpdate(sub *subscription, _ *client, _ *Account, su
 		return
 	}
 	si := ssm.Server
+	if !s.sameDomain(si.Domain) {
+		return
+	}
 	node := string(getHash(si.Name))
 	s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Cluster, si.ID, false, si.JetStream})
 }
@@ -989,8 +1002,10 @@ func (s *Server) processNewServer(ms *ServerInfo) {
 	// connect update to make sure they switch this account to interest only mode.
 	s.ensureGWsInterestOnlyForLeafNodes()
 	// Add to our nodeToName
-	node := string(getHash(ms.Name))
-	s.nodeToInfo.Store(node, nodeInfo{ms.Name, ms.Cluster, ms.ID, false, ms.JetStream})
+	if s.sameDomain(ms.Domain) {
+		node := string(getHash(ms.Name))
+		s.nodeToInfo.Store(node, nodeInfo{ms.Name, ms.Cluster, ms.ID, false, ms.JetStream})
+	}
 	// Announce ourselves..
 	s.sendStatsz(fmt.Sprintf(serverStatsSubj, s.info.ID))
 }

@@ -1198,7 +1198,7 @@ func (s *Server) setLeafNodeInfoHostPortAndIP() error {
 // (this solves the stale connection situation). An error is returned to help the
 // remote detect the misconfiguration when the duplicate is the result of that
 // misconfiguration.
-func (s *Server) addLeafNodeConnection(c *client, srvName string, checkForDup bool) {
+func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, checkForDup bool) {
 	var accName string
 	c.mu.Lock()
 	cid := c.cid
@@ -1217,7 +1217,8 @@ func (s *Server) addLeafNodeConnection(c *client, srvName string, checkForDup bo
 			// is more about replacing stale connections than detecting loops.
 			// We have code for the loop detection elsewhere, which also delays
 			// attempt to reconnect.
-			if !ol.isSolicitedLeafNode() && ol.leaf.remoteServer == srvName && ol.acc.Name == accName {
+			if !ol.isSolicitedLeafNode() && ol.leaf.remoteServer == srvName &&
+				ol.leaf.remoteCluster == clusterName && ol.acc.Name == accName {
 				old = ol
 			}
 			ol.mu.Unlock()
@@ -1350,7 +1351,7 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	c.mu.Unlock()
 
 	// Add in the leafnode here since we passed through auth at this point.
-	s.addLeafNodeConnection(c, proto.Name, true)
+	s.addLeafNodeConnection(c, proto.Name, proto.Cluster, true)
 
 	// If we have permissions bound to this leafnode we need to send then back to the
 	// origin server for local enforcement.
@@ -2440,7 +2441,7 @@ func (s *Server) leafNodeFinishConnectProcess(c *client) {
 
 	// Make sure we register with the account here.
 	c.registerWithAccount(acc)
-	s.addLeafNodeConnection(c, _EMPTY_, false)
+	s.addLeafNodeConnection(c, _EMPTY_, _EMPTY_, false)
 	s.initLeafNodeSmapAndSendSubs(c)
 	if sendSysConnectEvent {
 		s.sendLeafNodeConnect(acc)
