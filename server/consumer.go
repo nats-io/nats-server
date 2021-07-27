@@ -48,6 +48,7 @@ type ConsumerInfo struct {
 
 type ConsumerConfig struct {
 	Durable         string        `json:"durable_name,omitempty"`
+	Description     string        `json:"description,omitempty"`
 	DeliverSubject  string        `json:"deliver_subject,omitempty"`
 	DeliverPolicy   DeliverPolicy `json:"deliver_policy"`
 	OptStartSeq     uint64        `json:"opt_start_seq,omitempty"`
@@ -271,6 +272,10 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 
 	if config == nil {
 		return nil, ApiErrors[JSConsumerConfigRequiredErr]
+	}
+
+	if len(config.Description) > JSMaxDescriptionLen {
+		return nil, ApiErrors[JSConsumerDescriptionTooLongErrF].NewT("{max}", JSMaxDescriptionLen)
 	}
 
 	var err error
@@ -498,6 +503,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	if isDurableConsumer(config) {
 		if len(config.Durable) > JSMaxNameLen {
 			mset.mu.Unlock()
+			o.deleteWithoutAdvisory()
 			return nil, ApiErrors[JSConsumerNameTooLongErrF].NewT("{max}", JSMaxNameLen)
 		}
 		o.name = config.Durable

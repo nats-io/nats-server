@@ -39,6 +39,7 @@ import (
 // for a given stream. If subjects is empty the name will be used.
 type StreamConfig struct {
 	Name         string          `json:"name"`
+	Description  string          `json:"description,omitempty"`
 	Subjects     []string        `json:"subjects,omitempty"`
 	Retention    RetentionPolicy `json:"retention"`
 	MaxConsumers int             `json:"max_consumers"`
@@ -753,6 +754,10 @@ func checkStreamCfg(config *StreamConfig) (StreamConfig, error) {
 	if len(config.Name) > JSMaxNameLen {
 		return StreamConfig{}, fmt.Errorf("stream name is too long, maximum allowed is %d", JSMaxNameLen)
 	}
+	if len(config.Description) > JSMaxDescriptionLen {
+		return StreamConfig{}, fmt.Errorf("stream description is too long, maximum allowed is %d", JSMaxDescriptionLen)
+	}
+
 	cfg := *config
 
 	// Make file the default.
