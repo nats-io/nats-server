@@ -948,14 +948,15 @@ func (s *Server) remoteServerShutdown(sub *subscription, _ *client, _ *Account, 
 		return
 	}
 	// Additional processing here.
-	if s.sameDomain(si.Domain) {
-		node := string(getHash(si.Name))
-		s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Cluster, si.ID, true, true})
+	if !s.sameDomain(si.Domain) {
+		return
+	}
+	node := string(getHash(si.Name))
+	s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Cluster, si.ID, true, true})
 
-		sid := toks[serverSubjectIndex]
-		if su := s.sys.servers[sid]; su != nil {
-			s.processRemoteServerShutdown(sid)
-		}
+	sid := toks[serverSubjectIndex]
+	if su := s.sys.servers[sid]; su != nil {
+		s.processRemoteServerShutdown(sid)
 	}
 }
 
