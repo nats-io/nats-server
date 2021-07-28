@@ -86,8 +86,10 @@ const (
 	DeliverNew
 	// DeliverByStartSequence will look for a defined starting sequence to start.
 	DeliverByStartSequence
-	// DeliverByStartTime will select the first messsage with a timestamp >= to StartTime
+	// DeliverByStartTime will select the first messsage with a timestamp >= to StartTime.
 	DeliverByStartTime
+	// DeliverLastPerSubject will start the consumer with the last message for all subjects received.
+	DeliverLastPerSubject
 )
 
 func (dp DeliverPolicy) String() string {
@@ -102,6 +104,8 @@ func (dp DeliverPolicy) String() string {
 		return "by_start_sequence"
 	case DeliverByStartTime:
 		return "by_start_time"
+	case DeliverLastPerSubject:
+		return "last_per_subject"
 	default:
 		return "undefined"
 	}
@@ -186,6 +190,7 @@ type consumer struct {
 	asflr             uint64
 	sgap              uint64
 	dsubj             string
+	lss               *lastSeqSkipList
 	rlimit            *rate.Limiter
 	reqSub            *subscription
 	ackSub            *subscription
@@ -362,38 +367,68 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	switch config.DeliverPolicy {
 	case DeliverAll:
 		if config.OptStartSeq > 0 {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}", "consumer delivery policy is deliver all, but optional start sequence is also set")
+			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
+				"consumer delivery policy is deliver all, but optional start sequence is also set")
 		}
 		if config.OptStartTime != nil {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}", "consumer delivery policy is deliver all, but optional start time is also set")
+			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
+				"consumer delivery policy is deliver all, but optional start time is also set")
 		}
 	case DeliverLast:
 		if config.OptStartSeq > 0 {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}", "consumer delivery policy is deliver last, but optional start sequence is also set")
+			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
+				"consumer delivery policy is deliver last, but optional start sequence is also set")
 		}
 		if config.OptStartTime != nil {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}", "consumer delivery policy is deliver last, but optional start time is also set")
+			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
+				"consumer delivery policy is deliver last, but optional start time is also set")
+		}
+	case DeliverLastPerSubject:
+		if config.OptStartSeq > 0 {
+			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
+				"consumer delivery policy is deliver last per subject, but optional start sequence is also set")
+		}
+		if config.OptStartTime != nil {
+			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
+				"consumer delivery policy is deliver last per subject, but optional start time is also set")
+		}
+		badConfig := config.FilterSubject == _EMPTY_
+		if !badConfig {
+			subjects, ext := mset.allSubjects()
+			if len(subjects) == 1 && !ext && subjects[0] == config.FilterSubject && subjectIsLiteral(subjects[0]) {
+				badConfig = true
+			}
+		}
+		if badConfig {
+			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
+				"consumer delivery policy is deliver last per subject, but filter subject is not set")
 		}
 	case DeliverNew:
 		if config.OptStartSeq > 0 {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}", "consumer delivery policy is deliver new, but optional start sequence is also set")
+			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
+				"consumer delivery policy is deliver new, but optional start sequence is also set")
 		}
 		if config.OptStartTime != nil {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}", "consumer delivery policy is deliver new, but optional start time is also set")
+			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
+				"consumer delivery policy is deliver new, but optional start time is also set")
 		}
 	case DeliverByStartSequence:
 		if config.OptStartSeq == 0 {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}", "consumer delivery policy is deliver by start sequence, but optional start sequence is not set")
+			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
+				"consumer delivery policy is deliver by start sequence, but optional start sequence is not set")
 		}
 		if config.OptStartTime != nil {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}", "consumer delivery policy is deliver by start sequence, but optional start time is also set")
+			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
+				"consumer delivery policy is deliver by start sequence, but optional start time is also set")
 		}
 	case DeliverByStartTime:
 		if config.OptStartTime == nil {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}", "consumer delivery policy is deliver by start time, but optional start time is not set")
+			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
+				"consumer delivery policy is deliver by start time, but optional start time is not set")
 		}
 		if config.OptStartSeq != 0 {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}", "consumer delivery policy is deliver by start time, but optional start sequence is also set")
+			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
+				"consumer delivery policy is deliver by start time, but optional start sequence is also set")
 		}
 	}
 
@@ -1930,7 +1965,16 @@ func (o *consumer) getNextMsg() (subj string, hdr, msg []byte, seq uint64, dc ui
 	}
 	for {
 		seq, dc := o.sseq, uint64(1)
-		if o.hasRedeliveries() {
+		if o.hasSkipListPending() {
+			seq = o.lss.seqs[0]
+			if len(o.lss.seqs) == 1 {
+				o.sseq = o.lss.resume
+				o.lss = nil
+				o.updateSkipped()
+			} else {
+				o.lss.seqs = o.lss.seqs[1:]
+			}
+		} else if o.hasRedeliveries() {
 			seq = o.getNextToRedeliver()
 			dc = o.incDeliveryCount(seq)
 			if o.maxdc > 0 && dc > o.maxdc {
@@ -2568,10 +2612,32 @@ func ackReplyInfo(subject string) (sseq, dseq, dc uint64) {
 
 // NextSeq returns the next delivered sequence number for this consumer.
 func (o *consumer) nextSeq() uint64 {
-	o.mu.Lock()
+	o.mu.RLock()
 	dseq := o.dseq
-	o.mu.Unlock()
+	o.mu.RUnlock()
 	return dseq
+}
+
+// Used to hold skip list when deliver policy is last per subject.
+type lastSeqSkipList struct {
+	resume uint64
+	seqs   []uint64
+}
+
+// Will create a skip list for us from a store's subjects state.
+func createLastSeqSkipList(mss map[string]SimpleState) []uint64 {
+	seqs := make([]uint64, 0, len(mss))
+	for _, ss := range mss {
+		seqs = append(seqs, ss.Last)
+	}
+	sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
+	return seqs
+}
+
+// Let's us know we have a skip list, which is for deliver last per subject and we are just starting.
+// Lock should be held.
+func (o *consumer) hasSkipListPending() bool {
+	return o.lss != nil && len(o.lss.seqs) > 0
 }
 
 // Will select the starting sequence.
@@ -2589,6 +2655,17 @@ func (o *consumer) selectStartingSeqNo() {
 				if o.cfg.FilterSubject != _EMPTY_ {
 					ss := o.mset.store.FilteredState(1, o.cfg.FilterSubject)
 					o.sseq = ss.Last
+				}
+			} else if o.cfg.DeliverPolicy == DeliverLastPerSubject {
+				if mss := o.mset.store.SubjectsState(o.cfg.FilterSubject); len(mss) > 0 {
+					o.lss = &lastSeqSkipList{
+						resume: stats.LastSeq + 1,
+						seqs:   createLastSeqSkipList(mss),
+					}
+					o.sseq = o.lss.seqs[0]
+				} else {
+					// If no mapping info just set to last.
+					o.sseq = stats.LastSeq
 				}
 			} else if o.cfg.OptStartTime != nil {
 				// If we are here we are time based.
@@ -2935,6 +3012,7 @@ func (o *consumer) setInitialPendingAndStart() {
 	if mset == nil || mset.store == nil {
 		return
 	}
+
 	// notFiltered means we want all messages.
 	notFiltered := o.cfg.FilterSubject == _EMPTY_
 	if !notFiltered {
@@ -2953,17 +3031,27 @@ func (o *consumer) setInitialPendingAndStart() {
 		}
 	} else {
 		// Here we are filtered.
-		ss := mset.store.FilteredState(o.sseq, o.cfg.FilterSubject)
-		if ss.Msgs > 0 {
+		dp := o.cfg.DeliverPolicy
+		if dp == DeliverLastPerSubject && o.hasSkipListPending() && o.sseq < o.lss.resume {
+			if o.lss != nil {
+				ss := mset.store.FilteredState(o.lss.resume, o.cfg.FilterSubject)
+				o.sseq = o.lss.seqs[0]
+				o.sgap = ss.Msgs + uint64(len(o.lss.seqs))
+			}
+		} else if ss := mset.store.FilteredState(o.sseq, o.cfg.FilterSubject); ss.Msgs > 0 {
 			o.sgap = ss.Msgs
 			// See if we should update our starting sequence.
-			if dp := o.cfg.DeliverPolicy; dp == DeliverLast {
+			if dp == DeliverLast || dp == DeliverLastPerSubject {
 				o.sseq = ss.Last
 			} else if dp == DeliverNew {
 				o.sseq = ss.Last + 1
 			} else {
 				// DeliverAll, DeliverByStartSequence, DeliverByStartTime
 				o.sseq = ss.First
+			}
+			// Cleanup lss when we take over in clustered mode.
+			if dp == DeliverLastPerSubject && o.hasSkipListPending() && o.sseq >= o.lss.resume {
+				o.lss = nil
 			}
 		}
 		o.updateSkipped()

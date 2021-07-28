@@ -3018,7 +3018,6 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, acc *Acco
 }
 
 func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subject, reply string, rmsg []byte, expectDurable bool) {
-
 	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
