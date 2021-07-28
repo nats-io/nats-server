@@ -2368,6 +2368,9 @@ func TestFileStoreConsumerRedeliveredLost(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Unexepected error: %v", err)
 		}
+		if state == nil {
+			t.Fatalf("Did not recover state")
+		}
 		if len(state.Redelivered) == 0 {
 			t.Fatalf("Did not recover redelivered")
 		}
