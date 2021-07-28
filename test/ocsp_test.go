@@ -2439,7 +2439,7 @@ func getOCSPStatus(s tls.ConnectionState) (*ocsp.Response, error) {
 	return resp, nil
 }
 
-func TestOCSPManualConfig(t *testing.T) {
+func TestOCSPTLSConfigNoLeafSet(t *testing.T) {
 	o := DefaultTestOptions
 	o.HTTPHost = "127.0.0.1"
 	o.HTTPSPort = -1
