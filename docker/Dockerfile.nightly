@@ -7,7 +7,7 @@ RUN mkdir -p src/github.com/nats-io && \
     cd src/github.com/nats-io/ && \
     git clone https://github.com/nats-io/natscli.git && \
     cd natscli/nats && \
-    go build -ldflags "-s -w -X main.version=${VERSION}" -o /nats
+    go build -ldflags "-w -X main.version=${VERSION}" -o /nats
 
 RUN go get github.com/nats-io/nsc
 
