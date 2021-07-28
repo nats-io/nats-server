@@ -1038,5 +1038,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerDescriptionTooLongErrF",
+    "code": 400,
+    "error_code": 10107,
+    "description": "consumer description is too long, maximum allowed is {max}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

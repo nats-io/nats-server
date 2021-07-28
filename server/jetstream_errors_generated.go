@@ -57,6 +57,9 @@ const (
 	// JSConsumerDeliverToWildcardsErr consumer deliver subject has wildcards
 	JSConsumerDeliverToWildcardsErr ErrorIdentifier = 10079
 
+	// JSConsumerDescriptionTooLongErrF consumer description is too long, maximum allowed is {max}
+	JSConsumerDescriptionTooLongErrF ErrorIdentifier = 10107
+
 	// JSConsumerDirectRequiresEphemeralErr consumer direct requires an ephemeral consumer
 	JSConsumerDirectRequiresEphemeralErr ErrorIdentifier = 10091
 
@@ -336,6 +339,7 @@ var (
 		JSConsumerCreateErrF:                       {Code: 500, ErrCode: 10012, Description: "{err}"},
 		JSConsumerDeliverCycleErr:                  {Code: 400, ErrCode: 10081, Description: "consumer deliver subject forms a cycle"},
 		JSConsumerDeliverToWildcardsErr:            {Code: 400, ErrCode: 10079, Description: "consumer deliver subject has wildcards"},
+		JSConsumerDescriptionTooLongErrF:           {Code: 400, ErrCode: 10107, Description: "consumer description is too long, maximum allowed is {max}"},
 		JSConsumerDirectRequiresEphemeralErr:       {Code: 400, ErrCode: 10091, Description: "consumer direct requires an ephemeral consumer"},
 		JSConsumerDirectRequiresPushErr:            {Code: 400, ErrCode: 10090, Description: "consumer direct requires a push based consumer"},
 		JSConsumerDurableNameNotInSubjectErr:       {Code: 400, ErrCode: 10016, Description: "consumer expected to be durable but no durable name set in subject"},

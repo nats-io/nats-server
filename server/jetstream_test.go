@@ -16,6 +16,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -358,6 +359,58 @@ func TestJetStreamAutoTuneFSConfig(t *testing.T) {
 	testBlkSize("foo", 1, 1024*1024, 262200)
 	testBlkSize("foo", 1, 8*1024*1024, 2097200)
 	testBlkSize("foo_bar_baz", -1, 32*1024*1024*1024*1024, FileStoreMaxBlkSize)
+}
+
+func TestJetStreamConsumerAndStreamDescriptions(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	descr := "foo asset"
+	acc := s.GlobalAccount()
+
+	// Check stream's first.
+	mset, err := acc.addStream(&StreamConfig{Name: "foo", Description: descr})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	if cfg := mset.config(); cfg.Description != descr {
+		t.Fatalf("Expected a description of %q, got %q", descr, cfg.Description)
+	}
+
+	// Now consumer
+	edescr := "analytics"
+	o, err := mset.addConsumer(&ConsumerConfig{
+		Description:    edescr,
+		DeliverSubject: "to",
+		AckPolicy:      AckNone})
+	if err != nil {
+		t.Fatalf("Unexpected error adding consumer: %v", err)
+	}
+	if cfg := o.config(); cfg.Description != edescr {
+		t.Fatalf("Expected a description of %q, got %q", edescr, cfg.Description)
+	}
+
+	// Test max.
+	data := make([]byte, JSMaxDescriptionLen+1)
+	rand.Read(data)
+	bigDescr := base64.StdEncoding.EncodeToString(data)
+
+	_, err = acc.addStream(&StreamConfig{Name: "bar", Description: bigDescr})
+	if err == nil || !strings.Contains(err.Error(), "description is too long") {
+		t.Fatalf("Expected an error but got none")
+	}
+
+	_, err = mset.addConsumer(&ConsumerConfig{
+		Description:    bigDescr,
+		DeliverSubject: "to",
+		AckPolicy:      AckNone})
+	if err == nil || !strings.Contains(err.Error(), "description is too long") {
+		t.Fatalf("Expected an error but got none")
+	}
 }
 
 func TestJetStreamPubAck(t *testing.T) {
@@ -3699,7 +3752,7 @@ func TestJetStreamEphemeralConsumerRecoveryAfterServerRestart(t *testing.T) {
 			t.Fatalf("Error looking up consumer %q", oname)
 		}
 		// Make sure config does not have durable.
-		if cfg := o.config(); cfg.Durable != "" {
+		if cfg := o.config(); cfg.Durable != _EMPTY_ {
 			t.Fatalf("Expected no durable to be set")
 		}
 		// Wait for it to become active

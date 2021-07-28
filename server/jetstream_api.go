@@ -255,6 +255,9 @@ const (
 	JSAuditAdvisory = "$JS.EVENT.ADVISORY.API"
 )
 
+// JSMaxDescription is the maximum description length for streams and consumers.
+const JSMaxDescriptionLen = 4 * 1024
+
 // JSMaxNameLen is the maximum name lengths for streams, consumers and templates.
 const JSMaxNameLen = 256
 
