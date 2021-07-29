@@ -5,7 +5,7 @@ builds:
     id: nats-server
     binary: nats-server
     ldflags:
-      - -s -w -X github.com/nats-io/nats-server/server.gitCommit={{.ShortCommit}}
+      - -w -X github.com/nats-io/nats-server/server.gitCommit={{.ShortCommit}}
     env:
       - GO111MODULE=off
       - CGO_ENABLED=0
