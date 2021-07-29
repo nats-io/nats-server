@@ -1125,6 +1125,33 @@ func (fs *fileStore) perSubjectState(subj string) (total, first, last uint64) {
 	return total, first, last
 }
 
+// SubjectsState returns a map of SimpleState for all matching subjects.
+func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	if !fs.tms || fs.state.Msgs == 0 {
+		return nil
+	}
+
+	fss := make(map[string]SimpleState)
+	for _, mb := range fs.blks {
+		mb.mu.RLock()
+		for subj, ss := range mb.fss {
+			oss := fss[subj]
+			if oss.First == 0 { // New
+				fss[subj] = *ss
+			} else {
+				// Merge here.
+				oss.Last, oss.Msgs = ss.Last, oss.Msgs+ss.Msgs
+				fss[subj] = oss
+			}
+		}
+		mb.mu.RUnlock()
+	}
+	return fss
+}
+
 // RegisterStorageUpdates registers a callback for updates to storage changes.
 // It will present number of messages and bytes as a signed integer and an
 // optional sequence number of the message if a single.

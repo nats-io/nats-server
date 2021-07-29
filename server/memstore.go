@@ -317,6 +317,24 @@ func (ms *memStore) filteredStateLocked(sseq uint64, subj string) SimpleState {
 	return ss
 }
 
+// SubjectsState returns a map of SimpleState for all matching subjects.
+func (ms *memStore) SubjectsState(subject string) map[string]SimpleState {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+
+	if len(ms.fss) == 0 {
+		return nil
+	}
+
+	fss := make(map[string]SimpleState)
+	for subj, ss := range ms.fss {
+		if subject == _EMPTY_ || subject == fwcs || subjectIsSubsetMatch(subj, subject) {
+			fss[subj] = *ss
+		}
+	}
+	return fss
+}
+
 // Will check the msg limit for this tracked subject.
 // Lock should be held.
 func (ms *memStore) enforcePerSubjectLimit(ss *SimpleState) {

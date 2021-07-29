@@ -3990,6 +3990,23 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		return
 	}
 
+	// Also short circuit if DeliverLastPerSubject is set with no FilterSubject.
+	if cfg.DeliverPolicy == DeliverLastPerSubject {
+		badConfig := cfg.FilterSubject == _EMPTY_
+		if !badConfig {
+			subjects := sa.Config.Subjects
+			if len(subjects) == 1 && subjects[0] == cfg.FilterSubject && subjectIsLiteral(subjects[0]) {
+				badConfig = true
+			}
+		}
+		if badConfig {
+			resp.Error = ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
+				"consumer delivery policy is deliver last per subject, but FilterSubject is not set")
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+			return
+		}
+	}
+
 	// Setup proper default for ack wait if we are in explicit ack mode.
 	if cfg.AckWait == 0 && (cfg.AckPolicy == AckExplicit || cfg.AckPolicy == AckAll) {
 		cfg.AckWait = JsAckWaitDefault

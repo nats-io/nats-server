@@ -12169,6 +12169,148 @@ func TestJetStreamConsumerBadNumPending(t *testing.T) {
 	checkForNoPending(mon)
 }
 
+func TestJetStreamDeliverLastPerSubject(t *testing.T) {
+	for _, st := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(st.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer removeDir(t, config.StoreDir)
+			}
+
+			// Client for API requests.
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			cfg := StreamConfig{
+				Name:       "KV",
+				Subjects:   []string{"kv.>"},
+				Storage:    st,
+				MaxMsgsPer: 5,
+			}
+
+			req, err := json.Marshal(cfg)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			// Do manually for now.
+			nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+			si, err := js.StreamInfo("KV")
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if si == nil || si.Config.Name != "KV" {
+				t.Fatalf("StreamInfo is not correct %+v", si)
+			}
+
+			// Interleave them on purpose.
+			for i := 1; i <= 11; i++ {
+				msg := []byte(fmt.Sprintf("%d", i))
+				js.PublishAsync("kv.b1.foo", msg)
+				js.PublishAsync("kv.b2.foo", msg)
+
+				js.PublishAsync("kv.b1.bar", msg)
+				js.PublishAsync("kv.b2.bar", msg)
+
+				js.PublishAsync("kv.b1.baz", msg)
+				js.PublishAsync("kv.b2.baz", msg)
+			}
+
+			select {
+			case <-js.PublishAsyncComplete():
+			case <-time.After(2 * time.Second):
+				t.Fatalf("Did not receive completion signal")
+			}
+
+			// Do quick check that config needs FilteredSubjects otherwise bad config.
+			badReq := CreateConsumerRequest{
+				Stream: "KV",
+				Config: ConsumerConfig{
+					DeliverSubject: "b",
+					DeliverPolicy:  DeliverLastPerSubject,
+				},
+			}
+			req, err = json.Marshal(badReq)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			resp, err := nc.Request(fmt.Sprintf(JSApiConsumerCreateT, "KV"), req, time.Second)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			var ccResp JSApiConsumerCreateResponse
+			if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if ccResp.Error == nil || !strings.Contains(ccResp.Error.Description, "filter subject is not set") {
+				t.Fatalf("Expected an error, got none")
+			}
+
+			// Now let's consume these via last per subject.
+			obsReq := CreateConsumerRequest{
+				Stream: "KV",
+				Config: ConsumerConfig{
+					DeliverSubject: "d",
+					DeliverPolicy:  DeliverLastPerSubject,
+					FilterSubject:  "kv.b1.*",
+				},
+			}
+			req, err = json.Marshal(obsReq)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			resp, err = nc.Request(fmt.Sprintf(JSApiConsumerCreateT, "KV"), req, time.Second)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			ccResp.Error = nil
+			if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+
+			sub, _ := nc.SubscribeSync("d")
+			defer sub.Unsubscribe()
+
+			// Helper to check messages are correct.
+			checkNext := func(subject string, sseq uint64, v string) {
+				t.Helper()
+				m, err := sub.NextMsg(time.Second)
+				if err != nil {
+					t.Fatalf("Error receiving message: %v", err)
+				}
+				if m.Subject != subject {
+					t.Fatalf("Expected subject %q but got %q", subject, m.Subject)
+				}
+				meta, err := m.Metadata()
+				if err != nil {
+					t.Fatalf("didn't get metadata: %s", err)
+				}
+				if meta.Sequence.Stream != sseq {
+					t.Fatalf("Expected stream seq %d but got %d", sseq, meta.Sequence.Stream)
+				}
+				if string(m.Data) != v {
+					t.Fatalf("Expected data of %q but got %q", v, m.Data)
+				}
+			}
+
+			checkSubsPending(t, sub, 3)
+
+			// Now make sure they are what we expect.
+			checkNext("kv.b1.foo", 61, "11")
+			checkNext("kv.b1.bar", 63, "11")
+			checkNext("kv.b1.baz", 65, "11")
+
+			msg := []byte(fmt.Sprintf("%d", 22))
+			js.Publish("kv.b2.foo", msg) // Not filtered through..
+			js.Publish("kv.b1.bar", msg)
+
+			checkSubsPending(t, sub, 1)
+			checkNext("kv.b1.bar", 68, "22")
+		})
+	}
+}
+
 // We had a report of a consumer delete crashing the server when in interest retention mode.
 // This I believe is only really possible in clustered mode, but we will force the issue here.
 func TestJetStreamConsumerCleanupWithRetentionPolicy(t *testing.T) {
