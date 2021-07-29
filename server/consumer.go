@@ -2879,7 +2879,6 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	// non-leader consumers will need to restore state first.
 	if dflag && rp == InterestPolicy {
 		stop := mset.lastSeq()
-
 		o.mu.Lock()
 		if !o.isLeader() {
 			o.readStoredState()
@@ -2887,8 +2886,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 		start := o.asflr
 		o.mu.Unlock()
 
-		rmseqs := make([]uint64, 0, stop-start+1)
-
+		var rmseqs []uint64
 		mset.mu.RLock()
 		for seq := start; seq <= stop; seq++ {
 			if !mset.checkInterest(seq, o) {
