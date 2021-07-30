@@ -920,6 +920,7 @@ func (s *Server) processRemoteServerShutdown(sid string) {
 	delete(s.sys.servers, sid)
 }
 
+// returns true if the server's domain and the domain argument are either not set or identical
 func (s *Server) sameDomain(domain string) bool {
 	return domain == _EMPTY_ || s.info.Domain == _EMPTY_ || domain == s.info.Domain
 }

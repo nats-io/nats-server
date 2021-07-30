@@ -591,6 +591,7 @@ func (s *Server) startLeafNodeAcceptLoop() {
 		MaxPayload:    s.info.MaxPayload, // TODO(dlc) - Allow override?
 		Headers:       s.supportsHeaders(),
 		JetStream:     opts.JetStream,
+		Domain:        opts.JetStreamDomain,
 		Proto:         1, // Fixed for now.
 		InfoOnConnect: true,
 	}
@@ -650,6 +651,7 @@ func (c *client) sendLeafConnect(clusterName string, tlsRequired, headers bool) 
 		Cluster:   clusterName,
 		Headers:   headers,
 		JetStream: c.acc.jetStreamConfigured(),
+		Domain:    c.srv.info.Domain,
 		DenyPub:   c.leaf.remote.DenyImports,
 	}
 
@@ -1010,31 +1012,43 @@ func (c *client) processLeafnodeInfo(info *Info) {
 		if remote, acc := c.leaf.remote, c.acc; remote != nil {
 			remote.Lock()
 
-			// JetStream checks for mappings and permissions updates.
-			hasJSDomain := opts.JetStreamDomain != _EMPTY_
-			if acc != sysAcc {
-				if hasSysShared {
-					s.addInJSDeny(remote)
-				} else {
-					// Here we want to suppress if this local account has JS enabled.
-					// This is regardless of whether or not this server is actually running JS.
-					// We only suppress export. But we do send an indication about our JetStream
-					// status in the connect and the hub side will suppress as well if the remote
-					// account also has JetStream enabled.
-					if acc.jetStreamConfigured() {
-						s.addInJSDenyExport(remote)
+			// TODO JetStream Permissions should only be added only if
+			//      Doing so has consequences as Domain can only be set when JetStream is enabled.
+			//      Thus, if a server without JetStream participates anywhere in the network,
+			//      it can't be expressed which domain it belongs too.
+			//      Same applies to checking opts.JetStream.
+			//      consider such a daisy chained setup:
+			//      s1 (JetStream) <-ln- s2 (no JetStream) <-ln- s3 (JetStream)
+			//
+			//      which domain is s2 belonging to?
+			//      Where domain independent of JetStream, this would be configurable.
+			if !s.sameDomain(info.Domain) {
+				// JetStream checks for mappings and permissions updates.
+				hasJSDomain := opts.JetStreamDomain != _EMPTY_
+				if acc != sysAcc {
+					if hasSysShared {
+						s.addInJSDeny(remote)
+					} else {
+						// Here we want to suppress if this local account has JS enabled.
+						// This is regardless of whether or not this server is actually running JS.
+						// We only suppress export. But we do send an indication about our JetStream
+						// status in the connect and the hub side will suppress as well if the remote
+						// account also has JetStream enabled.
+						if acc.jetStreamConfigured() {
+							s.addInJSDenyExport(remote)
+						}
 					}
-				}
-				// If we have a specified JetStream domain we will want to add a mapping to
-				// allow access cross domain for each non-system account.
-				if hasJSDomain && acc.jetStreamConfigured() {
-					src := fmt.Sprintf(jsDomainAPI, opts.JetStreamDomain)
-					if err := acc.AddMapping(src, jsAllAPI); err != nil {
-						c.Debugf("Error adding JetStream domain mapping: %v", err)
+					// If we have a specified JetStream domain we will want to add a mapping to
+					// allow access cross domain for each non-system account.
+					if hasJSDomain && acc.jetStreamConfigured() {
+						src := fmt.Sprintf(jsDomainAPI, opts.JetStreamDomain)
+						if err := acc.AddMapping(src, jsAllAPI); err != nil {
+							c.Debugf("Error adding JetStream domain mapping: %v", err)
+						}
 					}
+				} else if hasJSDomain {
+					s.addInJSDenyAll(remote)
 				}
-			} else if hasJSDomain {
-				s.addInJSDenyAll(remote)
 			}
 
 			c.setPermissions(remote.perms)
@@ -1268,6 +1282,7 @@ type leafConnectInfo struct {
 	Cluster   string   `json:"cluster,omitempty"`
 	Headers   bool     `json:"headers,omitempty"`
 	JetStream bool     `json:"jetstream,omitempty"`
+	Domain    string   `json:"domain,omitempty"`
 	DenyPub   []string `json:"deny_pub,omitempty"`
 
 	// Just used to detect wrong connection attempts.
@@ -1335,8 +1350,9 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	jsConfigured := c.acc.jetStreamConfigured()
 	doDomainMappings := opts.JetStreamDomain != _EMPTY_ && c.acc != sysAcc && jsConfigured
 
-	// If we have JS enabled and the other side does as well we need to add in an import deny clause.
-	if jsConfigured && proto.JetStream {
+	// If we have JS enabled and the other side does as well and their domains differ, we need to add in an import deny clause.
+	if jsConfigured && proto.JetStream && !s.sameDomain(proto.Domain) {
+		// TODO missing trace
 		// We should never have existing perms here, if that changes this needs to be reworked.
 		c.setPermissions(&Permissions{Publish: &SubjectPermission{Deny: []string{jsAllAPI}}})
 	}

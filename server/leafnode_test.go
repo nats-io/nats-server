@@ -3786,3 +3786,86 @@ func TestLeafNodeUniqueServerNameCrossJSDomain(t *testing.T) {
 		test(sA, sA.ID(), sA, sL)
 	})
 }
+
+func TestLeafNodeJSDisconnected(t *testing.T) {
+	tmplA := `
+		listen: -1
+		server_name: sa
+		jetstream {
+			max_mem_store: 256MB, 
+			max_file_store: 2GB, 
+			store_dir: "%s", 
+			domain: hub
+		}
+		accounts {
+			JSY { users = [ { user: "y", pass: "p" } ]; jetstream: true }
+			$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+		}
+		leaf {
+			port: -1
+		}
+    `
+	tmplL := `
+		listen: -1
+		server_name: sl
+		accounts {
+			# jetstream: true while not locally configured is key to this.
+			# as this is what would happen in a JWT environment.
+			JSY { users = [ { user: "y", pass: "p" } ]; jetstream: true }
+			$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+		}
+		leaf {
+			remotes [
+				{ urls: [ %s ], account: "JSY" }
+				{ urls: [ %s ], account: "$SYS" }
+			]
+		}
+    `
+
+	confA := createConfFile(t, []byte(fmt.Sprintf(tmplA, createDir(t, JetStreamStoreDir))))
+	defer removeFile(t, confA)
+	sA, oA := RunServerWithConfig(confA)
+	defer sA.Shutdown()
+
+	// using same domain as sA
+	confL := createConfFile(t, []byte(fmt.Sprintf(tmplL,
+		fmt.Sprintf("nats://y:p@127.0.0.1:%d", oA.LeafNode.Port),
+		fmt.Sprintf("nats://admin:s3cr3t!@127.0.0.1:%d", oA.LeafNode.Port))))
+	defer removeFile(t, confL)
+	sL, _ := RunServerWithConfig(confL)
+	defer sL.Shutdown()
+
+	l := &captureDebugLogger{dbgCh: make(chan string, 100)}
+	sL.SetLogger(l, true, false)
+
+	checkLeafNodeConnectedCount(t, sA, 2)
+	checkLeafNodeConnectedCount(t, sL, 2)
+
+	// ensure that an update for every server was received
+	nc := natsConnect(t, fmt.Sprintf("nats://y:p@127.0.0.1:%d", sL.opts.Port))
+	js, err := nc.JetStream()
+	require_NoError(t, err)
+
+	// TODO I find it very odd that no error is returned despite the log message
+	//      Is this a client issue to not have a timeout?
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+FOR:
+	for {
+		select {
+		case dbgTrc := <-l.dbgCh:
+			require_False(t, strings.Contains(dbgTrc, "Not permitted to publish to"))
+		default:
+			break FOR
+		}
+	}
+	// ensure stream got created
+	nc = natsConnect(t, fmt.Sprintf("nats://y:p@127.0.0.1:%d", sA.opts.Port))
+	js, err = nc.JetStream()
+	require_NoError(t, err)
+	si, err := js.StreamInfo("foo")
+	require_NoError(t, err)
+	require_True(t, si != nil)
+}
