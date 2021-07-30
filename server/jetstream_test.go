@@ -12302,11 +12302,11 @@ func TestJetStreamDeliverLastPerSubject(t *testing.T) {
 			checkNext("kv.b1.baz", 65, "11")
 
 			msg := []byte(fmt.Sprintf("%d", 22))
-			js.Publish("kv.b2.foo", msg) // Not filtered through..
 			js.Publish("kv.b1.bar", msg)
+			js.Publish("kv.b2.foo", msg) // Not filtered through..
 
 			checkSubsPending(t, sub, 1)
-			checkNext("kv.b1.bar", 68, "22")
+			checkNext("kv.b1.bar", 67, "22")
 		})
 	}
 }
