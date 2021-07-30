@@ -2659,7 +2659,7 @@ func (o *consumer) selectStartingSeqNo() {
 			} else if o.cfg.DeliverPolicy == DeliverLastPerSubject {
 				if mss := o.mset.store.SubjectsState(o.cfg.FilterSubject); len(mss) > 0 {
 					o.lss = &lastSeqSkipList{
-						resume: stats.LastSeq + 1,
+						resume: stats.LastSeq,
 						seqs:   createLastSeqSkipList(mss),
 					}
 					o.sseq = o.lss.seqs[0]
