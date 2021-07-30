@@ -863,12 +863,120 @@ func (fs *fileStore) recoverMsgs() error {
 	fs.enforceBytesLimit()
 
 	// Do age checks too, make sure to call in place.
-	if fs.cfg.MaxAge != 0 && fs.state.Msgs > 0 {
+	if fs.cfg.MaxAge != 0 {
+		fs.expireMsgsOnRecover()
 		fs.startAgeChk()
-		fs.expireMsgsLocked()
 	}
 
 	return nil
+}
+
+// Will expire msgs that have aged out on restart.
+// We will treat this differently in case we have a recovery
+// that will expire alot of messages on startup. Should only be called
+// on startup. Lock should be held.
+func (fs *fileStore) expireMsgsOnRecover() {
+	if fs.state.Msgs == 0 {
+		return
+	}
+
+	var minAge = time.Now().UnixNano() - int64(fs.cfg.MaxAge)
+	var purged, bytes uint64
+	var deleted int
+
+	for _, mb := range fs.blks {
+		mb.mu.Lock()
+		if minAge < mb.first.ts {
+			mb.mu.Unlock()
+			break
+		}
+		// Can we remove whole block here?
+		if mb.last.ts <= minAge {
+			purged += mb.msgs
+			bytes += mb.bytes
+			mb.dirtyCloseWithRemove(true)
+			newFirst := mb.last.seq + 1
+			mb.mu.Unlock()
+			// Update fs first here as well.
+			fs.state.FirstSeq = newFirst
+			fs.state.FirstTime = time.Time{}
+			deleted++
+			continue
+		}
+
+		// If we are here we have to process the interior messages of this blk.
+		if err := mb.loadMsgsWithLock(); err != nil {
+			mb.mu.Unlock()
+			break
+		}
+
+		// Walk messages and remove if expired.
+		for seq := mb.first.seq; seq <= mb.last.seq; seq++ {
+			sm, err := mb.cacheLookupWithLock(seq)
+			// Process interior deleted msgs.
+			if err == errDeletedMsg {
+				// Update dmap.
+				if len(mb.dmap) > 0 {
+					delete(mb.dmap, seq)
+					if len(mb.dmap) == 0 {
+						mb.dmap = nil
+					}
+				}
+				continue
+			}
+			// Break on other errors.
+			if err != nil || sm == nil {
+				break
+			}
+
+			// No error and sm != nil from here onward.
+
+			// Check for done.
+			if sm.ts > minAge {
+				mb.first.seq = sm.seq
+				mb.first.ts = sm.ts
+				break
+			}
+
+			// Delete the message here.
+			sz := fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
+			mb.bytes -= sz
+			bytes += sz
+			mb.msgs--
+			purged++
+			// Update fss
+			mb.removeSeqPerSubject(sm.subj, seq)
+		}
+
+		// Check if empty after processing, could happen if tail of messages are all deleted.
+		isEmpty := mb.msgs == 0
+		if isEmpty {
+			mb.dirtyCloseWithRemove(true)
+			// Update fs first here as well.
+			fs.state.FirstSeq = mb.last.seq + 1
+			fs.state.FirstTime = time.Time{}
+			deleted++
+		} else {
+			// Update fs first seq and time.
+			fs.state.FirstSeq = mb.first.seq
+			fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
+		}
+		mb.mu.Unlock()
+
+		if !isEmpty {
+			// Make sure to write out our index info.
+			mb.writeIndexInfo()
+		}
+		break
+	}
+
+	if deleted > 0 {
+		// Update blks slice.
+		fs.blks = append(fs.blks[:0:0], fs.blks[deleted:]...)
+	}
+	// Update top level accounting.
+	fs.state.Msgs -= purged
+	fs.state.Bytes -= bytes
 }
 
 // GetSeqFromTime looks for the first sequence number that has
@@ -2173,13 +2281,6 @@ func (fs *fileStore) startAgeChk() {
 }
 
 // Lock should be held.
-func (fs *fileStore) expireMsgsLocked() {
-	fs.mu.Unlock()
-	fs.expireMsgs()
-	fs.mu.Lock()
-}
-
-// Lock should be held.
 func (fs *fileStore) resetAgeChk(delta int64) {
 	fireIn := fs.cfg.MaxAge
 	if delta > 0 {
@@ -3189,6 +3290,7 @@ func fileStoreMsgSizeEstimate(slen, maxPayload int) uint64 {
 }
 
 // Write index info to the appropriate file.
+// Lock should be held.
 func (mb *msgBlock) writeIndexInfo() error {
 	// HEADER: magic version msgs bytes fseq fts lseq lts ndel checksum
 	var hdr [indexHdrSize]byte
@@ -3586,8 +3688,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 		return fs.purge(seq)
 	}
 
-	var purged uint64
-	var bytes uint64
+	var purged, bytes uint64
 
 	// We have to delete interior messages.
 	fs.mu.Lock()
@@ -3602,9 +3703,9 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 	}
 
 	// All msgblocks up to this one can be thrown away.
-	for i, mb := range fs.blks {
+	var deleted int
+	for _, mb := range fs.blks {
 		if mb == smb {
-			fs.blks = append(fs.blks[:0:0], fs.blks[i:]...)
 			break
 		}
 		mb.mu.Lock()
@@ -3612,34 +3713,61 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 		bytes += mb.bytes
 		mb.dirtyCloseWithRemove(true)
 		mb.mu.Unlock()
+		deleted++
 	}
 
 	smb.mu.Lock()
 	for mseq := smb.first.seq; mseq < seq; mseq++ {
-		if sm, _ := smb.cacheLookupWithLock(mseq); sm != nil && smb.msgs > 0 {
+		sm, err := smb.cacheLookupWithLock(mseq)
+		if err == errDeletedMsg {
+			// Update dmap.
+			if len(smb.dmap) > 0 {
+				delete(smb.dmap, seq)
+				if len(smb.dmap) == 0 {
+					smb.dmap = nil
+				}
+			}
+		} else if sm != nil {
 			sz := fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 			smb.bytes -= sz
 			bytes += sz
 			smb.msgs--
 			purged++
+			// Update fss
+			smb.removeSeqPerSubject(sm.subj, mseq)
 		}
 	}
 
-	// Update first entry.
-	sm, _ := smb.cacheLookupWithLock(seq)
-	if sm != nil {
-		smb.first.seq = sm.seq
-		smb.first.ts = sm.ts
+	// Check if empty after processing, could happen if tail of messages are all deleted.
+	isEmpty := smb.msgs == 0
+	if isEmpty {
+		smb.dirtyCloseWithRemove(true)
+		// Update fs first here as well.
+		fs.state.FirstSeq = smb.last.seq + 1
+		fs.state.FirstTime = time.Time{}
+		deleted++
+	} else {
+		// Update fs first seq and time.
+		smb.first.seq = seq - 1 // Just for start condition for selectNextFirst.
+		smb.selectNextFirst()
+		fs.state.FirstSeq = smb.first.seq
+		fs.state.FirstTime = time.Unix(0, smb.first.ts).UTC()
 	}
 	smb.mu.Unlock()
 
-	if sm != nil {
-		// Reset our version of first.
-		fs.state.FirstSeq = sm.seq
-		fs.state.FirstTime = time.Unix(0, sm.ts).UTC()
-		fs.state.Msgs -= purged
-		fs.state.Bytes -= bytes
+	if !isEmpty {
+		// Make sure to write out our index info.
+		smb.writeIndexInfo()
 	}
+
+	if deleted > 0 {
+		// Update blks slice.
+		fs.blks = append(fs.blks[:0:0], fs.blks[deleted:]...)
+	}
+
+	// Update top level accounting.
+	fs.state.Msgs -= purged
+	fs.state.Bytes -= bytes
 
 	cb := fs.scb
 	fs.mu.Unlock()

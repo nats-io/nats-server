@@ -566,7 +566,7 @@ func TestFileStoreBytesLimit(t *testing.T) {
 }
 
 func TestFileStoreAgeLimit(t *testing.T) {
-	maxAge := 100 * time.Millisecond
+	maxAge := 250 * time.Millisecond
 
 	storeDir := createDir(t, JetStreamStoreDir)
 	defer removeDir(t, storeDir)
@@ -584,7 +584,9 @@ func TestFileStoreAgeLimit(t *testing.T) {
 	subj, msg := "foo", []byte("Hello World")
 	toStore := 500
 	for i := 0; i < toStore; i++ {
-		fs.StoreMsg(subj, nil, msg)
+		if _, _, err := fs.StoreMsg(subj, nil, msg); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
 	}
 	state := fs.State()
 	if state.Msgs != uint64(toStore) {
@@ -614,7 +616,16 @@ func TestFileStoreAgeLimit(t *testing.T) {
 	if state.Msgs != uint64(toStore) {
 		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
+	fs.RemoveMsg(502)
+	fs.RemoveMsg(602)
+	fs.RemoveMsg(702)
+	fs.RemoveMsg(802)
+	// We will measure the time to make sure expires works with interior deletes.
+	start := time.Now()
 	checkExpired(t)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Took too long to expire: %v", elapsed)
+	}
 }
 
 func TestFileStoreTimeStamps(t *testing.T) {
@@ -2890,4 +2901,228 @@ func TestBadConsumerState(t *testing.T) {
 	if cs, err := decodeConsumerState(bs); err != nil || cs == nil {
 		t.Fatalf("Expected to not throw error, got %v and %+v", err, cs)
 	}
+}
+
+func TestFileStoreExpireMsgsOnStart(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	ttl := 250 * time.Millisecond
+	cfg := StreamConfig{Name: "ORDERS", Subjects: []string{"orders.*"}, Storage: FileStorage, MaxAge: ttl}
+	var fs *fileStore
+
+	startFS := func() *fileStore {
+		t.Helper()
+		fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 8 * 1024}, cfg)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		return fs
+	}
+
+	newFS := func() *fileStore {
+		t.Helper()
+		if fs != nil {
+			fs.Stop()
+			fs = nil
+		}
+		removeDir(t, storeDir)
+		return startFS()
+	}
+
+	restartFS := func(delay time.Duration) *fileStore {
+		if fs != nil {
+			fs.Stop()
+			fs = nil
+			time.Sleep(delay)
+		}
+		fs = startFS()
+		return fs
+	}
+
+	fs = newFS()
+	defer fs.Stop()
+
+	msg := bytes.Repeat([]byte("ABC"), 33) // ~100bytes
+	loadMsgs := func(n int) {
+		t.Helper()
+		for i := 1; i <= n; i++ {
+			if _, _, err := fs.StoreMsg(fmt.Sprintf("orders.%d", i%10), nil, msg); err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+		}
+	}
+
+	checkState := func(msgs, first, last uint64) {
+		t.Helper()
+		if fs == nil {
+			t.Fatalf("No fs")
+			return
+		}
+		state := fs.State()
+		if state.Msgs != msgs {
+			t.Fatalf("Expected %d msgs, got %d", msgs, state.Msgs)
+		}
+		if state.FirstSeq != first {
+			t.Fatalf("Expected %d as first, got %d", first, state.FirstSeq)
+		}
+		if state.LastSeq != last {
+			t.Fatalf("Expected %d as last, got %d", last, state.LastSeq)
+		}
+	}
+
+	checkNumBlks := func(expected int) {
+		fs.mu.RLock()
+		n := len(fs.blks)
+		fs.mu.RUnlock()
+		if n != expected {
+			t.Fatalf("Expected %d msg blks, got %d", expected, n)
+		}
+	}
+
+	// Check the filtered subject state and make sure that is tracked properly.
+	checkFiltered := func(subject string, ss SimpleState) {
+		t.Helper()
+		fss := fs.FilteredState(1, subject)
+		if fss != ss {
+			t.Fatalf("Expected FilteredState of %+v, got %+v", ss, fss)
+		}
+	}
+
+	// Make sure state on disk matches (e.g. writeIndexInfo properly called)
+	checkBlkState := func(index int) {
+		t.Helper()
+		fs.mu.RLock()
+		if index >= len(fs.blks) {
+			t.Fatalf("Out of range, wanted %d but only %d blks", index, len(fs.blks))
+		}
+		mb := fs.blks[index]
+		fs.mu.RUnlock()
+
+		var errStr string
+
+		mb.mu.RLock()
+		// We will do a readIndex op on our clone and then compare.
+		mbc := &msgBlock{fs: fs, ifn: mb.ifn}
+		if err := mbc.readIndexInfo(); err != nil {
+			mb.mu.RUnlock()
+			t.Fatalf("Error during readIndexInfo: %v", err)
+		}
+		// Check state as represented by index info.
+		if mb.msgs != mbc.msgs {
+			errStr = fmt.Sprintf("msgs do not match: %d vs %d", mb.msgs, mbc.msgs)
+		} else if mb.bytes != mbc.bytes {
+			errStr = fmt.Sprintf("bytes do not match: %d vs %d", mb.bytes, mbc.bytes)
+		} else if mb.first != mbc.first {
+			errStr = fmt.Sprintf("first state does not match: %d vs %d", mb.first, mbc.first)
+		} else if mb.last != mbc.last {
+			errStr = fmt.Sprintf("last state does not match: %d vs %d", mb.last, mbc.last)
+		} else if !reflect.DeepEqual(mb.dmap, mbc.dmap) {
+			errStr = fmt.Sprintf("deleted map does not match: %d vs %d", mb.dmap, mbc.dmap)
+		}
+		mb.mu.RUnlock()
+		if errStr != _EMPTY_ {
+			t.Fatal(errStr)
+		}
+	}
+
+	lastSeqForBlk := func(index int) uint64 {
+		t.Helper()
+		fs.mu.RLock()
+		defer fs.mu.RUnlock()
+		if len(fs.blks) == 0 {
+			t.Fatalf("No blocks?")
+		}
+		mb := fs.blks[0]
+		mb.mu.RLock()
+		defer mb.mu.RUnlock()
+		return mb.last.seq
+	}
+
+	// Actual testing here.
+
+	loadMsgs(500)
+	restartFS(ttl + 100*time.Millisecond)
+	checkState(0, 501, 500)
+	checkNumBlks(0)
+
+	// Now check partial expires and the fss tracking state.
+	// Small numbers is to keep them in one block.
+	fs = newFS()
+	loadMsgs(10)
+	time.Sleep(100 * time.Millisecond)
+	loadMsgs(10)
+	restartFS(ttl - 100*time.Millisecond + 25*time.Millisecond) // Just want half
+	checkState(10, 11, 20)
+	checkNumBlks(1)
+	checkFiltered("orders.*", SimpleState{Msgs: 10, First: 11, Last: 20})
+	checkFiltered("orders.5", SimpleState{Msgs: 1, First: 15, Last: 15})
+	checkBlkState(0)
+
+	fs = newFS()
+	loadMsgs(5)
+	time.Sleep(100 * time.Millisecond)
+	loadMsgs(15)
+	restartFS(ttl - 100*time.Millisecond + 25*time.Millisecond) // Just want half
+	checkState(15, 6, 20)
+	checkFiltered("orders.*", SimpleState{Msgs: 15, First: 6, Last: 20})
+	checkFiltered("orders.5", SimpleState{Msgs: 2, First: 10, Last: 20})
+
+	// Now we want to test that if the end of a msg block is all deletes msgs that we do the right thing.
+	fs = newFS()
+	loadMsgs(150)
+	time.Sleep(100 * time.Millisecond)
+	loadMsgs(100)
+
+	checkNumBlks(5)
+
+	// Now delete 10 messages from the end of the first block which we will expire on restart.
+	// We will expire up to seq 100, so delete 91-100.
+	lseq := lastSeqForBlk(0)
+	for seq := lseq; seq > lseq-10; seq-- {
+		removed, err := fs.RemoveMsg(seq)
+		if err != nil || !removed {
+			t.Fatalf("Error removing message: %v", err)
+		}
+	}
+	restartFS(ttl - 100*time.Millisecond + 25*time.Millisecond) // Just want half
+	checkState(100, 151, 250)
+	checkNumBlks(3) // We should only have 3 blks left.
+	checkBlkState(0)
+
+	// Now make sure that we properly clean up any internal dmap entries (sparse) when expiring.
+	fs = newFS()
+	loadMsgs(10)
+	// Remove some in sparse fashion, adding to dmap.
+	fs.RemoveMsg(2)
+	fs.RemoveMsg(4)
+	fs.RemoveMsg(6)
+	time.Sleep(100 * time.Millisecond)
+	loadMsgs(10)
+	restartFS(ttl - 100*time.Millisecond + 25*time.Millisecond) // Just want half
+	checkState(10, 11, 20)
+	checkNumBlks(1)
+	checkBlkState(0)
+
+	// Make sure expiring a block with tail deleted messages removes the message block etc.
+	fs = newFS()
+	loadMsgs(7)
+	time.Sleep(100 * time.Millisecond)
+	loadMsgs(3)
+	fs.RemoveMsg(8)
+	fs.RemoveMsg(9)
+	fs.RemoveMsg(10)
+	restartFS(ttl - 100*time.Millisecond + 25*time.Millisecond)
+	checkState(0, 11, 10)
+
+	// Not for start per se but since we have all the test tooling here check that Compact() does right thing as well.
+	fs = newFS()
+	loadMsgs(100)
+	checkFiltered("orders.*", SimpleState{Msgs: 100, First: 1, Last: 100})
+	checkFiltered("orders.5", SimpleState{Msgs: 10, First: 5, Last: 95})
+	// Check that Compact keeps fss updated, does dmap etc.
+	fs.Compact(51)
+	checkFiltered("orders.*", SimpleState{Msgs: 50, First: 51, Last: 100})
+	checkFiltered("orders.5", SimpleState{Msgs: 5, First: 55, Last: 95})
+	checkBlkState(0)
 }

@@ -24,6 +24,7 @@ import (
 	"net/url"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2410,4 +2411,78 @@ func TestNoRaceJetStreamFileStoreBufferReuse(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	fmt.Printf("MEM AFTER SUBSCRIBE is %v\n", friendlyBytes(v.Mem))
+}
+
+// Report of slow restart for a server that has many messages that have expired while it was not running.
+func TestNoRaceJetStreamSlowRestartWithManyExpiredMsgs(t *testing.T) {
+	opts := DefaultTestOptions
+	opts.Port = -1
+	opts.JetStream = true
+	s := RunServer(&opts)
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	ttl := 2 * time.Second
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "ORDERS",
+		Subjects: []string{"orders.*"},
+		MaxAge:   ttl,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Attach a consumer who is filtering on a wildcard subject as well.
+	// This does not affect it like I thought originally but will keep it here.
+	_, err = js.AddConsumer("ORDERS", &nats.ConsumerConfig{
+		Durable:       "c22",
+		FilterSubject: "orders.*",
+		AckPolicy:     nats.AckExplicitPolicy,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now fill up with messages.
+	toSend := 100_000
+	for i := 1; i <= toSend; i++ {
+		js.PublishAsync(fmt.Sprintf("orders.%d", i), []byte("OK"))
+	}
+	<-js.PublishAsyncComplete()
+
+	sdir := strings.TrimSuffix(s.JetStreamConfig().StoreDir, JetStreamStoreDir)
+	s.Shutdown()
+
+	// Let them expire while not running.
+	time.Sleep(ttl + 500*time.Millisecond)
+
+	start := time.Now()
+	opts.Port = -1
+	opts.StoreDir = sdir
+	s = RunServer(&opts)
+	elapsed := time.Since(start)
+	defer s.Shutdown()
+
+	if elapsed > 2*time.Second {
+		t.Fatalf("Took %v for restart which is too long", elapsed)
+	}
+
+	// Check everything is correct.
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err := js.StreamInfo("ORDERS")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.State.Msgs != 0 {
+		t.Fatalf("Expected no msgs after restart, got %d", si.State.Msgs)
+	}
 }
