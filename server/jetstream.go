@@ -668,20 +668,57 @@ func (s *Server) configAllJetStreamAccounts() error {
 	return nil
 }
 
-// JetStreamEnabled reports if jetstream is enabled.
-func (s *Server) JetStreamEnabled() bool {
-	s.mu.Lock()
-	js := s.js
-	s.mu.Unlock()
+func (js *jetStream) isEnabled() bool {
+	if js == nil {
+		return false
+	}
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	return !js.disabled
+}
 
-	var enabled bool
-	if js != nil {
-		js.mu.RLock()
-		enabled = !js.disabled
-		js.mu.RUnlock()
+// JetStreamEnabled reports if jetstream is enabled for this server.
+func (s *Server) JetStreamEnabled() bool {
+	var js *jetStream
+	s.mu.Lock()
+	js = s.js
+	s.mu.Unlock()
+	return js.isEnabled()
+}
+
+// JetStreamEnabledForDomain will report if any servers have JetStream enabled within this domain.
+func (s *Server) JetStreamEnabledForDomain() bool {
+	if s.JetStreamEnabled() {
+		return true
 	}
 
-	return enabled
+	var jsFound bool
+	// If we are here we do not have JetStream enabled for ourselves, but we need to check all connected servers.
+	// TODO(dlc) - Could optimize and memoize this.
+	s.nodeToInfo.Range(func(k, v interface{}) bool {
+		// This should not be dependent on online status, so only check js.
+		if v.(nodeInfo).js {
+			jsFound = true
+			return false
+		}
+		return true
+	})
+
+	return jsFound
+}
+
+// Helper to see if we have a non-empty domain defined in any server we know about.
+func (s *Server) jetStreamHasDomainConfigured() bool {
+	var found bool
+	s.nodeToInfo.Range(func(k, v interface{}) bool {
+		if v.(nodeInfo).domain != _EMPTY_ {
+			found = true
+			return false
+		}
+		return true
+	})
+
+	return found
 }
 
 // Will migrate off ephemerals if possible.

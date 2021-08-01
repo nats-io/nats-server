@@ -187,21 +187,24 @@ func (s *Server) addInJSDenyAll(r *leafNodeCfg) {
 func (s *Server) hasSystemRemoteLeaf() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.hasSystemRemoteLeafLocked() != nil
+}
 
-	var sacc string
-	if s.sys != nil {
-		sacc = s.sys.account.Name
+func (s *Server) hasSystemRemoteLeafLocked() *leafNodeCfg {
+	if s.sys == nil {
+		return nil
 	}
 
+	sacc := s.sys.account.Name
 	for _, r := range s.leafRemoteCfgs {
 		r.RLock()
 		lacc := r.LocalAccount
 		r.RUnlock()
 		if lacc == sacc {
-			return true
+			return r
 		}
 	}
-	return false
+	return nil
 }
 
 // This will spin up go routines to solicit the remote leaf node connections.
@@ -460,6 +463,8 @@ func (s *Server) setLeafNodeNonExportedOptions() {
 	}
 }
 
+const sharedSysAccDelay = 250 * time.Millisecond
+
 func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool) {
 	defer s.grWG.Done()
 
@@ -473,7 +478,17 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 	s.mu.Lock()
 	dialTimeout := s.leafNodeOpts.dialTimeout
 	resolver := s.leafNodeOpts.resolver
+	var isSysAcc bool
+	if s.eventsEnabled() {
+		isSysAcc = remote.LocalAccount == s.sys.account.Name
+	}
 	s.mu.Unlock()
+
+	// If we are sharing a system account and we are not standalone delay to gather some info prior.
+	if firstConnect && isSysAcc && !s.standAloneMode() {
+		s.Debugf("Will delay first leafnode connect to shared system account due to clustering")
+		remote.setConnectDelay(sharedSysAccDelay)
+	}
 
 	if connDelay := remote.getConnectDelay(); connDelay > 0 {
 		select {
@@ -1007,13 +1022,22 @@ func (c *client) processLeafnodeInfo(info *Info) {
 
 		// Check for JetStream semantics to deny the JetStream API as needed.
 		// This is so that if JetStream is enabled on both sides we can separately address both.
-		if remote, acc := c.leaf.remote, c.acc; remote != nil {
-			remote.Lock()
+		hasJSDomain := opts.JetStreamDomain != _EMPTY_
+		inJSEnabledDomain := s.JetStreamEnabledForDomain()
 
+		// Check for mixed mode scenarios to resolve presence of domain names.
+		if !s.JetStreamEnabled() && inJSEnabledDomain && !hasJSDomain && s.jetStreamHasDomainConfigured() {
+			hasJSDomain = true
+		}
+
+		if remote, acc := c.leaf.remote, c.acc; remote != nil {
+			accHasJS := acc.jetStreamConfigured()
+			remote.Lock()
 			// JetStream checks for mappings and permissions updates.
-			hasJSDomain := opts.JetStreamDomain != _EMPTY_
 			if acc != sysAcc {
-				if hasSysShared {
+				// Check if JetStream is enabled for this domain. If it's not, and the account
+				// does not have JS, we can act as pass through, so do not deny.
+				if hasSysShared && (inJSEnabledDomain || accHasJS) {
 					s.addInJSDeny(remote)
 				} else {
 					// Here we want to suppress if this local account has JS enabled.
@@ -1021,7 +1045,7 @@ func (c *client) processLeafnodeInfo(info *Info) {
 					// We only suppress export. But we do send an indication about our JetStream
 					// status in the connect and the hub side will suppress as well if the remote
 					// account also has JetStream enabled.
-					if acc.jetStreamConfigured() {
+					if accHasJS {
 						s.addInJSDenyExport(remote)
 					}
 				}
