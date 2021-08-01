@@ -264,9 +264,11 @@ type Server struct {
 	sysAccOnlyNoAuthUser string
 }
 
+// For tracking JS nodes.
 type nodeInfo struct {
 	name    string
 	cluster string
+	domain  string
 	id      string
 	offline bool
 	js      bool
@@ -380,7 +382,7 @@ func NewServer(opts *Options) (*Server, error) {
 
 	// Place ourselves in some lookup maps.
 	ourNode := string(getHash(serverName))
-	s.nodeToInfo.Store(ourNode, nodeInfo{serverName, opts.Cluster.Name, info.ID, false, opts.JetStream})
+	s.nodeToInfo.Store(ourNode, nodeInfo{serverName, opts.Cluster.Name, opts.JetStreamDomain, info.ID, false, opts.JetStream})
 
 	s.routeResolver = opts.Cluster.resolver
 	if s.routeResolver == nil {

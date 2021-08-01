@@ -632,6 +632,12 @@ func (s *Server) heartbeatStatsz() {
 	s.sendStatsz(fmt.Sprintf(serverStatsSubj, s.info.ID))
 }
 
+func (s *Server) sendStatszUpdate() {
+	s.mu.Lock()
+	s.sendStatsz(fmt.Sprintf(serverStatsSubj, s.info.ID))
+	s.mu.Unlock()
+}
+
 // This should be wrapChk() to setup common locking.
 func (s *Server) startStatszTimer() {
 	// We will start by sending out more of these and trail off to the statsz being the max.
@@ -952,7 +958,7 @@ func (s *Server) remoteServerShutdown(sub *subscription, _ *client, _ *Account, 
 		return
 	}
 	node := string(getHash(si.Name))
-	s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Cluster, si.ID, true, true})
+	s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Cluster, si.Domain, si.ID, true, true})
 
 	sid := toks[serverSubjectIndex]
 	if su := s.sys.servers[sid]; su != nil {
@@ -972,7 +978,7 @@ func (s *Server) remoteServerUpdate(sub *subscription, _ *client, _ *Account, su
 		return
 	}
 	node := string(getHash(si.Name))
-	s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Cluster, si.ID, false, si.JetStream})
+	s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Cluster, si.Domain, si.ID, false, si.JetStream})
 }
 
 // updateRemoteServer is called when we have an update from a remote server.
@@ -1004,7 +1010,7 @@ func (s *Server) processNewServer(ms *ServerInfo) {
 	// Add to our nodeToName
 	if s.sameDomain(ms.Domain) {
 		node := string(getHash(ms.Name))
-		s.nodeToInfo.Store(node, nodeInfo{ms.Name, ms.Cluster, ms.ID, false, ms.JetStream})
+		s.nodeToInfo.Store(node, nodeInfo{ms.Name, ms.Cluster, ms.Domain, ms.ID, false, ms.JetStream})
 	}
 	// Announce ourselves..
 	s.sendStatsz(fmt.Sprintf(serverStatsSubj, s.info.ID))
@@ -1967,7 +1973,7 @@ func issuerForClient(c *client) (issuerKey string) {
 		return
 	}
 	issuerKey = c.user.SigningKey
-	if issuerKey == "" && c.user.Account != nil {
+	if issuerKey == _EMPTY_ && c.user.Account != nil {
 		issuerKey = c.user.Account.Name
 	}
 	return

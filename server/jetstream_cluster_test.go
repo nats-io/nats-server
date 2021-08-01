@@ -5758,7 +5758,7 @@ func TestJetStreamClusterAckPendingWithMaxRedelivered(t *testing.T) {
 }
 
 func TestJetStreamClusterMixedMode(t *testing.T) {
-	c := createMixedModeCluster(t, "MM5", 3, 2)
+	c := createMixedModeCluster(t, jsClusterLimitsTempl, "MM5", _EMPTY_, 3, 2, false)
 	defer c.shutdown()
 
 	// Client based API - Non-JS server.
@@ -6559,6 +6559,60 @@ func TestJetStreamClusterSingleLeafNodeEnablingJetStream(t *testing.T) {
 	if _, err := js.AccountInfo(); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+}
+
+func TestJetStreamClusterLeafNodesWithoutJS(t *testing.T) {
+	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: HUB, store_dir:", 1)
+	c := createJetStreamCluster(t, tmpl, "HUB", _EMPTY_, 3, 11233, true)
+	defer c.shutdown()
+
+	testJS := func(s *Server, domain string, doDomainAPI bool) {
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+		if doDomainAPI {
+			var err error
+			apiPre := fmt.Sprintf("$JS.%s.API", domain)
+			if js, err = nc.JetStream(nats.APIPrefix(apiPre)); err != nil {
+				t.Fatalf("Unexpected error getting JetStream context: %v", err)
+			}
+		}
+		ai, err := js.AccountInfo()
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if ai.Domain != domain {
+			t.Fatalf("Expected domain of %q, got %q", domain, ai.Domain)
+		}
+	}
+
+	ln := c.createLeafNodeWithTemplate("LN-SYS-S-NOJS", jsClusterTemplWithSingleLeafNodeNoJS)
+	defer ln.Shutdown()
+
+	// Check that we can access JS in the $G account on the cluster through the leafnode.
+	testJS(ln, "HUB", false)
+	ln.Shutdown()
+
+	// Now create a leafnode cluster with No JS and make sure that works.
+	lnc := c.createLeafNodesNoJS("LN-SYS-C-NOJS", 3)
+	defer lnc.shutdown()
+
+	testJS(lnc.randomServer(), "HUB", false)
+	lnc.shutdown()
+
+	// Do mixed mode but with a JS config block that specifies domain and just sets it to disabled.
+	// This is the preferred method for mixed mode, always define JS server config block just disable
+	// in those you do not want it running.
+	// e.g. jetstream: {domain: "SPOKE", enabled: false}
+	tmpl = strings.Replace(jsClusterTemplWithLeafNode, "store_dir:", "domain: SPOKE, store_dir:", 1)
+	lncm := c.createLeafNodesWithTemplateMixedMode(tmpl, "SPOKE", 3, 2, true)
+	defer lncm.shutdown()
+
+	// Now grab a non-JS server, last two are non-JS.
+	sl := lncm.servers[0]
+	testJS(sl, "SPOKE", false)
+
+	// Test that mappings work as well and we can access the hub.
+	testJS(sl, "HUB", true)
 }
 
 // Issue reported with superclusters and leafnodes where first few get next requests for pull susbcribers
@@ -8030,8 +8084,10 @@ var jsClusterImportsTempl = `
 	}
 `
 
-func createMixedModeCluster(t *testing.T, clusterName string, numJsServers, numNonServers int) *cluster {
-	if clusterName == "" || numJsServers < 1 || numNonServers < 1 {
+func createMixedModeCluster(t *testing.T, tmpl string, clusterName, snPre string, numJsServers, numNonServers int, doJSConfig bool) *cluster {
+	t.Helper()
+
+	if clusterName == _EMPTY_ || numJsServers < 1 || numNonServers < 1 {
 		t.Fatalf("Bad params")
 	}
 
@@ -8050,12 +8106,19 @@ func createMixedModeCluster(t *testing.T, clusterName string, numJsServers, numN
 
 	for cp := startClusterPort; cp < startClusterPort+numServers; cp++ {
 		storeDir := createDir(t, JetStreamStoreDir)
-		sn := fmt.Sprintf("S-%d", cp-startClusterPort+1)
-		conf := fmt.Sprintf(jsClusterLimitsTempl, sn, storeDir, clusterName, cp, routeConfig)
 
-		// Disable JS by commmenting it out.
+		sn := fmt.Sprintf("%sS-%d", snPre, cp-startClusterPort+1)
+		conf := fmt.Sprintf(tmpl, sn, storeDir, clusterName, cp, routeConfig)
+
+		// Disable JS here.
 		if cp-startClusterPort >= numJsServers {
-			conf = strings.Replace(conf, "jetstream: ", "#jetstream: ", 1)
+			// We can disable by commmenting it out, meaning no JS config, or can set the config up and just set disabled.
+			// e.g. jetstream: {domain: "SPOKE", enabled: false}
+			if doJSConfig {
+				conf = strings.Replace(conf, "jetstream: {", "jetstream: { enabled: false, ", 1)
+			} else {
+				conf = strings.Replace(conf, "jetstream: ", "# jetstream: ", 1)
+			}
 		}
 
 		s, o := RunServerWithConfig(createConfFile(t, []byte(conf)))
@@ -8083,9 +8146,9 @@ func createJetStreamClusterWithTemplate(t *testing.T, tmpl string, clusterName s
 	return createJetStreamCluster(t, tmpl, clusterName, _EMPTY_, numServers, port, true)
 }
 
-func createJetStreamCluster(t *testing.T, tmpl string, clusterName string, snPre string, numServers int, portStart int, waitOnReady bool) *cluster {
+func createJetStreamCluster(t *testing.T, tmpl string, clusterName, snPre string, numServers int, portStart int, waitOnReady bool) *cluster {
 	t.Helper()
-	if clusterName == "" || numServers < 1 {
+	if clusterName == _EMPTY_ || numServers < 1 {
 		t.Fatalf("Bad params")
 	}
 
@@ -8204,10 +8267,41 @@ var jsClusterTemplWithLeafNode = `
 	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
 `
 
+var jsClusterTemplWithLeafNodeNoJS = `
+	listen: 127.0.0.1:-1
+	server_name: %s
+
+	# Need to keep below since it fills in the store dir by default so just comment out.
+	# jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: "%s"}
+
+	{{leaf}}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	# For access to system account.
+	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+`
+
 var jsClusterTemplWithSingleLeafNode = `
 	listen: 127.0.0.1:-1
 	server_name: %s
 	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: "%s"}
+
+	{{leaf}}
+
+	# For access to system account.
+	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+`
+
+var jsClusterTemplWithSingleLeafNodeNoJS = `
+	listen: 127.0.0.1:-1
+	server_name: %s
+
+	# jetstream: {store_dir: "%s"}
 
 	{{leaf}}
 
@@ -8226,6 +8320,10 @@ var jsLeafFrag = `
 
 func (c *cluster) createLeafNodes(clusterName string, numServers int) *cluster {
 	return c.createLeafNodesWithStartPort(clusterName, numServers, 22111)
+}
+
+func (c *cluster) createLeafNodesNoJS(clusterName string, numServers int) *cluster {
+	return c.createLeafNodesWithTemplateAndStartPort(jsClusterTemplWithLeafNodeNoJS, clusterName, numServers, 21333)
 }
 
 func (c *cluster) createLeafNodesWithStartPort(clusterName string, numServers int, portStart int) *cluster {
@@ -8261,6 +8359,20 @@ func (c *cluster) createLeafSolicit(tmpl string) string {
 	lnsc := strings.Join(lnss, ", ")
 	lconf := fmt.Sprintf(jsLeafFrag, lnc, lnsc)
 	return strings.Replace(tmpl, "{{leaf}}", lconf, 1)
+}
+
+func (c *cluster) createLeafNodesWithTemplateMixedMode(template, clusterName string, numJsServers, numNonServers int, doJSConfig bool) *cluster {
+	// Create our leafnode cluster template first.
+	tmpl := c.createLeafSolicit(template)
+	pre := clusterName + "-"
+
+	lc := createMixedModeCluster(c.t, tmpl, clusterName, pre, numJsServers, numNonServers, doJSConfig)
+	for _, s := range lc.servers {
+		checkLeafNodeConnectedCount(c.t, s, 2)
+	}
+	lc.waitOnClusterReadyWithNumPeers(numJsServers)
+
+	return lc
 }
 
 func (c *cluster) createLeafNodesWithTemplateAndStartPort(template, clusterName string, numServers int, portStart int) *cluster {
@@ -8381,8 +8493,7 @@ func (c *cluster) waitOnPeerCount(n int) {
 	}
 	expires := time.Now().Add(10 * time.Second)
 	for time.Now().Before(expires) {
-		peers := leader.JetStreamClusterPeers()
-		if len(peers) == n {
+		if peers := leader.JetStreamClusterPeers(); len(peers) == n {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -8535,6 +8646,11 @@ func (c *cluster) waitOnLeader() {
 // Helper function to check that a cluster is formed
 func (c *cluster) waitOnClusterReady() {
 	c.t.Helper()
+	c.waitOnClusterReadyWithNumPeers(len(c.servers))
+}
+
+func (c *cluster) waitOnClusterReadyWithNumPeers(numPeersExpected int) {
+	c.t.Helper()
 	var leader *Server
 	expires := time.Now().Add(20 * time.Second)
 	for time.Now().Before(expires) {
@@ -8545,22 +8661,23 @@ func (c *cluster) waitOnClusterReady() {
 	}
 	// Now make sure we have all peers.
 	for leader != nil && time.Now().Before(expires) {
-		if len(leader.JetStreamClusterPeers()) == len(c.servers) {
+		if len(leader.JetStreamClusterPeers()) == numPeersExpected {
 			time.Sleep(100 * time.Millisecond)
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 
+	peersSeen := len(leader.JetStreamClusterPeers())
 	c.shutdown()
 	if leader == nil {
 		c.t.Fatalf("Expected a cluster leader and fully formed cluster, no leader")
 	} else {
-		c.t.Fatalf("Expected a fully formed cluster, only %d of %d peers seen", len(leader.JetStreamClusterPeers()), len(c.servers))
+		c.t.Fatalf("Expected a fully formed cluster, only %d of %d peers seen", peersSeen, numPeersExpected)
 	}
 }
 
-// Helper function to check that a cluster is formed
+// Helper function to remove JetStream from a server.
 func (c *cluster) removeJetStream(s *Server) {
 	c.t.Helper()
 	index := -1

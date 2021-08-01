@@ -292,7 +292,7 @@ func (s *Server) JetStreamClusterPeers() []string {
 	var nodes []string
 	for _, p := range peers {
 		si, ok := s.nodeToInfo.Load(p.ID)
-		if !ok || si.(nodeInfo).offline {
+		if !ok || si.(nodeInfo).offline || !si.(nodeInfo).js {
 			continue
 		}
 		nodes = append(nodes, si.(nodeInfo).name)
