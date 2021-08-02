@@ -6,7 +6,7 @@ github.com/klauspost/compress/s2
 # github.com/minio/highwayhash v1.0.1
 ## explicit
 github.com/minio/highwayhash
-# github.com/nats-io/jwt/v2 v2.0.3-0.20210715221700-37a10b0187c7
+# github.com/nats-io/jwt/v2 v2.0.3
 ## explicit
 github.com/nats-io/jwt/v2
 # github.com/nats-io/nats.go v1.11.1-0.20210623165838-4b75fc59ae30
