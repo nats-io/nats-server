@@ -2757,20 +2757,19 @@ func (o *consumer) hasNoLocalInterest() bool {
 }
 
 // This is when the underlying stream has been purged.
+// sseq is the new first seq for the stream after purge.
 func (o *consumer) purge(sseq uint64) {
+	if sseq == 0 {
+		return
+	}
+
 	o.mu.Lock()
 	o.sseq = sseq
 	o.asflr = sseq - 1
 	o.adflr = o.dseq - 1
 	o.sgap = 0
-	if len(o.pending) > 0 {
-		o.pending = nil
-		if o.ptmr != nil {
-			o.ptmr.Stop()
-			// Do not nil this out here. This allows checkPending to fire
-			// and still be ok and not panic.
-		}
-	}
+	o.pending = nil
+
 	// We need to remove all those being queued for redelivery under o.rdq
 	if len(o.rdq) > 0 {
 		rdq := o.rdq
