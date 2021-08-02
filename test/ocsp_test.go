@@ -2438,3 +2438,17 @@ func getOCSPStatus(s tls.ConnectionState) (*ocsp.Response, error) {
 	}
 	return resp, nil
 }
+
+func TestOCSPTLSConfigNoLeafSet(t *testing.T) {
+	o := DefaultTestOptions
+	o.HTTPHost = "127.0.0.1"
+	o.HTTPSPort = -1
+	o.TLSConfig = &tls.Config{ServerName: "localhost"}
+	cert, err := tls.LoadX509KeyPair("configs/certs/server-cert.pem", "configs/certs/server-key.pem")
+	if err != nil {
+		t.Fatalf("Got error reading certificates: %s", err)
+	}
+	o.TLSConfig.Certificates = []tls.Certificate{cert}
+	s := RunServer(&o)
+	s.Shutdown()
+}

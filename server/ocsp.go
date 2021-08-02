@@ -334,6 +334,18 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 	// NOTE: Currently OCSP Stapling is enabled only for the first certificate found.
 	var mon *OCSPMonitor
 	for _, cert := range tc.Certificates {
+		// This is normally non-nil, but can still be nil here when in tests
+		// or in some embedded scenarios.
+		if cert.Leaf == nil {
+			if len(cert.Certificate) <= 0 {
+				return nil, nil, fmt.Errorf("no certificate found")
+			}
+			var err error
+			cert.Leaf, err = x509.ParseCertificate(cert.Certificate[0])
+			if err != nil {
+				return nil, nil, fmt.Errorf("error parsing certificate: %v", err)
+			}
+		}
 		var shutdownOnRevoke bool
 		mustStaple := hasOCSPStatusRequest(cert.Leaf)
 		if oc != nil {
