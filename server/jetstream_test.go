@@ -12382,6 +12382,58 @@ func TestJetStreamConsumerCleanupWithRetentionPolicy(t *testing.T) {
 	}
 }
 
+// Issue #2392
+func TestJetStreamPurgeEffectsConsumerDelivery(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.*"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	js.Publish("foo.a", []byte("show once"))
+
+	sub, err := js.SubscribeSync("foo.*", nats.AckWait(250*time.Millisecond), nats.DeliverAll(), nats.AckExplicit())
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer sub.Unsubscribe()
+
+	checkSubsPending(t, sub, 1)
+
+	// Do not ack.
+	if _, err := sub.NextMsg(time.Second); err != nil {
+		t.Fatalf("Error receiving message: %v", err)
+	}
+
+	// Now purge stream.
+	if err := js.PurgeStream("TEST"); err != nil {
+		t.Fatalf("Unexpected purge error: %v", err)
+	}
+
+	js.Publish("foo.b", []byte("show twice?"))
+	// Do not ack again, should show back up.
+	if _, err := sub.NextMsg(time.Second); err != nil {
+		t.Fatalf("Error receiving message: %v", err)
+	}
+	// Make sure we get it back.
+	if _, err := sub.NextMsg(time.Second); err != nil {
+		t.Fatalf("Error receiving message: %v", err)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
