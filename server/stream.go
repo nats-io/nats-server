@@ -2341,11 +2341,21 @@ func (mset *stream) storeUpdates(md, bd int64, seq uint64, subj string) {
 	// If we have a single negative update then we will process our consumers for stream pending.
 	// Purge and Store handled separately inside individual calls.
 	if md == -1 && seq > 0 {
+		// We need to pull these out here and release the lock, even and RLock. RLocks are allowed to
+		// be reentrant, however once anyone signals interest in a write lock any subsequent RLocks
+		// will block. decStreamPending can try to re-acquire the RLock for this stream.
+		var _cl [8]*consumer
+		cl := _cl[:0]
+
 		mset.mu.RLock()
 		for _, o := range mset.consumers {
-			o.decStreamPending(seq, subj)
+			cl = append(cl, o)
 		}
 		mset.mu.RUnlock()
+
+		for _, o := range cl {
+			o.decStreamPending(seq, subj)
+		}
 	}
 
 	if mset.jsa != nil {
@@ -2363,7 +2373,7 @@ func (mset *stream) numMsgIds() int {
 // checkMsgId will process and check for duplicates.
 // Lock should be held.
 func (mset *stream) checkMsgId(id string) *ddentry {
-	if id == "" || mset.ddmap == nil {
+	if id == _EMPTY_ || mset.ddmap == nil {
 		return nil
 	}
 	return mset.ddmap[id]
@@ -3194,8 +3204,8 @@ func (mset *stream) getPublicConsumers() []*consumer {
 
 // NumConsumers reports on number of active consumers for this stream.
 func (mset *stream) numConsumers() int {
-	mset.mu.Lock()
-	defer mset.mu.Unlock()
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
 	return len(mset.consumers)
 }
 

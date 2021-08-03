@@ -12434,6 +12434,57 @@ func TestJetStreamPurgeEffectsConsumerDelivery(t *testing.T) {
 	}
 }
 
+// Issue #2403
+func TestJetStreamExpireCausesDeadlock(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo.*"},
+		Storage:   nats.MemoryStorage,
+		MaxMsgs:   10,
+		Retention: nats.InterestPolicy,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sub, err := js.SubscribeSync("foo.bar")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer sub.Unsubscribe()
+
+	// Publish from two connections to get the write lock request wedged in between
+	// having the RLock and wanting it again deeper in the stack.
+	nc2, js2 := jsClientConnect(t, s)
+	defer nc2.Close()
+
+	for i := 0; i < 1000; i++ {
+		js.PublishAsync("foo.bar", []byte("HELLO"))
+		js2.PublishAsync("foo.bar", []byte("HELLO"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// If we deadlocked then we will not be able to get stream info.
+	if _, err := js.StreamInfo("TEST"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
