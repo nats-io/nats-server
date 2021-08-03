@@ -7748,6 +7748,102 @@ func TestJetStreamClusterMaxConsumersMultipleConcurrentRequests(t *testing.T) {
 	}
 }
 
+func TestJetStreamPanicDecodingConsumerState(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	rch := make(chan struct{}, 1)
+	nc, js := jsClientConnect(t, c.randomServer(),
+		nats.ReconnectWait(50*time.Millisecond),
+		nats.MaxReconnects(-1),
+		nats.ReconnectHandler(func(_ *nats.Conn) {
+			rch <- struct{}{}
+		}),
+	)
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"ORDERS.*"},
+		Storage:   nats.FileStorage,
+		Replicas:  3,
+		Retention: nats.WorkQueuePolicy,
+		Discard:   nats.DiscardNew,
+		MaxMsgs:   -1,
+		MaxAge:    time.Hour * 24 * 365,
+	}); err != nil {
+		t.Fatalf("Error creating stream: %v", err)
+	}
+
+	if _, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:       "durable",
+		DeliverPolicy: nats.DeliverAllPolicy,
+		AckPolicy:     nats.AckExplicitPolicy,
+		ReplayPolicy:  nats.ReplayInstantPolicy,
+		FilterSubject: "ORDERS.created",
+		AckWait:       time.Second * 30,
+		MaxDeliver:    -1,
+		MaxAckPending: 1000,
+	}); err != nil {
+		t.Fatalf("Error creating consumer: %v", err)
+	}
+
+	sub, err := js.PullSubscribe("ORDERS.created", "durable", nats.Bind("TEST", "durable"))
+	if err != nil {
+		t.Fatalf("Error creating pull subscriber: %v", err)
+	}
+
+	sendMsg := func(subject string) {
+		t.Helper()
+		if _, err := js.Publish(subject, []byte("msg")); err != nil {
+			t.Fatalf("Error on publish: %v", err)
+		}
+	}
+
+	for i := 0; i < 100; i++ {
+		sendMsg("ORDERS.something")
+		sendMsg("ORDERS.created")
+	}
+
+	for total := 0; total != 100; {
+		msgs, err := sub.Fetch(100-total, nats.MaxWait(2*time.Second))
+		if err != nil {
+			t.Fatalf("Failed to fetch message: %v", err)
+		}
+		for _, m := range msgs {
+			m.Ack()
+			total++
+		}
+	}
+
+	c.stopAll()
+	c.restartAllSamePorts()
+	c.waitOnStreamLeader("$G", "TEST")
+	c.waitOnConsumerLeader("$G", "TEST", "durable")
+
+	select {
+	case <-rch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Did not reconnect")
+	}
+
+	for i := 0; i < 100; i++ {
+		sendMsg("ORDERS.something")
+		sendMsg("ORDERS.created")
+	}
+
+	for total := 0; total != 100; {
+		msgs, err := sub.Fetch(100-total, nats.MaxWait(2*time.Second))
+		if err != nil {
+			t.Fatalf("Error on fetch: %v", err)
+		}
+		for _, m := range msgs {
+			m.Ack()
+			total++
+		}
+	}
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
@@ -8719,6 +8815,18 @@ func (c *cluster) restartAll() {
 			s, o := RunServerWithConfig(opts.ConfigFile)
 			c.servers[i] = s
 			c.opts[i] = o
+		}
+	}
+	c.waitOnClusterReady()
+}
+
+func (c *cluster) restartAllSamePorts() {
+	c.t.Helper()
+	for i, s := range c.servers {
+		if !s.Running() {
+			opts := c.opts[i]
+			s := RunServer(opts)
+			c.servers[i] = s
 		}
 	}
 	c.waitOnClusterReady()
