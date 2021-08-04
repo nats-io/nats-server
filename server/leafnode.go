@@ -116,19 +116,42 @@ func (s *Server) addInJSDeny(r *leafNodeCfg) {
 	s.addInJSDenyImport(r)
 }
 
+// To deny all JS traffic.
+var jsDenyAll = []string{jsAllAPI, jsAckAPI, jsFlowControlAPI, jsSnapshotAPI}
+
+// Lock should be held.
+func (r *leafNodeCfg) containsDenyExport(deny string) bool {
+	for _, dsubj := range r.DenyExports {
+		if dsubj == deny {
+			return true
+		}
+	}
+	return false
+}
+
+// Lock should be held.
+func (r *leafNodeCfg) containsDenyImport(deny string) bool {
+	for _, dsubj := range r.DenyImports {
+		if dsubj == deny {
+			return true
+		}
+	}
+	return false
+}
+
 // Will add in the deny export for JetStream on solicited connections if we
 // detect we have multiple JetStream domains and we know our local account
 // is JetStream enabled.
 // r lock should be held.
 func (s *Server) addInJSDenyExport(r *leafNodeCfg) {
-	for _, dsubj := range r.DenyExports {
-		if dsubj == jsAllAPI {
-			return
+	for _, deny := range jsDenyAll {
+		if r.containsDenyExport(deny) {
+			continue
 		}
+		// Not present so add here.
+		s.Noticef("Adding deny export of %q for leafnode configuration on %q that bridges system account", deny, r.LocalAccount)
+		r.DenyExports = append(r.DenyExports, deny)
 	}
-
-	s.Noticef("Adding deny export of %q for leafnode configuration on %q that bridges system account", jsAllAPI, r.LocalAccount)
-	r.DenyExports = append(r.DenyExports, jsAllAPI)
 
 	// We added in some deny clauses here so need to regenerate the permissions etc.
 	perms := &Permissions{}
@@ -144,14 +167,14 @@ func (s *Server) addInJSDenyExport(r *leafNodeCfg) {
 // is JetStream enabled.
 // r lock should be held.
 func (s *Server) addInJSDenyImport(r *leafNodeCfg) {
-	for _, dsubj := range r.DenyImports {
-		if dsubj == jsAllAPI {
-			return
+	for _, deny := range jsDenyAll {
+		if r.containsDenyImport(deny) {
+			continue
 		}
-	}
 
-	s.Noticef("Adding deny import of %q for leafnode configuration on %q that bridges system account", jsAllAPI, r.LocalAccount)
-	r.DenyImports = append(r.DenyImports, jsAllAPI)
+		s.Noticef("Adding deny import of %q for leafnode configuration on %q that bridges system account", deny, r.LocalAccount)
+		r.DenyImports = append(r.DenyImports, deny)
+	}
 
 	// We added in some deny clauses here so need to regenerate the permissions etc.
 	perms := &Permissions{}
@@ -165,7 +188,8 @@ func (s *Server) addInJSDenyImport(r *leafNodeCfg) {
 // Used for $SYS accounts when sharing but using separate JS domains.
 // r lock should be held.
 func (s *Server) addInJSDenyAll(r *leafNodeCfg) {
-	denyAll := []string{jscAllSubj, raftAllSubj, jsAllAPI}
+	denyAll := jsDenyAll
+	denyAll = append(denyAll, jscAllSubj, raftAllSubj)
 
 	s.Noticef("Sharing system account but utilizing separate JetStream Domains")
 	s.Noticef("Adding deny of %+v for leafnode configuration that bridges system account", denyAll)
@@ -657,6 +681,11 @@ var credsRe = regexp.MustCompile(`\s*(?:(?:[-]{3,}[^\n]*[-]{3,}\n)(.+)(?:\n\s*[-
 
 // Lock should be held entering here.
 func (c *client) sendLeafConnect(clusterName string, tlsRequired, headers bool) error {
+	var jsDomain string
+	if s := c.srv; s != nil {
+		jsDomain = s.getOpts().JetStreamDomain
+	}
+
 	// We support basic user/pass and operator based user JWT with signatures.
 	cinfo := leafConnectInfo{
 		TLS:       tlsRequired,
@@ -666,6 +695,7 @@ func (c *client) sendLeafConnect(clusterName string, tlsRequired, headers bool) 
 		Cluster:   clusterName,
 		Headers:   headers,
 		JetStream: c.acc.jetStreamConfigured(),
+		Domain:    jsDomain,
 		DenyPub:   c.leaf.remote.DenyImports,
 	}
 
@@ -1293,6 +1323,7 @@ type leafConnectInfo struct {
 	Cluster   string   `json:"cluster,omitempty"`
 	Headers   bool     `json:"headers,omitempty"`
 	JetStream bool     `json:"jetstream,omitempty"`
+	Domain    string   `json:"domain,omitempty"`
 	DenyPub   []string `json:"deny_pub,omitempty"`
 
 	// Just used to detect wrong connection attempts.
@@ -1363,7 +1394,7 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	// If we have JS enabled and the other side does as well we need to add in an import deny clause.
 	if jsConfigured && proto.JetStream {
 		// We should never have existing perms here, if that changes this needs to be reworked.
-		c.setPermissions(&Permissions{Publish: &SubjectPermission{Deny: []string{jsAllAPI}}})
+		c.setPermissions(&Permissions{Publish: &SubjectPermission{Deny: jsDenyAll}})
 	}
 
 	// Set the Ping timer

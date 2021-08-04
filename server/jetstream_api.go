@@ -154,6 +154,7 @@ const (
 	// For snapshots and restores. The ack will have additional tokens.
 	jsSnapshotAckT    = "$JS.SNAPSHOT.ACK.%s.%s"
 	jsRestoreDeliverT = "$JS.SNAPSHOT.RESTORE.%s.%s"
+	jsSnapshotAPI     = "$JS.SNAPSHOT.>"
 
 	// JSApiStreamRemovePeer is the endpoint to remove a peer from a clustered stream and its consumers.
 	// Will return JSON response.
@@ -184,11 +185,13 @@ const (
 	// when they ACK/NAK, etc a message.
 	jsAckT   = "$JS.ACK.%s.%s"
 	jsAckPre = "$JS.ACK."
+	jsAckAPI = "$JS.ACK.>"
 
 	// jsFlowControl is for flow control subjects.
 	jsFlowControlPre = "$JS.FC."
 	// jsFlowControl is for FC responses.
-	jsFlowControl = "$JS.FC.%s.%s.*"
+	jsFlowControl    = "$JS.FC.%s.%s.*"
+	jsFlowControlAPI = "$JS.FC.>"
 
 	// JSAdvisoryPrefix is a prefix for all JetStream advisories.
 	JSAdvisoryPrefix = "$JS.EVENT.ADVISORY"

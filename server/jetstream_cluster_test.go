@@ -3247,8 +3247,8 @@ func TestJetStreamClusterExtendedAccountInfo(t *testing.T) {
 	if ai.Streams != 3 || ai.Consumers != 3 {
 		t.Fatalf("AccountInfo not correct: %+v", ai)
 	}
-	if ai.API.Total < 8 {
-		t.Fatalf("Expected at least 8 total API calls, got %d", ai.API.Total)
+	if ai.API.Total < 7 {
+		t.Fatalf("Expected at least 7 total API calls, got %d", ai.API.Total)
 	}
 
 	// Now do a failure to make sure we track API errors.
@@ -6185,23 +6185,30 @@ func TestJetStreamClusterDomains(t *testing.T) {
 	// The domain signals to the system that we are our own JetStream domain and should not extend CORE.
 	// We want to check to make sure we have all the deny properly setup.
 	spoke.mu.Lock()
-	// var hasDE, hasDI bool
+	var errStr string
 	for _, ln := range spoke.leafs {
+		if errStr != _EMPTY_ {
+			break
+		}
 		ln.mu.Lock()
 		remote := ln.leaf.remote
 		ln.mu.Unlock()
+
 		remote.RLock()
 		if remote.RemoteLeafOpts.LocalAccount == "$SYS" {
-			if len(remote.RemoteLeafOpts.DenyExports) != 3 {
-				t.Fatalf("Expected to have deny exports, got %+v", remote.RemoteLeafOpts.DenyExports)
-			}
-			if len(remote.RemoteLeafOpts.DenyImports) != 3 {
-				t.Fatalf("Expected to have deny imports, got %+v", remote.RemoteLeafOpts.DenyImports)
+			if len(remote.RemoteLeafOpts.DenyExports) != 6 {
+				errStr = fmt.Sprintf("Expected to have deny exports, got %+v", remote.RemoteLeafOpts.DenyExports)
+			} else if len(remote.RemoteLeafOpts.DenyImports) != 6 {
+				errStr = fmt.Sprintf("Expected to have deny imports, got %+v", remote.RemoteLeafOpts.DenyImports)
 			}
 		}
 		remote.RUnlock()
 	}
 	spoke.mu.Unlock()
+
+	if errStr != _EMPTY_ {
+		t.Fatal(errStr)
+	}
 
 	// Now do some operations.
 	// Check the enabled account only talks to its local JS domain by default.
@@ -6400,6 +6407,27 @@ func TestJetStreamClusterDomainsAndAPIResponses(t *testing.T) {
 	}
 	if si.Cluster.Name != "SPOKE" {
 		t.Fatalf("Expected %q as the cluster, got %q", "SPOKE", si.Cluster.Name)
+	}
+
+	// Also create a consumer and make sure we can ack etc.
+	sub, err := jsSpoke.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("sub failed: %s", err)
+	}
+	jsSpoke.Publish("foo", []byte("OK"))
+	checkSubsPending(t, sub, 1)
+
+	m, err := sub.NextMsg(time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	m.AckSync()
+	ci, err := sub.ConsumerInfo()
+	if err != nil {
+		t.Fatalf("Unexpected error getting consumer info: %v", err)
+	}
+	if ci.AckFloor.Consumer != 1 {
+		t.Fatalf("Expected ack floor of 1, got %+v\n", ci.AckFloor)
 	}
 }
 
