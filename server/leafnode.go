@@ -606,6 +606,7 @@ func (s *Server) startLeafNodeAcceptLoop() {
 		MaxPayload:    s.info.MaxPayload, // TODO(dlc) - Allow override?
 		Headers:       s.supportsHeaders(),
 		JetStream:     opts.JetStream,
+		Domain:        opts.JetStreamDomain,
 		Proto:         1, // Fixed for now.
 		InfoOnConnect: true,
 	}
@@ -1057,7 +1058,7 @@ func (c *client) processLeafnodeInfo(info *Info) {
 						c.Debugf("Error adding JetStream domain mapping: %v", err)
 					}
 				}
-			} else if hasJSDomain {
+			} else if hasJSDomain && opts.JetStreamDomain != info.Domain {
 				s.addInJSDenyAll(remote)
 			}
 
