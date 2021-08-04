@@ -1549,7 +1549,8 @@ func (s *Server) Start() {
 		s.Warnf("Trusted Operators should utilize a System Account")
 	}
 	if opts.MaxPayload > MAX_PAYLOAD_MAX_SIZE {
-		s.Warnf("Maximum payloads over 8MB are generally discouraged and could lead to poor performance")
+		s.Warnf("Maximum payloads over %v are generally discouraged and could lead to poor performance",
+			friendlyBytes(int64(MAX_PAYLOAD_MAX_SIZE)))
 	}
 
 	// If we have a memory resolver, check the accounts here for validation exceptions.
