@@ -1548,6 +1548,9 @@ func (s *Server) Start() {
 	if hasOperators && opts.SystemAccount == _EMPTY_ {
 		s.Warnf("Trusted Operators should utilize a System Account")
 	}
+	if opts.MaxPayload > MAX_PAYLOAD_MAX_SIZE {
+		s.Warnf("Maximum payloads over 8MB are generally discouraged and could lead to poor performance")
+	}
 
 	// If we have a memory resolver, check the accounts here for validation exceptions.
 	// This allows them to be logged right away vs when they are accessed via a client.
