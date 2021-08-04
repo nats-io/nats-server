@@ -2759,7 +2759,8 @@ func (o *consumer) hasNoLocalInterest() bool {
 // This is when the underlying stream has been purged.
 // sseq is the new first seq for the stream after purge.
 func (o *consumer) purge(sseq uint64) {
-	if sseq == 0 {
+	// Do not update our state unless we know we are the leader.
+	if sseq == 0 || !o.isLeader() {
 		return
 	}
 

@@ -7775,20 +7775,8 @@ func TestJetStreamPanicDecodingConsumerState(t *testing.T) {
 		t.Fatalf("Error creating stream: %v", err)
 	}
 
-	if _, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
-		Durable:       "durable",
-		DeliverPolicy: nats.DeliverAllPolicy,
-		AckPolicy:     nats.AckExplicitPolicy,
-		ReplayPolicy:  nats.ReplayInstantPolicy,
-		FilterSubject: "ORDERS.created",
-		AckWait:       time.Second * 30,
-		MaxDeliver:    -1,
-		MaxAckPending: 1000,
-	}); err != nil {
-		t.Fatalf("Error creating consumer: %v", err)
-	}
+	sub, err := js.PullSubscribe("ORDERS.created", "durable", nats.MaxAckPending(1000))
 
-	sub, err := js.PullSubscribe("ORDERS.created", "durable", nats.Bind("TEST", "durable"))
 	if err != nil {
 		t.Fatalf("Error creating pull subscriber: %v", err)
 	}
