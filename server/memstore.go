@@ -270,10 +270,9 @@ func (ms *memStore) filteredStateLocked(sseq uint64, subj string) SimpleState {
 		return ss
 	}
 
-	// If we want everything.
-	if subj == _EMPTY_ || subj == fwcs {
-		ss.Msgs, ss.First, ss.Last = ms.state.Msgs, ms.state.FirstSeq, ms.state.LastSeq
-		return ss
+	// Empty same as everything.
+	if subj == _EMPTY_ {
+		subj = fwcs
 	}
 
 	wc := subjectHasWildcard(subj)

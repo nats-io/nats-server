@@ -3031,11 +3031,9 @@ func (o *consumer) setInitialPendingAndStart() {
 		// Here we are filtered.
 		dp := o.cfg.DeliverPolicy
 		if dp == DeliverLastPerSubject && o.hasSkipListPending() && o.sseq < o.lss.resume {
-			if o.lss != nil {
-				ss := mset.store.FilteredState(o.lss.resume, o.cfg.FilterSubject)
-				o.sseq = o.lss.seqs[0]
-				o.sgap = ss.Msgs + uint64(len(o.lss.seqs))
-			}
+			ss := mset.store.FilteredState(o.lss.resume+1, o.cfg.FilterSubject)
+			o.sseq = o.lss.seqs[0]
+			o.sgap = ss.Msgs + uint64(len(o.lss.seqs))
 		} else if ss := mset.store.FilteredState(o.sseq, o.cfg.FilterSubject); ss.Msgs > 0 {
 			o.sgap = ss.Msgs
 			// See if we should update our starting sequence.

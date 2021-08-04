@@ -6624,9 +6624,6 @@ func TestJetStreamClusterLeafNodesWithSameDomainNames(t *testing.T) {
 	lnc := c.createLeafNodesWithTemplateAndStartPort(tmpl, "SPOKE", 3, 11311)
 	defer lnc.shutdown()
 
-	//lncm := c.createLeafNodesWithTemplateMixedMode(tmpl, "SPOKE", 3, 2, true)
-	//defer lncm.shutdown()
-
 	c.waitOnPeerCount(6)
 }
 
