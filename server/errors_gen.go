@@ -9,16 +9,22 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
+	"strings"
 	"text/template"
 
 	"github.com/nats-io/nats-server/v2/server"
 )
 
+var tagRe = regexp.MustCompile("\\{(.+?)}")
+
 var templ = `
 // Generated code, do not edit. See errors.json and run go generate to update
 
 package server
+
+import "strings"
 
 const (
 {{- range $i, $error := . }}
@@ -44,6 +50,28 @@ var (
 {{- end }}
 {{- end }}
 )
+
+{{- range $i, $error := . }}
+// {{ .Constant | funcNameForConstant }} creates a new {{ .Constant }} error: {{ .Description | printf "%q" }}
+func {{ .Constant | funcNameForConstant }}({{ .Description | funcArgsForTags }}) *ApiError {
+    eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+ 	}
+{{ if .Description | hasTags }}
+	e:=ApiErrors[{{.Constant}}]
+	args:=e.toReplacerArgs([]interface{}{ {{.Description | replacerArgsForTags }} })
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
+{{- else }}
+	return ApiErrors[{{.Constant}}]
+{{- end }}
+}
+
+{{- end }}
 `
 
 func panicIfErr(err error) {
@@ -92,6 +120,21 @@ func checkDupes(errs []server.ErrorsData) error {
 	return nil
 }
 
+func findTags(d string) []string {
+	tags := []string{}
+	for _, tag := range tagRe.FindAllStringSubmatch(d, -1) {
+		if len(tag) != 2 {
+			continue
+		}
+
+		tags = append(tags, tag[1])
+	}
+
+	sort.Strings(tags)
+
+	return tags
+}
+
 func main() {
 	ej, err := os.ReadFile("server/errors.json")
 	panicIfErr(err)
@@ -104,7 +147,60 @@ func main() {
 		return errs[i].Constant < errs[j].Constant
 	})
 
-	t := template.New("errors").Funcs(template.FuncMap{"inc": func(i int) int { return i + 1 }})
+	t := template.New("errors").Funcs(
+		template.FuncMap{
+			"inc": func(i int) int { return i + 1 },
+			"hasTags": func(d string) bool {
+				return strings.Contains(d, "{") && strings.Contains(d, "}")
+			},
+			"replacerArgsForTags": func(d string) string {
+				res := []string{}
+				for _, tag := range findTags(d) {
+					res = append(res, `"{`+tag+`}"`)
+					res = append(res, tag)
+				}
+
+				return strings.Join(res, ", ")
+			},
+			"funcArgsForTags": func(d string) string {
+				res := []string{}
+				for _, tag := range findTags(d) {
+					if tag == "err" {
+						res = append(res, "err error")
+					} else if tag == "seq" {
+						res = append(res, "seq uint64")
+					} else {
+						res = append(res, fmt.Sprintf("%s interface{}", tag))
+					}
+				}
+
+				res = append(res, "opts ...ErrorOption")
+
+				return strings.Join(res, ", ")
+			},
+			"funcNameForConstant": func(c string) string {
+				res := ""
+
+				switch {
+				case strings.HasSuffix(c, "ErrF"):
+					res = fmt.Sprintf("New%sError", strings.TrimSuffix(c, "ErrF"))
+				case strings.HasSuffix(c, "Err"):
+					res = fmt.Sprintf("New%sError", strings.TrimSuffix(c, "Err"))
+				case strings.HasSuffix(c, "ErrorF"):
+					res = fmt.Sprintf("New%s", strings.TrimSuffix(c, "F"))
+				case strings.HasSuffix(c, "F"):
+					res = fmt.Sprintf("New%sError", strings.TrimSuffix(c, "F"))
+				default:
+					res = fmt.Sprintf("New%s", c)
+				}
+
+				if !strings.HasSuffix(res, "Error") {
+					res = fmt.Sprintf("%sError", res)
+				}
+
+				return res
+			},
+		})
 	p, err := t.Parse(templ)
 	panicIfErr(err)
 

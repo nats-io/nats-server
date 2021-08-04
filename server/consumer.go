@@ -276,69 +276,69 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	}
 
 	if config == nil {
-		return nil, ApiErrors[JSConsumerConfigRequiredErr]
+		return nil, NewJSConsumerConfigRequiredError()
 	}
 
 	if len(config.Description) > JSMaxDescriptionLen {
-		return nil, ApiErrors[JSConsumerDescriptionTooLongErrF].NewT("{max}", JSMaxDescriptionLen)
+		return nil, NewJSConsumerDescriptionTooLongError(JSMaxDescriptionLen)
 	}
 
 	var err error
 	// For now expect a literal subject if its not empty. Empty means work queue mode (pull mode).
 	if config.DeliverSubject != _EMPTY_ {
 		if !subjectIsLiteral(config.DeliverSubject) {
-			return nil, ApiErrors[JSConsumerDeliverToWildcardsErr]
+			return nil, NewJSConsumerDeliverToWildcardsError()
 		}
 		if mset.deliveryFormsCycle(config.DeliverSubject) {
-			return nil, ApiErrors[JSConsumerDeliverCycleErr]
+			return nil, NewJSConsumerDeliverCycleError()
 		}
 		if config.MaxWaiting != 0 {
-			return nil, ApiErrors[JSConsumerPushMaxWaitingErr]
+			return nil, NewJSConsumerPushMaxWaitingError()
 		}
 		if config.MaxAckPending > 0 && config.AckPolicy == AckNone {
-			return nil, ApiErrors[JSConsumerMaxPendingAckPolicyRequiredErr]
+			return nil, NewJSConsumerMaxPendingAckPolicyRequiredError()
 		}
 		if config.Heartbeat > 0 && config.Heartbeat < 100*time.Millisecond {
-			return nil, ApiErrors[JSConsumerSmallHeartbeatErr]
+			return nil, NewJSConsumerSmallHeartbeatError()
 		}
 	} else {
 		// Pull mode / work queue mode require explicit ack.
 		if config.AckPolicy != AckExplicit {
-			return nil, ApiErrors[JSConsumerPullRequiresAckErr]
+			return nil, NewJSConsumerPullRequiresAckError()
 		}
 		// They are also required to be durable since otherwise we will not know when to
 		// clean them up.
 		if config.Durable == _EMPTY_ {
-			return nil, ApiErrors[JSConsumerPullNotDurableErr]
+			return nil, NewJSConsumerPullNotDurableError()
 		}
 		if config.RateLimit > 0 {
-			return nil, ApiErrors[JSConsumerPullWithRateLimitErr]
+			return nil, NewJSConsumerPullWithRateLimitError()
 		}
 		if config.MaxWaiting < 0 {
-			return nil, ApiErrors[JSConsumerMaxWaitingNegativeErr]
+			return nil, NewJSConsumerMaxWaitingNegativeError()
 		}
 		// Set to default if not specified.
 		if config.MaxWaiting == 0 {
 			config.MaxWaiting = JSWaitQueueDefaultMax
 		}
 		if config.Heartbeat > 0 {
-			return nil, ApiErrors[JSConsumerHBRequiresPushErr]
+			return nil, NewJSConsumerHBRequiresPushError()
 		}
 		if config.FlowControl {
-			return nil, ApiErrors[JSConsumerFCRequiresPushErr]
+			return nil, NewJSConsumerFCRequiresPushError()
 		}
 	}
 
 	// Direct need to be non-mapped ephemerals.
 	if config.Direct {
 		if config.DeliverSubject == _EMPTY_ {
-			return nil, ApiErrors[JSConsumerDirectRequiresPushErr]
+			return nil, NewJSConsumerDirectRequiresPushError()
 		}
 		if isDurableConsumer(config) {
-			return nil, ApiErrors[JSConsumerDirectRequiresEphemeralErr]
+			return nil, NewJSConsumerDirectRequiresEphemeralError()
 		}
 		if ca != nil {
-			return nil, ApiErrors[JSConsumerOnMappedErr]
+			return nil, NewJSConsumerOnMappedError()
 		}
 	}
 
@@ -359,7 +359,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	if config.FilterSubject != _EMPTY_ {
 		subjects, hasExt := mset.allSubjects()
 		if !validFilteredSubject(config.FilterSubject, subjects) && !hasExt {
-			return nil, ApiErrors[JSConsumerFilterNotSubsetErr]
+			return nil, NewJSConsumerFilterNotSubsetError()
 		}
 	}
 
@@ -367,30 +367,24 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	switch config.DeliverPolicy {
 	case DeliverAll:
 		if config.OptStartSeq > 0 {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
-				"consumer delivery policy is deliver all, but optional start sequence is also set")
+			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver all, but optional start sequence is also set"))
 		}
 		if config.OptStartTime != nil {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
-				"consumer delivery policy is deliver all, but optional start time is also set")
+			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver all, but optional start time is also set"))
 		}
 	case DeliverLast:
 		if config.OptStartSeq > 0 {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
-				"consumer delivery policy is deliver last, but optional start sequence is also set")
+			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver last, but optional start sequence is also set"))
 		}
 		if config.OptStartTime != nil {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
-				"consumer delivery policy is deliver last, but optional start time is also set")
+			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver last, but optional start time is also set"))
 		}
 	case DeliverLastPerSubject:
 		if config.OptStartSeq > 0 {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
-				"consumer delivery policy is deliver last per subject, but optional start sequence is also set")
+			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver last per subject, but optional start sequence is also set"))
 		}
 		if config.OptStartTime != nil {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
-				"consumer delivery policy is deliver last per subject, but optional start time is also set")
+			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver last per subject, but optional start time is also set"))
 		}
 		badConfig := config.FilterSubject == _EMPTY_
 		if !badConfig {
@@ -400,35 +394,28 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			}
 		}
 		if badConfig {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
-				"consumer delivery policy is deliver last per subject, but filter subject is not set")
+			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver last per subject, but filter subject is not set"))
 		}
 	case DeliverNew:
 		if config.OptStartSeq > 0 {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
-				"consumer delivery policy is deliver new, but optional start sequence is also set")
+			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver new, but optional start sequence is also set"))
 		}
 		if config.OptStartTime != nil {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
-				"consumer delivery policy is deliver new, but optional start time is also set")
+			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver new, but optional start time is also set"))
 		}
 	case DeliverByStartSequence:
 		if config.OptStartSeq == 0 {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
-				"consumer delivery policy is deliver by start sequence, but optional start sequence is not set")
+			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver by start sequence, but optional start sequence is not set"))
 		}
 		if config.OptStartTime != nil {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
-				"consumer delivery policy is deliver by start sequence, but optional start time is also set")
+			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver by start sequence, but optional start time is also set"))
 		}
 	case DeliverByStartTime:
 		if config.OptStartTime == nil {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
-				"consumer delivery policy is deliver by start time, but optional start time is not set")
+			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver by start time, but optional start time is not set"))
 		}
 		if config.OptStartSeq != 0 {
-			return nil, ApiErrors[JSConsumerInvalidPolicyErrF].NewT("{err}",
-				"consumer delivery policy is deliver by start time, but optional start sequence is also set")
+			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver by start time, but optional start sequence is also set"))
 		}
 	}
 
@@ -437,14 +424,14 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		s := strings.TrimSuffix(config.SampleFrequency, "%")
 		sampleFreq, err = strconv.Atoi(s)
 		if err != nil {
-			return nil, ApiErrors[JSConsumerInvalidSamplingErrF].NewT("{err}", err)
+			return nil, NewJSConsumerInvalidSamplingError(err)
 		}
 	}
 
 	// Grab the client, account and server reference.
 	c := mset.client
 	if c == nil {
-		return nil, ApiErrors[JSStreamInvalidErr]
+		return nil, NewJSStreamInvalidError()
 	}
 	c.mu.Lock()
 	s, a := c.srv, c.acc
@@ -471,7 +458,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 					eo.updateDeliverSubject(config.DeliverSubject)
 					return eo, nil
 				} else {
-					return nil, ApiErrors[JSConsumerNameExistErr]
+					return nil, NewJSConsumerNameExistError()
 				}
 			}
 		}
@@ -487,7 +474,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	}
 	if maxc > 0 && len(mset.consumers) >= maxc {
 		mset.mu.Unlock()
-		return nil, ApiErrors[JSMaximumConsumersLimitErr]
+		return nil, NewJSMaximumConsumersLimitError()
 	}
 
 	// Check on stream type conflicts with WorkQueues.
@@ -495,22 +482,22 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		// Force explicit acks here.
 		if config.AckPolicy != AckExplicit {
 			mset.mu.Unlock()
-			return nil, ApiErrors[JSConsumerWQRequiresExplicitAckErr]
+			return nil, NewJSConsumerWQRequiresExplicitAckError()
 		}
 
 		if len(mset.consumers) > 0 {
 			if config.FilterSubject == _EMPTY_ {
 				mset.mu.Unlock()
-				return nil, ApiErrors[JSConsumerWQMultipleUnfilteredErr]
+				return nil, NewJSConsumerWQMultipleUnfilteredError()
 			} else if !mset.partitionUnique(config.FilterSubject) {
 				// We have a partition but it is not unique amongst the others.
 				mset.mu.Unlock()
-				return nil, ApiErrors[JSConsumerWQConsumerNotUniqueErr]
+				return nil, NewJSConsumerWQConsumerNotUniqueError()
 			}
 		}
 		if config.DeliverPolicy != DeliverAll {
 			mset.mu.Unlock()
-			return nil, ApiErrors[JSConsumerWQConsumerNotDeliverAllErr]
+			return nil, NewJSConsumerWQConsumerNotDeliverAllError()
 		}
 	}
 
@@ -543,7 +530,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		if len(config.Durable) > JSMaxNameLen {
 			mset.mu.Unlock()
 			o.deleteWithoutAdvisory()
-			return nil, ApiErrors[JSConsumerNameTooLongErrF].NewT("{max}", JSMaxNameLen)
+			return nil, NewJSConsumerNameTooLongError(JSMaxNameLen)
 		}
 		o.name = config.Durable
 		if o.isPullMode() {
@@ -591,7 +578,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	if !isValidName(o.name) {
 		mset.mu.Unlock()
 		o.deleteWithoutAdvisory()
-		return nil, ApiErrors[JSConsumerBadDurableNameErr]
+		return nil, NewJSConsumerBadDurableNameError()
 	}
 
 	// Select starting sequence number
@@ -602,7 +589,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		if err != nil {
 			mset.mu.Unlock()
 			o.deleteWithoutAdvisory()
-			return nil, ApiErrors[JSConsumerStoreFailedErrF].NewT("{err}", err)
+			return nil, NewJSConsumerStoreFailedError(err)
 		}
 		o.store = store
 	}
@@ -614,20 +601,20 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		if !o.isDurable() || !o.isPushMode() {
 			o.name = _EMPTY_ // Prevent removal since same name.
 			o.deleteWithoutAdvisory()
-			return nil, ApiErrors[JSConsumerNameExistErr]
+			return nil, NewJSConsumerNameExistError()
 		}
 		// If we are here we have already registered this durable. If it is still active that is an error.
 		if eo.isActive() {
 			o.name = _EMPTY_ // Prevent removal since same name.
 			o.deleteWithoutAdvisory()
-			return nil, ApiErrors[JSConsumerExistingActiveErr]
+			return nil, NewJSConsumerExistingActiveError()
 		}
 		// Since we are here this means we have a potentially new durable so we should update here.
 		// Check that configs are the same.
 		if !configsEqualSansDelivery(o.cfg, eo.cfg) {
 			o.name = _EMPTY_ // Prevent removal since same name.
 			o.deleteWithoutAdvisory()
-			return nil, ApiErrors[JSConsumerReplacementWithDifferentNameErr]
+			return nil, NewJSConsumerReplacementWithDifferentNameError()
 		}
 		// Once we are here we have a replacement push-based durable.
 		eo.updateDeliverSubject(o.cfg.DeliverSubject)
