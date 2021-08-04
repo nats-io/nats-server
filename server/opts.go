@@ -841,7 +841,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		}
 		o.MaxControlLine = int32(v.(int64))
 	case "max_payload":
-		if v.(int64) > 1<<31-1 {
+		if v.(int64) > 64*1024*1024 {
 			err := &configErr{tk, fmt.Sprintf("%s value is too big", k)}
 			*errors = append(*errors, err)
 			return
