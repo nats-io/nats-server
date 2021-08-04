@@ -12485,6 +12485,72 @@ func TestJetStreamExpireCausesDeadlock(t *testing.T) {
 	}
 }
 
+func TestJetStreamConsumerPendingBugWithKV(t *testing.T) {
+	msc := StreamConfig{
+		Name:       "KV",
+		Subjects:   []string{"kv.>"},
+		Storage:    MemoryStorage,
+		MaxMsgsPer: 1,
+	}
+	fsc := msc
+	fsc.Storage = FileStorage
+
+	cases := []struct {
+		name    string
+		mconfig *StreamConfig
+	}{
+		{"MemoryStore", &msc},
+		{"FileStore", &fsc},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer removeDir(t, config.StoreDir)
+			}
+
+			// Client based API
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			// Not in Go client under server yet.
+			mset, err := s.GlobalAccount().addStream(c.mconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+
+			js.Publish("kv.1", []byte("1"))
+			js.Publish("kv.2", []byte("2"))
+			js.Publish("kv.3", []byte("3"))
+			js.Publish("kv.1", []byte("4"))
+
+			si, err := js.StreamInfo("KV")
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if si.State.Msgs != 3 {
+				t.Fatalf("Expected 3 total msgs, got %d", si.State.Msgs)
+			}
+
+			o, err := mset.addConsumer(&ConsumerConfig{
+				Durable:        "dlc",
+				DeliverSubject: "xxx",
+				DeliverPolicy:  DeliverLastPerSubject,
+				FilterSubject:  ">",
+			})
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if ci := o.info(); ci.NumPending != 3 {
+				t.Fatalf("Expected pending of 3, got %d", ci.NumPending)
+			}
+		})
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
