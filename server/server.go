@@ -599,6 +599,10 @@ func validateOptions(o *Options) error {
 		return fmt.Errorf("lame duck grace period (%v) should be strictly lower than lame duck duration (%v)",
 			o.LameDuckGracePeriod, o.LameDuckDuration)
 	}
+	if int64(o.MaxPayload) > o.MaxPending {
+		return fmt.Errorf("max_payload (%v) cannot be higher than max_pending (%v)",
+			o.MaxPayload, o.MaxPending)
+	}
 	// Check that the trust configuration is correct.
 	if err := validateTrustedOperators(o); err != nil {
 		return err
@@ -1543,6 +1547,10 @@ func (s *Server) Start() {
 	}
 	if hasOperators && opts.SystemAccount == _EMPTY_ {
 		s.Warnf("Trusted Operators should utilize a System Account")
+	}
+	if opts.MaxPayload > MAX_PAYLOAD_MAX_SIZE {
+		s.Warnf("Maximum payloads over %v are generally discouraged and could lead to poor performance",
+			friendlyBytes(int64(MAX_PAYLOAD_MAX_SIZE)))
 	}
 
 	// If we have a memory resolver, check the accounts here for validation exceptions.
