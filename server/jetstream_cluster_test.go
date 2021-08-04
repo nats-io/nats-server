@@ -6615,6 +6615,21 @@ func TestJetStreamClusterLeafNodesWithoutJS(t *testing.T) {
 	testJS(sl, "HUB", true)
 }
 
+func TestJetStreamClusterLeafNodesWithSameDomainNames(t *testing.T) {
+	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: HUB, store_dir:", 1)
+	c := createJetStreamCluster(t, tmpl, "HUB", _EMPTY_, 3, 11233, true)
+	defer c.shutdown()
+
+	tmpl = strings.Replace(jsClusterTemplWithLeafNode, "store_dir:", "domain: HUB, store_dir:", 1)
+	lnc := c.createLeafNodesWithTemplateAndStartPort(tmpl, "SPOKE", 3, 11311)
+	defer lnc.shutdown()
+
+	//lncm := c.createLeafNodesWithTemplateMixedMode(tmpl, "SPOKE", 3, 2, true)
+	//defer lncm.shutdown()
+
+	c.waitOnPeerCount(6)
+}
+
 // Issue reported with superclusters and leafnodes where first few get next requests for pull susbcribers
 // have the wrong subject.
 func TestJetStreamClusterSuperClusterGetNextRewrite(t *testing.T) {
