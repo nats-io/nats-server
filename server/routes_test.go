@@ -1029,6 +1029,7 @@ func TestRoutePermsAppliedOnInboundAndOutboundRoute(t *testing.T) {
 
 func TestRouteSendLocalSubsWithLowMaxPending(t *testing.T) {
 	optsA := DefaultOptions()
+	optsA.MaxPayload = 1024
 	optsA.MaxPending = 1024
 	optsA.NoSystemAccount = true
 	srvA := RunServer(optsA)

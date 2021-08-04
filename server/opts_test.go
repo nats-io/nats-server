@@ -2578,16 +2578,26 @@ func TestLargeMaxControlLine(t *testing.T) {
 }
 
 func TestLargeMaxPayload(t *testing.T) {
-	confFileName := "big_mp.conf"
+	confFileName := createConfFile(t, []byte(`
+		max_payload = 3000000000
+	`))
 	defer removeFile(t, confFileName)
-	content := `
-    max_payload = 3000000000
-    `
-	if err := ioutil.WriteFile(confFileName, []byte(content), 0666); err != nil {
-		t.Fatalf("Error writing config file: %v", err)
-	}
 	if _, err := ProcessConfigFile(confFileName); err == nil {
 		t.Fatalf("Expected an error from too large of a max_payload entry")
+	}
+
+	confFileName = createConfFile(t, []byte(`
+		max_payload = 100000
+		max_pending = 50000
+	`))
+	defer removeFile(t, confFileName)
+	o := LoadConfig(confFileName)
+	s, err := NewServer(o)
+	if err == nil || !strings.Contains(err.Error(), "cannot be higher") {
+		if s != nil {
+			s.Shutdown()
+		}
+		t.Fatalf("Unexpected error: %v", err)
 	}
 }
 
