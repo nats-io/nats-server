@@ -452,6 +452,10 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 
 	// Hold mset lock here.
 	mset.mu.Lock()
+	if mset.client == nil || mset.store == nil {
+		mset.mu.Unlock()
+		return nil, errors.New("invalid stream")
+	}
 
 	// If this one is durable and already exists, we let that be ok as long as the configs match.
 	if isDurableConsumer(config) {
