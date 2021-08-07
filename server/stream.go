@@ -964,7 +964,7 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 	mset.mu.Lock()
 	if mset.client == nil {
 		mset.mu.Unlock()
-		return 0, errors.New("stream closed")
+		return 0, errors.New("invalid stream")
 	}
 	// Purge dedupe.
 	mset.ddmap = nil
@@ -3324,7 +3324,7 @@ func (mset *stream) snapshot(deadline time.Duration, checkMsgs, includeConsumers
 	mset.mu.RLock()
 	if mset.client == nil || mset.store == nil {
 		mset.mu.RUnlock()
-		return nil, fmt.Errorf("invalid stream")
+		return nil, errors.New("invalid stream")
 	}
 	store := mset.store
 	mset.mu.RUnlock()
