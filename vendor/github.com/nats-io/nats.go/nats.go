@@ -146,6 +146,8 @@ var (
 	ErrInvalidJSAck                 = errors.New("nats: invalid jetstream publish response")
 	ErrMultiStreamUnsupported       = errors.New("nats: multiple streams are not supported")
 	ErrStreamNameRequired           = errors.New("nats: stream name is required")
+	ErrStreamNotFound               = errors.New("nats: stream not found")
+	ErrConsumerNotFound             = errors.New("nats: consumer not found")
 	ErrConsumerNameRequired         = errors.New("nats: consumer name is required")
 	ErrConsumerConfigRequired       = errors.New("nats: consumer configuration is required")
 	ErrStreamSnapshotConfigRequired = errors.New("nats: stream snapshot configuration is required")
@@ -433,6 +435,9 @@ type Options struct {
 	// For websocket connections, indicates to the server that the connection
 	// supports compression. If the server does too, then data will be compressed.
 	Compression bool
+
+	// InboxPrefix allows the default _INBOX prefix to be customized
+	InboxPrefix string
 }
 
 const (
@@ -494,11 +499,13 @@ type Conn struct {
 	ws      bool // true if a websocket connection
 
 	// New style response handler
-	respSub   string               // The wildcard subject
-	respScanf string               // The scanf template to extract mux token
-	respMux   *Subscription        // A single response subscription
-	respMap   map[string]chan *Msg // Request map for the response msg channels
-	respRand  *rand.Rand           // Used for generating suffix
+	respSub       string               // The wildcard subject
+	respSubPrefix string               // the wildcard prefix including trailing .
+	respSubLen    int                  // the length of the wildcard prefix excluding trailing .
+	respScanf     string               // The scanf template to extract mux token
+	respMux       *Subscription        // A single response subscription
+	respMap       map[string]chan *Msg // Request map for the response msg channels
+	respRand      *rand.Rand           // Used for generating suffix
 }
 
 type natsReader struct {
@@ -1097,6 +1104,17 @@ func RetryOnFailedConnect(retry bool) Option {
 func Compression(enabled bool) Option {
 	return func(o *Options) error {
 		o.Compression = enabled
+		return nil
+	}
+}
+
+// CustomInboxPrefix configures the request + reply inbox prefix
+func CustomInboxPrefix(p string) Option {
+	return func(o *Options) error {
+		if p == "" || strings.Contains(p, ">") || strings.Contains(p, "*") || strings.HasSuffix(p, ".") {
+			return fmt.Errorf("nats: invald custom prefix")
+		}
+		o.InboxPrefix = p
 		return nil
 	}
 }
@@ -3120,10 +3138,7 @@ func decodeHeadersMsg(data []byte) (Header, error) {
 //
 // https://golang.org/pkg/net/textproto/#Reader.ReadMIMEHeader
 func readMIMEHeader(tp *textproto.Reader) (textproto.MIMEHeader, error) {
-	var (
-		m    = make(textproto.MIMEHeader)
-		strs []string
-	)
+	m := make(textproto.MIMEHeader)
 	for {
 		kv, err := tp.ReadLine()
 		if len(kv) == 0 {
@@ -3145,16 +3160,7 @@ func readMIMEHeader(tp *textproto.Reader) (textproto.MIMEHeader, error) {
 			i++
 		}
 		value := string(kv[i:])
-		vv := m[key]
-		if vv == nil && len(strs) > 0 {
-			// Single value header.
-			vv, strs = strs[:1:1], strs[1:]
-			vv[0] = value
-			m[key] = vv
-		} else {
-			// Multi value header.
-			m[key] = append(vv, value)
-		}
+		m[key] = append(m[key], value)
 		if err != nil {
 			return m, err
 		}
@@ -3350,7 +3356,8 @@ func (nc *Conn) createNewRequestAndSend(subj string, hdr, data []byte) (chan *Ms
 	// Create new literal Inbox and map to a chan msg.
 	mch := make(chan *Msg, RequestChanLen)
 	respInbox := nc.newRespInbox()
-	token := respInbox[respInboxPrefixLen:]
+	token := respInbox[nc.respSubLen:]
+
 	nc.respMap[token] = mch
 	if nc.respMux == nil {
 		// Create the response subscription we will use for all new style responses.
@@ -3457,7 +3464,7 @@ func (nc *Conn) newRequest(subj string, hdr, data []byte, timeout time.Duration)
 // with the Inbox reply and return the first reply received.
 // This is optimized for the case of multiple responses.
 func (nc *Conn) oldRequest(subj string, hdr, data []byte, timeout time.Duration) (*Msg, error) {
-	inbox := NewInbox()
+	inbox := nc.newInbox()
 	ch := make(chan *Msg, RequestChanLen)
 
 	s, err := nc.subscribe(inbox, _EMPTY_, nil, ch, true, nil)
@@ -3477,12 +3484,10 @@ func (nc *Conn) oldRequest(subj string, hdr, data []byte, timeout time.Duration)
 
 // InboxPrefix is the prefix for all inbox subjects.
 const (
-	InboxPrefix        = "_INBOX."
-	inboxPrefixLen     = len(InboxPrefix)
-	respInboxPrefixLen = inboxPrefixLen + nuidSize + 1
-	replySuffixLen     = 8 // Gives us 62^8
-	rdigits            = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-	base               = 62
+	InboxPrefix    = "_INBOX."
+	inboxPrefixLen = len(InboxPrefix)
+	rdigits        = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	base           = 62
 )
 
 // NewInbox will return an inbox string which can be used for directed replies from
@@ -3497,10 +3502,23 @@ func NewInbox() string {
 	return string(b[:])
 }
 
+func (nc *Conn) newInbox() string {
+	if nc.Opts.InboxPrefix == _EMPTY_ {
+		return NewInbox()
+	}
+
+	var sb strings.Builder
+	sb.WriteString(nc.Opts.InboxPrefix)
+	sb.WriteByte('.')
+	sb.WriteString(nuid.Next())
+	return sb.String()
+}
+
 // Function to init new response structures.
 func (nc *Conn) initNewResp() {
-	// _INBOX wildcard
-	nc.respSub = fmt.Sprintf("%s.*", NewInbox())
+	nc.respSubPrefix = fmt.Sprintf("%s.", nc.newInbox())
+	nc.respSubLen = len(nc.respSubPrefix)
+	nc.respSub = fmt.Sprintf("%s*", nc.respSubPrefix)
 	nc.respMap = make(map[string]chan *Msg)
 	nc.respRand = rand.New(rand.NewSource(time.Now().UnixNano()))
 }
@@ -3512,15 +3530,17 @@ func (nc *Conn) newRespInbox() string {
 	if nc.respMap == nil {
 		nc.initNewResp()
 	}
-	var b [respInboxPrefixLen + replySuffixLen]byte
-	pres := b[:respInboxPrefixLen]
-	copy(pres, nc.respSub)
+
+	var sb strings.Builder
+	sb.WriteString(nc.respSubPrefix)
+
 	rn := nc.respRand.Int63()
-	for i, l := respInboxPrefixLen, rn; i < len(b); i++ {
-		b[i] = rdigits[l%base]
-		l /= base
+	for i := 0; i < nuidSize; i++ {
+		sb.WriteByte(rdigits[rn%base])
+		rn /= base
 	}
-	return string(b[:])
+
+	return sb.String()
 }
 
 // NewRespInbox is the new format used for _INBOX.
