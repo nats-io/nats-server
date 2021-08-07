@@ -2675,6 +2675,41 @@ func TestFileStoreStreamStateDeleted(t *testing.T) {
 	}
 }
 
+// We have reports that sometimes under load a stream could complain about a storage directory
+// not being empty.
+func TestFileStoreStreamDeleteDirNotEmpty(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	subj, toStore := "foo", uint64(10)
+	for i := uint64(1); i <= toStore; i++ {
+		msg := []byte(fmt.Sprintf("[%08d] Hello World!", i))
+		if _, _, err := fs.StoreMsg(subj, nil, msg); err != nil {
+			t.Fatalf("Error storing msg: %v", err)
+		}
+	}
+
+	ready := make(chan bool)
+	go func() {
+		g := path.Join(storeDir, "g")
+		ready <- true
+		for i := 0; i < 100; i++ {
+			ioutil.WriteFile(g, []byte("OK"), defaultFilePerms)
+		}
+	}()
+
+	<-ready
+	if err := fs.Delete(); err != nil {
+		t.Fatalf("Delete returned an error: %v", err)
+	}
+}
+
 func TestFileStoreConsumerPerf(t *testing.T) {
 	// Comment out to run, holding place for now.
 	t.SkipNow()

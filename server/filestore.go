@@ -4145,7 +4145,19 @@ func (fs *fileStore) Delete() error {
 	if err := fs.Stop(); err != nil {
 		return err
 	}
-	return os.RemoveAll(fs.fcfg.StoreDir)
+
+	err := os.RemoveAll(fs.fcfg.StoreDir)
+	if err == nil {
+		return nil
+	}
+	ttl := time.Now().Add(time.Second)
+	for time.Now().Before(ttl) {
+		time.Sleep(10 * time.Millisecond)
+		if err = os.RemoveAll(fs.fcfg.StoreDir); err == nil {
+			return nil
+		}
+	}
+	return err
 }
 
 // Lock should be held.
