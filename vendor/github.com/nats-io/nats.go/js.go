@@ -695,7 +695,7 @@ func ExpectLastSequence(seq uint64) PubOpt {
 	})
 }
 
-// ExpectLastMsgId sets the expected sequence in the response from the publish.
+// ExpectLastMsgId sets the expected last msgId in the response from the publish.
 func ExpectLastMsgId(id string) PubOpt {
 	return pubOptFn(func(opts *pubOpts) error {
 		opts.lid = id
@@ -1048,7 +1048,7 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync 
 	// to which it should be attaching to.
 	if consumer != _EMPTY_ {
 		info, err = js.ConsumerInfo(stream, consumer)
-		notFoundErr = err != nil && strings.Contains(err.Error(), "consumer not found")
+		notFoundErr = errors.Is(err, ErrConsumerNotFound)
 		lookupErr = err == ErrJetStreamNotEnabled || err == ErrTimeout || err == context.DeadlineExceeded
 	}
 
@@ -1194,6 +1194,9 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync 
 				}
 				attached = true
 			} else {
+				if cinfo.Error.Code == 404 {
+					return nil, ErrStreamNotFound
+				}
 				return nil, fmt.Errorf("nats: %s", cinfo.Error.Description)
 			}
 		}
@@ -1355,6 +1358,7 @@ func (js *js) lookupStreamBySubject(subj string) (string, error) {
 	if err := json.Unmarshal(resp.Data, &slr); err != nil {
 		return _EMPTY_, err
 	}
+
 	if slr.Error != nil || len(slr.Streams) != 1 {
 		return _EMPTY_, ErrNoMatchingStream
 	}
@@ -1889,6 +1893,9 @@ func (js *js) getConsumerInfoContext(ctx context.Context, stream, consumer strin
 		return nil, err
 	}
 	if info.Error != nil {
+		if info.Error.Code == 404 {
+			return nil, ErrConsumerNotFound
+		}
 		return nil, fmt.Errorf("nats: %s", info.Error.Description)
 	}
 	return info.ConsumerInfo, nil

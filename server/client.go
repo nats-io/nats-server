@@ -2799,14 +2799,14 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force, remove bool
 func (c *client) processUnsub(arg []byte) error {
 	args := splitArg(arg)
 	var sid []byte
-	max := -1
+	max := int64(-1)
 
 	switch len(args) {
 	case 1:
 		sid = args[0]
 	case 2:
 		sid = args[0]
-		max = parseSize(args[1])
+		max = int64(parseSize(args[1]))
 	default:
 		return fmt.Errorf("processUnsub Parse Error: '%s'", arg)
 	}
@@ -2827,8 +2827,8 @@ func (c *client) processUnsub(arg []byte) error {
 	updateGWs := false
 	if sub, ok = c.subs[string(sid)]; ok {
 		acc = c.acc
-		if max > 0 {
-			sub.max = int64(max)
+		if max > 0 && max > sub.nm {
+			sub.max = max
 		} else {
 			// Clear it here to override
 			sub.max = 0
@@ -3066,6 +3066,7 @@ func (c *client) deliverMsg(sub *subscription, acc *Account, subject, reply, mh,
 	srv := client.srv
 
 	sub.nm++
+
 	// Check if we should auto-unsubscribe.
 	if sub.max > 0 {
 		if client.kind == ROUTER && sub.nm >= sub.max {

@@ -7844,6 +7844,68 @@ func TestJetStreamPanicDecodingConsumerState(t *testing.T) {
 	}
 }
 
+// Had a report of leaked subs with pull subscribers.
+func TestJetStreamPullConsumerLeakedSubs(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"Domains.*"},
+		Replicas:  1,
+		Retention: nats.InterestPolicy,
+	}); err != nil {
+		t.Fatalf("Error creating stream: %v", err)
+	}
+
+	sub, err := js.PullSubscribe("Domains.Domain", "Domains-Api", nats.MaxAckPending(20_000))
+	if err != nil {
+		t.Fatalf("Error creating pull subscriber: %v", err)
+	}
+	defer sub.Unsubscribe()
+
+	// Load up a bunch of requests.
+	numRequests := 20 //100_000
+	for i := 0; i < numRequests; i++ {
+		js.PublishAsync("Domains.Domain", []byte("QUESTION"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+	numSubs := c.stableTotalSubs()
+
+	// With batch of 1 we do not see any issues, so set to 10.
+	// Currently Go client uses auto unsub based on the batch size.
+	for i := 0; i < numRequests/10; i++ {
+		msgs, err := sub.Fetch(10)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		for _, m := range msgs {
+			m.Ack()
+		}
+	}
+
+	// Make sure the stream is empty..
+	si, err := js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.State.Msgs != 0 {
+		t.Fatalf("Stream should be empty, got %+v", si)
+	}
+
+	// Make sure we did not leak any subs.
+	if numSubsAfter := c.stableTotalSubs(); numSubsAfter != numSubs {
+		t.Fatalf("Subs leaked: %d before, %d after", numSubs, numSubsAfter)
+	}
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
