@@ -88,6 +88,12 @@ const (
 
 	// apiMsgDeleteT is the endpoint to remove a message.
 	apiMsgDeleteT = "STREAM.MSG.DELETE.%s"
+
+	// orderedHeartbeatsInterval is how fast we want HBs from the server during idle.
+	orderedHeartbeatsInterval = 5 * time.Second
+
+	// Scale for threshold of missed HBs or lack of activity.
+	hbcThresh = 2
 )
 
 // JetStream allows persistent messaging through JetStream.
@@ -392,27 +398,6 @@ func (paf *pubAckFuture) Msg() *Msg {
 	paf.js.mu.RLock()
 	defer paf.js.mu.RUnlock()
 	return paf.msg
-}
-
-// pullSubscribe creates the wildcard subscription used per pull subscriber
-// to make fetch requests.
-func (js *js) pullSubscribe(subj string) (*Subscription, error) {
-	jsi := &jsSub{js: js, pull: true}
-
-	// Similar to async request handler we create a wildcard subscription for making requests,
-	// though we do not use the token based approach since we cannot match the response to
-	// the requestor due to JS subject being remapped on delivery.  Instead, we just use an array
-	// of channels similar to how ping/pong interval is handled and send the message to the first
-	// available requestor via a channel.
-	jsi.rr = rand.New(rand.NewSource(time.Now().UnixNano()))
-	jsi.rpre = fmt.Sprintf("%s.", NewInbox())
-	sub, err := js.nc.Subscribe(fmt.Sprintf("%s*", jsi.rpre), jsi.handleFetch)
-	if err != nil {
-		return nil, err
-	}
-	jsi.psub = sub
-
-	return &Subscription{Subject: subj, conn: js.nc, typ: PullSubscription, jsi: jsi}, nil
 }
 
 // For quick token lookup etc.
@@ -827,14 +812,11 @@ type nextRequest struct {
 
 // jsSub includes JetStream subscription info.
 type jsSub struct {
+	mu sync.RWMutex
 	js *js
 
-	// To setup request mux handler for pull subscribers.
-	mu    sync.RWMutex
-	psub  *Subscription
-	rpre  string
-	rr    *rand.Rand
-	freqs []chan *Msg
+	// For pull subscribers, this is the next message subject to send requests to.
+	nms string
 
 	consumer string
 	stream   string
@@ -843,100 +825,40 @@ type jsSub struct {
 	durable  bool
 	attached bool
 
+	// Ordered consumers
+	ordered bool
+	dseq    uint64
+	sseq    uint64
+	ccreq   *createConsumerRequest
+
 	// Heartbeats and Flow Control handling from push consumers.
-	hbs   bool
-	fc    bool
-	cmeta string
-	fcs   map[uint64]string
-}
-
-// newFetchReply generates a unique inbox used for a fetch request.
-func (jsi *jsSub) newFetchReply() string {
-	jsi.mu.Lock()
-	rpre := jsi.rpre
-	rn := jsi.rr.Int63()
-	jsi.mu.Unlock()
-	var sb strings.Builder
-	sb.WriteString(rpre)
-	var b [aReplyTokensize]byte
-	for i, l := 0, rn; i < len(b); i++ {
-		b[i] = rdigits[l%base]
-		l /= base
-	}
-	sb.Write(b[:])
-	return sb.String()
-}
-
-// handleFetch is delivered a message requested by pull subscribers
-// when calling Fetch.
-func (jsi *jsSub) handleFetch(m *Msg) {
-	jsi.mu.Lock()
-	if len(jsi.freqs) == 0 {
-		nc := jsi.js.nc
-		sub := jsi.psub
-		nc.mu.Lock()
-		errCB := nc.Opts.AsyncErrorCB
-		err := fmt.Errorf("nats: fetch response delivered but requestor has gone away")
-		if errCB != nil {
-			nc.ach.push(func() { errCB(nc, sub, err) })
-		}
-		nc.mu.Unlock()
-		jsi.mu.Unlock()
-		return
-	}
-	mch := jsi.freqs[0]
-	if len(jsi.freqs) > 1 {
-		jsi.freqs = append(jsi.freqs[:0], jsi.freqs[1:]...)
-	} else {
-		jsi.freqs = jsi.freqs[:0]
-	}
-	jsi.mu.Unlock()
-	mch <- m
-}
-
-// fetchNoWait makes a request to get a single message using no wait.
-func (jsi *jsSub) fetchNoWait(ctx context.Context, subj string, payload []byte) (*Msg, error) {
-	nc := jsi.js.nc
-	m := NewMsg(subj)
-	m.Reply = jsi.newFetchReply()
-	m.Data = payload
-
-	mch := make(chan *Msg, 1)
-	jsi.mu.Lock()
-	jsi.freqs = append(jsi.freqs, mch)
-	jsi.mu.Unlock()
-	if err := nc.PublishMsg(m); err != nil {
-		return nil, err
-	}
-
-	var ok bool
-	var msg *Msg
-
-	select {
-	case msg, ok = <-mch:
-		if !ok {
-			return nil, ErrConnectionClosed
-		}
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-
-	return msg, nil
+	hbc    *time.Timer
+	hbi    time.Duration
+	hbs    bool
+	active bool
+	fc     bool
+	cmeta  string
+	fcs    map[uint64]string
 }
 
 func (jsi *jsSub) unsubscribe(drainMode bool) error {
-	if drainMode && (jsi.durable || jsi.attached) {
+	jsi.mu.Lock()
+	durable, attached := jsi.durable, jsi.attached
+	stream, consumer := jsi.stream, jsi.consumer
+	js := jsi.js
+	if jsi.hbc != nil {
+		jsi.hbc.Stop()
+		jsi.hbc = nil
+	}
+	jsi.mu.Unlock()
+
+	if drainMode && (durable || attached) {
 		// Skip deleting consumer for durables/attached
 		// consumers when using drain mode.
 		return nil
 	}
-	// Clear the extra async pull subscription used for fetch requests.
-	if jsi.psub != nil {
-		jsi.psub.Drain()
-	}
 
-	js := jsi.js
-	return js.DeleteConsumer(jsi.stream, jsi.consumer)
+	return js.DeleteConsumer(stream, consumer)
 }
 
 // SubOpt configures options for subscribing to JetStream consumers.
@@ -956,13 +878,13 @@ func (js *js) Subscribe(subj string, cb MsgHandler, opts ...SubOpt) (*Subscripti
 	if cb == nil {
 		return nil, ErrBadSubscription
 	}
-	return js.subscribe(subj, _EMPTY_, cb, nil, false, opts)
+	return js.subscribe(subj, _EMPTY_, cb, nil, false, false, opts)
 }
 
 // SubscribeSync will create a sync subscription to the appropriate stream and consumer.
 func (js *js) SubscribeSync(subj string, opts ...SubOpt) (*Subscription, error) {
 	mch := make(chan *Msg, js.nc.Opts.SubChanLen)
-	return js.subscribe(subj, _EMPTY_, nil, mch, true, opts)
+	return js.subscribe(subj, _EMPTY_, nil, mch, true, false, opts)
 }
 
 // QueueSubscribe will create a subscription to the appropriate stream and consumer with queue semantics.
@@ -970,31 +892,32 @@ func (js *js) QueueSubscribe(subj, queue string, cb MsgHandler, opts ...SubOpt) 
 	if cb == nil {
 		return nil, ErrBadSubscription
 	}
-	return js.subscribe(subj, queue, cb, nil, false, opts)
+	return js.subscribe(subj, queue, cb, nil, false, false, opts)
 }
 
 // QueueSubscribeSync will create a sync subscription to the appropriate stream and consumer with queue semantics.
 func (js *js) QueueSubscribeSync(subj, queue string, opts ...SubOpt) (*Subscription, error) {
 	mch := make(chan *Msg, js.nc.Opts.SubChanLen)
-	return js.subscribe(subj, queue, nil, mch, true, opts)
+	return js.subscribe(subj, queue, nil, mch, true, false, opts)
 }
 
 // ChanSubscribe will create a subscription to the appropriate stream and consumer using a channel.
 func (js *js) ChanSubscribe(subj string, ch chan *Msg, opts ...SubOpt) (*Subscription, error) {
-	return js.subscribe(subj, _EMPTY_, nil, ch, false, opts)
+	return js.subscribe(subj, _EMPTY_, nil, ch, false, false, opts)
 }
 
 // ChanQueueSubscribe will create a subscription to the appropriate stream and consumer using a channel.
 func (js *js) ChanQueueSubscribe(subj, queue string, ch chan *Msg, opts ...SubOpt) (*Subscription, error) {
-	return js.subscribe(subj, queue, nil, ch, false, opts)
+	return js.subscribe(subj, queue, nil, ch, false, false, opts)
 }
 
 // PullSubscribe creates a pull subscriber.
 func (js *js) PullSubscribe(subj, durable string, opts ...SubOpt) (*Subscription, error) {
-	return js.subscribe(subj, _EMPTY_, nil, nil, false, append(opts, Durable(durable)))
+	mch := make(chan *Msg, js.nc.Opts.SubChanLen)
+	return js.subscribe(subj, _EMPTY_, nil, mch, true, true, append(opts, Durable(durable)))
 }
 
-func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync bool, opts []SubOpt) (*Subscription, error) {
+func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync, isPullMode bool, opts []SubOpt) (*Subscription, error) {
 	cfg := ConsumerConfig{AckPolicy: ackPolicyNotSet}
 	o := subOpts{cfg: &cfg}
 	if len(opts) > 0 {
@@ -1005,7 +928,6 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync 
 		}
 	}
 
-	isPullMode := ch == nil && cb == nil && !isSync
 	badPullAck := o.cfg.AckPolicy == AckNonePolicy || o.cfg.AckPolicy == AckAllPolicy
 	hasHeartbeats := o.cfg.Heartbeat > 0
 	hasFC := o.cfg.FlowControl
@@ -1026,7 +948,48 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync 
 		consumerBound = o.bound
 		notFoundErr   bool
 		lookupErr     bool
+		nc            = js.nc
+		nms           string
 	)
+
+	// Do some quick checks here for ordered consumers. We do these here instead of spread out
+	// in the individual SubOpts.
+	if o.ordered {
+		// Make sure we are not durable.
+		if isDurable {
+			return nil, fmt.Errorf("nats: durable can not be set for an ordered consumer")
+		}
+		// Check ack policy.
+		if o.cfg.AckPolicy != ackPolicyNotSet {
+			return nil, fmt.Errorf("nats: ack policy can not be set for an ordered consumer")
+		}
+		// Check max deliver.
+		if o.cfg.MaxDeliver != 1 && o.cfg.MaxDeliver != 0 {
+			return nil, fmt.Errorf("nats: max deliver can not be set for an ordered consumer")
+		}
+		// Queue groups not allowed.
+		if queue != _EMPTY_ {
+			return nil, fmt.Errorf("nats: queues not be set for an ordered consumer")
+		}
+		// Check for bound consumers.
+		if consumer != _EMPTY_ {
+			return nil, fmt.Errorf("nats: can not bind existing consumer for an ordered consumer")
+		}
+		// Check for pull mode.
+		if isPullMode {
+			return nil, fmt.Errorf("nats: can not use pull mode for an ordered consumer")
+		}
+		// Setup how we need it to be here.
+		o.cfg.FlowControl = true
+		o.cfg.AckPolicy = AckNonePolicy
+		o.cfg.MaxDeliver = 1
+		o.cfg.AckWait = 22 * time.Hour // Just set to something known, not utilized.
+		if !hasHeartbeats {
+			o.cfg.Heartbeat = orderedHeartbeatsInterval
+		}
+		hasFC, hasHeartbeats = true, true
+		o.mack = true // To avoid auto-ack wrapping call below.
+	}
 
 	// In case a consumer has not been set explicitly, then the
 	// durable name will be used as the consumer name.
@@ -1044,7 +1007,7 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync 
 		stream = o.stream
 	}
 
-	// With an explicit durable name, then can lookup the consumer first
+	// With an explicit durable name, we can lookup the consumer first
 	// to which it should be attaching to.
 	if consumer != _EMPTY_ {
 		info, err = js.ConsumerInfo(stream, consumer)
@@ -1069,26 +1032,24 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync 
 		} else if !isPullMode && ccfg.DeliverSubject == _EMPTY_ {
 			return nil, ErrPullSubscribeRequired
 		}
-
 		if ccfg.DeliverSubject != _EMPTY_ {
 			deliver = ccfg.DeliverSubject
 		} else if !isPullMode {
-			deliver = NewInbox()
+			deliver = nc.newInbox()
 		}
 	case (err != nil && !notFoundErr) || (notFoundErr && consumerBound):
-		// If the consumer is being bound got an error on pull subscribe then allow the error.
+		// If the consumer is being bound and we got an error on pull subscribe then allow the error.
 		if !(isPullMode && lookupErr && consumerBound) {
 			return nil, err
 		}
 	default:
 		// Attempt to create consumer if not found nor using Bind.
 		shouldCreate = true
-		deliver = NewInbox()
-		if !isPullMode {
-			cfg.DeliverSubject = deliver
+		if o.cfg.DeliverSubject != _EMPTY_ {
+			deliver = o.cfg.DeliverSubject
+		} else if !isPullMode {
+			deliver = nc.newInbox()
 		}
-		// Do filtering always, server will clear as needed.
-		cfg.FilterSubject = subj
 	}
 
 	var sub *Subscription
@@ -1099,11 +1060,67 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync 
 		cb = func(m *Msg) { ocb(m); m.Ack() }
 	}
 
-	if isPullMode {
-		sub, err = js.pullSubscribe(subj)
-	} else {
-		sub, err = js.nc.subscribe(deliver, queue, cb, ch, isSync, &jsSub{js: js, hbs: hasHeartbeats, fc: hasFC})
+	// In case we need to hold onto it for ordered consumers.
+	var ccreq *createConsumerRequest
+
+	// If we are creating or updating let's update cfg.
+	if shouldCreate {
+		if !isPullMode {
+			cfg.DeliverSubject = deliver
+		}
+		// Do filtering always, server will clear as needed.
+		cfg.FilterSubject = subj
+
+		// If not set default to ack explicit.
+		if cfg.AckPolicy == ackPolicyNotSet {
+			cfg.AckPolicy = AckExplicitPolicy
+		}
+		// If we have acks at all and the MaxAckPending is not set go ahead
+		// and set to the internal max.
+		// TODO(dlc) - We should be able to update this if client updates PendingLimits.
+		if cfg.MaxAckPending == 0 && cfg.AckPolicy != AckNonePolicy {
+			if !isPullMode && cb != nil && hasFC {
+				cfg.MaxAckPending = DefaultSubPendingMsgsLimit * 16
+			} else if ch != nil {
+				cfg.MaxAckPending = cap(ch)
+			} else {
+				cfg.MaxAckPending = DefaultSubPendingMsgsLimit
+			}
+		}
+		// Create request here.
+		ccreq = &createConsumerRequest{
+			Stream: stream,
+			Config: &cfg,
+		}
 	}
+
+	if isPullMode {
+		nms = fmt.Sprintf(js.apiSubj(apiRequestNextT), stream, consumer)
+		deliver = nc.newInbox()
+	}
+
+	jsi := &jsSub{
+		js:       js,
+		stream:   stream,
+		consumer: consumer,
+		durable:  isDurable,
+		attached: attached,
+		deliver:  deliver,
+		hbs:      hasHeartbeats,
+		hbi:      o.cfg.Heartbeat,
+		fc:       hasFC,
+		ordered:  o.ordered,
+		ccreq:    ccreq,
+		dseq:     1,
+		pull:     isPullMode,
+		nms:      nms,
+	}
+
+	sub, err = nc.subscribe(deliver, queue, cb, ch, isSync, jsi)
+	// Since JetStream sends on different subject, make sure this reflects the user's intentions.
+	sub.mu.Lock()
+	sub.Subject = subj
+	sub.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
@@ -1114,27 +1131,22 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync 
 		sub.SetPendingLimits(DefaultSubPendingMsgsLimit*16, DefaultSubPendingBytesLimit)
 	}
 
+	// If we fail and we had the sub we need to cleanup, but can't just do a straight Unsubscribe or Drain.
+	// We need to clear the jsi so we do not remove any durables etc.
+	cleanUpSub := func() {
+		if sub != nil {
+			sub.mu.Lock()
+			sub.jsi = nil
+			sub.mu.Unlock()
+			sub.Unsubscribe()
+		}
+	}
+
 	// If we are creating or updating let's process that request.
 	if shouldCreate {
-		// If not set default to ack explicit.
-		if cfg.AckPolicy == ackPolicyNotSet {
-			cfg.AckPolicy = AckExplicitPolicy
-		}
-		// If we have acks at all and the MaxAckPending is not set go ahead
-		// and set to the internal max.
-		// TODO(dlc) - We should be able to update this if client updates PendingLimits.
-		if cfg.MaxAckPending == 0 && cfg.AckPolicy != AckNonePolicy {
-			maxMsgs, _, _ := sub.PendingLimits()
-			cfg.MaxAckPending = maxMsgs
-		}
-
-		req := &createConsumerRequest{
-			Stream: stream,
-			Config: &cfg,
-		}
-
-		j, err := json.Marshal(req)
+		j, err := json.Marshal(ccreq)
 		if err != nil {
+			cleanUpSub()
 			return nil, err
 		}
 
@@ -1145,9 +1157,9 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync 
 			ccSubj = fmt.Sprintf(apiConsumerCreateT, stream)
 		}
 
-		resp, err := js.nc.Request(js.apiSubj(ccSubj), j, js.opts.wait)
+		resp, err := nc.Request(js.apiSubj(ccSubj), j, js.opts.wait)
 		if err != nil {
-			sub.Drain()
+			cleanUpSub()
 			if err == ErrNoResponders {
 				err = ErrJetStreamNotEnabled
 			}
@@ -1156,19 +1168,23 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync 
 		var cinfo consumerResponse
 		err = json.Unmarshal(resp.Data, &cinfo)
 		if err != nil {
-			sub.Drain()
+			cleanUpSub()
 			return nil, err
 		}
 		info = cinfo.ConsumerInfo
-		if cinfo.Error != nil {
-			// Remove interest from previous subscribe since it
-			// may have an incorrect delivery subject.
-			sub.Drain()
 
+		if cinfo.Error != nil {
+			// We will not be using this sub here if we were push based.
+			if !isPullMode {
+				cleanUpSub()
+			}
 			// Multiple subscribers could compete in creating the first consumer
 			// that will be shared using the same durable name. If this happens, then
 			// do a lookup of the consumer info and resubscribe using the latest info.
-			if consumer != _EMPTY_ && (strings.Contains(cinfo.Error.Description, `consumer already exists`) || strings.Contains(cinfo.Error.Description, `consumer name already in use`)) {
+			if consumer != _EMPTY_ &&
+				(strings.Contains(cinfo.Error.Description, `consumer already exists`) ||
+					strings.Contains(cinfo.Error.Description, `consumer name already in use`)) {
+
 				info, err = js.ConsumerInfo(stream, consumer)
 				if err != nil {
 					return nil, err
@@ -1180,37 +1196,44 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync 
 					return nil, ErrSubjectMismatch
 				}
 
+				// Update attached status.
+				jsi.attached = true
+
 				// Use the deliver subject from latest consumer config to attach.
-				if ccfg.DeliverSubject != _EMPTY_ {
+				if info.Config.DeliverSubject != _EMPTY_ {
 					// We can't reuse the channel, so if one was passed, we need to create a new one.
 					if ch != nil {
 						ch = make(chan *Msg, cap(ch))
 					}
-					sub, err = js.nc.subscribe(ccfg.DeliverSubject, queue, cb, ch, isSync,
-						&jsSub{js: js, hbs: hasHeartbeats, fc: hasFC})
+					jsi.deliver = info.Config.DeliverSubject
+					// Recreate the subscription here.
+					sub, err = nc.subscribe(jsi.deliver, queue, cb, ch, isSync, jsi)
 					if err != nil {
 						return nil, err
 					}
+					// Since JetStream sends on different subject, make sure this reflects the user's intentions.
+					sub.mu.Lock()
+					sub.Subject = subj
+					sub.mu.Unlock()
 				}
-				attached = true
 			} else {
 				if cinfo.Error.Code == 404 {
 					return nil, ErrStreamNotFound
 				}
 				return nil, fmt.Errorf("nats: %s", cinfo.Error.Description)
 			}
+		} else if consumer == _EMPTY_ {
+			// Update our consumer name here which is filled in when we create the consumer.
+			sub.mu.Lock()
+			sub.jsi.consumer = info.Name
+			sub.mu.Unlock()
 		}
-		stream = info.Stream
-		consumer = info.Name
-		deliver = info.Config.DeliverSubject
 	}
-	sub.mu.Lock()
-	sub.jsi.stream = stream
-	sub.jsi.consumer = consumer
-	sub.jsi.durable = isDurable
-	sub.jsi.attached = attached
-	sub.jsi.deliver = deliver
-	sub.mu.Unlock()
+
+	// Do heartbeats last if needed.
+	if hasHeartbeats {
+		sub.scheduleHeartbeatCheck()
+	}
 
 	return sub, nil
 }
@@ -1250,6 +1273,142 @@ func (jsi *jsSub) trackSequences(reply string) {
 	jsi.mu.Unlock()
 }
 
+// Check to make sure messages are arriving in order.
+// Returns true if the sub had to be replaced. Will cause upper layers to return.
+// Lock should be held.
+func (sub *Subscription) checkOrderedMsgs(m *Msg) bool {
+	// Ignore msgs with no reply like HBs and flowcontrol, they are handled elsewhere.
+	if m.Reply == _EMPTY_ || sub.jsi == nil || isControlMessage(m) {
+		return false
+	}
+
+	// Normal message here.
+	tokens, err := getMetadataFields(m.Reply)
+	if err != nil {
+		return false
+	}
+	sseq, dseq := uint64(parseNum(tokens[5])), uint64(parseNum(tokens[6]))
+
+	jsi := sub.jsi
+	jsi.mu.Lock()
+	if dseq != jsi.dseq {
+		rseq := jsi.sseq + 1
+		jsi.mu.Unlock()
+		sub.resetOrderedConsumer(rseq)
+		return true
+	}
+	// Update our tracking here.
+	jsi.dseq, jsi.sseq = dseq+1, sseq
+	jsi.mu.Unlock()
+	return false
+}
+
+// Update and replace sid.
+// Lock should be held on entry but will be unlocked to prevent lock inversion.
+func (sub *Subscription) applyNewSID() (osid int64) {
+	nc := sub.conn
+	sub.mu.Unlock()
+
+	nc.subsMu.Lock()
+	osid = sub.sid
+	delete(nc.subs, osid)
+	// Place new one.
+	nc.ssid++
+	nsid := nc.ssid
+	nc.subs[nsid] = sub
+	nc.subsMu.Unlock()
+
+	sub.mu.Lock()
+	sub.sid = nsid
+	return osid
+}
+
+// We are here if we have detected a gap with an ordered consumer.
+// We will create a new consumer and rewire the low level subscription.
+// Lock should be held.
+func (sub *Subscription) resetOrderedConsumer(sseq uint64) {
+	nc := sub.conn
+	closed := sub.closed
+	if sub.jsi == nil || nc == nil || closed {
+		return
+	}
+
+	// Quick unsubscribe. Since we know this is a simple push subscriber we do in place.
+	osid := sub.applyNewSID()
+
+	// Grab new inbox.
+	newDeliver := nc.newInbox()
+	sub.Subject = newDeliver
+
+	// Snapshot jsi under sub lock here.
+	jsi := sub.jsi
+
+	// We are still in the low level readloop for the connection so we need
+	// to spin a go routine to try to create the new consumer.
+	go func() {
+		// Unsubscribe and subscribe with new inbox and sid.
+		// Remap a new low level sub into this sub since its client accessible.
+		// This is done here in this go routine to prevent lock inversion.
+		nc.mu.Lock()
+		nc.bw.appendString(fmt.Sprintf(unsubProto, osid, _EMPTY_))
+		nc.bw.appendString(fmt.Sprintf(subProto, newDeliver, _EMPTY_, sub.sid))
+		nc.kickFlusher()
+		nc.mu.Unlock()
+
+		pushErr := func(err error) {
+			nc.handleConsumerSequenceMismatch(sub, err)
+			nc.unsubscribe(sub, 0, true)
+		}
+
+		jsi.mu.Lock()
+		// Reset some items in jsi.
+		jsi.dseq = 1
+		jsi.cmeta = _EMPTY_
+		jsi.fcs = nil
+		jsi.deliver = newDeliver
+		// Reset consumer request for starting policy.
+		cfg := jsi.ccreq.Config
+		cfg.DeliverSubject = newDeliver
+		cfg.DeliverPolicy = DeliverByStartSequencePolicy
+		cfg.OptStartSeq = sseq
+
+		ccSubj := fmt.Sprintf(apiConsumerCreateT, jsi.stream)
+		j, err := json.Marshal(jsi.ccreq)
+		js := jsi.js
+		jsi.mu.Unlock()
+
+		if err != nil {
+			pushErr(err)
+			return
+		}
+
+		resp, err := nc.Request(js.apiSubj(ccSubj), j, js.opts.wait)
+		if err != nil {
+			if err == ErrNoResponders {
+				err = ErrJetStreamNotEnabled
+			}
+			pushErr(err)
+			return
+		}
+
+		var cinfo consumerResponse
+		err = json.Unmarshal(resp.Data, &cinfo)
+		if err != nil {
+			pushErr(err)
+			return
+		}
+
+		if cinfo.Error != nil {
+			pushErr(fmt.Errorf("nats: %s", cinfo.Error.Description))
+			return
+		}
+
+		jsi.mu.Lock()
+		jsi.consumer = cinfo.Name
+		jsi.mu.Unlock()
+	}()
+}
+
 // checkForFlowControlResponse will check to see if we should send a flow control response
 // based on the delivered index.
 // Lock should be held.
@@ -1282,6 +1441,55 @@ func (jsi *jsSub) scheduleFlowControlResponse(dfuture uint64, reply string) {
 	jsi.mu.Unlock()
 }
 
+// Checks for activity from our consumer.
+// If we do not think we are active send an async error.
+func (sub *Subscription) activityCheck() {
+	jsi := sub.jsi
+	if jsi == nil {
+		return
+	}
+
+	jsi.mu.Lock()
+	active := jsi.active
+	jsi.hbc.Reset(jsi.hbi)
+	jsi.active = false
+	jsi.mu.Unlock()
+
+	if !active {
+		sub.mu.Lock()
+		nc := sub.conn
+		closed := sub.closed
+		sub.mu.Unlock()
+
+		if !closed {
+			nc.mu.Lock()
+			errCB := nc.Opts.AsyncErrorCB
+			if errCB != nil {
+				nc.ach.push(func() { errCB(nc, sub, ErrConsumerNotActive) })
+			}
+			nc.mu.Unlock()
+		}
+	}
+}
+
+// scheduleHeartbeatCheck sets up the timer check to make sure we are active
+// or receiving idle heartbeats..
+func (sub *Subscription) scheduleHeartbeatCheck() {
+	jsi := sub.jsi
+	if jsi == nil {
+		return
+	}
+
+	jsi.mu.Lock()
+	defer jsi.mu.Unlock()
+
+	if jsi.hbc == nil {
+		jsi.hbc = time.AfterFunc(jsi.hbi*hbcThresh, sub.activityCheck)
+	} else {
+		jsi.hbc.Reset(jsi.hbi)
+	}
+}
+
 // handleConsumerSequenceMismatch will send an async error that can be used to restart a push based consumer.
 func (nc *Conn) handleConsumerSequenceMismatch(sub *Subscription, err error) {
 	nc.mu.Lock()
@@ -1292,12 +1500,13 @@ func (nc *Conn) handleConsumerSequenceMismatch(sub *Subscription, err error) {
 	nc.mu.Unlock()
 }
 
-// processControlFlow will automatically respond to control messages sent by the server.
-func (nc *Conn) processSequenceMismatch(msg *Msg, s *Subscription, jsi *jsSub) {
+// checkForSequenceMismatch will make sure we have not missed any messages since last seen.
+func (nc *Conn) checkForSequenceMismatch(msg *Msg, s *Subscription, jsi *jsSub) {
 	// Process heartbeat received, get latest control metadata if present.
-	jsi.mu.RLock()
-	ctrl := jsi.cmeta
-	jsi.mu.RUnlock()
+	jsi.mu.Lock()
+	ctrl, ordered := jsi.cmeta, jsi.ordered
+	jsi.active = true
+	jsi.mu.Unlock()
 
 	if ctrl == _EMPTY_ {
 		return
@@ -1322,12 +1531,18 @@ func (nc *Conn) processSequenceMismatch(msg *Msg, s *Subscription, jsi *jsSub) {
 		// Dispatch async error including details such as
 		// from where the consumer could be restarted.
 		sseq := parseNum(tokens[5])
-		ecs := &ErrConsumerSequenceMismatch{
-			StreamResumeSequence: uint64(sseq),
-			ConsumerSequence:     uint64(parseNum(dseq)),
-			LastConsumerSequence: uint64(parseNum(ldseq)),
+		if ordered {
+			s.mu.Lock()
+			s.resetOrderedConsumer(jsi.sseq + 1)
+			s.mu.Unlock()
+		} else {
+			ecs := &ErrConsumerSequenceMismatch{
+				StreamResumeSequence: uint64(sseq),
+				ConsumerSequence:     uint64(parseNum(dseq)),
+				LastConsumerSequence: uint64(parseNum(ldseq)),
+			}
+			nc.handleConsumerSequenceMismatch(s, ecs)
 		}
-		nc.handleConsumerSequenceMismatch(s, ecs)
 	}
 }
 
@@ -1368,12 +1583,24 @@ func (js *js) lookupStreamBySubject(subj string) (string, error) {
 type subOpts struct {
 	// For attaching.
 	stream, consumer string
-	// For manual ack
-	mack bool
 	// For creating or updating.
 	cfg *ConsumerConfig
 	// For binding a subscription to a consumer without creating it.
 	bound bool
+	// For manual ack
+	mack bool
+	// For an ordered consumer.
+	ordered bool
+}
+
+// OrderedConsumer will create a fifo direct/ephemeral consumer for in order delivery of messages.
+// There are no redeliveries and no acks, and flow control and heartbeats will be added but
+// will be taken care of without additional client code.
+func OrderedConsumer() SubOpt {
+	return subOptFn(func(opts *subOpts) error {
+		opts.ordered = true
+		return nil
+	})
 }
 
 // ManualAck disables auto ack functionality for async subscriptions.
@@ -1597,6 +1824,45 @@ func PullMaxWaiting(n int) SubOpt {
 
 var errNoMessages = errors.New("nats: no messages")
 
+// Returns if the given message is a user message or not, and if
+// `checkSts` is true, returns appropriate error based on the
+// content of the status (404, etc..)
+func checkMsg(msg *Msg, checkSts bool) (usrMsg bool, err error) {
+	// Assume user message
+	usrMsg = true
+
+	// If payload or no header, consider this a user message
+	if len(msg.Data) > 0 || len(msg.Header) == 0 {
+		return
+	}
+	// Look for status header
+	val := msg.Header.Get(statusHdr)
+	// If not present, then this is considered a user message
+	if val == _EMPTY_ {
+		return
+	}
+	// At this point, this is not a user message since there is
+	// no payload and a "Status" header.
+	usrMsg = false
+
+	// If we don't care about status, we are done.
+	if !checkSts {
+		return
+	}
+	switch val {
+	case noResponders:
+		err = ErrNoResponders
+	case noMessagesSts:
+		// 404 indicates that there are no messages.
+		err = errNoMessages
+	case reqTimeoutSts:
+		err = ErrTimeout
+	default:
+		err = fmt.Errorf("nats: %s", msg.Header.Get(descrHdr))
+	}
+	return
+}
+
 // Fetch pulls a batch of messages from a stream for a pull consumer.
 func (sub *Subscription) Fetch(batch int, opts ...PullOpt) ([]*Msg, error) {
 	if sub == nil {
@@ -1615,14 +1881,18 @@ func (sub *Subscription) Fetch(batch int, opts ...PullOpt) ([]*Msg, error) {
 
 	sub.mu.Lock()
 	jsi := sub.jsi
-	if jsi == nil || sub.typ != PullSubscription {
+	// Reject if this is not a pull subscription. Note that sub.typ is SyncSubscription,
+	// so check for jsi.pull boolean instead.
+	if jsi == nil || !jsi.pull {
 		sub.mu.Unlock()
 		return nil, ErrTypeSubscription
 	}
 
-	nc, _ := sub.conn, sub.Subject
-	stream, consumer := sub.jsi.stream, sub.jsi.consumer
+	nc := sub.conn
+	nms := sub.jsi.nms
+	rply := sub.jsi.deliver
 	js := sub.jsi.js
+	pmc := len(sub.mch) > 0
 
 	ttl := o.ttl
 	if ttl == 0 {
@@ -1656,22 +1926,6 @@ func (sub *Subscription) Fetch(batch int, opts ...PullOpt) ([]*Msg, error) {
 		return nil, err
 	}
 
-	// Check for empty payload message and process synchronously
-	// any status messages.
-	checkMsg := func(msg *Msg) error {
-		if len(msg.Data) == 0 {
-			switch msg.Header.Get(statusHdr) {
-			case noResponders:
-				return ErrNoResponders
-			case noMessages:
-				return errNoMessages
-			case "400", "408", "409":
-				return fmt.Errorf("nats: %s", msg.Header.Get(descrHdr))
-			}
-		}
-		return nil
-	}
-
 	checkCtxErr := func(err error) error {
 		if o.ctx == nil && err == context.DeadlineExceeded {
 			return ErrTimeout
@@ -1680,195 +1934,86 @@ func (sub *Subscription) Fetch(batch int, opts ...PullOpt) ([]*Msg, error) {
 	}
 
 	var (
-		gotNoMessages bool
-		nr            = &nextRequest{Batch: batch, NoWait: true}
-		req, _        = json.Marshal(nr)
-		reqNext       = js.apiSubj(fmt.Sprintf(apiRequestNextT, stream, consumer))
-		expires       = ttl - 10*time.Millisecond
-		msgs          = make([]*Msg, 0)
+		msgs  = make([]*Msg, 0, batch)
+		msg   *Msg
+		start = time.Now()
 	)
-
-	if batch == 1 {
-		// To optimize single message no wait fetch, we use a shared wildcard
-		// subscription per pull subscriber to wait for the response.
-		resp, err := jsi.fetchNoWait(ctx, reqNext, req)
-		if err != nil {
-			return nil, checkCtxErr(err)
-		}
-
-		// In case of a no messages instant error, then fallback
-		// into longer version of pull batch request.
-		err = checkMsg(resp)
+	for pmc && len(msgs) < batch {
+		// Check next msg with booleans that say that this is an internal call
+		// for a pull subscribe (so don't reject it) and don't wait if there
+		// are no messages.
+		msg, err = sub.nextMsgWithContext(ctx, true, false)
 		if err != nil {
 			if err == errNoMessages {
-				// Use old request style for the retry of the pull request
-				// in order to use auto UNSUB 1 to prevent the server
-				// from delivering a message when there is no more interest.
-				nr.NoWait = false
-				nr.Expires = expires
-				req, _ = json.Marshal(nr)
-				resp, err = nc.oldRequestWithContext(ctx, reqNext, nil, req)
-				if err != nil {
-					return nil, checkCtxErr(err)
-				}
-
-				// This next message, could also be an error
-				// (e.g. 408 due to request timeout).
-				err = checkMsg(resp)
-				if err != nil {
-					return nil, err
-				}
-				return []*Msg{resp}, nil
-			} else {
-				// Hard error
-				return nil, checkCtxErr(err)
+				err = nil
 			}
-		}
-		return []*Msg{resp}, nil
-	}
-
-	// Setup a request where we will wait for the first response
-	// in case of errors, then dispatch the rest of the replies
-	// to the channel.
-	inbox := NewInbox()
-
-	mch := make(chan *Msg, batch)
-	s, err := nc.subscribe(inbox, _EMPTY_, nil, mch, true, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	// Remove interest in the subscription at the end so that the
-	// this inbox does not get delivered the results intended
-	// for another request.
-	defer s.Unsubscribe()
-
-	// Make a publish request to get results of the pull.
-	err = nc.publish(reqNext, inbox, nil, req)
-	if err != nil {
-		s.Unsubscribe()
-		return nil, err
-	}
-
-	// Try to get the first message or error with NoWait.
-	var (
-		firstMsg *Msg
-		ok       bool
-	)
-	select {
-	case firstMsg, ok = <-mch:
-		if !ok {
-			err = s.getNextMsgErr()
-		} else {
-			err = s.processNextMsgDelivered(firstMsg)
-			if err == nil {
-				err = checkMsg(firstMsg)
-			}
-		}
-	case <-ctx.Done():
-		err = checkCtxErr(ctx.Err())
-	}
-
-	// If the first error is 'no more messages', then switch into
-	// longer form version of the request that waits for messages.
-	if err == errNoMessages {
-		gotNoMessages = true
-	} else if err != nil {
-		// We should be getting the response from the server
-		// in case we got a poll error, so stop and cleanup.
-		s.Unsubscribe()
-		return nil, err
-	}
-
-	if gotNoMessages {
-		// We started with a 404 response right away, so fallback into
-		// second request that waits longer for messages to delivered.
-		nr.NoWait = false
-		nr.Expires = expires
-		req, _ = json.Marshal(nr)
-
-		// Since first message was an error we UNSUB (batch+1)
-		// since we are counting it as the first message.
-		err = s.AutoUnsubscribe(batch + 1)
-		if err != nil {
-			return nil, err
-		}
-
-		// Make another request and wait for the messages...
-		err = nc.publish(reqNext, inbox, nil, req)
-		if err != nil {
-			s.Unsubscribe()
-			return nil, err
-		}
-
-		// Try to get the first result again or return the error.
-		select {
-		case firstMsg, ok = <-mch:
-			if !ok {
-				err = s.getNextMsgErr()
-			} else {
-				err = s.processNextMsgDelivered(firstMsg)
-				if err == nil {
-					err = checkMsg(firstMsg)
-				}
-			}
-		case <-ctx.Done():
-			err = checkCtxErr(ctx.Err())
-		}
-		if err != nil {
-			s.Unsubscribe()
-			return nil, err
-		}
-		// Check again if the delivered next message is a status error.
-		err = checkMsg(firstMsg)
-		if err != nil {
-			s.Unsubscribe()
-			return nil, err
-		}
-	} else {
-		// We are receiving messages at this point. Send UNSUB to let
-		// the server clear interest once enough replies are delivered.
-		err = s.AutoUnsubscribe(batch)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	msgs = append(msgs, firstMsg)
-	for {
-		var (
-			msg *Msg
-			ok  bool
-		)
-		select {
-		case msg, ok = <-mch:
-			if !ok {
-				err = s.getNextMsgErr()
-			} else {
-				err = s.processNextMsgDelivered(msg)
-				if err == nil {
-					err = checkMsg(msg)
-				}
-			}
-		case <-ctx.Done():
-			return msgs, checkCtxErr(err)
-		}
-		if err != nil {
-			// Discard the error which may have been a timeout
-			// or 408 request timeout status from the server,
-			// and just the return delivered messages.
 			break
 		}
-		if msg != nil {
+		// Check msg but just to determine if this is a user message
+		// or status message, however, we don't care about values of status
+		// messages at this point in the Fetch() call, so checkMsg can't
+		// return an error.
+		if usrMsg, _ := checkMsg(msg, false); usrMsg {
 			msgs = append(msgs, msg)
 		}
+	}
+	if err == nil && len(msgs) < batch {
+		// For batch real size of 1, it does not make sense to set no_wait in
+		// the request.
+		batchSize := batch - len(msgs)
+		noWait := batchSize > 1
+		nr := &nextRequest{Batch: batchSize, NoWait: noWait}
+		req, _ := json.Marshal(nr)
 
-		if len(msgs) == batch {
-			// Done!
-			break
+		err = nc.PublishRequest(nms, rply, req)
+		for err == nil && len(msgs) < batch {
+			ttl -= time.Since(start)
+			if ttl < 0 {
+				ttl = 0
+			}
+
+			// Ask for next message and waits if there are no messages
+			msg, err = sub.nextMsgWithContext(ctx, true, true)
+			if err == nil {
+				var usrMsg bool
+
+				usrMsg, err = checkMsg(msg, true)
+				if err == nil && usrMsg {
+					msgs = append(msgs, msg)
+				} else if noWait && (err == errNoMessages) && len(msgs) == 0 {
+					// If we have a 404 for our "no_wait" request and have
+					// not collected any message, then resend request to
+					// wait this time.
+					noWait = false
+
+					ttl -= time.Since(start)
+					if ttl < 0 {
+						// At this point consider that we have timed-out
+						err = context.DeadlineExceeded
+						break
+					}
+
+					// Make our request expiration a bit shorter than the
+					// current timeout.
+					expires := ttl
+					if ttl >= 20*time.Millisecond {
+						expires = ttl - 10*time.Millisecond
+					}
+
+					nr.Batch = batch - len(msgs)
+					nr.Expires = expires
+					nr.NoWait = false
+					req, _ = json.Marshal(nr)
+
+					err = nc.PublishRequest(nms, rply, req)
+				}
+			}
 		}
 	}
-
+	// If there is at least a message added to msgs, then need to return OK and no error
+	if err != nil && len(msgs) == 0 {
+		return nil, checkCtxErr(err)
+	}
 	return msgs, nil
 }
 
@@ -1909,13 +2054,11 @@ func (m *Msg) checkReply() (*js, *jsSub, error) {
 		return nil, nil, ErrMsgNoReply
 	}
 	sub := m.Sub
-	sub.mu.Lock()
 	if sub.jsi == nil {
-		sub.mu.Unlock()
-
 		// Not using a JS context.
 		return nil, nil, nil
 	}
+	sub.mu.Lock()
 	js := sub.jsi.js
 	jsi := sub.jsi
 	sub.mu.Unlock()

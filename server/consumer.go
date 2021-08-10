@@ -293,7 +293,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			return nil, ApiErrors[JSConsumerDeliverCycleErr]
 		}
 		if config.MaxWaiting != 0 {
-			return nil, ApiErrors[JSConsumerDeliverToWildcardsErr]
+			return nil, ApiErrors[JSConsumerPushMaxWaitingErr]
 		}
 		if config.MaxAckPending > 0 && config.AckPolicy == AckNone {
 			return nil, ApiErrors[JSConsumerMaxPendingAckPolicyRequiredErr]
@@ -2126,6 +2126,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			if !o.active {
 				goto waitForMsgs
 			}
+			// Flowcontrol.
 			if o.maxpb > 0 && o.pbytes > o.maxpb {
 				goto waitForMsgs
 			}
@@ -2221,15 +2222,15 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			if o.isActive() {
 				const t = "NATS/1.0 100 Idle Heartbeat\r\n%s: %d\r\n%s: %d\r\n\r\n"
 				hdr := []byte(fmt.Sprintf(t, JSLastConsumerSeq, dseq, JSLastStreamSeq, sseq))
+				if fcp := o.fcID(); fcp != _EMPTY_ {
+					// Add in that we are stalled on flow control here.
+					addOn := []byte(fmt.Sprintf("%s: %s\r\n\r\n", JSConsumerStalled, fcp))
+					hdr = append(hdr[:len(hdr)-LEN_CR_LF], []byte(addOn)...)
+				}
 				outq.send(&jsPubMsg{odsubj, _EMPTY_, _EMPTY_, hdr, nil, nil, 0, nil})
 			}
 			// Reset our idle heartbeat timer.
 			hb.Reset(hbd)
-
-			// Now check on flowcontrol if enabled. Make sure if we have any outstanding to resend.
-			if o.fcOut() {
-				o.sendFlowControl()
-			}
 		}
 	}
 }
@@ -2336,12 +2337,10 @@ func (o *consumer) processFlowControl(_ *subscription, c *client, _ *Account, su
 
 	// Update accounting.
 	o.pbytes -= o.fcsz
-	o.fcid, o.fcsz = _EMPTY_, 0
-
-	// In case they are sent out of order or we get duplicates etc.
 	if o.pbytes < 0 {
 		o.pbytes = 0
 	}
+	o.fcid, o.fcsz = _EMPTY_, 0
 
 	o.signalNewMessages()
 }
@@ -2364,10 +2363,10 @@ func (o *consumer) fcReply() string {
 	return sb.String()
 }
 
-func (o *consumer) fcOut() bool {
+func (o *consumer) fcID() string {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
-	return o.fcid != _EMPTY_
+	return o.fcid
 }
 
 // sendFlowControl will send a flow control packet to the consumer.

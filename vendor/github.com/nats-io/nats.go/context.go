@@ -110,10 +110,7 @@ func (nc *Conn) oldRequestWithContext(ctx context.Context, subj string, hdr, dat
 	return s.NextMsgWithContext(ctx)
 }
 
-// NextMsgWithContext takes a context and returns the next message
-// available to a synchronous subscriber, blocking until it is delivered
-// or context gets canceled.
-func (s *Subscription) NextMsgWithContext(ctx context.Context) (*Msg, error) {
+func (s *Subscription) nextMsgWithContext(ctx context.Context, pullSubInternal, waitIfNoMsg bool) (*Msg, error) {
 	if ctx == nil {
 		return nil, ErrInvalidContext
 	}
@@ -126,6 +123,11 @@ func (s *Subscription) NextMsgWithContext(ctx context.Context) (*Msg, error) {
 
 	s.mu.Lock()
 	err := s.validateNextMsgState()
+	// Unless this is from an internal call, reject use of this API.
+	// Users should use Fetch() instead.
+	if err == nil && !pullSubInternal && s.jsi != nil && s.jsi.pull {
+		err = ErrTypeSubscription
+	}
 	if err != nil {
 		s.mu.Unlock()
 		return nil, err
@@ -150,6 +152,11 @@ func (s *Subscription) NextMsgWithContext(ctx context.Context) (*Msg, error) {
 			return msg, nil
 		}
 	default:
+		// If internal and we don't want to wait, signal that there is no
+		// message in the internal queue.
+		if pullSubInternal && !waitIfNoMsg {
+			return nil, errNoMessages
+		}
 	}
 
 	select {
@@ -165,6 +172,13 @@ func (s *Subscription) NextMsgWithContext(ctx context.Context) (*Msg, error) {
 	}
 
 	return msg, nil
+}
+
+// NextMsgWithContext takes a context and returns the next message
+// available to a synchronous subscriber, blocking until it is delivered
+// or context gets canceled.
+func (s *Subscription) NextMsgWithContext(ctx context.Context) (*Msg, error) {
+	return s.nextMsgWithContext(ctx, false, true)
 }
 
 // FlushWithContext will allow a context to control the duration

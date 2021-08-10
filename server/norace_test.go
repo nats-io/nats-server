@@ -2486,3 +2486,65 @@ func TestNoRaceJetStreamSlowRestartWithManyExpiredMsgs(t *testing.T) {
 		t.Fatalf("Expected no msgs after restart, got %d", si.State.Msgs)
 	}
 }
+
+func TestNoRaceJetStreamStalledMirrorsAfterExpire(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.*"},
+		Replicas: 1,
+		MaxAge:   250 * time.Microsecond,
+	}
+
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Error creating stream: %v", err)
+	}
+
+	if _, err := js.AddStream(&nats.StreamConfig{
+		Name:     "M",
+		Replicas: 2,
+		Mirror:   &nats.StreamSource{Name: "TEST"},
+	}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sendBatch := func(batch int) {
+		t.Helper()
+		for i := 0; i < batch; i++ {
+			js.PublishAsync("foo.bar", []byte("Hello"))
+		}
+		select {
+		case <-js.PublishAsyncComplete():
+		case <-time.After(5 * time.Second):
+			t.Fatalf("Did not receive completion signal")
+		}
+	}
+
+	numMsgs := 25_000
+	sendBatch(numMsgs)
+
+	// Turn off expiration so we can test we did not stall.
+	cfg.MaxAge = 0
+	if _, err := js.UpdateStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sendBatch(numMsgs)
+
+	// Wait for mirror to be caught up.
+	checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
+		si, err := js.StreamInfo("M")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if si.State.LastSeq != uint64(2*numMsgs) {
+			return fmt.Errorf("Expected %d as last sequence, got state: %+v", 2*numMsgs, si.State)
+		}
+		return nil
+	})
+}
