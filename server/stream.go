@@ -773,6 +773,9 @@ func checkStreamCfg(config *StreamConfig) (StreamConfig, error) {
 	if cfg.MaxMsgs == 0 {
 		cfg.MaxMsgs = -1
 	}
+	if cfg.MaxMsgsPer == 0 {
+		cfg.MaxMsgsPer = -1
+	}
 	if cfg.MaxBytes == 0 {
 		cfg.MaxBytes = -1
 	}

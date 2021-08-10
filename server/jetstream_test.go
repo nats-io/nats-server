@@ -12551,6 +12551,33 @@ func TestJetStreamConsumerPendingBugWithKV(t *testing.T) {
 	}
 }
 
+// Issue #2420
+func TestJetStreamDefaultMaxMsgsPer(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.*"},
+		Storage:  nats.MemoryStorage,
+		MaxMsgs:  10,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.Config.MaxMsgsPerSubject != -1 {
+		t.Fatalf("Expected default of -1, got %d", si.Config.MaxMsgsPerSubject)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
