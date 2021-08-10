@@ -1236,43 +1236,43 @@ func (as *mqttAccountSessionManager) processJSAPIReplies(_ *subscription, pc *cl
 	case mqttJSAStreamCreate:
 		var resp = &JSApiStreamCreateResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
-			resp.Error = ApiErrors[JSInvalidJSONErr]
+			resp.Error = NewJSInvalidJSONError()
 		}
 		ch <- resp
 	case mqttJSAStreamLookup:
 		var resp = &JSApiStreamInfoResponse{}
 		if err := json.Unmarshal(msg, &resp); err != nil {
-			resp.Error = ApiErrors[JSInvalidJSONErr]
+			resp.Error = NewJSInvalidJSONError()
 		}
 		ch <- resp
 	case mqttJSAStreamDel:
 		var resp = &JSApiStreamDeleteResponse{}
 		if err := json.Unmarshal(msg, &resp); err != nil {
-			resp.Error = ApiErrors[JSInvalidJSONErr]
+			resp.Error = NewJSInvalidJSONError()
 		}
 		ch <- resp
 	case mqttJSAConsumerCreate:
 		var resp = &JSApiConsumerCreateResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
-			resp.Error = ApiErrors[JSInvalidJSONErr]
+			resp.Error = NewJSInvalidJSONError()
 		}
 		ch <- resp
 	case mqttJSAConsumerDel:
 		var resp = &JSApiConsumerDeleteResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
-			resp.Error = ApiErrors[JSInvalidJSONErr]
+			resp.Error = NewJSInvalidJSONError()
 		}
 		ch <- resp
 	case mqttJSAMsgStore, mqttJSASessPersist:
 		var resp = &JSPubAckResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
-			resp.Error = ApiErrors[JSInvalidJSONErr]
+			resp.Error = NewJSInvalidJSONError()
 		}
 		ch <- resp
 	case mqttJSAMsgLoad:
 		var resp = &JSApiMsgGetResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
-			resp.Error = ApiErrors[JSInvalidJSONErr]
+			resp.Error = NewJSInvalidJSONError()
 		}
 		ch <- resp
 	default:
