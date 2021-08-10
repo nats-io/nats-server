@@ -12551,6 +12551,43 @@ func TestJetStreamConsumerPendingBugWithKV(t *testing.T) {
 	}
 }
 
+// Issue #2423
+func TestJetStreamBadConsumerCreateErr(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.*"},
+		Storage:  nats.MemoryStorage,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// When adding a consumer with both deliver subject and max wait (push vs pull),
+	// we got the wrong err about deliver subject having a wildcard.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "nowcerr",
+		DeliverSubject: "X",
+		MaxWaiting:     100,
+	})
+	if err == nil {
+		t.Fatalf("Expected an error but got none")
+	}
+	if !strings.Contains(err.Error(), "push mode can not set max waiting") {
+		t.Fatalf("Incorrect error returned: %v", err)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////

@@ -293,7 +293,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			return nil, ApiErrors[JSConsumerDeliverCycleErr]
 		}
 		if config.MaxWaiting != 0 {
-			return nil, ApiErrors[JSConsumerDeliverToWildcardsErr]
+			return nil, ApiErrors[JSConsumerPushMaxWaitingErr]
 		}
 		if config.MaxAckPending > 0 && config.AckPolicy == AckNone {
 			return nil, ApiErrors[JSConsumerMaxPendingAckPolicyRequiredErr]
