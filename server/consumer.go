@@ -351,7 +351,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		config.MaxDeliver = -1
 	}
 	// Set proper default for max ack pending if we are ack explicit and none has been set.
-	if config.AckPolicy == AckExplicit && config.MaxAckPending == 0 {
+	if (config.AckPolicy == AckExplicit || config.AckPolicy == AckAll) && config.MaxAckPending == 0 {
 		config.MaxAckPending = JsDefaultMaxAckPending
 	}
 
