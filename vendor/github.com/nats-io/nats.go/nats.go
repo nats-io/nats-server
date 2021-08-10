@@ -154,6 +154,7 @@ var (
 	ErrDeliverSubjectRequired       = errors.New("nats: deliver subject is required")
 	ErrPullSubscribeToPushConsumer  = errors.New("nats: cannot pull subscribe to push based consumer")
 	ErrPullSubscribeRequired        = errors.New("nats: must use pull subscribe to bind to pull based consumer")
+	ErrConsumerNotActive            = errors.New("nats: consumer not active")
 )
 
 func init() {
@@ -506,6 +507,10 @@ type Conn struct {
 	respMux       *Subscription        // A single response subscription
 	respMap       map[string]chan *Msg // Request map for the response msg channels
 	respRand      *rand.Rand           // Used for generating suffix
+
+	// Msg filters for testing.
+	// Protected by subsMu
+	filters map[string]msgFilter
 }
 
 type natsReader struct {
@@ -2564,8 +2569,14 @@ func (nc *Conn) waitForMsgs(s *Subscription) {
 		if !s.closed {
 			s.delivered++
 			delivered = s.delivered
-			if s.jsi != nil && s.jsi.fc && len(s.jsi.fcs) > 0 {
-				s.checkForFlowControlResponse(delivered)
+			if s.jsi != nil {
+				s.jsi.mu.Lock()
+				needCheck := s.jsi.fc && len(s.jsi.fcs) > 0
+				s.jsi.active = true
+				s.jsi.mu.Unlock()
+				if needCheck {
+					s.checkForFlowControlResponse(delivered)
+				}
 			}
 		}
 		s.mu.Unlock()
@@ -2601,6 +2612,32 @@ func (nc *Conn) waitForMsgs(s *Subscription) {
 	s.mu.Unlock()
 }
 
+// Used for debugging and simulating loss for certain tests.
+// Return what is to be used. If we return nil the message will be dropped.
+type msgFilter func(m *Msg) *Msg
+
+func (nc *Conn) addMsgFilter(subject string, filter msgFilter) {
+	nc.subsMu.Lock()
+	defer nc.subsMu.Unlock()
+
+	if nc.filters == nil {
+		nc.filters = make(map[string]msgFilter)
+	}
+	nc.filters[subject] = filter
+}
+
+func (nc *Conn) removeMsgFilter(subject string) {
+	nc.subsMu.Lock()
+	defer nc.subsMu.Unlock()
+
+	if nc.filters != nil {
+		delete(nc.filters, subject)
+		if len(nc.filters) == 0 {
+			nc.filters = nil
+		}
+	}
+}
+
 // processMsg is called by parse and will place the msg on the
 // appropriate channel/pending queue for processing. If the channel is full,
 // or the pending queue is over the pending limits, the connection is
@@ -2615,6 +2652,10 @@ func (nc *Conn) processMsg(data []byte) {
 	// that is itself trying to send data to us.
 	nc.subsMu.RLock()
 	sub := nc.subs[nc.ps.ma.sid]
+	var mf msgFilter
+	if nc.filters != nil {
+		mf = nc.filters[string(nc.ps.ma.subject)]
+	}
 	nc.subsMu.RUnlock()
 
 	if sub == nil {
@@ -2629,8 +2670,11 @@ func (nc *Conn) processMsg(data []byte) {
 	// It's possible that we end-up not using the message, but that's ok.
 
 	// FIXME(dlc): Need to copy, should/can do COW?
-	msgPayload := make([]byte, len(data))
-	copy(msgPayload, data)
+	var msgPayload = data
+	if !nc.ps.msgCopied {
+		msgPayload = make([]byte, len(data))
+		copy(msgPayload, data)
+	}
 
 	// Check if we have headers encoded here.
 	var h Header
@@ -2657,6 +2701,14 @@ func (nc *Conn) processMsg(data []byte) {
 	// FIXME(dlc): Should we recycle these containers?
 	m := &Msg{Header: h, Data: msgPayload, Subject: subj, Reply: reply, Sub: sub}
 
+	// Check for message filters.
+	if mf != nil {
+		if m = mf(m); m == nil {
+			// Drop message.
+			return
+		}
+	}
+
 	sub.mu.Lock()
 
 	// Check if closed.
@@ -2669,6 +2721,11 @@ func (nc *Conn) processMsg(data []byte) {
 	jsi := sub.jsi
 	if jsi != nil {
 		ctrlMsg, hasHBs, hasFC = isControlMessage(m), jsi.hbs, jsi.fc
+		// Check for ordered consumer here. If checkOrdered returns true that means it detected a gap.
+		if jsi.ordered && sub.checkOrderedMsgs(m) {
+			sub.mu.Unlock()
+			return
+		}
 	}
 
 	// Skip processing if this is a control message.
@@ -2720,7 +2777,7 @@ func (nc *Conn) processMsg(data []byte) {
 	} else if hasFC && m.Reply != _EMPTY_ {
 		// This is a flow control message.
 		// If we have no pending, go ahead and send in place.
-		if sub.pMsgs == 0 {
+		if sub.pMsgs <= 0 {
 			nc.Publish(m.Reply, nil)
 		} else {
 			// Schedule a reply after the previous message is delivered.
@@ -2728,14 +2785,13 @@ func (nc *Conn) processMsg(data []byte) {
 		}
 	}
 
-	// Clear SlowConsumer status.
+	// Clear any SlowConsumer status.
 	sub.sc = false
-
 	sub.mu.Unlock()
 
 	// Handle control heartbeat messages.
 	if ctrlMsg && hasHBs && m.Reply == _EMPTY_ {
-		nc.processSequenceMismatch(m, sub, jsi)
+		nc.checkForSequenceMismatch(m, sub, jsi)
 	}
 
 	return
@@ -3098,7 +3154,8 @@ const (
 	lastConsumerSeqHdr = "Nats-Last-Consumer"
 	lastStreamSeqHdr   = "Nats-Last-Stream"
 	noResponders       = "503"
-	noMessages         = "404"
+	noMessagesSts      = "404"
+	reqTimeoutSts      = "408"
 	controlMsg         = "100"
 	statusLen          = 3 // e.g. 20x, 40x, 50x
 )
@@ -3662,7 +3719,7 @@ func (nc *Conn) subscribeLocked(subj, queue string, cb MsgHandler, ch chan *Msg,
 	if badSubject(subj) {
 		return nil, ErrBadSubject
 	}
-	if queue != "" && badQueue(queue) {
+	if queue != _EMPTY_ && badQueue(queue) {
 		return nil, ErrBadQueueName
 	}
 
@@ -3769,6 +3826,12 @@ func (s *Subscription) Type() SubscriptionType {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Pull subscriptions are really a SyncSubscription and we want this
+	// type to be set internally for all delivered messages management, etc..
+	// So check when to return PullSubscription to the user.
+	if s.jsi != nil && s.jsi.pull {
+		return PullSubscription
+	}
 	return s.typ
 }
 
@@ -3878,12 +3941,22 @@ func (s *Subscription) AutoUnsubscribe(max int) error {
 // unsubscribe performs the low level unsubscribe to the server.
 // Use Subscription.Unsubscribe()
 func (nc *Conn) unsubscribe(sub *Subscription, max int, drainMode bool) error {
+	var maxStr string
+	if max > 0 {
+		sub.mu.Lock()
+		sub.max = uint64(max)
+		if sub.delivered < sub.max {
+			maxStr = strconv.Itoa(max)
+		}
+		sub.mu.Unlock()
+	}
+
 	// For JetStream consumers, need to clean up ephemeral consumers
 	// or delete durable ones if called with Unsubscribe.
 	sub.mu.Lock()
 	jsi := sub.jsi
 	sub.mu.Unlock()
-	if jsi != nil {
+	if jsi != nil && maxStr == _EMPTY_ {
 		err := jsi.unsubscribe(drainMode)
 		if err != nil {
 			return err
@@ -3893,7 +3966,6 @@ func (nc *Conn) unsubscribe(sub *Subscription, max int, drainMode bool) error {
 	nc.mu.Lock()
 	// ok here, but defer is expensive
 	defer nc.mu.Unlock()
-	defer nc.kickFlusher()
 
 	if nc.isClosed() {
 		return ErrConnectionClosed
@@ -3907,13 +3979,7 @@ func (nc *Conn) unsubscribe(sub *Subscription, max int, drainMode bool) error {
 		return nil
 	}
 
-	maxStr := _EMPTY_
-	if max > 0 {
-		s.mu.Lock()
-		s.max = uint64(max)
-		s.mu.Unlock()
-		maxStr = strconv.Itoa(max)
-	} else if !drainMode {
+	if maxStr == _EMPTY_ && !drainMode {
 		nc.removeSub(s)
 	}
 
@@ -4037,8 +4103,14 @@ func (s *Subscription) processNextMsgDelivered(msg *Msg) error {
 	// Update some stats.
 	s.delivered++
 	delivered := s.delivered
-	if s.jsi != nil && s.jsi.fc && len(s.jsi.fcs) > 0 {
-		s.checkForFlowControlResponse(delivered)
+	if s.jsi != nil {
+		s.jsi.mu.Lock()
+		needCheck := s.jsi.fc && len(s.jsi.fcs) > 0
+		s.jsi.active = true
+		s.jsi.mu.Unlock()
+		if needCheck {
+			s.checkForFlowControlResponse(delivered)
+		}
 	}
 
 	if s.typ == SyncSubscription {
