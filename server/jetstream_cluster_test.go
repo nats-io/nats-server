@@ -4893,7 +4893,8 @@ func TestJetStreamCrossAccountMirrorsAndSources(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	toSend := 100
+	// use large number to tease out FC issues
+	toSend := 3000
 	for i := 0; i < toSend; i++ {
 		if _, err := js.Publish("TEST", []byte("OK")); err != nil {
 			t.Fatalf("Unexpected publish error: %v", err)
@@ -8193,6 +8194,7 @@ var jsClusterMirrorSourceImportsTempl = `
 			exports [
 				{ service: "$JS.API.CONSUMER.>" } # To create internal consumers to mirror/source.
 				{ stream: "RI.DELIVER.SYNC.>" }   # For the mirror/source consumers sending to IA via delivery subject.
+				{ service: "$JS.FC.>" }
 			]
 		}
 		IA {
@@ -8201,6 +8203,7 @@ var jsClusterMirrorSourceImportsTempl = `
 			imports [
 				{ service: { account: JS, subject: "$JS.API.CONSUMER.>"}, to: "RI.JS.API.CONSUMER.>" }
 				{ stream: { account: JS, subject: "RI.DELIVER.SYNC.>"} }
+				{ service: {account: JS, subject: "$JS.FC.>" }}
 			]
 		}
 		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
