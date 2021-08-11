@@ -3878,10 +3878,16 @@ leafnodes:{
 	ncL := natsConnect(t, fmt.Sprintf("nats://a1:a1@localhost:%d", sL.opts.Port))
 	defer ncL.Close()
 
-	test := func(subject string, cSub, cPub *nats.Conn, pass bool) {
+	test := func(subject string, cSub, cPub *nats.Conn, remoteServerForSub *Server, accName string, pass bool) {
 		sub, err := cSub.SubscribeSync(subject)
 		require_NoError(t, err)
 		require_NoError(t, cSub.Flush())
+		// ensure the subscription made it across, or if not sent due to sub deny, make sure it could have made it.
+		if remoteServerForSub == nil {
+			time.Sleep(200 * time.Millisecond)
+		} else {
+			checkSubInterest(t, remoteServerForSub, accName, subject, time.Second)
+		}
 		require_NoError(t, cPub.Publish(subject, []byte("hello world")))
 		require_NoError(t, cPub.Flush())
 		m, err := sub.NextMsg(500 * time.Millisecond)
@@ -3895,15 +3901,15 @@ leafnodes:{
 	}
 
 	t.Run("sub-on-ln-pass", func(t *testing.T) {
-		test("sub", ncL, ncA, true)
+		test("sub", ncL, ncA, sA, accPub, true)
 	})
 	t.Run("sub-on-ln-fail", func(t *testing.T) {
-		test("subdeny", ncL, ncA, false)
+		test("subdeny", ncL, ncA, nil, "", false)
 	})
 	t.Run("pub-on-ln-pass", func(t *testing.T) {
-		test("pub", ncA, ncL, true)
+		test("pub", ncA, ncL, sL, "A", true)
 	})
 	t.Run("pub-on-ln-fail", func(t *testing.T) {
-		test("pubdeny", ncA, ncL, false)
+		test("pubdeny", ncA, ncL, sL, "A", false)
 	})
 }
