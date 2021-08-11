@@ -554,7 +554,7 @@ func TestJetStreamClusterConsumerRedeliveredInfo(t *testing.T) {
 }
 
 func TestJetStreamClusterConsumerState(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	c := createJetStreamClusterExplicit(t, "R3S", 5)
 	defer c.shutdown()
 
 	s := c.randomServer()
@@ -578,15 +578,27 @@ func TestJetStreamClusterConsumerState(t *testing.T) {
 		}
 	}
 
+	// Make sure we are not connected to any of the stream servers so that we do not do client reconnect
+	// when we take out the consumer leader.
+	if s.JetStreamIsStreamAssigned("$G", "TEST") {
+		nc.Close()
+		for _, ns := range c.servers {
+			if !ns.JetStreamIsStreamAssigned("$G", "TEST") {
+				s = ns
+				nc, js = jsClientConnect(t, s)
+				defer nc.Close()
+				break
+			}
+		}
+	}
+
 	sub, err := js.PullSubscribe("foo", "dlc")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
 	// Pull 5 messages and ack.
-	for i := 0; i < 5; i++ {
-		msgs := fetchMsgs(t, sub, 1, 5*time.Second)
-		m := msgs[0]
+	for _, m := range fetchMsgs(t, sub, 5, 5*time.Second) {
 		m.Ack()
 	}
 
@@ -618,11 +630,10 @@ func TestJetStreamClusterConsumerState(t *testing.T) {
 
 	// Now make sure we can receive new messages.
 	// Pull last 5.
-	for i := 0; i < 5; i++ {
-		msgs := fetchMsgs(t, sub, 1, 5*time.Second)
-		m := msgs[0]
+	for _, m := range fetchMsgs(t, sub, 5, 5*time.Second) {
 		m.Ack()
 	}
+
 	nci, _ = sub.ConsumerInfo()
 	if nci.Delivered.Consumer != 10 || nci.Delivered.Stream != 10 {
 		t.Fatalf("Received bad delivered: %+v", nci.Delivered)
@@ -1834,6 +1845,9 @@ func TestJetStreamClusterExtendedStreamInfo(t *testing.T) {
 		}
 		return nil
 	})
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
 
 	// Now do consumer.
 	sub, err := js.PullSubscribe("foo", "dlc")

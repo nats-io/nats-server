@@ -43,6 +43,7 @@ type ConsumerInfo struct {
 	NumRedelivered int             `json:"num_redelivered"`
 	NumWaiting     int             `json:"num_waiting"`
 	NumPending     uint64          `json:"num_pending"`
+	Active         *PushActive     `json:"active,omitempty"`
 	Cluster        *ClusterInfo    `json:"cluster,omitempty"`
 }
 
@@ -67,6 +68,11 @@ type ConsumerConfig struct {
 
 	// Don't add to general clients.
 	Direct bool `json:"direct,omitempty"`
+}
+
+type PushActive struct {
+	Subject string `json:"subject"`
+	Queue   string `json:"queue,omitempty"`
 }
 
 type CreateConsumerRequest struct {
@@ -190,6 +196,7 @@ type consumer struct {
 	asflr             uint64
 	sgap              uint64
 	dsubj             string
+	qgroup            string
 	lss               *lastSeqSkipList
 	rlimit            *rate.Limiter
 	reqSub            *subscription
@@ -688,6 +695,27 @@ func (o *consumer) setConsumerAssignment(ca *consumerAssignment) {
 	}
 }
 
+// checkInterest will check on our interest's queue group status.
+// Lock should be held.
+func (o *consumer) checkQueueInterest() {
+	if !o.active || o.cfg.DeliverSubject == _EMPTY_ {
+		return
+	}
+	subj := o.dsubj
+	if subj == _EMPTY_ {
+		subj = o.cfg.DeliverSubject
+	}
+
+	if rr := o.acc.sl.Match(subj); len(rr.qsubs) > 0 {
+		// Just grab first
+		if qsubs := rr.qsubs[0]; len(qsubs) > 0 {
+			if sub := rr.qsubs[0][0]; len(sub.queue) > 0 {
+				o.qgroup = string(sub.queue)
+			}
+		}
+	}
+}
+
 // Lock should be held.
 func (o *consumer) isLeader() bool {
 	if o.node != nil {
@@ -763,6 +791,8 @@ func (o *consumer) setLeader(isLeader bool) {
 					stopAndClearTimer(&o.gwdtmr)
 					o.gwdtmr = time.AfterFunc(time.Second, func() { o.watchGWinterest() })
 				}
+			} else {
+				o.checkQueueInterest()
 			}
 		}
 
@@ -968,7 +998,12 @@ func (o *consumer) updateDeliveryInterest(localInterest bool) bool {
 	if interest && !o.active {
 		o.signalNewMessages()
 	}
-	o.active = interest
+	// Update active status, if not active clear any queue group we captured.
+	if o.active = interest; !o.active {
+		o.qgroup = _EMPTY_
+	} else {
+		o.checkQueueInterest()
+	}
 
 	// If the delete timer has already been set do not clear here and return.
 	if o.dtmr != nil && !o.isDurable() && !interest {
@@ -1433,6 +1468,8 @@ func (o *consumer) writeStoreState() error {
 
 // Info returns our current consumer state.
 func (o *consumer) info() *ConsumerInfo {
+	var pa *PushActive
+
 	o.mu.RLock()
 	mset := o.mset
 	if mset == nil || mset.srv == nil {
@@ -1440,6 +1477,12 @@ func (o *consumer) info() *ConsumerInfo {
 		return nil
 	}
 	js := o.js
+	if o.active {
+		pa = &PushActive{
+			Subject: o.dsubj,
+			Queue:   o.qgroup,
+		}
+	}
 	o.mu.RUnlock()
 
 	if js == nil {
@@ -1468,6 +1511,7 @@ func (o *consumer) info() *ConsumerInfo {
 		NumAckPending:  len(o.pending),
 		NumRedelivered: len(o.rdc),
 		NumPending:     o.adjustedPending(),
+		Active:         pa,
 		Cluster:        ci,
 	}
 	// If we are a pull mode consumer, report on number of waiting requests.

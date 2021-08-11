@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -79,6 +78,7 @@ func (r *JSPubAckResponse) ToError() error {
 type PubAck struct {
 	Stream    string `json:"stream"`
 	Sequence  uint64 `json:"seq"`
+	Domain    string `json:"domain,omitempty"`
 	Duplicate bool   `json:"duplicate,omitempty"`
 }
 
@@ -382,10 +382,11 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	}
 
 	// Create our pubAck template here. Better than json marshal each time on success.
-	b, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: cfg.Name, Sequence: math.MaxUint64}})
-	end := bytes.Index(b, []byte(strconv.FormatUint(math.MaxUint64, 10)))
-	// We need to force cap here to make sure this is a copy when sending a response.
-	mset.pubAck = b[:end:end]
+	if domain := s.getOpts().JetStreamDomain; domain != _EMPTY_ {
+		mset.pubAck = []byte(fmt.Sprintf("{%q:%q, %q:%q, %q:", "stream", cfg.Name, "domain", domain, "seq"))
+	} else {
+		mset.pubAck = []byte(fmt.Sprintf("{%q:%q, %q:", "stream", cfg.Name, "seq"))
+	}
 
 	// Rebuild dedupe as needed.
 	mset.rebuildDedupe()
