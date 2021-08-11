@@ -11791,6 +11791,50 @@ func TestJetStreamServerDomainConfigButDisabled(t *testing.T) {
 	}
 }
 
+func TestJetStreamDomainInPubAck(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		jetstream: {domain: "HUB"}
+	`))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	if !s.JetStreamEnabled() {
+		t.Fatalf("Expected JetStream to be enabled")
+	}
+
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:         "TEST",
+		Storage:      nats.MemoryStorage,
+		Subjects:     []string{"foo"},
+		MaxConsumers: 1,
+	}
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Check by hand for now til it makes its way into Go client.
+	am, err := nc.Request("foo", nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var pa PubAck
+	json.Unmarshal(am.Data, &pa)
+	if pa.Domain != "HUB" {
+		t.Fatalf("Expected PubAck to have domain of %q, got %q", "HUB", pa.Domain)
+	}
+}
+
 // Issue #2213
 func TestJetStreamDirectConsumersBeingReported(t *testing.T) {
 	s := RunBasicJetStreamServer()
