@@ -1477,7 +1477,7 @@ func (o *consumer) info() *ConsumerInfo {
 		return nil
 	}
 	js := o.js
-	if o.active {
+	if o.isPushMode() && o.active {
 		pa = &PushActive{
 			Subject: o.dsubj,
 			Queue:   o.qgroup,
