@@ -1975,6 +1975,7 @@ func TestNoRaceJetStreamClusterMirrorExpirationAndMissingSequences(t *testing.T)
 	// Now shutdown the server with the mirror.
 	ms := c.streamLeader("$G", "M")
 	ms.Shutdown()
+	c.waitOnLeader()
 
 	// Send more messages but let them expire.
 	sendBatch(10)
