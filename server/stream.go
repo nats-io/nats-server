@@ -387,6 +387,8 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	} else {
 		mset.pubAck = []byte(fmt.Sprintf("{%q:%q, %q:", "stream", cfg.Name, "seq"))
 	}
+	end := len(mset.pubAck)
+	mset.pubAck = mset.pubAck[:end:end]
 
 	// Rebuild dedupe as needed.
 	mset.rebuildDedupe()
@@ -2578,8 +2580,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		accName = mset.acc.Name
 	}
 
-	doAck, pubAck := !mset.cfg.NoAck, mset.pubAck
-	js, jsa := mset.js, mset.jsa
+	js, jsa, doAck := mset.js, mset.jsa, !mset.cfg.NoAck
 	name, stype := mset.cfg.Name, mset.cfg.Storage
 	maxMsgSize := int(mset.cfg.MaxMsgSize)
 	numConsumers := len(mset.consumers)
@@ -2589,6 +2590,10 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	canRespond := doAck && len(reply) > 0 && isLeader
 
 	var resp = &JSPubAckResponse{}
+
+	var buf [128]byte
+	copy(buf[0:], mset.pubAck)
+	pubAck := buf[:len(mset.pubAck)]
 
 	// For clustering the lower layers will pass our expected lseq. If it is present check for that here.
 	if lseq > 0 && lseq != (mset.lseq+mset.clfs) {
