@@ -11860,6 +11860,7 @@ func TestJetStreamPushConsumerInfo(t *testing.T) {
 			Config: ConsumerConfig{
 				Durable:        name,
 				DeliverSubject: deliver,
+				AckPolicy:      AckExplicit,
 			},
 		}
 		req, err := json.Marshal(creq)
@@ -11926,6 +11927,12 @@ func TestJetStreamPushConsumerInfo(t *testing.T) {
 	sub.Unsubscribe()
 	nc.Flush() // Make sure it registers.
 	if ci := consumerInfo("ik"); ci.Active != nil {
+		t.Fatalf("Expected active to be nil, got %+v\n", ci.Active)
+	}
+
+	// Make sure pull consumers report Active as nil.
+	createConsumer("rip", _EMPTY_)
+	if ci := consumerInfo("rip"); ci.Active != nil {
 		t.Fatalf("Expected active to be nil, got %+v\n", ci.Active)
 	}
 }
