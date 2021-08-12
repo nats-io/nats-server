@@ -2525,7 +2525,7 @@ func TestNoRaceJetStreamStalledMirrorsAfterExpire(t *testing.T) {
 		}
 	}
 
-	numMsgs := 25_000
+	numMsgs := 10_000
 	sendBatch(numMsgs)
 
 	// Turn off expiration so we can test we did not stall.
