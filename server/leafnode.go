@@ -1362,8 +1362,7 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 
 	// If we have JS enabled and the other side does as well we need to add in an import deny clause.
 	if jsConfigured && proto.JetStream {
-		// We should never have existing perms here, if that changes this needs to be reworked.
-		c.setPermissions(&Permissions{Publish: &SubjectPermission{Deny: []string{jsAllAPI}}})
+		c.mergePubDenyPermissions([]string{jsAllAPI})
 	}
 
 	// Set the Ping timer

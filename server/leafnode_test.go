@@ -3786,3 +3786,130 @@ func TestLeafNodeUniqueServerNameCrossJSDomain(t *testing.T) {
 		test(sA, sA.ID(), sA, sL)
 	})
 }
+
+func TestLeafNodeJwtPermsAndJetStreamDomains(t *testing.T) {
+	createAcc := func(js bool) (string, string, nkeys.KeyPair) {
+		kp, _ := nkeys.CreateAccount()
+		aPub, _ := kp.PublicKey()
+		claim := jwt.NewAccountClaims(aPub)
+		if js {
+			claim.Limits.JetStreamLimits = jwt.JetStreamLimits{
+				MemoryStorage: 1024 * 1024,
+				DiskStorage:   1024 * 1024,
+				Streams:       1, Consumer: 2}
+		}
+		aJwt, err := claim.Encode(oKp)
+		require_NoError(t, err)
+		return aPub, aJwt, kp
+	}
+	sysPub, sysJwt, sysKp := createAcc(false)
+	accPub, accJwt, accKp := createAcc(true)
+	noExpiration := time.Now().Add(time.Hour)
+	// create user for acc to be used in leaf node.
+	lnCreds := createUserWithLimit(t, accKp, noExpiration, func(j *jwt.UserPermissionLimits) {
+		j.Sub.Deny.Add("subdeny")
+		j.Pub.Deny.Add("pubdeny")
+	})
+	defer removeFile(t, lnCreds)
+	unlimitedCreds := createUserWithLimit(t, accKp, noExpiration, nil)
+	defer removeFile(t, unlimitedCreds)
+
+	sysCreds := createUserWithLimit(t, sysKp, noExpiration, nil)
+	defer removeFile(t, sysCreds)
+
+	tmplA := `
+operator: %s
+system_account: %s
+resolver: MEMORY
+resolver_preload: {
+  %s: %s
+  %s: %s
+}
+listen: localhost:-1
+leafnodes: {
+	listen: localhost:-1
+}
+jetstream :{
+    domain: "cluster"
+    store_dir: "%s"
+    max_mem: 100Mb
+    max_file: 100Mb
+}
+`
+
+	tmplL := `
+listen: localhost:-1
+accounts :{
+    A:{   jetstream: enable, users:[ {user:a1,password:a1}]},
+    SYS:{ users:[ {user:s1,password:s1}]},
+}
+system_account = SYS
+jetstream: {
+    domain: ln1
+    store_dir: %s
+    max_mem: 50Mb
+    max_file: 50Mb
+}
+leafnodes:{
+    remotes:[{ url:nats://localhost:%d, account: A, credentials: %s},
+			 { url:nats://localhost:%d, account: SYS, credentials: %s}]
+}
+`
+
+	confA := createConfFile(t, []byte(fmt.Sprintf(tmplA, ojwt, sysPub,
+		sysPub, sysJwt, accPub, accJwt,
+		createDir(t, JetStreamStoreDir))))
+	defer removeFile(t, confA)
+	sA, _ := RunServerWithConfig(confA)
+	defer sA.Shutdown()
+
+	confL := createConfFile(t, []byte(fmt.Sprintf(tmplL, createDir(t, JetStreamStoreDir),
+		sA.opts.LeafNode.Port, lnCreds, sA.opts.LeafNode.Port, sysCreds)))
+	defer removeFile(t, confL)
+	sL, _ := RunServerWithConfig(confL)
+	defer sL.Shutdown()
+
+	checkLeafNodeConnectedCount(t, sA, 2)
+	checkLeafNodeConnectedCount(t, sL, 2)
+
+	ncA := natsConnect(t, sA.ClientURL(), nats.UserCredentials(unlimitedCreds))
+	defer ncA.Close()
+
+	ncL := natsConnect(t, fmt.Sprintf("nats://a1:a1@localhost:%d", sL.opts.Port))
+	defer ncL.Close()
+
+	test := func(subject string, cSub, cPub *nats.Conn, remoteServerForSub *Server, accName string, pass bool) {
+		sub, err := cSub.SubscribeSync(subject)
+		require_NoError(t, err)
+		require_NoError(t, cSub.Flush())
+		// ensure the subscription made it across, or if not sent due to sub deny, make sure it could have made it.
+		if remoteServerForSub == nil {
+			time.Sleep(200 * time.Millisecond)
+		} else {
+			checkSubInterest(t, remoteServerForSub, accName, subject, time.Second)
+		}
+		require_NoError(t, cPub.Publish(subject, []byte("hello world")))
+		require_NoError(t, cPub.Flush())
+		m, err := sub.NextMsg(500 * time.Millisecond)
+		if pass {
+			require_NoError(t, err)
+			require_True(t, m.Subject == subject)
+			require_Equal(t, string(m.Data), "hello world")
+		} else {
+			require_True(t, err == nats.ErrTimeout)
+		}
+	}
+
+	t.Run("sub-on-ln-pass", func(t *testing.T) {
+		test("sub", ncL, ncA, sA, accPub, true)
+	})
+	t.Run("sub-on-ln-fail", func(t *testing.T) {
+		test("subdeny", ncL, ncA, nil, "", false)
+	})
+	t.Run("pub-on-ln-pass", func(t *testing.T) {
+		test("pub", ncA, ncL, sL, "A", true)
+	})
+	t.Run("pub-on-ln-fail", func(t *testing.T) {
+		test("pubdeny", ncA, ncL, sL, "A", false)
+	})
+}

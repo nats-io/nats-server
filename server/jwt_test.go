@@ -3864,7 +3864,7 @@ func newTimeRange(start time.Time, dur time.Duration) jwt.TimeRange {
 	return jwt.TimeRange{Start: start.Format("15:04:05"), End: start.Add(dur).Format("15:04:05")}
 }
 
-func createUserWithLimit(t *testing.T, accKp nkeys.KeyPair, expiration time.Time, limits func(*jwt.Limits)) string {
+func createUserWithLimit(t *testing.T, accKp nkeys.KeyPair, expiration time.Time, limits func(*jwt.UserPermissionLimits)) string {
 	t.Helper()
 	ukp, _ := nkeys.CreateUser()
 	seed, _ := ukp.Seed()
@@ -3872,7 +3872,7 @@ func createUserWithLimit(t *testing.T, accKp nkeys.KeyPair, expiration time.Time
 	uclaim := newJWTTestUserClaims()
 	uclaim.Subject = upub
 	if limits != nil {
-		limits(&uclaim.Limits)
+		limits(&uclaim.UserPermissionLimits)
 	}
 	if !expiration.IsZero() {
 		uclaim.Expires = expiration.Unix()
@@ -3909,31 +3909,33 @@ func TestJWTUserLimits(t *testing.T) {
 	defer sA.Shutdown()
 	for _, v := range []struct {
 		pass bool
-		f    func(*jwt.Limits)
+		f    func(*jwt.UserPermissionLimits)
 	}{
 		{true, nil},
-		{false, func(j *jwt.Limits) { j.Src.Set("8.8.8.8/8") }},
-		{true, func(j *jwt.Limits) { j.Src.Set("8.8.8.8/0") }},
-		{true, func(j *jwt.Limits) { j.Src.Set("127.0.0.1/8") }},
-		{true, func(j *jwt.Limits) { j.Src.Set("8.8.8.8/8,127.0.0.1/8") }},
-		{false, func(j *jwt.Limits) { j.Src.Set("8.8.8.8/8,9.9.9.9/8") }},
-		{true, func(j *jwt.Limits) { j.Times = append(j.Times, newTimeRange(time.Now(), time.Hour)) }},
-		{false, func(j *jwt.Limits) { j.Times = append(j.Times, newTimeRange(time.Now().Add(time.Hour), time.Hour)) }},
-		{true, func(j *jwt.Limits) {
+		{false, func(j *jwt.UserPermissionLimits) { j.Src.Set("8.8.8.8/8") }},
+		{true, func(j *jwt.UserPermissionLimits) { j.Src.Set("8.8.8.8/0") }},
+		{true, func(j *jwt.UserPermissionLimits) { j.Src.Set("127.0.0.1/8") }},
+		{true, func(j *jwt.UserPermissionLimits) { j.Src.Set("8.8.8.8/8,127.0.0.1/8") }},
+		{false, func(j *jwt.UserPermissionLimits) { j.Src.Set("8.8.8.8/8,9.9.9.9/8") }},
+		{true, func(j *jwt.UserPermissionLimits) { j.Times = append(j.Times, newTimeRange(time.Now(), time.Hour)) }},
+		{false, func(j *jwt.UserPermissionLimits) {
+			j.Times = append(j.Times, newTimeRange(time.Now().Add(time.Hour), time.Hour))
+		}},
+		{true, func(j *jwt.UserPermissionLimits) {
 			j.Times = append(j.Times, newTimeRange(inAnHour, time.Hour), newTimeRange(time.Now(), time.Hour))
 		}}, // last one is within range
-		{false, func(j *jwt.Limits) {
+		{false, func(j *jwt.UserPermissionLimits) {
 			j.Times = append(j.Times, newTimeRange(inAnHour, time.Hour), newTimeRange(inTwoHours, time.Hour))
 		}}, // out of range
-		{false, func(j *jwt.Limits) {
+		{false, func(j *jwt.UserPermissionLimits) {
 			j.Times = append(j.Times, newTimeRange(inAnHour, 3*time.Hour), newTimeRange(inTwoHours, 2*time.Hour))
 		}}, // overlapping [a[]b] out of range*/
-		{false, func(j *jwt.Limits) {
+		{false, func(j *jwt.UserPermissionLimits) {
 			j.Times = append(j.Times, newTimeRange(inAnHour, 3*time.Hour), newTimeRange(inTwoHours, time.Hour))
 		}}, // overlapping [a[b]] out of range
 		// next day tests where end < begin
-		{true, func(j *jwt.Limits) { j.Times = append(j.Times, newTimeRange(time.Now(), 25*time.Hour)) }},
-		{true, func(j *jwt.Limits) { j.Times = append(j.Times, newTimeRange(time.Now(), -time.Hour)) }},
+		{true, func(j *jwt.UserPermissionLimits) { j.Times = append(j.Times, newTimeRange(time.Now(), 25*time.Hour)) }},
+		{true, func(j *jwt.UserPermissionLimits) { j.Times = append(j.Times, newTimeRange(time.Now(), -time.Hour)) }},
 	} {
 		t.Run("", func(t *testing.T) {
 			creds := createUserWithLimit(t, kp, doNotExpire, v.f)
@@ -3976,7 +3978,7 @@ func TestJWTTimeExpiration(t *testing.T) {
 	for _, l := range []string{"", "Europe/Berlin", "America/New_York"} {
 		t.Run("simple expiration "+l, func(t *testing.T) {
 			start := time.Now()
-			creds := createUserWithLimit(t, kp, doNotExpire, func(j *jwt.Limits) {
+			creds := createUserWithLimit(t, kp, doNotExpire, func(j *jwt.UserPermissionLimits) {
 				if l == "" {
 					j.Times = []jwt.TimeRange{newTimeRange(start, validFor)}
 				} else {
@@ -4020,7 +4022,7 @@ func TestJWTTimeExpiration(t *testing.T) {
 	t.Run("double expiration", func(t *testing.T) {
 		start1 := time.Now()
 		start2 := start1.Add(2 * validFor)
-		creds := createUserWithLimit(t, kp, doNotExpire, func(j *jwt.Limits) {
+		creds := createUserWithLimit(t, kp, doNotExpire, func(j *jwt.UserPermissionLimits) {
 			j.Times = []jwt.TimeRange{newTimeRange(start1, validFor), newTimeRange(start2, validFor)}
 		})
 		defer removeFile(t, creds)
@@ -4059,7 +4061,7 @@ func TestJWTTimeExpiration(t *testing.T) {
 	})
 	t.Run("lower jwt expiration overwrites time", func(t *testing.T) {
 		start := time.Now()
-		creds := createUserWithLimit(t, kp, start.Add(validFor), func(j *jwt.Limits) { j.Times = []jwt.TimeRange{newTimeRange(start, 2*validFor)} })
+		creds := createUserWithLimit(t, kp, start.Add(validFor), func(j *jwt.UserPermissionLimits) { j.Times = []jwt.TimeRange{newTimeRange(start, 2*validFor)} })
 		defer removeFile(t, creds)
 		disconnectChan := make(chan struct{})
 		defer close(disconnectChan)
@@ -4114,7 +4116,7 @@ func TestJWTLimits(t *testing.T) {
 	errChan := make(chan struct{})
 	defer close(errChan)
 	t.Run("subs", func(t *testing.T) {
-		creds := createUserWithLimit(t, kp, doNotExpire, func(j *jwt.Limits) { j.Subs = 1 })
+		creds := createUserWithLimit(t, kp, doNotExpire, func(j *jwt.UserPermissionLimits) { j.Subs = 1 })
 		defer removeFile(t, creds)
 		c := natsConnect(t, sA.ClientURL(), nats.UserCredentials(creds),
 			nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
@@ -4133,7 +4135,7 @@ func TestJWTLimits(t *testing.T) {
 		chanRecv(t, errChan, time.Second)
 	})
 	t.Run("payload", func(t *testing.T) {
-		creds := createUserWithLimit(t, kp, doNotExpire, func(j *jwt.Limits) { j.Payload = 5 })
+		creds := createUserWithLimit(t, kp, doNotExpire, func(j *jwt.UserPermissionLimits) { j.Payload = 5 })
 		defer removeFile(t, creds)
 		c := natsConnect(t, sA.ClientURL(), nats.UserCredentials(creds))
 		defer c.Close()
