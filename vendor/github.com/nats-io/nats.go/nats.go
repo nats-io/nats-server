@@ -1270,7 +1270,15 @@ func defaultErrHandler(nc *Conn, sub *Subscription, err error) {
 	}
 	var errStr string
 	if sub != nil {
-		errStr = fmt.Sprintf("%s on connection [%d] for subscription on %q\n", err.Error(), cid, sub.Subject)
+		var subject string
+		sub.mu.Lock()
+		if sub.jsi != nil {
+			subject = sub.jsi.psubj
+		} else {
+			subject = sub.Subject
+		}
+		sub.mu.Unlock()
+		errStr = fmt.Sprintf("%s on connection [%d] for subscription on %q\n", err.Error(), cid, subject)
 	} else {
 		errStr = fmt.Sprintf("%s on connection [%d]\n", err.Error(), cid)
 	}
@@ -4451,12 +4459,13 @@ func (nc *Conn) resendSubscriptions() {
 				continue
 			}
 		}
+		subj, queue, sid := s.Subject, s.Queue, s.sid
 		s.mu.Unlock()
 
-		nc.bw.writeDirect(fmt.Sprintf(subProto, s.Subject, s.Queue, s.sid))
+		nc.bw.writeDirect(fmt.Sprintf(subProto, subj, queue, sid))
 		if adjustedMax > 0 {
 			maxStr := strconv.Itoa(int(adjustedMax))
-			nc.bw.writeDirect(fmt.Sprintf(unsubProto, s.sid, maxStr))
+			nc.bw.writeDirect(fmt.Sprintf(unsubProto, sid, maxStr))
 		}
 	}
 }

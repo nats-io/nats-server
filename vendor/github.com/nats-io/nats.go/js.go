@@ -818,6 +818,7 @@ type jsSub struct {
 	// For pull subscribers, this is the next message subject to send requests to.
 	nms string
 
+	psubj    string // the subject that was passed by user to the subscribe calls
 	consumer string
 	stream   string
 	deliver  string
@@ -1114,13 +1115,10 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync,
 		dseq:     1,
 		pull:     isPullMode,
 		nms:      nms,
+		psubj:    subj,
 	}
 
 	sub, err = nc.subscribe(deliver, queue, cb, ch, isSync, jsi)
-	// Since JetStream sends on different subject, make sure this reflects the user's intentions.
-	sub.mu.Lock()
-	sub.Subject = subj
-	sub.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
@@ -1211,10 +1209,6 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync,
 					if err != nil {
 						return nil, err
 					}
-					// Since JetStream sends on different subject, make sure this reflects the user's intentions.
-					sub.mu.Lock()
-					sub.Subject = subj
-					sub.mu.Unlock()
 				}
 			} else {
 				if cinfo.Error.Code == 404 {
