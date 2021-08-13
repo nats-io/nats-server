@@ -1451,7 +1451,7 @@ func TestJetStreamBasicDeliverSubject(t *testing.T) {
 			defer sub.Unsubscribe()
 			nc2.Flush()
 
-			o, err = mset.addConsumer(&ConsumerConfig{DeliverSubject: sub.Subject})
+			o, err = mset.addConsumer(&ConsumerConfig{DeliverSubject: sub.Subject, DeliverGroup: "dev"})
 			if err != nil {
 				t.Fatalf("Expected no error with registered interest, got %v", err)
 			}

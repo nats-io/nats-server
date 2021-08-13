@@ -4599,7 +4599,7 @@ func TestJetStreamClusterConsumerPerf(t *testing.T) {
 // and make sure it connects to the server that is not the leader
 // of the stream. A bug was not stripping the $JS.ACK reply subject
 // correctly, which means that ack sent on the reply subject was
-// droped by the routed
+// dropped by the route.
 func TestJetStreamClusterQueueSubConsumer(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R2S", 2)
 	defer c.shutdown()
@@ -4619,14 +4619,35 @@ func TestJetStreamClusterQueueSubConsumer(t *testing.T) {
 	}
 
 	inbox := nats.NewInbox()
-	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
-		Durable:        "ivan",
-		DeliverSubject: inbox,
-		AckPolicy:      nats.AckExplicitPolicy,
-		AckWait:        100 * time.Millisecond,
-	})
+	obsReq := CreateConsumerRequest{
+		Stream: "TEST",
+		Config: ConsumerConfig{
+			Durable:        "ivan",
+			DeliverSubject: inbox,
+			DeliverGroup:   "queue",
+			AckPolicy:      AckExplicit,
+			AckWait:        100 * time.Millisecond,
+		},
+	}
+	req, err := json.Marshal(obsReq)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, "TEST", "ivan"), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var ccResp JSApiConsumerCreateResponse
+	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if ccResp.Error != nil {
+		t.Fatalf("Unexpected error, got %+v", ccResp.Error)
+	}
+
+	ci, err := js.ConsumerInfo("TEST", "ivan")
+	if err != nil {
+		t.Fatalf("Error getting consumer info: %v", err)
 	}
 
 	// Now create a client that does NOT connect to the stream leader.
@@ -7918,6 +7939,77 @@ func TestJetStreamPullConsumerLeakedSubs(t *testing.T) {
 	// Make sure we did not leak any subs.
 	if numSubsAfter := c.stableTotalSubs(); numSubsAfter != numSubs {
 		t.Fatalf("Subs leaked: %d before, %d after", numSubs, numSubsAfter)
+	}
+}
+
+func TestJetStreamPushConsumerQueueGroup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	}); err != nil {
+		t.Fatalf("Error creating stream: %v", err)
+	}
+
+	js.Publish("foo", []byte("QG"))
+
+	// Do consumer by hand for now.
+	inbox := nats.NewInbox()
+	obsReq := CreateConsumerRequest{
+		Stream: "TEST",
+		Config: ConsumerConfig{
+			Durable:        "dlc",
+			DeliverSubject: inbox,
+			DeliverGroup:   "22",
+			AckPolicy:      AckNone,
+		},
+	}
+	req, err := json.Marshal(obsReq)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, "TEST", "dlc"), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var ccResp JSApiConsumerCreateResponse
+	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if ccResp.Error != nil {
+		t.Fatalf("Unexpected error, got %+v", ccResp.Error)
+	}
+
+	sub, _ := nc.SubscribeSync(inbox)
+	if _, err := sub.NextMsg(100 * time.Millisecond); err == nil {
+		t.Fatalf("Expected a timeout, we should not get messages here")
+	}
+	qsub, _ := nc.QueueSubscribeSync(inbox, "22")
+	checkSubsPending(t, qsub, 1)
+
+	// Test deleting the plain sub has not affect.
+	sub.Unsubscribe()
+	js.Publish("foo", []byte("QG"))
+	checkSubsPending(t, qsub, 2)
+
+	qsub.Unsubscribe()
+	qsub2, _ := nc.QueueSubscribeSync(inbox, "22")
+	js.Publish("foo", []byte("QG"))
+	checkSubsPending(t, qsub2, 1)
+
+	// Catch all sub.
+	sub, _ = nc.SubscribeSync(inbox)
+	qsub2.Unsubscribe() // Should be no more interest.
+	// Send another, make sure we do not see the message flow here.
+	js.Publish("foo", []byte("QG"))
+	if _, err := sub.NextMsg(100 * time.Millisecond); err == nil {
+		t.Fatalf("Expected a timeout, we should not get messages here")
 	}
 }
 

@@ -1249,6 +1249,8 @@ func TestSublistRegisterInterestNotification(t *testing.T) {
 	expectFalse()
 
 	// Test queue subs
+	// We know make sure that if you have qualified a queue group it has to match, etc.
+	// Also if you do not specify one they will not trigger.
 	qsub := newQSub("foo.bar.baz", "1")
 	s.Insert(qsub)
 	expectNone()
@@ -1256,14 +1258,14 @@ func TestSublistRegisterInterestNotification(t *testing.T) {
 	if err := s.RegisterNotification("foo.bar.baz", ch); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	expectTrue()
+	expectFalse()
 
 	wcqsub := newQSub("foo.bar.>", "1")
 	s.Insert(wcqsub)
 	expectNone()
 
 	s.Remove(qsub)
-	expectFalse()
+	expectNone()
 
 	s.Remove(wcqsub)
 	expectNone()
@@ -1271,7 +1273,7 @@ func TestSublistRegisterInterestNotification(t *testing.T) {
 	s.Insert(wcqsub)
 	expectNone()
 
-	if err := s.RegisterNotification("queue.test.node", ch); err != nil {
+	if err := s.RegisterQueueNotification("queue.test.node", "q22", ch); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	expectOne()
@@ -1281,7 +1283,7 @@ func TestSublistRegisterInterestNotification(t *testing.T) {
 	s.Insert(qsub1)
 	expectNone()
 
-	qsub2 := newQSub("queue.test.node", "queue")
+	qsub2 := newQSub("queue.test.node", "q22")
 	s.Insert(qsub2)
 	expectTrue()
 
@@ -1289,11 +1291,11 @@ func TestSublistRegisterInterestNotification(t *testing.T) {
 	s.Insert(qsub3)
 	expectNone()
 
-	qsub4 := newQSub("queue.different.node", "queue")
+	qsub4 := newQSub("queue.different.node", "q22")
 	s.Insert(qsub4)
 	expectNone()
 
-	qsub5 := newQSub("queue.test.node", "queue")
+	qsub5 := newQSub("queue.test.node", "q22")
 	s.Insert(qsub5)
 	expectNone()
 
@@ -1308,7 +1310,7 @@ func TestSublistRegisterInterestNotification(t *testing.T) {
 	s.Remove(qsub5)
 	expectFalse()
 
-	if !s.ClearNotification("queue.test.node", ch) {
+	if !s.ClearQueueNotification("queue.test.node", "q22", ch) {
 		t.Fatalf("Expected to return true")
 	}
 

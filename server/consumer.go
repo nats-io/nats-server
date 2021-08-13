@@ -51,6 +51,7 @@ type ConsumerConfig struct {
 	Durable         string        `json:"durable_name,omitempty"`
 	Description     string        `json:"description,omitempty"`
 	DeliverSubject  string        `json:"deliver_subject,omitempty"`
+	DeliverGroup    string        `json:"deliver_queue,omitempty"`
 	DeliverPolicy   DeliverPolicy `json:"deliver_policy"`
 	OptStartSeq     uint64        `json:"opt_start_seq,omitempty"`
 	OptStartTime    *time.Time    `json:"opt_start_time,omitempty"`
@@ -783,7 +784,7 @@ func (o *consumer) setLeader(isLeader bool) {
 		// If push mode, register for notifications on interest.
 		if o.isPushMode() {
 			o.inch = make(chan bool, 8)
-			o.acc.sl.RegisterNotification(o.cfg.DeliverSubject, o.inch)
+			o.acc.sl.registerNotification(o.cfg.DeliverSubject, o.cfg.DeliverGroup, o.inch)
 			if o.active = <-o.inch; !o.active {
 				// Check gateways in case they are enabled.
 				if s.gateway.enabled {
@@ -1145,7 +1146,7 @@ func (o *consumer) updateDeliverSubject(newDeliver string) {
 	o.acc.sl.ClearNotification(o.dsubj, o.inch)
 	o.dsubj, o.cfg.DeliverSubject = newDeliver, newDeliver
 	// When we register new one it will deliver to update state loop.
-	o.acc.sl.RegisterNotification(newDeliver, o.inch)
+	o.acc.sl.registerNotification(newDeliver, o.cfg.DeliverGroup, o.inch)
 }
 
 // Check that configs are equal but allow delivery subjects to be different.
