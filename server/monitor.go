@@ -377,6 +377,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 			for _, sub := range c.subs {
 				if SubjectsCollide(filter, string(sub.subject)) {
 					oc = append(oc, c)
+					break
 				}
 			}
 			c.mu.Unlock()
