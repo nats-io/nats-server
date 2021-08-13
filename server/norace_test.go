@@ -2549,3 +2549,131 @@ func TestNoRaceJetStreamStalledMirrorsAfterExpire(t *testing.T) {
 		return nil
 	})
 }
+
+// We will use JetStream helpers to create supercluster but this test is about exposing the ability to access
+// account scoped connz with subject interest filtering.
+func TestNoRaceAccountConnz(t *testing.T) {
+	// This has 4 different account, 3 general and system.
+	sc := createJetStreamSuperClusterWithTemplate(t, jsClusterAccountsTempl, 3, 3)
+	defer sc.shutdown()
+
+	// Create 20 connections on account one and two
+	num := 20
+	for i := 0; i < num; i++ {
+		nc, _ := jsClientConnect(t, sc.randomServer(), nats.UserInfo("one", "p"), nats.Name("one"))
+		defer nc.Close()
+
+		if i%2 == 0 {
+			nc.SubscribeSync("foo")
+		} else {
+			nc.SubscribeSync("bar")
+		}
+
+		nc, _ = jsClientConnect(t, sc.randomServer(), nats.UserInfo("two", "p"), nats.Name("two"))
+		nc.SubscribeSync("baz")
+		nc.SubscribeSync("foo.bar.*")
+		nc.SubscribeSync(fmt.Sprintf("id.%d", i+1))
+		defer nc.Close()
+	}
+
+	type czapi struct {
+		Server *ServerInfo
+		Data   *Connz
+		Error  *ApiError
+	}
+
+	parseConnz := func(buf []byte) *Connz {
+		t.Helper()
+		var cz czapi
+		if err := json.Unmarshal(buf, &cz); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if cz.Error != nil {
+			t.Fatalf("Unexpected error: %+v", cz.Error)
+		}
+		return cz.Data
+	}
+
+	doRequest := func(reqSubj, acc, filter string, expected int) {
+		t.Helper()
+		nc, _ := jsClientConnect(t, sc.randomServer(), nats.UserInfo(acc, "p"), nats.Name(acc))
+		defer nc.Close()
+
+		mch := make(chan *nats.Msg, 9)
+		sub, _ := nc.ChanSubscribe(nats.NewInbox(), mch)
+
+		var req []byte
+		if filter != _EMPTY_ {
+			req, _ = json.Marshal(&ConnzOptions{FilterSubject: filter})
+		}
+
+		if err := nc.PublishRequest(reqSubj, sub.Subject, req); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		// So we can igniore ourtselves.
+		cid, _ := nc.GetClientID()
+		sid := nc.ConnectedServerId()
+
+		wt := time.NewTimer(200 * time.Millisecond)
+		var conns []*ConnInfo
+	LOOP:
+		for {
+			select {
+			case m := <-mch:
+				if len(m.Data) == 0 {
+					t.Fatalf("No responders")
+				}
+				cr := parseConnz(m.Data)
+				// For account scoped, NumConns and Total should be the same (sans limits and offsets).
+				// It Total should not include other accounts since that would leak information about the system.
+				if filter == _EMPTY_ && cr.NumConns != cr.Total {
+					t.Fatalf("NumConns and Total should be same with account scoped connz, got %+v", cr)
+				}
+				for _, c := range cr.Conns {
+					if c.Name != acc {
+						t.Fatalf("Got wrong account: %q vs %q", acc, c.Account)
+					}
+					if !(c.Cid == cid && cr.ID == sid) {
+						conns = append(conns, c)
+					}
+				}
+				wt.Reset(200 * time.Millisecond)
+			case <-wt.C:
+				break LOOP
+			}
+		}
+		if len(conns) != expected {
+			t.Fatalf("Expected to see %d conns but got %d", expected, len(conns))
+		}
+	}
+
+	doSysRequest := func(acc string, expected int) {
+		t.Helper()
+		doRequest("$SYS.REQ.SERVER.PING.CONNZ", acc, _EMPTY_, expected)
+	}
+	doAccRequest := func(acc string, expected int) {
+		t.Helper()
+		doRequest("$SYS.REQ.ACCOUNT.PING.CONNZ", acc, _EMPTY_, expected)
+	}
+	doFiltered := func(acc, filter string, expected int) {
+		t.Helper()
+		doRequest("$SYS.REQ.SERVER.PING.CONNZ", acc, filter, expected)
+	}
+
+	doSysRequest("one", 20)
+	doAccRequest("one", 20)
+
+	doSysRequest("two", 20)
+	doAccRequest("two", 20)
+
+	// Now check filtering.
+	doFiltered("one", _EMPTY_, 20)
+	doFiltered("one", ">", 20)
+	doFiltered("one", "bar", 10)
+	doFiltered("two", "bar", 0)
+	doFiltered("two", "id.1", 1)
+	doFiltered("two", "id.*", 20)
+	doFiltered("two", "foo.bar.*", 20)
+	doFiltered("two", "foo.>", 20)
+}
