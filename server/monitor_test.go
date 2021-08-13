@@ -3784,8 +3784,8 @@ func TestMonitorLeafz(t *testing.T) {
 				t.Fatalf("RTT not tracked?")
 			}
 			// LDS should be only one.
-			if ln.NumSubs != 1 || len(ln.Subs) != 1 {
-				t.Fatalf("Expected 1 sub, got %v (%v)", ln.NumSubs, ln.Subs)
+			if ln.NumSubs != 3 || len(ln.Subs) != 3 {
+				t.Fatalf("Expected 3 subs, got %v (%v)", ln.NumSubs, ln.Subs)
 			}
 		}
 	}

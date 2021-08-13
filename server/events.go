@@ -801,7 +801,7 @@ func (s *Server) initEventTracking() {
 				if acc, err := extractAccount(subject); err != nil {
 					return nil, err
 				} else {
-					if ci, _, _, _, err := c.srv.getRequestInfo(c, msg); err == nil {
+					if ci, _, _, _, err := c.srv.getRequestInfo(c, msg); err == nil && ci.Account != _EMPTY_ {
 						// Make sure the accounts match.
 						if ci.Account != acc {
 							// Do not leak too much here.

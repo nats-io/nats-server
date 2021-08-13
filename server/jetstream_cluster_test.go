@@ -3261,8 +3261,8 @@ func TestJetStreamClusterExtendedAccountInfo(t *testing.T) {
 	if ai.Streams != 3 || ai.Consumers != 3 {
 		t.Fatalf("AccountInfo not correct: %+v", ai)
 	}
-	if ai.API.Total < 8 {
-		t.Fatalf("Expected at least 8 total API calls, got %d", ai.API.Total)
+	if ai.API.Total < 7 {
+		t.Fatalf("Expected at least 7 total API calls, got %d", ai.API.Total)
 	}
 
 	// Now do a failure to make sure we track API errors.
@@ -8930,4 +8930,5 @@ func (c *cluster) stableTotalSubs() (total int) {
 		return fmt.Errorf("Still stabilizing")
 	})
 	return nsubs
+
 }

@@ -1095,8 +1095,8 @@ func TestRouteNoCrashOnAddingSubToRoute(t *testing.T) {
 
 	// Make sure all subs are registered in s.
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
-		if s.globalAccount().TotalSubs() != int(numRoutes) {
-			return fmt.Errorf("Not all %v routed subs were registered", numRoutes)
+		if ts := s.globalAccount().TotalSubs() - 2; ts != int(numRoutes) {
+			return fmt.Errorf("Not all %d routed subs were registered: %d", numRoutes, ts)
 		}
 		return nil
 	})
