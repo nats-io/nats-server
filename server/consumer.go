@@ -43,7 +43,6 @@ type ConsumerInfo struct {
 	NumRedelivered int             `json:"num_redelivered"`
 	NumWaiting     int             `json:"num_waiting"`
 	NumPending     uint64          `json:"num_pending"`
-	Active         *PushActive     `json:"active,omitempty"`
 	Cluster        *ClusterInfo    `json:"cluster,omitempty"`
 }
 
@@ -69,11 +68,6 @@ type ConsumerConfig struct {
 
 	// Don't add to general clients.
 	Direct bool `json:"direct,omitempty"`
-}
-
-type PushActive struct {
-	Subject string `json:"subject"`
-	Queue   string `json:"queue,omitempty"`
 }
 
 type CreateConsumerRequest struct {
@@ -1469,8 +1463,6 @@ func (o *consumer) writeStoreState() error {
 
 // Info returns our current consumer state.
 func (o *consumer) info() *ConsumerInfo {
-	var pa *PushActive
-
 	o.mu.RLock()
 	mset := o.mset
 	if mset == nil || mset.srv == nil {
@@ -1478,12 +1470,6 @@ func (o *consumer) info() *ConsumerInfo {
 		return nil
 	}
 	js := o.js
-	if o.isPushMode() && o.active {
-		pa = &PushActive{
-			Subject: o.dsubj,
-			Queue:   o.qgroup,
-		}
-	}
 	o.mu.RUnlock()
 
 	if js == nil {
@@ -1512,7 +1498,6 @@ func (o *consumer) info() *ConsumerInfo {
 		NumAckPending:  len(o.pending),
 		NumRedelivered: len(o.rdc),
 		NumPending:     o.adjustedPending(),
-		Active:         pa,
 		Cluster:        ci,
 	}
 	// If we are a pull mode consumer, report on number of waiting requests.
