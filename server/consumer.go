@@ -44,13 +44,14 @@ type ConsumerInfo struct {
 	NumWaiting     int             `json:"num_waiting"`
 	NumPending     uint64          `json:"num_pending"`
 	Cluster        *ClusterInfo    `json:"cluster,omitempty"`
+	PushBound      bool            `json:"push_bound,omitempty"`
 }
 
 type ConsumerConfig struct {
 	Durable         string        `json:"durable_name,omitempty"`
 	Description     string        `json:"description,omitempty"`
 	DeliverSubject  string        `json:"deliver_subject,omitempty"`
-	DeliverGroup    string        `json:"deliver_queue,omitempty"`
+	DeliverGroup    string        `json:"deliver_group,omitempty"`
 	DeliverPolicy   DeliverPolicy `json:"deliver_policy"`
 	OptStartSeq     uint64        `json:"opt_start_seq,omitempty"`
 	OptStartTime    *time.Time    `json:"opt_start_time,omitempty"`
@@ -1498,6 +1499,7 @@ func (o *consumer) info() *ConsumerInfo {
 		NumAckPending:  len(o.pending),
 		NumRedelivered: len(o.rdc),
 		NumPending:     o.adjustedPending(),
+		PushBound:      o.isPushMode() && o.active,
 		Cluster:        ci,
 	}
 	// If we are a pull mode consumer, report on number of waiting requests.
