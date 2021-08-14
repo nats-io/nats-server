@@ -2695,6 +2695,8 @@ func TestNoRaceJetStreamClusterExtendedStreamPurge(t *testing.T) {
 			js.DeleteStream("KV")
 			// Do manually for now.
 			nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+			c.waitOnStreamLeader("$G", "KV")
+
 			if _, err := js.StreamInfo("KV"); err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
