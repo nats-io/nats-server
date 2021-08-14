@@ -37,8 +37,8 @@ type ConsumerInfo struct {
 	Name           string          `json:"name"`
 	Created        time.Time       `json:"created"`
 	Config         *ConsumerConfig `json:"config,omitempty"`
-	Delivered      SequenceInfo    `json:"delivered"`
-	AckFloor       SequenceInfo    `json:"ack_floor"`
+	Delivered      SequencePair    `json:"delivered"`
+	AckFloor       SequencePair    `json:"ack_floor"`
 	NumAckPending  int             `json:"num_ack_pending"`
 	NumRedelivered int             `json:"num_redelivered"`
 	NumWaiting     int             `json:"num_waiting"`
@@ -69,13 +69,6 @@ type ConsumerConfig struct {
 
 	// Don't add to general clients.
 	Direct bool `json:"direct,omitempty"`
-}
-
-// SequenceInfo has both the consumer and the stream sequence and last activity.
-type SequenceInfo struct {
-	Consumer uint64     `json:"consumer_seq"`
-	Stream   uint64     `json:"stream_seq"`
-	Last     *time.Time `json:"last_active,omitempty"`
 }
 
 type CreateConsumerRequest struct {
@@ -1501,11 +1494,11 @@ func (o *consumer) info() *ConsumerInfo {
 		Name:    o.name,
 		Created: o.created,
 		Config:  &cfg,
-		Delivered: SequenceInfo{
+		Delivered: SequencePair{
 			Consumer: o.dseq - 1,
 			Stream:   o.sseq - 1,
 		},
-		AckFloor: SequenceInfo{
+		AckFloor: SequencePair{
 			Consumer: o.adflr,
 			Stream:   o.asflr,
 		},
