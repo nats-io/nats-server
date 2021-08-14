@@ -8013,6 +8013,134 @@ func TestJetStreamPushConsumerQueueGroup(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterConsumerLastActiveReporting(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{Name: "foo", Replicas: 2}
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sendMsg := func() {
+		t.Helper()
+		if _, err := js.Publish("foo", []byte("OK")); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	sub, err := js.SubscribeSync("foo", nats.Durable("dlc"))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// TODO(dlc) - Do by hand for now until Go client has this.
+	consumerInfo := func(name string) *ConsumerInfo {
+		t.Helper()
+		resp, err := nc.Request(fmt.Sprintf(JSApiConsumerInfoT, "foo", name), nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var cinfo JSApiConsumerInfoResponse
+		if err := json.Unmarshal(resp.Data, &cinfo); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if cinfo.ConsumerInfo == nil || cinfo.Error != nil {
+			t.Fatalf("Got a bad response %+v", cinfo)
+		}
+		return cinfo.ConsumerInfo
+	}
+
+	if ci := consumerInfo("dlc"); ci.Delivered.Last != nil || ci.AckFloor.Last != nil {
+		t.Fatalf("Expected last to be nil by default, got %+v", ci)
+	}
+
+	checkDelivered := func(name string) {
+		t.Helper()
+		now := time.Now().UTC().Round(time.Second)
+		ci := consumerInfo(name)
+		if ci.Delivered.Last == nil {
+			t.Fatalf("Expected delivered last to not be nil after activity, got %+v", ci.Delivered)
+		}
+		// Compare on a seconds level
+		if ldt := ci.Delivered.Last.Round(time.Second); now != ldt {
+			t.Fatalf("Last active time is off, expected %v got %v", now, ldt)
+		}
+	}
+
+	checkLastAck := func(name string, m *nats.Msg) {
+		t.Helper()
+		now := time.Now().UTC().Round(time.Second)
+		if err := m.AckSync(); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		ci := consumerInfo(name)
+		if ci.AckFloor.Last == nil {
+			t.Fatalf("Expected ack floor last to not be nil after ack, got %+v", ci.AckFloor)
+		}
+		// Compare on a seconds level
+		if lat := ci.AckFloor.Last.Round(time.Second); now != lat {
+			t.Fatalf("Last ack time is off, expected %v got %v", now, lat)
+		}
+	}
+
+	checkAck := func(name string) {
+		t.Helper()
+		m, err := sub.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		checkLastAck(name, m)
+	}
+
+	// Push
+	sendMsg()
+	checkSubsPending(t, sub, 1)
+	checkDelivered("dlc")
+	checkAck("dlc")
+
+	// Check pull.
+	sub, err = js.PullSubscribe("foo", "rip")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	sendMsg()
+	// Should still be nil since pull.
+	if ci := consumerInfo("rip"); ci.Delivered.Last != nil || ci.AckFloor.Last != nil {
+		t.Fatalf("Expected last to be nil by default, got %+v", ci)
+	}
+	msgs, err := sub.Fetch(1)
+	if err != nil || len(msgs) == 0 {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	checkDelivered("rip")
+	checkLastAck("rip", msgs[0])
+
+	// Now test to make sure this state is held correctly across a cluster.
+	ci := consumerInfo("rip")
+	nc.Request(fmt.Sprintf(JSApiConsumerLeaderStepDownT, "foo", "rip"), nil, time.Second)
+	c.waitOnConsumerLeader("$G", "foo", "rip")
+	nci := consumerInfo("rip")
+	if nci.Delivered.Last == nil {
+		t.Fatalf("Expected delivered last to not be nil, got %+v", nci.Delivered)
+	}
+	if nci.AckFloor.Last == nil {
+		t.Fatalf("Expected ack floor last to not be nil, got %+v", nci.AckFloor)
+	}
+	ldt, nldt := ci.Delivered.Last.Round(time.Second), nci.Delivered.Last.Round(time.Second)
+	if nldt != ldt {
+		t.Fatalf("Expected delivery times after leader transfer to be the same, %v vs %v", ldt, nldt)
+	}
+	lat, nlat := ci.AckFloor.Last.Round(time.Second), nci.AckFloor.Last.Round(time.Second)
+	if nlat != lat {
+		t.Fatalf("Expected ack floor times after leader transfer to be the same, %v vs %v", lat, nlat)
+	}
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.

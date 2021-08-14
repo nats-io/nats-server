@@ -2813,6 +2813,10 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					if err := o.store.UpdateDelivered(dseq, sseq, dc, ts); err != nil {
 						panic(err.Error())
 					}
+					// Update activity.
+					o.mu.Lock()
+					o.ldt = time.Now()
+					o.mu.Unlock()
 				}
 			case updateAcksOp:
 				dseq, sseq, err := decodeAckUpdate(buf[1:])
@@ -2838,10 +2842,13 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 func (o *consumer) processReplicatedAck(dseq, sseq uint64) {
 	o.store.UpdateAcks(dseq, sseq)
 
-	o.mu.RLock()
+	o.mu.Lock()
+	// Update activity.
+	o.lat = time.Now()
+
 	mset := o.mset
 	if mset == nil || mset.cfg.Retention == LimitsPolicy {
-		o.mu.RUnlock()
+		o.mu.Unlock()
 		return
 	}
 
@@ -2853,13 +2860,13 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) {
 			// We are a follower so only have the store state, so read that in.
 			state, err := o.store.State()
 			if err != nil {
-				o.mu.RUnlock()
+				o.mu.Unlock()
 				return
 			}
 			sagap = sseq - state.AckFloor.Stream
 		}
 	}
-	o.mu.RUnlock()
+	o.mu.Unlock()
 
 	if sagap > 1 {
 		// FIXME(dlc) - This is very inefficient, will need to fix.

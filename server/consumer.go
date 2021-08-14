@@ -37,8 +37,8 @@ type ConsumerInfo struct {
 	Name           string          `json:"name"`
 	Created        time.Time       `json:"created"`
 	Config         *ConsumerConfig `json:"config,omitempty"`
-	Delivered      SequencePair    `json:"delivered"`
-	AckFloor       SequencePair    `json:"ack_floor"`
+	Delivered      SequenceInfo    `json:"delivered"`
+	AckFloor       SequenceInfo    `json:"ack_floor"`
 	NumAckPending  int             `json:"num_ack_pending"`
 	NumRedelivered int             `json:"num_redelivered"`
 	NumWaiting     int             `json:"num_waiting"`
@@ -69,6 +69,13 @@ type ConsumerConfig struct {
 
 	// Don't add to general clients.
 	Direct bool `json:"direct,omitempty"`
+}
+
+// SequenceInfo has both the consumer and the stream sequence and last activity.
+type SequenceInfo struct {
+	Consumer uint64     `json:"consumer_seq"`
+	Stream   uint64     `json:"stream_seq"`
+	Last     *time.Time `json:"last_active,omitempty"`
 }
 
 type CreateConsumerRequest struct {
@@ -230,6 +237,8 @@ type consumer struct {
 	ackEventT         string
 	deliveryExcEventT string
 	created           time.Time
+	ldt               time.Time
+	lat               time.Time
 	closed            bool
 
 	// Clustered.
@@ -1304,6 +1313,8 @@ func (o *consumer) updateDelivered(dseq, sseq, dc uint64, ts int64) {
 		// Update local state always.
 		o.store.UpdateDelivered(dseq, sseq, dc, ts)
 	}
+	// Update activity.
+	o.ldt = time.Now()
 }
 
 // Lock should be held.
@@ -1319,6 +1330,8 @@ func (o *consumer) updateAcks(dseq, sseq uint64) {
 	} else if o.store != nil {
 		o.store.UpdateAcks(dseq, sseq)
 	}
+	// Update activity.
+	o.lat = time.Now()
 }
 
 // Process a NAK.
@@ -1488,11 +1501,11 @@ func (o *consumer) info() *ConsumerInfo {
 		Name:    o.name,
 		Created: o.created,
 		Config:  &cfg,
-		Delivered: SequencePair{
+		Delivered: SequenceInfo{
 			Consumer: o.dseq - 1,
 			Stream:   o.sseq - 1,
 		},
-		AckFloor: SequencePair{
+		AckFloor: SequenceInfo{
 			Consumer: o.adflr,
 			Stream:   o.asflr,
 		},
@@ -1502,6 +1515,16 @@ func (o *consumer) info() *ConsumerInfo {
 		PushBound:      o.isPushMode() && o.active,
 		Cluster:        ci,
 	}
+	// Adjust active based on non-zero etc. Also make UTC here.
+	if !o.ldt.IsZero() {
+		ldt := o.ldt.UTC() // This copies as well.
+		info.Delivered.Last = &ldt
+	}
+	if !o.lat.IsZero() {
+		lat := o.lat.UTC() // This copies as well.
+		info.AckFloor.Last = &lat
+	}
+
 	// If we are a pull mode consumer, report on number of waiting requests.
 	if o.isPullMode() {
 		info.NumWaiting = o.waiting.len()
