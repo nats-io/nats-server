@@ -12761,6 +12761,69 @@ func TestJetStreamConsumerPushBound(t *testing.T) {
 	}
 }
 
+// Got a report of memory leaking, tracked it to internal clients for consumers.
+func TestJetStreamConsumerInternalClientLeak(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:    "TEST",
+		Storage: nats.MemoryStorage,
+	}
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	ga, sa := s.GlobalAccount(), s.SystemAccount()
+	ncb, nscb := ga.NumConnections(), sa.NumConnections()
+
+	// Create 10 consumers
+	for i := 0; i < 10; i++ {
+		ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{DeliverSubject: "x"})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		// Accelerate ephemeral cleanup.
+		mset, err := ga.lookupStream("TEST")
+		if err != nil {
+			t.Fatalf("Expected to find a stream for %q", "TEST")
+		}
+		o := mset.lookupConsumer(ci.Name)
+		if o == nil {
+			t.Fatalf("Error looking up consumer %q", ci.Name)
+		}
+		o.setInActiveDeleteThreshold(500 * time.Millisecond)
+	}
+
+	// Wait for them to all go away.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if si.State.Consumers == 0 {
+			return nil
+		}
+		return fmt.Errorf("Consumers still present")
+	})
+	// Make sure we are not leaking clients/connections.
+	// Server does not see these so need to look at account.
+	if nca := ga.NumConnections(); nca != ncb {
+		t.Fatalf("Leaked clients in global account: %d vs %d", ncb, nca)
+	}
+	if nsca := sa.NumConnections(); nsca != nscb {
+		t.Fatalf("Leaked clients in system account: %d vs %d", nscb, nsca)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
