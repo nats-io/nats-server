@@ -5944,7 +5944,7 @@ func TestJetStreamInterestRetentionStream(t *testing.T) {
 
 			// Wait for all messsages to be pending for each sub.
 			for i, sub := range []*nats.Subscription{sub1, sub2, sub3} {
-				checkFor(t, 500*time.Millisecond, 25*time.Millisecond, func() error {
+				checkFor(t, 5*time.Second, 25*time.Millisecond, func() error {
 					if nmsgs, _, _ := sub.Pending(); nmsgs != totalMsgs {
 						return fmt.Errorf("Did not receive correct number of messages: %d vs %d for sub %d", nmsgs, totalMsgs, i+1)
 					}
