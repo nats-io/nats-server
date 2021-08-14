@@ -43,14 +43,15 @@ type ConsumerInfo struct {
 	NumRedelivered int             `json:"num_redelivered"`
 	NumWaiting     int             `json:"num_waiting"`
 	NumPending     uint64          `json:"num_pending"`
-	Active         *PushActive     `json:"active,omitempty"`
 	Cluster        *ClusterInfo    `json:"cluster,omitempty"`
+	PushBound      bool            `json:"push_bound,omitempty"`
 }
 
 type ConsumerConfig struct {
 	Durable         string        `json:"durable_name,omitempty"`
 	Description     string        `json:"description,omitempty"`
 	DeliverSubject  string        `json:"deliver_subject,omitempty"`
+	DeliverGroup    string        `json:"deliver_group,omitempty"`
 	DeliverPolicy   DeliverPolicy `json:"deliver_policy"`
 	OptStartSeq     uint64        `json:"opt_start_seq,omitempty"`
 	OptStartTime    *time.Time    `json:"opt_start_time,omitempty"`
@@ -68,11 +69,6 @@ type ConsumerConfig struct {
 
 	// Don't add to general clients.
 	Direct bool `json:"direct,omitempty"`
-}
-
-type PushActive struct {
-	Subject string `json:"subject"`
-	Queue   string `json:"queue,omitempty"`
 }
 
 type CreateConsumerRequest struct {
@@ -234,6 +230,8 @@ type consumer struct {
 	ackEventT         string
 	deliveryExcEventT string
 	created           time.Time
+	ldt               time.Time
+	lat               time.Time
 	closed            bool
 
 	// Clustered.
@@ -783,7 +781,7 @@ func (o *consumer) setLeader(isLeader bool) {
 		// If push mode, register for notifications on interest.
 		if o.isPushMode() {
 			o.inch = make(chan bool, 8)
-			o.acc.sl.RegisterNotification(o.cfg.DeliverSubject, o.inch)
+			o.acc.sl.registerNotification(o.cfg.DeliverSubject, o.cfg.DeliverGroup, o.inch)
 			if o.active = <-o.inch; !o.active {
 				// Check gateways in case they are enabled.
 				if s.gateway.enabled {
@@ -1145,7 +1143,7 @@ func (o *consumer) updateDeliverSubject(newDeliver string) {
 	o.acc.sl.ClearNotification(o.dsubj, o.inch)
 	o.dsubj, o.cfg.DeliverSubject = newDeliver, newDeliver
 	// When we register new one it will deliver to update state loop.
-	o.acc.sl.RegisterNotification(newDeliver, o.inch)
+	o.acc.sl.registerNotification(newDeliver, o.cfg.DeliverGroup, o.inch)
 }
 
 // Check that configs are equal but allow delivery subjects to be different.
@@ -1308,6 +1306,8 @@ func (o *consumer) updateDelivered(dseq, sseq, dc uint64, ts int64) {
 		// Update local state always.
 		o.store.UpdateDelivered(dseq, sseq, dc, ts)
 	}
+	// Update activity.
+	o.ldt = time.Now()
 }
 
 // Lock should be held.
@@ -1323,6 +1323,8 @@ func (o *consumer) updateAcks(dseq, sseq uint64) {
 	} else if o.store != nil {
 		o.store.UpdateAcks(dseq, sseq)
 	}
+	// Update activity.
+	o.lat = time.Now()
 }
 
 // Process a NAK.
@@ -1468,8 +1470,6 @@ func (o *consumer) writeStoreState() error {
 
 // Info returns our current consumer state.
 func (o *consumer) info() *ConsumerInfo {
-	var pa *PushActive
-
 	o.mu.RLock()
 	mset := o.mset
 	if mset == nil || mset.srv == nil {
@@ -1477,12 +1477,6 @@ func (o *consumer) info() *ConsumerInfo {
 		return nil
 	}
 	js := o.js
-	if o.isPushMode() && o.active {
-		pa = &PushActive{
-			Subject: o.dsubj,
-			Queue:   o.qgroup,
-		}
-	}
 	o.mu.RUnlock()
 
 	if js == nil {
@@ -1511,9 +1505,19 @@ func (o *consumer) info() *ConsumerInfo {
 		NumAckPending:  len(o.pending),
 		NumRedelivered: len(o.rdc),
 		NumPending:     o.adjustedPending(),
-		Active:         pa,
+		PushBound:      o.isPushMode() && o.active,
 		Cluster:        ci,
 	}
+	// Adjust active based on non-zero etc. Also make UTC here.
+	if !o.ldt.IsZero() {
+		ldt := o.ldt.UTC() // This copies as well.
+		info.Delivered.Last = &ldt
+	}
+	if !o.lat.IsZero() {
+		lat := o.lat.UTC() // This copies as well.
+		info.AckFloor.Last = &lat
+	}
+
 	// If we are a pull mode consumer, report on number of waiting requests.
 	if o.isPullMode() {
 		info.NumWaiting = o.waiting.len()

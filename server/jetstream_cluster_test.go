@@ -3261,8 +3261,8 @@ func TestJetStreamClusterExtendedAccountInfo(t *testing.T) {
 	if ai.Streams != 3 || ai.Consumers != 3 {
 		t.Fatalf("AccountInfo not correct: %+v", ai)
 	}
-	if ai.API.Total < 8 {
-		t.Fatalf("Expected at least 8 total API calls, got %d", ai.API.Total)
+	if ai.API.Total < 7 {
+		t.Fatalf("Expected at least 7 total API calls, got %d", ai.API.Total)
 	}
 
 	// Now do a failure to make sure we track API errors.
@@ -4599,7 +4599,7 @@ func TestJetStreamClusterConsumerPerf(t *testing.T) {
 // and make sure it connects to the server that is not the leader
 // of the stream. A bug was not stripping the $JS.ACK reply subject
 // correctly, which means that ack sent on the reply subject was
-// droped by the routed
+// dropped by the route.
 func TestJetStreamClusterQueueSubConsumer(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R2S", 2)
 	defer c.shutdown()
@@ -4619,14 +4619,35 @@ func TestJetStreamClusterQueueSubConsumer(t *testing.T) {
 	}
 
 	inbox := nats.NewInbox()
-	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
-		Durable:        "ivan",
-		DeliverSubject: inbox,
-		AckPolicy:      nats.AckExplicitPolicy,
-		AckWait:        100 * time.Millisecond,
-	})
+	obsReq := CreateConsumerRequest{
+		Stream: "TEST",
+		Config: ConsumerConfig{
+			Durable:        "ivan",
+			DeliverSubject: inbox,
+			DeliverGroup:   "queue",
+			AckPolicy:      AckExplicit,
+			AckWait:        100 * time.Millisecond,
+		},
+	}
+	req, err := json.Marshal(obsReq)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, "TEST", "ivan"), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var ccResp JSApiConsumerCreateResponse
+	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if ccResp.Error != nil {
+		t.Fatalf("Unexpected error, got %+v", ccResp.Error)
+	}
+
+	ci, err := js.ConsumerInfo("TEST", "ivan")
+	if err != nil {
+		t.Fatalf("Error getting consumer info: %v", err)
 	}
 
 	// Now create a client that does NOT connect to the stream leader.
@@ -7463,165 +7484,6 @@ func TestJetStreamClusterSourceAndMirrorConsumersLeaderChange(t *testing.T) {
 	})
 }
 
-func TestJetStreamClusterExtendedStreamPurge(t *testing.T) {
-	for _, st := range []StorageType{FileStorage, MemoryStorage} {
-		t.Run(st.String(), func(t *testing.T) {
-			c := createJetStreamClusterExplicit(t, "JSC", 3)
-			defer c.shutdown()
-
-			nc, js := jsClientConnect(t, c.randomServer())
-			defer nc.Close()
-
-			cfg := StreamConfig{
-				Name:       "KV",
-				Subjects:   []string{"kv.>"},
-				Storage:    st,
-				Replicas:   2,
-				MaxMsgsPer: 100,
-			}
-			req, err := json.Marshal(cfg)
-			if err != nil {
-				t.Fatalf("Unexpected error: %v", err)
-			}
-			// Do manually for now.
-			nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
-			si, err := js.StreamInfo("KV")
-			if err != nil {
-				t.Fatalf("Unexpected error: %v", err)
-			}
-			if si == nil || si.Config.Name != "KV" {
-				t.Fatalf("StreamInfo is not correct %+v", si)
-			}
-
-			for i := 0; i < 1000; i++ {
-				js.PublishAsync("kv.foo", []byte("OK")) // 1 * i
-				js.PublishAsync("kv.bar", []byte("OK")) // 2 * i
-				js.PublishAsync("kv.baz", []byte("OK")) // 3 * i, so after first is 2700, last is 3000
-			}
-			for i := 0; i < 700; i++ {
-				js.PublishAsync(fmt.Sprintf("kv.%d", i+1), []byte("OK"))
-			}
-
-			checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
-				si, err := js.StreamInfo("KV")
-				if err != nil {
-					return err
-				}
-				if si.State.Msgs != 1000 {
-					return fmt.Errorf("Expected %d msgs, got %d", 300, si.State.Msgs)
-				}
-				return nil
-			})
-
-			shouldFail := func(preq *JSApiStreamPurgeRequest) {
-				req, _ := json.Marshal(preq)
-				resp, err := nc.Request(fmt.Sprintf(JSApiStreamPurgeT, "KV"), req, time.Second)
-				if err != nil {
-					t.Fatalf("Unexpected error: %v", err)
-				}
-				var pResp JSApiStreamPurgeResponse
-				if err = json.Unmarshal(resp.Data, &pResp); err != nil {
-					t.Fatalf("Unexpected error: %v", err)
-				}
-				if pResp.Success || pResp.Error == nil {
-					t.Fatalf("Expected an error response but got none")
-				}
-			}
-
-			// Sequence and Keep should be mutually exclusive.
-			shouldFail(&JSApiStreamPurgeRequest{Sequence: 10, Keep: 10})
-
-			purge := func(preq *JSApiStreamPurgeRequest, newTotal uint64) {
-				t.Helper()
-				req, _ := json.Marshal(preq)
-				resp, err := nc.Request(fmt.Sprintf(JSApiStreamPurgeT, "KV"), req, time.Second)
-				if err != nil {
-					t.Fatalf("Unexpected error: %v", err)
-				}
-				var pResp JSApiStreamPurgeResponse
-				if err = json.Unmarshal(resp.Data, &pResp); err != nil {
-					t.Fatalf("Unexpected error: %v", err)
-				}
-				if !pResp.Success || pResp.Error != nil {
-					t.Fatalf("Got a bad response %+v", pResp)
-				}
-				si, err = js.StreamInfo("KV")
-				if err != nil {
-					t.Fatalf("Unexpected error: %v", err)
-				}
-				if si.State.Msgs != newTotal {
-					t.Fatalf("Expected total after purge to be %d but got %d", newTotal, si.State.Msgs)
-				}
-			}
-			expectLeft := func(subject string, expected uint64) {
-				t.Helper()
-				ci, err := js.AddConsumer("KV", &nats.ConsumerConfig{Durable: "dlc", FilterSubject: subject, AckPolicy: nats.AckExplicitPolicy})
-				if err != nil {
-					t.Fatalf("Unexpected error: %v", err)
-				}
-				defer js.DeleteConsumer("KV", "dlc")
-				if ci.NumPending != expected {
-					t.Fatalf("Expected %d remaining but got %d", expected, ci.NumPending)
-				}
-			}
-
-			purge(&JSApiStreamPurgeRequest{Subject: "kv.foo"}, 900)
-			expectLeft("kv.foo", 0)
-
-			purge(&JSApiStreamPurgeRequest{Subject: "kv.bar", Keep: 1}, 801)
-			expectLeft("kv.bar", 1)
-
-			purge(&JSApiStreamPurgeRequest{Subject: "kv.baz", Sequence: 2851}, 751)
-			expectLeft("kv.baz", 50)
-
-			purge(&JSApiStreamPurgeRequest{Subject: "kv.*"}, 0)
-
-			// RESET
-			js.DeleteStream("KV")
-			// Do manually for now.
-			nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
-			if _, err := js.StreamInfo("KV"); err != nil {
-				t.Fatalf("Unexpected error: %v", err)
-			}
-			// Put in 100.
-			for i := 0; i < 100; i++ {
-				js.Publish("kv.foo", []byte("OK"))
-			}
-			purge(&JSApiStreamPurgeRequest{Subject: "kv.foo", Keep: 10}, 10)
-			purge(&JSApiStreamPurgeRequest{Subject: "kv.foo", Keep: 10}, 10)
-			expectLeft("kv.foo", 10)
-
-			// RESET AGAIN
-			js.DeleteStream("KV")
-			// Do manually for now.
-			nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
-			if _, err := js.StreamInfo("KV"); err != nil {
-				t.Fatalf("Unexpected error: %v", err)
-			}
-			// Put in 100.
-			for i := 0; i < 100; i++ {
-				js.Publish("kv.foo", []byte("OK"))
-			}
-			purge(&JSApiStreamPurgeRequest{Keep: 10}, 10)
-			expectLeft(">", 10)
-
-			// RESET AGAIN
-			js.DeleteStream("KV")
-			// Do manually for now.
-			nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
-			if _, err := js.StreamInfo("KV"); err != nil {
-				t.Fatalf("Unexpected error: %v", err)
-			}
-			// Put in 100.
-			for i := 0; i < 100; i++ {
-				js.Publish("kv.foo", []byte("OK"))
-			}
-			purge(&JSApiStreamPurgeRequest{Sequence: 90}, 11) // Up to 90 so we keep that, hence the 11.
-			expectLeft(">", 11)
-		})
-	}
-}
-
 func TestPurgeBySequence(t *testing.T) {
 	for _, st := range []StorageType{FileStorage, MemoryStorage} {
 		t.Run(st.String(), func(t *testing.T) {
@@ -7919,6 +7781,207 @@ func TestJetStreamPullConsumerLeakedSubs(t *testing.T) {
 	if numSubsAfter := c.stableTotalSubs(); numSubsAfter != numSubs {
 		t.Fatalf("Subs leaked: %d before, %d after", numSubs, numSubsAfter)
 	}
+}
+
+func TestJetStreamPushConsumerQueueGroup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	}); err != nil {
+		t.Fatalf("Error creating stream: %v", err)
+	}
+
+	js.Publish("foo", []byte("QG"))
+
+	// Do consumer by hand for now.
+	inbox := nats.NewInbox()
+	obsReq := CreateConsumerRequest{
+		Stream: "TEST",
+		Config: ConsumerConfig{
+			Durable:        "dlc",
+			DeliverSubject: inbox,
+			DeliverGroup:   "22",
+			AckPolicy:      AckNone,
+		},
+	}
+	req, err := json.Marshal(obsReq)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, "TEST", "dlc"), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var ccResp JSApiConsumerCreateResponse
+	if err = json.Unmarshal(resp.Data, &ccResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if ccResp.Error != nil {
+		t.Fatalf("Unexpected error, got %+v", ccResp.Error)
+	}
+
+	sub, _ := nc.SubscribeSync(inbox)
+	if _, err := sub.NextMsg(100 * time.Millisecond); err == nil {
+		t.Fatalf("Expected a timeout, we should not get messages here")
+	}
+	qsub, _ := nc.QueueSubscribeSync(inbox, "22")
+	checkSubsPending(t, qsub, 1)
+
+	// Test deleting the plain sub has not affect.
+	sub.Unsubscribe()
+	js.Publish("foo", []byte("QG"))
+	checkSubsPending(t, qsub, 2)
+
+	qsub.Unsubscribe()
+	qsub2, _ := nc.QueueSubscribeSync(inbox, "22")
+	js.Publish("foo", []byte("QG"))
+	checkSubsPending(t, qsub2, 1)
+
+	// Catch all sub.
+	sub, _ = nc.SubscribeSync(inbox)
+	qsub2.Unsubscribe() // Should be no more interest.
+	// Send another, make sure we do not see the message flow here.
+	js.Publish("foo", []byte("QG"))
+	if _, err := sub.NextMsg(100 * time.Millisecond); err == nil {
+		t.Fatalf("Expected a timeout, we should not get messages here")
+	}
+}
+
+func TestJetStreamClusterConsumerLastActiveReporting(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{Name: "foo", Replicas: 2}
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sendMsg := func() {
+		t.Helper()
+		if _, err := js.Publish("foo", []byte("OK")); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	sub, err := js.SubscribeSync("foo", nats.Durable("dlc"))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// TODO(dlc) - Do by hand for now until Go client has this.
+	consumerInfo := func(name string) *ConsumerInfo {
+		t.Helper()
+		resp, err := nc.Request(fmt.Sprintf(JSApiConsumerInfoT, "foo", name), nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var cinfo JSApiConsumerInfoResponse
+		if err := json.Unmarshal(resp.Data, &cinfo); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if cinfo.ConsumerInfo == nil || cinfo.Error != nil {
+			t.Fatalf("Got a bad response %+v", cinfo)
+		}
+		return cinfo.ConsumerInfo
+	}
+
+	if ci := consumerInfo("dlc"); ci.Delivered.Last != nil || ci.AckFloor.Last != nil {
+		t.Fatalf("Expected last to be nil by default, got %+v", ci)
+	}
+
+	checkTimeDiff := func(t1, t2 *time.Time) {
+		t.Helper()
+		// Compare on a seconds level
+		rt1, rt2 := t1.UTC().Round(time.Second), t2.UTC().Round(time.Second)
+		if rt1 != rt2 {
+			d := rt1.Sub(rt2)
+			if d > time.Second || d < -time.Second {
+				t.Fatalf("Times differ too much, expected %v got %v", rt1, rt2)
+			}
+		}
+	}
+
+	checkDelivered := func(name string) {
+		t.Helper()
+		now := time.Now()
+		ci := consumerInfo(name)
+		if ci.Delivered.Last == nil {
+			t.Fatalf("Expected delivered last to not be nil after activity, got %+v", ci.Delivered)
+		}
+		checkTimeDiff(&now, ci.Delivered.Last)
+	}
+
+	checkLastAck := func(name string, m *nats.Msg) {
+		t.Helper()
+		now := time.Now()
+		if err := m.AckSync(); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		ci := consumerInfo(name)
+		if ci.AckFloor.Last == nil {
+			t.Fatalf("Expected ack floor last to not be nil after ack, got %+v", ci.AckFloor)
+		}
+		// Compare on a seconds level
+		checkTimeDiff(&now, ci.AckFloor.Last)
+	}
+
+	checkAck := func(name string) {
+		t.Helper()
+		m, err := sub.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		checkLastAck(name, m)
+	}
+
+	// Push
+	sendMsg()
+	checkSubsPending(t, sub, 1)
+	checkDelivered("dlc")
+	checkAck("dlc")
+
+	// Check pull.
+	sub, err = js.PullSubscribe("foo", "rip")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	sendMsg()
+	// Should still be nil since pull.
+	if ci := consumerInfo("rip"); ci.Delivered.Last != nil || ci.AckFloor.Last != nil {
+		t.Fatalf("Expected last to be nil by default, got %+v", ci)
+	}
+	msgs, err := sub.Fetch(1)
+	if err != nil || len(msgs) == 0 {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	checkDelivered("rip")
+	checkLastAck("rip", msgs[0])
+
+	// Now test to make sure this state is held correctly across a cluster.
+	ci := consumerInfo("rip")
+	nc.Request(fmt.Sprintf(JSApiConsumerLeaderStepDownT, "foo", "rip"), nil, time.Second)
+	c.waitOnConsumerLeader("$G", "foo", "rip")
+	nci := consumerInfo("rip")
+	if nci.Delivered.Last == nil {
+		t.Fatalf("Expected delivered last to not be nil, got %+v", nci.Delivered)
+	}
+	if nci.AckFloor.Last == nil {
+		t.Fatalf("Expected ack floor last to not be nil, got %+v", nci.AckFloor)
+	}
+
+	checkTimeDiff(ci.Delivered.Last, nci.Delivered.Last)
+	checkTimeDiff(ci.AckFloor.Last, nci.AckFloor.Last)
 }
 
 // Support functions
@@ -8681,7 +8744,7 @@ func (c *cluster) waitOnConsumerLeader(account, stream, consumer string) {
 	expires := time.Now().Add(20 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.consumerLeader(account, stream, consumer); leader != nil {
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -8704,7 +8767,7 @@ func (c *cluster) waitOnStreamLeader(account, stream string) {
 	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.streamLeader(account, stream); leader != nil {
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)

@@ -1451,7 +1451,7 @@ func TestJetStreamBasicDeliverSubject(t *testing.T) {
 			defer sub.Unsubscribe()
 			nc2.Flush()
 
-			o, err = mset.addConsumer(&ConsumerConfig{DeliverSubject: sub.Subject})
+			o, err = mset.addConsumer(&ConsumerConfig{DeliverSubject: sub.Subject, DeliverGroup: "dev"})
 			if err != nil {
 				t.Fatalf("Expected no error with registered interest, got %v", err)
 			}
@@ -5944,7 +5944,7 @@ func TestJetStreamInterestRetentionStream(t *testing.T) {
 
 			// Wait for all messsages to be pending for each sub.
 			for i, sub := range []*nats.Subscription{sub1, sub2, sub3} {
-				checkFor(t, 500*time.Millisecond, 25*time.Millisecond, func() error {
+				checkFor(t, 5*time.Second, 25*time.Millisecond, func() error {
 					if nmsgs, _, _ := sub.Pending(); nmsgs != totalMsgs {
 						return fmt.Errorf("Did not receive correct number of messages: %d vs %d for sub %d", nmsgs, totalMsgs, i+1)
 					}
@@ -11830,113 +11830,6 @@ func TestJetStreamDomainInPubAck(t *testing.T) {
 	}
 }
 
-func TestJetStreamPushConsumerInfo(t *testing.T) {
-	s := RunBasicJetStreamServer()
-	defer s.Shutdown()
-
-	config := s.JetStreamConfig()
-	if config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
-
-	nc, js := jsClientConnect(t, s)
-	defer nc.Close()
-
-	cfg := &nats.StreamConfig{
-		Name:     "TEST",
-		Storage:  nats.MemoryStorage,
-		Subjects: []string{"foo"},
-	}
-	if _, err := js.AddStream(cfg); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-
-	// We want to test extended consumer info for push based consumers.
-	// We need to do these by hand for now.
-	createConsumer := func(name, deliver string) {
-		t.Helper()
-		creq := CreateConsumerRequest{
-			Stream: "TEST",
-			Config: ConsumerConfig{
-				Durable:        name,
-				DeliverSubject: deliver,
-				AckPolicy:      AckExplicit,
-			},
-		}
-		req, err := json.Marshal(creq)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		resp, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, "TEST", name), req, time.Second)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		var ccResp JSApiConsumerCreateResponse
-		if err := json.Unmarshal(resp.Data, &ccResp); err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		if ccResp.ConsumerInfo == nil || ccResp.Error != nil {
-			t.Fatalf("Got a bad response %+v", ccResp)
-		}
-	}
-
-	consumerInfo := func(name string) *ConsumerInfo {
-		t.Helper()
-		resp, err := nc.Request(fmt.Sprintf(JSApiConsumerInfoT, "TEST", name), nil, time.Second)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		var cinfo JSApiConsumerInfoResponse
-		if err := json.Unmarshal(resp.Data, &cinfo); err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		if cinfo.ConsumerInfo == nil || cinfo.Error != nil {
-			t.Fatalf("Got a bad response %+v", cinfo)
-		}
-		return cinfo.ConsumerInfo
-	}
-
-	// First create a durable push and make sure we show now active status.
-	createConsumer("dlc", "d.X")
-	if ci := consumerInfo("dlc"); ci.Active != nil {
-		t.Fatalf("Expected active to be nil, got %+v\n", ci.Active)
-	}
-	// Now bind the deliver subject.
-	sub, _ := nc.SubscribeSync("d.X")
-	nc.Flush() // Make sure it registers.
-	// Check that its reported.
-	if ci := consumerInfo("dlc"); ci.Active == nil || ci.Active.Subject != "d.X" {
-		t.Fatalf("Expected active to be set and have subject %q, got %+v\n", "d.X", ci.Active)
-	}
-	sub.Unsubscribe()
-	nc.Flush() // Make sure it registers.
-	if ci := consumerInfo("dlc"); ci.Active != nil {
-		t.Fatalf("Expected active to be nil, got %+v\n", ci.Active)
-	}
-
-	// Now make sure we have queue groups indictated as needed.
-	createConsumer("ik", "d.Z")
-	// Now bind the deliver subject with a queue group.
-	sub, _ = nc.QueueSubscribeSync("d.Z", "g22")
-	defer sub.Unsubscribe()
-	nc.Flush() // Make sure it registers.
-	// Check that queue group reported.
-	if ci := consumerInfo("ik"); ci.Active == nil || ci.Active.Subject != "d.Z" || ci.Active.Queue != "g22" {
-		t.Fatalf("Expected active to be set and have subject %q and queue %q, got %+v\n", "d.Z", "g22", ci.Active)
-	}
-	sub.Unsubscribe()
-	nc.Flush() // Make sure it registers.
-	if ci := consumerInfo("ik"); ci.Active != nil {
-		t.Fatalf("Expected active to be nil, got %+v\n", ci.Active)
-	}
-
-	// Make sure pull consumers report Active as nil.
-	createConsumer("rip", _EMPTY_)
-	if ci := consumerInfo("rip"); ci.Active != nil {
-		t.Fatalf("Expected active to be nil, got %+v\n", ci.Active)
-	}
-}
-
 // Issue #2213
 func TestJetStreamDirectConsumersBeingReported(t *testing.T) {
 	s := RunBasicJetStreamServer()
@@ -12758,6 +12651,113 @@ func TestJetStreamBadConsumerCreateErr(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "push mode can not set max waiting") {
 		t.Fatalf("Incorrect error returned: %v", err)
+	}
+}
+
+func TestJetStreamConsumerPushBound(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Storage:  nats.MemoryStorage,
+		Subjects: []string{"foo"},
+	}
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// We want to test extended consumer info for push based consumers.
+	// We need to do these by hand for now.
+	createConsumer := func(name, deliver string) {
+		t.Helper()
+		creq := CreateConsumerRequest{
+			Stream: "TEST",
+			Config: ConsumerConfig{
+				Durable:        name,
+				DeliverSubject: deliver,
+				AckPolicy:      AckExplicit,
+			},
+		}
+		req, err := json.Marshal(creq)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		resp, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, "TEST", name), req, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var ccResp JSApiConsumerCreateResponse
+		if err := json.Unmarshal(resp.Data, &ccResp); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if ccResp.ConsumerInfo == nil || ccResp.Error != nil {
+			t.Fatalf("Got a bad response %+v", ccResp)
+		}
+	}
+
+	consumerInfo := func(name string) *ConsumerInfo {
+		t.Helper()
+		resp, err := nc.Request(fmt.Sprintf(JSApiConsumerInfoT, "TEST", name), nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var cinfo JSApiConsumerInfoResponse
+		if err := json.Unmarshal(resp.Data, &cinfo); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if cinfo.ConsumerInfo == nil || cinfo.Error != nil {
+			t.Fatalf("Got a bad response %+v", cinfo)
+		}
+		return cinfo.ConsumerInfo
+	}
+
+	// First create a durable push and make sure we show now active status.
+	createConsumer("dlc", "d.X")
+	if ci := consumerInfo("dlc"); ci.PushBound {
+		t.Fatalf("Expected push bound to be false")
+	}
+	// Now bind the deliver subject.
+	sub, _ := nc.SubscribeSync("d.X")
+	nc.Flush() // Make sure it registers.
+	// Check that its reported.
+	if ci := consumerInfo("dlc"); !ci.PushBound {
+		t.Fatalf("Expected push bound to be set")
+	}
+	sub.Unsubscribe()
+	nc.Flush() // Make sure it registers.
+	if ci := consumerInfo("dlc"); ci.PushBound {
+		t.Fatalf("Expected push bound to be false")
+	}
+
+	// Now make sure we have queue groups indictated as needed.
+	createConsumer("ik", "d.Z")
+	// Now bind the deliver subject with a queue group.
+	sub, _ = nc.QueueSubscribeSync("d.Z", "g22")
+	defer sub.Unsubscribe()
+	nc.Flush() // Make sure it registers.
+	// Check that queue group is not reported.
+	if ci := consumerInfo("ik"); ci.PushBound {
+		t.Fatalf("Expected push bound to be false")
+	}
+	sub.Unsubscribe()
+	nc.Flush() // Make sure it registers.
+	if ci := consumerInfo("ik"); ci.PushBound {
+		t.Fatalf("Expected push bound to be false")
+	}
+
+	// Make sure pull consumers report PushBound as false by default.
+	createConsumer("rip", _EMPTY_)
+	if ci := consumerInfo("rip"); ci.PushBound {
+		t.Fatalf("Expected push bound to be false")
 	}
 }
 
