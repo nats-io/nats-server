@@ -4701,7 +4701,7 @@ func (c *client) closeConnection(reason ClosedState) {
 		srv.removeClient(c)
 
 		// Update remote subscriptions.
-		if acc != nil && (kind == CLIENT || kind == LEAF) {
+		if acc != nil && (kind == CLIENT || kind == LEAF || kind == JETSTREAM) {
 			qsubs := map[string]*qsub{}
 			for _, sub := range subs {
 				// Call unsubscribe here to cleanup shadow subscriptions and such.
