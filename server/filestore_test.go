@@ -2370,6 +2370,7 @@ func TestFileStoreConsumerRedeliveredLost(t *testing.T) {
 	restartConsumer := func() {
 		t.Helper()
 		o.Stop()
+		time.Sleep(20 * time.Millisecond) // Wait for all things to settle.
 		o, err = fs.ConsumerStore("o22", cfg)
 		if err != nil {
 			t.Fatalf("Unexepected error: %v", err)
