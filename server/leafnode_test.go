@@ -3172,6 +3172,55 @@ func TestLeafNodeWSNoBufferCorruption(t *testing.T) {
 	checkMsgRcv(sub)
 }
 
+func TestLeafNodeWSRemoteNoTLSBlockWithWSSProto(t *testing.T) {
+	o := testDefaultLeafNodeWSOptions()
+	o.Websocket.NoTLS = false
+	tc := &TLSConfigOpts{
+		CertFile: "../test/configs/certs/server-cert.pem",
+		KeyFile:  "../test/configs/certs/server-key.pem",
+		CaFile:   "../test/configs/certs/ca.pem",
+	}
+	tlsConf, err := GenTLSConfig(tc)
+	if err != nil {
+		t.Fatalf("Error generating TLS config: %v", err)
+	}
+	o.Websocket.TLSConfig = tlsConf
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	// The test will make sure that if the protocol is "wss://", a TLS handshake must
+	// be initiated, regardless of the presence of a TLS config block in config file
+	// or here directly.
+	// A bug was causing the absence of TLS config block to initiate a non TLS connection
+	// even if "wss://" proto was specified, which would lead to "invalid websocket connection"
+	// errors in the log.
+	// With the fix, the connection will fail because the remote will fail to verify
+	// the root CA, but at least, we will make sure that this is not an "invalid websocket connection"
+
+	u, _ := url.Parse(fmt.Sprintf("wss://127.0.0.1:%d/some/path", o.Websocket.Port))
+	lo := DefaultOptions()
+	lo.Cluster.Name = "LN"
+	remote := &RemoteLeafOpts{URLs: []*url.URL{u}}
+	lo.LeafNode.Remotes = []*RemoteLeafOpts{remote}
+	lo.LeafNode.ReconnectInterval = 100 * time.Millisecond
+	ln := RunServer(lo)
+	defer ln.Shutdown()
+
+	l := &captureErrorLogger{errCh: make(chan string, 10)}
+	ln.SetLogger(l, false, false)
+
+	select {
+	case e := <-l.errCh:
+		if strings.Contains(e, "invalid websocket connection") {
+			t.Fatalf("The remote did not try to create a TLS connection: %v", e)
+		}
+		// OK!
+		return
+	case <-time.After(2 * time.Second):
+		t.Fatal("Connection should fail")
+	}
+}
+
 func TestLeafNodeStreamImport(t *testing.T) {
 	o1 := DefaultOptions()
 	o1.LeafNode.Port = -1
