@@ -8993,4 +8993,5 @@ func (c *cluster) stableTotalSubs() (total int) {
 		return fmt.Errorf("Still stabilizing")
 	})
 	return nsubs
+
 }

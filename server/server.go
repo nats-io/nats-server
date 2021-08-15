@@ -1319,6 +1319,12 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 	s.accounts.Store(acc.Name, acc)
 	s.tmpAccounts.Delete(acc.Name)
 	s.enableAccountTracking(acc)
+
+	// Can not have server lock here.
+	s.mu.Unlock()
+	s.registerSystemImports(acc)
+	s.mu.Lock()
+
 	return nil
 }
 

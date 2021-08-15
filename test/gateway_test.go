@@ -511,7 +511,7 @@ func TestGatewayNoAccUnsubAfterQSub(t *testing.T) {
 	// Simulate a client connecting to A and publishing a message
 	// so we get an A- from B since there is no interest.
 	gASend("RMSG $G foo 2\r\nok\r\n")
-	gAExpect(aunsubRe)
+	gAExpect(runsubRe)
 
 	// Now create client on B and create queue sub.
 	client := createClientConn(t, ob.Host, ob.Port)

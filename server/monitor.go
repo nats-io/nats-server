@@ -86,6 +86,13 @@ type ConnzOptions struct {
 
 	// Filter by account.
 	Account string `json:"acc"`
+
+	// Filter by subject interest
+	FilterSubject string `json:"filter_subject"`
+
+	// Private indication that this request is from an account and not a system account.
+	// Used to not leak system level information to the account.
+	isAccountReq bool
 }
 
 // ConnState is for filtering states of connections. We will only have two, open and closed.
@@ -103,6 +110,8 @@ const (
 // ConnInfo has detailed information on a per connection basis.
 type ConnInfo struct {
 	Cid            uint64      `json:"cid"`
+	Kind           string      `json:"kind,omitempty"`
+	Type           string      `json:"type,omitempty"`
 	IP             string      `json:"ip"`
 	Port           int         `json:"port"`
 	Start          time.Time   `json:"start"`
@@ -170,11 +179,13 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		state   = ConnOpen
 		user    string
 		acc     string
+		a       *Account
+		filter  string
 	)
 
 	if opts != nil {
 		// If no sort option given or sort is by uptime, then sort by cid
-		if opts.Sort == "" {
+		if opts.Sort == _EMPTY_ {
 			sortOpt = ByCid
 		} else {
 			sortOpt = opts.Sort
@@ -185,7 +196,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 
 		// Auth specifics.
 		auth = opts.Username
-		if !auth && (user != "" || acc != "") {
+		if !auth && (user != _EMPTY_ || acc != _EMPTY_) {
 			return nil, fmt.Errorf("filter by user or account only allowed with auth option")
 		}
 		user = opts.User
@@ -212,11 +223,17 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		if sortOpt == ByReason && state != ConnClosed {
 			return nil, fmt.Errorf("sort by reason only valid on closed connections")
 		}
-
 		// If searching by CID
 		if opts.CID > 0 {
 			cid = opts.CID
 			limit = 1
+		}
+		// If filtering by subject.
+		if opts.FilterSubject != _EMPTY_ && opts.FilterSubject != fwcs {
+			if acc == _EMPTY_ {
+				return nil, fmt.Errorf("filter by subject only valid with account filtering")
+			}
+			filter = opts.FilterSubject
 		}
 	}
 
@@ -231,8 +248,31 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	// Hold for closed clients if requested.
 	var closedClients []*closedClient
 
+	var clist map[uint64]*client
+
+	// If this is an account scoped request from a no $SYS account.
+	isAccReq := acc != _EMPTY_ && opts.isAccountReq
+
+	if acc != _EMPTY_ {
+		var err error
+		a, err = s.lookupAccount(acc)
+		if err != nil {
+			return c, nil
+		}
+		a.mu.RLock()
+		clist = make(map[uint64]*client, a.numLocalConnections())
+		for c := range a.clients {
+			clist[c.cid] = c
+		}
+		a.mu.RUnlock()
+	}
+
 	// Walk the open client list with server lock held.
 	s.mu.Lock()
+	// Default to all client unless filled in above.
+	if clist == nil {
+		clist = s.clients
+	}
 
 	// copy the server id for monitoring
 	c.ID = s.info.ID
@@ -241,14 +281,34 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	// may be smaller if pagination is used.
 	switch state {
 	case ConnOpen:
-		c.Total = len(s.clients)
+		if isAccReq {
+			c.Total = a.NumLocalConnections()
+		} else {
+			c.Total = len(s.clients)
+		}
 	case ConnClosed:
-		c.Total = s.closed.len()
 		closedClients = s.closed.closedClients()
 		c.Total = len(closedClients)
 	case ConnAll:
+		if isAccReq {
+			c.Total = a.NumLocalConnections()
+		} else {
+			c.Total = len(s.clients)
+		}
 		closedClients = s.closed.closedClients()
-		c.Total = len(s.clients) + len(closedClients)
+		c.Total += len(closedClients)
+	}
+
+	// We may need to filter these connections.
+	if isAccReq && len(closedClients) > 0 {
+		var ccc []*closedClient
+		for _, cc := range closedClients {
+			if cc.acc == acc {
+				ccc = append(ccc, cc)
+			}
+		}
+		c.Total -= (len(closedClients) - len(ccc))
+		closedClients = ccc
 	}
 
 	totalClients := c.Total
@@ -294,13 +354,13 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	} else {
 		// Gather all open clients.
 		if state == ConnOpen || state == ConnAll {
-			for _, client := range s.clients {
+			for _, client := range clist {
 				// If we have an account specified we need to filter.
-				if acc != "" && (client.acc == nil || client.acc.Name != acc) {
+				if acc != _EMPTY_ && (client.acc == nil || client.acc.Name != acc) {
 					continue
 				}
 				// Do user filtering second
-				if user != "" && client.opts.Username != user {
+				if user != _EMPTY_ && client.opts.Username != user {
 					continue
 				}
 				openClients = append(openClients, client)
@@ -309,6 +369,22 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	}
 	s.mu.Unlock()
 
+	// Filter by subject now if needed. We do this outside of server lock.
+	if filter != _EMPTY_ {
+		var oc []*client
+		for _, c := range openClients {
+			c.mu.Lock()
+			for _, sub := range c.subs {
+				if SubjectsCollide(filter, string(sub.subject)) {
+					oc = append(oc, c)
+					break
+				}
+			}
+			c.mu.Unlock()
+			openClients = oc
+		}
+	}
+
 	// Just return with empty array if nothing here.
 	if len(openClients) == 0 && len(closedClients) == 0 {
 		c.Conns = ConnInfos{}
@@ -316,7 +392,6 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	}
 
 	// Now whip through and generate ConnInfo entries
-
 	// Open Clients
 	i := 0
 	for _, client := range openClients {
@@ -354,11 +429,11 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	}
 	for _, cc := range closedClients {
 		// If we have an account specified we need to filter.
-		if acc != "" && cc.acc != acc {
+		if acc != _EMPTY_ && cc.acc != acc {
 			continue
 		}
 		// Do user filtering second
-		if user != "" && cc.user != user {
+		if user != _EMPTY_ && cc.user != user {
 			continue
 		}
 
@@ -451,6 +526,8 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 // client should be locked.
 func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time) {
 	ci.Cid = client.cid
+	ci.Kind = client.kindString()
+	ci.Type = client.clientTypeString()
 	ci.Start = client.start
 	ci.LastActivity = client.last
 	ci.Uptime = myUptime(now.Sub(client.start))

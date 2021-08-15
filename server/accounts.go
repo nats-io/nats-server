@@ -816,8 +816,7 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 }
 
 // SubscriptionInterest returns true if this account has a matching subscription
-// for the given `subject`. Works only for literal subjects.
-// TODO: Add support for wildcards
+// for the given `subject`.
 func (a *Account) SubscriptionInterest(subject string) bool {
 	return a.Interest(subject) > 0
 }
@@ -1377,7 +1376,7 @@ func (a *Account) AddServiceImportWithClaim(destination *Account, from, to strin
 		return ErrMissingAccount
 	}
 	// Empty means use from.
-	if to == "" {
+	if to == _EMPTY_ {
 		to = from
 	}
 	if !IsValidSubject(from) || !IsValidSubject(to) {
@@ -2277,7 +2276,7 @@ func (a *Account) AddStreamImportWithClaim(account *Account, from, prefix string
 
 	// Check prefix if it exists and make sure its a literal.
 	// Append token separator if not already present.
-	if prefix != "" {
+	if prefix != _EMPTY_ {
 		// Make sure there are no wildcards here, this prefix needs to be a literal
 		// since it will be prepended to a publish subject.
 		if !subjectIsLiteral(prefix) {
@@ -2415,7 +2414,7 @@ func (a *Account) checkStreamImportAuthorizedNoLock(account *Account, subject st
 
 func (a *Account) checkAuth(ea *exportAuth, account *Account, imClaim *jwt.Import, tokens []string) bool {
 	// if ea is nil or ea.approved is nil, that denotes a public export
-	if ea == nil || (ea.approved == nil && !ea.tokenReq && ea.accountPos == 0) {
+	if ea == nil || (len(ea.approved) == 0 && !ea.tokenReq && ea.accountPos == 0) {
 		return true
 	}
 	// Check if the export is protected and enforces presence of importing account identity
@@ -2444,6 +2443,7 @@ func (a *Account) checkStreamExportApproved(account *Account, subject string, im
 		}
 		return a.checkAuth(&ea.exportAuth, account, imClaim, nil)
 	}
+
 	// ok if we are here we did not match directly so we need to test each one.
 	// The import subject arg has to take precedence, meaning the export
 	// has to be a true subset of the import claim. We already checked for
@@ -2464,7 +2464,7 @@ func (a *Account) checkServiceExportApproved(account *Account, subject string, i
 	// Check direct match of subject first
 	se, ok := a.exports.services[subject]
 	if ok {
-		// if ea is nil or eq.approved is nil, that denotes a public export
+		// if se is nil or eq.approved is nil, that denotes a public export
 		if se == nil {
 			return true
 		}

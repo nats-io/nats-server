@@ -440,7 +440,7 @@ func TestLeafNodeAndRoutes(t *testing.T) {
 	lc := createLeafConn(t, optsA.LeafNode.Host, optsA.LeafNode.Port)
 	defer lc.Close()
 
-	leafSend, leafExpect := setupLeaf(t, lc, 1)
+	leafSend, leafExpect := setupLeaf(t, lc, 3)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -834,7 +834,7 @@ func TestLeafNodeGatewaySendsSystemEvent(t *testing.T) {
 	defer lc.Close()
 
 	// This is for our global responses since we are setting up GWs above.
-	leafSend, leafExpect := setupLeaf(t, lc, 3)
+	leafSend, leafExpect := setupLeaf(t, lc, 5)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -878,14 +878,14 @@ func TestLeafNodeGatewayInterestPropagation(t *testing.T) {
 	buf := leafExpect(infoRe)
 	buf = infoRe.ReplaceAll(buf, []byte(nil))
 	foundFoo := false
-	for count := 0; count != 5; {
+	for count := 0; count != 7; {
 		// skip first time if we still have data (buf from above may already have some left)
 		if count != 0 || len(buf) == 0 {
 			buf = append(buf, leafExpect(anyRe)...)
 		}
 		count += len(lsubRe.FindAllSubmatch(buf, -1))
-		if count > 5 {
-			t.Fatalf("Expected %v matches, got %v (buf=%s)", 4, count, buf)
+		if count > 7 {
+			t.Fatalf("Expected %v matches, got %v (buf=%s)", 7, count, buf)
 		}
 		if strings.Contains(string(buf), "foo") {
 			foundFoo = true
@@ -937,7 +937,7 @@ func TestLeafNodeWithRouteAndGateway(t *testing.T) {
 	defer lc.Close()
 
 	// This is for our global responses since we are setting up GWs above.
-	leafSend, leafExpect := setupLeaf(t, lc, 3)
+	leafSend, leafExpect := setupLeaf(t, lc, 5)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -996,7 +996,7 @@ func TestLeafNodeWithGatewaysAndStaggeredStart(t *testing.T) {
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	leafSend, leafExpect := setupLeaf(t, lc, 3)
+	leafSend, leafExpect := setupLeaf(t, lc, 5)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -1036,7 +1036,7 @@ func TestLeafNodeWithGatewaysServerRestart(t *testing.T) {
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	leafSend, leafExpect := setupLeaf(t, lc, 3)
+	leafSend, leafExpect := setupLeaf(t, lc, 5)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -1070,7 +1070,7 @@ func TestLeafNodeWithGatewaysServerRestart(t *testing.T) {
 	lc = createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	_, leafExpect = setupLeaf(t, lc, 3)
+	_, leafExpect = setupLeaf(t, lc, 5)
 
 	// Now wait on GW solicit to fire
 	time.Sleep(500 * time.Millisecond)
@@ -1174,7 +1174,7 @@ func TestLeafNodeBasicAuth(t *testing.T) {
 	leafExpect(infoRe)
 	leafExpect(lsubRe)
 	leafSend("PING\r\n")
-	leafExpect(pongRe)
+	expectResult(t, lc, pongRe)
 
 	checkLeafNodeConnected(t, s)
 }
@@ -1576,7 +1576,7 @@ func TestLeafNodeMultipleAccounts(t *testing.T) {
 
 	// Wait for the subs to propagate. LDS + foo.test
 	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
-		if subs := s.NumSubscriptions(); subs < 2 {
+		if subs := s.NumSubscriptions(); subs < 4 {
 			return fmt.Errorf("Number of subs is %d", subs)
 		}
 		return nil
@@ -1760,7 +1760,7 @@ func TestLeafNodeExportsImports(t *testing.T) {
 
 	// Wait for all subs to propagate.
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
-		if subs := s.NumSubscriptions(); subs < 3 {
+		if subs := s.NumSubscriptions(); subs < 5 {
 			return fmt.Errorf("Number of subs is %d", subs)
 		}
 		return nil
@@ -1924,8 +1924,8 @@ func TestLeafNodeExportImportComplexSetup(t *testing.T) {
 
 	// Wait for the sub to propagate to s2. LDS + subject above.
 	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
-		if acc1.RoutedSubs() != 2 {
-			return fmt.Errorf("Still no routed subscription")
+		if acc1.RoutedSubs() != 4 {
+			return fmt.Errorf("Still no routed subscription: %d", acc1.RoutedSubs())
 		}
 		return nil
 	})
@@ -2510,7 +2510,7 @@ func TestLeafNodeSwitchGatewayToInterestModeOnly(t *testing.T) {
 	defer lc.Close()
 
 	// This is for our global responses since we are setting up GWs above.
-	leafSend, leafExpect := setupLeaf(t, lc, 3)
+	leafSend, leafExpect := setupLeaf(t, lc, 5)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 }
