@@ -1279,7 +1279,7 @@ func TestAccountReqMonitoring(t *testing.T) {
 		t.Fatalf("Error on request: %v", err)
 	} else if !strings.Contains(string(resp.Data), `"num_connections":1,`) {
 		t.Fatalf("unexpected subs count (expected 1): %v", string(resp.Data))
-	} else if !strings.Contains(string(resp.Data), `"total":2,`) { // includes system acc connection
+	} else if !strings.Contains(string(resp.Data), `"total":1,`) {
 		t.Fatalf("unexpected subs count (expected 1): %v", string(resp.Data))
 	}
 	// query connections for js account
