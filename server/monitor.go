@@ -262,7 +262,9 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		a.mu.RLock()
 		clist = make(map[uint64]*client, a.numLocalConnections())
 		for c := range a.clients {
-			clist[c.cid] = c
+			if c.kind == CLIENT || c.kind == LEAF {
+				clist[c.cid] = c
+			}
 		}
 		a.mu.RUnlock()
 	}
@@ -281,20 +283,12 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	// may be smaller if pagination is used.
 	switch state {
 	case ConnOpen:
-		if isAccReq {
-			c.Total = a.NumLocalConnections()
-		} else {
-			c.Total = len(s.clients)
-		}
+		c.Total = len(clist)
 	case ConnClosed:
 		closedClients = s.closed.closedClients()
 		c.Total = len(closedClients)
 	case ConnAll:
-		if isAccReq {
-			c.Total = a.NumLocalConnections()
-		} else {
-			c.Total = len(s.clients)
-		}
+		c.Total = len(clist)
 		closedClients = s.closed.closedClients()
 		c.Total += len(closedClients)
 	}

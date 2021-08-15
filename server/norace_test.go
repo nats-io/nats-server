@@ -2558,6 +2558,7 @@ func TestNoRaceAccountConnz(t *testing.T) {
 	defer sc.shutdown()
 
 	// Create 20 connections on account one and two
+	// Create JetStream assets for each as well to make sure by default we do not report them.
 	num := 20
 	for i := 0; i < num; i++ {
 		nc, _ := jsClientConnect(t, sc.randomServer(), nats.UserInfo("one", "p"), nats.Name("one"))
@@ -2569,10 +2570,13 @@ func TestNoRaceAccountConnz(t *testing.T) {
 			nc.SubscribeSync("bar")
 		}
 
-		nc, _ = jsClientConnect(t, sc.randomServer(), nats.UserInfo("two", "p"), nats.Name("two"))
+		nc, js := jsClientConnect(t, sc.randomServer(), nats.UserInfo("two", "p"), nats.Name("two"))
 		nc.SubscribeSync("baz")
 		nc.SubscribeSync("foo.bar.*")
 		nc.SubscribeSync(fmt.Sprintf("id.%d", i+1))
+
+		js.AddStream(&nats.StreamConfig{Name: fmt.Sprintf("TEST:%d", i+1)})
+
 		defer nc.Close()
 	}
 
@@ -2632,7 +2636,7 @@ func TestNoRaceAccountConnz(t *testing.T) {
 				}
 				for _, c := range cr.Conns {
 					if c.Name != acc {
-						t.Fatalf("Got wrong account: %q vs %q", acc, c.Account)
+						t.Fatalf("Got wrong account: %q vs %q for %+v", acc, c.Account, c)
 					}
 					if !(c.Cid == cid && cr.ID == sid) {
 						conns = append(conns, c)
