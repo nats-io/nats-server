@@ -4564,6 +4564,7 @@ RETRY:
 				s.resourcesExeededError()
 				return
 			} else {
+				s.Warnf("Catchup for stream '%s > %s' errored, will retry: %v", mset.account(), mset.name(), err)
 				goto RETRY
 			}
 			if mrec.reply != _EMPTY_ {
