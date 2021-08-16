@@ -406,6 +406,11 @@ func newLeafNodeCfg(remote *RemoteLeafOpts) *leafNodeCfg {
 	for _, u := range cfg.urls {
 		cfg.saveTLSHostname(u)
 		cfg.saveUserPassword(u)
+		// If the url(s) have the "wss://" scheme, and we don't have a TLS
+		// config, mark that we should be using TLS anyway.
+		if !cfg.TLS && isWSSURL(u) {
+			cfg.TLS = true
+		}
 	}
 	return cfg
 }
@@ -1136,10 +1141,14 @@ func (c *client) updateLeafNodeURLs(info *Info) {
 	// We have ensured that if a remote has a WS scheme, then all are.
 	// So check if first is WS, then add WS URLs, otherwise, add non WS ones.
 	if len(cfg.URLs) > 0 && isWSURL(cfg.URLs[0]) {
-		// We use wsSchemePrefix. It does not matter if TLS or not since
-		// the distinction is done when creating the LN connection based
-		// on presence of TLS config, etc..
-		c.doUpdateLNURLs(cfg, wsSchemePrefix, info.WSConnectURLs)
+		// It does not really matter if we use "ws://" or "wss://" here since
+		// we will have already marked that the remote should use TLS anyway.
+		// But use proper scheme for log statements, etc...
+		proto := wsSchemePrefix
+		if cfg.TLS {
+			proto = wsSchemePrefixTLS
+		}
+		c.doUpdateLNURLs(cfg, proto, info.WSConnectURLs)
 		return
 	}
 	c.doUpdateLNURLs(cfg, "nats-leaf", info.LeafNodeURLs)
