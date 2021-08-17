@@ -2574,20 +2574,21 @@ func (nc *Conn) waitForMsgs(s *Subscription) {
 		mcb := s.mcb
 		max = s.max
 		closed = s.closed
+		var fcReply string
 		if !s.closed {
 			s.delivered++
 			delivered = s.delivered
 			if s.jsi != nil {
-				s.jsi.mu.Lock()
-				needCheck := s.jsi.fc && len(s.jsi.fcs) > 0
+				fcReply = s.checkForFlowControlResponse()
 				s.jsi.active = true
-				s.jsi.mu.Unlock()
-				if needCheck {
-					s.checkForFlowControlResponse(delivered)
-				}
 			}
 		}
 		s.mu.Unlock()
+
+		// Respond to flow control if applicable
+		if fcReply != _EMPTY_ {
+			nc.Publish(fcReply, nil)
+		}
 
 		if closed {
 			break
@@ -2688,8 +2689,8 @@ func (nc *Conn) processMsg(data []byte) {
 	var h Header
 	var err error
 	var ctrlMsg bool
-	var hasFC bool
-	var hasHBs bool
+	var ctrlType int
+	var fcReply string
 
 	if nc.ps.ma.hdr > 0 {
 		hbuf := msgPayload[:nc.ps.ma.hdr]
@@ -2728,9 +2729,18 @@ func (nc *Conn) processMsg(data []byte) {
 	// Skip flow control messages in case of using a JetStream context.
 	jsi := sub.jsi
 	if jsi != nil {
-		ctrlMsg, hasHBs, hasFC = isControlMessage(m), jsi.hbs, jsi.fc
+		// There has to be a header for it to be a control message.
+		if h != nil {
+			ctrlMsg, ctrlType = isJSControlMessage(m)
+			if ctrlMsg && ctrlType == jsCtrlHB {
+				// Check if the hearbeat has a "Consumer Stalled" header, if
+				// so, the value is the FC reply to send a nil message to.
+				// We will send it at the end of this function.
+				fcReply = m.Header.Get(consumerStalledHdr)
+			}
+		}
 		// Check for ordered consumer here. If checkOrdered returns true that means it detected a gap.
-		if jsi.ordered && sub.checkOrderedMsgs(m) {
+		if !ctrlMsg && jsi.ordered && sub.checkOrderedMsgs(m) {
 			sub.mu.Unlock()
 			return
 		}
@@ -2777,19 +2787,19 @@ func (nc *Conn) processMsg(data []byte) {
 				sub.pTail = m
 			}
 		}
-		if jsi != nil && hasHBs {
+		if jsi != nil {
 			// Store the ACK metadata from the message to
 			// compare later on with the received heartbeat.
-			jsi.trackSequences(m.Reply)
+			sub.trackSequences(m.Reply)
 		}
-	} else if hasFC && m.Reply != _EMPTY_ {
+	} else if ctrlType == jsCtrlFC && m.Reply != _EMPTY_ {
 		// This is a flow control message.
 		// If we have no pending, go ahead and send in place.
 		if sub.pMsgs <= 0 {
-			nc.Publish(m.Reply, nil)
+			fcReply = m.Reply
 		} else {
 			// Schedule a reply after the previous message is delivered.
-			jsi.scheduleFlowControlResponse(sub.delivered+uint64(sub.pMsgs), m.Reply)
+			sub.scheduleFlowControlResponse(sub.delivered+uint64(sub.pMsgs), m.Reply)
 		}
 	}
 
@@ -2797,8 +2807,12 @@ func (nc *Conn) processMsg(data []byte) {
 	sub.sc = false
 	sub.mu.Unlock()
 
+	if fcReply != _EMPTY_ {
+		nc.Publish(fcReply, nil)
+	}
+
 	// Handle control heartbeat messages.
-	if ctrlMsg && hasHBs && m.Reply == _EMPTY_ {
+	if ctrlMsg && ctrlType == jsCtrlHB && m.Reply == _EMPTY_ {
 		nc.checkForSequenceMismatch(m, sub, jsi)
 	}
 
@@ -3161,6 +3175,7 @@ const (
 	descrHdr           = "Description"
 	lastConsumerSeqHdr = "Nats-Last-Consumer"
 	lastStreamSeqHdr   = "Nats-Last-Stream"
+	consumerStalledHdr = "Nats-Consumer-Stalled"
 	noResponders       = "503"
 	noMessagesSts      = "404"
 	reqTimeoutSts      = "408"
@@ -3808,6 +3823,12 @@ func (nc *Conn) removeSub(s *Subscription) {
 	}
 	s.mch = nil
 
+	// If JS subscription then stop HB timer.
+	if jsi := s.jsi; jsi != nil && jsi.hbc != nil {
+		jsi.hbc.Stop()
+		jsi.hbc = nil
+	}
+
 	// Mark as invalid
 	s.closed = true
 	if s.pCond != nil {
@@ -3857,6 +3878,15 @@ func (s *Subscription) IsValid() bool {
 
 // Drain will remove interest but continue callbacks until all messages
 // have been processed.
+//
+// For a JetStream subscription, if the library has created the JetStream
+// consumer, the library will send a DeleteConsumer request to the server
+// when the Drain operation completes. If a failure occurs when deleting
+// the JetStream consumer, an error will be reported to the asynchronous
+// error callback.
+// If you do not wish the JetStream consumer to be automatically deleted,
+// ensure that the consumer is not created by the library, which means
+// create the consumer with AddConsumer and bind to this consumer.
 func (s *Subscription) Drain() error {
 	if s == nil {
 		return ErrBadSubscription
@@ -3871,6 +3901,15 @@ func (s *Subscription) Drain() error {
 }
 
 // Unsubscribe will remove interest in the given subject.
+//
+// For a JetStream subscription, if the library has created the JetStream
+// consumer, it will send a DeleteConsumer request to the server (if the
+// unsubscribe itself was successful). If the delete operation fails, the
+// error will be returned.
+// If you do not wish the JetStream consumer to be automatically deleted,
+// ensure that the consumer is not created by the library, which means
+// create the consumer with AddConsumer and bind to this consumer (using
+// the nats.Bind() option).
 func (s *Subscription) Unsubscribe() error {
 	if s == nil {
 		return ErrBadSubscription
@@ -3878,6 +3917,7 @@ func (s *Subscription) Unsubscribe() error {
 	s.mu.Lock()
 	conn := s.conn
 	closed := s.closed
+	dc := s.jsi != nil && s.jsi.dc
 	s.mu.Unlock()
 	if conn == nil || conn.IsClosed() {
 		return ErrConnectionClosed
@@ -3888,7 +3928,11 @@ func (s *Subscription) Unsubscribe() error {
 	if conn.IsDraining() {
 		return ErrConnectionDraining
 	}
-	return conn.unsubscribe(s, 0, false)
+	err := conn.unsubscribe(s, 0, false)
+	if err == nil && dc {
+		err = s.deleteConsumer()
+	}
+	return err
 }
 
 // checkDrained will watch for a subscription to be fully drained
@@ -3901,6 +3945,12 @@ func (nc *Conn) checkDrained(sub *Subscription) {
 	// This allows us to know that whatever we have in the client pending
 	// is correct and the server will not send additional information.
 	nc.Flush()
+
+	sub.mu.Lock()
+	// For JS subscriptions, check if we are going to delete the
+	// JS consumer when drain completes.
+	dc := sub.jsi != nil && sub.jsi.dc
+	sub.mu.Unlock()
 
 	// Once we are here we just wait for Pending to reach 0 or
 	// any other state to exit this go routine.
@@ -3921,6 +3971,15 @@ func (nc *Conn) checkDrained(sub *Subscription) {
 			nc.mu.Lock()
 			nc.removeSub(sub)
 			nc.mu.Unlock()
+			if dc {
+				if err := sub.deleteConsumer(); err != nil {
+					nc.mu.Lock()
+					if errCB := nc.Opts.AsyncErrorCB; errCB != nil {
+						nc.ach.push(func() { errCB(nc, sub, err) })
+					}
+					nc.mu.Unlock()
+				}
+			}
 			return
 		}
 
@@ -3957,18 +4016,6 @@ func (nc *Conn) unsubscribe(sub *Subscription, max int, drainMode bool) error {
 			maxStr = strconv.Itoa(max)
 		}
 		sub.mu.Unlock()
-	}
-
-	// For JetStream consumers, need to clean up ephemeral consumers
-	// or delete durable ones if called with Unsubscribe.
-	sub.mu.Lock()
-	jsi := sub.jsi
-	sub.mu.Unlock()
-	if jsi != nil && maxStr == _EMPTY_ {
-		err := jsi.unsubscribe(drainMode)
-		if err != nil {
-			return err
-		}
 	}
 
 	nc.mu.Lock()
@@ -4014,7 +4061,7 @@ func (s *Subscription) NextMsg(timeout time.Duration) (*Msg, error) {
 	}
 
 	s.mu.Lock()
-	err := s.validateNextMsgState()
+	err := s.validateNextMsgState(false)
 	if err != nil {
 		s.mu.Unlock()
 		return nil, err
@@ -4065,7 +4112,7 @@ func (s *Subscription) NextMsg(timeout time.Duration) (*Msg, error) {
 // validateNextMsgState checks whether the subscription is in a valid
 // state to call NextMsg and be delivered another message synchronously.
 // This should be called while holding the lock.
-func (s *Subscription) validateNextMsgState() error {
+func (s *Subscription) validateNextMsgState(pullSubInternal bool) error {
 	if s.connClosed {
 		return ErrConnectionClosed
 	}
@@ -4083,7 +4130,11 @@ func (s *Subscription) validateNextMsgState() error {
 		s.sc = false
 		return ErrSlowConsumer
 	}
-
+	// Unless this is from an internal call, reject use of this API.
+	// Users should use Fetch() instead.
+	if !pullSubInternal && s.jsi != nil && s.jsi.pull {
+		return ErrTypeSubscription
+	}
 	return nil
 }
 
@@ -4108,17 +4159,13 @@ func (s *Subscription) processNextMsgDelivered(msg *Msg) error {
 	nc := s.conn
 	max := s.max
 
+	var fcReply string
 	// Update some stats.
 	s.delivered++
 	delivered := s.delivered
 	if s.jsi != nil {
-		s.jsi.mu.Lock()
-		needCheck := s.jsi.fc && len(s.jsi.fcs) > 0
+		fcReply = s.checkForFlowControlResponse()
 		s.jsi.active = true
-		s.jsi.mu.Unlock()
-		if needCheck {
-			s.checkForFlowControlResponse(delivered)
-		}
 	}
 
 	if s.typ == SyncSubscription {
@@ -4126,6 +4173,10 @@ func (s *Subscription) processNextMsgDelivered(msg *Msg) error {
 		s.pBytes -= len(msg.Data)
 	}
 	s.mu.Unlock()
+
+	if fcReply != _EMPTY_ {
+		nc.Publish(fcReply, nil)
+	}
 
 	if max > 0 {
 		if delivered > max {
@@ -4729,6 +4780,8 @@ func (nc *Conn) drainConnection() {
 // will be drained and can not publish any additional messages. Upon draining
 // of the publishers, the connection will be closed. Use the ClosedCB()
 // option to know when the connection has moved from draining to closed.
+//
+// See note in Subscription.Drain for JetStream subscriptions.
 func (nc *Conn) Drain() error {
 	nc.mu.Lock()
 	if nc.isClosed() {

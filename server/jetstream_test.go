@@ -12057,6 +12057,8 @@ func TestJetStreamServerEncryption(t *testing.T) {
 	// Consumer create times can be slightly off after restore from disk.
 	now := time.Now()
 	ci.Created, ci2.Created = now, now
+	ci.Delivered.Last, ci2.Delivered.Last = nil, nil
+	ci.AckFloor.Last, ci2.AckFloor.Last = nil, nil
 	// Also clusters will be different.
 	ci.Cluster, ci2.Cluster = nil, nil
 	if !reflect.DeepEqual(ci, ci2) {

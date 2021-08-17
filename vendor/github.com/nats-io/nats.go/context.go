@@ -122,12 +122,7 @@ func (s *Subscription) nextMsgWithContext(ctx context.Context, pullSubInternal, 
 	}
 
 	s.mu.Lock()
-	err := s.validateNextMsgState()
-	// Unless this is from an internal call, reject use of this API.
-	// Users should use Fetch() instead.
-	if err == nil && !pullSubInternal && s.jsi != nil && s.jsi.pull {
-		err = ErrTypeSubscription
-	}
+	err := s.validateNextMsgState(pullSubInternal)
 	if err != nil {
 		s.mu.Unlock()
 		return nil, err
