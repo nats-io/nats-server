@@ -2959,8 +2959,12 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		a.RemoveMapping(rmMapping)
 	}
 
-	// Re-register system imports.
-	s.registerSystemImports(a)
+	// Re-register system exports/imports.
+	if a == s.SystemAccount() {
+		s.addSystemAccountExports(a)
+	} else {
+		s.registerSystemImports(a)
+	}
 
 	gatherClients := func() []*client {
 		a.mu.RLock()
