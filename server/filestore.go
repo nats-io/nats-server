@@ -394,13 +394,19 @@ func (fs *fileStore) genEncryptionKeys(context string) (aek cipher.AEAD, bek *ch
 		return nil, nil, nil, nil, errNoEncryption
 	}
 	// Generate key encryption key.
-	kek, err := chacha20poly1305.NewX(fs.prf([]byte(context)))
+	rb, err := fs.prf([]byte(context))
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	kek, err := chacha20poly1305.NewX(rb)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 	// Generate random asset encryption key seed.
 	seed = make([]byte, 32)
-	rand.Read(seed)
+	if n, err := rand.Read(seed); err != nil || n != 32 {
+		return nil, nil, nil, nil, err
+	}
 	aek, err = chacha20poly1305.NewX(seed)
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -499,7 +505,11 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) (*msgBlock, e
 				return nil, errBadKeySize
 			}
 			// Recover key encryption key.
-			kek, err := chacha20poly1305.NewX(fs.prf([]byte(fmt.Sprintf("%s:%d", fs.cfg.Name, mb.index))))
+			rb, err := fs.prf([]byte(fmt.Sprintf("%s:%d", fs.cfg.Name, mb.index)))
+			if err != nil {
+				return nil, err
+			}
+			kek, err := chacha20poly1305.NewX(rb)
 			if err != nil {
 				return nil, err
 			}
@@ -4464,7 +4474,11 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 	if o.prf != nil {
 		if ekey, err := ioutil.ReadFile(path.Join(odir, JetStreamMetaFileKey)); err == nil {
 			// Recover key encryption key.
-			kek, err := chacha20poly1305.NewX(fs.prf([]byte(fs.cfg.Name + tsep + o.name)))
+			rb, err := fs.prf([]byte(fs.cfg.Name + tsep + o.name))
+			if err != nil {
+				return nil, err
+			}
+			kek, err := chacha20poly1305.NewX(rb)
 			if err != nil {
 				return nil, err
 			}
