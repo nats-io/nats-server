@@ -12826,6 +12826,64 @@ func TestJetStreamConsumerInternalClientLeak(t *testing.T) {
 	}
 }
 
+// Got a report of streams that expire all messages while the server is down report errors when clients reconnect
+// and try to send new messages.
+func TestJetStreamExpireAllWhileServerDown(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:   "TEST",
+		MaxAge: 250 * time.Millisecond,
+	}
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	toSend := 10_000
+	for i := 0; i < toSend; i++ {
+		js.PublishAsync("TEST", []byte("OK"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+
+	time.Sleep(300 * time.Millisecond)
+
+	// Restart after expire.
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	if si, err := js.StreamInfo("TEST"); err != nil || si.State.Msgs != 0 {
+		t.Fatalf("Unexpected stream info state: %+v", si)
+	}
+
+	for i := 0; i < 10; i++ {
+		if _, err := js.Publish("TEST", []byte("OK")); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	if si, err := js.StreamInfo("TEST"); err != nil || si.State.Msgs != 10 {
+		t.Fatalf("Unexpected stream info state: %+v", si)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////

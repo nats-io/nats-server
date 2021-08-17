@@ -973,6 +973,12 @@ func (fs *fileStore) expireMsgsOnRecover() {
 	if deleted > 0 {
 		// Update blks slice.
 		fs.blks = append(fs.blks[:0:0], fs.blks[deleted:]...)
+		if lb := len(fs.blks); lb == 0 {
+			fs.lmb = nil
+		} else {
+			fs.lmb = fs.blks[lb-1]
+			fs.enableLastMsgBlockForWriting()
+		}
 	}
 	// Update top level accounting.
 	fs.state.Msgs -= purged
