@@ -534,7 +534,7 @@ type MapDest struct {
 }
 
 func NewMapDest(subject string, weight uint8) *MapDest {
-	return &MapDest{subject, weight, ""}
+	return &MapDest{subject, weight, _EMPTY_}
 }
 
 // destination is for internal representation for a weighted mapped destination.
@@ -1512,7 +1512,7 @@ func (a *Account) NumPendingReverseResponses() int {
 
 // NumPendingAllResponses return the number of all responses outstanding for service exports.
 func (a *Account) NumPendingAllResponses() int {
-	return a.NumPendingResponses("")
+	return a.NumPendingResponses(_EMPTY_)
 }
 
 // NumResponsesPending returns the number of responses outstanding for service exports
@@ -1522,7 +1522,7 @@ func (a *Account) NumPendingAllResponses() int {
 func (a *Account) NumPendingResponses(filter string) int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	if filter == "" {
+	if filter == _EMPTY_ {
 		return len(a.exports.responses)
 	}
 	se := a.getServiceExport(filter)
@@ -1780,7 +1780,7 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 			from, dup.acc.Name, dup.to)
 	}
 
-	if to == "" {
+	if to == _EMPTY_ {
 		to = from
 	}
 	// Check to see if we have a wildcard
@@ -2306,7 +2306,7 @@ func (a *Account) AddMappedStreamImportWithClaim(account *Account, from, to stri
 		return ErrStreamImportAuthorization
 	}
 
-	if to == "" {
+	if to == _EMPTY_ {
 		to = from
 	}
 
@@ -2595,7 +2595,7 @@ func isRevoked(revocations map[string]int64, subject string, issuedAt int64) boo
 
 // checkActivation will check the activation token for validity.
 func (a *Account) checkActivation(importAcc *Account, claim *jwt.Import, expTimer bool) bool {
-	if claim == nil || claim.Token == "" {
+	if claim == nil || claim.Token == _EMPTY_ {
 		return false
 	}
 	// Create a quick clone so we can inline Token JWT.
@@ -2638,7 +2638,7 @@ func (a *Account) checkActivation(importAcc *Account, claim *jwt.Import, expTime
 // the account or is an entry in the signing keys.
 func (a *Account) isIssuerClaimTrusted(claims *jwt.ActivationClaims) bool {
 	// if no issuer account, issuer is the account
-	if claims.IssuerAccount == "" {
+	if claims.IssuerAccount == _EMPTY_ {
 		return true
 	}
 	// If the IssuerAccount is not us, then this is considered an error.
@@ -2847,7 +2847,7 @@ func (s *Server) AccountResolver() AccountResolver {
 // isClaimAccount returns if this account is backed by a JWT claim.
 // Lock should be held.
 func (a *Account) isClaimAccount() bool {
-	return a.claimJWT != ""
+	return a.claimJWT != _EMPTY_
 }
 
 // updateAccountClaims will update an existing account with new claims.
@@ -2959,6 +2959,9 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		a.RemoveMapping(rmMapping)
 	}
 
+	// Re-register system imports.
+	s.registerSystemImports(a)
+
 	gatherClients := func() []*client {
 		a.mu.RLock()
 		clients := make([]*client, 0, len(a.clients))
@@ -2999,7 +3002,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			sub := string(e.Subject)
 			if e.Latency != nil {
 				if err := a.TrackServiceExportWithSampling(sub, string(e.Latency.Results), int(e.Latency.Sampling)); err != nil {
-					hdrNote := ""
+					hdrNote := _EMPTY_
 					if e.Latency.Sampling == jwt.Headers {
 						hdrNote = " (using headers)"
 					}
@@ -3233,7 +3236,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		theJWT := c.opts.JWT
 		c.mu.Unlock()
 		// Check for being revoked here. We use ac one to avoid the account lock.
-		if ac.Revocations != nil && theJWT != "" {
+		if ac.Revocations != nil && theJWT != _EMPTY_ {
 			if juc, err := jwt.DecodeUserClaims(theJWT); err != nil {
 				c.Debugf("User JWT not valid: %v", err)
 				c.authViolation()
@@ -3353,7 +3356,7 @@ func buildPermissionsFromJwt(uc *jwt.Permissions) *Permissions {
 // Helper to build internal NKeyUser.
 func buildInternalNkeyUser(uc *jwt.UserClaims, acts map[string]struct{}, acc *Account) *NkeyUser {
 	nu := &NkeyUser{Nkey: uc.Subject, Account: acc, AllowedConnectionTypes: acts}
-	if uc.IssuerAccount != "" {
+	if uc.IssuerAccount != _EMPTY_ {
 		nu.SigningKey = uc.Issuer
 	}
 
@@ -3368,7 +3371,7 @@ func buildInternalNkeyUser(uc *jwt.UserClaims, acts map[string]struct{}, acc *Ac
 
 func fetchAccount(res AccountResolver, name string) (string, error) {
 	if !nkeys.IsValidPublicAccountKey(name) {
-		return "", fmt.Errorf("will only fetch valid account keys")
+		return _EMPTY_, fmt.Errorf("will only fetch valid account keys")
 	}
 	return res.Fetch(name)
 }
@@ -3498,25 +3501,25 @@ func (dr *DirAccResolver) Reload() error {
 
 func respondToUpdate(s *Server, respSubj string, acc string, message string, err error) {
 	if err == nil {
-		if acc == "" {
+		if acc == _EMPTY_ {
 			s.Debugf("%s", message)
 		} else {
 			s.Debugf("%s - %s", message, acc)
 		}
 	} else {
-		if acc == "" {
+		if acc == _EMPTY_ {
 			s.Errorf("%s - %s", message, err)
 		} else {
 			s.Errorf("%s - %s - %s", message, acc, err)
 		}
 	}
-	if respSubj == "" {
+	if respSubj == _EMPTY_ {
 		return
 	}
 	server := &ServerInfo{}
 	response := map[string]interface{}{"server": server}
 	m := map[string]interface{}{}
-	if acc != "" {
+	if acc != _EMPTY_ {
 		m["account"] = acc
 	}
 	if err == nil {
@@ -3532,7 +3535,7 @@ func respondToUpdate(s *Server, respSubj string, acc string, message string, err
 }
 
 func handleListRequest(store *DirJWTStore, s *Server, reply string) {
-	if reply == "" {
+	if reply == _EMPTY_ {
 		return
 	}
 	accIds := make([]string, 0, 1024)
@@ -3574,7 +3577,7 @@ func handleDeleteRequest(store *DirJWTStore, s *Server, msg []byte, reply string
 		} else {
 			for _, entry := range accIds {
 				if acc, ok := entry.(string); !ok ||
-					acc == "" || !nkeys.IsValidPublicAccountKey(acc) {
+					acc == _EMPTY_ || !nkeys.IsValidPublicAccountKey(acc) {
 					err = fmt.Errorf("malformed request")
 					break
 				} else if acc == sysAccName {
@@ -3585,7 +3588,7 @@ func handleDeleteRequest(store *DirJWTStore, s *Server, msg []byte, reply string
 		}
 	}
 	if err != nil {
-		respondToUpdate(s, reply, "", fmt.Sprintf("delete accounts request by %s failed", subj), err)
+		respondToUpdate(s, reply, _EMPTY_, fmt.Sprintf("delete accounts request by %s failed", subj), err)
 		return
 	}
 	errs := []string{}
@@ -3598,9 +3601,9 @@ func handleDeleteRequest(store *DirJWTStore, s *Server, msg []byte, reply string
 		}
 	}
 	if len(errs) == 0 {
-		respondToUpdate(s, reply, "", fmt.Sprintf("deleted %d accounts", passCnt), nil)
+		respondToUpdate(s, reply, _EMPTY_, fmt.Sprintf("deleted %d accounts", passCnt), nil)
 	} else {
-		respondToUpdate(s, reply, "", fmt.Sprintf("deleted %d accounts, failed for %d", passCnt, len(errs)),
+		respondToUpdate(s, reply, _EMPTY_, fmt.Sprintf("deleted %d accounts, failed for %d", passCnt, len(errs)),
 			errors.New(strings.Join(errs, "\n")))
 	}
 }
@@ -3620,7 +3623,7 @@ func getOperatorKeys(s *Server) (string, map[string]struct{}, bool, error) {
 		}
 	}
 	if len(keys) == 0 {
-		return "", nil, false, fmt.Errorf("no operator key found")
+		return _EMPTY_, nil, false, fmt.Errorf("no operator key found")
 	}
 	return op, keys, strict, nil
 }
@@ -3680,7 +3683,7 @@ func (dr *DirAccResolver) Start(s *Server) error {
 	for _, reqSub := range []string{accUpdateEventSubjOld, accUpdateEventSubjNew} {
 		// subscribe to account jwt update requests
 		if _, err := s.sysSubscribe(fmt.Sprintf(reqSub, "*"), func(_ *subscription, _ *client, _ *Account, subj, resp string, msg []byte) {
-			pubKey := ""
+			pubKey := _EMPTY_
 			tk := strings.Split(subj, tsep)
 			if len(tk) == accUpdateTokensNew {
 				pubKey = tk[accReqAccIndex]
@@ -3727,7 +3730,7 @@ func (dr *DirAccResolver) Start(s *Server) error {
 	}
 	// respond to lookups with our version
 	if _, err := s.sysSubscribe(fmt.Sprintf(accLookupReqSubj, "*"), func(_ *subscription, _ *client, _ *Account, subj, reply string, msg []byte) {
-		if reply == "" {
+		if reply == _EMPTY_ {
 			return
 		}
 		tk := strings.Split(subj, tsep)
@@ -3737,7 +3740,7 @@ func (dr *DirAccResolver) Start(s *Server) error {
 		if theJWT, err := dr.DirJWTStore.LoadAcc(tk[accReqAccIndex]); err != nil {
 			s.Errorf("Merging resulted in error: %v", err)
 		} else {
-			s.sendInternalMsgLocked(reply, "", nil, []byte(theJWT))
+			s.sendInternalMsgLocked(reply, _EMPTY_, nil, []byte(theJWT))
 		}
 	}); err != nil {
 		return fmt.Errorf("error setting up lookup request handling: %v", err)
@@ -3745,21 +3748,21 @@ func (dr *DirAccResolver) Start(s *Server) error {
 	// respond to pack requests with one or more pack messages
 	// an empty message signifies the end of the response responder
 	if _, err := s.sysSubscribeQ(accPackReqSubj, "responder", func(_ *subscription, _ *client, _ *Account, _, reply string, theirHash []byte) {
-		if reply == "" {
+		if reply == _EMPTY_ {
 			return
 		}
 		ourHash := dr.DirJWTStore.Hash()
 		if bytes.Equal(theirHash, ourHash[:]) {
-			s.sendInternalMsgLocked(reply, "", nil, []byte{})
+			s.sendInternalMsgLocked(reply, _EMPTY_, nil, []byte{})
 			s.Debugf("pack request matches hash %x", ourHash[:])
 		} else if err := dr.DirJWTStore.PackWalk(1, func(partialPackMsg string) {
-			s.sendInternalMsgLocked(reply, "", nil, []byte(partialPackMsg))
+			s.sendInternalMsgLocked(reply, _EMPTY_, nil, []byte(partialPackMsg))
 		}); err != nil {
 			// let them timeout
 			s.Errorf("pack request error: %v", err)
 		} else {
 			s.Debugf("pack request hash %x - finished responding with hash %x", theirHash, ourHash)
-			s.sendInternalMsgLocked(reply, "", nil, []byte{})
+			s.sendInternalMsgLocked(reply, _EMPTY_, nil, []byte{})
 		}
 	}); err != nil {
 		return fmt.Errorf("error setting up pack request handling: %v", err)
@@ -3811,7 +3814,7 @@ func (dr *DirAccResolver) Start(s *Server) error {
 }
 
 func (dr *DirAccResolver) Fetch(name string) (string, error) {
-	if theJWT, err := dr.LoadAcc(name); theJWT != "" {
+	if theJWT, err := dr.LoadAcc(name); theJWT != _EMPTY_ {
 		return theJWT, nil
 	} else {
 		dr.Lock()
@@ -3819,7 +3822,7 @@ func (dr *DirAccResolver) Fetch(name string) (string, error) {
 		to := dr.fetchTimeout
 		dr.Unlock()
 		if srv == nil {
-			return "", err
+			return _EMPTY_, err
 		}
 		return srv.fetch(dr, name, to) // lookup from other server
 	}
@@ -3882,14 +3885,14 @@ type CacheDirAccResolver struct {
 
 func (s *Server) fetch(res AccountResolver, name string, timeout time.Duration) (string, error) {
 	if s == nil {
-		return "", ErrNoAccountResolver
+		return _EMPTY_, ErrNoAccountResolver
 	}
 	respC := make(chan []byte, 1)
 	accountLookupRequest := fmt.Sprintf(accLookupReqSubj, name)
 	s.mu.Lock()
 	if s.sys == nil || s.sys.replies == nil {
 		s.mu.Unlock()
-		return "", fmt.Errorf("eventing shut down")
+		return _EMPTY_, fmt.Errorf("eventing shut down")
 	}
 	replySubj := s.newRespInbox()
 	replies := s.sys.replies
@@ -3966,7 +3969,7 @@ func (dr *CacheDirAccResolver) Start(s *Server) error {
 	for _, reqSub := range []string{accUpdateEventSubjOld, accUpdateEventSubjNew} {
 		// subscribe to account jwt update requests
 		if _, err := s.sysSubscribe(fmt.Sprintf(reqSub, "*"), func(_ *subscription, _ *client, _ *Account, subj, resp string, msg []byte) {
-			pubKey := ""
+			pubKey := _EMPTY_
 			tk := strings.Split(subj, tsep)
 			if len(tk) == accUpdateTokensNew {
 				pubKey = tk[accReqAccIndex]
@@ -4117,13 +4120,13 @@ func (tr *transform) match(subject string) (string, error) {
 	}
 	tts = append(tts, subject[start:])
 	if !isValidLiteralSubject(tts) {
-		return "", ErrBadSubject
+		return _EMPTY_, ErrBadSubject
 	}
 
 	if isSubsetMatch(tts, tr.src) {
 		return tr.transform(tts)
 	}
-	return "", ErrNoTransforms
+	return _EMPTY_, ErrNoTransforms
 }
 
 // Do not need to match, just transform.
