@@ -5766,3 +5766,81 @@ func TestJWTNoSystemAccountButNatsResolver(t *testing.T) {
 		})
 	}
 }
+
+func TestJWTAccountConnzAccessAfterClaimUpdate(t *testing.T) {
+	skp, spub := createKey(t)
+	screds := newUser(t, skp)
+	defer removeFile(t, screds)
+
+	// create two jwt, one with and one without mapping
+	akp, apub := createKey(t)
+	creds := newUser(t, akp)
+	defer removeFile(t, creds)
+	claim := jwt.NewAccountClaims(apub)
+	jwt1 := encodeClaim(t, claim, apub)
+	claim.AddMapping("foo.bar", jwt.WeightedMapping{Subject: "foo.baz"})
+	jwt2 := encodeClaim(t, claim, apub)
+
+	dirSrv := createDir(t, "srv")
+	defer removeDir(t, dirSrv)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: full
+			dir: %s
+		}
+    `, ojwt, spub, dirSrv)))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	type zapi struct {
+		Server *ServerInfo
+		Data   *Connz
+		Error  *ApiError
+	}
+
+	updateJWT := func(jwt string) {
+		sc := natsConnect(t, s.ClientURL(), createUserCreds(t, s, skp))
+		defer sc.Close()
+		resp, err := sc.Request("$SYS.REQ.CLAIMS.UPDATE", []byte(jwt), time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var cz zapi
+		if err := json.Unmarshal(resp.Data, &cz); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if cz.Error != nil {
+			t.Fatalf("Unexpected error: %+v", cz.Error)
+		}
+	}
+
+	updateJWT(jwt1)
+
+	nc := natsConnect(t, s.ClientURL(), createUserCreds(t, s, akp))
+	defer nc.Close()
+
+	doRequest := func() {
+		resp, err := nc.Request("$SYS.REQ.SERVER.PING.CONNZ", nil, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var cz zapi
+		if err := json.Unmarshal(resp.Data, &cz); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if cz.Error != nil {
+			t.Fatalf("Unexpected error: %+v", cz.Error)
+		}
+	}
+
+	doRequest()
+	updateJWT(jwt2)
+	// If we accidentally wipe the system import this will fail with no responders.
+	doRequest()
+}
