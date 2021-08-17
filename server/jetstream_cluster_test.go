@@ -620,10 +620,12 @@ func TestJetStreamClusterConsumerState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error getting consumer info: %v", err)
 	}
-
+	// nil out timestamp for better comparison
+	nci.Delivered.Last, ci.Delivered.Last = nil, nil
 	if nci.Delivered != ci.Delivered {
 		t.Fatalf("Consumer delivered did not match after leader switch, wanted %+v, got %+v", ci.Delivered, nci.Delivered)
 	}
+	nci.AckFloor.Last, ci.AckFloor.Last = nil, nil
 	if nci.AckFloor != ci.AckFloor {
 		t.Fatalf("Consumer ackfloor did not match after leader switch, wanted %+v, got %+v", ci.AckFloor, nci.AckFloor)
 	}
@@ -1048,6 +1050,9 @@ func TestJetStreamClusterStreamPublishWithActiveConsumers(t *testing.T) {
 	ci.Cluster = nil
 	ci2.Cluster = nil
 
+	// nil out timestamp for better comparison
+	ci.Delivered.Last, ci2.Delivered.Last = nil, nil
+	ci.AckFloor.Last, ci2.AckFloor.Last = nil, nil
 	if !reflect.DeepEqual(ci, ci2) {
 		t.Fatalf("Consumer info did not match: %+v vs %+v", ci, ci2)
 	}
@@ -2694,10 +2699,12 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-
+	// nil out timestamp for better comparison
+	nci.Delivered.Last, ci.Delivered.Last = nil, nil
 	if nci.Delivered != ci.Delivered {
 		t.Fatalf("Delivered states do not match %+v vs %+v", nci.Delivered, ci.Delivered)
 	}
+	nci.AckFloor.Last, ci.AckFloor.Last = nil, nil
 	if nci.AckFloor != ci.AckFloor {
 		t.Fatalf("Ack floors did not match %+v vs %+v", nci.AckFloor, ci.AckFloor)
 	}
