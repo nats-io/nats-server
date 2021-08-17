@@ -5772,6 +5772,10 @@ func TestJWTAccountConnzAccessAfterClaimUpdate(t *testing.T) {
 	screds := newUser(t, skp)
 	defer removeFile(t, screds)
 
+	sclaim := jwt.NewAccountClaims(spub)
+	sclaim.AddMapping("foo.bar", jwt.WeightedMapping{Subject: "foo.baz"})
+	sjwt := encodeClaim(t, sclaim, spub)
+
 	// create two jwt, one with and one without mapping
 	akp, apub := createKey(t)
 	creds := newUser(t, akp)
@@ -5805,6 +5809,7 @@ func TestJWTAccountConnzAccessAfterClaimUpdate(t *testing.T) {
 	}
 
 	updateJWT := func(jwt string) {
+		t.Helper()
 		sc := natsConnect(t, s.ClientURL(), createUserCreds(t, s, skp))
 		defer sc.Close()
 		resp, err := sc.Request("$SYS.REQ.CLAIMS.UPDATE", []byte(jwt), time.Second)
@@ -5826,6 +5831,7 @@ func TestJWTAccountConnzAccessAfterClaimUpdate(t *testing.T) {
 	defer nc.Close()
 
 	doRequest := func() {
+		t.Helper()
 		resp, err := nc.Request("$SYS.REQ.SERVER.PING.CONNZ", nil, time.Second)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -5842,5 +5848,9 @@ func TestJWTAccountConnzAccessAfterClaimUpdate(t *testing.T) {
 	doRequest()
 	updateJWT(jwt2)
 	// If we accidentally wipe the system import this will fail with no responders.
+	doRequest()
+	// Now test updating system account.
+	updateJWT(sjwt)
+	// If export was wiped this would fail with timeout.
 	doRequest()
 }
