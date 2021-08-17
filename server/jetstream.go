@@ -183,17 +183,21 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 }
 
 // Function signature to generate a key encryption key.
-type keyGen func(context []byte) []byte
+type keyGen func(context []byte) ([]byte, error)
 
 // Return a key generation function or nil if encryption not enabled.
 // keyGen defined in filestore.go - keyGen func(iv, context []byte) []byte
 func (s *Server) jsKeyGen(info string) keyGen {
 	if ek := s.getOpts().JetStreamKey; ek != _EMPTY_ {
-		return func(context []byte) []byte {
+		return func(context []byte) ([]byte, error) {
 			h := hmac.New(sha256.New, []byte(ek))
-			h.Write([]byte(info))
-			h.Write(context)
-			return h.Sum(nil)
+			if _, err := h.Write([]byte(info)); err != nil {
+				return nil, err
+			}
+			if _, err := h.Write(context); err != nil {
+				return nil, err
+			}
+			return h.Sum(nil), nil
 		}
 	}
 	return nil
@@ -208,7 +212,11 @@ func (s *Server) decryptMeta(ekey, buf []byte, acc, context string) ([]byte, err
 	if prf == nil {
 		return nil, errNoEncryption
 	}
-	kek, err := chacha20poly1305.NewX(prf([]byte(context)))
+	rb, err := prf([]byte(context))
+	if err != nil {
+		return nil, err
+	}
+	kek, err := chacha20poly1305.NewX(rb)
 	if err != nil {
 		return nil, err
 	}
