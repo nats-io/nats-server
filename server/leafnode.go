@@ -276,7 +276,10 @@ func validateLeafNode(o *Options) error {
 		}
 		for _, r := range o.LeafNode.Remotes {
 			if !nkeys.IsValidPublicAccountKey(r.LocalAccount) {
-				return fmt.Errorf("operator mode requires account nkeys in remotes")
+				return fmt.Errorf(
+					"operator mode requires account nkeys in remotes. " +
+						"Please add an `account` key to each remote in your `leafnodes` section, to assign it to an account. " +
+						"Each account value should be a 56 character public key, starting with the letter 'A'")
 			}
 		}
 		if o.LeafNode.Port != 0 && o.LeafNode.Account != "" && !nkeys.IsValidPublicAccountKey(o.LeafNode.Account) {

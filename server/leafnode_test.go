@@ -2483,7 +2483,9 @@ func TestLeafNodeOperatorBadCfg(t *testing.T) {
 			authorization {
 				account: notankey
 			}`,
-		`operator mode requires account nkeys in remotes`: `remotes: [{url: u}]`,
+		("operator mode requires account nkeys in remotes. " +
+			"Please add an `account` key to each remote in your `leafnodes` section, to assign it to an account. " +
+			"Each account value should be a 56 character public key, starting with the letter 'A'"): `remotes: [{url: u}]`,
 	} {
 		t.Run(errorText, func(t *testing.T) {
 			conf := createConfFile(t, []byte(fmt.Sprintf(`
