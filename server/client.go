@@ -3056,9 +3056,23 @@ func (c *client) deliverMsg(sub *subscription, acc *Account, subject, reply, mh,
 
 	// Check if we are a leafnode and have perms to check.
 	if client.kind == LEAF && client.perms != nil {
-		if !client.pubAllowedFullCheck(string(subject), true, true) {
+		if client.isSpokeLeafNode() {
+			// `client` connection is considered a spoke, that is, it is a
+			// "remote" to the other server. We check if it is allowed to
+			// publish.
+			if !client.pubAllowedFullCheck(string(subject), true, true) {
+				client.mu.Unlock()
+				client.Debugf("Not permitted to publish to %q", subject)
+				return false
+			}
+		} else if !client.canSubscribe(string(subject)) {
+			// `client` connection is considered the hub, that is, it accepted
+			// the connection from the server that created a "remote" connection
+			// to this server. Here, we want to check if the other side can
+			// receive this message, so is it allowed to subscribe to this subject.
+
 			client.mu.Unlock()
-			client.Debugf("Not permitted to publish to %q", subject)
+			client.Debugf("Not permitted to subscribe to %q", subject)
 			return false
 		}
 	}

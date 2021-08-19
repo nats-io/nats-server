@@ -1591,6 +1591,127 @@ func TestLeafNodeMultipleAccounts(t *testing.T) {
 	}
 }
 
+func TestLeafNodeOperatorAndPermissions(t *testing.T) {
+	s, opts, conf := runLeafNodeOperatorServer(t)
+	defer os.Remove(conf)
+	defer s.Shutdown()
+
+	acc, akp := createAccount(t, s)
+	kp, _ := nkeys.CreateUser()
+	pub, _ := kp.PublicKey()
+
+	// Create SRV user, with no limitations
+	srvnuc := jwt.NewUserClaims(pub)
+	srvujwt, err := srvnuc.Encode(akp)
+	if err != nil {
+		t.Fatalf("Error generating user JWT: %v", err)
+	}
+	seed, _ := kp.Seed()
+	srvcreds := genCredsFile(t, srvujwt, seed)
+	defer os.Remove(srvcreds)
+
+	// Create LEAF user, with pub perms on "foo" and sub perms on "bar"
+	leafnuc := jwt.NewUserClaims(pub)
+	leafnuc.Permissions.Pub.Allow.Add("foo")
+	leafnuc.Permissions.Sub.Allow.Add("bar")
+	leafujwt, err := leafnuc.Encode(akp)
+	if err != nil {
+		t.Fatalf("Error generating user JWT: %v", err)
+	}
+	leafcreds := genCredsFile(t, leafujwt, seed)
+	defer os.Remove(leafcreds)
+
+	content := `
+		port: -1
+		leafnodes {
+			remotes = [
+				{
+					url: nats-leaf://127.0.0.1:%d
+					credentials: '%s'
+				}
+			]
+		}
+		`
+	config := fmt.Sprintf(content, opts.LeafNode.Port, leafcreds)
+	lnconf := createConfFile(t, []byte(config))
+	defer os.Remove(lnconf)
+	sl, _ := RunServerWithConfig(lnconf)
+	defer sl.Shutdown()
+
+	checkLeafNodeConnected(t, s)
+
+	// Create connection for SRV
+	srvnc, err := nats.Connect(s.ClientURL(), nats.UserCredentials(srvcreds))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer srvnc.Close()
+
+	// Create on the "s" server with user "SRV" a subscription on "foo"
+	srvsubFoo, err := srvnc.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	srvnc.Flush()
+
+	// Check that interest makes it to "sl" server
+	checkSubInterest(t, sl, "$G", "foo", time.Second)
+
+	// Create connection for LEAF and subscribe on "bar"
+	leafnc, err := nats.Connect(sl.ClientURL(), nats.UserCredentials(leafcreds))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer leafnc.Close()
+
+	leafsub, err := leafnc.SubscribeSync("bar")
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+
+	// Make sure the interest on "bar" from "sl" server makes it to the "s" server.
+	checkSubInterest(t, s, acc.GetName(), "bar", time.Second)
+	// Check for local interest too.
+	checkSubInterest(t, sl, "$G", "bar", time.Second)
+
+	// Now that we know that "s" has received interest on "bar", create
+	// the sub on "bar" locally on "s"
+	srvsub, err := srvnc.SubscribeSync("bar")
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+
+	srvnc.Publish("bar", []byte("hello"))
+
+	if _, err := srvsub.NextMsg(time.Second); err != nil {
+		t.Fatalf("SRV did not get message: %v", err)
+	}
+	if _, err := leafsub.NextMsg(time.Second); err != nil {
+		t.Fatalf("LEAF did not get message: %v", err)
+	}
+
+	// User LEAF user on "sl" server, publishs on "foo"
+	leafnc.Publish("foo", []byte("hello"))
+	// The user SRV on "s" receives it because the LN connection
+	// is allowed to publish on "foo".
+	if _, err := srvsubFoo.NextMsg(time.Second); err != nil {
+		t.Fatalf("SRV did not get message: %v", err)
+	}
+
+	// However, even when using an unrestricted user connects to "sl" and
+	// publishes on "bar", the user SRV on "s" should not receive it because
+	// the LN connection is not allowed to publish (send msg over) on "bar".
+	nc, err := nats.Connect(sl.ClientURL(), nats.UserCredentials(srvcreds))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+	nc.Publish("bar", []byte("should not received"))
+	if _, err := srvsub.NextMsg(250 * time.Millisecond); err == nil {
+		t.Fatal("Should not have received message")
+	}
+}
+
 func TestLeafNodeSignerUser(t *testing.T) {
 	s, opts, conf := runLeafNodeOperatorServer(t)
 	defer removeFile(t, conf)
