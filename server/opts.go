@@ -290,8 +290,9 @@ type Options struct {
 	inCmdLine map[string]bool
 
 	// private fields for operator mode
-	operatorJWT      []string
-	resolverPreloads map[string]string
+	operatorJWT            []string
+	resolverPreloads       map[string]string
+	resolverPinnedAccounts map[string]struct{}
 
 	// private fields, used for testing
 	gatewaysSolicitDelay time.Duration
@@ -1120,8 +1121,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		for key, val := range mp {
 			tk, val = unwrapValue(val, &lt)
 			if jwtstr, ok := val.(string); !ok {
-				err := &configErr{tk, "preload map value should be a string JWT"}
-				*errors = append(*errors, err)
+				*errors = append(*errors, &configErr{tk, "preload map value should be a string JWT"})
 				continue
 			} else {
 				// Make sure this is a valid account JWT, that is a config error.
@@ -1133,6 +1133,33 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 				}
 				o.resolverPreloads[key] = jwtstr
 			}
+		}
+	case "resolver_pinned_accounts":
+		switch v := v.(type) {
+		case string:
+			o.resolverPinnedAccounts = map[string]struct{}{v: {}}
+		case []string:
+			o.resolverPinnedAccounts = make(map[string]struct{})
+			for _, mv := range v {
+				o.resolverPinnedAccounts[mv] = struct{}{}
+			}
+		case []interface{}:
+			o.resolverPinnedAccounts = make(map[string]struct{})
+			for _, mv := range v {
+				tk, mv = unwrapValue(mv, &lt)
+				if key, ok := mv.(string); ok {
+					o.resolverPinnedAccounts[key] = struct{}{}
+				} else {
+					err := &configErr{tk,
+						fmt.Sprintf("error parsing resolver_pinned_accounts: unsupported type in array %T", mv)}
+					*errors = append(*errors, err)
+					continue
+				}
+			}
+		default:
+			err := &configErr{tk, fmt.Sprintf("error parsing resolver_pinned_accounts: unsupported type %T", v)}
+			*errors = append(*errors, err)
+			return
 		}
 	case "no_auth_user":
 		o.NoAuthUser = v.(string)

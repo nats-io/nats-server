@@ -3200,3 +3200,26 @@ func TestQueuePermissions(t *testing.T) {
 
 	}
 }
+
+func TestResolverPinnedAccountsFail(t *testing.T) {
+	cfgFmt := `
+		operator: %s
+		resolver: URL(foo.bar)
+		resolver_pinned_accounts: [%s]
+	`
+	dirSrv := createDir(t, "srv")
+	defer removeDir(t, dirSrv)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(cfgFmt, ojwt, "f")))
+	defer removeFile(t, conf)
+	srv, err := NewServer(LoadConfig(conf))
+	defer srv.Shutdown()
+	require_Error(t, err)
+	require_Contains(t, err.Error(), " is not a valid public account nkey")
+
+	conf = createConfFile(t, []byte(fmt.Sprintf(cfgFmt, ojwt, "1, x")))
+	defer removeFile(t, conf)
+	_, err = ProcessConfigFile(conf)
+	require_Error(t, err)
+	require_Contains(t, "parsing resolver_pinned_accounts: unsupported type")
+}
