@@ -2904,7 +2904,7 @@ func TestNoRaceJetStreamFileStoreCompaction(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	total, used, _ := mset.Store().Utilization()
-	if pu := 100.0 * float32(used) / float32(total); pu < 90.0 {
-		t.Fatalf("Utilization is less than 90%%, got %.2f", pu)
+	if pu := 100.0 * float32(used) / float32(total); pu < 80.0 {
+		t.Fatalf("Utilization is less than 80%%, got %.2f", pu)
 	}
 }

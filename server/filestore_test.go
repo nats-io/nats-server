@@ -1827,6 +1827,18 @@ func TestFileStoreSnapshot(t *testing.T) {
 	snap = snapshot()
 	verifySnapshot(snap)
 
+	// Make sure compaction works with snapshots.
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.Lock()
+		mb.compact()
+		mb.mu.Unlock()
+	}
+	fs.mu.RUnlock()
+
+	snap = snapshot()
+	verifySnapshot(snap)
+
 	// Now check to make sure that we get the correct error when trying to delete or erase
 	// a message when a snapshot is in progress and that closing the reader releases that condition.
 	sr, err := fs.Snapshot(5*time.Second, false, true)

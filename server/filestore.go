@@ -1831,12 +1831,11 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 				mb.dmap = make(map[uint64]struct{})
 			}
 			mb.dmap[seq] = struct{}{}
+			// Check if <50% utilization and minimum size met.
+			if mb.rbytes > compactMinimum && mb.rbytes>>1 > mb.bytes {
+				mb.compact()
+			}
 		}
-	}
-
-	// Check if <50% utilization and minimum size met.
-	if mb.rbytes > compactMinimum && mb.rbytes>>1 > mb.bytes {
-		mb.compact()
 	}
 
 	var qch, fch chan struct{}
