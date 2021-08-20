@@ -75,6 +75,7 @@ type JetStreamManager interface {
 // given the name will be used as the only subject.
 type StreamConfig struct {
 	Name              string          `json:"name"`
+	Description       string          `json:"description,omitempty"`
 	Subjects          []string        `json:"subjects,omitempty"`
 	Retention         RetentionPolicy `json:"retention"`
 	MaxConsumers      int             `json:"max_consumers"`
