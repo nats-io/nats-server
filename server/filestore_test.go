@@ -16,6 +16,8 @@ package server
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -1825,6 +1827,18 @@ func TestFileStoreSnapshot(t *testing.T) {
 	snap = snapshot()
 	verifySnapshot(snap)
 
+	// Make sure compaction works with snapshots.
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.Lock()
+		mb.compact()
+		mb.mu.Unlock()
+	}
+	fs.mu.RUnlock()
+
+	snap = snapshot()
+	verifySnapshot(snap)
+
 	// Now check to make sure that we get the correct error when trying to delete or erase
 	// a message when a snapshot is in progress and that closing the reader releases that condition.
 	sr, err := fs.Snapshot(5*time.Second, false, true)
@@ -3161,4 +3175,140 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 	checkFiltered("orders.*", SimpleState{Msgs: 50, First: 51, Last: 100})
 	checkFiltered("orders.5", SimpleState{Msgs: 5, First: 55, Last: 95})
 	checkBlkState(0)
+}
+
+func TestFileStoreSparseCompaction(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	cfg := StreamConfig{Name: "KV", Subjects: []string{"kv.>"}, Storage: FileStorage}
+	var fs *fileStore
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 1024 * 1024}, cfg)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	msg := bytes.Repeat([]byte("ABC"), 33) // ~100bytes
+	loadMsgs := func(n int) {
+		t.Helper()
+		for i := 1; i <= n; i++ {
+			if _, _, err := fs.StoreMsg(fmt.Sprintf("kv.%d", i%10), nil, msg); err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+		}
+	}
+
+	checkState := func(msgs, first, last uint64) {
+		t.Helper()
+		if fs == nil {
+			t.Fatalf("No fs")
+			return
+		}
+		state := fs.State()
+		if state.Msgs != msgs {
+			t.Fatalf("Expected %d msgs, got %d", msgs, state.Msgs)
+		}
+		if state.FirstSeq != first {
+			t.Fatalf("Expected %d as first, got %d", first, state.FirstSeq)
+		}
+		if state.LastSeq != last {
+			t.Fatalf("Expected %d as last, got %d", last, state.LastSeq)
+		}
+	}
+
+	deleteMsgs := func(seqs ...uint64) {
+		t.Helper()
+		for _, seq := range seqs {
+			removed, err := fs.RemoveMsg(seq)
+			if err != nil || !removed {
+				t.Fatalf("Got an error on remove of %d: %v", seq, err)
+			}
+		}
+	}
+
+	eraseMsgs := func(seqs ...uint64) {
+		t.Helper()
+		for _, seq := range seqs {
+			removed, err := fs.EraseMsg(seq)
+			if err != nil || !removed {
+				t.Fatalf("Got an error on erase of %d: %v", seq, err)
+			}
+		}
+	}
+
+	compact := func() {
+		t.Helper()
+		var ssb, ssa StreamState
+		fs.FastState(&ssb)
+		tb, ub, _ := fs.Utilization()
+
+		fs.mu.RLock()
+		if len(fs.blks) == 0 {
+			t.Fatalf("No blocks?")
+		}
+		mb := fs.blks[0]
+		fs.mu.RUnlock()
+
+		mb.mu.Lock()
+		mb.compact()
+		mb.mu.Unlock()
+		fs.FastState(&ssa)
+		if !reflect.DeepEqual(ssb, ssa) {
+			t.Fatalf("States do not match; %+v vs %+v", ssb, ssa)
+		}
+		ta, ua, _ := fs.Utilization()
+		if ub != ua {
+			t.Fatalf("Expected used to be the same, got %d vs %d", ub, ua)
+		}
+		if ta >= tb {
+			t.Fatalf("Expected total after to be less then before, got %d vs %d", tb, ta)
+		}
+		if ta != ua {
+			t.Fatalf("Expected compact to make total and used same, got %d vs %d", ta, ua)
+		}
+	}
+
+	// Actual testing here.
+	loadMsgs(1000)
+	checkState(1000, 1, 1000)
+
+	// Now delete a few messages.
+	deleteMsgs(1)
+	compact()
+
+	deleteMsgs(1000, 999, 998, 997)
+	compact()
+
+	eraseMsgs(500, 502, 504, 506, 508, 510)
+	compact()
+
+	// Now test encrypted mode.
+	fs.Delete()
+
+	prf := func(context []byte) ([]byte, error) {
+		h := hmac.New(sha256.New, []byte("dlc22"))
+		if _, err := h.Write(context); err != nil {
+			return nil, err
+		}
+		return h.Sum(nil), nil
+	}
+
+	fs, err = newFileStoreWithCreated(FileStoreConfig{StoreDir: storeDir, BlockSize: 1024 * 1024}, cfg, time.Now(), prf)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	loadMsgs(1000)
+	checkState(1000, 1, 1000)
+
+	// Now delete a few messages.
+	deleteMsgs(1)
+	compact()
+
+	deleteMsgs(1000, 999, 998, 997)
+	compact()
+
+	eraseMsgs(500, 502, 504, 506, 508, 510)
+	compact()
 }

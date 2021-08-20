@@ -2855,3 +2855,56 @@ func TestNoRaceJetStreamClusterExtendedStreamPurge(t *testing.T) {
 		})
 	}
 }
+
+func TestNoRaceJetStreamFileStoreCompaction(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:              "KV",
+		Subjects:          []string{"KV.>"},
+		MaxMsgsPerSubject: 1,
+	}
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	toSend := 10_000
+	data := make([]byte, 4*1024)
+	rand.Read(data)
+
+	// First one.
+	js.PublishAsync("KV.FM", data)
+
+	for i := 0; i < toSend; i++ {
+		js.PublishAsync(fmt.Sprintf("KV.%d", i+1), data)
+	}
+	// Do again and overwrite the previous batch.
+	for i := 0; i < toSend; i++ {
+		js.PublishAsync(fmt.Sprintf("KV.%d", i+1), data)
+	}
+
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// Now check by hand the utilization level.
+	mset, err := s.GlobalAccount().lookupStream("KV")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	total, used, _ := mset.Store().Utilization()
+	if pu := 100.0 * float32(used) / float32(total); pu < 80.0 {
+		t.Fatalf("Utilization is less than 80%%, got %.2f", pu)
+	}
+}

@@ -178,6 +178,8 @@ const (
 	purgeDir = "__msgs__"
 	// used to scan blk file names.
 	blkScan = "%d.blk"
+	// used for compacted blocks that are staged.
+	newScan = "%d.new"
 	// used to scan index file names.
 	indexScan = "%d.idx"
 	// used to load per subject meta information.
@@ -216,8 +218,12 @@ const (
 	defaultStreamBlockSize = 16 * 1024 * 1024 // 16MB
 	// Default for workqueue or interest based.
 	defaultOtherBlockSize = 8 * 1024 * 1024 // 8MB
+	// Default for KV based
+	defaultKVBlockSize = 8 * 1024 * 1024 // 8MB
 	// max block size for now.
 	maxBlockSize = defaultStreamBlockSize
+	// Compact minimum threshold.
+	compactMinimum = 2 * 1024 * 1024 // 2MB
 	// FileStoreMinBlkSize is minimum size we will do for a blk size.
 	FileStoreMinBlkSize = 32 * 1000 // 32kib
 	// FileStoreMaxBlkSize is maximum size we will do for a blk size.
@@ -495,7 +501,7 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) (*msgBlock, e
 		ekey, err := ioutil.ReadFile(path.Join(mdir, fmt.Sprintf(keyScan, mb.index)))
 		if err != nil {
 			// We do not seem to have keys even though we should. Could be a plaintext conversion.
-			// Create the keys and we will doubel check below.
+			// Create the keys and we will double check below.
 			if err := fs.genEncryptionKeysForBlock(mb); err != nil {
 				return nil, err
 			}
@@ -635,7 +641,10 @@ func (fs *fileStore) rebuildState(ld *LostStreamData) {
 func (mb *msgBlock) rebuildState() (*LostStreamData, error) {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
+	return mb.rebuildStateLocked()
+}
 
+func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, error) {
 	startLastSeq := mb.last.seq
 
 	// Clear state we need to rebuild.
@@ -791,7 +800,6 @@ func (mb *msgBlock) rebuildState() (*LostStreamData, error) {
 
 			mb.msgs++
 			mb.bytes += uint64(rl)
-			mb.rbytes += uint64(rl)
 
 			// Do per subject info.
 			if mb.fss != nil {
@@ -1812,12 +1820,22 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 			}
 		}
 	} else {
-		// Out of order delete.
-		if mb.dmap == nil {
-			mb.dmap = make(map[uint64]struct{})
+		// Check if we are empty first, as long as not the last message block.
+		if isLast := mb != fs.lmb; isLast && mb.msgs == 0 {
+			fs.removeMsgBlock(mb)
+			firstSeqNeedsUpdate = seq == fs.state.FirstSeq
+		} else {
+			// Out of order delete.
+			shouldWriteIndex = true
+			if mb.dmap == nil {
+				mb.dmap = make(map[uint64]struct{})
+			}
+			mb.dmap[seq] = struct{}{}
+			// Check if <50% utilization and minimum size met.
+			if mb.rbytes > compactMinimum && mb.rbytes>>1 > mb.bytes {
+				mb.compact()
+			}
 		}
-		mb.dmap[seq] = struct{}{}
-		shouldWriteIndex = true
 	}
 
 	var qch, fch chan struct{}
@@ -1868,6 +1886,95 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 	}
 
 	return true, nil
+}
+
+// This will compact and rewrite this block. This should only be called when we know we want to rewrite this block.
+// This should not be called on the lmb since we will prune tail deleted messages which could cause issues with
+// writing new messages. We will silently bail on any issues with the underlying block and let someone else detect.
+// Write lock needs to be held.
+func (mb *msgBlock) compact() {
+	if !mb.cacheAlreadyLoaded() {
+		if err := mb.loadMsgsWithLock(); err != nil {
+			return
+		}
+	}
+
+	buf := mb.cache.buf
+	nbuf := make([]byte, 0, len(buf))
+
+	var le = binary.LittleEndian
+	var firstSet bool
+
+	isDeleted := func(seq uint64) bool {
+		if seq == 0 || seq&ebit != 0 || seq < mb.first.seq {
+			return true
+		}
+		if mb.dmap != nil {
+			if _, ok := mb.dmap[seq]; ok {
+				return true
+			}
+		}
+		return false
+	}
+
+	for index, lbuf := uint32(0), uint32(len(buf)); index < lbuf; {
+		if index+msgHdrSize >= lbuf {
+			return
+		}
+		hdr := buf[index : index+msgHdrSize]
+		rl, slen := le.Uint32(hdr[0:]), le.Uint16(hdr[20:])
+		// Clear any headers bit that could be set.
+		rl &^= hbit
+		dlen := int(rl) - msgHdrSize
+		// Do some quick sanity checks here.
+		if dlen < 0 || int(slen) > dlen || dlen > int(rl) || rl > 32*1024*1024 || index+rl > lbuf {
+			return
+		}
+		// Only need to process non-deleted messages.
+		if seq := le.Uint64(hdr[4:]); !isDeleted(seq) {
+			// Normal message here.
+			nbuf = append(nbuf, buf[index:index+rl]...)
+			if !firstSet {
+				firstSet = true
+				mb.first.seq = seq
+			}
+			mb.last.seq = seq
+		}
+		// Advance to next record.
+		index += rl
+	}
+
+	// Check for encryption.
+	if mb.bek != nil && len(nbuf) > 0 {
+		// Recreate to reset counter.
+		rbek, err := chacha20.NewUnauthenticatedCipher(mb.seed, mb.nonce)
+		if err != nil {
+			return
+		}
+		rbek.XORKeyStream(nbuf, nbuf)
+	}
+
+	// Close FDs first.
+	mb.closeFDsLocked()
+
+	// We will write to a new file and mv/rename it in case of failure.
+	mfn := path.Join(path.Join(mb.fs.fcfg.StoreDir, msgDir), fmt.Sprintf(newScan, mb.index))
+	defer os.Remove(mfn)
+	if err := ioutil.WriteFile(mfn, nbuf, defaultFilePerms); err != nil {
+		return
+	}
+	os.Rename(mfn, mb.mfn)
+
+	// Close cache and open FDs and index file.
+	mb.clearCacheAndOffset()
+	mb.removeIndexFileLocked()
+	mb.deleteDmap()
+	mb.rebuildStateLocked()
+}
+
+// Nil out our dmap.
+func (mb *msgBlock) deleteDmap() {
+	mb.dmap = nil
 }
 
 // Grab info from a slot.
@@ -3290,6 +3397,18 @@ func (fs *fileStore) State() StreamState {
 	return state
 }
 
+func (fs *fileStore) Utilization() (total, reported uint64, err error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	for _, mb := range fs.blks {
+		mb.mu.RLock()
+		reported += mb.bytes
+		total += mb.rbytes
+		mb.mu.RUnlock()
+	}
+	return total, reported, nil
+}
+
 const emptyRecordLen = 22 + 8
 
 func fileStoreMsgSize(subj string, hdr, msg []byte) uint64 {
@@ -3880,6 +3999,10 @@ func (fs *fileStore) numMsgBlocks() int {
 func (mb *msgBlock) removeIndexFile() {
 	mb.mu.RLock()
 	defer mb.mu.RUnlock()
+	mb.removeIndexFileLocked()
+}
+
+func (mb *msgBlock) removeIndexFileLocked() {
 	if mb.ifd != nil {
 		mb.ifd.Close()
 		mb.ifd = nil
