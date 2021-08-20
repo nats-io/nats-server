@@ -571,6 +571,9 @@ func (mset *stream) autoTuneFileStorageBlockSize(fsCfg *FileStoreConfig) {
 	} else if mset.cfg.MaxMsgs > 0 {
 		// Determine max message size to estimate.
 		totalEstSize = mset.maxMsgSize() * uint64(mset.cfg.MaxMsgs)
+	} else if mset.cfg.MaxMsgsPer > 0 {
+		fsCfg.BlockSize = uint64(defaultKVBlockSize)
+		return
 	} else {
 		// If nothing set will let underlying filestore determine blkSize.
 		return
@@ -3279,6 +3282,12 @@ func (mset *stream) stateWithDetail(details bool) StreamState {
 		state.Deleted = nil
 	}
 	return state
+}
+
+func (mset *stream) Store() StreamStore {
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+	return mset.store
 }
 
 // Determines if the new proposed partition is unique amongst all consumers.

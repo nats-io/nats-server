@@ -758,6 +758,12 @@ func (ms *memStore) State() StreamState {
 	return state
 }
 
+func (ms *memStore) Utilization() (total, reported uint64, err error) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	return ms.state.Bytes, ms.state.Bytes, nil
+}
+
 func memStoreMsgSize(subj string, hdr, msg []byte) uint64 {
 	return uint64(len(subj) + len(hdr) + len(msg) + 16) // 8*2 for seq + age
 }
