@@ -1955,6 +1955,9 @@ func (mb *msgBlock) compact() {
 		rbek.XORKeyStream(nbuf, nbuf)
 	}
 
+	// Close FDs first.
+	mb.closeFDsLocked()
+
 	// We will write to a new file and mv/rename it in case of failure.
 	mfn := path.Join(path.Join(mb.fs.fcfg.StoreDir, msgDir), fmt.Sprintf(newScan, mb.index))
 	defer os.Remove(mfn)
@@ -1965,7 +1968,6 @@ func (mb *msgBlock) compact() {
 
 	// Close cache and open FDs and index file.
 	mb.clearCacheAndOffset()
-	mb.closeFDsLocked()
 	mb.removeIndexFileLocked()
 	mb.deleteDmap()
 	mb.rebuildStateLocked()
