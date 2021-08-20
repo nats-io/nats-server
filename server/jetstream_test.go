@@ -12884,6 +12884,32 @@ func TestJetStreamExpireAllWhileServerDown(t *testing.T) {
 	}
 }
 
+func TestJetStreamLongStreamNamesAndPubAck(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	data := make([]byte, 256)
+	rand.Read(data)
+	stream := base64.StdEncoding.EncodeToString(data)[:256]
+
+	cfg := &nats.StreamConfig{
+		Name:     stream,
+		Subjects: []string{"foo"},
+	}
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	js.Publish("foo", []byte("HELLO"))
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
