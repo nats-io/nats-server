@@ -2594,9 +2594,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	var resp = &JSPubAckResponse{}
 
-	var buf [128]byte
-	copy(buf[0:], mset.pubAck)
-	pubAck := buf[:len(mset.pubAck)]
+	var buf [256]byte
+	pubAck := append(buf[:0], mset.pubAck...)
 
 	// For clustering the lower layers will pass our expected lseq. If it is present check for that here.
 	if lseq > 0 && lseq != (mset.lseq+mset.clfs) {
