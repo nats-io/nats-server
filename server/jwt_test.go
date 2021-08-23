@@ -5748,7 +5748,7 @@ func TestJWTOperatorPinnedAccounts(t *testing.T) {
 		kps[i], pubs[i] = createKey(t)
 		jwts[i] = encodeClaim(t, jwt.NewAccountClaims(pubs[i]), pubs[i])
 	}
-	sysCreds := newUser(t, kps[0])
+	sysCreds := newUser(t, kps[0]) // index 0 is handled as system account
 	defer removeFile(t, sysCreds)
 
 	dirSrv := createDir(t, "srv")
@@ -5780,24 +5780,29 @@ func TestJWTOperatorPinnedAccounts(t *testing.T) {
 			defer nc.Close()
 		}
 	}
+	var pinnedFail uint64
 	connectFail := func(key nkeys.KeyPair) {
 		_, err := nats.Connect(srv.ClientURL(), createUserCreds(t, srv, key))
 		require_Error(t, err)
 		require_Contains(t, err.Error(), "Authorization Violation")
+		v, err := srv.Varz(&VarzOptions{})
+		require_NoError(t, err)
+		require_True(t, pinnedFail+1 == v.PinnedAccountFail)
+		pinnedFail = v.PinnedAccountFail
 	}
 
-	connectPass(kps[0], kps[1], kps[2]) // make sure user from accounts listed work
+	connectPass(kps[0], kps[1], kps[2]) // make sure user from accounts listed and system account (index 0) work
 	connectFail(kps[3])                 // make sure the other user does not work
 	// reload and test again
 	reloadUpdateConfig(t, srv, conf, fmt.Sprintf(cfgFmt, pubs[2], pubs[3]))
-	connectPass(kps[0], kps[2], kps[3]) // make sure user from accounts listed work
+	connectPass(kps[0], kps[2], kps[3]) // make sure user from accounts listed and system account (index 0) work
 	connectFail(kps[1])                 // make sure the other user does not work
 	// completely disable and test again
 	reloadUpdateConfig(t, srv, conf, cfgCommon)
-	connectPass(kps[0], kps[1], kps[2], kps[3]) // make sure every account can connect
+	connectPass(kps[0], kps[1], kps[2], kps[3]) // make sure every account and system account (index 0) can connect
 	// re-enable and test again
 	reloadUpdateConfig(t, srv, conf, fmt.Sprintf(cfgFmt, pubs[2], pubs[3]))
-	connectPass(kps[0], kps[2], kps[3]) // make sure user from accounts listed work
+	connectPass(kps[0], kps[2], kps[3]) // make sure user from accounts listed and system account (index 0) work
 	connectFail(kps[1])                 // make sure the other user does not work
 }
 

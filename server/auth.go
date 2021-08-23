@@ -25,6 +25,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/jwt/v2"
@@ -591,7 +592,8 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 		}
 		if pinnedAcounts != nil {
 			if _, ok := pinnedAcounts[issuer]; !ok {
-				c.Debugf("Account not listed as operator pinned account")
+				c.Debugf("Account %s not listed as operator pinned account", issuer)
+				atomic.AddUint64(&s.pinnedAccFail, 1)
 				return false
 			}
 		}

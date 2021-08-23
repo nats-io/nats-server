@@ -262,6 +262,9 @@ type Server struct {
 	// the server will create a fake user and add it to the list of users.
 	// Keep track of what that user name is for config reload purposes.
 	sysAccOnlyNoAuthUser string
+
+	// How often user logon fails due to the issuer account not being pinned.
+	pinnedAccFail uint64
 }
 
 // For tracking JS nodes.

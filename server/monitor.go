@@ -1119,6 +1119,7 @@ type Varz struct {
 	TrustedOperatorsJwt   []string              `json:"trusted_operators_jwt,omitempty"`
 	TrustedOperatorsClaim []*jwt.OperatorClaims `json:"trusted_operators_claim,omitempty"`
 	SystemAccount         string                `json:"system_account,omitempty"`
+	PinnedAccountFail     uint64                `json:"pinned_account_fails,omitempty"`
 }
 
 // JetStreamVarz contains basic runtime information about jetstream
@@ -1455,6 +1456,7 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 	v.OutMsgs = atomic.LoadInt64(&s.outMsgs)
 	v.OutBytes = atomic.LoadInt64(&s.outBytes)
 	v.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)
+	v.PinnedAccountFail = atomic.LoadUint64(&s.pinnedAccFail)
 
 	// Make sure to reset in case we are re-using.
 	v.Subscriptions = 0
