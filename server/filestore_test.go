@@ -2499,7 +2499,7 @@ func TestFileStoreConsumerDeliveredUpdates(t *testing.T) {
 		if state == nil {
 			t.Fatalf("No state available")
 		}
-		expected := SequencePair{dseq, sseq, nil}
+		expected := SequencePair{dseq, sseq}
 		if state.Delivered != expected {
 			t.Fatalf("Unexpected state, wanted %+v, got %+v", expected, state.Delivered)
 		}
@@ -2560,7 +2560,7 @@ func TestFileStoreConsumerDeliveredAndAckUpdates(t *testing.T) {
 		if state == nil {
 			t.Fatalf("No state available")
 		}
-		expected := SequencePair{dseq, sseq, nil}
+		expected := SequencePair{dseq, sseq}
 		if state.Delivered != expected {
 			t.Fatalf("Unexpected delivered state, wanted %+v, got %+v", expected, state.Delivered)
 		}
@@ -2600,7 +2600,7 @@ func TestFileStoreConsumerDeliveredAndAckUpdates(t *testing.T) {
 		if len(state.Pending) != pending {
 			t.Fatalf("Expected %d pending, got %d pending", pending, len(state.Pending))
 		}
-		eflr := SequencePair{dflr, sflr, nil}
+		eflr := SequencePair{dflr, sflr}
 		if state.AckFloor != eflr {
 			t.Fatalf("Unexpected ack floor state, wanted %+v, got %+v", eflr, state.AckFloor)
 		}

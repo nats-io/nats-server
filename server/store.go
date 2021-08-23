@@ -163,9 +163,8 @@ type ConsumerStore interface {
 
 // SequencePair has both the consumer and the stream sequence. They point to same message.
 type SequencePair struct {
-	Consumer uint64     `json:"consumer_seq"`
-	Stream   uint64     `json:"stream_seq"`
-	Last     *time.Time `json:"last_active,omitempty"`
+	Consumer uint64 `json:"consumer_seq"`
+	Stream   uint64 `json:"stream_seq"`
 }
 
 // ConsumerState represents a stored state for a consumer.
