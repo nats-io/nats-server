@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/server/pse"
 )
@@ -238,6 +240,7 @@ type pubMsg struct {
 	rply string
 	si   *ServerInfo
 	msg  interface{}
+	oct  compressionType
 	last bool
 }
 
@@ -331,15 +334,43 @@ RESET:
 			c.mu.Lock()
 
 			// Prep internal structures needed to send message.
-			c.pa.subject = []byte(pm.sub)
-			c.pa.size = len(b)
-			c.pa.szb = []byte(strconv.FormatInt(int64(len(b)), 10))
-			c.pa.reply = []byte(pm.rply)
+			c.pa.subject, c.pa.reply = []byte(pm.sub), []byte(pm.rply)
+			c.pa.size, c.pa.szb = len(b), []byte(strconv.FormatInt(int64(len(b)), 10))
+			c.pa.hdr, c.pa.hdb = -1, nil
 			trace := c.trace
+
+			// Now check for optional compression.
+			var contentHeader string
+			var bb bytes.Buffer
+
+			if len(b) > 0 {
+				switch pm.oct {
+				case gzipCompression:
+					zw := gzip.NewWriter(&bb)
+					zw.Write(b)
+					zw.Close()
+					b = bb.Bytes()
+					contentHeader = "gzip"
+				case snappyCompression:
+					sw := s2.NewWriter(&bb, s2.WriterSnappyCompat())
+					sw.Write(b)
+					sw.Close()
+					b = bb.Bytes()
+					contentHeader = "snappy"
+				case unsupportedCompression:
+					b = c.setHeader(contentEncodingHeader, "identity", b)
+					contentHeader = "identity"
+				}
+			}
 			c.mu.Unlock()
 
 			// Add in NL
 			b = append(b, _CRLF_...)
+
+			// Check if we should set content-encoding
+			if contentHeader != _EMPTY_ {
+				b = c.setHeader(contentEncodingHeader, contentHeader, b)
+			}
 
 			if trace {
 				c.traceInOp(fmt.Sprintf("PUB %s %s %d", c.pa.subject, c.pa.reply, c.pa.size), nil)
@@ -383,7 +414,7 @@ func (s *Server) sendShutdownEvent() {
 	s.mu.Unlock()
 	// Send to the internal queue and mark as last.
 	si := &ServerInfo{}
-	sendq <- &pubMsg{nil, subj, _EMPTY_, si, si, true}
+	sendq <- &pubMsg{nil, subj, _EMPTY_, si, si, noCompression, true}
 }
 
 // Used to send an internal message to an arbitrary account.
@@ -405,33 +436,46 @@ func (s *Server) sendInternalAccountMsg(a *Account, subject string, msg interfac
 		a.mu.Unlock()
 	}
 
-	sendq <- &pubMsg{c, subject, _EMPTY_, nil, msg, false}
+	sendq <- &pubMsg{c, subject, _EMPTY_, nil, msg, noCompression, false}
 	return nil
 }
 
 // This will queue up a message to be sent.
 // Lock should not be held.
-func (s *Server) sendInternalMsgLocked(sub, rply string, si *ServerInfo, msg interface{}) {
+func (s *Server) sendInternalMsgLocked(subj, rply string, si *ServerInfo, msg interface{}) {
 	s.mu.Lock()
-	s.sendInternalMsg(sub, rply, si, msg)
+	s.sendInternalMsg(subj, rply, si, msg)
 	s.mu.Unlock()
 }
 
 // This will queue up a message to be sent.
 // Assumes lock is held on entry.
-func (s *Server) sendInternalMsg(sub, rply string, si *ServerInfo, msg interface{}) {
+func (s *Server) sendInternalMsg(subj, rply string, si *ServerInfo, msg interface{}) {
 	if s.sys == nil || s.sys.sendq == nil {
 		return
 	}
 	sendq := s.sys.sendq
 	// Don't hold lock while placing on the channel.
 	s.mu.Unlock()
-	sendq <- &pubMsg{nil, sub, rply, si, msg, false}
+	sendq <- &pubMsg{nil, subj, rply, si, msg, noCompression, false}
 	s.mu.Lock()
 }
 
+// Will send an api response.
+func (s *Server) sendInternalResponse(subj string, response *ServerAPIResponse) {
+	s.mu.Lock()
+	if s.sys == nil || s.sys.sendq == nil {
+		s.mu.Unlock()
+		return
+	}
+	sendq := s.sys.sendq
+	// Don't hold lock while placing on the channel.
+	s.mu.Unlock()
+	sendq <- &pubMsg{nil, subj, _EMPTY_, response.Server, response, response.compress, false}
+}
+
 // Used to send internal messages from other system clients to avoid no echo issues.
-func (c *client) sendInternalMsg(sub, rply string, si *ServerInfo, msg interface{}) {
+func (c *client) sendInternalMsg(subj, rply string, si *ServerInfo, msg interface{}) {
 	if c == nil {
 		return
 	}
@@ -447,7 +491,7 @@ func (c *client) sendInternalMsg(sub, rply string, si *ServerInfo, msg interface
 	// Don't hold lock while placing on the channel.
 	s.mu.Unlock()
 
-	sendq <- &pubMsg{c, sub, rply, si, msg, false}
+	sendq <- &pubMsg{c, subj, rply, si, msg, noCompression, false}
 }
 
 // Locked version of checking if events system running. Also checks server.
@@ -1266,6 +1310,35 @@ func (s *Server) filterRequest(fOpts *EventFilterOptions) bool {
 	return false
 }
 
+// Encoding support (compression)
+type compressionType int8
+
+const (
+	noCompression = compressionType(iota)
+	gzipCompression
+	snappyCompression
+	unsupportedCompression
+)
+
+// ServerAPIResponse is the response type for the server API like varz, connz etc.
+type ServerAPIResponse struct {
+	Server *ServerInfo `json:"server"`
+	Data   interface{} `json:"data,omitempty"`
+	Error  *ApiError   `json:"error,omitempty"`
+
+	// Private to indicate compression if any.
+	compress compressionType
+}
+
+// Specialized response types for unmarshalling.
+
+// ServerAPIConnzResponse is the response type connz
+type ServerAPIConnzResponse struct {
+	Server *ServerInfo `json:"server"`
+	Data   *Connz      `json:"data,omitempty"`
+	Error  *ApiError   `json:"error,omitempty"`
+}
+
 // statszReq is a request for us to respond with current statsz.
 func (s *Server) statszReq(sub *subscription, _ *client, _ *Account, subject, reply string, msg []byte) {
 	if !s.EventsEnabled() || reply == _EMPTY_ {
@@ -1274,13 +1347,11 @@ func (s *Server) statszReq(sub *subscription, _ *client, _ *Account, subject, re
 	opts := StatszEventOptions{}
 	if len(msg) != 0 {
 		if err := json.Unmarshal(msg, &opts); err != nil {
-			server := &ServerInfo{}
-			response := map[string]interface{}{"server": server}
-			response["error"] = map[string]interface{}{
-				"code":        http.StatusBadRequest,
-				"description": err.Error(),
+			response := &ServerAPIResponse{
+				Server: &ServerInfo{},
+				Error:  &ApiError{Code: http.StatusBadRequest, Description: err.Error()},
 			}
-			s.sendInternalMsgLocked(reply, _EMPTY_, server, response)
+			s.sendInternalMsgLocked(reply, _EMPTY_, response.Server, response)
 			return
 		} else if ignore := s.filterRequest(&opts.EventFilterOptions); ignore {
 			return
@@ -1293,15 +1364,34 @@ func (s *Server) statszReq(sub *subscription, _ *client, _ *Account, subject, re
 
 var errSkipZreq = errors.New("filtered response")
 
+const (
+	acceptEncodingHeader  = "Accept-Encoding"
+	contentEncodingHeader = "Content-Encoding"
+)
+
+// This is not as formal as it could be. We see if anything has s2 or snappy first, then gzip.
+func getAcceptEncoding(hdr []byte) compressionType {
+	ae := strings.ToLower(string(getHeader(acceptEncodingHeader, hdr)))
+	if ae == _EMPTY_ {
+		return noCompression
+	}
+	if strings.Contains(ae, "snappy") || strings.Contains(ae, "s2") {
+		return snappyCompression
+	}
+	if strings.Contains(ae, "gzip") {
+		return gzipCompression
+	}
+	return unsupportedCompression
+}
+
 func (s *Server) zReq(c *client, reply string, rmsg []byte, fOpts *EventFilterOptions, optz interface{}, respf func() (interface{}, error)) {
 	if !s.EventsEnabled() || reply == _EMPTY_ {
 		return
 	}
-	server := &ServerInfo{}
-	response := map[string]interface{}{"server": server}
+	response := &ServerAPIResponse{Server: &ServerInfo{}}
 	var err error
 	status := 0
-	_, msg := c.msgParts(rmsg)
+	hdr, msg := c.msgParts(rmsg)
 	if len(msg) != 0 {
 		if err = json.Unmarshal(msg, optz); err != nil {
 			status = http.StatusBadRequest // status is only included on error, so record how far execution got
@@ -1310,19 +1400,19 @@ func (s *Server) zReq(c *client, reply string, rmsg []byte, fOpts *EventFilterOp
 		}
 	}
 	if err == nil {
-		response["data"], err = respf()
+		response.Data, err = respf()
 		if errors.Is(err, errSkipZreq) {
 			return
+		} else if err != nil {
+			status = http.StatusInternalServerError
 		}
-		status = http.StatusInternalServerError
 	}
 	if err != nil {
-		response["error"] = map[string]interface{}{
-			"code":        status,
-			"description": err.Error(),
-		}
+		response.Error = &ApiError{Code: status, Description: err.Error()}
+	} else if len(hdr) > 0 {
+		response.compress = getAcceptEncoding(hdr)
 	}
-	s.sendInternalMsgLocked(reply, _EMPTY_, server, response)
+	s.sendInternalResponse(reply, response)
 }
 
 // remoteConnsUpdate gets called when we receive a remote update from another server.
@@ -1472,7 +1562,7 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 		}
 	}
 	for _, sub := range subj {
-		msg := &pubMsg{nil, sub, _EMPTY_, &m.Server, &m, false}
+		msg := &pubMsg{nil, sub, _EMPTY_, &m.Server, &m, noCompression, false}
 		select {
 		case sendQ <- msg:
 		default:

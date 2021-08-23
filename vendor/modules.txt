@@ -1,6 +1,6 @@
 # github.com/golang/protobuf v1.4.2
 ## explicit
-# github.com/klauspost/compress v1.11.12
+# github.com/klauspost/compress v1.13.4
 ## explicit
 github.com/klauspost/compress/s2
 # github.com/minio/highwayhash v1.0.1

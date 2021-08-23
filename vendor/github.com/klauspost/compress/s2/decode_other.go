@@ -7,7 +7,10 @@
 
 package s2
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+)
 
 // decode writes the decoding of src to dst. It assumes that the varint-encoded
 // length of the decompressed bytes has already been read, and that len(dst)
@@ -44,7 +47,7 @@ func s2Decode(dst, src []byte) int {
 				x = uint32(src[s-4]) | uint32(src[s-3])<<8 | uint32(src[s-2])<<16 | uint32(src[s-1])<<24
 			}
 			length = int(x) + 1
-			if length > len(dst)-d || length > len(src)-s {
+			if length > len(dst)-d || length > len(src)-s || (strconv.IntSize == 32 && length <= 0) {
 				return decodeErrCodeCorrupt
 			}
 			if debug {
@@ -158,7 +161,7 @@ func s2Decode(dst, src []byte) int {
 				x = uint32(src[s-4]) | uint32(src[s-3])<<8 | uint32(src[s-2])<<16 | uint32(src[s-1])<<24
 			}
 			length = int(x) + 1
-			if length > len(dst)-d || length > len(src)-s {
+			if length > len(dst)-d || length > len(src)-s || (strconv.IntSize == 32 && length <= 0) {
 				return decodeErrCodeCorrupt
 			}
 			if debug {
