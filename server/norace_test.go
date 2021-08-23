@@ -17,8 +17,12 @@ package server
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"math/rand"
 	"net"
 	"net/url"
@@ -30,6 +34,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
@@ -2680,6 +2685,65 @@ func TestNoRaceAccountConnz(t *testing.T) {
 	doFiltered("two", "id.*", 20)
 	doFiltered("two", "foo.bar.*", 20)
 	doFiltered("two", "foo.>", 20)
+}
+
+func TestNoRaceCompressedConnz(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	doRequest := func(compress string) {
+		t.Helper()
+		m := nats.NewMsg("$SYS.REQ.ACCOUNT.PING.CONNZ")
+		m.Header.Add("Accept-Encoding", compress)
+		resp, err := nc.RequestMsg(m, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		buf := resp.Data
+
+		// Make sure we have an encoding header.
+		ce := resp.Header.Get("Content-Encoding")
+		switch strings.ToLower(ce) {
+		case "gzip":
+			zr, err := gzip.NewReader(bytes.NewReader(buf))
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			defer zr.Close()
+			buf, err = ioutil.ReadAll(zr)
+			if err != nil && err != io.ErrUnexpectedEOF {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+		case "snappy", "s2":
+			sr := s2.NewReader(bytes.NewReader(buf))
+			buf, err = ioutil.ReadAll(sr)
+			if err != nil && err != io.ErrUnexpectedEOF {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+		default:
+			t.Fatalf("Unknown content-encoding of %q", ce)
+		}
+
+		var cz ServerAPIConnzResponse
+		if err := json.Unmarshal(buf, &cz); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if cz.Error != nil {
+			t.Fatalf("Unexpected error: %+v", cz.Error)
+		}
+	}
+
+	doRequest("gzip")
+	doRequest("snappy")
+	doRequest("s2")
 }
 
 func TestNoRaceJetStreamClusterExtendedStreamPurge(t *testing.T) {

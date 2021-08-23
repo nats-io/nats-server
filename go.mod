@@ -4,7 +4,7 @@ go 1.16
 
 require (
 	github.com/golang/protobuf v1.4.2 // indirect
-	github.com/klauspost/compress v1.11.12
+	github.com/klauspost/compress v1.13.4
 	github.com/minio/highwayhash v1.0.1
 	github.com/nats-io/jwt/v2 v2.0.3
 	github.com/nats-io/nats.go v1.11.1-0.20210819195927-9053aa4200f0
