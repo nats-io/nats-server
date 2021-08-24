@@ -12910,6 +12910,67 @@ func TestJetStreamLongStreamNamesAndPubAck(t *testing.T) {
 	js.Publish("foo", []byte("HELLO"))
 }
 
+func TestJetStreamPerSubjectPending(t *testing.T) {
+	for _, st := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+		t.Run(st.String(), func(t *testing.T) {
+
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			config := s.JetStreamConfig()
+			if config != nil {
+				defer removeDir(t, config.StoreDir)
+			}
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:              "KV_X",
+				Subjects:          []string{"$KV.X.>"},
+				MaxMsgsPerSubject: 5,
+				Storage:           st,
+			})
+			if err != nil {
+				t.Fatalf("add stream failed: %s", err)
+			}
+
+			// the message we will care for
+			_, err = js.Publish("$KV.X.x.y.z", []byte("hello world"))
+			if err != nil {
+				t.Fatalf("publish failed: %s", err)
+			}
+
+			// make sure there's some unrelated message after
+			_, err = js.Publish("$KV.X.1", []byte("hello world"))
+			if err != nil {
+				t.Fatalf("publish failed: %s", err)
+			}
+
+			// we expect the wildcard filter subject to match only the one message and so pending will be 0
+			sub, err := js.SubscribeSync("$KV.X.x.>", nats.DeliverLastPerSubject())
+			if err != nil {
+				t.Fatalf("subscribe failed: %s", err)
+			}
+
+			msg, err := sub.NextMsg(time.Second)
+			if err != nil {
+				t.Fatalf("next failed: %s", err)
+			}
+
+			meta, err := msg.Metadata()
+			if err != nil {
+				t.Fatalf("meta failed: %s", err)
+			}
+
+			// with DeliverLastPerSubject set this is never 0, but without setting that its 0 correctly
+			if meta.NumPending != 0 {
+				t.Fatalf("expected numpending 0 got %d", meta.NumPending)
+			}
+		})
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
