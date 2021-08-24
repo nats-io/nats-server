@@ -1457,6 +1457,7 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	accNTag := acc.nameTag
 	// If we are solicited we only send interest for local clients.
 	if c.isSpokeLeafNode() {
+		// TODO need localSubs and upstream subs. (acc.sl.All(&subs) fixes it but is to coarse)
 		acc.sl.localSubs(&subs)
 	} else {
 		acc.sl.All(&subs)

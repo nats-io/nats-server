@@ -1369,6 +1369,7 @@ func matchLiteral(literal, subject string) bool {
 }
 
 func addLocalSub(sub *subscription, subs *[]*subscription) {
+	// TODO: adding sub.client.kind == LEAF fixes issue 2448 as well
 	if sub != nil && sub.client != nil &&
 		(sub.client.kind == CLIENT || sub.client.kind == SYSTEM || sub.client.kind == JETSTREAM || sub.client.kind == ACCOUNT) && sub.im == nil {
 		*subs = append(*subs, sub)
