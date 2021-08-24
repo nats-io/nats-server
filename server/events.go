@@ -1475,11 +1475,15 @@ func (s *Server) registerSystemImports(a *Account) {
 
 	// Add in this to the account in 2 places.
 	// "$SYS.REQ.SERVER.PING.CONNZ" and "$SYS.REQ.ACCOUNT.PING.CONNZ"
-	if err := a.AddServiceImport(sacc, connzSubj, mappedSubj); err != nil {
-		s.Errorf("Error setting up system service imports for account: %v", err)
+	if _, ok := a.imports.services[connzSubj]; !ok {
+		if err := a.AddServiceImport(sacc, connzSubj, mappedSubj); err != nil {
+			s.Errorf("Error setting up system service imports for account: %v", err)
+		}
 	}
-	if err := a.AddServiceImport(sacc, accConnzReqSubj, mappedSubj); err != nil {
-		s.Errorf("Error setting up system service imports for account: %v", err)
+	if _, ok := a.imports.services[accConnzReqSubj]; !ok {
+		if err := a.AddServiceImport(sacc, accConnzReqSubj, mappedSubj); err != nil {
+			s.Errorf("Error setting up system service imports for account: %v", err)
+		}
 	}
 }
 
