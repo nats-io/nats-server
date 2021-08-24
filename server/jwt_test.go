@@ -5742,6 +5742,70 @@ func TestJWTMappings(t *testing.T) {
 	test("foo2", "bar2", true)
 }
 
+func TestJWTOperatorPinnedAccounts(t *testing.T) {
+	kps, pubs, jwts := [4]nkeys.KeyPair{}, [4]string{}, [4]string{}
+	for i := 0; i < 4; i++ {
+		kps[i], pubs[i] = createKey(t)
+		jwts[i] = encodeClaim(t, jwt.NewAccountClaims(pubs[i]), pubs[i])
+	}
+	sysCreds := newUser(t, kps[0]) // index 0 is handled as system account
+	defer removeFile(t, sysCreds)
+
+	dirSrv := createDir(t, "srv")
+	defer removeDir(t, dirSrv)
+
+	cfgCommon := fmt.Sprintf(`
+		listen: -1
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: {
+			%s:%s
+			%s:%s
+			%s:%s
+			%s:%s
+		}`, ojwt, pubs[0], pubs[0], jwts[0], pubs[1], jwts[1], pubs[2], jwts[2], pubs[3], jwts[3])
+	cfgFmt := cfgCommon + `
+		resolver_pinned_accounts: [%s, %s]
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(cfgFmt, pubs[1], pubs[2])))
+	defer removeFile(t, conf)
+	srv, _ := RunServerWithConfig(conf)
+	defer srv.Shutdown()
+
+	connectPass := func(keys ...nkeys.KeyPair) {
+		for _, kp := range keys {
+			nc, err := nats.Connect(srv.ClientURL(), createUserCreds(t, srv, kp))
+			require_NoError(t, err)
+			defer nc.Close()
+		}
+	}
+	var pinnedFail uint64
+	connectFail := func(key nkeys.KeyPair) {
+		_, err := nats.Connect(srv.ClientURL(), createUserCreds(t, srv, key))
+		require_Error(t, err)
+		require_Contains(t, err.Error(), "Authorization Violation")
+		v, err := srv.Varz(&VarzOptions{})
+		require_NoError(t, err)
+		require_True(t, pinnedFail+1 == v.PinnedAccountFail)
+		pinnedFail = v.PinnedAccountFail
+	}
+
+	connectPass(kps[0], kps[1], kps[2]) // make sure user from accounts listed and system account (index 0) work
+	connectFail(kps[3])                 // make sure the other user does not work
+	// reload and test again
+	reloadUpdateConfig(t, srv, conf, fmt.Sprintf(cfgFmt, pubs[2], pubs[3]))
+	connectPass(kps[0], kps[2], kps[3]) // make sure user from accounts listed and system account (index 0) work
+	connectFail(kps[1])                 // make sure the other user does not work
+	// completely disable and test again
+	reloadUpdateConfig(t, srv, conf, cfgCommon)
+	connectPass(kps[0], kps[1], kps[2], kps[3]) // make sure every account and system account (index 0) can connect
+	// re-enable and test again
+	reloadUpdateConfig(t, srv, conf, fmt.Sprintf(cfgFmt, pubs[2], pubs[3]))
+	connectPass(kps[0], kps[2], kps[3]) // make sure user from accounts listed and system account (index 0) work
+	connectFail(kps[1])                 // make sure the other user does not work
+}
+
 func TestJWTNoSystemAccountButNatsResolver(t *testing.T) {
 	dirSrv := createDir(t, "srv")
 	defer removeDir(t, dirSrv)

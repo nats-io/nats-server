@@ -144,6 +144,17 @@ func validateTrustedOperators(o *Options) error {
 			return fmt.Errorf("trusted Keys %q are required to be a valid public operator nkey", key)
 		}
 	}
+	if len(o.resolverPinnedAccounts) > 0 {
+		for key := range o.resolverPinnedAccounts {
+			if !nkeys.IsValidPublicAccountKey(key) {
+				return fmt.Errorf("pinned account key %q is not a valid public account nkey", key)
+			}
+		}
+		// ensure the system account (belonging to the operator can always connect)
+		if o.SystemAccount != _EMPTY_ {
+			o.resolverPinnedAccounts[o.SystemAccount] = struct{}{}
+		}
+	}
 	return nil
 }
 
