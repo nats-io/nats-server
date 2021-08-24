@@ -1610,6 +1610,27 @@ func TestLeafNodeOperatorAndPermissions(t *testing.T) {
 	srvcreds := genCredsFile(t, srvujwt, seed)
 	defer os.Remove(srvcreds)
 
+	// Create connection for SRV
+	srvnc, err := nats.Connect(s.ClientURL(), nats.UserCredentials(srvcreds))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer srvnc.Close()
+
+	// Create on the server "s" a subscription on "*" and on "foo".
+	// We check that the subscription on "*" will be able to receive
+	// messages since LEAF has publish permissions on "foo", so msg
+	// should be received.
+	srvsubStar, err := srvnc.SubscribeSync("*")
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	srvsubFoo, err := srvnc.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	srvnc.Flush()
+
 	// Create LEAF user, with pub perms on "foo" and sub perms on "bar"
 	leafnuc := jwt.NewUserClaims(pub)
 	leafnuc.Permissions.Pub.Allow.Add("foo")
@@ -1640,21 +1661,8 @@ func TestLeafNodeOperatorAndPermissions(t *testing.T) {
 
 	checkLeafNodeConnected(t, s)
 
-	// Create connection for SRV
-	srvnc, err := nats.Connect(s.ClientURL(), nats.UserCredentials(srvcreds))
-	if err != nil {
-		t.Fatalf("Error on connect: %v", err)
-	}
-	defer srvnc.Close()
-
-	// Create on the "s" server with user "SRV" a subscription on "foo"
-	srvsubFoo, err := srvnc.SubscribeSync("foo")
-	if err != nil {
-		t.Fatalf("Error on subscribe: %v", err)
-	}
-	srvnc.Flush()
-
-	// Check that interest makes it to "sl" server
+	// Check that interest makes it to "sl" server.
+	// This helper does not check for wildcard interest...
 	checkSubInterest(t, sl, "$G", "foo", time.Second)
 
 	// Create connection for LEAF and subscribe on "bar"
@@ -1695,6 +1703,10 @@ func TestLeafNodeOperatorAndPermissions(t *testing.T) {
 	// The user SRV on "s" receives it because the LN connection
 	// is allowed to publish on "foo".
 	if _, err := srvsubFoo.NextMsg(time.Second); err != nil {
+		t.Fatalf("SRV did not get message: %v", err)
+	}
+	// The wildcard subscription should get it too.
+	if _, err := srvsubStar.NextMsg(time.Second); err != nil {
 		t.Fatalf("SRV did not get message: %v", err)
 	}
 
