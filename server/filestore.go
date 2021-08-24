@@ -1270,13 +1270,15 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 	for _, mb := range fs.blks {
 		mb.mu.RLock()
 		for subj, ss := range mb.fss {
-			oss := fss[subj]
-			if oss.First == 0 { // New
-				fss[subj] = *ss
-			} else {
-				// Merge here.
-				oss.Last, oss.Msgs = ss.Last, oss.Msgs+ss.Msgs
-				fss[subj] = oss
+			if subject == _EMPTY_ || subject == fwcs || subjectIsSubsetMatch(subj, subject) {
+				oss := fss[subj]
+				if oss.First == 0 { // New
+					fss[subj] = *ss
+				} else {
+					// Merge here.
+					oss.Last, oss.Msgs = ss.Last, oss.Msgs+ss.Msgs
+					fss[subj] = oss
+				}
 			}
 		}
 		mb.mu.RUnlock()

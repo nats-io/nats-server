@@ -328,7 +328,14 @@ func (ms *memStore) SubjectsState(subject string) map[string]SimpleState {
 	fss := make(map[string]SimpleState)
 	for subj, ss := range ms.fss {
 		if subject == _EMPTY_ || subject == fwcs || subjectIsSubsetMatch(subj, subject) {
-			fss[subj] = *ss
+			oss := fss[subj]
+			if oss.First == 0 { // New
+				fss[subj] = *ss
+			} else {
+				// Merge here.
+				oss.Last, oss.Msgs = ss.Last, oss.Msgs+ss.Msgs
+				fss[subj] = oss
+			}
 		}
 	}
 	return fss
