@@ -19,6 +19,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	crand "crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -2970,5 +2971,75 @@ func TestNoRaceJetStreamFileStoreCompaction(t *testing.T) {
 	total, used, _ := mset.Store().Utilization()
 	if pu := 100.0 * float32(used) / float32(total); pu < 80.0 {
 		t.Fatalf("Utilization is less than 80%%, got %.2f", pu)
+	}
+}
+
+func TestNoRaceJetStreamEncryptionEnabled(t *testing.T) {
+	// Disable for now.
+	skip(t)
+
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		jetstream: enabled
+	`))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config == nil {
+		t.Fatalf("Expected config but got none")
+	}
+	defer removeDir(t, config.StoreDir)
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar"},
+	}
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	data := make([]byte, 4*1024) // 4K payload
+	rand.Read(data)
+	toSend := 100_000
+
+	for i := 0; i < toSend; i++ {
+		js.PublishAsync("foo", data)
+		js.PublishAsync("bar", data)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	_, err := js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Restart
+	nc.Close()
+	s.Shutdown()
+
+	ncs := fmt.Sprintf("\nlisten: 127.0.0.1:-1\njetstream: {key: %q, store_dir: %q}\n", "s3cr3t!", config.StoreDir)
+	conf = createConfFile(t, []byte(ncs))
+	defer removeFile(t, conf)
+
+	// Try to drain entropy to see if effects startup time.
+	drain := make([]byte, 128*1024*1024) // Pull 128Mb of crypto rand.
+	crand.Read(drain)
+
+	start := time.Now()
+	s, _ = RunServerWithConfig(conf)
+	defer s.Shutdown()
+	dd := time.Since(start)
+	if dd > 5*time.Second {
+		t.Fatalf("Restart took longer than expected: %v", dd)
 	}
 }
