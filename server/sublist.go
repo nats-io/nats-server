@@ -1370,8 +1370,9 @@ func matchLiteral(literal, subject string) bool {
 
 func addLocalSub(sub *subscription, subs *[]*subscription, includeLeafHubs bool) {
 	if sub != nil && sub.client != nil && sub.im == nil {
-		if sub.client.kind == CLIENT || sub.client.kind == SYSTEM || sub.client.kind == JETSTREAM ||
-			sub.client.kind == ACCOUNT || (includeLeafHubs && sub.client.isHubLeafNode()) {
+		kind := sub.client.kind
+		if kind == CLIENT || kind == SYSTEM || kind == JETSTREAM || kind == ACCOUNT ||
+			(includeLeafHubs && sub.client.isHubLeafNode() /* implied kind==LEAF */) {
 			*subs = append(*subs, sub)
 		}
 	}
