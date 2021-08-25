@@ -1368,51 +1368,54 @@ func matchLiteral(literal, subject string) bool {
 	return li >= ll
 }
 
-func addLocalSub(sub *subscription, subs *[]*subscription) {
-	if sub != nil && sub.client != nil &&
-		(sub.client.kind == CLIENT || sub.client.kind == SYSTEM || sub.client.kind == JETSTREAM || sub.client.kind == ACCOUNT) && sub.im == nil {
-		*subs = append(*subs, sub)
+func addLocalSub(sub *subscription, subs *[]*subscription, includeLeafHubs bool) {
+	if sub != nil && sub.client != nil && sub.im == nil {
+		kind := sub.client.kind
+		if kind == CLIENT || kind == SYSTEM || kind == JETSTREAM || kind == ACCOUNT ||
+			(includeLeafHubs && sub.client.isHubLeafNode() /* implied kind==LEAF */) {
+			*subs = append(*subs, sub)
+		}
 	}
 }
 
-func (s *Sublist) addNodeToSubs(n *node, subs *[]*subscription) {
+func (s *Sublist) addNodeToSubs(n *node, subs *[]*subscription, includeLeafHubs bool) {
 	// Normal subscriptions
 	if n.plist != nil {
 		for _, sub := range n.plist {
-			addLocalSub(sub, subs)
+			addLocalSub(sub, subs, includeLeafHubs)
 		}
 	} else {
 		for _, sub := range n.psubs {
-			addLocalSub(sub, subs)
+			addLocalSub(sub, subs, includeLeafHubs)
 		}
 	}
 	// Queue subscriptions
 	for _, qr := range n.qsubs {
 		for _, sub := range qr {
-			addLocalSub(sub, subs)
+			addLocalSub(sub, subs, includeLeafHubs)
 		}
 	}
 }
 
-func (s *Sublist) collectLocalSubs(l *level, subs *[]*subscription) {
+func (s *Sublist) collectLocalSubs(l *level, subs *[]*subscription, includeLeafHubs bool) {
 	for _, n := range l.nodes {
-		s.addNodeToSubs(n, subs)
-		s.collectLocalSubs(n.next, subs)
+		s.addNodeToSubs(n, subs, includeLeafHubs)
+		s.collectLocalSubs(n.next, subs, includeLeafHubs)
 	}
 	if l.pwc != nil {
-		s.addNodeToSubs(l.pwc, subs)
-		s.collectLocalSubs(l.pwc.next, subs)
+		s.addNodeToSubs(l.pwc, subs, includeLeafHubs)
+		s.collectLocalSubs(l.pwc.next, subs, includeLeafHubs)
 	}
 	if l.fwc != nil {
-		s.addNodeToSubs(l.fwc, subs)
-		s.collectLocalSubs(l.fwc.next, subs)
+		s.addNodeToSubs(l.fwc, subs, includeLeafHubs)
+		s.collectLocalSubs(l.fwc.next, subs, includeLeafHubs)
 	}
 }
 
 // Return all local client subscriptions. Use the supplied slice.
-func (s *Sublist) localSubs(subs *[]*subscription) {
+func (s *Sublist) localSubs(subs *[]*subscription, includeLeafHubs bool) {
 	s.RLock()
-	s.collectLocalSubs(s.root, subs)
+	s.collectLocalSubs(s.root, subs, includeLeafHubs)
 	s.RUnlock()
 }
 

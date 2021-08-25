@@ -3965,3 +3965,75 @@ leafnodes:{
 		test("pubdeny", ncA, ncL, nil, "A", false)
 	})
 }
+
+func TestLeafNodeInterestPropagationDaisychain(t *testing.T) {
+	aTmpl := `
+		port: %d
+		leafnodes {
+			port: %d
+		   }
+		}`
+
+	confA := createConfFile(t, []byte(fmt.Sprintf(aTmpl, -1, -1)))
+	defer removeFile(t, confA)
+	sA, _ := RunServerWithConfig(confA)
+	defer sA.Shutdown()
+
+	aPort := sA.opts.Port
+	aLeafPort := sA.opts.LeafNode.Port
+
+	confB := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		leafnodes {
+			port: -1
+			remotes = [{
+				url:"nats://127.0.0.1:%d"
+			}]
+		}`, aLeafPort)))
+	defer removeFile(t, confB)
+	sB, _ := RunServerWithConfig(confB)
+	defer sB.Shutdown()
+
+	confC := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		leafnodes {
+			port: -1
+			remotes = [{url:"nats://127.0.0.1:%d"}]
+		}`, sB.opts.LeafNode.Port)))
+	defer removeFile(t, confC)
+	sC, _ := RunServerWithConfig(confC)
+	defer sC.Shutdown()
+
+	checkLeafNodeConnectedCount(t, sC, 1)
+	checkLeafNodeConnectedCount(t, sB, 2)
+	checkLeafNodeConnectedCount(t, sA, 1)
+
+	ncC := natsConnect(t, sC.ClientURL())
+	defer ncC.Close()
+	_, err := ncC.SubscribeSync("foo")
+	require_NoError(t, err)
+	require_NoError(t, ncC.Flush())
+
+	checkSubInterest(t, sC, "$G", "foo", time.Second)
+	checkSubInterest(t, sB, "$G", "foo", time.Second)
+	checkSubInterest(t, sA, "$G", "foo", time.Second)
+
+	ncA := natsConnect(t, sA.ClientURL())
+	defer ncA.Close()
+
+	sA.Shutdown()
+	sA.WaitForShutdown()
+
+	confAA := createConfFile(t, []byte(fmt.Sprintf(aTmpl, aPort, aLeafPort)))
+	defer removeFile(t, confAA)
+	sAA, _ := RunServerWithConfig(confAA)
+	defer sAA.Shutdown()
+
+	checkLeafNodeConnectedCount(t, sAA, 1)
+	checkLeafNodeConnectedCount(t, sB, 2)
+	checkLeafNodeConnectedCount(t, sC, 1)
+
+	checkSubInterest(t, sC, "$G", "foo", time.Second)
+	checkSubInterest(t, sB, "$G", "foo", time.Second)
+	checkSubInterest(t, sAA, "$G", "foo", time.Second) // failure issue 2448
+}

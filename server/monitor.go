@@ -941,7 +941,7 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 				return true
 			}
 			slStats.add(acc.sl.Stats())
-			acc.sl.localSubs(&subs)
+			acc.sl.localSubs(&subs, false)
 			return true
 		})
 
