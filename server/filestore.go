@@ -557,8 +557,15 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) (*msgBlock, e
 		if err := ioutil.WriteFile(mb.mfn, buf, defaultFilePerms); err != nil {
 			return nil, err
 		}
-		// Remove the index file here since it will be in plaintext as well so we just rebuild.
-		os.Remove(mb.ifn)
+		if buf, err = ioutil.ReadFile(mb.ifn); err == nil && len(buf) > 0 {
+			if err := checkHeader(buf); err != nil {
+				return nil, err
+			}
+			buf = mb.aek.Seal(buf[:0], mb.nonce, buf, nil)
+			if err := ioutil.WriteFile(mb.ifn, buf, defaultFilePerms); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	// Open up the message file, but we will try to recover from the index file.

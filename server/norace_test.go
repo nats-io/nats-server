@@ -2974,10 +2974,7 @@ func TestNoRaceJetStreamFileStoreCompaction(t *testing.T) {
 	}
 }
 
-func TestNoRaceJetStreamEncryptionEnabled(t *testing.T) {
-	// Disable for now.
-	skip(t)
-
+func TestNoRaceJetStreamEncryptionEnabledOnRestartWithExpire(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		listen: 127.0.0.1:-1
 		jetstream: enabled
@@ -2996,9 +2993,12 @@ func TestNoRaceJetStreamEncryptionEnabled(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
+	toSend := 10_000
+
 	cfg := &nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo", "bar"},
+		MaxMsgs:  int64(toSend),
 	}
 	if _, err := js.AddStream(cfg); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -3006,7 +3006,6 @@ func TestNoRaceJetStreamEncryptionEnabled(t *testing.T) {
 
 	data := make([]byte, 4*1024) // 4K payload
 	rand.Read(data)
-	toSend := 100_000
 
 	for i := 0; i < toSend; i++ {
 		js.PublishAsync("foo", data)
@@ -3032,7 +3031,7 @@ func TestNoRaceJetStreamEncryptionEnabled(t *testing.T) {
 	defer removeFile(t, conf)
 
 	// Try to drain entropy to see if effects startup time.
-	drain := make([]byte, 128*1024*1024) // Pull 128Mb of crypto rand.
+	drain := make([]byte, 32*1024*1024) // Pull 32Mb of crypto rand.
 	crand.Read(drain)
 
 	start := time.Now()
