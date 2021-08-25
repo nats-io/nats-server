@@ -2667,8 +2667,7 @@ func (c *client) canSubscribe(subject string) bool {
 		if allowed && c.mperms == nil && subjectHasWildcard(subject) {
 			// Whip through the deny array and check if this wildcard subject is within scope.
 			for _, sub := range c.darray {
-				tokens := strings.Split(sub, tsep)
-				if isSubsetMatch(tokens, sub) {
+				if subjectIsSubsetMatch(sub, subject) {
 					c.loadMsgDenyFilter()
 					break
 				}
@@ -3056,23 +3055,9 @@ func (c *client) deliverMsg(sub *subscription, acc *Account, subject, reply, mh,
 
 	// Check if we are a leafnode and have perms to check.
 	if client.kind == LEAF && client.perms != nil {
-		if client.isSpokeLeafNode() {
-			// `client` connection is considered a spoke, that is, it is a
-			// "remote" to the other server. We check if it is allowed to
-			// publish.
-			if !client.pubAllowedFullCheck(string(subject), true, true) {
-				client.mu.Unlock()
-				client.Debugf("Not permitted to publish to %q", subject)
-				return false
-			}
-		} else if !client.canSubscribe(string(subject)) {
-			// `client` connection is considered the hub, that is, it accepted
-			// the connection from the server that created a "remote" connection
-			// to this server. Here, we want to check if the other side can
-			// receive this message, so is it allowed to subscribe to this subject.
-
+		if !client.pubAllowedFullCheck(string(subject), true, true) {
 			client.mu.Unlock()
-			client.Debugf("Not permitted to subscribe to %q", subject)
+			client.Debugf("Not permitted to deliver to %q", subject)
 			return false
 		}
 	}
@@ -3394,14 +3379,11 @@ func (c *client) pubAllowedFullCheck(subject string, fullCheck, hasLock bool) bo
 	if ok {
 		return v.(bool)
 	}
-	var allowed bool
+	allowed := true
 	// Cache miss, check allow then deny as needed.
 	if c.perms.pub.allow != nil {
 		r := c.perms.pub.allow.Match(subject)
 		allowed = len(r.psubs) != 0
-	} else {
-		// No entries means all are allowed. Deny will overrule as needed.
-		allowed = true
 	}
 	// If we have a deny list and are currently allowed, check that as well.
 	if allowed && c.perms.pub.deny != nil {

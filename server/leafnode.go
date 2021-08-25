@@ -823,7 +823,6 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 	if remote != nil {
 		// For now, if lookup fails, we will constantly try
 		// to recreate this LN connection.
-
 		remote.Lock()
 		// Users can bind to any local account, if its empty
 		// we will assume the $G account.
@@ -1368,6 +1367,18 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 		c.leaf.remoteCluster = proto.Cluster
 	}
 
+	// When a leaf solicits a connection to a hub, the perms that it will use on the soliciting leafnode's
+	// behalf are correct for them, but inside the hub need to be reversed since data is flowing in the opposite direction.
+	if !c.isSolicitedLeafNode() && c.perms != nil {
+		sp, pp := c.perms.sub, c.perms.pub
+		c.perms.sub, c.perms.pub = pp, sp
+		if c.opts.Import != nil {
+			c.darray = c.opts.Import.Deny
+		} else {
+			c.darray = nil
+		}
+	}
+
 	// Check for JetStream domain
 	jsConfigured := c.acc.jetStreamConfigured()
 	doDomainMappings := opts.JetStreamDomain != _EMPTY_ && c.acc != sysAcc && jsConfigured
@@ -1375,6 +1386,13 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	// If we have JS enabled and the other side does as well we need to add in an import deny clause.
 	if jsConfigured && proto.JetStream {
 		c.mergePubDenyPermissions([]string{jsAllAPI})
+		// We need to send this back to the other side.
+		if c.isHubLeafNode() {
+			if c.opts.Import == nil {
+				c.opts.Import = &SubjectPermission{}
+			}
+			c.opts.Import.Deny = append(c.opts.Import.Deny, jsAllAPI)
+		}
 	}
 
 	// Set the Ping timer
@@ -1455,6 +1473,12 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	acc.mu.Lock()
 	accName := acc.Name
 	accNTag := acc.nameTag
+
+	// To make printing look better when no friendly name present.
+	if accNTag != _EMPTY_ {
+		accNTag = "/" + accNTag
+	}
+
 	// If we are solicited we only send interest for local clients.
 	if c.isSpokeLeafNode() {
 		acc.sl.localSubs(&subs)
@@ -1468,8 +1492,8 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	// Since leaf nodes only send on interest, if the bound
 	// account has import services we need to send those over.
 	for isubj := range acc.imports.services {
-		if !c.canSubscribe(isubj) {
-			c.Debugf("Not permitted to import service %s on behalf of %s/%s", isubj, accName, accNTag)
+		if c.isSpokeLeafNode() && !c.canSubscribe(isubj) {
+			c.Debugf("Not permitted to import service %q on behalf of %s%s", isubj, accName, accNTag)
 			continue
 		}
 		ims = append(ims, isubj)
@@ -1517,8 +1541,9 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	rc := c.leaf.remoteCluster
 	c.leaf.smap = make(map[string]int32)
 	for _, sub := range subs {
-		if !c.canSubscribe(string(sub.subject)) {
-			c.Debugf("Not permitted to subscribe to %s on behalf of %s/%s", string(sub.subject), accName, accNTag)
+		subj := string(sub.subject)
+		if c.isSpokeLeafNode() && !c.canSubscribe(subj) {
+			c.Debugf("Not permitted to subscribe to %q on behalf of %s%s", subj, accName, accNTag)
 			continue
 		}
 		// We ignore ourselves here.
@@ -1724,7 +1749,7 @@ func keyFromSub(sub *subscription) string {
 
 // Lock should be held.
 func (c *client) writeLeafSub(w *bytes.Buffer, key string, n int32) {
-	if key == "" {
+	if key == _EMPTY_ {
 		return
 	}
 	if n > 0 {
@@ -1807,7 +1832,9 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 			checkPerms = false
 		}
 	}
-	if checkPerms && c.isHubLeafNode() && !c.canSubscribe(string(sub.subject)) {
+
+	// If we are a hub check that we can publish to this subject.
+	if checkPerms && c.isHubLeafNode() && !c.pubAllowedFullCheck(string(sub.subject), true, true) {
 		c.mu.Unlock()
 		c.leafSubPermViolation(sub.subject)
 		return nil
@@ -2449,7 +2476,7 @@ func (s *Server) leafNodeResumeConnectProcess(c *client) {
 	c.Debugf("Remote leafnode connect msg sent")
 }
 
-// This is invoked for remote LEAF remote connections after processing the INFO
+// This is invoked for remote LEAF connections after processing the INFO
 // protocol and leafNodeResumeConnectProcess.
 // This will send LS+ the CONNECT protocol and register the leaf node.
 func (s *Server) leafNodeFinishConnectProcess(c *client) {

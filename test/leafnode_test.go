@@ -1337,6 +1337,7 @@ func runLeafNodeOperatorServer(t *testing.T) (*server.Server, *server.Options, s
 	t.Helper()
 	content := `
 	port: -1
+	server_name: OP
 	operator = "./configs/nkeys/op.jwt"
 	resolver = MEMORY
 	listen: "127.0.0.1:-1"
@@ -1644,6 +1645,7 @@ func TestLeafNodeOperatorAndPermissions(t *testing.T) {
 
 	content := `
 		port: -1
+		server_name: LN
 		leafnodes {
 			remotes = [
 				{
