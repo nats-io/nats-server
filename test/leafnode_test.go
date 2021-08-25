@@ -1337,6 +1337,7 @@ func runLeafNodeOperatorServer(t *testing.T) (*server.Server, *server.Options, s
 	t.Helper()
 	content := `
 	port: -1
+	server_name: OP
 	operator = "./configs/nkeys/op.jwt"
 	resolver = MEMORY
 	listen: "127.0.0.1:-1"
@@ -1485,7 +1486,6 @@ func TestLeafNodeUserPermsForConnection(t *testing.T) {
 	defer nc2.Close()
 
 	// Make sure subscriptions properly do or do not make it to the hub.
-	// Note that all hub subscriptions will make it to the leafnode.
 	nc2.SubscribeSync("bar")
 	checkNoSubInterest(t, s, acc.GetName(), "bar", 20*time.Millisecond)
 	// This one should.
@@ -1610,10 +1610,32 @@ func TestLeafNodeOperatorAndPermissions(t *testing.T) {
 	srvcreds := genCredsFile(t, srvujwt, seed)
 	defer os.Remove(srvcreds)
 
+	// Create connection for SRV
+	srvnc, err := nats.Connect(s.ClientURL(), nats.UserCredentials(srvcreds))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer srvnc.Close()
+
+	// Create on the server "s" a subscription on "*" and on "foo".
+	// We check that the subscription on "*" will be able to receive
+	// messages since LEAF has publish permissions on "foo", so msg
+	// should be received.
+	srvsubStar, err := srvnc.SubscribeSync("*")
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	srvsubFoo, err := srvnc.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	srvnc.Flush()
+
 	// Create LEAF user, with pub perms on "foo" and sub perms on "bar"
 	leafnuc := jwt.NewUserClaims(pub)
 	leafnuc.Permissions.Pub.Allow.Add("foo")
 	leafnuc.Permissions.Sub.Allow.Add("bar")
+	leafnuc.Permissions.Sub.Allow.Add("baz")
 	leafujwt, err := leafnuc.Encode(akp)
 	if err != nil {
 		t.Fatalf("Error generating user JWT: %v", err)
@@ -1623,6 +1645,7 @@ func TestLeafNodeOperatorAndPermissions(t *testing.T) {
 
 	content := `
 		port: -1
+		server_name: LN
 		leafnodes {
 			remotes = [
 				{
@@ -1640,21 +1663,8 @@ func TestLeafNodeOperatorAndPermissions(t *testing.T) {
 
 	checkLeafNodeConnected(t, s)
 
-	// Create connection for SRV
-	srvnc, err := nats.Connect(s.ClientURL(), nats.UserCredentials(srvcreds))
-	if err != nil {
-		t.Fatalf("Error on connect: %v", err)
-	}
-	defer srvnc.Close()
-
-	// Create on the "s" server with user "SRV" a subscription on "foo"
-	srvsubFoo, err := srvnc.SubscribeSync("foo")
-	if err != nil {
-		t.Fatalf("Error on subscribe: %v", err)
-	}
-	srvnc.Flush()
-
-	// Check that interest makes it to "sl" server
+	// Check that interest makes it to "sl" server.
+	// This helper does not check for wildcard interest...
 	checkSubInterest(t, sl, "$G", "foo", time.Second)
 
 	// Create connection for LEAF and subscribe on "bar"
@@ -1665,6 +1675,12 @@ func TestLeafNodeOperatorAndPermissions(t *testing.T) {
 	defer leafnc.Close()
 
 	leafsub, err := leafnc.SubscribeSync("bar")
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+
+	// To check that we can pull in 'baz'.
+	leafsubpwc, err := leafnc.SubscribeSync("*")
 	if err != nil {
 		t.Fatalf("Error on subscribe: %v", err)
 	}
@@ -1682,19 +1698,31 @@ func TestLeafNodeOperatorAndPermissions(t *testing.T) {
 	}
 
 	srvnc.Publish("bar", []byte("hello"))
-
 	if _, err := srvsub.NextMsg(time.Second); err != nil {
 		t.Fatalf("SRV did not get message: %v", err)
 	}
 	if _, err := leafsub.NextMsg(time.Second); err != nil {
 		t.Fatalf("LEAF did not get message: %v", err)
 	}
+	if _, err := leafsubpwc.NextMsg(time.Second); err != nil {
+		t.Fatalf("LEAF did not get message: %v", err)
+	}
 
-	// User LEAF user on "sl" server, publishs on "foo"
+	// The leafnode has a sub on '*', that should pull in a publish to 'baz'.
+	srvnc.Publish("baz", []byte("hello"))
+	if _, err := leafsubpwc.NextMsg(time.Second); err != nil {
+		t.Fatalf("LEAF did not get message: %v", err)
+	}
+
+	// User LEAF user on "sl" server, publish on "foo"
 	leafnc.Publish("foo", []byte("hello"))
 	// The user SRV on "s" receives it because the LN connection
 	// is allowed to publish on "foo".
 	if _, err := srvsubFoo.NextMsg(time.Second); err != nil {
+		t.Fatalf("SRV did not get message: %v", err)
+	}
+	// The wildcard subscription should get it too.
+	if _, err := srvsubStar.NextMsg(time.Second); err != nil {
 		t.Fatalf("SRV did not get message: %v", err)
 	}
 

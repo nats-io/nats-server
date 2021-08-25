@@ -1472,8 +1472,8 @@ func TestLeafNodeExportPermissionsNotForSpecialSubs(t *testing.T) {
 	// The deny is totally restrictive, but make sure that we still accept the $LDS, $GR and _GR_ go from LN1.
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
 		// We should have registered the 3 subs from the accepting leafnode.
-		if n := ln2.globalAccount().TotalSubs(); n != 7 {
-			return fmt.Errorf("Expected %d subs, got %v", 7, n)
+		if n := ln2.globalAccount().TotalSubs(); n != 5 {
+			return fmt.Errorf("Expected %d subs, got %v", 5, n)
 		}
 		return nil
 	})
@@ -3930,6 +3930,7 @@ leafnodes:{
 	defer ncL.Close()
 
 	test := func(subject string, cSub, cPub *nats.Conn, remoteServerForSub *Server, accName string, pass bool) {
+		t.Helper()
 		sub, err := cSub.SubscribeSync(subject)
 		require_NoError(t, err)
 		require_NoError(t, cSub.Flush())
@@ -3961,6 +3962,6 @@ leafnodes:{
 		test("pub", ncA, ncL, sL, "A", true)
 	})
 	t.Run("pub-on-ln-fail", func(t *testing.T) {
-		test("pubdeny", ncA, ncL, sL, "A", false)
+		test("pubdeny", ncA, ncL, nil, "A", false)
 	})
 }
