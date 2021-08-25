@@ -1486,7 +1486,6 @@ func TestLeafNodeUserPermsForConnection(t *testing.T) {
 	defer nc2.Close()
 
 	// Make sure subscriptions properly do or do not make it to the hub.
-	// Note that all hub subscriptions will make it to the leafnode.
 	nc2.SubscribeSync("bar")
 	checkNoSubInterest(t, s, acc.GetName(), "bar", 20*time.Millisecond)
 	// This one should.
@@ -1636,6 +1635,7 @@ func TestLeafNodeOperatorAndPermissions(t *testing.T) {
 	leafnuc := jwt.NewUserClaims(pub)
 	leafnuc.Permissions.Pub.Allow.Add("foo")
 	leafnuc.Permissions.Sub.Allow.Add("bar")
+	leafnuc.Permissions.Sub.Allow.Add("baz")
 	leafujwt, err := leafnuc.Encode(akp)
 	if err != nil {
 		t.Fatalf("Error generating user JWT: %v", err)
@@ -1679,6 +1679,12 @@ func TestLeafNodeOperatorAndPermissions(t *testing.T) {
 		t.Fatalf("Error on subscribe: %v", err)
 	}
 
+	// To check that we can pull in 'baz'.
+	leafsubpwc, err := leafnc.SubscribeSync("*")
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+
 	// Make sure the interest on "bar" from "sl" server makes it to the "s" server.
 	checkSubInterest(t, s, acc.GetName(), "bar", time.Second)
 	// Check for local interest too.
@@ -1692,15 +1698,23 @@ func TestLeafNodeOperatorAndPermissions(t *testing.T) {
 	}
 
 	srvnc.Publish("bar", []byte("hello"))
-
 	if _, err := srvsub.NextMsg(time.Second); err != nil {
 		t.Fatalf("SRV did not get message: %v", err)
 	}
 	if _, err := leafsub.NextMsg(time.Second); err != nil {
 		t.Fatalf("LEAF did not get message: %v", err)
 	}
+	if _, err := leafsubpwc.NextMsg(time.Second); err != nil {
+		t.Fatalf("LEAF did not get message: %v", err)
+	}
 
-	// User LEAF user on "sl" server, publishs on "foo"
+	// The leafnode has a sub on '*', that should pull in a publish to 'baz'.
+	srvnc.Publish("baz", []byte("hello"))
+	if _, err := leafsubpwc.NextMsg(time.Second); err != nil {
+		t.Fatalf("LEAF did not get message: %v", err)
+	}
+
+	// User LEAF user on "sl" server, publish on "foo"
 	leafnc.Publish("foo", []byte("hello"))
 	// The user SRV on "s" receives it because the LN connection
 	// is allowed to publish on "foo".

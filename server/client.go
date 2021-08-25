@@ -2654,6 +2654,12 @@ func (c *client) canSubscribe(subject string) bool {
 	if c.perms.sub.allow != nil {
 		r := c.perms.sub.allow.Match(subject)
 		allowed = len(r.psubs) != 0
+		// Leafnodes operate slightly differently in that they allow broader scoped subjects.
+		// They will prune based on publish perms before sending to a leafnode client.
+		if !allowed && c.kind == LEAF && subjectHasWildcard(subject) {
+			r := c.perms.sub.allow.ReverseMatch(subject)
+			allowed = len(r.psubs) != 0
+		}
 	}
 	// If we have a deny list and we think we are allowed, check that as well.
 	if allowed && c.perms.sub.deny != nil {

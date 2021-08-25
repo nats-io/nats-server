@@ -1488,10 +1488,10 @@ func (s *Sublist) ReverseMatch(subject string) *SublistResult {
 }
 
 func reverseMatchLevel(l *level, toks []string, n *node, results *SublistResult) {
+	if l == nil {
+		return
+	}
 	for i, t := range toks {
-		if l == nil {
-			return
-		}
 		if len(t) == 1 {
 			if t[0] == fwc {
 				getAllNodes(l, results)
@@ -1517,6 +1517,12 @@ func reverseMatchLevel(l *level, toks []string, n *node, results *SublistResult)
 func getAllNodes(l *level, results *SublistResult) {
 	if l == nil {
 		return
+	}
+	if l.pwc != nil {
+		addNodeToResults(l.pwc, results)
+	}
+	if l.fwc != nil {
+		addNodeToResults(l.fwc, results)
 	}
 	for _, n := range l.nodes {
 		addNodeToResults(n, results)

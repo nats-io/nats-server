@@ -1633,9 +1633,7 @@ func (s *Server) updateLeafNodes(acc *Account, sub *subscription, delta int32) {
 	for _, ln := range leafs {
 		// Check to make sure this sub does not have an origin cluster than matches the leafnode.
 		ln.mu.Lock()
-		skip := sub.origin != nil && string(sub.origin) == ln.remoteCluster()
-		// do not skip on !ln.canSubscribe(string(sub.subject))
-		// Given allow:foo, > would be rejected. For leaf nodes filtering is done on the (soliciting) end.
+		skip := (sub.origin != nil && string(sub.origin) == ln.remoteCluster()) || !ln.canSubscribe(string(sub.subject))
 		ln.mu.Unlock()
 		if skip {
 			continue
@@ -1834,7 +1832,7 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	}
 
 	// If we are a hub check that we can publish to this subject.
-	if checkPerms && c.isHubLeafNode() && !c.pubAllowedFullCheck(string(sub.subject), true, true) {
+	if checkPerms && subjectIsLiteral(string(sub.subject)) && !c.pubAllowedFullCheck(string(sub.subject), true, true) {
 		c.mu.Unlock()
 		c.leafSubPermViolation(sub.subject)
 		return nil
