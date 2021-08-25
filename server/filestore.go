@@ -35,6 +35,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	mrand "math/rand"
+
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
 	"golang.org/x/crypto/chacha20"
@@ -420,7 +422,7 @@ func (fs *fileStore) genEncryptionKeys(context string) (aek cipher.AEAD, bek *ch
 
 	// Generate our nonce. Use same buffer to hold encrypted seed.
 	nonce := make([]byte, kek.NonceSize(), kek.NonceSize()+len(seed)+kek.Overhead())
-	rand.Read(nonce)
+	mrand.Read(nonce)
 	bek, err = chacha20.NewUnauthenticatedCipher(seed[:], nonce)
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -458,7 +460,7 @@ func (fs *fileStore) writeStreamMeta() error {
 	// Encrypt if needed.
 	if fs.aek != nil {
 		nonce := make([]byte, fs.aek.NonceSize(), fs.aek.NonceSize()+len(b)+fs.aek.Overhead())
-		rand.Read(nonce)
+		mrand.Read(nonce)
 		b = fs.aek.Seal(nonce, nonce, b, nil)
 	}
 
@@ -555,8 +557,15 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) (*msgBlock, e
 		if err := ioutil.WriteFile(mb.mfn, buf, defaultFilePerms); err != nil {
 			return nil, err
 		}
-		// Remove the index file here since it will be in plaintext as well so we just rebuild.
-		os.Remove(mb.ifn)
+		if buf, err = ioutil.ReadFile(mb.ifn); err == nil && len(buf) > 0 {
+			if err := checkHeader(buf); err != nil {
+				return nil, err
+			}
+			buf = mb.aek.Seal(buf[:0], mb.nonce, buf, nil)
+			if err := ioutil.WriteFile(mb.ifn, buf, defaultFilePerms); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	// Open up the message file, but we will try to recover from the index file.
@@ -2131,7 +2140,7 @@ func (mb *msgBlock) eraseMsg(seq uint64, ri, rl int) error {
 
 	// Randomize record
 	data := make([]byte, rl-emptyRecordLen)
-	rand.Read(data)
+	mrand.Read(data)
 
 	// Now write to underlying buffer.
 	var b bytes.Buffer
@@ -5012,7 +5021,7 @@ func (o *consumerFileStore) encryptState(buf []byte) []byte {
 	}
 	// TODO(dlc) - Optimize on space usage a bit?
 	nonce := make([]byte, o.aek.NonceSize(), o.aek.NonceSize()+len(buf)+o.aek.Overhead())
-	rand.Read(nonce)
+	mrand.Read(nonce)
 	return o.aek.Seal(nonce, nonce, buf, nil)
 }
 
@@ -5086,7 +5095,7 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 	// Encrypt if needed.
 	if cfs.aek != nil {
 		nonce := make([]byte, cfs.aek.NonceSize(), cfs.aek.NonceSize()+len(b)+cfs.aek.Overhead())
-		rand.Read(nonce)
+		mrand.Read(nonce)
 		b = cfs.aek.Seal(nonce, nonce, b, nil)
 	}
 
