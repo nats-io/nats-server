@@ -18,6 +18,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"io/ioutil"
 	"math"
 	"math/rand"
@@ -2060,9 +2061,6 @@ func (a *Account) processServiceImportResponse(sub *subscription, c *client, _ *
 // Lock should not be held.
 func (a *Account) createRespWildcard() []byte {
 	a.mu.Lock()
-	if a.prand == nil {
-		a.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
-	}
 	var b = [baseServerLen]byte{'_', 'R', '_', '.'}
 	rn := a.prand.Uint64()
 	for i, l := replyPrefixLen, rn; i < len(b); i++ {
@@ -2095,7 +2093,9 @@ func (a *Account) newServiceReply(tracking bool) []byte {
 	a.mu.Lock()
 	s, replyPre := a.srv, a.siReply
 	if a.prand == nil {
-		a.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
+		var h maphash.Hash
+		h.WriteString(nuid.Next())
+		a.prand = rand.New(rand.NewSource(int64(h.Sum64())))
 	}
 	rn := a.prand.Uint64()
 	a.mu.Unlock()
