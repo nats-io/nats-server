@@ -19,7 +19,6 @@ package server
 import (
 	"os"
 	"syscall"
-	"server/available_storage"	
 )
 
 func diskAvailable(storeDir string) int64 {
