@@ -1647,8 +1647,18 @@ func (s *Server) Start() {
 		}
 	} else {
 		// Check to see if any configured accounts have JetStream enabled.
+		sa, ga := s.SystemAccount(), s.GlobalAccount()
+		var hasSys, hasGlobal bool
+		var total int
+
 		s.accounts.Range(func(k, v interface{}) bool {
+			total++
 			acc := v.(*Account)
+			if acc == sa {
+				hasSys = true
+			} else if acc == ga {
+				hasGlobal = true
+			}
 			acc.mu.RLock()
 			hasJs := acc.jsLimits != nil
 			acc.mu.RUnlock()
@@ -1658,6 +1668,15 @@ func (s *Server) Start() {
 			}
 			return true
 		})
+		// If we only have the system account and the global account and we are not standalone,
+		// go ahead and enable JS on $G in case we are in simple mixed mode setup.
+		if total == 2 && hasSys && hasGlobal && !s.standAloneMode() {
+			ga.mu.Lock()
+			ga.jsLimits = dynamicJSAccountLimits
+			ga.mu.Unlock()
+			s.checkJetStreamExports()
+			ga.enableAllJetStreamServiceImportsAndMappings()
+		}
 	}
 
 	// Start OCSP Stapling monitoring for TLS certificates if enabled.
