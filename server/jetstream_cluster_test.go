@@ -5801,48 +5801,59 @@ func TestJetStreamClusterAckPendingWithMaxRedelivered(t *testing.T) {
 }
 
 func TestJetStreamClusterMixedMode(t *testing.T) {
-	c := createMixedModeCluster(t, jsClusterLimitsTempl, "MM5", _EMPTY_, 3, 2, false)
-	defer c.shutdown()
+	for _, test := range []struct {
+		name string
+		tmpl string
+	}{
+		{"multi-account", jsClusterLimitsTempl},
+		{"global-account", jsMixedModeGlobalAccountTempl},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 
-	// Client based API - Non-JS server.
-	nc, js := jsClientConnect(t, c.serverByName("S-5"))
-	defer nc.Close()
+			c := createMixedModeCluster(t, test.tmpl, "MM5", _EMPTY_, 3, 2, true)
+			defer c.shutdown()
 
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:     "TEST",
-		Subjects: []string{"foo", "bar"},
-		Replicas: 3,
-	})
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
+			// Client based API - Non-JS server.
+			nc, js := jsClientConnect(t, c.serverByName("S-5"))
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo", "bar"},
+				Replicas: 3,
+			})
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+
+			ml := c.leader()
+			if ml == nil {
+				t.Fatalf("No metaleader")
+			}
+
+			// Make sure we are tracking only the JS peers.
+			checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+				peers := ml.JetStreamClusterPeers()
+				if len(peers) == 3 {
+					return nil
+				}
+				return fmt.Errorf("Not correct number of peers, expected %d, got %d", 3, len(peers))
+			})
+
+			// Grab the underlying raft structure and make sure the system adjusts its cluster set size.
+			meta := ml.getJetStream().getMetaGroup().(*raft)
+			checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+				ps := meta.currentPeerState()
+				if len(ps.knownPeers) != 3 {
+					return fmt.Errorf("Expected known peers to be 3, but got %+v", ps.knownPeers)
+				}
+				if ps.clusterSize < 3 {
+					return fmt.Errorf("Expected cluster size to be 3, but got %+v", ps)
+				}
+				return nil
+			})
+		})
 	}
-
-	ml := c.leader()
-	if ml == nil {
-		t.Fatalf("No metaleader")
-	}
-
-	// Make sure we are tracking only the JS peers.
-	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
-		peers := ml.JetStreamClusterPeers()
-		if len(peers) == 3 {
-			return nil
-		}
-		return fmt.Errorf("Not correct number of peers, expected %d, got %d", 3, len(peers))
-	})
-
-	// Grab the underlying raft structure and make sure the system adjusts its cluster set size.
-	meta := ml.getJetStream().getMetaGroup().(*raft)
-	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
-		ps := meta.currentPeerState()
-		if len(ps.knownPeers) != 3 {
-			return fmt.Errorf("Expected known peers to be 3, but got %+v", ps.knownPeers)
-		}
-		if ps.clusterSize < 3 {
-			return fmt.Errorf("Expected cluster size to be 3, but got %+v", ps)
-		}
-		return nil
-	})
 }
 
 func TestJetStreamClusterLeafnodeSpokes(t *testing.T) {
@@ -8088,6 +8099,20 @@ var jsClusterLimitsTempl = `
 		}
 		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
 	}
+`
+
+var jsMixedModeGlobalAccountTempl = `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {max_mem_store: 2MB, max_file_store: 8MB, store_dir: "%s"}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	accounts {$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
 `
 
 var jsGWTempl = `%s{name: %s, urls: [%s]}`

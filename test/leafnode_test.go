@@ -440,7 +440,7 @@ func TestLeafNodeAndRoutes(t *testing.T) {
 	lc := createLeafConn(t, optsA.LeafNode.Host, optsA.LeafNode.Port)
 	defer lc.Close()
 
-	leafSend, leafExpect := setupLeaf(t, lc, 3)
+	leafSend, leafExpect := setupLeaf(t, lc, 4)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -834,7 +834,7 @@ func TestLeafNodeGatewaySendsSystemEvent(t *testing.T) {
 	defer lc.Close()
 
 	// This is for our global responses since we are setting up GWs above.
-	leafSend, leafExpect := setupLeaf(t, lc, 5)
+	leafSend, leafExpect := setupLeaf(t, lc, 6)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -878,14 +878,14 @@ func TestLeafNodeGatewayInterestPropagation(t *testing.T) {
 	buf := leafExpect(infoRe)
 	buf = infoRe.ReplaceAll(buf, []byte(nil))
 	foundFoo := false
-	for count := 0; count != 7; {
+	for count := 0; count != 8; {
 		// skip first time if we still have data (buf from above may already have some left)
 		if count != 0 || len(buf) == 0 {
 			buf = append(buf, leafExpect(anyRe)...)
 		}
 		count += len(lsubRe.FindAllSubmatch(buf, -1))
-		if count > 7 {
-			t.Fatalf("Expected %v matches, got %v (buf=%s)", 7, count, buf)
+		if count > 8 {
+			t.Fatalf("Expected %v matches, got %v (buf=%s)", 8, count, buf)
 		}
 		if strings.Contains(string(buf), "foo") {
 			foundFoo = true
@@ -937,7 +937,7 @@ func TestLeafNodeWithRouteAndGateway(t *testing.T) {
 	defer lc.Close()
 
 	// This is for our global responses since we are setting up GWs above.
-	leafSend, leafExpect := setupLeaf(t, lc, 5)
+	leafSend, leafExpect := setupLeaf(t, lc, 6)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -996,7 +996,7 @@ func TestLeafNodeWithGatewaysAndStaggeredStart(t *testing.T) {
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	leafSend, leafExpect := setupLeaf(t, lc, 5)
+	leafSend, leafExpect := setupLeaf(t, lc, 6)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -1036,7 +1036,7 @@ func TestLeafNodeWithGatewaysServerRestart(t *testing.T) {
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	leafSend, leafExpect := setupLeaf(t, lc, 5)
+	leafSend, leafExpect := setupLeaf(t, lc, 6)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -1070,7 +1070,7 @@ func TestLeafNodeWithGatewaysServerRestart(t *testing.T) {
 	lc = createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	_, leafExpect = setupLeaf(t, lc, 5)
+	_, leafExpect = setupLeaf(t, lc, 6)
 
 	// Now wait on GW solicit to fire
 	time.Sleep(500 * time.Millisecond)
@@ -2659,7 +2659,7 @@ func TestLeafNodeSwitchGatewayToInterestModeOnly(t *testing.T) {
 	defer lc.Close()
 
 	// This is for our global responses since we are setting up GWs above.
-	leafSend, leafExpect := setupLeaf(t, lc, 5)
+	leafSend, leafExpect := setupLeaf(t, lc, 6)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 }

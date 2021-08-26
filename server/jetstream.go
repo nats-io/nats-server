@@ -906,6 +906,10 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		return fmt.Errorf("jetstream account not registered")
 	}
 
+	if s.SystemAccount() == a {
+		return fmt.Errorf("jetstream can not be enabled on the system account")
+	}
+
 	s.mu.Lock()
 	sendq := s.sys.sendq
 	s.mu.Unlock()
@@ -922,13 +926,6 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		return NewJSNotEnabledError()
 	}
 
-	if s.SystemAccount() == a {
-		return fmt.Errorf("jetstream can not be enabled on the system account")
-	}
-
-	if limits == nil {
-		limits = dynamicJSAccountLimits
-	}
 	a.assignJetStreamLimits(limits)
 
 	js.mu.Lock()
