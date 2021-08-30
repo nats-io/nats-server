@@ -51,6 +51,8 @@ func (sq *sendq) internalLoop() {
 	c.registerWithAccount(s.SystemAccount())
 	c.noIcb = true
 
+	tCtx := newTraceCtx("sendq", s)
+
 	defer c.closeConnection(ClientClosed)
 
 	for s.isRunning() {
@@ -74,7 +76,7 @@ func (sq *sendq) internalLoop() {
 					c.pa.hdb = nil
 					msg = append(pm.msg, _CRLF_...)
 				}
-				c.processInboundClientMsg(msg)
+				c.processInboundClientMsg(msg, tCtx)
 				c.pa.szb = nil
 				// Do this here to nil out below vs up in for loop.
 				next := pm.next

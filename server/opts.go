@@ -310,6 +310,9 @@ type Options struct {
 	// JetStream
 	maxMemSet   bool
 	maxStoreSet bool
+
+	// tracing policies
+	MsgTracePolicy map[string]Trace
 }
 
 // WebsocketOpts are options for websocket
@@ -744,6 +747,13 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			*errors = append(*errors, err)
 			return
 		}
+	case "msg_trace":
+		tp, err := parseMsgTracePolicies(tk, errors, warnings, true)
+		if err != nil {
+			*errors = append(*errors, err)
+			return
+		}
+		o.MsgTracePolicy = tp
 	case "authorization":
 		auth, err := parseAuthorization(tk, o, errors, warnings)
 		if err != nil {
@@ -2315,6 +2325,104 @@ func parseAccountMappings(v interface{}, acc *Account, errors *[]error, warnings
 	return nil
 }
 
+func parseMscTracePolicy(v interface{}, tk token, errors *[]error, warnings *[]error, privilegedProbes bool) (*Trace, *configErr) {
+	mv, ok := v.(map[string]interface{})
+	if !ok {
+		err := &configErr{tk, "Expected an entry for the mapping destination"}
+		*errors = append(*errors, err)
+		return nil, err
+	}
+	trc := &Trace{}
+	var lt token
+	for k, v := range mv {
+		tk, dmv := unwrapValue(v, &lt)
+		switch strings.ToLower(k) {
+		case "subject":
+			trc.Subject = dmv.(string)
+		case "notsubject":
+			trc.NotSubject = dmv.(string)
+		case "trace_subject":
+			trc.TrcSubject = dmv.(string)
+			if !IsValidPublishSubject(trc.TrcSubject) {
+				err := &configErr{tk, "trace_subject needs to be a valid subject without wildcards"}
+				*errors = append(*errors, err)
+				return nil, err
+			}
+		case "probes":
+			switch vv := dmv.(type) {
+			case []interface{}, []string, string:
+				if arr, err := parseStringArray("allowed probes", tk, &lt, vv, errors, warnings); err != nil {
+					// error is part of errors array
+					continue
+				} else if err := trc.fillTraceProbes(arr, true, privilegedProbes); err != nil {
+					*errors = append(*errors, &configErr{tk, err.Error()})
+				}
+			default:
+				err := &configErr{tk, fmt.Sprintf("Unknown entry type for level of %+v\n", vv)}
+				*errors = append(*errors, err)
+				return nil, err
+			}
+		case "freq":
+			switch vv := dmv.(type) {
+			case float32:
+				trc.SampleFreq = float64(vv)
+			case float64:
+				trc.SampleFreq = vv
+			default:
+				err := &configErr{tk, fmt.Sprintf("Unknown entry type for weight of %v\n", vv)}
+				*errors = append(*errors, err)
+				return nil, err
+			}
+			if trc.SampleFreq > 100 || trc.SampleFreq < 0 {
+				err := &configErr{tk, fmt.Sprintf("Invalid rate %f for message trace policy", trc.SampleFreq)}
+				*errors = append(*errors, err)
+				return nil, err
+			}
+		default:
+			err := &configErr{tk, fmt.Sprintf("Unknown field %q for mapping destination", k)}
+			*errors = append(*errors, err)
+			return nil, err
+		}
+	}
+	if trc.hasTrigger() {
+		err := &configErr{tk, "Empty Trace not allowed"}
+		*errors = append(*errors, err)
+		return nil, err
+	}
+
+	return trc, nil
+}
+
+func parseMsgTracePolicies(v interface{}, errors *[]error, warnings *[]error, privilegedProbes bool) (map[string]Trace, error) {
+	var lt token
+	defer convertPanicToErrorList(&lt, errors)
+	tk, v := unwrapValue(v, &lt)
+	am, ok := v.(map[string]interface{})
+	if !ok {
+		*errors = append(*errors, &configErr{tk, "Expected a map of policies"})
+		return nil, nil
+	}
+	msgTracePolicy := make(map[string]Trace)
+	for name, mv := range am {
+		if !isValidName(name) {
+			*errors = append(*errors, &configErr{tk, fmt.Sprintf(
+				"Policy name %q must be a valid name for subject construction", name)})
+			continue
+		}
+		tk, amv := unwrapValue(mv, &lt)
+		policy, err := parseMscTracePolicy(amv, tk, errors, warnings, privilegedProbes)
+		if err != nil {
+			continue
+		}
+		if _, ok = msgTracePolicy[name]; ok {
+			*errors = append(*errors, &configErr{tk, fmt.Sprintf("Policy %s already exists", name)})
+			continue
+		}
+		msgTracePolicy[name] = *policy
+	}
+	return msgTracePolicy, nil
+}
+
 // parseAccounts will parse the different accounts syntax.
 func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]error) error {
 	var (
@@ -2435,6 +2543,37 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 						*errors = append(*errors, err)
 						continue
 					}
+				case "msg_trace":
+					tp, err := parseMsgTracePolicies(tk, errors, warnings, false)
+					if err != nil {
+						*errors = append(*errors, err)
+						continue
+					}
+					acc.traces = tp
+				case "ping_probes":
+					switch vv := mv.(type) {
+					case []interface{}, []string:
+					case string:
+						if strings.ToLower(vv) == "disabled" {
+							continue
+						} else if strings.ToLower(vv) == "enabled" {
+							acc.pingProbes = &probes{}
+							continue
+						}
+					default:
+						err := &configErr{tk, fmt.Sprintf("Unknown entry type for ping_probes of %+v\n", vv)}
+						*errors = append(*errors, err)
+						continue
+					}
+					p := probes{}
+					if arr, err := parseStringArray("allowed ping probes", tk, &lt, mv, errors, warnings); err != nil {
+						// error is part of errors array
+						continue
+					} else if err := p.fillTraceProbes(arr, true, false); err != nil {
+						*errors = append(*errors, &configErr{tk, err.Error()})
+						continue
+					}
+					acc.pingProbes = &p
 				default:
 					if !tk.IsUsedVariable() {
 						err := &unknownConfigFieldErr{

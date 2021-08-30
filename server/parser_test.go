@@ -26,49 +26,51 @@ func dummyRouteClient() *client {
 	return &client{srv: New(&defaultServerOptions), kind: ROUTER}
 }
 
+var dummyTCtx = &traceCtx{}
+
 func TestParsePing(t *testing.T) {
 	c := dummyClient()
 	if c.state != OP_START {
 		t.Fatalf("Expected OP_START vs %d\n", c.state)
 	}
 	ping := []byte("PING\r\n")
-	err := c.parse(ping[:1])
+	err := c.parse(ping[:1], dummyTCtx)
 	if err != nil || c.state != OP_P {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
-	err = c.parse(ping[1:2])
+	err = c.parse(ping[1:2], dummyTCtx)
 	if err != nil || c.state != OP_PI {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
-	err = c.parse(ping[2:3])
+	err = c.parse(ping[2:3], dummyTCtx)
 	if err != nil || c.state != OP_PIN {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
-	err = c.parse(ping[3:4])
+	err = c.parse(ping[3:4], dummyTCtx)
 	if err != nil || c.state != OP_PING {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
-	err = c.parse(ping[4:5])
+	err = c.parse(ping[4:5], dummyTCtx)
 	if err != nil || c.state != OP_PING {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
-	err = c.parse(ping[5:6])
+	err = c.parse(ping[5:6], dummyTCtx)
 	if err != nil || c.state != OP_START {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
-	err = c.parse(ping)
+	err = c.parse(ping, dummyTCtx)
 	if err != nil || c.state != OP_START {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
 	// Should tolerate spaces
 	ping = []byte("PING  \r")
-	err = c.parse(ping)
+	err = c.parse(ping, dummyTCtx)
 	if err != nil || c.state != OP_PING {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
 	c.state = OP_START
 	ping = []byte("PING  \r  \n")
-	err = c.parse(ping)
+	err = c.parse(ping, dummyTCtx)
 	if err != nil || c.state != OP_START {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
@@ -80,34 +82,34 @@ func TestParsePong(t *testing.T) {
 		t.Fatalf("Expected OP_START vs %d\n", c.state)
 	}
 	pong := []byte("PONG\r\n")
-	err := c.parse(pong[:1])
+	err := c.parse(pong[:1], dummyTCtx)
 	if err != nil || c.state != OP_P {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
-	err = c.parse(pong[1:2])
+	err = c.parse(pong[1:2], dummyTCtx)
 	if err != nil || c.state != OP_PO {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
-	err = c.parse(pong[2:3])
+	err = c.parse(pong[2:3], dummyTCtx)
 	if err != nil || c.state != OP_PON {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
-	err = c.parse(pong[3:4])
+	err = c.parse(pong[3:4], dummyTCtx)
 	if err != nil || c.state != OP_PONG {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
-	err = c.parse(pong[4:5])
+	err = c.parse(pong[4:5], dummyTCtx)
 	if err != nil || c.state != OP_PONG {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
-	err = c.parse(pong[5:6])
+	err = c.parse(pong[5:6], dummyTCtx)
 	if err != nil || c.state != OP_START {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
 	if c.ping.out != 0 {
 		t.Fatalf("Unexpected ping.out value: %d vs 0\n", c.ping.out)
 	}
-	err = c.parse(pong)
+	err = c.parse(pong, dummyTCtx)
 	if err != nil || c.state != OP_START {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
@@ -116,13 +118,13 @@ func TestParsePong(t *testing.T) {
 	}
 	// Should tolerate spaces
 	pong = []byte("PONG  \r")
-	err = c.parse(pong)
+	err = c.parse(pong, dummyTCtx)
 	if err != nil || c.state != OP_PONG {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
 	c.state = OP_START
 	pong = []byte("PONG  \r  \n")
-	err = c.parse(pong)
+	err = c.parse(pong, dummyTCtx)
 	if err != nil || c.state != OP_START {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
@@ -134,7 +136,7 @@ func TestParsePong(t *testing.T) {
 	c.state = OP_START
 	c.ping.out = 10
 	pong = []byte("PONG\r\n")
-	err = c.parse(pong)
+	err = c.parse(pong, dummyTCtx)
 	if err != nil || c.state != OP_START {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
@@ -146,7 +148,7 @@ func TestParsePong(t *testing.T) {
 func TestParseConnect(t *testing.T) {
 	c := dummyClient()
 	connect := []byte("CONNECT {\"verbose\":false,\"pedantic\":true,\"tls_required\":false}\r\n")
-	err := c.parse(connect)
+	err := c.parse(connect, dummyTCtx)
 	if err != nil || c.state != OP_START {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
@@ -159,7 +161,7 @@ func TestParseConnect(t *testing.T) {
 func TestParseSub(t *testing.T) {
 	c := dummyClient()
 	sub := []byte("SUB foo 1\r")
-	err := c.parse(sub)
+	err := c.parse(sub, dummyTCtx)
 	if err != nil || c.state != SUB_ARG {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
@@ -179,7 +181,7 @@ func TestParsePub(t *testing.T) {
 	c := dummyClient()
 
 	pub := []byte("PUB foo 5\r\nhello\r")
-	err := c.parse(pub)
+	err := c.parse(pub, dummyTCtx)
 	if err != nil || c.state != MSG_END_N {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
@@ -197,7 +199,7 @@ func TestParsePub(t *testing.T) {
 	c.argBuf, c.msgBuf, c.state = nil, nil, OP_START
 
 	pub = []byte("PUB foo.bar INBOX.22 11\r\nhello world\r")
-	err = c.parse(pub)
+	err = c.parse(pub, dummyTCtx)
 	if err != nil || c.state != MSG_END_N {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
@@ -216,7 +218,7 @@ func TestParsePub(t *testing.T) {
 
 	// This is the case when data has more bytes than expected by size.
 	pub = []byte("PUB foo.bar 11\r\nhello world hello world\r")
-	err = c.parse(pub)
+	err = c.parse(pub, dummyTCtx)
 	if err == nil {
 		t.Fatalf("Expected an error parsing longer than expected message body")
 	}
@@ -230,7 +232,7 @@ func TestParsePubSizeOverflow(t *testing.T) {
 	c := dummyClient()
 
 	pub := []byte("PUB foo 3333333333333333333333333333333333333333333333333333333333333333\r\n")
-	if err := c.parse(pub); err == nil {
+	if err := c.parse(pub, dummyTCtx); err == nil {
 		t.Fatalf("Expected an error")
 	}
 }
@@ -312,7 +314,7 @@ func TestParseHeaderPub(t *testing.T) {
 	c.headers = true
 
 	hpub := []byte("HPUB foo 12 17\r\nname:derek\r\nHELLO\r")
-	if err := c.parse(hpub); err != nil || c.state != MSG_END_N {
+	if err := c.parse(hpub, dummyTCtx); err != nil || c.state != MSG_END_N {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
 	if !bytes.Equal(c.pa.subject, []byte("foo")) {
@@ -335,7 +337,7 @@ func TestParseHeaderPub(t *testing.T) {
 	c.argBuf, c.msgBuf, c.state = nil, nil, OP_START
 
 	hpub = []byte("HPUB foo INBOX.22 12 17\r\nname:derek\r\nHELLO\r")
-	if err := c.parse(hpub); err != nil || c.state != MSG_END_N {
+	if err := c.parse(hpub, dummyTCtx); err != nil || c.state != MSG_END_N {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
 	if !bytes.Equal(c.pa.subject, []byte("foo")) {
@@ -358,7 +360,7 @@ func TestParseHeaderPub(t *testing.T) {
 	c.argBuf, c.msgBuf, c.state = nil, nil, OP_START
 
 	hpub = []byte("HPUB foo INBOX.22 0 5\r\nHELLO\r")
-	if err := c.parse(hpub); err != nil || c.state != MSG_END_N {
+	if err := c.parse(hpub, dummyTCtx); err != nil || c.state != MSG_END_N {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
 	if !bytes.Equal(c.pa.subject, []byte("foo")) {
@@ -450,7 +452,7 @@ func TestParseRoutedHeaderMsg(t *testing.T) {
 	c := dummyRouteClient()
 
 	pub := []byte("HMSG $foo foo 10 8\r\nXXXhello\r")
-	if err := c.parse(pub); err == nil {
+	if err := c.parse(pub, dummyTCtx); err == nil {
 		t.Fatalf("Expected an error")
 	}
 
@@ -458,7 +460,7 @@ func TestParseRoutedHeaderMsg(t *testing.T) {
 	c.argBuf, c.msgBuf, c.state = nil, nil, OP_START
 
 	pub = []byte("HMSG $foo foo 3 8\r\nXXXhello\r")
-	err := c.parse(pub)
+	err := c.parse(pub, dummyTCtx)
 	if err != nil || c.state != MSG_END_N {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
@@ -482,7 +484,7 @@ func TestParseRoutedHeaderMsg(t *testing.T) {
 	c.argBuf, c.msgBuf, c.state = nil, nil, OP_START
 
 	pub = []byte("HMSG $G foo.bar INBOX.22 3 14\r\nOK:hello world\r")
-	err = c.parse(pub)
+	err = c.parse(pub, dummyTCtx)
 	if err != nil || c.state != MSG_END_N {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
@@ -506,7 +508,7 @@ func TestParseRoutedHeaderMsg(t *testing.T) {
 	c.argBuf, c.msgBuf, c.state = nil, nil, OP_START
 
 	pub = []byte("HMSG $G foo.bar + reply baz 3 14\r\nOK:hello world\r")
-	err = c.parse(pub)
+	err = c.parse(pub, dummyTCtx)
 	if err != nil || c.state != MSG_END_N {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
@@ -536,7 +538,7 @@ func TestParseRoutedHeaderMsg(t *testing.T) {
 	c.argBuf, c.msgBuf, c.state = nil, nil, OP_START
 
 	pub = []byte("HMSG $G foo.bar | baz 3 14\r\nOK:hello world\r")
-	err = c.parse(pub)
+	err = c.parse(pub, dummyTCtx)
 	if err != nil || c.state != MSG_END_N {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
@@ -567,12 +569,12 @@ func TestParseRouteMsg(t *testing.T) {
 	c := dummyRouteClient()
 
 	pub := []byte("MSG $foo foo 5\r\nhello\r")
-	err := c.parse(pub)
+	err := c.parse(pub, dummyTCtx)
 	if err == nil {
 		t.Fatalf("Expected an error, got none")
 	}
 	pub = []byte("RMSG $foo foo 5\r\nhello\r")
-	err = c.parse(pub)
+	err = c.parse(pub, dummyTCtx)
 	if err != nil || c.state != MSG_END_N {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
@@ -593,7 +595,7 @@ func TestParseRouteMsg(t *testing.T) {
 	c.argBuf, c.msgBuf, c.state = nil, nil, OP_START
 
 	pub = []byte("RMSG $G foo.bar INBOX.22 11\r\nhello world\r")
-	err = c.parse(pub)
+	err = c.parse(pub, dummyTCtx)
 	if err != nil || c.state != MSG_END_N {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
@@ -614,7 +616,7 @@ func TestParseRouteMsg(t *testing.T) {
 	c.argBuf, c.msgBuf, c.state = nil, nil, OP_START
 
 	pub = []byte("RMSG $G foo.bar + reply baz 11\r\nhello world\r")
-	err = c.parse(pub)
+	err = c.parse(pub, dummyTCtx)
 	if err != nil || c.state != MSG_END_N {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
@@ -638,7 +640,7 @@ func TestParseRouteMsg(t *testing.T) {
 	c.argBuf, c.msgBuf, c.state = nil, nil, OP_START
 
 	pub = []byte("RMSG $G foo.bar | baz 11\r\nhello world\r")
-	err = c.parse(pub)
+	err = c.parse(pub, dummyTCtx)
 	if err != nil || c.state != MSG_END_N {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
@@ -663,14 +665,14 @@ func TestParseMsgSpace(t *testing.T) {
 	c := dummyRouteClient()
 
 	// Ivan bug he found
-	if err := c.parse([]byte("MSG \r\n")); err == nil {
+	if err := c.parse([]byte("MSG \r\n"), dummyTCtx); err == nil {
 		t.Fatalf("Expected parse error for MSG <SPC>")
 	}
 
 	c = dummyClient()
 
 	// Anything with an M from a client should parse error
-	if err := c.parse([]byte("M")); err == nil {
+	if err := c.parse([]byte("M"), dummyTCtx); err == nil {
 		t.Fatalf("Expected parse error for M* from a client")
 	}
 }
@@ -694,7 +696,7 @@ func TestShouldFail(t *testing.T) {
 	}
 	for _, proto := range wrongProtos {
 		c := dummyClient()
-		if err := c.parse([]byte(proto)); err == nil {
+		if err := c.parse([]byte(proto), dummyTCtx); err == nil {
 			t.Fatalf("Should have received a parse error for: %v", proto)
 		}
 	}
@@ -704,7 +706,7 @@ func TestShouldFail(t *testing.T) {
 	for _, proto := range wrongProtos {
 		c := dummyClient()
 		c.kind = ROUTER
-		if err := c.parse([]byte(proto)); err == nil {
+		if err := c.parse([]byte(proto), dummyTCtx); err == nil {
 			t.Fatalf("Should have received a parse error for: %v", proto)
 		}
 	}
@@ -788,23 +790,23 @@ func TestParseOK(t *testing.T) {
 		t.Fatalf("Expected OP_START vs %d\n", c.state)
 	}
 	okProto := []byte("+OK\r\n")
-	err := c.parse(okProto[:1])
+	err := c.parse(okProto[:1], dummyTCtx)
 	if err != nil || c.state != OP_PLUS {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
-	err = c.parse(okProto[1:2])
+	err = c.parse(okProto[1:2], dummyTCtx)
 	if err != nil || c.state != OP_PLUS_O {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
-	err = c.parse(okProto[2:3])
+	err = c.parse(okProto[2:3], dummyTCtx)
 	if err != nil || c.state != OP_PLUS_OK {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
-	err = c.parse(okProto[3:4])
+	err = c.parse(okProto[3:4], dummyTCtx)
 	if err != nil || c.state != OP_PLUS_OK {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
-	err = c.parse(okProto[4:5])
+	err = c.parse(okProto[4:5], dummyTCtx)
 	if err != nil || c.state != OP_START {
 		t.Fatalf("Unexpected: %d : %v\n", c.state, err)
 	}
@@ -840,7 +842,7 @@ func TestMaxControlLine(t *testing.T) {
 			// First try with a partial:
 			// PUB foo.bar.baz 2\r\nok\r\n
 			// .............^
-			err := c.parse(pub[:14])
+			err := c.parse(pub[:14], dummyTCtx)
 			switch test.shouldFail {
 			case true:
 				if !ErrorIs(err, ErrMaxControlLine) {
@@ -854,7 +856,7 @@ func TestMaxControlLine(t *testing.T) {
 
 			// Now with full protocol (no split) and we should still enforce.
 			c = setupClient()
-			err = c.parse(pub)
+			err = c.parse(pub, dummyTCtx)
 			switch test.shouldFail {
 			case true:
 				if !ErrorIs(err, ErrMaxControlLine) {

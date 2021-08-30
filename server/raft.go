@@ -1392,7 +1392,7 @@ const (
 
 // Our internal subscribe.
 // Lock should be held.
-func (n *raft) subscribe(subject string, cb msgHandler) (*subscription, error) {
+func (n *raft) subscribe(subject string, cb internalMsgHandler) (*subscription, error) {
 	return n.s.systemSubscribe(subject, _EMPTY_, false, n.c, cb)
 }
 

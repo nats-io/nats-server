@@ -2405,7 +2405,7 @@ var subPool = &sync.Pool{
 // it is known that this gateway has no interest in the account or
 // subject, etc..
 // <Invoked from any client connection's readLoop>
-func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgroups [][]byte) bool {
+func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgroups [][]byte, tCtx *traceCtx) bool {
 	// We had some times when we were sending across a GW with no subject, and the other side would break
 	// due to parser error. These need to be fixed upstream but also double check here.
 	if len(subject) == 0 {
@@ -2540,8 +2540,23 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 			mh = append(mh, ' ')
 		}
 		// Headers
-		hasHeader := c.pa.hdr > 0
 		canReceiveHeader := gwc.headers
+
+		// We reuse the subscription object that we pass to deliverMsg.
+		// So set/reset important fields.
+		sub.nm, sub.max = 0, 0
+		sub.client = gwc
+		sub.subject = subject
+		msgRef, subs := tCtx.traceSub(c, sub, acc, subject, mreply, msg)
+
+		oldPa := c.pa
+		hset := false
+		dmsg := msg
+		if canReceiveHeader {
+			dmsg, hset = c.traceSetHeader(tCtx, dmsg, msgRef, acc, gwc, c.pa.psi, sub.im)
+		}
+
+		hasHeader := c.pa.hdr > 0
 
 		if hasHeader {
 			if canReceiveHeader {
@@ -2560,12 +2575,18 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 
 		mh = append(mh, CR_LF...)
 
-		// We reuse the subscription object that we pass to deliverMsg.
-		// So set/reset important fields.
-		sub.nm, sub.max = 0, 0
-		sub.client = gwc
-		sub.subject = subject
-		didDeliver = c.deliverMsg(sub, acc, subject, mreply, mh, msg, false) || didDeliver
+		dd, err := c.deliverMsg(sub, acc, subject, mreply, mh, dmsg, false, tCtx)
+		didDeliver = dd || didDeliver
+		if err != nil {
+			for _, s := range subs {
+				s.NoSendReason = err.Error()
+				s.Ref = _EMPTY_
+			}
+		}
+
+		if hset {
+			c.pa = oldPa
+		}
 	}
 	// Done with subscription, put back to pool. We don't need
 	// to reset content since we explicitly set when using it.
@@ -2737,7 +2758,7 @@ func getSubjectFromGWRoutedReply(reply []byte, isOldPrefix bool) []byte {
 // If gateway is not enabled on this server or if the subject
 // does not start with _GR_, `false` is returned and caller should
 // process message as usual.
-func (c *client) handleGatewayReply(msg []byte) (processed bool) {
+func (c *client) handleGatewayReply(msg []byte, tCtx *traceCtx) (processed bool) {
 	// Do not handle GW prefixed messages if this server does not have
 	// gateway enabled or if the subject does not start with the previx.
 	if !c.srv.gateway.enabled {
@@ -2821,13 +2842,13 @@ func (c *client) handleGatewayReply(msg []byte) (processed bool) {
 			if c.kind == ROUTER {
 				flags |= pmrAllowSendFromRouteToRoute
 			}
-			_, queues = c.processMsgResults(acc, r, msg, nil, c.pa.subject, c.pa.reply, flags)
+			_, queues = c.processMsgResults(acc, r, msg, nil, c.pa.subject, c.pa.reply, flags, tCtx)
 		}
 		// Since this was a reply that made it to the origin cluster,
 		// we now need to send the message with the real subject to
 		// gateways in case they have interest on that reply subject.
 		if !isServiceReply {
-			c.sendMsgToGateways(acc, msg, c.pa.subject, c.pa.reply, queues)
+			c.sendMsgToGateways(acc, msg, c.pa.subject, c.pa.reply, queues, tCtx)
 		}
 	} else if c.kind == GATEWAY {
 		// Only if we are a gateway connection should we try to route
@@ -2874,7 +2895,7 @@ func (c *client) handleGatewayReply(msg []byte) (processed bool) {
 // account or subject for which there is no interest in this cluster
 // an A-/RS- protocol may be send back.
 // <Invoked from inbound connection's readLoop>
-func (c *client) processInboundGatewayMsg(msg []byte) {
+func (c *client) processInboundGatewayMsg(msg []byte, tCtx *traceCtx) {
 	// Update statistics
 	c.in.msgs++
 	// The msg includes the CR_LF, so pull back out for accounting.
@@ -2891,7 +2912,7 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 
 	// If the subject (c.pa.subject) has the gateway prefix, this function will
 	// handle it.
-	if c.handleGatewayReply(msg) {
+	if c.handleGatewayReply(msg, tCtx) {
 		// We are done here.
 		return
 	}
@@ -2902,6 +2923,8 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 		c.srv.gatewayHandleAccountNoInterest(c, c.pa.account)
 		return
 	}
+
+	msg = tCtx.traceMsg(msg, string(c.pa.subject), string(c.pa.reply), c, acc)
 
 	// Check if this is a service reply subject (_R_)
 	noInterest := len(r.psubs) == 0
@@ -2935,7 +2958,9 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 			return
 		}
 	}
-	c.processMsgResults(acc, r, msg, nil, c.pa.subject, c.pa.reply, pmrNoFlag)
+	c.processMsgResults(acc, r, msg, nil, c.pa.subject, c.pa.reply, pmrNoFlag, tCtx)
+
+	tCtx.traceMsgCompletion(true)
 }
 
 // Indicates that the remote which we are sending messages to

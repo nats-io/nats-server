@@ -617,7 +617,7 @@ const defaultMaxJSApiOut = int64(4096)
 // Max API calls outstanding.
 var maxJSApiOut = defaultMaxJSApiOut
 
-func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, subject, reply string, rmsg []byte) {
+func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, subject, reply string, rmsg []byte, tCtx *traceCtx) {
 	js.mu.RLock()
 	s, rr := js.srv, js.apiSubs.Match(subject)
 	js.mu.RUnlock()
@@ -645,7 +645,7 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 
 	// If this is directly from a client connection ok to do in place.
 	if c.kind != ROUTER && c.kind != GATEWAY {
-		jsub.icb(sub, c, acc, subject, reply, rmsg)
+		jsub.icb(sub, c, acc, subject, reply, rmsg, tCtx)
 		return
 	}
 
@@ -677,7 +677,8 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 
 	// Dispatch the API call to its own Go routine.
 	go func() {
-		jsub.icb(sub, client, acc, subject, reply, rmsg)
+		// currently, the code inside the callback does not use tracing
+		jsub.icb(sub, client, acc, subject, reply, rmsg, nil)
 		atomic.AddInt64(&js.apiCalls, -1)
 	}()
 }
@@ -689,7 +690,7 @@ func (s *Server) setJetStreamExportSubs() error {
 	}
 
 	// This is the catch all now for all JetStream API calls.
-	if _, err := s.sysSubscribe(jsAllAPI, js.apiDispatch); err != nil {
+	if _, err := s.sysSubscribeEx(jsAllAPI, js.apiDispatch); err != nil {
 		return err
 	}
 
@@ -701,7 +702,7 @@ func (s *Server) setJetStreamExportSubs() error {
 	// API handles themselves.
 	pairs := []struct {
 		subject string
-		handler msgHandler
+		handler internalMsgHandler
 	}{
 		{JSApiAccountInfo, s.jsAccountInfoRequest},
 		{JSApiTemplateCreate, s.jsTemplateCreateRequest},
@@ -733,8 +734,9 @@ func (s *Server) setJetStreamExportSubs() error {
 	js.mu.Lock()
 	defer js.mu.Unlock()
 
-	for _, p := range pairs {
-		sub := &subscription{subject: []byte(p.subject), icb: p.handler}
+	for _, pair := range pairs {
+		p := pair
+		sub := &subscription{subject: []byte(p.subject), icb: wrapIntoMsgHandler(p.handler)}
 		if err := js.apiSubs.Insert(sub); err != nil {
 			return err
 		}

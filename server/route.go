@@ -410,7 +410,7 @@ func (c *client) processRoutedMsgArgs(arg []byte) error {
 }
 
 // processInboundRouteMsg is called to process an inbound msg from a route.
-func (c *client) processInboundRoutedMsg(msg []byte) {
+func (c *client) processInboundRoutedMsg(msg []byte, tCtx *traceCtx) {
 	// Update statistics
 	c.in.msgs++
 	// The msg includes the CR_LF, so pull back out for accounting.
@@ -426,7 +426,7 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 	}
 
 	// If the subject (c.pa.subject) has the gateway prefix, this function will handle it.
-	if c.handleGatewayReply(msg) {
+	if c.handleGatewayReply(msg, tCtx) {
 		// We are done here.
 		return
 	}
@@ -437,11 +437,15 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 		return
 	}
 
+	msg = tCtx.traceMsg(msg, string(c.pa.subject), string(c.pa.reply), c, acc)
+
 	// Check for no interest, short circuit if so.
 	// This is the fanout scale.
 	if len(r.psubs)+len(r.qsubs) > 0 {
-		c.processMsgResults(acc, r, msg, nil, c.pa.subject, c.pa.reply, pmrNoFlag)
+		c.processMsgResults(acc, r, msg, nil, c.pa.subject, c.pa.reply, pmrNoFlag, tCtx)
 	}
+
+	tCtx.traceMsgCompletion(true)
 }
 
 // Lock should be held entering here.

@@ -90,6 +90,10 @@ type Account struct {
 	tags         jwt.TagList
 	nameTag      string
 	lastLimErr   int64
+
+	// tracing policies
+	traces     map[string]Trace
+	pingProbes *probes
 }
 
 // Account based limits.
@@ -279,6 +283,13 @@ func (a *Account) shallowCopy() *Account {
 	// JetStream
 	na.jsLimits = a.jsLimits
 
+	if len(a.traces) > 0 {
+		na.traces = make(map[string]Trace)
+		for k, v := range a.traces {
+			na.traces[k] = v
+		}
+	}
+	na.pingProbes = a.pingProbes
 	return na
 }
 
@@ -1839,7 +1850,7 @@ func (a *Account) internalClient() *client {
 }
 
 // Internal account scoped subscriptions.
-func (a *Account) subscribeInternal(subject string, cb msgHandler) (*subscription, error) {
+func (a *Account) subscribeInternal(subject string, cb internalMsgHandler) (*subscription, error) {
 	a.mu.Lock()
 	c := a.internalClient()
 	a.isid++
@@ -1851,7 +1862,7 @@ func (a *Account) subscribeInternal(subject string, cb msgHandler) (*subscriptio
 		return nil, fmt.Errorf("no internal account client")
 	}
 
-	return c.processSub([]byte(subject), nil, []byte(sid), cb, false)
+	return c.processSub([]byte(subject), nil, []byte(sid), wrapIntoMsgHandler(cb), false)
 }
 
 // This will add an account subscription that matches the "from" from a service import entry.
@@ -1873,8 +1884,8 @@ func (a *Account) addServiceImportSub(si *serviceImport) error {
 	subject := si.from
 	a.mu.Unlock()
 
-	cb := func(sub *subscription, c *client, acc *Account, subject, reply string, msg []byte) {
-		c.processServiceImport(si, acc, msg)
+	cb := func(sub *subscription, c *client, acc *Account, subject, reply string, msg []byte, tCtx *traceCtx) {
+		c.processServiceImport(si, acc, msg, tCtx)
 	}
 	sub, err := c.processSubEx([]byte(subject), nil, []byte(sid), cb, true, true, false)
 	if err != nil {
@@ -2042,7 +2053,7 @@ const (
 )
 
 // This is where all service export responses are handled.
-func (a *Account) processServiceImportResponse(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
+func (a *Account) processServiceImportResponse(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte, tCtx *traceCtx) {
 	a.mu.RLock()
 	if a.expired || len(a.exports.responses) == 0 {
 		a.mu.RUnlock()
@@ -2057,7 +2068,7 @@ func (a *Account) processServiceImportResponse(sub *subscription, c *client, _ *
 	a.mu.RUnlock()
 
 	// Send for normal processing.
-	c.processServiceImport(si, a, msg)
+	c.processServiceImport(si, a, msg, tCtx)
 }
 
 // Will create a wildcard subscription to handle interest graph propagation for all
@@ -3905,7 +3916,7 @@ func (s *Server) fetch(res AccountResolver, name string, timeout time.Duration) 
 	replySubj := s.newRespInbox()
 	replies := s.sys.replies
 	// Store our handler.
-	replies[replySubj] = func(sub *subscription, _ *client, _ *Account, subject, _ string, msg []byte) {
+	replies[replySubj] = func(sub *subscription, _ *client, _ *Account, subject, _ string, msg []byte, _ *traceCtx) {
 		clone := make([]byte, len(msg))
 		copy(clone, msg)
 		s.mu.Lock()

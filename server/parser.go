@@ -131,11 +131,11 @@ const (
 	INFO_ARG
 )
 
-func (c *client) parse(buf []byte) error {
+func (c *client) parse(buf []byte, tCtx *traceCtx) error {
 	// Branch out to mqtt clients. c.mqtt is immutable, but should it become
 	// an issue (say data race detection), we could branch outside in readLoop
 	if c.isMqtt() {
-		return c.mqttParse(buf)
+		return c.mqttParse(buf, tCtx)
 	}
 	var i int
 	var b byte
@@ -474,7 +474,7 @@ func (c *client) parse(buf []byte) error {
 				c.traceMsg(c.msgBuf)
 			}
 
-			c.processInboundMsg(c.msgBuf)
+			c.processInboundMsg(c.msgBuf, tCtx)
 			c.argBuf, c.msgBuf, c.header = nil, nil, nil
 			c.drop, c.as, c.state = 0, i+1, OP_START
 			// Drop all pub args

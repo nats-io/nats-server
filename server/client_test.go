@@ -65,13 +65,13 @@ func (c *testAsyncClient) close() {
 }
 
 func (c *testAsyncClient) parse(proto []byte) error {
-	err := c.client.parse(proto)
+	err := c.client.parse(proto, dummyTCtx)
 	c.client.flushClients(0)
 	return err
 }
 
 func (c *testAsyncClient) parseAndClose(proto []byte) {
-	c.client.parse(proto)
+	c.client.parse(proto, dummyTCtx)
 	c.client.flushClients(0)
 	c.closeConnection(ClientClosed)
 }
@@ -123,7 +123,7 @@ func genAsyncParser(c *client) (func(string), chan bool) {
 		for {
 			select {
 			case cs := <-pab:
-				c.parse(cs)
+				c.parse(cs, dummyTCtx)
 				c.flushClients(0)
 			case <-quit:
 				return

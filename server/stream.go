@@ -992,7 +992,7 @@ func (mset *stream) update(config *StreamConfig) error {
 		// the originals first, since if it is in there we can skip, already added.
 		for _, s := range cfg.Subjects {
 			if _, ok := current[s]; !ok {
-				if _, err := mset.subscribeInternal(s, mset.processInboundJetStreamMsg); err != nil {
+				if _, err := mset.subscribeInternalEx(s, mset.processInboundJetStreamMsg); err != nil {
 					mset.mu.Unlock()
 					return err
 				}
@@ -1337,6 +1337,8 @@ func (mset *stream) processMirrorMsgs() {
 	t := time.NewTicker(sourceHealthCheckInterval)
 	defer t.Stop()
 
+	tCtx := newTraceCtx(fmt.Sprintf("mirror:%s", mset.name()), s)
+
 	for {
 		select {
 		case <-s.quitCh:
@@ -1347,7 +1349,7 @@ func (mset *stream) processMirrorMsgs() {
 			return
 		case <-mch:
 			for im := mset.pending(msgs); im != nil; im = im.next {
-				if !mset.processInboundMirrorMsg(im) {
+				if !mset.processInboundMirrorMsg(im, tCtx) {
 					break
 				}
 			}
@@ -1376,7 +1378,7 @@ func (si *sourceInfo) isCurrentSub(reply string) bool {
 }
 
 // processInboundMirrorMsg handles processing messages bound for a stream.
-func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
+func (mset *stream) processInboundMirrorMsg(m *inMsg, tCtx *traceCtx) bool {
 	mset.mu.Lock()
 	if mset.mirror == nil {
 		mset.mu.Unlock()
@@ -1473,7 +1475,7 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 			err = node.Propose(encodeStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts))
 		}
 	} else {
-		err = mset.processJetStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts)
+		err = mset.processJetStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts, tCtx)
 	}
 	if err != nil {
 		if err == errLastSeqMismatch {
@@ -1942,6 +1944,7 @@ func (mset *stream) processSourceMsgs(si *sourceInfo) {
 	t := time.NewTicker(sourceHealthCheckInterval)
 	defer t.Stop()
 
+	tCtx := newTraceCtx(fmt.Sprintf("source:%s", mset.name()), s)
 	for {
 		select {
 		case <-s.quitCh:
@@ -1952,7 +1955,7 @@ func (mset *stream) processSourceMsgs(si *sourceInfo) {
 			return
 		case <-mch:
 			for im := mset.pending(msgs); im != nil; im = im.next {
-				if !mset.processInboundSourceMsg(si, im) {
+				if !mset.processInboundSourceMsg(si, im, tCtx) {
 					break
 				}
 			}
@@ -2002,7 +2005,7 @@ func (mset *stream) handleFlowControl(si *sourceInfo, m *inMsg) {
 }
 
 // processInboundSourceMsg handles processing other stream messages bound for this stream.
-func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
+func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg, tCtx *traceCtx) bool {
 	mset.mu.Lock()
 
 	// If we are no longer the leader cancel this subscriber.
@@ -2089,7 +2092,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	if node != nil {
 		err = mset.processClusteredInboundMsg(m.subj, _EMPTY_, hdr, msg)
 	} else {
-		err = mset.processJetStreamMsg(m.subj, _EMPTY_, hdr, msg, 0, 0)
+		err = mset.processJetStreamMsg(m.subj, _EMPTY_, hdr, msg, 0, 0, tCtx)
 	}
 
 	if err != nil {
@@ -2291,7 +2294,7 @@ func (mset *stream) subscribeToStream() error {
 		return nil
 	}
 	for _, subject := range mset.cfg.Subjects {
-		if _, err := mset.subscribeInternal(subject, mset.processInboundJetStreamMsg); err != nil {
+		if _, err := mset.subscribeInternalEx(subject, mset.processInboundJetStreamMsg); err != nil {
 			return err
 		}
 	}
@@ -2362,7 +2365,7 @@ func (mset *stream) unsubscribeToStream() error {
 }
 
 // Lock should be held.
-func (mset *stream) subscribeInternal(subject string, cb msgHandler) (*subscription, error) {
+func (mset *stream) subscribeInternalEx(subject string, cb msgHandler) (*subscription, error) {
 	c := mset.client
 	if c == nil {
 		return nil, fmt.Errorf("invalid stream")
@@ -2377,8 +2380,13 @@ func (mset *stream) subscribeInternal(subject string, cb msgHandler) (*subscript
 	return c.processSub([]byte(subject), nil, []byte(strconv.Itoa(mset.sid)), cb, false)
 }
 
+// Lock should be held.
+func (mset *stream) subscribeInternal(subject string, cb internalMsgHandler) (*subscription, error) {
+	return mset.subscribeInternalEx(subject, wrapIntoMsgHandler(cb))
+}
+
 // Helper for unlocked stream.
-func (mset *stream) subscribeInternalUnlocked(subject string, cb msgHandler) (*subscription, error) {
+func (mset *stream) subscribeInternalUnlocked(subject string, cb internalMsgHandler) (*subscription, error) {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 	return mset.subscribeInternal(subject, cb)
@@ -2676,7 +2684,7 @@ func (mset *stream) queueInboundMsg(subj, rply string, hdr, msg []byte) {
 }
 
 // processInboundJetStreamMsg handles processing messages bound for a stream.
-func (mset *stream) processInboundJetStreamMsg(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
+func (mset *stream) processInboundJetStreamMsg(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte, tCtx *traceCtx) {
 	mset.mu.RLock()
 	isLeader, isClustered, isSealed := mset.isLeader(), mset.node != nil, mset.cfg.Sealed
 	mset.mu.RUnlock()
@@ -2708,7 +2716,7 @@ func (mset *stream) processInboundJetStreamMsg(_ *subscription, c *client, _ *Ac
 	if isClustered {
 		mset.processClusteredInboundMsg(subject, reply, hdr, msg)
 	} else {
-		mset.processJetStreamMsg(subject, reply, hdr, msg, 0, 0)
+		mset.processJetStreamMsg(subject, reply, hdr, msg, 0, 0, tCtx)
 	}
 }
 
@@ -2718,7 +2726,7 @@ var (
 )
 
 // processJetStreamMsg is where we try to actually process the stream msg.
-func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64) error {
+func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, tCtx *traceCtx) (e error) {
 	mset.mu.Lock()
 	store := mset.store
 	c, s := mset.client, mset.srv
@@ -2783,12 +2791,34 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	// Process additional msg headers if still present.
 	var msgId string
 	var rollupSub, rollupAll bool
+	var didStore bool
 
 	if len(hdr) > 0 {
 		outq := mset.outq
+		msgId = getMsgId(hdr)
+
+		if traceRef, subs, rec := tCtx.traceJsMsgStore(msg, hdr, subject, reply, msgId, c, mset.acc, mset); len(subs) > 0 {
+			defer func() {
+				for _, s := range subs {
+					if e != nil {
+						s.NoStoreReason = e.Error()
+					}
+					s.DidStore = didStore
+				}
+				if rec {
+					tCtx.traceMsgCompletion(true)
+				}
+			}()
+
+			trcHdr, _ := tCtx.traceCtxMarshal(traceRef, mset.acc, nil, nil)
+			if len(trcHdr) > 0 {
+				hdr = removeHeaderIfPresent(hdr, TraceHeader)
+				hdr = genHeader(hdr, TraceHeader, string(trcHdr))
+			}
+		}
 
 		// Dedupe detection.
-		if msgId = getMsgId(hdr); msgId != _EMPTY_ {
+		if msgId != _EMPTY_ {
 			if dde := mset.checkMsgId(msgId); dde != nil {
 				mset.clfs++
 				mset.mu.Unlock()
@@ -3000,6 +3030,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		seq = lseq + 1 - clfs
 		err = store.StoreRawMsg(subject, hdr, msg, seq, ts)
 	}
+	didStore = true
 
 	if err != nil {
 		// If we did not succeed put those values back and increment clfs in case we are clustered.
@@ -3252,6 +3283,7 @@ func (mset *stream) internalLoop() {
 
 	// Raw scratch buffer.
 	var _r [64 * 1024]byte
+	tCtx := newTraceCtx(fmt.Sprintf("stream:%s", mset.name()), s)
 
 	for {
 		select {
@@ -3278,7 +3310,9 @@ func (mset *stream) internalLoop() {
 				}
 				msg = append(msg, _CRLF_...)
 
-				didDeliver, _ := c.processInboundClientMsg(msg)
+				tCtx.consumer = pm.o
+				tCtx.stream = mset
+				didDeliver, _ := c.processInboundClientMsg(msg, tCtx)
 				c.pa.szb = nil
 
 				// Check to see if this is a delivery for a consumer and
@@ -3294,7 +3328,7 @@ func (mset *stream) internalLoop() {
 				if isClustered {
 					mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg)
 				} else {
-					mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0)
+					mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0, tCtx)
 				}
 			}
 		case <-amch:

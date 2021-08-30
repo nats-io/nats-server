@@ -2,7 +2,9 @@
 
 package server
 
-import "strings"
+import (
+	"strings"
+)
 
 const (
 	// JSAccountResourcesExceededErr resource limits exceeded for account

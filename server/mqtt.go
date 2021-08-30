@@ -610,7 +610,7 @@ func (c *client) getMQTTClientID() string {
 
 // Parse protocols inside the given buffer.
 // This is invoked from the readLoop.
-func (c *client) mqttParse(buf []byte) error {
+func (c *client) mqttParse(buf []byte, tCtx *traceCtx) error {
 	c.mu.Lock()
 	s := c.srv
 	trace := c.trace
@@ -677,7 +677,7 @@ func (c *client) mqttParse(buf []byte) error {
 				}
 			}
 			if err == nil {
-				err = s.mqttProcessPub(c, pp)
+				err = s.mqttProcessPub(c, pp, tCtx)
 			}
 			if err == nil && pp.pi > 0 {
 				c.mqttEnqueuePubAck(pp.pi)
@@ -780,7 +780,7 @@ func (c *client) mqttParse(buf []byte) error {
 				c.mqtt.cp.will = nil
 			}
 			c.mu.Unlock()
-			s.mqttHandleClosedClient(c)
+			s.mqttHandleClosedClient(c, tCtx)
 			c.closeConnection(ClientClosed)
 			return nil
 		case mqttPacketPubRec, mqttPacketPubRel, mqttPacketPubComp:
@@ -810,7 +810,7 @@ func (c *client) mqttTraceMsg(msg []byte) {
 //
 // Runs from the client's readLoop.
 // No lock held on entry.
-func (s *Server) mqttHandleClosedClient(c *client) {
+func (s *Server) mqttHandleClosedClient(c *client, tCtx *traceCtx) {
 	c.mu.Lock()
 	asm := c.mqtt.asm
 	sess := c.mqtt.sess
@@ -849,7 +849,7 @@ func (s *Server) mqttHandleClosedClient(c *client) {
 	}
 
 	// Now handle the "will". This function will be a no-op if there is no "will" to send.
-	s.mqttHandleWill(c)
+	s.mqttHandleWill(c, tCtx)
 }
 
 // Updates the MaxAckPending for all MQTT sessions, updating the
@@ -1633,8 +1633,8 @@ func (as *mqttAccountSessionManager) removeSessFromFlappers(clientID string) {
 }
 
 // Helper to create a subscription. It updates the sid and array of subscriptions.
-func (as *mqttAccountSessionManager) createSubscription(subject string, cb msgHandler, sid *int64, subs *[]*subscription) error {
-	sub, err := as.jsa.c.processSub([]byte(subject), nil, []byte(strconv.FormatInt(*sid, 10)), cb, false)
+func (as *mqttAccountSessionManager) createSubscription(subject string, cb internalMsgHandler, sid *int64, subs *[]*subscription) error {
+	sub, err := as.jsa.c.processSub([]byte(subject), nil, []byte(strconv.FormatInt(*sid, 10)), wrapIntoMsgHandler(cb), false)
 	if err != nil {
 		return err
 	}
@@ -1681,6 +1681,8 @@ func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, acc
 	hdrStart.WriteString(CR_LF)
 	hdrb := hdrStart.Bytes()
 
+	tCtx := newTraceCtx("mqtt", s)
+
 	for {
 		select {
 		case r := <-sendq:
@@ -1719,7 +1721,7 @@ func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, acc
 			c.pa.size = nsize
 			c.pa.szb = []byte(strconv.Itoa(nsize))
 
-			c.processInboundClientMsg(msg)
+			c.processInboundClientMsg(msg, tCtx)
 			c.flushClients(0)
 
 		case <-closeCh:
@@ -2815,7 +2817,7 @@ func (c *client) mqttEnqueueConnAck(rc byte, sessionPresent bool) {
 	c.mu.Unlock()
 }
 
-func (s *Server) mqttHandleWill(c *client) {
+func (s *Server) mqttHandleWill(c *client, tCtx *traceCtx) {
 	c.mu.Lock()
 	if c.mqtt.cp == nil {
 		c.mu.Unlock()
@@ -2837,7 +2839,7 @@ func (s *Server) mqttHandleWill(c *client) {
 		pp.flags |= mqttPubFlagRetain
 	}
 	c.mu.Unlock()
-	s.mqttProcessPub(c, pp)
+	s.mqttProcessPub(c, pp, tCtx)
 	c.flushClients(0)
 }
 
@@ -2914,7 +2916,7 @@ func mqttPubTrace(pp *mqttPublish) string {
 //
 // Runs from the client's readLoop.
 // No lock held on entry.
-func (s *Server) mqttProcessPub(c *client, pp *mqttPublish) error {
+func (s *Server) mqttProcessPub(c *client, pp *mqttPublish, tCtx *traceCtx) error {
 	c.pa.subject, c.pa.hdr, c.pa.size, c.pa.reply = pp.subject, -1, pp.sz, nil
 
 	bb := bytes.Buffer{}
@@ -2934,7 +2936,7 @@ func (s *Server) mqttProcessPub(c *client, pp *mqttPublish) error {
 	var err error
 	// Unless we have a publish permission error, if the message is QoS1, then we
 	// need to store the message (and deliver it to JS durable consumers).
-	if _, permIssue := c.processInboundClientMsg(msgToSend); !permIssue && mqttGetQoS(pp.flags) > 0 {
+	if _, permIssue := c.processInboundClientMsg(msgToSend, tCtx); !permIssue && mqttGetQoS(pp.flags) > 0 {
 		_, err = c.mqtt.sess.jsa.storeMsg(mqttStreamSubjectPrefix+string(c.pa.subject), c.pa.hdr, msgToSend)
 	}
 	c.pa.subject, c.pa.hdr, c.pa.size, c.pa.szb, c.pa.reply = nil, -1, 0, nil, nil
@@ -3296,7 +3298,7 @@ func mqttSubscribeTrace(pi uint16, filters []*mqttFilter) string {
 // message and this is the callback for a QoS1 subscription because in
 // that case, it will be handled by the other callback. This avoid getting
 // duplicate deliveries.
-func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, _ string, rmsg []byte) {
+func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, _ string, rmsg []byte, _ *traceCtx) {
 	if pc.kind == JETSTREAM {
 		return
 	}
@@ -3359,7 +3361,7 @@ func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, _ 
 // associated with the JS durable consumer), but in cluster mode, this can be coming
 // from a route, gw, etc... We make sure that if this is the case, the message contains
 // a NATS/MQTT header that indicates that this is a published QoS1 message.
-func mqttDeliverMsgCbQos1(sub *subscription, pc *client, _ *Account, subject, reply string, rmsg []byte) {
+func mqttDeliverMsgCbQos1(sub *subscription, pc *client, _ *Account, subject, reply string, rmsg []byte, _ *traceCtx) {
 	var retained bool
 
 	// Message on foo.bar is stored under $MQTT.msgs.foo.bar, so the subject has to be

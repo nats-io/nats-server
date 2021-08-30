@@ -35,13 +35,13 @@ func TestSplitBufferSubOp(t *testing.T) {
 	subop1 := subop[:6]
 	subop2 := subop[6:]
 
-	if err := c.parse(subop1); err != nil {
+	if err := c.parse(subop1, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != SUB_ARG {
 		t.Fatalf("Expected SUB_ARG state vs %d\n", c.state)
 	}
-	if err := c.parse(subop2); err != nil {
+	if err := c.parse(subop2, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != OP_START {
@@ -69,7 +69,7 @@ func TestSplitBufferUnsubOp(t *testing.T) {
 	c := &client{srv: s, acc: s.gacc, msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription)}
 
 	subop := []byte("SUB foo 1024\r\n")
-	if err := c.parse(subop); err != nil {
+	if err := c.parse(subop, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != OP_START {
@@ -80,13 +80,13 @@ func TestSplitBufferUnsubOp(t *testing.T) {
 	unsubop1 := unsubop[:8]
 	unsubop2 := unsubop[8:]
 
-	if err := c.parse(unsubop1); err != nil {
+	if err := c.parse(unsubop1, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != UNSUB_ARG {
 		t.Fatalf("Expected UNSUB_ARG state vs %d\n", c.state)
 	}
-	if err := c.parse(unsubop2); err != nil {
+	if err := c.parse(unsubop2, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != OP_START {
@@ -109,31 +109,31 @@ func TestSplitBufferPubOp(t *testing.T) {
 	pub6 := pub[25:33]
 	pub7 := pub[33:]
 
-	if err := c.parse(pub1); err != nil {
+	if err := c.parse(pub1, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != OP_PU {
 		t.Fatalf("Expected OP_PU state vs %d\n", c.state)
 	}
-	if err := c.parse(pub2); err != nil {
+	if err := c.parse(pub2, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != PUB_ARG {
 		t.Fatalf("Expected OP_PU state vs %d\n", c.state)
 	}
-	if err := c.parse(pub3); err != nil {
+	if err := c.parse(pub3, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != PUB_ARG {
 		t.Fatalf("Expected OP_PU state vs %d\n", c.state)
 	}
-	if err := c.parse(pub4); err != nil {
+	if err := c.parse(pub4, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != PUB_ARG {
 		t.Fatalf("Expected PUB_ARG state vs %d\n", c.state)
 	}
-	if err := c.parse(pub5); err != nil {
+	if err := c.parse(pub5, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != MSG_PAYLOAD {
@@ -150,13 +150,13 @@ func TestSplitBufferPubOp(t *testing.T) {
 	if c.pa.size != 11 {
 		t.Fatalf("PUB arg msg size incorrect: %d\n", c.pa.size)
 	}
-	if err := c.parse(pub6); err != nil {
+	if err := c.parse(pub6, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != MSG_PAYLOAD {
 		t.Fatalf("Expected MSG_PAYLOAD state vs %d\n", c.state)
 	}
-	if err := c.parse(pub7); err != nil {
+	if err := c.parse(pub7, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != MSG_END_N {
@@ -170,13 +170,13 @@ func TestSplitBufferPubOp2(t *testing.T) {
 	pub1 := pub[:30]
 	pub2 := pub[30:]
 
-	if err := c.parse(pub1); err != nil {
+	if err := c.parse(pub1, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != MSG_PAYLOAD {
 		t.Fatalf("Expected MSG_PAYLOAD state vs %d\n", c.state)
 	}
-	if err := c.parse(pub2); err != nil {
+	if err := c.parse(pub2, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != OP_START {
@@ -189,7 +189,7 @@ func TestSplitBufferPubOp3(t *testing.T) {
 	pubAll := []byte("PUB foo bar 11\r\nhello world\r\n")
 	pub := pubAll[:16]
 
-	if err := c.parse(pub); err != nil {
+	if err := c.parse(pub, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if !bytes.Equal(c.pa.subject, []byte("foo")) {
@@ -215,7 +215,7 @@ func TestSplitBufferPubOp4(t *testing.T) {
 	pubAll := []byte("PUB foo 11\r\nhello world\r\n")
 	pub := pubAll[:12]
 
-	if err := c.parse(pub); err != nil {
+	if err := c.parse(pub, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if !bytes.Equal(c.pa.subject, []byte("foo")) {
@@ -244,7 +244,7 @@ func TestSplitBufferPubOp5(t *testing.T) {
 	// Split between \r and \n
 	pub := pubAll[:len(pubAll)-1]
 
-	if err := c.parse(pub); err != nil {
+	if err := c.parse(pub, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.msgBuf == nil {
@@ -267,14 +267,14 @@ func TestSplitConnectArg(t *testing.T) {
 	c3 := connectAll[22 : len(connectAll)-2]
 	c4 := connectAll[len(connectAll)-2:]
 
-	if err := c.parse(c1); err != nil {
+	if err := c.parse(c1, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.argBuf != nil {
 		t.Fatalf("Unexpected argBug placeholder.\n")
 	}
 
-	if err := c.parse(c2); err != nil {
+	if err := c.parse(c2, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.argBuf == nil {
@@ -284,7 +284,7 @@ func TestSplitConnectArg(t *testing.T) {
 		t.Fatalf("argBuf not correct, received %q, wanted %q\n", argJSON[:14], c.argBuf)
 	}
 
-	if err := c.parse(c3); err != nil {
+	if err := c.parse(c3, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.argBuf == nil {
@@ -295,7 +295,7 @@ func TestSplitConnectArg(t *testing.T) {
 			argJSON[:len(argJSON)-2], c.argBuf)
 	}
 
-	if err := c.parse(c4); err != nil {
+	if err := c.parse(c4, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.argBuf != nil {
@@ -312,36 +312,36 @@ func TestSplitDanglingArgBuf(t *testing.T) {
 
 	// SUB
 	subop := []byte("SUB foo 1\r\n")
-	c.parse(subop[:6])
-	c.parse(subop[6:])
+	c.parse(subop[:6], dummyTCtx)
+	c.parse(subop[6:], dummyTCtx)
 	if c.argBuf != nil {
 		t.Fatalf("Expected c.argBuf to be nil: %q\n", c.argBuf)
 	}
 
 	// UNSUB
 	unsubop := []byte("UNSUB 1024\r\n")
-	c.parse(unsubop[:8])
-	c.parse(unsubop[8:])
+	c.parse(unsubop[:8], dummyTCtx)
+	c.parse(unsubop[8:], dummyTCtx)
 	if c.argBuf != nil {
 		t.Fatalf("Expected c.argBuf to be nil: %q\n", c.argBuf)
 	}
 
 	// PUB
 	pubop := []byte("PUB foo.bar INBOX.22 11\r\nhello world\r\n")
-	c.parse(pubop[:22])
-	c.parse(pubop[22:25])
+	c.parse(pubop[:22], dummyTCtx)
+	c.parse(pubop[22:25], dummyTCtx)
 	if c.argBuf == nil {
 		t.Fatal("Expected a non-nil argBuf!")
 	}
-	c.parse(pubop[25:])
+	c.parse(pubop[25:], dummyTCtx)
 	if c.argBuf != nil {
 		t.Fatalf("Expected c.argBuf to be nil: %q\n", c.argBuf)
 	}
 
 	// MINUS_ERR
 	errop := []byte("-ERR Too Long\r\n")
-	c.parse(errop[:8])
-	c.parse(errop[8:])
+	c.parse(errop[:8], dummyTCtx)
+	c.parse(errop[8:], dummyTCtx)
 	if c.argBuf != nil {
 		t.Fatalf("Expected c.argBuf to be nil: %q\n", c.argBuf)
 	}
@@ -349,16 +349,16 @@ func TestSplitDanglingArgBuf(t *testing.T) {
 	// CONNECT_ARG
 	connop := []byte("CONNECT {\"verbose\":false,\"tls_required\":false," +
 		"\"user\":\"test\",\"pedantic\":true,\"pass\":\"pass\"}\r\n")
-	c.parse(connop[:22])
-	c.parse(connop[22:])
+	c.parse(connop[:22], dummyTCtx)
+	c.parse(connop[22:], dummyTCtx)
 	if c.argBuf != nil {
 		t.Fatalf("Expected c.argBuf to be nil: %q\n", c.argBuf)
 	}
 
 	// INFO_ARG
 	infoop := []byte("INFO {\"server_id\":\"id\"}\r\n")
-	c.parse(infoop[:8])
-	c.parse(infoop[8:])
+	c.parse(infoop[:8], dummyTCtx)
+	c.parse(infoop[8:], dummyTCtx)
 	if c.argBuf != nil {
 		t.Fatalf("Expected c.argBuf to be nil: %q\n", c.argBuf)
 	}
@@ -366,15 +366,15 @@ func TestSplitDanglingArgBuf(t *testing.T) {
 	// MSG (the client has to be a ROUTE)
 	c = &client{msubs: -1, mpay: -1, subs: make(map[string]*subscription), kind: ROUTER}
 	msgop := []byte("RMSG $foo foo 5\r\nhello\r\n")
-	c.parse(msgop[:5])
-	c.parse(msgop[5:10])
+	c.parse(msgop[:5], dummyTCtx)
+	c.parse(msgop[5:10], dummyTCtx)
 	if c.argBuf == nil {
 		t.Fatal("Expected a non-nil argBuf")
 	}
 	if string(c.argBuf) != "$foo " {
 		t.Fatalf("Expected argBuf to be \"$foo \", got %q", string(c.argBuf))
 	}
-	c.parse(msgop[10:])
+	c.parse(msgop[10:], dummyTCtx)
 	if c.argBuf != nil {
 		t.Fatalf("Expected argBuf to be nil: %q", c.argBuf)
 	}
@@ -385,7 +385,7 @@ func TestSplitDanglingArgBuf(t *testing.T) {
 	c.state = OP_START
 	// Parse up-to somewhere in the middle of the payload.
 	// Verify that we have saved the MSG_ARG info
-	c.parse(msgop[:23])
+	c.parse(msgop[:23], dummyTCtx)
 	if c.argBuf == nil {
 		t.Fatal("Expected a non-nil argBuf")
 	}
@@ -405,7 +405,7 @@ func TestSplitDanglingArgBuf(t *testing.T) {
 	if c.msgBuf == nil || string(c.msgBuf) != "hello\r" {
 		t.Fatalf("Expected msgBuf to be \"hello\r\", got %q", c.msgBuf)
 	}
-	c.parse(msgop[23:])
+	c.parse(msgop[23:], dummyTCtx)
 	// At the end, we should have cleaned-up both arg and msg buffers.
 	if c.argBuf != nil {
 		t.Fatalf("Expected argBuf to be nil: %q", c.argBuf)
@@ -456,37 +456,37 @@ func TestSplitBufferMsgOp(t *testing.T) {
 	msg7 := msg[37:40]
 	msg8 := msg[40:]
 
-	if err := c.parse(msg1); err != nil {
+	if err := c.parse(msg1, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != OP_M {
 		t.Fatalf("Expected OP_M state vs %d\n", c.state)
 	}
-	if err := c.parse(msg2); err != nil {
+	if err := c.parse(msg2, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != MSG_ARG {
 		t.Fatalf("Expected MSG_ARG state vs %d\n", c.state)
 	}
-	if err := c.parse(msg3); err != nil {
+	if err := c.parse(msg3, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != MSG_ARG {
 		t.Fatalf("Expected MSG_ARG state vs %d\n", c.state)
 	}
-	if err := c.parse(msg4); err != nil {
+	if err := c.parse(msg4, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != MSG_ARG {
 		t.Fatalf("Expected MSG_ARG state vs %d\n", c.state)
 	}
-	if err := c.parse(msg5); err != nil {
+	if err := c.parse(msg5, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != MSG_ARG {
 		t.Fatalf("Expected MSG_ARG state vs %d\n", c.state)
 	}
-	if err := c.parse(msg6); err != nil {
+	if err := c.parse(msg6, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != MSG_PAYLOAD {
@@ -503,13 +503,13 @@ func TestSplitBufferMsgOp(t *testing.T) {
 	if c.pa.size != 11 {
 		t.Fatalf("MSG arg msg size incorrect: %d\n", c.pa.size)
 	}
-	if err := c.parse(msg7); err != nil {
+	if err := c.parse(msg7, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != MSG_PAYLOAD {
 		t.Fatalf("Expected MSG_PAYLOAD state vs %d\n", c.state)
 	}
-	if err := c.parse(msg8); err != nil {
+	if err := c.parse(msg8, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != MSG_END_N {
@@ -520,7 +520,7 @@ func TestSplitBufferMsgOp(t *testing.T) {
 func TestSplitBufferLeafMsgArg(t *testing.T) {
 	c := &client{msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription), kind: LEAF}
 	msg := []byte("LMSG foo + bar baz 11\r\n")
-	if err := c.parse(msg); err != nil {
+	if err := c.parse(msg, dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != MSG_PAYLOAD {
@@ -545,7 +545,7 @@ func TestSplitBufferLeafMsgArg(t *testing.T) {
 
 	// overwrite msg with payload
 	n := copy(msg, []byte("fffffffffff"))
-	if err := c.parse(msg[:n]); err != nil {
+	if err := c.parse(msg[:n], dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != MSG_END_R {
@@ -555,7 +555,7 @@ func TestSplitBufferLeafMsgArg(t *testing.T) {
 
 	// Finish processing
 	copy(msg, []byte("\r\n"))
-	if err := c.parse(msg[:2]); err != nil {
+	if err := c.parse(msg[:2], dummyTCtx); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)
 	}
 	if c.state != OP_START {

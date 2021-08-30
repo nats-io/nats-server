@@ -47,6 +47,7 @@ const (
 	// this overlaps with the names for events but you'd have to have the operator private key in order to succeed.
 	accUpdateEventSubjOld    = "$SYS.ACCOUNT.%s.CLAIMS.UPDATE"
 	accUpdateEventSubjNew    = "$SYS.REQ.ACCOUNT.%s.CLAIMS.UPDATE"
+	accUpdateTrcSubjNew      = "$SYS.REQ.ACCOUNT.%s.TRC.%s"
 	connsRespSubj            = "$SYS._INBOX_.%s"
 	accConnsEventSubjNew     = "$SYS.ACCOUNT.%s.SERVER.CONNS"
 	accConnsEventSubjOld     = "$SYS.SERVER.ACCOUNT.%s.CONNS" // kept for backward compatibility
@@ -60,6 +61,9 @@ const (
 	remoteLatencyEventSubj   = "$SYS.LATENCY.M2.%s"
 	inboxRespSubj            = "$SYS._INBOX.%s.%s"
 	accConnzReqSubj          = "$SYS.REQ.ACCOUNT.PING.CONNZ"
+
+	serverTrcEvent = "$SYS.SERVER.%s.TRC.%s"
+	accTrcEvent    = "$SYS.ACCOUNT.%s.TRC.%s"
 
 	// FIXME(dlc) - Should account scope, even with wc for now, but later on
 	// we can then shard as needed.
@@ -76,6 +80,7 @@ const (
 
 	accReqTokens   = 5
 	accReqAccIndex = 3
+	accReqTrcIndex = 4
 )
 
 // FIXME(dlc) - make configurable.
@@ -292,6 +297,8 @@ RESET:
 	warnFreq := time.Second
 	last := time.Now().Add(-warnFreq)
 
+	tCtx := newTraceCtx("internal-events", s)
+
 	for s.eventsRunning() {
 		// Setup information for next message
 		if len(sendq) > warnThresh && time.Since(last) >= warnFreq {
@@ -392,7 +399,7 @@ RESET:
 			}
 
 			// Process like a normal inbound msg.
-			c.processInboundClientMsg(b)
+			c.processInboundClientMsg(b, tCtx)
 
 			// Put echo back if needed.
 			if replaceEcho {
@@ -443,8 +450,13 @@ func (s *Server) sendInternalAccountMsg(a *Account, subject string, msg interfac
 	return s.sendInternalAccountMsgWithReply(a, subject, _EMPTY_, nil, msg, false)
 }
 
+// Used to send an internal message to an arbitrary account.
+func (s *Server) sendInternalAccountMsgWithSi(a *Account, subject string, si *ServerInfo, msg interface{}) error {
+	return s.sendInternalAccountMsgWithReplyWithSi(a, subject, _EMPTY_, si, nil, msg, false)
+}
+
 // Used to send an internal message with an optional reply to an arbitrary account.
-func (s *Server) sendInternalAccountMsgWithReply(a *Account, subject, reply string, hdr map[string]string, msg interface{}, echo bool) error {
+func (s *Server) sendInternalAccountMsgWithReplyWithSi(a *Account, subject, reply string, si *ServerInfo, hdr map[string]string, msg interface{}, echo bool) error {
 	s.mu.Lock()
 	if s.sys == nil || s.sys.sendq == nil {
 		s.mu.Unlock()
@@ -462,8 +474,13 @@ func (s *Server) sendInternalAccountMsgWithReply(a *Account, subject, reply stri
 		a.mu.Unlock()
 	}
 
-	sendq <- &pubMsg{c, subject, reply, nil, hdr, msg, noCompression, echo, false}
+	sendq <- &pubMsg{c, subject, reply, si, hdr, msg, noCompression, echo, false}
 	return nil
+}
+
+// Used to send an internal message with an optional reply to an arbitrary account.
+func (s *Server) sendInternalAccountMsgWithReply(a *Account, subject, reply string, hdr map[string]string, msg interface{}, echo bool) error {
+	return s.sendInternalAccountMsgWithReplyWithSi(a, subject, reply, nil, hdr, msg, echo)
 }
 
 // This will queue up a message to be sent.
@@ -757,7 +774,7 @@ func (s *Server) initEventTracking() {
 
 	// This will be for all inbox responses.
 	subject := fmt.Sprintf(inboxRespSubj, s.sys.shash, "*")
-	if _, err := s.sysSubscribe(subject, s.inboxReply); err != nil {
+	if _, err := s.sysSubscribeEx(subject, s.inboxReply); err != nil {
 		s.Errorf("Error setting up internal tracking: %v", err)
 	}
 	s.sys.inboxPre = subject
@@ -802,7 +819,7 @@ func (s *Server) initEventTracking() {
 	if _, err := s.sysSubscribe(serverStatsPingReqSubj, s.statszReq); err != nil {
 		s.Errorf("Error setting up internal tracking: %v", err)
 	}
-	monSrvc := map[string]msgHandler{
+	monSrvc := map[string]internalMsgHandler{
 		"STATSZ": s.statszReq,
 		"VARZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &VarzEventOptions{}
@@ -854,7 +871,7 @@ func (s *Server) initEventTracking() {
 			return tk[accReqAccIndex], nil
 		}
 	}
-	monAccSrvc := map[string]msgHandler{
+	monAccSrvc := map[string]internalMsgHandler{
 		"SUBSZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &SubszEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
@@ -914,7 +931,7 @@ func (s *Server) initEventTracking() {
 				if acc, err := extractAccount(subject); err != nil {
 					return nil, err
 				} else {
-					return s.accountInfo(acc)
+					return s.accountInfoByName(acc)
 				}
 			})
 		},
@@ -1802,24 +1819,43 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 // Internal message callback.
 // If the msg is needed past the callback it is required to be copied.
 // rmsg contains header and the message. use client.msgParts(rmsg) to split them apart
-type msgHandler func(sub *subscription, client *client, acc *Account, subject, reply string, rmsg []byte)
+type msgHandler func(sub *subscription, client *client, acc *Account, subject, reply string, rmsg []byte, tCtx *traceCtx)
+
+type internalMsgHandler func(sub *subscription, client *client, acc *Account, subject, reply string, rmsg []byte)
+
+func wrapIntoMsgHandler(cb internalMsgHandler) msgHandler {
+	if cb == nil {
+		return nil
+	}
+	return func(sub *subscription, client *client, acc *Account, subject, reply string, rmsg []byte, tCtx *traceCtx) {
+		cb(sub, client, acc, subject, reply, rmsg)
+	}
+}
 
 // Create an internal subscription. sysSubscribeQ for queue groups.
-func (s *Server) sysSubscribe(subject string, cb msgHandler) (*subscription, error) {
+func (s *Server) sysSubscribe(subject string, cb internalMsgHandler) (*subscription, error) {
 	return s.systemSubscribe(subject, _EMPTY_, false, nil, cb)
 }
 
+func (s *Server) sysSubscribeEx(subject string, cb msgHandler) (*subscription, error) {
+	return s.systemSubscribeEx(subject, _EMPTY_, false, nil, cb)
+}
+
 // Create an internal subscription with queue
-func (s *Server) sysSubscribeQ(subject, queue string, cb msgHandler) (*subscription, error) {
+func (s *Server) sysSubscribeQ(subject, queue string, cb internalMsgHandler) (*subscription, error) {
 	return s.systemSubscribe(subject, queue, false, nil, cb)
 }
 
 // Create an internal subscription but do not forward interest.
-func (s *Server) sysSubscribeInternal(subject string, cb msgHandler) (*subscription, error) {
+func (s *Server) sysSubscribeInternal(subject string, cb internalMsgHandler) (*subscription, error) {
 	return s.systemSubscribe(subject, _EMPTY_, true, nil, cb)
 }
 
-func (s *Server) systemSubscribe(subject, queue string, internalOnly bool, c *client, cb msgHandler) (*subscription, error) {
+func (s *Server) systemSubscribe(subject, queue string, internalOnly bool, c *client, cb internalMsgHandler) (*subscription, error) {
+	return s.systemSubscribeEx(subject, queue, internalOnly, c, wrapIntoMsgHandler(cb))
+}
+
+func (s *Server) systemSubscribeEx(subject, queue string, internalOnly bool, c *client, cb msgHandler) (*subscription, error) {
 	s.mu.Lock()
 	if !s.eventsEnabled() {
 		s.mu.Unlock()
@@ -1941,7 +1977,7 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, _ *Account, s
 
 // This is used for all inbox replies so that we do not send supercluster wide interest
 // updates for every request. Same trick used in modern NATS clients.
-func (s *Server) inboxReply(sub *subscription, c *client, acc *Account, subject, reply string, msg []byte) {
+func (s *Server) inboxReply(sub *subscription, c *client, acc *Account, subject, reply string, msg []byte, tCtx *traceCtx) {
 	s.mu.Lock()
 	if !s.eventsEnabled() || s.sys.replies == nil {
 		s.mu.Unlock()
@@ -1951,7 +1987,7 @@ func (s *Server) inboxReply(sub *subscription, c *client, acc *Account, subject,
 	s.mu.Unlock()
 
 	if ok && cb != nil {
-		cb(sub, c, acc, subject, reply, msg)
+		cb(sub, c, acc, subject, reply, msg, tCtx)
 	}
 }
 
@@ -2081,7 +2117,7 @@ func (s *Server) debugSubscribers(sub *subscription, c *client, _ *Account, subj
 	// Create direct reply inbox that we multiplex under the WC replies.
 	replySubj := s.newRespInbox()
 	// Store our handler.
-	s.sys.replies[replySubj] = func(sub *subscription, _ *client, _ *Account, subject, _ string, msg []byte) {
+	s.sys.replies[replySubj] = func(sub *subscription, _ *client, _ *Account, subject, _ string, msg []byte, _ *traceCtx) {
 		if n, err := strconv.Atoi(string(msg)); err == nil {
 			atomic.AddInt32(&nsubs, int32(n))
 		}

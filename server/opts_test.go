@@ -3224,6 +3224,80 @@ func TestResolverPinnedAccountsFail(t *testing.T) {
 	require_Contains(t, "parsing resolver_pinned_accounts: unsupported type")
 }
 
+func TestTracePolicy(t *testing.T) {
+	cfgFmt := `
+		msg_trace: {
+			foo: {Subject: foo, Freq: 0.1}
+			bar: {Subject: foo, Freq: 0.5, NotSubject: bar, Probes: ["connz", "accountz"]}
+		}
+		accounts: {
+			B: {
+				msg_trace: {
+					baz: {Subject: somefoo, Freq: 0.5, NotSubject: somebar, Probes: ["connz", "accountz"]}
+				}
+				ping_probes: disabled
+			}
+			C: {
+				ping_probes: enabled
+			}
+			D: {
+				ping_probes: connz
+			}
+			E: {
+				ping_probes: ["connz", "accountz"]
+			}
+		}
+	`
+
+	conf := createConfFile(t, []byte(cfgFmt))
+	defer removeFile(t, conf)
+	opts, err := ProcessConfigFile(conf)
+
+	require_NoError(t, err)
+	trc, ok := opts.MsgTracePolicy["foo"]
+	require_True(t, ok)
+	require_Equal(t, trc.Subject, "foo")
+	require_True(t, trc.SampleFreq == 0.1)
+	require_False(t, trc.Accountz)
+	require_False(t, trc.Connz)
+
+	trc, ok = opts.MsgTracePolicy["bar"]
+	require_True(t, ok)
+	require_Equal(t, trc.Subject, "foo")
+	require_True(t, trc.SampleFreq == 0.5)
+	require_Equal(t, trc.NotSubject, "bar")
+	require_True(t, trc.Accountz)
+	require_True(t, trc.Connz)
+
+	accs := map[string]*Account{}
+	for _, a := range opts.Accounts {
+		accs[a.Name] = a
+	}
+
+	a := accs["B"]
+	require_True(t, len(a.traces) == 1)
+	trc, ok = a.traces["baz"]
+	require_True(t, ok)
+	require_Equal(t, trc.Subject, "somefoo")
+	require_True(t, trc.SampleFreq == 0.5)
+	require_Equal(t, trc.NotSubject, "somebar")
+	require_True(t, trc.Accountz)
+	require_True(t, trc.Connz)
+	require_True(t, a.pingProbes == nil)
+
+	a = accs["C"]
+	require_True(t, a.pingProbes != nil)
+	require_True(t, *a.pingProbes == probes{})
+
+	a = accs["D"]
+	require_True(t, a.pingProbes != nil)
+	require_True(t, *a.pingProbes == probes{Connz: true})
+
+	a = accs["E"]
+	require_True(t, a.pingProbes != nil)
+	require_True(t, *a.pingProbes == probes{Connz: true, Accountz: true})
+}
+
 func TestMaxSubTokens(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		listen: 127.0.0.1:-1

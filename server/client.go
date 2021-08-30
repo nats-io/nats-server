@@ -18,6 +18,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -1146,9 +1147,12 @@ func (c *client) readLoop(pre []byte) {
 	}
 	c.mu.Unlock()
 
+	tCtx := newTraceCtx("client", s)
+
 	defer func() {
 		if c.isMqtt() {
-			s.mqttHandleClosedClient(c)
+			s.mqttHandleClosedClient(c, tCtx)
+			tCtx.traceMsgCompletion(true)
 		}
 		// These are used only in the readloop, so we can set them to nil
 		// on exit of the readLoop.
@@ -1221,7 +1225,7 @@ func (c *client) readLoop(pre []byte) {
 		// Main call into parser for inbound data. This will generate callouts
 		// to process messages, etc.
 		for i := 0; i < len(bufs); i++ {
-			if err := c.parse(bufs[i]); err != nil {
+			if err := c.parse(bufs[i], tCtx); err != nil {
 				if dur := time.Since(start); dur >= readLoopReportThreshold {
 					c.Warnf("Readloop processing time: %v", dur)
 				}
@@ -3087,30 +3091,51 @@ var needFlush = struct{}{}
 
 // deliverMsg will deliver a message to a matching subscription and its underlying client.
 // We process all connection/client types. mh is the part that will be protocol/client specific.
-func (c *client) deliverMsg(sub *subscription, acc *Account, subject, reply, mh, msg []byte, gwrply bool) bool {
+func (c *client) deliverMsg(sub *subscription, acc *Account, subject, reply, mh, msg []byte, gwrply bool, tCtx *traceCtx) (bool, error) {
 	if sub.client == nil {
-		return false
+		return false, errors.New("subscriber is without client")
 	}
 	client := sub.client
 	client.mu.Lock()
 
+	if tCtx.trcHdrSet {
+		//TODO alternatively: c.pa.hdr > 0 && isHeaderSet(TracePing, msg[:c.pa.hdr])
+		a := acc
+		// TODO pick by kind or by sub.im.acc? needs to match what traceSub uses
+		if client.kind == CLIENT {
+			a = sub.client.acc
+		}
+		if tCtx.pubAcc != nil && a != tCtx.pubAcc {
+			client.mu.Unlock()
+			return true, errors.New("trace Message is not delivered to foreign account")
+		}
+		if client.kind == CLIENT {
+			client.mu.Unlock()
+			return true, errors.New("trace Message is not delivered to Clients")
+		}
+		if client.kind == JETSTREAM {
+			client.mu.Unlock()
+			return true, errors.New("trace Message is not delivered to JetStream")
+		}
+	}
+
 	// Check echo
 	if c == client && !client.echo {
 		client.mu.Unlock()
-		return false
+		return false, errors.New("client disallows echo")
 	}
 
 	// Check if we have a subscribe deny clause. This will trigger us to check the subject
 	// for a match against the denied subjects.
 	if client.mperms != nil && client.checkDenySub(string(subject)) {
 		client.mu.Unlock()
-		return false
+		return false, errors.New("client has Sub Deny")
 	}
 
 	// New race detector forces this now.
 	if sub.isClosed() {
 		client.mu.Unlock()
-		return false
+		return false, errors.New("subscription is closed")
 	}
 
 	// Check if we are a leafnode and have perms to check.
@@ -3118,7 +3143,7 @@ func (c *client) deliverMsg(sub *subscription, acc *Account, subject, reply, mh,
 		if !client.pubAllowedFullCheck(string(subject), true, true) {
 			client.mu.Unlock()
 			client.Debugf("Not permitted to deliver to %q", subject)
-			return false
+			return false, errors.New("leaf Node not permitted to deliver")
 		}
 	}
 
@@ -3153,7 +3178,7 @@ func (c *client) deliverMsg(sub *subscription, acc *Account, subject, reply, mh,
 				if shouldForward {
 					srv.updateRemoteSubscription(client.acc, sub, -1)
 				}
-				return false
+				return false, errors.New("auto-unsubscribe limit hit")
 			}
 		}
 	}
@@ -3192,11 +3217,11 @@ func (c *client) deliverMsg(sub *subscription, acc *Account, subject, reply, mh,
 
 		// Internal account clients are for service imports and need the '\r\n'.
 		if client.kind == ACCOUNT {
-			sub.icb(sub, c, acc, string(subject), string(reply), msg)
+			sub.icb(sub, c, acc, string(subject), string(reply), msg, tCtx)
 		} else {
-			sub.icb(sub, c, acc, string(subject), string(reply), msg[:msgSize])
+			sub.icb(sub, c, acc, string(subject), string(reply), msg[:msgSize], tCtx)
 		}
-		return true
+		return true, nil
 	}
 
 	// We don't count internal deliveries so we update server statistics here.
@@ -3213,7 +3238,7 @@ func (c *client) deliverMsg(sub *subscription, acc *Account, subject, reply, mh,
 	// Check for closed connection
 	if client.isClosed() {
 		client.mu.Unlock()
-		return false
+		return false, errors.New("client Closed")
 	}
 
 	// Do a fast check here to see if we should be tracking this from a latency
@@ -3283,7 +3308,7 @@ func (c *client) deliverMsg(sub *subscription, acc *Account, subject, reply, mh,
 
 	client.mu.Unlock()
 
-	return true
+	return true, nil
 }
 
 // Add the given sub's client to the list of clients that need flushing.
@@ -3502,16 +3527,16 @@ func isReservedReply(reply []byte) bool {
 }
 
 // This will decide to call the client code or router code.
-func (c *client) processInboundMsg(msg []byte) {
+func (c *client) processInboundMsg(msg []byte, tCtx *traceCtx) {
 	switch c.kind {
 	case CLIENT:
-		c.processInboundClientMsg(msg)
+		c.processInboundClientMsg(msg, tCtx)
 	case ROUTER:
-		c.processInboundRoutedMsg(msg)
+		c.processInboundRoutedMsg(msg, tCtx)
 	case GATEWAY:
-		c.processInboundGatewayMsg(msg)
+		c.processInboundGatewayMsg(msg, tCtx)
 	case LEAF:
-		c.processInboundLeafMsg(msg)
+		c.processInboundLeafMsg(msg, tCtx)
 	}
 }
 
@@ -3528,7 +3553,7 @@ func (c *client) selectMappedSubject() bool {
 // processInboundClientMsg is called to process an inbound msg from a client.
 // Return if the message was delivered, and if the message was not delivered
 // due to a permission issue.
-func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
+func (c *client) processInboundClientMsg(msg []byte, tCtx *traceCtx) (bool, bool) {
 	// Update statistics
 	// The msg includes the CR_LF, so pull back out for accounting.
 	c.in.msgs++
@@ -3607,7 +3632,7 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 	// If the subject was converted to the gateway routed subject, then handle it now
 	// and be done with the rest of this function.
 	if isGWRouted {
-		c.handleGWReplyMap(msg)
+		c.handleGWReplyMap(msg, tCtx)
 		return true, false
 	}
 
@@ -3641,6 +3666,8 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 		}
 	}
 
+	msg = tCtx.traceMsg(msg, string(c.pa.subject), string(c.pa.reply), c, c.acc)
+
 	// Indication if we attempted to deliver the message to anyone.
 	var didDeliver bool
 	var qnames [][]byte
@@ -3658,7 +3685,7 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 			atomic.LoadInt64(&c.srv.gateway.totalQSubs) > 0 {
 			flag |= pmrCollectQueueNames
 		}
-		didDeliver, qnames = c.processMsgResults(c.acc, r, msg, c.pa.deliver, c.pa.subject, c.pa.reply, flag)
+		didDeliver, qnames = c.processMsgResults(c.acc, r, msg, c.pa.deliver, c.pa.subject, c.pa.reply, flag, tCtx)
 	}
 
 	// Now deal with gateways
@@ -3668,14 +3695,14 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 			reply = append(reply, '@')
 			reply = append(reply, c.pa.deliver...)
 		}
-		didDeliver = c.sendMsgToGateways(c.acc, msg, c.pa.subject, reply, qnames) || didDeliver
+		didDeliver = c.sendMsgToGateways(c.acc, msg, c.pa.subject, reply, qnames, tCtx) || didDeliver
 	}
 
 	// Check to see if we did not deliver to anyone and the client has a reply subject set
-	// and wants notification of no_responders.
+	// and wants notification of no_responders. (do this only for non trace messages)
 	if !didDeliver && len(c.pa.reply) > 0 {
 		c.mu.Lock()
-		if c.opts.NoResponders {
+		if c.opts.NoResponders && !tCtx.trcHdrSet {
 			if sub := c.subForReply(c.pa.reply); sub != nil {
 				proto := fmt.Sprintf("HMSG %s %s 16 16\r\nNATS/1.0 503\r\n\r\n\r\n", c.pa.reply, sub.sid)
 				c.queueOutbound([]byte(proto))
@@ -3684,6 +3711,8 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 		}
 		c.mu.Unlock()
 	}
+
+	tCtx.traceMsgCompletion(true)
 
 	return didDeliver, false
 }
@@ -3702,11 +3731,11 @@ func (c *client) subForReply(reply []byte) *subscription {
 // This is invoked knowing that c.pa.subject has been set to the gateway routed subject.
 // This function will send the message to possibly LEAFs and directly back to the origin
 // gateway.
-func (c *client) handleGWReplyMap(msg []byte) bool {
+func (c *client) handleGWReplyMap(msg []byte, tCtx *traceCtx) bool {
 	// Check for leaf nodes
 	if c.srv.gwLeafSubs.Count() > 0 {
 		if r := c.srv.gwLeafSubs.Match(string(c.pa.subject)); len(r.psubs) > 0 {
-			c.processMsgResults(c.acc, r, msg, c.pa.deliver, c.pa.subject, c.pa.reply, pmrNoFlag)
+			c.processMsgResults(c.acc, r, msg, c.pa.deliver, c.pa.subject, c.pa.reply, pmrNoFlag, tCtx)
 		}
 	}
 	if c.srv.gateway.enabled {
@@ -3715,7 +3744,7 @@ func (c *client) handleGWReplyMap(msg []byte) bool {
 			reply = append(reply, '@')
 			reply = append(reply, c.pa.deliver...)
 		}
-		c.sendMsgToGateways(c.acc, msg, c.pa.subject, reply, nil)
+		c.sendMsgToGateways(c.acc, msg, c.pa.subject, reply, nil, tCtx)
 	}
 	return true
 }
@@ -3844,9 +3873,28 @@ func getHeader(key string, hdr []byte) []byte {
 	return value
 }
 
+// Will return true if the header denoted by key if the header exists
+func isHeaderSet(key string, hdr []byte) bool {
+	if len(hdr) == 0 {
+		return false
+	}
+	index := bytes.Index(hdr, []byte(key))
+	if index < 0 {
+		return false
+	}
+	index += len(key)
+	if index >= len(hdr) {
+		return false
+	}
+	if hdr[index] != ':' {
+		return false
+	}
+	return true
+}
+
 // processServiceImport is an internal callback when a subscription matches an imported service
 // from another account. This includes response mappings as well.
-func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byte) {
+func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byte, tCtx *traceCtx) {
 	// If we are a GW and this is not a direct serviceImport ignore.
 	isResponse := si.isRespServiceImport()
 	if (c.kind == GATEWAY || c.kind == ROUTER) && !isResponse {
@@ -3989,10 +4037,10 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	if c.srv.gateway.enabled {
 		flags |= pmrCollectQueueNames
 		var queues [][]byte
-		didDeliver, queues = c.processMsgResults(si.acc, rr, msg, c.pa.deliver, []byte(to), nrr, flags)
-		didDeliver = c.sendMsgToGateways(si.acc, msg, []byte(to), nrr, queues) || didDeliver
+		didDeliver, queues = c.processMsgResults(si.acc, rr, msg, c.pa.deliver, []byte(to), nrr, flags, tCtx)
+		didDeliver = c.sendMsgToGateways(si.acc, msg, []byte(to), nrr, queues, tCtx) || didDeliver
 	} else {
-		didDeliver, _ = c.processMsgResults(si.acc, rr, msg, c.pa.deliver, []byte(to), nrr, flags)
+		didDeliver, _ = c.processMsgResults(si.acc, rr, msg, c.pa.deliver, []byte(to), nrr, flags, tCtx)
 	}
 
 	// Restore to original values.
@@ -4067,7 +4115,7 @@ func (c *client) addSubToRouteTargets(sub *subscription) {
 
 // This processes the sublist results for a given message.
 // Returns if the message was delivered to at least target and queue filters.
-func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver, subject, reply []byte, flags int) (bool, [][]byte) {
+func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver, subject, reply []byte, flags int, tCtx *traceCtx) (bool, [][]byte) {
 	// For sending messages across routes and leafnodes.
 	// Reset if we have one since we reuse this data structure.
 	if c.in.rts != nil {
@@ -4168,8 +4216,25 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		}
 
 		// Normal delivery
+		msgRef, subs := tCtx.traceSub(c, sub, acc, dsubj, creply, msg)
+		hset := false
+		opa := c.pa
+		dmsg := msg
+		if canReceiveHeader := sub.client != nil && sub.client.headers; canReceiveHeader {
+			dmsg, hset = c.traceSetHeader(tCtx, dmsg, msgRef, acc, sub.client, c.pa.psi, sub.im)
+		}
 		mh := c.msgHeader(dsubj, creply, sub)
-		didDeliver = c.deliverMsg(sub, acc, dsubj, creply, mh, msg, rplyHasGWPrefix) || didDeliver
+		dd, err := c.deliverMsg(sub, acc, dsubj, creply, mh, dmsg, rplyHasGWPrefix, tCtx)
+		didDeliver = dd || didDeliver
+		if err != nil {
+			for _, s := range subs {
+				s.NoSendReason = err.Error()
+				s.Ref = _EMPTY_
+			}
+		}
+		if hset {
+			c.pa = opa
+		}
 	}
 
 	// Set these up to optionally filter based on the queue lists.
@@ -4292,8 +4357,25 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				}
 			}
 
+			msgRef, subs := tCtx.traceSub(c, sub, acc, subject, creply, msg)
+			hset := false
+			opa := c.pa
+			dmsg := msg
+			if canReceiveHeader := sub.client != nil && sub.client.headers; canReceiveHeader {
+				dmsg, hset = c.traceSetHeader(tCtx, dmsg, msgRef, acc, sub.client, c.pa.psi, sub.im)
+			}
 			mh := c.msgHeader(dsubj, creply, sub)
-			if c.deliverMsg(sub, acc, subject, creply, mh, msg, rplyHasGWPrefix) {
+			dd, err := c.deliverMsg(sub, acc, subject, creply, mh, dmsg, rplyHasGWPrefix, tCtx)
+			if hset {
+				c.pa = opa
+			}
+			if err != nil {
+				for _, s := range subs {
+					s.NoSendReason = err.Error()
+					s.Ref = _EMPTY_
+				}
+			}
+			if dd {
 				didDeliver = true
 				// Clear rsub
 				rsub = nil
@@ -4338,7 +4420,7 @@ sendToRoutesOrLeafs:
 	for i := range c.in.rts {
 		rt := &c.in.rts[i]
 		dc := rt.sub.client
-		dmsg, hset := msg, false
+		dmsg, hTmp, hset := msg, false, false
 
 		// Check if we have an origin cluster set from a leafnode message.
 		// If so make sure we do not send it back to the same cluster for a different
@@ -4369,8 +4451,18 @@ sendToRoutesOrLeafs:
 			}
 		}
 
+		msgRef, subs := tCtx.traceSub(c, rt.sub, acc, subject, creply, msg)
+		dmsg, hTmp = c.traceSetHeader(tCtx, dmsg, msgRef, acc, dc, c.pa.psi, rt.sub.im)
+		hset = hTmp || hset
 		mh := c.msgHeaderForRouteOrLeaf(subject, reply, rt, acc)
-		didDeliver = c.deliverMsg(rt.sub, acc, subject, reply, mh, dmsg, false) || didDeliver
+		dd, err := c.deliverMsg(rt.sub, acc, subject, reply, mh, dmsg, false, tCtx)
+		didDeliver = dd || didDeliver
+		if err != nil {
+			for _, s := range subs {
+				s.NoSendReason = err.Error()
+				s.Ref = _EMPTY_
+			}
+		}
 
 		// If we set the header reset the origin pub args.
 		if hset {
