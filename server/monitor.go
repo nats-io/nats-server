@@ -1259,6 +1259,19 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	)
 }
 
+func (s *Server) updateJszVarz(js *jetStream, v *JetStreamVarz, doConfig bool) {
+	if doConfig {
+		js.mu.RLock()
+		cfg := js.config
+		v.Config = &cfg
+		js.mu.RUnlock()
+	}
+	v.Stats = js.usageStats()
+	if mg := js.getMetaGroup(); mg != nil {
+		v.Meta = s.raftNodeToClusterInfo(mg)
+	}
+}
+
 // Varz returns a Varz struct containing the server information.
 func (s *Server) Varz(varzOpts *VarzOptions) (*Varz, error) {
 	var rss, vss int64
@@ -1268,11 +1281,15 @@ func (s *Server) Varz(varzOpts *VarzOptions) (*Varz, error) {
 	pse.ProcUsage(&pcpu, &rss, &vss)
 
 	s.mu.Lock()
+	js := s.js
 	// We need to create a new instance of Varz (with no reference
 	// whatsoever to anything stored in the server) since the user
 	// has access to the returned value.
 	v := s.createVarz(pcpu, rss)
 	s.mu.Unlock()
+	if js != nil {
+		s.updateJszVarz(js, &v.JetStream, true)
+	}
 
 	return v, nil
 }
@@ -1373,14 +1390,6 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			}
 		}
 		varz.LeafNode.Remotes = rlna
-	}
-	if s.js != nil {
-		s.js.mu.RLock()
-		cfg := s.js.config
-		varz.JetStream = JetStreamVarz{
-			Config: &cfg,
-		}
-		s.js.mu.RUnlock()
 	}
 
 	// Finish setting it up with fields that can be updated during
@@ -1500,16 +1509,6 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 		}
 	}
 	gw.RUnlock()
-
-	if s.js != nil {
-		// FIXME(dlc) - We have lock inversion that needs to be fixed up properly.
-		s.mu.Unlock()
-		v.JetStream.Stats = s.js.usageStats()
-		if mg := s.js.getMetaGroup(); mg != nil {
-			v.JetStream.Meta = s.raftNodeToClusterInfo(mg)
-		}
-		s.mu.Lock()
-	}
 }
 
 // HandleVarz will process HTTP requests for server information.
@@ -1531,13 +1530,32 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 
 	// Use server lock to create/update the server's varz object.
 	s.mu.Lock()
+	var created bool
+	js := s.js
 	s.httpReqStats[VarzPath]++
 	if s.varz == nil {
 		s.varz = s.createVarz(pcpu, rss)
+		created = true
 	} else {
 		s.updateVarzRuntimeFields(s.varz, false, pcpu, rss)
 	}
 	s.mu.Unlock()
+	// Since locking is jetStream -> Server, need to update jetstream
+	// varz outside of server lock.
+	if js != nil {
+		var v JetStreamVarz
+		// Work on stack variable
+		s.updateJszVarz(js, &v, created)
+		// Now update server's varz
+		s.mu.Lock()
+		sv := &s.varz.JetStream
+		if created {
+			sv.Config = v.Config
+		}
+		sv.Stats = v.Stats
+		sv.Meta = v.Meta
+		s.mu.Unlock()
+	}
 
 	// Do the marshaling outside of server lock, but under varzMu lock.
 	b, err := json.MarshalIndent(s.varz, "", "  ")
