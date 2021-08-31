@@ -1262,6 +1262,8 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 func (s *Server) updateJszVarz(js *jetStream, v *JetStreamVarz, doConfig bool) {
 	if doConfig {
 		js.mu.RLock()
+		// We want to snapshot the config since it will then be available outside
+		// of the js lock. So make a copy first, then point to this copy.
 		cfg := js.config
 		v.Config = &cfg
 		js.mu.RUnlock()
