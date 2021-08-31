@@ -1307,6 +1307,7 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 	var stats JetStreamAccountStats
 	if jsa != nil {
 		js := jsa.js
+		js.mu.RLock()
 		jsa.mu.RLock()
 		stats.Memory = uint64(jsa.memTotal)
 		stats.Store = uint64(jsa.storeTotal)
@@ -1316,13 +1317,11 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 			Errors: jsa.apiErrors,
 		}
 		if cc := jsa.js.cluster; cc != nil {
-			js.mu.RLock()
 			sas := cc.streams[aname]
 			stats.Streams = len(sas)
 			for _, sa := range sas {
 				stats.Consumers += len(sa.consumers)
 			}
-			js.mu.RUnlock()
 		} else {
 			stats.Streams = len(jsa.streams)
 			for _, mset := range jsa.streams {
@@ -1331,6 +1330,7 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 		}
 		stats.Limits = jsa.limits
 		jsa.mu.RUnlock()
+		js.mu.RUnlock()
 	}
 	return stats
 }
