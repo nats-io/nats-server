@@ -8002,6 +8002,82 @@ func TestJetStreamClusterConsumerLastActiveReporting(t *testing.T) {
 	checkTimeDiff(ci.AckFloor.Last, nci.AckFloor.Last)
 }
 
+func TestJetStreamRaceOnRAFTCreate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	srv := c.servers[0]
+	nc, err := nats.Connect(srv.ClientURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	}); err != nil {
+		t.Fatalf("Error creating stream: %v", err)
+	}
+
+	size := 10
+	wg := sync.WaitGroup{}
+	wg.Add(size)
+	for i := 0; i < size; i++ {
+		go func() {
+			defer wg.Done()
+			js.PullSubscribe("foo", "shared")
+		}()
+	}
+	wg.Wait()
+}
+
+func TestJetStreamDeadlockOnVarz(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	srv := c.servers[0]
+	nc, err := nats.Connect(srv.ClientURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	size := 10
+	wg := sync.WaitGroup{}
+	wg.Add(size)
+	ch := make(chan struct{})
+	for i := 0; i < size; i++ {
+		go func(i int) {
+			defer wg.Done()
+			<-ch
+			js.AddStream(&nats.StreamConfig{
+				Name:     fmt.Sprintf("TEST%d", i),
+				Subjects: []string{"foo"},
+				Replicas: 3,
+			})
+		}(i)
+	}
+
+	close(ch)
+	for i := 0; i < 10; i++ {
+		srv.Varz(nil)
+		time.Sleep(time.Millisecond)
+	}
+	wg.Wait()
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
