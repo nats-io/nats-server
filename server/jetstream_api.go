@@ -3045,6 +3045,9 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 		return
 	}
 
+	// Make sure we have sane defaults.
+	setConsumerConfigDefaults(&req.Config)
+
 	// Determine if we should proceed here when we are in clustered mode.
 	if s.JetStreamIsClustered() {
 		if req.Config.Direct {
