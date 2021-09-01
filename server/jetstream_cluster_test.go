@@ -8028,6 +8028,11 @@ func TestJetStreamRaceOnRAFTCreate(t *testing.T) {
 		t.Fatalf("Error creating stream: %v", err)
 	}
 
+	js, err = nc.JetStream(nats.MaxWait(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	size := 10
 	wg := sync.WaitGroup{}
 	wg.Add(size)
