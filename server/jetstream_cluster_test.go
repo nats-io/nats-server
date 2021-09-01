@@ -20,8 +20,10 @@ import (
 	"fmt"
 	"io/ioutil"
 	"math/rand"
+	"os"
 	"path"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -7763,7 +7765,7 @@ func TestJetStreamPullConsumerLeakedSubs(t *testing.T) {
 	defer sub.Unsubscribe()
 
 	// Load up a bunch of requests.
-	numRequests := 20 //100_000
+	numRequests := 20
 	for i := 0; i < numRequests; i++ {
 		js.PublishAsync("Domains.Domain", []byte("QUESTION"))
 	}
@@ -8076,6 +8078,175 @@ func TestJetStreamDeadlockOnVarz(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	wg.Wait()
+}
+
+// Make sure when we try to hard reset a stream state in a cluster that we also re-create the consumers.
+func TestJetStreamClusterStreamReset(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo.*"},
+		Replicas:  2,
+		Retention: nats.WorkQueuePolicy,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	numRequests := 20
+	for i := 0; i < numRequests; i++ {
+		js.Publish("foo.created", []byte("REQ"))
+	}
+
+	// Durable.
+	sub, err := js.SubscribeSync("foo.created", nats.Durable("d1"))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer sub.Unsubscribe()
+
+	si, err := js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.State.Msgs != uint64(numRequests) {
+		t.Fatalf("Expected %d msgs, got bad state: %+v", numRequests, si.State)
+	}
+	// Let settle a bit.
+	time.Sleep(250 * time.Millisecond)
+
+	// Grab number go routines.
+	base := runtime.NumGoroutine()
+
+	// Grab a server that is the consumer leader for the durable.
+	cl := c.consumerLeader("$G", "TEST", "d1")
+	mset, err := cl.GlobalAccount().lookupStream("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Do a hard reset here by hand.
+	mset.resetClusteredState()
+	// Wait til we have the leader elected.
+	c.waitOnConsumerLeader("$G", "TEST", "d1")
+
+	// So do not wait 10s in call in checkFor.
+	js2, _ := nc.JetStream(nats.MaxWait(100 * time.Millisecond))
+	// Make sure we can get the consumer info eventually.
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		_, err := js2.ConsumerInfo("TEST", "d1")
+		return err
+	})
+
+	// Grab number go routines.
+	if after := runtime.NumGoroutine(); base > after {
+		t.Fatalf("Expected %d go routines, got %d", base, after)
+	}
+}
+
+// Issue #2397
+func TestJetStreamClusterStreamCatchupNoState(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R2S", 2)
+	defer c.shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.*"},
+		Replicas: 2,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Hold onto servers.
+	sl := c.streamLeader("$G", "TEST")
+	if sl == nil {
+		t.Fatalf("Did not get a server")
+	}
+	nsl := c.randomNonStreamLeader("$G", "TEST")
+	if nsl == nil {
+		t.Fatalf("Did not get a server")
+	}
+	// Grab low level stream and raft node.
+	mset, err := nsl.GlobalAccount().lookupStream("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	node := mset.raftNode()
+	if node == nil {
+		t.Fatalf("Could not get stream group name")
+	}
+	gname := node.Group()
+
+	numRequests := 100
+	for i := 0; i < numRequests; i++ {
+		// This will force a snapshot which will prune the normal log.
+		// We will remove the snapshot to simulate the error condition.
+		if i == 10 {
+			if err := node.InstallSnapshot(mset.stateSnapshot()); err != nil {
+				t.Fatalf("Error installing snapshot: %v", err)
+			}
+		}
+		js.Publish("foo.created", []byte("REQ"))
+	}
+
+	config := nsl.JetStreamConfig()
+	if config == nil {
+		t.Fatalf("No config")
+	}
+	lconfig := sl.JetStreamConfig()
+	if lconfig == nil {
+		t.Fatalf("No config")
+	}
+
+	nc.Close()
+	c.stopAll()
+	// Remove all state by truncating for the non-leader.
+	for _, fn := range []string{"1.blk", "1.idx", "1.fss"} {
+		fname := path.Join(config.StoreDir, "$G", "streams", "TEST", "msgs", fn)
+		fd, err := os.OpenFile(fname, os.O_RDWR, defaultFilePerms)
+		if err != nil {
+			continue
+		}
+		fd.Truncate(0)
+		fd.Close()
+	}
+	// For both make sure we have no raft snapshots.
+	snapDir := path.Join(lconfig.StoreDir, "$SYS", "_js_", gname, "snapshots")
+	os.RemoveAll(snapDir)
+	snapDir = path.Join(config.StoreDir, "$SYS", "_js_", gname, "snapshots")
+	os.RemoveAll(snapDir)
+
+	// Now restart.
+	c.restartAll()
+	for _, cs := range c.servers {
+		c.waitOnStreamCurrent(cs, "$G", "TEST")
+	}
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	if _, err := js.Publish("foo.created", []byte("REQ")); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	si, err := js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.State.LastSeq != 101 {
+		t.Fatalf("bad state after restart: %+v", si.State)
+	}
 }
 
 // Support functions

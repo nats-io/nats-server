@@ -586,6 +586,7 @@ func (js *jetStream) isGroupLeaderless(rg *raftGroup) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -1295,17 +1296,18 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 
 	// Make sure we do not leave the apply channel to fill up and block the raft layer.
 	defer func() {
-		if n.State() != Closed {
-			if n.Leader() {
-				n.StepDown()
-			}
-			// Drain the commit channel..
-			for len(ach) > 0 {
-				select {
-				case <-ach:
-				default:
-					return
-				}
+		if n.State() == Closed {
+			return
+		}
+		if n.Leader() {
+			n.StepDown()
+		}
+		// Drain the commit channel..
+		for len(ach) > 0 {
+			select {
+			case <-ach:
+			default:
+				return
 			}
 		}
 	}()
@@ -1529,9 +1531,33 @@ func (mset *stream) resetClusteredState() bool {
 		js.mu.Lock()
 		sa.Group.node = nil
 		js.mu.Unlock()
-		go js.processClusterCreateStream(acc, sa)
+		go js.restartClustered(acc, sa)
 	}
 	return true
+}
+
+// This will reset the stream and consumers.
+// Should be done in separate go routine.
+func (js *jetStream) restartClustered(acc *Account, sa *streamAssignment) {
+	js.processClusterCreateStream(acc, sa)
+
+	// Check consumers.
+	js.mu.Lock()
+	var consumers []*consumerAssignment
+	if cc := js.cluster; cc != nil && cc.meta != nil {
+		ourID := cc.meta.ID()
+		for _, ca := range sa.consumers {
+			if rg := ca.Group; rg != nil && rg.isMember(ourID) {
+				rg.node = nil // Erase group raft/node state.
+				consumers = append(consumers, ca)
+			}
+		}
+	}
+	js.mu.Unlock()
+
+	for _, ca := range consumers {
+		js.processClusterCreateConsumer(ca, nil)
+	}
 }
 
 func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isRecovering bool) error {
@@ -1561,7 +1587,9 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 				// We can skip if we know this is less than what we already have.
 				if lseq < last {
-					s.Debugf("Apply stream entries skipping message with sequence %d with last of %d", lseq, last)
+					if !isRecovering {
+						s.Debugf("Apply stream entries skipping message with sequence %d with last of %d", lseq, last)
+					}
 					continue
 				}
 
