@@ -3045,6 +3045,9 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 		return
 	}
 
+	// Make sure we have sane defaults.
+	setConsumerConfigDefaults(&req.Config)
+
 	// Determine if we should proceed here when we are in clustered mode.
 	if s.JetStreamIsClustered() {
 		if req.Config.Direct {
@@ -3422,9 +3425,15 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 				// Delaying an error response gives the leader a chance to respond before us
 				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), ca.Group)
 			} else if ca != nil {
+				js.mu.RLock()
+				var node RaftNode
 				if rg := ca.Group; rg != nil && rg.node != nil && rg.isMember(ourID) {
+					node = rg.node
+				}
+				js.mu.RUnlock()
+				if node != nil {
 					// Check here if we are a member and this is just a new consumer that does not have a leader yet.
-					if rg.node.GroupLeader() == _EMPTY_ && !rg.node.HadPreviousLeader() {
+					if node.GroupLeader() == _EMPTY_ && !node.HadPreviousLeader() {
 						resp.Error = NewJSConsumerNotFoundError()
 						s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil)
 					}

@@ -2600,8 +2600,9 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	// For clustering the lower layers will pass our expected lseq. If it is present check for that here.
 	if lseq > 0 && lseq != (mset.lseq+mset.clfs) {
 		isMisMatch := true
-		// If our first message for this mirror, see if we have to adjust our starting sequence.
-		if mset.cfg.Mirror != nil {
+		// We may be able to recover here if we have no state whatsoever, or we are a mirror.
+		// See if we have to adjust our starting sequence.
+		if mset.lseq == 0 || mset.cfg.Mirror != nil {
 			var state StreamState
 			mset.store.FastState(&state)
 			if state.FirstSeq == 0 {
