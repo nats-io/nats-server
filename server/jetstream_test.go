@@ -1853,13 +1853,15 @@ func TestJetStreamWorkQueueRequest(t *testing.T) {
 			// Send a few more messages. These should not be delivered to the sub.
 			sendStreamMsg(t, nc, "foo", "Hello World!")
 			sendStreamMsg(t, nc, "bar", "Hello World!")
-			// We will have an alert here.
+			time.Sleep(10 * time.Millisecond)
+			checkSubPending(0)
+
+			// Send a new request, we should not get the 408 because our previous request
+			// should have expired.
+			nc.PublishRequest(getSubj, reply, jreq)
 			checkSubPending(1)
-			m, _ := sub.NextMsg(0)
-			// Make sure this is an alert that tells us our request is now stale.
-			if m.Header.Get("Status") != "408" {
-				t.Fatalf("Expected a 408 status code, got %q", m.Header.Get("Status"))
-			}
+			sub.NextMsg(time.Millisecond)
+			checkSubPending(0)
 		})
 	}
 }
