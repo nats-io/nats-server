@@ -4070,8 +4070,9 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	} else {
 		oname = cfg.Durable
 		if ca := sa.consumers[oname]; ca != nil && !ca.deleted {
+			isPull := ca.Config.DeliverSubject == _EMPTY_
 			// This can be ok if delivery subject update.
-			shouldErr := !reflect.DeepEqual(cfg, ca.Config) && !configsEqualSansDelivery(*cfg, *ca.Config) || ca.pending
+			shouldErr := isPull || ca.pending || (!reflect.DeepEqual(cfg, ca.Config) && !configsEqualSansDelivery(*cfg, *ca.Config))
 			if !shouldErr {
 				rr := acc.sl.Match(ca.Config.DeliverSubject)
 				shouldErr = len(rr.psubs)+len(rr.qsubs) != 0
