@@ -1556,7 +1556,18 @@ func TestAccountURLResolver(t *testing.T) {
 			})
 			var ts *httptest.Server
 			if test.useTLS {
-				ts = httptest.NewTLSServer(hf)
+				tc := &TLSConfigOpts{
+					CertFile: "../test/configs/certs/server-cert.pem",
+					KeyFile:  "../test/configs/certs/server-key.pem",
+					CaFile:   "../test/configs/certs/ca.pem",
+				}
+				tlsConfig, err := GenTLSConfig(tc)
+				if err != nil {
+					t.Fatalf("Error generating tls config: %v", err)
+				}
+				ts = httptest.NewUnstartedServer(hf)
+				ts.TLS = tlsConfig
+				ts.StartTLS()
 			} else {
 				ts = httptest.NewServer(hf)
 			}
@@ -1567,7 +1578,9 @@ func TestAccountURLResolver(t *testing.T) {
 				listen: -1
 				resolver: URL("%s/ngs/v1/accounts/jwt/")
 				resolver_tls {
-					insecure: true
+					cert_file: "../test/configs/certs/client-cert.pem"
+					key_file: "../test/configs/certs/client-key.pem"
+					ca_file: "../test/configs/certs/ca.pem"
 				}
 			`
 			conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, ojwt, ts.URL)))
