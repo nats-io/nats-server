@@ -3743,6 +3743,7 @@ func TestLeafNodeUniqueServerNameCrossJSDomain(t *testing.T) {
 		}
 		// ensure that an update for every server was received
 		sysNc := natsConnect(t, fmt.Sprintf("nats://admin:s3cr3t!@127.0.0.1:%d", s.opts.Port))
+		defer sysNc.Close()
 		sub, err := sysNc.SubscribeSync(fmt.Sprintf(serverStatsSubj, "*"))
 		require_NoError(t, err)
 		for {

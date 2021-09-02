@@ -206,6 +206,7 @@ func TestVarzSubscriptionsResetProperly(t *testing.T) {
 	opts := DefaultMonitorOptions()
 	opts.JetStream = true
 	s := RunServer(opts)
+	defer s.Shutdown()
 
 	// This bug seems to only happen via the http endpoint, not direct calls.
 	// Every time you call it doubles.

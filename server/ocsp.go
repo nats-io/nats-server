@@ -233,7 +233,15 @@ func (oc *OCSPMonitor) run() {
 	quitCh := s.quitCh
 	s.mu.Unlock()
 
-	defer s.grWG.Done()
+	var doShutdown bool
+	defer func() {
+		// Need to decrement before shuting down, otherwise shutdown
+		// would be stuck waiting on grWG to go down to 0.
+		s.grWG.Done()
+		if doShutdown {
+			s.Shutdown()
+		}
+	}()
 
 	oc.mu.Lock()
 	shutdownOnRevoke := oc.shutdownOnRevoke
@@ -254,7 +262,7 @@ func (oc *OCSPMonitor) run() {
 	} else if err == nil && shutdownOnRevoke {
 		// If resp.Status is ocsp.Revoked, ocsp.Unknown, or any other value.
 		s.Errorf("Found OCSP status for %s certificate at '%s': %s", kind, certFile, ocspStatusString(resp.Status))
-		s.Shutdown()
+		doShutdown = true
 		return
 	}
 
@@ -288,7 +296,7 @@ func (oc *OCSPMonitor) run() {
 		default:
 			s.Errorf("Received OCSP status for %s certificate '%s': %s", kind, certFile, ocspStatusString(n))
 			if shutdownOnRevoke {
-				s.Shutdown()
+				doShutdown = true
 			}
 			return
 		}

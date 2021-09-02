@@ -393,7 +393,7 @@ func TestNoRaceQueueSubWeightOrderMultipleConnections(t *testing.T) {
 			<-start
 			// Now create 100 identical queue subscribers on each connection.
 			for i := 0; i < 100; i++ {
-				if _, err := nc.QueueSubscribeSync("foo", "bar"); err != nil {
+				if _, err := nc.QueueSubscribe("foo", "bar", func(_ *nats.Msg) {}); err != nil {
 					return
 				}
 			}

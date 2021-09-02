@@ -6770,6 +6770,7 @@ func TestJetStreamClusterSuperClusterPullConsumerAndHeaders(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
+		defer nc.Close()
 		m, err := nc.Request("$JS.API.CONSUMER.MSG.NEXT.S.dlc", nil, 2*time.Second)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
