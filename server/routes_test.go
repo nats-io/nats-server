@@ -1431,3 +1431,80 @@ func TestRouteLockReleasedOnTLSFailure(t *testing.T) {
 		t.Fatal("Seem connection lock was not released")
 	}
 }
+
+type localhostResolver struct{}
+
+func (r *localhostResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
+	return []string{"127.0.0.1"}, nil
+}
+
+func TestTLSRoutesCertificateImplicitAllowPass(t *testing.T) {
+	testTLSRoutesCertificateImplicitAllow(t, true)
+}
+
+func TestTLSRoutesCertificateImplicitAllowFail(t *testing.T) {
+	testTLSRoutesCertificateImplicitAllow(t, false)
+}
+
+func testTLSRoutesCertificateImplicitAllow(t *testing.T, pass bool) {
+	// Base config for the servers
+	cfg := createFile(t, "cfg")
+	defer removeFile(t, cfg.Name())
+	cfg.WriteString(fmt.Sprintf(`
+		cluster {
+		  tls {
+			cert_file = "../test/configs/certs/tlsauth/server.pem"
+			key_file = "../test/configs/certs/tlsauth/server-key.pem"
+			ca_file = "../test/configs/certs/tlsauth/ca.pem"
+			verify_cert_and_check_known_urls = true
+			insecure = %t
+			timeout = 1
+		  }
+		}
+	`, !pass)) // set insecure to skip verification on the outgoing end
+	if err := cfg.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
+	optsA := LoadConfig(cfg.Name())
+	optsB := LoadConfig(cfg.Name())
+
+	routeURLs := "nats://localhost:9935, nats://localhost:9936"
+	if !pass {
+		routeURLs = "nats://127.0.0.1:9935, nats://127.0.0.1:9936"
+	}
+	optsA.Host = "127.0.0.1"
+	optsA.Port = 9335
+	optsA.Cluster.Name = "xyz"
+	optsA.Cluster.Host = optsA.Host
+	optsA.Cluster.Port = 9935
+	optsA.Cluster.resolver = &localhostResolver{}
+	optsA.Routes = RoutesFromStr(routeURLs)
+	optsA.NoSystemAccount = true
+	srvA := RunServer(optsA)
+	defer srvA.Shutdown()
+
+	optsB.Host = "127.0.0.1"
+	optsB.Port = 9336
+	optsB.Cluster.Name = "xyz"
+	optsB.Cluster.Host = optsB.Host
+	optsB.Cluster.Port = 9936
+	optsB.Cluster.resolver = &localhostResolver{}
+	optsB.Routes = RoutesFromStr(routeURLs)
+	optsB.NoSystemAccount = true
+	srvB := RunServer(optsB)
+	defer srvB.Shutdown()
+
+	if pass {
+		checkNumRoutes(t, srvA, 1)
+		checkNumRoutes(t, srvB, 1)
+	} else {
+		time.Sleep(1 * time.Second) // the fail case uses the IP, so a short wait is sufficient
+		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+			if srvA.NumRoutes() != 0 || srvB.NumRoutes() != 0 {
+				return fmt.Errorf("No route connection expected")
+			}
+			return nil
+		})
+	}
+}

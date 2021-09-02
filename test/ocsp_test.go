@@ -274,6 +274,7 @@ func TestOCSPMustStapleAutoDoesNotShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer nc.Close()
 	sub, err := nc.SubscribeSync("foo")
 	if err != nil {
 		t.Fatal(err)
@@ -296,7 +297,7 @@ func TestOCSPMustStapleAutoDoesNotShutdown(t *testing.T) {
 
 	// Should not be connection refused, the client will continue running and
 	// be served the stale OCSP staple instead.
-	_, err = nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port),
+	nc, err = nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port),
 		nats.Secure(&tls.Config{
 			VerifyConnection: func(s tls.ConnectionState) error {
 				resp, err := getOCSPStatus(s)
@@ -315,6 +316,7 @@ func TestOCSPMustStapleAutoDoesNotShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	nc.Close()
 }
 
 func TestOCSPAutoWithoutMustStapleDoesNotShutdownOnRevoke(t *testing.T) {
@@ -378,6 +380,7 @@ func TestOCSPAutoWithoutMustStapleDoesNotShutdownOnRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer nc.Close()
 	sub, err := nc.SubscribeSync("foo")
 	if err != nil {
 		t.Fatal(err)
@@ -398,13 +401,14 @@ func TestOCSPAutoWithoutMustStapleDoesNotShutdownOnRevoke(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Should not be connection refused since server will continue running.
-	_, err = nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port),
+	nc, err = nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port),
 		nats.RootCAs(caCert),
 		nats.ErrorHandler(noOpErrHandler),
 	)
 	if err != nil {
 		t.Errorf("Unexpected error: %s", err)
 	}
+	nc.Close()
 }
 
 func TestOCSPClient(t *testing.T) {
@@ -1078,6 +1082,7 @@ func TestOCSPCluster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer cA.Close()
 	checkClusterFormed(t, srvA, srvB)
 
 	// Revoke the seed server cluster certificate, following servers will not be able to verify connection.
@@ -1143,6 +1148,7 @@ func TestOCSPCluster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer cB.Close()
 	cC, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", optsC.Port),
 		nats.Secure(&tls.Config{
 			VerifyConnection: func(s tls.ConnectionState) error {
@@ -1158,6 +1164,7 @@ func TestOCSPCluster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer cC.Close()
 
 	// There should be no connectivity between the clients due to the revoked staple.
 	_, err = cA.Subscribe("foo", func(m *nats.Msg) {
@@ -1343,6 +1350,7 @@ func TestOCSPLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer cA.Close()
 	// checkLeafNodeConnected(t, srvA)
 
 	// Revoke the seed server cluster certificate, following servers will not be able to verify connection.
@@ -1402,6 +1410,7 @@ func TestOCSPLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer cB.Close()
 	cC, err := nats.Connect(fmt.Sprintf("tls://127.0.0.1:%d", optsC.Port),
 		nats.Secure(&tls.Config{
 			VerifyConnection: func(s tls.ConnectionState) error {
@@ -1417,6 +1426,7 @@ func TestOCSPLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer cC.Close()
 
 	// There should be no connectivity between the clients due to the revoked staple.
 	_, err = cA.Subscribe("foo", func(m *nats.Msg) {
@@ -1623,6 +1633,7 @@ func TestOCSPGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer cA.Close()
 	waitForOutboundGateways(t, srvB, 1, 5*time.Second)
 
 	// Revoke the seed server cluster certificate, following servers will not be able to verify connection.
@@ -1685,6 +1696,7 @@ func TestOCSPGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer cB.Close()
 	cC, err := nats.Connect(fmt.Sprintf("tls://127.0.0.1:%d", optsC.Port),
 		nats.Secure(&tls.Config{
 			VerifyConnection: func(s tls.ConnectionState) error {
@@ -1700,6 +1712,7 @@ func TestOCSPGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer cC.Close()
 
 	// There should be no connectivity between the clients due to the revoked staple.
 	_, err = cA.Subscribe("foo", func(m *nats.Msg) {

@@ -135,6 +135,7 @@ func genAsyncParser(c *client) (func(string), chan bool) {
 
 var defaultServerOptions = Options{
 	Host:                  "127.0.0.1",
+	Port:                  -1,
 	Trace:                 true,
 	Debug:                 true,
 	DisableShortFirstPing: true,
@@ -199,7 +200,7 @@ func TestAsyncClientWithRunningServer(t *testing.T) {
 }
 
 func TestClientCreateAndInfo(t *testing.T) {
-	c, l := setUpClientWithResponse()
+	s, c, _, l := rawSetup(defaultServerOptions)
 	defer c.close()
 
 	if c.cid != 1 {
@@ -221,14 +222,13 @@ func TestClientCreateAndInfo(t *testing.T) {
 	// Sanity checks
 	if info.MaxPayload != MAX_PAYLOAD_SIZE ||
 		info.AuthRequired || info.TLSRequired ||
-		info.Port != DEFAULT_PORT {
+		int(info.Port) != s.opts.Port {
 		t.Fatalf("INFO inconsistent: %+v\n", info)
 	}
 }
 
 func TestClientNoResponderSupport(t *testing.T) {
 	opts := defaultServerOptions
-	opts.Port = -1
 	s := New(&opts)
 
 	c, _, _ := newClientForServer(s)
@@ -258,7 +258,6 @@ func TestClientNoResponderSupport(t *testing.T) {
 
 func TestServerHeaderSupport(t *testing.T) {
 	opts := defaultServerOptions
-	opts.Port = -1
 	s := New(&opts)
 
 	c, _, l := newClientForServer(s)
@@ -295,7 +294,6 @@ func TestServerHeaderSupport(t *testing.T) {
 // is bi-directional and functions properly.
 func TestClientHeaderSupport(t *testing.T) {
 	opts := defaultServerOptions
-	opts.Port = -1
 	s := New(&opts)
 
 	c, _, _ := newClientForServer(s)
@@ -331,7 +329,6 @@ var hmsgPat = regexp.MustCompile(`HMSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n
 
 func TestClientHeaderDeliverMsg(t *testing.T) {
 	opts := defaultServerOptions
-	opts.Port = -1
 	s := New(&opts)
 
 	c, cr, _ := newClientForServer(s)
@@ -375,7 +372,6 @@ var smsgPat = regexp.MustCompile(`^MSG\s+([^\s]+)\s+([^\s]+)\s+(([^\s]+)[^\S\r\n
 
 func TestClientHeaderDeliverStrippedMsg(t *testing.T) {
 	opts := defaultServerOptions
-	opts.Port = -1
 	s := New(&opts)
 
 	c, _, _ := newClientForServer(s)
@@ -424,7 +420,6 @@ func TestClientHeaderDeliverStrippedMsg(t *testing.T) {
 
 func TestClientHeaderDeliverQueueSubStrippedMsg(t *testing.T) {
 	opts := defaultServerOptions
-	opts.Port = -1
 	s := New(&opts)
 
 	c, _, _ := newClientForServer(s)
@@ -2543,6 +2538,7 @@ func TestClientClampMaxSubsErrReport(t *testing.T) {
 	checkLeafNodeConnected(t, s2)
 
 	nc := natsConnect(t, s2.ClientURL())
+	defer nc.Close()
 	natsSubSync(t, nc, "foo")
 	natsSubSync(t, nc, "bar")
 

@@ -194,6 +194,7 @@ func TestPingSuppresion(t *testing.T) {
 	opts := DefaultTestOptions
 	opts.Port = PING_TEST_PORT
 	opts.PingInterval = pingInterval
+	opts.DisableShortFirstPing = true
 
 	s := RunServer(&opts)
 	defer s.Shutdown()
