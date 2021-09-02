@@ -4041,9 +4041,20 @@ func TestConfigReloadAccountResolverTLSConfig(t *testing.T) {
 	}
 	pub, _ := kp.PublicKey()
 
-	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	tc := &TLSConfigOpts{
+		CertFile: "../test/configs/certs/server-cert.pem",
+		KeyFile:  "../test/configs/certs/server-key.pem",
+		CaFile:   "../test/configs/certs/ca.pem",
+	}
+	tlsConfig, err := GenTLSConfig(tc)
+	if err != nil {
+		t.Fatalf("Error generating tls config: %v", err)
+	}
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(ajwt))
 	}))
+	ts.TLS = tlsConfig
+	ts.StartTLS()
 	defer ts.Close()
 	// Set a dummy logger to prevent tls bad certificate output to stderr.
 	ts.Config.ErrorLog = log.New(&bytes.Buffer{}, "", 0)
@@ -4056,7 +4067,9 @@ func TestConfigReloadAccountResolverTLSConfig(t *testing.T) {
 	`
 	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, pub, ts.URL, `
 		resolver_tls {
-			insecure: true
+			cert_file: "../test/configs/certs/client-cert.pem"
+			key_file: "../test/configs/certs/client-key.pem"
+			ca_file: "../test/configs/certs/ca.pem"
 		}
 	`)))
 	defer removeFile(t, conf)
