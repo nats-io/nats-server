@@ -130,6 +130,8 @@ func TestOCSPAlwaysMustStapleAndShutdown(t *testing.T) {
 	if err != nats.ErrNoServers {
 		t.Errorf("Expected connection refused")
 	}
+	// Verify that the server finishes shutdown
+	srv.WaitForShutdown()
 }
 
 func TestOCSPMustStapleShutdown(t *testing.T) {
