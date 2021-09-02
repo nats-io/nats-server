@@ -1843,24 +1843,24 @@ func TestJetStreamWorkQueueRequest(t *testing.T) {
 			// Now do expiration
 			req.Batch = 1
 			req.NoWait = false
-			req.Expires = 10 * time.Millisecond
+			req.Expires = 100 * time.Millisecond
 			jreq, _ = json.Marshal(req)
 
 			nc.PublishRequest(getSubj, reply, jreq)
 			// Let it expire
-			time.Sleep(20 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond)
 
 			// Send a few more messages. These should not be delivered to the sub.
 			sendStreamMsg(t, nc, "foo", "Hello World!")
 			sendStreamMsg(t, nc, "bar", "Hello World!")
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 			checkSubPending(0)
 
 			// Send a new request, we should not get the 408 because our previous request
 			// should have expired.
 			nc.PublishRequest(getSubj, reply, jreq)
 			checkSubPending(1)
-			sub.NextMsg(time.Millisecond)
+			sub.NextMsg(time.Second)
 			checkSubPending(0)
 		})
 	}
