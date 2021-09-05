@@ -3094,13 +3094,7 @@ func (mb *msgBlock) fetchMsg(seq uint64) (*fileStoredMsg, error) {
 	if err := mb.loadMsgsWithLock(); err != nil {
 		return nil, err
 	}
-
-	sm, err = mb.cacheLookup(seq)
-	if err == errNoCache {
-		fmt.Printf("NO CACHE [%d] FOR %d!!\n\n", mb.index, seq)
-		fmt.Printf("first %d, last %d\n", mb.first.seq, mb.last.seq)
-	}
-	return sm, err
+	return mb.cacheLookup(seq)
 }
 
 var (
