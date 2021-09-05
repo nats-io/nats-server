@@ -1796,12 +1796,11 @@ func TestFileStoreSnapshot(t *testing.T) {
 		// Will have more exhaustive tests in jetstream_test.go.
 		state.Consumers = 0
 
-		// FIXME(dlc) - Also the hashes will not match if directory is not the same, so need to
-		// work through that problem too. The test below will pass but if you try to extract a
-		// message that will most likely fail.
+		// Just check the state.
 		if !reflect.DeepEqual(rstate, state) {
 			t.Fatalf("Restored state does not match:\n%+v\n\n%+v", rstate, state)
 		}
+
 	}
 
 	// Simple case first.
@@ -1830,9 +1829,12 @@ func TestFileStoreSnapshot(t *testing.T) {
 	// Make sure compaction works with snapshots.
 	fs.mu.RLock()
 	for _, mb := range fs.blks {
-		mb.mu.Lock()
-		mb.compact()
-		mb.mu.Unlock()
+		// Should not call compact on last msg block.
+		if mb != fs.lmb {
+			mb.mu.Lock()
+			mb.compact()
+			mb.mu.Unlock()
+		}
 	}
 	fs.mu.RUnlock()
 
@@ -2102,7 +2104,7 @@ func TestFileStorePerf(t *testing.T) {
 	defer removeDir(t, storeDir)
 
 	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: storeDir},
+		FileStoreConfig{StoreDir: storeDir, AsyncFlush: true},
 		StreamConfig{Name: "zzz", Storage: FileStorage},
 	)
 	if err != nil {
