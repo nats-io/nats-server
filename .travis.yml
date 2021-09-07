@@ -32,8 +32,8 @@ before_script:
 script:
 - set -e
 - if [[ $TRAVIS_TAG ]]; then go test -v -run=TestVersionMatchesTag ./server; fi
-- if [[ ! $TRAVIS_TAG ]]; then go test -v -run=TestNoRace --failfast -p=1 ./...; fi
-- if [[ ! $TRAVIS_TAG ]]; then if [[ "$TRAVIS_GO_VERSION" =~ 1.15 ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race -p=1 --failfast ./...; fi; fi
+- if [[ ! $TRAVIS_TAG ]]; then go test -v -run=TestNoRace --failfast -p=1 -timeout 20m ./...; fi
+- if [[ ! $TRAVIS_TAG ]]; then if [[ "$TRAVIS_GO_VERSION" =~ 1.15 ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race -p=1 --failfast -timeout 20m ./...; fi; fi
 - set +e
 
 deploy:

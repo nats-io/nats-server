@@ -3042,3 +3042,88 @@ func TestNoRaceJetStreamEncryptionEnabledOnRestartWithExpire(t *testing.T) {
 		t.Fatalf("Restart took longer than expected: %v", dd)
 	}
 }
+
+// This test was from Ivan K. and showed a bug in the filestore implementation.
+// This is skipped by default since it takes >40s to run.
+func TestNoRaceJetStreamOrderedConsumerMissingMsg(t *testing.T) {
+	// Uncomment to run. Needs to be on a big machine. Do not want as part of Travis tests atm.
+	skip(t)
+
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{
+		Name:     "benchstream",
+		Subjects: []string{"testsubject"},
+		Replicas: 1,
+	}); err != nil {
+		t.Fatalf("add stream failed: %s", err)
+	}
+
+	total := 1_000_000
+
+	numSubs := 10
+	ch := make(chan struct{}, numSubs)
+	wg := sync.WaitGroup{}
+	wg.Add(numSubs)
+	errCh := make(chan error, 1)
+	for i := 0; i < numSubs; i++ {
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+		go func(nc *nats.Conn, js nats.JetStreamContext) {
+			defer wg.Done()
+			received := 0
+			_, err := js.Subscribe("testsubject", func(m *nats.Msg) {
+				meta, _ := m.Metadata()
+				if meta.Sequence.Consumer != meta.Sequence.Stream {
+					nc.Close()
+					errCh <- fmt.Errorf("Bad meta: %+v", meta)
+				}
+				received++
+				if received == total {
+					ch <- struct{}{}
+				}
+			}, nats.OrderedConsumer())
+			if err != nil {
+				select {
+				case errCh <- fmt.Errorf("Error creating sub: %v", err):
+				default:
+				}
+
+			}
+		}(nc, js)
+	}
+	wg.Wait()
+	select {
+	case e := <-errCh:
+		t.Fatal(e)
+	default:
+	}
+
+	payload := make([]byte, 500)
+	for i := 1; i <= total; i++ {
+		js.PublishAsync("testsubject", payload)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(10 * time.Second):
+		t.Fatalf("Did not send all messages")
+	}
+
+	// Now wait for consumers to be done:
+	for i := 0; i < numSubs; i++ {
+		select {
+		case <-ch:
+		case <-time.After(10 * time.Second):
+			t.Fatal("Did not receive all messages for all consumers in time")
+		}
+	}
+}
