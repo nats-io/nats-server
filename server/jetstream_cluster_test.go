@@ -3358,6 +3358,187 @@ func TestJetStreamClusterPeerRemovalAPI(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterPeerRemovalAndStreamReassignment(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomNonLeader()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar"},
+		Replicas: 3,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Admin based API
+	ml := c.leader()
+	nc, err = nats.Connect(ml.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	if err != nil {
+		t.Fatalf("Failed to create system client: %v", err)
+	}
+	defer nc.Close()
+
+	// Select the non-leader server for the stream to remove.
+	if len(si.Cluster.Replicas) < 2 {
+		t.Fatalf("Not enough replicas found: %+v", si.Cluster)
+	}
+	toRemove, cl := si.Cluster.Replicas[0].Name, c.leader()
+	if toRemove == cl.Name() {
+		toRemove = si.Cluster.Replicas[1].Name
+	}
+
+	req := &JSApiMetaServerRemoveRequest{Server: toRemove}
+	jsreq, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	rmsg, err := nc.Request(JSApiRemoveServer, jsreq, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var resp JSApiMetaServerRemoveResponse
+	if err := json.Unmarshal(rmsg.Data, &resp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("Unexpected error: %+v", resp.Error)
+	}
+	// In case that server was also meta-leader.
+	c.waitOnLeader()
+
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		for _, s := range ml.JetStreamClusterPeers() {
+			if s == toRemove {
+				return fmt.Errorf("Server still in the peer list")
+			}
+		}
+		return nil
+	})
+
+	// Now wait until the stream is now current.
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
+		if err != nil {
+			return fmt.Errorf("Could not fetch stream info: %v", err)
+		}
+		// We should not see the old server at all.
+		for _, p := range si.Cluster.Replicas {
+			if p.Name == toRemove {
+				t.Fatalf("Peer not removed yet: %+v", toRemove)
+			}
+			if !p.Current {
+				return fmt.Errorf("Expected replica to be current: %+v", p)
+			}
+		}
+		if len(si.Cluster.Replicas) != 2 {
+			return fmt.Errorf("Expected 2 replicas, got %d", len(si.Cluster.Replicas))
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterPeerRemovalAndStreamReassignmentWithoutSpace(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomNonLeader()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar"},
+		Replicas: 3,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Admin based API
+	ml := c.leader()
+	nc, err = nats.Connect(ml.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	if err != nil {
+		t.Fatalf("Failed to create system client: %v", err)
+	}
+	defer nc.Close()
+
+	// Select the non-leader server for the stream to remove.
+	if len(si.Cluster.Replicas) < 2 {
+		t.Fatalf("Not enough replicas found: %+v", si.Cluster)
+	}
+	toRemove, cl := si.Cluster.Replicas[0].Name, c.leader()
+	if toRemove == cl.Name() {
+		toRemove = si.Cluster.Replicas[1].Name
+	}
+
+	req := &JSApiMetaServerRemoveRequest{Server: toRemove}
+	jsreq, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	rmsg, err := nc.Request(JSApiRemoveServer, jsreq, 2*time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	var resp JSApiMetaServerRemoveResponse
+	if err := json.Unmarshal(rmsg.Data, &resp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("Unexpected error: %+v", resp.Error)
+	}
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		for _, s := range ml.JetStreamClusterPeers() {
+			if s == toRemove {
+				return fmt.Errorf("Server still in the peer list")
+			}
+		}
+		return nil
+	})
+	// Make sure only 2 peers at this point.
+	c.waitOnPeerCount(2)
+
+	// Now wait until the stream is now current.
+	streamCurrent := func(nr int) {
+		checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+			si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
+			if err != nil {
+				return fmt.Errorf("Could not fetch stream info: %v", err)
+			}
+			// We should not see the old server at all.
+			for _, p := range si.Cluster.Replicas {
+				if p.Name == toRemove {
+					return fmt.Errorf("Peer not removed yet: %+v", toRemove)
+				}
+				if !p.Current {
+					return fmt.Errorf("Expected replica to be current: %+v", p)
+				}
+			}
+			if len(si.Cluster.Replicas) != nr {
+				return fmt.Errorf("Expected %d replicas, got %d", nr, len(si.Cluster.Replicas))
+			}
+			return nil
+		})
+	}
+
+	// Make sure the peer was removed from the stream and that we did not fill the new spot.
+	streamCurrent(1)
+
+	// Now add in a new server and make sure it gets added to our stream.
+	c.addInNewServer()
+	c.waitOnPeerCount(3)
+
+	streamCurrent(2)
+}
+
 func TestJetStreamClusterPeerOffline(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R5S", 5)
 	defer c.shutdown()
@@ -3825,7 +4006,7 @@ func TestJetStreamClusterNoDupePeerSelection(t *testing.T) {
 	}
 }
 
-func TestJetStreamClusterRemovePeer(t *testing.T) {
+func TestJetStreamClusterStreamRemovePeer(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "RNS", 5)
 	defer c.shutdown()
 
@@ -3852,6 +4033,20 @@ func TestJetStreamClusterRemovePeer(t *testing.T) {
 	}
 	checkSubsPending(t, sub, toSend)
 
+	// Do ephemeral too.
+	esub, err := js.SubscribeSync("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	checkSubsPending(t, esub, toSend)
+
+	ci, err := esub.ConsumerInfo()
+	if err != nil {
+		t.Fatalf("Could not fetch consumer info: %v", err)
+	}
+	// Capture ephemeral's server and name.
+	es, en := ci.Cluster.Leader, ci.Name
+
 	// Grab stream info.
 	si, err := js.StreamInfo("TEST")
 	if err != nil {
@@ -3863,7 +4058,9 @@ func TestJetStreamClusterRemovePeer(t *testing.T) {
 	}
 	rand.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
 	toRemove := peers[0]
-
+	if cl := c.leader(); toRemove == cl.Name() {
+		toRemove = peers[1]
+	}
 	// First test bad peer.
 	req := &JSApiStreamRemovePeerRequest{Peer: "NOT VALID"}
 	jsreq, err := json.Marshal(req)
@@ -3924,8 +4121,10 @@ func TestJetStreamClusterRemovePeer(t *testing.T) {
 		return nil
 	})
 
+	c.waitOnConsumerLeader("$G", "TEST", "cat")
+
 	// Now check consumer info as well.
-	checkFor(t, 30*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
 		ci, err := js.ConsumerInfo("TEST", "cat", nats.MaxWait(time.Second))
 		if err != nil {
 			return fmt.Errorf("Could not fetch consumer info: %v", err)
@@ -3948,6 +4147,30 @@ func TestJetStreamClusterRemovePeer(t *testing.T) {
 		}
 		return nil
 	})
+
+	// Now check ephemeral consumer info.
+	// Make sure we did not stamp same new group into the ephemeral where R=1.
+	ci, err = esub.ConsumerInfo()
+	// If the leader was same as what we just removed, this should fail.
+	if es == toRemove {
+		if err != nats.ErrConsumerNotFound {
+			t.Fatalf("Expected a not found error, got %v", err)
+		}
+		// Also make sure this was removed all together.
+		// We may proactively move things in the future.
+		for cn := range js.ConsumerNames("TEST") {
+			if cn == en {
+				t.Fatalf("Expected ephemeral consumer to be deleted since we removed its only peer")
+			}
+		}
+	} else {
+		if err != nil {
+			t.Fatalf("Could not fetch consumer info: %v", err)
+		}
+		if len(ci.Cluster.Replicas) != 0 {
+			t.Fatalf("Expected no replicas for ephemeral, got %d", len(ci.Cluster.Replicas))
+		}
+	}
 }
 
 func TestJetStreamClusterStreamLeaderStepDown(t *testing.T) {
@@ -8491,7 +8714,7 @@ func (sc *supercluster) waitOnLeader() {
 	for time.Now().Before(expires) {
 		for _, c := range sc.clusters {
 			if leader := c.leader(); leader != nil {
-				time.Sleep(200 * time.Millisecond)
+				time.Sleep(250 * time.Millisecond)
 				return
 			}
 		}
