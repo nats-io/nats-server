@@ -1012,10 +1012,60 @@ func (sa *streamAssignment) copyGroup() *streamAssignment {
 	return &csa
 }
 
+// Lock should be held.
+func (sa *streamAssignment) missingPeers() bool {
+	return len(sa.Group.Peers) < sa.Config.Replicas
+}
+
+// Called when we detect a new peer. Only the leader will process checking
+// for any streams, and consequently any consumers.
+func (js *jetStream) processAddPeer(peer string) {
+	js.mu.Lock()
+	defer js.mu.Unlock()
+
+	s, cc := js.srv, js.cluster
+	isLeader := cc.isLeader()
+
+	// Now check if we are meta-leader. We will check for any re-assignments.
+	if !isLeader {
+		return
+	}
+
+	sir, ok := s.nodeToInfo.Load(peer)
+	if !ok || sir == nil {
+		return
+	}
+	si := sir.(nodeInfo)
+
+	for _, asa := range cc.streams {
+		for _, sa := range asa {
+			if sa.missingPeers() {
+				// Make sure the right cluster etc.
+				if si.cluster != sa.Client.Cluster {
+					continue
+				}
+				// If we are here we can add in this peer.
+				csa := sa.copyGroup()
+				csa.Group.Peers = append(csa.Group.Peers, peer)
+				// Send our proposal for this csa. Also use same group definition for all the consumers as well.
+				cc.meta.Propose(encodeAddStreamAssignment(csa))
+				for _, ca := range sa.consumers {
+					// Ephemerals are R=1, so only auto-remap durables, or R>1.
+					if ca.Config.Durable != _EMPTY_ {
+						cca := *ca
+						cca.Group.Peers = csa.Group.Peers
+						cc.meta.Propose(encodeAddConsumerAssignment(&cca))
+					}
+				}
+			}
+		}
+	}
+}
+
 func (js *jetStream) processRemovePeer(peer string) {
 	js.mu.Lock()
 	s, cc := js.srv, js.cluster
-
+	isLeader := cc.isLeader()
 	// All nodes will check if this is them.
 	isUs := cc.meta.ID() == peer
 	disabled := js.disabled
@@ -1043,28 +1093,58 @@ func (js *jetStream) processRemovePeer(peer string) {
 
 		go s.DisableJetStream()
 	}
+
+	// Now check if we are meta-leader. We will attempt re-assignment.
+	if !isLeader {
+		return
+	}
+
+	js.mu.Lock()
+	defer js.mu.Unlock()
+
+	for _, asa := range cc.streams {
+		for _, sa := range asa {
+			if rg := sa.Group; rg.isMember(peer) {
+				js.removePeerFromStreamLocked(sa, peer)
+			}
+		}
+	}
 }
 
 // Assumes all checks have already been done.
 func (js *jetStream) removePeerFromStream(sa *streamAssignment, peer string) bool {
 	js.mu.Lock()
 	defer js.mu.Unlock()
+	return js.removePeerFromStreamLocked(sa, peer)
+}
+
+// Lock should be held.
+func (js *jetStream) removePeerFromStreamLocked(sa *streamAssignment, peer string) bool {
+	if rg := sa.Group; !rg.isMember(peer) {
+		return false
+	}
 
 	s, cc, csa := js.srv, js.cluster, sa.copyGroup()
-	if !cc.remapStreamAssignment(csa, peer) {
-		s.Warnf("JetStream cluster could not remap stream '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
-		return false
+	replaced := cc.remapStreamAssignment(csa, peer)
+	if !replaced {
+		s.Warnf("JetStream cluster could not replace peer for stream '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
 	}
 
 	// Send our proposal for this csa. Also use same group definition for all the consumers as well.
 	cc.meta.Propose(encodeAddStreamAssignment(csa))
 	rg := csa.Group
 	for _, ca := range sa.consumers {
-		cca := *ca
-		cca.Group.Peers = rg.Peers
-		cc.meta.Propose(encodeAddConsumerAssignment(&cca))
+		// Ephemerals are R=1, so only auto-remap durables, or R>1.
+		if ca.Config.Durable != _EMPTY_ {
+			cca := *ca
+			cca.Group.Peers = rg.Peers
+			cc.meta.Propose(encodeAddConsumerAssignment(&cca))
+		} else if ca.Group.isMember(peer) {
+			// These are ephemerals. Check to see if we deleted this peer.
+			cc.meta.Propose(encodeDeleteConsumerAssignment(ca))
+		}
 	}
-	return true
+	return replaced
 }
 
 // Check if we have peer related entries.
@@ -1086,6 +1166,10 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 		} else if e.Type == EntryRemovePeer {
 			if !isRecovering {
 				js.processRemovePeer(string(e.Data))
+			}
+		} else if e.Type == EntryAddPeer {
+			if !isRecovering {
+				js.processAddPeer(string(e.Data))
 			}
 		} else {
 			buf := e.Data
@@ -1606,7 +1690,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					mset.setLastSeq(mset.store.SkipMsg())
 					continue
 				}
-
+				// Process the actual message here.
 				if err := mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts); err != nil {
 					if !isRecovering {
 						if err == errLastSeqMismatch {
@@ -1619,7 +1703,6 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						return err
 					}
 				}
-
 			case deleteMsgOp:
 				md, err := decodeMsgDelete(buf[1:])
 				if err != nil {
@@ -2827,6 +2910,8 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 				o.stopWithFlags(true, false, false, false)
 			}
 			return nil
+		} else if e.Type == EntryAddPeer {
+			// Ignore for now.
 		} else {
 			buf := e.Data
 			switch entryOp(buf[0]) {
@@ -3258,6 +3343,14 @@ func (cc *jetStreamCluster) remapStreamAssignment(sa *streamAssignment, removePe
 				sa.Group.Preferred = _EMPTY_
 				return true
 			}
+		}
+	}
+	// If we are here let's remove the peer at least.
+	for i, peer := range sa.Group.Peers {
+		if peer == removePeer {
+			sa.Group.Peers[i] = sa.Group.Peers[len(sa.Group.Peers)-1]
+			sa.Group.Peers = sa.Group.Peers[:len(sa.Group.Peers)-1]
+			break
 		}
 	}
 	return false

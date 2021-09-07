@@ -2112,6 +2112,8 @@ func (n *raft) applyCommit(index uint64) error {
 				}
 			}
 			n.writePeerState(&peerState{n.peerNames(), n.csz})
+			// We pass these up as well.
+			committed = append(committed, e)
 		case EntryRemovePeer:
 			peer := string(e.Data)
 			n.debug("Removing peer %q", peer)
