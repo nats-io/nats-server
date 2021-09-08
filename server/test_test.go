@@ -18,6 +18,7 @@ import (
 	"math/rand"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -200,6 +201,7 @@ func (c *cluster) shutdown() {
 			os.Remove(cf)
 		}
 		if sd != _EMPTY_ {
+			sd = strings.TrimSuffix(sd, JetStreamStoreDir)
 			os.RemoveAll(sd)
 		}
 	}

@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -2700,7 +2701,7 @@ func TestMQTTCluster(t *testing.T) {
 					clientID := nuid.Next()
 
 					o := cl.opts[0]
-					mc, r := testMQTTConnect(t, &mqttConnInfo{clientID: clientID, cleanSess: false}, o.MQTT.Host, o.MQTT.Port)
+					mc, r := testMQTTConnectRetry(t, &mqttConnInfo{clientID: clientID, cleanSess: false}, o.MQTT.Host, o.MQTT.Port, 5)
 					defer mc.Close()
 					testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 
@@ -2775,7 +2776,7 @@ func TestMQTTCluster(t *testing.T) {
 				cl.stopAll()
 				cl.restartAll()
 
-				streams := []string{mqttStreamName, mqttRetainedMsgsStreamName}
+				streams := []string{mqttStreamName, mqttRetainedMsgsStreamName, mqttSessStreamName}
 				for _, sn := range streams {
 					cl.waitOnStreamLeader(globalAccountName, sn)
 				}
@@ -2794,7 +2795,7 @@ func TestMQTTClusterRetainedMsg(t *testing.T) {
 	srv2Opts := cl.opts[1]
 
 	// Connect subscription on server 1.
-	mc, rc := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: false}, srv1Opts.MQTT.Host, srv1Opts.MQTT.Port)
+	mc, rc := testMQTTConnectRetry(t, &mqttConnInfo{clientID: "sub", cleanSess: false}, srv1Opts.MQTT.Host, srv1Opts.MQTT.Port, 5)
 	defer mc.Close()
 	testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, false)
 
@@ -3014,7 +3015,7 @@ func TestMQTTClusterReplicasCount(t *testing.T) {
 			for _, sname := range []string{
 				mqttStreamName,
 				mqttRetainedMsgsStreamName,
-				mqttSessionsStreamNamePrefix + string(getHash("sub")),
+				mqttSessStreamName,
 			} {
 				t.Run(sname, func(t *testing.T) {
 					si, err := js.StreamInfo(sname)
@@ -3030,25 +3031,27 @@ func TestMQTTClusterReplicasCount(t *testing.T) {
 	}
 }
 
-func TestMQTTClusterSessionReplicasAdjustment(t *testing.T) {
+func TestMQTTClusterCanCreateSessionWithOnServerDown(t *testing.T) {
 	cl := createJetStreamClusterWithTemplate(t, testMQTTGetClusterTemplaceNoLeaf(), "MQTT", 3)
 	defer cl.shutdown()
 	o := cl.opts[0]
 
-	mc, rc := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	mc, rc := testMQTTConnectRetry(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
 	defer mc.Close()
 	testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, false)
 	mc.Close()
 
 	// Shutdown one of the server.
+	sd := cl.servers[1].StoreDir()
+	defer os.RemoveAll(strings.TrimSuffix(sd, JetStreamStoreDir))
 	cl.servers[1].Shutdown()
 
 	// Make sure there is a meta leader
 	cl.waitOnPeerCount(2)
 	cl.waitOnLeader()
 
-	// Now try to create a new session. With R(3) this would fail, but now server will
-	// adjust it down to R(2).
+	// Now try to create a new session. Since we use a single stream now for all sessions,
+	// this should succeed.
 	o = cl.opts[2]
 	// We may still get failures because of some JS APIs may timeout while things
 	// settle, so try again for a certain amount of times.
@@ -3069,7 +3072,7 @@ func TestMQTTClusterPlacement(t *testing.T) {
 	sc.waitOnLeader()
 
 	for i := 0; i < 10; i++ {
-		mc, rc := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, lnc.opts[i%3].MQTT.Host, lnc.opts[i%3].MQTT.Port)
+		mc, rc := testMQTTConnectRetry(t, &mqttConnInfo{cleanSess: true}, lnc.opts[i%3].MQTT.Host, lnc.opts[i%3].MQTT.Port, 5)
 		defer mc.Close()
 		testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, false)
 	}
@@ -3258,7 +3261,7 @@ func TestMQTTSessionMovingDomains(t *testing.T) {
 
 	connectSubAndDisconnect := func(host string, port int, present bool) {
 		t.Helper()
-		mc, rc := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: false}, host, port)
+		mc, rc := testMQTTConnectRetry(t, &mqttConnInfo{clientID: "sub", cleanSess: false}, host, port, 5)
 		defer mc.Close()
 		testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, present)
 		testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
@@ -4959,6 +4962,108 @@ func TestMQTTWebsocketNotSupported(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Did not log any error")
+	}
+}
+
+func TestMQTTTransferSessionStreamsToMuxed(t *testing.T) {
+	cl := createJetStreamClusterWithTemplate(t, testMQTTGetClusterTemplaceNoLeaf(), "MQTT", 3)
+	defer cl.shutdown()
+
+	nc, js := jsClientConnect(t, cl.randomServer())
+	defer nc.Close()
+
+	// Create 2 streams that start with "$MQTT_sess_" to check for transfer to new
+	// mux'ed unique "$MQTT_sess" stream. One of this stream will not contain a
+	// proper session record, and we will check that the stream does not get deleted.
+	sessStreamName1 := mqttSessionsStreamNamePrefix + string(getHash("sub"))
+	if _, err := js.AddStream(&nats.StreamConfig{
+		Name:     sessStreamName1,
+		Subjects: []string{sessStreamName1},
+		Replicas: 3,
+		MaxMsgs:  1,
+	}); err != nil {
+		t.Fatalf("Unable to add stream: %v", err)
+	}
+	// Then add the session record
+	ps := mqttPersistedSession{
+		ID:   "sub",
+		Subs: map[string]byte{"foo": 1},
+		Cons: map[string]*ConsumerConfig{"foo": {
+			Durable:        "d6INCtp3_cK39H5WHEtOSU7sLy2oQv3",
+			DeliverSubject: "$MQTT.sub.cK39H5WHEtOSU7sLy2oQrR",
+			DeliverPolicy:  DeliverNew,
+			AckPolicy:      AckExplicit,
+			FilterSubject:  "$MQTT.msgs.foo",
+			MaxAckPending:  1024,
+		}},
+	}
+	b, _ := json.Marshal(&ps)
+	if _, err := js.Publish(sessStreamName1, b); err != nil {
+		t.Fatalf("Error on publish: %v", err)
+	}
+
+	// Create the stream that has "$MQTT_sess_" prefix, but that is not really a MQTT session stream
+	sessStreamName2 := mqttSessionsStreamNamePrefix + "ivan"
+	if _, err := js.AddStream(&nats.StreamConfig{
+		Name:     sessStreamName2,
+		Subjects: []string{sessStreamName2},
+		Replicas: 3,
+		MaxMsgs:  1,
+	}); err != nil {
+		t.Fatalf("Unable to add stream: %v", err)
+	}
+	if _, err := js.Publish(sessStreamName2, []byte("some content")); err != nil {
+		t.Fatalf("Error on publish: %v", err)
+	}
+
+	nc.Close()
+	cl.stopAll()
+	cl.restartAll()
+
+	cl.waitOnStreamLeader(globalAccountName, sessStreamName1)
+	cl.waitOnStreamLeader(globalAccountName, sessStreamName2)
+
+	// Now create a real MQTT connection
+	o := cl.opts[0]
+	sc, sr := testMQTTConnectRetry(t, &mqttConnInfo{clientID: "sub"}, o.MQTT.Host, o.MQTT.Port, 10)
+	defer sc.Close()
+	testMQTTCheckConnAck(t, sr, mqttConnAckRCConnectionAccepted, true)
+
+	nc, js = jsClientConnect(t, cl.randomServer())
+	defer nc.Close()
+
+	// Check that old session stream is gone, but the non session stream is still present.
+	var gotIt = false
+	for info := range js.StreamsInfo() {
+		if strings.HasPrefix(info.Config.Name, mqttSessionsStreamNamePrefix) {
+			if strings.HasSuffix(info.Config.Name, "_ivan") {
+				gotIt = true
+			} else {
+				t.Fatalf("The stream %q should have been deleted", info.Config.Name)
+			}
+		}
+	}
+	if !gotIt {
+		t.Fatalf("The stream %q should not have been deleted", mqttSessionsStreamNamePrefix+"ivan")
+	}
+
+	// We want to check that the record was properly transferred.
+	rmsg, err := js.GetMsg(mqttSessStreamName, 2)
+	if err != nil {
+		t.Fatalf("Unable to get session message: %v", err)
+	}
+	ps2 := &mqttPersistedSession{}
+	if err := json.Unmarshal(rmsg.Data, ps2); err != nil {
+		t.Fatalf("Error unpacking session record: %v", err)
+	}
+	if ps2.ID != "sub" {
+		t.Fatalf("Unexpected session record, %+v vs %+v", ps2, ps)
+	}
+	if qos, ok := ps2.Subs["foo"]; !ok || qos != 1 {
+		t.Fatalf("Unexpected session record, %+v vs %+v", ps2, ps)
+	}
+	if cons, ok := ps2.Cons["foo"]; !ok || !reflect.DeepEqual(cons, ps.Cons["foo"]) {
+		t.Fatalf("Unexpected session record, %+v vs %+v", ps2, ps)
 	}
 }
 
