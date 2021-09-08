@@ -2121,7 +2121,7 @@ func TestJetStreamClusterMirrorAndSourceWorkQueues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	// Allow sync consumers to connect.
+	// Allow direct sync consumers to connect.
 	time.Sleep(500 * time.Millisecond)
 
 	if _, err = js.Publish("foo", []byte("ok")); err != nil {

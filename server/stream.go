@@ -350,7 +350,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 
 	// For no-ack consumers when we are interest retention.
 	if cfg.Retention != LimitsPolicy {
-		mset.amch = make(chan uint64, 8192)
+		mset.amch = make(chan uint64, 1024)
 	}
 
 	jsa.streams[cfg.Name] = mset
@@ -3316,6 +3316,8 @@ func (mset *stream) checkInterest(seq uint64, obs *consumer) bool {
 
 // ackMsg is called into from a consumer when we have a WorkQueue or Interest Retention Policy.
 func (mset *stream) ackMsg(o *consumer, seq uint64) {
+	var shouldRemove bool
+
 	switch mset.cfg.Retention {
 	case LimitsPolicy:
 		return
@@ -3323,17 +3325,22 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) {
 		// Normally we just remove a message when its ack'd here but if we have direct consumers
 		// from sources and/or mirrors we need to make sure they have delivered the msg.
 		mset.mu.RLock()
-		shouldRemove := mset.directs <= 0 || !mset.checkInterest(seq, o)
+		shouldRemove = mset.directs <= 0 || !mset.checkInterest(seq, o)
 		mset.mu.RUnlock()
-		if shouldRemove {
-			mset.store.RemoveMsg(seq)
-		}
 	case InterestPolicy:
 		mset.mu.RLock()
-		hasInterest := mset.checkInterest(seq, o)
+		shouldRemove = !mset.checkInterest(seq, o)
 		mset.mu.RUnlock()
-		if !hasInterest {
-			mset.store.RemoveMsg(seq)
+	}
+
+	if shouldRemove {
+		if _, err := mset.store.RemoveMsg(seq); err == ErrStoreEOF {
+			// This should be rare but I have seen it.
+			// The ack reached us before the actual msg with AckNone and InterestPolicy.
+			if n := mset.raftNode(); n != nil {
+				md := streamMsgDelete{Seq: seq, NoErase: true, Stream: mset.cfg.Name}
+				n.ForwardProposal(encodeMsgDelete(&md))
+			}
 		}
 	}
 }

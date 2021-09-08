@@ -6189,7 +6189,7 @@ func TestJetStreamInterestRetentionStreamWithDurableRestart(t *testing.T) {
 
 			checkNumMsgs := func(numExpected int) {
 				t.Helper()
-				checkFor(t, 200*time.Millisecond, 10*time.Millisecond, func() error {
+				checkFor(t, time.Second, 50*time.Millisecond, func() error {
 					if state := mset.state(); state.Msgs != uint64(numExpected) {
 						return fmt.Errorf("Expected %d messages, got %d", numExpected, state.Msgs)
 					}
