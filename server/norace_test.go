@@ -3126,4 +3126,76 @@ func TestNoRaceJetStreamOrderedConsumerMissingMsg(t *testing.T) {
 			t.Fatal("Did not receive all messages for all consumers in time")
 		}
 	}
+
+}
+
+// Issue #2488 - Bad accounting, can not reproduce the stalled consumers after last several PRs.
+// Issue did show bug in ack logic for no-ack and interest based retention.
+func TestNoRaceJetStreamClusterInterestPolicyAckNone(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		durable string
+	}{
+		{"durable", "dlc"},
+		{"ephemeral", _EMPTY_},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			// Client based API
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:      "cluster",
+				Subjects:  []string{"cluster.*"},
+				Retention: nats.InterestPolicy,
+				Discard:   nats.DiscardOld,
+				Replicas:  3,
+			})
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+
+			var received uint32
+			mh := func(m *nats.Msg) {
+				atomic.AddUint32(&received, 1)
+			}
+
+			_, err = js.Subscribe("cluster.created", mh, nats.Durable(test.durable), nats.DeliverNew(), nats.AckNone())
+			if err != nil {
+				t.Fatalf("Unexepected error: %v", err)
+			}
+
+			msg := []byte("ACK ME")
+			const total = uint32(1_000)
+			for i := 0; i < int(total); i++ {
+				if _, err := js.Publish("cluster.created", msg); err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				//time.Sleep(100 * time.Microsecond)
+			}
+
+			// Wait for all messages to be received.
+			checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+				r := atomic.LoadUint32(&received)
+				if r == total {
+					return nil
+				}
+				return fmt.Errorf("Received only %d out of %d", r, total)
+			})
+
+			checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+				si, err := js.StreamInfo("cluster")
+				if err != nil {
+					t.Fatalf("Error getting stream info: %v", err)
+				}
+				if si.State.Msgs != 0 {
+					return fmt.Errorf("Expected no messages, got %d", si.State.Msgs)
+				}
+				return nil
+			})
+		})
+	}
 }

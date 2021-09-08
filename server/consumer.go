@@ -2340,11 +2340,6 @@ func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 	// Send message.
 	o.outq.send(pmsg)
 
-	// If we are ack none and mset is interest only we should make sure stream removes interest.
-	if ap == AckNone && mset.cfg.Retention != LimitsPolicy && mset.amch != nil {
-		mset.amch <- seq
-	}
-
 	if ap == AckExplicit || ap == AckAll {
 		o.trackPending(seq, dseq)
 	} else if ap == AckNone {
@@ -2359,6 +2354,15 @@ func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 
 	// FIXME(dlc) - Capture errors?
 	o.updateDelivered(dseq, seq, dc, ts)
+
+	// If we are ack none and mset is interest only we should make sure stream removes interest.
+	if ap == AckNone && mset.cfg.Retention != LimitsPolicy {
+		if o.node == nil || o.cfg.Direct {
+			mset.amch <- seq
+		} else {
+			o.updateAcks(dseq, seq)
+		}
+	}
 }
 
 func (o *consumer) needFlowControl() bool {

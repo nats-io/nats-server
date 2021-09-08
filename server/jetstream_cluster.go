@@ -1690,6 +1690,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					mset.setLastSeq(mset.store.SkipMsg())
 					continue
 				}
+
 				// Process the actual message here.
 				if err := mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts); err != nil {
 					if !isRecovering {
@@ -2952,11 +2953,11 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 }
 
 func (o *consumer) processReplicatedAck(dseq, sseq uint64) {
-	o.store.UpdateAcks(dseq, sseq)
-
 	o.mu.Lock()
 	// Update activity.
 	o.lat = time.Now()
+	// Do actual ack update to store.
+	o.store.UpdateAcks(dseq, sseq)
 
 	mset := o.mset
 	if mset == nil || mset.cfg.Retention == LimitsPolicy {
@@ -4019,8 +4020,8 @@ func (s *Server) jsClusteredMsgDeleteRequest(ci *ClientInfo, acc *Account, mset 
 	}
 	// Check for single replica items.
 	if n := sa.Group.node; n != nil {
-		md := &streamMsgDelete{Seq: req.Seq, NoErase: req.NoErase, Stream: stream, Subject: subject, Reply: reply, Client: ci}
-		n.Propose(encodeMsgDelete(md))
+		md := streamMsgDelete{Seq: req.Seq, NoErase: req.NoErase, Stream: stream, Subject: subject, Reply: reply, Client: ci}
+		n.Propose(encodeMsgDelete(&md))
 	} else if mset != nil {
 		var err error
 		var removed bool
