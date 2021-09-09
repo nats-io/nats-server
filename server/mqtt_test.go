@@ -5103,7 +5103,7 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 		t.Helper()
 		var ce ConnectEventMsg
 		json.Unmarshal(data, &ce)
-		if ce.Client.ClientID != expected {
+		if ce.Client.MQTTClient != expected {
 			t.Fatalf("Expected client ID %q, got this connect event: %+v", expected, ce)
 		}
 	}
@@ -5111,7 +5111,7 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 		t.Helper()
 		var de DisconnectEventMsg
 		json.Unmarshal(data, &de)
-		if de.Client.ClientID != expected {
+		if de.Client.MQTTClient != expected {
 			t.Fatalf("Expected client ID %q, got this disconnect event: %+v", expected, de)
 		}
 	}
@@ -5158,17 +5158,17 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 
 		// Check that client ID is present
 		for _, conn := range c.Conns {
-			if conn.Type == clientTypeStringMap[MQTT] && conn.ClientID == _EMPTY_ {
+			if conn.Type == clientTypeStringMap[MQTT] && conn.MQTTClient == _EMPTY_ {
 				t.Fatalf("Expected a client ID to be set, got %+v", conn)
 			}
 		}
 
 		// Check that we can select based on client ID:
-		c = pollConz(t, s, mode, url+"connz?client_id=conn2", &ConnzOptions{ClientID: "conn2"})
+		c = pollConz(t, s, mode, url+"connz?mqtt_client=conn2", &ConnzOptions{MQTTClient: "conn2"})
 		if c.Conns == nil || len(c.Conns) != 1 {
 			t.Fatalf("Expected 1 connection in array, got %v", len(c.Conns))
 		}
-		if c.Conns[0].ClientID != "conn2" {
+		if c.Conns[0].MQTTClient != "conn2" {
 			t.Fatalf("Unexpected client ID: %+v", c.Conns[0])
 		}
 
@@ -5178,21 +5178,21 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 			t.Fatalf("Expected 2 connections in array, got %v", len(c.Conns))
 		}
 		for _, conn := range c.Conns {
-			if conn.ClientID == _EMPTY_ {
+			if conn.MQTTClient == _EMPTY_ {
 				t.Fatalf("Expected a client ID, got %+v", conn)
 			}
 		}
 
 		// Check that we can select with client ID for closed state
-		c = pollConz(t, s, mode, url+"connz?state=closed&client_id=conn3", &ConnzOptions{State: ConnClosed, ClientID: "conn3"})
+		c = pollConz(t, s, mode, url+"connz?state=closed&mqtt_client=conn3", &ConnzOptions{State: ConnClosed, MQTTClient: "conn3"})
 		if c.Conns == nil || len(c.Conns) != 1 {
 			t.Fatalf("Expected 1 connection in array, got %v", len(c.Conns))
 		}
-		if c.Conns[0].ClientID != "conn3" {
+		if c.Conns[0].MQTTClient != "conn3" {
 			t.Fatalf("Unexpected client ID: %+v", c.Conns[0])
 		}
 		// Check that we can select with client ID for closed state (but in this case not found)
-		c = pollConz(t, s, mode, url+"connz?state=closed&client_id=conn5", &ConnzOptions{State: ConnClosed, ClientID: "conn5"})
+		c = pollConz(t, s, mode, url+"connz?state=closed&mqtt_client=conn5", &ConnzOptions{State: ConnClosed, MQTTClient: "conn5"})
 		if len(c.Conns) != 0 {
 			t.Fatalf("Expected 0 connection in array, got %v", len(c.Conns))
 		}
@@ -5206,14 +5206,14 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 		opt interface{}
 		cid string
 	}{
-		{&ConnzOptions{ClientID: "conn1"}, "conn1"},
-		{&ConnzOptions{ClientID: "conn3", State: ConnClosed}, "conn3"},
-		{&ConnzOptions{ClientID: "conn4", State: ConnClosed}, "conn4"},
-		{&ConnzOptions{ClientID: "conn5"}, _EMPTY_},
-		{json.RawMessage(`{"client_id":"conn1"}`), "conn1"},
-		{json.RawMessage(fmt.Sprintf(`{"client_id":"conn3", "state":%v}`, ConnClosed)), "conn3"},
-		{json.RawMessage(fmt.Sprintf(`{"client_id":"conn4", "state":%v}`, ConnClosed)), "conn4"},
-		{json.RawMessage(`{"client_id":"conn5"}`), _EMPTY_},
+		{&ConnzOptions{MQTTClient: "conn1"}, "conn1"},
+		{&ConnzOptions{MQTTClient: "conn3", State: ConnClosed}, "conn3"},
+		{&ConnzOptions{MQTTClient: "conn4", State: ConnClosed}, "conn4"},
+		{&ConnzOptions{MQTTClient: "conn5"}, _EMPTY_},
+		{json.RawMessage(`{"mqtt_client":"conn1"}`), "conn1"},
+		{json.RawMessage(fmt.Sprintf(`{"mqtt_client":"conn3", "state":%v}`, ConnClosed)), "conn3"},
+		{json.RawMessage(fmt.Sprintf(`{"mqtt_client":"conn4", "state":%v}`, ConnClosed)), "conn4"},
+		{json.RawMessage(`{"mqtt_client":"conn5"}`), _EMPTY_},
 	} {
 		t.Run("sys connz", func(t *testing.T) {
 			b, _ := json.Marshal(test.opt)
@@ -5245,8 +5245,8 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 				t.Fatalf("Expected single connection, got %v", len(cz.Conns))
 			}
 			conn := cz.Conns[0]
-			if conn.ClientID != test.cid {
-				t.Fatalf("Expected client ID %q, got %q", test.cid, conn.ClientID)
+			if conn.MQTTClient != test.cid {
+				t.Fatalf("Expected client ID %q, got %q", test.cid, conn.MQTTClient)
 			}
 		})
 	}

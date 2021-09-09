@@ -592,7 +592,7 @@ func (c *client) isMqtt() bool {
 // If this is an MQTT client, returns the session client ID,
 // otherwise returns the empty string.
 // Lock held on entry
-func (c *client) getClientID() string {
+func (c *client) getMQTTClientID() string {
 	if !c.isMqtt() {
 		return _EMPTY_
 	}
