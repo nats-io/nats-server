@@ -170,14 +170,35 @@ func (s *Server) addInJSDenyAll(r *leafNodeCfg) {
 	s.Noticef("Sharing system account but utilizing separate JetStream Domains")
 	s.Noticef("Adding deny of %+v for leafnode configuration that bridges system account", denyAll)
 
-	r.DenyExports = append(r.DenyExports, denyAll...)
-	r.DenyImports = append(r.DenyImports, denyAll...)
+	hasDeny := func(deny string, l []string) bool {
+		for _, le := range l {
+			if le == deny {
+				return true
+			}
+		}
+		return false
+	}
+
+	var exportAdded, importAdded bool
+	for _, deny := range denyAll {
+		if !hasDeny(deny, r.DenyExports) {
+			r.DenyExports = append(r.DenyExports, deny)
+			exportAdded = true
+		}
+		if !hasDeny(deny, r.DenyImports) {
+			r.DenyImports = append(r.DenyImports, deny)
+			importAdded = true
+		}
+	}
+	if !exportAdded && !importAdded {
+		return
+	}
 
 	perms := &Permissions{}
-	if len(r.DenyExports) > 0 {
+	if exportAdded {
 		perms.Publish = &SubjectPermission{Deny: r.DenyExports}
 	}
-	if len(r.DenyImports) > 0 {
+	if importAdded {
 		perms.Subscribe = &SubjectPermission{Deny: r.DenyImports}
 	}
 	r.perms = perms

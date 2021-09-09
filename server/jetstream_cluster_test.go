@@ -6240,6 +6240,46 @@ func TestJetStreamClusterSuperClusterAndSingleLeafNodeWithSharedSystemAccount(t 
 	}
 }
 
+func TestJetStreamClusterLeafNodeDenyNoDupe(t *testing.T) {
+	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: CORE, store_dir:", 1)
+	c := createJetStreamCluster(t, tmpl, "CORE", _EMPTY_, 3, 18033, true)
+	defer c.shutdown()
+
+	tmpl = strings.Replace(jsClusterTemplWithSingleLeafNode, "store_dir:", "domain: SPOKE, store_dir:", 1)
+	ln := c.createLeafNodeWithTemplate("LN-SPOKE", tmpl)
+	defer ln.Shutdown()
+
+	checkLeafNodeConnectedCount(t, ln, 2)
+
+	// Now disconnect our leafnode connections by restarting the server we are connected to..
+	for _, s := range c.servers {
+		if s.ClusterName() != c.name {
+			continue
+		}
+		if nln := s.NumLeafNodes(); nln > 0 {
+			s.Shutdown()
+			c.restartServer(s)
+		}
+	}
+	// Make sure we are back connected.
+	checkLeafNodeConnectedCount(t, ln, 2)
+
+	// Now grab leaf varz and make sure we have no dupe deny clauses.
+	vz, err := ln.Varz(nil)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Grab the correct remote.
+	for _, remote := range vz.LeafNode.Remotes {
+		if remote.LocalAccount == ln.SystemAccount().Name {
+			if len(remote.Deny.Exports) > 3 { // denyAll := []string{jscAllSubj, raftAllSubj, jsAllAPI}
+				t.Fatalf("Dupe entries found: %+v", remote.Deny)
+			}
+			break
+		}
+	}
+}
+
 // Multiple JS domains.
 func TestJetStreamClusterSingleLeafNodeWithoutSharedSystemAccount(t *testing.T) {
 	c := createJetStreamCluster(t, jsClusterAccountsTempl, "HUB", _EMPTY_, 3, 14333, true)
