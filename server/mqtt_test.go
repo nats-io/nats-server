@@ -649,7 +649,7 @@ func testMQTTGetClient(t testing.TB, s *Server, clientID string) *client {
 	s.mu.Lock()
 	for _, c := range s.clients {
 		c.mu.Lock()
-		if c.isMqtt() && c.mqtt.cp != nil && c.mqtt.cp.clientID == clientID {
+		if c.isMqtt() && c.mqtt.cid == clientID {
 			mc = c
 		}
 		c.mu.Unlock()
@@ -5064,6 +5064,191 @@ func TestMQTTTransferSessionStreamsToMuxed(t *testing.T) {
 	}
 	if cons, ok := ps2.Cons["foo"]; !ok || !reflect.DeepEqual(cons, ps.Cons["foo"]) {
 		t.Fatalf("Unexpected session record, %+v vs %+v", ps2, ps)
+	}
+}
+
+func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		http: "127.0.0.1:-1"
+		server_name: "mqtt"
+		jetstream: enabled
+		accounts {
+			MQTT {
+				jetstream: enabled
+				users: [{user: "mqtt", password: "pwd"}]
+			}
+			SYS {
+				users: [{user: "sys", password: "pwd"}]
+			}
+		}
+		mqtt {
+			listen: "127.0.0.1:-1"
+		}
+		system_account: "SYS"
+	`))
+	defer os.Remove(conf)
+	s, o := RunServerWithConfig(conf)
+	defer testMQTTShutdownServer(s)
+
+	nc := natsConnect(t, s.ClientURL(), nats.UserInfo("sys", "pwd"))
+	defer nc.Close()
+
+	accConn := natsSubSync(t, nc, fmt.Sprintf(connectEventSubj, "MQTT"))
+	accDisc := natsSubSync(t, nc, fmt.Sprintf(disconnectEventSubj, "MQTT"))
+	accAuth := natsSubSync(t, nc, fmt.Sprintf(authErrorEventSubj, s.ID()))
+	natsFlush(t, nc)
+
+	checkConnEvent := func(data []byte, expected string) {
+		t.Helper()
+		var ce ConnectEventMsg
+		json.Unmarshal(data, &ce)
+		if ce.Client.MQTTClient != expected {
+			t.Fatalf("Expected client ID %q, got this connect event: %+v", expected, ce)
+		}
+	}
+	checkDiscEvent := func(data []byte, expected string) {
+		t.Helper()
+		var de DisconnectEventMsg
+		json.Unmarshal(data, &de)
+		if de.Client.MQTTClient != expected {
+			t.Fatalf("Expected client ID %q, got this disconnect event: %+v", expected, de)
+		}
+	}
+
+	c1, r1 := testMQTTConnect(t, &mqttConnInfo{user: "mqtt", pass: "pwd", clientID: "conn1", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer c1.Close()
+	testMQTTCheckConnAck(t, r1, mqttConnAckRCConnectionAccepted, false)
+
+	cm := natsNexMsg(t, accConn, time.Second)
+	checkConnEvent(cm.Data, "conn1")
+
+	c2, r2 := testMQTTConnect(t, &mqttConnInfo{user: "mqtt", pass: "pwd", clientID: "conn2", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer c2.Close()
+	testMQTTCheckConnAck(t, r2, mqttConnAckRCConnectionAccepted, false)
+
+	cm = natsNexMsg(t, accConn, time.Second)
+	checkConnEvent(cm.Data, "conn2")
+
+	c3, r3 := testMQTTConnect(t, &mqttConnInfo{user: "mqtt", pass: "pwd", clientID: "conn3", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer c3.Close()
+	testMQTTCheckConnAck(t, r3, mqttConnAckRCConnectionAccepted, false)
+
+	cm = natsNexMsg(t, accConn, time.Second)
+	checkConnEvent(cm.Data, "conn3")
+
+	testMQTTDisconnect(t, c3, nil)
+	cm = natsNexMsg(t, accDisc, time.Second)
+	checkDiscEvent(cm.Data, "conn3")
+
+	// Now try a bad auth
+	c4, r4 := testMQTTConnect(t, &mqttConnInfo{clientID: "conn4", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer c4.Close()
+	testMQTTCheckConnAck(t, r4, mqttConnAckRCNotAuthorized, false)
+	// This will generate an auth error, which is a disconnect event
+	cm = natsNexMsg(t, accAuth, time.Second)
+	checkDiscEvent(cm.Data, "conn4")
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
+	for mode := 0; mode < 2; mode++ {
+		c := pollConz(t, s, mode, url+"connz", nil)
+		if c.Conns == nil || len(c.Conns) != 3 {
+			t.Fatalf("Expected 3 connections in array, got %v", len(c.Conns))
+		}
+
+		// Check that client ID is present
+		for _, conn := range c.Conns {
+			if conn.Type == clientTypeStringMap[MQTT] && conn.MQTTClient == _EMPTY_ {
+				t.Fatalf("Expected a client ID to be set, got %+v", conn)
+			}
+		}
+
+		// Check that we can select based on client ID:
+		c = pollConz(t, s, mode, url+"connz?mqtt_client=conn2", &ConnzOptions{MQTTClient: "conn2"})
+		if c.Conns == nil || len(c.Conns) != 1 {
+			t.Fatalf("Expected 1 connection in array, got %v", len(c.Conns))
+		}
+		if c.Conns[0].MQTTClient != "conn2" {
+			t.Fatalf("Unexpected client ID: %+v", c.Conns[0])
+		}
+
+		// Check that we have the closed ones
+		c = pollConz(t, s, mode, url+"connz?state=closed", &ConnzOptions{State: ConnClosed})
+		if c.Conns == nil || len(c.Conns) != 2 {
+			t.Fatalf("Expected 2 connections in array, got %v", len(c.Conns))
+		}
+		for _, conn := range c.Conns {
+			if conn.MQTTClient == _EMPTY_ {
+				t.Fatalf("Expected a client ID, got %+v", conn)
+			}
+		}
+
+		// Check that we can select with client ID for closed state
+		c = pollConz(t, s, mode, url+"connz?state=closed&mqtt_client=conn3", &ConnzOptions{State: ConnClosed, MQTTClient: "conn3"})
+		if c.Conns == nil || len(c.Conns) != 1 {
+			t.Fatalf("Expected 1 connection in array, got %v", len(c.Conns))
+		}
+		if c.Conns[0].MQTTClient != "conn3" {
+			t.Fatalf("Unexpected client ID: %+v", c.Conns[0])
+		}
+		// Check that we can select with client ID for closed state (but in this case not found)
+		c = pollConz(t, s, mode, url+"connz?state=closed&mqtt_client=conn5", &ConnzOptions{State: ConnClosed, MQTTClient: "conn5"})
+		if len(c.Conns) != 0 {
+			t.Fatalf("Expected 0 connection in array, got %v", len(c.Conns))
+		}
+	}
+
+	reply := nc.NewRespInbox()
+	replySub := natsSubSync(t, nc, reply)
+
+	// Test system events now
+	for _, test := range []struct {
+		opt interface{}
+		cid string
+	}{
+		{&ConnzOptions{MQTTClient: "conn1"}, "conn1"},
+		{&ConnzOptions{MQTTClient: "conn3", State: ConnClosed}, "conn3"},
+		{&ConnzOptions{MQTTClient: "conn4", State: ConnClosed}, "conn4"},
+		{&ConnzOptions{MQTTClient: "conn5"}, _EMPTY_},
+		{json.RawMessage(`{"mqtt_client":"conn1"}`), "conn1"},
+		{json.RawMessage(fmt.Sprintf(`{"mqtt_client":"conn3", "state":%v}`, ConnClosed)), "conn3"},
+		{json.RawMessage(fmt.Sprintf(`{"mqtt_client":"conn4", "state":%v}`, ConnClosed)), "conn4"},
+		{json.RawMessage(`{"mqtt_client":"conn5"}`), _EMPTY_},
+	} {
+		t.Run("sys connz", func(t *testing.T) {
+			b, _ := json.Marshal(test.opt)
+
+			// set a header to make sure request parsing knows to ignore them
+			nc.PublishMsg(&nats.Msg{
+				Subject: fmt.Sprintf("%s.CONNZ", serverStatsPingReqSubj),
+				Reply:   reply,
+				Data:    b,
+			})
+
+			msg := natsNexMsg(t, replySub, time.Second)
+			var response ServerAPIResponse
+			if err := json.Unmarshal(msg.Data, &response); err != nil {
+				t.Fatalf("Error unmarshalling response json: %v", err)
+			}
+			tmp, _ := json.Marshal(response.Data)
+			cz := &Connz{}
+			if err := json.Unmarshal(tmp, cz); err != nil {
+				t.Fatalf("Error unmarshalling connz: %v", err)
+			}
+			if test.cid == _EMPTY_ {
+				if len(cz.Conns) != 0 {
+					t.Fatalf("Expected no connections, got %v", len(cz.Conns))
+				}
+				return
+			}
+			if len(cz.Conns) != 1 {
+				t.Fatalf("Expected single connection, got %v", len(cz.Conns))
+			}
+			conn := cz.Conns[0]
+			if conn.MQTTClient != test.cid {
+				t.Fatalf("Expected client ID %q, got %q", test.cid, conn.MQTTClient)
+			}
+		})
 	}
 }
 

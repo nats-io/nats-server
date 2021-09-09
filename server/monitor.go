@@ -76,6 +76,9 @@ type ConnzOptions struct {
 	// Filter for this explicit client connection.
 	CID uint64 `json:"cid"`
 
+	// Filter for this explicit client connection based on the MQTT client ID
+	MQTTClient string `json:"mqtt_client"`
+
 	// Filter by connection state.
 	State ConnState `json:"state"`
 
@@ -140,6 +143,7 @@ type ConnInfo struct {
 	IssuerKey      string      `json:"issuer_key,omitempty"`
 	NameTag        string      `json:"name_tag,omitempty"`
 	Tags           jwt.TagList `json:"tags,omitempty"`
+	MQTTClient     string      `json:"mqtt_client,omitempty"` // This is the MQTT client id
 }
 
 // DefaultConnListSize is the default size of the connection list.
@@ -181,6 +185,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		acc     string
 		a       *Account
 		filter  string
+		mqttCID string
 	)
 
 	if opts != nil {
@@ -201,6 +206,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		}
 		user = opts.User
 		acc = opts.Account
+		mqttCID = opts.MQTTClient
 
 		subs = opts.Subscriptions
 		subsDet = opts.SubscriptionsDetail
@@ -357,6 +363,10 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 				if user != _EMPTY_ && client.opts.Username != user {
 					continue
 				}
+				// Do mqtt client ID filtering next
+				if mqttCID != _EMPTY_ && client.getMQTTClientID() != mqttCID {
+					continue
+				}
 				openClients = append(openClients, client)
 			}
 		}
@@ -430,7 +440,10 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		if user != _EMPTY_ && cc.user != user {
 			continue
 		}
-
+		// Do mqtt client ID filtering next
+		if mqttCID != _EMPTY_ && cc.MQTTClient != mqttCID {
+			continue
+		}
 		// Copy if needed for any changes to the ConnInfo
 		if needCopy {
 			cx := *cc
@@ -520,6 +533,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 // client should be locked.
 func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time) {
 	ci.Cid = client.cid
+	ci.MQTTClient = client.getMQTTClientID()
 	ci.Kind = client.kindString()
 	ci.Type = client.clientTypeString()
 	ci.Start = client.start
@@ -674,6 +688,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 
 	user := r.URL.Query().Get("user")
 	acc := r.URL.Query().Get("acc")
+	mqttCID := r.URL.Query().Get("mqtt_client")
 
 	connzOpts := &ConnzOptions{
 		Sort:                sortOpt,
@@ -683,6 +698,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 		Offset:              offset,
 		Limit:               limit,
 		CID:                 cid,
+		MQTTClient:          mqttCID,
 		State:               state,
 		User:                user,
 		Account:             acc,

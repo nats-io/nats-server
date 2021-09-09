@@ -318,6 +318,7 @@ type mqtt struct {
 	pp   *mqttPublish
 	asm  *mqttAccountSessionManager // quick reference to account session manager, immutable after processConnect()
 	sess *mqttSession               // quick reference to session, immutable after processConnect()
+	cid  string                     // client ID
 }
 
 type mqttPending struct {
@@ -327,10 +328,9 @@ type mqttPending struct {
 }
 
 type mqttConnectProto struct {
-	clientID string
-	rd       time.Duration
-	will     *mqttWill
-	flags    byte
+	rd    time.Duration
+	will  *mqttWill
+	flags byte
 }
 
 type mqttIOReader interface {
@@ -587,6 +587,16 @@ func validateMQTTOptions(o *Options) error {
 // Lock held on entry.
 func (c *client) isMqtt() bool {
 	return c.mqtt != nil
+}
+
+// If this is an MQTT client, returns the session client ID,
+// otherwise returns the empty string.
+// Lock held on entry
+func (c *client) getMQTTClientID() string {
+	if !c.isMqtt() {
+		return _EMPTY_
+	}
+	return c.mqtt.cid
 }
 
 // Parse protocols inside the given buffer.
@@ -2424,21 +2434,21 @@ func (c *client) mqttParseConnect(r *mqttReader, pl int) (byte, *mqttConnectProt
 	// Spec [MQTT-3.1.3-1]: client ID, will topic, will message, username, password
 
 	// Client ID
-	cp.clientID, err = r.readString("client ID")
+	c.mqtt.cid, err = r.readString("client ID")
 	if err != nil {
 		return 0, nil, err
 	}
 	// Spec [MQTT-3.1.3-7]
-	if cp.clientID == _EMPTY_ {
+	if c.mqtt.cid == _EMPTY_ {
 		if cp.flags&mqttConnFlagCleanSession == 0 {
 			return mqttConnAckRCIdentifierRejected, nil, errMQTTCIDEmptyNeedsCleanFlag
 		}
 		// Spec [MQTT-3.1.3-6]
-		cp.clientID = nuid.Next()
+		c.mqtt.cid = nuid.Next()
 	}
 	// Spec [MQTT-3.1.3-4] and [MQTT-3.1.3-9]
-	if !utf8.ValidString(cp.clientID) {
-		return mqttConnAckRCIdentifierRejected, nil, fmt.Errorf("invalid utf8 for client ID: %q", cp.clientID)
+	if !utf8.ValidString(c.mqtt.cid) {
+		return mqttConnAckRCIdentifierRejected, nil, fmt.Errorf("invalid utf8 for client ID: %q", c.mqtt.cid)
 	}
 
 	if hasWill {
@@ -2498,7 +2508,7 @@ func (c *client) mqttParseConnect(r *mqttReader, pl int) (byte, *mqttConnectProt
 }
 
 func (c *client) mqttConnectTrace(cp *mqttConnectProto) string {
-	trace := fmt.Sprintf("clientID=%s", cp.clientID)
+	trace := fmt.Sprintf("clientID=%s", c.mqtt.cid)
 	if cp.rd > 0 {
 		trace += fmt.Sprintf(" keepAlive=%v", cp.rd)
 	}
@@ -2542,19 +2552,21 @@ func (s *Server) mqttProcessConnect(c *client, cp *mqttConnectProto, trace bool)
 	}
 
 	c.mu.Lock()
+	cid := c.mqtt.cid
 	c.clearAuthTimer()
 	c.mu.Unlock()
 	if !s.isClientAuthorized(c) {
-		c.Errorf(ErrAuthentication.Error())
-		sendConnAck(mqttConnAckRCNotAuthorized, false)
-		c.closeConnection(AuthenticationViolation)
+		if trace {
+			c.traceOutOp("CONNACK", []byte(fmt.Sprintf("sp=%v rc=%v", false, mqttConnAckRCNotAuthorized)))
+		}
+		c.authViolation()
 		return ErrAuthentication
 	}
 	// Now that we are are authenticated, we have the client bound to the account.
 	// Get the account's level MQTT sessions manager. If it does not exists yet,
 	// this will create it along with the streams where sessions and messages
 	// are stored.
-	asm, err := s.getOrCreateMQTTAccountSessionManager(cp.clientID, c)
+	asm, err := s.getOrCreateMQTTAccountSessionManager(cid, c)
 	if err != nil {
 		return err
 	}
@@ -2574,11 +2586,11 @@ CHECK:
 	asm.mu.Lock()
 	// Check if different applications keep trying to connect with the same
 	// client ID at the same time.
-	if tm, ok := asm.flappers[cp.clientID]; ok {
+	if tm, ok := asm.flappers[cid]; ok {
 		// If the last time it tried to connect was more than 1 sec ago,
 		// then accept and remove from flappers map.
 		if time.Now().UnixNano()-tm > int64(mqttSessJailDur) {
-			asm.removeSessFromFlappers(cp.clientID)
+			asm.removeSessFromFlappers(cid)
 		} else {
 			// Will hold this client for a second and then close it. We
 			// do this so that if the client has a reconnect feature we
@@ -2594,21 +2606,21 @@ CHECK:
 	// evict the old client just yet. So try again to see if the state clears, but
 	// if it does not, then we have no choice but to fail the new client instead of
 	// the old one.
-	if _, ok := asm.sessLocked[cp.clientID]; ok {
+	if _, ok := asm.sessLocked[cid]; ok {
 		asm.mu.Unlock()
 		if locked++; locked == 10 {
-			return fmt.Errorf("other session with client ID %q is in the process of connecting", cp.clientID)
+			return fmt.Errorf("other session with client ID %q is in the process of connecting", cid)
 		}
 		time.Sleep(100 * time.Millisecond)
 		goto CHECK
 	}
 
 	// Register this client ID the "locked" map for the duration if this function.
-	asm.sessLocked[cp.clientID] = struct{}{}
+	asm.sessLocked[cid] = struct{}{}
 	// And remove it on exit, regardless of error or not.
 	defer func() {
 		asm.mu.Lock()
-		delete(asm.sessLocked, cp.clientID)
+		delete(asm.sessLocked, cid)
 		asm.mu.Unlock()
 	}()
 
@@ -2617,13 +2629,13 @@ CHECK:
 	// Session present? Assume false, will be set to true only when applicable.
 	sessp := false
 	// Do we have an existing session for this client ID
-	es, exists := asm.sessions[cp.clientID]
+	es, exists := asm.sessions[cid]
 	asm.mu.Unlock()
 
 	// The session is not in the map, but may be on disk, so try to recover
 	// or create the stream if not.
 	if !exists {
-		es, exists, err = asm.createOrRestoreSession(cp.clientID, s.getOpts())
+		es, exists, err = asm.createOrRestoreSession(cid, s.getOpts())
 		if err != nil {
 			return err
 		}
@@ -2659,9 +2671,9 @@ CHECK:
 			ec.mu.Unlock()
 			// Add to the map of the flappers
 			asm.mu.Lock()
-			asm.addSessToFlappers(cp.clientID)
+			asm.addSessToFlappers(cid)
 			asm.mu.Unlock()
-			c.Warnf("Replacing old client %q since both have the same client ID %q", ec, cp.clientID)
+			c.Warnf("Replacing old client %q since both have the same client ID %q", ec, cid)
 			// Close old client in separate go routine
 			go ec.closeConnection(DuplicateClientID)
 		}

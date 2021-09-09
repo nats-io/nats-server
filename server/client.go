@@ -1895,7 +1895,11 @@ func (c *client) authViolation() {
 	} else {
 		c.Errorf(ErrAuthentication.Error())
 	}
-	c.sendErr("Authorization Violation")
+	if c.isMqtt() {
+		c.mqttEnqueueConnAck(mqttConnAckRCNotAuthorized, false)
+	} else {
+		c.sendErr("Authorization Violation")
+	}
 	c.closeConnection(AuthenticationViolation)
 }
 
