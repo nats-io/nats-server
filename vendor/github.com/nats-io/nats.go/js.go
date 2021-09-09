@@ -2078,7 +2078,11 @@ func checkMsg(msg *Msg, checkSts bool) (usrMsg bool, err error) {
 		// 404 indicates that there are no messages.
 		err = errNoMessages
 	case reqTimeoutSts:
-		err = ErrTimeout
+		// Older servers may send a 408 when a request in the server was expired
+		// and interest is still found, which will be the case for our
+		// implementation. Regardless, ignore 408 errors, the caller will
+		// go back to wait for the next message.
+		err = nil
 	default:
 		err = fmt.Errorf("nats: %s", msg.Header.Get(descrHdr))
 	}
@@ -2089,6 +2093,9 @@ func checkMsg(msg *Msg, checkSts bool) (usrMsg bool, err error) {
 func (sub *Subscription) Fetch(batch int, opts ...PullOpt) ([]*Msg, error) {
 	if sub == nil {
 		return nil, ErrBadSubscription
+	}
+	if batch < 1 {
+		return nil, ErrInvalidArg
 	}
 
 	var o pullOpts
@@ -2182,19 +2189,31 @@ func (sub *Subscription) Fetch(batch int, opts ...PullOpt) ([]*Msg, error) {
 	if err == nil && len(msgs) < batch {
 		// For batch real size of 1, it does not make sense to set no_wait in
 		// the request.
-		batchSize := batch - len(msgs)
-		noWait := batchSize > 1
-		nr := &nextRequest{Batch: batchSize, NoWait: noWait}
-		req, _ := json.Marshal(nr)
+		noWait := batch-len(msgs) > 1
+		var nr nextRequest
 
-		err = nc.PublishRequest(nms, rply, req)
-		for err == nil && len(msgs) < batch {
+		sendReq := func() error {
 			ttl -= time.Since(start)
 			if ttl < 0 {
-				ttl = 0
+				// At this point consider that we have timed-out
+				return context.DeadlineExceeded
+			}
+			// Make our request expiration a bit shorter than the current timeout.
+			expires := ttl
+			if ttl >= 20*time.Millisecond {
+				expires = ttl - 10*time.Millisecond
 			}
 
-			// Ask for next message and waits if there are no messages
+			nr.Batch = batch - len(msgs)
+			nr.Expires = expires
+			nr.NoWait = noWait
+			req, _ := json.Marshal(nr)
+			return nc.PublishRequest(nms, rply, req)
+		}
+
+		err = sendReq()
+		for err == nil && len(msgs) < batch {
+			// Ask for next message and wait if there are no messages
 			msg, err = sub.nextMsgWithContext(ctx, true, true)
 			if err == nil {
 				var usrMsg bool
@@ -2207,27 +2226,7 @@ func (sub *Subscription) Fetch(batch int, opts ...PullOpt) ([]*Msg, error) {
 					// not collected any message, then resend request to
 					// wait this time.
 					noWait = false
-
-					ttl -= time.Since(start)
-					if ttl < 0 {
-						// At this point consider that we have timed-out
-						err = context.DeadlineExceeded
-						break
-					}
-
-					// Make our request expiration a bit shorter than the
-					// current timeout.
-					expires := ttl
-					if ttl >= 20*time.Millisecond {
-						expires = ttl - 10*time.Millisecond
-					}
-
-					nr.Batch = batch - len(msgs)
-					nr.Expires = expires
-					nr.NoWait = false
-					req, _ = json.Marshal(nr)
-
-					err = nc.PublishRequest(nms, rply, req)
+					err = sendReq()
 				}
 			}
 		}

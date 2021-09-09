@@ -9,7 +9,7 @@ github.com/minio/highwayhash
 # github.com/nats-io/jwt/v2 v2.0.3
 ## explicit
 github.com/nats-io/jwt/v2
-# github.com/nats-io/nats.go v1.12.0
+# github.com/nats-io/nats.go v1.12.1
 ## explicit
 github.com/nats-io/nats.go
 github.com/nats-io/nats.go/encoders/builtin
