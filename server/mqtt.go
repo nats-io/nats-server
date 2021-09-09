@@ -2139,17 +2139,21 @@ func (sess *mqttSession) save() error {
 	seq := sess.seq
 	sess.mu.Unlock()
 
-	bb := bytes.Buffer{}
-	bb.WriteString(hdrLine)
-	bb.WriteString(JSExpectedLastSubjSeq)
-	bb.WriteString(":")
-	bb.WriteString(strconv.FormatInt(int64(seq), 10))
-	bb.WriteString(CR_LF)
-	bb.WriteString(CR_LF)
-	hdr := bb.Len()
-	bb.Write(b)
+	var hdr int
+	if seq != 0 {
+		bb := bytes.Buffer{}
+		bb.WriteString(hdrLine)
+		bb.WriteString(JSExpectedLastSubjSeq)
+		bb.WriteString(":")
+		bb.WriteString(strconv.FormatInt(int64(seq), 10))
+		bb.WriteString(CR_LF)
+		bb.WriteString(CR_LF)
+		hdr = bb.Len()
+		bb.Write(b)
+		b = bb.Bytes()
+	}
 
-	resp, err := sess.jsa.storeMsgWithKind(mqttJSASessPersist, subject, hdr, bb.Bytes())
+	resp, err := sess.jsa.storeMsgWithKind(mqttJSASessPersist, subject, hdr, b)
 	if err != nil {
 		return err
 	}
