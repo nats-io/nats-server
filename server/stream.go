@@ -2465,12 +2465,12 @@ func getExpectedLastSeq(hdr []byte) uint64 {
 }
 
 // Fast lookup of expected stream sequence per subject.
-func getExpectedLastSeqPerSubject(hdr []byte) uint64 {
+func getExpectedLastSeqPerSubject(hdr []byte) (uint64, bool) {
 	bseq := getHeader(JSExpectedLastSubjSeq, hdr)
 	if len(bseq) == 0 {
-		return 0
+		return 0, false
 	}
-	return uint64(parseInt64(bseq))
+	return uint64(parseInt64(bseq)), true
 }
 
 // Lock should be held.
@@ -2686,9 +2686,13 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			return fmt.Errorf("last msgid mismatch: %q vs %q", lmsgId, last)
 		}
 		// Expected last sequence per subject.
-		if seq := getExpectedLastSeqPerSubject(hdr); seq > 0 {
+		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists {
 			// TODO(dlc) - We could make a new store func that does this all in one.
 			_, lseq, _, _, _, err := mset.store.LoadLastMsg(subject)
+			// If seq passed in is zero that signals we expect no msg to be present.
+			if err == ErrStoreMsgNotFound && seq == 0 {
+				lseq, err = 0, nil
+			}
 			if err != nil || lseq != seq {
 				mset.clfs++
 				mset.mu.Unlock()

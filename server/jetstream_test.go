@@ -12973,6 +12973,55 @@ func TestJetStreamPerSubjectPending(t *testing.T) {
 	}
 }
 
+func TestJetStreamPublishExpectNoMsg(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:              "KV",
+		Subjects:          []string{"KV.>"},
+		MaxMsgsPerSubject: 5,
+	})
+	if err != nil {
+		t.Fatalf("add stream failed: %s", err)
+	}
+
+	if _, err = js.Publish("KV.22", []byte("hello world")); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// This should succeed.
+	m := nats.NewMsg("KV.33")
+	m.Header.Set(JSExpectedLastSubjSeq, "0")
+	if _, err := js.PublishMsg(m); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// This should fail.
+	m = nats.NewMsg("KV.22")
+	m.Header.Set(JSExpectedLastSubjSeq, "0")
+	if _, err := js.PublishMsg(m); err == nil {
+		t.Fatalf("Expected error: %v", err)
+	}
+
+	if err := js.PurgeStream("KV"); err != nil {
+		t.Fatalf("Unexpected purge error: %v", err)
+	}
+
+	// This should succeed now.
+	if _, err := js.PublishMsg(m); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
