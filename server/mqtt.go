@@ -922,9 +922,8 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		},
 	}
 	// We need to include the domain in the subject prefix used to store sessions in the $MQTT_sess stream.
-	// If no domain is present, use "_" so that the token always exists.
 	if d := s.getOpts().JetStreamDomain; d != _EMPTY_ {
-		as.domainTk = string(getHash(d)) + "."
+		as.domainTk = d + "."
 	}
 
 	var subs []*subscription
@@ -1136,7 +1135,7 @@ func (jsa *mqttJSA) newRequestEx(kind, subject string, hdr int, msg []byte, time
 	var sb strings.Builder
 	sb.WriteString(jsa.rplyr)
 	sb.WriteString(kind)
-	sb.WriteByte('.')
+	sb.WriteByte(btsep)
 	sb.WriteString(jsa.nuid.Next())
 	reply := sb.String()
 	jsa.mu.Unlock()
