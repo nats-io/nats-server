@@ -3266,9 +3266,6 @@ func TestFileStoreSparseCompaction(t *testing.T) {
 		if ta >= tb {
 			t.Fatalf("Expected total after to be less then before, got %d vs %d", tb, ta)
 		}
-		if ta != ua {
-			t.Fatalf("Expected compact to make total and used same, got %d vs %d", ta, ua)
-		}
 	}
 
 	// Actual testing here.
@@ -3313,4 +3310,48 @@ func TestFileStoreSparseCompaction(t *testing.T) {
 
 	eraseMsgs(500, 502, 504, 506, 508, 510)
 	compact()
+}
+
+func TestFileStoreSparseCompactionWithInteriorDeletes(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	cfg := StreamConfig{Name: "KV", Subjects: []string{"kv.>"}, Storage: FileStorage}
+	var fs *fileStore
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, cfg)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	for i := 1; i <= 1000; i++ {
+		if _, _, err := fs.StoreMsg(fmt.Sprintf("kv.%d", i%10), nil, []byte("OK")); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	// Now do interior deletes.
+	for _, seq := range []uint64{500, 600, 700, 800} {
+		removed, err := fs.RemoveMsg(seq)
+		if err != nil || !removed {
+			t.Fatalf("Got an error on remove of %d: %v", seq, err)
+		}
+	}
+
+	_, _, _, _, err = fs.LoadMsg(900)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Do compact by hand, make sure we can still access msgs past the interior deletes.
+	fs.mu.RLock()
+	lmb := fs.lmb
+	lmb.dirtyCloseWithRemove(false)
+	lmb.compact()
+	fs.mu.RUnlock()
+
+	_, _, _, _, err = fs.LoadMsg(900)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
 }
