@@ -412,7 +412,6 @@ func (c *client) wsHandleControlFrame(r *wsReadInfo, frameType wsOpCode, nc io.R
 	var payload []byte
 	var err error
 
-	statusPos := pos
 	if r.rem > 0 {
 		payload, pos, err = wsGet(nc, buf, pos, r.rem)
 		if err != nil {
@@ -426,17 +425,20 @@ func (c *client) wsHandleControlFrame(r *wsReadInfo, frameType wsOpCode, nc io.R
 	switch frameType {
 	case wsCloseMessage:
 		status := wsCloseStatusNoStatusReceived
-		body := ""
+		body := _EMPTY_
 		// If there is a payload, it should contain 2 unsigned bytes
 		// that represent the status code and then optional payload.
 		if len(payload) >= 2 {
-			status = int(binary.BigEndian.Uint16(buf[statusPos : statusPos+2]))
-			body = string(buf[statusPos+2 : statusPos+len(payload)])
-			if body != "" && !utf8.ValidString(body) {
-				// https://tools.ietf.org/html/rfc6455#section-5.5.1
-				// If body is present, it must be a valid utf8
-				status = wsCloseStatusInvalidPayloadData
-				body = "invalid utf8 body in close frame"
+			status = int(binary.BigEndian.Uint16(payload[:2]))
+			// Check for optional paylos
+			if len(payload) > 2 {
+				body = string(payload[2:])
+				if body != _EMPTY_ && !utf8.ValidString(body) {
+					// https://tools.ietf.org/html/rfc6455#section-5.5.1
+					// If body is present, it must be a valid utf8
+					status = wsCloseStatusInvalidPayloadData
+					body = "invalid utf8 body in close frame"
+				}
 			}
 		}
 		c.wsEnqueueControlMessage(wsCloseMessage, wsCreateCloseMessage(status, body))

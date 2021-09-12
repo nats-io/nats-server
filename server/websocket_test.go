@@ -54,8 +54,8 @@ func (tr *testReader) Read(p []byte) (int, error) {
 	if n == 0 {
 		return 0, nil
 	}
-	if n > cap(p) {
-		n = cap(p)
+	if n > len(p) {
+		n = len(p)
 	}
 	if tr.max > 0 && n > tr.max {
 		n = tr.max
@@ -725,6 +725,97 @@ func TestWSReadControlFrameBetweebFragmentedFrames(t *testing.T) {
 	}
 	if string(bufs[1]) != "second" {
 		t.Fatalf("Unexpected content: %s", bufs[1])
+	}
+}
+
+func TestWSCloseFrameWithPartialOrInvalid(t *testing.T) {
+	c, ri, tr := testWSSetupForRead()
+	// a close message has a status in 2 bytes + optional payload
+	payloadTxt := []byte("hello")
+	payload := make([]byte, 2+len(payloadTxt))
+	binary.BigEndian.PutUint16(payload[:2], wsCloseStatusNormalClosure)
+	copy(payload[2:], payloadTxt)
+	closeMsg := testWSCreateClientMsg(wsCloseMessage, 1, true, false, payload)
+
+	// We will pass to wsRead a buffer of small capacity that contains
+	// only 1 byte.
+	closeFirtByte := []byte{closeMsg[0]}
+	// Make the io reader return the rest of the frame
+	tr.buf = closeMsg[1:]
+	bufs, err := c.wsRead(ri, tr, closeFirtByte[:])
+	// It is expected that wsRead returns io.EOF on processing a close.
+	if err != io.EOF {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if n := len(bufs); n != 0 {
+		t.Fatalf("Unexpected buffer returned: %v", n)
+	}
+	// A CLOSE should have been queued with the payload of the original close message.
+	c.mu.Lock()
+	nb, _ := c.collapsePtoNB()
+	c.mu.Unlock()
+	if n := len(nb); n == 0 {
+		t.Fatalf("Expected buffers, got %v", n)
+	}
+	if expected := 2 + 2 + len(payloadTxt); expected != len(nb[0]) {
+		t.Fatalf("Expected buffer to be %v bytes long, got %v", expected, len(nb[0]))
+	}
+	b := nb[0][0]
+	if b&wsFinalBit == 0 {
+		t.Fatalf("Control frame should have been the final flag, it was not set: %v", b)
+	}
+	if b&byte(wsCloseMessage) == 0 {
+		t.Fatalf("Should have been a CLOSE, it wasn't: %v", b)
+	}
+	if status := binary.BigEndian.Uint16(nb[0][2:4]); status != wsCloseStatusNormalClosure {
+		t.Fatalf("Expected status to be %v, got %v", wsCloseStatusNormalClosure, status)
+	}
+	if !bytes.Equal(nb[0][4:], payloadTxt) {
+		t.Fatalf("Unexpected content: %s", nb[0][4:])
+	}
+
+	// Now test close with invalid status size (1 instead of 2 bytes)
+	c, ri, tr = testWSSetupForRead()
+	payload[0] = 100
+	binary.BigEndian.PutUint16(payload, wsCloseStatusNormalClosure)
+	closeMsg = testWSCreateClientMsg(wsCloseMessage, 1, true, false, payload[:1])
+
+	// We will pass to wsRead a buffer of small capacity that contains
+	// only 1 byte.
+	closeFirtByte = []byte{closeMsg[0]}
+	// Make the io reader return the rest of the frame
+	tr.buf = closeMsg[1:]
+	bufs, err = c.wsRead(ri, tr, closeFirtByte[:])
+	// It is expected that wsRead returns io.EOF on processing a close.
+	if err != io.EOF {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if n := len(bufs); n != 0 {
+		t.Fatalf("Unexpected buffer returned: %v", n)
+	}
+	// A CLOSE should have been queued with the payload of the original close message.
+	c.mu.Lock()
+	nb, _ = c.collapsePtoNB()
+	c.mu.Unlock()
+	if n := len(nb); n == 0 {
+		t.Fatalf("Expected buffers, got %v", n)
+	}
+	if expected := 2 + 2; expected != len(nb[0]) {
+		t.Fatalf("Expected buffer to be %v bytes long, got %v", expected, len(nb[0]))
+	}
+	b = nb[0][0]
+	if b&wsFinalBit == 0 {
+		t.Fatalf("Control frame should have been the final flag, it was not set: %v", b)
+	}
+	if b&byte(wsCloseMessage) == 0 {
+		t.Fatalf("Should have been a CLOSE, it wasn't: %v", b)
+	}
+	// Since satus was not valid, we should get wsCloseStatusNoStatusReceived
+	if status := binary.BigEndian.Uint16(nb[0][2:4]); status != wsCloseStatusNoStatusReceived {
+		t.Fatalf("Expected status to be %v, got %v", wsCloseStatusNoStatusReceived, status)
+	}
+	if len(nb[0][:]) != 4 {
+		t.Fatalf("Unexpected content: %s", nb[0][2:])
 	}
 }
 
