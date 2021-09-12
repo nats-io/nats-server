@@ -4,13 +4,15 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"fmt"
-	"golang.org/x/crypto/ssh"
 	"os"
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/dgrijalva/jwt-go"
 	natsjwt "github.com/nats-io/jwt/v2"
+	"github.com/provideplatform/provide-go/common/util"
 )
 
 type BearerAuth struct {
@@ -23,10 +25,19 @@ func bearerAuthFactory(s *Server) (*BearerAuth, error) {
 		server: s,
 		jwks:   map[string]*rsa.PublicKey{},
 	}
-	err := auth.readPublicKey()
-	if err != nil {
-		return nil, fmt.Errorf("failed to read JWT_SIGNER_PUBLIC_KEY from environment")
+	
+	if os.Getenv("JWT_SIGNER_PUBLIC_KEY") != "" {
+		err := auth.readPublicKey()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read JWT_SIGNER_PUBLIC_KEY from environment")
+		}
 	}
+
+	jwks := util.RequireJWTVerifiers()
+	for kid := range jwks {
+		auth.jwks[kid] = &jwks[kid].PublicKey
+	}
+
 	return auth, nil
 }
 

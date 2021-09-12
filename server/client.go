@@ -528,6 +528,9 @@ type ClientOpts struct {
 	Headers      bool   `json:"headers,omitempty"`
 	NoResponders bool   `json:"no_responders,omitempty"`
 
+	// HACK
+	UserJWT string `json:"userJWT,omitempty"`
+
 	// Routes and Leafnodes only
 	Import *SubjectPermission `json:"import,omitempty"`
 	Export *SubjectPermission `json:"export,omitempty"`
@@ -719,6 +722,12 @@ func (c *client) applyAccountLimits() {
 	}
 	c.mpay = jwt.NoLimit
 	c.msubs = jwt.NoLimit
+
+	// HACK
+	if c.opts.JWT == "" && c.opts.UserJWT != "" {
+		c.opts.JWT = c.opts.UserJWT
+	}
+
 	if c.opts.JWT != "" { // user jwt implies account
 		if uc, _ := jwt.DecodeUserClaims(c.opts.JWT); uc != nil {
 			c.mpay = int32(uc.Limits.Payload)
@@ -1719,7 +1728,11 @@ func (c *client) processConnect(arg []byte) error {
 
 	// If websocket client and JWT not in the CONNECT, use the cookie JWT (possibly empty).
 	if ws := c.ws; ws != nil && c.opts.JWT == "" {
-		c.opts.JWT = ws.cookieJwt
+		if c.opts.UserJWT != "" {
+			c.opts.JWT = c.opts.UserJWT // HACK
+		} else {
+			c.opts.JWT = ws.cookieJwt
+		}
 	}
 	// when not in operator mode, discard the jwt
 	if srv != nil && srv.trustedKeys == nil && srv.getOpts().CustomClientAuthentication == nil {
