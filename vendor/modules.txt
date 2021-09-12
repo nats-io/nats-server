@@ -1,14 +1,58 @@
 # github.com/dgrijalva/jwt-go v3.2.0+incompatible
 ## explicit
 github.com/dgrijalva/jwt-go
+# github.com/form3tech-oss/jwt-go v3.2.2+incompatible
+github.com/form3tech-oss/jwt-go
+# github.com/gin-contrib/sse v0.1.0
+github.com/gin-contrib/sse
+# github.com/gin-gonic/gin v1.6.3
+github.com/gin-gonic/gin
+github.com/gin-gonic/gin/binding
+github.com/gin-gonic/gin/internal/bytesconv
+github.com/gin-gonic/gin/internal/json
+github.com/gin-gonic/gin/render
+# github.com/go-playground/locales v0.13.0
+github.com/go-playground/locales
+github.com/go-playground/locales/currency
+# github.com/go-playground/universal-translator v0.17.0
+github.com/go-playground/universal-translator
+# github.com/go-playground/validator/v10 v10.2.0
+github.com/go-playground/validator/v10
 # github.com/golang/protobuf v1.4.2
-## explicit
+github.com/golang/protobuf/proto
+# github.com/jinzhu/gorm v1.9.16
+github.com/jinzhu/gorm
+# github.com/jinzhu/inflection v1.0.0
+github.com/jinzhu/inflection
+# github.com/json-iterator/go v1.1.9
+github.com/json-iterator/go
 # github.com/klauspost/compress v1.11.12
 ## explicit
 github.com/klauspost/compress/s2
+# github.com/kthomas/go-auth0 v0.0.0-20210417042937-27d1d2dadf19
+github.com/kthomas/go-auth0
+# github.com/kthomas/go-logger v0.0.0-20210526080020-a63672d0724c
+github.com/kthomas/go-logger
+# github.com/kthomas/go-pgputil v0.0.0-20200602073402-784e96083943
+github.com/kthomas/go-pgputil
+# github.com/kthomas/go-self-signed-cert v0.0.0-20200602041729-f9878375d46e
+github.com/kthomas/go-self-signed-cert
+# github.com/kthomas/go.uuid v1.2.1-0.20190324131420-28d1fa77e9a4
+github.com/kthomas/go.uuid
+# github.com/kthomas/logrus v1.8.2-0.20210411034302-11586d6ce483
+github.com/kthomas/logrus
+github.com/kthomas/logrus/hooks/syslog
+# github.com/leodido/go-urn v1.2.0
+github.com/leodido/go-urn
+# github.com/mattn/go-isatty v0.0.12
+github.com/mattn/go-isatty
 # github.com/minio/highwayhash v1.0.1
 ## explicit
 github.com/minio/highwayhash
+# github.com/modern-go/concurrent v0.0.0-20180228061459-e0a39a4cb421
+github.com/modern-go/concurrent
+# github.com/modern-go/reflect2 v0.0.0-20180701023420-4b7aa43c6742
+github.com/modern-go/reflect2
 # github.com/nats-io/jwt/v2 v2.0.2
 ## explicit
 github.com/nats-io/jwt/v2
@@ -23,19 +67,37 @@ github.com/nats-io/nkeys
 # github.com/nats-io/nuid v1.0.1
 ## explicit
 github.com/nats-io/nuid
+# github.com/provideplatform/provide-go v0.0.0-20210714163140-d81ce23b460b
+## explicit
+github.com/provideplatform/provide-go/api
+github.com/provideplatform/provide-go/api/ident
+github.com/provideplatform/provide-go/api/vault
+github.com/provideplatform/provide-go/common
+github.com/provideplatform/provide-go/common/util
+# github.com/ugorji/go/codec v1.1.7
+github.com/ugorji/go/codec
+# github.com/vincent-petithory/dataurl v0.0.0-20191104211930-d1553a71de50
+github.com/vincent-petithory/dataurl
 # golang.org/x/crypto v0.0.0-20210314154223-e6e6c4f2bb5b
 ## explicit
 golang.org/x/crypto/bcrypt
 golang.org/x/crypto/blowfish
+golang.org/x/crypto/cast5
 golang.org/x/crypto/chacha20
 golang.org/x/crypto/curve25519
 golang.org/x/crypto/ed25519
 golang.org/x/crypto/ed25519/internal/edwards25519
 golang.org/x/crypto/internal/subtle
+golang.org/x/crypto/openpgp
+golang.org/x/crypto/openpgp/armor
+golang.org/x/crypto/openpgp/elgamal
+golang.org/x/crypto/openpgp/errors
+golang.org/x/crypto/openpgp/packet
+golang.org/x/crypto/openpgp/s2k
 golang.org/x/crypto/poly1305
 golang.org/x/crypto/ssh
 golang.org/x/crypto/ssh/internal/bcrypt_pbkdf
-# golang.org/x/sys v0.0.0-20201119102817-f84b799fce68
+# golang.org/x/sys v0.0.0-20210218155724-8ebf48af031b
 ## explicit
 golang.org/x/sys/cpu
 golang.org/x/sys/internal/unsafeheader
@@ -48,3 +110,33 @@ golang.org/x/sys/windows/svc/mgr
 # golang.org/x/time v0.0.0-20200416051211-89c76fbcd5d1
 ## explicit
 golang.org/x/time/rate
+# google.golang.org/protobuf v1.23.0
+google.golang.org/protobuf/encoding/prototext
+google.golang.org/protobuf/encoding/protowire
+google.golang.org/protobuf/internal/descfmt
+google.golang.org/protobuf/internal/descopts
+google.golang.org/protobuf/internal/detrand
+google.golang.org/protobuf/internal/encoding/defval
+google.golang.org/protobuf/internal/encoding/messageset
+google.golang.org/protobuf/internal/encoding/tag
+google.golang.org/protobuf/internal/encoding/text
+google.golang.org/protobuf/internal/errors
+google.golang.org/protobuf/internal/fieldnum
+google.golang.org/protobuf/internal/fieldsort
+google.golang.org/protobuf/internal/filedesc
+google.golang.org/protobuf/internal/filetype
+google.golang.org/protobuf/internal/flags
+google.golang.org/protobuf/internal/genname
+google.golang.org/protobuf/internal/impl
+google.golang.org/protobuf/internal/mapsort
+google.golang.org/protobuf/internal/pragma
+google.golang.org/protobuf/internal/set
+google.golang.org/protobuf/internal/strs
+google.golang.org/protobuf/internal/version
+google.golang.org/protobuf/proto
+google.golang.org/protobuf/reflect/protoreflect
+google.golang.org/protobuf/reflect/protoregistry
+google.golang.org/protobuf/runtime/protoiface
+google.golang.org/protobuf/runtime/protoimpl
+# gopkg.in/yaml.v2 v2.3.0
+gopkg.in/yaml.v2
