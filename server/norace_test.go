@@ -29,6 +29,7 @@ import (
 	"net/url"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3197,5 +3198,47 @@ func TestNoRaceJetStreamClusterInterestPolicyAckNone(t *testing.T) {
 				return nil
 			})
 		})
+	}
+}
+
+// There was a bug in the filestore compact code that would cause a store
+// with JSExpectedLastSubjSeq to fail with "wrong last sequence: 0"
+func TestNoRaceJetStreamLastSubjSeqAndFilestoreCompact(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:              "MQTT_sess",
+		Subjects:          []string{"MQTT.sess.>"},
+		Storage:           nats.FileStorage,
+		Retention:         nats.LimitsPolicy,
+		Replicas:          1,
+		MaxMsgsPerSubject: 1,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	firstPayload := make([]byte, 40)
+	secondPayload := make([]byte, 380)
+	for iter := 0; iter < 2; iter++ {
+		for i := 0; i < 4000; i++ {
+			subj := "MQTT.sess." + string(getHash(fmt.Sprintf("client_%d", i)))
+			pa, err := js.Publish(subj, firstPayload)
+			if err != nil {
+				t.Fatalf("Error on publish: %v", err)
+			}
+			m := nats.NewMsg(subj)
+			m.Data = secondPayload
+			eseq := strconv.FormatInt(int64(pa.Sequence), 10)
+			m.Header.Set(JSExpectedLastSubjSeq, eseq)
+			if _, err := js.PublishMsg(m); err != nil {
+				t.Fatalf("Error on publish (iter=%v seq=%v): %v", iter+1, pa.Sequence, err)
+			}
+		}
 	}
 }

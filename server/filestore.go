@@ -783,9 +783,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, error) {
 
 		var deleted bool
 		if mb.dmap != nil {
-			if _, ok := mb.dmap[seq]; ok {
-				deleted = true
-			}
+			_, deleted = mb.dmap[seq]
 		}
 
 		// Always set last.
@@ -1766,14 +1764,12 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 	mb.mu.Lock()
 
 	// Check cache. This should be very rare.
-	if mb.cache == nil || mb.cache.idx == nil || seq < mb.cache.fseq && mb.cache.off > 0 {
-		mb.mu.Unlock()
-		fsUnlock()
-		if err := mb.loadMsgs(); err != nil {
+	if !mb.cacheAlreadyLoaded() {
+		if err := mb.loadMsgsWithLock(); err != nil {
+			mb.mu.Unlock()
+			fsUnlock()
 			return false, err
 		}
-		fsLock()
-		mb.mu.Lock()
 	}
 
 	// See if the sequence numbers is still relevant. Check first and cache first.
@@ -1931,12 +1927,11 @@ func (mb *msgBlock) compact() {
 		if seq == 0 || seq&ebit != 0 || seq < mb.first.seq {
 			return true
 		}
+		var deleted bool
 		if mb.dmap != nil {
-			if _, ok := mb.dmap[seq]; ok {
-				return true
-			}
+			_, deleted = mb.dmap[seq]
 		}
-		return false
+		return deleted
 	}
 
 	// For skip msgs.
@@ -2005,11 +2000,12 @@ func (mb *msgBlock) compact() {
 		return
 	}
 
-	// Close cache and open FDs and index file.
+	// Close cache and index file and wipe delete map, then rebuild.
 	mb.clearCacheAndOffset()
 	mb.removeIndexFileLocked()
 	mb.deleteDmap()
 	mb.rebuildStateLocked()
+	mb.loadMsgsWithLock()
 }
 
 // Nil out our dmap.
@@ -2870,8 +2866,6 @@ func (mb *msgBlock) flushPendingMsgs() error {
 		return nil
 	}
 
-	// bytesPending will return with errFlushRunning
-	// if we are already flushing this message block.
 	buf, err := mb.bytesPending()
 	// If we got an error back return here.
 	if err != nil {
@@ -2984,7 +2978,11 @@ func (mb *msgBlock) loadMsgs() error {
 
 // Lock should be held.
 func (mb *msgBlock) cacheAlreadyLoaded() bool {
-	return mb.cache != nil && len(mb.cache.idx) == int(mb.msgs) && mb.cache.off == 0 && len(mb.cache.buf) > 0
+	if mb.cache == nil || mb.cache.off != 0 {
+		return false
+	}
+	numEntries := mb.msgs + uint64(len(mb.dmap)) + (mb.first.seq - mb.cache.fseq)
+	return numEntries == uint64(len(mb.cache.idx)) && len(mb.cache.buf) > 0
 }
 
 // Used to load in the block contents.
@@ -3041,7 +3039,7 @@ checkCache:
 	mb.llts = time.Now().UnixNano()
 
 	// FIXME(dlc) - We could be smarter here.
-	if mb.cache != nil && len(mb.cache.buf)-mb.cache.wp > 0 {
+	if buf, _ := mb.bytesPending(); len(buf) > 0 {
 		mb.mu.Unlock()
 		err := mb.flushPendingMsgs()
 		mb.mu.Lock()
@@ -4073,6 +4071,14 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64) {
 	if seq != ss.First {
 		return
 	}
+
+	// Here what we are removing is the first message.
+	// If we only have one message left we can simply assign it to last.
+	if ss.Msgs == 1 {
+		ss.First = ss.Last
+		return
+	}
+
 	// TODO(dlc) - Might want to optimize this.
 	for tseq := seq + 1; tseq <= ss.Last; tseq++ {
 		if sm, _ := mb.cacheLookup(tseq); sm != nil {
