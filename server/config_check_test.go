@@ -1474,6 +1474,35 @@ func TestConfigCheck(t *testing.T) {
                         `,
 			err: fmt.Errorf(`Duplicate 'store_dir' configuration`),
 		},
+		{
+			name: "token not supported in cluster",
+			config: `
+				cluster {
+					port: -1
+					authorization {
+						token: "my_token"
+					}
+				}
+			`,
+			err:       fmt.Errorf("Cluster authorization does not support tokens"),
+			errorLine: 4,
+			errorPos:  6,
+		},
+		{
+			name: "token not supported in gateway",
+			config: `
+				gateway {
+					port: -1
+					name: "A"
+					authorization {
+						token: "my_token"
+					}
+				}
+			`,
+			err:       fmt.Errorf("Gateway authorization does not support tokens"),
+			errorLine: 5,
+			errorPos:  6,
+		},
 	}
 
 	checkConfig := func(config string) error {
