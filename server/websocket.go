@@ -58,6 +58,7 @@ const (
 	wsMaxFrameHeaderSize    = 14 // Since LeafNode may need to behave as a client
 	wsMaxControlPayloadSize = 125
 	wsFrameSizeForBrowsers  = 4096 // From experiment, webrowsers behave better with limited frame size
+	wsCloseSatusSize        = 2
 
 	// From https://tools.ietf.org/html/rfc6455#section-11.7
 	wsCloseStatusNormalClosure      = 1000
@@ -412,7 +413,6 @@ func (c *client) wsHandleControlFrame(r *wsReadInfo, frameType wsOpCode, nc io.R
 	var payload []byte
 	var err error
 
-	statusPos := pos
 	if r.rem > 0 {
 		payload, pos, err = wsGet(nc, buf, pos, r.rem)
 		if err != nil {
@@ -426,17 +426,24 @@ func (c *client) wsHandleControlFrame(r *wsReadInfo, frameType wsOpCode, nc io.R
 	switch frameType {
 	case wsCloseMessage:
 		status := wsCloseStatusNoStatusReceived
-		body := ""
-		// If there is a payload, it should contain 2 unsigned bytes
-		// that represent the status code and then optional payload.
-		if len(payload) >= 2 {
-			status = int(binary.BigEndian.Uint16(buf[statusPos : statusPos+2]))
-			body = string(buf[statusPos+2 : statusPos+len(payload)])
-			if body != "" && !utf8.ValidString(body) {
-				// https://tools.ietf.org/html/rfc6455#section-5.5.1
-				// If body is present, it must be a valid utf8
-				status = wsCloseStatusInvalidPayloadData
-				body = "invalid utf8 body in close frame"
+		var body string
+		lp := len(payload)
+		// If there is a payload, the status is represented as a 2-byte
+		// unsigned integer (in network byte order). Then, there may be an
+		// optional body.
+		hasStatus, hasBody := lp >= wsCloseSatusSize, lp > wsCloseSatusSize
+		if hasStatus {
+			// Decode the status
+			status = int(binary.BigEndian.Uint16(payload[:wsCloseSatusSize]))
+			// Now if there is a body, capture it and make sure this is a valid UTF-8.
+			if hasBody {
+				body = string(payload[wsCloseSatusSize:])
+				if !utf8.ValidString(body) {
+					// https://tools.ietf.org/html/rfc6455#section-5.5.1
+					// If body is present, it must be a valid utf8
+					status = wsCloseStatusInvalidPayloadData
+					body = "invalid utf8 body in close frame"
+				}
 			}
 		}
 		c.wsEnqueueControlMessage(wsCloseMessage, wsCreateCloseMessage(status, body))
