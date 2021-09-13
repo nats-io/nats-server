@@ -345,7 +345,7 @@ func (s *Sublist) chkForRemoveNotification(subject, queue string) {
 			}
 			// Move from the remove map to the insert map.
 			s.notify.insert[key] = append(s.notify.insert[key], chs...)
-			delete(s.notify.remove, subject)
+			delete(s.notify.remove, key)
 		}
 	}
 }
