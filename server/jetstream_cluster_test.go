@@ -6983,6 +6983,77 @@ func TestJetStreamClusterSuperClusterGetNextRewrite(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterWithLnDomainsNoSharedSys(t *testing.T) {
+	fmtA := `
+		listen: localhost:-1
+		accounts: {
+			A: {
+				users: [{user: a, password: a}]
+			}
+		}
+		no_auth_user: a
+		leafnodes {
+		    listen localhost:-1
+		}
+	`
+	cfgA := createConfFile(t, []byte(fmtA))
+	defer removeFile(t, cfgA)
+	sA, _ := RunServerWithConfig(cfgA)
+	defer sA.Shutdown()
+
+	fmtL := `
+		listen: localhost:-1
+		jetstream {
+			store_dir: "%s"
+			domain: "%s"
+		}
+		accounts: {
+			A: {
+				users: [{user: a, password: a}]
+				jetstream: enabled
+			}
+		}
+		no_auth_user: a
+		leafnodes {
+			remotes = [
+				{
+					url: "nats://localhost:%d"
+					account: A
+				},
+			]
+		}
+	`
+	dirL1 := createDir(t, JetStreamStoreDir)
+	cfgL1 := createConfFile(t, []byte(fmt.Sprintf(fmtL, dirL1, "", sA.opts.LeafNode.Port)))
+	defer removeFile(t, cfgL1)
+	sL1, _ := RunServerWithConfig(cfgL1)
+	defer sL1.Shutdown()
+
+	dirL2 := createDir(t, JetStreamStoreDir)
+	cfgL2 := createConfFile(t, []byte(fmt.Sprintf(fmtL, dirL2, "domain", sA.opts.LeafNode.Port)))
+	defer removeFile(t, cfgL2)
+	sL2, _ := RunServerWithConfig(cfgL2)
+	defer sL2.Shutdown()
+
+	checkLeafNodeConnectedCount(t, sA, 2)
+
+	ncA, jsA := jsClientConnect(t, sA)
+	defer ncA.Close()
+	_, err := jsA.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 1,
+	})
+	require_NoError(t, err)
+	// to make this check simpler, make sure the files only exists in one store directory.
+	// TODO this check would be simpler if StreamInfo where to contain domain.
+	_, err1 := ioutil.ReadFile(fmt.Sprintf("%s/jetstream/A/streams/TEST/meta.inf", dirL1))
+	_, err2 := ioutil.ReadFile(fmt.Sprintf("%s/jetstream/A/streams/TEST/meta.inf", dirL2))
+	require_True(t, (err1 == nil && err2 != nil) || (err1 != nil && err2 == nil)) // xor
+	// Phil's expectation of the config is that the stream got created in L1, where no domain was set.
+	require_True(t, err1 == nil)
+}
+
 func TestJetStreamClusterSuperClusterPullConsumerAndHeaders(t *testing.T) {
 	sc := createJetStreamSuperCluster(t, 3, 2)
 	defer sc.shutdown()
