@@ -1364,6 +1364,11 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 				*errors = append(*errors, err)
 				continue
 			}
+			if auth.token != _EMPTY_ {
+				err := &configErr{tk, "Cluster authorization does not support tokens"}
+				*errors = append(*errors, err)
+				continue
+			}
 			opts.Cluster.Username = auth.user
 			opts.Cluster.Password = auth.pass
 			opts.Cluster.AuthTimeout = auth.timeout
@@ -1504,6 +1509,11 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 			}
 			if auth.users != nil {
 				*errors = append(*errors, &configErr{tk, "Gateway authorization does not allow multiple users"})
+				continue
+			}
+			if auth.token != _EMPTY_ {
+				err := &configErr{tk, "Gateway authorization does not support tokens"}
+				*errors = append(*errors, err)
 				continue
 			}
 			o.Gateway.Username = auth.user
