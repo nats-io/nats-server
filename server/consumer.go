@@ -1842,15 +1842,20 @@ func (wq *waitQueue) pop() *waitingRequest {
 	if wr != nil {
 		wr.n--
 		if wr.n <= 0 {
-			wq.reqs[wq.rp] = nil
-			wq.rp = (wq.rp + 1) % cap(wq.reqs)
-			// Check if we are empty.
-			if wq.rp == wq.wp {
-				wq.rp, wq.wp = -1, 0
-			}
+			wq.done()
 		}
 	}
 	return wr
+}
+
+// done will remove a next request from the queue.
+func (wq *waitQueue) done() {
+	wq.reqs[wq.rp] = nil
+	wq.rp = (wq.rp + 1) % cap(wq.reqs)
+	// Check if we are empty.
+	if wq.rp == wq.wp {
+		wq.rp, wq.wp = -1, 0
+	}
 }
 
 // processNextMsgReq will process a request for the next message available. A nil message payload means deliver
@@ -2070,8 +2075,10 @@ func (o *consumer) getNextMsg() (subj string, hdr, msg []byte, seq uint64, dc ui
 // Lock should be held.
 func (o *consumer) forceExpireFirstWaiting() *waitingRequest {
 	// FIXME(dlc) - Should we do advisory here as well?
-	wr := o.waiting.pop()
-	if wr == nil {
+	wr := o.waiting.peek()
+	if wr != nil {
+		o.waiting.done()
+	} else {
 		return wr
 	}
 	// If we are expiring this and we think there is still interest, alert.
