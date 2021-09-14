@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"path"
 	"reflect"
@@ -4414,6 +4415,20 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		if canRespond {
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 			resp.Error = NewJSStreamMessageExceedsMaximumError()
+			response, _ = json.Marshal(resp)
+			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
+		}
+		return err
+	}
+
+	// Since we encode header len as u16 make sure we do not exceed.
+	// Again this works if it goes through but better to be pre-emptive.
+	if len(hdr) > math.MaxUint16 {
+		err := fmt.Errorf("JetStream header size exceeds limits for '%s > %s'", jsa.acc().Name, mset.cfg.Name)
+		s.Warnf(err.Error())
+		if canRespond {
+			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+			resp.Error = NewJSStreamHeaderExceedsMaximumError()
 			response, _ = json.Marshal(resp)
 			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
 		}

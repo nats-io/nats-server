@@ -16,6 +16,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -8515,6 +8516,37 @@ func TestJetStreamClusterStreamCatchupNoState(t *testing.T) {
 	}
 	if si.State.LastSeq != 101 {
 		t.Fatalf("bad state after restart: %+v", si.State)
+	}
+}
+
+// Issue #2525
+func TestJetStreamClusterLargeHeaders(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	if err != nil {
+		t.Fatalf("add stream failed: %s", err)
+	}
+
+	// We use u16 to encode msg header len. Make sure we do the right thing when > 65k.
+	data := make([]byte, 8*1024)
+	rand.Read(data)
+	val := hex.EncodeToString(data)[:8*1024]
+	m := nats.NewMsg("foo")
+	for i := 1; i <= 10; i++ {
+		m.Header.Add(fmt.Sprintf("LargeHeader-%d", i), val)
+	}
+	m.Data = []byte("Hello Large Headers!")
+	if _, err = js.PublishMsg(m); err == nil {
+		t.Fatalf("Expected an error but got none")
 	}
 }
 

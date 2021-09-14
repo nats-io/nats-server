@@ -190,6 +190,16 @@
     "deprecates": ""
   },
   {
+    "constant": "JSStreamHeaderExceedsMaximumErr",
+    "code": 400,
+    "error_code": 10154,
+    "description": "header size exceeds maximum allowed of 64k",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
     "constant": "JSStreamTemplateCreateErrF",
     "code": 500,
     "error_code": 10066,
