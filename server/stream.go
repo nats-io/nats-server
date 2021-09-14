@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -2721,6 +2722,18 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
 			resp.Error = NewJSStreamMessageExceedsMaximumError()
+			b, _ := json.Marshal(resp)
+			mset.outq.sendMsg(reply, b)
+		}
+		return ErrMaxPayload
+	}
+
+	if len(hdr) > math.MaxUint16 {
+		mset.clfs++
+		mset.mu.Unlock()
+		if canRespond {
+			resp.PubAck = &PubAck{Stream: name}
+			resp.Error = NewJSStreamHeaderExceedsMaximumError()
 			b, _ := json.Marshal(resp)
 			mset.outq.sendMsg(reply, b)
 		}
