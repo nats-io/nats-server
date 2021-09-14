@@ -150,6 +150,7 @@ const (
 	mqttJSAConsumerDel    = "CD"
 	mqttJSAMsgStore       = "MS"
 	mqttJSAMsgLoad        = "ML"
+	mqttJSAMsgDelete      = "MD"
 	mqttJSASessPersist    = "SP"
 	mqttJSARetainedMsgDel = "RD"
 	mqttJSAStreamNames    = "SN"
@@ -811,7 +812,6 @@ func (s *Server) mqttHandleClosedClient(c *client) {
 	sess.mu.Lock()
 	sess.c = nil
 	doClean := sess.clean
-	seq := sess.seq
 	sess.mu.Unlock()
 	// If it was a clean session, then we remove from the account manager,
 	// and we will call clear() outside of any lock.
@@ -824,7 +824,7 @@ func (s *Server) mqttHandleClosedClient(c *client) {
 
 	// This needs to be done outside of any lock.
 	if doClean {
-		sess.clear(true, seq)
+		sess.clear()
 	}
 
 	// Now handle the "will". This function will be a no-op if there is no "will" to send.
@@ -1278,13 +1278,22 @@ func (jsa *mqttJSA) storeMsgWithKind(kind, subject string, headers int, msg []by
 	return smr, smr.ToError()
 }
 
-func (jsa *mqttJSA) deleteMsg(stream string, seq uint64) {
+func (jsa *mqttJSA) deleteMsg(stream string, seq uint64, wait bool) error {
 	dreq := JSApiMsgDeleteRequest{Seq: seq, NoErase: true}
 	req, _ := json.Marshal(dreq)
-	jsa.sendq <- &mqttJSPubMsg{
-		subj: fmt.Sprintf(JSApiMsgDeleteT, stream),
-		msg:  req,
+	if !wait {
+		jsa.sendq <- &mqttJSPubMsg{
+			subj: fmt.Sprintf(JSApiMsgDeleteT, stream),
+			msg:  req,
+		}
+		return nil
 	}
+	dmi, err := jsa.newRequest(mqttJSAMsgDelete, fmt.Sprintf(JSApiMsgDeleteT, stream), 0, req)
+	if err != nil {
+		return err
+	}
+	dm := dmi.(*JSApiMsgDeleteResponse)
+	return dm.ToError()
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -1358,6 +1367,12 @@ func (as *mqttAccountSessionManager) processJSAPIReplies(_ *subscription, pc *cl
 		ch <- resp
 	case mqttJSAStreamNames:
 		var resp = &JSApiStreamNamesResponse{}
+		if err := json.Unmarshal(msg, resp); err != nil {
+			resp.Error = NewJSInvalidJSONError()
+		}
+		ch <- resp
+	case mqttJSAMsgDelete:
+		var resp = &JSApiMsgDeleteResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
 			resp.Error = NewJSInvalidJSONError()
 		}
@@ -2036,7 +2051,7 @@ func (as *mqttAccountSessionManager) createOrRestoreSession(clientID string, opt
 //
 // No lock held on entry.
 func (as *mqttAccountSessionManager) deleteRetainedMsg(seq uint64) {
-	as.jsa.deleteMsg(mqttRetainedMsgsStreamName, seq)
+	as.jsa.deleteMsg(mqttRetainedMsgsStreamName, seq, false)
 }
 
 // Sends a message indicating that a retained message on a given subject and stream sequence
@@ -2165,7 +2180,7 @@ func (sess *mqttSession) save() error {
 
 	resp, err := sess.jsa.storeMsgWithKind(mqttJSASessPersist, subject, hdr, b)
 	if err != nil {
-		return err
+		return fmt.Errorf("unable to persist session %q (seq=%v): %v", ps.ID, seq, err)
 	}
 	sess.mu.Lock()
 	sess.seq = resp.Sequence
@@ -2173,22 +2188,34 @@ func (sess *mqttSession) save() error {
 	return nil
 }
 
-// Clear the session. If `deleteStream` is true, the stream is deleted,
-// otherwise only the consumers (if present) are deleted.
+// Clear the session.
 //
 // Runs from the client's readLoop.
 // Lock not held on entry, but session is in the locked map.
-func (sess *mqttSession) clear(deleteSess bool, seq uint64) {
-	for sid, cc := range sess.cons {
-		delete(sess.cons, sid)
-		sess.deleteConsumer(cc)
-	}
-	if deleteSess {
-		sess.jsa.deleteMsg(mqttSessStreamName, seq)
-	}
+func (sess *mqttSession) clear() error {
+	var durs []string
 	sess.mu.Lock()
+	id := sess.id
+	seq := sess.seq
+	if l := len(sess.cons); l > 0 {
+		durs = make([]string, 0, l)
+		for sid, cc := range sess.cons {
+			delete(sess.cons, sid)
+			durs = append(durs, cc.Durable)
+		}
+	}
 	sess.subs, sess.pending, sess.cpending, sess.seq, sess.tmaxack = nil, nil, nil, 0, 0
 	sess.mu.Unlock()
+
+	for _, dur := range durs {
+		sess.jsa.sendq <- &mqttJSPubMsg{subj: fmt.Sprintf(JSApiConsumerDeleteT, mqttStreamName, dur)}
+	}
+	if seq > 0 {
+		if err := sess.jsa.deleteMsg(mqttSessStreamName, seq, true); err != nil {
+			return fmt.Errorf("unable to delete session %q record at sequence %v", id, seq)
+		}
+	}
+	return nil
 }
 
 // This will update the session record for this client in the account's MQTT
@@ -2649,7 +2676,10 @@ CHECK:
 			// This Session lasts as long as the Network Connection. State data
 			// associated with this Session MUST NOT be reused in any subsequent
 			// Session.
-			es.clear(false, 0)
+			if err := es.clear(); err != nil {
+				asm.removeSession(es, true)
+				return err
+			}
 		} else {
 			// Report to the client that the session was present
 			sessp = true

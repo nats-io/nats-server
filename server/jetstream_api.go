@@ -621,7 +621,7 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 	jsub := rr.psubs[0]
 
 	// If this is directly from a client connection ok to do in place.
-	if c.kind == CLIENT {
+	if c.kind != ROUTER && c.kind != GATEWAY {
 		jsub.icb(sub, c, acc, subject, reply, rmsg)
 		return
 	}
