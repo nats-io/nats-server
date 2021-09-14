@@ -64,12 +64,12 @@ type JSPubAckResponse struct {
 	*PubAck
 }
 
-// ToError checks if the response has a error and if it does converts it to an error avoiding the pitfalls described by https://yourbasic.org/golang/gotcha-why-nil-error-not-equal-nil/
+// ToError checks if the response has a error and if it does converts it to an error
+// avoiding the pitfalls described by https://yourbasic.org/golang/gotcha-why-nil-error-not-equal-nil/
 func (r *JSPubAckResponse) ToError() error {
 	if r.Error == nil {
 		return nil
 	}
-
 	return r.Error
 }
 
