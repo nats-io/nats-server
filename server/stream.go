@@ -88,6 +88,7 @@ type StreamInfo struct {
 	Config  StreamConfig        `json:"config"`
 	Created time.Time           `json:"created"`
 	State   StreamState         `json:"state"`
+	Domain  string              `json:"domain,omitempty"`
 	Cluster *ClusterInfo        `json:"cluster,omitempty"`
 	Mirror  *StreamSourceInfo   `json:"mirror,omitempty"`
 	Sources []*StreamSourceInfo `json:"sources,omitempty"`

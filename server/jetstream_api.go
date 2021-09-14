@@ -1670,6 +1670,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 		Created: mset.createdTime(),
 		State:   mset.stateWithDetail(details),
 		Config:  config,
+		Domain:  s.getOpts().JetStreamDomain,
 		Cluster: js.clusterInfo(mset.raftGroup()),
 	}
 	if mset.isMirror() {

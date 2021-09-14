@@ -1076,11 +1076,15 @@ func (c *client) processLeafnodeInfo(info *Info) {
 					// account also has JetStream enabled.
 					if accHasJS {
 						s.addInJSDenyExport(remote)
+						// If we specified a domain do not import by default.
+						if hasJSDomain {
+							s.addInJSDenyImport(remote)
+						}
 					}
 				}
 				// If we have a specified JetStream domain we will want to add a mapping to
 				// allow access cross domain for each non-system account.
-				if hasJSDomain && acc.jetStreamConfigured() {
+				if hasJSDomain && accHasJS {
 					src := fmt.Sprintf(jsDomainAPI, opts.JetStreamDomain)
 					if err := acc.AddMapping(src, jsAllAPI); err != nil {
 						c.Debugf("Error adding JetStream domain mapping: %v", err)
