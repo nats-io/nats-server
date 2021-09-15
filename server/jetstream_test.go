@@ -7143,6 +7143,7 @@ func TestJetStreamPushConsumerFlowControl(t *testing.T) {
 			Durable:        "dlc",
 			DeliverSubject: sub.Subject,
 			FlowControl:    true,
+			Heartbeat:      5 * time.Second,
 		},
 	}
 	req, err := json.Marshal(obsReq)
@@ -7215,6 +7216,30 @@ func TestJetStreamPushConsumerFlowControl(t *testing.T) {
 
 	if n != 100 {
 		t.Fatalf("Expected to receive all 100 messages but got %d", n)
+	}
+}
+
+func TestJetStreamFlowControlRequiresHeartbeats(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST"}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if _, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "dlc",
+		DeliverSubject: nats.NewInbox(),
+		FlowControl:    true,
+	}); err == nil || IsNatsErr(err, JSConsumerWithFlowControlNeedsHeartbeats) {
+		t.Fatalf("Unexpected error: %v", err)
 	}
 }
 
