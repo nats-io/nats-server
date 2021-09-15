@@ -1,3 +1,4 @@
+//go:build ignore
 // +build ignore
 
 package main
@@ -91,6 +92,28 @@ func goFmt(file string) error {
 	return err
 }
 
+func checkIncrements(errs []server.ErrorsData) error {
+	sort.Slice(errs, func(i, j int) bool {
+		return errs[i].ErrCode < errs[j].ErrCode
+	})
+
+	last := errs[0].ErrCode
+	gaps := []uint16{}
+
+	for i := 1; i < len(errs); i++ {
+		if errs[i].ErrCode != last+1 {
+			gaps = append(gaps, last)
+		}
+		last = errs[i].ErrCode
+	}
+
+	if len(gaps) > 0 {
+		return fmt.Errorf("gaps found in sequences: %v", gaps)
+	}
+
+	return nil
+}
+
 func checkDupes(errs []server.ErrorsData) error {
 	codes := []uint16{}
 	highest := uint16(0)
@@ -141,7 +164,9 @@ func main() {
 
 	errs := []server.ErrorsData{}
 	panicIfErr(json.Unmarshal(ej, &errs))
+
 	panicIfErr(checkDupes(errs))
+	panicIfErr(checkIncrements(errs))
 
 	sort.Slice(errs, func(i, j int) bool {
 		return errs[i].Constant < errs[j].Constant
