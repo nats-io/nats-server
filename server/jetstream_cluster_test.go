@@ -6686,6 +6686,8 @@ func TestJetStreamClusterDomainsWithNoJSHub(t *testing.T) {
 
 	// Client based API - Connected to the core cluster with no JS but account has JS.
 	s := c.randomServer()
+	// Make sure the JS interest from the LNs has made it to this server.
+	checkSubInterest(t, s, "NOJS", "$JS.API.>", time.Second)
 	nc, _ := jsClientConnect(t, s, nats.UserInfo("nojs", "p"))
 	defer nc.Close()
 
@@ -6703,9 +6705,9 @@ func TestJetStreamClusterDomainsWithNoJSHub(t *testing.T) {
 	rs := nats.NewInbox()
 	sub, _ := nc.SubscribeSync(rs)
 	nc.PublishRequest(sis, rs, req)
-	// Wait a bit for responses.
-	time.Sleep(200 * time.Millisecond)
-
+	// Wait for response.
+	checkSubsPending(t, sub, 1)
+	// Double check to make sure we only have 1.
 	if nr, _, err := sub.Pending(); err != nil || nr != 1 {
 		t.Fatalf("Expected 1 response, got %d and %v", nr, err)
 	}
