@@ -3048,6 +3048,13 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 		return
 	}
 
+	// We reject if flow control is set without heartbeats.
+	if req.Config.FlowControl && req.Config.Heartbeat == 0 {
+		resp.Error = NewJSConsumerWithFlowControlNeedsHeartbeatsError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
 	// Make sure we have sane defaults.
 	setConsumerConfigDefaults(&req.Config)
 

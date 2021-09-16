@@ -1058,5 +1058,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerWithFlowControlNeedsHeartbeats",
+    "code": 400,
+    "error_code": 10108,
+    "description": "consumer with flow control also needs heartbeats",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

@@ -8626,6 +8626,26 @@ func TestJetStreamClusterLargeHeaders(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterFlowControlRequiresHeartbeats(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST"}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if _, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "dlc",
+		DeliverSubject: nats.NewInbox(),
+		FlowControl:    true,
+	}); err == nil || IsNatsErr(err, JSConsumerWithFlowControlNeedsHeartbeats) {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
