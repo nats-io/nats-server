@@ -49,10 +49,12 @@ type JetStreamConfig struct {
 }
 
 type JetStreamStats struct {
-	Memory   uint64            `json:"memory"`
-	Store    uint64            `json:"storage"`
-	Accounts int               `json:"accounts,omitempty"`
-	API      JetStreamAPIStats `json:"api"`
+	Memory         uint64            `json:"memory"`
+	Store          uint64            `json:"storage"`
+	Accounts       int               `json:"accounts,omitempty"`
+	API            JetStreamAPIStats `json:"api"`
+	ReservedMemory uint64            `json:"reserved_memory"`
+	ReservedStore  uint64            `json:"reserved_storage"`
 }
 
 type JetStreamAccountLimits struct {
@@ -1645,6 +1647,8 @@ func (js *jetStream) usageStats() *JetStreamStats {
 	var stats JetStreamStats
 	js.mu.RLock()
 	stats.Accounts = len(js.accounts)
+	stats.ReservedMemory = (uint64)(js.memReserved)
+	stats.ReservedStore = (uint64)(js.storeReserved)
 	js.mu.RUnlock()
 	stats.API.Total = (uint64)(atomic.LoadInt64(&js.apiCalls))
 	stats.API.Errors = (uint64)(atomic.LoadInt64(&js.apiErrors))
