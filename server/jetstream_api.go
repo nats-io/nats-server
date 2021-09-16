@@ -3377,6 +3377,12 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 
 	var resp = JSApiConsumerInfoResponse{ApiResponse: ApiResponse{Type: JSApiConsumerInfoResponseType}}
 
+	if !isEmptyRequest(msg) {
+		resp.Error = NewJSNotEmptyRequestError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
 	// If we are in clustered mode we need to be the stream leader to proceed.
 	if s.JetStreamIsClustered() {
 		// Check to make sure the consumer is assigned.
@@ -3387,10 +3393,6 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 
 		js.mu.RLock()
 		isLeader, sa, ca := cc.isLeader(), js.streamAssignment(acc.Name, streamName), js.consumerAssignment(acc.Name, streamName, consumerName)
-		// Ignore pending consumers for now.
-		if ca != nil && ca.pending {
-			ca = nil
-		}
 		ourID := cc.meta.ID()
 		js.mu.RUnlock()
 
@@ -3434,32 +3436,44 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 				resp.Error = NewJSClusterNotAvailError()
 				// Delaying an error response gives the leader a chance to respond before us
 				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), ca.Group)
-			} else if ca != nil {
-				js.mu.RLock()
-				var node RaftNode
-				if rg := ca.Group; rg != nil && rg.node != nil && rg.isMember(ourID) {
-					node = rg.node
-				}
-				js.mu.RUnlock()
-				if node != nil {
-					// Check here if we are a member and this is just a new consumer that does not have a leader yet.
-					if node.GroupLeader() == _EMPTY_ && !node.HadPreviousLeader() {
-						resp.Error = NewJSConsumerNotFoundError()
-						s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil)
-					}
-				}
+				return
 			}
-			return
+			if ca == nil {
+				return
+			}
+			// We have a consumer assignment.
+			js.mu.RLock()
+			var node RaftNode
+			if rg := ca.Group; rg != nil && rg.node != nil && rg.isMember(ourID) {
+				node = rg.node
+			}
+			js.mu.RUnlock()
+			// Check if we should ignore all together.
+			if node == nil {
+				// We have been assigned and are pending.
+				if ca.pending {
+					// Send our config and defaults for state and no cluster info.
+					resp.ConsumerInfo = &ConsumerInfo{
+						Stream:  ca.Stream,
+						Name:    ca.Name,
+						Created: ca.Created,
+						Config:  ca.Config,
+					}
+					s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+				}
+				return
+			}
+			if node != nil && (node.GroupLeader() != _EMPTY_ || node.HadPreviousLeader()) {
+				return
+			}
+			// If we are here we are a member and this is just a new consumer that does not have a leader yet.
+			// Will fall through and return what we have. All consumers can respond but this should be very rare
+			// but makes more sense to clients when they try to create, get a consumer exists, and then do consumer info.
 		}
 	}
 
 	if !acc.JetStreamEnabled() {
 		resp.Error = NewJSNotEnabledForAccountError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-	if !isEmptyRequest(msg) {
-		resp.Error = NewJSNotEmptyRequestError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}

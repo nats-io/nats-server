@@ -8380,7 +8380,9 @@ func TestJetStreamRaceOnRAFTCreate(t *testing.T) {
 	for i := 0; i < size; i++ {
 		go func() {
 			defer wg.Done()
-			js.PullSubscribe("foo", "shared")
+			if _, err := js.PullSubscribe("foo", "shared"); err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
 		}()
 	}
 	wg.Wait()
