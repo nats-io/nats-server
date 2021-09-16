@@ -364,6 +364,11 @@ RESET:
 					contentHeader = "identity"
 				}
 			}
+			// Optional Echo
+			replaceEcho := c.echo != pm.echo
+			if replaceEcho {
+				c.echo = !c.echo
+			}
 			c.mu.Unlock()
 
 			// Add in NL
@@ -386,11 +391,15 @@ RESET:
 				c.traceMsg(b)
 			}
 
-			// Optional Echo
-			c.echo = pm.echo
 			// Process like a normal inbound msg.
 			c.processInboundClientMsg(b)
-			c.echo = false
+
+			// Put echo back if needed.
+			if replaceEcho {
+				c.mu.Lock()
+				c.echo = !c.echo
+				c.mu.Unlock()
+			}
 
 			// See if we are doing graceful shutdown.
 			if !pm.last {
