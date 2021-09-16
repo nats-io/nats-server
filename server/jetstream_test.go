@@ -13047,6 +13047,53 @@ func TestJetStreamPublishExpectNoMsg(t *testing.T) {
 	}
 }
 
+func TestJetStreamPullLargeBatchExpired(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	if err != nil {
+		t.Fatalf("add stream failed: %s", err)
+	}
+
+	sub, err := js.PullSubscribe("foo", "dlc", nats.PullMaxWaiting(10), nats.MaxAckPending(10*50_000_000))
+	if err != nil {
+		t.Fatalf("Error creating pull subscriber: %v", err)
+	}
+
+	// Queue up 10 batch requests with timeout.
+	rsubj := fmt.Sprintf(JSApiRequestNextT, "TEST", "dlc")
+	req := &JSApiConsumerGetNextRequest{Batch: 50_000_000, Expires: 100 * time.Millisecond}
+	jreq, _ := json.Marshal(req)
+	for i := 0; i < 10; i++ {
+		nc.PublishRequest(rsubj, "bar", jreq)
+	}
+	nc.Flush()
+
+	// Let them all expire.
+	time.Sleep(150 * time.Millisecond)
+
+	// Now do another and measure how long to timeout and shutdown the server.
+	start := time.Now()
+	sub.Fetch(1, nats.MaxWait(100*time.Millisecond))
+	s.Shutdown()
+
+	if delta := time.Since(start); delta > 200*time.Millisecond {
+		t.Fatalf("Took too long to expire: %v", delta)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////

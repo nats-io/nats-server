@@ -2089,6 +2089,7 @@ func (o *consumer) expireWaiting() int {
 	now := time.Now()
 	for wr := o.waiting.peek(); wr != nil; wr = o.waiting.peek() {
 		if !wr.expires.IsZero() && now.After(wr.expires) {
+			wr.n = 0 // Force removal by setting requests left to 0.
 			o.waiting.pop()
 			expired++
 			continue
@@ -2103,6 +2104,7 @@ func (o *consumer) expireWaiting() int {
 			break
 		}
 		// No more interest so go ahead and remove this one from our list.
+		wr.n = 0 // Force removal by setting requests left to 0.
 		o.waiting.pop()
 		expired++
 	}
