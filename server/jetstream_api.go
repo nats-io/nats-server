@@ -304,6 +304,7 @@ const JSApiAccountInfoResponseType = "io.nats.jetstream.api.v1.account_info_resp
 type JSApiStreamCreateResponse struct {
 	ApiResponse
 	*StreamInfo
+	DidCreate bool `json:"did_create,omitempty"`
 }
 
 const JSApiStreamCreateResponseType = "io.nats.jetstream.api.v1.stream_create_response"
@@ -1274,6 +1275,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, a *Account,
 		return
 	}
 	resp.StreamInfo = &StreamInfo{Created: mset.createdTime(), State: mset.state(), Config: mset.config()}
+	resp.DidCreate = true
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 

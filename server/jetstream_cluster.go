@@ -1834,6 +1834,7 @@ func (js *jetStream) checkPeers(rg *raftGroup) {
 	}
 }
 
+// Process a leader change for the clustered stream.
 func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 	if mset == nil {
 		return
@@ -1890,6 +1891,7 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 			Sources: mset.sourcesInfo(),
 			Mirror:  mset.mirrorInfo(),
 		}
+		resp.DidCreate = true
 		s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 		if node := mset.raftNode(); node != nil {
 			mset.sendCreateAdvisory()
@@ -3479,6 +3481,18 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	defer js.mu.Unlock()
 
 	if sa := js.streamAssignment(acc.Name, cfg.Name); sa != nil {
+		// If they are the same then we will forward on as a stream info request.
+		// This now matches single server behavior.
+		if reflect.DeepEqual(sa.Config, cfg) {
+			isubj := fmt.Sprintf(JSApiStreamInfoT, cfg.Name)
+			// We want to make sure we send along the client info.
+			cij, _ := json.Marshal(ci)
+			hdr := map[string]string{ClientInfoHdr: string(cij)}
+			// Send this as system account, but include client info header.
+			s.sendInternalAccountMsgWithReply(nil, isubj, reply, hdr, nil, true)
+			return
+		}
+
 		resp.Error = NewJSStreamNameExistError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return

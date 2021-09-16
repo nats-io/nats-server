@@ -1010,7 +1010,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		Replicas:   as.replicas,
 		MaxMsgsPer: 1,
 	}
-	if _, err := jsa.createStream(cfg); err == nil {
+	if _, created, err := jsa.createStream(cfg); err == nil && created {
 		as.transferUniqueSessStreamsToMuxed(s)
 	} else if isErrorOtherThan(err, JSStreamNameExistErr) {
 		return nil, fmt.Errorf("create sessions stream for account %q: %v", acc.GetName(), err)
@@ -1024,7 +1024,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		Retention: InterestPolicy,
 		Replicas:  as.replicas,
 	}
-	if _, err := jsa.createStream(cfg); isErrorOtherThan(err, JSStreamNameExistErr) {
+	if _, _, err := jsa.createStream(cfg); isErrorOtherThan(err, JSStreamNameExistErr) {
 		return nil, fmt.Errorf("create messages stream for account %q: %v", acc.GetName(), err)
 	}
 
@@ -1036,7 +1036,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		Retention: LimitsPolicy,
 		Replicas:  as.replicas,
 	}
-	si, err := jsa.createStream(cfg)
+	si, _, err := jsa.createStream(cfg)
 	if isErrorOtherThan(err, JSStreamNameExistErr) {
 		return nil, fmt.Errorf("create retained messages stream for account %q: %v", acc.GetName(), err)
 	}
@@ -1206,17 +1206,17 @@ func (jsa *mqttJSA) deleteConsumer(streamName, consName string) (*JSApiConsumerD
 	return cdr, cdr.ToError()
 }
 
-func (jsa *mqttJSA) createStream(cfg *StreamConfig) (*StreamInfo, error) {
+func (jsa *mqttJSA) createStream(cfg *StreamConfig) (*StreamInfo, bool, error) {
 	cfgb, err := json.Marshal(cfg)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	scri, err := jsa.newRequest(mqttJSAStreamCreate, fmt.Sprintf(JSApiStreamCreateT, cfg.Name), 0, cfgb)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	scr := scri.(*JSApiStreamCreateResponse)
-	return scr.StreamInfo, scr.ToError()
+	return scr.StreamInfo, scr.DidCreate, scr.ToError()
 }
 
 func (jsa *mqttJSA) lookupStream(name string) (*StreamInfo, error) {

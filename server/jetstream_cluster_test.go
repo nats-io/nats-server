@@ -1415,12 +1415,12 @@ func TestJetStreamClusterDoubleAdd(t *testing.T) {
 	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 2}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	// Check double add fails.
-	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 2}); err == nil || err == nats.ErrTimeout {
-		t.Fatalf("Expected error but got none or timeout")
+	// Streams should allow double add.
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 2}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	// Do Consumers too.
+	// Check Consumers.
 	cfg := &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy}
 	if _, err := js.AddConsumer("TEST", cfg); err != nil {
 		t.Fatalf("Unexpected error: %v", err)

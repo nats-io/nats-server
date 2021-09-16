@@ -178,6 +178,9 @@ func TestSystemAccount(t *testing.T) {
 	if s.sys.client == nil {
 		t.Fatalf("Expected sys.client to be non-nil")
 	}
+
+	s.sys.client.mu.Lock()
+	defer s.sys.client.mu.Unlock()
 	if s.sys.client.echo {
 		t.Fatalf("Internal clients should always have echo false")
 	}
