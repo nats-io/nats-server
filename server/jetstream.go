@@ -1494,7 +1494,7 @@ func (jsa *jsAccount) sendClusterUsageUpdate() {
 	le.PutUint64(b[16:], uint64(jsa.usage.api))
 	le.PutUint64(b[24:], uint64(jsa.usage.err))
 	if jsa.sendq != nil {
-		jsa.sendq <- &pubMsg{nil, jsa.updatesPub, _EMPTY_, nil, b, noCompression, false}
+		jsa.sendq <- &pubMsg{nil, jsa.updatesPub, _EMPTY_, nil, nil, b, noCompression, false, false}
 	}
 }
 
