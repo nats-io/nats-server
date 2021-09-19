@@ -2978,7 +2978,7 @@ func (n *raft) setWriteErrLocked(err error) {
 
 	// For now since this can be happening all under the covers, we will call up and disable JetStream.
 	n.Unlock()
-	n.s.handleOutOfSpace("")
+	n.s.handleOutOfSpace(_EMPTY_)
 	n.Lock()
 }
 
@@ -3009,6 +3009,7 @@ func (n *raft) fileWriter() {
 			n.RUnlock()
 			if err := ioutil.WriteFile(tvf, buf[:], 0640); err != nil {
 				n.setWriteErr(err)
+				n.error("Error writing term and vote file for %q: %v", n.group, err)
 			}
 		case <-n.wpsch:
 			n.RLock()
@@ -3016,6 +3017,7 @@ func (n *raft) fileWriter() {
 			n.RUnlock()
 			if err := ioutil.WriteFile(psf, buf, 0640); err != nil {
 				n.setWriteErr(err)
+				n.error("Error writing peer state file for %q: %v", n.group, err)
 			}
 		}
 	}
