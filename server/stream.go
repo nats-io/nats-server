@@ -393,6 +393,15 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	end := len(mset.pubAck)
 	mset.pubAck = mset.pubAck[:end:end]
 
+	// Set our known last sequence.
+	state := mset.store.State()
+	mset.lseq = state.LastSeq
+
+	// If no msgs (new stream), set dedupe state loaded to true.
+	if state.Msgs == 0 {
+		mset.ddloaded = true
+	}
+
 	// Set our stream assignment if in clustered mode.
 	if sa != nil {
 		mset.setStreamAssignment(sa)
@@ -599,9 +608,6 @@ func (mset *stream) autoTuneFileStorageBlockSize(fsCfg *FileStoreConfig) {
 // headers and msgId in them. Would need signaling from the storage layer.
 // Lock should be held.
 func (mset *stream) rebuildDedupe() {
-	state := mset.store.State()
-	mset.lseq = state.LastSeq
-
 	mset.ddloaded = true
 
 	// We have some messages. Lookup starting sequence by duplicate time window.
@@ -610,6 +616,7 @@ func (mset *stream) rebuildDedupe() {
 		return
 	}
 
+	state := mset.store.State()
 	for seq := sseq; seq <= state.LastSeq; seq++ {
 		_, hdr, _, ts, err := mset.store.LoadMsg(seq)
 		var msgId string
@@ -2699,17 +2706,22 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			return fmt.Errorf("last sequence mismatch: %d vs %d", seq, mlseq)
 		}
 		// Expected last msgId.
-		if lmsgId := getExpectedLastMsgId(hdr); lmsgId != _EMPTY_ && lmsgId != mset.lmsgId {
-			last := mset.lmsgId
-			mset.clfs++
-			mset.mu.Unlock()
-			if canRespond {
-				resp.PubAck = &PubAck{Stream: name}
-				resp.Error = NewJSStreamWrongLastMsgIDError(last)
-				b, _ := json.Marshal(resp)
-				outq.sendMsg(reply, b)
+		if lmsgId := getExpectedLastMsgId(hdr); lmsgId != _EMPTY_ {
+			if mset.lmsgId == _EMPTY_ && !mset.ddloaded {
+				mset.rebuildDedupe()
 			}
-			return fmt.Errorf("last msgid mismatch: %q vs %q", lmsgId, last)
+			if lmsgId != mset.lmsgId {
+				last := mset.lmsgId
+				mset.clfs++
+				mset.mu.Unlock()
+				if canRespond {
+					resp.PubAck = &PubAck{Stream: name}
+					resp.Error = NewJSStreamWrongLastMsgIDError(last)
+					b, _ := json.Marshal(resp)
+					outq.sendMsg(reply, b)
+				}
+				return fmt.Errorf("last msgid mismatch: %q vs %q", lmsgId, last)
+			}
 		}
 		// Expected last sequence per subject.
 		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists {
