@@ -460,7 +460,7 @@ func TestJetStreamClusterStreamUpdateSubjects(t *testing.T) {
 		t.Fatalf("Expected subjects to be updated: got %+v", si.Config.Subjects)
 	}
 	// Make sure it registered
-	js2, err := nc.JetStream(nats.MaxWait(50 * time.Millisecond))
+	js2, err := nc.JetStream(nats.MaxWait(250 * time.Millisecond))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1763,7 +1763,7 @@ func TestJetStreamClusterExtendedStreamInfo(t *testing.T) {
 	}
 
 	// Faster timeout since we loop below checking for condition.
-	js2, err := nc.JetStream(nats.MaxWait(50 * time.Millisecond))
+	js2, err := nc.JetStream(nats.MaxWait(250 * time.Millisecond))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2270,7 +2270,7 @@ func TestJetStreamClusterInterestRetentionWithFilteredConsumers(t *testing.T) {
 		m.Ack()
 	}
 
-	jsq, err := nc.JetStream(nats.MaxWait(50 * time.Millisecond))
+	jsq, err := nc.JetStream(nats.MaxWait(250 * time.Millisecond))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2278,6 +2278,7 @@ func TestJetStreamClusterInterestRetentionWithFilteredConsumers(t *testing.T) {
 	checkState := func(expected uint64) {
 		t.Helper()
 		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+			t.Helper()
 			si, err := jsq.StreamInfo("TEST")
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
@@ -4217,7 +4218,7 @@ func TestJetStreamClusterStreamLeaderStepDown(t *testing.T) {
 	}
 
 	// Grab shorter timeout jetstream context.
-	js, err = nc.JetStream(nats.MaxWait(50 * time.Millisecond))
+	js, err = nc.JetStream(nats.MaxWait(250 * time.Millisecond))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4317,7 +4318,7 @@ func TestJetStreamClusterRemoveServer(t *testing.T) {
 	c.waitOnStreamLeader("$G", "TEST")
 
 	// Faster timeout since we loop below checking for condition.
-	js, err = nc.JetStream(nats.MaxWait(50 * time.Millisecond))
+	js, err = nc.JetStream(nats.MaxWait(250 * time.Millisecond))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -8485,7 +8486,7 @@ func TestJetStreamClusterStreamReset(t *testing.T) {
 	c.waitOnConsumerLeader("$G", "TEST", "d1")
 
 	// So do not wait 10s in call in checkFor.
-	js2, _ := nc.JetStream(nats.MaxWait(100 * time.Millisecond))
+	js2, _ := nc.JetStream(nats.MaxWait(250 * time.Millisecond))
 	// Make sure we can get the consumer info eventually.
 	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
 		_, err := js2.ConsumerInfo("TEST", "d1")
