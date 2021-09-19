@@ -1276,7 +1276,6 @@ func (js *jetStream) createRaftGroup(rg *raftGroup, storage StorageType) error {
 	defer js.mu.Unlock()
 	s, cc := js.srv, js.cluster
 	if cc == nil || cc.meta == nil {
-		js.mu.Unlock()
 		return NewJSClusterNotActiveError()
 	}
 
