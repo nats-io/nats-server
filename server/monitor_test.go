@@ -3959,7 +3959,7 @@ func TestMonitorJsz(t *testing.T) {
 			}
 			ACC {
 				users [{user: usr, password: pwd}]
-				jetstream: enabled
+				jetstream: {max_store: 4Mb, max_memory: 5Mb}
 			}
 			BCC_TO_HAVE_ONE_EXTRA {
 				users [{user: usr2, password: pwd}]
@@ -4033,6 +4033,12 @@ func TestMonitorJsz(t *testing.T) {
 			}
 			if info.Messages != 1 {
 				t.Fatalf("expected one message but got %d", info.Messages)
+			}
+			if info.ReservedStore != 4*1024*1024 {
+				t.Fatalf("expected 4Mb reserved, got %d bytes", info.ReservedStore)
+			}
+			if info.ReservedMemory != 5*1024*1024 {
+				t.Fatalf("expected 5Mb reserved, got %d bytes", info.ReservedStore)
 			}
 		}
 	})
