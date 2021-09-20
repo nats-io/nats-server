@@ -13101,6 +13101,39 @@ func TestJetStreamPullLargeBatchExpired(t *testing.T) {
 	}
 }
 
+func TestNegativeDupeWindow(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// we incorrectly set MaxAge to -1 which then as a side effect sets dupe window to -1 which should fail
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:              "TEST",
+		Subjects:          nil,
+		Retention:         nats.WorkQueuePolicy,
+		MaxConsumers:      1,
+		MaxMsgs:           -1,
+		MaxBytes:          -1,
+		Discard:           nats.DiscardNew,
+		MaxAge:            -1,
+		MaxMsgsPerSubject: -1,
+		MaxMsgSize:        -1,
+		Storage:           nats.FileStorage,
+		Replicas:          1,
+		NoAck:             false,
+	})
+	if err == nil || err.Error() != "duplicates window can not be negative" {
+		t.Fatalf("Expected dupe window error got: %v", err)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
