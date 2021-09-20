@@ -201,6 +201,8 @@ const (
 	defaultCacheIdxExpiration = 5 * time.Minute
 	// default sync interval
 	defaultSyncInterval = 60 * time.Second
+	// default idle timeout to close FDs.
+	closeFDsIdle = 30 * time.Second
 	// coalesceMinimum
 	coalesceMinimum = 16 * 1024
 	// maxFlushWait is maximum we will wait to gather messages to flush.
@@ -605,6 +607,7 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) (*msgBlock, e
 
 	// Rewrite this to make sure we are sync'd.
 	mb.writeIndexInfo()
+	mb.closeFDs()
 	fs.blks = append(fs.blks, mb)
 	fs.lmb = mb
 	return mb, nil
@@ -884,7 +887,6 @@ func (fs *fileStore) recoverMsgs() error {
 	if len(fs.blks) > 0 {
 		sort.Slice(fs.blks, func(i, j int) bool { return fs.blks[i].index < fs.blks[j].index })
 		fs.lmb = fs.blks[len(fs.blks)-1]
-		err = fs.enableLastMsgBlockForWriting()
 	} else {
 		_, err = fs.newMsgBlockForWrite()
 	}
@@ -1012,7 +1014,6 @@ func (fs *fileStore) expireMsgsOnRecover() {
 			fs.lmb = nil
 		} else {
 			fs.lmb = fs.blks[lb-1]
-			fs.enableLastMsgBlockForWriting()
 		}
 	}
 	// Update top level accounting.
@@ -1118,7 +1119,7 @@ func (mb *msgBlock) filteredPendingLocked(subj string, wc bool, seq uint64) (tot
 		// We need to scan this block to compute the correct number of pending for this block.
 		// We want to only do this once so we will adjust subs and test against them all here.
 
-		if !mb.cacheAlreadyLoaded() {
+		if mb.cacheNotLoaded() {
 			mb.loadMsgsWithLock()
 			shouldExpire = true
 		}
@@ -1184,7 +1185,7 @@ func (mb *msgBlock) filteredPendingLocked(subj string, wc bool, seq uint64) (tot
 
 	// If we loaded this block for this operation go ahead and expire it here.
 	if shouldExpire {
-		mb.expireCacheLocked()
+		mb.tryForceExpireCacheLocked()
 	}
 
 	return total, first, last
@@ -1351,16 +1352,22 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	if lmb := fs.lmb; lmb != nil {
 		index = lmb.index + 1
 
-		// Determine if we can reclaim resources here.
+		// Make sure to write out our index file if needed.
+		if lmb.indexNeedsUpdate() {
+			lmb.writeIndexInfo()
+		}
+
+		// Determine if we can reclaim any resources here.
 		if fs.fip {
-			// Reset write timestamp and see if we can expire this cache.
 			lmb.mu.Lock()
 			lmb.closeFDsLocked()
 			if lmb.cache != nil {
+				// Reset write timestamp and see if we can expire this cache.
+				lwts, buf, llts := lmb.lwts, lmb.cache.buf, lmb.llts
 				lmb.lwts = 0
-				buf, llts := lmb.cache.buf, lmb.llts
 				lmb.expireCacheLocked()
-				// We could check for a certain time since last load, but to be safe just reuse if no loads.
+				lmb.lwts = lwts
+				// We could check for a certain time since last load, but to be safe just reuse if no loads at all.
 				if llts == 0 && (lmb.cache == nil || lmb.cache.buf == nil) {
 					rbuf = buf
 				}
@@ -1455,30 +1462,6 @@ func (fs *fileStore) genEncryptionKeysForBlock(mb *msgBlock) error {
 	if err := ioutil.WriteFile(keyFile, encrypted, defaultFilePerms); err != nil {
 		return err
 	}
-	return nil
-}
-
-// Make sure we can write to the last message block.
-// Lock should be held.
-func (fs *fileStore) enableLastMsgBlockForWriting() error {
-	mb := fs.lmb
-	if mb == nil {
-		return fmt.Errorf("no last message block assigned, can not enable for writing")
-	}
-	if mb.mfd != nil {
-		return nil
-	}
-	mfd, err := os.OpenFile(mb.mfn, os.O_CREATE|os.O_RDWR, defaultFilePerms)
-	if err != nil {
-		return fmt.Errorf("error opening msg block file [%q]: %v", mb.mfn, err)
-	}
-	mb.mfd = mfd
-
-	// Spin up our flusher loop if needed.
-	if !fs.fip {
-		mb.spinUpFlushLoop()
-	}
-
 	return nil
 }
 
@@ -1751,29 +1734,10 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 		return false, err
 	}
 
-	// If we have a callback grab the message since we need the subject.
-	// TODO(dlc) - This will cause whole buffer to be loaded which I was trying
-	// to avoid. Maybe use side cache for subjects or understand when we really need them.
-	// Meaning if the stream above is only a single subject no need to store, this is just
-	// for updating stream pending for consumers.
-	var sm *fileStoredMsg
-	if fs.scb != nil {
-		sm, _ = mb.fetchMsg(seq)
-	}
-
 	mb.mu.Lock()
 
-	// Check cache. This should be very rare.
-	if !mb.cacheAlreadyLoaded() {
-		if err := mb.loadMsgsWithLock(); err != nil {
-			mb.mu.Unlock()
-			fsUnlock()
-			return false, err
-		}
-	}
-
-	// See if the sequence numbers is still relevant. Check first and cache first.
-	if seq < mb.first.seq || seq < mb.cache.fseq || (seq-mb.cache.fseq) >= uint64(len(mb.cache.idx)) {
+	// See if the sequence numbers is still relevant.
+	if seq < mb.first.seq {
 		mb.mu.Unlock()
 		fsUnlock()
 		return false, nil
@@ -1788,13 +1752,28 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 		}
 	}
 
+	// We used to not have to load in the messages except with callbacks or the filtered subject state (which is now always on).
+	// Now just load regardless.
+	// TODO(dlc) - Figure out a way not to have to load it in, we need subject tracking outside main data block.
+	if mb.cacheNotLoaded() {
+		if err := mb.loadMsgsWithLock(); err != nil {
+			mb.mu.Unlock()
+			fsUnlock()
+			return false, err
+		}
+	}
+
+	sm, err := mb.cacheLookup(seq)
+	if err != nil {
+		mb.mu.Unlock()
+		fsUnlock()
+		return false, err
+	}
+	// Grab size
+	msz := fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
+
 	// Set cache timestamp for last remove.
 	mb.lrts = time.Now().UnixNano()
-
-	// Grab record length from idx.
-	slot := seq - mb.cache.fseq
-	ri, rl, _, _ := mb.slotInfo(int(slot))
-	msz := uint64(rl)
 
 	// Global stats
 	fs.state.Msgs--
@@ -1805,21 +1784,13 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 	mb.bytes -= msz
 
 	// If we are tracking multiple subjects here make sure we update that accounting.
-	if mb.fss != nil {
-		if sm == nil {
-			if !mb.cacheAlreadyLoaded() {
-				mb.loadMsgsWithLock()
-			}
-			sm, _ = mb.cacheLookup(seq)
-		}
-		if sm != nil {
-			mb.removeSeqPerSubject(sm.subj, seq)
-		}
-	}
+	mb.removeSeqPerSubject(sm.subj, seq)
 
 	var shouldWriteIndex, firstSeqNeedsUpdate bool
 
 	if secure {
+		// Grab record info.
+		ri, rl, _, _ := mb.slotInfo(int(seq - mb.cache.fseq))
 		mb.eraseMsg(seq, int(ri), int(rl))
 	}
 
@@ -1911,7 +1882,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 // writing new messages. We will silently bail on any issues with the underlying block and let someone else detect.
 // Write lock needs to be held.
 func (mb *msgBlock) compact() {
-	if !mb.cacheAlreadyLoaded() {
+	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			return
 		}
@@ -2390,6 +2361,20 @@ func (mb *msgBlock) expireCache() {
 	mb.expireCacheLocked()
 }
 
+func (mb *msgBlock) tryForceExpireCache() {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+	mb.tryForceExpireCacheLocked()
+}
+
+// We will attempt to force expire this be temp clearing the last load time.
+func (mb *msgBlock) tryForceExpireCacheLocked() {
+	llts := mb.llts
+	mb.llts = 0
+	mb.expireCacheLocked()
+	mb.llts = llts
+}
+
 func (mb *msgBlock) expireCacheLocked() {
 	if mb.cache == nil {
 		if mb.ctmr != nil {
@@ -2488,7 +2473,9 @@ func (fs *fileStore) checkAndFlushAllBlocks() {
 		if mb.pendingWriteSize() > 0 {
 			mb.flushPendingMsgs()
 		}
-		mb.writeIndexInfo()
+		if mb.indexNeedsUpdate() {
+			mb.writeIndexInfo()
+		}
 	}
 }
 
@@ -2508,6 +2495,28 @@ func (fs *fileStore) checkMsgs() *LostStreamData {
 	return fs.ld
 }
 
+// Lock should be held.
+func (mb *msgBlock) enableForWriting(fip bool) error {
+	if mb == nil {
+		return errNoMsgBlk
+	}
+	if mb.mfd != nil {
+		return nil
+	}
+	mfd, err := os.OpenFile(mb.mfn, os.O_CREATE|os.O_RDWR, defaultFilePerms)
+	if err != nil {
+		return fmt.Errorf("error opening msg block file [%q]: %v", mb.mfn, err)
+	}
+	mb.mfd = mfd
+
+	// Spin up our flusher loop if needed.
+	if !fip {
+		mb.spinUpFlushLoop()
+	}
+
+	return nil
+}
+
 // Will write the message record to the underlying message block.
 // filestore lock will be held.
 func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte, ts int64, flush bool) error {
@@ -2515,6 +2524,12 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 	// Make sure we have a cache setup.
 	if mb.cache == nil {
 		mb.setupWriteCache(nil)
+	}
+	// Enable for writing if our mfd is not open.
+	if mb.mfd == nil {
+		if err := mb.enableForWriting(flush); err != nil {
+			return err
+		}
 	}
 
 	// Indexing
@@ -2724,19 +2739,29 @@ func (fs *fileStore) syncBlocks() {
 	fs.mu.RUnlock()
 
 	for _, mb := range blks {
-		mb.mu.RLock()
-		mfd := mb.mfd
-		ifd := mb.ifd
-		liwsz := mb.liwsz
-		mb.mu.RUnlock()
-
-		if mfd != nil {
-			mfd.Sync()
+		// Flush anything that may be pending.
+		if mb.pendingWriteSize() > 0 {
+			mb.flushPendingMsgs()
 		}
-		if ifd != nil {
-			ifd.Truncate(liwsz)
-			ifd.Sync()
+		if mb.indexNeedsUpdate() {
+			mb.writeIndexInfo()
 		}
+		// Do actual sync. Hold lock for consistency.
+		mb.mu.Lock()
+		if !mb.closed {
+			if mb.mfd != nil {
+				mb.mfd.Sync()
+			}
+			if mb.ifd != nil {
+				mb.ifd.Truncate(mb.liwsz)
+				mb.ifd.Sync()
+			}
+			// See if we can close FDs do to being idle.
+			if mb.ifd != nil || mb.mfd != nil && mb.sinceLastWriteActivity() > closeFDsIdle {
+				mb.dirtyCloseWithRemove(false)
+			}
+		}
+		mb.mu.Unlock()
 	}
 
 	fs.mu.Lock()
@@ -2958,6 +2983,8 @@ func (mb *msgBlock) flushPendingMsgs() error {
 		mb.cache.wp = 0
 		// Place buffer back in the cache structure.
 		mb.cache.buf = buf
+		// Mark fseq to 0
+		mb.cache.fseq = 0
 	}
 
 	return mb.werr
@@ -2978,11 +3005,16 @@ func (mb *msgBlock) loadMsgs() error {
 
 // Lock should be held.
 func (mb *msgBlock) cacheAlreadyLoaded() bool {
-	if mb.cache == nil || mb.cache.off != 0 {
+	if mb.cache == nil || mb.cache.off != 0 || mb.cache.fseq == 0 || len(mb.cache.buf) == 0 {
 		return false
 	}
 	numEntries := mb.msgs + uint64(len(mb.dmap)) + (mb.first.seq - mb.cache.fseq)
 	return numEntries == uint64(len(mb.cache.idx)) && len(mb.cache.buf) > 0
+}
+
+// Lock should be held.
+func (mb *msgBlock) cacheNotLoaded() bool {
+	return !mb.cacheAlreadyLoaded()
 }
 
 // Used to load in the block contents.
@@ -3096,19 +3128,13 @@ checkCache:
 // Fetch a message from this block, possibly reading in and caching the messages.
 // We assume the block was selected and is correct, so we do not do range checks.
 func (mb *msgBlock) fetchMsg(seq uint64) (*fileStoredMsg, error) {
-	var sm *fileStoredMsg
-
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 
-	sm, err := mb.cacheLookup(seq)
-	if err == nil || (err != errNoCache && err != errPartialCache) {
-		return sm, err
-	}
-
-	// We have a cache miss here.
-	if err := mb.loadMsgsWithLock(); err != nil {
-		return nil, err
+	if mb.cacheNotLoaded() {
+		if err := mb.loadMsgsWithLock(); err != nil {
+			return nil, err
+		}
 	}
 	return mb.cacheLookup(seq)
 }
@@ -3124,6 +3150,7 @@ var (
 	errPendingData  = errors.New("pending data still present")
 	errNoEncryption = errors.New("encryption not enabled")
 	errBadKeySize   = errors.New("encryption bad key size")
+	errNoMsgBlk     = errors.New("no message block")
 )
 
 // Used for marking messages that have had their checksums checked.
@@ -3136,11 +3163,7 @@ const ebit = 1 << 63
 // Will do a lookup from cache.
 // Lock should be held.
 func (mb *msgBlock) cacheLookup(seq uint64) (*fileStoredMsg, error) {
-	if mb.cache == nil || len(mb.cache.idx) == 0 {
-		return nil, errNoCache
-	}
-
-	if seq < mb.first.seq || seq < mb.cache.fseq || seq > mb.last.seq {
+	if seq < mb.first.seq || seq > mb.last.seq {
 		return nil, ErrStoreMsgNotFound
 	}
 
@@ -3150,14 +3173,18 @@ func (mb *msgBlock) cacheLookup(seq uint64) (*fileStoredMsg, error) {
 			return nil, errDeletedMsg
 		}
 	}
-
-	if mb.cache.off > 0 {
+	// Detect no cache loaded.
+	if mb.cache == nil || mb.cache.fseq == 0 || len(mb.cache.idx) == 0 || len(mb.cache.buf) == 0 {
+		return nil, errNoCache
+	}
+	// Check partial cache status.
+	if seq < mb.cache.fseq {
 		return nil, errPartialCache
 	}
 
 	bi, _, hashChecked, err := mb.slotInfo(int(seq - mb.cache.fseq))
 	if err != nil {
-		return nil, errPartialCache
+		return nil, err
 	}
 
 	// Update cache activity.
@@ -3176,6 +3203,9 @@ func (mb *msgBlock) cacheLookup(seq uint64) (*fileStoredMsg, error) {
 	}
 
 	li := int(bi) - mb.cache.off
+	if li >= len(mb.cache.buf) {
+		return nil, errPartialCache
+	}
 	buf := mb.cache.buf[li:]
 
 	// Parse from the raw buffer.
@@ -3188,16 +3218,7 @@ func (mb *msgBlock) cacheLookup(seq uint64) (*fileStoredMsg, error) {
 		return nil, fmt.Errorf("sequence numbers for cache load did not match, %d vs %d", seq, mseq)
 	}
 
-	sm := &fileStoredMsg{
-		subj: subj,
-		hdr:  hdr,
-		msg:  msg,
-		seq:  seq,
-		ts:   ts,
-		mb:   mb,
-		off:  int64(bi),
-	}
-	return sm, nil
+	return &fileStoredMsg{subj, hdr, msg, seq, ts, mb, int64(bi)}, nil
 }
 
 // Will return message for the given sequence number.
@@ -3243,10 +3264,7 @@ func (fs *fileStore) msgForSeq(seq uint64) (*fileStoredMsg, error) {
 
 	// We detected a linear scan and access to the last message.
 	if shouldTryExpire {
-		mb.mu.Lock()
-		mb.llts = 0
-		mb.expireCacheLocked()
-		mb.mu.Unlock()
+		mb.tryForceExpireCache()
 	}
 
 	return fsm, nil
@@ -3405,6 +3423,26 @@ func fileStoreMsgSizeEstimate(slen, maxPayload int) uint64 {
 	return uint64(emptyRecordLen + slen + 4 + maxPayload)
 }
 
+// Determine time since last write or remove of a message.
+// Read lock should be held.
+func (mb *msgBlock) sinceLastWriteActivity() time.Duration {
+	if mb.closed {
+		return 0
+	}
+	last := mb.lwts
+	if mb.lrts > last {
+		last = mb.lrts
+	}
+	return time.Since(time.Unix(0, last).UTC())
+}
+
+// Determine if we need to write out this index info.
+func (mb *msgBlock) indexNeedsUpdate() bool {
+	mb.mu.RLock()
+	defer mb.mu.RUnlock()
+	return mb.lwits < mb.lwts || mb.lwits < mb.lrts
+}
+
 // Write index info to the appropriate file.
 // Lock should be held.
 func (mb *msgBlock) writeIndexInfo() error {
@@ -3432,7 +3470,8 @@ func (mb *msgBlock) writeIndexInfo() error {
 	if len(mb.dmap) > 0 {
 		buf = append(buf, mb.genDeleteMap()...)
 	}
-	var err error
+
+	// Open our FD if needed.
 	if mb.ifd == nil {
 		ifd, err := os.OpenFile(mb.ifn, os.O_CREATE|os.O_RDWR, defaultFilePerms)
 		if err != nil {
@@ -3441,13 +3480,14 @@ func (mb *msgBlock) writeIndexInfo() error {
 		mb.ifd = ifd
 	}
 
-	mb.lwits = time.Now().UnixNano()
-
 	// Encrypt if needed.
 	if mb.aek != nil {
 		buf = mb.aek.Seal(buf[:0], mb.nonce, buf, nil)
 	}
 
+	mb.lwits = time.Now().UnixNano()
+
+	var err error
 	if n, err = mb.ifd.WriteAt(buf, 0); err == nil {
 		mb.liwsz = int64(n)
 		mb.werr = nil
@@ -3668,7 +3708,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 		}
 
 		var shouldExpire bool
-		if !mb.cacheAlreadyLoaded() {
+		if mb.cacheNotLoaded() {
 			mb.loadMsgsWithLock()
 			shouldExpire = true
 		}
@@ -3712,10 +3752,8 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 		// Expire if we were responsible for loading.
 		if shouldExpire {
 			// Expire this cache before moving on.
-			mb.llts = 0
-			mb.expireCacheLocked()
+			mb.tryForceExpireCacheLocked()
 		}
-
 		mb.mu.Unlock()
 		// Update our index info on disk.
 		mb.writeIndexInfo()
@@ -3921,7 +3959,9 @@ func (fs *fileStore) Truncate(seq uint64) error {
 
 	// Set lmb to nlmb and make sure writeable.
 	fs.lmb = nlmb
-	fs.enableLastMsgBlockForWriting()
+	if err := nlmb.enableForWriting(fs.fip); err != nil {
+		return err
+	}
 
 	var purged, bytes uint64
 
@@ -4096,7 +4136,7 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 	defer mb.mu.Unlock()
 
 	var shouldExpire bool
-	if !mb.cacheAlreadyLoaded() {
+	if mb.cacheNotLoaded() {
 		mb.loadMsgsWithLock()
 		shouldExpire = true
 	}
@@ -4116,8 +4156,7 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 	}
 	if shouldExpire {
 		// Expire this cache before moving on.
-		mb.llts = 0
-		mb.expireCacheLocked()
+		mb.tryForceExpireCacheLocked()
 	}
 	return nil
 }
@@ -4399,9 +4438,10 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includ
 	for _, mb := range blks {
 		if mb.pendingWriteSize() > 0 {
 			mb.flushPendingMsgs()
+		}
+		if mb.indexNeedsUpdate() {
 			mb.writeIndexInfo()
 		}
-
 		mb.mu.Lock()
 		buf, err := ioutil.ReadFile(mb.ifn)
 		if err != nil {

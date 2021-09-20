@@ -3402,9 +3402,9 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 		t.Fatalf("Expected duplicate to be set")
 	}
 
-	// Purge should wipe the msgIds as well.
+	// Purge should NOT wipe the msgIds. They should still persist.
 	mset.purge(nil)
-	nmids(0)
+	nmids(5)
 }
 
 func getPubAckResponse(msg []byte) *JSPubAckResponse {
@@ -9325,7 +9325,7 @@ func TestJetStreamPubPerf(t *testing.T) {
 	defer nc.Close()
 
 	toSend := 5_000_000
-	numProducers := 1
+	numProducers := 5
 
 	payload := []byte("Hello World")
 
@@ -9345,16 +9345,23 @@ func TestJetStreamPubPerf(t *testing.T) {
 	}
 
 	// Wait for Go routines.
-	time.Sleep(10 * time.Millisecond)
-
+	time.Sleep(20 * time.Millisecond)
 	start := time.Now()
-
 	close(startCh)
 	wg.Wait()
 
 	tt := time.Since(start)
 	fmt.Printf("time is %v\n", tt)
 	fmt.Printf("%.0f msgs/sec\n", float64(toSend)/tt.Seconds())
+
+	// Stop current
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+	// Restart.
+	start = time.Now()
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+	fmt.Printf("Took %v to restart!\n", time.Since(start))
 }
 
 func TestJetStreamPubWithAsyncResponsePerf(t *testing.T) {
@@ -11454,7 +11461,7 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 	}
 
 	// Faster timeout since we loop below checking for condition.
-	js2, err := nc.JetStream(nats.MaxWait(10 * time.Millisecond))
+	js2, err := nc.JetStream(nats.MaxWait(250 * time.Millisecond))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -11615,7 +11622,7 @@ func TestJetStreamSourceBasics(t *testing.T) {
 	createStream(cfg)
 
 	// Faster timeout since we loop below checking for condition.
-	js2, err := nc.JetStream(nats.MaxWait(50 * time.Millisecond))
+	js2, err := nc.JetStream(nats.MaxWait(250 * time.Millisecond))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}

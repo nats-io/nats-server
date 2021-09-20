@@ -168,6 +168,7 @@ type stream struct {
 	ddtmr     *time.Timer
 	qch       chan struct{}
 	active    bool
+	ddloaded  bool
 
 	// Mirror
 	mirror *sourceInfo
@@ -392,8 +393,14 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	end := len(mset.pubAck)
 	mset.pubAck = mset.pubAck[:end:end]
 
-	// Rebuild dedupe as needed.
-	mset.rebuildDedupe()
+	// Set our known last sequence.
+	state := mset.store.State()
+	mset.lseq = state.LastSeq
+
+	// If no msgs (new stream), set dedupe state loaded to true.
+	if state.Msgs == 0 {
+		mset.ddloaded = true
+	}
 
 	// Set our stream assignment if in clustered mode.
 	if sa != nil {
@@ -596,11 +603,12 @@ func (mset *stream) autoTuneFileStorageBlockSize(fsCfg *FileStoreConfig) {
 }
 
 // rebuildDedupe will rebuild any dedupe structures needed after recovery of a stream.
+// Will be called lazily to avoid penalizing startup times.
 // TODO(dlc) - Might be good to know if this should be checked at all for streams with no
 // headers and msgId in them. Would need signaling from the storage layer.
+// Lock should be held.
 func (mset *stream) rebuildDedupe() {
-	state := mset.store.State()
-	mset.lseq = state.LastSeq
+	mset.ddloaded = true
 
 	// We have some messages. Lookup starting sequence by duplicate time window.
 	sseq := mset.store.GetSeqFromTime(time.Now().Add(-mset.cfg.Duplicates))
@@ -608,12 +616,13 @@ func (mset *stream) rebuildDedupe() {
 		return
 	}
 
+	state := mset.store.State()
 	for seq := sseq; seq <= state.LastSeq; seq++ {
 		_, hdr, _, ts, err := mset.store.LoadMsg(seq)
 		var msgId string
 		if err == nil && len(hdr) > 0 {
 			if msgId = getMsgId(hdr); msgId != _EMPTY_ {
-				mset.storeMsgId(&ddentry{msgId, seq, ts})
+				mset.storeMsgIdLocked(&ddentry{msgId, seq, ts})
 			}
 		}
 		if seq == state.LastSeq {
@@ -974,8 +983,6 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 		mset.mu.Unlock()
 		return 0, errors.New("invalid stream")
 	}
-	// Purge dedupe.
-	mset.ddmap = nil
 	var _obs [4]*consumer
 	obs := _obs[:0]
 	for _, o := range mset.consumers {
@@ -992,6 +999,7 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 		return purged, err
 	}
 
+	// Purge consumers.
 	var state StreamState
 	mset.store.FastState(&state)
 	for _, o := range obs {
@@ -2377,15 +2385,21 @@ func (mset *stream) storeUpdates(md, bd int64, seq uint64, subj string) {
 
 // NumMsgIds returns the number of message ids being tracked for duplicate suppression.
 func (mset *stream) numMsgIds() int {
-	mset.mu.RLock()
-	defer mset.mu.RUnlock()
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	if !mset.ddloaded {
+		mset.rebuildDedupe()
+	}
 	return len(mset.ddmap)
 }
 
 // checkMsgId will process and check for duplicates.
 // Lock should be held.
 func (mset *stream) checkMsgId(id string) *ddentry {
-	if id == _EMPTY_ || mset.ddmap == nil {
+	if !mset.ddloaded {
+		mset.rebuildDedupe()
+	}
+	if id == _EMPTY_ || len(mset.ddmap) == 0 {
 		return nil
 	}
 	return mset.ddmap[id]
@@ -2421,25 +2435,40 @@ func (mset *stream) purgeMsgIds() {
 		if tmrNext < minFire {
 			tmrNext = minFire
 		}
-		mset.ddtmr.Reset(tmrNext)
+		if mset.ddtmr != nil {
+			mset.ddtmr.Reset(tmrNext)
+		} else {
+			mset.ddtmr = time.AfterFunc(tmrNext, mset.purgeMsgIds)
+		}
 	} else {
-		mset.ddtmr.Stop()
-		mset.ddtmr = nil
+		if mset.ddtmr != nil {
+			mset.ddtmr.Stop()
+			mset.ddtmr = nil
+		}
+		mset.ddmap = nil
+		mset.ddarr = nil
+		mset.ddindex = 0
 	}
 }
 
 // storeMsgId will store the message id for duplicate detection.
 func (mset *stream) storeMsgId(dde *ddentry) {
 	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	mset.storeMsgIdLocked(dde)
+}
+
+// storeMsgIdLocked will store the message id for duplicate detection.
+// Lock should he held.
+func (mset *stream) storeMsgIdLocked(dde *ddentry) {
 	if mset.ddmap == nil {
 		mset.ddmap = make(map[string]*ddentry)
 	}
+	mset.ddmap[dde.id] = dde
+	mset.ddarr = append(mset.ddarr, dde)
 	if mset.ddtmr == nil {
 		mset.ddtmr = time.AfterFunc(mset.cfg.Duplicates, mset.purgeMsgIds)
 	}
-	mset.ddmap[dde.id] = dde
-	mset.ddarr = append(mset.ddarr, dde)
-	mset.mu.Unlock()
 }
 
 // Fast lookup of msgId.
@@ -2636,8 +2665,10 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	// Process additional msg headers if still present.
 	var msgId string
 	if len(hdr) > 0 {
-		msgId = getMsgId(hdr)
 		outq := mset.outq
+
+		// Dedupe detection.
+		msgId = getMsgId(hdr)
 		if dde := mset.checkMsgId(msgId); dde != nil {
 			mset.clfs++
 			mset.mu.Unlock()
@@ -2675,17 +2706,22 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			return fmt.Errorf("last sequence mismatch: %d vs %d", seq, mlseq)
 		}
 		// Expected last msgId.
-		if lmsgId := getExpectedLastMsgId(hdr); lmsgId != _EMPTY_ && lmsgId != mset.lmsgId {
-			last := mset.lmsgId
-			mset.clfs++
-			mset.mu.Unlock()
-			if canRespond {
-				resp.PubAck = &PubAck{Stream: name}
-				resp.Error = NewJSStreamWrongLastMsgIDError(last)
-				b, _ := json.Marshal(resp)
-				outq.sendMsg(reply, b)
+		if lmsgId := getExpectedLastMsgId(hdr); lmsgId != _EMPTY_ {
+			if mset.lmsgId == _EMPTY_ && !mset.ddloaded {
+				mset.rebuildDedupe()
 			}
-			return fmt.Errorf("last msgid mismatch: %q vs %q", lmsgId, last)
+			if lmsgId != mset.lmsgId {
+				last := mset.lmsgId
+				mset.clfs++
+				mset.mu.Unlock()
+				if canRespond {
+					resp.PubAck = &PubAck{Stream: name}
+					resp.Error = NewJSStreamWrongLastMsgIDError(last)
+					b, _ := json.Marshal(resp)
+					outq.sendMsg(reply, b)
+				}
+				return fmt.Errorf("last msgid mismatch: %q vs %q", lmsgId, last)
+			}
 		}
 		// Expected last sequence per subject.
 		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists {
@@ -3161,8 +3197,9 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	if mset.ddtmr != nil {
 		mset.ddtmr.Stop()
 		mset.ddtmr = nil
-		mset.ddarr = nil
 		mset.ddmap = nil
+		mset.ddarr = nil
+		mset.ddindex = 0
 	}
 
 	sysc := mset.sysc
