@@ -796,7 +796,8 @@ func checkStreamCfg(config *StreamConfig) (StreamConfig, error) {
 		} else {
 			cfg.Duplicates = StreamDefaultDuplicatesWindow
 		}
-	} else if cfg.Duplicates < 0 {
+	}
+	if cfg.Duplicates < 0 {
 		return StreamConfig{}, fmt.Errorf("duplicates window can not be negative")
 	}
 	// Check that duplicates is not larger then age if set.
