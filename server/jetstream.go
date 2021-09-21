@@ -1034,6 +1034,13 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		}
 	}
 
+	// Collect consumers, do after all streams.
+	type ce struct {
+		mset *stream
+		odir string
+	}
+	var consumers []*ce
+
 	// Now recover the streams.
 	fis, _ := ioutil.ReadDir(sdir)
 	for _, fi := range fis {
@@ -1109,13 +1116,17 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 
 		// Now do the consumers.
 		odir := path.Join(sdir, fi.Name(), consumerDir)
-		ofis, _ := ioutil.ReadDir(odir)
+		consumers = append(consumers, &ce{mset, odir})
+	}
+
+	for _, e := range consumers {
+		ofis, _ := ioutil.ReadDir(e.odir)
 		if len(ofis) > 0 {
-			s.Noticef("  Recovering %d consumers for stream - %q", len(ofis), fi.Name())
+			s.Noticef("  Recovering %d consumers for stream - %q", len(ofis), e.mset.name())
 		}
 		for _, ofi := range ofis {
-			metafile := path.Join(odir, ofi.Name(), JetStreamMetaFile)
-			metasum := path.Join(odir, ofi.Name(), JetStreamMetaFileSum)
+			metafile := path.Join(e.odir, ofi.Name(), JetStreamMetaFile)
+			metasum := path.Join(e.odir, ofi.Name(), JetStreamMetaFileSum)
 			if _, err := os.Stat(metafile); os.IsNotExist(err) {
 				s.Warnf("    Missing consumer metafile %q", metafile)
 				continue
@@ -1131,10 +1142,10 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 			}
 
 			// Check if we are encrypted.
-			if key, err := ioutil.ReadFile(path.Join(odir, ofi.Name(), JetStreamMetaFileKey)); err == nil {
+			if key, err := ioutil.ReadFile(path.Join(e.odir, ofi.Name(), JetStreamMetaFileKey)); err == nil {
 				s.Debugf("  Consumer metafile is encrypted, reading encrypted keyfile")
 				// Decode the buffer before proceeding.
-				if buf, err = s.decryptMeta(key, buf, a.Name, fi.Name()+tsep+ofi.Name()); err != nil {
+				if buf, err = s.decryptMeta(key, buf, a.Name, e.mset.name()+tsep+ofi.Name()); err != nil {
 					s.Warnf("  Error decrypting our consumer metafile: %v", err)
 					continue
 				}
@@ -1151,7 +1162,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 				// the consumer can reconnect. We will create it as a durable and switch it.
 				cfg.ConsumerConfig.Durable = ofi.Name()
 			}
-			obs, err := mset.addConsumer(&cfg.ConsumerConfig)
+			obs, err := e.mset.addConsumer(&cfg.ConsumerConfig)
 			if err != nil {
 				s.Warnf("    Error adding consumer: %v", err)
 				continue
