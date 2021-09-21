@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	crand "crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -3269,10 +3270,46 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 		t.Fatalf("Did not receive completion signal")
 	}
 
-	for _, m := range fetchMsgs(t, sub, 100, 5*time.Second) {
-		m.Ack()
+	for i, m := range fetchMsgs(t, sub, 200, 5*time.Second) {
+		// Ack first 50 and every other even on after that..
+		if i < 50 || i%2 == 1 {
+			m.Ack()
+		}
 	}
+	// Make sure acks processed.
 	nc.Flush()
+
+	// Check consumer consistency.
+	checkConsumerWith := func(delivered, ackFloor uint64, ackPending int) {
+		t.Helper()
+		nc, js = jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		ci, err := js.ConsumerInfo("TEST", "dlc")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if ci.Delivered.Consumer != ci.Delivered.Stream || ci.Delivered.Consumer != delivered {
+			t.Fatalf("Expected %d for delivered, got %+v", delivered, ci.Delivered)
+		}
+		if ci.AckFloor.Consumer != ci.AckFloor.Stream || ci.AckFloor.Consumer != ackFloor {
+			t.Fatalf("Expected %d for ack floor, got %+v", ackFloor, ci.AckFloor)
+		}
+		nm := uint64(numMsgs)
+		if ci.NumPending != nm-delivered {
+			t.Fatalf("Expected num pending to be %d, got %d", nm-delivered, ci.NumPending)
+		}
+		if ci.NumAckPending != ackPending {
+			t.Fatalf("Expected num ack pending to be %d, got %d", ackPending, ci.NumAckPending)
+		}
+	}
+
+	checkConsumer := func() {
+		t.Helper()
+		checkConsumerWith(200, 50, 75)
+	}
+
+	checkConsumer()
 
 	// Grab the consumer leader.
 	cl := c.consumerLeader("$G", "TEST", "dlc")
@@ -3302,9 +3339,21 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	}
 	ae := node.decodeAppendEntry(msg, nil, _EMPTY_)
 
+	dentry := func(dseq, sseq, dc uint64, ts int64) []byte {
+		b := make([]byte, 4*binary.MaxVarintLen64+1)
+		b[0] = byte(updateDeliveredOp)
+		n := 1
+		n += binary.PutUvarint(b[n:], dseq)
+		n += binary.PutUvarint(b[n:], sseq)
+		n += binary.PutUvarint(b[n:], dc)
+		n += binary.PutVarint(b[n:], ts)
+		return b[:n]
+	}
+
 	// Let's put a non-contigous AppendEntry into the system.
-	// node.storeToWAL(ae) could panic so need to do by hand.
 	ae.pindex += 10
+	// Add in delivered record.
+	ae.entries = []*Entry{&Entry{EntryNormal, dentry(1000, 1000, 1, time.Now().UnixNano())}}
 	if _, _, err := fs.StoreMsg(_EMPTY_, nil, ae.encode()); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -3313,4 +3362,43 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	c.restartAllSamePorts()
 	c.waitOnStreamLeader("$G", "TEST")
 	c.waitOnConsumerLeader("$G", "TEST", "dlc")
+
+	checkConsumer()
+
+	// Now we will truncate out the WAL out from underneath the leader.
+	// Grab the consumer leader.
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cl = c.consumerLeader("$G", "TEST", "dlc")
+	mset, err = cl.GlobalAccount().lookupStream("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	o = mset.lookupConsumer("dlc")
+	if o == nil {
+		t.Fatalf("Error looking up consumer %q", "dlc")
+	}
+	// Grab underlying raft node and the WAL (filestore) and truncate it.
+	// This will simulate the WAL losing state due to truncate and we want to make sure it recovers.
+	fs = o.raftNode().(*raft).wal.(*fileStore)
+	state = fs.State()
+	fs.Truncate(state.FirstSeq)
+
+	// This will cause us to stepdown and truncate our WAL.
+	fetchMsgs(t, sub, 100, 50*time.Millisecond)
+
+	checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
+		// Make sure we changed leaders.
+		if clnew := c.consumerLeader("$G", "TEST", "dlc"); clnew == nil || cl == clnew {
+			return fmt.Errorf("Expected leader to have moved")
+		}
+		return nil
+	})
+
+	// First one triggered stepdown so no updates would be distributed, now make sure we are ok.
+	checkConsumer()
+	fetchMsgs(t, sub, 100, 5*time.Second)
+	checkConsumerWith(300, 50, 175)
 }

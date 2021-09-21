@@ -2775,10 +2775,19 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 	if index := ae.pindex + 1; index != seq {
 		// We are missing store state from our state.
 		if index > seq {
-			panic(fmt.Sprintf("[%s | %s] Wrong index, ae is %+v, seq is %d, n.pindex is %d\n\n", n.s, n.group, ae, seq, n.pindex))
+			// Reset to last before this one.
+			if ae, err := n.loadEntry(seq - 1); err == nil && ae != nil {
+				n.truncateWAL(ae.pterm, ae.pindex)
+				if n.state == Leader {
+					n.attemptStepDown(n.selectNextLeader())
+				}
+			} else {
+				panic(fmt.Sprintf("[%s | %s] Wrong index, ae is %+v, seq is %d, n.pindex is %d\n\n", n.s, n.group, ae, seq, n.pindex))
+			}
+		} else {
+			// Truncate back to our last known.
+			n.truncateWAL(n.pterm, n.pindex)
 		}
-		// Truncate back to last known.
-		n.truncateWAL(n.pterm, n.pindex)
 		return errEntryStoreFailed
 	}
 
