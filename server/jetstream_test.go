@@ -13101,7 +13101,7 @@ func TestJetStreamPullLargeBatchExpired(t *testing.T) {
 	}
 }
 
-func TestNegativeDupeWindow(t *testing.T) {
+func TestJetStreamNegativeDupeWindow(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
 
@@ -13131,6 +13131,69 @@ func TestNegativeDupeWindow(t *testing.T) {
 	})
 	if err == nil || err.Error() != "duplicates window can not be negative" {
 		t.Fatalf("Expected dupe window error got: %v", err)
+	}
+}
+
+// Issue #2551
+func TestJetStreamMirroredConsumerFailAfterRestart(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "S1",
+		Storage:  nats.FileStorage,
+		Subjects: []string{"foo", "bar", "baz"},
+	})
+	if err != nil {
+		t.Fatalf("create failed: %s", err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:    "M1",
+		Storage: nats.FileStorage,
+		Mirror:  &nats.StreamSource{Name: "S1"},
+	})
+	if err != nil {
+		t.Fatalf("create failed: %s", err)
+	}
+
+	_, err = js.AddConsumer("M1", &nats.ConsumerConfig{
+		Durable:       "C1",
+		FilterSubject: ">",
+		AckPolicy:     nats.AckExplicitPolicy,
+	})
+	if err != nil {
+		t.Fatalf("consumer create failed: %s", err)
+	}
+
+	// Stop current
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+	s.WaitForShutdown()
+
+	// Restart.
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err = js.StreamInfo("M1")
+	if err != nil {
+		t.Fatalf("%s did not exist after start: %s", "M1", err)
+	}
+
+	_, err = js.ConsumerInfo("M1", "C1")
+	if err != nil {
+		t.Fatalf("C1 did not exist after start: %s", err)
 	}
 }
 
