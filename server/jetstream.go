@@ -49,12 +49,14 @@ type JetStreamConfig struct {
 }
 
 type JetStreamStats struct {
-	Memory         uint64            `json:"memory"`
-	Store          uint64            `json:"storage"`
-	Accounts       int               `json:"accounts,omitempty"`
-	API            JetStreamAPIStats `json:"api"`
-	ReservedMemory uint64            `json:"reserved_memory"`
-	ReservedStore  uint64            `json:"reserved_storage"`
+	Memory            uint64            `json:"memory"`
+	Store             uint64            `json:"storage"`
+	MemoryReserveUsed uint64            `json:"reserved_memory_used,omitempty"`
+	StoreReserveUsed  uint64            `json:"reserved_storage_used,omitempty"`
+	Accounts          int               `json:"accounts,omitempty"`
+	API               JetStreamAPIStats `json:"api"`
+	ReservedMemory    uint64            `json:"reserved_memory,omitempty"`
+	ReservedStore     uint64            `json:"reserved_storage,omitempty"`
 }
 
 type JetStreamAccountLimits struct {
@@ -89,6 +91,8 @@ type jetStream struct {
 	apiErrors     int64
 	memTotal      int64
 	storeTotal    int64
+	memTotalRes   int64
+	storeTotalRes int64
 	mu            sync.RWMutex
 	srv           *Server
 	config        JetStreamConfig
@@ -530,11 +534,13 @@ func (s *Server) enableJetStreamAccounts() error {
 	// If we have no configured accounts setup then setup imports on global account.
 	if s.globalAccountOnly() {
 		gacc := s.GlobalAccount()
+		gacc.mu.Lock()
+		if gacc.jsLimits == nil {
+			gacc.jsLimits = dynamicJSAccountLimits
+		}
+		gacc.mu.Unlock()
 		if err := s.configJetStream(gacc); err != nil {
 			return err
-		}
-		if err := gacc.EnableJetStream(nil); err != nil {
-			return fmt.Errorf("Error enabling jetstream on the global account")
 		}
 	} else if err := s.configAllJetStreamAccounts(); err != nil {
 		return fmt.Errorf("Error enabling jetstream on configured accounts: %v", err)
@@ -1294,6 +1300,20 @@ func (a *Account) UpdateJetStreamLimits(limits *JetStreamAccountLimits) error {
 	// FIXME(dlc) - If we drop and are over the max on memory or store, do we delete??
 	js.releaseResources(&jsaLimits)
 	js.reserveResources(limits)
+	if jsaLimits.MaxMemory >= 0 && limits.MaxMemory < 0 {
+		// we had a reserve and am now dropping it
+		atomic.AddInt64(&js.memTotalRes, -jsa.memTotal)
+	} else if jsaLimits.MaxMemory < 0 && limits.MaxMemory >= 0 {
+		// we had no reserve and am now adding it
+		atomic.AddInt64(&js.memTotalRes, jsa.memTotal)
+	}
+	if jsaLimits.MaxStore >= 0 && limits.MaxStore < 0 {
+		// we had a reserve and am now dropping it
+		atomic.AddInt64(&js.storeTotalRes, -jsa.storeTotal)
+	} else if jsaLimits.MaxStore < 0 && limits.MaxStore >= 0 {
+		// we had no reserve and am now adding it
+		atomic.AddInt64(&js.storeTotalRes, jsa.storeTotal)
+	}
 	js.mu.Unlock()
 
 	// Update
@@ -1464,10 +1484,16 @@ func (jsa *jsAccount) updateUsage(storeType StorageType, delta int64) {
 		jsa.usage.mem += delta
 		jsa.memTotal += delta
 		atomic.AddInt64(&js.memTotal, delta)
+		if jsa.limits.MaxMemory > 0 {
+			atomic.AddInt64(&js.memTotalRes, delta)
+		}
 	} else {
 		jsa.usage.store += delta
 		jsa.storeTotal += delta
 		atomic.AddInt64(&js.storeTotal, delta)
+		if jsa.limits.MaxStore > 0 {
+			atomic.AddInt64(&js.storeTotalRes, delta)
+		}
 	}
 	// Publish our local updates if in clustered mode.
 	if js.cluster != nil {
@@ -1665,6 +1691,8 @@ func (js *jetStream) usageStats() *JetStreamStats {
 	stats.API.Errors = (uint64)(atomic.LoadInt64(&js.apiErrors))
 	stats.Memory = (uint64)(atomic.LoadInt64(&js.memTotal))
 	stats.Store = (uint64)(atomic.LoadInt64(&js.storeTotal))
+	stats.MemoryReserveUsed = (uint64)(atomic.LoadInt64(&js.memTotalRes))
+	stats.StoreReserveUsed = (uint64)(atomic.LoadInt64(&js.storeTotalRes))
 	return &stats
 }
 
@@ -1711,17 +1739,6 @@ func (js *jetStream) releaseResources(limits *JetStreamAccountLimits) error {
 		js.storeReserved -= limits.MaxStore
 	}
 	return nil
-}
-
-// Will clear the resource reservations. Mostly for reload of a config.
-func (js *jetStream) clearResources() {
-	if js == nil {
-		return
-	}
-	js.mu.Lock()
-	js.memReserved = 0
-	js.storeReserved = 0
-	js.mu.Unlock()
 }
 
 const (

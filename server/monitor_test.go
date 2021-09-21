@@ -3928,7 +3928,7 @@ func checkForJSClusterUp(t *testing.T, servers ...*Server) {
 	})
 }
 
-func TestMonitorJsz(t *testing.T) {
+func TestMonitorJsz2(t *testing.T) {
 	readJsInfo := func(url string) *JSInfo {
 		t.Helper()
 		body := readBody(t, url)
@@ -4152,4 +4152,108 @@ func TestMonitorJsz(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestMonitorJszAccountReserves(t *testing.T) {
+	readJsInfo := func(url string) *JSInfo {
+		t.Helper()
+		body := readBody(t, url)
+		info := &JSInfo{}
+		err := json.Unmarshal(body, info)
+		require_NoError(t, err)
+		return info
+	}
+	tmpDir := createDir(t, "srv")
+	defer removeDir(t, tmpDir)
+	tmplCfg := `
+		listen: 127.0.0.1:-1
+		http_port: 7501
+		system_account: SYS
+		jetstream: {
+			store_dir: %s
+		}
+		accounts {
+			SYS { users [{user: sys, password: pwd}] }
+			ACC {
+				users [{user: usr, password: pwd}]
+				%s
+			}
+		}`
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmplCfg, tmpDir, "jetstream: enabled")))
+	defer removeFile(t, conf)
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+	checkForJSClusterUp(t, s)
+
+	nc := natsConnect(t, fmt.Sprintf("nats://usr:pwd@127.0.0.1:%d", s.opts.Port))
+	defer nc.Close()
+	js, err := nc.JetStream(nats.MaxWait(5 * time.Second))
+	require_NoError(t, err)
+	for _, v := range []struct {
+		subject string
+		storage nats.StorageType
+	}{
+		{"file", nats.FileStorage},
+		{"mem", nats.MemoryStorage}} {
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     v.subject,
+			Subjects: []string{v.subject},
+			Replicas: 1,
+			Storage:  v.storage,
+		})
+		require_NoError(t, err)
+		require_NoError(t, nc.Flush())
+	}
+
+	send := func() {
+		for _, subj := range []string{"file", "mem"} {
+			_, err = js.Publish(subj, []byte("hello world "+subj))
+			require_NoError(t, err)
+		}
+		require_NoError(t, nc.Flush())
+	}
+
+	test := func(msgs, reservedMemory, reservedStore uint64, totalIsReserveUsd bool) {
+		t.Helper()
+		info := readJsInfo(fmt.Sprintf("http://127.0.0.1:%d/jsz", s.opts.HTTPPort))
+		if info.Streams != 2 {
+			t.Fatalf("expected stream count to be 1 but got %d", info.Streams)
+		}
+		if info.Messages != msgs {
+			t.Fatalf("expected one message but got %d", info.Messages)
+		}
+		if info.ReservedStore != reservedStore {
+			t.Fatalf("expected %d bytes reserved, got %d bytes", reservedStore, info.ReservedStore)
+		}
+		if info.ReservedMemory != reservedMemory {
+			t.Fatalf("expected %d bytes reserved, got %d bytes", reservedMemory, info.ReservedStore)
+		}
+		if info.Memory == 0 {
+			t.Fatalf("memory expected to be not 0")
+		}
+		if info.Store == 0 {
+			t.Fatalf("store expected to be not 0")
+		}
+		memory, store := uint64(0), uint64(0)
+		if totalIsReserveUsd {
+			memory = info.Memory
+			store = info.Store
+		}
+		if info.MemoryReserveUsed != memory {
+			t.Fatalf("expected %d bytes reserved memory used, got %d bytes", memory, info.MemoryReserveUsed)
+		}
+		if info.StoreReserveUsed != store {
+			t.Fatalf("expected %d bytes reserved store used, got %d bytes", store, info.StoreReserveUsed)
+		}
+	}
+
+	send()
+	test(2, 0, 0, false)
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmplCfg, tmpDir, "jetstream: {max_mem: 4Mb, max_store: 5Mb}"))
+	test(2, 4*1024*1024, 5*1024*1024, true)
+	send()
+	test(4, 4*1024*1024, 5*1024*1024, true)
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmplCfg, tmpDir, "jetstream: enabled"))
+	test(4, 0, 0, false)
 }
