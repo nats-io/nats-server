@@ -840,6 +840,9 @@ func (os *consumerMemStore) StreamDelete() error {
 
 func (os *consumerMemStore) State() (*ConsumerState, error) { return nil, nil }
 
+// Type returns the type of the underlying store.
+func (os *consumerMemStore) Type() StorageType { return MemoryStorage }
+
 // Templates
 type templateMemStore struct{}
 

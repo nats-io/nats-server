@@ -2843,11 +2843,17 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	t := time.NewTicker(compactInterval)
 	defer t.Stop()
 
+	st := o.store.Type()
 	var lastSnap []byte
 
-	// Should only to be called from leader.
 	doSnapshot := func() {
-		if state, err := o.store.State(); err == nil && state != nil {
+		// Memory store consumers do not keep state in the store itself.
+		// Just compact to our applied index.
+		if st == MemoryStorage {
+			_, _, applied := n.Progress()
+			n.Compact(applied)
+		} else if state, err := o.store.State(); err == nil && state != nil {
+			// FileStore version.
 			if snap := encodeConsumerState(state); !bytes.Equal(lastSnap, snap) {
 				if err := n.InstallSnapshot(snap); err == nil {
 					lastSnap = snap

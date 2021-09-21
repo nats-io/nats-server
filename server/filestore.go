@@ -5178,6 +5178,9 @@ func (o *consumerFileStore) copyRedelivered() map[uint64]uint64 {
 	return redelivered
 }
 
+// Type returns the type of the underlying store.
+func (o *consumerFileStore) Type() StorageType { return FileStorage }
+
 // State retrieves the state from the state file.
 // This is not expected to be called in high performance code, only on startup.
 func (o *consumerFileStore) State() (*ConsumerState, error) {
