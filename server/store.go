@@ -156,6 +156,7 @@ type ConsumerStore interface {
 	UpdateAcks(dseq, sseq uint64) error
 	Update(*ConsumerState) error
 	State() (*ConsumerState, error)
+	Type() StorageType
 	Stop() error
 	Delete() error
 	StreamDelete() error
