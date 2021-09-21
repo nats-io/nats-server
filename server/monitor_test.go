@@ -3928,7 +3928,7 @@ func checkForJSClusterUp(t *testing.T, servers ...*Server) {
 	})
 }
 
-func TestMonitorJsz2(t *testing.T) {
+func TestMonitorJsz(t *testing.T) {
 	readJsInfo := func(url string) *JSInfo {
 		t.Helper()
 		body := readBody(t, url)
@@ -4240,11 +4240,11 @@ func TestMonitorJszAccountReserves(t *testing.T) {
 			memory = info.Memory
 			store = info.Store
 		}
-		if info.MemoryReserveUsed != memory {
-			t.Fatalf("expected %d bytes reserved memory used, got %d bytes", memory, info.MemoryReserveUsed)
+		if info.ReservedMemoryUsed != memory {
+			t.Fatalf("expected %d bytes reserved memory used, got %d bytes", memory, info.ReservedMemoryUsed)
 		}
-		if info.StoreReserveUsed != store {
-			t.Fatalf("expected %d bytes reserved store used, got %d bytes", store, info.StoreReserveUsed)
+		if info.ReserveStoreUsed != store {
+			t.Fatalf("expected %d bytes reserved store used, got %d bytes", store, info.ReserveStoreUsed)
 		}
 	}
 

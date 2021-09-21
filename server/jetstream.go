@@ -49,14 +49,14 @@ type JetStreamConfig struct {
 }
 
 type JetStreamStats struct {
-	Memory            uint64            `json:"memory"`
-	Store             uint64            `json:"storage"`
-	MemoryReserveUsed uint64            `json:"reserved_memory_used,omitempty"`
-	StoreReserveUsed  uint64            `json:"reserved_storage_used,omitempty"`
-	Accounts          int               `json:"accounts,omitempty"`
-	API               JetStreamAPIStats `json:"api"`
-	ReservedMemory    uint64            `json:"reserved_memory,omitempty"`
-	ReservedStore     uint64            `json:"reserved_storage,omitempty"`
+	Memory             uint64            `json:"memory"`
+	Store              uint64            `json:"storage"`
+	ReservedMemoryUsed uint64            `json:"reserved_memory_used,omitempty"`
+	ReserveStoreUsed   uint64            `json:"reserved_storage_used,omitempty"`
+	Accounts           int               `json:"accounts,omitempty"`
+	API                JetStreamAPIStats `json:"api"`
+	ReservedMemory     uint64            `json:"reserved_memory,omitempty"`
+	ReservedStore      uint64            `json:"reserved_storage,omitempty"`
 }
 
 type JetStreamAccountLimits struct {
@@ -1301,17 +1301,17 @@ func (a *Account) UpdateJetStreamLimits(limits *JetStreamAccountLimits) error {
 	js.releaseResources(&jsaLimits)
 	js.reserveResources(limits)
 	if jsaLimits.MaxMemory >= 0 && limits.MaxMemory < 0 {
-		// we had a reserve and am now dropping it
+		// we had a reserve and are now dropping it
 		atomic.AddInt64(&js.memTotalRes, -jsa.memTotal)
 	} else if jsaLimits.MaxMemory < 0 && limits.MaxMemory >= 0 {
-		// we had no reserve and am now adding it
+		// we had no reserve and are now adding it
 		atomic.AddInt64(&js.memTotalRes, jsa.memTotal)
 	}
 	if jsaLimits.MaxStore >= 0 && limits.MaxStore < 0 {
-		// we had a reserve and am now dropping it
+		// we had a reserve and are now dropping it
 		atomic.AddInt64(&js.storeTotalRes, -jsa.storeTotal)
 	} else if jsaLimits.MaxStore < 0 && limits.MaxStore >= 0 {
-		// we had no reserve and am now adding it
+		// we had no reserve and are now adding it
 		atomic.AddInt64(&js.storeTotalRes, jsa.storeTotal)
 	}
 	js.mu.Unlock()
@@ -1691,8 +1691,8 @@ func (js *jetStream) usageStats() *JetStreamStats {
 	stats.API.Errors = (uint64)(atomic.LoadInt64(&js.apiErrors))
 	stats.Memory = (uint64)(atomic.LoadInt64(&js.memTotal))
 	stats.Store = (uint64)(atomic.LoadInt64(&js.storeTotal))
-	stats.MemoryReserveUsed = (uint64)(atomic.LoadInt64(&js.memTotalRes))
-	stats.StoreReserveUsed = (uint64)(atomic.LoadInt64(&js.storeTotalRes))
+	stats.ReservedMemoryUsed = (uint64)(atomic.LoadInt64(&js.memTotalRes))
+	stats.ReserveStoreUsed = (uint64)(atomic.LoadInt64(&js.storeTotalRes))
 	return &stats
 }
 
