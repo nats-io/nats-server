@@ -3244,6 +3244,60 @@ func TestNoRaceJetStreamLastSubjSeqAndFilestoreCompact(t *testing.T) {
 	}
 }
 
+// Issue #2548
+func TestNoRaceJetStreamClusterMemoryStreamConsumerRaftGrowth(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "memory-leak",
+		Subjects:  []string{"memory-leak"},
+		Retention: nats.LimitsPolicy,
+		MaxMsgs:   1000,
+		Discard:   nats.DiscardOld,
+		MaxAge:    time.Minute,
+		Storage:   nats.MemoryStorage,
+		Replicas:  3,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	_, err = js.QueueSubscribe("memory-leak", "q1", func(msg *nats.Msg) {
+		time.Sleep(1 * time.Second)
+		msg.Ack()
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Send 10k (Must be > 8192 which is compactNumMin from monitorConsumer.
+	msg := []byte("NATS is a connective technology that powers modern distributed systems.")
+	for i := 0; i < 10_000; i++ {
+		if _, err := js.Publish("memory-leak", msg); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	// We will verify here that the underlying raft layer for the leader is not > 8192
+	cl := c.consumerLeader("$G", "memory-leak", "q1")
+	mset, err := cl.GlobalAccount().lookupStream("memory-leak")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	o := mset.lookupConsumer("q1")
+	if o == nil {
+		t.Fatalf("Error looking up consumer %q", "q1")
+	}
+	node := o.raftNode().(*raft)
+	if ms := node.wal.(*memStore); ms.State().Msgs > 8192 {
+		t.Fatalf("Did not compact the raft memory WAL")
+	}
+}
+
 func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
