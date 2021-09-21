@@ -46,7 +46,7 @@ import (
 
 // Default Constants
 const (
-	Version                   = "1.12.1"
+	Version                   = "1.12.3"
 	DefaultURL                = "nats://127.0.0.1:4222"
 	DefaultPort               = 4222
 	DefaultMaxReconnect       = 60
@@ -3779,7 +3779,13 @@ func (nc *Conn) subscribeLocked(subj, queue string, cb MsgHandler, ch chan *Msg,
 		return nil, ErrBadSubscription
 	}
 
-	sub := &Subscription{Subject: subj, Queue: queue, mcb: cb, conn: nc, jsi: js}
+	sub := &Subscription{
+		Subject: subj,
+		Queue:   queue,
+		mcb:     cb,
+		conn:    nc,
+		jsi:     js,
+	}
 	// Set pending limits.
 	if ch != nil {
 		sub.pMsgsLimit = cap(ch)

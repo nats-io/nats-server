@@ -17,3 +17,5 @@ before_script:
 script:
 - go test -modfile=go_test.mod -v -run=TestNoRace -p=1 ./... --failfast -vet=off
 - if [[ "$TRAVIS_GO_VERSION" =~ 1.16 ]]; then ./scripts/cov.sh TRAVIS; else go test -modfile=go_test.mod -race -v -p=1 ./... --failfast -vet=off; fi
+after_success:
+- if [[ "$TRAVIS_GO_VERSION" =~ 1.16 ]]; then $HOME/gopath/bin/goveralls -coverprofile=acc.out -service travis-ci; fi
