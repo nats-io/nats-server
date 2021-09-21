@@ -3242,3 +3242,75 @@ func TestNoRaceJetStreamLastSubjSeqAndFilestoreCompact(t *testing.T) {
 		}
 	}
 }
+
+func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sub, err := js.PullSubscribe("foo", "dlc")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	numMsgs := 1000
+	for i := 0; i < numMsgs; i++ {
+		js.PublishAsync("foo", []byte("WAL"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	for _, m := range fetchMsgs(t, sub, 100, 5*time.Second) {
+		m.Ack()
+	}
+	nc.Flush()
+
+	// Grab the consumer leader.
+	cl := c.consumerLeader("$G", "TEST", "dlc")
+	mset, err := cl.GlobalAccount().lookupStream("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	o := mset.lookupConsumer("dlc")
+	if o == nil {
+		t.Fatalf("Error looking up consumer %q", "dlc")
+	}
+	// Grab underlying raft node and the WAL (filestore) and we will attempt to "corrupt" it.
+	node := o.raftNode().(*raft)
+	fs := node.wal.(*fileStore)
+	fcfg, cfg := fs.fcfg, fs.cfg.StreamConfig
+	c.stopAll()
+
+	// Manipulate directly with cluster down.
+	fs, err = newFileStore(fcfg, cfg)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	state := fs.State()
+	_, _, msg, _, err := fs.LoadMsg(state.LastSeq)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	ae := node.decodeAppendEntry(msg, nil, _EMPTY_)
+
+	// Let's put a non-contigous AppendEntry into the system.
+	// node.storeToWAL(ae) could panic so need to do by hand.
+	ae.pindex += 10
+	if _, _, err := fs.StoreMsg(_EMPTY_, nil, ae.encode()); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	fs.Stop()
+
+	c.restartAllSamePorts()
+	c.waitOnStreamLeader("$G", "TEST")
+	c.waitOnConsumerLeader("$G", "TEST", "dlc")
+}
