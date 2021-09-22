@@ -154,7 +154,7 @@ type stream struct {
 	outq      *jsOutQ
 	msgs      *inbound
 	store     StreamStore
-	amch      chan uint64
+	ackq      *ackMsgQueue
 	lseq      uint64
 	lmsgId    string
 	consumers map[string]*consumer
@@ -353,7 +353,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 
 	// For no-ack consumers when we are interest retention.
 	if cfg.Retention != LimitsPolicy {
-		mset.amch = make(chan uint64, 1024)
+		mset.ackq = &ackMsgQueue{mch: make(chan struct{}, 1)}
 	}
 
 	jsa.streams[cfg.Name] = mset
@@ -3040,14 +3040,66 @@ func (mset *stream) subjects() []string {
 	return append(mset.cfg.Subjects[:0:0], mset.cfg.Subjects...)
 }
 
+// Linked list for async ack of messages.
+// When we have a consumer to a stream that is interest based and the
+// consumer is R=1 and acknone. This is how mirrors and sources replicate.
+type ackMsgQueue struct {
+	sync.Mutex
+	mch  chan struct{}
+	seqs []uint64
+	back []uint64
+}
+
+// Push onto the queue.
+func (q *ackMsgQueue) push(seq uint64) {
+	q.Lock()
+	notify := len(q.seqs) == 0
+	q.seqs = append(q.seqs, seq)
+	q.Unlock()
+	if notify {
+		select {
+		case q.mch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// Pop all pending off.
+func (q *ackMsgQueue) pop() []uint64 {
+	q.Lock()
+	seqs := q.seqs
+	q.seqs, q.back = q.back, nil
+	q.Unlock()
+	return seqs
+}
+
+func (q *ackMsgQueue) recycle(seqs []uint64) {
+	const maxAckQueueReuse = 8 * 1024
+	if cap(seqs) > maxAckQueueReuse {
+		return
+	}
+	q.Lock()
+	q.back = seqs[:0]
+	q.Unlock()
+}
+
 func (mset *stream) internalLoop() {
 	mset.mu.RLock()
 	s := mset.srv
 	c := s.createInternalJetStreamClient()
 	c.registerWithAccount(mset.acc)
 	defer c.closeConnection(ClientClosed)
-	outq, qch, mch, amch := mset.outq, mset.qch, mset.msgs.mch, mset.amch
+	outq, qch, mch := mset.outq, mset.qch, mset.msgs.mch
 	isClustered := mset.cfg.Replicas > 1
+
+	// For the ack msgs queue for interest retention.
+	var (
+		amch chan struct{}
+		ackq *ackMsgQueue
+	)
+	if mset.ackq != nil {
+		ackq, amch = mset.ackq, mset.ackq.mch
+	}
 	mset.mu.RUnlock()
 
 	// Raw scratch buffer.
@@ -3097,8 +3149,12 @@ func (mset *stream) internalLoop() {
 					mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0)
 				}
 			}
-		case seq := <-amch:
-			mset.ackMsg(nil, seq)
+		case <-amch:
+			seqs := ackq.pop()
+			for _, seq := range seqs {
+				mset.ackMsg(nil, seq)
+			}
+			ackq.recycle(seqs)
 		case <-qch:
 			return
 		case <-s.quitCh:

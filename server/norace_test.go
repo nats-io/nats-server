@@ -3456,3 +3456,51 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	fetchMsgs(t, sub, 100, 5*time.Second)
 	checkConsumerWith(300, 50, 175)
 }
+
+func TestNoRaceJetStreamClusterInterestRetentionDeadlock(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// This can trigger deadlock with current architecture.
+	// If stream is !limitsRetention and consumer is DIRECT and ack none we will try to place the msg seq
+	// onto a chan for the stream to consider removing. All conditions above must hold to trigger.
+
+	// We will attempt to trigger here with a stream mirror setup which uses and R=1 DIRECT consumer to replicate msgs.
+	_, err := js.AddStream(&nats.StreamConfig{Name: "S", Retention: nats.InterestPolicy, Storage: nats.MemoryStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Create a mirror which will create the consumer profile to trigger.
+	_, err = js.AddStream(&nats.StreamConfig{Name: "M", Mirror: &nats.StreamSource{Name: "S"}})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Queue up alot of messages.
+	numRequests := 20_000
+	for i := 0; i < numRequests; i++ {
+		js.PublishAsync("S", []byte("Q"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("S")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if si.State.Msgs != 0 {
+			return fmt.Errorf("Expected 0 msgs, got state: %+v", si.State)
+		}
+		return nil
+	})
+}
