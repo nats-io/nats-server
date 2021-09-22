@@ -3303,8 +3303,8 @@ func (mset *stream) getMsg(seq uint64) (*StoredMsg, error) {
 
 // getConsumers will return all the current consumers for this stream.
 func (mset *stream) getConsumers() []*consumer {
-	mset.mu.Lock()
-	defer mset.mu.Unlock()
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
 
 	var obs []*consumer
 	for _, o := range mset.consumers {
@@ -3313,10 +3313,15 @@ func (mset *stream) getConsumers() []*consumer {
 	return obs
 }
 
+// Lock should be held for this one.
+func (mset *stream) numPublicConsumers() int {
+	return len(mset.consumers) - mset.directs
+}
+
 // This returns all consumers that are not DIRECT.
 func (mset *stream) getPublicConsumers() []*consumer {
-	mset.mu.Lock()
-	defer mset.mu.Unlock()
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
 
 	var obs []*consumer
 	for _, o := range mset.consumers {

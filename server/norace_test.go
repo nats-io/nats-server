@@ -19,7 +19,6 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
-	crand "crypto/rand"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -36,6 +35,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	crand "crypto/rand"
 
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
@@ -3500,6 +3501,52 @@ func TestNoRaceJetStreamClusterInterestRetentionDeadlock(t *testing.T) {
 		}
 		if si.State.Msgs != 0 {
 			return fmt.Errorf("Expected 0 msgs, got state: %+v", si.State)
+		}
+		return nil
+	})
+}
+
+func TestNoRaceJetStreamClusterMaxConsumersAndDirect(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// We want to max sure max consumer limits do not affect mirrors or sources etc.
+	_, err := js.AddStream(&nats.StreamConfig{Name: "S", Storage: nats.MemoryStorage, MaxConsumers: 1})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	var mirrors []string
+	for i := 0; i < 10; i++ {
+		// Create a mirror.
+		mname := fmt.Sprintf("M-%d", i+1)
+		mirrors = append(mirrors, mname)
+		_, err = js.AddStream(&nats.StreamConfig{Name: mname, Mirror: &nats.StreamSource{Name: "S"}})
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	// Queue up messages.
+	numRequests := 20
+	for i := 0; i < numRequests; i++ {
+		js.Publish("S", []byte("Q"))
+	}
+
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, mname := range mirrors {
+			si, err := js.StreamInfo(mname)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if si.State.Msgs != uint64(numRequests) {
+				return fmt.Errorf("Expected %d msgs for %q, got state: %+v", numRequests, mname, si.State)
+			}
 		}
 		return nil
 	})
