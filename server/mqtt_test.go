@@ -865,6 +865,7 @@ func testMQTTEnableJSForAccount(t *testing.T, s *Server, accName string) {
 		MaxConsumers: -1,
 		MaxStreams:   -1,
 		MaxMemory:    1024 * 1024,
+		MaxStore:     1024 * 1024,
 	}
 	if err := acc.EnableJetStream(limits); err != nil {
 		t.Fatalf("Error enabling JS: %v", err)
@@ -1274,6 +1275,7 @@ func TestMQTTJWTWithAllowedConnectionTypes(t *testing.T) {
 			nac.Limits.JetStreamLimits.Consumer = -1
 			nac.Limits.JetStreamLimits.Streams = -1
 			nac.Limits.JetStreamLimits.MemoryStorage = 1024 * 1024
+			nac.Limits.JetStreamLimits.DiskStorage = 1024 * 1024
 			ajwt, err := nac.Encode(okp)
 			if err != nil {
 				t.Fatalf("Error generating account JWT: %v", err)
