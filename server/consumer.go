@@ -2360,7 +2360,7 @@ func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 	// If we are ack none and mset is interest only we should make sure stream removes interest.
 	if ap == AckNone && mset.cfg.Retention != LimitsPolicy {
 		if o.node == nil || o.cfg.Direct {
-			mset.amch <- seq
+			mset.ackq.push(seq)
 		} else {
 			o.updateAcks(dseq, seq)
 		}
