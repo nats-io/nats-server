@@ -1275,6 +1275,7 @@ func TestMQTTJWTWithAllowedConnectionTypes(t *testing.T) {
 			nac.Limits.JetStreamLimits.Consumer = -1
 			nac.Limits.JetStreamLimits.Streams = -1
 			nac.Limits.JetStreamLimits.MemoryStorage = 1024 * 1024
+			nac.Limits.JetStreamLimits.DiskStorage = 1024 * 1024
 			ajwt, err := nac.Encode(okp)
 			if err != nil {
 				t.Fatalf("Error generating account JWT: %v", err)
