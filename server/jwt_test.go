@@ -4430,17 +4430,7 @@ func TestJWTJetStreamDisabledLimitsEnforcement(t *testing.T) {
 		Storage:  nats.FileStorage,
 		Subjects: []string{"disk"},
 	})
-	require_NoError(t, err)
-
-	_, err = js.Publish("disk", nil)
-	require_NoError(t, err) // TODO should fail already
-
-	si, err := js.StreamInfo("disk")
-	require_NoError(t, err)
-
-	require_True(t, si.State.Msgs == 0)
-
-	// TODO consider changing from off to on and on to off (delete directory) on update
+	require_Error(t, err)
 }
 
 func TestJetStreamDisabledLimitsEnforcement(t *testing.T) {
@@ -4474,17 +4464,7 @@ func TestJetStreamDisabledLimitsEnforcement(t *testing.T) {
 		Storage:  nats.FileStorage,
 		Subjects: []string{"disk"},
 	})
-	require_NoError(t, err)
-
-	_, err = js.Publish("disk", nil)
-	require_NoError(t, err) // TODO should fail already
-
-	si, err := js.StreamInfo("disk")
-	require_NoError(t, err)
-
-	require_True(t, si.State.Msgs == 0)
-
-	// TODO consider changing from off to on and on to off (delete directory) on reload
+	require_Error(t, err)
 }
 
 func TestJWTUserRevocation(t *testing.T) {

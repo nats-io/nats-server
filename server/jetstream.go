@@ -1583,10 +1583,7 @@ func (jsa *jsAccount) checkLimits(config *StreamConfig) error {
 	}
 
 	// Check storage, memory or disk.
-	if config.MaxBytes > 0 {
-		return jsa.checkBytesLimits(config.MaxBytes, config.Storage, config.Replicas)
-	}
-	return nil
+	return jsa.checkBytesLimits(config.MaxBytes, config.Storage, config.Replicas)
 }
 
 // Check if additional bytes will exceed our account limits.
@@ -1596,12 +1593,15 @@ func (jsa *jsAccount) checkBytesLimits(addBytes int64, storage StorageType, repl
 	if replicas < 1 {
 		replicas = 1
 	}
+	if addBytes < 0 {
+		addBytes = 1
+	}
 	js, totalBytes := jsa.js, addBytes*int64(replicas)
 
 	switch storage {
 	case MemoryStorage:
 		// Account limits defined.
-		if jsa.limits.MaxMemory > 0 {
+		if jsa.limits.MaxMemory >= 0 {
 			if jsa.memReserved+totalBytes > jsa.limits.MaxMemory {
 				return NewJSMemoryResourcesExceededError()
 			}
@@ -1613,7 +1613,8 @@ func (jsa *jsAccount) checkBytesLimits(addBytes int64, storage StorageType, repl
 		}
 	case FileStorage:
 		// Account limits defined.
-		if jsa.limits.MaxStore > 0 {
+		if jsa.limits.MaxStore >= 0 {
+
 			if jsa.storeReserved+totalBytes > jsa.limits.MaxStore {
 				return NewJSStorageResourcesExceededError()
 			}
@@ -1702,7 +1703,6 @@ func (js *jetStream) sufficientResources(limits *JetStreamAccountLimits) error {
 	if limits == nil {
 		return nil
 	}
-
 	if js.memReserved+limits.MaxMemory > js.config.MaxMemory {
 		return NewJSMemoryResourcesExceededError()
 	}
