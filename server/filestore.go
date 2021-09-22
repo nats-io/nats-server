@@ -2675,6 +2675,9 @@ func (mb *msgBlock) bytesPending() ([]byte, error) {
 	if mb.cache == nil {
 		return nil, errNoCache
 	}
+	if len(mb.cache.buf) <= mb.cache.wp {
+		return nil, errNoPending
+	}
 	buf := mb.cache.buf[mb.cache.wp:]
 	if len(buf) == 0 {
 		return nil, errNoPending
