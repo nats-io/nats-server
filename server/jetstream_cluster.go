@@ -4119,10 +4119,19 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	}
 
 	// Check for max consumers here to short circuit if possible.
-	if maxc := sa.Config.MaxConsumers; maxc > 0 && len(sa.consumers) >= maxc {
-		resp.Error = NewJSMaximumConsumersLimitError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
-		return
+	if maxc := sa.Config.MaxConsumers; maxc > 0 {
+		// Don't count DIRECTS.
+		total := 0
+		for _, ca := range sa.consumers {
+			if ca.Config != nil && !ca.Config.Direct {
+				total++
+			}
+		}
+		if total >= maxc {
+			resp.Error = NewJSMaximumConsumersLimitError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+			return
+		}
 	}
 
 	// Also short circuit if DeliverLastPerSubject is set with no FilterSubject.
