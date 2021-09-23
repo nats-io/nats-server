@@ -3340,7 +3340,7 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 		nc, js = jsClientConnect(t, c.randomServer())
 		defer nc.Close()
 
-		checkFor(t, time.Second, 50*time.Millisecond, func() error {
+		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 			ci, err := js.ConsumerInfo("TEST", "dlc")
 			if err != nil {
 				return fmt.Errorf("Unexpected error: %v", err)
