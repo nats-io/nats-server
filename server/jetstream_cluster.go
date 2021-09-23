@@ -1695,6 +1695,10 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				if err := mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts); err != nil {
 					if !isRecovering {
 						if err == errLastSeqMismatch {
+							if mset.jsa.limitsExceeded(mset.cfg.Storage) {
+								s.Warnf("stream '%s > %s' errored, account resources exceeded: %v", mset.account(), mset.name(), err)
+								return nil
+							}
 							return err
 						}
 						s.Debugf("Got error processing JetStream msg: %v", err)
@@ -4388,9 +4392,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	canRespond := !mset.cfg.NoAck && len(reply) > 0
 	name, stype := mset.cfg.Name, mset.cfg.Storage
 	s, js, jsa, st, rf, outq := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.outq
-	maxMsgSize := int(mset.cfg.MaxMsgSize)
-	msetName := mset.cfg.Name
-	lseq := mset.lseq
+	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
 	mset.mu.RUnlock()
 
 	// Check here pre-emptively if we have exceeded this server limits.
@@ -4493,7 +4495,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	}
 
 	if err != nil && isOutOfSpaceErr(err) {
-		s.handleOutOfSpace(msetName)
+		s.handleOutOfSpace(name)
 	}
 
 	return err
@@ -4614,12 +4616,11 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) {
 	mset.mu.Lock()
 	state := mset.store.State()
 	sreq := mset.calculateSyncRequest(&state, snap)
-	s, subject, n := mset.srv, mset.sa.Sync, mset.node
-	msetName := mset.cfg.Name
+	s, js, subject, n, name := mset.srv, mset.js, mset.sa.Sync, mset.node, mset.cfg.Name
 	mset.mu.Unlock()
 
-	// Just return if up to date..
-	if sreq == nil {
+	// Just return if up to date or already exceeded limits.
+	if sreq == nil || js.limitsExceeded(mset.cfg.Storage) {
 		return
 	}
 
@@ -4630,8 +4631,6 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) {
 	// Set our catchup state.
 	mset.setCatchingUp()
 	defer mset.clearCatchingUp()
-
-	js := s.getJetStream()
 
 	var sub *subscription
 	var err error
@@ -4681,7 +4680,8 @@ RETRY:
 		reply string
 	}
 
-	msgsC := make(chan *im, 32768)
+	sz := int(sreq.LastSeq-sreq.FirstSeq) + 1
+	msgsC := make(chan *im, sz)
 
 	// Send our catchup request here.
 	reply := syncReplySubject()
@@ -4723,10 +4723,14 @@ RETRY:
 					return
 				}
 			} else if isOutOfSpaceErr(err) {
-				s.handleOutOfSpace(msetName)
+				s.handleOutOfSpace(name)
 				return
 			} else if err == NewJSInsufficientResourcesError() {
-				s.resourcesExeededError()
+				if mset.js.limitsExceeded(mset.cfg.Storage) {
+					s.resourcesExeededError()
+				} else {
+					s.Warnf("Catchup for stream '%s > %s' errored, account resources exceeded: %v", mset.account(), mset.name(), err)
+				}
 				return
 			} else {
 				s.Warnf("Catchup for stream '%s > %s' errored, will retry: %v", mset.account(), mset.name(), err)
@@ -4745,6 +4749,7 @@ RETRY:
 			return
 		case isLeader := <-lch:
 			js.processStreamLeaderChange(mset, isLeader)
+			return
 		}
 	}
 }
@@ -4761,7 +4766,8 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 		return 0, errors.New("bad catchup msg")
 	}
 
-	if mset.js.limitsExceeded(mset.cfg.Storage) {
+	st := mset.cfg.Storage
+	if mset.js.limitsExceeded(st) || mset.jsa.limitsExceeded(st) {
 		return 0, NewJSInsufficientResourcesError()
 	}
 
