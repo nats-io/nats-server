@@ -5610,6 +5610,71 @@ func TestJetStreamClusterSuperClusterEphemeralCleanup(t *testing.T) {
 	}
 }
 
+func TestJetStreamSuperClusterConnectionCount(t *testing.T) {
+	sc := createJetStreamSuperClusterWithTemplate(t, jsClusterAccountsTempl, 3, 2)
+	defer sc.shutdown()
+
+	sysNc := natsConnect(t, sc.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	defer sysNc.Close()
+	_, err := sysNc.Request(fmt.Sprintf(accReqSubj, "ONE", "CONNS"), nil, time.Second)
+	// this is a timeout as the server only responds when it has connections....
+	// not convinced this should be that way, but also not the issue to investigate.
+	require_True(t, err == nats.ErrTimeout)
+
+	for i := 1; i <= 2; i++ {
+		func() {
+			nc := natsConnect(t, sc.clusterForName(fmt.Sprintf("C%d", i)).randomServer().ClientURL())
+			defer nc.Close()
+			js, err := nc.JetStream()
+			require_NoError(t, err)
+			name := fmt.Sprintf("foo%d", 1)
+			_, err = js.AddStream(&nats.StreamConfig{
+				Name:     name,
+				Subjects: []string{name},
+				Replicas: 3})
+			require_NoError(t, err)
+		}()
+	}
+	func() {
+		nc := natsConnect(t, sc.clusterForName("C1").randomServer().ClientURL())
+		defer nc.Close()
+		js, err := nc.JetStream()
+		require_NoError(t, err)
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "src",
+			Sources:  []*nats.StreamSource{{Name: "foo.1"}, {Name: "foo.2"}},
+			Replicas: 3})
+		require_NoError(t, err)
+	}()
+	func() {
+		nc := natsConnect(t, sc.clusterForName("C2").randomServer().ClientURL())
+		defer nc.Close()
+		js, err := nc.JetStream()
+		require_NoError(t, err)
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "mir",
+			Mirror:   &nats.StreamSource{Name: "foo.2"},
+			Replicas: 3})
+		require_NoError(t, err)
+	}()
+
+	// give it some time for the conn count to propagate among server
+	time.Sleep(2 * time.Minute)
+	// AT THIS POINT THERE IS NO ACTIVE NATS CLIENT CONNECTION
+	// Thus, the question: hat is the expected connection count?
+	m, err := sysNc.Request(fmt.Sprintf(accReqSubj, "ONE", "CONNS"), nil, time.Second)
+	require_NoError(t, err) // TODO the connection count should be 0, thus the request should have timed out (same as above)
+
+	// for nicer parsing
+	o := &AccountNumConns{}
+	json.Unmarshal(m.Data, o)
+	p, _ := json.MarshalIndent(o, "", "  ")
+	t.Logf("%s\n", p)
+
+	// TODO I believe this should be 0
+	require_True(t, o.Conns == 0)
+}
+
 func TestJetStreamSuperClusterDirectConsumersBrokenGateways(t *testing.T) {
 	sc := createJetStreamSuperCluster(t, 1, 2)
 	defer sc.shutdown()
