@@ -1559,11 +1559,11 @@ func (jsa *jsAccount) limitsExceeded(storeType StorageType) bool {
 	defer jsa.mu.RUnlock()
 
 	if storeType == MemoryStorage {
-		if jsa.limits.MaxMemory > 0 && jsa.memTotal > jsa.limits.MaxMemory {
+		if jsa.limits.MaxMemory >= 0 && jsa.memTotal > jsa.limits.MaxMemory {
 			return true
 		}
 	} else {
-		if jsa.limits.MaxStore > 0 && jsa.storeTotal > jsa.limits.MaxStore {
+		if jsa.limits.MaxStore >= 0 && jsa.storeTotal > jsa.limits.MaxStore {
 			return true
 		}
 	}
