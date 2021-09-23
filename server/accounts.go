@@ -392,7 +392,7 @@ func (a *Account) GetName() string {
 // all known servers.
 func (a *Account) NumConnections() int {
 	a.mu.RLock()
-	nc := len(a.clients) + int(a.nrclients)
+	nc := len(a.clients) - int(a.sysclients) + int(a.nrclients)
 	a.mu.RUnlock()
 	return nc
 }
@@ -844,7 +844,7 @@ func (a *Account) addClient(c *client) int {
 	}
 	added := n != len(a.clients)
 	if added {
-		if c.kind == SYSTEM {
+		if c.kind != CLIENT && c.kind != LEAF {
 			a.sysclients++
 		} else if c.kind == LEAF {
 			a.nleafs++
@@ -886,7 +886,7 @@ func (a *Account) removeClient(c *client) int {
 	delete(a.clients, c)
 	removed := n != len(a.clients)
 	if removed {
-		if c.kind == SYSTEM {
+		if c.kind != CLIENT && c.kind != LEAF {
 			a.sysclients--
 		} else if c.kind == LEAF {
 			a.nleafs--

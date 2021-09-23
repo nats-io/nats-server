@@ -1446,7 +1446,7 @@ func (s *Server) remoteConnsUpdate(sub *subscription, _ *client, _ *Account, sub
 	if !s.eventsRunning() {
 		return
 	}
-	m := AccountNumConns{}
+	var m AccountNumConns
 	if err := json.Unmarshal(msg, &m); err != nil {
 		s.sys.client.Errorf("Error unmarshalling account connection event message: %v", err)
 		return
