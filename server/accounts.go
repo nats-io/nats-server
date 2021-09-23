@@ -846,7 +846,6 @@ func (a *Account) addClient(c *client) int {
 	if added {
 		if c.kind != CLIENT && c.kind != LEAF {
 			a.sysclients++
-			added = false
 		} else if c.kind == LEAF {
 			a.nleafs++
 			a.lleafs = append(a.lleafs, c)
@@ -889,7 +888,6 @@ func (a *Account) removeClient(c *client) int {
 	if removed {
 		if c.kind != CLIENT && c.kind != LEAF {
 			a.sysclients--
-			removed = false
 		} else if c.kind == LEAF {
 			a.nleafs--
 			a.removeLeafNode(c)

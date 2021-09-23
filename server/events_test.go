@@ -1224,6 +1224,9 @@ func TestAccountClaimsUpdates(t *testing.T) {
 	t.Run("new", func(t *testing.T) {
 		test(accUpdateEventSubjNew)
 	})
+	t.Run("old", func(t *testing.T) {
+		test(accUpdateEventSubjOld)
+	})
 }
 
 func TestAccountReqMonitoring(t *testing.T) {
