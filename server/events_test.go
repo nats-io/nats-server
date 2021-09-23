@@ -763,7 +763,7 @@ func TestSystemAccountConnectionUpdatesStopAfterNoLocal(t *testing.T) {
 		copy := append([]byte(nil), msg...)
 		received <- &nats.Msg{Subject: subject, Reply: reply, Data: copy}
 	}
-	subj := fmt.Sprintf(accConnsEventSubjOld, pub)
+	subj := fmt.Sprintf(accConnsEventSubjNew, pub)
 	sub, err := sa.sysSubscribe(subj, cb)
 	if sub == nil || err != nil {
 		t.Fatalf("Expected to subscribe, got %v", err)
@@ -1223,9 +1223,6 @@ func TestAccountClaimsUpdates(t *testing.T) {
 	}
 	t.Run("new", func(t *testing.T) {
 		test(accUpdateEventSubjNew)
-	})
-	t.Run("old", func(t *testing.T) {
-		test(accUpdateEventSubjOld)
 	})
 }
 
@@ -2148,7 +2145,7 @@ func TestConnectionUpdatesTimerProperlySet(t *testing.T) {
 	cb := func(sub *subscription, _ *client, _ *Account, subject, reply string, msg []byte) {
 		atomic.AddInt32(&count, 1)
 	}
-	subj := fmt.Sprintf(accConnsEventSubjOld, pub)
+	subj := fmt.Sprintf(accConnsEventSubjNew, pub)
 	sub, err := sa.sysSubscribe(subj, cb)
 	if sub == nil || err != nil {
 		t.Fatalf("Expected to subscribe, got %v", err)

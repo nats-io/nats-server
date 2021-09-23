@@ -5616,7 +5616,7 @@ func TestJetStreamSuperClusterConnectionCount(t *testing.T) {
 
 	sysNc := natsConnect(t, sc.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
 	defer sysNc.Close()
-	_, err := sysNc.Request(fmt.Sprintf(accReqSubj, "ONE", "CONNS"), nil, time.Second)
+	_, err := sysNc.Request(fmt.Sprintf(accReqSubj, "ONE", "CONNS"), nil, 100*time.Millisecond)
 	// this is a timeout as the server only responds when it has connections....
 	// not convinced this should be that way, but also not the issue to investigate.
 	require_True(t, err == nats.ErrTimeout)
@@ -5658,21 +5658,22 @@ func TestJetStreamSuperClusterConnectionCount(t *testing.T) {
 		require_NoError(t, err)
 	}()
 
-	// give it some time for the conn count to propagate among server
-	time.Sleep(2 * time.Minute)
 	// AT THIS POINT THERE IS NO ACTIVE NATS CLIENT CONNECTION
-	// Thus, the question: hat is the expected connection count?
-	m, err := sysNc.Request(fmt.Sprintf(accReqSubj, "ONE", "CONNS"), nil, time.Second)
-	require_NoError(t, err) // TODO the connection count should be 0, thus the request should have timed out (same as above)
+	_, err = sysNc.Request(fmt.Sprintf(accReqSubj, "ONE", "CONNS"), nil, 100*time.Millisecond)
+	require_True(t, err == nats.ErrTimeout)
+	sysNc.Close()
 
-	// for nicer parsing
-	o := &AccountNumConns{}
-	json.Unmarshal(m.Data, o)
-	p, _ := json.MarshalIndent(o, "", "  ")
-	t.Logf("%s\n", p)
-
-	// TODO I believe this should be 0
-	require_True(t, o.Conns == 0)
+	s := sc.randomServer()
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		acc, err := s.lookupAccount("ONE")
+		if err != nil {
+			t.Fatalf("Could not look up account: %v", err)
+		}
+		if n := acc.NumConnections(); n != 0 {
+			return fmt.Errorf("Expected no connections, got %d", n)
+		}
+		return nil
+	})
 }
 
 func TestJetStreamSuperClusterDirectConsumersBrokenGateways(t *testing.T) {

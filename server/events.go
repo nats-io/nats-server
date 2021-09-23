@@ -49,7 +49,6 @@ const (
 	accUpdateEventSubjNew    = "$SYS.REQ.ACCOUNT.%s.CLAIMS.UPDATE"
 	connsRespSubj            = "$SYS._INBOX_.%s"
 	accConnsEventSubjNew     = "$SYS.ACCOUNT.%s.SERVER.CONNS"
-	accConnsEventSubjOld     = "$SYS.SERVER.ACCOUNT.%s.CONNS" // kept for backward compatibility
 	shutdownEventSubj        = "$SYS.SERVER.%s.SHUTDOWN"
 	authErrorEventSubj       = "$SYS.SERVER.%s.CLIENT.AUTH.ERR"
 	serverStatsSubj          = "$SYS.SERVER.%s.STATSZ"
@@ -760,7 +759,7 @@ func (s *Server) initEventTracking() {
 	}
 	s.sys.inboxPre = subject
 	// This is for remote updates for connection accounting.
-	subject = fmt.Sprintf(accConnsEventSubjOld, "*")
+	subject = fmt.Sprintf(accConnsEventSubjNew, "*")
 	if _, err := s.sysSubscribe(subject, s.remoteConnsUpdate); err != nil {
 		s.Errorf("Error setting up internal tracking for %s: %v", subject, err)
 	}
@@ -1446,7 +1445,7 @@ func (s *Server) remoteConnsUpdate(sub *subscription, _ *client, _ *Account, sub
 	if !s.eventsRunning() {
 		return
 	}
-	m := AccountNumConns{}
+	var m AccountNumConns
 	if err := json.Unmarshal(msg, &m); err != nil {
 		s.sys.client.Errorf("Error unmarshalling account connection event message: %v", err)
 		return
@@ -1613,7 +1612,7 @@ func (s *Server) accConnsUpdate(a *Account) {
 	if !s.eventsEnabled() || a == nil {
 		return
 	}
-	s.sendAccConnsUpdate(a, fmt.Sprintf(accConnsEventSubjOld, a.Name), fmt.Sprintf(accConnsEventSubjNew, a.Name))
+	s.sendAccConnsUpdate(a, fmt.Sprintf(accConnsEventSubjNew, a.Name))
 }
 
 // server lock should be held
