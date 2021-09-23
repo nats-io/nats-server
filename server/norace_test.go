@@ -3340,23 +3340,26 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 		nc, js = jsClientConnect(t, c.randomServer())
 		defer nc.Close()
 
-		ci, err := js.ConsumerInfo("TEST", "dlc")
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		if ci.Delivered.Consumer != ci.Delivered.Stream || ci.Delivered.Consumer != delivered {
-			t.Fatalf("Expected %d for delivered, got %+v", delivered, ci.Delivered)
-		}
-		if ci.AckFloor.Consumer != ci.AckFloor.Stream || ci.AckFloor.Consumer != ackFloor {
-			t.Fatalf("Expected %d for ack floor, got %+v", ackFloor, ci.AckFloor)
-		}
-		nm := uint64(numMsgs)
-		if ci.NumPending != nm-delivered {
-			t.Fatalf("Expected num pending to be %d, got %d", nm-delivered, ci.NumPending)
-		}
-		if ci.NumAckPending != ackPending {
-			t.Fatalf("Expected num ack pending to be %d, got %d", ackPending, ci.NumAckPending)
-		}
+		checkFor(t, time.Second, 50*time.Millisecond, func() error {
+			ci, err := js.ConsumerInfo("TEST", "dlc")
+			if err != nil {
+				return fmt.Errorf("Unexpected error: %v", err)
+			}
+			if ci.Delivered.Consumer != ci.Delivered.Stream || ci.Delivered.Consumer != delivered {
+				return fmt.Errorf("Expected %d for delivered, got %+v", delivered, ci.Delivered)
+			}
+			if ci.AckFloor.Consumer != ci.AckFloor.Stream || ci.AckFloor.Consumer != ackFloor {
+				return fmt.Errorf("Expected %d for ack floor, got %+v", ackFloor, ci.AckFloor)
+			}
+			nm := uint64(numMsgs)
+			if ci.NumPending != nm-delivered {
+				return fmt.Errorf("Expected num pending to be %d, got %d", nm-delivered, ci.NumPending)
+			}
+			if ci.NumAckPending != ackPending {
+				return fmt.Errorf("Expected num ack pending to be %d, got %d", ackPending, ci.NumAckPending)
+			}
+			return nil
+		})
 	}
 
 	checkConsumer := func() {
