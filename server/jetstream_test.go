@@ -101,6 +101,29 @@ func RunJetStreamServerOnPort(port int, sd string) *Server {
 	return RunServer(&opts)
 }
 
+type testServer struct {
+	s  *Server
+	nc *nats.Conn
+	js nats.JetStreamContext
+}
+
+func withBasicJetStreamServer(t *testing.T, f func(*testing.T, *testServer)) {
+	t.Helper()
+
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	f(t, &testServer{s, nc, js})
+}
+
 func clientConnectToServer(t *testing.T, s *Server) *nats.Conn {
 	t.Helper()
 	nc, err := nats.Connect(s.ClientURL(),
@@ -13289,6 +13312,74 @@ func TestJetStreamDisabledLimitsEnforcement(t *testing.T) {
 		Subjects: []string{"disk"},
 	})
 	require_Error(t, err)
+}
+
+// https://github.com/nats-io/nats-server/issues/2572
+func TestJetStreamNumRedelivered(t *testing.T) {
+	withBasicJetStreamServer(t, func(t *testing.T, tc *testServer) {
+		js, nc := tc.js, tc.nc
+
+		subj := nats.NewInbox()
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "2572",
+			Storage:  nats.MemoryStorage,
+			Subjects: []string{subj},
+		})
+		if err != nil {
+			t.Fatalf("create failed: %s", err)
+		}
+
+		redelivered := 0
+		done := make(chan struct{})
+		handler := func(m *nats.Msg) {
+			meta, _ := m.Metadata()
+			if meta.NumDelivered > 0 {
+				redelivered++
+			}
+			if meta.Sequence.Stream == 100 {
+				m.Ack()
+				done <- struct{}{}
+			}
+			if meta.Sequence.Consumer%3 == 0 {
+				m.Nak()
+			}
+		}
+
+		opts := []nats.SubOpt{nats.Durable("C"), nats.AckAll()}
+		_, err = js.QueueSubscribe(subj, "q", handler, opts...)
+		if err != nil {
+			t.Fatalf("s1 sub failed: %s", err)
+		}
+		_, err = js.QueueSubscribe(subj, "q", handler, opts...)
+		if err != nil {
+			t.Fatalf("s2 sub failed: %s", err)
+		}
+
+		for i := 0; i < 100; i++ {
+			_, err := nc.Request(subj, []byte(fmt.Sprintf("msg %d", i)), time.Second)
+			if err != nil {
+				t.Fatalf("request %d failed: %s", i, err)
+			}
+		}
+
+		<-done
+		nc.Flush()
+
+		ci, err := js.ConsumerInfo("2572", "C")
+		if err != nil {
+			t.Fatalf("consumer info failed: %s", err)
+		}
+
+		if ci.Delivered.Stream != 100 {
+			t.Fatalf("Expected message 100 to have been delivered")
+		}
+		if ci.AckFloor.Stream != 100 {
+			t.Fatalf("Expected message 100 to be acked but ack floor is %d", ci.AckFloor.Stream)
+		}
+		if ci.NumRedelivered == 0 {
+			t.Fatalf("Expected redeliverd messages but consumer info reported %d despite %d redeliveries", ci.NumRedelivered, redelivered)
+		}
+	})
 }
 
 ///////////////////////////////////////////////////////////////////////////
