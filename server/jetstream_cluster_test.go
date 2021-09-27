@@ -8765,6 +8765,30 @@ func TestJetStreamAccountLimitsAndRestart(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterMixedModeColdStartPrune(t *testing.T) {
+	// Purposely make this unbalanced. Without changes this will never form a quorum to elect the meta-leader.
+	c := createMixedModeCluster(t, jsMixedModeGlobalAccountTempl, "MMCS5", _EMPTY_, 3, 4, false)
+	defer c.shutdown()
+
+	// Make sure we report cluster size.
+	checkClusterSize := func(s *Server) {
+		t.Helper()
+		jsi, err := s.Jsz(nil)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if jsi.Meta == nil {
+			t.Fatalf("Expected a cluster info")
+		}
+		if jsi.Meta.Size != 3 {
+			t.Fatalf("Expected cluster size to be adjusted to %d, but got %d", 3, jsi.Meta.Size)
+		}
+	}
+
+	checkClusterSize(c.leader())
+	checkClusterSize(c.randomNonLeader())
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.

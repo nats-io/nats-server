@@ -1142,7 +1142,7 @@ type Varz struct {
 type JetStreamVarz struct {
 	Config *JetStreamConfig `json:"config,omitempty"`
 	Stats  *JetStreamStats  `json:"stats,omitempty"`
-	Meta   *ClusterInfo     `json:"meta,omitempty"`
+	Meta   *MetaClusterInfo `json:"meta,omitempty"`
 }
 
 // ClusterOptsVarz contains monitoring cluster information
@@ -1286,7 +1286,9 @@ func (s *Server) updateJszVarz(js *jetStream, v *JetStreamVarz, doConfig bool) {
 	}
 	v.Stats = js.usageStats()
 	if mg := js.getMetaGroup(); mg != nil {
-		v.Meta = s.raftNodeToClusterInfo(mg)
+		if ci := s.raftNodeToClusterInfo(mg); ci != nil {
+			v.Meta = &MetaClusterInfo{Name: ci.Name, Leader: ci.Leader, Replicas: ci.Replicas, Size: mg.ClusterSize()}
+		}
 	}
 }
 
@@ -2391,19 +2393,28 @@ type AccountDetail struct {
 	Streams []StreamDetail `json:"stream_detail,omitempty"`
 }
 
-// LeafInfo has detailed information on each remote leafnode connection.
+// MetaClusterInfo shows information about the meta group.
+type MetaClusterInfo struct {
+	Name     string      `json:"name,omitempty"`
+	Leader   string      `json:"leader,omitempty"`
+	Replicas []*PeerInfo `json:"replicas,omitempty"`
+	Size     int         `json:"cluster_size"`
+}
+
+// JSInfo has detailed information on JetStream.
 type JSInfo struct {
 	ID       string          `json:"server_id"`
 	Now      time.Time       `json:"now"`
 	Disabled bool            `json:"disabled,omitempty"`
 	Config   JetStreamConfig `json:"config,omitempty"`
 	JetStreamStats
-	APICalls  int64        `json:"current_api_calls"`
-	Streams   int          `json:"total_streams,omitempty"`
-	Consumers int          `json:"total_consumers,omitempty"`
-	Messages  uint64       `json:"total_messages,omitempty"`
-	Bytes     uint64       `json:"total_message_bytes,omitempty"`
-	Meta      *ClusterInfo `json:"meta_cluster,omitempty"`
+	APICalls  int64            `json:"current_api_calls"`
+	Streams   int              `json:"total_streams,omitempty"`
+	Consumers int              `json:"total_consumers,omitempty"`
+	Messages  uint64           `json:"total_messages,omitempty"`
+	Bytes     uint64           `json:"total_message_bytes,omitempty"`
+	Meta      *MetaClusterInfo `json:"meta_cluster,omitempty"`
+
 	// aggregate raft info
 	AccountDetails []*AccountDetail `json:"account_details,omitempty"`
 }
@@ -2554,7 +2565,11 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 	s.js.mu.RUnlock()
 	jsi.APICalls = atomic.LoadInt64(&s.js.apiCalls)
 
-	jsi.Meta = s.raftNodeToClusterInfo(s.js.getMetaGroup())
+	if mg := s.js.getMetaGroup(); mg != nil {
+		if ci := s.raftNodeToClusterInfo(mg); ci != nil {
+			jsi.Meta = &MetaClusterInfo{Name: ci.Name, Leader: ci.Leader, Replicas: ci.Replicas, Size: mg.ClusterSize()}
+		}
+	}
 	jsi.JetStreamStats = *s.js.usageStats()
 
 	filterIdx := -1

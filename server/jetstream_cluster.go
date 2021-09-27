@@ -153,6 +153,24 @@ const (
 	defaultMetaFSBlkSize = 1024 * 1024
 )
 
+// Returns information useful in mixed mode.
+func (s *Server) trackedJetStreamServers() (js, total int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.running || !s.eventsEnabled() {
+		return -1, -1
+	}
+	s.nodeToInfo.Range(func(k, v interface{}) bool {
+		si := v.(nodeInfo)
+		if si.js {
+			js++
+		}
+		total++
+		return true
+	})
+	return js, total
+}
+
 func (s *Server) getJetStreamCluster() (*jetStream, *jetStreamCluster) {
 	s.mu.Lock()
 	shutdown := s.shutdown
@@ -726,6 +744,11 @@ func (js *jetStream) monitorCluster() {
 	t := time.NewTicker(compactInterval)
 	defer t.Stop()
 
+	// Used to check cold boot cluster when possibly in mixed mode.
+	const leaderCheckInterval = time.Second
+	lt := time.NewTicker(leaderCheckInterval)
+	defer lt.Stop()
+
 	var (
 		isLeader     bool
 		lastSnap     []byte
@@ -784,6 +807,20 @@ func (js *jetStream) monitorCluster() {
 			// Periodically check the cluster size.
 			if n.Leader() {
 				js.checkClusterSize()
+			}
+		case <-lt.C:
+			s.Debugf("Checking JetStream cluster state")
+			// If we have a current leader or had one in the past we can cancel this here since the metaleader
+			// will be in charge of all peer state changes.
+			// For cold boot only.
+			if n.GroupLeader() != _EMPTY_ || n.HadPreviousLeader() {
+				lt.Stop()
+				continue
+			}
+			// If we are here we do not have a leader and we did not have a previous one, so cold start.
+			// Check to see if we can adjust our cluster size.
+			if js, total := s.trackedJetStreamServers(); js < total {
+				n.AdjustBootClusterSize(js)
 			}
 		}
 	}
