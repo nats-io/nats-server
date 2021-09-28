@@ -988,7 +988,7 @@ func (s *Server) addSystemAccountExports(sacc *Account) {
 }
 
 // accountClaimUpdate will receive claim updates for accounts.
-func (s *Server) accountClaimUpdate(sub *subscription, _ *client, _ *Account, subject, resp string, msg []byte) {
+func (s *Server) accountClaimUpdate(sub *subscription, c *client, _ *Account, subject, resp string, rmsg []byte) {
 	if !s.EventsEnabled() {
 		return
 	}
@@ -1002,7 +1002,10 @@ func (s *Server) accountClaimUpdate(sub *subscription, _ *client, _ *Account, su
 		s.Debugf("Received account claims update on bad subject %q", subject)
 		return
 	}
-	if claim, err := jwt.DecodeAccountClaims(string(msg)); err != nil {
+	if _, msg := c.msgParts(rmsg); len(msg) == 0 {
+		err := errors.New("request body is empty")
+		respondToUpdate(s, resp, pubKey, "jwt update error", err)
+	} else if claim, err := jwt.DecodeAccountClaims(string(msg)); err != nil {
 		respondToUpdate(s, resp, pubKey, "jwt update resulted in error", err)
 	} else if claim.Subject != pubKey {
 		err := errors.New("subject does not match jwt content")
@@ -1042,7 +1045,7 @@ func (s *Server) sameDomain(domain string) bool {
 }
 
 // remoteServerShutdownEvent is called when we get an event from another server shutting down.
-func (s *Server) remoteServerShutdown(sub *subscription, _ *client, _ *Account, subject, reply string, msg []byte) {
+func (s *Server) remoteServerShutdown(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.eventsEnabled() {
@@ -1053,6 +1056,8 @@ func (s *Server) remoteServerShutdown(sub *subscription, _ *client, _ *Account, 
 		s.Debugf("Received remote server shutdown on bad subject %q", subject)
 		return
 	}
+
+	_, msg := c.msgParts(rmsg)
 	if len(msg) == 0 {
 		s.Errorf("Remote server sent invalid (empty) shutdown message to %q", subject)
 		return
@@ -1078,9 +1083,12 @@ func (s *Server) remoteServerShutdown(sub *subscription, _ *client, _ *Account, 
 }
 
 // remoteServerUpdate listens for statsz updates from other servers.
-func (s *Server) remoteServerUpdate(sub *subscription, _ *client, _ *Account, subject, reply string, msg []byte) {
+func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	var ssm ServerStatsMsg
-	if err := json.Unmarshal(msg, &ssm); err != nil {
+	if _, msg := c.msgParts(rmsg); len(msg) == 0 {
+		s.Debugf("Received empty server info for remote server update")
+		return
+	} else if err := json.Unmarshal(msg, &ssm); err != nil {
 		s.Debugf("Received bad server info for remote server update")
 		return
 	}
@@ -1366,12 +1374,12 @@ type ServerAPIConnzResponse struct {
 }
 
 // statszReq is a request for us to respond with current statsz.
-func (s *Server) statszReq(sub *subscription, _ *client, _ *Account, subject, reply string, msg []byte) {
+func (s *Server) statszReq(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	if !s.EventsEnabled() || reply == _EMPTY_ {
 		return
 	}
 	opts := StatszEventOptions{}
-	if len(msg) != 0 {
+	if _, msg := c.msgParts(rmsg); len(msg) != 0 {
 		if err := json.Unmarshal(msg, &opts); err != nil {
 			response := &ServerAPIResponse{
 				Server: &ServerInfo{},
@@ -1442,12 +1450,15 @@ func (s *Server) zReq(c *client, reply string, rmsg []byte, fOpts *EventFilterOp
 }
 
 // remoteConnsUpdate gets called when we receive a remote update from another server.
-func (s *Server) remoteConnsUpdate(sub *subscription, _ *client, _ *Account, subject, reply string, msg []byte) {
+func (s *Server) remoteConnsUpdate(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	if !s.eventsRunning() {
 		return
 	}
 	var m AccountNumConns
-	if err := json.Unmarshal(msg, &m); err != nil {
+	if _, msg := c.msgParts(rmsg); len(msg) == 0 {
+		s.sys.client.Errorf("No message body provided")
+		return
+	} else if err := json.Unmarshal(msg, &m); err != nil {
 		s.sys.client.Errorf("Error unmarshalling account connection event message: %v", err)
 		return
 	}
@@ -2110,12 +2121,15 @@ func (s *Server) debugSubscribers(sub *subscription, c *client, _ *Account, subj
 
 // Request for our local subscription count. This will come from a remote origin server
 // that received the initial request.
-func (s *Server) nsubsRequest(sub *subscription, _ *client, _ *Account, subject, reply string, msg []byte) {
+func (s *Server) nsubsRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	if !s.eventsRunning() {
 		return
 	}
 	m := accNumSubsReq{}
-	if err := json.Unmarshal(msg, &m); err != nil {
+	if _, msg := c.msgParts(rmsg); len(msg) == 0 {
+		s.sys.client.Errorf("request requires a body")
+		return
+	} else if err := json.Unmarshal(msg, &m); err != nil {
 		s.sys.client.Errorf("Error unmarshalling account nsubs request message: %v", err)
 		return
 	}
