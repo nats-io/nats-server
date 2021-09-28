@@ -9825,3 +9825,116 @@ func (c *cluster) stableTotalSubs() (total int) {
 	return nsubs
 
 }
+
+func TestJetStreamClusterMirrorAndSourceCrossNonNeighboringDomain(t *testing.T) {
+	storeDir1 := createDir(t, JetStreamStoreDir)
+	conf1 := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 256MB, max_file_store: 256MB, domain: domain1, store_dir: "%s"}
+		accounts {
+			A:{   jetstream: enable, users:[ {user:a1,password:a1}]},
+			SYS:{ users:[ {user:s1,password:s1}]},
+		}
+		system_account = SYS
+		no_auth_user: a1
+		leafnodes: {
+			listen: localhost:-1
+		}
+	`, storeDir1)))
+	s1, _ := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+	storeDir2 := createDir(t, JetStreamStoreDir)
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 256MB, max_file_store: 256MB, domain: domain2, store_dir: "%s"}
+		accounts {
+			A:{   jetstream: enable, users:[ {user:a1,password:a1}]},
+			SYS:{ users:[ {user:s1,password:s1}]},
+		}
+		system_account = SYS
+		no_auth_user: a1
+		leafnodes:{
+			remotes:[{ url:nats://a1:a1@localhost:%d, account: A},
+					 { url:nats://s1:s1@localhost:%d, account: SYS}]
+		}
+	`, storeDir2, s1.opts.LeafNode.Port, s1.opts.LeafNode.Port)))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+	storeDir3 := createDir(t, JetStreamStoreDir)
+	conf3 := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 256MB, max_file_store: 256MB, domain: domain3, store_dir: "%s"}
+		accounts {
+			A:{   jetstream: enable, users:[ {user:a1,password:a1}]},
+			SYS:{ users:[ {user:s1,password:s1}]},
+		}
+		system_account = SYS
+		no_auth_user: a1
+		leafnodes:{
+			remotes:[{ url:nats://a1:a1@localhost:%d, account: A},
+					 { url:nats://s1:s1@localhost:%d, account: SYS}]
+		}
+	`, storeDir3, s1.opts.LeafNode.Port, s1.opts.LeafNode.Port)))
+	s3, _ := RunServerWithConfig(conf3)
+	defer s3.Shutdown()
+
+	checkLeafNodeConnectedCount(t, s1, 4)
+	checkLeafNodeConnectedCount(t, s2, 2)
+	checkLeafNodeConnectedCount(t, s3, 2)
+
+	c2 := natsConnect(t, s2.ClientURL())
+	defer c2.Close()
+	js2, err := c2.JetStream(nats.Domain("domain2"))
+	require_NoError(t, err)
+	ai2, err := js2.AccountInfo()
+	require_NoError(t, err)
+	require_Equal(t, ai2.Domain, "domain2")
+	_, err = js2.AddStream(&nats.StreamConfig{
+		Name:     "disk",
+		Storage:  nats.FileStorage,
+		Subjects: []string{"disk"},
+	})
+	require_NoError(t, err)
+	_, err = js2.Publish("disk", nil)
+	require_NoError(t, err)
+	si, err := js2.StreamInfo("disk")
+	require_NoError(t, err)
+	require_True(t, si.State.Msgs == 1)
+
+	c3 := natsConnect(t, s3.ClientURL())
+	defer c3.Close()
+	js3, err := c3.JetStream(nats.Domain("domain3"))
+	require_NoError(t, err)
+	ai3, err := js3.AccountInfo()
+	require_NoError(t, err)
+	require_Equal(t, ai3.Domain, "domain3")
+
+	_, err = js3.AddStream(&nats.StreamConfig{
+		Name:    "stream-mirror",
+		Storage: nats.FileStorage,
+		Mirror: &nats.StreamSource{
+			Name:     "disk",
+			External: &nats.ExternalStream{APIPrefix: "$JS.domain2.API"},
+		},
+	})
+	require_NoError(t, err)
+
+	_, err = js3.AddStream(&nats.StreamConfig{
+		Name:    "stream-source",
+		Storage: nats.FileStorage,
+		Sources: []*nats.StreamSource{{
+			Name:     "disk",
+			External: &nats.ExternalStream{APIPrefix: "$JS.domain2.API"},
+		}},
+	})
+	require_NoError(t, err)
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		if si, _ := js3.StreamInfo("stream-mirror"); si.State.Msgs != 1 {
+			return fmt.Errorf("Expected 1 msg for mirror, got %d", si.State.Msgs)
+		}
+		if si, _ := js3.StreamInfo("stream-source"); si.State.Msgs != 1 {
+			return fmt.Errorf("Expected 1 msg for source, got %d", si.State.Msgs)
+		}
+		return nil
+	})
+}
