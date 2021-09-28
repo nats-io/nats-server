@@ -549,12 +549,11 @@ func (s *Server) eventsEnabled() bool {
 // from a system events perspective.
 func (s *Server) TrackedRemoteServers() int {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.running || !s.eventsEnabled() {
 		return -1
 	}
-	ns := len(s.sys.servers)
-	s.mu.Unlock()
-	return ns
+	return len(s.sys.servers)
 }
 
 // Check for orphan servers who may have gone away without notification.
@@ -672,12 +671,15 @@ func (s *Server) sendStatsz(subj string) {
 		jStat.Stats = js.usageStats()
 		if mg := js.getMetaGroup(); mg != nil {
 			if mg.Leader() {
-				jStat.Meta = s.raftNodeToClusterInfo(mg)
+				if ci := s.raftNodeToClusterInfo(mg); ci != nil {
+					jStat.Meta = &MetaClusterInfo{Name: ci.Name, Leader: ci.Leader, Replicas: ci.Replicas, Size: mg.ClusterSize()}
+				}
 			} else {
 				// non leader only include a shortened version without peers
-				jStat.Meta = &ClusterInfo{
-					Name:   s.ClusterName(),
+				jStat.Meta = &MetaClusterInfo{
+					Name:   mg.Group(),
 					Leader: s.serverNameForNode(mg.GroupLeader()),
+					Size:   mg.ClusterSize(),
 				}
 			}
 		}
@@ -1088,6 +1090,7 @@ func (s *Server) remoteServerUpdate(sub *subscription, _ *client, _ *Account, su
 	if !s.sameDomain(si.Domain) {
 		return
 	}
+
 	node := string(getHash(si.Name))
 	s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Cluster, si.Domain, si.ID, false, si.JetStream})
 }

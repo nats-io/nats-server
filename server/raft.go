@@ -58,6 +58,8 @@ type RaftNode interface {
 	ProposeAddPeer(peer string) error
 	ProposeRemovePeer(peer string) error
 	AdjustClusterSize(csz int) error
+	AdjustBootClusterSize(csz int) error
+	ClusterSize() int
 	ApplyC() <-chan *CommittedEntry
 	PauseApply()
 	ResumeApply()
@@ -235,22 +237,23 @@ type RaftConfig struct {
 }
 
 var (
-	errProposalFailed   = errors.New("raft: proposal failed")
-	errNotLeader        = errors.New("raft: not leader")
-	errAlreadyLeader    = errors.New("raft: already leader")
-	errNilCfg           = errors.New("raft: no config given")
-	errCorruptPeers     = errors.New("raft: corrupt peer state")
-	errStepdownFailed   = errors.New("raft: stepdown failed")
-	errEntryLoadFailed  = errors.New("raft: could not load entry from WAL")
-	errEntryStoreFailed = errors.New("raft: could not storeentry to WAL")
-	errNodeClosed       = errors.New("raft: node is closed")
-	errBadSnapName      = errors.New("raft: snapshot name could not be parsed")
-	errNoSnapAvailable  = errors.New("raft: no snapshot available")
-	errCatchupsRunning  = errors.New("raft: snapshot can not be installed while catchups running")
-	errSnapshotCorrupt  = errors.New("raft: snapshot corrupt")
-	errTooManyPrefs     = errors.New("raft: stepdown requires at most one preferred new leader")
-	errStepdownNoPeer   = errors.New("raft: stepdown failed, could not match new leader")
-	errNoPeerState      = errors.New("raft: no peerstate")
+	errProposalFailed    = errors.New("raft: proposal failed")
+	errNotLeader         = errors.New("raft: not leader")
+	errAlreadyLeader     = errors.New("raft: already leader")
+	errNilCfg            = errors.New("raft: no config given")
+	errCorruptPeers      = errors.New("raft: corrupt peer state")
+	errStepdownFailed    = errors.New("raft: stepdown failed")
+	errEntryLoadFailed   = errors.New("raft: could not load entry from WAL")
+	errEntryStoreFailed  = errors.New("raft: could not storeentry to WAL")
+	errNodeClosed        = errors.New("raft: node is closed")
+	errBadSnapName       = errors.New("raft: snapshot name could not be parsed")
+	errNoSnapAvailable   = errors.New("raft: no snapshot available")
+	errCatchupsRunning   = errors.New("raft: snapshot can not be installed while catchups running")
+	errSnapshotCorrupt   = errors.New("raft: snapshot corrupt")
+	errTooManyPrefs      = errors.New("raft: stepdown requires at most one preferred new leader")
+	errStepdownNoPeer    = errors.New("raft: stepdown failed, could not match new leader")
+	errNoPeerState       = errors.New("raft: no peerstate")
+	errAdjustBootCluster = errors.New("raft: can not adjust boot peer size on established group")
 )
 
 // This will bootstrap a raftNode by writing its config into the store directory.
@@ -703,11 +706,39 @@ func (n *raft) ProposeRemovePeer(peer string) error {
 	return nil
 }
 
+// ClusterSize reports back the total cluster size.
+// This effects quorum etc.
+func (n *raft) ClusterSize() int {
+	n.Lock()
+	defer n.Unlock()
+	return n.csz
+}
+
+// AdjustBootClusterSize can be called to adjust the boot cluster size.
+// Will error if called on a group with a leader or a previous leader.
+// This can be helpful in mixed mode.
+func (n *raft) AdjustBootClusterSize(csz int) error {
+	n.Lock()
+	defer n.Unlock()
+
+	if n.leader != noLeader || n.pleader {
+		return errAdjustBootCluster
+	}
+	// Same floor as bootstrap.
+	if csz < 2 {
+		csz = 2
+	}
+	// Adjust.
+	n.csz = csz
+	n.qn = n.csz/2 + 1
+
+	return nil
+}
+
 // AdjustClusterSize will change the cluster set size.
 // Must be the leader.
 func (n *raft) AdjustClusterSize(csz int) error {
 	n.Lock()
-
 	if n.state != Leader {
 		n.Unlock()
 		return errNotLeader
