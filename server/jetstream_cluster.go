@@ -821,6 +821,7 @@ func (js *jetStream) monitorCluster() {
 			// Check to see if we can adjust our cluster size down iff we are in mixed mode and we have
 			// seen a total that is what our original estimate was.
 			if js, total := s.trackedJetStreamServers(); js < total && total >= n.ClusterSize() {
+				s.Noticef("Adjusting JetStream expected peer set size to %d from original %d", js, n.ClusterSize())
 				n.AdjustBootClusterSize(js)
 			}
 		}
