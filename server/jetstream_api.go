@@ -2415,13 +2415,14 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 
 	var subj string
 	var hdr []byte
+	var data []byte
 	var ts int64
 	seq := req.Seq
 
 	if req.Seq > 0 {
-		subj, hdr, msg, ts, err = mset.store.LoadMsg(req.Seq)
+		subj, hdr, data, ts, err = mset.store.LoadMsg(req.Seq)
 	} else {
-		subj, seq, hdr, msg, ts, err = mset.store.LoadLastMsg(req.LastFor)
+		subj, seq, hdr, data, ts, err = mset.store.LoadLastMsg(req.LastFor)
 	}
 	if err != nil {
 		resp.Error = NewJSNoMessageFoundError()
@@ -2432,7 +2433,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 		Subject:  subj,
 		Sequence: seq,
 		Header:   hdr,
-		Data:     msg,
+		Data:     data,
 		Time:     time.Unix(0, ts).UTC(),
 	}
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
