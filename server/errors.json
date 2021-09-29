@@ -1068,5 +1068,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSStreamSealedErr",
+    "code": 400,
+    "error_code": 10109,
+    "description": "invalid operation on sealed stream",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

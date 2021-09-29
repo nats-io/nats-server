@@ -57,6 +57,7 @@ type StreamConfig struct {
 	Placement    *Placement      `json:"placement,omitempty"`
 	Mirror       *StreamSource   `json:"mirror,omitempty"`
 	Sources      []*StreamSource `json:"sources,omitempty"`
+	Sealed       bool            `json:"sealed,omitempty"`
 }
 
 // JSPubAckResponse is a formal response to a publish operation.
@@ -261,6 +262,11 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	cfg, err := checkStreamCfg(config)
 	if err != nil {
 		return nil, NewJSStreamInvalidConfigError(err, Unless(err))
+	}
+
+	// Can't create a stream with a sealed state.
+	if cfg.Sealed {
+		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for create can not be sealed"))
 	}
 
 	singleServerMode := !s.JetStreamIsClustered() && s.standAloneMode()
@@ -882,6 +888,15 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig) (*StreamConfig, 
 	if cfg.Template != _EMPTY_ {
 		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not be owned by a template"))
 	}
+	if !cfg.Sealed && old.Sealed {
+		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not unseal a sealed stream"))
+	}
+
+	// Do some adjustments for being sealed.
+	if cfg.Sealed {
+		cfg.MaxAge = 0
+		cfg.Discard = DiscardNew
+	}
 
 	// Check limits.
 	if err := jsa.checkLimits(&cfg); err != nil {
@@ -983,6 +998,9 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 	if mset.client == nil {
 		mset.mu.Unlock()
 		return 0, errors.New("invalid stream")
+	}
+	if mset.cfg.Sealed {
+		return 0, errors.New("sealed stream")
 	}
 	var _obs [4]*consumer
 	obs := _obs[:0]
@@ -2571,11 +2589,21 @@ func (mset *stream) queueInboundMsg(subj, rply string, hdr, msg []byte) {
 // processInboundJetStreamMsg handles processing messages bound for a stream.
 func (mset *stream) processInboundJetStreamMsg(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	mset.mu.RLock()
-	isLeader, isClustered := mset.isLeader(), mset.node != nil
+	isLeader, isClustered, isSealed := mset.isLeader(), mset.node != nil, mset.cfg.Sealed
 	mset.mu.RUnlock()
 
 	// If we are not the leader just ignore.
 	if !isLeader {
+		return
+	}
+
+	if isSealed {
+		var resp = JSPubAckResponse{
+			PubAck: &PubAck{Stream: mset.name()},
+			Error:  NewJSStreamSealedError(),
+		}
+		b, _ := json.Marshal(resp)
+		mset.outq.sendMsg(reply, b)
 		return
 	}
 

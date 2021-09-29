@@ -290,6 +290,9 @@ const (
 	// JSStreamRestoreErrF restore failed: {err}
 	JSStreamRestoreErrF ErrorIdentifier = 10062
 
+	// JSStreamSealedErr invalid operation on sealed stream
+	JSStreamSealedErr ErrorIdentifier = 10109
+
 	// JSStreamSequenceNotMatchErr expected stream sequence does not match
 	JSStreamSequenceNotMatchErr ErrorIdentifier = 10063
 
@@ -424,6 +427,7 @@ var (
 		JSStreamReplicasNotSupportedErr:            {Code: 500, ErrCode: 10074, Description: "replicas > 1 not supported in non-clustered mode"},
 		JSStreamReplicasNotUpdatableErr:            {Code: 400, ErrCode: 10061, Description: "Replicas configuration can not be updated"},
 		JSStreamRestoreErrF:                        {Code: 500, ErrCode: 10062, Description: "restore failed: {err}"},
+		JSStreamSealedErr:                          {Code: 400, ErrCode: 10109, Description: "invalid operation on sealed stream"},
 		JSStreamSequenceNotMatchErr:                {Code: 503, ErrCode: 10063, Description: "expected stream sequence does not match"},
 		JSStreamSnapshotErrF:                       {Code: 500, ErrCode: 10064, Description: "snapshot failed: {err}"},
 		JSStreamStoreFailedF:                       {Code: 503, ErrCode: 10077, Description: "{err}"},
@@ -1541,6 +1545,16 @@ func NewJSStreamRestoreError(err error, opts ...ErrorOption) *ApiError {
 		ErrCode:     e.ErrCode,
 		Description: strings.NewReplacer(args...).Replace(e.Description),
 	}
+}
+
+// NewJSStreamSealedError creates a new JSStreamSealedErr error: "invalid operation on sealed stream"
+func NewJSStreamSealedError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSStreamSealedErr]
 }
 
 // NewJSStreamSequenceNotMatchError creates a new JSStreamSequenceNotMatchErr error: "expected stream sequence does not match"

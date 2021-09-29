@@ -1133,6 +1133,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, a *Account,
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+
 	streamName := streamNameFromSubject(subject)
 	if streamName != cfg.Name {
 		resp.Error = NewJSStreamMismatchError()
@@ -2296,7 +2297,11 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, _ *Account, su
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-
+	if mset.cfg.Sealed {
+		resp.Error = NewJSStreamSealedError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
 	if s.JetStreamIsClustered() {
 		s.jsClusteredMsgDeleteRequest(ci, acc, mset, stream, subject, reply, &req, rmsg)
 		return
@@ -2533,7 +2538,11 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, _ *Account, 
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-
+	if mset.cfg.Sealed {
+		resp.Error = NewJSStreamSealedError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
 	if s.JetStreamIsClustered() {
 		s.jsClusteredStreamPurgeRequest(ci, acc, mset, stream, subject, reply, rmsg, purgeRequest)
 		return
