@@ -221,6 +221,13 @@ const (
 	JSLastConsumerSeq     = "Nats-Last-Consumer"
 	JSLastStreamSeq       = "Nats-Last-Stream"
 	JSConsumerStalled     = "Nats-Consumer-Stalled"
+	JSMsgRollup           = "Nats-Rollup"
+)
+
+// Rollups, can be subject only or all messages.
+const (
+	JSMsgRollupSubject = "sub"
+	JSMsgRollupAll     = "all"
 )
 
 // Dedupe entry
@@ -2514,6 +2521,15 @@ func getExpectedLastSeq(hdr []byte) uint64 {
 	return uint64(parseInt64(bseq))
 }
 
+// Fast lookup of rollups.
+func getRollup(hdr []byte) string {
+	r := getHeader(JSMsgRollup, hdr)
+	if len(r) == 0 {
+		return _EMPTY_
+	}
+	return strings.ToLower(string(r))
+}
+
 // Fast lookup of expected stream sequence per subject.
 func getExpectedLastSeqPerSubject(hdr []byte) (uint64, bool) {
 	bseq := getHeader(JSExpectedLastSubjSeq, hdr)
@@ -2693,6 +2709,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// Process additional msg headers if still present.
 	var msgId string
+	var rollupSub, rollupAll bool
+
 	if len(hdr) > 0 {
 		outq := mset.outq
 
@@ -2770,6 +2788,17 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 					outq.sendMsg(reply, b)
 				}
 				return fmt.Errorf("last sequence by subject mismatch: %d vs %d", seq, lseq)
+			}
+		}
+		// Check for any rollups.
+		if rollup := getRollup(hdr); rollup != _EMPTY_ {
+			switch rollup {
+			case JSMsgRollupSubject:
+				rollupSub = true
+			case JSMsgRollupAll:
+				rollupAll = true
+			default:
+				return fmt.Errorf("rollup value invalid: %q", rollup)
 			}
 		}
 	}
@@ -2930,6 +2959,11 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		// If we have a msgId make sure to save.
 		if msgId != _EMPTY_ {
 			mset.storeMsgId(&ddentry{msgId, seq, ts})
+		}
+		if rollupSub {
+			mset.purge(&JSApiStreamPurgeRequest{Subject: subject, Keep: 1})
+		} else if rollupAll {
+			mset.purge(&JSApiStreamPurgeRequest{Keep: 1})
 		}
 		if canRespond {
 			response = append(pubAck, strconv.FormatUint(seq, 10)...)
