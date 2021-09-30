@@ -12862,6 +12862,45 @@ func TestJetStreamConsumerInternalClientLeak(t *testing.T) {
 	}
 }
 
+func TestJetStreamConsumerEventingRaceOnShutdown(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s, nats.NoReconnect())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  nats.MemoryStorage,
+	}
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		for {
+			if _, err := js.SubscribeSync("foo", nats.BindStream("TEST")); err != nil {
+				return
+			}
+		}
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	s.Shutdown()
+
+	wg.Wait()
+}
+
 // Got a report of streams that expire all messages while the server is down report errors when clients reconnect
 // and try to send new messages.
 func TestJetStreamExpireAllWhileServerDown(t *testing.T) {
