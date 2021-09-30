@@ -1885,7 +1885,7 @@ func (t *streamTemplate) createTemplateSubscriptions() error {
 		return fmt.Errorf("template not enabled")
 	}
 	c := t.tc
-	if !c.srv.eventsEnabled() {
+	if !c.srv.EventsEnabled() {
 		return ErrNoSysAccount
 	}
 	sid := 1
