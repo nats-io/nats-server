@@ -9084,6 +9084,74 @@ func TestJetStreamRollups(t *testing.T) {
 	}
 }
 
+func TestJetStreamRollupSubjectAndWatchers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:              "KVW",
+		Subjects:          []string{"kv.*"},
+		MaxMsgsPerSubject: 10,
+		Replicas:          2,
+	}
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sub, err := js.SubscribeSync("kv.*")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	send := func(key, value string) {
+		t.Helper()
+		_, err := js.Publish("kv."+key, []byte(value))
+		require_NoError(t, err)
+	}
+
+	rollup := func(key, value string) {
+		t.Helper()
+		m := nats.NewMsg("kv." + key)
+		m.Data = []byte(value)
+		m.Header.Set(JSMsgRollup, JSMsgRollupSubject)
+		_, err := js.PublishMsg(m)
+		require_NoError(t, err)
+	}
+
+	expectUpdate := func(key, value string, seq uint64) {
+		t.Helper()
+		m, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		if m.Subject != "kv."+key {
+			t.Fatalf("Keys don't match: %q vs %q", m.Subject[3:], key)
+		}
+		if string(m.Data) != value {
+			t.Fatalf("Values don't match: %q vs %q", m.Data, value)
+		}
+		meta, err := m.Metadata()
+		require_NoError(t, err)
+		if meta.Sequence.Consumer != seq {
+			t.Fatalf("Sequences don't match: %v vs %v", meta.Sequence.Consumer, value)
+		}
+	}
+
+	send("name", "derek")
+	expectUpdate("name", "derek", 1)
+	send("age", "22")
+	expectUpdate("age", "22", 2)
+	send("age", "33")
+	expectUpdate("age", "33", 3)
+	send("name", "ivan")
+	expectUpdate("name", "ivan", 4)
+	send("name", "rip")
+	expectUpdate("name", "rip", 5)
+	rollup("age", "50")
+	expectUpdate("age", "50", 6)
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
