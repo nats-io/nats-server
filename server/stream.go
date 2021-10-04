@@ -1012,6 +1012,9 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 	var _obs [4]*consumer
 	obs := _obs[:0]
 	for _, o := range mset.consumers {
+		if preq != nil && !o.isFilteredMatch(preq.Subject) {
+			continue
+		}
 		obs = append(obs, o)
 	}
 	mset.mu.Unlock()
@@ -1028,8 +1031,16 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 	// Purge consumers.
 	var state StreamState
 	mset.store.FastState(&state)
+	fseq := state.FirstSeq
+
+	// Check for filtered purge.
+	if preq != nil && preq.Subject != _EMPTY_ {
+		ss := mset.store.FilteredState(state.FirstSeq, preq.Subject)
+		fseq = ss.First
+	}
+
 	for _, o := range obs {
-		o.purge(state.FirstSeq)
+		o.purge(fseq)
 	}
 	return purged, nil
 }
