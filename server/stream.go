@@ -66,9 +66,9 @@ type StreamConfig struct {
 	DenyDelete bool `json:"deny_delete,omitempty"`
 	// DenyPurge will restrict the ability to purge messages.
 	DenyPurge bool `json:"deny_purge,omitempty"`
-	// RollupAllowed allows messages to be placed into the system and purge
+	// AllowRollup allows messages to be placed into the system and purge
 	// all older messages using a special msg header.
-	RollupAllowed bool `json:"rollup_hdrs,omitempty"`
+	AllowRollup bool `json:"allow_rollup_hdrs,omitempty"`
 }
 
 // JSPubAckResponse is a formal response to a publish operation.
@@ -2823,7 +2823,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		}
 		// Check for any rollups.
 		if rollup := getRollup(hdr); rollup != _EMPTY_ {
-			if !mset.cfg.RollupAllowed || mset.cfg.DenyPurge {
+			if !mset.cfg.AllowRollup || mset.cfg.DenyPurge {
 				mset.mu.Unlock()
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}

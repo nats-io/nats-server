@@ -9031,12 +9031,12 @@ func TestJetStreamRollups(t *testing.T) {
 	defer nc.Close()
 
 	cfg := &StreamConfig{
-		Name:          "SENSORS",
-		Storage:       FileStorage,
-		Subjects:      []string{"sensor.*.temp"},
-		MaxMsgsPer:    10,
-		RollupAllowed: true,
-		Replicas:      2,
+		Name:        "SENSORS",
+		Storage:     FileStorage,
+		Subjects:    []string{"sensor.*.temp"},
+		MaxMsgsPer:  10,
+		AllowRollup: true,
+		Replicas:    2,
 	}
 	addStream(t, nc, cfg)
 
@@ -9107,12 +9107,12 @@ func TestJetStreamRollupSubjectAndWatchers(t *testing.T) {
 	defer nc.Close()
 
 	cfg := &StreamConfig{
-		Name:          "KVW",
-		Storage:       FileStorage,
-		Subjects:      []string{"kv.*"},
-		MaxMsgsPer:    10,
-		RollupAllowed: true,
-		Replicas:      2,
+		Name:        "KVW",
+		Storage:     FileStorage,
+		Subjects:    []string{"kv.*"},
+		MaxMsgsPer:  10,
+		AllowRollup: true,
+		Replicas:    2,
 	}
 	addStream(t, nc, cfg)
 
