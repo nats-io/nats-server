@@ -13330,6 +13330,52 @@ func TestJetStreamDisabledLimitsEnforcement(t *testing.T) {
 	require_Error(t, err)
 }
 
+func TestJetStreamConsumerNoMsgPayload(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "S"})
+	require_NoError(t, err)
+
+	msg := nats.NewMsg("S")
+	msg.Header.Set("name", "derek")
+	msg.Data = bytes.Repeat([]byte("A"), 128)
+	for i := 0; i < 10; i++ {
+		msg.Reply = _EMPTY_ // Fixed in Go client but not in embdedded on yet.
+		_, err = js.PublishMsgAsync(msg)
+		require_NoError(t, err)
+	}
+
+	mset, err := s.GlobalAccount().lookupStream("S")
+	require_NoError(t, err)
+
+	// Now create our consumer with no payload option.
+	_, err = mset.addConsumer(&ConsumerConfig{DeliverSubject: "_d_", Durable: "d22", HeadersOnly: true})
+	require_NoError(t, err)
+
+	sub, err := js.SubscribeSync("S", nats.Durable("d22"))
+	require_NoError(t, err)
+
+	for i := 0; i < 10; i++ {
+		m, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		if len(m.Data) > 0 {
+			t.Fatalf("Expected no payload")
+		}
+		if ms := m.Header.Get(JSMsgSize); ms != "128" {
+			t.Fatalf("Expected a header with msg size, got %q", ms)
+		}
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////

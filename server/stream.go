@@ -222,6 +222,7 @@ const (
 	JSLastStreamSeq       = "Nats-Last-Stream"
 	JSConsumerStalled     = "Nats-Consumer-Stalled"
 	JSMsgRollup           = "Nats-Rollup"
+	JSMsgSize             = "Nats-Msg-Size"
 )
 
 // Rollups, can be subject only or all messages.

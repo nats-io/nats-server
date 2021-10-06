@@ -66,6 +66,7 @@ type ConsumerConfig struct {
 	MaxAckPending   int           `json:"max_ack_pending,omitempty"`
 	Heartbeat       time.Duration `json:"idle_heartbeat,omitempty"`
 	FlowControl     bool          `json:"flow_control,omitempty"`
+	HeadersOnly     bool          `json:"headers_only,omitempty"`
 
 	// Don't add to general clients.
 	Direct bool `json:"direct,omitempty"`
@@ -2330,6 +2331,25 @@ func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 
 	dseq := o.dseq
 	o.dseq++
+
+	// If headers only do not send msg payload.
+	// Add in msg size itself as header.
+	if o.cfg.HeadersOnly {
+		bb := bytes.NewBuffer(hdr)
+		if hdr == nil {
+			bb.WriteString(hdrLine)
+		} else {
+			bb.Truncate(len(hdr) - LEN_CR_LF)
+		}
+		bb.WriteString(JSMsgSize)
+		bb.WriteString(": ")
+		bb.WriteString(strconv.FormatInt(int64(len(msg)), 10))
+		bb.WriteString(CR_LF)
+		bb.WriteString(CR_LF)
+		hdr = bb.Bytes()
+		// Cancel msg payload
+		msg = nil
+	}
 
 	pmsg := &jsPubMsg{dsubj, subj, o.ackReply(seq, dseq, dc, ts, o.adjustedPending()), hdr, msg, o, seq, nil}
 	if o.maxpb > 0 {
