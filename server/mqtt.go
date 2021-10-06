@@ -732,6 +732,10 @@ func (c *client) mqttParse(buf []byte) error {
 			var cp *mqttConnectProto
 			var sessp bool
 			rc, cp, err = c.mqttParseConnect(r, pl)
+			// Add the client id to the client's string, regardless of error.
+			// We may still get the client_id if the call above fails somewhere
+			// after parsing the client ID itself.
+			c.ncs.Store(fmt.Sprintf("%s - %q", c, c.mqtt.cid))
 			if trace && cp != nil {
 				c.traceInOp("CONNECT", errOrTrace(err, c.mqttConnectTrace(cp)))
 			}
@@ -744,6 +748,9 @@ func (c *client) mqttParse(buf []byte) error {
 				if err = s.mqttProcessConnect(c, cp, trace); err != nil {
 					err = fmt.Errorf("unable to connect: %v", err)
 				} else {
+					// Add this debug statement so users running in Debug mode
+					// will have the client id printed here for the first time.
+					c.Debugf("Client connected")
 					connected = true
 					rd = cp.rd
 				}
