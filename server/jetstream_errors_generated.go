@@ -281,6 +281,9 @@ const (
 	// JSStreamNotMatchErr expected stream does not match
 	JSStreamNotMatchErr ErrorIdentifier = 10060
 
+	// JSStreamPurgeFailedF Generic stream purge failure error string ({err})
+	JSStreamPurgeFailedF ErrorIdentifier = 10110
+
 	// JSStreamReplicasNotSupportedErr replicas > 1 not supported in non-clustered mode
 	JSStreamReplicasNotSupportedErr ErrorIdentifier = 10074
 
@@ -289,6 +292,9 @@ const (
 
 	// JSStreamRestoreErrF restore failed: {err}
 	JSStreamRestoreErrF ErrorIdentifier = 10062
+
+	// JSStreamRollupFailedF Generic stream rollup failure error string ({err})
+	JSStreamRollupFailedF ErrorIdentifier = 10111
 
 	// JSStreamSealedErr invalid operation on sealed stream
 	JSStreamSealedErr ErrorIdentifier = 10109
@@ -424,9 +430,11 @@ var (
 		JSStreamNameExistErr:                       {Code: 400, ErrCode: 10058, Description: "stream name already in use"},
 		JSStreamNotFoundErr:                        {Code: 404, ErrCode: 10059, Description: "stream not found"},
 		JSStreamNotMatchErr:                        {Code: 400, ErrCode: 10060, Description: "expected stream does not match"},
+		JSStreamPurgeFailedF:                       {Code: 500, ErrCode: 10110, Description: "{err}"},
 		JSStreamReplicasNotSupportedErr:            {Code: 500, ErrCode: 10074, Description: "replicas > 1 not supported in non-clustered mode"},
 		JSStreamReplicasNotUpdatableErr:            {Code: 400, ErrCode: 10061, Description: "Replicas configuration can not be updated"},
 		JSStreamRestoreErrF:                        {Code: 500, ErrCode: 10062, Description: "restore failed: {err}"},
+		JSStreamRollupFailedF:                      {Code: 500, ErrCode: 10111, Description: "{err}"},
 		JSStreamSealedErr:                          {Code: 400, ErrCode: 10109, Description: "invalid operation on sealed stream"},
 		JSStreamSequenceNotMatchErr:                {Code: 503, ErrCode: 10063, Description: "expected stream sequence does not match"},
 		JSStreamSnapshotErrF:                       {Code: 500, ErrCode: 10064, Description: "snapshot failed: {err}"},
@@ -1511,6 +1519,22 @@ func NewJSStreamNotMatchError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSStreamNotMatchErr]
 }
 
+// NewJSStreamPurgeFailedError creates a new JSStreamPurgeFailedF error: "{err}"
+func NewJSStreamPurgeFailedError(err error, opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	e := ApiErrors[JSStreamPurgeFailedF]
+	args := e.toReplacerArgs([]interface{}{"{err}", err})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
+}
+
 // NewJSStreamReplicasNotSupportedError creates a new JSStreamReplicasNotSupportedErr error: "replicas > 1 not supported in non-clustered mode"
 func NewJSStreamReplicasNotSupportedError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
@@ -1539,6 +1563,22 @@ func NewJSStreamRestoreError(err error, opts ...ErrorOption) *ApiError {
 	}
 
 	e := ApiErrors[JSStreamRestoreErrF]
+	args := e.toReplacerArgs([]interface{}{"{err}", err})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
+}
+
+// NewJSStreamRollupFailedError creates a new JSStreamRollupFailedF error: "{err}"
+func NewJSStreamRollupFailedError(err error, opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	e := ApiErrors[JSStreamRollupFailedF]
 	args := e.toReplacerArgs([]interface{}{"{err}", err})
 	return &ApiError{
 		Code:        e.Code,
