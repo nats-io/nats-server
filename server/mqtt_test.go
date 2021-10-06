@@ -5263,6 +5263,44 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 	}
 }
 
+func TestMQTTClientIDInLogStatements(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	l := &captureDebugLogger{dbgCh: make(chan string, 10)}
+	s.SetLogger(l, true, false)
+
+	cisub := &mqttConnInfo{clientID: "my_client_id", cleanSess: false}
+	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTDisconnect(t, c, nil)
+	c.Close()
+
+	tm := time.NewTimer(2 * time.Second)
+	var connected bool
+	var disconnected bool
+	for {
+		select {
+		case dl := <-l.dbgCh:
+			if strings.Contains(dl, "my_client_id") {
+				if strings.Contains(dl, "Client connected") {
+					connected = true
+				} else if strings.Contains(dl, "Client connection closed") {
+					disconnected = true
+				}
+				if connected && disconnected {
+					// OK!
+					return
+				}
+			}
+		case <-tm.C:
+			t.Fatal("Did not get the debug statements or client_id in them")
+		}
+	}
+}
+
 //////////////////////////////////////////////////////////////////////////
 //
 // Benchmarks
