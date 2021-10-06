@@ -9008,6 +9008,21 @@ func TestJetStreamSeal(t *testing.T) {
 	t.Run("Clustered", func(t *testing.T) { testSeal(t, c.randomServer(), 3) })
 }
 
+func addStream(t *testing.T, nc *nats.Conn, cfg *StreamConfig) *StreamInfo {
+	t.Helper()
+	req, err := json.Marshal(cfg)
+	require_NoError(t, err)
+	rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+	require_NoError(t, err)
+	var resp JSApiStreamCreateResponse
+	err = json.Unmarshal(rmsg.Data, &resp)
+	require_NoError(t, err)
+	if resp.Error != nil {
+		t.Fatalf("Unexpected error: %+v", resp.Error)
+	}
+	return resp.StreamInfo
+}
+
 func TestJetStreamRollups(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "JSC", 3)
 	defer c.shutdown()
@@ -9015,15 +9030,15 @@ func TestJetStreamRollups(t *testing.T) {
 	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
-	cfg := &nats.StreamConfig{
-		Name:              "SENSORS",
-		Subjects:          []string{"sensor.*.temp"},
-		MaxMsgsPerSubject: 10,
-		Replicas:          2,
+	cfg := &StreamConfig{
+		Name:        "SENSORS",
+		Storage:     FileStorage,
+		Subjects:    []string{"sensor.*.temp"},
+		MaxMsgsPer:  10,
+		AllowRollup: true,
+		Replicas:    2,
 	}
-	if _, err := js.AddStream(cfg); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
+	addStream(t, nc, cfg)
 
 	var bt [16]byte
 	var le = binary.LittleEndian
@@ -9091,15 +9106,15 @@ func TestJetStreamRollupSubjectAndWatchers(t *testing.T) {
 	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
-	cfg := &nats.StreamConfig{
-		Name:              "KVW",
-		Subjects:          []string{"kv.*"},
-		MaxMsgsPerSubject: 10,
-		Replicas:          2,
+	cfg := &StreamConfig{
+		Name:        "KVW",
+		Storage:     FileStorage,
+		Subjects:    []string{"kv.*"},
+		MaxMsgsPer:  10,
+		AllowRollup: true,
+		Replicas:    2,
 	}
-	if _, err := js.AddStream(cfg); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
+	addStream(t, nc, cfg)
 
 	sub, err := js.SubscribeSync("kv.*")
 	if err != nil {
@@ -9150,6 +9165,52 @@ func TestJetStreamRollupSubjectAndWatchers(t *testing.T) {
 	expectUpdate("name", "rip", 5)
 	rollup("age", "50")
 	expectUpdate("age", "50", 6)
+}
+
+func TestJetStreamAppendOnly(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &StreamConfig{
+		Name:       "AUDIT",
+		Storage:    MemoryStorage,
+		Subjects:   []string{"foo"},
+		Replicas:   3,
+		DenyDelete: true,
+		DenyPurge:  true,
+	}
+	si := addStream(t, nc, cfg)
+	if !si.Config.DenyDelete || !si.Config.DenyPurge {
+		t.Fatalf("Expected DenyDelete and DenyPurge to be set, got %+v", si.Config)
+	}
+	for i := 0; i < 10; i++ {
+		js.Publish("foo", []byte("ok"))
+	}
+	// Delete should not be allowed.
+	if err := js.DeleteMsg("AUDIT", 1); err == nil {
+		t.Fatalf("Expected an error for delete but got none")
+	}
+	if err := js.PurgeStream("AUDIT"); err == nil {
+		t.Fatalf("Expected an error for purge but got none")
+	}
+
+	cfg.DenyDelete = false
+	cfg.DenyPurge = false
+
+	req, err := json.Marshal(cfg)
+	require_NoError(t, err)
+	rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamUpdateT, cfg.Name), req, time.Second)
+	require_NoError(t, err)
+	var resp JSApiStreamCreateResponse
+	err = json.Unmarshal(rmsg.Data, &resp)
+	require_NoError(t, err)
+	if resp.Error == nil {
+		t.Fatalf("Expected an error")
+	}
+
 }
 
 // Support functions

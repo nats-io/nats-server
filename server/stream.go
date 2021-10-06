@@ -57,7 +57,18 @@ type StreamConfig struct {
 	Placement    *Placement      `json:"placement,omitempty"`
 	Mirror       *StreamSource   `json:"mirror,omitempty"`
 	Sources      []*StreamSource `json:"sources,omitempty"`
-	Sealed       bool            `json:"sealed,omitempty"`
+
+	// Optional qualifiers. These can not be modified after set to true.
+
+	// Sealed will seal a stream so no messages can get our or in.
+	Sealed bool `json:"sealed,omitempty"`
+	// DenyDelete will restrict the ability to delete messages.
+	DenyDelete bool `json:"deny_delete,omitempty"`
+	// DenyPurge will restrict the ability to purge messages.
+	DenyPurge bool `json:"deny_purge,omitempty"`
+	// AllowRollup allows messages to be placed into the system and purge
+	// all older messages using a special msg header.
+	AllowRollup bool `json:"allow_rollup_hdrs,omitempty"`
 }
 
 // JSPubAckResponse is a formal response to a publish operation.
@@ -896,8 +907,17 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig) (*StreamConfig, 
 	if cfg.Template != _EMPTY_ {
 		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not be owned by a template"))
 	}
+	// Can not change from true to false.
 	if !cfg.Sealed && old.Sealed {
 		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not unseal a sealed stream"))
+	}
+	// Can not change from true to false.
+	if !cfg.DenyDelete && old.DenyDelete {
+		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not cancel deny message deletes"))
+	}
+	// Can not change from true to false.
+	if !cfg.DenyPurge && old.DenyPurge {
+		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not cancel deny purge"))
 	}
 
 	// Do some adjustments for being sealed.
@@ -2804,12 +2824,23 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		}
 		// Check for any rollups.
 		if rollup := getRollup(hdr); rollup != _EMPTY_ {
+			if !mset.cfg.AllowRollup || mset.cfg.DenyPurge {
+				mset.mu.Unlock()
+				if canRespond {
+					resp.PubAck = &PubAck{Stream: name}
+					resp.Error = NewJSStreamRollupFailedError(errors.New("rollup not permitted"))
+					b, _ := json.Marshal(resp)
+					outq.sendMsg(reply, b)
+				}
+				return errors.New("rollup not permitted")
+			}
 			switch rollup {
 			case JSMsgRollupSubject:
 				rollupSub = true
 			case JSMsgRollupAll:
 				rollupAll = true
 			default:
+				mset.mu.Unlock()
 				return fmt.Errorf("rollup value invalid: %q", rollup)
 			}
 		}
