@@ -9023,6 +9023,36 @@ func addStream(t *testing.T, nc *nats.Conn, cfg *StreamConfig) *StreamInfo {
 	return resp.StreamInfo
 }
 
+func TestJetStreamRollupsRequirePurge(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, _ := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &StreamConfig{
+		Name:        "SENSORS",
+		Storage:     FileStorage,
+		Subjects:    []string{"sensor.*.temp"},
+		MaxMsgsPer:  10,
+		AllowRollup: true,
+		DenyPurge:   true,
+		Replicas:    2,
+	}
+
+	j, err := json.Marshal(cfg)
+	require_NoError(t, err)
+	resp, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), j, time.Second)
+	require_NoError(t, err)
+
+	var cr JSApiStreamCreateResponse
+	err = json.Unmarshal(resp.Data, &cr)
+	require_NoError(t, err)
+	if cr.Error == nil || cr.Error.Description != "roll-ups require the purge permission" {
+		t.Fatalf("unexpected error: %v", cr.Error)
+	}
+}
+
 func TestJetStreamRollups(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "JSC", 3)
 	defer c.shutdown()

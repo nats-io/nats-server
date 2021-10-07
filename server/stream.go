@@ -839,6 +839,10 @@ func checkStreamCfg(config *StreamConfig) (StreamConfig, error) {
 		return StreamConfig{}, fmt.Errorf("duplicates window can not be larger then max age")
 	}
 
+	if cfg.DenyPurge && cfg.AllowRollup {
+		return StreamConfig{}, fmt.Errorf("roll-ups require the purge permission")
+	}
+
 	if len(cfg.Subjects) == 0 {
 		if cfg.Mirror == nil && len(cfg.Sources) == 0 {
 			cfg.Subjects = append(cfg.Subjects, cfg.Name)
