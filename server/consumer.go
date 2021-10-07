@@ -2849,9 +2849,14 @@ func (o *consumer) purge(sseq uint64) {
 	}
 
 	o.mu.Lock()
-	o.sseq = sseq
-	o.asflr = sseq - 1
-	o.adflr = o.dseq - 1
+	// Do not go backwards
+	if o.sseq < sseq {
+		o.sseq = sseq
+	}
+	if o.asflr < sseq {
+		o.asflr = sseq - 1
+		o.adflr = o.dseq - 1
+	}
 	o.sgap = 0
 	o.pending = nil
 

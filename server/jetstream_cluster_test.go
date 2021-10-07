@@ -9183,18 +9183,23 @@ func TestJetStreamRollupSubjectAndWatchers(t *testing.T) {
 		}
 	}
 
-	send("name", "derek")
+	rollup("name", "derek")
 	expectUpdate("name", "derek", 1)
-	send("age", "22")
+	rollup("age", "22")
 	expectUpdate("age", "22", 2)
+
+	send("name", "derek")
+	expectUpdate("name", "derek", 3)
+	send("age", "22")
+	expectUpdate("age", "22", 4)
 	send("age", "33")
-	expectUpdate("age", "33", 3)
+	expectUpdate("age", "33", 5)
 	send("name", "ivan")
-	expectUpdate("name", "ivan", 4)
+	expectUpdate("name", "ivan", 6)
 	send("name", "rip")
-	expectUpdate("name", "rip", 5)
+	expectUpdate("name", "rip", 7)
 	rollup("age", "50")
-	expectUpdate("age", "50", 6)
+	expectUpdate("age", "50", 8)
 }
 
 func TestJetStreamAppendOnly(t *testing.T) {
