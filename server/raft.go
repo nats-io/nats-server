@@ -3023,6 +3023,7 @@ func (n *raft) setWriteErrLocked(err error) {
 
 	// For now since this can be happening all under the covers, we will call up and disable JetStream.
 	n.Unlock()
+	n.error("Critical write error: %v", err)
 	n.s.handleOutOfSpace(_EMPTY_)
 	n.Lock()
 }

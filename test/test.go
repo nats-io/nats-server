@@ -65,9 +65,12 @@ func RunRandClientPortServer() *server.Server {
 // To turn on server tracing and debugging and logging which are
 // normally suppressed.
 var (
-	doLog   = false
-	doTrace = false
-	doDebug = false
+	doLog   = true
+	doTrace = true
+	doDebug = true
+	// doLog   = false
+	// doTrace = false
+	// doDebug = false
 )
 
 // RunServer starts a new Go routine based server

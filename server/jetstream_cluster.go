@@ -1742,6 +1742,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						}
 						s.Debugf("Got error processing JetStream msg: %v", err)
 					}
+					s.Warnf("A: %v", err)
 					if isOutOfSpaceErr(err) {
 						s.handleOutOfSpace(mset.name())
 						return err
@@ -4538,6 +4539,9 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		}
 	}
 
+	if err != nil {
+		s.Warnf("B processClusteredInboundMsg: %v", err)
+	}
 	if err != nil && isOutOfSpaceErr(err) {
 		s.handleOutOfSpace(name)
 	}
@@ -4767,6 +4771,7 @@ RETRY:
 					return
 				}
 			} else if isOutOfSpaceErr(err) {
+				s.Warnf("C: %v", err)
 				s.handleOutOfSpace(name)
 				return
 			} else if err == NewJSInsufficientResourcesError() {

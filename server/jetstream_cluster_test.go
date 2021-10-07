@@ -24,6 +24,7 @@ import (
 	"math/rand"
 	"os"
 	"path"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strconv"
@@ -9150,6 +9151,138 @@ func TestJetStreamRollupSubjectAndWatchers(t *testing.T) {
 	expectUpdate("name", "rip", 5)
 	rollup("age", "50")
 	expectUpdate("age", "50", 6)
+}
+
+func TestJetStreamClusterFoldersGoingAway(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "FOO",
+		Subjects:  []string{"foo.*"},
+		Replicas:  3,
+		Retention: nats.WorkQueuePolicy,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sub, err := js.PullSubscribe("foo.test", "test")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	time.AfterFunc(1*time.Second, func() {
+		// err := js.DeleteConsumer("FOO", "test")
+		// if err != nil {
+		// 	t.Logf("======> %v", err)
+		// }
+		for _, opts := range c.opts {
+			filepath.Walk(opts.StoreDir+"/jetstream/$SYS",
+				func(path string, info os.FileInfo, err error) error {
+					if err != nil {
+						return err
+					}
+					if strings.HasPrefix(info.Name(), "C-R3F") {
+						// if strings.HasPrefix(info.Name(), "$SYS") {
+						// Delete it !
+						t.Logf("DELETING IT!!!!!!!!!!!!!!!! %v || %+v", path, info.Name())
+						err := os.RemoveAll(path)
+						if err != nil {
+							t.Logf("WARN: %v", err)
+						}
+					}
+
+					t.Logf("-----> %v || %v || %+v", path, info.Name(), info.Size())
+					return nil
+				})
+			time.Sleep(500*time.Millisecond)
+		}
+
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	time.AfterFunc(1500*time.Millisecond, func() {
+		sub, err := js.PullSubscribe("foo.test2", "test2")
+		if err != nil {
+			t.Logf("Unexpected error: %v", err)
+		}
+
+	Pull:
+		for {
+			select {
+			case <-ctx.Done():
+				break Pull
+			default:
+			}
+			msgs, err := sub.Fetch(1, nats.MaxWait(200*time.Millisecond))
+			if err != nil {
+				t.Logf("WARN SUB 2: %v", err)
+			}
+
+			for _, m := range msgs {
+				m.AckSync(nats.AckWait(200 * time.Millisecond))
+			}
+		}
+	})
+
+Loop:
+	for range time.NewTicker(10 * time.Millisecond).C {
+		select {
+		case <-ctx.Done():
+			break Loop
+		default:
+		}
+
+		total := 1024
+		for i := 0; i < total; i++ {
+			if _, err = js.PublishAsync("foo.test", []byte("OK")); err != nil {
+				t.Logf("Unexpected publish error: %v", err)
+			}
+			if _, err = js.PublishAsync("foo.test2", []byte("OK2")); err != nil {
+				t.Logf("Unexpected publish error: %v", err)
+			}
+		}
+
+		msgs, err := sub.Fetch(1, nats.MaxWait(200*time.Millisecond))
+		if err != nil {
+			t.Logf("WARN SUB 1: %v", err)
+		}
+
+		for _, m := range msgs {
+			m.AckSync(nats.AckWait(200 * time.Millisecond))
+		}
+
+		// for _, opts := range c.opts {
+		// 	filepath.Walk(opts.StoreDir+"/jetstream/$SYS",
+		// 		func(path string, info os.FileInfo, err error) error {
+		// 			if err != nil {
+		// 				return err
+		// 			}
+		// 			t.Logf("-----> %v || %v || %+v", path, info.Name(), info.Size())
+		// 			return nil
+		// 		})
+		// }
+	}
+
+	// Make sure the messages are removed.
+	// checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+	// 	si, err := js.StreamInfo("FOO")
+	// 	if err != nil {
+	// 		t.Fatalf("Unexpected error: %v", err)
+	// 	}
+	// 	if si.State.Msgs != 0 {
+	// 		return fmt.Errorf("Expected 0 msgs, got state: %+v", si.State)
+	// 	}
+	// 	return nil
+	// })
+
 }
 
 // Support functions
