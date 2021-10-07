@@ -3019,10 +3019,17 @@ func (n *raft) setWriteErrLocked(err error) {
 			return
 		}
 	}
+	if os.IsNotExist(err) {
+		// TODO: Skip disabling JetStream for all for now.
+		n.error("Directory not found: %v", err)
+		return
+	}
+
 	n.werr = err
 
 	// For now since this can be happening all under the covers, we will call up and disable JetStream.
 	n.Unlock()
+	n.error("Critical write error: %v", err)
 	n.s.handleOutOfSpace(_EMPTY_)
 	n.Lock()
 }

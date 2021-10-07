@@ -4537,7 +4537,6 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
 		}
 	}
-
 	if err != nil && isOutOfSpaceErr(err) {
 		s.handleOutOfSpace(name)
 	}
