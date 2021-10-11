@@ -1190,7 +1190,7 @@ type LeafNodeOptsVarz struct {
 	Remotes     []RemoteLeafOptsVarz `json:"remotes,omitempty"`
 }
 
-// Contains lists of subjects not allowed to be imported/exported
+// DenyRules Contains lists of subjects not allowed to be imported/exported
 type DenyRules struct {
 	Exports []string `json:"exports,omitempty"`
 	Imports []string `json:"imports,omitempty"`
