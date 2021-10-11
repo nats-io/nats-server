@@ -2838,7 +2838,7 @@ func TestWSCompressionBasic(t *testing.T) {
 	cbuf := &bytes.Buffer{}
 	compressor, _ := flate.NewWriter(cbuf, flate.BestSpeed)
 	compressor.Write([]byte(msgProto))
-	compressor.Close()
+	compressor.Flush()
 	compressed := cbuf.Bytes()
 	// The last 4 bytes are dropped
 	compressed = compressed[:len(compressed)-4]
@@ -2906,6 +2906,29 @@ func TestWSCompressionBasic(t *testing.T) {
 	}
 	if !bytes.Equal(body, compressed) {
 		t.Fatalf("Unexpected compress body: %q", body)
+	}
+
+	wc.mu.Lock()
+	wc.buf.Reset()
+	wc.mu.Unlock()
+
+	payload = "small"
+	natsPub(t, nc, "foo", []byte(payload))
+	msgProto = fmt.Sprintf("MSG foo 1 %d\r\n%s\r\n", len(payload), payload)
+	res = &bytes.Buffer{}
+	for total := 0; total < len(msgProto); {
+		l := testWSReadFrame(t, br)
+		n, _ := res.Write(l)
+		total += n
+	}
+	if !bytes.Equal([]byte(msgProto), res.Bytes()) {
+		t.Fatalf("Unexpected result: %q", res)
+	}
+	wc.mu.RLock()
+	res = wc.buf
+	wc.mu.RUnlock()
+	if !bytes.HasSuffix(res.Bytes(), []byte(msgProto)) {
+		t.Fatalf("Looks like frame was compressed: %q", res.Bytes())
 	}
 }
 
@@ -3001,15 +3024,16 @@ func TestWSCompressionFrameSizeLimit(t *testing.T) {
 	for _, test := range []struct {
 		name      string
 		maskWrite bool
+		noLimit   bool
 	}{
-		{"no write masking", false},
-		{"write masking", true},
+		{"no write masking", false, false},
+		{"write masking", true, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			opts := testWSOptions()
 			opts.MaxPending = MAX_PENDING_SIZE
 			s := &Server{opts: opts}
-			c := &client{srv: s, ws: &websocket{compress: true, browser: true, maskwrite: test.maskWrite}}
+			c := &client{srv: s, ws: &websocket{compress: true, browser: true, nocompfrag: test.noLimit, maskwrite: test.maskWrite}}
 			c.initClient()
 
 			uncompressedPayload := make([]byte, 2*wsFrameSizeForBrowsers)
@@ -3022,13 +3046,19 @@ func TestWSCompressionFrameSizeLimit(t *testing.T) {
 			nb, _ := c.collapsePtoNB()
 			c.mu.Unlock()
 
+			if test.noLimit && len(nb) != 2 {
+				t.Fatalf("There should be only 2 buffers, the header and payload, got %v", len(nb))
+			}
+
 			bb := &bytes.Buffer{}
 			var key []byte
 			for i, b := range nb {
-				// frame header buffer are always very small. The payload should not be more
-				// than 10 bytes since that is what we passed as the limit.
-				if len(b) > wsFrameSizeForBrowsers {
-					t.Fatalf("Frame size too big: %v (%q)", len(b), b)
+				if !test.noLimit {
+					// frame header buffer are always very small. The payload should not be more
+					// than 10 bytes since that is what we passed as the limit.
+					if len(b) > wsFrameSizeForBrowsers {
+						t.Fatalf("Frame size too big: %v (%q)", len(b), b)
+					}
 				}
 				if test.maskWrite {
 					if i%2 == 0 {
@@ -3048,6 +3078,13 @@ func TestWSCompressionFrameSizeLimit(t *testing.T) {
 						t.Fatalf("Compressed bit missing")
 					}
 				} else {
+					if test.noLimit {
+						// Since the payload is likely not well compressed, we are expecting
+						// the length to be > wsFrameSizeForBrowsers
+						if len(b) <= wsFrameSizeForBrowsers {
+							t.Fatalf("Expected frame to be bigger, got %v", len(b))
+						}
+					}
 					// Collect the payload
 					bb.Write(b)
 				}

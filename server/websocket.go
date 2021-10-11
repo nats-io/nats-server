@@ -58,6 +58,7 @@ const (
 	wsMaxFrameHeaderSize    = 14 // Since LeafNode may need to behave as a client
 	wsMaxControlPayloadSize = 125
 	wsFrameSizeForBrowsers  = 4096 // From experiment, webrowsers behave better with limited frame size
+	wsCompressThreshold     = 64   // Don't compress for small buffer(s)
 	wsCloseSatusSize        = 2
 
 	// From https://tools.ietf.org/html/rfc6455#section-11.7
@@ -107,6 +108,7 @@ type websocket struct {
 	compress   bool
 	closeSent  bool
 	browser    bool
+	nocompfrag bool // No fragment for compressed frames
 	maskread   bool
 	maskwrite  bool
 	compressor *flate.Writer
@@ -773,6 +775,7 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 		// Indicate if this is likely coming from a browser.
 		if ua := r.Header.Get("User-Agent"); ua != "" && strings.HasPrefix(ua, "Mozilla/") {
 			ws.browser = true
+			ws.nocompfrag = ws.compress && strings.Contains(ua, "Safari")
 		}
 		if opts.Websocket.JWTCookie != "" {
 			if c, err := r.Cookie(opts.Websocket.JWTCookie); err == nil && c != nil {
@@ -1251,8 +1254,8 @@ func (cl *wsCaptureHTTPServerLog) Write(p []byte) (int, error) {
 
 func (c *client) wsCollapsePtoNB() (net.Buffers, int64) {
 	var nb net.Buffers
-	var total = 0
-	var mfs = 0
+	var mfs int
+	var usz int
 	if c.ws.browser {
 		mfs = wsFrameSizeForBrowsers
 	}
@@ -1267,7 +1270,21 @@ func (c *client) wsCollapsePtoNB() (net.Buffers, int64) {
 	// Start with possible already framed buffers (that we could have
 	// got from partials or control messages such as ws pings or pongs).
 	bufs := c.ws.frames
-	if c.ws.compress && len(nb) > 0 {
+	compress := c.ws.compress
+	if compress && len(nb) > 0 {
+		// First, make sure we don't compress for very small cumulative buffers.
+		for _, b := range nb {
+			usz += len(b)
+		}
+		if usz <= wsCompressThreshold {
+			compress = false
+		}
+	}
+	if compress && len(nb) > 0 {
+		// Overwrite mfs if this connection does not support fragmented compressed frames.
+		if mfs > 0 && c.ws.nocompfrag {
+			mfs = 0
+		}
 		buf := &bytes.Buffer{}
 
 		cp := c.ws.compressor
@@ -1277,13 +1294,15 @@ func (c *client) wsCollapsePtoNB() (net.Buffers, int64) {
 		} else {
 			cp.Reset(buf)
 		}
-		var usz int
 		var csz int
 		for _, b := range nb {
-			usz += len(b)
 			cp.Write(b)
 		}
-		cp.Close()
+		if err := cp.Flush(); err != nil {
+			c.Errorf("Error during compression: %v", err)
+			c.markConnAsClosed(WriteError)
+			return nil, 0
+		}
 		b := buf.Bytes()
 		p := b[:len(b)-4]
 		if mfs > 0 && len(p) > mfs {
@@ -1319,6 +1338,7 @@ func (c *client) wsCollapsePtoNB() (net.Buffers, int64) {
 		c.out.pb += int64(csz) - int64(usz)
 		c.ws.fs += int64(csz)
 	} else if len(nb) > 0 {
+		var total int
 		if mfs > 0 {
 			// We are limiting the frame size.
 			startFrame := func() int {
