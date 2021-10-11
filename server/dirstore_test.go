@@ -60,11 +60,20 @@ func require_Contains(t *testing.T, s string, subStrs ...string) {
 	}
 }
 
-func require_Error(t *testing.T, err error) {
+func require_Error(t *testing.T, err error, expected ...error) {
 	t.Helper()
 	if err == nil {
 		t.Fatalf("require error, but got none")
 	}
+	if len(expected) == 0 {
+		return
+	}
+	for _, e := range expected {
+		if err == e || strings.Contains(e.Error(), err.Error()) {
+			return
+		}
+	}
+	t.Fatalf("Expected one of %+v, got '%v'", expected, err)
 }
 
 func require_Equal(t *testing.T, a, b string) {

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"hash"
 	"io/ioutil"
+	"math"
 	"math/rand"
 	"net"
 	"os"
@@ -254,6 +255,9 @@ var (
 	errStepdownNoPeer    = errors.New("raft: stepdown failed, could not match new leader")
 	errNoPeerState       = errors.New("raft: no peerstate")
 	errAdjustBootCluster = errors.New("raft: can not adjust boot peer size on established group")
+	errLeaderLen         = fmt.Errorf("raft: leader should be exactly %d bytes", idLen)
+	errTooManyEntries    = errors.New("raft: append entry can contain a max of 64k entries")
+	errBadAppendEntry    = errors.New("raft: append entry corrupt")
 )
 
 // This will bootstrap a raftNode by writing its config into the store directory.
@@ -1534,6 +1538,7 @@ type CommittedEntry struct {
 	Entries []*Entry
 }
 
+// appendEntry is the main struct that is used to sync raft peers.
 type appendEntry struct {
 	leader  string
 	term    uint64
@@ -1591,13 +1596,28 @@ func (ae *appendEntry) String() string {
 
 const appendEntryBaseLen = idLen + 4*8 + 2
 
-func (ae *appendEntry) encode() []byte {
+func (ae *appendEntry) encode(b []byte) ([]byte, error) {
+	if ll := len(ae.leader); ll != idLen && ll != 0 {
+		return nil, errLeaderLen
+	}
+	if len(ae.entries) > math.MaxUint16 {
+		return nil, errTooManyEntries
+	}
+
 	var elen int
 	for _, e := range ae.entries {
 		elen += len(e.Data) + 1 + 4 // 1 is type, 4 is for size.
 	}
+	tlen := appendEntryBaseLen + elen + 1
+
+	var buf []byte
+	if cap(b) >= tlen {
+		buf = b[:tlen]
+	} else {
+		buf = make([]byte, tlen)
+	}
+
 	var le = binary.LittleEndian
-	buf := make([]byte, appendEntryBaseLen+elen)
 	copy(buf[:idLen], ae.leader)
 	le.PutUint64(buf[8:], ae.term)
 	le.PutUint64(buf[16:], ae.commit)
@@ -1613,13 +1633,13 @@ func (ae *appendEntry) encode() []byte {
 		copy(buf[wi:], e.Data)
 		wi += len(e.Data)
 	}
-	return buf[:wi]
+	return buf[:wi], nil
 }
 
 // This can not be used post the wire level callback since we do not copy.
-func (n *raft) decodeAppendEntry(msg []byte, sub *subscription, reply string) *appendEntry {
+func (n *raft) decodeAppendEntry(msg []byte, sub *subscription, reply string) (*appendEntry, error) {
 	if len(msg) < appendEntryBaseLen {
-		return nil
+		return nil, errBadAppendEntry
 	}
 
 	var le = binary.LittleEndian
@@ -1632,17 +1652,23 @@ func (n *raft) decodeAppendEntry(msg []byte, sub *subscription, reply string) *a
 	}
 	// Decode Entries.
 	ne, ri := int(le.Uint16(msg[40:])), 42
-	for i := 0; i < ne; i++ {
+	for i, max := 0, len(msg); i < ne; i++ {
+		if ri >= max-1 {
+			return nil, errBadAppendEntry
+		}
 		le := int(le.Uint32(msg[ri:]))
 		ri += 4
+		if le <= 0 || ri+le > max {
+			return nil, errBadAppendEntry
+		}
 		etype := EntryType(msg[ri])
 		ae.entries = append(ae.entries, &Entry{etype, msg[ri+1 : ri+le]})
-		ri += int(le)
+		ri += le
 	}
 	ae.reply = reply
 	ae.sub = sub
 	ae.buf = msg
-	return ae
+	return ae, nil
 }
 
 // appendEntryResponse is our response to a received appendEntry.
@@ -1659,13 +1685,17 @@ type appendEntryResponse struct {
 const idLen = 8
 const appendEntryResponseLen = 24 + 1
 
-func (ar *appendEntryResponse) encode() []byte {
-	var buf [appendEntryResponseLen]byte
+func (ar *appendEntryResponse) encode(b []byte) []byte {
+	var buf []byte
+	if cap(b) >= appendEntryResponseLen {
+		buf = b[:appendEntryResponseLen]
+	} else {
+		buf = make([]byte, appendEntryResponseLen)
+	}
 	var le = binary.LittleEndian
 	le.PutUint64(buf[0:], ar.term)
 	le.PutUint64(buf[8:], ar.index)
-	copy(buf[16:], ar.peer)
-
+	copy(buf[16:16+idLen], ar.peer)
 	if ar.success {
 		buf[24] = 1
 	} else {
@@ -1792,7 +1822,7 @@ func (n *raft) runAsLeader() {
 			if b.Type == EntryNormal {
 				const maxBatch = 256 * 1024
 			gather:
-				for sz := 0; sz < maxBatch; {
+				for sz := 0; sz < maxBatch && len(entries) < math.MaxUint16; {
 					select {
 					case e := <-n.propc:
 						entries = append(entries, e)
@@ -1993,7 +2023,11 @@ func (n *raft) sendSnapshotToFollower(subject string) (uint64, error) {
 		snap.lastIndex = state.FirstSeq
 		ae.pindex = snap.lastIndex
 	}
-	n.sendRPC(subject, n.areply, ae.encode())
+	encoding, err := ae.encode(nil)
+	if err != nil {
+		return 0, err
+	}
+	n.sendRPC(subject, n.areply, encoding)
 	return snap.lastIndex, nil
 }
 
@@ -2069,7 +2103,7 @@ func (n *raft) loadEntry(index uint64) (*appendEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return n.decodeAppendEntry(msg, nil, _EMPTY_), nil
+	return n.decodeAppendEntry(msg, nil, _EMPTY_)
 }
 
 // applyCommit will update our commit index and apply the entry to the apply chan.
@@ -2381,12 +2415,14 @@ func (n *raft) handleAppendEntry(sub *subscription, c *client, _ *Account, subje
 	}
 
 	msg = append(msg[:0:0], msg...)
-	if ae := n.decodeAppendEntry(msg, sub, reply); ae != nil {
+	if ae, err := n.decodeAppendEntry(msg, sub, reply); err == nil {
 		select {
 		case n.entryc <- ae:
 		default:
 			n.warn("AppendEntry failed to be placed on internal channel")
 		}
+	} else {
+		n.warn("AppendEntry failed to be placed on internal channel: corrupt entry")
 	}
 }
 
@@ -2471,6 +2507,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		return
 	}
 
+	// Scratch buffer for responses.
+	var scratch [appendEntryResponseLen]byte
+	arbuf := scratch[:]
+
 	// Are we receiving from another leader.
 	if n.state == Leader {
 		if ae.term > n.term {
@@ -2484,7 +2524,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			ar := &appendEntryResponse{n.term, n.pindex, n.id, false, _EMPTY_}
 			n.Unlock()
 			n.debug("AppendEntry ignoring old term from another leader")
-			n.sendRPC(ae.reply, _EMPTY_, ar.encode())
+			n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
 			return
 		}
 	}
@@ -2521,7 +2561,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		ar := &appendEntryResponse{n.term, n.pindex, n.id, false, _EMPTY_}
 		n.Unlock()
 		n.debug("AppendEntry ignoring old term")
-		n.sendRPC(ae.reply, _EMPTY_, ar.encode())
+		n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
 		return
 	}
 
@@ -2549,7 +2589,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			}
 			n.Unlock()
 			if ar != nil {
-				n.sendRPC(ae.reply, inbox, ar.encode())
+				n.sendRPC(ae.reply, inbox, ar.encode(arbuf))
 			}
 			// Ignore new while catching up or replaying.
 			return
@@ -2592,7 +2632,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			}
 			n.Unlock()
 			if ar != nil {
-				n.sendRPC(ae.reply, _EMPTY_, ar.encode())
+				n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
 			}
 			return
 		}
@@ -2657,7 +2697,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				inbox := n.createCatchup(ae)
 				ar := &appendEntryResponse{n.pterm, n.pindex, n.id, false, _EMPTY_}
 				n.Unlock()
-				n.sendRPC(ae.reply, inbox, ar.encode())
+				n.sendRPC(ae.reply, inbox, ar.encode(arbuf))
 				return
 			}
 		}
@@ -2727,7 +2767,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	n.Unlock()
 
 	// Success. Send our response.
-	n.sendRPC(ae.reply, _EMPTY_, ar.encode())
+	n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
 }
 
 // Lock should be held.
@@ -2833,7 +2873,14 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 	n.Lock()
 	defer n.Unlock()
 	ae := n.buildAppendEntry(entries)
-	ae.buf = ae.encode()
+
+	var err error
+	var scratch [1024]byte
+	ae.buf, err = ae.encode(scratch[:])
+	if err != nil {
+		return
+	}
+
 	// If we have entries store this in our wal.
 	if len(entries) > 0 {
 		if err := n.storeToWAL(ae); err != nil {

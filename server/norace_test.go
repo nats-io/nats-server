@@ -3395,7 +3395,10 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	ae := node.decodeAppendEntry(msg, nil, _EMPTY_)
+	ae, err := node.decodeAppendEntry(msg, nil, _EMPTY_)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
 
 	dentry := func(dseq, sseq, dc uint64, ts int64) []byte {
 		b := make([]byte, 4*binary.MaxVarintLen64+1)
@@ -3412,7 +3415,11 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	ae.pindex += 10
 	// Add in delivered record.
 	ae.entries = []*Entry{&Entry{EntryNormal, dentry(1000, 1000, 1, time.Now().UnixNano())}}
-	if _, _, err := fs.StoreMsg(_EMPTY_, nil, ae.encode()); err != nil {
+	encoded, err := ae.encode(nil)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if _, _, err := fs.StoreMsg(_EMPTY_, nil, encoded); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	fs.Stop()
