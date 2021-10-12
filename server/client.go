@@ -985,22 +985,22 @@ func (c *client) writeLoop() {
 
 	// Used to check that we did flush from last wake up.
 	waitOk := true
-	var close bool
+	var closed bool
 
 	// Main loop. Will wait to be signaled and then will use
 	// buffered outbound structure for efficient writev to the underlying socket.
 	for {
 		c.mu.Lock()
-		if close = c.isClosed(); !close {
+		if closed = c.isClosed(); !closed {
 			owtf := c.out.fsp > 0 && c.out.pb < maxBufSize && c.out.fsp < maxFlushPending
 			if waitOk && (c.out.pb == 0 || owtf) {
 				c.out.sg.Wait()
 				// Check that connection has not been closed while lock was released
 				// in the conditional wait.
-				close = c.isClosed()
+				closed = c.isClosed()
 			}
 		}
-		if close {
+		if closed {
 			c.flushAndClose(false)
 			c.mu.Unlock()
 
