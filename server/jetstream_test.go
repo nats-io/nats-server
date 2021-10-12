@@ -12388,6 +12388,53 @@ func TestJetStreamDeliverLastPerSubject(t *testing.T) {
 	}
 }
 
+func TestJetStreamDeliverLastPerSubjectNumPending(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{
+		Name:              "KV",
+		Subjects:          []string{"KV.>"},
+		MaxMsgsPerSubject: 5,
+		Replicas:          1,
+	}); err != nil {
+		t.Fatalf("Error adding stream: %v", err)
+	}
+
+	for i := 0; i < 5; i++ {
+		msg := []byte(fmt.Sprintf("msg%d", i))
+		js.Publish("KV.foo", msg)
+		js.Publish("KV.bar", msg)
+		js.Publish("KV.baz", msg)
+		js.Publish("KV.bat", msg)
+	}
+
+	// Delete some messages
+	js.DeleteMsg("KV", 2)
+	js.DeleteMsg("KV", 5)
+
+	ci, err := js.AddConsumer("KV", &nats.ConsumerConfig{
+		DeliverSubject: nats.NewInbox(),
+		AckPolicy:      nats.AckExplicitPolicy,
+		DeliverPolicy:  nats.DeliverLastPerSubjectPolicy,
+		FilterSubject:  "KV.>",
+	})
+	if err != nil {
+		t.Fatalf("Error adding consumer: %v", err)
+	}
+	if ci.NumPending != 4 {
+		t.Fatalf("Expected 4 pending msgs, got %v", ci.NumPending)
+	}
+}
+
 // We had a report of a consumer delete crashing the server when in interest retention mode.
 // This I believe is only really possible in clustered mode, but we will force the issue here.
 func TestJetStreamConsumerCleanupWithRetentionPolicy(t *testing.T) {

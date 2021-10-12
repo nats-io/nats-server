@@ -3107,25 +3107,24 @@ func (o *consumer) setInitialPendingAndStart() {
 		return
 	}
 
-	// notFiltered means we want all messages.
-	notFiltered := o.cfg.FilterSubject == _EMPTY_
-	if !notFiltered {
+	// !filtered means we want all messages.
+	filtered, dp := o.cfg.FilterSubject != _EMPTY_, o.cfg.DeliverPolicy
+	if filtered {
 		// Check to see if we directly match the configured stream.
 		// Many clients will always send a filtered subject.
 		cfg := &mset.cfg
 		if len(cfg.Subjects) == 1 && cfg.Subjects[0] == o.cfg.FilterSubject {
-			notFiltered = true
+			filtered = false
 		}
 	}
 
-	if notFiltered {
+	if !filtered && dp != DeliverLastPerSubject {
 		state := mset.store.State()
 		if state.Msgs > 0 {
 			o.sgap = state.Msgs - (o.sseq - state.FirstSeq)
 		}
 	} else {
 		// Here we are filtered.
-		dp := o.cfg.DeliverPolicy
 		if dp == DeliverLastPerSubject && o.hasSkipListPending() && o.sseq < o.lss.resume {
 			ss := mset.store.FilteredState(o.lss.resume+1, o.cfg.FilterSubject)
 			o.sseq = o.lss.seqs[0]
