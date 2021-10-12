@@ -2842,10 +2842,15 @@ func (o *consumer) hasNoLocalInterest() bool {
 
 // This is when the underlying stream has been purged.
 // sseq is the new first seq for the stream after purge.
+// Lock should be held.
 func (o *consumer) purge(sseq uint64) {
 	// Do not update our state unless we know we are the leader.
-	if sseq == 0 || !o.isLeader() {
+	if !o.isLeader() {
 		return
+	}
+	// Signals all have been purged for this consumer.
+	if sseq == 0 {
+		sseq = o.mset.lastSeq() + 1
 	}
 
 	o.mu.Lock()
@@ -2855,7 +2860,9 @@ func (o *consumer) purge(sseq uint64) {
 	}
 	if o.asflr < sseq {
 		o.asflr = sseq - 1
-		o.adflr = o.dseq - 1
+		if o.dseq > 0 {
+			o.adflr = o.dseq - 1
+		}
 	}
 	o.sgap = 0
 	o.pending = nil
