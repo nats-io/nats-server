@@ -695,7 +695,7 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 		return nil, wsReturnHTTPError(w, http.StatusMethodNotAllowed, "request method must be GET")
 	}
 	// Point 2.
-	if r.Host == "" {
+	if r.Host == _EMPTY_ {
 		return nil, wsReturnHTTPError(w, http.StatusBadRequest, "'Host' missing in request")
 	}
 	// Point 3.
@@ -708,7 +708,7 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 	}
 	// Point 5.
 	key := r.Header.Get("Sec-Websocket-Key")
-	if key == "" {
+	if key == _EMPTY_ {
 		return nil, wsReturnHTTPError(w, http.StatusBadRequest, "key missing")
 	}
 	// Point 6.
@@ -773,11 +773,16 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 	ws := &websocket{compress: compress, maskread: !noMasking}
 	if kind == CLIENT {
 		// Indicate if this is likely coming from a browser.
-		if ua := r.Header.Get("User-Agent"); ua != "" && strings.HasPrefix(ua, "Mozilla/") {
+		if ua := r.Header.Get("User-Agent"); ua != _EMPTY_ && strings.HasPrefix(ua, "Mozilla/") {
 			ws.browser = true
-			ws.nocompfrag = ws.compress && strings.Contains(ua, "Safari")
+			// Disable fragmentation of compressed frames for Safari browsers.
+			// Unfortunately, you could be running Chrome on macOS and this
+			// string will contain "Safari/" (along "Chrome/"). However, what
+			// I have found is that actual Safari browser also have "Version/".
+			// So make the combination of the two.
+			ws.nocompfrag = ws.compress && strings.Contains(ua, "Version/") && strings.Contains(ua, "Safari/")
 		}
-		if opts.Websocket.JWTCookie != "" {
+		if opts.Websocket.JWTCookie != _EMPTY_ {
 			if c, err := r.Cookie(opts.Websocket.JWTCookie); err == nil && c != nil {
 				ws.cookieJwt = c.Value
 			}
@@ -929,7 +934,7 @@ func wsAcceptKey(key string) string {
 func wsMakeChallengeKey() (string, error) {
 	p := make([]byte, 16)
 	if _, err := io.ReadFull(rand.Reader, p); err != nil {
-		return "", err
+		return _EMPTY_, err
 	}
 	return base64.StdEncoding.EncodeToString(p), nil
 }
@@ -968,7 +973,7 @@ func validateWebsocketOptions(o *Options) error {
 		}
 	}
 	// Using JWT requires Trusted Keys
-	if wo.JWTCookie != "" {
+	if wo.JWTCookie != _EMPTY_ {
 		if len(o.TrustedOperators) == 0 && len(o.TrustedKeys) == 0 {
 			return fmt.Errorf("trusted operators or trusted keys configuration is required for JWT authentication via cookie %q", wo.JWTCookie)
 		}
@@ -1107,7 +1112,7 @@ func (s *Server) startWebsocketServer() {
 		Addr:        hp,
 		Handler:     mux,
 		ReadTimeout: o.HandshakeTimeout,
-		ErrorLog:    log.New(&wsCaptureHTTPServerLog{s}, "", 0),
+		ErrorLog:    log.New(&wsCaptureHTTPServerLog{s}, _EMPTY_, 0),
 	}
 	s.websocket.server = hs
 	s.websocket.listener = hl
