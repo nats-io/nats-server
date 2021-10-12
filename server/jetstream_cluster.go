@@ -753,9 +753,19 @@ func (js *jetStream) monitorCluster() {
 		isLeader     bool
 		lastSnap     []byte
 		lastSnapTime time.Time
+		isRecovering bool
+		beenLeader   bool
 	)
 
+	// Set to true to start.
+	isRecovering = true
+
+	// Snapshotting function.
 	doSnapshot := func() {
+		// Suppress during recovery.
+		if isRecovering {
+			return
+		}
 		if snap := js.metaSnapshot(); !bytes.Equal(lastSnap, snap) {
 			if err := n.InstallSnapshot(snap); err == nil {
 				lastSnap = snap
@@ -763,9 +773,6 @@ func (js *jetStream) monitorCluster() {
 			}
 		}
 	}
-
-	isRecovering := true
-	beenLeader := false
 
 	for {
 		select {
@@ -787,7 +794,7 @@ func (js *jetStream) monitorCluster() {
 					// Since we received one make sure we have our own since we do not store
 					// our meta state outside of raft.
 					doSnapshot()
-				} else if nb > uint64(len(lastSnap)*4) {
+				} else if lls := len(lastSnap); nb > uint64(lls*8) && lls > 0 {
 					doSnapshot()
 				}
 			}
@@ -1743,7 +1750,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						s.Debugf("Got error processing JetStream msg: %v", err)
 					}
 					if isOutOfSpaceErr(err) {
-						s.handleOutOfSpace(mset.name())
+						s.handleOutOfSpace(mset)
 						return err
 					}
 				}
@@ -4539,7 +4546,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	}
 
 	if err != nil && isOutOfSpaceErr(err) {
-		s.handleOutOfSpace(name)
+		s.handleOutOfSpace(mset)
 	}
 
 	return err
@@ -4660,7 +4667,7 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) {
 	mset.mu.Lock()
 	state := mset.store.State()
 	sreq := mset.calculateSyncRequest(&state, snap)
-	s, js, subject, n, name := mset.srv, mset.js, mset.sa.Sync, mset.node, mset.cfg.Name
+	s, js, subject, n := mset.srv, mset.js, mset.sa.Sync, mset.node
 	mset.mu.Unlock()
 
 	// Just return if up to date or already exceeded limits.
@@ -4767,7 +4774,7 @@ RETRY:
 					return
 				}
 			} else if isOutOfSpaceErr(err) {
-				s.handleOutOfSpace(name)
+				s.handleOutOfSpace(mset)
 				return
 			} else if err == NewJSInsufficientResourcesError() {
 				if mset.js.limitsExceeded(mset.cfg.Storage) {

@@ -25,7 +25,6 @@ import (
 	"os"
 	"path"
 	"reflect"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -5845,17 +5844,7 @@ func TestJetStreamClusterMultiRestartBug(t *testing.T) {
 	c.waitOnStreamLeader("$G", "TEST")
 
 	s = c.serverByName(s.Name())
-	opts = s.getOpts()
-
 	c.waitOnStreamCurrent(s, "$G", "TEST")
-
-	snaps, err := ioutil.ReadDir(path.Join(opts.StoreDir, JetStreamStoreDir, "$SYS", "_js_", "_meta_", "snapshots"))
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if len(snaps) == 0 {
-		t.Fatalf("Expected a meta snapshot for the restarted server")
-	}
 
 	// Now restart them all..
 	c.stopAll()
@@ -5868,8 +5857,12 @@ func TestJetStreamClusterMultiRestartBug(t *testing.T) {
 	defer nc.Close()
 
 	// Make sure the replicas are current.
-	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
-		si, _ := js.StreamInfo("TEST")
+	js2, err := nc.JetStream(nats.MaxWait(250 * time.Millisecond))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		si, _ := js2.StreamInfo("TEST")
 		if si == nil || si.Cluster == nil {
 			t.Fatalf("Did not get stream info")
 		}
@@ -8497,76 +8490,6 @@ func TestJetStreamDeadlockOnVarz(t *testing.T) {
 	wg.Wait()
 }
 
-// Make sure when we try to hard reset a stream state in a cluster that we also re-create the consumers.
-func TestJetStreamClusterStreamReset(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
-	defer c.shutdown()
-
-	// Client based API
-	s := c.randomServer()
-	nc, js := jsClientConnect(t, s)
-	defer nc.Close()
-
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:      "TEST",
-		Subjects:  []string{"foo.*"},
-		Replicas:  2,
-		Retention: nats.WorkQueuePolicy,
-	})
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-
-	numRequests := 20
-	for i := 0; i < numRequests; i++ {
-		js.Publish("foo.created", []byte("REQ"))
-	}
-
-	// Durable.
-	sub, err := js.SubscribeSync("foo.created", nats.Durable("d1"))
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	defer sub.Unsubscribe()
-
-	si, err := js.StreamInfo("TEST")
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if si.State.Msgs != uint64(numRequests) {
-		t.Fatalf("Expected %d msgs, got bad state: %+v", numRequests, si.State)
-	}
-	// Let settle a bit.
-	time.Sleep(250 * time.Millisecond)
-
-	// Grab number go routines.
-	base := runtime.NumGoroutine()
-
-	// Grab a server that is the consumer leader for the durable.
-	cl := c.consumerLeader("$G", "TEST", "d1")
-	mset, err := cl.GlobalAccount().lookupStream("TEST")
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	// Do a hard reset here by hand.
-	mset.resetClusteredState()
-	// Wait til we have the leader elected.
-	c.waitOnConsumerLeader("$G", "TEST", "d1")
-
-	// So do not wait 10s in call in checkFor.
-	js2, _ := nc.JetStream(nats.MaxWait(250 * time.Millisecond))
-	// Make sure we can get the consumer info eventually.
-	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
-		_, err := js2.ConsumerInfo("TEST", "d1")
-		return err
-	})
-
-	// Grab number go routines.
-	if after := runtime.NumGoroutine(); base > after {
-		t.Fatalf("Expected %d go routines, got %d", base, after)
-	}
-}
-
 // Issue #2397
 func TestJetStreamClusterStreamCatchupNoState(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R2S", 2)
@@ -9245,7 +9168,6 @@ func TestJetStreamAppendOnly(t *testing.T) {
 	if resp.Error == nil {
 		t.Fatalf("Expected an error")
 	}
-
 }
 
 // Support functions
