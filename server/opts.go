@@ -297,6 +297,10 @@ type Options struct {
 	// private fields, used for testing
 	gatewaysSolicitDelay time.Duration
 	routeProto           int
+
+	// JetStream
+	maxMemSet   bool
+	maxStoreSet bool
 }
 
 // WebsocketOpts are options for websocket
@@ -1658,14 +1662,16 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 			switch strings.ToLower(mk) {
 			case "store", "store_dir", "storedir":
 				// StoreDir can be set at the top level as well so have to prevent ambiguous declarations.
-				if opts.StoreDir != "" {
+				if opts.StoreDir != _EMPTY_ {
 					return &configErr{tk, "Duplicate 'store_dir' configuration"}
 				}
 				opts.StoreDir = mv.(string)
 			case "max_memory_store", "max_mem_store", "max_mem":
 				opts.JetStreamMaxMemory = mv.(int64)
+				opts.maxMemSet = true
 			case "max_file_store", "max_file":
 				opts.JetStreamMaxStore = mv.(int64)
+				opts.maxStoreSet = true
 			case "domain":
 				opts.JetStreamDomain = mv.(string)
 			case "enable", "enabled":
@@ -4228,10 +4234,10 @@ func setBaselineOptions(opts *Options) {
 		}
 	}
 	// JetStream
-	if opts.JetStreamMaxMemory == 0 {
+	if opts.JetStreamMaxMemory == 0 && !opts.maxMemSet {
 		opts.JetStreamMaxMemory = -1
 	}
-	if opts.JetStreamMaxStore == 0 {
+	if opts.JetStreamMaxStore == 0 && !opts.maxStoreSet {
 		opts.JetStreamMaxStore = -1
 	}
 }

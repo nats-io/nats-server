@@ -158,7 +158,7 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 			storeDir, domain = config.StoreDir, config.Domain
 			maxStore, maxMem = config.MaxStore, config.MaxMemory
 		}
-		config = s.dynJetStreamConfig(storeDir, maxStore)
+		config = s.dynJetStreamConfig(storeDir, maxStore, maxMem)
 		if maxMem > 0 {
 			config.MaxMemory = maxMem
 		}
@@ -1621,7 +1621,6 @@ func (jsa *jsAccount) checkBytesLimits(addBytes int64, storage StorageType, repl
 	case FileStorage:
 		// Account limits defined.
 		if jsa.limits.MaxStore >= 0 {
-
 			if jsa.storeReserved+totalBytes > jsa.limits.MaxStore {
 				return NewJSStorageResourcesExceededError()
 			}
@@ -1760,7 +1759,7 @@ const (
 )
 
 // Dynamically create a config with a tmp based directory (repeatable) and 75% of system memory.
-func (s *Server) dynJetStreamConfig(storeDir string, maxStore int64) *JetStreamConfig {
+func (s *Server) dynJetStreamConfig(storeDir string, maxStore, maxMem int64) *JetStreamConfig {
 	jsc := &JetStreamConfig{}
 	if storeDir != _EMPTY_ {
 		jsc.StoreDir = filepath.Join(storeDir, JetStreamStoreDir)
@@ -1769,16 +1768,23 @@ func (s *Server) dynJetStreamConfig(storeDir string, maxStore int64) *JetStreamC
 		jsc.StoreDir = filepath.Join(os.TempDir(), "nats", JetStreamStoreDir)
 	}
 
-	if maxStore > 0 {
+	opts := s.getOpts()
+
+	if opts.maxStoreSet && maxStore >= 0 {
 		jsc.MaxStore = maxStore
 	} else {
 		jsc.MaxStore = diskAvailable(jsc.StoreDir)
 	}
-	// Estimate to 75% of total memory if we can determine system memory.
-	if sysMem := sysmem.Memory(); sysMem > 0 {
-		jsc.MaxMemory = sysMem / 4 * 3
+
+	if opts.maxMemSet && maxMem >= 0 {
+		jsc.MaxMemory = maxMem
 	} else {
-		jsc.MaxMemory = JetStreamMaxMemDefault
+		// Estimate to 75% of total memory if we can determine system memory.
+		if sysMem := sysmem.Memory(); sysMem > 0 {
+			jsc.MaxMemory = sysMem / 4 * 3
+		} else {
+			jsc.MaxMemory = JetStreamMaxMemDefault
+		}
 	}
 	return jsc
 }
