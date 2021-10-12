@@ -316,7 +316,7 @@ func TestJetStreamAutoTuneFSConfig(t *testing.T) {
 	s := RunRandClientPortServer()
 	defer s.Shutdown()
 
-	jsconfig := &JetStreamConfig{MaxMemory: -1, MaxStore: 128 * 1024 * 1024 * 1024 * 1024}
+	jsconfig := &JetStreamConfig{MaxMemory: -1, MaxStore: 128 * 1024 * 1024 * 1024}
 	if err := s.EnableJetStream(jsconfig); err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -360,7 +360,7 @@ func TestJetStreamAutoTuneFSConfig(t *testing.T) {
 	testBlkSize("foo", 1, 512, FileStoreMinBlkSize)
 	testBlkSize("foo", 1, 1024*1024, 262200)
 	testBlkSize("foo", 1, 8*1024*1024, 2097200)
-	testBlkSize("foo_bar_baz", -1, 32*1024*1024*1024*1024, FileStoreMaxBlkSize)
+	testBlkSize("foo_bar_baz", -1, 32*1024*1024*1024, FileStoreMaxBlkSize)
 }
 
 func TestJetStreamConsumerAndStreamDescriptions(t *testing.T) {
