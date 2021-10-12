@@ -13376,6 +13376,76 @@ func TestJetStreamConsumerNoMsgPayload(t *testing.T) {
 	}
 }
 
+// Issue #2607
+func TestJetStreamPurgeAndFilteredConsumers(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "S", Subjects: []string{"FOO.*"}})
+	require_NoError(t, err)
+
+	for i := 0; i < 10; i++ {
+		_, err = js.Publish("FOO.adam", []byte("M"))
+		require_NoError(t, err)
+		_, err = js.Publish("FOO.eve", []byte("F"))
+		require_NoError(t, err)
+	}
+
+	ci, err := js.AddConsumer("S", &nats.ConsumerConfig{
+		Durable:       "adam",
+		AckPolicy:     nats.AckExplicitPolicy,
+		FilterSubject: "FOO.adam",
+	})
+	require_NoError(t, err)
+	if ci.NumPending != 10 {
+		t.Fatalf("Expected NumPending to be 10, got %d", ci.NumPending)
+	}
+
+	ci, err = js.AddConsumer("S", &nats.ConsumerConfig{
+		Durable:       "eve",
+		AckPolicy:     nats.AckExplicitPolicy,
+		FilterSubject: "FOO.eve",
+	})
+	require_NoError(t, err)
+	if ci.NumPending != 10 {
+		t.Fatalf("Expected NumPending to be 10, got %d", ci.NumPending)
+	}
+
+	// Now purge only adam.
+	jr, _ := json.Marshal(&JSApiStreamPurgeRequest{Subject: "FOO.adam"})
+	_, err = nc.Request(fmt.Sprintf(JSApiStreamPurgeT, "S"), jr, time.Second)
+	require_NoError(t, err)
+
+	si, err := js.StreamInfo("S")
+	require_NoError(t, err)
+	if si.State.Msgs != 10 {
+		t.Fatalf("Expected 10 messages after purge, got %d", si.State.Msgs)
+	}
+
+	ci, err = js.ConsumerInfo("S", "eve")
+	require_NoError(t, err)
+	if ci.NumPending != 10 {
+		t.Fatalf("Expected NumPending to be 10, got %d", ci.NumPending)
+	}
+
+	ci, err = js.ConsumerInfo("S", "adam")
+	require_NoError(t, err)
+	if ci.NumPending != 0 {
+		t.Fatalf("Expected NumPending to be 0, got %d", ci.NumPending)
+	}
+	if ci.AckFloor.Stream != 20 {
+		t.Fatalf("Expected AckFloor for stream to be 20, got %d", ci.AckFloor.Stream)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
