@@ -32,6 +32,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -46,7 +47,7 @@ import (
 
 // Default Constants
 const (
-	Version                   = "1.12.3"
+	Version                   = "1.13.0"
 	DefaultURL                = "nats://127.0.0.1:4222"
 	DefaultPort               = 4222
 	DefaultMaxReconnect       = 60
@@ -155,6 +156,7 @@ var (
 	ErrPullSubscribeToPushConsumer  = errors.New("nats: cannot pull subscribe to push based consumer")
 	ErrPullSubscribeRequired        = errors.New("nats: must use pull subscribe to bind to pull based consumer")
 	ErrConsumerNotActive            = errors.New("nats: consumer not active")
+	ErrMsgNotFound                  = errors.New("nats: message not found")
 )
 
 func init() {
@@ -677,6 +679,7 @@ type serverInfo struct {
 	ID           string   `json:"server_id"`
 	Name         string   `json:"server_name"`
 	Proto        int      `json:"proto"`
+	Version      string   `json:"version"`
 	Host         string   `json:"host"`
 	Port         int      `json:"port"`
 	Headers      bool     `json:"headers"`
@@ -1834,6 +1837,52 @@ func (nc *Conn) ConnectedServerName() string {
 	return nc.info.Name
 }
 
+var semVerRe = regexp.MustCompile(`\Av?([0-9]+)\.?([0-9]+)?\.?([0-9]+)?`)
+
+func versionComponents(version string) (major, minor, patch int, err error) {
+	m := semVerRe.FindStringSubmatch(version)
+	if m == nil {
+		return 0, 0, 0, errors.New("invalid semver")
+	}
+	major, err = strconv.Atoi(m[1])
+	if err != nil {
+		return -1, -1, -1, err
+	}
+	minor, err = strconv.Atoi(m[2])
+	if err != nil {
+		return -1, -1, -1, err
+	}
+	patch, err = strconv.Atoi(m[3])
+	if err != nil {
+		return -1, -1, -1, err
+	}
+	return major, minor, patch, err
+}
+
+// Check for mininum server requirement.
+func (nc *Conn) serverMinVersion(major, minor, patch int) bool {
+	smajor, sminor, spatch, _ := versionComponents(nc.ConnectedServerVersion())
+	if smajor < major || (smajor == major && sminor < minor) || (smajor == major && sminor == minor && spatch < patch) {
+		return false
+	}
+	return true
+}
+
+// ConnectedServerVersion reports the connected server's version as a string
+func (nc *Conn) ConnectedServerVersion() string {
+	if nc == nil {
+		return _EMPTY_
+	}
+
+	nc.mu.RLock()
+	defer nc.mu.RUnlock()
+
+	if nc.status != CONNECTED {
+		return _EMPTY_
+	}
+	return nc.info.Version
+}
+
 // ConnectedClusterName reports the connected server's cluster name if any
 func (nc *Conn) ConnectedClusterName() string {
 	if nc == nil {
@@ -2600,7 +2649,6 @@ func (nc *Conn) waitForMsgs(s *Subscription) {
 			delivered = s.delivered
 			if s.jsi != nil {
 				fcReply = s.checkForFlowControlResponse()
-				s.jsi.active = true
 			}
 		}
 		s.mu.Unlock()
@@ -2768,6 +2816,7 @@ func (nc *Conn) processMsg(data []byte) {
 
 	// Skip processing if this is a control message.
 	if !ctrlMsg {
+		var chanSubCheckFC bool
 		// Subscription internal stats (applicable only for non ChanSubscription's)
 		if sub.typ != ChanSubscription {
 			sub.pMsgs++
@@ -2784,6 +2833,8 @@ func (nc *Conn) processMsg(data []byte) {
 				(sub.pBytesLimit > 0 && sub.pBytes > sub.pBytesLimit) {
 				goto slowConsumer
 			}
+		} else if jsi != nil {
+			chanSubCheckFC = true
 		}
 
 		// We have two modes of delivery. One is the channel, used by channel
@@ -2811,15 +2862,26 @@ func (nc *Conn) processMsg(data []byte) {
 			// Store the ACK metadata from the message to
 			// compare later on with the received heartbeat.
 			sub.trackSequences(m.Reply)
+			if chanSubCheckFC {
+				// For ChanSubscription, since we can't call this when a message
+				// is "delivered" (since user is pull from their own channel),
+				// we have a go routine that does this check, however, we do it
+				// also here to make it much more responsive. The go routine is
+				// really to avoid stalling when there is no new messages coming.
+				fcReply = sub.checkForFlowControlResponse()
+			}
 		}
 	} else if ctrlType == jsCtrlFC && m.Reply != _EMPTY_ {
 		// This is a flow control message.
-		// If we have no pending, go ahead and send in place.
-		if sub.pMsgs <= 0 {
+		// We will schedule the send of the FC reply once we have delivered the
+		// DATA message that was received before this flow control message, which
+		// has sequence `jsi.fciseq`. However, it is possible that this message
+		// has already been delivered, in that case, we need to send the FC reply now.
+		if sub.getJSDelivered() >= jsi.fciseq {
 			fcReply = m.Reply
 		} else {
 			// Schedule a reply after the previous message is delivered.
-			sub.scheduleFlowControlResponse(sub.delivered+uint64(sub.pMsgs), m.Reply)
+			sub.scheduleFlowControlResponse(m.Reply)
 		}
 	}
 
@@ -2968,7 +3030,7 @@ func (nc *Conn) processInfo(info string) error {
 	if info == _EMPTY_ {
 		return nil
 	}
-	ncInfo := serverInfo{}
+	var ncInfo serverInfo
 	if err := json.Unmarshal([]byte(info), &ncInfo); err != nil {
 		return err
 	}
@@ -3851,9 +3913,15 @@ func (nc *Conn) removeSub(s *Subscription) {
 	s.mch = nil
 
 	// If JS subscription then stop HB timer.
-	if jsi := s.jsi; jsi != nil && jsi.hbc != nil {
-		jsi.hbc.Stop()
-		jsi.hbc = nil
+	if jsi := s.jsi; jsi != nil {
+		if jsi.hbc != nil {
+			jsi.hbc.Stop()
+			jsi.hbc = nil
+		}
+		if jsi.csfct != nil {
+			jsi.csfct.Stop()
+			jsi.csfct = nil
+		}
 	}
 
 	// Mark as invalid
@@ -4192,7 +4260,6 @@ func (s *Subscription) processNextMsgDelivered(msg *Msg) error {
 	delivered := s.delivered
 	if s.jsi != nil {
 		fcReply = s.checkForFlowControlResponse()
-		s.jsi.active = true
 	}
 
 	if s.typ == SyncSubscription {
