@@ -463,9 +463,16 @@ func (s *Server) setJetStreamDisabled() {
 	}
 }
 
-func (s *Server) handleOutOfSpace(stream string) {
+func (s *Server) handleOutOfSpace(mset *stream) {
 	if s.JetStreamEnabled() && !s.jetStreamOOSPending() {
-		s.Errorf("JetStream out of resources, will be DISABLED")
+		var stream string
+		if mset != nil {
+			stream = mset.name()
+			s.Errorf("JetStream out of %s resources, will be DISABLED", mset.Store().Type())
+		} else {
+			s.Errorf("JetStream out of resources, will be DISABLED")
+		}
+
 		go s.DisableJetStream()
 
 		adv := &JSServerOutOfSpaceAdvisory{

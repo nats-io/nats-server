@@ -2042,8 +2042,6 @@ func TestNoRaceJetStreamClusterSuperClusterRIPStress(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
-	fmt.Printf("CONNECT is %v\n", s.ClientURL())
-
 	scm := make(map[string][]string)
 
 	// Create 50 streams per cluster.
@@ -3560,4 +3558,110 @@ func TestNoRaceJetStreamClusterMaxConsumersAndDirect(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// Make sure when we try to hard reset a stream state in a cluster that we also re-create the consumers.
+func TestNoRaceJetStreamClusterStreamReset(t *testing.T) {
+	// Speed up raft
+	minElectionTimeout = 250 * time.Millisecond
+	maxElectionTimeout = time.Second
+	hbInterval = 50 * time.Millisecond
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo.*"},
+		Replicas:  2,
+		Retention: nats.WorkQueuePolicy,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	numRequests := 20
+	for i := 0; i < numRequests; i++ {
+		js.Publish("foo.created", []byte("REQ"))
+	}
+
+	// Durable.
+	sub, err := js.SubscribeSync("foo.created", nats.Durable("d1"))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer sub.Unsubscribe()
+
+	si, err := js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si.State.Msgs != uint64(numRequests) {
+		t.Fatalf("Expected %d msgs, got bad state: %+v", numRequests, si.State)
+	}
+
+	// Let settle a bit for Go routine checks.
+	time.Sleep(250 * time.Millisecond)
+
+	// Grab number go routines.
+	base := runtime.NumGoroutine()
+
+	// Make the consumer busy here by async sending a bunch of messages.
+	for i := 0; i < numRequests*10; i++ {
+		js.PublishAsync("foo.created", []byte("REQ"))
+	}
+
+	// Grab a server that is the consumer leader for the durable.
+	cl := c.consumerLeader("$G", "TEST", "d1")
+	mset, err := cl.GlobalAccount().lookupStream("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Do a hard reset here by hand.
+	mset.resetClusteredState()
+
+	// Wait til we have the consumer leader re-elected.
+	c.waitOnConsumerLeader("$G", "TEST", "d1")
+
+	// So we do not wait all 10s in each call to ConsumerInfo.
+	js2, _ := nc.JetStream(nats.MaxWait(250 * time.Millisecond))
+	// Make sure we can get the consumer info eventually.
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		_, err := js2.ConsumerInfo("TEST", "d1")
+		return err
+	})
+
+	// Grab number go routines.
+	if after := runtime.NumGoroutine(); base > after {
+		t.Fatalf("Expected %d go routines, got %d", base, after)
+	}
+
+	// Simulate a low level write error on our consumer and make sure we can recover etc.
+	cl = c.consumerLeader("$G", "TEST", "d1")
+	mset, err = cl.GlobalAccount().lookupStream("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	o := mset.lookupConsumer("d1")
+	if o == nil {
+		t.Fatalf("Did not retrieve consumer")
+	}
+	node := o.raftNode().(*raft)
+	if node == nil {
+		t.Fatalf("could not retrieve the raft node for consumer")
+	}
+
+	nc.Close()
+	node.setWriteErr(io.ErrShortWrite)
+
+	c.stopAll()
+	c.restartAll()
+
+	c.waitOnStreamLeader("$G", "TEST")
+	c.waitOnConsumerLeader("$G", "TEST", "d1")
 }

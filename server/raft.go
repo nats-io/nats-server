@@ -221,12 +221,21 @@ type lps struct {
 }
 
 const (
-	minElectionTimeout = 2 * time.Second
-	maxElectionTimeout = 5 * time.Second
-	minCampaignTimeout = 100 * time.Millisecond
-	maxCampaignTimeout = 4 * minCampaignTimeout
-	hbInterval         = 500 * time.Millisecond
-	lostQuorumInterval = hbInterval * 5
+	minElectionTimeoutDefault = 2 * time.Second
+	maxElectionTimeoutDefault = 5 * time.Second
+	minCampaignTimeoutDefault = 100 * time.Millisecond
+	maxCampaignTimeoutDefault = 4 * minCampaignTimeoutDefault
+	hbIntervalDefault         = 500 * time.Millisecond
+	lostQuorumIntervalDefault = hbIntervalDefault * 5
+)
+
+var (
+	minElectionTimeout = minElectionTimeoutDefault
+	maxElectionTimeout = maxElectionTimeoutDefault
+	minCampaignTimeout = minCampaignTimeoutDefault
+	maxCampaignTimeout = maxCampaignTimeoutDefault
+	hbInterval         = hbIntervalDefault
+	lostQuorumInterval = lostQuorumIntervalDefault
 )
 
 type RaftConfig struct {
@@ -388,19 +397,18 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 	key := sha256.Sum256([]byte(n.group))
 	n.hh, _ = highwayhash.New64(key[:])
 
-	if term, vote, err := n.readTermVote(); err != nil && term > 0 {
+	if term, vote, err := n.readTermVote(); err == nil && term > 0 {
 		n.term = term
 		n.vote = vote
 	}
 
-	if err := os.MkdirAll(path.Join(cfg.Store, snapshotsDir), 0750); err != nil {
+	if err := os.MkdirAll(path.Join(n.sd, snapshotsDir), 0750); err != nil {
 		return nil, fmt.Errorf("could not create snapshots directory - %v", err)
 	}
 
 	// Can't recover snapshots if memory based.
 	if _, ok := n.wal.(*memStore); ok {
-		snapDir := path.Join(n.sd, snapshotsDir, "*")
-		os.RemoveAll(snapDir)
+		os.Remove(path.Join(n.sd, snapshotsDir, "*"))
 	} else {
 		// See if we have any snapshots and if so load and process on startup.
 		n.setupLastSnapshot()
@@ -937,6 +945,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		n.setWriteErr(err)
 		return err
 	}
+
 	n.Unlock()
 
 	psnaps, _ := ioutil.ReadDir(snapDir)
@@ -1110,7 +1119,7 @@ func (n *raft) isCurrent() bool {
 
 	// Check to see that we have heard from the current leader lately.
 	if n.leader != noLeader && n.leader != n.id && n.catchup == nil {
-		const okInterval = int64(hbInterval) * 2
+		okInterval := int64(hbInterval) * 2
 		ts := time.Now().UnixNano()
 		if ps := n.peers[n.leader]; ps != nil && ps.ts > 0 && (ts-ps.ts) <= okInterval {
 			return true
@@ -3060,18 +3069,26 @@ func (n *raft) readTermVote() (term uint64, voted string, err error) {
 
 // Lock should be held.
 func (n *raft) setWriteErrLocked(err error) {
+	// Ignore if already set.
+	if n.werr == err {
+		return
+	}
 	// Ignore non-write errors.
 	if err != nil {
 		if err == ErrStoreClosed || err == ErrStoreEOF || err == ErrInvalidSequence || err == ErrStoreMsgNotFound || err == errNoPending {
 			return
 		}
+		// If this is a not found report but do not disable.
+		if os.IsNotExist(err) {
+			n.error("Resource not found: %v", err)
+			return
+		}
+		n.error("Critical write error: %v", err)
 	}
 	n.werr = err
 
 	// For now since this can be happening all under the covers, we will call up and disable JetStream.
-	n.Unlock()
-	n.s.handleOutOfSpace(_EMPTY_)
-	n.Lock()
+	go n.s.handleOutOfSpace(nil)
 }
 
 // Capture our write error if any and hold.
@@ -3101,7 +3118,7 @@ func (n *raft) fileWriter() {
 			n.RUnlock()
 			if err := ioutil.WriteFile(tvf, buf[:], 0640); err != nil {
 				n.setWriteErr(err)
-				n.error("Error writing term and vote file for %q: %v", n.group, err)
+				n.warn("Error writing term and vote file for %q: %v", n.group, err)
 			}
 		case <-n.wpsch:
 			n.RLock()
@@ -3109,7 +3126,7 @@ func (n *raft) fileWriter() {
 			n.RUnlock()
 			if err := ioutil.WriteFile(psf, buf, 0640); err != nil {
 				n.setWriteErr(err)
-				n.error("Error writing peer state file for %q: %v", n.group, err)
+				n.warn("Error writing peer state file for %q: %v", n.group, err)
 			}
 		}
 	}
