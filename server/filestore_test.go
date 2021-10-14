@@ -3355,3 +3355,39 @@ func TestFileStoreSparseCompactionWithInteriorDeletes(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 }
+
+// When messages span multiple blocks and we want to purge but keep some amount, say 1, we would remove all.
+// This is because we would not break out of iterator across more message blocks.
+// Issue #2622
+func TestFileStorePurgeExKeepOneBug(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 128}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	fill := bytes.Repeat([]byte("X"), 128)
+
+	fs.StoreMsg("A", nil, []byte("META"))
+	fs.StoreMsg("B", nil, fill)
+	fs.StoreMsg("A", nil, []byte("META"))
+	fs.StoreMsg("B", nil, fill)
+
+	if fss := fs.FilteredState(1, "A"); fss.Msgs != 2 {
+		t.Fatalf("Expected to find 2 `A` msgs, got %d", fss.Msgs)
+	}
+
+	n, err := fs.PurgeEx("A", 0, 1)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("Expected PurgeEx to remove 1 `A` msgs, got %d", n)
+	}
+	if fss := fs.FilteredState(1, "A"); fss.Msgs != 1 {
+		t.Fatalf("Expected to find 1 `A` msgs, got %d", fss.Msgs)
+	}
+}
