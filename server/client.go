@@ -1550,7 +1550,8 @@ func (c *client) flushSignal() {
 func (c *client) traceMsg(msg []byte) {
 	maxTrace := c.srv.getOpts().MaxTracedMsgLen
 	if maxTrace > 0 && (len(msg)-LEN_CR_LF) > maxTrace {
-		c.Tracef("<<- MSG_PAYLOAD: [\"%s...\"]", msg[:maxTrace])
+		tm := fmt.Sprintf("%q", msg[:maxTrace])
+		c.Tracef("<<- MSG_PAYLOAD: [\"%s...\"]", tm[1:maxTrace+1])
 	} else {
 		c.Tracef("<<- MSG_PAYLOAD: [%q]", msg[:len(msg)-LEN_CR_LF])
 	}
