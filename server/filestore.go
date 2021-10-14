@@ -3718,6 +3718,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 		if sequence > 0 && sequence <= l {
 			l = sequence - 1
 		}
+
 		for seq := f; seq <= l; seq++ {
 			if sm, _ := mb.cacheLookup(seq); sm != nil && eq(sm.subj, subject) {
 				rl := fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
@@ -3760,6 +3761,11 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 		mb.mu.Unlock()
 		// Update our index info on disk.
 		mb.writeIndexInfo()
+
+		// Check if we should break out of top level too.
+		if maxp > 0 && purged >= maxp {
+			break
+		}
 	}
 	if firstSeqNeedsUpdate {
 		fs.selectNextFirst()
