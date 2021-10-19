@@ -329,7 +329,7 @@ func TestLeafNodeTLSRemoteWithNoCerts(t *testing.T) {
 		t.Fatal("Expected at least a single leaf remote")
 	}
 	got = o4.LeafNode.Remotes[0].TLSTimeout
-	expected = float64(DEFAULT_LEAF_TLS_TIMEOUT)
+	expected = float64(DEFAULT_LEAF_TLS_TIMEOUT) / float64(time.Second)
 	if int(got) != int(expected) {
 		t.Fatalf("Expected %v, got: %v", expected, got)
 	}
