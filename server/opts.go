@@ -1972,7 +1972,7 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 				if tc.Timeout > 0 {
 					remote.TLSTimeout = tc.Timeout
 				} else {
-					remote.TLSTimeout = float64(DEFAULT_LEAF_TLS_TIMEOUT)
+					remote.TLSTimeout = float64(DEFAULT_LEAF_TLS_TIMEOUT) / float64(time.Second)
 				}
 				remote.tlsConfigOpts = tc
 			case "hub":
