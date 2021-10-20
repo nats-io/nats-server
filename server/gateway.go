@@ -3160,6 +3160,12 @@ func (s *Server) startGWReplyMapExpiration() {
 				}
 			case cttl := <-s.gwrm.ch:
 				ttl = cttl
+				if !t.Stop() {
+					select {
+					case <-t.C:
+					default:
+					}
+				}
 				t.Reset(ttl)
 			case <-s.quitCh:
 				return
