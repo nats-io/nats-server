@@ -268,6 +268,8 @@ type client struct {
 
 	tags    jwt.TagList
 	nameTag string
+
+	tlsTo *time.Timer
 }
 
 type rrTracking struct {
@@ -4465,6 +4467,14 @@ func (c *client) clearPingTimer() {
 	c.ping.tmr = nil
 }
 
+func (c *client) clearTlsToTimer() {
+	if c.tlsTo == nil {
+		return
+	}
+	c.tlsTo.Stop()
+	c.tlsTo = nil
+}
+
 // Lock should be held
 func (c *client) setAuthTimer(d time.Duration) {
 	c.atmr = time.AfterFunc(d, c.authTimeout)
@@ -4642,6 +4652,7 @@ func (c *client) closeConnection(reason ClosedState) {
 	c.flags.set(closeConnection)
 	c.clearAuthTimer()
 	c.clearPingTimer()
+	c.clearTlsToTimer()
 	c.markConnAsClosed(reason)
 
 	// Unblock anyone who is potentially stalled waiting on us.
@@ -5059,7 +5070,7 @@ func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfi
 
 	// Setup the timeout
 	ttl := secondsToDuration(timeout)
-	time.AfterFunc(ttl, func() { tlsTimeout(c, conn) })
+	c.tlsTo = time.AfterFunc(ttl, func() { tlsTimeout(c, conn) })
 	conn.SetReadDeadline(time.Now().Add(ttl))
 
 	c.mu.Unlock()
