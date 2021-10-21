@@ -320,7 +320,7 @@ func validateLeafNode(o *Options) error {
 				}
 			}
 			if !ok {
-				return fmt.Errorf("remote leaf node configuration cannot have a mix of websocket and non-websocket urls: %q", rcfg.URLs)
+				return fmt.Errorf("remote leaf node configuration cannot have a mix of websocket and non-websocket urls: %q", redactURLList(rcfg.URLs))
 			}
 		}
 	}
@@ -1187,6 +1187,7 @@ func (c *client) doUpdateLNURLs(cfg *leafNodeCfg, scheme string, URLs []string) 
 	for _, surl := range URLs {
 		url, err := url.Parse(fmt.Sprintf("%s://%s", scheme, surl))
 		if err != nil {
+			// As per below, the URLs we receive should not have contained URL info, so this should be safe to log.
 			c.Errorf("Error parsing url %q: %v", surl, err)
 			continue
 		}
