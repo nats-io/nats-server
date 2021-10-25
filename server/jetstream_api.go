@@ -600,6 +600,12 @@ type JSApiStreamTemplateNamesResponse struct {
 
 const JSApiStreamTemplateNamesResponseType = "io.nats.jetstream.api.v1.stream_template_names_response"
 
+// Default max API calls outstanding.
+const defaultMaxJSApiOut = int64(4096)
+
+// Max API calls outstanding.
+var maxJSApiOut = defaultMaxJSApiOut
+
 func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, subject, reply string, rmsg []byte) {
 	hdr, _ := c.msgParts(rmsg)
 	if len(getHeader(ClientInfoHdr, hdr)) == 0 {
@@ -631,7 +637,7 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 	// If we are here we have received this request over a non client connection.
 	// We need to make sure not to block. We will spin a Go routine per but also make
 	// sure we do not have too many outstanding.
-	if apiOut := atomic.AddInt64(&js.apiCalls, 1); apiOut > 1024 {
+	if apiOut := atomic.AddInt64(&js.apiCalls, 1); apiOut > maxJSApiOut {
 		atomic.AddInt64(&js.apiCalls, -1)
 		ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
 		if err == nil {

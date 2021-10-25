@@ -1858,6 +1858,10 @@ func (wq *waitQueue) pop() *waitingRequest {
 // a single message. If the payload is a formal request or a number parseable with Atoi(), then we will send a
 // batch of messages without requiring another request to this endpoint, or an ACK.
 func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, reply string, msg []byte) {
+	if reply == _EMPTY_ {
+		return
+	}
+
 	_, msg = c.msgParts(msg)
 
 	o.mu.Lock()
@@ -1936,14 +1940,12 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 		sendBatch(&wr)
 	} else {
 		// Check for API outstanding requests.
-		if apiOut := atomic.AddInt64(&js.apiCalls, 1); apiOut > 1024 {
+		if apiOut := atomic.AddInt64(&js.apiCalls, 1); apiOut > maxJSApiOut {
 			atomic.AddInt64(&js.apiCalls, -1)
-			o.mu.Unlock()
 			sendErr(503, "JetStream API limit exceeded")
 			s.Warnf("JetStream API limit exceeded: %d calls outstanding", apiOut)
 			return
 		}
-
 		// Dispatch the API call to its own Go routine.
 		go func() {
 			o.mu.Lock()

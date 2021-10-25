@@ -3665,3 +3665,58 @@ func TestNoRaceJetStreamClusterStreamReset(t *testing.T) {
 	c.waitOnStreamLeader("$G", "TEST")
 	c.waitOnConsumerLeader("$G", "TEST", "d1")
 }
+
+// Issue #2644
+func TestNoRaceJetStreamPullConsumerAPIOutUnlock(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.WorkQueuePolicy,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if _, err = js.PullSubscribe("foo", "dlc"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	for i := 0; i < 100; i++ {
+		if _, err := js.PublishAsync("foo", []byte("OK")); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// Force to go through route to use the Go routines, etc.
+	s := c.randomStreamNotAssigned("$G", "TEST")
+	if s == nil {
+		t.Fatalf("Did not get a server")
+	}
+
+	nc, _ = jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Set this low to trigger error.
+	maxJSApiOut = 5
+	defer func() { maxJSApiOut = defaultMaxJSApiOut }()
+
+	nsubj := fmt.Sprintf(JSApiRequestNextT, "TEST", "dlc")
+	for i := 0; i < 500; i++ {
+		if err := nc.PublishRequest(nsubj, "bar", nil); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+	nc.Flush()
+}

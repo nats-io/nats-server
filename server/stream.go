@@ -60,7 +60,7 @@ type StreamConfig struct {
 
 	// Optional qualifiers. These can not be modified after set to true.
 
-	// Sealed will seal a stream so no messages can get our or in.
+	// Sealed will seal a stream so no messages can get out or in.
 	Sealed bool `json:"sealed,omitempty"`
 	// DenyDelete will restrict the ability to delete messages.
 	DenyDelete bool `json:"deny_delete,omitempty"`
