@@ -1472,6 +1472,13 @@ func (g *gatewayCfg) updateURLs(infoURLs []string) {
 	}
 	// Then add the ones from the infoURLs array we got.
 	g.addURLs(infoURLs)
+	// The call above will set varzUpdateURLs only when finding ULRs in infoURLs
+	// that are not present in the config. That does not cover the case where
+	// previously "discovered" URLs are now gone. We could check "before" size
+	// of g.urls and if bigger than current size, set the boolean to true.
+	// Not worth it... simply set this to true to allow a refresh of gateway
+	// URLs in varz.
+	g.varzUpdateURLs = true
 	g.Unlock()
 }
 
