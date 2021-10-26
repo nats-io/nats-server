@@ -1809,7 +1809,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 		}
 	} else {
 		// Check if we are empty first, as long as not the last message block.
-		if isLast := mb != fs.lmb; isLast && mb.msgs == 0 {
+		if notLast := mb != fs.lmb; notLast && mb.msgs == 0 {
 			fs.removeMsgBlock(mb)
 			firstSeqNeedsUpdate = seq == fs.state.FirstSeq
 		} else {
@@ -1819,9 +1819,9 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 				mb.dmap = make(map[uint64]struct{})
 			}
 			mb.dmap[seq] = struct{}{}
-			// Check if <50% utilization and minimum size met.
-			if mb.rbytes > compactMinimum && mb.rbytes>>1 > mb.bytes {
-				// FIXME(dlc) - Might want this out of band.
+			// Check if <25% utilization and minimum size met.
+
+			if notLast && mb.rbytes > compactMinimum && mb.rbytes>>2 > mb.bytes {
 				mb.compact()
 			}
 		}
