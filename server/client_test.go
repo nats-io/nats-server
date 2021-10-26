@@ -1819,7 +1819,7 @@ func TestTraceMsg(t *testing.T) {
 
 		c.traceMsg(ut.Msg)
 
-		got := c.srv.logging.logger.(*DummyLogger).msg
+		got := c.srv.logging.logger.(*DummyLogger).Msg
 		if !reflect.DeepEqual(ut.Wanted, got) {
 			t.Errorf("Desc: %s. Msg %q. Traced msg want: %s, got: %s", ut.Desc, ut.Msg, ut.Wanted, got)
 		}
@@ -2427,15 +2427,15 @@ func TestClientConnectionName(t *testing.T) {
 			checkLog := func(suffix string) {
 				t.Helper()
 				l.Lock()
-				msg := l.msg
+				msg := l.Msg
 				l.Unlock()
 				if strings.Contains(msg, "(MISSING)") {
 					t.Fatalf("conn name was not escaped properly, got MISSING: %s", msg)
 				}
-				if !strings.Contains(l.msg, test.kindStr) {
+				if !strings.Contains(l.Msg, test.kindStr) {
 					t.Fatalf("expected kind to be %q, got: %s", test.kindStr, msg)
 				}
-				if !strings.HasSuffix(l.msg, suffix) {
+				if !strings.HasSuffix(l.Msg, suffix) {
 					t.Fatalf("expected statement to end with %q, got %s", suffix, msg)
 				}
 			}

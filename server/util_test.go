@@ -148,11 +148,16 @@ func TestComma(t *testing.T) {
 		{"-10", comma(-10), "-10"},
 	}
 
+	failed := false
 	for _, test := range l {
 		if test.got != test.exp {
 			t.Errorf("On %v, expected '%v', but got '%v'",
 				test.name, test.exp, test.got)
+			failed = true
 		}
+	}
+	if failed {
+		t.FailNow()
 	}
 }
 
@@ -172,7 +177,7 @@ func TestURLRedaction(t *testing.T) {
 	for i := range redactionFromTo {
 		r := redactURLString(redactionFromTo[i].Full)
 		if r != redactionFromTo[i].Safe {
-			t.Errorf("Redacting URL [index %d] %q, expected %q got %q", i, redactionFromTo[i].Full, redactionFromTo[i].Safe, r)
+			t.Fatalf("Redacting URL [index %d] %q, expected %q got %q", i, redactionFromTo[i].Full, redactionFromTo[i].Safe, r)
 		}
 		if listFull[i], err = url.Parse(redactionFromTo[i].Full); err != nil {
 			t.Fatalf("Redacting URL index %d parse Full failed: %v", i, err)
@@ -183,7 +188,7 @@ func TestURLRedaction(t *testing.T) {
 	}
 	results := redactURLList(listFull)
 	if !reflect.DeepEqual(results, listSafe) {
-		t.Errorf("Redacting URL list did not compare equal, even after each URL did")
+		t.Fatalf("Redacting URL list did not compare equal, even after each URL did")
 	}
 }
 

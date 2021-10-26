@@ -72,6 +72,10 @@ var (
 
 // RunServer starts a new Go routine based server
 func RunServer(opts *server.Options) *server.Server {
+	return RunServerCallback(opts, nil)
+}
+
+func RunServerCallback(opts *server.Options, callback func(*server.Server)) *server.Server {
 	if opts == nil {
 		opts = &DefaultTestOptions
 	}
@@ -87,6 +91,10 @@ func RunServer(opts *server.Options) *server.Server {
 
 	if doLog {
 		s.ConfigureLogger()
+	}
+
+	if callback != nil {
+		callback(s)
 	}
 
 	// Run server in Go routine.
@@ -112,6 +120,17 @@ func LoadConfig(configFile string) *server.Options {
 func RunServerWithConfig(configFile string) (srv *server.Server, opts *server.Options) {
 	opts = LoadConfig(configFile)
 	srv = RunServer(opts)
+	return
+}
+
+// RunServerWithConfigOverrides starts a new Go routine based server with a configuration file,
+// providing a callback to update the options configured.
+func RunServerWithConfigOverrides(configFile string, optsCallback func(*server.Options), svrCallback func(*server.Server)) (srv *server.Server, opts *server.Options) {
+	opts = LoadConfig(configFile)
+	if optsCallback != nil {
+		optsCallback(opts)
+	}
+	srv = RunServerCallback(opts, svrCallback)
 	return
 }
 
