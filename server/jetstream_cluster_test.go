@@ -5659,9 +5659,15 @@ func TestJetStreamSuperClusterConnectionCount(t *testing.T) {
 		require_NoError(t, err)
 	}()
 
-	// AT THIS POINT THERE IS NO ACTIVE NATS CLIENT CONNECTION
-	_, err = sysNc.Request(fmt.Sprintf(accReqSubj, "ONE", "CONNS"), nil, 100*time.Millisecond)
-	require_True(t, err == nats.ErrTimeout)
+	// There should be no active NATS CLIENT connections, but we still need
+	// to wait a little bit...
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		_, err := sysNc.Request(fmt.Sprintf(accReqSubj, "ONE", "CONNS"), nil, 100*time.Millisecond)
+		if err != nats.ErrTimeout {
+			return fmt.Errorf("Expected timeout, got %v", err)
+		}
+		return nil
+	})
 	sysNc.Close()
 
 	s := sc.randomServer()

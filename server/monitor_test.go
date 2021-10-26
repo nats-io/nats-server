@@ -2809,6 +2809,29 @@ func TestMonitorGatewayURLsUpdated(t *testing.T) {
 		}
 		return nil
 	})
+
+	// Now stop sb2 and make sure that its removal is reflected in varz.
+	sb2.Shutdown()
+	// Wait for it to disappear from sa.
+	waitForInboundGateways(t, sa, 1, 2*time.Second)
+	// Now check that URLs in /varz get updated.
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		for mode := 0; mode < 2; mode++ {
+			v := pollVarz(t, sa, mode, varzURL, nil)
+			if n := len(v.Gateway.Gateways); n != 1 {
+				return fmt.Errorf("mode=%v - Expected 1 remote gateway, got %v", mode, n)
+			}
+			gw := v.Gateway.Gateways[0]
+			if n := len(gw.URLs); n != 1 {
+				return fmt.Errorf("mode=%v - Expected 1 url, got %v", mode, n)
+			}
+			u := gw.URLs[0]
+			if u != fmt.Sprintf("127.0.0.1:%d", sb1.GatewayAddr().Port) {
+				return fmt.Errorf("mode=%v - Did not get URL to sb1", mode)
+			}
+		}
+		return nil
+	})
 }
 
 func TestMonitorLeafNode(t *testing.T) {
