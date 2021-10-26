@@ -27,6 +27,7 @@ import (
 
 // Structs used for json serialization of a trace
 type TraceMsg struct {
+	TrcRef  string `json:"trc_ref"`
 	CtxName string `json:"ctx_name,omitempty"`
 	// contains a value corresponding to a TraceSubscription or TraceStore entry with ref set.
 	// When not present or empty, the message originated from a client.
@@ -112,6 +113,7 @@ type traceHeader struct {
 
 // Tracing rule that fired.
 type selectedTrace struct {
+	Ref  string `json:"ref"`
 	Name string `json:"name"`
 	// include always. not all policies may be present in every server.
 	TrcSubj  string `json:"trc_subj"`
@@ -263,14 +265,26 @@ func (tCtx *traceCtx) traceInfo(t *selectedTrace, tMsg *TraceMsg, accInfoCache m
 		var ci *ConnInfo
 		if tMsg.Client != nil {
 			if ci, ok = connInfoCache[tMsg.Client.ClientId]; !ok {
-				if c := tCtx.srv.getClient(tMsg.Client.ClientId); c == nil {
-					tCtx.srv.Errorf("Client not found during trace conn info gathering")
-				} else {
-					ci = &ConnInfo{}
-					c.mu.Lock()
-					ci.fill(c, c.nc, now, true)
-					c.mu.Unlock()
-					connInfoCache[tMsg.Client.ClientId] = ci
+				var c *client
+				if tMsg.Client.Kind == "Leafnode" {
+					c = tCtx.srv.GetLeafNode(tMsg.Client.ClientId)
+				} else if tMsg.Client.Kind == "Client" {
+					c = tCtx.srv.getClient(tMsg.Client.ClientId)
+				} else if tMsg.Client.Kind == "Router" {
+					tCtx.srv.mu.Lock()
+					c = tCtx.srv.routes[tMsg.Client.ClientId]
+					tCtx.srv.mu.Unlock()
+				}
+				if tMsg.Client.Kind != "JetStream" {
+					if c == nil {
+						tCtx.srv.Errorf("%s Client not found during trace conn info gathering", tMsg.Client.Kind)
+					} else {
+						ci = &ConnInfo{}
+						c.mu.Lock()
+						ci.fill(c, c.nc, now, true)
+						c.mu.Unlock()
+						connInfoCache[tMsg.Client.ClientId] = ci
+					}
 				}
 			}
 		}
@@ -287,15 +301,27 @@ func (tCtx *traceCtx) traceInfo(t *selectedTrace, tMsg *TraceMsg, accInfoCache m
 				continue
 			}
 			if ci, ok = connInfoCache[s.SubClient.ClientId]; !ok {
-				if c := tCtx.srv.getClient(s.SubClient.ClientId); c == nil {
-					tCtx.srv.Errorf("Client not found during trace conn info gathering")
-					continue
-				} else {
-					ci = &ConnInfo{}
-					c.mu.Lock()
-					ci.fill(c, c.nc, now, true)
-					c.mu.Unlock()
-					connInfoCache[s.SubClient.ClientId] = ci
+				var c *client
+				if s.SubClient.Kind == "Leafnode" {
+					c = tCtx.srv.GetLeafNode(s.SubClient.ClientId)
+				} else if s.SubClient.Kind == "Client" {
+					c = tCtx.srv.getClient(s.SubClient.ClientId)
+				} else if s.SubClient.Kind == "Router" {
+					tCtx.srv.mu.Lock()
+					c = tCtx.srv.routes[s.SubClient.ClientId]
+					tCtx.srv.mu.Unlock()
+				}
+				if s.SubClient.Kind != "JetStream" {
+					if c == nil {
+						tCtx.srv.Errorf("%s Client not found during subscriber trace conn info gathering", s.SubClient.Kind)
+						continue
+					} else {
+						ci = &ConnInfo{}
+						c.mu.Lock()
+						ci.fill(c, c.nc, now, true)
+						c.mu.Unlock()
+						connInfoCache[s.SubClient.ClientId] = ci
+					}
 				}
 			}
 			if ci != nil {
@@ -328,6 +354,7 @@ func (tCtx *traceCtx) traceGroupSend(group *traceGroup, accInfoSet map[string]*A
 	for _, t := range group.traces {
 		tMsg := group.traceMsg
 		tMsg.CtxName = ctxName
+		tMsg.TrcRef = t.Ref
 		tMsg.ProcessingStart = start.String()
 		tMsg.ProcessingDur = now.Sub(start).String()
 		tMsg.AssociatedInfo = tCtx.traceInfo(t, &tMsg, accInfoSet, connInfoSet, now)
@@ -344,6 +371,8 @@ func (tCtx *traceCtx) traceMsgCompletion(send bool) {
 		tCtx.trcHdrSet = false
 		return
 	}
+	tCtx.srv.Debugf("Trace Complete: global (%d), header (%d), pub (%d), imported (%d), exported (%d)",
+		len(tCtx.global.traces), len(tCtx.hdr.traces), len(tCtx.pub.traces), len(tCtx.importedStrms), len(tCtx.exportedSrvcs))
 	now := time.Now().UTC()
 	connInfoSet := map[uint64]*ConnInfo{}
 	accInfoSet := map[string]*AccountInfo{}
@@ -477,13 +506,21 @@ FOR_ACCOUNT_POLICY:
 		}
 		// We may be here because this is the point of origin, or because subsequent server have additional tracing
 		if subj := tCtx.evalTrace(name, policy, accName, pubSubject); subj != _EMPTY_ {
+			var b [8]byte
+			rn := rand.Int63()
+			for i, l := 0, rn; i < len(b); i++ {
+				b[i] = digits[l%base]
+				l /= base
+			}
+			trcRef := string(b[:])
 			firstMsg = firstMsg || policy.Msg
 			tracePolicies = append(tracePolicies, &selectedTrace{
 				Name:     name,
 				probes:   policy.probes,
 				TrcSubj:  subj,
 				LocalAcc: accName,
-				sendAcc:  acc})
+				sendAcc:  acc,
+				Ref:      trcRef})
 		}
 	}
 	return firstMsg, tracePolicies
@@ -503,8 +540,9 @@ func (tCtx *traceCtx) evalHdrTraces(acc *Account, trcSubj string, trcLvel []stri
 				found = true
 				break
 			}
+			// TODO deal with hop cnt
 		}
-		if !found {
+		if !found && len(filterIds) > 0 {
 			return nil
 		}
 	}
@@ -950,6 +988,7 @@ func (tCtx *traceCtx) traceMsg(msg []byte, subj, reply string, msgC *client, msg
 				msg = msgC.setHeader(TraceHeader, "", msg)
 				trcSubj = _EMPTY_
 			}
+			//TODO only do this if the system account is not shared.
 			if msgC.kind == LEAF && len(trcHeader.Traces) != 0 {
 				msgC.Errorf("Leaf nodes only allowed to set header without traces: %s", TraceHeader)
 				msgC.closeConnection(ProtocolViolation)

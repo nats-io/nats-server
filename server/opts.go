@@ -754,6 +754,15 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			return
 		}
 		o.MsgTracePolicy = tp
+	case "ping_probes":
+		gacc := NewAccount(globalAccountName)
+		o.Accounts = append(o.Accounts, gacc)
+		p, err := parsePingProbes(v, tk, &lt, errors, warnings)
+		if err != nil {
+			*errors = append(*errors, err)
+			return
+		}
+		gacc.pingProbes = p
 	case "authorization":
 		auth, err := parseAuthorization(tk, o, errors, warnings)
 		if err != nil {
@@ -2393,6 +2402,31 @@ func parseMscTracePolicy(v interface{}, tk token, errors *[]error, warnings *[]e
 	return trc, nil
 }
 
+func parsePingProbes(mv interface{}, tk token, lt *token, errors *[]error, warnings *[]error) (*probes, error) {
+	switch vv := mv.(type) {
+	case []interface{}, []string:
+	case string:
+		if strings.ToLower(vv) == "disabled" {
+			return nil, nil
+		} else if strings.ToLower(vv) == "enabled" {
+			return &probes{}, nil
+		}
+	default:
+		err := &configErr{tk, fmt.Sprintf("Unknown entry type for ping_probes of %+v\n", vv)}
+		*errors = append(*errors, err)
+		return nil, err
+	}
+	p := probes{}
+	if arr, err := parseStringArray("allowed ping probes", tk, lt, mv, errors, warnings); err != nil {
+		// error is part of errors array
+		return nil, err
+	} else if err := p.fillTraceProbes(arr, true, false); err != nil {
+		*errors = append(*errors, &configErr{tk, err.Error()})
+		return nil, err
+	}
+	return &p, nil
+}
+
 func parseMsgTracePolicies(v interface{}, errors *[]error, warnings *[]error, privilegedProbes bool) (map[string]Trace, error) {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
@@ -2551,29 +2585,12 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 					}
 					acc.traces = tp
 				case "ping_probes":
-					switch vv := mv.(type) {
-					case []interface{}, []string:
-					case string:
-						if strings.ToLower(vv) == "disabled" {
-							continue
-						} else if strings.ToLower(vv) == "enabled" {
-							acc.pingProbes = &probes{}
-							continue
-						}
-					default:
-						err := &configErr{tk, fmt.Sprintf("Unknown entry type for ping_probes of %+v\n", vv)}
+					p, err := parsePingProbes(mv, tk, &lt, errors, warnings)
+					if err != nil {
 						*errors = append(*errors, err)
 						continue
 					}
-					p := probes{}
-					if arr, err := parseStringArray("allowed ping probes", tk, &lt, mv, errors, warnings); err != nil {
-						// error is part of errors array
-						continue
-					} else if err := p.fillTraceProbes(arr, true, false); err != nil {
-						*errors = append(*errors, &configErr{tk, err.Error()})
-						continue
-					}
-					acc.pingProbes = &p
+					acc.pingProbes = p
 				default:
 					if !tk.IsUsedVariable() {
 						err := &unknownConfigFieldErr{

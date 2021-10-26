@@ -686,6 +686,9 @@ func (s *Server) configureAccounts() error {
 			// We use this for selecting between multiple weighted destinations.
 			a.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
 		}
+		if acc.pingProbes != nil {
+			a.pingProbes = acc.pingProbes
+		}
 		acc.sl = nil
 		acc.clients = nil
 		s.registerAccountNoLock(a)
