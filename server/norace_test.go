@@ -3720,3 +3720,29 @@ func TestNoRaceJetStreamPullConsumerAPIOutUnlock(t *testing.T) {
 	}
 	nc.Flush()
 }
+
+// Reports of high cpu on compaction for a KV store.
+func TestNoRaceJetStreamKeyValueCompaction(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+		Bucket:   "COMPACT",
+		Replicas: 3,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	value := strings.Repeat("A", 128*1024)
+	for i := 0; i < 5_000; i++ {
+		key := fmt.Sprintf("K-%d", rand.Intn(256)+1)
+		if _, err := kv.PutString(key, value); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+}

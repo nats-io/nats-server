@@ -66,13 +66,33 @@ type KeyValue interface {
 	Bucket() string
 	// PurgeDeletes will remove all current delete markers.
 	PurgeDeletes(opts ...WatchOpt) error
+	// Status retrieves the status and configuration of a bucket
+	Status() (KeyValueStatus, error)
+}
+
+// KeyValueStatus is run-time status about a Key-Value bucket
+type KeyValueStatus interface {
+	// Bucket the name of the bucket
+	Bucket() string
+
+	// Values is how many messages are in the bucket, including historical values
+	Values() uint64
+
+	// History returns the configured history kept per key
+	History() int64
+
+	// TTL is how long the bucket keeps values for
+	TTL() time.Duration
+
+	// BackingStore indicates what technology is used for storage of the bucket
+	BackingStore() string
 }
 
 // KeyWatcher is what is returned when doing a watch.
 type KeyWatcher interface {
 	// Updates returns a channel to read any updates to entries.
 	Updates() <-chan KeyValueEntry
-	// Stop() will stop this watcher.
+	// Stop will stop this watcher.
 	Stop() error
 }
 
@@ -333,6 +353,18 @@ func keyValid(key string) bool {
 
 // Get returns the latest value for the key.
 func (kv *kvs) Get(key string) (KeyValueEntry, error) {
+	e, err := kv.get(key)
+	if err == ErrKeyDeleted {
+		return nil, ErrKeyNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return e, nil
+}
+
+func (kv *kvs) get(key string) (KeyValueEntry, error) {
 	if !keyValid(key) {
 		return nil, ErrInvalidKey
 	}
@@ -367,6 +399,7 @@ func (kv *kvs) Get(key string) (KeyValueEntry, error) {
 			entry.op = KeyValuePurge
 			return entry, ErrKeyDeleted
 		}
+
 	}
 
 	return entry, nil
@@ -400,11 +433,13 @@ func (kv *kvs) Create(key string, value []byte) (revision uint64, err error) {
 	if err == nil {
 		return v, nil
 	}
+
 	// TODO(dlc) - Since we have tombstones for DEL ops for watchers, this could be from that
 	// so we need to double check.
-	if e, err := kv.Get(key); err == ErrKeyDeleted {
+	if e, err := kv.get(key); err == ErrKeyDeleted {
 		return kv.Update(key, value, e.Revision())
 	}
+
 	return 0, err
 }
 
@@ -469,19 +504,30 @@ func (kv *kvs) PurgeDeletes(opts ...WatchOpt) error {
 	}
 	defer watcher.Stop()
 
+	var deleteMarkers []KeyValueEntry
 	for entry := range watcher.Updates() {
 		if entry == nil {
 			break
 		}
 		if op := entry.Operation(); op == KeyValueDelete || op == KeyValuePurge {
-			var b strings.Builder
-			b.WriteString(kv.pre)
-			b.WriteString(entry.Key())
-			err := kv.js.purgeStream(kv.stream, &streamPurgeRequest{Subject: b.String()})
-			if err != nil {
-				return err
-			}
+			deleteMarkers = append(deleteMarkers, entry)
 		}
+	}
+
+	var (
+		pr streamPurgeRequest
+		b  strings.Builder
+	)
+	// Do actual purges here.
+	for _, entry := range deleteMarkers {
+		b.WriteString(kv.pre)
+		b.WriteString(entry.Key())
+		pr.Subject = b.String()
+		err := kv.js.purgeStream(kv.stream, &pr)
+		if err != nil {
+			return err
+		}
+		b.Reset()
 	}
 	return nil
 }
@@ -641,4 +687,38 @@ func (kv *kvs) Watch(keys string, opts ...WatchOpt) (KeyWatcher, error) {
 // Bucket returns the current bucket name (JetStream stream).
 func (kv *kvs) Bucket() string {
 	return kv.name
+}
+
+// KeyValueBucketStatus represents status of a Bucket, implements KeyValueStatus
+type KeyValueBucketStatus struct {
+	nfo    *StreamInfo
+	bucket string
+}
+
+// Bucket the name of the bucket
+func (s *KeyValueBucketStatus) Bucket() string { return s.bucket }
+
+// Values is how many messages are in the bucket, including historical values
+func (s *KeyValueBucketStatus) Values() uint64 { return s.nfo.State.Msgs }
+
+// History returns the configured history kept per key
+func (s *KeyValueBucketStatus) History() int64 { return s.nfo.Config.MaxMsgsPerSubject }
+
+// TTL is how long the bucket keeps values for
+func (s *KeyValueBucketStatus) TTL() time.Duration { return s.nfo.Config.MaxAge }
+
+// BackingStore indicates what technology is used for storage of the bucket
+func (s *KeyValueBucketStatus) BackingStore() string { return "JetStream" }
+
+// StreamInfo is the stream info retrieved to create the status
+func (s *KeyValueBucketStatus) StreamInfo() *StreamInfo { return s.nfo }
+
+// Status retrieves the status and configuration of a bucket
+func (kv *kvs) Status() (KeyValueStatus, error) {
+	nfo, err := kv.js.StreamInfo(kv.stream)
+	if err != nil {
+		return nil, err
+	}
+
+	return &KeyValueBucketStatus{nfo: nfo, bucket: kv.name}, nil
 }

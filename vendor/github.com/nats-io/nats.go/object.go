@@ -31,6 +31,8 @@ import (
 	"github.com/nats-io/nuid"
 )
 
+// ObjectStoreManager creates, loads and deletes Object Stores
+//
 // Notice: Experimental Preview
 //
 // This functionality is EXPERIMENTAL and may be changed in later releases.
@@ -43,6 +45,9 @@ type ObjectStoreManager interface {
 	DeleteObjectStore(bucket string) error
 }
 
+// ObjectStore is a blob store capable of storing large objects efficiently in
+// JetStream streams
+//
 // Notice: Experimental Preview
 //
 // This functionality is EXPERIMENTAL and may be changed in later releases.
@@ -89,6 +94,9 @@ type ObjectStore interface {
 
 	// List will list all the objects in this store.
 	List(opts ...WatchOpt) ([]*ObjectInfo, error)
+
+	// Status retrieves run-time status about the backing store of the bucket.
+	Status() (ObjectStoreStatus, error)
 }
 
 type ObjectOpt interface {
@@ -109,7 +117,7 @@ func (ctx ContextOpt) configureObject(opts *objOpts) error {
 type ObjectWatcher interface {
 	// Updates returns a channel to read any updates to entries.
 	Updates() <-chan *ObjectInfo
-	// Stop() will stop this watcher.
+	// Stop will stop this watcher.
 	Stop() error
 }
 
@@ -130,6 +138,25 @@ type ObjectStoreConfig struct {
 	TTL         time.Duration
 	Storage     StorageType
 	Replicas    int
+}
+
+type ObjectStoreStatus interface {
+	// Bucket is the name of the bucket
+	Bucket() string
+	// Description is the description supplied when creating the bucket
+	Description() string
+	// TTL indicates how long objects are kept in the bucket
+	TTL() time.Duration
+	// Storage indicates the underlying JetStream storage technology used to store data
+	Storage() StorageType
+	// Replicas indicates how many storage replicas are kept for the data in the bucket
+	Replicas() int
+	// Sealed indicates the stream is sealed and cannot be modified in any way
+	Sealed() bool
+	// Size is the combined size of all data in the bucket including metadata, in bytes
+	Size() uint64
+	// BackingStore provides details about the underlying storage
+	BackingStore() string
 }
 
 // ObjectMetaOptions
@@ -857,6 +884,54 @@ func (obs *obs) List(opts ...WatchOpt) ([]*ObjectInfo, error) {
 	return objs, nil
 }
 
+// ObjectBucketStatus  represents status of a Bucket, implements ObjectStoreStatus
+type ObjectBucketStatus struct {
+	nfo    *StreamInfo
+	bucket string
+}
+
+// Bucket is the name of the bucket
+func (s *ObjectBucketStatus) Bucket() string { return s.bucket }
+
+// Description is the description supplied when creating the bucket
+func (s *ObjectBucketStatus) Description() string { return s.nfo.Config.Description }
+
+// TTL indicates how long objects are kept in the bucket
+func (s *ObjectBucketStatus) TTL() time.Duration { return s.nfo.Config.MaxAge }
+
+// Storage indicates the underlying JetStream storage technology used to store data
+func (s *ObjectBucketStatus) Storage() StorageType { return s.nfo.Config.Storage }
+
+// Replicas indicates how many storage replicas are kept for the data in the bucket
+func (s *ObjectBucketStatus) Replicas() int { return s.nfo.Config.Replicas }
+
+// Sealed indicates the stream is sealed and cannot be modified in any way
+func (s *ObjectBucketStatus) Sealed() bool { return s.nfo.Config.Sealed }
+
+// Size is the combined size of all data in the bucket including metadata, in bytes
+func (s *ObjectBucketStatus) Size() uint64 { return s.nfo.State.Bytes }
+
+// BackingStore indicates what technology is used for storage of the bucket
+func (s *ObjectBucketStatus) BackingStore() string { return "JetStream" }
+
+// StreamInfo is the stream info retrieved to create the status
+func (s *ObjectBucketStatus) StreamInfo() *StreamInfo { return s.nfo }
+
+// Status retrieves run-time status about a bucket
+func (obs *obs) Status() (ObjectStoreStatus, error) {
+	nfo, err := obs.js.StreamInfo(obs.stream)
+	if err != nil {
+		return nil, err
+	}
+
+	status := &ObjectBucketStatus{
+		nfo:    nfo,
+		bucket: obs.name,
+	}
+
+	return status, nil
+}
+
 // Read impl.
 func (o *objResult) Read(p []byte) (n int, err error) {
 	o.Lock()
@@ -880,7 +955,7 @@ func (o *objResult) Read(p []byte) (n int, err error) {
 	}
 
 	r := o.r.(net.Conn)
-	r.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	r.SetReadDeadline(time.Now().Add(2 * time.Second))
 	n, err = r.Read(p)
 	if err, ok := err.(net.Error); ok && err.Timeout() {
 		if ctx := o.ctx; ctx != nil {
