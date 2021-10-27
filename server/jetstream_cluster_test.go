@@ -9754,6 +9754,21 @@ func createJetStreamCluster(t *testing.T, tmpl string, clusterName, snPre string
 		t.Fatalf("Bad params")
 	}
 
+	// Flaky test prevention:
+	// Binding a socket to IP stack port 0 will bind an ephemeral port from an OS-specific range.
+	// If someone passes in to us a port spec which would cover that range, the test would be flaky.
+	// Adjust these ports to be the most inclusive across the port runner OSes.
+	// Linux: /proc/sys/net/ipv4/ip_local_port_range : 32768:60999
+	// <https://dataplane.org/ephemeralports.html> is useful, and shows there's no safe available range without OS-specific tuning.
+	// Our tests are usually run on Linux.  Folks who care about other OSes: if you can't tune your test-runner OS to match, please
+	// propose a viable alternative.
+	const prohibitedPortFirst = 32768
+	const prohibitedPortLast = 60999
+	if (portStart >= prohibitedPortFirst && portStart <= prohibitedPortLast) ||
+		(portStart+numServers-1 >= prohibitedPortFirst && portStart+numServers-1 <= prohibitedPortLast) {
+		t.Fatalf("test setup failure: may not specify a cluster port range which falls within %d:%d", prohibitedPortFirst, prohibitedPortLast)
+	}
+
 	// Build out the routes that will be shared with all configs.
 	var routes []string
 	for cp := portStart; cp < portStart+numServers; cp++ {
