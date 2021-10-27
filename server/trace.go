@@ -148,6 +148,7 @@ type traceCtx struct {
 	exportedSrvcs map[*serviceImport]*traceGroup
 
 	liftedTraces []*selectedTrace
+	msgAcc       *Account
 
 	stream   *stream
 	consumer *consumer
@@ -275,7 +276,7 @@ func (tCtx *traceCtx) traceInfo(t *selectedTrace, tMsg *TraceMsg, accInfoCache m
 					c = tCtx.srv.routes[tMsg.Client.ClientId]
 					tCtx.srv.mu.Unlock()
 				}
-				if tMsg.Client.Kind != "JetStream" {
+				if !(tMsg.Client.Kind == "JetStream" || tMsg.Client.Kind == "Account") {
 					if c == nil {
 						tCtx.srv.Errorf("%s Client not found during trace conn info gathering", tMsg.Client.Kind)
 					} else {
@@ -311,7 +312,7 @@ func (tCtx *traceCtx) traceInfo(t *selectedTrace, tMsg *TraceMsg, accInfoCache m
 					c = tCtx.srv.routes[s.SubClient.ClientId]
 					tCtx.srv.mu.Unlock()
 				}
-				if s.SubClient.Kind != "JetStream" {
+				if !(s.SubClient.Kind == "JetStream" || s.SubClient.Kind == "Account") {
 					if c == nil {
 						tCtx.srv.Errorf("%s Client not found during subscriber trace conn info gathering", s.SubClient.Kind)
 						continue
@@ -369,6 +370,7 @@ func (tCtx *traceCtx) traceMsgCompletion(send bool) {
 		tCtx.consumer = nil
 		tCtx.stream = nil
 		tCtx.trcHdrSet = false
+		tCtx.msgAcc = nil
 		return
 	}
 	tCtx.srv.Debugf("Trace Complete: global (%d), header (%d), pub (%d), imported (%d), exported (%d)",
@@ -420,6 +422,7 @@ func (tCtx *traceCtx) traceMsgCompletion(send bool) {
 	tCtx.stream = nil
 	tCtx.Msg = nil
 	tCtx.Header = nil
+	tCtx.msgAcc = nil
 	tCtx.traceStart = time.Time{}
 }
 
@@ -639,7 +642,7 @@ func (tCtx *traceCtx) traceJsMsgStore(msg []byte, hdr []byte, subj, reply, msgId
 }
 
 // conditionally capture header and message content
-func condCaputeMsg(firstMsg bool, hdrStart int, msg []byte) (http.Header, []byte) {
+func condCaptureMsg(firstMsg bool, hdrStart int, msg []byte) (http.Header, []byte) {
 	if !firstMsg {
 		return nil, nil
 	}
@@ -662,6 +665,7 @@ func (tCtx *traceCtx) tracePub(msgC *client, msgAcc *Account, pubSubject, reply 
 	if srv == nil {
 		return
 	}
+	tCtx.msgAcc = msgAcc
 	tCtx.trcHdrSet = trcHdrSet
 	// In case storage in JetStream needs to be monitored in detail, only return if msgC.kind == Client
 	if msgAcc == srv.SystemAccount() {
@@ -779,7 +783,7 @@ func (tCtx *traceCtx) tracePub(msgC *client, msgAcc *Account, pubSubject, reply 
 		if tCtx.consumer != nil {
 			tCtx.pub.traceMsg.ConsumerRef = tCtx.consumer.name
 		}
-		tCtx.Header, tCtx.Msg = condCaputeMsg(firstMsg, msgC.pa.hdr, msg)
+		tCtx.Header, tCtx.Msg = condCaptureMsg(firstMsg, msgC.pa.hdr, msg)
 	}
 }
 
@@ -814,10 +818,10 @@ func (tCtx *traceCtx) traceSub(c *client, sub *subscription, acc *Account, subje
 		if !importFound {
 			firstMsg, tracePolicies := tCtx.evalTraces(subAcc, subAccName, pubSubj, sub.client.acc.traces, tCtx.liftedTraces)
 			if len(tracePolicies) > 0 {
-				tCtx.Header, tCtx.Msg = condCaputeMsg(firstMsg, c.pa.hdr, msg)
+				tCtx.Header, tCtx.Msg = condCaptureMsg(firstMsg, c.pa.hdr, msg)
 				trc = &traceGroup{
 					traces:   tracePolicies,
-					traceMsg: TraceMsg{Acc: acc.Name, Reply: string(reply)},
+					traceMsg: TraceMsg{Acc: tCtx.msgAcc.Name, Reply: string(reply)},
 				}
 				if tCtx.importedStrms == nil {
 					tCtx.importedStrms = make(map[*streamImport]*traceGroup)
@@ -839,10 +843,10 @@ func (tCtx *traceCtx) traceSub(c *client, sub *subscription, acc *Account, subje
 		if !importFound {
 			firstMsg, tracePolicies := tCtx.evalTraces(subAcc, subAccName, pubSubj, subAcc.traces, tCtx.liftedTraces)
 			if len(tracePolicies) > 0 {
-				tCtx.Header, tCtx.Msg = condCaputeMsg(firstMsg, c.pa.hdr, msg)
+				tCtx.Header, tCtx.Msg = condCaptureMsg(firstMsg, c.pa.hdr, msg)
 				trc = &traceGroup{
 					traces:   tracePolicies,
-					traceMsg: TraceMsg{Acc: c.acc.Name, Reply: string(reply)},
+					traceMsg: TraceMsg{Acc: tCtx.msgAcc.Name, Reply: string(reply)},
 				}
 				if tCtx.exportedSrvcs == nil {
 					tCtx.exportedSrvcs = make(map[*serviceImport]*traceGroup)

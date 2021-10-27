@@ -747,13 +747,22 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			*errors = append(*errors, err)
 			return
 		}
-	case "msg_trace":
+	case "operator_msg_trace":
 		tp, err := parseMsgTracePolicies(tk, errors, warnings, true)
 		if err != nil {
 			*errors = append(*errors, err)
 			return
 		}
 		o.MsgTracePolicy = tp
+	case "msg_trace":
+		gacc := NewAccount(globalAccountName)
+		o.Accounts = append(o.Accounts, gacc)
+		tp, err := parseMsgTracePolicies(tk, errors, warnings, true)
+		if err != nil {
+			*errors = append(*errors, err)
+			return
+		}
+		gacc.traces = tp
 	case "ping_probes":
 		gacc := NewAccount(globalAccountName)
 		o.Accounts = append(o.Accounts, gacc)

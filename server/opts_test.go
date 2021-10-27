@@ -3226,7 +3226,7 @@ func TestResolverPinnedAccountsFail(t *testing.T) {
 
 func TestTracePolicy(t *testing.T) {
 	cfgFmt := `
-		msg_trace: {
+		operator_msg_trace: {
 			foo: {Subject: foo, Freq: 0.1}
 			bar: {Subject: foo, Freq: 0.5, NotSubject: bar, Probes: ["connz", "accountz"]}
 		}
@@ -3246,6 +3246,11 @@ func TestTracePolicy(t *testing.T) {
 			E: {
 				ping_probes: ["connz", "accountz"]
 			}
+		}
+		# $G settings
+		ping_probes: all
+		msg_trace: {
+			baz: {Subject: bazzz}
 		}
 	`
 
@@ -3296,6 +3301,18 @@ func TestTracePolicy(t *testing.T) {
 	a = accs["E"]
 	require_True(t, a.pingProbes != nil)
 	require_True(t, *a.pingProbes == probes{Connz: true, Accountz: true})
+
+	s, err := NewServer(opts)
+	require_NoError(t, err)
+
+	trc, ok = s.gacc.traces["baz"]
+	require_True(t, ok)
+	require_Equal(t, trc.Subject, "bazzz")
+	require_True(t, s.gacc.pingProbes != nil)
+	require_True(t, !s.gacc.pingProbes.Varz)
+	require_True(t, s.gacc.pingProbes.Accountz)
+	require_True(t, s.gacc.pingProbes.Msg)
+	require_True(t, s.gacc.pingProbes.Connz)
 }
 
 func TestMaxSubTokens(t *testing.T) {

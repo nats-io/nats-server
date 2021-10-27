@@ -80,7 +80,7 @@ func TestMessageTraceOperatorSimpleServer(t *testing.T) {
 		system_account: SYS
 		server_name: srv-A
 		jetstream: {max_mem_store: 10Mb, max_file_store: 10Mb, store_dir: %s }
-		msg_trace: {
+		operator_msg_trace: {
 			trace_particular_subject_always: {Subject: always, Probes: [connz, accountz, varz] }
 		}
 		accounts: {
@@ -917,7 +917,7 @@ func TestMessageTraceOperatorTrcSubjectOverwrite(t *testing.T) {
 		listen: -1
 		system_account: SYS
 		server_name: srv-A
-		msg_trace: {
+		operator_msg_trace: {
 			trace_name: {Subject: foo, trace_subject "send.trace.here"}
 		}
 		accounts: {
@@ -966,7 +966,7 @@ func TestMessageTraceFreq(t *testing.T) {
 		listen: -1
 		system_account: SYS
 		server_name: srv-A
-		msg_trace: {
+		operator_msg_trace: {
 			trace_most_the_time: {Freq: 0.8}
 		}
 		accounts: {
@@ -1142,7 +1142,7 @@ func TestMessageTraceOperatorCrossServer(t *testing.T) {
 			listen: -1
 			system_account: SYS
 			server_name: srv-A
-			msg_trace: {
+			operator_msg_trace: {
 				trc1: {Subject: foo}
 			}
 			accounts: {
@@ -1180,7 +1180,7 @@ func TestMessageTraceOperatorCrossServer(t *testing.T) {
 				remotes:[{ url:nats://acc:acc@localhost:%d, account: ACC1},
 						 { url:nats://sys:sys@localhost:%d, account: SYS}]
 			}
-			msg_trace: {
+			operator_msg_trace: {
 				trc1: {Subject: foo}
 				trc2: {Subject: foo}
 			}
@@ -1214,7 +1214,7 @@ func TestMessageTraceOperatorCrossServer(t *testing.T) {
 					nats-route://127.0.0.1:%d
 				]
 			}
-			msg_trace: {
+			operator_msg_trace: {
 				trc2: {Subject: foo}
 			}
 		`, srvBTmpl, sA.opts.Cluster.Port)))
@@ -1246,7 +1246,7 @@ func TestMessageTraceOperatorCrossServer(t *testing.T) {
 					{name: "GA", url: "nats://127.0.0.1:%d"},
 				]
 			}
-			msg_trace: {
+			operator_msg_trace: {
 				trc2: {Subject: foo}
 			}
 		`, srvBTmpl, sA.opts.Gateway.Port)))
@@ -1443,7 +1443,7 @@ func TestMessageTraceOperatorClusterStream(t *testing.T) {
 		listen: -1
 		system_account: SYS
 		server_name: srv-A
-		msg_trace: {
+		operator_msg_trace: {
 			trc1: {Subject: foo}
 		}
 		accounts: {
@@ -1608,7 +1608,7 @@ func TestMessageTraceOperatorLeafStream(t *testing.T) {
 		listen: -1
 		system_account: SYS
 		server_name: srv-A
-		msg_trace: {
+		operator_msg_trace: {
 			trc1: {Subject: foo}
 		}
 		accounts: {
@@ -1639,7 +1639,7 @@ func TestMessageTraceOperatorLeafStream(t *testing.T) {
 		listen: -1
 		system_account: SYS
 		server_name: srv-B
-		msg_trace: {
+		operator_msg_trace: {
 			trc1: {Subject: foo}
 		}
 		accounts: {
@@ -1806,7 +1806,7 @@ func TestMessageTraceOperatorClusterService(t *testing.T) {
 		listen: -1
 		system_account: SYS
 		server_name: srv-A
-		msg_trace: {
+		operator_msg_trace: {
 			trc1: {Subject: foo}
 		}
 		accounts: {
@@ -1834,7 +1834,7 @@ func TestMessageTraceOperatorClusterService(t *testing.T) {
 		listen: -1
 		system_account: SYS
 		server_name: srv-B
-		msg_trace: {
+		operator_msg_trace: {
 			trc1: {Subject: foo, Probes: accountz}
 		}
 		accounts: {

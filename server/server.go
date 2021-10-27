@@ -689,6 +689,9 @@ func (s *Server) configureAccounts() error {
 		if acc.pingProbes != nil {
 			a.pingProbes = acc.pingProbes
 		}
+		if acc.traces != nil {
+			a.traces = acc.traces
+		}
 		acc.sl = nil
 		acc.clients = nil
 		s.registerAccountNoLock(a)
