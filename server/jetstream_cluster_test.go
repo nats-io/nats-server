@@ -9176,6 +9176,162 @@ func TestJetStreamAppendOnly(t *testing.T) {
 	}
 }
 
+// Related to #2642
+func TestJetStreamClusterStreamUpdateSyncBug(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar"},
+		Replicas: 3,
+	}
+
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	msg, toSend := []byte("OK"), 100
+	for i := 0; i < toSend; i++ {
+		if _, err := js.PublishAsync("foo", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	cfg.Subjects = []string{"foo", "bar", "baz"}
+	if _, err := js.UpdateStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Shutdown a server. The bug is that the update wiped the sync subject used to cacthup a stream that has the RAFT layer snapshotted.
+	nsl := c.randomNonStreamLeader("$G", "TEST")
+	nsl.Shutdown()
+
+	for i := 0; i < toSend*4; i++ {
+		if _, err := js.PublishAsync("foo", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// Throw in deletes as well.
+	for seq := uint64(200); seq < uint64(300); seq += 4 {
+		if err := js.DeleteMsg("TEST", seq); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	// We need to snapshot to force upper layer catchup vs RAFT layer.
+	mset, err := c.streamLeader("$G", "TEST").GlobalAccount().lookupStream("TEST")
+	if err != nil {
+		t.Fatalf("Expected to find a stream for %q", "TEST")
+	}
+	if err := mset.raftNode().InstallSnapshot(mset.stateSnapshot()); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	nsl = c.restartServer(nsl)
+	c.waitOnStreamCurrent(nsl, "$G", "TEST")
+
+	mset, _ = nsl.GlobalAccount().lookupStream("TEST")
+	cloneState := mset.state()
+
+	mset, _ = c.streamLeader("$G", "TEST").GlobalAccount().lookupStream("TEST")
+	leaderState := mset.state()
+
+	if !reflect.DeepEqual(cloneState, leaderState) {
+		t.Fatalf("States do not match: %+v vs %+v", cloneState, leaderState)
+	}
+}
+
+func TestJetStreamClusterStreamUpdateMissingBeginning(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	}
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	msg, toSend := []byte("OK"), 100
+	for i := 0; i < toSend; i++ {
+		if _, err := js.PublishAsync("foo", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	nsl := c.randomNonStreamLeader("$G", "TEST")
+	// Delete the first 50 messages manually from only this server.
+	mset, _ := nsl.GlobalAccount().lookupStream("TEST")
+	if _, err := mset.purge(&JSApiStreamPurgeRequest{Sequence: 50}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now shutdown.
+	nsl.Shutdown()
+
+	for i := 0; i < toSend; i++ {
+		if _, err := js.PublishAsync("foo", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// We need to snapshot to force upper layer catchup vs RAFT layer.
+	mset, err := c.streamLeader("$G", "TEST").GlobalAccount().lookupStream("TEST")
+	if err != nil {
+		t.Fatalf("Expected to find a stream for %q", "TEST")
+	}
+	if err := mset.raftNode().InstallSnapshot(mset.stateSnapshot()); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	nsl = c.restartServer(nsl)
+	c.waitOnStreamCurrent(nsl, "$G", "TEST")
+
+	mset, _ = nsl.GlobalAccount().lookupStream("TEST")
+	cloneState := mset.state()
+
+	mset, _ = c.streamLeader("$G", "TEST").GlobalAccount().lookupStream("TEST")
+	leaderState := mset.state()
+
+	if !reflect.DeepEqual(cloneState, leaderState) {
+		t.Fatalf("States do not match: %+v vs %+v", cloneState, leaderState)
+	}
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.

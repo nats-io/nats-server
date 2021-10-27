@@ -500,6 +500,13 @@ func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 	}
 }
 
+// IsLeader will return if we are the current leader.
+func (mset *stream) IsLeader() bool {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	return mset.isLeader()
+}
+
 // Lock should be held.
 func (mset *stream) isLeader() bool {
 	if mset.isClustered() {

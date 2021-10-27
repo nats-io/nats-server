@@ -3623,7 +3623,7 @@ func TestNoRaceJetStreamClusterStreamReset(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	// Do a hard reset here by hand.
-	mset.resetClusteredState()
+	mset.resetClusteredState(nil)
 
 	// Wait til we have the consumer leader re-elected.
 	c.waitOnConsumerLeader("$G", "TEST", "d1")

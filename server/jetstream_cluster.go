@@ -37,8 +37,10 @@ type jetStreamCluster struct {
 	// The metacontroller raftNode.
 	meta RaftNode
 	// For stream and consumer assignments. All servers will have this be the same.
-	// ACC -> STREAM -> Stream Assignment -> Consumers
+	// ACCOUNT -> STREAM -> Stream Assignment -> Consumers
 	streams map[string]map[string]*streamAssignment
+	// Signals meta-leader should check the stream assignments.
+	streamsCheck bool
 	// Server.
 	s *Server
 	// Internal client.
@@ -1498,28 +1500,27 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 				continue
 			}
 			// Apply our entries.
-			// TODO mset may be nil see doSnapshot(). applyStreamEntries is sensitive to this.
 			if err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
 				ne, nb := n.Applied(ce.Index)
 				// If we have at least min entries to compact, go ahead and snapshot/compact.
 				if ne >= compactNumMin || nb > compactSizeMin {
 					doSnapshot()
 				}
-			} else if err == errLastSeqMismatch {
-				mset.mu.RLock()
-				isLeader := mset.isLeader()
-				mset.mu.RUnlock()
-
-				if mset.isMirror() && isLeader {
-					mset.retryMirrorConsumer()
-				} else {
-					s.Warnf("Got stream sequence mismatch for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
-					if mset.resetClusteredState() {
+			} else {
+				s.Warnf("Error applying entries to '%s > %s': %v", sa.Client.serviceAccount(), sa.Config.Name, err)
+				if isClusterResetErr(err) {
+					if mset.isMirror() && mset.IsLeader() {
+						mset.retryMirrorConsumer()
+						continue
+					}
+					// We will attempt to reset our cluster state.
+					if mset.resetClusteredState(err) {
 						return
 					}
+				} else if isOutOfSpaceErr(err) {
+					// If applicable this will tear all of this down, but don't assume so and return.
+					s.handleOutOfSpace(mset)
 				}
-			} else {
-				s.Warnf("Error applying entries to '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
 			}
 		case isLeader = <-lch:
 			if isLeader {
@@ -1633,9 +1634,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 }
 
 // resetClusteredState is called when a clustered stream had a sequence mismatch and needs to be reset.
-func (mset *stream) resetClusteredState() bool {
+func (mset *stream) resetClusteredState(err error) bool {
 	mset.mu.RLock()
-	s, js, sa, acc, node := mset.srv, mset.js, mset.sa, mset.acc, mset.node
+	s, js, jsa, sa, acc, node := mset.srv, mset.js, mset.jsa, mset.sa, mset.acc, mset.node
 	stype, isLeader := mset.cfg.Storage, mset.isLeader()
 	mset.mu.RUnlock()
 
@@ -1644,8 +1645,15 @@ func (mset *stream) resetClusteredState() bool {
 		node.StepDown()
 	}
 
+	// Server
 	if js.limitsExceeded(stype) {
-		s.Debugf("Will not reset stream, resources exceeded")
+		s.Debugf("Will not reset stream, server resources exceeded")
+		return false
+	}
+
+	// Account
+	if jsa.limitsExceeded(stype) {
+		s.Warnf("stream '%s > %s' errored, account resources exceeded", acc, mset.name())
 		return false
 	}
 
@@ -1653,11 +1661,13 @@ func (mset *stream) resetClusteredState() bool {
 	if node != nil {
 		node.Delete()
 	}
-	// Preserve our current state and messages.
-	mset.stop(false, false)
+
+	// Preserve our current state and messages unless we have a first sequence mismatch.
+	shouldDelete := err == errFirstSequenceMismatch
+	mset.stop(shouldDelete, false)
 
 	if sa != nil {
-		s.Warnf("Resetting stream '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
+		s.Warnf("Resetting stream cluster state for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
 		js.mu.Lock()
 		sa.Group.node = nil
 		js.mu.Unlock()
@@ -1690,6 +1700,11 @@ func (js *jetStream) restartClustered(acc *Account, sa *streamAssignment) {
 	}
 }
 
+func isControlHdr(hdr []byte) bool {
+	return bytes.HasPrefix(hdr, []byte("NATS/1.0 100 "))
+}
+
+// Apply our stream entries.
 func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isRecovering bool) error {
 	for _, e := range ce.Entries {
 		if e.Type == EntryNormal {
@@ -1707,7 +1722,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				}
 
 				// Check for flowcontrol here.
-				if len(msg) == 0 && len(hdr) > 0 && reply != _EMPTY_ && bytes.HasPrefix(hdr, []byte("NATS/1.0 100 ")) {
+				if !isRecovering && len(msg) == 0 && len(hdr) > 0 && reply != _EMPTY_ && isControlHdr(hdr) {
 					mset.sendFlowControlReply(reply)
 					continue
 				}
@@ -1717,15 +1732,13 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 				// We can skip if we know this is less than what we already have.
 				if lseq < last {
-					if !isRecovering {
-						s.Debugf("Apply stream entries skipping message with sequence %d with last of %d", lseq, last)
-					}
+					s.Debugf("Apply stream entries skipping message with sequence %d with last of %d", lseq, last)
 					continue
 				}
 
 				// Skip by hand here since first msg special case.
 				// Reason is sequence is unsigned and for lseq being 0
-				// the lseq under stream would have be -1.
+				// the lseq under stream would have to be -1.
 				if lseq == 0 && last != 0 {
 					continue
 				}
@@ -1739,20 +1752,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 				// Process the actual message here.
 				if err := mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts); err != nil {
-					if !isRecovering {
-						if err == errLastSeqMismatch {
-							if mset.jsa.limitsExceeded(mset.cfg.Storage) {
-								s.Warnf("stream '%s > %s' errored, account resources exceeded: %v", mset.account(), mset.name(), err)
-								return nil
-							}
-							return err
-						}
-						s.Debugf("Got error processing JetStream msg: %v", err)
-					}
-					if isOutOfSpaceErr(err) {
-						s.handleOutOfSpace(mset)
-						return err
-					}
+					return err
 				}
 			case deleteMsgOp:
 				md, err := decodeMsgDelete(buf[1:])
@@ -1767,6 +1767,12 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				} else {
 					removed, err = mset.eraseMsg(md.Seq)
 				}
+
+				// Cluster reset error.
+				if err == ErrStoreEOF {
+					return err
+				}
+
 				if err != nil && !isRecovering {
 					s.Debugf("JetStream cluster failed to delete msg %d from stream %q for account %q: %v",
 						md.Seq, md.Stream, md.Client.serviceAccount(), err)
@@ -1833,7 +1839,9 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				if err := json.Unmarshal(e.Data, &snap); err != nil {
 					return err
 				}
-				mset.processSnapshot(&snap)
+				if err := mset.processSnapshot(&snap); err != nil {
+					return err
+				}
 			}
 		} else if e.Type == EntryRemovePeer {
 			js.mu.RLock()
@@ -2113,6 +2121,14 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) bool {
 		js.mu.Unlock()
 	}
 
+	// If this stream assignment does not have a sync subject (bug) set that the meta-leader should check when elected.
+	if sa.Sync == _EMPTY_ {
+		js.mu.Lock()
+		cc.streamsCheck = true
+		js.mu.Unlock()
+		return false
+	}
+
 	return didRemove
 }
 
@@ -2174,7 +2190,7 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 
 	// Check if this is for us..
 	if isMember {
-		js.processClusterUpdateStream(acc, sa)
+		js.processClusterUpdateStream(acc, osa, sa)
 	} else if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
 		// We have one here even though we are not a member. This can happen on re-assignment.
 		s.Debugf("JetStream removing stream '%s > %s' from this server, re-assigned", sa.Client.serviceAccount(), sa.Config.Name)
@@ -2187,7 +2203,7 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 
 // processClusterUpdateStream is called when we have a stream assignment that
 // has been updated for an existing assignment.
-func (js *jetStream) processClusterUpdateStream(acc *Account, sa *streamAssignment) {
+func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAssignment) {
 	if sa == nil {
 		return
 	}
@@ -2202,7 +2218,6 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, sa *streamAssignme
 
 	mset, err := acc.lookupStream(sa.Config.Name)
 	if err == nil && mset != nil {
-		osa := mset.streamAssignment()
 		if !alreadyRunning {
 			s.startGoRoutine(func() { js.monitorStream(mset, sa) })
 		}
@@ -2233,6 +2248,14 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, sa *streamAssignme
 	mset.mu.RLock()
 	isLeader := mset.isLeader()
 	mset.mu.RUnlock()
+
+	// Check for missing syncSubject bug.
+	if isLeader && osa != nil && osa.Sync == _EMPTY_ {
+		if node := mset.raftNode(); node != nil {
+			node.StepDown()
+		}
+		return
+	}
 
 	if !isLeader || hasResponded {
 		return
@@ -3365,6 +3388,24 @@ func (js *jetStream) processLeaderChange(isLeader bool) {
 		js.stopUpdatesSub()
 		// TODO(dlc) - stepdown.
 	}
+
+	// If we have been signaled to check the streams, this is for a bug that left stream
+	// assignments with no sync subject after and update and no way to sync/catchup outside of the RAFT layer.
+	if isLeader && js.cluster.streamsCheck {
+		cc := js.cluster
+		for acc, asa := range cc.streams {
+			for _, sa := range asa {
+				if sa.Sync == _EMPTY_ {
+					js.srv.Warnf("Stream assigment corrupt for stream '%s > %s'", acc, sa.Config.Name)
+					nsa := &streamAssignment{Group: sa.Group, Config: sa.Config, Subject: sa.Subject, Reply: sa.Reply, Client: sa.Client}
+					nsa.Sync = syncSubjForStream()
+					cc.meta.Propose(encodeUpdateStreamAssignment(nsa))
+				}
+			}
+		}
+		// Clear check.
+		cc.streamsCheck = false
+	}
 }
 
 // Lock should be held.
@@ -3646,7 +3687,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		}
 	}
 
-	sa := &streamAssignment{Group: osa.Group, Config: newCfg, Subject: subject, Reply: reply, Client: ci}
+	sa := &streamAssignment{Group: osa.Group, Sync: osa.Sync, Config: newCfg, Subject: subject, Reply: reply, Client: ci}
 	cc.meta.Propose(encodeUpdateStreamAssignment(sa))
 }
 
@@ -4660,7 +4701,7 @@ func (mset *stream) isCatchingUp() bool {
 }
 
 // Process a stream snapshot.
-func (mset *stream) processSnapshot(snap *streamSnapshot) {
+func (mset *stream) processSnapshot(snap *streamSnapshot) error {
 	// Update any deletes, etc.
 	mset.processSnapshotDeletes(snap)
 
@@ -4670,9 +4711,19 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) {
 	s, js, subject, n := mset.srv, mset.js, mset.sa.Sync, mset.node
 	mset.mu.Unlock()
 
+	// Make sure our state's first sequence is <= the leader's snapshot.
+	if snap.FirstSeq < state.FirstSeq {
+		return errFirstSequenceMismatch
+	}
+
+	// Bug that would cause this to be empty on stream update.
+	if subject == _EMPTY_ {
+		return errors.New("corrupt stream assignment detected")
+	}
+
 	// Just return if up to date or already exceeded limits.
 	if sreq == nil || js.limitsExceeded(mset.cfg.Storage) {
-		return
+		return nil
 	}
 
 	// Pause the apply channel for our raft group while we catch up.
@@ -4699,6 +4750,7 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) {
 		for _, o := range mset.consumers {
 			o.mu.Lock()
 			if o.isLeader() {
+				// This expects mset lock to be held.
 				o.setInitialPendingAndStart()
 			}
 			o.mu.Unlock()
@@ -4707,7 +4759,6 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) {
 	}()
 
 RETRY:
-
 	// If we have a sub clear that here.
 	if sub != nil {
 		s.sysUnsubscribe(sub)
@@ -4721,7 +4772,7 @@ RETRY:
 		sreq = mset.calculateSyncRequest(&state, snap)
 		mset.mu.Unlock()
 		if sreq == nil {
-			return
+			return nil
 		}
 	}
 
@@ -4749,7 +4800,7 @@ RETRY:
 	})
 	if err != nil {
 		s.Errorf("Could not subscribe to stream catchup: %v", err)
-		return
+		return err
 	}
 
 	b, _ := json.Marshal(sreq)
@@ -4765,24 +4816,24 @@ RETRY:
 		case mrec := <-msgsC:
 			notActive.Reset(activityInterval)
 			msg := mrec.msg
+
 			// Check for eof signaling.
 			if len(msg) == 0 {
-				return
+				return nil
 			}
 			if lseq, err := mset.processCatchupMsg(msg); err == nil {
 				if lseq >= last {
-					return
+					return nil
 				}
 			} else if isOutOfSpaceErr(err) {
-				s.handleOutOfSpace(mset)
-				return
+				return err
 			} else if err == NewJSInsufficientResourcesError() {
 				if mset.js.limitsExceeded(mset.cfg.Storage) {
 					s.resourcesExeededError()
 				} else {
 					s.Warnf("Catchup for stream '%s > %s' errored, account resources exceeded: %v", mset.account(), mset.name(), err)
 				}
-				return
+				return err
 			} else {
 				s.Warnf("Catchup for stream '%s > %s' errored, will retry: %v", mset.account(), mset.name(), err)
 				goto RETRY
@@ -4795,12 +4846,12 @@ RETRY:
 			notActive.Reset(activityInterval)
 			goto RETRY
 		case <-s.quitCh:
-			return
+			return nil
 		case <-qch:
-			return
+			return nil
 		case isLeader := <-lch:
 			js.processStreamLeaderChange(mset, isLeader)
-			return
+			return nil
 		}
 	}
 }
@@ -4808,7 +4859,6 @@ RETRY:
 // processCatchupMsg will be called to process out of band catchup msgs from a sync request.
 func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	if len(msg) == 0 || entryOp(msg[0]) != streamMsgOp {
-		// TODO(dlc) - This is error condition, log.
 		return 0, errors.New("bad catchup msg")
 	}
 
