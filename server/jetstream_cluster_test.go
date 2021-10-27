@@ -5440,13 +5440,13 @@ func TestJetStreamClusterSuperClusterInterestOnlyMode(t *testing.T) {
 	`
 	storeDir1 := createDir(t, JetStreamStoreDir)
 	conf1 := createConfFile(t, []byte(fmt.Sprintf(template,
-		"S1", storeDir1, "", 33222, "A", 33222, "A", 11222, "B", 11223)))
+		"S1", storeDir1, "", 23222, "A", 23222, "A", 11222, "B", 11223)))
 	s1, o1 := RunServerWithConfig(conf1)
 	defer s1.Shutdown()
 
 	storeDir2 := createDir(t, JetStreamStoreDir)
 	conf2 := createConfFile(t, []byte(fmt.Sprintf(template,
-		"S2", storeDir2, "", 33223, "B", 33223, "B", 11223, "A", 11222)))
+		"S2", storeDir2, "", 23223, "B", 23223, "B", 11223, "A", 11222)))
 	s2, o2 := RunServerWithConfig(conf2)
 	defer s2.Shutdown()
 
@@ -5497,9 +5497,9 @@ func TestJetStreamClusterSuperClusterInterestOnlyMode(t *testing.T) {
 
 	// Now change account "two" to enable JS
 	changeCurrentConfigContentWithNewContent(t, conf1, []byte(fmt.Sprintf(template,
-		"S1", storeDir1, "jetstream: enabled", 33222, "A", 33222, "A", 11222, "B", 11223)))
+		"S1", storeDir1, "jetstream: enabled", 23222, "A", 23222, "A", 11222, "B", 11223)))
 	changeCurrentConfigContentWithNewContent(t, conf2, []byte(fmt.Sprintf(template,
-		"S2", storeDir2, "jetstream: enabled", 33223, "B", 33223, "B", 11223, "A", 11222)))
+		"S2", storeDir2, "jetstream: enabled", 23223, "B", 23223, "B", 11223, "A", 11222)))
 
 	if err := s1.Reload(); err != nil {
 		t.Fatalf("Error on s1 reload: %v", err)
@@ -6826,7 +6826,7 @@ func TestJetStreamClusterDomainsAndAPIResponses(t *testing.T) {
 
 	// Now create spoke LN cluster.
 	tmpl = strings.Replace(jsClusterTemplWithLeafNode, "store_dir:", "domain: SPOKE, store_dir:", 1)
-	lnc := c.createLeafNodesWithTemplateAndStartPort(tmpl, "SPOKE", 5, 33913)
+	lnc := c.createLeafNodesWithTemplateAndStartPort(tmpl, "SPOKE", 5, 23913)
 	defer lnc.shutdown()
 
 	lnc.waitOnClusterReady()
@@ -7190,7 +7190,7 @@ func TestJetStreamClusterSuperClusterPullConsumerAndHeaders(t *testing.T) {
 }
 
 func TestJetStreamClusterLeafDifferentAccounts(t *testing.T) {
-	c := createJetStreamCluster(t, jsClusterAccountsTempl, "HUB", _EMPTY_, 2, 33133, false)
+	c := createJetStreamCluster(t, jsClusterAccountsTempl, "HUB", _EMPTY_, 2, 23133, false)
 	defer c.shutdown()
 
 	ln := c.createLeafNodesWithStartPort("LN", 2, 22110)
