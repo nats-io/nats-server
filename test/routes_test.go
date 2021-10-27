@@ -386,7 +386,11 @@ func TestRouteQueueSemantics(t *testing.T) {
 }
 
 func TestSolicitRouteReconnect(t *testing.T) {
-	s, opts := runRouteServer(t)
+	l := testhelper.NewDummyLogger(100)
+	s, opts := runRouteServerOverrides(t, nil,
+		func(s *server.Server) {
+			s.SetLogger(l, true, true)
+		})
 	defer s.Shutdown()
 
 	rURL := opts.Routes[0]
@@ -399,6 +403,9 @@ func TestSolicitRouteReconnect(t *testing.T) {
 	// We expect to get called back..
 	route = acceptRouteConn(t, rURL.Host, 2*server.DEFAULT_ROUTE_CONNECT)
 	route.Close()
+
+	// Now we want to check for the debug logs when it tries to reconnect
+	l.CheckForProhibited(t, "route authorization password found", ":bar")
 }
 
 func TestMultipleRoutesSameId(t *testing.T) {
