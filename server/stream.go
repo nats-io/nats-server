@@ -61,14 +61,14 @@ type StreamConfig struct {
 	// Optional qualifiers. These can not be modified after set to true.
 
 	// Sealed will seal a stream so no messages can get out or in.
-	Sealed bool `json:"sealed,omitempty"`
+	Sealed bool `json:"sealed"`
 	// DenyDelete will restrict the ability to delete messages.
-	DenyDelete bool `json:"deny_delete,omitempty"`
+	DenyDelete bool `json:"deny_delete"`
 	// DenyPurge will restrict the ability to purge messages.
-	DenyPurge bool `json:"deny_purge,omitempty"`
+	DenyPurge bool `json:"deny_purge"`
 	// AllowRollup allows messages to be placed into the system and purge
 	// all older messages using a special msg header.
-	AllowRollup bool `json:"allow_rollup_hdrs,omitempty"`
+	AllowRollup bool `json:"allow_rollup_hdrs"`
 }
 
 // JSPubAckResponse is a formal response to a publish operation.
@@ -935,6 +935,8 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig) (*StreamConfig, 
 	if cfg.Sealed {
 		cfg.MaxAge = 0
 		cfg.Discard = DiscardNew
+		cfg.DenyDelete, cfg.DenyPurge = true, true
+		cfg.AllowRollup = false
 	}
 
 	// Check limits.
