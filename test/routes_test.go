@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats-server/v2/internal/testhelper"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 )
@@ -32,6 +33,10 @@ const clientProtoInfo = 1
 
 func runRouteServer(t *testing.T) (*server.Server, *server.Options) {
 	return RunServerWithConfig("./configs/cluster.conf")
+}
+
+func runRouteServerOverrides(t *testing.T, cbo func(*server.Options), cbs func(*server.Server)) (*server.Server, *server.Options) {
+	return RunServerWithConfigOverrides("./configs/cluster.conf", cbo, cbs)
 }
 
 func TestRouterListeningSocket(t *testing.T) {
@@ -93,7 +98,11 @@ func TestSendRouteInfoOnConnect(t *testing.T) {
 }
 
 func TestRouteToSelf(t *testing.T) {
-	s, opts := runRouteServer(t)
+	l := testhelper.NewDummyLogger(100)
+	s, opts := runRouteServerOverrides(t, nil,
+		func(s *server.Server) {
+			s.SetLogger(l, true, true)
+		})
 	defer s.Shutdown()
 
 	rc := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
@@ -123,6 +132,8 @@ func TestRouteToSelf(t *testing.T) {
 	if _, err := rc.Read(buf); err == nil {
 		t.Fatal("Expected route connection to be closed")
 	}
+	// This should have been removed by removePassFromTrace(), but we also check debug logs here
+	l.CheckForProhibited(t, "route authorization password found", "top_secret")
 }
 
 func TestSendRouteSubAndUnsub(t *testing.T) {
@@ -375,7 +386,11 @@ func TestRouteQueueSemantics(t *testing.T) {
 }
 
 func TestSolicitRouteReconnect(t *testing.T) {
-	s, opts := runRouteServer(t)
+	l := testhelper.NewDummyLogger(100)
+	s, opts := runRouteServerOverrides(t, nil,
+		func(s *server.Server) {
+			s.SetLogger(l, true, true)
+		})
 	defer s.Shutdown()
 
 	rURL := opts.Routes[0]
@@ -388,6 +403,9 @@ func TestSolicitRouteReconnect(t *testing.T) {
 	// We expect to get called back..
 	route = acceptRouteConn(t, rURL.Host, 2*server.DEFAULT_ROUTE_CONNECT)
 	route.Close()
+
+	// Now we want to check for the debug logs when it tries to reconnect
+	l.CheckForProhibited(t, "route authorization password found", ":bar")
 }
 
 func TestMultipleRoutesSameId(t *testing.T) {

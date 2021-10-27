@@ -17,6 +17,7 @@ import (
 	"math"
 	"math/rand"
 	"net/url"
+	"reflect"
 	"strconv"
 	"sync"
 	"testing"
@@ -147,11 +148,47 @@ func TestComma(t *testing.T) {
 		{"-10", comma(-10), "-10"},
 	}
 
+	failed := false
 	for _, test := range l {
 		if test.got != test.exp {
 			t.Errorf("On %v, expected '%v', but got '%v'",
 				test.name, test.exp, test.got)
+			failed = true
 		}
+	}
+	if failed {
+		t.FailNow()
+	}
+}
+
+func TestURLRedaction(t *testing.T) {
+	redactionFromTo := []struct {
+		Full string
+		Safe string
+	}{
+		{"nats://foo:bar@example.org", "nats://foo:xxxxx@example.org"},
+		{"nats://foo@example.org", "nats://foo@example.org"},
+		{"nats://example.org", "nats://example.org"},
+		{"nats://example.org/foo?bar=1", "nats://example.org/foo?bar=1"},
+	}
+	var err error
+	listFull := make([]*url.URL, len(redactionFromTo))
+	listSafe := make([]*url.URL, len(redactionFromTo))
+	for i := range redactionFromTo {
+		r := redactURLString(redactionFromTo[i].Full)
+		if r != redactionFromTo[i].Safe {
+			t.Fatalf("Redacting URL [index %d] %q, expected %q got %q", i, redactionFromTo[i].Full, redactionFromTo[i].Safe, r)
+		}
+		if listFull[i], err = url.Parse(redactionFromTo[i].Full); err != nil {
+			t.Fatalf("Redacting URL index %d parse Full failed: %v", i, err)
+		}
+		if listSafe[i], err = url.Parse(redactionFromTo[i].Safe); err != nil {
+			t.Fatalf("Redacting URL index %d parse Safe failed: %v", i, err)
+		}
+	}
+	results := redactURLList(listFull)
+	if !reflect.DeepEqual(results, listSafe) {
+		t.Fatalf("Redacting URL list did not compare equal, even after each URL did")
 	}
 }
 

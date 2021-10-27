@@ -221,3 +221,44 @@ func natsDialTimeout(network, address string, timeout time.Duration) (net.Conn, 
 	}
 	return d.Dial(network, address)
 }
+
+// redactURLList() returns a copy of a list of URL pointers where each item
+// in the list will either be the same pointer if the URL does not contain a
+// password, or to a new object if there is a password.
+// The intended use-case is for logging lists of URLs safely.
+func redactURLList(unredacted []*url.URL) []*url.URL {
+	r := make([]*url.URL, len(unredacted))
+	// In the common case of no passwords, if we don't let the new object leave
+	// this function then GC should be easier.
+	needCopy := false
+	for i := range unredacted {
+		if unredacted[i] == nil {
+			r[i] = nil
+			continue
+		}
+		if _, has := unredacted[i].User.Password(); !has {
+			r[i] = unredacted[i]
+			continue
+		}
+		needCopy = true
+		ru := *unredacted[i]
+		ru.User = url.UserPassword(ru.User.Username(), "xxxxx")
+		r[i] = &ru
+	}
+	if needCopy {
+		return r
+	}
+	return unredacted
+}
+
+// redactURLString() attempts to redact a URL string.
+func redactURLString(raw string) string {
+	if !strings.ContainsRune(raw, '@') {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	return u.Redacted()
+}

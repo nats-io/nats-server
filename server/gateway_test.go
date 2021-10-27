@@ -2946,7 +2946,7 @@ type checkErrorLogger struct {
 func (l *checkErrorLogger) Errorf(format string, args ...interface{}) {
 	l.DummyLogger.Errorf(format, args...)
 	l.Lock()
-	if strings.Contains(l.msg, l.checkErrorStr) {
+	if strings.Contains(l.Msg, l.checkErrorStr) {
 		l.gotError = true
 	}
 	l.Unlock()

@@ -15,15 +15,14 @@ package server
 
 import (
 	"bytes"
-	"fmt"
 	"io/ioutil"
 	"os"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats-server/v2/internal/testhelper"
 	"github.com/nats-io/nats-server/v2/logger"
 )
 
@@ -47,22 +46,22 @@ func TestSetLogger(t *testing.T) {
 	// Check traces
 	expectedStr := "This is a Notice"
 	server.Noticef(expectedStr)
-	dl.checkContent(t, expectedStr)
+	dl.CheckContent(t, expectedStr)
 	expectedStr = "This is an Error"
 	server.Errorf(expectedStr)
-	dl.checkContent(t, expectedStr)
+	dl.CheckContent(t, expectedStr)
 	expectedStr = "This is a Fatal"
 	server.Fatalf(expectedStr)
-	dl.checkContent(t, expectedStr)
+	dl.CheckContent(t, expectedStr)
 	expectedStr = "This is a Debug"
 	server.Debugf(expectedStr)
-	dl.checkContent(t, expectedStr)
+	dl.CheckContent(t, expectedStr)
 	expectedStr = "This is a Trace"
 	server.Tracef(expectedStr)
-	dl.checkContent(t, expectedStr)
+	dl.CheckContent(t, expectedStr)
 	expectedStr = "This is a Warning"
 	server.Tracef(expectedStr)
-	dl.checkContent(t, expectedStr)
+	dl.CheckContent(t, expectedStr)
 
 	// Make sure that we can reset to fal
 	server.SetLogger(dl, false, false)
@@ -73,56 +72,14 @@ func TestSetLogger(t *testing.T) {
 		t.Fatalf("Expected trace 0, got %v", server.logging.trace)
 	}
 	// Now, Debug and Trace should not produce anything
-	dl.msg = ""
+	dl.Msg = ""
 	server.Debugf("This Debug should not be traced")
-	dl.checkContent(t, "")
+	dl.CheckContent(t, "")
 	server.Tracef("This Trace should not be traced")
-	dl.checkContent(t, "")
+	dl.CheckContent(t, "")
 }
 
-type DummyLogger struct {
-	sync.Mutex
-	msg string
-}
-
-func (l *DummyLogger) checkContent(t *testing.T, expectedStr string) {
-	l.Lock()
-	defer l.Unlock()
-	if l.msg != expectedStr {
-		stackFatalf(t, "Expected log to be: %v, got %v", expectedStr, l.msg)
-	}
-}
-
-func (l *DummyLogger) Noticef(format string, v ...interface{}) {
-	l.Lock()
-	defer l.Unlock()
-	l.msg = fmt.Sprintf(format, v...)
-}
-func (l *DummyLogger) Errorf(format string, v ...interface{}) {
-	l.Lock()
-	defer l.Unlock()
-	l.msg = fmt.Sprintf(format, v...)
-}
-func (l *DummyLogger) Warnf(format string, v ...interface{}) {
-	l.Lock()
-	defer l.Unlock()
-	l.msg = fmt.Sprintf(format, v...)
-}
-func (l *DummyLogger) Fatalf(format string, v ...interface{}) {
-	l.Lock()
-	defer l.Unlock()
-	l.msg = fmt.Sprintf(format, v...)
-}
-func (l *DummyLogger) Debugf(format string, v ...interface{}) {
-	l.Lock()
-	defer l.Unlock()
-	l.msg = fmt.Sprintf(format, v...)
-}
-func (l *DummyLogger) Tracef(format string, v ...interface{}) {
-	l.Lock()
-	defer l.Unlock()
-	l.msg = fmt.Sprintf(format, v...)
-}
+type DummyLogger = testhelper.DummyLogger
 
 func TestReOpenLogFile(t *testing.T) {
 	// We can't rename the file log when still opened on Windows, so skip
@@ -140,7 +97,7 @@ func TestReOpenLogFile(t *testing.T) {
 	dl := &DummyLogger{}
 	s.SetLogger(dl, false, false)
 	s.ReOpenLogFile()
-	dl.checkContent(t, "File log re-open ignored, not a file logger")
+	dl.CheckContent(t, "File log re-open ignored, not a file logger")
 
 	// Set a File log
 	s.opts.LogFile = "test.log"
@@ -247,7 +204,7 @@ func TestNoPasswordsFromConnectTrace(t *testing.T) {
 	opts.PingInterval = 2 * time.Minute
 	setBaselineOptions(opts)
 	s := &Server{opts: opts}
-	dl := &DummyLogger{}
+	dl := testhelper.NewDummyLogger(100)
 	s.SetLogger(dl, false, true)
 
 	_ = s.logging.logger.(*DummyLogger)
@@ -265,13 +222,7 @@ func TestNoPasswordsFromConnectTrace(t *testing.T) {
 		t.Fatalf("Received error: %v\n", err)
 	}
 
-	dl.Lock()
-	hasPass := strings.Contains(dl.msg, "s3cr3t")
-	dl.Unlock()
-
-	if hasPass {
-		t.Fatalf("Password detected in log output: %s", dl.msg)
-	}
+	dl.CheckForProhibited(t, "password found", "s3cr3t")
 }
 
 func TestRemovePassFromTrace(t *testing.T) {

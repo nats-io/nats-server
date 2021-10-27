@@ -32,6 +32,8 @@ import (
 
 	jwt "github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
+
+	"github.com/nats-io/nats-server/v2/internal/testhelper"
 )
 
 type captureLeafNodeRandomIPLogger struct {
@@ -409,7 +411,12 @@ func TestLeafNodeAccountNotFound(t *testing.T) {
 
 // This test ensures that we can connect using proper user/password
 // to a LN URL that was discovered through the INFO protocol.
+// We also check that the password doesn't leak to debug/trace logs.
 func TestLeafNodeBasicAuthFailover(t *testing.T) {
+	// Something a little longer than "pwd" to prevent false positives amongst many log lines;
+	// don't make it complex enough to be subject to %-escaping, we want a simple needle search.
+	fatalPassword := "pwdfatal"
+
 	content := `
 	listen: "127.0.0.1:-1"
 	cluster {
@@ -421,18 +428,18 @@ func TestLeafNodeBasicAuthFailover(t *testing.T) {
 		listen: "127.0.0.1:-1"
 		authorization {
 			user: foo
-			password: pwd
+			password: %s
 			timeout: 1
 		}
 	}
 	`
-	conf := createConfFile(t, []byte(fmt.Sprintf(content, "")))
+	conf := createConfFile(t, []byte(fmt.Sprintf(content, "", fatalPassword)))
 	defer removeFile(t, conf)
 
 	sb1, ob1 := RunServerWithConfig(conf)
 	defer sb1.Shutdown()
 
-	conf = createConfFile(t, []byte(fmt.Sprintf(content, fmt.Sprintf("routes: [nats://127.0.0.1:%d]", ob1.Cluster.Port))))
+	conf = createConfFile(t, []byte(fmt.Sprintf(content, fmt.Sprintf("routes: [nats://127.0.0.1:%d]", ob1.Cluster.Port), fatalPassword)))
 	defer removeFile(t, conf)
 
 	sb2, _ := RunServerWithConfig(conf)
@@ -450,16 +457,19 @@ func TestLeafNodeBasicAuthFailover(t *testing.T) {
 		remotes [
 			{
 				account: "foo"
-				url: "nats://foo:pwd@127.0.0.1:%d"
+				url: "nats://foo:%s@127.0.0.1:%d"
 			}
 		]
 	}
 	`
-	conf = createConfFile(t, []byte(fmt.Sprintf(content, ob1.LeafNode.Port)))
+	conf = createConfFile(t, []byte(fmt.Sprintf(content, fatalPassword, ob1.LeafNode.Port)))
 	defer removeFile(t, conf)
 
 	sa, _ := RunServerWithConfig(conf)
 	defer sa.Shutdown()
+
+	l := testhelper.NewDummyLogger(100)
+	sa.SetLogger(l, true, true) // we want debug & trace logs, to check for passwords in them
 
 	checkLeafNodeConnected(t, sa)
 
@@ -471,6 +481,10 @@ func TestLeafNodeBasicAuthFailover(t *testing.T) {
 
 	// Should be able to reconnect
 	checkLeafNodeConnected(t, sa)
+
+	// Look at all our logs for the password; at time of writing it doesn't appear
+	// but we want to safe-guard against it.
+	l.CheckForProhibited(t, "fatal password", fatalPassword)
 }
 
 func TestLeafNodeRTT(t *testing.T) {
