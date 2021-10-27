@@ -8902,7 +8902,7 @@ func TestJetStreamSeal(t *testing.T) {
 		}
 		si := sir.StreamInfo
 		if !si.Config.Sealed {
-			t.Fatalf("Expetced the stream to be marked sealed, got %+v\n", si.Config)
+			t.Fatalf("Expected the stream to be marked sealed, got %+v\n", si.Config)
 		}
 		// Make sure we also updated any max age and moved to discard new.
 		if si.Config.MaxAge != 0 {
@@ -8910,6 +8910,16 @@ func TestJetStreamSeal(t *testing.T) {
 		}
 		if si.Config.Discard != DiscardNew {
 			t.Fatalf("Expected DiscardPolicy to be set to new, got %v", si.Config.Discard)
+		}
+		// Also make sure we set denyDelete and denyPurge.
+		if !si.Config.DenyDelete {
+			t.Fatalf("Expected the stream to be marked as DenyDelete, got %+v\n", si.Config)
+		}
+		if !si.Config.DenyPurge {
+			t.Fatalf("Expected the stream to be marked as DenyPurge, got %+v\n", si.Config)
+		}
+		if si.Config.AllowRollup {
+			t.Fatalf("Expected the stream to be marked as not AllowRollup, got %+v\n", si.Config)
 		}
 
 		// Sealing is not reversible, so make sure we get an error trying to undo.
