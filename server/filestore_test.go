@@ -1992,6 +1992,26 @@ func TestFileStoreConsumer(t *testing.T) {
 	updateAndCheck()
 }
 
+func TestFileStoreConsumerEncodeDecodeRedelivered(t *testing.T) {
+	state := &ConsumerState{}
+
+	state.Delivered.Consumer = 100
+	state.Delivered.Stream = 100
+	state.AckFloor.Consumer = 50
+	state.AckFloor.Stream = 50
+
+	state.Redelivered = map[uint64]uint64{122: 3, 144: 8}
+	buf := encodeConsumerState(state)
+
+	rstate, err := decodeConsumerState(buf)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(state, rstate) {
+		t.Fatalf("States do not match: %+v vs %+v", state, rstate)
+	}
+}
+
 func TestFileStoreWriteFailures(t *testing.T) {
 	// This test should be run inside an environment where this directory
 	// has a limited size.

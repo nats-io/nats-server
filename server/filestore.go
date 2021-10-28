@@ -5346,6 +5346,8 @@ func decodeConsumerState(buf []byte) (*ConsumerState, error) {
 		state.Redelivered = make(map[uint64]uint64, numRedelivered)
 		for i := 0; i < int(numRedelivered); i++ {
 			if seq, n := readSeq(), readCount(); seq > 0 && n > 0 {
+				// Adjust seq back.
+				seq += state.AckFloor.Stream
 				state.Redelivered[seq] = n
 			}
 		}

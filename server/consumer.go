@@ -1408,7 +1408,27 @@ func (o *consumer) ackWait(next time.Duration) time.Duration {
 	return o.cfg.AckWait + ackWaitDelay
 }
 
+// Due to bug in calculation of sequences on restoring redelivered let's do quick sanity check.
+func (o *consumer) checkRedelivered() {
+	var lseq uint64
+	if mset := o.mset; mset != nil {
+		lseq = mset.lastSeq()
+	}
+	var shouldUpdateState bool
+	for sseq := range o.rdc {
+		if sseq < o.asflr || sseq > lseq {
+			delete(o.rdc, sseq)
+			o.removeFromRedeliverQueue(sseq)
+			shouldUpdateState = true
+		}
+	}
+	if shouldUpdateState {
+		o.writeStoreStateUnlocked()
+	}
+}
+
 // This will restore the state from disk.
+// Lock should be held.
 func (o *consumer) readStoredState() error {
 	if o.store == nil {
 		return nil
@@ -1416,6 +1436,9 @@ func (o *consumer) readStoredState() error {
 	state, err := o.store.State()
 	if err == nil && state != nil {
 		o.applyState(state)
+		if len(o.rdc) > 0 {
+			o.checkRedelivered()
+		}
 	}
 	return err
 }
@@ -1435,7 +1458,10 @@ func (o *consumer) applyState(state *ConsumerState) {
 
 	// Setup tracking timer if we have restored pending.
 	if len(o.pending) > 0 && o.ptmr == nil {
-		o.ptmr = time.AfterFunc(o.ackWait(0), o.checkPending)
+		// This is on startup or leader change. We want to check pending
+		// sooner in case there are inconsistencies etc. Pick between 1-5 secs.
+		delay := time.Second + time.Duration(rand.Int63n(4000))*time.Millisecond
+		o.ptmr = time.AfterFunc(delay, o.checkPending)
 	}
 }
 
@@ -1462,7 +1488,12 @@ func (o *consumer) setStoreState(state *ConsumerState) error {
 func (o *consumer) writeStoreState() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	return o.writeStoreStateUnlocked()
+}
 
+// Update our state to the store.
+// Lock should be held.
+func (o *consumer) writeStoreStateUnlocked() error {
 	if o.store == nil {
 		return nil
 	}
@@ -2583,19 +2614,32 @@ func (o *consumer) checkPending() {
 	if mset == nil {
 		return
 	}
+
+	now := time.Now().UnixNano()
 	ttl := int64(o.cfg.AckWait)
 	next := int64(o.ackWait(0))
-	now := time.Now().UnixNano()
+
+	var shouldUpdateState bool
+	var state StreamState
+	mset.store.FastState(&state)
+	fseq := state.FirstSeq
 
 	// Since we can update timestamps, we have to review all pending.
 	// We may want to unlock here or warn if list is big.
 	var expired []uint64
 	for seq, p := range o.pending {
+		// Check if these are no longer valid.
+		if seq < fseq {
+			delete(o.pending, seq)
+			delete(o.rdc, seq)
+			o.removeFromRedeliverQueue(seq)
+			shouldUpdateState = true
+			continue
+		}
 		elapsed := now - p.Timestamp
 		if elapsed >= ttl {
 			if !o.onRedeliverQueue(seq) {
 				expired = append(expired, seq)
-				o.signalNewMessages()
 			}
 		} else if ttl-elapsed < next {
 			// Update when we should fire next.
@@ -2615,6 +2659,7 @@ func (o *consumer) checkPending() {
 				p.Timestamp += off
 			}
 		}
+		o.signalNewMessages()
 	}
 
 	if len(o.pending) > 0 {
@@ -2622,6 +2667,11 @@ func (o *consumer) checkPending() {
 	} else {
 		o.ptmr.Stop()
 		o.ptmr = nil
+	}
+
+	// Update our state if needed.
+	if shouldUpdateState {
+		o.writeStoreStateUnlocked()
 	}
 }
 
