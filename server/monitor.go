@@ -1525,6 +1525,15 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 					rgw.varzUpdateURLs = false
 				}
 				rgw.RUnlock()
+			} else if g.Name == gw.name && len(gw.ownCfgURLs) > 0 {
+				// This is a remote that correspond to this very same server.
+				// We report the URLs that were configured (if any).
+				// Since we don't support changes to the gateway configuration
+				// at this time, we could do this only if g.URLs has not been already
+				// set, but let's do it regardless in case we add support for
+				// gateway config reload.
+				g.URLs = g.URLs[:0]
+				g.URLs = append(g.URLs, gw.ownCfgURLs...)
 			}
 		}
 	}

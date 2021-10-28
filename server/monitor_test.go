@@ -2834,6 +2834,36 @@ func TestMonitorGatewayURLsUpdated(t *testing.T) {
 	})
 }
 
+func TestMonitorGatewayReportItsOwnURLs(t *testing.T) {
+	resetPreviousHTTPConnections()
+
+	// In this test, we show that if a server has its own gateway information
+	// as a remote (which is the case when remote gateway definitions is copied
+	// on all clusters), we display the defined URLs.
+	oa := testGatewayOptionsFromToWithURLs(t, "A", "A", []string{"nats://127.0.0.1:1234", "nats://127.0.0.1:1235"})
+	oa.HTTPHost = "127.0.0.1"
+	oa.HTTPPort = MONITOR_PORT
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	varzURL := fmt.Sprintf("http://127.0.0.1:%d/varz", sa.MonitorAddr().Port)
+	// Check the /varz gateway's URLs
+	for mode := 0; mode < 2; mode++ {
+		v := pollVarz(t, sa, mode, varzURL, nil)
+		if n := len(v.Gateway.Gateways); n != 1 {
+			t.Fatalf("mode=%v - Expected 1 remote gateway, got %v", mode, n)
+		}
+		gw := v.Gateway.Gateways[0]
+		if n := len(gw.URLs); n != 2 {
+			t.Fatalf("mode=%v - Expected 2 urls, got %v", mode, gw.URLs)
+		}
+		expected := []string{"127.0.0.1:1234", "127.0.0.1:1235"}
+		if !reflect.DeepEqual(gw.URLs, expected) {
+			t.Fatalf("mode=%v - Expected URLs %q, got %q", mode, expected, gw.URLs)
+		}
+	}
+}
+
 func TestMonitorLeafNode(t *testing.T) {
 	testMonitorStructPresent(t, "leaf")
 

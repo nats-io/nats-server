@@ -6551,3 +6551,69 @@ func testTLSGatewaysCertificateImplicitAllow(t *testing.T, pass bool) {
 		})
 	}
 }
+
+func TestGatewayURLsNotRemovedOnDuplicateRoute(t *testing.T) {
+	// For this test, we need to have servers in cluster B creating routes
+	// to each other to help produce the "duplicate route" situation, so
+	// we are forced to use deterministic ports.
+	getEphemeralPort := func() int {
+		t.Helper()
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("Error getting a port: %v", err)
+		}
+		p := l.Addr().(*net.TCPAddr).Port
+		l.Close()
+		return p
+	}
+	p1 := getEphemeralPort()
+	p2 := getEphemeralPort()
+	routeURLs := fmt.Sprintf("nats://127.0.0.1:%d,nats://127.0.0.1:%d", p1, p2)
+
+	ob1 := testDefaultOptionsForGateway("B")
+	ob1.Cluster.Port = p1
+	ob1.Routes = RoutesFromStr(routeURLs)
+	sb1 := RunServer(ob1)
+	defer sb1.Shutdown()
+
+	ob2 := testDefaultOptionsForGateway("B")
+	ob2.Cluster.Port = p2
+	ob2.Routes = RoutesFromStr(routeURLs)
+	sb2 := RunServer(ob2)
+	defer sb2.Shutdown()
+
+	checkClusterFormed(t, sb1, sb2)
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb1)
+	sa := RunServer(oa)
+	defer sa.Shutdown()
+
+	waitForOutboundGateways(t, sb1, 1, 2*time.Second)
+	waitForOutboundGateways(t, sb2, 1, 2*time.Second)
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+	waitForInboundGateways(t, sa, 2, 2*time.Second)
+
+	checkURLs := func(s *Server) {
+		t.Helper()
+		s.mu.Lock()
+		urls := s.gateway.URLs.getAsStringSlice()
+		s.mu.Unlock()
+		if len(urls) != 2 {
+			t.Fatalf("Expected 2 urls, got %v", urls)
+		}
+	}
+	checkURLs(sb1)
+	checkURLs(sb2)
+
+	// As for sa, we should have both sb1 and sb2 urls in its outbound urls map
+	c := sa.getOutboundGatewayConnection("B")
+	if c == nil {
+		t.Fatal("No outound connection found!")
+	}
+	c.mu.Lock()
+	urls := c.gw.cfg.urls
+	c.mu.Unlock()
+	if len(urls) != 2 {
+		t.Fatalf("Expected 2 urls to B, got %v", urls)
+	}
+}
