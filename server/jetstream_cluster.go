@@ -4867,7 +4867,10 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 		return 0, errors.New("bad catchup msg")
 	}
 
+	mset.mu.RLock()
 	st := mset.cfg.Storage
+	mset.mu.RUnlock()
+
 	if mset.js.limitsExceeded(st) || mset.jsa.limitsExceeded(st) {
 		return 0, NewJSInsufficientResourcesError()
 	}
