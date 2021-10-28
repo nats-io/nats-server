@@ -1461,6 +1461,10 @@ func (o *consumer) applyState(state *ConsumerState) {
 		// This is on startup or leader change. We want to check pending
 		// sooner in case there are inconsistencies etc. Pick between 1-5 secs.
 		delay := time.Second + time.Duration(rand.Int63n(4000))*time.Millisecond
+		// If normal is lower than this just use that.
+		if o.cfg.AckWait < delay {
+			delay = o.ackWait(0)
+		}
 		o.ptmr = time.AfterFunc(delay, o.checkPending)
 	}
 }
