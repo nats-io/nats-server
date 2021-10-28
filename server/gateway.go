@@ -164,6 +164,11 @@ type srvGateway struct {
 	// These are used for routing of mapped replies.
 	sIDHash        []byte   // Server ID hash (6 bytes)
 	routesIDByHash sync.Map // Route's server ID is hashed (6 bytes) and stored in this map.
+
+	// If a server has its own configuration in the "Gateways" remotes configuration
+	// we will keep track of the URLs that are defined in the config so they can
+	// be reported in monitoring.
+	ownCfgURLs []string
 }
 
 // Subject interest tally. Also indicates if the key in the map is a
@@ -371,6 +376,7 @@ func (s *Server) newGateway(opts *Options) error {
 	for _, rgo := range opts.Gateway.Gateways {
 		// Ignore if there is a remote gateway with our name.
 		if rgo.Name == gateway.name {
+			gateway.ownCfgURLs = getURLsAsString(rgo.URLs)
 			continue
 		}
 		cfg := &gatewayCfg{
