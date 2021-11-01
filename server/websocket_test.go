@@ -2382,7 +2382,7 @@ func TestWSServerReportUpgradeFailure(t *testing.T) {
 	logger := &captureErrorLogger{errCh: make(chan string, 1)}
 	s.SetLogger(logger, false, false)
 
-	addr := fmt.Sprintf("%s:%d", o.Websocket.Host, o.Websocket.Port)
+	addr := fmt.Sprintf("127.0.0.1:%d", o.Websocket.Port)
 	req := testWSCreateValidReq()
 	req.URL, _ = url.Parse("wss://" + addr)
 
@@ -2416,6 +2416,11 @@ func TestWSServerReportUpgradeFailure(t *testing.T) {
 	case e := <-logger.errCh:
 		if !strings.Contains(e, "invalid value for header 'Connection'") {
 			t.Fatalf("Unexpected error: %v", e)
+		}
+		// The client IP's local should be printed as a remote from server perspective.
+		clientIP := wsc.LocalAddr().String()
+		if !strings.HasPrefix(e, clientIP) {
+			t.Fatalf("IP should have been logged, it was not: %v", e)
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("Should have timed-out")
