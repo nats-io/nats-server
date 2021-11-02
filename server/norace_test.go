@@ -2545,7 +2545,7 @@ func TestNoRaceJetStreamStalledMirrorsAfterExpire(t *testing.T) {
 	sendBatch(numMsgs)
 
 	// Wait for mirror to be caught up.
-	checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
 		si, err := js.StreamInfo("M")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)

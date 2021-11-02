@@ -8956,10 +8956,33 @@ func addStream(t *testing.T, nc *nats.Conn, cfg *StreamConfig) *StreamInfo {
 	var resp JSApiStreamCreateResponse
 	err = json.Unmarshal(rmsg.Data, &resp)
 	require_NoError(t, err)
+	if resp.Type != JSApiStreamCreateResponseType {
+		t.Fatalf("Invalid response type %s expected %s", resp.Type, JSApiStreamCreateResponseType)
+	}
 	if resp.Error != nil {
 		t.Fatalf("Unexpected error: %+v", resp.Error)
 	}
 	return resp.StreamInfo
+}
+
+// Issue #2568
+func TestJetStreamClusteredStreamCreateIdempotent(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, _ := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &StreamConfig{
+		Name:       "AUDIT",
+		Storage:    MemoryStorage,
+		Subjects:   []string{"foo"},
+		Replicas:   3,
+		DenyDelete: true,
+		DenyPurge:  true,
+	}
+	addStream(t, nc, cfg)
+	addStream(t, nc, cfg)
 }
 
 func TestJetStreamRollupsRequirePurge(t *testing.T) {
