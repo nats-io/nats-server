@@ -9342,6 +9342,68 @@ func TestJetStreamClusterStreamUpdateMissingBeginning(t *testing.T) {
 	}
 }
 
+// Issue #2666
+func TestJetStreamClusterKVMultipleConcurrentCreate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: "TEST", History: 1, TTL: 150 * time.Millisecond, Replicas: 3})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	startCh := make(chan bool)
+	var wg sync.WaitGroup
+
+	for n := 0; n < 5; n++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-startCh
+			if r, err := kv.Create("name", []byte("dlc")); err == nil {
+				if _, err = kv.Update("name", []byte("rip"), r); err != nil {
+					t.Log("Unexpected Update error: ", err)
+				}
+			}
+		}()
+	}
+	// Wait for Go routines to start.
+	time.Sleep(100 * time.Millisecond)
+	close(startCh)
+	wg.Wait()
+	// Just make sure its there and picks up the phone.
+	if _, err := js.StreamInfo("KV_TEST"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now make sure we do ok when servers are restarted and we need to deal with dangling clfs state.
+	// First non-leader.
+	rs := c.randomNonStreamLeader("$G", "KV_TEST")
+	rs.Shutdown()
+	rs = c.restartServer(rs)
+	c.waitOnStreamCurrent(rs, "$G", "KV_TEST")
+
+	if _, err := kv.Put("name", []byte("ik")); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Now the actual leader.
+	sl := c.streamLeader("$G", "KV_TEST")
+	sl.Shutdown()
+	sl = c.restartServer(sl)
+	c.waitOnStreamLeader("$G", "KV_TEST")
+	c.waitOnStreamCurrent(sl, "$G", "KV_TEST")
+
+	if _, err := kv.Put("name", []byte("mh")); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	time.Sleep(time.Second)
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
