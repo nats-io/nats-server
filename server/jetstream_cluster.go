@@ -1752,7 +1752,11 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 				// Process the actual message here.
 				if err := mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts); err != nil {
-					return err
+					// Only return in place if we are going to reset stream or we are out of space.
+					if isClusterResetErr(err) || isOutOfSpaceErr(err) {
+						return err
+					}
+					s.Debugf("Apply stream entries error processing message: %v", err)
 				}
 			case deleteMsgOp:
 				md, err := decodeMsgDelete(buf[1:])

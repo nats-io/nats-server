@@ -201,6 +201,7 @@ type stream struct {
 	clMu     sync.Mutex
 	clseq    uint64
 	clfs     uint64
+	leader   string
 	lqsent   time.Time
 	catchups map[string]uint64
 }
@@ -528,6 +529,8 @@ func (mset *stream) setLeader(isLeader bool) error {
 			mset.mu.Unlock()
 			return err
 		}
+		// Clear and fixup state we had for last state.
+		mset.clfs = 0
 	} else {
 		// Stop responding to sync requests.
 		mset.stopClusterSubs()
@@ -535,6 +538,14 @@ func (mset *stream) setLeader(isLeader bool) error {
 		mset.unsubscribeToStream()
 		// Clear catchup state
 		mset.clearAllCatchupPeers()
+		// Check on any fixup state and optionally clear.
+		if mset.isClustered() && mset.leader != _EMPTY_ && mset.leader != mset.node.GroupLeader() {
+			mset.clfs = 0
+		}
+	}
+	// Track group leader.
+	if mset.isClustered() {
+		mset.leader = mset.node.GroupLeader()
 	}
 	mset.mu.Unlock()
 	return nil
@@ -2760,16 +2771,17 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		outq := mset.outq
 
 		// Dedupe detection.
-		msgId = getMsgId(hdr)
-		if dde := mset.checkMsgId(msgId); dde != nil {
-			mset.clfs++
-			mset.mu.Unlock()
-			if canRespond {
-				response := append(pubAck, strconv.FormatUint(dde.seq, 10)...)
-				response = append(response, ",\"duplicate\": true}"...)
-				outq.sendMsg(reply, response)
+		if msgId = getMsgId(hdr); msgId != _EMPTY_ {
+			if dde := mset.checkMsgId(msgId); dde != nil {
+				mset.clfs++
+				mset.mu.Unlock()
+				if canRespond {
+					response := append(pubAck, strconv.FormatUint(dde.seq, 10)...)
+					response = append(response, ",\"duplicate\": true}"...)
+					outq.sendMsg(reply, response)
+				}
+				return errMsgIdDuplicate
 			}
-			return errMsgIdDuplicate
 		}
 
 		// Expected stream.
@@ -2838,6 +2850,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		// Check for any rollups.
 		if rollup := getRollup(hdr); rollup != _EMPTY_ {
 			if !mset.cfg.AllowRollup || mset.cfg.DenyPurge {
+				mset.clfs++
 				mset.mu.Unlock()
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}

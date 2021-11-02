@@ -85,11 +85,6 @@ type WAL interface {
 	Delete() error
 }
 
-type LeadChange struct {
-	Leader   bool
-	Previous string
-}
-
 type Peer struct {
 	ID      string
 	Current bool
