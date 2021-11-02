@@ -234,12 +234,17 @@ const (
 	JSConsumerStalled     = "Nats-Consumer-Stalled"
 	JSMsgRollup           = "Nats-Rollup"
 	JSMsgSize             = "Nats-Msg-Size"
+	JSResponseType        = "Nats-Response-Type"
 )
 
 // Rollups, can be subject only or all messages.
 const (
 	JSMsgRollupSubject = "sub"
 	JSMsgRollupAll     = "all"
+)
+
+const (
+	jsCreateResponse = "create"
 )
 
 // Dedupe entry

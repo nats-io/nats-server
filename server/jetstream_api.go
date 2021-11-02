@@ -1589,7 +1589,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
-	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	ci, acc, hdr, msg, err := s.getRequestInfo(c, rmsg)
 	if err != nil {
 		s.Warnf(badAPIRequestT, msg)
 		return
@@ -1598,6 +1598,12 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 	streamName := streamNameFromSubject(subject)
 
 	var resp = JSApiStreamInfoResponse{ApiResponse: ApiResponse{Type: JSApiStreamInfoResponseType}}
+
+	// If someone creates a duplicate stream that is identical we will get this request forwarded to us.
+	// Make sure the response type is for a create call.
+	if rt := getHeader(JSResponseType, hdr); len(rt) > 0 && string(rt) == jsCreateResponse {
+		resp.ApiResponse.Type = JSApiStreamCreateResponseType
+	}
 
 	// If we are in clustered mode we need to be the stream leader to proceed.
 	if s.JetStreamIsClustered() {

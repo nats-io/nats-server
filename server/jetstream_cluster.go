@@ -3583,7 +3583,10 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 			isubj := fmt.Sprintf(JSApiStreamInfoT, cfg.Name)
 			// We want to make sure we send along the client info.
 			cij, _ := json.Marshal(ci)
-			hdr := map[string]string{ClientInfoHdr: string(cij)}
+			hdr := map[string]string{
+				ClientInfoHdr:  string(cij),
+				JSResponseType: jsCreateResponse,
+			}
 			// Send this as system account, but include client info header.
 			s.sendInternalAccountMsgWithReply(nil, isubj, reply, hdr, nil, true)
 			return
@@ -4977,7 +4980,7 @@ func (mset *stream) checkClusterInfo(si *StreamInfo) {
 	}
 }
 
-func (mset *stream) handleClusterStreamInfoRequest(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
+func (mset *stream) handleClusterStreamInfoRequest(sub *subscription, c *client, _ *Account, subject, reply string, _ []byte) {
 	mset.mu.RLock()
 	sysc, js, sa, config := mset.sysc, mset.srv.js, mset.sa, mset.cfg
 	stype := mset.cfg.Storage
