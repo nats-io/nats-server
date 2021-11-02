@@ -910,8 +910,9 @@ func (fs *fileStore) recoverMsgs() error {
 
 // Will expire msgs that have aged out on restart.
 // We will treat this differently in case we have a recovery
-// that will expire alot of messages on startup. Should only be called
-// on startup. Lock should be held.
+// that will expire alot of messages on startup.
+// Should only be called on startup.
+// Lock should be held.
 func (fs *fileStore) expireMsgsOnRecover() {
 	if fs.state.Msgs == 0 {
 		return
@@ -920,10 +921,12 @@ func (fs *fileStore) expireMsgsOnRecover() {
 	var minAge = time.Now().UnixNano() - int64(fs.cfg.MaxAge)
 	var purged, bytes uint64
 	var deleted int
+	var nts int64
 
 	for _, mb := range fs.blks {
 		mb.mu.Lock()
 		if minAge < mb.first.ts {
+			nts = mb.first.ts
 			mb.mu.Unlock()
 			break
 		}
@@ -969,9 +972,10 @@ func (fs *fileStore) expireMsgsOnRecover() {
 			// No error and sm != nil from here onward.
 
 			// Check for done.
-			if sm.ts > minAge {
+			if minAge < sm.ts {
 				mb.first.seq = sm.seq
 				mb.first.ts = sm.ts
+				nts = sm.ts
 				break
 			}
 
@@ -1005,6 +1009,11 @@ func (fs *fileStore) expireMsgsOnRecover() {
 			mb.writeIndexInfo()
 		}
 		break
+	}
+
+	if nts > 0 {
+		// Make sure to set age check based on this value.
+		fs.resetAgeChk(nts - minAge)
 	}
 
 	if deleted > 0 {

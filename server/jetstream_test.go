@@ -13493,6 +13493,59 @@ func TestJetStreamPurgeAndFilteredConsumers(t *testing.T) {
 	}
 }
 
+// Issue #2662
+func TestJetStreamLargeExpiresAndServerRestart(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	maxAge := 2 * time.Second
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "S",
+		Subjects: []string{"foo"},
+		MaxAge:   maxAge,
+	})
+	require_NoError(t, err)
+
+	start := time.Now()
+	_, err = js.Publish("foo", []byte("ok"))
+	require_NoError(t, err)
+
+	// Wait total of maxAge - 1s.
+	time.Sleep(maxAge - time.Since(start) - time.Second)
+
+	// Stop current
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+	// Restart.
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		si, err := js.StreamInfo("S")
+		require_NoError(t, err)
+		if si.State.Msgs != 0 {
+			return fmt.Errorf("Expected no messages, got %d", si.State.Msgs)
+		}
+		return nil
+	})
+
+	if waited := time.Since(start); waited > maxAge+time.Second {
+		t.Fatalf("Waited to long %v vs %v for messages to expire", waited, maxAge)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
