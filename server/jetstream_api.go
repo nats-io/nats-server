@@ -614,8 +614,8 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 
 	hdr, _ := c.msgParts(rmsg)
 	if len(getHeader(ClientInfoHdr, hdr)) == 0 {
-		// Check of this is the system account. We will let these through.
-		if s.SystemAccount() != acc {
+		// Check if this is the system account. We will let these through for the account info only.
+		if s.SystemAccount() != acc || subject != JSApiAccountInfo {
 			return
 		}
 	}
