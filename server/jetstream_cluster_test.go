@@ -9427,6 +9427,19 @@ func TestJetStreamClusterKVMultipleConcurrentCreate(t *testing.T) {
 	time.Sleep(time.Second)
 }
 
+func TestJetStreamClusterAccountInfoForSystemAccount(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	if _, err := js.AccountInfo(); err != nats.ErrJetStreamNotEnabled {
+		t.Fatalf("Expected a not enabled error for system account, got %v", err)
+	}
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
