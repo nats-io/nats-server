@@ -270,7 +270,8 @@ type ApiResponse struct {
 	Error *ApiError `json:"error,omitempty"`
 }
 
-// ToError checks if the response has a error and if it does converts it to an error avoiding the pitfalls described by https://yourbasic.org/golang/gotcha-why-nil-error-not-equal-nil/
+// ToError checks if the response has a error and if it does converts it to an error avoiding
+// the pitfalls described by https://yourbasic.org/golang/gotcha-why-nil-error-not-equal-nil/
 func (r *ApiResponse) ToError() error {
 	if r.Error == nil {
 		return nil
@@ -607,13 +608,17 @@ const defaultMaxJSApiOut = int64(4096)
 var maxJSApiOut = defaultMaxJSApiOut
 
 func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, subject, reply string, rmsg []byte) {
-	hdr, _ := c.msgParts(rmsg)
-	if len(getHeader(ClientInfoHdr, hdr)) == 0 {
-		return
-	}
 	js.mu.RLock()
 	s, rr := js.srv, js.apiSubs.Match(subject)
 	js.mu.RUnlock()
+
+	hdr, _ := c.msgParts(rmsg)
+	if len(getHeader(ClientInfoHdr, hdr)) == 0 {
+		// Check of this is the system account. We will let these through.
+		if s.SystemAccount() != acc {
+			return
+		}
+	}
 
 	// Shortcircuit.
 	if len(rr.psubs)+len(rr.qsubs) == 0 {
