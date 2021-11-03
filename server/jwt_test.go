@@ -1533,7 +1533,7 @@ func TestJWTAccountServiceImportExpires(t *testing.T) {
 	expectPong(t, crb)
 }
 
-func TestAccountURLResolver(t *testing.T) {
+func TestJWTAccountURLResolver(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		useTLS bool
@@ -1575,7 +1575,7 @@ func TestAccountURLResolver(t *testing.T) {
 
 			confTemplate := `
 				operator: %s
-				listen: -1
+				listen: 127.0.0.1:-1
 				resolver: URL("%s/ngs/v1/accounts/jwt/")
 				resolver_tls {
 					cert_file: "../test/configs/certs/client-cert.pem"
@@ -1602,7 +1602,7 @@ func TestAccountURLResolver(t *testing.T) {
 	}
 }
 
-func TestAccountURLResolverTimeout(t *testing.T) {
+func TestJWTAccountURLResolverTimeout(t *testing.T) {
 	kp, _ := nkeys.FromSeed(oSeed)
 	akp, _ := nkeys.CreateAccount()
 	apub, _ := akp.PublicKey()
@@ -1626,7 +1626,7 @@ func TestAccountURLResolverTimeout(t *testing.T) {
 	defer ts.Close()
 
 	confTemplate := `
-		listen: -1
+		listen: 127.0.0.1:-1
 		resolver: URL("%s%s")
     `
 	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, ts.URL, basePath)))
@@ -1646,7 +1646,7 @@ func TestAccountURLResolverTimeout(t *testing.T) {
 	}
 }
 
-func TestAccountURLResolverNoFetchOnReload(t *testing.T) {
+func TestJWTAccountURLResolverNoFetchOnReload(t *testing.T) {
 	kp, _ := nkeys.FromSeed(oSeed)
 	akp, _ := nkeys.CreateAccount()
 	apub, _ := akp.PublicKey()
@@ -1663,7 +1663,7 @@ func TestAccountURLResolverNoFetchOnReload(t *testing.T) {
 
 	confTemplate := `
 		operator: %s
-		listen: -1
+		listen: 127.0.0.1:-1
 		resolver: URL("%s/ngs/v1/accounts/jwt/")
     `
 	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, ojwt, ts.URL)))
@@ -1711,7 +1711,7 @@ func TestAccountURLResolverNoFetchOnReload(t *testing.T) {
 	}
 }
 
-func TestAccountURLResolverFetchFailureInServer1(t *testing.T) {
+func TestJWTAccountURLResolverFetchFailureInServer1(t *testing.T) {
 	const subj = "test"
 	const crossAccSubj = "test"
 	// Create Exporting Account
@@ -1770,7 +1770,7 @@ func TestAccountURLResolverFetchFailureInServer1(t *testing.T) {
 	defer ts.Close()
 	// Create server
 	confA := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		operator: %s
 		resolver: URL("%s/A/")
     `, ojwt, ts.URL)))
@@ -1801,7 +1801,7 @@ func TestAccountURLResolverFetchFailureInServer1(t *testing.T) {
 	checkSubInterest(t, sA, exppub, crossAccSubj, 10*time.Second) // Will fail as a result of this issue
 }
 
-func TestAccountURLResolverFetchFailurePushReorder(t *testing.T) {
+func TestJWTAccountURLResolverFetchFailurePushReorder(t *testing.T) {
 	const subj = "test"
 	const crossAccSubj = "test"
 	// Create System Account
@@ -1867,7 +1867,7 @@ func TestAccountURLResolverFetchFailurePushReorder(t *testing.T) {
 	}))
 	defer ts.Close()
 	confA := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		operator: %s
 		resolver: URL("%s/A/")
 		system_account: %s
@@ -1915,7 +1915,7 @@ func (l *captureDebugLogger) Debugf(format string, v ...interface{}) {
 	}
 }
 
-func TestAccountURLResolverPermanentFetchFailure(t *testing.T) {
+func TestJWTAccountURLResolverPermanentFetchFailure(t *testing.T) {
 	const crossAccSubj = "test"
 	expkp, _ := nkeys.CreateAccount()
 	exppub, _ := expkp.PublicKey()
@@ -1968,7 +1968,7 @@ func TestAccountURLResolverPermanentFetchFailure(t *testing.T) {
 	}))
 	defer ts.Close()
 	confA := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		operator: %s
 		resolver: URL("%s/A/")
 		system_account: %s
@@ -2009,7 +2009,7 @@ func TestAccountURLResolverPermanentFetchFailure(t *testing.T) {
 	}
 }
 
-func TestAccountURLResolverFetchFailureInCluster(t *testing.T) {
+func TestJWTAccountURLResolverFetchFailureInCluster(t *testing.T) {
 	assertChanLen := func(x int, chans ...chan struct{}) {
 		t.Helper()
 		for _, c := range chans {
@@ -2102,13 +2102,13 @@ func TestAccountURLResolverFetchFailureInCluster(t *testing.T) {
 	defer ts.Close()
 	// Create seed server A
 	confA := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		operator: %s
 		resolver: URL("%s/A/")
 		cluster {
 			name: clust
 			no_advertise: true
-			listen: -1
+			listen: 127.0.0.1:-1
 		}
     `, ojwt, ts.URL)))
 	defer removeFile(t, confA)
@@ -2116,15 +2116,15 @@ func TestAccountURLResolverFetchFailureInCluster(t *testing.T) {
 	defer sA.Shutdown()
 	// Create Server B (using no_advertise to prevent failover)
 	confB := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		operator: %s
 		resolver: URL("%s/B/")
 		cluster {
 			name: clust
 			no_advertise: true
-			listen: -1
+			listen: 127.0.0.1:-1
 			routes [
-				nats-route://localhost:%d
+				nats-route://127.0.0.1:%d
 			]
 		}
     `, ojwt, ts.URL, sA.opts.Cluster.Port)))
@@ -2192,7 +2192,7 @@ func TestAccountURLResolverFetchFailureInCluster(t *testing.T) {
 	assertChanLen(0, chanImpA, chanImpB, chanExpA, chanExpB)
 }
 
-func TestAccountURLResolverReturnDifferentOperator(t *testing.T) {
+func TestJWTAccountURLResolverReturnDifferentOperator(t *testing.T) {
 	// Create a valid chain of op/acc/usr using a different operator
 	// This is so we can test if the server rejects this chain.
 	// Create Operator
@@ -2224,7 +2224,7 @@ func TestAccountURLResolverReturnDifferentOperator(t *testing.T) {
 	defer ts.Close()
 	// Create Server
 	confA := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		operator: %s
 		resolver: URL("%s/A/")
     `, ojwt, ts.URL)))
@@ -3007,7 +3007,7 @@ func TestJWTAccountLimitsMaxConnsAfterExpired(t *testing.T) {
 	})
 }
 
-func TestBearerToken(t *testing.T) {
+func TestJWTBearerToken(t *testing.T) {
 	okp, _ := nkeys.FromSeed(oSeed)
 	akp, _ := nkeys.CreateAccount()
 	apub, _ := akp.PublicKey()
@@ -3053,7 +3053,7 @@ func TestBearerToken(t *testing.T) {
 	wg.Wait()
 }
 
-func TestBearerWithIssuerSameAsAccountToken(t *testing.T) {
+func TestJWTBearerWithIssuerSameAsAccountToken(t *testing.T) {
 	okp, _ := nkeys.FromSeed(oSeed)
 	akp, _ := nkeys.CreateAccount()
 	apub, _ := akp.PublicKey()
@@ -3103,7 +3103,7 @@ func TestBearerWithIssuerSameAsAccountToken(t *testing.T) {
 	wg.Wait()
 }
 
-func TestBearerWithBadIssuerToken(t *testing.T) {
+func TestJWTBearerWithBadIssuerToken(t *testing.T) {
 	okp, _ := nkeys.FromSeed(oSeed)
 	akp, _ := nkeys.CreateAccount()
 	apub, _ := akp.PublicKey()
@@ -3152,7 +3152,7 @@ func TestBearerWithBadIssuerToken(t *testing.T) {
 	wg.Wait()
 }
 
-func TestExpiredUserCredentialsRenewal(t *testing.T) {
+func TestJWTExpiredUserCredentialsRenewal(t *testing.T) {
 	createTmpFile := func(t *testing.T, content []byte) string {
 		t.Helper()
 		conf := createFile(t, "")
@@ -3365,7 +3365,7 @@ func writeJWT(t *testing.T, dir string, pub string, jwt string) {
 	require_NoError(t, err)
 }
 
-func TestAccountNATSResolverFetch(t *testing.T) {
+func TestJWTAccountNATSResolverFetch(t *testing.T) {
 	origEventsHBInterval := eventsHBInterval
 	eventsHBInterval = 50 * time.Millisecond // speed up eventing
 	defer func() { eventsHBInterval = origEventsHBInterval }()
@@ -3481,7 +3481,7 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 	writeJWT(t, dirC, cpub, cjwt1)
 	// Create seed server A (using no_advertise to prevent fail over)
 	confA := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		server_name: srv-A
 		operator: %s
 		system_account: %s
@@ -3496,7 +3496,7 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 		}
 		cluster {
 			name: clust
-			listen: -1
+			listen: 127.0.0.1:-1
 			no_advertise: true
 		}
     `, ojwt, syspub, dirA, cpub, cjwt1)))
@@ -3507,7 +3507,7 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 	require_JWTPresent(t, dirA, cpub)
 	// Create Server B (using no_advertise to prevent fail over)
 	confB := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		server_name: srv-B
 		operator: %s
 		system_account: %s
@@ -3519,10 +3519,10 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 		}
 		cluster {
 			name: clust
-			listen: -1
+			listen: 127.0.0.1:-1
 			no_advertise: true
 			routes [
-				nats-route://localhost:%d
+				nats-route://127.0.0.1:%d
 			]
 		}
     `, ojwt, syspub, dirB, sA.opts.Cluster.Port)))
@@ -3531,7 +3531,7 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 	defer sB.Shutdown()
 	// Create Server C (using no_advertise to prevent fail over)
 	fmtC := `
-		listen: -1
+		listen: 127.0.0.1:-1
 		server_name: srv-C
 		operator: %s
 		system_account: %s
@@ -3543,10 +3543,10 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 		}
 		cluster {
 			name: clust
-			listen: -1
+			listen: 127.0.0.1:-1
 			no_advertise: true
 			routes [
-				nats-route://localhost:%d
+				nats-route://127.0.0.1:%d
 			]
 		}
     `
@@ -3661,7 +3661,7 @@ func TestAccountNATSResolverFetch(t *testing.T) {
 	}
 }
 
-func TestAccountNATSResolverCrossClusterFetch(t *testing.T) {
+func TestJWTAccountNATSResolverCrossClusterFetch(t *testing.T) {
 	connect := func(url string, credsfile string) {
 		t.Helper()
 		nc := natsConnect(t, url, nats.UserCredentials(credsfile))
@@ -3723,7 +3723,7 @@ func TestAccountNATSResolverCrossClusterFetch(t *testing.T) {
 	writeJWT(t, dirBA, bpub, bjwt1)
 	// Create seed server A (using no_advertise to prevent fail over)
 	confAA := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		server_name: srv-A-A
 		operator: %s
 		system_account: %s
@@ -3734,11 +3734,11 @@ func TestAccountNATSResolverCrossClusterFetch(t *testing.T) {
 		}
 		gateway: {
 			name: "clust-A"
-			listen: -1
+			listen: 127.0.0.1:-1
 		}
 		cluster {
 			name: clust-A
-			listen: -1
+			listen: 127.0.0.1:-1
 			no_advertise: true
 		}
     `, ojwt, syspub, dirAA)))
@@ -3747,7 +3747,7 @@ func TestAccountNATSResolverCrossClusterFetch(t *testing.T) {
 	defer sAA.Shutdown()
 	// Create Server B (using no_advertise to prevent fail over)
 	confAB := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		server_name: srv-A-B
 		operator: %s
 		system_account: %s
@@ -3758,14 +3758,14 @@ func TestAccountNATSResolverCrossClusterFetch(t *testing.T) {
 		}
 		gateway: {
 			name: "clust-A"
-			listen: -1
+			listen: 127.0.0.1:-1
 		}
 		cluster {
 			name: clust-A
-			listen: -1
+			listen: 127.0.0.1:-1
 			no_advertise: true
 			routes [
-				nats-route://localhost:%d
+				nats-route://127.0.0.1:%d
 			]
 		}
     `, ojwt, syspub, dirAB, sAA.opts.Cluster.Port)))
@@ -3774,7 +3774,7 @@ func TestAccountNATSResolverCrossClusterFetch(t *testing.T) {
 	defer sAB.Shutdown()
 	// Create Server C (using no_advertise to prevent fail over)
 	confBA := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		server_name: srv-B-A
 		operator: %s
 		system_account: %s
@@ -3785,14 +3785,14 @@ func TestAccountNATSResolverCrossClusterFetch(t *testing.T) {
 		}
 		gateway: {
 			name: "clust-B"
-			listen: -1
+			listen: 127.0.0.1:-1
 			gateways: [
-				{name: "clust-A", url: "nats://localhost:%d"},
+				{name: "clust-A", url: "nats://127.0.0.1:%d"},
 			]
 		}
 		cluster {
 			name: clust-B
-			listen: -1
+			listen: 127.0.0.1:-1
 			no_advertise: true
 		}
     `, ojwt, syspub, dirBA, sAA.opts.Gateway.Port)))
@@ -3801,7 +3801,7 @@ func TestAccountNATSResolverCrossClusterFetch(t *testing.T) {
 	defer sBA.Shutdown()
 	// Create Sever BA  (using no_advertise to prevent fail over)
 	confBB := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		server_name: srv-B-B
 		operator: %s
 		system_account: %s
@@ -3812,17 +3812,17 @@ func TestAccountNATSResolverCrossClusterFetch(t *testing.T) {
 		}
 		cluster {
 			name: clust-B
-			listen: -1
+			listen: 127.0.0.1:-1
 			no_advertise: true
 			routes [
-				nats-route://localhost:%d
+				nats-route://127.0.0.1:%d
 			]
 		}
 		gateway: {
 			name: "clust-B"
-			listen: -1
+			listen: 127.0.0.1:-1
 			gateways: [
-				{name: "clust-A", url: "nats://localhost:%d"},
+				{name: "clust-A", url: "nats://127.0.0.1:%d"},
 			]
 		}
     `, ojwt, syspub, dirBB, sBA.opts.Cluster.Port, sAA.opts.Cluster.Port)))
@@ -3910,7 +3910,7 @@ func TestJWTUserLimits(t *testing.T) {
 	aJwt, err := claim.Encode(oKp)
 	require_NoError(t, err)
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		operator: %s
 		resolver: MEM
 		resolver_preload: {
@@ -3978,7 +3978,7 @@ func TestJWTTimeExpiration(t *testing.T) {
 	aJwt, err := claim.Encode(oKp)
 	require_NoError(t, err)
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		operator: %s
 		resolver: MEM
 		resolver_preload: {
@@ -4116,7 +4116,7 @@ func TestJWTLimits(t *testing.T) {
 	aJwt, err := claim.Encode(oKp)
 	require_NoError(t, err)
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		operator: %s
 		resolver: MEM
 		resolver_preload: {
@@ -4291,7 +4291,7 @@ func TestJWTJetStreamLimits(t *testing.T) {
 	dir := createDir(t, "srv")
 	defer removeDir(t, dir)
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		jetstream: {max_mem_store: 10Mb, max_file_store: 10Mb}
 		operator: %s
 		resolver: {
@@ -4337,7 +4337,7 @@ func TestJWTJetStreamLimits(t *testing.T) {
 	validate_limits(c, limits2)
 	s.Shutdown()
 	conf = createConfFile(t, []byte(fmt.Sprintf(`
-		listen: %d
+		listen: 127.0.0.1:%d
 		jetstream: {max_mem_store: 20Mb, max_file_store: 20Mb}
 		operator: %s
 		resolver: {
@@ -4355,7 +4355,7 @@ func TestJWTJetStreamLimits(t *testing.T) {
 	s.Shutdown()
 	// disable jetstream test
 	conf = createConfFile(t, []byte(fmt.Sprintf(`
-		listen: %d
+		listen: 127.0.0.1:%d
 		operator: %s
 		resolver: {
 			type: full
@@ -4424,7 +4424,7 @@ func TestJWTUserRevocation(t *testing.T) {
 	dirSrv := createDir(t, "srv")
 	defer removeDir(t, dirSrv)
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		operator: %s
 		system_account: %s
 		resolver: {
@@ -4507,7 +4507,7 @@ func TestJWTAccountFetchTimeout(t *testing.T) {
 			dirSrv := createDir(t, "srv")
 			defer removeDir(t, dirSrv)
 			conf := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		operator: %s
 		system_account: %s
 		resolver: {
@@ -4589,7 +4589,7 @@ func TestJWTAccountOps(t *testing.T) {
 			dirSrv := createDir(t, "srv")
 			defer removeDir(t, dirSrv)
 			conf := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		operator: %s
 		system_account: %s
 		resolver: {
@@ -4724,7 +4724,7 @@ func TestJWTHeader(t *testing.T) {
 		dirSrv := createDir(t, "srv")
 		defer removeDir(t, dirSrv)
 		conf := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		operator: %s
 		system_account: %s
 		resolver: {
@@ -5009,7 +5009,7 @@ func TestJWTAccountTokenImportMisuse(t *testing.T) {
 		}))
 		defer ts.Close()
 		cf := createConfFile(t, []byte(fmt.Sprintf(`
-			listen: -1
+			listen: 127.0.0.1:-1
 			operator: %s
 			resolver: URL("%s/A/")
 		`, ojwt, ts.URL)))
@@ -5028,7 +5028,7 @@ func TestJWTAccountTokenImportMisuse(t *testing.T) {
 		dirSrv := createDir(t, "srv")
 		defer removeDir(t, dirSrv)
 		cf := createConfFile(t, []byte(fmt.Sprintf(`
-			listen: -1
+			listen: 127.0.0.1:-1
 			operator: %s
 			system_account: %s
 			resolver: {
@@ -5277,7 +5277,7 @@ func TestJWScopedSigningKeys(t *testing.T) {
 	dirSrv := createDir(t, "srv")
 	defer removeDir(t, dirSrv)
 	cf := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		operator: %s
 		system_account: %s
 		resolver: {
@@ -5712,7 +5712,7 @@ func TestJWTMappings(t *testing.T) {
 	dirSrv := createDir(t, "srv")
 	defer removeDir(t, dirSrv)
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		operator: %s
 		system_account: %s
 		resolver: {
@@ -5768,7 +5768,7 @@ func TestJWTOperatorPinnedAccounts(t *testing.T) {
 	defer removeDir(t, dirSrv)
 
 	cfgCommon := fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		operator: %s
 		system_account: %s
 		resolver: MEM
@@ -5825,7 +5825,7 @@ func TestJWTNoSystemAccountButNatsResolver(t *testing.T) {
 	for _, resType := range []string{"full", "cache"} {
 		t.Run(resType, func(t *testing.T) {
 			conf := createConfFile(t, []byte(fmt.Sprintf(`
-			listen: -1
+			listen: 127.0.0.1:-1
 			operator: %s
 			resolver: {
 				type: %s
@@ -5866,7 +5866,7 @@ func TestJWTAccountConnzAccessAfterClaimUpdate(t *testing.T) {
 	defer removeDir(t, dirSrv)
 
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: -1
+		listen: 127.0.0.1:-1
 		operator: %s
 		system_account: %s
 		resolver: {
