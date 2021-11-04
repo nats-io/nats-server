@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bytes"
 	"fmt"
 	"math/rand"
 	"net/url"
@@ -57,6 +58,73 @@ type cluster struct {
 	opts    []*Options
 	name    string
 	t       *testing.T
+}
+
+func require_True(t *testing.T, b bool) {
+	t.Helper()
+	if !b {
+		t.Fatalf("require true, but got false")
+	}
+}
+
+func require_False(t *testing.T, b bool) {
+	t.Helper()
+	if b {
+		t.Fatalf("require no false, but got true")
+	}
+}
+
+func require_NoError(t testing.TB, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("require no error, but got: %v", err)
+	}
+}
+
+func require_Contains(t *testing.T, s string, subStrs ...string) {
+	t.Helper()
+	for _, subStr := range subStrs {
+		if !strings.Contains(s, subStr) {
+			t.Fatalf("require %q to be contained in %q", subStr, s)
+		}
+	}
+}
+
+func require_Error(t *testing.T, err error, expected ...error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("require error, but got none")
+	}
+	if len(expected) == 0 {
+		return
+	}
+	for _, e := range expected {
+		if err == e || strings.Contains(e.Error(), err.Error()) {
+			return
+		}
+	}
+	t.Fatalf("Expected one of %+v, got '%v'", expected, err)
+}
+
+func require_Equal(t *testing.T, a, b string) {
+	t.Helper()
+	if strings.Compare(a, b) != 0 {
+		t.Fatalf("require equal, but got: %v != %v", a, b)
+	}
+}
+
+func require_NotEqual(t *testing.T, a, b [32]byte) {
+	t.Helper()
+	if bytes.Equal(a[:], b[:]) {
+		t.Fatalf("require not equal, but got: %v != %v", a, b)
+	}
+}
+
+func require_Len(t *testing.T, a, b int) {
+	t.Helper()
+	if a != b {
+		t.Fatalf("require len, but got: %v != %v", a, b)
+	}
 }
 
 func checkNatsError(t *testing.T, e *ApiError, id ErrorIdentifier) {

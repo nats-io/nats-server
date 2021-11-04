@@ -1696,7 +1696,7 @@ func (js *jetStream) restartClustered(acc *Account, sa *streamAssignment) {
 	js.mu.Unlock()
 
 	for _, ca := range consumers {
-		js.processClusterCreateConsumer(ca, nil)
+		js.processClusterCreateConsumer(ca, nil, false)
 	}
 }
 
@@ -2544,7 +2544,6 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 		ourID = cc.meta.ID()
 	}
 	var isMember bool
-
 	if ca.Group != nil && ourID != _EMPTY_ {
 		isMember = ca.Group.isMember(ourID)
 	}
@@ -2579,15 +2578,15 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 		return
 	}
 
+	// Track if this existed already.
+	var wasExisting bool
+
 	// Check if we have an existing consumer assignment.
 	js.mu.Lock()
 	if sa.consumers == nil {
 		sa.consumers = make(map[string]*consumerAssignment)
-	} else if oca := sa.consumers[ca.Name]; oca != nil && !oca.pending {
-		// Copy over private existing state from former CA.
-		ca.Group.node = oca.Group.node
-		ca.responded = oca.responded
-		ca.err = oca.err
+	} else if oca := sa.consumers[ca.Name]; oca != nil {
+		wasExisting = true
 	}
 
 	// Capture the optional state. We will pass it along if we are a member to apply.
@@ -2602,7 +2601,7 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 
 	// Check if this is for us..
 	if isMember {
-		js.processClusterCreateConsumer(ca, state)
+		js.processClusterCreateConsumer(ca, state, wasExisting)
 	} else {
 		// Check if we have a raft node running, meaning we are no longer part of the group but were.
 		js.mu.Lock()
@@ -2649,7 +2648,7 @@ type consumerAssignmentResult struct {
 }
 
 // processClusterCreateConsumer is when we are a member of the group and need to create the consumer.
-func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state *ConsumerState) {
+func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state *ConsumerState, wasExisting bool) {
 	if ca == nil {
 		return
 	}
@@ -2683,38 +2682,47 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 		return
 	}
 
-	// Process the raft group and make sure its running if needed.
-	js.createRaftGroup(rg, mset.config().Storage)
-
-	// Check if we already have this consumer running.
-	o := mset.lookupConsumer(ca.Name)
-	if o != nil {
-		if o.isDurable() && o.isPushMode() {
-			ocfg := o.config()
-			if ocfg == *ca.Config || (configsEqualSansDelivery(ocfg, *ca.Config) && o.hasNoLocalInterest()) {
-				o.updateDeliverSubject(ca.Config.DeliverSubject)
-			} else {
-				// This is essentially and update that has failed.
-				js.mu.Lock()
-				result := &consumerAssignmentResult{
-					Account:  ca.Client.serviceAccount(),
-					Stream:   ca.Stream,
-					Consumer: ca.Name,
-					Response: &JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}},
-				}
-				result.Response.Error = NewJSConsumerNameExistError()
-				s.sendInternalMsgLocked(consumerAssignmentSubj, _EMPTY_, nil, result)
-				js.mu.Unlock()
-				return
-			}
-		}
-		o.setConsumerAssignment(ca)
-		s.Debugf("JetStream cluster, consumer was already running")
+	if !alreadyRunning {
+		// Process the raft group and make sure its running if needed.
+		js.createRaftGroup(rg, mset.config().Storage)
 	}
 
-	// Add in the consumer if needed.
+	// Check if we already have this consumer running.
+	var didCreate bool
+	o := mset.lookupConsumer(ca.Name)
 	if o == nil {
+		// Add in the consumer if needed.
 		o, err = mset.addConsumerWithAssignment(ca.Config, ca.Name, ca)
+		didCreate = true
+	} else {
+		if err := o.updateConfig(ca.Config); err != nil {
+			// This is essentially an update that has failed.
+			js.mu.Lock()
+			result := &consumerAssignmentResult{
+				Account:  ca.Client.serviceAccount(),
+				Stream:   ca.Stream,
+				Consumer: ca.Name,
+				Response: &JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}},
+			}
+			result.Response.Error = NewJSConsumerNameExistError()
+			s.sendInternalMsgLocked(consumerAssignmentSubj, _EMPTY_, nil, result)
+			js.mu.Unlock()
+			return
+		}
+		// Check if we already had a consumer assignment and its still pending.
+		cca, oca := ca, o.consumerAssignment()
+		js.mu.Lock()
+		if oca != nil && !oca.responded {
+			// We can't over ride info for replying here otherwise leader once elected can not respond.
+			// So just update Config, leave off client and reply to the originals.
+			cac := *oca
+			cac.Config = ca.Config
+			cca = &cac
+		}
+		js.mu.Unlock()
+		// Set CA for our consumer.
+		o.setConsumerAssignment(cca)
+		s.Debugf("JetStream cluster, consumer was already running")
 	}
 
 	// If we have an initial state set apply that now.
@@ -2763,15 +2771,27 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 			s.sendInternalMsgLocked(consumerAssignmentSubj, _EMPTY_, nil, b)
 		}
 	} else {
-		o.setCreatedTime(ca.Created)
+		if didCreate {
+			o.setCreatedTime(ca.Created)
+		}
 		// Start our monitoring routine.
-		if rg.node != nil {
+		if rg.node == nil {
+			// Single replica consumer, process manually here.
+			js.processConsumerLeaderChange(o, true)
+		} else {
 			if !alreadyRunning {
 				s.startGoRoutine(func() { js.monitorConsumer(o, ca) })
 			}
-		} else {
-			// Single replica consumer, process manually here.
-			js.processConsumerLeaderChange(o, true)
+			// Process if existing.
+			if wasExisting && (o.isLeader() || (!didCreate && rg.node.GroupLeader() == _EMPTY_)) {
+				// This is essentially an update, so make sure to respond if needed.
+				js.mu.RLock()
+				client, subject, reply := ca.Client, ca.Subject, ca.Reply
+				js.mu.RUnlock()
+				var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
+				resp.ConsumerInfo = o.info()
+				s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+			}
 		}
 	}
 }
@@ -4266,52 +4286,71 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		cfg.MaxAckPending = JsDefaultMaxAckPending
 	}
 
-	rg := cc.createGroupForConsumer(sa)
-	if rg == nil {
-		resp.Error = NewJSInsufficientResourcesError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
-		return
-	}
-	// Pick a preferred leader.
-	rg.setPreferred()
-
-	// We need to set the ephemeral here before replicating.
+	var ca *consumerAssignment
 	var oname string
-	if !isDurableConsumer(cfg) {
-		// We chose to have ephemerals be R=1 unless stream is interest or workqueue.
-		if sa.Config.Retention == LimitsPolicy {
-			rg.Peers = []string{rg.Preferred}
-			rg.Name = groupNameForConsumer(rg.Peers, rg.Storage)
-		}
-		// Make sure name is unique.
-		for {
-			oname = createConsumerName()
-			if sa.consumers != nil {
-				if sa.consumers[oname] != nil {
-					continue
-				}
-			}
-			break
-		}
-	} else {
+
+	// See if we have an existing one already under same durable name.
+	if isDurableConsumer(cfg) {
 		oname = cfg.Durable
-		if ca := sa.consumers[oname]; ca != nil && !ca.deleted {
-			isPull := ca.Config.DeliverSubject == _EMPTY_
-			// This can be ok if delivery subject update.
-			shouldErr := isPull || ca.pending || (!reflect.DeepEqual(cfg, ca.Config) && !configsEqualSansDelivery(*cfg, *ca.Config))
-			if !shouldErr {
-				rr := acc.sl.Match(ca.Config.DeliverSubject)
-				shouldErr = len(rr.psubs)+len(rr.qsubs) != 0
-			}
-			if shouldErr {
-				resp.Error = NewJSConsumerNameExistError()
+		if ca = sa.consumers[oname]; ca != nil && !ca.deleted {
+			// Do quick sanity check on new cfg to prevent here if possible.
+			if err := acc.checkNewConsumerConfig(ca.Config, cfg); err != nil {
+				resp.Error = NewJSConsumerCreateError(err, Unless(err))
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 				return
 			}
 		}
 	}
 
-	ca := &consumerAssignment{Group: rg, Stream: stream, Name: oname, Config: cfg, Subject: subject, Reply: reply, Client: ci, Created: time.Now().UTC()}
+	// If this is new consumer.
+	if ca == nil {
+		rg := cc.createGroupForConsumer(sa)
+		if rg == nil {
+			resp.Error = NewJSInsufficientResourcesError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+			return
+		}
+		// Pick a preferred leader.
+		rg.setPreferred()
+
+		// We need to set the ephemeral here before replicating.
+		if !isDurableConsumer(cfg) {
+			// We chose to have ephemerals be R=1 unless stream is interest or workqueue.
+			if sa.Config.Retention == LimitsPolicy {
+				rg.Peers = []string{rg.Preferred}
+				rg.Name = groupNameForConsumer(rg.Peers, rg.Storage)
+			}
+			// Make sure name is unique.
+			for {
+				oname = createConsumerName()
+				if sa.consumers != nil {
+					if sa.consumers[oname] != nil {
+						continue
+					}
+				}
+				break
+			}
+		}
+		ca = &consumerAssignment{
+			Group:   rg,
+			Stream:  stream,
+			Name:    oname,
+			Config:  cfg,
+			Subject: subject,
+			Reply:   reply,
+			Client:  ci,
+			Created: time.Now().UTC(),
+		}
+	} else {
+		// Update config and client info on copy of existing.
+		nca := *ca
+		nca.Config = cfg
+		nca.Client = ci
+		nca.Subject = subject
+		nca.Reply = reply
+		ca = &nca
+	}
+
 	eca := encodeAddConsumerAssignment(ca)
 
 	// Mark this as pending.
