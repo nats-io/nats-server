@@ -1485,8 +1485,15 @@ func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, _ *Account
 // Updates accounting on in use memory and storage. This is called from locally
 // by the lower storage layers.
 func (jsa *jsAccount) updateUsage(storeType StorageType, delta int64) {
-	jsa.mu.Lock()
+	// Never changes so ok with no lock.
 	js := jsa.js
+
+	// Grab clustered state.
+	js.mu.RLock()
+	isClustered := js.cluster != nil
+	js.mu.RUnlock()
+
+	jsa.mu.Lock()
 	if storeType == MemoryStorage {
 		jsa.usage.mem += delta
 		jsa.memTotal += delta
@@ -1503,7 +1510,7 @@ func (jsa *jsAccount) updateUsage(storeType StorageType, delta int64) {
 		}
 	}
 	// Publish our local updates if in clustered mode.
-	if js.cluster != nil {
+	if isClustered {
 		jsa.sendClusterUsageUpdate()
 	}
 	jsa.mu.Unlock()
