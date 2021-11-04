@@ -3223,3 +3223,36 @@ func TestResolverPinnedAccountsFail(t *testing.T) {
 	require_Error(t, err)
 	require_Contains(t, "parsing resolver_pinned_accounts: unsupported type")
 }
+
+func TestMaxSubTokens(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		max_sub_tokens: 4
+	`))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(s.ClientURL())
+	require_NoError(t, err)
+
+	errs := make(chan error, 1)
+
+	nc.SetErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+		errs <- err
+	})
+
+	bad := "a.b.c.d.e"
+	_, err = nc.SubscribeSync(bad)
+	require_NoError(t, err)
+
+	select {
+	case e := <-errs:
+		if !strings.Contains(e.Error(), "too many tokens") {
+			t.Fatalf("Got wrong error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Did not get the permissions error")
+	}
+}
