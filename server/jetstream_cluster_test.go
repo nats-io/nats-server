@@ -1426,9 +1426,9 @@ func TestJetStreamClusterDoubleAdd(t *testing.T) {
 	if _, err := js.AddConsumer("TEST", cfg); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	// Check double add fails.
-	if _, err := js.AddConsumer("TEST", cfg); err == nil || err == nats.ErrTimeout {
-		t.Fatalf("Expected error but got none or timeout")
+	// Check double add ok.
+	if _, err := js.AddConsumer("TEST", cfg); err != nil {
+		t.Fatalf("Expected no error but got: %v", err)
 	}
 }
 
@@ -8437,7 +8437,7 @@ func TestJetStreamRaceOnRAFTCreate(t *testing.T) {
 		t.Fatalf("Error creating stream: %v", err)
 	}
 
-	js, err = nc.JetStream(nats.MaxWait(time.Second))
+	js, err = nc.JetStream(nats.MaxWait(2 * time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -8446,12 +8446,12 @@ func TestJetStreamRaceOnRAFTCreate(t *testing.T) {
 	wg := sync.WaitGroup{}
 	wg.Add(size)
 	for i := 0; i < size; i++ {
-		go func() {
+		go func(i int) {
 			defer wg.Done()
 			if _, err := js.PullSubscribe("foo", "shared"); err != nil {
-				t.Errorf("Unexpected error: %v", err)
+				t.Errorf("Unexpected error on %v: %v", i, err)
 			}
-		}()
+		}(i)
 	}
 	wg.Wait()
 }
@@ -9438,6 +9438,148 @@ func TestJetStreamClusterAccountInfoForSystemAccount(t *testing.T) {
 	if _, err := js.AccountInfo(); err != nats.ErrJetStreamNotEnabled {
 		t.Fatalf("Expected a not enabled error for system account, got %v", err)
 	}
+}
+
+func TestJetStreamConsumerUpdates(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	c := createJetStreamClusterExplicit(t, "JSC", 5)
+	defer c.shutdown()
+
+	testConsumerUpdate := func(t *testing.T, s *Server, replicas int) {
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+		// Create a stream.
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo", "bar"},
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+
+		for i := 0; i < 100; i++ {
+			js.PublishAsync("foo", []byte("OK"))
+		}
+
+		cfg := &nats.ConsumerConfig{
+			Durable:        "dlc",
+			Description:    "Update TEST",
+			FilterSubject:  "foo",
+			DeliverSubject: "d.foo",
+			AckPolicy:      nats.AckExplicitPolicy,
+			AckWait:        time.Minute,
+			MaxDeliver:     5,
+			MaxAckPending:  50,
+		}
+
+		_, err = js.AddConsumer("TEST", cfg)
+		require_NoError(t, err)
+
+		// Update delivery subject, which worked before, but upon review had issues unless replica count == clustered size.
+		cfg.DeliverSubject = "d.bar"
+		_, err = js.AddConsumer("TEST", cfg)
+		require_NoError(t, err)
+
+		// Bind deliver subject.
+		sub, err := nc.SubscribeSync("d.bar")
+		require_NoError(t, err)
+		defer sub.Unsubscribe()
+
+		ncfg := *cfg
+		ncfg.DeliverSubject = "d.baz"
+
+		// Should fail.
+		_, err = js.AddConsumer("TEST", &ncfg)
+		require_Error(t, err)
+
+		// Description
+		cfg.Description = "New Description"
+		_, err = js.AddConsumer("TEST", cfg)
+		require_NoError(t, err)
+
+		// MaxAckPending
+		checkSubsPending(t, sub, 50)
+		cfg.MaxAckPending = 75
+		_, err = js.AddConsumer("TEST", cfg)
+		require_NoError(t, err)
+		checkSubsPending(t, sub, 75)
+
+		// Drain sub, do not ack first ten though so we can test shortening AckWait.
+		for i := 0; i < 100; i++ {
+			m, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			if i >= 10 {
+				m.Ack()
+			}
+		}
+
+		// AckWait
+		checkSubsPending(t, sub, 0)
+		cfg.AckWait = 200 * time.Millisecond
+		_, err = js.AddConsumer("TEST", cfg)
+		require_NoError(t, err)
+		checkSubsPending(t, sub, 10)
+
+		// Rate Limit
+		cfg.RateLimit = 8 * 1024
+		_, err = js.AddConsumer("TEST", cfg)
+		require_NoError(t, err)
+
+		cfg.RateLimit = 0
+		_, err = js.AddConsumer("TEST", cfg)
+		require_NoError(t, err)
+
+		// These all should fail.
+		ncfg = *cfg
+		ncfg.FilterSubject = "bar"
+		_, err = js.AddConsumer("TEST", &ncfg)
+		require_Error(t, err)
+
+		ncfg = *cfg
+		ncfg.DeliverPolicy = nats.DeliverLastPolicy
+		_, err = js.AddConsumer("TEST", &ncfg)
+		require_Error(t, err)
+
+		ncfg = *cfg
+		ncfg.OptStartSeq = 22
+		_, err = js.AddConsumer("TEST", &ncfg)
+		require_Error(t, err)
+
+		ncfg = *cfg
+		now := time.Now()
+		ncfg.OptStartTime = &now
+		_, err = js.AddConsumer("TEST", &ncfg)
+		require_Error(t, err)
+
+		ncfg = *cfg
+		ncfg.AckPolicy = nats.AckAllPolicy
+		_, err = js.AddConsumer("TEST", &ncfg)
+		require_Error(t, err)
+
+		ncfg = *cfg
+		ncfg.ReplayPolicy = nats.ReplayOriginalPolicy
+		_, err = js.AddConsumer("TEST", &ncfg)
+		require_Error(t, err)
+
+		ncfg = *cfg
+		ncfg.Heartbeat = time.Second
+		_, err = js.AddConsumer("TEST", &ncfg)
+		require_Error(t, err)
+
+		ncfg = *cfg
+		ncfg.FlowControl = true
+		_, err = js.AddConsumer("TEST", &ncfg)
+		require_Error(t, err)
+
+	}
+
+	t.Run("Single", func(t *testing.T) { testConsumerUpdate(t, s, 1) })
+	t.Run("Clustered", func(t *testing.T) { testConsumerUpdate(t, c.randomServer(), 2) })
 }
 
 // Support functions

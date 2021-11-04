@@ -382,28 +382,36 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		}
 	}
 
+	// Helper function to formulate similar errors.
+	badStart := func(dp, start string) error {
+		return fmt.Errorf("consumer delivery policy is deliver %s, but optional start %s is also set", dp, start)
+	}
+	notSet := func(dp, notSet string) error {
+		return fmt.Errorf("consumer delivery policy is deliver %s, but optional %s is not set", dp, notSet)
+	}
+
 	// Check on start position conflicts.
 	switch config.DeliverPolicy {
 	case DeliverAll:
 		if config.OptStartSeq > 0 {
-			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver all, but optional start sequence is also set"))
+			return nil, NewJSConsumerInvalidPolicyError(badStart("all", "sequence"))
 		}
 		if config.OptStartTime != nil {
-			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver all, but optional start time is also set"))
+			return nil, NewJSConsumerInvalidPolicyError(badStart("all", "time"))
 		}
 	case DeliverLast:
 		if config.OptStartSeq > 0 {
-			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver last, but optional start sequence is also set"))
+			return nil, NewJSConsumerInvalidPolicyError(badStart("last", "sequence"))
 		}
 		if config.OptStartTime != nil {
-			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver last, but optional start time is also set"))
+			return nil, NewJSConsumerInvalidPolicyError(badStart("last", "time"))
 		}
 	case DeliverLastPerSubject:
 		if config.OptStartSeq > 0 {
-			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver last per subject, but optional start sequence is also set"))
+			return nil, NewJSConsumerInvalidPolicyError(badStart("last per subject", "sequence"))
 		}
 		if config.OptStartTime != nil {
-			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver last per subject, but optional start time is also set"))
+			return nil, NewJSConsumerInvalidPolicyError(badStart("last per subject", "time"))
 		}
 		badConfig := config.FilterSubject == _EMPTY_
 		if !badConfig {
@@ -413,28 +421,28 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			}
 		}
 		if badConfig {
-			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver last per subject, but filter subject is not set"))
+			return nil, NewJSConsumerInvalidPolicyError(notSet("deliver last per subject", "filter subject"))
 		}
 	case DeliverNew:
 		if config.OptStartSeq > 0 {
-			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver new, but optional start sequence is also set"))
+			return nil, NewJSConsumerInvalidPolicyError(badStart("new", "sequence"))
 		}
 		if config.OptStartTime != nil {
-			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver new, but optional start time is also set"))
+			return nil, NewJSConsumerInvalidPolicyError(badStart("new", "time"))
 		}
 	case DeliverByStartSequence:
 		if config.OptStartSeq == 0 {
-			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver by start sequence, but optional start sequence is not set"))
+			return nil, NewJSConsumerInvalidPolicyError(notSet("deliver by start sequence", "start sequence"))
 		}
 		if config.OptStartTime != nil {
-			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver by start sequence, but optional start time is also set"))
+			return nil, NewJSConsumerInvalidPolicyError(badStart("deliver by start sequence", "time"))
 		}
 	case DeliverByStartTime:
 		if config.OptStartTime == nil {
-			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver by start time, but optional start time is not set"))
+			return nil, NewJSConsumerInvalidPolicyError(notSet("deliver by start time", "start time"))
 		}
 		if config.OptStartSeq != 0 {
-			return nil, NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver by start time, but optional start sequence is also set"))
+			return nil, NewJSConsumerInvalidPolicyError(badStart("deliver by start time", "start sequence"))
 		}
 	}
 
@@ -463,23 +471,15 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		return nil, errors.New("invalid stream")
 	}
 
-	// If this one is durable and already exists, we let that be ok as long as the configs match.
+	// If this one is durable and already exists, we let that be ok as long as only updating what should be allowed.
 	if isDurableConsumer(config) {
 		if eo, ok := mset.consumers[config.Durable]; ok {
 			mset.mu.Unlock()
-			ocfg := eo.config()
-			if reflect.DeepEqual(&ocfg, config) {
+			err := eo.updateConfig(config)
+			if err == nil {
 				return eo, nil
-			} else {
-				// If we are a push mode and not active and the only difference
-				// is deliver subject then update and return.
-				if configsEqualSansDelivery(ocfg, *config) && eo.hasNoLocalInterest() {
-					eo.updateDeliverSubject(config.DeliverSubject)
-					return eo, nil
-				} else {
-					return nil, NewJSConsumerNameExistError()
-				}
 			}
+			return nil, NewJSConsumerCreateError(err, Unless(err))
 		}
 	}
 
@@ -566,24 +566,6 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		}
 	}
 
-	// Check if we have a rate limit set.
-	if config.RateLimit != 0 {
-		// TODO(dlc) - Make sane values or error if not sane?
-		// We are configured in bits per sec so adjust to bytes.
-		rl := rate.Limit(config.RateLimit / 8)
-		// Burst should be set to maximum msg size for this account, etc.
-		var burst int
-		if mset.cfg.MaxMsgSize > 0 {
-			burst = int(mset.cfg.MaxMsgSize)
-		} else if mset.jsa.account.limits.mpay > 0 {
-			burst = int(mset.jsa.account.limits.mpay)
-		} else {
-			s := mset.jsa.account.srv
-			burst = int(s.getOpts().MaxPayload)
-		}
-		o.rlimit = rate.NewLimiter(rl, burst)
-	}
-
 	// Check if we have  filtered subject that is a wildcard.
 	if config.FilterSubject != _EMPTY_ && subjectHasWildcard(config.FilterSubject) {
 		o.filterWC = true
@@ -665,6 +647,11 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	// Set our ca.
 	if ca != nil {
 		o.setConsumerAssignment(ca)
+	}
+
+	// Check if we have a rate limit set.
+	if config.RateLimit != 0 {
+		o.setRateLimit(config.RateLimit)
 	}
 
 	mset.setConsumer(o)
@@ -1138,13 +1125,146 @@ func (o *consumer) forceExpirePending() {
 	o.signalNewMessages()
 }
 
+// Acquire proper locks and update rate limit.
+// Will use what is in config.
+func (o *consumer) setRateLimitNeedsLocks() {
+	o.mu.RLock()
+	mset := o.mset
+	o.mu.RUnlock()
+
+	if mset == nil {
+		return
+	}
+
+	mset.mu.RLock()
+	o.mu.Lock()
+	o.setRateLimit(o.cfg.RateLimit)
+	o.mu.Unlock()
+	mset.mu.RUnlock()
+}
+
+// Set the rate limiter
+// Both mset and consumer lock should be held.
+func (o *consumer) setRateLimit(bps uint64) {
+	if bps == 0 {
+		o.rlimit = nil
+		return
+	}
+
+	// TODO(dlc) - Make sane values or error if not sane?
+	// We are configured in bits per sec so adjust to bytes.
+	rl := rate.Limit(bps / 8)
+	mset := o.mset
+
+	// Burst should be set to maximum msg size for this account, etc.
+	var burst int
+	if mset.cfg.MaxMsgSize > 0 {
+		burst = int(mset.cfg.MaxMsgSize)
+	} else if mset.jsa.account.limits.mpay > 0 {
+		burst = int(mset.jsa.account.limits.mpay)
+	} else {
+		s := mset.jsa.account.srv
+		burst = int(s.getOpts().MaxPayload)
+	}
+
+	o.rlimit = rate.NewLimiter(rl, burst)
+}
+
+// Check if new consumer config allowed vs old.
+func (acc *Account) checkNewConsumerConfig(cfg, ncfg *ConsumerConfig) error {
+	if reflect.DeepEqual(cfg, ncfg) {
+		return nil
+	}
+	// Something different, so check since we only allow certain things to be updated.
+	if cfg.FilterSubject != ncfg.FilterSubject {
+		return errors.New("filter subject can not be updated")
+	}
+	if cfg.DeliverPolicy != ncfg.DeliverPolicy {
+		return errors.New("deliver policy can not be updated")
+	}
+	if cfg.OptStartSeq != ncfg.OptStartSeq {
+		return errors.New("start sequence can not be updated")
+	}
+	if cfg.OptStartTime != ncfg.OptStartTime {
+		return errors.New("start time can not be updated")
+	}
+	if cfg.AckPolicy != ncfg.AckPolicy {
+		return errors.New("ack policy can not be updated")
+	}
+	if cfg.ReplayPolicy != ncfg.ReplayPolicy {
+		return errors.New("replay policy can not be updated")
+	}
+	if cfg.Heartbeat != ncfg.Heartbeat {
+		return errors.New("heart beats can not be updated")
+	}
+	if cfg.FlowControl != ncfg.FlowControl {
+		return errors.New("flow control can not be updated")
+	}
+
+	// Deliver Subject is conditional on if its bound.
+	if cfg.DeliverSubject != ncfg.DeliverSubject {
+		if cfg.DeliverSubject == _EMPTY_ {
+			return errors.New("can not update pull consumer to push based")
+		}
+		rr := acc.sl.Match(cfg.DeliverSubject)
+		if len(rr.psubs)+len(rr.qsubs) != 0 {
+			return NewJSConsumerNameExistError()
+		}
+	}
+
+	return nil
+}
+
+// Update the config based on the new config, or error if update not allowed.
+func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	if err := o.acc.checkNewConsumerConfig(&o.cfg, cfg); err != nil {
+		return err
+	}
+
+	// DeliverSubject
+	if cfg.DeliverSubject != o.cfg.DeliverSubject {
+		o.updateDeliverSubjectLocked(cfg.DeliverSubject)
+	}
+
+	// MaxAckPending
+	if cfg.MaxAckPending != o.cfg.MaxAckPending {
+		o.maxp = cfg.MaxAckPending
+		o.signalNewMessages()
+	}
+	// AckWait
+	if cfg.AckWait != o.cfg.AckWait {
+		if o.ptmr != nil {
+			o.ptmr.Reset(100 * time.Millisecond)
+		}
+	}
+	// Rate Limit
+	if cfg.RateLimit != o.cfg.RateLimit {
+		// We need both locks here so do in Go routine.
+		go o.setRateLimitNeedsLocks()
+	}
+
+	// Record new config for others that do not need special handling.
+	// Allowed but considered no-op, [Description, MaxDeliver, SampleFrequency, MaxWaiting, HeadersOnly]
+	o.cfg = *cfg
+
+	return nil
+}
+
 // This is a config change for the delivery subject for a
 // push based consumer.
 func (o *consumer) updateDeliverSubject(newDeliver string) {
 	// Update the config and the dsubj
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.updateDeliverSubjectLocked(newDeliver)
+}
 
+// This is a config change for the delivery subject for a
+// push based consumer.
+func (o *consumer) updateDeliverSubjectLocked(newDeliver string) {
 	if o.closed || o.isPullMode() || o.cfg.DeliverSubject == newDeliver {
 		return
 	}
