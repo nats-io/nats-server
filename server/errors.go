@@ -64,6 +64,9 @@ var (
 	// has been reached.
 	ErrTooManySubs = errors.New("maximum subscriptions exceeded")
 
+	// ErrTooManySubTokens signals a client that the subject has too many tokens.
+	ErrTooManySubTokens = errors.New("subject has exceeded number of tokens limit")
+
 	// ErrClientConnectedToRoutePort represents an error condition when a client
 	// attempted to connect to the route listen port.
 	ErrClientConnectedToRoutePort = errors.New("attempted to connect to route port")

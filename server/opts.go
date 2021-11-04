@@ -21,6 +21,7 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -196,6 +197,7 @@ type Options struct {
 	Logtime               bool          `json:"-"`
 	MaxConn               int           `json:"max_connections"`
 	MaxSubs               int           `json:"max_subscriptions,omitempty"`
+	MaxSubTokens          uint8         `json:"-"`
 	Nkeys                 []*NkeyUser   `json:"-"`
 	Users                 []*User       `json:"-"`
 	Accounts              []*Account    `json:"-"`
@@ -860,6 +862,18 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		o.MaxTracedMsgLen = int(v.(int64))
 	case "max_subscriptions", "max_subs":
 		o.MaxSubs = int(v.(int64))
+	case "max_sub_tokens", "max_subscription_tokens":
+		if n := v.(int64); n > math.MaxUint8 {
+			err := &configErr{tk, fmt.Sprintf("%s value is too big", k)}
+			*errors = append(*errors, err)
+			return
+		} else if n <= 0 {
+			err := &configErr{tk, fmt.Sprintf("%s value can not be negative", k)}
+			*errors = append(*errors, err)
+			return
+		} else {
+			o.MaxSubTokens = uint8(n)
+		}
 	case "ping_interval":
 		o.PingInterval = parseDuration("ping_interval", tk, v, errors, warnings)
 	case "ping_max":

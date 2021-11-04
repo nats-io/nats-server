@@ -2418,6 +2418,14 @@ func (c *client) processSubEx(subject, queue, bsid []byte, cb msgHandler, noForw
 			c.subPermissionViolation(sub)
 			return nil, ErrSubscribePermissionViolation
 		}
+
+		if opts := srv.getOpts(); opts != nil && opts.MaxSubTokens > 0 {
+			if len(bytes.Split(sub.subject, []byte(tsep))) > int(opts.MaxSubTokens) {
+				c.mu.Unlock()
+				c.maxTokensViolation(sub)
+				return nil, ErrTooManySubTokens
+			}
+		}
 	}
 
 	// Check if we have a maximum on the number of subscriptions.
@@ -4383,6 +4391,14 @@ func (c *client) subPermissionViolation(sub *subscription) {
 func (c *client) replySubjectViolation(reply []byte) {
 	c.sendErr(fmt.Sprintf("Permissions Violation for Publish with Reply of %q", reply))
 	c.Errorf("Publish Violation - %s, Reply %q", c.getAuthUser(), reply)
+}
+
+func (c *client) maxTokensViolation(sub *subscription) {
+	errTxt := fmt.Sprintf("Permissions Violation for Subscription to %q, too many tokens", sub.subject)
+	logTxt := fmt.Sprintf("Subscription Violation Too Many Tokens - %s, Subject %q, SID %s",
+		c.getAuthUser(), sub.subject, sub.sid)
+	c.sendErr(errTxt)
+	c.Errorf(logTxt)
 }
 
 func (c *client) processPingTimer() {
