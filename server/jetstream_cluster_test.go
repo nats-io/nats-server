@@ -9249,6 +9249,8 @@ func TestJetStreamClusterStreamUpdateSyncBug(t *testing.T) {
 	// Shutdown a server. The bug is that the update wiped the sync subject used to cacthup a stream that has the RAFT layer snapshotted.
 	nsl := c.randomNonStreamLeader("$G", "TEST")
 	nsl.Shutdown()
+	// make sure a leader exists
+	c.waitOnStreamLeader("$G", "TEST")
 
 	for i := 0; i < toSend*4; i++ {
 		if _, err := js.PublishAsync("foo", msg); err != nil {
