@@ -223,6 +223,10 @@ func testSublistFullWildcard(t *testing.T, s *Sublist) {
 	verifyLen(r.psubs, 2, t)
 	verifyMember(r.psubs, lsub, t)
 	verifyMember(r.psubs, fsub, t)
+
+	r = s.Match("a.>")
+	verifyLen(r.psubs, 1, t)
+	verifyMember(r.psubs, fsub, t)
 }
 
 func TestSublistRemove(t *testing.T) {

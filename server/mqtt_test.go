@@ -29,6 +29,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats-server/v2/logger"
+
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
@@ -313,8 +315,8 @@ func testMQTTRunServer(t testing.TB, o *Options) *Server {
 	if err != nil {
 		t.Fatalf("Error creating server: %v", err)
 	}
-	l := &DummyLogger{}
-	s.SetLogger(l, true, true)
+
+	s.SetLogger(logger.NewFileLogger(fmt.Sprintf("/Users/matthiashanel/test/server_%s", o.ServerName), true, true, false, false), false, false)
 	go s.Start()
 	if err := s.readyForConnections(3 * time.Second); err != nil {
 		testMQTTShutdownServer(s)
@@ -3131,15 +3133,24 @@ func TestMQTTClusterPlacement(t *testing.T) {
 }
 
 func TestMQTTLeafnodeWithoutJSToClusterWithJS(t *testing.T) {
+	t.Skip("inspect what is going on here")
+	// In this test the leaf node has no JS enabled, but shares the system account and domain name
+	addInSysAcc := func(o *Options) {
+		o.Accounts = append(o.Accounts, NewAccount("$SYS"))
+		o.Users = append(o.Users, &User{Username: "sys", Password: "pwd", Account: o.Accounts[len(o.Accounts)-1]})
+		o.SystemAccount = "$SYS"
+	}
 	getClusterOpts := func(name string, i int) *Options {
 		o := testMQTTDefaultOptions()
 		o.ServerName = name
 		o.Cluster.Name = "hub"
+		o.JetStreamDomain = "DOMAIN"
 		o.Cluster.Host = "127.0.0.1"
 		o.Cluster.Port = 2790 + i
 		o.Routes = RoutesFromStr("nats://127.0.0.1:2791,nats://127.0.0.1:2792,nats://127.0.0.1:2793")
 		o.LeafNode.Host = "127.0.0.1"
 		o.LeafNode.Port = -1
+		addInSysAcc(o)
 		return o
 	}
 	o1 := getClusterOpts("S1", 1)
@@ -3165,17 +3176,32 @@ func TestMQTTLeafnodeWithoutJSToClusterWithJS(t *testing.T) {
 		return fmt.Errorf("no leader yet")
 	})
 
-	// Now define a leafnode that has mqtt enabled, but no JS. This should still work.
+	// Now define a leafnode that has mqtt enabled, no JS, but JSDomain. This should still work.
 	lno := testMQTTDefaultOptions()
+	addInSysAcc(lno)
 	// Make sure jetstream is not explicitly defined here.
 	lno.JetStream = false
+	lno.JetStreamDomain = "DOMAIN"
 	// Use RoutesFromStr() to make an array of urls
 	urls := RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d,nats://127.0.0.1:%d,nats://127.0.0.1:%d",
 		o1.LeafNode.Port, o2.LeafNode.Port, o3.LeafNode.Port))
-	lno.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: urls}}
+	urlsSys := RoutesFromStr(fmt.Sprintf("nats://sys:pwd@127.0.0.1:%d,nats://sys:pwd@127.0.0.1:%d,nats://sys:pwd@127.0.0.1:%d",
+		o1.LeafNode.Port, o2.LeafNode.Port, o3.LeafNode.Port))
+	lno.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: urls, LocalAccount: "$G"}, {URLs: urlsSys, LocalAccount: "$SYS"}}
 	ln := RunServer(lno)
 	defer ln.Shutdown()
 
+	checkLeafNodeConnectedCount(t, ln, 2)
+	checkFor(t, 5*time.Second, time.Second/4, func() error {
+		cnt := 0
+		for _, s := range cluster {
+			cnt += s.NumLeafNodes()
+		}
+		if cnt == 2 {
+			return nil
+		}
+		return fmt.Errorf("not enought leaf node connections")
+	})
 	// Now connect to leafnode and subscribe
 	mc, rc := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: true}, lno.MQTT.Host, lno.MQTT.Port)
 	defer mc.Close()

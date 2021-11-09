@@ -256,6 +256,8 @@ const (
 	JSAuditAdvisory = "$JS.EVENT.ADVISORY.API"
 )
 
+var denyAllJs = []string{jscAllSubj, raftAllSubj, jsAllAPI}
+
 // JSMaxDescription is the maximum description length for streams and consumers.
 const JSMaxDescriptionLen = 4 * 1024
 

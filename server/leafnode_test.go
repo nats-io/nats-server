@@ -2017,14 +2017,24 @@ type proxyAcceptDetectFailureLate struct {
 	l          net.Listener
 	srvs       []net.Conn
 	leaf       net.Conn
+	startChan  chan struct{}
 }
 
 func (p *proxyAcceptDetectFailureLate) run(t *testing.T) int {
+	return p.runEx(t, false)
+}
+
+func (p *proxyAcceptDetectFailureLate) runEx(t *testing.T, needStart bool) int {
 	l, err := natsListen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Error on listen: %v", err)
 	}
 	p.Lock()
+	var startChan chan struct{}
+	if needStart {
+		startChan = make(chan struct{})
+		p.startChan = startChan
+	}
 	p.l = l
 	p.Unlock()
 	port := l.Addr().(*net.TCPAddr).Port
@@ -2039,6 +2049,9 @@ func (p *proxyAcceptDetectFailureLate) run(t *testing.T) int {
 			}
 			p.Unlock()
 		}()
+		if startChan != nil {
+			<-startChan
+		}
 		for {
 			c, err := l.Accept()
 			if err != nil {
@@ -2073,8 +2086,21 @@ func (p *proxyAcceptDetectFailureLate) run(t *testing.T) int {
 	return port
 }
 
+func (p *proxyAcceptDetectFailureLate) start() {
+	p.Lock()
+	if p.startChan != nil {
+		close(p.startChan)
+		p.startChan = nil
+	}
+	p.Unlock()
+}
+
 func (p *proxyAcceptDetectFailureLate) close() {
 	p.Lock()
+	if p.startChan != nil {
+		close(p.startChan)
+		p.startChan = nil
+	}
 	p.l.Close()
 	p.Unlock()
 
@@ -4071,4 +4097,336 @@ func TestLeafNodeInterestPropagationDaisychain(t *testing.T) {
 	checkSubInterest(t, sC, "$G", "foo", time.Second)
 	checkSubInterest(t, sB, "$G", "foo", time.Second)
 	checkSubInterest(t, sAA, "$G", "foo", time.Second) // failure issue 2448
+}
+
+func TestLeafNodeJetStreamClusterExtensionWithSystemAccount(t *testing.T) {
+	/*
+		Topologies tested here
+		same == true
+		A  <-> B
+		^ |\
+		|   \
+		|  proxy
+		|     \
+		LA <-> LB
+
+		same == false
+		A  <-> B
+		^      ^
+		|      |
+		|    proxy
+		|      |
+		LA <-> LB
+
+		The proxy is turned on later, such that the system account connection can be started later, in a controlled way
+		This explicitly tests the system state before and after this happens.
+	*/
+
+	tmplA := `
+listen: 127.0.0.1:-1
+accounts :{
+    A:{   jetstream: enable, users:[ {user:a1,password:a1}]},
+    SYS:{ users:[ {user:s1,password:s1}]},
+}
+system_account: SYS
+leafnodes: {
+	listen: 127.0.0.1:-1
+	no_advertise: true
+	authorization: {
+		timeout: 0.5
+	}
+}
+jetstream :{
+    domain: "cluster"
+    store_dir: "%s"
+    max_mem: 100Mb
+    max_file: 100Mb
+}
+server_name: A
+cluster: {
+	name: clust1
+	listen: 127.0.0.1:50554
+	routes=[nats-route://127.0.0.1:50555]
+no_advertise: true
+}
+`
+
+	tmplB := `
+listen: 127.0.0.1:-1
+accounts :{
+    A:{   jetstream: enable, users:[ {user:a1,password:a1}]},
+    SYS:{ users:[ {user:s1,password:s1}]},
+}
+system_account: SYS
+leafnodes: {
+	listen: 127.0.0.1:-1
+	no_advertise: true
+	authorization: {
+		timeout: 0.5
+	}
+}
+jetstream: {
+    domain: "cluster"
+    store_dir: "%s"
+    max_mem: 100Mb
+    max_file: 100Mb
+}
+server_name: B
+cluster: {
+	name: clust1
+	listen: 127.0.0.1:50555
+	routes=[nats-route://127.0.0.1:50554]
+no_advertise: true
+}
+`
+
+	tmplLA := `
+listen: 127.0.0.1:-1
+accounts :{
+    A:{   jetstream: enable, users:[ {user:a1,password:a1}]},
+    SYS:{ users:[ {user:s1,password:s1}]},
+}
+system_account = SYS
+jetstream: {
+    domain: "cluster"
+    store_dir: %s
+    max_mem: 50Mb
+    max_file: 50Mb
+}
+server_name: LA
+cluster: {
+	name: clustL
+	listen: 127.0.0.1:50556
+	routes=[nats-route://127.0.0.1:50557]
+	no_advertise: true
+}
+leafnodes:{
+	no_advertise: true
+    remotes:[{url:nats://a1:a1@127.0.0.1:%d, account: A},
+		     {url:nats://s1:s1@127.0.0.1:%d, account: SYS}]
+}
+`
+
+	tmplLB := `
+listen: 127.0.0.1:-1
+accounts :{
+    A:{   jetstream: enable, users:[ {user:a1,password:a1}]},
+    SYS:{ users:[ {user:s1,password:s1}]},
+}
+system_account = SYS
+jetstream: {
+    domain: "cluster"
+    store_dir: %s
+    max_mem: 50Mb
+    max_file: 50Mb
+}
+server_name: LB
+cluster: {
+	name: clustL
+	listen: 127.0.0.1:50557
+	routes=[nats-route://127.0.0.1:50556]
+no_advertise: true
+}
+leafnodes:{
+	no_advertise: true
+    remotes:[{url:nats://a1:a1@127.0.0.1:%d, account: A},
+		     {url:nats://s1:s1@127.0.0.1:%d, account: SYS}]
+}
+`
+
+	for _, same := range []bool{true, false} {
+		t.Run(fmt.Sprintf("%t", same), func(t *testing.T) {
+			sd1 := createDir(t, JetStreamStoreDir)
+			defer os.RemoveAll(sd1)
+			confA := createConfFile(t, []byte(fmt.Sprintf(tmplA, sd1)))
+			defer removeFile(t, confA)
+			sA, _ := RunServerWithConfig(confA)
+			defer sA.Shutdown()
+
+			sd2 := createDir(t, JetStreamStoreDir)
+			defer os.RemoveAll(sd2)
+			confB := createConfFile(t, []byte(fmt.Sprintf(tmplB, sd2)))
+			defer removeFile(t, confB)
+			sB, _ := RunServerWithConfig(confB)
+			defer sB.Shutdown()
+
+			checkClusterFormed(t, sA, sB)
+
+			c := cluster{t: t, servers: []*Server{sA, sB}}
+			c.waitOnLeader()
+
+			// starting this will allow the second remote in tmplL to successfully connect.
+			port := sB.opts.LeafNode.Port
+			if same {
+				port = sA.opts.LeafNode.Port
+			}
+			p := &proxyAcceptDetectFailureLate{acceptPort: port}
+			defer p.close()
+			lPort := p.runEx(t, true)
+
+			sd3 := createDir(t, JetStreamStoreDir)
+			defer os.RemoveAll(sd3)
+			// deliberately pick server sA and proxy
+			confLA := createConfFile(t, []byte(fmt.Sprintf(tmplLA, sd3, sA.opts.LeafNode.Port, lPort)))
+			defer removeFile(t, confLA)
+			sLA, _ := RunServerWithConfig(confLA)
+			defer sLA.Shutdown()
+
+			sd4 := createDir(t, JetStreamStoreDir)
+			defer os.RemoveAll(sd4)
+			// deliberately pick server sA and proxy
+			confLB := createConfFile(t, []byte(fmt.Sprintf(tmplLB, sd4, sA.opts.LeafNode.Port, lPort)))
+			defer removeFile(t, confLB)
+			sLB, _ := RunServerWithConfig(confLB)
+			defer sLB.Shutdown()
+
+			checkClusterFormed(t, sLA, sLB)
+
+			cl := cluster{t: t, servers: []*Server{sLA, sLB}}
+			cl.waitOnLeader()
+
+			strmCfg := func(name, placementCluster string) *nats.StreamConfig {
+				if placementCluster == "" {
+					return &nats.StreamConfig{Name: name, Replicas: 1, Subjects: []string{name}}
+				}
+				return &nats.StreamConfig{Name: name, Replicas: 1, Subjects: []string{name},
+					Placement: &nats.Placement{Cluster: placementCluster}}
+			}
+			// Only after the system account is fully connected can streams be placed anywhere.
+			test := func(pass bool) {
+				//t.Helper()
+				ncA := natsConnect(t, fmt.Sprintf("nats://a1:a1@127.0.0.1:%d", sA.opts.Port))
+				jsA, err := ncA.JetStream()
+				require_NoError(t, err)
+				_, err = jsA.AddStream(strmCfg(fmt.Sprintf("fooA1-%t", pass), ""))
+				require_NoError(t, err)
+				_, err = jsA.AddStream(strmCfg(fmt.Sprintf("fooA2-%t", pass), "clust1"))
+				require_NoError(t, err)
+				_, err = jsA.AddStream(strmCfg(fmt.Sprintf("fooA3-%t", pass), "clustL"))
+				if pass {
+					require_NoError(t, err)
+				} else {
+					require_Error(t, err)
+					require_Contains(t, err.Error(), "insufficient resources")
+				}
+				ncL := natsConnect(t, fmt.Sprintf("nats://a1:a1@127.0.0.1:%d", sLA.opts.Port))
+				jsL, err := ncL.JetStream()
+				require_NoError(t, err)
+				_, err = jsL.AddStream(strmCfg(fmt.Sprintf("fooL1-%t", pass), ""))
+				require_NoError(t, err)
+				_, err = jsL.AddStream(strmCfg(fmt.Sprintf("fooL2-%t", pass), "clustL"))
+				require_NoError(t, err)
+				_, err = jsL.AddStream(strmCfg(fmt.Sprintf("fooL3-%t", pass), "clust1"))
+				if pass {
+					require_NoError(t, err)
+				} else {
+					require_Error(t, err)
+					require_Contains(t, err.Error(), "insufficient resources")
+				}
+			}
+			clusterLnCnt := func(expected int) error {
+				cnt := 0
+				for _, s := range c.servers {
+					cnt += s.NumLeafNodes()
+				}
+				if cnt == expected {
+					return nil
+				}
+				return fmt.Errorf("not enought leaf node connections, got %d needed %d", cnt, expected)
+			}
+
+			// Even though there are two remotes defined in tmplL, only one will be able to connect.
+			checkFor(t, 10*time.Second, time.Second/4, func() error { return clusterLnCnt(2) })
+			checkLeafNodeConnectedCount(t, sLA, 1)
+			checkLeafNodeConnectedCount(t, sLB, 1)
+			c.waitOnPeerCount(2)
+			cl.waitOnPeerCount(2)
+			test(false)
+
+			// Starting the proxy will connect the system accounts.
+			// After they are connected the clusters are merged.
+			// Once this happened, all streams in test can be placed anywhere in the cluster.
+			// Before that only the cluster the client is connected to can be used for placement
+			p.start()
+
+			// Even though there are two remotes defined in tmplL, only one will be able to connect.
+			checkFor(t, 10*time.Second, time.Second/4, func() error { return clusterLnCnt(4) })
+			checkLeafNodeConnectedCount(t, sLA, 2)
+			checkLeafNodeConnectedCount(t, sLB, 2)
+
+			cAll := cluster{t: t, servers: []*Server{sA, sB, sLA, sLB}}
+			cAll.waitOnPeerCount(4)
+			//t.Logf("Elected meta leader: %s", cAll.leader().Name())
+			test(true)
+		})
+	}
+}
+
+func TestLeafNodeJetStreamCredsDenies(t *testing.T) {
+	tmplL := `
+listen: 127.0.0.1:-1
+accounts :{
+    A:{   jetstream: enable, users:[ {user:a1,password:a1}]},
+    SYS:{ users:[ {user:s1,password:s1}]},
+}
+system_account = SYS
+jetstream: {
+    domain: "cluster"
+    store_dir: %s
+    max_mem: 50Mb
+    max_file: 50Mb
+}
+leafnodes:{
+    remotes:[{url:nats://a1:a1@127.0.0.1:50555, account: A, credentials: %s },
+		     {url:nats://s1:s1@127.0.0.1:50555, account: SYS, credentials: %s, deny_imports: foo, deny_exports: bar}]
+}
+`
+	akp, err := nkeys.CreateAccount()
+	require_NoError(t, err)
+	creds := createUserWithLimit(t, akp, time.Time{}, func(pl *jwt.UserPermissionLimits) {
+		pl.Pub.Deny.Add(jsAllAPI)
+		pl.Sub.Deny.Add(jsAllAPI)
+	})
+
+	sd := createDir(t, JetStreamStoreDir)
+	defer os.RemoveAll(sd)
+
+	confL := createConfFile(t, []byte(fmt.Sprintf(tmplL, sd, creds, creds)))
+	defer removeFile(t, confL)
+	opts := LoadConfig(confL)
+	sL, err := NewServer(opts)
+	require_NoError(t, err)
+
+	l := captureNoticeLogger{}
+	sL.SetLogger(&l, false, false)
+
+	go sL.Start()
+	defer sL.Shutdown()
+
+	// wait till the notices got printed
+UNTIL_READY:
+	for {
+		<-time.After(50 * time.Millisecond)
+		l.Lock()
+		for _, n := range l.notices {
+			if strings.Contains(n, "Server is ready") {
+				l.Unlock()
+				break UNTIL_READY
+			}
+		}
+		l.Unlock()
+	}
+
+	l.Lock()
+	cnt := 0
+	for _, n := range l.notices {
+		if strings.Contains(n, "LeafNode Remote for Account A uses credentials file") ||
+			strings.Contains(n, "LeafNode Remote for System Account uses") ||
+			strings.Contains(n, "Remote for System Account uses restricted export permissions") ||
+			strings.Contains(n, "Remote for System Account uses restricted import permissions") {
+			cnt++
+		}
+	}
+	l.Unlock()
+	require_True(t, cnt == 4)
 }

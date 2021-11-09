@@ -4202,6 +4202,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	opts.Port = -1
 	tdir := createDir(t, "jstests-storedir-")
 	opts.JetStream = true
+	opts.JetStreamDomain = "domain"
 	opts.StoreDir = tdir
 	rurl, _ := url.Parse(fmt.Sprintf("nats-leaf://%s:%d", lopts.LeafNode.Host, lopts.LeafNode.Port))
 	opts.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{rurl}}}
@@ -4417,6 +4418,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	}
 
 	// Now connect through a cluster server and make sure we can get things to work this way as well.
+	// This client, connecting to a leaf without shared system account and domain needs to provide the domain explicitly.
 	nc2 := clientConnectToServer(t, ls)
 	defer nc2.Close()
 	// Wait a bit for interest to propagate.
@@ -4425,7 +4427,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	snapshot = snapshot[:0]
 
 	req, _ = json.Marshal(sreq)
-	rmsg, err = nc2.Request(fmt.Sprintf(JSApiStreamSnapshotT, mname), req, time.Second)
+	rmsg, err = nc2.Request(fmt.Sprintf(strings.ReplaceAll(JSApiStreamSnapshotT, JSApiPrefix, "$JS.domain.API"), mname), req, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error on snapshot request: %v", err)
 	}
@@ -4450,7 +4452,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	state = mset.state()
 	mset.delete()
 
-	rmsg, err = nc2.Request(fmt.Sprintf(JSApiStreamRestoreT, mname), req, time.Second)
+	rmsg, err = nc2.Request(strings.ReplaceAll(JSApiStreamRestoreT, JSApiPrefix, "$JS.domain.API"), req, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error on snapshot request: %v", err)
 	}
@@ -4471,7 +4473,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 		t.Fatalf("Expected restore subscription to be closed")
 	}
 
-	rmsg, err = nc2.Request(fmt.Sprintf(JSApiStreamRestoreT, mname), req, time.Second)
+	rmsg, err = nc2.Request(strings.ReplaceAll(JSApiStreamRestoreT, JSApiPrefix, "$JS.domain.API"), req, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error on snapshot request: %v", err)
 	}
@@ -11156,10 +11158,11 @@ func TestJetStreamLastSequenceBySubject(t *testing.T) {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 			// Do manually for now.
-			nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+			m, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+			require_NoError(t, err)
 			si, err := js.StreamInfo("KV")
 			if err != nil {
-				t.Fatalf("Unexpected error: %v", err)
+				t.Fatalf("Unexpected error: %v, respmsg: %q", err, string(m.Data))
 			}
 			if si == nil || si.Config.Name != "KV" {
 				t.Fatalf("StreamInfo is not correct %+v", si)

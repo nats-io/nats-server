@@ -34,6 +34,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nats-io/jwt/v2"
+
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
 )
@@ -65,6 +67,8 @@ type leaf struct {
 	remoteCluster string
 	// remoteServer holds onto the remove server's name or ID.
 	remoteServer string
+	// domain name of remote server
+	remoteDomain string
 	// Used to suppress sub and unsub interest. Same as routes but our audience
 	// here is tied to this leaf node. This will hold all subscriptions except this
 	// leaf nodes. This represents all the interest we want to send to the other side.
@@ -108,102 +112,6 @@ func (c *client) isHubLeafNode() bool {
 	return c.kind == LEAF && !c.leaf.isSpoke
 }
 
-// Will add in the deny exports and imports for JetStream on solicited connections if we
-// are sharing the system account and wanting to extend the JS domain.
-// r lock should be held.
-func (s *Server) addInJSDeny(r *leafNodeCfg) {
-	s.addInJSDenyExport(r)
-	s.addInJSDenyImport(r)
-}
-
-// Will add in the deny export for JetStream on solicited connections if we
-// detect we have multiple JetStream domains and we know our local account
-// is JetStream enabled.
-// r lock should be held.
-func (s *Server) addInJSDenyExport(r *leafNodeCfg) {
-	for _, dsubj := range r.DenyExports {
-		if dsubj == jsAllAPI {
-			return
-		}
-	}
-
-	s.Noticef("Adding deny export of %q for leafnode configuration on %q that bridges system account", jsAllAPI, r.LocalAccount)
-	r.DenyExports = append(r.DenyExports, jsAllAPI)
-
-	// We added in some deny clauses here so need to regenerate the permissions etc.
-	perms := &Permissions{}
-	perms.Publish = &SubjectPermission{Deny: r.DenyExports}
-	if len(r.DenyImports) > 0 {
-		perms.Subscribe = &SubjectPermission{Deny: r.DenyImports}
-	}
-	r.perms = perms
-}
-
-// Will add in the deny import for JetStream on solicited connections if we
-// detect we have multiple JetStream domains and we know our local account
-// is JetStream enabled.
-// r lock should be held.
-func (s *Server) addInJSDenyImport(r *leafNodeCfg) {
-	for _, dsubj := range r.DenyImports {
-		if dsubj == jsAllAPI {
-			return
-		}
-	}
-
-	s.Noticef("Adding deny import of %q for leafnode configuration on %q that bridges system account", jsAllAPI, r.LocalAccount)
-	r.DenyImports = append(r.DenyImports, jsAllAPI)
-
-	// We added in some deny clauses here so need to regenerate the permissions etc.
-	perms := &Permissions{}
-	perms.Subscribe = &SubjectPermission{Deny: r.DenyImports}
-	if len(r.DenyExports) > 0 {
-		perms.Publish = &SubjectPermission{Deny: r.DenyExports}
-	}
-	r.perms = perms
-}
-
-// Used for $SYS accounts when sharing but using separate JS domains.
-// r lock should be held.
-func (s *Server) addInJSDenyAll(r *leafNodeCfg) {
-	denyAll := []string{jscAllSubj, raftAllSubj, jsAllAPI}
-
-	s.Noticef("Sharing system account but utilizing separate JetStream Domains")
-	s.Noticef("Adding deny of %+v for leafnode configuration that bridges system account", denyAll)
-
-	hasDeny := func(deny string, l []string) bool {
-		for _, le := range l {
-			if le == deny {
-				return true
-			}
-		}
-		return false
-	}
-
-	var exportAdded, importAdded bool
-	for _, deny := range denyAll {
-		if !hasDeny(deny, r.DenyExports) {
-			r.DenyExports = append(r.DenyExports, deny)
-			exportAdded = true
-		}
-		if !hasDeny(deny, r.DenyImports) {
-			r.DenyImports = append(r.DenyImports, deny)
-			importAdded = true
-		}
-	}
-	if !exportAdded && !importAdded {
-		return
-	}
-
-	perms := &Permissions{}
-	if exportAdded {
-		perms.Publish = &SubjectPermission{Deny: r.DenyExports}
-	}
-	if importAdded {
-		perms.Subscribe = &SubjectPermission{Deny: r.DenyImports}
-	}
-	r.perms = perms
-}
-
 // Determine if we are sharing our local system account with the remote.
 func (s *Server) hasSystemRemoteLeaf() bool {
 	s.mu.Lock()
@@ -230,11 +138,75 @@ func (s *Server) hasSystemRemoteLeafLocked() *leafNodeCfg {
 
 // This will spin up go routines to solicit the remote leaf node connections.
 func (s *Server) solicitLeafNodeRemotes(remotes []*RemoteLeafOpts) {
-	for _, r := range remotes {
+	sysAccName := _EMPTY_
+	sAcc := s.SystemAccount()
+	if sAcc != nil {
+		sysAccName = sAcc.Name
+	}
+	addRemote := func(r *RemoteLeafOpts, isSysAccRemote bool) *leafNodeCfg {
 		s.mu.Lock()
 		remote := newLeafNodeCfg(r)
+		creds := remote.Credentials
+		accName := remote.LocalAccount
 		s.leafRemoteCfgs = append(s.leafRemoteCfgs, remote)
+		// Print notice if
+		if isSysAccRemote {
+			if len(remote.DenyExports) > 0 {
+				s.Noticef("Remote for System Account uses restricted export permissions")
+			}
+			if len(remote.DenyImports) > 0 {
+				s.Noticef("Remote for System Account uses restricted import permissions")
+			}
+		}
 		s.mu.Unlock()
+		if creds != _EMPTY_ {
+			contents, err := ioutil.ReadFile(creds)
+			defer wipeSlice(contents)
+			if err != nil {
+				s.Errorf("Error reading LeafNode Remote Credentials file %q: %v", creds, err)
+			} else if items := credsRe.FindAllSubmatch(contents, -1); len(items) < 2 {
+				s.Errorf("LeafNode Remote Credentials file %q malformed", creds)
+			} else if _, err := nkeys.FromSeed(items[1][1]); err != nil {
+				s.Errorf("LeafNode Remote Credentials file %q has malformed seed", creds)
+			} else if uc, err := jwt.DecodeUserClaims(string(items[0][1])); err != nil {
+				s.Errorf("LeafNode Remote Credentials file %q has malformed user jwt", creds)
+			} else if isSysAccRemote {
+				if !uc.Permissions.Pub.Empty() || !uc.Permissions.Sub.Empty() || uc.Permissions.Resp != nil {
+					s.Noticef("LeafNode Remote for System Account uses credentials file %q with restricted permissions", creds)
+				}
+			} else {
+				if !uc.Permissions.Pub.Empty() || !uc.Permissions.Sub.Empty() || uc.Permissions.Resp != nil {
+					s.Noticef("LeafNode Remote for Account %s uses credentials file %q with restricted permissions", accName, creds)
+				}
+			}
+		}
+		return remote
+	}
+	// Connect to remote leaf node with system account first
+	for _, r := range remotes {
+		if r.LocalAccount != sysAccName {
+			continue
+		}
+		conCreatedChan := make(chan struct{})
+		remote := addRemote(r, true)
+		s.startGoRoutine(func() {
+			s.connectToRemoteLeafNode(remote, true)
+			close(conCreatedChan)
+		})
+		// Give the system account connection a slight head start
+		// This will reduce forced reconnects from accounts triggered by the system account connecting as well
+		select {
+		case <-conCreatedChan:
+		case <-time.After(200 * time.Millisecond):
+		case <-s.quitCh:
+		}
+		break
+	}
+	for _, r := range remotes {
+		if r.LocalAccount == sysAccName {
+			continue
+		}
+		remote := addRemote(r, false)
 		s.startGoRoutine(func() { s.connectToRemoteLeafNode(remote, true) })
 	}
 }
@@ -684,12 +656,14 @@ func (s *Server) startLeafNodeAcceptLoop() {
 // RegEx to match a creds file with user JWT and Seed.
 var credsRe = regexp.MustCompile(`\s*(?:(?:[-]{3,}[^\n]*[-]{3,}\n)(.+)(?:\n\s*[-]{3,}[^\n]*[-]{3,}\n))`)
 
+// clusterName is provided as argument to avoid lock ordering issues with the locked client c
 // Lock should be held entering here.
 func (c *client) sendLeafConnect(clusterName string, tlsRequired, headers bool) error {
 	// We support basic user/pass and operator based user JWT with signatures.
 	cinfo := leafConnectInfo{
 		TLS:       tlsRequired,
 		ID:        c.srv.info.ID,
+		Domain:    c.srv.info.Domain,
 		Name:      c.srv.info.Name,
 		Hub:       c.leaf.remote.Hub,
 		Cluster:   clusterName,
@@ -990,8 +964,6 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 
 func (c *client) processLeafnodeInfo(info *Info) {
 	s := c.srv
-	opts := s.getOpts()
-	hasSysShared, sysAcc := s.hasSystemRemoteLeaf(), s.SystemAccount()
 
 	c.mu.Lock()
 	if c.leaf == nil || c.isClosed() {
@@ -1048,56 +1020,9 @@ func (c *client) processLeafnodeInfo(info *Info) {
 		} else {
 			c.leaf.remoteServer = info.Name
 		}
-
-		// Check for JetStream semantics to deny the JetStream API as needed.
-		// This is so that if JetStream is enabled on both sides we can separately address both.
-		hasJSDomain := opts.JetStreamDomain != _EMPTY_
-		inJSEnabledDomain := s.JetStreamEnabledForDomain()
-
-		// Check for mixed mode scenarios to resolve presence of domain names.
-		if !s.JetStreamEnabled() && inJSEnabledDomain && !hasJSDomain && s.jetStreamHasDomainConfigured() {
-			hasJSDomain = true
-		}
-
-		if remote, acc := c.leaf.remote, c.acc; remote != nil {
-			accHasJS := acc.jetStreamConfigured()
-			remote.Lock()
-			// JetStream checks for mappings and permissions updates.
-			if acc != sysAcc {
-				// Check if JetStream is enabled for this domain. If it's not, and the account
-				// does not have JS, we can act as pass through, so do not deny.
-				if hasSysShared && (inJSEnabledDomain || accHasJS) {
-					s.addInJSDeny(remote)
-				} else {
-					// Here we want to suppress if this local account has JS enabled.
-					// This is regardless of whether or not this server is actually running JS.
-					// We only suppress export. But we do send an indication about our JetStream
-					// status in the connect and the hub side will suppress as well if the remote
-					// account also has JetStream enabled.
-					if accHasJS {
-						s.addInJSDenyExport(remote)
-						// If we specified a domain do not import by default.
-						if hasJSDomain {
-							s.addInJSDenyImport(remote)
-						}
-					}
-				}
-				// If we have a specified JetStream domain we will want to add a mapping to
-				// allow access cross domain for each non-system account.
-				if hasJSDomain && accHasJS {
-					src := fmt.Sprintf(jsDomainAPI, opts.JetStreamDomain)
-					if err := acc.AddMapping(src, jsAllAPI); err != nil {
-						c.Debugf("Error adding JetStream domain mapping: %v", err)
-					}
-				}
-			} else if hasJSDomain && opts.JetStreamDomain != info.Domain {
-				s.addInJSDenyAll(remote)
-			}
-
-			c.setPermissions(remote.perms)
-			remote.Unlock()
-		}
+		c.leaf.remoteDomain = info.Domain
 	}
+
 	// For both initial INFO and async INFO protocols, Possibly
 	// update our list of remote leafnode URLs we can connect to.
 	if c.leaf.remote != nil && (len(info.LeafNodeURLs) > 0 || len(info.WSConnectURLs) > 0) {
@@ -1264,9 +1189,13 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 	var accName string
 	c.mu.Lock()
 	cid := c.cid
-	if c.acc != nil {
-		accName = c.acc.Name
+	acc := c.acc
+	if acc != nil {
+		accName = acc.Name
 	}
+	myRemoteDomain := c.leaf.remoteDomain
+	mySrvName := c.leaf.remoteServer
+	myClustName := c.leaf.remoteCluster
 	c.mu.Unlock()
 
 	var old *client
@@ -1300,6 +1229,50 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 		old.closeConnection(DuplicateRemoteLeafnodeConnection)
 		c.Warnf("Replacing connection from same server")
 	}
+
+	srvDecorated := func() string {
+		if myClustName == _EMPTY_ {
+			return mySrvName
+		}
+		return fmt.Sprintf("%s/%s", mySrvName, myClustName)
+	}
+
+	opts := s.getOpts()
+	sysAcc := s.SystemAccount()
+	// Deny (non domain) JetStream API traffic unless system account is shared and domain names are identical
+	if opts.JetStreamDomain != myRemoteDomain || (!opts.JetStream && opts.JetStreamDomain == _EMPTY_) || sysAcc == nil || acc == nil {
+		// If domain names mismatch always deny. This applies to system accounts as well as non system accounts.
+		// Not having a system account, account or JetStream disabled is considered a mismatch as well.
+		if acc != nil && acc == sysAcc {
+			c.Noticef("System Account Connected from %s", srvDecorated())
+			c.Noticef("JetStream Not Extended, adding denies %+v", denyAllJs)
+			c.mergeDenyPermissionsLocked(both, denyAllJs)
+		} else {
+			c.Noticef("JetStream Not Extended, adding deny %q for account %q", jsAllAPI, accName)
+			c.mergeDenyPermissionsLocked(both, []string{jsAllAPI})
+		}
+	} else if acc == sysAcc {
+		// system account and same domain
+		s.sys.client.Noticef("Extending JetStream as System Account connected from server %s", srvDecorated())
+	} else {
+		// This deny is needed in all cases (system account shared or not)
+		// If the system account is shared, jsAllAPI traffic will go through the system account.
+		// So in order to prevent duplicate delivery (from system and actual account) suppress it on the account.
+		// If the system account is NOT shared, jsAllAPI traffic has no business
+		c.Noticef("Adding deny %q for account %q", jsAllAPI, accName)
+		c.mergeDenyPermissionsLocked(both, []string{jsAllAPI})
+	}
+
+	// If we have a specified JetStream domain we will want to add a mapping to
+	// allow access cross domain for each non-system account.
+	if opts.JetStreamDomain != _EMPTY_ && acc != sysAcc && opts.JetStream {
+		src := fmt.Sprintf(jsDomainAPI, opts.JetStreamDomain)
+		if err := acc.AddMapping(src, jsAllAPI); err != nil {
+			c.Debugf("Error adding JetStream domain mapping: %v", err)
+		} else {
+			c.Noticef("Adding JetStream Domain Mapping: %s %s", src, s.Name())
+		}
+	}
 }
 
 func (s *Server) removeLeafNodeConnection(c *client) {
@@ -1325,6 +1298,7 @@ type leafConnectInfo struct {
 	TLS       bool     `json:"tls_required"`
 	Comp      bool     `json:"compression,omitempty"`
 	ID        string   `json:"server_id,omitempty"`
+	Domain    string   `json:"domain,omitempty"`
 	Name      string   `json:"name,omitempty"`
 	Hub       bool     `json:"is_hub,omitempty"`
 	Cluster   string   `json:"cluster,omitempty"`
@@ -1367,9 +1341,6 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	// Check if this server supports headers.
 	supportHeaders := c.srv.supportsHeaders()
 
-	// Grab system account and server options.
-	sysAcc, opts := s.SystemAccount(), s.getOpts()
-
 	c.mu.Lock()
 	// Leaf Nodes do not do echo or verbose or pedantic.
 	c.opts.Verbose = false
@@ -1393,6 +1364,8 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 		c.leaf.remoteCluster = proto.Cluster
 	}
 
+	c.leaf.remoteDomain = proto.Domain
+
 	// When a leaf solicits a connection to a hub, the perms that it will use on the soliciting leafnode's
 	// behalf are correct for them, but inside the hub need to be reversed since data is flowing in the opposite direction.
 	if !c.isSolicitedLeafNode() && c.perms != nil {
@@ -1407,27 +1380,18 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 
 	// Check for JetStream domain
 	jsConfigured := c.acc.jetStreamConfigured()
-	doDomainMappings := opts.JetStreamDomain != _EMPTY_ && c.acc != sysAcc && jsConfigured
 
 	// If we have JS enabled and the other side does as well we need to add in an import deny clause.
 	if jsConfigured && proto.JetStream {
-		c.mergePubDenyPermissions([]string{jsAllAPI})
-		// We need to send this back to the other side.
-		if c.isHubLeafNode() {
-			if c.opts.Import == nil {
-				c.opts.Import = &SubjectPermission{}
-			}
-			c.opts.Import.Deny = append(c.opts.Import.Deny, jsAllAPI)
-		}
+		c.mergeDenyPermissions(pub, []string{jsAllAPI})
 	}
 
 	// Set the Ping timer
 	s.setFirstPingTimer(c)
 
 	// If we received pub deny permissions from the other end, merge with existing ones.
-	c.mergePubDenyPermissions(proto.DenyPub)
+	c.mergeDenyPermissions(pub, proto.DenyPub)
 
-	acc := c.acc
 	c.mu.Unlock()
 
 	// Add in the leafnode here since we passed through auth at this point.
@@ -1444,15 +1408,6 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	// Announce the account connect event for a leaf node.
 	// This will no-op as needed.
 	s.sendLeafNodeConnect(c.acc)
-
-	// If we have a specified JetStream domain we will want to add a mapping to
-	// allow access cross domain for each non-system account.
-	if doDomainMappings {
-		src := fmt.Sprintf(jsDomainAPI, opts.JetStreamDomain)
-		if err := acc.AddMapping(src, jsAllAPI); err != nil {
-			c.Debugf("Error adding JetStream domain mapping: %v", err)
-		}
-	}
 
 	return nil
 }

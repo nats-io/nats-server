@@ -670,6 +670,28 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 		if err := c.RegisterNkeyUser(nkey); err != nil {
 			return false
 		}
+
+		// Warn about JetStream restrictions
+		if c.perms != nil {
+			deniedPub := []string{}
+			deniedSub := []string{}
+			for _, sub := range denyAllJs {
+				if c.perms.pub.deny != nil {
+					if r := c.perms.pub.deny.Match(sub); len(r.psubs)+len(r.qsubs) > 0 {
+						deniedPub = append(deniedPub, sub)
+					}
+				}
+				if c.perms.sub.deny != nil {
+					if r := c.perms.sub.deny.Match(sub); len(r.psubs)+len(r.qsubs) > 0 {
+						deniedSub = append(deniedSub, sub)
+					}
+				}
+			}
+			if len(deniedPub) > 0 || len(deniedSub) > 0 {
+				c.Noticef("Connected %s has JetStream denied on pub: %v sub: %v", c.kindString(), deniedPub, deniedSub)
+			}
+		}
+
 		// Hold onto the user's public key.
 		c.mu.Lock()
 		c.pubKey = juc.Subject
