@@ -1726,15 +1726,6 @@ func (l *captureWarnLogger) Warnf(format string, v ...interface{}) {
 	}
 }
 
-type pauseWriteConn struct {
-	net.Conn
-}
-
-func (swc *pauseWriteConn) Write(b []byte) (int, error) {
-	time.Sleep(250 * time.Millisecond)
-	return swc.Conn.Write(b)
-}
-
 func TestReadloopWarning(t *testing.T) {
 	readLoopReportThreshold = 100 * time.Millisecond
 	defer func() { readLoopReportThreshold = readLoopReport }()
@@ -1756,10 +1747,15 @@ func TestReadloopWarning(t *testing.T) {
 	sender := natsConnect(t, url)
 	defer sender.Close()
 
+	wg := sync.WaitGroup{}
+	wg.Add(1)
 	c := s.getClient(cid)
 	c.mu.Lock()
-	c.nc = &pauseWriteConn{Conn: c.nc}
-	c.mu.Unlock()
+	go func() {
+		defer wg.Done()
+		time.Sleep(250 * time.Millisecond)
+		c.mu.Unlock()
+	}()
 
 	natsPub(t, sender, "foo", make([]byte, 100))
 	natsFlush(t, sender)
@@ -1772,6 +1768,7 @@ func TestReadloopWarning(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("No warning printed")
 	}
+	wg.Wait()
 }
 
 func TestTraceMsg(t *testing.T) {
