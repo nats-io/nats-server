@@ -608,6 +608,7 @@ func (s *Server) startLeafNodeAcceptLoop() {
 		Headers:       s.supportsHeaders(),
 		JetStream:     opts.JetStream,
 		Domain:        opts.JetStreamDomain,
+		Cluster:       opts.Cluster.Name,
 		Proto:         1, // Fixed for now.
 		InfoOnConnect: true,
 	}
@@ -1021,6 +1022,7 @@ func (c *client) processLeafnodeInfo(info *Info) {
 			c.leaf.remoteServer = info.Name
 		}
 		c.leaf.remoteDomain = info.Domain
+		c.leaf.remoteCluster = info.Cluster
 	}
 
 	// For both initial INFO and async INFO protocols, Possibly
@@ -1196,6 +1198,7 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 	myRemoteDomain := c.leaf.remoteDomain
 	mySrvName := c.leaf.remoteServer
 	myClustName := c.leaf.remoteCluster
+	solicited := c.leaf.remote != nil
 	c.mu.Unlock()
 
 	var old *client
@@ -1239,21 +1242,52 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 
 	opts := s.getOpts()
 	sysAcc := s.SystemAccount()
-	// Deny (non domain) JetStream API traffic unless system account is shared and domain names are identical
-	if opts.JetStreamDomain != myRemoteDomain || (!opts.JetStream && opts.JetStreamDomain == _EMPTY_) || sysAcc == nil || acc == nil {
+	js := s.getJetStream()
+	var meta *raft
+	if js != nil {
+		if mg := js.getMetaGroup(); mg != nil {
+			meta = mg.(*raft)
+		}
+	}
+	blockMappingOutgoing := false
+	// Deny (non domain) JetStream API traffic unless system account is shared
+	// and domain names are identical and extending is not disabled
+	if opts.JetStreamDomain != myRemoteDomain || (!opts.JetStream && opts.JetStreamDomain == _EMPTY_) ||
+		sysAcc == nil || acc == nil {
 		// If domain names mismatch always deny. This applies to system accounts as well as non system accounts.
 		// Not having a system account, account or JetStream disabled is considered a mismatch as well.
 		if acc != nil && acc == sysAcc {
 			c.Noticef("System Account Connected from %s", srvDecorated())
 			c.Noticef("JetStream Not Extended, adding denies %+v", denyAllJs)
 			c.mergeDenyPermissionsLocked(both, denyAllJs)
+			// When a remote with a system account is present in a server, unless otherwise disabled, the server will be
+			// started in observer mode. Now that it is clear that this not used, turn the observer mode off.
+			if solicited && meta != nil && meta.isObserver() {
+				meta.setObserver(false, extNotExtended)
+				c.Noticef("Turning JetStream metadata controller Observer Mode off")
+				// Take note that the domain was not extended to avoid this state from startup.
+				writePeerState(js.config.StoreDir, meta.currentPeerState())
+				// Meta controller does not need to be kicked as this server can't be leader yet.
+			}
 		} else {
 			c.Noticef("JetStream Not Extended, adding deny %q for account %q", jsAllAPI, accName)
 			c.mergeDenyPermissionsLocked(both, []string{jsAllAPI})
 		}
+		blockMappingOutgoing = true
 	} else if acc == sysAcc {
 		// system account and same domain
-		s.sys.client.Noticef("Extending JetStream as System Account connected from server %s", srvDecorated())
+		s.sys.client.Noticef("Extending JetStream domain %q as System Account connected from server %s",
+			myRemoteDomain, srvDecorated())
+		// In an extension use case, pin leadership to server remotes connect to.
+		// Therefore, server with a remote that are not already in observer mode, need to be put into it.
+		if solicited && meta != nil && !meta.isObserver() {
+			meta.setObserver(true, extExtended)
+			c.Noticef("Turning JetStream metadata controller Observer Mode on")
+			// Take note that the domain was not extended to avoid this state next startup.
+			writePeerState(js.config.StoreDir, meta.currentPeerState())
+			// If this server is the leader already, step down so a new leader can be elected (that is not an observer)
+			meta.StepDown()
+		}
 	} else {
 		// This deny is needed in all cases (system account shared or not)
 		// If the system account is shared, jsAllAPI traffic will go through the system account.
@@ -1262,7 +1296,6 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 		c.Noticef("Adding deny %q for account %q", jsAllAPI, accName)
 		c.mergeDenyPermissionsLocked(both, []string{jsAllAPI})
 	}
-
 	// If we have a specified JetStream domain we will want to add a mapping to
 	// allow access cross domain for each non-system account.
 	if opts.JetStreamDomain != _EMPTY_ && acc != sysAcc && opts.JetStream {
@@ -1270,7 +1303,16 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 		if err := acc.AddMapping(src, jsAllAPI); err != nil {
 			c.Debugf("Error adding JetStream domain mapping: %v", err)
 		} else {
-			c.Noticef("Adding JetStream Domain Mapping: %s %s", src, s.Name())
+			c.Noticef("Adding JetStream Domain Mapping %q to account %q", src, accName)
+		}
+		if blockMappingOutgoing {
+			// make sure that messages intended for this domain, do not leave the cluster via this leaf node connection
+			// This is a guard against a miss-config with two identical domain names and will only cover some forms
+			// of this issue, not all of them.
+			// This guards against a hub and a spoke having the same domain name.
+			// But not two spokes having the same one and the request coming from the hub.
+			c.mergeDenyPermissionsLocked(pub, []string{src})
+			c.Noticef("Adding deny %q for outgoing messages to account %q", src, accName)
 		}
 	}
 }

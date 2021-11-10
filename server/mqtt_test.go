@@ -3133,7 +3133,7 @@ func TestMQTTClusterPlacement(t *testing.T) {
 }
 
 func TestMQTTLeafnodeWithoutJSToClusterWithJS(t *testing.T) {
-	t.Skip("inspect what is going on here")
+	t.Skip("The mqtt client in the leaf node needs to use the domain name")
 	// In this test the leaf node has no JS enabled, but shares the system account and domain name
 	addInSysAcc := func(o *Options) {
 		o.Accounts = append(o.Accounts, NewAccount("$SYS"))

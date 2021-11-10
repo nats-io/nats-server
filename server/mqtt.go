@@ -950,6 +950,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 			ch: make(chan struct{}, 1),
 		},
 	}
+	// TODO record domain name in as here
 	// We need to include the domain in the subject prefix used to store sessions in the $MQTT_sess stream.
 	if d := s.getOpts().JetStreamDomain; d != _EMPTY_ {
 		as.domainTk = d + "."

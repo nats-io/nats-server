@@ -155,6 +155,7 @@ type raft struct {
 	dflag    bool
 	pleader  bool
 	observer bool
+	extSt    extensionState
 
 	// Subjects for votes, updates, replays.
 	psubj  string
@@ -325,7 +326,7 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 	tmpfile.Close()
 	os.Remove(tmpfile.Name())
 
-	return writePeerState(cfg.Store, &peerState{knownPeers, expected})
+	return writePeerState(cfg.Store, &peerState{knownPeers, expected, extUndetermined})
 }
 
 // startRaftNode will start the raft node.
@@ -382,6 +383,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		leadc:    make(chan bool, 8),
 		stepdown: make(chan string, 8),
 		observer: cfg.Observer,
+		extSt:    ps.domainExt,
 	}
 	n.c.registerWithAccount(sacc)
 
@@ -919,7 +921,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	snap := &snapshot{
 		lastTerm:  term,
 		lastIndex: n.applied,
-		peerstate: encodePeerState(&peerState{n.peerNames(), n.csz}),
+		peerstate: encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt}),
 		data:      data,
 	}
 
@@ -1500,6 +1502,13 @@ func (n *raft) isObserver() bool {
 	n.RLock()
 	defer n.RUnlock()
 	return n.observer
+}
+
+func (n *raft) setObserver(isObserver bool, extSt extensionState) {
+	n.Lock()
+	defer n.Unlock()
+	n.observer = isObserver
+	n.extSt = extSt
 }
 
 func (n *raft) runAsFollower() {
@@ -2187,7 +2196,7 @@ func (n *raft) applyCommit(index uint64) error {
 					n.qn = n.csz/2 + 1
 				}
 			}
-			n.writePeerState(&peerState{n.peerNames(), n.csz})
+			n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
 			// We pass these up as well.
 			committed = append(committed, e)
 		case EntryRemovePeer:
@@ -2216,7 +2225,7 @@ func (n *raft) applyCommit(index uint64) error {
 			}
 
 			// Write out our new state.
-			n.writePeerState(&peerState{n.peerNames(), n.csz})
+			n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
 			// We pass these up as well.
 			committed = append(committed, e)
 		}
@@ -2903,13 +2912,22 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 	n.sendRPC(n.asubj, n.areply, ae.buf)
 }
 
+type extensionState uint16
+
+const (
+	extUndetermined = extensionState(iota)
+	extExtended
+	extNotExtended
+)
+
 type peerState struct {
 	knownPeers  []string
 	clusterSize int
+	domainExt   extensionState
 }
 
 func peerStateBufSize(ps *peerState) int {
-	return 4 + 4 + (8 * len(ps.knownPeers))
+	return 4 + 4 + (idLen * len(ps.knownPeers)) + 2
 }
 
 func encodePeerState(ps *peerState) []byte {
@@ -2922,6 +2940,7 @@ func encodePeerState(ps *peerState) []byte {
 		copy(buf[wi:], peer)
 		wi += idLen
 	}
+	le.PutUint16(buf[wi:], uint16(ps.domainExt))
 	return buf
 }
 
@@ -2933,13 +2952,15 @@ func decodePeerState(buf []byte) (*peerState, error) {
 	ps := &peerState{clusterSize: int(le.Uint32(buf[0:]))}
 	expectedPeers := int(le.Uint32(buf[4:]))
 	buf = buf[8:]
-	for i, ri, n := 0, 0, expectedPeers; i < n && ri < len(buf); i++ {
+	ri := 0
+	for i, n := 0, expectedPeers; i < n && ri < len(buf); i++ {
 		ps.knownPeers = append(ps.knownPeers, string(buf[ri:ri+idLen]))
 		ri += idLen
 	}
 	if len(ps.knownPeers) != expectedPeers {
 		return nil, errCorruptPeers
 	}
+	ps.domainExt = extensionState(le.Uint16(buf[ri:]))
 	return ps, nil
 }
 
@@ -2954,7 +2975,7 @@ func (n *raft) peerNames() []string {
 
 func (n *raft) currentPeerState() *peerState {
 	n.RLock()
-	ps := &peerState{n.peerNames(), n.csz}
+	ps := &peerState{n.peerNames(), n.csz, n.extSt}
 	n.RUnlock()
 	return ps
 }

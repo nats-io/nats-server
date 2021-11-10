@@ -225,6 +225,7 @@ type Options struct {
 	JetStreamMaxMemory    int64         `json:"-"`
 	JetStreamMaxStore     int64         `json:"-"`
 	JetStreamDomain       string        `json:"-"`
+	JetStreamExtHint      string        `json:"-"`
 	JetStreamKey          string        `json:"-"`
 	StoreDir              string        `json:"-"`
 	Websocket             WebsocketOpts `json:"-"`
@@ -1699,6 +1700,8 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 				doEnable = mv.(bool)
 			case "key", "ek", "encryption_key":
 				opts.JetStreamKey = mv.(string)
+			case "extension_hint":
+				opts.JetStreamExtHint = mv.(string)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{

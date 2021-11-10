@@ -97,7 +97,7 @@ func LoadConfig(configFile string) (opts *Options) {
 	if err != nil {
 		panic(fmt.Sprintf("Error processing configuration file: %v", err))
 	}
-	opts.NoSigs, opts.NoLog = true, false
+	opts.NoSigs, opts.NoLog = true, true
 	return
 }
 

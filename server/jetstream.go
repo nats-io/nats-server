@@ -365,8 +365,20 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 		return err
 	}
 
+	canExtend := s.canExtendOtherDomain()
+	standAlone := s.standAloneMode()
+	if standAlone && canExtend {
+		if s.getOpts().JetStreamExtHint == jsWillExtend {
+			standAlone = false
+		} else {
+			canExtend = false
+			s.Noticef("Standalone server started in clustered mode do not support extending domains.")
+			s.Noticef(`Manually disable standalone mode by setting the JetStream Option "extension_hint: %s"`, jsWillExtend)
+		}
+	}
+
 	// If we are in clustered mode go ahead and start the meta controller.
-	if !s.standAloneMode() || s.wantsToExtendOtherDomain() {
+	if !standAlone || canExtend {
 		if err := s.enableJetStreamClustering(); err != nil {
 			return err
 		}
@@ -375,15 +387,13 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	return nil
 }
 
+const jsNoExtend = "no_extend"
+const jsWillExtend = "will_extend"
+
 // This will check if we have a solicited leafnode that shares the system account
-// and we are not our own domain and we are not denying subjects that would prevent
-// extending JetStream.
-func (s *Server) wantsToExtendOtherDomain() bool {
+// and extension is not manually disabled
+func (s *Server) canExtendOtherDomain() bool {
 	opts := s.getOpts()
-	// If we have a domain name set we want to be our own domain.
-	if opts.JetStreamDomain != _EMPTY_ {
-		return false
-	}
 	sysAcc := s.SystemAccount().GetName()
 	for _, r := range opts.LeafNode.Remotes {
 		if r.LocalAccount == sysAcc {
@@ -2209,5 +2219,12 @@ func validateJetStreamOptions(o *Options) error {
 		return fmt.Errorf("jetstream cluster requires `cluster.name` to be set")
 	}
 
+	h := strings.ToLower(o.JetStreamExtHint)
+	switch h {
+	case jsWillExtend, jsNoExtend, _EMPTY_:
+		o.JetStreamExtHint = h
+	default:
+		return fmt.Errorf("Expected 'no_extend' for string value, got '%s'", h)
+	}
 	return nil
 }

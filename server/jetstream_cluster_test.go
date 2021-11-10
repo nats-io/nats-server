@@ -6333,7 +6333,7 @@ func TestJetStreamClusterSuperClusterAndSingleLeafNodeWithSharedSystemAccount(t 
 	sc := createJetStreamSuperCluster(t, 3, 2)
 	defer sc.shutdown()
 
-	ln := sc.createSingleLeafNode()
+	ln := sc.createSingleLeafNode(true)
 	defer ln.Shutdown()
 
 	// We want to make sure there is only one leader and its always in the supercluster.
@@ -6947,6 +6947,9 @@ func TestJetStreamClusterDomainsAndSameNameSources(t *testing.T) {
 	tmpl = strings.Replace(jsClusterTemplWithSingleLeafNode, "store_dir:", "domain: SPOKE-2, store_dir:", 1)
 	spoke2 := c.createLeafNodeWithTemplate("LN-SPOKE-2", tmpl)
 	defer spoke2.Shutdown()
+
+	checkLeafNodeConnectedCount(t, spoke1, 2)
+	checkLeafNodeConnectedCount(t, spoke2, 2)
 
 	subjFor := func(s *Server) string {
 		switch s {
@@ -7761,6 +7764,8 @@ func TestJetStreamClusterNilMsgWithHeaderThroughSourcedStream(t *testing.T) {
 	tmpl = strings.Replace(jsClusterTemplWithSingleLeafNode, "store_dir:", "domain: SPOKE, store_dir:", 1)
 	spoke := c.createLeafNodeWithTemplate("SPOKE", tmpl)
 	defer spoke.Shutdown()
+
+	checkLeafNodeConnectedCount(t, spoke, 2)
 
 	// Client for API requests.
 	nc, js := jsClientConnect(t, spoke)
@@ -9941,8 +9946,8 @@ func (sc *supercluster) createLeafNodesWithDomain(clusterName string, numServers
 	return sc.randomCluster().createLeafNodes(clusterName, numServers, domain)
 }
 
-func (sc *supercluster) createSingleLeafNode() *Server {
-	return sc.randomCluster().createLeafNode()
+func (sc *supercluster) createSingleLeafNode(extend bool) *Server {
+	return sc.randomCluster().createLeafNode(extend)
 }
 
 func (sc *supercluster) leader() *Server {
@@ -10352,8 +10357,13 @@ func (c *cluster) createLeafNodesWithStartPortAndDomain(clusterName string, numS
 	return c.createLeafNodesWithTemplateAndStartPort(tmpl, clusterName, numServers, portStart)
 }
 
-func (c *cluster) createLeafNode() *Server {
-	return c.createLeafNodeWithTemplate("LNS", jsClusterTemplWithSingleLeafNode)
+func (c *cluster) createLeafNode(extend bool) *Server {
+	if extend {
+		return c.createLeafNodeWithTemplate("LNS",
+			strings.ReplaceAll(jsClusterTemplWithSingleLeafNode, "store_dir:", " extension_hint: will_extend, store_dir:"))
+	} else {
+		return c.createLeafNodeWithTemplate("LNS", jsClusterTemplWithSingleLeafNode)
+	}
 }
 
 func (c *cluster) createLeafNodeWithTemplate(name, template string) *Server {
@@ -10533,6 +10543,10 @@ func (c *cluster) waitOnPeerCount(n int) {
 		}
 		time.Sleep(100 * time.Millisecond)
 		leader = c.leader()
+		for leader == nil {
+			c.waitOnLeader()
+			leader = c.leader()
+		}
 	}
 	c.t.Fatalf("Expected a cluster peer count of %d, got %d", n, len(leader.JetStreamClusterPeers()))
 }
