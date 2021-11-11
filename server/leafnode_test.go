@@ -4389,6 +4389,188 @@ leafnodes:{
 	}
 }
 
+func TestLeafNodeJetStreamClusterMixedModeExtensionWithSystemAccount(t *testing.T) {
+	/*  Topology used in this test:
+	CLUSTER(A <-> B <-> C (NO JS))
+	      	            ^
+	                    |
+	                    LA
+	*/
+
+	// once every server is up, we expect these peers to be part of the JetStream meta cluster
+	expectedJetStreamPeers := map[string]struct{}{
+		"A":  {},
+		"B":  {},
+		"LA": {},
+	}
+
+	tmplA := `
+listen: 127.0.0.1:-1
+accounts :{
+    A:{   jetstream: enable, users:[ {user:a1,password:a1}]},
+    SYS:{ users:[ {user:s1,password:s1}]},
+}
+system_account: SYS
+leafnodes: {
+	listen: 127.0.0.1:-1
+	no_advertise: true
+	authorization: {
+		timeout: 0.5
+	}
+}
+jetstream: { domain: "domain", store_dir: %s; max_mem: 50Mb, max_file: 50Mb }
+server_name: A
+cluster: {
+	name: clust1
+	listen: 127.0.0.1:50554
+	routes=[nats-route://127.0.0.1:50555,nats-route://127.0.0.1:50556]
+	no_advertise: true
+}
+`
+
+	tmplB := `
+listen: 127.0.0.1:-1
+accounts :{
+    A:{   jetstream: enable, users:[ {user:a1,password:a1}]},
+    SYS:{ users:[ {user:s1,password:s1}]},
+}
+system_account: SYS
+leafnodes: {
+	listen: 127.0.0.1:-1
+	no_advertise: true
+	authorization: {
+		timeout: 0.5
+	}
+}
+jetstream: { domain: "domain", store_dir: %s; max_mem: 50Mb, max_file: 50Mb }
+server_name: B
+cluster: {
+	name: clust1
+	listen: 127.0.0.1:50555
+	routes=[nats-route://127.0.0.1:50554,nats-route://127.0.0.1:50556]
+	no_advertise: true
+}
+`
+
+	tmplC := `
+listen: 127.0.0.1:-1
+accounts :{
+    A:{   jetstream: enable, users:[ {user:a1,password:a1}]},
+    SYS:{ users:[ {user:s1,password:s1}]},
+}
+system_account: SYS
+leafnodes: {
+	listen: 127.0.0.1:-1
+	no_advertise: true
+	authorization: {
+		timeout: 0.5
+	}
+}
+jetstream: {
+	enabled: false
+	domain: "domain"
+}
+server_name: C
+cluster: {
+	name: clust1
+	listen: 127.0.0.1:50556
+	routes=[nats-route://127.0.0.1:50554,nats-route://127.0.0.1:50555]
+	no_advertise: true
+}
+`
+
+	tmplLA := `
+listen: 127.0.0.1:-1
+accounts :{
+    A:{   jetstream: enable, users:[ {user:a1,password:a1}]},
+    SYS:{ users:[ {user:s1,password:s1}]},
+}
+system_account = SYS
+# the extension hint is to simplify this test. without it present we would need a cluster of size 2
+jetstream: { domain: "domain", store_dir: %s; max_mem: 50Mb, max_file: 50Mb, extension_hint: will_extend }
+server_name: LA
+leafnodes:{
+	no_advertise: true
+    remotes:[{url:nats://a1:a1@127.0.0.1:%d, account: A},
+		     {url:nats://s1:s1@127.0.0.1:%d, account: SYS}]
+}
+# add the cluster here so we can test placement
+cluster: { name: clustL }
+`
+	sd1 := createDir(t, JetStreamStoreDir)
+	defer os.RemoveAll(sd1)
+	confA := createConfFile(t, []byte(fmt.Sprintf(tmplA, sd1)))
+	defer removeFile(t, confA)
+	sA, _ := RunServerWithConfig(confA)
+	defer sA.Shutdown()
+
+	sd2 := createDir(t, JetStreamStoreDir)
+	defer os.RemoveAll(sd2)
+	confB := createConfFile(t, []byte(fmt.Sprintf(tmplB, sd2)))
+	defer removeFile(t, confB)
+	sB, _ := RunServerWithConfig(confB)
+	defer sA.Shutdown()
+
+	confC := createConfFile(t, []byte(fmt.Sprintf(tmplC)))
+	defer removeFile(t, confC)
+	sC, _ := RunServerWithConfig(confC)
+	defer sC.Shutdown()
+
+	checkClusterFormed(t, sA, sB, sC)
+	c := cluster{t: t, servers: []*Server{sA, sB, sC}}
+	c.waitOnPeerCount(2)
+
+	sd3 := createDir(t, JetStreamStoreDir)
+	defer os.RemoveAll(sd3)
+	// deliberately pick server sC (no JS) to connect to
+	confLA := createConfFile(t, []byte(fmt.Sprintf(tmplLA, sd3, sC.opts.LeafNode.Port, sC.opts.LeafNode.Port)))
+	defer removeFile(t, confLA)
+	sLA, _ := RunServerWithConfig(confLA)
+	defer sLA.Shutdown()
+
+	checkLeafNodeConnectedCount(t, sC, 2)
+	checkLeafNodeConnectedCount(t, sLA, 2)
+	c.waitOnPeerCount(3)
+	peers := c.leader().JetStreamClusterPeers()
+	for _, peer := range peers {
+		if _, ok := expectedJetStreamPeers[peer]; !ok {
+			t.Fatalf("Found unexpected peer %q", peer)
+		}
+	}
+
+	// helper to create stream config with uniqe name and subject
+	cnt := 0
+	strmCfg := func(placementCluster string) *nats.StreamConfig {
+		name := fmt.Sprintf("s-%d", cnt)
+		cnt++
+		if placementCluster == "" {
+			return &nats.StreamConfig{Name: name, Replicas: 1, Subjects: []string{name}}
+		}
+		return &nats.StreamConfig{Name: name, Replicas: 1, Subjects: []string{name},
+			Placement: &nats.Placement{Cluster: placementCluster}}
+	}
+
+	test := func(port int, expectedDefPlacement string) {
+		ncA := natsConnect(t, fmt.Sprintf("nats://a1:a1@127.0.0.1:%d", port))
+		jsA, err := ncA.JetStream()
+		require_NoError(t, err)
+		si, err := jsA.AddStream(strmCfg(""))
+		require_NoError(t, err)
+		require_Contains(t, si.Cluster.Name, expectedDefPlacement)
+		si, err = jsA.AddStream(strmCfg("clust1"))
+		require_NoError(t, err)
+		require_Contains(t, si.Cluster.Name, "clust1")
+		si, err = jsA.AddStream(strmCfg("clustL"))
+		require_NoError(t, err)
+		require_Contains(t, si.Cluster.Name, "clustL")
+	}
+
+	test(sA.opts.Port, "clust1")
+	test(sB.opts.Port, "clust1")
+	test(sC.opts.Port, "clust1")
+	test(sLA.opts.Port, "clustL")
+}
+
 func TestLeafNodeJetStreamCredsDenies(t *testing.T) {
 	tmplL := `
 listen: 127.0.0.1:-1
