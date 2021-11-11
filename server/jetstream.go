@@ -2199,6 +2199,41 @@ func (s *Server) resourcesExeededError() {
 
 // For validating options.
 func validateJetStreamOptions(o *Options) error {
+	// in non operator mode, the account names need to be configured
+	if len(o.jsAccDefaultDomain) > 0 {
+		if len(o.TrustedOperators) == 0 {
+			for a, _ := range o.jsAccDefaultDomain {
+				found := false
+				if isReservedAccount(a) {
+					found = true
+				} else {
+					for _, acc := range o.Accounts {
+						if a == acc.GetName() {
+							if acc.jsLimits != nil {
+								return fmt.Errorf("default_js_domain contains account name %q with enabled JetStream", a)
+							}
+							found = true
+							break
+						}
+					}
+				}
+				if !found {
+					return fmt.Errorf("In non operator mode, `default_js_domain` references non existing account %q", a)
+				}
+			}
+		} else {
+			for a, _ := range o.jsAccDefaultDomain {
+				if !nkeys.IsValidPublicAccountKey(a) {
+					return fmt.Errorf("default_js_domain contains account name %q, which is not a valid public account nkey", a)
+				}
+			}
+		}
+		for a, d := range o.jsAccDefaultDomain {
+			if sub := fmt.Sprintf(jsDomainAPI, d); !IsValidSubject(sub) {
+				return fmt.Errorf("default_js_domain contains account %q with invalid domain name %q", a, d)
+			}
+		}
+	}
 	if o.JetStreamDomain != _EMPTY_ {
 		if subj := fmt.Sprintf(jsDomainAPI, o.JetStreamDomain); !IsValidSubject(subj) {
 			return fmt.Errorf("invalid domain name: derived %q is not a valid subject", subj)

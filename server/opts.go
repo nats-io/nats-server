@@ -181,78 +181,79 @@ type RemoteLeafOpts struct {
 // NOTE: This structure is no longer used for monitoring endpoints
 // and json tags are deprecated and may be removed in the future.
 type Options struct {
-	ConfigFile            string        `json:"-"`
-	ServerName            string        `json:"server_name"`
-	Host                  string        `json:"addr"`
-	Port                  int           `json:"port"`
-	ClientAdvertise       string        `json:"-"`
-	Trace                 bool          `json:"-"`
-	Debug                 bool          `json:"-"`
-	TraceVerbose          bool          `json:"-"`
-	NoLog                 bool          `json:"-"`
-	NoSigs                bool          `json:"-"`
-	NoSublistCache        bool          `json:"-"`
-	NoHeaderSupport       bool          `json:"-"`
-	DisableShortFirstPing bool          `json:"-"`
-	Logtime               bool          `json:"-"`
-	MaxConn               int           `json:"max_connections"`
-	MaxSubs               int           `json:"max_subscriptions,omitempty"`
-	MaxSubTokens          uint8         `json:"-"`
-	Nkeys                 []*NkeyUser   `json:"-"`
-	Users                 []*User       `json:"-"`
-	Accounts              []*Account    `json:"-"`
-	NoAuthUser            string        `json:"-"`
-	SystemAccount         string        `json:"-"`
-	NoSystemAccount       bool          `json:"-"`
-	AllowNewAccounts      bool          `json:"-"`
-	Username              string        `json:"-"`
-	Password              string        `json:"-"`
-	Authorization         string        `json:"-"`
-	PingInterval          time.Duration `json:"ping_interval"`
-	MaxPingsOut           int           `json:"ping_max"`
-	HTTPHost              string        `json:"http_host"`
-	HTTPPort              int           `json:"http_port"`
-	HTTPBasePath          string        `json:"http_base_path"`
-	HTTPSPort             int           `json:"https_port"`
-	AuthTimeout           float64       `json:"auth_timeout"`
-	MaxControlLine        int32         `json:"max_control_line"`
-	MaxPayload            int32         `json:"max_payload"`
-	MaxPending            int64         `json:"max_pending"`
-	Cluster               ClusterOpts   `json:"cluster,omitempty"`
-	Gateway               GatewayOpts   `json:"gateway,omitempty"`
-	LeafNode              LeafNodeOpts  `json:"leaf,omitempty"`
-	JetStream             bool          `json:"jetstream"`
-	JetStreamMaxMemory    int64         `json:"-"`
-	JetStreamMaxStore     int64         `json:"-"`
-	JetStreamDomain       string        `json:"-"`
-	JetStreamExtHint      string        `json:"-"`
-	JetStreamKey          string        `json:"-"`
-	StoreDir              string        `json:"-"`
-	Websocket             WebsocketOpts `json:"-"`
-	MQTT                  MQTTOpts      `json:"-"`
-	ProfPort              int           `json:"-"`
-	PidFile               string        `json:"-"`
-	PortsFileDir          string        `json:"-"`
-	LogFile               string        `json:"-"`
-	LogSizeLimit          int64         `json:"-"`
-	Syslog                bool          `json:"-"`
-	RemoteSyslog          string        `json:"-"`
-	Routes                []*url.URL    `json:"-"`
-	RoutesStr             string        `json:"-"`
-	TLSTimeout            float64       `json:"tls_timeout"`
-	TLS                   bool          `json:"-"`
-	TLSVerify             bool          `json:"-"`
-	TLSMap                bool          `json:"-"`
-	TLSCert               string        `json:"-"`
-	TLSKey                string        `json:"-"`
-	TLSCaCert             string        `json:"-"`
-	TLSConfig             *tls.Config   `json:"-"`
-	TLSPinnedCerts        PinnedCertSet `json:"-"`
-	AllowNonTLS           bool          `json:"-"`
-	WriteDeadline         time.Duration `json:"-"`
-	MaxClosedClients      int           `json:"-"`
-	LameDuckDuration      time.Duration `json:"-"`
-	LameDuckGracePeriod   time.Duration `json:"-"`
+	ConfigFile            string            `json:"-"`
+	ServerName            string            `json:"server_name"`
+	Host                  string            `json:"addr"`
+	Port                  int               `json:"port"`
+	ClientAdvertise       string            `json:"-"`
+	Trace                 bool              `json:"-"`
+	Debug                 bool              `json:"-"`
+	TraceVerbose          bool              `json:"-"`
+	NoLog                 bool              `json:"-"`
+	NoSigs                bool              `json:"-"`
+	NoSublistCache        bool              `json:"-"`
+	NoHeaderSupport       bool              `json:"-"`
+	DisableShortFirstPing bool              `json:"-"`
+	Logtime               bool              `json:"-"`
+	MaxConn               int               `json:"max_connections"`
+	MaxSubs               int               `json:"max_subscriptions,omitempty"`
+	MaxSubTokens          uint8             `json:"-"`
+	Nkeys                 []*NkeyUser       `json:"-"`
+	Users                 []*User           `json:"-"`
+	Accounts              []*Account        `json:"-"`
+	NoAuthUser            string            `json:"-"`
+	SystemAccount         string            `json:"-"`
+	NoSystemAccount       bool              `json:"-"`
+	AllowNewAccounts      bool              `json:"-"`
+	Username              string            `json:"-"`
+	Password              string            `json:"-"`
+	Authorization         string            `json:"-"`
+	PingInterval          time.Duration     `json:"ping_interval"`
+	MaxPingsOut           int               `json:"ping_max"`
+	HTTPHost              string            `json:"http_host"`
+	HTTPPort              int               `json:"http_port"`
+	HTTPBasePath          string            `json:"http_base_path"`
+	HTTPSPort             int               `json:"https_port"`
+	AuthTimeout           float64           `json:"auth_timeout"`
+	MaxControlLine        int32             `json:"max_control_line"`
+	MaxPayload            int32             `json:"max_payload"`
+	MaxPending            int64             `json:"max_pending"`
+	Cluster               ClusterOpts       `json:"cluster,omitempty"`
+	Gateway               GatewayOpts       `json:"gateway,omitempty"`
+	LeafNode              LeafNodeOpts      `json:"leaf,omitempty"`
+	JetStream             bool              `json:"jetstream"`
+	JetStreamMaxMemory    int64             `json:"-"`
+	JetStreamMaxStore     int64             `json:"-"`
+	JetStreamDomain       string            `json:"-"`
+	JetStreamExtHint      string            `json:"-"`
+	JetStreamKey          string            `json:"-"`
+	StoreDir              string            `json:"-"`
+	jsAccDefaultDomain    map[string]string `json:"-"` // account to domain name mapping
+	Websocket             WebsocketOpts     `json:"-"`
+	MQTT                  MQTTOpts          `json:"-"`
+	ProfPort              int               `json:"-"`
+	PidFile               string            `json:"-"`
+	PortsFileDir          string            `json:"-"`
+	LogFile               string            `json:"-"`
+	LogSizeLimit          int64             `json:"-"`
+	Syslog                bool              `json:"-"`
+	RemoteSyslog          string            `json:"-"`
+	Routes                []*url.URL        `json:"-"`
+	RoutesStr             string            `json:"-"`
+	TLSTimeout            float64           `json:"tls_timeout"`
+	TLS                   bool              `json:"-"`
+	TLSVerify             bool              `json:"-"`
+	TLSMap                bool              `json:"-"`
+	TLSCert               string            `json:"-"`
+	TLSKey                string            `json:"-"`
+	TLSCaCert             string            `json:"-"`
+	TLSConfig             *tls.Config       `json:"-"`
+	TLSPinnedCerts        PinnedCertSet     `json:"-"`
+	AllowNonTLS           bool              `json:"-"`
+	WriteDeadline         time.Duration     `json:"-"`
+	MaxClosedClients      int               `json:"-"`
+	LameDuckDuration      time.Duration     `json:"-"`
+	LameDuckGracePeriod   time.Duration     `json:"-"`
 
 	// MaxTracedMsgLen is the maximum printable length for traced messages.
 	MaxTracedMsgLen int `json:"-"`
@@ -1272,6 +1273,18 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			*errors = append(*errors, err)
 			return
 		}
+	case "default_js_domain":
+		vv, ok := v.(map[string]interface{})
+		if !ok {
+			*errors = append(*errors, &configErr{tk, fmt.Sprintf("error default_js_domain config: unsupported type %T", v)})
+			return
+		}
+		m := make(map[string]string)
+		for kk, kv := range vv {
+			_, v = unwrapValue(kv, &tk)
+			m[kk] = v.(string)
+		}
+		o.jsAccDefaultDomain = m
 	default:
 		if au := atomic.LoadInt32(&allowUnknownTopLevelField); au == 0 && !tk.IsUsedVariable() {
 			err := &unknownConfigFieldErr{

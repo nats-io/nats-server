@@ -6610,16 +6610,15 @@ func TestJetStreamClusterSingleLeafNodeWithoutSharedSystemAccount(t *testing.T) 
 
 // JetStream Domains
 func TestJetStreamClusterDomains(t *testing.T) {
-	t.Skip("Leaf node does not share system account and domain")
 	// This adds in domain config option to template.
-	// jetstream: {max_mem_store: 256MB, max_file_store: 2GB, domain: CORE, store_dir: "%s"}
 	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: CORE, store_dir:", 1)
 	c := createJetStreamCluster(t, tmpl, "CORE", _EMPTY_, 3, 12232, true)
 	defer c.shutdown()
 
 	// This leafnode is a single server with no domain but sharing the system account.
 	// This extends the CORE domain through this leafnode.
-	ln := c.createLeafNodeWithTemplate("LN-SYS", jsClusterTemplWithSingleLeafNode)
+	ln := c.createLeafNodeWithTemplate("LN-SYS",
+		strings.ReplaceAll(jsClusterTemplWithSingleLeafNode, "store_dir:", "extension_hint: will_extend, domain: CORE, store_dir:"))
 	defer ln.Shutdown()
 
 	// This shows we have extended this system.
@@ -6646,11 +6645,13 @@ func TestJetStreamClusterDomains(t *testing.T) {
 		ln.mu.Unlock()
 		remote.RLock()
 		if remote.RemoteLeafOpts.LocalAccount == "$SYS" {
-			if len(remote.RemoteLeafOpts.DenyExports) != 3 {
-				t.Fatalf("Expected to have deny exports, got %+v", remote.RemoteLeafOpts.DenyExports)
-			}
-			if len(remote.RemoteLeafOpts.DenyImports) != 3 {
-				t.Fatalf("Expected to have deny imports, got %+v", remote.RemoteLeafOpts.DenyImports)
+			for _, s := range denyAllJs {
+				if r := ln.perms.pub.deny.Match(s); len(r.psubs) != 1 {
+					t.Fatalf("Expected to have deny permission for %s", s)
+				}
+				if r := ln.perms.sub.deny.Match(s); len(r.psubs) != 1 {
+					t.Fatalf("Expected to have deny permission for %s", s)
+				}
 			}
 		}
 		remote.RUnlock()
@@ -6822,7 +6823,7 @@ func TestJetStreamClusterDomainsWithNoJSHub(t *testing.T) {
 	// Client based API - Connected to the core cluster with no JS but account has JS.
 	s := c.randomServer()
 	// Make sure the JS interest from the LNs has made it to this server.
-	checkSubInterest(t, s, "NOJS", "$JS.API.>", time.Second)
+	checkSubInterest(t, s, "NOJS", "$JS.SPOKE.API.>", time.Second)
 	nc, _ := jsClientConnect(t, s, nats.UserInfo("nojs", "p"))
 	defer nc.Close()
 
@@ -6836,7 +6837,7 @@ func TestJetStreamClusterDomainsWithNoJSHub(t *testing.T) {
 	}
 
 	// Do by hand to make sure we only get one response.
-	sis := fmt.Sprintf(JSApiStreamCreateT, "TEST")
+	sis := fmt.Sprintf(strings.ReplaceAll(JSApiStreamCreateT, JSApiPrefix, fmt.Sprintf(jsDomainAPI, "SPOKE")), "TEST")
 	rs := nats.NewInbox()
 	sub, _ := nc.SubscribeSync(rs)
 	nc.PublishRequest(sis, rs, req)
@@ -6846,7 +6847,8 @@ func TestJetStreamClusterDomainsWithNoJSHub(t *testing.T) {
 	if nr, _, err := sub.Pending(); err != nil || nr != 1 {
 		t.Fatalf("Expected 1 response, got %d and %v", nr, err)
 	}
-	resp, _ := sub.NextMsg(time.Second)
+	resp, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
 
 	// This StreamInfo should *not* have a domain set.
 	// Do by hand until this makes it to the Go client.
@@ -6854,7 +6856,7 @@ func TestJetStreamClusterDomainsWithNoJSHub(t *testing.T) {
 	if err = json.Unmarshal(resp.Data, &si); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if si.Domain != _EMPTY_ {
+	if si.Domain != "SPOKE" {
 		t.Fatalf("Expected to have NO domain set but got %q", si.Domain)
 	}
 
@@ -7097,7 +7099,6 @@ func TestJetStreamClusterSingleLeafNodeEnablingJetStream(t *testing.T) {
 }
 
 func TestJetStreamClusterLeafNodesWithoutJS(t *testing.T) {
-	t.Skip("fails because leaf does not have JS")
 	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: HUB, store_dir:", 1)
 	c := createJetStreamCluster(t, tmpl, "HUB", _EMPTY_, 3, 11233, true)
 	defer c.shutdown()
@@ -7125,14 +7126,14 @@ func TestJetStreamClusterLeafNodesWithoutJS(t *testing.T) {
 	defer ln.Shutdown()
 
 	// Check that we can access JS in the $G account on the cluster through the leafnode.
-	testJS(ln, "HUB", false)
+	testJS(ln, "HUB", true)
 	ln.Shutdown()
 
 	// Now create a leafnode cluster with No JS and make sure that works.
 	lnc := c.createLeafNodesNoJS("LN-SYS-C-NOJS", 3)
 	defer lnc.shutdown()
 
-	testJS(lnc.randomServer(), "HUB", false)
+	testJS(lnc.randomServer(), "HUB", true)
 	lnc.shutdown()
 
 	// Do mixed mode but with a JS config block that specifies domain and just sets it to disabled.
@@ -9407,6 +9408,8 @@ func TestJetStreamClusterStreamUpdateMissingBeginning(t *testing.T) {
 
 	// Now shutdown.
 	nsl.Shutdown()
+	// make sure a leader exists
+	c.waitOnStreamLeader("$G", "TEST")
 
 	for i := 0; i < toSend; i++ {
 		if _, err := js.PublishAsync("foo", msg); err != nil {
