@@ -4418,7 +4418,7 @@ leafnodes: {
 		timeout: 0.5
 	}
 }
-jetstream: { domain: "domain", store_dir: %s; max_mem: 50Mb, max_file: 50Mb }
+jetstream: { %s store_dir: %s; max_mem: 50Mb, max_file: 50Mb }
 server_name: A
 cluster: {
 	name: clust1
@@ -4442,7 +4442,7 @@ leafnodes: {
 		timeout: 0.5
 	}
 }
-jetstream: { domain: "domain", store_dir: %s; max_mem: 50Mb, max_file: 50Mb }
+jetstream: { %s store_dir: %s; max_mem: 50Mb, max_file: 50Mb }
 server_name: B
 cluster: {
 	name: clust1
@@ -4468,7 +4468,7 @@ leafnodes: {
 }
 jetstream: {
 	enabled: false
-	domain: "domain"
+	%s
 }
 server_name: C
 cluster: {
@@ -4487,7 +4487,7 @@ accounts :{
 }
 system_account = SYS
 # the extension hint is to simplify this test. without it present we would need a cluster of size 2
-jetstream: { domain: "domain", store_dir: %s; max_mem: 50Mb, max_file: 50Mb, extension_hint: will_extend }
+jetstream: { %s store_dir: %s; max_mem: 50Mb, max_file: 50Mb, extension_hint: will_extend }
 server_name: LA
 leafnodes:{
 	no_advertise: true
@@ -4497,78 +4497,93 @@ leafnodes:{
 # add the cluster here so we can test placement
 cluster: { name: clustL }
 `
-	sd1 := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(sd1)
-	confA := createConfFile(t, []byte(fmt.Sprintf(tmplA, sd1)))
-	defer removeFile(t, confA)
-	sA, _ := RunServerWithConfig(confA)
-	defer sA.Shutdown()
+	for _, withDomain := range []bool{true, false} {
+		t.Run(fmt.Sprintf("with-domain:%t", withDomain), func(t *testing.T) {
+			jsDisabledDomainString := _EMPTY_
+			jsEnabledDomainString := _EMPTY_
+			if withDomain {
+				jsEnabledDomainString = fmt.Sprintf(`domain: "domain", `)
+				jsDisabledDomainString = fmt.Sprintf(`domain: "domain"`)
+			} else {
+				// in case no domain name is set, fall back to the extension hint.
+				// since JS is disabled, the value of this does not clash with other uses.
+				jsDisabledDomainString = "extension_hint: will_extend"
+			}
 
-	sd2 := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(sd2)
-	confB := createConfFile(t, []byte(fmt.Sprintf(tmplB, sd2)))
-	defer removeFile(t, confB)
-	sB, _ := RunServerWithConfig(confB)
-	defer sA.Shutdown()
+			sd1 := createDir(t, JetStreamStoreDir)
+			defer os.RemoveAll(sd1)
+			confA := createConfFile(t, []byte(fmt.Sprintf(tmplA, jsEnabledDomainString, sd1)))
+			defer removeFile(t, confA)
+			sA, _ := RunServerWithConfig(confA)
+			defer sA.Shutdown()
 
-	confC := createConfFile(t, []byte(fmt.Sprintf(tmplC)))
-	defer removeFile(t, confC)
-	sC, _ := RunServerWithConfig(confC)
-	defer sC.Shutdown()
+			sd2 := createDir(t, JetStreamStoreDir)
+			defer os.RemoveAll(sd2)
+			confB := createConfFile(t, []byte(fmt.Sprintf(tmplB, jsEnabledDomainString, sd2)))
+			defer removeFile(t, confB)
+			sB, _ := RunServerWithConfig(confB)
+			defer sB.Shutdown()
 
-	checkClusterFormed(t, sA, sB, sC)
-	c := cluster{t: t, servers: []*Server{sA, sB, sC}}
-	c.waitOnPeerCount(2)
+			confC := createConfFile(t, []byte(fmt.Sprintf(tmplC, jsDisabledDomainString)))
+			defer removeFile(t, confC)
+			sC, _ := RunServerWithConfig(confC)
+			defer sC.Shutdown()
 
-	sd3 := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(sd3)
-	// deliberately pick server sC (no JS) to connect to
-	confLA := createConfFile(t, []byte(fmt.Sprintf(tmplLA, sd3, sC.opts.LeafNode.Port, sC.opts.LeafNode.Port)))
-	defer removeFile(t, confLA)
-	sLA, _ := RunServerWithConfig(confLA)
-	defer sLA.Shutdown()
+			checkClusterFormed(t, sA, sB, sC)
+			c := cluster{t: t, servers: []*Server{sA, sB, sC}}
+			c.waitOnPeerCount(2)
 
-	checkLeafNodeConnectedCount(t, sC, 2)
-	checkLeafNodeConnectedCount(t, sLA, 2)
-	c.waitOnPeerCount(3)
-	peers := c.leader().JetStreamClusterPeers()
-	for _, peer := range peers {
-		if _, ok := expectedJetStreamPeers[peer]; !ok {
-			t.Fatalf("Found unexpected peer %q", peer)
-		}
+			sd3 := createDir(t, JetStreamStoreDir)
+			defer os.RemoveAll(sd3)
+			// deliberately pick server sC (no JS) to connect to
+			confLA := createConfFile(t, []byte(fmt.Sprintf(tmplLA, jsEnabledDomainString, sd3, sC.opts.LeafNode.Port, sC.opts.LeafNode.Port)))
+			defer removeFile(t, confLA)
+			sLA, _ := RunServerWithConfig(confLA)
+			defer sLA.Shutdown()
+
+			checkLeafNodeConnectedCount(t, sC, 2)
+			checkLeafNodeConnectedCount(t, sLA, 2)
+			c.waitOnPeerCount(3)
+			peers := c.leader().JetStreamClusterPeers()
+			for _, peer := range peers {
+				if _, ok := expectedJetStreamPeers[peer]; !ok {
+					t.Fatalf("Found unexpected peer %q", peer)
+				}
+			}
+
+			// helper to create stream config with uniqe name and subject
+			cnt := 0
+			strmCfg := func(placementCluster string) *nats.StreamConfig {
+				name := fmt.Sprintf("s-%d", cnt)
+				cnt++
+				if placementCluster == "" {
+					return &nats.StreamConfig{Name: name, Replicas: 1, Subjects: []string{name}}
+				}
+				return &nats.StreamConfig{Name: name, Replicas: 1, Subjects: []string{name},
+					Placement: &nats.Placement{Cluster: placementCluster}}
+			}
+
+			test := func(port int, expectedDefPlacement string) {
+				ncA := natsConnect(t, fmt.Sprintf("nats://a1:a1@127.0.0.1:%d", port))
+				jsA, err := ncA.JetStream()
+				require_NoError(t, err)
+				si, err := jsA.AddStream(strmCfg(""))
+				require_NoError(t, err)
+				require_Contains(t, si.Cluster.Name, expectedDefPlacement)
+				si, err = jsA.AddStream(strmCfg("clust1"))
+				require_NoError(t, err)
+				require_Contains(t, si.Cluster.Name, "clust1")
+				si, err = jsA.AddStream(strmCfg("clustL"))
+				require_NoError(t, err)
+				require_Contains(t, si.Cluster.Name, "clustL")
+			}
+
+			test(sA.opts.Port, "clust1")
+			test(sB.opts.Port, "clust1")
+			test(sC.opts.Port, "clust1")
+			test(sLA.opts.Port, "clustL")
+		})
 	}
-
-	// helper to create stream config with uniqe name and subject
-	cnt := 0
-	strmCfg := func(placementCluster string) *nats.StreamConfig {
-		name := fmt.Sprintf("s-%d", cnt)
-		cnt++
-		if placementCluster == "" {
-			return &nats.StreamConfig{Name: name, Replicas: 1, Subjects: []string{name}}
-		}
-		return &nats.StreamConfig{Name: name, Replicas: 1, Subjects: []string{name},
-			Placement: &nats.Placement{Cluster: placementCluster}}
-	}
-
-	test := func(port int, expectedDefPlacement string) {
-		ncA := natsConnect(t, fmt.Sprintf("nats://a1:a1@127.0.0.1:%d", port))
-		jsA, err := ncA.JetStream()
-		require_NoError(t, err)
-		si, err := jsA.AddStream(strmCfg(""))
-		require_NoError(t, err)
-		require_Contains(t, si.Cluster.Name, expectedDefPlacement)
-		si, err = jsA.AddStream(strmCfg("clust1"))
-		require_NoError(t, err)
-		require_Contains(t, si.Cluster.Name, "clust1")
-		si, err = jsA.AddStream(strmCfg("clustL"))
-		require_NoError(t, err)
-		require_Contains(t, si.Cluster.Name, "clustL")
-	}
-
-	test(sA.opts.Port, "clust1")
-	test(sB.opts.Port, "clust1")
-	test(sC.opts.Port, "clust1")
-	test(sLA.opts.Port, "clustL")
 }
 
 func TestLeafNodeJetStreamCredsDenies(t *testing.T) {
@@ -4663,98 +4678,118 @@ accounts :{
     SYS:{ users:[ {user:s1,password:s1}]},
 }
 system_account: SYS
-jetstream: { domain: "domain", store_dir: "%s", max_mem: 100Mb, max_file: 100Mb }
+jetstream: { domain: "%s", store_dir: "%s", max_mem: 100Mb, max_file: 100Mb }
 server_name: LEAF
 leafnodes: {
     remotes:[{url:nats://a1:a1@127.0.0.1:%d, account: A},
 		     {url:nats://s1:s1@127.0.0.1:%d, account: SYS}]
 }
+%s
 `
 
-	confHub := createConfFile(t, []byte(fmt.Sprintf(tmplHub, -1, "disabled", "disabled", -1, "")))
-	defer removeFile(t, confHub)
-	sHub, _ := RunServerWithConfig(confHub)
-	defer sHub.Shutdown()
+	test := func(domain string) {
+		confHub := createConfFile(t, []byte(fmt.Sprintf(tmplHub, -1, "disabled", "disabled", -1, "")))
+		defer removeFile(t, confHub)
+		sHub, _ := RunServerWithConfig(confHub)
+		defer sHub.Shutdown()
 
-	sdLeaf := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(sdLeaf)
-	confL := createConfFile(t, []byte(fmt.Sprintf(tmplL, sdLeaf, sHub.opts.LeafNode.Port, sHub.opts.LeafNode.Port)))
-	defer removeFile(t, confL)
-	sLeaf, _ := RunServerWithConfig(confL)
-	defer sLeaf.Shutdown()
+		noDomainFix := ""
+		if domain == _EMPTY_ {
+			noDomainFix = `default_js_domain:{A:""}`
+		}
 
-	checkLeafNodeConnectedCount(t, sHub, 2)
-	checkLeafNodeConnectedCount(t, sLeaf, 2)
+		sdLeaf := createDir(t, JetStreamStoreDir)
+		defer os.RemoveAll(sdLeaf)
+		confL := createConfFile(t, []byte(fmt.Sprintf(tmplL, domain, sdLeaf, sHub.opts.LeafNode.Port, sHub.opts.LeafNode.Port, noDomainFix)))
+		defer removeFile(t, confL)
+		sLeaf, _ := RunServerWithConfig(confL)
+		defer sLeaf.Shutdown()
 
-	ncA := natsConnect(t, fmt.Sprintf("nats://a1:a1@127.0.0.1:%d", sHub.opts.Port))
-	jsA, err := ncA.JetStream()
-	require_NoError(t, err)
+		checkLeafNodeConnectedCount(t, sHub, 2)
+		checkLeafNodeConnectedCount(t, sLeaf, 2)
 
-	_, err = jsA.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, Subjects: []string{"foo"}})
-	require_True(t, err == nats.ErrNoResponders)
+		ncA := natsConnect(t, fmt.Sprintf("nats://a1:a1@127.0.0.1:%d", sHub.opts.Port))
+		jsA, err := ncA.JetStream()
+		require_NoError(t, err)
 
-	// Add in default domain and restart server
-	require_NoError(t, ioutil.WriteFile(confHub, []byte(fmt.Sprintf(tmplHub,
-		sHub.opts.Port,
-		"disabled",
-		"disabled",
-		sHub.opts.LeafNode.Port,
-		"default_js_domain: {A:domain}")), 0664))
+		_, err = jsA.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, Subjects: []string{"foo"}})
+		require_True(t, err == nats.ErrNoResponders)
 
-	sHub.Shutdown()
-	sHub.WaitForShutdown()
-	checkLeafNodeConnectedCount(t, sLeaf, 0)
-	sHubUpd1, _ := RunServerWithConfig(confHub)
-	defer sHubUpd1.Shutdown()
+		// Add in default domain and restart server
+		require_NoError(t, ioutil.WriteFile(confHub, []byte(fmt.Sprintf(tmplHub,
+			sHub.opts.Port,
+			"disabled",
+			"disabled",
+			sHub.opts.LeafNode.Port,
+			fmt.Sprintf(`default_js_domain: {A:"%s"}`, domain))), 0664))
 
-	checkLeafNodeConnectedCount(t, sHubUpd1, 2)
-	checkLeafNodeConnectedCount(t, sLeaf, 2)
+		sHub.Shutdown()
+		sHub.WaitForShutdown()
+		checkLeafNodeConnectedCount(t, sLeaf, 0)
+		sHubUpd1, _ := RunServerWithConfig(confHub)
+		defer sHubUpd1.Shutdown()
 
-	_, err = jsA.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, Subjects: []string{"foo"}})
-	require_NoError(t, err)
+		checkLeafNodeConnectedCount(t, sHubUpd1, 2)
+		checkLeafNodeConnectedCount(t, sLeaf, 2)
 
-	// Enable jetstream in hub.
-	sdHub := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(sdHub)
-	jsEnabled := fmt.Sprintf(`{ domain: "domain", store_dir: "%s", max_mem: 100Mb, max_file: 100Mb }`, sdHub)
-	require_NoError(t, ioutil.WriteFile(confHub, []byte(fmt.Sprintf(tmplHub,
-		sHubUpd1.opts.Port,
-		"disabled",
-		jsEnabled,
-		sHubUpd1.opts.LeafNode.Port,
-		"default_js_domain: {A:domain}")), 0664))
+		_, err = jsA.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, Subjects: []string{"foo"}})
+		require_NoError(t, err)
 
-	sHubUpd1.Shutdown()
-	sHubUpd1.WaitForShutdown()
-	checkLeafNodeConnectedCount(t, sLeaf, 0)
-	sHubUpd2, _ := RunServerWithConfig(confHub)
-	defer sHubUpd2.Shutdown()
+		// Enable jetstream in hub.
+		sdHub := createDir(t, JetStreamStoreDir)
+		defer os.RemoveAll(sdHub)
+		jsEnabled := fmt.Sprintf(`{ domain: "%s", store_dir: "%s", max_mem: 100Mb, max_file: 100Mb }`, domain, sdHub)
+		require_NoError(t, ioutil.WriteFile(confHub, []byte(fmt.Sprintf(tmplHub,
+			sHubUpd1.opts.Port,
+			"disabled",
+			jsEnabled,
+			sHubUpd1.opts.LeafNode.Port,
+			fmt.Sprintf(`default_js_domain: {A:"%s"}`, domain))), 0664))
 
-	checkLeafNodeConnectedCount(t, sHubUpd2, 2)
-	checkLeafNodeConnectedCount(t, sLeaf, 2)
+		sHubUpd1.Shutdown()
+		sHubUpd1.WaitForShutdown()
+		checkLeafNodeConnectedCount(t, sLeaf, 0)
+		sHubUpd2, _ := RunServerWithConfig(confHub)
+		defer sHubUpd2.Shutdown()
 
-	_, err = jsA.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 1, Subjects: []string{"bar"}})
-	require_NoError(t, err)
+		checkLeafNodeConnectedCount(t, sHubUpd2, 2)
+		checkLeafNodeConnectedCount(t, sLeaf, 2)
 
-	// Enable jetstream in account A of hub
-	// This is a mis config, as you can't have it both ways, local jetstream but default to another one
-	require_NoError(t, ioutil.WriteFile(confHub, []byte(fmt.Sprintf(tmplHub,
-		sHubUpd2.opts.Port,
-		"enabled",
-		jsEnabled,
-		sHubUpd2.opts.LeafNode.Port,
-		"default_js_domain: {A:domain}")), 0664))
+		_, err = jsA.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 1, Subjects: []string{"bar"}})
+		require_NoError(t, err)
 
-	sHubUpd2.Shutdown()
-	sHubUpd2.WaitForShutdown()
-	checkLeafNodeConnectedCount(t, sLeaf, 0)
-	sHubUpd3, err := NewServer(LoadConfig(confHub))
-	sHubUpd3.Shutdown()
-	require_Error(t, err)
-	require_Contains(t, err.Error(), `default_js_domain contains account name "A" with enabled JetStream`)
+		// Enable jetstream in account A of hub
+		// This is a mis config, as you can't have it both ways, local jetstream but default to another one
+		require_NoError(t, ioutil.WriteFile(confHub, []byte(fmt.Sprintf(tmplHub,
+			sHubUpd2.opts.Port,
+			"enabled",
+			jsEnabled,
+			sHubUpd2.opts.LeafNode.Port,
+			fmt.Sprintf(`default_js_domain: {A:"%s"}`, domain))), 0664))
+
+		if domain != _EMPTY_ {
+			// in case no domain name exists there are no additional guard rails, hence no error
+			// It is the users responsibility to get this edge case right
+			sHubUpd2.Shutdown()
+			sHubUpd2.WaitForShutdown()
+			checkLeafNodeConnectedCount(t, sLeaf, 0)
+			sHubUpd3, err := NewServer(LoadConfig(confHub))
+			sHubUpd3.Shutdown()
+
+			require_Error(t, err)
+			require_Contains(t, err.Error(), `default_js_domain contains account name "A" with enabled JetStream`)
+		}
+	}
+
+	t.Run("with-domain", func(t *testing.T) {
+		test("domain")
+	})
+	t.Run("no-domain", func(t *testing.T) {
+		test("")
+	})
 }
 
-func TestLeafNodeJetStreamDefaultDomainJwt(t *testing.T) {
+func TestLeafNodeJetStreamDefaultDomainJwtExplicit(t *testing.T) {
 	tmplHub := `
 listen: 127.0.0.1:%d
 operator: %s

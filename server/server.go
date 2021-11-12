@@ -1327,7 +1327,7 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 		if defDomain, ok := s.opts.jsAccDefaultDomain[accName]; ok {
 			if jsEnabled {
 				s.Warnf("Skipping Default Domain %q, set for JetStream enabled account %q", defDomain, accName)
-			} else {
+			} else if defDomain != _EMPTY_ {
 				dest := fmt.Sprintf(jsDomainAPI, defDomain)
 				s.Noticef("Adding default domain mapping %q -> %q to account %q %p", jsAllAPI, dest, accName, acc)
 				if err := acc.AddMapping(jsAllAPI, dest); err != nil {
@@ -1586,7 +1586,7 @@ func (s *Server) Start() {
 	}
 
 	if len(opts.jsAccDefaultDomain) > 0 {
-		s.Warnf("The option `default_js_domain` is a temporary compatibility measure and will be removed")
+		s.Warnf("The option `default_js_domain` is a temporary backwards compatibility measure and will be removed")
 	}
 
 	// If we have a memory resolver, check the accounts here for validation exceptions.

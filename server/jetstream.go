@@ -2202,14 +2202,14 @@ func validateJetStreamOptions(o *Options) error {
 	// in non operator mode, the account names need to be configured
 	if len(o.jsAccDefaultDomain) > 0 {
 		if len(o.TrustedOperators) == 0 {
-			for a, _ := range o.jsAccDefaultDomain {
+			for a, domain := range o.jsAccDefaultDomain {
 				found := false
 				if isReservedAccount(a) {
 					found = true
 				} else {
 					for _, acc := range o.Accounts {
 						if a == acc.GetName() {
-							if acc.jsLimits != nil {
+							if acc.jsLimits != nil && domain != _EMPTY_ {
 								return fmt.Errorf("default_js_domain contains account name %q with enabled JetStream", a)
 							}
 							found = true
@@ -2229,6 +2229,16 @@ func validateJetStreamOptions(o *Options) error {
 			}
 		}
 		for a, d := range o.jsAccDefaultDomain {
+			sacc := DEFAULT_SYSTEM_ACCOUNT
+			if o.SystemAccount != _EMPTY_ {
+				sacc = o.SystemAccount
+			}
+			if a == sacc {
+				return fmt.Errorf("System account %q can not be in default_js_domain", a)
+			}
+			if d == _EMPTY_ {
+				continue
+			}
 			if sub := fmt.Sprintf(jsDomainAPI, d); !IsValidSubject(sub) {
 				return fmt.Errorf("default_js_domain contains account %q with invalid domain name %q", a, d)
 			}

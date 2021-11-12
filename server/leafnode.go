@@ -1252,8 +1252,33 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 	blockMappingOutgoing := false
 	// Deny (non domain) JetStream API traffic unless system account is shared
 	// and domain names are identical and extending is not disabled
-	if opts.JetStreamDomain != myRemoteDomain || (!opts.JetStream && opts.JetStreamDomain == _EMPTY_) ||
-		sysAcc == nil || acc == nil {
+
+	// Check if backwards compatibility has been enabled and needs to be acted on
+	forceSysAccDeny := false
+	if len(opts.jsAccDefaultDomain) > 0 {
+		if acc == sysAcc {
+			for _, d := range opts.jsAccDefaultDomain {
+				if d == _EMPTY_ {
+					c.Noticef("Forcing System Account into non extend mode due to presence of empty default domain")
+					forceSysAccDeny = true
+					break
+				}
+			}
+		} else if domain, ok := opts.jsAccDefaultDomain[accName]; ok && domain == _EMPTY_ {
+			// for backwards compatibility with old setups that do not have a domain name set
+			c.Noticef("Skipping deny %q for account %q due to default domain", jsAllAPI, accName)
+			return
+		}
+	}
+
+	// If the server has JS disabled, it may still be part of a JetStream that could be extended.
+	// This is either signaled by js being disabled and a domain set,
+	// or in cases where no domain name exists, an extension hint is set.
+	// However, this is only relevant in mixed setups.
+	//
+	// If the system account connects but default domains are present, JetStream can't be extended.
+	if opts.JetStreamDomain != myRemoteDomain || (!opts.JetStream && (opts.JetStreamDomain == _EMPTY_ && opts.JetStreamExtHint != jsWillExtend)) ||
+		sysAcc == nil || acc == nil || forceSysAccDeny {
 		// If domain names mismatch always deny. This applies to system accounts as well as non system accounts.
 		// Not having a system account, account or JetStream disabled is considered a mismatch as well.
 		if acc != nil && acc == sysAcc {
