@@ -1175,7 +1175,11 @@ func (m1 *ServiceLatency) NATSTotalTime() time.Duration {
 // m1 TotalLatency is correct, so use that.
 // Will use those to back into NATS latency.
 func (m1 *ServiceLatency) merge(m2 *ServiceLatency) {
-	m1.SystemLatency = m1.ServiceLatency - (m2.ServiceLatency + m2.Responder.RTT)
+	rtt := time.Duration(0)
+	if m2.Responder != nil {
+		rtt = m2.Responder.RTT
+	}
+	m1.SystemLatency = m1.ServiceLatency - (m2.ServiceLatency + rtt)
 	m1.ServiceLatency = m2.ServiceLatency
 	m1.Responder = m2.Responder
 	sanitizeLatencyMetric(m1)
