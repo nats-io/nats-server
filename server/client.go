@@ -3843,7 +3843,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// Send tracking info here if we are tracking this response.
 	// This is always a response.
 	var didSendTL bool
-	if si.tracking {
+	if si.tracking && !si.didDeliver {
 		// Stamp that we attempted delivery.
 		si.didDeliver = true
 		didSendTL = acc.sendTrackingLatency(si, c)

@@ -1,4 +1,4 @@
-// Copyright 2019-2020 The NATS Authors
+// Copyright 2019-2021 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1883,4 +1883,40 @@ func TestServiceLatencyMissingResults(t *testing.T) {
 	if sl.ServiceLatency == 0 || sl.SystemLatency == 0 || sl.TotalLatency == 0 {
 		t.Fatalf("Received invalid tracking measurements, %d %d %d", sl.ServiceLatency, sl.SystemLatency, sl.TotalLatency)
 	}
+}
+
+// To test a bug I was seeing.
+func TestServiceLatencyDoubleResponse(t *testing.T) {
+	sc := createSuperCluster(t, 3, 1)
+	defer sc.shutdown()
+
+	// Now add in new service export to FOO and have bar import that with tracking enabled.
+	sc.setupLatencyTracking(t, 100)
+
+	// Responder
+	nc := clientConnectWithName(t, sc.clusters[0].opts[0], "foo", "service22")
+	defer nc.Close()
+
+	// Setup responder
+	sub, _ := nc.Subscribe("ngs.usage.*", func(msg *nats.Msg) {
+		msg.Respond([]byte("22 msgs"))
+		msg.Respond([]byte("boom"))
+	})
+	nc.Flush()
+	defer sub.Unsubscribe()
+
+	// Listen for metrics
+	rsub, _ := nc.SubscribeSync("latency.svc")
+
+	// Requestor
+	nc2 := clientConnect(t, sc.clusters[0].opts[2], "bar")
+	defer nc2.Close()
+
+	// Send a request
+	if _, err := nc2.Request("ngs.usage", []byte("1h"), time.Second); err != nil {
+		t.Fatalf("Expected a response")
+	}
+
+	rsub.NextMsg(time.Second)
+	time.Sleep(time.Second)
 }
