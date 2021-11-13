@@ -1588,6 +1588,9 @@ func (s *Server) Start() {
 	if len(opts.jsAccDefaultDomain) > 0 {
 		s.Warnf("The option `default_js_domain` is a temporary backwards compatibility measure and will be removed")
 	}
+	if opts.jsAccNewLnJsCompTag != _EMPTY_ {
+		s.Warnf("The option `js_leaf_tag` is a temporary backwards compatibility measure and will be removed")
+	}
 
 	// If we have a memory resolver, check the accounts here for validation exceptions.
 	// This allows them to be logged right away vs when they are accessed via a client.

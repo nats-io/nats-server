@@ -1270,6 +1270,21 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 			return
 		}
 	}
+	// if requested, turn on new routing rules only when a certain tag is present
+	if opts.jsAccNewLnJsCompTag != _EMPTY_ {
+		if acc == sysAcc {
+			c.Noticef("Forcing System Account into non extend mode due to presence of compatibility tag check")
+			forceSysAccDeny = true
+		} else if acc.jsLimits == nil {
+			acc.mu.Lock()
+			cont := acc.tags.Contains(opts.jsAccNewLnJsCompTag)
+			acc.mu.Unlock()
+			if !cont {
+				c.Noticef("Skipping deny %q for account %q due to absence of compatibility tag", jsAllAPI, accName)
+				return
+			}
+		}
+	}
 
 	// If the server has JS disabled, it may still be part of a JetStream that could be extended.
 	// This is either signaled by js being disabled and a domain set,

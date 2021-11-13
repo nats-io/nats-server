@@ -4681,13 +4681,12 @@ system_account: SYS
 jetstream: { domain: "%s", store_dir: "%s", max_mem: 100Mb, max_file: 100Mb }
 server_name: LEAF
 leafnodes: {
-    remotes:[{url:nats://a1:a1@127.0.0.1:%d, account: A},
-		     {url:nats://s1:s1@127.0.0.1:%d, account: SYS}]
+    remotes:[{url:nats://a1:a1@127.0.0.1:%d, account: A},%s]
 }
 %s
 `
 
-	test := func(domain string) {
+	test := func(domain string, sysShared bool) {
 		confHub := createConfFile(t, []byte(fmt.Sprintf(tmplHub, -1, "disabled", "disabled", -1, "")))
 		defer removeFile(t, confHub)
 		sHub, _ := RunServerWithConfig(confHub)
@@ -4698,15 +4697,25 @@ leafnodes: {
 			noDomainFix = `default_js_domain:{A:""}`
 		}
 
+		sys := ""
+		if sysShared {
+			sys = fmt.Sprintf(`{url:nats://s1:s1@127.0.0.1:%d, account: SYS}`, sHub.opts.LeafNode.Port)
+		}
+
 		sdLeaf := createDir(t, JetStreamStoreDir)
 		defer os.RemoveAll(sdLeaf)
-		confL := createConfFile(t, []byte(fmt.Sprintf(tmplL, domain, sdLeaf, sHub.opts.LeafNode.Port, sHub.opts.LeafNode.Port, noDomainFix)))
+		confL := createConfFile(t, []byte(fmt.Sprintf(tmplL, domain, sdLeaf, sHub.opts.LeafNode.Port, sys, noDomainFix)))
 		defer removeFile(t, confL)
 		sLeaf, _ := RunServerWithConfig(confL)
 		defer sLeaf.Shutdown()
 
-		checkLeafNodeConnectedCount(t, sHub, 2)
-		checkLeafNodeConnectedCount(t, sLeaf, 2)
+		lnCnt := 1
+		if sysShared {
+			lnCnt++
+		}
+
+		checkLeafNodeConnectedCount(t, sHub, lnCnt)
+		checkLeafNodeConnectedCount(t, sLeaf, lnCnt)
 
 		ncA := natsConnect(t, fmt.Sprintf("nats://a1:a1@127.0.0.1:%d", sHub.opts.Port))
 		jsA, err := ncA.JetStream()
@@ -4729,8 +4738,8 @@ leafnodes: {
 		sHubUpd1, _ := RunServerWithConfig(confHub)
 		defer sHubUpd1.Shutdown()
 
-		checkLeafNodeConnectedCount(t, sHubUpd1, 2)
-		checkLeafNodeConnectedCount(t, sLeaf, 2)
+		checkLeafNodeConnectedCount(t, sHubUpd1, lnCnt)
+		checkLeafNodeConnectedCount(t, sLeaf, lnCnt)
 
 		_, err = jsA.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, Subjects: []string{"foo"}})
 		require_NoError(t, err)
@@ -4752,8 +4761,8 @@ leafnodes: {
 		sHubUpd2, _ := RunServerWithConfig(confHub)
 		defer sHubUpd2.Shutdown()
 
-		checkLeafNodeConnectedCount(t, sHubUpd2, 2)
-		checkLeafNodeConnectedCount(t, sLeaf, 2)
+		checkLeafNodeConnectedCount(t, sHubUpd2, lnCnt)
+		checkLeafNodeConnectedCount(t, sLeaf, lnCnt)
 
 		_, err = jsA.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 1, Subjects: []string{"bar"}})
 		require_NoError(t, err)
@@ -4781,11 +4790,17 @@ leafnodes: {
 		}
 	}
 
-	t.Run("with-domain", func(t *testing.T) {
-		test("domain")
+	t.Run("with-domain-sys", func(t *testing.T) {
+		test("domain", true)
+	})
+	t.Run("with-domain-nosys", func(t *testing.T) {
+		test("domain", false)
 	})
 	t.Run("no-domain", func(t *testing.T) {
-		test("")
+		test("", true)
+	})
+	t.Run("no-domain", func(t *testing.T) {
+		test("", false)
 	})
 }
 
@@ -4891,5 +4906,122 @@ leafnodes: {
 	})
 	t.Run("no-domain", func(t *testing.T) {
 		test("")
+	})
+}
+
+func TestLeafNodeJetStreamDefaultDomainJwtImplicit(t *testing.T) {
+	tmplHub := `
+listen: 127.0.0.1:%d
+operator: %s
+system_account: %s
+resolver: MEM
+resolver_preload: {
+	%s:%s
+	%s:%s
+}
+jetstream : disabled
+server_name: HUB
+leafnodes: {
+	listen: 127.0.0.1:%d
+}
+%s
+`
+
+	tmplL := `
+listen: 127.0.0.1:-1
+accounts :{
+    A:{   jetstream: enable, users:[ {user:a1,password:a1}]},
+    SYS:{ users:[ {user:s1,password:s1}]},
+}
+system_account: SYS
+jetstream: { domain: "%s", store_dir: "%s", max_mem: 100Mb, max_file: 100Mb }
+server_name: LEAF
+leafnodes: {
+    remotes:[{url:nats://127.0.0.1:%d, account: A, credentials: %s},
+		     {url:nats://127.0.0.1:%d, account: SYS, credentials: %s}]
+}
+%s
+`
+
+	test := func(domain string, implicit bool) {
+		noDomainFix := ""
+		if domain == _EMPTY_ {
+			noDomainFix = `default_js_domain:{A:""}`
+		}
+
+		sysKp, syspub := createKey(t)
+		sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+		sysCreds := newUser(t, sysKp)
+		defer removeFile(t, sysCreds)
+
+		aKp, aPub := createKey(t)
+		aClaim := jwt.NewAccountClaims(aPub)
+		//aClaim.Tags.Add("synadia:ln-v2")
+		aJwt := encodeClaim(t, aClaim, aPub)
+		aCreds := newUser(t, aKp)
+		defer removeFile(t, aCreds)
+
+		confHub := createConfFile(t, []byte(fmt.Sprintf(tmplHub, -1, ojwt, syspub, syspub, sysJwt, aPub, aJwt, -1, "")))
+		defer removeFile(t, confHub)
+		sHub, _ := RunServerWithConfig(confHub)
+		defer sHub.Shutdown()
+
+		sdLeaf := createDir(t, JetStreamStoreDir)
+		defer os.RemoveAll(sdLeaf)
+		confL := createConfFile(t, []byte(fmt.Sprintf(tmplL,
+			domain,
+			sdLeaf,
+			sHub.opts.LeafNode.Port,
+			aCreds,
+			sHub.opts.LeafNode.Port,
+			sysCreds,
+			noDomainFix)))
+		defer removeFile(t, confL)
+		sLeaf, _ := RunServerWithConfig(confL)
+		defer sLeaf.Shutdown()
+
+		checkLeafNodeConnectedCount(t, sHub, 2)
+		checkLeafNodeConnectedCount(t, sLeaf, 2)
+
+		ncA := natsConnect(t, fmt.Sprintf("nats://127.0.0.1:%d", sHub.opts.Port), createUserCreds(t, nil, aKp))
+		jsA, err := ncA.JetStream()
+		require_NoError(t, err)
+
+		_, err = jsA.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, Subjects: []string{"foo"}})
+		require_True(t, err == nats.ErrNoResponders)
+
+		backwardsComp := ""
+		if implicit {
+			backwardsComp = fmt.Sprintf(`default_js_domain: {%s:"%s"}`, aPub, domain)
+		} else {
+			backwardsComp = "js_leaf_tag=synadia:ln-v2"
+		}
+
+		// Add in default domain and restart server
+		require_NoError(t, ioutil.WriteFile(confHub, []byte(fmt.Sprintf(tmplHub,
+			sHub.opts.Port, ojwt, syspub, syspub, sysJwt, aPub, aJwt, sHub.opts.LeafNode.Port,
+			backwardsComp)), 0664))
+
+		sHub.Shutdown()
+		sHub.WaitForShutdown()
+		checkLeafNodeConnectedCount(t, sLeaf, 0)
+		sHubUpd1, _ := RunServerWithConfig(confHub)
+		defer sHubUpd1.Shutdown()
+
+		checkLeafNodeConnectedCount(t, sHubUpd1, 2)
+		checkLeafNodeConnectedCount(t, sLeaf, 2)
+
+		_, err = jsA.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 1, Subjects: []string{"bar"}})
+		require_NoError(t, err)
+	}
+	t.Run("with-domain-explicit", func(t *testing.T) {
+		test("domain", true)
+	})
+	// js_leaf_tag only applies to cases where no domain is used
+	t.Run("no-domain-explicit", func(t *testing.T) {
+		test("", true)
+	})
+	t.Run("no-domain-implicit", func(t *testing.T) {
+		test("", false)
 	})
 }
