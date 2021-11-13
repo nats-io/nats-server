@@ -1247,12 +1247,12 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			o.Tags.Add(v...)
 		case []interface{}:
 			for _, t := range v {
-				if t, ok := t.(token); ok {
-					if t, ok := t.Value().(string); ok {
-						o.Tags.Add(t)
+				if token, ok := t.(token); ok {
+					if ts, ok := token.Value().(string); ok {
+						o.Tags.Add(ts)
 						continue
 					} else {
-						err = &configErr{tk, fmt.Sprintf("error parsing tags: unsupported type %T where string is expected", t)}
+						err = &configErr{tk, fmt.Sprintf("error parsing tags: unsupported type %T where string is expected", token)}
 					}
 				} else {
 					err = &configErr{tk, fmt.Sprintf("error parsing tags: unsupported type %T", t)}
