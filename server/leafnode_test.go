@@ -4814,66 +4814,82 @@ accounts :{
     SYS:{ users:[ {user:s1,password:s1}]},
 }
 system_account: SYS
-jetstream: { domain: "domain", store_dir: "%s", max_mem: 100Mb, max_file: 100Mb }
+jetstream: { domain: "%s", store_dir: "%s", max_mem: 100Mb, max_file: 100Mb }
 server_name: LEAF
 leafnodes: {
     remotes:[{url:nats://127.0.0.1:%d, account: A, credentials: %s},
 		     {url:nats://127.0.0.1:%d, account: SYS, credentials: %s}]
 }
+%s
 `
 
-	sysKp, syspub := createKey(t)
-	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
-	sysCreds := newUser(t, sysKp)
-	defer removeFile(t, sysCreds)
+	test := func(domain string) {
+		noDomainFix := ""
+		if domain == _EMPTY_ {
+			noDomainFix = `default_js_domain:{A:""}`
+		}
 
-	aKp, aPub := createKey(t)
-	aClaim := jwt.NewAccountClaims(aPub)
-	aJwt := encodeClaim(t, aClaim, aPub)
-	aCreds := newUser(t, aKp)
-	defer removeFile(t, aCreds)
+		sysKp, syspub := createKey(t)
+		sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+		sysCreds := newUser(t, sysKp)
+		defer removeFile(t, sysCreds)
 
-	confHub := createConfFile(t, []byte(fmt.Sprintf(tmplHub, -1, ojwt, syspub, syspub, sysJwt, aPub, aJwt, -1, "")))
-	defer removeFile(t, confHub)
-	sHub, _ := RunServerWithConfig(confHub)
-	defer sHub.Shutdown()
+		aKp, aPub := createKey(t)
+		aClaim := jwt.NewAccountClaims(aPub)
+		aJwt := encodeClaim(t, aClaim, aPub)
+		aCreds := newUser(t, aKp)
+		defer removeFile(t, aCreds)
 
-	sdLeaf := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(sdLeaf)
-	confL := createConfFile(t, []byte(fmt.Sprintf(tmplL,
-		sdLeaf,
-		sHub.opts.LeafNode.Port,
-		aCreds,
-		sHub.opts.LeafNode.Port,
-		sysCreds)))
-	defer removeFile(t, confL)
-	sLeaf, _ := RunServerWithConfig(confL)
-	defer sLeaf.Shutdown()
+		confHub := createConfFile(t, []byte(fmt.Sprintf(tmplHub, -1, ojwt, syspub, syspub, sysJwt, aPub, aJwt, -1, "")))
+		defer removeFile(t, confHub)
+		sHub, _ := RunServerWithConfig(confHub)
+		defer sHub.Shutdown()
 
-	checkLeafNodeConnectedCount(t, sHub, 2)
-	checkLeafNodeConnectedCount(t, sLeaf, 2)
+		sdLeaf := createDir(t, JetStreamStoreDir)
+		defer os.RemoveAll(sdLeaf)
+		confL := createConfFile(t, []byte(fmt.Sprintf(tmplL,
+			domain,
+			sdLeaf,
+			sHub.opts.LeafNode.Port,
+			aCreds,
+			sHub.opts.LeafNode.Port,
+			sysCreds,
+			noDomainFix)))
+		defer removeFile(t, confL)
+		sLeaf, _ := RunServerWithConfig(confL)
+		defer sLeaf.Shutdown()
 
-	ncA := natsConnect(t, fmt.Sprintf("nats://127.0.0.1:%d", sHub.opts.Port), createUserCreds(t, nil, aKp))
-	jsA, err := ncA.JetStream()
-	require_NoError(t, err)
+		checkLeafNodeConnectedCount(t, sHub, 2)
+		checkLeafNodeConnectedCount(t, sLeaf, 2)
 
-	_, err = jsA.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, Subjects: []string{"foo"}})
-	require_True(t, err == nats.ErrNoResponders)
+		ncA := natsConnect(t, fmt.Sprintf("nats://127.0.0.1:%d", sHub.opts.Port), createUserCreds(t, nil, aKp))
+		jsA, err := ncA.JetStream()
+		require_NoError(t, err)
 
-	// Add in default domain and restart server
-	require_NoError(t, ioutil.WriteFile(confHub, []byte(fmt.Sprintf(tmplHub,
-		sHub.opts.Port, ojwt, syspub, syspub, sysJwt, aPub, aJwt, sHub.opts.LeafNode.Port,
-		fmt.Sprintf("default_js_domain: {%s:domain}", aPub))), 0664))
+		_, err = jsA.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, Subjects: []string{"foo"}})
+		require_True(t, err == nats.ErrNoResponders)
 
-	sHub.Shutdown()
-	sHub.WaitForShutdown()
-	checkLeafNodeConnectedCount(t, sLeaf, 0)
-	sHubUpd1, _ := RunServerWithConfig(confHub)
-	defer sHubUpd1.Shutdown()
+		// Add in default domain and restart server
+		require_NoError(t, ioutil.WriteFile(confHub, []byte(fmt.Sprintf(tmplHub,
+			sHub.opts.Port, ojwt, syspub, syspub, sysJwt, aPub, aJwt, sHub.opts.LeafNode.Port,
+			fmt.Sprintf(`default_js_domain: {%s:"%s"}`, aPub, domain))), 0664))
 
-	checkLeafNodeConnectedCount(t, sHubUpd1, 2)
-	checkLeafNodeConnectedCount(t, sLeaf, 2)
+		sHub.Shutdown()
+		sHub.WaitForShutdown()
+		checkLeafNodeConnectedCount(t, sLeaf, 0)
+		sHubUpd1, _ := RunServerWithConfig(confHub)
+		defer sHubUpd1.Shutdown()
 
-	_, err = jsA.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 1, Subjects: []string{"bar"}})
-	require_NoError(t, err)
+		checkLeafNodeConnectedCount(t, sHubUpd1, 2)
+		checkLeafNodeConnectedCount(t, sLeaf, 2)
+
+		_, err = jsA.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 1, Subjects: []string{"bar"}})
+		require_NoError(t, err)
+	}
+	t.Run("with-domain", func(t *testing.T) {
+		test("domain")
+	})
+	t.Run("no-domain", func(t *testing.T) {
+		test("")
+	})
 }
