@@ -137,7 +137,7 @@ func (oc *OCSPMonitor) getLocalStatus() ([]byte, *ocsp.Response, error) {
 
 	resp, err := ocsp.ParseResponse(raw, oc.Issuer)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("failed to get local status: %w", err)
 	}
 	if err := validOCSPResponse(resp); err != nil {
 		return nil, nil, err
@@ -206,7 +206,7 @@ func (oc *OCSPMonitor) getRemoteStatus() ([]byte, *ocsp.Response, error) {
 
 	resp, err := ocsp.ParseResponse(raw, oc.Issuer)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("failed to get remote status: %w", err)
 	}
 	if err := validOCSPResponse(resp); err != nil {
 		return nil, nil, err
@@ -389,7 +389,7 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 		}
 
 		// TODO: Add OCSP 'responder_cert' option in case CA cert not available.
-		issuer, err := getOCSPIssuer(caFile, cert.Certificate)
+		issuers, err := getOCSPIssuer(caFile, cert.Certificate)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -402,7 +402,7 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 			certFile:         certFile,
 			stopCh:           make(chan struct{}, 1),
 			Leaf:             cert.Leaf,
-			Issuer:           issuer,
+			Issuer:           issuers[len(issuers)-1],
 		}
 
 		// Get the certificate status from the memory, then remote OCSP responder.
@@ -446,13 +446,33 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 				if len(s.VerifiedChains) == 0 {
 					return fmt.Errorf("%s client missing TLS verified chains", kind)
 				}
+
 				chain := s.VerifiedChains[0]
-				resp, err := ocsp.ParseResponseForCert(oresp, chain[0], issuer)
+				leaf := chain[0]
+				parent := issuers[len(issuers)-1]
+
+				resp, err := ocsp.ParseResponseForCert(oresp, leaf, parent)
 				if err != nil {
 					return fmt.Errorf("failed to parse OCSP response from %s client: %w", kind, err)
 				}
-				if err := resp.CheckSignatureFrom(issuer); err != nil {
-					return err
+				if resp.Certificate == nil {
+					if err := resp.CheckSignatureFrom(parent); err != nil {
+						return fmt.Errorf("OCSP staple not issued by issuer: %w", err)
+					}
+				} else {
+					if err := resp.Certificate.CheckSignatureFrom(parent); err != nil {
+						return fmt.Errorf("OCSP staple's signer not signed by issuer: %w", err)
+					}
+					ok := false
+					for _, eku := range resp.Certificate.ExtKeyUsage {
+						if eku == x509.ExtKeyUsageOCSPSigning {
+							ok = true
+							break
+						}
+					}
+					if !ok {
+						return fmt.Errorf("OCSP staple's signer missing authorization by CA to act as OCSP signer")
+					}
 				}
 				if resp.Status != ocsp.Good {
 					return fmt.Errorf("bad status for OCSP Staple from %s client: %s", kind, ocspStatusString(resp.Status))
@@ -739,47 +759,61 @@ func (oc *OCSPMonitor) writeOCSPStatus(storeDir, file string, data []byte) error
 	return nil
 }
 
-func parseCertPEM(name string) (*x509.Certificate, error) {
+func parseCertPEM(name string) ([]*x509.Certificate, error) {
 	data, err := ioutil.ReadFile(name)
 	if err != nil {
 		return nil, err
 	}
 
-	// Ignoring left over byte slice.
-	block, _ := pem.Decode(data)
-	if block == nil {
-		return nil, fmt.Errorf("failed to parse PEM cert %s", name)
-	}
-	if block.Type != "CERTIFICATE" {
-		return nil, fmt.Errorf("unexpected PEM certificate type: %s", block.Type)
+	var pemBytes []byte
+
+	var block *pem.Block
+	for len(data) != 0 {
+		block, data = pem.Decode(data)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			return nil, fmt.Errorf("unexpected PEM certificate type: %s", block.Type)
+		}
+
+		pemBytes = append(pemBytes, block.Bytes...)
 	}
 
-	return x509.ParseCertificate(block.Bytes)
+	return x509.ParseCertificates(pemBytes)
 }
 
 // getOCSPIssuer returns a CA cert from the given path. If the path is empty,
 // then this checks a given cert chain. If both are empty, then it returns an
 // error.
-func getOCSPIssuer(issuerCert string, chain [][]byte) (*x509.Certificate, error) {
-	var issuer *x509.Certificate
+func getOCSPIssuer(issuerCert string, chain [][]byte) ([]*x509.Certificate, error) {
+	var issuers []*x509.Certificate
 	var err error
 	switch {
 	case len(chain) == 1 && issuerCert == _EMPTY_:
 		err = fmt.Errorf("ocsp ca required in chain or configuration")
 	case issuerCert != _EMPTY_:
-		issuer, err = parseCertPEM(issuerCert)
+		issuers, err = parseCertPEM(issuerCert)
 	case len(chain) > 1 && issuerCert == _EMPTY_:
-		issuer, err = x509.ParseCertificate(chain[1])
+		issuers, err = x509.ParseCertificates(chain[1])
 	default:
 		err = fmt.Errorf("invalid ocsp ca configuration")
 	}
 	if err != nil {
 		return nil, err
-	} else if !issuer.IsCA {
-		return nil, fmt.Errorf("%s invalid ca basic constraints: is not ca", issuerCert)
 	}
 
-	return issuer, nil
+	if len(issuers) == 0 {
+		return nil, fmt.Errorf("no issuers found")
+	}
+
+	for _, issuer := range issuers {
+		if !issuer.IsCA {
+			return nil, fmt.Errorf("%s invalid ca basic constraints: is not ca", issuer.Subject)
+		}
+	}
+
+	return issuers, nil
 }
 
 func ocspStatusString(n int) string {

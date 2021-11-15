@@ -1797,6 +1797,107 @@ func TestOCSPGateway(t *testing.T) {
 	}
 }
 
+func TestOCSPGatewayIntermediate(t *testing.T) {
+	const (
+		caCert       = "configs/certs/ocsp/desgsign/ca-cert.pem"
+		caIntermCert = "configs/certs/ocsp/desgsign/ca-interm-cert.pem"
+		caIntermKey  = "configs/certs/ocsp/desgsign/ca-interm-key.pem"
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ocspr := newOCSPResponderDesignated(t, caCert, caIntermCert, caIntermKey, true)
+	defer ocspr.Shutdown(ctx)
+
+	addr := fmt.Sprintf("http://%s", ocspr.Addr)
+	setOCSPStatus(t, addr, "configs/certs/ocsp/desgsign/server-01-cert.pem", ocsp.Good)
+	setOCSPStatus(t, addr, "configs/certs/ocsp/desgsign/server-02-cert.pem", ocsp.Good)
+
+	// Gateway server configuration
+	srvConfA := `
+		host: "127.0.0.1"
+		port: -1
+
+		server_name: "AAA"
+
+		ocsp: {
+			mode: always
+			url: %s
+		}
+
+		gateway {
+			name: A
+			host: "127.0.0.1"
+			port: -1
+			advertise: "127.0.0.1"
+
+			tls {
+				cert_file: "configs/certs/ocsp/desgsign/server-01-cert.pem"
+				key_file: "configs/certs/ocsp/desgsign/server-01-key.pem"
+				ca_file: "configs/certs/ocsp/desgsign/ca-chain-cert.pem"
+				timeout: 5
+			}
+		}
+	`
+	srvConfA = fmt.Sprintf(srvConfA, addr)
+	sconfA := createConfFile(t, []byte(srvConfA))
+	defer removeFile(t, sconfA)
+	srvA, optsA := RunServerWithConfig(sconfA)
+	defer srvA.Shutdown()
+
+	srvConfB := `
+		host: "127.0.0.1"
+		port: -1
+
+		server_name: "BBB"
+
+		ocsp: {
+			mode: always
+			url: %s
+		}
+
+		gateway {
+			name: B
+			host: "127.0.0.1"
+			advertise: "127.0.0.1"
+			port: -1
+			gateways: [{
+				name: "A"
+				url: "nats://127.0.0.1:%d"
+			}]
+			tls {
+				cert_file: "configs/certs/ocsp/desgsign/server-02-cert.pem"
+				key_file: "configs/certs/ocsp/desgsign/server-02-key.pem"
+				ca_file: "configs/certs/ocsp/desgsign/ca-chain-cert.pem"
+				timeout: 5
+			}
+		}
+	`
+	srvConfB = fmt.Sprintf(srvConfB, addr, optsA.Gateway.Port)
+	conf := createConfFile(t, []byte(srvConfB))
+	defer removeFile(t, conf)
+	srvB, optsB := RunServerWithConfig(conf)
+	defer srvB.Shutdown()
+
+	// Client connects to server A.
+	cA, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", optsA.Port),
+		nats.ErrorHandler(noOpErrHandler),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cA.Close()
+	waitForOutboundGateways(t, srvB, 1, 5*time.Second)
+
+	cB, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", optsB.Port),
+		nats.ErrorHandler(noOpErrHandler),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cB.Close()
+}
+
 func TestOCSPCustomConfig(t *testing.T) {
 	const (
 		caCert     = "configs/certs/ocsp/ca-cert.pem"
@@ -2269,11 +2370,17 @@ func TestOCSPCustomConfigReloadEnable(t *testing.T) {
 
 func newOCSPResponder(t *testing.T, issuerCertPEM, issuerKeyPEM string) *http.Server {
 	t.Helper()
+	return newOCSPResponderDesignated(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false)
+}
+
+func newOCSPResponderDesignated(t *testing.T, issuerCertPEM, respCertPEM, respKeyPEM string, embed bool) *http.Server {
+	t.Helper()
 	var mu sync.Mutex
 	status := make(map[string]int)
 
 	issuerCert := parseCertPEM(t, issuerCertPEM)
-	issuerKey := parseKeyPEM(t, issuerKeyPEM)
+	respCert := parseCertPEM(t, respCertPEM)
+	respKey := parseKeyPEM(t, respKeyPEM)
 
 	mux := http.NewServeMux()
 	// The "/statuses/" endpoint is for directly setting a key-value pair in
@@ -2349,7 +2456,10 @@ func newOCSPResponder(t *testing.T, issuerCertPEM, issuerKeyPEM string) *http.Se
 			ThisUpdate:   time.Now(),
 			NextUpdate:   time.Now().Add(4 * time.Second),
 		}
-		respData, err := ocsp.CreateResponse(issuerCert, issuerCert, tmpl, issuerKey)
+		if embed {
+			tmpl.Certificate = respCert
+		}
+		respData, err := ocsp.CreateResponse(issuerCert, respCert, tmpl, respKey)
 		if err != nil {
 			http.Error(rw, err.Error(), http.StatusInternalServerError)
 			return
@@ -2645,7 +2755,7 @@ func TestOCSPSuperCluster(t *testing.T) {
 			advertise: "127.0.0.1"
 			port: -1
 			gateways: [{
-				name: "A", 
+				name: "A",
 				urls: ["nats://127.0.0.1:%d"]
 				tls {
 					cert_file: "configs/certs/ocsp/server-status-request-url-06-cert.pem"
@@ -2695,7 +2805,7 @@ func TestOCSPSuperCluster(t *testing.T) {
 			advertise: "127.0.0.1"
 			port: -1
 			gateways: [{
-				name: "A", 
+				name: "A",
 				urls: ["nats://127.0.0.1:%d"]
 				tls {
 					cert_file: "configs/certs/ocsp/server-status-request-url-08-cert.pem"
@@ -2704,7 +2814,7 @@ func TestOCSPSuperCluster(t *testing.T) {
 					timeout: 5
 				}},
 				{
-				name: "C", 
+				name: "C",
 				urls: ["nats://127.0.0.1:%d"]
 
 				####################################################################
