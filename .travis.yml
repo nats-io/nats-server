@@ -17,8 +17,8 @@ env:
 - GO111MODULE=off
 go_import_path: github.com/nats-io/nats-server
 install:
-- GO111MODULE=on go get honnef.co/go/tools/cmd/staticcheck@2021.1.2
-- GO111MODULE=on go get github.com/client9/misspell/cmd/misspell@v0.3.4
+- GO111MODULE=on go install honnef.co/go/tools/cmd/staticcheck@latest
+- GO111MODULE=on go install github.com/client9/misspell/cmd/misspell@latest
 before_script:
 - GO_LIST=$(go list ./...)
 - go build
