@@ -608,7 +608,6 @@ func (s *Server) startLeafNodeAcceptLoop() {
 		Headers:       s.supportsHeaders(),
 		JetStream:     opts.JetStream,
 		Domain:        opts.JetStreamDomain,
-		Cluster:       opts.Cluster.Name,
 		Proto:         1, // Fixed for now.
 		InfoOnConnect: true,
 	}
