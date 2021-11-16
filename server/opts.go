@@ -229,7 +229,6 @@ type Options struct {
 	JetStreamKey          string            `json:"-"`
 	StoreDir              string            `json:"-"`
 	jsAccDefaultDomain    map[string]string `json:"-"` // account to domain name mapping
-	jsAccNewLnJsCompTag   string            `json:"-"` // tag, when present enables new leafnode js routing behaviour
 	Websocket             WebsocketOpts     `json:"-"`
 	MQTT                  MQTTOpts          `json:"-"`
 	ProfPort              int               `json:"-"`
@@ -1286,8 +1285,6 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			m[kk] = v.(string)
 		}
 		o.jsAccDefaultDomain = m
-	case "js_leaf_tag":
-		o.jsAccNewLnJsCompTag = v.(string)
 	default:
 		if au := atomic.LoadInt32(&allowUnknownTopLevelField); au == 0 && !tk.IsUsedVariable() {
 			err := &unknownConfigFieldErr{
