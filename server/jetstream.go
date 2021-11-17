@@ -2208,7 +2208,7 @@ func validateJetStreamOptions(o *Options) error {
 				}
 			}
 		} else {
-			for a, _ := range o.JsAccDefaultDomain {
+			for a := range o.JsAccDefaultDomain {
 				if !nkeys.IsValidPublicAccountKey(a) {
 					return fmt.Errorf("default_js_domain contains account name %q, which is not a valid public account nkey", a)
 				}
@@ -2255,7 +2255,7 @@ func validateJetStreamOptions(o *Options) error {
 	case jsWillExtend, jsNoExtend, _EMPTY_:
 		o.JetStreamExtHint = h
 	default:
-		return fmt.Errorf("Expected 'no_extend' for string value, got '%s'", h)
+		return fmt.Errorf("expected 'no_extend' for string value, got '%s'", h)
 	}
 	return nil
 }
