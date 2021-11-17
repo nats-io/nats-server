@@ -8,10 +8,10 @@ go get github.com/wadey/gocovmerge
 
 rm -rf ./cov
 mkdir cov
-go test -v -failfast -covermode=atomic -coverprofile=./cov/conf.out ./conf
-go test -v -failfast -covermode=atomic -coverprofile=./cov/log.out ./logger
-go test -v -failfast -covermode=atomic -coverprofile=./cov/server.out ./server
-go test -v -failfast -covermode=atomic -coverprofile=./cov/test.out -coverpkg=./server ./test
+go test -v -failfast -covermode=atomic -coverprofile=./cov/conf.out ./conf -timeout=20m
+go test -v -failfast -covermode=atomic -coverprofile=./cov/log.out ./logger -timeout=20m
+go test -v -failfast -covermode=atomic -coverprofile=./cov/server.out ./server -timeout=20m
+go test -v -failfast -covermode=atomic -coverprofile=./cov/test.out -coverpkg=./server ./test -timeout=20m
 gocovmerge ./cov/*.out > acc.out
 rm -rf ./cov
 
