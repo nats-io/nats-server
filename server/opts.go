@@ -228,7 +228,7 @@ type Options struct {
 	JetStreamExtHint      string            `json:"-"`
 	JetStreamKey          string            `json:"-"`
 	StoreDir              string            `json:"-"`
-	jsAccDefaultDomain    map[string]string `json:"-"` // account to domain name mapping
+	JsAccDefaultDomain    map[string]string `json:"-"` // account to domain name mapping
 	Websocket             WebsocketOpts     `json:"-"`
 	MQTT                  MQTTOpts          `json:"-"`
 	ProfPort              int               `json:"-"`
@@ -391,6 +391,9 @@ type MQTTOpts struct {
 	Username string
 	Password string
 	Token    string
+
+	// JetStream domain mqtt is supposed to pick up
+	JsDomain string
 
 	// Timeout for the authentication process.
 	AuthTimeout float64
@@ -1284,7 +1287,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			_, v = unwrapValue(kv, &tk)
 			m[kk] = v.(string)
 		}
-		o.jsAccDefaultDomain = m
+		o.JsAccDefaultDomain = m
 	default:
 		if au := atomic.LoadInt32(&allowUnknownTopLevelField); au == 0 && !tk.IsUsedVariable() {
 			err := &unknownConfigFieldErr{
@@ -3903,6 +3906,8 @@ func parseMQTT(v interface{}, o *Options, errors *[]error, warnings *[]error) er
 			} else {
 				o.MQTT.MaxAckPending = uint16(tmp)
 			}
+		case "js-domain":
+			o.MQTT.JsDomain = mv.(string)
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{

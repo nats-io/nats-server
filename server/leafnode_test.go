@@ -4907,3 +4907,134 @@ leafnodes: {
 		test("")
 	})
 }
+
+func TestLeafNodeJetStreamDefaultDomainClusterBothEnds(t *testing.T) {
+	// test to ensure that default domain functions when both ends of the leaf node connection are clusters
+	tmplHub1 := `
+listen: 127.0.0.1:-1
+accounts :{
+    A:{ jetstream: enabled, users:[ {user:a1,password:a1}]},
+	B:{ jetstream: enabled, users:[ {user:b1,password:b1}]}
+}
+jetstream : { domain: "DHUB", store_dir: "%s", max_mem: 100Mb, max_file: 100Mb }
+server_name: HUB1
+cluster: {
+	name: HUB
+	listen: 127.0.0.1:50554
+	routes=[nats-route://127.0.0.1:50555]
+}
+leafnodes: {
+	listen:127.0.0.1:-1
+}
+`
+
+	tmplHub2 := `
+listen: 127.0.0.1:-1
+accounts :{
+    A:{ jetstream: enabled, users:[ {user:a1,password:a1}]},
+	B:{ jetstream: enabled, users:[ {user:b1,password:b1}]}
+}
+jetstream : { domain: "DHUB", store_dir: "%s", max_mem: 100Mb, max_file: 100Mb }
+server_name: HUB2
+cluster: {
+	name: HUB
+	listen: 127.0.0.1:50555
+	routes=[nats-route://127.0.0.1:50554]
+}
+leafnodes: {
+	listen:127.0.0.1:-1
+}
+`
+
+	tmplL1 := `
+listen: 127.0.0.1:-1
+accounts :{
+    A:{ jetstream: enabled,  users:[ {user:a1,password:a1}]},
+	B:{ jetstream: disabled, users:[ {user:b1,password:b1}]}
+}
+jetstream: { domain: "DLEAF", store_dir: "%s", max_mem: 100Mb, max_file: 100Mb }
+server_name: LEAF1
+cluster: {
+	name: LEAF
+	listen: 127.0.0.1:50556
+	routes=[nats-route://127.0.0.1:50557]
+}
+leafnodes: {
+    remotes:[{url:nats://a1:a1@127.0.0.1:%d, account: A},{url:nats://b1:b1@127.0.0.1:%d, account: B}]
+}
+default_js_domain: {B:"DHUB"}
+`
+
+	tmplL2 := `
+listen: 127.0.0.1:-1
+accounts :{
+    A:{ jetstream: enabled,  users:[ {user:a1,password:a1}]},
+	B:{ jetstream: disabled, users:[ {user:b1,password:b1}]}
+}
+jetstream: { domain: "DLEAF", store_dir: "%s", max_mem: 100Mb, max_file: 100Mb }
+server_name: LEAF2
+cluster: {
+	name: LEAF
+	listen: 127.0.0.1:50557
+	routes=[nats-route://127.0.0.1:50556]
+}
+leafnodes: {
+    remotes:[{url:nats://a1:a1@127.0.0.1:%d, account: A},{url:nats://b1:b1@127.0.0.1:%d, account: B}]
+}
+default_js_domain: {B:"DHUB"}
+`
+
+	sd1 := createDir(t, JetStreamStoreDir)
+	defer os.RemoveAll(sd1)
+	confHub1 := createConfFile(t, []byte(fmt.Sprintf(tmplHub1, sd1)))
+	defer removeFile(t, confHub1)
+	sHub1, _ := RunServerWithConfig(confHub1)
+	defer sHub1.Shutdown()
+
+	sd2 := createDir(t, JetStreamStoreDir)
+	defer os.RemoveAll(sd2)
+	confHub2 := createConfFile(t, []byte(fmt.Sprintf(tmplHub2, sd2)))
+	defer removeFile(t, confHub2)
+	sHub2, _ := RunServerWithConfig(confHub2)
+	defer sHub2.Shutdown()
+
+	checkClusterFormed(t, sHub1, sHub2)
+	c1 := cluster{t: t, servers: []*Server{sHub1, sHub2}}
+	c1.waitOnPeerCount(2)
+
+	sd3 := createDir(t, JetStreamStoreDir)
+	defer os.RemoveAll(sd3)
+	confLeaf1 := createConfFile(t, []byte(fmt.Sprintf(tmplL1, sd3, sHub1.getOpts().LeafNode.Port, sHub1.getOpts().LeafNode.Port)))
+	defer removeFile(t, confLeaf1)
+	sLeaf1, _ := RunServerWithConfig(confLeaf1)
+	defer sLeaf1.Shutdown()
+
+	sd4 := createDir(t, JetStreamStoreDir)
+	defer os.RemoveAll(sd4)
+	confLeaf2 := createConfFile(t, []byte(fmt.Sprintf(tmplL2, sd3, sHub1.getOpts().LeafNode.Port, sHub1.getOpts().LeafNode.Port)))
+	defer removeFile(t, confLeaf2)
+	sLeaf2, _ := RunServerWithConfig(confLeaf2)
+	defer sLeaf2.Shutdown()
+
+	checkClusterFormed(t, sLeaf1, sLeaf2)
+	c2 := cluster{t: t, servers: []*Server{sLeaf1, sLeaf2}}
+	c2.waitOnPeerCount(2)
+
+	checkLeafNodeConnectedCount(t, sHub1, 4)
+	checkLeafNodeConnectedCount(t, sLeaf1, 2)
+	checkLeafNodeConnectedCount(t, sLeaf2, 2)
+
+	ncB := natsConnect(t, fmt.Sprintf("nats://b1:b1@127.0.0.1:%d", sLeaf1.getOpts().Port))
+	jsB1, err := ncB.JetStream()
+	require_NoError(t, err)
+	si, err := jsB1.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, Subjects: []string{"foo"}})
+	require_NoError(t, err)
+	require_Equal(t, si.Cluster.Name, "HUB")
+
+	jsB2, err := ncB.JetStream(nats.Domain("DHUB"))
+	require_NoError(t, err)
+	si, err = jsB2.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 1, Subjects: []string{"bar"}})
+	require_NoError(t, err)
+	require_Equal(t, si.Cluster.Name, "HUB")
+
+}

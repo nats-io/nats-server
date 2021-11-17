@@ -843,7 +843,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 
 	c.mu.Lock()
 	c.initClient()
-	c.Noticef("Leafnode connection created%s", remoteSuffix)
+	c.Noticef("Leafnode connection created%s %s", remoteSuffix, c.opts.Name)
 
 	if remote != nil {
 		solicited = true
@@ -1254,16 +1254,16 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 
 	// Check if backwards compatibility has been enabled and needs to be acted on
 	forceSysAccDeny := false
-	if len(opts.jsAccDefaultDomain) > 0 {
+	if len(opts.JsAccDefaultDomain) > 0 {
 		if acc == sysAcc {
-			for _, d := range opts.jsAccDefaultDomain {
+			for _, d := range opts.JsAccDefaultDomain {
 				if d == _EMPTY_ {
 					c.Noticef("Forcing System Account into non extend mode due to presence of empty default domain")
 					forceSysAccDeny = true
 					break
 				}
 			}
-		} else if domain, ok := opts.jsAccDefaultDomain[accName]; ok && domain == _EMPTY_ {
+		} else if domain, ok := opts.JsAccDefaultDomain[accName]; ok && domain == _EMPTY_ {
 			// for backwards compatibility with old setups that do not have a domain name set
 			c.Noticef("Skipping deny %q for account %q due to default domain", jsAllAPI, accName)
 			return

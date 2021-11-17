@@ -1323,8 +1323,8 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 	jsEnabled := acc.jsLimits != nil
 	acc.mu.Unlock()
 
-	if s.opts != nil && len(s.opts.jsAccDefaultDomain) > 0 {
-		if defDomain, ok := s.opts.jsAccDefaultDomain[accName]; ok {
+	if s.opts != nil && len(s.opts.JsAccDefaultDomain) > 0 {
+		if defDomain, ok := s.opts.JsAccDefaultDomain[accName]; ok {
 			if jsEnabled {
 				s.Warnf("Skipping Default Domain %q, set for JetStream enabled account %q", defDomain, accName)
 			} else if defDomain != _EMPTY_ {
@@ -1585,7 +1585,7 @@ func (s *Server) Start() {
 			friendlyBytes(int64(MAX_PAYLOAD_MAX_SIZE)))
 	}
 
-	if len(opts.jsAccDefaultDomain) > 0 {
+	if len(opts.JsAccDefaultDomain) > 0 {
 		s.Warnf("The option `default_js_domain` is a temporary backwards compatibility measure and will be removed")
 	}
 

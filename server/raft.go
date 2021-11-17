@@ -2960,7 +2960,9 @@ func decodePeerState(buf []byte) (*peerState, error) {
 	if len(ps.knownPeers) != expectedPeers {
 		return nil, errCorruptPeers
 	}
-	ps.domainExt = extensionState(le.Uint16(buf[ri:]))
+	if len(buf[ri:]) >= 2 {
+		ps.domainExt = extensionState(le.Uint16(buf[ri:]))
+	}
 	return ps, nil
 }
 

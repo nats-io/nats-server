@@ -2200,9 +2200,9 @@ func (s *Server) resourcesExeededError() {
 // For validating options.
 func validateJetStreamOptions(o *Options) error {
 	// in non operator mode, the account names need to be configured
-	if len(o.jsAccDefaultDomain) > 0 {
+	if len(o.JsAccDefaultDomain) > 0 {
 		if len(o.TrustedOperators) == 0 {
-			for a, domain := range o.jsAccDefaultDomain {
+			for a, domain := range o.JsAccDefaultDomain {
 				found := false
 				if isReservedAccount(a) {
 					found = true
@@ -2222,13 +2222,13 @@ func validateJetStreamOptions(o *Options) error {
 				}
 			}
 		} else {
-			for a, _ := range o.jsAccDefaultDomain {
+			for a, _ := range o.JsAccDefaultDomain {
 				if !nkeys.IsValidPublicAccountKey(a) {
 					return fmt.Errorf("default_js_domain contains account name %q, which is not a valid public account nkey", a)
 				}
 			}
 		}
-		for a, d := range o.jsAccDefaultDomain {
+		for a, d := range o.JsAccDefaultDomain {
 			sacc := DEFAULT_SYSTEM_ACCOUNT
 			if o.SystemAccount != _EMPTY_ {
 				sacc = o.SystemAccount
