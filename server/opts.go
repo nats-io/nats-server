@@ -262,6 +262,11 @@ type Options struct {
 	AccountResolver          AccountResolver       `json:"-"`
 	AccountResolverTLSConfig *tls.Config           `json:"-"`
 
+	// AlwaysEnableNonce will always present a nonce to new connections
+	// typically used by custom Authentication implementations who embeds
+	// the server and so not presented as a configuration option
+	AlwaysEnableNonce bool
+
 	CustomClientAuthentication Authentication `json:"-"`
 	CustomRouterAuthentication Authentication `json:"-"`
 
