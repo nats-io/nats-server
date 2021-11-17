@@ -6318,7 +6318,7 @@ func TestJetStreamClusterSuperClusterAndLeafNodesWithSharedSystemAccountAndDiffe
 
 	// Now make sure placement does not works for cluster in different domain
 	pcn := "C2"
-	si, err = js.AddStream(&nats.StreamConfig{
+	_, err = js.AddStream(&nats.StreamConfig{
 		Name:      "TEST2",
 		Subjects:  []string{"baz"},
 		Replicas:  2,
@@ -9833,14 +9833,6 @@ var jsGWTempl = `%s{name: %s, urls: [%s]}`
 
 func createJetStreamSuperCluster(t *testing.T, numServersPer, numClusters int) *supercluster {
 	return createJetStreamSuperClusterWithTemplate(t, jsClusterTempl, numServersPer, numClusters)
-}
-
-func createJetStreamSuperClusterWithDomain(t *testing.T, numServersPer, numClusters int, domain string) *supercluster {
-	if domain == _EMPTY_ {
-		return createJetStreamSuperClusterWithTemplate(t, jsClusterTempl, numServersPer, numClusters)
-	}
-	tmpl := strings.Replace(jsClusterTempl, "store_dir:", fmt.Sprintf(`domain: "%s", store_dir:`, domain), 1)
-	return createJetStreamSuperClusterWithTemplate(t, tmpl, numServersPer, numClusters)
 }
 
 func createJetStreamSuperClusterWithTemplate(t *testing.T, tmpl string, numServersPer, numClusters int) *supercluster {

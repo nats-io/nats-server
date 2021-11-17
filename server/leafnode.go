@@ -112,30 +112,6 @@ func (c *client) isHubLeafNode() bool {
 	return c.kind == LEAF && !c.leaf.isSpoke
 }
 
-// Determine if we are sharing our local system account with the remote.
-func (s *Server) hasSystemRemoteLeaf() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.hasSystemRemoteLeafLocked() != nil
-}
-
-func (s *Server) hasSystemRemoteLeafLocked() *leafNodeCfg {
-	if s.sys == nil {
-		return nil
-	}
-
-	sacc := s.sys.account.Name
-	for _, r := range s.leafRemoteCfgs {
-		r.RLock()
-		lacc := r.LocalAccount
-		r.RUnlock()
-		if lacc == sacc {
-			return r
-		}
-	}
-	return nil
-}
-
 // This will spin up go routines to solicit the remote leaf node connections.
 func (s *Server) solicitLeafNodeRemotes(remotes []*RemoteLeafOpts) {
 	sysAccName := _EMPTY_
@@ -182,31 +158,8 @@ func (s *Server) solicitLeafNodeRemotes(remotes []*RemoteLeafOpts) {
 		}
 		return remote
 	}
-	// Connect to remote leaf node with system account first
 	for _, r := range remotes {
-		if r.LocalAccount != sysAccName {
-			continue
-		}
-		conCreatedChan := make(chan struct{})
-		remote := addRemote(r, true)
-		s.startGoRoutine(func() {
-			s.connectToRemoteLeafNode(remote, true)
-			close(conCreatedChan)
-		})
-		// Give the system account connection a slight head start
-		// This will reduce forced reconnects from accounts triggered by the system account connecting as well
-		select {
-		case <-conCreatedChan:
-		case <-time.After(200 * time.Millisecond):
-		case <-s.quitCh:
-		}
-		break
-	}
-	for _, r := range remotes {
-		if r.LocalAccount == sysAccName {
-			continue
-		}
-		remote := addRemote(r, false)
+		remote := addRemote(r, r.LocalAccount == sysAccName)
 		s.startGoRoutine(func() { s.connectToRemoteLeafNode(remote, true) })
 	}
 }

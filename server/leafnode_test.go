@@ -4367,7 +4367,7 @@ leafnodes:{
 				ncA := natsConnect(t, fmt.Sprintf("nats://a1:a1@127.0.0.1:%d", sLA.opts.Port))
 				jsA, err := ncA.JetStream()
 				require_NoError(t, err)
-				_, err = jsA.AddStream(strmCfg(fmt.Sprintf("fail-false"), ""))
+				_, err = jsA.AddStream(strmCfg("fail-false", ""))
 				require_Error(t, err)
 			}
 			// Starting the proxy will connect the system accounts.
@@ -4501,8 +4501,8 @@ cluster: { name: clustL }
 			jsDisabledDomainString := _EMPTY_
 			jsEnabledDomainString := _EMPTY_
 			if withDomain {
-				jsEnabledDomainString = fmt.Sprintf(`domain: "domain", `)
-				jsDisabledDomainString = fmt.Sprintf(`domain: "domain"`)
+				jsEnabledDomainString = `domain: "domain", `
+				jsDisabledDomainString = `domain: "domain"`
 			} else {
 				// in case no domain name is set, fall back to the extension hint.
 				// since JS is disabled, the value of this does not clash with other uses.
