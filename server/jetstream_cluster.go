@@ -3836,7 +3836,7 @@ func (s *Server) allPeersOffline(rg *raftGroup) bool {
 
 // This will do a scatter and gather operation for all streams for this account. This is only called from metadata leader.
 // This will be running in a separate Go routine.
-func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, offset int, subject, reply string, rmsg []byte) {
+func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, filter string, offset int, subject, reply string, rmsg []byte) {
 	defer s.grWG.Done()
 
 	js, cc := s.getJetStreamCluster()
@@ -3848,8 +3848,29 @@ func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, offs
 
 	var streams []*streamAssignment
 	for _, sa := range cc.streams[acc.Name] {
-		streams = append(streams, sa)
+		if IsNatsErr(sa.err, JSClusterNotAssignedErr) {
+			continue
+		}
+
+		if filter != _EMPTY_ {
+			// These could not have subjects auto-filled in since they are raw and unprocessed.
+			if len(sa.Config.Subjects) == 0 {
+				if SubjectsCollide(filter, sa.Config.Name) {
+					streams = append(streams, sa)
+				}
+			} else {
+				for _, subj := range sa.Config.Subjects {
+					if SubjectsCollide(filter, subj) {
+						streams = append(streams, sa)
+						break
+					}
+				}
+			}
+		} else {
+			streams = append(streams, sa)
+		}
 	}
+
 	// Needs to be sorted for offsets etc.
 	if len(streams) > 1 {
 		sort.Slice(streams, func(i, j int) bool {

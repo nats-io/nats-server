@@ -351,6 +351,12 @@ type JSApiStreamNamesResponse struct {
 
 const JSApiStreamNamesResponseType = "io.nats.jetstream.api.v1.stream_names_response"
 
+type JSApiStreamListRequest struct {
+	ApiPagedRequest
+	// These are filters that can be applied to the list.
+	Subject string `json:"subject,omitempty"`
+}
+
 // JSApiStreamListResponse list of detailed stream information.
 // A nil request is valid and means all streams.
 type JSApiStreamListResponse struct {
@@ -1541,27 +1547,38 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, s
 	}
 
 	var offset int
+	var filter string
+
 	if !isEmptyRequest(msg) {
-		var req JSApiStreamNamesRequest
+		var req JSApiStreamListRequest
 		if err := json.Unmarshal(msg, &req); err != nil {
 			resp.Error = NewJSInvalidJSONError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
 		offset = req.Offset
+		if req.Subject != _EMPTY_ {
+			filter = req.Subject
+		}
 	}
 
 	// Clustered mode will invoke a scatter and gather.
 	if s.JetStreamIsClustered() {
 		// Need to copy these off before sending..
 		msg = append(msg[:0:0], msg...)
-		s.startGoRoutine(func() { s.jsClusteredStreamListRequest(acc, ci, offset, subject, reply, msg) })
+		s.startGoRoutine(func() { s.jsClusteredStreamListRequest(acc, ci, filter, offset, subject, reply, msg) })
 		return
 	}
 
 	// TODO(dlc) - Maybe hold these results for large results that we expect to be paged.
 	// TODO(dlc) - If this list is long maybe do this in a Go routine?
-	msets := acc.streams()
+	var msets []*stream
+	if filter == _EMPTY_ {
+		msets = acc.streams()
+	} else {
+		msets = acc.filteredStreams(filter)
+	}
+
 	sort.Slice(msets, func(i, j int) bool {
 		return strings.Compare(msets[i].cfg.Name, msets[j].cfg.Name) < 0
 	})
