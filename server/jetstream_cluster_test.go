@@ -6809,7 +6809,6 @@ func TestJetStreamClusterDomains(t *testing.T) {
 }
 
 func TestJetStreamClusterDomainsWithNoJSHub(t *testing.T) {
-	t.Skip("This test will not work with the new changes. system account is not share")
 	// Create our hub cluster with no JetStream defined.
 	c := createMixedModeCluster(t, jsClusterAccountsTempl, "NOJS5", _EMPTY_, 0, 5, false)
 	defer c.shutdown()
@@ -6837,7 +6836,7 @@ func TestJetStreamClusterDomainsWithNoJSHub(t *testing.T) {
 	}
 
 	// Do by hand to make sure we only get one response.
-	sis := fmt.Sprintf(strings.ReplaceAll(JSApiStreamCreateT, JSApiPrefix, fmt.Sprintf(jsDomainAPI, "SPOKE")), "TEST")
+	sis := fmt.Sprintf(strings.ReplaceAll(JSApiStreamCreateT, JSApiPrefix, "$JS.SPOKE.API"), "TEST")
 	rs := nats.NewInbox()
 	sub, _ := nc.SubscribeSync(rs)
 	nc.PublishRequest(sis, rs, req)
@@ -6856,7 +6855,7 @@ func TestJetStreamClusterDomainsWithNoJSHub(t *testing.T) {
 	if err = json.Unmarshal(resp.Data, &si); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if si.Domain != "SPOKE" {
+	if si.Domain != _EMPTY_ {
 		t.Fatalf("Expected to have NO domain set but got %q", si.Domain)
 	}
 
@@ -7069,10 +7068,10 @@ func TestJetStreamClusterDomainsAndSameNameSources(t *testing.T) {
 	}
 }
 
-// When a leafnode enables JS on an account that is not enabled on the remote cluster account this should
-// still work. Early NGS beta testers etc.
+// When a leafnode enables JS on an account that is not enabled on the remote cluster account this should fail
+// Accessing a jet stream in a different availability domain requires the client provide a damain name, or
+// the server having set up appropriate defaults (default_js_domain. tested in leafnode_test.go)
 func TestJetStreamClusterSingleLeafNodeEnablingJetStream(t *testing.T) {
-	t.Skip("System account is not shared")
 	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: HUB, store_dir:", 1)
 	c := createJetStreamCluster(t, tmpl, "HUB", _EMPTY_, 3, 11322, true)
 	defer c.shutdown()
@@ -7092,10 +7091,9 @@ func TestJetStreamClusterSingleLeafNodeEnablingJetStream(t *testing.T) {
 	s := c.randomServer()
 	nc, js = jsClientConnect(t, s, nats.UserInfo("nojs", "p"))
 	defer nc.Close()
-
-	if _, err := js.AccountInfo(); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
+	_, err := js.AccountInfo()
+	// error is context deadline exceeded as the local account has no js and can't reach the remote one
+	require_True(t, err == context.DeadlineExceeded)
 }
 
 func TestJetStreamClusterLeafNodesWithoutJS(t *testing.T) {
@@ -7164,19 +7162,18 @@ func TestJetStreamClusterLeafNodesWithSameDomainNames(t *testing.T) {
 	c.waitOnPeerCount(6)
 }
 
-// Issue reported with superclusters and leafnodes where first few get next requests for pull susbcribers
+// Issue reported with superclusters and leafnodes where first few get next requests for pull subscribers
 // have the wrong subject.
 func TestJetStreamClusterSuperClusterGetNextRewrite(t *testing.T) {
-	t.Skip("System account not shared")
 	sc := createJetStreamSuperClusterWithTemplate(t, jsClusterAccountsTempl, 2, 2)
 	defer sc.shutdown()
 
 	// Will connect the leafnode to cluster C1. We will then connect the "client" to cluster C2 to cross gateways.
-	ln := sc.clusterForName("C1").createSingleLeafNodeNoSystemAccountAndEnablesJetStream()
+	ln := sc.clusterForName("C1").createSingleLeafNodeNoSystemAccountAndEnablesJetStreamWithDomain("C", "nojs")
 	defer ln.Shutdown()
 
 	c2 := sc.clusterForName("C2")
-	nc, js := jsClientConnect(t, c2.randomServer(), nats.UserInfo("nojs", "p"))
+	nc, js := jsClientConnectEx(t, c2.randomServer(), "C", nats.UserInfo("nojs", "p"))
 	defer nc.Close()
 
 	// Create a stream and add messages.
