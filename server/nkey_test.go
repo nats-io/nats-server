@@ -54,6 +54,28 @@ func mixedSetup() (*Server, *testAsyncClient, *bufio.Reader, string) {
 	return rawSetup(opts)
 }
 
+func TestServerInfoNonceAlwaysEnabled(t *testing.T) {
+	opts := defaultServerOptions
+	opts.AlwaysEnableNonce = true
+	s, c, _, l := rawSetup(opts)
+	defer s.WaitForShutdown()
+	defer s.Shutdown()
+	defer c.close()
+
+	if !strings.HasPrefix(l, "INFO ") {
+		t.Fatalf("INFO response incorrect: %s\n", l)
+	}
+
+	var info nonceInfo
+	err := json.Unmarshal([]byte(l[5:]), &info)
+	if err != nil {
+		t.Fatalf("Could not parse INFO json: %v\n", err)
+	}
+	if info.Nonce == "" {
+		t.Fatalf("Expected a non-empty nonce with AlwaysEnableNonce set")
+	}
+}
+
 func TestServerInfoNonce(t *testing.T) {
 	c, l := setUpClientWithResponse()
 	defer c.close()
