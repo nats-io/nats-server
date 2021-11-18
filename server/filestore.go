@@ -1596,6 +1596,8 @@ func (mb *msgBlock) skipMsg(seq uint64, now time.Time) {
 			mb.dmap = make(map[uint64]struct{})
 		}
 		mb.dmap[seq] = struct{}{}
+		mb.msgs--
+		mb.bytes -= emptyRecordLen
 	}
 	mb.mu.Unlock()
 
