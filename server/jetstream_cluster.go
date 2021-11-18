@@ -3032,7 +3032,7 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 				if mset, node := o.streamAndNode(); mset != nil && node != nil {
 					s := js.srv
 					s.Errorf("JetStream cluster could not decode consumer snapshot for '%s > %s > %s' [%s]",
-						mset.account(), mset.name(), o, o.node.Group())
+						mset.account(), mset.name(), o, node.Group())
 				}
 				panic(err.Error())
 			}
@@ -3061,7 +3061,7 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 						if mset, node := o.streamAndNode(); mset != nil && node != nil {
 							s := js.srv
 							s.Errorf("JetStream cluster could not decode consumer delivered update for '%s > %s > %s' [%s]",
-								mset.account(), mset.name(), o, o.node.Group())
+								mset.account(), mset.name(), o, node.Group())
 						}
 						panic(err.Error())
 					}
@@ -3079,7 +3079,7 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					if mset, node := o.streamAndNode(); mset != nil && node != nil {
 						s := js.srv
 						s.Errorf("JetStream cluster could not decode consumer ack update for '%s > %s > %s' [%s]",
-							mset.account(), mset.name(), o, o.node.Group())
+							mset.account(), mset.name(), o, node.Group())
 					}
 					panic(err.Error())
 				}
