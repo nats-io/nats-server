@@ -10519,11 +10519,10 @@ func (c *cluster) waitOnServerCurrent(s *Server) {
 	c.t.Helper()
 	expires := time.Now().Add(20 * time.Second)
 	for time.Now().Before(expires) {
+		time.Sleep(100 * time.Millisecond)
 		if s.JetStreamIsCurrent() {
-			time.Sleep(100 * time.Millisecond)
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
 	}
 	c.t.Fatalf("Expected server %q to eventually be current", s)
 }
