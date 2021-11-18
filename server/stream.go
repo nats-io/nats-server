@@ -2686,7 +2686,7 @@ func (mset *stream) processInboundJetStreamMsg(_ *subscription, c *client, _ *Ac
 
 	hdr, msg := c.msgParts(rmsg)
 
-	// If we are not receiving directly from a client we should move this this Go routine.
+	// If we are not receiving directly from a client we should move this to another Go routine.
 	if c.kind != CLIENT {
 		mset.queueInboundMsg(subject, reply, hdr, msg)
 		return

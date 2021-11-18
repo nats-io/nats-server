@@ -1953,6 +1953,7 @@ func (mb *msgBlock) compact() {
 		}
 		// Always set last.
 		mb.last.seq = seq &^ ebit
+
 		// Advance to next record.
 		index += rl
 	}
@@ -2605,7 +2606,7 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 	writeIndex := ts-mb.lwits > int64(2*time.Second)
 
 	// Accounting
-	mb.updateAccounting(seq, ts, rl)
+	mb.updateAccounting(seq&^ebit, ts, rl)
 
 	// Check if we are tracking per subject for our simple state.
 	if len(subj) > 0 && mb.fss != nil {
@@ -3840,6 +3841,7 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	}
 	fs.lmb.first.seq = fs.state.FirstSeq
 	fs.lmb.last.seq = fs.state.LastSeq
+
 	fs.lmb.writeIndexInfo()
 
 	cb := fs.scb

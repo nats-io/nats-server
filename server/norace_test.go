@@ -3747,3 +3747,174 @@ func TestNoRaceJetStreamKeyValueCompaction(t *testing.T) {
 		}
 	}
 }
+
+// Trying to recreate an issue rip saw with KV and server restarts complaining about
+// mismatch for a few minutes and growing memory.
+func TestNoRaceJetStreamClusterStreamSeqMismatchIssue(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+		Bucket:   "MM",
+		Replicas: 3,
+		TTL:      500 * time.Millisecond,
+	})
+	require_NoError(t, err)
+
+	for i := 1; i <= 10; i++ {
+		if _, err := kv.PutString("k", "1"); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+	// Close in case we are connected here. Will recreate.
+	nc.Close()
+
+	// Shutdown a non-leader.
+	s := c.randomNonStreamLeader("$G", "KV_MM")
+	s.Shutdown()
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	kv, err = js.KeyValue("MM")
+	require_NoError(t, err)
+
+	// Now change the state of the stream such that we have to do a compact upon restart
+	// of the downed server.
+	for i := 1; i <= 10; i++ {
+		if _, err := kv.PutString("k", "2"); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	// Raft could save us here so need to run a compact on the leader.
+	snapshotLeader := func() {
+		sl := c.streamLeader("$G", "KV_MM")
+		if sl == nil {
+			t.Fatalf("Did not get the leader")
+		}
+		mset, err := sl.GlobalAccount().lookupStream("KV_MM")
+		require_NoError(t, err)
+		node := mset.raftNode()
+		if node == nil {
+			t.Fatalf("Could not get stream group")
+		}
+		if err := node.InstallSnapshot(mset.stateSnapshot()); err != nil {
+			t.Fatalf("Error installing snapshot: %v", err)
+		}
+	}
+
+	// Now wait for expiration
+	time.Sleep(time.Second)
+
+	snapshotLeader()
+
+	s = c.restartServer(s)
+	c.waitOnServerCurrent(s)
+
+	// We want to make sure we do not reset the raft state on a catchup due to no request yield.
+	// Bug was if we did not actually request any help from snapshot we did not set mset.lseq properly.
+	// So when we send next batch that would cause raft reset due to cluster reset for our stream.
+	mset, err := s.GlobalAccount().lookupStream("KV_MM")
+	require_NoError(t, err)
+
+	for i := 1; i <= 10; i++ {
+		if _, err := kv.PutString("k1", "X"); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	c.waitOnStreamCurrent(s, "$G", "KV_MM")
+
+	// Make sure we did not reset our stream.
+	msetNew, err := s.GlobalAccount().lookupStream("KV_MM")
+	require_NoError(t, err)
+	if msetNew != mset {
+		t.Fatalf("Stream was reset")
+	}
+}
+
+func TestNoRaceJetStreamClusterStreamDropCLFS(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+		Bucket:   "CLFS",
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Will work
+	_, err = kv.Create("k.1", []byte("X"))
+	require_NoError(t, err)
+	// Drive up CLFS state on leader.
+	for i := 0; i < 10; i++ {
+		_, err = kv.Create("k.1", []byte("X"))
+		require_Error(t, err)
+	}
+	// Bookend with new key success.
+	_, err = kv.Create("k.2", []byte("Z"))
+	require_NoError(t, err)
+
+	// Close in case we are connected here. Will recreate.
+	nc.Close()
+
+	// Shutdown, which will also clear clfs.
+	s := c.randomNonStreamLeader("$G", "KV_CLFS")
+	s.Shutdown()
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	kv, err = js.KeyValue("CLFS")
+	require_NoError(t, err)
+
+	// Drive up CLFS state on leader.
+	for i := 0; i < 10; i++ {
+		_, err = kv.Create("k.1", []byte("X"))
+		require_Error(t, err)
+	}
+
+	sl := c.streamLeader("$G", "KV_CLFS")
+	if sl == nil {
+		t.Fatalf("Did not get the leader")
+	}
+	mset, err := sl.GlobalAccount().lookupStream("KV_CLFS")
+	require_NoError(t, err)
+	node := mset.raftNode()
+	if node == nil {
+		t.Fatalf("Could not get stream group")
+	}
+	if err := node.InstallSnapshot(mset.stateSnapshot()); err != nil {
+		t.Fatalf("Error installing snapshot: %v", err)
+	}
+
+	_, err = kv.Create("k.3", []byte("ZZZ"))
+	require_NoError(t, err)
+
+	s = c.restartServer(s)
+	c.waitOnServerCurrent(s)
+
+	mset, err = s.GlobalAccount().lookupStream("KV_CLFS")
+	require_NoError(t, err)
+
+	_, err = kv.Create("k.4", []byte("YYY"))
+	require_NoError(t, err)
+
+	c.waitOnStreamCurrent(s, "$G", "KV_CLFS")
+
+	// Make sure we did not reset our stream.
+	msetNew, err := s.GlobalAccount().lookupStream("KV_CLFS")
+	require_NoError(t, err)
+	if msetNew != mset {
+		t.Fatalf("Stream was reset")
+	}
+}

@@ -1679,10 +1679,8 @@ func (mset *stream) resetClusteredState(err error) bool {
 // This will reset the stream and consumers.
 // Should be done in separate go routine.
 func (js *jetStream) restartClustered(acc *Account, sa *streamAssignment) {
-	js.processClusterCreateStream(acc, sa)
-
-	// Check consumers.
-	js.mu.Lock()
+	// Check and collect consumers first.
+	js.mu.RLock()
 	var consumers []*consumerAssignment
 	if cc := js.cluster; cc != nil && cc.meta != nil {
 		ourID := cc.meta.ID()
@@ -1693,8 +1691,11 @@ func (js *jetStream) restartClustered(acc *Account, sa *streamAssignment) {
 			}
 		}
 	}
-	js.mu.Unlock()
+	js.mu.RUnlock()
 
+	// Reset stream.
+	js.processClusterCreateStream(acc, sa)
+	// Reset consumers.
 	for _, ca := range consumers {
 		js.processClusterCreateConsumer(ca, nil, false)
 	}
@@ -1718,12 +1719,18 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 				subject, reply, hdr, msg, lseq, ts, err := decodeStreamMsg(buf[1:])
 				if err != nil {
+					if node := mset.raftNode(); node != nil {
+						s.Errorf("JetStream cluster could not decode stream msg for '%s > %s' [%s]",
+							mset.account(), mset.name(), node.Group())
+					}
 					panic(err.Error())
 				}
 
 				// Check for flowcontrol here.
-				if !isRecovering && len(msg) == 0 && len(hdr) > 0 && reply != _EMPTY_ && isControlHdr(hdr) {
-					mset.sendFlowControlReply(reply)
+				if len(msg) == 0 && len(hdr) > 0 && reply != _EMPTY_ && isControlHdr(hdr) {
+					if !isRecovering {
+						mset.sendFlowControlReply(reply)
+					}
 					continue
 				}
 
@@ -1761,6 +1768,11 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 			case deleteMsgOp:
 				md, err := decodeMsgDelete(buf[1:])
 				if err != nil {
+					if node := mset.raftNode(); node != nil {
+						s := js.srv
+						s.Errorf("JetStream cluster could not decode delete msg for '%s > %s' [%s]",
+							mset.account(), mset.name(), node.Group())
+					}
 					panic(err.Error())
 				}
 				s, cc := js.server(), js.cluster
@@ -1802,6 +1814,11 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 			case purgeStreamOp:
 				sp, err := decodeStreamPurge(buf[1:])
 				if err != nil {
+					if node := mset.raftNode(); node != nil {
+						s := js.srv
+						s.Errorf("JetStream cluster could not decode purge msg for '%s > %s' [%s]",
+							mset.account(), mset.name(), node.Group())
+					}
 					panic(err.Error())
 				}
 				// Ignore if we are recovering and we have already processed.
@@ -2896,6 +2913,16 @@ func (cc *jetStreamCluster) isConsumerAssigned(a *Account, stream, consumer stri
 	return false
 }
 
+// Returns our stream and underlying raft node.
+func (o *consumer) streamAndNode() (*stream, RaftNode) {
+	if o == nil {
+		return nil, nil
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.mset, o.node
+}
+
 func (o *consumer) raftGroup() *raftGroup {
 	if o == nil {
 		return nil
@@ -3002,6 +3029,11 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 			// No-op needed?
 			state, err := decodeConsumerState(e.Data)
 			if err != nil {
+				if mset, node := o.streamAndNode(); mset != nil && node != nil {
+					s := js.srv
+					s.Errorf("JetStream cluster could not decode consumer snapshot for '%s > %s > %s' [%s]",
+						mset.account(), mset.name(), o, node.Group())
+				}
 				panic(err.Error())
 			}
 			o.store.Update(state)
@@ -3026,6 +3058,11 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 				if !isLeader {
 					dseq, sseq, dc, ts, err := decodeDeliveredUpdate(buf[1:])
 					if err != nil {
+						if mset, node := o.streamAndNode(); mset != nil && node != nil {
+							s := js.srv
+							s.Errorf("JetStream cluster could not decode consumer delivered update for '%s > %s > %s' [%s]",
+								mset.account(), mset.name(), o, node.Group())
+						}
 						panic(err.Error())
 					}
 					if err := o.store.UpdateDelivered(dseq, sseq, dc, ts); err != nil {
@@ -3039,6 +3076,11 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 			case updateAcksOp:
 				dseq, sseq, err := decodeAckUpdate(buf[1:])
 				if err != nil {
+					if mset, node := o.streamAndNode(); mset != nil && node != nil {
+						s := js.srv
+						s.Errorf("JetStream cluster could not decode consumer ack update for '%s > %s > %s' [%s]",
+							mset.account(), mset.name(), o, node.Group())
+					}
 					panic(err.Error())
 				}
 				o.processReplicatedAck(dseq, sseq)
@@ -4522,6 +4564,7 @@ type streamSnapshot struct {
 	Bytes    uint64   `json:"bytes"`
 	FirstSeq uint64   `json:"first_seq"`
 	LastSeq  uint64   `json:"last_seq"`
+	Failed   uint64   `json:"clfs"`
 	Deleted  []uint64 `json:"deleted,omitempty"`
 }
 
@@ -4536,6 +4579,7 @@ func (mset *stream) stateSnapshot() []byte {
 		Bytes:    state.Bytes,
 		FirstSeq: state.FirstSeq,
 		LastSeq:  state.LastSeq,
+		Failed:   mset.clfs,
 		Deleted:  state.Deleted,
 	}
 	b, _ := json.Marshal(snap)
@@ -4638,7 +4682,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 
 	// Do proposal.
 	err := mset.node.Propose(esm)
-	if err != nil {
+	if err != nil && mset.clseq > 0 {
 		mset.clseq--
 	}
 	mset.clMu.Unlock()
@@ -4686,6 +4730,7 @@ func (mset *stream) processSnapshotDeletes(snap *streamSnapshot) {
 	if snap.FirstSeq > state.FirstSeq {
 		mset.store.Compact(snap.FirstSeq)
 		state = mset.store.State()
+		mset.setLastSeq(snap.LastSeq)
 	}
 	// Range the deleted and delete if applicable.
 	for _, dseq := range snap.Deleted {
@@ -4773,6 +4818,7 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) error {
 	mset.processSnapshotDeletes(snap)
 
 	mset.mu.Lock()
+	mset.clfs = snap.Failed
 	state := mset.store.State()
 	sreq := mset.calculateSyncRequest(&state, snap)
 	s, js, subject, n := mset.srv, mset.js, mset.sa.Sync, mset.node
