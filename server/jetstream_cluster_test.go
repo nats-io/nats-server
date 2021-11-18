@@ -9442,6 +9442,63 @@ func TestJetStreamClusterAccountInfoForSystemAccount(t *testing.T) {
 	}
 }
 
+func TestJetStreamListFilter(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	testList := func(t *testing.T, srv *Server, r int) {
+		nc, js := jsClientConnect(t, srv)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "ONE",
+			Subjects: []string{"one.>"},
+			Replicas: r,
+		})
+		require_NoError(t, err)
+
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "TWO",
+			Subjects: []string{"two.>"},
+			Replicas: r,
+		})
+		require_NoError(t, err)
+
+		resp, err := nc.Request(JSApiStreamList, []byte("{}"), time.Second)
+		require_NoError(t, err)
+
+		list := &JSApiStreamListResponse{}
+		err = json.Unmarshal(resp.Data, list)
+		require_NoError(t, err)
+
+		if len(list.Streams) != 2 {
+			t.Fatalf("Expected 2 responses got %d", len(list.Streams))
+		}
+
+		resp, err = nc.Request(JSApiStreamList, []byte(`{"subject":"two.x"}`), time.Second)
+		require_NoError(t, err)
+		list = &JSApiStreamListResponse{}
+		err = json.Unmarshal(resp.Data, list)
+		require_NoError(t, err)
+		if len(list.Streams) != 1 {
+			t.Fatalf("Expected 1 response got %d", len(list.Streams))
+		}
+		if list.Streams[0].Config.Name != "TWO" {
+			t.Fatalf("Expected stream TWO in result got %#v", list.Streams[0])
+		}
+	}
+
+	t.Run("Single", func(t *testing.T) { testList(t, s, 1) })
+	t.Run("Clustered", func(t *testing.T) { testList(t, c.randomServer(), 3) })
+}
+
 func TestJetStreamConsumerUpdates(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
