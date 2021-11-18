@@ -427,6 +427,14 @@ func (c *client) String() (id string) {
 	return _EMPTY_
 }
 
+// GetNonce returns the nonce that was presented to the user on connection
+func (c *client) GetNonce() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.nonce
+}
+
 // GetName returns the application supplied name for the connection.
 func (c *client) GetName() string {
 	c.mu.Lock()

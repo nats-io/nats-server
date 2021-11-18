@@ -42,14 +42,16 @@ type Authentication interface {
 
 // ClientAuthentication is an interface for client authentication
 type ClientAuthentication interface {
-	// Get options associated with a client
+	// GetOpts gets options associated with a client
 	GetOpts() *ClientOpts
-	// If TLS is enabled, TLS ConnectionState, nil otherwise
+	// GetTLSConnectionState if TLS is enabled, TLS ConnectionState, nil otherwise
 	GetTLSConnectionState() *tls.ConnectionState
-	// Optionally map a user after auth.
+	// RegisterUser optionally map a user after auth.
 	RegisterUser(*User)
 	// RemoteAddress expose the connection information of the client
 	RemoteAddress() net.Addr
+	// GetNonce is the nonce presented to the user in the INFO line
+	GetNonce() []byte
 	// Kind indicates what type of connection this is matching defined constants like CLIENT, ROUTER, GATEWAY, LEAF etc
 	Kind() int
 }
