@@ -3770,10 +3770,18 @@ func TestNoRaceJetStreamClusterStreamSeqMismatchIssue(t *testing.T) {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 	}
+	// Close in case we are connected here. Will recreate.
+	nc.Close()
 
 	// Shutdown a non-leader.
 	s := c.randomNonStreamLeader("$G", "KV_MM")
 	s.Shutdown()
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	kv, err = js.KeyValue("MM")
+	require_NoError(t, err)
 
 	// Now change the state of the stream such that we have to do a compact upon restart
 	// of the downed server.
@@ -3856,9 +3864,18 @@ func TestNoRaceJetStreamClusterStreamDropCLFS(t *testing.T) {
 	_, err = kv.Create("k.2", []byte("Z"))
 	require_NoError(t, err)
 
+	// Close in case we are connected here. Will recreate.
+	nc.Close()
+
 	// Shutdown, which will also clear clfs.
 	s := c.randomNonStreamLeader("$G", "KV_CLFS")
 	s.Shutdown()
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	kv, err = js.KeyValue("CLFS")
+	require_NoError(t, err)
 
 	// Drive up CLFS state on leader.
 	for i := 0; i < 10; i++ {
