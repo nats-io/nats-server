@@ -603,32 +603,46 @@ func TestNilMonitoringPort(t *testing.T) {
 	}
 }
 
-type DummyAuth struct{}
+type DummyAuth struct {
+	t         *testing.T
+	needNonce bool
+}
 
 func (d *DummyAuth) Check(c ClientAuthentication) bool {
+	if d.needNonce && len(c.GetNonce()) == 0 {
+		d.t.Fatalf("Expected a nonce but received none")
+	} else if !d.needNonce && len(c.GetNonce()) > 0 {
+		d.t.Fatalf("Received a nonce when none was expected")
+	}
+
 	return c.GetOpts().Username == "valid"
 }
 
 func TestCustomClientAuthentication(t *testing.T) {
-	var clientAuth DummyAuth
+	testAuth := func(t *testing.T, nonce bool) {
+		clientAuth := &DummyAuth{t, nonce}
 
-	opts := DefaultOptions()
-	opts.CustomClientAuthentication = &clientAuth
+		opts := DefaultOptions()
+		opts.CustomClientAuthentication = clientAuth
+		opts.AlwaysEnableNonce = nonce
 
-	s := RunServer(opts)
+		s := RunServer(opts)
+		defer s.Shutdown()
 
-	defer s.Shutdown()
+		addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
 
-	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
-
-	nc, err := nats.Connect(addr, nats.UserInfo("valid", ""))
-	if err != nil {
-		t.Fatalf("Expected client to connect, got: %s", err)
+		nc, err := nats.Connect(addr, nats.UserInfo("valid", ""))
+		if err != nil {
+			t.Fatalf("Expected client to connect, got: %s", err)
+		}
+		nc.Close()
+		if _, err := nats.Connect(addr, nats.UserInfo("invalid", "")); err == nil {
+			t.Fatal("Expected client to fail to connect")
+		}
 	}
-	nc.Close()
-	if _, err := nats.Connect(addr, nats.UserInfo("invalid", "")); err == nil {
-		t.Fatal("Expected client to fail to connect")
-	}
+
+	t.Run("with nonce", func(t *testing.T) { testAuth(t, true) })
+	t.Run("without nonce", func(t *testing.T) { testAuth(t, false) })
 }
 
 func TestCustomRouterAuthentication(t *testing.T) {
