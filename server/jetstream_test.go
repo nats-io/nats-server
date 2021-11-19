@@ -13546,6 +13546,51 @@ func TestJetStreamLargeExpiresAndServerRestart(t *testing.T) {
 	}
 }
 
+// Bug that was reported showing memstore not handling max per subject of 1.
+func TestJetStreamMessagePerSubjectKeepBug(t *testing.T) {
+	test := func(t *testing.T, keep int64, store nats.StorageType) {
+		s := RunBasicJetStreamServer()
+		defer s.Shutdown()
+
+		config := s.JetStreamConfig()
+		if config != nil {
+			defer removeDir(t, config.StoreDir)
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:              "TEST",
+			MaxMsgsPerSubject: keep,
+			Storage:           store,
+		})
+		require_NoError(t, err)
+
+		for i := 0; i < 100; i++ {
+			_, err = js.Publish("TEST", []byte(fmt.Sprintf("test %d", i)))
+			require_NoError(t, err)
+		}
+
+		nfo, err := js.StreamInfo("TEST")
+		require_NoError(t, err)
+
+		if nfo.State.Msgs != uint64(keep) {
+			t.Fatalf("Expected %d message got %d", keep, nfo.State.Msgs)
+		}
+	}
+
+	t.Run("FileStore", func(t *testing.T) {
+		t.Run("Keep 10", func(t *testing.T) { test(t, 10, nats.FileStorage) })
+		t.Run("Keep 1", func(t *testing.T) { test(t, 1, nats.FileStorage) })
+	})
+
+	t.Run("MemStore", func(t *testing.T) {
+		t.Run("Keep 10", func(t *testing.T) { test(t, 10, nats.MemoryStorage) })
+		t.Run("Keep 1", func(t *testing.T) { test(t, 1, nats.MemoryStorage) })
+	})
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
