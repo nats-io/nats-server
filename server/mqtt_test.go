@@ -305,7 +305,7 @@ func testMQTTDefaultOptions() *Options {
 
 func testMQTTRunServer(t testing.TB, o *Options) *Server {
 	t.Helper()
-	o.NoLog = true
+	o.NoLog = false
 	if o.StoreDir == _EMPTY_ {
 		o.StoreDir = createDir(t, "mqtt_js")
 	}
