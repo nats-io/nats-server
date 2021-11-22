@@ -313,6 +313,8 @@ func testMQTTRunServer(t testing.TB, o *Options) *Server {
 	if err != nil {
 		t.Fatalf("Error creating server: %v", err)
 	}
+	l := &DummyLogger{}
+	s.SetLogger(l, true, true)
 	go s.Start()
 	if err := s.readyForConnections(3 * time.Second); err != nil {
 		testMQTTShutdownServer(s)
