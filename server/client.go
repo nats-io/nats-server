@@ -5172,7 +5172,9 @@ func convertAllowedConnectionTypes(cts []string) (map[string]struct{}, error) {
 	for _, i := range cts {
 		i = strings.ToUpper(i)
 		switch i {
-		case jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket, jwt.ConnectionTypeLeafnode, jwt.ConnectionTypeMqtt:
+		case jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket,
+			jwt.ConnectionTypeLeafnode, jwt.ConnectionTypeLeafnodeWS,
+			jwt.ConnectionTypeMqtt:
 			m[i] = struct{}{}
 		default:
 			unknown = append(unknown, i)
@@ -5206,7 +5208,11 @@ func (c *client) connectionTypeAllowed(acts map[string]struct{}) bool {
 			want = jwt.ConnectionTypeMqtt
 		}
 	case LEAF:
-		want = jwt.ConnectionTypeLeafnode
+		if c.isWebsocket() {
+			want = jwt.ConnectionTypeLeafnodeWS
+		} else {
+			want = jwt.ConnectionTypeLeafnode
+		}
 	}
 	_, ok := acts[want]
 	return ok

@@ -22,6 +22,7 @@ import (
 	"math/rand"
 	"net"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3032,12 +3033,12 @@ func TestLeafNodeWSFailedConnection(t *testing.T) {
 }
 
 func TestLeafNodeWSAuth(t *testing.T) {
-	conf := createConfFile(t, []byte(fmt.Sprintf(`
+	template := `
 		port: -1
 		authorization {
 			users [
 				{user: "user", pass: "puser", connection_types: ["%s"]}
-				{user: "leaf", pass: "pleaf", connection_types: ["%s"]}
+				{user: "leaf", pass: "pleaf", connection_types: ["%s"%s]}
 			]
 		}
 		websocket {
@@ -3047,19 +3048,39 @@ func TestLeafNodeWSAuth(t *testing.T) {
 		leafnodes {
 			port: -1
 		}
-	`, jwt.ConnectionTypeStandard, jwt.ConnectionTypeLeafnode)))
-	defer removeFile(t, conf)
-	o, err := ProcessConfigFile(conf)
-	if err != nil {
-		t.Fatalf("Error processing config file: %v", err)
-	}
-	o.NoLog, o.NoSigs = true, true
-	s := RunServer(o)
+	`
+	s, o, conf := runReloadServerWithContent(t,
+		[]byte(fmt.Sprintf(template, jwt.ConnectionTypeStandard, jwt.ConnectionTypeLeafnode, "")))
+	defer os.Remove(conf)
 	defer s.Shutdown()
 
+	l := &captureErrorLogger{errCh: make(chan string, 10)}
+	s.SetLogger(l, false, false)
+
 	lo := testDefaultRemoteLeafNodeWSOptions(t, o, false)
+	u, _ := url.Parse(fmt.Sprintf("ws://leaf:pleaf@127.0.0.1:%d", o.Websocket.Port))
+	remote := &RemoteLeafOpts{URLs: []*url.URL{u}}
+	lo.LeafNode.Remotes = []*RemoteLeafOpts{remote}
+	lo.LeafNode.ReconnectInterval = 50 * time.Millisecond
 	ln := RunServer(lo)
 	defer ln.Shutdown()
+
+	var lasterr string
+	tm := time.NewTimer(2 * time.Second)
+	for done := false; !done; {
+		select {
+		case lasterr = <-l.errCh:
+			if strings.Contains(lasterr, "authentication") {
+				done = true
+			}
+		case <-tm.C:
+			t.Fatalf("Expected auth error, got %v", lasterr)
+		}
+	}
+
+	ws := fmt.Sprintf(`, "%s"`, jwt.ConnectionTypeLeafnodeWS)
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(template,
+		jwt.ConnectionTypeStandard, jwt.ConnectionTypeLeafnode, ws))
 
 	checkLeafNodeConnected(t, s)
 	checkLeafNodeConnected(t, ln)
