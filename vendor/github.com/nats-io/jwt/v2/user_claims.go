@@ -23,10 +23,12 @@ import (
 )
 
 const (
-	ConnectionTypeStandard  = "STANDARD"
-	ConnectionTypeWebsocket = "WEBSOCKET"
-	ConnectionTypeLeafnode  = "LEAFNODE"
-	ConnectionTypeMqtt      = "MQTT"
+	ConnectionTypeStandard   = "STANDARD"
+	ConnectionTypeWebsocket  = "WEBSOCKET"
+	ConnectionTypeLeafnode   = "LEAFNODE"
+	ConnectionTypeLeafnodeWS = "LEAFNODE_WS"
+	ConnectionTypeMqtt       = "MQTT"
+	ConnectionTypeMqttWS     = "MQTT_WS"
 )
 
 type UserPermissionLimits struct {

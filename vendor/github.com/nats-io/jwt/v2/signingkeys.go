@@ -120,9 +120,12 @@ func (sk SigningKeys) Validate(vr *ValidationResults) {
 }
 
 // MarshalJSON serializes the scoped signing keys as an array
-func (sk SigningKeys) MarshalJSON() ([]byte, error) {
+func (sk *SigningKeys) MarshalJSON() ([]byte, error) {
+	if sk == nil {
+		return nil, nil
+	}
 	var a []interface{}
-	for k, v := range sk {
+	for k, v := range *sk {
 		if v != nil {
 			a = append(a, v)
 		} else {
@@ -132,7 +135,10 @@ func (sk SigningKeys) MarshalJSON() ([]byte, error) {
 	return json.Marshal(a)
 }
 
-func (sk SigningKeys) UnmarshalJSON(data []byte) error {
+func (sk *SigningKeys) UnmarshalJSON(data []byte) error {
+	if *sk == nil {
+		*sk = make(SigningKeys)
+	}
 	// read an array - we can have a string or an map
 	var a []interface{}
 	if err := json.Unmarshal(data, &a); err != nil {
@@ -141,7 +147,7 @@ func (sk SigningKeys) UnmarshalJSON(data []byte) error {
 	for _, i := range a {
 		switch v := i.(type) {
 		case string:
-			sk[v] = nil
+			(*sk)[v] = nil
 		case map[string]interface{}:
 			d, err := json.Marshal(v)
 			if err != nil {
@@ -153,7 +159,7 @@ func (sk SigningKeys) UnmarshalJSON(data []byte) error {
 				if err := json.Unmarshal(d, &us); err != nil {
 					return err
 				}
-				sk[us.Key] = us
+				(*sk)[us.Key] = us
 			default:
 				return fmt.Errorf("unknown signing key scope %q", v["type"])
 			}
