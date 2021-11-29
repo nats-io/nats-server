@@ -4724,7 +4724,7 @@ func (mset *stream) calculateSyncRequest(state *StreamState, snap *streamSnapsho
 // processSnapshotDeletes will update our current store based on the snapshot
 // but only processing deletes and new FirstSeq / purges.
 func (mset *stream) processSnapshotDeletes(snap *streamSnapshot) {
-	state := mset.store.State()
+	state := mset.state()
 
 	// Adjust if FirstSeq has moved.
 	if snap.FirstSeq > state.FirstSeq {

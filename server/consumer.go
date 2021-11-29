@@ -2905,12 +2905,13 @@ func (o *consumer) selectStartingSeqNo() {
 	if o.mset == nil || o.mset.store == nil {
 		o.sseq = 1
 	} else {
-		stats := o.mset.store.State()
+		var state StreamState
+		o.mset.store.FastState(&state)
 		if o.cfg.OptStartSeq == 0 {
 			if o.cfg.DeliverPolicy == DeliverAll {
-				o.sseq = stats.FirstSeq
+				o.sseq = state.FirstSeq
 			} else if o.cfg.DeliverPolicy == DeliverLast {
-				o.sseq = stats.LastSeq
+				o.sseq = state.LastSeq
 				// If we are partitioned here this will be properly set when we become leader.
 				if o.cfg.FilterSubject != _EMPTY_ {
 					ss := o.mset.store.FilteredState(1, o.cfg.FilterSubject)
@@ -2919,31 +2920,31 @@ func (o *consumer) selectStartingSeqNo() {
 			} else if o.cfg.DeliverPolicy == DeliverLastPerSubject {
 				if mss := o.mset.store.SubjectsState(o.cfg.FilterSubject); len(mss) > 0 {
 					o.lss = &lastSeqSkipList{
-						resume: stats.LastSeq,
+						resume: state.LastSeq,
 						seqs:   createLastSeqSkipList(mss),
 					}
 					o.sseq = o.lss.seqs[0]
 				} else {
 					// If no mapping info just set to last.
-					o.sseq = stats.LastSeq
+					o.sseq = state.LastSeq
 				}
 			} else if o.cfg.OptStartTime != nil {
 				// If we are here we are time based.
 				// TODO(dlc) - Once clustered can't rely on this.
 				o.sseq = o.mset.store.GetSeqFromTime(*o.cfg.OptStartTime)
 			} else {
-				o.sseq = stats.LastSeq + 1
+				o.sseq = state.LastSeq + 1
 			}
 		} else {
 			o.sseq = o.cfg.OptStartSeq
 		}
 
-		if stats.FirstSeq == 0 {
+		if state.FirstSeq == 0 {
 			o.sseq = 1
-		} else if o.sseq < stats.FirstSeq {
-			o.sseq = stats.FirstSeq
-		} else if o.sseq > stats.LastSeq {
-			o.sseq = stats.LastSeq + 1
+		} else if o.sseq < state.FirstSeq {
+			o.sseq = state.FirstSeq
+		} else if o.sseq > state.LastSeq {
+			o.sseq = state.LastSeq + 1
 		}
 	}
 
@@ -3295,7 +3296,8 @@ func (o *consumer) setInitialPendingAndStart() {
 	}
 
 	if !filtered && dp != DeliverLastPerSubject {
-		state := mset.store.State()
+		var state StreamState
+		mset.store.FastState(&state)
 		if state.Msgs > 0 {
 			o.sgap = state.Msgs - (o.sseq - state.FirstSeq)
 		}

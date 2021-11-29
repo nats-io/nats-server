@@ -737,13 +737,19 @@ func (ms *memStore) Type() StorageType {
 }
 
 // FastState will fill in state with only the following.
-// Msgs, Bytes, FirstSeq, LastSeq
+// Msgs, Bytes, First and Last Sequence and Time and NumDeleted.
 func (ms *memStore) FastState(state *StreamState) {
 	ms.mu.RLock()
 	state.Msgs = ms.state.Msgs
 	state.Bytes = ms.state.Bytes
 	state.FirstSeq = ms.state.FirstSeq
+	state.FirstTime = ms.state.FirstTime
 	state.LastSeq = ms.state.LastSeq
+	state.LastTime = ms.state.LastTime
+	if state.LastSeq > state.FirstSeq {
+		state.NumDeleted = int((state.LastSeq - state.FirstSeq) - state.Msgs + 1)
+	}
+	state.Consumers = ms.consumers
 	ms.mu.RUnlock()
 }
 
