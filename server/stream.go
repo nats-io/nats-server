@@ -1787,6 +1787,9 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64) {
 	si.sseq, si.dseq = seq, 0
 	si.last = time.Now()
 	ssi := mset.streamSource(iname)
+	if ssi == nil {
+		return
+	}
 
 	// Determine subjects etc.
 	var deliverSubject string
