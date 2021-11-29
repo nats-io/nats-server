@@ -425,7 +425,8 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	mset.pubAck = mset.pubAck[:end:end]
 
 	// Set our known last sequence.
-	state := mset.store.State()
+	var state StreamState
+	mset.store.FastState(&state)
 	mset.lseq = state.LastSeq
 
 	// If no msgs (new stream), set dedupe state loaded to true.
@@ -3502,11 +3503,6 @@ func (mset *stream) lookupConsumer(name string) *consumer {
 	return mset.consumers[name]
 }
 
-// State will return the current state for this stream.
-func (mset *stream) state() StreamState {
-	return mset.stateWithDetail(false)
-}
-
 func (mset *stream) numDirectConsumers() (num int) {
 	mset.mu.RLock()
 	defer mset.mu.RUnlock()
@@ -3522,6 +3518,11 @@ func (mset *stream) numDirectConsumers() (num int) {
 	return num
 }
 
+// State will return the current state for this stream.
+func (mset *stream) state() StreamState {
+	return mset.stateWithDetail(false)
+}
+
 func (mset *stream) stateWithDetail(details bool) StreamState {
 	mset.mu.RLock()
 	c, store := mset.client, mset.store
@@ -3530,10 +3531,12 @@ func (mset *stream) stateWithDetail(details bool) StreamState {
 		return StreamState{}
 	}
 	// Currently rely on store.
-	state := store.State()
-	if !details {
-		state.Deleted = nil
+	if details {
+		return store.State()
 	}
+	// Here we do the fast version.
+	var state StreamState
+	mset.store.FastState(&state)
 	return state
 }
 

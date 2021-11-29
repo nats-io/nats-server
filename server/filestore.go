@@ -3367,13 +3367,19 @@ func (fs *fileStore) Type() StorageType {
 }
 
 // FastState will fill in state with only the following.
-// Msgs, Bytes, FirstSeq, LastSeq
+// Msgs, Bytes, First and Last Sequence and Time and NumDeleted.
 func (fs *fileStore) FastState(state *StreamState) {
 	fs.mu.RLock()
 	state.Msgs = fs.state.Msgs
 	state.Bytes = fs.state.Bytes
 	state.FirstSeq = fs.state.FirstSeq
+	state.FirstTime = fs.state.FirstTime
 	state.LastSeq = fs.state.LastSeq
+	state.LastTime = fs.state.LastTime
+	if state.LastSeq > state.FirstSeq {
+		state.NumDeleted = int((state.LastSeq - state.FirstSeq) - state.Msgs + 1)
+	}
+	state.Consumers = len(fs.cfs)
 	fs.mu.RUnlock()
 }
 
