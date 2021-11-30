@@ -2530,12 +2530,12 @@ func (s *Server) leafNodeFinishConnectProcess(c *client) {
 	if err := c.registerWithAccount(acc); err != nil {
 		c.Errorf("Registering leaf with account %s resulted in error: %v", acc.Name, err)
 		c.closeConnection(ProtocolViolation)
-	} else {
-		s.addLeafNodeConnection(c, _EMPTY_, _EMPTY_, false)
-		s.initLeafNodeSmapAndSendSubs(c)
-		if sendSysConnectEvent {
-			s.sendLeafNodeConnect(acc)
-		}
+		return
+	}
+	s.addLeafNodeConnection(c, _EMPTY_, _EMPTY_, false)
+	s.initLeafNodeSmapAndSendSubs(c)
+	if sendSysConnectEvent {
+		s.sendLeafNodeConnect(acc)
 	}
 
 	// The above functions are not atomically under the client
