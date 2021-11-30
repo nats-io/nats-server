@@ -2528,6 +2528,10 @@ func (s *Server) leafNodeFinishConnectProcess(c *client) {
 
 	// Make sure we register with the account here.
 	if err := c.registerWithAccount(acc); err != nil {
+		if err == ErrTooManyAccountConnections {
+			c.maxAccountConnExceeded()
+			return
+		}
 		c.Errorf("Registering leaf with account %s resulted in error: %v", acc.Name, err)
 		c.closeConnection(ProtocolViolation)
 		return
