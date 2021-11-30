@@ -4310,3 +4310,58 @@ func TestMonitorJszAccountReserves(t *testing.T) {
 	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmplCfg, tmpDir, "jetstream: enabled"))
 	test(4, 0, 0, false)
 }
+
+func TestMonitorReloadTLSConfig(t *testing.T) {
+	template := `
+		listen: "127.0.0.1:-1"
+		https: "127.0.0.1:-1"
+		tls {
+			cert_file: '%s'
+			key_file: '%s'
+			ca_file: '../test/configs/certs/ca.pem'
+		}
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(template,
+		"../test/configs/certs/server-noip.pem",
+		"../test/configs/certs/server-key-noip.pem")))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", s.MonitorAddr().Port)
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Error creating ws connection: %v", err)
+	}
+	defer c.Close()
+
+	tc := &TLSConfigOpts{CaFile: "../test/configs/certs/ca.pem"}
+	tlsConfig, err := GenTLSConfig(tc)
+	if err != nil {
+		t.Fatalf("Error generating TLS config: %v", err)
+	}
+	tlsConfig.ServerName = "127.0.0.1"
+	tlsConfig.RootCAs = tlsConfig.ClientCAs
+	tlsConfig.ClientCAs = nil
+	c = tls.Client(c, tlsConfig.Clone())
+	if err := c.(*tls.Conn).Handshake(); err == nil || !strings.Contains(err.Error(), "SAN") {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	c.Close()
+
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(template,
+		"../test/configs/certs/server-cert.pem",
+		"../test/configs/certs/server-key.pem"))
+
+	c, err = net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Error creating ws connection: %v", err)
+	}
+	defer c.Close()
+
+	c = tls.Client(c, tlsConfig.Clone())
+	if err := c.(*tls.Conn).Handshake(); err != nil {
+		t.Fatalf("Error on TLS handshake: %v", err)
+	}
+}
