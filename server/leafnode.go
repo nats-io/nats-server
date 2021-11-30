@@ -2527,11 +2527,15 @@ func (s *Server) leafNodeFinishConnectProcess(c *client) {
 	c.mu.Unlock()
 
 	// Make sure we register with the account here.
-	c.registerWithAccount(acc)
-	s.addLeafNodeConnection(c, _EMPTY_, _EMPTY_, false)
-	s.initLeafNodeSmapAndSendSubs(c)
-	if sendSysConnectEvent {
-		s.sendLeafNodeConnect(acc)
+	if err := c.registerWithAccount(acc); err != nil {
+		c.Errorf("Registering leaf with account %s resulted in error: %v", acc.Name, err)
+		c.closeConnection(ProtocolViolation)
+	} else {
+		s.addLeafNodeConnection(c, _EMPTY_, _EMPTY_, false)
+		s.initLeafNodeSmapAndSendSubs(c)
+		if sendSysConnectEvent {
+			s.sendLeafNodeConnect(acc)
+		}
 	}
 
 	// The above functions are not atomically under the client
