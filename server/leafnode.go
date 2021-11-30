@@ -2527,7 +2527,15 @@ func (s *Server) leafNodeFinishConnectProcess(c *client) {
 	c.mu.Unlock()
 
 	// Make sure we register with the account here.
-	c.registerWithAccount(acc)
+	if err := c.registerWithAccount(acc); err != nil {
+		if err == ErrTooManyAccountConnections {
+			c.maxAccountConnExceeded()
+			return
+		}
+		c.Errorf("Registering leaf with account %s resulted in error: %v", acc.Name, err)
+		c.closeConnection(ProtocolViolation)
+		return
+	}
 	s.addLeafNodeConnection(c, _EMPTY_, _EMPTY_, false)
 	s.initLeafNodeSmapAndSendSubs(c)
 	if sendSysConnectEvent {
