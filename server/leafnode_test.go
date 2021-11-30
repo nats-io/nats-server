@@ -3911,9 +3911,9 @@ resolver_preload: {
   %s: %s
   %s: %s
 }
-listen: localhost:-1
+listen: 127.0.0.1:-1
 leafnodes: {
-	listen: localhost:-1
+	listen: 127.0.0.1:-1
 }
 jetstream :{
     domain: "cluster"
@@ -3924,7 +3924,7 @@ jetstream :{
 `
 
 	tmplL := `
-listen: localhost:-1
+listen: 127.0.0.1:-1
 accounts :{
     A:{   jetstream: enable, users:[ {user:a1,password:a1}]},
     SYS:{ users:[ {user:s1,password:s1}]},
@@ -3937,8 +3937,8 @@ jetstream: {
     max_file: 50Mb
 }
 leafnodes:{
-    remotes:[{ url:nats://localhost:%d, account: A, credentials: %s},
-			 { url:nats://localhost:%d, account: SYS, credentials: %s}]
+    remotes:[{ url:nats://127.0.0.1:%d, account: A, credentials: %s},
+			 { url:nats://127.0.0.1:%d, account: SYS, credentials: %s}]
 }
 `
 
@@ -3961,7 +3961,7 @@ leafnodes:{
 	ncA := natsConnect(t, sA.ClientURL(), nats.UserCredentials(unlimitedCreds))
 	defer ncA.Close()
 
-	ncL := natsConnect(t, fmt.Sprintf("nats://a1:a1@localhost:%d", sL.opts.Port))
+	ncL := natsConnect(t, fmt.Sprintf("nats://a1:a1@127.0.0.1:%d", sL.opts.Port))
 	defer ncL.Close()
 
 	test := func(subject string, cSub, cPub *nats.Conn, remoteServerForSub *Server, accName string, pass bool) {

@@ -8732,7 +8732,7 @@ func TestJetStreamClusterMirrorAndSourceCrossNonNeighboringDomain(t *testing.T) 
 		system_account = SYS
 		no_auth_user: a1
 		leafnodes: {
-			listen: localhost:-1
+			listen: 127.0.0.1:-1
 		}
 	`, storeDir1)))
 	s1, _ := RunServerWithConfig(conf1)
@@ -8748,8 +8748,8 @@ func TestJetStreamClusterMirrorAndSourceCrossNonNeighboringDomain(t *testing.T) 
 		system_account = SYS
 		no_auth_user: a1
 		leafnodes:{
-			remotes:[{ url:nats://a1:a1@localhost:%d, account: A},
-					 { url:nats://s1:s1@localhost:%d, account: SYS}]
+			remotes:[{ url:nats://a1:a1@127.0.0.1:%d, account: A},
+					 { url:nats://s1:s1@127.0.0.1:%d, account: SYS}]
 		}
 	`, storeDir2, s1.opts.LeafNode.Port, s1.opts.LeafNode.Port)))
 	s2, _ := RunServerWithConfig(conf2)
@@ -8765,8 +8765,8 @@ func TestJetStreamClusterMirrorAndSourceCrossNonNeighboringDomain(t *testing.T) 
 		system_account = SYS
 		no_auth_user: a1
 		leafnodes:{
-			remotes:[{ url:nats://a1:a1@localhost:%d, account: A},
-					 { url:nats://s1:s1@localhost:%d, account: SYS}]
+			remotes:[{ url:nats://a1:a1@127.0.0.1:%d, account: A},
+					 { url:nats://s1:s1@127.0.0.1:%d, account: SYS}]
 		}
 	`, storeDir3, s1.opts.LeafNode.Port, s1.opts.LeafNode.Port)))
 	s3, _ := RunServerWithConfig(conf3)

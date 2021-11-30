@@ -2366,6 +2366,10 @@ func TestWSHandshakeTimeout(t *testing.T) {
 	// Check that server logs error
 	select {
 	case e := <-logger.errCh:
+		// Check that log starts with "websocket: "
+		if !strings.HasPrefix(e, "websocket: ") {
+			t.Fatalf("Wrong log line start: %s", e)
+		}
 		if !strings.Contains(e, "timeout") {
 			t.Fatalf("Unexpected error: %v", e)
 		}

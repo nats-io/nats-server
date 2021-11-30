@@ -1112,7 +1112,7 @@ func (s *Server) startWebsocketServer() {
 		Addr:        hp,
 		Handler:     mux,
 		ReadTimeout: o.HandshakeTimeout,
-		ErrorLog:    log.New(&wsCaptureHTTPServerLog{s}, _EMPTY_, 0),
+		ErrorLog:    log.New(&captureHTTPServerLog{s, "websocket: "}, _EMPTY_, 0),
 	}
 	s.websocket.server = hs
 	s.websocket.listener = hl
@@ -1237,24 +1237,6 @@ func (s *Server) createWSClient(conn net.Conn, ws *websocket) *client {
 	c.mu.Unlock()
 
 	return c
-}
-
-type wsCaptureHTTPServerLog struct {
-	s *Server
-}
-
-func (cl *wsCaptureHTTPServerLog) Write(p []byte) (int, error) {
-	var buf [128]byte
-	var b = buf[:0]
-
-	copy(b, []byte("websocket :"))
-	offset := 0
-	if bytes.HasPrefix(p, []byte("http:")) {
-		offset = 6
-	}
-	b = append(b, p[offset:]...)
-	cl.s.Errorf(string(b))
-	return len(p), nil
 }
 
 func (c *client) wsCollapsePtoNB() (net.Buffers, int64) {

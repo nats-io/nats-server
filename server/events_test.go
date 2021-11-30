@@ -2257,7 +2257,7 @@ func TestServerEventsFilteredByTag(t *testing.T) {
 			listen: -1
 			no_advertise: true
 			routes [
-				nats-route://localhost:%d
+				nats-route://127.0.0.1:%d
 			]
 		}
 		system_account: SYS
