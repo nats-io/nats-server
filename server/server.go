@@ -1541,6 +1541,11 @@ func (s *Server) Start() {
 	s.grRunning = true
 	s.grMu.Unlock()
 
+	// Pprof http endpoint for the profiler.
+	if opts.ProfPort != 0 {
+		s.StartProfiler()
+	}
+
 	if opts.ConfigFile != _EMPTY_ {
 		s.Noticef("Using configuration file: %s", opts.ConfigFile)
 	}
@@ -1738,11 +1743,6 @@ func (s *Server) Start() {
 		s.startGoRoutine(func() {
 			s.StartRouting(clientListenReady)
 		})
-	}
-
-	// Pprof http endpoint for the profiler.
-	if opts.ProfPort != 0 {
-		s.StartProfiler()
 	}
 
 	if opts.PortsFileDir != _EMPTY_ {
