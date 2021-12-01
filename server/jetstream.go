@@ -1115,6 +1115,34 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 				s.Warnf("  Error adding stream %q to template %q: %v", cfg.Name, cfg.Template, err)
 			}
 		}
+
+		// We had a bug that could allow subjects in that had prefix or suffix spaces. We check for that here
+		// and will patch them on the fly for now. We will warn about them.
+		var hadSubjErr bool
+		for i, subj := range cfg.StreamConfig.Subjects {
+			if !IsValidSubject(subj) {
+				s.Warnf("  Detected bad subject %q while adding stream %q, will attempt to repair", subj, cfg.Name)
+				if nsubj := strings.TrimSpace(subj); IsValidSubject(nsubj) {
+					s.Warnf("  Bad subject %q repaired to %q", subj, nsubj)
+					cfg.StreamConfig.Subjects[i] = nsubj
+				} else {
+					s.Warnf("  Error recreating stream %q: %v", cfg.Name, "invalid subject")
+					hadSubjErr = true
+					break
+				}
+			}
+		}
+		if hadSubjErr {
+			continue
+		}
+
+		// The other possible bug is assigning subjects to mirrors, so check for that and patch as well.
+		if cfg.StreamConfig.Mirror != nil && len(cfg.StreamConfig.Subjects) > 0 {
+			s.Warnf("  Detected subjects on a mirrored stream %q, will remove", cfg.Name)
+			cfg.StreamConfig.Subjects = nil
+		}
+
+		// Add in the stream.
 		mset, err := a.addStream(&cfg.StreamConfig)
 		if err != nil {
 			s.Warnf("  Error recreating stream %q: %v", cfg.Name, err)
