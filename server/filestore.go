@@ -1018,7 +1018,7 @@ func (fs *fileStore) expireMsgsOnRecover() {
 
 	if deleted > 0 {
 		// Update blks slice.
-		fs.blks = append(fs.blks[:0:0], fs.blks[deleted:]...)
+		fs.blks = copyMsgBlocks(fs.blks[deleted:])
 		if lb := len(fs.blks); lb == 0 {
 			fs.lmb = nil
 		} else {
@@ -1028,6 +1028,15 @@ func (fs *fileStore) expireMsgsOnRecover() {
 	// Update top level accounting.
 	fs.state.Msgs -= purged
 	fs.state.Bytes -= bytes
+}
+
+func copyMsgBlocks(src []*msgBlock) []*msgBlock {
+	if src == nil {
+		return nil
+	}
+	dst := make([]*msgBlock, len(src))
+	copy(dst, src)
+	return dst
 }
 
 // GetSeqFromTime looks for the first sequence number that has
@@ -3942,7 +3951,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 
 	if deleted > 0 {
 		// Update blks slice.
-		fs.blks = append(fs.blks[:0:0], fs.blks[deleted:]...)
+		fs.blks = copyMsgBlocks(fs.blks[deleted:])
 	}
 
 	// Update top level accounting.
@@ -4068,7 +4077,7 @@ func (fs *fileStore) removeMsgBlock(mb *msgBlock) {
 	for i, omb := range fs.blks {
 		if mb == omb {
 			blks := append(fs.blks[:i], fs.blks[i+1:]...)
-			fs.blks = append(blks[:0:0], blks...)
+			fs.blks = copyMsgBlocks(blks)
 			break
 		}
 	}

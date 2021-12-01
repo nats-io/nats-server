@@ -1701,7 +1701,7 @@ func (mset *stream) setupMirrorConsumer() error {
 
 				// Process inbound mirror messages from the wire.
 				sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-					hdr, msg := c.msgParts(append(rmsg[:0:0], rmsg...)) // Need to copy.
+					hdr, msg := c.msgParts(copyBytes(rmsg)) // Need to copy.
 					mset.queueInbound(msgs, subject, reply, hdr, msg)
 				})
 				if err != nil {
@@ -1893,7 +1893,7 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64) {
 					si.cname = ccr.ConsumerInfo.Name
 					// Now create sub to receive messages.
 					sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-						hdr, msg := c.msgParts(append(rmsg[:0:0], rmsg...)) // Need to copy.
+						hdr, msg := c.msgParts(copyBytes(rmsg)) // Need to copy.
 						mset.queueInbound(si.msgs, subject, reply, hdr, msg)
 					})
 					if err != nil {
@@ -2667,10 +2667,10 @@ func (mset *stream) queueInbound(ib *inbound, subj, rply string, hdr, msg []byte
 func (mset *stream) queueInboundMsg(subj, rply string, hdr, msg []byte) {
 	// Copy these.
 	if len(hdr) > 0 {
-		hdr = append(hdr[:0:0], hdr...)
+		hdr = copyBytes(hdr)
 	}
 	if len(msg) > 0 {
-		msg = append(msg[:0:0], msg...)
+		msg = copyBytes(msg)
 	}
 	mset.queueInbound(mset.msgs, subj, rply, hdr, msg)
 }
@@ -3185,7 +3185,7 @@ func (mset *stream) subjects() []string {
 	if len(mset.cfg.Subjects) == 0 {
 		return nil
 	}
-	return append(mset.cfg.Subjects[:0:0], mset.cfg.Subjects...)
+	return copyStrings(mset.cfg.Subjects)
 }
 
 // Linked list for async ack of messages.

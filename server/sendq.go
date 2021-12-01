@@ -100,11 +100,11 @@ func (sq *sendq) send(subj, rply string, hdr, msg []byte) {
 	out := &outMsg{subj, rply, nil, nil, nil}
 	// We will copy these for now.
 	if len(hdr) > 0 {
-		hdr = append(hdr[:0:0], hdr...)
+		hdr = copyBytes(hdr)
 		out.hdr = hdr
 	}
 	if len(msg) > 0 {
-		msg = append(msg[:0:0], msg...)
+		msg = copyBytes(msg)
 		out.msg = msg
 	}
 

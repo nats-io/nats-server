@@ -2495,10 +2495,11 @@ func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 	// If headers only do not send msg payload.
 	// Add in msg size itself as header.
 	if o.cfg.HeadersOnly {
-		bb := bytes.NewBuffer(hdr)
-		if hdr == nil {
+		var bb bytes.Buffer
+		if len(hdr) == 0 {
 			bb.WriteString(hdrLine)
 		} else {
+			bb.Write(hdr)
 			bb.Truncate(len(hdr) - LEN_CR_LF)
 		}
 		bb.WriteString(JSMsgSize)

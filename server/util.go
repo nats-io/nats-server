@@ -271,3 +271,25 @@ func getURLsAsString(urls []*url.URL) []string {
 	}
 	return a
 }
+
+// copyBytes make a new slice of the same size than `src` and copy its content.
+// If `src` is nil, then this returns `nil`
+func copyBytes(src []byte) []byte {
+	if src == nil {
+		return nil
+	}
+	dst := make([]byte, len(src))
+	copy(dst, src)
+	return dst
+}
+
+// copyStrings make a new slice of the same size than `src` and copy its content.
+// If `src` is nil, then this returns `nil`
+func copyStrings(src []string) []string {
+	if src == nil {
+		return nil
+	}
+	dst := make([]string, len(src))
+	copy(dst, src)
+	return dst
+}

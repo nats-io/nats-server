@@ -3869,15 +3869,6 @@ func mqttNeedSubForLevelUp(subject string) bool {
 //
 //////////////////////////////////////////////////////////////////////////////
 
-func copyBytes(b []byte) []byte {
-	if b == nil {
-		return nil
-	}
-	cbuf := make([]byte, len(b))
-	copy(cbuf, b)
-	return cbuf
-}
-
 func (r *mqttReader) reset(buf []byte) {
 	r.buf = buf
 	r.pos = 0

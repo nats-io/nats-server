@@ -81,7 +81,7 @@ func TestNRGAppendEntryDecode(t *testing.T) {
 	require_Error(t, err, errBadAppendEntry)
 
 	for i := 0; i < 100; i++ {
-		b := append(buf[:0:0], buf...)
+		b := copyBytes(buf)
 		bi := rand.Intn(len(b))
 		if b[bi] != 0 {
 			b[bi] = 0

@@ -2135,7 +2135,7 @@ func RateLimit(n uint64) SubOpt {
 // BindStream binds a consumer to a stream explicitly based on a name.
 // When a stream name is not specified, the library uses the subscribe
 // subject as a way to find the stream name. It is done by making a request
-// to the server to get list of stream names that have a fileter for this
+// to the server to get list of stream names that have a filter for this
 // subject. If the returned list contains a single stream, then this
 // stream name will be used, otherwise the `ErrNoMatchingStream` is returned.
 // To avoid the stream lookup, provide the stream name with this function.
@@ -2552,7 +2552,7 @@ func (m *Msg) ackReply(ackType []byte, sync bool, opts ...AckOpt) error {
 
 	// Skip if already acked.
 	if atomic.LoadUint32(&m.ackd) == 1 {
-		return ErrInvalidJSAck
+		return ErrMsgAlreadyAckd
 	}
 
 	m.Sub.mu.Lock()
