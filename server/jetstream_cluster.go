@@ -3987,7 +3987,7 @@ func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, filt
 	// Don't hold lock.
 	js.mu.Unlock()
 
-	const timeout = 5 * time.Second
+	const timeout = 4 * time.Second
 	notActive := time.NewTimer(timeout)
 	defer notActive.Stop()
 
@@ -4116,7 +4116,7 @@ func (s *Server) jsClusteredConsumerListRequest(acc *Account, ci *ClientInfo, of
 	}
 	js.mu.Unlock()
 
-	const timeout = 2 * time.Second
+	const timeout = 4 * time.Second
 	notActive := time.NewTimer(timeout)
 	defer notActive.Stop()
 
@@ -4126,7 +4126,7 @@ LOOP:
 		case <-s.quitCh:
 			return
 		case <-notActive.C:
-			s.Warnf("Did not receive all stream info results for %q", acc)
+			s.Warnf("Did not receive all consumer info results for %q", acc)
 			break LOOP
 		case ci := <-rc:
 			resp.Consumers = append(resp.Consumers, ci)
