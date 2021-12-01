@@ -920,16 +920,16 @@ func TestJetStreamAddStreamBadSubjects(t *testing.T) {
 		if err := json.Unmarshal(resp.Data, &scResp); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
-		e := scResp.Error
-		if e == nil || e.Code != 500 || e.Description != ErrMalformedSubject.Error() {
-			t.Fatalf("Did not get proper error response: %+v", e)
-		}
+
+		require_Error(t, scResp.ToError(), NewJSStreamInvalidConfigError(fmt.Errorf("invalid subject")))
 	}
 
 	expectAPIErr(StreamConfig{Name: "MyStream", Storage: MemoryStorage, Subjects: []string{"foo.bar."}})
 	expectAPIErr(StreamConfig{Name: "MyStream", Storage: MemoryStorage, Subjects: []string{".."}})
 	expectAPIErr(StreamConfig{Name: "MyStream", Storage: MemoryStorage, Subjects: []string{".*"}})
 	expectAPIErr(StreamConfig{Name: "MyStream", Storage: MemoryStorage, Subjects: []string{".>"}})
+	expectAPIErr(StreamConfig{Name: "MyStream", Storage: MemoryStorage, Subjects: []string{" x"}})
+	expectAPIErr(StreamConfig{Name: "MyStream", Storage: MemoryStorage, Subjects: []string{"y "}})
 }
 
 func TestJetStreamMaxConsumers(t *testing.T) {
@@ -13589,6 +13589,27 @@ func TestJetStreamMessagePerSubjectKeepBug(t *testing.T) {
 		t.Run("Keep 10", func(t *testing.T) { test(t, 10, nats.MemoryStorage) })
 		t.Run("Keep 1", func(t *testing.T) { test(t, 1, nats.MemoryStorage) })
 	})
+}
+
+func TestJetStreamInvalidDeliverSubject(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name: "TEST",
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{DeliverSubject: " x"})
+	require_Error(t, err, NewJSConsumerInvalidDeliverSubjectError())
 }
 
 ///////////////////////////////////////////////////////////////////////////

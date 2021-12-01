@@ -325,6 +325,9 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		if !subjectIsLiteral(config.DeliverSubject) {
 			return nil, NewJSConsumerDeliverToWildcardsError()
 		}
+		if !IsValidSubject(config.DeliverSubject) {
+			return nil, NewJSConsumerInvalidDeliverSubjectError()
+		}
 		if mset.deliveryFormsCycle(config.DeliverSubject) {
 			return nil, NewJSConsumerDeliverCycleError()
 		}
