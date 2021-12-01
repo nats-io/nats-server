@@ -872,6 +872,10 @@ func checkStreamCfg(config *StreamConfig) (StreamConfig, error) {
 			cfg.Subjects = append(cfg.Subjects, cfg.Name)
 		}
 	} else {
+		if cfg.Mirror != nil {
+			return StreamConfig{}, fmt.Errorf("stream mirrors may not have subjects")
+		}
+
 		// We can allow overlaps, but don't allow direct duplicates.
 		dset := make(map[string]struct{}, len(cfg.Subjects))
 		for _, subj := range cfg.Subjects {

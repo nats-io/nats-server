@@ -11422,7 +11422,7 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 	createStreamOk := func(cfg *nats.StreamConfig) {
 		t.Helper()
 		if _, err := createStream(cfg); err != nil {
-			t.Fatalf("Expected error, got %+v", err)
+			t.Fatalf("Expected no error, got %+v", err)
 		}
 	}
 
@@ -11561,6 +11561,30 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestJetStreamMirrorUpdatePreventsSubjects(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "ORIGINAL"})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{Name: "MIRROR", Mirror: &nats.StreamSource{Name: "ORIGINAL"}})
+	require_NoError(t, err)
+
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "MIRROR", Mirror: &nats.StreamSource{Name: "ORIGINAL"}, Subjects: []string{"x"}})
+	if err == nil || err.Error() != "stream mirrors may not have subjects" {
+		t.Fatalf("Expected to not be able to put subjects on a stream, got: %+v", err)
+	}
 }
 
 func TestJetStreamSourceBasics(t *testing.T) {
