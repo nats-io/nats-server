@@ -883,6 +883,10 @@ func checkStreamCfg(config *StreamConfig) (StreamConfig, error) {
 				return StreamConfig{}, fmt.Errorf("subjects overlap with jetstream api")
 			}
 
+			if !IsValidSubject(subj) {
+				return StreamConfig{}, fmt.Errorf("invalid subject")
+			}
+
 			dset[subj] = struct{}{}
 		}
 	}

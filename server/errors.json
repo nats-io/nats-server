@@ -1089,13 +1089,23 @@
     "url": "",
     "deprecates": ""
   },
-    {
+  {
     "constant": "JSStreamRollupFailedF",
     "code": 500,
     "error_code": 10111,
     "description": "{err}",
     "comment": "Generic stream rollup failure error string",
     "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerInvalidDeliverSubject",
+    "code": 400,
+    "error_code": 10112,
+    "description": "invalid push consumer deliver subject",
+    "comment": "",
+    "help": "Returned when the delivery subject on a Push Consumer is not a valid NATS Subject",
     "url": "",
     "deprecates": ""
   }
