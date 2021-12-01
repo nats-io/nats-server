@@ -13700,6 +13700,85 @@ func TestJetStreamMemoryCorruption(t *testing.T) {
 	}
 }
 
+func TestJetStreamRecoverBadStreamSubjects(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	sd := config.StoreDir
+	s.Shutdown()
+
+	f := path.Join(sd, "$G", "streams", "TEST")
+	fs, err := newFileStore(FileStoreConfig{StoreDir: f}, StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar", " baz "}, // baz has spaces
+		Storage:  FileStorage,
+	})
+	require_NoError(t, err)
+	fs.Stop()
+
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	if len(si.Config.Subjects) != 3 {
+		t.Fatalf("Expected to recover all subjects")
+	}
+}
+
+func TestJetStreamRecoverBadMirrorConfigWithSubjects(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	sd := config.StoreDir
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Origin
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "S",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	s.Shutdown()
+
+	f := path.Join(sd, "$G", "streams", "M")
+	fs, err := newFileStore(FileStoreConfig{StoreDir: f}, StreamConfig{
+		Name:     "M",
+		Subjects: []string{"foo", "bar", "baz"}, // Mirrors should not have spaces.
+		Mirror:   &StreamSource{Name: "S"},
+		Storage:  FileStorage,
+	})
+	require_NoError(t, err)
+	fs.Stop()
+
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err := js.StreamInfo("M")
+	require_NoError(t, err)
+
+	if len(si.Config.Subjects) != 0 {
+		t.Fatalf("Expected to have NO subjects on mirror")
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
