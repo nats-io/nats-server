@@ -1057,7 +1057,7 @@ func (js *jetStream) setConsumerAssignmentRecovering(ca *consumerAssignment) {
 func (sa *streamAssignment) copyGroup() *streamAssignment {
 	csa, cg := *sa, *sa.Group
 	csa.Group = &cg
-	csa.Group.Peers = append(sa.Group.Peers[:0:0], sa.Group.Peers...)
+	csa.Group.Peers = copyStrings(sa.Group.Peers)
 	return &csa
 }
 
@@ -4901,10 +4901,10 @@ RETRY:
 	// Send our catchup request here.
 	reply := syncReplySubject()
 	sub, err = s.sysSubscribe(reply, func(_ *subscription, _ *client, _ *Account, _, reply string, msg []byte) {
-		// Make copies - https://github.com/go101/go101/wiki
+		// Make copies
 		// TODO(dlc) - Since we are using a buffer from the inbound client/route.
 		select {
-		case msgsC <- &im{append(msg[:0:0], msg...), reply}:
+		case msgsC <- &im{copyBytes(msg), reply}:
 		default:
 			s.Warnf("Failed to place catchup message onto internal channel: %d pending", len(msgsC))
 			return

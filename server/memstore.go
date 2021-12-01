@@ -126,13 +126,13 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 		ms.state.FirstTime = now
 	}
 
-	// Make copies - https://github.com/go101/go101/wiki
+	// Make copies
 	// TODO(dlc) - Maybe be smarter here.
 	if len(msg) > 0 {
-		msg = append(msg[:0:0], msg...)
+		msg = copyBytes(msg)
 	}
 	if len(hdr) > 0 {
-		hdr = append(hdr[:0:0], hdr...)
+		hdr = copyBytes(hdr)
 	}
 
 	ms.msgs[seq] = &storedMsg{subj, hdr, msg, seq, ts}

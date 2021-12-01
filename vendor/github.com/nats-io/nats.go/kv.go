@@ -112,6 +112,8 @@ type watchOpts struct {
 	ignoreDeletes bool
 	// Include all history per subject, not just last one.
 	includeHistory bool
+	// retrieve only the meta data of the entry
+	metaOnly bool
 }
 
 type watchOptFn func(opts *watchOpts) error
@@ -132,6 +134,14 @@ func IncludeHistory() WatchOpt {
 func IgnoreDeletes() WatchOpt {
 	return watchOptFn(func(opts *watchOpts) error {
 		opts.ignoreDeletes = true
+		return nil
+	})
+}
+
+// MetaOnly instructs the key watcher to retrieve only the entry meta data, not the entry value
+func MetaOnly() WatchOpt {
+	return watchOptFn(func(opts *watchOpts) error {
+		opts.metaOnly = true
 		return nil
 	})
 }
@@ -534,7 +544,7 @@ func (kv *kvs) PurgeDeletes(opts ...WatchOpt) error {
 
 // Keys() will return all keys.
 func (kv *kvs) Keys(opts ...WatchOpt) ([]string, error) {
-	opts = append(opts, IgnoreDeletes())
+	opts = append(opts, IgnoreDeletes(), MetaOnly())
 	watcher, err := kv.WatchAll(opts...)
 	if err != nil {
 		return nil, err
@@ -675,6 +685,9 @@ func (kv *kvs) Watch(keys string, opts ...WatchOpt) (KeyWatcher, error) {
 	subOpts := []SubOpt{OrderedConsumer()}
 	if !o.includeHistory {
 		subOpts = append(subOpts, DeliverLastPerSubject())
+	}
+	if o.metaOnly {
+		subOpts = append(subOpts, HeadersOnly())
 	}
 	sub, err := kv.js.Subscribe(keys, update, subOpts...)
 	if err != nil {

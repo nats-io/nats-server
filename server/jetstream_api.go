@@ -667,7 +667,7 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 	// the header from the msg body. No other references are needed.
 	// FIXME(dlc) - Should cleanup eventually and make sending
 	// and receiving internal messages more formal.
-	rmsg = append(rmsg[:0:0], rmsg...)
+	rmsg = copyBytes(rmsg)
 	client := &client{srv: s, kind: JETSTREAM}
 	client.pa = c.pa
 
@@ -1565,7 +1565,7 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, s
 	// Clustered mode will invoke a scatter and gather.
 	if s.JetStreamIsClustered() {
 		// Need to copy these off before sending..
-		msg = append(msg[:0:0], msg...)
+		msg = copyBytes(msg)
 		s.startGoRoutine(func() { s.jsClusteredStreamListRequest(acc, ci, filter, offset, subject, reply, msg) })
 		return
 	}
@@ -3382,7 +3382,7 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 
 	// Clustered mode will invoke a scatter and gather.
 	if s.JetStreamIsClustered() {
-		msg = append(msg[:0:0], msg...)
+		msg = copyBytes(msg)
 		s.startGoRoutine(func() {
 			s.jsClusteredConsumerListRequest(acc, ci, offset, streamName, subject, reply, msg)
 		})

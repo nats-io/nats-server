@@ -1735,7 +1735,7 @@ func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _
 		return
 	}
 	// Need to copy since this is underlying client/route buffer.
-	peer := string(append(msg[:0:0], msg...))
+	peer := string(copyBytes(msg))
 
 	n.RLock()
 	propc, werr := n.propc, n.werr
@@ -1760,7 +1760,7 @@ func (n *raft) handleForwardedProposal(sub *subscription, c *client, _ *Account,
 		return
 	}
 	// Need to copy since this is underlying client/route buffer.
-	msg = append(msg[:0:0], msg...)
+	msg = copyBytes(msg)
 
 	n.RLock()
 	propc, werr := n.propc, n.werr
@@ -2418,7 +2418,7 @@ func (n *raft) handleAppendEntry(sub *subscription, c *client, _ *Account, subje
 		return
 	}
 
-	msg = append(msg[:0:0], msg...)
+	msg = copyBytes(msg)
 	if ae, err := n.decodeAppendEntry(msg, sub, reply); err == nil {
 		select {
 		case n.entryc <- ae:
@@ -2665,7 +2665,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			if ps, err := decodePeerState(ae.entries[1].Data); err == nil {
 				n.processPeerState(ps)
 				// Also need to copy from client's buffer.
-				ae.entries[0].Data = append(ae.entries[0].Data[:0:0], ae.entries[0].Data...)
+				ae.entries[0].Data = copyBytes(ae.entries[0].Data)
 			} else {
 				n.warn("Could not parse snapshot peerstate correctly")
 				n.cancelCatchup()
@@ -2816,7 +2816,7 @@ func (n *raft) handleAppendEntryResponse(sub *subscription, c *client, _ *Accoun
 	if !n.Leader() {
 		return
 	}
-	msg = append(msg[:0:0], msg...)
+	msg = copyBytes(msg)
 	ar := n.decodeAppendEntryResponse(msg)
 	ar.reply = reply
 
@@ -2995,7 +2995,7 @@ func (n *raft) decodeVoteRequest(msg []byte, reply string) *voteRequest {
 		return nil
 	}
 	// Need to copy for now b/c of candidate.
-	msg = append(msg[:0:0], msg...)
+	msg = copyBytes(msg)
 
 	var le = binary.LittleEndian
 	return &voteRequest{
@@ -3117,7 +3117,7 @@ func (n *raft) fileWriter() {
 			}
 		case <-n.wpsch:
 			n.RLock()
-			buf := append(n.wps[:0:0], n.wps...)
+			buf := copyBytes(n.wps)
 			n.RUnlock()
 			if err := ioutil.WriteFile(psf, buf, 0640); err != nil {
 				n.setWriteErr(err)

@@ -13612,6 +13612,70 @@ func TestJetStreamInvalidDeliverSubject(t *testing.T) {
 	require_Error(t, err, NewJSConsumerInvalidDeliverSubjectError())
 }
 
+func TestJetStreamMemoryCorruption(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	errCh := make(chan error, 10)
+	nc.SetErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, e error) {
+		select {
+		case errCh <- e:
+		default:
+		}
+	})
+
+	// The storage has to be MemoryStorage to show the issue
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: "bucket", Storage: nats.MemoryStorage})
+	require_NoError(t, err)
+
+	w1, err := kv.WatchAll()
+	require_NoError(t, err)
+
+	w2, err := kv.WatchAll(nats.MetaOnly())
+	require_NoError(t, err)
+
+	kv.Put("key1", []byte("aaa"))
+	kv.Put("key1", []byte("aab"))
+	kv.Put("key2", []byte("zza"))
+	kv.Put("key2", []byte("zzb"))
+	kv.Delete("key1")
+	kv.Delete("key2")
+	kv.Put("key1", []byte("aac"))
+	kv.Put("key2", []byte("zzc"))
+	kv.Delete("key1")
+	kv.Delete("key2")
+	kv.Purge("key1")
+	kv.Purge("key2")
+
+	checkUpdates := func(updates <-chan nats.KeyValueEntry) {
+		t.Helper()
+		count := 0
+		for {
+			select {
+			case <-updates:
+				count++
+				if count == 13 {
+					return
+				}
+			case <-time.After(time.Second):
+				t.Fatal("Did not receive all updates")
+			}
+		}
+	}
+	checkUpdates(w1.Updates())
+	checkUpdates(w2.Updates())
+
+	select {
+	case e := <-errCh:
+		t.Fatal(e)
+	case <-time.After(250 * time.Millisecond):
+		// OK
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////

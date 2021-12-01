@@ -157,6 +157,7 @@ var (
 	ErrPullSubscribeRequired        = errors.New("nats: must use pull subscribe to bind to pull based consumer")
 	ErrConsumerNotActive            = errors.New("nats: consumer not active")
 	ErrMsgNotFound                  = errors.New("nats: message not found")
+	ErrMsgAlreadyAckd               = errors.New("nats: message was already acknowledged")
 )
 
 func init() {
