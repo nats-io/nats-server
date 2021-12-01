@@ -1166,7 +1166,7 @@ func TestMessageTraceOperatorCrossServer(t *testing.T) {
 		confA := createConfFile(t, []byte(fmt.Sprintf(`
 			%s
 			leafnodes: {
-				listen: localhost:-1
+				listen: 127.0.0.1:-1
 			}
 		`, srvATmpl)))
 		defer removeFile(t, confA)
@@ -1177,8 +1177,8 @@ func TestMessageTraceOperatorCrossServer(t *testing.T) {
 		confB := createConfFile(t, []byte(fmt.Sprintf(`
 			%s
 			leafnodes: {
-				remotes:[{ url:nats://acc:acc@localhost:%d, account: ACC1},
-						 { url:nats://sys:sys@localhost:%d, account: SYS}]
+				remotes:[{ url:nats://acc:acc@127.0.0.1:%d, account: ACC1},
+						 { url:nats://sys:sys@127.0.0.1:%d, account: SYS}]
 			}
 			operator_msg_trace: {
 				trc1: {Subject: foo}
@@ -1198,7 +1198,7 @@ func TestMessageTraceOperatorCrossServer(t *testing.T) {
 			%s
 			cluster: {
 				name: C1
-				listen: localhost:-1
+				listen: 127.0.0.1:-1
 			}
 		`, srvATmpl)))
 		defer removeFile(t, confA)
@@ -1209,7 +1209,7 @@ func TestMessageTraceOperatorCrossServer(t *testing.T) {
 			%s
 			cluster: {
 				name: C1
-				listen: localhost:-1
+				listen: 127.0.0.1:-1
 				routes = [
 					nats-route://127.0.0.1:%d
 				]
@@ -1230,7 +1230,7 @@ func TestMessageTraceOperatorCrossServer(t *testing.T) {
 			%s
 			gateway: {
 				name: GA
-				listen: localhost:-1
+				listen: 127.0.0.1:-1
 			}
 		`, srvATmpl)))
 		defer removeFile(t, confA)
@@ -1241,7 +1241,7 @@ func TestMessageTraceOperatorCrossServer(t *testing.T) {
 			%s
 			gateway: {
 				name: GB
-				listen: localhost:-1
+				listen: 127.0.0.1:-1
 				gateways: [
 					{name: "GA", url: "nats://127.0.0.1:%d"},
 				]
@@ -1355,7 +1355,7 @@ func TestMessageTraceSubjectAccountCrossServer(t *testing.T) {
 		confA := createConfFile(t, []byte(fmt.Sprintf(`
 			%s
 			leafnodes: {
-				listen: localhost:-1
+				listen: 127.0.0.1:-1
 			}
 		`, srvATmpl)))
 		defer removeFile(t, confA)
@@ -1366,8 +1366,8 @@ func TestMessageTraceSubjectAccountCrossServer(t *testing.T) {
 		confB := createConfFile(t, []byte(fmt.Sprintf(`
 			%s
 			leafnodes: {
-				remotes:[{ url:nats://acc:acc@localhost:%d, account: ACC1},
-						 { url:nats://sys:sys@localhost:%d, account: SYS}]
+				remotes:[{ url:nats://acc:acc@127.0.0.1:%d, account: ACC1},
+						 { url:nats://sys:sys@127.0.0.1:%d, account: SYS}]
 			}
 		`, srvBTmpl, sA.opts.LeafNode.Port, sA.opts.LeafNode.Port)))
 		defer removeFile(t, confB)
@@ -1383,7 +1383,7 @@ func TestMessageTraceSubjectAccountCrossServer(t *testing.T) {
 			%s
 			cluster: {
 				name: C1
-				listen: localhost:-1
+				listen: 127.0.0.1:-1
 			}
 		`, srvATmpl)))
 		defer removeFile(t, confA)
@@ -1394,7 +1394,7 @@ func TestMessageTraceSubjectAccountCrossServer(t *testing.T) {
 			%s
 			cluster: {
 				name: C1
-				listen: localhost:-1
+				listen: 127.0.0.1:-1
 				routes = [
 					nats-route://127.0.0.1:%d
 				]
@@ -1412,7 +1412,7 @@ func TestMessageTraceSubjectAccountCrossServer(t *testing.T) {
 			%s
 			gateway: {
 				name: GA
-				listen: localhost:-1
+				listen: 127.0.0.1:-1
 			}
 		`, srvATmpl)))
 		defer removeFile(t, confA)
@@ -1423,7 +1423,7 @@ func TestMessageTraceSubjectAccountCrossServer(t *testing.T) {
 			%s
 			gateway: {
 				name: GB
-				listen: localhost:-1
+				listen: 127.0.0.1:-1
 				gateways: [
 					{name: "GA", url: "nats://127.0.0.1:%d"},
 				]
@@ -1464,7 +1464,7 @@ func TestMessageTraceOperatorClusterStream(t *testing.T) {
 		no_auth_user: exp
 		cluster: {
 			name: C1
-			listen: localhost:-1
+			listen: 127.0.0.1:-1
 		}
     `))
 	defer removeFile(t, confA)
@@ -1493,7 +1493,7 @@ func TestMessageTraceOperatorClusterStream(t *testing.T) {
 		no_auth_user: exp
 		cluster: {
 			name: C1
-			listen: localhost:-1
+			listen: 127.0.0.1:-1
 			routes = [
 				nats-route://127.0.0.1:%d
 			]
@@ -1628,7 +1628,7 @@ func TestMessageTraceOperatorLeafStream(t *testing.T) {
 		}
 		no_auth_user: exp
 		leafnodes: {
-			listen: localhost:-1
+			listen: 127.0.0.1:-1
 		}
     `))
 	defer removeFile(t, confA)
@@ -1659,10 +1659,10 @@ func TestMessageTraceOperatorLeafStream(t *testing.T) {
 		}
 		no_auth_user: exp
 		leafnodes: {
-			remotes:[{ url:nats://exp:exp@localhost:%d, account: EXP},
-					 { url:nats://sys:sys@localhost:%d, account: SYS},
-					 { url:nats://imp1:imp1@localhost:%d, account: IMP1},
-					 { url:nats://imp2:imp2@localhost:%d, account: IMP2}]
+			remotes:[{ url:nats://exp:exp@127.0.0.1:%d, account: EXP},
+					 { url:nats://sys:sys@127.0.0.1:%d, account: SYS},
+					 { url:nats://imp1:imp1@127.0.0.1:%d, account: IMP1},
+					 { url:nats://imp2:imp2@127.0.0.1:%d, account: IMP2}]
 		}
     `, sA.opts.LeafNode.Port, sA.opts.LeafNode.Port, sA.opts.LeafNode.Port, sA.opts.LeafNode.Port)))
 	defer removeFile(t, confB)
@@ -1823,7 +1823,7 @@ func TestMessageTraceOperatorClusterService(t *testing.T) {
 		no_auth_user: exp
 		cluster: {
 			name: C1
-			listen: localhost:-1
+			listen: 127.0.0.1:-1
 		}
     `))
 	defer removeFile(t, confA)
@@ -1851,7 +1851,7 @@ func TestMessageTraceOperatorClusterService(t *testing.T) {
 		no_auth_user: exp
 		cluster: {
 			name: C1
-			listen: localhost:-1
+			listen: 127.0.0.1:-1
 			routes = [
 				nats-route://127.0.0.1:%d
 			]
@@ -1983,7 +1983,7 @@ func TestMessageTraceAccountHeaderLeafStream(t *testing.T) {
 		}
 		no_auth_user: exp
 		leafnodes: {
-			listen: localhost:-1
+			listen: 127.0.0.1:-1
 		}
     `))
 	defer removeFile(t, confA)
@@ -2008,8 +2008,8 @@ func TestMessageTraceAccountHeaderLeafStream(t *testing.T) {
 		}
 		no_auth_user: exp
 		leafnodes: {
-			remotes:[{ url:nats://exp:exp@localhost:%d, account: EXP2},
-					 { url:nats://sys:sys@localhost:%d, account: SYS}]
+			remotes:[{ url:nats://exp:exp@127.0.0.1:%d, account: EXP2},
+					 { url:nats://sys:sys@127.0.0.1:%d, account: SYS}]
 		}
     `, sA.opts.LeafNode.Port, sA.opts.LeafNode.Port)))
 	defer removeFile(t, confB)
