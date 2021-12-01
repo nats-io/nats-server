@@ -1138,6 +1138,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 
 		// The other possible bug is assigning subjects to mirrors, so check for that and patch as well.
 		if cfg.StreamConfig.Mirror != nil && len(cfg.StreamConfig.Subjects) > 0 {
+			s.Warnf("  Detected subjects on a mirrored stream %q, will remove", cfg.Name)
 			cfg.StreamConfig.Subjects = nil
 		}
 
