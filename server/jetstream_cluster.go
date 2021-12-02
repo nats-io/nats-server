@@ -4127,6 +4127,7 @@ LOOP:
 			return
 		case <-notActive.C:
 			s.Warnf("Did not receive all consumer info results for %q", acc)
+			resp.Error = NewJSClusterIncompleteError()
 			break LOOP
 		case ci := <-rc:
 			resp.Consumers = append(resp.Consumers, ci)
