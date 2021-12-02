@@ -6,8 +6,8 @@
 
 ## Documentation
 
-* [Official documentation](https://nats-io.github.io/docs)
-* [FAQ](https://nats-io.github.io/docs/faq)
+* [Official documentation](https://docs.nats.io)
+* [FAQ](https://docs.nats.io/reference/faq)
 * Watch [a video overview of NATS](https://www.youtube.com/watch?v=sm63oAVPqAM) to learn more about its origin story and design philosophy.
 
 ## Contact
