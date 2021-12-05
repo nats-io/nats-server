@@ -1106,7 +1106,7 @@ func validateAllowedConnectionTypes(m map[string]struct{}) error {
 		switch ctuc {
 		case jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket,
 			jwt.ConnectionTypeLeafnode, jwt.ConnectionTypeLeafnodeWS,
-			jwt.ConnectionTypeMqtt:
+			jwt.ConnectionTypeMqtt, jwt.ConnectionTypeMqttWS:
 		default:
 			return fmt.Errorf("unknown connection type %q", ct)
 		}

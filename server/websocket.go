@@ -91,6 +91,9 @@ const (
 	wsPMCCliNoCtx           = "client_no_context_takeover"
 	wsPMCReqHeaderValue     = wsPMCExtension + "; " + wsPMCSrvNoCtx + "; " + wsPMCCliNoCtx
 	wsPMCFullResponse       = "Sec-WebSocket-Extensions: " + wsPMCExtension + "; " + wsPMCSrvNoCtx + "; " + wsPMCCliNoCtx + _CRLF_
+	wsSecProto              = "Sec-Websocket-Protocol"
+	wsMQTTSecProtoVal       = "mqtt"
+	wsMQTTSecProto          = wsSecProto + ": " + wsMQTTSecProtoVal + CR_LF
 )
 
 var decompressorPool sync.Pool
@@ -686,6 +689,8 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 		ep := r.URL.EscapedPath()
 		if strings.HasPrefix(ep, leafNodeWSPath) {
 			kind = LEAF
+		} else if strings.HasPrefix(ep, mqttWSPath) {
+			kind = MQTT
 		}
 	}
 
@@ -760,6 +765,9 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 	if noMasking {
 		p = append(p, wsNoMaskingFullResponse...)
 	}
+	if kind == MQTT {
+		p = append(p, wsMQTTSecProto...)
+	}
 	p = append(p, _CRLF_...)
 
 	if _, err = conn.Write(p); err != nil {
@@ -782,7 +790,7 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 		}
 	}
 
-	if kind == CLIENT {
+	if kind == CLIENT || kind == MQTT {
 		// Indicate if this is likely coming from a browser.
 		if ua := r.Header.Get("User-Agent"); ua != _EMPTY_ && strings.HasPrefix(ua, "Mozilla/") {
 			ws.browser = true
@@ -1107,6 +1115,8 @@ func (s *Server) startWebsocketServer() {
 		switch res.kind {
 		case CLIENT:
 			s.createWSClient(res.conn, res.ws)
+		case MQTT:
+			s.createMQTTClient(res.conn, res.ws)
 		case LEAF:
 			if !hasLeaf {
 				s.Errorf("Not configured to accept leaf node connections")
