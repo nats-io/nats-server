@@ -610,7 +610,13 @@ func (c *client) initClient() {
 			if conn = addr.String(); conn != _EMPTY_ {
 				host, port, _ := net.SplitHostPort(conn)
 				iPort, _ := strconv.Atoi(port)
-				c.host, c.port = host, uint16(iPort)
+				c.port = uint16(iPort)
+				if c.isWebsocket() && c.ws.clientIP != _EMPTY_ {
+					c.host = c.ws.clientIP
+					conn = net.JoinHostPort(c.host, port)
+				} else {
+					c.host = host
+				}
 				// Now that we have extracted host and port, escape
 				// the string because it is going to be used in Sprintf
 				conn = strings.ReplaceAll(conn, "%", "%%")
