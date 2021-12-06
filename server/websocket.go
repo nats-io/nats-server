@@ -84,6 +84,7 @@ const (
 
 	wsNoMaskingHeader       = "Nats-No-Masking"
 	wsNoMaskingValue        = "true"
+	wsXForwardedForHeader   = "X-Forwarded-For"
 	wsNoMaskingFullResponse = wsNoMaskingHeader + ": " + wsNoMaskingValue + CR_LF
 	wsPMCExtension          = "permessage-deflate" // per-message compression
 	wsPMCSrvNoCtx           = "server_no_context_takeover"
@@ -113,6 +114,7 @@ type websocket struct {
 	maskwrite  bool
 	compressor *flate.Writer
 	cookieJwt  string
+	clientIP   string
 }
 
 type srvWebsocket struct {
@@ -771,6 +773,15 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 	// Server always expect "clients" to send masked payload, unless the option
 	// "no-masking" has been enabled.
 	ws := &websocket{compress: compress, maskread: !noMasking}
+
+	// Check for X-Forwarded-For header
+	if cips, ok := r.Header[wsXForwardedForHeader]; ok {
+		cip := cips[0]
+		if net.ParseIP(cip) != nil {
+			ws.clientIP = cip
+		}
+	}
+
 	if kind == CLIENT {
 		// Indicate if this is likely coming from a browser.
 		if ua := r.Header.Get("User-Agent"); ua != _EMPTY_ && strings.HasPrefix(ua, "Mozilla/") {
