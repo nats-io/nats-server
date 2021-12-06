@@ -236,6 +236,8 @@ const (
 	JSMsgRollup           = "Nats-Rollup"
 	JSMsgSize             = "Nats-Msg-Size"
 	JSResponseType        = "Nats-Response-Type"
+
+	JsNotBefore = "Nats-Not-Before"
 )
 
 // Rollups, can be subject only or all messages.
@@ -2612,6 +2614,14 @@ func getExpectedLastSeqPerSubject(hdr []byte) (uint64, bool) {
 	return uint64(parseInt64(bseq)), true
 }
 
+func getNotBefore(hdr []byte) (uint64, bool) {
+	notBefore := getHeader(JsNotBefore, hdr)
+	if len(notBefore) == 0 {
+		return 0, false
+	}
+	return uint64(parseInt64(notBefore)), true
+}
+
 // Lock should be held.
 func (mset *stream) isClustered() bool {
 	return mset.node != nil
@@ -3128,6 +3138,12 @@ func (q *jsOutQ) send(msg *jsPubMsg) {
 	if q == nil || msg == nil {
 		return
 	}
+
+	waitUntil, shouldCheckDefer := getNotBefore(msg.hdr)
+	if shouldCheckDefer && uint64(time.Now().Unix()) < waitUntil {
+		return
+	}
+
 	q.mu.Lock()
 	var notify bool
 	if q.head == nil {
