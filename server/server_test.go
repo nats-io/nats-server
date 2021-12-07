@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net"
 	"net/url"
@@ -1417,17 +1418,23 @@ func TestGetRandomIP(t *testing.T) {
 	}
 }
 
-type slowWriteConn struct {
+type shortWriteConn struct {
 	net.Conn
 }
 
-func (swc *slowWriteConn) Write(b []byte) (int, error) {
+func (swc *shortWriteConn) Write(b []byte) (int, error) {
 	// Limit the write to 10 bytes at a time.
+	short := false
 	max := len(b)
 	if max > 10 {
 		max = 10
+		short = true
 	}
-	return swc.Conn.Write(b[:max])
+	n, err := swc.Conn.Write(b[:max])
+	if err == nil && short {
+		return n, io.ErrShortWrite
+	}
+	return n, err
 }
 
 func TestClientWriteLoopStall(t *testing.T) {
@@ -1464,7 +1471,7 @@ func TestClientWriteLoopStall(t *testing.T) {
 
 	c := s.getClient(cid)
 	c.mu.Lock()
-	c.nc = &slowWriteConn{Conn: c.nc}
+	c.nc = &shortWriteConn{Conn: c.nc}
 	c.mu.Unlock()
 
 	sender.Publish("foo", make([]byte, 100))

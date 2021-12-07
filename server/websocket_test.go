@@ -1796,20 +1796,31 @@ type testWSClientOptions struct {
 	port          int
 	extraHeaders  map[string][]string
 	noTLS         bool
+	path          string
 }
 
 func testNewWSClient(t testing.TB, o testWSClientOptions) (net.Conn, *bufio.Reader, []byte) {
 	t.Helper()
+	c, br, info, err := testNewWSClientWithError(t, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c, br, info
+}
+
+func testNewWSClientWithError(t testing.TB, o testWSClientOptions) (net.Conn, *bufio.Reader, []byte, error) {
 	addr := fmt.Sprintf("%s:%d", o.host, o.port)
 	wsc, err := net.Dial("tcp", addr)
 	if err != nil {
-		t.Fatalf("Error creating ws connection: %v", err)
+		return nil, nil, nil, fmt.Errorf("Error creating ws connection: %v", err)
 	}
 	if !o.noTLS {
 		wsc = tls.Client(wsc, &tls.Config{InsecureSkipVerify: true})
+		wsc.SetDeadline(time.Now().Add(time.Second))
 		if err := wsc.(*tls.Conn).Handshake(); err != nil {
-			t.Fatalf("Error during handshake: %v", err)
+			return nil, nil, nil, fmt.Errorf("Error during handshake: %v", err)
 		}
+		wsc.SetDeadline(time.Time{})
 	}
 	req := testWSCreateValidReq()
 	if o.compress {
@@ -1830,25 +1841,32 @@ func testNewWSClient(t testing.TB, o testWSClientOptions) (net.Conn, *bufio.Read
 			}
 		}
 	}
-	req.URL, _ = url.Parse("wss://" + addr)
+	req.URL, _ = url.Parse("wss://" + addr + o.path)
 	if err := req.Write(wsc); err != nil {
-		t.Fatalf("Error sending request: %v", err)
+		return nil, nil, nil, fmt.Errorf("Error sending request: %v", err)
 	}
 	br := bufio.NewReader(wsc)
 	resp, err := http.ReadResponse(br, req)
 	if err != nil {
-		t.Fatalf("Error reading response: %v", err)
+		return nil, nil, nil, fmt.Errorf("Error reading response: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusSwitchingProtocols {
-		t.Fatalf("Expected response status %v, got %v", http.StatusSwitchingProtocols, resp.StatusCode)
+		return nil, nil, nil, fmt.Errorf("Expected response status %v, got %v", http.StatusSwitchingProtocols, resp.StatusCode)
 	}
-	// Wait for the INFO
-	info := testWSReadFrame(t, br)
-	if !bytes.HasPrefix(info, []byte("INFO {")) {
-		t.Fatalf("Expected INFO, got %s", info)
+	var info []byte
+	if o.path == mqttWSPath {
+		if v := resp.Header[wsSecProto]; len(v) != 1 || v[0] != wsMQTTSecProtoVal {
+			return nil, nil, nil, fmt.Errorf("No mqtt protocol in header: %v", resp.Header)
+		}
+	} else {
+		// Wait for the INFO
+		info = testWSReadFrame(t, br)
+		if !bytes.HasPrefix(info, []byte("INFO {")) {
+			return nil, nil, nil, fmt.Errorf("Expected INFO, got %s", info)
+		}
 	}
-	return wsc, br, info
+	return wsc, br, info, nil
 }
 
 type testClaimsOptions struct {

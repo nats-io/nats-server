@@ -632,7 +632,11 @@ func (c *client) initClient() {
 		case WS:
 			c.ncs.Store(fmt.Sprintf("%s - wid:%d", conn, c.cid))
 		case MQTT:
-			c.ncs.Store(fmt.Sprintf("%s - mid:%d", conn, c.cid))
+			var ws string
+			if c.isWebsocket() {
+				ws = "_ws"
+			}
+			c.ncs.Store(fmt.Sprintf("%s - mid%s:%d", conn, ws, c.cid))
 		}
 	case ROUTER:
 		c.ncs.Store(fmt.Sprintf("%s - rid:%d", conn, c.cid))
@@ -5180,7 +5184,7 @@ func convertAllowedConnectionTypes(cts []string) (map[string]struct{}, error) {
 		switch i {
 		case jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket,
 			jwt.ConnectionTypeLeafnode, jwt.ConnectionTypeLeafnodeWS,
-			jwt.ConnectionTypeMqtt:
+			jwt.ConnectionTypeMqtt, jwt.ConnectionTypeMqttWS:
 			m[i] = struct{}{}
 		default:
 			unknown = append(unknown, i)
@@ -5211,7 +5215,11 @@ func (c *client) connectionTypeAllowed(acts map[string]struct{}) bool {
 		case WS:
 			want = jwt.ConnectionTypeWebsocket
 		case MQTT:
-			want = jwt.ConnectionTypeMqtt
+			if c.isWebsocket() {
+				want = jwt.ConnectionTypeMqttWS
+			} else {
+				want = jwt.ConnectionTypeMqtt
+			}
 		}
 	case LEAF:
 		if c.isWebsocket() {
