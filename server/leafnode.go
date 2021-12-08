@@ -35,7 +35,6 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt/v2"
-
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
 )
@@ -1211,6 +1210,8 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 		if acc == sysAcc {
 			for _, d := range opts.JsAccDefaultDomain {
 				if d == _EMPTY_ {
+					// Extending Js via leaf node is mutually exclusive with a domain mapping to the empty/default domain.
+					// As soon as one mapping to "" is found, disable the ability to extend JS via a leaf node.
 					c.Noticef("Forcing System Account into non extend mode due to presence of empty default domain")
 					forceSysAccDeny = true
 					break
@@ -1278,7 +1279,7 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 	if opts.JetStreamDomain != _EMPTY_ && acc != sysAcc && opts.JetStream {
 		src := fmt.Sprintf(jsDomainAPI, opts.JetStreamDomain)
 		if err := acc.AddMapping(src, jsAllAPI); err != nil {
-			c.Debugf("Error adding JetStream domain mapping: %v", err)
+			c.Debugf("Error adding JetStream domain mapping: %s", err.Error())
 		} else {
 			c.Noticef("Adding JetStream Domain Mapping %q to account %q", src, accName)
 		}
@@ -1395,14 +1396,6 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 		} else {
 			c.darray = nil
 		}
-	}
-
-	// Check for JetStream domain
-	jsConfigured := c.acc.jetStreamConfigured()
-
-	// If we have JS enabled and the other side does as well we need to add in an import deny clause.
-	if jsConfigured && proto.JetStream {
-		c.mergeDenyPermissions(pub, []string{jsAllAPI})
 	}
 
 	// Set the Ping timer

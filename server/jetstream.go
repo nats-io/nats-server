@@ -367,14 +367,10 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 
 	canExtend := s.canExtendOtherDomain()
 	standAlone := s.standAloneMode()
-	if standAlone && canExtend {
-		if s.getOpts().JetStreamExtHint == jsWillExtend {
-			standAlone = false
-		} else {
-			canExtend = false
-			s.Noticef("Standalone server started in clustered mode do not support extending domains.")
-			s.Noticef(`Manually disable standalone mode by setting the JetStream Option "extension_hint: %s"`, jsWillExtend)
-		}
+	if standAlone && canExtend && s.getOpts().JetStreamExtHint != jsWillExtend {
+		canExtend = false
+		s.Noticef("Standalone server started in clustered mode do not support extending domains")
+		s.Noticef(`Manually disable standalone mode by setting the JetStream Option "extension_hint: %s"`, jsWillExtend)
 	}
 
 	// If we are in clustered mode go ahead and start the meta controller.

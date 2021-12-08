@@ -520,9 +520,9 @@ func (js *jetStream) setupMetaGroup() error {
 		if cfg.Observer {
 			switch ps.domainExt {
 			case extExtended:
-				s.Noticef("Turning JetStream metadata controller Observer Mode off - due to previous contact")
+				s.Noticef("Keeping JetStream metadata controller Observer Mode on - due to previous contact")
 			case extNotExtended:
-				s.Noticef("Turning JetStream metadata controller Observer Mode on - due to previous contact")
+				s.Noticef("Turning JetStream metadata controller Observer Mode off - due to previous contact")
 				cfg.Observer = false
 			case extUndetermined:
 				s.Noticef("Turning JetStream metadata controller Observer Mode on - no previous contact")

@@ -3214,7 +3214,7 @@ func TestMQTTLeafnodeWithoutJSToClusterWithJSNoSharedSysAcc(t *testing.T) {
 		lno.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: urls}}
 
 		ln := RunServer(lno)
-		defer ln.Shutdown()
+		defer testMQTTShutdownServer(ln)
 
 		// Now connect to leafnode and subscribe
 		mc, rc := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: true}, lno.MQTT.Host, lno.MQTT.Port)

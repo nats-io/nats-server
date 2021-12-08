@@ -1323,8 +1323,8 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 	jsEnabled := acc.jsLimits != nil
 	acc.mu.Unlock()
 
-	if s.opts != nil && len(s.opts.JsAccDefaultDomain) > 0 {
-		if defDomain, ok := s.opts.JsAccDefaultDomain[accName]; ok {
+	if opts := s.getOpts(); opts != nil && len(opts.JsAccDefaultDomain) > 0 {
+		if defDomain, ok := opts.JsAccDefaultDomain[accName]; ok {
 			if jsEnabled {
 				s.Warnf("Skipping Default Domain %q, set for JetStream enabled account %q", defDomain, accName)
 			} else if defDomain != _EMPTY_ {

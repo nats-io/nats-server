@@ -3906,7 +3906,7 @@ func parseMQTT(v interface{}, o *Options, errors *[]error, warnings *[]error) er
 			} else {
 				o.MQTT.MaxAckPending = uint16(tmp)
 			}
-		case "js-domain":
+		case "js_domain":
 			o.MQTT.JsDomain = mv.(string)
 		default:
 			if !tk.IsUsedVariable() {
