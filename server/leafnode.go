@@ -1245,7 +1245,10 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 				c.Noticef("Turning JetStream metadata controller Observer Mode off")
 				// Take note that the domain was not extended to avoid this state from startup.
 				writePeerState(js.config.StoreDir, meta.currentPeerState())
-				// Meta controller does not need to be kicked as this server can't be leader yet.
+				// Meta controller can't be leader yet.
+				// Yet it is possible that due to observer mode every server already stopped campaigning.
+				// Therefore this server needs to be kicked into campaigning gear explicitly.
+				meta.Campaign()
 			}
 		} else {
 			c.Noticef("JetStream Not Extended, adding deny %q for account %q", jsAllAPI, accName)
@@ -1260,7 +1263,7 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 		// Therefore, server with a remote that are not already in observer mode, need to be put into it.
 		if solicited && meta != nil && !meta.isObserver() {
 			meta.setObserver(true, extExtended)
-			c.Noticef("Turning JetStream metadata controller Observer Mode on")
+			c.Noticef("Turning JetStream metadata controller Observer Mode on - System Account Connected")
 			// Take note that the domain was not extended to avoid this state next startup.
 			writePeerState(js.config.StoreDir, meta.currentPeerState())
 			// If this server is the leader already, step down so a new leader can be elected (that is not an observer)

@@ -853,8 +853,9 @@ func (js *jetStream) monitorCluster() {
 			// If we are here we do not have a leader and we did not have a previous one, so cold start.
 			// Check to see if we can adjust our cluster size down iff we are in mixed mode and we have
 			// seen a total that is what our original estimate was.
-			if js, total := s.trackedJetStreamServers(); js < total && total >= n.ClusterSize() {
-				s.Noticef("Adjusting JetStream expected peer set size to %d from original %d", js, n.ClusterSize())
+			cs := n.ClusterSize()
+			if js, total := s.trackedJetStreamServers(); js < total && total >= cs && js != cs {
+				s.Noticef("Adjusting JetStream expected peer set size to %d from original %d", js, cs)
 				n.AdjustBootClusterSize(js)
 			}
 		}
