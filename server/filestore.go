@@ -5348,11 +5348,14 @@ func decodeConsumerState(buf []byte) (*ConsumerState, error) {
 				dseq = readSeq()
 			}
 			ts := readTimeStamp()
-			if sseq == 0 || ts == -1 {
+			if ts == -1 {
 				return nil, errCorruptState
 			}
 			// Adjust seq back.
 			sseq += state.AckFloor.Stream
+			if sseq == 0 {
+				return nil, errCorruptState
+			}
 			if version == 2 {
 				dseq += state.AckFloor.Consumer
 			}
