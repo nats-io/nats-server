@@ -2012,6 +2012,44 @@ func TestFileStoreConsumerEncodeDecodeRedelivered(t *testing.T) {
 	}
 }
 
+func TestFileStoreConsumerEncodeDecodePendingBelowStreamAckFloor(t *testing.T) {
+	state := &ConsumerState{}
+
+	state.Delivered.Consumer = 1192
+	state.Delivered.Stream = 10185
+	state.AckFloor.Consumer = 1189
+	state.AckFloor.Stream = 10815
+
+	now := time.Now().Round(time.Second).Add(-10 * time.Second).UnixNano()
+	state.Pending = map[uint64]*Pending{
+		10782: {1190, now},
+		10810: {1191, now + int64(time.Second)},
+		10815: {1192, now + int64(2*time.Second)},
+	}
+	buf := encodeConsumerState(state)
+
+	rstate, err := decodeConsumerState(buf)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(rstate.Pending) != 3 {
+		t.Fatalf("Invalid pending: %v", rstate.Pending)
+	}
+	for k, v := range state.Pending {
+		rv, ok := rstate.Pending[k]
+		if !ok {
+			t.Fatalf("Did not find sseq=%v", k)
+		}
+		if !reflect.DeepEqual(v, rv) {
+			t.Fatalf("Pending for sseq=%v should be %+v, got %+v", k, v, rv)
+		}
+	}
+	state.Pending, rstate.Pending = nil, nil
+	if !reflect.DeepEqual(*state, *rstate) {
+		t.Fatalf("States do not match: %+v vs %+v", state, rstate)
+	}
+}
+
 func TestFileStoreWriteFailures(t *testing.T) {
 	// This test should be run inside an environment where this directory
 	// has a limited size.
