@@ -363,7 +363,7 @@ type JSApiStreamListResponse struct {
 	ApiResponse
 	ApiPaged
 	Streams []*StreamInfo `json:"streams"`
-	Missing []string      `json:"missing_stream_names,omitempty"`
+	Missing []string      `json:"missing,omitempty"`
 }
 
 const JSApiStreamListResponseType = "io.nats.jetstream.api.v1.stream_list_response"
@@ -561,7 +561,7 @@ type JSApiConsumerListResponse struct {
 	ApiResponse
 	ApiPaged
 	Consumers []*ConsumerInfo `json:"consumers"`
-	Missing   []string        `json:"missing_consumer_names,omitempty"`
+	Missing   []string        `json:"missing,omitempty"`
 }
 
 const JSApiConsumerListResponseType = "io.nats.jetstream.api.v1.consumer_list_response"
