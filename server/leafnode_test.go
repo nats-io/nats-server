@@ -4311,6 +4311,7 @@ leafnodes:{
 			// Only after the system account is fully connected can streams be placed anywhere.
 			testJSFunctions := func(pass bool) {
 				ncA := natsConnect(t, fmt.Sprintf("nats://a1:a1@127.0.0.1:%d", sA.opts.Port))
+				defer ncA.Close()
 				jsA, err := ncA.JetStream()
 				require_NoError(t, err)
 				_, err = jsA.AddStream(strmCfg(fmt.Sprintf("fooA1-%t", pass), ""))
@@ -4325,6 +4326,7 @@ leafnodes:{
 					require_Contains(t, err.Error(), "insufficient resources")
 				}
 				ncL := natsConnect(t, fmt.Sprintf("nats://a1:a1@127.0.0.1:%d", sLA.opts.Port))
+				defer ncL.Close()
 				jsL, err := ncL.JetStream()
 				require_NoError(t, err)
 				_, err = jsL.AddStream(strmCfg(fmt.Sprintf("fooL1-%t", pass), ""))
@@ -4365,6 +4367,7 @@ leafnodes:{
 				// In cases where the leaf nodes have to wait for the system account to connect,
 				// JetStream should not be operational during that time
 				ncA := natsConnect(t, fmt.Sprintf("nats://a1:a1@127.0.0.1:%d", sLA.opts.Port))
+				defer ncA.Close()
 				jsA, err := ncA.JetStream()
 				require_NoError(t, err)
 				_, err = jsA.AddStream(strmCfg("fail-false", ""))
@@ -4564,6 +4567,7 @@ cluster: { name: clustL }
 
 			test := func(port int, expectedDefPlacement string) {
 				ncA := natsConnect(t, fmt.Sprintf("nats://a1:a1@127.0.0.1:%d", port))
+				defer ncA.Close()
 				jsA, err := ncA.JetStream()
 				require_NoError(t, err)
 				si, err := jsA.AddStream(strmCfg(""))
@@ -4717,6 +4721,7 @@ leafnodes: {
 		checkLeafNodeConnectedCount(t, sLeaf, lnCnt)
 
 		ncA := natsConnect(t, fmt.Sprintf("nats://a1:a1@127.0.0.1:%d", sHub.opts.Port))
+		defer ncA.Close()
 		jsA, err := ncA.JetStream()
 		require_NoError(t, err)
 
@@ -4877,6 +4882,7 @@ leafnodes: {
 		checkLeafNodeConnectedCount(t, sLeaf, 2)
 
 		ncA := natsConnect(t, fmt.Sprintf("nats://127.0.0.1:%d", sHub.opts.Port), createUserCreds(t, nil, aKp))
+		defer ncA.Close()
 		jsA, err := ncA.JetStream()
 		require_NoError(t, err)
 
@@ -5025,6 +5031,7 @@ default_js_domain: {B:"DHUB"}
 	checkLeafNodeConnectedCount(t, sLeaf2, 2)
 
 	ncB := natsConnect(t, fmt.Sprintf("nats://b1:b1@127.0.0.1:%d", sLeaf1.getOpts().Port))
+	defer ncB.Close()
 	jsB1, err := ncB.JetStream()
 	require_NoError(t, err)
 	si, err := jsB1.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, Subjects: []string{"foo"}})

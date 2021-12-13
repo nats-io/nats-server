@@ -1483,7 +1483,7 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	}
 
 	// Check if we have an existing service import reply.
-	siReply := acc.siReply
+	siReply := copyBytes(acc.siReply)
 
 	// Since leaf nodes only send on interest, if the bound
 	// account has import services we need to send those over.
