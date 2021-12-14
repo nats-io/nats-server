@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1661,6 +1662,65 @@ func TestSystemAccountWithGateways(t *testing.T) {
 		t.Fatal("Expected a message")
 	}
 }
+
+func TestSystemAccountNoAuthUser(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		accounts {
+			$SYS {
+				users [{user: "admin", password: "pwd"}]
+			}
+		}
+	`))
+	defer os.Remove(conf)
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	for _, test := range []struct {
+		name    string
+		usrInfo string
+		ok      bool
+		account string
+	}{
+		{"valid user/pwd", "admin:pwd@", true, "$SYS"},
+		{"invalid pwd", "admin:wrong@", false, _EMPTY_},
+		{"some token", "sometoken@", false, _EMPTY_},
+		{"user used without pwd", "admin@", false, _EMPTY_}, // will be treated as a token
+		{"user with empty password", "admin:@", false, _EMPTY_},
+		{"no user means global account", _EMPTY_, true, globalAccountName},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			url := fmt.Sprintf("nats://%s127.0.0.1:%d", test.usrInfo, o.Port)
+			nc, err := nats.Connect(url)
+			if err != nil {
+				if test.ok {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				return
+			} else if !test.ok {
+				nc.Close()
+				t.Fatalf("Should have failed, did not")
+			}
+			var accName string
+			s.mu.Lock()
+			for _, c := range s.clients {
+				c.mu.Lock()
+				if c.acc != nil {
+					accName = c.acc.Name
+				}
+				c.mu.Unlock()
+				break
+			}
+			s.mu.Unlock()
+			nc.Close()
+			checkClientsCount(t, s, 0)
+			if accName != test.account {
+				t.Fatalf("The account should have been %q, got %q", test.account, accName)
+			}
+		})
+	}
+}
+
 func TestServerEventsStatsZ(t *testing.T) {
 	serverStatsReqSubj := "$SYS.REQ.SERVER.%s.STATSZ"
 	preStart := time.Now().UTC()
