@@ -1178,7 +1178,7 @@ func (s *Server) createWSClient(conn net.Conn, ws *websocket) *client {
 	}
 	now := time.Now().UTC()
 
-	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: maxPay, msubs: maxSubs, start: now, last: now, ws: ws}
+	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: maxPay, mdata: -1, msubs: maxSubs, start: now, last: now, ws: ws}
 
 	c.registerWithAccount(s.globalAccount())
 

@@ -431,7 +431,7 @@ func (s *Server) createMQTTClient(conn net.Conn, ws *websocket) *client {
 	}
 	now := time.Now().UTC()
 
-	c := &client{srv: s, nc: conn, mpay: maxPay, msubs: maxSubs, start: now, last: now, mqtt: &mqtt{}, ws: ws}
+	c := &client{srv: s, nc: conn, mpay: maxPay, mdata: -1, msubs: maxSubs, start: now, last: now, mqtt: &mqtt{}, ws: ws}
 	c.headers = true
 	c.mqtt.pp = &mqttPublish{}
 	// MQTT clients don't send NATS CONNECT protocols. So make it an "echo"

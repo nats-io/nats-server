@@ -414,7 +414,7 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 	// Update statistics
 	c.in.msgs++
 	// The msg includes the CR_LF, so pull back out for accounting.
-	c.in.bytes += int32(len(msg) - LEN_CR_LF)
+	c.in.bytes += int64(len(msg) - LEN_CR_LF)
 
 	if c.opts.Verbose {
 		c.sendOK()
@@ -1292,7 +1292,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		}
 	}
 
-	c := &client{srv: s, nc: conn, opts: ClientOpts{}, kind: ROUTER, msubs: -1, mpay: -1, route: r}
+	c := &client{srv: s, nc: conn, opts: ClientOpts{}, kind: ROUTER, mdata: -1, msubs: -1, mpay: -1, route: r}
 
 	// Grab server variables
 	s.mu.Lock()

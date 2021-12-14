@@ -2878,7 +2878,7 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 	// Update statistics
 	c.in.msgs++
 	// The msg includes the CR_LF, so pull back out for accounting.
-	c.in.bytes += int32(len(msg) - LEN_CR_LF)
+	c.in.bytes += int64(len(msg) - LEN_CR_LF)
 
 	if c.opts.Verbose {
 		c.sendOK()

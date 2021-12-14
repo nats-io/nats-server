@@ -96,6 +96,7 @@ type Account struct {
 type limits struct {
 	mpay   int32
 	msubs  int32
+	mdata  int64
 	mconns int32
 	mleafs int32
 }
@@ -223,7 +224,7 @@ type importMap struct {
 func NewAccount(name string) *Account {
 	a := &Account{
 		Name:     name,
-		limits:   limits{-1, -1, -1, -1},
+		limits:   limits{-1, -1, -1, -1, -1},
 		eventIds: nuid.New(),
 	}
 	return a
@@ -3167,6 +3168,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	a.mu.Lock()
 	a.msubs = int32(ac.Limits.Subs)
 	a.mpay = int32(ac.Limits.Payload)
+	a.mdata = ac.Limits.Data
 	a.mconns = int32(ac.Limits.Conn)
 	a.mleafs = int32(ac.Limits.LeafNodeConn)
 	// Check for any revocations

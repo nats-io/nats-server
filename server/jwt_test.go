@@ -5264,6 +5264,7 @@ func TestJWScopedSigningKeys(t *testing.T) {
 	signer.Key = aSignScopedPub
 	signer.Template.Pub.Deny.Add("denied")
 	signer.Template.Payload = 5
+	signer.Template.Data = -1
 	accClaim.SigningKeys.AddScopedSigner(signer)
 	accJwt := encodeClaim(t, accClaim, aExpPub)
 
@@ -5368,6 +5369,7 @@ func TestJWScopedSigningKeys(t *testing.T) {
 		require_Len(t, len(msgChan), 0)
 		// Alter scoped permissions and update
 		signer.Template.Payload = -1
+		signer.Template.Data = -1
 		signer.Template.Pub.Deny.Remove("denied")
 		accClaim.SigningKeys.AddScopedSigner(signer)
 		accUpdatedJwt := encodeClaim(t, accClaim, aExpPub)
@@ -5930,4 +5932,139 @@ func TestJWTAccountConnzAccessAfterClaimUpdate(t *testing.T) {
 	updateJWT(sjwt)
 	// If export was wiped this would fail with timeout.
 	doRequest()
+}
+
+func TestJWTDataLimitClient(t *testing.T) {
+	aKp, defPub := createKey(t)
+	defJwt := encodeClaim(t, jwt.NewAccountClaims(defPub), "")
+
+	creds := createUserWithLimit(t, aKp, time.Now().Add(time.Hour), func(j *jwt.UserPermissionLimits) { j.Data = 1024 })
+	defer os.Remove(creds)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		operator = %s
+		resolver: MEMORY
+		resolver_preload = {
+			%s : "%s"
+		}
+		leafnodes {
+			port: -1
+		}
+		`, ojwt, defPub, defJwt)))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	pay := make(chan struct{}, 50)
+	defer close(pay)
+	nc := natsConnect(t, s.ClientURL(), nats.UserCredentials(creds), nats.MaxReconnects(0),
+		nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
+			// maximum payload exceeded gets swallowed by an immediate disconnect,
+			pay <- struct{}{}
+		}))
+	defer nc.Close()
+	data := [512]uint8{}
+	require_NoError(t, nc.Publish("pub.1", data[:len(data)]))
+	require_NoError(t, nc.Flush())
+	require_True(t, nc.IsConnected())
+
+	require_NoError(t, nc.Publish("pub.2", data[:len(data)]))
+	require_NoError(t, nc.Flush())
+	require_True(t, nc.IsConnected())
+
+	require_NoError(t, nc.Publish("pub.3", data[:len(data)]))
+	<-pay
+	require_False(t, nc.IsConnected())
+}
+
+func TestJWTDataLimitLeaf(t *testing.T) {
+	aKp, defPub := createKey(t)
+	defJwt := encodeClaim(t, jwt.NewAccountClaims(defPub), "")
+
+	credsNoLim := createUserWithLimit(t, aKp, time.Now().Add(time.Hour), func(j *jwt.UserPermissionLimits) { j.Data = -1 })
+	defer os.Remove(credsNoLim)
+	creds := createUserWithLimit(t, aKp, time.Now().Add(time.Hour), func(j *jwt.UserPermissionLimits) { j.Data = 1024 })
+	defer os.Remove(creds)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		operator = %s
+		resolver: MEMORY
+		resolver_preload = {
+			%s : "%s"
+		}
+		leafnodes {
+			port: -1
+		}
+		`, ojwt, defPub, defJwt)))
+	defer removeFile(t, conf)
+
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	l := &captureErrorLogger{errCh: make(chan string, 2)}
+	s.SetLogger(l, false, false)
+
+	confL := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		operator = %s
+		resolver: MEMORY
+		resolver_preload = {
+			%s : "%s"
+		}
+		leafnodes {
+			remotes = [ 
+				{ 
+				  url: "nats-remote://127.0.0.1:%d"
+  				  account: %s
+				  credentials: %s
+				},
+			]
+		}
+		`, ojwt, defPub, defJwt, o.LeafNode.Port, defPub, creds)))
+	defer removeFile(t, confL)
+
+	nc := natsConnect(t, s.ClientURL(), nats.UserCredentials(credsNoLim))
+	defer nc.Close()
+	sub, err := nc.SubscribeSync("pub.*")
+	require_NoError(t, err)
+
+	sl, _ := RunServerWithConfig(confL)
+	defer sl.Shutdown()
+
+	checkLeafNodeConnected(t, s)
+	checkLeafNodeConnected(t, sl)
+	checkSubInterest(t, sl, defPub, "pub.*", time.Second)
+	checkSubInterest(t, s, defPub, "pub.*", time.Second)
+
+	ncL := natsConnect(t, sl.ClientURL(), nats.UserCredentials(credsNoLim))
+	defer ncL.Close()
+
+	data := [512]uint8{}
+	require_NoError(t, ncL.Publish("pub.1", data[:len(data)]))
+	require_NoError(t, ncL.Publish("pub.2", data[:len(data)]))
+	require_NoError(t, ncL.Publish("pub.3", data[:len(data)]))
+	require_NoError(t, ncL.Flush())
+	require_True(t, ncL.IsConnected())
+
+FOR:
+	for {
+		select {
+		case m := <-l.errCh:
+			if strings.Contains(m, "Maximum Publish Data Exceeded") {
+				break FOR
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("no error trace found")
+		}
+	}
+
+	_, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	_, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	_, err = sub.NextMsg(time.Millisecond * 100)
+	require_Error(t, err)
 }

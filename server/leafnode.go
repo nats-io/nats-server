@@ -747,7 +747,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 	}
 	now := time.Now().UTC()
 
-	c := &client{srv: s, nc: conn, kind: LEAF, opts: defaultOpts, mpay: maxPay, msubs: maxSubs, start: now, last: now}
+	c := &client{srv: s, nc: conn, kind: LEAF, opts: defaultOpts, mpay: maxPay, mdata: -1, msubs: maxSubs, start: now, last: now}
 	// Do not update the smap here, we need to do it in initLeafNodeSmapAndSendSubs
 	c.leaf = &leaf{}
 
@@ -2113,7 +2113,8 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 	// Update statistics
 	// The msg includes the CR_LF, so pull back out for accounting.
 	c.in.msgs++
-	c.in.bytes += int32(len(msg) - LEN_CR_LF)
+	msgSize := int64(len(msg) - LEN_CR_LF)
+	c.in.bytes += msgSize
 
 	srv, acc, subject := c.srv, c.acc, string(c.pa.subject)
 
@@ -2150,6 +2151,16 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 				}
 			}
 		}
+	}
+
+	c.mu.Lock()
+	dataLim := c.mdata
+	c.mu.Unlock()
+	if dataLim != jwt.NoLimit && dataLim < c.inBytes+c.in.bytes {
+		c.sendErr(fmt.Sprintf("Maximum Publish Data Exceeded"))
+		c.Errorf("Maximum Publish Data Exceeded, Subject: %s Total: %d Limit %d", c.pa.subject, c.inBytes+c.in.bytes, dataLim)
+		c.closeConnection(MaxPayloadExceeded)
+		return
 	}
 
 	// Collect queue names if needed.

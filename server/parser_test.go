@@ -19,7 +19,7 @@ import (
 )
 
 func dummyClient() *client {
-	return &client{srv: New(&defaultServerOptions), msubs: -1, mpay: -1, mcl: MAX_CONTROL_LINE_SIZE}
+	return &client{srv: New(&defaultServerOptions), mdata: -1, msubs: -1, mpay: -1, mcl: MAX_CONTROL_LINE_SIZE}
 }
 
 func dummyRouteClient() *client {

@@ -226,6 +226,7 @@ type client struct {
 	rrTracking *rrTracking
 	mpay       int32
 	msubs      int32
+	mdata      int64
 	mcl        int32
 	mu         sync.Mutex
 	cid        uint64
@@ -374,7 +375,7 @@ type readCache struct {
 
 	// These are all temporary totals for an invocation of a read in readloop.
 	msgs  int32
-	bytes int32
+	bytes int64
 	subs  int32
 
 	rsz int32 // Read buffer size
@@ -729,6 +730,21 @@ func (c *client) subsAtLimit() bool {
 	return c.msubs != jwt.NoLimit && len(c.subs) >= int(c.msubs)
 }
 
+func minLimit64(value *int64, limit int64) bool {
+	if *value != jwt.NoLimit {
+		if limit != jwt.NoLimit {
+			if limit < *value {
+				*value = limit
+				return true
+			}
+		}
+	} else if limit != jwt.NoLimit {
+		*value = limit
+		return true
+	}
+	return false
+}
+
 func minLimit(value *int32, limit int32) bool {
 	if *value != jwt.NoLimit {
 		if limit != jwt.NoLimit {
@@ -753,16 +769,19 @@ func (c *client) applyAccountLimits() {
 	}
 	c.mpay = jwt.NoLimit
 	c.msubs = jwt.NoLimit
+	c.mdata = jwt.NoLimit
 	if c.opts.JWT != _EMPTY_ { // user jwt implies account
 		if uc, _ := jwt.DecodeUserClaims(c.opts.JWT); uc != nil {
 			c.mpay = int32(uc.Limits.Payload)
 			c.msubs = int32(uc.Limits.Subs)
+			c.mdata = uc.Limits.Data
 			if uc.IssuerAccount != _EMPTY_ && uc.IssuerAccount != uc.Issuer {
 				if scope, ok := c.acc.signingKeys[uc.Issuer]; ok {
 					if userScope, ok := scope.(*jwt.UserScope); ok {
 						// if signing key disappeared or changed and we don't get here, the client will be disconnected
 						c.mpay = int32(userScope.Template.Limits.Payload)
 						c.msubs = int32(userScope.Template.Limits.Subs)
+						c.mdata = userScope.Template.Limits.Data
 					}
 				}
 			}
@@ -770,6 +789,7 @@ func (c *client) applyAccountLimits() {
 	}
 	minLimit(&c.mpay, c.acc.mpay)
 	minLimit(&c.msubs, c.acc.msubs)
+	minLimit64(&c.mdata, c.acc.mdata)
 	s := c.srv
 	opts := s.getOpts()
 	mPay := opts.MaxPayload
@@ -1242,9 +1262,9 @@ func (c *client) readLoop(pre []byte) {
 		// from parsing through the buffer.
 		if c.in.msgs > 0 {
 			atomic.AddInt64(&c.inMsgs, int64(c.in.msgs))
-			atomic.AddInt64(&c.inBytes, int64(c.in.bytes))
+			atomic.AddInt64(&c.inBytes, c.in.bytes)
 			atomic.AddInt64(&s.inMsgs, int64(c.in.msgs))
-			atomic.AddInt64(&s.inBytes, int64(c.in.bytes))
+			atomic.AddInt64(&s.inBytes, c.in.bytes)
 		}
 
 		// Signal to writeLoop to flush to socket.
@@ -3532,7 +3552,8 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 	// Update statistics
 	// The msg includes the CR_LF, so pull back out for accounting.
 	c.in.msgs++
-	c.in.bytes += int32(len(msg) - LEN_CR_LF)
+	msgSize := int64(len(msg) - LEN_CR_LF)
+	c.in.bytes += msgSize
 
 	// Check that client (could be here with SYSTEM) is not publishing on reserved "$GNR" prefix.
 	if c.kind == CLIENT && hasGWRoutedReplyPrefix(c.pa.subject) {
@@ -3548,6 +3569,15 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 	// Check pub permissions
 	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) && !c.pubAllowed(string(c.pa.subject)) {
 		c.pubPermissionViolation(c.pa.subject)
+		return false, true
+	}
+
+	c.mu.Lock()
+	dataLim := c.mdata
+	c.mu.Unlock()
+	if dataLim != jwt.NoLimit && dataLim < c.inBytes+c.in.bytes {
+		c.sendErr(fmt.Sprintf("Maximum Publish Data Exceeded"))
+		c.Errorf("Maximum Publish Data Exceeded, Subject: %s Total: %d Limit %d", c.pa.subject, c.inBytes+c.in.bytes, dataLim)
 		return false, true
 	}
 
