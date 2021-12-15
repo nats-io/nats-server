@@ -134,6 +134,39 @@ func TestTLSClientCertificateHasUserID(t *testing.T) {
 	defer nc.Close()
 }
 
+func TestTLSClientCertificateCheckWithAllowedConnectionTypes(t *testing.T) {
+	conf := createConfFile(t, []byte(
+		`
+		listen: "127.0.0.1:-1"
+		tls {
+			cert_file: "./configs/certs/server-cert.pem"
+			key_file:  "./configs/certs/server-key.pem"
+			timeout: 2
+			ca_file:   "./configs/certs/ca.pem"
+			verify_and_map: true
+		}
+		authorization {
+			users = [
+				{user: derek@nats.io, permissions: { publish:"foo" }, allowed_connection_types: ["WEBSOCKET"]}
+			]
+		}
+	`))
+	defer removeFile(t, conf)
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nurl := fmt.Sprintf("tls://%s:%d", o.Host, o.Port)
+	nc, err := nats.Connect(nurl,
+		nats.ClientCert("./configs/certs/client-id-auth-cert.pem", "./configs/certs/client-id-auth-key.pem"),
+		nats.RootCAs("./configs/certs/ca.pem"))
+	if err == nil {
+		if nc != nil {
+			nc.Close()
+		}
+		t.Fatal("Expected connection to fail, it did not")
+	}
+}
+
 func TestTLSClientCertificateCNBasedAuth(t *testing.T) {
 	srv, opts := RunServerWithConfig("./configs/tls_cert_cn.conf")
 	defer srv.Shutdown()
