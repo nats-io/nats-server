@@ -485,10 +485,10 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 				if u != _EMPTY_ {
 					usr, ok := s.users[u]
 					if !ok || !c.connectionTypeAllowed(usr.AllowedConnectionTypes) {
-						return _EMPTY_, ok
+						return _EMPTY_, false
 					}
 					user = usr
-					return usr.Username, ok
+					return usr.Username, true
 				}
 
 				if certDN == nil {
