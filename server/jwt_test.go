@@ -5889,7 +5889,7 @@ func TestJWTSignupFromSysAcc(t *testing.T) {
 
 	ncIssuer := natsConnect(t, s.ClientURL(), createUserCreds(t, s, fromKey))
 	defer ncIssuer.Close()
-	ncIssuer.Subscribe("$jwt.request.*", func(msg *nats.Msg) {
+	ncIssuer.Subscribe(fmt.Sprintf(onboardSubjFmt, "*"), func(msg *nats.Msg) {
 		if !strings.HasPrefix(string(msg.Data), "shared-secret") {
 			errChan <- fmt.Errorf("request info not present")
 			return
@@ -5915,7 +5915,7 @@ func TestJWTSignupFromSysAcc(t *testing.T) {
 			errChan <- err
 			return
 		}
-		if ri, ok := msg.Header["Nats-Request-Info"]; !ok {
+		if ri, ok := msg.Header[ClientInfoHdr]; !ok {
 			errChan <- fmt.Errorf("request info not present")
 			return
 		} else {

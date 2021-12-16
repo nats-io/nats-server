@@ -371,6 +371,89 @@ func (c *client) matchesPinnedCert(tlsPinnedCerts PinnedCertSet) bool {
 
 // JWT Tag value for Account JWT Tag, enabling on-boarding services
 const featureTagOnboard = "nats-onboard-jwt"
+const onboardSubjFmt = "$jwt.request.%s"
+
+func (s *Server) onboardingCallout(c *client, opts *Options) bool {
+	var acc *Account
+	if c.opts.Account == _EMPTY_ {
+		// check default (system account) callout
+		acc = s.SystemAccount()
+		if acc == nil {
+			c.Debugf("Authentication requires a user JWT - Token Request failed - Account Missing")
+			return false
+		}
+	} else {
+		// check account listed
+		var err error
+		acc, err = s.fetchAccount(c.opts.Account)
+		if err != nil {
+			c.Debugf("Authentication requires a user JWT - Token Request Account %q lookup failed: %s", c.opts.Account, err)
+			return false
+		}
+	}
+	acc.mu.RLock()
+	signupName := fmt.Sprintf("Account: %s/%s", acc.Name, acc.nameTag)
+	featOnboard := acc.tags.Contains(featureTagOnboard)
+	acc.mu.RUnlock()
+	if !featOnboard {
+		c.Debugf("Authentication requires a user JWT")
+		return false
+	}
+	// Perform the actual JWT Request
+	msgChan := make(chan string)
+	defer close(msgChan)
+	ib := s.newRespInbox()
+	sub, err := s.sysSubscribe(ib, func(_ *subscription, _ *client, acc *Account, subject, reply string, rmsg []byte) {
+		msgChan <- string(copyBytes(rmsg))
+	})
+	if err != nil {
+		c.Debugf("Authentication requires a user JWT - Setup failure %s", signupName)
+		return false
+	}
+	defer s.sysUnsubscribe(sub)
+	var hdr map[string]string
+	ci := c.getClientInfo(true)
+	// TODO clear out account in ci? the value of $G may be confusing
+	if b, _ := json.Marshal(ci); b != nil {
+		hdr = map[string]string{ClientInfoHdr: string(b)}
+	}
+	// Always look up with an nkey, even if none is provided.
+	// If none is provided by the client, the service has to return a bearer token
+	var dest string
+	if c.opts.Nkey == _EMPTY_ {
+		if kp, err := nkeys.CreateUser(); err != nil {
+			c.Debugf("Authentication requires a user JWT - %s Setup failure: %s", signupName, err)
+			return false
+		} else if pub, err := kp.PublicKey(); err != nil {
+			c.Debugf("Authentication requires a user JWT - Setup failure %s", signupName, err)
+			return false
+		} else {
+			dest = pub
+		}
+	} else {
+		dest = c.opts.Nkey
+	}
+	to := secondsToDuration(opts.AuthTimeout) - time.Now().Sub(c.start)
+	if to <= 0 {
+		c.Debugf("Authentication requires a user JWT - Token Request Timed Out Immediately: %s", signupName)
+		return false
+	}
+	s.sendInternalAccountMsgWithReply(acc, fmt.Sprintf(onboardSubjFmt, dest), ib, hdr, c.opts.Token, true)
+	select {
+	case <-time.After(to):
+		c.Debugf("Authentication requires a user JWT - Token Request Timed Out: %s", signupName)
+		return false
+	case m := <-msgChan:
+		if m == _EMPTY_ {
+			c.Debugf("Authentication requires a user JWT - Empty Token Request Response")
+			return false
+		}
+		c.opts.JWT = m
+	}
+	c.flags.set(jwtRetrieved)
+	c.Warnf("Obtained JWT using: %s", signupName)
+	return true
+}
 
 func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) bool {
 	var (
@@ -451,80 +534,10 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 	if s.trustedKeys != nil {
 		if c.opts.JWT == _EMPTY_ {
 			s.mu.Unlock()
-
-			var acc *Account
-			if c.opts.Account == _EMPTY_ {
-				// check default (system account) callout
-				acc = s.SystemAccount()
-				if acc == nil {
-					c.Debugf("Authentication requires a user JWT - Token Request failed - Account Missing")
-					return false
-				}
-			} else {
-				// check account listed
-				acc, err = s.fetchAccount(c.opts.Account)
-				if err != nil {
-					c.Debugf("Authentication requires a user JWT - Token Request Account %q lookup failed: %s", c.opts.Account, err)
-					return false
-				}
-			}
-			acc.mu.RLock()
-			signupName := fmt.Sprintf("Account: %s/%s", acc.Name, acc.nameTag)
-			featOnboard := acc.tags.Contains(featureTagOnboard)
-			acc.mu.RUnlock()
-			if !featOnboard {
-				c.Debugf("Authentication requires a user JWT")
+			if !s.onboardingCallout(c, opts) {
 				return false
-			}
-			// Perform the actual JWT Request
-			msgChan := make(chan []byte)
-			defer close(msgChan)
-			ib := s.newRespInbox()
-			sub, err := s.sysSubscribe(ib, func(_ *subscription, _ *client, acc *Account, subject, reply string, rmsg []byte) {
-				msgChan <- copyBytes(rmsg)
-			})
-			if err != nil {
-				c.Debugf("Authentication requires a user JWT - Setup failure %s", signupName)
-				return false
-			}
-			defer s.sysUnsubscribe(sub)
-			var hdr map[string]string
-			ci := c.getClientInfo(true)
-			// TODO clear out account in ci? the value of $G may be confusing
-			if b, _ := json.Marshal(ci); b != nil {
-				hdr = map[string]string{ClientInfoHdr: string(b)}
-			}
-			// Always look up with an nkey, even if none is provided.
-			// If none is provided by the client, the service has to return a bearer token
-			var dest string
-			if c.opts.Nkey == _EMPTY_ {
-				if kp, err := nkeys.CreateUser(); err != nil {
-					c.Debugf("Authentication requires a user JWT - %s Setup failure: %s", signupName, err)
-					return false
-				} else if pub, err := kp.PublicKey(); err != nil {
-					c.Debugf("Authentication requires a user JWT - Setup failure %s", signupName, err)
-					return false
-				} else {
-					dest = pub
-				}
-			} else {
-				dest = c.opts.Nkey
-			}
-			s.sendInternalAccountMsgWithReply(acc, fmt.Sprintf("$jwt.request.%s", dest), ib, hdr, c.opts.Token, true)
-			select {
-			case <-time.After(secondsToDuration(opts.AuthTimeout)):
-				c.Debugf("Authentication requires a user JWT - Token Request Timed Out: %s", signupName)
-				return false
-			case m := <-msgChan:
-				if len(m) == 0 {
-					c.Debugf("Authentication requires a user JWT - Empty Token Request Response")
-					return false
-				}
-				c.opts.JWT = string(m)
 			}
 			s.mu.Lock()
-			c.flags.set(jwtRetrieved)
-			c.Warnf("Obtained JWT using: %s", signupName)
 		}
 		// So we have a valid user jwt here.
 		juc, err = jwt.DecodeUserClaims(c.opts.JWT)
