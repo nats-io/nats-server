@@ -478,7 +478,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			defer close(msgChan)
 			ib := s.newRespInbox()
 			sub, err := s.sysSubscribe(ib, func(_ *subscription, _ *client, acc *Account, subject, reply string, rmsg []byte) {
-				msgChan <- rmsg
+				msgChan <- copyBytes(rmsg)
 			})
 			if err != nil {
 				c.Debugf("Authentication requires a user JWT - Setup failure %s", signupName)
