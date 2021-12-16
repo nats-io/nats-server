@@ -974,6 +974,9 @@ func (c *client) processLeafnodeInfo(info *Info) {
 		} else {
 			c.leaf.remoteServer = info.Name
 		}
+		if info.ID != _EMPTY_ {
+			c.leaf.remoteId = info.ID
+		}
 		c.leaf.remoteDomain = info.Domain
 		c.leaf.remoteCluster = info.Cluster
 	}
