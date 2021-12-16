@@ -468,7 +468,7 @@ func (s *Server) enableJetStreamClustering() error {
 	// We need to determine if we have a stable cluster name and expected number of servers.
 	s.Debugf("JetStream cluster checking for stable cluster name and peers")
 
-	hasLeafNodeSystemShare := s.wantsToExtendOtherDomain()
+	hasLeafNodeSystemShare := s.canExtendOtherDomain()
 	if s.isClusterNameDynamic() && !hasLeafNodeSystemShare {
 		return errors.New("JetStream cluster requires cluster name")
 	}
@@ -498,13 +498,12 @@ func (js *jetStream) setupMetaGroup() error {
 
 	cfg := &RaftConfig{Name: defaultMetaGroupName, Store: storeDir, Log: fs}
 
-	// If we are soliciting leafnode connections and we are sharing a system account
-	// we want to move to observer mode so that we extend the solicited cluster or supercluster
-	// but do not form our own.
-	cfg.Observer = s.wantsToExtendOtherDomain()
+	// If we are soliciting leafnode connections and we are sharing a system account and do not disable it with a hint,
+	// we want to move to observer mode so that we extend the solicited cluster or supercluster but do not form our own.
+	cfg.Observer = s.canExtendOtherDomain() && s.opts.JetStreamExtHint != jsNoExtend
 
 	var bootstrap bool
-	if _, err := readPeerState(storeDir); err != nil {
+	if ps, err := readPeerState(storeDir); err != nil {
 		s.Noticef("JetStream cluster bootstrapping")
 		bootstrap = true
 		peers := s.ActivePeers()
@@ -512,8 +511,33 @@ func (js *jetStream) setupMetaGroup() error {
 		if err := s.bootstrapRaftNode(cfg, peers, false); err != nil {
 			return err
 		}
+		if cfg.Observer {
+			s.Noticef("Turning JetStream metadata controller Observer Mode on")
+		}
 	} else {
 		s.Noticef("JetStream cluster recovering state")
+		// correlate the value of observer with observations from a previous run.
+		if cfg.Observer {
+			switch ps.domainExt {
+			case extExtended:
+				s.Noticef("Keeping JetStream metadata controller Observer Mode on - due to previous contact")
+			case extNotExtended:
+				s.Noticef("Turning JetStream metadata controller Observer Mode off - due to previous contact")
+				cfg.Observer = false
+			case extUndetermined:
+				s.Noticef("Turning JetStream metadata controller Observer Mode on - no previous contact")
+				s.Noticef("In cases where JetStream will not be extended")
+				s.Noticef("and waiting for leader election until first contact is not acceptable,")
+				s.Noticef(`manually disable Observer Mode by setting the JetStream Option "extension_hint: %s"`, jsNoExtend)
+			}
+		} else {
+			// To track possible configuration changes, responsible for an altered value of cfg.Observer,
+			// set extension state to undetermined.
+			ps.domainExt = extUndetermined
+			if err := writePeerState(storeDir, ps); err != nil {
+				return err
+			}
+		}
 	}
 
 	// Start up our meta node.
@@ -829,8 +853,9 @@ func (js *jetStream) monitorCluster() {
 			// If we are here we do not have a leader and we did not have a previous one, so cold start.
 			// Check to see if we can adjust our cluster size down iff we are in mixed mode and we have
 			// seen a total that is what our original estimate was.
-			if js, total := s.trackedJetStreamServers(); js < total && total >= n.ClusterSize() {
-				s.Noticef("Adjusting JetStream expected peer set size to %d from original %d", js, n.ClusterSize())
+			cs := n.ClusterSize()
+			if js, total := s.trackedJetStreamServers(); js < total && total >= cs && js != cs {
+				s.Noticef("Adjusting JetStream expected peer set size to %d from original %d", js, cs)
 				n.AdjustBootClusterSize(js)
 			}
 		}
@@ -3442,7 +3467,15 @@ func (js *jetStream) stopUpdatesSub() {
 
 func (js *jetStream) processLeaderChange(isLeader bool) {
 	if isLeader {
-		js.srv.Noticef("JetStream cluster new metadata leader")
+		js.srv.Noticef("Self is new JetStream cluster metadata leader")
+	} else if node := js.getMetaGroup().GroupLeader(); node == _EMPTY_ {
+		js.srv.Noticef("JetStream cluster no metadata leader")
+	} else if srv := js.srv.serverNameForNode(node); srv == _EMPTY_ {
+		js.srv.Noticef("JetStream cluster new remote metadata leader")
+	} else if clst := js.srv.clusterNameForNode(node); clst == _EMPTY_ {
+		js.srv.Noticef("JetStream cluster new metadata leader: %s", srv)
+	} else {
+		js.srv.Noticef("JetStream cluster new metadata leader: %s/%s", srv, clst)
 	}
 
 	js.mu.Lock()

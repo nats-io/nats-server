@@ -1319,7 +1319,24 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 	}
 	acc.srv = s
 	acc.updated = time.Now().UTC()
+	accName := acc.Name
+	jsEnabled := acc.jsLimits != nil
 	acc.mu.Unlock()
+
+	if opts := s.getOpts(); opts != nil && len(opts.JsAccDefaultDomain) > 0 {
+		if defDomain, ok := opts.JsAccDefaultDomain[accName]; ok {
+			if jsEnabled {
+				s.Warnf("Skipping Default Domain %q, set for JetStream enabled account %q", defDomain, accName)
+			} else if defDomain != _EMPTY_ {
+				dest := fmt.Sprintf(jsDomainAPI, defDomain)
+				s.Noticef("Adding default domain mapping %q -> %q to account %q %p", jsAllAPI, dest, accName, acc)
+				if err := acc.AddMapping(jsAllAPI, dest); err != nil {
+					s.Errorf("Error adding JetStream default domain mapping: %v", err)
+				}
+			}
+		}
+	}
+
 	s.accounts.Store(acc.Name, acc)
 	s.tmpAccounts.Delete(acc.Name)
 	s.enableAccountTracking(acc)
@@ -1566,6 +1583,10 @@ func (s *Server) Start() {
 	if opts.MaxPayload > MAX_PAYLOAD_MAX_SIZE {
 		s.Warnf("Maximum payloads over %v are generally discouraged and could lead to poor performance",
 			friendlyBytes(int64(MAX_PAYLOAD_MAX_SIZE)))
+	}
+
+	if len(opts.JsAccDefaultDomain) > 0 {
+		s.Warnf("The option `default_js_domain` is a temporary backwards compatibility measure and will be removed")
 	}
 
 	// If we have a memory resolver, check the accounts here for validation exceptions.

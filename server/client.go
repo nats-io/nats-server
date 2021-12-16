@@ -942,22 +942,63 @@ func (c *client) setPermissions(perms *Permissions) {
 	}
 }
 
+type denyType int
+
+const (
+	pub = denyType(iota + 1)
+	sub
+	both
+)
+
 // Merge client.perms structure with additional pub deny permissions
 // Lock is held on entry.
-func (c *client) mergePubDenyPermissions(denyPubs []string) {
+func (c *client) mergeDenyPermissions(what denyType, denyPubs []string) {
 	if len(denyPubs) == 0 {
 		return
 	}
 	if c.perms == nil {
 		c.perms = &permissions{}
 	}
-	if c.perms.pub.deny == nil {
-		c.perms.pub.deny = NewSublistWithCache()
+	var perms []*perm
+	switch what {
+	case pub:
+		perms = []*perm{&c.perms.pub}
+	case sub:
+		perms = []*perm{&c.perms.sub}
+	case both:
+		perms = []*perm{&c.perms.pub, &c.perms.sub}
 	}
-	for _, pubSubject := range denyPubs {
-		sub := &subscription{subject: []byte(pubSubject)}
-		c.perms.pub.deny.Insert(sub)
+	for _, p := range perms {
+		if p.deny == nil {
+			p.deny = NewSublistWithCache()
+		}
+	FOR_DENY:
+		for _, subj := range denyPubs {
+			r := p.deny.Match(subj)
+			for _, v := range r.qsubs {
+				for _, s := range v {
+					if string(s.subject) == subj {
+						continue FOR_DENY
+					}
+				}
+			}
+			for _, s := range r.psubs {
+				if string(s.subject) == subj {
+					continue FOR_DENY
+				}
+			}
+			sub := &subscription{subject: []byte(subj)}
+			p.deny.Insert(sub)
+		}
 	}
+}
+
+// Merge client.perms structure with additional pub deny permissions
+// Client lock must not be held on entry
+func (c *client) mergeDenyPermissionsLocked(what denyType, denyPubs []string) {
+	c.mu.Lock()
+	c.mergeDenyPermissions(what, denyPubs)
+	c.mu.Unlock()
 }
 
 // Check to see if we have an expiration for the user JWT via base claims.

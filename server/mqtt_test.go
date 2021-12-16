@@ -3130,88 +3130,149 @@ func TestMQTTClusterPlacement(t *testing.T) {
 	}
 }
 
-func TestMQTTLeafnodeWithoutJSToClusterWithJS(t *testing.T) {
-	getClusterOpts := func(name string, i int) *Options {
-		o := testMQTTDefaultOptions()
-		o.ServerName = name
-		o.Cluster.Name = "hub"
-		o.Cluster.Host = "127.0.0.1"
-		o.Cluster.Port = 2790 + i
-		o.Routes = RoutesFromStr("nats://127.0.0.1:2791,nats://127.0.0.1:2792,nats://127.0.0.1:2793")
-		o.LeafNode.Host = "127.0.0.1"
-		o.LeafNode.Port = -1
-		return o
-	}
-	o1 := getClusterOpts("S1", 1)
-	s1 := testMQTTRunServer(t, o1)
-	defer testMQTTShutdownServer(s1)
+func TestMQTTLeafnodeWithoutJSToClusterWithJSNoSharedSysAcc(t *testing.T) {
+	test := func(resolution int) {
+		getClusterOpts := func(name string, i int) *Options {
+			o := testMQTTDefaultOptions()
+			o.ServerName = name
+			o.Cluster.Name = "hub"
+			// first two test cases rely on domain not being set in hub
+			if resolution > 1 {
+				o.JetStreamDomain = "DOMAIN"
+			}
+			o.Cluster.Host = "127.0.0.1"
+			o.Cluster.Port = 2790 + i
+			o.Routes = RoutesFromStr("nats://127.0.0.1:2791,nats://127.0.0.1:2792,nats://127.0.0.1:2793")
+			o.LeafNode.Host = "127.0.0.1"
+			o.LeafNode.Port = -1
+			return o
+		}
+		o1 := getClusterOpts("S1", 1)
+		s1 := testMQTTRunServer(t, o1)
+		defer testMQTTShutdownServer(s1)
 
-	o2 := getClusterOpts("S2", 2)
-	s2 := testMQTTRunServer(t, o2)
-	defer testMQTTShutdownServer(s2)
+		o2 := getClusterOpts("S2", 2)
+		s2 := testMQTTRunServer(t, o2)
+		defer testMQTTShutdownServer(s2)
 
-	o3 := getClusterOpts("S3", 3)
-	s3 := testMQTTRunServer(t, o3)
-	defer testMQTTShutdownServer(s3)
+		o3 := getClusterOpts("S3", 3)
+		s3 := testMQTTRunServer(t, o3)
+		defer testMQTTShutdownServer(s3)
 
-	cluster := []*Server{s1, s2, s3}
-	checkClusterFormed(t, cluster...)
-	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
-		for _, s := range cluster {
-			if s.JetStreamIsLeader() {
-				return nil
+		cluster := []*Server{s1, s2, s3}
+		checkClusterFormed(t, cluster...)
+		checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+			for _, s := range cluster {
+				if s.JetStreamIsLeader() {
+					return nil
+				}
+			}
+			return fmt.Errorf("no leader yet")
+		})
+
+		// Now define a leafnode that has mqtt enabled, but no JS. This should still work.
+		lno := testMQTTDefaultOptions()
+		// Make sure jetstream is not explicitly defined here.
+		lno.JetStream = false
+		switch resolution {
+		case 0:
+			// turn off jetstream in $G by adding another account and set mqtt domain option and set account default
+			lno.Accounts = append(lno.Accounts, NewAccount("unused-account"))
+			fallthrough
+		case 1:
+			lno.JsAccDefaultDomain = map[string]string{
+				"$G": "",
+			}
+		case 2:
+			lno.JsAccDefaultDomain = map[string]string{
+				"$G": o1.JetStreamDomain,
+			}
+		case 3:
+			// turn off jetstream in $G by adding another account and set mqtt domain option
+			lno.Accounts = append(lno.Accounts, NewAccount("unused-account"))
+			fallthrough
+		case 4:
+			// actual solution
+			lno.MQTT.JsDomain = o1.JetStreamDomain
+		case 5:
+			// set per account overwrite and disable js in $G
+			lno.Accounts = append(lno.Accounts, NewAccount("unused-account"))
+			lno.JsAccDefaultDomain = map[string]string{
+				"$G": o1.JetStreamDomain,
 			}
 		}
-		return fmt.Errorf("no leader yet")
-	})
+		// Whenever an account was added to disable JS in $G, enable it in the server
+		if len(lno.Accounts) > 0 {
+			lno.JetStream = true
+			lno.JetStreamDomain = "OTHER"
+			lno.StoreDir = createDir(t, "mqtt_js_ln")
+		}
 
-	// Now define a leafnode that has mqtt enabled, but no JS. This should still work.
-	lno := testMQTTDefaultOptions()
-	// Make sure jetstream is not explicitly defined here.
-	lno.JetStream = false
-	// Use RoutesFromStr() to make an array of urls
-	urls := RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d,nats://127.0.0.1:%d,nats://127.0.0.1:%d",
-		o1.LeafNode.Port, o2.LeafNode.Port, o3.LeafNode.Port))
-	lno.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: urls}}
-	ln := RunServer(lno)
-	defer ln.Shutdown()
+		// Use RoutesFromStr() to make an array of urls
+		urls := RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d,nats://127.0.0.1:%d,nats://127.0.0.1:%d",
+			o1.LeafNode.Port, o2.LeafNode.Port, o3.LeafNode.Port))
+		lno.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: urls}}
 
-	// Now connect to leafnode and subscribe
-	mc, rc := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: true}, lno.MQTT.Host, lno.MQTT.Port)
-	defer mc.Close()
-	testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, false)
-	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
-	testMQTTFlush(t, mc, nil, rc)
+		ln := RunServer(lno)
+		defer testMQTTShutdownServer(ln)
 
-	connectAndPublish := func(o *Options) {
-		mp, rp := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
-		defer mp.Close()
-		testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+		// Now connect to leafnode and subscribe
+		mc, rc := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: true}, lno.MQTT.Host, lno.MQTT.Port)
+		defer mc.Close()
+		testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, false)
+		testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+		testMQTTFlush(t, mc, nil, rc)
 
-		testMQTTPublish(t, mp, rp, 1, false, false, "foo", 1, []byte("msg"))
+		connectAndPublish := func(o *Options) {
+			mp, rp := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+			defer mp.Close()
+			testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+
+			testMQTTPublish(t, mp, rp, 1, false, false, "foo", 1, []byte("msg"))
+		}
+		// Connect a publisher from leafnode and publish, verify message is received.
+		connectAndPublish(lno)
+		testMQTTCheckPubMsg(t, mc, rc, "foo", mqttPubQos1, []byte("msg"))
+
+		// Connect from one server in the cluster check it works from there too.
+		connectAndPublish(o3)
+		testMQTTCheckPubMsg(t, mc, rc, "foo", mqttPubQos1, []byte("msg"))
+
+		// Connect from a server in the hub and subscribe
+		mc2, rc2 := testMQTTConnect(t, &mqttConnInfo{clientID: "sub2", cleanSess: true}, o2.MQTT.Host, o2.MQTT.Port)
+		defer mc2.Close()
+		testMQTTCheckConnAck(t, rc2, mqttConnAckRCConnectionAccepted, false)
+		testMQTTSub(t, 1, mc2, rc2, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+		testMQTTFlush(t, mc2, nil, rc2)
+
+		// Connect a publisher from leafnode and publish, verify message is received.
+		connectAndPublish(lno)
+		testMQTTCheckPubMsg(t, mc2, rc2, "foo", mqttPubQos1, []byte("msg"))
+
+		// Connect from one server in the cluster check it works from there too.
+		connectAndPublish(o1)
+		testMQTTCheckPubMsg(t, mc2, rc2, "foo", mqttPubQos1, []byte("msg"))
 	}
-	// Connect a publisher from leafnode and publish, verify message is received.
-	connectAndPublish(lno)
-	testMQTTCheckPubMsg(t, mc, rc, "foo", mqttPubQos1, []byte("msg"))
-
-	// Connect from one server in the cluster check it works from there too.
-	connectAndPublish(o3)
-	testMQTTCheckPubMsg(t, mc, rc, "foo", mqttPubQos1, []byte("msg"))
-
-	// Connect from a server in the hub and subscribe
-	mc2, rc2 := testMQTTConnect(t, &mqttConnInfo{clientID: "sub2", cleanSess: true}, o2.MQTT.Host, o2.MQTT.Port)
-	defer mc2.Close()
-	testMQTTCheckConnAck(t, rc2, mqttConnAckRCConnectionAccepted, false)
-	testMQTTSub(t, 1, mc2, rc2, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
-	testMQTTFlush(t, mc2, nil, rc2)
-
-	// Connect a publisher from leafnode and publish, verify message is received.
-	connectAndPublish(lno)
-	testMQTTCheckPubMsg(t, mc2, rc2, "foo", mqttPubQos1, []byte("msg"))
-
-	// Connect from one server in the cluster check it works from there too.
-	connectAndPublish(o1)
-	testMQTTCheckPubMsg(t, mc2, rc2, "foo", mqttPubQos1, []byte("msg"))
+	t.Run("backwards-compatibility-default-js-enabled-in-leaf", func(t *testing.T) {
+		test(0) // test with JsAccDefaultDomain set to default (pointing at hub) but jetstream enabled in leaf node too
+	})
+	t.Run("backwards-compatibility-default-js-disabled-in-leaf", func(t *testing.T) {
+		// test with JsAccDefaultDomain set. Checks if it works with backwards compatibility code for empty domain
+		test(1)
+	})
+	t.Run("backwards-compatibility-domain-js-disabled-in-leaf", func(t *testing.T) {
+		// test with JsAccDefaultDomain set. Checks if it works with backwards compatibility code for domain set
+		test(2) // test with domain set in mqtt client
+	})
+	t.Run("mqtt-explicit-js-enabled-in-leaf", func(t *testing.T) {
+		test(3) // test with domain set in mqtt client (pointing at hub) but jetstream enabled in leaf node too
+	})
+	t.Run("mqtt-explicit-js-disabled-in-leaf", func(t *testing.T) {
+		test(4) // test with domain set in mqtt client
+	})
+	t.Run("backwards-compatibility-domain-js-enabled-in-leaf", func(t *testing.T) {
+		test(5) // test with JsAccDefaultDomain set to domain (pointing at hub) but jetstream enabled in leaf node too
+	})
 }
 
 func TestMQTTImportExport(t *testing.T) {

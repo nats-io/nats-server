@@ -365,8 +365,16 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 		return err
 	}
 
+	canExtend := s.canExtendOtherDomain()
+	standAlone := s.standAloneMode()
+	if standAlone && canExtend && s.getOpts().JetStreamExtHint != jsWillExtend {
+		canExtend = false
+		s.Noticef("Standalone server started in clustered mode do not support extending domains")
+		s.Noticef(`Manually disable standalone mode by setting the JetStream Option "extension_hint: %s"`, jsWillExtend)
+	}
+
 	// If we are in clustered mode go ahead and start the meta controller.
-	if !s.standAloneMode() || s.wantsToExtendOtherDomain() {
+	if !standAlone || canExtend {
 		if err := s.enableJetStreamClustering(); err != nil {
 			return err
 		}
@@ -375,15 +383,13 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	return nil
 }
 
+const jsNoExtend = "no_extend"
+const jsWillExtend = "will_extend"
+
 // This will check if we have a solicited leafnode that shares the system account
-// and we are not our own domain and we are not denying subjects that would prevent
-// extending JetStream.
-func (s *Server) wantsToExtendOtherDomain() bool {
+// and extension is not manually disabled
+func (s *Server) canExtendOtherDomain() bool {
 	opts := s.getOpts()
-	// If we have a domain name set we want to be our own domain.
-	if opts.JetStreamDomain != _EMPTY_ {
-		return false
-	}
 	sysAcc := s.SystemAccount().GetName()
 	for _, r := range opts.LeafNode.Remotes {
 		if r.LocalAccount == sysAcc {
@@ -728,20 +734,6 @@ func (s *Server) JetStreamEnabledForDomain() bool {
 	})
 
 	return jsFound
-}
-
-// Helper to see if we have a non-empty domain defined in any server we know about.
-func (s *Server) jetStreamHasDomainConfigured() bool {
-	var found bool
-	s.nodeToInfo.Range(func(k, v interface{}) bool {
-		if v.(nodeInfo).domain != _EMPTY_ {
-			found = true
-			return false
-		}
-		return true
-	})
-
-	return found
 }
 
 // Will migrate off ephemerals if possible.
@@ -2189,6 +2181,51 @@ func (s *Server) resourcesExeededError() {
 
 // For validating options.
 func validateJetStreamOptions(o *Options) error {
+	// in non operator mode, the account names need to be configured
+	if len(o.JsAccDefaultDomain) > 0 {
+		if len(o.TrustedOperators) == 0 {
+			for a, domain := range o.JsAccDefaultDomain {
+				found := false
+				if isReservedAccount(a) {
+					found = true
+				} else {
+					for _, acc := range o.Accounts {
+						if a == acc.GetName() {
+							if acc.jsLimits != nil && domain != _EMPTY_ {
+								return fmt.Errorf("default_js_domain contains account name %q with enabled JetStream", a)
+							}
+							found = true
+							break
+						}
+					}
+				}
+				if !found {
+					return fmt.Errorf("in non operator mode, `default_js_domain` references non existing account %q", a)
+				}
+			}
+		} else {
+			for a := range o.JsAccDefaultDomain {
+				if !nkeys.IsValidPublicAccountKey(a) {
+					return fmt.Errorf("default_js_domain contains account name %q, which is not a valid public account nkey", a)
+				}
+			}
+		}
+		for a, d := range o.JsAccDefaultDomain {
+			sacc := DEFAULT_SYSTEM_ACCOUNT
+			if o.SystemAccount != _EMPTY_ {
+				sacc = o.SystemAccount
+			}
+			if a == sacc {
+				return fmt.Errorf("system account %q can not be in default_js_domain", a)
+			}
+			if d == _EMPTY_ {
+				continue
+			}
+			if sub := fmt.Sprintf(jsDomainAPI, d); !IsValidSubject(sub) {
+				return fmt.Errorf("default_js_domain contains account %q with invalid domain name %q", a, d)
+			}
+		}
+	}
 	if o.JetStreamDomain != _EMPTY_ {
 		if subj := fmt.Sprintf(jsDomainAPI, o.JetStreamDomain); !IsValidSubject(subj) {
 			return fmt.Errorf("invalid domain name: derived %q is not a valid subject", subj)
@@ -2209,5 +2246,12 @@ func validateJetStreamOptions(o *Options) error {
 		return fmt.Errorf("jetstream cluster requires `cluster.name` to be set")
 	}
 
+	h := strings.ToLower(o.JetStreamExtHint)
+	switch h {
+	case jsWillExtend, jsNoExtend, _EMPTY_:
+		o.JetStreamExtHint = h
+	default:
+		return fmt.Errorf("expected 'no_extend' for string value, got '%s'", h)
+	}
 	return nil
 }
