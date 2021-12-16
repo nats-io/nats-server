@@ -433,7 +433,8 @@ func (s *Server) onboardingCallout(c *client, opts *Options) bool {
 	} else {
 		dest = c.opts.Nkey
 	}
-	to := secondsToDuration(opts.AuthTimeout) - time.Now().Sub(c.start)
+
+	to := secondsToDuration(opts.AuthTimeout) - time.Since(c.start)
 	if to <= 0 {
 		c.Debugf("Authentication requires a user JWT - Token Request Timed Out Immediately: %s", signupName)
 		return false
