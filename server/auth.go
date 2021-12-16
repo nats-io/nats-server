@@ -369,6 +369,9 @@ func (c *client) matchesPinnedCert(tlsPinnedCerts PinnedCertSet) bool {
 	return true
 }
 
+// JWT Tag value for Account JWT Tag, enabling on-boarding services
+const featureTagOnboard = "nats-onboard-jwt"
+
 func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) bool {
 	var (
 		nkey *NkeyUser
@@ -467,9 +470,9 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			}
 			acc.mu.RLock()
 			signupName := fmt.Sprintf("Account: %s/%s", acc.Name, acc.nameTag)
-			canObtainJWT := acc.canObtainJWT
+			featOnboard := acc.tags.Contains(featureTagOnboard)
 			acc.mu.RUnlock()
-			if !canObtainJWT {
+			if !featOnboard {
 				c.Debugf("Authentication requires a user JWT")
 				return false
 			}

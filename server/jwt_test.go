@@ -5847,6 +5847,7 @@ func TestJWTNoSystemAccountButNatsResolver(t *testing.T) {
 func TestJWTSignupFromSysAcc(t *testing.T) {
 	fromKey, from := createKey(t)
 	fromClaim := jwt.NewAccountClaims(from)
+	fromClaim.Tags.Add(featureTagOnboard) // required for this test to work
 	fromJWT := encodeClaim(t, fromClaim, "")
 
 	_, to := createKey(t)
