@@ -136,6 +136,7 @@ const (
 	skipFlushOnClose                              // Marks that flushOutbound() should not be called on connection close.
 	expectConnect                                 // Marks if this connection is expected to send a CONNECT
 	connectProcessFinished                        // Marks if this connection has finished the connect process.
+	jwtRetrieved                                  // Marks if this connection's jwt was requested by the server
 )
 
 // set the flag (would be equivalent to set the boolean to true)
@@ -1820,7 +1821,7 @@ func (c *client) processConnect(arg []byte) error {
 		}
 
 		// Check for Account designation, this section should be only used when there is not a jwt.
-		if account != _EMPTY_ {
+		if account != _EMPTY_ && len(srv.trustedKeys) == 0 {
 			var acc *Account
 			var wasNew bool
 			var err error
@@ -2210,8 +2211,14 @@ func (c *client) processPing() {
 		c.flags.set(firstPongSent)
 		// If there was a cluster update since this client was created,
 		// send an updated INFO protocol now.
-		if srv.lastCURLsUpdate >= c.start.UnixNano() || c.mpay != int32(opts.MaxPayload) {
-			c.enqueueProto(c.generateClientInfoJSON(srv.copyInfo()))
+		updateJwt := c.flags.isSet(jwtRetrieved)
+		if srv.lastCURLsUpdate >= c.start.UnixNano() || c.mpay != int32(opts.MaxPayload) || updateJwt {
+			info := srv.copyInfo()
+			if updateJwt {
+				info.JWT = c.opts.JWT
+				c.flags.clear(jwtRetrieved)
+			}
+			c.enqueueProto(c.generateClientInfoJSON(info))
 		}
 		c.mu.Unlock()
 		srv.mu.Unlock()

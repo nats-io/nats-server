@@ -79,6 +79,7 @@ type Account struct {
 	limits
 	expired      bool
 	incomplete   bool
+	canObtainJWT bool
 	signingKeys  map[string]jwt.Scope
 	srv          *Server // server this account is registered with (possibly nil)
 	lds          string  // loop detection subject for leaf nodes
@@ -2944,6 +2945,8 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			removeList = append(removeList, m.src)
 		}
 	}
+	// TODO Obtain real value from JWT
+	a.canObtainJWT = true
 	a.mu.Unlock()
 
 	for sub, wm := range ac.Mappings {

@@ -5844,6 +5844,115 @@ func TestJWTNoSystemAccountButNatsResolver(t *testing.T) {
 	}
 }
 
+func TestJWTSignupFromSysAcc(t *testing.T) {
+	fromKey, from := createKey(t)
+	fromClaim := jwt.NewAccountClaims(from)
+	fromJWT := encodeClaim(t, fromClaim, "")
+
+	_, to := createKey(t)
+
+	sigBearerKp, sigBearerPub := createKey(t)
+	sigBearer := jwt.NewUserScope()
+	sigBearer.Template.BearerToken = true
+	sigBearer.Key = sigBearerPub
+
+	sigKp, sigPub := createKey(t)
+	sig := jwt.NewUserScope()
+	sig.Template.BearerToken = false
+	sig.Key = sigPub
+
+	toClaim := jwt.NewAccountClaims(to)
+	toClaim.SigningKeys.AddScopedSigner(sigBearer)
+	toClaim.SigningKeys.AddScopedSigner(sig)
+	toJWT := encodeClaim(t, toClaim, "")
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		operator = %s
+		resolver: MEMORY
+		resolver_preload = {
+			%s : "%s"
+			%s : "%s"
+		} 
+		system_account: %s `, ojwt, from, fromJWT, to, toJWT, from)))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	errChan := make(chan error, 10)
+	defer close(errChan)
+
+	okChan := make(chan string, 10)
+	defer close(okChan)
+
+	ncIssuer := natsConnect(t, s.ClientURL(), createUserCreds(t, s, fromKey))
+	defer ncIssuer.Close()
+	ncIssuer.Subscribe("$jwt.request.*", func(msg *nats.Msg) {
+		if !strings.HasPrefix(string(msg.Data), "shared-secret") {
+			errChan <- fmt.Errorf("request info not present")
+			return
+		}
+
+		var signer nkeys.KeyPair
+		if strings.HasSuffix(string(msg.Data), "bearer") {
+			signer = sigBearerKp
+		} else {
+			signer = sigKp
+		}
+
+		uPub := ""
+		if tk := strings.Split(msg.Subject, "."); len(tk) == 3 {
+			uPub = tk[2]
+		}
+		uJwt, err := jwt.IssueUserJWT(signer, to, uPub, "", 0)
+		if err != nil {
+			errChan <- err
+			return
+		}
+		if err := msg.Respond([]byte(uJwt)); err != nil {
+			errChan <- err
+			return
+		}
+		if ri, ok := msg.Header["Nats-Request-Info"]; !ok {
+			errChan <- fmt.Errorf("request info not present")
+			return
+		} else {
+			ci := ClientInfo{}
+			json.Unmarshal([]byte(ri[0]), &ci)
+			okChan <- ci.Name
+		}
+	})
+
+	ncRequest1 := natsConnect(t, s.ClientURL(), nats.Name("0"), nats.Token("shared-secret-bearer"))
+	defer ncRequest1.Close()
+
+	ncRequest2 := natsConnect(t, s.ClientURL(), nats.Name("1"), nats.TokenHandler(func() string {
+		return "shared-secret-bearer"
+	}))
+	defer ncRequest2.Close()
+
+	kp, _ := nkeys.CreateUser()
+	pub, _ := kp.PublicKey()
+	ncRequest3 := natsConnect(t, s.ClientURL(), nats.Name("2"), nats.Token("shared-secret"), nats.Nkey(pub, func(bytes []byte) ([]byte, error) {
+		return kp.Sign(bytes)
+	}))
+	defer ncRequest3.Close()
+
+	ncRequest4 := natsConnect(t, s.ClientURL(), nats.Name("3"), nats.TokenHandler(func() string {
+		return "shared-secret"
+	}), nats.Nkey(pub, func(bytes []byte) ([]byte, error) {
+		return kp.Sign(bytes)
+	}))
+	defer ncRequest4.Close()
+
+	require_True(t, len(errChan) == 0)
+
+	for i := 0; i < 4; i++ {
+		require_Equal(t, <-okChan, fmt.Sprintf("%d", i))
+	}
+}
+
 func TestJWTAccountConnzAccessAfterClaimUpdate(t *testing.T) {
 	skp, spub := createKey(t)
 	screds := newUser(t, skp)

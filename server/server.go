@@ -77,6 +77,7 @@ type Info struct {
 	IP                string   `json:"ip,omitempty"`
 	CID               uint64   `json:"client_id,omitempty"`
 	ClientIP          string   `json:"client_ip,omitempty"`
+	JWT               string   `json:"client_jwt,omitempty"` // If the server requested the JWT on behalf of the client, communicate the obtained JWT back to the client
 	Nonce             string   `json:"nonce,omitempty"`
 	Cluster           string   `json:"cluster,omitempty"`
 	Dynamic           bool     `json:"cluster_dynamic,omitempty"`
