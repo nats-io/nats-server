@@ -786,15 +786,16 @@ func (o *consumer) setLeader(isLeader bool) {
 		if o.isPushMode() {
 			o.inch = make(chan bool, 8)
 			o.acc.sl.registerNotification(o.cfg.DeliverSubject, o.cfg.DeliverGroup, o.inch)
-			if o.active = <-o.inch; !o.active {
-				// Check gateways in case they are enabled.
-				if s.gateway.enabled {
-					o.active = s.hasGatewayInterest(o.acc.Name, o.cfg.DeliverSubject)
-					stopAndClearTimer(&o.gwdtmr)
-					o.gwdtmr = time.AfterFunc(time.Second, func() { o.watchGWinterest() })
-				}
-			} else {
+			if o.active = <-o.inch; o.active {
 				o.checkQueueInterest()
+			}
+			// Check gateways in case they are enabled.
+			if s.gateway.enabled {
+				if !o.active {
+					o.active = s.hasGatewayInterest(o.acc.Name, o.cfg.DeliverSubject)
+				}
+				stopAndClearTimer(&o.gwdtmr)
+				o.gwdtmr = time.AfterFunc(time.Second, func() { o.watchGWinterest() })
 			}
 		}
 
@@ -1277,7 +1278,7 @@ func (o *consumer) updateDeliverSubjectLocked(newDeliver string) {
 		o.forceExpirePending()
 	}
 
-	o.acc.sl.ClearNotification(o.dsubj, o.inch)
+	o.acc.sl.clearNotification(o.dsubj, o.cfg.DeliverGroup, o.inch)
 	o.dsubj, o.cfg.DeliverSubject = newDeliver, newDeliver
 	// When we register new one it will deliver to update state loop.
 	o.acc.sl.registerNotification(newDeliver, o.cfg.DeliverGroup, o.inch)
@@ -3133,6 +3134,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 		o.signalNewMessages()
 	}
 	n := o.node
+	qgroup := o.cfg.DeliverGroup
 	o.mu.Unlock()
 
 	if c != nil {
@@ -3143,7 +3145,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	}
 
 	if delivery != _EMPTY_ {
-		a.sl.ClearNotification(delivery, o.inch)
+		a.sl.clearNotification(delivery, qgroup, o.inch)
 	}
 
 	mset.mu.Lock()
