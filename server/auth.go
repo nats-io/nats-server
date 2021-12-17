@@ -403,14 +403,14 @@ func (s *Server) onboardingCallout(c *client, opts *Options) bool {
 	msgChan := make(chan string)
 	defer close(msgChan)
 	ib := s.newRespInbox()
-	sub, err := s.sysSubscribe(ib, func(_ *subscription, _ *client, acc *Account, subject, reply string, rmsg []byte) {
+	sub, err := acc.subscribeInternal(ib, func(_ *subscription, _ *client, acc *Account, subject, reply string, rmsg []byte) {
 		msgChan <- string(rmsg)
 	})
 	if err != nil {
 		c.Debugf("Authentication requires a user JWT - Setup failure %s", signupName)
 		return false
 	}
-	defer s.sysUnsubscribe(sub)
+	defer sub.client.processUnsub(sub.sid)
 	var hdr map[string]string
 	ci := c.getClientInfo(true)
 	// TODO clear out account in ci? the value of $G may be confusing
