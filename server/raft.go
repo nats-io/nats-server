@@ -263,6 +263,7 @@ var (
 	errLeaderLen         = fmt.Errorf("raft: leader should be exactly %d bytes", idLen)
 	errTooManyEntries    = errors.New("raft: append entry can contain a max of 64k entries")
 	errBadAppendEntry    = errors.New("raft: append entry corrupt")
+	errChannelFull       = errors.New("raft: entry failed to be placed on internal channel")
 )
 
 // This will bootstrap a raftNode by writing its config into the store directory.
@@ -2230,6 +2231,7 @@ func (n *raft) applyCommit(index uint64) error {
 			committed = append(committed, e)
 		}
 	}
+	var err error
 	// Pass to the upper layers if we have normal entries.
 	if len(committed) > 0 {
 		if fpae {
@@ -2240,14 +2242,18 @@ func (n *raft) applyCommit(index uint64) error {
 		closed := n.state == Closed
 		n.Unlock()
 		if !closed {
-			n.applyc <- &CommittedEntry{index, committed}
+			select {
+			case n.applyc <- &CommittedEntry{index, committed}:
+			default:
+				err = errChannelFull
+			}
 		}
 		n.Lock()
 	} else {
 		// If we processed inline update our applied index.
 		n.applied = index
 	}
-	return nil
+	return err
 }
 
 // Used to track a success response and apply entries.
