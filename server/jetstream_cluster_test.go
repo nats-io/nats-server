@@ -9716,6 +9716,54 @@ func TestJetStreamConsumerUpdates(t *testing.T) {
 	t.Run("Clustered", func(t *testing.T) { testConsumerUpdate(t, c.randomServer(), 2) })
 }
 
+func TestJetStreamSuperClusterPushConsumerInterest(t *testing.T) {
+	sc := createJetStreamSuperCluster(t, 3, 2)
+	defer sc.shutdown()
+
+	for _, test := range []struct {
+		name  string
+		queue string
+	}{
+		{"non queue", _EMPTY_},
+		{"queue", "queue"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testInterest := func(s *Server) {
+				t.Helper()
+				nc, js := jsClientConnect(t, s)
+				defer nc.Close()
+
+				_, err := js.AddStream(&nats.StreamConfig{
+					Name:     "TEST",
+					Subjects: []string{"foo"},
+					Replicas: 3,
+				})
+				require_NoError(t, err)
+
+				var sub *nats.Subscription
+				if test.queue != _EMPTY_ {
+					sub, err = js.QueueSubscribeSync("foo", test.queue)
+				} else {
+					sub, err = js.SubscribeSync("foo", nats.Durable("dur"))
+				}
+				require_NoError(t, err)
+
+				js.Publish("foo", []byte("msg1"))
+				// Since the GW watcher is checking every 1sec, make sure we are
+				// giving it enough time for the delivery to start.
+				_, err = sub.NextMsg(2 * time.Second)
+				require_NoError(t, err)
+			}
+
+			// Create the durable push consumer from cluster "0"
+			testInterest(sc.clusters[0].servers[0])
+
+			// Now "move" to a server in cluster "1"
+			testInterest(sc.clusters[1].servers[0])
+		})
+	}
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
