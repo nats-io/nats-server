@@ -1058,7 +1058,7 @@ func (mset *stream) update(config *StreamConfig) error {
 	return nil
 }
 
-// Purge will remove all messages from the stream and underlying store.
+// Purge will remove all messages from the stream and underlying store based on the request.
 func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err error) {
 	mset.mu.Lock()
 	if mset.client == nil {
