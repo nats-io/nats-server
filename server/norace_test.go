@@ -3918,3 +3918,58 @@ func TestNoRaceJetStreamClusterStreamDropCLFS(t *testing.T) {
 		t.Fatalf("Stream was reset")
 	}
 }
+
+func TestNoRaceJetStreamMemstoreWithLargeInteriorDeletes(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	config := s.JetStreamConfig()
+	if config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"foo", "bar"},
+		MaxMsgsPerSubject: 1,
+		Storage:           nats.MemoryStorage,
+	})
+	require_NoError(t, err)
+
+	acc, err := s.lookupAccount("$G")
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+
+	msg := []byte("Hello World!")
+	if _, err := js.PublishAsync("foo", msg); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+	for i := 1; i <= 1_000_000; i++ {
+		if _, err := js.PublishAsync("bar", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	now := time.Now()
+	ss := mset.stateWithDetail(true)
+	// Before the fix the snapshot for this test would be > 200ms on my setup.
+	if elapsed := time.Since(now); elapsed > 50*time.Millisecond {
+		t.Fatalf("Took too long to snapshot: %v", elapsed)
+	}
+
+	if ss.Msgs != 2 || ss.FirstSeq != 1 || ss.LastSeq != 1_000_001 || ss.NumDeleted != 999999 {
+		// To not print out on error.
+		ss.Deleted = nil
+		t.Fatalf("Bad State: %+v", ss)
+	}
+}
