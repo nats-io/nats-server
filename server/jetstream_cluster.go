@@ -4868,8 +4868,9 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) error {
 	mset.processSnapshotDeletes(snap)
 
 	mset.mu.Lock()
+	var state StreamState
 	mset.clfs = snap.Failed
-	state := mset.store.State()
+	mset.store.FastState(&state)
 	sreq := mset.calculateSyncRequest(&state, snap)
 	s, js, subject, n := mset.srv, mset.js, mset.sa.Sync, mset.node
 	mset.mu.Unlock()
@@ -4931,7 +4932,8 @@ RETRY:
 	// Grab sync request again on failures.
 	if sreq == nil {
 		mset.mu.Lock()
-		state := mset.store.State()
+		var state StreamState
+		mset.store.FastState(&state)
 		sreq = mset.calculateSyncRequest(&state, snap)
 		mset.mu.Unlock()
 		if sreq == nil {
