@@ -1872,9 +1872,11 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 	}
 
 	// If we emptied the current message block and the seq was state.First.Seq
-	// then we need to jump message blocks.
+	// then we need to jump message blocks. We will also write the index so
+	// we don't lose track of the first sequence.
 	if firstSeqNeedsUpdate {
 		fs.selectNextFirst()
+		fs.lmb.writeIndexInfo()
 	}
 	fs.mu.Unlock()
 
@@ -3472,7 +3474,7 @@ func (mb *msgBlock) indexNeedsUpdate() bool {
 }
 
 // Write index info to the appropriate file.
-// Lock should be held.
+// Filestore lock should be held.
 func (mb *msgBlock) writeIndexInfo() error {
 	// HEADER: magic version msgs bytes fseq fts lseq lts ndel checksum
 	var hdr [indexHdrSize]byte

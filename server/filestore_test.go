@@ -3449,3 +3449,33 @@ func TestFileStorePurgeExKeepOneBug(t *testing.T) {
 		t.Fatalf("Expected to find 1 `A` msgs, got %d", fss.Msgs)
 	}
 }
+
+func TestFileStoreRemoveLastWriteIndex(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "TEST", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	for i := 0; i < 10; i++ {
+		fs.StoreMsg("foo", nil, []byte("msg"))
+	}
+	for i := 0; i < 10; i++ {
+		fs.RemoveMsg(uint64(i + 1))
+	}
+
+	fs.mu.Lock()
+	fname := fs.lmb.ifn
+	fs.mu.Unlock()
+
+	fi, err := os.Stat(fname)
+	if err != nil {
+		t.Fatalf("Error getting stats for index file %q: %v", fname, err)
+	}
+	if fi.Size() == 0 {
+		t.Fatalf("Index file %q size is 0", fname)
+	}
+}
