@@ -278,6 +278,8 @@ func (a *Account) shallowCopy() *Account {
 	}
 	// JetStream
 	na.jsLimits = a.jsLimits
+	// Server config account limits.
+	na.limits = a.limits
 
 	return na
 }

@@ -3377,3 +3377,44 @@ func TestImportSubscriptionPartialOverlapWithTransform(t *testing.T) {
 		})
 	}
 }
+
+func TestAccountLimitsServerConfig(t *testing.T) {
+	cf := createConfFile(t, []byte(`
+	max_connections: 10
+	accounts {
+		MAXC {
+			users = [{user: derek, password: foo}]
+			limits {
+				max_connections: 5
+				max_subs: 10
+				max_payload: 32k
+				max_leafnodes: 1
+			}
+		}
+	}
+    `))
+	defer removeFile(t, cf)
+
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	acc, err := s.lookupAccount("MAXC")
+	require_NoError(t, err)
+
+	if mc := acc.MaxActiveConnections(); mc != 5 {
+		t.Fatalf("Did not set MaxActiveConnections properly, expected 5, got %d", mc)
+	}
+	if mlc := acc.MaxActiveLeafNodes(); mlc != 1 {
+		t.Fatalf("Did not set MaxActiveLeafNodes properly, expected 1, got %d", mlc)
+	}
+
+	// Do quick test on connections, but if they are registered above should be good.
+	for i := 0; i < 5; i++ {
+		_, err := nats.Connect(s.ClientURL(), nats.UserInfo("derek", "foo"))
+		require_NoError(t, err)
+	}
+
+	// Should fail.
+	_, err = nats.Connect(s.ClientURL(), nats.UserInfo("derek", "foo"))
+	require_Error(t, err)
+}

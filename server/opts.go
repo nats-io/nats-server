@@ -2315,6 +2315,39 @@ func parseAccountMappings(v interface{}, acc *Account, errors *[]error, warnings
 	return nil
 }
 
+// parseAccountLimits is called to parse account limits in a server config.
+func parseAccountLimits(mv interface{}, acc *Account, errors *[]error, warnings *[]error) error {
+	var lt token
+	defer convertPanicToErrorList(&lt, errors)
+
+	tk, v := unwrapValue(mv, &lt)
+	am, ok := v.(map[string]interface{})
+	if !ok {
+		return &configErr{tk, fmt.Sprintf("Expected account limits to be a map/struct, got %+v", v)}
+	}
+
+	for k, v := range am {
+		tk, mv = unwrapValue(v, &lt)
+		switch strings.ToLower(k) {
+		case "max_connections", "max_conn":
+			acc.mconns = int32(mv.(int64))
+		case "max_subscriptions", "max_subs":
+			acc.msubs = int32(mv.(int64))
+		case "max_payload", "max_pay":
+			acc.mpay = int32(mv.(int64))
+		case "max_leafnodes", "max_leafs":
+			acc.mleafs = int32(mv.(int64))
+		default:
+			if !tk.IsUsedVariable() {
+				err := &configErr{tk, fmt.Sprintf("Unknown field %q parsing account limits", k)}
+				*errors = append(*errors, err)
+			}
+		}
+	}
+
+	return nil
+}
+
 // parseAccounts will parse the different accounts syntax.
 func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]error) error {
 	var (
@@ -2431,6 +2464,12 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 					acc.defaultPerms = permissions
 				case "mappings", "maps":
 					err := parseAccountMappings(tk, acc, errors, warnings)
+					if err != nil {
+						*errors = append(*errors, err)
+						continue
+					}
+				case "limits":
+					err := parseAccountLimits(tk, acc, errors, warnings)
 					if err != nil {
 						*errors = append(*errors, err)
 						continue
@@ -2574,7 +2613,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 			*errors = append(*errors, &configErr{tk, msg})
 			continue
 		}
-		if service.to == "" {
+		if service.to == _EMPTY_ {
 			service.to = service.sub
 		}
 		if err := service.acc.AddServiceImport(ta, service.to, service.sub); err != nil {
