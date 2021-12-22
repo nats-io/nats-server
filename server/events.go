@@ -91,7 +91,7 @@ type internal struct {
 	sweeper  *time.Timer
 	stmr     *time.Timer
 	replies  map[string]msgHandler
-	sendq    chan *pubMsg
+	sendq    *ipQueue // of *pubMsg
 	resetCh  chan struct{}
 	wg       sync.WaitGroup
 	sq       *sendq
@@ -288,130 +288,124 @@ RESET:
 	}
 	s.mu.Unlock()
 
-	// Warn when internal send queue is backed up past 75%
-	warnThresh := 3 * internalSendQLen / 4
-	warnFreq := time.Second
-	last := time.Now().Add(-warnFreq)
-
 	for s.eventsRunning() {
-		// Setup information for next message
-		if len(sendq) > warnThresh && time.Since(last) >= warnFreq {
-			s.Warnf("Internal system send queue > 75%%")
-			last = time.Now()
-		}
-
 		select {
-		case pm := <-sendq:
-			if pm.si != nil {
-				pm.si.Name = servername
-				pm.si.Domain = domain
-				pm.si.Host = host
-				pm.si.Cluster = cluster
-				pm.si.ID = id
-				pm.si.Seq = atomic.AddUint64(seqp, 1)
-				pm.si.Version = VERSION
-				pm.si.Time = time.Now().UTC()
-				pm.si.JetStream = js
-			}
-			var b []byte
-			if pm.msg != nil {
-				switch v := pm.msg.(type) {
-				case string:
-					b = []byte(v)
-				case []byte:
-					b = v
-				default:
-					b, _ = json.Marshal(pm.msg)
+		case <-sendq.ch:
+			msgs := sendq.pop()
+			for _, pmi := range msgs {
+				pm := pmi.(*pubMsg)
+				if pm.si != nil {
+					pm.si.Name = servername
+					pm.si.Domain = domain
+					pm.si.Host = host
+					pm.si.Cluster = cluster
+					pm.si.ID = id
+					pm.si.Seq = atomic.AddUint64(seqp, 1)
+					pm.si.Version = VERSION
+					pm.si.Time = time.Now().UTC()
+					pm.si.JetStream = js
 				}
-			}
-
-			// Setup our client. If the user wants to use a non-system account use our internal
-			// account scoped here so that we are not changing out accounts for the system client.
-			var c *client
-			if pm.c != nil {
-				c = pm.c
-			} else {
-				c = sysc
-			}
-
-			// Grab client lock.
-			c.mu.Lock()
-
-			// Prep internal structures needed to send message.
-			c.pa.subject, c.pa.reply = []byte(pm.sub), []byte(pm.rply)
-			c.pa.size, c.pa.szb = len(b), []byte(strconv.FormatInt(int64(len(b)), 10))
-			c.pa.hdr, c.pa.hdb = -1, nil
-			trace := c.trace
-
-			// Now check for optional compression.
-			var contentHeader string
-			var bb bytes.Buffer
-
-			if len(b) > 0 {
-				switch pm.oct {
-				case gzipCompression:
-					zw := gzip.NewWriter(&bb)
-					zw.Write(b)
-					zw.Close()
-					b = bb.Bytes()
-					contentHeader = "gzip"
-				case snappyCompression:
-					sw := s2.NewWriter(&bb, s2.WriterSnappyCompat())
-					sw.Write(b)
-					sw.Close()
-					b = bb.Bytes()
-					contentHeader = "snappy"
-				case unsupportedCompression:
-					contentHeader = "identity"
+				var b []byte
+				if pm.msg != nil {
+					switch v := pm.msg.(type) {
+					case string:
+						b = []byte(v)
+					case []byte:
+						b = v
+					default:
+						b, _ = json.Marshal(pm.msg)
+					}
 				}
-			}
-			// Optional Echo
-			replaceEcho := c.echo != pm.echo
-			if replaceEcho {
-				c.echo = !c.echo
-			}
-			c.mu.Unlock()
 
-			// Add in NL
-			b = append(b, _CRLF_...)
-
-			// Check if we should set content-encoding
-			if contentHeader != _EMPTY_ {
-				b = c.setHeader(contentEncodingHeader, contentHeader, b)
-			}
-
-			// Optional header processing.
-			if pm.hdr != nil {
-				for k, v := range pm.hdr {
-					b = c.setHeader(k, v, b)
+				// Setup our client. If the user wants to use a non-system account use our internal
+				// account scoped here so that we are not changing out accounts for the system client.
+				var c *client
+				if pm.c != nil {
+					c = pm.c
+				} else {
+					c = sysc
 				}
-			}
-			// Tracing
-			if trace {
-				c.traceInOp(fmt.Sprintf("PUB %s %s %d", c.pa.subject, c.pa.reply, c.pa.size), nil)
-				c.traceMsg(b)
-			}
 
-			// Process like a normal inbound msg.
-			c.processInboundClientMsg(b)
-
-			// Put echo back if needed.
-			if replaceEcho {
+				// Grab client lock.
 				c.mu.Lock()
-				c.echo = !c.echo
-				c.mu.Unlock()
-			}
 
-			// See if we are doing graceful shutdown.
-			if !pm.last {
-				c.flushClients(0) // Never spend time in place.
-			} else {
-				// For the Shutdown event, we need to send in place otherwise
-				// there is a chance that the process will exit before the
-				// writeLoop has a chance to send it.
-				c.flushClients(time.Second)
-				return
+				// Prep internal structures needed to send message.
+				c.pa.subject, c.pa.reply = []byte(pm.sub), []byte(pm.rply)
+				c.pa.size, c.pa.szb = len(b), []byte(strconv.FormatInt(int64(len(b)), 10))
+				c.pa.hdr, c.pa.hdb = -1, nil
+				trace := c.trace
+
+				// Now check for optional compression.
+				var contentHeader string
+				var bb bytes.Buffer
+
+				if len(b) > 0 {
+					switch pm.oct {
+					case gzipCompression:
+						zw := gzip.NewWriter(&bb)
+						zw.Write(b)
+						zw.Close()
+						b = bb.Bytes()
+						contentHeader = "gzip"
+					case snappyCompression:
+						sw := s2.NewWriter(&bb, s2.WriterSnappyCompat())
+						sw.Write(b)
+						sw.Close()
+						b = bb.Bytes()
+						contentHeader = "snappy"
+					case unsupportedCompression:
+						contentHeader = "identity"
+					}
+				}
+				// Optional Echo
+				replaceEcho := c.echo != pm.echo
+				if replaceEcho {
+					c.echo = !c.echo
+				}
+				c.mu.Unlock()
+
+				// Add in NL
+				b = append(b, _CRLF_...)
+
+				// Check if we should set content-encoding
+				if contentHeader != _EMPTY_ {
+					b = c.setHeader(contentEncodingHeader, contentHeader, b)
+				}
+
+				// Optional header processing.
+				if pm.hdr != nil {
+					for k, v := range pm.hdr {
+						b = c.setHeader(k, v, b)
+					}
+				}
+				// Tracing
+				if trace {
+					c.traceInOp(fmt.Sprintf("PUB %s %s %d", c.pa.subject, c.pa.reply, c.pa.size), nil)
+					c.traceMsg(b)
+				}
+
+				// Process like a normal inbound msg.
+				c.processInboundClientMsg(b)
+
+				// Put echo back if needed.
+				if replaceEcho {
+					c.mu.Lock()
+					c.echo = !c.echo
+					c.mu.Unlock()
+				}
+
+				// See if we are doing graceful shutdown.
+				if !pm.last {
+					c.flushClients(0) // Never spend time in place.
+				} else {
+					// For the Shutdown event, we need to send in place otherwise
+					// there is a chance that the process will exit before the
+					// writeLoop has a chance to send it.
+					c.flushClients(time.Second)
+					return
+				}
 			}
+			sendq.recycle(&msgs)
 		case <-resetCh:
 			goto RESET
 		case <-s.quitCh:
@@ -433,10 +427,10 @@ func (s *Server) sendShutdownEvent() {
 	s.sys.sendq = nil
 	// Unhook all msgHandlers. Normal client cleanup will deal with subs, etc.
 	s.sys.replies = nil
-	s.mu.Unlock()
 	// Send to the internal queue and mark as last.
 	si := &ServerInfo{}
-	sendq <- &pubMsg{nil, subj, _EMPTY_, si, nil, si, noCompression, false, true}
+	sendq.push(&pubMsg{nil, subj, _EMPTY_, si, nil, si, noCompression, false, true})
+	s.mu.Unlock()
 }
 
 // Used to send an internal message to an arbitrary account.
@@ -451,19 +445,15 @@ func (s *Server) sendInternalAccountMsgWithReply(a *Account, subject, reply stri
 		s.mu.Unlock()
 		return ErrNoSysAccount
 	}
-	sendq := s.sys.sendq
-	// Don't hold lock while placing on the channel.
 	c := s.sys.client
-	s.mu.Unlock()
-
 	// Replace our client with the account's internal client.
 	if a != nil {
 		a.mu.Lock()
 		c = a.internalClient()
 		a.mu.Unlock()
 	}
-
-	sendq <- &pubMsg{c, subject, reply, nil, hdr, msg, noCompression, echo, false}
+	s.sys.sendq.push(&pubMsg{c, subject, reply, nil, hdr, msg, noCompression, echo, false})
+	s.mu.Unlock()
 	return nil
 }
 
@@ -481,11 +471,7 @@ func (s *Server) sendInternalMsg(subj, rply string, si *ServerInfo, msg interfac
 	if s.sys == nil || s.sys.sendq == nil {
 		return
 	}
-	sendq := s.sys.sendq
-	// Don't hold lock while placing on the channel.
-	s.mu.Unlock()
-	sendq <- &pubMsg{nil, subj, rply, si, nil, msg, noCompression, false, false}
-	s.mu.Lock()
+	s.sys.sendq.push(&pubMsg{nil, subj, rply, si, nil, msg, noCompression, false, false})
 }
 
 // Will send an api response.
@@ -495,10 +481,8 @@ func (s *Server) sendInternalResponse(subj string, response *ServerAPIResponse) 
 		s.mu.Unlock()
 		return
 	}
-	sendq := s.sys.sendq
-	// Don't hold lock while placing on the channel.
+	s.sys.sendq.push(&pubMsg{nil, subj, _EMPTY_, response.Server, nil, response, response.compress, false, false})
 	s.mu.Unlock()
-	sendq <- &pubMsg{nil, subj, _EMPTY_, response.Server, nil, response, response.compress, false, false}
 }
 
 // Used to send internal messages from other system clients to avoid no echo issues.
@@ -512,13 +496,11 @@ func (c *client) sendInternalMsg(subj, rply string, si *ServerInfo, msg interfac
 	}
 	s.mu.Lock()
 	if s.sys == nil || s.sys.sendq == nil {
+		s.mu.Unlock()
 		return
 	}
-	sendq := s.sys.sendq
-	// Don't hold lock while placing on the channel.
+	s.sys.sendq.push(&pubMsg{c, subj, rply, si, nil, msg, noCompression, false, false})
 	s.mu.Unlock()
-
-	sendq <- &pubMsg{c, subj, rply, si, nil, msg, noCompression, false, false}
 }
 
 // Locked version of checking if events system running. Also checks server.
@@ -1622,7 +1604,6 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 	// Build event with account name and number of local clients and leafnodes.
 	eid := s.nextEventID()
 	a.mu.Lock()
-	s.mu.Unlock()
 	localConns := a.numLocalConnections()
 	m := &AccountNumConns{
 		TypedEvent: TypedEvent{
@@ -1648,16 +1629,9 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 	}
 	for _, sub := range subj {
 		msg := &pubMsg{nil, sub, _EMPTY_, &m.Server, nil, &m, noCompression, false, false}
-		select {
-		case sendQ <- msg:
-		default:
-			a.mu.Unlock()
-			sendQ <- msg
-			a.mu.Lock()
-		}
+		sendQ.push(msg)
 	}
 	a.mu.Unlock()
-	s.mu.Lock()
 }
 
 // accConnsUpdate is called whenever there is a change to the account's

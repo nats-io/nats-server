@@ -1186,9 +1186,6 @@ func (s *Server) SetDefaultSystemAccount() error {
 	return s.SetSystemAccount(DEFAULT_SYSTEM_ACCOUNT)
 }
 
-// For internal sends.
-const internalSendQLen = 256 * 1024
-
 // Assign a system account. Should only be called once.
 // This sets up a server to send and receive messages from
 // inside the server itself.
@@ -1228,7 +1225,7 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		sid:     1,
 		servers: make(map[string]*serverUpdate),
 		replies: make(map[string]msgHandler),
-		sendq:   make(chan *pubMsg, internalSendQLen),
+		sendq:   newIPQueue(), // of *pubMsg
 		resetCh: make(chan struct{}),
 		sq:      s.newSendQ(),
 		statsz:  eventsHBInterval,
