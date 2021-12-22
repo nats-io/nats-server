@@ -13782,6 +13782,85 @@ func TestJetStreamRecoverBadMirrorConfigWithSubjects(t *testing.T) {
 	}
 }
 
+func TestJetStreamCrossAccountsDeliverSubjectInterest(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 4GB, max_file_store: 1TB}
+		accounts: {
+			A: {
+				jetstream: enabled
+				users: [ {user: a, password: pwd} ]
+				exports [
+					{ stream: "_d_" }   # For the delivery subject for the consumer
+				]
+			},
+			B: {
+				users: [ {user: b, password: pwd} ]
+				imports [
+					{ stream: { account: A, subject: "_d_"}, to: "foo" }
+				]
+			},
+		}
+	`))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	_, js := jsClientConnect(t, s, nats.UserInfo("a", "pwd"))
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	msg, toSend := []byte("OK"), 100
+	for i := 0; i < toSend; i++ {
+		if _, err := js.PublishAsync("foo", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// Now create the consumer as well here manually that we will want to reference from Account B.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "dlc", DeliverSubject: "_d_"})
+	require_NoError(t, err)
+
+	// Wait to see if the stream import signals to deliver messages with no real subscriber interest.
+	time.Sleep(200 * time.Millisecond)
+
+	ci, err := js.ConsumerInfo("TEST", "dlc")
+	require_NoError(t, err)
+
+	// Make sure we have not delivered any messages based on the import signal alone.
+	if ci.NumPending != uint64(toSend) || ci.Delivered.Consumer != 0 {
+		t.Fatalf("Bad consumer info, looks like we started delivering: %+v", ci)
+	}
+
+	// Now create interest in the delivery subject through the import on account B.
+	nc, _ := jsClientConnect(t, s, nats.UserInfo("b", "pwd"))
+	sub, err := nc.SubscribeSync("foo")
+	require_NoError(t, err)
+	checkSubsPending(t, sub, toSend)
+
+	ci, err = js.ConsumerInfo("TEST", "dlc")
+	require_NoError(t, err)
+
+	// Make sure our consumer info reflects we delivered the messages.
+	if ci.NumPending != 0 || ci.Delivered.Consumer != uint64(toSend) {
+		t.Fatalf("Bad consumer info, looks like we did not deliver: %+v", ci)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
