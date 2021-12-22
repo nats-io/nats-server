@@ -770,7 +770,7 @@ func (cc *jetStreamCluster) isConsumerLeader(account, stream, consumer string) b
 
 func (js *jetStream) monitorCluster() {
 	s, n := js.server(), js.getMetaGroup()
-	qch, lch, ach := n.QuitC(), n.LeadChangeC(), n.ApplyC()
+	qch, lch, aq := n.QuitC(), n.LeadChangeC(), n.ApplyC()
 
 	defer s.grWG.Done()
 
@@ -817,24 +817,29 @@ func (js *jetStream) monitorCluster() {
 			return
 		case <-qch:
 			return
-		case ce := <-ach:
-			if ce == nil {
-				// Signals we have replayed all of our metadata.
-				isRecovering = false
-				s.Debugf("Recovered JetStream cluster metadata")
-				continue
-			}
-			// FIXME(dlc) - Deal with errors.
-			if didSnap, didRemoval, err := js.applyMetaEntries(ce.Entries, isRecovering); err == nil {
-				_, nb := n.Applied(ce.Index)
-				if js.hasPeerEntries(ce.Entries) || didSnap || (didRemoval && time.Since(lastSnapTime) > 2*time.Second) {
-					// Since we received one make sure we have our own since we do not store
-					// our meta state outside of raft.
-					doSnapshot()
-				} else if lls := len(lastSnap); nb > uint64(lls*8) && lls > 0 {
-					doSnapshot()
+		case <-aq.ch:
+			ces := aq.pop()
+			for _, cei := range ces {
+				if cei == nil {
+					// Signals we have replayed all of our metadata.
+					isRecovering = false
+					s.Debugf("Recovered JetStream cluster metadata")
+					continue
+				}
+				ce := cei.(*CommittedEntry)
+				// FIXME(dlc) - Deal with errors.
+				if didSnap, didRemoval, err := js.applyMetaEntries(ce.Entries, isRecovering); err == nil {
+					_, nb := n.Applied(ce.Index)
+					if js.hasPeerEntries(ce.Entries) || didSnap || (didRemoval && time.Since(lastSnapTime) > 2*time.Second) {
+						// Since we received one make sure we have our own since we do not store
+						// our meta state outside of raft.
+						doSnapshot()
+					} else if lls := len(lastSnap); nb > uint64(lls*8) && lls > 0 {
+						doSnapshot()
+					}
 				}
 			}
+			aq.recycle(&ces)
 		case isLeader = <-lch:
 			// We want to make sure we are updated on statsz so ping the extended cluster.
 			if isLeader {
@@ -1461,7 +1466,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 		return
 	}
 
-	qch, lch, ach := n.QuitC(), n.LeadChangeC(), n.ApplyC()
+	qch, lch, aq := n.QuitC(), n.LeadChangeC(), n.ApplyC()
 
 	s.Debugf("Starting stream monitor for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
 	defer s.Debugf("Exiting stream monitor for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
@@ -1474,14 +1479,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 		if n.Leader() {
 			n.StepDown()
 		}
-		// Drain the commit channel..
-		for len(ach) > 0 {
-			select {
-			case <-ach:
-			default:
-				return
-			}
-		}
+		// Drain the commit queue...
+		aq.drain()
 	}()
 
 	const (
@@ -1529,39 +1528,45 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 			return
 		case <-qch:
 			return
-		case ce := <-ach:
-			// No special processing needed for when we are caught up on restart.
-			if ce == nil {
-				isRecovering = false
-				// Check on startup if we should snapshot/compact.
-				if _, b := n.Size(); b > compactSizeMin || n.NeedSnapshot() {
-					doSnapshot()
-				}
-				continue
-			}
-			// Apply our entries.
-			if err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
-				ne, nb := n.Applied(ce.Index)
-				// If we have at least min entries to compact, go ahead and snapshot/compact.
-				if ne >= compactNumMin || nb > compactSizeMin {
-					doSnapshot()
-				}
-			} else {
-				s.Warnf("Error applying entries to '%s > %s': %v", sa.Client.serviceAccount(), sa.Config.Name, err)
-				if isClusterResetErr(err) {
-					if mset.isMirror() && mset.IsLeader() {
-						mset.retryMirrorConsumer()
-						continue
+		case <-aq.ch:
+			ces := aq.pop()
+			for _, cei := range ces {
+				// No special processing needed for when we are caught up on restart.
+				if cei == nil {
+					isRecovering = false
+					// Check on startup if we should snapshot/compact.
+					if _, b := n.Size(); b > compactSizeMin || n.NeedSnapshot() {
+						doSnapshot()
 					}
-					// We will attempt to reset our cluster state.
-					if mset.resetClusteredState(err) {
-						return
+					continue
+				}
+				ce := cei.(*CommittedEntry)
+				// Apply our entries.
+				if err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
+					ne, nb := n.Applied(ce.Index)
+					// If we have at least min entries to compact, go ahead and snapshot/compact.
+					if ne >= compactNumMin || nb > compactSizeMin {
+						doSnapshot()
 					}
-				} else if isOutOfSpaceErr(err) {
-					// If applicable this will tear all of this down, but don't assume so and return.
-					s.handleOutOfSpace(mset)
+				} else {
+					s.Warnf("Error applying entries to '%s > %s': %v", sa.Client.serviceAccount(), sa.Config.Name, err)
+					if isClusterResetErr(err) {
+						if mset.isMirror() && mset.IsLeader() {
+							mset.retryMirrorConsumer()
+							continue
+						}
+						// We will attempt to reset our cluster state.
+						if mset.resetClusteredState(err) {
+							aq.recycle(&ces)
+							return
+						}
+					} else if isOutOfSpaceErr(err) {
+						// If applicable this will tear all of this down, but don't assume so and return.
+						s.handleOutOfSpace(mset)
+					}
 				}
 			}
+			aq.recycle(&ces)
 		case isLeader = <-lch:
 			if isLeader {
 				if isRestore {
@@ -2994,7 +2999,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 		return
 	}
 
-	qch, lch, ach := n.QuitC(), n.LeadChangeC(), n.ApplyC()
+	qch, lch, aq := n.QuitC(), n.LeadChangeC(), n.ApplyC()
 
 	s.Debugf("Starting consumer monitor for '%s > %s > %s", o.acc.Name, ca.Stream, ca.Name)
 	defer s.Debugf("Exiting consumer monitor for '%s > %s > %s'", o.acc.Name, ca.Stream, ca.Name)
@@ -3036,23 +3041,28 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			return
 		case <-qch:
 			return
-		case ce := <-ach:
-			// No special processing needed for when we are caught up on restart.
-			if ce == nil {
-				if n.NeedSnapshot() {
-					doSnapshot()
+		case <-aq.ch:
+			ces := aq.pop()
+			for _, cei := range ces {
+				// No special processing needed for when we are caught up on restart.
+				if cei == nil {
+					if n.NeedSnapshot() {
+						doSnapshot()
+					}
+					continue
 				}
-				continue
-			}
-			if err := js.applyConsumerEntries(o, ce, isLeader); err == nil {
-				ne, nb := n.Applied(ce.Index)
-				// If we have at least min entries to compact, go ahead and snapshot/compact.
-				if nb > 0 && ne >= compactNumMin || nb > compactSizeMin {
-					doSnapshot()
+				ce := cei.(*CommittedEntry)
+				if err := js.applyConsumerEntries(o, ce, isLeader); err == nil {
+					ne, nb := n.Applied(ce.Index)
+					// If we have at least min entries to compact, go ahead and snapshot/compact.
+					if nb > 0 && ne >= compactNumMin || nb > compactSizeMin {
+						doSnapshot()
+					}
+				} else {
+					s.Warnf("Error applying consumer entries to '%s > %s'", ca.Client.serviceAccount(), ca.Name)
 				}
-			} else {
-				s.Warnf("Error applying consumer entries to '%s > %s'", ca.Client.serviceAccount(), ca.Name)
 			}
+			aq.recycle(&ces)
 		case isLeader = <-lch:
 			if !isLeader && n.GroupLeader() != noLeader {
 				js.setConsumerAssignmentRecovering(ca)

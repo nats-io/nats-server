@@ -61,7 +61,7 @@ type RaftNode interface {
 	AdjustClusterSize(csz int) error
 	AdjustBootClusterSize(csz int) error
 	ClusterSize() int
-	ApplyC() <-chan *CommittedEntry
+	ApplyC() *ipQueue // of *CommittedEntry
 	PauseApply()
 	ResumeApply()
 	LeadChangeC() <-chan bool
@@ -191,7 +191,7 @@ type raft struct {
 	propc    chan *Entry
 	entryc   chan *appendEntry
 	respc    chan *appendEntryResponse
-	applyc   chan *CommittedEntry
+	applyc   *ipQueue // of *CommittedEntry
 	quit     chan struct{}
 	reqs     chan *voteRequest
 	votes    chan *voteResponse
@@ -263,7 +263,6 @@ var (
 	errLeaderLen         = fmt.Errorf("raft: leader should be exactly %d bytes", idLen)
 	errTooManyEntries    = errors.New("raft: append entry can contain a max of 64k entries")
 	errBadAppendEntry    = errors.New("raft: append entry corrupt")
-	errChannelFull       = errors.New("raft: entry failed to be placed on internal channel")
 )
 
 // This will bootstrap a raftNode by writing its config into the store directory.
@@ -380,7 +379,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		propc:    make(chan *Entry, 8192),
 		entryc:   make(chan *appendEntry, 32768),
 		respc:    make(chan *appendEntryResponse, 32768),
-		applyc:   make(chan *CommittedEntry, 32768),
+		applyc:   newIPQueue(), // of *CommittedEntry
 		leadc:    make(chan bool, 8),
 		stepdown: make(chan string, 8),
 		observer: cfg.Observer,
@@ -423,13 +422,6 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 			}
 		}
 
-		// Replay the log.
-		// Since doing this in place we need to make sure we have enough room on the applyc.
-		needed := state.Msgs + 1 // 1 is for nil to mark end of replay.
-		if uint64(cap(n.applyc)) < needed {
-			n.applyc = make(chan *CommittedEntry, needed)
-		}
-
 		for index := state.FirstSeq; index <= state.LastSeq; index++ {
 			ae, err := n.loadEntry(index)
 			if err != nil {
@@ -451,7 +443,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 	}
 
 	// Send nil entry to signal the upper layers we are done doing replay/restore.
-	n.applyc <- nil
+	n.applyc.push(nil)
 
 	// Setup our internal subscriptions.
 	if err := n.createInternalSubs(); err != nil {
@@ -1025,7 +1017,7 @@ func (n *raft) setupLastSnapshot() {
 		n.pterm = snap.lastTerm
 		n.commit = snap.lastIndex
 		n.applied = snap.lastIndex
-		n.applyc <- &CommittedEntry{n.commit, []*Entry{{EntrySnapshot, snap.data}}}
+		n.applyc.push(&CommittedEntry{n.commit, []*Entry{{EntrySnapshot, snap.data}}})
 		if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 			n.setWriteErrLocked(err)
 		}
@@ -1298,9 +1290,9 @@ func (n *raft) Peers() []*Peer {
 	return peers
 }
 
-func (n *raft) ApplyC() <-chan *CommittedEntry { return n.applyc }
-func (n *raft) LeadChangeC() <-chan bool       { return n.leadc }
-func (n *raft) QuitC() <-chan struct{}         { return n.quit }
+func (n *raft) ApplyC() *ipQueue         { return n.applyc } // queue of *CommittedEntry
+func (n *raft) LeadChangeC() <-chan bool { return n.leadc }
+func (n *raft) QuitC() <-chan struct{}   { return n.quit }
 
 func (n *raft) Created() time.Time {
 	n.RLock()
@@ -2222,7 +2214,6 @@ func (n *raft) applyCommit(index uint64) error {
 			committed = append(committed, e)
 		}
 	}
-	var err error
 	// Pass to the upper layers if we have normal entries.
 	if len(committed) > 0 {
 		if fpae {
@@ -2230,21 +2221,13 @@ func (n *raft) applyCommit(index uint64) error {
 		}
 		// For entering and exiting the system, proposals and apply we
 		// will block.
-		closed := n.state == Closed
-		n.Unlock()
-		if !closed {
-			select {
-			case n.applyc <- &CommittedEntry{index, committed}:
-			default:
-				err = errChannelFull
-			}
-		}
-		n.Lock()
+		// TODO: Not the case with moving to queue, is that ok?
+		n.applyc.push(&CommittedEntry{index, committed})
 	} else {
 		// If we processed inline update our applied index.
 		n.applied = index
 	}
-	return err
+	return nil
 }
 
 // Used to track a success response and apply entries.
@@ -2689,12 +2672,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			}
 
 			// Now send snapshot to upper levels. Only send the snapshot, not the peerstate entry.
-			select {
-			case n.applyc <- &CommittedEntry{n.commit, ae.entries[:1]}:
-			default:
-				n.warn("Failed to place snapshot entry onto our apply channel")
-				n.commit--
-			}
+			n.applyc.push(&CommittedEntry{n.commit, ae.entries[:1]})
 			n.Unlock()
 			return
 
@@ -2726,7 +2704,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			}
 			// Save in memory for faster processing during applyCommit.
 			n.pae[n.pindex] = ae
-			if len(n.pae) > paeWarnThreshold {
+			if l := len(n.pae); l > paeWarnThreshold && l%1000 == 0 {
 				n.warn("%d append entries pending", len(n.pae))
 			}
 
@@ -2898,7 +2876,7 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 
 		// Save in memory for faster processing during applyCommit.
 		n.pae[n.pindex] = ae
-		if len(n.pae) > paeWarnThreshold {
+		if l := len(n.pae); l > paeWarnThreshold && l%1000 == 0 {
 			n.warn("%d append entries pending", len(n.pae))
 		}
 	}
