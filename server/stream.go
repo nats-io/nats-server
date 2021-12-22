@@ -1672,7 +1672,7 @@ func (mset *stream) setupMirrorConsumer() error {
 		subject = strings.ReplaceAll(subject, "..", ".")
 	}
 
-	mset.outq.send(&jsPubMsg{subject, _EMPTY_, reply, nil, b, nil, 0, nil})
+	mset.outq.send(&jsPubMsg{subject, _EMPTY_, reply, nil, b, nil, 0})
 
 	go func() {
 		select {
@@ -1874,7 +1874,7 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64) {
 		subject = strings.ReplaceAll(subject, "..", ".")
 	}
 
-	mset.outq.send(&jsPubMsg{subject, _EMPTY_, reply, nil, b, nil, 0, nil})
+	mset.outq.send(&jsPubMsg{subject, _EMPTY_, reply, nil, b, nil, 0})
 
 	go func() {
 		select {
@@ -3092,7 +3092,6 @@ type jsPubMsg struct {
 	msg   []byte
 	o     *consumer
 	seq   uint64
-	next  *jsPubMsg
 }
 
 func (pm *jsPubMsg) size() int {
@@ -3102,28 +3101,14 @@ func (pm *jsPubMsg) size() int {
 	return len(pm.subj) + len(pm.reply) + len(pm.hdr) + len(pm.msg)
 }
 
-// Forms a linked list for sending internal system messages.
+// Queue of *jsPubMsg for sending internal system messages.
 type jsOutQ struct {
-	mu   sync.Mutex
-	mch  chan struct{}
-	head *jsPubMsg
-	tail *jsPubMsg
-}
-
-func (q *jsOutQ) pending() *jsPubMsg {
-	if q == nil {
-		return nil
-	}
-	q.mu.Lock()
-	head := q.head
-	q.head, q.tail = nil, nil
-	q.mu.Unlock()
-	return head
+	*ipQueue
 }
 
 func (q *jsOutQ) sendMsg(subj string, msg []byte) {
 	if q != nil {
-		q.send(&jsPubMsg{subj, _EMPTY_, _EMPTY_, nil, msg, nil, 0, nil})
+		q.send(&jsPubMsg{subj, _EMPTY_, _EMPTY_, nil, msg, nil, 0})
 	}
 }
 
@@ -3131,23 +3116,7 @@ func (q *jsOutQ) send(msg *jsPubMsg) {
 	if q == nil || msg == nil {
 		return
 	}
-	q.mu.Lock()
-	var notify bool
-	if q.head == nil {
-		q.head = msg
-		notify = true
-	} else {
-		q.tail.next = msg
-	}
-	q.tail = msg
-	q.mu.Unlock()
-
-	if notify {
-		select {
-		case q.mch <- struct{}{}:
-		default:
-		}
-	}
+	q.push(msg)
 }
 
 // StoredMsg is for raw access to messages in a stream.
@@ -3167,7 +3136,7 @@ func (mset *stream) setupSendCapabilities() {
 	if mset.outq != nil {
 		return
 	}
-	mset.outq = &jsOutQ{mch: make(chan struct{}, 1)}
+	mset.outq = &jsOutQ{newIPQueue()} // of *jsPubMsg
 	go mset.internalLoop()
 }
 
@@ -3215,8 +3184,10 @@ func (mset *stream) internalLoop() {
 
 	for {
 		select {
-		case <-outq.mch:
-			for pm := outq.pending(); pm != nil; pm = pm.next {
+		case <-outq.ch:
+			pms := outq.pop()
+			for _, pmi := range pms {
+				pm := pmi.(*jsPubMsg)
 				c.pa.subject = []byte(pm.subj)
 				c.pa.deliver = []byte(pm.dsubj)
 				c.pa.size = len(pm.msg) + len(pm.hdr)
@@ -3247,7 +3218,9 @@ func (mset *stream) internalLoop() {
 					pm.o.didNotDeliver(pm.seq)
 				}
 			}
+			// TODO: Move in the for-loop?
 			c.flushClients(0)
+			outq.recycle(&pms)
 		case <-mch:
 			for im := mset.pending(mset.msgs); im != nil; im = im.next {
 				// If we are clustered we need to propose this message to the underlying raft group.

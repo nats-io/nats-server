@@ -2819,7 +2819,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 		} else if err == errNoInterest {
 			// This is a stranded ephemeral, let's clean this one up.
 			subject := fmt.Sprintf(JSApiConsumerDeleteT, ca.Stream, ca.Name)
-			mset.outq.send(&jsPubMsg{subject, _EMPTY_, _EMPTY_, nil, nil, nil, 0, nil})
+			mset.outq.send(&jsPubMsg{subject, _EMPTY_, _EMPTY_, nil, nil, nil, 0})
 		}
 		js.mu.Unlock()
 
@@ -4770,7 +4770,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		s.resourcesExeededError()
 		if canRespond {
 			b, _ := json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: NewJSInsufficientResourcesError()})
-			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0, nil})
+			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, b, nil, 0})
 		}
 		// Stepdown regardless.
 		if node := mset.raftNode(); node != nil {
@@ -4803,7 +4803,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 			resp.Error = NewJSAccountResourcesExceededError()
 			response, _ = json.Marshal(resp)
-			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
+			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0})
 		}
 		return err
 	}
@@ -4816,7 +4816,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 			resp.Error = NewJSStreamMessageExceedsMaximumError()
 			response, _ = json.Marshal(resp)
-			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
+			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0})
 		}
 		return err
 	}
@@ -4830,7 +4830,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 			resp.Error = NewJSStreamHeaderExceedsMaximumError()
 			response, _ = json.Marshal(resp)
-			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
+			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0})
 		}
 		return err
 	}
@@ -4860,7 +4860,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			resp.Error = &ApiError{Code: 503, Description: err.Error()}
 			response, _ = json.Marshal(resp)
 			// If we errored out respond here.
-			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0, nil})
+			outq.send(&jsPubMsg{reply, _EMPTY_, _EMPTY_, nil, response, nil, 0})
 		}
 	}
 
