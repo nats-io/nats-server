@@ -164,9 +164,9 @@ type stream struct {
 	sid       int
 	pubAck    []byte
 	outq      *jsOutQ
-	msgs      *inbound
+	msgs      *ipQueue // of *inMsg
 	store     StreamStore
-	ackq      *ipQueue // queue of uint64
+	ackq      *ipQueue // of uint64
 	lseq      uint64
 	lmsgId    string
 	consumers map[string]*consumer
@@ -211,7 +211,7 @@ type sourceInfo struct {
 	iname string
 	cname string
 	sub   *subscription
-	msgs  *inbound
+	msgs  *ipQueue // of *inMsg
 	sseq  uint64
 	dseq  uint64
 	lag   uint64
@@ -378,7 +378,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		sysc:      ic,
 		stype:     cfg.Storage,
 		consumers: make(map[string]*consumer),
-		msgs:      &inbound{mch: make(chan struct{}, 1)},
+		msgs:      newIPQueue(), // of *inMsg
 		qch:       make(chan struct{}),
 	}
 
@@ -1029,7 +1029,7 @@ func (mset *stream) update(config *StreamConfig) error {
 						mset.sources = make(map[string]*sourceInfo)
 					}
 					mset.cfg.Sources = append(mset.cfg.Sources, s)
-					si := &sourceInfo{name: s.Name, iname: s.iname, msgs: &inbound{mch: make(chan struct{}, 1)}}
+					si := &sourceInfo{name: s.Name, iname: s.iname, msgs: newIPQueue() /* of *inMsg */}
 					mset.sources[s.iname] = si
 					mset.setStartingSequenceForSource(s.iname)
 					mset.setSourceConsumer(s.iname, si.sseq+1)
@@ -1332,7 +1332,7 @@ func (mset *stream) processMirrorMsgs() {
 		mset.mu.Unlock()
 		return
 	}
-	msgs, mch, qch, siqch := mset.mirror.msgs, mset.mirror.msgs.mch, mset.qch, mset.mirror.qch
+	msgs, qch, siqch := mset.mirror.msgs, mset.qch, mset.mirror.qch
 	// Set the last seen as now so that we don't fail at the first check.
 	mset.mirror.last = time.Now()
 	mset.mu.Unlock()
@@ -1348,12 +1348,15 @@ func (mset *stream) processMirrorMsgs() {
 			return
 		case <-siqch:
 			return
-		case <-mch:
-			for im := mset.pending(msgs); im != nil; im = im.next {
+		case <-msgs.ch:
+			ims := msgs.pop()
+			for _, imi := range ims {
+				im := imi.(*inMsg)
 				if !mset.processInboundMirrorMsg(im) {
 					break
 				}
 			}
+			msgs.recycle(&ims)
 		case <-t.C:
 			mset.mu.RLock()
 			isLeader := mset.isLeader()
@@ -1598,7 +1601,7 @@ func (mset *stream) setupMirrorConsumer() error {
 	}
 
 	if !isReset {
-		mset.mirror = &sourceInfo{name: mset.cfg.Mirror.Name, msgs: &inbound{mch: make(chan struct{}, 1)}}
+		mset.mirror = &sourceInfo{name: mset.cfg.Mirror.Name, msgs: newIPQueue() /* of *inMsg */}
 	}
 
 	if !mset.mirror.grr {
@@ -1937,7 +1940,7 @@ func (mset *stream) processSourceMsgs(si *sourceInfo) {
 
 	// Grab stream quit channel.
 	mset.mu.Lock()
-	msgs, mch, qch, siqch := si.msgs, si.msgs.mch, mset.qch, si.qch
+	msgs, qch, siqch := si.msgs, mset.qch, si.qch
 	// Set the last seen as now so that we don't fail at the first check.
 	si.last = time.Now()
 	mset.mu.Unlock()
@@ -1953,12 +1956,15 @@ func (mset *stream) processSourceMsgs(si *sourceInfo) {
 			return
 		case <-siqch:
 			return
-		case <-mch:
-			for im := mset.pending(msgs); im != nil; im = im.next {
+		case <-msgs.ch:
+			ims := msgs.pop()
+			for _, imi := range ims {
+				im := imi.(*inMsg)
 				if !mset.processInboundSourceMsg(si, im) {
 					break
 				}
 			}
+			msgs.recycle(&ims)
 		case <-t.C:
 			mset.mu.RLock()
 			iname, isLeader := si.iname, mset.isLeader()
@@ -2213,7 +2219,7 @@ func (mset *stream) startingSequenceForSources() {
 		if ssi.iname == _EMPTY_ {
 			ssi.setIndexName()
 		}
-		si := &sourceInfo{name: ssi.Name, iname: ssi.iname, msgs: &inbound{mch: make(chan struct{}, 1)}}
+		si := &sourceInfo{name: ssi.Name, iname: ssi.iname, msgs: newIPQueue() /* of *inMsg */}
 		mset.sources[ssi.iname] = si
 	}
 
@@ -2626,45 +2632,10 @@ type inMsg struct {
 	rply string
 	hdr  []byte
 	msg  []byte
-	next *inMsg
 }
 
-// Linked list for inbound messages.
-type inbound struct {
-	head *inMsg
-	tail *inMsg
-	mch  chan struct{}
-}
-
-func (mset *stream) pending(msgs *inbound) *inMsg {
-	mset.mu.Lock()
-	head := msgs.head
-	msgs.head, msgs.tail = nil, nil
-	mset.mu.Unlock()
-	return head
-}
-
-func (mset *stream) queueInbound(ib *inbound, subj, rply string, hdr, msg []byte) {
-	m := &inMsg{subj, rply, hdr, msg, nil}
-
-	mset.mu.Lock()
-	var notify bool
-	if ib.head == nil {
-		ib.head = m
-		notify = true
-	} else {
-		ib.tail.next = m
-	}
-	ib.tail = m
-	mch := ib.mch
-	mset.mu.Unlock()
-
-	if notify {
-		select {
-		case mch <- struct{}{}:
-		default:
-		}
-	}
+func (mset *stream) queueInbound(ib *ipQueue, subj, rply string, hdr, msg []byte) {
+	ib.push(&inMsg{subj, rply, hdr, msg})
 }
 
 func (mset *stream) queueInboundMsg(subj, rply string, hdr, msg []byte) {
@@ -3166,7 +3137,7 @@ func (mset *stream) internalLoop() {
 	c := s.createInternalJetStreamClient()
 	c.registerWithAccount(mset.acc)
 	defer c.closeConnection(ClientClosed)
-	outq, qch, mch := mset.outq, mset.qch, mset.msgs.mch
+	outq, qch, msgs := mset.outq, mset.qch, mset.msgs
 	isClustered := mset.cfg.Replicas > 1
 
 	// For the ack msgs queue for interest retention.
@@ -3221,8 +3192,10 @@ func (mset *stream) internalLoop() {
 			// TODO: Move in the for-loop?
 			c.flushClients(0)
 			outq.recycle(&pms)
-		case <-mch:
-			for im := mset.pending(mset.msgs); im != nil; im = im.next {
+		case <-msgs.ch:
+			ims := msgs.pop()
+			for _, imi := range ims {
+				im := imi.(*inMsg)
 				// If we are clustered we need to propose this message to the underlying raft group.
 				if isClustered {
 					mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg)
@@ -3230,6 +3203,7 @@ func (mset *stream) internalLoop() {
 					mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0)
 				}
 			}
+			msgs.recycle(&ims)
 		case <-amch:
 			seqs := ackq.pop()
 			for _, seq := range seqs {
