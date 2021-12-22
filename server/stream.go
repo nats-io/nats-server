@@ -1552,6 +1552,8 @@ func (mset *stream) skipMsgs(start, end uint64) {
 			// So a single message does not get too big.
 			if len(entries) > 10_000 {
 				node.ProposeDirect(entries)
+				// We need to re-craete `entries` because there is a reference
+				// to it in the node's pae map.
 				entries = entries[:0]
 			}
 		} else {

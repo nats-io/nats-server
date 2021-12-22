@@ -1421,7 +1421,9 @@ func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
 			sz += len(proposal.data)
 			if sz > maxBatch {
 				node.ProposeDirect(entries)
-				sz, entries = 0, entries[:0]
+				// We need to re-craete `entries` because there is a reference
+				// to it in the node's pae map.
+				sz, entries = 0, nil
 			}
 		}
 		if len(entries) > 0 {
