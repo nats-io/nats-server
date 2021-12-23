@@ -466,7 +466,7 @@ func NewServer(opts *Options) (*Server, error) {
 	}
 	// For other resolver:
 	// In operator mode, when the account resolver depends on an external system and
-	// the system account can't fetched, inject a temporary one.
+	// the system account can't be fetched, inject a temporary one.
 	if ar := s.accResolver; len(opts.TrustedOperators) == 1 && ar != nil &&
 		opts.SystemAccount != _EMPTY_ && opts.SystemAccount != DEFAULT_SYSTEM_ACCOUNT {
 		if _, ok := ar.(*MemAccResolver); !ok {
@@ -474,7 +474,7 @@ func NewServer(opts *Options) (*Server, error) {
 			var a *Account
 			// perform direct lookup to avoid warning trace
 			if _, err := fetchAccount(ar, s.opts.SystemAccount); err == nil {
-				a, _ = s.fetchAccount(s.opts.SystemAccount)
+				a, _ = s.lookupAccount(s.opts.SystemAccount)
 			}
 			s.mu.Lock()
 			if a == nil {
@@ -1635,10 +1635,10 @@ func (s *Server) Start() {
 						case <-s.quitCh:
 							return
 						case <-t.C:
-							if _, err := fetchAccount(ar, s.opts.SystemAccount); err != nil {
+							sacc := s.SystemAccount()
+							if claimJWT, err := fetchAccount(ar, s.opts.SystemAccount); err != nil {
 								continue
-							}
-							if _, err := s.fetchAccount(s.opts.SystemAccount); err != nil {
+							} else if err = s.updateAccountWithClaimJWT(sacc, claimJWT); err != nil {
 								continue
 							}
 							s.Noticef("System account fetched and updated")
