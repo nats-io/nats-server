@@ -448,7 +448,7 @@ func TestFileStoreWriteExpireWrite(t *testing.T) {
 	for i := 1; i <= toSend*2; i++ {
 		subj, _, msg, _, err := fs.LoadMsg(uint64(i))
 		if err != nil {
-			t.Fatalf("Unexpected error looking up seq 11: %v", err)
+			t.Fatalf("Unexpected error looking up seq %d: %v", i, err)
 		}
 		str := "Hello World!"
 		if i > toSend {
@@ -3478,4 +3478,37 @@ func TestFileStoreRemoveLastWriteIndex(t *testing.T) {
 	if fi.Size() == 0 {
 		t.Fatalf("Index file %q size is 0", fname)
 	}
+}
+
+// Test to optimize the selectMsgBlock with lots of blocks.
+func TestFileStoreFetchPerf(t *testing.T) {
+	// Comment out to run.
+	t.SkipNow()
+
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 8192, AsyncFlush: true}, StreamConfig{Name: "TEST", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	// Will create 25k msg blocks.
+	n, subj, msg := 100_000, "zzz", bytes.Repeat([]byte("ABC"), 600)
+	for i := 0; i < n; i++ {
+		if _, _, err := fs.StoreMsg(subj, nil, msg); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	// Time how long it takes us to load all messages.
+	now := time.Now()
+	for i := 0; i < n; i++ {
+		_, _, _, _, err := fs.LoadMsg(uint64(i))
+		if err != nil {
+			t.Fatalf("Unexpected error looking up seq %d: %v", i, err)
+		}
+	}
+	fmt.Printf("Elapsed to load all messages is %v\n", time.Since(now))
 }

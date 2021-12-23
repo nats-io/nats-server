@@ -1065,7 +1065,7 @@ func (fs *fileStore) GetSeqFromTime(t time.Time) uint64 {
 	// Linear search, hence the dumb part..
 	ts := t.UnixNano()
 	for seq := fseq; seq <= lseq; seq++ {
-		sm, _ := mb.fetchMsg(seq)
+		sm, _, _ := mb.fetchMsg(seq)
 		if sm != nil && sm.ts >= ts {
 			return sm.seq
 		}
@@ -1838,7 +1838,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 			}
 			mb.dmap[seq] = struct{}{}
 			// Check if <25% utilization and minimum size met.
-
 			if notLast && mb.rbytes > compactMinimum && mb.rbytes>>2 > mb.bytes {
 				mb.compact()
 			}
@@ -2012,8 +2011,8 @@ func (mb *msgBlock) slotInfo(slot int) (uint32, uint32, bool, error) {
 		return 0, 0, false, errPartialCache
 	}
 	bi := mb.cache.idx[slot]
-	ri := (bi &^ hbit)
-	hashChecked := (bi & hbit) != 0
+	ri, hashChecked := (bi &^ hbit), (bi&hbit) != 0
+
 	// Determine record length
 	var rl uint32
 	if len(mb.cache.idx) > slot+1 {
@@ -2301,7 +2300,7 @@ func (mb *msgBlock) selectNextFirst() {
 	if sm == nil {
 		// Slow path, need to unlock.
 		mb.mu.Unlock()
-		sm, _ = mb.fetchMsg(seq)
+		sm, _, _ = mb.fetchMsg(seq)
 		mb.mu.Lock()
 	}
 	if sm != nil {
@@ -2801,10 +2800,26 @@ func (fs *fileStore) selectMsgBlock(seq uint64) *msgBlock {
 	if seq < fs.state.FirstSeq || seq > fs.state.LastSeq {
 		return nil
 	}
+
+	// Starting index, defaults to beginning.
+	si := 0
+
+	// Max threshold before we probe for a starting block to start our linear search.
+	const maxl = 256
+	if nb := len(fs.blks); nb > maxl {
+		d := nb / 8
+		for _, i := range []int{d, 2 * d, 3 * d, 4 * d, 5 * d, 6 * d, 7 * d} {
+			mb := fs.blks[i]
+			if seq <= atomic.LoadUint64(&mb.last.seq) {
+				break
+			}
+			si = i
+		}
+	}
+
 	// blks are sorted in ascending order.
-	// TODO(dlc) - Can be smarter here, when lots of blks maybe use binary search.
-	// For now this is cache friendly for small to medium numbers of blks.
-	for _, mb := range fs.blks {
+	for i := si; i < len(fs.blks); i++ {
+		mb := fs.blks[i]
 		if seq <= atomic.LoadUint64(&mb.last.seq) {
 			return mb
 		}
@@ -3151,16 +3166,21 @@ checkCache:
 
 // Fetch a message from this block, possibly reading in and caching the messages.
 // We assume the block was selected and is correct, so we do not do range checks.
-func (mb *msgBlock) fetchMsg(seq uint64) (*fileStoredMsg, error) {
+func (mb *msgBlock) fetchMsg(seq uint64) (*fileStoredMsg, bool, error) {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
-	return mb.cacheLookup(seq)
+	sm, err := mb.cacheLookup(seq)
+	if err != nil {
+		return nil, false, err
+	}
+	expireOk := seq == mb.last.seq && mb.llseq == seq-1
+	return sm, expireOk, err
 }
 
 var (
@@ -3271,23 +3291,14 @@ func (fs *fileStore) msgForSeq(seq uint64) (*fileStoredMsg, error) {
 		return nil, err
 	}
 
-	// Check to see if we are the last seq for this message block and are doing
-	// a linear scan. If that is true and we are not the last message block we can
-	// try to expire the cache.
-	mb.mu.RLock()
-	shouldTryExpire := mb != lmb && seq == mb.last.seq && mb.llseq == seq-1
-	mb.mu.RUnlock()
-
-	// TODO(dlc) - older design had a check to prefetch when we knew we were
-	// loading in order and getting close to end of current mb. Should add
-	// something like it back in.
-	fsm, err := mb.fetchMsg(seq)
+	fsm, expireOk, err := mb.fetchMsg(seq)
 	if err != nil {
 		return nil, err
 	}
 
 	// We detected a linear scan and access to the last message.
-	if shouldTryExpire {
+	// If we are not the last message block we can try to expire the cache.
+	if mb != lmb && expireOk {
 		mb.tryForceExpireCache()
 	}
 
@@ -3988,7 +3999,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 		fs.mu.Unlock()
 		return ErrInvalidSequence
 	}
-	lsm, _ := nlmb.fetchMsg(seq)
+	lsm, _, _ := nlmb.fetchMsg(seq)
 	if lsm == nil {
 		fs.mu.Unlock()
 		return ErrInvalidSequence
