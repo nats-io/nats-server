@@ -196,7 +196,7 @@ type raft struct {
 	reqs     *ipQueue // of *voteRequest
 	votes    *ipQueue // of *voteResponse
 	leadc    chan bool
-	stepdown chan string
+	stepdown *ipQueue // of string
 }
 
 // cacthupState structure that holds our subscription, and catchup term and index
@@ -247,7 +247,6 @@ var (
 	errAlreadyLeader     = errors.New("raft: already leader")
 	errNilCfg            = errors.New("raft: no config given")
 	errCorruptPeers      = errors.New("raft: corrupt peer state")
-	errStepdownFailed    = errors.New("raft: stepdown failed")
 	errEntryLoadFailed   = errors.New("raft: could not load entry from WAL")
 	errEntryStoreFailed  = errors.New("raft: could not storeentry to WAL")
 	errNodeClosed        = errors.New("raft: node is closed")
@@ -380,7 +379,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		respc:    newIPQueue(), // of *appendEntryResponse
 		applyc:   newIPQueue(), // of *CommittedEntry
 		leadc:    make(chan bool, 8),
-		stepdown: make(chan string, 8),
+		stepdown: newIPQueue(), // of string
 		observer: cfg.Observer,
 		extSt:    ps.domainExt,
 	}
@@ -1188,11 +1187,7 @@ func (n *raft) StepDown(preferred ...string) error {
 		n.sendAppendEntry([]*Entry{{EntryLeaderTransfer, []byte(maybeLeader)}})
 	}
 	// Force us to stepdown here.
-	select {
-	case stepdown <- noLeader:
-	default:
-		return errStepdownFailed
-	}
+	stepdown.push(noLeader)
 	return nil
 }
 
@@ -1538,7 +1533,8 @@ func (n *raft) runAsFollower() {
 		case <-n.reqs.ch:
 			// Because of drain() it is possible that we get nil from popOne().
 			n.processVoteRequest(convertVoteRequest(n.reqs.popOne()))
-		case newLeader := <-n.stepdown:
+		case <-n.stepdown.ch:
+			newLeader := n.stepdown.popOne().(string)
 			n.switchToFollower(newLeader)
 			return
 		}
@@ -1868,7 +1864,8 @@ func (n *raft) runAsLeader() {
 		case <-n.reqs.ch:
 			// Because of drain() it is possible that we get nil from popOne().
 			n.processVoteRequest(convertVoteRequest(n.reqs.popOne()))
-		case newLeader := <-n.stepdown:
+		case <-n.stepdown.ch:
+			newLeader := n.stepdown.popOne().(string)
 			n.switchToFollower(newLeader)
 			return
 		case <-n.entryc.ch:
@@ -2030,7 +2027,7 @@ func (n *raft) sendSnapshotToFollower(subject string) (uint64, error) {
 	snap, err := n.loadLastSnapshot()
 	if err != nil {
 		// We need to stepdown here when this happens.
-		n.attemptStepDown(noLeader)
+		n.stepdown.push(noLeader)
 		return 0, err
 	}
 	// Go ahead and send the snapshot and peerstate here as first append entry to the catchup follower.
@@ -2227,7 +2224,7 @@ func (n *raft) applyCommit(index uint64) error {
 
 			// If this is us and we are the leader we should attempt to stepdown.
 			if peer == n.id && n.state == Leader {
-				n.attemptStepDown(n.selectNextLeader())
+				n.stepdown.push(n.selectNextLeader())
 			}
 
 			// Write out our new state.
@@ -2409,15 +2406,16 @@ func (n *raft) runAsCandidate() {
 				n.term = vresp.term
 				n.vote = noVote
 				n.writeTermVote()
-				n.Unlock()
 				n.debug("Stepping down from candidate, detected higher term: %d vs %d", vresp.term, n.term)
-				n.attemptStepDown(noLeader)
+				n.stepdown.push(noLeader)
+				n.Unlock()
 				return
 			}
 		case <-n.reqs.ch:
 			// Because of drain() it is possible that we get nil from popOne().
 			n.processVoteRequest(convertVoteRequest(n.reqs.popOne()))
-		case newLeader := <-n.stepdown:
+		case <-n.stepdown.ch:
+			newLeader := n.stepdown.popOne().(string)
 			n.switchToFollower(newLeader)
 			return
 		}
@@ -2484,15 +2482,6 @@ func (n *raft) createCatchup(ae *appendEntry) string {
 	return inbox
 }
 
-// Attempt to stepdown, lock should be held.
-func (n *raft) attemptStepDown(newLeader string) {
-	select {
-	case n.stepdown <- newLeader:
-	default:
-		n.debug("Failed to place stepdown for new leader %q for %q", newLeader, n.group)
-	}
-}
-
 // Truncate our WAL and reset.
 func (n *raft) truncateWAL(pterm, pindex uint64) {
 	n.debug("Truncating and repairing WAL")
@@ -2531,7 +2520,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.vote = noVote
 			n.writeTermVote()
 			n.debug("Received append entry from another leader, stepping down to %q", ae.leader)
-			n.attemptStepDown(ae.leader)
+			n.stepdown.push(ae.leader)
 		} else {
 			// Let them know we are the leader.
 			ar := &appendEntryResponse{n.term, n.pindex, n.id, false, _EMPTY_}
@@ -2550,7 +2539,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.vote = noVote
 			n.writeTermVote()
 		}
-		n.attemptStepDown(ae.leader)
+		n.stepdown.push(ae.leader)
 	}
 
 	n.resetElectionTimeout()
@@ -2618,7 +2607,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		}
 		if n.state != Follower {
 			n.debug("Term higher than ours and we are not a follower: %v, stepping down to %q", n.state, ae.leader)
-			n.attemptStepDown(ae.leader)
+			n.stepdown.push(ae.leader)
 		}
 	}
 
@@ -2806,9 +2795,7 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 		n.term = ar.term
 		n.vote = noVote
 		n.writeTermVote()
-		n.Lock()
-		n.attemptStepDown(noLeader)
-		n.Unlock()
+		n.stepdown.push(noLeader)
 	} else if ar.reply != _EMPTY_ {
 		n.catchupFollower(ar)
 	}
@@ -2849,7 +2836,7 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 			if ae, err := n.loadEntry(seq - 1); err == nil && ae != nil {
 				n.truncateWAL(ae.pterm, ae.pindex)
 				if n.state == Leader {
-					n.attemptStepDown(n.selectNextLeader())
+					n.stepdown.push(n.selectNextLeader())
 				}
 			} else {
 				panic(fmt.Sprintf("[%s | %s] Wrong index, ae is %+v, seq is %d, n.pindex is %d\n\n", n.s, n.group, ae, seq, n.pindex))
@@ -3240,7 +3227,7 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 	if vr.term > n.term {
 		if n.state != Follower {
 			n.debug("Stepping down from candidate, detected higher term: %d vs %d", vr.term, n.term)
-			n.attemptStepDown(noLeader)
+			n.stepdown.push(noLeader)
 		}
 		n.term = vr.term
 		n.vote = noVote
