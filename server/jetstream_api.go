@@ -2724,7 +2724,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 
 	// For signaling to upper layers.
 	resultCh := make(chan result, 1)
-	activeCh := make(chan int, 32)
+	activeQ := newIPQueue() // of int
 
 	var total int
 
@@ -2776,7 +2776,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 			return
 		}
 
-		activeCh <- len(msg)
+		activeQ.push(len(msg))
 
 		s.sendInternalAccountMsg(acc, reply, nil)
 	}
@@ -2862,7 +2862,8 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 				// Signal to the upper layers.
 				doneCh <- err
 				return
-			case n := <-activeCh:
+			case <-activeQ.ch:
+				n := activeQ.popOne().(int)
 				total += n
 				notActive.Reset(activityInterval)
 			case <-notActive.C:
