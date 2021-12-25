@@ -770,7 +770,7 @@ func (cc *jetStreamCluster) isConsumerLeader(account, stream, consumer string) b
 
 func (js *jetStream) monitorCluster() {
 	s, n := js.server(), js.getMetaGroup()
-	qch, lch, aq := n.QuitC(), n.LeadChangeC(), n.ApplyC()
+	qch, lch, aq := n.QuitC(), n.LeadChangeC(), n.ApplyQ()
 
 	defer s.grWG.Done()
 
@@ -1466,7 +1466,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 		return
 	}
 
-	qch, lch, aq := n.QuitC(), n.LeadChangeC(), n.ApplyC()
+	qch, lch, aq := n.QuitC(), n.LeadChangeC(), n.ApplyQ()
 
 	s.Debugf("Starting stream monitor for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
 	defer s.Debugf("Exiting stream monitor for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
@@ -2999,7 +2999,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 		return
 	}
 
-	qch, lch, aq := n.QuitC(), n.LeadChangeC(), n.ApplyC()
+	qch, lch, aq := n.QuitC(), n.LeadChangeC(), n.ApplyQ()
 
 	s.Debugf("Starting consumer monitor for '%s > %s > %s", o.acc.Name, ca.Stream, ca.Name)
 	defer s.Debugf("Exiting consumer monitor for '%s > %s > %s'", o.acc.Name, ca.Stream, ca.Name)
