@@ -2353,7 +2353,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 
 		// On error either wait or return.
 		if err != nil {
-			if err == ErrStoreMsgNotFound || err == ErrStoreEOF || err == errMaxAckPending {
+			if err == ErrStoreMsgNotFound || err == ErrStoreEOF || err == errMaxAckPending || err == errPartialCache {
 				goto waitForMsgs
 			} else {
 				o.mu.Unlock()
