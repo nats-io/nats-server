@@ -3973,3 +3973,54 @@ func TestNoRaceJetStreamMemstoreWithLargeInteriorDeletes(t *testing.T) {
 		t.Fatalf("Bad State: %+v", ss)
 	}
 }
+
+// This is related to an issue reported where we were exhausting threads by trying to
+// cleanup too many consumers at the same time.
+// https://github.com/nats-io/nats-server/issues/2742
+func TestNoRaceConsumerFileStoreConcurrentDiskIO(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	// Artificially adjust our environment for this test.
+	gmp := runtime.GOMAXPROCS(32)
+	defer runtime.GOMAXPROCS(gmp)
+
+	maxT := debug.SetMaxThreads(64)
+	defer debug.SetMaxThreads(maxT)
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "MT", Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	startCh := make(chan bool)
+	var wg sync.WaitGroup
+	var swg sync.WaitGroup
+
+	ts := time.Now().UnixNano()
+
+	// Create 1000 consumerStores
+	n := 1000
+	swg.Add(n)
+
+	for i := 1; i <= n; i++ {
+		name := fmt.Sprintf("o%d", i)
+		o, err := fs.ConsumerStore(name, &ConsumerConfig{AckPolicy: AckExplicit})
+		require_NoError(t, err)
+		wg.Add(1)
+		swg.Done()
+
+		go func() {
+			defer wg.Done()
+			// Will make everyone run concurrently.
+			<-startCh
+			o.UpdateDelivered(22, 22, 1, ts)
+			buf, _ := o.(*consumerFileStore).encodeState()
+			o.(*consumerFileStore).writeState(buf)
+			o.Delete()
+		}()
+	}
+
+	swg.Wait()
+	close(startCh)
+	wg.Wait()
+}
