@@ -197,10 +197,7 @@ func (s *Server) JetStreamIsClustered() bool {
 	if js == nil {
 		return false
 	}
-	js.mu.RLock()
-	isClustered := js.cluster != nil
-	js.mu.RUnlock()
-	return isClustered
+	return js.isClustered()
 }
 
 func (s *Server) JetStreamIsLeader() bool {
@@ -477,6 +474,15 @@ func (s *Server) enableJetStreamClustering() error {
 	}
 
 	return js.setupMetaGroup()
+}
+
+// isClustered returns if we are clustered.
+// Lock should not be held.
+func (js *jetStream) isClustered() bool {
+	js.mu.RLock()
+	isClustered := js.cluster != nil
+	js.mu.RUnlock()
+	return isClustered
 }
 
 func (js *jetStream) setupMetaGroup() error {
