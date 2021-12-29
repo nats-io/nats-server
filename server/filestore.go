@@ -30,6 +30,7 @@ import (
 	"net"
 	"os"
 	"path"
+	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -5129,6 +5130,26 @@ func (o *consumerFileStore) encryptState(buf []byte) []byte {
 	return o.aek.Seal(nonce, nonce, buf, nil)
 }
 
+// Used to limit number of disk IO calls in flight since they could all be blocking an OS thread.
+// https://github.com/nats-io/nats-server/issues/2742
+var dios chan struct{}
+
+// Used to setup our simplistic counting semaphore using buffered channels.
+// golang.org's semaphore seemed a bit heavy.
+func init() {
+	// Minimum for blocking disk IO calls.
+	const minNIO = 4
+	nIO := runtime.GOMAXPROCS(0)
+	if nIO < minNIO {
+		nIO = minNIO
+	}
+	dios = make(chan struct{}, nIO)
+	// Fill it up to start.
+	for i := 0; i < nIO; i++ {
+		dios <- struct{}{}
+	}
+}
+
 func (o *consumerFileStore) writeState(buf []byte) error {
 	// Check if we have the index file open.
 	o.mu.Lock()
@@ -5147,8 +5168,10 @@ func (o *consumerFileStore) writeState(buf []byte) error {
 	ifn := o.ifn
 	o.mu.Unlock()
 
-	// Lock not held here.
+	// Lock not held here but we do limit number of outstanding calls that could block OS threads.
+	<-dios
 	err := ioutil.WriteFile(ifn, buf, defaultFilePerms)
+	dios <- struct{}{}
 
 	o.mu.Lock()
 	if err != nil {
@@ -5458,7 +5481,9 @@ func (o *consumerFileStore) Stop() error {
 
 	if len(buf) > 0 {
 		o.waitOnFlusher()
+		<-dios
 		err = ioutil.WriteFile(ifn, buf, defaultFilePerms)
+		dios <- struct{}{}
 	}
 	return err
 }
@@ -5498,14 +5523,18 @@ func (o *consumerFileStore) delete(streamDeleted bool) error {
 	}
 
 	var err error
-	// If our stream was deleted it will remove the directories.
-	if o.odir != _EMPTY_ && !streamDeleted {
-		err = os.RemoveAll(o.odir)
-	}
+	odir := o.odir
 	o.odir = _EMPTY_
 	o.closed = true
 	fs := o.fs
 	o.mu.Unlock()
+
+	// If our stream was not deleted this will remove the directories.
+	if odir != _EMPTY_ && !streamDeleted {
+		<-dios
+		err = os.RemoveAll(odir)
+		dios <- struct{}{}
+	}
 
 	if !streamDeleted {
 		fs.removeConsumer(o)

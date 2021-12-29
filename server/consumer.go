@@ -635,7 +635,8 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	o.nextMsgSubj = fmt.Sprintf(JSApiRequestNextT, mn, o.name)
 
 	if o.isPushMode() {
-		o.dthresh = JsDeleteWaitTimeDefault
+		// Add in 1 sec of jitter above and beyond the default of 5s.
+		o.dthresh = JsDeleteWaitTimeDefault + time.Duration(rand.Int63n(1000))*time.Millisecond
 		if !o.isDurable() {
 			// Check if we are not durable that the delivery subject has interest.
 			// Check in place here for interest. Will setup properly in setLeader.
@@ -1026,8 +1027,8 @@ func (o *consumer) updateDeliveryInterest(localInterest bool) bool {
 }
 
 func (o *consumer) deleteNotActive() {
-	// Need to check again if there is not an interest now that the timer fires.
-	if !o.hasNoLocalInterest() {
+	// If we have local interest simply return.
+	if o.hasLocalInterest() {
 		return
 	}
 	o.mu.RLock()
@@ -1055,6 +1056,7 @@ func (o *consumer) deleteNotActive() {
 			// Check to make sure we went away.
 			// Don't think this needs to be a monitored go routine.
 			go func() {
+				var fs bool
 				ticker := time.NewTicker(time.Second)
 				defer ticker.Stop()
 				for range ticker.C {
@@ -1062,8 +1064,11 @@ func (o *consumer) deleteNotActive() {
 					ca := js.consumerAssignment(acc, stream, name)
 					js.mu.RUnlock()
 					if ca != nil {
-						s.Warnf("Consumer assignment not cleaned up, retrying")
-						meta.ForwardProposal(removeEntry)
+						if fs {
+							s.Warnf("Consumer assignment not cleaned up, retrying")
+							meta.ForwardProposal(removeEntry)
+						}
+						fs = true
 					} else {
 						return
 					}
@@ -3014,6 +3019,11 @@ func (o *consumer) isActive() bool {
 	return active
 }
 
+// hasLocalInterest returns if we have local interest.
+func (o *consumer) hasLocalInterest() bool {
+	return !o.hasNoLocalInterest()
+}
+
 // hasNoLocalInterest return true if we have no local interest.
 func (o *consumer) hasNoLocalInterest() bool {
 	o.mu.RLock()
@@ -3239,7 +3249,7 @@ func validFilteredSubject(filteredSubject string, subjects []string) bool {
 	return false
 }
 
-// SetInActiveDeleteThreshold sets the delete threshold for how long to wait
+// setInActiveDeleteThreshold sets the delete threshold for how long to wait
 // before deleting an inactive ephemeral consumer.
 func (o *consumer) setInActiveDeleteThreshold(dthresh time.Duration) error {
 	o.mu.Lock()
@@ -3253,6 +3263,7 @@ func (o *consumer) setInActiveDeleteThreshold(dthresh time.Duration) error {
 	}
 	deleteWasRunning := o.dtmr != nil
 	stopAndClearTimer(&o.dtmr)
+	// Do not add jitter if set via here.
 	o.dthresh = dthresh
 	if deleteWasRunning {
 		o.dtmr = time.AfterFunc(o.dthresh, func() { o.deleteNotActive() })
