@@ -1261,7 +1261,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	<a href=.%s>accountz</a><br/>
 	<a href=.%s>jsz</a><br/>
     <br/>
-    <a href=https://docs.nats.io/nats-server/configuration/monitoring.html>help</a>
+    <a href=https://docs.nats.io/nats-server/configuration/monitoring>help</a>
   </body>
 </html>`,
 		s.basePath(VarzPath),
