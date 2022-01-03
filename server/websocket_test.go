@@ -3989,12 +3989,12 @@ func TestWSXForwardedFor(t *testing.T) {
 			}
 			select {
 			case d := <-l.ch:
-				ipAndColumn := fmt.Sprintf("%s:", test.expectedValue)
+				ipAndSlash := fmt.Sprintf("%s/", test.expectedValue)
 				if test.useHdrValue {
-					if !strings.HasPrefix(d, ipAndColumn) {
-						t.Fatalf("Expected debug statement to start with: %q, got %q", ipAndColumn, d)
+					if !strings.HasPrefix(d, ipAndSlash) {
+						t.Fatalf("Expected debug statement to start with: %q, got %q", ipAndSlash, d)
 					}
-				} else if strings.HasPrefix(d, ipAndColumn) {
+				} else if strings.HasPrefix(d, ipAndSlash) {
 					t.Fatalf("Unexpected debug statement: %q", d)
 				}
 			case <-time.After(time.Second):
