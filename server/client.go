@@ -610,12 +610,15 @@ func (c *client) initClient() {
 			if conn = addr.String(); conn != _EMPTY_ {
 				host, port, _ := net.SplitHostPort(conn)
 				iPort, _ := strconv.Atoi(port)
-				c.port = uint16(iPort)
+				c.host, c.port = host, uint16(iPort)
 				if c.isWebsocket() && c.ws.clientIP != _EMPTY_ {
-					c.host = c.ws.clientIP
-					conn = net.JoinHostPort(c.host, port)
-				} else {
-					c.host = host
+					cip := c.ws.clientIP
+					// Surround IPv6 addresses with square brackets, as
+					// net.JoinHostPort would do...
+					if strings.Contains(cip, ":") {
+						cip = "[" + cip + "]"
+					}
+					conn = fmt.Sprintf("%s/%s", cip, conn)
 				}
 				// Now that we have extracted host and port, escape
 				// the string because it is going to be used in Sprintf
