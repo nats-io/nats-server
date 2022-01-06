@@ -3131,7 +3131,7 @@ func TestMQTTClusterPlacement(t *testing.T) {
 }
 
 func TestMQTTLeafnodeWithoutJSToClusterWithJSNoSharedSysAcc(t *testing.T) {
-	test := func(resolution int) {
+	test := func(t *testing.T, resolution int) {
 		getClusterOpts := func(name string, i int) *Options {
 			o := testMQTTDefaultOptions()
 			o.ServerName = name
@@ -3214,15 +3214,17 @@ func TestMQTTLeafnodeWithoutJSToClusterWithJSNoSharedSysAcc(t *testing.T) {
 		ln := RunServer(lno)
 		defer testMQTTShutdownServer(ln)
 
+		checkLeafNodeConnected(t, ln)
+
 		// Now connect to leafnode and subscribe
-		mc, rc := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: true}, lno.MQTT.Host, lno.MQTT.Port)
+		mc, rc := testMQTTConnectRetry(t, &mqttConnInfo{clientID: "sub", cleanSess: true}, lno.MQTT.Host, lno.MQTT.Port, 5)
 		defer mc.Close()
 		testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, false)
 		testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 		testMQTTFlush(t, mc, nil, rc)
 
 		connectAndPublish := func(o *Options) {
-			mp, rp := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+			mp, rp := testMQTTConnectRetry(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
 			defer mp.Close()
 			testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
 
@@ -3237,7 +3239,7 @@ func TestMQTTLeafnodeWithoutJSToClusterWithJSNoSharedSysAcc(t *testing.T) {
 		testMQTTCheckPubMsg(t, mc, rc, "foo", mqttPubQos1, []byte("msg"))
 
 		// Connect from a server in the hub and subscribe
-		mc2, rc2 := testMQTTConnect(t, &mqttConnInfo{clientID: "sub2", cleanSess: true}, o2.MQTT.Host, o2.MQTT.Port)
+		mc2, rc2 := testMQTTConnectRetry(t, &mqttConnInfo{clientID: "sub2", cleanSess: true}, o2.MQTT.Host, o2.MQTT.Port, 5)
 		defer mc2.Close()
 		testMQTTCheckConnAck(t, rc2, mqttConnAckRCConnectionAccepted, false)
 		testMQTTSub(t, 1, mc2, rc2, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
@@ -3252,24 +3254,24 @@ func TestMQTTLeafnodeWithoutJSToClusterWithJSNoSharedSysAcc(t *testing.T) {
 		testMQTTCheckPubMsg(t, mc2, rc2, "foo", mqttPubQos1, []byte("msg"))
 	}
 	t.Run("backwards-compatibility-default-js-enabled-in-leaf", func(t *testing.T) {
-		test(0) // test with JsAccDefaultDomain set to default (pointing at hub) but jetstream enabled in leaf node too
+		test(t, 0) // test with JsAccDefaultDomain set to default (pointing at hub) but jetstream enabled in leaf node too
 	})
 	t.Run("backwards-compatibility-default-js-disabled-in-leaf", func(t *testing.T) {
 		// test with JsAccDefaultDomain set. Checks if it works with backwards compatibility code for empty domain
-		test(1)
+		test(t, 1)
 	})
 	t.Run("backwards-compatibility-domain-js-disabled-in-leaf", func(t *testing.T) {
 		// test with JsAccDefaultDomain set. Checks if it works with backwards compatibility code for domain set
-		test(2) // test with domain set in mqtt client
+		test(t, 2) // test with domain set in mqtt client
 	})
 	t.Run("mqtt-explicit-js-enabled-in-leaf", func(t *testing.T) {
-		test(3) // test with domain set in mqtt client (pointing at hub) but jetstream enabled in leaf node too
+		test(t, 3) // test with domain set in mqtt client (pointing at hub) but jetstream enabled in leaf node too
 	})
 	t.Run("mqtt-explicit-js-disabled-in-leaf", func(t *testing.T) {
-		test(4) // test with domain set in mqtt client
+		test(t, 4) // test with domain set in mqtt client
 	})
 	t.Run("backwards-compatibility-domain-js-enabled-in-leaf", func(t *testing.T) {
-		test(5) // test with JsAccDefaultDomain set to domain (pointing at hub) but jetstream enabled in leaf node too
+		test(t, 5) // test with JsAccDefaultDomain set to domain (pointing at hub) but jetstream enabled in leaf node too
 	})
 }
 

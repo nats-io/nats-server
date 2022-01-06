@@ -3410,8 +3410,9 @@ func TestAccountLimitsServerConfig(t *testing.T) {
 
 	// Do quick test on connections, but if they are registered above should be good.
 	for i := 0; i < 5; i++ {
-		_, err := nats.Connect(s.ClientURL(), nats.UserInfo("derek", "foo"))
+		c, err := nats.Connect(s.ClientURL(), nats.UserInfo("derek", "foo"))
 		require_NoError(t, err)
+		defer c.Close()
 	}
 
 	// Should fail.

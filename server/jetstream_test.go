@@ -13792,7 +13792,8 @@ func TestJetStreamCrossAccountsDeliverSubjectInterest(t *testing.T) {
 		defer removeDir(t, config.StoreDir)
 	}
 
-	_, js := jsClientConnect(t, s, nats.UserInfo("a", "pwd"))
+	nc, js := jsClientConnect(t, s, nats.UserInfo("a", "pwd"))
+	defer nc.Close()
 
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
@@ -13828,7 +13829,8 @@ func TestJetStreamCrossAccountsDeliverSubjectInterest(t *testing.T) {
 	}
 
 	// Now create interest in the delivery subject through the import on account B.
-	nc, _ := jsClientConnect(t, s, nats.UserInfo("b", "pwd"))
+	nc, _ = jsClientConnect(t, s, nats.UserInfo("b", "pwd"))
+	defer nc.Close()
 	sub, err := nc.SubscribeSync("foo")
 	require_NoError(t, err)
 	checkSubsPending(t, sub, toSend)

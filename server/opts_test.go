@@ -3236,6 +3236,7 @@ func TestMaxSubTokens(t *testing.T) {
 
 	nc, err := nats.Connect(s.ClientURL())
 	require_NoError(t, err)
+	defer nc.Close()
 
 	errs := make(chan error, 1)
 
