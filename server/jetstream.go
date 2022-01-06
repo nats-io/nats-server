@@ -1,4 +1,4 @@
-// Copyright 2019-2021 The NATS Authors
+// Copyright 2019-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -48,22 +48,22 @@ type JetStreamConfig struct {
 	Domain    string `json:"domain,omitempty"`
 }
 
+// Statistics about JetStream for this server.
 type JetStreamStats struct {
-	Memory             uint64            `json:"memory"`
-	Store              uint64            `json:"storage"`
-	ReservedMemoryUsed uint64            `json:"reserved_memory_used,omitempty"`
-	ReserveStoreUsed   uint64            `json:"reserved_storage_used,omitempty"`
-	Accounts           int               `json:"accounts,omitempty"`
-	API                JetStreamAPIStats `json:"api"`
-	ReservedMemory     uint64            `json:"reserved_memory,omitempty"`
-	ReservedStore      uint64            `json:"reserved_storage,omitempty"`
+	Memory         uint64            `json:"memory"`
+	Store          uint64            `json:"storage"`
+	ReservedMemory uint64            `json:"reserved_memory"`
+	ReservedStore  uint64            `json:"reserved_storage"`
+	Accounts       int               `json:"accounts"`
+	API            JetStreamAPIStats `json:"api"`
 }
 
 type JetStreamAccountLimits struct {
-	MaxMemory    int64 `json:"max_memory"`
-	MaxStore     int64 `json:"max_storage"`
-	MaxStreams   int   `json:"max_streams"`
-	MaxConsumers int   `json:"max_consumers"`
+	MaxMemory        int64 `json:"max_memory"`
+	MaxStore         int64 `json:"max_storage"`
+	MaxStreams       int   `json:"max_streams"`
+	MaxConsumers     int   `json:"max_consumers"`
+	MaxBytesRequired bool  `json:"max_bytes_required"`
 }
 
 // JetStreamAccountStats returns current statistics about the account's JetStream usage.
@@ -78,27 +78,28 @@ type JetStreamAccountStats struct {
 }
 
 type JetStreamAPIStats struct {
-	Total  uint64 `json:"total"`
-	Errors uint64 `json:"errors"`
+	Total    uint64 `json:"total"`
+	Errors   uint64 `json:"errors"`
+	Inflight uint64 `json:"inflight,omitempty"`
 }
 
 // This is for internal accounting for JetStream for this server.
 type jetStream struct {
 	// These are here first because of atomics on 32bit systems.
+	apiInflight   int64
+	apiTotal      int64
+	apiErrors     int64
 	memReserved   int64
 	storeReserved int64
-	apiCalls      int64
-	apiErrors     int64
-	memTotal      int64
-	storeTotal    int64
-	memTotalRes   int64
-	storeTotalRes int64
+	memUsed       int64
+	storeUsed     int64
 	mu            sync.RWMutex
 	srv           *Server
 	config        JetStreamConfig
 	cluster       *jetStreamCluster
 	accounts      map[string]*jsAccount
 	apiSubs       *Sublist
+	standAlone    bool
 	disabled      bool
 	oos           bool
 }
@@ -306,8 +307,10 @@ func (s *Server) checkStoreDir(cfg *JetStreamConfig) error {
 
 // enableJetStream will start up the JetStream subsystem.
 func (s *Server) enableJetStream(cfg JetStreamConfig) error {
+	js := &jetStream{srv: s, config: cfg, accounts: make(map[string]*jsAccount), apiSubs: NewSublistNoCache()}
+
 	s.mu.Lock()
-	s.js = &jetStream{srv: s, config: cfg, accounts: make(map[string]*jsAccount), apiSubs: NewSublistNoCache()}
+	s.js = js
 	s.mu.Unlock()
 
 	// FIXME(dlc) - Allow memory only operation?
@@ -360,17 +363,19 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	s.Debugf("     %s", jsAllAPI)
 	s.setupJetStreamExports()
 
-	// Enable accounts and restore state before starting clustering.
-	if err := s.enableJetStreamAccounts(); err != nil {
-		return err
-	}
-
-	canExtend := s.canExtendOtherDomain()
-	standAlone := s.standAloneMode()
+	standAlone, canExtend := s.standAloneMode(), s.canExtendOtherDomain()
 	if standAlone && canExtend && s.getOpts().JetStreamExtHint != jsWillExtend {
 		canExtend = false
 		s.Noticef("Standalone server started in clustered mode do not support extending domains")
 		s.Noticef(`Manually disable standalone mode by setting the JetStream Option "extension_hint: %s"`, jsWillExtend)
+	}
+
+	// Indicate if we will be standalone for checking resource reservations, etc.
+	js.setJetStreamStandAlone(standAlone && !canExtend)
+
+	// Enable accounts and restore state before starting clustering.
+	if err := s.enableJetStreamAccounts(); err != nil {
+		return err
 	}
 
 	// If we are in clustered mode go ahead and start the meta controller.
@@ -706,6 +711,16 @@ func (js *jetStream) isEnabled() bool {
 	return !js.disabled
 }
 
+// Mark that we will be in standlone mode.
+func (js *jetStream) setJetStreamStandAlone(isStandAlone bool) {
+	if js == nil {
+		return
+	}
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	js.standAlone = isStandAlone
+}
+
 // JetStreamEnabled reports if jetstream is enabled for this server.
 func (s *Server) JetStreamEnabled() bool {
 	var js *jetStream
@@ -927,30 +942,30 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		limits = dynamicJSAccountLimits
 	}
 
+	a.assignJetStreamLimits(limits)
+
 	js := s.getJetStream()
 	if js == nil {
-		a.assignJetStreamLimits(limits)
 		return NewJSNotEnabledError()
 	}
 
-	a.assignJetStreamLimits(limits)
-
 	js.mu.Lock()
-	// Check the limits against existing reservations.
 	if _, ok := js.accounts[a.Name]; ok && a.JetStreamEnabled() {
 		js.mu.Unlock()
 		return fmt.Errorf("jetstream already enabled for account")
 	}
+
+	// Check the limits against existing reservations.
 	if err := js.sufficientResources(limits); err != nil {
 		js.mu.Unlock()
 		return err
 	}
+
 	jsa := &jsAccount{js: js, account: a, limits: *limits, streams: make(map[string]*stream), sendq: sendq}
 	jsa.utimer = time.AfterFunc(usageTick, jsa.sendClusterUsageUpdateTimer)
 	jsa.storeDir = path.Join(js.config.StoreDir, a.Name)
 
 	js.accounts[a.Name] = jsa
-	js.reserveResources(limits)
 	js.mu.Unlock()
 
 	sysNode := s.Node()
@@ -1223,6 +1238,18 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	return nil
 }
 
+// Return whether or not we require MaxBytes to be set.
+func (a *Account) maxBytesRequired() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	jsa := a.js
+	if jsa == nil {
+		return false
+	}
+	return jsa.limits.MaxBytesRequired
+}
+
 // NumStreams will return how many streams we have.
 func (a *Account) numStreams() int {
 	a.mu.RLock()
@@ -1293,8 +1320,7 @@ func (a *Account) lookupStream(name string) (*stream, error) {
 // UpdateJetStreamLimits will update the account limits for a JetStream enabled account.
 func (a *Account) UpdateJetStreamLimits(limits *JetStreamAccountLimits) error {
 	a.mu.RLock()
-	s := a.srv
-	jsa := a.js
+	s, jsa := a.srv, a.js
 	a.mu.RUnlock()
 
 	if s == nil {
@@ -1315,7 +1341,6 @@ func (a *Account) UpdateJetStreamLimits(limits *JetStreamAccountLimits) error {
 	// Calculate the delta between what we have and what we want.
 	jsa.mu.Lock()
 	dl := diffCheckedLimits(&jsa.limits, limits)
-	jsaLimits := jsa.limits
 	jsa.mu.Unlock()
 
 	js.mu.Lock()
@@ -1323,23 +1348,6 @@ func (a *Account) UpdateJetStreamLimits(limits *JetStreamAccountLimits) error {
 	if err := js.sufficientResources(&dl); err != nil {
 		js.mu.Unlock()
 		return err
-	}
-	// FIXME(dlc) - If we drop and are over the max on memory or store, do we delete??
-	js.releaseResources(&jsaLimits)
-	js.reserveResources(limits)
-	if jsaLimits.MaxMemory >= 0 && limits.MaxMemory < 0 {
-		// we had a reserve and are now dropping it
-		atomic.AddInt64(&js.memTotalRes, -jsa.memTotal)
-	} else if jsaLimits.MaxMemory < 0 && limits.MaxMemory >= 0 {
-		// we had no reserve and are now adding it
-		atomic.AddInt64(&js.memTotalRes, jsa.memTotal)
-	}
-	if jsaLimits.MaxStore >= 0 && limits.MaxStore < 0 {
-		// we had a reserve and are now dropping it
-		atomic.AddInt64(&js.storeTotalRes, -jsa.storeTotal)
-	} else if jsaLimits.MaxStore < 0 && limits.MaxStore >= 0 {
-		// we had no reserve and are now adding it
-		atomic.AddInt64(&js.storeTotalRes, jsa.storeTotal)
 	}
 	js.mu.Unlock()
 
@@ -1427,7 +1435,6 @@ func (js *jetStream) disableJetStream(jsa *jsAccount) error {
 
 	js.mu.Lock()
 	delete(js.accounts, jsa.account.Name)
-	js.releaseResources(&jsa.limits)
 	js.mu.Unlock()
 
 	jsa.delete()
@@ -1518,17 +1525,11 @@ func (jsa *jsAccount) updateUsage(storeType StorageType, delta int64) {
 	if storeType == MemoryStorage {
 		jsa.usage.mem += delta
 		jsa.memTotal += delta
-		atomic.AddInt64(&js.memTotal, delta)
-		if jsa.limits.MaxMemory > 0 {
-			atomic.AddInt64(&js.memTotalRes, delta)
-		}
+		atomic.AddInt64(&js.memUsed, delta)
 	} else {
 		jsa.usage.store += delta
 		jsa.storeTotal += delta
-		atomic.AddInt64(&js.storeTotal, delta)
-		if jsa.limits.MaxStore > 0 {
-			atomic.AddInt64(&js.storeTotalRes, delta)
-		}
+		atomic.AddInt64(&js.storeUsed, delta)
 	}
 	// Publish our local updates if in clustered mode.
 	if isClustered {
@@ -1550,7 +1551,7 @@ func (jsa *jsAccount) sendClusterUsageUpdateTimer() {
 // Send updates to our account usage for this server.
 // Lock should be held.
 func (jsa *jsAccount) sendClusterUsageUpdate() {
-	if jsa.js == nil || jsa.js.srv == nil {
+	if jsa.js == nil || jsa.js.srv == nil || jsa.sendq == nil {
 		return
 	}
 	// These values are absolute so we can limit send rates.
@@ -1566,9 +1567,8 @@ func (jsa *jsAccount) sendClusterUsageUpdate() {
 	le.PutUint64(b[8:], uint64(jsa.usage.store))
 	le.PutUint64(b[16:], uint64(jsa.usage.api))
 	le.PutUint64(b[24:], uint64(jsa.usage.err))
-	if jsa.sendq != nil {
-		jsa.sendq <- &pubMsg{nil, jsa.updatesPub, _EMPTY_, nil, nil, b, noCompression, false, false}
-	}
+
+	jsa.sendq <- &pubMsg{nil, jsa.updatesPub, _EMPTY_, nil, nil, b, noCompression, false, false}
 }
 
 func (js *jetStream) wouldExceedLimits(storeType StorageType, sz int) bool {
@@ -1577,9 +1577,9 @@ func (js *jetStream) wouldExceedLimits(storeType StorageType, sz int) bool {
 		max   int64
 	)
 	if storeType == MemoryStorage {
-		total, max = &js.memTotal, js.config.MaxMemory
+		total, max = &js.memUsed, js.config.MaxMemory
 	} else {
-		total, max = &js.storeTotal, js.config.MaxStore
+		total, max = &js.storeUsed, js.config.MaxStore
 	}
 	return atomic.LoadInt64(total) > (max + int64(sz))
 }
@@ -1605,9 +1605,19 @@ func (jsa *jsAccount) limitsExceeded(storeType StorageType) bool {
 	return false
 }
 
+// Check account limits.
+func (jsa *jsAccount) checkAccountLimits(config *StreamConfig) error {
+	return jsa.checkLimits(config, false)
+}
+
+// Check account and server limits.
+func (jsa *jsAccount) checkAllLimits(config *StreamConfig) error {
+	return jsa.checkLimits(config, true)
+}
+
 // Check if a new proposed msg set while exceed our account limits.
 // Lock should be held.
-func (jsa *jsAccount) checkLimits(config *StreamConfig) error {
+func (jsa *jsAccount) checkLimits(config *StreamConfig, checkServer bool) error {
 	if jsa.limits.MaxStreams > 0 && len(jsa.streams) >= jsa.limits.MaxStreams {
 		return NewJSMaximumStreamsLimitError()
 	}
@@ -1617,13 +1627,13 @@ func (jsa *jsAccount) checkLimits(config *StreamConfig) error {
 	}
 
 	// Check storage, memory or disk.
-	return jsa.checkBytesLimits(config.MaxBytes, config.Storage, config.Replicas)
+	return jsa.checkBytesLimits(config.MaxBytes, config.Storage, config.Replicas, checkServer)
 }
 
-// Check if additional bytes will exceed our account limits.
+// Check if additional bytes will exceed our account limits and optionally the server itself.
 // This should account for replicas.
 // Lock should be held.
-func (jsa *jsAccount) checkBytesLimits(addBytes int64, storage StorageType, replicas int) error {
+func (jsa *jsAccount) checkBytesLimits(addBytes int64, storage StorageType, replicas int, checkServer bool) error {
 	if replicas < 1 {
 		replicas = 1
 	}
@@ -1639,11 +1649,10 @@ func (jsa *jsAccount) checkBytesLimits(addBytes int64, storage StorageType, repl
 			if jsa.memReserved+totalBytes > jsa.limits.MaxMemory {
 				return NewJSMemoryResourcesExceededError()
 			}
-		} else {
-			// Account is unlimited, check if this server can handle request.
-			if js.memReserved+addBytes > js.config.MaxMemory {
-				return NewJSMemoryResourcesExceededError()
-			}
+		}
+		// Check if this server can handle request.
+		if checkServer && js.memReserved+addBytes > js.config.MaxMemory {
+			return NewJSMemoryResourcesExceededError()
 		}
 	case FileStorage:
 		// Account limits defined.
@@ -1651,11 +1660,10 @@ func (jsa *jsAccount) checkBytesLimits(addBytes int64, storage StorageType, repl
 			if jsa.storeReserved+totalBytes > jsa.limits.MaxStore {
 				return NewJSStorageResourcesExceededError()
 			}
-		} else {
-			// Account is unlimited, check if this server can handle request.
-			if js.storeReserved+addBytes > js.config.MaxStore {
-				return NewJSStorageResourcesExceededError()
-			}
+		}
+		// Check if this server can handle request.
+		if checkServer && js.storeReserved+addBytes > js.config.MaxStore {
+			return NewJSStorageResourcesExceededError()
 		}
 	}
 
@@ -1721,57 +1729,96 @@ func (js *jetStream) usageStats() *JetStreamStats {
 	stats.ReservedMemory = (uint64)(js.memReserved)
 	stats.ReservedStore = (uint64)(js.storeReserved)
 	js.mu.RUnlock()
-	stats.API.Total = (uint64)(atomic.LoadInt64(&js.apiCalls))
+	stats.API.Total = (uint64)(atomic.LoadInt64(&js.apiTotal))
 	stats.API.Errors = (uint64)(atomic.LoadInt64(&js.apiErrors))
-	stats.Memory = (uint64)(atomic.LoadInt64(&js.memTotal))
-	stats.Store = (uint64)(atomic.LoadInt64(&js.storeTotal))
-	stats.ReservedMemoryUsed = (uint64)(atomic.LoadInt64(&js.memTotalRes))
-	stats.ReserveStoreUsed = (uint64)(atomic.LoadInt64(&js.storeTotalRes))
+	stats.API.Inflight = (uint64)(atomic.LoadInt64(&js.apiInflight))
+	stats.Memory = (uint64)(atomic.LoadInt64(&js.memUsed))
+	stats.Store = (uint64)(atomic.LoadInt64(&js.storeUsed))
 	return &stats
 }
 
 // Check to see if we have enough system resources for this account.
 // Lock should be held.
 func (js *jetStream) sufficientResources(limits *JetStreamAccountLimits) error {
-	if limits == nil {
+	// If we are clustered we do not really know how many resources will be ultimately available.
+	// This needs to be handled out of band.
+	// If we are a single server, we can make decisions here.
+	if limits == nil || !js.standAlone {
 		return nil
 	}
+
+	// Reserved is now specific to the MaxBytes for streams.
 	if js.memReserved+limits.MaxMemory > js.config.MaxMemory {
 		return NewJSMemoryResourcesExceededError()
 	}
 	if js.storeReserved+limits.MaxStore > js.config.MaxStore {
 		return NewJSStorageResourcesExceededError()
 	}
+
+	// Since we know if we are here we are single server mode, check the account reservations.
+	var storeReserved, memReserved int64
+	for _, jsa := range js.accounts {
+		jsa.mu.RLock()
+		if jsa.limits.MaxMemory > 0 {
+			memReserved += jsa.limits.MaxMemory
+		}
+		if jsa.limits.MaxStore > 0 {
+			storeReserved += jsa.limits.MaxStore
+		}
+		jsa.mu.RUnlock()
+	}
+
+	if memReserved+limits.MaxMemory > js.config.MaxMemory {
+		return NewJSMemoryResourcesExceededError()
+	}
+	if storeReserved+limits.MaxStore > js.config.MaxStore {
+		return NewJSStorageResourcesExceededError()
+	}
+
 	return nil
 }
 
-// This will (blindly) reserve the respources requested.
-// Lock should be held.
-func (js *jetStream) reserveResources(limits *JetStreamAccountLimits) error {
-	if limits == nil {
-		return nil
+// This will reserve the stream resources requested.
+// This will spin off off of MaxBytes.
+func (js *jetStream) reserveStreamResources(cfg *StreamConfig) {
+	if cfg == nil || cfg.MaxBytes <= 0 {
+		return
 	}
-	if limits.MaxMemory > 0 {
-		js.memReserved += limits.MaxMemory
+
+	js.mu.Lock()
+	switch cfg.Storage {
+	case MemoryStorage:
+		js.memReserved += cfg.MaxBytes
+	case FileStorage:
+		js.storeReserved += cfg.MaxBytes
 	}
-	if limits.MaxStore > 0 {
-		js.storeReserved += limits.MaxStore
+	s, clustered := js.srv, !js.standAlone
+	js.mu.Unlock()
+	// If clustered send an update to the system immediately.
+	if clustered {
+		s.sendStatszUpdate()
 	}
-	return nil
 }
 
-// Lock should be held.
-func (js *jetStream) releaseResources(limits *JetStreamAccountLimits) error {
-	if limits == nil {
-		return nil
+// Release reserved resources held by a stream.
+func (js *jetStream) releaseStreamResources(cfg *StreamConfig) {
+	if cfg == nil || cfg.MaxBytes <= 0 {
+		return
 	}
-	if limits.MaxMemory > 0 {
-		js.memReserved -= limits.MaxMemory
+
+	js.mu.Lock()
+	switch cfg.Storage {
+	case MemoryStorage:
+		js.memReserved -= cfg.MaxBytes
+	case FileStorage:
+		js.storeReserved -= cfg.MaxBytes
 	}
-	if limits.MaxStore > 0 {
-		js.storeReserved -= limits.MaxStore
+	s, clustered := js.srv, !js.standAlone
+	js.mu.Unlock()
+	// If clustered send an update to the system immediately.
+	if clustered {
+		s.sendStatszUpdate()
 	}
-	return nil
 }
 
 const (

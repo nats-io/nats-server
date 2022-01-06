@@ -1,4 +1,4 @@
-// Copyright 2013-2019 The NATS Authors
+// Copyright 2013-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -2417,11 +2417,10 @@ type JSInfo struct {
 	Disabled bool            `json:"disabled,omitempty"`
 	Config   JetStreamConfig `json:"config,omitempty"`
 	JetStreamStats
-	APICalls  int64            `json:"current_api_calls"`
-	Streams   int              `json:"total_streams,omitempty"`
-	Consumers int              `json:"total_consumers,omitempty"`
-	Messages  uint64           `json:"total_messages,omitempty"`
-	Bytes     uint64           `json:"total_message_bytes,omitempty"`
+	Streams   int              `json:"streams"`
+	Consumers int              `json:"consumers"`
+	Messages  uint64           `json:"messages"`
+	Bytes     uint64           `json:"bytes"`
 	Meta      *MetaClusterInfo `json:"meta_cluster,omitempty"`
 
 	// aggregate raft info
@@ -2576,7 +2575,6 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 		accounts = append(accounts, info)
 	}
 	s.js.mu.RUnlock()
-	jsi.APICalls = atomic.LoadInt64(&s.js.apiCalls)
 
 	if mg := s.js.getMetaGroup(); mg != nil {
 		if ci := s.raftNodeToClusterInfo(mg); ci != nil {

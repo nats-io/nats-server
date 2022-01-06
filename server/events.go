@@ -1,4 +1,4 @@
-// Copyright 2018-2021 The NATS Authors
+// Copyright 2018-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -181,6 +181,7 @@ type ClientInfo struct {
 	RTT        time.Duration `json:"rtt,omitempty"`
 	Server     string        `json:"server,omitempty"`
 	Cluster    string        `json:"cluster,omitempty"`
+	Alternates []string      `json:"alts,omitempty"`
 	Stop       *time.Time    `json:"stop,omitempty"`
 	Jwt        string        `json:"jwt,omitempty"`
 	IssuerKey  string        `json:"issuer_key,omitempty"`
@@ -669,6 +670,14 @@ func (s *Server) sendStatsz(subj string) {
 		jStat.Config = &c
 		js.mu.RUnlock()
 		jStat.Stats = js.usageStats()
+		// Update our own usage since we do not echo so we will not hear ourselves.
+		ourNode := string(getHash(s.serverName()))
+		if v, ok := s.nodeToInfo.Load(ourNode); ok && v != nil {
+			ni := v.(nodeInfo)
+			ni.stats = jStat.Stats
+			s.nodeToInfo.Store(ourNode, ni)
+		}
+		// Metagroup info.
 		if mg := js.getMetaGroup(); mg != nil {
 			if mg.Leader() {
 				if ci := s.raftNodeToClusterInfo(mg); ci != nil {
@@ -695,9 +704,11 @@ func (s *Server) sendStatsz(subj string) {
 func (s *Server) heartbeatStatsz() {
 	if s.sys.stmr != nil {
 		// Increase after startup to our max.
-		s.sys.cstatsz *= 4
-		if s.sys.cstatsz > s.sys.statsz {
-			s.sys.cstatsz = s.sys.statsz
+		if s.sys.cstatsz < s.sys.statsz {
+			s.sys.cstatsz *= 2
+			if s.sys.cstatsz > s.sys.statsz {
+				s.sys.cstatsz = s.sys.statsz
+			}
 		}
 		s.sys.stmr.Reset(s.sys.cstatsz)
 	}
@@ -714,7 +725,7 @@ func (s *Server) sendStatszUpdate() {
 func (s *Server) startStatszTimer() {
 	// We will start by sending out more of these and trail off to the statsz being the max.
 	s.sys.cstatsz = 250 * time.Millisecond
-	// Send out the first one after 250ms.
+	// Send out the first one quickly, we will slowly back off.
 	s.sys.stmr = time.AfterFunc(s.sys.cstatsz, s.wrapChk(s.heartbeatStatsz))
 }
 
@@ -1031,10 +1042,10 @@ func (s *Server) processRemoteServerShutdown(sid string) {
 	})
 	// Update any state in nodeInfo.
 	s.nodeToInfo.Range(func(k, v interface{}) bool {
-		si := v.(nodeInfo)
-		if si.id == sid {
-			si.offline = true
-			s.nodeToInfo.Store(k, si)
+		ni := v.(nodeInfo)
+		if ni.id == sid {
+			ni.offline = true
+			s.nodeToInfo.Store(k, ni)
 			return false
 		}
 		return true
@@ -1071,12 +1082,14 @@ func (s *Server) remoteServerShutdown(sub *subscription, c *client, _ *Account, 
 		s.Debugf("Received bad server info for remote server shutdown")
 		return
 	}
-	// Additional processing here.
-	if !s.sameDomain(si.Domain) {
-		return
-	}
+
+	// JetStream node updates if applicable.
 	node := string(getHash(si.Name))
-	s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Cluster, si.Domain, si.ID, true, true})
+	if v, ok := s.nodeToInfo.Load(node); ok && v != nil {
+		ni := v.(nodeInfo)
+		ni.offline = true
+		s.nodeToInfo.Store(node, ni)
+	}
 
 	sid := toks[serverSubjectIndex]
 	if su := s.sys.servers[sid]; su != nil {
@@ -1095,44 +1108,66 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 		return
 	}
 	si := ssm.Server
+
+	// JetStream node updates.
 	if !s.sameDomain(si.Domain) {
 		return
 	}
 
+	var cfg *JetStreamConfig
+	var stats *JetStreamStats
+
+	if ssm.Stats.JetStream != nil {
+		cfg = ssm.Stats.JetStream.Config
+		stats = ssm.Stats.JetStream.Stats
+	}
+
 	node := string(getHash(si.Name))
-	s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Cluster, si.Domain, si.ID, false, si.JetStream})
+	s.nodeToInfo.Store(node, nodeInfo{
+		si.Name,
+		si.Cluster,
+		si.Domain,
+		si.ID,
+		cfg,
+		stats,
+		false, si.JetStream,
+	})
 }
 
 // updateRemoteServer is called when we have an update from a remote server.
 // This allows us to track remote servers, respond to shutdown messages properly,
 // make sure that messages are ordered, and allow us to prune dead servers.
 // Lock should be held upon entry.
-func (s *Server) updateRemoteServer(ms *ServerInfo) {
-	su := s.sys.servers[ms.ID]
+func (s *Server) updateRemoteServer(si *ServerInfo) {
+	su := s.sys.servers[si.ID]
 	if su == nil {
-		s.sys.servers[ms.ID] = &serverUpdate{ms.Seq, time.Now()}
-		s.processNewServer(ms)
+		s.sys.servers[si.ID] = &serverUpdate{si.Seq, time.Now()}
+		s.processNewServer(si)
 	} else {
 		// Should always be going up.
-		if ms.Seq <= su.seq {
-			s.Errorf("Received out of order remote server update from: %q", ms.ID)
+		if si.Seq <= su.seq {
+			s.Errorf("Received out of order remote server update from: %q", si.ID)
 			return
 		}
-		su.seq = ms.Seq
+		su.seq = si.Seq
 		su.ltime = time.Now()
 	}
 }
 
 // processNewServer will hold any logic we want to use when we discover a new server.
 // Lock should be held upon entry.
-func (s *Server) processNewServer(ms *ServerInfo) {
+func (s *Server) processNewServer(si *ServerInfo) {
 	// Right now we only check if we have leafnode servers and if so send another
 	// connect update to make sure they switch this account to interest only mode.
 	s.ensureGWsInterestOnlyForLeafNodes()
+
 	// Add to our nodeToName
-	if s.sameDomain(ms.Domain) {
-		node := string(getHash(ms.Name))
-		s.nodeToInfo.Store(node, nodeInfo{ms.Name, ms.Cluster, ms.Domain, ms.ID, false, ms.JetStream})
+	if s.sameDomain(si.Domain) {
+		node := string(getHash(si.Name))
+		// Only update if non-existent
+		if _, ok := s.nodeToInfo.Load(node); !ok {
+			s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Cluster, si.Domain, si.ID, nil, nil, false, si.JetStream})
+		}
 	}
 	// Announce ourselves..
 	s.sendStatsz(fmt.Sprintf(serverStatsSubj, s.info.ID))
@@ -1378,9 +1413,15 @@ type ServerAPIConnzResponse struct {
 
 // statszReq is a request for us to respond with current statsz.
 func (s *Server) statszReq(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-	if !s.EventsEnabled() || reply == _EMPTY_ {
+	if !s.EventsEnabled() {
 		return
 	}
+
+	// No reply is a signal that we should use our normal broadcast subject.
+	if reply == _EMPTY_ {
+		reply = fmt.Sprintf(serverStatsSubj, s.info.ID)
+	}
+
 	opts := StatszEventOptions{}
 	if _, msg := c.msgParts(rmsg); len(msg) != 0 {
 		if err := json.Unmarshal(msg, &opts); err != nil {

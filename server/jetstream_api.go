@@ -1,4 +1,4 @@
-// Copyright 2020-2021 The NATS Authors
+// Copyright 2020-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -652,8 +652,8 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 	// If we are here we have received this request over a non client connection.
 	// We need to make sure not to block. We will spin a Go routine per but also make
 	// sure we do not have too many outstanding.
-	if apiOut := atomic.AddInt64(&js.apiCalls, 1); apiOut > maxJSApiOut {
-		atomic.AddInt64(&js.apiCalls, -1)
+	if apiOut := atomic.AddInt64(&js.apiInflight, 1); apiOut > maxJSApiOut {
+		atomic.AddInt64(&js.apiInflight, -1)
 		ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
 		if err == nil {
 			resp := &ApiResponse{Type: JSApiOverloadedType, Error: NewJSInsufficientResourcesError()}
@@ -678,7 +678,7 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 	// Dispatch the API call to its own Go routine.
 	go func() {
 		jsub.icb(sub, client, acc, subject, reply, rmsg)
-		atomic.AddInt64(&js.apiCalls, -1)
+		atomic.AddInt64(&js.apiInflight, -1)
 	}()
 }
 
@@ -817,7 +817,9 @@ func (a *Account) trackAPI() {
 		jsa.usage.api++
 		jsa.apiTotal++
 		jsa.sendClusterUsageUpdate()
+		js := jsa.js
 		jsa.mu.Unlock()
+		atomic.AddInt64(&js.apiTotal, 1)
 	}
 }
 
@@ -834,6 +836,7 @@ func (a *Account) trackAPIErr() {
 		jsa.sendClusterUsageUpdate()
 		js := jsa.js
 		jsa.mu.Unlock()
+		atomic.AddInt64(&js.apiTotal, 1)
 		atomic.AddInt64(&js.apiErrors, 1)
 	}
 }
@@ -1113,7 +1116,7 @@ func (s *Server) jsonResponse(v interface{}) string {
 }
 
 // Request to create a stream.
-func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, a *Account, subject, reply string, rmsg []byte) {
+func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
@@ -1286,6 +1289,14 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, a *Account,
 		}
 	}
 
+	// Check for MaxBytes required.
+	if acc.maxBytesRequired() && cfg.MaxBytes <= 0 {
+		resp.Error = NewJSStreamMaxBytesRequiredError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	// Hand off to cluster for processing.
 	if s.JetStreamIsClustered() {
 		s.jsClusteredStreamRequest(ci, acc, subject, reply, rmsg, &cfg)
 		return

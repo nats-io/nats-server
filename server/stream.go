@@ -1,4 +1,4 @@
-// Copyright 2019-2021 The NATS Authors
+// Copyright 2019-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -314,8 +314,8 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 			return nil, ApiErrors[JSStreamNameExistErr]
 		}
 	}
-	// Check for limits.
-	if err := jsa.checkLimits(&cfg); err != nil {
+	// Check for account and server limits.
+	if err := jsa.checkAllLimits(&cfg); err != nil {
 		jsa.mu.Unlock()
 		return nil, err
 	}
@@ -441,6 +441,9 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 
 	// Setup our internal send go routine.
 	mset.setupSendCapabilities()
+
+	// Reserve resources if MaxBytes present.
+	mset.js.reserveStreamResources(&mset.cfg)
 
 	// Call directly to set leader if not in clustered mode.
 	// This can be called though before we actually setup clustering, so check both.
@@ -965,7 +968,7 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig) (*StreamConfig, 
 	}
 
 	// Check limits.
-	if err := jsa.checkLimits(&cfg); err != nil {
+	if err := jsa.checkAllLimits(&cfg); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
@@ -3319,7 +3322,7 @@ func (mset *stream) delete() error {
 // Internal function to stop or delete the stream.
 func (mset *stream) stop(deleteFlag, advisory bool) error {
 	mset.mu.RLock()
-	jsa := mset.jsa
+	js, jsa := mset.js, mset.jsa
 	mset.mu.RUnlock()
 
 	if jsa == nil {
@@ -3427,6 +3430,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		if err := mset.store.Delete(); err != nil {
 			return err
 		}
+		js.releaseStreamResources(&mset.cfg)
 	} else if err := mset.store.Stop(); err != nil {
 		return err
 	}
