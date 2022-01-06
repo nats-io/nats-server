@@ -368,6 +368,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	c := s.createInternalJetStreamClient()
 	ic := s.createInternalJetStreamClient()
 
+	qname := fmt.Sprintf("Stream %s > %s messages", a.Name, config.Name)
 	mset := &stream{
 		acc:       a,
 		jsa:       jsa,
@@ -378,7 +379,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		sysc:      ic,
 		stype:     cfg.Storage,
 		consumers: make(map[string]*consumer),
-		msgs:      newIPQueue(), // of *inMsg
+		msgs:      newIPQueue(ipQueue_Logger(qname, s.ipqLog)), // of *inMsg
 		qch:       make(chan struct{}),
 	}
 
@@ -3109,7 +3110,8 @@ func (mset *stream) setupSendCapabilities() {
 	if mset.outq != nil {
 		return
 	}
-	mset.outq = &jsOutQ{newIPQueue()} // of *jsPubMsg
+	qname := fmt.Sprintf("Stream %q send", mset.cfg.Name)
+	mset.outq = &jsOutQ{newIPQueue(ipQueue_Logger(qname, mset.srv.ipqLog))} // of *jsPubMsg
 	go mset.internalLoop()
 }
 

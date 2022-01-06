@@ -921,6 +921,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 
 	id := string(getHash(s.Name()))
 	replicas := s.mqttDetermineReplicas()
+	qname := fmt.Sprintf("MQTT account %q send", accName)
 	as := &mqttAccountSessionManager{
 		sessions:   make(map[string]*mqttSession),
 		sessByHash: make(map[string]*mqttSession),
@@ -931,7 +932,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 			id:     id,
 			c:      c,
 			rplyr:  mqttJSARepliesPrefix + id + ".",
-			sendq:  newIPQueue(), // of *mqttJSPubMsg
+			sendq:  newIPQueue(ipQueue_Logger(qname, s.ipqLog)), // of *mqttJSPubMsg
 			nuid:   nuid.New(),
 			quitCh: quitCh,
 		},
