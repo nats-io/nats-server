@@ -817,9 +817,8 @@ func (a *Account) trackAPI() {
 		jsa.usage.api++
 		jsa.apiTotal++
 		jsa.sendClusterUsageUpdate()
-		js := jsa.js
+		atomic.AddInt64(&jsa.js.apiTotal, 1)
 		jsa.mu.Unlock()
-		atomic.AddInt64(&js.apiTotal, 1)
 	}
 }
 
@@ -834,10 +833,9 @@ func (a *Account) trackAPIErr() {
 		jsa.usage.err++
 		jsa.apiErrors++
 		jsa.sendClusterUsageUpdate()
-		js := jsa.js
+		atomic.AddInt64(&jsa.js.apiTotal, 1)
+		atomic.AddInt64(&jsa.js.apiErrors, 1)
 		jsa.mu.Unlock()
-		atomic.AddInt64(&js.apiTotal, 1)
-		atomic.AddInt64(&js.apiErrors, 1)
 	}
 }
 

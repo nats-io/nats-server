@@ -3604,7 +3604,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 	}
 
 	var maxBytes uint64
-	if cfg != nil && cfg.MaxBytes > 0 {
+	if cfg.MaxBytes > 0 {
 		maxBytes = uint64(cfg.MaxBytes)
 	}
 
