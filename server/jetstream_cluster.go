@@ -3394,7 +3394,12 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 				// If we have additional clusters to try we can retry.
 				if ci != nil && len(ci.Alternates) > 0 {
 					if rg := js.createGroupForStream(ci, cfg); rg != nil {
-						s.Warnf("Retrying cluster placement for stream '%s > %s'", result.Account, result.Stream)
+						if org := sa.Group; org != nil && len(org.Peers) > 0 {
+							s.Warnf("Retrying cluster placement for stream '%s > %s' due to insufficient resources in cluster %q",
+								result.Account, result.Stream, s.clusterNameForNode(org.Peers[0]))
+						} else {
+							s.Warnf("Retrying cluster placement for stream '%s > %s' due to insufficient resources", result.Account, result.Stream)
+						}
 						// Pick a new preferred leader.
 						rg.setPreferred()
 						// Get rid of previous attempt.
