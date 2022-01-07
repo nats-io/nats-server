@@ -10898,7 +10898,7 @@ func (c *cluster) waitOnLeader() {
 	expires := time.Now().Add(40 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.leader(); leader != nil {
-			time.Sleep(250 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -10926,7 +10926,7 @@ func (c *cluster) waitOnClusterReadyWithNumPeers(numPeersExpected int) {
 	// Now make sure we have all peers.
 	for leader != nil && time.Now().Before(expires) {
 		if len(leader.JetStreamClusterPeers()) == numPeersExpected {
-			time.Sleep(250 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
