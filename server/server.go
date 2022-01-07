@@ -1,4 +1,4 @@
-// Copyright 2012-2021 The NATS Authors
+// Copyright 2012-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -274,6 +274,8 @@ type nodeInfo struct {
 	cluster string
 	domain  string
 	id      string
+	cfg     *JetStreamConfig
+	stats   *JetStreamStats
 	offline bool
 	js      bool
 }
@@ -384,9 +386,19 @@ func NewServer(opts *Options) (*Server, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Place ourselves in some lookup maps.
-	ourNode := string(getHash(serverName))
-	s.nodeToInfo.Store(ourNode, nodeInfo{serverName, opts.Cluster.Name, opts.JetStreamDomain, info.ID, false, opts.JetStream})
+	// Place ourselves in the JetStream nodeInfo if needed.
+	if opts.JetStream {
+		ourNode := string(getHash(serverName))
+		s.nodeToInfo.Store(ourNode, nodeInfo{
+			serverName,
+			opts.Cluster.Name,
+			opts.JetStreamDomain,
+			info.ID,
+			&JetStreamConfig{MaxMemory: opts.JetStreamMaxMemory, MaxStore: opts.JetStreamMaxStore},
+			nil,
+			false, true,
+		})
+	}
 
 	s.routeResolver = opts.Cluster.resolver
 	if s.routeResolver == nil {
@@ -558,6 +570,11 @@ func (s *Server) setClusterName(name string) {
 // Return whether the cluster name is dynamic.
 func (s *Server) isClusterNameDynamic() bool {
 	return s.getOpts().Cluster.Name == _EMPTY_
+}
+
+// Returns our configured serverName.
+func (s *Server) serverName() string {
+	return s.getOpts().ServerName
 }
 
 // ClientURL returns the URL used to connect clients. Helpful in testing

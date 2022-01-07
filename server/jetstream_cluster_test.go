@@ -1,4 +1,4 @@
-// Copyright 2020-2021 The NATS Authors
+// Copyright 2020-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -143,9 +143,7 @@ func TestJetStreamClusterStreamLimitWithAccountDefaults(t *testing.T) {
 		Replicas: 2,
 		MaxBytes: 15 * 1024 * 1024,
 	})
-	if err == nil || !strings.Contains(err.Error(), "insufficient storage") {
-		t.Fatalf("Expected %v but got %v", ApiErrors[JSStorageResourcesExceededErr], err)
-	}
+	require_Error(t, err, NewJSInsufficientResourcesError(), NewJSStorageResourcesExceededError())
 }
 
 func TestJetStreamClusterSingleReplicaStreams(t *testing.T) {
@@ -966,20 +964,17 @@ func TestJetStreamClusterMaxBytesForStream(t *testing.T) {
 	// Stream config.
 	cfg := &nats.StreamConfig{
 		Name:     "TEST",
-		Subjects: []string{"foo", "bar"},
 		Replicas: 2,
+		MaxBytes: 2 * 1024 * 1024 * 1024, // 2GB
 	}
-	// 2GB
-	cfg.MaxBytes = 2 * 1024 * 1024 * 1024
-	if _, err := js.AddStream(cfg); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+
 	// Make sure going over the single server limit though is enforced (for now).
+	cfg.Name = "TEST2"
 	cfg.MaxBytes *= 2
 	_, err = js.AddStream(cfg)
-	if err == nil || !strings.Contains(err.Error(), "insufficient storage resources") {
-		t.Fatalf("Expected %q error, got %q", "insufficient storage resources", err.Error())
-	}
+	require_Error(t, err, NewJSInsufficientResourcesError(), NewJSStorageResourcesExceededError())
 }
 
 func TestJetStreamClusterStreamPublishWithActiveConsumers(t *testing.T) {
@@ -9764,6 +9759,146 @@ func TestJetStreamSuperClusterPushConsumerInterest(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterOverflowPlacement(t *testing.T) {
+	sc := createJetStreamSuperClusterWithTemplate(t, jsClusterMaxBytesTempl, 3, 3)
+	defer sc.shutdown()
+
+	pcn := "C2"
+	s := sc.clusterForName(pcn).randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// With this setup, we opted in for requiring MaxBytes, so this should error.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "foo",
+		Replicas: 3,
+	})
+	require_Error(t, err, NewJSStreamMaxBytesRequiredError())
+
+	// R=2 on purpose to leave one server empty.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "foo",
+		Replicas: 2,
+		MaxBytes: 2 * 1024 * 1024 * 1024,
+	})
+	require_NoError(t, err)
+
+	// Now try to add another that will overflow the current cluster's reservation.
+	// Since we asked explicitly for the same cluster this should fail.
+	// Note this will not be testing the peer picker since the update has probably not made it to the meta leader.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:      "bar",
+		Replicas:  3,
+		MaxBytes:  2 * 1024 * 1024 * 1024,
+		Placement: &nats.Placement{Cluster: pcn},
+	})
+	require_Error(t, err, NewJSInsufficientResourcesError(), NewJSStorageResourcesExceededError())
+
+	// Now test actual overflow placement. So try again with no placement designation.
+	// This will test the peer picker's logic since they are updated at this point and the meta leader
+	// knows it can not place it in C2.
+	si, err := js.AddStream(&nats.StreamConfig{
+		Name:     "bar",
+		Replicas: 3,
+		MaxBytes: 2 * 1024 * 1024 * 1024,
+	})
+	require_NoError(t, err)
+
+	// Make sure we did not get place into C2.
+	falt := si.Cluster.Name
+	if falt == pcn {
+		t.Fatalf("Expected to be placed in another cluster besides %q, but got %q", pcn, falt)
+	}
+
+	// One more time that should spill over again to our last cluster.
+	si, err = js.AddStream(&nats.StreamConfig{
+		Name:     "baz",
+		Replicas: 3,
+		MaxBytes: 2 * 1024 * 1024 * 1024,
+	})
+	require_NoError(t, err)
+
+	// Make sure we did not get place into C2.
+	if salt := si.Cluster.Name; salt == pcn || salt == falt {
+		t.Fatalf("Expected to be placed in last cluster besides %q or %q, but got %q", pcn, falt, salt)
+	}
+
+	// Now place a stream of R1 into C2 which should have space.
+	si, err = js.AddStream(&nats.StreamConfig{
+		Name:     "dlc",
+		MaxBytes: 2 * 1024 * 1024 * 1024,
+	})
+	require_NoError(t, err)
+
+	if si.Cluster.Name != pcn {
+		t.Fatalf("Expected to be placed in our origin cluster %q, but got %q", pcn, si.Cluster.Name)
+	}
+}
+
+func TestJetStreamClusterConcurrentOverflow(t *testing.T) {
+	sc := createJetStreamSuperClusterWithTemplate(t, jsClusterMaxBytesTempl, 3, 3)
+	defer sc.shutdown()
+
+	pcn := "C2"
+
+	startCh := make(chan bool)
+	var wg sync.WaitGroup
+	var swg sync.WaitGroup
+
+	start := func(name string) {
+		wg.Add(1)
+		defer wg.Done()
+
+		s := sc.clusterForName(pcn).randomServer()
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		swg.Done()
+		<-startCh
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     name,
+			Replicas: 3,
+			MaxBytes: 2 * 1024 * 1024 * 1024,
+		})
+		require_NoError(t, err)
+	}
+
+	swg.Add(2)
+	go start("foo")
+	go start("bar")
+	swg.Wait()
+	// Now start both at same time.
+	close(startCh)
+	wg.Wait()
+}
+
+func TestJetStreamClusterBalancedPlacement(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterMaxBytesTempl, "CB", 5)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// We have 10GB (2GB X 5) available.
+	// Use MaxBytes for ease of test (used works too) and place 5 1GB streams with R=2.
+	for i := 1; i <= 5; i++ {
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     fmt.Sprintf("S-%d", i),
+			Replicas: 2,
+			MaxBytes: 1 * 1024 * 1024 * 1024,
+		})
+		require_NoError(t, err)
+	}
+	// Make sure the next one fails properly.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "FAIL",
+		Replicas: 2,
+		MaxBytes: 1 * 1024 * 1024 * 1024,
+	})
+	require_Error(t, err, NewJSInsufficientResourcesError(), NewJSStorageResourcesExceededError())
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
@@ -9827,6 +9962,36 @@ var jsClusterTempl = `
 
 	# For access to system account.
 	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+`
+
+var jsClusterMaxBytesTempl = `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: "%s"}
+
+	leaf {
+		listen: 127.0.0.1:-1
+	}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	no_auth_user: u
+
+	accounts {
+		$U {
+			users = [ { user: "u", pass: "p" } ]
+			jetstream: {
+				max_mem:   128MB
+				max_file:  8GB
+				max_bytes: true // Forces streams to indicate max_bytes.
+			}
+		}
+		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+	}
 `
 
 var jsSuperClusterTempl = `
@@ -10736,7 +10901,7 @@ func (c *cluster) waitOnLeader() {
 			time.Sleep(100 * time.Millisecond)
 			return
 		}
-		time.Sleep(25 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	c.t.Fatalf("Expected a cluster leader, got none")
@@ -10751,7 +10916,7 @@ func (c *cluster) waitOnClusterReady() {
 func (c *cluster) waitOnClusterReadyWithNumPeers(numPeersExpected int) {
 	c.t.Helper()
 	var leader *Server
-	expires := time.Now().Add(20 * time.Second)
+	expires := time.Now().Add(40 * time.Second)
 	for time.Now().Before(expires) {
 		if leader = c.leader(); leader != nil {
 			break
@@ -10764,7 +10929,7 @@ func (c *cluster) waitOnClusterReadyWithNumPeers(numPeersExpected int) {
 			time.Sleep(100 * time.Millisecond)
 			return
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	peersSeen := len(leader.JetStreamClusterPeers())

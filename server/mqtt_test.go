@@ -3164,6 +3164,8 @@ func TestMQTTLeafnodeWithoutJSToClusterWithJSNoSharedSysAcc(t *testing.T) {
 		checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
 			for _, s := range cluster {
 				if s.JetStreamIsLeader() {
+					// Need to wait for usage updates now to propagate to meta leader.
+					time.Sleep(250 * time.Millisecond)
 					return nil
 				}
 			}
@@ -3180,13 +3182,9 @@ func TestMQTTLeafnodeWithoutJSToClusterWithJSNoSharedSysAcc(t *testing.T) {
 			lno.Accounts = append(lno.Accounts, NewAccount("unused-account"))
 			fallthrough
 		case 1:
-			lno.JsAccDefaultDomain = map[string]string{
-				"$G": "",
-			}
+			lno.JsAccDefaultDomain = map[string]string{"$G": ""}
 		case 2:
-			lno.JsAccDefaultDomain = map[string]string{
-				"$G": o1.JetStreamDomain,
-			}
+			lno.JsAccDefaultDomain = map[string]string{"$G": o1.JetStreamDomain}
 		case 3:
 			// turn off jetstream in $G by adding another account and set mqtt domain option
 			lno.Accounts = append(lno.Accounts, NewAccount("unused-account"))

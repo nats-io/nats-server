@@ -1,4 +1,4 @@
-// Copyright 2012-2021 The NATS Authors
+// Copyright 2012-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1601,7 +1601,7 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 	return nil
 }
 
-var dynamicJSAccountLimits = &JetStreamAccountLimits{-1, -1, -1, -1}
+var dynamicJSAccountLimits = &JetStreamAccountLimits{-1, -1, -1, -1, false}
 
 // Parses jetstream account limits for an account. Simple setup with boolen is allowed, and we will
 // use dynamic account limits.
@@ -1626,7 +1626,7 @@ func parseJetStreamForAccount(v interface{}, acc *Account, errors *[]error, warn
 			return &configErr{tk, fmt.Sprintf("Expected 'enabled' or 'disabled' for string value, got '%s'", vv)}
 		}
 	case map[string]interface{}:
-		jsLimits := &JetStreamAccountLimits{-1, -1, -1, -1}
+		jsLimits := &JetStreamAccountLimits{-1, -1, -1, -1, false}
 		for mk, mv := range vv {
 			tk, mv = unwrapValue(mv, &lt)
 			switch strings.ToLower(mk) {
@@ -1654,6 +1654,12 @@ func parseJetStreamForAccount(v interface{}, acc *Account, errors *[]error, warn
 					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
 				}
 				jsLimits.MaxConsumers = int(vv)
+			case "max_bytes_required", "max_stream_bytes", "max_bytes":
+				vv, ok := mv.(bool)
+				if !ok {
+					return &configErr{tk, fmt.Sprintf("Expected a parseable bool for %q, got %v", mk, mv)}
+				}
+				jsLimits.MaxBytesRequired = bool(vv)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{

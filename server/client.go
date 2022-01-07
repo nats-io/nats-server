@@ -3948,11 +3948,19 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 			if err := json.Unmarshal(getHeader(ClientInfoHdr, msg[:c.pa.hdr]), &cis); err == nil {
 				ci = &cis
 				ci.Service = acc.Name
+				// Check if we are moving into a share details account from a non-shared
+				// and add in server and cluster details.
+				if !share && si.share {
+					c.addServerAndClusterInfo(ci)
+				}
 			}
 		} else if c.kind != LEAF || c.pa.hdr < 0 || len(getHeader(ClientInfoHdr, msg[:c.pa.hdr])) == 0 {
 			ci = c.getClientInfo(share)
+		} else if c.kind == LEAF && si.share {
+			// We have a leaf header here for ci, augment as above.
+			ci = c.getClientInfo(si.share)
 		}
-
+		// Set clientInfo if present.
 		if ci != nil {
 			if b, _ := json.Marshal(ci); b != nil {
 				msg = c.setHeader(ClientInfoHdr, string(b), msg)
@@ -5034,31 +5042,52 @@ func (ci *ClientInfo) serviceAccount() string {
 	return ci.Account
 }
 
+// Add in our server and cluster information to this client info.
+func (c *client) addServerAndClusterInfo(ci *ClientInfo) {
+	if ci == nil {
+		return
+	}
+	// Server
+	if c.kind != LEAF {
+		ci.Server = c.srv.Name()
+	} else if c.kind == LEAF {
+		ci.Server = c.leaf.remoteServer
+	}
+	// Cluster
+	ci.Cluster = c.srv.cachedClusterName()
+	// If we have gateways fill in cluster alternates.
+	// These will be in RTT asc order.
+	if c.srv.gateway.enabled {
+		var gws []*client
+		c.srv.getOutboundGatewayConnections(&gws)
+		for _, c := range gws {
+			c.mu.Lock()
+			cn := c.gw.name
+			c.mu.Unlock()
+			ci.Alternates = append(ci.Alternates, cn)
+		}
+	}
+}
+
 // Grabs the information for this client.
 func (c *client) getClientInfo(detailed bool) *ClientInfo {
-	if c == nil || (c.kind != CLIENT && c.kind != LEAF && c.kind != JETSTREAM) {
+	if c == nil || (c.kind != CLIENT && c.kind != LEAF && c.kind != JETSTREAM && c.kind != ACCOUNT) {
 		return nil
 	}
 
-	// Server name. Defaults to server ID if not set explicitly.
-	var cn, sn string
+	// Result
+	var ci ClientInfo
+
 	if detailed {
-		if c.kind != LEAF {
-			sn = c.srv.Name()
-		}
-		cn = c.srv.cachedClusterName()
+		c.addServerAndClusterInfo(&ci)
 	}
 
 	c.mu.Lock()
-	var ci ClientInfo
 	// RTT and Account are always added.
 	ci.Account = accForClient(c)
 	ci.RTT = c.rtt
 	// Detailed signals additional opt in.
 	if detailed {
-		if c.kind == LEAF {
-			sn = c.leaf.remoteServer
-		}
 		ci.Start = &c.start
 		ci.Host = c.host
 		ci.ID = c.cid
@@ -5066,8 +5095,6 @@ func (c *client) getClientInfo(detailed bool) *ClientInfo {
 		ci.User = c.getRawAuthUser()
 		ci.Lang = c.opts.Lang
 		ci.Version = c.opts.Version
-		ci.Server = sn
-		ci.Cluster = cn
 		ci.Jwt = c.opts.JWT
 		ci.IssuerKey = issuerForClient(c)
 		ci.NameTag = c.nameTag
