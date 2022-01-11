@@ -13890,6 +13890,54 @@ func TestJetStreamPullConsumerRequestCleanup(t *testing.T) {
 	}
 }
 
+func TestJetStreamPullConsumerRequestMaximums(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Need to do this via server for now.
+	acc := s.GlobalAccount()
+	mset, err := acc.addStream(&StreamConfig{Name: "TEST", Storage: MemoryStorage})
+	require_NoError(t, err)
+
+	_, err = mset.addConsumer(&ConsumerConfig{
+		Durable:           "dlc",
+		MaxRequestBatch:   10,
+		MaxRequestExpires: time.Second,
+		AckPolicy:         AckExplicit,
+	})
+	require_NoError(t, err)
+
+	genReq := func(b int, e time.Duration) []byte {
+		req := &JSApiConsumerGetNextRequest{Batch: b, Expires: e}
+		jreq, err := json.Marshal(req)
+		require_NoError(t, err)
+		return jreq
+	}
+
+	rsubj := fmt.Sprintf(JSApiRequestNextT, "TEST", "dlc")
+
+	// Exceeds max batch size.
+	resp, err := nc.Request(rsubj, genReq(11, 100*time.Millisecond), time.Second)
+	require_NoError(t, err)
+	if status := resp.Header.Get("Status"); status != "409" {
+		t.Fatalf("Expected a 409 status code, got %q", status)
+	}
+
+	// Exceeds max expires.
+	resp, err = nc.Request(rsubj, genReq(1, 10*time.Minute), time.Second)
+	require_NoError(t, err)
+	if status := resp.Header.Get("Status"); status != "409" {
+		t.Fatalf("Expected a 409 status code, got %q", status)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////

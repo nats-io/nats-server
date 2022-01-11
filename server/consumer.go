@@ -49,8 +49,6 @@ type ConsumerInfo struct {
 type ConsumerConfig struct {
 	Durable         string        `json:"durable_name,omitempty"`
 	Description     string        `json:"description,omitempty"`
-	DeliverSubject  string        `json:"deliver_subject,omitempty"`
-	DeliverGroup    string        `json:"deliver_group,omitempty"`
 	DeliverPolicy   DeliverPolicy `json:"deliver_policy"`
 	OptStartSeq     uint64        `json:"opt_start_seq,omitempty"`
 	OptStartTime    *time.Time    `json:"opt_start_time,omitempty"`
@@ -66,6 +64,14 @@ type ConsumerConfig struct {
 	Heartbeat       time.Duration `json:"idle_heartbeat,omitempty"`
 	FlowControl     bool          `json:"flow_control,omitempty"`
 	HeadersOnly     bool          `json:"headers_only,omitempty"`
+
+	// Pull based options.
+	MaxRequestBatch   int           `json:"max_batch,omitempty"`
+	MaxRequestExpires time.Duration `json:"max_expires,omitempty"`
+
+	// Push based consumers
+	DeliverSubject string `json:"deliver_subject,omitempty"`
+	DeliverGroup   string `json:"deliver_group,omitempty"`
 
 	// Don't add to general clients.
 	Direct bool `json:"direct,omitempty"`
@@ -2113,6 +2119,18 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 	if err != nil {
 		sendErr(400, fmt.Sprintf("Bad Request - %v", err))
 		return
+	}
+
+	// Check for request limits
+	if o.cfg.MaxRequestBatch > 0 && batchSize > o.cfg.MaxRequestBatch {
+		sendErr(409, fmt.Sprintf("Exceeded MaxRequestBatch of %d", o.cfg.MaxRequestBatch))
+		return
+	}
+
+	if !expires.IsZero() && o.cfg.MaxRequestExpires > 0 && expires.After(time.Now().Add(o.cfg.MaxRequestExpires)) {
+		sendErr(409, fmt.Sprintf("Exceeded MaxRequestExpires of %v", o.cfg.MaxRequestExpires))
+		return
+
 	}
 
 	// If we have the max number of requests already pending try to expire.
