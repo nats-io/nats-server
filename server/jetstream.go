@@ -1568,7 +1568,7 @@ func (jsa *jsAccount) sendClusterUsageUpdate() {
 	le.PutUint64(b[16:], uint64(jsa.usage.api))
 	le.PutUint64(b[24:], uint64(jsa.usage.err))
 
-	jsa.sendq.push(&pubMsg{nil, jsa.updatesPub, _EMPTY_, nil, nil, b, noCompression, false, false})
+	jsa.sendq.push(newPubMsg(nil, jsa.updatesPub, _EMPTY_, nil, nil, b, noCompression, false, false))
 }
 
 func (js *jetStream) wouldExceedLimits(storeType StorageType, sz int) bool {

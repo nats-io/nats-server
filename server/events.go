@@ -248,6 +248,33 @@ type pubMsg struct {
 	last bool
 }
 
+var pubMsgPool sync.Pool
+
+func newPubMsg(c *client, sub, rply string, si *ServerInfo, hdr map[string]string,
+	msg interface{}, oct compressionType, echo, last bool) *pubMsg {
+
+	var m *pubMsg
+	pm := pubMsgPool.Get()
+	if pm != nil {
+		m = pm.(*pubMsg)
+	} else {
+		m = &pubMsg{}
+	}
+	// When getting something from a pool it is criticical that all fields are
+	// initialized. Doing this way guarantees that if someone adds a field to
+	// the structure, the compiler will fail the build if this line is not updated.
+	(*m) = pubMsg{c, sub, rply, si, hdr, msg, oct, echo, last}
+	return m
+}
+
+func (pm *pubMsg) returnToPool() {
+	if pm == nil {
+		return
+	}
+	pm.c, pm.sub, pm.rply, pm.si, pm.hdr, pm.msg = nil, _EMPTY_, _EMPTY_, nil, nil, nil
+	pubMsgPool.Put(pm)
+}
+
 // Used to track server updates.
 type serverUpdate struct {
 	seq   uint64
@@ -404,6 +431,7 @@ RESET:
 					c.flushClients(time.Second)
 					return
 				}
+				pm.returnToPool()
 			}
 			sendq.recycle(&msgs)
 		case <-resetCh:
@@ -429,7 +457,7 @@ func (s *Server) sendShutdownEvent() {
 	s.sys.replies = nil
 	// Send to the internal queue and mark as last.
 	si := &ServerInfo{}
-	sendq.push(&pubMsg{nil, subj, _EMPTY_, si, nil, si, noCompression, false, true})
+	sendq.push(newPubMsg(nil, subj, _EMPTY_, si, nil, si, noCompression, false, true))
 	s.mu.Unlock()
 }
 
@@ -452,7 +480,7 @@ func (s *Server) sendInternalAccountMsgWithReply(a *Account, subject, reply stri
 		c = a.internalClient()
 		a.mu.Unlock()
 	}
-	s.sys.sendq.push(&pubMsg{c, subject, reply, nil, hdr, msg, noCompression, echo, false})
+	s.sys.sendq.push(newPubMsg(c, subject, reply, nil, hdr, msg, noCompression, echo, false))
 	s.mu.Unlock()
 	return nil
 }
@@ -471,7 +499,7 @@ func (s *Server) sendInternalMsg(subj, rply string, si *ServerInfo, msg interfac
 	if s.sys == nil || s.sys.sendq == nil {
 		return
 	}
-	s.sys.sendq.push(&pubMsg{nil, subj, rply, si, nil, msg, noCompression, false, false})
+	s.sys.sendq.push(newPubMsg(nil, subj, rply, si, nil, msg, noCompression, false, false))
 }
 
 // Will send an api response.
@@ -481,7 +509,7 @@ func (s *Server) sendInternalResponse(subj string, response *ServerAPIResponse) 
 		s.mu.Unlock()
 		return
 	}
-	s.sys.sendq.push(&pubMsg{nil, subj, _EMPTY_, response.Server, nil, response, response.compress, false, false})
+	s.sys.sendq.push(newPubMsg(nil, subj, _EMPTY_, response.Server, nil, response, response.compress, false, false))
 	s.mu.Unlock()
 }
 
@@ -499,7 +527,7 @@ func (c *client) sendInternalMsg(subj, rply string, si *ServerInfo, msg interfac
 		s.mu.Unlock()
 		return
 	}
-	s.sys.sendq.push(&pubMsg{c, subj, rply, si, nil, msg, noCompression, false, false})
+	s.sys.sendq.push(newPubMsg(c, subj, rply, si, nil, msg, noCompression, false, false))
 	s.mu.Unlock()
 }
 
@@ -1628,7 +1656,7 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 		}
 	}
 	for _, sub := range subj {
-		msg := &pubMsg{nil, sub, _EMPTY_, &m.Server, nil, &m, noCompression, false, false}
+		msg := newPubMsg(nil, sub, _EMPTY_, &m.Server, nil, &m, noCompression, false, false)
 		sendQ.push(msg)
 	}
 	a.mu.Unlock()
