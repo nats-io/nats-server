@@ -107,6 +107,12 @@ const (
 	// JSConsumerMaxPendingAckPolicyRequiredErr consumer requires ack policy for max ack pending
 	JSConsumerMaxPendingAckPolicyRequiredErr ErrorIdentifier = 10082
 
+	// JSConsumerMaxRequestBatchNegativeErr consumer max request batch needs to be > 0
+	JSConsumerMaxRequestBatchNegativeErr ErrorIdentifier = 10114
+
+	// JSConsumerMaxRequestExpiresToSmall consumer max request expires needs to be >= 1ms
+	JSConsumerMaxRequestExpiresToSmall ErrorIdentifier = 10115
+
 	// JSConsumerMaxWaitingNegativeErr consumer max waiting needs to be positive
 	JSConsumerMaxWaitingNegativeErr ErrorIdentifier = 10087
 
@@ -125,7 +131,7 @@ const (
 	// JSConsumerPullNotDurableErr consumer in pull mode requires a durable name
 	JSConsumerPullNotDurableErr ErrorIdentifier = 10085
 
-	// JSConsumerPullRequiresAckErr consumer in pull mode requires explicit ack policy
+	// JSConsumerPullRequiresAckErr consumer in pull mode requires ack policy
 	JSConsumerPullRequiresAckErr ErrorIdentifier = 10084
 
 	// JSConsumerPullWithRateLimitErr consumer in pull mode can not have rate limit set
@@ -378,13 +384,15 @@ var (
 		JSConsumerInvalidPolicyErrF:                {Code: 400, ErrCode: 10094, Description: "{err}"},
 		JSConsumerInvalidSamplingErrF:              {Code: 400, ErrCode: 10095, Description: "failed to parse consumer sampling configuration: {err}"},
 		JSConsumerMaxPendingAckPolicyRequiredErr:   {Code: 400, ErrCode: 10082, Description: "consumer requires ack policy for max ack pending"},
+		JSConsumerMaxRequestBatchNegativeErr:       {Code: 400, ErrCode: 10114, Description: "consumer max request batch needs to be > 0"},
+		JSConsumerMaxRequestExpiresToSmall:         {Code: 400, ErrCode: 10115, Description: "consumer max request expires needs to be >= 1ms"},
 		JSConsumerMaxWaitingNegativeErr:            {Code: 400, ErrCode: 10087, Description: "consumer max waiting needs to be positive"},
 		JSConsumerNameExistErr:                     {Code: 400, ErrCode: 10013, Description: "consumer name already in use"},
 		JSConsumerNameTooLongErrF:                  {Code: 400, ErrCode: 10102, Description: "consumer name is too long, maximum allowed is {max}"},
 		JSConsumerNotFoundErr:                      {Code: 404, ErrCode: 10014, Description: "consumer not found"},
 		JSConsumerOnMappedErr:                      {Code: 400, ErrCode: 10092, Description: "consumer direct on a mapped consumer"},
 		JSConsumerPullNotDurableErr:                {Code: 400, ErrCode: 10085, Description: "consumer in pull mode requires a durable name"},
-		JSConsumerPullRequiresAckErr:               {Code: 400, ErrCode: 10084, Description: "consumer in pull mode requires explicit ack policy"},
+		JSConsumerPullRequiresAckErr:               {Code: 400, ErrCode: 10084, Description: "consumer in pull mode requires ack policy"},
 		JSConsumerPullWithRateLimitErr:             {Code: 400, ErrCode: 10086, Description: "consumer in pull mode can not have rate limit set"},
 		JSConsumerPushMaxWaitingErr:                {Code: 400, ErrCode: 10080, Description: "consumer in push mode can not set max waiting"},
 		JSConsumerReplacementWithDifferentNameErr:  {Code: 400, ErrCode: 10106, Description: "consumer replacement durable config not the same"},
@@ -845,6 +853,26 @@ func NewJSConsumerMaxPendingAckPolicyRequiredError(opts ...ErrorOption) *ApiErro
 	return ApiErrors[JSConsumerMaxPendingAckPolicyRequiredErr]
 }
 
+// NewJSConsumerMaxRequestBatchNegativeError creates a new JSConsumerMaxRequestBatchNegativeErr error: "consumer max request batch needs to be > 0"
+func NewJSConsumerMaxRequestBatchNegativeError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerMaxRequestBatchNegativeErr]
+}
+
+// NewJSConsumerMaxRequestExpiresToSmallError creates a new JSConsumerMaxRequestExpiresToSmall error: "consumer max request expires needs to be >= 1ms"
+func NewJSConsumerMaxRequestExpiresToSmallError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerMaxRequestExpiresToSmall]
+}
+
 // NewJSConsumerMaxWaitingNegativeError creates a new JSConsumerMaxWaitingNegativeErr error: "consumer max waiting needs to be positive"
 func NewJSConsumerMaxWaitingNegativeError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
@@ -911,7 +939,7 @@ func NewJSConsumerPullNotDurableError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSConsumerPullNotDurableErr]
 }
 
-// NewJSConsumerPullRequiresAckError creates a new JSConsumerPullRequiresAckErr error: "consumer in pull mode requires explicit ack policy"
+// NewJSConsumerPullRequiresAckError creates a new JSConsumerPullRequiresAckErr error: "consumer in pull mode requires ack policy"
 func NewJSConsumerPullRequiresAckError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {

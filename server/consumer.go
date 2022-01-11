@@ -69,9 +69,12 @@ type ConsumerConfig struct {
 	MaxRequestBatch   int           `json:"max_batch,omitempty"`
 	MaxRequestExpires time.Duration `json:"max_expires,omitempty"`
 
-	// Push based consumers
+	// Push based consumers.
 	DeliverSubject string `json:"deliver_subject,omitempty"`
 	DeliverGroup   string `json:"deliver_group,omitempty"`
+
+	// Ephemeral inactivity threshold.
+	InactiveThreshold time.Duration `json:"inactive_threshold,omitempty"`
 
 	// Don't add to general clients.
 	Direct bool `json:"direct,omitempty"`
@@ -350,11 +353,6 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		if config.AckPolicy == AckNone {
 			return nil, NewJSConsumerPullRequiresAckError()
 		}
-		// They are also required to be durable since otherwise we will not know when to
-		// clean them up.
-		if config.Durable == _EMPTY_ {
-			return nil, NewJSConsumerPullNotDurableError()
-		}
 		if config.RateLimit > 0 {
 			return nil, NewJSConsumerPullWithRateLimitError()
 		}
@@ -366,6 +364,12 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		}
 		if config.FlowControl {
 			return nil, NewJSConsumerFCRequiresPushError()
+		}
+		if config.MaxRequestBatch < 0 {
+			return nil, NewJSConsumerMaxRequestBatchNegativeError()
+		}
+		if config.MaxRequestExpires != 0 && config.MaxRequestExpires < time.Millisecond {
+			return nil, NewJSConsumerMaxRequestExpiresToSmallError()
 		}
 	}
 
@@ -560,9 +564,6 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			return nil, NewJSConsumerNameTooLongError(JSMaxNameLen)
 		}
 		o.name = config.Durable
-		if o.isPullMode() {
-			o.waiting = newWaitQueue(config.MaxWaiting)
-		}
 	} else if oname != _EMPTY_ {
 		o.name = oname
 	} else {
@@ -572,6 +573,10 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 				break
 			}
 		}
+	}
+	// Create our request waiting queue.
+	if o.isPullMode() {
+		o.waiting = newWaitQueue(config.MaxWaiting)
 	}
 
 	// Check if we have  filtered subject that is a wildcard.
@@ -639,9 +644,17 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	o.ackSubj = fmt.Sprintf("%s.*.*.*.*.*", pre)
 	o.nextMsgSubj = fmt.Sprintf(JSApiRequestNextT, mn, o.name)
 
+	// If not durable determine the inactive threshold.
+	if !o.isDurable() {
+		if o.cfg.InactiveThreshold != 0 {
+			o.dthresh = o.cfg.InactiveThreshold
+		} else {
+			// Add in 1 sec of jitter above and beyond the default of 5s.
+			o.dthresh = JsDeleteWaitTimeDefault + time.Duration(rand.Int63n(1000))*time.Millisecond
+		}
+	}
+
 	if o.isPushMode() {
-		// Add in 1 sec of jitter above and beyond the default of 5s.
-		o.dthresh = JsDeleteWaitTimeDefault + time.Duration(rand.Int63n(1000))*time.Millisecond
 		if !o.isDurable() {
 			// Check if we are not durable that the delivery subject has interest.
 			// Check in place here for interest. Will setup properly in setLeader.
@@ -803,6 +816,12 @@ func (o *consumer) setLeader(isLeader bool) {
 				stopAndClearTimer(&o.gwdtmr)
 				o.gwdtmr = time.AfterFunc(time.Second, func() { o.watchGWinterest() })
 			}
+		} else if !o.isDurable() {
+			// Ephemeral pull consumer. We run the dtmr all the time for this one.
+			if o.dtmr != nil {
+				stopAndClearTimer(&o.dtmr)
+			}
+			o.dtmr = time.AfterFunc(o.dthresh, func() { o.deleteNotActive() })
 		}
 
 		// If we are not in ReplayInstant mode mark us as in replay state until resolved.
@@ -1032,26 +1051,41 @@ func (o *consumer) updateDeliveryInterest(localInterest bool) bool {
 }
 
 func (o *consumer) deleteNotActive() {
-	// If we have local interest simply return.
-	if o.hasLocalInterest() {
-		return
-	}
-	o.mu.RLock()
+	o.mu.Lock()
 	if o.mset == nil {
-		o.mu.RUnlock()
+		o.mu.Unlock()
 		return
 	}
+	// Push mode just look at active.
+	if o.isPushMode() {
+		// If weare active simply return.
+		if o.active {
+			o.mu.Unlock()
+			return
+		}
+	} else {
+		// These need to keep firing so reset first.
+		if o.dtmr != nil {
+			o.dtmr.Reset(o.dthresh)
+		}
+		// Check if we have had a request lately, or if we still have valid requests waiting.
+		if time.Since(o.waiting.last) <= o.dthresh || o.checkWaitingForInterest() {
+			o.mu.Unlock()
+			return
+		}
+	}
+
 	s, js := o.mset.srv, o.mset.srv.js
-	acc, stream, name := o.acc.Name, o.stream, o.name
-	o.mu.RUnlock()
+	acc, stream, name, isDirect := o.acc.Name, o.stream, o.name, o.cfg.Direct
+	o.mu.Unlock()
 
 	// If we are clustered, check if we still have this consumer assigned.
 	// If we do forward a proposal to delete ourselves to the metacontroller leader.
-	if s.JetStreamIsClustered() {
+	if !isDirect && s.JetStreamIsClustered() {
 		js.mu.RLock()
-		ca := js.consumerAssignment(acc, stream, name)
-		cc := js.cluster
+		ca, cc := js.consumerAssignment(acc, stream, name), js.cluster
 		js.mu.RUnlock()
+
 		if ca != nil && cc != nil {
 			cca := *ca
 			cca.Reply = _EMPTY_
@@ -1970,6 +2004,7 @@ func (wr *waitingRequest) recycle() {
 // waiting queue for requests that are waiting for new messages to arrive.
 type waitQueue struct {
 	rp, wp int
+	last   time.Time
 	reqs   []*waitingRequest
 }
 
@@ -1984,14 +2019,14 @@ var (
 )
 
 // Adds in a new request.
-func (wq *waitQueue) add(req *waitingRequest) error {
+func (wq *waitQueue) add(wr *waitingRequest) error {
 	if wq == nil {
 		return errWaitQueueNil
 	}
 	if wq.isFull() {
 		return errWaitQueueFull
 	}
-	wq.reqs[wq.wp] = req
+	wq.reqs[wq.wp] = wr
 	// TODO(dlc) - Could make pow2 and get rid of mod.
 	wq.wp = (wq.wp + 1) % cap(wq.reqs)
 
@@ -1999,7 +2034,8 @@ func (wq *waitQueue) add(req *waitingRequest) error {
 	if wq.rp < 0 {
 		wq.rp = 0
 	}
-
+	// Track last active via when we receive a request.
+	wq.last = wr.received
 	return nil
 }
 
@@ -2130,7 +2166,6 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 	if !expires.IsZero() && o.cfg.MaxRequestExpires > 0 && expires.After(time.Now().Add(o.cfg.MaxRequestExpires)) {
 		sendErr(409, fmt.Sprintf("Exceeded MaxRequestExpires of %v", o.cfg.MaxRequestExpires))
 		return
-
 	}
 
 	// If we have the max number of requests already pending try to expire.
@@ -3077,11 +3112,6 @@ func (o *consumer) isActive() bool {
 	return active
 }
 
-// hasLocalInterest returns if we have local interest.
-func (o *consumer) hasLocalInterest() bool {
-	return !o.hasNoLocalInterest()
-}
-
 // hasNoLocalInterest return true if we have no local interest.
 func (o *consumer) hasNoLocalInterest() bool {
 	o.mu.RLock()
@@ -3313,11 +3343,8 @@ func (o *consumer) setInActiveDeleteThreshold(dthresh time.Duration) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	if o.isPullMode() {
-		return fmt.Errorf("consumer is not push-based")
-	}
 	if o.isDurable() {
-		return fmt.Errorf("consumer is not durable")
+		return fmt.Errorf("consumer is not ephemeral")
 	}
 	deleteWasRunning := o.dtmr != nil
 	stopAndClearTimer(&o.dtmr)
@@ -3335,6 +3362,15 @@ func (o *consumer) switchToEphemeral() {
 	o.cfg.Durable = _EMPTY_
 	store, ok := o.store.(*consumerFileStore)
 	rr := o.acc.sl.Match(o.cfg.DeliverSubject)
+	// Setup dthresh.
+	if o.dthresh == 0 {
+		if o.cfg.InactiveThreshold != 0 {
+			o.dthresh = o.cfg.InactiveThreshold
+		} else {
+			// Add in 1 sec of jitter above and beyond the default of 5s.
+			o.dthresh = JsDeleteWaitTimeDefault + time.Duration(rand.Int63n(1000))*time.Millisecond
+		}
+	}
 	o.mu.Unlock()
 
 	// Update interest

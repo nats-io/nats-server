@@ -1263,12 +1263,6 @@ func TestJetStreamCreateConsumer(t *testing.T) {
 
 			// Non-Durables need to have subscription to delivery subject.
 			delivery := nats.NewInbox()
-			// Pull-based consumers are required to be durable since we do not know when they should
-			// be cleaned up.
-			if _, err := mset.addConsumer(&ConsumerConfig{AckPolicy: AckExplicit}); err == nil {
-				t.Fatalf("Expected an error on pull-based that is non-durable.")
-			}
-
 			nc := clientConnectToServer(t, s)
 			defer nc.Close()
 			sub, _ := nc.SubscribeSync(delivery)
@@ -13869,7 +13863,7 @@ func TestJetStreamPullConsumerRequestCleanup(t *testing.T) {
 	jreq, err := json.Marshal(req)
 	require_NoError(t, err)
 
-	// Need interest otehrwise the requests will be recycled based on that.
+	// Need interest otherwise the requests will be recycled based on that.
 	_, err = nc.SubscribeSync("xx")
 	require_NoError(t, err)
 
@@ -13936,6 +13930,75 @@ func TestJetStreamPullConsumerRequestMaximums(t *testing.T) {
 	if status := resp.Header.Get("Status"); status != "409" {
 		t.Fatalf("Expected a 409 status code, got %q", status)
 	}
+}
+
+func TestJetStreamEphemeralPullConsumers(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "EC", Storage: nats.MemoryStorage})
+	require_NoError(t, err)
+
+	ci, err := js.AddConsumer("EC", &nats.ConsumerConfig{AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	mset, err := s.GlobalAccount().lookupStream("EC")
+	require_NoError(t, err)
+	o := mset.lookupConsumer(ci.Name)
+	if o == nil {
+		t.Fatalf("Error looking up consumer %q", ci.Name)
+	}
+	err = o.setInActiveDeleteThreshold(50 * time.Millisecond)
+	require_NoError(t, err)
+
+	time.Sleep(100 * time.Millisecond)
+	// Should no longer be around.
+	if o := mset.lookupConsumer(ci.Name); o != nil {
+		t.Fatalf("Expected consumer to be closed and removed")
+	}
+
+	// Make sure timer keeps firing etc. and does not delete until interest is gone.
+	ci, err = js.AddConsumer("EC", &nats.ConsumerConfig{AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	if o = mset.lookupConsumer(ci.Name); o == nil {
+		t.Fatalf("Error looking up consumer %q", ci.Name)
+	}
+	err = o.setInActiveDeleteThreshold(50 * time.Millisecond)
+	require_NoError(t, err)
+
+	// Need interest otherwise the requests will be recycled based on no real interest.
+	sub, err := nc.SubscribeSync("xx")
+	require_NoError(t, err)
+
+	req := &JSApiConsumerGetNextRequest{Batch: 10, Expires: 250 * time.Millisecond}
+	jreq, err := json.Marshal(req)
+	require_NoError(t, err)
+	rsubj := fmt.Sprintf(JSApiRequestNextT, "EC", ci.Name)
+	err = nc.PublishRequest(rsubj, "xx", jreq)
+	require_NoError(t, err)
+	nc.Flush()
+
+	time.Sleep(100 * time.Millisecond)
+	// Should still be alive here.
+	if o := mset.lookupConsumer(ci.Name); o == nil {
+		t.Fatalf("Expected consumer to still be active")
+	}
+	// Remove interest.
+	sub.Unsubscribe()
+	// Make sure this EPC goes away now.
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		if o := mset.lookupConsumer(ci.Name); o != nil {
+			return fmt.Errorf("Consumer still present")
+		}
+		return nil
+	})
 }
 
 ///////////////////////////////////////////////////////////////////////////
