@@ -14001,6 +14001,331 @@ func TestJetStreamEphemeralPullConsumers(t *testing.T) {
 	})
 }
 
+func TestJetStreamPullConsumerCrossAccountExpires(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 4GB, max_file_store: 1TB}
+		accounts: {
+			JS: {
+				jetstream: enabled
+				users: [ {user: dlc, password: foo} ]
+				exports [ { service: "$JS.API.CONSUMER.MSG.NEXT.>", response: stream } ]
+			},
+			IU: {
+				users: [ {user: mh, password: bar} ]
+				imports [ { service: { subject: "$JS.API.CONSUMER.MSG.NEXT.*.*", account: JS } }]
+				# Re-export for dasiy chain test.
+				exports [ { service: "$JS.API.CONSUMER.MSG.NEXT.>", response: stream } ]
+			},
+			IU2: {
+				users: [ {user: ik, password: bar} ]
+				imports [ { service: { subject: "$JS.API.CONSUMER.MSG.NEXT.*.*", account: IU } } ]
+			},
+		}
+	`))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Connect to JS account and create stream, put some messages into it.
+	nc, js := jsClientConnect(t, s, nats.UserInfo("dlc", "foo"))
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "PC", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+
+	toSend := 50
+	for i := 0; i < toSend; i++ {
+		_, err := js.Publish("foo", []byte("OK"))
+		require_NoError(t, err)
+	}
+
+	// Now create pull consumer.
+	_, err = js.AddConsumer("PC", &nats.ConsumerConfig{Durable: "PC", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// Now access from the importing account.
+	nc2, _ := jsClientConnect(t, s, nats.UserInfo("mh", "bar"))
+	defer nc2.Close()
+
+	// Make sure batch request works properly with stream response.
+	req := &JSApiConsumerGetNextRequest{Batch: 10}
+	jreq, err := json.Marshal(req)
+	require_NoError(t, err)
+	rsubj := fmt.Sprintf(JSApiRequestNextT, "PC", "PC")
+	// Make sure we can get a batch correctly etc.
+	// This requires response stream above in the export definition.
+	sub, err := nc2.SubscribeSync("xx")
+	require_NoError(t, err)
+	err = nc2.PublishRequest(rsubj, "xx", jreq)
+	require_NoError(t, err)
+	checkSubsPending(t, sub, 10)
+
+	// Now let's queue up a bunch of requests and then delete interest to make sure the system
+	// removes those requests.
+
+	// Purge stream
+	err = js.PurgeStream("PC")
+	require_NoError(t, err)
+
+	// Queue up 10 requests
+	for i := 0; i < 10; i++ {
+		err = nc2.PublishRequest(rsubj, "xx", jreq)
+		require_NoError(t, err)
+	}
+	// Since using different connection, flush to make sure processed.
+	nc2.Flush()
+
+	ci, err := js.ConsumerInfo("PC", "PC")
+	require_NoError(t, err)
+	if ci.NumWaiting != 10 {
+		t.Fatalf("Expected to see 10 waiting requests, got %d", ci.NumWaiting)
+	}
+
+	// Now remove interest and make sure requests are removed.
+	sub.Unsubscribe()
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		ci, err := js.ConsumerInfo("PC", "PC")
+		require_NoError(t, err)
+		if ci.NumWaiting != 0 {
+			return fmt.Errorf("Requests still present")
+		}
+		return nil
+	})
+
+	// Now let's test that ephemerals will go away as well when interest etc is no longer around.
+	ci, err = js.AddConsumer("PC", &nats.ConsumerConfig{AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// Set the inactivity threshold by hand for now.
+	jsacc, err := s.LookupAccount("JS")
+	require_NoError(t, err)
+	mset, err := jsacc.lookupStream("PC")
+	require_NoError(t, err)
+	o := mset.lookupConsumer(ci.Name)
+	if o == nil {
+		t.Fatalf("Error looking up consumer %q", ci.Name)
+	}
+	err = o.setInActiveDeleteThreshold(50 * time.Millisecond)
+	require_NoError(t, err)
+
+	rsubj = fmt.Sprintf(JSApiRequestNextT, "PC", ci.Name)
+	sub, err = nc2.SubscribeSync("zz")
+	require_NoError(t, err)
+	err = nc2.PublishRequest(rsubj, "zz", jreq)
+	require_NoError(t, err)
+
+	// Wait past inactive threshold.
+	time.Sleep(100 * time.Millisecond)
+	// Make sure it is still there..
+	ci, err = js.ConsumerInfo("PC", ci.Name)
+	require_NoError(t, err)
+	if ci.NumWaiting != 1 {
+		t.Fatalf("Expected to see 1 waiting request, got %d", ci.NumWaiting)
+	}
+
+	// Now release interest.
+	sub.Unsubscribe()
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		_, err := js.ConsumerInfo("PC", ci.Name)
+		if err == nil {
+			return fmt.Errorf("Consumer still present")
+		}
+		return nil
+	})
+
+	// Now test daisy chained.
+	toSend = 10
+	for i := 0; i < toSend; i++ {
+		_, err := js.Publish("foo", []byte("OK"))
+		require_NoError(t, err)
+	}
+
+	ci, err = js.AddConsumer("PC", &nats.ConsumerConfig{AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// Set the inactivity threshold by hand for now.
+	o = mset.lookupConsumer(ci.Name)
+	if o == nil {
+		t.Fatalf("Error looking up consumer %q", ci.Name)
+	}
+	// Make this one longer so we test request purge and ephemerals in same test.
+	err = o.setInActiveDeleteThreshold(500 * time.Millisecond)
+	require_NoError(t, err)
+
+	// Now access from the importing account.
+	nc3, _ := jsClientConnect(t, s, nats.UserInfo("ik", "bar"))
+	defer nc3.Close()
+
+	sub, err = nc3.SubscribeSync("yy")
+	require_NoError(t, err)
+
+	rsubj = fmt.Sprintf(JSApiRequestNextT, "PC", ci.Name)
+	err = nc3.PublishRequest(rsubj, "yy", jreq)
+	require_NoError(t, err)
+	checkSubsPending(t, sub, 10)
+
+	// Purge stream
+	err = js.PurgeStream("PC")
+	require_NoError(t, err)
+
+	// Queue up 10 requests
+	for i := 0; i < 10; i++ {
+		err = nc3.PublishRequest(rsubj, "yy", jreq)
+		require_NoError(t, err)
+	}
+	// Since using different connection, flush to make sure processed.
+	nc3.Flush()
+
+	ci, err = js.ConsumerInfo("PC", ci.Name)
+	require_NoError(t, err)
+	if ci.NumWaiting != 10 {
+		t.Fatalf("Expected to see 10 waiting requests, got %d", ci.NumWaiting)
+	}
+
+	// Now remove interest and make sure requests are removed.
+	sub.Unsubscribe()
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		ci, err := js.ConsumerInfo("PC", ci.Name)
+		require_NoError(t, err)
+		if ci.NumWaiting != 0 {
+			return fmt.Errorf("Requests still present")
+		}
+		return nil
+	})
+	// Now make sure the ephemeral goes away too.
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		_, err := js.ConsumerInfo("PC", ci.Name)
+		if err == nil {
+			return fmt.Errorf("Consumer still present")
+		}
+		return nil
+	})
+}
+
+// This tests account export/import replies across a LN connection with account import/export
+// on both sides of the LN.
+// THIS DOES NOT WORK ATM. This is a placeholder.
+func TestJetStreamPullConsumerCrossAccountsAndLeafNodes(t *testing.T) {
+	// Comment out to run, holding place for now.
+	t.SkipNow()
+
+	conf := createConfFile(t, []byte(`
+		server_name: SJS
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 4GB, max_file_store: 1TB, domain: JSD }
+		accounts: {
+			JS: {
+				jetstream: enabled
+				users: [ {user: dlc, password: foo} ]
+				exports [ { service: "$JS.API.CONSUMER.MSG.NEXT.>", response: stream } ]
+			},
+			IU: {
+				users: [ {user: mh, password: bar} ]
+				imports [ { service: { subject: "$JS.API.CONSUMER.MSG.NEXT.*.*", account: JS } }]
+			},
+		}
+		leaf { listen: "127.0.0.1:-1" }
+	`))
+	defer removeFile(t, conf)
+
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(`
+		server_name: SLN
+		listen: 127.0.0.1:-1
+		accounts: {
+			A: {
+				users: [ {user: l, password: p} ]
+				exports [ { service: "$JS.JSD.API.CONSUMER.MSG.NEXT.>", response: stream } ]
+			},
+			B: {
+				users: [ {user: m, password: p} ]
+				imports [ { service: { subject: "$JS.JSD.API.CONSUMER.MSG.NEXT.*.*", account: A } }]
+			},
+		}
+		# bind local A to IU account on other side of LN.
+		leaf { remotes [ { url: nats://mh:bar@127.0.0.1:%d; account: A } ] }
+	`, o.LeafNode.Port)))
+	defer removeFile(t, conf2)
+
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkLeafNodeConnectedCount(t, s, 1)
+
+	// Connect to JS account, create stream and consumer and put in some messages.
+	nc, js := jsClientConnect(t, s, nats.UserInfo("dlc", "foo"))
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "PC", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+
+	toSend := 10
+	for i := 0; i < toSend; i++ {
+		_, err := js.Publish("foo", []byte("OK"))
+		require_NoError(t, err)
+	}
+
+	// Now create durable pull consumer.
+	_, err = js.AddConsumer("PC", &nats.ConsumerConfig{Durable: "PC", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// Now access from the account on the leafnode, so importing on both sides and crossing a leafnode connection.
+	nc2, _ := jsClientConnect(t, s2, nats.UserInfo("m", "p"))
+	defer nc2.Close()
+
+	req := &JSApiConsumerGetNextRequest{Batch: toSend}
+	jreq, err := json.Marshal(req)
+	require_NoError(t, err)
+
+	// Make sure we can get a batch correctly etc.
+	// This requires response stream above in the export definition.
+	sub, err := nc2.SubscribeSync("xx")
+	require_NoError(t, err)
+
+	rsubj := "$JS.JSD.API.CONSUMER.MSG.NEXT.PC.PC"
+	err = nc2.PublishRequest(rsubj, "xx", jreq)
+	require_NoError(t, err)
+	checkSubsPending(t, sub, 10)
+
+	// Queue up a bunch of requests.
+	for i := 0; i < 10; i++ {
+		err = nc2.PublishRequest(rsubj, "xx", jreq)
+		require_NoError(t, err)
+	}
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		ci, err := js.ConsumerInfo("PC", "PC")
+		require_NoError(t, err)
+		if ci.NumWaiting != 10 {
+			return fmt.Errorf("Expected to see 10 waiting requests, got %d", ci.NumWaiting)
+		}
+		return nil
+	})
+
+	// Remove interest.
+	sub.Unsubscribe()
+	// Make sure requests go away.
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		ci, err := js.ConsumerInfo("PC", "PC")
+		require_NoError(t, err)
+		if ci.NumWaiting != 0 {
+			return fmt.Errorf("Expected to see no waiting requests, got %d", ci.NumWaiting)
+		}
+		return nil
+	})
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////

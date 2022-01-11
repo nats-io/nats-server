@@ -1058,7 +1058,7 @@ func (o *consumer) deleteNotActive() {
 	}
 	// Push mode just look at active.
 	if o.isPushMode() {
-		// If weare active simply return.
+		// If we are active simply return.
 		if o.active {
 			o.mu.Unlock()
 			return
@@ -1972,7 +1972,8 @@ func nextReqFromMsg(msg []byte) (time.Time, int, bool, error) {
 
 // Represents a request that is on the internal waiting queue
 type waitingRequest struct {
-	client   *client
+	acc      *Account
+	interest string
 	reply    string
 	n        int // For batching
 	expires  time.Time
@@ -1990,6 +1991,7 @@ var wrPool = sync.Pool{
 // Recycle this request. This request can not be accessed after this call.
 func (wr *waitingRequest) recycleIfDone() {
 	if wr != nil && wr.n <= 0 {
+		wr.acc, wr.interest, wr.reply = nil, _EMPTY_, _EMPTY_
 		wrPool.Put(wr)
 	}
 }
@@ -1997,6 +1999,7 @@ func (wr *waitingRequest) recycleIfDone() {
 // Force a recycle.
 func (wr *waitingRequest) recycle() {
 	if wr != nil {
+		wr.acc, wr.interest, wr.reply = nil, _EMPTY_, _EMPTY_
 		wrPool.Put(wr)
 	}
 }
@@ -2101,23 +2104,22 @@ func (o *consumer) nextWaiting() *waitingRequest {
 	if o.waiting == nil || o.waiting.isEmpty() {
 		return nil
 	}
-
 	for wr := o.waiting.peek(); !o.waiting.isEmpty(); wr = o.waiting.peek() {
 		if wr == nil || wr.expires.IsZero() || time.Now().Before(wr.expires) {
-			rr := o.acc.sl.Match(wr.reply)
+			rr := wr.acc.sl.Match(wr.interest)
 			if len(rr.psubs)+len(rr.qsubs) > 0 {
 				return o.waiting.pop()
 			} else if o.srv.gateway.enabled {
-				if o.srv.hasGatewayInterest(o.acc.Name, wr.reply) || time.Since(wr.received) < defaultGatewayRecentSubExpiration {
+				if o.srv.hasGatewayInterest(wr.acc.Name, wr.interest) || time.Since(wr.received) < defaultGatewayRecentSubExpiration {
 					return o.waiting.pop()
 				}
 			}
 		}
+		hdr := []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
+		o.outq.send(&jsPubMsg{wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0, nil})
 		// Remove the current one, no longer valid.
 		o.waiting.removeCurrent()
 		wr.recycle()
-		hdr := []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
-		o.outq.send(&jsPubMsg{wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0, nil})
 	}
 	return nil
 }
@@ -2129,7 +2131,6 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 	if reply == _EMPTY_ {
 		return
 	}
-
 	_, msg = c.msgParts(msg)
 
 	o.mu.Lock()
@@ -2183,9 +2184,19 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 		return
 	}
 
+	// If we receive this request though an account export, we need to track that interest subject and account.
+	acc, interest := o.acc, reply
+	for strings.HasPrefix(interest, replyPrefix) && acc.exports.responses != nil {
+		if si := acc.exports.responses[interest]; si != nil {
+			acc, interest = si.acc, si.to
+		} else {
+			break
+		}
+	}
+
 	// In case we have to queue up this request.
 	wr := wrPool.Get().(*waitingRequest)
-	wr.client, wr.reply, wr.n, wr.noWait, wr.expires = c, reply, batchSize, noWait, expires
+	wr.acc, wr.interest, wr.reply, wr.n, wr.noWait, wr.expires = acc, interest, reply, batchSize, noWait, expires
 	wr.received = time.Now()
 
 	if err := o.waiting.add(wr); err != nil {
@@ -2317,7 +2328,7 @@ func (o *consumer) forceExpireFirstWaiting() {
 		return
 	}
 	// If we are expiring this and we think there is still interest, alert.
-	if rr := o.acc.sl.Match(wr.reply); len(rr.psubs)+len(rr.qsubs) > 0 && o.mset != nil {
+	if rr := wr.acc.sl.Match(wr.interest); len(rr.psubs)+len(rr.qsubs) > 0 && o.mset != nil {
 		// We still appear to have interest, so send alert as courtesy.
 		hdr := []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
 		o.outq.send(&jsPubMsg{wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0, nil})
@@ -2332,9 +2343,6 @@ func (o *consumer) expireWaiting() int {
 	now := time.Now()
 	for wr := o.waiting.peek(); wr != nil; wr = o.waiting.peek() {
 		if wr.noWait || !wr.expires.IsZero() && now.After(wr.expires) {
-			o.waiting.removeCurrent()
-			wr.recycle()
-			expired++
 			var hdr []byte
 			if wr.noWait {
 				hdr = []byte("NATS/1.0 404 No Messages\r\n\r\n")
@@ -2342,11 +2350,14 @@ func (o *consumer) expireWaiting() int {
 				hdr = []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
 			}
 			o.outq.send(&jsPubMsg{wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0, nil})
+			o.waiting.removeCurrent()
+			wr.recycle()
+			expired++
 			continue
 		}
 
-		s, acc := o.srv, o.acc
-		rr := acc.sl.Match(wr.reply)
+		s, acc := o.srv, wr.acc
+		rr := acc.sl.Match(wr.interest)
 		// If we have local interest or no server break and do not remove.
 		if len(rr.psubs)+len(rr.qsubs) > 0 || s == nil {
 			break
@@ -2356,7 +2367,7 @@ func (o *consumer) expireWaiting() int {
 		if s.gateway.enabled {
 			// If we are here check on gateways.
 			// If we have interest or the request is too young break and do not expire.
-			if s.hasGatewayInterest(acc.Name, wr.reply) || time.Since(wr.received) < defaultGatewayRecentSubExpiration {
+			if s.hasGatewayInterest(acc.Name, wr.interest) || time.Since(wr.received) < defaultGatewayRecentSubExpiration {
 				break
 			}
 		}
