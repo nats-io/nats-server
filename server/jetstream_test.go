@@ -1818,7 +1818,7 @@ func TestJetStreamWorkQueueRequest(t *testing.T) {
 			req.NoWait = true
 			jreq, _ = json.Marshal(req)
 
-			resp, err := nc.Request(getSubj, jreq, 50*time.Millisecond)
+			resp, err := nc.Request(getSubj, jreq, 100*time.Millisecond)
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -1833,6 +1833,7 @@ func TestJetStreamWorkQueueRequest(t *testing.T) {
 			req.Batch = toSend + 10
 			req.NoWait = true
 			jreq, _ = json.Marshal(req)
+
 			nc.PublishRequest(getSubj, reply, jreq)
 			// We should now have 2 * toSend + the 404 message.
 			checkSubPending(2*toSend + 1)
@@ -1856,7 +1857,15 @@ func TestJetStreamWorkQueueRequest(t *testing.T) {
 			sendStreamMsg(t, nc, "foo", "Hello World!")
 			sendStreamMsg(t, nc, "bar", "Hello World!")
 			time.Sleep(100 * time.Millisecond)
-			checkSubPending(0)
+
+			// Expect the request timed out message.
+			checkSubPending(1)
+			if resp, _ = sub.NextMsg(time.Millisecond); resp == nil {
+				t.Fatalf("Expected an expired status message")
+			}
+			if status := resp.Header.Get("Status"); !strings.HasPrefix(status, "408") {
+				t.Fatalf("Expected status code of 408")
+			}
 
 			// Send a new request, we should not get the 408 because our previous request
 			// should have expired.
@@ -3557,6 +3566,7 @@ func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {
 
 	nc = clientConnectToServer(t, s)
 	defer nc.Close()
+
 	// Send a message
 	sendStreamMsg(t, nc, mname, "Hello World!")
 
@@ -4518,6 +4528,10 @@ func TestJetStreamPubAckPerf(t *testing.T) {
 
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
 
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
@@ -9278,23 +9292,6 @@ func TestJetStreamPushConsumersPullError(t *testing.T) {
 	if m.Header.Get("Status") != "409" {
 		t.Fatalf("Expected a 409 status code, got %q", m.Header.Get("Status"))
 	}
-
-	// Should not be possible to ask for more messages than MaxAckPending limit.
-	ci, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
-		Durable:       "test",
-		AckPolicy:     nats.AckExplicitPolicy,
-		MaxAckPending: 5,
-	})
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	m, err = nc.Request(fmt.Sprintf(JSApiRequestNextT, "TEST", ci.Name), []byte(`10`), time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if m.Header.Get("Status") != "409" {
-		t.Fatalf("Expected a 409 status code, got %q", m.Header.Get("Status"))
-	}
 }
 
 ////////////////////////////////////////
@@ -10293,16 +10290,6 @@ func TestJetStreamPullConsumerMaxAckPending(t *testing.T) {
 					toAck = append(toAck, m)
 				}
 			}
-			// This should fail.. But we do not want to queue up our request.
-			req := &JSApiConsumerGetNextRequest{Batch: 1, NoWait: true}
-			jreq, _ := json.Marshal(req)
-			m, err := nc.Request(getSubj, jreq, time.Second)
-			if err != nil {
-				t.Fatalf("Unexpected error: %v", err)
-			}
-			if m.Header.Get("Status") != "409" {
-				t.Fatalf("Expected a 409 status code, got %q", m.Header.Get("Status"))
-			}
 
 			// Now ack them all.
 			for _, m := range toAck {
@@ -10323,8 +10310,8 @@ func TestJetStreamPullConsumerMaxAckPending(t *testing.T) {
 				})
 			}
 
-			req = &JSApiConsumerGetNextRequest{Batch: maxAckPending}
-			jreq, _ = json.Marshal(req)
+			req := &JSApiConsumerGetNextRequest{Batch: maxAckPending}
+			jreq, _ := json.Marshal(req)
 			nc.PublishRequest(getSubj, sub.Subject, jreq)
 
 			checkSubPending(maxAckPending)
@@ -13858,6 +13845,48 @@ func TestJetStreamCrossAccountsDeliverSubjectInterest(t *testing.T) {
 	// Make sure our consumer info reflects we delivered the messages.
 	if ci.NumPending != 0 || ci.Delivered.Consumer != uint64(toSend) {
 		t.Fatalf("Bad consumer info, looks like we did not deliver: %+v", ci)
+	}
+}
+
+func TestJetStreamPullConsumerRequestCleanup(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "T", Storage: nats.MemoryStorage})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("T", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	req := &JSApiConsumerGetNextRequest{Batch: 10, Expires: 100 * time.Millisecond}
+	jreq, err := json.Marshal(req)
+	require_NoError(t, err)
+
+	// Need interest otehrwise the requests will be recycled based on that.
+	_, err = nc.SubscribeSync("xx")
+	require_NoError(t, err)
+
+	// Queue up 100 requests.
+	rsubj := fmt.Sprintf(JSApiRequestNextT, "T", "dlc")
+	for i := 0; i < 100; i++ {
+		err = nc.PublishRequest(rsubj, "xx", jreq)
+		require_NoError(t, err)
+	}
+	// Wait to expire
+	time.Sleep(200 * time.Millisecond)
+
+	ci, err := js.ConsumerInfo("T", "dlc")
+	require_NoError(t, err)
+
+	if ci.NumWaiting != 0 {
+		t.Fatalf("Expected to see no waiting requests, got %d", ci.NumWaiting)
 	}
 }
 

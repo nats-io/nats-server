@@ -25,7 +25,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nuid"
@@ -342,7 +341,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		}
 	} else {
 		// Pull mode / work queue mode require explicit ack.
-		if config.AckPolicy != AckExplicit {
+		if config.AckPolicy == AckNone {
 			return nil, NewJSConsumerPullRequiresAckError()
 		}
 		// They are also required to be durable since otherwise we will not know when to
@@ -698,7 +697,7 @@ func (o *consumer) setConsumerAssignment(ca *consumerAssignment) {
 	}
 }
 
-// checkInterest will check on our interest's queue group status.
+// checkQueueInterest will check on our interest's queue group status.
 // Lock should be held.
 func (o *consumer) checkQueueInterest() {
 	if !o.active || o.cfg.DeliverSubject == _EMPTY_ {
@@ -1663,8 +1662,8 @@ func (o *consumer) info() *ConsumerInfo {
 
 	ci := js.clusterInfo(o.raftGroup())
 
-	o.mu.RLock()
-	defer o.mu.RUnlock()
+	o.mu.Lock()
+	defer o.mu.Unlock()
 
 	cfg := o.cfg
 	info := &ConsumerInfo{
@@ -1698,6 +1697,7 @@ func (o *consumer) info() *ConsumerInfo {
 
 	// If we are a pull mode consumer, report on number of waiting requests.
 	if o.isPullMode() {
+		o.expireWaiting()
 		info.NumWaiting = o.waiting.len()
 	}
 	return info
@@ -1932,11 +1932,33 @@ func nextReqFromMsg(msg []byte) (time.Time, int, bool, error) {
 
 // Represents a request that is on the internal waiting queue
 type waitingRequest struct {
-	client  *client
-	reply   string
-	n       int // For batching
-	expires time.Time
-	noWait  bool
+	client   *client
+	reply    string
+	n        int // For batching
+	expires  time.Time
+	received time.Time
+	noWait   bool
+}
+
+// sync.Pool for waiting requests.
+var wrPool = sync.Pool{
+	New: func() interface{} {
+		return new(waitingRequest)
+	},
+}
+
+// Recycle this request. This request can not be accessed after this call.
+func (wr *waitingRequest) recycleIfDone() {
+	if wr != nil && wr.n <= 0 {
+		wrPool.Put(wr)
+	}
+}
+
+// Force a recycle.
+func (wr *waitingRequest) recycle() {
+	if wr != nil {
+		wrPool.Put(wr)
+	}
 }
 
 // waiting queue for requests that are waiting for new messages to arrive.
@@ -1979,6 +2001,10 @@ func (wq *waitQueue) isFull() bool {
 	return wq.rp == wq.wp
 }
 
+func (wq *waitQueue) isEmpty() bool {
+	return wq.len() == 0
+}
+
 func (wq *waitQueue) len() int {
 	if wq == nil || wq.rp < 0 {
 		return 0
@@ -2007,15 +2033,51 @@ func (wq *waitQueue) pop() *waitingRequest {
 	if wr != nil {
 		wr.n--
 		if wr.n <= 0 {
-			wq.reqs[wq.rp] = nil
-			wq.rp = (wq.rp + 1) % cap(wq.reqs)
-			// Check if we are empty.
-			if wq.rp == wq.wp {
-				wq.rp, wq.wp = -1, 0
-			}
+			wq.removeCurrent()
 		}
 	}
 	return wr
+}
+
+// removes the current read pointer (head FIFO) entry.
+func (wq *waitQueue) removeCurrent() {
+	if wq.rp < 0 {
+		return
+	}
+	wq.reqs[wq.rp] = nil
+	wq.rp = (wq.rp + 1) % cap(wq.reqs)
+	// Check if we are empty.
+	if wq.rp == wq.wp {
+		wq.rp, wq.wp = -1, 0
+	}
+}
+
+// Return next waiting request. This will check for expirations but not noWait or interest.
+// That will be handled by expireWaiting.
+// Lock should be held.
+func (o *consumer) nextWaiting() *waitingRequest {
+	if o.waiting == nil || o.waiting.isEmpty() {
+		return nil
+	}
+
+	for wr := o.waiting.peek(); !o.waiting.isEmpty(); wr = o.waiting.peek() {
+		if wr == nil || wr.expires.IsZero() || time.Now().Before(wr.expires) {
+			rr := o.acc.sl.Match(wr.reply)
+			if len(rr.psubs)+len(rr.qsubs) > 0 {
+				return o.waiting.pop()
+			} else if o.srv.gateway.enabled {
+				if o.srv.hasGatewayInterest(o.acc.Name, wr.reply) || time.Since(wr.received) < defaultGatewayRecentSubExpiration {
+					return o.waiting.pop()
+				}
+			}
+		}
+		// Remove the current one, no longer valid.
+		o.waiting.removeCurrent()
+		wr.recycle()
+		hdr := []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
+		o.outq.send(&jsPubMsg{wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0, nil})
+	}
+	return nil
 }
 
 // processNextMsgReq will process a request for the next message available. A nil message payload means deliver
@@ -2031,7 +2093,7 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	s, mset, js := o.srv, o.mset, o.js
+	mset := o.mset
 	if mset == nil {
 		return
 	}
@@ -2046,6 +2108,14 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 		return
 	}
 
+	// Check payload here to see if they sent in batch size or a formal request.
+	expires, batchSize, noWait, err := nextReqFromMsg(msg)
+	if err != nil {
+		sendErr(400, fmt.Sprintf("Bad Request - %v", err))
+		return
+	}
+
+	// If we have the max number of requests already pending try to expire.
 	if o.waiting.isFull() {
 		// Try to expire some of the requests.
 		if expired := o.expireWaiting(); expired == 0 {
@@ -2054,70 +2124,22 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 		}
 	}
 
-	// Check payload here to see if they sent in batch size or a formal request.
-	expires, batchSize, noWait, err := nextReqFromMsg(msg)
-	if err != nil {
-		sendErr(400, fmt.Sprintf("Bad Request - %v", err))
-		return
-	}
-
-	if o.maxp > 0 && batchSize > o.maxp {
-		sendErr(409, "Exceeded MaxAckPending")
+	// If the request is for noWait and we have pending requests already, error.
+	if noWait && o.checkWaitingForInterest() {
+		sendErr(408, "Requests Pending")
 		return
 	}
 
 	// In case we have to queue up this request.
-	wr := waitingRequest{client: c, reply: reply, n: batchSize, noWait: noWait, expires: expires}
+	wr := wrPool.Get().(*waitingRequest)
+	wr.client, wr.reply, wr.n, wr.noWait, wr.expires = c, reply, batchSize, noWait, expires
+	wr.received = time.Now()
 
-	// If we are in replay mode, defer to processReplay for delivery.
-	if o.replay {
-		o.waiting.add(&wr)
-		o.signalNewMessages()
+	if err := o.waiting.add(wr); err != nil {
+		sendErr(409, "Exceeded MaxWaiting")
 		return
 	}
-
-	sendBatch := func(wr *waitingRequest) {
-		for i, batchSize := 0, wr.n; i < batchSize; i++ {
-			// See if we have more messages available.
-			if subj, hdr, msg, seq, dc, ts, err := o.getNextMsg(); err == nil {
-				o.deliverMsg(reply, subj, hdr, msg, seq, dc, ts)
-				// Need to discount this from the total n for the request.
-				wr.n--
-			} else {
-				if wr.noWait {
-					switch err {
-					case errMaxAckPending:
-						sendErr(409, "Exceeded MaxAckPending")
-					default:
-						sendErr(404, "No Messages")
-					}
-				} else {
-					o.waiting.add(wr)
-				}
-				return
-			}
-		}
-	}
-
-	// If this is direct from a client can proceed inline.
-	if c.kind == CLIENT {
-		sendBatch(&wr)
-	} else {
-		// Check for API outstanding requests.
-		if apiOut := atomic.AddInt64(&js.apiInflight, 1); apiOut > maxJSApiOut {
-			atomic.AddInt64(&js.apiInflight, -1)
-			sendErr(503, "JetStream API limit exceeded")
-			s.Warnf("JetStream API limit exceeded: %d calls outstanding", apiOut)
-			return
-		}
-		// Dispatch the API call to its own Go routine.
-		go func() {
-			o.mu.Lock()
-			sendBatch(&wr)
-			o.mu.Unlock()
-			atomic.AddInt64(&js.apiInflight, -1)
-		}()
-	}
+	o.signalNewMessages()
 }
 
 // Increase the delivery count for this message.
@@ -2235,11 +2257,11 @@ func (o *consumer) getNextMsg() (subj string, hdr, msg []byte, seq uint64, dc ui
 
 // forceExpireFirstWaiting will force expire the first waiting.
 // Lock should be held.
-func (o *consumer) forceExpireFirstWaiting() *waitingRequest {
+func (o *consumer) forceExpireFirstWaiting() {
 	// FIXME(dlc) - Should we do advisory here as well?
-	wr := o.waiting.pop()
+	wr := o.waiting.peek()
 	if wr == nil {
-		return wr
+		return
 	}
 	// If we are expiring this and we think there is still interest, alert.
 	if rr := o.acc.sl.Match(wr.reply); len(rr.psubs)+len(rr.qsubs) > 0 && o.mset != nil {
@@ -2247,7 +2269,8 @@ func (o *consumer) forceExpireFirstWaiting() *waitingRequest {
 		hdr := []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
 		o.outq.send(&jsPubMsg{wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0, nil})
 	}
-	return wr
+	o.waiting.removeCurrent()
+	wr.recycle()
 }
 
 // Will check for expiration and lack of interest on waiting requests.
@@ -2255,24 +2278,38 @@ func (o *consumer) expireWaiting() int {
 	var expired int
 	now := time.Now()
 	for wr := o.waiting.peek(); wr != nil; wr = o.waiting.peek() {
-		if !wr.expires.IsZero() && now.After(wr.expires) {
-			wr.n = 0 // Force removal by setting requests left to 0.
-			o.waiting.pop()
+		if wr.noWait || !wr.expires.IsZero() && now.After(wr.expires) {
+			o.waiting.removeCurrent()
+			wr.recycle()
 			expired++
+			var hdr []byte
+			if wr.noWait {
+				hdr = []byte("NATS/1.0 404 No Messages\r\n\r\n")
+			} else {
+				hdr = []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
+			}
+			o.outq.send(&jsPubMsg{wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0, nil})
 			continue
 		}
-		s, acc := o.acc.srv, o.acc
+
+		s, acc := o.srv, o.acc
 		rr := acc.sl.Match(wr.reply)
-		if len(rr.psubs)+len(rr.qsubs) > 0 {
+		// If we have local interest or no server break and do not remove.
+		if len(rr.psubs)+len(rr.qsubs) > 0 || s == nil {
 			break
 		}
-		// If we are here check on gateways.
-		if s != nil && s.hasGatewayInterest(acc.Name, wr.reply) {
-			break
+
+		// Check gateway interest.
+		if s.gateway.enabled {
+			// If we are here check on gateways.
+			// If we have interest or the request is too young break and do not expire.
+			if s.hasGatewayInterest(acc.Name, wr.reply) || time.Since(wr.received) < defaultGatewayRecentSubExpiration {
+				break
+			}
 		}
-		// No more interest so go ahead and remove this one from our list.
-		wr.n = 0 // Force removal by setting requests left to 0.
-		o.waiting.pop()
+		// No more interest here so go ahead and remove this one from our list.
+		o.waiting.removeCurrent()
+		wr.recycle()
 		expired++
 	}
 	return expired
@@ -2340,17 +2377,11 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 
 		// If we are in push mode and not active or under flowcontrol let's stop sending.
 		if o.isPushMode() {
-			if !o.active {
+			if !o.active || (o.maxpb > 0 && o.pbytes > o.maxpb) {
 				goto waitForMsgs
 			}
-			// Flowcontrol.
-			if o.maxpb > 0 && o.pbytes > o.maxpb {
-				goto waitForMsgs
-			}
-		}
-
-		// If we are in pull mode and no one is waiting already break and wait.
-		if o.isPullMode() && !o.checkWaitingForInterest() {
+		} else if o.waiting.isEmpty() {
+			// If we are in pull mode and no one is waiting already break and wait.
 			goto waitForMsgs
 		}
 
@@ -2361,16 +2392,20 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			if err == ErrStoreMsgNotFound || err == ErrStoreEOF || err == errMaxAckPending || err == errPartialCache {
 				goto waitForMsgs
 			} else {
-				o.mu.Unlock()
 				s.Errorf("Received an error looking up message for consumer: %v", err)
-				return
+				goto waitForMsgs
 			}
 		}
 
-		if wr := o.waiting.pop(); wr != nil {
-			dsubj = wr.reply
-		} else {
+		if o.isPushMode() {
 			dsubj = o.dsubj
+		} else if wr := o.nextWaiting(); wr != nil {
+			dsubj = wr.reply
+			wr.recycleIfDone()
+		} else {
+			// We will redo this one.
+			o.sseq--
+			goto waitForMsgs
 		}
 
 		// If we are in a replay scenario and have not caught up check if we need to delay here.
@@ -2420,6 +2455,11 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		// If we were in a replay state check to see if we are caught up. If so clear.
 		if o.replay && o.sseq > lseq {
 			o.replay = false
+		}
+
+		// Make sure to process any expired requests that are pending.
+		if o.isPullMode() {
+			o.expireWaiting()
 		}
 
 		// We will wait here for new messages to arrive.
