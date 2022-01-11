@@ -859,6 +859,11 @@ func (ctx ContextOpt) configurePublish(opts *pubOpts) error {
 	return nil
 }
 
+func (ctx ContextOpt) configureSubscribe(opts *subOpts) error {
+	opts.ctx = ctx
+	return nil
+}
+
 func (ctx ContextOpt) configurePull(opts *pullOpts) error {
 	opts.ctx = ctx
 	return nil
@@ -965,6 +970,9 @@ type jsSub struct {
 	fcd    uint64
 	fciseq uint64
 	csfct  *time.Timer
+
+	// Cancellation function to cancel context on drain/unsubscribe.
+	cancel func()
 }
 
 // Deletes the JS Consumer.
@@ -1243,6 +1251,7 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync,
 		consumer      = o.consumer
 		isDurable     = o.cfg.Durable != _EMPTY_
 		consumerBound = o.bound
+		ctx           = o.ctx
 		notFoundErr   bool
 		lookupErr     bool
 		nc            = js.nc
@@ -1389,6 +1398,13 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync,
 		deliver = nc.newInbox()
 	}
 
+	// In case this has a context, then create a child context that
+	// is possible to cancel via unsubscribe / drain.
+	var cancel func()
+	if ctx != nil {
+		ctx, cancel = context.WithCancel(ctx)
+	}
+
 	jsi := &jsSub{
 		js:       js,
 		stream:   stream,
@@ -1401,6 +1417,7 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync,
 		pull:     isPullMode,
 		nms:      nms,
 		psubj:    subj,
+		cancel:   cancel,
 	}
 
 	// Check if we are manual ack.
@@ -1537,6 +1554,14 @@ func (js *js) subscribe(subj, queue string, cb MsgHandler, ch chan *Msg, isSync,
 	// and process flow control.
 	if sub.Type() == ChanSubscription && hasFC {
 		sub.chanSubcheckForFlowControlResponse()
+	}
+
+	// Wait for context to get canceled if there is one.
+	if ctx != nil {
+		go func() {
+			<-ctx.Done()
+			sub.Unsubscribe()
+		}()
 	}
 
 	return sub, nil
@@ -1813,7 +1838,7 @@ func (sub *Subscription) scheduleFlowControlResponse(reply string) {
 func (sub *Subscription) activityCheck() {
 	sub.mu.Lock()
 	jsi := sub.jsi
-	if jsi == nil {
+	if jsi == nil || sub.closed {
 		sub.mu.Unlock()
 		return
 	}
@@ -1822,10 +1847,9 @@ func (sub *Subscription) activityCheck() {
 	jsi.hbc.Reset(jsi.hbi)
 	jsi.active = false
 	nc := sub.conn
-	closed := sub.closed
 	sub.mu.Unlock()
 
-	if !active && !closed {
+	if !active {
 		nc.mu.Lock()
 		if errCB := nc.Opts.AsyncErrorCB; errCB != nil {
 			nc.ach.push(func() { errCB(nc, sub, ErrConsumerNotActive) })
@@ -1953,6 +1977,7 @@ type subOpts struct {
 	mack bool
 	// For an ordered consumer.
 	ordered bool
+	ctx     context.Context
 }
 
 // OrderedConsumer will create a fifo direct/ephemeral consumer for in order delivery of messages.

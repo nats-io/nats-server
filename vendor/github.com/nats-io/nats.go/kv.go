@@ -689,6 +689,9 @@ func (kv *kvs) Watch(keys string, opts ...WatchOpt) (KeyWatcher, error) {
 	if o.metaOnly {
 		subOpts = append(subOpts, HeadersOnly())
 	}
+	if o.ctx != nil {
+		subOpts = append(subOpts, Context(o.ctx))
+	}
 	sub, err := kv.js.Subscribe(keys, update, subOpts...)
 	if err != nil {
 		return nil, err
