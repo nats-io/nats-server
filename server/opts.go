@@ -1691,12 +1691,40 @@ func getInterfaceValue(v interface{}) (int64, error) {
 		return 0, fmt.Errorf("must be int64 or string")
 	}
 
-	i, err := strconv.Atoi(v.(string))
+	num, err := stringStorageSize(v.(string))
 	if err != nil {
-		return 0, fmt.Errorf("must represent an int64")
+		return 0, err
 	}
 
-	return int64(i), nil
+	return int64(num), nil
+}
+
+func stringStorageSize(s string) (int, error) {
+	suffix := strings.ToUpper(s[len(s)-1:])
+	prefix := s[:len(s)-1]
+	var num int
+	var err error
+	switch suffix {
+	case "K":
+		num, err = strconv.Atoi(prefix)
+		num = num * 1024
+	case "M":
+		num, err = strconv.Atoi(prefix)
+		num = num * 1048576
+	case "G":
+		num, err = strconv.Atoi(prefix)
+		num = num * 1073741824
+	case "T":
+		num, err = strconv.Atoi(prefix)
+		num = num * 1099511627776
+	default:
+		return 0, fmt.Errorf("sizes defined as strings must end in K, M, G, T")
+	}
+	if err != nil {
+		return 0, err
+	}
+
+	return num, nil
 }
 
 // Parse enablement of jetstream for a server.
