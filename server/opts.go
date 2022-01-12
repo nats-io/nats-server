@@ -1765,7 +1765,7 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 				if err != nil {
 					return &configErr{tk, fmt.Sprintf("max_file_store %s", err)}
 				}
-				opts.JetStreamMaxStore, err = getStorageSize(s)
+				opts.JetStreamMaxStore = s
 				opts.maxStoreSet = true
 			case "domain":
 				opts.JetStreamDomain = mv.(string)
