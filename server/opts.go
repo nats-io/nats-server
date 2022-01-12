@@ -1680,6 +1680,25 @@ func parseJetStreamForAccount(v interface{}, acc *Account, errors *[]error, warn
 	return nil
 }
 
+func getInterfaceValue(v interface{}) (int64, error) {
+	_, ok := v.(int64)
+	if ok {
+		return v.(int64), nil
+	}
+
+	_, ok = v.(string)
+	if !ok {
+		return 0, fmt.Errorf("must be int64 or string")
+	}
+
+	i, err := strconv.Atoi(v.(string))
+	if err != nil {
+		return 0, fmt.Errorf("must represent an int64")
+	}
+
+	return int64(i), nil
+}
+
 // Parse enablement of jetstream for a server.
 func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]error) error {
 	var lt token
@@ -1714,7 +1733,12 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 				opts.JetStreamMaxMemory = mv.(int64)
 				opts.maxMemSet = true
 			case "max_file_store", "max_file":
-				opts.JetStreamMaxStore = mv.(int64)
+				// need to define error to avoid non-name on left side of :=
+				var err error
+				opts.JetStreamMaxStore, err = getInterfaceValue(mv)
+				if err != nil {
+					return &configErr{tk, fmt.Sprintf("max_file_store %s", err)}
+				}
 				opts.maxStoreSet = true
 			case "domain":
 				opts.JetStreamDomain = mv.(string)
