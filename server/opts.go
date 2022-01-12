@@ -1680,26 +1680,22 @@ func parseJetStreamForAccount(v interface{}, acc *Account, errors *[]error, warn
 	return nil
 }
 
-func getInterfaceValue(v interface{}) (int64, error) {
+// takes in a storage size as either an int or a string and returns an int64 value based on the input.
+func getStorageSize(v interface{}) (int64, error) {
 	_, ok := v.(int64)
 	if ok {
 		return v.(int64), nil
 	}
 
-	_, ok = v.(string)
+	s, ok := v.(string)
 	if !ok {
 		return 0, fmt.Errorf("must be int64 or string")
 	}
 
-	num, err := stringStorageSize(v.(string))
-	if err != nil {
-		return 0, err
+	if s == "" {
+		return 0, nil
 	}
 
-	return int64(num), nil
-}
-
-func stringStorageSize(s string) (int, error) {
 	suffix := strings.ToUpper(s[len(s)-1:])
 	prefix := s[:len(s)-1]
 	var num int
@@ -1710,13 +1706,13 @@ func stringStorageSize(s string) (int, error) {
 		num = num * 1024
 	case "M":
 		num, err = strconv.Atoi(prefix)
-		num = num * 1048576
+		num = num * 1024 * 1024
 	case "G":
 		num, err = strconv.Atoi(prefix)
-		num = num * 1073741824
+		num = num * 1024 * 1024 * 1024
 	case "T":
 		num, err = strconv.Atoi(prefix)
-		num = num * 1099511627776
+		num = num * 1024 * 1024 * 1024 * 1024
 	default:
 		return 0, fmt.Errorf("sizes defined as strings must end in K, M, G, T")
 	}
@@ -1724,7 +1720,7 @@ func stringStorageSize(s string) (int, error) {
 		return 0, err
 	}
 
-	return num, nil
+	return int64(num), nil
 }
 
 // Parse enablement of jetstream for a server.
@@ -1758,15 +1754,18 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 				}
 				opts.StoreDir = mv.(string)
 			case "max_memory_store", "max_mem_store", "max_mem":
-				opts.JetStreamMaxMemory = mv.(int64)
+				s, err := getStorageSize(mv)
+				if err != nil {
+					return &configErr{tk, fmt.Sprintf("max_mem_store %s", err)}
+				}
+				opts.JetStreamMaxMemory = s
 				opts.maxMemSet = true
 			case "max_file_store", "max_file":
-				// need to define error to avoid non-name on left side of :=
-				var err error
-				opts.JetStreamMaxStore, err = getInterfaceValue(mv)
+				s, err := getStorageSize(mv)
 				if err != nil {
 					return &configErr{tk, fmt.Sprintf("max_file_store %s", err)}
 				}
+				opts.JetStreamMaxStore, err = getStorageSize(s)
 				opts.maxStoreSet = true
 			case "domain":
 				opts.JetStreamDomain = mv.(string)

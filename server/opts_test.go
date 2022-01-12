@@ -3257,7 +3257,7 @@ func TestMaxSubTokens(t *testing.T) {
 	}
 }
 
-func TestStringStoreSize(t *testing.T) {
+func TestGetStorageSize(t *testing.T) {
 	tt := []struct {
 		input string
 		want  int64
@@ -3269,11 +3269,12 @@ func TestStringStoreSize(t *testing.T) {
 		{"1T", 1099511627776, false},
 		{"1L", 0, true},
 		{"TT", 0, true},
+		{"", 0, false},
 	}
 
 	for _, v := range tt {
 		var testErr bool
-		got, err := getInterfaceValue(v.input)
+		got, err := getStorageSize(v.input)
 		if err != nil {
 			testErr = true
 		}
