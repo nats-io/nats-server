@@ -14210,11 +14210,7 @@ func TestJetStreamPullConsumerCrossAccountExpires(t *testing.T) {
 
 // This tests account export/import replies across a LN connection with account import/export
 // on both sides of the LN.
-// THIS DOES NOT WORK ATM. This is a placeholder.
 func TestJetStreamPullConsumerCrossAccountsAndLeafNodes(t *testing.T) {
-	// Comment out to run, holding place for now.
-	t.SkipNow()
-
 	conf := createConfFile(t, []byte(`
 		server_name: SJS
 		listen: 127.0.0.1:-1
