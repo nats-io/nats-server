@@ -268,6 +268,16 @@ type Server struct {
 
 	// How often user logon fails due to the issuer account not being pinned.
 	pinnedAccFail uint64
+
+	// This is a central logger for IPQueues when the number of pending
+	// messages reaches a certain thresold (per queue)
+	ipqLog *srvIPQueueLogger
+}
+
+type srvIPQueueLogger struct {
+	ch   chan string
+	done chan struct{}
+	s    *Server
 }
 
 // For tracking JS nodes.
@@ -1186,9 +1196,6 @@ func (s *Server) SetDefaultSystemAccount() error {
 	return s.SetSystemAccount(DEFAULT_SYSTEM_ACCOUNT)
 }
 
-// For internal sends.
-const internalSendQLen = 256 * 1024
-
 // Assign a system account. Should only be called once.
 // This sets up a server to send and receive messages from
 // inside the server itself.
@@ -1228,7 +1235,7 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		sid:     1,
 		servers: make(map[string]*serverUpdate),
 		replies: make(map[string]msgHandler),
-		sendq:   make(chan *pubMsg, internalSendQLen),
+		sendq:   newIPQueue(ipQueue_Logger("System send", s.ipqLog)), // of *pubMsg
 		resetCh: make(chan struct{}),
 		sq:      s.newSendQ(),
 		statsz:  eventsHBInterval,
@@ -1598,6 +1605,8 @@ func (s *Server) Start() {
 	s.grRunning = true
 	s.grMu.Unlock()
 
+	s.startIPQLogger()
+
 	// Pprof http endpoint for the profiler.
 	if opts.ProfPort != 0 {
 		s.StartProfiler()
@@ -1964,6 +1973,11 @@ func (s *Server) Shutdown() {
 	for doneExpected > 0 {
 		<-s.done
 		doneExpected--
+	}
+
+	// Stop the IPQueue logger (before the grWG.Wait() call)
+	if s.ipqLog != nil {
+		s.ipqLog.stop()
 	}
 
 	// Wait for go routines to be done.
@@ -3603,4 +3617,36 @@ func (s *Server) updateRemoteSubscription(acc *Account, sub *subscription, delta
 	}
 
 	s.updateLeafNodes(acc, sub, delta)
+}
+
+func (s *Server) startIPQLogger() {
+	s.ipqLog = &srvIPQueueLogger{
+		ch:   make(chan string, 128),
+		done: make(chan struct{}),
+		s:    s,
+	}
+	s.startGoRoutine(s.ipqLog.run)
+}
+
+func (l *srvIPQueueLogger) stop() {
+	close(l.done)
+}
+
+func (l *srvIPQueueLogger) log(name string, pending int) {
+	select {
+	case l.ch <- fmt.Sprintf("%s queue pending size: %v", name, pending):
+	default:
+	}
+}
+
+func (l *srvIPQueueLogger) run() {
+	defer l.s.grWG.Done()
+	for {
+		select {
+		case w := <-l.ch:
+			l.s.Warnf("%s", w)
+		case <-l.done:
+			return
+		}
+	}
 }
