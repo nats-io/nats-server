@@ -1696,31 +1696,22 @@ func getStorageSize(v interface{}) (int64, error) {
 		return 0, nil
 	}
 
-	suffix := strings.ToUpper(s[len(s)-1:])
+	suffix := s[len(s)-1:]
 	prefix := s[:len(s)-1]
-	var num int
-	var err error
-	switch suffix {
-	case "K":
-		num, err = strconv.Atoi(prefix)
-		num = num * 1024
-	case "M":
-		num, err = strconv.Atoi(prefix)
-		num = num * 1024 * 1024
-	case "G":
-		num, err = strconv.Atoi(prefix)
-		num = num * 1024 * 1024 * 1024
-	case "T":
-		num, err = strconv.Atoi(prefix)
-		num = num * 1024 * 1024 * 1024 * 1024
-	default:
-		return 0, fmt.Errorf("sizes defined as strings must end in K, M, G, T")
-	}
+	num, err := strconv.ParseInt(prefix, 10, 64)
 	if err != nil {
 		return 0, err
 	}
 
-	return int64(num), nil
+	suffixMap := map[string]int64{"K": 10, "M": 20, "G": 30, "T": 40}
+
+	mult, ok := suffixMap[suffix]
+	if !ok {
+		return 0, fmt.Errorf("sizes defined as strings must end in K, M, G, T")
+	}
+	num *= 1 << mult
+
+	return num, nil
 }
 
 // Parse enablement of jetstream for a server.
