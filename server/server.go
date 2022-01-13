@@ -1612,7 +1612,7 @@ func (s *Server) Start() {
 		s.checkResolvePreloads()
 	}
 
-	// Log the pid to a file
+	// Log the pid to a file.
 	if opts.PidFile != _EMPTY_ {
 		if err := s.logPid(); err != nil {
 			s.Fatalf("Could not write pidfile: %v", err)
@@ -1631,14 +1631,21 @@ func (s *Server) Start() {
 		s.SetDefaultSystemAccount()
 	}
 
-	// start up resolver machinery
+	// Start monitoring before enabling other subsystems of the
+	// server to be able to monitor during startup.
+	if err := s.StartMonitoring(); err != nil {
+		s.Fatalf("Can't start monitoring: %v", err)
+		return
+	}
+
+	// Start up resolver machinery.
 	if ar := s.AccountResolver(); ar != nil {
 		if err := ar.Start(s); err != nil {
 			s.Fatalf("Could not start resolver: %v", err)
 			return
 		}
 		// In operator mode, when the account resolver depends on an external system and
-		// the system account is the bootstrapping account, start fetching it
+		// the system account is the bootstrapping account, start fetching it.
 		if len(opts.TrustedOperators) == 1 && opts.SystemAccount != _EMPTY_ && opts.SystemAccount != DEFAULT_SYSTEM_ACCOUNT {
 			_, isMemResolver := ar.(*MemAccResolver)
 			if v, ok := s.accounts.Load(s.opts.SystemAccount); !isMemResolver && ok && v.(*Account).claimJWT == "" {
@@ -1725,12 +1732,6 @@ func (s *Server) Start() {
 
 	// Start OCSP Stapling monitoring for TLS certificates if enabled.
 	s.startOCSPMonitoring()
-
-	// Start monitoring if needed.
-	if err := s.StartMonitoring(); err != nil {
-		s.Fatalf("Can't start monitoring: %v", err)
-		return
-	}
 
 	// Start up gateway if needed. Do this before starting the routes, because
 	// we want to resolve the gateway host:port so that this information can
