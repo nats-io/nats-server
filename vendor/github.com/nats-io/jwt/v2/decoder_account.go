@@ -73,7 +73,7 @@ func (oa v1AccountClaims) migrateV1() (*AccountClaims, error) {
 	a.Account.Exports = oa.v1NatsAccount.Exports
 	a.Account.Limits.AccountLimits = oa.v1NatsAccount.Limits.AccountLimits
 	a.Account.Limits.NatsLimits = oa.v1NatsAccount.Limits.NatsLimits
-	a.Account.Limits.JetStreamLimits = JetStreamLimits{0, 0, 0, 0}
+	a.Account.Limits.JetStreamLimits = JetStreamLimits{0, 0, 0, 0, false}
 	a.Account.SigningKeys = make(SigningKeys)
 	for _, v := range oa.SigningKeys {
 		a.Account.SigningKeys.Add(v)
