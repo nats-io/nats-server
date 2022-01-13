@@ -14,17 +14,17 @@ addons:
     packages:
     - rpm
 env:
-- GO111MODULE=off
+- GO111MODULE=on
 go_import_path: github.com/nats-io/nats-server
 install:
-- GO111MODULE=on go install honnef.co/go/tools/cmd/staticcheck@latest
-- GO111MODULE=on go install github.com/client9/misspell/cmd/misspell@latest
+- go install honnef.co/go/tools/cmd/staticcheck@latest
+- go install github.com/client9/misspell/cmd/misspell@latest
 before_script:
 - GO_LIST=$(go list ./...)
 - go build
 - $(exit $(go fmt $GO_LIST | wc -l))
 - go vet $GO_LIST
-- find . -type f -name "*.go" | grep -v "/vendor/" | xargs misspell -error -locale US
+- find . -type f -name "*.go" | xargs misspell -error -locale US
 - staticcheck $GO_LIST
 script:
 - set -e
@@ -38,7 +38,7 @@ after_success:
 deploy:
   provider: script
   cleanup: true
-  script: curl -sL http://git.io/goreleaser | VERSION=v0.160.0 bash
+  script: curl -sL http://git.io/goreleaser
   on:
     tags: true
-    condition: $TRAVIS_GO_VERSION =~ 1.16
+    condition: $TRAVIS_GO_VERSION =~ 1.17

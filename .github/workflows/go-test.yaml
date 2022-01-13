@@ -9,7 +9,7 @@ jobs:
 
     env:
       GOPATH: /home/runner/work/nats-server
-      GO111MODULE: "off"
+      GO111MODULE: "on"
 
     runs-on: ubuntu-latest
     steps:
@@ -36,7 +36,7 @@ jobs:
           go build
           $(exit $(go fmt $GO_LIST | wc -l))
           go vet $GO_LIST
-          find . -type f -name "*.go" | grep -v "/vendor/" | xargs $GOPATH/bin/misspell -error -locale US
+          find . -type f -name "*.go" | xargs $GOPATH/bin/misspell -error -locale US
           $GOPATH/bin/staticcheck $GO_LIST
 
       - name: Run tests
