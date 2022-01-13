@@ -9899,6 +9899,62 @@ func TestJetStreamClusterBalancedPlacement(t *testing.T) {
 	require_Error(t, err, NewJSInsufficientResourcesError(), NewJSStorageResourcesExceededError())
 }
 
+func TestJetStreamClusterConsumerPendingBug(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	nc2, js2 := jsClientConnect(t, c.randomServer())
+	defer nc2.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 3})
+	require_NoError(t, err)
+
+	startCh, doneCh := make(chan bool), make(chan error)
+	go func() {
+		<-startCh
+		_, err := js2.AddConsumer("foo", &nats.ConsumerConfig{
+			Durable:        "dlc",
+			FilterSubject:  "foo",
+			DeliverSubject: "x",
+		})
+		doneCh <- err
+	}()
+
+	n := 10_000
+	for i := 0; i < n; i++ {
+		nc.Publish("foo", []byte("ok"))
+		if i == 222 {
+			startCh <- true
+		}
+	}
+	// Wait for them to all be there.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("foo")
+		require_NoError(t, err)
+		if si.State.Msgs != uint64(n) {
+			return fmt.Errorf("Not received all messages")
+		}
+		return nil
+	})
+
+	select {
+	case err := <-doneCh:
+		if err != nil {
+			t.Fatalf("Error creating consumer: %v", err)
+		}
+		ci, err := js.ConsumerInfo("foo", "dlc")
+		require_NoError(t, err)
+		if ci.NumPending != uint64(n) {
+			t.Fatalf("Expected NumPending to be %d, got %d", n, ci.NumPending)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Timed out?")
+	}
+}
+
 func TestJetStreamClusterPullPerf(t *testing.T) {
 	skip(t)
 

@@ -207,6 +207,7 @@ type consumer struct {
 	adflr             uint64
 	asflr             uint64
 	sgap              uint64
+	lsgap             uint64
 	dsubj             string
 	qgroup            string
 	lss               *lastSeqSkipList
@@ -425,15 +426,8 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		if config.OptStartTime != nil {
 			return nil, NewJSConsumerInvalidPolicyError(badStart("last per subject", "time"))
 		}
-		badConfig := config.FilterSubject == _EMPTY_
-		if !badConfig {
-			subjects, ext := mset.allSubjects()
-			if len(subjects) == 1 && !ext && subjects[0] == config.FilterSubject && subjectIsLiteral(subjects[0]) {
-				badConfig = true
-			}
-		}
-		if badConfig {
-			return nil, NewJSConsumerInvalidPolicyError(notSet("deliver last per subject", "filter subject"))
+		if config.FilterSubject == _EMPTY_ {
+			return nil, NewJSConsumerInvalidPolicyError(notSet("last per subject", "filter subject"))
 		}
 	case DeliverNew:
 		if config.OptStartSeq > 0 {
@@ -444,17 +438,17 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		}
 	case DeliverByStartSequence:
 		if config.OptStartSeq == 0 {
-			return nil, NewJSConsumerInvalidPolicyError(notSet("deliver by start sequence", "start sequence"))
+			return nil, NewJSConsumerInvalidPolicyError(notSet("by start sequence", "start sequence"))
 		}
 		if config.OptStartTime != nil {
-			return nil, NewJSConsumerInvalidPolicyError(badStart("deliver by start sequence", "time"))
+			return nil, NewJSConsumerInvalidPolicyError(badStart("by start sequence", "time"))
 		}
 	case DeliverByStartTime:
 		if config.OptStartTime == nil {
-			return nil, NewJSConsumerInvalidPolicyError(notSet("deliver by start time", "start time"))
+			return nil, NewJSConsumerInvalidPolicyError(notSet("by start time", "start time"))
 		}
 		if config.OptStartSeq != 0 {
-			return nil, NewJSConsumerInvalidPolicyError(badStart("deliver by start time", "start sequence"))
+			return nil, NewJSConsumerInvalidPolicyError(badStart("by start time", "start sequence"))
 		}
 	}
 
@@ -3422,6 +3416,7 @@ func (o *consumer) setInitialPendingAndStart() {
 		mset.store.FastState(&state)
 		if state.Msgs > 0 {
 			o.sgap = state.Msgs - (o.sseq - state.FirstSeq)
+			o.lsgap = state.LastSeq
 		}
 	} else {
 		// Here we are filtered.
@@ -3429,8 +3424,10 @@ func (o *consumer) setInitialPendingAndStart() {
 			ss := mset.store.FilteredState(o.lss.resume+1, o.cfg.FilterSubject)
 			o.sseq = o.lss.seqs[0]
 			o.sgap = ss.Msgs + uint64(len(o.lss.seqs))
+			o.lsgap = ss.Last
 		} else if ss := mset.store.FilteredState(o.sseq, o.cfg.FilterSubject); ss.Msgs > 0 {
 			o.sgap = ss.Msgs
+			o.lsgap = ss.Last
 			// See if we should update our starting sequence.
 			if dp == DeliverLast || dp == DeliverLastPerSubject {
 				o.sseq = ss.Last

@@ -3070,7 +3070,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		for _, o := range mset.consumers {
 			o.mu.Lock()
 			if o.isLeader() {
-				if o.isFilteredMatch(subject) {
+				if seq > o.lsgap && o.isFilteredMatch(subject) {
 					o.sgap++
 				}
 				o.signalNewMessages()
