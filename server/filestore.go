@@ -3171,7 +3171,9 @@ checkCache:
 			mb.mu.Unlock()
 			var ld *LostStreamData
 			if ld, err = mb.rebuildState(); ld != nil {
-				fs.rebuildState(ld)
+				// We do not know if fs is locked or not at this point.
+				// This should be an exceptional condition so do so in Go routine.
+				go fs.rebuildState(ld)
 			}
 			mb.mu.Lock()
 		}
