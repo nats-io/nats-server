@@ -41,6 +41,10 @@ If you are interested in contributing to NATS, read about our...
 [ReportCard-Image]: https://goreportcard.com/badge/github.com/nats-io/nats-server
 [github-release]: https://github.com/nats-io/nats-server/releases/
 
+## Roadmap
+
+The NATS product roadmap can be found [here](https://nats.io/about/#roadmap).
+
 ## Security
 
 ### Security Audit
