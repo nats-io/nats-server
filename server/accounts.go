@@ -1,4 +1,4 @@
-// Copyright 2018-2021 The NATS Authors
+// Copyright 2018-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1242,9 +1242,7 @@ func (a *Account) sendReplyInterestLostTrackLatency(si *serviceImport) {
 		Error:  "Request Timeout",
 	}
 	a.mu.RLock()
-	rc := si.rc
-	share := si.share
-	ts := si.ts
+	rc, share, ts := si.rc, si.share, si.ts
 	sl.RequestHeader = si.trackingHdr
 	a.mu.RUnlock()
 	if rc != nil {
@@ -1257,9 +1255,7 @@ func (a *Account) sendReplyInterestLostTrackLatency(si *serviceImport) {
 func (a *Account) sendBackendErrorTrackingLatency(si *serviceImport, reason rsiReason) {
 	sl := &ServiceLatency{}
 	a.mu.RLock()
-	rc := si.rc
-	share := si.share
-	ts := si.ts
+	rc, share, ts := si.rc, si.share, si.ts
 	sl.RequestHeader = si.trackingHdr
 	a.mu.RUnlock()
 	if rc != nil {
@@ -1568,14 +1564,17 @@ func (a *Account) removeRespServiceImport(si *serviceImport, reason rsiReason) {
 	}
 
 	a.mu.Lock()
+	c := a.ic
 	delete(a.exports.responses, si.from)
-	dest := si.acc
-	to := si.to
-	tracking := si.tracking
-	rc := si.rc
+	dest, to, tracking, rc, didDeliver := si.acc, si.to, si.tracking, si.rc, si.didDeliver
 	a.mu.Unlock()
 
-	if tracking && rc != nil {
+	// If we have a sid make sure to unsub.
+	if len(si.sid) > 0 && c != nil {
+		c.processUnsub(si.sid)
+	}
+
+	if tracking && rc != nil && !didDeliver {
 		a.sendBackendErrorTrackingLatency(si, reason)
 	}
 
@@ -1714,12 +1713,17 @@ func (a *Account) checkForReverseEntry(reply string, si *serviceImport, checkInt
 			var trackingCleanup bool
 			var rsi *serviceImport
 			acc.mu.Lock()
+			c := acc.ic
 			if rsi = acc.exports.responses[sre.msub]; rsi != nil && !rsi.didDeliver {
 				delete(acc.exports.responses, rsi.from)
 				trackingCleanup = rsi.tracking && rsi.rc != nil
 			}
 			acc.mu.Unlock()
-
+			// If we are doing explicit subs for all responses (e.g. bound to leafnode)
+			// we will have a non-empty sid here.
+			if rsi != nil && len(rsi.sid) > 0 && c != nil {
+				c.processUnsub(rsi.sid)
+			}
 			if trackingCleanup {
 				acc.sendReplyInterestLostTrackLatency(rsi)
 			}
@@ -1842,10 +1846,18 @@ func (a *Account) internalClient() *client {
 
 // Internal account scoped subscriptions.
 func (a *Account) subscribeInternal(subject string, cb msgHandler) (*subscription, error) {
+	return a.subscribeInternalEx(subject, cb, false)
+}
+
+// Creates internal subscription for service import responses.
+func (a *Account) subscribeServiceImportResponse(subject string) (*subscription, error) {
+	return a.subscribeInternalEx(subject, a.processServiceImportResponse, true)
+}
+
+func (a *Account) subscribeInternalEx(subject string, cb msgHandler, ri bool) (*subscription, error) {
 	a.mu.Lock()
-	c := a.internalClient()
 	a.isid++
-	sid := strconv.FormatUint(a.isid, 10)
+	c, sid := a.internalClient(), strconv.FormatUint(a.isid, 10)
 	a.mu.Unlock()
 
 	// This will happen in parsing when the account has not been properly setup.
@@ -1853,7 +1865,7 @@ func (a *Account) subscribeInternal(subject string, cb msgHandler) (*subscriptio
 		return nil, fmt.Errorf("no internal account client")
 	}
 
-	return c.processSub([]byte(subject), nil, []byte(sid), cb, false)
+	return c.processSubEx([]byte(subject), nil, []byte(sid), cb, false, false, ri)
 }
 
 // This will add an account subscription that matches the "from" from a service import entry.
@@ -2062,11 +2074,11 @@ func (a *Account) processServiceImportResponse(sub *subscription, c *client, _ *
 	c.processServiceImport(si, a, msg)
 }
 
-// Will create a wildcard subscription to handle interest graph propagation for all
-// service replies.
-// Lock should not be held.
-func (a *Account) createRespWildcard() []byte {
-	a.mu.Lock()
+// Will create the response prefix for fast generation of responses.
+// A wildcard subscription may be used handle interest graph propagation
+// for all service replies, unless we are bound to a leafnode.
+// Lock should be held.
+func (a *Account) createRespWildcard() {
 	var b = [baseServerLen]byte{'_', 'R', '_', '.'}
 	rn := a.prand.Uint64()
 	for i, l := replyPrefixLen, rn; i < len(b); i++ {
@@ -2074,17 +2086,6 @@ func (a *Account) createRespWildcard() []byte {
 		l /= base
 	}
 	a.siReply = append(b[:], '.')
-	pre := a.siReply
-	wcsub := append(a.siReply, '>')
-	c := a.internalClient()
-	a.isid++
-	sid := strconv.FormatUint(a.isid, 10)
-	a.mu.Unlock()
-
-	// Create subscription and internal callback for all the wildcard response subjects.
-	c.processSubEx(wcsub, nil, []byte(sid), a.processServiceImportResponse, false, false, true)
-
-	return pre
 }
 
 // Test whether this is a tracked reply.
@@ -2097,17 +2098,27 @@ func isTrackedReply(reply []byte) bool {
 // FIXME(dlc) - probably do not have to use rand here. about 25ns per.
 func (a *Account) newServiceReply(tracking bool) []byte {
 	a.mu.Lock()
-	s, replyPre := a.srv, a.siReply
+	s := a.srv
 	if a.prand == nil {
 		var h maphash.Hash
 		h.WriteString(nuid.Next())
 		a.prand = rand.New(rand.NewSource(int64(h.Sum64())))
 	}
 	rn := a.prand.Uint64()
+
+	// Check if we need to create the reply here.
+	var createdSiReply bool
+	if a.siReply == nil {
+		a.createRespWildcard()
+		createdSiReply = true
+	}
+	replyPre, isBoundToLeafnode := a.siReply, a.lds != _EMPTY_
 	a.mu.Unlock()
 
-	if replyPre == nil {
-		replyPre = a.createRespWildcard()
+	// If we created the siReply and we are not bound to a leafnode
+	// we need to do the wildcard subscription.
+	if createdSiReply && !isBoundToLeafnode {
+		a.subscribeServiceImportResponse(string(append(replyPre, '>')))
 	}
 
 	var b [replyLen]byte
@@ -2127,6 +2138,7 @@ func (a *Account) newServiceReply(tracking bool) []byte {
 		reply = append(reply, s.sys.shash...)
 		reply = append(reply, '.', 'T')
 	}
+
 	return reply
 }
 
@@ -2256,11 +2268,18 @@ func (a *Account) addRespServiceImport(dest *Account, to string, osi *serviceImp
 		si.tracking = true
 		si.trackingHdr = header
 	}
+	isBoundToLeafnode := a.lds != _EMPTY_
 	a.mu.Unlock()
 
-	// We do not do individual subscriptions here like we do on configured imports.
+	// We might not do individual subscriptions here like we do on configured imports.
+	// If we are bound to a leafnode we do explicit subscriptions for these.
 	// We have an internal callback for all responses inbound to this account and
 	// will process appropriately there. This does not pollute the sublist and the caches.
+
+	if isBoundToLeafnode {
+		sub, _ := a.subscribeServiceImportResponse(nrr)
+		si.sid = sub.sid
+	}
 
 	// We do add in the reverse map such that we can detect loss of interest and do proper
 	// cleanup of this si as interest goes away.

@@ -1263,12 +1263,6 @@ func TestJetStreamCreateConsumer(t *testing.T) {
 
 			// Non-Durables need to have subscription to delivery subject.
 			delivery := nats.NewInbox()
-			// Pull-based consumers are required to be durable since we do not know when they should
-			// be cleaned up.
-			if _, err := mset.addConsumer(&ConsumerConfig{AckPolicy: AckExplicit}); err == nil {
-				t.Fatalf("Expected an error on pull-based that is non-durable.")
-			}
-
 			nc := clientConnectToServer(t, s)
 			defer nc.Close()
 			sub, _ := nc.SubscribeSync(delivery)
@@ -1818,7 +1812,7 @@ func TestJetStreamWorkQueueRequest(t *testing.T) {
 			req.NoWait = true
 			jreq, _ = json.Marshal(req)
 
-			resp, err := nc.Request(getSubj, jreq, 50*time.Millisecond)
+			resp, err := nc.Request(getSubj, jreq, 100*time.Millisecond)
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -1833,6 +1827,7 @@ func TestJetStreamWorkQueueRequest(t *testing.T) {
 			req.Batch = toSend + 10
 			req.NoWait = true
 			jreq, _ = json.Marshal(req)
+
 			nc.PublishRequest(getSubj, reply, jreq)
 			// We should now have 2 * toSend + the 404 message.
 			checkSubPending(2*toSend + 1)
@@ -1856,7 +1851,15 @@ func TestJetStreamWorkQueueRequest(t *testing.T) {
 			sendStreamMsg(t, nc, "foo", "Hello World!")
 			sendStreamMsg(t, nc, "bar", "Hello World!")
 			time.Sleep(100 * time.Millisecond)
-			checkSubPending(0)
+
+			// Expect the request timed out message.
+			checkSubPending(1)
+			if resp, _ = sub.NextMsg(time.Millisecond); resp == nil {
+				t.Fatalf("Expected an expired status message")
+			}
+			if status := resp.Header.Get("Status"); !strings.HasPrefix(status, "408") {
+				t.Fatalf("Expected status code of 408")
+			}
 
 			// Send a new request, we should not get the 408 because our previous request
 			// should have expired.
@@ -3557,6 +3560,7 @@ func TestJetStreamPullConsumerRemoveInterest(t *testing.T) {
 
 	nc = clientConnectToServer(t, s)
 	defer nc.Close()
+
 	// Send a message
 	sendStreamMsg(t, nc, mname, "Hello World!")
 
@@ -4518,6 +4522,10 @@ func TestJetStreamPubAckPerf(t *testing.T) {
 
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
 
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
@@ -9278,23 +9286,6 @@ func TestJetStreamPushConsumersPullError(t *testing.T) {
 	if m.Header.Get("Status") != "409" {
 		t.Fatalf("Expected a 409 status code, got %q", m.Header.Get("Status"))
 	}
-
-	// Should not be possible to ask for more messages than MaxAckPending limit.
-	ci, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
-		Durable:       "test",
-		AckPolicy:     nats.AckExplicitPolicy,
-		MaxAckPending: 5,
-	})
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	m, err = nc.Request(fmt.Sprintf(JSApiRequestNextT, "TEST", ci.Name), []byte(`10`), time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if m.Header.Get("Status") != "409" {
-		t.Fatalf("Expected a 409 status code, got %q", m.Header.Get("Status"))
-	}
 }
 
 ////////////////////////////////////////
@@ -10293,16 +10284,6 @@ func TestJetStreamPullConsumerMaxAckPending(t *testing.T) {
 					toAck = append(toAck, m)
 				}
 			}
-			// This should fail.. But we do not want to queue up our request.
-			req := &JSApiConsumerGetNextRequest{Batch: 1, NoWait: true}
-			jreq, _ := json.Marshal(req)
-			m, err := nc.Request(getSubj, jreq, time.Second)
-			if err != nil {
-				t.Fatalf("Unexpected error: %v", err)
-			}
-			if m.Header.Get("Status") != "409" {
-				t.Fatalf("Expected a 409 status code, got %q", m.Header.Get("Status"))
-			}
 
 			// Now ack them all.
 			for _, m := range toAck {
@@ -10323,8 +10304,8 @@ func TestJetStreamPullConsumerMaxAckPending(t *testing.T) {
 				})
 			}
 
-			req = &JSApiConsumerGetNextRequest{Batch: maxAckPending}
-			jreq, _ = json.Marshal(req)
+			req := &JSApiConsumerGetNextRequest{Batch: maxAckPending}
+			jreq, _ := json.Marshal(req)
 			nc.PublishRequest(getSubj, sub.Subject, jreq)
 
 			checkSubPending(maxAckPending)
@@ -13859,6 +13840,486 @@ func TestJetStreamCrossAccountsDeliverSubjectInterest(t *testing.T) {
 	if ci.NumPending != 0 || ci.Delivered.Consumer != uint64(toSend) {
 		t.Fatalf("Bad consumer info, looks like we did not deliver: %+v", ci)
 	}
+}
+
+func TestJetStreamPullConsumerRequestCleanup(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "T", Storage: nats.MemoryStorage})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("T", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	req := &JSApiConsumerGetNextRequest{Batch: 10, Expires: 100 * time.Millisecond}
+	jreq, err := json.Marshal(req)
+	require_NoError(t, err)
+
+	// Need interest otherwise the requests will be recycled based on that.
+	_, err = nc.SubscribeSync("xx")
+	require_NoError(t, err)
+
+	// Queue up 100 requests.
+	rsubj := fmt.Sprintf(JSApiRequestNextT, "T", "dlc")
+	for i := 0; i < 100; i++ {
+		err = nc.PublishRequest(rsubj, "xx", jreq)
+		require_NoError(t, err)
+	}
+	// Wait to expire
+	time.Sleep(200 * time.Millisecond)
+
+	ci, err := js.ConsumerInfo("T", "dlc")
+	require_NoError(t, err)
+
+	if ci.NumWaiting != 0 {
+		t.Fatalf("Expected to see no waiting requests, got %d", ci.NumWaiting)
+	}
+}
+
+func TestJetStreamPullConsumerRequestMaximums(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Need to do this via server for now.
+	acc := s.GlobalAccount()
+	mset, err := acc.addStream(&StreamConfig{Name: "TEST", Storage: MemoryStorage})
+	require_NoError(t, err)
+
+	_, err = mset.addConsumer(&ConsumerConfig{
+		Durable:           "dlc",
+		MaxRequestBatch:   10,
+		MaxRequestExpires: time.Second,
+		AckPolicy:         AckExplicit,
+	})
+	require_NoError(t, err)
+
+	genReq := func(b int, e time.Duration) []byte {
+		req := &JSApiConsumerGetNextRequest{Batch: b, Expires: e}
+		jreq, err := json.Marshal(req)
+		require_NoError(t, err)
+		return jreq
+	}
+
+	rsubj := fmt.Sprintf(JSApiRequestNextT, "TEST", "dlc")
+
+	// Exceeds max batch size.
+	resp, err := nc.Request(rsubj, genReq(11, 100*time.Millisecond), time.Second)
+	require_NoError(t, err)
+	if status := resp.Header.Get("Status"); status != "409" {
+		t.Fatalf("Expected a 409 status code, got %q", status)
+	}
+
+	// Exceeds max expires.
+	resp, err = nc.Request(rsubj, genReq(1, 10*time.Minute), time.Second)
+	require_NoError(t, err)
+	if status := resp.Header.Get("Status"); status != "409" {
+		t.Fatalf("Expected a 409 status code, got %q", status)
+	}
+}
+
+func TestJetStreamEphemeralPullConsumers(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "EC", Storage: nats.MemoryStorage})
+	require_NoError(t, err)
+
+	ci, err := js.AddConsumer("EC", &nats.ConsumerConfig{AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	mset, err := s.GlobalAccount().lookupStream("EC")
+	require_NoError(t, err)
+	o := mset.lookupConsumer(ci.Name)
+	if o == nil {
+		t.Fatalf("Error looking up consumer %q", ci.Name)
+	}
+	err = o.setInActiveDeleteThreshold(50 * time.Millisecond)
+	require_NoError(t, err)
+
+	time.Sleep(100 * time.Millisecond)
+	// Should no longer be around.
+	if o := mset.lookupConsumer(ci.Name); o != nil {
+		t.Fatalf("Expected consumer to be closed and removed")
+	}
+
+	// Make sure timer keeps firing etc. and does not delete until interest is gone.
+	ci, err = js.AddConsumer("EC", &nats.ConsumerConfig{AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	if o = mset.lookupConsumer(ci.Name); o == nil {
+		t.Fatalf("Error looking up consumer %q", ci.Name)
+	}
+	err = o.setInActiveDeleteThreshold(50 * time.Millisecond)
+	require_NoError(t, err)
+
+	// Need interest otherwise the requests will be recycled based on no real interest.
+	sub, err := nc.SubscribeSync("xx")
+	require_NoError(t, err)
+
+	req := &JSApiConsumerGetNextRequest{Batch: 10, Expires: 250 * time.Millisecond}
+	jreq, err := json.Marshal(req)
+	require_NoError(t, err)
+	rsubj := fmt.Sprintf(JSApiRequestNextT, "EC", ci.Name)
+	err = nc.PublishRequest(rsubj, "xx", jreq)
+	require_NoError(t, err)
+	nc.Flush()
+
+	time.Sleep(100 * time.Millisecond)
+	// Should still be alive here.
+	if o := mset.lookupConsumer(ci.Name); o == nil {
+		t.Fatalf("Expected consumer to still be active")
+	}
+	// Remove interest.
+	sub.Unsubscribe()
+	// Make sure this EPC goes away now.
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		if o := mset.lookupConsumer(ci.Name); o != nil {
+			return fmt.Errorf("Consumer still present")
+		}
+		return nil
+	})
+}
+
+func TestJetStreamPullConsumerCrossAccountExpires(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 4GB, max_file_store: 1TB}
+		accounts: {
+			JS: {
+				jetstream: enabled
+				users: [ {user: dlc, password: foo} ]
+				exports [ { service: "$JS.API.CONSUMER.MSG.NEXT.>", response: stream } ]
+			},
+			IU: {
+				users: [ {user: mh, password: bar} ]
+				imports [ { service: { subject: "$JS.API.CONSUMER.MSG.NEXT.*.*", account: JS } }]
+				# Re-export for dasiy chain test.
+				exports [ { service: "$JS.API.CONSUMER.MSG.NEXT.>", response: stream } ]
+			},
+			IU2: {
+				users: [ {user: ik, password: bar} ]
+				imports [ { service: { subject: "$JS.API.CONSUMER.MSG.NEXT.*.*", account: IU } } ]
+			},
+		}
+	`))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Connect to JS account and create stream, put some messages into it.
+	nc, js := jsClientConnect(t, s, nats.UserInfo("dlc", "foo"))
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "PC", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+
+	toSend := 50
+	for i := 0; i < toSend; i++ {
+		_, err := js.Publish("foo", []byte("OK"))
+		require_NoError(t, err)
+	}
+
+	// Now create pull consumer.
+	_, err = js.AddConsumer("PC", &nats.ConsumerConfig{Durable: "PC", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// Now access from the importing account.
+	nc2, _ := jsClientConnect(t, s, nats.UserInfo("mh", "bar"))
+	defer nc2.Close()
+
+	// Make sure batch request works properly with stream response.
+	req := &JSApiConsumerGetNextRequest{Batch: 10}
+	jreq, err := json.Marshal(req)
+	require_NoError(t, err)
+	rsubj := fmt.Sprintf(JSApiRequestNextT, "PC", "PC")
+	// Make sure we can get a batch correctly etc.
+	// This requires response stream above in the export definition.
+	sub, err := nc2.SubscribeSync("xx")
+	require_NoError(t, err)
+	err = nc2.PublishRequest(rsubj, "xx", jreq)
+	require_NoError(t, err)
+	checkSubsPending(t, sub, 10)
+
+	// Now let's queue up a bunch of requests and then delete interest to make sure the system
+	// removes those requests.
+
+	// Purge stream
+	err = js.PurgeStream("PC")
+	require_NoError(t, err)
+
+	// Queue up 10 requests
+	for i := 0; i < 10; i++ {
+		err = nc2.PublishRequest(rsubj, "xx", jreq)
+		require_NoError(t, err)
+	}
+	// Since using different connection, flush to make sure processed.
+	nc2.Flush()
+
+	ci, err := js.ConsumerInfo("PC", "PC")
+	require_NoError(t, err)
+	if ci.NumWaiting != 10 {
+		t.Fatalf("Expected to see 10 waiting requests, got %d", ci.NumWaiting)
+	}
+
+	// Now remove interest and make sure requests are removed.
+	sub.Unsubscribe()
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		ci, err := js.ConsumerInfo("PC", "PC")
+		require_NoError(t, err)
+		if ci.NumWaiting != 0 {
+			return fmt.Errorf("Requests still present")
+		}
+		return nil
+	})
+
+	// Now let's test that ephemerals will go away as well when interest etc is no longer around.
+	ci, err = js.AddConsumer("PC", &nats.ConsumerConfig{AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// Set the inactivity threshold by hand for now.
+	jsacc, err := s.LookupAccount("JS")
+	require_NoError(t, err)
+	mset, err := jsacc.lookupStream("PC")
+	require_NoError(t, err)
+	o := mset.lookupConsumer(ci.Name)
+	if o == nil {
+		t.Fatalf("Error looking up consumer %q", ci.Name)
+	}
+	err = o.setInActiveDeleteThreshold(50 * time.Millisecond)
+	require_NoError(t, err)
+
+	rsubj = fmt.Sprintf(JSApiRequestNextT, "PC", ci.Name)
+	sub, err = nc2.SubscribeSync("zz")
+	require_NoError(t, err)
+	err = nc2.PublishRequest(rsubj, "zz", jreq)
+	require_NoError(t, err)
+
+	// Wait past inactive threshold.
+	time.Sleep(100 * time.Millisecond)
+	// Make sure it is still there..
+	ci, err = js.ConsumerInfo("PC", ci.Name)
+	require_NoError(t, err)
+	if ci.NumWaiting != 1 {
+		t.Fatalf("Expected to see 1 waiting request, got %d", ci.NumWaiting)
+	}
+
+	// Now release interest.
+	sub.Unsubscribe()
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		_, err := js.ConsumerInfo("PC", ci.Name)
+		if err == nil {
+			return fmt.Errorf("Consumer still present")
+		}
+		return nil
+	})
+
+	// Now test daisy chained.
+	toSend = 10
+	for i := 0; i < toSend; i++ {
+		_, err := js.Publish("foo", []byte("OK"))
+		require_NoError(t, err)
+	}
+
+	ci, err = js.AddConsumer("PC", &nats.ConsumerConfig{AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// Set the inactivity threshold by hand for now.
+	o = mset.lookupConsumer(ci.Name)
+	if o == nil {
+		t.Fatalf("Error looking up consumer %q", ci.Name)
+	}
+	// Make this one longer so we test request purge and ephemerals in same test.
+	err = o.setInActiveDeleteThreshold(500 * time.Millisecond)
+	require_NoError(t, err)
+
+	// Now access from the importing account.
+	nc3, _ := jsClientConnect(t, s, nats.UserInfo("ik", "bar"))
+	defer nc3.Close()
+
+	sub, err = nc3.SubscribeSync("yy")
+	require_NoError(t, err)
+
+	rsubj = fmt.Sprintf(JSApiRequestNextT, "PC", ci.Name)
+	err = nc3.PublishRequest(rsubj, "yy", jreq)
+	require_NoError(t, err)
+	checkSubsPending(t, sub, 10)
+
+	// Purge stream
+	err = js.PurgeStream("PC")
+	require_NoError(t, err)
+
+	// Queue up 10 requests
+	for i := 0; i < 10; i++ {
+		err = nc3.PublishRequest(rsubj, "yy", jreq)
+		require_NoError(t, err)
+	}
+	// Since using different connection, flush to make sure processed.
+	nc3.Flush()
+
+	ci, err = js.ConsumerInfo("PC", ci.Name)
+	require_NoError(t, err)
+	if ci.NumWaiting != 10 {
+		t.Fatalf("Expected to see 10 waiting requests, got %d", ci.NumWaiting)
+	}
+
+	// Now remove interest and make sure requests are removed.
+	sub.Unsubscribe()
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		ci, err := js.ConsumerInfo("PC", ci.Name)
+		require_NoError(t, err)
+		if ci.NumWaiting != 0 {
+			return fmt.Errorf("Requests still present")
+		}
+		return nil
+	})
+	// Now make sure the ephemeral goes away too.
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		_, err := js.ConsumerInfo("PC", ci.Name)
+		if err == nil {
+			return fmt.Errorf("Consumer still present")
+		}
+		return nil
+	})
+}
+
+// This tests account export/import replies across a LN connection with account import/export
+// on both sides of the LN.
+func TestJetStreamPullConsumerCrossAccountsAndLeafNodes(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		server_name: SJS
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 4GB, max_file_store: 1TB, domain: JSD }
+		accounts: {
+			JS: {
+				jetstream: enabled
+				users: [ {user: dlc, password: foo} ]
+				exports [ { service: "$JS.API.CONSUMER.MSG.NEXT.>", response: stream } ]
+			},
+			IU: {
+				users: [ {user: mh, password: bar} ]
+				imports [ { service: { subject: "$JS.API.CONSUMER.MSG.NEXT.*.*", account: JS } }]
+			},
+		}
+		leaf { listen: "127.0.0.1:-1" }
+	`))
+	defer removeFile(t, conf)
+
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(`
+		server_name: SLN
+		listen: 127.0.0.1:-1
+		accounts: {
+			A: {
+				users: [ {user: l, password: p} ]
+				exports [ { service: "$JS.JSD.API.CONSUMER.MSG.NEXT.>", response: stream } ]
+			},
+			B: {
+				users: [ {user: m, password: p} ]
+				imports [ { service: { subject: "$JS.JSD.API.CONSUMER.MSG.NEXT.*.*", account: A } }]
+			},
+		}
+		# bind local A to IU account on other side of LN.
+		leaf { remotes [ { url: nats://mh:bar@127.0.0.1:%d; account: A } ] }
+	`, o.LeafNode.Port)))
+	defer removeFile(t, conf2)
+
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkLeafNodeConnectedCount(t, s, 1)
+
+	// Connect to JS account, create stream and consumer and put in some messages.
+	nc, js := jsClientConnect(t, s, nats.UserInfo("dlc", "foo"))
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "PC", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+
+	toSend := 10
+	for i := 0; i < toSend; i++ {
+		_, err := js.Publish("foo", []byte("OK"))
+		require_NoError(t, err)
+	}
+
+	// Now create durable pull consumer.
+	_, err = js.AddConsumer("PC", &nats.ConsumerConfig{Durable: "PC", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// Now access from the account on the leafnode, so importing on both sides and crossing a leafnode connection.
+	nc2, _ := jsClientConnect(t, s2, nats.UserInfo("m", "p"))
+	defer nc2.Close()
+
+	req := &JSApiConsumerGetNextRequest{Batch: toSend}
+	jreq, err := json.Marshal(req)
+	require_NoError(t, err)
+
+	// Make sure we can get a batch correctly etc.
+	// This requires response stream above in the export definition.
+	sub, err := nc2.SubscribeSync("xx")
+	require_NoError(t, err)
+
+	rsubj := "$JS.JSD.API.CONSUMER.MSG.NEXT.PC.PC"
+	err = nc2.PublishRequest(rsubj, "xx", jreq)
+	require_NoError(t, err)
+	checkSubsPending(t, sub, 10)
+
+	// Queue up a bunch of requests.
+	for i := 0; i < 10; i++ {
+		err = nc2.PublishRequest(rsubj, "xx", jreq)
+		require_NoError(t, err)
+	}
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		ci, err := js.ConsumerInfo("PC", "PC")
+		require_NoError(t, err)
+		if ci.NumWaiting != 10 {
+			return fmt.Errorf("Expected to see 10 waiting requests, got %d", ci.NumWaiting)
+		}
+		return nil
+	})
+
+	// Remove interest.
+	sub.Unsubscribe()
+	// Make sure requests go away.
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		ci, err := js.ConsumerInfo("PC", "PC")
+		require_NoError(t, err)
+		if ci.NumWaiting != 0 {
+			return fmt.Errorf("Expected to see no waiting requests, got %d", ci.NumWaiting)
+		}
+		return nil
+	})
 }
 
 ///////////////////////////////////////////////////////////////////////////

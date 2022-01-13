@@ -1,27 +1,27 @@
 # github.com/golang/protobuf v1.4.2
-## explicit
+## explicit; go 1.9
 # github.com/klauspost/compress v1.13.4
-## explicit
+## explicit; go 1.13
 github.com/klauspost/compress/s2
 # github.com/minio/highwayhash v1.0.1
-## explicit
+## explicit; go 1.15
 github.com/minio/highwayhash
 # github.com/nats-io/jwt/v2 v2.2.1-0.20220113022732-58e87895b296
-## explicit
+## explicit; go 1.16
 github.com/nats-io/jwt/v2
 # github.com/nats-io/nats.go v1.13.1-0.20211122170419-d7c1d78a50fc
-## explicit
+## explicit; go 1.16
 github.com/nats-io/nats.go
 github.com/nats-io/nats.go/encoders/builtin
 github.com/nats-io/nats.go/util
 # github.com/nats-io/nkeys v0.3.0
-## explicit
+## explicit; go 1.16
 github.com/nats-io/nkeys
 # github.com/nats-io/nuid v1.0.1
 ## explicit
 github.com/nats-io/nuid
-# golang.org/x/crypto v0.0.0-20211202192323-5770296d904e
-## explicit
+# golang.org/x/crypto v0.0.0-20211215153901-e495a2d5b3d3
+## explicit; go 1.17
 golang.org/x/crypto/bcrypt
 golang.org/x/crypto/blowfish
 golang.org/x/crypto/chacha20
@@ -32,7 +32,7 @@ golang.org/x/crypto/internal/poly1305
 golang.org/x/crypto/internal/subtle
 golang.org/x/crypto/ocsp
 # golang.org/x/sys v0.0.0-20210615035016-665e8c7367d1
-## explicit
+## explicit; go 1.17
 golang.org/x/sys/cpu
 golang.org/x/sys/internal/unsafeheader
 golang.org/x/sys/unix
