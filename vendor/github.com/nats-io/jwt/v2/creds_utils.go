@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/nats-io/nkeys"
 )
@@ -215,4 +216,50 @@ func ParseDecoratedUserNKey(contents []byte) (nkeys.KeyPair, error) {
 		return nil, err
 	}
 	return kp, nil
+}
+
+// IssueUserJWT takes an account scoped signing key, account id, and use public key (and optionally a user's name, an expiration duration and tags) and returns a valid signed JWT.
+// The scopedSigningKey, is a mandatory account scoped signing nkey pair to sign the generated jwt (note that it _must_ be a signing key attached to the account (and a _scoped_ signing key), not the account's private (seed) key).
+// The accountId, is a mandatory public account nkey. Will return error when not set or not account nkey.
+// The publicUserKey, is a mandatory public user nkey. Will return error when not set or not user nkey.
+// The name, is an optional human-readable name. When absent, default to publicUserKey.
+// The expirationDuration, is an optional but recommended duration, when the generated jwt needs to expire. If not set, JWT will not expire.
+// The tags, is an optional list of tags to be included in the JWT.
+//
+// Returns:
+// string, resulting jwt.
+// error, when issues arose.
+func IssueUserJWT(scopedSigningKey nkeys.KeyPair, accountId string, publicUserKey string, name string, expirationDuration time.Duration, tags ...string) (string, error) {
+
+	if !nkeys.IsValidPublicAccountKey(accountId) {
+		return "", errors.New("issueUserJWT requires an account key for the accountId parameter, but got " + nkeys.Prefix(accountId).String())
+	}
+
+	if !nkeys.IsValidPublicUserKey(publicUserKey) {
+		return "", errors.New("issueUserJWT requires an account key for the publicUserKey parameter, but got " + nkeys.Prefix(publicUserKey).String())
+	}
+
+	claim := NewUserClaims(publicUserKey)
+	claim.SetScoped(true)
+
+	if expirationDuration != 0 {
+		claim.Expires = time.Now().Add(expirationDuration).UTC().Unix()
+	}
+
+	claim.IssuerAccount = accountId
+	if name != "" {
+		claim.Name = name
+	} else {
+		claim.Name = publicUserKey
+	}
+
+	claim.Subject = publicUserKey
+	claim.Tags = tags
+
+	encoded, err := claim.Encode(scopedSigningKey)
+	if err != nil {
+		return "", errors.New("err encoding claim " + err.Error())
+	}
+
+	return encoded, nil
 }

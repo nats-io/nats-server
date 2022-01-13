@@ -259,6 +259,8 @@ type Server struct {
 	rerrMu   sync.Mutex
 	rerrLast time.Time
 
+	connRateCounter *rateCounter
+
 	// If there is a system account configured, to still support the $G account,
 	// the server will create a fake user and add it to the list of users.
 	// Keep track of what that user name is for config reload purposes.
@@ -363,6 +365,10 @@ func NewServer(opts *Options) (*Server, error) {
 		eventIds:     nuid.New(),
 		routesToSelf: make(map[string]struct{}),
 		httpReqStats: make(map[string]uint64), // Used to track HTTP requests
+	}
+
+	if opts.TLSRateLimit > 0 {
+		s.connRateCounter = newRateCounter(opts.tlsConfigOpts.RateLimit)
 	}
 
 	// Trusted root operator keys.
@@ -511,6 +517,23 @@ func NewServer(opts *Options) (*Server, error) {
 	s.handleSignals()
 
 	return s, nil
+}
+
+func (s *Server) logRejectedTLSConns() {
+	defer s.grWG.Done()
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.quitCh:
+			return
+		case <-t.C:
+			blocked := s.connRateCounter.countBlocked()
+			if blocked > 0 {
+				s.Warnf("Rejected %d connections due to TLS rate limiting", blocked)
+			}
+		}
+	}
 }
 
 // clusterName returns our cluster name which could be dynamic.
@@ -1612,7 +1635,7 @@ func (s *Server) Start() {
 		s.checkResolvePreloads()
 	}
 
-	// Log the pid to a file
+	// Log the pid to a file.
 	if opts.PidFile != _EMPTY_ {
 		if err := s.logPid(); err != nil {
 			s.Fatalf("Could not write pidfile: %v", err)
@@ -1631,14 +1654,21 @@ func (s *Server) Start() {
 		s.SetDefaultSystemAccount()
 	}
 
-	// start up resolver machinery
+	// Start monitoring before enabling other subsystems of the
+	// server to be able to monitor during startup.
+	if err := s.StartMonitoring(); err != nil {
+		s.Fatalf("Can't start monitoring: %v", err)
+		return
+	}
+
+	// Start up resolver machinery.
 	if ar := s.AccountResolver(); ar != nil {
 		if err := ar.Start(s); err != nil {
 			s.Fatalf("Could not start resolver: %v", err)
 			return
 		}
 		// In operator mode, when the account resolver depends on an external system and
-		// the system account is the bootstrapping account, start fetching it
+		// the system account is the bootstrapping account, start fetching it.
 		if len(opts.TrustedOperators) == 1 && opts.SystemAccount != _EMPTY_ && opts.SystemAccount != DEFAULT_SYSTEM_ACCOUNT {
 			_, isMemResolver := ar.(*MemAccResolver)
 			if v, ok := s.accounts.Load(s.opts.SystemAccount); !isMemResolver && ok && v.(*Account).claimJWT == "" {
@@ -1726,12 +1756,6 @@ func (s *Server) Start() {
 	// Start OCSP Stapling monitoring for TLS certificates if enabled.
 	s.startOCSPMonitoring()
 
-	// Start monitoring if needed.
-	if err := s.StartMonitoring(); err != nil {
-		s.Fatalf("Can't start monitoring: %v", err)
-		return
-	}
-
 	// Start up gateway if needed. Do this before starting the routes, because
 	// we want to resolve the gateway host:port so that this information can
 	// be sent to other routes.
@@ -1785,6 +1809,10 @@ func (s *Server) Start() {
 
 	if opts.PortsFileDir != _EMPTY_ {
 		s.logPorts()
+	}
+
+	if opts.TLSRateLimit > 0 {
+		s.startGoRoutine(s.logRejectedTLSConns)
 	}
 
 	// Wait for clients.
@@ -2480,6 +2508,13 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 	// Check for TLS
 	if !isClosed && tlsRequired {
+		if s.connRateCounter != nil && !s.connRateCounter.allow() {
+			c.mu.Unlock()
+			c.sendErr("Connection throttling is active. Please try again later.")
+			c.closeConnection(MaxConnectionsExceeded)
+			return nil
+		}
+
 		// If we have a prebuffer create a multi-reader.
 		if len(pre) > 0 {
 			c.nc = &tlsMixConn{c.nc, bytes.NewBuffer(pre)}

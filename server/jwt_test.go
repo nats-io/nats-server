@@ -4259,7 +4259,7 @@ func TestJWTJetStreamLimits(t *testing.T) {
 	sysKp.Seed()
 	sysCreds := genCredsFile(t, sysUserJwt, sysUSeed)
 	// limits to apply and check
-	limits1 := jwt.JetStreamLimits{MemoryStorage: 1024 * 1024, DiskStorage: 2048 * 1024, Streams: 1, Consumer: 2}
+	limits1 := jwt.JetStreamLimits{MemoryStorage: 1024 * 1024, DiskStorage: 2048 * 1024, Streams: 1, Consumer: 2, MaxBytesRequired: true}
 	// has valid limits that would fail when incorrectly applied twice
 	limits2 := jwt.JetStreamLimits{MemoryStorage: 4096 * 1024, DiskStorage: 8192 * 1024, Streams: 3, Consumer: 4}
 	// limits exceeding actual configured value of DiskStorage
