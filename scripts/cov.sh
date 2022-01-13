@@ -1,7 +1,7 @@
 #!/bin/bash -e
 # Run from directory above via ./scripts/cov.sh
 
-export GO111MODULE="off"
+export GO111MODULE="on"
 
 go get github.com/mattn/goveralls
 go get github.com/wadey/gocovmerge

@@ -12,7 +12,7 @@ jobs:
 
     env:
       GOPATH: /home/runner/work/nats-server
-      GO111MODULE: "off"
+      GO111MODULE: "on"
 
     steps:
       - name: Checkout code
