@@ -4056,6 +4056,14 @@ func TestMonitorJsz(t *testing.T) {
 		Replicas: 1,
 	})
 	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "my-stream-mirror",
+		Replicas: 2,
+		Mirror: &nats.StreamSource{
+			Name: "my-stream-replicated",
+		},
+	})
+	require_NoError(t, err)
 	_, err = js.AddConsumer("my-stream-replicated", &nats.ConsumerConfig{
 		Durable:   "my-consumer-replicated",
 		AckPolicy: nats.AckExplicitPolicy,
@@ -4066,9 +4074,16 @@ func TestMonitorJsz(t *testing.T) {
 		AckPolicy: nats.AckExplicitPolicy,
 	})
 	require_NoError(t, err)
+	_, err = js.AddConsumer("my-stream-mirror", &nats.ConsumerConfig{
+		Durable:   "my-consumer-mirror",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
 	nc.Flush()
 	_, err = js.Publish("foo", nil)
 	require_NoError(t, err)
+	// Wait for mirror replication
+	time.Sleep(100 * time.Millisecond)
 
 	monUrl1 := fmt.Sprintf("http://127.0.0.1:%d/jsz", 7501)
 	monUrl2 := fmt.Sprintf("http://127.0.0.1:%d/jsz", 5501)
@@ -4080,13 +4095,13 @@ func TestMonitorJsz(t *testing.T) {
 				t.Fatalf("expected no account to be returned by %s but got %v", url, info)
 			}
 			if info.Streams == 0 {
-				t.Fatalf("expected stream count to be 2 but got %d", info.Streams)
+				t.Fatalf("expected stream count to be 3 but got %d", info.Streams)
 			}
 			if info.Consumers == 0 {
-				t.Fatalf("expected consumer count to be 2 but got %d", info.Consumers)
+				t.Fatalf("expected consumer count to be 3 but got %d", info.Consumers)
 			}
-			if info.Messages != 1 {
-				t.Fatalf("expected one message but got %d", info.Messages)
+			if info.Messages != 2 {
+				t.Fatalf("expected two message but got %d", info.Messages)
 			}
 		}
 	})
@@ -4190,6 +4205,31 @@ func TestMonitorJsz(t *testing.T) {
 			if info.AccountDetails[0].Streams[0].Consumer[0].Config == nil {
 				t.Fatal("Config expected to be present")
 			}
+		}
+	})
+	t.Run("replication", func(t *testing.T) {
+		// The replication lag may only be present on the leader
+		replicationFound := false
+		for _, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url + "?acc=ACC&streams=true")
+			if len(info.AccountDetails) != 1 {
+				t.Fatalf("expected account ACC to be returned by %s but got %v", url, info)
+			}
+			streamFound := false
+			for _, stream := range info.AccountDetails[0].Streams {
+				if stream.Name == "my-stream-mirror" {
+					streamFound = true
+					if stream.Mirror != nil {
+						replicationFound = true
+					}
+				}
+			}
+			if !streamFound {
+				t.Fatalf("Did not locate my-stream-mirror stream in results")
+			}
+		}
+		if !replicationFound {
+			t.Fatal("ReplicationLag expected to be present for my-stream-mirror stream")
 		}
 	})
 	t.Run("account-non-existing", func(t *testing.T) {

@@ -2388,11 +2388,13 @@ type JSzOptions struct {
 }
 
 type StreamDetail struct {
-	Name     string          `json:"name"`
-	Cluster  *ClusterInfo    `json:"cluster,omitempty"`
-	Config   *StreamConfig   `json:"config,omitempty"`
-	State    StreamState     `json:"state,omitempty"`
-	Consumer []*ConsumerInfo `json:"consumer_detail,omitempty"`
+	Name     string              `json:"name"`
+	Cluster  *ClusterInfo        `json:"cluster,omitempty"`
+	Config   *StreamConfig       `json:"config,omitempty"`
+	State    StreamState         `json:"state,omitempty"`
+	Consumer []*ConsumerInfo     `json:"consumer_detail,omitempty"`
+	Mirror   *StreamSourceInfo   `json:"mirror,omitempty"`
+	Sources  []*StreamSourceInfo `json:"sources,omitempty"`
 }
 
 type AccountDetail struct {
@@ -2469,6 +2471,8 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg 
 				State:   stream.state(),
 				Cluster: ci,
 				Config:  cfg,
+				Mirror:  stream.mirrorInfo(),
+				Sources: stream.sourcesInfo(),
 			}
 			if optConsumers {
 				for _, consumer := range stream.getPublicConsumers() {
