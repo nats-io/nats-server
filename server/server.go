@@ -2362,7 +2362,6 @@ func (s *Server) startMonitoring(secure bool) error {
 			}
 		}
 		srv.Close()
-		srv.Handler = nil
 		s.mu.Lock()
 		s.httpHandler = nil
 		s.mu.Unlock()
