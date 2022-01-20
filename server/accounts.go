@@ -731,9 +731,16 @@ func (a *Account) hasMappings() bool {
 		return false
 	}
 	a.mu.RLock()
-	n := len(a.mappings)
+	hm := a.hasMappingsLocked()
 	a.mu.RUnlock()
-	return n > 0
+	return hm
+}
+
+// Indicates we have mapping entries.
+// The account has been verified to be non-nil.
+// Read or Write lock held on entry.
+func (a *Account) hasMappingsLocked() bool {
+	return len(a.mappings) > 0
 }
 
 // This performs the logic to map to a new dest subject based on mappings.
