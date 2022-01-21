@@ -171,7 +171,11 @@ func (c *client) parse(buf []byte) error {
 						s.mu.Unlock()
 						if exists {
 							c.RegisterUser(user)
-							ok = true
+							c.mu.Lock()
+							c.clearAuthTimer()
+							c.flags.set(connectReceived)
+							c.mu.Unlock()
+							authSet, ok = false, true
 						}
 					}
 					if !ok {

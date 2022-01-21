@@ -282,7 +282,7 @@ func TestNoAuthUserNoConnectProto(t *testing.T) {
 		accounts {
 			A { users [{user: "foo", password: "pwd"}] }
 		}
-		authorization { timeout: 1s }
+		authorization { timeout: 1 }
 		no_auth_user: "foo"
 	`))
 	defer os.Remove(conf)
