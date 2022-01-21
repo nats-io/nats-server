@@ -15,11 +15,13 @@ package server
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
@@ -272,4 +274,47 @@ func TestNoAuthUser(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNoAuthUserNoConnectProto(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		accounts {
+			A { users [{user: "foo", password: "pwd"}] }
+		}
+		authorization { timeout: 1 }
+		no_auth_user: "foo"
+	`))
+	defer os.Remove(conf)
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	checkClients := func(n int) {
+		t.Helper()
+		time.Sleep(100 * time.Millisecond)
+		if nc := s.NumClients(); nc != n {
+			t.Fatalf("Expected %d clients, got %d", n, nc)
+		}
+	}
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", o.Host, o.Port))
+	require_NoError(t, err)
+	defer conn.Close()
+	checkClientsCount(t, s, 1)
+
+	// With no auth user we should not require a CONNECT.
+	// Make sure we are good on not sending CONN first.
+	_, err = conn.Write([]byte("PUB foo 2\r\nok\r\n"))
+	require_NoError(t, err)
+	checkClients(1)
+	conn.Close()
+
+	// Now make sure we still do get timed out though.
+	conn, err = net.Dial("tcp", fmt.Sprintf("%s:%d", o.Host, o.Port))
+	require_NoError(t, err)
+	defer conn.Close()
+	checkClientsCount(t, s, 1)
+
+	time.Sleep(1200 * time.Millisecond)
+	checkClientsCount(t, s, 0)
 }

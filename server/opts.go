@@ -663,7 +663,7 @@ func configureSystemAccount(o *Options, m map[string]interface{}) (retErr error)
 // or was present but set to false.
 func (o *Options) ProcessConfigFile(configFile string) error {
 	o.ConfigFile = configFile
-	if configFile == "" {
+	if configFile == _EMPTY_ {
 		return nil
 	}
 	m, err := conf.ParseFileWithChecks(configFile)
@@ -1018,7 +1018,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 				}
 			}
 			// In case "system_account" is defined as well, it takes precedence
-			if o.SystemAccount == "" {
+			if o.SystemAccount == _EMPTY_ {
 				o.SystemAccount = o.TrustedOperators[0].SystemAccount
 			}
 		}

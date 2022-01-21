@@ -147,8 +147,7 @@ func (c *client) parse(buf []byte) error {
 	// proper CONNECT if needed.
 	authSet := c.awaitingAuth()
 	// Snapshot max control line as well.
-	mcl := c.mcl
-	trace := c.trace
+	s, mcl, trace := c.srv, c.mcl, c.trace
 	c.mu.Unlock()
 
 	// Move to loop instead of range syntax to allow jumping of i
@@ -160,7 +159,28 @@ func (c *client) parse(buf []byte) error {
 			c.op = b
 			if b != 'C' && b != 'c' {
 				if authSet {
-					goto authErr
+					if s == nil {
+						goto authErr
+					}
+					var ok bool
+					// Check here for NoAuthUser. If this is set allow non CONNECT protos as our first.
+					// E.g. telnet proto demos.
+					if noAuthUser := s.getOpts().NoAuthUser; noAuthUser != _EMPTY_ {
+						s.mu.Lock()
+						user, exists := s.users[noAuthUser]
+						s.mu.Unlock()
+						if exists {
+							c.RegisterUser(user)
+							c.mu.Lock()
+							c.clearAuthTimer()
+							c.flags.set(connectReceived)
+							c.mu.Unlock()
+							authSet, ok = false, true
+						}
+					}
+					if !ok {
+						goto authErr
+					}
 				}
 				// If the connection is a gateway connection, make sure that
 				// if this is an inbound, it starts with a CONNECT.
