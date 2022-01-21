@@ -1972,6 +1972,7 @@ type waitingRequest struct {
 	interest string
 	reply    string
 	n        int // For batching
+	d        int
 	expires  time.Time
 	received time.Time
 	noWait   bool
@@ -2004,6 +2005,7 @@ func (wr *waitingRequest) recycle() {
 type waitQueue struct {
 	rp, wp int
 	last   time.Time
+	fexp   time.Time
 	reqs   []*waitingRequest
 }
 
@@ -2035,6 +2037,10 @@ func (wq *waitQueue) add(wr *waitingRequest) error {
 	}
 	// Track last active via when we receive a request.
 	wq.last = wr.received
+	// Track next to expire for all pending requests.
+	if !wr.expires.IsZero() && (wq.fexp.IsZero() || wr.expires.Before(wq.fexp)) {
+		wq.fexp = wr.expires
+	}
 	return nil
 }
 
@@ -2072,6 +2078,7 @@ func (wq *waitQueue) peek() *waitingRequest {
 func (wq *waitQueue) pop() *waitingRequest {
 	wr := wq.peek()
 	if wr != nil {
+		wr.d++
 		wr.n--
 		if wr.n <= 0 {
 			wq.removeCurrent()
@@ -2080,7 +2087,7 @@ func (wq *waitQueue) pop() *waitingRequest {
 	return wr
 }
 
-// removes the current read pointer (head FIFO) entry.
+// Removes the current read pointer (head FIFO) entry.
 func (wq *waitQueue) removeCurrent() {
 	if wq.rp < 0 {
 		return
@@ -2091,6 +2098,22 @@ func (wq *waitQueue) removeCurrent() {
 	if wq.rp == wq.wp {
 		wq.rp, wq.wp = -1, 0
 	}
+}
+
+// Will compact when we have interior deletes.
+func (wq *waitQueue) compact() {
+	if wq.isEmpty() {
+		return
+	}
+	nreqs, i := make([]*waitingRequest, cap(wq.reqs)), 0
+	for rp := wq.rp; rp != wq.wp; rp = (rp + 1) % cap(wq.reqs) {
+		if wr := wq.reqs[rp]; wr != nil {
+			nreqs[i] = wr
+			i++
+		}
+	}
+	// Reset here.
+	wq.rp, wq.wp, wq.reqs = 0, i, nreqs
 }
 
 // Return next waiting request. This will check for expirations but not noWait or interest.
@@ -2168,16 +2191,30 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 	// If we have the max number of requests already pending try to expire.
 	if o.waiting.isFull() {
 		// Try to expire some of the requests.
-		if expired := o.expireWaiting(); expired == 0 {
+		if expired, _, _ := o.expireWaiting(); expired == 0 {
 			// Force expiration if needed.
 			o.forceExpireFirstWaiting()
 		}
 	}
 
-	// If the request is for noWait and we have pending requests already, error.
-	if noWait && o.checkWaitingForInterest() {
-		sendErr(408, "Requests Pending")
-		return
+	// If the request is for noWait and we have pending requests already, check if we have room.
+	if noWait {
+		msgsPending := o.adjustedPending()
+		// If no pending at all, decide what to do with request.
+		// If no expires was set then fail.
+		if msgsPending == 0 && expires.IsZero() {
+			sendErr(404, "No Messages")
+			return
+		}
+		if msgsPending > 0 {
+			_, _, batchPending := o.expireWaiting()
+			if msgsPending < uint64(batchPending) {
+				sendErr(408, "Requests Pending")
+				return
+			}
+		}
+		// If we are here this should be considered a one-shot situation.
+		// We will wait for expires but will return as soon as we have any messages.
 	}
 
 	// If we receive this request though an account export, we need to track that interest subject and account.
@@ -2192,7 +2229,7 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 
 	// In case we have to queue up this request.
 	wr := wrPool.Get().(*waitingRequest)
-	wr.acc, wr.interest, wr.reply, wr.n, wr.noWait, wr.expires = acc, interest, reply, batchSize, noWait, expires
+	wr.acc, wr.interest, wr.reply, wr.n, wr.d, wr.noWait, wr.expires = acc, interest, reply, batchSize, 0, noWait, expires
 	wr.received = time.Now()
 
 	if err := o.waiting.add(wr); err != nil {
@@ -2326,7 +2363,7 @@ func (o *consumer) forceExpireFirstWaiting() {
 	// If we are expiring this and we think there is still interest, alert.
 	if rr := wr.acc.sl.Match(wr.interest); len(rr.psubs)+len(rr.qsubs) > 0 && o.mset != nil {
 		// We still appear to have interest, so send alert as courtesy.
-		hdr := []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
+		hdr := []byte("NATS/1.0 408 Request Canceled\r\n\r\n")
 		o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 	}
 	o.waiting.removeCurrent()
@@ -2334,45 +2371,67 @@ func (o *consumer) forceExpireFirstWaiting() {
 }
 
 // Will check for expiration and lack of interest on waiting requests.
-func (o *consumer) expireWaiting() int {
-	var expired int
-	now := time.Now()
-	for wr := o.waiting.peek(); wr != nil; wr = o.waiting.peek() {
-		if wr.noWait || !wr.expires.IsZero() && now.After(wr.expires) {
-			var hdr []byte
-			if wr.noWait {
-				hdr = []byte("NATS/1.0 404 No Messages\r\n\r\n")
-			} else {
-				hdr = []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
-			}
-			o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+func (o *consumer) expireWaiting() (int, int, int) {
+	if o.srv == nil || o.waiting.isEmpty() {
+		return 0, 0, 0
+	}
+
+	var expired, brp int
+	s, now := o.srv, time.Now()
+
+	// Signals interior deletes, which we will compact if needed.
+	var hid bool
+	remove := func(wr *waitingRequest, i int) {
+		if i == o.waiting.rp {
 			o.waiting.removeCurrent()
-			wr.recycle()
-			expired++
+		} else {
+			o.waiting.reqs[i] = nil
+			hid = true
+		}
+		expired++
+		wr.recycle()
+	}
+
+	wq := o.waiting
+	wq.fexp = time.Time{}
+
+	for rp := o.waiting.rp; o.waiting.rp >= 0 && rp != wq.wp; rp = (rp + 1) % cap(wq.reqs) {
+		wr := wq.reqs[rp]
+		// Check expiration.
+		if (wr.noWait && wr.d > 0) || (!wr.expires.IsZero() && now.After(wr.expires)) {
+			hdr := []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
+			o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+			remove(wr, rp)
 			continue
 		}
-
-		s, acc := o.srv, wr.acc
-		rr := acc.sl.Match(wr.interest)
-		// If we have local interest or no server break and do not remove.
-		if len(rr.psubs)+len(rr.qsubs) > 0 || s == nil {
-			break
-		}
-
-		// Check gateway interest.
-		if s.gateway.enabled {
+		// Now check interest.
+		rr := wr.acc.sl.Match(wr.interest)
+		interest := len(rr.psubs)+len(rr.qsubs) > 0
+		if !interest && s.gateway.enabled {
 			// If we are here check on gateways.
 			// If we have interest or the request is too young break and do not expire.
-			if s.hasGatewayInterest(acc.Name, wr.interest) || time.Since(wr.received) < defaultGatewayRecentSubExpiration {
-				break
+			if s.hasGatewayInterest(wr.acc.Name, wr.interest) || time.Since(wr.received) < defaultGatewayRecentSubExpiration {
+				interest = true
 			}
 		}
+		// If interest, update batch pending requests counter and update fexp timer.
+		if interest {
+			brp += wr.n
+			if !wr.expires.IsZero() && (wq.fexp.IsZero() || wr.expires.Before(wq.fexp)) {
+				wq.fexp = wr.expires
+			}
+			continue
+		}
 		// No more interest here so go ahead and remove this one from our list.
-		o.waiting.removeCurrent()
-		wr.recycle()
-		expired++
+		remove(wr, rp)
 	}
-	return expired
+
+	// If we have interior deletes from out of order invalidation, compact the waiting queue.
+	if hid {
+		o.waiting.compact()
+	}
+
+	return expired, o.waiting.len(), brp
 }
 
 // Will check to make sure those waiting still have registered interest.
@@ -2518,8 +2577,16 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		}
 
 		// Make sure to process any expired requests that are pending.
+		var wrExp <-chan time.Time
 		if o.isPullMode() {
 			o.expireWaiting()
+			if o.waiting.len() > 0 && !o.waiting.fexp.IsZero() {
+				expires := time.Until(o.waiting.fexp)
+				if expires <= 0 {
+					expires = time.Millisecond
+				}
+				wrExp = time.NewTimer(expires).C
+			}
 		}
 
 		// We will wait here for new messages to arrive.
@@ -2535,6 +2602,8 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			return
 		case <-mch:
 			// Messages are waiting.
+		case <-wrExp:
+			o.expireWaiting()
 		case <-hbc:
 			if o.isActive() {
 				const t = "NATS/1.0 100 Idle Heartbeat\r\n%s: %d\r\n%s: %d\r\n\r\n"

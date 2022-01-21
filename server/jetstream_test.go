@@ -1656,7 +1656,7 @@ func TestJetStreamWorkQueueMaxWaiting(t *testing.T) {
 			}
 			sendStreamMsg(t, nc, "foo", "Hello World!")
 			sendStreamMsg(t, nc, "bar", "Hello World!")
-			expectWaiting(JSWaitQueueDefaultMax - 2)
+			expectWaiting(JSWaitQueueDefaultMax - 3)
 		})
 	}
 }
@@ -14322,6 +14322,183 @@ func TestJetStreamPullConsumerCrossAccountsAndLeafNodes(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// This test is to explicitly test for all combinations of pull consumer behavior.
+// 1. Long poll, will be used to emulate push. A request is only invalidated when batch is filled, it expires, or we lose interest.
+// 2. Batch 1, will return no messages or a message. Works today.
+// 3. Conditional wait, or one shot. This is what the clients do when the do a fetch().
+//    They expect to wait up to a given time for any messages but will return once they have any to deliver, so parital fills.
+// 4. Try, which never waits at all ever.
+func TestJetStreamPullConsumersOneShotBehavior(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:       "dlc",
+		AckPolicy:     nats.AckExplicitPolicy,
+		FilterSubject: "foo",
+	})
+	require_NoError(t, err)
+
+	// We will do low level requests by hand for this test as to not depend on any client impl.
+	rsubj := fmt.Sprintf(JSApiRequestNextT, "TEST", "dlc")
+
+	getNext := func(batch int, expires time.Duration, noWait bool) (numMsgs int, elapsed time.Duration, hdr *nats.Header) {
+		t.Helper()
+		req := &JSApiConsumerGetNextRequest{Batch: batch, Expires: expires, NoWait: noWait}
+		jreq, err := json.Marshal(req)
+		require_NoError(t, err)
+		// Create listener.
+		reply, msgs := nats.NewInbox(), make(chan *nats.Msg, batch)
+		sub, err := nc.ChanSubscribe(reply, msgs)
+		require_NoError(t, err)
+		defer sub.Unsubscribe()
+
+		// Send request.
+		start := time.Now()
+		err = nc.PublishRequest(rsubj, reply, jreq)
+		require_NoError(t, err)
+
+		for {
+			select {
+			case m := <-msgs:
+				if len(m.Data) == 0 && m.Header != nil {
+					return numMsgs, time.Since(start), &m.Header
+				}
+				numMsgs++
+				if numMsgs >= batch {
+					return numMsgs, time.Since(start), nil
+				}
+			case <-time.After(expires + 250*time.Millisecond):
+				t.Fatalf("Did not receive all the msgs in time")
+			}
+		}
+	}
+
+	expect := func(batch int, expires time.Duration, noWait bool, ne int, he *nats.Header, lt time.Duration, gt time.Duration) {
+		t.Helper()
+		n, e, h := getNext(batch, expires, noWait)
+		if n != ne {
+			t.Fatalf("Expected %d msgs, got %d", ne, n)
+		}
+		if !reflect.DeepEqual(h, he) {
+			t.Fatalf("Expected %+v hdr, got %+v", he, h)
+		}
+		if lt > 0 && e > lt {
+			t.Fatalf("Expected elapsed of %v to be less than %v", e, lt)
+		}
+		if gt > 0 && e < gt {
+			t.Fatalf("Expected elapsed of %v to be greater than %v", e, gt)
+		}
+	}
+	expectAfter := func(batch int, expires time.Duration, noWait bool, ne int, he *nats.Header, gt time.Duration) {
+		t.Helper()
+		expect(batch, expires, noWait, ne, he, 0, gt)
+	}
+	expectInstant := func(batch int, expires time.Duration, noWait bool, ne int, he *nats.Header) {
+		t.Helper()
+		expect(batch, expires, noWait, ne, he, 2*time.Millisecond, 0)
+	}
+	expectOK := func(batch int, expires time.Duration, noWait bool, ne int) {
+		t.Helper()
+		expectInstant(batch, expires, noWait, ne, nil)
+	}
+
+	noMsgs := &nats.Header{"Status": []string{"404"}, "Description": []string{"No Messages"}}
+	reqTimeout := &nats.Header{"Status": []string{"408"}, "Description": []string{"Request Timeout"}}
+
+	// We are empty here, meaning no messages available.
+	// Do not wait, should get noMsgs.
+	expectInstant(1, 0, true, 0, noMsgs)
+	// We should wait here for the full second.
+	expectAfter(1, 250*time.Millisecond, false, 0, reqTimeout, 250*time.Millisecond)
+	// This should also wait since no messages are available. This is the one shot scenario, or wait for at least a message if none are there.
+	expectAfter(1, 500*time.Millisecond, true, 0, reqTimeout, 500*time.Millisecond)
+
+	// Now let's put some messages into the system.
+	for i := 0; i < 20; i++ {
+		_, err := js.Publish("foo", []byte("HELLO"))
+		require_NoError(t, err)
+	}
+
+	// Now run same 3 scenarios.
+	expectOK(1, 0, true, 1)
+	expectOK(5, 500*time.Millisecond, false, 5)
+	expectOK(5, 500*time.Millisecond, true, 5)
+}
+
+func TestJetStreamPullConsumersMultipleRequestsExpireOutOfOrder(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:       "dlc",
+		AckPolicy:     nats.AckExplicitPolicy,
+		FilterSubject: "foo",
+	})
+	require_NoError(t, err)
+
+	// We will now queue up 4 requests. All should expire but they will do so out of order.
+	// We want to make sure we get them in correct order.
+	rsubj := fmt.Sprintf(JSApiRequestNextT, "TEST", "dlc")
+	sub, err := nc.SubscribeSync("i.*")
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+
+	for _, expires := range []time.Duration{200, 100, 25, 75} {
+		reply := fmt.Sprintf("i.%d", expires)
+		req := &JSApiConsumerGetNextRequest{Expires: expires * time.Millisecond}
+		jreq, err := json.Marshal(req)
+		require_NoError(t, err)
+		err = nc.PublishRequest(rsubj, reply, jreq)
+		require_NoError(t, err)
+	}
+	start := time.Now()
+	checkSubsPending(t, sub, 4)
+	elapsed := time.Since(start)
+
+	if elapsed < 200*time.Millisecond || elapsed > 500*time.Millisecond {
+		t.Fatalf("Expected elapsed to be close to %v, but got %v", 200*time.Millisecond, elapsed)
+	}
+
+	var rs []string
+	for i := 0; i < 4; i++ {
+		m, err := sub.NextMsg(0)
+		require_NoError(t, err)
+		rs = append(rs, m.Subject)
+	}
+	if expected := []string{"i.25", "i.75", "i.100", "i.200"}; !reflect.DeepEqual(rs, expected) {
+		t.Fatalf("Received in wrong order, wanted %+v, got %+v", expected, rs)
+	}
 }
 
 ///////////////////////////////////////////////////////////////////////////
