@@ -256,6 +256,8 @@ type consumer struct {
 	node    RaftNode
 	infoSub *subscription
 	lqsent  time.Time
+	prm     map[string]struct{}
+	prOk    bool
 
 	// R>1 proposals
 	pch   chan struct{}
@@ -837,6 +839,10 @@ func (o *consumer) setLeader(isLeader bool) {
 
 		// If we are R>1 spin up our proposal loop.
 		if node != nil {
+			// Determine if we can send pending requests info to the group.
+			// They must be on server versions >= 2.7.1
+			o.checkAndSetPendingRequestsOk()
+			o.checkPendingRequests()
 			go o.loopAndForwardProposals(qch)
 		}
 
@@ -1505,6 +1511,82 @@ func (o *consumer) updateAcks(dseq, sseq uint64) {
 	o.lat = time.Now()
 }
 
+// Communicate to the cluster an addition of a pending request.
+// Lock should be held.
+func (o *consumer) addClusterPendingRequest(reply string) {
+	if o.node == nil || !o.pendingRequestsOk() {
+		return
+	}
+	b := make([]byte, len(reply)+1)
+	b[0] = byte(addPendingRequest)
+	copy(b[1:], reply)
+	o.propose(b)
+}
+
+// Communicate to the cluster a removal of a pending request.
+// Lock should be held.
+func (o *consumer) removeClusterPendingRequest(reply string) {
+	if o.node == nil || !o.pendingRequestsOk() {
+		return
+	}
+	b := make([]byte, len(reply)+1)
+	b[0] = byte(removePendingRequest)
+	copy(b[1:], reply)
+	o.propose(b)
+}
+
+// Set whether or not we can send pending requests to followers.
+func (o *consumer) setPendingRequestsOk(ok bool) {
+	o.mu.Lock()
+	o.prOk = ok
+	o.mu.Unlock()
+}
+
+// Lock should be held.
+func (o *consumer) pendingRequestsOk() bool {
+	return o.prOk
+}
+
+// Set whether or not we can send info about pending pull requests to our group.
+// Will require all peers have a minimum version.
+func (o *consumer) checkAndSetPendingRequestsOk() {
+	o.mu.RLock()
+	s, isValid := o.srv, o.mset != nil
+	o.mu.RUnlock()
+	if !isValid {
+		return
+	}
+
+	if ca := o.consumerAssignment(); ca != nil && len(ca.Group.Peers) > 1 {
+		for _, pn := range ca.Group.Peers {
+			if si, ok := s.nodeToInfo.Load(pn); ok {
+				if !versionAtLeast(si.(nodeInfo).version, 2, 7, 1) {
+					// We expect all of our peers to eventually be up to date.
+					// So check again in awhile.
+					time.AfterFunc(eventsHBInterval, func() { o.checkAndSetPendingRequestsOk() })
+					o.setPendingRequestsOk(false)
+					return
+				}
+			}
+		}
+	}
+	o.setPendingRequestsOk(true)
+}
+
+// On leadership change make sure we alert the pending requests that they are no longer valid.
+func (o *consumer) checkPendingRequests() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.mset == nil || o.outq == nil {
+		return
+	}
+	hdr := []byte("NATS/1.0 409 Request Invalid\r\n\r\n")
+	for reply := range o.prm {
+		o.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+	}
+	o.prm = nil
+}
+
 // Process a NAK.
 func (o *consumer) processNak(sseq, dseq uint64) {
 	o.mu.Lock()
@@ -1986,11 +2068,13 @@ var wrPool = sync.Pool{
 }
 
 // Recycle this request. This request can not be accessed after this call.
-func (wr *waitingRequest) recycleIfDone() {
+func (wr *waitingRequest) recycleIfDone() bool {
 	if wr != nil && wr.n <= 0 {
 		wr.acc, wr.interest, wr.reply = nil, _EMPTY_, _EMPTY_
 		wrPool.Put(wr)
+		return true
 	}
+	return false
 }
 
 // Force a recycle.
@@ -2116,6 +2200,27 @@ func (wq *waitQueue) compact() {
 	wq.rp, wq.wp, wq.reqs = 0, i, nreqs
 }
 
+// Return the replies for our pending requests.
+// No-op if push consumer or invalid etc.
+func (o *consumer) pendingRequestReplies() []string {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	if o.waiting == nil {
+		return nil
+	}
+	wq, m := o.waiting, make(map[string]struct{})
+	for rp := o.waiting.rp; o.waiting.rp >= 0 && rp != wq.wp; rp = (rp + 1) % cap(wq.reqs) {
+		if wr := wq.reqs[rp]; wr != nil {
+			m[wr.reply] = struct{}{}
+		}
+	}
+	var replies []string
+	for reply := range m {
+		replies = append(replies, reply)
+	}
+	return replies
+}
+
 // Return next waiting request. This will check for expirations but not noWait or interest.
 // That will be handled by expireWaiting.
 // Lock should be held.
@@ -2138,6 +2243,9 @@ func (o *consumer) nextWaiting() *waitingRequest {
 		o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		// Remove the current one, no longer valid.
 		o.waiting.removeCurrent()
+		if o.node != nil {
+			o.removeClusterPendingRequest(wr.reply)
+		}
 		wr.recycle()
 	}
 	return nil
@@ -2237,6 +2345,10 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 		return
 	}
 	o.signalNewMessages()
+	// If we are clustered update our followers about this request.
+	if o.node != nil {
+		o.addClusterPendingRequest(wr.reply)
+	}
 }
 
 // Increase the delivery count for this message.
@@ -2367,6 +2479,9 @@ func (o *consumer) forceExpireFirstWaiting() {
 		o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 	}
 	o.waiting.removeCurrent()
+	if o.node != nil {
+		o.removeClusterPendingRequest(wr.reply)
+	}
 	wr.recycle()
 }
 
@@ -2387,6 +2502,9 @@ func (o *consumer) expireWaiting() (int, int, int) {
 		} else {
 			o.waiting.reqs[i] = nil
 			hid = true
+		}
+		if o.node != nil {
+			o.removeClusterPendingRequest(wr.reply)
 		}
 		expired++
 		wr.recycle()
@@ -2520,7 +2638,9 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			dsubj = o.dsubj
 		} else if wr := o.nextWaiting(); wr != nil {
 			dsubj = wr.reply
-			wr.recycleIfDone()
+			if wr.recycleIfDone() && o.node != nil {
+				o.removeClusterPendingRequest(dsubj)
+			}
 		} else {
 			// We will redo this one.
 			o.sseq--
