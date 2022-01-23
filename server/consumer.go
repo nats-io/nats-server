@@ -1369,8 +1369,8 @@ func (o *consumer) processAck(_ *subscription, c *client, acc *Account, subject,
 		o.processNextMsgReq(nil, c, acc, subject, reply, msg[len(AckNext):])
 		c.pa.hdr = phdr
 		skipAckReply = true
-	case bytes.Equal(msg, AckNak):
-		o.processNak(sseq, dseq)
+	case bytes.HasPrefix(msg, AckNak):
+		o.processNak(sseq, dseq, dc, msg)
 	case bytes.Equal(msg, AckProgress):
 		o.progressUpdate(sseq)
 	case bytes.Equal(msg, AckTerm):
@@ -1592,7 +1592,7 @@ func (o *consumer) checkPendingRequests() {
 }
 
 // Process a NAK.
-func (o *consumer) processNak(sseq, dseq uint64) {
+func (o *consumer) processNak(sseq, dseq, dc uint64, nak []byte) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -1606,6 +1606,33 @@ func (o *consumer) processNak(sseq, dseq uint64) {
 			return
 		}
 	}
+	// Check to see if we have delays attached.
+	if len(nak) > len(AckNak) {
+		arg := bytes.TrimSpace(nak[len(AckNak):])
+		d, err := time.ParseDuration(string(arg))
+		if err != nil && o.acc != nil {
+			// Treat this as normal NAK.
+			o.srv.Warnf("JetStream consumer '%s > %s > %s' bad NAK delay value: %q.", o.acc.Name, o.stream, o.name)
+		} else {
+			// We have a parsed duration that the user wants us to wait before retrying.
+			// Make sure we are not on the rdq.
+			o.removeFromRedeliverQueue(sseq)
+			if p, ok := o.pending[sseq]; ok {
+				// now - ackWait is expired now, so offset from there.
+				p.Timestamp = time.Now().Add(-o.cfg.AckWait).Add(d).UnixNano()
+				// Update store system which will update followers as well.
+				o.updateDelivered(p.Sequence, sseq, dc, p.Timestamp)
+				if d < o.cfg.AckWait && o.ptmr != nil {
+					// Want checkPending to run and figure out the next timer ttl.
+					// TODO(dlc) - We could optimize this maybe a bit more and track when we expect the timer to fire.
+					o.ptmr.Reset(10 * time.Millisecond)
+				}
+			}
+			// Nothing else for use to do now so return.
+			return
+		}
+	}
+
 	// If already queued up also ignore.
 	if !o.onRedeliverQueue(sseq) {
 		o.addToRedeliverQueue(sseq)
@@ -1709,8 +1736,8 @@ func (o *consumer) applyState(state *ConsumerState) {
 	// Setup tracking timer if we have restored pending.
 	if len(o.pending) > 0 && o.ptmr == nil {
 		// This is on startup or leader change. We want to check pending
-		// sooner in case there are inconsistencies etc. Pick between 1-5 secs.
-		delay := time.Second + time.Duration(rand.Int63n(4000))*time.Millisecond
+		// sooner in case there are inconsistencies etc. Pick between 500ms - 1.5s
+		delay := 500*time.Millisecond + time.Duration(rand.Int63n(1000))*time.Millisecond
 		// If normal is lower than this just use that.
 		if o.cfg.AckWait < delay {
 			delay = o.ackWait(0)
@@ -3065,8 +3092,7 @@ func (o *consumer) checkPending() {
 			shouldUpdateState = true
 			continue
 		}
-		elapsed := now - p.Timestamp
-		if elapsed >= ttl {
+		if elapsed := now - p.Timestamp; elapsed >= ttl {
 			if !o.onRedeliverQueue(seq) {
 				expired = append(expired, seq)
 			}
