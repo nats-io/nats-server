@@ -63,6 +63,7 @@ type Placement struct {
 // Define types of the entry.
 type entryOp uint8
 
+// ONLY ADD TO THE END, DO NOT INSERT IN BETWEEN WILL BREAK SERVER INTEROP.
 const (
 	// Meta ops.
 	assignStreamOp entryOp = iota
@@ -73,15 +74,18 @@ const (
 	streamMsgOp
 	purgeStreamOp
 	deleteMsgOp
-	// Consumer ops
+	// Consumer ops.
 	updateDeliveredOp
 	updateAcksOp
 	// Compressed consumer assignments.
 	assignCompressedConsumerOp
 	// Filtered Consumer skip.
 	updateSkipOp
-	// Update Stream
+	// Update Stream.
 	updateStreamOp
+	// For updating information on pending pull requests.
+	addPendingRequest
+	removePendingRequest
 )
 
 // raftGroups are controlled by the metagroup controller.
@@ -3142,6 +3146,23 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					o.sseq = le.Uint64(buf[1:])
 				}
 				o.mu.Unlock()
+			case addPendingRequest:
+				if !o.isLeader() {
+					o.mu.Lock()
+					if o.prm == nil {
+						o.prm = make(map[string]struct{})
+					}
+					o.prm[string(buf[1:])] = struct{}{}
+					o.mu.Unlock()
+				}
+			case removePendingRequest:
+				if !o.isLeader() {
+					o.mu.Lock()
+					if o.prm != nil {
+						delete(o.prm, string(buf[1:]))
+					}
+					o.mu.Unlock()
+				}
 			default:
 				panic(fmt.Sprintf("JetStream Cluster Unknown group entry op type! %v", entryOp(buf[0])))
 			}

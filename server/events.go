@@ -1135,6 +1135,7 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 	node := string(getHash(si.Name))
 	s.nodeToInfo.Store(node, nodeInfo{
 		si.Name,
+		si.Version,
 		si.Cluster,
 		si.Domain,
 		si.ID,
@@ -1176,7 +1177,7 @@ func (s *Server) processNewServer(si *ServerInfo) {
 		node := string(getHash(si.Name))
 		// Only update if non-existent
 		if _, ok := s.nodeToInfo.Load(node); !ok {
-			s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Cluster, si.Domain, si.ID, nil, nil, false, si.JetStream})
+			s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Version, si.Cluster, si.Domain, si.ID, nil, nil, false, si.JetStream})
 		}
 	}
 	// Announce ourselves..

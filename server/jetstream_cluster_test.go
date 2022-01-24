@@ -10049,6 +10049,146 @@ func TestJetStreamClusterPullPerf(t *testing.T) {
 	fmt.Printf("%.0f mb/s\n\n", float64(si.State.Bytes/(1024*1024))/tt.Seconds())
 }
 
+// Test that we get the right signaling when a consumer leader change occurs for any pending requests.
+func TestJetStreamClusterPullConsumerLeaderChange(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Replicas: 3,
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:       "dlc",
+		AckPolicy:     nats.AckExplicitPolicy,
+		FilterSubject: "foo",
+	})
+	require_NoError(t, err)
+
+	rsubj := fmt.Sprintf(JSApiRequestNextT, "TEST", "dlc")
+	sub, err := nc.SubscribeSync("reply")
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+
+	drainSub := func() {
+		t.Helper()
+		for _, err := sub.NextMsg(0); err == nil; _, err = sub.NextMsg(0) {
+		}
+		checkSubsPending(t, sub, 0)
+	}
+
+	// Queue up a request that can live for a bit.
+	req := &JSApiConsumerGetNextRequest{Expires: 2 * time.Second}
+	jreq, err := json.Marshal(req)
+	require_NoError(t, err)
+	err = nc.PublishRequest(rsubj, "reply", jreq)
+	require_NoError(t, err)
+	// Make sure request is recorded and replicated.
+	time.Sleep(100 * time.Millisecond)
+	checkSubsPending(t, sub, 0)
+
+	// Now have consumer leader change and make sure we get signaled that our request is not valid.
+	_, err = nc.Request(fmt.Sprintf(JSApiConsumerLeaderStepDownT, "TEST", "dlc"), nil, time.Second)
+	require_NoError(t, err)
+	c.waitOnConsumerLeader("$G", "TEST", "dlc")
+	checkSubsPending(t, sub, 1)
+	m, err := sub.NextMsg(0)
+	require_NoError(t, err)
+	// Make sure this is an alert that tells us our request is no longer valid.
+	if m.Header.Get("Status") != "409" {
+		t.Fatalf("Expected a 409 status code, got %q", m.Header.Get("Status"))
+	}
+	checkSubsPending(t, sub, 0)
+
+	// Add a few messages to the stream to fulfill a request.
+	for i := 0; i < 10; i++ {
+		_, err := js.Publish("foo", []byte("HELLO"))
+		require_NoError(t, err)
+	}
+	req = &JSApiConsumerGetNextRequest{Batch: 10, Expires: 10 * time.Second}
+	jreq, err = json.Marshal(req)
+	require_NoError(t, err)
+	err = nc.PublishRequest(rsubj, "reply", jreq)
+	require_NoError(t, err)
+	checkSubsPending(t, sub, 10)
+	drainSub()
+
+	// Now do a leader change again, make sure we do not get anything about that request.
+	_, err = nc.Request(fmt.Sprintf(JSApiConsumerLeaderStepDownT, "TEST", "dlc"), nil, time.Second)
+	require_NoError(t, err)
+	c.waitOnConsumerLeader("$G", "TEST", "dlc")
+	time.Sleep(100 * time.Millisecond)
+	checkSubsPending(t, sub, 0)
+
+	// Make sure we do not get anything if we expire, etc.
+	req = &JSApiConsumerGetNextRequest{Batch: 10, Expires: 250 * time.Millisecond}
+	jreq, err = json.Marshal(req)
+	require_NoError(t, err)
+	err = nc.PublishRequest(rsubj, "reply", jreq)
+	require_NoError(t, err)
+	// Let it expire.
+	time.Sleep(350 * time.Millisecond)
+	checkSubsPending(t, sub, 1)
+
+	// Now do a leader change again, make sure we do not get anything about that request.
+	_, err = nc.Request(fmt.Sprintf(JSApiConsumerLeaderStepDownT, "TEST", "dlc"), nil, time.Second)
+	require_NoError(t, err)
+	c.waitOnConsumerLeader("$G", "TEST", "dlc")
+	checkSubsPending(t, sub, 1)
+}
+
+func TestJetStreamClusterEphemeralPullConsumerServerShutdown(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Replicas: 2,
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		AckPolicy:     nats.AckExplicitPolicy,
+		FilterSubject: "foo",
+	})
+	require_NoError(t, err)
+
+	rsubj := fmt.Sprintf(JSApiRequestNextT, "TEST", ci.Name)
+	sub, err := nc.SubscribeSync("reply")
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+
+	// Queue up a request that can live for a bit.
+	req := &JSApiConsumerGetNextRequest{Expires: 2 * time.Second}
+	jreq, err := json.Marshal(req)
+	require_NoError(t, err)
+	err = nc.PublishRequest(rsubj, "reply", jreq)
+	require_NoError(t, err)
+	// Make sure request is recorded and replicated.
+	time.Sleep(100 * time.Millisecond)
+	checkSubsPending(t, sub, 0)
+
+	// Now shutdown the server where this ephemeral lives.
+	c.consumerLeader("$G", "TEST", ci.Name).Shutdown()
+	checkSubsPending(t, sub, 1)
+	m, err := sub.NextMsg(0)
+	require_NoError(t, err)
+	// Make sure this is an alert that tells us our request is no longer valid.
+	if m.Header.Get("Status") != "409" {
+		t.Fatalf("Expected a 409 status code, got %q", m.Header.Get("Status"))
+	}
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.

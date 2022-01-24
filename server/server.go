@@ -283,6 +283,7 @@ type srvIPQueueLogger struct {
 // For tracking JS nodes.
 type nodeInfo struct {
 	name    string
+	version string
 	cluster string
 	domain  string
 	id      string
@@ -407,6 +408,7 @@ func NewServer(opts *Options) (*Server, error) {
 		ourNode := string(getHash(serverName))
 		s.nodeToInfo.Store(ourNode, nodeInfo{
 			serverName,
+			VERSION,
 			opts.Cluster.Name,
 			opts.JetStreamDomain,
 			info.ID,
@@ -527,6 +529,39 @@ func NewServer(opts *Options) (*Server, error) {
 	s.handleSignals()
 
 	return s, nil
+}
+
+var semVerRe = regexp.MustCompile(`\Av?([0-9]+)\.?([0-9]+)?\.?([0-9]+)?`)
+
+func versionComponents(version string) (major, minor, patch int, err error) {
+	m := semVerRe.FindStringSubmatch(version)
+	if m == nil {
+		return 0, 0, 0, errors.New("invalid semver")
+	}
+	major, err = strconv.Atoi(m[1])
+	if err != nil {
+		return -1, -1, -1, err
+	}
+	minor, err = strconv.Atoi(m[2])
+	if err != nil {
+		return -1, -1, -1, err
+	}
+	patch, err = strconv.Atoi(m[3])
+	if err != nil {
+		return -1, -1, -1, err
+	}
+	return major, minor, patch, err
+}
+
+func versionAtLeast(version string, emajor, eminor, epatch int) bool {
+	major, minor, patch, err := versionComponents(version)
+	if err != nil {
+		return false
+	}
+	if major < emajor || minor < eminor || patch < epatch {
+		return false
+	}
+	return true
 }
 
 func (s *Server) logRejectedTLSConns() {

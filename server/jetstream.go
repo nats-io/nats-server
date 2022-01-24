@@ -785,12 +785,22 @@ func (s *Server) migrateEphemerals() {
 	}
 	js.mu.Unlock()
 
+	// In case we have stale pending requests.
+	hdr := []byte("NATS/1.0 409 Consumer Migration\r\n\r\n")
+
 	// Process the consumers.
 	for _, ca := range consumers {
 		// Locate the consumer itself.
 		if acc, err := s.LookupAccount(ca.Client.Account); err == nil && acc != nil {
 			if mset, err := acc.lookupStream(ca.Stream); err == nil && mset != nil {
 				if o := mset.lookupConsumer(ca.Name); o != nil {
+					if pr := o.pendingRequestReplies(); len(pr) > 0 {
+						o.mu.Lock()
+						for _, reply := range pr {
+							o.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+						}
+						o.mu.Unlock()
+					}
 					state := o.readStoreState()
 					o.deleteWithoutAdvisory()
 					js.mu.Lock()

@@ -1422,7 +1422,8 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 		s.remotes[id] = c
 		// check to be consistent and future proof. but will be same domain
 		if s.sameDomain(info.Domain) {
-			s.nodeToInfo.Store(c.route.hash, nodeInfo{c.route.remoteName, s.info.Cluster, info.Domain, id, nil, nil, false, info.JetStream})
+			s.nodeToInfo.Store(c.route.hash,
+				nodeInfo{c.route.remoteName, s.info.Version, s.info.Cluster, info.Domain, id, nil, nil, false, info.JetStream})
 		}
 		c.mu.Lock()
 		c.route.connectURLs = info.ClientConnectURLs
