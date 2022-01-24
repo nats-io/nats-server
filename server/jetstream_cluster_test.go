@@ -10189,6 +10189,177 @@ func TestJetStreamClusterEphemeralPullConsumerServerShutdown(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterNAKBackoffs(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Replicas: 2,
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", []byte("NAK"))
+	require_NoError(t, err)
+
+	sub, err := js.SubscribeSync("foo", nats.Durable("dlc"), nats.AckWait(5*time.Second), nats.ManualAck())
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+
+	checkSubsPending(t, sub, 1)
+	m, err := sub.NextMsg(0)
+	require_NoError(t, err)
+
+	// Default nak will redeliver almost immediately.
+	// We can now add a parse duration string after whitespace to the NAK proto.
+	start := time.Now()
+	dnak := []byte(fmt.Sprintf("%s 200ms", AckNak))
+	m.Respond(dnak)
+	checkSubsPending(t, sub, 1)
+	elapsed := time.Since(start)
+	if elapsed < 200*time.Millisecond {
+		t.Fatalf("Took too short to redeliver, expected ~200ms but got %v", elapsed)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("Took too long to redeliver, expected ~200ms but got %v", elapsed)
+	}
+
+	// Now let's delay and make sure that is honored when a new consumer leader takes over.
+	m, err = sub.NextMsg(0)
+	require_NoError(t, err)
+	dnak = []byte(fmt.Sprintf("%s 1s", AckNak))
+	start = time.Now()
+	m.Respond(dnak)
+	// Wait for NAK state to propagate.
+	time.Sleep(100 * time.Millisecond)
+	// Ask leader to stepdown.
+	_, err = nc.Request(fmt.Sprintf(JSApiConsumerLeaderStepDownT, "TEST", "dlc"), nil, time.Second)
+	require_NoError(t, err)
+	c.waitOnConsumerLeader("$G", "TEST", "dlc")
+	checkSubsPending(t, sub, 1)
+	elapsed = time.Since(start)
+	if elapsed < time.Second {
+		t.Fatalf("Took too short to redeliver, expected ~1s but got %v", elapsed)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("Took too long to redeliver, expected ~1s but got %v", elapsed)
+	}
+
+	// Test json version.
+	delay, err := json.Marshal(&ConsumerNakOptions{Delay: 20 * time.Millisecond})
+	require_NoError(t, err)
+	dnak = []byte(fmt.Sprintf("%s  %s", AckNak, delay))
+	m, err = sub.NextMsg(0)
+	require_NoError(t, err)
+	start = time.Now()
+	m.Respond(dnak)
+	checkSubsPending(t, sub, 1)
+	elapsed = time.Since(start)
+	if elapsed < 20*time.Millisecond {
+		t.Fatalf("Took too short to redeliver, expected ~20ms but got %v", elapsed)
+	}
+	if elapsed > 100*time.Millisecond {
+		t.Fatalf("Took too long to redeliver, expected ~20ms but got %v", elapsed)
+	}
+}
+
+func TestJetStreamClusterRedeliverBackoffs(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Replicas: 2,
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	// Test when BackOff is configured and AckWait and MaxDeliver are as well.
+	// Currently the BackOff will override AckWait, but we want MaxDeliver to be set to be at least len(BackOff)+1.
+	ccReq := &CreateConsumerRequest{
+		Stream: "TEST",
+		Config: ConsumerConfig{
+			Durable:        "dlc",
+			DeliverSubject: "x",
+			AckPolicy:      AckExplicit,
+			AckWait:        30 * time.Second,
+			MaxDeliver:     2,
+			BackOff:        []time.Duration{25 * time.Millisecond, 100 * time.Millisecond, 250 * time.Millisecond},
+		},
+	}
+	req, err := json.Marshal(ccReq)
+	require_NoError(t, err)
+	resp, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, "TEST", "dlc"), req, time.Second)
+	require_NoError(t, err)
+	var ccResp JSApiConsumerCreateResponse
+	err = json.Unmarshal(resp.Data, &ccResp)
+	require_NoError(t, err)
+	if ccResp.Error == nil || ccResp.Error.ErrCode != 10116 {
+		t.Fatalf("Expected an error when MaxDeliver is <= len(BackOff), got %+v", ccResp.Error)
+	}
+
+	// Set MaxDeliver to 6.
+	ccReq.Config.MaxDeliver = 6
+	req, err = json.Marshal(ccReq)
+	require_NoError(t, err)
+	resp, err = nc.Request(fmt.Sprintf(JSApiDurableCreateT, "TEST", "dlc"), req, time.Second)
+	require_NoError(t, err)
+	ccResp.Error = nil
+	err = json.Unmarshal(resp.Data, &ccResp)
+	require_NoError(t, err)
+	if ccResp.Error != nil {
+		t.Fatalf("Unexpected error: %+v", ccResp.Error)
+	}
+	if cfg := ccResp.ConsumerInfo.Config; cfg.AckWait != 25*time.Millisecond || cfg.MaxDeliver != 6 {
+		t.Fatalf("Expected AckWait to be first BackOff (25ms) and MaxDeliver set to 6, got %+v", cfg)
+	}
+
+	var received []time.Time
+	var mu sync.Mutex
+
+	sub, err := nc.Subscribe("x", func(m *nats.Msg) {
+		mu.Lock()
+		received = append(received, time.Now())
+		mu.Unlock()
+	})
+	require_NoError(t, err)
+
+	// Send a message.
+	start := time.Now()
+	_, err = js.Publish("foo", []byte("m22"))
+	require_NoError(t, err)
+
+	checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
+		mu.Lock()
+		nr := len(received)
+		mu.Unlock()
+		if nr >= 6 {
+			return nil
+		}
+		return fmt.Errorf("Only seen %d of 6", nr)
+	})
+	sub.Unsubscribe()
+
+	expected := ccReq.Config.BackOff
+	// We expect the MaxDeliver to go until 6, so fill in two additional ones.
+	expected = append(expected, 250*time.Millisecond, 250*time.Millisecond)
+	for i, tr := range received[1:] {
+		d := tr.Sub(start)
+		// Adjust start for next calcs.
+		start = start.Add(d)
+		if d < expected[i] || d > expected[i]*2 {
+			t.Fatalf("Timing is off for %d, expected ~%v, but got %v", i, expected[i], d)
+		}
+	}
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.

@@ -2052,7 +2052,7 @@ func (s *Server) sendStreamLostQuorumAdvisory(mset *stream) {
 		return
 	}
 
-	s.Warnf("JetStream cluster stream '%s > %s' has NO quorum, stalled.", acc.GetName(), stream)
+	s.Warnf("JetStream cluster stream '%s > %s' has NO quorum, stalled", acc.GetName(), stream)
 
 	subj := JSAdvisoryStreamQuorumLostPre + "." + stream
 	adv := &JSStreamQuorumLostAdvisory{

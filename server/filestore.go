@@ -4884,7 +4884,7 @@ func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) err
 	}
 
 	// On restarts the old leader may get a replay from the raft logs that are old.
-	if dseq <= o.state.Delivered.Consumer {
+	if dseq <= o.state.AckFloor.Consumer {
 		return nil
 	}
 
