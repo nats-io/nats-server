@@ -673,6 +673,11 @@ func (c *client) RemoteAddress() net.Addr {
 	return c.nc.RemoteAddr()
 }
 
+func (c *client) ExemptFromThrottleTLS() bool {
+	return c.srv.opts.tlsConfigOpts.RateLimitWhiteList != "" &&
+		strings.HasPrefix(c.nc.RemoteAddr().String(), c.srv.opts.tlsConfigOpts.RateLimitWhiteList)
+}
+
 // Helper function to report errors.
 func (c *client) reportErrRegisterAccount(acc *Account, err error) {
 	if err == ErrTooManyAccountConnections {

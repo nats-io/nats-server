@@ -2521,7 +2521,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 	// Check for TLS
 	if !isClosed && tlsRequired {
-		if s.connRateCounter != nil && !s.connRateCounter.allow() {
+		if s.connRateCounter != nil && !s.connRateCounter.allow() && !c.ExemptFromThrottleTLS() {
 			c.mu.Unlock()
 			c.sendErr("Connection throttling is active. Please try again later.")
 			c.closeConnection(MaxConnectionsExceeded)

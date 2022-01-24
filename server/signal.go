@@ -47,21 +47,13 @@ func (s *Server) handleSignals() {
 		for {
 			select {
 			case sig := <-c:
-				s.Debugf("Trapped %q signal", sig)
+				s.Noticef("Trapped %q signal", sig)
 				switch sig {
 				case syscall.SIGINT:
 					s.Shutdown()
 					os.Exit(0)
 				case syscall.SIGTERM:
-					// Shutdown unless graceful shutdown already in progress.
-					s.mu.Lock()
-					ldm := s.ldm
-					s.mu.Unlock()
-
-					if !ldm {
-						s.Shutdown()
-						os.Exit(1)
-					}
+					go s.lameDuckMode()
 				case syscall.SIGUSR1:
 					// File log re-open for rotating file logs.
 					s.ReOpenLogFile()

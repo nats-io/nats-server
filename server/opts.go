@@ -250,6 +250,7 @@ type Options struct {
 	TLSConfig             *tls.Config       `json:"-"`
 	TLSPinnedCerts        PinnedCertSet     `json:"-"`
 	TLSRateLimit          int64             `json:"-"`
+	TLSRateLimitWhitelist string            `json:"-"`
 	AllowNonTLS           bool              `json:"-"`
 	WriteDeadline         time.Duration     `json:"-"`
 	MaxClosedClients      int               `json:"-"`
@@ -506,18 +507,19 @@ type authorization struct {
 // TLSConfigOpts holds the parsed tls config information,
 // used with flag parsing
 type TLSConfigOpts struct {
-	CertFile          string
-	KeyFile           string
-	CaFile            string
-	Verify            bool
-	Insecure          bool
-	Map               bool
-	TLSCheckKnownURLs bool
-	Timeout           float64
-	RateLimit         int64
-	Ciphers           []uint16
-	CurvePreferences  []tls.CurveID
-	PinnedCerts       PinnedCertSet
+	CertFile           string
+	KeyFile            string
+	CaFile             string
+	Verify             bool
+	Insecure           bool
+	Map                bool
+	TLSCheckKnownURLs  bool
+	Timeout            float64
+	RateLimit          int64
+	RateLimitWhiteList string
+	Ciphers            []uint16
+	CurvePreferences   []tls.CurveID
+	PinnedCerts        PinnedCertSet
 }
 
 // OCSPConfig represents the options of OCSP stapling options.
@@ -905,6 +907,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		o.TLSMap = tc.Map
 		o.TLSPinnedCerts = tc.PinnedCerts
 		o.TLSRateLimit = tc.RateLimit
+		o.TLSRateLimitWhitelist = tc.RateLimitWhiteList
 
 		// Need to keep track of path of the original TLS config
 		// and certs path for OCSP Stapling monitoring.
@@ -3749,6 +3752,15 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 				return nil, &configErr{tk, "error parsing tls config, 'connection_rate_limit' wrong type"}
 			}
 			tc.RateLimit = at
+		case "connection_rate_whitelist":
+			at := ""
+			switch mv := mv.(type) {
+			case string:
+				at = mv
+			default:
+				return nil, &configErr{tk, "error parsing tls config, 'connection_rate_whitelist' wrong type"}
+			}
+			tc.RateLimitWhiteList = at
 		case "pinned_certs":
 			ra, ok := mv.([]interface{})
 			if !ok {

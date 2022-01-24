@@ -1920,6 +1920,41 @@ func TestTLSConnectionRate(t *testing.T) {
 	}
 }
 
+func TestTLSConnectionRateWhitelist(t *testing.T) {
+	config := `
+		listen: "127.0.0.1:-1"
+		tls {
+			cert_file: "./configs/certs/server-cert.pem"
+			key_file:  "./configs/certs/server-key.pem"
+			connection_rate_limit: 3
+			connection_rate_whitelist: "127."
+		}
+	`
+
+	confFileName := createConfFile(t, []byte(config))
+	defer removeFile(t, confFileName)
+
+	srv, _ := RunServerWithConfig(confFileName)
+	defer srv.Shutdown()
+
+	var err error
+	count := 0
+	for count < 10 {
+		var nc *nats.Conn
+		nc, err = nats.Connect(srv.ClientURL(), nats.RootCAs("./configs/certs/ca.pem"))
+
+		if err != nil {
+			break
+		}
+		nc.Close()
+		count++
+	}
+
+	if count != 10 {
+		t.Fatalf("Expected 10 connections per second, got %d (%v)", count, err)
+	}
+}
+
 func TestTLSPinnedCertsRoute(t *testing.T) {
 	tmplSeed := `
 	host: localhost
