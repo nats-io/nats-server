@@ -47,23 +47,24 @@ type ConsumerInfo struct {
 }
 
 type ConsumerConfig struct {
-	Durable         string        `json:"durable_name,omitempty"`
-	Description     string        `json:"description,omitempty"`
-	DeliverPolicy   DeliverPolicy `json:"deliver_policy"`
-	OptStartSeq     uint64        `json:"opt_start_seq,omitempty"`
-	OptStartTime    *time.Time    `json:"opt_start_time,omitempty"`
-	AckPolicy       AckPolicy     `json:"ack_policy"`
-	AckWait         time.Duration `json:"ack_wait,omitempty"`
-	MaxDeliver      int           `json:"max_deliver,omitempty"`
-	FilterSubject   string        `json:"filter_subject,omitempty"`
-	ReplayPolicy    ReplayPolicy  `json:"replay_policy"`
-	RateLimit       uint64        `json:"rate_limit_bps,omitempty"` // Bits per sec
-	SampleFrequency string        `json:"sample_freq,omitempty"`
-	MaxWaiting      int           `json:"max_waiting,omitempty"`
-	MaxAckPending   int           `json:"max_ack_pending,omitempty"`
-	Heartbeat       time.Duration `json:"idle_heartbeat,omitempty"`
-	FlowControl     bool          `json:"flow_control,omitempty"`
-	HeadersOnly     bool          `json:"headers_only,omitempty"`
+	Durable         string          `json:"durable_name,omitempty"`
+	Description     string          `json:"description,omitempty"`
+	DeliverPolicy   DeliverPolicy   `json:"deliver_policy"`
+	OptStartSeq     uint64          `json:"opt_start_seq,omitempty"`
+	OptStartTime    *time.Time      `json:"opt_start_time,omitempty"`
+	AckPolicy       AckPolicy       `json:"ack_policy"`
+	AckWait         time.Duration   `json:"ack_wait,omitempty"`
+	MaxDeliver      int             `json:"max_deliver,omitempty"`
+	BackOff         []time.Duration `json:"backoff,omitempty"`
+	FilterSubject   string          `json:"filter_subject,omitempty"`
+	ReplayPolicy    ReplayPolicy    `json:"replay_policy"`
+	RateLimit       uint64          `json:"rate_limit_bps,omitempty"` // Bits per sec
+	SampleFrequency string          `json:"sample_freq,omitempty"`
+	MaxWaiting      int             `json:"max_waiting,omitempty"`
+	MaxAckPending   int             `json:"max_ack_pending,omitempty"`
+	Heartbeat       time.Duration   `json:"idle_heartbeat,omitempty"`
+	FlowControl     bool            `json:"flow_control,omitempty"`
+	HeadersOnly     bool            `json:"headers_only,omitempty"`
 
 	// Pull based options.
 	MaxRequestBatch   int           `json:"max_batch,omitempty"`
@@ -296,6 +297,11 @@ func setConsumerConfigDefaults(config *ConsumerConfig) {
 	// Setup default of -1, meaning no limit for MaxDeliver.
 	if config.MaxDeliver == 0 {
 		config.MaxDeliver = -1
+	}
+	// If BackOff was specified that will override the AckWait and the MaxDeliver.
+	if len(config.BackOff) > 0 {
+		config.MaxDeliver = len(config.BackOff) + 1
+		config.AckWait = config.BackOff[0]
 	}
 	// Set proper default for max ack pending if we are ack explicit and none has been set.
 	if (config.AckPolicy == AckExplicit || config.AckPolicy == AckAll) && config.MaxAckPending == 0 {
@@ -1336,7 +1342,7 @@ func (o *consumer) updateDeliverSubjectLocked(newDeliver string) {
 func configsEqualSansDelivery(a, b ConsumerConfig) bool {
 	// These were copied in so can set Delivery here.
 	a.DeliverSubject, b.DeliverSubject = _EMPTY_, _EMPTY_
-	return a == b
+	return reflect.DeepEqual(a, b)
 }
 
 // Helper to send a reply to an ack.
@@ -3092,13 +3098,21 @@ func (o *consumer) checkPending() {
 			shouldUpdateState = true
 			continue
 		}
-		if elapsed := now - p.Timestamp; elapsed >= ttl {
+		elapsed, deadline := now-p.Timestamp, ttl
+		if len(o.cfg.BackOff) > 0 && o.rdc != nil {
+			dc := int(o.rdc[p.Sequence])
+			if dc >= len(o.cfg.BackOff) {
+				dc = len(o.cfg.BackOff) - 1
+			}
+			deadline = int64(o.cfg.BackOff[dc])
+		}
+		if elapsed >= deadline {
 			if !o.onRedeliverQueue(seq) {
 				expired = append(expired, seq)
 			}
-		} else if ttl-elapsed < next {
+		} else if deadline-elapsed < next {
 			// Update when we should fire next.
-			next = ttl - elapsed
+			next = deadline - elapsed
 		}
 	}
 
