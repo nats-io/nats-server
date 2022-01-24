@@ -3129,6 +3129,14 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 	// Make sure we have sane defaults.
 	setConsumerConfigDefaults(&req.Config)
 
+	// Check if we have a BackOff defined that MaxDeliver is within range etc.
+	if lbo := len(req.Config.BackOff); lbo > 0 && req.Config.MaxDeliver <= lbo {
+		err := errors.New("max deliver required to be > length backoff values")
+		resp.Error = NewJSConsumerCreateError(err, Unless(err))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
 	// Determine if we should proceed here when we are in clustered mode.
 	if s.JetStreamIsClustered() {
 		if req.Config.Direct {

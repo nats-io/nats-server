@@ -93,8 +93,8 @@ type CreateConsumerRequest struct {
 	Config ConsumerConfig `json:"config"`
 }
 
-// ConsumerNAKDelay is for optional NAK delay.
-type ConsumerNAKDelay struct {
+// ConsumerNakOptions is for optional NAK values, e.g. delay.
+type ConsumerNakOptions struct {
 	Delay time.Duration `json:"delay"`
 }
 
@@ -305,7 +305,6 @@ func setConsumerConfigDefaults(config *ConsumerConfig) {
 	}
 	// If BackOff was specified that will override the AckWait and the MaxDeliver.
 	if len(config.BackOff) > 0 {
-		config.MaxDeliver = len(config.BackOff) + 1
 		config.AckWait = config.BackOff[0]
 	}
 	// Set proper default for max ack pending if we are ack explicit and none has been set.
@@ -336,6 +335,11 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 
 	// Make sure we have sane defaults.
 	setConsumerConfigDefaults(config)
+
+	// Check if we have a BackOff defined that MaxDeliver is within range etc.
+	if lbo := len(config.BackOff); lbo > 0 && config.MaxDeliver <= lbo {
+		return nil, errors.New("max deliver required to be > length backoff values")
+	}
 
 	if len(config.Description) > JSMaxDescriptionLen {
 		return nil, NewJSConsumerDescriptionTooLongError(JSMaxDescriptionLen)
@@ -1624,7 +1628,7 @@ func (o *consumer) processNak(sseq, dseq, dc uint64, nak []byte) {
 			var d time.Duration
 			var err error
 			if arg[0] == '{' {
-				var nd ConsumerNAKDelay
+				var nd ConsumerNakOptions
 				if err = json.Unmarshal(arg, &nd); err == nil {
 					d = nd.Delay
 				}
@@ -1633,7 +1637,7 @@ func (o *consumer) processNak(sseq, dseq, dc uint64, nak []byte) {
 			}
 			if err != nil {
 				// Treat this as normal NAK.
-				o.srv.Warnf("JetStream consumer '%s > %s > %s' bad NAK delay value: %q.", o.acc.Name, o.stream, o.name, arg)
+				o.srv.Warnf("JetStream consumer '%s > %s > %s' bad NAK delay value: %q", o.acc.Name, o.stream, o.name, arg)
 			} else {
 				// We have a parsed duration that the user wants us to wait before retrying.
 				// Make sure we are not on the rdq.
