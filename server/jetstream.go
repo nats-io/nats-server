@@ -786,7 +786,7 @@ func (s *Server) migrateEphemerals() {
 	js.mu.Unlock()
 
 	// In case we have stale pending requests.
-	hdr := []byte("NATS/1.0 409 Request Invalid\r\n\r\n")
+	hdr := []byte("NATS/1.0 409 Consumer Migration\r\n\r\n")
 
 	// Process the consumers.
 	for _, ca := range consumers {

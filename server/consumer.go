@@ -1580,7 +1580,7 @@ func (o *consumer) checkPendingRequests() {
 	if o.mset == nil || o.outq == nil {
 		return
 	}
-	hdr := []byte("NATS/1.0 409 Request Invalid\r\n\r\n")
+	hdr := []byte("NATS/1.0 409 Leadership Change\r\n\r\n")
 	for reply := range o.prm {
 		o.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 	}

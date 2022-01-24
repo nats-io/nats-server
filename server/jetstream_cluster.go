@@ -63,6 +63,7 @@ type Placement struct {
 // Define types of the entry.
 type entryOp uint8
 
+// ONLY ADD TO THE END, DO NOT INSERT IN BETWEEN WILL BREAK SERVER INTEROP.
 const (
 	// Meta ops.
 	assignStreamOp entryOp = iota
