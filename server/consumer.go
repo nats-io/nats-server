@@ -93,6 +93,11 @@ type CreateConsumerRequest struct {
 	Config ConsumerConfig `json:"config"`
 }
 
+// ConsumerNAKDelay is for optional NAK delay.
+type ConsumerNAKDelay struct {
+	Delay time.Duration `json:"delay"`
+}
+
 // DeliverPolicy determines how the consumer should select the first message to deliver.
 type DeliverPolicy int
 
@@ -1615,27 +1620,38 @@ func (o *consumer) processNak(sseq, dseq, dc uint64, nak []byte) {
 	// Check to see if we have delays attached.
 	if len(nak) > len(AckNak) {
 		arg := bytes.TrimSpace(nak[len(AckNak):])
-		d, err := time.ParseDuration(string(arg))
-		if err != nil && o.acc != nil {
-			// Treat this as normal NAK.
-			o.srv.Warnf("JetStream consumer '%s > %s > %s' bad NAK delay value: %q.", o.acc.Name, o.stream, o.name)
-		} else {
-			// We have a parsed duration that the user wants us to wait before retrying.
-			// Make sure we are not on the rdq.
-			o.removeFromRedeliverQueue(sseq)
-			if p, ok := o.pending[sseq]; ok {
-				// now - ackWait is expired now, so offset from there.
-				p.Timestamp = time.Now().Add(-o.cfg.AckWait).Add(d).UnixNano()
-				// Update store system which will update followers as well.
-				o.updateDelivered(p.Sequence, sseq, dc, p.Timestamp)
-				if d < o.cfg.AckWait && o.ptmr != nil {
-					// Want checkPending to run and figure out the next timer ttl.
-					// TODO(dlc) - We could optimize this maybe a bit more and track when we expect the timer to fire.
-					o.ptmr.Reset(10 * time.Millisecond)
+		if len(arg) > 0 {
+			var d time.Duration
+			var err error
+			if arg[0] == '{' {
+				var nd ConsumerNAKDelay
+				if err = json.Unmarshal(arg, &nd); err == nil {
+					d = nd.Delay
 				}
+			} else {
+				d, err = time.ParseDuration(string(arg))
 			}
-			// Nothing else for use to do now so return.
-			return
+			if err != nil {
+				// Treat this as normal NAK.
+				o.srv.Warnf("JetStream consumer '%s > %s > %s' bad NAK delay value: %q.", o.acc.Name, o.stream, o.name, arg)
+			} else {
+				// We have a parsed duration that the user wants us to wait before retrying.
+				// Make sure we are not on the rdq.
+				o.removeFromRedeliverQueue(sseq)
+				if p, ok := o.pending[sseq]; ok {
+					// now - ackWait is expired now, so offset from there.
+					p.Timestamp = time.Now().Add(-o.cfg.AckWait).Add(d).UnixNano()
+					// Update store system which will update followers as well.
+					o.updateDelivered(p.Sequence, sseq, dc, p.Timestamp)
+					if o.ptmr != nil {
+						// Want checkPending to run and figure out the next timer ttl.
+						// TODO(dlc) - We could optimize this maybe a bit more and track when we expect the timer to fire.
+						o.ptmr.Reset(10 * time.Millisecond)
+					}
+				}
+				// Nothing else for use to do now so return.
+				return
+			}
 		}
 	}
 
