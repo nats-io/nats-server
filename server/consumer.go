@@ -338,7 +338,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 
 	// Check if we have a BackOff defined that MaxDeliver is within range etc.
 	if lbo := len(config.BackOff); lbo > 0 && config.MaxDeliver <= lbo {
-		return nil, errors.New("max deliver required to be > length backoff values")
+		return nil, NewJSConsumerMaxDeliverBackoffError()
 	}
 
 	if len(config.Description) > JSMaxDescriptionLen {

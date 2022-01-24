@@ -3131,8 +3131,7 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 
 	// Check if we have a BackOff defined that MaxDeliver is within range etc.
 	if lbo := len(req.Config.BackOff); lbo > 0 && req.Config.MaxDeliver <= lbo {
-		err := errors.New("max deliver required to be > length backoff values")
-		resp.Error = NewJSConsumerCreateError(err, Unless(err))
+		resp.Error = NewJSConsumerMaxDeliverBackoffError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
