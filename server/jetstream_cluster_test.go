@@ -10076,6 +10076,13 @@ func TestJetStreamClusterPullConsumerLeaderChange(t *testing.T) {
 	require_NoError(t, err)
 	defer sub.Unsubscribe()
 
+	drainSub := func() {
+		t.Helper()
+		for _, err := sub.NextMsg(0); err == nil; _, err = sub.NextMsg(0) {
+		}
+		checkSubsPending(t, sub, 0)
+	}
+
 	// Queue up a request that can live for a bit.
 	req := &JSApiConsumerGetNextRequest{Expires: 2 * time.Second}
 	jreq, err := json.Marshal(req)
@@ -10097,6 +10104,7 @@ func TestJetStreamClusterPullConsumerLeaderChange(t *testing.T) {
 	if m.Header.Get("Status") != "409" {
 		t.Fatalf("Expected a 409 status code, got %q", m.Header.Get("Status"))
 	}
+	checkSubsPending(t, sub, 0)
 
 	// Add a few messages to the stream to fulfill a request.
 	for i := 0; i < 10; i++ {
@@ -10109,13 +10117,13 @@ func TestJetStreamClusterPullConsumerLeaderChange(t *testing.T) {
 	err = nc.PublishRequest(rsubj, "reply", jreq)
 	require_NoError(t, err)
 	checkSubsPending(t, sub, 10)
-	// Drain this sub.
-	for _, err := sub.NextMsg(0); err == nil; _, err = sub.NextMsg(0) {
-	}
+	drainSub()
+
 	// Now do a leader change again, make sure we do not get anything about that request.
 	_, err = nc.Request(fmt.Sprintf(JSApiConsumerLeaderStepDownT, "TEST", "dlc"), nil, time.Second)
 	require_NoError(t, err)
 	c.waitOnConsumerLeader("$G", "TEST", "dlc")
+	time.Sleep(100 * time.Millisecond)
 	checkSubsPending(t, sub, 0)
 
 	// Make sure we do not get anything if we expire, etc.
@@ -10125,7 +10133,7 @@ func TestJetStreamClusterPullConsumerLeaderChange(t *testing.T) {
 	err = nc.PublishRequest(rsubj, "reply", jreq)
 	require_NoError(t, err)
 	// Let it expire.
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(350 * time.Millisecond)
 	checkSubsPending(t, sub, 1)
 
 	// Now do a leader change again, make sure we do not get anything about that request.

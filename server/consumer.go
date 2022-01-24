@@ -863,6 +863,10 @@ func (o *consumer) setLeader(isLeader bool) {
 			close(o.qch)
 			o.qch = nil
 		}
+		// Reset waiting if we are in pull mode.
+		if o.isPullMode() {
+			o.waiting = newWaitQueue(o.cfg.MaxWaiting)
+		}
 		o.mu.Unlock()
 	}
 }
@@ -2723,7 +2727,9 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		case <-mch:
 			// Messages are waiting.
 		case <-wrExp:
+			o.mu.Lock()
 			o.expireWaiting()
+			o.mu.Unlock()
 		case <-hbc:
 			if o.isActive() {
 				const t = "NATS/1.0 100 Idle Heartbeat\r\n%s: %d\r\n%s: %d\r\n\r\n"
