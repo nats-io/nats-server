@@ -3427,6 +3427,9 @@ func (fs *fileStore) FastState(state *StreamState) {
 	state.LastTime = fs.state.LastTime
 	if state.LastSeq > state.FirstSeq {
 		state.NumDeleted = int((state.LastSeq - state.FirstSeq + 1) - state.Msgs)
+		if state.NumDeleted < 0 {
+			state.NumDeleted = 0
+		}
 	}
 	state.Consumers = len(fs.cfs)
 	fs.mu.RUnlock()
