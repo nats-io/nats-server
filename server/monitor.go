@@ -2261,6 +2261,9 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 		}
 	}
 	collectRevocations := func(revocations map[string]int64) map[string]time.Time {
+		if len(revocations) == 0 {
+			return nil
+		}
 		rev := map[string]time.Time{}
 		for k, v := range a.usersRevoked {
 			rev[k] = time.Unix(v, 0)
