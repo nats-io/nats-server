@@ -69,7 +69,6 @@ type Account struct {
 	rm           map[string]int32
 	lqws         map[string]int32
 	usersRevoked map[string]int64
-	actsRevoked  map[string]int64
 	mappings     []*mapping
 	lleafs       []*client
 	imports      importMap
@@ -178,9 +177,10 @@ func (rt ServiceRespType) String() string {
 // exportAuth holds configured approvals or boolean indicating an
 // auth token is required for import.
 type exportAuth struct {
-	tokenReq   bool
-	accountPos uint
-	approved   map[string]*Account
+	tokenReq    bool
+	accountPos  uint
+	approved    map[string]*Account
+	actsRevoked map[string]int64
 }
 
 // streamExport
@@ -2455,7 +2455,7 @@ func (a *Account) checkAuth(ea *exportAuth, account *Account, imClaim *jwt.Impor
 	}
 	// Check if token required
 	if ea.tokenReq {
-		return a.checkActivation(account, imClaim, true)
+		return a.checkActivation(account, imClaim, ea, true)
 	}
 	if ea.approved == nil {
 		return false
@@ -2562,7 +2562,7 @@ func (a *Account) streamActivationExpired(exportAcc *Account, subject string) {
 	}
 	a.mu.RUnlock()
 
-	if si.acc.checkActivation(a, si.claim, false) {
+	if si.acc.checkActivation(a, si.claim, nil, false) {
 		// The token has been updated most likely and we are good to go.
 		return
 	}
@@ -2594,7 +2594,7 @@ func (a *Account) serviceActivationExpired(subject string) {
 	}
 	a.mu.RUnlock()
 
-	if si.acc.checkActivation(a, si.claim, false) {
+	if si.acc.checkActivation(a, si.claim, nil, false) {
 		// The token has been updated most likely and we are good to go.
 		return
 	}
@@ -2616,17 +2616,20 @@ func (a *Account) activationExpired(exportAcc *Account, subject string, kind jwt
 }
 
 func isRevoked(revocations map[string]int64, subject string, issuedAt int64) bool {
-	if revocations == nil {
+	if len(revocations) == 0 {
 		return false
 	}
 	if t, ok := revocations[subject]; !ok || t < issuedAt {
-		return false
+		if t, ok := revocations[jwt.All]; !ok || t < issuedAt {
+			return false
+		}
 	}
 	return true
 }
 
 // checkActivation will check the activation token for validity.
-func (a *Account) checkActivation(importAcc *Account, claim *jwt.Import, expTimer bool) bool {
+// ea may only be nil in cases where revocation may not be checked, say triggered by expiration timer.
+func (a *Account) checkActivation(importAcc *Account, claim *jwt.Import, ea *exportAuth, expTimer bool) bool {
 	if claim == nil || claim.Token == _EMPTY_ {
 		return false
 	}
@@ -2662,8 +2665,11 @@ func (a *Account) checkActivation(importAcc *Account, claim *jwt.Import, expTime
 			})
 		}
 	}
+	if ea == nil {
+		return true
+	}
 	// Check for token revocation..
-	return !isRevoked(a.actsRevoked, act.Subject, act.IssuedAt)
+	return !isRevoked(ea.actsRevoked, act.Subject, act.IssuedAt)
 }
 
 // Returns true if the activation claim is trusted. That is the issuer matches
@@ -2936,9 +2942,6 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		delete(a.imports.services, k)
 	}
 
-	// Reset any notion of export revocations.
-	a.actsRevoked = nil
-
 	alteredScope := map[string]struct{}{}
 
 	// update account signing keys
@@ -3013,6 +3016,9 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		s.checkJetStreamExports()
 	}
 
+	streamTokenExpirationChanged := false
+	serviceTokenExpirationChanged := false
+
 	for _, e := range ac.Exports {
 		switch e.Type {
 		case jwt.Stream:
@@ -3052,17 +3058,44 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 				}
 			}
 		}
-		// We will track these at the account level. Should not have any collisions.
-		if e.Revocations != nil {
-			a.mu.Lock()
-			if a.actsRevoked == nil {
-				a.actsRevoked = make(map[string]int64)
+
+		var revocationChanged *bool
+		var ea *exportAuth
+
+		a.mu.Lock()
+		switch e.Type {
+		case jwt.Stream:
+			revocationChanged = &streamTokenExpirationChanged
+			if se, ok := a.exports.streams[string(e.Subject)]; ok && se != nil {
+				ea = &se.exportAuth
 			}
-			for k, t := range e.Revocations {
-				a.actsRevoked[k] = t
+		case jwt.Service:
+			revocationChanged = &serviceTokenExpirationChanged
+			if se, ok := a.exports.services[string(e.Subject)]; ok && se != nil {
+				ea = &se.exportAuth
 			}
-			a.mu.Unlock()
 		}
+		if ea != nil {
+			oldRevocations := ea.actsRevoked
+			if len(e.Revocations) == 0 {
+				// remove all, no need to evaluate existing imports
+				ea.actsRevoked = nil
+			} else if len(oldRevocations) == 0 {
+				// add all, existing imports need to be re evaluated
+				ea.actsRevoked = e.Revocations
+				*revocationChanged = true
+			} else {
+				ea.actsRevoked = e.Revocations
+				// diff, existing imports need to be conditionally re evaluated, depending on:
+				// if a key was added, or it's timestamp increased
+				for k, t := range e.Revocations {
+					if tOld, ok := oldRevocations[k]; !ok || tOld < t {
+						*revocationChanged = true
+					}
+				}
+			}
+		}
+		a.mu.Unlock()
 	}
 	var incompleteImports []*jwt.Import
 	for _, i := range ac.Imports {
@@ -3116,7 +3149,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		}
 	}
 	// Now check if stream exports have changed.
-	if !a.checkStreamExportsEqual(old) || signersChanged {
+	if !a.checkStreamExportsEqual(old) || signersChanged || streamTokenExpirationChanged {
 		clients := map[*client]struct{}{}
 		// We need to check all accounts that have an import claim from this account.
 		awcsti := map[string]struct{}{}
@@ -3149,7 +3182,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		}
 	}
 	// Now check if service exports have changed.
-	if !a.checkServiceExportsEqual(old) || signersChanged {
+	if !a.checkServiceExportsEqual(old) || signersChanged || serviceTokenExpirationChanged {
 		s.accounts.Range(func(k, v interface{}) bool {
 			acc := v.(*Account)
 			// Move to the next if this account is actually account "a".

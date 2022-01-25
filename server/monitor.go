@@ -2133,7 +2133,8 @@ type ExtImport struct {
 
 type ExtExport struct {
 	jwt.Export
-	ApprovedAccounts []string `json:"approved_accounts,omitempty"`
+	ApprovedAccounts []string             `json:"approved_accounts,omitempty"`
+	RevokedAct       map[string]time.Time `json:"revoked_activations,omitempty"`
 }
 
 type ExtVrIssues struct {
@@ -2164,7 +2165,6 @@ type AccountInfo struct {
 	Claim       *jwt.AccountClaims   `json:"decoded_jwt,omitempty"`
 	Vr          []ExtVrIssues        `json:"validation_result_jwt,omitempty"`
 	RevokedUser map[string]time.Time `json:"revoked_user,omitempty"`
-	RevokedAct  map[string]time.Time `json:"revoked_activations,omitempty"`
 	Sublist     *SublistStats        `json:"sublist_stats,omitempty"`
 	Responses   map[string]ExtImport `json:"responses,omitempty"`
 }
@@ -2262,6 +2262,17 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 			vrIssues[i] = ExtVrIssues{v.Description, v.Blocking, v.TimeCheck}
 		}
 	}
+	collectRevocations := func(revocations map[string]int64) map[string]time.Time {
+		l := len(revocations)
+		if l == 0 {
+			return nil
+		}
+		rev := make(map[string]time.Time, l)
+		for k, v := range revocations {
+			rev[k] = time.Unix(v, 0)
+		}
+		return rev
+	}
 	exports := []ExtExport{}
 	for k, v := range a.exports.services {
 		e := ExtExport{
@@ -2278,6 +2289,7 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 			for name := range v.approved {
 				e.ApprovedAccounts = append(e.ApprovedAccounts, name)
 			}
+			e.RevokedAct = collectRevocations(v.actsRevoked)
 		}
 		exports = append(exports, e)
 	}
@@ -2294,6 +2306,7 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 			for name := range v.approved {
 				e.ApprovedAccounts = append(e.ApprovedAccounts, name)
 			}
+			e.RevokedAct = collectRevocations(v.actsRevoked)
 		}
 		exports = append(exports, e)
 	}
@@ -2344,13 +2357,6 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 		}
 		mappings[src] = dests
 	}
-	collectRevocations := func(revocations map[string]int64) map[string]time.Time {
-		rev := map[string]time.Time{}
-		for k, v := range a.usersRevoked {
-			rev[k] = time.Unix(v, 0)
-		}
-		return rev
-	}
 	return &AccountInfo{
 		accName,
 		a.updated,
@@ -2371,7 +2377,6 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 		claim,
 		vrIssues,
 		collectRevocations(a.usersRevoked),
-		collectRevocations(a.actsRevoked),
 		a.sl.Stats(),
 		responses,
 	}, nil
