@@ -1260,6 +1260,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	<a href=.%s>subsz</a><br/>
 	<a href=.%s>accountz</a><br/>
 	<a href=.%s>jsz</a><br/>
+	<a href=.%s>healthz</a><br/>
     <br/>
     <a href=https://docs.nats.io/nats-server/configuration/monitoring>help</a>
   </body>
@@ -1272,6 +1273,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 		s.basePath(SubszPath),
 		s.basePath(AccountzPath),
 		s.basePath(JszPath),
+		s.basePath(HealthzPath),
 	)
 }
 
@@ -2686,9 +2688,98 @@ func (s *Server) HandleJsz(w http.ResponseWriter, r *http.Request) {
 	}
 	b, err := json.MarshalIndent(l, "", "  ")
 	if err != nil {
-		s.Errorf("Error marshaling response to /leafz request: %v", err)
+		s.Errorf("Error marshaling response to /jsz request: %v", err)
 	}
 
 	// Handle response
+	ResponseHandler(w, r, b)
+}
+
+type HealthStatus struct {
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+// https://tools.ietf.org/id/draft-inadarei-api-health-check-05.html
+func (s *Server) HandleHealthz(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	s.httpReqStats[HealthzPath]++
+	s.mu.Unlock()
+
+	var health = &HealthStatus{Status: "ok"}
+
+	if err := s.readyForConnections(time.Millisecond); err != nil {
+		health.Status = "error"
+		health.Error = err.Error()
+		w.WriteHeader(http.StatusServiceUnavailable)
+	} else if js := s.getJetStream(); js != nil {
+		// Check JetStream status here.
+		js.mu.RLock()
+		clustered, cc := !js.standAlone, js.cluster
+		js.mu.RUnlock()
+		if clustered {
+			// We do more checking for clustered mode to allow for proper rolling updates.
+			// We will make sure that we have seen the meta leader and that we are current with all assets.
+			node := js.getMetaGroup()
+			if node.GroupLeader() == _EMPTY_ {
+				health.Status = "unavailable"
+				health.Error = "JetStream has not established contact with a meta leader"
+				w.WriteHeader(http.StatusServiceUnavailable)
+			} else if !node.Current() {
+				health.Status = "unavailable"
+				health.Error = "JetStream is not current with the meta leader"
+				w.WriteHeader(http.StatusServiceUnavailable)
+			} else {
+				// If we are here we are current and have seen our meta leader.
+				// Now check assets.
+				var _a [512]*jsAccount
+				accounts := _a[:0]
+				js.mu.RLock()
+				// Collect accounts.
+				for _, jsa := range js.accounts {
+					accounts = append(accounts, jsa)
+				}
+				js.mu.RUnlock()
+
+				var streams []*stream
+			Err:
+				// Walk our accounts and assets.
+				for _, jsa := range accounts {
+					if len(streams) > 0 {
+						streams = streams[:0]
+					}
+					jsa.mu.RLock()
+					accName := jsa.account.Name
+					for _, stream := range jsa.streams {
+						streams = append(streams, stream)
+					}
+					jsa.mu.RUnlock()
+					// Now walk the streams themselves.
+					js.mu.RLock()
+					for _, stream := range streams {
+						// Skip non-replicated.
+						if stream.cfg.Replicas <= 1 {
+							continue
+						}
+						sname := stream.name()
+						if !cc.isStreamCurrent(accName, sname) {
+							health.Status = "unavailable"
+							health.Error = fmt.Sprintf("JetStream stream %q for account %q is not current", sname, accName)
+							w.WriteHeader(http.StatusServiceUnavailable)
+							js.mu.RUnlock()
+							break Err
+						}
+					}
+					js.mu.RUnlock()
+				}
+			}
+		}
+	}
+
+	b, err := json.Marshal(health)
+	if err != nil {
+		s.Errorf("Error marshaling response to /healthz request: %v", err)
+	}
+
 	ResponseHandler(w, r, b)
 }

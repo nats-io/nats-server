@@ -2265,6 +2265,7 @@ const (
 	StackszPath  = "/stacksz"
 	AccountzPath = "/accountz"
 	JszPath      = "/jsz"
+	HealthzPath  = "/healthz"
 )
 
 func (s *Server) basePath(p string) string {
@@ -2340,8 +2341,8 @@ func (s *Server) startMonitoring(secure bool) error {
 		return fmt.Errorf("can't listen to the monitor port: %v", err)
 	}
 
-	s.Noticef("Starting %s monitor on %s", monitorProtocol,
-		net.JoinHostPort(opts.HTTPHost, strconv.Itoa(httpListener.Addr().(*net.TCPAddr).Port)))
+	rport := httpListener.Addr().(*net.TCPAddr).Port
+	s.Noticef("Starting %s monitor on %s", monitorProtocol, net.JoinHostPort(opts.HTTPHost, strconv.Itoa(rport)))
 
 	mux := http.NewServeMux()
 
@@ -2367,6 +2368,9 @@ func (s *Server) startMonitoring(secure bool) error {
 	mux.HandleFunc(s.basePath(AccountzPath), s.HandleAccountz)
 	// Jsz
 	mux.HandleFunc(s.basePath(JszPath), s.HandleJsz)
+	// Healthz
+	mux.HandleFunc(s.basePath(HealthzPath), s.HandleHealthz)
+
 	// Do not set a WriteTimeout because it could cause cURL/browser
 	// to return empty response or unable to display page if the
 	// server needs more time to build the response.
@@ -2942,7 +2946,7 @@ func (s *Server) readyForConnections(d time.Duration) error {
 		s.mu.Lock()
 		chk["server"] = info{ok: s.listener != nil, err: s.listenerErr}
 		chk["route"] = info{ok: (opts.Cluster.Port == 0 || s.routeListener != nil), err: s.routeListenerErr}
-		chk["gateway"] = info{ok: (opts.Gateway.Name == "" || s.gatewayListener != nil), err: s.gatewayListenerErr}
+		chk["gateway"] = info{ok: (opts.Gateway.Name == _EMPTY_ || s.gatewayListener != nil), err: s.gatewayListenerErr}
 		chk["leafNode"] = info{ok: (opts.LeafNode.Port == 0 || s.leafNodeListener != nil), err: s.leafNodeListenerErr}
 		chk["websocket"] = info{ok: (opts.Websocket.Port == 0 || s.websocket.listener != nil), err: s.websocket.listenerErr}
 		chk["mqtt"] = info{ok: (opts.MQTT.Port == 0 || s.mqtt.listener != nil), err: s.mqtt.listenerErr}
@@ -2957,7 +2961,9 @@ func (s *Server) readyForConnections(d time.Duration) error {
 		if numOK == len(chk) {
 			return nil
 		}
-		time.Sleep(25 * time.Millisecond)
+		if d > 25*time.Millisecond {
+			time.Sleep(25 * time.Millisecond)
+		}
 	}
 
 	failed := make([]string, 0, len(chk))
