@@ -27,6 +27,7 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"net"
+	"net/http"
 	"net/url"
 	"runtime"
 	"runtime/debug"
@@ -4023,4 +4024,80 @@ func TestNoRaceConsumerFileStoreConcurrentDiskIO(t *testing.T) {
 	swg.Wait()
 	close(startCh)
 	wg.Wait()
+}
+
+func TestNoRaceJetStreamClusterHealthz(t *testing.T) {
+	c := createJetStreamCluster(t, jsClusterAccountsTempl, "HZ", _EMPTY_, 3, 23033, true)
+	defer c.shutdown()
+
+	nc1, js1 := jsClientConnect(t, c.randomServer(), nats.UserInfo("one", "p"))
+	defer nc1.Close()
+
+	nc2, js2 := jsClientConnect(t, c.randomServer(), nats.UserInfo("two", "p"))
+	defer nc2.Close()
+
+	var err error
+	for _, sname := range []string{"foo", "bar", "baz"} {
+		_, err = js1.AddStream(&nats.StreamConfig{Name: sname, Replicas: 3})
+		require_NoError(t, err)
+		_, err = js2.AddStream(&nats.StreamConfig{Name: sname, Replicas: 3})
+		require_NoError(t, err)
+	}
+	// R1
+	_, err = js1.AddStream(&nats.StreamConfig{Name: "r1", Replicas: 1})
+	require_NoError(t, err)
+
+	// Now shutdown then send a bunch of data.
+	s := c.servers[0]
+	s.Shutdown()
+
+	for i := 0; i < 5_000; i++ {
+		_, err = js1.PublishAsync("foo", []byte("OK"))
+		require_NoError(t, err)
+		_, err = js2.PublishAsync("bar", []byte("OK"))
+		require_NoError(t, err)
+	}
+	select {
+	case <-js1.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+	select {
+	case <-js2.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	s = c.restartServer(s)
+	opts := s.getOpts()
+	opts.HTTPHost = "127.0.0.1"
+	opts.HTTPPort = 11222
+	err = s.StartMonitoring()
+	require_NoError(t, err)
+	url := fmt.Sprintf("http://127.0.0.1:%d/healthz", opts.HTTPPort)
+
+	getHealth := func() (int, *HealthStatus) {
+		resp, err := http.Get(url)
+		require_NoError(t, err)
+		defer resp.Body.Close()
+		body, err := ioutil.ReadAll(resp.Body)
+		require_NoError(t, err)
+		var hs HealthStatus
+		err = json.Unmarshal(body, &hs)
+		require_NoError(t, err)
+		return resp.StatusCode, &hs
+	}
+
+	errors := 0
+	checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
+		code, hs := getHealth()
+		if code >= 200 && code < 300 {
+			return nil
+		}
+		errors++
+		return fmt.Errorf("Got %d status with %+v", code, hs)
+	})
+	if errors == 0 {
+		t.Fatalf("Expected to have some errors until we became current, got none")
+	}
 }
