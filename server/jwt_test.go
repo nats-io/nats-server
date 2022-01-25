@@ -4376,54 +4376,59 @@ func TestJWTJetStreamLimits(t *testing.T) {
 }
 
 func TestJWTUserRevocation(t *testing.T) {
-	createAccountAndUser := func(done chan struct{}, pubKey, jwt1, jwt2, creds1, creds2 *string) {
-		t.Helper()
-		kp, _ := nkeys.CreateAccount()
-		*pubKey, _ = kp.PublicKey()
-		claim := jwt.NewAccountClaims(*pubKey)
-		var err error
-		*jwt1, err = claim.Encode(oKp)
-		require_NoError(t, err)
+	test := func(all bool) {
+		createAccountAndUser := func(done chan struct{}, pubKey, jwt1, jwt2, creds1, creds2 *string) {
+			t.Helper()
+			kp, _ := nkeys.CreateAccount()
+			*pubKey, _ = kp.PublicKey()
+			claim := jwt.NewAccountClaims(*pubKey)
+			var err error
+			*jwt1, err = claim.Encode(oKp)
+			require_NoError(t, err)
 
-		ukp, _ := nkeys.CreateUser()
-		seed, _ := ukp.Seed()
-		upub, _ := ukp.PublicKey()
-		uclaim := newJWTTestUserClaims()
-		uclaim.Subject = upub
+			ukp, _ := nkeys.CreateUser()
+			seed, _ := ukp.Seed()
+			upub, _ := ukp.PublicKey()
+			uclaim := newJWTTestUserClaims()
+			uclaim.Subject = upub
 
-		ujwt1, err := uclaim.Encode(kp)
-		require_NoError(t, err)
-		*creds1 = genCredsFile(t, ujwt1, seed)
+			ujwt1, err := uclaim.Encode(kp)
+			require_NoError(t, err)
+			*creds1 = genCredsFile(t, ujwt1, seed)
 
-		// create updated claim need to assure that issue time differs
-		claim.Revoke(upub) // revokes all jwt from now on
-		time.Sleep(time.Millisecond * 1100)
-		*jwt2, err = claim.Encode(oKp)
-		require_NoError(t, err)
+			// create updated claim need to assure that issue time differs
+			if all {
+				claim.Revoke(jwt.All) // revokes all jwt from now on
+			} else {
+				claim.Revoke(upub) // revokes this jwt from now on
+			}
+			time.Sleep(time.Millisecond * 1100)
+			*jwt2, err = claim.Encode(oKp)
+			require_NoError(t, err)
 
-		ujwt2, err := uclaim.Encode(kp)
-		require_NoError(t, err)
-		*creds2 = genCredsFile(t, ujwt2, seed)
+			ujwt2, err := uclaim.Encode(kp)
+			require_NoError(t, err)
+			*creds2 = genCredsFile(t, ujwt2, seed)
 
-		done <- struct{}{}
-	}
-	// Create Accounts and corresponding revoked and non revoked user creds. Do so concurrently to speed up the test
-	doneChan := make(chan struct{}, 2)
-	defer close(doneChan)
-	var syspub, sysjwt, dummy1, sysCreds, dummyCreds string
-	go createAccountAndUser(doneChan, &syspub, &sysjwt, &dummy1, &sysCreds, &dummyCreds)
-	var apub, ajwt1, ajwt2, aCreds1, aCreds2 string
-	go createAccountAndUser(doneChan, &apub, &ajwt1, &ajwt2, &aCreds1, &aCreds2)
-	for i := 0; i < cap(doneChan); i++ {
-		<-doneChan
-	}
-	defer removeFile(t, sysCreds)
-	defer removeFile(t, dummyCreds)
-	defer removeFile(t, aCreds1)
-	defer removeFile(t, aCreds2)
-	dirSrv := createDir(t, "srv")
-	defer removeDir(t, dirSrv)
-	conf := createConfFile(t, []byte(fmt.Sprintf(`
+			done <- struct{}{}
+		}
+		// Create Accounts and corresponding revoked and non revoked user creds. Do so concurrently to speed up the test
+		doneChan := make(chan struct{}, 2)
+		defer close(doneChan)
+		var syspub, sysjwt, dummy1, sysCreds, dummyCreds string
+		go createAccountAndUser(doneChan, &syspub, &sysjwt, &dummy1, &sysCreds, &dummyCreds)
+		var apub, ajwt1, ajwt2, aCreds1, aCreds2 string
+		go createAccountAndUser(doneChan, &apub, &ajwt1, &ajwt2, &aCreds1, &aCreds2)
+		for i := 0; i < cap(doneChan); i++ {
+			<-doneChan
+		}
+		defer removeFile(t, sysCreds)
+		defer removeFile(t, dummyCreds)
+		defer removeFile(t, aCreds1)
+		defer removeFile(t, aCreds2)
+		dirSrv := createDir(t, "srv")
+		defer removeDir(t, dirSrv)
+		conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		operator: %s
 		system_account: %s
@@ -4432,47 +4437,189 @@ func TestJWTUserRevocation(t *testing.T) {
 			dir: %s
 		}
     `, ojwt, syspub, dirSrv)))
-	defer removeFile(t, conf)
-	srv, _ := RunServerWithConfig(conf)
-	defer srv.Shutdown()
-	updateJwt(t, srv.ClientURL(), sysCreds, sysjwt, 1) // update system account jwt
-	updateJwt(t, srv.ClientURL(), sysCreds, ajwt1, 1)  // set account jwt without revocation
-	ncSys := natsConnect(t, srv.ClientURL(), nats.UserCredentials(sysCreds), nats.Name("conn name"))
-	defer ncSys.Close()
-	ncChan := make(chan *nats.Msg, 10)
-	defer close(ncChan)
-	sub, _ := ncSys.ChanSubscribe(fmt.Sprintf(disconnectEventSubj, apub), ncChan) // observe disconnect message
-	defer sub.Unsubscribe()
-	// use credentials that will be revoked ans assure that the connection will be disconnected
-	nc := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aCreds1),
-		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
-			if err != nil && strings.Contains(err.Error(), "authentication revoked") {
-				doneChan <- struct{}{}
-			}
-		}),
-	)
-	defer nc.Close()
-	// update account jwt to contain revocation
-	if updateJwt(t, srv.ClientURL(), sysCreds, ajwt2, 1) != 1 {
-		t.Fatalf("Expected jwt update to pass")
+		defer removeFile(t, conf)
+		srv, _ := RunServerWithConfig(conf)
+		defer srv.Shutdown()
+		updateJwt(t, srv.ClientURL(), sysCreds, sysjwt, 1) // update system account jwt
+		updateJwt(t, srv.ClientURL(), sysCreds, ajwt1, 1)  // set account jwt without revocation
+		ncSys := natsConnect(t, srv.ClientURL(), nats.UserCredentials(sysCreds), nats.Name("conn name"))
+		defer ncSys.Close()
+		ncChan := make(chan *nats.Msg, 10)
+		defer close(ncChan)
+		sub, _ := ncSys.ChanSubscribe(fmt.Sprintf(disconnectEventSubj, apub), ncChan) // observe disconnect message
+		defer sub.Unsubscribe()
+		// use credentials that will be revoked ans assure that the connection will be disconnected
+		nc := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aCreds1),
+			nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+				if err != nil && strings.Contains(err.Error(), "authentication revoked") {
+					doneChan <- struct{}{}
+				}
+			}),
+		)
+		defer nc.Close()
+		// update account jwt to contain revocation
+		if updateJwt(t, srv.ClientURL(), sysCreds, ajwt2, 1) != 1 {
+			t.Fatalf("Expected jwt update to pass")
+		}
+		// assure that nc got disconnected due to the revocation
+		select {
+		case <-doneChan:
+		case <-time.After(time.Second):
+			t.Fatalf("Expected connection to have failed")
+		}
+		m := <-ncChan
+		require_Len(t, strings.Count(string(m.Data), apub), 2)
+		require_True(t, strings.Contains(string(m.Data), `"jwt":"eyJ0`))
+		// try again with old credentials. Expected to fail
+		if nc1, err := nats.Connect(srv.ClientURL(), nats.UserCredentials(aCreds1)); err == nil {
+			nc1.Close()
+			t.Fatalf("Expected revoked credentials to fail")
+		}
+		// Assure new creds pass
+		nc2 := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aCreds2))
+		defer nc2.Close()
 	}
-	// assure that nc got disconnected due to the revocation
-	select {
-	case <-doneChan:
-	case <-time.After(time.Second):
-		t.Fatalf("Expected connection to have failed")
+	t.Run("specific-key", func(t *testing.T) {
+		test(false)
+	})
+	t.Run("all-key", func(t *testing.T) {
+		test(true)
+	})
+}
+
+func TestJWTActivationRevocation(t *testing.T) {
+	test := func(all bool) {
+		sysKp, syspub := createKey(t)
+		sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+		sysCreds := newUser(t, sysKp)
+		defer removeFile(t, sysCreds)
+
+		aExpKp, aExpPub := createKey(t)
+		aExpClaim := jwt.NewAccountClaims(aExpPub)
+		aExpClaim.Name = "Export"
+		aExpClaim.Exports.Add(&jwt.Export{
+			Subject:  "foo",
+			Type:     jwt.Stream,
+			TokenReq: true,
+		})
+		aExp1Jwt := encodeClaim(t, aExpClaim, aExpPub)
+		aExpCreds := newUser(t, aExpKp)
+
+		time.Sleep(1100 * time.Millisecond)
+		aImpKp, aImpPub := createKey(t)
+
+		revPubKey := aImpPub
+		if all {
+			revPubKey = jwt.All
+		}
+
+		aExpClaim.Exports[0].RevokeAt(revPubKey, time.Now())
+		aExp2Jwt := encodeClaim(t, aExpClaim, aExpPub)
+
+		aExpClaim.Exports[0].ClearRevocation(revPubKey)
+		aExp3Jwt := encodeClaim(t, aExpClaim, aExpPub)
+
+		ac := &jwt.ActivationClaims{}
+		ac.Subject = aImpPub
+		ac.ImportSubject = "foo"
+		ac.ImportType = jwt.Stream
+		token, err := ac.Encode(aExpKp)
+		require_NoError(t, err)
+
+		aImpClaim := jwt.NewAccountClaims(aImpPub)
+		aImpClaim.Name = "Import"
+		aImpClaim.Imports.Add(&jwt.Import{
+			Subject: "foo",
+			Type:    jwt.Stream,
+			Account: aExpPub,
+			Token:   token,
+		})
+		aImpJwt := encodeClaim(t, aImpClaim, aImpPub)
+		aImpCreds := newUser(t, aImpKp)
+		defer removeFile(t, aExpCreds)
+		defer removeFile(t, aImpCreds)
+
+		dirSrv := createDir(t, "srv")
+		defer removeDir(t, dirSrv)
+		conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: full
+			dir: %s
+		}
+    `, ojwt, syspub, dirSrv)))
+		defer removeFile(t, conf)
+
+		t.Run("token-expired-on-connect", func(t *testing.T) {
+			srv, _ := RunServerWithConfig(conf)
+			defer srv.Shutdown()
+			defer removeDir(t, dirSrv) // clean jwt directory
+
+			updateJwt(t, srv.ClientURL(), sysCreds, sysJwt, 1)   // update system account jwt
+			updateJwt(t, srv.ClientURL(), sysCreds, aExp2Jwt, 1) // set account jwt without revocation
+			updateJwt(t, srv.ClientURL(), sysCreds, aImpJwt, 1)
+
+			ncExp1 := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aExpCreds))
+			defer ncExp1.Close()
+
+			ncImp := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aImpCreds))
+			defer ncImp.Close()
+
+			sub, err := ncImp.SubscribeSync("foo")
+			require_NoError(t, err)
+			require_NoError(t, ncImp.Flush())
+			require_NoError(t, ncExp1.Publish("foo", []byte("1")))
+			_, err = sub.NextMsg(time.Second)
+			require_Error(t, err)
+			require_Equal(t, err.Error(), "nats: timeout")
+		})
+
+		t.Run("token-expired-on-update", func(t *testing.T) {
+			srv, _ := RunServerWithConfig(conf)
+			defer srv.Shutdown()
+			defer removeDir(t, dirSrv) // clean jwt directory
+
+			updateJwt(t, srv.ClientURL(), sysCreds, sysJwt, 1)   // update system account jwt
+			updateJwt(t, srv.ClientURL(), sysCreds, aExp1Jwt, 1) // set account jwt without revocation
+			updateJwt(t, srv.ClientURL(), sysCreds, aImpJwt, 1)
+
+			ncExp1 := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aExpCreds))
+			defer ncExp1.Close()
+
+			ncImp := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aImpCreds))
+			defer ncImp.Close()
+
+			sub, err := ncImp.SubscribeSync("foo")
+			require_NoError(t, err)
+			require_NoError(t, ncImp.Flush())
+			require_NoError(t, ncExp1.Publish("foo", []byte("1")))
+			m1, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Equal(t, string(m1.Data), "1")
+
+			updateJwt(t, srv.ClientURL(), sysCreds, aExp2Jwt, 1) // set account jwt with revocation
+
+			require_NoError(t, ncExp1.Publish("foo", []byte("2")))
+			_, err = sub.NextMsg(time.Second)
+			require_Error(t, err)
+			require_Equal(t, err.Error(), "nats: timeout")
+
+			updateJwt(t, srv.ClientURL(), sysCreds, aExp3Jwt, 1) // set account with revocation cleared
+
+			require_NoError(t, ncExp1.Publish("foo", []byte("3")))
+			m2, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Equal(t, string(m2.Data), "3")
+		})
 	}
-	m := <-ncChan
-	require_Len(t, strings.Count(string(m.Data), apub), 2)
-	require_True(t, strings.Contains(string(m.Data), `"jwt":"eyJ0`))
-	// try again with old credentials. Expected to fail
-	if nc1, err := nats.Connect(srv.ClientURL(), nats.UserCredentials(aCreds1)); err == nil {
-		nc1.Close()
-		t.Fatalf("Expected revoked credentials to fail")
-	}
-	// Assure new creds pass
-	nc2 := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aCreds2))
-	defer nc2.Close()
+	t.Run("specific-key", func(t *testing.T) {
+		test(false)
+	})
+	t.Run("all-key", func(t *testing.T) {
+		test(true)
+	})
 }
 
 func TestJWTAccountFetchTimeout(t *testing.T) {
