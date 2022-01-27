@@ -685,6 +685,7 @@ func (s *Server) sendStatsz(subj string) {
 		if v, ok := s.nodeToInfo.Load(ourNode); ok && v != nil {
 			ni := v.(nodeInfo)
 			ni.stats = jStat.Stats
+			ni.cfg = jStat.Config
 			s.nodeToInfo.Store(ourNode, ni)
 		}
 		// Metagroup info.
