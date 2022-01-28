@@ -10423,6 +10423,83 @@ func TestJetStreamClusterRedeliverBackoffs(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterHaLimitStream(t *testing.T) {
+	tmpl := strings.Replace(jsClusterMaxBytesTempl, "max_mem:   128MB", `max_mem:   128MB
+		max_ha: 2`, 1)
+	c := createJetStreamClusterWithTemplate(t, tmpl, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer(), nats.UserInfo("u", "p"))
+	defer nc.Close()
+
+	// consumer created through this, do NOT count towards max_ha
+	createConsumersNoRep := func(subj, stream string) {
+		t.Helper()
+		_, err := js.SubscribeSync(subj)
+		require_NoError(t, err)
+		_, err = js.AddConsumer(stream, &nats.ConsumerConfig{
+			AckPolicy:      nats.AckExplicitPolicy,
+			DeliverSubject: nats.NewInbox(),
+		})
+		require_NoError(t, err)
+	}
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST-noHA1",
+		Replicas: 1,
+		MaxBytes: 1024,
+		Subjects: []string{"foo1"},
+	})
+	require_NoError(t, err)
+
+	createConsumersNoRep("foo1", "TEST-noHA1")
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST-HA",
+		Replicas: 2,
+		MaxBytes: 1024,
+		Subjects: []string{"foo2"},
+	})
+	require_NoError(t, err)
+
+	createConsumersNoRep("foo2", "TEST-HA")
+
+	// make sure consumer HA resource exists as well
+	_, err = js.AddConsumer("TEST-HA", &nats.ConsumerConfig{
+		AckPolicy:      nats.AckExplicitPolicy,
+		DeliverSubject: nats.NewInbox(),
+		Durable:        "DUR1",
+	})
+	require_NoError(t, err)
+
+	// Test exceeding limit on replicated stream add
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST-HA-FULL",
+		Replicas: 2,
+		MaxBytes: 1024,
+		Subjects: []string{"foo3"},
+	})
+	require_Error(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST-noHA2",
+		Replicas: 1,
+		MaxBytes: 1024,
+		Subjects: []string{"foo4"},
+	})
+	require_NoError(t, err)
+
+	createConsumersNoRep("foo4", "TEST-noHA2")
+
+	// Test exceeding limit on replicated consumer add
+	_, err = js.AddConsumer("TEST-HA", &nats.ConsumerConfig{
+		AckPolicy:      nats.AckExplicitPolicy,
+		DeliverSubject: nats.NewInbox(),
+		Durable:        "DUR2",
+	})
+	require_Error(t, err)
+}
+
 func TestJetStreamConsumerUpgrade(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()

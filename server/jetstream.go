@@ -64,6 +64,7 @@ type JetStreamAccountLimits struct {
 	MaxStore         int64 `json:"max_storage"`
 	MaxStreams       int   `json:"max_streams"`
 	MaxConsumers     int   `json:"max_consumers"`
+	MaxHaResources   int   `json:"max_ha_resources"`
 	MaxBytesRequired bool  `json:"max_bytes_required"`
 }
 
