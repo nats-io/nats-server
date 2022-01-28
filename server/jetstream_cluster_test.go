@@ -10360,6 +10360,36 @@ func TestJetStreamClusterRedeliverBackoffs(t *testing.T) {
 	}
 }
 
+func TestJetStreamConsumerUpgrade(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	testUpdate := func(t *testing.T, s *Server) {
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+		_, err := js.AddStream(&nats.StreamConfig{Name: "X"})
+		require_NoError(t, err)
+		_, err = js.Publish("X", []byte("OK"))
+		require_NoError(t, err)
+		// First create a consumer that is push based.
+		_, err = js.AddConsumer("X", &nats.ConsumerConfig{Durable: "dlc", DeliverSubject: "Y"})
+		require_NoError(t, err)
+		// Now do same name but pull. This should be an error.
+		_, err = js.AddConsumer("X", &nats.ConsumerConfig{Durable: "dlc"})
+		require_Error(t, err)
+	}
+
+	t.Run("Single", func(t *testing.T) { testUpdate(t, s) })
+	t.Run("Clustered", func(t *testing.T) { testUpdate(t, c.randomServer()) })
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
