@@ -1273,6 +1273,9 @@ func (acc *Account) checkNewConsumerConfig(cfg, ncfg *ConsumerConfig) error {
 		if cfg.DeliverSubject == _EMPTY_ {
 			return errors.New("can not update pull consumer to push based")
 		}
+		if ncfg.DeliverSubject == _EMPTY_ {
+			return errors.New("can not update push consumer to pull based")
+		}
 		rr := acc.sl.Match(cfg.DeliverSubject)
 		if len(rr.psubs)+len(rr.qsubs) != 0 {
 			return NewJSConsumerNameExistError()
@@ -2330,7 +2333,7 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 		o.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 	}
 
-	if o.isPushMode() {
+	if o.isPushMode() || o.waiting == nil {
 		sendErr(409, "Consumer is push based")
 		return
 	}
