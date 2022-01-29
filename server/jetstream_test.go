@@ -14501,6 +14501,50 @@ func TestJetStreamPullConsumersMultipleRequestsExpireOutOfOrder(t *testing.T) {
 	}
 }
 
+func TestJetStreamConsumerUpdateSurvival(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "X"})
+	require_NoError(t, err)
+
+	// First create a consumer that is push based.
+	_, err = js.AddConsumer("X", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 1024})
+	require_NoError(t, err)
+
+	// Now do same name but pull. This will update the MaxAcKPending
+	ci, err := js.AddConsumer("X", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 22})
+	require_NoError(t, err)
+
+	if ci.Config.MaxAckPending != 22 {
+		t.Fatalf("Expected MaxAckPending to be 22, got %d", ci.Config.MaxAckPending)
+	}
+
+	// Make sure this survives across a restart.
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+	// Restart.
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	ci, err = js.ConsumerInfo("X", "dlc")
+	require_NoError(t, err)
+
+	if ci.Config.MaxAckPending != 22 {
+		t.Fatalf("Expected MaxAckPending to be 22, got %d", ci.Config.MaxAckPending)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////

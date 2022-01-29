@@ -5074,6 +5074,17 @@ func encodeConsumerState(state *ConsumerState) []byte {
 	return buf[:n]
 }
 
+func (o *consumerFileStore) UpdateConfig(cfg *ConsumerConfig) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	// This is mostly unchecked here. We are assuming the upper layers have done sanity checking.
+	csi := o.cfg
+	csi.ConsumerConfig = *cfg
+
+	return o.writeConsumerMeta()
+}
+
 func (o *consumerFileStore) Update(state *ConsumerState) error {
 	// Sanity checks.
 	if state.AckFloor.Consumer > state.Delivered.Consumer {
