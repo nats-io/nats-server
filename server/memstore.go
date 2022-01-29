@@ -95,17 +95,31 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 		return ErrStoreClosed
 	}
 
+	// Tracking by subject.
+	var ss *SimpleState
+	var asl bool
+	if len(subj) > 0 {
+		if ss = ms.fss[subj]; ss != nil {
+			asl = ms.maxp > 0 && ss.Msgs >= uint64(ms.maxp)
+		}
+	}
+
 	// Check if we are discarding new messages when we reach the limit.
 	if ms.cfg.Discard == DiscardNew {
 		if ms.cfg.MaxMsgs > 0 && ms.state.Msgs >= uint64(ms.cfg.MaxMsgs) {
-			return ErrMaxMsgs
+			// If we are tracking max messages per subject and are at the limit we will replace, so this is ok.
+			if !asl {
+				return ErrMaxMsgs
+			}
 		}
 		if ms.cfg.MaxBytes > 0 && ms.state.Bytes+uint64(len(msg)+len(hdr)) >= uint64(ms.cfg.MaxBytes) {
-			return ErrMaxBytes
-		}
-		if ms.maxp > 0 && len(subj) > 0 {
-			if ss := ms.fss[subj]; ss != nil && ss.Msgs >= uint64(ms.maxp) {
-				return ErrMaxMsgsPerSubject
+			if !asl {
+				return ErrMaxBytes
+			}
+			// If we are here we are at a subject maximum, need to determine if dropping last message gives us enough room.
+			sm, ok := ms.msgs[ss.First]
+			if !ok || memStoreMsgSize(sm.subj, sm.hdr, sm.msg) < uint64(len(msg)+len(hdr)) {
+				return ErrMaxBytes
 			}
 		}
 	}
@@ -141,7 +155,7 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 
 	// Track per subject.
 	if len(subj) > 0 {
-		if ss := ms.fss[subj]; ss != nil {
+		if ss != nil {
 			ss.Msgs++
 			ss.Last = seq
 			// Check per subject limits.
