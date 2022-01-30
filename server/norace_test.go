@@ -3332,7 +3332,8 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 		}
 	}
 	// Make sure acks processed.
-	nc.Flush()
+	time.Sleep(200 * time.Millisecond)
+	nc.Close()
 
 	// Check consumer consistency.
 	checkConsumerWith := func(delivered, ackFloor uint64, ackPending int) {
@@ -3383,6 +3384,7 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	node := o.raftNode().(*raft)
 	fs := node.wal.(*fileStore)
 	fcfg, cfg := fs.fcfg, fs.cfg.StreamConfig
+	// Stop all the servers.
 	c.stopAll()
 
 	// Manipulate directly with cluster down.
@@ -3451,8 +3453,13 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	state = fs.State()
 	fs.Truncate(state.FirstSeq)
 
+	sub, err = js.PullSubscribe("foo", "dlc")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
 	// This will cause us to stepdown and truncate our WAL.
-	fetchMsgs(t, sub, 100, 50*time.Millisecond)
+	fetchMsgs(t, sub, 100, 5*time.Second)
 
 	checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
 		// Make sure we changed leaders.
