@@ -1294,6 +1294,13 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 		return err
 	}
 
+	if o.store != nil {
+		// Update local state always.
+		if err := o.store.UpdateConfig(cfg); err != nil {
+			return err
+		}
+	}
+
 	// DeliverSubject
 	if cfg.DeliverSubject != o.cfg.DeliverSubject {
 		o.updateDeliverSubjectLocked(cfg.DeliverSubject)
