@@ -4387,6 +4387,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	if rresp.Error != nil {
 		t.Fatalf("Got an unexpected error response: %+v", rresp.Error)
 	}
+
 	// Can be any size message.
 	var chunk [512]byte
 	for r := bytes.NewReader(snapshot); ; {
@@ -4478,6 +4479,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 		t.Fatalf("Expected restore subscription to be closed")
 	}
 
+	req, _ = json.Marshal(rreq)
 	rmsg, err = nc2.Request(strings.ReplaceAll(JSApiStreamRestoreT, JSApiPrefix, "$JS.domain.API"), req, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error on snapshot request: %v", err)
@@ -4499,6 +4501,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 			t.Fatalf("Restore not honoring reply subjects for ack flow")
 		}
 	}
+
 	// For EOF this will send back stream info or an error.
 	si, err := nc2.Request(rresp.DeliverSubject, nil, time.Second)
 	if err != nil {
@@ -14642,6 +14645,67 @@ func TestJetStreamMaxMsgsPerSubjectWithDiscardNew(t *testing.T) {
 	}
 }
 
+func TestJetStreamStreamInfoSubjectsDetails(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	getInfo := func(filter string) *StreamInfo {
+		t.Helper()
+		// Need to grab StreamInfo by hand for now.
+		req, err := json.Marshal(&JSApiStreamInfoRequest{SubjectsFilter: filter})
+		require_NoError(t, err)
+		resp, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, "TEST"), req, time.Second)
+		require_NoError(t, err)
+		var si StreamInfo
+		err = json.Unmarshal(resp.Data, &si)
+		require_NoError(t, err)
+		return &si
+	}
+
+	testSubjects := func(t *testing.T, st nats.StorageType) {
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"*"},
+			Storage:  st,
+		})
+		require_NoError(t, err)
+		defer js.DeleteStream("TEST")
+
+		counts, msg := []int{22, 33, 44}, []byte("ok")
+		// Now place msgs, foo-22, bar-33 and baz-44.
+		for i, subj := range []string{"foo", "bar", "baz"} {
+			for n := 0; n < counts[i]; n++ {
+				_, err = js.Publish(subj, msg)
+				require_NoError(t, err)
+			}
+		}
+
+		// Test all subjects first.
+		expected := map[string]uint64{"foo": 22, "bar": 33, "baz": 44}
+		if si := getInfo(nats.AllKeys); !reflect.DeepEqual(si.State.Subjects, expected) {
+			t.Fatalf("Expected subjects of %+v, but got %+v", expected, si.State.Subjects)
+		}
+		if si := getInfo("*"); !reflect.DeepEqual(si.State.Subjects, expected) {
+			t.Fatalf("Expected subjects of %+v, but got %+v", expected, si.State.Subjects)
+		}
+		// Filtered to 1.
+		expected = map[string]uint64{"foo": 22}
+		if si := getInfo("foo"); !reflect.DeepEqual(si.State.Subjects, expected) {
+			t.Fatalf("Expected subjects of %+v, but got %+v", expected, si.State.Subjects)
+		}
+	}
+
+	t.Run("MemoryStore", func(t *testing.T) { testSubjects(t, nats.MemoryStorage) })
+	t.Run("FileStore", func(t *testing.T) { testSubjects(t, nats.FileStorage) })
+}
+
 // Issue #2836
 func TestJetStreamInterestRetentionBug(t *testing.T) {
 	s := RunBasicJetStreamServer()
@@ -14686,7 +14750,6 @@ func TestJetStreamInterestRetentionBug(t *testing.T) {
 	require_NoError(t, err)
 
 	test("bar", 1, 2)
-
 }
 
 ///////////////////////////////////////////////////////////////////////////

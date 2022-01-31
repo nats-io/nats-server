@@ -3274,18 +3274,17 @@ func (mb *msgBlock) cacheLookup(seq uint64) (*fileStoredMsg, error) {
 		mb.llseq = seq
 	}
 
-	// We use the high bit to denote we have already checked the checksum.
-	var hh hash.Hash64
-	if !hashChecked {
-		hh = mb.hh // This will force the hash check in msgFromBuf.
-		mb.cache.idx[seq-mb.cache.fseq] = (bi | hbit)
-	}
-
 	li := int(bi) - mb.cache.off
 	if li >= len(mb.cache.buf) {
 		return nil, errPartialCache
 	}
 	buf := mb.cache.buf[li:]
+
+	// We use the high bit to denote we have already checked the checksum.
+	var hh hash.Hash64
+	if !hashChecked {
+		hh = mb.hh // This will force the hash check in msgFromBuf.
+	}
 
 	// Parse from the raw buffer.
 	subj, hdr, msg, mseq, ts, err := msgFromBuf(buf, hh)
@@ -3295,6 +3294,11 @@ func (mb *msgBlock) cacheLookup(seq uint64) (*fileStoredMsg, error) {
 	if seq != mseq {
 		mb.cache.buf = nil
 		return nil, fmt.Errorf("sequence numbers for cache load did not match, %d vs %d", seq, mseq)
+	}
+
+	// Clear the check bit here after we know all is good.
+	if !hashChecked {
+		mb.cache.idx[seq-mb.cache.fseq] = (bi | hbit)
 	}
 
 	return &fileStoredMsg{subj, hdr, msg, seq, ts, mb, int64(bi)}, nil
@@ -3451,6 +3455,7 @@ func (fs *fileStore) FastState(state *StreamState) {
 		}
 	}
 	state.Consumers = len(fs.cfs)
+
 	fs.mu.RUnlock()
 }
 
@@ -3460,6 +3465,7 @@ func (fs *fileStore) State() StreamState {
 	state := fs.state
 	state.Consumers = len(fs.cfs)
 	state.Deleted = nil // make sure.
+
 	for _, mb := range fs.blks {
 		mb.mu.Lock()
 		fseq := mb.first.seq
@@ -4243,6 +4249,7 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 	if mb.fss == nil {
 		mb.fss = make(map[string]*SimpleState)
 	}
+
 	fseq, lseq := mb.first.seq, mb.last.seq
 	for seq := fseq; seq <= lseq; seq++ {
 		if sm, _ := mb.cacheLookup(seq); sm != nil && len(sm.subj) > 0 {
