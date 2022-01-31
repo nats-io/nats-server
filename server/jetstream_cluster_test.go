@@ -278,6 +278,74 @@ func TestJetStreamClusterMultiReplicaStreams(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterMultiReplicaStreamsDefaultFileMem(t *testing.T) {
+	const testConfig = `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {store_dir: "%s"}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+`
+	c := createJetStreamClusterWithTemplate(t, testConfig, "RNS", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar"},
+		Replicas: 3,
+		MaxBytes: 1024,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// Send in 10 messages.
+	msg, toSend := []byte("Hello JS Clustering"), 10
+	for i := 0; i < toSend; i++ {
+		if _, err = js.Publish("foo", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	// Now grab info for this stream.
+	si, err := js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if si == nil || si.Config.Name != "TEST" {
+		t.Fatalf("StreamInfo is not correct %+v", si)
+	}
+	// Check active state as well, shows that the owner answered.
+	if si.State.Msgs != uint64(toSend) {
+		t.Fatalf("Expected %d msgs, got bad state: %+v", toSend, si.State)
+	}
+	// Now create a consumer. This should be affinitize to the same set of servers as the stream.
+	// First do a normal sub.
+	sub, err := js.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	checkSubsPending(t, sub, toSend)
+
+	// Now create a consumer as well.
+	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if ci == nil || ci.Name != "dlc" || ci.Stream != "TEST" || ci.NumPending != uint64(toSend) {
+		t.Fatalf("ConsumerInfo is not correct %+v", ci)
+	}
+}
+
 func TestJetStreamClusterMemoryStore(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3M", 3)
 	defer c.shutdown()
