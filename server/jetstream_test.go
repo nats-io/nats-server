@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
@@ -10880,7 +10881,7 @@ func TestJetStreamConfigReloadWithGlobalAccount(t *testing.T) {
 	checkJSAccount()
 }
 
-// Test that we properly enfore per subject msg limits.
+// Test that we properly enforce per subject msg limits.
 func TestJetStreamMaxMsgsPerSubject(t *testing.T) {
 	const maxPer = 5
 	msc := StreamConfig{
@@ -11179,58 +11180,6 @@ func TestJetStreamLastSequenceBySubject(t *testing.T) {
 			pubAndCheck("kv.bar", "2", true)
 			pubAndCheck("kv.bar", "5", true)
 			pubAndCheck("kv.xxx", "5", false)
-		})
-	}
-}
-
-// https://github.com/nats-io/nats-server/issues/2314
-func TestJetStreamMaxMsgsPerAndDiscardNew(t *testing.T) {
-	for _, st := range []StorageType{FileStorage, MemoryStorage} {
-		t.Run(st.String(), func(t *testing.T) {
-			c := createJetStreamClusterExplicit(t, "JSC", 3)
-			defer c.shutdown()
-
-			nc, js := jsClientConnect(t, c.randomServer())
-			defer nc.Close()
-
-			cfg := StreamConfig{
-				Name:       "KV",
-				Subjects:   []string{"kv.>"},
-				Storage:    st,
-				Discard:    DiscardNew,
-				MaxMsgsPer: 1,
-				Replicas:   3,
-			}
-
-			req, err := json.Marshal(cfg)
-			if err != nil {
-				t.Fatalf("Unexpected error: %v", err)
-			}
-			// Do manually for now.
-			nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
-			si, err := js.StreamInfo("KV")
-			if err != nil {
-				t.Fatalf("Unexpected error: %v", err)
-			}
-			if si == nil || si.Config.Name != "KV" {
-				t.Fatalf("StreamInfo is not correct %+v", si)
-			}
-
-			js.Publish("kv.1", []byte("ok"))
-			js.Publish("kv.2", []byte("ok"))
-			js.Publish("kv.3", []byte("ok"))
-
-			if si, _ := js.StreamInfo("KV"); si == nil || si.State.Msgs != 3 {
-				t.Fatalf("Expected 3 messages, got %d", si.State.Msgs)
-			}
-			// This should fail.
-			if pa, err := js.Publish("kv.1", []byte("last")); err == nil {
-				t.Fatalf("Expected an error, got %+v and %v", pa, err)
-			}
-			// Make sure others work after the above failure.
-			if _, err := js.Publish("kv.22", []byte("favorite")); err != nil {
-				t.Fatalf("Unexpected error: %v", err)
-			}
 		})
 	}
 }
@@ -14612,6 +14561,85 @@ func TestJetStreamNakRedeliveryWithNoWait(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("Did not get the message in time")
+}
+
+// Test that we properly enforce per subject msg limits when DiscardNew is set.
+// DiscardNew should only apply to stream limits, subject based limits should always be DiscardOld.
+func TestJetStreamMaxMsgsPerSubjectWithDiscardNew(t *testing.T) {
+	msc := StreamConfig{
+		Name:       "TEST",
+		Subjects:   []string{"foo", "bar", "baz", "x"},
+		Discard:    DiscardNew,
+		Storage:    MemoryStorage,
+		MaxMsgsPer: 4,
+		MaxMsgs:    10,
+		MaxBytes:   500,
+	}
+	fsc := msc
+	fsc.Storage = FileStorage
+
+	cases := []struct {
+		name    string
+		mconfig *StreamConfig
+	}{
+		{"MemoryStore", &msc},
+		{"FileStore", &fsc},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer()
+			defer s.Shutdown()
+
+			if config := s.JetStreamConfig(); config != nil {
+				defer removeDir(t, config.StoreDir)
+			}
+
+			mset, err := s.GlobalAccount().addStream(c.mconfig)
+			require_NoError(t, err)
+			defer mset.delete()
+
+			// Client for API requests.
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			pubAndCheck := func(subj string, num int, expectedNumMsgs uint64) {
+				t.Helper()
+				for i := 0; i < num; i++ {
+					_, err = js.Publish(subj, []byte("TSLA"))
+					require_NoError(t, err)
+				}
+				si, err := js.StreamInfo("TEST")
+				require_NoError(t, err)
+				if si.State.Msgs != expectedNumMsgs {
+					t.Fatalf("Expected %d msgs, got %d", expectedNumMsgs, si.State.Msgs)
+				}
+			}
+
+			pubExpectErr := func(subj string, sz int) {
+				t.Helper()
+				_, err = js.Publish(subj, bytes.Repeat([]byte("X"), sz))
+				require_Error(t, err, errors.New("nats: maximum bytes exceeded"), errors.New("nats: maximum messages exceeded"))
+			}
+
+			pubAndCheck("foo", 1, 1)
+			// We should treat this as DiscardOld and only have 4 msgs after.
+			pubAndCheck("foo", 4, 4)
+			// Same thing here, shoud only have 4 foo and 4 bar for total of 8.
+			pubAndCheck("bar", 8, 8)
+			// We have 8 here, so only 2 left. If we add in a new subject when we have room it will be accepted.
+			pubAndCheck("baz", 2, 10)
+			// Now we are full, but makeup is foo-4 bar-4 baz-2.
+			// We can add to foo and bar since they are at their max and adding new ones there stays the same in terms of total of 10.
+			pubAndCheck("foo", 1, 10)
+			pubAndCheck("bar", 1, 10)
+			// Try to send a large message under an established subject that will exceed the 500 maximum.
+			// Even though we have a bar subject and its at its maximum, the message to be dropped is not big enough, so this should err.
+			pubExpectErr("bar", 300)
+			// Also even though we have room bytes wise, if we introduce a new subject this should fail too on msg limit exceeded.
+			pubExpectErr("x", 2)
+		})
+	}
 }
 
 ///////////////////////////////////////////////////////////////////////////

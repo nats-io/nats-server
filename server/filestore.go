@@ -1494,15 +1494,22 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 
 	// Check if we are discarding new messages when we reach the limit.
 	if fs.cfg.Discard == DiscardNew {
+		var asl bool
+		var fseq uint64
+		if fs.cfg.MaxMsgsPer > 0 && len(subj) > 0 {
+			var msgs uint64
+			if msgs, fseq, _ = fs.perSubjectState(subj); msgs >= uint64(fs.cfg.MaxMsgsPer) {
+				asl = true
+			}
+		}
 		if fs.cfg.MaxMsgs > 0 && fs.state.Msgs >= uint64(fs.cfg.MaxMsgs) {
-			return ErrMaxMsgs
+			if !asl {
+				return ErrMaxMsgs
+			}
 		}
 		if fs.cfg.MaxBytes > 0 && fs.state.Bytes+uint64(len(msg)+len(hdr)) >= uint64(fs.cfg.MaxBytes) {
-			return ErrMaxBytes
-		}
-		if fs.cfg.MaxMsgsPer > 0 && len(subj) > 0 {
-			if msgs, _, _ := fs.perSubjectState(subj); msgs >= uint64(fs.cfg.MaxMsgsPer) {
-				return ErrMaxMsgsPerSubject
+			if !asl || fs.sizeForSeq(fseq) <= len(msg)+len(hdr) {
+				return ErrMaxBytes
 			}
 		}
 	}
@@ -1658,7 +1665,7 @@ func (fs *fileStore) rebuildFirst() {
 // Will check the msg limit for this tracked subject.
 // Lock should be held.
 func (fs *fileStore) enforcePerSubjectLimit(subj string) {
-	if fs.closed || fs.sips > 0 || fs.cfg.MaxMsgsPer < 0 || !fs.tms {
+	if fs.closed || fs.sips > 0 || fs.cfg.MaxMsgsPer <= 0 || !fs.tms {
 		return
 	}
 	for {
@@ -3291,6 +3298,18 @@ func (mb *msgBlock) cacheLookup(seq uint64) (*fileStoredMsg, error) {
 	}
 
 	return &fileStoredMsg{subj, hdr, msg, seq, ts, mb, int64(bi)}, nil
+}
+
+// Used when we are checking if discarding a message due to max msgs per subject will give us
+// enough room for a max bytes condition.
+// Lock should be already held.
+func (fs *fileStore) sizeForSeq(seq uint64) int {
+	if mb := fs.selectMsgBlock(seq); mb != nil {
+		if sm, _, _ := mb.fetchMsg(seq); sm != nil {
+			return int(fileStoreMsgSize(sm.subj, sm.hdr, sm.msg))
+		}
+	}
+	return 0
 }
 
 // Will return message for the given sequence number.
