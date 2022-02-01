@@ -3130,7 +3130,7 @@ func (o *consumer) checkPending() {
 		}
 		elapsed, deadline := now-p.Timestamp, ttl
 		if len(o.cfg.BackOff) > 0 && o.rdc != nil {
-			dc := int(o.rdc[p.Sequence])
+			dc := int(o.rdc[seq])
 			if dc >= len(o.cfg.BackOff) {
 				dc = len(o.cfg.BackOff) - 1
 			}
