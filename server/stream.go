@@ -2923,10 +2923,10 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		if numConsumers == 0 {
 			noInterest = true
 		} else if mset.numFilter > 0 {
-			// Assume none.
+			// Assume no interest and check to disqualify.
 			noInterest = true
 			for _, o := range mset.consumers {
-				if o.cfg.FilterSubject != _EMPTY_ && subjectIsSubsetMatch(subject, o.cfg.FilterSubject) {
+				if o.cfg.FilterSubject == _EMPTY_ || subjectIsSubsetMatch(subject, o.cfg.FilterSubject) {
 					noInterest = false
 					break
 				}
