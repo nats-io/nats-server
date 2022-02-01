@@ -10345,9 +10345,15 @@ func TestJetStreamClusterRedeliverBackoffs(t *testing.T) {
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
 		Replicas: 2,
-		Subjects: []string{"foo"},
+		Subjects: []string{"foo", "bar"},
 	})
 	require_NoError(t, err)
+
+	// Produce some messages on bar so that when we create the consumer
+	// on "foo", we don't have a 1:1 between consumer/stream sequence.
+	for i := 0; i < 10; i++ {
+		js.Publish("bar", []byte("msg"))
+	}
 
 	// Test when BackOff is configured and AckWait and MaxDeliver are as well.
 	// Currently the BackOff will override AckWait, but we want MaxDeliver to be set to be at least len(BackOff)+1.
@@ -10355,6 +10361,7 @@ func TestJetStreamClusterRedeliverBackoffs(t *testing.T) {
 		Stream: "TEST",
 		Config: ConsumerConfig{
 			Durable:        "dlc",
+			FilterSubject:  "foo",
 			DeliverSubject: "x",
 			AckPolicy:      AckExplicit,
 			AckWait:        30 * time.Second,
