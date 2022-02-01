@@ -3459,7 +3459,9 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	}
 
 	// This will cause us to stepdown and truncate our WAL.
-	fetchMsgs(t, sub, 100, 5*time.Second)
+	if _, err = sub.Fetch(100); err != nil {
+		t.Fatal(err)
+	}
 
 	checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
 		// Make sure we changed leaders.
