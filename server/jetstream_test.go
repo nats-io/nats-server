@@ -14642,6 +14642,53 @@ func TestJetStreamMaxMsgsPerSubjectWithDiscardNew(t *testing.T) {
 	}
 }
 
+// Issue #2836
+func TestJetStreamInterestRetentionBug(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo.>"},
+		Retention: nats.InterestPolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "c1", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	test := func(token string, fseq, msgs uint64) {
+		t.Helper()
+		subj := fmt.Sprintf("foo.%s", token)
+		_, err = js.Publish(subj, nil)
+		require_NoError(t, err)
+		si, err := js.StreamInfo("TEST")
+		require_NoError(t, err)
+		if si.State.FirstSeq != fseq {
+			t.Fatalf("Expected first to be %d, got %d", fseq, si.State.FirstSeq)
+		}
+		if si.State.Msgs != msgs {
+			t.Fatalf("Expected msgs to be %d, got %d", msgs, si.State.Msgs)
+		}
+	}
+
+	test("bar", 1, 1)
+
+	// Create second filtered consumer.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "c2", FilterSubject: "foo.foo", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	test("bar", 1, 2)
+
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
