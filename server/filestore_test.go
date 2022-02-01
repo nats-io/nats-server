@@ -3480,6 +3480,33 @@ func TestFileStoreRemoveLastWriteIndex(t *testing.T) {
 	}
 }
 
+func TestFileStoreFilteredPendingBug(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "TEST", Storage: FileStorage})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	fs.StoreMsg("foo", nil, []byte("msg"))
+	fs.StoreMsg("bar", nil, []byte("msg"))
+	fs.StoreMsg("baz", nil, []byte("msg"))
+
+	fs.mu.Lock()
+	mb := fs.lmb
+	fs.mu.Unlock()
+
+	total, f, l := mb.filteredPending("foo", false, 3)
+	if total != 0 {
+		t.Fatalf("Expected total of 0 but got %d", total)
+	}
+	if f != 0 || l != 0 {
+		t.Fatalf("Expected first and last to be 0 as well, but got %d %d", f, l)
+	}
+}
+
 // Test to optimize the selectMsgBlock with lots of blocks.
 func TestFileStoreFetchPerf(t *testing.T) {
 	// Comment out to run.
