@@ -1,4 +1,4 @@
-// Copyright 2019-2021 The NATS Authors
+// Copyright 2019-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -119,17 +119,18 @@ const (
 
 // StreamState is information about the given stream.
 type StreamState struct {
-	Msgs       uint64            `json:"messages"`
-	Bytes      uint64            `json:"bytes"`
-	FirstSeq   uint64            `json:"first_seq"`
-	FirstTime  time.Time         `json:"first_ts"`
-	LastSeq    uint64            `json:"last_seq"`
-	LastTime   time.Time         `json:"last_ts"`
-	Subjects   map[string]uint64 `json:"subjects,omitempty"`
-	NumDeleted int               `json:"num_deleted,omitempty"`
-	Deleted    []uint64          `json:"deleted,omitempty"`
-	Lost       *LostStreamData   `json:"lost,omitempty"`
-	Consumers  int               `json:"consumer_count"`
+	Msgs        uint64            `json:"messages"`
+	Bytes       uint64            `json:"bytes"`
+	FirstSeq    uint64            `json:"first_seq"`
+	FirstTime   time.Time         `json:"first_ts"`
+	LastSeq     uint64            `json:"last_seq"`
+	LastTime    time.Time         `json:"last_ts"`
+	NumSubjects int               `json:"num_subjects,omitempty"`
+	Subjects    map[string]uint64 `json:"subjects,omitempty"`
+	NumDeleted  int               `json:"num_deleted,omitempty"`
+	Deleted     []uint64          `json:"deleted,omitempty"`
+	Lost        *LostStreamData   `json:"lost,omitempty"`
+	Consumers   int               `json:"consumer_count"`
 }
 
 // SimpleState for filtered subject specific state.

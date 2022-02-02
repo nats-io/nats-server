@@ -1,4 +1,4 @@
-// Copyright 2019-2021 The NATS Authors
+// Copyright 2019-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -89,6 +89,7 @@ type fileStore struct {
 	aek     cipher.AEAD
 	lmb     *msgBlock
 	blks    []*msgBlock
+	psmc    map[string]uint64
 	hh      hash.Hash64
 	qch     chan struct{}
 	cfs     []*consumerFileStore
@@ -280,6 +281,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	fs := &fileStore{
 		fcfg: fcfg,
 		cfg:  FileStreamInfo{Created: created, StreamConfig: cfg},
+		psmc: make(map[string]uint64),
 		prf:  prf,
 		qch:  make(chan struct{}),
 	}
@@ -879,6 +881,13 @@ func (fs *fileStore) recoverMsgs() error {
 				}
 				fs.state.Msgs += mb.msgs
 				fs.state.Bytes += mb.bytes
+				// Walk the fss for this mb and fill in fs.psmc
+				for subj, ss := range mb.fss {
+					if len(subj) > 0 {
+						fs.psmc[subj] += ss.Msgs
+					}
+				}
+
 			} else {
 				return err
 			}
@@ -988,6 +997,7 @@ func (fs *fileStore) expireMsgsOnRecover() {
 			mb.msgs--
 			purged++
 			// Update fss
+			fs.removePerSubject(sm.subj)
 			mb.removeSeqPerSubject(sm.subj, seq)
 		}
 
@@ -1528,6 +1538,11 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 		return err
 	}
 
+	// Adjust top level tracking of per subject msg counts.
+	if len(subj) > 0 {
+		fs.psmc[subj]++
+	}
+
 	// Adjust first if needed.
 	now := time.Unix(0, ts).UTC()
 	if fs.state.Msgs == 0 {
@@ -1724,6 +1739,19 @@ func (fs *fileStore) EraseMsg(seq uint64) (bool, error) {
 	return fs.removeMsg(seq, true, true)
 }
 
+// Convenience function to remove per subject tracking at the filestore level.
+// Lock should be held.
+func (fs *fileStore) removePerSubject(subj string) {
+	if len(subj) == 0 {
+		return
+	}
+	if n, ok := fs.psmc[subj]; ok && n == 1 {
+		delete(fs.psmc, subj)
+	} else if ok {
+		fs.psmc[subj]--
+	}
+}
+
 // Remove a message, optionally rewriting the mb file.
 func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error) {
 	fsLock := func() {
@@ -1811,6 +1839,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 	mb.bytes -= msz
 
 	// If we are tracking multiple subjects here make sure we update that accounting.
+	fs.removePerSubject(sm.subj)
 	mb.removeSeqPerSubject(sm.subj, seq)
 
 	var shouldWriteIndex, firstSeqNeedsUpdate bool
@@ -3455,7 +3484,7 @@ func (fs *fileStore) FastState(state *StreamState) {
 		}
 	}
 	state.Consumers = len(fs.cfs)
-
+	state.NumSubjects = len(fs.psmc)
 	fs.mu.RUnlock()
 }
 
@@ -3464,6 +3493,7 @@ func (fs *fileStore) State() StreamState {
 	fs.mu.RLock()
 	state := fs.state
 	state.Consumers = len(fs.cfs)
+	state.NumSubjects = len(fs.psmc)
 	state.Deleted = nil // make sure.
 
 	for _, mb := range fs.blks {
@@ -3825,6 +3855,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 				mb.msgs--
 				mb.bytes -= rl
 				// FSS updates.
+				fs.removePerSubject(sm.subj)
 				mb.removeSeqPerSubject(sm.subj, seq)
 				// Check for first message.
 				if seq == mb.first.seq {
@@ -3930,6 +3961,9 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 
 	fs.lmb.writeIndexInfo()
 
+	// Clear any per subject tracking.
+	fs.psmc = make(map[string]uint64)
+
 	cb := fs.scb
 	fs.mu.Unlock()
 
@@ -3994,6 +4028,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 			smb.msgs--
 			purged++
 			// Update fss
+			fs.removePerSubject(sm.subj)
 			smb.removeSeqPerSubject(sm.subj, mseq)
 		}
 	}
