@@ -754,6 +754,7 @@ func (ms *memStore) FastState(state *StreamState) {
 		state.NumDeleted = int((state.LastSeq - state.FirstSeq) - state.Msgs + 1)
 	}
 	state.Consumers = ms.consumers
+	state.NumSubjects = len(ms.fss)
 	ms.mu.RUnlock()
 }
 
@@ -763,6 +764,7 @@ func (ms *memStore) State() StreamState {
 
 	state := ms.state
 	state.Consumers = ms.consumers
+	state.NumSubjects = len(ms.fss)
 	state.Deleted = nil
 
 	// Calculate interior delete details.

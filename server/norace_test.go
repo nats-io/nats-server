@@ -4110,3 +4110,89 @@ func TestNoRaceJetStreamClusterHealthz(t *testing.T) {
 		t.Fatalf("Expected to have some errors until we became current, got none")
 	}
 }
+
+// Test that we can receive larger messages with stream subject details.
+// Also test that we will fail at some point and the user can fall back to
+// an orderedconsumer like we do with watch for KV Keys() call.
+func TestNoRaceJetStreamStreamInfoSubjectDetailsLimits(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		jetstream: enabled
+		accounts: {
+		  default: {
+			jetstream: true
+			users: [ {user: me, password: pwd} ]
+			limits { max_payload: 256 }
+		  }
+		}
+	`))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s, nats.UserInfo("me", "pwd"))
+	defer nc.Close()
+
+	// Make sure we cannot send larger than 256 bytes.
+	// But we can receive larger.
+	sub, err := nc.SubscribeSync("foo")
+	require_NoError(t, err)
+	err = nc.Publish("foo", []byte(strings.Repeat("A", 300)))
+	require_Error(t, err, nats.ErrMaxPayload)
+	sub.Unsubscribe()
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"*", "X.*"},
+	})
+	require_NoError(t, err)
+
+	n := JSMaxSubjectDetails
+	for i := 0; i < n; i++ {
+		_, err := js.PublishAsync(fmt.Sprintf("X.%d", i), []byte("OK"))
+		require_NoError(t, err)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	getInfo := func(filter string) *StreamInfo {
+		t.Helper()
+		// Need to grab StreamInfo by hand for now.
+		req, err := json.Marshal(&JSApiStreamInfoRequest{SubjectsFilter: filter})
+		require_NoError(t, err)
+		resp, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, "TEST"), req, 5*time.Second)
+		require_NoError(t, err)
+		var si StreamInfo
+		err = json.Unmarshal(resp.Data, &si)
+		require_NoError(t, err)
+		return &si
+	}
+
+	si := getInfo("X.*")
+	if len(si.State.Subjects) != n {
+		t.Fatalf("Expected to get %d subject details, got %d", n, len(si.State.Subjects))
+	}
+
+	// Now add one more message in which will exceed our internal limits for subject details.
+	_, err = js.Publish("foo", []byte("TOO MUCH"))
+	require_NoError(t, err)
+
+	req, err := json.Marshal(&JSApiStreamInfoRequest{SubjectsFilter: nats.AllKeys})
+	require_NoError(t, err)
+	resp, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, "TEST"), req, 5*time.Second)
+	require_NoError(t, err)
+	var sir JSApiStreamInfoResponse
+	err = json.Unmarshal(resp.Data, &sir)
+	require_NoError(t, err)
+	if !IsNatsErr(sir.Error, JSStreamInfoMaxSubjectsErr) {
+		t.Fatalf("Did not get correct error response: %+v", sir.Error)
+	}
+}

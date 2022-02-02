@@ -321,8 +321,12 @@ type JSApiStreamDeleteResponse struct {
 
 const JSApiStreamDeleteResponseType = "io.nats.jetstream.api.v1.stream_delete_response"
 
+// Maximum number of subject details we will send in the stream info.
+const JSMaxSubjectDetails = 100_000
+
 type JSApiStreamInfoRequest struct {
-	DeletedDetails bool `json:"deleted_details,omitempty"`
+	DeletedDetails bool   `json:"deleted_details,omitempty"`
+	SubjectsFilter string `json:"subjects_filter,omitempty"`
 }
 
 type JSApiStreamInfoResponse struct {
@@ -1697,6 +1701,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 	}
 
 	var details bool
+	var subjects string
 	if !isEmptyRequest(msg) {
 		var req JSApiStreamInfoRequest
 		if err := json.Unmarshal(msg, &req); err != nil {
@@ -1704,7 +1709,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		details = req.DeletedDetails
+		details, subjects = req.DeletedDetails, req.SubjectsFilter
 	}
 
 	mset, err := acc.lookupStream(streamName)
@@ -1730,6 +1735,23 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 		resp.StreamInfo.Sources = mset.sourcesInfo()
 	}
 
+	// Check if they have asked for subject details.
+	if subjects != _EMPTY_ {
+		if mss := mset.store.SubjectsState(subjects); len(mss) > 0 {
+			if len(mss) > JSMaxSubjectDetails {
+				resp.StreamInfo = nil
+				resp.Error = NewJSStreamInfoMaxSubjectsError()
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
+			}
+			sd := make(map[string]uint64, len(mss))
+			for subj, ss := range mss {
+				sd[subj] = ss.Msgs
+			}
+			resp.StreamInfo.State.Subjects = sd
+		}
+
+	}
 	// Check for out of band catchups.
 	if mset.hasCatchupPeers() {
 		mset.checkClusterInfo(resp.StreamInfo)

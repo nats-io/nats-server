@@ -260,6 +260,9 @@ const (
 	// JSStreamHeaderExceedsMaximumErr header size exceeds maximum allowed of 64k
 	JSStreamHeaderExceedsMaximumErr ErrorIdentifier = 10097
 
+	// JSStreamInfoMaxSubjectsErr subject details would exceed maximum allowed
+	JSStreamInfoMaxSubjectsErr ErrorIdentifier = 10117
+
 	// JSStreamInvalidConfigF Stream configuration validation error string ({err})
 	JSStreamInvalidConfigF ErrorIdentifier = 10052
 
@@ -438,6 +441,7 @@ var (
 		JSStreamExternalDelPrefixOverlapsErrF:      {Code: 400, ErrCode: 10022, Description: "stream external delivery prefix {prefix} overlaps with stream subject {subject}"},
 		JSStreamGeneralErrorF:                      {Code: 500, ErrCode: 10051, Description: "{err}"},
 		JSStreamHeaderExceedsMaximumErr:            {Code: 400, ErrCode: 10097, Description: "header size exceeds maximum allowed of 64k"},
+		JSStreamInfoMaxSubjectsErr:                 {Code: 500, ErrCode: 10117, Description: "subject details would exceed maximum allowed"},
 		JSStreamInvalidConfigF:                     {Code: 500, ErrCode: 10052, Description: "{err}"},
 		JSStreamInvalidErr:                         {Code: 500, ErrCode: 10096, Description: "stream not valid"},
 		JSStreamInvalidExternalDeliverySubjErrF:    {Code: 400, ErrCode: 10024, Description: "stream external delivery prefix {prefix} must not contain wildcards"},
@@ -1443,6 +1447,16 @@ func NewJSStreamHeaderExceedsMaximumError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSStreamHeaderExceedsMaximumErr]
+}
+
+// NewJSStreamInfoMaxSubjectsError creates a new JSStreamInfoMaxSubjectsErr error: "subject details would exceed maximum allowed"
+func NewJSStreamInfoMaxSubjectsError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSStreamInfoMaxSubjectsErr]
 }
 
 // NewJSStreamInvalidConfigError creates a new JSStreamInvalidConfigF error: "{err}"
