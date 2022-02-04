@@ -1035,20 +1035,17 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 		acc = v.(*Account)
 	}
 	if acc == nil {
-		expire := false
 		isNew := false
-		if !srv.NewAccountsAllowed() {
-			// if the option of retrieving accounts later exists, create an expired one.
-			// When a client comes along, expiration will prevent it from being used,
-			// cause a fetch and update the account to what is should be.
-			if staticResolver {
-				c.Errorf("Unknown account %q for remote subject %q", accountName, sub.subject)
-				return
-			}
-			c.Debugf("Unknown account %q for remote subject %q", accountName, sub.subject)
-			expire = true
+		// if the option of retrieving accounts later exists, create an expired one.
+		// When a client comes along, expiration will prevent it from being used,
+		// cause a fetch and update the account to what is should be.
+		if staticResolver {
+			c.Errorf("Unknown account %q for remote subject %q", accountName, sub.subject)
+			return
 		}
-		if acc, isNew = srv.LookupOrRegisterAccount(accountName); isNew && expire {
+		c.Debugf("Unknown account %q for remote subject %q", accountName, sub.subject)
+
+		if acc, isNew = srv.LookupOrRegisterAccount(accountName); isNew {
 			acc.mu.Lock()
 			acc.expired = true
 			acc.incomplete = true

@@ -825,8 +825,8 @@ func TestLeafNodeGatewaySendsSystemEvent(t *testing.T) {
 	defer c.Close()
 
 	// Listen for the leaf node event.
-	send, expect := setupConnWithAccount(t, c, "$SYS")
-	send("SUB $SYS.ACCOUNT.*.LEAFNODE.CONNECT 1\r\nPING\r\n")
+	send, expect := setupConnWithAccount(t, ca.servers[0], c, "$SYS")
+	send("SUB $SYS.ACCOUNT.$G.LEAFNODE.CONNECT 1\r\nPING\r\n")
 	expect(pongRe)
 
 	opts = cb.opts[0]
