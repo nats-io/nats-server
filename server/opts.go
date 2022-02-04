@@ -204,7 +204,6 @@ type Options struct {
 	NoAuthUser            string            `json:"-"`
 	SystemAccount         string            `json:"-"`
 	NoSystemAccount       bool              `json:"-"`
-	AllowNewAccounts      bool              `json:"-"`
 	Username              string            `json:"-"`
 	Password              string            `json:"-"`
 	Authorization         string            `json:"-"`

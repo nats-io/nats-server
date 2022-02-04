@@ -149,10 +149,9 @@ func TestGatewayAccountInterest(t *testing.T) {
 	// A should receive an A+ because B knows that it previously sent
 	// an A-, but since it did not send one to C, C should not receive
 	// the A+.
-	sb.RegisterAccount("$foo")
 	client := createClientConn(t, ob.Host, ob.Port)
 	defer client.Close()
-	clientSend, clientExpect := setupConnWithAccount(t, client, "$foo")
+	clientSend, clientExpect := setupConnWithAccount(t, sb, client, "$foo")
 	clientSend("SUB not.used 1234567\r\nPING\r\n")
 	clientExpect(pongRe)
 	gAExpect(asubRe)

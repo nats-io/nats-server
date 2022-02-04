@@ -1108,13 +1108,6 @@ func (s *Server) logPid() error {
 	return ioutil.WriteFile(s.getOpts().PidFile, []byte(pidStr), 0660)
 }
 
-// NewAccountsAllowed returns whether or not new accounts can be created on the fly.
-func (s *Server) NewAccountsAllowed() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.opts.AllowNewAccounts
-}
-
 // numReservedAccounts will return the number of reserved accounts configured in the server.
 // Currently this is 1, one for the global default account.
 func (s *Server) numReservedAccounts() int {

@@ -1,4 +1,4 @@
-// Copyright 2012-2021 The NATS Authors
+// Copyright 2012-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1822,35 +1822,15 @@ func (c *client) processConnect(arg []byte) error {
 			return ErrAuthentication
 		}
 
-		// Check for Account designation, this section should be only used when there is not a jwt.
-		if account != _EMPTY_ {
-			var acc *Account
-			var wasNew bool
-			var err error
-			if !srv.NewAccountsAllowed() {
-				acc, err = srv.LookupAccount(account)
-				if err != nil {
-					c.Errorf(err.Error())
-					c.sendErr(ErrMissingAccount.Error())
-					return err
-				} else if accountNew && acc != nil {
-					c.sendErrAndErr(ErrAccountExists.Error())
-					return ErrAccountExists
-				}
-			} else {
-				// We can create this one on the fly.
-				acc, wasNew = srv.LookupOrRegisterAccount(account)
-				if accountNew && !wasNew {
-					c.sendErrAndErr(ErrAccountExists.Error())
-					return ErrAccountExists
-				}
-			}
-			// If we are here we can register ourselves with the new account.
-			if err := c.registerWithAccount(acc); err != nil {
-				c.reportErrRegisterAccount(acc, err)
-				return ErrBadAccount
-			}
-		} else if c.acc == nil {
+		// Check for Account designation, we used to have this as an optional feature for dynamic
+		// sandbox environments. Now its considered an error.
+		if accountNew || account != _EMPTY_ {
+			c.authViolation()
+			return ErrAuthentication
+		}
+
+		// If no account designation.
+		if c.acc == nil {
 			// By default register with the global account.
 			c.registerWithAccount(srv.globalAccount())
 		}

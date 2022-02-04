@@ -343,7 +343,6 @@ RESET:
 						b, _ = json.Marshal(pm.msg)
 					}
 				}
-
 				// Setup our client. If the user wants to use a non-system account use our internal
 				// account scoped here so that we are not changing out accounts for the system client.
 				var c *client
@@ -1617,7 +1616,7 @@ func (s *Server) sendLeafNodeConnect(a *Account) {
 func (s *Server) sendLeafNodeConnectMsg(accName string) {
 	subj := fmt.Sprintf(leafNodeConnectEventSubj, accName)
 	m := accNumConnsReq{Account: accName}
-	s.sendInternalMsg(subj, "", &m.Server, &m)
+	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
 }
 
 // sendAccConnsUpdate is called to send out our information on the

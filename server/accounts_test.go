@@ -1,4 +1,4 @@
-// Copyright 2018-2020 The NATS Authors
+// Copyright 2018-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -322,156 +322,69 @@ func TestAccountFromOptions(t *testing.T) {
 	}
 }
 
-func TestNewAccountsFromClients(t *testing.T) {
-	opts := defaultServerOptions
-	s := New(&opts)
-	defer s.Shutdown()
-
-	c, cr, _ := newClientForServer(s)
-	defer c.close()
-	connectOp := "CONNECT {\"account\":\"foo\"}\r\n"
-	c.parseAsync(connectOp)
-	l, _ := cr.ReadString('\n')
-	if !strings.HasPrefix(l, "-ERR ") {
-		t.Fatalf("Expected an error")
-	}
-
-	opts.AllowNewAccounts = true
-	s = New(&opts)
-	defer s.Shutdown()
-
-	c, cr, _ = newClientForServer(s)
-	defer c.close()
-	err := c.parse([]byte(connectOp))
-	if err != nil {
-		t.Fatalf("Received an error trying to connect: %v", err)
-	}
-	c.parseAsync("PING\r\n")
-	l, err = cr.ReadString('\n')
-	if err != nil {
-		t.Fatalf("Error reading response for client from server: %v", err)
-	}
-	if !strings.HasPrefix(l, "PONG\r\n") {
-		t.Fatalf("PONG response incorrect: %q", l)
-	}
-}
-
-func TestActiveAccounts(t *testing.T) {
-	opts := defaultServerOptions
-	opts.AllowNewAccounts = true
-	opts.Cluster.Port = 22
-
-	s := New(&opts)
-	defer s.Shutdown()
-
-	if s.NumActiveAccounts() != 0 {
-		t.Fatalf("Expected no active account, got %d", s.NumActiveAccounts())
-	}
-
-	addClientWithAccount := func(accName string) *testAsyncClient {
-		t.Helper()
-		c, _, _ := newClientForServer(s)
-		connectOp := fmt.Sprintf("CONNECT {\"account\":\"%s\"}\r\n", accName)
-		err := c.parse([]byte(connectOp))
-		if err != nil {
-			t.Fatalf("Received an error trying to connect: %v", err)
+// Clients used to be able to ask that the account be forced to be new.
+// This was for dynamic sandboxes for demo environments but was never really used.
+// Make sure it always errors if set.
+func TestNewAccountAndRequireNewAlwaysError(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		accounts: {
+			A: { users: [ {user: ua, password: pa} ] },
+			B: { users: [ {user: ub, password: pb} ] },
 		}
-		return c
-	}
+	`))
+	defer removeFile(t, conf)
 
-	// Now add some clients.
-	cf1 := addClientWithAccount("foo")
-	defer cf1.close()
-	if s.activeAccounts != 1 {
-		t.Fatalf("Expected active accounts to be 1, got %d", s.activeAccounts)
-	}
-	// Adding in same one should not change total.
-	cf2 := addClientWithAccount("foo")
-	defer cf2.close()
-	if s.activeAccounts != 1 {
-		t.Fatalf("Expected active accounts to be 1, got %d", s.activeAccounts)
-	}
-	// Add in new one.
-	cb1 := addClientWithAccount("bar")
-	defer cb1.close()
-	if s.activeAccounts != 2 {
-		t.Fatalf("Expected active accounts to be 2, got %d", s.activeAccounts)
-	}
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
 
-	// Make sure the Accounts track clients.
-	foo, _ := s.LookupAccount("foo")
-	bar, _ := s.LookupAccount("bar")
-	if foo == nil || bar == nil {
-		t.Fatalf("Error looking up accounts")
-	}
-	if nc := foo.NumConnections(); nc != 2 {
-		t.Fatalf("Expected account foo to have 2 clients, got %d", nc)
-	}
-	if nc := bar.NumConnections(); nc != 1 {
-		t.Fatalf("Expected account bar to have 1 client, got %d", nc)
-	}
+	// Success case
+	c, _, _ := newClientForServer(s)
+	connectOp := "CONNECT {\"user\":\"ua\", \"pass\":\"pa\"}\r\n"
+	err := c.parse([]byte(connectOp))
+	require_NoError(t, err)
+	c.close()
 
-	waitTilActiveCount := func(n int32) {
-		t.Helper()
-		checkFor(t, time.Second, 10*time.Millisecond, func() error {
-			if active := s.NumActiveAccounts(); active != n {
-				return fmt.Errorf("Number of active accounts is %d", active)
-			}
-			return nil
-		})
-	}
-
-	// Test Removal
-	cb1.closeConnection(ClientClosed)
-	waitTilActiveCount(1)
-
-	checkAccClientsCount(t, bar, 0)
-
-	// This should not change the count.
-	cf1.closeConnection(ClientClosed)
-	waitTilActiveCount(1)
-
-	checkAccClientsCount(t, foo, 1)
-
-	cf2.closeConnection(ClientClosed)
-	waitTilActiveCount(0)
-
-	checkAccClientsCount(t, foo, 0)
-}
-
-// Clients can ask that the account be forced to be new. If it exists this is an error.
-func TestNewAccountRequireNew(t *testing.T) {
-	// This has foo and bar accounts already.
-	s, _, _ := simpleAccountServer(t)
-
+	// Simple cases, any setting of account or new_account always errors.
+	// Even with proper auth.
 	c, cr, _ := newClientForServer(s)
-	defer c.close()
-	connectOp := "CONNECT {\"account\":\"foo\",\"new_account\":true}\r\n"
+	connectOp = "CONNECT {\"user\":\"ua\", \"pass\":\"pa\", \"account\":\"ANY\"}\r\n"
 	c.parseAsync(connectOp)
 	l, _ := cr.ReadString('\n')
-	if !strings.HasPrefix(l, "-ERR ") {
-		t.Fatalf("Expected an error")
+	if !strings.HasPrefix(l, "-ERR 'Authorization Violation'") {
+		t.Fatalf("Expected an error, got %q", l)
 	}
+	c.close()
 
-	// Now allow new accounts on the fly, make sure second time does not work.
-	opts := defaultServerOptions
-	opts.AllowNewAccounts = true
-	s = New(&opts)
-
-	c, _, _ = newClientForServer(s)
-	defer c.close()
-	err := c.parse([]byte(connectOp))
-	if err != nil {
-		t.Fatalf("Received an error trying to create an account: %v", err)
-	}
-
+	// new_account with proper credentials.
 	c, cr, _ = newClientForServer(s)
-	defer c.close()
+	connectOp = "CONNECT {\"user\":\"ua\", \"pass\":\"pa\", \"new_account\":true}\r\n"
 	c.parseAsync(connectOp)
 	l, _ = cr.ReadString('\n')
-	if !strings.HasPrefix(l, "-ERR ") {
-		t.Fatalf("Expected an error")
+	if !strings.HasPrefix(l, "-ERR 'Authorization Violation'") {
+		t.Fatalf("Expected an error, got %q", l)
 	}
+	c.close()
+
+	// switch acccounts with proper credentials.
+	c, cr, _ = newClientForServer(s)
+	connectOp = "CONNECT {\"user\":\"ua\", \"pass\":\"pa\", \"account\":\"B\"}\r\n"
+	c.parseAsync(connectOp)
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "-ERR 'Authorization Violation'") {
+		t.Fatalf("Expected an error, got %q", l)
+	}
+	c.close()
+
+	// Even if correct account designation, still make sure we error.
+	c, cr, _ = newClientForServer(s)
+	connectOp = "CONNECT {\"user\":\"ua\", \"pass\":\"pa\", \"account\":\"A\"}\r\n"
+	c.parseAsync(connectOp)
+	l, _ = cr.ReadString('\n')
+	if !strings.HasPrefix(l, "-ERR 'Authorization Violation'") {
+		t.Fatalf("Expected an error, got %q", l)
+	}
+	c.close()
 }
 
 func accountNameExists(name string, accounts []*Account) bool {
