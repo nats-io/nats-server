@@ -14905,6 +14905,40 @@ func TestJetStreamInterestRetentionBug(t *testing.T) {
 	test("bar", 1, 2)
 }
 
+// Under load testing for K3S and the KINE interface we saw some stalls.
+// These were caused by a dynamic that would not send a second FC item with one
+// pending, but when we sent the next message and got blocked, if that msg would
+// exceed the outstanding FC we would become stalled.
+func TestJetStreamFlowControlStall(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "FC"})
+	require_NoError(t, err)
+
+	msg := []byte(strings.Repeat("X", 32768))
+	_, err = js.Publish("FC", msg)
+	require_NoError(t, err)
+
+	msg = []byte(strings.Repeat("X", 8*32768))
+	_, err = js.Publish("FC", msg)
+	require_NoError(t, err)
+	_, err = js.Publish("FC", msg)
+	require_NoError(t, err)
+
+	sub, err := js.SubscribeSync("FC", nats.OrderedConsumer())
+	require_NoError(t, err)
+
+	checkSubsPending(t, sub, 3)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
