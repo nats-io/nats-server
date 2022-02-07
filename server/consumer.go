@@ -2877,8 +2877,10 @@ func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 	}
 
 	pmsg := newJSPubMsg(dsubj, subj, o.ackReply(seq, dseq, dc, ts, o.adjustedPending()), hdr, msg, o, seq)
+	psz := pmsg.size()
+
 	if o.maxpb > 0 {
-		o.pbytes += pmsg.size()
+		o.pbytes += psz
 	}
 
 	mset := o.mset
@@ -2895,7 +2897,7 @@ func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 	}
 
 	// Flow control.
-	if o.maxpb > 0 && o.needFlowControl() {
+	if o.maxpb > 0 && o.needFlowControl(psz) {
 		o.sendFlowControl()
 	}
 
@@ -2912,7 +2914,7 @@ func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 	}
 }
 
-func (o *consumer) needFlowControl() bool {
+func (o *consumer) needFlowControl(sz int) bool {
 	if o.maxpb == 0 {
 		return false
 	}
@@ -2920,6 +2922,10 @@ func (o *consumer) needFlowControl() bool {
 	// We send when we are over 50% of our current window limit.
 	if o.fcid == _EMPTY_ && o.pbytes > o.maxpb/2 {
 		return true
+	}
+	// If we have an existing outstanding FC, check to see if we need to expand the o.fcsz
+	if o.fcid != _EMPTY_ && (o.pbytes-o.fcsz) >= o.maxpb {
+		o.fcsz += sz
 	}
 	return false
 }
