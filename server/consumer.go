@@ -2476,23 +2476,22 @@ var (
 // Get next available message from underlying store.
 // Is partition aware and redeliver aware.
 // Lock should be held.
-func (o *consumer) getNextMsg() (subj string, hdr, msg []byte, seq uint64, dc uint64, ts int64, err error) {
+func (o *consumer) getNextMsg() (subj string, hdr, msg []byte, sseq uint64, dc uint64, ts int64, err error) {
 	if o.mset == nil || o.mset.store == nil {
 		return _EMPTY_, nil, nil, 0, 0, 0, errBadConsumer
 	}
-	for {
-		seq, dc := o.sseq, uint64(1)
-		if o.hasSkipListPending() {
-			seq = o.lss.seqs[0]
-			if len(o.lss.seqs) == 1 {
-				o.sseq = o.lss.resume
-				o.lss = nil
-				o.updateSkipped()
-			} else {
-				o.lss.seqs = o.lss.seqs[1:]
-			}
-		} else if o.hasRedeliveries() {
-			seq = o.getNextToRedeliver()
+	seq, dc := o.sseq, uint64(1)
+	if o.hasSkipListPending() {
+		seq = o.lss.seqs[0]
+		if len(o.lss.seqs) == 1 {
+			o.sseq = o.lss.resume
+			o.lss = nil
+			o.updateSkipped()
+		} else {
+			o.lss.seqs = o.lss.seqs[1:]
+		}
+	} else if o.hasRedeliveries() {
+		for seq = o.getNextToRedeliver(); seq > 0; seq = o.getNextToRedeliver() {
 			dc = o.incDeliveryCount(seq)
 			if o.maxdc > 0 && dc > o.maxdc {
 				// Only send once
@@ -2503,32 +2502,33 @@ func (o *consumer) getNextMsg() (subj string, hdr, msg []byte, seq uint64, dc ui
 				delete(o.pending, seq)
 				continue
 			}
-		} else if o.maxp > 0 && len(o.pending) >= o.maxp {
-			// maxp only set when ack policy != AckNone and user set MaxAckPending
-			// Stall if we have hit max pending.
-			return _EMPTY_, nil, nil, 0, 0, 0, errMaxAckPending
-		}
-
-		subj, hdr, msg, ts, err := o.mset.store.LoadMsg(seq)
-		if err == nil {
-			if dc == 1 { // First delivery.
-				o.sseq++
-				if o.cfg.FilterSubject != _EMPTY_ && !o.isFilteredMatch(subj) {
-					o.updateSkipped()
-					continue
-				}
+			if seq > 0 {
+				subj, hdr, msg, ts, err = o.mset.store.LoadMsg(seq)
+				return subj, hdr, msg, seq, dc, ts, err
 			}
-			// We have the msg here.
-			return subj, hdr, msg, seq, dc, ts, nil
 		}
-		// We got an error here. If this is an EOF we will return, otherwise
-		// we can continue looking.
-		if err == ErrStoreEOF || err == ErrStoreClosed || err == errNoCache || err == errPartialCache {
-			return _EMPTY_, nil, nil, 0, 0, 0, err
-		}
-		// Skip since its deleted or expired.
-		o.sseq++
+		// Fallback if all redeliveries are gone.
+		seq = o.sseq
 	}
+
+	// Check if we have max pending.
+	if o.maxp > 0 && len(o.pending) >= o.maxp {
+		// maxp only set when ack policy != AckNone and user set MaxAckPending
+		// Stall if we have hit max pending.
+		return _EMPTY_, nil, nil, 0, 0, 0, errMaxAckPending
+	}
+
+	// Grab next message applicable to us.
+	subj, sseq, hdr, msg, ts, err = o.mset.store.LoadNextMsg(o.cfg.FilterSubject, o.filterWC, seq)
+
+	if sseq > 0 {
+		o.sseq = sseq + 1
+		if err == ErrStoreEOF {
+			o.updateSkipped()
+		}
+	}
+
+	return subj, hdr, msg, sseq, dc, ts, err
 }
 
 // forceExpireFirstWaiting will force expire the first waiting.

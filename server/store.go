@@ -72,6 +72,7 @@ type StreamStore interface {
 	SkipMsg() uint64
 	LoadMsg(seq uint64) (subject string, hdr, msg []byte, ts int64, err error)
 	LoadLastMsg(subject string) (subj string, seq uint64, hdr, msg []byte, ts int64, err error)
+	LoadNextMsg(filter string, wc bool, start uint64) (subject string, seq uint64, hdr, msg []byte, ts int64, err error)
 	RemoveMsg(seq uint64) (bool, error)
 	EraseMsg(seq uint64) (bool, error)
 	Purge() (uint64, error)

@@ -1099,12 +1099,13 @@ func (mb *msgBlock) filteredPendingLocked(subj string, wc bool, seq uint64) (tot
 		return 0, 0, 0
 	}
 
+	isAll := subj == _EMPTY_ || subj == fwcs
 	subs := []string{subj}
 	// If we have a wildcard match against all tracked subjects we know about.
-	if wc {
+	if wc || isAll {
 		subs = subs[:0]
 		for fsubj := range mb.fss {
-			if subjectIsSubsetMatch(fsubj, subj) {
+			if isAll || subjectIsSubsetMatch(fsubj, subj) {
 				subs = append(subs, fsubj)
 			}
 		}
@@ -3460,6 +3461,40 @@ func (fs *fileStore) LoadLastMsg(subject string) (subj string, seq uint64, hdr, 
 		return _EMPTY_, 0, nil, nil, 0, ErrStoreMsgNotFound
 	}
 	return sm.subj, sm.seq, sm.hdr, sm.msg, sm.ts, nil
+}
+
+// LoadNextMsg will find the next message matching the filter subject starting at the start sequence.
+// The filter subject can be a wildcard.
+func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64) (subj string, seq uint64, hdr, msg []byte, ts int64, err error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	if fs.closed {
+		return _EMPTY_, 0, nil, nil, 0, ErrStoreClosed
+	}
+	if start < fs.state.FirstSeq {
+		start = fs.state.FirstSeq
+	}
+
+	for _, mb := range fs.blks {
+		// Skip blocks that are less than our starting sequence.
+		if start > atomic.LoadUint64(&mb.last.seq) {
+			continue
+		}
+		if _, f, _ := mb.filteredPending(filter, wc, start); f > 0 {
+			// We have some messages here, so just return the first one and we are good.
+			sm, expireOk, err := mb.fetchMsg(f)
+			if err != nil {
+				return _EMPTY_, 0, nil, nil, 0, err
+			}
+			if mb != fs.lmb && expireOk {
+				mb.tryForceExpireCache()
+			}
+			return sm.subj, f, sm.hdr, sm.msg, sm.ts, nil
+		}
+	}
+
+	return _EMPTY_, fs.state.LastSeq, nil, nil, 0, ErrStoreEOF
 }
 
 // Type returns the type of the underlying store.

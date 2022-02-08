@@ -7077,6 +7077,7 @@ func TestJetStreamSimpleFileRecovery(t *testing.T) {
 		ostate[msetName] = info{mset.config(), mset.state(), obs}
 	}
 	pusage := acc.JetStreamUsage()
+	nc.Flush()
 
 	// Shutdown and restart and make sure things come back.
 	s.Shutdown()

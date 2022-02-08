@@ -4196,3 +4196,82 @@ func TestNoRaceJetStreamStreamInfoSubjectDetailsLimits(t *testing.T) {
 		t.Fatalf("Did not get correct error response: %+v", sir.Error)
 	}
 }
+
+func TestNoRaceJetStreamSparseConsumers(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	msg := []byte("ok")
+
+	cases := []struct {
+		name    string
+		mconfig *nats.StreamConfig
+	}{
+		{"MemoryStore", &nats.StreamConfig{Name: "TEST", Storage: nats.MemoryStorage, MaxMsgsPerSubject: 25_000_000,
+			Subjects: []string{"*"}}},
+		{"FileStore", &nats.StreamConfig{Name: "TEST", Storage: nats.FileStorage, MaxMsgsPerSubject: 25_000_000,
+			Subjects: []string{"*"}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			js.DeleteStream("TEST")
+			_, err := js.AddStream(c.mconfig)
+			require_NoError(t, err)
+
+			// We will purposely place foo msgs near the beginning, then in middle, then at the end.
+			for n := 0; n < 2; n++ {
+				_, err = js.PublishAsync("foo", msg)
+				require_NoError(t, err)
+
+				for i := 0; i < 1_000_000; i++ {
+					_, err = js.PublishAsync("bar", msg)
+					require_NoError(t, err)
+				}
+				_, err = js.PublishAsync("foo", msg)
+				require_NoError(t, err)
+			}
+			select {
+			case <-js.PublishAsyncComplete():
+			case <-time.After(5 * time.Second):
+				t.Fatalf("Did not receive completion signal")
+			}
+
+			// Now create a consumer on foo.
+			ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{DeliverSubject: "x.x", FilterSubject: "foo", AckPolicy: nats.AckNonePolicy})
+			require_NoError(t, err)
+
+			done, received := make(chan bool), uint64(0)
+
+			cb := func(m *nats.Msg) {
+				received++
+				if received >= ci.NumPending {
+					done <- true
+				}
+			}
+
+			sub, err := nc.Subscribe("x.x", cb)
+			require_NoError(t, err)
+			defer sub.Unsubscribe()
+			start := time.Now()
+			var elapsed time.Duration
+
+			select {
+			case <-done:
+				elapsed = time.Since(start)
+			case <-time.After(10 * time.Second):
+				t.Fatal("Did not receive all messages for all consumers in time")
+			}
+
+			if elapsed > 500*time.Millisecond {
+				t.Fatalf("Getting all messages took longer than expected: %v", elapsed)
+			}
+		})
+	}
+}
