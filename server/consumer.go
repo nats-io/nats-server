@@ -2521,7 +2521,7 @@ func (o *consumer) getNextMsg() (subj string, hdr, msg []byte, sseq uint64, dc u
 	// Grab next message applicable to us.
 	subj, sseq, hdr, msg, ts, err = o.mset.store.LoadNextMsg(o.cfg.FilterSubject, o.filterWC, seq)
 
-	if sseq > 0 {
+	if sseq >= o.sseq {
 		o.sseq = sseq + 1
 		if err == ErrStoreEOF {
 			o.updateSkipped()

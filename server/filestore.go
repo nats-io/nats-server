@@ -1085,6 +1085,65 @@ func (fs *fileStore) GetSeqFromTime(t time.Time) uint64 {
 	return 0
 }
 
+// Find the first matching message.
+func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64) (*fileStoredMsg, bool, error) {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	isAll, subs := filter == _EMPTY_ || filter == fwcs, []string{filter}
+	// If we have a wildcard match against all tracked subjects we know about.
+	if wc || isAll {
+		subs = subs[:0]
+		for subj := range mb.fss {
+			if isAll || subjectIsSubsetMatch(subj, filter) {
+				subs = append(subs, subj)
+			}
+		}
+	}
+	fseq := mb.last.seq + 1
+	for _, subj := range subs {
+		ss := mb.fss[subj]
+		if ss == nil || start > ss.Last || ss.First >= fseq {
+			continue
+		}
+		if ss.First < start {
+			fseq = start
+		} else {
+			fseq = ss.First
+		}
+	}
+	if fseq > mb.last.seq {
+		return nil, false, ErrStoreMsgNotFound
+	}
+
+	if mb.cacheNotLoaded() {
+		if err := mb.loadMsgsWithLock(); err != nil {
+			return nil, false, err
+		}
+	}
+
+	for seq := fseq; seq <= mb.last.seq; seq++ {
+		llseq := mb.llseq
+		sm, err := mb.cacheLookup(seq)
+		if err != nil {
+			continue
+		}
+		expireOk := seq == mb.last.seq && mb.llseq == seq-1
+		if len(subs) == 1 && sm.subj == subs[0] {
+			return sm, expireOk, nil
+		}
+		for _, subj := range subs {
+			if sm.subj == subj {
+				return sm, expireOk, nil
+			}
+		}
+		// If we are here we did not match, so put the llseq back.
+		mb.llseq = llseq
+	}
+
+	return nil, false, ErrStoreMsgNotFound
+}
+
 // This will traverse a message block and generate the filtered pending.
 func (mb *msgBlock) filteredPending(subj string, wc bool, seq uint64) (total, first, last uint64) {
 	mb.mu.Lock()
@@ -1094,19 +1153,19 @@ func (mb *msgBlock) filteredPending(subj string, wc bool, seq uint64) (total, fi
 
 // This will traverse a message block and generate the filtered pending.
 // Lock should be held.
-func (mb *msgBlock) filteredPendingLocked(subj string, wc bool, seq uint64) (total, first, last uint64) {
+func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, seq uint64) (total, first, last uint64) {
 	if mb.fss == nil {
 		return 0, 0, 0
 	}
 
-	isAll := subj == _EMPTY_ || subj == fwcs
-	subs := []string{subj}
+	isAll := filter == _EMPTY_ || filter == fwcs
+	subs := []string{filter}
 	// If we have a wildcard match against all tracked subjects we know about.
 	if wc || isAll {
 		subs = subs[:0]
-		for fsubj := range mb.fss {
-			if isAll || subjectIsSubsetMatch(fsubj, subj) {
-				subs = append(subs, fsubj)
+		for subj := range mb.fss {
+			if isAll || subjectIsSubsetMatch(subj, filter) {
+				subs = append(subs, subj)
 			}
 		}
 	}
@@ -1155,10 +1214,9 @@ func (mb *msgBlock) filteredPendingLocked(subj string, wc bool, seq uint64) (tot
 			shouldExpire = true
 		}
 
-		subs = subs[i:]
 		var all, lseq uint64
 		// Grab last applicable sequence as a union of all applicable subjects.
-		for _, subj := range subs {
+		for _, subj := range subs[i:] {
 			if ss := mb.fss[subj]; ss != nil {
 				all += ss.Msgs
 				if ss.Last > lseq {
@@ -3481,16 +3539,13 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64) (subj str
 		if start > atomic.LoadUint64(&mb.last.seq) {
 			continue
 		}
-		if _, f, _ := mb.filteredPending(filter, wc, start); f > 0 {
-			// We have some messages here, so just return the first one and we are good.
-			sm, expireOk, err := mb.fetchMsg(f)
-			if err != nil {
-				return _EMPTY_, 0, nil, nil, 0, err
-			}
-			if mb != fs.lmb && expireOk {
+		if sm, expireOk, err := mb.firstMatching(filter, wc, start); err == nil {
+			if expireOk && mb != fs.lmb {
 				mb.tryForceExpireCache()
 			}
-			return sm.subj, f, sm.hdr, sm.msg, sm.ts, nil
+			return sm.subj, sm.seq, sm.hdr, sm.msg, sm.ts, nil
+		} else if err != ErrStoreMsgNotFound {
+			return _EMPTY_, 0, nil, nil, 0, err
 		}
 	}
 

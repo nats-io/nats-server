@@ -7008,13 +7008,8 @@ type info struct {
 func TestJetStreamSimpleFileRecovery(t *testing.T) {
 	base := runtime.NumGoroutine()
 
-	s := RunRandClientPortServer()
+	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
-
-	jsconfig := &JetStreamConfig{MaxMemory: 128 * 1024 * 1024, MaxStore: 32 * 1024 * 1024 * 1024}
-	if err := s.EnableJetStream(jsconfig); err != nil {
-		t.Fatalf("Expected no error, got %v", err)
-	}
 
 	if config := s.JetStreamConfig(); config != nil {
 		defer removeDir(t, config.StoreDir)
@@ -7047,7 +7042,6 @@ func TestJetStreamSimpleFileRecovery(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Unexpected error adding stream %q: %v", msetName, err)
 		}
-		defer mset.delete()
 
 		toSend := rand.Intn(100) + 1
 		for n := 1; n <= toSend; n++ {
@@ -7059,15 +7053,17 @@ func TestJetStreamSimpleFileRecovery(t *testing.T) {
 		numObs := rand.Intn(5) + 1
 		var obs []obsi
 		for n := 1; n <= numObs; n++ {
-			oname := fmt.Sprintf("WQ-%d", n)
+			oname := fmt.Sprintf("WQ-%d-%d", i, n)
 			o, err := mset.addConsumer(workerModeConfig(oname))
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 			// Now grab some messages.
 			toReceive := rand.Intn(toSend) + 1
+			rsubj := o.requestNextMsgSubject()
 			for r := 0; r < toReceive; r++ {
-				resp, _ := nc.Request(o.requestNextMsgSubject(), nil, time.Second)
+				resp, err := nc.Request(rsubj, nil, time.Second)
+				require_NoError(t, err)
 				if resp != nil {
 					resp.Respond(nil)
 				}
@@ -7080,6 +7076,7 @@ func TestJetStreamSimpleFileRecovery(t *testing.T) {
 	nc.Flush()
 
 	// Shutdown and restart and make sure things come back.
+	sd := s.JetStreamConfig().StoreDir
 	s.Shutdown()
 
 	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
@@ -7090,12 +7087,8 @@ func TestJetStreamSimpleFileRecovery(t *testing.T) {
 		return nil
 	})
 
-	s = RunRandClientPortServer()
+	s = RunJetStreamServerOnPort(-1, sd)
 	defer s.Shutdown()
-
-	if err := s.EnableJetStream(jsconfig); err != nil {
-		t.Fatalf("Expected no error, got %v", err)
-	}
 
 	acc = s.GlobalAccount()
 
