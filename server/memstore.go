@@ -628,6 +628,61 @@ func (ms *memStore) LoadLastMsg(subject string) (subj string, seq uint64, hdr, m
 	return sm.subj, sm.seq, sm.hdr, sm.msg, sm.ts, nil
 }
 
+// LoadNextMsg will find the next message matching the filter subject starting at the start sequence.
+// The filter subject can be a wildcard.
+func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64) (subj string, seq uint64, hdr, msg []byte, ts int64, err error) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+
+	if start < ms.state.FirstSeq {
+		start = ms.state.FirstSeq
+	}
+
+	// If past the end no results.
+	if start > ms.state.LastSeq {
+		return _EMPTY_, ms.state.LastSeq, nil, nil, 0, ErrStoreEOF
+	}
+
+	isAll := filter == _EMPTY_ || filter == fwcs
+	subs := []string{filter}
+	if wc || isAll {
+		subs = subs[:0]
+		for fsubj := range ms.fss {
+			if isAll || subjectIsSubsetMatch(fsubj, filter) {
+				subs = append(subs, fsubj)
+			}
+		}
+	}
+	fseq, lseq := ms.state.LastSeq, uint64(0)
+	for _, subj := range subs {
+		ss := ms.fss[subj]
+		if ss == nil {
+			continue
+		}
+		if ss.First < fseq {
+			fseq = ss.First
+		}
+		if ss.Last > lseq {
+			lseq = ss.Last
+		}
+	}
+	if fseq < start {
+		fseq = start
+	}
+
+	eq := subjectsEqual
+	if wc {
+		eq = subjectIsSubsetMatch
+	}
+
+	for nseq := fseq; nseq <= lseq; nseq++ {
+		if sm, ok := ms.msgs[nseq]; ok && (isAll || eq(sm.subj, filter)) {
+			return sm.subj, nseq, sm.hdr, sm.msg, sm.ts, nil
+		}
+	}
+	return _EMPTY_, ms.state.LastSeq, nil, nil, 0, ErrStoreEOF
+}
+
 // RemoveMsg will remove the message from this store.
 // Will return the number of bytes removed.
 func (ms *memStore) RemoveMsg(seq uint64) (bool, error) {
