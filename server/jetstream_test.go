@@ -4512,11 +4512,56 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	if scResp.Error != nil {
-		t.Fatalf("Got an unexpected error from EOF omn restore: %+v", scResp.Error)
+		t.Fatalf("Got an unexpected error from EOF on restore: %+v", scResp.Error)
 	}
 
 	if !reflect.DeepEqual(scResp.StreamInfo.State, state) {
 		t.Fatalf("Did not match states, %+v vs %+v", scResp.StreamInfo.State, state)
+	}
+
+	// Now make sure that if we try to change the name/identity of the stream we get an error.
+	mset, err = acc.lookupStream(mname)
+	if err != nil {
+		t.Fatalf("Expected to find a stream for %q", mname)
+	}
+	state = mset.state()
+	mset.delete()
+
+	rreq.Config.Name = "NEW_STREAM"
+	req, _ = json.Marshal(rreq)
+
+	rmsg, err = nc.Request(fmt.Sprintf(JSApiStreamRestoreT, rreq.Config.Name), req, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error on snapshot request: %v", err)
+	}
+	// Make sure to clear.
+	rresp.Error = nil
+	json.Unmarshal(rmsg.Data, &rresp)
+	// We should not get an error here.
+	if rresp.Error != nil {
+		t.Fatalf("Got an unexpected error response: %+v", rresp.Error)
+	}
+	for r := bytes.NewReader(snapshot); ; {
+		n, err := r.Read(chunk[:])
+		if err != nil {
+			break
+		}
+		nc.Request(rresp.DeliverSubject, chunk[:n], time.Second)
+	}
+
+	si, err = nc2.Request(rresp.DeliverSubject, nil, time.Second)
+	require_NoError(t, err)
+
+	scResp.Error = nil
+	if err := json.Unmarshal(si.Data, &scResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if scResp.Error == nil {
+		t.Fatalf("Expected an error but got none")
+	}
+	expect := "names do not match"
+	if !strings.Contains(scResp.Error.Description, expect) {
+		t.Fatalf("Expected description of %q, got %q", expect, scResp.Error.Description)
 	}
 }
 

@@ -309,11 +309,6 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	// Always track per subject information.
 	fs.tms = true
 
-	// Recover our message state.
-	if err := fs.recoverMsgs(); err != nil {
-		return nil, err
-	}
-
 	// Write our meta data iff does not exist.
 	meta := path.Join(fcfg.StoreDir, JetStreamMetaFile)
 	if _, err := os.Stat(meta); err != nil && os.IsNotExist(err) {
@@ -321,6 +316,12 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 			return nil, err
 		}
 	}
+
+	// Recover our message state.
+	if err := fs.recoverMsgs(); err != nil {
+		return nil, err
+	}
+
 	// If we expect to be encrypted check that what we are restoring is not plaintext.
 	// This can happen on snapshot restores or conversions.
 	if fs.prf != nil {
@@ -602,7 +603,9 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) (*msgBlock, e
 		// Note this only checks that the message blk file is not newer then this file.
 		if bytes.Equal(lchk[:], mb.lchk[:]) {
 			if fs.tms {
-				mb.readPerSubjectInfo()
+				if err = mb.readPerSubjectInfo(); err != nil {
+					return nil, err
+				}
 			}
 			fs.blks = append(fs.blks, mb)
 			return mb, nil
@@ -4368,7 +4371,9 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 
 	var shouldExpire bool
 	if mb.cacheNotLoaded() {
-		mb.loadMsgsWithLock()
+		if err := mb.loadMsgsWithLock(); err != nil {
+			return err
+		}
 		shouldExpire = true
 	}
 	if mb.fss == nil {
@@ -4377,7 +4382,11 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 
 	fseq, lseq := mb.first.seq, mb.last.seq
 	for seq := fseq; seq <= lseq; seq++ {
-		if sm, _ := mb.cacheLookup(seq); sm != nil && len(sm.subj) > 0 {
+		sm, err := mb.cacheLookup(seq)
+		if err != nil {
+			return err
+		}
+		if sm != nil && len(sm.subj) > 0 {
 			if ss := mb.fss[sm.subj]; ss != nil {
 				ss.Msgs++
 				ss.Last = seq
