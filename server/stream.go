@@ -3631,6 +3631,11 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 		return nil, err
 	}
 
+	// Check to make sure names match.
+	if fcfg.Name != cfg.Name {
+		return nil, errors.New("stream names do not match")
+	}
+
 	// See if this stream already exists.
 	if _, err := a.lookupStream(cfg.Name); err == nil {
 		return nil, NewJSStreamNameExistError()

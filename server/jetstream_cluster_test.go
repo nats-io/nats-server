@@ -2949,25 +2949,17 @@ func TestJetStreamClusterUserSnapshotAndRestoreConfigChanges(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	// Change name.
+	// Now change subjects.
 	ncfg := &StreamConfig{
-		Name:     "TEST2",
-		Subjects: []string{"foo"},
+		Name:     "TEST",
+		Subjects: []string{"bar", "baz"},
 		Storage:  FileStorage,
 		Replicas: 2,
 	}
-	if si := restore(ncfg, state, snap); si.Config.Name != "TEST2" {
-		t.Fatalf("Did not get expected stream info: %+v", si)
-	}
-	if err := js.DeleteStream("TEST2"); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	// Now change subjects.
-	ncfg.Subjects = []string{"bar", "baz"}
 	if si := restore(ncfg, state, snap); !reflect.DeepEqual(si.Config.Subjects, ncfg.Subjects) {
 		t.Fatalf("Did not get expected stream info: %+v", si)
 	}
-	if err := js.DeleteStream("TEST2"); err != nil {
+	if err := js.DeleteStream("TEST"); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	// Storage
@@ -2975,7 +2967,7 @@ func TestJetStreamClusterUserSnapshotAndRestoreConfigChanges(t *testing.T) {
 	if si := restore(ncfg, state, snap); !reflect.DeepEqual(si.Config.Subjects, ncfg.Subjects) {
 		t.Fatalf("Did not get expected stream info: %+v", si)
 	}
-	if err := js.DeleteStream("TEST2"); err != nil {
+	if err := js.DeleteStream("TEST"); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	// Now replicas
