@@ -32,6 +32,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/jwt/v2"
+
 	"github.com/nats-io/nats.go"
 )
 
@@ -2979,10 +2981,11 @@ func TestJetStreamClusterAccountInfoAndLimits(t *testing.T) {
 
 	// Adjust our limits.
 	c.updateLimits("$G", &JetStreamAccountLimits{
-		MaxMemory:    1024,
-		MaxStore:     8000,
-		MaxStreams:   3,
-		MaxConsumers: 1,
+		MaxMemory:      1024,
+		MaxStore:       8000,
+		MaxStreams:     3,
+		MaxConsumers:   1,
+		MaxHaResources: jwt.NoLimit,
 	})
 
 	// Client based API
@@ -10424,80 +10427,155 @@ func TestJetStreamClusterRedeliverBackoffs(t *testing.T) {
 }
 
 func TestJetStreamClusterHaLimitStream(t *testing.T) {
-	tmpl := strings.Replace(jsClusterMaxBytesTempl, "max_mem:   128MB", `max_mem:   128MB
-		max_ha: 2`, 1)
-	c := createJetStreamClusterWithTemplate(t, tmpl, "JSC", 3)
-	defer c.shutdown()
+	test := func(c *cluster, creds nats.Option) {
+		nc, js := jsClientConnect(t, c.randomServer(), creds)
+		defer nc.Close()
 
-	nc, js := jsClientConnect(t, c.randomServer(), nats.UserInfo("u", "p"))
-	defer nc.Close()
+		// consumer created through this, do NOT count towards max_ha
+		createConsumersNoRep := func(subj, stream string) {
+			t.Helper()
+			_, err := js.SubscribeSync(subj)
+			require_NoError(t, err)
+			_, err = js.AddConsumer(stream, &nats.ConsumerConfig{
+				AckPolicy:      nats.AckExplicitPolicy,
+				DeliverSubject: nats.NewInbox(),
+			})
+			require_NoError(t, err)
+		}
 
-	// consumer created through this, do NOT count towards max_ha
-	createConsumersNoRep := func(subj, stream string) {
-		t.Helper()
-		_, err := js.SubscribeSync(subj)
-		require_NoError(t, err)
-		_, err = js.AddConsumer(stream, &nats.ConsumerConfig{
-			AckPolicy:      nats.AckExplicitPolicy,
-			DeliverSubject: nats.NewInbox(),
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST-noHA1",
+			Replicas: 1,
+			MaxBytes: 1024,
+			Subjects: []string{"foo1"},
 		})
 		require_NoError(t, err)
+
+		createConsumersNoRep("foo1", "TEST-noHA1")
+
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "TEST-HA",
+			Replicas: 2,
+			MaxBytes: 1024,
+			Subjects: []string{"foo2"},
+		})
+		require_NoError(t, err)
+
+		createConsumersNoRep("foo2", "TEST-HA")
+
+		// make sure consumer HA resource exists as well
+		_, err = js.AddConsumer("TEST-HA", &nats.ConsumerConfig{
+			AckPolicy:      nats.AckExplicitPolicy,
+			DeliverSubject: nats.NewInbox(),
+			Durable:        "DUR1",
+		})
+		require_NoError(t, err)
+
+		// Test exceeding limit on replicated stream add
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "TEST-HA-FULL",
+			Replicas: 2,
+			MaxBytes: 1024,
+			Subjects: []string{"foo3"},
+		})
+		require_Error(t, err)
+
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "TEST-noHA2",
+			Replicas: 1,
+			MaxBytes: 1024,
+			Subjects: []string{"foo4"},
+		})
+		require_NoError(t, err)
+
+		createConsumersNoRep("foo4", "TEST-noHA2")
+
+		// Test exceeding limit on replicated consumer add
+		_, err = js.AddConsumer("TEST-HA", &nats.ConsumerConfig{
+			AckPolicy:      nats.AckExplicitPolicy,
+			DeliverSubject: nats.NewInbox(),
+			Durable:        "DUR2",
+		})
+		require_Error(t, err)
 	}
 
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:     "TEST-noHA1",
-		Replicas: 1,
-		MaxBytes: 1024,
-		Subjects: []string{"foo1"},
+	t.Run("config", func(t *testing.T) {
+		tmpl := strings.Replace(jsClusterMaxBytesTempl, "max_mem:   128MB", `max_mem:   128MB
+		max_ha: 2`, 1)
+		c := createJetStreamClusterWithTemplate(t, tmpl, "JSC", 3)
+		defer c.shutdown()
+		test(c, nats.UserInfo("u", "p"))
 	})
-	require_NoError(t, err)
+	t.Run("jwt", func(t *testing.T) {
+		tmpl := `
+			listen: 127.0.0.1:-1
+			server_name: %s
+			jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: "%s"}
+		
+			cluster {
+				name: %s
+				listen: 127.0.0.1:%d
+				routes = [%s]
+			}
+		`
+		dirSrv := createDir(t, "srv")
+		defer removeDir(t, dirSrv)
 
-	createConsumersNoRep("foo1", "TEST-noHA1")
+		sysKp, syspub := createKey(t)
+		sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+		sysCreds := newUser(t, sysKp)
+		defer removeFile(t, sysCreds)
 
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name:     "TEST-HA",
-		Replicas: 2,
-		MaxBytes: 1024,
-		Subjects: []string{"foo2"},
+		accKp, accpub := createKey(t)
+		accClaim := jwt.NewAccountClaims(accpub)
+		accClaim.Limits.JetStreamLimits = jwt.JetStreamLimits{
+			HaResources:   2,
+			MemoryStorage: jwt.NoLimit,
+			DiskStorage:   jwt.NoLimit,
+			Streams:       jwt.NoLimit,
+			Consumer:      jwt.NoLimit,
+		}
+		accJwt1 := encodeClaim(t, accClaim, accpub)
+		time.Sleep(1100 * time.Millisecond)
+		accClaim.Limits.JetStreamLimits.HaResources = 3
+		accJwt2 := encodeClaim(t, accClaim, accpub)
+		accCreds := newUser(t, accKp)
+		defer removeFile(t, accCreds)
+
+		c := createJetStreamClusterWithTemplate(t, fmt.Sprintf(`%s	
+			operator: %s
+			system_account: %s
+			resolver: {
+				type: full
+				dir: %s
+			}`, tmpl, ojwt, syspub, dirSrv), "JSC", 3)
+		defer c.shutdown()
+
+		updateJwt(t, c.randomServer().ClientURL(), sysCreds, sysJwt, 3)
+		updateJwt(t, c.randomServer().ClientURL(), sysCreds, accJwt1, 3)
+
+		test(c, nats.UserCredentials(accCreds))
+
+		// Test increasing the limit by executing the last command in test. (Decreasing has no effect)
+		updateJwt(t, c.randomServer().ClientURL(), sysCreds, accJwt2, 3)
+
+		nc, js := jsClientConnect(t, c.randomServer(), nats.UserCredentials(accCreds))
+		defer nc.Close()
+		_, err := js.AddConsumer("TEST-HA", &nats.ConsumerConfig{
+			AckPolicy:      nats.AckExplicitPolicy,
+			DeliverSubject: nats.NewInbox(),
+			Durable:        "DUR2",
+		})
+		require_NoError(t, err)
+
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "TEST-HA-FULL2",
+			Replicas: 2,
+			MaxBytes: 1024,
+			Subjects: []string{"foo3"},
+		})
+		require_Error(t, err)
 	})
-	require_NoError(t, err)
-
-	createConsumersNoRep("foo2", "TEST-HA")
-
-	// make sure consumer HA resource exists as well
-	_, err = js.AddConsumer("TEST-HA", &nats.ConsumerConfig{
-		AckPolicy:      nats.AckExplicitPolicy,
-		DeliverSubject: nats.NewInbox(),
-		Durable:        "DUR1",
-	})
-	require_NoError(t, err)
-
-	// Test exceeding limit on replicated stream add
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name:     "TEST-HA-FULL",
-		Replicas: 2,
-		MaxBytes: 1024,
-		Subjects: []string{"foo3"},
-	})
-	require_Error(t, err)
-
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name:     "TEST-noHA2",
-		Replicas: 1,
-		MaxBytes: 1024,
-		Subjects: []string{"foo4"},
-	})
-	require_NoError(t, err)
-
-	createConsumersNoRep("foo4", "TEST-noHA2")
-
-	// Test exceeding limit on replicated consumer add
-	_, err = js.AddConsumer("TEST-HA", &nats.ConsumerConfig{
-		AckPolicy:      nats.AckExplicitPolicy,
-		DeliverSubject: nats.NewInbox(),
-		Durable:        "DUR2",
-	})
-	require_Error(t, err)
 }
 
 func TestJetStreamConsumerUpgrade(t *testing.T) {

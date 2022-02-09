@@ -5,6 +5,9 @@ package server
 import "strings"
 
 const (
+	// JSAccountHaLimitExceededErr JetStream Account High Availability Limit Exceeded
+	JSAccountHaLimitExceededErr ErrorIdentifier = 10118
+
 	// JSAccountResourcesExceededErr resource limits exceeded for account
 	JSAccountResourcesExceededErr ErrorIdentifier = 10002
 
@@ -356,6 +359,7 @@ const (
 
 var (
 	ApiErrors = map[ErrorIdentifier]*ApiError{
+		JSAccountHaLimitExceededErr:                {Code: 400, ErrCode: 10118, Description: "JetStream Account High Availability Limit Exceeded"},
 		JSAccountResourcesExceededErr:              {Code: 400, ErrCode: 10002, Description: "resource limits exceeded for account"},
 		JSBadRequestErr:                            {Code: 400, ErrCode: 10003, Description: "bad request"},
 		JSClusterIncompleteErr:                     {Code: 503, ErrCode: 10004, Description: "incomplete results"},
@@ -496,6 +500,16 @@ var (
 	// ErrReplicasNotSupported Deprecated by JSStreamReplicasNotSupportedErr ApiError, use IsNatsError() for comparisons
 	ErrReplicasNotSupported = ApiErrors[JSStreamReplicasNotSupportedErr]
 )
+
+// NewJSAccountHaLimitExceededError creates a new JSAccountHaLimitExceededErr error: "JetStream Account High Availability Limit Exceeded"
+func NewJSAccountHaLimitExceededError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSAccountHaLimitExceededErr]
+}
 
 // NewJSAccountResourcesExceededError creates a new JSAccountResourcesExceededErr error: "resource limits exceeded for account"
 func NewJSAccountResourcesExceededError(opts ...ErrorOption) *ApiError {

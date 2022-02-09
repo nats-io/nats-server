@@ -3251,14 +3251,14 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	}
 
 	// Setup js limits regardless of whether this server has jsEnabled.
-	if ac.Limits.JetStreamLimits.DiskStorage != 0 || ac.Limits.JetStreamLimits.MemoryStorage != 0 {
+	if ac.Limits.IsJSEnabled() {
 		// JetStreamAccountLimits and jwt.JetStreamLimits use same value for unlimited
 		a.jsLimits = &JetStreamAccountLimits{
 			MaxMemory:        ac.Limits.JetStreamLimits.MemoryStorage,
 			MaxStore:         ac.Limits.JetStreamLimits.DiskStorage,
 			MaxStreams:       int(ac.Limits.JetStreamLimits.Streams),
 			MaxConsumers:     int(ac.Limits.JetStreamLimits.Consumer),
-			MaxHaResources:   0, //TODO read from claim JS Limits
+			MaxHaResources:   int(ac.Limits.JetStreamLimits.HaResources),
 			MaxBytesRequired: ac.Limits.JetStreamLimits.MaxBytesRequired,
 		}
 	} else if a.jsLimits != nil {

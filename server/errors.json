@@ -1158,5 +1158,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSAccountHaLimitExceededErr",
+    "code": 400,
+    "error_code": 10118,
+    "description": "JetStream Account High Availability Limit Exceeded",
+    "comment": "",
+    "help": "This error indicates that the Account specific JetStream High Availability Limit is exceeded and new requests for replicated resources, such as Streams and Durable Consumer, will be rejected",
+    "url": "",
+    "deprecates": ""
   }
 ]
