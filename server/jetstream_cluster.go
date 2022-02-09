@@ -3292,6 +3292,9 @@ func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) {
 	}
 
 	if !isLeader || hasResponded {
+		if isLeader {
+			o.clearInitialInfo()
+		}
 		return
 	}
 
@@ -3300,7 +3303,7 @@ func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) {
 		resp.Error = NewJSConsumerCreateError(err, Unless(err))
 		s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 	} else {
-		resp.ConsumerInfo = o.info()
+		resp.ConsumerInfo = o.initialInfo()
 		s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 		if node := o.raftNode(); node != nil {
 			o.sendCreateAdvisory()

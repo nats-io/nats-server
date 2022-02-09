@@ -239,6 +239,7 @@ type consumer struct {
 	maxdc             uint64
 	waiting           *waitQueue
 	cfg               ConsumerConfig
+	ici               *ConsumerInfo
 	store             ConsumerStore
 	active            bool
 	replay            bool
@@ -848,6 +849,9 @@ func (o *consumer) setLeader(isLeader bool) {
 			o.pch = make(chan struct{}, 1)
 		}
 		o.mu.Unlock()
+
+		// Snapshot initial info.
+		o.infoWithSnap(true)
 
 		// Now start up Go routine to deliver msgs.
 		go o.loopAndGatherMsgs(qch)
@@ -1830,8 +1834,33 @@ func (o *consumer) writeStoreStateUnlocked() error {
 	return o.store.Update(&state)
 }
 
+// Returns an initial info. Only applicable for non-clustered consumers.
+// We will clear after we return it, so one shot.
+func (o *consumer) initialInfo() *ConsumerInfo {
+	o.mu.Lock()
+	ici := o.ici
+	o.ici = nil // gc friendly
+	o.mu.Unlock()
+	if ici == nil {
+		ici = o.info()
+	}
+	return ici
+}
+
+// Clears our initial info.
+// Used when we have a leader change in cluster mode but do not send a response.
+func (o *consumer) clearInitialInfo() {
+	o.mu.Lock()
+	o.ici = nil // gc friendly
+	o.mu.Unlock()
+}
+
 // Info returns our current consumer state.
 func (o *consumer) info() *ConsumerInfo {
+	return o.infoWithSnap(false)
+}
+
+func (o *consumer) infoWithSnap(snap bool) *ConsumerInfo {
 	o.mu.RLock()
 	mset := o.mset
 	if mset == nil || mset.srv == nil {
@@ -1885,6 +1914,11 @@ func (o *consumer) info() *ConsumerInfo {
 		o.expireWaiting()
 		info.NumWaiting = o.waiting.len()
 	}
+	// If we were asked to snapshot do so here.
+	if snap {
+		o.ici = info
+	}
+
 	return info
 }
 
