@@ -10465,6 +10465,56 @@ func TestJetStreamConsumerUpgrade(t *testing.T) {
 	t.Run("Clustered", func(t *testing.T) { testUpdate(t, c.randomServer()) })
 }
 
+func TestJetStreamAddConsumerWithInfo(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	testConsInfo := func(t *testing.T, s *Server) {
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+		})
+		require_NoError(t, err)
+
+		for i := 0; i < 10; i++ {
+			_, err = js.Publish("foo", []byte("msg"))
+			require_NoError(t, err)
+		}
+
+		for i := 0; i < 100; i++ {
+			inbox := nats.NewInbox()
+			sub := natsSubSync(t, nc, inbox)
+
+			ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+				DeliverSubject: inbox,
+				DeliverPolicy:  nats.DeliverAllPolicy,
+				FilterSubject:  "foo",
+				AckPolicy:      nats.AckExplicitPolicy,
+			})
+			require_NoError(t, err)
+
+			if ci.NumPending != 10 {
+				t.Fatalf("Iter=%v - expected 10 messages pending on create, got %v", i+1, ci.NumPending)
+			}
+			js.DeleteConsumer("TEST", ci.Name)
+			sub.Unsubscribe()
+		}
+	}
+
+	t.Run("Single", func(t *testing.T) { testConsInfo(t, s) })
+	t.Run("Clustered", func(t *testing.T) { testConsInfo(t, c.randomServer()) })
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
