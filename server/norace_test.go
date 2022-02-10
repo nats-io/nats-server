@@ -29,6 +29,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"strconv"
@@ -4273,5 +4275,52 @@ func TestNoRaceJetStreamSparseConsumers(t *testing.T) {
 				t.Fatalf("Getting all messages took longer than expected: %v", elapsed)
 			}
 		})
+	}
+}
+
+func TestNoRaceFileStoreSubjectInfoWithSnapshotCleanup(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 1024 * 1024}, StreamConfig{Name: "TEST", Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	n, msg := 10_000, []byte(strings.Repeat("Z", 1024))
+	for i := 0; i < n; i++ {
+		_, _, err := fs.StoreMsg(fmt.Sprintf("X.%d", i), nil, msg)
+		require_NoError(t, err)
+	}
+
+	// Snapshot causes us to write out per subject info, fss files.
+	// We want to make sure they get cleaned up.
+	sr, err := fs.Snapshot(5*time.Second, false, false)
+	require_NoError(t, err)
+	var buf [4 * 1024 * 1024]byte
+	for {
+		if _, err = sr.Reader.Read(buf[:]); err == io.EOF {
+			break
+		}
+		require_NoError(t, err)
+	}
+
+	var seqs []uint64
+	for i := 1; i <= n; i++ {
+		seqs = append(seqs, uint64(i))
+	}
+	// Randomly delete msgs, make sure we cleanup as we empty the message blocks.
+	rand.Shuffle(len(seqs), func(i, j int) { seqs[i], seqs[j] = seqs[j], seqs[i] })
+
+	for _, seq := range seqs {
+		_, err := fs.RemoveMsg(seq)
+		require_NoError(t, err)
+	}
+
+	// We will have cleanup the main .blk and .idx sans the lmb, but we should not have any *.fss files.
+	fms, err := filepath.Glob(path.Join(storeDir, msgDir, fssScanAll))
+	require_NoError(t, err)
+
+	if len(fms) > 0 {
+		t.Fatalf("Expected to find no fss files, found %d", len(fms))
 	}
 }

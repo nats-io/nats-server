@@ -30,6 +30,7 @@ import (
 	"net"
 	"os"
 	"path"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"sync"
@@ -187,6 +188,8 @@ const (
 	indexScan = "%d.idx"
 	// used to load per subject meta information.
 	fssScan = "%d.fss"
+	// to look for orphans
+	fssScanAll = "*.fss"
 	// used to store our block encryption key.
 	keyScan = "%d.key"
 	// This is where we keep state on consumers.
@@ -890,7 +893,6 @@ func (fs *fileStore) recoverMsgs() error {
 						fs.psmc[subj] += ss.Msgs
 					}
 				}
-
 			} else {
 				return err
 			}
@@ -907,6 +909,14 @@ func (fs *fileStore) recoverMsgs() error {
 
 	if err != nil {
 		return err
+	}
+
+	// We had a bug that would leave fss files around during a snapshot.
+	// Clean them up here if we see them.
+	if fms, err := filepath.Glob(path.Join(mdir, fssScanAll)); err == nil && len(fms) > 0 {
+		for _, fn := range fms {
+			os.Remove(fn)
+		}
 	}
 
 	// Limits checks and enforcement.
@@ -4325,6 +4335,10 @@ func (mb *msgBlock) dirtyCloseWithRemove(remove bool) {
 		if mb.mfn != _EMPTY_ {
 			os.Remove(mb.mfn)
 			mb.mfn = _EMPTY_
+		}
+		if mb.sfn != _EMPTY_ {
+			os.Remove(mb.sfn)
+			mb.sfn = _EMPTY_
 		}
 	}
 }
