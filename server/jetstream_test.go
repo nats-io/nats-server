@@ -14978,6 +14978,73 @@ func TestJetStreamFlowControlStall(t *testing.T) {
 	checkSubsPending(t, sub, 3)
 }
 
+func TestJetStreamConsumerPendingCountWithRedeliveries(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:    "test",
+		AckPolicy:  nats.AckExplicitPolicy,
+		AckWait:    50 * time.Millisecond,
+		MaxDeliver: 1,
+	})
+	require_NoError(t, err)
+
+	// Publish 1st message
+	_, err = js.Publish("foo", []byte("msg1"))
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe("foo", "test")
+	require_NoError(t, err)
+	msgs, err := sub.Fetch(1)
+	require_NoError(t, err)
+	for _, m := range msgs {
+		require_Equal(t, string(m.Data), "msg1")
+		// Do not ack the message
+	}
+	// Check consumer info, pending should be 0
+	ci, err := js.ConsumerInfo("TEST", "test")
+	require_NoError(t, err)
+	if ci.NumPending != 0 {
+		t.Fatalf("Expected consumer info pending count to be 0, got %v", ci.NumPending)
+	}
+
+	// Wait for more than expiration
+	time.Sleep(100 * time.Millisecond)
+
+	// Publish 2nd message
+	_, err = js.Publish("foo", []byte("msg2"))
+	require_NoError(t, err)
+
+	msgs, err = sub.Fetch(1)
+	require_NoError(t, err)
+	for _, m := range msgs {
+		require_Equal(t, string(m.Data), "msg2")
+		// Its deliver count should be 1
+		meta, err := m.Metadata()
+		require_NoError(t, err)
+		if meta.NumDelivered != 1 {
+			t.Fatalf("Expected message's deliver count to be 1, got %v", meta.NumDelivered)
+		}
+	}
+	// Check consumer info, pending should be 0
+	ci, err = js.ConsumerInfo("TEST", "test")
+	require_NoError(t, err)
+	if ci.NumPending != 0 {
+		t.Fatalf("Expected consumer info pending count to be 0, got %v", ci.NumPending)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////

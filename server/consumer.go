@@ -2542,7 +2542,7 @@ func (o *consumer) getNextMsg() (subj string, hdr, msg []byte, sseq uint64, dc u
 			}
 		}
 		// Fallback if all redeliveries are gone.
-		seq = o.sseq
+		seq, dc = o.sseq, 1
 	}
 
 	// Check if we have max pending.
