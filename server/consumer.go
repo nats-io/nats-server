@@ -1911,7 +1911,7 @@ func (o *consumer) infoWithSnap(snap bool) *ConsumerInfo {
 
 	// If we are a pull mode consumer, report on number of waiting requests.
 	if o.isPullMode() {
-		o.expireWaiting()
+		o.processWaiting()
 		info.NumWaiting = o.waiting.len()
 	}
 	// If we were asked to snapshot do so here.
@@ -2124,29 +2124,36 @@ func (o *consumer) needAck(sseq uint64) bool {
 }
 
 // Helper for the next message requests.
-func nextReqFromMsg(msg []byte) (time.Time, int, bool, error) {
+func nextReqFromMsg(msg []byte) (time.Time, int, bool, time.Duration, time.Time, error) {
 	req := bytes.TrimSpace(msg)
 
 	switch {
 	case len(req) == 0:
-		return time.Time{}, 1, false, nil
+		return time.Time{}, 1, false, 0, time.Time{}, nil
 
 	case req[0] == '{':
 		var cr JSApiConsumerGetNextRequest
 		if err := json.Unmarshal(req, &cr); err != nil {
-			return time.Time{}, -1, false, err
+			return time.Time{}, -1, false, 0, time.Time{}, err
+		}
+		var hbt time.Time
+		if cr.Heartbeat > 0 {
+			if cr.Heartbeat*2 > cr.Expires {
+				return time.Time{}, 1, false, 0, time.Time{}, errors.New("heartbeat value too large")
+			}
+			hbt = time.Now().Add(cr.Heartbeat)
 		}
 		if cr.Expires == time.Duration(0) {
-			return time.Time{}, cr.Batch, cr.NoWait, nil
+			return time.Time{}, cr.Batch, cr.NoWait, cr.Heartbeat, hbt, nil
 		}
-		return time.Now().Add(cr.Expires), cr.Batch, cr.NoWait, nil
+		return time.Now().Add(cr.Expires), cr.Batch, cr.NoWait, cr.Heartbeat, hbt, nil
 	default:
 		if n, err := strconv.Atoi(string(req)); err == nil {
-			return time.Time{}, n, false, nil
+			return time.Time{}, n, false, 0, time.Time{}, nil
 		}
 	}
 
-	return time.Time{}, 1, false, nil
+	return time.Time{}, 1, false, 0, time.Time{}, nil
 }
 
 // Represents a request that is on the internal waiting queue
@@ -2158,6 +2165,8 @@ type waitingRequest struct {
 	d        int
 	expires  time.Time
 	received time.Time
+	hb       time.Duration
+	hbt      time.Time
 	noWait   bool
 }
 
@@ -2171,8 +2180,7 @@ var wrPool = sync.Pool{
 // Recycle this request. This request can not be accessed after this call.
 func (wr *waitingRequest) recycleIfDone() bool {
 	if wr != nil && wr.n <= 0 {
-		wr.acc, wr.interest, wr.reply = nil, _EMPTY_, _EMPTY_
-		wrPool.Put(wr)
+		wr.recycle()
 		return true
 	}
 	return false
@@ -2190,7 +2198,6 @@ func (wr *waitingRequest) recycle() {
 type waitQueue struct {
 	rp, wp int
 	last   time.Time
-	fexp   time.Time
 	reqs   []*waitingRequest
 }
 
@@ -2222,10 +2229,6 @@ func (wq *waitQueue) add(wr *waitingRequest) error {
 	}
 	// Track last active via when we receive a request.
 	wq.last = wr.received
-	// Track next to expire for all pending requests.
-	if !wr.expires.IsZero() && (wq.fexp.IsZero() || wr.expires.Before(wq.fexp)) {
-		wq.fexp = wr.expires
-	}
 	return nil
 }
 
@@ -2323,7 +2326,7 @@ func (o *consumer) pendingRequestReplies() []string {
 }
 
 // Return next waiting request. This will check for expirations but not noWait or interest.
-// That will be handled by expireWaiting.
+// That will be handled by processWaiting.
 // Lock should be held.
 func (o *consumer) nextWaiting() *waitingRequest {
 	if o.waiting == nil || o.waiting.isEmpty() {
@@ -2380,7 +2383,7 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 	}
 
 	// Check payload here to see if they sent in batch size or a formal request.
-	expires, batchSize, noWait, err := nextReqFromMsg(msg)
+	expires, batchSize, noWait, hb, hbt, err := nextReqFromMsg(msg)
 	if err != nil {
 		sendErr(400, fmt.Sprintf("Bad Request - %v", err))
 		return
@@ -2400,7 +2403,7 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 	// If we have the max number of requests already pending try to expire.
 	if o.waiting.isFull() {
 		// Try to expire some of the requests.
-		if expired, _, _ := o.expireWaiting(); expired == 0 {
+		if expired, _, _, _ := o.processWaiting(); expired == 0 {
 			// Force expiration if needed.
 			o.forceExpireFirstWaiting()
 		}
@@ -2416,7 +2419,7 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 			return
 		}
 		if msgsPending > 0 {
-			_, _, batchPending := o.expireWaiting()
+			_, _, batchPending, _ := o.processWaiting()
 			if msgsPending < uint64(batchPending) {
 				sendErr(408, "Requests Pending")
 				return
@@ -2438,7 +2441,7 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 
 	// In case we have to queue up this request.
 	wr := wrPool.Get().(*waitingRequest)
-	wr.acc, wr.interest, wr.reply, wr.n, wr.d, wr.noWait, wr.expires = acc, interest, reply, batchSize, 0, noWait, expires
+	wr.acc, wr.interest, wr.reply, wr.n, wr.d, wr.noWait, wr.expires, wr.hb, wr.hbt = acc, interest, reply, batchSize, 0, noWait, expires, hb, hbt
 	wr.received = time.Now()
 
 	if err := o.waiting.add(wr); err != nil {
@@ -2587,9 +2590,11 @@ func (o *consumer) forceExpireFirstWaiting() {
 }
 
 // Will check for expiration and lack of interest on waiting requests.
-func (o *consumer) expireWaiting() (int, int, int) {
+// Will also do any heartbeats and return the next expiration or HB interval.
+func (o *consumer) processWaiting() (int, int, int, time.Time) {
+	var fexp time.Time
 	if o.srv == nil || o.waiting.isEmpty() {
-		return 0, 0, 0
+		return 0, 0, 0, fexp
 	}
 
 	var expired, brp int
@@ -2612,7 +2617,6 @@ func (o *consumer) expireWaiting() (int, int, int) {
 	}
 
 	wq := o.waiting
-	wq.fexp = time.Time{}
 
 	for rp := o.waiting.rp; o.waiting.rp >= 0 && rp != wq.wp; rp = (rp + 1) % cap(wq.reqs) {
 		wr := wq.reqs[rp]
@@ -2636,8 +2640,19 @@ func (o *consumer) expireWaiting() (int, int, int) {
 		// If interest, update batch pending requests counter and update fexp timer.
 		if interest {
 			brp += wr.n
-			if !wr.expires.IsZero() && (wq.fexp.IsZero() || wr.expires.Before(wq.fexp)) {
-				wq.fexp = wr.expires
+			if !wr.hbt.IsZero() {
+				if now.After(wr.hbt) {
+					// Fire off a heartbeat here.
+					o.sendIdleHeartbeat(wr.reply)
+					// Update next HB.
+					wr.hbt = now.Add(wr.hb)
+				}
+				if fexp.IsZero() || wr.hbt.Before(fexp) {
+					fexp = wr.hbt
+				}
+			}
+			if !wr.expires.IsZero() && (fexp.IsZero() || wr.expires.Before(fexp)) {
+				fexp = wr.expires
 			}
 			continue
 		}
@@ -2650,12 +2665,12 @@ func (o *consumer) expireWaiting() (int, int, int) {
 		o.waiting.compact()
 	}
 
-	return expired, o.waiting.len(), brp
+	return expired, o.waiting.len(), brp, fexp
 }
 
 // Will check to make sure those waiting still have registered interest.
 func (o *consumer) checkWaitingForInterest() bool {
-	o.expireWaiting()
+	o.processWaiting()
 	return o.waiting.len() > 0
 }
 
@@ -2739,8 +2754,10 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			dsubj = o.dsubj
 		} else if wr := o.nextWaiting(); wr != nil {
 			dsubj = wr.reply
-			if wr.recycleIfDone() && o.node != nil {
+			if done := wr.recycleIfDone(); done && o.node != nil {
 				o.removeClusterPendingRequest(dsubj)
+			} else if !done && wr.hb > 0 {
+				wr.hbt = time.Now().Add(wr.hb)
 			}
 		} else {
 			// We will redo this one.
@@ -2800,9 +2817,9 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		// Make sure to process any expired requests that are pending.
 		var wrExp <-chan time.Time
 		if o.isPullMode() {
-			o.expireWaiting()
-			if o.waiting.len() > 0 && !o.waiting.fexp.IsZero() {
-				expires := time.Until(o.waiting.fexp)
+			_, _, _, fexp := o.processWaiting()
+			if !fexp.IsZero() {
+				expires := time.Until(fexp)
 				if expires <= 0 {
 					expires = time.Millisecond
 				}
@@ -2811,7 +2828,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		}
 
 		// We will wait here for new messages to arrive.
-		mch, outq, odsubj := o.mch, o.outq, o.cfg.DeliverSubject
+		mch, odsubj := o.mch, o.cfg.DeliverSubject
 		o.mu.Unlock()
 
 		select {
@@ -2825,19 +2842,13 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			// Messages are waiting.
 		case <-wrExp:
 			o.mu.Lock()
-			o.expireWaiting()
+			o.processWaiting()
 			o.mu.Unlock()
 		case <-hbc:
 			if o.isActive() {
-				const t = "NATS/1.0 100 Idle Heartbeat\r\n%s: %d\r\n%s: %d\r\n\r\n"
-				sseq, dseq := o.lastDelivered()
-				hdr := []byte(fmt.Sprintf(t, JSLastConsumerSeq, dseq, JSLastStreamSeq, sseq))
-				if fcp := o.fcID(); fcp != _EMPTY_ {
-					// Add in that we are stalled on flow control here.
-					addOn := []byte(fmt.Sprintf("%s: %s\r\n\r\n", JSConsumerStalled, fcp))
-					hdr = append(hdr[:len(hdr)-LEN_CR_LF], []byte(addOn)...)
-				}
-				outq.send(newJSPubMsg(odsubj, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+				o.mu.RLock()
+				o.sendIdleHeartbeat(odsubj)
+				o.mu.RUnlock()
 			}
 			// Reset our idle heartbeat timer.
 			hb.Reset(hbd)
@@ -2845,10 +2856,17 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 	}
 }
 
-func (o *consumer) lastDelivered() (sseq, dseq uint64) {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-	return o.sseq - 1, o.dseq - 1
+// Lock should be held.
+func (o *consumer) sendIdleHeartbeat(subj string) {
+	const t = "NATS/1.0 100 Idle Heartbeat\r\n%s: %d\r\n%s: %d\r\n\r\n"
+	sseq, dseq := o.sseq-1, o.dseq-1
+	hdr := []byte(fmt.Sprintf(t, JSLastConsumerSeq, dseq, JSLastStreamSeq, sseq))
+	if fcp := o.fcid; fcp != _EMPTY_ {
+		// Add in that we are stalled on flow control here.
+		addOn := []byte(fmt.Sprintf("%s: %s\r\n\r\n", JSConsumerStalled, fcp))
+		hdr = append(hdr[:len(hdr)-LEN_CR_LF], []byte(addOn)...)
+	}
+	o.outq.send(newJSPubMsg(subj, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 }
 
 func (o *consumer) ackReply(sseq, dseq, dc uint64, ts int64, pending uint64) string {
@@ -3007,12 +3025,6 @@ func (o *consumer) fcReply() string {
 	}
 	sb.Write(b[:])
 	return sb.String()
-}
-
-func (o *consumer) fcID() string {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-	return o.fcid
 }
 
 // sendFlowControl will send a flow control packet to the consumer.

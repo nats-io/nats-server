@@ -15045,6 +15045,131 @@ func TestJetStreamConsumerPendingCountWithRedeliveries(t *testing.T) {
 	}
 }
 
+func TestJetStreamPullConsumerHeartBeats(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "T", Storage: nats.MemoryStorage})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("T", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	rsubj := fmt.Sprintf(JSApiRequestNextT, "T", "dlc")
+
+	type tsMsg struct {
+		received time.Time
+		msg      *nats.Msg
+	}
+
+	doReq := func(batch int, hb, expires time.Duration, expected int) []*tsMsg {
+		t.Helper()
+		req := &JSApiConsumerGetNextRequest{Batch: batch, Expires: expires, Heartbeat: hb}
+		jreq, err := json.Marshal(req)
+		require_NoError(t, err)
+		reply := nats.NewInbox()
+		var msgs []*tsMsg
+		var mu sync.Mutex
+
+		sub, err := nc.Subscribe(reply, func(m *nats.Msg) {
+			mu.Lock()
+			msgs = append(msgs, &tsMsg{time.Now(), m})
+			mu.Unlock()
+		})
+		require_NoError(t, err)
+
+		err = nc.PublishRequest(rsubj, reply, jreq)
+		require_NoError(t, err)
+		checkFor(t, time.Second, 50*time.Millisecond, func() error {
+			mu.Lock()
+			nr := len(msgs)
+			mu.Unlock()
+			if nr >= expected {
+				return nil
+			}
+			return fmt.Errorf("Only have seen %d of %d responses", nr, expected)
+		})
+		sub.Unsubscribe()
+		return msgs
+	}
+
+	reqBad := nats.Header{"Status": []string{"400"}, "Description": []string{"Bad Request - heartbeat value too large"}}
+	expectErr := func(msgs []*tsMsg) {
+		t.Helper()
+		if len(msgs) != 1 {
+			t.Fatalf("Expected 1 msg, got %d", len(msgs))
+		}
+		if !reflect.DeepEqual(msgs[0].msg.Header, reqBad) {
+			t.Fatalf("Expected %+v hdr, got %+v", reqBad, msgs[0].msg.Header)
+		}
+	}
+
+	// Test errors first.
+	// Setting HB with no expires.
+	expectErr(doReq(1, 100*time.Millisecond, 0, 1))
+	// If HB larger than 50% of expires..
+	expectErr(doReq(1, 75*time.Millisecond, 100*time.Millisecond, 1))
+
+	reqTimeout := nats.Header{"Status": []string{"408"}, "Description": []string{"Request Timeout"}}
+	expectHBs := func(start time.Time, msgs []*tsMsg, expected int, hbi time.Duration) {
+		t.Helper()
+		if len(msgs) != expected {
+			t.Fatalf("Expected %d but got %d", expected, len(msgs))
+		}
+		// expected -1 should be all HBs.
+		for i, ts := 0, start; i < expected-1; i++ {
+			tr, m := msgs[i].received, msgs[i].msg
+			if m.Header.Get("Status") != "100" {
+				t.Fatalf("Expected a 100 status code, got %q", m.Header.Get("Status"))
+			}
+			if m.Header.Get("Description") != "Idle Heartbeat" {
+				t.Fatalf("Wrong description, got %q", m.Header.Get("Description"))
+			}
+			ts = ts.Add(hbi)
+			if tr.Before(ts) {
+				t.Fatalf("Received at wrong time: %v vs %v", tr, ts)
+			}
+		}
+		// Last msg should be timeout.
+		lm := msgs[len(msgs)-1].msg
+		if !reflect.DeepEqual(lm.Header, reqTimeout) {
+			t.Fatalf("Expected %+v hdr, got %+v", reqTimeout, lm.Header)
+		}
+	}
+
+	// These should work. Test idle first.
+	start, msgs := time.Now(), doReq(1, 50*time.Millisecond, 250*time.Millisecond, 5)
+	expectHBs(start, msgs, 5, 50*time.Millisecond)
+
+	// Now test that we do not send heartbeats while we receive traffic.
+	go func() {
+		for i := 0; i < 5; i++ {
+			time.Sleep(50 * time.Millisecond)
+			js.Publish("T", nil)
+		}
+	}()
+
+	start, msgs = time.Now(), doReq(10, 75*time.Millisecond, 350*time.Millisecond, 6)
+	// The first 5 should be msgs, no HBs.
+	for i := 0; i < 5; i++ {
+		if m := msgs[i].msg; len(m.Header) > 0 {
+			t.Fatalf("Got a potential heartbeat msg when we should not have: %+v", m.Header)
+		}
+	}
+	// Last should be timeout.
+	lm := msgs[len(msgs)-1].msg
+	if !reflect.DeepEqual(lm.Header, reqTimeout) {
+		t.Fatalf("Expected %+v hdr, got %+v", reqTimeout, lm.Header)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
