@@ -3398,9 +3398,9 @@ type streamAssignmentResult struct {
 	Update   bool                        `json:"is_update,omitempty"`
 }
 
-// Determine if this is an insufficient resources error type.
-func isInsufficientResourcesErr(err *ApiError) bool {
-	return err != nil && IsNatsErr(err, JSInsufficientResourcesErr, JSMemoryResourcesExceededErr, JSStorageResourcesExceededErr)
+// Determine if this is an insufficient resources' error type.
+func isInsufficientResourcesErr(resp *JSApiStreamCreateResponse) bool {
+	return resp != nil && resp.Error != nil && IsNatsErr(resp.Error, JSInsufficientResourcesErr, JSMemoryResourcesExceededErr, JSStorageResourcesExceededErr)
 }
 
 // Process error results of stream and consumer assignments.
@@ -3427,7 +3427,7 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 		canDelete := !result.Update && time.Since(sa.Created) < 5*time.Second
 
 		// See if we should retry in case this cluster is full but there are others.
-		if cfg, ci := sa.Config, sa.Client; cfg != nil && ci != nil && isInsufficientResourcesErr(result.Response.Error) && canDelete {
+		if cfg, ci := sa.Config, sa.Client; cfg != nil && ci != nil && isInsufficientResourcesErr(result.Response) && canDelete {
 			// If cluster is defined we can not retry.
 			if cfg.Placement == nil || cfg.Placement.Cluster == _EMPTY_ {
 				// If we have additional clusters to try we can retry.
