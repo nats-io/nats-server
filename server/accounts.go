@@ -3258,7 +3258,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			MaxStore:         ac.Limits.JetStreamLimits.DiskStorage,
 			MaxStreams:       int(ac.Limits.JetStreamLimits.Streams),
 			MaxConsumers:     int(ac.Limits.JetStreamLimits.Consumer),
-			MaxHaResources:   int(ac.Limits.JetStreamLimits.HaResources),
+			MaxHAResources:   int(ac.Limits.JetStreamLimits.HaResources),
 			MaxBytesRequired: ac.Limits.JetStreamLimits.MaxBytesRequired,
 		}
 	} else if a.jsLimits != nil {

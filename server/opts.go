@@ -1667,7 +1667,7 @@ func parseJetStreamForAccount(v interface{}, acc *Account, errors *[]error, warn
 				if !ok {
 					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
 				}
-				jsLimits.MaxHaResources = int(vv)
+				jsLimits.MaxHAResources = int(vv)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{

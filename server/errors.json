@@ -1160,7 +1160,7 @@
     "deprecates": ""
   },
   {
-    "constant": "JSAccountHaLimitExceededErr",
+    "constant": "JSAccountHALimitExceededErr",
     "code": 400,
     "error_code": 10118,
     "description": "JetStream Account High Availability Limit Exceeded",

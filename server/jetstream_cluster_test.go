@@ -2984,7 +2984,7 @@ func TestJetStreamClusterAccountInfoAndLimits(t *testing.T) {
 		MaxStore:       8000,
 		MaxStreams:     3,
 		MaxConsumers:   1,
-		MaxHaResources: jwt.NoLimit,
+		MaxHAResources: jwt.NoLimit,
 	})
 
 	// Client based API

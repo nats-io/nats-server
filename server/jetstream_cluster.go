@@ -3815,26 +3815,25 @@ func (js *jetStream) createGroupForStream(ci *ClientInfo, cfg *StreamConfig) *ra
 	return nil
 }
 
+// Expects jetStream Lock to be held
 func (js *jetStream) haExceeded(acc string, limit int) bool {
 	if limit < 0 {
 		return false
 	} else if limit == 0 {
 		return true
 	}
-	js.mu.RLock()
-	defer js.mu.RUnlock()
 	if assignment, ok := js.cluster.streams[acc]; ok {
-		cnt := 0
+		count := 0
 		for _, v := range assignment {
 			if v.Group != nil && len(v.Group.Peers) > 1 {
-				cnt++
+				count++
 			}
 			for _, v := range v.consumers {
 				if v.Group != nil && len(v.Group.Peers) > 1 {
-					cnt++
+					count++
 				}
 			}
-			if cnt >= limit {
+			if count >= limit {
 				return true
 			}
 		}
@@ -3856,7 +3855,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	accName := acc.Name
 	accHaLim := 0
 	if jsa != nil {
-		accHaLim = jsa.limits.MaxHaResources
+		accHaLim = jsa.limits.MaxHAResources
 	}
 	acc.mu.RUnlock()
 
@@ -3874,14 +3873,15 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	}
 	cfg := &ccfg
 
+	js.mu.RLock()
 	if config.Replicas > 1 && js.haExceeded(accName, accHaLim) {
-		resp.Error = NewJSAccountHaLimitExceededError()
+		js.mu.RUnlock()
+		resp.Error = NewJSAccountHALimitExceededError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
 
 	// Check for stream limits here before proposing. These need to be tracked from meta layer, not jsa.
-	js.mu.RLock()
 	asa := cc.streams[acc.Name]
 	numStreams := len(asa)
 	js.mu.RUnlock()
@@ -4612,18 +4612,11 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 
 	// Grab our jetstream account info.
 	acc.mu.RLock()
-	jsa := acc.js
-	accName := acc.Name
-	accHaLim := jsa.limits.MaxHaResources
+	jsa, accName := acc.js, acc.Name
+	accHaLim := jsa.limits.MaxHAResources
 	acc.mu.RUnlock()
 
 	var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
-
-	if cfg.Durable != _EMPTY_ && js.haExceeded(accName, accHaLim) {
-		resp.Error = NewJSAccountHaLimitExceededError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
-		return
-	}
 
 	js.mu.Lock()
 	defer js.mu.Unlock()
@@ -4632,6 +4625,12 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	sa := js.streamAssignment(acc.Name, stream)
 	if sa == nil {
 		resp.Error = NewJSStreamNotFoundError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
+	}
+
+	if (cfg.Durable != _EMPTY_ || sa.Config.Retention == WorkQueuePolicy) && js.haExceeded(accName, accHaLim) {
+		resp.Error = NewJSAccountHALimitExceededError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
