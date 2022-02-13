@@ -1456,10 +1456,6 @@ func TestJetStreamClusterStreamExtendedUpdates(t *testing.T) {
 	if si := updateStream(); !reflect.DeepEqual(si.Config.Subjects, cfg.Subjects) {
 		t.Fatalf("Did not get expected stream info: %+v", si)
 	}
-	// Make sure these error for now.
-	// R factor changes
-	cfg.Replicas = 1
-	expectError()
 	// Mirror changes
 	cfg.Replicas = 3
 	cfg.Mirror = &nats.StreamSource{Name: "ORDERS"}
@@ -10505,6 +10501,88 @@ func TestJetStreamAddConsumerWithInfo(t *testing.T) {
 
 	t.Run("Single", func(t *testing.T) { testConsInfo(t, s) })
 	t.Run("Clustered", func(t *testing.T) { testConsInfo(t, c.randomServer()) })
+}
+
+func TestJetStreamClusterStreamReplicaUpdates(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R7S", 7)
+	defer c.shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Start out at R1
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 1,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	numMsgs := 1000
+	for i := 0; i < numMsgs; i++ {
+		js.PublishAsync("foo", []byte("HELLO WORLD"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	updateReplicas := func(r int) {
+		t.Helper()
+		si, err := js.StreamInfo("TEST")
+		require_NoError(t, err)
+		leader := si.Cluster.Leader
+
+		cfg.Replicas = r
+		_, err = js.UpdateStream(cfg)
+		require_NoError(t, err)
+		c.waitOnStreamLeader("$G", "TEST")
+
+		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+			si, err = js.StreamInfo("TEST")
+			require_NoError(t, err)
+			if len(si.Cluster.Replicas) != r-1 {
+				return fmt.Errorf("Expected %d replicas, got %d", r-1, len(si.Cluster.Replicas))
+			}
+			return nil
+		})
+
+		// Make sure we kept same leader.
+		if si.Cluster.Leader != leader {
+			t.Fatalf("Leader changed, expected %q got %q", leader, si.Cluster.Leader)
+		}
+		// Make sure all are current.
+		for _, r := range si.Cluster.Replicas {
+			c.waitOnStreamCurrent(c.serverByName(r.Name), "$G", "TEST")
+		}
+		// Check msgs.
+		if si.State.Msgs != uint64(numMsgs) {
+			t.Fatalf("Expected %d msgs, got %d", numMsgs, si.State.Msgs)
+		}
+		// Make sure we have the right number of HA Assets running on the leader.
+		s := c.serverByName(leader)
+		jsi, err := s.Jsz(nil)
+		require_NoError(t, err)
+		nha := 1 // meta always present.
+		if len(si.Cluster.Replicas) > 0 {
+			nha++
+		}
+		if nha != jsi.HAAssets {
+			t.Fatalf("Expected %d HA asset(s), but got %d", nha, jsi.HAAssets)
+		}
+	}
+
+	// Update from 1-3
+	updateReplicas(3)
+	// Update from 3-5
+	updateReplicas(5)
+	// Update from 5-3
+	updateReplicas(3)
+	// Update from 3-1
+	updateReplicas(1)
 }
 
 // Support functions
