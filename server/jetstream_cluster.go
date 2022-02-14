@@ -94,6 +94,7 @@ type raftGroup struct {
 	Name      string      `json:"name"`
 	Peers     []string    `json:"peers"`
 	Storage   StorageType `json:"store"`
+	Cluster   string      `json:"cluster,omitempty"`
 	Preferred string      `json:"preferred,omitempty"`
 	// Internal
 	node RaftNode
@@ -1460,6 +1461,15 @@ func (mset *stream) raftNode() RaftNode {
 	return mset.node
 }
 
+func (mset *stream) removeNode() {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	if n := mset.node; n != nil {
+		n.Delete()
+		mset.node = nil
+	}
+}
+
 // Monitor our stream node for this stream.
 func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 	s, cc, n := js.server(), js.cluster, sa.Group.node
@@ -2162,7 +2172,7 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) bool {
 	accStreams := cc.streams[acc.Name]
 	if accStreams == nil {
 		accStreams = make(map[string]*streamAssignment)
-	} else if osa := accStreams[stream]; osa != nil {
+	} else if osa := accStreams[stream]; osa != nil && osa != sa {
 		// Copy over private existing state from former SA.
 		sa.Group.node = osa.Group.node
 		sa.consumers = osa.consumers
@@ -2273,7 +2283,7 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 }
 
 // processClusterUpdateStream is called when we have a stream assignment that
-// has been updated for an existing assignment.
+// has been updated for an existing assignment and we are a member.
 func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAssignment) {
 	if sa == nil {
 		return
@@ -2282,21 +2292,38 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	js.mu.Lock()
 	s, rg := js.srv, sa.Group
 	client, subject, reply := sa.Client, sa.Subject, sa.Reply
-	alreadyRunning := rg.node != nil
+	alreadyRunning, numReplicas := osa.Group.node != nil, sa.Config.Replicas
+	needsNode := rg.node == nil
+	storage := sa.Config.Storage
 	hasResponded := sa.responded
 	sa.responded = true
 	js.mu.Unlock()
 
 	mset, err := acc.lookupStream(sa.Config.Name)
 	if err == nil && mset != nil {
-		if !alreadyRunning {
+		if !alreadyRunning && numReplicas > 1 {
+			if needsNode {
+				js.createRaftGroup(rg, storage)
+			}
 			s.startGoRoutine(func() { js.monitorStream(mset, sa) })
+		} else if numReplicas == 1 && alreadyRunning {
+			// We downgraded to R1. Make sure we cleanup the raft node and the stream monitor.
+			mset.removeNode()
+			js.mu.Lock()
+			sa.Group.node = nil
+			js.mu.Unlock()
 		}
 		mset.setStreamAssignment(sa)
 		if err = mset.update(sa.Config); err != nil {
 			s.Warnf("JetStream cluster error updating stream %q for account %q: %v", sa.Config.Name, acc.Name, err)
 			mset.setStreamAssignment(osa)
 		}
+	}
+
+	// If not found we must be expanding into this node since if we are here we know we are a member.
+	if err == ErrJetStreamStreamNotFound {
+		js.processStreamAssignment(sa)
+		return
 	}
 
 	if err != nil {
@@ -2328,6 +2355,12 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		return
 	}
 
+	// If we were a single node being promoted assume leadership role for purpose of responding.
+	if !hasResponded && !isLeader && !alreadyRunning {
+		isLeader = true
+	}
+
+	// Check if we should bail.
 	if !isLeader || hasResponded {
 		return
 	}
@@ -3637,7 +3670,7 @@ func (cc *jetStreamCluster) remapStreamAssignment(sa *streamAssignment, removePe
 }
 
 // selectPeerGroup will select a group of peers to start a raft group.
-func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamConfig) []string {
+func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamConfig, existing []string) []string {
 	if cluster == _EMPTY_ || cfg == nil {
 		return nil
 	}
@@ -3656,6 +3689,18 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 	var nodes []wn
 	s, peers := cc.s, cc.meta.Peers()
 
+	// Map existing.
+	var ep map[string]struct{}
+	if le := len(existing); le > 0 {
+		if le >= r {
+			return existing
+		}
+		ep = make(map[string]struct{})
+		for _, p := range existing {
+			ep[p] = struct{}{}
+		}
+	}
+
 	for _, p := range peers {
 		si, ok := s.nodeToInfo.Load(p.ID)
 		if !ok || si == nil {
@@ -3666,6 +3711,13 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		// If we know its offline or we do not have config or stats don't consider.
 		if ni.cluster != cluster || ni.offline || ni.cfg == nil || ni.stats == nil {
 			continue
+		}
+
+		// If existing also skip, we will add back in to front of the list when done.
+		if ep != nil {
+			if _, ok := ep[p.ID]; ok {
+				continue
+			}
 		}
 
 		var available uint64
@@ -3688,7 +3740,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 			}
 		}
 
-		// Check if we have enveough room if maxBytes set.
+		// Otherwise check if we have enough room if maxBytes set.
 		if maxBytes > 0 && maxBytes > available {
 			continue
 		}
@@ -3697,13 +3749,17 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 	}
 
 	// If we could not select enough peers, fail.
-	if len(nodes) < r {
+	if len(nodes) < (r - len(existing)) {
 		return nil
 	}
 	// Sort based on available from most to least.
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].avail > nodes[j].avail })
 
 	var results []string
+	if len(existing) > 0 {
+		results = append(results, existing...)
+		r -= len(existing)
+	}
 	for _, r := range nodes[:r] {
 		results = append(results, r.id)
 	}
@@ -3750,11 +3806,11 @@ func (js *jetStream) createGroupForStream(ci *ClientInfo, cfg *StreamConfig) *ra
 
 	// Need to create a group here.
 	for _, cn := range clusters {
-		peers := cc.selectPeerGroup(replicas, cn, cfg)
+		peers := cc.selectPeerGroup(replicas, cn, cfg, nil)
 		if len(peers) < replicas {
 			continue
 		}
-		return &raftGroup{Name: groupNameForStream(peers, cfg.Storage), Storage: cfg.Storage, Peers: peers}
+		return &raftGroup{Name: groupNameForStream(peers, cfg.Storage), Storage: cfg.Storage, Peers: peers, Cluster: cn}
 	}
 	return nil
 }
@@ -3901,12 +3957,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
-	// Check for cluster changes that we want to error on.
-	if newCfg.Replicas != len(osa.Group.Peers) {
-		resp.Error = NewJSStreamReplicasNotUpdatableError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
-		return
-	}
+	// Check for mirrot changes which are not allowed.
 	if !reflect.DeepEqual(newCfg.Mirror, osa.Config.Mirror) {
 		resp.Error = NewJSStreamMirrorNotUpdatableError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -3929,7 +3980,29 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		}
 	}
 
-	sa := &streamAssignment{Group: osa.Group, Sync: osa.Sync, Config: newCfg, Subject: subject, Reply: reply, Client: ci}
+	// Check for replica changes.
+	rg := osa.Group
+	if newCfg.Replicas != len(rg.Peers) {
+		// We are adding new peers here.
+		if newCfg.Replicas > len(rg.Peers) {
+			peers := cc.selectPeerGroup(newCfg.Replicas, rg.Cluster, newCfg, rg.Peers)
+			if len(peers) != newCfg.Replicas {
+				resp.Error = NewJSInsufficientResourcesError()
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+				return
+			}
+			// Single nodes are not recorded by the NRG layer so we can rename.
+			if len(rg.Peers) == 1 {
+				rg.Name = groupNameForStream(peers, rg.Storage)
+			}
+			rg.Peers = peers
+		} else {
+			// We are deleting nodes here.
+			rg.Peers = rg.Peers[:newCfg.Replicas]
+		}
+	}
+
+	sa := &streamAssignment{Group: rg, Sync: osa.Sync, Config: newCfg, Subject: subject, Reply: reply, Client: ci}
 	cc.meta.Propose(encodeUpdateStreamAssignment(sa))
 }
 

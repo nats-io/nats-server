@@ -517,6 +517,12 @@ func (s *Server) unregisterRaftNode(group string) {
 	}
 }
 
+func (s *Server) numRaftNodes() int {
+	s.rnMu.Lock()
+	defer s.rnMu.Unlock()
+	return len(s.raftNodes)
+}
+
 func (s *Server) lookupRaftNode(group string) RaftNode {
 	s.rnMu.RLock()
 	defer s.rnMu.RUnlock()
