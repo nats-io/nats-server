@@ -56,7 +56,7 @@ type jetStreamCluster struct {
 
 // Used to guide placement of streams and meta controllers in clustered JetStream.
 type Placement struct {
-	Cluster string   `json:"cluster"`
+	Cluster string   `json:"cluster,omitempty"`
 	Tags    []string `json:"tags,omitempty"`
 }
 
@@ -3680,6 +3680,12 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		maxBytes = uint64(cfg.MaxBytes)
 	}
 
+	// Check for tags.
+	var tags []string
+	if cfg.Placement != nil && len(cfg.Placement.Tags) > 0 {
+		tags = cfg.Placement.Tags
+	}
+
 	// Used for weighted sorting based on availability.
 	type wn struct {
 		id    string
@@ -3716,6 +3722,19 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		// If existing also skip, we will add back in to front of the list when done.
 		if ep != nil {
 			if _, ok := ep[p.ID]; ok {
+				continue
+			}
+		}
+
+		if len(tags) > 0 {
+			matched := true
+			for _, t := range tags {
+				if !ni.tags.Contains(t) {
+					matched = false
+					break
+				}
+			}
+			if !matched {
 				continue
 			}
 		}

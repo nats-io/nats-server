@@ -10585,6 +10585,88 @@ func TestJetStreamClusterStreamReplicaUpdates(t *testing.T) {
 	updateReplicas(1)
 }
 
+func TestJetStreamClusterStreamTagPlacement(t *testing.T) {
+	sc := createJetStreamSuperCluster(t, 3, 4)
+	defer sc.shutdown()
+
+	reset := func(s *Server) {
+		s.mu.Lock()
+		s.sys.resetCh <- struct{}{}
+		s.mu.Unlock()
+		s.sendStatszUpdate()
+	}
+
+	// Make first cluster AWS, US country code.
+	for _, s := range sc.clusterForName("C1").servers {
+		opts := s.getOpts()
+		opts.Tags.Add("cloud:aws")
+		opts.Tags.Add("country:us")
+		reset(s)
+	}
+	// Make second cluster GCP, UK country code.
+	for _, s := range sc.clusterForName("C2").servers {
+		opts := s.getOpts()
+		opts.Tags.Add("cloud:gcp")
+		opts.Tags.Add("country:uk")
+		reset(s)
+	}
+	// Make third cluster AZ, JP country code.
+	for _, s := range sc.clusterForName("C3").servers {
+		opts := s.getOpts()
+		opts.Tags.Add("cloud:az")
+		opts.Tags.Add("country:jp")
+		reset(s)
+	}
+	// Make fourth cluster GCP, and SG country code.
+	for _, s := range sc.clusterForName("C4").servers {
+		opts := s.getOpts()
+		opts.Tags.Add("cloud:gcp")
+		opts.Tags.Add("country:sg")
+		reset(s)
+	}
+
+	placeOK := func(connectCluster string, tags []string, expectedCluster string) {
+		t.Helper()
+		nc, js := jsClientConnect(t, sc.clusterForName(connectCluster).randomServer())
+		defer nc.Close()
+		si, err := js.AddStream(&nats.StreamConfig{
+			Name:      "TEST",
+			Subjects:  []string{"foo"},
+			Placement: &nats.Placement{Tags: tags},
+		})
+		require_NoError(t, err)
+		if si.Cluster.Name != expectedCluster {
+			t.Fatalf("Failed to place properly in %q, got %q", expectedCluster, si.Cluster.Name)
+		}
+		js.DeleteStream("TEST")
+	}
+
+	placeOK("C2", []string{"cloud:aws"}, "C1")
+	placeOK("C2", []string{"country:jp"}, "C3")
+	placeOK("C1", []string{"cloud:gcp", "country:uk"}, "C2")
+	placeOK("C2", []string{"cloud:gcp", "country:sg"}, "C4")
+
+	// Case shoud not matter.
+	placeOK("C1", []string{"cloud:GCP", "country:UK"}, "C2")
+	placeOK("C2", []string{"Cloud:Gcp", "Country:Sg"}, "C4")
+
+	placeErr := func(connectCluster string, tags []string) {
+		t.Helper()
+		nc, js := jsClientConnect(t, sc.clusterForName(connectCluster).randomServer())
+		defer nc.Close()
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:      "TEST",
+			Subjects:  []string{"foo"},
+			Placement: &nats.Placement{Tags: tags},
+		})
+		require_Error(t, err, NewJSInsufficientResourcesError())
+	}
+
+	placeErr("C1", []string{"cloud:GCP", "country:US"})
+	placeErr("C1", []string{"country:DN"})
+	placeErr("C1", []string{"cloud:DO"})
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.

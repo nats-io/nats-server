@@ -162,6 +162,7 @@ type ServerInfo struct {
 	Cluster   string    `json:"cluster,omitempty"`
 	Domain    string    `json:"domain,omitempty"`
 	Version   string    `json:"ver"`
+	Tags      []string  `json:"tags,omitempty"`
 	Seq       uint64    `json:"seq"`
 	JetStream bool      `json:"jetstream"`
 	Time      time.Time `json:"time"`
@@ -315,6 +316,9 @@ RESET:
 	}
 	s.mu.Unlock()
 
+	// Grab tags.
+	tags := s.getOpts().Tags
+
 	for s.eventsRunning() {
 		select {
 		case <-sendq.ch:
@@ -331,6 +335,7 @@ RESET:
 					pm.si.Version = VERSION
 					pm.si.Time = time.Now().UTC()
 					pm.si.JetStream = js
+					pm.si.Tags = tags
 				}
 				var b []byte
 				if pm.msg != nil {
@@ -1139,6 +1144,7 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 		si.Cluster,
 		si.Domain,
 		si.ID,
+		si.Tags,
 		cfg,
 		stats,
 		false, si.JetStream,
@@ -1177,7 +1183,7 @@ func (s *Server) processNewServer(si *ServerInfo) {
 		node := string(getHash(si.Name))
 		// Only update if non-existent
 		if _, ok := s.nodeToInfo.Load(node); !ok {
-			s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Version, si.Cluster, si.Domain, si.ID, nil, nil, false, si.JetStream})
+			s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Version, si.Cluster, si.Domain, si.ID, si.Tags, nil, nil, false, si.JetStream})
 		}
 	}
 	// Announce ourselves..
