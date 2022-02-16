@@ -286,7 +286,7 @@ type Options struct {
 	ReconnectErrorReports int
 
 	// Tags describing the server. They will be included in varz
-	// and used as a filter criteria for some system requests
+	// and used as a filter criteria for some system requests.
 	Tags jwt.TagList `json:"-"`
 
 	// OCSPConfig enables OCSP Stapling in the server.
