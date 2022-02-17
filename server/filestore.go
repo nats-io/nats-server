@@ -1794,11 +1794,9 @@ func (fs *fileStore) enforceBytesLimit() {
 	}
 }
 
-// Lock should be held on entry but will be released during actual remove.
+// Lock should be held.
 func (fs *fileStore) deleteFirstMsg() (bool, error) {
-	fs.mu.Unlock()
-	defer fs.mu.Lock()
-	return fs.removeMsg(fs.state.FirstSeq, false, true)
+	return fs.removeMsg(fs.state.FirstSeq, false, false)
 }
 
 // RemoveMsg will remove the message from this store.
@@ -1923,7 +1921,8 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 	}
 
 	// Optimize for FIFO case.
-	if seq == mb.first.seq {
+	fifo := seq == mb.first.seq
+	if fifo {
 		mb.selectNextFirst()
 		if mb.isEmpty() {
 			fs.removeMsgBlock(mb)
@@ -1965,6 +1964,13 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 			fs.rebuildStateLocked(ld)
 		}
 	}
+	// Check if we need to write the index file and we are flush in place (fip).
+	if shouldWriteIndex && fs.fip {
+		// Check if this is the first message, common during expirations etc.
+		if !fifo || time.Now().UnixNano()-mb.lwits > int64(2*time.Second) {
+			mb.writeIndexInfoLocked()
+		}
+	}
 	mb.mu.Unlock()
 
 	// Kick outside of lock.
@@ -1977,8 +1983,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 			case fch <- struct{}{}:
 			default:
 			}
-		} else {
-			mb.writeIndexInfo()
 		}
 	}
 
