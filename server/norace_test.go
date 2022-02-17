@@ -40,7 +40,9 @@ import (
 	"testing"
 	"time"
 
+	"crypto/hmac"
 	crand "crypto/rand"
+	"crypto/sha256"
 
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
@@ -4322,5 +4324,52 @@ func TestNoRaceFileStoreSubjectInfoWithSnapshotCleanup(t *testing.T) {
 
 	if len(fms) > 0 {
 		t.Fatalf("Expected to find no fss files, found %d", len(fms))
+	}
+}
+
+func TestNoRaceFileStoreKeyFileCleanup(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	prf := func(context []byte) ([]byte, error) {
+		h := hmac.New(sha256.New, []byte("dlc22"))
+		if _, err := h.Write(context); err != nil {
+			return nil, err
+		}
+		return h.Sum(nil), nil
+	}
+
+	fs, err := newFileStoreWithCreated(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 1024 * 1024},
+		StreamConfig{Name: "TEST", Storage: FileStorage},
+		time.Now(),
+		prf)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	n, msg := 10_000, []byte(strings.Repeat("Z", 1024))
+	for i := 0; i < n; i++ {
+		_, _, err := fs.StoreMsg(fmt.Sprintf("X.%d", i), nil, msg)
+		require_NoError(t, err)
+	}
+
+	var seqs []uint64
+	for i := 1; i <= n; i++ {
+		seqs = append(seqs, uint64(i))
+	}
+	// Randomly delete msgs, make sure we cleanup as we empty the message blocks.
+	rand.Shuffle(len(seqs), func(i, j int) { seqs[i], seqs[j] = seqs[j], seqs[i] })
+
+	for _, seq := range seqs {
+		_, err := fs.RemoveMsg(seq)
+		require_NoError(t, err)
+	}
+
+	// We will have cleanup the main .blk and .idx sans the lmb, but we should not have any *.fss files.
+	kms, err := filepath.Glob(path.Join(storeDir, msgDir, keyScanAll))
+	require_NoError(t, err)
+
+	if len(kms) > 1 {
+		t.Fatalf("Expected to find only 1 key file, found %d", len(kms))
 	}
 }

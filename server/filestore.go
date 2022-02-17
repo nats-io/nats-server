@@ -122,6 +122,7 @@ type msgBlock struct {
 	msgs    uint64 // User visible message count.
 	fss     map[string]*SimpleState
 	sfn     string
+	kfn     string
 	lwits   int64
 	lwts    int64
 	llts    int64
@@ -192,6 +193,8 @@ const (
 	fssScanAll = "*.fss"
 	// used to store our block encryption key.
 	keyScan = "%d.key"
+	// to look for orphans
+	keyScanAll = "*.key"
 	// This is where we keep state on consumers.
 	consumerDir = "obs"
 	// Index file for a consumer.
@@ -918,6 +921,23 @@ func (fs *fileStore) recoverMsgs() error {
 			os.Remove(fn)
 		}
 	}
+	// Same bug for keyfiles but for these we just need to identify orphans.
+	if kms, err := filepath.Glob(path.Join(mdir, keyScanAll)); err == nil && len(kms) > 0 {
+		valid := make(map[uint64]bool)
+		for _, mb := range fs.blks {
+			valid[mb.index] = true
+		}
+		for _, fn := range kms {
+			var index uint64
+			shouldRemove := true
+			if n, err := fmt.Sscanf(path.Base(fn), keyScan, &index); err == nil && n == 1 && valid[index] {
+				shouldRemove = false
+			}
+			if shouldRemove {
+				os.Remove(fn)
+			}
+		}
+	}
 
 	// Limits checks and enforcement.
 	fs.enforceMsgLimit()
@@ -1564,6 +1584,7 @@ func (fs *fileStore) genEncryptionKeysForBlock(mb *msgBlock) error {
 	if err := ioutil.WriteFile(keyFile, encrypted, defaultFilePerms); err != nil {
 		return err
 	}
+	mb.kfn = keyFile
 	return nil
 }
 
@@ -4343,6 +4364,9 @@ func (mb *msgBlock) dirtyCloseWithRemove(remove bool) {
 		if mb.sfn != _EMPTY_ {
 			os.Remove(mb.sfn)
 			mb.sfn = _EMPTY_
+		}
+		if mb.kfn != _EMPTY_ {
+			os.Remove(mb.kfn)
 		}
 	}
 }
