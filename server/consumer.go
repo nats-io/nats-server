@@ -2085,6 +2085,16 @@ func (o *consumer) needAck(sseq uint64) bool {
 	var asflr, osseq uint64
 	var pending map[uint64]*Pending
 	o.mu.RLock()
+
+	// Check first if we are filtered, and if so check if this is even applicable to us.
+	if o.isFiltered() && o.mset != nil {
+		subj, _, _, _, err := o.mset.store.LoadMsg(sseq)
+		if err != nil || !o.isFilteredMatch(subj) {
+			o.mu.RUnlock()
+			return false
+		}
+	}
+
 	if o.isLeader() {
 		asflr, osseq = o.asflr, o.sseq
 		pending = o.pending
