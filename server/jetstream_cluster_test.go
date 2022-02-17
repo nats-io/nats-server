@@ -10667,6 +10667,75 @@ func TestJetStreamClusterStreamTagPlacement(t *testing.T) {
 	placeErr("C1", []string{"cloud:DO"})
 }
 
+func TestJetStreamClusterInterestRetentionWithFilteredConsumersExtra(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	subjectNameZero := "foo.bar"
+	subjectNameOne := "foo.baz"
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo.*"}, Retention: nats.InterestPolicy, Replicas: 3})
+	require_NoError(t, err)
+
+	checkState := func(expected uint64) {
+		t.Helper()
+		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+			si, err := js.StreamInfo("TEST")
+			require_NoError(t, err)
+			if si.State.Msgs != expected {
+				return fmt.Errorf("Expected %d msgs, got %d", expected, si.State.Msgs)
+			}
+			return nil
+		})
+	}
+
+	subZero, err := js.PullSubscribe(subjectNameZero, "dlc-0")
+	require_NoError(t, err)
+
+	subOne, err := js.PullSubscribe(subjectNameOne, "dlc-1")
+	require_NoError(t, err)
+
+	msg := []byte("FILTERED")
+	// Now send a bunch of messages
+	for i := 0; i < 1000; i++ {
+		_, err = js.PublishAsync(subjectNameZero, msg)
+		require_NoError(t, err)
+		_, err = js.PublishAsync(subjectNameOne, msg)
+		require_NoError(t, err)
+	}
+
+	// should be 2000 in total
+	checkState(2000)
+
+	// fetch and acknowledge, count records to ensure no errors acknowledging
+	getAndAckBatch := func(sub *nats.Subscription) {
+		t.Helper()
+		successCounter := 0
+		msgs, err := sub.Fetch(1000)
+		require_NoError(t, err)
+
+		for _, m := range msgs {
+			err = m.Ack()
+			require_NoError(t, err)
+			successCounter++
+		}
+		if successCounter != 1000 {
+			t.Fatalf("Unexpected number of acknowledges %d for subscription %v", successCounter, sub)
+		}
+	}
+
+	// fetch records subscription zero
+	getAndAckBatch(subZero)
+	// fetch records for subscription one
+	getAndAckBatch(subOne)
+	// Make sure stream is zero.
+	checkState(0)
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
