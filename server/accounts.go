@@ -4200,10 +4200,9 @@ func newTransform(src, dest string) (*transform, error) {
 				dtpinb = append(dtpinb, -1)
 			}
 		}
-		// NOTE(JNM) - Not sure why this check was there, nor sure if it is safe to comment out, but it's totally valid to have unequal sizes with the bucket mapping
-		//if nphs != npwcs {
-		//	return nil, ErrBadSubject
-		//}
+		if nphs < npwcs {
+			return nil, ErrBadSubject
+		}
 	}
 
 	return &transform{src: src, dest: dest, dtoks: dtokens, stoks: stokens, dtpi: dtpi, dtpinb: dtpinb}, nil
@@ -4287,9 +4286,6 @@ func (tr *transform) transform(tokens []string) (string, error) {
 				var keyForHashing string
 				for _, sourceToken := range tr.dtpi[i] {
 					keyForHashing = keyForHashing + tokens[sourceToken]
-					// uncomment below for 'repeat the hashed tokens' behavior
-					//b.WriteString(tokens[sourceToken])
-					//b.WriteByte(btsep)
 				}
 				token = tr.getHashBucket(keyForHashing, int(tr.dtpinb[i]))
 			} else { // back to normal substitution
