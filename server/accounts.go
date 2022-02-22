@@ -18,6 +18,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"hash/maphash"
 	"io/ioutil"
 	"math"
@@ -700,6 +701,9 @@ func transformUntokenize(subject string) (string, []string) {
 
 	for _, token := range strings.Split(subject, tsep) {
 		if len(token) > 1 && token[0] == '$' && token[1] >= '1' && token[1] <= '9' {
+			phs = append(phs, token)
+			nda = append(nda, "*")
+		} else if len(token) > 1 && token[0] == '#' && token[1] >= '1' && token[1] <= '9' {
 			phs = append(phs, token)
 			nda = append(nda, "*")
 		} else {
@@ -4114,18 +4118,42 @@ type transform struct {
 	src, dest string
 	dtoks     []string
 	stoks     []string
-	dtpi      []int8
+	dtpi      [][]int // destination token position indexes
+	dtpinb    []int32 // destination token position index number of buckets
 }
 
 // Helper to pull raw place holder index. Returns -1 if not a place holder.
-func placeHolderIndex(token string) int {
-	if len(token) > 1 && token[0] == '$' {
+func placeHolderIndex(token string) ([]int, int32) {
+	if len(token) > 1 {
 		var tp int
-		if n, err := fmt.Sscanf(token, "$%d", &tp); err == nil && n == 1 {
-			return tp
+		var tphnb int32
+		if token[0] == '$' {
+			if n, err := fmt.Sscanf(token, "$%d", &tp); err == nil && n == 1 {
+				return []int{tp}, -1
+			}
+		}
+		if token[0] == '#' {
+			colunmSeparatedParts := strings.Split(token[1:], ":")
+			if len(colunmSeparatedParts) == 2 {
+				n, err := fmt.Sscanf(colunmSeparatedParts[1], "%d", &tphnb) // get the number of bucket
+				if err == nil && n == 1 {
+					tokenIndexes := strings.Split(colunmSeparatedParts[0], "+")
+					var numPositions = len(tokenIndexes)
+					tps := make([]int, numPositions)
+					for ti, t := range tokenIndexes {
+						i, err := strconv.Atoi(t)
+						if err == nil {
+							tps[ti] = i
+						} else {
+							return []int{-1}, -1
+						}
+					}
+					return tps, tphnb
+				}
+			}
 		}
 	}
-	return -1
+	return []int{-1}, -1
 }
 
 // newTransform will create a new transform checking the src and dest subjects for accuracy.
@@ -4139,7 +4167,8 @@ func newTransform(src, dest string) (*transform, error) {
 		return nil, ErrBadSubject
 	}
 
-	var dtpi []int8
+	var dtpi [][]int
+	var dtpinb []int32
 
 	// If the src has partial wildcards then the dest needs to have the token place markers.
 	if npwcs > 0 || hasFwc {
@@ -4153,25 +4182,31 @@ func newTransform(src, dest string) (*transform, error) {
 
 		nphs := 0
 		for _, token := range dtokens {
-			tp := placeHolderIndex(token)
-			if tp >= 0 {
-				if tp > npwcs {
-					return nil, ErrBadSubject
-				}
+			tp, nb := placeHolderIndex(token)
+			if tp[0] >= 0 {
 				nphs++
 				// Now build up our runtime mapping from dest to source tokens.
-				dtpi = append(dtpi, int8(sti[tp]))
+				var stis []int
+				for _, position := range tp {
+					if position > npwcs {
+						return nil, ErrBadSubject
+					}
+					stis = append(stis, sti[position])
+				}
+				dtpi = append(dtpi, stis)
+				dtpinb = append(dtpinb, int32(nb))
 			} else {
-				dtpi = append(dtpi, -1)
+				dtpi = append(dtpi, []int{-1})
+				dtpinb = append(dtpinb, -1)
 			}
 		}
-
-		if nphs != npwcs {
-			return nil, ErrBadSubject
-		}
+		// NOTE(JNM) - Not sure why this check was there, nor sure if it is safe to comment out, but it's totally valid to have unequal sizes with the bucket mapping
+		//if nphs != npwcs {
+		//	return nil, ErrBadSubject
+		//}
 	}
 
-	return &transform{src: src, dest: dest, dtoks: dtokens, stoks: stokens, dtpi: dtpi}, nil
+	return &transform{src: src, dest: dest, dtoks: dtokens, stoks: stokens, dtpi: dtpi, dtpinb: dtpinb}, nil
 }
 
 // match will take a literal published subject that is associated with a client and will match and transform
@@ -4215,6 +4250,16 @@ func (tr *transform) transformSubject(subject string) (string, error) {
 	return tr.transform(tts)
 }
 
+func (tr *transform) getHashBucket(key string, numBuckets int) string {
+	h := fnv.New32a()
+	_, err := h.Write([]byte(key))
+	if err != nil {
+		return fmt.Sprintf("error: %v", err)
+	}
+
+	return fmt.Sprintf("%d", h.Sum32()%uint32(numBuckets))
+}
+
 // Do a transform on the subject to the dest subject.
 func (tr *transform) transform(tokens []string) (string, error) {
 	if len(tr.dtpi) == 0 {
@@ -4230,7 +4275,7 @@ func (tr *transform) transform(tokens []string) (string, error) {
 	li := len(tr.dtpi) - 1
 	for i, index := range tr.dtpi {
 		// <0 means use destination token.
-		if index < 0 {
+		if index[0] < 0 {
 			token = tr.dtoks[i]
 			// Break if fwc
 			if len(token) == 1 && token[0] == fwc {
@@ -4238,7 +4283,18 @@ func (tr *transform) transform(tokens []string) (string, error) {
 			}
 		} else {
 			// >= 0 means use source map index to figure out which source token to pull.
-			token = tokens[index]
+			if tr.dtpinb[i] > 0 { // there is a valid (i.e. not -1) value for number of buckets, this is a bucket transform token
+				var keyForHashing string
+				for _, sourceToken := range tr.dtpi[i] {
+					keyForHashing = keyForHashing + tokens[sourceToken]
+					// uncomment below for 'repeat the hashed tokens' behavior
+					//b.WriteString(tokens[sourceToken])
+					//b.WriteByte(btsep)
+				}
+				token = tr.getHashBucket(keyForHashing, int(tr.dtpinb[i]))
+			} else { // back to normal substitution
+				token = tokens[tr.dtpi[i][0]]
+			}
 		}
 		b.WriteString(token)
 		if i < li {
