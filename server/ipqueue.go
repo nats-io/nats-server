@@ -101,7 +101,7 @@ func (q *ipQueue) push(e interface{}) int {
 	}
 	q.elts = append(q.elts, e)
 	l++
-	if l >= q.lt && q.logger != nil {
+	if l >= q.lt && q.logger != nil && (l <= q.lt+10 || q.lt%10000 == 0) {
 		q.logger.log(q.name, l)
 	}
 	q.Unlock()
