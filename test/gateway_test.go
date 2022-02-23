@@ -733,3 +733,76 @@ func TestGatewayAdvertiseInCluster(t *testing.T) {
 	sb2.Shutdown()
 	expectNothing(t, gA)
 }
+
+func TestGatewayAuthTimeout(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		setAuth bool //
+		wait    time.Duration
+	}{
+		{"auth not explicitly set", false, 2500 * time.Millisecond},
+		{"auth set", true, 500 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ob := testDefaultOptionsForGateway("B")
+			if test.setAuth {
+				ob.Gateway.AuthTimeout = 0.25
+			}
+			sb := RunServer(ob)
+			defer sb.Shutdown()
+
+			sa := createGatewayConn(t, ob.Gateway.Host, ob.Gateway.Port)
+			defer sa.Close()
+
+			gAExpect := expectCommand(t, sa)
+
+			dstInfo := checkInfoMsg(t, sa)
+			if dstInfo.Gateway != "B" {
+				t.Fatalf("Expected to connect to %q, got %q", "B", dstInfo.Gateway)
+			}
+
+			// Don't send our CONNECT and we should be disconnected due to auth timeout.
+			time.Sleep(test.wait)
+			gAExpect(errRe)
+			expectDisconnect(t, sa)
+		})
+	}
+}
+
+func TestGatewayFirstPingGoesAfterConnect(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	// For this test, we want the first ping to NOT be disabled.
+	ob.DisableShortFirstPing = false
+	// Also, for this test increase auth_timeout so that it does not disconnect
+	// while checking...
+	ob.Gateway.AuthTimeout = 10.0
+	sb := RunServer(ob)
+	defer sb.Shutdown()
+
+	sa := createGatewayConn(t, ob.Gateway.Host, ob.Gateway.Port)
+	defer sa.Close()
+
+	gASend, gAExpect := sendCommand(t, sa), expectCommand(t, sa)
+	dstInfo := checkInfoMsg(t, sa)
+	if dstInfo.Gateway != "B" {
+		t.Fatalf("Expected to connect to %q, got %q", "B", dstInfo.Gateway)
+	}
+
+	// Wait and we should not be receiving a PING from server B until we send
+	// a CONNECT. We need to wait for more than the initial PING, so cannot
+	// use expectNothing() helper here.
+	buf := make([]byte, 256)
+	sa.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if n, err := sa.Read(buf); err == nil {
+		t.Fatalf("Expected nothing, got %s", buf[:n])
+	}
+
+	// Now send connect and INFO
+	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"tls_required\":%v,\"gateway\":%q}\r\n",
+		false, false, false, "A")
+	gASend(cs)
+	gASend(fmt.Sprintf("INFO {\"gateway\":%q}\r\n", "A"))
+
+	// We should get the first PING
+	gAExpect(pingRe)
+}
