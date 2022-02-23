@@ -3,8 +3,8 @@ module github.com/nats-io/nats-server/v2
 go 1.17
 
 require (
-	github.com/klauspost/compress v1.13.4
-	github.com/minio/highwayhash v1.0.1
+	github.com/klauspost/compress v1.14.4
+	github.com/minio/highwayhash v1.0.2
 	github.com/nats-io/jwt/v2 v2.2.1-0.20220113022732-58e87895b296
 	github.com/nats-io/nats.go v1.13.1-0.20220121202836-972a071d373d
 	github.com/nats-io/nkeys v0.3.0
