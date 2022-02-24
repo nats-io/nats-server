@@ -15,6 +15,7 @@ package test
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -348,6 +349,75 @@ func TestAccountCycleDepthLimit(t *testing.T) {
 			}
 		}
 		last = acc
+	}
+}
+
+func TestSubjectMappingToBuckets(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		port: -1
+		mappings = {
+    		foo.* : foo.#1:10
+		}
+	`))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc1 := clientConnectToServer(t, s)
+	defer nc1.Close()
+
+	numMessages := 100
+	subjectsReceived := make(chan string)
+
+	msg := []byte("HELLO")
+	sub1, err := nc1.Subscribe("foo.*", func(m *nats.Msg) {
+		subjectsReceived <- m.Subject
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	sub1.AutoUnsubscribe(numMessages + 2)
+
+	nc2 := clientConnectToServer(t, s)
+	defer nc2.Close()
+
+	// publish numMessages with an increasing id (should map to bucket numbers with the range of 10 buckets)
+	for i := 0; i < numMessages; i++ {
+		err = nc2.Publish(fmt.Sprintf("foo.%d", i), msg)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	// publish the same message twice to make sure it always maps to the same bucket
+	for i := 0; i < 2; i++ {
+		err = nc2.Publish("foo.a", msg)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	// verify all the buckets are in the expected range
+	bucketsReceived := make([]int, numMessages)
+
+	for i := 0; i < numMessages; i++ {
+		subject := <-subjectsReceived
+		bucketsReceived[i], err = strconv.Atoi(strings.Split(subject, ".")[1])
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	for _, bucket := range bucketsReceived {
+		if bucket > 9 || bucket < 0 {
+			t.Fatalf("Error received bucket number %d out of range 0..9", bucket)
+		}
+	}
+
+	// verify hashing is deterministic
+	if strings.Compare(<-subjectsReceived, <-subjectsReceived) != 0 {
+		t.Fatalf("Error: same id mapped to two different buckets")
 	}
 }
 
