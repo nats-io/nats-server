@@ -934,6 +934,10 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig) (*StreamConfig, 
 	if cfg.MaxConsumers != old.MaxConsumers {
 		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not change MaxConsumers"))
 	}
+	// Can't change MaxBytes for now.
+	if cfg.MaxBytes != old.MaxBytes {
+		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not change MaxBytes"))
+	}
 	// Can't change storage types.
 	if cfg.Storage != old.Storage {
 		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not change storage type"))

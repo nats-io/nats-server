@@ -11601,6 +11601,31 @@ func TestJetStreamMirrorUpdatePreventsSubjects(t *testing.T) {
 	}
 }
 
+func TestJetStreamPreventUpdateMaxBytes(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	}
+
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	cfg.MaxBytes = 22
+	_, err = js.UpdateStream(cfg)
+	require_Error(t, err)
+}
+
 func TestJetStreamSourceBasics(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()
