@@ -15209,6 +15209,78 @@ func TestJetStreamPullConsumerHeartBeats(t *testing.T) {
 	}
 }
 
+func TestStorageReservedBytes(t *testing.T) {
+	opts := DefaultTestOptions
+	opts.Port = -1
+	opts.JetStream = true
+	tdir, _ := ioutil.TempDir(tempRoot, "jstests-storedir-")
+	opts.StoreDir = tdir
+	opts.HTTPPort = -1
+	s := RunServer(&opts)
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	getReserved := func(addr string, st nats.StorageType) (uint64, error) {
+		resp, err := http.Get(addr)
+		if err != nil {
+			return 0, err
+		}
+		defer resp.Body.Close()
+
+		var v Varz
+		if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
+			return 0, err
+		}
+
+		if st == nats.MemoryStorage {
+			return v.JetStream.Stats.ReservedMemory, nil
+		}
+		return v.JetStream.Stats.ReservedStore, nil
+	}
+
+	storage := []nats.StorageType{
+		nats.FileStorage,
+		nats.MemoryStorage,
+	}
+	varzAddr := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+	for _, storage := range storage {
+		cfg := &nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Storage:  storage,
+		}
+
+		_, err := js.AddStream(cfg)
+		require_NoError(t, err)
+
+		cfg.MaxBytes = 1234
+		_, err = js.UpdateStream(cfg)
+		require_NoError(t, err)
+
+		reserved, err := getReserved(varzAddr, storage)
+		require_NoError(t, err)
+		if reserved != uint64(cfg.MaxBytes) {
+			t.Fatalf("Unexpected reserved: %d, want %d", reserved, cfg.MaxBytes)
+		}
+
+		err = js.DeleteStream("TEST")
+		require_NoError(t, err)
+
+		reserved, err = getReserved(varzAddr, storage)
+		require_NoError(t, err)
+		if reserved != 0 {
+			t.Fatalf("Unexpected reserved: %d, want 0", reserved)
+		}
+	}
+}
+
 func TestJetStreamRecoverStreamWithDeletedMessagesNonCleanShutdown(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	defer s.Shutdown()

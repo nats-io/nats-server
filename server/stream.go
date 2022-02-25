@@ -1047,6 +1047,9 @@ func (mset *stream) update(config *StreamConfig) error {
 		}
 	}
 
+	mset.js.releaseStreamResources(&ocfg)
+	mset.js.reserveStreamResources(cfg)
+
 	// Now update config and store's version of our config.
 	mset.cfg = *cfg
 
