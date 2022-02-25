@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -15090,6 +15091,218 @@ func TestJetStreamPullConsumerHeartBeats(t *testing.T) {
 	lm := msgs[len(msgs)-1].msg
 	if !reflect.DeepEqual(lm.Header, reqTimeout) {
 		t.Fatalf("Expected %+v hdr, got %+v", reqTimeout, lm.Header)
+	}
+}
+
+func TestStorageReservedBytes(t *testing.T) {
+	const systemLimit = 1024
+	opts := DefaultTestOptions
+	opts.Port = -1
+	opts.JetStream = true
+	opts.JetStreamMaxMemory = systemLimit
+	opts.JetStreamMaxStore = systemLimit
+	tdir, _ := ioutil.TempDir(tempRoot, "jstests-storedir-")
+	opts.StoreDir = tdir
+	opts.HTTPPort = -1
+	s := RunServer(&opts)
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	getJetStreamVarz := func(hc *http.Client, addr string) (JetStreamVarz, error) {
+		resp, err := hc.Get(addr)
+		if err != nil {
+			return JetStreamVarz{}, err
+		}
+		defer resp.Body.Close()
+
+		var v Varz
+		if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
+			return JetStreamVarz{}, err
+		}
+
+		return v.JetStream, nil
+	}
+	getReserved := func(hc *http.Client, addr string, st nats.StorageType) (uint64, error) {
+		jsv, err := getJetStreamVarz(hc, addr)
+		if err != nil {
+			return 0, err
+		}
+		if st == nats.MemoryStorage {
+			return jsv.Stats.ReservedMemory, nil
+		}
+		return jsv.Stats.ReservedStore, nil
+	}
+
+	varzAddr := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+	hc := &http.Client{Timeout: 5 * time.Second}
+
+	jsv, err := getJetStreamVarz(hc, varzAddr)
+	require_NoError(t, err)
+
+	if got, want := systemLimit, int(jsv.Config.MaxMemory); got != want {
+		t.Fatalf("Unexpected max memory: got=%d, want=%d", got, want)
+	}
+	if got, want := systemLimit, int(jsv.Config.MaxStore); got != want {
+		t.Fatalf("Unexpected max store: got=%d, want=%d", got, want)
+	}
+
+	cases := []struct {
+		name            string
+		accountLimit    int64
+		storage         nats.StorageType
+		createMaxBytes  int64
+		updateMaxBytes  int64
+		wantUpdateError bool
+	}{
+		{
+			name:           "file reserve 66% of system limit",
+			accountLimit:   -1,
+			storage:        nats.FileStorage,
+			createMaxBytes: int64(math.Round(float64(systemLimit) * .666)),
+			updateMaxBytes: int64(math.Round(float64(systemLimit)*.666)) + 1,
+		},
+		{
+			name:           "memory reserve 66% of system limit",
+			accountLimit:   -1,
+			storage:        nats.MemoryStorage,
+			createMaxBytes: int64(math.Round(float64(systemLimit) * .666)),
+			updateMaxBytes: int64(math.Round(float64(systemLimit)*.666)) + 1,
+		},
+		{
+			name:            "file update past system limit",
+			accountLimit:    -1,
+			storage:         nats.FileStorage,
+			createMaxBytes:  systemLimit,
+			updateMaxBytes:  systemLimit + 1,
+			wantUpdateError: true,
+		},
+		{
+			name:            "memory update past system limit",
+			accountLimit:    -1,
+			storage:         nats.MemoryStorage,
+			createMaxBytes:  systemLimit,
+			updateMaxBytes:  systemLimit + 1,
+			wantUpdateError: true,
+		},
+		{
+			name:           "file update to system limit",
+			accountLimit:   -1,
+			storage:        nats.FileStorage,
+			createMaxBytes: systemLimit - 1,
+			updateMaxBytes: systemLimit,
+		},
+		{
+			name:           "memory update to system limit",
+			accountLimit:   -1,
+			storage:        nats.MemoryStorage,
+			createMaxBytes: systemLimit - 1,
+			updateMaxBytes: systemLimit,
+		},
+		{
+			name:           "file reserve 66% of account limit",
+			accountLimit:   systemLimit / 2,
+			storage:        nats.FileStorage,
+			createMaxBytes: int64(math.Round(float64(systemLimit/2) * .666)),
+			updateMaxBytes: int64(math.Round(float64(systemLimit/2)*.666)) + 1,
+		},
+		{
+			name:           "memory reserve 66% of account limit",
+			accountLimit:   systemLimit / 2,
+			storage:        nats.MemoryStorage,
+			createMaxBytes: int64(math.Round(float64(systemLimit/2) * .666)),
+			updateMaxBytes: int64(math.Round(float64(systemLimit/2)*.666)) + 1,
+		},
+		// TODO: Enable these once account limits are enforced.
+		//{
+		//	name:            "file update past account limit",
+		//	accountLimit:    systemLimit / 2,
+		//	storage:         nats.FileStorage,
+		//	createMaxBytes:  (systemLimit / 2),
+		//	updateMaxBytes:  (systemLimit / 2) + 1,
+		//	wantUpdateError: true,
+		//},
+		//{
+		//	name:            "memory update past account limit",
+		//	accountLimit:    systemLimit / 2,
+		//	storage:         nats.MemoryStorage,
+		//	createMaxBytes:  (systemLimit / 2),
+		//	updateMaxBytes:  (systemLimit / 2) + 1,
+		//	wantUpdateError: true,
+		//},
+		{
+			name:           "file update to account limit",
+			accountLimit:   systemLimit / 2,
+			storage:        nats.FileStorage,
+			createMaxBytes: (systemLimit / 2) - 1,
+			updateMaxBytes: (systemLimit / 2),
+		},
+		{
+			name:           "memory update to account limit",
+			accountLimit:   systemLimit / 2,
+			storage:        nats.MemoryStorage,
+			createMaxBytes: (systemLimit / 2) - 1,
+			updateMaxBytes: (systemLimit / 2),
+		},
+	}
+	for i := 0; i < len(cases) && !t.Failed(); i++ {
+		c := cases[i]
+		t.Run(c.name, func(st *testing.T) {
+			// Setup limits
+			err = s.GlobalAccount().UpdateJetStreamLimits(&JetStreamAccountLimits{
+				MaxMemory: c.accountLimit,
+				MaxStore:  c.accountLimit,
+			})
+			require_NoError(st, err)
+
+			// Create initial stream
+			cfg := &nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Storage:  c.storage,
+				MaxBytes: c.createMaxBytes,
+			}
+			_, err = js.AddStream(cfg)
+			require_NoError(st, err)
+
+			// Update stream MaxBytes
+			cfg.MaxBytes = c.updateMaxBytes
+			info, err := js.UpdateStream(cfg)
+			if c.wantUpdateError && err == nil {
+				got := info.Config.MaxBytes
+				st.Fatalf("Unexpected update success, newMaxBytes=%d; systemLimit=%d; accountLimit=%d",
+					got, systemLimit, c.accountLimit)
+			} else if !c.wantUpdateError && err != nil {
+				st.Fatalf("Unexpected update error: %s", err)
+			}
+
+			if !c.wantUpdateError && err == nil {
+				// If update was successful, then ensure reserved shows new
+				// amount
+				reserved, err := getReserved(hc, varzAddr, c.storage)
+				require_NoError(st, err)
+				if got, want := reserved, uint64(c.updateMaxBytes); got != want {
+					st.Fatalf("Unexpected reserved: %d, want %d", got, want)
+				}
+			}
+
+			// Delete stream
+			err = js.DeleteStream("TEST")
+			require_NoError(st, err)
+
+			// Ensure reserved shows 0 because we've deleted the stream
+			reserved, err := getReserved(hc, varzAddr, c.storage)
+			require_NoError(st, err)
+			if reserved != 0 {
+				st.Fatalf("Unexpected reserved: %d, want 0", reserved)
+			}
+		})
 	}
 }
 
