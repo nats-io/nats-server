@@ -464,7 +464,9 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		// Send advisory.
 		var suppress bool
 		if !s.standAloneMode() && sa == nil {
-			suppress = true
+			if cfg.Replicas > 1 {
+				suppress = true
+			}
 		} else if sa != nil {
 			suppress = sa.responded
 		}
@@ -1048,11 +1050,8 @@ func (mset *stream) update(config *StreamConfig) error {
 	// Now update config and store's version of our config.
 	mset.cfg = *cfg
 
-	var suppress bool
-	if mset.isClustered() && mset.sa != nil {
-		suppress = mset.sa.responded
-	}
-	if mset.isLeader() && !suppress {
+	// If we are the leader never suppres update advisory, simply send.
+	if mset.isLeader() {
 		mset.sendUpdateAdvisoryLocked()
 	}
 	mset.mu.Unlock()
@@ -3327,12 +3326,6 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		mset.infoSub = nil
 	}
 
-	// Quit channel.
-	if mset.qch != nil {
-		close(mset.qch)
-		mset.qch = nil
-	}
-
 	// Cluster cleanup
 	if n := mset.node; n != nil {
 		if deleteFlag {
@@ -3345,6 +3338,12 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	// Send stream delete advisory after the consumers.
 	if deleteFlag && advisory {
 		mset.sendDeleteAdvisoryLocked()
+	}
+
+	// Quit channel, do this after sending the delete advisory
+	if mset.qch != nil {
+		close(mset.qch)
+		mset.qch = nil
 	}
 
 	c := mset.client
