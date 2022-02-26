@@ -4125,19 +4125,20 @@ type transform struct {
 // Helper to pull raw place holder index. Returns -1 if not a place holder.
 func placeHolderIndex(token string) ([]int, int32) {
 	if len(token) > 1 {
-		var tp int
-		var tphnb int32
+		//var tp int
 		if token[0] == '$' {
-			if n, err := fmt.Sscanf(token, "$%d", &tp); err == nil && n == 1 {
-				return []int{tp}, -1
+
+			bucketingParts := strings.Split(token[1:], "%")
+			if len(bucketingParts) == 1 { // simple non-bucket mapping
+				tp, err := strconv.Atoi(bucketingParts[0])
+				if err == nil {
+					return []int{tp}, -1
+				}
 			}
-		}
-		if token[0] == '#' {
-			colunmSeparatedParts := strings.Split(token[1:], ":")
-			if len(colunmSeparatedParts) == 2 {
-				n, err := fmt.Sscanf(colunmSeparatedParts[1], "%d", &tphnb) // get the number of bucket
-				if err == nil && n == 1 {
-					tokenIndexes := strings.Split(colunmSeparatedParts[0], "+")
+			if len(bucketingParts) == 2 { // mapping to a bucket
+				tphnb, err := strconv.Atoi(bucketingParts[1])
+				if err == nil {
+					tokenIndexes := strings.Split(bucketingParts[0], "+")
 					var numPositions = len(tokenIndexes)
 					tps := make([]int, numPositions)
 					for ti, t := range tokenIndexes {
@@ -4148,10 +4149,12 @@ func placeHolderIndex(token string) ([]int, int32) {
 							return []int{-1}, -1
 						}
 					}
-					return tps, tphnb
+					return tps, int32(tphnb)
 				}
 			}
+
 		}
+
 	}
 	return []int{-1}, -1
 }
@@ -4194,7 +4197,7 @@ func newTransform(src, dest string) (*transform, error) {
 					stis = append(stis, sti[position])
 				}
 				dtpi = append(dtpi, stis)
-				dtpinb = append(dtpinb, int32(nb))
+				dtpinb = append(dtpinb, nb)
 			} else {
 				dtpi = append(dtpi, []int{-1})
 				dtpinb = append(dtpinb, -1)

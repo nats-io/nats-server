@@ -356,7 +356,7 @@ func TestSubjectMappingToBuckets(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		port: -1
 		mappings = {
-    		foo.* : foo.#1:10
+    		foo.* : foo.$1%10
 		}
 	`))
 	defer removeFile(t, conf)
@@ -377,24 +377,18 @@ func TestSubjectMappingToBuckets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	sub1.AutoUnsubscribe(numMessages + 2)
+	sub1.AutoUnsubscribe(numMessages * 2)
 
 	nc2 := clientConnectToServer(t, s)
 	defer nc2.Close()
 
-	// publish numMessages with an increasing id (should map to bucket numbers with the range of 10 buckets)
-	for i := 0; i < numMessages; i++ {
-		err = nc2.Publish(fmt.Sprintf("foo.%d", i), msg)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-	}
-
-	// publish the same message twice to make sure it always maps to the same bucket
-	for i := 0; i < 2; i++ {
-		err = nc2.Publish("foo.a", msg)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
+	// publish numMessages with an increasing id (should map to bucket numbers with the range of 10 buckets) - twice
+	for j := 0; j < 2; j++ {
+		for i := 0; i < numMessages; i++ {
+			err = nc2.Publish(fmt.Sprintf("foo.%d", i), msg)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
 		}
 	}
 
@@ -407,17 +401,21 @@ func TestSubjectMappingToBuckets(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
-	}
-
-	for _, bucket := range bucketsReceived {
-		if bucket > 9 || bucket < 0 {
-			t.Fatalf("Error received bucket number %d out of range 0..9", bucket)
+		if bucketsReceived[i] > 9 || bucketsReceived[i] < 0 {
+			t.Fatalf("Error received bucket number %d out of range 0..9", bucketsReceived[i])
 		}
 	}
 
-	// verify hashing is deterministic
-	if strings.Compare(<-subjectsReceived, <-subjectsReceived) != 0 {
-		t.Fatalf("Error: same id mapped to two different buckets")
+	// verify hashing is deterministic by checking it produces the same exact result twice
+	for i := 0; i < numMessages; i++ {
+		subject := <-subjectsReceived
+		bucketNumber, err := strconv.Atoi(strings.Split(subject, ".")[1])
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if bucketsReceived[i] != bucketNumber {
+			t.Fatalf("Error: same id mapped to two different buckets")
+		}
 	}
 }
 
