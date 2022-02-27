@@ -352,11 +352,11 @@ func TestAccountCycleDepthLimit(t *testing.T) {
 	}
 }
 
-func TestSubjectMappingToBuckets(t *testing.T) {
+func TestAccountSubjectMapping(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		port: -1
 		mappings = {
-    		foo.* : foo.$1%10
+    		"foo.*.*" : "foo.$1.$2.$1+2%10"
 		}
 	`))
 	defer removeFile(t, conf)
@@ -371,7 +371,7 @@ func TestSubjectMappingToBuckets(t *testing.T) {
 	subjectsReceived := make(chan string)
 
 	msg := []byte("HELLO")
-	sub1, err := nc1.Subscribe("foo.*", func(m *nats.Msg) {
+	sub1, err := nc1.Subscribe("foo.*.*.*", func(m *nats.Msg) {
 		subjectsReceived <- m.Subject
 	})
 	if err != nil {
@@ -385,7 +385,7 @@ func TestSubjectMappingToBuckets(t *testing.T) {
 	// publish numMessages with an increasing id (should map to bucket numbers with the range of 10 buckets) - twice
 	for j := 0; j < 2; j++ {
 		for i := 0; i < numMessages; i++ {
-			err = nc2.Publish(fmt.Sprintf("foo.%d", i), msg)
+			err = nc2.Publish(fmt.Sprintf("foo.%d.%d", i, numMessages-i), msg)
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -397,19 +397,111 @@ func TestSubjectMappingToBuckets(t *testing.T) {
 
 	for i := 0; i < numMessages; i++ {
 		subject := <-subjectsReceived
-		bucketsReceived[i], err = strconv.Atoi(strings.Split(subject, ".")[1])
+		sTokens := strings.Split(subject, ".")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
-		if bucketsReceived[i] > 9 || bucketsReceived[i] < 0 {
-			t.Fatalf("Error received bucket number %d out of range 0..9", bucketsReceived[i])
+		t1, _ := strconv.Atoi(sTokens[1])
+		t2, _ := strconv.Atoi(sTokens[2])
+		bucketsReceived[i], err = strconv.Atoi(sTokens[3])
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if bucketsReceived[i] > 9 || bucketsReceived[i] < 0 || t1 != i || t2 != numMessages-i {
+			t.Fatalf("Error received unexpected %d.%d to partition %d", t1, t2, bucketsReceived[i])
 		}
 	}
 
 	// verify hashing is deterministic by checking it produces the same exact result twice
 	for i := 0; i < numMessages; i++ {
 		subject := <-subjectsReceived
-		bucketNumber, err := strconv.Atoi(strings.Split(subject, ".")[1])
+		bucketNumber, err := strconv.Atoi(strings.Split(subject, ".")[3])
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if bucketsReceived[i] != bucketNumber {
+			t.Fatalf("Error: same id mapped to two different buckets")
+		}
+	}
+}
+
+// Alice imports from Bob with subject mapping
+func TestAccountImportSubjectMapping(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		port: -1
+		accounts {
+		  A {
+			users: [{user: a,  pass: x}]
+			imports [ {stream: {account: B, subject: "foo.*.*"}, to : "foo.$1.$2.$1+2%10"}]
+		  }
+		  B {
+			users: [{user: b, pass x}]
+		    exports [ { stream: ">" } ]
+		  }
+		}
+		mappings = {
+    		"foo.*.*" : "foo.$1.$2.$1+2%10"
+		}
+	`))
+	defer removeFile(t, conf)
+
+	s, opts := RunServerWithConfig(conf)
+
+	defer s.Shutdown()
+	ncA := clientConnectToServerWithUP(t, opts, "a", "x")
+	defer ncA.Close()
+
+	numMessages := 100
+	subjectsReceived := make(chan string)
+
+	msg := []byte("HELLO")
+	sub1, err := ncA.Subscribe("foo.*.*.*", func(m *nats.Msg) {
+		subjectsReceived <- m.Subject
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	sub1.AutoUnsubscribe(numMessages * 2)
+
+	ncB := clientConnectToServerWithUP(t, opts, "b", "x")
+	defer ncB.Close()
+
+	// publish numMessages with an increasing id (should map to bucket numbers with the range of 10 buckets) - twice
+	for j := 0; j < 2; j++ {
+		for i := 0; i < numMessages; i++ {
+			err = ncB.Publish(fmt.Sprintf("foo.%d.%d", i, numMessages-i), msg)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+		}
+	}
+
+	// verify all the buckets are in the expected range
+	bucketsReceived := make([]int, numMessages)
+
+	for i := 0; i < numMessages; i++ {
+		subject := <-subjectsReceived
+		sTokens := strings.Split(subject, ".")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		t1, _ := strconv.Atoi(sTokens[1])
+		t2, _ := strconv.Atoi(sTokens[2])
+		bucketsReceived[i], err = strconv.Atoi(sTokens[3])
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if bucketsReceived[i] > 9 || bucketsReceived[i] < 0 || t1 != i || t2 != numMessages-i {
+			t.Fatalf("Error received unexpected %d.%d to partition %d", t1, t2, bucketsReceived[i])
+		}
+	}
+
+	// verify hashing is deterministic by checking it produces the same exact result twice
+	for i := 0; i < numMessages; i++ {
+		subject := <-subjectsReceived
+		bucketNumber, err := strconv.Atoi(strings.Split(subject, ".")[3])
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
