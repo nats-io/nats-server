@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,6 +45,30 @@ func simpleAccountServer(t *testing.T) (*Server, *Account, *Account) {
 		t.Fatalf("Error creating account 'bar': %v", err)
 	}
 	return s, f, b
+}
+
+func TestPlaceHolderIndex(t *testing.T) {
+	testString := "$1"
+	indexes, nbPartitions := placeHolderIndex(testString)
+
+	if len(indexes) != 1 || indexes[0] != 1 || nbPartitions != -1 {
+		t.Fatalf("Error parsing %s", testString)
+	}
+
+	testString = "{{partition(10,1,2,3)}}"
+
+	indexes, nbPartitions = placeHolderIndex(testString)
+
+	if !reflect.DeepEqual(indexes, []int{1, 2, 3}) || nbPartitions != 10 {
+		t.Fatalf("Error parsing %s", testString)
+	}
+
+	testString = "{{wildcard(2)}}"
+	indexes, nbPartitions = placeHolderIndex(testString)
+
+	if len(indexes) != 1 || indexes[0] != 2 || nbPartitions != -1 {
+		t.Fatalf("Error parsing %s", testString)
+	}
 }
 
 func TestRegisterDuplicateAccounts(t *testing.T) {
