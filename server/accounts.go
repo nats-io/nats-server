@@ -163,6 +163,10 @@ const (
 	Chunked
 )
 
+var commaSeparatorRegEx = regexp.MustCompile(`,\s*`)
+var partitionMappingFunctionRegEx = regexp.MustCompile(`{{partition *\((.*)\)}}`)
+var wildcardMappingFunctionRegEx = regexp.MustCompile(`{{wildcard *\((.*)\)}}`)
+
 // String helper.
 func (rt ServiceRespType) String() string {
 	switch rt {
@@ -4120,19 +4124,10 @@ type transform struct {
 	dtpinp    []int32 // destination token position index number of partitions
 }
 
-func getMappingFunctionArgs(functionName string, token string) ([]string, error) {
-	regEx := `{{` + functionName + ` *\((.*)\)}}`
-	r1, err := regexp.Compile(regEx)
-	if err != nil {
-		return nil, err
-	}
-	commandStrings := r1.FindStringSubmatch(token)
+func getMappingFunctionArgs(functionRegEx *regexp.Regexp, token string) ([]string, error) {
+	commandStrings := functionRegEx.FindStringSubmatch(token)
 	if len(commandStrings) > 1 {
-		ra, err := regexp.Compile(`,\s*`)
-		if err != nil {
-			return nil, err
-		}
-		args := ra.Split(commandStrings[1], -1)
+		args := commaSeparatorRegEx.Split(commandStrings[1], -1)
 		return args, nil
 	}
 	return nil, nil
@@ -4151,7 +4146,7 @@ func placeHolderIndex(token string) ([]int, int32) {
 
 		// New 'moustache' style mapping
 		// wildcard(wildcard token index) (equivalent to $)
-		args, err := getMappingFunctionArgs("wildcard", token)
+		args, err := getMappingFunctionArgs(wildcardMappingFunctionRegEx, token)
 		if err == nil && args != nil {
 			if len(args) == 1 {
 				tp, err := strconv.Atoi(strings.Trim(args[0], " "))
@@ -4162,7 +4157,7 @@ func placeHolderIndex(token string) ([]int, int32) {
 		}
 
 		// partition(number of partitions, token1, token2, ...)
-		args, err = getMappingFunctionArgs("partition", token)
+		args, err = getMappingFunctionArgs(partitionMappingFunctionRegEx, token)
 		if err == nil && args != nil {
 			if len(args) >= 2 {
 				tphnp, err := strconv.Atoi(strings.Trim(args[0], " "))
@@ -4278,12 +4273,9 @@ func (tr *transform) transformSubject(subject string) (string, error) {
 	return tr.transform(tts)
 }
 
-func (tr *transform) getHashBucket(key string, numBuckets int) string {
+func (tr *transform) getHashPartition(key string, numBuckets int) string {
 	h := fnv.New32a()
-	_, err := h.Write([]byte(key))
-	if err != nil {
-		return fmt.Sprintf("error: %v", err)
-	}
+	h.Write([]byte(key))
 
 	return fmt.Sprintf("%d", h.Sum32()%uint32(numBuckets))
 }
@@ -4316,7 +4308,7 @@ func (tr *transform) transform(tokens []string) (string, error) {
 				for _, sourceToken := range tr.dtpi[i] {
 					keyForHashing = keyForHashing + tokens[sourceToken]
 				}
-				token = tr.getHashBucket(keyForHashing, int(tr.dtpinp[i]))
+				token = tr.getHashPartition(keyForHashing, int(tr.dtpinp[i]))
 			} else { // back to normal substitution
 				token = tokens[tr.dtpi[i][0]]
 			}
