@@ -4128,7 +4128,7 @@ func getMappingFunctionArgs(functionName string, token string) ([]string, error)
 	}
 	commandStrings := r1.FindStringSubmatch(token)
 	if len(commandStrings) > 1 {
-		ra, err := regexp.Compile(",\\s*")
+		ra, err := regexp.Compile(`,\s*`)
 		if err != nil {
 			return nil, err
 		}
