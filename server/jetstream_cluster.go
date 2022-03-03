@@ -4250,7 +4250,7 @@ func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, filt
 	}()
 
 	var missingNames []string
-	sent := map[string]struct{}{}
+	sent := map[string]int{}
 	// Send out our requests here.
 	for _, sa := range streams {
 		if s.allPeersOffline(sa.Group) {
@@ -4261,7 +4261,7 @@ func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, filt
 		} else {
 			isubj := fmt.Sprintf(clusterStreamInfoT, sa.Client.serviceAccount(), sa.Config.Name)
 			s.sendInternalMsgLocked(isubj, inbox, nil, nil)
-			sent[sa.Config.Name] = struct{}{}
+			sent[sa.Config.Name] = len(sa.consumers)
 		}
 	}
 	// Don't hold lock.
@@ -4284,6 +4284,10 @@ LOOP:
 			resp.Missing = missingNames
 			break LOOP
 		case si := <-rc:
+			consCount := sent[si.Config.Name]
+			if consCount > 0 {
+				si.State.Consumers = consCount
+			}
 			delete(sent, si.Config.Name)
 			resp.Streams = append(resp.Streams, si)
 			// Check to see if we are done.
