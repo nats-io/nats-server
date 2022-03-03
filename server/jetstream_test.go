@@ -6173,7 +6173,7 @@ func TestJetStreamInterestRetentionStreamWithFilteredConsumers(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Unexpected error getting msg: %v", err)
 				}
-				m.Ack()
+				m.AckSync()
 			}
 
 			checkState := func(expected uint64) {
