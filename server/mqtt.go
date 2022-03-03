@@ -156,7 +156,8 @@ const (
 	mqttJSAStreamNames    = "SN"
 
 	// Name of the header key added to NATS message to carry mqtt PUBLISH information
-	mqttNatsHeader = "Nmqtt-Pub"
+	mqttNatsHeader      = "Nmqtt-Pub"
+	mqttNatsMsgIdHeader = "Nats-Msg-Id"
 
 	// This is how long to keep a client in the flappers map before closing the
 	// connection. This prevent quick reconnect from those clients that keep
@@ -174,13 +175,14 @@ const (
 )
 
 var (
-	mqttPingResponse  = []byte{mqttPacketPingResp, 0x0}
-	mqttProtoName     = []byte("MQTT")
-	mqttOldProtoName  = []byte("MQIsdp")
-	mqttNatsHeaderB   = []byte(mqttNatsHeader)
-	mqttSessJailDur   = mqttSessFlappingJailDur
-	mqttFlapCleanItvl = mqttSessFlappingCleanupInterval
-	mqttJSAPITimeout  = 4 * time.Second
+	mqttPingResponse     = []byte{mqttPacketPingResp, 0x0}
+	mqttProtoName        = []byte("MQTT")
+	mqttOldProtoName     = []byte("MQIsdp")
+	mqttNatsHeaderB      = []byte(mqttNatsHeader)
+	mqttNatsMsgIdHeaderB = []byte(mqttNatsMsgIdHeader)
+	mqttSessJailDur      = mqttSessFlappingJailDur
+	mqttFlapCleanItvl    = mqttSessFlappingCleanupInterval
+	mqttJSAPITimeout     = 4 * time.Second
 )
 
 var (
@@ -2893,6 +2895,10 @@ func (s *Server) mqttProcessPub(c *client, pp *mqttPublish) error {
 	bb.Write(mqttNatsHeaderB)
 	bb.WriteByte(':')
 	bb.WriteByte('0' + mqttGetQoS(pp.flags))
+	bb.WriteString(_CRLF_)
+	bb.Write(mqttNatsMsgIdHeaderB)
+	bb.WriteByte(':')
+	bb.WriteString(fmt.Sprintf("%x", pp.pi))
 	bb.WriteString(_CRLF_)
 	bb.WriteString(_CRLF_)
 	c.pa.hdr = bb.Len()
