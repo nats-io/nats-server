@@ -3140,6 +3140,17 @@ func (mset *stream) setupSendCapabilities() {
 	go mset.internalLoop()
 }
 
+// Returns the associated account name.
+func (mset *stream) accName() string {
+	if mset == nil {
+		return _EMPTY_
+	}
+	mset.mu.RLock()
+	acc := mset.acc
+	mset.mu.RUnlock()
+	return acc.Name
+}
+
 // Name returns the stream name.
 func (mset *stream) name() string {
 	if mset == nil {
