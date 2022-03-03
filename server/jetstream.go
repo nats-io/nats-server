@@ -1171,7 +1171,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		}
 
 		state := mset.state()
-		s.Noticef("  Restored %s messages for stream %q", comma(int64(state.Msgs)), fi.Name())
+		s.Noticef("  Restored %s messages for stream '%s > %s'", comma(int64(state.Msgs)), mset.accName(), mset.name())
 
 		// Now do the consumers.
 		odir := path.Join(sdir, fi.Name(), consumerDir)
@@ -1181,7 +1181,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	for _, e := range consumers {
 		ofis, _ := ioutil.ReadDir(e.odir)
 		if len(ofis) > 0 {
-			s.Noticef("  Recovering %d consumers for stream - %q", len(ofis), e.mset.name())
+			s.Noticef("  Recovering %d consumers for stream - '%s > %s'", len(ofis), e.mset.accName(), e.mset.name())
 		}
 		for _, ofi := range ofis {
 			metafile := path.Join(e.odir, ofi.Name(), JetStreamMetaFile)
