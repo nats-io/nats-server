@@ -10736,6 +10736,46 @@ func TestJetStreamClusterInterestRetentionWithFilteredConsumersExtra(t *testing.
 	checkState(0)
 }
 
+func TestJetStreamClusterStreamConsumersCount(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	sname := "TEST_STREAM_CONS_COUNT"
+	_, err := js.AddStream(&nats.StreamConfig{Name: sname, Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+
+	// Create some R1 consumers
+	for i := 0; i < 10; i++ {
+		inbox := nats.NewInbox()
+		natsSubSync(t, nc, inbox)
+		_, err = js.AddConsumer(sname, &nats.ConsumerConfig{DeliverSubject: inbox})
+		require_NoError(t, err)
+	}
+
+	// Now check that the consumer count in stream info/list is 10
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		// Check stream info
+		si, err := js.StreamInfo(sname)
+		if err != nil {
+			return fmt.Errorf("Error getting stream info: %v", err)
+		}
+		if n := si.State.Consumers; n != 10 {
+			return fmt.Errorf("From StreamInfo, expecting 10 consumers, got %v", n)
+		}
+
+		// Now from stream list
+		for si := range js.StreamsInfo() {
+			if n := si.State.Consumers; n != 10 {
+				return fmt.Errorf("From StreamsInfo, expecting 10 consumers, got %v", n)
+			}
+		}
+		return nil
+	})
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.

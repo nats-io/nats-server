@@ -1645,6 +1645,8 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 		resp.ApiResponse.Type = JSApiStreamCreateResponseType
 	}
 
+	var clusterWideConsCount int
+
 	// If we are in clustered mode we need to be the stream leader to proceed.
 	if s.JetStreamIsClustered() {
 		// Check to make sure the stream is assigned.
@@ -1655,6 +1657,9 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 
 		js.mu.RLock()
 		isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, streamName)
+		if sa != nil {
+			clusterWideConsCount = len(sa.consumers)
+		}
 		js.mu.RUnlock()
 
 		if isLeader && sa == nil {
@@ -1729,6 +1734,9 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 		Config:  config,
 		Domain:  s.getOpts().JetStreamDomain,
 		Cluster: js.clusterInfo(mset.raftGroup()),
+	}
+	if clusterWideConsCount > 0 {
+		resp.StreamInfo.State.Consumers = clusterWideConsCount
 	}
 	if mset.isMirror() {
 		resp.StreamInfo.Mirror = mset.mirrorInfo()
