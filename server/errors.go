@@ -46,6 +46,9 @@ var (
 	// ErrBadSubject represents an error condition for an invalid subject.
 	ErrBadSubject = errors.New("invalid subject")
 
+	// ErrBadSubjectMappingDestination is used to error on a bad transform destination mapping
+	ErrBadSubjectMappingDestination = errors.New("invalid subject mapping destination")
+
 	// ErrBadQualifier is used to error on a bad qualifier for a transform.
 	ErrBadQualifier = errors.New("bad qualifier")
 
