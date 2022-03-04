@@ -315,17 +315,17 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	// Always track per subject information.
 	fs.tms = true
 
+	// Recover our message state.
+	if err := fs.recoverMsgs(); err != nil {
+		return nil, err
+	}
+
 	// Write our meta data iff does not exist.
 	meta := path.Join(fcfg.StoreDir, JetStreamMetaFile)
 	if _, err := os.Stat(meta); err != nil && os.IsNotExist(err) {
 		if err := fs.writeStreamMeta(); err != nil {
 			return nil, err
 		}
-	}
-
-	// Recover our message state.
-	if err := fs.recoverMsgs(); err != nil {
-		return nil, err
 	}
 
 	// If we expect to be encrypted check that what we are restoring is not plaintext.
@@ -4429,6 +4429,9 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 			// Since we are walking by sequence we can ignore some errors that are benign to rebuilding our state.
 			if err == ErrStoreMsgNotFound || err == errDeletedMsg {
 				continue
+			}
+			if err == errNoCache {
+				return nil
 			}
 			return err
 		}
