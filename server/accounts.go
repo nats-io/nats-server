@@ -4169,11 +4169,10 @@ func placeHolderIndex(token string) ([]int, int32, error) {
 				tps := make([]int, numPositions)
 				for ti, t := range args[1:] {
 					i, err := strconv.Atoi(strings.Trim(t, " "))
-					if err == nil {
-						tps[ti] = i
-					} else {
-						return []int{-1}, -1, err
+					if err != nil {
+						return []int{}, -1, err
 					}
+					tps[ti] = i
 				}
 				return tps, int32(tphnp), nil
 			}
