@@ -4426,6 +4426,10 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 	for seq := fseq; seq <= lseq; seq++ {
 		sm, err := mb.cacheLookup(seq)
 		if err != nil {
+			// Since we are walking by sequence we can ignore some errors that are benign to rebuilding our state.
+			if err == ErrStoreMsgNotFound || err == errDeletedMsg {
+				continue
+			}
 			return err
 		}
 		if sm != nil && len(sm.subj) > 0 {

@@ -15209,6 +15209,51 @@ func TestJetStreamPullConsumerHeartBeats(t *testing.T) {
 	}
 }
 
+func TestJetStreamRecoverStreamWithDeletedMessagesNonCleanShutdown(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	defer s.Shutdown()
+
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "T"})
+	require_NoError(t, err)
+
+	for i := 0; i < 100; i++ {
+		js.Publish("T", []byte("OK"))
+	}
+
+	js.DeleteMsg("T", 22)
+
+	// Now we need a non-clean shutdown.
+	// For this use case that means we do *not* write the fss file.
+	sd := s.JetStreamConfig().StoreDir
+	fss := path.Join(sd, "$G", "streams", "T", "msgs", "1.fss")
+
+	// Stop current
+	nc.Close()
+	s.Shutdown()
+
+	// Remove fss file to simulate a non-clean shutdown.
+	err = os.Remove(fss)
+	require_NoError(t, err)
+
+	// Restart.
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Make sure we recovered our stream
+	_, err = js.StreamInfo("T")
+	require_NoError(t, err)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
