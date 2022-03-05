@@ -3619,32 +3619,6 @@ func (s *Server) shouldReportConnectErr(firstConnect bool, attempts int) bool {
 	return false
 }
 
-// Invoked for route, leaf and gateway connections. Set the very first
-// PING to a lower interval to capture the initial RTT.
-// After that the PING interval will be set to the user defined value.
-// Client lock should be held.
-func (s *Server) setFirstPingTimer(c *client) {
-	opts := s.getOpts()
-	d := opts.PingInterval
-
-	if !opts.DisableShortFirstPing {
-		if c.kind != CLIENT {
-			if d > firstPingInterval {
-				d = firstPingInterval
-			}
-			if c.kind == GATEWAY {
-				d = adjustPingIntervalForGateway(d)
-			}
-		} else if d > firstClientPingInterval {
-			d = firstClientPingInterval
-		}
-	}
-	// We randomize the first one by an offset up to 20%, e.g. 2m ~= max 24s.
-	addDelay := rand.Int63n(int64(d / 5))
-	d += time.Duration(addDelay)
-	c.ping.tmr = time.AfterFunc(d, c.processPingTimer)
-}
-
 func (s *Server) updateRemoteSubscription(acc *Account, sub *subscription, delta int32) {
 	s.updateRouteSubscriptionMap(acc, sub, delta)
 	if s.gateway.enabled {

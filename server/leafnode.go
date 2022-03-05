@@ -1402,7 +1402,7 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	}
 
 	// Set the Ping timer
-	s.setFirstPingTimer(c)
+	c.setFirstPingTimer()
 
 	// If we received pub deny permissions from the other end, merge with existing ones.
 	c.mergeDenyPermissions(pub, proto.DenyPub)
@@ -2526,7 +2526,7 @@ func (s *Server) leafNodeFinishConnectProcess(c *client) {
 	c.mu.Lock()
 	closed := c.isClosed()
 	if !closed {
-		s.setFirstPingTimer(c)
+		c.setFirstPingTimer()
 	}
 	c.mu.Unlock()
 	if closed {

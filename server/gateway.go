@@ -928,17 +928,11 @@ func (c *client) processGatewayConnect(arg []byte) error {
 		return ErrWrongGateway
 	}
 
-	// For a gateway connection, c.gw is guaranteed not to be nil here
-	// (created in createGateway() and never set to nil).
-	// For inbound connections, it is important to know in the parser
-	// if the CONNECT was received first, so we use this boolean (as
-	// opposed to client.flags that require locking) to indicate that
-	// CONNECT was processed. Again, this boolean is set/read in the
-	// readLoop without locking.
+	c.mu.Lock()
 	c.gw.connected = true
-
 	// Set the Ping timer after sending connect and info.
-	s.setFirstPingTimer(c)
+	c.setFirstPingTimer()
+	c.mu.Unlock()
 
 	return nil
 }
@@ -1052,7 +1046,9 @@ func (c *client) processGatewayInfo(info *Info) {
 				// Now that the outbound gateway is registered, we can remove from temp map.
 				s.removeFromTempClients(cid)
 				// Set the Ping timer after sending connect and info.
-				s.setFirstPingTimer(c)
+				c.mu.Lock()
+				c.setFirstPingTimer()
+				c.mu.Unlock()
 			} else {
 				// There was a bug that would cause a connection to possibly
 				// be called twice resulting in reconnection of twice the
