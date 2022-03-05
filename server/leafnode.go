@@ -1546,7 +1546,11 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 		// Also don't add the subscription if it has a origin cluster and the
 		// cluster name matches the one of the client we are sending to.
 		if c != sub.client && (sub.origin == nil || (string(sub.origin) != rc)) {
-			c.leaf.smap[keyFromSub(sub)]++
+			count := int32(1)
+			if len(sub.queue) > 0 && sub.qw > 0 {
+				count = sub.qw
+			}
+			c.leaf.smap[keyFromSub(sub)] += count
 			if c.leaf.tsub == nil {
 				c.leaf.tsub = make(map[*subscription]struct{})
 			}
