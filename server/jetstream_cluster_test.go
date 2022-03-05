@@ -10825,6 +10825,30 @@ func TestJetStreamClusterFilteredAndIdleConsumerNRGGrowth(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterMirrorOrSourceNotActiveReporting(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+
+	si, err := js.AddStream(&nats.StreamConfig{
+		Name:   "M",
+		Mirror: &nats.StreamSource{Name: "TEST"},
+	})
+	require_NoError(t, err)
+
+	// We would previous calculate a large number if we actually never heard from the peer yet.
+	// We want to make sure if we have never heard from the other side report -1 as Active.
+	// It is possible if testing infra is slow that this could be legit, but should be pretty small.
+	if si.Mirror.Active != -1 && si.Mirror.Active > 10*time.Millisecond {
+		t.Fatalf("Expected an Active of -1, but got %v", si.Mirror.Active)
+	}
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
