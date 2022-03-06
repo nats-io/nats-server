@@ -1728,7 +1728,7 @@ func (c *client) processConnect(arg []byte) error {
 		c.rtt = computeRTT(c.start)
 		if c.srv != nil {
 			c.clearPingTimer()
-			c.srv.setFirstPingTimer(c)
+			c.setFirstPingTimer()
 		}
 	}
 	kind := c.kind
@@ -5317,4 +5317,33 @@ func (c *client) Tracef(format string, v ...interface{}) {
 func (c *client) Warnf(format string, v ...interface{}) {
 	format = fmt.Sprintf("%s - %s", c, format)
 	c.srv.Warnf(format, v...)
+}
+
+// Set the very first PING to a lower interval to capture the initial RTT.
+// After that the PING interval will be set to the user defined value.
+// Client lock should be held.
+func (c *client) setFirstPingTimer() {
+	s := c.srv
+	if s == nil {
+		return
+	}
+	opts := s.getOpts()
+	d := opts.PingInterval
+
+	if !opts.DisableShortFirstPing {
+		if c.kind != CLIENT {
+			if d > firstPingInterval {
+				d = firstPingInterval
+			}
+			if c.kind == GATEWAY {
+				d = adjustPingIntervalForGateway(d)
+			}
+		} else if d > firstClientPingInterval {
+			d = firstClientPingInterval
+		}
+	}
+	// We randomize the first one by an offset up to 20%, e.g. 2m ~= max 24s.
+	addDelay := rand.Int63n(int64(d / 5))
+	d += time.Duration(addDelay)
+	c.ping.tmr = time.AfterFunc(d, c.processPingTimer)
 }

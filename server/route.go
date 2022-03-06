@@ -1346,7 +1346,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	}
 
 	// Set the Ping timer
-	s.setFirstPingTimer(c)
+	c.setFirstPingTimer()
 
 	// For routes, the "client" is added to s.routes only when processing
 	// the INFO protocol, that is much later.
