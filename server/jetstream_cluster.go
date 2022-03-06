@@ -1102,13 +1102,22 @@ func (js *jetStream) setConsumerAssignmentRecovering(ca *consumerAssignment) {
 	}
 }
 
-// Just copied over and changes out the group so it can be encoded.
+// Just copies over and changes out the group so it can be encoded.
 // Lock should be held.
 func (sa *streamAssignment) copyGroup() *streamAssignment {
 	csa, cg := *sa, *sa.Group
 	csa.Group = &cg
 	csa.Group.Peers = copyStrings(sa.Group.Peers)
 	return &csa
+}
+
+// Just copies over and changes out the group so it can be encoded.
+// Lock should be held.
+func (ca *consumerAssignment) copyGroup() *consumerAssignment {
+	cca, cg := *ca, *ca.Group
+	cca.Group = &cg
+	cca.Group.Peers = copyStrings(ca.Group.Peers)
+	return &cca
 }
 
 // Lock should be held.
@@ -1235,9 +1244,9 @@ func (js *jetStream) removePeerFromStreamLocked(sa *streamAssignment, peer strin
 	for _, ca := range sa.consumers {
 		// Ephemerals are R=1, so only auto-remap durables, or R>1.
 		if ca.Config.Durable != _EMPTY_ {
-			cca := *ca
-			cca.Group.Peers = rg.Peers
-			cc.meta.Propose(encodeAddConsumerAssignment(&cca))
+			cca := ca.copyGroup()
+			cca.Group.Peers, cca.Group.Preferred = rg.Peers, _EMPTY_
+			cc.meta.Propose(encodeAddConsumerAssignment(cca))
 		} else if ca.Group.isMember(peer) {
 			// These are ephemerals. Check to see if we deleted this peer.
 			cc.meta.Propose(encodeDeleteConsumerAssignment(ca))
@@ -1297,7 +1306,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 			case assignConsumerOp:
 				ca, err := decodeConsumerAssignment(buf[1:])
 				if err != nil {
-					js.srv.Errorf("JetStream cluster failed to decode consumer assigment: %q", buf[1:])
+					js.srv.Errorf("JetStream cluster failed to decode consumer assignment: %q", buf[1:])
 					return didSnap, didRemove, err
 				}
 				if isRecovering {
@@ -1307,7 +1316,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 			case assignCompressedConsumerOp:
 				ca, err := decodeConsumerAssignmentCompressed(buf[1:])
 				if err != nil {
-					js.srv.Errorf("JetStream cluster failed to decode compressed consumer assigment: %q", buf[1:])
+					js.srv.Errorf("JetStream cluster failed to decode compressed consumer assignment: %q", buf[1:])
 					return didSnap, didRemove, err
 				}
 				if isRecovering {
@@ -1317,7 +1326,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, isRecovering bool) (bool
 			case removeConsumerOp:
 				ca, err := decodeConsumerAssignment(buf[1:])
 				if err != nil {
-					js.srv.Errorf("JetStream cluster failed to decode consumer assigment: %q", buf[1:])
+					js.srv.Errorf("JetStream cluster failed to decode consumer assignment: %q", buf[1:])
 					return didSnap, didRemove, err
 				}
 				if isRecovering {
@@ -2194,6 +2203,9 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) bool {
 		// Check if we have a raft node running, meaning we are no longer part of the group but were.
 		js.mu.Lock()
 		if node := sa.Group.node; node != nil {
+			if node.Leader() {
+				node.StepDown()
+			}
 			node.ProposeRemovePeer(ourID)
 			didRemove = true
 		}
@@ -2687,6 +2699,10 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 		sa.consumers = make(map[string]*consumerAssignment)
 	} else if oca := sa.consumers[ca.Name]; oca != nil {
 		wasExisting = true
+		// Copy over private existing state from former SA.
+		ca.Group.node = oca.Group.node
+		ca.responded = oca.responded
+		ca.err = oca.err
 	}
 
 	// Capture the optional state. We will pass it along if we are a member to apply.
@@ -2706,6 +2722,9 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 		// Check if we have a raft node running, meaning we are no longer part of the group but were.
 		js.mu.Lock()
 		if node := ca.Group.node; node != nil {
+			if node.Leader() {
+				node.StepDown()
+			}
 			node.ProposeRemovePeer(ourID)
 		}
 		ca.Group.node = nil
@@ -3076,6 +3095,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 
 	// Track if we are leader.
 	var isLeader bool
+	recovering := true
 
 	for {
 		select {
@@ -3088,6 +3108,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			for _, cei := range ces {
 				// No special processing needed for when we are caught up on restart.
 				if cei == nil {
+					recovering = false
 					if n.NeedSnapshot() {
 						doSnapshot()
 					}
@@ -3106,7 +3127,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			}
 			aq.recycle(&ces)
 		case isLeader = <-lch:
-			if !isLeader && n.GroupLeader() != noLeader {
+			if recovering && !isLeader {
 				js.setConsumerAssignmentRecovering(ca)
 			}
 			js.processConsumerLeaderChange(o, isLeader)

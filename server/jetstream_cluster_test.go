@@ -4110,11 +4110,10 @@ func TestJetStreamClusterStreamRemovePeer(t *testing.T) {
 	for _, p := range si.Cluster.Replicas {
 		peers = append(peers, p.Name)
 	}
+	// Pick a truly random server to remove.
 	rand.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
 	toRemove := peers[0]
-	if cl := c.leader(); toRemove == cl.Name() {
-		toRemove = peers[1]
-	}
+
 	// First test bad peer.
 	req := &JSApiStreamRemovePeerRequest{Peer: "NOT VALID"}
 	jsreq, err := json.Marshal(req)
@@ -4140,6 +4139,7 @@ func TestJetStreamClusterStreamRemovePeer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+
 	resp, err = nc.Request(fmt.Sprintf(JSApiStreamRemovePeerT, "TEST"), jsreq, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -4150,6 +4150,8 @@ func TestJetStreamClusterStreamRemovePeer(t *testing.T) {
 	if rpResp.Error != nil {
 		t.Fatalf("Unexpected error: %+v", rpResp.Error)
 	}
+
+	c.waitOnStreamLeader("$G", "TEST")
 
 	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
 		si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
