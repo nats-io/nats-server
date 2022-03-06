@@ -868,12 +868,11 @@ func (o *consumer) setLeader(isLeader bool) {
 	} else {
 		// Shutdown the go routines and the subscriptions.
 		o.mu.Lock()
+		// ok if they are nil, we protect inside unsubscribe()
 		o.unsubscribe(o.ackSub)
 		o.unsubscribe(o.reqSub)
 		o.unsubscribe(o.fcSub)
-		o.ackSub = nil
-		o.reqSub = nil
-		o.fcSub = nil
+		o.ackSub, o.reqSub, o.fcSub = nil, nil, nil
 		if o.infoSub != nil {
 			o.srv.sysUnsubscribe(o.infoSub)
 			o.infoSub = nil
@@ -3528,8 +3527,15 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	}
 	o.closed = true
 
-	if dflag && advisory && o.isLeader() {
-		o.sendDeleteAdvisoryLocked()
+	// Check if we are the leader and are being deleted.
+	if dflag && o.isLeader() {
+		// If we are clustered and node leader (probable from above), stepdown.
+		if node := o.node; node != nil && node.Leader() {
+			node.StepDown()
+		}
+		if advisory {
+			o.sendDeleteAdvisoryLocked()
+		}
 	}
 
 	if o.qch != nil {
