@@ -1286,7 +1286,15 @@ func (mset *stream) sourceInfo(si *sourceInfo) *StreamSourceInfo {
 	if si == nil {
 		return nil
 	}
-	ssi := &StreamSourceInfo{Name: si.name, Lag: si.lag, Active: time.Since(si.last), Error: si.err}
+
+	ssi := &StreamSourceInfo{Name: si.name, Lag: si.lag, Error: si.err}
+	// If we have not heard from the source, set Active to -1.
+	if si.last.IsZero() {
+		ssi.Active = -1
+	} else {
+		ssi.Active = time.Since(si.last)
+	}
+
 	var ext *ExternalStream
 	if mset.cfg.Mirror != nil {
 		ext = mset.cfg.Mirror.External
