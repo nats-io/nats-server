@@ -749,6 +749,16 @@ func (o *consumer) checkQueueInterest() {
 	}
 }
 
+// clears our node if we have one. When we scale down to 1.
+func (o *consumer) clearNode() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.node != nil {
+		o.node.Delete()
+		o.node = nil
+	}
+}
+
 // Lock should be held.
 func (o *consumer) isLeader() bool {
 	if o.node != nil {

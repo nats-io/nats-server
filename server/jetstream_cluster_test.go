@@ -10587,6 +10587,99 @@ func TestJetStreamClusterStreamReplicaUpdates(t *testing.T) {
 	updateReplicas(1)
 }
 
+func TestJetStreamClusterStreamReplicaUpdateFunctionCheck(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Start out at R3
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	sub, err := js.SubscribeSync("foo", nats.Durable("cat"))
+	require_NoError(t, err)
+
+	numMsgs := 10
+	for i := 0; i < numMsgs; i++ {
+		_, err := js.Publish("foo", []byte("HELLO WORLD"))
+		require_NoError(t, err)
+	}
+	checkSubsPending(t, sub, numMsgs)
+
+	// Now ask leader to stepdown.
+	rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST"), nil, time.Second)
+	require_NoError(t, err)
+
+	var sdResp JSApiStreamLeaderStepDownResponse
+	err = json.Unmarshal(rmsg.Data, &sdResp)
+	require_NoError(t, err)
+
+	if sdResp.Error != nil || !sdResp.Success {
+		t.Fatalf("Unexpected error: %+v", sdResp.Error)
+	}
+
+	c.waitOnStreamLeader("$G", "TEST")
+
+	updateReplicas := func(r int) {
+		t.Helper()
+		cfg.Replicas = r
+		_, err := js.UpdateStream(cfg)
+		require_NoError(t, err)
+		c.waitOnStreamLeader("$G", "TEST")
+		c.waitOnConsumerLeader("$G", "TEST", "cat")
+		ci, err := js.ConsumerInfo("TEST", "cat")
+		require_NoError(t, err)
+		if ci.Cluster.Leader == _EMPTY_ {
+			t.Fatalf("Expected a consumer leader but got none in consumer info")
+		}
+		if len(ci.Cluster.Replicas)+1 != r {
+			t.Fatalf("Expected consumer info to have %d peers, got %d", r, len(ci.Cluster.Replicas)+1)
+		}
+	}
+
+	// Scale down to 1.
+	updateReplicas(1)
+
+	// Make sure we can still send to the stream.
+	for i := 0; i < numMsgs; i++ {
+		_, err := js.Publish("foo", []byte("HELLO WORLD"))
+		require_NoError(t, err)
+	}
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	if si.State.Msgs != uint64(2*numMsgs) {
+		t.Fatalf("Expected %d msgs, got %d", 3*numMsgs, si.State.Msgs)
+	}
+
+	checkSubsPending(t, sub, 2*numMsgs)
+
+	// Now back up.
+	updateReplicas(3)
+
+	// Send more.
+	for i := 0; i < numMsgs; i++ {
+		_, err := js.Publish("foo", []byte("HELLO WORLD"))
+		require_NoError(t, err)
+	}
+
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	if si.State.Msgs != uint64(3*numMsgs) {
+		t.Fatalf("Expected %d msgs, got %d", 3*numMsgs, si.State.Msgs)
+	}
+
+	checkSubsPending(t, sub, 3*numMsgs)
+}
+
 func TestJetStreamClusterStreamTagPlacement(t *testing.T) {
 	sc := createJetStreamSuperCluster(t, 3, 4)
 	defer sc.shutdown()
