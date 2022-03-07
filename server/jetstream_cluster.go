@@ -1159,10 +1159,10 @@ func (js *jetStream) processAddPeer(peer string) {
 				cc.meta.Propose(encodeAddStreamAssignment(csa))
 				for _, ca := range sa.consumers {
 					// Ephemerals are R=1, so only auto-remap durables, or R>1.
-					if ca.Config.Durable != _EMPTY_ {
-						cca := *ca
+					if ca.Config.Durable != _EMPTY_ || len(ca.Group.Peers) > 1 {
+						cca := ca.copyGroup()
 						cca.Group.Peers = csa.Group.Peers
-						cc.meta.Propose(encodeAddConsumerAssignment(&cca))
+						cc.meta.Propose(encodeAddConsumerAssignment(cca))
 					}
 				}
 			}
@@ -2313,6 +2313,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 
 	mset, err := acc.lookupStream(sa.Config.Name)
 	if err == nil && mset != nil {
+		var needsSetLeader bool
 		if !alreadyRunning && numReplicas > 1 {
 			if needsNode {
 				js.createRaftGroup(rg, storage)
@@ -2321,6 +2322,10 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		} else if numReplicas == 1 && alreadyRunning {
 			// We downgraded to R1. Make sure we cleanup the raft node and the stream monitor.
 			mset.removeNode()
+			// Make sure we are leader now that we are R1.
+			needsSetLeader = true
+			// In case we nned to shutdown the cluster specific subs, etc.
+			mset.setLeader(false)
 			js.mu.Lock()
 			sa.Group.node = nil
 			js.mu.Unlock()
@@ -2329,6 +2334,10 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		if err = mset.update(sa.Config); err != nil {
 			s.Warnf("JetStream cluster error updating stream %q for account %q: %v", sa.Config.Name, acc.Name, err)
 			mset.setStreamAssignment(osa)
+		}
+		// Make sure we are the leader now that we are R1.
+		if needsSetLeader {
+			mset.setLeader(true)
 		}
 	}
 
@@ -2892,7 +2901,19 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 	} else {
 		if didCreate {
 			o.setCreatedTime(ca.Created)
+		} else {
+			// Check for scale down to 1..
+			if rg.node != nil && len(rg.Peers) == 1 {
+				o.clearNode()
+				o.setLeader(true)
+				// Need to clear from rg too.
+				js.mu.Lock()
+				rg.node = nil
+				js.mu.Unlock()
+				return
+			}
 		}
+
 		// Start our monitoring routine.
 		if rg.node == nil {
 			// Single replica consumer, process manually here.
@@ -4027,6 +4048,8 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 
 	// Check for replica changes.
 	rg := osa.Group
+	var consumers []*consumerAssignment
+
 	if newCfg.Replicas != len(rg.Peers) {
 		// We are adding new peers here.
 		if newCfg.Replicas > len(rg.Peers) {
@@ -4037,18 +4060,45 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 				return
 			}
 			// Single nodes are not recorded by the NRG layer so we can rename.
-			if len(rg.Peers) == 1 {
+			if len(peers) == 1 {
 				rg.Name = groupNameForStream(peers, rg.Storage)
+			} else if len(rg.Peers) == 1 {
+				// This is scale up from being a singelton, set preferred to that singelton.
+				rg.Preferred = rg.Peers[0]
 			}
 			rg.Peers = peers
 		} else {
 			// We are deleting nodes here.
 			rg.Peers = rg.Peers[:newCfg.Replicas]
 		}
+
+		// Need to remap any consumers.
+		for _, ca := range osa.consumers {
+			// Ephemerals are R=1, so only auto-remap durables, or R>1.
+			numPeers := len(ca.Group.Peers)
+			if ca.Config.Durable != _EMPTY_ || numPeers > 1 {
+				cca := ca.copyGroup()
+				// Adjust preferred as needed.
+				if numPeers == 1 && len(rg.Peers) > 1 {
+					cca.Group.Preferred = ca.Group.Peers[0]
+				} else {
+					cca.Group.Preferred = _EMPTY_
+				}
+				// Assign new peers.
+				cca.Group.Peers = rg.Peers
+				// We can not propose here before the stream itself so we collect them.
+				consumers = append(consumers, cca)
+			}
+		}
 	}
 
 	sa := &streamAssignment{Group: rg, Sync: osa.Sync, Config: newCfg, Subject: subject, Reply: reply, Client: ci}
 	cc.meta.Propose(encodeUpdateStreamAssignment(sa))
+
+	// Process any staged consumers.
+	for _, ca := range consumers {
+		cc.meta.Propose(encodeAddConsumerAssignment(ca))
+	}
 }
 
 func (s *Server) jsClusteredStreamDeleteRequest(ci *ClientInfo, acc *Account, stream, subject, reply string, rmsg []byte) {
@@ -4917,9 +4967,14 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	mset.mu.RLock()
 	canRespond := !mset.cfg.NoAck && len(reply) > 0
 	name, stype := mset.cfg.Name, mset.cfg.Storage
-	s, js, jsa, st, rf, outq := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.outq
+	s, js, jsa, st, rf, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.outq, mset.node
 	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
 	mset.mu.RUnlock()
+
+	// This should not happen but possible now that we allow scale up, and scale down where this could trigger.
+	if node == nil {
+		return mset.processJetStreamMsg(subject, reply, hdr, msg, 0, 0)
+	}
 
 	// Check here pre-emptively if we have exceeded this server limits.
 	if js.limitsExceeded(stype) {
@@ -5004,7 +5059,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	mset.clseq++
 
 	// Do proposal.
-	err := mset.node.Propose(esm)
+	err := node.Propose(esm)
 	if err != nil && mset.clseq > 0 {
 		mset.clseq--
 	}

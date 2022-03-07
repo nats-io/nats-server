@@ -3185,7 +3185,6 @@ func (mset *stream) internalLoop() {
 	c.registerWithAccount(mset.acc)
 	defer c.closeConnection(ClientClosed)
 	outq, qch, msgs := mset.outq, mset.qch, mset.msgs
-	isClustered := mset.cfg.Replicas > 1
 
 	// For the ack msgs queue for interest retention.
 	var (
@@ -3241,6 +3240,11 @@ func (mset *stream) internalLoop() {
 			c.flushClients(0)
 			outq.recycle(&pms)
 		case <-msgs.ch:
+			// This can possibly change now so needs to be checked here.
+			mset.mu.RLock()
+			isClustered := mset.node != nil
+			mset.mu.RUnlock()
+
 			ims := msgs.pop()
 			for _, imi := range ims {
 				im := imi.(*inMsg)
