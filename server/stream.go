@@ -1047,6 +1047,8 @@ func (mset *stream) update(config *StreamConfig) error {
 		}
 	}
 
+	js := mset.js
+
 	// Now update config and store's version of our config.
 	mset.cfg = *cfg
 
@@ -1056,8 +1058,10 @@ func (mset *stream) update(config *StreamConfig) error {
 	}
 	mset.mu.Unlock()
 
-	mset.js.releaseStreamResources(&ocfg)
-	mset.js.reserveStreamResources(cfg)
+	if js != nil {
+		js.releaseStreamResources(&ocfg)
+		js.reserveStreamResources(cfg)
+	}
 
 	mset.store.UpdateConfig(cfg)
 
