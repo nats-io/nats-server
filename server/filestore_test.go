@@ -27,7 +27,6 @@ import (
 	"math/bits"
 	"math/rand"
 	"os"
-	"path"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -516,6 +515,7 @@ func TestFileStoreMsgLimitBug(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	defer fs.Stop()
 	fs.StoreMsg(subj, nil, msg)
 }
 
@@ -742,8 +742,8 @@ func TestFileStorePurge(t *testing.T) {
 	}
 
 	// We will simulate crashing before the purge directory is cleared.
-	mdir := path.Join(storeDir, msgDir)
-	pdir := path.Join(fs.fcfg.StoreDir, "ptest")
+	mdir := filepath.Join(storeDir, msgDir)
+	pdir := filepath.Join(fs.fcfg.StoreDir, "ptest")
 	os.Rename(mdir, pdir)
 	os.MkdirAll(mdir, 0755)
 
@@ -753,7 +753,7 @@ func TestFileStorePurge(t *testing.T) {
 	// Make sure we recover same state.
 	fs.Stop()
 
-	purgeDir := path.Join(fs.fcfg.StoreDir, purgeDir)
+	purgeDir := filepath.Join(fs.fcfg.StoreDir, purgeDir)
 	os.Rename(pdir, purgeDir)
 
 	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: blkSize}, StreamConfig{Name: "zzz", Storage: FileStorage})
@@ -1253,7 +1253,7 @@ func TestFileStoreEraseMsg(t *testing.T) {
 	// Now look on disk as well.
 	rl := fileStoreMsgSize(subj, nil, msg)
 	buf := make([]byte, rl)
-	fp, err := os.Open(path.Join(storeDir, msgDir, fmt.Sprintf(blkScan, 1)))
+	fp, err := os.Open(filepath.Join(storeDir, msgDir, fmt.Sprintf(blkScan, 1)))
 	if err != nil {
 		t.Fatalf("Error opening msg block file: %v", err)
 	}
@@ -1311,7 +1311,7 @@ func TestFileStoreEraseAndNoIndexRecovery(t *testing.T) {
 
 	// Stop and remove the index file.
 	fs.Stop()
-	ifn := path.Join(storeDir, msgDir, fmt.Sprintf(indexScan, 1))
+	ifn := filepath.Join(storeDir, msgDir, fmt.Sprintf(indexScan, 1))
 	removeFile(t, ifn)
 
 	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
@@ -1344,8 +1344,8 @@ func TestFileStoreMeta(t *testing.T) {
 	}
 	defer fs.Stop()
 
-	metafile := path.Join(storeDir, JetStreamMetaFile)
-	metasum := path.Join(storeDir, JetStreamMetaFileSum)
+	metafile := filepath.Join(storeDir, JetStreamMetaFile)
+	metasum := filepath.Join(storeDir, JetStreamMetaFileSum)
 
 	// Test to make sure meta file and checksum are present.
 	if _, err := os.Stat(metafile); os.IsNotExist(err) {
@@ -1389,8 +1389,8 @@ func TestFileStoreMeta(t *testing.T) {
 		t.Fatalf("Unexepected error: %v", err)
 	}
 
-	ometafile := path.Join(storeDir, consumerDir, oname, JetStreamMetaFile)
-	ometasum := path.Join(storeDir, consumerDir, oname, JetStreamMetaFileSum)
+	ometafile := filepath.Join(storeDir, consumerDir, oname, JetStreamMetaFile)
+	ometasum := filepath.Join(storeDir, consumerDir, oname, JetStreamMetaFileSum)
 
 	// Test to make sure meta file and checksum are present.
 	if _, err := os.Stat(ometafile); os.IsNotExist(err) {
@@ -1766,7 +1766,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Error getting next entry from snapshot: %v", err)
 			}
-			fpath := path.Join(rstoreDir, filepath.Clean(hdr.Name))
+			fpath := filepath.Join(rstoreDir, filepath.Clean(hdr.Name))
 			pdir := filepath.Dir(fpath)
 			os.MkdirAll(pdir, 0755)
 			fd, err := os.OpenFile(fpath, os.O_CREATE|os.O_RDWR, 0600)
@@ -2055,13 +2055,13 @@ func TestFileStoreWriteFailures(t *testing.T) {
 	// has a limited size.
 	// E.g. Docker
 	// docker run -ti --tmpfs /jswf_test:rw,size=32k --rm -v ~/Development/go/src:/go/src -w /go/src/github.com/nats-io/nats-server/ golang:1.16 /bin/bash
-	tdir := path.Join("/", "jswf_test")
+	tdir := filepath.Join("/", "jswf_test")
 	if stat, err := os.Stat(tdir); err != nil || !stat.IsDir() {
 		t.SkipNow()
 	}
 	defer removeDir(t, tdir)
 
-	storeDir := path.Join(tdir, JetStreamStoreDir)
+	storeDir := filepath.Join(tdir, JetStreamStoreDir)
 	os.MkdirAll(storeDir, 0755)
 
 	subj, msg := "foo", []byte("Hello Write Failures!")
@@ -2772,7 +2772,7 @@ func TestFileStoreStreamDeleteDirNotEmpty(t *testing.T) {
 
 	ready := make(chan bool)
 	go func() {
-		g := path.Join(storeDir, "g")
+		g := filepath.Join(storeDir, "g")
 		ready <- true
 		for i := 0; i < 100; i++ {
 			ioutil.WriteFile(g, []byte("OK"), defaultFilePerms)
@@ -2859,7 +2859,7 @@ func TestFileStoreStreamIndexBug(t *testing.T) {
 	badIdxBytes, _ := base64.StdEncoding.DecodeString("FgGBkw7D/f8/772iDPDIgbU=")
 	dir := createDir(t, "js-bad-idx-")
 	defer removeDir(t, dir)
-	fn := path.Join(dir, "1.idx")
+	fn := filepath.Join(dir, "1.idx")
 	ioutil.WriteFile(fn, badIdxBytes, 0644)
 	mb := &msgBlock{index: 1, ifn: fn}
 	if err := mb.readIndexInfo(); err == nil || !strings.Contains(err.Error(), "short index") {
@@ -3225,8 +3225,10 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 	restartFS(ttl - 100*time.Millisecond + 25*time.Millisecond)
 	checkState(0, 11, 10)
 
+	fs.Stop()
 	// Not for start per se but since we have all the test tooling here check that Compact() does right thing as well.
 	fs = newFS()
+	defer fs.Stop()
 	loadMsgs(100)
 	checkFiltered("orders.*", SimpleState{Msgs: 100, First: 1, Last: 100})
 	checkFiltered("orders.5", SimpleState{Msgs: 10, First: 5, Last: 95})

@@ -1946,7 +1946,7 @@ func TestServerLogsConfigurationFile(t *testing.T) {
 
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
 	port: -1
-	logfile: "%s"
+	logfile: '%s'
 	`, file.Name())))
 	defer removeFile(t, conf)
 

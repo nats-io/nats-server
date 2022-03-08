@@ -29,7 +29,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"path"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
@@ -1092,11 +1091,10 @@ func TestNoRaceAcceptLoopsDoNotLeaveOpenedConn(t *testing.T) {
 
 func TestNoRaceJetStreamDeleteStreamManyConsumers(t *testing.T) {
 	s := RunBasicJetStreamServer()
-	defer s.Shutdown()
-
 	if config := s.JetStreamConfig(); config != nil {
 		defer removeDir(t, config.StoreDir)
 	}
+	defer s.Shutdown()
 
 	mname := "MYS"
 	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: mname, Storage: FileStorage})
@@ -1125,11 +1123,10 @@ func TestNoRaceJetStreamDeleteStreamManyConsumers(t *testing.T) {
 // This test is to show that issue and that the fix works, meaning we no longer swap c.acc.
 func TestNoRaceJetStreamServiceImportAccountSwapIssue(t *testing.T) {
 	s := RunBasicJetStreamServer()
-	defer s.Shutdown()
-
 	if config := s.JetStreamConfig(); config != nil {
 		defer removeDir(t, config.StoreDir)
 	}
+	defer s.Shutdown()
 
 	// Client based API
 	nc, js := jsClientConnect(t, s)
@@ -1203,12 +1200,10 @@ func TestNoRaceJetStreamServiceImportAccountSwapIssue(t *testing.T) {
 
 func TestNoRaceJetStreamAPIStreamListPaging(t *testing.T) {
 	s := RunBasicJetStreamServer()
-	defer s.Shutdown()
-
-	// Forced cleanup of all persisted state.
 	if config := s.JetStreamConfig(); config != nil {
 		defer removeDir(t, config.StoreDir)
 	}
+	defer s.Shutdown()
 
 	// Create 2X limit
 	streamsNum := 2 * JSApiNamesLimit
@@ -1272,12 +1267,10 @@ func TestNoRaceJetStreamAPIStreamListPaging(t *testing.T) {
 
 func TestNoRaceJetStreamAPIConsumerListPaging(t *testing.T) {
 	s := RunBasicJetStreamServer()
-	defer s.Shutdown()
-
-	// Forced cleanup of all persisted state.
 	if config := s.JetStreamConfig(); config != nil {
 		defer removeDir(t, config.StoreDir)
 	}
+	defer s.Shutdown()
 
 	sname := "MYSTREAM"
 	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: sname})
@@ -1867,11 +1860,10 @@ func TestNoRaceJetStreamClusterExtendedStreamPurgeStall(t *testing.T) {
 	}
 
 	s := RunBasicJetStreamServer()
-	defer s.Shutdown()
-
 	if config := s.JetStreamConfig(); config != nil {
 		defer removeDir(t, config.StoreDir)
 	}
+	defer s.Shutdown()
 
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
@@ -2198,11 +2190,10 @@ func TestNoRaceJetStreamClusterSuperClusterRIPStress(t *testing.T) {
 
 func TestNoRaceJetStreamSlowFilteredInititalPendingAndFirstMsg(t *testing.T) {
 	s := RunBasicJetStreamServer()
-	defer s.Shutdown()
-
 	if config := s.JetStreamConfig(); config != nil {
 		defer removeDir(t, config.StoreDir)
 	}
+	defer s.Shutdown()
 
 	// Create directly here to force multiple blocks, etc.
 	a, err := s.LookupAccount("$G")
@@ -2352,11 +2343,10 @@ func TestNoRaceJetStreamFileStoreBufferReuse(t *testing.T) {
 	skip(t)
 
 	s := RunBasicJetStreamServer()
-	defer s.Shutdown()
-
 	if config := s.JetStreamConfig(); config != nil {
 		defer removeDir(t, config.StoreDir)
 	}
+	defer s.Shutdown()
 
 	cfg := &StreamConfig{Name: "TEST", Subjects: []string{"foo", "bar", "baz"}, Storage: FileStorage}
 	if _, err := s.GlobalAccount().addStreamWithStore(cfg, nil); err != nil {
@@ -2433,11 +2423,10 @@ func TestNoRaceJetStreamSlowRestartWithManyExpiredMsgs(t *testing.T) {
 	opts.Port = -1
 	opts.JetStream = true
 	s := RunServer(&opts)
-	defer s.Shutdown()
-
 	if config := s.JetStreamConfig(); config != nil {
 		defer removeDir(t, config.StoreDir)
 	}
+	defer s.Shutdown()
 
 	// Client for API requests.
 	nc, js := jsClientConnect(t, s)
@@ -2697,12 +2686,11 @@ func TestNoRaceAccountConnz(t *testing.T) {
 
 func TestNoRaceCompressedConnz(t *testing.T) {
 	s := RunBasicJetStreamServer()
-	defer s.Shutdown()
-
 	config := s.JetStreamConfig()
 	if config != nil {
 		defer removeDir(t, config.StoreDir)
 	}
+	defer s.Shutdown()
 
 	nc, _ := jsClientConnect(t, s)
 	defer nc.Close()
@@ -2930,12 +2918,11 @@ func TestNoRaceJetStreamClusterExtendedStreamPurge(t *testing.T) {
 
 func TestNoRaceJetStreamFileStoreCompaction(t *testing.T) {
 	s := RunBasicJetStreamServer()
-	defer s.Shutdown()
-
 	config := s.JetStreamConfig()
 	if config != nil {
 		defer removeDir(t, config.StoreDir)
 	}
+	defer s.Shutdown()
 
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
@@ -3057,12 +3044,11 @@ func TestNoRaceJetStreamOrderedConsumerMissingMsg(t *testing.T) {
 	skip(t)
 
 	s := RunBasicJetStreamServer()
-	defer s.Shutdown()
-
 	config := s.JetStreamConfig()
 	if config != nil {
 		defer removeDir(t, config.StoreDir)
 	}
+	defer s.Shutdown()
 
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
@@ -3935,12 +3921,11 @@ func TestNoRaceJetStreamClusterStreamDropCLFS(t *testing.T) {
 
 func TestNoRaceJetStreamMemstoreWithLargeInteriorDeletes(t *testing.T) {
 	s := RunBasicJetStreamServer()
-	defer s.Shutdown()
-
 	config := s.JetStreamConfig()
 	if config != nil {
 		defer removeDir(t, config.StoreDir)
 	}
+	defer s.Shutdown()
 
 	// Client for API requests.
 	nc, js := jsClientConnect(t, s)
@@ -4133,11 +4118,10 @@ func TestNoRaceJetStreamStreamInfoSubjectDetailsLimits(t *testing.T) {
 	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
-	defer s.Shutdown()
-
 	if config := s.JetStreamConfig(); config != nil {
 		defer removeDir(t, config.StoreDir)
 	}
+	defer s.Shutdown()
 
 	nc, js := jsClientConnect(t, s, nats.UserInfo("me", "pwd"))
 	defer nc.Close()
@@ -4203,11 +4187,10 @@ func TestNoRaceJetStreamStreamInfoSubjectDetailsLimits(t *testing.T) {
 
 func TestNoRaceJetStreamSparseConsumers(t *testing.T) {
 	s := RunBasicJetStreamServer()
-	defer s.Shutdown()
-
 	if config := s.JetStreamConfig(); config != nil {
 		defer removeDir(t, config.StoreDir)
 	}
+	defer s.Shutdown()
 
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
@@ -4319,7 +4302,7 @@ func TestNoRaceFileStoreSubjectInfoWithSnapshotCleanup(t *testing.T) {
 	}
 
 	// We will have cleanup the main .blk and .idx sans the lmb, but we should not have any *.fss files.
-	fms, err := filepath.Glob(path.Join(storeDir, msgDir, fssScanAll))
+	fms, err := filepath.Glob(filepath.Join(storeDir, msgDir, fssScanAll))
 	require_NoError(t, err)
 
 	if len(fms) > 0 {
@@ -4366,7 +4349,7 @@ func TestNoRaceFileStoreKeyFileCleanup(t *testing.T) {
 	}
 
 	// We will have cleanup the main .blk and .idx sans the lmb, but we should not have any *.fss files.
-	kms, err := filepath.Glob(path.Join(storeDir, msgDir, keyScanAll))
+	kms, err := filepath.Glob(filepath.Join(storeDir, msgDir, keyScanAll))
 	require_NoError(t, err)
 
 	if len(kms) > 1 {

@@ -1465,6 +1465,7 @@ func testTLSRoutesCertificateImplicitAllow(t *testing.T, pass bool) {
 	if err := cfg.Sync(); err != nil {
 		t.Fatal(err)
 	}
+	cfg.Close()
 
 	optsA := LoadConfig(cfg.Name())
 	optsB := LoadConfig(cfg.Name())

@@ -1,0 +1,33 @@
+{
+  "config": {
+    "name": "TEST",
+    "subjects": [
+      "foo"
+    ],
+    "retention": "limits",
+    "max_consumers": -1,
+    "max_msgs_per_subject": -1,
+    "max_msgs": -1,
+    "max_bytes": -1,
+    "max_age": 0,
+    "max_msg_size": -1,
+    "storage": "file",
+    "discard": "old",
+    "num_replicas": 1,
+    "duplicate_window": 120000000000,
+    "sealed": false,
+    "deny_delete": false,
+    "deny_purge": false,
+    "allow_rollup_hdrs": false
+  },
+  "state": {
+    "messages": 10,
+    "bytes": 381,
+    "first_seq": 1,
+    "first_ts": "2022-03-07T23:59:01.710801Z",
+    "last_seq": 10,
+    "last_ts": "2022-03-07T23:59:01.712378Z",
+    "num_subjects": 1,
+    "consumer_count": 1
+  }
+}

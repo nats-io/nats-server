@@ -3487,7 +3487,7 @@ func TestJWTAccountNATSResolverFetch(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 			interval: "200ms"
 			limit: 4
 		}
@@ -3513,7 +3513,7 @@ func TestJWTAccountNATSResolverFetch(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 			interval: "200ms"
 			limit: 4
 		}
@@ -3537,7 +3537,7 @@ func TestJWTAccountNATSResolverFetch(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: cache
-			dir: %s
+			dir: '%s'
 			ttl: "%dms"
 			limit: 4
 		}
@@ -3729,7 +3729,7 @@ func TestJWTAccountNATSResolverCrossClusterFetch(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 			interval: "200ms"
 		}
 		gateway: {
@@ -3753,7 +3753,7 @@ func TestJWTAccountNATSResolverCrossClusterFetch(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 			interval: "200ms"
 		}
 		gateway: {
@@ -3780,7 +3780,7 @@ func TestJWTAccountNATSResolverCrossClusterFetch(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 			interval: "200ms"
 		}
 		gateway: {
@@ -3807,7 +3807,7 @@ func TestJWTAccountNATSResolverCrossClusterFetch(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 			interval: "200ms"
 		}
 		cluster {
@@ -4296,7 +4296,7 @@ func TestJWTJetStreamLimits(t *testing.T) {
 		operator: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 		}
 		system_account: %s
     `, ojwt, dir, sysPub)))
@@ -4342,7 +4342,7 @@ func TestJWTJetStreamLimits(t *testing.T) {
 		operator: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 		}
 		system_account: %s
     `, port, ojwt, dir, sysPub)))
@@ -4359,7 +4359,7 @@ func TestJWTJetStreamLimits(t *testing.T) {
 		operator: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 		}
 		system_account: %s
     `, port, ojwt, dir, sysPub)))
@@ -4434,7 +4434,7 @@ func TestJWTUserRevocation(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 		}
     `, ojwt, syspub, dirSrv)))
 		defer removeFile(t, conf)
@@ -4547,7 +4547,7 @@ func TestJWTActivationRevocation(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 		}
     `, ojwt, syspub, dirSrv)))
 		defer removeFile(t, conf)
@@ -4660,7 +4660,7 @@ func TestJWTAccountFetchTimeout(t *testing.T) {
 		resolver: {
 			%s
 			timeout: "100ms"
-			dir: %s
+			dir: '%s'
 		}
     `, ojwt, syspub, cfg, dirSrv)))
 			defer removeFile(t, conf)
@@ -4741,7 +4741,7 @@ func TestJWTAccountOps(t *testing.T) {
 		system_account: %s
 		resolver: {
 			%s
-			dir: %s
+			dir: '%s'
 		}
     `, opJwt, syspub, cfg, dirSrv)))
 			disconnectErrChan := make(chan struct{}, 1)
@@ -4876,7 +4876,7 @@ func TestJWTHeader(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 		}
     `, ojwt, syspub, dirSrv)))
 		defer removeFile(t, conf)
@@ -5180,7 +5180,7 @@ func TestJWTAccountTokenImportMisuse(t *testing.T) {
 			system_account: %s
 			resolver: {
 				type: full
-				dir: %s
+				dir: '%s'
 			}
 		`, ojwt, syspub, dirSrv)))
 
@@ -5429,7 +5429,7 @@ func TestJWScopedSigningKeys(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 		}
     `, ojwt, syspub, dirSrv)))
 	defer removeFile(t, cf)
@@ -5614,7 +5614,7 @@ func TestJWTStrictSigningKeys(t *testing.T) {
 		operator = %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 		}
 		resolver_preload = {
 			%s : "%s"
@@ -5786,7 +5786,7 @@ func TestJWTAccountProtectedImport(t *testing.T) {
 		system_account = %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 		}`, ojwt, sysPub, dirSrv)))
 		defer removeFile(t, cf)
 		s, _ := RunServerWithConfig(cf)
@@ -5864,7 +5864,7 @@ func TestJWTMappings(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 		}
     `, ojwt, syspub, dirSrv)))
 	defer removeFile(t, conf)
@@ -5976,7 +5976,7 @@ func TestJWTNoSystemAccountButNatsResolver(t *testing.T) {
 			operator: %s
 			resolver: {
 				type: %s
-				dir: %s
+				dir: '%s'
 			}`, ojwt, resType, dirSrv)))
 			defer removeFile(t, conf)
 			opts := LoadConfig(conf)
@@ -6018,7 +6018,7 @@ func TestJWTAccountConnzAccessAfterClaimUpdate(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 		}
     `, ojwt, spub, dirSrv)))
 	defer removeFile(t, conf)

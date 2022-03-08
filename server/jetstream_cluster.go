@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
-	"path"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -501,7 +501,7 @@ func (js *jetStream) setupMetaGroup() error {
 
 	// Setup our WAL for the metagroup.
 	sysAcc := s.SystemAccount()
-	storeDir := path.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, defaultMetaGroupName)
+	storeDir := filepath.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, defaultMetaGroupName)
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMetaFSBlkSize, AsyncFlush: false},
@@ -1407,7 +1407,7 @@ func (js *jetStream) createRaftGroup(rg *raftGroup, storage StorageType) error {
 		return errors.New("shutting down")
 	}
 
-	storeDir := path.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, rg.Name)
+	storeDir := filepath.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, rg.Name)
 	var store StreamStore
 	if storage == FileStorage {
 		fs, err := newFileStore(

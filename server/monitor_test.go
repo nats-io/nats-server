@@ -4022,7 +4022,7 @@ func TestMonitorJsz(t *testing.T) {
 		jetstream: {
 			max_mem_store: 10Mb
 			max_file_store: 10Mb
-			store_dir: %s
+			store_dir: '%s'
 		}
 		cluster {
 			name: cluster_name
