@@ -1667,11 +1667,13 @@ func (jsa *jsAccount) checkBytesLimits(addBytes int64, storage StorageType, repl
 		}
 	case FileStorage:
 		// Account limits defined.
+
 		if jsa.limits.MaxStore >= 0 {
 			if jsa.storeReserved+totalBytes > jsa.limits.MaxStore {
 				return NewJSStorageResourcesExceededError()
 			}
 		}
+
 		// Check if this server can handle request.
 		if checkServer && js.storeReserved+addBytes > js.config.MaxStore {
 			return NewJSStorageResourcesExceededError()

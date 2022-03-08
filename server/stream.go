@@ -971,7 +971,30 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig) (*StreamConfig, 
 	}
 
 	// Check limits.
-	if err := jsa.checkAllLimits(&cfg); err != nil {
+	if old.MaxBytes == cfg.MaxBytes {
+		// If MaxBytes isn't being changed, then we can run the normal limit
+		// checking code.
+		if err := jsa.checkAllLimits(&cfg); err != nil {
+			return nil, err
+		}
+		return &cfg, nil
+	}
+
+	// If we do want to change MaxBytes, then we need some special handling.
+
+	maxBytesDiff := old.MaxBytes - cfg.MaxBytes
+	newMaxBytes := cfg.MaxBytes
+
+	// We temporarily set the new MaxBytes to maxBytesDiff because
+	// checkAllLimits adds new MaxBytes to the current reserved limit and
+	// checks if we've gone over.
+	cfg.MaxBytes = maxBytesDiff
+	err = jsa.checkAllLimits(&cfg)
+
+	// Set new MaxBytes back to original absolute value.
+	cfg.MaxBytes = newMaxBytes
+
+	if err != nil {
 		return nil, err
 	}
 	return &cfg, nil

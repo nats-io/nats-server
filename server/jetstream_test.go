@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"math"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -15210,9 +15211,12 @@ func TestJetStreamPullConsumerHeartBeats(t *testing.T) {
 }
 
 func TestStorageReservedBytes(t *testing.T) {
+	const systemLimit = 1024
 	opts := DefaultTestOptions
 	opts.Port = -1
 	opts.JetStream = true
+	opts.JetStreamMaxMemory = systemLimit
+	opts.JetStreamMaxStore = systemLimit
 	tdir, _ := ioutil.TempDir(tempRoot, "jstests-storedir-")
 	opts.StoreDir = tdir
 	opts.HTTPPort = -1
@@ -15227,57 +15231,101 @@ func TestStorageReservedBytes(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
-	getReserved := func(addr string, st nats.StorageType) (uint64, error) {
-		resp, err := http.Get(addr)
+	getJetStreamVarz := func(hc *http.Client, addr string) (JetStreamVarz, error) {
+		resp, err := hc.Get(addr)
 		if err != nil {
-			return 0, err
+			return JetStreamVarz{}, err
 		}
 		defer resp.Body.Close()
 
 		var v Varz
 		if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
-			return 0, err
+			return JetStreamVarz{}, err
 		}
 
-		if st == nats.MemoryStorage {
-			return v.JetStream.Stats.ReservedMemory, nil
+		return v.JetStream, nil
+	}
+	getReserved := func(hc *http.Client, addr string, st nats.StorageType) (uint64, error) {
+		jsv, err := getJetStreamVarz(hc, addr)
+		if err != nil {
+			return 0, err
 		}
-		return v.JetStream.Stats.ReservedStore, nil
+		if st == nats.MemoryStorage {
+			return jsv.Stats.ReservedMemory, nil
+		}
+		return jsv.Stats.ReservedStore, nil
+	}
+
+	varzAddr := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+	hc := &http.Client{Timeout: 5 * time.Second}
+
+	jsv, err := getJetStreamVarz(hc, varzAddr)
+	require_NoError(t, err)
+
+	if got, want := systemLimit, int(jsv.Config.MaxMemory); got != want {
+		t.Fatalf("Unexpected max memory: got=%d, want=%d", got, want)
+	}
+	if got, want := systemLimit, int(jsv.Config.MaxStore); got != want {
+		t.Fatalf("Unexpected max store: got=%d, want=%d", got, want)
 	}
 
 	storage := []nats.StorageType{
 		nats.FileStorage,
 		nats.MemoryStorage,
 	}
-	varzAddr := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
-	for _, storage := range storage {
-		cfg := &nats.StreamConfig{
-			Name:     "TEST",
-			Subjects: []string{"foo"},
-			Storage:  storage,
+	for _, limit := range []int{systemLimit, (systemLimit / 2)} {
+		createMaxBytes := int64(math.Round(float64(limit) * .666))
+
+		for _, storage := range storage {
+			cfg := &nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Storage:  storage,
+				MaxBytes: createMaxBytes,
+			}
+
+			_, err = js.AddStream(cfg)
+			require_NoError(t, err)
+
+			updateMaxBytes := createMaxBytes + 1
+			cfg.MaxBytes = updateMaxBytes
+			_, err = js.UpdateStream(cfg)
+			require_NoError(t, err)
+
+			reserved, err := getReserved(hc, varzAddr, storage)
+			require_NoError(t, err)
+			if reserved != uint64(updateMaxBytes) {
+				t.Fatalf("Unexpected reserved: %d, want %d", reserved, uint64(updateMaxBytes))
+			}
+
+			updateMaxBytes = createMaxBytes - 1
+			cfg.MaxBytes = updateMaxBytes
+			_, err = js.UpdateStream(cfg)
+			require_NoError(t, err)
+
+			reserved, err = getReserved(hc, varzAddr, storage)
+			require_NoError(t, err)
+			if reserved != uint64(updateMaxBytes) {
+				t.Fatalf("Unexpected reserved: %d, want %d", reserved, uint64(updateMaxBytes))
+			}
+
+			err = js.DeleteStream("TEST")
+			require_NoError(t, err)
+
+			reserved, err = getReserved(hc, varzAddr, storage)
+			require_NoError(t, err)
+			if reserved != 0 {
+				t.Fatalf("Unexpected reserved: %d, want 0", reserved)
+			}
 		}
 
-		_, err := js.AddStream(cfg)
-		require_NoError(t, err)
-
-		cfg.MaxBytes = 1234
-		_, err = js.UpdateStream(cfg)
-		require_NoError(t, err)
-
-		reserved, err := getReserved(varzAddr, storage)
-		require_NoError(t, err)
-		if reserved != uint64(cfg.MaxBytes) {
-			t.Fatalf("Unexpected reserved: %d, want %d", reserved, cfg.MaxBytes)
+		globalAcc := s.GlobalAccount()
+		al := &JetStreamAccountLimits{
+			MaxMemory: systemLimit / 2,
+			MaxStore:  systemLimit / 2,
 		}
-
-		err = js.DeleteStream("TEST")
+		err = globalAcc.UpdateJetStreamLimits(al)
 		require_NoError(t, err)
-
-		reserved, err = getReserved(varzAddr, storage)
-		require_NoError(t, err)
-		if reserved != 0 {
-			t.Fatalf("Unexpected reserved: %d, want 0", reserved)
-		}
 	}
 }
 
