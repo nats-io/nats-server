@@ -893,7 +893,7 @@ type SubDetail struct {
 func newSubDetail(sub *subscription) SubDetail {
 	sd := newClientSubDetail(sub)
 	if sub.client.acc != nil {
-		sd.Account = sub.client.acc.GetName()
+		sd.Account = sub.client.acc.Name
 	}
 	return sd
 }
