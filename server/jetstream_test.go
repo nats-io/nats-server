@@ -15391,7 +15391,7 @@ func TestStorageReservedBytes(t *testing.T) {
 			info, err := js.UpdateStream(cfg)
 			if c.wantUpdateError && err == nil {
 				got := info.Config.MaxBytes
-				st.Fatalf("Unexpected update success, maxBytes=%d; systemLimit=%d; accountLimit=%d",
+				st.Fatalf("Unexpected update success, newMaxBytes=%d; systemLimit=%d; accountLimit=%d",
 					got, systemLimit, c.accountLimit)
 			} else if !c.wantUpdateError && err != nil {
 				st.Fatalf("Unexpected update error: %s", err)
