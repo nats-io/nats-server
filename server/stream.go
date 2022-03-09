@@ -983,6 +983,10 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig) (*StreamConfig, 
 	// If we do want to change MaxBytes, then we need some special handling.
 
 	maxBytesDiff := old.MaxBytes - cfg.MaxBytes
+	if maxBytesDiff < 0 {
+		maxBytesDiff = 0
+	}
+
 	newMaxBytes := cfg.MaxBytes
 
 	// We temporarily set the new MaxBytes to maxBytesDiff because
