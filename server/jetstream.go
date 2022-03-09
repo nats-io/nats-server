@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"math"
 	"os"
 	"path"
@@ -1668,14 +1669,35 @@ func (jsa *jsAccount) checkBytesLimits(addBytes int64, storage StorageType, repl
 	case FileStorage:
 		// Account limits defined.
 
+		log.Printf(
+			"jsAccount.checkBytesLimits - jsa.limits.MaxStore=%d"+
+				"; js.config.MaxStore=%d; jsa.storeReserved=%d"+
+				"; js.storeReserved=%d"+
+				"; totalBytes=%d; addBytes=%d; checkServer=%t",
+			jsa.limits.MaxStore,
+			js.config.MaxStore, jsa.storeReserved,
+			js.storeReserved,
+			totalBytes, addBytes, checkServer,
+		)
+
 		if jsa.limits.MaxStore >= 0 {
 			if jsa.storeReserved+totalBytes > jsa.limits.MaxStore {
+				log.Printf(
+					"jsAccount.checkBytesLimits - ERROR - jsa.storeReserved+totalBytes=%d"+
+						"; jsa.limits.MaxStore=%d",
+					(jsa.storeReserved + totalBytes), jsa.limits.MaxStore,
+				)
 				return NewJSStorageResourcesExceededError()
 			}
 		}
 
 		// Check if this server can handle request.
 		if checkServer && js.storeReserved+addBytes > js.config.MaxStore {
+			log.Printf(
+				"jsAccount.checkBytesLimits - ERROR - js.storeReserved+addBytes=%d"+
+					"; js.config.MaxStore=%d",
+				(js.storeReserved + addBytes), js.config.MaxStore,
+			)
 			return NewJSStorageResourcesExceededError()
 		}
 	}
