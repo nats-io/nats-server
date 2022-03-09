@@ -4309,7 +4309,7 @@ func TestJetStreamClusterStreamLeaderStepDown(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	if cdResp.Error != nil {
-		t.Fatalf("Unexpected error: %+v", sdResp.Error)
+		t.Fatalf("Unexpected error: %+v", cdResp.Error)
 	}
 
 	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
@@ -10918,6 +10918,20 @@ func TestJetStreamClusterFilteredAndIdleConsumerNRGGrowth(t *testing.T) {
 	if entries, _ := o.raftNode().Size(); entries > compactNumMin {
 		t.Fatalf("Expected <= %d entries, got %d", compactNumMin, entries)
 	}
+
+	// Now make the consumer leader stepdown and make sure we have the proper snapshot.
+	resp, err := nc.Request(fmt.Sprintf(JSApiConsumerLeaderStepDownT, "TEST", "dlc"), nil, time.Second)
+	require_NoError(t, err)
+
+	var cdResp JSApiConsumerLeaderStepDownResponse
+	if err := json.Unmarshal(resp.Data, &cdResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if cdResp.Error != nil {
+		t.Fatalf("Unexpected error: %+v", cdResp.Error)
+	}
+
+	c.waitOnConsumerLeader("$G", "TEST", "dlc")
 }
 
 func TestJetStreamClusterMirrorOrSourceNotActiveReporting(t *testing.T) {

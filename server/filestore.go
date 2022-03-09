@@ -5509,11 +5509,10 @@ func (o *consumerFileStore) State() (*ConsumerState, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	var state *ConsumerState
+	state := &ConsumerState{}
 
 	// See if we have a running state or if we need to read in from disk.
 	if o.state.Delivered.Consumer != 0 {
-		state = &ConsumerState{}
 		state.Delivered = o.state.Delivered
 		state.AckFloor = o.state.AckFloor
 		if len(o.state.Pending) > 0 {
