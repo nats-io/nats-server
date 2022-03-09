@@ -5183,3 +5183,100 @@ func TestLeafNodeQueueGroupWithLateLNJoin(t *testing.T) {
 	natsPub(t, cln1, "foo", []byte("hello"))
 	natsNexMsg(t, sln2, time.Second)
 }
+
+func TestLeafNodeJetStreamDomainMapCrossTalk(t *testing.T) {
+	accs := `
+accounts :{
+    A:{   jetstream: enable, users:[ {user:a1,password:a1}]},
+    SYS:{ users:[ {user:s1,password:s1}]},
+}
+system_account: SYS
+`
+
+	sd1 := createDir(t, JetStreamStoreDir)
+	defer os.RemoveAll(sd1)
+	confA := createConfFile(t, []byte(fmt.Sprintf(`
+listen: 127.0.0.1:-1
+%s
+jetstream: { domain: da, store_dir: '%s', max_mem: 50Mb, max_file: 50Mb }
+leafnodes: {
+	listen: 127.0.0.1:-1
+	no_advertise: true
+	authorization: {
+		timeout: 0.5
+	}
+}
+`, accs, sd1)))
+	defer removeFile(t, confA)
+	sA, _ := RunServerWithConfig(confA)
+	defer sA.Shutdown()
+
+	sd2 := createDir(t, JetStreamStoreDir)
+	defer os.RemoveAll(sd2)
+	confL := createConfFile(t, []byte(fmt.Sprintf(`
+listen: 127.0.0.1:-1
+%s
+jetstream: { domain: dl, store_dir: '%s', max_mem: 50Mb, max_file: 50Mb }
+leafnodes:{
+	no_advertise: true
+    remotes:[{url:nats://a1:a1@127.0.0.1:%d, account: A},
+		     {url:nats://s1:s1@127.0.0.1:%d, account: SYS}]
+}
+`, accs, sd2, sA.opts.LeafNode.Port, sA.opts.LeafNode.Port)))
+	defer removeFile(t, confL)
+	sL, _ := RunServerWithConfig(confL)
+	defer sL.Shutdown()
+
+	ncA := natsConnect(t, sA.ClientURL(), nats.UserInfo("a1", "a1"))
+	defer ncA.Close()
+	ncL := natsConnect(t, sL.ClientURL(), nats.UserInfo("a1", "a1"))
+	defer ncL.Close()
+
+	test := func(jsA, jsL nats.JetStreamContext) {
+		kvA, err := jsA.CreateKeyValue(&nats.KeyValueConfig{Bucket: "bucket"})
+		require_NoError(t, err)
+		kvL, err := jsL.CreateKeyValue(&nats.KeyValueConfig{Bucket: "bucket"})
+		require_NoError(t, err)
+
+		_, err = kvA.Put("A", nil)
+		require_NoError(t, err)
+		_, err = kvL.Put("L", nil)
+		require_NoError(t, err)
+
+		// check for unwanted cross talk
+		_, err = kvA.Get("A")
+		require_NoError(t, err)
+		_, err = kvA.Get("l")
+		require_Error(t, err)
+		require_True(t, err == nats.ErrKeyNotFound)
+
+		_, err = kvL.Get("A")
+		require_Error(t, err)
+		require_True(t, err == nats.ErrKeyNotFound)
+		_, err = kvL.Get("L")
+		require_NoError(t, err)
+
+		err = jsA.DeleteKeyValue("bucket")
+		require_NoError(t, err)
+		err = jsL.DeleteKeyValue("bucket")
+		require_NoError(t, err)
+	}
+
+	jsA, err := ncA.JetStream()
+	require_NoError(t, err)
+	jsL, err := ncL.JetStream()
+	require_NoError(t, err)
+	test(jsA, jsL)
+
+	jsAL, err := ncA.JetStream(nats.Domain("dl"))
+	require_NoError(t, err)
+	jsLA, err := ncL.JetStream(nats.Domain("da"))
+	require_NoError(t, err)
+	test(jsAL, jsLA)
+
+	jsAA, err := ncA.JetStream(nats.Domain("da"))
+	require_NoError(t, err)
+	jsLL, err := ncL.JetStream(nats.Domain("dl"))
+	require_NoError(t, err)
+	test(jsAA, jsLL)
+}

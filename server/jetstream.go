@@ -586,18 +586,14 @@ func (a *Account) enableAllJetStreamServiceImportsAndMappings() error {
 	// Check if we have a Domain specified.
 	// If so add in a subject mapping that will allow local connected clients to reach us here as well.
 	if opts := s.getOpts(); opts.JetStreamDomain != _EMPTY_ {
-		src := fmt.Sprintf(jsDomainAPI, opts.JetStreamDomain)
-		found := false
+		mappings := generateJSMappingTable(opts.JetStreamDomain)
 		a.mu.RLock()
 		for _, m := range a.mappings {
-			if src == m.src {
-				found = true
-				break
-			}
+			delete(mappings, m.src)
 		}
 		a.mu.RUnlock()
-		if !found {
-			if err := a.AddMapping(src, jsAllAPI); err != nil {
+		for src, dest := range mappings {
+			if err := a.AddMapping(src, dest); err != nil {
 				s.Errorf("Error adding JetStream domain mapping: %v", err)
 			}
 		}

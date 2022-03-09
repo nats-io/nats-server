@@ -1251,8 +1251,8 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 				meta.Campaign()
 			}
 		} else {
-			c.Noticef("JetStream Not Extended, adding deny %q for account %q", jsAllAPI, accName)
-			c.mergeDenyPermissionsLocked(both, []string{jsAllAPI})
+			c.Noticef("JetStream Not Extended, adding deny %+v for account %q", denyAllClientJs, accName)
+			c.mergeDenyPermissionsLocked(both, denyAllClientJs)
 		}
 		blockMappingOutgoing = true
 	} else if acc == sysAcc {
@@ -1274,19 +1274,21 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 		// If the system account is shared, jsAllAPI traffic will go through the system account.
 		// So in order to prevent duplicate delivery (from system and actual account) suppress it on the account.
 		// If the system account is NOT shared, jsAllAPI traffic has no business
-		c.Noticef("Adding deny %q for account %q", jsAllAPI, accName)
-		c.mergeDenyPermissionsLocked(both, []string{jsAllAPI})
+		c.Noticef("Adding deny %+v for account %q", denyAllClientJs, accName)
+		c.mergeDenyPermissionsLocked(both, denyAllClientJs)
 	}
 	// If we have a specified JetStream domain we will want to add a mapping to
 	// allow access cross domain for each non-system account.
 	if opts.JetStreamDomain != _EMPTY_ && acc != sysAcc && opts.JetStream {
-		src := fmt.Sprintf(jsDomainAPI, opts.JetStreamDomain)
-		if err := acc.AddMapping(src, jsAllAPI); err != nil {
-			c.Debugf("Error adding JetStream domain mapping: %s", err.Error())
-		} else {
-			c.Noticef("Adding JetStream Domain Mapping %q to account %q", src, accName)
+		for src, dest := range generateJSMappingTable(opts.JetStreamDomain) {
+			if err := acc.AddMapping(src, dest); err != nil {
+				c.Debugf("Error adding JetStream domain mapping: %s", err.Error())
+			} else {
+				c.Noticef("Adding JetStream Domain Mapping %q -> %s to account %q", src, dest, accName)
+			}
 		}
 		if blockMappingOutgoing {
+			src := fmt.Sprintf(jsDomainAPI, opts.JetStreamDomain)
 			// make sure that messages intended for this domain, do not leave the cluster via this leaf node connection
 			// This is a guard against a miss-config with two identical domain names and will only cover some forms
 			// of this issue, not all of them.
@@ -1496,6 +1498,10 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	}
 	// Likewise for mappings.
 	for _, m := range acc.mappings {
+		if c.isSpokeLeafNode() && !c.canSubscribe(m.src) {
+			c.Debugf("Not permitted to import mapping %q on behalf of %s%s", m.src, accName, accNTag)
+			continue
+		}
 		ims = append(ims, m.src)
 	}
 
@@ -1695,6 +1701,9 @@ func (c *client) forceAddToSmap(subj string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.leaf.smap == nil {
+		return
+	}
 	n := c.leaf.smap[subj]
 	if n != 0 {
 		return

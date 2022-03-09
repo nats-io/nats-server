@@ -256,7 +256,34 @@ const (
 	JSAuditAdvisory = "$JS.EVENT.ADVISORY.API"
 )
 
-var denyAllJs = []string{jscAllSubj, raftAllSubj, jsAllAPI}
+var denyAllClientJs = []string{jsAllAPI, "$KV.>", "$OBJ.>"}
+var denyAllJs = []string{jscAllSubj, raftAllSubj, jsAllAPI, "$KV.>", "$OBJ.>"}
+
+func generateJSMappingTable(domain string) map[string]string {
+	mappings := map[string]string{}
+	// This set of mappings is very very very ugly.
+	// It is a consequence of what we defined the domain prefix to be "$JS.domain.API" and it's mapping to "$JS.API"
+	// For optics $KV and $OBJ where made to be independent subject spaces.
+	// As materialized views of JS, they did not simply extend that subject space to say "$JS.API.KV" "$JS.API.OBJ"
+	// This is very unfortunate!!!
+	// Furthermore, it seemed bad to require different domain prefixes for JS/KV/OBJ.
+	// Especially since the actual API for say KV, does use stream create from JS.
+	// To avoid overlaps KV and OBJ views append the prefix to their API.
+	// (Replacing $KV with the prefix allows users to create collisions with say the bucket name)
+	// This mapping therefore needs to have extra token so that the mapping can properly discern between $JS, $KV, $OBJ
+	for srcMappingSuffix, to := range map[string]string{
+		"INFO":       JSApiAccountInfo,
+		"STREAM.>":   "$JS.API.STREAM.>",
+		"CONSUMER.>": "$JS.API.CONSUMER.>",
+		"META.>":     "$JS.API.META.>",
+		"SERVER.>":   "$JS.API.SERVER.>",
+		"$KV.>":      "$KV.>",
+		"$OBJ.>":     "$OBJ.>",
+	} {
+		mappings[fmt.Sprintf("$JS.%s.API.%s", domain, srcMappingSuffix)] = to
+	}
+	return mappings
+}
 
 // JSMaxDescription is the maximum description length for streams and consumers.
 const JSMaxDescriptionLen = 4 * 1024
