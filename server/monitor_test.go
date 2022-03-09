@@ -677,7 +677,6 @@ func TestConnzLastActivity(t *testing.T) {
 		if barLA.Equal(nextLA) {
 			t.Fatalf("Publish should have triggered update to LastActivity\n")
 		}
-		barLA = nextLA
 
 		// Message delivery on ncFoo should have triggered as well.
 		nextLA = ciFoo.LastActivity
