@@ -3106,11 +3106,6 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 					lastSnap = snap
 				}
 			}
-		} else {
-			// If we are here we may have no state but may be processing updates as a filtered consumer.
-			// Make sure the store does not grow too much, so similar to memory logic above, just compact.
-			_, _, applied := n.Progress()
-			n.Compact(applied)
 		}
 	}
 

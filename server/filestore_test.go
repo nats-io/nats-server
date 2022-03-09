@@ -1892,7 +1892,7 @@ func TestFileStoreConsumer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexepected error: %v", err)
 	}
-	if state, err := o.State(); state != nil || err != nil {
+	if state, err := o.State(); err != nil || state.Delivered.Consumer != 0 {
 		t.Fatalf("Unexpected state or error: %v", err)
 	}
 

@@ -1760,7 +1760,7 @@ func (o *consumer) readStoredState() error {
 		return nil
 	}
 	state, err := o.store.State()
-	if err == nil && state != nil {
+	if err == nil && state != nil && state.Delivered.Consumer != 0 {
 		o.applyState(state)
 		if len(o.rdc) > 0 {
 			o.checkRedelivered()
