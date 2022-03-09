@@ -25,7 +25,6 @@ import (
 	"math/rand"
 	"net"
 	"os"
-	"path"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -409,13 +408,13 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		n.vote = vote
 	}
 
-	if err := os.MkdirAll(path.Join(n.sd, snapshotsDir), 0750); err != nil {
+	if err := os.MkdirAll(filepath.Join(n.sd, snapshotsDir), 0750); err != nil {
 		return nil, fmt.Errorf("could not create snapshots directory - %v", err)
 	}
 
 	// Can't recover snapshots if memory based.
 	if _, ok := n.wal.(*memStore); ok {
-		os.Remove(path.Join(n.sd, snapshotsDir, "*"))
+		os.Remove(filepath.Join(n.sd, snapshotsDir, "*"))
 	} else {
 		// See if we have any snapshots and if so load and process on startup.
 		n.setupLastSnapshot()
@@ -913,9 +912,9 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		data:      data,
 	}
 
-	snapDir := path.Join(n.sd, snapshotsDir)
+	snapDir := filepath.Join(n.sd, snapshotsDir)
 	sn := fmt.Sprintf(snapFileT, snap.lastTerm, snap.lastIndex)
-	sfile := path.Join(snapDir, sn)
+	sfile := filepath.Join(snapDir, sn)
 	// Remember our latest snapshot file.
 	n.snapfile = sfile
 
@@ -938,7 +937,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	for _, fi := range psnaps {
 		pn := fi.Name()
 		if pn != sn {
-			os.Remove(path.Join(snapDir, pn))
+			os.Remove(filepath.Join(snapDir, pn))
 		}
 	}
 
@@ -968,7 +967,7 @@ func termAndIndexFromSnapFile(sn string) (term, index uint64, err error) {
 }
 
 func (n *raft) setupLastSnapshot() {
-	snapDir := path.Join(n.sd, snapshotsDir)
+	snapDir := filepath.Join(n.sd, snapshotsDir)
 	psnaps, err := ioutil.ReadDir(snapDir)
 	if err != nil {
 		return
@@ -977,7 +976,7 @@ func (n *raft) setupLastSnapshot() {
 	var lterm, lindex uint64
 	var latest string
 	for _, sf := range psnaps {
-		sfile := path.Join(snapDir, sf.Name())
+		sfile := filepath.Join(snapDir, sf.Name())
 		var term, index uint64
 		term, index, err := termAndIndexFromSnapFile(sf.Name())
 		if err == nil {
@@ -998,7 +997,7 @@ func (n *raft) setupLastSnapshot() {
 
 	// Now cleanup any old entries
 	for _, sf := range psnaps {
-		sfile := path.Join(snapDir, sf.Name())
+		sfile := filepath.Join(snapDir, sf.Name())
 		if sfile != latest {
 			n.debug("Removing old snapshot: %q", sfile)
 			os.Remove(sfile)
@@ -1334,9 +1333,9 @@ func (n *raft) shutdown(shouldDelete bool) {
 
 	// Delete our peer state and vote state and any snapshots.
 	if shouldDelete {
-		os.Remove(path.Join(n.sd, peerStateFile))
-		os.Remove(path.Join(n.sd, termVoteFile))
-		os.RemoveAll(path.Join(n.sd, snapshotsDir))
+		os.Remove(filepath.Join(n.sd, peerStateFile))
+		os.Remove(filepath.Join(n.sd, termVoteFile))
+		os.RemoveAll(filepath.Join(n.sd, snapshotsDir))
 	}
 	n.Unlock()
 
@@ -3027,7 +3026,7 @@ func (n *raft) writePeerState(ps *peerState) {
 
 // Writes out our peer state outside of a specific raft context.
 func writePeerState(sd string, ps *peerState) error {
-	psf := path.Join(sd, peerStateFile)
+	psf := filepath.Join(sd, peerStateFile)
 	if _, err := os.Stat(psf); err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -3038,7 +3037,7 @@ func writePeerState(sd string, ps *peerState) error {
 }
 
 func readPeerState(sd string) (ps *peerState, err error) {
-	buf, err := ioutil.ReadFile(path.Join(sd, peerStateFile))
+	buf, err := ioutil.ReadFile(filepath.Join(sd, peerStateFile))
 	if err != nil {
 		return nil, err
 	}
@@ -3051,7 +3050,7 @@ const termVoteLen = idLen + 8
 // readTermVote will read the largest term and who we voted from to stable storage.
 // Lock should be held.
 func (n *raft) readTermVote() (term uint64, voted string, err error) {
-	buf, err := ioutil.ReadFile(path.Join(n.sd, termVoteFile))
+	buf, err := ioutil.ReadFile(filepath.Join(n.sd, termVoteFile))
 	if err != nil {
 		return 0, noVote, err
 	}
@@ -3100,8 +3099,8 @@ func (n *raft) fileWriter() {
 	defer s.grWG.Done()
 
 	n.RLock()
-	tvf := path.Join(n.sd, termVoteFile)
-	psf := path.Join(n.sd, peerStateFile)
+	tvf := filepath.Join(n.sd, termVoteFile)
+	psf := filepath.Join(n.sd, peerStateFile)
 	n.RUnlock()
 
 	for s.isRunning() {

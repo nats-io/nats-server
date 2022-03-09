@@ -23,7 +23,6 @@ import (
 	"io/ioutil"
 	"math"
 	"os"
-	"path"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -389,7 +388,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	}
 
 	jsa.streams[cfg.Name] = mset
-	storeDir := path.Join(jsa.storeDir, streamsDir, cfg.Name)
+	storeDir := filepath.Join(jsa.storeDir, streamsDir, cfg.Name)
 	jsa.mu.Unlock()
 
 	// Bind to the user account.
@@ -3603,7 +3602,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 		return nil, err
 	}
 
-	sd := path.Join(jsa.storeDir, snapsDir)
+	sd := filepath.Join(jsa.storeDir, snapsDir)
 	if _, err := os.Stat(sd); os.IsNotExist(err) {
 		if err := os.MkdirAll(sd, defaultDirPerms); err != nil {
 			return nil, fmt.Errorf("could not create snapshots directory - %v", err)
@@ -3620,6 +3619,17 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 	}
 	defer os.RemoveAll(sdir)
 
+	logAndReturnError := func() error {
+		a.mu.RLock()
+		err := fmt.Errorf("unexpected content (account=%s)", a.Name)
+		if a.srv != nil {
+			a.srv.Errorf("Stream restore failed due to %v", err)
+		}
+		a.mu.RUnlock()
+		return err
+	}
+	sdirCheck := filepath.Clean(sdir) + string(os.PathSeparator)
+
 	tr := tar.NewReader(s2.NewReader(r))
 	for {
 		hdr, err := tr.Next()
@@ -3629,7 +3639,13 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 		if err != nil {
 			return nil, err
 		}
-		fpath := path.Join(sdir, filepath.Clean(hdr.Name))
+		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
+			return nil, logAndReturnError()
+		}
+		fpath := filepath.Join(sdir, filepath.Clean(hdr.Name))
+		if !strings.HasPrefix(fpath, sdirCheck) {
+			return nil, logAndReturnError()
+		}
 		os.MkdirAll(filepath.Dir(fpath), defaultDirPerms)
 		fd, err := os.OpenFile(fpath, os.O_CREATE|os.O_RDWR, 0600)
 		if err != nil {
@@ -3645,7 +3661,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 	// Check metadata.
 	// The cfg passed in will be the new identity for the stream.
 	var fcfg FileStreamInfo
-	b, err := ioutil.ReadFile(path.Join(sdir, JetStreamMetaFile))
+	b, err := ioutil.ReadFile(filepath.Join(sdir, JetStreamMetaFile))
 	if err != nil {
 		return nil, err
 	}
@@ -3663,13 +3679,13 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 		return nil, NewJSStreamNameExistError()
 	}
 	// Move into the correct place here.
-	ndir := path.Join(jsa.storeDir, streamsDir, cfg.Name)
+	ndir := filepath.Join(jsa.storeDir, streamsDir, cfg.Name)
 	// Remove old one if for some reason it is still here.
 	if _, err := os.Stat(ndir); err == nil {
 		os.RemoveAll(ndir)
 	}
 	// Make sure our destination streams directory exists.
-	if err := os.MkdirAll(path.Join(jsa.storeDir, streamsDir), defaultDirPerms); err != nil {
+	if err := os.MkdirAll(filepath.Join(jsa.storeDir, streamsDir), defaultDirPerms); err != nil {
 		return nil, err
 	}
 	// Move into new location.
@@ -3690,11 +3706,11 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 	}
 
 	// Now do consumers.
-	odir := path.Join(ndir, consumerDir)
+	odir := filepath.Join(ndir, consumerDir)
 	ofis, _ := ioutil.ReadDir(odir)
 	for _, ofi := range ofis {
-		metafile := path.Join(odir, ofi.Name(), JetStreamMetaFile)
-		metasum := path.Join(odir, ofi.Name(), JetStreamMetaFileSum)
+		metafile := filepath.Join(odir, ofi.Name(), JetStreamMetaFile)
+		metasum := filepath.Join(odir, ofi.Name(), JetStreamMetaFileSum)
 		if _, err := os.Stat(metafile); os.IsNotExist(err) {
 			mset.stop(true, false)
 			return nil, fmt.Errorf("error restoring consumer [%q]: %v", ofi.Name(), err)

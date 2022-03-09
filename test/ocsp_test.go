@@ -690,7 +690,7 @@ func TestOCSPReloadRotateTLSCertDisableMustStaple(t *testing.T) {
 	originalContent := `
 		port: -1
 
-		store_dir: "%s"
+		store_dir: '%s'
 
 		tls {
 			cert_file: "configs/certs/ocsp/server-status-request-url-01-cert.pem"
@@ -769,7 +769,7 @@ func TestOCSPReloadRotateTLSCertDisableMustStaple(t *testing.T) {
 	updatedContent := `
 		port: -1
 
-		store_dir: "%s"
+		store_dir: '%s'
 
 		tls {
 			cert_file: "configs/certs/ocsp/server-cert.pem"
@@ -1010,7 +1010,7 @@ func TestOCSPCluster(t *testing.T) {
 			ca_file: "configs/certs/ocsp/ca-cert.pem"
 			timeout: 5
 		}
-		store_dir: "%s"
+		store_dir: '%s'
 		cluster {
 			name: AB
 			host: "127.0.0.1"
@@ -1044,7 +1044,7 @@ func TestOCSPCluster(t *testing.T) {
 			ca_file: "configs/certs/ocsp/ca-cert.pem"
 			timeout: 5
 		}
-		store_dir: "%s"
+		store_dir: '%s'
 		cluster {
 			name: AB
 			host: "127.0.0.1"
@@ -1111,7 +1111,7 @@ func TestOCSPCluster(t *testing.T) {
 			ca_file: "configs/certs/ocsp/ca-cert.pem"
 			timeout: 5
 		}
-		store_dir: "%s"
+		store_dir: '%s'
 		cluster {
 			name: AB
 			host: "127.0.0.1"
@@ -1206,7 +1206,7 @@ func TestOCSPCluster(t *testing.T) {
 			ca_file: "configs/certs/ocsp/ca-cert.pem"
 			timeout: 5
 		}
-		store_dir: "%s"
+		store_dir: '%s'
 		cluster {
 			port: -1
 			name: AB
@@ -1284,7 +1284,7 @@ func TestOCSPLeaf(t *testing.T) {
 			ca_file: "configs/certs/ocsp/ca-cert.pem"
 			timeout: 5
 		}
-		store_dir: "%s"
+		store_dir: '%s'
 		leafnodes {
 			host: "127.0.0.1"
 			port: -1
@@ -1317,7 +1317,7 @@ func TestOCSPLeaf(t *testing.T) {
 			ca_file: "configs/certs/ocsp/ca-cert.pem"
 			timeout: 5
 		}
-		store_dir: "%s"
+		store_dir: '%s'
 		leafnodes {
 			remotes: [ {
 				url: "tls://127.0.0.1:%d"
@@ -1378,7 +1378,7 @@ func TestOCSPLeaf(t *testing.T) {
 			ca_file: "configs/certs/ocsp/ca-cert.pem"
 			timeout: 5
 		}
-		store_dir: "%s"
+		store_dir: '%s'
 		leafnodes {
 			remotes: [ {
 				url: "tls://127.0.0.1:%d"
@@ -1468,7 +1468,7 @@ func TestOCSPLeaf(t *testing.T) {
 			ca_file: "configs/certs/ocsp/ca-cert.pem"
 			timeout: 5
 		}
-		store_dir: "%s"
+		store_dir: '%s'
 		leafnodes {
 			host: "127.0.0.1"
 			port: -1
@@ -1555,7 +1555,7 @@ func TestOCSPGateway(t *testing.T) {
 			ca_file: "configs/certs/ocsp/ca-cert.pem"
 			timeout: 5
 		}
-		store_dir: "%s"
+		store_dir: '%s'
 		gateway {
 			name: A
 			host: "127.0.0.1"
@@ -1589,7 +1589,7 @@ func TestOCSPGateway(t *testing.T) {
 			ca_file: "configs/certs/ocsp/ca-cert.pem"
 			timeout: 5
 		}
-		store_dir: "%s"
+		store_dir: '%s'
 		gateway {
 			name: B
 			host: "127.0.0.1"
@@ -1662,7 +1662,7 @@ func TestOCSPGateway(t *testing.T) {
 			ca_file: "configs/certs/ocsp/ca-cert.pem"
 			timeout: 5
 		}
-		store_dir: "%s"
+		store_dir: '%s'
 		gateway {
 			name: C
 			host: "127.0.0.1"
@@ -1758,7 +1758,7 @@ func TestOCSPGateway(t *testing.T) {
 			ca_file: "configs/certs/ocsp/ca-cert.pem"
 			timeout: 5
 		}
-		store_dir: "%s"
+		store_dir: '%s'
 		gateway {
 			name: A
 			host: "127.0.0.1"
@@ -2623,7 +2623,7 @@ func TestOCSPSuperCluster(t *testing.T) {
 			ca_file: "configs/certs/ocsp/ca-cert.pem"
 			timeout: 5
 		}
-		store_dir: "%s"
+		store_dir: '%s'
 
 		cluster {
 			name: A
@@ -2675,7 +2675,7 @@ func TestOCSPSuperCluster(t *testing.T) {
 			ca_file: "configs/certs/ocsp/ca-cert.pem"
 			timeout: 5
 		}
-		store_dir: "%s"
+		store_dir: '%s'
 
 		cluster {
 			name: A
@@ -2748,7 +2748,7 @@ func TestOCSPSuperCluster(t *testing.T) {
 			ca_file: "configs/certs/ocsp/ca-cert.pem"
 			timeout: 5
 		}
-		store_dir: "%s"
+		store_dir: '%s'
 		gateway {
 			name: C
 			host: "127.0.0.1"
@@ -2798,7 +2798,7 @@ func TestOCSPSuperCluster(t *testing.T) {
 			ca_file: "configs/certs/ocsp/ca-cert.pem"
 			timeout: 5
 		}
-		store_dir: "%s"
+		store_dir: '%s'
 		gateway {
 			name: D
 			host: "127.0.0.1"
