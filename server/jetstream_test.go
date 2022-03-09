@@ -4524,7 +4524,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expected to find a stream for %q", mname)
 	}
-	state = mset.state()
+	mset.state()
 	mset.delete()
 
 	rreq.Config.Name = "NEW_STREAM"
@@ -15195,7 +15195,7 @@ func TestJetStreamPullConsumerHeartBeats(t *testing.T) {
 		}
 	}()
 
-	start, msgs = time.Now(), doReq(10, 75*time.Millisecond, 350*time.Millisecond, 6)
+	msgs = doReq(10, 75*time.Millisecond, 350*time.Millisecond, 6)
 	// The first 5 should be msgs, no HBs.
 	for i := 0; i < 5; i++ {
 		if m := msgs[i].msg; len(m.Header) > 0 {

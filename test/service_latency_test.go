@@ -361,7 +361,6 @@ func TestServiceLatencyClientRTTSlowerVsServiceRTT(t *testing.T) {
 		}
 
 		// Send the request.
-		start = time.Now()
 		_, err := nc2.Request("ngs.usage", []byte("1h"), time.Second)
 		if err != nil {
 			t.Fatalf("Expected a response")
@@ -1500,7 +1499,6 @@ func TestServiceLatencyRequestorSharesConfig(t *testing.T) {
 		t.Fatalf("Error on server reload: %v", err)
 	}
 
-	start = time.Now()
 	if _, err = nc2.Request("SVC", []byte("1h"), time.Second); err != nil {
 		t.Fatalf("Expected a response")
 	}

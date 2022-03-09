@@ -1,0 +1,5 @@
+Here is the list of some established lock ordering.
+
+In this list, A -> B means that you can have A.Lock() then B.Lock(), not the opposite.
+
+jetStream -> jsAccount -> Server -> client-> Account
