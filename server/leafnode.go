@@ -1701,8 +1701,11 @@ func (c *client) forceAddToSmap(subj string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.leaf.smap == nil {
+		return
+	}
 	n := c.leaf.smap[subj]
-	if n != 0 || c.leaf.smap == nil {
+	if n != 0 {
 		return
 	}
 	// Place into the map since it was not there.
