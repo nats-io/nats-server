@@ -589,9 +589,7 @@ func (a *Account) enableAllJetStreamServiceImportsAndMappings() error {
 		mappings := generateJSMappingTable(opts.JetStreamDomain)
 		a.mu.RLock()
 		for _, m := range a.mappings {
-			if _, ok := mappings[m.src]; ok {
-				delete(mappings, m.src)
-			}
+			delete(mappings, m.src)
 		}
 		a.mu.RUnlock()
 		for src, dest := range mappings {

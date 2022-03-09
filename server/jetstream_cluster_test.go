@@ -6876,7 +6876,6 @@ func TestJetStreamClusterDomainsWithNoJSHub(t *testing.T) {
 	s := c.randomServer()
 	// Make sure the JS interest from the LNs has made it to this server.
 	checkSubInterest(t, s, "NOJS", "$JS.SPOKE.API.INFO", time.Second)
-	//checkSubInterest(t, s, "NOJS", "$JS.SPOKE.API.INFO", time.Second)
 	nc, _ := jsClientConnect(t, s, nats.UserInfo("nojs", "p"))
 	defer nc.Close()
 

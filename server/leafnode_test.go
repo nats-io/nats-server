@@ -5198,7 +5198,7 @@ system_account: SYS
 	confA := createConfFile(t, []byte(fmt.Sprintf(`
 listen: 127.0.0.1:-1
 %s
-jetstream: { domain: da, store_dir: %s, max_mem: 50Mb, max_file: 50Mb }
+jetstream: { domain: da, store_dir: '%s', max_mem: 50Mb, max_file: 50Mb }
 leafnodes: {
 	listen: 127.0.0.1:-1
 	no_advertise: true
@@ -5216,7 +5216,7 @@ leafnodes: {
 	confL := createConfFile(t, []byte(fmt.Sprintf(`
 listen: 127.0.0.1:-1
 %s
-jetstream: { domain: dl, store_dir: %s, max_mem: 50Mb, max_file: 50Mb }
+jetstream: { domain: dl, store_dir: '%s', max_mem: 50Mb, max_file: 50Mb }
 leafnodes:{
 	no_advertise: true
     remotes:[{url:nats://a1:a1@127.0.0.1:%d, account: A},
@@ -5228,7 +5228,9 @@ leafnodes:{
 	defer sL.Shutdown()
 
 	ncA := natsConnect(t, sA.ClientURL(), nats.UserInfo("a1", "a1"))
+	defer ncA.Close()
 	ncL := natsConnect(t, sL.ClientURL(), nats.UserInfo("a1", "a1"))
+	defer ncL.Close()
 
 	test := func(jsA, jsL nats.JetStreamContext) {
 		kvA, err := jsA.CreateKeyValue(&nats.KeyValueConfig{Bucket: "bucket"})
