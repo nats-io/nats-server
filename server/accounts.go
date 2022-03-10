@@ -164,8 +164,8 @@ const (
 )
 
 var commaSeparatorRegEx = regexp.MustCompile(`,\s*`)
-var partitionMappingFunctionRegEx = regexp.MustCompile(`{{partition *\((.*)\)}}`)
-var wildcardMappingFunctionRegEx = regexp.MustCompile(`{{wildcard *\((.*)\)}}`)
+var partitionMappingFunctionRegEx = regexp.MustCompile(`{{\s*partition\s*\((.*)\)\s*}}`)
+var wildcardMappingFunctionRegEx = regexp.MustCompile(`{{\s*wildcard\s*\((.*)\)\s*}}`)
 
 // String helper.
 func (rt ServiceRespType) String() string {

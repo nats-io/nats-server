@@ -63,7 +63,30 @@ func TestPlaceHolderIndex(t *testing.T) {
 		t.Fatalf("Error parsing %s", testString)
 	}
 
+	testString = "{{ partition(10,1,2,3) }}"
+
+	indexes, nbPartitions, err = placeHolderIndex(testString)
+
+	if err != nil || !reflect.DeepEqual(indexes, []int{1, 2, 3}) || nbPartitions != 10 {
+		t.Fatalf("Error parsing %s", testString)
+	}
+
+	testString = "{{partition (10,1,2,3)}}"
+
+	indexes, nbPartitions, err = placeHolderIndex(testString)
+
+	if err != nil || !reflect.DeepEqual(indexes, []int{1, 2, 3}) || nbPartitions != 10 {
+		t.Fatalf("Error parsing %s", testString)
+	}
+
 	testString = "{{wildcard(2)}}"
+	indexes, nbPartitions, err = placeHolderIndex(testString)
+
+	if err != nil || len(indexes) != 1 || indexes[0] != 2 || nbPartitions != -1 {
+		t.Fatalf("Error parsing %s", testString)
+	}
+
+	testString = "{{ wildcard (2) }}"
 	indexes, nbPartitions, err = placeHolderIndex(testString)
 
 	if err != nil || len(indexes) != 1 || indexes[0] != 2 || nbPartitions != -1 {
