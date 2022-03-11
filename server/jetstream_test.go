@@ -6802,6 +6802,222 @@ func TestJetStreamSystemLimits(t *testing.T) {
 	}
 }
 
+func TestJetStreamSystemLimitsPlacement(t *testing.T) {
+	const smallSystemLimit = 128
+	const mediumSystemLimit = smallSystemLimit * 2
+	const largeSystemLimit = smallSystemLimit * 3
+
+	getServer := func(t *testing.T, serverName string) *Server {
+		storeDir, err := os.MkdirTemp(tempRoot, "jstests-storedir-")
+		require_NoError(t, err)
+
+		natsPort, clusterPort := 24000, 26000
+		systemLimit := smallSystemLimit
+		if serverName == "medium" {
+			natsPort, clusterPort = 24001, 26001
+			systemLimit = mediumSystemLimit
+		} else if serverName == "large" {
+			natsPort, clusterPort = 24002, 26002
+			systemLimit = largeSystemLimit
+		}
+
+		s, _ := RunServerWithConfig(createConfFile(t, []byte(fmt.Sprintf(`
+server_name: %s
+port: %d
+
+jetstream: {
+  enabled: true
+  store_dir: %s
+  max_mem: %d
+  max_file: %d
+}
+
+server_tags: [%s]
+
+cluster {
+  name: cluster-a
+  port: %d
+  routes: [
+    nats-route://127.0.0.1:26000
+    nats-route://127.0.0.1:26001
+    nats-route://127.0.0.1:26002
+  ]
+}
+	`,
+			serverName,
+			natsPort,
+			storeDir,
+			systemLimit,
+			systemLimit,
+			serverName,
+			clusterPort,
+		))))
+
+		return s
+	}
+
+	smallSrv := getServer(t, "small")
+	defer smallSrv.Shutdown()
+	if config := smallSrv.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	mediumSrv := getServer(t, "medium")
+	defer mediumSrv.Shutdown()
+	if config := mediumSrv.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	largeSrv := getServer(t, "large")
+	defer largeSrv.Shutdown()
+	if config := largeSrv.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+
+	checkClusterFormed(t, smallSrv, mediumSrv, largeSrv)
+
+	requestLeaderStepDown := func(clientURL string) error {
+		nc, err := nats.Connect(clientURL)
+		if err != nil {
+			return err
+		}
+		defer nc.Close()
+
+		ncResp, err := nc.Request(JSApiLeaderStepDown, nil, time.Second)
+		if err != nil {
+			return err
+		}
+
+		var resp JSApiLeaderStepDownResponse
+		if err := json.Unmarshal(ncResp.Data, &resp); err != nil {
+			return err
+		}
+		if resp.Error != nil {
+			return resp.Error
+		}
+		if !resp.Success {
+			return fmt.Errorf("leader step down request not successful")
+		}
+
+		return nil
+	}
+
+	// Force large server to be leader
+	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+		if largeSrv.JetStreamIsLeader() {
+			return nil
+		}
+
+		if err := requestLeaderStepDown(largeSrv.ClientURL()); err != nil {
+			return err
+		}
+		return fmt.Errorf("large server is not leader")
+	})
+	_, js := jsClientConnect(t, largeSrv)
+
+	cases := []struct {
+		name           string
+		storage        nats.StorageType
+		createMaxBytes int64
+		serverTag      string
+		wantErr        bool
+	}{
+		{
+			name:           "file create large stream on small server",
+			storage:        nats.FileStorage,
+			createMaxBytes: largeSystemLimit,
+			serverTag:      "small",
+			wantErr:        true,
+		},
+		{
+			name:           "memory create large stream on small server",
+			storage:        nats.MemoryStorage,
+			createMaxBytes: largeSystemLimit,
+			serverTag:      "small",
+			wantErr:        true,
+		},
+		{
+			name:           "file create large stream on medium server",
+			storage:        nats.FileStorage,
+			createMaxBytes: largeSystemLimit,
+			serverTag:      "medium",
+			wantErr:        true,
+		},
+		{
+			name:           "memory create large stream on medium server",
+			storage:        nats.MemoryStorage,
+			createMaxBytes: largeSystemLimit,
+			serverTag:      "medium",
+			wantErr:        true,
+		},
+		{
+			name:           "file create large stream on large server",
+			storage:        nats.FileStorage,
+			createMaxBytes: largeSystemLimit,
+			serverTag:      "large",
+		},
+		{
+			name:           "memory create large stream on large server",
+			storage:        nats.MemoryStorage,
+			createMaxBytes: largeSystemLimit,
+			serverTag:      "large",
+		},
+	}
+
+	for i := 0; i < len(cases) && !t.Failed(); i++ {
+		c := cases[i]
+		t.Run(c.name, func(st *testing.T) {
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Storage:  c.storage,
+				MaxBytes: c.createMaxBytes,
+				Placement: &nats.Placement{
+					Cluster: "cluster-a",
+					Tags:    []string{c.serverTag},
+				},
+			})
+			if c.wantErr && err == nil {
+				st.Fatalf("unexpected stream create success, maxBytes=%d, tag=%s",
+					c.createMaxBytes, c.serverTag)
+			} else if !c.wantErr && err != nil {
+				st.Fatalf("unexpected error: %s", err)
+			}
+
+			if err == nil {
+				err = js.DeleteStream("TEST")
+				require_NoError(st, err)
+			}
+		})
+	}
+
+	// These next two tests should fail because although the stream fits in the
+	// large and medium server, it doesn't fit on the small server.
+	si, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  nats.FileStorage,
+		MaxBytes: smallSystemLimit + 1,
+		Replicas: 3,
+	})
+	if err == nil {
+		t.Fatalf("unexpected file stream create success, maxBytes=%d, replicas=%d",
+			si.Config.MaxBytes, si.Config.Replicas)
+	}
+
+	si, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  nats.MemoryStorage,
+		MaxBytes: smallSystemLimit + 1,
+		Replicas: 3,
+	})
+	if err == nil {
+		t.Fatalf("unexpected memory stream create success, maxBytes=%d, replicas=%d",
+			si.Config.MaxBytes, si.Config.Replicas)
+	}
+}
+
 func TestJetStreamStreamStorageTrackingAndLimits(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	if config := s.JetStreamConfig(); config != nil {
