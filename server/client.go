@@ -201,6 +201,7 @@ const (
 	ClusterNameConflict
 	DuplicateRemoteLeafnodeConnection
 	DuplicateClientID
+	DuplicateServerName
 )
 
 // Some flags passed to processMsgResults
