@@ -7018,6 +7018,316 @@ cluster {
 	}
 }
 
+func TestJetStreamSuperClusterSystemLimitsPlacement(t *testing.T) {
+	const largeSystemLimit = 1024
+	const smallSystemLimit = 512
+	getServer := func(t *testing.T, serverName string) *Server {
+		require_NoError(t, os.MkdirAll(tempRoot, 0755))
+		storeDir, err := os.MkdirTemp(tempRoot, "jstests-storedir-")
+		require_NoError(t, err)
+
+		var (
+			natsPort               int
+			systemLimit            int
+			clusterName            string
+			clusterPort            int
+			route1, route2, route3 int
+			gatewayPort            int
+		)
+		switch serverName {
+		case "a0":
+			natsPort = 4000
+			systemLimit = largeSystemLimit
+			clusterName = "cluster-a"
+			clusterPort = 6000
+			route1, route2, route3 = clusterPort, clusterPort+1, clusterPort+2
+			gatewayPort = 7000
+		case "a1":
+			natsPort = 4001
+			systemLimit = largeSystemLimit
+			clusterName = "cluster-a"
+			clusterPort = 6001
+			route1, route2, route3 = clusterPort, clusterPort+1, clusterPort+2
+			gatewayPort = 7001
+		case "a2":
+			natsPort = 4002
+			systemLimit = largeSystemLimit
+			clusterName = "cluster-a"
+			clusterPort = 6002
+			route1, route2, route3 = clusterPort, clusterPort+1, clusterPort+2
+			gatewayPort = 7002
+		case "b0":
+			natsPort = 4100
+			systemLimit = smallSystemLimit
+			clusterName = "cluster-b"
+			clusterPort = 6100
+			route1, route2, route3 = clusterPort, clusterPort+1, clusterPort+2
+			gatewayPort = 7100
+		case "b1":
+			natsPort = 4101
+			systemLimit = smallSystemLimit
+			clusterName = "cluster-b"
+			clusterPort = 6101
+			route1, route2, route3 = clusterPort, clusterPort+1, clusterPort+2
+			gatewayPort = 7101
+		case "b2":
+			natsPort = 4102
+			systemLimit = smallSystemLimit
+			clusterName = "cluster-b"
+			clusterPort = 6102
+			route1, route2, route3 = clusterPort, clusterPort+1, clusterPort+2
+			gatewayPort = 7102
+		default:
+			t.Fatalf("unknown server name: %s", serverName)
+		}
+
+		s, _ := RunServerWithConfig(createConfFile(t, []byte(fmt.Sprintf(`
+server_name: %s
+port: %d
+
+jetstream: {
+  enabled: true
+  store_dir: %s
+  max_mem: %d
+  max_file: %d
+}
+
+server_tags: [%s]
+
+cluster {
+  name: %s
+  port: %d
+  routes: [
+    nats-route://127.0.0.1:%d
+    nats-route://127.0.0.1:%d
+    nats-route://127.0.0.1:%d
+  ]
+}
+
+gateway {
+  name: %s
+  port: %d
+
+  gateways: [
+    {name: "cluster-a", url: "nats://localhost:7000"},
+    {name: "cluster-b", url: "nats://localhost:7100"},
+  ]
+}
+	`,
+			serverName,
+			natsPort,
+			storeDir,
+			systemLimit,
+			systemLimit,
+			serverName,
+			clusterName,
+			clusterPort,
+			route1, route2, route3,
+			clusterName,
+			gatewayPort,
+		))))
+
+		return s
+	}
+
+	var servers []*Server
+	for _, name := range []string{"a0", "a1", "a2", "b0", "b1", "b2"} {
+		servers = append(servers, getServer(t, name))
+	}
+
+	checkClusterFormed(t, servers[:3]...)
+	checkClusterFormed(t, servers[3:]...)
+
+	for _, s := range servers {
+		waitForOutboundGateways(t, s, 1, 2*time.Second)
+	}
+
+	requestLeaderStepDown := func(clientURL string) error {
+		nc, err := nats.Connect(clientURL)
+		if err != nil {
+			return err
+		}
+		defer nc.Close()
+
+		ncResp, err := nc.Request(JSApiLeaderStepDown, nil, time.Second)
+		if err != nil {
+			return err
+		}
+
+		var resp JSApiLeaderStepDownResponse
+		if err := json.Unmarshal(ncResp.Data, &resp); err != nil {
+			return err
+		}
+		if resp.Error != nil {
+			return resp.Error
+		}
+		if !resp.Success {
+			return fmt.Errorf("leader step down request not successful")
+		}
+
+		return nil
+	}
+
+	// Force large cluster to be leader
+	checkFor(t, 15*time.Second, 500*time.Millisecond, func() error {
+		a0 := servers[0]
+		if a0.JetStreamIsLeader() {
+			return nil
+		}
+
+		if err := requestLeaderStepDown(a0.ClientURL()); err != nil {
+			return fmt.Errorf("failed to request leader step down: %s", err)
+		}
+		return fmt.Errorf("a0 server is not leader")
+	})
+	getStreams := func(jsm nats.JetStreamManager) []string {
+		var streams []string
+		for s := range jsm.StreamNames() {
+			streams = append(streams, s)
+		}
+		return streams
+	}
+	_, js := jsClientConnect(t, servers[0])
+
+	cases := []struct {
+		name           string
+		storage        nats.StorageType
+		createMaxBytes int64
+		serverTag      string
+		wantErr        bool
+	}{
+		{
+			name:           "file create large stream on small cluster b0",
+			storage:        nats.FileStorage,
+			createMaxBytes: smallSystemLimit + 1,
+			serverTag:      "b0",
+			wantErr:        true,
+		},
+		{
+			name:           "memory create large stream on small cluster b0",
+			storage:        nats.MemoryStorage,
+			createMaxBytes: smallSystemLimit + 1,
+			serverTag:      "b0",
+			wantErr:        true,
+		},
+		{
+			name:           "file create large stream on small cluster b1",
+			storage:        nats.FileStorage,
+			createMaxBytes: smallSystemLimit + 1,
+			serverTag:      "b1",
+			wantErr:        true,
+		},
+		{
+			name:           "memory create large stream on small cluster b1",
+			storage:        nats.MemoryStorage,
+			createMaxBytes: smallSystemLimit + 1,
+			serverTag:      "b1",
+			wantErr:        true,
+		},
+		{
+			name:           "file create large stream on small cluster b2",
+			storage:        nats.FileStorage,
+			createMaxBytes: smallSystemLimit + 1,
+			serverTag:      "b2",
+			wantErr:        true,
+		},
+		{
+			name:           "memory create large stream on small cluster b2",
+			storage:        nats.MemoryStorage,
+			createMaxBytes: smallSystemLimit + 1,
+			serverTag:      "b2",
+			wantErr:        true,
+		},
+		{
+			name:           "file create large stream on large cluster a0",
+			storage:        nats.FileStorage,
+			createMaxBytes: smallSystemLimit + 1,
+			serverTag:      "a0",
+		},
+		{
+			name:           "memory create large stream on large cluster a0",
+			storage:        nats.MemoryStorage,
+			createMaxBytes: smallSystemLimit + 1,
+			serverTag:      "a0",
+		},
+		{
+			name:           "file create large stream on large cluster a1",
+			storage:        nats.FileStorage,
+			createMaxBytes: smallSystemLimit + 1,
+			serverTag:      "a1",
+		},
+		{
+			name:           "memory create large stream on large cluster a1",
+			storage:        nats.MemoryStorage,
+			createMaxBytes: smallSystemLimit + 1,
+			serverTag:      "a1",
+		},
+		{
+			name:           "file create large stream on large cluster a2",
+			storage:        nats.FileStorage,
+			createMaxBytes: smallSystemLimit + 1,
+			serverTag:      "a2",
+		},
+		{
+			name:           "memory create large stream on large cluster a2",
+			storage:        nats.MemoryStorage,
+			createMaxBytes: smallSystemLimit + 1,
+			serverTag:      "a2",
+		},
+	}
+	for i := 0; i < len(cases) && !t.Failed(); i++ {
+		c := cases[i]
+		t.Run(c.name, func(st *testing.T) {
+			var clusterName string
+			if strings.HasPrefix(c.serverTag, "a") {
+				clusterName = "cluster-a"
+			} else if strings.HasPrefix(c.serverTag, "b") {
+				clusterName = "cluster-b"
+			}
+
+			if s := getStreams(js); len(s) != 0 {
+				st.Fatalf("unexpected stream count, got=%d, want=0", len(s))
+			}
+
+			streamName := fmt.Sprintf("TEST-%s", c.serverTag)
+			si, err := js.AddStream(&nats.StreamConfig{
+				Name:     streamName,
+				Subjects: []string{"foo"},
+				Storage:  c.storage,
+				MaxBytes: c.createMaxBytes,
+				Placement: &nats.Placement{
+					Cluster: clusterName,
+					Tags:    []string{c.serverTag},
+				},
+			})
+			if c.wantErr && err == nil {
+				if s := getStreams(js); len(s) != 1 {
+					st.Logf("unexpected stream count, got=%d, want=1, streams=%v", len(s), s)
+				}
+
+				cfg := si.Config
+				st.Fatalf("unexpected success, maxBytes=%d, cluster=%s, tags=%v",
+					cfg.MaxBytes, cfg.Placement.Cluster, cfg.Placement.Tags)
+			} else if !c.wantErr && err != nil {
+				if s := getStreams(js); len(s) != 0 {
+					st.Logf("unexpected stream count, got=%d, want=0, streams=%v", len(s), s)
+				}
+
+				st.Fatalf("unexpected error: %s", err)
+			}
+
+			if err == nil {
+				if s := getStreams(js); len(s) != 1 {
+					st.Fatalf("unexpected stream count, got=%d, want=1", len(s))
+				}
+
+				err = js.DeleteStream(streamName)
+				require_NoError(st, err)
+			}
+		})
+	}
+}
+
 func TestJetStreamStreamStorageTrackingAndLimits(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	if config := s.JetStreamConfig(); config != nil {
