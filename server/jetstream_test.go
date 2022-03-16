@@ -6827,7 +6827,7 @@ port: %d
 
 jetstream: {
   enabled: true
-  store_dir: %s
+  store_dir: '%s'
   max_mem: %d
   max_file: %d
 }
@@ -7088,7 +7088,7 @@ port: %d
 
 jetstream: {
   enabled: true
-  store_dir: %s
+  store_dir: '%s'
   max_mem: %d
   max_file: %d
 }
