@@ -969,8 +969,34 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig) (*StreamConfig, 
 		cfg.AllowRollup = false
 	}
 
-	// Check limits.
-	if err := jsa.checkAllLimits(&cfg); err != nil {
+	// Check limits. We need some extra handling to allow updating MaxBytes.
+
+	// First, let's calculate the difference between the new and old MaxBytes.
+	maxBytesDiff := cfg.MaxBytes - old.MaxBytes
+	if maxBytesDiff < 0 {
+		// If we're updating to a lower MaxBytes (maxBytesDiff is negative),
+		// then set to zero so checkBytesLimits doesn't set addBytes to 1.
+		maxBytesDiff = 0
+	}
+	// If maxBytesDiff == 0, then that means MaxBytes didn't change.
+	// If maxBytesDiff > 0, then we want to reserve additional bytes.
+
+	// Save the user configured MaxBytes.
+	newMaxBytes := cfg.MaxBytes
+
+	// We temporarily set cfg.MaxBytes to maxBytesDiff because checkAllLimits
+	// adds cfg.MaxBytes to the current reserved limit and checks if we've gone
+	// over. However, we don't want an addition cfg.MaxBytes, we only want to
+	// reserve the difference between the new and the old values.
+	cfg.MaxBytes = maxBytesDiff
+
+	// Check if we can reserve the additional difference.
+	err = jsa.checkAllLimits(&cfg)
+
+	// Restore the user configured MaxBytes.
+	cfg.MaxBytes = newMaxBytes
+
+	if err != nil {
 		return nil, err
 	}
 	return &cfg, nil
@@ -1046,6 +1072,8 @@ func (mset *stream) update(config *StreamConfig) error {
 		}
 	}
 
+	js := mset.js
+
 	// Now update config and store's version of our config.
 	mset.cfg = *cfg
 
@@ -1054,6 +1082,23 @@ func (mset *stream) update(config *StreamConfig) error {
 		mset.sendUpdateAdvisoryLocked()
 	}
 	mset.mu.Unlock()
+
+	if js != nil {
+		maxBytesDiff := cfg.MaxBytes - ocfg.MaxBytes
+		if maxBytesDiff > 0 {
+			// Reserve the difference
+			js.reserveStreamResources(&StreamConfig{
+				MaxBytes: maxBytesDiff,
+				Storage:  cfg.Storage,
+			})
+		} else if maxBytesDiff < 0 {
+			// Release the difference
+			js.releaseStreamResources(&StreamConfig{
+				MaxBytes: -maxBytesDiff,
+				Storage:  ocfg.Storage,
+			})
+		}
+	}
 
 	mset.store.UpdateConfig(cfg)
 
