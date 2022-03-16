@@ -128,6 +128,9 @@ const (
 	// JSConsumerNotFoundErr consumer not found
 	JSConsumerNotFoundErr ErrorIdentifier = 10014
 
+	// JSConsumerOfflineErr consumer is offline
+	JSConsumerOfflineErr ErrorIdentifier = 10119
+
 	// JSConsumerOnMappedErr consumer direct on a mapped consumer
 	JSConsumerOnMappedErr ErrorIdentifier = 10092
 
@@ -299,6 +302,9 @@ const (
 	// JSStreamNotMatchErr expected stream does not match
 	JSStreamNotMatchErr ErrorIdentifier = 10060
 
+	// JSStreamOfflineErr stream is offline
+	JSStreamOfflineErr ErrorIdentifier = 10118
+
 	// JSStreamPurgeFailedF Generic stream purge failure error string ({err})
 	JSStreamPurgeFailedF ErrorIdentifier = 10110
 
@@ -397,6 +403,7 @@ var (
 		JSConsumerNameExistErr:                     {Code: 400, ErrCode: 10013, Description: "consumer name already in use"},
 		JSConsumerNameTooLongErrF:                  {Code: 400, ErrCode: 10102, Description: "consumer name is too long, maximum allowed is {max}"},
 		JSConsumerNotFoundErr:                      {Code: 404, ErrCode: 10014, Description: "consumer not found"},
+		JSConsumerOfflineErr:                       {Code: 500, ErrCode: 10119, Description: "consumer is offline"},
 		JSConsumerOnMappedErr:                      {Code: 400, ErrCode: 10092, Description: "consumer direct on a mapped consumer"},
 		JSConsumerPullNotDurableErr:                {Code: 400, ErrCode: 10085, Description: "consumer in pull mode requires a durable name"},
 		JSConsumerPullRequiresAckErr:               {Code: 400, ErrCode: 10084, Description: "consumer in pull mode requires ack policy"},
@@ -454,6 +461,7 @@ var (
 		JSStreamNameExistErr:                       {Code: 400, ErrCode: 10058, Description: "stream name already in use"},
 		JSStreamNotFoundErr:                        {Code: 404, ErrCode: 10059, Description: "stream not found"},
 		JSStreamNotMatchErr:                        {Code: 400, ErrCode: 10060, Description: "expected stream does not match"},
+		JSStreamOfflineErr:                         {Code: 500, ErrCode: 10118, Description: "stream is offline"},
 		JSStreamPurgeFailedF:                       {Code: 500, ErrCode: 10110, Description: "{err}"},
 		JSStreamReplicasNotSupportedErr:            {Code: 500, ErrCode: 10074, Description: "replicas > 1 not supported in non-clustered mode"},
 		JSStreamReplicasNotUpdatableErr:            {Code: 400, ErrCode: 10061, Description: "Replicas configuration can not be updated"},
@@ -935,6 +943,16 @@ func NewJSConsumerNotFoundError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSConsumerNotFoundErr]
+}
+
+// NewJSConsumerOfflineError creates a new JSConsumerOfflineErr error: "consumer is offline"
+func NewJSConsumerOfflineError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerOfflineErr]
 }
 
 // NewJSConsumerOnMappedError creates a new JSConsumerOnMappedErr error: "consumer direct on a mapped consumer"
@@ -1601,6 +1619,16 @@ func NewJSStreamNotMatchError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSStreamNotMatchErr]
+}
+
+// NewJSStreamOfflineError creates a new JSStreamOfflineErr error: "stream is offline"
+func NewJSStreamOfflineError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSStreamOfflineErr]
 }
 
 // NewJSStreamPurgeFailedError creates a new JSStreamPurgeFailedF error: "{err}"
