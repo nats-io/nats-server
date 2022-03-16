@@ -1158,5 +1158,25 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSStreamOfflineErr",
+    "code": 500,
+    "error_code": 10118,
+    "description": "stream is offline",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerOfflineErr",
+    "code": 500,
+    "error_code": 10119,
+    "description": "consumer is offline",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

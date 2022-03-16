@@ -1609,9 +1609,8 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, s
 
 	// Clustered mode will invoke a scatter and gather.
 	if s.JetStreamIsClustered() {
-		// Need to copy these off before sending..
-		msg = copyBytes(msg)
-		s.startGoRoutine(func() { s.jsClusteredStreamListRequest(acc, ci, filter, offset, subject, reply, msg) })
+		// Need to copy the msg before sending..
+		s.startGoRoutine(func() { s.jsClusteredStreamListRequest(acc, ci, filter, offset, subject, reply, copyBytes(msg)) })
 		return
 	}
 
@@ -1684,8 +1683,10 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 
 		js.mu.RLock()
 		isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, streamName)
+		var offline bool
 		if sa != nil {
 			clusterWideConsCount = len(sa.consumers)
+			offline = s.allPeersOffline(sa.Group)
 		}
 		js.mu.RUnlock()
 
@@ -1708,6 +1709,10 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 				// Delaying an error response gives the leader a chance to respond before us
 				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil)
 			}
+			return
+		} else if isLeader && offline {
+			resp.Error = NewJSStreamOfflineError()
+			s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil)
 			return
 		}
 
@@ -3461,9 +3466,8 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 
 	// Clustered mode will invoke a scatter and gather.
 	if s.JetStreamIsClustered() {
-		msg = copyBytes(msg)
 		s.startGoRoutine(func() {
-			s.jsClusteredConsumerListRequest(acc, ci, offset, streamName, subject, reply, msg)
+			s.jsClusteredConsumerListRequest(acc, ci, offset, streamName, subject, reply, copyBytes(msg))
 		})
 		return
 	}
@@ -3530,6 +3534,10 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 		js.mu.RLock()
 		isLeader, sa, ca := cc.isLeader(), js.streamAssignment(acc.Name, streamName), js.consumerAssignment(acc.Name, streamName, consumerName)
 		ourID := cc.meta.ID()
+		var offline bool
+		if ca != nil {
+			offline = s.allPeersOffline(ca.Group)
+		}
 		js.mu.RUnlock()
 
 		if isLeader && ca == nil {
@@ -3556,6 +3564,10 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 				// Delaying an error response gives the leader a chance to respond before us
 				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil)
 			}
+			return
+		} else if isLeader && offline {
+			resp.Error = NewJSConsumerOfflineError()
+			s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil)
 			return
 		}
 

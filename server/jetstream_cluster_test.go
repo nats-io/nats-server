@@ -19,6 +19,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
@@ -11106,6 +11107,103 @@ func TestJetStreamStreamAdvisories(t *testing.T) {
 	t.Run("Single", func(t *testing.T) { checkAdvisories(t, s, 1) })
 	t.Run("Clustered_R1", func(t *testing.T) { checkAdvisories(t, c.randomServer(), 1) })
 	t.Run("Clustered_R3", func(t *testing.T) { checkAdvisories(t, c.randomServer(), 3) })
+}
+
+func TestJetStreamRemovedPeersAndStreamsListAndDelete(t *testing.T) {
+	sc := createJetStreamSuperCluster(t, 3, 3)
+	defer sc.shutdown()
+
+	pcn := "C2"
+	sc.waitOnLeader()
+	ml := sc.leader()
+	if ml.ClusterName() == pcn {
+		pcn = "C1"
+	}
+
+	// Client based API
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "GONE",
+		Replicas:  3,
+		Placement: &nats.Placement{Cluster: pcn},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("GONE", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Replicas:  3,
+		Placement: &nats.Placement{Cluster: ml.ClusterName()},
+	})
+	require_NoError(t, err)
+
+	// Put messages in..
+	num := 100
+	for i := 0; i < num; i++ {
+		js.PublishAsync("GONE", []byte("SLS"))
+		js.PublishAsync("TEST", []byte("SLS"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	c := sc.clusterForName(pcn)
+	c.shutdown()
+
+	// Grab Stream List..
+	start := time.Now()
+	resp, err := nc.Request(JSApiStreamList, nil, 2*time.Second)
+	require_NoError(t, err)
+	if delta := time.Since(start); delta > 100*time.Millisecond {
+		t.Fatalf("Stream list call took too long to return: %v", delta)
+	}
+	var list JSApiStreamListResponse
+	err = json.Unmarshal(resp.Data, &list)
+	require_NoError(t, err)
+
+	if len(list.Missing) != 1 || list.Missing[0] != "GONE" {
+		t.Fatalf("Wrong Missing: %+v", list)
+	}
+
+	// Check behavior of stream info as well. We want it to return the stream is offline and not just timeout.
+	_, err = js.StreamInfo("GONE")
+	// FIXME(dlc) - Go client not putting nats: prefix on for stream but does for consumer.
+	require_Error(t, err, NewJSStreamOfflineError())
+
+	// Same for Consumer
+	start = time.Now()
+	resp, err = nc.Request("$JS.API.CONSUMER.LIST.GONE", nil, 2*time.Second)
+	require_NoError(t, err)
+	if delta := time.Since(start); delta > 100*time.Millisecond {
+		t.Fatalf("Consumer list call took too long to return: %v", delta)
+	}
+	var clist JSApiConsumerListResponse
+	err = json.Unmarshal(resp.Data, &clist)
+	require_NoError(t, err)
+
+	if len(clist.Missing) != 1 || clist.Missing[0] != "dlc" {
+		t.Fatalf("Wrong Missing: %+v", clist)
+	}
+
+	_, err = js.ConsumerInfo("GONE", "dlc")
+	require_Error(t, err, NewJSConsumerOfflineError(), errors.New("nats: consumer is offline"))
+
+	// Make sure delete works.
+	err = js.DeleteConsumer("GONE", "dlc")
+	require_NoError(t, err)
+
+	err = js.DeleteStream("GONE")
+	require_NoError(t, err)
+
+	// Test it is really gone.
+	_, err = js.StreamInfo("GONE")
+	require_Error(t, err, nats.ErrStreamNotFound)
 }
 
 // Support functions
