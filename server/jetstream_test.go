@@ -7134,7 +7134,13 @@ gateway {
 
 	var servers []*Server
 	for _, name := range []string{"a0", "a1", "a2", "b0", "b1", "b2"} {
-		servers = append(servers, getServer(t, name))
+		s := getServer(t, name)
+		if config := s.JetStreamConfig(); config != nil {
+			defer removeDir(t, config.StoreDir)
+		}
+		defer s.Shutdown()
+
+		servers = append(servers, s)
 	}
 
 	checkClusterFormed(t, servers[:3]...)
