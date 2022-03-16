@@ -6913,7 +6913,8 @@ cluster {
 		}
 		return fmt.Errorf("large server is not leader")
 	})
-	_, js := jsClientConnect(t, largeSrv)
+	nc, js := jsClientConnect(t, largeSrv)
+	defer nc.Close()
 
 	cases := []struct {
 		name           string
@@ -7187,7 +7188,8 @@ gateway {
 		}
 		return streams
 	}
-	_, js := jsClientConnect(t, servers[0])
+	nc, js := jsClientConnect(t, servers[0])
+	defer nc.Close()
 
 	cases := []struct {
 		name           string
