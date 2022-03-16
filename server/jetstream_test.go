@@ -6857,22 +6857,23 @@ cluster {
 	}
 
 	smallSrv := getServer(t, "small")
-	defer smallSrv.Shutdown()
 	if config := smallSrv.JetStreamConfig(); config != nil {
 		defer removeDir(t, config.StoreDir)
 	}
+	defer smallSrv.Shutdown()
 
 	mediumSrv := getServer(t, "medium")
-	defer mediumSrv.Shutdown()
 	if config := mediumSrv.JetStreamConfig(); config != nil {
 		defer removeDir(t, config.StoreDir)
 	}
+	defer mediumSrv.Shutdown()
 
 	largeSrv := getServer(t, "large")
 	defer largeSrv.Shutdown()
 	if config := largeSrv.JetStreamConfig(); config != nil {
 		defer removeDir(t, config.StoreDir)
 	}
+	defer mediumSrv.Shutdown()
 
 	checkClusterFormed(t, smallSrv, mediumSrv, largeSrv)
 
@@ -15633,11 +15634,11 @@ func TestStorageReservedBytes(t *testing.T) {
 	opts.StoreDir = tdir
 	opts.HTTPPort = -1
 	s := RunServer(&opts)
-	defer s.Shutdown()
 
 	if config := s.JetStreamConfig(); config != nil {
 		defer removeDir(t, config.StoreDir)
 	}
+	defer s.Shutdown()
 
 	// Client for API requests.
 	nc, js := jsClientConnect(t, s)
