@@ -16006,29 +16006,30 @@ func TestJetStreamConsumerAckSampling(t *testing.T) {
 	asub, err := js.PullSubscribe("foo", "alps")
 	require_NoError(t, err)
 
-	for i := 0; i < 100; i++ {
+	total := 500
+	for i := 0; i < total; i++ {
 		_, err = js.Publish("foo", []byte("Hello"))
 		require_NoError(t, err)
 	}
 
 	mp := 0
-	for _, m := range fetchMsgs(t, asub, 100, time.Second) {
+	for _, m := range fetchMsgs(t, asub, total, time.Second) {
 		err = m.Ack()
 		require_NoError(t, err)
 		mp++
 	}
 	nc.Flush()
 
-	if mp != 100 {
-		t.Fatalf("Got only %d msgs out of %d", mp, 100)
+	if mp != total {
+		t.Fatalf("Got only %d msgs out of %d", mp, total)
 	}
 
 	nmsgs, _, err := msub.Pending()
 	require_NoError(t, err)
 
-	// Should be ~50
-	if nmsgs < 35 || nmsgs > 65 {
-		t.Fatalf("Expected about 50, got %d", nmsgs)
+	// Should be ~250
+	if nmsgs < 150 || nmsgs > 350 {
+		t.Fatalf("Expected about 250, got %d", nmsgs)
 	}
 }
 
