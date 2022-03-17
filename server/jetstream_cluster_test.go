@@ -11271,6 +11271,47 @@ func TestJetStreamConsumerDeliverNewBug(t *testing.T) {
 	}
 }
 
+// If the config files have duplicate routes this can have the metagroup estimate a size for the system
+// which prevents reaching quorum and electing a meta-leader.
+func TestJetStreamDuplicateRoutesDisruptJetStreamMetaGroup(t *testing.T) {
+	tmpl := `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+	cluster {
+		name: RR
+		listen: 127.0.0.1:%d
+		routes = [
+			nats-route://127.0.0.1:%d
+			nats-route://127.0.0.1:%d
+			nats-route://127.0.0.1:%d
+			# These will be dupes
+			nats-route://127.0.0.1:%d
+			nats-route://127.0.0.1:%d
+			nats-route://127.0.0.1:%d
+		]
+	}
+
+	# For access to system account.
+	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+`
+
+	c := &cluster{servers: make([]*Server, 0, 3), opts: make([]*Options, 0, 3), name: "RR", t: t}
+
+	rports := []int{22208, 22209, 22210}
+	for i, p := range rports {
+		sname, sd := fmt.Sprintf("S%d", i+1), createDir(t, JetStreamStoreDir)
+		cf := fmt.Sprintf(tmpl, sname, sd, p, rports[0], rports[1], rports[2], rports[0], rports[1], rports[2])
+		s, o := RunServerWithConfig(createConfFile(t, []byte(cf)))
+		c.servers, c.opts = append(c.servers, s), append(c.opts, o)
+	}
+	defer c.shutdown()
+
+	checkClusterFormed(t, c.servers...)
+	c.waitOnClusterReady()
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
@@ -12316,6 +12357,10 @@ func (c *cluster) waitOnClusterReadyWithNumPeers(numPeersExpected int) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+
+	if leader == nil {
+		c.t.Fatalf("Failed to elect a meta-leader")
 	}
 
 	peersSeen := len(leader.JetStreamClusterPeers())
