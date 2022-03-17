@@ -11299,6 +11299,7 @@ func TestJetStreamDuplicateRoutesDisruptJetStreamMetaGroup(t *testing.T) {
 
 	c := &cluster{servers: make([]*Server, 0, 3), opts: make([]*Options, 0, 3), name: "RR", t: t}
 
+	defer removeDir(t, filepath.Dir(createDir(t, JetStreamStoreDir)))
 	rports := []int{22208, 22209, 22210}
 	for i, p := range rports {
 		sname, sd := fmt.Sprintf("S%d", i+1), createDir(t, JetStreamStoreDir)
