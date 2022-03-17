@@ -1607,7 +1607,7 @@ func (s *Server) Start() {
 	s.Noticef("Starting nats-server")
 
 	gc := gitCommit
-	if gc == "" {
+	if gc == _EMPTY_ {
 		gc = "not set"
 	}
 
