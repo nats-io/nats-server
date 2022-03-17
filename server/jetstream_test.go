@@ -7340,6 +7340,46 @@ gateway {
 	}
 }
 
+func TestStreamLimitUpdate(t *testing.T) {
+	t.Skip("shouldn't fail")
+
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	err := s.GlobalAccount().UpdateJetStreamLimits(&JetStreamAccountLimits{
+		MaxMemory:  128,
+		MaxStore:   128,
+		MaxStreams: 1,
+	})
+	require_NoError(t, err)
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	for _, storage := range []nats.StorageType{nats.MemoryStorage, nats.FileStorage} {
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Storage:  storage,
+			MaxBytes: 32,
+		})
+		require_NoError(t, err)
+
+		_, err = js.UpdateStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Storage:  storage,
+			MaxBytes: 16,
+		})
+		require_NoError(t, err)
+
+		require_NoError(t, js.DeleteStream("TEST"))
+	}
+}
+
 func TestJetStreamStreamStorageTrackingAndLimits(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	if config := s.JetStreamConfig(); config != nil {
