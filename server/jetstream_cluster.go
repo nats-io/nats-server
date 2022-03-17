@@ -3146,7 +3146,9 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			if recovering && !isLeader {
 				js.setConsumerAssignmentRecovering(ca)
 			}
-			js.processConsumerLeaderChange(o, isLeader)
+			if err := js.processConsumerLeaderChange(o, isLeader); err == nil && isLeader {
+				doSnapshot()
+			}
 		case <-t.C:
 			doSnapshot()
 		}
@@ -3320,10 +3322,17 @@ func decodeDeliveredUpdate(buf []byte) (dseq, sseq, dc uint64, ts int64, err err
 	return dseq, sseq, dc, ts, nil
 }
 
-func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) {
+func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) error {
+	stepDownIfLeader := func() error {
+		if node := o.raftNode(); node != nil && isLeader {
+			node.StepDown()
+		}
+		return errors.New("failed to update consumer leader status")
+	}
+
 	ca := o.consumerAssignment()
 	if ca == nil {
-		return
+		return stepDownIfLeader()
 	}
 	js.mu.Lock()
 	s, account, err := js.srv, ca.Client.serviceAccount(), ca.err
@@ -3336,7 +3345,7 @@ func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) {
 	consumerName := o.String()
 	acc, _ := s.LookupAccount(account)
 	if acc == nil {
-		return
+		return stepDownIfLeader()
 	}
 
 	if isLeader {
@@ -3370,7 +3379,7 @@ func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) {
 		if isLeader {
 			o.clearInitialInfo()
 		}
-		return
+		return nil
 	}
 
 	var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
@@ -3384,6 +3393,8 @@ func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) {
 			o.sendCreateAdvisory()
 		}
 	}
+
+	return nil
 }
 
 // Determines if we should send lost quorum advisory. We throttle these after first one.
