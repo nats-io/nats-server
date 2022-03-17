@@ -2102,6 +2102,8 @@ func (reason ClosedState) String() string {
 		return "Duplicate Remote LeafNode Connection"
 	case DuplicateClientID:
 		return "Duplicate Client ID"
+	case DuplicateServerName:
+		return "Duplicate Server Name"
 	}
 
 	return "Unknown State"
