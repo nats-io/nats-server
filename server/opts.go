@@ -1432,7 +1432,7 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 			}
 		case "routes":
 			ra := mv.([]interface{})
-			routes, errs := parseURLs(ra, "route", warnings)
+			routes, errs := parseURLs(ra, mk, "route", warnings)
 			if errs != nil {
 				*errors = append(*errors, errs...)
 				continue
@@ -1487,7 +1487,7 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 	return nil
 }
 
-func parseURLs(a []interface{}, typ string, warnings *[]error) (urls []*url.URL, errors []error) {
+func parseURLs(a []interface{}, field string, typ string, warnings *[]error) (urls []*url.URL, errors []error) {
 	urls = make([]*url.URL, 0, len(a))
 	var lt token
 	defer convertPanicToErrorList(&lt, &errors)
@@ -1499,10 +1499,10 @@ func parseURLs(a []interface{}, typ string, warnings *[]error) (urls []*url.URL,
 		sURL := u.(string)
 		if dd[sURL] {
 			err := &configWarningErr{
-				field: sURL,
+				field: field,
 				configErr: configErr{
 					token:  tk,
-					reason: fmt.Sprintf("Duplicate %s entry detected", typ),
+					reason: fmt.Sprintf("Duplicate %s %q entry detected", typ, sURL),
 				},
 			}
 			*warnings = append(*warnings, err)
@@ -2033,7 +2033,7 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 			case "url", "urls":
 				switch v := v.(type) {
 				case []interface{}, []string:
-					urls, errs := parseURLs(v.([]interface{}), "leafnode", warnings)
+					urls, errs := parseURLs(v.([]interface{}), k, "leafnode", warnings)
 					if errs != nil {
 						*errors = append(*errors, errs...)
 						continue
@@ -2179,7 +2179,7 @@ func parseGateways(v interface{}, errors *[]error, warnings *[]error) ([]*Remote
 				}
 				gateway.URLs = append(gateway.URLs, url)
 			case "urls":
-				urls, errs := parseURLs(v.([]interface{}), "gateway", warnings)
+				urls, errs := parseURLs(v.([]interface{}), k, "gateway", warnings)
 				if errs != nil {
 					*errors = append(*errors, errs...)
 					continue

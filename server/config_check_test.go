@@ -1503,6 +1503,23 @@ func TestConfigCheck(t *testing.T) {
 			errorLine: 5,
 			errorPos:  6,
 		},
+		{
+			name: "duplicate routes",
+			config: `
+				cluster {
+					port: -1
+					routes = [
+					  nats://127.0.0.1:6222,
+					  nats://127.0.0.1:6223,
+					  nats://127.0.0.1:6223,
+					  nats://127.0.0.1:6224,
+					]
+				}
+			`,
+			err:       fmt.Errorf("invalid use of field \"routes\": Duplicate route \"nats://127.0.0.1:6223\" entry detected"),
+			errorLine: 7,
+			errorPos:  8,
+		},
 	}
 
 	checkConfig := func(config string) error {
