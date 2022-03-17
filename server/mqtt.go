@@ -921,7 +921,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 
 	id := string(getHash(s.Name()))
 	replicas := s.mqttDetermineReplicas()
-	qname := fmt.Sprintf("MQTT account %q send", accName)
+	qname := fmt.Sprintf("[ACC:%s] MQTT ", accName)
 	as := &mqttAccountSessionManager{
 		sessions:   make(map[string]*mqttSession),
 		sessByHash: make(map[string]*mqttSession),
@@ -932,11 +932,11 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 			id:     id,
 			c:      c,
 			rplyr:  mqttJSARepliesPrefix + id + ".",
-			sendq:  newIPQueue(ipQueue_Logger(qname, s.ipqLog)), // of *mqttJSPubMsg
+			sendq:  s.newIPQueue(qname + "send"), // of *mqttJSPubMsg
 			nuid:   nuid.New(),
 			quitCh: quitCh,
 		},
-		sp: newIPQueue(), // of uint64
+		sp: s.newIPQueue(qname + "sp"), // of uint64
 	}
 	// TODO record domain name in as here
 

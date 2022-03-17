@@ -1279,9 +1279,6 @@ func TestServerShutdownDuringStart(t *testing.T) {
 	ch := make(chan struct{}, 1)
 	go func() {
 		s.Start()
-		// Since the server has already been shutdown and we don't want to leave
-		// the ipqLog run() routine running, stop it now.
-		s.ipqLog.stop()
 		close(ch)
 	}()
 	select {
@@ -1962,38 +1959,5 @@ func TestServerLogsConfigurationFile(t *testing.T) {
 	}
 	if !bytes.Contains(log, []byte(fmt.Sprintf("Using configuration file: %s", file.Name()))) {
 		t.Fatalf("Config file location was not reported in log: %s", log)
-	}
-}
-
-func TestServerIPQueueLogger(t *testing.T) {
-	o := DefaultOptions()
-	s := RunServer(o)
-	defer s.Shutdown()
-
-	l := &captureWarnLogger{warn: make(chan string, 100)}
-	s.SetLogger(l, false, false)
-
-	q := newIPQueue(ipQueue_Logger("test", s.ipqLog))
-	// Normally, lt is immutable and set to ipQueueDefaultWarnThreshold, but
-	// for test, we set it to a low value.
-	q.lt = 2
-	q.push(1)
-	// This one should case a warning
-	q.push(2)
-
-	for {
-		select {
-		case w := <-l.warn:
-			// In case we get other warnings a runtime, just check that we
-			// get the one we expect and be done.
-			if strings.Contains(w, "test queue") {
-				if strings.Contains(w, "test queue pending size: 2") {
-					return
-				}
-				t.Fatalf("Invalid warning: %v", w)
-			}
-		case <-time.After(time.Second):
-			t.Fatal("Did not get warning")
-		}
 	}
 }

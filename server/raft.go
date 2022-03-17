@@ -197,6 +197,9 @@ type raft struct {
 	leadc    chan bool
 	quit     chan struct{}
 
+	// Account name of the asset this raft group is for
+	accName string
+
 	// Random generator, used to generate inboxes for instance
 	prand *rand.Rand
 }
@@ -330,7 +333,7 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 }
 
 // startRaftNode will start the raft node.
-func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
+func (s *Server) startRaftNode(accName string, cfg *RaftConfig) (RaftNode, error) {
 	if cfg == nil {
 		return nil, errNilCfg
 	}
@@ -353,7 +356,7 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		return nil, errNoPeerState
 	}
 
-	qpfx := fmt.Sprintf("RAFT [%s - %s] ", hash[:idLen], cfg.Name)
+	qpfx := fmt.Sprintf("[ACC:%s] RAFT '%s' ", accName, cfg.Name)
 	rsrc := time.Now().UnixNano()
 	if len(pub) >= 32 {
 		if h, _ := highwayhash.New64([]byte(pub[:32])); h != nil {
@@ -382,13 +385,14 @@ func (s *Server) startRaftNode(cfg *RaftConfig) (RaftNode, error) {
 		quit:     make(chan struct{}),
 		wtvch:    make(chan struct{}, 1),
 		wpsch:    make(chan struct{}, 1),
-		reqs:     newIPQueue(),                                                     // of *voteRequest
-		votes:    newIPQueue(),                                                     // of *voteResponse
-		prop:     newIPQueue(ipQueue_Logger(qpfx+"Entry", s.ipqLog)),               // of *Entry
-		entry:    newIPQueue(ipQueue_Logger(qpfx+"AppendEntry", s.ipqLog)),         // of *appendEntry
-		resp:     newIPQueue(ipQueue_Logger(qpfx+"AppendEntryResponse", s.ipqLog)), // of *appendEntryResponse
-		apply:    newIPQueue(ipQueue_Logger(qpfx+"CommittedEntry", s.ipqLog)),      // of *CommittedEntry
-		stepdown: newIPQueue(),                                                     // of string
+		reqs:     s.newIPQueue(qpfx + "vreq"),                // of *voteRequest
+		votes:    s.newIPQueue(qpfx + "vresp"),               // of *voteResponse
+		prop:     s.newIPQueue(qpfx + "entry"),               // of *Entry
+		entry:    s.newIPQueue(qpfx + "appendEntry"),         // of *appendEntry
+		resp:     s.newIPQueue(qpfx + "appendEntryResponse"), // of *appendEntryResponse
+		apply:    s.newIPQueue(qpfx + "committedEntry"),      // of *CommittedEntry
+		stepdown: s.newIPQueue(qpfx + "stepdown"),            // of string
+		accName:  accName,
 		leadc:    make(chan bool, 1),
 		observer: cfg.Observer,
 		extSt:    ps.domainExt,
@@ -1337,6 +1341,12 @@ func (n *raft) shutdown(shouldDelete bool) {
 		os.Remove(filepath.Join(n.sd, termVoteFile))
 		os.RemoveAll(filepath.Join(n.sd, snapshotsDir))
 	}
+	// Unregistering ipQueues do not prevent them from push/pop
+	// just will remove them from the central monitoring map
+	queues := []*ipQueue{n.reqs, n.votes, n.prop, n.entry, n.resp, n.apply, n.stepdown}
+	for _, q := range queues {
+		q.unregister()
+	}
 	n.Unlock()
 
 	s.unregisterRaftNode(g)
@@ -1973,6 +1983,7 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue /* of 
 			n.debug("Catchup done for %q, will add into peers", peer)
 			n.ProposeAddPeer(peer)
 		}
+		indexUpdatesQ.unregister()
 	}()
 
 	n.debug("Running catchup for %q", peer)
@@ -2114,8 +2125,7 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 		n.debug("Our first entry does not match request from follower")
 	}
 	// Create a queue for delivering updates from responses.
-	qname := fmt.Sprintf("RAFT [%s - %s] Index updates", n.id, n.group)
-	indexUpdates := newIPQueue(ipQueue_Logger(qname, n.s.ipqLog)) // of uint64
+	indexUpdates := n.s.newIPQueue(fmt.Sprintf("[ACC:%s] RAFT '%s' indexUpdates", n.accName, n.group)) // of uint64
 	indexUpdates.push(ae.pindex)
 	n.progress[ar.peer] = indexUpdates
 	n.Unlock()

@@ -269,15 +269,8 @@ type Server struct {
 	// Keep track of what that user name is for config reload purposes.
 	sysAccOnlyNoAuthUser string
 
-	// This is a central logger for IPQueues when the number of pending
-	// messages reaches a certain thresold (per queue)
-	ipqLog *srvIPQueueLogger
-}
-
-type srvIPQueueLogger struct {
-	ch   chan string
-	done chan struct{}
-	s    *Server
+	// IPQueues map
+	ipQueues sync.Map
 }
 
 // For tracking JS nodes.
@@ -1265,7 +1258,7 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		sid:     1,
 		servers: make(map[string]*serverUpdate),
 		replies: make(map[string]msgHandler),
-		sendq:   newIPQueue(ipQueue_Logger("System send", s.ipqLog)), // of *pubMsg
+		sendq:   s.newIPQueue("System sendQ"), // of *pubMsg
 		resetCh: make(chan struct{}),
 		sq:      s.newSendQ(),
 		statsz:  eventsHBInterval,
@@ -1641,8 +1634,6 @@ func (s *Server) Start() {
 	s.grRunning = true
 	s.grMu.Unlock()
 
-	s.startIPQLogger()
-
 	// Pprof http endpoint for the profiler.
 	if opts.ProfPort != 0 {
 		s.StartProfiler()
@@ -2011,11 +2002,6 @@ func (s *Server) Shutdown() {
 		doneExpected--
 	}
 
-	// Stop the IPQueue logger (before the grWG.Wait() call)
-	if s.ipqLog != nil {
-		s.ipqLog.stop()
-	}
-
 	// Wait for go routines to be done.
 	s.grWG.Wait()
 
@@ -2267,6 +2253,7 @@ const (
 	AccountzPath = "/accountz"
 	JszPath      = "/jsz"
 	HealthzPath  = "/healthz"
+	IPQueuesPath = "/ipqueuesz"
 )
 
 func (s *Server) basePath(p string) string {
@@ -2371,6 +2358,8 @@ func (s *Server) startMonitoring(secure bool) error {
 	mux.HandleFunc(s.basePath(JszPath), s.HandleJsz)
 	// Healthz
 	mux.HandleFunc(s.basePath(HealthzPath), s.HandleHealthz)
+	// IPQueuesz
+	mux.HandleFunc(s.basePath(IPQueuesPath), s.HandleIPQueuesz)
 
 	// Do not set a WriteTimeout because it could cause cURL/browser
 	// to return empty response or unable to display page if the
@@ -3632,36 +3621,4 @@ func (s *Server) updateRemoteSubscription(acc *Account, sub *subscription, delta
 	}
 
 	s.updateLeafNodes(acc, sub, delta)
-}
-
-func (s *Server) startIPQLogger() {
-	s.ipqLog = &srvIPQueueLogger{
-		ch:   make(chan string, 128),
-		done: make(chan struct{}),
-		s:    s,
-	}
-	s.startGoRoutine(s.ipqLog.run)
-}
-
-func (l *srvIPQueueLogger) stop() {
-	close(l.done)
-}
-
-func (l *srvIPQueueLogger) log(name string, pending int) {
-	select {
-	case l.ch <- fmt.Sprintf("%s queue pending size: %v", name, pending):
-	default:
-	}
-}
-
-func (l *srvIPQueueLogger) run() {
-	defer l.s.grWG.Done()
-	for {
-		select {
-		case w := <-l.ch:
-			l.s.Warnf("%s", w)
-		case <-l.done:
-			return
-		}
-	}
 }

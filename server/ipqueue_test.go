@@ -14,14 +14,14 @@
 package server
 
 import (
-	"fmt"
 	"sync"
 	"testing"
 	"time"
 )
 
 func TestIPQueueBasic(t *testing.T) {
-	q := newIPQueue()
+	s := &Server{}
+	q := s.newIPQueue("test")
 	// Check that pool has been created
 	if q.pool == nil {
 		t.Fatal("Expected pool to have been created")
@@ -42,14 +42,54 @@ func TestIPQueueBasic(t *testing.T) {
 	}
 
 	// Try to change the max recycle size
-	q = newIPQueue(ipQueue_MaxRecycleSize(10))
-	if q.mrs != 10 {
-		t.Fatalf("Expected max recycle size to be 10, got %v", q.mrs)
+	q2 := s.newIPQueue("test2", ipQueue_MaxRecycleSize(10))
+	if q2.mrs != 10 {
+		t.Fatalf("Expected max recycle size to be 10, got %v", q2.mrs)
+	}
+
+	// Check that those 2 queues are registered
+	var gotFirst bool
+	var gotSecond bool
+	s.ipQueues.Range(func(k, v interface{}) bool {
+		switch k.(string) {
+		case "test":
+			gotFirst = true
+		case "test2":
+			gotSecond = true
+		default:
+			t.Fatalf("Unknown queue: %q", k.(string))
+		}
+		return true
+	})
+	if !gotFirst {
+		t.Fatalf("Did not find queue %q", "test")
+	}
+	if !gotSecond {
+		t.Fatalf("Did not find queue %q", "test2")
+	}
+	// Unregister them
+	q.unregister()
+	q2.unregister()
+	// They should have been removed from the map
+	s.ipQueues.Range(func(k, v interface{}) bool {
+		t.Fatalf("Got queue %q", k.(string))
+		return false
+	})
+	// But verify that we can still push/pop
+	q.push(1)
+	elts := q.pop()
+	if len(elts) != 1 {
+		t.Fatalf("Should have gotten 1 element, got %v", len(elts))
+	}
+	q2.push(2)
+	if e := q2.popOne(); e.(int) != 2 {
+		t.Fatalf("popOne failed: %+v", e)
 	}
 }
 
 func TestIPQueuePush(t *testing.T) {
-	q := newIPQueue()
+	s := &Server{}
+	q := s.newIPQueue("test")
 	q.push(1)
 	if l := q.len(); l != 1 {
 		t.Fatalf("Expected len to be 1, got %v", l)
@@ -74,7 +114,8 @@ func TestIPQueuePush(t *testing.T) {
 }
 
 func TestIPQueuePop(t *testing.T) {
-	q := newIPQueue()
+	s := &Server{}
+	q := s.newIPQueue("test")
 	q.push(1)
 	<-q.ch
 	elts := q.pop()
@@ -91,14 +132,29 @@ func TestIPQueuePop(t *testing.T) {
 	default:
 		// OK
 	}
+	// Since pop() brings the number of pending to 0, we keep track of the
+	// number of "in progress" elements. Check that the value is 1 here.
+	if n := q.inProgress(); n != 1 {
+		t.Fatalf("Expected count to be 1, got %v", n)
+	}
+	// Recycling will bring it down to 0.
+	q.recycle(&elts)
+	if n := q.inProgress(); n != 0 {
+		t.Fatalf("Expected count to be 0, got %v", n)
+	}
 	// If we call pop() now, we should get an empty list.
 	if elts = q.pop(); elts != nil {
 		t.Fatalf("Expected nil, got %v", elts)
 	}
+	// The in progress count should still be 0
+	if n := q.inProgress(); n != 0 {
+		t.Fatalf("Expected count to be 0, got %v", n)
+	}
 }
 
 func TestIPQueuePopOne(t *testing.T) {
-	q := newIPQueue()
+	s := &Server{}
+	q := s.newIPQueue("test")
 	q.push(1)
 	<-q.ch
 	e := q.popOne()
@@ -110,6 +166,10 @@ func TestIPQueuePopOne(t *testing.T) {
 	}
 	if l := q.len(); l != 0 {
 		t.Fatalf("Expected len to be 0, got %v", l)
+	}
+	// That does not affect the number of notProcessed
+	if n := q.inProgress(); n != 0 {
+		t.Fatalf("Expected count to be 0, got %v", n)
 	}
 	select {
 	case <-q.ch:
@@ -157,7 +217,7 @@ func TestIPQueuePopOne(t *testing.T) {
 		t.Fatalf("Expected nil, got %v", e)
 	}
 
-	q = newIPQueue()
+	q = s.newIPQueue("test2")
 	q.push(1)
 	q.push(2)
 	// Capture current capacity
@@ -186,7 +246,8 @@ func TestIPQueuePopOne(t *testing.T) {
 }
 
 func TestIPQueueMultiProducers(t *testing.T) {
-	q := newIPQueue()
+	s := &Server{}
+	q := s.newIPQueue("test")
 
 	wg := sync.WaitGroup{}
 	wg.Add(3)
@@ -211,6 +272,9 @@ func TestIPQueueMultiProducers(t *testing.T) {
 				m[v.(int)] = struct{}{}
 			}
 			q.recycle(&values)
+			if n := q.inProgress(); n != 0 {
+				t.Fatalf("Expected count to be 0, got %v", n)
+			}
 			done = len(m) == 300
 		case <-tm.C:
 			t.Fatalf("Did not receive all elements: %v", m)
@@ -220,7 +284,8 @@ func TestIPQueueMultiProducers(t *testing.T) {
 }
 
 func TestIPQueueRecycle(t *testing.T) {
-	q := newIPQueue()
+	s := &Server{}
+	q := s.newIPQueue("test")
 	total := 1000
 	for iter := 0; iter < 5; iter++ {
 		var sz int
@@ -252,7 +317,7 @@ func TestIPQueueRecycle(t *testing.T) {
 		}
 	}
 
-	q = newIPQueue(ipQueue_MaxRecycleSize(10))
+	q = s.newIPQueue("test2", ipQueue_MaxRecycleSize(10))
 	for i := 0; i < 100; i++ {
 		q.push(i)
 	}
@@ -291,7 +356,8 @@ func TestIPQueueRecycle(t *testing.T) {
 }
 
 func TestIPQueueDrain(t *testing.T) {
-	q := newIPQueue()
+	s := &Server{}
+	q := s.newIPQueue("test")
 	for iter, recycled := 0, false; iter < 5 && !recycled; iter++ {
 		for i := 0; i < 100; i++ {
 			q.push(i + 1)
@@ -321,57 +387,5 @@ func TestIPQueueDrain(t *testing.T) {
 		if recycled {
 			break
 		}
-	}
-}
-
-type testIPQLog struct {
-	msgs []string
-}
-
-func (l *testIPQLog) log(name string, pending int) {
-	l.msgs = append(l.msgs, fmt.Sprintf("%s: %d pending", name, pending))
-}
-
-func TestIPQueueLogger(t *testing.T) {
-	l := &testIPQLog{}
-	q := newIPQueue(ipQueue_Logger("test_logger", l))
-	q.lt = 2
-	q.push(1)
-	q.push(2)
-	if len(l.msgs) != 1 {
-		t.Fatalf("Unexpected logging: %v", l.msgs)
-	}
-	if l.msgs[0] != "test_logger: 2 pending" {
-		t.Fatalf("Unexpected content: %v", l.msgs[0])
-	}
-	l.msgs = nil
-	q.push(3)
-	if len(l.msgs) != 1 {
-		t.Fatalf("Unexpected logging: %v", l.msgs)
-	}
-	if l.msgs[0] != "test_logger: 3 pending" {
-		t.Fatalf("Unexpected content: %v", l.msgs[0])
-	}
-	l.msgs = nil
-	q.popOne()
-	q.push(4)
-	if len(l.msgs) != 1 {
-		t.Fatalf("Unexpected logging: %v", l.msgs)
-	}
-	if l.msgs[0] != "test_logger: 3 pending" {
-		t.Fatalf("Unexpected content: %v", l.msgs[0])
-	}
-	l.msgs = nil
-	q.pop()
-	q.push(5)
-	if len(l.msgs) != 0 {
-		t.Fatalf("Unexpected logging: %v", l.msgs)
-	}
-	q.push(6)
-	if len(l.msgs) != 1 {
-		t.Fatalf("Unexpected logging: %v", l.msgs)
-	}
-	if l.msgs[0] != "test_logger: 2 pending" {
-		t.Fatalf("Unexpected content: %v", l.msgs[0])
 	}
 }
