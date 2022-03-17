@@ -1502,7 +1502,7 @@ func parseURLs(a []interface{}, typ string, warnings *[]error) (urls []*url.URL,
 				field: sURL,
 				configErr: configErr{
 					token:  tk,
-					reason: "Duplicate entry detected",
+					reason: fmt.Sprintf("Duplicate %s entry detected", typ),
 				},
 			}
 			*warnings = append(*warnings, err)
