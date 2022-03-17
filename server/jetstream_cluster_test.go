@@ -11206,6 +11206,71 @@ func TestJetStreamRemovedPeersAndStreamsListAndDelete(t *testing.T) {
 	require_Error(t, err, nats.ErrStreamNotFound)
 }
 
+func TestJetStreamConsumerDeliverNewBug(t *testing.T) {
+	sc := createJetStreamSuperCluster(t, 3, 3)
+	defer sc.shutdown()
+
+	pcn := "C2"
+	sc.waitOnLeader()
+	ml := sc.leader()
+	if ml.ClusterName() == pcn {
+		pcn = "C1"
+	}
+
+	// Client based API
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "T",
+		Replicas:  3,
+		Placement: &nats.Placement{Cluster: pcn},
+	})
+	require_NoError(t, err)
+
+	// Put messages in..
+	num := 200
+	for i := 0; i < num; i++ {
+		js.PublishAsync("T", []byte("OK"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	ci, err := js.AddConsumer("T", &nats.ConsumerConfig{
+		Durable:       "d",
+		AckPolicy:     nats.AckExplicitPolicy,
+		DeliverPolicy: nats.DeliverNewPolicy,
+	})
+	require_NoError(t, err)
+
+	if ci.Delivered.Consumer != 0 || ci.Delivered.Stream != 200 {
+		t.Fatalf("Incorrect consumer delivered info: %+v", ci.Delivered)
+	}
+
+	c := sc.clusterForName(pcn)
+	for _, s := range c.servers {
+		sd := s.JetStreamConfig().StoreDir
+		s.Shutdown()
+		removeDir(t, sd)
+		s = c.restartServer(s)
+		c.waitOnServerHealthz(s)
+	}
+
+	c.waitOnConsumerLeader("$G", "T", "d")
+	ci, err = js.ConsumerInfo("T", "d")
+	require_NoError(t, err)
+
+	if ci.Delivered.Consumer != 0 || ci.Delivered.Stream != 200 {
+		t.Fatalf("Incorrect consumer delivered info: %+v", ci.Delivered)
+	}
+	if ci.NumPending != 0 {
+		t.Fatalf("Did not expect NumPending, got %d", ci.NumPending)
+	}
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
@@ -12141,6 +12206,19 @@ func (c *cluster) waitOnStreamCurrent(s *Server, account, stream string) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	c.t.Fatalf("Expected server %q to eventually be current for stream %q", s, stream)
+}
+
+func (c *cluster) waitOnServerHealthz(s *Server) {
+	c.t.Helper()
+	expires := time.Now().Add(30 * time.Second)
+	for time.Now().Before(expires) {
+		hs := s.healthz()
+		if hs.Status == "ok" && hs.Error == _EMPTY_ {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	c.t.Fatalf("Expected server %q to eventually return healthz 'ok', but got %q", s, s.healthz().Error)
 }
 
 func (c *cluster) waitOnServerCurrent(s *Server) {

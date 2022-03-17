@@ -1760,7 +1760,7 @@ func (o *consumer) readStoredState() error {
 		return nil
 	}
 	state, err := o.store.State()
-	if err == nil && state != nil && state.Delivered.Consumer != 0 {
+	if err == nil && state != nil && (state.Delivered.Consumer != 0 || state.Delivered.Stream != 0) {
 		o.applyState(state)
 		if len(o.rdc) > 0 {
 			o.checkRedelivered()
@@ -3756,7 +3756,7 @@ func (o *consumer) setInitialPendingAndStart() {
 		}
 	}
 
-	if !filtered && dp != DeliverLastPerSubject {
+	if !filtered && (dp != DeliverLastPerSubject && dp != DeliverNew) {
 		var state StreamState
 		mset.store.FastState(&state)
 		if state.Msgs > 0 {
@@ -3777,7 +3777,12 @@ func (o *consumer) setInitialPendingAndStart() {
 			if dp == DeliverLast || dp == DeliverLastPerSubject {
 				o.sseq = ss.Last
 			} else if dp == DeliverNew {
-				o.sseq = ss.Last + 1
+				// If our original is larger we will ignore, we don't want to go backwards with DeliverNew.
+				// If its greater, we need to adjust pending.
+				if ss.Last >= o.sseq {
+					o.sgap -= (ss.Last - o.sseq + 1)
+					o.sseq = ss.Last + 1
+				}
 			} else {
 				// DeliverAll, DeliverByStartSequence, DeliverByStartTime
 				o.sseq = ss.First
@@ -3788,6 +3793,15 @@ func (o *consumer) setInitialPendingAndStart() {
 			}
 		}
 		o.updateSkipped()
+	}
+
+	// Update our persisted state if something has changed.
+	if store := o.store; store != nil {
+		if state, _ := store.State(); state != nil {
+			if o.dseq-1 > state.Delivered.Consumer || o.sseq-1 > state.Delivered.Stream {
+				o.writeStoreStateUnlocked()
+			}
+		}
 	}
 }
 

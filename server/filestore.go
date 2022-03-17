@@ -5511,7 +5511,7 @@ func (o *consumerFileStore) State() (*ConsumerState, error) {
 	state := &ConsumerState{}
 
 	// See if we have a running state or if we need to read in from disk.
-	if o.state.Delivered.Consumer != 0 {
+	if o.state.Delivered.Consumer != 0 || o.state.Delivered.Stream != 0 {
 		state.Delivered = o.state.Delivered
 		state.AckFloor = o.state.AckFloor
 		if len(o.state.Pending) > 0 {
