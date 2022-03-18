@@ -16068,7 +16068,7 @@ func TestJetStreamConsumerAckSampling(t *testing.T) {
 	require_NoError(t, err)
 
 	// Should be ~250
-	if nmsgs < 150 || nmsgs > 350 {
+	if nmsgs < 100 || nmsgs > 400 {
 		t.Fatalf("Expected about 250, got %d", nmsgs)
 	}
 }
