@@ -557,7 +557,7 @@ func (js *jetStream) setupMetaGroup() error {
 	}
 
 	// Start up our meta node.
-	n, err := s.startRaftNode(cfg)
+	n, err := s.startRaftNode(sysAcc.GetName(), cfg)
 	if err != nil {
 		s.Warnf("Could not start metadata controller: %v", err)
 		return err
@@ -1378,7 +1378,7 @@ func (rg *raftGroup) setPreferred() {
 }
 
 // createRaftGroup is called to spin up this raft group if needed.
-func (js *jetStream) createRaftGroup(rg *raftGroup, storage StorageType) error {
+func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage StorageType) error {
 	js.mu.Lock()
 	defer js.mu.Unlock()
 	s, cc := js.srv, js.cluster
@@ -1434,7 +1434,7 @@ func (js *jetStream) createRaftGroup(rg *raftGroup, storage StorageType) error {
 		s.bootstrapRaftNode(cfg, rg.Peers, true)
 	}
 
-	n, err := s.startRaftNode(cfg)
+	n, err := s.startRaftNode(accName, cfg)
 	if err != nil || n == nil {
 		s.Debugf("Error creating raft group: %v", err)
 		return err
@@ -2316,7 +2316,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		var needsSetLeader bool
 		if !alreadyRunning && numReplicas > 1 {
 			if needsNode {
-				js.createRaftGroup(rg, storage)
+				js.createRaftGroup(acc.GetName(), rg, storage)
 			}
 			s.startGoRoutine(func() { js.monitorStream(mset, sa) })
 		} else if numReplicas == 1 && alreadyRunning {
@@ -2413,7 +2413,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	js.mu.RUnlock()
 
 	// Process the raft group and make sure it's running if needed.
-	err := js.createRaftGroup(rg, storage)
+	err := js.createRaftGroup(acc.GetName(), rg, storage)
 
 	// If we are restoring, create the stream if we are R>1 and not the preferred who handles the
 	// receipt of the snapshot itself.
@@ -2813,7 +2813,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 
 	if !alreadyRunning {
 		// Process the raft group and make sure its running if needed.
-		js.createRaftGroup(rg, mset.config().Storage)
+		js.createRaftGroup(acc.GetName(), rg, mset.config().Storage)
 	}
 
 	// Check if we already have this consumer running.
@@ -5215,7 +5215,7 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) error {
 	mset.store.FastState(&state)
 	sreq := mset.calculateSyncRequest(&state, snap)
 	s, js, subject, n := mset.srv, mset.js, mset.sa.Sync, mset.node
-	qname := fmt.Sprintf("Stream %q snapshot", mset.cfg.Name)
+	qname := fmt.Sprintf("[ACC:%s] stream '%s' snapshot", mset.acc.Name, mset.cfg.Name)
 	mset.mu.Unlock()
 
 	// Make sure our state's first sequence is <= the leader's snapshot.
@@ -5290,7 +5290,8 @@ RETRY:
 		reply string
 	}
 
-	msgsQ := newIPQueue(ipQueue_Logger(qname, s.ipqLog)) // of *im
+	msgsQ := s.newIPQueue(qname) // of *im
+	defer msgsQ.unregister()
 
 	// Send our catchup request here.
 	reply := syncReplySubject()
@@ -5324,10 +5325,12 @@ RETRY:
 
 				// Check for eof signaling.
 				if len(msg) == 0 {
+					msgsQ.recycle(&mrecs)
 					return nil
 				}
 				if lseq, err := mset.processCatchupMsg(msg); err == nil {
 					if lseq >= last {
+						msgsQ.recycle(&mrecs)
 						return nil
 					}
 				} else if isOutOfSpaceErr(err) {
@@ -5338,9 +5341,11 @@ RETRY:
 					} else {
 						s.Warnf("Catchup for stream '%s > %s' errored, account resources exceeded: %v", mset.account(), mset.name(), err)
 					}
+					msgsQ.recycle(&mrecs)
 					return err
 				} else {
 					s.Warnf("Catchup for stream '%s > %s' errored, will retry: %v", mset.account(), mset.name(), err)
+					msgsQ.recycle(&mrecs)
 					goto RETRY
 				}
 				if mrec.reply != _EMPTY_ {

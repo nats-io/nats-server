@@ -433,6 +433,7 @@ RESET:
 					// there is a chance that the process will exit before the
 					// writeLoop has a chance to send it.
 					c.flushClients(time.Second)
+					sendq.recycle(&msgs)
 					return
 				}
 				pm.returnToPool()

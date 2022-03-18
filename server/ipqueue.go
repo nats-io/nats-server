@@ -15,35 +15,26 @@ package server
 
 import (
 	"sync"
+	"sync/atomic"
 )
 
 const ipQueueDefaultMaxRecycleSize = 4 * 1024
-const ipQueueDefaultWarnThreshold = 32 * 1024
-
-type ipQueueLogger interface {
-	// The ipQueue will invoke this function with the queue's name and the number
-	// of pending elements. This call CANNOT block. It is ok to drop the logging
-	// if desired, but not block.
-	log(name string, pending int)
-}
 
 // This is a generic intra-process queue.
 type ipQueue struct {
+	inprogress int64
 	sync.RWMutex
-	ch     chan struct{}
-	elts   []interface{}
-	pos    int
-	pool   *sync.Pool
-	mrs    int
-	name   string
-	logger ipQueueLogger
-	lt     int
+	ch   chan struct{}
+	elts []interface{}
+	pos  int
+	pool *sync.Pool
+	mrs  int
+	name string
+	m    *sync.Map
 }
 
 type ipQueueOpts struct {
 	maxRecycleSize int
-	name           string
-	logger         ipQueueLogger
 }
 
 type ipQueueOpt func(*ipQueueOpts)
@@ -56,27 +47,19 @@ func ipQueue_MaxRecycleSize(max int) ipQueueOpt {
 	}
 }
 
-// This option provides the logger to be used by this queue to log
-// when the number of pending elements reaches a certain threshold.
-func ipQueue_Logger(name string, l ipQueueLogger) ipQueueOpt {
-	return func(o *ipQueueOpts) {
-		o.name, o.logger = name, l
-	}
-}
-
-func newIPQueue(opts ...ipQueueOpt) *ipQueue {
+func (s *Server) newIPQueue(name string, opts ...ipQueueOpt) *ipQueue {
 	qo := ipQueueOpts{maxRecycleSize: ipQueueDefaultMaxRecycleSize}
 	for _, o := range opts {
 		o(&qo)
 	}
 	q := &ipQueue{
-		ch:     make(chan struct{}, 1),
-		mrs:    qo.maxRecycleSize,
-		pool:   &sync.Pool{},
-		name:   qo.name,
-		logger: qo.logger,
-		lt:     ipQueueDefaultWarnThreshold,
+		ch:   make(chan struct{}, 1),
+		mrs:  qo.maxRecycleSize,
+		pool: &sync.Pool{},
+		name: name,
+		m:    &s.ipQueues,
 	}
+	s.ipQueues.Store(name, q)
 	return q
 }
 
@@ -101,9 +84,6 @@ func (q *ipQueue) push(e interface{}) int {
 	}
 	q.elts = append(q.elts, e)
 	l++
-	if l >= q.lt && q.logger != nil && (l <= q.lt+10 || q.lt%10000 == 0) {
-		q.logger.log(q.name, l)
-	}
 	q.Unlock()
 	if signal {
 		select {
@@ -132,6 +112,7 @@ func (q *ipQueue) pop() []interface{} {
 		elts = q.elts[q.pos:]
 	}
 	q.elts, q.pos = nil, 0
+	atomic.AddInt64(&q.inprogress, int64(len(elts)))
 	q.Unlock()
 	return elts
 }
@@ -174,13 +155,24 @@ func (q *ipQueue) popOne() interface{} {
 
 // After a pop(), the slice can be recycled for the next push() when
 // a first element is added to the queue.
+// This will also decrement the "in progress" count with the length
+// of the slice.
 // Reason we use pointer to slice instead of slice is explained
 // here: https://staticcheck.io/docs/checks#SA6002
 func (q *ipQueue) recycle(elts *[]interface{}) {
-	// If invoked with an nil list, don't recyle.
+	// If invoked with a nil list, nothing to do.
+	if elts == nil || *elts == nil {
+		return
+	}
+	// Update the in progress count.
+	if len(*elts) > 0 {
+		if atomic.AddInt64(&q.inprogress, int64(-(len(*elts)))) < 0 {
+			atomic.StoreInt64(&q.inprogress, 0)
+		}
+	}
 	// We also don't want to recycle huge slices, so check against the max.
 	// q.mrs is normally immutable but can be changed, in a safe way, in some tests.
-	if elts == nil || *elts == nil || cap(*elts) > q.mrs {
+	if cap(*elts) > q.mrs {
 		return
 	}
 	q.resetAndReturnToPool(elts)
@@ -211,4 +203,22 @@ func (q *ipQueue) drain() {
 	default:
 	}
 	q.Unlock()
+}
+
+// Since the length of the queue goes to 0 after a pop(), it is good to
+// have an insight on how many elements are yet to be processed after a pop().
+// For that reason, the queue maintains a count of elements returned through
+// the pop() API. When the caller will call q.recycle(), this count will
+// be reduced by the size of the slice returned by pop().
+func (q *ipQueue) inProgress() int64 {
+	return atomic.LoadInt64(&q.inprogress)
+}
+
+// Remove this queue from the server's map of ipQueues.
+// All ipQueue operations (such as push/pop/etc..) are still possible.
+func (q *ipQueue) unregister() {
+	if q == nil {
+		return
+	}
+	q.m.Delete(q.name)
 }

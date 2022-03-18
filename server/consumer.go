@@ -492,8 +492,12 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	if c == nil {
 		return nil, NewJSStreamInvalidError()
 	}
+	var accName string
 	c.mu.Lock()
 	s, a := c.srv, c.acc
+	if a != nil {
+		accName = a.Name
+	}
 	c.mu.Unlock()
 
 	// Hold mset lock here.
@@ -570,7 +574,6 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		maxdc:   uint64(config.MaxDeliver),
 		maxp:    config.MaxAckPending,
 		created: time.Now().UTC(),
-		ackMsgs: newIPQueue(),
 	}
 
 	// Bind internal client to the user account.
@@ -595,6 +598,9 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			}
 		}
 	}
+	// Create ackMsgs queue now that we have a consumer name
+	o.ackMsgs = s.newIPQueue(fmt.Sprintf("[ACC:%s] consumer '%s' on stream '%s' ackMsgs", accName, o.name, mset.cfg.Name))
+
 	// Create our request waiting queue.
 	if o.isPullMode() {
 		o.waiting = newWaitQueue(config.MaxWaiting)
@@ -3645,6 +3651,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	}
 	n := o.node
 	qgroup := o.cfg.DeliverGroup
+	o.ackMsgs.unregister()
 	o.mu.Unlock()
 
 	if c != nil {
