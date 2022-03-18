@@ -1174,7 +1174,7 @@ func TestNoRaceJetStreamServiceImportAccountSwapIssue(t *testing.T) {
 		if msgs, err := sub.Fetch(1, nats.MaxWait(200*time.Millisecond)); err == nil {
 			for _, m := range msgs {
 				received++
-				m.Ack()
+				m.AckSync()
 			}
 		} else {
 			break
@@ -3259,7 +3259,7 @@ func TestNoRaceJetStreamClusterMemoryStreamConsumerRaftGrowth(t *testing.T) {
 
 	_, err = js.QueueSubscribe("memory-leak", "q1", func(msg *nats.Msg) {
 		time.Sleep(1 * time.Second)
-		msg.Ack()
+		msg.AckSync()
 	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -3318,7 +3318,7 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	for i, m := range fetchMsgs(t, sub, 200, 5*time.Second) {
 		// Ack first 50 and every other even on after that..
 		if i < 50 || i%2 == 1 {
-			m.Ack()
+			m.AckSync()
 		}
 	}
 	// Make sure acks processed.

@@ -670,7 +670,7 @@ func TestJetStreamClusterConsumerState(t *testing.T) {
 
 	// Pull 5 messages and ack.
 	for _, m := range fetchMsgs(t, sub, 5, 5*time.Second) {
-		m.Ack()
+		m.AckSync()
 	}
 
 	// Let state propagate for exact comparison below.
@@ -704,7 +704,7 @@ func TestJetStreamClusterConsumerState(t *testing.T) {
 	// Now make sure we can receive new messages.
 	// Pull last 5.
 	for _, m := range fetchMsgs(t, sub, 5, 5*time.Second) {
-		m.Ack()
+		m.AckSync()
 	}
 
 	nci, _ = sub.ConsumerInfo()
@@ -968,7 +968,7 @@ func TestJetStreamClusterRestoreSingleConsumer(t *testing.T) {
 	if m, err := sub.NextMsg(time.Second); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	} else {
-		m.Ack()
+		m.AckSync()
 	}
 
 	c.stopAll()
@@ -1076,7 +1076,7 @@ func TestJetStreamClusterStreamPublishWithActiveConsumers(t *testing.T) {
 	if m, err := sub.NextMsg(time.Second); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	} else {
-		m.Ack()
+		m.AckSync()
 	}
 
 	// Send 10 messages.
@@ -1301,7 +1301,7 @@ func TestJetStreamClusterConsumerInfoList(t *testing.T) {
 	} {
 		msgs := fetchMsgs(t, ss.sub, ss.fetch, 5*time.Second)
 		for i := 0; i < ss.ack; i++ {
-			msgs[i].Ack()
+			msgs[i].AckSync()
 		}
 	}
 
@@ -2060,7 +2060,7 @@ func TestJetStreamClusterInterestRetention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error getting msg: %v", err)
 	}
-	m.Ack()
+	m.AckSync()
 
 	waitForZero := func() {
 		checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
@@ -2131,7 +2131,7 @@ func TestJetStreamClusterWorkQueueRetention(t *testing.T) {
 
 	// Fetch from our pull consumer and ack.
 	for _, m := range fetchMsgs(t, sub, 1, 5*time.Second) {
-		m.Ack()
+		m.AckSync()
 	}
 
 	// Make sure the messages are removed.
@@ -2328,7 +2328,7 @@ func TestJetStreamClusterInterestRetentionWithFilteredConsumers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Unexpected error getting msg: %v", err)
 		}
-		m.Ack()
+		m.AckSync()
 	}
 
 	jsq, err := nc.JetStream(nats.MaxWait(250 * time.Millisecond))
@@ -2611,12 +2611,12 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	}
 	// Ack first 50.
 	for _, m := range fetchMsgs(t, jsub, 50, 5*time.Second) {
-		m.Ack()
+		m.AckSync()
 	}
 	// Now ack every third message for next 50.
 	for i, m := range fetchMsgs(t, jsub, 50, 5*time.Second) {
 		if i%3 == 0 {
-			m.Ack()
+			m.AckSync()
 		}
 	}
 	nc.Flush()
@@ -2786,7 +2786,7 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 		if meta.Sequence.Stream != uint64(wantSeq) {
 			t.Fatalf("Expected stream sequence of %d, but got %d", wantSeq, meta.Sequence.Stream)
 		}
-		m.Ack()
+		m.AckSync()
 		wantSeq++
 	}
 
@@ -3990,7 +3990,7 @@ func TestJetStreamClusterNoDuplicateOnNodeRestart(t *testing.T) {
 	if m, err := sub.NextMsg(time.Second); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	} else {
-		m.Ack()
+		m.AckSync()
 	}
 
 	sl := c.streamLeader("$G", "TEST")
@@ -4007,7 +4007,7 @@ func TestJetStreamClusterNoDuplicateOnNodeRestart(t *testing.T) {
 	if string(msg.Data) != "msg2" {
 		t.Fatalf("Unexpected message: %s", msg.Data)
 	}
-	msg.Ack()
+	msg.AckSync()
 
 	// Make sure we don't get a duplicate.
 	msg, err = sub.NextMsg(250 * time.Millisecond)
@@ -8244,7 +8244,7 @@ func TestJetStreamPanicDecodingConsumerState(t *testing.T) {
 			t.Fatalf("Failed to fetch message: %v", err)
 		}
 		for _, m := range msgs {
-			m.Ack()
+			m.AckSync()
 			total++
 		}
 	}
@@ -8271,7 +8271,7 @@ func TestJetStreamPanicDecodingConsumerState(t *testing.T) {
 			t.Fatalf("Error on fetch: %v", err)
 		}
 		for _, m := range msgs {
-			m.Ack()
+			m.AckSync()
 			total++
 		}
 	}
@@ -8320,7 +8320,7 @@ func TestJetStreamPullConsumerLeakedSubs(t *testing.T) {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 		for _, m := range msgs {
-			m.Ack()
+			m.AckSync()
 		}
 	}
 
@@ -9699,7 +9699,7 @@ func TestJetStreamConsumerUpdates(t *testing.T) {
 			m, err := sub.NextMsg(time.Second)
 			require_NoError(t, err)
 			if i >= 10 {
-				m.Ack()
+				m.AckSync()
 			}
 		}
 
@@ -10077,7 +10077,7 @@ func TestJetStreamClusterPullPerf(t *testing.T) {
 			done <- true
 		}
 		if r%750 == 0 {
-			m.Ack()
+			m.AckSync()
 		}
 	})
 	require_NoError(t, err)
@@ -10810,7 +10810,7 @@ func TestJetStreamClusterInterestRetentionWithFilteredConsumersExtra(t *testing.
 		require_NoError(t, err)
 
 		for _, m := range msgs {
-			err = m.Ack()
+			err = m.AckSync()
 			require_NoError(t, err)
 			successCounter++
 		}

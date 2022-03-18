@@ -12560,7 +12560,7 @@ func TestJetStreamServerEncryption(t *testing.T) {
 	}
 	for i, m := range fetchMsgs(t, sub, 10, 5*time.Second) {
 		if i < 5 {
-			m.Ack()
+			m.AckSync()
 		}
 	}
 
@@ -13015,7 +13015,7 @@ func TestJetStreamConsumerCleanupWithRetentionPolicy(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
-		m.Ack()
+		m.AckSync()
 	}
 
 	ci, err := sub.ConsumerInfo()
