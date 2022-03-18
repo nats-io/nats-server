@@ -16054,7 +16054,7 @@ func TestJetStreamConsumerAckSampling(t *testing.T) {
 
 	mp := 0
 	for _, m := range fetchMsgs(t, asub, total, time.Second) {
-		err = m.Ack()
+		err = m.AckSync()
 		require_NoError(t, err)
 		mp++
 	}
@@ -16068,7 +16068,7 @@ func TestJetStreamConsumerAckSampling(t *testing.T) {
 	require_NoError(t, err)
 
 	// Should be ~250
-	if nmsgs < 100 || nmsgs > 400 {
+	if nmsgs < 200 || nmsgs > 300 {
 		t.Fatalf("Expected about 250, got %d", nmsgs)
 	}
 }
