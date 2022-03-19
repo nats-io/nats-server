@@ -11177,7 +11177,7 @@ func TestJetStreamRemovedPeersAndStreamsListAndDelete(t *testing.T) {
 	// Check behavior of stream info as well. We want it to return the stream is offline and not just timeout.
 	_, err = js.StreamInfo("GONE")
 	// FIXME(dlc) - Go client not putting nats: prefix on for stream but does for consumer.
-	require_Error(t, err, NewJSStreamOfflineError())
+	require_Error(t, err, NewJSStreamOfflineError(), errors.New("nats: stream is offline"))
 
 	// Same for Consumer
 	start = time.Now()
