@@ -7027,69 +7027,48 @@ func TestJetStreamSuperClusterSystemLimitsPlacement(t *testing.T) {
 	const largeSystemLimit = 1024
 	const smallSystemLimit = 512
 
+	startClusterPorts := []int{20_022, 22_022, 24_022}
+	startGatewayPorts := []int{20_122, 22_122, 24_122}
+	startClusterPort := startClusterPorts[rand.Intn(len(startClusterPorts))]
+	startGWPort := startGatewayPorts[rand.Intn(len(startGatewayPorts))]
+
 	require_NoError(t, os.MkdirAll(tempRoot, 0755))
 	getServer := func(t *testing.T, serverName string) *Server {
 		storeDir, err := os.MkdirTemp(tempRoot, "jstests-storedir-")
 		require_NoError(t, err)
 
 		var (
-			natsPort               int
-			systemLimit            int
-			clusterName            string
-			clusterPort            int
-			route1, route2, route3 int
-			gatewayPort            int
+			clusterName string
+			systemLimit int
+			clusterPort int
+			gatewayPort int
 		)
-		switch serverName {
-		case "a0":
-			natsPort = 4000
-			systemLimit = largeSystemLimit
+		// serverName should be like "a0", "a1", "b0", "b1"
+		if strings.HasPrefix(serverName, "a") {
 			clusterName = "cluster-a"
-			clusterPort = 6000
-			route1, route2, route3 = clusterPort, clusterPort+1, clusterPort+2
-			gatewayPort = 7000
-		case "a1":
-			natsPort = 4001
 			systemLimit = largeSystemLimit
-			clusterName = "cluster-a"
-			clusterPort = 6001
-			route1, route2, route3 = clusterPort, clusterPort+1, clusterPort+2
-			gatewayPort = 7001
-		case "a2":
-			natsPort = 4002
-			systemLimit = largeSystemLimit
-			clusterName = "cluster-a"
-			clusterPort = 6002
-			route1, route2, route3 = clusterPort, clusterPort+1, clusterPort+2
-			gatewayPort = 7002
-		case "b0":
-			natsPort = 4100
-			systemLimit = smallSystemLimit
+
+			idx, err := strconv.Atoi(serverName[1:])
+			require_NoError(t, err)
+
+			clusterPort = startClusterPort + idx
+			gatewayPort = startGWPort + idx
+		} else if strings.HasPrefix(serverName, "b") {
 			clusterName = "cluster-b"
-			clusterPort = 6100
-			route1, route2, route3 = clusterPort, clusterPort+1, clusterPort+2
-			gatewayPort = 7100
-		case "b1":
-			natsPort = 4101
 			systemLimit = smallSystemLimit
-			clusterName = "cluster-b"
-			clusterPort = 6101
-			route1, route2, route3 = clusterPort, clusterPort+1, clusterPort+2
-			gatewayPort = 7101
-		case "b2":
-			natsPort = 4102
-			systemLimit = smallSystemLimit
-			clusterName = "cluster-b"
-			clusterPort = 6102
-			route1, route2, route3 = clusterPort, clusterPort+1, clusterPort+2
-			gatewayPort = 7102
-		default:
-			t.Fatalf("unknown server name: %s", serverName)
+
+			idx, err := strconv.Atoi(serverName[1:])
+			require_NoError(t, err)
+
+			clusterPort = startClusterPort + 10 + idx
+			gatewayPort = startGWPort + 10 + idx
 		}
+
+		route1, route2, route3 := clusterPort, clusterPort+1, clusterPort+2
 
 		s, _ := RunServerWithConfig(createConfFile(t, []byte(fmt.Sprintf(`
 server_name: %s
-port: %d
+listen: 127.0.0.1:-1
 
 jetstream: {
   enabled: true
@@ -7115,13 +7094,12 @@ gateway {
   port: %d
 
   gateways: [
-    {name: "cluster-a", url: "nats://localhost:7000"},
-    {name: "cluster-b", url: "nats://localhost:7100"},
+    {name: "cluster-a", url: "nats://localhost:%d"},
+    {name: "cluster-b", url: "nats://localhost:%d"},
   ]
 }
 	`,
 			serverName,
-			natsPort,
 			storeDir,
 			systemLimit,
 			systemLimit,
@@ -7131,6 +7109,8 @@ gateway {
 			route1, route2, route3,
 			clusterName,
 			gatewayPort,
+			startGWPort,
+			startGWPort+10,
 		))))
 
 		return s
