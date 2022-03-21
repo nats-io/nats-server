@@ -3635,14 +3635,20 @@ func (js *jetStream) stopUpdatesSub() {
 func (js *jetStream) processLeaderChange(isLeader bool) {
 	if isLeader {
 		js.srv.Noticef("Self is new JetStream cluster metadata leader")
-	} else if node := js.getMetaGroup().GroupLeader(); node == _EMPTY_ {
-		js.srv.Noticef("JetStream cluster no metadata leader")
-	} else if srv := js.srv.serverNameForNode(node); srv == _EMPTY_ {
-		js.srv.Noticef("JetStream cluster new remote metadata leader")
-	} else if clst := js.srv.clusterNameForNode(node); clst == _EMPTY_ {
-		js.srv.Noticef("JetStream cluster new metadata leader: %s", srv)
 	} else {
-		js.srv.Noticef("JetStream cluster new metadata leader: %s/%s", srv, clst)
+		var node string
+		if meta := js.getMetaGroup(); meta != nil {
+			node = meta.GroupLeader()
+		}
+		if node == _EMPTY_ {
+			js.srv.Noticef("JetStream cluster no metadata leader")
+		} else if srv := js.srv.serverNameForNode(node); srv == _EMPTY_ {
+			js.srv.Noticef("JetStream cluster new remote metadata leader")
+		} else if clst := js.srv.clusterNameForNode(node); clst == _EMPTY_ {
+			js.srv.Noticef("JetStream cluster new metadata leader: %s", srv)
+		} else {
+			js.srv.Noticef("JetStream cluster new metadata leader: %s/%s", srv, clst)
+		}
 	}
 
 	js.mu.Lock()
