@@ -1048,7 +1048,7 @@ func (mset *stream) update(config *StreamConfig) error {
 		if len(cfg.Sources) > 0 || len(ocfg.Sources) > 0 {
 			current := make(map[string]struct{})
 			for _, s := range ocfg.Sources {
-				current[s.Name] = struct{}{}
+				current[s.iname] = struct{}{}
 			}
 			for _, s := range cfg.Sources {
 				s.setIndexName()

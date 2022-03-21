@@ -16099,6 +16099,137 @@ func TestJetStreamConsumerAckSampling(t *testing.T) {
 	}
 }
 
+func TestJetStreamRemoveExternalSource(t *testing.T) {
+	ho := DefaultTestOptions
+	ho.Port = 4000 //-1
+	ho.LeafNode.Host = "127.0.0.1"
+	ho.LeafNode.Port = -1
+	hs := RunServer(&ho)
+	defer hs.Shutdown()
+
+	lu, err := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", ho.LeafNode.Port))
+	require_NoError(t, err)
+
+	tdir, _ := ioutil.TempDir(tempRoot, "jstests-storedir-")
+	defer removeDir(t, tdir)
+	lo1 := DefaultTestOptions
+	lo1.Port = 4111 //-1
+	lo1.ServerName = "a-leaf"
+	lo1.JetStream = true
+	lo1.StoreDir = tdir
+	lo1.JetStreamDomain = "a-leaf"
+	lo1.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{lu}}}
+	l1 := RunServer(&lo1)
+	defer l1.Shutdown()
+
+	tdir, _ = ioutil.TempDir(tempRoot, "jstests-storedir-")
+	defer removeDir(t, tdir)
+	lo2 := DefaultTestOptions
+	lo2.Port = 2111 //-1
+	lo2.ServerName = "b-leaf"
+	lo2.JetStream = true
+	lo2.StoreDir = tdir
+	lo2.JetStreamDomain = "b-leaf"
+	lo2.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{lu}}}
+	l2 := RunServer(&lo2)
+	defer l2.Shutdown()
+
+	checkLeafNodeConnected(t, l1)
+	checkLeafNodeConnected(t, l2)
+
+	checkStreamMsgs := func(js nats.JetStreamContext, stream string, expected uint64) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+			si, err := js.StreamInfo(stream)
+			if err != nil {
+				return err
+			}
+			if si.State.Msgs != expected {
+				return fmt.Errorf("Expected %v messages, got %v", expected, si.State.Msgs)
+			}
+			return nil
+		})
+	}
+
+	sendToStreamTest := func(js nats.JetStreamContext) {
+		t.Helper()
+		for i := 0; i < 10; i++ {
+			_, err = js.Publish("test", []byte("hello"))
+			require_NoError(t, err)
+		}
+	}
+
+	nca, jsa := jsClientConnect(t, l1)
+	defer nca.Close()
+	_, err = jsa.AddStream(&nats.StreamConfig{Name: "queue", Subjects: []string{"queue"}})
+	require_NoError(t, err)
+
+	ncb, jsb := jsClientConnect(t, l2)
+	defer ncb.Close()
+	_, err = jsb.AddStream(&nats.StreamConfig{Name: "test", Subjects: []string{"test"}})
+	require_NoError(t, err)
+	sendToStreamTest(jsb)
+	checkStreamMsgs(jsb, "test", 10)
+
+	// Add test as source to queue
+	si, err := jsa.UpdateStream(&nats.StreamConfig{
+		Name:     "queue",
+		Subjects: []string{"queue"},
+		Sources: []*nats.StreamSource{
+			{
+				Name: "test",
+				External: &nats.ExternalStream{
+					APIPrefix: "$JS.b-leaf.API",
+				},
+			},
+		},
+	})
+	require_NoError(t, err)
+	require_True(t, len(si.Config.Sources) == 1)
+	checkStreamMsgs(jsa, "queue", 10)
+
+	// add more entries to "test"
+	sendToStreamTest(jsb)
+
+	// verify entries are both in "test" and "queue"
+	checkStreamMsgs(jsb, "test", 20)
+	checkStreamMsgs(jsa, "queue", 20)
+
+	// Remove source
+	si, err = jsa.UpdateStream(&nats.StreamConfig{
+		Name:     "queue",
+		Subjects: []string{"queue"},
+	})
+	require_NoError(t, err)
+	require_True(t, len(si.Config.Sources) == 0)
+
+	// add more entries to "test"
+	sendToStreamTest(jsb)
+	// verify entries are in "test"
+	checkStreamMsgs(jsb, "test", 30)
+
+	// But they should not be in "queue". We will wait a bit before checking
+	// to make sure that we are letting enough time for the sourcing to
+	// incorrectly happen if there is a bug.
+	time.Sleep(250 * time.Millisecond)
+	checkStreamMsgs(jsa, "queue", 20)
+
+	// Restart leaf "a"
+	nca.Close()
+	l1.Shutdown()
+	l1 = RunServer(&lo1)
+	defer l1.Shutdown()
+
+	// add more entries to "test"
+	sendToStreamTest(jsb)
+	checkStreamMsgs(jsb, "test", 40)
+
+	nca, jsa = jsClientConnect(t, l1)
+	defer nca.Close()
+	time.Sleep(250 * time.Millisecond)
+	checkStreamMsgs(jsa, "queue", 20)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
