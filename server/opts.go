@@ -755,30 +755,55 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		o.Username = auth.user
 		o.Password = auth.pass
 		o.Authorization = auth.token
-		if (auth.user != "" || auth.pass != "") && auth.token != "" {
+		o.AuthTimeout = auth.timeout
+		if (auth.user != _EMPTY_ || auth.pass != _EMPTY_) && auth.token != _EMPTY_ {
 			err := &configErr{tk, "Cannot have a user/pass and token"}
 			*errors = append(*errors, err)
 			return
 		}
-		o.AuthTimeout = auth.timeout
-		// Check for multiple users defined
-		if auth.users != nil {
-			if auth.user != "" {
+		// In case parseAccounts() was done first, we need to check for duplicates.
+		unames := setupUsersAndNKeysDuplicateCheckMap(o)
+		// Check for multiple users defined.
+		// Note: auth.users will be != nil as long as `users: []` is present
+		// in the authorization block, even if empty, and will also account for
+		// nkey users. We also check for users/nkeys that may have been already
+		// added in parseAccounts() (which means they will be in unames)
+		if auth.users != nil || len(unames) > 0 {
+			if auth.user != _EMPTY_ {
 				err := &configErr{tk, "Can not have a single user/pass and a users array"}
 				*errors = append(*errors, err)
 				return
 			}
-			if auth.token != "" {
+			if auth.token != _EMPTY_ {
 				err := &configErr{tk, "Can not have a token and a users array"}
 				*errors = append(*errors, err)
 				return
 			}
-			// Users may have been added from Accounts parsing, so do an append here
-			o.Users = append(o.Users, auth.users...)
+			// Now check that if we have users, there is no duplicate, including
+			// users that may have been configured in parseAccounts().
+			if len(auth.users) > 0 {
+				for _, u := range auth.users {
+					if _, ok := unames[u.Username]; ok {
+						err := &configErr{tk, fmt.Sprintf("Duplicate user %q detected", u.Username)}
+						*errors = append(*errors, err)
+						return
+					}
+					unames[u.Username] = struct{}{}
+				}
+				// Users may have been added from Accounts parsing, so do an append here
+				o.Users = append(o.Users, auth.users...)
+			}
 		}
-
 		// Check for nkeys
-		if auth.nkeys != nil {
+		if len(auth.nkeys) > 0 {
+			for _, u := range auth.nkeys {
+				if _, ok := unames[u.Nkey]; ok {
+					err := &configErr{tk, fmt.Sprintf("Duplicate nkey %q detected", u.Nkey)}
+					*errors = append(*errors, err)
+					return
+				}
+				unames[u.Nkey] = struct{}{}
+			}
 			// NKeys may have been added from Accounts parsing, so do an append here
 			o.Nkeys = append(o.Nkeys, auth.nkeys...)
 		}
@@ -1301,6 +1326,17 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			*errors = append(*errors, err)
 		}
 	}
+}
+
+func setupUsersAndNKeysDuplicateCheckMap(o *Options) map[string]struct{} {
+	unames := make(map[string]struct{}, len(o.Users)+len(o.Nkeys))
+	for _, u := range o.Users {
+		unames[u.Username] = struct{}{}
+	}
+	for _, u := range o.Nkeys {
+		unames[u.Nkey] = struct{}{}
+	}
+	return unames
 }
 
 func parseDuration(field string, tk token, v interface{}, errors *[]error, warnings *[]error) time.Duration {
@@ -2449,7 +2485,10 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 	case map[string]interface{}:
 		// Track users across accounts, must be unique across
 		// accounts and nkeys vs users.
-		uorn := make(map[string]struct{})
+		// We also want to check for users that may have been added in
+		// parseAuthorization{} if that happened first.
+		uorn := setupUsersAndNKeysDuplicateCheckMap(opts)
+
 		for aname, mv := range vv {
 			tk, amv := unwrapValue(mv, &lt)
 
@@ -2548,6 +2587,20 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 						}
 						*errors = append(*errors, err)
 					}
+				}
+			}
+			// Report error if there is an authorization{} block
+			// with u/p or token and any user defined in accounts{}
+			if len(nkeyUsr) > 0 || len(users) > 0 {
+				if opts.Username != _EMPTY_ {
+					err := &configErr{usersTk, "Can not have a single user/pass and accounts"}
+					*errors = append(*errors, err)
+					continue
+				}
+				if opts.Authorization != _EMPTY_ {
+					err := &configErr{usersTk, "Can not have a token and accounts"}
+					*errors = append(*errors, err)
+					continue
 				}
 			}
 			applyDefaultPermissions(users, nkeyUsr, acc.defaultPerms)
