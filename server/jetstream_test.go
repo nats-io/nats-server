@@ -16210,6 +16210,23 @@ func TestJetStreamRemoveExternalSource(t *testing.T) {
 	checkStreamMsgs(jsa, "queue", 20)
 }
 
+func TestJetStreamAddStreamWithFilestoreFailure(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	// Cause failure to create stream with filestore.
+	// In one of ipQueue changes, this could cause a panic, so verify that we get
+	// a failure to create, but no panic.
+	if _, err := s.globalAccount().addStreamWithStore(
+		&StreamConfig{Name: "TEST"},
+		&FileStoreConfig{BlockSize: 2 * maxBlockSize}); err == nil {
+		t.Fatal("Expected failure, did not get one")
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////

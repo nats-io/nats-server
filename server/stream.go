@@ -3174,6 +3174,13 @@ func (q *jsOutQ) send(msg *jsPubMsg) {
 	q.push(msg)
 }
 
+func (q *jsOutQ) unregister() {
+	if q == nil {
+		return
+	}
+	q.ipQueue.unregister()
+}
+
 // StoredMsg is for raw access to messages in a stream.
 type StoredMsg struct {
 	Subject  string    `json:"subject"`
