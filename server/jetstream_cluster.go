@@ -5062,7 +5062,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	jsaLimits, ok := jsa.limits[tierName]
 	if !ok {
 		jsa.mu.RUnlock()
-		err := fmt.Errorf("No JetStream resource limits found account: %q", jsa.acc().Name)
+		err := fmt.Errorf("no JetStream resource limits found account: %q", jsa.acc().Name)
 		s.Warnf(err.Error())
 		if canRespond {
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}

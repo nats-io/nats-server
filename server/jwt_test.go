@@ -5390,7 +5390,7 @@ func TestJWTJetStreamTiers(t *testing.T) {
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
 
-	time.Sleep(time.Second - time.Now().Sub(start)) // make sure the time stamp changes
+	time.Sleep(time.Second - time.Since(start)) // make sure the time stamp changes
 	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
 		DiskStorage: 1650, MemoryStorage: 0, Consumer: 1, Streams: 3}
 	accJwt2 := encodeClaim(t, accClaim, accPub)
@@ -5587,7 +5587,7 @@ func TestJWTClusteredJetStreamTiersChange(t *testing.T) {
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "insufficient storage resources available")
 
-	time.Sleep(time.Second - time.Now().Sub(start)) // make sure the time stamp changes
+	time.Sleep(time.Second - time.Since(start)) // make sure the time stamp changes
 	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{
 		DiskStorage: 3000, MemoryStorage: 0, Consumer: 1, Streams: 1}
 	accJwt2 := encodeClaim(t, accClaim, aExpPub)
@@ -5598,14 +5598,14 @@ func TestJWTClusteredJetStreamTiersChange(t *testing.T) {
 	m, err := nc.Request("$JS.API.INFO", nil, time.Second)
 	require_NoError(t, err)
 	err = json.Unmarshal(m.Data, &rBefore)
-
+	require_NoError(t, err)
 	_, err = js.UpdateStream(cfg)
 	require_NoError(t, err)
 
 	m, err = nc.Request("$JS.API.INFO", nil, time.Second)
 	require_NoError(t, err)
 	err = json.Unmarshal(m.Data, &rAfter)
-
+	require_NoError(t, err)
 	require_True(t, rBefore.Tiers["R1"].Streams == 1)
 	require_True(t, rBefore.Tiers["R1"].Streams == rAfter.Tiers["R3"].Streams)
 	require_True(t, rBefore.Tiers["R3"].Streams == 0)

@@ -380,7 +380,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 
 	if !hasTier {
 		jsa.mu.Unlock()
-		return nil, fmt.Errorf("No applicable tier found")
+		return nil, fmt.Errorf("no applicable tier found")
 	}
 
 	// Setup the internal clients.
