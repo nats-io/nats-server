@@ -917,13 +917,13 @@ func TestConfigCheck(t *testing.T) {
 			name: "when user authorization config has both token and users",
 			config: `
 		authorization = {
-                 token = "s3cr3t"
-		  users = [
-		    {
-		      user = "foo"
-		      pass = "bar"
-		    }
-		  ]
+			token = "s3cr3t"
+			users = [
+				{
+					user = "foo"
+					pass = "bar"
+				}
+			]
 		}
 		`,
 			err:       errors.New(`Can not have a token and a users array`),
@@ -934,17 +934,60 @@ func TestConfigCheck(t *testing.T) {
 			name: "when user authorization config has both token and user",
 			config: `
 		authorization = {
-  	          user = "foo"
-		  pass = "bar"
-		  users = [
-		    {
-		      user = "foo"
-		      pass = "bar"
-		    }
-		  ]
+			user = "foo"
+			pass = "bar"
+			token = "baz"
+		}
+		`,
+			err:       errors.New(`Cannot have a user/pass and token`),
+			errorLine: 2,
+			errorPos:  3,
+		},
+		{
+			name: "when user authorization config has both user and users array",
+			config: `
+		authorization = {
+			user = "user1"
+			pass = "pwd1"
+			users = [
+				{
+					user = "user2"
+					pass = "pwd2"
+				}
+			]
 		}
 		`,
 			err:       errors.New(`Can not have a single user/pass and a users array`),
+			errorLine: 2,
+			errorPos:  3,
+		},
+		{
+			name: "when user authorization has duplicate users",
+			config: `
+		authorization = {
+			users = [
+				{user: "user1", pass: "pwd"}
+				{user: "user2", pass: "pwd"}
+				{user: "user1", pass: "pwd"}
+			]
+		}
+		`,
+			err:       fmt.Errorf(`Duplicate user %q detected`, "user1"),
+			errorLine: 2,
+			errorPos:  3,
+		},
+		{
+			name: "when user authorization has duplicate nkeys",
+			config: `
+		authorization = {
+			users = [
+				{nkey: UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX }
+				{nkey: UBAAQWTW6CG2G6ANGNKB5U2B7HRWHSGMZEZX3AQSAJOQDAUGJD46LD2E }
+				{nkey: UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX }
+			]
+		}
+		`,
+			err:       fmt.Errorf(`Duplicate nkey %q detected`, "UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX"),
 			errorLine: 2,
 			errorPos:  3,
 		},
@@ -1600,9 +1643,9 @@ func TestConfigCheckMultipleErrors(t *testing.T) {
 		t.Errorf("Expected a %d warning, got: %d", expected, got)
 	}
 	got = len(cerr.Errors())
-	expected = 7
-	if got != 7 {
-		t.Errorf("Expected a %d errors, got: %d", expected, got)
+	// Could be 7 or 8 errors depending on internal ordering of the parsing.
+	if got != 7 && got != 8 {
+		t.Errorf("Expected 7 or 8 errors, got: %d", got)
 	}
 
 	errMsg := err.Error()
@@ -1620,7 +1663,13 @@ func TestConfigCheckMultipleErrors(t *testing.T) {
 	for _, msg := range errs {
 		found := strings.Contains(errMsg, msg)
 		if !found {
-			t.Errorf("Expected to find error %q", msg)
+			t.Fatalf("Expected to find error %q", msg)
+		}
+	}
+	if got == 8 {
+		extra := "./configs/multiple_errors.conf:54:5: Can not have a single user/pass and accounts"
+		if !strings.Contains(errMsg, extra) {
+			t.Fatalf("Expected to find error %q (%s)", extra, errMsg)
 		}
 	}
 }

@@ -3286,3 +3286,36 @@ func TestGetStorageSize(t *testing.T) {
 	}
 
 }
+
+func TestAuthorizationAndAccountsDuplicateUsers(t *testing.T) {
+	// There is a test called TestConfigCheck but we can't use it
+	// because the place where the error will be reported will depend
+	// if the duplicate is found while parsing authorization{} or
+	// accounts{}, which order is random.
+	for _, test := range []struct {
+		name   string
+		config string
+		err    string
+	}{
+		{"duplicate users",
+			`
+			authorization = {users = [ {user: "user1", pass: "pwd"} ] }
+			accounts { ACC { users = [ {user: "user1"} ] } }
+		`,
+			fmt.Sprintf("Duplicate user %q detected", "user1")},
+		{"duplicate nkey",
+			`
+			authorization = {users = [ {nkey: UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX} ] }
+			accounts { ACC { users = [ {nkey: UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX} ] } }
+		`,
+			fmt.Sprintf("Duplicate nkey %q detected", "UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte(test.config))
+			defer removeFile(t, conf)
+			if _, err := ProcessConfigFile(conf); err == nil || !strings.Contains(err.Error(), test.err) {
+				t.Fatalf("Expected error %q, got %q", test.err, err.Error())
+			}
+		})
+	}
+}
