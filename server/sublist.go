@@ -145,7 +145,7 @@ func (s *Sublist) CacheEnabled() bool {
 // will not block when trying to send the notification. Its up to the caller to make
 // sure the channel send will not block.
 func (s *Sublist) RegisterNotification(subject string, notify chan<- bool) error {
-	return s.registerNotification(subject, _EMPTY_, notify)
+	return s.registerNotification(subject, EMPTY, notify)
 }
 
 func (s *Sublist) RegisterQueueNotification(subject, queue string, notify chan<- bool) error {
@@ -164,7 +164,7 @@ func (s *Sublist) registerNotification(subject, queue string, notify chan<- bool
 	r := s.Match(subject)
 
 	if len(r.psubs)+len(r.qsubs) > 0 {
-		if queue == _EMPTY_ {
+		if queue == EMPTY {
 			for _, sub := range r.psubs {
 				if string(sub.subject) == subject {
 					hasInterest = true
@@ -223,7 +223,7 @@ func chkAndRemove(key string, notify chan<- bool, ms map[string][]chan<- bool) b
 }
 
 func (s *Sublist) ClearNotification(subject string, notify chan<- bool) bool {
-	return s.clearNotification(subject, _EMPTY_, notify)
+	return s.clearNotification(subject, EMPTY, notify)
 }
 
 func (s *Sublist) ClearQueueNotification(subject, queue string, notify chan<- bool) bool {
@@ -322,7 +322,7 @@ func (s *Sublist) chkForRemoveNotification(subject, queue string) {
 		r := s.matchNoLock(subject)
 
 		if len(r.psubs)+len(r.qsubs) > 0 {
-			if queue == _EMPTY_ {
+			if queue == EMPTY {
 				for _, sub := range r.psubs {
 					if string(sub.subject) == subject {
 						hasInterest = true
@@ -1055,7 +1055,7 @@ func IsValidPublishSubject(subject string) bool {
 
 // IsValidSubject returns true if a subject is valid, false otherwise
 func IsValidSubject(subject string) bool {
-	if subject == _EMPTY_ {
+	if subject == EMPTY {
 		return false
 	}
 	sfwc := false
@@ -1225,7 +1225,7 @@ func tokenAt(subject string, index uint8) string {
 	if ti == index {
 		return subject[start:]
 	}
-	return _EMPTY_
+	return EMPTY
 }
 
 // use similar to append. meaning, the updated slice will be returned

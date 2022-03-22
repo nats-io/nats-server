@@ -283,7 +283,7 @@ func (ms *memStore) filteredStateLocked(sseq uint64, subj string) SimpleState {
 	}
 
 	// Empty same as everything.
-	if subj == _EMPTY_ {
+	if subj == EMPTY {
 		subj = fwcs
 	}
 
@@ -339,7 +339,7 @@ func (ms *memStore) SubjectsState(subject string) map[string]SimpleState {
 
 	fss := make(map[string]SimpleState)
 	for subj, ss := range ms.fss {
-		if subject == _EMPTY_ || subject == fwcs || subjectIsSubsetMatch(subj, subject) {
+		if subject == EMPTY || subject == fwcs || subjectIsSubsetMatch(subj, subject) {
 			oss := fss[subj]
 			if oss.First == 0 { // New
 				fss[subj] = *ss
@@ -428,7 +428,7 @@ func (ms *memStore) expireMsgs() {
 // PurgeEx will remove messages based on subject filters, sequence and number of messages to keep.
 // Will return the number of purged messages.
 func (ms *memStore) PurgeEx(subject string, sequence, keep uint64) (purged uint64, err error) {
-	if subject == _EMPTY_ || subject == fwcs {
+	if subject == EMPTY || subject == fwcs {
 		if keep == 0 && (sequence == 0 || sequence == 1) {
 			return ms.Purge()
 		}
@@ -490,7 +490,7 @@ func (ms *memStore) Purge() (uint64, error) {
 	ms.mu.Unlock()
 
 	if cb != nil {
-		cb(-int64(purged), -bytes, 0, _EMPTY_)
+		cb(-int64(purged), -bytes, 0, EMPTY)
 	}
 
 	return purged, nil
@@ -541,7 +541,7 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 	ms.mu.Unlock()
 
 	if cb != nil {
-		cb(-int64(purged), -int64(bytes), 0, _EMPTY_)
+		cb(-int64(purged), -int64(bytes), 0, EMPTY)
 	}
 
 	return purged, nil
@@ -575,7 +575,7 @@ func (ms *memStore) Truncate(seq uint64) error {
 	ms.mu.Unlock()
 
 	if cb != nil {
-		cb(-int64(purged), -int64(bytes), 0, _EMPTY_)
+		cb(-int64(purged), -int64(bytes), 0, EMPTY)
 	}
 
 	return nil
@@ -603,7 +603,7 @@ func (ms *memStore) LoadMsg(seq uint64) (string, []byte, []byte, int64, error) {
 		if seq <= last {
 			err = ErrStoreMsgNotFound
 		}
-		return _EMPTY_, nil, nil, 0, err
+		return EMPTY, nil, nil, 0, err
 	}
 	return sm.subj, sm.hdr, sm.msg, sm.ts, nil
 }
@@ -617,13 +617,13 @@ func (ms *memStore) LoadLastMsg(subject string) (subj string, seq uint64, hdr, m
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
 
-	if subject == _EMPTY_ || subject == fwcs {
+	if subject == EMPTY || subject == fwcs {
 		sm, ok = ms.msgs[ms.state.LastSeq]
 	} else if ss := ms.filteredStateLocked(1, subject); ss.Msgs > 0 {
 		sm, ok = ms.msgs[ss.Last]
 	}
 	if !ok || sm == nil {
-		return _EMPTY_, 0, nil, nil, 0, ErrStoreMsgNotFound
+		return EMPTY, 0, nil, nil, 0, ErrStoreMsgNotFound
 	}
 	return sm.subj, sm.seq, sm.hdr, sm.msg, sm.ts, nil
 }
@@ -640,10 +640,10 @@ func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64) (subj stri
 
 	// If past the end no results.
 	if start > ms.state.LastSeq {
-		return _EMPTY_, ms.state.LastSeq, nil, nil, 0, ErrStoreEOF
+		return EMPTY, ms.state.LastSeq, nil, nil, 0, ErrStoreEOF
 	}
 
-	isAll := filter == _EMPTY_ || filter == fwcs
+	isAll := filter == EMPTY || filter == fwcs
 	subs := []string{filter}
 	if wc || isAll {
 		subs = subs[:0]
@@ -680,7 +680,7 @@ func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64) (subj stri
 			return sm.subj, nseq, sm.hdr, sm.msg, sm.ts, nil
 		}
 	}
-	return _EMPTY_, ms.state.LastSeq, nil, nil, 0, ErrStoreEOF
+	return EMPTY, ms.state.LastSeq, nil, nil, 0, ErrStoreEOF
 }
 
 // RemoveMsg will remove the message from this store.

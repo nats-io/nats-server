@@ -306,7 +306,7 @@ func testMQTTDefaultOptions() *Options {
 func testMQTTRunServer(t testing.TB, o *Options) *Server {
 	t.Helper()
 	o.NoLog = false
-	if o.StoreDir == _EMPTY_ {
+	if o.StoreDir == EMPTY {
 		o.StoreDir = createDir(t, "mqtt_js")
 	}
 	s, err := NewServer(o)
@@ -580,7 +580,7 @@ func TestMQTTParseOptions(t *testing.T) {
 			conf := createConfFile(t, []byte(test.content))
 			defer removeFile(t, conf)
 			o, err := ProcessConfigFile(conf)
-			if test.err != _EMPTY_ {
+			if test.err != EMPTY {
 				if err == nil || !strings.Contains(err.Error(), test.err) {
 					t.Fatalf("For content: %q, expected error about %q, got %v", test.content, test.err, err)
 				}
@@ -845,10 +845,10 @@ func mqttCreateConnectProto(ci *mqttConnInfo) []byte {
 			flags |= mqttConnFlagWillRetain
 		}
 	}
-	if ci.user != _EMPTY_ {
+	if ci.user != EMPTY {
 		flags |= mqttConnFlagUsernameFlag
 	}
-	if ci.pass != _EMPTY_ {
+	if ci.pass != EMPTY {
 		flags |= mqttConnFlagPasswordFlag
 	}
 
@@ -862,10 +862,10 @@ func mqttCreateConnectProto(ci *mqttConnInfo) []byte {
 		pkLen += 2 + len(ci.will.topic)
 		pkLen += 2 + len(ci.will.message)
 	}
-	if ci.user != _EMPTY_ {
+	if ci.user != EMPTY {
 		pkLen += 2 + len(ci.user)
 	}
-	if ci.pass != _EMPTY_ {
+	if ci.pass != EMPTY {
 		pkLen += 2 + len(ci.pass)
 	}
 
@@ -881,10 +881,10 @@ func mqttCreateConnectProto(ci *mqttConnInfo) []byte {
 		w.WriteBytes(ci.will.topic)
 		w.WriteBytes(ci.will.message)
 	}
-	if ci.user != _EMPTY_ {
+	if ci.user != EMPTY {
 		w.WriteString(ci.user)
 	}
-	if ci.pass != _EMPTY_ {
+	if ci.pass != EMPTY {
 		w.WriteBytes([]byte(ci.pass))
 	}
 	return w.Bytes()
@@ -1768,7 +1768,7 @@ func TestMQTTTopicAndSubjectConversion(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			res, err := mqttTopicToNATSPubSubject([]byte(test.mqttTopic))
-			if test.err != _EMPTY_ {
+			if test.err != EMPTY {
 				if err == nil || !strings.Contains(err.Error(), test.err) {
 					t.Fatalf("Expected error %q, got %q", test.err, err.Error())
 				}
@@ -2590,7 +2590,7 @@ func TestMQTTTrackPendingOverrun(t *testing.T) {
 	sub := &subscription{mqtt: &mqttSub{qos: 1}}
 
 	sess.ppi = 0xFFFF
-	pi, _ := sess.trackPending(1, _EMPTY_, sub)
+	pi, _ := sess.trackPending(1, EMPTY, sub)
 	if pi != 1 {
 		t.Fatalf("Expected 1, got %v", pi)
 	}
@@ -2599,13 +2599,13 @@ func TestMQTTTrackPendingOverrun(t *testing.T) {
 	for i := 1; i <= 0xFFFF; i++ {
 		sess.pending[uint16(i)] = p
 	}
-	pi, _ = sess.trackPending(1, _EMPTY_, sub)
+	pi, _ = sess.trackPending(1, EMPTY, sub)
 	if pi != 0 {
 		t.Fatalf("Expected 0, got %v", pi)
 	}
 
 	delete(sess.pending, 1234)
-	pi, _ = sess.trackPending(1, _EMPTY_, sub)
+	pi, _ = sess.trackPending(1, EMPTY, sub)
 	if pi != 1234 {
 		t.Fatalf("Expected 1234, got %v", pi)
 	}
@@ -3328,7 +3328,7 @@ func TestMQTTImportExport(t *testing.T) {
 func TestMQTTSessionMovingDomains(t *testing.T) {
 	tmpl := strings.Replace(jsClusterTemplWithLeafAndMQTT, "{{leaf}}", `leafnodes { listen: 127.0.0.1:-1 }`, 1)
 	tmpl = strings.Replace(tmpl, "store_dir:", "domain: HUB, store_dir:", 1)
-	c := createJetStreamCluster(t, tmpl, "HUB", _EMPTY_, 3, 22020, true)
+	c := createJetStreamCluster(t, tmpl, "HUB", EMPTY, 3, 22020, true)
 	defer c.shutdown()
 	c.waitOnLeader()
 
@@ -5389,7 +5389,7 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 
 		// Check that client ID is present
 		for _, conn := range c.Conns {
-			if conn.Type == clientTypeStringMap[MQTT] && conn.MQTTClient == _EMPTY_ {
+			if conn.Type == clientTypeStringMap[MQTT] && conn.MQTTClient == EMPTY {
 				t.Fatalf("Expected a client ID to be set, got %+v", conn)
 			}
 		}
@@ -5409,7 +5409,7 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 			t.Fatalf("Expected 2 connections in array, got %v", len(c.Conns))
 		}
 		for _, conn := range c.Conns {
-			if conn.MQTTClient == _EMPTY_ {
+			if conn.MQTTClient == EMPTY {
 				t.Fatalf("Expected a client ID, got %+v", conn)
 			}
 		}
@@ -5440,11 +5440,11 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 		{&ConnzOptions{MQTTClient: "conn1"}, "conn1"},
 		{&ConnzOptions{MQTTClient: "conn3", State: ConnClosed}, "conn3"},
 		{&ConnzOptions{MQTTClient: "conn4", State: ConnClosed}, "conn4"},
-		{&ConnzOptions{MQTTClient: "conn5"}, _EMPTY_},
+		{&ConnzOptions{MQTTClient: "conn5"}, EMPTY},
 		{json.RawMessage(`{"mqtt_client":"conn1"}`), "conn1"},
 		{json.RawMessage(fmt.Sprintf(`{"mqtt_client":"conn3", "state":%v}`, ConnClosed)), "conn3"},
 		{json.RawMessage(fmt.Sprintf(`{"mqtt_client":"conn4", "state":%v}`, ConnClosed)), "conn4"},
-		{json.RawMessage(`{"mqtt_client":"conn5"}`), _EMPTY_},
+		{json.RawMessage(`{"mqtt_client":"conn5"}`), EMPTY},
 	} {
 		t.Run("sys connz", func(t *testing.T) {
 			b, _ := json.Marshal(test.opt)
@@ -5466,7 +5466,7 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 			if err := json.Unmarshal(tmp, cz); err != nil {
 				t.Fatalf("Error unmarshalling connz: %v", err)
 			}
-			if test.cid == _EMPTY_ {
+			if test.cid == EMPTY {
 				if len(cz.Conns) != 0 {
 					t.Fatalf("Expected no connections, got %v", len(cz.Conns))
 				}

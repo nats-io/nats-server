@@ -777,7 +777,7 @@ func (s *Server) setJetStreamExportSubs() error {
 
 func (s *Server) sendAPIResponse(ci *ClientInfo, acc *Account, subject, reply, request, response string) {
 	acc.trackAPI()
-	if reply != _EMPTY_ {
+	if reply != EMPTY {
 		s.sendInternalAccountMsg(nil, reply, response)
 	}
 	s.sendJetStreamAPIAuditAdvisory(ci, acc, subject, request, response)
@@ -785,7 +785,7 @@ func (s *Server) sendAPIResponse(ci *ClientInfo, acc *Account, subject, reply, r
 
 func (s *Server) sendAPIErrResponse(ci *ClientInfo, acc *Account, subject, reply, request, response string) {
 	acc.trackAPIErr()
-	if reply != _EMPTY_ {
+	if reply != EMPTY {
 		s.sendInternalAccountMsg(nil, reply, response)
 	}
 	s.sendJetStreamAPIAuditAdvisory(ci, acc, subject, request, response)
@@ -805,7 +805,7 @@ func (s *Server) sendDelayedAPIErrResponse(ci *ClientInfo, acc *Account, subject
 		case <-s.quitCh:
 		case <-time.After(errRespDelay):
 			acc.trackAPIErr()
-			if reply != _EMPTY_ {
+			if reply != EMPTY {
 				s.sendInternalAccountMsg(nil, reply, response)
 			}
 			s.sendJetStreamAPIAuditAdvisory(ci, acc, subject, request, response)
@@ -823,9 +823,9 @@ func (s *Server) getRequestInfo(c *client, raw []byte) (pci *ClientInfo, acc *Ac
 		}
 	}
 
-	if ci.Service != _EMPTY_ {
+	if ci.Service != EMPTY {
 		acc, _ = s.LookupAccount(ci.Service)
-	} else if ci.Account != _EMPTY_ {
+	} else if ci.Account != EMPTY {
 		acc, _ = s.LookupAccount(ci.Account)
 	} else {
 		// Direct $SYS access.
@@ -1234,7 +1234,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		if cfg.Mirror.FilterSubject != _EMPTY_ {
+		if cfg.Mirror.FilterSubject != EMPTY {
 			resp.Error = NewJSMirrorWithSubjectFiltersError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -1260,10 +1260,10 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 			return
 		}
 		if cfg.Mirror.External != nil {
-			if cfg.Mirror.External.DeliverPrefix != _EMPTY_ {
+			if cfg.Mirror.External.DeliverPrefix != EMPTY {
 				deliveryPrefixes = append(deliveryPrefixes, cfg.Mirror.External.DeliverPrefix)
 			}
-			if cfg.Mirror.External.ApiPrefix != _EMPTY_ {
+			if cfg.Mirror.External.ApiPrefix != EMPTY {
 				apiPrefixes = append(apiPrefixes, cfg.Mirror.External.ApiPrefix)
 			}
 		}
@@ -1277,10 +1277,10 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 			if len(subs) > 0 {
 				streamSubs = append(streamSubs, subs...)
 			}
-			if src.External.DeliverPrefix != _EMPTY_ {
+			if src.External.DeliverPrefix != EMPTY {
 				deliveryPrefixes = append(deliveryPrefixes, src.External.DeliverPrefix)
 			}
-			if src.External.ApiPrefix != _EMPTY_ {
+			if src.External.ApiPrefix != EMPTY {
 				apiPrefixes = append(apiPrefixes, src.External.ApiPrefix)
 			}
 			if exists && cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
@@ -1475,7 +1475,7 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, _ *Account, 
 			return
 		}
 		offset = req.Offset
-		if req.Subject != _EMPTY_ {
+		if req.Subject != EMPTY {
 			filter = req.Subject
 		}
 	}
@@ -1494,7 +1494,7 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, _ *Account, 
 			if IsNatsErr(sa.err, JSClusterNotAssignedErr) {
 				continue
 			}
-			if filter != _EMPTY_ {
+			if filter != EMPTY {
 				// These could not have subjects auto-filled in since they are raw and unprocessed.
 				if len(sa.Config.Subjects) == 0 {
 					if SubjectsCollide(filter, sa.Config.Name) {
@@ -1602,7 +1602,7 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, s
 			return
 		}
 		offset = req.Offset
-		if req.Subject != _EMPTY_ {
+		if req.Subject != EMPTY {
 			filter = req.Subject
 		}
 	}
@@ -1617,7 +1617,7 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, s
 	// TODO(dlc) - Maybe hold these results for large results that we expect to be paged.
 	// TODO(dlc) - If this list is long maybe do this in a Go routine?
 	var msets []*stream
-	if filter == _EMPTY_ {
+	if filter == EMPTY {
 		msets = acc.streams()
 	} else {
 		msets = acc.filteredStreams(filter)
@@ -1777,7 +1777,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 	}
 
 	// Check if they have asked for subject details.
-	if subjects != _EMPTY_ {
+	if subjects != EMPTY {
 		if mss := mset.store.SubjectsState(subjects); len(mss) > 0 {
 			if len(mss) > JSMaxSubjectDetails {
 				resp.StreamInfo = nil
@@ -2051,7 +2051,7 @@ func (s *Server) jsStreamRemovePeerRequest(sub *subscription, c *client, _ *Acco
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	if req.Peer == _EMPTY_ {
+	if req.Peer == EMPTY {
 		resp.Error = NewJSBadRequestError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -2143,7 +2143,7 @@ func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, _ *Ac
 	}
 	js.mu.RUnlock()
 
-	if found == _EMPTY_ {
+	if found == EMPTY {
 		resp.Error = NewJSClusterServerNotMemberError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -2522,7 +2522,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 	}
 
 	// Check that we do not have both options set.
-	if req.Seq > 0 && req.LastFor != _EMPTY_ || req.Seq == 0 && req.LastFor == _EMPTY_ {
+	if req.Seq > 0 && req.LastFor != EMPTY || req.Seq == 0 && req.LastFor == EMPTY {
 		resp.Error = NewJSBadRequestError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -2714,7 +2714,7 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, _ *Account
 
 	stream := streamNameFromSubject(subject)
 
-	if stream != req.Config.Name && req.Config.Name == _EMPTY_ {
+	if stream != req.Config.Name && req.Config.Name == EMPTY {
 		req.Config.Name = stream
 	}
 
@@ -2794,7 +2794,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 	// FIXM(dlc) - Probably take out of network path eventually due to disk I/O?
 	processChunk := func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 		// We require reply subjects to communicate back failures, flow etc. If they do not have one log and cancel.
-		if reply == _EMPTY_ {
+		if reply == EMPTY {
 			sub.client.processUnsub(sub.sid)
 			resultCh <- result{
 				fmt.Errorf("restore for stream '%s > %s' requires reply subject for each chunk", acc.Name, streamName),
@@ -2833,7 +2833,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 		// Append chunk to temp file. Mark as issue if we encounter an error.
 		if n, err := tfile.Write(msg); n != len(msg) || err != nil {
 			resultCh <- result{err, reply}
-			if reply != _EMPTY_ {
+			if reply != EMPTY {
 				s.sendInternalAccountMsg(acc, reply, "-ERR 'storage failure during restore'")
 			}
 			return
@@ -3121,7 +3121,7 @@ func (s *Server) streamSnapshot(ci *ClientInfo, acc *Account, mset *stream, sr *
 		chunk = chunk[:n]
 		if err != nil {
 			if n > 0 {
-				mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, chunk, nil, 0))
+				mset.outq.send(newJSPubMsg(reply, EMPTY, EMPTY, nil, chunk, nil, 0))
 			}
 			break
 		}
@@ -3137,13 +3137,13 @@ func (s *Server) streamSnapshot(ci *ClientInfo, acc *Account, mset *stream, sr *
 			}
 		}
 		ackReply := fmt.Sprintf("%s.%d.%d", ackSubj, len(chunk), index)
-		mset.outq.send(newJSPubMsg(reply, _EMPTY_, ackReply, nil, chunk, nil, 0))
+		mset.outq.send(newJSPubMsg(reply, EMPTY, ackReply, nil, chunk, nil, 0))
 		atomic.AddInt32(&out, int32(len(chunk)))
 	}
 done:
 	// Send last EOF
 	// TODO(dlc) - place hash in header
-	mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, nil, nil, 0))
+	mset.outq.send(newJSPubMsg(reply, EMPTY, EMPTY, nil, nil, nil, 0))
 }
 
 // Request to create a durable consumer.
@@ -3244,7 +3244,7 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 			return
 		}
 		// Now check on requirements for durable request.
-		if req.Config.Durable == _EMPTY_ {
+		if req.Config.Durable == EMPTY {
 			resp.Error = NewJSConsumerDurableNameNotSetError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -3261,7 +3261,7 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		if req.Config.Durable != _EMPTY_ {
+		if req.Config.Durable != EMPTY {
 			resp.Error = NewJSConsumerEphemeralWithDurableNameError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -3612,7 +3612,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 				}
 				return
 			}
-			if node != nil && (node.GroupLeader() != _EMPTY_ || node.HadPreviousLeader()) {
+			if node != nil && (node.GroupLeader() != EMPTY || node.HadPreviousLeader()) {
 				return
 			}
 			// If we are here we are a member and this is just a new consumer that does not have a leader yet.

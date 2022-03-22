@@ -662,7 +662,7 @@ func configureSystemAccount(o *Options, m map[string]interface{}) (retErr error)
 // or was present but set to false.
 func (o *Options) ProcessConfigFile(configFile string) error {
 	o.ConfigFile = configFile
-	if configFile == _EMPTY_ {
+	if configFile == EMPTY {
 		return nil
 	}
 	m, err := conf.ParseFileWithChecks(configFile)
@@ -1017,7 +1017,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 				}
 			}
 			// In case "system_account" is defined as well, it takes precedence
-			if o.SystemAccount == _EMPTY_ {
+			if o.SystemAccount == EMPTY {
 				o.SystemAccount = o.TrustedOperators[0].SystemAccount
 			}
 		}
@@ -1406,7 +1406,7 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 				*errors = append(*errors, err)
 				continue
 			}
-			if auth.token != _EMPTY_ {
+			if auth.token != EMPTY {
 				err := &configErr{tk, "Cluster authorization does not support tokens"}
 				*errors = append(*errors, err)
 				continue
@@ -1569,7 +1569,7 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 				*errors = append(*errors, &configErr{tk, "Gateway authorization does not allow multiple users"})
 				continue
 			}
-			if auth.token != _EMPTY_ {
+			if auth.token != EMPTY {
 				err := &configErr{tk, "Gateway authorization does not support tokens"}
 				*errors = append(*errors, err)
 				continue
@@ -1756,7 +1756,7 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 			switch strings.ToLower(mk) {
 			case "store", "store_dir", "storedir":
 				// StoreDir can be set at the top level as well so have to prevent ambiguous declarations.
-				if opts.StoreDir != _EMPTY_ {
+				if opts.StoreDir != EMPTY {
 					return &configErr{tk, "Duplicate 'store_dir' configuration"}
 				}
 				opts.StoreDir = mv.(string)
@@ -2677,7 +2677,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 			*errors = append(*errors, &configErr{tk, msg})
 			continue
 		}
-		if service.to == _EMPTY_ {
+		if service.to == EMPTY {
 			service.to = service.sub
 		}
 		if err := service.acc.AddServiceImport(ta, service.to, service.sub); err != nil {
@@ -4566,14 +4566,14 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	})
 
 	// Process signal control.
-	if signal != _EMPTY_ {
+	if signal != EMPTY {
 		if err := processSignal(signal); err != nil {
 			return nil, err
 		}
 	}
 
 	// Parse config if given
-	if configFile != _EMPTY_ {
+	if configFile != EMPTY {
 		// This will update the options with values from the config file.
 		err := opts.ProcessConfigFile(configFile)
 		if err != nil {

@@ -502,7 +502,7 @@ func (s *Server) serverNameForNode(node string) string {
 	if si, ok := s.nodeToInfo.Load(node); ok && si != nil {
 		return si.(nodeInfo).name
 	}
-	return _EMPTY_
+	return EMPTY
 }
 
 // Maps node names back to cluster names.
@@ -510,7 +510,7 @@ func (s *Server) clusterNameForNode(node string) string {
 	if si, ok := s.nodeToInfo.Load(node); ok && si != nil {
 		return si.(nodeInfo).cluster
 	}
-	return _EMPTY_
+	return EMPTY
 }
 
 // Server will track all raft nodes.
@@ -660,7 +660,7 @@ func (n *raft) ForwardProposal(entry []byte) error {
 		return n.Propose(entry)
 	}
 
-	n.sendRPC(n.psubj, _EMPTY_, entry)
+	n.sendRPC(n.psubj, EMPTY, entry)
 	return nil
 }
 
@@ -702,7 +702,7 @@ func (n *raft) ProposeRemovePeer(peer string) error {
 	}
 
 	// Need to forward.
-	n.sendRPC(subj, _EMPTY_, []byte(peer))
+	n.sendRPC(subj, EMPTY, []byte(peer))
 	return nil
 }
 
@@ -893,7 +893,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	var state StreamState
 	n.wal.FastState(&state)
 
-	if n.snapfile != _EMPTY_ && state.FirstSeq >= n.applied {
+	if n.snapfile != EMPTY && state.FirstSeq >= n.applied {
 		n.Unlock()
 		return nil
 	}
@@ -951,7 +951,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 func (n *raft) NeedSnapshot() bool {
 	n.RLock()
 	defer n.RUnlock()
-	return n.snapfile == _EMPTY_ && n.applied > 0
+	return n.snapfile == EMPTY && n.applied > 0
 }
 
 const (
@@ -960,7 +960,7 @@ const (
 )
 
 func termAndIndexFromSnapFile(sn string) (term, index uint64, err error) {
-	if sn == _EMPTY_ {
+	if sn == EMPTY {
 		return 0, 0, errBadSnapName
 	}
 	fn := filepath.Base(sn)
@@ -1008,7 +1008,7 @@ func (n *raft) setupLastSnapshot() {
 		}
 	}
 
-	if latest == _EMPTY_ {
+	if latest == EMPTY {
 		return
 	}
 
@@ -1020,7 +1020,7 @@ func (n *raft) setupLastSnapshot() {
 	snap, err := n.loadLastSnapshot()
 	if err != nil {
 		os.Remove(n.snapfile)
-		n.snapfile = _EMPTY_
+		n.snapfile = EMPTY
 	} else {
 		n.pindex = snap.lastIndex
 		n.pterm = snap.lastTerm
@@ -1036,20 +1036,20 @@ func (n *raft) setupLastSnapshot() {
 // loadLastSnapshot will load and return our last snapshot.
 // Lock should be held.
 func (n *raft) loadLastSnapshot() (*snapshot, error) {
-	if n.snapfile == _EMPTY_ {
+	if n.snapfile == EMPTY {
 		return nil, errNoSnapAvailable
 	}
 	buf, err := ioutil.ReadFile(n.snapfile)
 	if err != nil {
 		n.warn("Error reading snapshot: %v", err)
 		os.Remove(n.snapfile)
-		n.snapfile = _EMPTY_
+		n.snapfile = EMPTY
 		return nil, err
 	}
 	if len(buf) < minSnapshotLen {
 		n.warn("Snapshot corrupt, too short")
 		os.Remove(n.snapfile)
-		n.snapfile = _EMPTY_
+		n.snapfile = EMPTY
 		return nil, errSnapshotCorrupt
 	}
 
@@ -1061,7 +1061,7 @@ func (n *raft) loadLastSnapshot() (*snapshot, error) {
 	if !bytes.Equal(lchk[:], n.hh.Sum(nil)) {
 		n.warn("Snapshot corrupt, checksums did not match")
 		os.Remove(n.snapfile)
-		n.snapfile = _EMPTY_
+		n.snapfile = EMPTY
 		return nil, errSnapshotCorrupt
 	}
 
@@ -1261,7 +1261,7 @@ func (n *raft) Size() (uint64, uint64) {
 
 func (n *raft) ID() string {
 	if n == nil {
-		return _EMPTY_
+		return EMPTY
 	}
 	n.RLock()
 	defer n.RUnlock()
@@ -1387,7 +1387,7 @@ const (
 // Our internal subscribe.
 // Lock should be held.
 func (n *raft) subscribe(subject string, cb msgHandler) (*subscription, error) {
-	return n.s.systemSubscribe(subject, _EMPTY_, false, n.c, cb)
+	return n.s.systemSubscribe(subject, EMPTY, false, n.c, cb)
 }
 
 // Lock should be held.
@@ -2138,7 +2138,7 @@ func (n *raft) loadEntry(index uint64) (*appendEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return n.decodeAppendEntry(msg, nil, _EMPTY_)
+	return n.decodeAppendEntry(msg, nil, EMPTY)
 }
 
 // applyCommit will update our commit index and apply the entry to the apply chan.
@@ -2538,10 +2538,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.stepdown.push(ae.leader)
 		} else {
 			// Let them know we are the leader.
-			ar := &appendEntryResponse{n.term, n.pindex, n.id, false, _EMPTY_}
+			ar := &appendEntryResponse{n.term, n.pindex, n.id, false, EMPTY}
 			n.Unlock()
 			n.debug("AppendEntry ignoring old term from another leader")
-			n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
+			n.sendRPC(ae.reply, EMPTY, ar.encode(arbuf))
 			return
 		}
 	}
@@ -2575,10 +2575,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 
 	// Ignore old terms.
 	if isNew && ae.term < n.term {
-		ar := &appendEntryResponse{n.term, n.pindex, n.id, false, _EMPTY_}
+		ar := &appendEntryResponse{n.term, n.pindex, n.id, false, EMPTY}
 		n.Unlock()
 		n.debug("AppendEntry ignoring old term")
-		n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
+		n.sendRPC(ae.reply, EMPTY, ar.encode(arbuf))
 		return
 	}
 
@@ -2602,7 +2602,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			if n.catchupStalled() {
 				n.debug("Catchup may be stalled, will request again")
 				inbox = n.createCatchup(ae)
-				ar = &appendEntryResponse{n.pterm, n.pindex, n.id, false, _EMPTY_}
+				ar = &appendEntryResponse{n.pterm, n.pindex, n.id, false, EMPTY}
 			}
 			n.Unlock()
 			if ar != nil {
@@ -2642,14 +2642,14 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				// If terms mismatched, delete that entry and all others past it.
 				if ae.pterm > eae.pterm {
 					n.truncateWAL(ae.pterm, ae.pindex)
-					ar = &appendEntryResponse{n.pterm, n.pindex, n.id, false, _EMPTY_}
+					ar = &appendEntryResponse{n.pterm, n.pindex, n.id, false, EMPTY}
 				} else {
-					ar = &appendEntryResponse{ae.pterm, ae.pindex, n.id, true, _EMPTY_}
+					ar = &appendEntryResponse{ae.pterm, ae.pindex, n.id, true, EMPTY}
 				}
 			}
 			n.Unlock()
 			if ar != nil {
-				n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
+				n.sendRPC(ae.reply, EMPTY, ar.encode(arbuf))
 			}
 			return
 		}
@@ -2707,7 +2707,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			if ae.pindex > n.pindex {
 				// Setup our state for catching up.
 				inbox := n.createCatchup(ae)
-				ar := &appendEntryResponse{n.pterm, n.pindex, n.id, false, _EMPTY_}
+				ar := &appendEntryResponse{n.pterm, n.pindex, n.id, false, EMPTY}
 				n.Unlock()
 				n.sendRPC(ae.reply, inbox, ar.encode(arbuf))
 				return
@@ -2775,11 +2775,11 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		}
 	}
 
-	ar := appendEntryResponse{n.pterm, n.pindex, n.id, true, _EMPTY_}
+	ar := appendEntryResponse{n.pterm, n.pindex, n.id, true, EMPTY}
 	n.Unlock()
 
 	// Success. Send our response.
-	n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
+	n.sendRPC(ae.reply, EMPTY, ar.encode(arbuf))
 }
 
 // Lock should be held.
@@ -2811,7 +2811,7 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 		n.vote = noVote
 		n.writeTermVote()
 		n.stepdown.push(noLeader)
-	} else if ar.reply != _EMPTY_ {
+	} else if ar.reply != EMPTY {
 		n.catchupFollower(ar)
 	}
 }
@@ -2825,7 +2825,7 @@ func (n *raft) handleAppendEntryResponse(sub *subscription, c *client, _ *Accoun
 }
 
 func (n *raft) buildAppendEntry(entries []*Entry) *appendEntry {
-	return &appendEntry{n.id, n.term, n.commit, n.pterm, n.pindex, entries, _EMPTY_, nil, nil}
+	return &appendEntry{n.id, n.term, n.commit, n.pterm, n.pindex, entries, EMPTY, nil, nil}
 }
 
 // Store our append entry to our WAL.
@@ -2837,7 +2837,7 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 	if n.werr != nil {
 		return n.werr
 	}
-	seq, _, err := n.wal.StoreMsg(_EMPTY_, nil, ae.buf)
+	seq, _, err := n.wal.StoreMsg(EMPTY, nil, ae.buf)
 	if err != nil {
 		n.setWriteErrLocked(err)
 		return err
@@ -3280,7 +3280,7 @@ func (n *raft) requestVote() {
 	}
 	n.vote = n.id
 	n.writeTermVote()
-	vr := voteRequest{n.term, n.pterm, n.pindex, n.id, _EMPTY_}
+	vr := voteRequest{n.term, n.pterm, n.pindex, n.id, EMPTY}
 	subj, reply := n.vsubj, n.vreply
 	n.Unlock()
 
@@ -3298,7 +3298,7 @@ func (n *raft) sendRPC(subject, reply string, msg []byte) {
 
 func (n *raft) sendReply(subject string, msg []byte) {
 	if n.sq != nil {
-		n.sq.send(subject, _EMPTY_, nil, msg)
+		n.sq.send(subject, EMPTY, nil, msg)
 	}
 }
 
@@ -3358,8 +3358,8 @@ func (n *raft) switchState(state RaftState) {
 }
 
 const (
-	noLeader = _EMPTY_
-	noVote   = _EMPTY_
+	noLeader = EMPTY
+	noVote   = EMPTY
 )
 
 func (n *raft) switchToFollower(leader string) {

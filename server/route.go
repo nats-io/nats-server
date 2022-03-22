@@ -102,8 +102,8 @@ type connectInfo struct {
 
 // Route protocol constants
 const (
-	ConProto  = "CONNECT %s" + _CRLF_
-	InfoProto = "INFO %s" + _CRLF_
+	ConProto  = "CONNECT %s" + CR_LF
+	InfoProto = "INFO %s" + CR_LF
 )
 
 const (
@@ -813,7 +813,7 @@ func (s *Server) forwardNewRouteInfoToKnownServers(info *Info) {
 	// That being said, the info we get is the initial INFO which
 	// contains a nonce, but we now forward this to existing routes,
 	// so clear it now.
-	info.Nonce = _EMPTY_
+	info.Nonce = EMPTY
 	b, _ := json.Marshal(info)
 	infoJSON := []byte(fmt.Sprintf(InfoProto, b))
 
@@ -1300,7 +1300,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	s.routeInfo.Nonce = string(nonce)
 	s.generateRouteInfoJSON()
 	// Clear now that it has been serialized. Will prevent nonce to be included in async INFO that we may send.
-	s.routeInfo.Nonce = _EMPTY_
+	s.routeInfo.Nonce = EMPTY
 	infoJSON := s.routeInfoJSON
 	authRequired := s.routeInfo.AuthRequired
 	tlsRequired := s.routeInfo.TLSRequired
@@ -1329,7 +1329,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 			tlsConfig = tlsConfig.Clone()
 		}
 		// Perform (server or client side) TLS handshake.
-		if _, err := c.doTLSHandshake("route", didSolicit, rURL, tlsConfig, _EMPTY_, opts.Cluster.TLSTimeout, opts.Cluster.TLSPinnedCerts); err != nil {
+		if _, err := c.doTLSHandshake("route", didSolicit, rURL, tlsConfig, EMPTY, opts.Cluster.TLSTimeout, opts.Cluster.TLSPinnedCerts); err != nil {
 			c.mu.Unlock()
 			return nil
 		}
@@ -1399,11 +1399,6 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	return c
 }
 
-const (
-	_CRLF_  = "\r\n"
-	_EMPTY_ = ""
-)
-
 func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 	id := c.route.remoteID
 	sendInfo := false
@@ -1460,9 +1455,9 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 		// c.route.leafnodeURL, otherwise, when processing the disconnect, this
 		// would cause the leafnode URL for that remote server to be removed
 		// from our list. Same for gateway...
-		c.route.leafnodeURL, c.route.gatewayURL = _EMPTY_, _EMPTY_
+		c.route.leafnodeURL, c.route.gatewayURL = EMPTY, EMPTY
 		// Same for the route hash otherwise it would be removed from s.routesByHash.
-		c.route.hash, c.route.idHash = _EMPTY_, _EMPTY_
+		c.route.hash, c.route.idHash = EMPTY, EMPTY
 		c.mu.Unlock()
 
 		remote.mu.Lock()
@@ -1720,7 +1715,7 @@ func (s *Server) startRouteAcceptLoop() {
 	// taking into account possible advertise setting. Use the LeafNodeURLs
 	// and set this server's leafnode accept URL. This will be sent to
 	// routed servers.
-	if !opts.LeafNode.NoAdvertise && s.leafNodeInfo.IP != _EMPTY_ {
+	if !opts.LeafNode.NoAdvertise && s.leafNodeInfo.IP != EMPTY {
 		info.LeafNodeURLs = []string{s.leafNodeInfo.IP}
 	}
 	s.routeInfo = info
@@ -2014,12 +2009,12 @@ func (s *Server) removeRoute(c *client) {
 		}
 		// Remove the remote's gateway URL from our list and
 		// send update to inbound Gateway connections.
-		if gwURL != _EMPTY_ && s.removeGatewayURL(gwURL) {
+		if gwURL != EMPTY && s.removeGatewayURL(gwURL) {
 			s.sendAsyncGatewayInfo()
 		}
 		// Remove the remote's leafNode URL from
 		// our list and send update to LN connections.
-		if lnURL != _EMPTY_ && s.removeLeafNodeURL(lnURL) {
+		if lnURL != EMPTY && s.removeLeafNodeURL(lnURL) {
 			s.sendAsyncLeafNodeInfo()
 		}
 		s.removeRouteByHash(hash, idHash)
@@ -2029,7 +2024,7 @@ func (s *Server) removeRoute(c *client) {
 }
 
 func (s *Server) isDuplicateServerName(name string) bool {
-	if name == _EMPTY_ {
+	if name == EMPTY {
 		return false
 	}
 	s.mu.Lock()

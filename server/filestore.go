@@ -248,7 +248,7 @@ func newFileStore(fcfg FileStoreConfig, cfg StreamConfig) (*fileStore, error) {
 }
 
 func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created time.Time, prf keyGen) (*fileStore, error) {
-	if cfg.Name == _EMPTY_ {
+	if cfg.Name == EMPTY {
 		return nil, fmt.Errorf("name required")
 	}
 	if cfg.Storage != FileStorage {
@@ -347,7 +347,7 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	if fs.isClosed() {
 		return ErrStoreClosed
 	}
-	if cfg.Name == _EMPTY_ {
+	if cfg.Name == EMPTY {
 		return fmt.Errorf("name required")
 	}
 	if cfg.Storage != FileStorage {
@@ -1122,7 +1122,7 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64) (*fileSt
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 
-	isAll, subs := filter == _EMPTY_ || filter == fwcs, []string{filter}
+	isAll, subs := filter == EMPTY || filter == fwcs, []string{filter}
 	// If we have a wildcard match against all tracked subjects we know about.
 	if wc || isAll {
 		subs = subs[:0]
@@ -1190,7 +1190,7 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, seq uint64) (t
 		return 0, 0, 0
 	}
 
-	isAll := filter == _EMPTY_ || filter == fwcs
+	isAll := filter == EMPTY || filter == fwcs
 	subs := []string{filter}
 	// If we have a wildcard match against all tracked subjects we know about.
 	if wc || isAll {
@@ -1329,7 +1329,7 @@ func (fs *fileStore) FilteredState(sseq uint64, subj string) SimpleState {
 	}
 
 	// If subj is empty or we are not tracking multiple subjects.
-	if subj == _EMPTY_ || subj == fwcs || !fs.tms {
+	if subj == EMPTY || subj == fwcs || !fs.tms {
 		total := lseq - sseq + 1
 		if state := fs.State(); len(state.Deleted) > 0 {
 			for _, dseq := range state.Deleted {
@@ -1409,7 +1409,7 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 	for _, mb := range fs.blks {
 		mb.mu.RLock()
 		for subj, ss := range mb.fss {
-			if subject == _EMPTY_ || subject == fwcs || subjectIsSubsetMatch(subj, subject) {
+			if subject == EMPTY || subject == fwcs || subjectIsSubsetMatch(subj, subject) {
 				oss := fss[subj]
 				if oss.First == 0 { // New
 					fss[subj] = *ss
@@ -1434,7 +1434,7 @@ func (fs *fileStore) RegisterStorageUpdates(cb StorageUpdateHandler) {
 	bsz := fs.state.Bytes
 	fs.mu.Unlock()
 	if cb != nil && bsz > 0 {
-		cb(0, int64(bsz), 0, _EMPTY_)
+		cb(0, int64(bsz), 0, EMPTY)
 	}
 }
 
@@ -1455,7 +1455,7 @@ func (mb *msgBlock) setupWriteCache(buf []byte) {
 	var fi os.FileInfo
 	if mb.mfd != nil {
 		fi, _ = mb.mfd.Stat()
-	} else if mb.mfn != _EMPTY_ {
+	} else if mb.mfn != EMPTY {
 		fi, _ = os.Stat(mb.mfn)
 	}
 	if fi != nil {
@@ -1727,7 +1727,7 @@ func (mb *msgBlock) skipMsg(seq uint64, now time.Time) {
 	mb.mu.Unlock()
 
 	if needsRecord {
-		mb.writeMsgRecord(emptyRecordLen, seq|ebit, _EMPTY_, nil, nil, now.UnixNano(), true)
+		mb.writeMsgRecord(emptyRecordLen, seq|ebit, EMPTY, nil, nil, now.UnixNano(), true)
 	} else {
 		mb.kickFlusher()
 	}
@@ -2017,7 +2017,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 
 	// Storage updates.
 	if cb != nil {
-		subj := _EMPTY_
+		subj := EMPTY
 		if sm != nil {
 			subj = sm.subj
 		}
@@ -3483,7 +3483,7 @@ func (fs *fileStore) msgForSeq(seq uint64) (*fileStoredMsg, error) {
 // Internal function to return msg parts from a raw buffer.
 func msgFromBuf(buf []byte, hh hash.Hash64) (string, []byte, []byte, uint64, int64, error) {
 	if len(buf) < emptyRecordLen {
-		return _EMPTY_, nil, nil, 0, 0, errBadMsg
+		return EMPTY, nil, nil, 0, 0, errBadMsg
 	}
 	var le = binary.LittleEndian
 
@@ -3495,7 +3495,7 @@ func msgFromBuf(buf []byte, hh hash.Hash64) (string, []byte, []byte, uint64, int
 	slen := int(le.Uint16(hdr[20:]))
 	// Simple sanity check.
 	if dlen < 0 || slen > dlen || int(rl) > len(buf) {
-		return _EMPTY_, nil, nil, 0, 0, errBadMsg
+		return EMPTY, nil, nil, 0, 0, errBadMsg
 	}
 	data := buf[msgHdrSize : msgHdrSize+dlen]
 	// Do checksum tests here if requested.
@@ -3509,7 +3509,7 @@ func msgFromBuf(buf []byte, hh hash.Hash64) (string, []byte, []byte, uint64, int
 			hh.Write(data[slen : dlen-8])
 		}
 		if !bytes.Equal(hh.Sum(nil), data[len(data)-8:]) {
-			return _EMPTY_, nil, nil, 0, 0, errBadMsg
+			return EMPTY, nil, nil, 0, 0, errBadMsg
 		}
 	}
 	seq := le.Uint64(hdr[4:])
@@ -3540,20 +3540,20 @@ func (fs *fileStore) LoadMsg(seq uint64) (string, []byte, []byte, int64, error) 
 	if sm != nil {
 		return sm.subj, sm.hdr, sm.msg, sm.ts, nil
 	}
-	return _EMPTY_, nil, nil, 0, err
+	return EMPTY, nil, nil, 0, err
 }
 
 // LoadLastMsg will return the last message we have that matches a given subject.
 // The subject can be a wildcard.
 func (fs *fileStore) LoadLastMsg(subject string) (subj string, seq uint64, hdr, msg []byte, ts int64, err error) {
 	var sm *fileStoredMsg
-	if subject == _EMPTY_ || subject == fwcs {
+	if subject == EMPTY || subject == fwcs {
 		sm, _ = fs.msgForSeq(fs.lastSeq())
 	} else if ss := fs.FilteredState(1, subject); ss.Msgs > 0 {
 		sm, _ = fs.msgForSeq(ss.Last)
 	}
 	if sm == nil {
-		return _EMPTY_, 0, nil, nil, 0, ErrStoreMsgNotFound
+		return EMPTY, 0, nil, nil, 0, ErrStoreMsgNotFound
 	}
 	return sm.subj, sm.seq, sm.hdr, sm.msg, sm.ts, nil
 }
@@ -3565,7 +3565,7 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64) (subj str
 	defer fs.mu.RUnlock()
 
 	if fs.closed {
-		return _EMPTY_, 0, nil, nil, 0, ErrStoreClosed
+		return EMPTY, 0, nil, nil, 0, ErrStoreClosed
 	}
 	if start < fs.state.FirstSeq {
 		start = fs.state.FirstSeq
@@ -3582,11 +3582,11 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64) (subj str
 			}
 			return sm.subj, sm.seq, sm.hdr, sm.msg, sm.ts, nil
 		} else if err != ErrStoreMsgNotFound {
-			return _EMPTY_, 0, nil, nil, 0, err
+			return EMPTY, 0, nil, nil, 0, err
 		}
 	}
 
-	return _EMPTY_, fs.state.LastSeq, nil, nil, 0, ErrStoreEOF
+	return EMPTY, fs.state.LastSeq, nil, nil, 0, ErrStoreEOF
 }
 
 // Type returns the type of the underlying store.
@@ -3911,7 +3911,7 @@ func subjectsAll(a, b string) bool {
 }
 
 func compareFn(subject string) func(string, string) bool {
-	if subject == _EMPTY_ || subject == fwcs {
+	if subject == EMPTY || subject == fwcs {
 		return subjectsAll
 	}
 	if subjectHasWildcard(subject) {
@@ -3923,7 +3923,7 @@ func compareFn(subject string) func(string, string) bool {
 // PurgeEx will remove messages based on subject filters, sequence and number of messages to keep.
 // Will return the number of purged messages.
 func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint64, err error) {
-	if subject == _EMPTY_ || subject == fwcs {
+	if subject == EMPTY || subject == fwcs {
 		if keep == 0 && (sequence == 0 || sequence == 1) {
 			return fs.Purge()
 		}
@@ -4095,7 +4095,7 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	fs.mu.Unlock()
 
 	if cb != nil {
-		cb(-int64(purged), -rbytes, 0, _EMPTY_)
+		cb(-int64(purged), -rbytes, 0, EMPTY)
 	}
 
 	return purged, nil
@@ -4195,7 +4195,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 	fs.mu.Unlock()
 
 	if cb != nil {
-		cb(-int64(purged), -int64(bytes), 0, _EMPTY_)
+		cb(-int64(purged), -int64(bytes), 0, EMPTY)
 	}
 
 	return purged, nil
@@ -4264,7 +4264,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 	fs.mu.Unlock()
 
 	if cb != nil {
-		cb(-int64(purged), -int64(bytes), 0, _EMPTY_)
+		cb(-int64(purged), -int64(bytes), 0, EMPTY)
 	}
 
 	return nil
@@ -4296,7 +4296,7 @@ func (mb *msgBlock) removeIndexFileLocked() {
 		mb.ifd.Close()
 		mb.ifd = nil
 	}
-	if mb.ifn != _EMPTY_ {
+	if mb.ifn != EMPTY {
 		os.Remove(mb.ifn)
 	}
 }
@@ -4352,19 +4352,19 @@ func (mb *msgBlock) dirtyCloseWithRemove(remove bool) {
 		mb.ifd = nil
 	}
 	if remove {
-		if mb.ifn != _EMPTY_ {
+		if mb.ifn != EMPTY {
 			os.Remove(mb.ifn)
-			mb.ifn = _EMPTY_
+			mb.ifn = EMPTY
 		}
-		if mb.mfn != _EMPTY_ {
+		if mb.mfn != EMPTY {
 			os.Remove(mb.mfn)
-			mb.mfn = _EMPTY_
+			mb.mfn = EMPTY
 		}
-		if mb.sfn != _EMPTY_ {
+		if mb.sfn != EMPTY {
 			os.Remove(mb.sfn)
-			mb.sfn = _EMPTY_
+			mb.sfn = EMPTY
 		}
-		if mb.kfn != _EMPTY_ {
+		if mb.kfn != EMPTY {
 			os.Remove(mb.kfn)
 		}
 	}
@@ -4905,7 +4905,7 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 	if fs.isClosed() {
 		return nil, ErrStoreClosed
 	}
-	if cfg == nil || name == _EMPTY_ {
+	if cfg == nil || name == EMPTY {
 		return nil, fmt.Errorf("bad consumer config")
 	}
 	odir := filepath.Join(fs.fcfg.StoreDir, consumerDir, name)
@@ -5694,7 +5694,7 @@ func (o *consumerFileStore) Stop() error {
 		}
 	}
 
-	o.odir = _EMPTY_
+	o.odir = EMPTY
 	o.closed = true
 	ifn, fs := o.ifn, o.fs
 	o.mu.Unlock()
@@ -5746,13 +5746,13 @@ func (o *consumerFileStore) delete(streamDeleted bool) error {
 
 	var err error
 	odir := o.odir
-	o.odir = _EMPTY_
+	o.odir = EMPTY
 	o.closed = true
 	fs := o.fs
 	o.mu.Unlock()
 
 	// If our stream was not deleted this will remove the directories.
-	if odir != _EMPTY_ && !streamDeleted {
+	if odir != EMPTY && !streamDeleted {
 		<-dios
 		err = os.RemoveAll(odir)
 		dios <- struct{}{}

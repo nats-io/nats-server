@@ -1069,13 +1069,13 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				for _, oldRemote := range tmpOld.Remotes {
 					var found bool
 
-					if oldRemote.LocalAccount == _EMPTY_ {
+					if oldRemote.LocalAccount == EMPTY {
 						oldRemote.LocalAccount = globalAccountName
 					}
 
 					for _, newRemote := range tmpNew.Remotes {
 						// Bind to global account in case not defined.
-						if newRemote.LocalAccount == _EMPTY_ {
+						if newRemote.LocalAccount == EMPTY {
 							newRemote.LocalAccount = globalAccountName
 						}
 
@@ -1122,7 +1122,7 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 
 			// Check whether JS is being disabled and/or storage dir attempted to change.
 			if jsEnabled && modified {
-				if new == _EMPTY_ {
+				if new == EMPTY {
 					// This means that either JS is being disabled or it is using an temp dir.
 					// Allow the change but error in case JS was not disabled.
 					jsStoreDirChanged = true
@@ -1212,7 +1212,7 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			}
 			fallthrough
 		case "noauthuser":
-			if oldValue != _EMPTY_ && newValue == _EMPTY_ {
+			if oldValue != EMPTY && newValue == EMPTY {
 				for _, user := range newOpts.Users {
 					if user.Username == oldValue {
 						return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
@@ -1224,7 +1224,7 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 					field.Name, oldValue, newValue)
 			}
 		case "systemaccount":
-			if oldValue != DEFAULT_SYSTEM_ACCOUNT || newValue != _EMPTY_ {
+			if oldValue != DEFAULT_SYSTEM_ACCOUNT || newValue != EMPTY {
 				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
 					field.Name, oldValue, newValue)
 			}

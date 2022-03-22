@@ -272,7 +272,7 @@ func (pm *pubMsg) returnToPool() {
 	if pm == nil {
 		return
 	}
-	pm.c, pm.sub, pm.rply, pm.si, pm.hdr, pm.msg = nil, _EMPTY_, _EMPTY_, nil, nil, nil
+	pm.c, pm.sub, pm.rply, pm.si, pm.hdr, pm.msg = nil, EMPTY, EMPTY, nil, nil, nil
 	pubMsgPool.Put(pm)
 }
 
@@ -396,10 +396,10 @@ RESET:
 				c.mu.Unlock()
 
 				// Add in NL
-				b = append(b, _CRLF_...)
+				b = append(b, CR_LF...)
 
 				// Check if we should set content-encoding
-				if contentHeader != _EMPTY_ {
+				if contentHeader != EMPTY {
 					b = c.setHeader(contentEncodingHeader, contentHeader, b)
 				}
 
@@ -462,13 +462,13 @@ func (s *Server) sendShutdownEvent() {
 	s.sys.replies = nil
 	// Send to the internal queue and mark as last.
 	si := &ServerInfo{}
-	sendq.push(newPubMsg(nil, subj, _EMPTY_, si, nil, si, noCompression, false, true))
+	sendq.push(newPubMsg(nil, subj, EMPTY, si, nil, si, noCompression, false, true))
 	s.mu.Unlock()
 }
 
 // Used to send an internal message to an arbitrary account.
 func (s *Server) sendInternalAccountMsg(a *Account, subject string, msg interface{}) error {
-	return s.sendInternalAccountMsgWithReply(a, subject, _EMPTY_, nil, msg, false)
+	return s.sendInternalAccountMsgWithReply(a, subject, EMPTY, nil, msg, false)
 }
 
 // Used to send an internal message with an optional reply to an arbitrary account.
@@ -514,7 +514,7 @@ func (s *Server) sendInternalResponse(subj string, response *ServerAPIResponse) 
 		s.mu.Unlock()
 		return
 	}
-	s.sys.sendq.push(newPubMsg(nil, subj, _EMPTY_, response.Server, nil, response, response.compress, false, false))
+	s.sys.sendq.push(newPubMsg(nil, subj, EMPTY, response.Server, nil, response, response.compress, false, false))
 	s.mu.Unlock()
 }
 
@@ -681,7 +681,7 @@ func (s *Server) sendStatsz(subj string) {
 		s.mu.Unlock()
 		js.mu.RLock()
 		c := js.config
-		c.StoreDir = _EMPTY_
+		c.StoreDir = EMPTY
 		jStat.Config = &c
 		js.mu.RUnlock()
 		jStat.Stats = js.usageStats()
@@ -712,7 +712,7 @@ func (s *Server) sendStatsz(subj string) {
 		s.mu.Lock()
 	}
 	// Send message.
-	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
+	s.sendInternalMsg(subj, EMPTY, &m.Server, &m)
 }
 
 // Send out our statz update.
@@ -766,7 +766,7 @@ func (s *Server) Node() string {
 	if s.sys != nil {
 		return s.sys.shash
 	}
-	return _EMPTY_
+	return EMPTY
 }
 
 // This will setup our system wide tracking subs.
@@ -876,7 +876,7 @@ func (s *Server) initEventTracking() {
 	}
 	extractAccount := func(subject string) (string, error) {
 		if tk := strings.Split(subject, tsep); len(tk) != accReqTokens {
-			return _EMPTY_, fmt.Errorf("subject %q is malformed", subject)
+			return EMPTY, fmt.Errorf("subject %q is malformed", subject)
 		} else {
 			return tk[accReqAccIndex], nil
 		}
@@ -900,7 +900,7 @@ func (s *Server) initEventTracking() {
 				if acc, err := extractAccount(subject); err != nil {
 					return nil, err
 				} else {
-					if ci, _, _, _, err := c.srv.getRequestInfo(c, msg); err == nil && ci.Account != _EMPTY_ {
+					if ci, _, _, _, err := c.srv.getRequestInfo(c, msg); err == nil && ci.Account != EMPTY {
 						// Make sure the accounts match.
 						if ci.Account != acc {
 							// Do not leak too much here.
@@ -1070,7 +1070,7 @@ func (s *Server) processRemoteServerShutdown(sid string) {
 }
 
 func (s *Server) sameDomain(domain string) bool {
-	return domain == _EMPTY_ || s.info.Domain == _EMPTY_ || domain == s.info.Domain
+	return domain == EMPTY || s.info.Domain == EMPTY || domain == s.info.Domain
 }
 
 // remoteServerShutdownEvent is called when we get an event from another server shutting down.
@@ -1288,7 +1288,7 @@ func (s *Server) leafNodeConnected(sub *subscription, _ *client, _ *Account, sub
 	}
 
 	s.mu.Lock()
-	na := m.Account == _EMPTY_ || !s.eventsEnabled() || !s.gateway.enabled
+	na := m.Account == EMPTY || !s.eventsEnabled() || !s.gateway.enabled
 	s.mu.Unlock()
 
 	if na {
@@ -1372,13 +1372,13 @@ type JszEventOptions struct {
 // returns true if the request does NOT apply to this server and can be ignored.
 // DO NOT hold the server lock when
 func (s *Server) filterRequest(fOpts *EventFilterOptions) bool {
-	if fOpts.Name != _EMPTY_ && !strings.Contains(s.info.Name, fOpts.Name) {
+	if fOpts.Name != EMPTY && !strings.Contains(s.info.Name, fOpts.Name) {
 		return true
 	}
-	if fOpts.Host != _EMPTY_ && !strings.Contains(s.info.Host, fOpts.Host) {
+	if fOpts.Host != EMPTY && !strings.Contains(s.info.Host, fOpts.Host) {
 		return true
 	}
-	if fOpts.Cluster != _EMPTY_ {
+	if fOpts.Cluster != EMPTY {
 		s.mu.Lock()
 		cluster := s.info.Cluster
 		s.mu.Unlock()
@@ -1394,7 +1394,7 @@ func (s *Server) filterRequest(fOpts *EventFilterOptions) bool {
 			}
 		}
 	}
-	if fOpts.Domain != _EMPTY_ && s.getOpts().JetStreamDomain != fOpts.Domain {
+	if fOpts.Domain != EMPTY && s.getOpts().JetStreamDomain != fOpts.Domain {
 		return true
 	}
 	return false
@@ -1436,7 +1436,7 @@ func (s *Server) statszReq(sub *subscription, c *client, _ *Account, subject, re
 	}
 
 	// No reply is a signal that we should use our normal broadcast subject.
-	if reply == _EMPTY_ {
+	if reply == EMPTY {
 		reply = fmt.Sprintf(serverStatsSubj, s.info.ID)
 	}
 
@@ -1447,7 +1447,7 @@ func (s *Server) statszReq(sub *subscription, c *client, _ *Account, subject, re
 				Server: &ServerInfo{},
 				Error:  &ApiError{Code: http.StatusBadRequest, Description: err.Error()},
 			}
-			s.sendInternalMsgLocked(reply, _EMPTY_, response.Server, response)
+			s.sendInternalMsgLocked(reply, EMPTY, response.Server, response)
 			return
 		} else if ignore := s.filterRequest(&opts.EventFilterOptions); ignore {
 			return
@@ -1468,7 +1468,7 @@ const (
 // This is not as formal as it could be. We see if anything has s2 or snappy first, then gzip.
 func getAcceptEncoding(hdr []byte) compressionType {
 	ae := strings.ToLower(string(getHeader(acceptEncodingHeader, hdr)))
-	if ae == _EMPTY_ {
+	if ae == EMPTY {
 		return noCompression
 	}
 	if strings.Contains(ae, "snappy") || strings.Contains(ae, "s2") {
@@ -1481,7 +1481,7 @@ func getAcceptEncoding(hdr []byte) compressionType {
 }
 
 func (s *Server) zReq(c *client, reply string, rmsg []byte, fOpts *EventFilterOptions, optz interface{}, respf func() (interface{}, error)) {
-	if !s.EventsEnabled() || reply == _EMPTY_ {
+	if !s.EventsEnabled() || reply == EMPTY {
 		return
 	}
 	response := &ServerAPIResponse{Server: &ServerInfo{}}
@@ -1623,7 +1623,7 @@ func (s *Server) sendLeafNodeConnect(a *Account) {
 func (s *Server) sendLeafNodeConnectMsg(accName string) {
 	subj := fmt.Sprintf(leafNodeConnectEventSubj, accName)
 	m := accNumConnsReq{Account: accName}
-	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
+	s.sendInternalMsg(subj, EMPTY, &m.Server, &m)
 }
 
 // sendAccConnsUpdate is called to send out our information on the
@@ -1664,7 +1664,7 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 		}
 	}
 	for _, sub := range subj {
-		msg := newPubMsg(nil, sub, _EMPTY_, &m.Server, nil, &m, noCompression, false, false)
+		msg := newPubMsg(nil, sub, EMPTY, &m.Server, nil, &m, noCompression, false, false)
 		sendQ.push(msg)
 	}
 	a.mu.Unlock()
@@ -1732,7 +1732,7 @@ func (s *Server) accountConnectEvent(c *client) {
 	c.mu.Unlock()
 
 	subj := fmt.Sprintf(connectEventSubj, c.acc.Name)
-	s.sendInternalMsgLocked(subj, _EMPTY_, &m.Server, &m)
+	s.sendInternalMsgLocked(subj, EMPTY, &m.Server, &m)
 }
 
 // accountDisconnectEvent will send an account client disconnect event if there is interest.
@@ -1794,7 +1794,7 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 	c.mu.Unlock()
 
 	subj := fmt.Sprintf(disconnectEventSubj, accName)
-	s.sendInternalMsgLocked(subj, _EMPTY_, &m.Server, &m)
+	s.sendInternalMsgLocked(subj, EMPTY, &m.Server, &m)
 }
 
 func (s *Server) sendAuthErrorEvent(c *client) {
@@ -1846,7 +1846,7 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 
 	s.mu.Lock()
 	subj := fmt.Sprintf(authErrorEventSubj, s.info.ID)
-	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
+	s.sendInternalMsg(subj, EMPTY, &m.Server, &m)
 	s.mu.Unlock()
 }
 
@@ -1857,7 +1857,7 @@ type msgHandler func(sub *subscription, client *client, acc *Account, subject, r
 
 // Create an internal subscription. sysSubscribeQ for queue groups.
 func (s *Server) sysSubscribe(subject string, cb msgHandler) (*subscription, error) {
-	return s.systemSubscribe(subject, _EMPTY_, false, nil, cb)
+	return s.systemSubscribe(subject, EMPTY, false, nil, cb)
 }
 
 // Create an internal subscription with queue
@@ -1867,7 +1867,7 @@ func (s *Server) sysSubscribeQ(subject, queue string, cb msgHandler) (*subscript
 
 // Create an internal subscription but do not forward interest.
 func (s *Server) sysSubscribeInternal(subject string, cb msgHandler) (*subscription, error) {
-	return s.systemSubscribe(subject, _EMPTY_, true, nil, cb)
+	return s.systemSubscribe(subject, EMPTY, true, nil, cb)
 }
 
 func (s *Server) systemSubscribe(subject, queue string, internalOnly bool, c *client, cb msgHandler) (*subscription, error) {
@@ -2211,7 +2211,7 @@ func (s *Server) nsubsRequest(sub *subscription, c *client, _ *Account, subject,
 			}
 		}
 	}
-	s.sendInternalMsgLocked(reply, _EMPTY_, nil, nsubs)
+	s.sendInternalMsgLocked(reply, EMPTY, nil, nsubs)
 }
 
 // Helper to grab account name for a client.
@@ -2228,7 +2228,7 @@ func issuerForClient(c *client) (issuerKey string) {
 		return
 	}
 	issuerKey = c.user.SigningKey
-	if issuerKey == _EMPTY_ && c.user.Account != nil {
+	if issuerKey == EMPTY && c.user.Account != nil {
 		issuerKey = c.user.Account.Name
 	}
 	return

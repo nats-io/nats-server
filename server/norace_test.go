@@ -2365,7 +2365,7 @@ func TestNoRaceJetStreamFileStoreBufferReuse(t *testing.T) {
 
 	start := time.Now()
 	for i := 0; i < toSend; i++ {
-		m.Reply = _EMPTY_
+		m.Reply = EMPTY
 		switch i % 3 {
 		case 0:
 			m.Subject = "foo"
@@ -2609,7 +2609,7 @@ func TestNoRaceAccountConnz(t *testing.T) {
 		sub, _ := nc.ChanSubscribe(nats.NewInbox(), mch)
 
 		var req []byte
-		if filter != _EMPTY_ {
+		if filter != EMPTY {
 			req, _ = json.Marshal(&ConnzOptions{FilterSubject: filter})
 		}
 
@@ -2633,7 +2633,7 @@ func TestNoRaceAccountConnz(t *testing.T) {
 				cr := parseConnz(m.Data)
 				// For account scoped, NumConns and Total should be the same (sans limits and offsets).
 				// It Total should not include other accounts since that would leak information about the system.
-				if filter == _EMPTY_ && cr.NumConns != cr.Total {
+				if filter == EMPTY && cr.NumConns != cr.Total {
 					t.Fatalf("NumConns and Total should be same with account scoped connz, got %+v", cr)
 				}
 				for _, c := range cr.Conns {
@@ -2656,11 +2656,11 @@ func TestNoRaceAccountConnz(t *testing.T) {
 
 	doSysRequest := func(acc string, expected int) {
 		t.Helper()
-		doRequest("$SYS.REQ.SERVER.PING.CONNZ", acc, _EMPTY_, expected)
+		doRequest("$SYS.REQ.SERVER.PING.CONNZ", acc, EMPTY, expected)
 	}
 	doAccRequest := func(acc string, expected int) {
 		t.Helper()
-		doRequest("$SYS.REQ.ACCOUNT.PING.CONNZ", acc, _EMPTY_, expected)
+		doRequest("$SYS.REQ.ACCOUNT.PING.CONNZ", acc, EMPTY, expected)
 	}
 	doFiltered := func(acc, filter string, expected int) {
 		t.Helper()
@@ -2674,7 +2674,7 @@ func TestNoRaceAccountConnz(t *testing.T) {
 	doAccRequest("two", 20)
 
 	// Now check filtering.
-	doFiltered("one", _EMPTY_, 20)
+	doFiltered("one", EMPTY, 20)
 	doFiltered("one", ">", 20)
 	doFiltered("one", "bar", 10)
 	doFiltered("two", "bar", 0)
@@ -3130,7 +3130,7 @@ func TestNoRaceJetStreamClusterInterestPolicyAckNone(t *testing.T) {
 		durable string
 	}{
 		{"durable", "dlc"},
-		{"ephemeral", _EMPTY_},
+		{"ephemeral", EMPTY},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			c := createJetStreamClusterExplicit(t, "R3S", 3)
@@ -3387,7 +3387,7 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	ae, err := node.decodeAppendEntry(msg, nil, _EMPTY_)
+	ae, err := node.decodeAppendEntry(msg, nil, EMPTY)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -3411,7 +3411,7 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if _, _, err := fs.StoreMsg(_EMPTY_, nil, encoded); err != nil {
+	if _, _, err := fs.StoreMsg(EMPTY, nil, encoded); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	fs.Stop()
@@ -4025,7 +4025,7 @@ func TestNoRaceConsumerFileStoreConcurrentDiskIO(t *testing.T) {
 }
 
 func TestNoRaceJetStreamClusterHealthz(t *testing.T) {
-	c := createJetStreamCluster(t, jsClusterAccountsTempl, "HZ", _EMPTY_, 3, 23033, true)
+	c := createJetStreamCluster(t, jsClusterAccountsTempl, "HZ", EMPTY, 3, 23033, true)
 	defer c.shutdown()
 
 	nc1, js1 := jsClientConnect(t, c.randomServer(), nats.UserInfo("one", "p"))

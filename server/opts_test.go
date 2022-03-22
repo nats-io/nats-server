@@ -2001,7 +2001,7 @@ func TestParseExport(t *testing.T) {
 	subscribe := func(nc *nats.Conn, subj string) {
 		t.Helper()
 		_, err := nc.Subscribe(subj, func(msg *nats.Msg) {
-			if msg.Reply != _EMPTY_ {
+			if msg.Reply != EMPTY {
 				msg.Respond(msg.Data)
 			}
 			if atomic.AddInt32(&count, 1) == expected {

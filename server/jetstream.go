@@ -163,16 +163,16 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 		if maxMem > 0 {
 			config.MaxMemory = maxMem
 		}
-		if domain != _EMPTY_ {
+		if domain != EMPTY {
 			config.Domain = domain
 		}
 		s.Debugf("JetStream creating dynamic configuration - %s memory, %s disk", friendlyBytes(config.MaxMemory), friendlyBytes(config.MaxStore))
-	} else if config.StoreDir != _EMPTY_ {
+	} else if config.StoreDir != EMPTY {
 		config.StoreDir = filepath.Join(config.StoreDir, JetStreamStoreDir)
 	}
 
 	cfg := *config
-	if cfg.StoreDir == _EMPTY_ {
+	if cfg.StoreDir == EMPTY {
 		cfg.StoreDir = filepath.Join(os.TempDir(), JetStreamStoreDir)
 	}
 
@@ -182,7 +182,7 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 		return err
 	}
 
-	if ek := s.getOpts().JetStreamKey; ek != _EMPTY_ {
+	if ek := s.getOpts().JetStreamKey; ek != EMPTY {
 		s.Warnf("JetStream Encryption is Beta")
 	}
 
@@ -195,7 +195,7 @@ type keyGen func(context []byte) ([]byte, error)
 // Return a key generation function or nil if encryption not enabled.
 // keyGen defined in filestore.go - keyGen func(iv, context []byte) []byte
 func (s *Server) jsKeyGen(info string) keyGen {
-	if ek := s.getOpts().JetStreamKey; ek != _EMPTY_ {
+	if ek := s.getOpts().JetStreamKey; ek != EMPTY {
 		return func(context []byte) ([]byte, error) {
 			h := hmac.New(sha256.New, []byte(ek))
 			if _, err := h.Write([]byte(info)); err != nil {
@@ -274,7 +274,7 @@ func (s *Server) checkStoreDir(cfg *JetStreamConfig) error {
 			continue
 		}
 		// Let's see if this is an account.
-		if accName := fi.Name(); accName != _EMPTY_ {
+		if accName := fi.Name(); accName != EMPTY {
 			_, ok := s.accounts.Load(accName)
 			if !ok && s.AccountResolver() != nil && nkeys.IsValidPublicAccountKey(accName) {
 				// Account is not local but matches the NKEY account public key,
@@ -348,7 +348,7 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	s.Noticef("  Max Memory:      %s", friendlyBytes(cfg.MaxMemory))
 	s.Noticef("  Max Storage:     %s", friendlyBytes(cfg.MaxStore))
 	s.Noticef("  Store Directory: \"%s\"", cfg.StoreDir)
-	if cfg.Domain != _EMPTY_ {
+	if cfg.Domain != EMPTY {
 		s.Noticef("  Domain:          %s", cfg.Domain)
 	}
 	s.Noticef("-------------------------------------------")
@@ -577,14 +577,14 @@ func (a *Account) enableAllJetStreamServiceImportsAndMappings() error {
 	}
 
 	if !a.serviceImportExists(jsAllAPI) {
-		if err := a.AddServiceImport(s.SystemAccount(), jsAllAPI, _EMPTY_); err != nil {
+		if err := a.AddServiceImport(s.SystemAccount(), jsAllAPI, EMPTY); err != nil {
 			return fmt.Errorf("Error setting up jetstream service imports for account: %v", err)
 		}
 	}
 
 	// Check if we have a Domain specified.
 	// If so add in a subject mapping that will allow local connected clients to reach us here as well.
-	if opts := s.getOpts(); opts.JetStreamDomain != _EMPTY_ {
+	if opts := s.getOpts(); opts.JetStreamDomain != EMPTY {
 		mappings := generateJSMappingTable(opts.JetStreamDomain)
 		a.mu.RLock()
 		for _, m := range a.mappings {
@@ -683,7 +683,7 @@ func (s *Server) configAllJetStreamAccounts() error {
 	// This is important in resolver/operator models.
 	fis, _ := ioutil.ReadDir(js.config.StoreDir)
 	for _, fi := range fis {
-		if accName := fi.Name(); accName != _EMPTY_ {
+		if accName := fi.Name(); accName != EMPTY {
 			// Only load up ones not already loaded since they are processed above.
 			if _, ok := accounts.Load(accName); !ok {
 				if acc, err := s.lookupAccount(accName); err != nil && acc != nil {
@@ -793,7 +793,7 @@ func (s *Server) migrateEphemerals() {
 					if pr := o.pendingRequestReplies(); len(pr) > 0 {
 						o.mu.Lock()
 						for _, reply := range pr {
-							o.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+							o.outq.send(newJSPubMsg(reply, EMPTY, EMPTY, hdr, nil, nil, 0))
 						}
 						o.mu.Unlock()
 					}
@@ -883,7 +883,7 @@ func (s *Server) StoreDir() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.js == nil {
-		return _EMPTY_
+		return EMPTY
 	}
 	return s.js.config.StoreDir
 }
@@ -1052,7 +1052,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 				s.Warnf("  Error unmarshalling StreamTemplate metafile: %v", err)
 				continue
 			}
-			cfg.Config.Name = _EMPTY_
+			cfg.Config.Name = EMPTY
 			if _, err := a.addStreamTemplate(&cfg); err != nil {
 				s.Warnf("  Error recreating StreamTemplate %q: %v", cfg.Name, err)
 				continue
@@ -1123,7 +1123,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 			continue
 		}
 
-		if cfg.Template != _EMPTY_ {
+		if cfg.Template != EMPTY {
 			if err := jsa.addStreamNameToTemplate(cfg.Template, cfg.Name); err != nil {
 				s.Warnf("  Error adding stream %q to template %q: %v", cfg.Name, cfg.Template, err)
 			}
@@ -1272,7 +1272,7 @@ func (a *Account) numStreams() int {
 
 // Streams will return all known streams.
 func (a *Account) streams() []*stream {
-	return a.filteredStreams(_EMPTY_)
+	return a.filteredStreams(EMPTY)
 }
 
 func (a *Account) filteredStreams(filter string) []*stream {
@@ -1289,7 +1289,7 @@ func (a *Account) filteredStreams(filter string) []*stream {
 
 	var msets []*stream
 	for _, mset := range jsa.streams {
-		if filter != _EMPTY_ {
+		if filter != EMPTY {
 			for _, subj := range mset.cfg.Subjects {
 				if SubjectsCollide(filter, subj) {
 					msets = append(msets, mset)
@@ -1484,7 +1484,7 @@ func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, _ *Account
 	if li := strings.LastIndexByte(subject, btsep); li > 0 && li < len(subject) {
 		rnode = subject[li+1:]
 	}
-	if rnode == _EMPTY_ {
+	if rnode == EMPTY {
 		jsa.mu.Unlock()
 		s.Warnf("Received remote usage update with no remote node")
 		return
@@ -1574,7 +1574,7 @@ func (jsa *jsAccount) sendClusterUsageUpdate() {
 	le.PutUint64(b[16:], uint64(jsa.usage.api))
 	le.PutUint64(b[24:], uint64(jsa.usage.err))
 
-	jsa.sendq.push(newPubMsg(nil, jsa.updatesPub, _EMPTY_, nil, nil, b, noCompression, false, false))
+	jsa.sendq.push(newPubMsg(nil, jsa.updatesPub, EMPTY, nil, nil, b, noCompression, false, false))
 }
 
 func (js *jetStream) wouldExceedLimits(storeType StorageType, sz int) bool {
@@ -1843,7 +1843,7 @@ const (
 // Dynamically create a config with a tmp based directory (repeatable) and 75% of system memory.
 func (s *Server) dynJetStreamConfig(storeDir string, maxStore, maxMem int64) *JetStreamConfig {
 	jsc := &JetStreamConfig{}
-	if storeDir != _EMPTY_ {
+	if storeDir != EMPTY {
 		jsc.StoreDir = filepath.Join(storeDir, JetStreamStoreDir)
 	} else {
 		// Create one in tmp directory, but make it consistent for restarts.
@@ -2253,7 +2253,7 @@ func validateJetStreamOptions(o *Options) error {
 				} else {
 					for _, acc := range o.Accounts {
 						if a == acc.GetName() {
-							if acc.jsLimits != nil && domain != _EMPTY_ {
+							if acc.jsLimits != nil && domain != EMPTY {
 								return fmt.Errorf("default_js_domain contains account name %q with enabled JetStream", a)
 							}
 							found = true
@@ -2274,13 +2274,13 @@ func validateJetStreamOptions(o *Options) error {
 		}
 		for a, d := range o.JsAccDefaultDomain {
 			sacc := DEFAULT_SYSTEM_ACCOUNT
-			if o.SystemAccount != _EMPTY_ {
+			if o.SystemAccount != EMPTY {
 				sacc = o.SystemAccount
 			}
 			if a == sacc {
 				return fmt.Errorf("system account %q can not be in default_js_domain", a)
 			}
-			if d == _EMPTY_ {
+			if d == EMPTY {
 				continue
 			}
 			if sub := fmt.Sprintf(jsDomainAPI, d); !IsValidSubject(sub) {
@@ -2288,7 +2288,7 @@ func validateJetStreamOptions(o *Options) error {
 			}
 		}
 	}
-	if o.JetStreamDomain != _EMPTY_ {
+	if o.JetStreamDomain != EMPTY {
 		if subj := fmt.Sprintf(jsDomainAPI, o.JetStreamDomain); !IsValidSubject(subj) {
 			return fmt.Errorf("invalid domain name: derived %q is not a valid subject", subj)
 		}
@@ -2301,16 +2301,16 @@ func validateJetStreamOptions(o *Options) error {
 	if !o.JetStream || o.Cluster.Port == 0 {
 		return nil
 	}
-	if o.ServerName == _EMPTY_ {
+	if o.ServerName == EMPTY {
 		return fmt.Errorf("jetstream cluster requires `server_name` to be set")
 	}
-	if o.Cluster.Name == _EMPTY_ {
+	if o.Cluster.Name == EMPTY {
 		return fmt.Errorf("jetstream cluster requires `cluster.name` to be set")
 	}
 
 	h := strings.ToLower(o.JetStreamExtHint)
 	switch h {
-	case jsWillExtend, jsNoExtend, _EMPTY_:
+	case jsWillExtend, jsNoExtend, EMPTY:
 		o.JetStreamExtHint = h
 	default:
 		return fmt.Errorf("expected 'no_extend' for string value, got '%s'", h)

@@ -25,13 +25,13 @@ func TestNRGAppendEntryEncode(t *testing.T) {
 		pindex: 0,
 	}
 
-	// Test leader should be _EMPTY_ or exactly idLen long
+	// Test leader should be EMPTY or exactly idLen long
 	ae.leader = "foo_bar_baz"
 	_, err := ae.encode(nil)
 	require_Error(t, err, errLeaderLen)
 
 	// Empty ok (noLeader)
-	ae.leader = noLeader // _EMPTY_
+	ae.leader = noLeader // EMPTY
 	_, err = ae.encode(nil)
 	require_NoError(t, err)
 
@@ -77,7 +77,7 @@ func TestNRGAppendEntryDecode(t *testing.T) {
 	// Truncate buffer first.
 	var node *raft
 	short := buf[0 : len(buf)-1024]
-	_, err = node.decodeAppendEntry(short, nil, _EMPTY_)
+	_, err = node.decodeAppendEntry(short, nil, EMPTY)
 	require_Error(t, err, errBadAppendEntry)
 
 	for i := 0; i < 100; i++ {
@@ -85,7 +85,7 @@ func TestNRGAppendEntryDecode(t *testing.T) {
 		bi := rand.Intn(len(b))
 		if b[bi] != 0 {
 			b[bi] = 0
-			_, err = node.decodeAppendEntry(b, nil, _EMPTY_)
+			_, err = node.decodeAppendEntry(b, nil, EMPTY)
 			require_Error(t, err, errBadAppendEntry)
 		}
 	}

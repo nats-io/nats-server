@@ -82,11 +82,11 @@ func validateTrustedOperators(o *Options) error {
 	if len(o.TrustedOperators) > 0 && len(o.TrustedKeys) > 0 {
 		return fmt.Errorf("conflicting options for 'TrustedKeys' and 'TrustedOperators'")
 	}
-	if o.SystemAccount != _EMPTY_ {
+	if o.SystemAccount != EMPTY {
 		foundSys := false
 		foundNonEmpty := false
 		for _, op := range o.TrustedOperators {
-			if op.SystemAccount != _EMPTY_ {
+			if op.SystemAccount != EMPTY {
 				foundNonEmpty = true
 			}
 			if op.SystemAccount == o.SystemAccount {
@@ -97,7 +97,7 @@ func validateTrustedOperators(o *Options) error {
 		if foundNonEmpty && !foundSys {
 			return fmt.Errorf("system_account in config and operator JWT must be identical")
 		}
-	} else if o.TrustedOperators[0].SystemAccount == _EMPTY_ {
+	} else if o.TrustedOperators[0].SystemAccount == EMPTY {
 		// In case the system account is neither defined in config nor in the first operator.
 		// If it would be needed due to the nats account resolver, raise an error.
 		switch o.AccountResolver.(type) {
@@ -148,7 +148,7 @@ func validateTrustedOperators(o *Options) error {
 			}
 		}
 		// ensure the system account (belonging to the operator can always connect)
-		if o.SystemAccount != _EMPTY_ {
+		if o.SystemAccount != EMPTY {
 			o.resolverPinnedAccounts[o.SystemAccount] = struct{}{}
 		}
 	}

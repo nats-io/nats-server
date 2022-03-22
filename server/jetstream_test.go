@@ -3746,7 +3746,7 @@ func TestJetStreamEphemeralConsumerRecoveryAfterServerRestart(t *testing.T) {
 			t.Fatalf("Error looking up consumer %q", oname)
 		}
 		// Make sure config does not have durable.
-		if cfg := o.config(); cfg.Durable != _EMPTY_ {
+		if cfg := o.config(); cfg.Durable != EMPTY {
 			t.Fatalf("Expected no durable to be set")
 		}
 		// Wait for it to become active
@@ -12237,7 +12237,7 @@ func TestJetStreamSourceBasics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if shdr := m.Header.Get(JSStreamSource); shdr == _EMPTY_ {
+	if shdr := m.Header.Get(JSStreamSource); shdr == EMPTY {
 		t.Fatalf("Expected a header, got none")
 	} else if _, sseq := streamAndSeq(shdr); sseq != 26 {
 		t.Fatalf("Expected header sequence of 26, got %d", sseq)
@@ -12267,7 +12267,7 @@ func TestJetStreamSourceBasics(t *testing.T) {
 	if m, err = js.GetMsg("FMS2", 1); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if shdr := m.Header.Get(JSStreamSource); shdr == _EMPTY_ {
+	if shdr := m.Header.Get(JSStreamSource); shdr == EMPTY {
 		t.Fatalf("Expected a header, got none")
 	} else if _, sseq := streamAndSeq(shdr); sseq != 11 {
 		t.Fatalf("Expected header sequence of 11, got %d", sseq)
@@ -13379,7 +13379,7 @@ func TestJetStreamConsumerPushBound(t *testing.T) {
 	}
 
 	// Make sure pull consumers report PushBound as false by default.
-	createConsumer("rip", _EMPTY_)
+	createConsumer("rip", EMPTY)
 	if ci := consumerInfo("rip"); ci.PushBound {
 		t.Fatalf("Expected push bound to be false")
 	}
@@ -13925,7 +13925,7 @@ func TestJetStreamConsumerNoMsgPayload(t *testing.T) {
 	msg.Header.Set("name", "derek")
 	msg.Data = bytes.Repeat([]byte("A"), 128)
 	for i := 0; i < 10; i++ {
-		msg.Reply = _EMPTY_ // Fixed in Go client but not in embdedded on yet.
+		msg.Reply = EMPTY // Fixed in Go client but not in embdedded on yet.
 		_, err = js.PublishMsgAsync(msg)
 		require_NoError(t, err)
 	}

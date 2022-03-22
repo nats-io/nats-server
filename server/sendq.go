@@ -67,11 +67,11 @@ func (sq *sendq) internalLoop() {
 					c.pa.hdr = len(pm.hdr)
 					c.pa.hdb = []byte(strconv.Itoa(c.pa.hdr))
 					msg = append(pm.hdr, pm.msg...)
-					msg = append(msg, _CRLF_...)
+					msg = append(msg, CR_LF...)
 				} else {
 					c.pa.hdr = -1
 					c.pa.hdb = nil
-					msg = append(pm.msg, _CRLF_...)
+					msg = append(pm.msg, CR_LF...)
 				}
 				c.processInboundClientMsg(msg)
 				c.pa.szb = nil

@@ -3131,7 +3131,7 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 			errStr = fmt.Sprintf("deleted map does not match: %d vs %d", mb.dmap, mbc.dmap)
 		}
 		mb.mu.RUnlock()
-		if errStr != _EMPTY_ {
+		if errStr != EMPTY {
 			t.Fatal(errStr)
 		}
 	}

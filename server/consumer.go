@@ -301,7 +301,7 @@ const (
 // Helper function to set consumer config defaults from above.
 func setConsumerConfigDefaults(config *ConsumerConfig) {
 	// Set to default if not specified.
-	if config.DeliverSubject == _EMPTY_ && config.MaxWaiting == 0 {
+	if config.DeliverSubject == EMPTY && config.MaxWaiting == 0 {
 		config.MaxWaiting = JSWaitQueueDefaultMax
 	}
 	// Setup proper default for ack wait if we are in explicit ack mode.
@@ -323,7 +323,7 @@ func setConsumerConfigDefaults(config *ConsumerConfig) {
 }
 
 func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
-	return mset.addConsumerWithAssignment(config, _EMPTY_, nil)
+	return mset.addConsumerWithAssignment(config, EMPTY, nil)
 }
 
 func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment) (*consumer, error) {
@@ -334,7 +334,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	// If we do not have the consumer currently assigned to us in cluster mode we will proceed but warn.
 	// This can happen on startup with restored state where on meta replay we still do not have
 	// the assignment. Running in single server mode this always returns true.
-	if oname != _EMPTY_ && !jsa.consumerAssigned(mset.name(), oname) {
+	if oname != EMPTY && !jsa.consumerAssigned(mset.name(), oname) {
 		s.Debugf("Consumer %q > %q does not seem to be assigned to this server", mset.name(), oname)
 	}
 
@@ -356,7 +356,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 
 	var err error
 	// For now expect a literal subject if its not empty. Empty means work queue mode (pull mode).
-	if config.DeliverSubject != _EMPTY_ {
+	if config.DeliverSubject != EMPTY {
 		if !subjectIsLiteral(config.DeliverSubject) {
 			return nil, NewJSConsumerDeliverToWildcardsError()
 		}
@@ -402,7 +402,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 
 	// Direct need to be non-mapped ephemerals.
 	if config.Direct {
-		if config.DeliverSubject == _EMPTY_ {
+		if config.DeliverSubject == EMPTY {
 			return nil, NewJSConsumerDirectRequiresPushError()
 		}
 		if isDurableConsumer(config) {
@@ -414,7 +414,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	}
 
 	// As best we can make sure the filtered subject is valid.
-	if config.FilterSubject != _EMPTY_ {
+	if config.FilterSubject != EMPTY {
 		subjects, hasExt := mset.allSubjects()
 		if !validFilteredSubject(config.FilterSubject, subjects) && !hasExt {
 			return nil, NewJSConsumerFilterNotSubsetError()
@@ -452,7 +452,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		if config.OptStartTime != nil {
 			return nil, NewJSConsumerInvalidPolicyError(badStart("last per subject", "time"))
 		}
-		if config.FilterSubject == _EMPTY_ {
+		if config.FilterSubject == EMPTY {
 			return nil, NewJSConsumerInvalidPolicyError(notSet("last per subject", "filter subject"))
 		}
 	case DeliverNew:
@@ -479,7 +479,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	}
 
 	sampleFreq := 0
-	if config.SampleFrequency != _EMPTY_ {
+	if config.SampleFrequency != EMPTY {
 		s := strings.TrimSuffix(config.SampleFrequency, "%")
 		sampleFreq, err = strconv.Atoi(s)
 		if err != nil {
@@ -541,7 +541,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		}
 
 		if len(mset.consumers) > 0 {
-			if config.FilterSubject == _EMPTY_ {
+			if config.FilterSubject == EMPTY {
 				mset.mu.Unlock()
 				return nil, NewJSConsumerWQMultipleUnfilteredError()
 			} else if !mset.partitionUnique(config.FilterSubject) {
@@ -588,7 +588,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			return nil, NewJSConsumerNameTooLongError(JSMaxNameLen)
 		}
 		o.name = config.Durable
-	} else if oname != _EMPTY_ {
+	} else if oname != EMPTY {
 		o.name = oname
 	} else {
 		for {
@@ -607,7 +607,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	}
 
 	// Check if we have  filtered subject that is a wildcard.
-	if config.FilterSubject != _EMPTY_ && subjectHasWildcard(config.FilterSubject) {
+	if config.FilterSubject != EMPTY && subjectHasWildcard(config.FilterSubject) {
 		o.filterWC = true
 	}
 
@@ -640,20 +640,20 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	if eo, ok := mset.consumers[o.name]; ok {
 		mset.mu.Unlock()
 		if !o.isDurable() || !o.isPushMode() {
-			o.name = _EMPTY_ // Prevent removal since same name.
+			o.name = EMPTY // Prevent removal since same name.
 			o.deleteWithoutAdvisory()
 			return nil, NewJSConsumerNameExistError()
 		}
 		// If we are here we have already registered this durable. If it is still active that is an error.
 		if eo.isActive() {
-			o.name = _EMPTY_ // Prevent removal since same name.
+			o.name = EMPTY // Prevent removal since same name.
 			o.deleteWithoutAdvisory()
 			return nil, NewJSConsumerExistingActiveError()
 		}
 		// Since we are here this means we have a potentially new durable so we should update here.
 		// Check that configs are the same.
 		if !configsEqualSansDelivery(o.cfg, eo.cfg) {
-			o.name = _EMPTY_ // Prevent removal since same name.
+			o.name = EMPTY // Prevent removal since same name.
 			o.deleteWithoutAdvisory()
 			return nil, NewJSConsumerReplacementWithDifferentNameError()
 		}
@@ -746,11 +746,11 @@ func (o *consumer) setConsumerAssignment(ca *consumerAssignment) {
 // checkQueueInterest will check on our interest's queue group status.
 // Lock should be held.
 func (o *consumer) checkQueueInterest() {
-	if !o.active || o.cfg.DeliverSubject == _EMPTY_ {
+	if !o.active || o.cfg.DeliverSubject == EMPTY {
 		return
 	}
 	subj := o.dsubj
-	if subj == _EMPTY_ {
+	if subj == EMPTY {
 		subj = o.cfg.DeliverSubject
 	}
 
@@ -806,7 +806,7 @@ func (o *consumer) setLeader(isLeader bool) {
 		if o.infoSub == nil && jsa != nil {
 			isubj := fmt.Sprintf(clusterConsumerInfoT, jsa.acc(), stream, o.name)
 			// Note below the way we subscribe here is so that we can send requests to ourselves.
-			o.infoSub, _ = s.systemSubscribe(isubj, _EMPTY_, false, o.sysc, o.handleClusterConsumerInfoRequest)
+			o.infoSub, _ = s.systemSubscribe(isubj, EMPTY, false, o.sysc, o.handleClusterConsumerInfoRequest)
 		}
 
 		var err error
@@ -918,7 +918,7 @@ func (o *consumer) handleClusterConsumerInfoRequest(sub *subscription, c *client
 	o.mu.RLock()
 	sysc := o.sysc
 	o.mu.RUnlock()
-	sysc.sendInternalMsg(reply, _EMPTY_, nil, o.info())
+	sysc.sendInternalMsg(reply, EMPTY, nil, o.info())
 }
 
 // Lock should be held.
@@ -1075,7 +1075,7 @@ func (o *consumer) updateDeliveryInterest(localInterest bool) bool {
 	}
 	// Update active status, if not active clear any queue group we captured.
 	if o.active = interest; !o.active {
-		o.qgroup = _EMPTY_
+		o.qgroup = EMPTY
 	} else {
 		o.checkQueueInterest()
 	}
@@ -1135,7 +1135,7 @@ func (o *consumer) deleteNotActive() {
 
 		if ca != nil && cc != nil {
 			cca := *ca
-			cca.Reply = _EMPTY_
+			cca.Reply = EMPTY
 			meta, removeEntry := cc.meta, encodeDeleteConsumerAssignment(&cca)
 			meta.ForwardProposal(removeEntry)
 
@@ -1298,10 +1298,10 @@ func (acc *Account) checkNewConsumerConfig(cfg, ncfg *ConsumerConfig) error {
 
 	// Deliver Subject is conditional on if its bound.
 	if cfg.DeliverSubject != ncfg.DeliverSubject {
-		if cfg.DeliverSubject == _EMPTY_ {
+		if cfg.DeliverSubject == EMPTY {
 			return errors.New("can not update pull consumer to push based")
 		}
-		if ncfg.DeliverSubject == _EMPTY_ {
+		if ncfg.DeliverSubject == EMPTY {
 			return errors.New("can not update push consumer to pull based")
 		}
 		rr := acc.sl.Match(cfg.DeliverSubject)
@@ -1388,7 +1388,7 @@ func (o *consumer) updateDeliverSubjectLocked(newDeliver string) {
 // Check that configs are equal but allow delivery subjects to be different.
 func configsEqualSansDelivery(a, b ConsumerConfig) bool {
 	// These were copied in so can set Delivery here.
-	a.DeliverSubject, b.DeliverSubject = _EMPTY_, _EMPTY_
+	a.DeliverSubject, b.DeliverSubject = EMPTY, EMPTY
 	return reflect.DeepEqual(a, b)
 }
 
@@ -1427,7 +1427,7 @@ func (am *jsAckMsg) returnToPool() {
 	if am == nil {
 		return
 	}
-	am.subject, am.reply, am.hdr, am.msg = _EMPTY_, _EMPTY_, -1, nil
+	am.subject, am.reply, am.hdr, am.msg = EMPTY, EMPTY, -1, nil
 	jsAckMsgPool.Put(am)
 }
 
@@ -1676,7 +1676,7 @@ func (o *consumer) checkPendingRequests() {
 	}
 	hdr := []byte("NATS/1.0 409 Leadership Change\r\n\r\n")
 	for reply := range o.prm {
-		o.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		o.outq.send(newJSPubMsg(reply, EMPTY, EMPTY, hdr, nil, nil, 0))
 	}
 	o.prm = nil
 }
@@ -2124,7 +2124,7 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, doSample bool) {
 // even if the stream only has a single non-wildcard subject designation.
 // Read lock should be held.
 func (o *consumer) isFiltered() bool {
-	if o.cfg.FilterSubject == _EMPTY_ {
+	if o.cfg.FilterSubject == EMPTY {
 		return false
 	}
 	// If we are here we want to check if the filtered subject is
@@ -2260,7 +2260,7 @@ func (wr *waitingRequest) recycleIfDone() bool {
 // Force a recycle.
 func (wr *waitingRequest) recycle() {
 	if wr != nil {
-		wr.acc, wr.interest, wr.reply = nil, _EMPTY_, _EMPTY_
+		wr.acc, wr.interest, wr.reply = nil, EMPTY, EMPTY
 		wrPool.Put(wr)
 	}
 }
@@ -2415,7 +2415,7 @@ func (o *consumer) nextWaiting() *waitingRequest {
 			}
 		}
 		hdr := []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
-		o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		o.outq.send(newJSPubMsg(wr.reply, EMPTY, EMPTY, hdr, nil, nil, 0))
 		// Remove the current one, no longer valid.
 		o.waiting.removeCurrent()
 		if o.node != nil {
@@ -2430,7 +2430,7 @@ func (o *consumer) nextWaiting() *waitingRequest {
 // a single message. If the payload is a formal request or a number parseable with Atoi(), then we will send a
 // batch of messages without requiring another request to this endpoint, or an ACK.
 func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, reply string, msg []byte) {
-	if reply == _EMPTY_ {
+	if reply == EMPTY {
 		return
 	}
 	_, msg = c.msgParts(msg)
@@ -2448,7 +2448,7 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 
 	sendErr := func(status int, description string) {
 		hdr := []byte(fmt.Sprintf("NATS/1.0 %d %s\r\n\r\n", status, description))
-		o.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		o.outq.send(newJSPubMsg(reply, EMPTY, EMPTY, hdr, nil, nil, 0))
 	}
 
 	if o.isPushMode() || o.waiting == nil {
@@ -2567,7 +2567,7 @@ func (o *consumer) notifyDeliveryExceeded(sseq, dc uint64) {
 // Lock should be held.
 func (o *consumer) isFilteredMatch(subj string) bool {
 	// No filter is automatic match.
-	if o.cfg.FilterSubject == _EMPTY_ {
+	if o.cfg.FilterSubject == EMPTY {
 		return true
 	}
 	if !o.filterWC {
@@ -2589,7 +2589,7 @@ var (
 // Lock should be held.
 func (o *consumer) getNextMsg() (subj string, hdr, msg []byte, sseq uint64, dc uint64, ts int64, err error) {
 	if o.mset == nil || o.mset.store == nil {
-		return _EMPTY_, nil, nil, 0, 0, 0, errBadConsumer
+		return EMPTY, nil, nil, 0, 0, 0, errBadConsumer
 	}
 	seq, dc := o.sseq, uint64(1)
 	if o.hasSkipListPending() {
@@ -2626,7 +2626,7 @@ func (o *consumer) getNextMsg() (subj string, hdr, msg []byte, sseq uint64, dc u
 	if o.maxp > 0 && len(o.pending) >= o.maxp {
 		// maxp only set when ack policy != AckNone and user set MaxAckPending
 		// Stall if we have hit max pending.
-		return _EMPTY_, nil, nil, 0, 0, 0, errMaxAckPending
+		return EMPTY, nil, nil, 0, 0, 0, errMaxAckPending
 	}
 
 	// Grab next message applicable to us.
@@ -2654,7 +2654,7 @@ func (o *consumer) forceExpireFirstWaiting() {
 	if rr := wr.acc.sl.Match(wr.interest); len(rr.psubs)+len(rr.qsubs) > 0 && o.mset != nil {
 		// We still appear to have interest, so send alert as courtesy.
 		hdr := []byte("NATS/1.0 408 Request Canceled\r\n\r\n")
-		o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		o.outq.send(newJSPubMsg(wr.reply, EMPTY, EMPTY, hdr, nil, nil, 0))
 	}
 	o.waiting.removeCurrent()
 	if o.node != nil {
@@ -2697,7 +2697,7 @@ func (o *consumer) processWaiting() (int, int, int, time.Time) {
 		// Check expiration.
 		if (wr.noWait && wr.d > 0) || (!wr.expires.IsZero() && now.After(wr.expires)) {
 			hdr := []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
-			o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+			o.outq.send(newJSPubMsg(wr.reply, EMPTY, EMPTY, hdr, nil, nil, 0))
 			remove(wr, rp)
 			continue
 		}
@@ -2943,12 +2943,12 @@ func (o *consumer) sendIdleHeartbeat(subj string) {
 	const t = "NATS/1.0 100 Idle Heartbeat\r\n%s: %d\r\n%s: %d\r\n\r\n"
 	sseq, dseq := o.sseq-1, o.dseq-1
 	hdr := []byte(fmt.Sprintf(t, JSLastConsumerSeq, dseq, JSLastStreamSeq, sseq))
-	if fcp := o.fcid; fcp != _EMPTY_ {
+	if fcp := o.fcid; fcp != EMPTY {
 		// Add in that we are stalled on flow control here.
 		addOn := []byte(fmt.Sprintf("%s: %s\r\n\r\n", JSConsumerStalled, fcp))
 		hdr = append(hdr[:len(hdr)-LEN_CR_LF], []byte(addOn)...)
 	}
-	o.outq.send(newJSPubMsg(subj, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+	o.outq.send(newJSPubMsg(subj, EMPTY, EMPTY, hdr, nil, nil, 0))
 }
 
 func (o *consumer) ackReply(sseq, dseq, dc uint64, ts int64, pending uint64) string {
@@ -3054,11 +3054,11 @@ func (o *consumer) needFlowControl(sz int) bool {
 	}
 	// Decide whether to send a flow control message which we will need the user to respond.
 	// We send when we are over 50% of our current window limit.
-	if o.fcid == _EMPTY_ && o.pbytes > o.maxpb/2 {
+	if o.fcid == EMPTY && o.pbytes > o.maxpb/2 {
 		return true
 	}
 	// If we have an existing outstanding FC, check to see if we need to expand the o.fcsz
-	if o.fcid != _EMPTY_ && (o.pbytes-o.fcsz) >= o.maxpb {
+	if o.fcid != EMPTY && (o.pbytes-o.fcsz) >= o.maxpb {
 		o.fcsz += sz
 	}
 	return false
@@ -3086,7 +3086,7 @@ func (o *consumer) processFlowControl(_ *subscription, c *client, _ *Account, su
 	if o.pbytes < 0 {
 		o.pbytes = 0
 	}
-	o.fcid, o.fcsz = _EMPTY_, 0
+	o.fcid, o.fcsz = EMPTY, 0
 
 	o.signalNewMessages()
 }
@@ -3118,7 +3118,7 @@ func (o *consumer) sendFlowControl() {
 	subj, rply := o.cfg.DeliverSubject, o.fcReply()
 	o.fcsz, o.fcid = o.pbytes, rply
 	hdr := []byte("NATS/1.0 100 FlowControl Request\r\n\r\n")
-	o.outq.send(newJSPubMsg(subj, _EMPTY_, rply, hdr, nil, nil, 0))
+	o.outq.send(newJSPubMsg(subj, EMPTY, rply, hdr, nil, nil, 0))
 }
 
 // Tracks our outstanding pending acks. Only applicable to AckExplicit mode.
@@ -3427,7 +3427,7 @@ func (o *consumer) selectStartingSeqNo() {
 			} else if o.cfg.DeliverPolicy == DeliverLast {
 				o.sseq = state.LastSeq
 				// If we are partitioned here this will be properly set when we become leader.
-				if o.cfg.FilterSubject != _EMPTY_ {
+				if o.cfg.FilterSubject != EMPTY {
 					ss := o.mset.store.FilteredState(1, o.cfg.FilterSubject)
 					o.sseq = ss.Last
 				}
@@ -3472,20 +3472,20 @@ func (o *consumer) selectStartingSeqNo() {
 
 // Test whether a config represents a durable subscriber.
 func isDurableConsumer(config *ConsumerConfig) bool {
-	return config != nil && config.Durable != _EMPTY_
+	return config != nil && config.Durable != EMPTY
 }
 
 func (o *consumer) isDurable() bool {
-	return o.cfg.Durable != _EMPTY_
+	return o.cfg.Durable != EMPTY
 }
 
 // Are we in push mode, delivery subject, etc.
 func (o *consumer) isPushMode() bool {
-	return o.cfg.DeliverSubject != _EMPTY_
+	return o.cfg.DeliverSubject != EMPTY
 }
 
 func (o *consumer) isPullMode() bool {
-	return o.cfg.DeliverSubject == _EMPTY_
+	return o.cfg.DeliverSubject == EMPTY
 }
 
 // Name returns the name of this consumer.
@@ -3512,7 +3512,7 @@ func (o *consumer) streamName() string {
 	if mset != nil {
 		return mset.name()
 	}
-	return _EMPTY_
+	return EMPTY
 }
 
 // Active indicates if this consumer is still active.
@@ -3661,7 +3661,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 		sysc.closeConnection(ClientClosed)
 	}
 
-	if delivery != _EMPTY_ {
+	if delivery != EMPTY {
 		a.sl.clearNotification(delivery, qgroup, o.inch)
 	}
 
@@ -3778,7 +3778,7 @@ func (o *consumer) setInActiveDeleteThreshold(dthresh time.Duration) error {
 // switchToEphemeral is called on startup when recovering ephemerals.
 func (o *consumer) switchToEphemeral() {
 	o.mu.Lock()
-	o.cfg.Durable = _EMPTY_
+	o.cfg.Durable = EMPTY
 	store, ok := o.store.(*consumerFileStore)
 	rr := o.acc.sl.Match(o.cfg.DeliverSubject)
 	// Setup dthresh.
@@ -3815,7 +3815,7 @@ func (o *consumer) setInitialPendingAndStart() {
 	}
 
 	// !filtered means we want all messages.
-	filtered, dp := o.cfg.FilterSubject != _EMPTY_, o.cfg.DeliverPolicy
+	filtered, dp := o.cfg.FilterSubject != EMPTY, o.cfg.DeliverPolicy
 	if filtered {
 		// Check to see if we directly match the configured stream.
 		// Many clients will always send a filtered subject.

@@ -238,11 +238,11 @@ func TestNoAuthUser(t *testing.T) {
 		account string
 	}{
 		{"valid user/pwd", "bar:pwd2@", true, "BAR"},
-		{"invalid pwd", "bar:wrong@", false, _EMPTY_},
-		{"some token", "sometoken@", false, _EMPTY_},
-		{"user used without pwd", "bar@", false, _EMPTY_}, // will be treated as a token
-		{"user with empty password", "bar:@", false, _EMPTY_},
-		{"no user", _EMPTY_, true, "FOO"},
+		{"invalid pwd", "bar:wrong@", false, EMPTY},
+		{"some token", "sometoken@", false, EMPTY},
+		{"user used without pwd", "bar@", false, EMPTY}, // will be treated as a token
+		{"user with empty password", "bar:@", false, EMPTY},
+		{"no user", EMPTY, true, "FOO"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			url := fmt.Sprintf("nats://%s127.0.0.1:%d", test.usrInfo, o.Port)

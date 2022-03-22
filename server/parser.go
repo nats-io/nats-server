@@ -165,7 +165,7 @@ func (c *client) parse(buf []byte) error {
 					var ok bool
 					// Check here for NoAuthUser. If this is set allow non CONNECT protos as our first.
 					// E.g. telnet proto demos.
-					if noAuthUser := s.getOpts().NoAuthUser; noAuthUser != _EMPTY_ {
+					if noAuthUser := s.getOpts().NoAuthUser; noAuthUser != EMPTY {
 						s.mu.Lock()
 						user, exists := s.users[noAuthUser]
 						s.mu.Unlock()

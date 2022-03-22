@@ -91,11 +91,14 @@ const (
 	// DEFAULT_PING_MAX_OUT is maximum allowed pings outstanding before disconnect.
 	DEFAULT_PING_MAX_OUT = 2
 
-	// CR_LF string
+	// CR_LF string.
 	CR_LF = "\r\n"
-
+	
 	// LEN_CR_LF hold onto the computed size.
 	LEN_CR_LF = len(CR_LF)
+
+	// EMPTY is used to check for empty strings.
+	EMPTY = ""
 
 	// DEFAULT_FLUSH_DEADLINE is the write/flush deadlines.
 	DEFAULT_FLUSH_DEADLINE = 10 * time.Second

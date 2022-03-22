@@ -190,7 +190,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 
 	if opts != nil {
 		// If no sort option given or sort is by uptime, then sort by cid
-		if opts.Sort == _EMPTY_ {
+		if opts.Sort == EMPTY {
 			sortOpt = ByCid
 		} else {
 			sortOpt = opts.Sort
@@ -201,7 +201,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 
 		// Auth specifics.
 		auth = opts.Username
-		if !auth && (user != _EMPTY_ || acc != _EMPTY_) {
+		if !auth && (user != EMPTY || acc != EMPTY) {
 			return nil, fmt.Errorf("filter by user or account only allowed with auth option")
 		}
 		user = opts.User
@@ -235,8 +235,8 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 			limit = 1
 		}
 		// If filtering by subject.
-		if opts.FilterSubject != _EMPTY_ && opts.FilterSubject != fwcs {
-			if acc == _EMPTY_ {
+		if opts.FilterSubject != EMPTY && opts.FilterSubject != fwcs {
+			if acc == EMPTY {
 				return nil, fmt.Errorf("filter by subject only valid with account filtering")
 			}
 			filter = opts.FilterSubject
@@ -257,9 +257,9 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	var clist map[uint64]*client
 
 	// If this is an account scoped request from a no $SYS account.
-	isAccReq := acc != _EMPTY_ && opts.isAccountReq
+	isAccReq := acc != EMPTY && opts.isAccountReq
 
-	if acc != _EMPTY_ {
+	if acc != EMPTY {
 		var err error
 		a, err = s.lookupAccount(acc)
 		if err != nil {
@@ -356,15 +356,15 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		if state == ConnOpen || state == ConnAll {
 			for _, client := range clist {
 				// If we have an account specified we need to filter.
-				if acc != _EMPTY_ && (client.acc == nil || client.acc.Name != acc) {
+				if acc != EMPTY && (client.acc == nil || client.acc.Name != acc) {
 					continue
 				}
 				// Do user filtering second
-				if user != _EMPTY_ && client.opts.Username != user {
+				if user != EMPTY && client.opts.Username != user {
 					continue
 				}
 				// Do mqtt client ID filtering next
-				if mqttCID != _EMPTY_ && client.getMQTTClientID() != mqttCID {
+				if mqttCID != EMPTY && client.getMQTTClientID() != mqttCID {
 					continue
 				}
 				openClients = append(openClients, client)
@@ -374,7 +374,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	s.mu.Unlock()
 
 	// Filter by subject now if needed. We do this outside of server lock.
-	if filter != _EMPTY_ {
+	if filter != EMPTY {
 		var oc []*client
 		for _, c := range openClients {
 			c.mu.Lock()
@@ -433,15 +433,15 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	}
 	for _, cc := range closedClients {
 		// If we have an account specified we need to filter.
-		if acc != _EMPTY_ && cc.acc != acc {
+		if acc != EMPTY && cc.acc != acc {
 			continue
 		}
 		// Do user filtering second
-		if user != _EMPTY_ && cc.user != user {
+		if user != EMPTY && cc.user != user {
 			continue
 		}
 		// Do mqtt client ID filtering next
-		if mqttCID != _EMPTY_ && cc.MQTTClient != mqttCID {
+		if mqttCID != EMPTY && cc.MQTTClient != mqttCID {
 			continue
 		}
 		// Copy if needed for any changes to the ConnInfo
@@ -1098,7 +1098,7 @@ func (s *Server) HandleIPQueuesz(w http.ResponseWriter, r *http.Request) {
 		inProgress := int(queue.inProgress())
 		if !all && (pending == 0 && inProgress == 0) {
 			return true
-		} else if qfilter != _EMPTY_ && !strings.Contains(name, qfilter) {
+		} else if qfilter != EMPTY && !strings.Contains(name, qfilter) {
 			return true
 		}
 		queues[name] = monitorIPQueue{Pending: pending, InProgress: inProgress}
@@ -1276,7 +1276,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 
 	// Calculate source url. If git set go directly to that tag, otherwise just main.
 	var srcUrl string
-	if gitCommit == _EMPTY_ {
+	if gitCommit == EMPTY {
 		srcUrl = "https://github.com/nats-io/nats-server"
 	} else {
 		srcUrl = fmt.Sprintf("https://github.com/nats-io/nats-server/tree/%s", gitCommit)
@@ -1732,11 +1732,11 @@ func getMonitorGWOptions(opts *GatewayzOptions) (string, bool) {
 	var name string
 	var accs bool
 	if opts != nil {
-		if opts.Name != _EMPTY_ {
+		if opts.Name != EMPTY {
 			name = opts.Name
 		}
 		accs = opts.Accounts
-		if !accs && opts.AccountName != _EMPTY_ {
+		if !accs && opts.AccountName != EMPTY {
 			accs = true
 		}
 	}
@@ -1749,7 +1749,7 @@ func getMonitorGWOptions(opts *GatewayzOptions) (string, bool) {
 func (s *Server) createOutboundsRemoteGatewayz(opts *GatewayzOptions, now time.Time) map[string]*RemoteGatewayz {
 	targetGWName, doAccs := getMonitorGWOptions(opts)
 
-	if targetGWName != _EMPTY_ {
+	if targetGWName != EMPTY {
 		c := s.getOutboundGatewayConnection(targetGWName)
 		if c == nil {
 			return nil
@@ -1810,7 +1810,7 @@ func createOutboundAccountsGatewayz(opts *GatewayzOptions, gw *gateway) []*Accou
 	if opts != nil {
 		accName = opts.AccountName
 	}
-	if accName != _EMPTY_ {
+	if accName != EMPTY {
 		ei, ok := gw.outsim.Load(accName)
 		if !ok {
 			return nil
@@ -1864,7 +1864,7 @@ func (s *Server) createInboundsRemoteGatewayz(opts *GatewayzOptions, now time.Ti
 	m := make(map[string][]*RemoteGatewayz)
 	for _, c := range conns {
 		c.mu.Lock()
-		if c.gw != nil && (targetGWName == _EMPTY_ || targetGWName == c.gw.name) {
+		if c.gw != nil && (targetGWName == EMPTY || targetGWName == c.gw.name) {
 			igws := m[c.gw.name]
 			if igws == nil {
 				igws = make([]*RemoteGatewayz, 0, 2)
@@ -1895,7 +1895,7 @@ func createInboundAccountsGatewayz(opts *GatewayzOptions, gw *gateway) []*Accoun
 	if opts != nil {
 		accName = opts.AccountName
 	}
-	if accName != _EMPTY_ {
+	if accName != EMPTY {
 		e, ok := gw.insim[accName]
 		if !ok {
 			return nil
@@ -1939,7 +1939,7 @@ func (s *Server) HandleGatewayz(w http.ResponseWriter, r *http.Request) {
 	}
 	gwName := r.URL.Query().Get("gw_name")
 	accName := r.URL.Query().Get("acc_name")
-	if accName != _EMPTY_ {
+	if accName != EMPTY {
 		accs = true
 	}
 
@@ -2583,7 +2583,7 @@ func (s *Server) raftNodeToClusterInfo(node RaftNode) *ClusterInfo {
 		peerList[i] = p.ID
 	}
 	group := &raftGroup{
-		Name:  _EMPTY_,
+		Name:  EMPTY,
 		Peers: peerList,
 		node:  node,
 	}
@@ -2766,7 +2766,7 @@ func (s *Server) HandleHealthz(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	hs := s.healthz()
-	if hs.Error != _EMPTY_ {
+	if hs.Error != EMPTY {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 	b, err := json.Marshal(hs)
@@ -2793,7 +2793,7 @@ func (s *Server) healthz() *HealthStatus {
 			// We do more checking for clustered mode to allow for proper rolling updates.
 			// We will make sure that we have seen the meta leader and that we are current with all assets.
 			node := js.getMetaGroup()
-			if node.GroupLeader() == _EMPTY_ {
+			if node.GroupLeader() == EMPTY {
 				health.Status = "unavailable"
 				health.Error = "JetStream has not established contact with a meta leader"
 			} else if !node.Current() {

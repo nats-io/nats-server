@@ -317,7 +317,7 @@ func NewServer(opts *Options) (*Server, error) {
 	pub, _ := kp.PublicKey()
 
 	serverName := pub
-	if opts.ServerName != _EMPTY_ {
+	if opts.ServerName != EMPTY {
 		serverName = opts.ServerName
 	}
 
@@ -383,11 +383,11 @@ func NewServer(opts *Options) (*Server, error) {
 
 	// If we have solicited leafnodes but no clustering and no clustername.
 	// However we may need a stable clustername so use the server name.
-	if len(opts.LeafNode.Remotes) > 0 && opts.Cluster.Port == 0 && opts.Cluster.Name == _EMPTY_ {
+	if len(opts.LeafNode.Remotes) > 0 && opts.Cluster.Port == 0 && opts.Cluster.Name == EMPTY {
 		opts.Cluster.Name = opts.ServerName
 	}
 
-	if opts.Cluster.Name != _EMPTY_ {
+	if opts.Cluster.Name != EMPTY {
 		// Also place into mapping cn with cnMu lock.
 		s.cnMu.Lock()
 		s.cn = opts.Cluster.Name
@@ -440,9 +440,9 @@ func NewServer(opts *Options) (*Server, error) {
 	}
 
 	// If we have a cluster definition but do not have a cluster name, create one.
-	if opts.Cluster.Port != 0 && opts.Cluster.Name == _EMPTY_ {
+	if opts.Cluster.Port != 0 && opts.Cluster.Name == EMPTY {
 		s.info.Cluster = nuid.Next()
-	} else if opts.Cluster.Name != _EMPTY_ {
+	} else if opts.Cluster.Name != EMPTY {
 		// Likewise here if we have a cluster name set.
 		s.info.Cluster = opts.Cluster.Name
 	}
@@ -493,7 +493,7 @@ func NewServer(opts *Options) (*Server, error) {
 	// In operator mode, when the account resolver depends on an external system and
 	// the system account can't be fetched, inject a temporary one.
 	if ar := s.accResolver; len(opts.TrustedOperators) == 1 && ar != nil &&
-		opts.SystemAccount != _EMPTY_ && opts.SystemAccount != DEFAULT_SYSTEM_ACCOUNT {
+		opts.SystemAccount != EMPTY && opts.SystemAccount != DEFAULT_SYSTEM_ACCOUNT {
 		if _, ok := ar.(*MemAccResolver); !ok {
 			s.mu.Unlock()
 			var a *Account
@@ -632,7 +632,7 @@ func (s *Server) setClusterName(name string) {
 
 // Return whether the cluster name is dynamic.
 func (s *Server) isClusterNameDynamic() bool {
-	return s.getOpts().Cluster.Name == _EMPTY_
+	return s.getOpts().Cluster.Name == EMPTY
 }
 
 // Returns our configured serverName.
@@ -771,7 +771,7 @@ func (s *Server) configureAccounts() error {
 		s.registerAccountNoLock(a)
 
 		// If we see an account defined using $SYS we will make sure that is set as system account.
-		if acc.Name == DEFAULT_SYSTEM_ACCOUNT && opts.SystemAccount == _EMPTY_ {
+		if acc.Name == DEFAULT_SYSTEM_ACCOUNT && opts.SystemAccount == EMPTY {
 			s.opts.SystemAccount = DEFAULT_SYSTEM_ACCOUNT
 		}
 	}
@@ -832,7 +832,7 @@ func (s *Server) configureAccounts() error {
 
 	// Set the system account if it was configured.
 	// Otherwise create a default one.
-	if opts.SystemAccount != _EMPTY_ {
+	if opts.SystemAccount != EMPTY {
 		// Lock may be acquired in lookupAccount, so release to call lookupAccount.
 		s.mu.Unlock()
 		acc, err := s.lookupAccount(opts.SystemAccount)
@@ -852,11 +852,11 @@ func (s *Server) configureAccounts() error {
 		// If we have defined a system account here check to see if its just us and the $G account.
 		// We would do this to add user/pass to the system account. If this is the case add in
 		// no-auth-user for $G.
-		if numAccounts == 2 && s.opts.NoAuthUser == _EMPTY_ {
+		if numAccounts == 2 && s.opts.NoAuthUser == EMPTY {
 			// If we come here from config reload, let's not recreate the fake user name otherwise
 			// it will cause currently clients to be disconnected.
 			uname := s.sysAccOnlyNoAuthUser
-			if uname == _EMPTY_ {
+			if uname == EMPTY {
 				// Create a unique name so we do not collide.
 				var b [8]byte
 				rn := rand.Int63()
@@ -1397,7 +1397,7 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 		if defDomain, ok := opts.JsAccDefaultDomain[accName]; ok {
 			if jsEnabled {
 				s.Warnf("Skipping Default Domain %q, set for JetStream enabled account %q", defDomain, accName)
-			} else if defDomain != _EMPTY_ {
+			} else if defDomain != EMPTY {
 				for src, dest := range generateJSMappingTable(defDomain) {
 					// flip src and dest around so the domain is inserted
 					s.Noticef("Adding default domain mapping %q -> %q to account %q %p", dest, src, accName, acc)
@@ -1480,7 +1480,7 @@ func (s *Server) updateAccountWithClaimJWT(acc *Account, claimJWT string) error 
 		return ErrMissingAccount
 	}
 	acc.mu.RLock()
-	sameClaim := acc.claimJWT != _EMPTY_ && acc.claimJWT == claimJWT && !acc.incomplete
+	sameClaim := acc.claimJWT != EMPTY && acc.claimJWT == claimJWT && !acc.incomplete
 	acc.mu.RUnlock()
 	if sameClaim {
 		s.Debugf("Requested account update for [%s], same claims detected", acc.Name)
@@ -1489,7 +1489,7 @@ func (s *Server) updateAccountWithClaimJWT(acc *Account, claimJWT string) error 
 	accClaims, _, err := s.verifyAccountClaims(claimJWT)
 	if err == nil && accClaims != nil {
 		acc.mu.Lock()
-		if acc.Issuer == _EMPTY_ {
+		if acc.Issuer == EMPTY {
 			acc.Issuer = accClaims.Issuer
 		}
 		if acc.Name != accClaims.Subject {
@@ -1513,7 +1513,7 @@ func (s *Server) updateAccountWithClaimJWT(acc *Account, claimJWT string) error 
 func (s *Server) fetchRawAccountClaims(name string) (string, error) {
 	accResolver := s.AccountResolver()
 	if accResolver == nil {
-		return _EMPTY_, ErrNoAccountResolver
+		return EMPTY, ErrNoAccountResolver
 	}
 	// Need to do actual Fetch
 	start := time.Now()
@@ -1536,12 +1536,12 @@ func (s *Server) fetchRawAccountClaims(name string) (string, error) {
 func (s *Server) fetchAccountClaims(name string) (*jwt.AccountClaims, string, error) {
 	claimJWT, err := s.fetchRawAccountClaims(name)
 	if err != nil {
-		return nil, _EMPTY_, err
+		return nil, EMPTY, err
 	}
 	var claim *jwt.AccountClaims
 	claim, claimJWT, err = s.verifyAccountClaims(claimJWT)
 	if claim != nil && claim.Subject != name {
-		return nil, _EMPTY_, ErrAccountValidation
+		return nil, EMPTY, ErrAccountValidation
 	}
 	return claim, claimJWT, err
 }
@@ -1550,15 +1550,15 @@ func (s *Server) fetchAccountClaims(name string) (*jwt.AccountClaims, string, er
 func (s *Server) verifyAccountClaims(claimJWT string) (*jwt.AccountClaims, string, error) {
 	accClaims, err := jwt.DecodeAccountClaims(claimJWT)
 	if err != nil {
-		return nil, _EMPTY_, err
+		return nil, EMPTY, err
 	}
 	if !s.isTrustedIssuer(accClaims.Issuer) {
-		return nil, _EMPTY_, ErrAccountValidation
+		return nil, EMPTY, ErrAccountValidation
 	}
 	vr := jwt.CreateValidationResults()
 	accClaims.Validate(vr)
 	if vr.IsBlocking(true) {
-		return nil, _EMPTY_, ErrAccountValidation
+		return nil, EMPTY, ErrAccountValidation
 	}
 	return accClaims, claimJWT, nil
 }
@@ -1600,7 +1600,7 @@ func (s *Server) Start() {
 	s.Noticef("Starting nats-server")
 
 	gc := gitCommit
-	if gc == _EMPTY_ {
+	if gc == EMPTY {
 		gc = "not set"
 	}
 
@@ -1611,7 +1611,7 @@ func (s *Server) Start() {
 	s.Noticef("  Version:  %s", VERSION)
 	s.Noticef("  Git:      [%s]", gc)
 	s.Debugf("  Go build: %s", s.info.GoVersion)
-	if clusterName != _EMPTY_ {
+	if clusterName != EMPTY {
 		s.Noticef("  Cluster:  %s", clusterName)
 	}
 	s.Noticef("  Name:     %s", s.info.Name)
@@ -1639,7 +1639,7 @@ func (s *Server) Start() {
 		s.StartProfiler()
 	}
 
-	if opts.ConfigFile != _EMPTY_ {
+	if opts.ConfigFile != EMPTY {
 		s.Noticef("Using configuration file: %s", opts.ConfigFile)
 	}
 
@@ -1653,7 +1653,7 @@ func (s *Server) Start() {
 		s.Noticef("  Issued  : %v", time.Unix(opc.IssuedAt, 0))
 		s.Noticef("  Expires : %v", time.Unix(opc.Expires, 0))
 	}
-	if hasOperators && opts.SystemAccount == _EMPTY_ {
+	if hasOperators && opts.SystemAccount == EMPTY {
 		s.Warnf("Trusted Operators should utilize a System Account")
 	}
 	if opts.MaxPayload > MAX_PAYLOAD_MAX_SIZE {
@@ -1672,7 +1672,7 @@ func (s *Server) Start() {
 	}
 
 	// Log the pid to a file.
-	if opts.PidFile != _EMPTY_ {
+	if opts.PidFile != EMPTY {
 		if err := s.logPid(); err != nil {
 			s.Fatalf("Could not write pidfile: %v", err)
 			return
@@ -1680,7 +1680,7 @@ func (s *Server) Start() {
 	}
 
 	// Setup system account which will start the eventing stack.
-	if sa := opts.SystemAccount; sa != _EMPTY_ {
+	if sa := opts.SystemAccount; sa != EMPTY {
 		if err := s.SetSystemAccount(sa); err != nil {
 			s.Fatalf("Can't set system account: %v", err)
 			return
@@ -1705,7 +1705,7 @@ func (s *Server) Start() {
 		}
 		// In operator mode, when the account resolver depends on an external system and
 		// the system account is the bootstrapping account, start fetching it.
-		if len(opts.TrustedOperators) == 1 && opts.SystemAccount != _EMPTY_ && opts.SystemAccount != DEFAULT_SYSTEM_ACCOUNT {
+		if len(opts.TrustedOperators) == 1 && opts.SystemAccount != EMPTY && opts.SystemAccount != DEFAULT_SYSTEM_ACCOUNT {
 			_, isMemResolver := ar.(*MemAccResolver)
 			if v, ok := s.accounts.Load(s.opts.SystemAccount); !isMemResolver && ok && v.(*Account).claimJWT == "" {
 				s.Noticef("Using bootstrapping system account")
@@ -1843,7 +1843,7 @@ func (s *Server) Start() {
 		})
 	}
 
-	if opts.PortsFileDir != _EMPTY_ {
+	if opts.PortsFileDir != EMPTY {
 		s.logPorts()
 	}
 
@@ -2005,7 +2005,7 @@ func (s *Server) Shutdown() {
 	// Wait for go routines to be done.
 	s.grWG.Wait()
 
-	if opts.PortsFileDir != _EMPTY_ {
+	if opts.PortsFileDir != EMPTY {
 		s.deletePortsFile(opts.PortsFileDir)
 	}
 
@@ -2137,7 +2137,7 @@ func (s *Server) setInfoHostPort() error {
 	// When this function is called, opts.Port is set to the actual listen
 	// port (if option was originally set to RANDOM), even during a config
 	// reload. So use of s.opts.Port is safe.
-	if s.opts.ClientAdvertise != _EMPTY_ {
+	if s.opts.ClientAdvertise != EMPTY {
 		h, p, err := parseHostPort(s.opts.ClientAdvertise, s.opts.Port)
 		if err != nil {
 			return err
@@ -2368,7 +2368,7 @@ func (s *Server) startMonitoring(secure bool) error {
 		Addr:           hp,
 		Handler:        mux,
 		MaxHeaderBytes: 1 << 20,
-		ErrorLog:       log.New(&captureHTTPServerLog{s, "monitoring: "}, _EMPTY_, 0),
+		ErrorLog:       log.New(&captureHTTPServerLog{s, "monitoring: "}, EMPTY, 0),
 	}
 	s.mu.Lock()
 	if s.shutdown {
@@ -2564,7 +2564,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 			pre = nil
 		}
 		// Performs server-side TLS handshake.
-		if err := c.doTLSServerHandshake(_EMPTY_, opts.TLSConfig, opts.TLSTimeout, opts.TLSPinnedCerts); err != nil {
+		if err := c.doTLSServerHandshake(EMPTY, opts.TLSConfig, opts.TLSTimeout, opts.TLSPinnedCerts); err != nil {
 			c.mu.Unlock()
 			return nil
 		}
@@ -2936,7 +2936,7 @@ func (s *Server) readyForConnections(d time.Duration) error {
 		s.mu.Lock()
 		chk["server"] = info{ok: s.listener != nil, err: s.listenerErr}
 		chk["route"] = info{ok: (opts.Cluster.Port == 0 || s.routeListener != nil), err: s.routeListenerErr}
-		chk["gateway"] = info{ok: (opts.Gateway.Name == _EMPTY_ || s.gatewayListener != nil), err: s.gatewayListenerErr}
+		chk["gateway"] = info{ok: (opts.Gateway.Name == EMPTY || s.gatewayListener != nil), err: s.gatewayListenerErr}
 		chk["leafNode"] = info{ok: (opts.LeafNode.Port == 0 || s.leafNodeListener != nil), err: s.leafNodeListenerErr}
 		chk["websocket"] = info{ok: (opts.Websocket.Port == 0 || s.websocket.listener != nil), err: s.websocket.listenerErr}
 		chk["mqtt"] = info{ok: (opts.MQTT.Port == 0 || s.mqtt.listener != nil), err: s.mqtt.listenerErr}
@@ -3248,8 +3248,8 @@ func (s *Server) portFile(dirHint string) string {
 	if dirHint != "" {
 		dirname = dirHint
 	}
-	if dirname == _EMPTY_ {
-		return _EMPTY_
+	if dirname == EMPTY {
+		return EMPTY
 	}
 	return filepath.Join(dirname, fmt.Sprintf("%s_%d.ports", filepath.Base(os.Args[0]), os.Getpid()))
 }
@@ -3271,7 +3271,7 @@ func (s *Server) deletePortsFile(hintDir string) {
 func (s *Server) logPorts() {
 	opts := s.getOpts()
 	portsFile := s.portFile(opts.PortsFileDir)
-	if portsFile != _EMPTY_ {
+	if portsFile != EMPTY {
 		go func() {
 			info := s.PortsInfo(5 * time.Second)
 			if info == nil {

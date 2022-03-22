@@ -1612,7 +1612,7 @@ func TestWSParseOptions(t *testing.T) {
 			conf := createConfFile(t, []byte(test.content))
 			defer removeFile(t, conf)
 			o, err := ProcessConfigFile(conf)
-			if test.err != _EMPTY_ {
+			if test.err != EMPTY {
 				if err == nil || !strings.Contains(err.Error(), test.err) {
 					t.Fatalf("For content: %q, expected error about %q, got %v", test.content, test.err, err)
 				}
@@ -1832,7 +1832,7 @@ func testNewWSClientWithError(t testing.TB, o testWSClientOptions) (net.Conn, *b
 	if len(o.extraHeaders) > 0 {
 		for hdr, values := range o.extraHeaders {
 			if len(values) == 0 {
-				req.Header.Set(hdr, _EMPTY_)
+				req.Header.Set(hdr, EMPTY)
 				continue
 			}
 			req.Header.Set(hdr, values[0])
@@ -3941,20 +3941,20 @@ func TestWSXForwardedFor(t *testing.T) {
 	}{
 		{"nil map", func() map[string][]string {
 			return nil
-		}, false, _EMPTY_},
+		}, false, EMPTY},
 		{"empty map", func() map[string][]string {
 			return make(map[string][]string)
-		}, false, _EMPTY_},
+		}, false, EMPTY},
 		{"header present empty value", func() map[string][]string {
 			m := make(map[string][]string)
 			m[wsXForwardedForHeader] = []string{}
 			return m
-		}, false, _EMPTY_},
+		}, false, EMPTY},
 		{"header present invalid IP", func() map[string][]string {
 			m := make(map[string][]string)
 			m[wsXForwardedForHeader] = []string{"not a valid IP"}
 			return m
-		}, false, _EMPTY_},
+		}, false, EMPTY},
 		{"header present one IP", func() map[string][]string {
 			m := make(map[string][]string)
 			m[wsXForwardedForHeader] = []string{"1.2.3.4"}

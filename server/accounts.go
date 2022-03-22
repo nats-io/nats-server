@@ -555,7 +555,7 @@ type MapDest struct {
 }
 
 func NewMapDest(subject string, weight uint8) *MapDest {
-	return &MapDest{subject, weight, _EMPTY_}
+	return &MapDest{subject, weight, EMPTY}
 }
 
 // destination is for internal representation for a weighted mapped destination.
@@ -616,7 +616,7 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 		if err != nil {
 			return err
 		}
-		if d.Cluster == _EMPTY_ {
+		if d.Cluster == EMPTY {
 			m.dests = append(m.dests, &destination{tr, d.Weight})
 		} else {
 			// We have a cluster scoped filter.
@@ -1414,7 +1414,7 @@ func (a *Account) AddServiceImportWithClaim(destination *Account, from, to strin
 		return ErrMissingAccount
 	}
 	// Empty means use from.
-	if to == _EMPTY_ {
+	if to == EMPTY {
 		to = from
 	}
 	if !IsValidSubject(from) || !IsValidSubject(to) {
@@ -1550,7 +1550,7 @@ func (a *Account) NumPendingReverseResponses() int {
 
 // NumPendingAllResponses return the number of all responses outstanding for service exports.
 func (a *Account) NumPendingAllResponses() int {
-	return a.NumPendingResponses(_EMPTY_)
+	return a.NumPendingResponses(EMPTY)
 }
 
 // NumResponsesPending returns the number of responses outstanding for service exports
@@ -1560,7 +1560,7 @@ func (a *Account) NumPendingAllResponses() int {
 func (a *Account) NumPendingResponses(filter string) int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	if filter == _EMPTY_ {
+	if filter == EMPTY {
 		return len(a.exports.responses)
 	}
 	se := a.getServiceExport(filter)
@@ -1826,7 +1826,7 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 			from, dup.acc.Name, dup.to)
 	}
 
-	if to == _EMPTY_ {
+	if to == EMPTY {
 		to = from
 	}
 	// Check to see if we have a wildcard
@@ -2147,7 +2147,7 @@ func (a *Account) newServiceReply(tracking bool) []byte {
 		a.createRespWildcard()
 		createdSiReply = true
 	}
-	replyPre, isBoundToLeafnode := a.siReply, a.lds != _EMPTY_
+	replyPre, isBoundToLeafnode := a.siReply, a.lds != EMPTY
 	a.mu.Unlock()
 
 	// If we created the siReply and we are not bound to a leafnode
@@ -2312,7 +2312,7 @@ func (a *Account) addRespServiceImport(dest *Account, to string, osi *serviceImp
 		si.tracking = true
 		si.trackingHdr = header
 	}
-	isBoundToLeafnode := a.lds != _EMPTY_
+	isBoundToLeafnode := a.lds != EMPTY
 	a.mu.Unlock()
 
 	// We might not do individual subscriptions here like we do on configured imports.
@@ -2345,7 +2345,7 @@ func (a *Account) AddStreamImportWithClaim(account *Account, from, prefix string
 
 	// Check prefix if it exists and make sure its a literal.
 	// Append token separator if not already present.
-	if prefix != _EMPTY_ {
+	if prefix != EMPTY {
 		// Make sure there are no wildcards here, this prefix needs to be a literal
 		// since it will be prepended to a publish subject.
 		if !subjectIsLiteral(prefix) {
@@ -2375,7 +2375,7 @@ func (a *Account) AddMappedStreamImportWithClaim(account *Account, from, to stri
 		return ErrStreamImportAuthorization
 	}
 
-	if to == _EMPTY_ {
+	if to == EMPTY {
 		to = from
 	}
 
@@ -2664,7 +2664,7 @@ func isRevoked(revocations map[string]int64, subject string, issuedAt int64) boo
 // checkActivation will check the activation token for validity.
 // ea may only be nil in cases where revocation may not be checked, say triggered by expiration timer.
 func (a *Account) checkActivation(importAcc *Account, claim *jwt.Import, ea *exportAuth, expTimer bool) bool {
-	if claim == nil || claim.Token == _EMPTY_ {
+	if claim == nil || claim.Token == EMPTY {
 		return false
 	}
 	// Create a quick clone so we can inline Token JWT.
@@ -2710,7 +2710,7 @@ func (a *Account) checkActivation(importAcc *Account, claim *jwt.Import, ea *exp
 // the account or is an entry in the signing keys.
 func (a *Account) isIssuerClaimTrusted(claims *jwt.ActivationClaims) bool {
 	// if no issuer account, issuer is the account
-	if claims.IssuerAccount == _EMPTY_ {
+	if claims.IssuerAccount == EMPTY {
 		return true
 	}
 	// If the IssuerAccount is not us, then this is considered an error.
@@ -2913,7 +2913,7 @@ func (s *Server) AccountResolver() AccountResolver {
 // isClaimAccount returns if this account is backed by a JWT claim.
 // Lock should be held.
 func (a *Account) isClaimAccount() bool {
-	return a.claimJWT != _EMPTY_
+	return a.claimJWT != EMPTY
 }
 
 // updateAccountClaims will update an existing account with new claims.
@@ -2925,9 +2925,9 @@ func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
 
 func (a *Account) traceLabel() string {
 	if a == nil {
-		return _EMPTY_
+		return EMPTY
 	}
-	if a.nameTag != _EMPTY_ {
+	if a.nameTag != EMPTY {
 		return fmt.Sprintf("%s/%s", a.Name, a.nameTag)
 	}
 	return a.Name
@@ -3062,7 +3062,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			sub := string(e.Subject)
 			if e.Latency != nil {
 				if err := a.TrackServiceExportWithSampling(sub, string(e.Latency.Results), int(e.Latency.Sampling)); err != nil {
-					hdrNote := _EMPTY_
+					hdrNote := EMPTY
 					if e.Latency.Sampling == jwt.Headers {
 						hdrNote = " (using headers)"
 					}
@@ -3134,7 +3134,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		to := i.GetTo()
 		switch i.Type {
 		case jwt.Stream:
-			if i.LocalSubject != _EMPTY_ {
+			if i.LocalSubject != EMPTY {
 				// set local subject implies to is empty
 				to = string(i.LocalSubject)
 				s.Debugf("Adding stream import %s:%q for %s:%q", acc.traceLabel(), from, a.traceLabel(), to)
@@ -3148,7 +3148,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 				incompleteImports = append(incompleteImports, i)
 			}
 		case jwt.Service:
-			if i.LocalSubject != _EMPTY_ {
+			if i.LocalSubject != EMPTY {
 				from = string(i.LocalSubject)
 				to = string(i.Subject)
 			}
@@ -3324,7 +3324,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		theJWT := c.opts.JWT
 		c.mu.Unlock()
 		// Check for being revoked here. We use ac one to avoid the account lock.
-		if ac.Revocations != nil && theJWT != _EMPTY_ {
+		if ac.Revocations != nil && theJWT != EMPTY {
 			if juc, err := jwt.DecodeUserClaims(theJWT); err != nil {
 				c.Debugf("User JWT not valid: %v", err)
 				c.authViolation()
@@ -3347,7 +3347,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			}
 			sk := c.user.SigningKey
 			c.mu.Unlock()
-			if sk == _EMPTY_ {
+			if sk == EMPTY {
 				continue
 			}
 			if _, ok := alteredScope[sk]; ok {
@@ -3444,7 +3444,7 @@ func buildPermissionsFromJwt(uc *jwt.Permissions) *Permissions {
 // Helper to build internal NKeyUser.
 func buildInternalNkeyUser(uc *jwt.UserClaims, acts map[string]struct{}, acc *Account) *NkeyUser {
 	nu := &NkeyUser{Nkey: uc.Subject, Account: acc, AllowedConnectionTypes: acts}
-	if uc.IssuerAccount != _EMPTY_ {
+	if uc.IssuerAccount != EMPTY {
 		nu.SigningKey = uc.Issuer
 	}
 
@@ -3459,7 +3459,7 @@ func buildInternalNkeyUser(uc *jwt.UserClaims, acts map[string]struct{}, acc *Ac
 
 func fetchAccount(res AccountResolver, name string) (string, error) {
 	if !nkeys.IsValidPublicAccountKey(name) {
-		return _EMPTY_, fmt.Errorf("will only fetch valid account keys")
+		return EMPTY, fmt.Errorf("will only fetch valid account keys")
 	}
 	return res.Fetch(name)
 }
@@ -3513,7 +3513,7 @@ func (m *MemAccResolver) Fetch(name string) (string, error) {
 	if j, ok := m.sm.Load(name); ok {
 		return j.(string), nil
 	}
-	return _EMPTY_, ErrMissingAccount
+	return EMPTY, ErrMissingAccount
 }
 
 // Store will store the account jwt claims in the internal sync.Map.
@@ -3557,16 +3557,16 @@ func (ur *URLAccResolver) Fetch(name string) (string, error) {
 	url := ur.url + name
 	resp, err := ur.c.Get(url)
 	if err != nil {
-		return _EMPTY_, fmt.Errorf("could not fetch <%q>: %v", redactURLString(url), err)
+		return EMPTY, fmt.Errorf("could not fetch <%q>: %v", redactURLString(url), err)
 	} else if resp == nil {
-		return _EMPTY_, fmt.Errorf("could not fetch <%q>: no response", redactURLString(url))
+		return EMPTY, fmt.Errorf("could not fetch <%q>: no response", redactURLString(url))
 	} else if resp.StatusCode != http.StatusOK {
-		return _EMPTY_, fmt.Errorf("could not fetch <%q>: %v", redactURLString(url), resp.Status)
+		return EMPTY, fmt.Errorf("could not fetch <%q>: %v", redactURLString(url), resp.Status)
 	}
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return _EMPTY_, err
+		return EMPTY, err
 	}
 	return string(body), nil
 }
@@ -3589,25 +3589,25 @@ func (dr *DirAccResolver) Reload() error {
 
 func respondToUpdate(s *Server, respSubj string, acc string, message string, err error) {
 	if err == nil {
-		if acc == _EMPTY_ {
+		if acc == EMPTY {
 			s.Debugf("%s", message)
 		} else {
 			s.Debugf("%s - %s", message, acc)
 		}
 	} else {
-		if acc == _EMPTY_ {
+		if acc == EMPTY {
 			s.Errorf("%s - %s", message, err)
 		} else {
 			s.Errorf("%s - %s - %s", message, acc, err)
 		}
 	}
-	if respSubj == _EMPTY_ {
+	if respSubj == EMPTY {
 		return
 	}
 	server := &ServerInfo{}
 	response := map[string]interface{}{"server": server}
 	m := map[string]interface{}{}
-	if acc != _EMPTY_ {
+	if acc != EMPTY {
 		m["account"] = acc
 	}
 	if err == nil {
@@ -3619,11 +3619,11 @@ func respondToUpdate(s *Server, respSubj string, acc string, message string, err
 		m["description"] = fmt.Sprintf("%s - %v", message, err)
 		response["error"] = m
 	}
-	s.sendInternalMsgLocked(respSubj, _EMPTY_, server, response)
+	s.sendInternalMsgLocked(respSubj, EMPTY, server, response)
 }
 
 func handleListRequest(store *DirJWTStore, s *Server, reply string) {
-	if reply == _EMPTY_ {
+	if reply == EMPTY {
 		return
 	}
 	accIds := make([]string, 0, 1024)
@@ -3638,7 +3638,7 @@ func handleListRequest(store *DirJWTStore, s *Server, reply string) {
 		s.Debugf("list request responded with %d account ids", len(accIds))
 		server := &ServerInfo{}
 		response := map[string]interface{}{"server": server, "data": accIds}
-		s.sendInternalMsgLocked(reply, _EMPTY_, server, response)
+		s.sendInternalMsgLocked(reply, EMPTY, server, response)
 	}
 }
 
@@ -3665,7 +3665,7 @@ func handleDeleteRequest(store *DirJWTStore, s *Server, msg []byte, reply string
 		} else {
 			for _, entry := range accIds {
 				if acc, ok := entry.(string); !ok ||
-					acc == _EMPTY_ || !nkeys.IsValidPublicAccountKey(acc) {
+					acc == EMPTY || !nkeys.IsValidPublicAccountKey(acc) {
 					err = fmt.Errorf("malformed request")
 					break
 				} else if acc == sysAccName {
@@ -3676,7 +3676,7 @@ func handleDeleteRequest(store *DirJWTStore, s *Server, msg []byte, reply string
 		}
 	}
 	if err != nil {
-		respondToUpdate(s, reply, _EMPTY_, fmt.Sprintf("delete accounts request by %s failed", subj), err)
+		respondToUpdate(s, reply, EMPTY, fmt.Sprintf("delete accounts request by %s failed", subj), err)
 		return
 	}
 	errs := []string{}
@@ -3689,9 +3689,9 @@ func handleDeleteRequest(store *DirJWTStore, s *Server, msg []byte, reply string
 		}
 	}
 	if len(errs) == 0 {
-		respondToUpdate(s, reply, _EMPTY_, fmt.Sprintf("deleted %d accounts", passCnt), nil)
+		respondToUpdate(s, reply, EMPTY, fmt.Sprintf("deleted %d accounts", passCnt), nil)
 	} else {
-		respondToUpdate(s, reply, _EMPTY_, fmt.Sprintf("deleted %d accounts, failed for %d", passCnt, len(errs)),
+		respondToUpdate(s, reply, EMPTY, fmt.Sprintf("deleted %d accounts, failed for %d", passCnt, len(errs)),
 			errors.New(strings.Join(errs, "\n")))
 	}
 }
@@ -3711,7 +3711,7 @@ func getOperatorKeys(s *Server) (string, map[string]struct{}, bool, error) {
 		}
 	}
 	if len(keys) == 0 {
-		return _EMPTY_, nil, false, fmt.Errorf("no operator key found")
+		return EMPTY, nil, false, fmt.Errorf("no operator key found")
 	}
 	return op, keys, strict, nil
 }
@@ -3771,7 +3771,7 @@ func (dr *DirAccResolver) Start(s *Server) error {
 	for _, reqSub := range []string{accUpdateEventSubjOld, accUpdateEventSubjNew} {
 		// subscribe to account jwt update requests
 		if _, err := s.sysSubscribe(fmt.Sprintf(reqSub, "*"), func(_ *subscription, _ *client, _ *Account, subj, resp string, msg []byte) {
-			pubKey := _EMPTY_
+			pubKey := EMPTY
 			tk := strings.Split(subj, tsep)
 			if len(tk) == accUpdateTokensNew {
 				pubKey = tk[accReqAccIndex]
@@ -3818,7 +3818,7 @@ func (dr *DirAccResolver) Start(s *Server) error {
 	}
 	// respond to lookups with our version
 	if _, err := s.sysSubscribe(fmt.Sprintf(accLookupReqSubj, "*"), func(_ *subscription, _ *client, _ *Account, subj, reply string, msg []byte) {
-		if reply == _EMPTY_ {
+		if reply == EMPTY {
 			return
 		}
 		tk := strings.Split(subj, tsep)
@@ -3828,7 +3828,7 @@ func (dr *DirAccResolver) Start(s *Server) error {
 		if theJWT, err := dr.DirJWTStore.LoadAcc(tk[accReqAccIndex]); err != nil {
 			s.Errorf("Merging resulted in error: %v", err)
 		} else {
-			s.sendInternalMsgLocked(reply, _EMPTY_, nil, []byte(theJWT))
+			s.sendInternalMsgLocked(reply, EMPTY, nil, []byte(theJWT))
 		}
 	}); err != nil {
 		return fmt.Errorf("error setting up lookup request handling: %v", err)
@@ -3836,21 +3836,21 @@ func (dr *DirAccResolver) Start(s *Server) error {
 	// respond to pack requests with one or more pack messages
 	// an empty message signifies the end of the response responder
 	if _, err := s.sysSubscribeQ(accPackReqSubj, "responder", func(_ *subscription, _ *client, _ *Account, _, reply string, theirHash []byte) {
-		if reply == _EMPTY_ {
+		if reply == EMPTY {
 			return
 		}
 		ourHash := dr.DirJWTStore.Hash()
 		if bytes.Equal(theirHash, ourHash[:]) {
-			s.sendInternalMsgLocked(reply, _EMPTY_, nil, []byte{})
+			s.sendInternalMsgLocked(reply, EMPTY, nil, []byte{})
 			s.Debugf("pack request matches hash %x", ourHash[:])
 		} else if err := dr.DirJWTStore.PackWalk(1, func(partialPackMsg string) {
-			s.sendInternalMsgLocked(reply, _EMPTY_, nil, []byte(partialPackMsg))
+			s.sendInternalMsgLocked(reply, EMPTY, nil, []byte(partialPackMsg))
 		}); err != nil {
 			// let them timeout
 			s.Errorf("pack request error: %v", err)
 		} else {
 			s.Debugf("pack request hash %x - finished responding with hash %x", theirHash, ourHash)
-			s.sendInternalMsgLocked(reply, _EMPTY_, nil, []byte{})
+			s.sendInternalMsgLocked(reply, EMPTY, nil, []byte{})
 		}
 	}); err != nil {
 		return fmt.Errorf("error setting up pack request handling: %v", err)
@@ -3902,7 +3902,7 @@ func (dr *DirAccResolver) Start(s *Server) error {
 }
 
 func (dr *DirAccResolver) Fetch(name string) (string, error) {
-	if theJWT, err := dr.LoadAcc(name); theJWT != _EMPTY_ {
+	if theJWT, err := dr.LoadAcc(name); theJWT != EMPTY {
 		return theJWT, nil
 	} else {
 		dr.Lock()
@@ -3910,7 +3910,7 @@ func (dr *DirAccResolver) Fetch(name string) (string, error) {
 		to := dr.fetchTimeout
 		dr.Unlock()
 		if srv == nil {
-			return _EMPTY_, err
+			return EMPTY, err
 		}
 		return srv.fetch(dr, name, to) // lookup from other server
 	}
@@ -3973,14 +3973,14 @@ type CacheDirAccResolver struct {
 
 func (s *Server) fetch(res AccountResolver, name string, timeout time.Duration) (string, error) {
 	if s == nil {
-		return _EMPTY_, ErrNoAccountResolver
+		return EMPTY, ErrNoAccountResolver
 	}
 	respC := make(chan []byte, 1)
 	accountLookupRequest := fmt.Sprintf(accLookupReqSubj, name)
 	s.mu.Lock()
 	if s.sys == nil || s.sys.replies == nil {
 		s.mu.Unlock()
-		return _EMPTY_, fmt.Errorf("eventing shut down")
+		return EMPTY, fmt.Errorf("eventing shut down")
 	}
 	replySubj := s.newRespInbox()
 	replies := s.sys.replies
@@ -4057,7 +4057,7 @@ func (dr *CacheDirAccResolver) Start(s *Server) error {
 	for _, reqSub := range []string{accUpdateEventSubjOld, accUpdateEventSubjNew} {
 		// subscribe to account jwt update requests
 		if _, err := s.sysSubscribe(fmt.Sprintf(reqSub, "*"), func(_ *subscription, _ *client, _ *Account, subj, resp string, msg []byte) {
-			pubKey := _EMPTY_
+			pubKey := EMPTY
 			tk := strings.Split(subj, tsep)
 			if len(tk) == accUpdateTokensNew {
 				pubKey = tk[accReqAccIndex]
@@ -4208,13 +4208,13 @@ func (tr *transform) match(subject string) (string, error) {
 	}
 	tts = append(tts, subject[start:])
 	if !isValidLiteralSubject(tts) {
-		return _EMPTY_, ErrBadSubject
+		return EMPTY, ErrBadSubject
 	}
 
 	if isSubsetMatch(tts, tr.src) {
 		return tr.transform(tts)
 	}
-	return _EMPTY_, ErrNoTransforms
+	return EMPTY, ErrNoTransforms
 }
 
 // Do not need to match, just transform.

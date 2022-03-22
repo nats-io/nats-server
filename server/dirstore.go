@@ -37,27 +37,27 @@ const (
 
 // validatePathExists checks that the provided path exists and is a dir if requested
 func validatePathExists(path string, dir bool) (string, error) {
-	if path == _EMPTY_ {
-		return _EMPTY_, errors.New("path is not specified")
+	if path == EMPTY {
+		return EMPTY, errors.New("path is not specified")
 	}
 
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return _EMPTY_, fmt.Errorf("error parsing path [%s]: %v", abs, err)
+		return EMPTY, fmt.Errorf("error parsing path [%s]: %v", abs, err)
 	}
 
 	var finfo os.FileInfo
 	if finfo, err = os.Stat(abs); os.IsNotExist(err) {
-		return _EMPTY_, fmt.Errorf("the path [%s] doesn't exist", abs)
+		return EMPTY, fmt.Errorf("the path [%s] doesn't exist", abs)
 	}
 
 	mode := finfo.Mode()
 	if dir && mode.IsRegular() {
-		return _EMPTY_, fmt.Errorf("the path [%s] is not a directory", abs)
+		return EMPTY, fmt.Errorf("the path [%s] is not a directory", abs)
 	}
 
 	if !dir && mode.IsDir() {
-		return _EMPTY_, fmt.Errorf("the path [%s] is not a file", abs)
+		return EMPTY, fmt.Errorf("the path [%s] is not a file", abs)
 	}
 
 	return abs, nil
@@ -89,13 +89,13 @@ func newDir(dirPath string, create bool) (string, error) {
 	fullPath, err := validateDirPath(dirPath)
 	if err != nil {
 		if !create {
-			return _EMPTY_, err
+			return EMPTY, err
 		}
 		if err = os.MkdirAll(dirPath, defaultDirPerms); err != nil {
-			return _EMPTY_, err
+			return EMPTY, err
 		}
 		if fullPath, err = validateDirPath(dirPath); err != nil {
-			return _EMPTY_, err
+			return EMPTY, err
 		}
 	}
 	return fullPath, nil
@@ -256,7 +256,7 @@ func (store *DirJWTStore) Pack(maxJWTs int) (string, error) {
 	})
 	store.Unlock()
 	if err != nil {
-		return _EMPTY_, err
+		return EMPTY, err
 	} else {
 		return strings.Join(pack, "\n"), nil
 	}
@@ -313,7 +313,7 @@ func (store *DirJWTStore) PackWalk(maxJWTs int, cb func(partialPackMsg string)) 
 func (store *DirJWTStore) Merge(pack string) error {
 	newJWTs := strings.Split(pack, "\n")
 	for _, line := range newJWTs {
-		if line == _EMPTY_ { // ignore blank lines
+		if line == EMPTY { // ignore blank lines
 			continue
 		}
 		split := strings.Split(line, "|")
@@ -368,7 +368,7 @@ func (store *DirJWTStore) Reload() error {
 
 func (store *DirJWTStore) pathForKey(publicKey string) string {
 	if len(publicKey) < 2 {
-		return _EMPTY_
+		return EMPTY
 	}
 	fileName := fmt.Sprintf("%s%s", publicKey, fileExtension)
 	if store.shard {
@@ -384,10 +384,10 @@ func (store *DirJWTStore) pathForKey(publicKey string) string {
 func (store *DirJWTStore) load(publicKey string) (string, error) {
 	store.Lock()
 	defer store.Unlock()
-	if path := store.pathForKey(publicKey); path == _EMPTY_ {
-		return _EMPTY_, fmt.Errorf("invalid public key")
+	if path := store.pathForKey(publicKey); path == EMPTY {
+		return EMPTY, fmt.Errorf("invalid public key")
 	} else if data, err := ioutil.ReadFile(path); err != nil {
-		return _EMPTY_, err
+		return EMPTY, err
 	} else {
 		if store.expiration != nil {
 			store.expiration.updateTrack(publicKey)
@@ -467,7 +467,7 @@ func (store *DirJWTStore) save(publicKey string, theJWT string) error {
 	}
 	store.Lock()
 	path := store.pathForKey(publicKey)
-	if path == _EMPTY_ {
+	if path == EMPTY {
 		store.Unlock()
 		return fmt.Errorf("invalid public key")
 	}
@@ -494,7 +494,7 @@ func (store *DirJWTStore) saveIfNewer(publicKey string, theJWT string) error {
 		return fmt.Errorf("store is read-only")
 	}
 	path := store.pathForKey(publicKey)
-	if path == _EMPTY_ {
+	if path == EMPTY {
 		return fmt.Errorf("invalid public key")
 	}
 	dirPath := filepath.Dir(path)

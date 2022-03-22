@@ -1588,7 +1588,7 @@ func TestSystemAccountWithBadRemoteLatencyUpdate(t *testing.T) {
 		ReqId:   "_INBOX.22",
 	}
 	b, _ := json.Marshal(&rl)
-	s.remoteLatencyUpdate(nil, nil, nil, "foo", _EMPTY_, b)
+	s.remoteLatencyUpdate(nil, nil, nil, "foo", EMPTY, b)
 }
 
 func TestSystemAccountWithGateways(t *testing.T) {
@@ -1683,11 +1683,11 @@ func TestSystemAccountNoAuthUser(t *testing.T) {
 		account string
 	}{
 		{"valid user/pwd", "admin:pwd@", true, "$SYS"},
-		{"invalid pwd", "admin:wrong@", false, _EMPTY_},
-		{"some token", "sometoken@", false, _EMPTY_},
-		{"user used without pwd", "admin@", false, _EMPTY_}, // will be treated as a token
-		{"user with empty password", "admin:@", false, _EMPTY_},
-		{"no user means global account", _EMPTY_, true, globalAccountName},
+		{"invalid pwd", "admin:wrong@", false, EMPTY},
+		{"some token", "sometoken@", false, EMPTY},
+		{"user used without pwd", "admin@", false, EMPTY}, // will be treated as a token
+		{"user with empty password", "admin:@", false, EMPTY},
+		{"no user means global account", EMPTY, true, globalAccountName},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			url := fmt.Sprintf("nats://%s127.0.0.1:%d", test.usrInfo, o.Port)

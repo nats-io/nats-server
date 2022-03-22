@@ -812,7 +812,7 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 		if resetTLSName, err := c.doTLSHandshake("gateway", solicit, url, tlsConfig, tlsName, timeout, opts.Gateway.TLSPinnedCerts); err != nil {
 			if resetTLSName {
 				cfg.Lock()
-				cfg.tlsName = _EMPTY_
+				cfg.tlsName = EMPTY
 				cfg.Unlock()
 			}
 			c.mu.Unlock()
@@ -2870,7 +2870,7 @@ func (c *client) handleGatewayReply(msg []byte) (processed bool) {
 		}
 		buf = append(buf, szb...)
 		mhEnd := len(buf)
-		buf = append(buf, _CRLF_...)
+		buf = append(buf, CR_LF...)
 		buf = append(buf, msg...)
 
 		route.mu.Lock()

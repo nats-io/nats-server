@@ -171,17 +171,17 @@ func (p *Permissions) clone() *Permissions {
 // Lock is assumed held.
 func (s *Server) checkAuthforWarnings() {
 	warn := false
-	if s.opts.Password != _EMPTY_ && !isBcrypt(s.opts.Password) {
+	if s.opts.Password != EMPTY && !isBcrypt(s.opts.Password) {
 		warn = true
 	}
 	for _, u := range s.users {
 		// Skip warn if using TLS certs based auth
 		// unless a password has been left in the config.
-		if u.Password == _EMPTY_ && s.opts.TLSMap {
+		if u.Password == EMPTY && s.opts.TLSMap {
 			continue
 		}
 		// Check if this is our internal sys client created on the fly.
-		if s.sysAccOnlyNoAuthUser != _EMPTY_ && u.Username == s.sysAccOnlyNoAuthUser {
+		if s.sysAccOnlyNoAuthUser != EMPTY && u.Username == s.sysAccOnlyNoAuthUser {
 			continue
 		}
 		if !isBcrypt(u.Password) {
@@ -448,7 +448,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 
 	// Check if we have trustedKeys defined in the server. If so we require a user jwt.
 	if s.trustedKeys != nil {
-		if c.opts.JWT == _EMPTY_ {
+		if c.opts.JWT == EMPTY {
 			s.mu.Unlock()
 			c.Debugf("Authentication requires a user JWT")
 			return false
@@ -473,7 +473,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 	// Check if we have nkeys or users for client.
 	hasNkeys := len(s.nkeys) > 0
 	hasUsers := len(s.users) > 0
-	if hasNkeys && c.opts.Nkey != _EMPTY_ {
+	if hasNkeys && c.opts.Nkey != EMPTY {
 		nkey, ok = s.nkeys[c.opts.Nkey]
 		if !ok || !c.connectionTypeAllowed(nkey.AllowedConnectionTypes) {
 			s.mu.Unlock()
@@ -485,17 +485,17 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			authorized := checkClientTLSCertSubject(c, func(u string, certDN *ldap.DN, _ bool) (string, bool) {
 				// First do literal lookup using the resulting string representation
 				// of RDNSequence as implemented by the pkix package from Go.
-				if u != _EMPTY_ {
+				if u != EMPTY {
 					usr, ok := s.users[u]
 					if !ok || !c.connectionTypeAllowed(usr.AllowedConnectionTypes) {
-						return _EMPTY_, false
+						return EMPTY, false
 					}
 					user = usr
 					return usr.Username, true
 				}
 
 				if certDN == nil {
-					return _EMPTY_, false
+					return EMPTY, false
 				}
 
 				// Look through the accounts for a DN that is equal to the one
@@ -528,21 +528,21 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 						return usr.Username, true
 					}
 				}
-				return _EMPTY_, false
+				return EMPTY, false
 			})
 			if !authorized {
 				s.mu.Unlock()
 				return false
 			}
-			if c.opts.Username != _EMPTY_ {
+			if c.opts.Username != EMPTY {
 				s.Warnf("User %q found in connect proto, but user required from cert", c.opts.Username)
 			}
 			// Already checked that the client didn't send a user in connect
 			// but we set it here to be able to identify it in the logs.
 			c.opts.Username = user.Username
 		} else {
-			if (c.kind == CLIENT || c.kind == LEAF) && noAuthUser != _EMPTY_ &&
-				c.opts.Username == _EMPTY_ && c.opts.Password == _EMPTY_ && c.opts.Token == _EMPTY_ {
+			if (c.kind == CLIENT || c.kind == LEAF) && noAuthUser != EMPTY &&
+				c.opts.Username == EMPTY && c.opts.Password == EMPTY && c.opts.Token == EMPTY {
 				if u, exists := s.users[noAuthUser]; exists {
 					c.mu.Lock()
 					c.opts.Username = u.Username
@@ -550,7 +550,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 					c.mu.Unlock()
 				}
 			}
-			if c.opts.Username != _EMPTY_ {
+			if c.opts.Username != EMPTY {
 				user, ok = s.users[c.opts.Username]
 				if !ok || !c.connectionTypeAllowed(user.AllowedConnectionTypes) {
 					s.mu.Unlock()
@@ -593,7 +593,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			return false
 		}
 		issuer := juc.Issuer
-		if juc.IssuerAccount != _EMPTY_ {
+		if juc.IssuerAccount != EMPTY {
 			issuer = juc.IssuerAccount
 		}
 		if pinnedAcounts != nil {
@@ -633,7 +633,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 		// FIXME: if BearerToken is only for WSS, need check for server with that port enabled
 		if !juc.BearerToken {
 			// Verify the signature against the nonce.
-			if c.opts.Sig == _EMPTY_ {
+			if c.opts.Sig == EMPTY {
 				c.Debugf("Signature missing")
 				return false
 			}
@@ -715,7 +715,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 	}
 
 	if nkey != nil {
-		if c.opts.Sig == _EMPTY_ {
+		if c.opts.Sig == EMPTY {
 			c.Debugf("Signature missing")
 			return false
 		}
@@ -753,9 +753,9 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 	}
 
 	if c.kind == CLIENT {
-		if token != _EMPTY_ {
+		if token != EMPTY {
 			return comparePasswords(token, c.opts.Token)
-		} else if username != _EMPTY_ {
+		} else if username != EMPTY {
 			if username != c.opts.Username {
 				return false
 			}
@@ -1001,7 +1001,7 @@ func (s *Server) isGatewayAuthorized(c *client) bool {
 func (s *Server) registerLeafWithAccount(c *client, account string) bool {
 	var err error
 	acc := s.globalAccount()
-	if account != _EMPTY_ {
+	if account != EMPTY {
 		acc, err = s.lookupAccount(account)
 		if err != nil {
 			s.Errorf("authentication of user %q failed, unable to lookup account %q: %v",
@@ -1032,7 +1032,7 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 	// If leafnodes config has an authorization{} stanza, this takes precedence.
 	// The user in CONNECT must match. We will bind to the account associated
 	// with that user (from the leafnode's authorization{} config).
-	if opts.LeafNode.Username != _EMPTY_ {
+	if opts.LeafNode.Username != EMPTY {
 		return isAuthorized(opts.LeafNode.Username, opts.LeafNode.Password, opts.LeafNode.Account)
 	} else if len(opts.LeafNode.Users) > 0 {
 		if opts.LeafNode.TLSMap {
@@ -1045,17 +1045,17 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 						return u, true
 					}
 				}
-				return _EMPTY_, false
+				return EMPTY, false
 			})
 			if !found {
 				return false
 			}
-			if c.opts.Username != _EMPTY_ {
+			if c.opts.Username != EMPTY {
 				s.Warnf("User %q found in connect proto, but user required from cert", c.opts.Username)
 			}
 			c.opts.Username = user.Username
 			// EMPTY will result in $G
-			accName := _EMPTY_
+			accName := EMPTY
 			if user.Account != nil {
 				accName = user.Account.GetName()
 			}
@@ -1145,7 +1145,7 @@ func validateAllowedConnectionTypes(m map[string]struct{}) error {
 }
 
 func validateNoAuthUser(o *Options, noAuthUser string) error {
-	if noAuthUser == _EMPTY_ {
+	if noAuthUser == EMPTY {
 		return nil
 	}
 	if len(o.TrustedOperators) > 0 {

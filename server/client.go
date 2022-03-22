@@ -77,10 +77,10 @@ const (
 )
 
 const (
-	pingProto = "PING" + _CRLF_
-	pongProto = "PONG" + _CRLF_
-	errProto  = "-ERR '%s'" + _CRLF_
-	okProto   = "+OK" + _CRLF_
+	pingProto = "PING" + CR_LF
+	pongProto = "PONG" + CR_LF
+	errProto  = "-ERR '%s'" + CR_LF
+	okProto   = "+OK" + CR_LF
 )
 
 func init() {
@@ -425,7 +425,7 @@ func (c *client) String() (id string) {
 		return loaded.(string)
 	}
 
-	return _EMPTY_
+	return EMPTY
 }
 
 // GetNonce returns the nonce that was presented to the user on connection
@@ -486,7 +486,7 @@ func (c *client) clientType() int {
 }
 
 var clientTypeStringMap = map[int]string{
-	NON_CLIENT: _EMPTY_,
+	NON_CLIENT: EMPTY,
 	NATS:       "nats",
 	WS:         "websocket",
 	MQTT:       "mqtt",
@@ -496,7 +496,7 @@ func (c *client) clientTypeString() string {
 	if typeStringVal, ok := clientTypeStringMap[c.clientType()]; ok {
 		return typeStringVal
 	}
-	return _EMPTY_
+	return EMPTY
 }
 
 // This is the main subscription struct that indicates
@@ -608,11 +608,11 @@ func (c *client) initClient() {
 	var conn string
 	if c.nc != nil {
 		if addr := c.nc.RemoteAddr(); addr != nil {
-			if conn = addr.String(); conn != _EMPTY_ {
+			if conn = addr.String(); conn != EMPTY {
 				host, port, _ := net.SplitHostPort(conn)
 				iPort, _ := strconv.Atoi(port)
 				c.host, c.port = host, uint16(iPort)
-				if c.isWebsocket() && c.ws.clientIP != _EMPTY_ {
+				if c.isWebsocket() && c.ws.clientIP != EMPTY {
 					cip := c.ws.clientIP
 					// Surround IPv6 addresses with square brackets, as
 					// net.JoinHostPort would do...
@@ -757,11 +757,11 @@ func (c *client) applyAccountLimits() {
 	}
 	c.mpay = jwt.NoLimit
 	c.msubs = jwt.NoLimit
-	if c.opts.JWT != _EMPTY_ { // user jwt implies account
+	if c.opts.JWT != EMPTY { // user jwt implies account
 		if uc, _ := jwt.DecodeUserClaims(c.opts.JWT); uc != nil {
 			c.mpay = int32(uc.Limits.Payload)
 			c.msubs = int32(uc.Limits.Subs)
-			if uc.IssuerAccount != _EMPTY_ && uc.IssuerAccount != uc.Issuer {
+			if uc.IssuerAccount != EMPTY && uc.IssuerAccount != uc.Issuer {
 				if scope, ok := c.acc.signingKeys[uc.Issuer]; ok {
 					if userScope, ok := scope.(*jwt.UserScope); ok {
 						// if signing key disappeared or changed and we don't get here, the client will be disconnected
@@ -827,7 +827,7 @@ func (c *client) RegisterUser(user *User) {
 
 	// allows custom authenticators to set a username to be reported in
 	// server events and more
-	if user.Username != _EMPTY_ {
+	if user.Username != EMPTY {
 		c.opts.Username = user.Username
 	}
 
@@ -1757,24 +1757,24 @@ func (c *client) processConnect(arg []byte) error {
 
 	if c.kind == CLIENT {
 		var ncs string
-		if c.opts.Version != _EMPTY_ {
+		if c.opts.Version != EMPTY {
 			ncs = fmt.Sprintf("v%s", c.opts.Version)
 		}
-		if c.opts.Lang != _EMPTY_ {
-			if c.opts.Version == _EMPTY_ {
+		if c.opts.Lang != EMPTY {
+			if c.opts.Version == EMPTY {
 				ncs = c.opts.Lang
 			} else {
 				ncs = fmt.Sprintf("%s:%s", ncs, c.opts.Lang)
 			}
 		}
-		if c.opts.Name != _EMPTY_ {
-			if c.opts.Version == _EMPTY_ && c.opts.Lang == _EMPTY_ {
+		if c.opts.Name != EMPTY {
+			if c.opts.Version == EMPTY && c.opts.Lang == EMPTY {
 				ncs = c.opts.Name
 			} else {
 				ncs = fmt.Sprintf("%s:%s", ncs, c.opts.Name)
 			}
 		}
-		if ncs != _EMPTY_ {
+		if ncs != EMPTY {
 			c.ncs.Store(fmt.Sprintf("%s - %q", c, ncs))
 		}
 	}
@@ -1785,7 +1785,7 @@ func (c *client) processConnect(arg []byte) error {
 	}
 	// when not in operator mode, discard the jwt
 	if srv != nil && srv.trustedKeys == nil {
-		c.opts.JWT = _EMPTY_
+		c.opts.JWT = EMPTY
 	}
 	ujwt := c.opts.JWT
 
@@ -1808,7 +1808,7 @@ func (c *client) processConnect(arg []byte) error {
 		// Check for Auth
 		if ok := srv.checkAuthentication(c); !ok {
 			// We may fail here because we reached max limits on an account.
-			if ujwt != _EMPTY_ {
+			if ujwt != EMPTY {
 				c.mu.Lock()
 				acc := c.acc
 				c.mu.Unlock()
@@ -1825,7 +1825,7 @@ func (c *client) processConnect(arg []byte) error {
 
 		// Check for Account designation, we used to have this as an optional feature for dynamic
 		// sandbox environments. Now its considered an error.
-		if accountNew || account != _EMPTY_ {
+		if accountNew || account != EMPTY {
 			c.authViolation()
 			return ErrAuthentication
 		}
@@ -2562,7 +2562,7 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
 			continue
 		}
 		if subj == im.to {
-			ims = append(ims, ime{im, _EMPTY_, false})
+			ims = append(ims, ime{im, EMPTY, false})
 			continue
 		}
 		if tokensModified {
@@ -2573,10 +2573,10 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
 		imTokens := tokenizeSubjectIntoSlice(imTsa[:0], im.to)
 
 		if isSubsetMatchTokenized(tokens, imTokens) {
-			ims = append(ims, ime{im, _EMPTY_, true})
+			ims = append(ims, ime{im, EMPTY, true})
 		} else if hasWC {
 			if isSubsetMatchTokenized(imTokens, tokens) {
-				ims = append(ims, ime{im, _EMPTY_, false})
+				ims = append(ims, ime{im, EMPTY, false})
 			} else {
 				imTokensLen := len(imTokens)
 				for i, t := range tokens {
@@ -2649,7 +2649,7 @@ func (c *client) addShadowSub(sub *subscription, ime *ime) (*subscription, error
 			im.rtr = im.tr.reverse()
 		}
 		s := string(nsub.subject)
-		if ime.overlapSubj != _EMPTY_ {
+		if ime.overlapSubj != EMPTY {
 			s = ime.overlapSubj
 		}
 		subj, err := im.rtr.transformSubject(s)
@@ -2658,7 +2658,7 @@ func (c *client) addShadowSub(sub *subscription, ime *ime) (*subscription, error
 		}
 		nsub.subject = []byte(subj)
 	} else if !im.usePub || !ime.dyn {
-		if ime.overlapSubj != _EMPTY_ {
+		if ime.overlapSubj != EMPTY {
 			nsub.subject = []byte(ime.overlapSubj)
 		} else {
 			nsub.subject = []byte(im.from)
@@ -2932,7 +2932,7 @@ func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, ac
 		// If we are coming from a leaf with an origin cluster we need to handle differently
 		// if we can. We will send a route based LMSG which has origin cluster and headers
 		// by default.
-		if c.kind == LEAF && c.remoteCluster() != _EMPTY_ && rt.sub.client.route.lnoc {
+		if c.kind == LEAF && c.remoteCluster() != EMPTY && rt.sub.client.route.lnoc {
 			mh[0] = 'L'
 			mh = append(mh, c.remoteCluster()...)
 			mh = append(mh, ' ')
@@ -2996,7 +2996,7 @@ func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, ac
 	} else {
 		mh = append(mh, c.pa.szb...)
 	}
-	return append(mh, _CRLF_...)
+	return append(mh, CR_LF...)
 }
 
 // Create a message header for clients. Header aware.
@@ -3037,7 +3037,7 @@ func (c *client) msgHeader(subj, reply []byte, sub *subscription) []byte {
 	} else {
 		mh = append(mh, c.pa.szb...)
 	}
-	mh = append(mh, _CRLF_...)
+	mh = append(mh, CR_LF...)
 	return mh
 }
 
@@ -3730,11 +3730,11 @@ func removeHeaderIfPresent(hdr []byte, key string) []byte {
 	if index >= len(hdr) || hdr[index] != ':' {
 		return hdr
 	}
-	end := bytes.Index(hdr[start:], []byte(_CRLF_))
+	end := bytes.Index(hdr[start:], []byte(CR_LF))
 	if end < 0 {
 		return hdr
 	}
-	hdr = append(hdr[:start], hdr[start+end+len(_CRLF_):]...)
+	hdr = append(hdr[:start], hdr[start+end+len(CR_LF):]...)
 	if len(hdr) <= len(emptyHdrLine) {
 		return nil
 	}
@@ -4345,7 +4345,7 @@ sendToRoutesOrLeafs:
 			// The other is leaf to leaf.
 			if c.kind == LEAF {
 				src, dest := c.remoteCluster(), dc.remoteCluster()
-				if src != _EMPTY_ && src == dest {
+				if src != EMPTY && src == dest {
 					continue
 				}
 			}
@@ -5015,9 +5015,9 @@ func (c *client) pruneClosedSubFromPerAccountCache() {
 // Returns our service account for this request.
 func (ci *ClientInfo) serviceAccount() string {
 	if ci == nil {
-		return _EMPTY_
+		return EMPTY
 	}
-	if ci.Service != _EMPTY_ {
+	if ci.Service != EMPTY {
 		return ci.Service
 	}
 	return ci.Account
@@ -5088,7 +5088,7 @@ func (c *client) getClientInfo(detailed bool) *ClientInfo {
 }
 
 func (c *client) doTLSServerHandshake(typ string, tlsConfig *tls.Config, timeout float64, pCerts PinnedCertSet) error {
-	_, err := c.doTLSHandshake(typ, false, nil, tlsConfig, _EMPTY_, timeout, pCerts)
+	_, err := c.doTLSHandshake(typ, false, nil, tlsConfig, EMPTY, timeout, pCerts)
 	return err
 }
 
@@ -5112,12 +5112,12 @@ func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfi
 	// If we solicited, we will act like the client, otherwise the server.
 	if solicit {
 		c.Debugf("Starting TLS %s client handshake", typ)
-		if tlsConfig.ServerName == _EMPTY_ {
+		if tlsConfig.ServerName == EMPTY {
 			// If the given url is a hostname, use this hostname for the
 			// ServerName. If it is an IP, use the cfg's tlsName. If none
 			// is available, resort to current IP.
 			host = url.Hostname()
-			if tlsName != _EMPTY_ && net.ParseIP(host) != nil {
+			if tlsName != EMPTY && net.ParseIP(host) != nil {
 				host = tlsName
 			}
 			tlsConfig.ServerName = host

@@ -113,7 +113,7 @@ func (c *client) isHubLeafNode() bool {
 
 // This will spin up go routines to solicit the remote leaf node connections.
 func (s *Server) solicitLeafNodeRemotes(remotes []*RemoteLeafOpts) {
-	sysAccName := _EMPTY_
+	sysAccName := EMPTY
 	sAcc := s.SystemAccount()
 	if sAcc != nil {
 		sysAccName = sAcc.Name
@@ -134,7 +134,7 @@ func (s *Server) solicitLeafNodeRemotes(remotes []*RemoteLeafOpts) {
 			}
 		}
 		s.mu.Unlock()
-		if creds != _EMPTY_ {
+		if creds != EMPTY {
 			contents, err := ioutil.ReadFile(creds)
 			defer wipeSlice(contents)
 			if err != nil {
@@ -188,9 +188,9 @@ func validateLeafNode(o *Options) error {
 		// global account is always created
 		accNames[DEFAULT_GLOBAL_ACCOUNT] = struct{}{}
 		// in the context of leaf nodes, empty account means global account
-		accNames[_EMPTY_] = struct{}{}
+		accNames[EMPTY] = struct{}{}
 		// system account either exists or, if not disabled, will be created
-		if o.SystemAccount == _EMPTY_ && !o.NoSystemAccount {
+		if o.SystemAccount == EMPTY && !o.NoSystemAccount {
 			accNames[DEFAULT_SYSTEM_ACCOUNT] = struct{}{}
 		}
 		checkAccountExists := func(accName string, cfgType string) error {
@@ -273,7 +273,7 @@ func validateLeafNodeAuthOptions(o *Options) error {
 	if len(o.LeafNode.Users) == 0 {
 		return nil
 	}
-	if o.LeafNode.Username != _EMPTY_ {
+	if o.LeafNode.Username != EMPTY {
 		return fmt.Errorf("can not have a single user/pass and a users array")
 	}
 	users := map[string]struct{}{}
@@ -503,7 +503,7 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 // We now save the host name regardless in case the remote returns an INFO indicating
 // that TLS is required.
 func (cfg *leafNodeCfg) saveTLSHostname(u *url.URL) {
-	if cfg.tlsName == _EMPTY_ && net.ParseIP(u.Hostname()) == nil {
+	if cfg.tlsName == EMPTY && net.ParseIP(u.Hostname()) == nil {
 		cfg.tlsName = u.Hostname()
 	}
 }
@@ -511,7 +511,7 @@ func (cfg *leafNodeCfg) saveTLSHostname(u *url.URL) {
 // Save off the username/password for when we connect using a bare URL
 // that we get from the INFO protocol.
 func (cfg *leafNodeCfg) saveUserPassword(u *url.URL) {
-	if cfg.username == _EMPTY_ && u.User != nil {
+	if cfg.username == EMPTY && u.User != nil {
 		cfg.username = u.User.Username()
 		cfg.password, _ = u.User.Password()
 	}
@@ -625,7 +625,7 @@ func (c *client) sendLeafConnect(clusterName string, tlsRequired, headers bool) 
 	}
 
 	// Check for credentials first, that will take precedence..
-	if creds := c.leaf.remote.Credentials; creds != _EMPTY_ {
+	if creds := c.leaf.remote.Credentials; creds != EMPTY {
 		c.Debugf("Authenticating with credentials file %q", c.leaf.remote.Credentials)
 		contents, err := ioutil.ReadFile(creds)
 		if err != nil {
@@ -659,7 +659,7 @@ func (c *client) sendLeafConnect(clusterName string, tlsRequired, headers bool) 
 	} else if userInfo := c.leaf.remote.curURL.User; userInfo != nil {
 		cinfo.User = userInfo.Username()
 		cinfo.Pass, _ = userInfo.Password()
-	} else if c.leaf.remote.username != _EMPTY_ {
+	} else if c.leaf.remote.username != EMPTY {
 		cinfo.User = c.leaf.remote.username
 		cinfo.Pass = c.leaf.remote.password
 	}
@@ -773,7 +773,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 		remote.Lock()
 		// Users can bind to any local account, if its empty
 		// we will assume the $G account.
-		if remote.LocalAccount == _EMPTY_ {
+		if remote.LocalAccount == EMPTY {
 			remote.LocalAccount = globalAccountName
 		}
 		lacc := remote.LocalAccount
@@ -967,7 +967,7 @@ func (c *client) processLeafnodeInfo(info *Info) {
 		// Pre 2.2.0 servers are not sending their server name.
 		// In that case, use info.ID, which, for those servers, matches
 		// the content of the field `Name` in the leafnode CONNECT protocol.
-		if info.Name == _EMPTY_ {
+		if info.Name == EMPTY {
 			c.leaf.remoteServer = info.ID
 		} else {
 			c.leaf.remoteServer = info.Name
@@ -1019,7 +1019,7 @@ func (c *client) processLeafnodeInfo(info *Info) {
 	}
 
 	// Check if we have the remote account information and if so make sure it's stored.
-	if info.RemoteAccount != _EMPTY_ {
+	if info.RemoteAccount != EMPTY {
 		s.leafRemoteAccounts.Store(c.acc.Name, info.RemoteAccount)
 	}
 	c.mu.Unlock()
@@ -1092,7 +1092,7 @@ func (c *client) doUpdateLNURLs(cfg *leafNodeCfg, scheme string, URLs []string) 
 // Similar to setInfoHostPortAndGenerateJSON, but for leafNodeInfo.
 func (s *Server) setLeafNodeInfoHostPortAndIP() error {
 	opts := s.getOpts()
-	if opts.LeafNode.Advertise != _EMPTY_ {
+	if opts.LeafNode.Advertise != EMPTY {
 		advHost, advPort, err := parseHostPort(opts.LeafNode.Advertise, opts.LeafNode.Port)
 		if err != nil {
 			return err
@@ -1120,7 +1120,7 @@ func (s *Server) setLeafNodeInfoHostPortAndIP() error {
 	}
 	// Use just host:port for the IP
 	s.leafNodeInfo.IP = net.JoinHostPort(s.leafNodeInfo.Host, strconv.Itoa(s.leafNodeInfo.Port))
-	if opts.LeafNode.Advertise != _EMPTY_ {
+	if opts.LeafNode.Advertise != EMPTY {
 		s.Noticef("Advertise address for leafnode is set to %s", s.leafNodeInfo.IP)
 	}
 	return nil
@@ -1155,7 +1155,7 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 	var old *client
 	s.mu.Lock()
 	// We check for empty because in some test we may send empty CONNECT{}
-	if checkForDup && srvName != _EMPTY_ {
+	if checkForDup && srvName != EMPTY {
 		for _, ol := range s.leafs {
 			ol.mu.Lock()
 			// We care here only about non solicited Leafnode. This function
@@ -1185,7 +1185,7 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 	}
 
 	srvDecorated := func() string {
-		if myClustName == _EMPTY_ {
+		if myClustName == EMPTY {
 			return mySrvName
 		}
 		return fmt.Sprintf("%s/%s", mySrvName, myClustName)
@@ -1209,7 +1209,7 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 	if len(opts.JsAccDefaultDomain) > 0 {
 		if acc == sysAcc {
 			for _, d := range opts.JsAccDefaultDomain {
-				if d == _EMPTY_ {
+				if d == EMPTY {
 					// Extending Js via leaf node is mutually exclusive with a domain mapping to the empty/default domain.
 					// As soon as one mapping to "" is found, disable the ability to extend JS via a leaf node.
 					c.Noticef("Forcing System Account into non extend mode due to presence of empty default domain")
@@ -1217,7 +1217,7 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 					break
 				}
 			}
-		} else if domain, ok := opts.JsAccDefaultDomain[accName]; ok && domain == _EMPTY_ {
+		} else if domain, ok := opts.JsAccDefaultDomain[accName]; ok && domain == EMPTY {
 			// for backwards compatibility with old setups that do not have a domain name set
 			c.Noticef("Skipping deny %q for account %q due to default domain", jsAllAPI, accName)
 			return
@@ -1230,7 +1230,7 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 	// However, this is only relevant in mixed setups.
 	//
 	// If the system account connects but default domains are present, JetStream can't be extended.
-	if opts.JetStreamDomain != myRemoteDomain || (!opts.JetStream && (opts.JetStreamDomain == _EMPTY_ && opts.JetStreamExtHint != jsWillExtend)) ||
+	if opts.JetStreamDomain != myRemoteDomain || (!opts.JetStream && (opts.JetStreamDomain == EMPTY && opts.JetStreamExtHint != jsWillExtend)) ||
 		sysAcc == nil || acc == nil || forceSysAccDeny {
 		// If domain names mismatch always deny. This applies to system accounts as well as non system accounts.
 		// Not having a system account, account or JetStream disabled is considered a mismatch as well.
@@ -1279,7 +1279,7 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 	}
 	// If we have a specified JetStream domain we will want to add a mapping to
 	// allow access cross domain for each non-system account.
-	if opts.JetStreamDomain != _EMPTY_ && acc != sysAcc && opts.JetStream {
+	if opts.JetStreamDomain != EMPTY && acc != sysAcc && opts.JetStream {
 		for src, dest := range generateJSMappingTable(opts.JetStreamDomain) {
 			if err := acc.AddMapping(src, dest); err != nil {
 				c.Debugf("Error adding JetStream domain mapping: %s", err.Error())
@@ -1341,7 +1341,7 @@ type leafConnectInfo struct {
 func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) error {
 	// Way to detect clients that incorrectly connect to the route listen
 	// port. Client provided "lang" in the CONNECT protocol while LEAFNODEs don't.
-	if lang != _EMPTY_ {
+	if lang != EMPTY {
 		c.sendErrAndErr(ErrClientConnectedToLeafNodePort.Error())
 		c.closeConnection(WrongPort)
 		return ErrClientConnectedToLeafNodePort
@@ -1355,7 +1355,7 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 
 	// Reject if this has Gateway which means that it would be from a gateway
 	// connection that incorrectly connects to the leafnode port.
-	if proto.Gateway != _EMPTY_ {
+	if proto.Gateway != EMPTY {
 		errTxt := fmt.Sprintf("Rejecting connection from gateway %q on the leafnode port", proto.Gateway)
 		c.Errorf(errTxt)
 		c.sendErr(errTxt)
@@ -1385,7 +1385,7 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	}
 
 	// The soliciting side is part of a cluster.
-	if proto.Cluster != _EMPTY_ {
+	if proto.Cluster != EMPTY {
 		c.leaf.remoteCluster = proto.Cluster
 	}
 
@@ -1432,7 +1432,7 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 // Returns the remote cluster name. This is set only once so does not require a lock.
 func (c *client) remoteCluster() string {
 	if c.leaf == nil {
-		return _EMPTY_
+		return EMPTY
 	}
 	return c.leaf.remoteCluster
 }
@@ -1473,7 +1473,7 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	accNTag := acc.nameTag
 
 	// To make printing look better when no friendly name present.
-	if accNTag != _EMPTY_ {
+	if accNTag != EMPTY {
 		accNTag = "/" + accNTag
 	}
 
@@ -1507,7 +1507,7 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 
 	// Create a unique subject that will be used for loop detection.
 	lds := acc.lds
-	if lds == _EMPTY_ {
+	if lds == EMPTY {
 		lds = leafNodeLoopDetectionSubjectPrefix + nuid.Next()
 		acc.lds = lds
 	}
@@ -1756,7 +1756,7 @@ func keyFromSub(sub *subscription) string {
 
 // Lock should be held.
 func (c *client) writeLeafSub(w *bytes.Buffer, key string, n int32) {
-	if key == _EMPTY_ {
+	if key == EMPTY {
 		return
 	}
 	if n > 0 {
@@ -1855,7 +1855,7 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	}
 
 	// If we have an origin cluster associated mark that in the sub.
-	if rc := c.remoteCluster(); rc != _EMPTY_ {
+	if rc := c.remoteCluster(); rc != EMPTY {
 		sub.origin = []byte(rc)
 	}
 
@@ -2306,7 +2306,7 @@ func (c *client) leafNodeSolicitWSConnection(opts *Options, rURL *url.URL, remot
 			// Check if we need to reset the remote's TLS name.
 			if resetTLSName {
 				remote.Lock()
-				remote.tlsName = _EMPTY_
+				remote.tlsName = EMPTY
 				remote.Unlock()
 			}
 			// 0 will indicate that the connection was already closed
@@ -2324,7 +2324,7 @@ func (c *client) leafNodeSolicitWSConnection(opts *Options, rURL *url.URL, remot
 	// In case we use the user's URL path in the future, make sure we append the user's
 	// path to our `/leafnode` path.
 	path := leafNodeWSPath
-	if curPath := rURL.EscapedPath(); curPath != _EMPTY_ {
+	if curPath := rURL.EscapedPath(); curPath != EMPTY {
 		if curPath[0] == '/' {
 			curPath = curPath[1:]
 		}
@@ -2446,7 +2446,7 @@ func (s *Server) leafNodeResumeConnectProcess(c *client) {
 				// Check if we need to reset the remote's TLS name.
 				if resetTLSName {
 					remote.Lock()
-					remote.tlsName = _EMPTY_
+					remote.tlsName = EMPTY
 					remote.Unlock()
 				}
 				c.mu.Unlock()
@@ -2519,7 +2519,7 @@ func (s *Server) leafNodeFinishConnectProcess(c *client) {
 		c.closeConnection(ProtocolViolation)
 		return
 	}
-	s.addLeafNodeConnection(c, _EMPTY_, _EMPTY_, false)
+	s.addLeafNodeConnection(c, EMPTY, EMPTY, false)
 	s.initLeafNodeSmapAndSendSubs(c)
 	if sendSysConnectEvent {
 		s.sendLeafNodeConnect(acc)

@@ -2956,7 +2956,7 @@ func TestMonitorGatewayz(t *testing.T) {
 	for pollMode := 0; pollMode < 2; pollMode++ {
 		g := pollGatewayz(t, s, pollMode, url, nil)
 		// Expect Name and port to be empty
-		if g.Name != _EMPTY_ || g.Port != 0 {
+		if g.Name != EMPTY || g.Port != 0 {
 			t.Fatalf("Expected no gateway, got %+v", g)
 		}
 	}
@@ -3538,7 +3538,7 @@ func TestMonitorRouteRTT(t *testing.T) {
 					return fmt.Errorf("Expected 1 route, got %v", len(rz.Routes))
 				}
 				ri := rz.Routes[0]
-				if ri.RTT == _EMPTY_ {
+				if ri.RTT == EMPTY {
 					return fmt.Errorf("Route's RTT not reported")
 				}
 				return nil
@@ -3891,7 +3891,7 @@ func TestMonitorAuthorizedUsers(t *testing.T) {
 			}
 			conn := connz.Conns[0]
 			au := conn.AuthorizedUser
-			if au == _EMPTY_ {
+			if au == EMPTY {
 				t.Fatal("AuthorizedUser is empty!")
 			}
 			if au != expected {

@@ -532,7 +532,7 @@ func (s *Server) createMQTTClient(conn net.Conn, ws *websocket) *client {
 func (s *Server) mqttConfigAuth(opts *MQTTOpts) {
 	mqtt := &s.mqtt
 	// If any of those is specified, we consider that there is an override.
-	mqtt.authOverride = opts.Username != _EMPTY_ || opts.Token != _EMPTY_ || opts.NoAuthUser != _EMPTY_
+	mqtt.authOverride = opts.Username != EMPTY || opts.Token != EMPTY || opts.NoAuthUser != EMPTY
 }
 
 // Validate the mqtt related options.
@@ -544,22 +544,22 @@ func validateMQTTOptions(o *Options) error {
 	}
 	// We have to force the server name to be explicitly set. There are conditions
 	// where we need a unique, repeatable name.
-	if o.ServerName == _EMPTY_ {
+	if o.ServerName == EMPTY {
 		return errMQTTServerNameMustBeSet
 	}
 	// If there is a NoAuthUser, we need to have Users defined and
 	// the user to be present.
-	if mo.NoAuthUser != _EMPTY_ {
+	if mo.NoAuthUser != EMPTY {
 		if err := validateNoAuthUser(o, mo.NoAuthUser); err != nil {
 			return err
 		}
 	}
 	// Token/Username not possible if there are users/nkeys
 	if len(o.Users) > 0 || len(o.Nkeys) > 0 {
-		if mo.Username != _EMPTY_ {
+		if mo.Username != EMPTY {
 			return errMQTTUserMixWithUsersNKeys
 		}
-		if mo.Token != _EMPTY_ {
+		if mo.Token != EMPTY {
 			return errMQTTTokenMixWIthUsersNKeys
 		}
 	}
@@ -591,7 +591,7 @@ func (c *client) isMqtt() bool {
 // Lock held on entry
 func (c *client) getMQTTClientID() string {
 	if !c.isMqtt() {
-		return _EMPTY_
+		return EMPTY
 	}
 	return c.mqtt.cid
 }
@@ -945,25 +945,25 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	opts := s.getOpts()
 	if opts.JsAccDefaultDomain != nil {
 		if d, ok := opts.JsAccDefaultDomain[accName]; ok {
-			if d != _EMPTY_ {
+			if d != EMPTY {
 				as.jsa.domain = d
 			}
 			as.jsa.domainSet = true
 		}
 		// in case domain was set to empty, check if there are more generic domain overwrites
 	}
-	if as.jsa.domain == _EMPTY_ {
-		if d := opts.MQTT.JsDomain; d != _EMPTY_ {
+	if as.jsa.domain == EMPTY {
+		if d := opts.MQTT.JsDomain; d != EMPTY {
 			as.jsa.domain = d
 			as.jsa.domainSet = true
 		}
 	}
 	// We need to include the domain in the subject prefix used to store sessions in the $MQTT_sess stream.
 	if as.jsa.domainSet {
-		if as.jsa.domain != _EMPTY_ {
+		if as.jsa.domain != EMPTY {
 			as.domainTk = as.jsa.domain + "."
 		}
-	} else if d := s.getOpts().JetStreamDomain; d != _EMPTY_ {
+	} else if d := s.getOpts().JetStreamDomain; d != EMPTY {
 		as.domainTk = d + "."
 	}
 	if as.jsa.domainSet {
@@ -1174,7 +1174,7 @@ func (jsa *mqttJSA) newRequest(kind, subject string, hdr int, msg []byte) (inter
 }
 
 func (jsa *mqttJSA) prefixDomain(subject string) string {
-	if jsa.domain != _EMPTY_ {
+	if jsa.domain != EMPTY {
 		// rewrite js api prefix with domain
 		if sub := strings.TrimPrefix(subject, JSApiPrefix+"."); sub != subject {
 			subject = fmt.Sprintf("$JS.%s.API.%s", jsa.domain, sub)
@@ -1230,7 +1230,7 @@ func (jsa *mqttJSA) createConsumer(cfg *CreateConsumerRequest) (*JSApiConsumerCr
 		return nil, err
 	}
 	var subj string
-	if cfg.Config.Durable != _EMPTY_ {
+	if cfg.Config.Durable != EMPTY {
 		subj = fmt.Sprintf(JSApiDurableCreateT, cfg.Stream, cfg.Config.Durable)
 	} else {
 		subj = fmt.Sprintf(JSApiConsumerCreateT, cfg.Stream)
@@ -1360,7 +1360,7 @@ func isErrorOtherThan(err error, id ErrorIdentifier) bool {
 // Can run from various go routines (consumer's loop, system send loop, etc..).
 func (as *mqttAccountSessionManager) processJSAPIReplies(_ *subscription, pc *client, _ *Account, subject, _ string, msg []byte) {
 	token := tokenAt(subject, mqttJSATokenPos)
-	if token == _EMPTY_ {
+	if token == EMPTY {
 		return
 	}
 	jsa := &as.jsa
@@ -1462,7 +1462,7 @@ func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *clie
 
 func (as *mqttAccountSessionManager) processRetainedMsgDel(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	idHash := tokenAt(subject, 3)
-	if idHash == _EMPTY_ || idHash == as.jsa.id {
+	if idHash == EMPTY || idHash == as.jsa.id {
 		return
 	}
 	_, msg := c.msgParts(rmsg)
@@ -1666,14 +1666,14 @@ func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, acc
 						// already part of `msg`, so simply set c.pa.hdr to the given value.
 						c.pa.hdr = r.hdr
 						nsize = len(msg)
-						msg = append(msg, _CRLF_...)
+						msg = append(msg, CR_LF...)
 					} else {
 						// We need the ClientInfo header, so add it here.
 						bb.Write(hdrb)
 						c.pa.hdr = bb.Len()
 						bb.Write(r.msg)
 						nsize = bb.Len()
-						bb.WriteString(_CRLF_)
+						bb.WriteString(CR_LF)
 						msg = bb.Bytes()
 					}
 					c.pa.hdb = []byte(strconv.Itoa(c.pa.hdr))
@@ -1681,7 +1681,7 @@ func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, acc
 					c.pa.hdr = -1
 					c.pa.hdb = nil
 					nsize = len(msg)
-					msg = append(msg, _CRLF_...)
+					msg = append(msg, CR_LF...)
 				}
 
 				c.pa.subject = []byte(r.subj)
@@ -2290,7 +2290,7 @@ func (sess *mqttSession) update(filters []*mqttFilter, add bool) error {
 //
 // Lock held on entry
 func (sess *mqttSession) getPubAckIdentifier(pQos byte, sub *subscription) uint16 {
-	pi, _ := sess.trackPending(pQos, _EMPTY_, sub)
+	pi, _ := sess.trackPending(pQos, EMPTY, sub)
 	return pi
 }
 
@@ -2328,7 +2328,7 @@ func (sess *mqttSession) trackPending(pQos byte, reply string, sub *subscription
 	}
 
 	// This can happen when invoked from getPubAckIdentifier...
-	if reply == _EMPTY_ || sub.mqtt.jsDur == _EMPTY_ {
+	if reply == EMPTY || sub.mqtt.jsDur == EMPTY {
 		return bumpPI(), false
 	}
 
@@ -2492,7 +2492,7 @@ func (c *client) mqttParseConnect(r *mqttReader, pl int) (byte, *mqttConnectProt
 		return 0, nil, err
 	}
 	// Spec [MQTT-3.1.3-7]
-	if c.mqtt.cid == _EMPTY_ {
+	if c.mqtt.cid == EMPTY {
 		if cp.flags&mqttConnFlagCleanSession == 0 {
 			return mqttConnAckRCIdentifierRejected, nil, errMQTTCIDEmptyNeedsCleanFlag
 		}
@@ -2540,7 +2540,7 @@ func (c *client) mqttParseConnect(r *mqttReader, pl int) (byte, *mqttConnectProt
 		if err != nil {
 			return 0, nil, err
 		}
-		if c.opts.Username == _EMPTY_ {
+		if c.opts.Username == EMPTY {
 			return mqttConnAckRCBadUserOrPassword, nil, errMQTTEmptyUsername
 		}
 		// Spec [MQTT-3.1.3-11]
@@ -2569,10 +2569,10 @@ func (c *client) mqttConnectTrace(cp *mqttConnectProto) string {
 		trace += fmt.Sprintf(" will=(topic=%s QoS=%v retain=%v)",
 			cp.will.topic, cp.will.qos, cp.will.retain)
 	}
-	if c.opts.Username != _EMPTY_ {
+	if c.opts.Username != EMPTY {
 		trace += fmt.Sprintf(" username=%s", c.opts.Username)
 	}
-	if c.opts.Password != _EMPTY_ {
+	if c.opts.Password != EMPTY {
 		trace += " password=****"
 	}
 	return trace
@@ -2893,8 +2893,8 @@ func (s *Server) mqttProcessPub(c *client, pp *mqttPublish) error {
 	bb.Write(mqttNatsHeaderB)
 	bb.WriteByte(':')
 	bb.WriteByte('0' + mqttGetQoS(pp.flags))
-	bb.WriteString(_CRLF_)
-	bb.WriteString(_CRLF_)
+	bb.WriteString(CR_LF)
+	bb.WriteString(CR_LF)
 	c.pa.hdr = bb.Len()
 	c.pa.hdb = []byte(strconv.FormatInt(int64(c.pa.hdr), 10))
 	bb.Write(pp.msg)
@@ -2998,7 +2998,7 @@ func (s *Server) mqttCheckPubRetainedPerms() {
 		deletes := map[string]uint64{}
 		asm.mu.Lock()
 		for subject, rm := range asm.retmsgs {
-			if rm.Source == _EMPTY_ {
+			if rm.Source == EMPTY {
 				continue
 			}
 			// Lookup source from global users.
@@ -3140,7 +3140,7 @@ func (c *client) mqttProcessPubAck(pi uint16) {
 		ackSubject = ack.subject
 	}
 	// Send the ack if applicable.
-	if ackSubject != _EMPTY_ {
+	if ackSubject != EMPTY {
 		// We pass -1 for the hdr so that the send loop does not need to
 		// add the "client info" header. This is not a JS API request per se.
 		sess.jsa.sendq.push(&mqttJSPubMsg{subj: ackSubject, hdr: -1})

@@ -265,10 +265,10 @@ func (c *cluster) shutdown() {
 	for i, s := range c.servers {
 		sd := s.StoreDir()
 		s.Shutdown()
-		if cf := c.opts[i].ConfigFile; cf != _EMPTY_ {
+		if cf := c.opts[i].ConfigFile; cf != EMPTY {
 			os.Remove(cf)
 		}
-		if sd != _EMPTY_ {
+		if sd != EMPTY {
 			sd = strings.TrimSuffix(sd, JetStreamStoreDir)
 			os.RemoveAll(sd)
 		}

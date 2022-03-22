@@ -593,8 +593,8 @@ func TestLeafNodeValidateAuthOptions(t *testing.T) {
 	}
 
 	// Check duplicate user names
-	opts.LeafNode.Username = _EMPTY_
-	opts.LeafNode.Password = _EMPTY_
+	opts.LeafNode.Username = EMPTY
+	opts.LeafNode.Password = EMPTY
 	opts.LeafNode.Users = append(opts.LeafNode.Users, &User{Username: "user", Password: "pwd"})
 	if _, err := NewServer(opts); err == nil || !strings.Contains(err.Error(), "duplicate user") {
 		t.Fatalf("Expected error about duplicate user, got %v", err)
@@ -3492,7 +3492,7 @@ func TestLeafNodeUnsubOnRouteDisconnect(t *testing.T) {
 	ro1 := DefaultOptions()
 	// DefaultOptions sets a cluster name, so make sure they are different.
 	// Also, we don't have r1 and r2 clustered in this test, so set port to 0.
-	ro1.Cluster.Name = _EMPTY_
+	ro1.Cluster.Name = EMPTY
 	ro1.Cluster.Port = 0
 	ro1.LeafNode.ReconnectInterval = 50 * time.Millisecond
 	ro1.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: urls}}
@@ -3500,7 +3500,7 @@ func TestLeafNodeUnsubOnRouteDisconnect(t *testing.T) {
 	defer r1.Shutdown()
 
 	ro2 := DefaultOptions()
-	ro1.Cluster.Name = _EMPTY_
+	ro1.Cluster.Name = EMPTY
 	ro2.Cluster.Port = 0
 	ro2.LeafNode.ReconnectInterval = 50 * time.Millisecond
 	// Have this one point only to l2
@@ -4501,8 +4501,8 @@ cluster: { name: clustL }
 `
 	for _, withDomain := range []bool{true, false} {
 		t.Run(fmt.Sprintf("with-domain:%t", withDomain), func(t *testing.T) {
-			jsDisabledDomainString := _EMPTY_
-			jsEnabledDomainString := _EMPTY_
+			jsDisabledDomainString := EMPTY
+			jsEnabledDomainString := EMPTY
 			if withDomain {
 				jsEnabledDomainString = `domain: "domain", `
 				jsDisabledDomainString = `domain: "domain"`
@@ -4696,7 +4696,7 @@ leafnodes: {
 		defer sHub.Shutdown()
 
 		noDomainFix := ""
-		if domain == _EMPTY_ {
+		if domain == EMPTY {
 			noDomainFix = `default_js_domain:{A:""}`
 		}
 
@@ -4780,7 +4780,7 @@ leafnodes: {
 			sHubUpd2.opts.LeafNode.Port,
 			fmt.Sprintf(`default_js_domain: {A:"%s"}`, domain))), 0664))
 
-		if domain != _EMPTY_ {
+		if domain != EMPTY {
 			// in case no domain name exists there are no additional guard rails, hence no error
 			// It is the users responsibility to get this edge case right
 			sHubUpd2.Shutdown()
@@ -4844,7 +4844,7 @@ leafnodes: {
 
 	test := func(domain string) {
 		noDomainFix := ""
-		if domain == _EMPTY_ {
+		if domain == EMPTY {
 			noDomainFix = `default_js_domain:{A:""}`
 		}
 

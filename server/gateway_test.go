@@ -5307,7 +5307,7 @@ func TestGatewayPingPongReplyAcrossGateways(t *testing.T) {
 		nca.Publish(msg.Reply, []byte("sa reply"))
 		// And make sure that subS2 receives it...
 		msg = natsNexMsg(t, subSB, time.Second)
-		if string(msg.Data) != "sa reply" || msg.Reply != _EMPTY_ {
+		if string(msg.Data) != "sa reply" || msg.Reply != EMPTY {
 			t.Fatalf("Unexpected message from sa: %v", msg)
 		}
 	}

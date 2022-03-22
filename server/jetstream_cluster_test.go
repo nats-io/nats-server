@@ -6158,7 +6158,7 @@ func TestJetStreamClusterMixedMode(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 
-			c := createMixedModeCluster(t, test.tmpl, "MM5", _EMPTY_, 3, 2, true)
+			c := createMixedModeCluster(t, test.tmpl, "MM5", EMPTY, 3, 2, true)
 			defer c.shutdown()
 
 			// Client based API - Non-JS server.
@@ -6205,16 +6205,16 @@ func TestJetStreamClusterMixedMode(t *testing.T) {
 }
 
 func TestJetStreamClusterLeafnodeSpokes(t *testing.T) {
-	c := createJetStreamCluster(t, jsClusterTempl, "HUB", _EMPTY_, 3, 22020, false)
+	c := createJetStreamCluster(t, jsClusterTempl, "HUB", EMPTY, 3, 22020, false)
 	defer c.shutdown()
 
-	lnc1 := c.createLeafNodesWithStartPortAndDomain("R1", 3, 22110, _EMPTY_)
+	lnc1 := c.createLeafNodesWithStartPortAndDomain("R1", 3, 22110, EMPTY)
 	defer lnc1.shutdown()
 
-	lnc2 := c.createLeafNodesWithStartPortAndDomain("R2", 3, 22120, _EMPTY_)
+	lnc2 := c.createLeafNodesWithStartPortAndDomain("R2", 3, 22120, EMPTY)
 	defer lnc2.shutdown()
 
-	lnc3 := c.createLeafNodesWithStartPortAndDomain("R3", 3, 22130, _EMPTY_)
+	lnc3 := c.createLeafNodesWithStartPortAndDomain("R3", 3, 22130, EMPTY)
 	defer lnc3.shutdown()
 
 	// Wait on all peers.
@@ -6224,7 +6224,7 @@ func TestJetStreamClusterLeafnodeSpokes(t *testing.T) {
 	lnc3.shutdown()
 	c.waitOnPeerCount(9)
 
-	lnc3 = c.createLeafNodesWithStartPortAndDomain("LNC3", 3, 22130, _EMPTY_)
+	lnc3 = c.createLeafNodesWithStartPortAndDomain("LNC3", 3, 22130, EMPTY)
 	defer lnc3.shutdown()
 
 	c.waitOnPeerCount(12)
@@ -6430,7 +6430,7 @@ func TestJetStreamClusterSuperClusterAndSingleLeafNodeWithSharedSystemAccount(t 
 
 func TestJetStreamClusterLeafNodeDenyNoDupe(t *testing.T) {
 	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: CORE, store_dir:", 1)
-	c := createJetStreamCluster(t, tmpl, "CORE", _EMPTY_, 3, 18033, true)
+	c := createJetStreamCluster(t, tmpl, "CORE", EMPTY, 3, 18033, true)
 	defer c.shutdown()
 
 	tmpl = strings.Replace(jsClusterTemplWithSingleLeafNode, "store_dir:", "domain: SPOKE, store_dir:", 1)
@@ -6470,7 +6470,7 @@ func TestJetStreamClusterLeafNodeDenyNoDupe(t *testing.T) {
 
 // Multiple JS domains.
 func TestJetStreamClusterSingleLeafNodeWithoutSharedSystemAccount(t *testing.T) {
-	c := createJetStreamCluster(t, strings.Replace(jsClusterAccountsTempl, "store_dir", "domain: CORE, store_dir", 1), "HUB", _EMPTY_, 3, 14333, true)
+	c := createJetStreamCluster(t, strings.Replace(jsClusterAccountsTempl, "store_dir", "domain: CORE, store_dir", 1), "HUB", EMPTY, 3, 14333, true)
 	defer c.shutdown()
 
 	ln := c.createSingleLeafNodeNoSystemAccount()
@@ -6666,7 +6666,7 @@ func TestJetStreamClusterSingleLeafNodeWithoutSharedSystemAccount(t *testing.T) 
 func TestJetStreamClusterDomains(t *testing.T) {
 	// This adds in domain config option to template.
 	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: CORE, store_dir:", 1)
-	c := createJetStreamCluster(t, tmpl, "CORE", _EMPTY_, 3, 12232, true)
+	c := createJetStreamCluster(t, tmpl, "CORE", EMPTY, 3, 12232, true)
 	defer c.shutdown()
 
 	// This leafnode is a single server with no domain but sharing the system account.
@@ -6864,7 +6864,7 @@ func TestJetStreamClusterDomains(t *testing.T) {
 
 func TestJetStreamClusterDomainsWithNoJSHub(t *testing.T) {
 	// Create our hub cluster with no JetStream defined.
-	c := createMixedModeCluster(t, jsClusterAccountsTempl, "NOJS5", _EMPTY_, 0, 5, false)
+	c := createMixedModeCluster(t, jsClusterAccountsTempl, "NOJS5", EMPTY, 0, 5, false)
 	defer c.shutdown()
 
 	ln := c.createSingleLeafNodeNoSystemAccountAndEnablesJetStream()
@@ -6909,7 +6909,7 @@ func TestJetStreamClusterDomainsWithNoJSHub(t *testing.T) {
 	if err = json.Unmarshal(resp.Data, &si); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if si.Domain != _EMPTY_ {
+	if si.Domain != EMPTY {
 		t.Fatalf("Expected to have NO domain set but got %q", si.Domain)
 	}
 
@@ -6943,7 +6943,7 @@ func TestJetStreamClusterDomainsWithNoJSHub(t *testing.T) {
 func TestJetStreamClusterDomainsAndAPIResponses(t *testing.T) {
 	// This adds in domain config option to template.
 	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: CORE, store_dir:", 1)
-	c := createJetStreamCluster(t, tmpl, "CORE", _EMPTY_, 3, 12232, true)
+	c := createJetStreamCluster(t, tmpl, "CORE", EMPTY, 3, 12232, true)
 	defer c.shutdown()
 
 	// Now create spoke LN cluster.
@@ -6992,7 +6992,7 @@ func TestJetStreamClusterDomainsAndAPIResponses(t *testing.T) {
 // Issue #2202
 func TestJetStreamClusterDomainsAndSameNameSources(t *testing.T) {
 	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: CORE, store_dir:", 1)
-	c := createJetStreamCluster(t, tmpl, "CORE", _EMPTY_, 3, 9323, true)
+	c := createJetStreamCluster(t, tmpl, "CORE", EMPTY, 3, 9323, true)
 	defer c.shutdown()
 
 	tmpl = strings.Replace(jsClusterTemplWithSingleLeafNode, "store_dir:", "domain: SPOKE-1, store_dir:", 1)
@@ -7127,7 +7127,7 @@ func TestJetStreamClusterDomainsAndSameNameSources(t *testing.T) {
 // the server having set up appropriate defaults (default_js_domain. tested in leafnode_test.go)
 func TestJetStreamClusterSingleLeafNodeEnablingJetStream(t *testing.T) {
 	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: HUB, store_dir:", 1)
-	c := createJetStreamCluster(t, tmpl, "HUB", _EMPTY_, 3, 11322, true)
+	c := createJetStreamCluster(t, tmpl, "HUB", EMPTY, 3, 11322, true)
 	defer c.shutdown()
 
 	ln := c.createSingleLeafNodeNoSystemAccountAndEnablesJetStream()
@@ -7152,7 +7152,7 @@ func TestJetStreamClusterSingleLeafNodeEnablingJetStream(t *testing.T) {
 
 func TestJetStreamClusterLeafNodesWithoutJS(t *testing.T) {
 	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: HUB, store_dir:", 1)
-	c := createJetStreamCluster(t, tmpl, "HUB", _EMPTY_, 3, 11233, true)
+	c := createJetStreamCluster(t, tmpl, "HUB", EMPTY, 3, 11233, true)
 	defer c.shutdown()
 
 	testJS := func(s *Server, domain string, doDomainAPI bool) {
@@ -7206,7 +7206,7 @@ func TestJetStreamClusterLeafNodesWithoutJS(t *testing.T) {
 
 func TestJetStreamClusterLeafNodesWithSameDomainNames(t *testing.T) {
 	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: HUB, store_dir:", 1)
-	c := createJetStreamCluster(t, tmpl, "HUB", _EMPTY_, 3, 11233, true)
+	c := createJetStreamCluster(t, tmpl, "HUB", EMPTY, 3, 11233, true)
 	defer c.shutdown()
 
 	tmpl = strings.Replace(jsClusterTemplWithLeafNode, "store_dir:", "domain: HUB, store_dir:", 1)
@@ -7315,10 +7315,10 @@ func TestJetStreamClusterSuperClusterPullConsumerAndHeaders(t *testing.T) {
 }
 
 func TestJetStreamClusterLeafDifferentAccounts(t *testing.T) {
-	c := createJetStreamCluster(t, jsClusterAccountsTempl, "HUB", _EMPTY_, 2, 23133, false)
+	c := createJetStreamCluster(t, jsClusterAccountsTempl, "HUB", EMPTY, 2, 23133, false)
 	defer c.shutdown()
 
-	ln := c.createLeafNodesWithStartPortAndDomain("LN", 2, 22110, _EMPTY_)
+	ln := c.createLeafNodesWithStartPortAndDomain("LN", 2, 22110, EMPTY)
 	defer ln.shutdown()
 
 	// Wait on all peers.
@@ -7810,7 +7810,7 @@ func TestJetStreamClusterMsgIdDuplicateBug(t *testing.T) {
 
 func TestJetStreamClusterNilMsgWithHeaderThroughSourcedStream(t *testing.T) {
 	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: HUB, store_dir:", 1)
-	c := createJetStreamCluster(t, tmpl, "HUB", _EMPTY_, 3, 12232, true)
+	c := createJetStreamCluster(t, tmpl, "HUB", EMPTY, 3, 12232, true)
 	defer c.shutdown()
 
 	tmpl = strings.Replace(jsClusterTemplWithSingleLeafNode, "store_dir:", "domain: SPOKE, store_dir:", 1)
@@ -8825,7 +8825,7 @@ func TestJetStreamAccountLimitsAndRestart(t *testing.T) {
 
 func TestJetStreamClusterMixedModeColdStartPrune(t *testing.T) {
 	// Purposely make this unbalanced. Without changes this will never form a quorum to elect the meta-leader.
-	c := createMixedModeCluster(t, jsMixedModeGlobalAccountTempl, "MMCS5", _EMPTY_, 3, 4, false)
+	c := createMixedModeCluster(t, jsMixedModeGlobalAccountTempl, "MMCS5", EMPTY, 3, 4, false)
 	defer c.shutdown()
 
 	// Make sure we report cluster size.
@@ -9775,7 +9775,7 @@ func TestJetStreamSuperClusterPushConsumerInterest(t *testing.T) {
 		name  string
 		queue string
 	}{
-		{"non queue", _EMPTY_},
+		{"non queue", EMPTY},
 		{"queue", "queue"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -9792,7 +9792,7 @@ func TestJetStreamSuperClusterPushConsumerInterest(t *testing.T) {
 				require_NoError(t, err)
 
 				var sub *nats.Subscription
-				if test.queue != _EMPTY_ {
+				if test.queue != EMPTY {
 					sub, err = js.QueueSubscribeSync("foo", test.queue)
 				} else {
 					sub, err = js.SubscribeSync("foo", nats.Durable("dur"))
@@ -10633,7 +10633,7 @@ func TestJetStreamClusterStreamReplicaUpdateFunctionCheck(t *testing.T) {
 		c.waitOnConsumerLeader("$G", "TEST", "cat")
 		ci, err := js.ConsumerInfo("TEST", "cat")
 		require_NoError(t, err)
-		if ci.Cluster.Leader == _EMPTY_ {
+		if ci.Cluster.Leader == EMPTY {
 			t.Fatalf("Expected a consumer leader but got none in consumer info")
 		}
 		if len(ci.Cluster.Replicas)+1 != r {
@@ -11703,7 +11703,7 @@ var jsClusterImportsTempl = `
 func createMixedModeCluster(t *testing.T, tmpl string, clusterName, snPre string, numJsServers, numNonServers int, doJSConfig bool) *cluster {
 	t.Helper()
 
-	if clusterName == _EMPTY_ || numJsServers < 0 || numNonServers < 1 {
+	if clusterName == EMPTY || numJsServers < 0 || numNonServers < 1 {
 		t.Fatalf("Bad params")
 	}
 
@@ -11761,12 +11761,12 @@ func createJetStreamClusterExplicit(t *testing.T, clusterName string, numServers
 func createJetStreamClusterWithTemplate(t *testing.T, tmpl string, clusterName string, numServers int) *cluster {
 	startPorts := []int{7_022, 9_022, 11_022, 15_022}
 	port := startPorts[rand.Intn(len(startPorts))]
-	return createJetStreamCluster(t, tmpl, clusterName, _EMPTY_, numServers, port, true)
+	return createJetStreamCluster(t, tmpl, clusterName, EMPTY, numServers, port, true)
 }
 
 func createJetStreamCluster(t *testing.T, tmpl string, clusterName, snPre string, numServers int, portStart int, waitOnReady bool) *cluster {
 	t.Helper()
-	if clusterName == _EMPTY_ || numServers < 1 {
+	if clusterName == EMPTY || numServers < 1 {
 		t.Fatalf("Bad params")
 	}
 
@@ -11845,12 +11845,12 @@ func (c *cluster) createSingleLeafNodeNoSystemAccount() *Server {
 
 // This is tied to jsClusterAccountsTempl, so changes there to users needs to be reflected here.
 func (c *cluster) createSingleLeafNodeNoSystemAccountAndEnablesJetStream() *Server {
-	return c.createSingleLeafNodeNoSystemAccountAndEnablesJetStreamWithDomain(_EMPTY_, "nojs")
+	return c.createSingleLeafNodeNoSystemAccountAndEnablesJetStreamWithDomain(EMPTY, "nojs")
 }
 
 func (c *cluster) createSingleLeafNodeNoSystemAccountAndEnablesJetStreamWithDomain(domain, user string) *Server {
 	tmpl := jsClusterSingleLeafNodeLikeNGSTempl
-	if domain != _EMPTY_ {
+	if domain != EMPTY {
 		nsc := fmt.Sprintf("domain: %s, store_dir:", domain)
 		tmpl = strings.Replace(jsClusterSingleLeafNodeLikeNGSTempl, "store_dir:", nsc, 1)
 	}
@@ -11969,7 +11969,7 @@ func (c *cluster) createLeafNodesNoJS(clusterName string, numServers int) *clust
 }
 
 func (c *cluster) createLeafNodesWithStartPortAndDomain(clusterName string, numServers int, portStart int, domain string) *cluster {
-	if domain == _EMPTY_ {
+	if domain == EMPTY {
 		return c.createLeafNodesWithTemplateAndStartPort(jsClusterTemplWithLeafNode, clusterName, numServers, portStart)
 	}
 	tmpl := strings.Replace(jsClusterTemplWithLeafNode, "store_dir:", fmt.Sprintf(`domain: "%s", store_dir:`, domain), 1)
@@ -12254,7 +12254,7 @@ func (c *cluster) waitOnServerHealthz(s *Server) {
 	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
 		hs := s.healthz()
-		if hs.Status == "ok" && hs.Error == _EMPTY_ {
+		if hs.Status == "ok" && hs.Error == EMPTY {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)

@@ -90,7 +90,7 @@ const (
 	wsPMCSrvNoCtx           = "server_no_context_takeover"
 	wsPMCCliNoCtx           = "client_no_context_takeover"
 	wsPMCReqHeaderValue     = wsPMCExtension + "; " + wsPMCSrvNoCtx + "; " + wsPMCCliNoCtx
-	wsPMCFullResponse       = "Sec-WebSocket-Extensions: " + wsPMCExtension + "; " + wsPMCSrvNoCtx + "; " + wsPMCCliNoCtx + _CRLF_
+	wsPMCFullResponse       = "Sec-WebSocket-Extensions: " + wsPMCExtension + "; " + wsPMCSrvNoCtx + "; " + wsPMCCliNoCtx + CR_LF
 	wsSecProto              = "Sec-Websocket-Protocol"
 	wsMQTTSecProtoVal       = "mqtt"
 	wsMQTTSecProto          = wsSecProto + ": " + wsMQTTSecProtoVal + CR_LF
@@ -702,7 +702,7 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 		return nil, wsReturnHTTPError(w, r, http.StatusMethodNotAllowed, "request method must be GET")
 	}
 	// Point 2.
-	if r.Host == _EMPTY_ {
+	if r.Host == EMPTY {
 		return nil, wsReturnHTTPError(w, r, http.StatusBadRequest, "'Host' missing in request")
 	}
 	// Point 3.
@@ -715,7 +715,7 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 	}
 	// Point 5.
 	key := r.Header.Get("Sec-Websocket-Key")
-	if key == _EMPTY_ {
+	if key == EMPTY {
 		return nil, wsReturnHTTPError(w, r, http.StatusBadRequest, "key missing")
 	}
 	// Point 6.
@@ -758,7 +758,7 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 	// From https://tools.ietf.org/html/rfc6455#section-4.2.2
 	p = append(p, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "...)
 	p = append(p, wsAcceptKey(key)...)
-	p = append(p, _CRLF_...)
+	p = append(p, CR_LF...)
 	if compress {
 		p = append(p, wsPMCFullResponse...)
 	}
@@ -768,7 +768,7 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 	if kind == MQTT {
 		p = append(p, wsMQTTSecProto...)
 	}
-	p = append(p, _CRLF_...)
+	p = append(p, CR_LF...)
 
 	if _, err = conn.Write(p); err != nil {
 		conn.Close()
@@ -792,7 +792,7 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 
 	if kind == CLIENT || kind == MQTT {
 		// Indicate if this is likely coming from a browser.
-		if ua := r.Header.Get("User-Agent"); ua != _EMPTY_ && strings.HasPrefix(ua, "Mozilla/") {
+		if ua := r.Header.Get("User-Agent"); ua != EMPTY && strings.HasPrefix(ua, "Mozilla/") {
 			ws.browser = true
 			// Disable fragmentation of compressed frames for Safari browsers.
 			// Unfortunately, you could be running Chrome on macOS and this
@@ -801,7 +801,7 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 			// So make the combination of the two.
 			ws.nocompfrag = ws.compress && strings.Contains(ua, "Version/") && strings.Contains(ua, "Safari/")
 		}
-		if opts.Websocket.JWTCookie != _EMPTY_ {
+		if opts.Websocket.JWTCookie != EMPTY {
 			if c, err := r.Cookie(opts.Websocket.JWTCookie); err == nil && c != nil {
 				ws.cookieJwt = c.Value
 			}
@@ -881,7 +881,7 @@ func (w *srvWebsocket) checkOrigin(r *http.Request) error {
 		return nil
 	}
 	origin := r.Header.Get("Origin")
-	if origin == _EMPTY_ {
+	if origin == EMPTY {
 		origin = r.Header.Get("Sec-Websocket-Origin")
 	}
 	// If the header is not present, we will accept.
@@ -889,7 +889,7 @@ func (w *srvWebsocket) checkOrigin(r *http.Request) error {
 	// "Naturally, when the WebSocket Protocol is used by a dedicated client
 	// directly (i.e., not from a web page through a web browser), the origin
 	// model is not useful, as the client can provide any arbitrary origin string."
-	if origin == _EMPTY_ {
+	if origin == EMPTY {
 		return nil
 	}
 	u, err := url.ParseRequestURI(origin)
@@ -953,7 +953,7 @@ func wsAcceptKey(key string) string {
 func wsMakeChallengeKey() (string, error) {
 	p := make([]byte, 16)
 	if _, err := io.ReadFull(rand.Reader, p); err != nil {
-		return _EMPTY_, err
+		return EMPTY, err
 	}
 	return base64.StdEncoding.EncodeToString(p), nil
 }
@@ -977,22 +977,22 @@ func validateWebsocketOptions(o *Options) error {
 	}
 	// If there is a NoAuthUser, we need to have Users defined and
 	// the user to be present.
-	if wo.NoAuthUser != _EMPTY_ {
+	if wo.NoAuthUser != EMPTY {
 		if err := validateNoAuthUser(o, wo.NoAuthUser); err != nil {
 			return err
 		}
 	}
 	// Token/Username not possible if there are users/nkeys
 	if len(o.Users) > 0 || len(o.Nkeys) > 0 {
-		if wo.Username != _EMPTY_ {
+		if wo.Username != EMPTY {
 			return fmt.Errorf("websocket authentication username not compatible with presence of users/nkeys")
 		}
-		if wo.Token != _EMPTY_ {
+		if wo.Token != EMPTY {
 			return fmt.Errorf("websocket authentication token not compatible with presence of users/nkeys")
 		}
 	}
 	// Using JWT requires Trusted Keys
-	if wo.JWTCookie != _EMPTY_ {
+	if wo.JWTCookie != EMPTY {
 		if len(o.TrustedOperators) == 0 && len(o.TrustedKeys) == 0 {
 			return fmt.Errorf("trusted operators or trusted keys configuration is required for JWT authentication via cookie %q", wo.JWTCookie)
 		}
@@ -1040,7 +1040,7 @@ func (s *Server) wsSetOriginOptions(o *WebsocketOpts) {
 func (s *Server) wsConfigAuth(opts *WebsocketOpts) {
 	ws := &s.websocket
 	// If any of those is specified, we consider that there is an override.
-	ws.authOverride = opts.Username != _EMPTY_ || opts.Token != _EMPTY_ || opts.NoAuthUser != _EMPTY_
+	ws.authOverride = opts.Username != EMPTY || opts.Token != EMPTY || opts.NoAuthUser != EMPTY
 }
 
 func (s *Server) startWebsocketServer() {
@@ -1133,7 +1133,7 @@ func (s *Server) startWebsocketServer() {
 		Addr:        hp,
 		Handler:     mux,
 		ReadTimeout: o.HandshakeTimeout,
-		ErrorLog:    log.New(&captureHTTPServerLog{s, "websocket: "}, _EMPTY_, 0),
+		ErrorLog:    log.New(&captureHTTPServerLog{s, "websocket: "}, EMPTY, 0),
 	}
 	s.websocket.server = hs
 	s.websocket.listener = hl

@@ -120,7 +120,7 @@ func (oc *OCSPMonitor) getCacheStatus() ([]byte, *ocsp.Response) {
 func (oc *OCSPMonitor) getLocalStatus() ([]byte, *ocsp.Response, error) {
 	opts := oc.srv.getOpts()
 	storeDir := opts.StoreDir
-	if storeDir == _EMPTY_ {
+	if storeDir == EMPTY {
 		return nil, nil, fmt.Errorf("store_dir not set")
 	}
 
@@ -212,7 +212,7 @@ func (oc *OCSPMonitor) getRemoteStatus() ([]byte, *ocsp.Response, error) {
 		return nil, nil, err
 	}
 
-	if storeDir := opts.StoreDir; storeDir != _EMPTY_ {
+	if storeDir := opts.StoreDir; storeDir != EMPTY {
 		key := fmt.Sprintf("%x", sha256.Sum256(oc.Leaf.Raw))
 		if err := oc.writeOCSPStatus(storeDir, key, raw); err != nil {
 			return nil, nil, fmt.Errorf("failed to write ocsp status: %w", err)
@@ -327,10 +327,10 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 	)
 	if kind == kindStringMap[CLIENT] {
 		tcOpts = opts.tlsConfigOpts
-		if opts.TLSCert != _EMPTY_ {
+		if opts.TLSCert != EMPTY {
 			certFile = opts.TLSCert
 		}
-		if opts.TLSCaCert != _EMPTY_ {
+		if opts.TLSCaCert != EMPTY {
 			caFile = opts.TLSCaCert
 		}
 	}
@@ -505,7 +505,7 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 func (s *Server) setupOCSPStapleStoreDir() error {
 	opts := s.getOpts()
 	storeDir := opts.StoreDir
-	if storeDir == _EMPTY_ {
+	if storeDir == EMPTY {
 		return nil
 	}
 	storeDir = filepath.Join(storeDir, defaultOCSPStoreDir)
@@ -790,11 +790,11 @@ func getOCSPIssuer(issuerCert string, chain [][]byte) ([]*x509.Certificate, erro
 	var issuers []*x509.Certificate
 	var err error
 	switch {
-	case len(chain) == 1 && issuerCert == _EMPTY_:
+	case len(chain) == 1 && issuerCert == EMPTY:
 		err = fmt.Errorf("ocsp ca required in chain or configuration")
-	case issuerCert != _EMPTY_:
+	case issuerCert != EMPTY:
 		issuers, err = parseCertPEM(issuerCert)
-	case len(chain) > 1 && issuerCert == _EMPTY_:
+	case len(chain) > 1 && issuerCert == EMPTY:
 		issuers, err = x509.ParseCertificates(chain[1])
 	default:
 		err = fmt.Errorf("invalid ocsp ca configuration")
