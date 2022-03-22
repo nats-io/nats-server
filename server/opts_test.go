@@ -3287,28 +3287,67 @@ func TestGetStorageSize(t *testing.T) {
 
 }
 
-func TestAuthorizationAndAccountsDuplicateUsers(t *testing.T) {
+func TestAuthorizationAndAccountsMisconfigurations(t *testing.T) {
 	// There is a test called TestConfigCheck but we can't use it
 	// because the place where the error will be reported will depend
-	// if the duplicate is found while parsing authorization{} or
-	// accounts{}, which order is random.
+	// if the error is found while parsing authorization{} or
+	// accounts{}, but we can't control the internal parsing of those
+	// (due to lexer giving back a map and iteration over map is random)
+	// regardless of the ordering in the configuration file.
+	// The test is also repeated
 	for _, test := range []struct {
 		name   string
 		config string
 		err    string
 	}{
-		{"duplicate users",
+		{
+			"duplicate users",
 			`
 			authorization = {users = [ {user: "user1", pass: "pwd"} ] }
 			accounts { ACC { users = [ {user: "user1"} ] } }
-		`,
-			fmt.Sprintf("Duplicate user %q detected", "user1")},
-		{"duplicate nkey",
+			`,
+			fmt.Sprintf("Duplicate user %q detected", "user1"),
+		},
+		{
+			"duplicate nkey",
 			`
 			authorization = {users = [ {nkey: UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX} ] }
 			accounts { ACC { users = [ {nkey: UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX} ] } }
-		`,
-			fmt.Sprintf("Duplicate nkey %q detected", "UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX")},
+			`,
+			fmt.Sprintf("Duplicate nkey %q detected", "UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX"),
+		},
+		{
+			"auth single user and password and accounts users",
+			`
+			authorization = {user: "user1", password: "pwd"}
+			accounts = { ACC { users = [ {user: "user2", pass: "pwd"} ] } }
+			`,
+			"Can not have a single user/pass",
+		},
+		{
+			"auth single user and password and accounts nkeys",
+			`
+			authorization = {user: "user1", password: "pwd"}
+			accounts = { ACC { users = [ {nkey: UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX} ] } }
+			`,
+			"Can not have a single user/pass",
+		},
+		{
+			"auth token and accounts users",
+			`
+			authorization = {token: "my_token"}
+			accounts = { ACC { users = [ {user: "user2", pass: "pwd"} ] } }
+			`,
+			"Can not have a token",
+		},
+		{
+			"auth token and accounts nkeys",
+			`
+			authorization = {token: "my_token"}
+			accounts = { ACC { users = [ {nkey: UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX} ] } }
+			`,
+			"Can not have a token",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(test.config))
