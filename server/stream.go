@@ -3541,7 +3541,9 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		// just will remove them from the central monitoring map
 		mset.msgs.unregister()
 		mset.ackq.unregister()
-		mset.outq.unregister()
+		if mset.outq != nil {
+			mset.outq.unregister()
+		}
 	}
 
 	// Clustered cleanup.
