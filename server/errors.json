@@ -1178,5 +1178,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSNoLimitsErr",
+    "code": 400,
+    "error_code": 10120,
+    "description": "no JetStream default or applicable tiered limit present",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

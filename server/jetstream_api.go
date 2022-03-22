@@ -846,7 +846,7 @@ func (a *Account) trackAPI() {
 	a.mu.RUnlock()
 	if jsa != nil {
 		jsa.mu.Lock()
-		jsa.usage.api++
+		jsa.usageApi++
 		jsa.apiTotal++
 		jsa.sendClusterUsageUpdate()
 		atomic.AddInt64(&jsa.js.apiTotal, 1)
@@ -860,9 +860,9 @@ func (a *Account) trackAPIErr() {
 	a.mu.RUnlock()
 	if jsa != nil {
 		jsa.mu.Lock()
-		jsa.usage.api++
+		jsa.usageApi++
 		jsa.apiTotal++
-		jsa.usage.err++
+		jsa.usageErr++
 		jsa.apiErrors++
 		jsa.sendClusterUsageUpdate()
 		atomic.AddInt64(&jsa.js.apiTotal, 1)
@@ -1145,6 +1145,31 @@ func (s *Server) jsonResponse(v interface{}) string {
 	return string(b)
 }
 
+// Read lock must be held
+func (jsa *jsAccount) tieredReservation(tier string, cfg *StreamConfig) int64 {
+	reservation := int64(0)
+	if tier == _EMPTY_ {
+		for _, sa := range jsa.streams {
+			if sa.cfg.MaxBytes > 0 {
+				if sa.cfg.Storage == cfg.Storage && sa.cfg.Name != cfg.Name {
+					reservation += (int64(sa.cfg.Replicas) * sa.cfg.MaxBytes)
+				}
+			}
+		}
+	} else {
+		for _, sa := range jsa.streams {
+			if sa.cfg.Replicas == cfg.Replicas {
+				if sa.cfg.MaxBytes > 0 {
+					if isSameTier(&sa.cfg, cfg) && sa.cfg.Name != cfg.Name {
+						reservation += (int64(sa.cfg.Replicas) * sa.cfg.MaxBytes)
+					}
+				}
+			}
+		}
+	}
+	return reservation
+}
+
 // Request to create a stream.
 func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	if c == nil || !s.JetStreamEnabled() {
@@ -1320,7 +1345,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 	}
 
 	// Check for MaxBytes required.
-	if acc.maxBytesRequired() && cfg.MaxBytes <= 0 {
+	if acc.maxBytesRequired(&cfg) && cfg.MaxBytes <= 0 {
 		resp.Error = NewJSStreamMaxBytesRequiredError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -1329,6 +1354,23 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 	// Hand off to cluster for processing.
 	if s.JetStreamIsClustered() {
 		s.jsClusteredStreamRequest(ci, acc, subject, reply, rmsg, &cfg)
+		return
+	}
+
+	acc.mu.RLock()
+	jsa := acc.js
+	acc.mu.RUnlock()
+
+	selectedLimits, tier, ok := jsa.selectLimits(&cfg)
+	if !ok {
+		resp.Error = NewJSNoLimitsError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	if selectedLimits.MaxStreams > 0 && jsa.countStreams(tier, &cfg) >= selectedLimits.MaxStreams {
+		resp.Error = NewJSMaximumStreamsLimitError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 

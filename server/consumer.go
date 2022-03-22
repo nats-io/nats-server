@@ -328,7 +328,7 @@ func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
 
 func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment) (*consumer, error) {
 	mset.mu.RLock()
-	s, jsa := mset.srv, mset.jsa
+	s, jsa, tierName := mset.srv, mset.jsa, mset.tier
 	mset.mu.RUnlock()
 
 	// If we do not have the consumer currently assigned to us in cluster mode we will proceed but warn.
@@ -500,6 +500,13 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	}
 	c.mu.Unlock()
 
+	jsa.mu.RLock()
+	jsaLimits, limitsFound := jsa.limits[tierName]
+	jsa.mu.RUnlock()
+	if !limitsFound {
+		return nil, NewJSNoLimitsError()
+	}
+
 	// Hold mset lock here.
 	mset.mu.Lock()
 	if mset.client == nil || mset.store == nil {
@@ -524,8 +531,8 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	// than stream config we prefer the account limits to handle cases where account limits are
 	// updated during the lifecycle of the stream
 	maxc := mset.cfg.MaxConsumers
-	if maxc <= 0 || (mset.jsa.limits.MaxConsumers > 0 && mset.jsa.limits.MaxConsumers < maxc) {
-		maxc = mset.jsa.limits.MaxConsumers
+	if maxc <= 0 || (jsaLimits.MaxConsumers > 0 && jsaLimits.MaxConsumers < maxc) {
+		maxc = jsaLimits.MaxConsumers
 	}
 	if maxc > 0 && mset.numPublicConsumers() >= maxc {
 		mset.mu.Unlock()

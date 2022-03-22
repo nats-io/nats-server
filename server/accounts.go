@@ -76,7 +76,7 @@ type Account struct {
 	imports      importMap
 	exports      exportMap
 	js           *jsAccount
-	jsLimits     *JetStreamAccountLimits
+	jsLimits     map[string]JetStreamAccountLimits
 	limits
 	expired      bool
 	incomplete   bool
@@ -3274,15 +3274,29 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		a.srv = s
 	}
 
-	// Setup js limits regardless of whether this server has jsEnabled.
-	if ac.Limits.JetStreamLimits.DiskStorage != 0 || ac.Limits.JetStreamLimits.MemoryStorage != 0 {
-		// JetStreamAccountLimits and jwt.JetStreamLimits use same value for unlimited
-		a.jsLimits = &JetStreamAccountLimits{
-			MaxMemory:        ac.Limits.JetStreamLimits.MemoryStorage,
-			MaxStore:         ac.Limits.JetStreamLimits.DiskStorage,
-			MaxStreams:       int(ac.Limits.JetStreamLimits.Streams),
-			MaxConsumers:     int(ac.Limits.JetStreamLimits.Consumer),
-			MaxBytesRequired: ac.Limits.JetStreamLimits.MaxBytesRequired,
+	if ac.Limits.IsJSEnabled() {
+		if ac.Limits.JetStreamLimits.DiskStorage != 0 || ac.Limits.JetStreamLimits.MemoryStorage != 0 {
+			// JetStreamAccountLimits and jwt.JetStreamLimits use same value for unlimited
+			a.jsLimits = map[string]JetStreamAccountLimits{
+				_EMPTY_: {
+					MaxMemory:        ac.Limits.JetStreamLimits.MemoryStorage,
+					MaxStore:         ac.Limits.JetStreamLimits.DiskStorage,
+					MaxStreams:       int(ac.Limits.JetStreamLimits.Streams),
+					MaxConsumers:     int(ac.Limits.JetStreamLimits.Consumer),
+					MaxBytesRequired: ac.Limits.JetStreamLimits.MaxBytesRequired,
+				},
+			}
+		} else {
+			a.jsLimits = map[string]JetStreamAccountLimits{}
+			for t, l := range ac.Limits.JetStreamTieredLimits {
+				a.jsLimits[t] = JetStreamAccountLimits{
+					MaxMemory:        l.MemoryStorage,
+					MaxStore:         l.DiskStorage,
+					MaxStreams:       int(l.Streams),
+					MaxConsumers:     int(l.Consumer),
+					MaxBytesRequired: l.MaxBytesRequired,
+				}
+			}
 		}
 	} else if a.jsLimits != nil {
 		// covers failed update followed by disable

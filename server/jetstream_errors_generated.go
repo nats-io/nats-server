@@ -2,7 +2,9 @@
 
 package server
 
-import "strings"
+import (
+	"strings"
+)
 
 const (
 	// JSAccountResourcesExceededErr resource limits exceeded for account
@@ -205,6 +207,9 @@ const (
 
 	// JSNoAccountErr account not found
 	JSNoAccountErr ErrorIdentifier = 10035
+
+	// JSNoLimitsErr no JetStream default or applicable tiered limit present
+	JSNoLimitsErr ErrorIdentifier = 10120
 
 	// JSNoMessageFoundErr no message found
 	JSNoMessageFoundErr ErrorIdentifier = 10037
@@ -429,6 +434,7 @@ var (
 		JSMirrorWithSubjectFiltersErr:              {Code: 400, ErrCode: 10033, Description: "stream mirrors can not contain filtered subjects"},
 		JSMirrorWithSubjectsErr:                    {Code: 400, ErrCode: 10034, Description: "stream mirrors can not also contain subjects"},
 		JSNoAccountErr:                             {Code: 503, ErrCode: 10035, Description: "account not found"},
+		JSNoLimitsErr:                              {Code: 400, ErrCode: 10120, Description: "no JetStream default or applicable tiered limit present"},
 		JSNoMessageFoundErr:                        {Code: 404, ErrCode: 10037, Description: "no message found"},
 		JSNotEmptyRequestErr:                       {Code: 400, ErrCode: 10038, Description: "expected an empty request payload"},
 		JSNotEnabledErr:                            {Code: 503, ErrCode: 10076, Description: "JetStream not enabled"},
@@ -1215,6 +1221,16 @@ func NewJSNoAccountError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSNoAccountErr]
+}
+
+// NewJSNoLimitsError creates a new JSNoLimitsErr error: "no JetStream default or applicable tiered limit present"
+func NewJSNoLimitsError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSNoLimitsErr]
 }
 
 // NewJSNoMessageFoundError creates a new JSNoMessageFoundErr error: "no message found"
