@@ -1,4 +1,4 @@
-// Copyright 2019-2021 The NATS Authors
+// Copyright 2019-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -45,15 +45,15 @@ func TestMemStoreBasics(t *testing.T) {
 	if state.Bytes != expectedSize {
 		t.Fatalf("Expected %d bytes, got %d", expectedSize, state.Bytes)
 	}
-	nsubj, _, nmsg, _, err := ms.LoadMsg(1)
+	sm, err := ms.LoadMsg(1, nil)
 	if err != nil {
 		t.Fatalf("Unexpected error looking up msg: %v", err)
 	}
-	if nsubj != subj {
-		t.Fatalf("Subjects don't match, original %q vs %q", subj, nsubj)
+	if sm.subj != subj {
+		t.Fatalf("Subjects don't match, original %q vs %q", subj, sm.subj)
 	}
-	if !bytes.Equal(nmsg, msg) {
-		t.Fatalf("Msgs don't match, original %q vs %q", msg, nmsg)
+	if !bytes.Equal(sm.msg, msg) {
+		t.Fatalf("Msgs don't match, original %q vs %q", msg, sm.msg)
 	}
 }
 
@@ -84,7 +84,7 @@ func TestMemStoreMsgLimit(t *testing.T) {
 		t.Fatalf("Expected the first sequence to be 2 now, but got %d", state.FirstSeq)
 	}
 	// Make sure we can not lookup seq 1.
-	if _, _, _, _, err := ms.LoadMsg(1); err == nil {
+	if _, err := ms.LoadMsg(1, nil); err == nil {
 		t.Fatalf("Expected error looking up seq 1 but got none")
 	}
 }
@@ -186,16 +186,17 @@ func TestMemStoreTimeStamps(t *testing.T) {
 		time.Sleep(5 * time.Microsecond)
 		ms.StoreMsg(subj, nil, msg)
 	}
+	var smv StoreMsg
 	for seq := uint64(1); seq <= 10; seq++ {
-		_, _, _, ts, err := ms.LoadMsg(seq)
+		sm, err := ms.LoadMsg(seq, &smv)
 		if err != nil {
 			t.Fatalf("Unexpected error looking up msg: %v", err)
 		}
 		// These should be different
-		if ts <= last {
-			t.Fatalf("Expected different timestamps, got %v", ts)
+		if sm.ts <= last {
+			t.Fatalf("Expected different timestamps, got %v", sm.ts)
 		}
-		last = ts
+		last = sm.ts
 	}
 }
 
@@ -265,12 +266,12 @@ func TestMemStoreEraseMsg(t *testing.T) {
 	}
 	subj, msg := "foo", []byte("Hello World")
 	ms.StoreMsg(subj, nil, msg)
-	_, _, smsg, _, err := ms.LoadMsg(1)
+	sm, err := ms.LoadMsg(1, nil)
 	if err != nil {
 		t.Fatalf("Unexpected error looking up msg: %v", err)
 	}
-	if !bytes.Equal(msg, smsg) {
-		t.Fatalf("Expected same msg, got %q vs %q", smsg, msg)
+	if !bytes.Equal(msg, sm.msg) {
+		t.Fatalf("Expected same msg, got %q vs %q", sm.msg, msg)
 	}
 	if removed, _ := ms.EraseMsg(1); !removed {
 		t.Fatalf("Expected erase msg to return success")
@@ -287,15 +288,15 @@ func TestMemStoreMsgHeaders(t *testing.T) {
 		t.Fatalf("Wrong size for stored msg with header")
 	}
 	ms.StoreMsg(subj, hdr, msg)
-	_, shdr, smsg, _, err := ms.LoadMsg(1)
+	sm, err := ms.LoadMsg(1, nil)
 	if err != nil {
 		t.Fatalf("Unexpected error looking up msg: %v", err)
 	}
-	if !bytes.Equal(msg, smsg) {
-		t.Fatalf("Expected same msg, got %q vs %q", smsg, msg)
+	if !bytes.Equal(msg, sm.msg) {
+		t.Fatalf("Expected same msg, got %q vs %q", sm.msg, msg)
 	}
-	if !bytes.Equal(hdr, shdr) {
-		t.Fatalf("Expected same hdr, got %q vs %q", shdr, hdr)
+	if !bytes.Equal(hdr, sm.hdr) {
+		t.Fatalf("Expected same hdr, got %q vs %q", sm.hdr, hdr)
 	}
 	if removed, _ := ms.EraseMsg(1); !removed {
 		t.Fatalf("Expected erase msg to return success")

@@ -1508,7 +1508,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 	const (
 		compactInterval = 2 * time.Minute
 		compactSizeMin  = 32 * 1024 * 1024
-		compactNumMin   = 8192
+		compactNumMin   = 65536
 	)
 
 	t := time.NewTicker(compactInterval)
@@ -1861,7 +1861,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 				if err != nil && !isRecovering {
 					s.Debugf("JetStream cluster failed to delete stream msg %d from '%s > %s': %v",
-						md.Seq, md.Stream, md.Client.serviceAccount(), err)
+						md.Seq, md.Client.serviceAccount(), md.Stream, err)
 				}
 
 				js.mu.RLock()
@@ -5396,6 +5396,7 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 
 	mset.mu.RLock()
 	st := mset.cfg.Storage
+	ddloaded := mset.ddloaded
 	mset.mu.RUnlock()
 
 	if mset.js.limitsExceeded(st) || mset.jsa.limitsExceeded(st) {
@@ -5415,6 +5416,18 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	}
 	// Update our lseq.
 	mset.setLastSeq(seq)
+
+	// Check for MsgId and if we have one here make sure to update our internal map.
+	if len(hdr) > 0 {
+		if msgId := getMsgId(hdr); msgId != _EMPTY_ {
+			if !ddloaded {
+				mset.mu.Lock()
+				mset.rebuildDedupe()
+				mset.mu.Unlock()
+			}
+			mset.storeMsgId(&ddentry{msgId, seq, ts})
+		}
+	}
 
 	return seq, nil
 }
@@ -5587,8 +5600,9 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	defer mset.clearCatchupPeer(sreq.Peer)
 
 	sendNextBatch := func() {
+		var smv StoreMsg
 		for ; seq <= last && atomic.LoadInt64(&outb) <= maxOutBytes && atomic.LoadInt32(&outm) <= maxOutMsgs; seq++ {
-			subj, hdr, msg, ts, err := mset.store.LoadMsg(seq)
+			sm, err := mset.store.LoadMsg(seq, &smv)
 			// if this is not a deleted msg, bail out.
 			if err != nil && err != ErrStoreMsgNotFound && err != errDeletedMsg {
 				// break, something changed.
@@ -5596,7 +5610,13 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 				return
 			}
 			// S2?
-			em := encodeStreamMsg(subj, _EMPTY_, hdr, msg, seq, ts)
+			var em []byte
+			if sm != nil {
+				em = encodeStreamMsg(sm.subj, _EMPTY_, sm.hdr, sm.msg, sm.seq, sm.ts)
+			} else {
+				// Skip record for deleted msg.
+				em = encodeStreamMsg(_EMPTY_, _EMPTY_, nil, nil, seq, 0)
+			}
 			// Place size in reply subject for flow control.
 			reply := fmt.Sprintf(ackReplyT, len(em))
 			atomic.AddInt64(&outb, int64(len(em)))

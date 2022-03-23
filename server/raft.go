@@ -74,7 +74,7 @@ type RaftNode interface {
 type WAL interface {
 	Type() StorageType
 	StoreMsg(subj string, hdr, msg []byte) (uint64, int64, error)
-	LoadMsg(index uint64) (subj string, hdr, msg []byte, ts int64, err error)
+	LoadMsg(index uint64, sm *StoreMsg) (*StoreMsg, error)
 	RemoveMsg(index uint64) (bool, error)
 	Compact(index uint64) (uint64, error)
 	Purge() (uint64, error)
@@ -2161,11 +2161,12 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 }
 
 func (n *raft) loadEntry(index uint64) (*appendEntry, error) {
-	_, _, msg, _, err := n.wal.LoadMsg(index)
+	var smp StoreMsg
+	sm, err := n.wal.LoadMsg(index, &smp)
 	if err != nil {
 		return nil, err
 	}
-	return n.decodeAppendEntry(msg, nil, _EMPTY_)
+	return n.decodeAppendEntry(sm.msg, nil, _EMPTY_)
 }
 
 // applyCommit will update our commit index and apply the entry to the apply chan.

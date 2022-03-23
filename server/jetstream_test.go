@@ -7339,10 +7339,9 @@ gateway {
 				if s := getStreams(js); len(s) != 1 {
 					st.Fatalf("unexpected stream count, got=%d, want=1", len(s))
 				}
-
-				err = js.DeleteStream(streamName)
-				require_NoError(st, err)
 			}
+			// Delete regardless.
+			js.DeleteStream(streamName)
 		})
 	}
 }

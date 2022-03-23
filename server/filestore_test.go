@@ -1,4 +1,4 @@
-// Copyright 2019-2021 The NATS Authors
+// Copyright 2019-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -67,17 +67,18 @@ func TestFileStoreBasics(t *testing.T) {
 		t.Fatalf("Expected %d bytes, got %d", expectedSize, state.Bytes)
 	}
 
-	nsubj, _, nmsg, _, err := fs.LoadMsg(2)
+	var smv StoreMsg
+	sm, err := fs.LoadMsg(2, &smv)
 	if err != nil {
 		t.Fatalf("Unexpected error looking up msg: %v", err)
 	}
-	if nsubj != subj {
-		t.Fatalf("Subjects don't match, original %q vs %q", subj, nsubj)
+	if sm.subj != subj {
+		t.Fatalf("Subjects don't match, original %q vs %q", subj, sm.subj)
 	}
-	if !bytes.Equal(nmsg, msg) {
-		t.Fatalf("Msgs don't match, original %q vs %q", msg, nmsg)
+	if !bytes.Equal(sm.msg, msg) {
+		t.Fatalf("Msgs don't match, original %q vs %q", msg, sm.msg)
 	}
-	_, _, _, _, err = fs.LoadMsg(3)
+	_, err = fs.LoadMsg(3, nil)
 	if err != nil {
 		t.Fatalf("Unexpected error looking up msg: %v", err)
 	}
@@ -120,15 +121,16 @@ func TestFileStoreMsgHeaders(t *testing.T) {
 		t.Fatalf("Wrong size for stored msg with header")
 	}
 	fs.StoreMsg(subj, hdr, msg)
-	_, shdr, smsg, _, err := fs.LoadMsg(1)
+	var smv StoreMsg
+	sm, err := fs.LoadMsg(1, &smv)
 	if err != nil {
 		t.Fatalf("Unexpected error looking up msg: %v", err)
 	}
-	if !bytes.Equal(msg, smsg) {
-		t.Fatalf("Expected same msg, got %q vs %q", smsg, msg)
+	if !bytes.Equal(msg, sm.msg) {
+		t.Fatalf("Expected same msg, got %q vs %q", sm.msg, msg)
 	}
-	if !bytes.Equal(hdr, shdr) {
-		t.Fatalf("Expected same hdr, got %q vs %q", shdr, hdr)
+	if !bytes.Equal(hdr, sm.hdr) {
+		t.Fatalf("Expected same hdr, got %q vs %q", sm.hdr, hdr)
 	}
 	if removed, _ := fs.EraseMsg(1); !removed {
 		t.Fatalf("Expected erase msg to return success")
@@ -360,11 +362,12 @@ func TestFileStoreSkipMsg(t *testing.T) {
 		t.Fatalf("Expected first to be %d and last to be %d. got first %d and last %d", numSkips+1, numSkips+5, state.FirstSeq, state.LastSeq)
 	}
 
-	subj, _, msg, _, err := fs.LoadMsg(11)
+	var smv StoreMsg
+	sm, err := fs.LoadMsg(11, &smv)
 	if err != nil {
 		t.Fatalf("Unexpected error looking up seq 11: %v", err)
 	}
-	if subj != "zzz" || string(msg) != "Hello World!" {
+	if sm.subj != "zzz" || string(sm.msg) != "Hello World!" {
 		t.Fatalf("Message did not match")
 	}
 
@@ -386,11 +389,11 @@ func TestFileStoreSkipMsg(t *testing.T) {
 	}
 	defer fs.Stop()
 
-	subj, _, msg, _, err = fs.LoadMsg(nseq)
+	sm, err = fs.LoadMsg(nseq, &smv)
 	if err != nil {
 		t.Fatalf("Unexpected error looking up seq %d: %v", nseq, err)
 	}
-	if subj != "AAA" || string(msg) != "Skip?" {
+	if sm.subj != "AAA" || string(sm.msg) != "Skip?" {
 		t.Fatalf("Message did not match")
 	}
 }
@@ -444,8 +447,9 @@ func TestFileStoreWriteExpireWrite(t *testing.T) {
 	}
 
 	// Now load them in and check.
+	var smv StoreMsg
 	for i := 1; i <= toSend*2; i++ {
-		subj, _, msg, _, err := fs.LoadMsg(uint64(i))
+		sm, err := fs.LoadMsg(uint64(i), &smv)
 		if err != nil {
 			t.Fatalf("Unexpected error looking up seq %d: %v", i, err)
 		}
@@ -453,7 +457,7 @@ func TestFileStoreWriteExpireWrite(t *testing.T) {
 		if i > toSend {
 			str = "Hello World! - 22"
 		}
-		if subj != "zzz" || string(msg) != str {
+		if sm.subj != "zzz" || string(sm.msg) != str {
 			t.Fatalf("Message did not match")
 		}
 	}
@@ -491,7 +495,7 @@ func TestFileStoreMsgLimit(t *testing.T) {
 		t.Fatalf("Expected the first sequence to be 2 now, but got %d", state.FirstSeq)
 	}
 	// Make sure we can not lookup seq 1.
-	if _, _, _, _, err := fs.LoadMsg(1); err == nil {
+	if _, err := fs.LoadMsg(1, nil); err == nil {
 		t.Fatalf("Expected error looking up seq 1 but got none")
 	}
 }
@@ -646,16 +650,17 @@ func TestFileStoreTimeStamps(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 		fs.StoreMsg(subj, nil, msg)
 	}
+	var smv StoreMsg
 	for seq := uint64(1); seq <= 10; seq++ {
-		_, _, _, ts, err := fs.LoadMsg(seq)
+		sm, err := fs.LoadMsg(seq, &smv)
 		if err != nil {
 			t.Fatalf("Unexpected error looking up msg [%d]: %v", seq, err)
 		}
 		// These should be different
-		if ts <= last {
-			t.Fatalf("Expected different timestamps, got last %v vs %v", last, ts)
+		if sm.ts <= last {
+			t.Fatalf("Expected different timestamps, got last %v vs %v", last, sm.ts)
 		}
-		last = ts
+		last = sm.ts
 	}
 }
 
@@ -1078,11 +1083,12 @@ func TestFileStoreRemoveOutOfOrderRecovery(t *testing.T) {
 		t.Fatalf("Expected %d msgs, got %d", toStore/2, state.Msgs)
 	}
 
-	if _, _, _, _, err := fs.LoadMsg(1); err != nil {
+	var smv StoreMsg
+	if _, err := fs.LoadMsg(1, &smv); err != nil {
 		t.Fatalf("Expected to retrieve seq 1")
 	}
 	for i := 2; i <= toStore; i += 2 {
-		if _, _, _, _, err := fs.LoadMsg(uint64(i)); err == nil {
+		if _, err := fs.LoadMsg(uint64(i), &smv); err == nil {
 			t.Fatalf("Expected error looking up seq %d that should be deleted", i)
 		}
 	}
@@ -1101,11 +1107,11 @@ func TestFileStoreRemoveOutOfOrderRecovery(t *testing.T) {
 		t.Fatalf("Expected recovered states to be the same, got %+v vs %+v\n", state, state2)
 	}
 
-	if _, _, _, _, err := fs.LoadMsg(1); err != nil {
+	if _, err := fs.LoadMsg(1, &smv); err != nil {
 		t.Fatalf("Expected to retrieve seq 1")
 	}
 	for i := 2; i <= toStore; i += 2 {
-		if _, _, _, _, err := fs.LoadMsg(uint64(i)); err == nil {
+		if _, err := fs.LoadMsg(uint64(i), nil); err == nil {
 			t.Fatalf("Expected error looking up seq %d that should be deleted", i)
 		}
 	}
@@ -1233,19 +1239,18 @@ func TestFileStoreEraseMsg(t *testing.T) {
 	subj, msg := "foo", []byte("Hello World")
 	fs.StoreMsg(subj, nil, msg)
 	fs.StoreMsg(subj, nil, msg) // To keep block from being deleted.
-	_, _, smsg, _, err := fs.LoadMsg(1)
+	var smv StoreMsg
+	sm, err := fs.LoadMsg(1, &smv)
 	if err != nil {
 		t.Fatalf("Unexpected error looking up msg: %v", err)
 	}
-	if !bytes.Equal(msg, smsg) {
-		t.Fatalf("Expected same msg, got %q vs %q", smsg, msg)
+	if !bytes.Equal(msg, sm.msg) {
+		t.Fatalf("Expected same msg, got %q vs %q", sm.msg, msg)
 	}
-	// Hold for offset check later.
-	sm, _ := fs.msgForSeq(1)
 	if removed, _ := fs.EraseMsg(1); !removed {
 		t.Fatalf("Expected erase msg to return success")
 	}
-	if sm2, _ := fs.msgForSeq(1); sm2 != nil {
+	if sm2, _ := fs.msgForSeq(1, nil); sm2 != nil {
 		t.Fatalf("Expected msg to be erased")
 	}
 	fs.checkAndFlushAllBlocks()
@@ -1259,21 +1264,22 @@ func TestFileStoreEraseMsg(t *testing.T) {
 	}
 	defer fp.Close()
 
-	fp.ReadAt(buf, sm.off)
-	nsubj, _, nmsg, seq, ts, err := msgFromBuf(buf, nil)
+	fp.ReadAt(buf, 0)
+	//	nsubj, _, nmsg, seq, ts, err := msgFromBuf(buf, nil)
+	sm, err = msgFromBuf(buf, nil, nil)
 	if err != nil {
 		t.Fatalf("error reading message from block: %v", err)
 	}
-	if nsubj == subj {
+	if sm.subj == subj {
 		t.Fatalf("Expected the subjects to be different")
 	}
-	if seq != 0 && seq&ebit == 0 {
-		t.Fatalf("Expected seq to be 0, marking as deleted, got %d", seq)
+	if sm.seq != 0 && sm.seq&ebit == 0 {
+		t.Fatalf("Expected seq to be 0, marking as deleted, got %d", sm.seq)
 	}
-	if ts != 0 {
-		t.Fatalf("Expected timestamp to be 0, got %d", ts)
+	if sm.ts != 0 {
+		t.Fatalf("Expected timestamp to be 0, got %d", sm.ts)
 	}
-	if bytes.Equal(nmsg, msg) {
+	if bytes.Equal(sm.msg, msg) {
 		t.Fatalf("Expected message body to be randomized")
 	}
 }
@@ -1326,7 +1332,7 @@ func TestFileStoreEraseAndNoIndexRecovery(t *testing.T) {
 	}
 
 	for i := 2; i <= toStore; i += 2 {
-		if _, _, _, _, err := fs.LoadMsg(uint64(i)); err == nil {
+		if _, err := fs.LoadMsg(uint64(i), nil); err == nil {
 			t.Fatalf("Expected error looking up seq %d that should be erased", i)
 		}
 	}
@@ -1444,7 +1450,7 @@ func TestFileStoreWriteAndReadSameBlock(t *testing.T) {
 
 	for i := uint64(1); i <= 10; i++ {
 		fs.StoreMsg(subj, nil, msg)
-		if _, _, _, _, err := fs.LoadMsg(i); err != nil {
+		if _, err := fs.LoadMsg(i, nil); err != nil {
 			t.Fatalf("Error loading %d: %v", i, err)
 		}
 	}
@@ -1483,8 +1489,9 @@ func TestFileStoreAndRetrieveMultiBlock(t *testing.T) {
 	}
 	defer fs.Stop()
 
+	var smv StoreMsg
 	for i := uint64(1); i <= 20; i++ {
-		if _, _, _, _, err := fs.LoadMsg(i); err != nil {
+		if _, err := fs.LoadMsg(i, &smv); err != nil {
 			t.Fatalf("Error loading %d: %v", i, err)
 		}
 	}
@@ -1592,7 +1599,7 @@ func TestFileStoreReadCache(t *testing.T) {
 		return nil
 	})
 
-	fs.LoadMsg(1)
+	fs.LoadMsg(1, nil)
 	if csz := fs.cacheSize(); csz != totalBytes {
 		t.Fatalf("Expected all messages to be cached, got %d vs %d", csz, totalBytes)
 	}
@@ -1607,14 +1614,14 @@ func TestFileStoreReadCache(t *testing.T) {
 		t.Fatalf("Expected only 1 cache load, got %d", cls)
 	}
 	// Now make sure we do not reload cache if there is activity.
-	fs.LoadMsg(1)
+	fs.LoadMsg(1, nil)
 	timeout := time.Now().Add(250 * time.Millisecond)
 	for time.Now().Before(timeout) {
 		if cls := fs.cacheLoads(); cls != 2 {
 			t.Fatalf("cache loads not 2, got %d", cls)
 		}
 		time.Sleep(5 * time.Millisecond)
-		fs.LoadMsg(1) // register activity.
+		fs.LoadMsg(1, nil) // register activity.
 	}
 }
 
@@ -1638,7 +1645,7 @@ func TestFileStorePartialCacheExpiration(t *testing.T) {
 
 	// Again wait for cache to expire.
 	time.Sleep(2 * cexp)
-	if _, _, _, _, err := fs.LoadMsg(1); err != nil {
+	if _, err := fs.LoadMsg(1, nil); err != nil {
 		t.Fatalf("Error loading message 1: %v", err)
 	}
 }
@@ -1685,7 +1692,7 @@ func TestFileStorePartialIndexes(t *testing.T) {
 	}
 	// If we now load in a message in second half if we do not
 	// detect idx is a partial correctly this will panic.
-	if _, _, _, _, err := fs.LoadMsg(8); err != nil {
+	if _, err := fs.LoadMsg(8, nil); err != nil {
 		t.Fatalf("Error loading %d: %v", 1, err)
 	}
 }
@@ -2091,11 +2098,11 @@ func TestFileStoreWriteFailures(t *testing.T) {
 	if state.Msgs != lseq-1 {
 		t.Fatalf("Expected total msgs to be %d, got %d\n", lseq-1, state.Msgs)
 	}
-	if _, _, _, _, err := fs.LoadMsg(lseq); err == nil {
+	if _, err := fs.LoadMsg(lseq, nil); err == nil {
 		t.Fatalf("Expected error loading seq that failed, got none")
 	}
 	// Loading should still work.
-	if _, _, _, _, err := fs.LoadMsg(1); err != nil {
+	if _, err := fs.LoadMsg(1, nil); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
@@ -2200,9 +2207,10 @@ func TestFileStorePerf(t *testing.T) {
 		friendlyBytes(int64(toStore*storedMsgSize)),
 	)
 
+	var smv StoreMsg
 	start = time.Now()
 	for i := uint64(1); i <= toStore; i++ {
-		if _, _, _, _, err := fs.LoadMsg(i); err != nil {
+		if _, err := fs.LoadMsg(i, &smv); err != nil {
 			t.Fatalf("Error loading %d: %v", i, err)
 		}
 	}
@@ -2221,7 +2229,7 @@ func TestFileStorePerf(t *testing.T) {
 
 	start = time.Now()
 	for i := uint64(1); i <= toStore; i++ {
-		if _, _, _, _, err := fs.LoadMsg(i); err != nil {
+		if _, err := fs.LoadMsg(i, &smv); err != nil {
 			t.Fatalf("Error loading %d: %v", i, err)
 		}
 	}
@@ -2321,11 +2329,11 @@ func TestFileStoreReadBackMsgPerf(t *testing.T) {
 	// Pick something towards end of the block.
 	index := defaultStreamBlockSize/storedMsgSize - 22
 	start = time.Now()
-	fs.LoadMsg(index)
+	fs.LoadMsg(index, nil)
 	fmt.Printf("Time to load first msg [%d] = %v\n", index, time.Since(start))
 
 	start = time.Now()
-	fs.LoadMsg(index + 2)
+	fs.LoadMsg(index+2, nil)
 	fmt.Printf("Time to load second msg [%d] = %v\n", index+2, time.Since(start))
 }
 
@@ -2890,7 +2898,7 @@ func TestFileStoreStreamDeleteCacheBug(t *testing.T) {
 		t.Fatalf("Got an error on remove of %d: %v", 1, err)
 	}
 	time.Sleep(100 * time.Millisecond)
-	if _, _, _, _, err := fs.LoadMsg(2); err != nil {
+	if _, err := fs.LoadMsg(2, nil); err != nil {
 		t.Fatalf("Unexpected error looking up msg: %v", err)
 	}
 }
@@ -3398,7 +3406,7 @@ func TestFileStoreSparseCompactionWithInteriorDeletes(t *testing.T) {
 		}
 	}
 
-	_, _, _, _, err = fs.LoadMsg(900)
+	_, err = fs.LoadMsg(900, nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -3410,8 +3418,7 @@ func TestFileStoreSparseCompactionWithInteriorDeletes(t *testing.T) {
 	lmb.compact()
 	fs.mu.RUnlock()
 
-	_, _, _, _, err = fs.LoadMsg(900)
-	if err != nil {
+	if _, err = fs.LoadMsg(900, nil); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 }
@@ -3532,9 +3539,10 @@ func TestFileStoreFetchPerf(t *testing.T) {
 	}
 
 	// Time how long it takes us to load all messages.
+	var smv StoreMsg
 	now := time.Now()
 	for i := 0; i < n; i++ {
-		_, _, _, _, err := fs.LoadMsg(uint64(i))
+		_, err := fs.LoadMsg(uint64(i), &smv)
 		if err != nil {
 			t.Fatalf("Unexpected error looking up seq %d: %v", i, err)
 		}
