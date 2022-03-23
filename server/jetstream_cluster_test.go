@@ -10682,8 +10682,11 @@ func TestJetStreamClusterStreamTagPlacement(t *testing.T) {
 
 	reset := func(s *Server) {
 		s.mu.Lock()
-		s.sys.resetCh <- struct{}{}
+		rch := s.sys.resetCh
 		s.mu.Unlock()
+		if rch != nil {
+			rch <- struct{}{}
+		}
 		s.sendStatszUpdate()
 	}
 
