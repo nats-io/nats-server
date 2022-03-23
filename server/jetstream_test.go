@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -16224,6 +16225,84 @@ func TestJetStreamAddStreamWithFilestoreFailure(t *testing.T) {
 		&StreamConfig{Name: "TEST"},
 		&FileStoreConfig{BlockSize: 2 * maxBlockSize}); err == nil {
 		t.Fatal("Expected failure, did not get one")
+	}
+}
+
+type checkFastState struct {
+	count int64
+	StreamStore
+}
+
+func (s *checkFastState) FastState(state *StreamState) {
+	// Keep track only when called from checkPending()
+	if bytes.Contains(debug.Stack(), []byte("checkPending(")) {
+		atomic.AddInt64(&s.count, 1)
+	}
+	s.StreamStore.FastState(state)
+}
+
+func TestJetStreamBackOffCheckPending(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset.delete()
+
+	// Plug or store to see how many times we invoke FastState, which is done in checkPending
+	mset.mu.Lock()
+	st := &checkFastState{StreamStore: mset.store}
+	mset.store = st
+	mset.mu.Unlock()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	sendStreamMsg(t, nc, "foo", "Hello World!")
+
+	sub, _ := nc.SubscribeSync(nats.NewInbox())
+	defer sub.Unsubscribe()
+	nc.Flush()
+
+	o, err := mset.addConsumer(&ConsumerConfig{
+		DeliverSubject: sub.Subject,
+		AckPolicy:      AckExplicit,
+		MaxDeliver:     1000,
+		BackOff:        []time.Duration{50 * time.Millisecond, 250 * time.Millisecond, time.Second},
+	})
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	defer o.delete()
+
+	// Check the first delivery and the following 2 redeliveries
+	start := time.Now()
+	natsNexMsg(t, sub, time.Second)
+	if dur := time.Since(start); dur >= 50*time.Millisecond {
+		t.Fatalf("Expected first delivery to be fast, took: %v", dur)
+	}
+	start = time.Now()
+	natsNexMsg(t, sub, time.Second)
+	if dur := time.Since(start); dur < 25*time.Millisecond || dur > 75*time.Millisecond {
+		t.Fatalf("Expected first redelivery to be ~50ms, took: %v", dur)
+	}
+	start = time.Now()
+	natsNexMsg(t, sub, time.Second)
+	if dur := time.Since(start); dur < 200*time.Millisecond || dur > 300*time.Millisecond {
+		t.Fatalf("Expected first redelivery to be ~250ms, took: %v", dur)
+	}
+	// There was a bug that would cause checkPending to be invoked based on the
+	// ackWait (which in this case would be the first value of BackOff, which
+	// is 50ms). So we would call checkPending() too many times.
+	time.Sleep(500 * time.Millisecond)
+	// Check now, it should have been invoked twice.
+	if n := atomic.LoadInt64(&st.count); n != 2 {
+		t.Fatalf("Expected checkPending to be invoked 2 times, was %v", n)
 	}
 }
 

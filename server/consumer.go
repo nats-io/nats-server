@@ -3244,6 +3244,11 @@ func (o *consumer) checkPending() {
 	now := time.Now().UnixNano()
 	ttl := int64(o.cfg.AckWait)
 	next := int64(o.ackWait(0))
+	// However, if there is backoff, initializes with the largest backoff.
+	// It will be adjusted as needed.
+	if l := len(o.cfg.BackOff); l > 0 {
+		next = int64(o.cfg.BackOff[l-1])
+	}
 
 	var shouldUpdateState bool
 	var state StreamState
@@ -3268,12 +3273,20 @@ func (o *consumer) checkPending() {
 			continue
 		}
 		elapsed, deadline := now-p.Timestamp, ttl
-		if len(o.cfg.BackOff) > 0 && o.rdc != nil {
+		if len(o.cfg.BackOff) > 0 {
+			// This is ok even if o.rdc is nil, we would get dc == 0, which is what we want.
 			dc := int(o.rdc[seq])
-			if dc >= len(o.cfg.BackOff) {
+			// This will be the index for the next backoff, will set to last element if needed.
+			nbi := dc + 1
+			if dc+1 >= len(o.cfg.BackOff) {
 				dc = len(o.cfg.BackOff) - 1
+				nbi = dc
 			}
 			deadline = int64(o.cfg.BackOff[dc])
+			// Set `next` to the next backoff (if smaller than current `next` value).
+			if nextBackoff := int64(o.cfg.BackOff[nbi]); nextBackoff < next {
+				next = nextBackoff
+			}
 		}
 		if elapsed >= deadline {
 			if !o.onRedeliverQueue(seq) {
