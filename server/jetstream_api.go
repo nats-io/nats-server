@@ -2535,16 +2535,13 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 		return
 	}
 
-	var subj string
-	var hdr []byte
-	var data []byte
-	var ts int64
-	seq := req.Seq
+	var svp StoreMsg
+	var sm *StoreMsg
 
 	if req.Seq > 0 {
-		subj, hdr, data, ts, err = mset.store.LoadMsg(req.Seq)
+		sm, err = mset.store.LoadMsg(req.Seq, &svp)
 	} else {
-		subj, seq, hdr, data, ts, err = mset.store.LoadLastMsg(req.LastFor)
+		sm, err = mset.store.LoadLastMsg(req.LastFor, &svp)
 	}
 	if err != nil {
 		resp.Error = NewJSNoMessageFoundError()
@@ -2552,11 +2549,11 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 		return
 	}
 	resp.Message = &StoredMsg{
-		Subject:  subj,
-		Sequence: seq,
-		Header:   hdr,
-		Data:     data,
-		Time:     time.Unix(0, ts).UTC(),
+		Subject:  sm.subj,
+		Sequence: sm.seq,
+		Header:   sm.hdr,
+		Data:     sm.msg,
+		Time:     time.Unix(0, sm.ts).UTC(),
 	}
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }

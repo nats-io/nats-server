@@ -1442,10 +1442,9 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage Stor
 	rg.node = n
 
 	// See if we are preferred and should start campaign immediately.
-	if n.ID() == rg.Preferred {
+	if n.ID() == rg.Preferred && n.Term() == 0 {
 		n.Campaign()
 	}
-
 	return nil
 }
 
@@ -1509,7 +1508,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 	const (
 		compactInterval = 2 * time.Minute
 		compactSizeMin  = 32 * 1024 * 1024
-		compactNumMin   = 8192
+		compactNumMin   = 65536
 	)
 
 	t := time.NewTicker(compactInterval)
@@ -1602,6 +1601,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 			} else if n.GroupLeader() != noLeader {
 				js.setStreamAssignmentRecovering(sa)
 			}
+
 			js.processStreamLeaderChange(mset, isLeader)
 		case <-t.C:
 			doSnapshot()
@@ -1807,7 +1807,8 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 				// We can skip if we know this is less than what we already have.
 				if lseq < last {
-					s.Debugf("Apply stream entries skipping message with sequence %d with last of %d", lseq, last)
+					s.Debugf("Apply stream entries for '%s > %s' skipping message with sequence %d with last of %d",
+						mset.account(), mset.name(), lseq, last)
 					continue
 				}
 
@@ -1831,7 +1832,8 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					if isClusterResetErr(err) || isOutOfSpaceErr(err) {
 						return err
 					}
-					s.Debugf("Apply stream entries error processing message: %v", err)
+					s.Debugf("Apply stream entries for '%s > %s' got error processing message: %v",
+						mset.account(), mset.name(), err)
 				}
 			case deleteMsgOp:
 				md, err := decodeMsgDelete(buf[1:])
@@ -1858,8 +1860,8 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				}
 
 				if err != nil && !isRecovering {
-					s.Debugf("JetStream cluster failed to delete msg %d from stream %q for account %q: %v",
-						md.Seq, md.Stream, md.Client.serviceAccount(), err)
+					s.Debugf("JetStream cluster failed to delete stream msg %d from '%s > %s': %v",
+						md.Seq, md.Client.serviceAccount(), md.Stream, err)
 				}
 
 				js.mu.RLock()
@@ -5220,6 +5222,7 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) error {
 	mset.clfs = snap.Failed
 	mset.store.FastState(&state)
 	sreq := mset.calculateSyncRequest(&state, snap)
+
 	s, js, subject, n := mset.srv, mset.js, mset.sa.Sync, mset.node
 	qname := fmt.Sprintf("[ACC:%s] stream '%s' snapshot", mset.acc.Name, mset.cfg.Name)
 	mset.mu.Unlock()
@@ -5240,7 +5243,9 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) error {
 	}
 
 	// Pause the apply channel for our raft group while we catch up.
-	n.PauseApply()
+	if err := n.PauseApply(); err != nil {
+		return err
+	}
 	defer n.ResumeApply()
 
 	// Set our catchup state.
@@ -5308,7 +5313,8 @@ RETRY:
 	})
 	if err != nil {
 		s.Errorf("Could not subscribe to stream catchup: %v", err)
-		return err
+		err = nil
+		goto RETRY
 	}
 
 	b, _ := json.Marshal(sreq)
@@ -5368,8 +5374,11 @@ RETRY:
 		case <-qch:
 			return nil
 		case isLeader := <-lch:
-			js.processStreamLeaderChange(mset, isLeader)
-			return nil
+			if isLeader {
+				n.StepDown()
+				notActive.Reset(activityInterval)
+				goto RETRY
+			}
 		}
 	}
 }
@@ -5387,6 +5396,7 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 
 	mset.mu.RLock()
 	st := mset.cfg.Storage
+	ddloaded := mset.ddloaded
 	mset.mu.RUnlock()
 
 	if mset.js.limitsExceeded(st) || mset.jsa.limitsExceeded(st) {
@@ -5406,6 +5416,18 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	}
 	// Update our lseq.
 	mset.setLastSeq(seq)
+
+	// Check for MsgId and if we have one here make sure to update our internal map.
+	if len(hdr) > 0 {
+		if msgId := getMsgId(hdr); msgId != _EMPTY_ {
+			if !ddloaded {
+				mset.mu.Lock()
+				mset.rebuildDedupe()
+				mset.mu.Unlock()
+			}
+			mset.storeMsgId(&ddentry{msgId, seq, ts})
+		}
+	}
 
 	return seq, nil
 }
@@ -5534,7 +5556,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	s := mset.srv
 	defer s.grWG.Done()
 
-	const maxOutBytes = int64(1 * 1024 * 1024) // 1MB for now.
+	const maxOutBytes = int64(4 * 1024 * 1024) // 4MB for now.
 	const maxOutMsgs = int32(16384)
 	outb := int64(0)
 	outm := int32(0)
@@ -5578,8 +5600,9 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	defer mset.clearCatchupPeer(sreq.Peer)
 
 	sendNextBatch := func() {
+		var smv StoreMsg
 		for ; seq <= last && atomic.LoadInt64(&outb) <= maxOutBytes && atomic.LoadInt32(&outm) <= maxOutMsgs; seq++ {
-			subj, hdr, msg, ts, err := mset.store.LoadMsg(seq)
+			sm, err := mset.store.LoadMsg(seq, &smv)
 			// if this is not a deleted msg, bail out.
 			if err != nil && err != ErrStoreMsgNotFound && err != errDeletedMsg {
 				// break, something changed.
@@ -5587,7 +5610,13 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 				return
 			}
 			// S2?
-			em := encodeStreamMsg(subj, _EMPTY_, hdr, msg, seq, ts)
+			var em []byte
+			if sm != nil {
+				em = encodeStreamMsg(sm.subj, _EMPTY_, sm.hdr, sm.msg, sm.seq, sm.ts)
+			} else {
+				// Skip record for deleted msg.
+				em = encodeStreamMsg(_EMPTY_, _EMPTY_, nil, nil, seq, 0)
+			}
 			// Place size in reply subject for flow control.
 			reply := fmt.Sprintf(ackReplyT, len(em))
 			atomic.AddInt64(&outb, int64(len(em)))

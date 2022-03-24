@@ -2594,13 +2594,13 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	}
 
 	// Create consumer with no state.
-	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "rip", AckPolicy: nats.AckExplicitPolicy, AckWait: time.Second})
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "rip", AckPolicy: nats.AckExplicitPolicy})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
 	// Create another consumer as well and give it a non-simplistic state.
-	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy, AckWait: time.Second})
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy, AckWait: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2619,8 +2619,6 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 			m.AckSync()
 		}
 	}
-	nc.Flush()
-	time.Sleep(500 * time.Millisecond)
 
 	// Snapshot consumer info.
 	ci, err := jsub.ConsumerInfo()
@@ -7067,13 +7065,14 @@ func TestJetStreamClusterDomainsAndSameNameSources(t *testing.T) {
 	}
 
 	// Now make sure we have 2 msgs in our sourced stream.
-	si, err := js.StreamInfo("S")
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if si.State.Msgs != 2 {
-		t.Fatalf("Expected 2 msgs, got %d", si.State.Msgs)
-	}
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		si, err := js.StreamInfo("S")
+		require_NoError(t, err)
+		if si.State.Msgs != 2 {
+			return fmt.Errorf("Expected 2 msgs, got %d", si.State.Msgs)
+		}
+		return nil
+	})
 
 	// Make sure we can see our external information.
 	// This not in the Go client yet so manual for now.
@@ -10301,7 +10300,7 @@ func TestJetStreamClusterNAKBackoffs(t *testing.T) {
 	if elapsed < time.Second {
 		t.Fatalf("Took too short to redeliver, expected ~1s but got %v", elapsed)
 	}
-	if elapsed > 2*time.Second {
+	if elapsed > 3*time.Second {
 		t.Fatalf("Took too long to redeliver, expected ~1s but got %v", elapsed)
 	}
 
@@ -11177,7 +11176,7 @@ func TestJetStreamRemovedPeersAndStreamsListAndDelete(t *testing.T) {
 	// Check behavior of stream info as well. We want it to return the stream is offline and not just timeout.
 	_, err = js.StreamInfo("GONE")
 	// FIXME(dlc) - Go client not putting nats: prefix on for stream but does for consumer.
-	require_Error(t, err, NewJSStreamOfflineError())
+	require_Error(t, err, NewJSStreamOfflineError(), errors.New("nats: stream is offline"))
 
 	// Same for Consumer
 	start = time.Now()
@@ -11313,6 +11312,73 @@ func TestJetStreamDuplicateRoutesDisruptJetStreamMetaGroup(t *testing.T) {
 
 	checkClusterFormed(t, c.servers...)
 	c.waitOnClusterReady()
+}
+
+func TestJetStreamDuplicateMsgIdsOnCatchupAndLeaderTakeover(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Shutdown a non-leader.
+	nc.Close()
+	sr := c.randomNonStreamLeader("$G", "TEST")
+	sr.Shutdown()
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	m := nats.NewMsg("TEST")
+	m.Data = []byte("OK")
+
+	n := 10
+	for i := 0; i < n; i++ {
+		m.Header.Set(JSMsgId, strconv.Itoa(i))
+		_, err := js.PublishMsg(m)
+		require_NoError(t, err)
+	}
+
+	m.Header.Set(JSMsgId, "8")
+	pa, err := js.PublishMsg(m)
+	require_NoError(t, err)
+	if !pa.Duplicate {
+		t.Fatalf("Expected msg to be a duplicate")
+	}
+
+	// Now force a snapshot, want to test catchup above RAFT layer.
+	sl := c.streamLeader("$G", "TEST")
+	mset, err := sl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	if node := mset.raftNode(); node == nil {
+		t.Fatalf("Could not get stream group name")
+	} else if err := node.InstallSnapshot(mset.stateSnapshot()); err != nil {
+		t.Fatalf("Error installing snapshot: %v", err)
+	}
+
+	// Now restart
+	sr = c.restartServer(sr)
+	c.waitOnStreamCurrent(sr, "$G", "TEST")
+
+	// Now make them the leader.
+	for sr != c.streamLeader("$G", "TEST") {
+		_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST"), nil, time.Second)
+		require_NoError(t, err)
+		c.waitOnStreamLeader("$G", "TEST")
+	}
+
+	// Make sure this gets rejected.
+	pa, err = js.PublishMsg(m)
+	require_NoError(t, err)
+	if !pa.Duplicate {
+		t.Fatalf("Expected msg to be a duplicate")
+	}
 }
 
 // Support functions

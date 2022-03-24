@@ -2149,8 +2149,9 @@ func (o *consumer) needAck(sseq uint64) bool {
 
 	// Check first if we are filtered, and if so check if this is even applicable to us.
 	if o.isFiltered() && o.mset != nil {
-		subj, _, _, _, err := o.mset.store.LoadMsg(sseq)
-		if err != nil || !o.isFilteredMatch(subj) {
+		var svp StoreMsg
+		sm, err := o.mset.store.LoadMsg(sseq, &svp)
+		if err != nil || !o.isFilteredMatch(sm.subj) {
 			o.mu.RUnlock()
 			return false
 		}
@@ -2587,9 +2588,9 @@ var (
 // Get next available message from underlying store.
 // Is partition aware and redeliver aware.
 // Lock should be held.
-func (o *consumer) getNextMsg() (subj string, hdr, msg []byte, sseq uint64, dc uint64, ts int64, err error) {
+func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 	if o.mset == nil || o.mset.store == nil {
-		return _EMPTY_, nil, nil, 0, 0, 0, errBadConsumer
+		return nil, 0, errBadConsumer
 	}
 	seq, dc := o.sseq, uint64(1)
 	if o.hasSkipListPending() {
@@ -2614,8 +2615,13 @@ func (o *consumer) getNextMsg() (subj string, hdr, msg []byte, sseq uint64, dc u
 				continue
 			}
 			if seq > 0 {
-				subj, hdr, msg, ts, err = o.mset.store.LoadMsg(seq)
-				return subj, hdr, msg, seq, dc, ts, err
+				pmsg := getJSPubMsgFromPool()
+				sm, err := o.mset.store.LoadMsg(seq, &pmsg.StoreMsg)
+				if sm == nil || err != nil {
+					pmsg.returnToPool()
+					pmsg, dc = nil, 0
+				}
+				return pmsg, dc, err
 			}
 		}
 		// Fallback if all redeliveries are gone.
@@ -2626,11 +2632,12 @@ func (o *consumer) getNextMsg() (subj string, hdr, msg []byte, sseq uint64, dc u
 	if o.maxp > 0 && len(o.pending) >= o.maxp {
 		// maxp only set when ack policy != AckNone and user set MaxAckPending
 		// Stall if we have hit max pending.
-		return _EMPTY_, nil, nil, 0, 0, 0, errMaxAckPending
+		return nil, 0, errMaxAckPending
 	}
 
 	// Grab next message applicable to us.
-	subj, sseq, hdr, msg, ts, err = o.mset.store.LoadNextMsg(o.cfg.FilterSubject, o.filterWC, seq)
+	pmsg := getJSPubMsgFromPool()
+	sm, sseq, err := o.mset.store.LoadNextMsg(o.cfg.FilterSubject, o.filterWC, seq, &pmsg.StoreMsg)
 
 	if sseq >= o.sseq {
 		o.sseq = sseq + 1
@@ -2639,7 +2646,12 @@ func (o *consumer) getNextMsg() (subj string, hdr, msg []byte, sseq uint64, dc u
 		}
 	}
 
-	return subj, hdr, msg, sseq, dc, ts, err
+	if sm == nil {
+		pmsg.returnToPool()
+		return nil, 0, err
+	}
+
+	return pmsg, dc, err
 }
 
 // forceExpireFirstWaiting will force expire the first waiting.
@@ -2786,13 +2798,11 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 	// Deliver all the msgs we have now, once done or on a condition, we wait for new ones.
 	for {
 		var (
-			seq, dc     uint64
-			subj, dsubj string
-			hdr         []byte
-			msg         []byte
-			err         error
-			ts          int64
-			delay       time.Duration
+			pmsg  *jsPubMsg
+			dc    uint64
+			dsubj string
+			err   error
+			delay time.Duration
 		)
 
 		o.mu.Lock()
@@ -2812,10 +2822,11 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			goto waitForMsgs
 		}
 
-		subj, hdr, msg, seq, dc, ts, err = o.getNextMsg()
+		// Grab our next msg.
+		pmsg, dc, err = o.getNextMsg()
 
 		// On error either wait or return.
-		if err != nil {
+		if err != nil || pmsg == nil {
 			if err == ErrStoreMsgNotFound || err == ErrStoreEOF || err == errMaxAckPending || err == errPartialCache {
 				goto waitForMsgs
 			} else {
@@ -2836,15 +2847,17 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		} else {
 			// We will redo this one.
 			o.sseq--
+			pmsg.returnToPool()
 			goto waitForMsgs
 		}
 
 		// If we are in a replay scenario and have not caught up check if we need to delay here.
 		if o.replay && lts > 0 {
-			if delay = time.Duration(ts - lts); delay > time.Millisecond {
+			if delay = time.Duration(pmsg.ts - lts); delay > time.Millisecond {
 				o.mu.Unlock()
 				select {
 				case <-qch:
+					pmsg.returnToPool()
 					return
 				case <-time.After(delay):
 				}
@@ -2853,17 +2866,18 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		}
 
 		// Track this regardless.
-		lts = ts
+		lts = pmsg.ts
 
 		// If we have a rate limit set make sure we check that here.
 		if o.rlimit != nil {
-			now := time.Now()
-			r := o.rlimit.ReserveN(now, len(msg)+len(hdr)+len(subj)+len(dsubj)+len(o.ackReplyT))
+			now, sm := time.Now(), &pmsg.StoreMsg
+			r := o.rlimit.ReserveN(now, len(sm.msg)+len(sm.hdr)+len(sm.subj)+len(dsubj)+len(o.ackReplyT))
 			delay := r.DelayFrom(now)
 			if delay > 0 {
 				o.mu.Unlock()
 				select {
 				case <-qch:
+					pmsg.returnToPool()
 					return
 				case <-time.After(delay):
 				}
@@ -2872,7 +2886,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		}
 
 		// Do actual delivery.
-		o.deliverMsg(dsubj, subj, hdr, msg, seq, dc, ts)
+		o.deliverMsg(dsubj, pmsg, dc)
 
 		// Reset our idle heartbeat timer if set.
 		if hb != nil {
@@ -2977,8 +2991,9 @@ func (o *consumer) adjustedPending() uint64 {
 
 // Deliver a msg to the consumer.
 // Lock should be held and o.mset validated to be non-nil.
-func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint64, ts int64) {
+func (o *consumer) deliverMsg(dsubj string, pmsg *jsPubMsg, dc uint64) {
 	if o.mset == nil {
+		pmsg.returnToPool()
 		return
 	}
 	// Update pending on first attempt. This can go upside down for a short bit, that is ok.
@@ -2993,6 +3008,7 @@ func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 	// If headers only do not send msg payload.
 	// Add in msg size itself as header.
 	if o.cfg.HeadersOnly {
+		hdr, msg := pmsg.hdr, pmsg.msg
 		var bb bytes.Buffer
 		if len(hdr) == 0 {
 			bb.WriteString(hdrLine)
@@ -3005,12 +3021,17 @@ func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 		bb.WriteString(strconv.FormatInt(int64(len(msg)), 10))
 		bb.WriteString(CR_LF)
 		bb.WriteString(CR_LF)
-		hdr = bb.Bytes()
+		// Replace underlying buf which we can use directly when we send.
+		// TODO(dlc) - Probably just use directly when forming bytes.Buffer?
+		pmsg.buf = pmsg.buf[:0]
+		pmsg.buf = append(pmsg.buf, bb.Bytes()...)
+		// Replace with new header.
+		pmsg.hdr = pmsg.buf
 		// Cancel msg payload
-		msg = nil
+		pmsg.msg = nil
 	}
 
-	pmsg := newJSPubMsg(dsubj, subj, o.ackReply(seq, dseq, dc, ts, o.adjustedPending()), hdr, msg, o, seq)
+	pmsg.dsubj, pmsg.reply, pmsg.o = dsubj, o.ackReply(pmsg.seq, dseq, dc, pmsg.ts, o.adjustedPending()), o
 	psz := pmsg.size()
 
 	if o.maxpb > 0 {
@@ -3020,6 +3041,8 @@ func (o *consumer) deliverMsg(dsubj, subj string, hdr, msg []byte, seq, dc uint6
 	mset := o.mset
 	ap := o.cfg.AckPolicy
 
+	// Cant touch pmsg after this sending so capture what we need.
+	seq, ts := pmsg.seq, pmsg.ts
 	// Send message.
 	o.outq.send(pmsg)
 

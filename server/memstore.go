@@ -1,4 +1,4 @@
-// Copyright 2019-2021 The NATS Authors
+// Copyright 2019-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -26,20 +26,12 @@ type memStore struct {
 	mu        sync.RWMutex
 	cfg       StreamConfig
 	state     StreamState
-	msgs      map[uint64]*storedMsg
+	msgs      map[uint64]*StoreMsg
 	fss       map[string]*SimpleState
 	maxp      int64
 	scb       StorageUpdateHandler
 	ageChk    *time.Timer
 	consumers int
-}
-
-type storedMsg struct {
-	subj string
-	hdr  []byte
-	msg  []byte
-	seq  uint64
-	ts   int64 // nanoseconds
 }
 
 func newMemStore(cfg *StreamConfig) (*memStore, error) {
@@ -50,7 +42,7 @@ func newMemStore(cfg *StreamConfig) (*memStore, error) {
 		return nil, fmt.Errorf("memStore requires memory storage type in config")
 	}
 	ms := &memStore{
-		msgs: make(map[uint64]*storedMsg),
+		msgs: make(map[uint64]*StoreMsg),
 		fss:  make(map[string]*SimpleState),
 		maxp: cfg.MaxMsgsPer,
 		cfg:  *cfg,
@@ -147,7 +139,15 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 		hdr = copyBytes(hdr)
 	}
 
-	ms.msgs[seq] = &storedMsg{subj, hdr, msg, seq, ts}
+	// FIXME(dlc) - Could pool at this level?
+	sm := &StoreMsg{subj, nil, nil, make([]byte, 0, len(hdr)+len(msg)), seq, ts}
+	sm.buf = append(sm.buf, hdr...)
+	sm.buf = append(sm.buf, msg...)
+	if len(hdr) > 0 {
+		sm.hdr = sm.buf[:len(hdr)]
+	}
+	sm.msg = sm.buf[len(hdr):]
+	ms.msgs[seq] = sm
 	ms.state.Msgs++
 	ms.state.Bytes += memStoreMsgSize(subj, hdr, msg)
 	ms.state.LastSeq = seq
@@ -485,7 +485,7 @@ func (ms *memStore) Purge() (uint64, error) {
 	ms.state.FirstTime = time.Time{}
 	ms.state.Bytes = 0
 	ms.state.Msgs = 0
-	ms.msgs = make(map[uint64]*storedMsg)
+	ms.msgs = make(map[uint64]*StoreMsg)
 	ms.fss = make(map[string]*SimpleState)
 	ms.mu.Unlock()
 
@@ -536,7 +536,7 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 		ms.state.FirstSeq = seq
 		ms.state.FirstTime = time.Time{}
 		ms.state.LastSeq = seq - 1
-		ms.msgs = make(map[uint64]*storedMsg)
+		ms.msgs = make(map[uint64]*StoreMsg)
 	}
 	ms.mu.Unlock()
 
@@ -592,7 +592,7 @@ func (ms *memStore) deleteFirstMsg() bool {
 }
 
 // LoadMsg will lookup the message by sequence number and return it if found.
-func (ms *memStore) LoadMsg(seq uint64) (string, []byte, []byte, int64, error) {
+func (ms *memStore) LoadMsg(seq uint64, smp *StoreMsg) (*StoreMsg, error) {
 	ms.mu.RLock()
 	sm, ok := ms.msgs[seq]
 	last := ms.state.LastSeq
@@ -603,15 +603,20 @@ func (ms *memStore) LoadMsg(seq uint64) (string, []byte, []byte, int64, error) {
 		if seq <= last {
 			err = ErrStoreMsgNotFound
 		}
-		return _EMPTY_, nil, nil, 0, err
+		return nil, err
 	}
-	return sm.subj, sm.hdr, sm.msg, sm.ts, nil
+
+	if smp == nil {
+		smp = new(StoreMsg)
+	}
+	sm.copy(smp)
+	return smp, nil
 }
 
 // LoadLastMsg will return the last message we have that matches a given subject.
 // The subject can be a wildcard.
-func (ms *memStore) LoadLastMsg(subject string) (subj string, seq uint64, hdr, msg []byte, ts int64, err error) {
-	var sm *storedMsg
+func (ms *memStore) LoadLastMsg(subject string, smp *StoreMsg) (*StoreMsg, error) {
+	var sm *StoreMsg
 	var ok bool
 
 	ms.mu.RLock()
@@ -623,14 +628,19 @@ func (ms *memStore) LoadLastMsg(subject string) (subj string, seq uint64, hdr, m
 		sm, ok = ms.msgs[ss.Last]
 	}
 	if !ok || sm == nil {
-		return _EMPTY_, 0, nil, nil, 0, ErrStoreMsgNotFound
+		return nil, ErrStoreMsgNotFound
 	}
-	return sm.subj, sm.seq, sm.hdr, sm.msg, sm.ts, nil
+
+	if smp == nil {
+		smp = new(StoreMsg)
+	}
+	sm.copy(smp)
+	return smp, nil
 }
 
 // LoadNextMsg will find the next message matching the filter subject starting at the start sequence.
 // The filter subject can be a wildcard.
-func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64) (subj string, seq uint64, hdr, msg []byte, ts int64, err error) {
+func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64, smp *StoreMsg) (*StoreMsg, uint64, error) {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
 
@@ -640,7 +650,7 @@ func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64) (subj stri
 
 	// If past the end no results.
 	if start > ms.state.LastSeq {
-		return _EMPTY_, ms.state.LastSeq, nil, nil, 0, ErrStoreEOF
+		return nil, ms.state.LastSeq, ErrStoreEOF
 	}
 
 	isAll := filter == _EMPTY_ || filter == fwcs
@@ -677,10 +687,14 @@ func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64) (subj stri
 
 	for nseq := fseq; nseq <= lseq; nseq++ {
 		if sm, ok := ms.msgs[nseq]; ok && (isAll || eq(sm.subj, filter)) {
-			return sm.subj, nseq, sm.hdr, sm.msg, sm.ts, nil
+			if smp == nil {
+				smp = new(StoreMsg)
+			}
+			sm.copy(smp)
+			return smp, nseq, nil
 		}
 	}
-	return _EMPTY_, ms.state.LastSeq, nil, nil, 0, ErrStoreEOF
+	return nil, ms.state.LastSeq, ErrStoreEOF
 }
 
 // RemoveMsg will remove the message from this store.
@@ -707,7 +721,7 @@ func (ms *memStore) updateFirstSeq(seq uint64) {
 		// Interior delete.
 		return
 	}
-	var nsm *storedMsg
+	var nsm *StoreMsg
 	var ok bool
 	for nseq := ms.state.FirstSeq + 1; nseq <= ms.state.LastSeq; nseq++ {
 		if nsm, ok = ms.msgs[nseq]; ok {

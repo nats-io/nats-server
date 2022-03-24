@@ -662,6 +662,10 @@ func (mset *stream) autoTuneFileStorageBlockSize(fsCfg *FileStoreConfig) {
 // headers and msgId in them. Would need signaling from the storage layer.
 // Lock should be held.
 func (mset *stream) rebuildDedupe() {
+	if mset.ddloaded {
+		return
+	}
+
 	mset.ddloaded = true
 
 	// We have some messages. Lookup starting sequence by duplicate time window.
@@ -670,13 +674,17 @@ func (mset *stream) rebuildDedupe() {
 		return
 	}
 
+	var smv StoreMsg
 	state := mset.store.State()
 	for seq := sseq; seq <= state.LastSeq; seq++ {
-		_, hdr, _, ts, err := mset.store.LoadMsg(seq)
+		sm, err := mset.store.LoadMsg(seq, &smv)
+		if err != nil {
+			continue
+		}
 		var msgId string
-		if err == nil && len(hdr) > 0 {
-			if msgId = getMsgId(hdr); msgId != _EMPTY_ {
-				mset.storeMsgIdLocked(&ddentry{msgId, seq, ts})
+		if len(sm.hdr) > 0 {
+			if msgId = getMsgId(sm.hdr); msgId != _EMPTY_ {
+				mset.storeMsgIdLocked(&ddentry{msgId, sm.seq, sm.ts})
 			}
 		}
 		if seq == state.LastSeq {
@@ -2241,12 +2249,13 @@ func (mset *stream) setStartingSequenceForSource(sname string) {
 		return
 	}
 
+	var smv StoreMsg
 	for seq := state.LastSeq; seq >= state.FirstSeq; seq-- {
-		_, hdr, _, _, err := mset.store.LoadMsg(seq)
-		if err != nil || len(hdr) == 0 {
+		sm, err := mset.store.LoadMsg(seq, &smv)
+		if err != nil || len(sm.hdr) == 0 {
 			continue
 		}
-		ss := getHeader(JSStreamSource, hdr)
+		ss := getHeader(JSStreamSource, sm.hdr)
 		if len(ss) == 0 {
 			continue
 		}
@@ -2303,12 +2312,13 @@ func (mset *stream) startingSequenceForSources() {
 		}
 	}()
 
+	var smv StoreMsg
 	for seq := state.LastSeq; seq >= state.FirstSeq; seq-- {
-		_, hdr, _, _, err := mset.store.LoadMsg(seq)
-		if err != nil || len(hdr) == 0 {
+		sm, err := mset.store.LoadMsg(seq, &smv)
+		if err != nil || sm == nil || len(sm.hdr) == 0 {
 			continue
 		}
-		ss := getHeader(JSStreamSource, hdr)
+		ss := getHeader(JSStreamSource, sm.hdr)
 		if len(ss) == 0 {
 			continue
 		}
@@ -2880,21 +2890,26 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		// Expected last sequence per subject.
 		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists {
 			// TODO(dlc) - We could make a new store func that does this all in one.
-			_, lseq, _, _, _, err := mset.store.LoadLastMsg(subject)
+			var smv StoreMsg
+			var fseq uint64
+			sm, err := mset.store.LoadLastMsg(subject, &smv)
+			if sm != nil {
+				fseq = sm.seq
+			}
 			// If seq passed in is zero that signals we expect no msg to be present.
 			if err == ErrStoreMsgNotFound && seq == 0 {
-				lseq, err = 0, nil
+				fseq, err = 0, nil
 			}
-			if err != nil || lseq != seq {
+			if err != nil || fseq != seq {
 				mset.clfs++
 				mset.mu.Unlock()
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
-					resp.Error = NewJSStreamWrongLastSequenceError(lseq)
+					resp.Error = NewJSStreamWrongLastSequenceError(fseq)
 					b, _ := json.Marshal(resp)
 					outq.sendMsg(reply, b)
 				}
-				return fmt.Errorf("last sequence by subject mismatch: %d vs %d", seq, lseq)
+				return fmt.Errorf("last sequence by subject mismatch: %d vs %d", seq, fseq)
 			}
 		}
 		// Check for any rollups.
@@ -3115,30 +3130,39 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 // Internal message for use by jetstream subsystem.
 type jsPubMsg struct {
-	subj  string
-	dsubj string
+	dsubj string // Subject to send to, e.g. _INBOX.xxx
 	reply string
-	hdr   []byte
-	msg   []byte
-	o     *consumer
-	seq   uint64
+	StoreMsg
+	o *consumer
 }
 
 var jsPubMsgPool sync.Pool
 
-func newJSPubMsg(subj, dsubj, reply string, hdr, msg []byte, o *consumer, seq uint64) *jsPubMsg {
+func newJSPubMsg(dsubj, subj, reply string, hdr, msg []byte, o *consumer, seq uint64) *jsPubMsg {
 	var m *jsPubMsg
+	var buf []byte
 	pm := jsPubMsgPool.Get()
 	if pm != nil {
 		m = pm.(*jsPubMsg)
+		buf = m.buf[:0]
 	} else {
-		m = &jsPubMsg{}
+		m = new(jsPubMsg)
 	}
 	// When getting something from a pool it is criticical that all fields are
 	// initialized. Doing this way guarantees that if someone adds a field to
 	// the structure, the compiler will fail the build if this line is not updated.
-	(*m) = jsPubMsg{subj, dsubj, reply, hdr, msg, o, seq}
+	(*m) = jsPubMsg{dsubj, reply, StoreMsg{subj, hdr, msg, buf, seq, 0}, o}
+
 	return m
+}
+
+// Gets a jsPubMsg from the pool.
+func getJSPubMsgFromPool() *jsPubMsg {
+	pm := jsPubMsgPool.Get()
+	if pm != nil {
+		return pm.(*jsPubMsg)
+	}
+	return new(jsPubMsg)
 }
 
 func (pm *jsPubMsg) returnToPool() {
@@ -3146,6 +3170,9 @@ func (pm *jsPubMsg) returnToPool() {
 		return
 	}
 	pm.subj, pm.dsubj, pm.reply, pm.hdr, pm.msg, pm.o = _EMPTY_, _EMPTY_, _EMPTY_, nil, nil, nil
+	if len(pm.buf) > 0 {
+		pm.buf = pm.buf[:0]
+	}
 	jsPubMsgPool.Put(pm)
 }
 
@@ -3153,7 +3180,7 @@ func (pm *jsPubMsg) size() int {
 	if pm == nil {
 		return 0
 	}
-	return len(pm.subj) + len(pm.reply) + len(pm.hdr) + len(pm.msg)
+	return len(pm.dsubj) + len(pm.reply) + len(pm.hdr) + len(pm.msg)
 }
 
 // Queue of *jsPubMsg for sending internal system messages.
@@ -3253,7 +3280,8 @@ func (mset *stream) internalLoop() {
 	mset.mu.RUnlock()
 
 	// Raw scratch buffer.
-	var _r [64 * 1024]byte
+	// This should be rarely used now so can be smaller.
+	var _r [1024]byte
 
 	for {
 		select {
@@ -3261,29 +3289,42 @@ func (mset *stream) internalLoop() {
 			pms := outq.pop()
 			for _, pmi := range pms {
 				pm := pmi.(*jsPubMsg)
-				c.pa.subject = []byte(pm.subj)
-				c.pa.deliver = []byte(pm.dsubj)
+				c.pa.subject = []byte(pm.dsubj)
+				c.pa.deliver = []byte(pm.subj)
 				c.pa.size = len(pm.msg) + len(pm.hdr)
 				c.pa.szb = []byte(strconv.Itoa(c.pa.size))
 				c.pa.reply = []byte(pm.reply)
 
-				msg := _r[:0]
+				// If we have an underlying buf that is the wire contents for hdr + msg, else construct on the fly.
+				var msg []byte
+				if len(pm.buf) > 0 {
+					msg = pm.buf
+				} else {
+					if len(pm.hdr) > 0 {
+						msg = pm.hdr
+						if len(pm.msg) > 0 {
+							msg = _r[:0]
+							msg = append(msg, pm.hdr...)
+							msg = append(msg, pm.msg...)
+						}
+					} else if len(pm.msg) > 0 {
+						// We own this now from a low level buffer perspective so can use directly here.
+						msg = pm.msg
+					}
+				}
+
 				if len(pm.hdr) > 0 {
 					c.pa.hdr = len(pm.hdr)
 					c.pa.hdb = []byte(strconv.Itoa(c.pa.hdr))
-					msg = append(msg, pm.hdr...)
-					msg = append(msg, pm.msg...)
 				} else {
 					c.pa.hdr = -1
 					c.pa.hdb = nil
-					if len(pm.msg) > 0 {
-						msg = append(msg, pm.msg...)
-					}
 				}
+
 				msg = append(msg, _CRLF_...)
 
 				didDeliver, _ := c.processInboundClientMsg(msg)
-				c.pa.szb = nil
+				c.pa.szb, c.pa.subject, c.pa.deliver = nil, nil, nil
 
 				// Check to see if this is a delivery for a consumer and
 				// we failed to deliver the message. If so alert the consumer.
@@ -3459,18 +3500,19 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 }
 
 func (mset *stream) getMsg(seq uint64) (*StoredMsg, error) {
-	subj, hdr, msg, ts, err := mset.store.LoadMsg(seq)
+	var smv StoreMsg
+	sm, err := mset.store.LoadMsg(seq, &smv)
 	if err != nil {
 		return nil, err
 	}
-	sm := &StoredMsg{
-		Subject:  subj,
-		Sequence: seq,
-		Header:   hdr,
-		Data:     msg,
-		Time:     time.Unix(0, ts).UTC(),
-	}
-	return sm, nil
+	// This only used in tests directly so no need to pool etc.
+	return &StoredMsg{
+		Subject:  sm.subj,
+		Sequence: sm.seq,
+		Header:   sm.hdr,
+		Data:     sm.msg,
+		Time:     time.Unix(0, sm.ts).UTC(),
+	}, nil
 }
 
 // getConsumers will return all the current consumers for this stream.

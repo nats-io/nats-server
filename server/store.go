@@ -62,6 +62,16 @@ var (
 	ErrSequenceMismatch = errors.New("expected sequence does not match store")
 )
 
+// StoreMsg is the stored message format for messages that are retained by the Store layer.
+type StoreMsg struct {
+	subj string
+	hdr  []byte
+	msg  []byte
+	buf  []byte
+	seq  uint64
+	ts   int64
+}
+
 // Used to call back into the upper layers to report on changes in storage resources.
 // For the cases where its a single message we will also supply sequence number and subject.
 type StorageUpdateHandler func(msgs, bytes int64, seq uint64, subj string)
@@ -70,9 +80,9 @@ type StreamStore interface {
 	StoreMsg(subject string, hdr, msg []byte) (uint64, int64, error)
 	StoreRawMsg(subject string, hdr, msg []byte, seq uint64, ts int64) error
 	SkipMsg() uint64
-	LoadMsg(seq uint64) (subject string, hdr, msg []byte, ts int64, err error)
-	LoadLastMsg(subject string) (subj string, seq uint64, hdr, msg []byte, ts int64, err error)
-	LoadNextMsg(filter string, wc bool, start uint64) (subject string, seq uint64, hdr, msg []byte, ts int64, err error)
+	LoadMsg(seq uint64, sm *StoreMsg) (*StoreMsg, error)
+	LoadNextMsg(filter string, wc bool, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error)
+	LoadLastMsg(subject string, sm *StoreMsg) (*StoreMsg, error)
 	RemoveMsg(seq uint64) (bool, error)
 	EraseMsg(seq uint64) (bool, error)
 	Purge() (uint64, error)
@@ -449,4 +459,26 @@ var errFirstSequenceMismatch = errors.New("first sequence mismatch")
 
 func isClusterResetErr(err error) bool {
 	return err == errLastSeqMismatch || err == ErrStoreEOF || err == errFirstSequenceMismatch
+}
+
+// Copy all fields.
+func (smo *StoreMsg) copy(sm *StoreMsg) {
+	if sm.buf != nil {
+		sm.buf = sm.buf[:0]
+	}
+	sm.buf = append(sm.buf, smo.buf...)
+	// We set cap on header in case someone wants to expand it.
+	sm.hdr, sm.msg = sm.buf[:len(smo.hdr):len(smo.hdr)], sm.buf[len(smo.hdr):]
+	sm.subj, sm.seq, sm.ts = smo.subj, smo.seq, smo.ts
+}
+
+// Clear all fields except underlying buffer but reset that if present to [:0].
+func (sm *StoreMsg) clear() {
+	if sm == nil {
+		return
+	}
+	*sm = StoreMsg{_EMPTY_, nil, nil, sm.buf, 0, 0}
+	if len(sm.buf) > 0 {
+		sm.buf = sm.buf[:0]
+	}
 }

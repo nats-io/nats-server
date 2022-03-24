@@ -1,4 +1,4 @@
-// Copyright 2018-2021 The NATS Authors
+// Copyright 2018-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -3383,11 +3383,11 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	state := fs.State()
-	_, _, msg, _, err := fs.LoadMsg(state.LastSeq)
+	sm, err := fs.LoadMsg(state.LastSeq, nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	ae, err := node.decodeAppendEntry(msg, nil, _EMPTY_)
+	ae, err := node.decodeAppendEntry(sm.msg, nil, _EMPTY_)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4355,4 +4355,172 @@ func TestNoRaceFileStoreKeyFileCleanup(t *testing.T) {
 	if len(kms) > 1 {
 		t.Fatalf("Expected to find only 1 key file, found %d", len(kms))
 	}
+}
+
+func TestNoRaceMsgIdPerfDuringCatchup(t *testing.T) {
+	// Uncomment to run. Needs to be on a bigger machine. Do not want as part of Travis tests atm.
+	skip(t)
+
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.serverByName("S-1"))
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// This will be the one we restart.
+	sl := c.streamLeader("$G", "TEST")
+	// Now move leader.
+	_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST"), nil, time.Second)
+	require_NoError(t, err)
+	c.waitOnStreamLeader("$G", "TEST")
+
+	// Connect to new leader.
+	nc, _ = jsClientConnect(t, c.streamLeader("$G", "TEST"))
+	defer nc.Close()
+
+	js, err = nc.JetStream(nats.PublishAsyncMaxPending(1024))
+	require_NoError(t, err)
+
+	n, ss, sr := 1_000_000, 250_000, 800_000
+	m := nats.NewMsg("TEST")
+	m.Data = []byte(strings.Repeat("Z", 2048))
+
+	// Target rate 10k msgs/sec
+	start := time.Now()
+
+	for i := 0; i < n; i++ {
+		m.Header.Set(JSMsgId, strconv.Itoa(i))
+		_, err := js.PublishMsgAsync(m)
+		require_NoError(t, err)
+		//time.Sleep(42 * time.Microsecond)
+		if i == ss {
+			fmt.Printf("SD")
+			sl.Shutdown()
+		} else if i == sr {
+			nc.Flush()
+			select {
+			case <-js.PublishAsyncComplete():
+			case <-time.After(10 * time.Second):
+			}
+			fmt.Printf("RS")
+			sl = c.restartServer(sl)
+		}
+		if i%10_000 == 0 {
+			fmt.Print("#")
+		}
+	}
+	fmt.Println()
+
+	// Wait to receive all messages.
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(20 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	tt := time.Since(start)
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	fmt.Printf("Took %v to send %d msgs\n", tt, n)
+	fmt.Printf("%.0f msgs/s\n", float64(n)/tt.Seconds())
+	fmt.Printf("%.0f mb/s\n\n", float64(si.State.Bytes/(1024*1024))/tt.Seconds())
+
+	c.waitOnStreamCurrent(sl, "$G", "TEST")
+	for _, s := range c.servers {
+		mset, _ := s.GlobalAccount().lookupStream("TEST")
+		if state := mset.store.State(); state.Msgs != uint64(n) {
+			t.Fatalf("Expected server %v to have correct number of msgs %d but got %d", s, n, state.Msgs)
+		}
+	}
+}
+
+func TestNoRaceRebuildDeDupeAndMemoryPerf(t *testing.T) {
+	skip(t)
+
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "DD"})
+	require_NoError(t, err)
+
+	m := nats.NewMsg("DD")
+	m.Data = []byte(strings.Repeat("Z", 2048))
+
+	start := time.Now()
+
+	n := 1_000_000
+	for i := 0; i < n; i++ {
+		m.Header.Set(JSMsgId, strconv.Itoa(i))
+		_, err := js.PublishMsgAsync(m)
+		require_NoError(t, err)
+	}
+
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(20 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	tt := time.Since(start)
+	si, err := js.StreamInfo("DD")
+	require_NoError(t, err)
+
+	fmt.Printf("Took %v to send %d msgs\n", tt, n)
+	fmt.Printf("%.0f msgs/s\n", float64(n)/tt.Seconds())
+	fmt.Printf("%.0f mb/s\n\n", float64(si.State.Bytes/(1024*1024))/tt.Seconds())
+
+	v, _ := s.Varz(nil)
+	fmt.Printf("Memory AFTER SEND: %v\n", friendlyBytes(v.Mem))
+
+	mset, err := s.GlobalAccount().lookupStream("DD")
+	require_NoError(t, err)
+
+	mset.mu.Lock()
+	mset.ddloaded = false
+	start = time.Now()
+	mset.rebuildDedupe()
+	fmt.Printf("TOOK %v to rebuild dd\n", time.Since(start))
+	mset.mu.Unlock()
+
+	v, _ = s.Varz(nil)
+	fmt.Printf("Memory: %v\n", friendlyBytes(v.Mem))
+
+	// Now do an ephemeral consumer and whip through every message. Doing same calculations.
+	start = time.Now()
+	received, done := 0, make(chan bool)
+	sub, err := js.Subscribe("DD", func(m *nats.Msg) {
+		received++
+		if received >= n {
+			done <- true
+		}
+	}, nats.OrderedConsumer())
+	require_NoError(t, err)
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		if s.NumSlowConsumers() > 0 {
+			t.Fatalf("Did not receive all large messages due to slow consumer status: %d of %d", received, n)
+		}
+		t.Fatalf("Failed to receive all large messages: %d of %d\n", received, n)
+	}
+
+	fmt.Printf("TOOK %v to receive all %d msgs\n", time.Since(start), n)
+	sub.Unsubscribe()
+
+	v, _ = s.Varz(nil)
+	fmt.Printf("Memory: %v\n", friendlyBytes(v.Mem))
 }
