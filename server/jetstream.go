@@ -1746,7 +1746,7 @@ func isSameTier(cfgA, cfgB *StreamConfig) bool {
 	return cfgA.Replicas == cfgB.Replicas
 }
 
-// Lock should be held.
+// Read lock should be held.
 func (jsa *jsAccount) selectLimits(cfg *StreamConfig) (JetStreamAccountLimits, string, bool) {
 	if selectedLimits, ok := jsa.limits[_EMPTY_]; ok {
 		return selectedLimits, _EMPTY_, true

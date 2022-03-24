@@ -299,10 +299,13 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		return nil, ApiErrors[JSStreamReplicasNotSupportedErr]
 	}
 
-	jsa.mu.Lock()
+	jsa.mu.RLock()
 	js := jsa.js
+	jsa.mu.RUnlock()
+	isClustered := js.isClustered()
+	jsa.mu.RLock()
 	if mset, ok := jsa.streams[cfg.Name]; ok {
-		jsa.mu.Unlock()
+		jsa.mu.RUnlock()
 		// Check to see if configs are same.
 		ocfg := mset.config()
 		if reflect.DeepEqual(ocfg, cfg) {
@@ -316,15 +319,15 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	}
 	selected, tier, hasTier := jsa.selectLimits(&cfg)
 	reserved := int64(0)
-	if js.cluster == nil {
+	if !isClustered {
 		reserved = jsa.tieredReservation(tier, &cfg)
 	}
-	jsa.mu.Unlock()
+	jsa.mu.RUnlock()
 	if !hasTier {
 		return nil, NewJSNoLimitsError()
 	}
 	js.mu.RLock()
-	if js.cluster != nil {
+	if isClustered {
 		_, reserved = tieredStreamAndReservationCount(js.cluster.streams[a.Name], tier, &cfg)
 	}
 	if err := js.checkAllLimits(&selected, &cfg, reserved, 0); err != nil {
@@ -1030,13 +1033,16 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig) (*StreamConfig, 
 	// Check limits.
 	jsa.mu.RLock()
 	js := jsa.js
+	jsa.mu.RUnlock()
+	isClustered := js.isClustered()
+	jsa.mu.RLock()
 	acc := jsa.account
 	selected, tier, hasTier := jsa.selectLimits(&cfg)
 	if !hasTier && old.Replicas != cfg.Replicas {
 		selected, tier, hasTier = jsa.selectLimits(old)
 	}
 	reserved := int64(0)
-	if js.cluster == nil {
+	if !isClustered {
 		reserved = jsa.tieredReservation(tier, &cfg)
 	}
 	jsa.mu.RUnlock()
@@ -1045,7 +1051,7 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig) (*StreamConfig, 
 	}
 	js.mu.RLock()
 	defer js.mu.RUnlock()
-	if js.cluster != nil {
+	if isClustered {
 		_, reserved = tieredStreamAndReservationCount(js.cluster.streams[acc.Name], tier, &cfg)
 	}
 	// reservation does not account for this stream, hence add the old value
@@ -3535,9 +3541,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		// just will remove them from the central monitoring map
 		mset.msgs.unregister()
 		mset.ackq.unregister()
-		if mset.outq != nil {
-			mset.outq.unregister()
-		}
+		mset.outq.unregister()
 	}
 
 	// Clustered cleanup.

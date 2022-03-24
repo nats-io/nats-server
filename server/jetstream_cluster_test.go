@@ -9983,7 +9983,6 @@ func TestJetStreamClusterConcurrentOverflow(t *testing.T) {
 	var swg sync.WaitGroup
 
 	start := func(name string) {
-		wg.Add(1)
 		defer wg.Done()
 
 		s := sc.clusterForName(pcn).randomServer()
@@ -10000,7 +9999,7 @@ func TestJetStreamClusterConcurrentOverflow(t *testing.T) {
 		})
 		require_NoError(t, err)
 	}
-
+	wg.Add(2)
 	swg.Add(2)
 	go start("foo")
 	go start("bar")
