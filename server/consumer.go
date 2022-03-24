@@ -795,12 +795,12 @@ func (o *consumer) setLeader(isLeader bool) {
 		}
 
 		mset.mu.RLock()
-		s, jsa, stream := mset.srv, mset.jsa, mset.cfg.Name
+		s, jsa, stream, lseq := mset.srv, mset.jsa, mset.cfg.Name, mset.lseq
 		mset.mu.RUnlock()
 
 		o.mu.Lock()
 		// Restore our saved state. During non-leader status we just update our underlying store.
-		o.readStoredState()
+		o.readStoredState(lseq)
 
 		// Do info sub.
 		if o.infoSub == nil && jsa != nil {
@@ -1787,10 +1787,10 @@ func (o *consumer) ackWait(next time.Duration) time.Duration {
 }
 
 // Due to bug in calculation of sequences on restoring redelivered let's do quick sanity check.
-func (o *consumer) checkRedelivered() {
+func (o *consumer) checkRedelivered(slseq uint64) {
 	var lseq uint64
 	if mset := o.mset; mset != nil {
-		lseq = mset.lastSeq()
+		lseq = slseq
 	}
 	var shouldUpdateState bool
 	for sseq := range o.rdc {
@@ -1807,7 +1807,7 @@ func (o *consumer) checkRedelivered() {
 
 // This will restore the state from disk.
 // Lock should be held.
-func (o *consumer) readStoredState() error {
+func (o *consumer) readStoredState(slseq uint64) error {
 	if o.store == nil {
 		return nil
 	}
@@ -1815,7 +1815,7 @@ func (o *consumer) readStoredState() error {
 	if err == nil && state != nil && (state.Delivered.Consumer != 0 || state.Delivered.Stream != 0) {
 		o.applyState(state)
 		if len(o.rdc) > 0 {
-			o.checkRedelivered()
+			o.checkRedelivered(slseq)
 		}
 	}
 	return err
@@ -3570,14 +3570,14 @@ func (o *consumer) hasNoLocalInterest() bool {
 // This is when the underlying stream has been purged.
 // sseq is the new first seq for the stream after purge.
 // Lock should be held.
-func (o *consumer) purge(sseq uint64) {
+func (o *consumer) purge(sseq uint64, slseq uint64) {
 	// Do not update our state unless we know we are the leader.
 	if !o.isLeader() {
 		return
 	}
 	// Signals all have been purged for this consumer.
 	if sseq == 0 {
-		sseq = o.mset.lastSeq() + 1
+		sseq = slseq + 1
 	}
 
 	o.mu.Lock()
@@ -3713,7 +3713,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 		stop := mset.lastSeq()
 		o.mu.Lock()
 		if !o.isLeader() {
-			o.readStoredState()
+			o.readStoredState(stop)
 		}
 		start := o.asflr
 		o.mu.Unlock()

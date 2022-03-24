@@ -1147,6 +1147,7 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 	var state StreamState
 	mset.store.FastState(&state)
 	fseq := state.FirstSeq
+	lseq := state.LastSeq
 
 	// Check for filtered purge.
 	if preq != nil && preq.Subject != _EMPTY_ {
@@ -1155,7 +1156,7 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 	}
 
 	for _, o := range obs {
-		o.purge(fseq)
+		o.purge(fseq, lseq)
 	}
 	return purged, nil
 }
@@ -3811,6 +3812,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 	if !fcfg.Created.IsZero() {
 		mset.setCreatedTime(fcfg.Created)
 	}
+	lseq := mset.lastSeq()
 
 	// Now do consumers.
 	odir := filepath.Join(ndir, consumerDir)
@@ -3854,7 +3856,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 			obs.setCreatedTime(cfg.Created)
 		}
 		obs.mu.Lock()
-		err = obs.readStoredState()
+		err = obs.readStoredState(lseq)
 		obs.mu.Unlock()
 		if err != nil {
 			mset.stop(true, false)
