@@ -1430,7 +1430,7 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, _ *Account,
 		return
 	}
 
-	cfg, err := checkStreamCfg(&ncfg)
+	cfg, err := checkStreamCfg(&ncfg, &s.getOpts().JetStreamLimits)
 	if err != nil {
 		resp.Error = NewJSStreamInvalidConfigError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -3238,22 +3238,12 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 		return
 	}
 
-	// We reject if flow control is set without heartbeats.
-	if req.Config.FlowControl && req.Config.Heartbeat == 0 {
-		resp.Error = NewJSConsumerWithFlowControlNeedsHeartbeatsError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
+	lim := &s.getOpts().JetStreamLimits
 
 	// Make sure we have sane defaults.
-	setConsumerConfigDefaults(&req.Config)
+	setConsumerConfigDefaults(&req.Config, lim)
 
-	// Check if we have a BackOff defined that MaxDeliver is within range etc.
-	if lbo := len(req.Config.BackOff); lbo > 0 && req.Config.MaxDeliver <= lbo {
-		resp.Error = NewJSConsumerMaxDeliverBackoffError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
+	var js *jetStream
 
 	// Determine if we should proceed here when we are in clustered mode.
 	if s.JetStreamIsClustered() {
@@ -3263,7 +3253,8 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 				return
 			}
 		} else {
-			js, cc := s.getJetStreamCluster()
+			var cc *jetStreamCluster
+			js, cc = s.getJetStreamCluster()
 			if js == nil || cc == nil {
 				return
 			}
@@ -3324,6 +3315,17 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 	}
 
 	if s.JetStreamIsClustered() && !req.Config.Direct {
+		streamCfg, ok := js.clusterStreamConfig(acc.Name, streamName)
+		if !ok {
+			resp.Error = NewJSStreamNotFoundError(Unless(err))
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		if err := checkConsumerCfg(&req.Config, lim, &streamCfg, acc); err != nil {
+			resp.Error = err
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
 		s.jsClusteredConsumerRequest(ci, acc, subject, reply, rmsg, req.Stream, &req.Config)
 		return
 	}

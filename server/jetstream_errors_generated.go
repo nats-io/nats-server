@@ -2,9 +2,7 @@
 
 package server
 
-import (
-	"strings"
-)
+import "strings"
 
 const (
 	// JSAccountResourcesExceededErr resource limits exceeded for account
@@ -108,6 +106,9 @@ const (
 
 	// JSConsumerMaxDeliverBackoffErr max deliver is required to be > length of backoff values
 	JSConsumerMaxDeliverBackoffErr ErrorIdentifier = 10116
+
+	// JSConsumerMaxPendingAckExcess consumer max ack pending exceeds server limit
+	JSConsumerMaxPendingAckExcess ErrorIdentifier = 10121
 
 	// JSConsumerMaxPendingAckPolicyRequiredErr consumer requires ack policy for max ack pending
 	JSConsumerMaxPendingAckPolicyRequiredErr ErrorIdentifier = 10082
@@ -401,6 +402,7 @@ var (
 		JSConsumerInvalidPolicyErrF:                {Code: 400, ErrCode: 10094, Description: "{err}"},
 		JSConsumerInvalidSamplingErrF:              {Code: 400, ErrCode: 10095, Description: "failed to parse consumer sampling configuration: {err}"},
 		JSConsumerMaxDeliverBackoffErr:             {Code: 400, ErrCode: 10116, Description: "max deliver is required to be > length of backoff values"},
+		JSConsumerMaxPendingAckExcess:              {Code: 400, ErrCode: 10121, Description: "consumer max ack pending exceeds server limit"},
 		JSConsumerMaxPendingAckPolicyRequiredErr:   {Code: 400, ErrCode: 10082, Description: "consumer requires ack policy for max ack pending"},
 		JSConsumerMaxRequestBatchNegativeErr:       {Code: 400, ErrCode: 10114, Description: "consumer max request batch needs to be > 0"},
 		JSConsumerMaxRequestExpiresToSmall:         {Code: 400, ErrCode: 10115, Description: "consumer max request expires needs to be >= 1ms"},
@@ -873,6 +875,16 @@ func NewJSConsumerMaxDeliverBackoffError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSConsumerMaxDeliverBackoffErr]
+}
+
+// NewJSConsumerMaxPendingAckExcessError creates a new JSConsumerMaxPendingAckExcess error: "consumer max ack pending exceeds server limit"
+func NewJSConsumerMaxPendingAckExcessError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerMaxPendingAckExcess]
 }
 
 // NewJSConsumerMaxPendingAckPolicyRequiredError creates a new JSConsumerMaxPendingAckPolicyRequiredErr error: "consumer requires ack policy for max ack pending"

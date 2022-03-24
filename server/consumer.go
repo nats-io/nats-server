@@ -299,7 +299,7 @@ const (
 )
 
 // Helper function to set consumer config defaults from above.
-func setConsumerConfigDefaults(config *ConsumerConfig) {
+func setConsumerConfigDefaults(config *ConsumerConfig, lim *JSLimitOpts) {
 	// Set to default if not specified.
 	if config.DeliverSubject == _EMPTY_ && config.MaxWaiting == 0 {
 		config.MaxWaiting = JSWaitQueueDefaultMax
@@ -318,7 +318,11 @@ func setConsumerConfigDefaults(config *ConsumerConfig) {
 	}
 	// Set proper default for max ack pending if we are ack explicit and none has been set.
 	if (config.AckPolicy == AckExplicit || config.AckPolicy == AckAll) && config.MaxAckPending == 0 {
-		config.MaxAckPending = JsDefaultMaxAckPending
+		if lim.MaxAckPending > 0 && lim.MaxAckPending < JsDefaultMaxAckPending {
+			config.MaxAckPending = lim.MaxAckPending
+		} else {
+			config.MaxAckPending = JsDefaultMaxAckPending
+		}
 	}
 }
 
@@ -326,98 +330,79 @@ func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
 	return mset.addConsumerWithAssignment(config, _EMPTY_, nil)
 }
 
-func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment) (*consumer, error) {
-	mset.mu.RLock()
-	s, jsa, tierName := mset.srv, mset.jsa, mset.tier
-	mset.mu.RUnlock()
-
-	// If we do not have the consumer currently assigned to us in cluster mode we will proceed but warn.
-	// This can happen on startup with restored state where on meta replay we still do not have
-	// the assignment. Running in single server mode this always returns true.
-	if oname != _EMPTY_ && !jsa.consumerAssigned(mset.name(), oname) {
-		s.Debugf("Consumer %q > %q does not seem to be assigned to this server", mset.name(), oname)
-	}
-
-	if config == nil {
-		return nil, NewJSConsumerConfigRequiredError()
-	}
-
-	// Make sure we have sane defaults.
-	setConsumerConfigDefaults(config)
-
+func checkConsumerCfg(config *ConsumerConfig, lim *JSLimitOpts, cfg *StreamConfig, acc *Account) *ApiError {
 	// Check if we have a BackOff defined that MaxDeliver is within range etc.
 	if lbo := len(config.BackOff); lbo > 0 && config.MaxDeliver <= lbo {
-		return nil, NewJSConsumerMaxDeliverBackoffError()
+		return NewJSConsumerMaxDeliverBackoffError()
 	}
 
 	if len(config.Description) > JSMaxDescriptionLen {
-		return nil, NewJSConsumerDescriptionTooLongError(JSMaxDescriptionLen)
+		return NewJSConsumerDescriptionTooLongError(JSMaxDescriptionLen)
 	}
 
-	var err error
 	// For now expect a literal subject if its not empty. Empty means work queue mode (pull mode).
 	if config.DeliverSubject != _EMPTY_ {
 		if !subjectIsLiteral(config.DeliverSubject) {
-			return nil, NewJSConsumerDeliverToWildcardsError()
+			return NewJSConsumerDeliverToWildcardsError()
 		}
 		if !IsValidSubject(config.DeliverSubject) {
-			return nil, NewJSConsumerInvalidDeliverSubjectError()
+			return NewJSConsumerInvalidDeliverSubjectError()
 		}
-		if mset.deliveryFormsCycle(config.DeliverSubject) {
-			return nil, NewJSConsumerDeliverCycleError()
+		if deliveryFormsCycle(cfg, config.DeliverSubject) {
+			return NewJSConsumerDeliverCycleError()
 		}
 		if config.MaxWaiting != 0 {
-			return nil, NewJSConsumerPushMaxWaitingError()
+			return NewJSConsumerPushMaxWaitingError()
 		}
 		if config.MaxAckPending > 0 && config.AckPolicy == AckNone {
-			return nil, NewJSConsumerMaxPendingAckPolicyRequiredError()
+			return NewJSConsumerMaxPendingAckPolicyRequiredError()
 		}
 		if config.Heartbeat > 0 && config.Heartbeat < 100*time.Millisecond {
-			return nil, NewJSConsumerSmallHeartbeatError()
+			return NewJSConsumerSmallHeartbeatError()
 		}
 	} else {
 		// Pull mode / work queue mode require explicit ack.
 		if config.AckPolicy == AckNone {
-			return nil, NewJSConsumerPullRequiresAckError()
+			return NewJSConsumerPullRequiresAckError()
 		}
 		if config.RateLimit > 0 {
-			return nil, NewJSConsumerPullWithRateLimitError()
+			return NewJSConsumerPullWithRateLimitError()
 		}
 		if config.MaxWaiting < 0 {
-			return nil, NewJSConsumerMaxWaitingNegativeError()
+			return NewJSConsumerMaxWaitingNegativeError()
 		}
 		if config.Heartbeat > 0 {
-			return nil, NewJSConsumerHBRequiresPushError()
+			return NewJSConsumerHBRequiresPushError()
 		}
 		if config.FlowControl {
-			return nil, NewJSConsumerFCRequiresPushError()
+			return NewJSConsumerFCRequiresPushError()
 		}
 		if config.MaxRequestBatch < 0 {
-			return nil, NewJSConsumerMaxRequestBatchNegativeError()
+			return NewJSConsumerMaxRequestBatchNegativeError()
 		}
 		if config.MaxRequestExpires != 0 && config.MaxRequestExpires < time.Millisecond {
-			return nil, NewJSConsumerMaxRequestExpiresToSmallError()
+			return NewJSConsumerMaxRequestExpiresToSmallError()
 		}
+	}
+	if lim.MaxAckPending > 0 && config.MaxAckPending > lim.MaxAckPending {
+		return NewJSConsumerMaxPendingAckExcessError()
 	}
 
 	// Direct need to be non-mapped ephemerals.
 	if config.Direct {
 		if config.DeliverSubject == _EMPTY_ {
-			return nil, NewJSConsumerDirectRequiresPushError()
+			return NewJSConsumerDirectRequiresPushError()
 		}
 		if isDurableConsumer(config) {
-			return nil, NewJSConsumerDirectRequiresEphemeralError()
-		}
-		if ca != nil {
-			return nil, NewJSConsumerOnMappedError()
+			return NewJSConsumerDirectRequiresEphemeralError()
 		}
 	}
 
 	// As best we can make sure the filtered subject is valid.
 	if config.FilterSubject != _EMPTY_ {
-		subjects, hasExt := mset.allSubjects()
+		subjects, hasExt := allSubjects(cfg, acc)
 		if !validFilteredSubject(config.FilterSubject, subjects) && !hasExt {
-			return nil, NewJSConsumerFilterNotSubsetError()
+			return NewJSConsumerFilterNotSubsetError()
 		}
 	}
 
@@ -433,58 +418,94 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	switch config.DeliverPolicy {
 	case DeliverAll:
 		if config.OptStartSeq > 0 {
-			return nil, NewJSConsumerInvalidPolicyError(badStart("all", "sequence"))
+			return NewJSConsumerInvalidPolicyError(badStart("all", "sequence"))
 		}
 		if config.OptStartTime != nil {
-			return nil, NewJSConsumerInvalidPolicyError(badStart("all", "time"))
+			return NewJSConsumerInvalidPolicyError(badStart("all", "time"))
 		}
 	case DeliverLast:
 		if config.OptStartSeq > 0 {
-			return nil, NewJSConsumerInvalidPolicyError(badStart("last", "sequence"))
+			return NewJSConsumerInvalidPolicyError(badStart("last", "sequence"))
 		}
 		if config.OptStartTime != nil {
-			return nil, NewJSConsumerInvalidPolicyError(badStart("last", "time"))
+			return NewJSConsumerInvalidPolicyError(badStart("last", "time"))
 		}
 	case DeliverLastPerSubject:
 		if config.OptStartSeq > 0 {
-			return nil, NewJSConsumerInvalidPolicyError(badStart("last per subject", "sequence"))
+			return NewJSConsumerInvalidPolicyError(badStart("last per subject", "sequence"))
 		}
 		if config.OptStartTime != nil {
-			return nil, NewJSConsumerInvalidPolicyError(badStart("last per subject", "time"))
+			return NewJSConsumerInvalidPolicyError(badStart("last per subject", "time"))
 		}
 		if config.FilterSubject == _EMPTY_ {
-			return nil, NewJSConsumerInvalidPolicyError(notSet("last per subject", "filter subject"))
+			return NewJSConsumerInvalidPolicyError(notSet("last per subject", "filter subject"))
 		}
 	case DeliverNew:
 		if config.OptStartSeq > 0 {
-			return nil, NewJSConsumerInvalidPolicyError(badStart("new", "sequence"))
+			return NewJSConsumerInvalidPolicyError(badStart("new", "sequence"))
 		}
 		if config.OptStartTime != nil {
-			return nil, NewJSConsumerInvalidPolicyError(badStart("new", "time"))
+			return NewJSConsumerInvalidPolicyError(badStart("new", "time"))
 		}
 	case DeliverByStartSequence:
 		if config.OptStartSeq == 0 {
-			return nil, NewJSConsumerInvalidPolicyError(notSet("by start sequence", "start sequence"))
+			return NewJSConsumerInvalidPolicyError(notSet("by start sequence", "start sequence"))
 		}
 		if config.OptStartTime != nil {
-			return nil, NewJSConsumerInvalidPolicyError(badStart("by start sequence", "time"))
+			return NewJSConsumerInvalidPolicyError(badStart("by start sequence", "time"))
 		}
 	case DeliverByStartTime:
 		if config.OptStartTime == nil {
-			return nil, NewJSConsumerInvalidPolicyError(notSet("by start time", "start time"))
+			return NewJSConsumerInvalidPolicyError(notSet("by start time", "start time"))
 		}
 		if config.OptStartSeq != 0 {
-			return nil, NewJSConsumerInvalidPolicyError(badStart("by start time", "start sequence"))
+			return NewJSConsumerInvalidPolicyError(badStart("by start time", "start sequence"))
 		}
+	}
+
+	if config.SampleFrequency != _EMPTY_ {
+		s := strings.TrimSuffix(config.SampleFrequency, "%")
+		if sampleFreq, err := strconv.Atoi(s); err != nil || sampleFreq < 0 {
+			return NewJSConsumerInvalidSamplingError(err)
+		}
+	}
+
+	// We reject if flow control is set without heartbeats.
+	if config.FlowControl && config.Heartbeat == 0 {
+		return NewJSConsumerWithFlowControlNeedsHeartbeatsError()
+	}
+
+	return nil
+}
+
+func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment) (*consumer, error) {
+	mset.mu.RLock()
+	s, jsa, tierName, cfg, acc := mset.srv, mset.jsa, mset.tier, mset.cfg, mset.acc
+	mset.mu.RUnlock()
+
+	// If we do not have the consumer currently assigned to us in cluster mode we will proceed but warn.
+	// This can happen on startup with restored state where on meta replay we still do not have
+	// the assignment. Running in single server mode this always returns true.
+	if oname != _EMPTY_ && !jsa.consumerAssigned(mset.name(), oname) {
+		s.Debugf("Consumer %q > %q does not seem to be assigned to this server", mset.name(), oname)
+	}
+
+	if config == nil {
+		return nil, NewJSConsumerConfigRequiredError()
+	}
+
+	lim := &s.getOpts().JetStreamLimits
+	// Make sure we have sane defaults.
+	setConsumerConfigDefaults(config, lim)
+
+	if err := checkConsumerCfg(config, lim, &cfg, acc); err != nil {
+		return nil, err
 	}
 
 	sampleFreq := 0
 	if config.SampleFrequency != _EMPTY_ {
-		s := strings.TrimSuffix(config.SampleFrequency, "%")
-		sampleFreq, err = strconv.Atoi(s)
-		if err != nil {
-			return nil, NewJSConsumerInvalidSamplingError(err)
-		}
+		// Can't fail as checkConsumerCfg checks correct format
+		sampleFreq, _ = strconv.Atoi(strings.TrimSuffix(config.SampleFrequency, "%"))
 	}
 
 	// Grab the client, account and server reference.
@@ -3783,11 +3804,8 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 
 // Check that we do not form a cycle by delivering to a delivery subject
 // that is part of the interest group.
-func (mset *stream) deliveryFormsCycle(deliverySubject string) bool {
-	mset.mu.RLock()
-	defer mset.mu.RUnlock()
-
-	for _, subject := range mset.cfg.Subjects {
+func deliveryFormsCycle(cfg *StreamConfig, deliverySubject string) bool {
+	for _, subject := range cfg.Subjects {
 		if subjectIsSubsetMatch(deliverySubject, subject) {
 			return true
 		}

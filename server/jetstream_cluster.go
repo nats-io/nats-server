@@ -941,6 +941,15 @@ type writeableStreamAssignment struct {
 	Consumers []*consumerAssignment
 }
 
+func (js *jetStream) clusterStreamConfig(accName, streamName string) (StreamConfig, bool) {
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	if sa, ok := js.cluster.streams[accName][streamName]; ok {
+		return *sa.Config, true
+	}
+	return StreamConfig{}, false
+}
+
 func (js *jetStream) metaSnapshot() []byte {
 	var streams []writeableStreamAssignment
 
@@ -2875,7 +2884,6 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 	if state != nil && o != nil {
 		err = o.setStoreState(state)
 	}
-
 	if err != nil {
 		if IsNatsErr(err, JSConsumerStoreFailedErrF) {
 			s.Warnf("Consumer create failed for '%s > %s > %s': %v", ca.Client.serviceAccount(), ca.Stream, ca.Name, err)
@@ -3962,7 +3970,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 		return
 	}
 
-	ccfg, err := checkStreamCfg(config)
+	ccfg, err := checkStreamCfg(config, &s.getOpts().JetStreamLimits)
 	if err != nil {
 		resp.Error = NewJSStreamInvalidConfigError(err, Unless(err))
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -4082,7 +4090,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	var newCfg *StreamConfig
 	if jsa := js.accounts[acc.Name]; jsa != nil {
 		js.mu.Unlock()
-		ncfg, err := jsa.configUpdateCheck(osa.Config, cfg)
+		ncfg, err := jsa.configUpdateCheck(osa.Config, cfg, &s.getOpts().JetStreamLimits)
 		js.mu.Lock()
 		if err != nil {
 			resp.Error = NewJSStreamUpdateError(err, Unless(err))

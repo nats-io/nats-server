@@ -885,7 +885,7 @@ func imposeOrder(value interface{}) error {
 		sort.Strings(value.AllowedOrigins)
 	case string, bool, uint8, int, int32, int64, time.Duration, float64, nil, LeafNodeOpts, ClusterOpts, *tls.Config, PinnedCertSet,
 		*URLAccResolver, *MemAccResolver, *DirAccResolver, *CacheDirAccResolver, Authentication, MQTTOpts, jwt.TagList,
-		*OCSPConfig, map[string]string:
+		*OCSPConfig, map[string]string, JSLimitOpts:
 		// explicitly skipped types
 	default:
 		// this will fail during unit tests

@@ -284,7 +284,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	}
 
 	// Sensible defaults.
-	cfg, err := checkStreamCfg(config)
+	cfg, err := checkStreamCfg(config, &s.getOpts().JetStreamLimits)
 	if err != nil {
 		return nil, NewJSStreamInvalidConfigError(err, Unless(err))
 	}
@@ -843,7 +843,7 @@ func (jsa *jsAccount) subjectsOverlap(subjects []string) bool {
 // StreamDefaultDuplicatesWindow default duplicates window.
 const StreamDefaultDuplicatesWindow = 2 * time.Minute
 
-func checkStreamCfg(config *StreamConfig) (StreamConfig, error) {
+func checkStreamCfg(config *StreamConfig, lim *JSLimitOpts) (StreamConfig, error) {
 	if config == nil {
 		return StreamConfig{}, fmt.Errorf("stream configuration invalid")
 	}
@@ -885,10 +885,14 @@ func checkStreamCfg(config *StreamConfig) (StreamConfig, error) {
 		cfg.MaxConsumers = -1
 	}
 	if cfg.Duplicates == 0 {
-		if cfg.MaxAge != 0 && cfg.MaxAge < StreamDefaultDuplicatesWindow {
+		maxWindow := StreamDefaultDuplicatesWindow
+		if lim.Duplicates > 0 && maxWindow > lim.Duplicates {
+			maxWindow = lim.Duplicates
+		}
+		if cfg.MaxAge != 0 && cfg.MaxAge < maxWindow {
 			cfg.Duplicates = cfg.MaxAge
 		} else {
-			cfg.Duplicates = StreamDefaultDuplicatesWindow
+			cfg.Duplicates = maxWindow
 		}
 	}
 	if cfg.Duplicates < 0 {
@@ -897,6 +901,9 @@ func checkStreamCfg(config *StreamConfig) (StreamConfig, error) {
 	// Check that duplicates is not larger then age if set.
 	if cfg.MaxAge != 0 && cfg.Duplicates > cfg.MaxAge {
 		return StreamConfig{}, fmt.Errorf("duplicates window can not be larger then max age")
+	}
+	if lim.Duplicates > 0 && cfg.Duplicates > lim.Duplicates {
+		return StreamConfig{}, fmt.Errorf("duplicates window can not be larger then server limit of %v", lim.Duplicates.String())
 	}
 
 	if cfg.DenyPurge && cfg.AllowRollup {
@@ -951,8 +958,8 @@ func (mset *stream) fileStoreConfig() (FileStoreConfig, error) {
 }
 
 // Do not hold jsAccount or jetStream lock
-func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig) (*StreamConfig, error) {
-	cfg, err := checkStreamCfg(new)
+func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, lim *JSLimitOpts) (*StreamConfig, error) {
+	cfg, err := checkStreamCfg(new, lim)
 	if err != nil {
 		return nil, NewJSStreamInvalidConfigError(err, Unless(err))
 	}
@@ -1063,7 +1070,7 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig) (*StreamConfig, 
 // Update will allow certain configuration properties of an existing stream to be updated.
 func (mset *stream) update(config *StreamConfig) error {
 	ocfg := mset.config()
-	cfg, err := mset.jsa.configUpdateCheck(&ocfg, config)
+	cfg, err := mset.jsa.configUpdateCheck(&ocfg, config, &mset.srv.getOpts().JetStreamLimits)
 	if err != nil {
 		return NewJSStreamInvalidConfigError(err, Unless(err))
 	}
@@ -1274,9 +1281,8 @@ func (mset *stream) sourcesInfo() (sis []*StreamSourceInfo) {
 	return sis
 }
 
-func (mset *stream) allSubjects() ([]string, bool) {
-	subjects, cfg, acc := mset.subjects(), mset.config(), mset.account()
-
+func allSubjects(cfg *StreamConfig, acc *Account) ([]string, bool) {
+	subjects := copyStrings(cfg.Subjects)
 	var hasExt bool
 	var seen map[string]bool
 
@@ -3315,16 +3321,6 @@ func (mset *stream) name() string {
 	return mset.cfg.Name
 }
 
-// Returns a copy of the interest subjects for this stream.
-func (mset *stream) subjects() []string {
-	mset.mu.RLock()
-	defer mset.mu.RUnlock()
-	if len(mset.cfg.Subjects) == 0 {
-		return nil
-	}
-	return copyStrings(mset.cfg.Subjects)
-}
-
 func (mset *stream) internalLoop() {
 	mset.mu.RLock()
 	s := mset.srv
@@ -3766,7 +3762,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 		return nil, errors.New("nil config on stream restore")
 	}
 
-	cfg, err := checkStreamCfg(ncfg)
+	cfg, err := checkStreamCfg(ncfg, &a.srv.getOpts().JetStreamLimits)
 	if err != nil {
 		return nil, NewJSStreamNotFoundError(Unless(err))
 	}
