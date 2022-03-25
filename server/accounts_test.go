@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,6 +45,53 @@ func simpleAccountServer(t *testing.T) (*Server, *Account, *Account) {
 		t.Fatalf("Error creating account 'bar': %v", err)
 	}
 	return s, f, b
+}
+
+func TestPlaceHolderIndex(t *testing.T) {
+	testString := "$1"
+	indexes, nbPartitions, err := placeHolderIndex(testString)
+
+	if err != nil || len(indexes) != 1 || indexes[0] != 1 || nbPartitions != -1 {
+		t.Fatalf("Error parsing %s", testString)
+	}
+
+	testString = "{{partition(10,1,2,3)}}"
+
+	indexes, nbPartitions, err = placeHolderIndex(testString)
+
+	if err != nil || !reflect.DeepEqual(indexes, []int{1, 2, 3}) || nbPartitions != 10 {
+		t.Fatalf("Error parsing %s", testString)
+	}
+
+	testString = "{{ partition(10,1,2,3) }}"
+
+	indexes, nbPartitions, err = placeHolderIndex(testString)
+
+	if err != nil || !reflect.DeepEqual(indexes, []int{1, 2, 3}) || nbPartitions != 10 {
+		t.Fatalf("Error parsing %s", testString)
+	}
+
+	testString = "{{partition (10,1,2,3)}}"
+
+	indexes, nbPartitions, err = placeHolderIndex(testString)
+
+	if err != nil || !reflect.DeepEqual(indexes, []int{1, 2, 3}) || nbPartitions != 10 {
+		t.Fatalf("Error parsing %s", testString)
+	}
+
+	testString = "{{wildcard(2)}}"
+	indexes, nbPartitions, err = placeHolderIndex(testString)
+
+	if err != nil || len(indexes) != 1 || indexes[0] != 2 || nbPartitions != -1 {
+		t.Fatalf("Error parsing %s", testString)
+	}
+
+	testString = "{{ wildcard (2) }}"
+	indexes, nbPartitions, err = placeHolderIndex(testString)
+
+	if err != nil || len(indexes) != 1 || indexes[0] != 2 || nbPartitions != -1 {
+		t.Fatalf("Error parsing %s", testString)
+	}
 }
 
 func TestRegisterDuplicateAccounts(t *testing.T) {
@@ -3131,7 +3179,7 @@ func TestSamplingHeader(t *testing.T) {
 func TestSubjectTransforms(t *testing.T) {
 	shouldErr := func(src, dest string) {
 		t.Helper()
-		if _, err := newTransform(src, dest); err != ErrBadSubject {
+		if _, err := newTransform(src, dest); err != ErrBadSubject && err != ErrBadSubjectMappingDestination {
 			t.Fatalf("Did not get an error for src=%q and dest=%q", src, dest)
 		}
 	}

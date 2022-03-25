@@ -2372,7 +2372,7 @@ func parseAccountMappings(v interface{}, acc *Account, errors *[]error, warnings
 		switch vv := v.(type) {
 		case string:
 			if err := acc.AddMapping(subj, v.(string)); err != nil {
-				err := &configErr{tk, fmt.Sprintf("Error adding mapping for %q: %v", subj, err)}
+				err := &configErr{tk, fmt.Sprintf("Error adding mapping for %q to %q : %v", subj, v.(string), err)}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -2389,7 +2389,7 @@ func parseAccountMappings(v interface{}, acc *Account, errors *[]error, warnings
 
 			// Now add them in..
 			if err := acc.AddWeightedMappings(subj, mappings...); err != nil {
-				err := &configErr{tk, fmt.Sprintf("Error adding mapping for %q: %v", subj, err)}
+				err := &configErr{tk, fmt.Sprintf("Error adding mapping for %q to %q : %v", subj, v.(string), err)}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -2401,7 +2401,7 @@ func parseAccountMappings(v interface{}, acc *Account, errors *[]error, warnings
 			}
 			// Now add it in..
 			if err := acc.AddWeightedMappings(subj, mdest); err != nil {
-				err := &configErr{tk, fmt.Sprintf("Error adding mapping for %q: %v", subj, err)}
+				err := &configErr{tk, fmt.Sprintf("Error adding mapping for %q to %q : %v", subj, v.(string), err)}
 				*errors = append(*errors, err)
 				continue
 			}
