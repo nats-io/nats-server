@@ -3279,22 +3279,26 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			// JetStreamAccountLimits and jwt.JetStreamLimits use same value for unlimited
 			a.jsLimits = map[string]JetStreamAccountLimits{
 				_EMPTY_: {
-					MaxMemory:        ac.Limits.JetStreamLimits.MemoryStorage,
-					MaxStore:         ac.Limits.JetStreamLimits.DiskStorage,
-					MaxStreams:       int(ac.Limits.JetStreamLimits.Streams),
-					MaxConsumers:     int(ac.Limits.JetStreamLimits.Consumer),
-					MaxBytesRequired: ac.Limits.JetStreamLimits.MaxBytesRequired,
+					MaxMemory:            ac.Limits.JetStreamLimits.MemoryStorage,
+					MaxStore:             ac.Limits.JetStreamLimits.DiskStorage,
+					MaxStreams:           int(ac.Limits.JetStreamLimits.Streams),
+					MaxConsumers:         int(ac.Limits.JetStreamLimits.Consumer),
+					MemoryMaxStreamBytes: ac.Limits.JetStreamLimits.MemoryMaxStreamBytes,
+					StoreMaxStreamBytes:  ac.Limits.JetStreamLimits.DiskMaxStreamBytes,
+					MaxBytesRequired:     ac.Limits.JetStreamLimits.MaxBytesRequired,
 				},
 			}
 		} else {
 			a.jsLimits = map[string]JetStreamAccountLimits{}
 			for t, l := range ac.Limits.JetStreamTieredLimits {
 				a.jsLimits[t] = JetStreamAccountLimits{
-					MaxMemory:        l.MemoryStorage,
-					MaxStore:         l.DiskStorage,
-					MaxStreams:       int(l.Streams),
-					MaxConsumers:     int(l.Consumer),
-					MaxBytesRequired: l.MaxBytesRequired,
+					MaxMemory:            l.MemoryStorage,
+					MaxStore:             l.DiskStorage,
+					MaxStreams:           int(l.Streams),
+					MaxConsumers:         int(l.Consumer),
+					MemoryMaxStreamBytes: l.MemoryMaxStreamBytes,
+					StoreMaxStreamBytes:  l.DiskMaxStreamBytes,
+					MaxBytesRequired:     l.MaxBytesRequired,
 				}
 			}
 		}

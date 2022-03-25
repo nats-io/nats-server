@@ -287,6 +287,9 @@ const (
 	// JSStreamMaxBytesRequired account requires a stream config to have max bytes set
 	JSStreamMaxBytesRequired ErrorIdentifier = 10113
 
+	// JSStreamMaxStreamBytesExceeded stream max bytes exceeds account limit max stream bytes
+	JSStreamMaxStreamBytesExceeded ErrorIdentifier = 10122
+
 	// JSStreamMessageExceedsMaximumErr message size exceeds maximum allowed
 	JSStreamMessageExceedsMaximumErr ErrorIdentifier = 10054
 
@@ -462,6 +465,7 @@ var (
 		JSStreamInvalidExternalDeliverySubjErrF:    {Code: 400, ErrCode: 10024, Description: "stream external delivery prefix {prefix} must not contain wildcards"},
 		JSStreamLimitsErrF:                         {Code: 500, ErrCode: 10053, Description: "{err}"},
 		JSStreamMaxBytesRequired:                   {Code: 400, ErrCode: 10113, Description: "account requires a stream config to have max bytes set"},
+		JSStreamMaxStreamBytesExceeded:             {Code: 400, ErrCode: 10122, Description: "stream max bytes exceeds account limit max stream bytes"},
 		JSStreamMessageExceedsMaximumErr:           {Code: 400, ErrCode: 10054, Description: "message size exceeds maximum allowed"},
 		JSStreamMirrorNotUpdatableErr:              {Code: 400, ErrCode: 10055, Description: "Mirror configuration can not be updated"},
 		JSStreamMismatchErr:                        {Code: 400, ErrCode: 10056, Description: "stream name in subject does not match request"},
@@ -1571,6 +1575,16 @@ func NewJSStreamMaxBytesRequiredError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSStreamMaxBytesRequired]
+}
+
+// NewJSStreamMaxStreamBytesExceededError creates a new JSStreamMaxStreamBytesExceeded error: "stream max bytes exceeds account limit max stream bytes"
+func NewJSStreamMaxStreamBytesExceededError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSStreamMaxStreamBytesExceeded]
 }
 
 // NewJSStreamMessageExceedsMaximumError creates a new JSStreamMessageExceedsMaximumErr error: "message size exceeds maximum allowed"
