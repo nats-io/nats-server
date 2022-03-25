@@ -2775,15 +2775,24 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		lseq uint64
 	)
 
+	o.mu.RLock()
+	mset := o.mset
+	getLSeq := o.replay
+	o.mu.RUnlock()
+	// consumer is closed when mset is set to nil.
+	if mset == nil {
+		return
+	}
+	if getLSeq {
+		lseq = mset.state().LastSeq
+	}
+
 	o.mu.Lock()
 	s := o.srv
-	if o.replay {
-		// consumer is closed when mset is set to nil.
-		if o.mset == nil {
-			o.mu.Unlock()
-			return
-		}
-		lseq = o.mset.state().LastSeq
+	// need to check again if consumer is closed
+	if o.mset == nil {
+		o.mu.Unlock()
+		return
 	}
 	// For idle heartbeat support.
 	var hbc <-chan time.Time
