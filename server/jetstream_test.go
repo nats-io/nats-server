@@ -16565,3 +16565,64 @@ func Benchmark_JetStream10x1kWorker(b *testing.B) {
 func Benchmark_JetStream4x512Worker(b *testing.B) {
 	benchJetStreamWorkersAndBatch(b, 4, 512)
 }
+
+func TestJetStreamConsumerStreamUpdate(t *testing.T) {
+	test := func(t *testing.T, s *Server, replica int) {
+		nc := natsConnect(t, s.ClientURL())
+		defer nc.Close()
+		js, err := nc.JetStream()
+		require_NoError(t, err)
+		_, err = js.AddStream(&nats.StreamConfig{Name: "foo", Duplicates: 1 * time.Minute, Replicas: replica})
+		defer js.DeleteStream("foo")
+		require_NoError(t, err)
+		_, err = js.UpdateStream(&nats.StreamConfig{Name: "foo", Duplicates: 1 * time.Minute, Replicas: replica})
+		require_NoError(t, err)
+		_, err = js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur1", AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+		_, err = js.UpdateConsumer("foo", &nats.ConsumerConfig{Durable: "dur1", AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+	}
+	t.Run("clustered", func(t *testing.T) {
+		c := createJetStreamClusterWithTemplate(t, `
+			listen: 127.0.0.1:-1
+			server_name: %s
+			jetstream: {
+				max_mem_store: 2MB, 
+				max_file_store: 8MB, 
+				store_dir: '%s',
+			}
+			cluster {
+				name: %s
+				listen: 127.0.0.1:%d
+				routes = [%s]
+			}
+			no_auth_user: u
+			accounts {
+				ONE {
+					users = [ { user: "u", pass: "s3cr3t!" } ]
+					jetstream: enabled
+				}
+				$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+			}`, "clust", 3)
+		defer c.shutdown()
+		s := c.randomServer()
+		t.Run("r3", func(t *testing.T) {
+			test(t, s, 3)
+		})
+		t.Run("r1", func(t *testing.T) {
+			test(t, s, 1)
+		})
+	})
+	t.Run("single", func(t *testing.T) {
+		storeDir := createDir(t, JetStreamStoreDir)
+		defer removeDir(t, storeDir)
+		conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 2MB, max_file_store: 8MB, store_dir: '%s'}`,
+			storeDir)))
+		defer removeFile(t, conf)
+		s, _ := RunServerWithConfig(conf)
+		defer s.Shutdown()
+		test(t, s, 1)
+	})
+}

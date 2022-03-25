@@ -2920,6 +2920,10 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 		// Start our monitoring routine.
 		if rg.node == nil {
 			// Single replica consumer, process manually here.
+			js.mu.Lock()
+			// to force response in case we think we have responded before.
+			ca.responded = false
+			js.mu.Unlock()
 			js.processConsumerLeaderChange(o, true)
 		} else {
 			if !alreadyRunning {
