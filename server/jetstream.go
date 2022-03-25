@@ -1227,8 +1227,9 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 			if !cfg.Created.IsZero() {
 				obs.setCreatedTime(cfg.Created)
 			}
+			lseq := e.mset.lastSeq()
 			obs.mu.Lock()
-			err = obs.readStoredState()
+			err = obs.readStoredState(lseq)
 			obs.mu.Unlock()
 			if err != nil {
 				s.Warnf("    Error restoring consumer state: %v", err)

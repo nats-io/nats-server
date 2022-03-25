@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -11378,6 +11379,95 @@ func TestJetStreamDuplicateMsgIdsOnCatchupAndLeaderTakeover(t *testing.T) {
 	require_NoError(t, err)
 	if !pa.Duplicate {
 		t.Fatalf("Expected msg to be a duplicate")
+	}
+}
+
+func TestJetStreamClusterConsumerLeaderChangeDeadlock(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Create a stream and durable with ack explicit
+	_, err := js.AddStream(&nats.StreamConfig{Name: "test", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("test", &nats.ConsumerConfig{
+		Durable:        "test",
+		DeliverSubject: "bar",
+		AckPolicy:      nats.AckExplicitPolicy,
+		AckWait:        250 * time.Millisecond,
+	})
+	require_NoError(t, err)
+
+	// Wait for a leader
+	c.waitOnConsumerLeader("$G", "test", "test")
+	cl := c.consumerLeader("$G", "test", "test")
+
+	// Publish a message
+	_, err = js.Publish("foo", []byte("msg"))
+	require_NoError(t, err)
+
+	// Create nats consumer on "bar" and don't ack it
+	sub := natsSubSync(t, nc, "bar")
+	natsNexMsg(t, sub, time.Second)
+	// Wait for redeliveries, to make sure it is in the redelivery map
+	natsNexMsg(t, sub, time.Second)
+	natsNexMsg(t, sub, time.Second)
+
+	mset, err := cl.GlobalAccount().lookupStream("test")
+	require_NoError(t, err)
+	require_True(t, mset != nil)
+
+	// There are parts in the code (for instance when signaling to consumers
+	// that there are new messages) where we get the mset lock and iterate
+	// over the consumers and get consumer lock. We are going to do that
+	// in a go routine while we send a consumer step down request from
+	// another go routine. We will watch for possible deadlock and if
+	// found report it.
+	ch := make(chan struct{})
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		for {
+			mset.mu.Lock()
+			for _, o := range mset.consumers {
+				o.mu.Lock()
+				time.Sleep(time.Duration(rand.Intn(10)) * time.Millisecond)
+				o.mu.Unlock()
+			}
+			mset.mu.Unlock()
+			select {
+			case <-ch:
+				return
+			default:
+			}
+		}
+	}()
+
+	// Now cause a leader changes
+	for i := 0; i < 5; i++ {
+		m, err := nc.Request("$JS.API.CONSUMER.LEADER.STEPDOWN.test.test", nil, 2*time.Second)
+		// Ignore error here and check for deadlock below
+		if err != nil {
+			break
+		}
+		// if there is a message, check that it is success
+		var resp JSApiConsumerLeaderStepDownResponse
+		err = json.Unmarshal(m.Data, &resp)
+		require_NoError(t, err)
+		require_True(t, resp.Success)
+		c.waitOnConsumerLeader("$G", "test", "test")
+	}
+
+	close(ch)
+	select {
+	case <-doneCh:
+		// OK!
+	case <-time.After(2 * time.Second):
+		buf := make([]byte, 1000000)
+		n := runtime.Stack(buf, true)
+		t.Fatalf("Suspected deadlock, printing current stack. The test suite may timeout and will also dump the stack\n%s\n", buf[:n])
 	}
 }
 
