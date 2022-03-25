@@ -1084,7 +1084,7 @@ func TestConnzSortedByStopTimeClosedConn(t *testing.T) {
 	}
 	checkClosedConns(t, s, 4, time.Second)
 
-	//Now adjust the Stop times for these with some random values.
+	// Now adjust the Stop times for these with some random values.
 	s.mu.Lock()
 	now := time.Now().UTC()
 	ccs := s.closed.closedClients()
@@ -1129,7 +1129,7 @@ func TestConnzSortedByReason(t *testing.T) {
 	}
 	checkClosedConns(t, s, 20, time.Second)
 
-	//Now adjust the Reasons for these with some random values.
+	// Now adjust the Reasons for these with some random values.
 	s.mu.Lock()
 	ccs := s.closed.closedClients()
 	max := int(ServerShutdown)
@@ -4229,6 +4229,24 @@ func TestMonitorJsz(t *testing.T) {
 		}
 		if !replicationFound {
 			t.Fatal("ReplicationLag expected to be present for my-stream-mirror stream")
+		}
+	})
+	t.Run("cluster-info", func(t *testing.T) {
+		found := 0
+		for i, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url + "")
+			if info.Meta.Replicas != nil {
+				found++
+				if info.Meta.Leader != srvs[i].Name() {
+					t.Fatalf("received cluster info from non leader: leader %s, server: %s", info.Meta.Leader, srvs[i].Name())
+				}
+			}
+		}
+		if found == 0 {
+			t.Fatalf("did not receive cluster info from any node")
+		}
+		if found > 1 {
+			t.Fatalf("received cluster info from multiple nodes")
 		}
 	})
 	t.Run("account-non-existing", func(t *testing.T) {

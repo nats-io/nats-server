@@ -1341,7 +1341,10 @@ func (s *Server) updateJszVarz(js *jetStream, v *JetStreamVarz, doConfig bool) {
 	v.Stats = js.usageStats()
 	if mg := js.getMetaGroup(); mg != nil {
 		if ci := s.raftNodeToClusterInfo(mg); ci != nil {
-			v.Meta = &MetaClusterInfo{Name: ci.Name, Leader: ci.Leader, Replicas: ci.Replicas, Size: mg.ClusterSize()}
+			v.Meta = &MetaClusterInfo{Name: ci.Name, Leader: ci.Leader, Size: mg.ClusterSize()}
+			if ci.Leader == s.info.Name {
+				v.Meta.Replicas = ci.Replicas
+			}
 		}
 	}
 }
@@ -2307,7 +2310,7 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	var vrIssues []ExtVrIssues
-	claim, _ := jwt.DecodeAccountClaims(a.claimJWT) //ignore error
+	claim, _ := jwt.DecodeAccountClaims(a.claimJWT) // ignore error
 	if claim != nil {
 		vr := jwt.ValidationResults{}
 		claim.Validate(&vr)
@@ -2606,33 +2609,26 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 		opts.Accounts = true
 	}
 
-	// Check if we want a response from the leader only.
-	if opts.LeaderOnly {
-		js, cc := s.getJetStreamCluster()
-		if js == nil {
-			// Ignore
-			return nil, fmt.Errorf("%w: no cluster", errSkipZreq)
-		}
-		// So if we have JS but no clustering, we are the leader so allow.
-		if cc != nil {
-			js.mu.RLock()
-			isLeader := cc.isLeader()
-			js.mu.RUnlock()
-			if !isLeader {
-				return nil, fmt.Errorf("%w: not leader", errSkipZreq)
-			}
-		}
-	}
-
 	jsi := &JSInfo{
 		ID:  s.ID(),
 		Now: time.Now().UTC(),
 	}
-	if !s.JetStreamEnabled() {
+
+	js := s.getJetStream()
+	if js == nil || !js.isEnabled() {
 		jsi.Disabled = true
 		return jsi, nil
 	}
-	accounts := []*jsAccount{}
+
+	js.mu.RLock()
+	isLeader := js.cluster == nil || js.cluster.isLeader()
+	js.mu.RUnlock()
+
+	if opts.LeaderOnly && !isLeader {
+		return nil, fmt.Errorf("%w: not leader", errSkipZreq)
+	}
+
+	var accounts []*jsAccount
 
 	s.js.mu.RLock()
 	jsi.Config = s.js.config
@@ -2643,9 +2639,13 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 
 	if mg := s.js.getMetaGroup(); mg != nil {
 		if ci := s.raftNodeToClusterInfo(mg); ci != nil {
-			jsi.Meta = &MetaClusterInfo{Name: ci.Name, Leader: ci.Leader, Replicas: ci.Replicas, Size: mg.ClusterSize()}
+			jsi.Meta = &MetaClusterInfo{Name: ci.Name, Leader: ci.Leader, Size: mg.ClusterSize()}
+			if isLeader {
+				jsi.Meta.Replicas = ci.Replicas
+			}
 		}
 	}
+
 	jsi.JetStreamStats = *s.js.usageStats()
 
 	filterIdx := -1
@@ -2697,7 +2697,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 	return jsi, nil
 }
 
-// HandleJSz process HTTP requests for jetstream information.
+// HandleJsz process HTTP requests for jetstream information.
 func (s *Server) HandleJsz(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.httpReqStats[JszPath]++
