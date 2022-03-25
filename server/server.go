@@ -553,10 +553,10 @@ func versionAtLeast(version string, emajor, eminor, epatch int) bool {
 	if err != nil {
 		return false
 	}
-	if major < emajor || minor < eminor || patch < epatch {
-		return false
+	if major*100+minor*10+patch > emajor*100+eminor*10+epatch {
+		return true
 	}
-	return true
+	return false
 }
 
 func (s *Server) logRejectedTLSConns() {
