@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/url"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +36,41 @@ const (
 	asciiZero = 48
 	asciiNine = 57
 )
+
+var semVerRe = regexp.MustCompile(`\Av?([0-9]+)\.?([0-9]+)?\.?([0-9]+)?`)
+
+func versionComponents(version string) (major, minor, patch int, err error) {
+	m := semVerRe.FindStringSubmatch(version)
+	if m == nil {
+		return 0, 0, 0, errors.New("invalid semver")
+	}
+	major, err = strconv.Atoi(m[1])
+	if err != nil {
+		return -1, -1, -1, err
+	}
+	minor, err = strconv.Atoi(m[2])
+	if err != nil {
+		return -1, -1, -1, err
+	}
+	patch, err = strconv.Atoi(m[3])
+	if err != nil {
+		return -1, -1, -1, err
+	}
+	return major, minor, patch, err
+}
+
+func versionAtLeast(version string, emajor, eminor, epatch int) bool {
+	major, minor, patch, err := versionComponents(version)
+	if err != nil {
+		return false
+	}
+	if major > emajor ||
+		(major == emajor && minor > eminor) ||
+		(major == emajor && minor == eminor && patch >= epatch) {
+		return true
+	}
+	return false
+}
 
 // parseSize expects decimal positive numbers. We
 // return -1 to signal error.
