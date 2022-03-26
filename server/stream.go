@@ -557,6 +557,8 @@ func (mset *stream) setLeader(isLeader bool) error {
 	// Track group leader.
 	if mset.isClustered() {
 		mset.leader = mset.node.GroupLeader()
+	} else {
+		mset.leader = _EMPTY_
 	}
 	mset.mu.Unlock()
 	return nil

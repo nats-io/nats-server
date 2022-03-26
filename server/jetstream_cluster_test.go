@@ -10674,6 +10674,23 @@ func TestJetStreamClusterStreamReplicaUpdateFunctionCheck(t *testing.T) {
 	}
 
 	checkSubsPending(t, sub, 3*numMsgs)
+
+	// Make sure cluster replicas are current.
+	for _, r := range si.Cluster.Replicas {
+		if !r.Current {
+			t.Fatalf("Expected replica to be current: %+v", r)
+		}
+	}
+
+	// Now check each indidvidual stream on each server to make sure replication occurred.
+	for _, s := range c.servers {
+		mset, err := s.GlobalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		state := mset.state()
+		if state.Msgs != uint64(3*numMsgs) || state.FirstSeq != 1 || state.LastSeq != 30 || state.Bytes != 1320 {
+			t.Fatalf("Wrong state: %+v", state)
+		}
+	}
 }
 
 func TestJetStreamClusterStreamTagPlacement(t *testing.T) {
