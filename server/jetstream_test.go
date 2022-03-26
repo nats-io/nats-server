@@ -14921,7 +14921,7 @@ func TestJetStreamPullConsumersOneShotBehavior(t *testing.T) {
 	}
 	expectInstant := func(batch int, expires time.Duration, noWait bool, ne int, he *nats.Header) {
 		t.Helper()
-		expect(batch, expires, noWait, ne, he, 2*time.Millisecond, 0)
+		expect(batch, expires, noWait, ne, he, 5*time.Millisecond, 0)
 	}
 	expectOK := func(batch int, expires time.Duration, noWait bool, ne int) {
 		t.Helper()
@@ -16587,8 +16587,8 @@ func TestJetStreamConsumerStreamUpdate(t *testing.T) {
 			listen: 127.0.0.1:-1
 			server_name: %s
 			jetstream: {
-				max_mem_store: 2MB, 
-				max_file_store: 8MB, 
+				max_mem_store: 2MB,
+				max_file_store: 8MB,
 				store_dir: '%s',
 			}
 			cluster {

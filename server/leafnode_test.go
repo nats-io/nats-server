@@ -2860,7 +2860,7 @@ func TestLeafNodeWSBasic(t *testing.T) {
 
 			nc2 := natsConnect(t, ln.ClientURL())
 			defer nc2.Close()
-			msg1Payload := make([]byte, 512)
+			msg1Payload := make([]byte, 2048)
 			for i := 0; i < len(msg1Payload); i++ {
 				msg1Payload[i] = 'A'
 			}
@@ -2876,7 +2876,7 @@ func TestLeafNodeWSBasic(t *testing.T) {
 
 			checkSubInterest(t, s, globalAccountName, "bar", time.Second)
 
-			msg2Payload := make([]byte, 512)
+			msg2Payload := make([]byte, 2048)
 			for i := 0; i < len(msg2Payload); i++ {
 				msg2Payload[i] = 'B'
 			}
@@ -2893,10 +2893,10 @@ func TestLeafNodeWSBasic(t *testing.T) {
 				trackSizeConn.Unlock()
 
 				if test.acceptCompression && test.remoteCompression {
-					if size >= 100 {
+					if size >= 1024 {
 						t.Fatalf("Seems that there was no compression: size=%v", size)
 					}
-				} else if size < 500 {
+				} else if size < 2048 {
 					t.Fatalf("Seems compression was on while it should not: size=%v", size)
 				}
 			}
