@@ -231,9 +231,10 @@ const (
 	FileStoreMinBlkSize = 32 * 1000 // 32kib
 	// FileStoreMaxBlkSize is maximum size we will do for a blk size.
 	FileStoreMaxBlkSize = maxBlockSize
-
 	// Check for bad record length value due to corrupt data.
 	rlBadThresh = 32 * 1024 * 1024
+	// Time threshold to write index info.
+	wiThresh = int64(2 * time.Second)
 )
 
 func newFileStore(fcfg FileStoreConfig, cfg StreamConfig) (*fileStore, error) {
@@ -1743,26 +1744,30 @@ func (mb *msgBlock) skipMsg(seq uint64, now time.Time) {
 	}
 	var needsRecord bool
 
+	nowts := now.UnixNano()
+
 	mb.mu.Lock()
 	// If we are empty can just do meta.
 	if mb.msgs == 0 {
 		mb.last.seq = seq
-		mb.last.ts = now.UnixNano()
+		mb.last.ts = nowts
 		mb.first.seq = seq + 1
-		mb.first.ts = now.UnixNano()
+		mb.first.ts = nowts
+		// Take care of index if needed.
+		if nowts-mb.lwits > wiThresh {
+			mb.writeIndexInfoLocked()
+		}
 	} else {
 		needsRecord = true
 		if mb.dmap == nil {
 			mb.dmap = make(map[uint64]struct{})
 		}
 		mb.dmap[seq] = struct{}{}
-		mb.msgs--
-		mb.bytes -= emptyRecordLen
 	}
 	mb.mu.Unlock()
 
 	if needsRecord {
-		mb.writeMsgRecord(emptyRecordLen, seq|ebit, _EMPTY_, nil, nil, now.UnixNano(), true)
+		mb.writeMsgRecord(emptyRecordLen, seq|ebit, _EMPTY_, nil, nil, nowts, true)
 	} else {
 		mb.kickFlusher()
 	}
@@ -1773,18 +1778,14 @@ func (fs *fileStore) SkipMsg() uint64 {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
-	// Grab time.
-	now := time.Now().UTC()
-	seq := fs.state.LastSeq + 1
-	fs.state.LastSeq = seq
-	fs.state.LastTime = now
+	// Grab time and last seq.
+	now, seq := time.Now().UTC(), fs.state.LastSeq+1
+	fs.state.LastSeq, fs.state.LastTime = seq, now
 	if fs.state.Msgs == 0 {
-		fs.state.FirstSeq = seq
-		fs.state.FirstTime = now
+		fs.state.FirstSeq, fs.state.FirstTime = seq, now
 	}
 	if seq == fs.state.FirstSeq {
-		fs.state.FirstSeq = seq + 1
-		fs.state.FirstTime = now
+		fs.state.FirstSeq, fs.state.FirstTime = seq+1, now
 	}
 	fs.lmb.skipMsg(seq, now)
 
@@ -2023,7 +2024,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 	// Check if we need to write the index file and we are flush in place (fip).
 	if shouldWriteIndex && fs.fip {
 		// Check if this is the first message, common during expirations etc.
-		if !fifo || time.Now().UnixNano()-mb.lwits > int64(2*time.Second) {
+		if !fifo || time.Now().UnixNano()-mb.lwits > wiThresh {
 			mb.writeIndexInfoLocked()
 		}
 	}
@@ -2824,10 +2825,10 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 	// Set cache timestamp for last store.
 	mb.lwts = ts
 	// Decide if we write index info if flushing in place.
-	writeIndex := ts-mb.lwits > int64(2*time.Second)
+	writeIndex := ts-mb.lwits > wiThresh
 
 	// Accounting
-	mb.updateAccounting(seq&^ebit, ts, rl)
+	mb.updateAccounting(seq, ts, rl)
 
 	// Check if we are tracking per subject for our simple state.
 	if len(subj) > 0 && mb.fss != nil {
@@ -2930,6 +2931,11 @@ func (mb *msgBlock) blkSize() uint64 {
 // Update accounting on a write msg.
 // Lock should be held.
 func (mb *msgBlock) updateAccounting(seq uint64, ts int64, rl uint64) {
+	isDeleted := seq&ebit != 0
+	if isDeleted {
+		seq = seq &^ ebit
+	}
+
 	if mb.first.seq == 0 || mb.first.ts == 0 {
 		mb.first.seq = seq
 		mb.first.ts = ts
@@ -2937,9 +2943,12 @@ func (mb *msgBlock) updateAccounting(seq uint64, ts int64, rl uint64) {
 	// Need atomics here for selectMsgBlock speed.
 	atomic.StoreUint64(&mb.last.seq, seq)
 	mb.last.ts = ts
-	mb.bytes += rl
 	mb.rbytes += rl
-	mb.msgs++
+	// Only update this accounting if message is not a deleted message.
+	if !isDeleted {
+		mb.bytes += rl
+		mb.msgs++
+	}
 }
 
 // Lock should be held.
