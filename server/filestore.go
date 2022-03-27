@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -221,8 +222,11 @@ const (
 	defaultOtherBlockSize = 8 * 1024 * 1024 // 8MB
 	// Default for KV based
 	defaultKVBlockSize = 8 * 1024 * 1024 // 8MB
+	// For smaller reuse buffers. Usually being generated during contention on the lead write buffer.
+	// E.g. mirrors/sources etc.
+	defaultSmallBlockSize = 2 * 1024 * 1024 // 2MB
 	// Default for minimum recycle size.
-	defaultMinRecycleBlockSize = 4 * 1024 * 1024 // 4MB
+	defaultMinRecycleBlockSize = defaultSmallBlockSize
 	// max block size for now.
 	maxBlockSize = defaultStreamBlockSize
 	// Compact minimum threshold.
@@ -484,20 +488,31 @@ func (fs *fileStore) writeStreamMeta() error {
 }
 
 // Pools to recycle the blocks to help with memory pressure.
-var blkPoolBig sync.Pool
-var blkPoolSmall sync.Pool
+var blkPoolBig sync.Pool    // 16MB
+var blkPoolMedium sync.Pool // 8MB
+var blkPoolSmall sync.Pool  // 2MB
 
 // Get a new msg block based on sz estimate.
 func getMsgBlockBuf(sz int) (buf []byte) {
 	var pb interface{}
-	if sz <= defaultOtherBlockSize {
-		pb, sz = blkPoolSmall.Get(), defaultOtherBlockSize
+	if sz <= defaultSmallBlockSize {
+		pb = blkPoolSmall.Get()
+	} else if sz <= defaultOtherBlockSize {
+		pb = blkPoolMedium.Get()
 	} else {
-		pb, sz = blkPoolBig.Get(), maxBlockSize
+		pb = blkPoolBig.Get()
 	}
 	if pb != nil {
 		buf = *(pb.(*[]byte))
 	} else {
+		// Here we need to make a new blk.
+		if sz <= defaultSmallBlockSize {
+			sz = defaultSmallBlockSize
+		} else if sz <= defaultOtherBlockSize {
+			sz = defaultOtherBlockSize
+		} else {
+			sz = defaultStreamBlockSize
+		}
 		buf = make([]byte, sz)
 	}
 	return buf[:0]
@@ -513,10 +528,12 @@ func recycleMsgBlockBuf(buf []byte) {
 	}
 
 	buf = buf[:0]
-	if cap(buf) > defaultOtherBlockSize {
-		blkPoolBig.Put(&buf)
-	} else {
+	if sz := cap(buf); sz <= defaultSmallBlockSize {
 		blkPoolSmall.Put(&buf)
+	} else if sz <= defaultOtherBlockSize {
+		blkPoolMedium.Put(&buf)
+	} else {
+		blkPoolBig.Put(&buf)
 	}
 }
 
@@ -870,6 +887,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, error) {
 						ss.Msgs++
 						ss.Last = seq
 					} else {
+						subj = mb.subjString(subj)
 						mb.fss[subj] = &SimpleState{Msgs: 1, First: seq, Last: seq}
 					}
 				}
@@ -1062,7 +1080,7 @@ func (fs *fileStore) expireMsgsOnRecover() {
 			purged++
 			// Update fss
 			fs.removePerSubject(sm.subj)
-			mb.removeSeqPerSubject(sm.subj, seq)
+			mb.removeSeqPerSubject(sm.subj, seq, &smv)
 		}
 
 		// Check if empty after processing, could happen if tail of messages are all deleted.
@@ -1156,28 +1174,32 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 
-	isAll, subs := filter == _EMPTY_ || filter == fwcs, []string{filter}
-	// If we have a wildcard match against all tracked subjects we know about.
-	if wc || isAll {
-		subs = subs[:0]
-		for subj := range mb.fss {
-			if isAll || subjectIsSubsetMatch(subj, filter) {
-				subs = append(subs, subj)
+	fseq, isAll, subs := start, filter == _EMPTY_ || filter == fwcs, []string{filter}
+
+	if !isAll {
+		// If we have a wildcard match against all tracked subjects we know about.
+		if wc {
+			subs = subs[:0]
+			for subj := range mb.fss {
+				if isAll || subjectIsSubsetMatch(subj, filter) {
+					subs = append(subs, subj)
+				}
+			}
+		}
+		fseq = mb.last.seq + 1
+		for _, subj := range subs {
+			ss := mb.fss[subj]
+			if ss == nil || start > ss.Last || ss.First >= fseq {
+				continue
+			}
+			if ss.First < start {
+				fseq = start
+			} else {
+				fseq = ss.First
 			}
 		}
 	}
-	fseq := mb.last.seq + 1
-	for _, subj := range subs {
-		ss := mb.fss[subj]
-		if ss == nil || start > ss.Last || ss.First >= fseq {
-			continue
-		}
-		if ss.First < start {
-			fseq = start
-		} else {
-			fseq = ss.First
-		}
-	}
+
 	if fseq > mb.last.seq {
 		return nil, false, ErrStoreMsgNotFound
 	}
@@ -1199,7 +1221,7 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 			continue
 		}
 		expireOk := seq == mb.last.seq && mb.llseq == seq
-		if len(subs) == 1 && fsm.subj == subs[0] {
+		if isAll || len(subs) == 1 && fsm.subj == subs[0] {
 			return fsm, expireOk, nil
 		}
 		for _, subj := range subs {
@@ -1966,7 +1988,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 
 	// If we are tracking multiple subjects here make sure we update that accounting.
 	fs.removePerSubject(sm.subj)
-	mb.removeSeqPerSubject(sm.subj, seq)
+	mb.removeSeqPerSubject(sm.subj, seq, &smv)
 
 	var shouldWriteIndex, firstSeqNeedsUpdate bool
 
@@ -2047,7 +2069,11 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 	// we don't lose track of the first sequence.
 	if firstSeqNeedsUpdate {
 		fs.selectNextFirst()
-		fs.lmb.writeIndexInfo()
+		// Write out the new first message block if we have one.
+		if len(fs.blks) > 0 {
+			fmb := fs.blks[0]
+			fmb.writeIndexInfo()
+		}
 	}
 	fs.mu.Unlock()
 
@@ -2537,16 +2563,16 @@ func (mb *msgBlock) clearCache() {
 		return
 	}
 
+	buf := mb.cache.buf
 	if mb.cache.off == 0 {
-		recycleMsgBlockBuf(mb.cache.buf)
 		mb.cache = nil
 	} else {
 		// Clear msgs and index.
-		recycleMsgBlockBuf(mb.cache.buf)
 		mb.cache.buf = nil
 		mb.cache.idx = nil
 		mb.cache.wp = 0
 	}
+	recycleMsgBlockBuf(buf)
 }
 
 // Called to possibly expire a message block cache.
@@ -2835,6 +2861,7 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 			ss.Msgs++
 			ss.Last = seq
 		} else {
+			subj = mb.subjString(subj)
 			mb.fss[subj] = &SimpleState{Msgs: 1, First: seq, Last: seq}
 		}
 	}
@@ -3487,7 +3514,7 @@ func (mb *msgBlock) cacheLookup(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
 	}
 
 	// Parse from the raw buffer.
-	fsm, err := msgFromBuf(buf, sm, hh)
+	fsm, err := mb.msgFromBuf(buf, sm, hh)
 	if err != nil || fsm == nil {
 		return nil, err
 	}
@@ -3558,7 +3585,8 @@ func (fs *fileStore) msgForSeq(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
 }
 
 // Internal function to return msg parts from a raw buffer.
-func msgFromBuf(buf []byte, sm *StoreMsg, hh hash.Hash64) (*StoreMsg, error) {
+// Lock should be held.
+func (mb *msgBlock) msgFromBuf(buf []byte, sm *StoreMsg, hh hash.Hash64) (*StoreMsg, error) {
 	if len(buf) < emptyRecordLen {
 		return nil, errBadMsg
 	}
@@ -3617,8 +3645,36 @@ func msgFromBuf(buf []byte, sm *StoreMsg, hh hash.Hash64) (*StoreMsg, error) {
 		sm.buf = append(sm.buf, data[slen:end]...)
 		sm.msg = sm.buf[0 : end-slen]
 	}
-	sm.subj, sm.seq, sm.ts = string(data[:slen]), seq, ts
+	sm.seq, sm.ts = seq, ts
+	// Treat subject a bit different to not reference underlying buf.
+	if slen > 0 {
+		sm.subj = mb.subjString(string(data[:slen]))
+	}
+
 	return sm, nil
+}
+
+// Lock should be held.
+func (mb *msgBlock) subjString(key string) string {
+	if len(key) == 0 {
+		return _EMPTY_
+	}
+
+	if lsubjs := len(mb.fs.cfg.Subjects); lsubjs > 0 {
+		if lsubjs == 1 && key == mb.fs.cfg.Subjects[0] {
+			return mb.fs.cfg.Subjects[0]
+		} else {
+			for _, subj := range mb.fs.cfg.Subjects {
+				if key == subj {
+					return subj
+				}
+			}
+		}
+	}
+	// Copy here to not reference underlying buffer.
+	var sb strings.Builder
+	sb.WriteString(key)
+	return sb.String()
 }
 
 // LoadMsg will lookup the message by sequence number and return it if found.
@@ -4067,7 +4123,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 				mb.bytes -= rl
 				// FSS updates.
 				fs.removePerSubject(sm.subj)
-				mb.removeSeqPerSubject(sm.subj, seq)
+				mb.removeSeqPerSubject(sm.subj, seq, &smv)
 				// Check for first message.
 				if seq == mb.first.seq {
 					mb.selectNextFirst()
@@ -4242,7 +4298,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 			purged++
 			// Update fss
 			fs.removePerSubject(sm.subj)
-			smb.removeSeqPerSubject(sm.subj, mseq)
+			smb.removeSeqPerSubject(sm.subj, mseq, &smv)
 		}
 	}
 
@@ -4458,7 +4514,7 @@ func (mb *msgBlock) dirtyCloseWithRemove(remove bool) {
 
 // Remove a seq from the fss and select new first.
 // Lock should be held.
-func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64) {
+func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64, smp *StoreMsg) {
 	ss := mb.fss[subj]
 	if ss == nil {
 		return
@@ -4482,8 +4538,11 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64) {
 
 	// TODO(dlc) - Might want to optimize this.
 	var smv StoreMsg
+	if smp == nil {
+		smp = &smv
+	}
 	for tseq := seq + 1; tseq <= ss.Last; tseq++ {
-		if sm, _ := mb.cacheLookup(tseq, &smv); sm != nil {
+		if sm, _ := mb.cacheLookup(tseq, smp); sm != nil {
 			if sm.subj == subj {
 				ss.First = tseq
 				return

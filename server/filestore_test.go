@@ -1265,8 +1265,12 @@ func TestFileStoreEraseMsg(t *testing.T) {
 	defer fp.Close()
 
 	fp.ReadAt(buf, 0)
-	//	nsubj, _, nmsg, seq, ts, err := msgFromBuf(buf, nil)
-	sm, err = msgFromBuf(buf, nil, nil)
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	fs.mu.RUnlock()
+	mb.mu.Lock()
+	sm, err = mb.msgFromBuf(buf, nil, nil)
+	mb.mu.Unlock()
 	if err != nil {
 		t.Fatalf("error reading message from block: %v", err)
 	}
