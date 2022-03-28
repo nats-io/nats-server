@@ -217,18 +217,16 @@ const (
 	blkKeySize  = 72
 
 	// Default stream block size.
-	defaultStreamBlockSize = 16 * 1024 * 1024 // 16MB
+	defaultLargeBlockSize = 16 * 1024 * 1024 // 16MB
 	// Default for workqueue or interest based.
-	defaultOtherBlockSize = 8 * 1024 * 1024 // 8MB
+	defaultMediumBlockSize = 8 * 1024 * 1024 // 8MB
 	// Default for KV based
 	defaultKVBlockSize = 8 * 1024 * 1024 // 8MB
 	// For smaller reuse buffers. Usually being generated during contention on the lead write buffer.
 	// E.g. mirrors/sources etc.
 	defaultSmallBlockSize = 2 * 1024 * 1024 // 2MB
-	// Default for minimum recycle size.
-	defaultMinRecycleBlockSize = defaultSmallBlockSize
 	// max block size for now.
-	maxBlockSize = defaultStreamBlockSize
+	maxBlockSize = defaultLargeBlockSize
 	// Compact minimum threshold.
 	compactMinimum = 2 * 1024 * 1024 // 2MB
 	// FileStoreMinBlkSize is minimum size we will do for a blk size.
@@ -399,10 +397,10 @@ func dynBlkSize(retention RetentionPolicy, maxBytes int64) uint64 {
 
 	if retention == LimitsPolicy {
 		// TODO(dlc) - Make the blocksize relative to this if set.
-		return defaultStreamBlockSize
+		return defaultLargeBlockSize
 	} else {
 		// TODO(dlc) - Make the blocksize relative to this if set.
-		return defaultOtherBlockSize
+		return defaultMediumBlockSize
 	}
 }
 
@@ -497,7 +495,7 @@ func getMsgBlockBuf(sz int) (buf []byte) {
 	var pb interface{}
 	if sz <= defaultSmallBlockSize {
 		pb = blkPoolSmall.Get()
-	} else if sz <= defaultOtherBlockSize {
+	} else if sz <= defaultMediumBlockSize {
 		pb = blkPoolMedium.Get()
 	} else {
 		pb = blkPoolBig.Get()
@@ -506,12 +504,11 @@ func getMsgBlockBuf(sz int) (buf []byte) {
 		buf = *(pb.(*[]byte))
 	} else {
 		// Here we need to make a new blk.
-		if sz <= defaultSmallBlockSize {
-			sz = defaultSmallBlockSize
-		} else if sz <= defaultOtherBlockSize {
-			sz = defaultOtherBlockSize
-		} else {
-			sz = defaultStreamBlockSize
+		// If small leave as is..
+		if sz > defaultSmallBlockSize && sz <= defaultMediumBlockSize {
+			sz = defaultMediumBlockSize
+		} else if sz > defaultMediumBlockSize {
+			sz = defaultLargeBlockSize
 		}
 		buf = make([]byte, sz)
 	}
@@ -520,17 +517,19 @@ func getMsgBlockBuf(sz int) (buf []byte) {
 
 // Recycle the msg block.
 func recycleMsgBlockBuf(buf []byte) {
-	if buf == nil {
+	if buf == nil || cap(buf) < defaultSmallBlockSize {
 		return
 	}
-	if cap(buf) < defaultMinRecycleBlockSize {
-		return
-	}
-
+	// Make sure to reset before placing back into pool.
 	buf = buf[:0]
-	if sz := cap(buf); sz <= defaultSmallBlockSize {
+
+	// We need to make sure the load code gets a block that can fit the maximum for a size block.
+	// E.g. 8, 16 etc. otherwise we thrash and actually make things worse by pulling it out, and putting
+	// it right back in and making a new []byte.
+	// From above we know its already >= defaultSmallBlockSize
+	if sz := cap(buf); sz < defaultMediumBlockSize {
 		blkPoolSmall.Put(&buf)
-	} else if sz <= defaultOtherBlockSize {
+	} else if sz < defaultLargeBlockSize {
 		blkPoolMedium.Put(&buf)
 	} else {
 		blkPoolBig.Put(&buf)
@@ -3251,6 +3250,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 		if cap(mb.cache.buf) <= maxBufReuse {
 			buf = mb.cache.buf[:0]
 		} else {
+			recycleMsgBlockBuf(mb.cache.buf)
 			buf = nil
 		}
 		if moreBytes > 0 {
