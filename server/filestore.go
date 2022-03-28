@@ -881,15 +881,16 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, error) {
 			mb.bytes += uint64(rl)
 
 			// Do per subject info.
-			if mb.fss != nil {
-				if subj := string(data[:slen]); len(subj) > 0 {
-					if ss := mb.fss[subj]; ss != nil {
-						ss.Msgs++
-						ss.Last = seq
-					} else {
-						subj = mb.subjString(subj)
-						mb.fss[subj] = &SimpleState{Msgs: 1, First: seq, Last: seq}
-					}
+			if slen > 0 && mb.fss != nil {
+				// For the lookup, we cast the byte slice and there won't be any copy
+				if ss := mb.fss[string(data[:slen])]; ss != nil {
+					ss.Msgs++
+					ss.Last = seq
+				} else {
+					// This will either use a subject from the config, or make a copy
+					// so we don't reference the underlying buffer.
+					subj := mb.subjString(data[:slen])
+					mb.fss[subj] = &SimpleState{Msgs: 1, First: seq, Last: seq}
 				}
 			}
 		}
@@ -2861,7 +2862,6 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 			ss.Msgs++
 			ss.Last = seq
 		} else {
-			subj = mb.subjString(subj)
 			mb.fss[subj] = &SimpleState{Msgs: 1, First: seq, Last: seq}
 		}
 	}
@@ -3648,24 +3648,29 @@ func (mb *msgBlock) msgFromBuf(buf []byte, sm *StoreMsg, hh hash.Hash64) (*Store
 	sm.seq, sm.ts = seq, ts
 	// Treat subject a bit different to not reference underlying buf.
 	if slen > 0 {
-		sm.subj = mb.subjString(string(data[:slen]))
+		sm.subj = mb.subjString(data[:slen])
 	}
 
 	return sm, nil
 }
 
+// Given the `key` byte slice, this function will return the subject
+// as a copy of `key` or a configured subject as to minimize memory allocations.
 // Lock should be held.
-func (mb *msgBlock) subjString(key string) string {
+func (mb *msgBlock) subjString(key []byte) string {
 	if len(key) == 0 {
 		return _EMPTY_
 	}
 
 	if lsubjs := len(mb.fs.cfg.Subjects); lsubjs > 0 {
-		if lsubjs == 1 && key == mb.fs.cfg.Subjects[0] {
-			return mb.fs.cfg.Subjects[0]
+		if lsubjs == 1 {
+			// The cast for the comparison does not make a copy
+			if string(key) == mb.fs.cfg.Subjects[0] {
+				return mb.fs.cfg.Subjects[0]
+			}
 		} else {
 			for _, subj := range mb.fs.cfg.Subjects {
-				if key == subj {
+				if string(key) == subj {
 					return subj
 				}
 			}
@@ -3673,7 +3678,7 @@ func (mb *msgBlock) subjString(key string) string {
 	}
 	// Copy here to not reference underlying buffer.
 	var sb strings.Builder
-	sb.WriteString(key)
+	sb.Write(key)
 	return sb.String()
 }
 
@@ -4626,8 +4631,6 @@ func (mb *msgBlock) readPerSubjectInfo() error {
 		return mb.generatePerSubjectInfo()
 	}
 
-	fss := make(map[string]*SimpleState)
-
 	bi := hdrLen
 	readU64 := func() uint64 {
 		if bi < 0 {
@@ -4642,15 +4645,15 @@ func (mb *msgBlock) readPerSubjectInfo() error {
 		return num
 	}
 
+	mb.mu.Lock()
 	for i, numEntries := uint64(0), readU64(); i < numEntries; i++ {
 		lsubj := readU64()
-		subj := buf[bi : bi+int(lsubj)]
+		// Make a copy or use a configured subject (to avoid mem allocation)
+		subj := mb.subjString(buf[bi : bi+int(lsubj)])
 		bi += int(lsubj)
 		msgs, first, last := readU64(), readU64(), readU64()
-		fss[string(subj)] = &SimpleState{Msgs: msgs, First: first, Last: last}
+		mb.fss[subj] = &SimpleState{Msgs: msgs, First: first, Last: last}
 	}
-	mb.mu.Lock()
-	mb.fss = fss
 	mb.mu.Unlock()
 	return nil
 }
