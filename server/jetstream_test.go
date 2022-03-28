@@ -16080,8 +16080,6 @@ func TestJetStreamConsumerAckSampling(t *testing.T) {
 }
 
 func TestJetStreamConsumerAckSamplingSpecifiedUsingUpdateConsumer(t *testing.T) {
-	t.Skip("sampling msg is not sent when sampling option is part of update flow")
-
 	s := RunBasicJetStreamServer()
 	if config := s.JetStreamConfig(); config != nil {
 		defer removeDir(t, config.StoreDir)
