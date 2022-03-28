@@ -4631,6 +4631,8 @@ func (mb *msgBlock) readPerSubjectInfo() error {
 		return mb.generatePerSubjectInfo()
 	}
 
+	fss := make(map[string]*SimpleState)
+
 	bi := hdrLen
 	readU64 := func() uint64 {
 		if bi < 0 {
@@ -4652,8 +4654,9 @@ func (mb *msgBlock) readPerSubjectInfo() error {
 		subj := mb.subjString(buf[bi : bi+int(lsubj)])
 		bi += int(lsubj)
 		msgs, first, last := readU64(), readU64(), readU64()
-		mb.fss[subj] = &SimpleState{Msgs: msgs, First: first, Last: last}
+		fss[subj] = &SimpleState{Msgs: msgs, First: first, Last: last}
 	}
+	mb.fss = fss
 	mb.mu.Unlock()
 	return nil
 }
