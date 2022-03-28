@@ -299,10 +299,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		return nil, ApiErrors[JSStreamReplicasNotSupportedErr]
 	}
 
-	jsa.mu.RLock()
-	js := jsa.js
-	jsa.mu.RUnlock()
-	isClustered := js.isClustered()
+	js, isClustered := jsa.jetStreamAndClustered()
 	jsa.mu.RLock()
 	if mset, ok := jsa.streams[cfg.Name]; ok {
 		jsa.mu.RUnlock()
@@ -1031,10 +1028,7 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig) (*StreamConfig, 
 	cfg.MaxBytes = maxBytesDiff
 
 	// Check limits.
-	jsa.mu.RLock()
-	js := jsa.js
-	jsa.mu.RUnlock()
-	isClustered := js.isClustered()
+	js, isClustered := jsa.jetStreamAndClustered()
 	jsa.mu.RLock()
 	acc := jsa.account
 	selected, tier, hasTier := jsa.selectLimits(&cfg)

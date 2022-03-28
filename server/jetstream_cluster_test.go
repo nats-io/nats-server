@@ -10640,6 +10640,17 @@ func TestJetStreamClusterStreamReplicaUpdates(t *testing.T) {
 		if si.State.Msgs != uint64(numMsgs) {
 			t.Fatalf("Expected %d msgs, got %d", numMsgs, si.State.Msgs)
 		}
+		// Make sure we have the right number of HA Assets running on the leader.
+		s := c.serverByName(leader)
+		jsi, err := s.Jsz(nil)
+		require_NoError(t, err)
+		nha := 1 // meta always present.
+		if len(si.Cluster.Replicas) > 0 {
+			nha++
+		}
+		if nha != jsi.RaftAssets {
+			t.Fatalf("Expected %d HA asset(s), but got %d", nha, jsi.RaftAssets)
+		}
 	}
 
 	// Update from 1-3

@@ -54,6 +54,7 @@ type JetStreamStats struct {
 	ReservedMemory uint64            `json:"reserved_memory"`
 	ReservedStore  uint64            `json:"reserved_storage"`
 	Accounts       int               `json:"accounts"`
+	RaftAssets     int               `json:"raft_assets"`
 	API            JetStreamAPIStats `json:"api"`
 }
 
@@ -1737,13 +1738,20 @@ func (js *jetStream) limitsExceeded(storeType StorageType) bool {
 }
 
 func tierName(cfg *StreamConfig) string {
-	// TODO this is where we could select based off a placement tag as well "qos:tier"
+	// TODO (mh) this is where we could select based off a placement tag as well "qos:tier"
 	return fmt.Sprintf("R%d", cfg.Replicas)
 }
 
 func isSameTier(cfgA, cfgB *StreamConfig) bool {
-	// TODO this is where we could select based off a placement tag as well "qos:tier"
+	// TODO (mh) this is where we could select based off a placement tag as well "qos:tier"
 	return cfgA.Replicas == cfgB.Replicas
+}
+
+func (jsa *jsAccount) jetStreamAndClustered() (*jetStream, bool) {
+	jsa.mu.RLock()
+	js := jsa.js
+	jsa.mu.RUnlock()
+	return js, js.isClustered()
 }
 
 // Read lock should be held.
@@ -1926,12 +1934,14 @@ func (js *jetStream) usageStats() *JetStreamStats {
 	stats.Accounts = len(js.accounts)
 	stats.ReservedMemory = (uint64)(js.memReserved)
 	stats.ReservedStore = (uint64)(js.storeReserved)
+	s := js.srv
 	js.mu.RUnlock()
 	stats.API.Total = (uint64)(atomic.LoadInt64(&js.apiTotal))
 	stats.API.Errors = (uint64)(atomic.LoadInt64(&js.apiErrors))
 	stats.API.Inflight = (uint64)(atomic.LoadInt64(&js.apiInflight))
 	stats.Memory = (uint64)(atomic.LoadInt64(&js.memUsed))
 	stats.Store = (uint64)(atomic.LoadInt64(&js.storeUsed))
+	stats.RaftAssets = s.numRaftNodes()
 	return &stats
 }
 
