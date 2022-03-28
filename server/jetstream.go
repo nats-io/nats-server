@@ -54,7 +54,7 @@ type JetStreamStats struct {
 	ReservedMemory uint64            `json:"reserved_memory"`
 	ReservedStore  uint64            `json:"reserved_storage"`
 	Accounts       int               `json:"accounts"`
-	RaftAssets     int               `json:"raft_assets"`
+	HAAssets       int               `json:"ha_assets"`
 	API            JetStreamAPIStats `json:"api"`
 }
 
@@ -1941,7 +1941,7 @@ func (js *jetStream) usageStats() *JetStreamStats {
 	stats.API.Inflight = (uint64)(atomic.LoadInt64(&js.apiInflight))
 	stats.Memory = (uint64)(atomic.LoadInt64(&js.memUsed))
 	stats.Store = (uint64)(atomic.LoadInt64(&js.storeUsed))
-	stats.RaftAssets = s.numRaftNodes()
+	stats.HAAssets = s.numRaftNodes()
 	return &stats
 }
 

@@ -10648,8 +10648,8 @@ func TestJetStreamClusterStreamReplicaUpdates(t *testing.T) {
 		if len(si.Cluster.Replicas) > 0 {
 			nha++
 		}
-		if nha != jsi.RaftAssets {
-			t.Fatalf("Expected %d HA asset(s), but got %d", nha, jsi.RaftAssets)
+		if nha != jsi.HAAssets {
+			t.Fatalf("Expected %d HA asset(s), but got %d", nha, jsi.HAAssets)
 		}
 	}
 
