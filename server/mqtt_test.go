@@ -4674,6 +4674,9 @@ func TestMQTTMaxAckPending(t *testing.T) {
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownRestartedServer(&s)
 
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
 	dir := strings.TrimSuffix(s.JetStreamConfig().StoreDir, JetStreamStoreDir)
 
 	cisub := &mqttConnInfo{clientID: "sub", cleanSess: false}
@@ -4700,8 +4703,15 @@ func TestMQTTMaxAckPending(t *testing.T) {
 	testMQTTCheckPubMsg(t, c, r, "foo", mqttPubQos1, []byte("msg2"))
 	testMQTTDisconnect(t, c, nil)
 
-	// Give a chance to the server to register that this client is gone.
-	checkClientsCount(t, s, 1)
+	// Give a chance to the server to "close" the consumer
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		for ci := range js.ConsumersInfo("$MQTT_msgs") {
+			if ci.PushBound {
+				return fmt.Errorf("Consumer still connected")
+			}
+		}
+		return nil
+	})
 
 	// Send 2 messages while sub is offline
 	testMQTTPublish(t, cp, rp, 1, false, false, "foo", 1, []byte("msg3"))

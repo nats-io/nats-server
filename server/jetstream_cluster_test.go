@@ -12269,16 +12269,24 @@ func checkSubsPending(t *testing.T, sub *nats.Subscription, numExpected int) {
 	})
 }
 
-func fetchMsgs(t *testing.T, sub *nats.Subscription, numExpected int, wait time.Duration) []*nats.Msg {
+func fetchMsgs(t *testing.T, sub *nats.Subscription, numExpected int, totalWait time.Duration) []*nats.Msg {
 	t.Helper()
-	msgs, err := sub.Fetch(numExpected, nats.MaxWait(wait))
-	if err != nil {
-		t.Fatal(err)
+	result := make([]*nats.Msg, 0, numExpected)
+	for start, count, wait := time.Now(), numExpected, totalWait; len(result) != numExpected; {
+		msgs, err := sub.Fetch(count, nats.MaxWait(wait))
+		if err != nil {
+			t.Fatal(err)
+		}
+		result = append(result, msgs...)
+		count -= len(msgs)
+		if wait = totalWait - time.Since(start); wait < 0 {
+			break
+		}
 	}
-	if len(msgs) != numExpected {
-		t.Fatalf("Unexpected msg count, got %d, want %d", len(msgs), numExpected)
+	if len(result) != numExpected {
+		t.Fatalf("Unexpected msg count, got %d, want %d", len(result), numExpected)
 	}
-	return msgs
+	return result
 }
 
 func (c *cluster) restartServer(rs *Server) *Server {
