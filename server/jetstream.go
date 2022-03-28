@@ -76,7 +76,7 @@ type JetStreamTier struct {
 
 // JetStreamAccountStats returns current statistics about the account's JetStream usage.
 type JetStreamAccountStats struct {
-	JetStreamTier                          // reflect totals in case tiers are used, limits not set
+	JetStreamTier                          // in case tiers are used, reflects totals with limits not set
 	Domain        string                   `json:"domain,omitempty"`
 	API           JetStreamAPIStats        `json:"api"`
 	Tiers         map[string]JetStreamTier `json:"tiers,omitempty"` // indexed by tier name
