@@ -1726,8 +1726,23 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 				resp.Error = NewJSClusterNotAvailError()
 				// Delaying an error response gives the leader a chance to respond before us
 				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), sa.Group)
+				return
 			}
-			return
+
+			// We may be in process of electing a leader, but if this is a scale up from 1 we will still be the state leader
+			// while the new members work through the election and catchup process.
+			// Double check for that instead of exiting here and being silent. e.g. nats stream update test --replicas=3
+			js.mu.RLock()
+			rg, ourID := sa.Group, cc.meta.ID()
+			bail := !rg.isMember(ourID)
+			if !bail {
+				// We know we are a member here, if this group is new and we are preferred allow us to answer.
+				bail = rg.Preferred != ourID || time.Since(rg.node.Created()) > lostQuorumInterval
+			}
+			js.mu.RUnlock()
+			if bail {
+				return
+			}
 		}
 	}
 

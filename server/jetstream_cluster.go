@@ -1479,7 +1479,7 @@ func (mset *stream) removeNode() {
 }
 
 // Monitor our stream node for this stream.
-func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
+func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnapshot bool) {
 	s, cc, n := js.server(), js.cluster, sa.Group.node
 	defer s.grWG.Done()
 
@@ -1543,6 +1543,14 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 	// we replace with the restore chan.
 	restoreDoneCh := make(<-chan error)
 	isRecovering := true
+
+	// This is triggered during a scale up from 1 to clustered mode. We need the new followers to catchup,
+	// similar to how we trigger the catchup mechanism post a backup/restore. It's ok to do here and preferred
+	// over waiting to be elected, this just queues it up for the new members to see first and trigger the above
+	// RAFT layer catchup mechanism.
+	if sendSnapshot && mset != nil && n != nil {
+		n.SendSnapshot(mset.stateSnapshot())
+	}
 
 	for {
 		select {
@@ -1617,8 +1625,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 			sa.Restore = nil
 			// If we were successful lookup up our stream now.
 			if err == nil {
-				mset, err = acc.lookupStream(sa.Config.Name)
-				if mset != nil {
+				if mset, err = acc.lookupStream(sa.Config.Name); mset != nil {
 					mset.setStreamAssignment(sa)
 				}
 			}
@@ -1647,7 +1654,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 				panic("Finished restore but not leader")
 			}
 			// Trigger the stream followers to catchup.
-			if n := mset.raftNode(); n != nil {
+			if n = mset.raftNode(); n != nil {
 				n.SendSnapshot(mset.stateSnapshot())
 			}
 			js.processStreamLeaderChange(mset, isLeader)
@@ -1930,8 +1937,10 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				if err := json.Unmarshal(e.Data, &snap); err != nil {
 					return err
 				}
-				if err := mset.processSnapshot(&snap); err != nil {
-					return err
+				if !mset.IsLeader() {
+					if err := mset.processSnapshot(&snap); err != nil {
+						return err
+					}
 				}
 			}
 		} else if e.Type == EntryRemovePeer {
@@ -2272,6 +2281,11 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 	sa.consumers = osa.consumers
 	sa.err = osa.err
 
+	// If we detect we are scaling down to 1, non-clustered, and we had a previous node, clear it here.
+	if sa.Config.Replicas == 1 && sa.Group.node != nil {
+		sa.Group.node = nil
+	}
+
 	// Update our state.
 	accStreams[stream] = sa
 	cc.streams[acc.Name] = accStreams
@@ -2320,7 +2334,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			if needsNode {
 				js.createRaftGroup(acc.GetName(), rg, storage)
 			}
-			s.startGoRoutine(func() { js.monitorStream(mset, sa) })
+			s.startGoRoutine(func() { js.monitorStream(mset, sa, needsNode) })
 		} else if numReplicas == 1 && alreadyRunning {
 			// We downgraded to R1. Make sure we cleanup the raft node and the stream monitor.
 			mset.removeNode()
@@ -2329,7 +2343,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			// In case we nned to shutdown the cluster specific subs, etc.
 			mset.setLeader(false)
 			js.mu.Lock()
-			sa.Group.node = nil
+			rg.node = nil
 			js.mu.Unlock()
 		}
 		mset.setStreamAssignment(sa)
@@ -2398,6 +2412,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		Mirror:  mset.mirrorInfo(),
 		Sources: mset.sourcesInfo(),
 	}
+
 	s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 }
 
@@ -2489,7 +2504,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	// Start our monitoring routine.
 	if rg.node != nil {
 		if !alreadyRunning {
-			s.startGoRoutine(func() { js.monitorStream(mset, sa) })
+			s.startGoRoutine(func() { js.monitorStream(mset, sa, false) })
 		}
 	} else {
 		// Single replica stream, process manually here.

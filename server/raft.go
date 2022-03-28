@@ -885,7 +885,7 @@ func (n *raft) encodeSnapshot(snap *snapshot) []byte {
 
 // SendSnapshot will send the latest snapshot as a normal AE.
 // Should only be used when the upper layers know this is most recent.
-// Used when restoring streams etc.
+// Used when restoring streams, moving a stream from R1 to R>1, etc.
 func (n *raft) SendSnapshot(data []byte) error {
 	n.sendAppendEntry([]*Entry{{EntrySnapshot, data}})
 	return nil
