@@ -1350,6 +1350,13 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 		// We need both locks here so do in Go routine.
 		go o.setRateLimitNeedsLocks()
 	}
+	if cfg.SampleFrequency != o.cfg.SampleFrequency {
+		s := strings.TrimSuffix(cfg.SampleFrequency, "%")
+		// String has been already verified for validity up in the stack, so no
+		// need to check for error here.
+		sampleFreq, _ := strconv.Atoi(s)
+		o.sfreq = int32(sampleFreq)
+	}
 
 	// Record new config for others that do not need special handling.
 	// Allowed but considered no-op, [Description, MaxDeliver, SampleFrequency, MaxWaiting, HeadersOnly]
