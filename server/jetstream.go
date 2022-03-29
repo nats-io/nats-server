@@ -1689,6 +1689,9 @@ func (jsa *jsAccount) sendClusterUsageUpdate() {
 	jsa.lupdate = now
 
 	lenUsage := len(jsa.usage)
+	if lenUsage == 0 {
+		return
+	}
 	// every base record contains mem/store/len(tier) as well as the tier name
 	l := 24 * lenUsage
 	for tier := range jsa.usage {
