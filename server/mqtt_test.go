@@ -949,11 +949,13 @@ func testMQTTEnableJSForAccount(t *testing.T, s *Server, accName string) {
 	if err != nil {
 		t.Fatalf("Error looking up account: %v", err)
 	}
-	limits := &JetStreamAccountLimits{
-		MaxConsumers: -1,
-		MaxStreams:   -1,
-		MaxMemory:    1024 * 1024,
-		MaxStore:     1024 * 1024,
+	limits := map[string]JetStreamAccountLimits{
+		_EMPTY_: {
+			MaxConsumers: -1,
+			MaxStreams:   -1,
+			MaxMemory:    1024 * 1024,
+			MaxStore:     1024 * 1024,
+		},
 	}
 	if err := acc.EnableJetStream(limits); err != nil {
 		t.Fatalf("Error enabling JS: %v", err)

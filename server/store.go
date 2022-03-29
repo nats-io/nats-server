@@ -451,7 +451,7 @@ func (p DeliverPolicy) MarshalJSON() ([]byte, error) {
 }
 
 func isOutOfSpaceErr(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "no space left")
+	return err != nil && (strings.Contains(err.Error(), "no space left"))
 }
 
 // For when our upper layer catchup detects its missing messages from the beginning of the stream.

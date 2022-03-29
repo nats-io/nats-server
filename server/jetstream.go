@@ -66,15 +66,20 @@ type JetStreamAccountLimits struct {
 	MaxBytesRequired bool  `json:"max_bytes_required"`
 }
 
-// JetStreamAccountStats returns current statistics about the account's JetStream usage.
-type JetStreamAccountStats struct {
+type JetStreamTier struct {
 	Memory    uint64                 `json:"memory"`
 	Store     uint64                 `json:"storage"`
 	Streams   int                    `json:"streams"`
 	Consumers int                    `json:"consumers"`
-	Domain    string                 `json:"domain,omitempty"`
-	API       JetStreamAPIStats      `json:"api"`
 	Limits    JetStreamAccountLimits `json:"limits"`
+}
+
+// JetStreamAccountStats returns current statistics about the account's JetStream usage.
+type JetStreamAccountStats struct {
+	JetStreamTier                          // in case tiers are used, reflects totals with limits not set
+	Domain        string                   `json:"domain,omitempty"`
+	API           JetStreamAPIStats        `json:"api"`
+	Tiers         map[string]JetStreamTier `json:"tiers,omitempty"` // indexed by tier name
 }
 
 type JetStreamAPIStats struct {
@@ -104,28 +109,37 @@ type jetStream struct {
 	oos           bool
 }
 
+type remoteUsage struct {
+	tiers map[string]*jsaUsage // indexed by tier name
+	api   uint64
+	err   uint64
+}
+
+type jsaStorage struct {
+	total jsaUsage
+	local jsaUsage
+}
+
 // This represents a jetstream enabled account.
 // Worth noting that we include the jetstream pointer, this is because
 // in general we want to be very efficient when receiving messages on
 // an internal sub for a stream, so we will direct link to the stream
 // and walk backwards as needed vs multiple hash lookups and locks, etc.
 type jsAccount struct {
-	mu            sync.RWMutex
-	js            *jetStream
-	account       *Account
-	limits        JetStreamAccountLimits
-	memReserved   int64
-	storeReserved int64
-	memTotal      int64
-	storeTotal    int64
-	apiTotal      uint64
-	apiErrors     uint64
-	usage         jsaUsage
-	rusage        map[string]*jsaUsage
-	storeDir      string
-	streams       map[string]*stream
-	templates     map[string]*streamTemplate
-	store         TemplateStore
+	mu        sync.RWMutex
+	js        *jetStream
+	account   *Account
+	limits    map[string]JetStreamAccountLimits // indexed by tierName
+	usage     map[string]*jsaStorage            // indexed by tierName
+	apiTotal  uint64
+	apiErrors uint64
+	usageApi  uint64
+	usageErr  uint64
+	rusage    map[string]*remoteUsage // indexed by node id
+	storeDir  string
+	streams   map[string]*stream
+	templates map[string]*streamTemplate
+	store     TemplateStore
 
 	// Cluster support
 	updatesPub string
@@ -140,8 +154,6 @@ type jsAccount struct {
 type jsaUsage struct {
 	mem   int64
 	store int64
-	api   uint64
-	err   uint64
 }
 
 // EnableJetStream will enable JetStream support on this server with the given configuration.
@@ -553,8 +565,8 @@ func (s *Server) enableJetStreamAccounts() error {
 	if s.globalAccountOnly() {
 		gacc := s.GlobalAccount()
 		gacc.mu.Lock()
-		if gacc.jsLimits == nil {
-			gacc.jsLimits = dynamicJSAccountLimits
+		if len(gacc.jsLimits) == 0 {
+			gacc.jsLimits = defaultJSAccountTiers
 		}
 		gacc.mu.Unlock()
 		if err := s.configJetStream(gacc); err != nil {
@@ -917,7 +929,7 @@ func (s *Server) getJetStream() *jetStream {
 	return js
 }
 
-func (a *Account) assignJetStreamLimits(limits *JetStreamAccountLimits) {
+func (a *Account) assignJetStreamLimits(limits map[string]JetStreamAccountLimits) {
 	a.mu.Lock()
 	a.jsLimits = limits
 	a.mu.Unlock()
@@ -925,7 +937,7 @@ func (a *Account) assignJetStreamLimits(limits *JetStreamAccountLimits) {
 
 // EnableJetStream will enable JetStream on this account with the defined limits.
 // This is a helper for JetStreamEnableAccount.
-func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
+func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) error {
 	a.mu.RLock()
 	s := a.srv
 	a.mu.RUnlock()
@@ -944,8 +956,8 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 
 	// No limits means we dynamically set up limits.
 	// We also place limits here so we know that the account is configured for JetStream.
-	if limits == nil {
-		limits = dynamicJSAccountLimits
+	if len(limits) == 0 {
+		limits = defaultJSAccountTiers
 	}
 
 	a.assignJetStreamLimits(limits)
@@ -967,7 +979,7 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 		return err
 	}
 
-	jsa := &jsAccount{js: js, account: a, limits: *limits, streams: make(map[string]*stream), sendq: sendq}
+	jsa := &jsAccount{js: js, account: a, limits: limits, streams: make(map[string]*stream), sendq: sendq, usage: make(map[string]*jsaStorage)}
 	jsa.utimer = time.AfterFunc(usageTick, jsa.sendClusterUsageUpdateTimer)
 	jsa.storeDir = filepath.Join(js.config.StoreDir, a.Name)
 
@@ -993,8 +1005,16 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 	}
 
 	s.Debugf("Enabled JetStream for account %q", a.Name)
-	s.Debugf("  Max Memory:      %s", friendlyBytes(limits.MaxMemory))
-	s.Debugf("  Max Storage:     %s", friendlyBytes(limits.MaxStore))
+	if l, ok := limits[_EMPTY_]; ok {
+		s.Debugf("  Max Memory:      %s", friendlyBytes(l.MaxMemory))
+		s.Debugf("  Max Storage:     %s", friendlyBytes(l.MaxStore))
+	} else {
+		for t, l := range limits {
+			s.Debugf("  Tier: %s", t)
+			s.Debugf("    Max Memory:      %s", friendlyBytes(l.MaxMemory))
+			s.Debugf("    Max Storage:     %s", friendlyBytes(l.MaxStore))
+		}
+	}
 
 	// Clean up any old snapshots that were orphaned while staging.
 	os.RemoveAll(filepath.Join(js.config.StoreDir, snapStagingDir))
@@ -1246,15 +1266,20 @@ func (a *Account) EnableJetStream(limits *JetStreamAccountLimits) error {
 }
 
 // Return whether or not we require MaxBytes to be set.
-func (a *Account) maxBytesRequired() bool {
+func (a *Account) maxBytesRequired(cfg *StreamConfig) bool {
 	a.mu.RLock()
-	defer a.mu.RUnlock()
-
 	jsa := a.js
+	a.mu.RUnlock()
 	if jsa == nil {
 		return false
 	}
-	return jsa.limits.MaxBytesRequired
+	jsa.mu.RLock()
+	selectedLimits, _, ok := jsa.selectLimits(cfg)
+	jsa.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	return selectedLimits.MaxBytesRequired
 }
 
 // NumStreams will return how many streams we have.
@@ -1325,7 +1350,7 @@ func (a *Account) lookupStream(name string) (*stream, error) {
 }
 
 // UpdateJetStreamLimits will update the account limits for a JetStream enabled account.
-func (a *Account) UpdateJetStreamLimits(limits *JetStreamAccountLimits) error {
+func (a *Account) UpdateJetStreamLimits(limits map[string]JetStreamAccountLimits) error {
 	a.mu.RLock()
 	s, jsa := a.srv, a.js
 	a.mu.RUnlock()
@@ -1341,18 +1366,18 @@ func (a *Account) UpdateJetStreamLimits(limits *JetStreamAccountLimits) error {
 		return NewJSNotEnabledForAccountError()
 	}
 
-	if limits == nil {
-		limits = dynamicJSAccountLimits
+	if len(limits) == 0 {
+		limits = defaultJSAccountTiers
 	}
 
 	// Calculate the delta between what we have and what we want.
 	jsa.mu.Lock()
-	dl := diffCheckedLimits(&jsa.limits, limits)
+	dl := diffCheckedLimits(jsa.limits, limits)
 	jsa.mu.Unlock()
 
 	js.mu.Lock()
 	// Check the limits against existing reservations.
-	if err := js.sufficientResources(&dl); err != nil {
+	if err := js.sufficientResources(dl); err != nil {
 		js.mu.Unlock()
 		return err
 	}
@@ -1360,23 +1385,39 @@ func (a *Account) UpdateJetStreamLimits(limits *JetStreamAccountLimits) error {
 
 	// Update
 	jsa.mu.Lock()
-	jsa.limits = *limits
+	jsa.limits = limits
 	jsa.mu.Unlock()
 
 	return nil
 }
 
-func diffCheckedLimits(a, b *JetStreamAccountLimits) JetStreamAccountLimits {
-	return JetStreamAccountLimits{
-		MaxMemory: b.MaxMemory - a.MaxMemory,
-		MaxStore:  b.MaxStore - a.MaxStore,
+func diffCheckedLimits(a, b map[string]JetStreamAccountLimits) map[string]JetStreamAccountLimits {
+	diff := map[string]JetStreamAccountLimits{}
+	for t, la := range a {
+		// in a, not in b will return 0
+		lb := b[t]
+		diff[t] = JetStreamAccountLimits{
+			MaxMemory: lb.MaxMemory - la.MaxMemory,
+			MaxStore:  lb.MaxStore - la.MaxStore,
+		}
 	}
+	for t, lb := range b {
+		if la, ok := a[t]; !ok {
+			// only in b not in a. (in a and b already covered)
+			diff[t] = JetStreamAccountLimits{
+				MaxMemory: lb.MaxMemory - la.MaxMemory,
+				MaxStore:  lb.MaxStore - la.MaxStore,
+			}
+		}
+	}
+	return diff
 }
 
 // JetStreamUsage reports on JetStream usage and limits for an account.
 func (a *Account) JetStreamUsage() JetStreamAccountStats {
 	a.mu.RLock()
 	jsa, aname := a.js, a.Name
+	accJsLimits := a.jsLimits
 	a.mu.RUnlock()
 
 	var stats JetStreamAccountStats
@@ -1384,26 +1425,69 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 		js := jsa.js
 		js.mu.RLock()
 		jsa.mu.RLock()
-		stats.Memory = uint64(jsa.memTotal)
-		stats.Store = uint64(jsa.storeTotal)
+		stats.Memory, stats.Store = jsa.storageTotals()
 		stats.Domain = js.config.Domain
 		stats.API = JetStreamAPIStats{
 			Total:  jsa.apiTotal,
 			Errors: jsa.apiErrors,
 		}
-		if cc := jsa.js.cluster; cc != nil {
-			sas := cc.streams[aname]
-			stats.Streams = len(sas)
-			for _, sa := range sas {
-				stats.Consumers += len(sa.consumers)
-			}
+		l, defaultTier := jsa.limits[_EMPTY_]
+		if defaultTier {
+			stats.Limits = l
 		} else {
-			stats.Streams = len(jsa.streams)
-			for _, mset := range jsa.streams {
-				stats.Consumers += mset.numConsumers()
+			stats.Tiers = make(map[string]JetStreamTier)
+			for t, total := range jsa.usage {
+				stats.Tiers[t] = JetStreamTier{
+					Memory: uint64(total.total.mem),
+					Store:  uint64(total.total.store),
+					Limits: jsa.limits[t],
+				}
+			}
+			if len(accJsLimits) != len(jsa.usage) {
+				// insert unused limits
+				for t, lim := range accJsLimits {
+					if _, ok := stats.Tiers[t]; !ok {
+						stats.Tiers[t] = JetStreamTier{Limits: lim}
+					}
+				}
 			}
 		}
-		stats.Limits = jsa.limits
+		if cc := jsa.js.cluster; cc != nil {
+			sas := cc.streams[aname]
+			if defaultTier {
+				stats.Streams = len(sas)
+			}
+			for _, sa := range sas {
+				stats.Consumers += len(sa.consumers)
+				if !defaultTier {
+					tier := tierName(sa.Config)
+					u, ok := stats.Tiers[tier]
+					if !ok {
+						u = JetStreamTier{}
+					}
+					u.Streams++
+					u.Consumers += len(sa.consumers)
+					stats.Tiers[tier] = u
+				}
+			}
+		} else {
+			if defaultTier {
+				stats.Streams = len(jsa.streams)
+			}
+			for _, mset := range jsa.streams {
+				consCount := mset.numConsumers()
+				stats.Consumers += consCount
+				if !defaultTier {
+					u, ok := stats.Tiers[mset.tier]
+					if !ok {
+						u = JetStreamTier{}
+					}
+					u.Streams++
+					u.Consumers += consCount
+					stats.Tiers[mset.tier] = u
+				}
+			}
+		}
 		jsa.mu.RUnlock()
 		js.mu.RUnlock()
 	}
@@ -1457,7 +1541,7 @@ func (a *Account) jetStreamConfigured() bool {
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.jsLimits != nil
+	return len(a.jsLimits) > 0
 }
 
 // JetStreamEnabled is a helper to determine if jetstream is enabled for an account.
@@ -1490,27 +1574,58 @@ func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, _ *Account
 		s.Warnf("Received remote usage update with no remote node")
 		return
 	}
-	var le = binary.LittleEndian
-	memUsed, storeUsed := int64(le.Uint64(msg[0:])), int64(le.Uint64(msg[8:]))
-	apiTotal, apiErrors := le.Uint64(msg[16:]), le.Uint64(msg[24:])
+	rUsage, ok := jsa.rusage[rnode]
+	if !ok {
+		if jsa.rusage == nil {
+			jsa.rusage = make(map[string]*remoteUsage)
+		}
+		rUsage = &remoteUsage{tiers: make(map[string]*jsaUsage)}
+		jsa.rusage[rnode] = rUsage
+	}
+	updateTotal := func(tierName string, memUsed, storeUsed int64) {
+		total, ok := jsa.usage[tierName]
+		if !ok {
+			total = &jsaStorage{}
+			jsa.usage[tierName] = total
+		}
+		// Update the usage for this remote.
+		if usage := rUsage.tiers[tierName]; usage != nil {
+			// Decrement our old values.
+			total.total.mem -= usage.mem
+			total.total.store -= usage.store
+			usage.mem, usage.store = memUsed, storeUsed
+		} else {
+			rUsage.tiers[tierName] = &jsaUsage{memUsed, storeUsed}
+		}
+		total.total.mem += memUsed
+		total.total.store += storeUsed
+	}
 
-	if jsa.rusage == nil {
-		jsa.rusage = make(map[string]*jsaUsage)
+	var le = binary.LittleEndian
+	apiTotal, apiErrors := le.Uint64(msg[16:]), le.Uint64(msg[24:])
+	memUsed, storeUsed := int64(le.Uint64(msg[0:])), int64(le.Uint64(msg[8:]))
+
+	// we later extended the data structure to support multiple tiers
+	excessRecordCnt := uint32(0)
+	tierName := _EMPTY_
+	if len(msg) >= 44 {
+		excessRecordCnt = le.Uint32(msg[32:])
+		length := le.Uint64(msg[36:])
+		tierName = string(msg[44 : 44+length])
+		msg = msg[44+length:]
 	}
-	// Update the usage for this remote.
-	if usage := jsa.rusage[rnode]; usage != nil {
-		// Decrement our old values.
-		jsa.memTotal -= usage.mem
-		jsa.storeTotal -= usage.store
-		jsa.apiTotal -= usage.api
-		jsa.apiErrors -= usage.err
-		usage.mem, usage.store = memUsed, storeUsed
-		usage.api, usage.err = apiTotal, apiErrors
-	} else {
-		jsa.rusage[rnode] = &jsaUsage{memUsed, storeUsed, apiTotal, apiErrors}
+	updateTotal(tierName, memUsed, storeUsed)
+	for ; excessRecordCnt > 0 && len(msg) >= 24; excessRecordCnt-- {
+		memUsed, storeUsed := int64(le.Uint64(msg[0:])), int64(le.Uint64(msg[8:]))
+		length := le.Uint64(msg[16:])
+		tierName = string(msg[24 : 24+length])
+		msg = msg[24+length:]
+		updateTotal(tierName, memUsed, storeUsed)
 	}
-	jsa.memTotal += memUsed
-	jsa.storeTotal += storeUsed
+	jsa.apiTotal -= rUsage.api
+	jsa.apiErrors -= rUsage.err
+	rUsage.api = apiTotal
+	rUsage.err = apiErrors
 	jsa.apiTotal += apiTotal
 	jsa.apiErrors += apiErrors
 	jsa.mu.Unlock()
@@ -1518,7 +1633,7 @@ func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, _ *Account
 
 // Updates accounting on in use memory and storage. This is called from locally
 // by the lower storage layers.
-func (jsa *jsAccount) updateUsage(storeType StorageType, delta int64) {
+func (jsa *jsAccount) updateUsage(tierName string, storeType StorageType, delta int64) {
 	var isClustered bool
 	// Ok to check jsa.js here w/o lock.
 	js := jsa.js
@@ -1529,13 +1644,18 @@ func (jsa *jsAccount) updateUsage(storeType StorageType, delta int64) {
 	jsa.mu.Lock()
 	defer jsa.mu.Unlock()
 
+	s, ok := jsa.usage[tierName]
+	if !ok {
+		s = &jsaStorage{}
+		jsa.usage[tierName] = s
+	}
 	if storeType == MemoryStorage {
-		jsa.usage.mem += delta
-		jsa.memTotal += delta
+		s.local.mem += delta
+		s.total.mem += delta
 		atomic.AddInt64(&js.memUsed, delta)
 	} else {
-		jsa.usage.store += delta
-		jsa.storeTotal += delta
+		s.local.store += delta
+		s.total.store += delta
 		atomic.AddInt64(&js.storeUsed, delta)
 	}
 	// Publish our local updates if in clustered mode.
@@ -1568,13 +1688,36 @@ func (jsa *jsAccount) sendClusterUsageUpdate() {
 	}
 	jsa.lupdate = now
 
-	b := make([]byte, 32)
+	lenUsage := len(jsa.usage)
+	// every base record contains mem/store/len(tier) as well as the tier name
+	l := 24 * lenUsage
+	for tier := range jsa.usage {
+		l += len(tier)
+	}
+	if lenUsage > 0 {
+		// first record contains api/usage errors as well as count for extra base records
+		l += 20
+	}
 	var le = binary.LittleEndian
-	le.PutUint64(b[0:], uint64(jsa.usage.mem))
-	le.PutUint64(b[8:], uint64(jsa.usage.store))
-	le.PutUint64(b[16:], uint64(jsa.usage.api))
-	le.PutUint64(b[24:], uint64(jsa.usage.err))
+	b := make([]byte, l)
+	i := 0
 
+	for tier, usage := range jsa.usage {
+		le.PutUint64(b[i+0:], uint64(usage.local.mem))
+		le.PutUint64(b[i+8:], uint64(usage.local.store))
+		if i == 0 {
+			le.PutUint64(b[i+16:], jsa.usageApi)
+			le.PutUint64(b[i+24:], jsa.usageErr)
+			le.PutUint32(b[i+32:], uint32(len(jsa.usage)-1))
+			le.PutUint64(b[i+36:], uint64(len(tier)))
+			copy(b[i+44:], tier)
+			i += 44 + len(tier)
+		} else {
+			le.PutUint64(b[i+16:], uint64(len(tier)))
+			copy(b[i+24:], tier)
+			i += 24 + len(tier)
+		}
+	}
 	jsa.sendq.push(newPubMsg(nil, jsa.updatesPub, _EMPTY_, nil, nil, b, noCompression, false, false))
 }
 
@@ -1595,16 +1738,74 @@ func (js *jetStream) limitsExceeded(storeType StorageType) bool {
 	return js.wouldExceedLimits(storeType, 0)
 }
 
-func (jsa *jsAccount) limitsExceeded(storeType StorageType) bool {
+func tierName(cfg *StreamConfig) string {
+	// TODO (mh) this is where we could select based off a placement tag as well "qos:tier"
+	return fmt.Sprintf("R%d", cfg.Replicas)
+}
+
+func isSameTier(cfgA, cfgB *StreamConfig) bool {
+	// TODO (mh) this is where we could select based off a placement tag as well "qos:tier"
+	return cfgA.Replicas == cfgB.Replicas
+}
+
+func (jsa *jsAccount) jetStreamAndClustered() (*jetStream, bool) {
+	jsa.mu.RLock()
+	js := jsa.js
+	jsa.mu.RUnlock()
+	return js, js.isClustered()
+}
+
+// Read lock should be held.
+func (jsa *jsAccount) selectLimits(cfg *StreamConfig) (JetStreamAccountLimits, string, bool) {
+	if selectedLimits, ok := jsa.limits[_EMPTY_]; ok {
+		return selectedLimits, _EMPTY_, true
+	}
+	tier := tierName(cfg)
+	if selectedLimits, ok := jsa.limits[tier]; ok {
+		return selectedLimits, tier, true
+	}
+	return JetStreamAccountLimits{}, _EMPTY_, false
+}
+
+// Lock should be held.
+func (jsa *jsAccount) countStreams(tier string, cfg *StreamConfig) int {
+	streams := len(jsa.streams)
+	if tier != _EMPTY_ {
+		streams = 0
+		for _, sa := range jsa.streams {
+			if isSameTier(&sa.cfg, cfg) {
+				streams++
+			}
+		}
+	}
+	return streams
+}
+
+// Lock should be held.
+func (jsa *jsAccount) storageTotals() (uint64, uint64) {
+	mem := uint64(0)
+	store := uint64(0)
+	for _, sa := range jsa.usage {
+		mem += uint64(sa.total.mem)
+		store += uint64(sa.total.store)
+	}
+	return mem, store
+}
+
+func (jsa *jsAccount) limitsExceeded(storeType StorageType, tierName string) bool {
 	jsa.mu.RLock()
 	defer jsa.mu.RUnlock()
 
+	selectedLimits, ok := jsa.limits[tierName]
+	if !ok {
+		return true
+	}
 	if storeType == MemoryStorage {
-		if jsa.limits.MaxMemory >= 0 && jsa.memTotal > jsa.limits.MaxMemory {
+		if selectedLimits.MaxMemory >= 0 && jsa.usage[tierName].total.mem > selectedLimits.MaxMemory {
 			return true
 		}
 	} else {
-		if jsa.limits.MaxStore >= 0 && jsa.storeTotal > jsa.limits.MaxStore {
+		if selectedLimits.MaxStore >= 0 && jsa.usage[tierName].total.store > selectedLimits.MaxStore {
 			return true
 		}
 	}
@@ -1613,47 +1814,46 @@ func (jsa *jsAccount) limitsExceeded(storeType StorageType) bool {
 }
 
 // Check account limits.
-func (jsa *jsAccount) checkAccountLimits(config *StreamConfig) error {
-	return jsa.checkLimits(config, false)
+// Read Lock should be held
+func (js *jetStream) checkAccountLimits(selected *JetStreamAccountLimits, config *StreamConfig, currentRes int64) error {
+	return js.checkLimits(selected, config, false, currentRes, 0)
 }
 
 // Check account and server limits.
-func (jsa *jsAccount) checkAllLimits(config *StreamConfig) error {
-	return jsa.checkLimits(config, true)
+// Read Lock should be held
+func (js *jetStream) checkAllLimits(selected *JetStreamAccountLimits, config *StreamConfig, currentRes, maxBytesOffset int64) error {
+	return js.checkLimits(selected, config, true, currentRes, maxBytesOffset)
 }
 
 // Check if a new proposed msg set while exceed our account limits.
 // Lock should be held.
-func (jsa *jsAccount) checkLimits(config *StreamConfig, checkServer bool) error {
-	if jsa.limits.MaxStreams > 0 && len(jsa.streams) >= jsa.limits.MaxStreams {
-		return NewJSMaximumStreamsLimitError()
-	}
+func (js *jetStream) checkLimits(selected *JetStreamAccountLimits, config *StreamConfig, checkServer bool, currentRes, maxBytesOffset int64) error {
 	// Check MaxConsumers
-	if config.MaxConsumers > 0 && jsa.limits.MaxConsumers > 0 && config.MaxConsumers > jsa.limits.MaxConsumers {
+	if config.MaxConsumers > 0 && selected.MaxConsumers > 0 && config.MaxConsumers > selected.MaxConsumers {
 		return NewJSMaximumConsumersLimitError()
 	}
-
+	// stream limit is checked separately on stream create only!
 	// Check storage, memory or disk.
-	return jsa.checkBytesLimits(config.MaxBytes, config.Storage, config.Replicas, checkServer)
+	return js.checkBytesLimits(selected, config.MaxBytes, config.Storage, config.Replicas, checkServer, currentRes, maxBytesOffset)
 }
 
 // Check if additional bytes will exceed our account limits and optionally the server itself.
 // This should account for replicas.
-// Lock should be held.
-func (jsa *jsAccount) checkBytesLimits(addBytes int64, storage StorageType, replicas int, checkServer bool) error {
+// Read Lock should be held.
+func (js *jetStream) checkBytesLimits(selectedLimits *JetStreamAccountLimits, addBytes int64, storage StorageType, replicas int, checkServer bool, currentRes, maxBytesOffset int64) error {
 	if replicas < 1 {
 		replicas = 1
 	}
 	if addBytes < 0 {
 		addBytes = 1
 	}
-	js, totalBytes := jsa.js, addBytes*int64(replicas)
+	totalBytes := (addBytes * int64(replicas)) + maxBytesOffset
 
 	switch storage {
 	case MemoryStorage:
 		// Account limits defined.
-		if jsa.limits.MaxMemory >= 0 {
-			if jsa.memReserved+totalBytes > jsa.limits.MaxMemory {
+		if selectedLimits.MaxMemory >= 0 {
+			if currentRes+totalBytes > selectedLimits.MaxMemory {
 				return NewJSMemoryResourcesExceededError()
 			}
 		}
@@ -1663,8 +1863,8 @@ func (jsa *jsAccount) checkBytesLimits(addBytes int64, storage StorageType, repl
 		}
 	case FileStorage:
 		// Account limits defined.
-		if jsa.limits.MaxStore >= 0 {
-			if jsa.storeReserved+totalBytes > jsa.limits.MaxStore {
+		if selectedLimits.MaxStore >= 0 {
+			if currentRes+totalBytes > selectedLimits.MaxStore {
 				return NewJSStorageResourcesExceededError()
 			}
 		}
@@ -1748,7 +1948,7 @@ func (js *jetStream) usageStats() *JetStreamStats {
 
 // Check to see if we have enough system resources for this account.
 // Lock should be held.
-func (js *jetStream) sufficientResources(limits *JetStreamAccountLimits) error {
+func (js *jetStream) sufficientResources(limits map[string]JetStreamAccountLimits) error {
 	// If we are clustered we do not really know how many resources will be ultimately available.
 	// This needs to be handled out of band.
 	// If we are a single server, we can make decisions here.
@@ -1756,11 +1956,27 @@ func (js *jetStream) sufficientResources(limits *JetStreamAccountLimits) error {
 		return nil
 	}
 
+	totalMaxBytes := func(limits map[string]JetStreamAccountLimits) (int64, int64) {
+		totalMaxMemory := int64(0)
+		totalMaxStore := int64(0)
+		for _, l := range limits {
+			if l.MaxMemory > 0 {
+				totalMaxMemory += l.MaxMemory
+			}
+			if l.MaxStore > 0 {
+				totalMaxStore += l.MaxStore
+			}
+		}
+		return totalMaxMemory, totalMaxStore
+	}
+
+	totalMaxMemory, totalMaxStore := totalMaxBytes(limits)
+
 	// Reserved is now specific to the MaxBytes for streams.
-	if js.memReserved+limits.MaxMemory > js.config.MaxMemory {
+	if js.memReserved+totalMaxMemory > js.config.MaxMemory {
 		return NewJSMemoryResourcesExceededError()
 	}
-	if js.storeReserved+limits.MaxStore > js.config.MaxStore {
+	if js.storeReserved+totalMaxStore > js.config.MaxStore {
 		return NewJSStorageResourcesExceededError()
 	}
 
@@ -1768,19 +1984,16 @@ func (js *jetStream) sufficientResources(limits *JetStreamAccountLimits) error {
 	var storeReserved, memReserved int64
 	for _, jsa := range js.accounts {
 		jsa.mu.RLock()
-		if jsa.limits.MaxMemory > 0 {
-			memReserved += jsa.limits.MaxMemory
-		}
-		if jsa.limits.MaxStore > 0 {
-			storeReserved += jsa.limits.MaxStore
-		}
+		maxMemory, maxStore := totalMaxBytes(jsa.limits)
+		memReserved += maxMemory
+		storeReserved += maxStore
 		jsa.mu.RUnlock()
 	}
 
-	if memReserved+limits.MaxMemory > js.config.MaxMemory {
+	if memReserved+totalMaxMemory > js.config.MaxMemory {
 		return NewJSMemoryResourcesExceededError()
 	}
-	if storeReserved+limits.MaxStore > js.config.MaxStore {
+	if storeReserved+totalMaxStore > js.config.MaxStore {
 		return NewJSStorageResourcesExceededError()
 	}
 
@@ -2254,7 +2467,7 @@ func validateJetStreamOptions(o *Options) error {
 				} else {
 					for _, acc := range o.Accounts {
 						if a == acc.GetName() {
-							if acc.jsLimits != nil && domain != _EMPTY_ {
+							if len(acc.jsLimits) > 0 && domain != _EMPTY_ {
 								return fmt.Errorf("default_js_domain contains account name %q with enabled JetStream", a)
 							}
 							found = true

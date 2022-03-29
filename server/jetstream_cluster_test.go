@@ -2978,11 +2978,13 @@ func TestJetStreamClusterAccountInfoAndLimits(t *testing.T) {
 	defer c.shutdown()
 
 	// Adjust our limits.
-	c.updateLimits("$G", &JetStreamAccountLimits{
-		MaxMemory:    1024,
-		MaxStore:     8000,
-		MaxStreams:   3,
-		MaxConsumers: 1,
+	c.updateLimits("$G", map[string]JetStreamAccountLimits{
+		_EMPTY_: {
+			MaxMemory:    1024,
+			MaxStore:     8000,
+			MaxStreams:   3,
+			MaxConsumers: 1,
+		},
 	})
 
 	// Client based API
@@ -9815,6 +9817,45 @@ func TestJetStreamSuperClusterPushConsumerInterest(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterAccountReservations(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterMaxBytesAccountLimitTempl, "C1", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+	accMax := 3
+
+	test := func(t *testing.T, replica int) {
+		mb := int64((1+accMax)-replica) * 1024 * 1024 * 1024 // GB, corrected for replication factor
+		_, err := js.AddStream(&nats.StreamConfig{Name: "S1", Subjects: []string{"s1"}, MaxBytes: mb, Replicas: replica})
+		require_NoError(t, err)
+
+		_, err = js.AddStream(&nats.StreamConfig{Name: "S2", Subjects: []string{"s2"}, MaxBytes: 1024, Replicas: replica})
+		require_Error(t, err)
+		require_Equal(t, err.Error(), "insufficient storage resources available")
+
+		_, err = js.UpdateStream(&nats.StreamConfig{Name: "S1", Subjects: []string{"s1"}, MaxBytes: mb / 2, Replicas: replica})
+		require_NoError(t, err)
+
+		_, err = js.AddStream(&nats.StreamConfig{Name: "S2", Subjects: []string{"s2"}, MaxBytes: mb / 2, Replicas: replica})
+		require_NoError(t, err)
+
+		_, err = js.AddStream(&nats.StreamConfig{Name: "S3", Subjects: []string{"s3"}, MaxBytes: 1024, Replicas: replica})
+		require_Error(t, err)
+		require_Equal(t, err.Error(), "insufficient storage resources available")
+
+		_, err = js.UpdateStream(&nats.StreamConfig{Name: "S2", Subjects: []string{"s2"}, MaxBytes: mb/2 + 1, Replicas: replica})
+		require_Error(t, err)
+		require_Equal(t, err.Error(), "insufficient storage resources available")
+
+		require_NoError(t, js.DeleteStream("S1"))
+		require_NoError(t, js.DeleteStream("S2"))
+	}
+	test(t, 3)
+	test(t, 1)
+}
+
 func TestJetStreamClusterOverflowPlacement(t *testing.T) {
 	sc := createJetStreamSuperClusterWithTemplate(t, jsClusterMaxBytesTempl, 3, 3)
 	defer sc.shutdown()
@@ -9891,6 +9932,47 @@ func TestJetStreamClusterOverflowPlacement(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterConcurrentAccountLimits(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterMaxBytesAccountLimitTempl, "cluster", 3)
+	defer c.shutdown()
+
+	startCh := make(chan bool)
+	var wg sync.WaitGroup
+	var swg sync.WaitGroup
+	failCount := int32(0)
+
+	start := func(name string) {
+		wg.Add(1)
+		defer wg.Done()
+
+		s := c.randomServer()
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		swg.Done()
+		<-startCh
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     name,
+			Replicas: 3,
+			MaxBytes: 1024 * 1024 * 1024,
+		})
+		if err != nil {
+			atomic.AddInt32(&failCount, 1)
+			require_Equal(t, err.Error(), "insufficient storage resources available")
+		}
+	}
+
+	swg.Add(2)
+	go start("foo")
+	go start("bar")
+	swg.Wait()
+	// Now start both at same time.
+	close(startCh)
+	wg.Wait()
+	require_True(t, failCount == 1)
+}
+
 func TestJetStreamClusterConcurrentOverflow(t *testing.T) {
 	sc := createJetStreamSuperClusterWithTemplate(t, jsClusterMaxBytesTempl, 3, 3)
 	defer sc.shutdown()
@@ -9902,7 +9984,6 @@ func TestJetStreamClusterConcurrentOverflow(t *testing.T) {
 	var swg sync.WaitGroup
 
 	start := func(name string) {
-		wg.Add(1)
 		defer wg.Done()
 
 		s := sc.clusterForName(pcn).randomServer()
@@ -9919,7 +10000,7 @@ func TestJetStreamClusterConcurrentOverflow(t *testing.T) {
 		})
 		require_NoError(t, err)
 	}
-
+	wg.Add(2)
 	swg.Add(2)
 	go start("foo")
 	go start("bar")
@@ -11589,7 +11670,37 @@ var jsClusterMaxBytesTempl = `
 			users = [ { user: "u", pass: "p" } ]
 			jetstream: {
 				max_mem:   128MB
-				max_file:  8GB
+				max_file:  18GB
+				max_bytes: true // Forces streams to indicate max_bytes.
+			}
+		}
+		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+	}
+`
+
+var jsClusterMaxBytesAccountLimitTempl = `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {max_mem_store: 256MB, max_file_store: 4GB, store_dir: '%s'}
+
+	leaf {
+		listen: 127.0.0.1:-1
+	}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	no_auth_user: u
+
+	accounts {
+		$U {
+			users = [ { user: "u", pass: "p" } ]
+			jetstream: {
+				max_mem:   128MB
+				max_file:  3GB
 				max_bytes: true // Forces streams to indicate max_bytes.
 			}
 		}
@@ -12245,7 +12356,7 @@ func (c *cluster) addSubjectMapping(account, src, dest string) {
 }
 
 // Adjust limits for the given account.
-func (c *cluster) updateLimits(account string, newLimits *JetStreamAccountLimits) {
+func (c *cluster) updateLimits(account string, newLimits map[string]JetStreamAccountLimits) {
 	c.t.Helper()
 	for _, s := range c.servers {
 		acc, err := s.LookupAccount(account)

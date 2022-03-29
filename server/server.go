@@ -1357,7 +1357,7 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 	acc.srv = s
 	acc.updated = time.Now().UTC()
 	accName := acc.Name
-	jsEnabled := acc.jsLimits != nil
+	jsEnabled := len(acc.jsLimits) > 0
 	acc.mu.Unlock()
 
 	if opts := s.getOpts(); opts != nil && len(opts.JsAccDefaultDomain) > 0 {
@@ -1709,7 +1709,7 @@ func (s *Server) Start() {
 	// own system account if one is not present.
 	if opts.JetStream {
 		// Make sure someone is not trying to enable on the system account.
-		if sa := s.SystemAccount(); sa != nil && sa.jsLimits != nil {
+		if sa := s.SystemAccount(); sa != nil && len(sa.jsLimits) > 0 {
 			s.Fatalf("Not allowed to enable JetStream on the system account")
 		}
 		cfg := &JetStreamConfig{
@@ -1737,7 +1737,7 @@ func (s *Server) Start() {
 				hasGlobal = true
 			}
 			acc.mu.RLock()
-			hasJs := acc.jsLimits != nil
+			hasJs := len(acc.jsLimits) > 0
 			acc.mu.RUnlock()
 			if hasJs {
 				s.checkJetStreamExports()
@@ -1749,7 +1749,9 @@ func (s *Server) Start() {
 		// go ahead and enable JS on $G in case we are in simple mixed mode setup.
 		if total == 2 && hasSys && hasGlobal && !s.standAloneMode() {
 			ga.mu.Lock()
-			ga.jsLimits = dynamicJSAccountLimits
+			ga.jsLimits = map[string]JetStreamAccountLimits{
+				_EMPTY_: dynamicJSAccountLimits,
+			}
 			ga.mu.Unlock()
 			s.checkJetStreamExports()
 			ga.enableAllJetStreamServiceImportsAndMappings()

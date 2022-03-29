@@ -1712,7 +1712,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 func (mset *stream) resetClusteredState(err error) bool {
 	mset.mu.RLock()
 	s, js, jsa, sa, acc, node := mset.srv, mset.js, mset.jsa, mset.sa, mset.acc, mset.node
-	stype, isLeader := mset.cfg.Storage, mset.isLeader()
+	stype, isLeader, tierName := mset.cfg.Storage, mset.isLeader(), mset.tier
 	mset.mu.RUnlock()
 
 	// Stepdown regardless if we are the leader here.
@@ -1727,7 +1727,7 @@ func (mset *stream) resetClusteredState(err error) bool {
 	}
 
 	// Account
-	if jsa.limitsExceeded(stype) {
+	if jsa.limitsExceeded(stype, tierName) {
 		s.Warnf("stream '%s > %s' errored, account resources exceeded", acc, mset.name())
 		return false
 	}
@@ -3883,6 +3883,35 @@ func groupName(prefix string, peers []string, storage StorageType) string {
 	return fmt.Sprintf("%s-R%d%s-%s", prefix, len(peers), storage.String()[:1], gns)
 }
 
+// returns stream count for this tier as well as applicable reservation size (not including reservations for cfg)
+// jetStream read lock should be held
+func tieredStreamAndReservationCount(asa map[string]*streamAssignment, tier string, cfg *StreamConfig) (int, int64) {
+	numStreams := len(asa)
+	reservation := int64(0)
+	if tier == _EMPTY_ {
+		for _, sa := range asa {
+			if sa.Config.MaxBytes > 0 && sa.Config.Name != cfg.Name {
+				if sa.Config.Storage == cfg.Storage {
+					reservation += (int64(sa.Config.Replicas) * sa.Config.MaxBytes)
+				}
+			}
+		}
+	} else {
+		numStreams = 0
+		for _, sa := range asa {
+			if isSameTier(sa.Config, cfg) {
+				numStreams++
+				if sa.Config.MaxBytes > 0 {
+					if sa.Config.Storage == cfg.Storage && sa.Config.Name != cfg.Name {
+						reservation += (int64(sa.Config.Replicas) * sa.Config.MaxBytes)
+					}
+				}
+			}
+		}
+	}
+	return numStreams, reservation
+}
+
 // createGroupForStream will create a group for assignment for the stream.
 // Lock should be held.
 func (js *jetStream) createGroupForStream(ci *ClientInfo, cfg *StreamConfig) *raftGroup {
@@ -3941,28 +3970,36 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	}
 	cfg := &ccfg
 
+	jsa.mu.RLock()
+	selectedLimits, tier, ok := jsa.selectLimits(config)
+	jsa.mu.RUnlock()
+
+	if !ok {
+		resp.Error = NewJSNoLimitsError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
+	}
+
 	// Check for stream limits here before proposing. These need to be tracked from meta layer, not jsa.
 	js.mu.RLock()
 	asa := cc.streams[acc.Name]
-	numStreams := len(asa)
-	js.mu.RUnlock()
+	numStreams, reservations := tieredStreamAndReservationCount(asa, tier, config)
 
-	jsa.mu.RLock()
-	exceeded := jsa.limits.MaxStreams > 0 && numStreams >= jsa.limits.MaxStreams
-	jsa.mu.RUnlock()
-
-	if exceeded {
+	if selectedLimits.MaxStreams > 0 && numStreams >= selectedLimits.MaxStreams {
 		resp.Error = NewJSMaximumStreamsLimitError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		js.mu.RUnlock()
 		return
 	}
 
 	// Check for account limits here before proposing.
-	if err := jsa.checkAccountLimits(cfg); err != nil {
+	if err := js.checkAccountLimits(&selectedLimits, cfg, reservations); err != nil {
 		resp.Error = NewJSStreamLimitsError(err, Unless(err))
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		js.mu.RUnlock()
 		return
 	}
+	js.mu.RUnlock()
 
 	// Now process the request and proposal.
 	js.mu.Lock()
@@ -4044,7 +4081,10 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	}
 	var newCfg *StreamConfig
 	if jsa := js.accounts[acc.Name]; jsa != nil {
-		if ncfg, err := jsa.configUpdateCheck(osa.Config, cfg); err != nil {
+		js.mu.Unlock()
+		ncfg, err := jsa.configUpdateCheck(osa.Config, cfg)
+		js.mu.Lock()
+		if err != nil {
 			resp.Error = NewJSStreamUpdateError(err, Unless(err))
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 			return
@@ -5008,7 +5048,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	mset.mu.RLock()
 	canRespond := !mset.cfg.NoAck && len(reply) > 0
 	name, stype := mset.cfg.Name, mset.cfg.Storage
-	s, js, jsa, st, rf, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.outq, mset.node
+	s, js, jsa, st, rf, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
 	mset.mu.RUnlock()
 
@@ -5034,14 +5074,32 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// Check here pre-emptively if we have exceeded our account limits.
 	var exceeded bool
 	jsa.mu.RLock()
+	jsaLimits, ok := jsa.limits[tierName]
+	if !ok {
+		jsa.mu.RUnlock()
+		err := fmt.Errorf("no JetStream resource limits found account: %q", jsa.acc().Name)
+		s.Warnf(err.Error())
+		if canRespond {
+			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+			resp.Error = NewJSNoLimitsError()
+			response, _ = json.Marshal(resp)
+			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
+		}
+		return err
+	}
+	t, ok := jsa.usage[tierName]
+	if !ok {
+		t = &jsaStorage{}
+		jsa.usage[tierName] = t
+	}
 	if st == MemoryStorage {
-		total := jsa.storeTotal + int64(memStoreMsgSize(subject, hdr, msg)*uint64(rf))
-		if jsa.limits.MaxMemory > 0 && total > jsa.limits.MaxMemory {
+		total := t.total.store + int64(memStoreMsgSize(subject, hdr, msg)*uint64(rf))
+		if jsaLimits.MaxMemory > 0 && total > jsaLimits.MaxMemory {
 			exceeded = true
 		}
 	} else {
-		total := jsa.storeTotal + int64(fileStoreMsgSize(subject, hdr, msg)*uint64(rf))
-		if jsa.limits.MaxStore > 0 && total > jsa.limits.MaxStore {
+		total := t.total.store + int64(fileStoreMsgSize(subject, hdr, msg)*uint64(rf))
+		if jsaLimits.MaxStore > 0 && total > jsaLimits.MaxStore {
 			exceeded = true
 		}
 	}
@@ -5416,9 +5474,10 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	mset.mu.RLock()
 	st := mset.cfg.Storage
 	ddloaded := mset.ddloaded
+	tierName := mset.tier
 	mset.mu.RUnlock()
 
-	if mset.js.limitsExceeded(st) || mset.jsa.limitsExceeded(st) {
+	if mset.js.limitsExceeded(st) || mset.jsa.limitsExceeded(st, tierName) {
 		return 0, NewJSInsufficientResourcesError()
 	}
 

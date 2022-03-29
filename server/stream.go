@@ -173,6 +173,7 @@ type stream struct {
 	cfg       StreamConfig
 	created   time.Time
 	stype     StorageType
+	tier      string
 	ddmap     map[string]*ddentry
 	ddarr     []*ddentry
 	ddindex   int
@@ -298,10 +299,10 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		return nil, ApiErrors[JSStreamReplicasNotSupportedErr]
 	}
 
-	jsa.mu.Lock()
-	js := jsa.js
+	js, isClustered := jsa.jetStreamAndClustered()
+	jsa.mu.RLock()
 	if mset, ok := jsa.streams[cfg.Name]; ok {
-		jsa.mu.Unlock()
+		jsa.mu.RUnlock()
 		// Check to see if configs are same.
 		ocfg := mset.config()
 		if reflect.DeepEqual(ocfg, cfg) {
@@ -313,11 +314,25 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 			return nil, ApiErrors[JSStreamNameExistErr]
 		}
 	}
-	// Check for account and server limits.
-	if err := jsa.checkAllLimits(&cfg); err != nil {
-		jsa.mu.Unlock()
+	selected, tier, hasTier := jsa.selectLimits(&cfg)
+	reserved := int64(0)
+	if !isClustered {
+		reserved = jsa.tieredReservation(tier, &cfg)
+	}
+	jsa.mu.RUnlock()
+	if !hasTier {
+		return nil, NewJSNoLimitsError()
+	}
+	js.mu.RLock()
+	if isClustered {
+		_, reserved = tieredStreamAndReservationCount(js.cluster.streams[a.Name], tier, &cfg)
+	}
+	if err := js.checkAllLimits(&selected, &cfg, reserved, 0); err != nil {
+		js.mu.RUnlock()
 		return nil, err
 	}
+	js.mu.RUnlock()
+	jsa.mu.Lock()
 	// Check for template ownership if present.
 	if cfg.Template != _EMPTY_ && jsa.account != nil {
 		if !jsa.checkTemplateOwnership(cfg.Template, cfg.Name) {
@@ -363,6 +378,11 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		return nil, fmt.Errorf("subjects overlap with an existing stream")
 	}
 
+	if !hasTier {
+		jsa.mu.Unlock()
+		return nil, fmt.Errorf("no applicable tier found")
+	}
+
 	// Setup the internal clients.
 	c := s.createInternalJetStreamClient()
 	ic := s.createInternalJetStreamClient()
@@ -376,6 +396,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		srv:       s,
 		client:    c,
 		sysc:      ic,
+		tier:      tier,
 		stype:     cfg.Storage,
 		consumers: make(map[string]*consumer),
 		msgs:      s.newIPQueue(qpfx + "messages"), // of *inMsg
@@ -929,6 +950,7 @@ func (mset *stream) fileStoreConfig() (FileStoreConfig, error) {
 	return fs.fileStoreConfig(), nil
 }
 
+// Do not hold jsAccount or jetStream lock
 func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig) (*StreamConfig, error) {
 	cfg, err := checkStreamCfg(new)
 	if err != nil {
@@ -994,21 +1016,47 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig) (*StreamConfig, 
 	// Save the user configured MaxBytes.
 	newMaxBytes := cfg.MaxBytes
 
+	maxBytesOffset := int64(0)
+	if old.MaxBytes > 0 {
+		if excessRep := cfg.Replicas - old.Replicas; excessRep > 0 {
+			maxBytesOffset = old.MaxBytes * int64(excessRep)
+		}
+	}
+
 	// We temporarily set cfg.MaxBytes to maxBytesDiff because checkAllLimits
 	// adds cfg.MaxBytes to the current reserved limit and checks if we've gone
 	// over. However, we don't want an addition cfg.MaxBytes, we only want to
 	// reserve the difference between the new and the old values.
 	cfg.MaxBytes = maxBytesDiff
 
-	// Check if we can reserve the additional difference.
-	err = jsa.checkAllLimits(&cfg)
-
-	// Restore the user configured MaxBytes.
-	cfg.MaxBytes = newMaxBytes
-
-	if err != nil {
+	// Check limits.
+	js, isClustered := jsa.jetStreamAndClustered()
+	jsa.mu.RLock()
+	acc := jsa.account
+	selected, tier, hasTier := jsa.selectLimits(&cfg)
+	if !hasTier && old.Replicas != cfg.Replicas {
+		selected, tier, hasTier = jsa.selectLimits(old)
+	}
+	reserved := int64(0)
+	if !isClustered {
+		reserved = jsa.tieredReservation(tier, &cfg)
+	}
+	jsa.mu.RUnlock()
+	if !hasTier {
+		return nil, NewJSNoLimitsError()
+	}
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	if isClustered {
+		_, reserved = tieredStreamAndReservationCount(js.cluster.streams[acc.Name], tier, &cfg)
+	}
+	// reservation does not account for this stream, hence add the old value
+	reserved += int64(old.Replicas) * old.MaxBytes
+	if err := js.checkAllLimits(&selected, &cfg, reserved, maxBytesOffset); err != nil {
 		return nil, err
 	}
+	// Restore the user configured MaxBytes.
+	cfg.MaxBytes = newMaxBytes
 	return &cfg, nil
 }
 
@@ -1084,6 +1132,19 @@ func (mset *stream) update(config *StreamConfig) error {
 	}
 
 	js := mset.js
+
+	if targetTier := tierName(cfg); mset.tier != targetTier {
+		// In cases such as R1->R3, only one update is needed
+		if _, ok := mset.jsa.limits[targetTier]; ok {
+			// error never set
+			_, reported, _ := mset.store.Utilization()
+			mset.jsa.updateUsage(mset.tier, mset.stype, -int64(reported))
+			mset.jsa.updateUsage(targetTier, mset.stype, int64(reported))
+			mset.tier = targetTier
+		}
+		// else in case the new tier does not exist (say on move), keep the old tier around
+		// a subsequent update to an existing tier will then move from existing past tier to existing new tier
+	}
 
 	// Now update config and store's version of our config.
 	mset.cfg = *cfg
@@ -2559,7 +2620,7 @@ func (mset *stream) storeUpdates(md, bd int64, seq uint64, subj string) {
 	}
 
 	if mset.jsa != nil {
-		mset.jsa.updateUsage(mset.stype, bd)
+		mset.jsa.updateUsage(mset.tier, mset.stype, bd)
 	}
 }
 
@@ -3037,7 +3098,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	mset.lmsgId = msgId
 	clfs := mset.clfs
 	mset.lseq++
-
+	tierName := mset.tier
 	// We hold the lock to this point to make sure nothing gets between us since we check for pre-conditions.
 	// Currently can not hold while calling store b/c we have inline storage update calls that may need the lock.
 	// Note that upstream that sets seq/ts should be serialized as much as possible.
@@ -3075,7 +3136,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			resp.Error = NewJSStreamStoreFailedError(err, Unless(err))
 			response, _ = json.Marshal(resp)
 		}
-	} else if jsa.limitsExceeded(stype) {
+	} else if jsa.limitsExceeded(stype, tierName) {
 		s.Warnf("JetStream resource limits exceeded for account: %q", accName)
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
@@ -3372,6 +3433,9 @@ func (mset *stream) internalLoop() {
 
 // Internal function to delete a stream.
 func (mset *stream) delete() error {
+	if mset == nil {
+		return nil
+	}
 	return mset.stop(true, true)
 }
 

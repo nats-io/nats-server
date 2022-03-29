@@ -5304,6 +5304,314 @@ func TestJWTResponseThreshold(t *testing.T) {
 	})
 }
 
+func TestJWTJetStreamTiers(t *testing.T) {
+	sysKp, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	sysCreds := newUser(t, sysKp)
+	defer removeFile(t, sysCreds)
+
+	accKp, accPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(accPub)
+	accClaim.Name = "acc"
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
+		DiskStorage: 1100, MemoryStorage: 0, Consumer: 2, Streams: 2}
+	accJwt1 := encodeClaim(t, accClaim, accPub)
+	accCreds := newUser(t, accKp)
+
+	start := time.Now()
+
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	dirSrv := createDir(t, "srv")
+	defer removeDir(t, dirSrv)
+	cf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		server_name: s1
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		leaf {
+			listen: 127.0.0.1:-1
+		}
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: full
+			dir: '%s'
+		}
+	`, storeDir, ojwt, syspub, dirSrv)))
+	defer removeFile(t, cf)
+
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	updateJwt(t, s.ClientURL(), sysCreds, sysJwt, 1)
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt1, 1)
+
+	nc := natsConnect(t, s.ClientURL(), nats.UserCredentials(accCreds))
+	defer nc.Close()
+
+	js, err := nc.JetStream()
+	require_NoError(t, err)
+
+	// Test tiers up to stream limits
+	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-1", Replicas: 1, Subjects: []string{"testR1-1"}})
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-2", Replicas: 1, Subjects: []string{"testR1-2"}})
+	require_NoError(t, err)
+
+	// Test exceeding tiered stream limit
+	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-3", Replicas: 1, Subjects: []string{"testR1-3"}})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "maximum number of streams reached")
+
+	// Test tiers up to consumer limits
+	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur1", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur3", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// test exceeding tiered consumer limits
+	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur4", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "maximum consumers limit reached")
+	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur5", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "maximum consumers limit reached")
+
+	// test tiered storage limit
+	msg := [512]byte{}
+	_, err = js.Publish("testR1-1", msg[:])
+	require_NoError(t, err)
+	_, err = js.Publish("testR1-2", msg[:])
+	require_NoError(t, err)
+
+	// test exceeding tiered storage limit
+	_, err = js.Publish("testR1-1", []byte("1"))
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
+
+	time.Sleep(time.Second - time.Since(start)) // make sure the time stamp changes
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
+		DiskStorage: 1650, MemoryStorage: 0, Consumer: 1, Streams: 3}
+	accJwt2 := encodeClaim(t, accClaim, accPub)
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt2, 1)
+
+	// test same sequence as before, add stream, fail add stream, add consumer, fail add consumer, publish, fail publish
+	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-3", Replicas: 1, Subjects: []string{"testR1-3"}})
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-4", Replicas: 1, Subjects: []string{"testR1-4"}})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "maximum number of streams reached")
+	_, err = js.AddConsumer("testR1-3", &nats.ConsumerConfig{Durable: "dur6", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("testR1-3", &nats.ConsumerConfig{Durable: "dur7", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "maximum consumers limit reached")
+	_, err = js.Publish("testR1-3", msg[:])
+	require_NoError(t, err)
+	_, err = js.Publish("testR1-3", []byte("1"))
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
+}
+
+func TestJWTClusteredJetStreamTiers(t *testing.T) {
+	sysKp, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	sysCreds := newUser(t, sysKp)
+	defer removeFile(t, sysCreds)
+
+	accKp, aExpPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(aExpPub)
+	accClaim.Name = "acc"
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
+		DiskStorage: 1100, MemoryStorage: 0, Consumer: 2, Streams: 2}
+	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{
+		DiskStorage: 3100, MemoryStorage: 0, Consumer: 1, Streams: 1}
+	accJwt := encodeClaim(t, accClaim, aExpPub)
+	accCreds := newUser(t, accKp)
+	tmlp := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		leaf {
+			listen: 127.0.0.1:-1
+		}
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+	` + fmt.Sprintf(`
+		operator: %s
+		system_account: %s
+		resolver = MEMORY
+		resolver_preload = {
+			%s : %s
+			%s : %s
+		}
+	`, ojwt, syspub, syspub, sysJwt, aExpPub, accJwt)
+
+	c := createJetStreamClusterWithTemplate(t, tmlp, "cluster", 3)
+	defer c.shutdown()
+
+	nc := natsConnect(t, c.randomServer().ClientURL(), nats.UserCredentials(accCreds))
+	defer nc.Close()
+
+	js, err := nc.JetStream()
+	require_NoError(t, err)
+
+	// Test absent tiers
+	_, err = js.AddStream(&nats.StreamConfig{Name: "testR2", Replicas: 2, Subjects: []string{"testR2"}})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "no JetStream default or applicable tiered limit present")
+	_, err = js.AddStream(&nats.StreamConfig{Name: "testR5", Replicas: 5, Subjects: []string{"testR5"}})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "no JetStream default or applicable tiered limit present")
+
+	// Test tiers up to stream limits
+	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-1", Replicas: 1, Subjects: []string{"testR1-1"}})
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "testR3-1", Replicas: 3, Subjects: []string{"testR3-1"}})
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-2", Replicas: 1, Subjects: []string{"testR1-2"}})
+	require_NoError(t, err)
+
+	// Test exceeding tiered stream limit
+	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-3", Replicas: 1, Subjects: []string{"testR1-3"}})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "maximum number of streams reached")
+	_, err = js.AddStream(&nats.StreamConfig{Name: "testR3-3", Replicas: 3, Subjects: []string{"testR3-3"}})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "maximum number of streams reached")
+
+	// Test tiers up to consumer limits
+	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur1", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("testR3-1", &nats.ConsumerConfig{Durable: "dur2", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur3", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// test exceeding tiered consumer limits
+	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur4", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "maximum consumers limit reached")
+	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur5", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "maximum consumers limit reached")
+
+	// test tiered storage limit
+	msg := [512]byte{}
+	_, err = js.Publish("testR1-1", msg[:])
+	require_NoError(t, err)
+	_, err = js.Publish("testR3-1", msg[:])
+	require_NoError(t, err)
+	_, err = js.Publish("testR3-1", msg[:])
+	require_NoError(t, err)
+	_, err = js.Publish("testR1-2", msg[:])
+	require_NoError(t, err)
+
+	time.Sleep(2000 * time.Millisecond) // wait for update timer to synchronize totals
+
+	// test exceeding tiered storage limit
+	_, err = js.Publish("testR1-1", []byte("1"))
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
+	_, err = js.Publish("testR3-1", []byte("fail this message!"))
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
+}
+
+func TestJWTClusteredJetStreamTiersChange(t *testing.T) {
+	sysKp, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	sysCreds := newUser(t, sysKp)
+	defer removeFile(t, sysCreds)
+
+	accKp, aExpPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(aExpPub)
+	accClaim.Name = "acc"
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
+		DiskStorage: 1000, MemoryStorage: 0, Consumer: 1, Streams: 1}
+	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{
+		DiskStorage: 1500, MemoryStorage: 0, Consumer: 1, Streams: 1}
+	accJwt1 := encodeClaim(t, accClaim, aExpPub)
+	accCreds := newUser(t, accKp)
+
+	start := time.Now()
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+	dirSrv := createDir(t, "srv")
+	defer removeDir(t, dirSrv)
+
+	tmlp := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		leaf {
+			listen: 127.0.0.1:-1
+		}
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+	` + fmt.Sprintf(`
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: full
+			dir: '%s'
+		}
+	`, ojwt, syspub, dirSrv)
+
+	c := createJetStreamClusterWithTemplate(t, tmlp, "cluster", 3)
+	defer c.shutdown()
+
+	updateJwt(t, c.randomServer().ClientURL(), sysCreds, sysJwt, 3)
+	updateJwt(t, c.randomServer().ClientURL(), sysCreds, accJwt1, 3)
+
+	nc := natsConnect(t, c.randomServer().ClientURL(), nats.UserCredentials(accCreds))
+	defer nc.Close()
+
+	js, err := nc.JetStream()
+	require_NoError(t, err)
+
+	// Test tiers up to stream limits
+	cfg := &nats.StreamConfig{Name: "testR1-1", Replicas: 1, Subjects: []string{"testR1-1"}, MaxBytes: 1000}
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+
+	cfg.Replicas = 3
+	_, err = js.UpdateStream(cfg)
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "insufficient storage resources available")
+
+	time.Sleep(time.Second - time.Since(start)) // make sure the time stamp changes
+	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{
+		DiskStorage: 3000, MemoryStorage: 0, Consumer: 1, Streams: 1}
+	accJwt2 := encodeClaim(t, accClaim, aExpPub)
+
+	updateJwt(t, c.randomServer().ClientURL(), sysCreds, accJwt2, 3)
+
+	var rBefore, rAfter JSApiAccountInfoResponse
+	m, err := nc.Request("$JS.API.INFO", nil, time.Second)
+	require_NoError(t, err)
+	err = json.Unmarshal(m.Data, &rBefore)
+	require_NoError(t, err)
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	m, err = nc.Request("$JS.API.INFO", nil, time.Second)
+	require_NoError(t, err)
+	err = json.Unmarshal(m.Data, &rAfter)
+	require_NoError(t, err)
+	require_True(t, rBefore.Tiers["R1"].Streams == 1)
+	require_True(t, rBefore.Tiers["R1"].Streams == rAfter.Tiers["R3"].Streams)
+	require_True(t, rBefore.Tiers["R3"].Streams == 0)
+	require_True(t, rAfter.Tiers["R1"].Streams == 0)
+}
+
 func TestJWTQueuePermissions(t *testing.T) {
 	aExpKp, aExpPub := createKey(t)
 	aExpClaim := jwt.NewAccountClaims(aExpPub)

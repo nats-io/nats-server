@@ -4123,7 +4123,7 @@ func TestJetStreamSnapshots(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	// Now compare to make sure they are equal.
-	if nusage := acc.JetStreamUsage(); nusage != pusage {
+	if nusage := acc.JetStreamUsage(); !reflect.DeepEqual(nusage, pusage) {
 		t.Fatalf("Usage does not match after restore: %+v vs %+v", nusage, pusage)
 	}
 	if state := mset.state(); !reflect.DeepEqual(state, info.state) {
@@ -6661,12 +6661,14 @@ func TestJetStreamSystemLimits(t *testing.T) {
 		t.Fatalf("Expected reserved memory and store to be 0, got %d and %d", rm, rd)
 	}
 
-	limits := func(mem int64, store int64) *JetStreamAccountLimits {
-		return &JetStreamAccountLimits{
-			MaxMemory:    mem,
-			MaxStore:     store,
-			MaxStreams:   -1,
-			MaxConsumers: -1,
+	limits := func(mem int64, store int64) map[string]JetStreamAccountLimits {
+		return map[string]JetStreamAccountLimits{
+			_EMPTY_: {
+				MaxMemory:    mem,
+				MaxStore:     store,
+				MaxStreams:   -1,
+				MaxConsumers: -1,
+			},
 		}
 	}
 
@@ -6701,11 +6703,12 @@ func TestJetStreamSystemLimits(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	// Test Adjust
-	l := limits(jsconfig.MaxMemory, jsconfig.MaxStore)
+	lim := limits(jsconfig.MaxMemory, jsconfig.MaxStore)
+	l := lim[_EMPTY_]
 	l.MaxStreams = 10
 	l.MaxConsumers = 10
-
-	if err := facc.UpdateJetStreamLimits(l); err != nil {
+	lim[_EMPTY_] = l
+	if err := facc.UpdateJetStreamLimits(lim); err != nil {
 		t.Fatalf("Unexpected error updating jetstream account limits: %v", err)
 	}
 
@@ -6718,11 +6721,6 @@ func TestJetStreamSystemLimits(t *testing.T) {
 			t.Fatalf("Unexpected error adding stream: %v", err)
 		}
 		msets = append(msets, mset)
-	}
-
-	// This one should fail since over the limit for max number of streams.
-	if _, err := facc.addStream(&StreamConfig{Name: "22", Storage: MemoryStorage, Subjects: []string{"foo.22"}}); err == nil {
-		t.Fatalf("Expected error adding stream over limit")
 	}
 
 	// Remove them all
@@ -6788,7 +6786,8 @@ func TestJetStreamSystemLimits(t *testing.T) {
 	}
 
 	l.MaxConsumers = 5
-	if err := facc.UpdateJetStreamLimits(l); err != nil {
+	lim[_EMPTY_] = l
+	if err := facc.UpdateJetStreamLimits(lim); err != nil {
 		t.Fatalf("Unexpected error updating jetstream account limits: %v", err)
 	}
 
@@ -7347,18 +7346,18 @@ gateway {
 }
 
 func TestStreamLimitUpdate(t *testing.T) {
-	t.Skip("shouldn't fail")
-
 	s := RunBasicJetStreamServer()
 	if config := s.JetStreamConfig(); config != nil {
 		defer removeDir(t, config.StoreDir)
 	}
 	defer s.Shutdown()
 
-	err := s.GlobalAccount().UpdateJetStreamLimits(&JetStreamAccountLimits{
-		MaxMemory:  128,
-		MaxStore:   128,
-		MaxStreams: 1,
+	err := s.GlobalAccount().UpdateJetStreamLimits(map[string]JetStreamAccountLimits{
+		_EMPTY_: {
+			MaxMemory:  128,
+			MaxStore:   128,
+			MaxStreams: 1,
+		},
 	})
 	require_NoError(t, err)
 
@@ -7395,11 +7394,13 @@ func TestJetStreamStreamStorageTrackingAndLimits(t *testing.T) {
 
 	gacc := s.GlobalAccount()
 
-	al := &JetStreamAccountLimits{
-		MaxMemory:    8192,
-		MaxStore:     -1,
-		MaxStreams:   -1,
-		MaxConsumers: -1,
+	al := map[string]JetStreamAccountLimits{
+		_EMPTY_: {
+			MaxMemory:    8192,
+			MaxStore:     -1,
+			MaxStreams:   -1,
+			MaxConsumers: -1,
+		},
 	}
 
 	if err := gacc.UpdateJetStreamLimits(al); err != nil {
@@ -7498,12 +7499,13 @@ func TestJetStreamStreamStorageTrackingAndLimits(t *testing.T) {
 	state = mset.state()
 	usage = gacc.JetStreamUsage()
 
-	if usage.Memory > uint64(al.MaxMemory) {
-		t.Fatalf("Expected memory to not exceed limit of %d, got %d", al.MaxMemory, usage.Memory)
+	lim := al[_EMPTY_]
+	if usage.Memory > uint64(lim.MaxMemory) {
+		t.Fatalf("Expected memory to not exceed limit of %d, got %d", lim.MaxMemory, usage.Memory)
 	}
 
 	// make sure that unlimited accounts work
-	al.MaxMemory = -1
+	lim.MaxMemory = -1
 
 	if err := gacc.UpdateJetStreamLimits(al); err != nil {
 		t.Fatalf("Unexpected error updating jetstream account limits: %v", err)
@@ -7523,11 +7525,13 @@ func TestJetStreamStreamFileTrackingAndLimits(t *testing.T) {
 
 	gacc := s.GlobalAccount()
 
-	al := &JetStreamAccountLimits{
-		MaxMemory:    8192,
-		MaxStore:     9600,
-		MaxStreams:   -1,
-		MaxConsumers: -1,
+	al := map[string]JetStreamAccountLimits{
+		_EMPTY_: {
+			MaxMemory:    8192,
+			MaxStore:     9600,
+			MaxStreams:   -1,
+			MaxConsumers: -1,
+		},
 	}
 
 	if err := gacc.UpdateJetStreamLimits(al); err != nil {
@@ -7628,8 +7632,51 @@ func TestJetStreamStreamFileTrackingAndLimits(t *testing.T) {
 	state = mset.state()
 	usage = gacc.JetStreamUsage()
 
-	if usage.Memory > uint64(al.MaxMemory) {
-		t.Fatalf("Expected memory to not exceed limit of %d, got %d", al.MaxMemory, usage.Memory)
+	lim := al[_EMPTY_]
+	if usage.Memory > uint64(lim.MaxMemory) {
+		t.Fatalf("Expected memory to not exceed limit of %d, got %d", lim.MaxMemory, usage.Memory)
+	}
+}
+
+func TestJetStreamTieredLimits(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	gacc := s.GlobalAccount()
+
+	tFail := map[string]JetStreamAccountLimits{
+		"nottheer": {
+			MaxMemory:    8192,
+			MaxStore:     9600,
+			MaxStreams:   -1,
+			MaxConsumers: -1,
+		},
+	}
+
+	if err := gacc.UpdateJetStreamLimits(tFail); err != nil {
+		t.Fatalf("Unexpected error updating jetstream account limits: %v", err)
+	}
+
+	mconfig := &StreamConfig{Name: "LIMITS", Storage: FileStorage, Retention: WorkQueuePolicy}
+	mset, err := gacc.addStream(mconfig)
+	defer mset.delete()
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "no JetStream default or applicable tiered limit present")
+
+	tPass := map[string]JetStreamAccountLimits{
+		"R1": {
+			MaxMemory:    8192,
+			MaxStore:     9600,
+			MaxStreams:   -1,
+			MaxConsumers: -1,
+		},
+	}
+
+	if err := gacc.UpdateJetStreamLimits(tPass); err != nil {
+		t.Fatalf("Unexpected error updating jetstream account limits: %v", err)
 	}
 }
 
@@ -7731,7 +7778,7 @@ func TestJetStreamSimpleFileRecovery(t *testing.T) {
 	acc = s.GlobalAccount()
 
 	nusage := acc.JetStreamUsage()
-	if nusage != pusage {
+	if !reflect.DeepEqual(nusage, pusage) {
 		t.Fatalf("Usage does not match after restore: %+v vs %+v", nusage, pusage)
 	}
 
@@ -15803,23 +15850,22 @@ func TestStorageReservedBytes(t *testing.T) {
 			createMaxBytes: int64(math.Round(float64(systemLimit/2) * .666)),
 			updateMaxBytes: int64(math.Round(float64(systemLimit/2)*.666)) + 1,
 		},
-		// TODO: Enable these once account limits are enforced.
-		//{
-		//	name:            "file update past account limit",
-		//	accountLimit:    systemLimit / 2,
-		//	storage:         nats.FileStorage,
-		//	createMaxBytes:  (systemLimit / 2),
-		//	updateMaxBytes:  (systemLimit / 2) + 1,
-		//	wantUpdateError: true,
-		//},
-		//{
-		//	name:            "memory update past account limit",
-		//	accountLimit:    systemLimit / 2,
-		//	storage:         nats.MemoryStorage,
-		//	createMaxBytes:  (systemLimit / 2),
-		//	updateMaxBytes:  (systemLimit / 2) + 1,
-		//	wantUpdateError: true,
-		//},
+		{
+			name:            "file update past account limit",
+			accountLimit:    systemLimit / 2,
+			storage:         nats.FileStorage,
+			createMaxBytes:  (systemLimit / 2),
+			updateMaxBytes:  (systemLimit / 2) + 1,
+			wantUpdateError: true,
+		},
+		{
+			name:            "memory update past account limit",
+			accountLimit:    systemLimit / 2,
+			storage:         nats.MemoryStorage,
+			createMaxBytes:  (systemLimit / 2),
+			updateMaxBytes:  (systemLimit / 2) + 1,
+			wantUpdateError: true,
+		},
 		{
 			name:           "file update to account limit",
 			accountLimit:   systemLimit / 2,
@@ -15839,9 +15885,11 @@ func TestStorageReservedBytes(t *testing.T) {
 		c := cases[i]
 		t.Run(c.name, func(st *testing.T) {
 			// Setup limits
-			err = s.GlobalAccount().UpdateJetStreamLimits(&JetStreamAccountLimits{
-				MaxMemory: c.accountLimit,
-				MaxStore:  c.accountLimit,
+			err = s.GlobalAccount().UpdateJetStreamLimits(map[string]JetStreamAccountLimits{
+				_EMPTY_: {
+					MaxMemory: c.accountLimit,
+					MaxStore:  c.accountLimit,
+				},
 			})
 			require_NoError(st, err)
 

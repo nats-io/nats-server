@@ -2501,12 +2501,13 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg 
 	if acc.nameTag != "" {
 		name = acc.nameTag
 	}
+	totalMem, totalStore := jsa.storageTotals()
 	detail := AccountDetail{
 		Name: name,
 		Id:   id,
 		JetStreamStats: JetStreamStats{
-			Memory: uint64(jsa.memTotal),
-			Store:  uint64(jsa.storeTotal),
+			Memory: totalMem,
+			Store:  totalStore,
 			API: JetStreamAPIStats{
 				Total:  jsa.apiTotal,
 				Errors: jsa.apiErrors,
