@@ -3244,9 +3244,10 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 	setConsumerConfigDefaults(&req.Config, lim)
 
 	var js *jetStream
+	isClustered := s.JetStreamIsClustered()
 
 	// Determine if we should proceed here when we are in clustered mode.
-	if s.JetStreamIsClustered() {
+	if isClustered {
 		if req.Config.Direct {
 			// Check to see if we have this stream and are the stream leader.
 			if !acc.JetStreamIsStreamLeader(streamName) {
@@ -3314,7 +3315,7 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 		}
 	}
 
-	if s.JetStreamIsClustered() && !req.Config.Direct {
+	if isClustered && !req.Config.Direct {
 		streamCfg, ok := js.clusterStreamConfig(acc.Name, streamName)
 		if !ok {
 			resp.Error = NewJSStreamNotFoundError(Unless(err))
