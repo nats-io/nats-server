@@ -295,7 +295,7 @@ const (
 	// outstanding.
 	JsFlowControlMaxPending = 1 * 1024 * 1024
 	// JsDefaultMaxAckPending is set for consumers with explicit ack that do not set the max ack pending.
-	JsDefaultMaxAckPending = 20_000
+	JsDefaultMaxAckPending = 1000
 )
 
 // Helper function to set consumer config defaults from above.
