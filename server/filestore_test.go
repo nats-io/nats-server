@@ -1265,8 +1265,12 @@ func TestFileStoreEraseMsg(t *testing.T) {
 	defer fp.Close()
 
 	fp.ReadAt(buf, 0)
-	//	nsubj, _, nmsg, seq, ts, err := msgFromBuf(buf, nil)
-	sm, err = msgFromBuf(buf, nil, nil)
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	fs.mu.RUnlock()
+	mb.mu.Lock()
+	sm, err = mb.msgFromBuf(buf, nil, nil)
+	mb.mu.Unlock()
 	if err != nil {
 		t.Fatalf("error reading message from block: %v", err)
 	}
@@ -2296,7 +2300,7 @@ func TestFileStoreReadBackMsgPerf(t *testing.T) {
 	storedMsgSize := fileStoreMsgSize(subj, nil, msg)
 
 	// Make sure we store 2 blocks.
-	toStore := defaultStreamBlockSize * 2 / storedMsgSize
+	toStore := defaultLargeBlockSize * 2 / storedMsgSize
 
 	fmt.Printf("storing %d msgs of %s each, totalling %s\n",
 		toStore,
@@ -2327,7 +2331,7 @@ func TestFileStoreReadBackMsgPerf(t *testing.T) {
 
 	// We should not have cached here with no reads.
 	// Pick something towards end of the block.
-	index := defaultStreamBlockSize/storedMsgSize - 22
+	index := defaultLargeBlockSize/storedMsgSize - 22
 	start = time.Now()
 	fs.LoadMsg(index, nil)
 	fmt.Printf("Time to load first msg [%d] = %v\n", index, time.Since(start))

@@ -4522,3 +4522,56 @@ func TestNoRaceRebuildDeDupeAndMemoryPerf(t *testing.T) {
 	v, _ = s.Varz(nil)
 	fmt.Printf("Memory: %v\n", friendlyBytes(v.Mem))
 }
+
+func TestNoRaceMemoryUsageOnLimitedStreamWithMirror(t *testing.T) {
+	skip(t)
+
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "DD", Subjects: []string{"ORDERS.*"}, MaxMsgs: 10_000})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:    "M",
+		Mirror:  &nats.StreamSource{Name: "DD"},
+		MaxMsgs: 10_000,
+	})
+	require_NoError(t, err)
+
+	m := nats.NewMsg("ORDERS.0")
+	m.Data = []byte(strings.Repeat("Z", 2048))
+
+	start := time.Now()
+
+	n := 1_000_000
+	for i := 0; i < n; i++ {
+		m.Subject = fmt.Sprintf("ORDERS.%d", i)
+		m.Header.Set(JSMsgId, strconv.Itoa(i))
+		_, err := js.PublishMsgAsync(m)
+		require_NoError(t, err)
+	}
+
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(20 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	tt := time.Since(start)
+	si, err := js.StreamInfo("DD")
+	require_NoError(t, err)
+
+	fmt.Printf("Took %v to send %d msgs\n", tt, n)
+	fmt.Printf("%.0f msgs/s\n", float64(n)/tt.Seconds())
+	fmt.Printf("%.0f mb/s\n\n", float64(si.State.Bytes/(1024*1024))/tt.Seconds())
+
+	v, _ := s.Varz(nil)
+	fmt.Printf("Memory AFTER SEND: %v\n", friendlyBytes(v.Mem))
+}
