@@ -16668,6 +16668,95 @@ func Benchmark_JetStream4x512Worker(b *testing.B) {
 	benchJetStreamWorkersAndBatch(b, 4, 512)
 }
 
+func TestJetStreamLimits(t *testing.T) {
+	test := func(t *testing.T, s *Server) {
+		nc := natsConnect(t, s.ClientURL())
+		defer nc.Close()
+
+		js, err := nc.JetStream()
+		require_NoError(t, err)
+
+		si, err := js.AddStream(&nats.StreamConfig{Name: "foo"})
+		require_NoError(t, err)
+		require_True(t, si.Config.Duplicates == time.Minute)
+
+		si, err = js.AddStream(&nats.StreamConfig{Name: "bar", Duplicates: 500 * time.Millisecond})
+		require_NoError(t, err)
+		require_True(t, si.Config.Duplicates == 500*time.Millisecond)
+
+		_, err = js.UpdateStream(&nats.StreamConfig{Name: "bar", Duplicates: 2 * time.Minute})
+		require_Error(t, err)
+		require_Equal(t, err.Error(), "duplicates window can not be larger then server limit of 1m0s")
+
+		_, err = js.AddStream(&nats.StreamConfig{Name: "baz", Duplicates: 2 * time.Minute})
+		require_Error(t, err)
+		require_Equal(t, err.Error(), "duplicates window can not be larger then server limit of 1m0s")
+
+		ci, err := js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur1", AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+		require_True(t, ci.Config.MaxAckPending == 1000)
+
+		ci, err = js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur2", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 500})
+		require_NoError(t, err)
+		require_True(t, ci.Config.MaxAckPending == 500)
+
+		_, err = js.UpdateConsumer("foo", &nats.ConsumerConfig{Durable: "dur2", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 2000})
+		require_Error(t, err)
+		require_Equal(t, err.Error(), "consumer max ack pending exceeds server limit")
+
+		_, err = js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur3", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 2000})
+		require_Error(t, err)
+		require_Equal(t, err.Error(), "consumer max ack pending exceeds server limit")
+	}
+
+	t.Run("clustered", func(t *testing.T) {
+		c := createJetStreamClusterWithTemplate(t, `
+			listen: 127.0.0.1:-1
+			server_name: %s
+			jetstream: {
+				max_mem_store: 2MB, 
+				max_file_store: 8MB, 
+				store_dir: '%s',
+				limits: {max_ack_pending: 1000, duplicate_window: "1m"}
+			}
+			cluster {
+				name: %s
+				listen: 127.0.0.1:%d
+				routes = [%s]
+			}
+			no_auth_user: u
+			accounts {
+				ONE {
+					users = [ { user: "u", pass: "s3cr3t!" } ]
+					jetstream: enabled
+				}
+				$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+			}`, "clust", 3)
+		defer c.shutdown()
+		s := c.randomServer()
+		test(t, s)
+	})
+
+	t.Run("single", func(t *testing.T) {
+		storeDir := createDir(t, JetStreamStoreDir)
+		defer removeDir(t, storeDir)
+		conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {
+			max_mem_store: 2MB,
+			max_file_store: 8MB,
+			store_dir: '%s',
+			limits: {max_ack_pending: 1000, duplicate_window: "1m"}
+		}`, storeDir)))
+		defer removeFile(t, conf)
+		s, opts := RunServerWithConfig(conf)
+		defer s.Shutdown()
+		require_True(t, opts.JetStreamLimits.MaxAckPending == 1000)
+		require_True(t, opts.JetStreamLimits.Duplicates == time.Minute)
+		test(t, s)
+	})
+}
+
 func TestJetStreamConsumerStreamUpdate(t *testing.T) {
 	test := func(t *testing.T, s *Server, replica int) {
 		nc := natsConnect(t, s.ClientURL())
