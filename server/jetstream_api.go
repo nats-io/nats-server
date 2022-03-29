@@ -1345,7 +1345,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 	}
 
 	// Check for MaxBytes required and it's limit
-	if required, limit := acc.maxBytesRequired(&cfg); required && cfg.MaxBytes <= 0 {
+	if required, limit := acc.maxBytesLimits(&cfg); required && cfg.MaxBytes <= 0 {
 		resp.Error = NewJSStreamMaxBytesRequiredError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -1449,7 +1449,7 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, _ *Account,
 	}
 
 	// Check for MaxBytes required and it's limit
-	if required, limit := acc.maxBytesRequired(&cfg); required && cfg.MaxBytes <= 0 {
+	if required, limit := acc.maxBytesLimits(&cfg); required && cfg.MaxBytes <= 0 {
 		resp.Error = NewJSStreamMaxBytesRequiredError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return

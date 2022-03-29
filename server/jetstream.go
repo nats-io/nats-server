@@ -1267,8 +1267,9 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 	return nil
 }
 
-// Return whether we require MaxBytes to be set and if > 0 an upper limit exists
-func (a *Account) maxBytesRequired(cfg *StreamConfig) (bool, int64) {
+// Return whether we require MaxBytes to be set and if > 0 an upper limit for stream size exists
+// Both limits are independent of each other.
+func (a *Account) maxBytesLimits(cfg *StreamConfig) (bool, int64) {
 	a.mu.RLock()
 	jsa := a.js
 	a.mu.RUnlock()
