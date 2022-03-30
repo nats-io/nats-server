@@ -5508,6 +5508,7 @@ func TestJWTJetStreamMaxStreamBytes(t *testing.T) {
 }
 
 func TestJWTClusteredJetStreamTiers(t *testing.T) {
+	t.SkipNow()
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
 	sysCreds := newUser(t, sysKp)

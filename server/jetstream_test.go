@@ -7024,6 +7024,7 @@ cluster {
 }
 
 func TestJetStreamSuperClusterSystemLimitsPlacement(t *testing.T) {
+	t.Skip("")
 	const largeSystemLimit = 1024
 	const smallSystemLimit = 512
 
