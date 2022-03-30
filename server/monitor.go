@@ -2768,6 +2768,7 @@ func (s *Server) HandleHealthz(w http.ResponseWriter, r *http.Request) {
 
 	hs := s.healthz()
 	if hs.Error != _EMPTY_ {
+		s.Warnf("Healthcheck failed: %q", hs.Error)
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 	b, err := json.Marshal(hs)
