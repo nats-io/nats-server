@@ -1706,8 +1706,7 @@ func (a *Account) checkForReverseEntry(reply string, si *serviceImport, checkInt
 		return
 	}
 
-	sres := a.imports.rrMap[reply]
-	if sres == nil {
+	if sres := a.imports.rrMap[reply]; sres == nil {
 		a.mu.RUnlock()
 		return
 	}
@@ -1728,9 +1727,11 @@ func (a *Account) checkForReverseEntry(reply string, si *serviceImport, checkInt
 
 	// Delete the appropriate entries here based on optional si.
 	a.mu.Lock()
+	// We need a new lookup here because we have released the lock.
+	sres := a.imports.rrMap[reply]
 	if si == nil {
 		delete(a.imports.rrMap, reply)
-	} else {
+	} else if sres != nil {
 		// Find the one we are looking for..
 		for i, sre := range sres {
 			if sre.msub == si.from {
@@ -1749,6 +1750,8 @@ func (a *Account) checkForReverseEntry(reply string, si *serviceImport, checkInt
 	// If we are here we no longer have interest and we have
 	// response entries that we should clean up.
 	if si == nil {
+		// sres is now known to have been removed from a.imports.rrMap, so we
+		// can safely (data race wise) iterate through.
 		for _, sre := range sres {
 			acc := sre.acc
 			var trackingCleanup bool
