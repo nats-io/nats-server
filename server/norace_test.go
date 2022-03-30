@@ -3284,9 +3284,12 @@ func TestNoRaceJetStreamClusterMemoryStreamConsumerRaftGrowth(t *testing.T) {
 		t.Fatalf("Error looking up consumer %q", "q1")
 	}
 	node := o.raftNode().(*raft)
-	if ms := node.wal.(*memStore); ms.State().Msgs > 8192 {
-		t.Fatalf("Did not compact the raft memory WAL")
-	}
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		if ms := node.wal.(*memStore); ms.State().Msgs > 8192 {
+			return fmt.Errorf("Did not compact the raft memory WAL")
+		}
+		return nil
+	})
 }
 
 func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {

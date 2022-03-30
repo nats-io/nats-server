@@ -1888,6 +1888,25 @@ func (o *consumer) readStoreState() *ConsumerState {
 	if o.store == nil {
 		return nil
 	}
+	if o.store.Type() == MemoryStorage {
+		state := o.liveState()
+		// Need to copy pending and rdc since we pass this up.
+		if len(state.Pending) > 0 {
+			pending := make(map[uint64]*Pending, len(state.Pending))
+			for seq, p := range state.Pending {
+				pending[seq] = &Pending{p.Sequence, p.Timestamp}
+			}
+			state.Pending = pending
+		}
+		if len(state.Redelivered) > 0 {
+			redelivered := make(map[uint64]uint64, len(state.Redelivered))
+			for seq, dc := range state.Redelivered {
+				redelivered[seq] = dc
+			}
+			state.Redelivered = redelivered
+		}
+		return state
+	}
 	state, _ := o.store.State()
 	return state
 }
@@ -1908,14 +1927,9 @@ func (o *consumer) writeStoreState() error {
 	return o.writeStoreStateUnlocked()
 }
 
-// Update our state to the store.
 // Lock should be held.
-func (o *consumer) writeStoreStateUnlocked() error {
-	if o.store == nil {
-		return nil
-	}
-
-	state := ConsumerState{
+func (o *consumer) liveState() *ConsumerState {
+	return &ConsumerState{
 		Delivered: SequencePair{
 			Consumer: o.dseq - 1,
 			Stream:   o.sseq - 1,
@@ -1927,7 +1941,15 @@ func (o *consumer) writeStoreStateUnlocked() error {
 		Pending:     o.pending,
 		Redelivered: o.rdc,
 	}
-	return o.store.Update(&state)
+}
+
+// Update our state to the store.
+// Lock should be held.
+func (o *consumer) writeStoreStateUnlocked() error {
+	if o.store == nil {
+		return nil
+	}
+	return o.store.Update(o.liveState())
 }
 
 // Returns an initial info. Only applicable for non-clustered consumers.

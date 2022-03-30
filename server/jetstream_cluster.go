@@ -1516,11 +1516,13 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 	const (
 		compactInterval = 2 * time.Minute
-		compactSizeMin  = 32 * 1024 * 1024
+		compactSizeMin  = 8 * 1024 * 1024
 		compactNumMin   = 65536
 	)
 
-	t := time.NewTicker(compactInterval)
+	// Spread these out for large numbers on server restart.
+	rci := time.Duration(rand.Int63n(int64(time.Minute)))
+	t := time.NewTicker(compactInterval + rci)
 	defer t.Stop()
 
 	js.mu.RLock()
@@ -3112,28 +3114,43 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 
 	const (
 		compactInterval = 2 * time.Minute
-		compactSizeMin  = 8 * 1024 * 1024
-		compactNumMin   = 8192
+		compactSizeMin  = 64 * 1024 // What is stored here is always small for consumers.
+		compactNumMin   = 1024
+		minSnapDelta    = 2 * time.Second
 	)
 
-	t := time.NewTicker(compactInterval)
+	// Spread these out for large numbers on server restart.
+	rci := time.Duration(rand.Int63n(int64(time.Minute)))
+	t := time.NewTicker(compactInterval + rci)
 	defer t.Stop()
 
-	st := o.store.Type()
 	var lastSnap []byte
+	var lastSnapTime time.Time
 
-	doSnapshot := func() {
-		// Memory store consumers do not keep state in the store itself.
-		// Just compact to our applied index.
-		if st == MemoryStorage {
-			_, _, applied := n.Progress()
-			n.Compact(applied)
-		} else if state, err := o.store.State(); err == nil && state != nil {
-			// FileStore version.
-			if snap := encodeConsumerState(state); !bytes.Equal(lastSnap, snap) {
-				if err := n.InstallSnapshot(snap); err == nil {
-					lastSnap = snap
-				}
+	doSnapshot := func(force bool) {
+		// Bail if trying too fast and not in a forced situation.
+		if !force && time.Since(lastSnapTime) < minSnapDelta {
+			return
+		}
+
+		// Check several things to see if we need a snapshot.
+		needSnap := force || n.NeedSnapshot()
+		if !needSnap {
+			// Check if we should compact etc. based on size of log.
+			ne, nb := n.Size()
+			needSnap = nb > 0 && ne >= compactNumMin || nb > compactSizeMin
+		}
+
+		state := o.readStoreState()
+		if state == nil {
+			s.Warnf("Failed to get state for '%s > %s > %s' [%s]", o.acc.Name, ca.Stream, ca.Name, n.Group())
+		}
+
+		if snap := encodeConsumerState(state); !bytes.Equal(lastSnap, snap) || needSnap {
+			if err := n.InstallSnapshot(snap); err == nil {
+				lastSnap, lastSnapTime = snap, time.Now()
+			} else {
+				s.Warnf("Failed to install snapshot for '%s > %s > %s' [%s]: %v", o.acc.Name, ca.Stream, ca.Name, n.Group(), err)
 			}
 		}
 	}
@@ -3155,7 +3172,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				if cei == nil {
 					recovering = false
 					if n.NeedSnapshot() {
-						doSnapshot()
+						doSnapshot(true)
 					}
 					continue
 				}
@@ -3164,7 +3181,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 					ne, nb := n.Applied(ce.Index)
 					// If we have at least min entries to compact, go ahead and snapshot/compact.
 					if nb > 0 && ne >= compactNumMin || nb > compactSizeMin {
-						doSnapshot()
+						doSnapshot(false)
 					}
 				} else {
 					s.Warnf("Error applying consumer entries to '%s > %s'", ca.Client.serviceAccount(), ca.Name)
@@ -3176,10 +3193,10 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				js.setConsumerAssignmentRecovering(ca)
 			}
 			if err := js.processConsumerLeaderChange(o, isLeader); err == nil && isLeader {
-				doSnapshot()
+				doSnapshot(true)
 			}
 		case <-t.C:
-			doSnapshot()
+			doSnapshot(false)
 		}
 	}
 }

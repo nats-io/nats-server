@@ -2915,6 +2915,11 @@ func (mb *msgBlock) closeFDsLocked() error {
 	if buf, _ := mb.bytesPending(); len(buf) > 0 {
 		return errPendingData
 	}
+	mb.closeFDsLockedNoCheck()
+	return nil
+}
+
+func (mb *msgBlock) closeFDsLockedNoCheck() {
 	if mb.mfd != nil {
 		mb.mfd.Close()
 		mb.mfd = nil
@@ -2923,7 +2928,6 @@ func (mb *msgBlock) closeFDsLocked() error {
 		mb.ifd.Close()
 		mb.ifd = nil
 	}
-	return nil
 }
 
 // bytesPending returns the buffer to be used for writing to the underlying file.
@@ -4330,7 +4334,40 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 		smb.selectNextFirst()
 		fs.state.FirstSeq = smb.first.seq
 		fs.state.FirstTime = time.Unix(0, smb.first.ts).UTC()
+
+		// Check if we should reclaim the head space from this block.
+		// This will be optimistic only, so don't continue if we encounter any errors here.
+		if smb.bytes*2 < smb.rbytes {
+			moff, _, _, err := smb.slotInfo(int(smb.first.seq - smb.cache.fseq))
+			if err != nil {
+				goto SKIP
+			}
+			buf := smb.cache.buf[moff:]
+			// Don't reuse, copy to new recycled buf.
+			nbuf := getMsgBlockBuf(len(buf))
+			nbuf = append(nbuf, buf...)
+			smb.closeFDsLockedNoCheck()
+			// Check for encryption.
+			if smb.bek != nil && len(nbuf) > 0 {
+				// Recreate to reset counter.
+				rbek, err := chacha20.NewUnauthenticatedCipher(smb.seed, smb.nonce)
+				if err != nil {
+					goto SKIP
+				}
+				cbuf := make([]byte, len(nbuf))
+				rbek.XORKeyStream(cbuf, nbuf)
+				if err := ioutil.WriteFile(smb.mfn, cbuf, defaultFilePerms); err != nil {
+					goto SKIP
+				}
+			} else if err := ioutil.WriteFile(smb.mfn, nbuf, defaultFilePerms); err != nil {
+				goto SKIP
+			}
+			smb.clearCacheAndOffset()
+			smb.rbytes = uint64(len(nbuf))
+		}
 	}
+
+SKIP:
 	smb.mu.Unlock()
 
 	if !isEmpty {
