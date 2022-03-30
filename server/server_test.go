@@ -38,17 +38,22 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-func checkFor(t *testing.T, totalWait, sleepDur time.Duration, f func() error) {
-	t.Helper()
+func checkForErr(totalWait, sleepDur time.Duration, f func() error) error {
 	timeout := time.Now().Add(totalWait)
 	var err error
 	for time.Now().Before(timeout) {
 		err = f()
 		if err == nil {
-			return
+			return nil
 		}
 		time.Sleep(sleepDur)
 	}
+	return err
+}
+
+func checkFor(t *testing.T, totalWait, sleepDur time.Duration, f func() error) {
+	t.Helper()
+	err := checkForErr(totalWait, sleepDur, f)
 	if err != nil {
 		t.Fatal(err.Error())
 	}
