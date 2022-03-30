@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -47,6 +48,7 @@ import (
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
+	"golang.org/x/time/rate"
 )
 
 // IMPORTANT: Tests in this file are not executed when running with the -race flag.
@@ -4577,4 +4579,173 @@ func TestNoRaceMemoryUsageOnLimitedStreamWithMirror(t *testing.T) {
 
 	v, _ := s.Varz(nil)
 	fmt.Printf("Memory AFTER SEND: %v\n", friendlyBytes(v.Mem))
+}
+
+func TestNoRaceOrderedConsumerLongRTTPerformance(t *testing.T) {
+	skip(t)
+
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	js, err := nc.JetStream(nats.PublishAsyncMaxPending(1000))
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{Name: "OCP"})
+	require_NoError(t, err)
+
+	n, msg := 100_000, []byte(strings.Repeat("D", 30_000))
+
+	for i := 0; i < n; i++ {
+		_, err := js.PublishAsync("OCP", msg)
+		require_NoError(t, err)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// Approximately 3GB
+	si, err := js.StreamInfo("OCP")
+	require_NoError(t, err)
+
+	start := time.Now()
+	received, done := 0, make(chan bool)
+	sub, err := js.Subscribe("OCP", func(m *nats.Msg) {
+		received++
+		if received >= n {
+			done <- true
+		}
+	}, nats.OrderedConsumer())
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+
+	// Wait to receive all messages.
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("Did not receive all of our messages")
+	}
+
+	tt := time.Since(start)
+	fmt.Printf("Took %v to receive %d msgs\n", tt, n)
+	fmt.Printf("%.0f msgs/s\n", float64(n)/tt.Seconds())
+	fmt.Printf("%.0f mb/s\n\n", float64(si.State.Bytes/(1024*1024))/tt.Seconds())
+
+	sub.Unsubscribe()
+
+	rtt := 10 * time.Millisecond
+	bw := 10 * 1024 * 1024 * 1024
+	proxy := newNetProxy(rtt, bw, bw, s.ClientURL())
+	defer proxy.stop()
+
+	nc, err = nats.Connect(proxy.clientURL())
+	require_NoError(t, err)
+	js, err = nc.JetStream()
+	require_NoError(t, err)
+
+	start, received = time.Now(), 0
+	sub, err = js.Subscribe("OCP", func(m *nats.Msg) {
+		received++
+		if received >= n {
+			done <- true
+		}
+	}, nats.OrderedConsumer())
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+
+	// Wait to receive all messages.
+	select {
+	case <-done:
+	case <-time.After(60 * time.Second):
+		t.Fatalf("Did not receive all of our messages")
+	}
+
+	tt = time.Since(start)
+	fmt.Printf("Proxy RTT: %v, UP: %d, DOWN: %d\n", rtt, bw, bw)
+	fmt.Printf("Took %v to receive %d msgs\n", tt, n)
+	fmt.Printf("%.0f msgs/s\n", float64(n)/tt.Seconds())
+	fmt.Printf("%.0f mb/s\n\n", float64(si.State.Bytes/(1024*1024))/tt.Seconds())
+}
+
+// Net Proxy - For introducing RTT and BW constraints.
+type netProxy struct {
+	listener net.Listener
+	conns    []net.Conn
+	url      string
+}
+
+func newNetProxy(rtt time.Duration, upRate, downRate int, serverURL string) *netProxy {
+	hp := net.JoinHostPort("127.0.0.1", "0")
+	l, e := net.Listen("tcp", hp)
+	if e != nil {
+		panic(fmt.Sprintf("Error listening on port: %s, %q", hp, e))
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	proxy := &netProxy{listener: l}
+	go func() {
+		client, err := l.Accept()
+		if err != nil {
+			return
+		}
+		server, err := net.DialTimeout("tcp", serverURL[7:], time.Second)
+		if err != nil {
+			panic("Can't connect to NATS server")
+		}
+		proxy.conns = append(proxy.conns, client, server)
+		go proxy.loop(rtt, upRate, client, server)
+		go proxy.loop(rtt, downRate, server, client)
+	}()
+	proxy.url = fmt.Sprintf("nats://127.0.0.1:%d", port)
+	return proxy
+}
+
+func (np *netProxy) clientURL() string {
+	return np.url
+}
+
+func (np *netProxy) loop(rtt time.Duration, tbw int, r, w net.Conn) {
+	delay := rtt / 2
+	const rbl = 8192
+	var buf [rbl]byte
+	ctx := context.Background()
+
+	rl := rate.NewLimiter(rate.Limit(tbw), rbl)
+
+	for fr := true; ; {
+		sr := time.Now()
+		n, err := r.Read(buf[:])
+		if err != nil {
+			return
+		}
+		// RTT delays
+		if fr || time.Since(sr) > 2*time.Millisecond {
+			fr = false
+			if delay > 0 {
+				time.Sleep(delay)
+			}
+		}
+		if err := rl.WaitN(ctx, n); err != nil {
+			return
+		}
+		if _, err = w.Write(buf[:n]); err != nil {
+			return
+		}
+	}
+}
+
+func (np *netProxy) stop() {
+	if np.listener != nil {
+		np.listener.Close()
+		np.listener = nil
+		for _, c := range np.conns {
+			c.Close()
+		}
+	}
 }

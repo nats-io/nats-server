@@ -293,7 +293,7 @@ const (
 	JsDeleteWaitTimeDefault = 5 * time.Second
 	// JsFlowControlMaxPending specifies default pending bytes during flow control that can be
 	// outstanding.
-	JsFlowControlMaxPending = 1 * 1024 * 1024
+	JsFlowControlMaxPending = 32 * 1024 * 1024
 	// JsDefaultMaxAckPending is set for consumers with explicit ack that do not set the max ack pending.
 	JsDefaultMaxAckPending = 1000
 )
@@ -3038,7 +3038,7 @@ func (o *consumer) ackReply(sseq, dseq, dc uint64, ts int64, pending uint64) str
 // Used mostly for testing. Sets max pending bytes for flow control setups.
 func (o *consumer) setMaxPendingBytes(limit int) {
 	o.pblimit = limit
-	o.maxpb = limit / 16
+	o.maxpb = limit / 4
 	if o.maxpb == 0 {
 		o.maxpb = 1
 	}
