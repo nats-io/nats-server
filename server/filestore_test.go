@@ -17,6 +17,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"crypto/hmac"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -3552,4 +3553,169 @@ func TestFileStoreFetchPerf(t *testing.T) {
 		}
 	}
 	fmt.Printf("Elapsed to load all messages is %v\n", time.Since(now))
+}
+
+// For things like raft log when we compact and have a message block that could reclaim > 50% of space for block we want to do that.
+// https://github.com/nats-io/nats-server/issues/2936
+func TestFileStoreCompactReclaimHeadSpace(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 1024 * 1024},
+		StreamConfig{Name: "TEST", Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Create random bytes for payload to test for corruption vs repeated.
+	msg := make([]byte, 16*1024)
+	crand.Read(msg)
+
+	// This gives us ~63 msgs in first and ~37 in second.
+	n, subj := 100, "z"
+	for i := 0; i < n; i++ {
+		_, _, err := fs.StoreMsg(subj, nil, msg)
+		require_NoError(t, err)
+	}
+
+	checkNumBlocks := func(n int) {
+		t.Helper()
+		fs.mu.RLock()
+		defer fs.mu.RUnlock()
+		if len(fs.blks) != n {
+			t.Fatalf("Expected to have %d blocks, got %d", n, len(fs.blks))
+		}
+	}
+
+	getBlock := func(index int) *msgBlock {
+		t.Helper()
+		fs.mu.RLock()
+		defer fs.mu.RUnlock()
+		return fs.blks[index]
+	}
+
+	// Check that we did right thing and actually reclaimed since > 50%
+	checkBlock := func(mb *msgBlock) {
+		t.Helper()
+
+		mb.mu.RLock()
+		nbytes, rbytes, mfn := mb.bytes, mb.rbytes, mb.mfn
+		fseq, lseq := mb.first.seq, mb.last.seq
+		mb.mu.RUnlock()
+		// Check rbytes then the actual file as well.
+		if nbytes != rbytes {
+			t.Fatalf("Expected to reclaim and have bytes == rbytes, got %d vs %d", nbytes, rbytes)
+		}
+		file, err := os.Open(mfn)
+		require_NoError(t, err)
+		defer file.Close()
+		fi, err := file.Stat()
+		require_NoError(t, err)
+		if rbytes != uint64(fi.Size()) {
+			t.Fatalf("Expected to rbytes == fi.Size, got %d vs %d", rbytes, fi.Size())
+		}
+		// Make sure we can pull messages and that they are ok.
+		var smv StoreMsg
+		sm, err := fs.LoadMsg(fseq, &smv)
+		require_NoError(t, err)
+		if !bytes.Equal(sm.msg, msg) {
+			t.Fatalf("Msgs don't match, original %q vs %q", msg, sm.msg)
+		}
+		sm, err = fs.LoadMsg(lseq, &smv)
+		require_NoError(t, err)
+		if !bytes.Equal(sm.msg, msg) {
+			t.Fatalf("Msgs don't match, original %q vs %q", msg, sm.msg)
+		}
+	}
+
+	checkNumBlocks(2)
+	_, err = fs.Compact(33)
+	require_NoError(t, err)
+
+	checkNumBlocks(2)
+	checkBlock(getBlock(0))
+	checkBlock(getBlock(1))
+
+	_, err = fs.Compact(85)
+	require_NoError(t, err)
+
+	checkNumBlocks(1)
+	checkBlock(getBlock(0))
+
+	// Make sure we can write.
+	_, _, err = fs.StoreMsg(subj, nil, msg)
+	require_NoError(t, err)
+
+	checkNumBlocks(1)
+	checkBlock(getBlock(0))
+
+	// Stop and start again.
+	fs.Stop()
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 1024 * 1024},
+		StreamConfig{Name: "TEST", Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	checkNumBlocks(1)
+	checkBlock(getBlock(0))
+
+	// Now test encrypted mode.
+	fs.Delete()
+
+	prf := func(context []byte) ([]byte, error) {
+		h := hmac.New(sha256.New, []byte("dlc22"))
+		if _, err := h.Write(context); err != nil {
+			return nil, err
+		}
+		return h.Sum(nil), nil
+	}
+
+	fs, err = newFileStoreWithCreated(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 1024 * 1024},
+		StreamConfig{Name: "TEST", Storage: FileStorage},
+		time.Now(),
+		prf,
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	for i := 0; i < n; i++ {
+		_, _, err := fs.StoreMsg(subj, nil, msg)
+		require_NoError(t, err)
+	}
+
+	checkNumBlocks(2)
+	_, err = fs.Compact(33)
+	require_NoError(t, err)
+
+	checkNumBlocks(2)
+	checkBlock(getBlock(0))
+	checkBlock(getBlock(1))
+
+	_, err = fs.Compact(85)
+	require_NoError(t, err)
+
+	checkNumBlocks(1)
+	checkBlock(getBlock(0))
+
+	// Stop and start again.
+	fs.Stop()
+	fs, err = newFileStoreWithCreated(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 1024 * 1024},
+		StreamConfig{Name: "TEST", Storage: FileStorage},
+		time.Now(),
+		prf,
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	checkNumBlocks(1)
+	checkBlock(getBlock(0))
+
+	// Make sure we can write.
+	_, _, err = fs.StoreMsg(subj, nil, msg)
+	require_NoError(t, err)
 }

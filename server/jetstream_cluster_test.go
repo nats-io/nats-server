@@ -11582,6 +11582,78 @@ func TestJetStreamClusterConsumerLeaderChangeDeadlock(t *testing.T) {
 	}
 }
 
+// We were compacting to keep the raft log manageable but not snapshotting, which meant that restarted
+// servers could complain about no snapshot and could not sync after that condition.
+// Changes also address https://github.com/nats-io/nats-server/issues/2936
+func TestJetStreamClusterMemoryConsumerCompactVsSnapshot(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Create a stream and durable with ack explicit
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "test",
+		Storage:  nats.MemoryStorage,
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("test", &nats.ConsumerConfig{
+		Durable:   "d",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// Bring a non-leader down.
+	s := c.randomNonConsumerLeader("$G", "test", "d")
+	s.Shutdown()
+
+	// In case that was also mete or stream leader.
+	c.waitOnLeader()
+	c.waitOnStreamLeader("$G", "test")
+	// In case we were connected there.
+	nc.Close()
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Generate some state.
+	for i := 0; i < 2000; i++ {
+		_, err := js.PublishAsync("test", nil)
+		require_NoError(t, err)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	sub, err := js.PullSubscribe("test", "d")
+	require_NoError(t, err)
+
+	for _, m := range fetchMsgs(t, sub, 2000, 5*time.Second) {
+		m.AckSync()
+	}
+
+	// Restart our downed server.
+	s = c.restartServer(s)
+	c.checkClusterFormed()
+	c.waitOnServerCurrent(s)
+
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		ci, err := js.ConsumerInfo("test", "d")
+		require_NoError(t, err)
+		for _, r := range ci.Cluster.Replicas {
+			if !r.Current || r.Lag != 0 {
+				return fmt.Errorf("Replica not current: %+v", r)
+			}
+		}
+		return nil
+	})
+
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
@@ -12495,6 +12567,16 @@ func (c *cluster) consumerLeader(account, stream, consumer string) *Server {
 	c.t.Helper()
 	for _, s := range c.servers {
 		if s.JetStreamIsConsumerLeader(account, stream, consumer) {
+			return s
+		}
+	}
+	return nil
+}
+
+func (c *cluster) randomNonConsumerLeader(account, stream, consumer string) *Server {
+	c.t.Helper()
+	for _, s := range c.servers {
+		if !s.JetStreamIsConsumerLeader(account, stream, consumer) {
 			return s
 		}
 	}
