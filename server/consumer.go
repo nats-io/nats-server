@@ -2581,15 +2581,19 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 }
 
 func trackDownAccountAndInterest(acc *Account, interest string) (*Account, string) {
-	for done := false; !done && strings.HasPrefix(interest, replyPrefix); {
+	for strings.HasPrefix(interest, replyPrefix) {
 		oa := acc
-		done = true // will be set to false if we need to continue the loop
 		oa.mu.RLock()
-		if oa.exports.responses != nil {
-			if si := oa.exports.responses[interest]; si != nil {
-				acc, interest, done = si.acc, si.to, false
-			}
+		if oa.exports.responses == nil {
+			oa.mu.RUnlock()
+			break
 		}
+		si := oa.exports.responses[interest]
+		if si == nil {
+			oa.mu.RUnlock()
+			break
+		}
+		acc, interest = si.acc, si.to
 		oa.mu.RUnlock()
 	}
 	return acc, interest
