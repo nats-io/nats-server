@@ -1551,8 +1551,9 @@ func (s *Server) reloadAuthorization() {
 	var (
 		cclientsa [64]*client
 		cclients  = cclientsa[:0]
-		clientsa  [64]*client
-		clients   = clientsa[:0]
+		clients   = map[*client]struct{}{}
+		iClientsa [64]*client
+		iClients  = iClientsa[:0]
 		routesa   [64]*client
 		routes    = routesa[:0]
 	)
@@ -1560,16 +1561,18 @@ func (s *Server) reloadAuthorization() {
 		if s.clientHasMovedToDifferentAccount(client) {
 			cclients = append(cclients, client)
 		} else {
-			clients = append(clients, client)
+			clients[client] = struct{}{}
 		}
 	}
 	for _, route := range s.routes {
 		routes = append(routes, route)
 	}
 	var resetCh chan struct{}
+	var sysAcc *Account
 	if s.sys != nil {
 		// can't hold the lock as go routine reading it may be waiting for lock as well
 		resetCh = s.sys.resetCh
+		sysAcc = s.sys.account
 	}
 	s.mu.Unlock()
 
@@ -1585,7 +1588,7 @@ func (s *Server) reloadAuthorization() {
 		client.closeConnection(ClientClosed)
 	}
 
-	for _, client := range clients {
+	for client := range clients {
 		// Disconnect any unauthorized clients.
 		if !s.isClientAuthorized(client) {
 			client.authViolation()
@@ -1617,6 +1620,27 @@ func (s *Server) reloadAuthorization() {
 		if err := s.enableJetStreamAccounts(); err != nil {
 			s.Errorf(err.Error())
 		}
+	}
+
+	s.accounts.Range(func(k, v interface{}) bool {
+		acc := v.(*Account)
+		acc.mu.RLock()
+		for client, _ := range acc.clients {
+			if acc != sysAcc {
+				if _, ok := clients[client]; !ok {
+					iClients = append(iClients, client)
+				}
+			}
+		}
+		acc.mu.RUnlock()
+		return true
+	})
+
+	// process internal clients that don't need to authorize or switch accounts
+	for _, client := range iClients {
+		// TODO mh we seem to trigger the sublist remove, but unit test still fails
+		// Remove any unauthorized subscriptions and check for account imports.
+		client.processSubsOnConfigReload(awcsti)
 	}
 }
 
