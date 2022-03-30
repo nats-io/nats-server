@@ -59,11 +59,13 @@ type JetStreamStats struct {
 }
 
 type JetStreamAccountLimits struct {
-	MaxMemory        int64 `json:"max_memory"`
-	MaxStore         int64 `json:"max_storage"`
-	MaxStreams       int   `json:"max_streams"`
-	MaxConsumers     int   `json:"max_consumers"`
-	MaxBytesRequired bool  `json:"max_bytes_required"`
+	MaxMemory            int64 `json:"max_memory"`
+	MaxStore             int64 `json:"max_storage"`
+	MaxStreams           int   `json:"max_streams"`
+	MaxConsumers         int   `json:"max_consumers"`
+	MemoryMaxStreamBytes int64 `json:"memory_max_stream_bytes"`
+	StoreMaxStreamBytes  int64 `json:"storage_max_stream_bytes"`
+	MaxBytesRequired     bool  `json:"max_bytes_required"`
 }
 
 type JetStreamTier struct {
@@ -1265,21 +1267,28 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 	return nil
 }
 
-// Return whether or not we require MaxBytes to be set.
-func (a *Account) maxBytesRequired(cfg *StreamConfig) bool {
+// Return whether we require MaxBytes to be set and if > 0 an upper limit for stream size exists
+// Both limits are independent of each other.
+func (a *Account) maxBytesLimits(cfg *StreamConfig) (bool, int64) {
 	a.mu.RLock()
 	jsa := a.js
 	a.mu.RUnlock()
 	if jsa == nil {
-		return false
+		return false, 0
 	}
 	jsa.mu.RLock()
 	selectedLimits, _, ok := jsa.selectLimits(cfg)
 	jsa.mu.RUnlock()
 	if !ok {
-		return false
+		return false, 0
 	}
-	return selectedLimits.MaxBytesRequired
+	maxStreamBytes := int64(0)
+	if cfg.Storage == MemoryStorage {
+		maxStreamBytes = selectedLimits.MemoryMaxStreamBytes
+	} else {
+		maxStreamBytes = selectedLimits.StoreMaxStreamBytes
+	}
+	return selectedLimits.MaxBytesRequired, maxStreamBytes
 }
 
 // NumStreams will return how many streams we have.
@@ -1803,12 +1812,25 @@ func (jsa *jsAccount) limitsExceeded(storeType StorageType, tierName string) boo
 	if !ok {
 		return true
 	}
+	inUse := jsa.usage[tierName]
+	if inUse == nil {
+		// Imply totals of 0
+		return false
+	}
 	if storeType == MemoryStorage {
-		if selectedLimits.MaxMemory >= 0 && jsa.usage[tierName].total.mem > selectedLimits.MaxMemory {
+		totalMem := inUse.total.mem
+		if selectedLimits.MemoryMaxStreamBytes > 0 && totalMem > selectedLimits.MemoryMaxStreamBytes {
+			return true
+		}
+		if selectedLimits.MaxMemory >= 0 && totalMem > selectedLimits.MaxMemory {
 			return true
 		}
 	} else {
-		if selectedLimits.MaxStore >= 0 && jsa.usage[tierName].total.store > selectedLimits.MaxStore {
+		totalStore := inUse.total.store
+		if selectedLimits.StoreMaxStreamBytes > 0 && totalStore > selectedLimits.StoreMaxStreamBytes {
+			return true
+		}
+		if selectedLimits.MaxStore >= 0 && totalStore > selectedLimits.MaxStore {
 			return true
 		}
 	}

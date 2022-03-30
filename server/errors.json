@@ -1198,5 +1198,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSStreamMaxStreamBytesExceeded",
+    "code": 400,
+    "error_code": 10122,
+    "description": "stream max bytes exceeds account limit max stream bytes",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
