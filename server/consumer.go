@@ -2562,14 +2562,7 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 	}
 
 	// If we receive this request though an account export, we need to track that interest subject and account.
-	acc, interest := o.acc, reply
-	for strings.HasPrefix(interest, replyPrefix) && acc.exports.responses != nil {
-		if si := acc.exports.responses[interest]; si != nil {
-			acc, interest = si.acc, si.to
-		} else {
-			break
-		}
-	}
+	acc, interest := trackDownAccountAndInterest(o.acc, reply)
 
 	// In case we have to queue up this request.
 	wr := wrPool.Get().(*waitingRequest)
@@ -2585,6 +2578,25 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 	if o.node != nil {
 		o.addClusterPendingRequest(wr.reply)
 	}
+}
+
+func trackDownAccountAndInterest(acc *Account, interest string) (*Account, string) {
+	for strings.HasPrefix(interest, replyPrefix) {
+		oa := acc
+		oa.mu.RLock()
+		if oa.exports.responses == nil {
+			oa.mu.RUnlock()
+			break
+		}
+		si := oa.exports.responses[interest]
+		if si == nil {
+			oa.mu.RUnlock()
+			break
+		}
+		acc, interest = si.acc, si.to
+		oa.mu.RUnlock()
+	}
+	return acc, interest
 }
 
 // Increase the delivery count for this message.

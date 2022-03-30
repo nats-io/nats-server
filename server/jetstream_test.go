@@ -14769,6 +14769,79 @@ func TestJetStreamPullConsumerCrossAccountExpires(t *testing.T) {
 	})
 }
 
+func TestJetStreamPullConsumerCrossAccountExpiresNoDataRace(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 4GB, max_file_store: 1TB}
+		accounts: {
+			JS: {
+				jetstream: enabled
+				users: [ {user: dlc, password: foo} ]
+				exports [ { service: "$JS.API.CONSUMER.MSG.NEXT.>", response: stream } ]
+			},
+			IU: {
+				jetstream: enabled
+				users: [ {user: ik, password: bar} ]
+				imports [ { service: { subject: "$JS.API.CONSUMER.MSG.NEXT.*.*", account: JS } }]
+			},
+		}
+	`))
+	defer removeFile(t, conf)
+
+	test := func() {
+		s, _ := RunServerWithConfig(conf)
+		if config := s.JetStreamConfig(); config != nil {
+			defer removeDir(t, config.StoreDir)
+		}
+		defer s.Shutdown()
+
+		// Connect to JS account and create stream, put some messages into it.
+		nc, js := jsClientConnect(t, s, nats.UserInfo("dlc", "foo"))
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{Name: "PC", Subjects: []string{"foo"}})
+		require_NoError(t, err)
+
+		toSend := 100
+		for i := 0; i < toSend; i++ {
+			_, err := js.Publish("foo", []byte("OK"))
+			require_NoError(t, err)
+		}
+
+		// Create pull consumer.
+		_, err = js.AddConsumer("PC", &nats.ConsumerConfig{Durable: "PC", AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+
+		// Now access from the importing account.
+		nc2, _ := jsClientConnect(t, s, nats.UserInfo("ik", "bar"))
+		defer nc2.Close()
+
+		req := &JSApiConsumerGetNextRequest{Batch: 1}
+		jreq, err := json.Marshal(req)
+		require_NoError(t, err)
+		rsubj := fmt.Sprintf(JSApiRequestNextT, "PC", "PC")
+		sub, err := nc2.SubscribeSync("xx")
+		require_NoError(t, err)
+
+		wg := sync.WaitGroup{}
+		wg.Add(1)
+		go func() {
+			time.Sleep(5 * time.Millisecond)
+			sub.Unsubscribe()
+			wg.Done()
+		}()
+		for i := 0; i < toSend; i++ {
+			nc2.PublishRequest(rsubj, "xx", jreq)
+		}
+		wg.Wait()
+	}
+	// Need to rerun this test several times to get the race (which then would possible be panic
+	// such as: "fatal error: concurrent map read and map write"
+	for iter := 0; iter < 10; iter++ {
+		test()
+	}
+}
+
 // This tests account export/import replies across a LN connection with account import/export
 // on both sides of the LN.
 func TestJetStreamPullConsumerCrossAccountsAndLeafNodes(t *testing.T) {
