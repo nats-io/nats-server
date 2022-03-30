@@ -3995,13 +3995,13 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 
 		// For B, we expect it to send to gateway on the two subjects: test.request
 		// and foo.request then send the reply to the client and optimistically
-		// to the other gateway. Also send on _R_.
+		// to the other gateway.
 		if i == 0 {
-			expected = 5
+			expected = 4
 		} else {
 			// The second time, one of the accounts will be suppressed and the reply going
 			// back so we should get only 2 more messages.
-			expected = 7
+			expected = 6
 		}
 		vz, _ = sb.Varz(nil)
 		if vz.OutMsgs != expected {

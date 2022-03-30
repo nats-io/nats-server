@@ -2824,7 +2824,7 @@ func (c *client) handleGatewayReply(msg []byte) (processed bool) {
 	// If route is nil, we will process the incoming message locally.
 	if route == nil {
 		// Check if this is a service reply subject (_R_)
-		isServiceReply := len(acc.imports.services) > 0 && isServiceReply(c.pa.subject)
+		isServiceReply := isServiceReply(c.pa.subject)
 
 		var queues [][]byte
 		if len(r.psubs)+len(r.qsubs) > 0 {
