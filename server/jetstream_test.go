@@ -2817,7 +2817,7 @@ func TestJetStreamWorkQueueAckWaitRedelivery(t *testing.T) {
 					t.Fatalf("Expected these to be marked as redelivered")
 				}
 				// Ack the message here.
-				m.Respond(nil)
+				m.AckSync()
 			}
 
 			if nmsgs, _, _ := sub.Pending(); err != nil || nmsgs != 0 {
@@ -16714,8 +16714,8 @@ func TestJetStreamLimits(t *testing.T) {
 			listen: 127.0.0.1:-1
 			server_name: %s
 			jetstream: {
-				max_mem_store: 2MB, 
-				max_file_store: 8MB, 
+				max_mem_store: 2MB,
+				max_file_store: 8MB,
 				store_dir: '%s',
 				limits: {max_ack_pending: 1000, duplicate_window: "1m"}
 			}
