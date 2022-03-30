@@ -11632,8 +11632,10 @@ func TestJetStreamClusterMemoryConsumerCompactVsSnapshot(t *testing.T) {
 	sub, err := js.PullSubscribe("test", "d")
 	require_NoError(t, err)
 
-	for _, m := range fetchMsgs(t, sub, 2000, 5*time.Second) {
-		m.AckSync()
+	for i := 0; i < 2; i++ {
+		for _, m := range fetchMsgs(t, sub, 1000, 5*time.Second) {
+			m.AckSync()
+		}
 	}
 
 	// Restart our downed server.
