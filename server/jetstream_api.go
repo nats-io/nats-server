@@ -3130,8 +3130,8 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, _ *Accoun
 }
 
 // Default chunk size for now.
-const defaultSnapshotChunkSize = 256 * 1024
-const defaultSnapshotWindowSize = 32 * 1024 * 1024 // 32MB
+const defaultSnapshotChunkSize = 128 * 1024
+const defaultSnapshotWindowSize = 8 * 1024 * 1024 // 8MB
 
 // streamSnapshot will stream out our snapshot to the reply subject.
 func (s *Server) streamSnapshot(ci *ClientInfo, acc *Account, mset *stream, sr *SnapshotResult, req *JSApiStreamSnapshotRequest) {
@@ -3194,7 +3194,7 @@ func (s *Server) streamSnapshot(ci *ClientInfo, acc *Account, mset *stream, sr *
 		}
 
 		// Wait on acks for flow control if past our window size.
-		// Wait up to 1ms for now if no acks received.
+		// Wait up to 10ms for now if no acks received.
 		if atomic.LoadInt32(&out) > defaultSnapshotWindowSize {
 			select {
 			case <-acks:
