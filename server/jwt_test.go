@@ -5590,7 +5590,6 @@ func TestJWTJetStreamMaxStreamBytes(t *testing.T) {
 }
 
 func TestJWTClusteredJetStreamTiers(t *testing.T) {
-	t.SkipNow()
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
 	sysCreds := newUser(t, sysKp)
@@ -5602,7 +5601,7 @@ func TestJWTClusteredJetStreamTiers(t *testing.T) {
 	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
 		DiskStorage: 1100, MemoryStorage: 0, Consumer: 2, Streams: 2}
 	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{
-		DiskStorage: 3100, MemoryStorage: 0, Consumer: 1, Streams: 1}
+		DiskStorage: 3300, MemoryStorage: 0, Consumer: 1, Streams: 1}
 	accJwt := encodeClaim(t, accClaim, aExpPub)
 	accCreds := newUser(t, accKp)
 	tmlp := `
