@@ -3975,7 +3975,7 @@ func (acc *Account) selectLimits(cfg *StreamConfig) (*JetStreamAccountLimits, st
 	acc.mu.RUnlock()
 
 	if jsa == nil {
-		return nil, "", nil, NewJSNotEnabledForAccountError()
+		return nil, _EMPTY_, nil, NewJSNotEnabledForAccountError()
 	}
 
 	jsa.mu.RLock()
@@ -3983,7 +3983,7 @@ func (acc *Account) selectLimits(cfg *StreamConfig) (*JetStreamAccountLimits, st
 	jsa.mu.RUnlock()
 
 	if !ok {
-		return nil, "", nil, NewJSNoLimitsError()
+		return nil, _EMPTY_, nil, NewJSNoLimitsError()
 	}
 	return &selectedLimits, tierName, jsa, nil
 }
@@ -4797,11 +4797,11 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
-	lim := &s.getOpts().JetStreamLimits
+	srvLim := &s.getOpts().JetStreamLimits
 	// Make sure we have sane defaults
-	setConsumerConfigDefaults(cfg, lim, selectedLimits)
+	setConsumerConfigDefaults(cfg, srvLim, selectedLimits)
 
-	if err := checkConsumerCfg(cfg, lim, &streamCfg, acc, selectedLimits); err != nil {
+	if err := checkConsumerCfg(cfg, srvLim, &streamCfg, acc, selectedLimits); err != nil {
 		resp.Error = err
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
