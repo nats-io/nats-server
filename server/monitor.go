@@ -2617,6 +2617,10 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 
 	js := s.getJetStream()
 	if js == nil || !js.isEnabled() {
+		if opts.LeaderOnly {
+			return nil, fmt.Errorf("%w: not leader", errSkipZreq)
+		}
+
 		jsi.Disabled = true
 		return jsi, nil
 	}
