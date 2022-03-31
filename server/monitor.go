@@ -2635,14 +2635,14 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 
 	var accounts []*jsAccount
 
-	s.js.mu.RLock()
-	jsi.Config = s.js.config
-	for _, info := range s.js.accounts {
+	js.mu.RLock()
+	jsi.Config = js.config
+	for _, info := range js.accounts {
 		accounts = append(accounts, info)
 	}
-	s.js.mu.RUnlock()
+	js.mu.RUnlock()
 
-	if mg := s.js.getMetaGroup(); mg != nil {
+	if mg := js.getMetaGroup(); mg != nil {
 		if ci := s.raftNodeToClusterInfo(mg); ci != nil {
 			jsi.Meta = &MetaClusterInfo{Name: ci.Name, Leader: ci.Leader, Size: mg.ClusterSize()}
 			if isLeader {
@@ -2651,7 +2651,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 		}
 	}
 
-	jsi.JetStreamStats = *s.js.usageStats()
+	jsi.JetStreamStats = *js.usageStats()
 
 	filterIdx := -1
 	for i, jsa := range accounts {

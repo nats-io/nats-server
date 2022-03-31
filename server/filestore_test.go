@@ -1190,26 +1190,33 @@ func TestFileStoreBitRot(t *testing.T) {
 		t.Fatalf("Expected to have no corrupt msgs, got %d", len(ld.Msgs))
 	}
 
-	// Now twiddle some bits.
-	fs.mu.Lock()
-	lmb := fs.lmb
-	contents, _ := ioutil.ReadFile(lmb.mfn)
-	var index int
-	for {
-		index = rand.Intn(len(contents))
-		// Reverse one byte anywhere.
-		b := contents[index]
-		contents[index] = bits.Reverse8(b)
-		if b != contents[index] {
+	for i := 0; i < 10; i++ {
+		// Now twiddle some bits.
+		fs.mu.Lock()
+		lmb := fs.lmb
+		contents, _ := ioutil.ReadFile(lmb.mfn)
+		var index int
+		for {
+			index = rand.Intn(len(contents))
+			// Reverse one byte anywhere.
+			b := contents[index]
+			contents[index] = bits.Reverse8(b)
+			if b != contents[index] {
+				break
+			}
+		}
+		ioutil.WriteFile(lmb.mfn, contents, 0644)
+		fs.mu.Unlock()
+
+		ld := fs.checkMsgs()
+		if len(ld.Msgs) > 0 {
 			break
 		}
-	}
-	ioutil.WriteFile(lmb.mfn, contents, 0644)
-	fs.mu.Unlock()
-
-	ld := fs.checkMsgs()
-	if ld == nil || len(ld.Msgs) == 0 {
-		t.Fatalf("Expected to have corrupt msgs got none: changed [%d]", index)
+		// Fail the test if we have tried the 10 times and still did not
+		// get any corruption report.
+		if i == 9 {
+			t.Fatalf("Expected to have corrupt msgs got none: changed [%d]", index)
+		}
 	}
 
 	// Make sure we can restore.
