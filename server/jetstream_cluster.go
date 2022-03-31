@@ -4005,7 +4005,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	cfg := &ccfg
 
 	selectedLimits, tier, _, apiErr := acc.selectLimits(&ccfg)
-	if err != nil {
+	if apiErr != nil {
 		resp.Error = apiErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
