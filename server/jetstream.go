@@ -63,6 +63,7 @@ type JetStreamAccountLimits struct {
 	MaxStore             int64 `json:"max_storage"`
 	MaxStreams           int   `json:"max_streams"`
 	MaxConsumers         int   `json:"max_consumers"`
+	MaxAckPending        int   `json:"max_ack_pending"`
 	MemoryMaxStreamBytes int64 `json:"memory_max_stream_bytes"`
 	StoreMaxStreamBytes  int64 `json:"storage_max_stream_bytes"`
 	MaxBytesRequired     bool  `json:"max_bytes_required"`

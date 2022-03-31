@@ -3968,6 +3968,26 @@ func (js *jetStream) createGroupForStream(ci *ClientInfo, cfg *StreamConfig) *ra
 	return nil
 }
 
+func (acc *Account) selectLimits(cfg *StreamConfig) (*JetStreamAccountLimits, string, *jsAccount, *ApiError) {
+	// Grab our jetstream account info.
+	acc.mu.RLock()
+	jsa := acc.js
+	acc.mu.RUnlock()
+
+	if jsa == nil {
+		return nil, _EMPTY_, nil, NewJSNotEnabledForAccountError()
+	}
+
+	jsa.mu.RLock()
+	selectedLimits, tierName, ok := jsa.selectLimits(cfg)
+	jsa.mu.RUnlock()
+
+	if !ok {
+		return nil, _EMPTY_, nil, NewJSNoLimitsError()
+	}
+	return &selectedLimits, tierName, jsa, nil
+}
+
 func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, config *StreamConfig) {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
@@ -3975,17 +3995,6 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	}
 
 	var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
-
-	// Grab our jetstream account info.
-	acc.mu.RLock()
-	jsa := acc.js
-	acc.mu.RUnlock()
-
-	if jsa == nil {
-		resp.Error = NewJSNotEnabledForAccountError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
-		return
-	}
 
 	ccfg, err := checkStreamCfg(config, &s.getOpts().JetStreamLimits)
 	if err != nil {
@@ -3995,12 +4004,9 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	}
 	cfg := &ccfg
 
-	jsa.mu.RLock()
-	selectedLimits, tier, ok := jsa.selectLimits(config)
-	jsa.mu.RUnlock()
-
-	if !ok {
-		resp.Error = NewJSNoLimitsError()
+	selectedLimits, tier, _, apiErr := acc.selectLimits(&ccfg)
+	if err != nil {
+		resp.Error = apiErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
@@ -4018,7 +4024,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	}
 
 	// Check for account limits here before proposing.
-	if err := js.checkAccountLimits(&selectedLimits, cfg, reservations); err != nil {
+	if err := js.checkAccountLimits(selectedLimits, cfg, reservations); err != nil {
 		resp.Error = NewJSStreamLimitsError(err, Unless(err))
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		js.mu.RUnlock()
@@ -4777,10 +4783,32 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		return
 	}
 
+	var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
+
+	streamCfg, ok := js.clusterStreamConfig(acc.Name, stream)
+	if !ok {
+		resp.Error = NewJSStreamNotFoundError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
+	}
+	selectedLimits, _, _, apiErr := acc.selectLimits(&streamCfg)
+	if apiErr != nil {
+		resp.Error = apiErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
+	}
+	srvLim := &s.getOpts().JetStreamLimits
+	// Make sure we have sane defaults
+	setConsumerConfigDefaults(cfg, srvLim, selectedLimits)
+
+	if err := checkConsumerCfg(cfg, srvLim, &streamCfg, acc, selectedLimits); err != nil {
+		resp.Error = err
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
+	}
+
 	js.mu.Lock()
 	defer js.mu.Unlock()
-
-	var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
 
 	// Lookup the stream assignment.
 	sa := js.streamAssignment(acc.Name, stream)

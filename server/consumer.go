@@ -299,7 +299,7 @@ const (
 )
 
 // Helper function to set consumer config defaults from above.
-func setConsumerConfigDefaults(config *ConsumerConfig, lim *JSLimitOpts) {
+func setConsumerConfigDefaults(config *ConsumerConfig, lim *JSLimitOpts, accLim *JetStreamAccountLimits) {
 	// Set to default if not specified.
 	if config.DeliverSubject == _EMPTY_ && config.MaxWaiting == 0 {
 		config.MaxWaiting = JSWaitQueueDefaultMax
@@ -318,11 +318,14 @@ func setConsumerConfigDefaults(config *ConsumerConfig, lim *JSLimitOpts) {
 	}
 	// Set proper default for max ack pending if we are ack explicit and none has been set.
 	if (config.AckPolicy == AckExplicit || config.AckPolicy == AckAll) && config.MaxAckPending == 0 {
-		if lim.MaxAckPending > 0 && lim.MaxAckPending < JsDefaultMaxAckPending {
-			config.MaxAckPending = lim.MaxAckPending
-		} else {
-			config.MaxAckPending = JsDefaultMaxAckPending
+		accPending := JsDefaultMaxAckPending
+		if lim.MaxAckPending > 0 && lim.MaxAckPending < accPending {
+			accPending = lim.MaxAckPending
 		}
+		if accLim.MaxAckPending > 0 && accLim.MaxAckPending < accPending {
+			accPending = accLim.MaxAckPending
+		}
+		config.MaxAckPending = accPending
 	}
 }
 
@@ -330,7 +333,7 @@ func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
 	return mset.addConsumerWithAssignment(config, _EMPTY_, nil)
 }
 
-func checkConsumerCfg(config *ConsumerConfig, lim *JSLimitOpts, cfg *StreamConfig, acc *Account) *ApiError {
+func checkConsumerCfg(config *ConsumerConfig, srvLim *JSLimitOpts, cfg *StreamConfig, acc *Account, accLim *JetStreamAccountLimits) *ApiError {
 	// Check if we have a BackOff defined that MaxDeliver is within range etc.
 	if lbo := len(config.BackOff); lbo > 0 && config.MaxDeliver <= lbo {
 		return NewJSConsumerMaxDeliverBackoffError()
@@ -384,7 +387,8 @@ func checkConsumerCfg(config *ConsumerConfig, lim *JSLimitOpts, cfg *StreamConfi
 			return NewJSConsumerMaxRequestExpiresToSmallError()
 		}
 	}
-	if lim.MaxAckPending > 0 && config.MaxAckPending > lim.MaxAckPending {
+	if srvLim.MaxAckPending > 0 && config.MaxAckPending > srvLim.MaxAckPending ||
+		accLim.MaxAckPending > 0 && config.MaxAckPending > accLim.MaxAckPending {
 		return NewJSConsumerMaxPendingAckExcessError()
 	}
 
@@ -494,11 +498,18 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		return nil, NewJSConsumerConfigRequiredError()
 	}
 
-	lim := &s.getOpts().JetStreamLimits
-	// Make sure we have sane defaults.
-	setConsumerConfigDefaults(config, lim)
+	jsa.mu.RLock()
+	selectedLimits, limitsFound := jsa.limits[tierName]
+	jsa.mu.RUnlock()
+	if !limitsFound {
+		return nil, NewJSNoLimitsError()
+	}
 
-	if err := checkConsumerCfg(config, lim, &cfg, acc); err != nil {
+	srvLim := &s.getOpts().JetStreamLimits
+	// Make sure we have sane defaults.
+	setConsumerConfigDefaults(config, srvLim, &selectedLimits)
+
+	if err := checkConsumerCfg(config, srvLim, &cfg, acc, &selectedLimits); err != nil {
 		return nil, err
 	}
 
@@ -520,13 +531,6 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		accName = a.Name
 	}
 	c.mu.Unlock()
-
-	jsa.mu.RLock()
-	jsaLimits, limitsFound := jsa.limits[tierName]
-	jsa.mu.RUnlock()
-	if !limitsFound {
-		return nil, NewJSNoLimitsError()
-	}
 
 	// Hold mset lock here.
 	mset.mu.Lock()
@@ -552,8 +556,8 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	// than stream config we prefer the account limits to handle cases where account limits are
 	// updated during the lifecycle of the stream
 	maxc := mset.cfg.MaxConsumers
-	if maxc <= 0 || (jsaLimits.MaxConsumers > 0 && jsaLimits.MaxConsumers < maxc) {
-		maxc = jsaLimits.MaxConsumers
+	if maxc <= 0 || (selectedLimits.MaxConsumers > 0 && selectedLimits.MaxConsumers < maxc) {
+		maxc = selectedLimits.MaxConsumers
 	}
 	if maxc > 0 && mset.numPublicConsumers() >= maxc {
 		mset.mu.Unlock()

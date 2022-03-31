@@ -5,7 +5,7 @@ go 1.17
 require (
 	github.com/klauspost/compress v1.14.4
 	github.com/minio/highwayhash v1.0.2
-	github.com/nats-io/jwt/v2 v2.2.1-0.20220328222144-5efd4536dd5c
+	github.com/nats-io/jwt/v2 v2.2.1-0.20220330180145-442af02fd36a
 	github.com/nats-io/nats.go v1.13.1-0.20220318132711-e0e03e374228
 	github.com/nats-io/nkeys v0.3.0
 	github.com/nats-io/nuid v1.0.1

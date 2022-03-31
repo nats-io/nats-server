@@ -1361,13 +1361,10 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 		return
 	}
 
-	acc.mu.RLock()
-	jsa := acc.js
-	acc.mu.RUnlock()
+	selectedLimits, tier, jsa, apiErr := acc.selectLimits(&cfg)
 
-	selectedLimits, tier, ok := jsa.selectLimits(&cfg)
-	if !ok {
-		resp.Error = NewJSNoLimitsError()
+	if apiErr != nil {
+		resp.Error = apiErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -3253,11 +3250,6 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 		return
 	}
 
-	lim := &s.getOpts().JetStreamLimits
-
-	// Make sure we have sane defaults.
-	setConsumerConfigDefaults(&req.Config, lim)
-
 	var js *jetStream
 	isClustered := s.JetStreamIsClustered()
 
@@ -3331,17 +3323,6 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 	}
 
 	if isClustered && !req.Config.Direct {
-		streamCfg, ok := js.clusterStreamConfig(acc.Name, streamName)
-		if !ok {
-			resp.Error = NewJSStreamNotFoundError(Unless(err))
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-		if err := checkConsumerCfg(&req.Config, lim, &streamCfg, acc); err != nil {
-			resp.Error = err
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
 		s.jsClusteredConsumerRequest(ci, acc, subject, reply, rmsg, req.Stream, &req.Config)
 		return
 	}

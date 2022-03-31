@@ -1659,7 +1659,7 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 	return nil
 }
 
-var dynamicJSAccountLimits = JetStreamAccountLimits{-1, -1, -1, -1, 0, 0, false}
+var dynamicJSAccountLimits = JetStreamAccountLimits{-1, -1, -1, -1, 0, 0, 0, false}
 var defaultJSAccountTiers = map[string]JetStreamAccountLimits{_EMPTY_: dynamicJSAccountLimits}
 
 // Parses jetstream account limits for an account. Simple setup with boolen is allowed, and we will
@@ -1685,7 +1685,7 @@ func parseJetStreamForAccount(v interface{}, acc *Account, errors *[]error, warn
 			return &configErr{tk, fmt.Sprintf("Expected 'enabled' or 'disabled' for string value, got '%s'", vv)}
 		}
 	case map[string]interface{}:
-		jsLimits := JetStreamAccountLimits{-1, -1, -1, -1, 0, 0, false}
+		jsLimits := JetStreamAccountLimits{-1, -1, -1, -1, 0, 0, 0, false}
 		for mk, mv := range vv {
 			tk, mv = unwrapValue(mv, &lt)
 			switch strings.ToLower(mk) {
@@ -1694,13 +1694,13 @@ func parseJetStreamForAccount(v interface{}, acc *Account, errors *[]error, warn
 				if !ok {
 					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
 				}
-				jsLimits.MaxMemory = int64(vv)
+				jsLimits.MaxMemory = vv
 			case "max_store", "max_file", "max_disk", "store", "disk":
 				vv, ok := mv.(int64)
 				if !ok {
 					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
 				}
-				jsLimits.MaxStore = int64(vv)
+				jsLimits.MaxStore = vv
 			case "max_streams", "streams":
 				vv, ok := mv.(int64)
 				if !ok {
@@ -1718,7 +1718,7 @@ func parseJetStreamForAccount(v interface{}, acc *Account, errors *[]error, warn
 				if !ok {
 					return &configErr{tk, fmt.Sprintf("Expected a parseable bool for %q, got %v", mk, mv)}
 				}
-				jsLimits.MaxBytesRequired = bool(vv)
+				jsLimits.MaxBytesRequired = vv
 			case "mem_max_stream_bytes", "memory_max_stream_bytes":
 				vv, ok := mv.(int64)
 				if !ok {
@@ -1731,6 +1731,12 @@ func parseJetStreamForAccount(v interface{}, acc *Account, errors *[]error, warn
 					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
 				}
 				jsLimits.StoreMaxStreamBytes = vv
+			case "max_ack_pending":
+				vv, ok := mv.(int64)
+				if !ok {
+					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
+				}
+				jsLimits.MaxAckPending = int(vv)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{

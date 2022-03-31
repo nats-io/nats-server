@@ -16784,14 +16784,14 @@ func TestJetStreamLimits(t *testing.T) {
 	}
 
 	t.Run("clustered", func(t *testing.T) {
-		c := createJetStreamClusterWithTemplate(t, `
+		tmpl := `
 			listen: 127.0.0.1:-1
 			server_name: %s
 			jetstream: {
 				max_mem_store: 2MB,
 				max_file_store: 8MB,
 				store_dir: '%s',
-				limits: {max_ack_pending: 1000, duplicate_window: "1m"}
+				limits: {duplicate_window: "1m"}
 			}
 			cluster {
 				name: %s
@@ -16805,29 +16805,56 @@ func TestJetStreamLimits(t *testing.T) {
 					jetstream: enabled
 				}
 				$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
-			}`, "clust", 3)
-		defer c.shutdown()
-		s := c.randomServer()
-		test(t, s)
+			}`
+		limitsTest := func(t *testing.T, tmpl string) {
+			c := createJetStreamClusterWithTemplate(t, tmpl, "clust", 3)
+			defer c.shutdown()
+			s := c.randomServer()
+			test(t, s)
+		}
+		// test with max_ack_pending being defined in operator or account
+		t.Run("operator", func(t *testing.T) {
+			limitsTest(t, strings.Replace(tmpl, "duplicate_window", "max_ack_pending: 1000, duplicate_window", 1))
+		})
+		t.Run("account", func(t *testing.T) {
+			limitsTest(t, strings.Replace(tmpl, "jetstream: enabled", "jetstream: {max_ack_pending: 1000}", 1))
+		})
 	})
 
 	t.Run("single", func(t *testing.T) {
-		storeDir := createDir(t, JetStreamStoreDir)
-		defer removeDir(t, storeDir)
-		conf := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: 127.0.0.1:-1
-		jetstream: {
-			max_mem_store: 2MB,
-			max_file_store: 8MB,
-			store_dir: '%s',
-			limits: {max_ack_pending: 1000, duplicate_window: "1m"}
-		}`, storeDir)))
-		defer removeFile(t, conf)
-		s, opts := RunServerWithConfig(conf)
-		defer s.Shutdown()
-		require_True(t, opts.JetStreamLimits.MaxAckPending == 1000)
-		require_True(t, opts.JetStreamLimits.Duplicates == time.Minute)
-		test(t, s)
+		tmpl := `
+			listen: 127.0.0.1:-1
+			jetstream: {
+				max_mem_store: 2MB,
+				max_file_store: 8MB,
+				store_dir: '%s',
+				limits: {duplicate_window: "1m"}
+			}
+			no_auth_user: u
+			accounts {
+				ONE {
+					users = [ { user: "u", pass: "s3cr3t!" } ]
+					jetstream: enabled
+				}
+				$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+			}`
+		limitsTest := func(t *testing.T, tmpl string) {
+			storeDir := createDir(t, JetStreamStoreDir)
+			defer removeDir(t, storeDir)
+			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, storeDir)))
+			defer removeFile(t, conf)
+			s, opts := RunServerWithConfig(conf)
+			defer s.Shutdown()
+			require_True(t, opts.JetStreamLimits.Duplicates == time.Minute)
+			test(t, s)
+		}
+		// test with max_ack_pending being defined in operator or account
+		t.Run("operator", func(t *testing.T) {
+			limitsTest(t, strings.Replace(tmpl, "duplicate_window", "max_ack_pending: 1000, duplicate_window", 1))
+		})
+		t.Run("account", func(t *testing.T) {
+			limitsTest(t, strings.Replace(tmpl, "jetstream: enabled", "jetstream: {max_ack_pending: 1000}", 1))
+		})
 	})
 }
 
