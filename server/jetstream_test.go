@@ -16891,3 +16891,66 @@ func TestJetStreamConsumerStreamUpdate(t *testing.T) {
 		test(t, s, 1)
 	})
 }
+
+func TestJetStreamImportReload(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 2MB, max_file_store: 8MB, store_dir: '%s'}
+		accounts: {
+			account_a: {
+				users: [{user: user_a, password: pwd}]
+				exports: [{stream: news.>}]
+			}
+			account_b: {
+				users: [{user: user_b, password: pwd}]
+				jetstream: enabled
+				imports: [{stream: {subject: news.>, account: account_a}}]
+			}
+		}`, storeDir)))
+	defer removeFile(t, conf)
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	ncA := natsConnect(t, s.ClientURL(), nats.UserInfo("user_a", "pwd"))
+	defer ncA.Close()
+
+	ncB := natsConnect(t, s.ClientURL(), nats.UserInfo("user_b", "pwd"))
+	defer ncB.Close()
+
+	jsB, err := ncB.JetStream()
+	require_NoError(t, err)
+
+	_, err = jsB.AddStream(&nats.StreamConfig{Name: "news", Subjects: []string{"news.>"}})
+	require_NoError(t, err)
+
+	require_NoError(t, ncA.Publish("news.article", nil))
+	require_NoError(t, ncA.Flush())
+
+	si, err := jsB.StreamInfo("news")
+	require_NoError(t, err)
+	require_True(t, si.State.Msgs == 1)
+
+	// Remove exports/imports
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 2MB, max_file_store: 8MB, store_dir: '%s'}
+		accounts: {
+			account_a: {
+				users: [{user: user_a, password: pwd}]
+			}
+			account_b: {
+				users: [{user: user_b, password: pwd}]
+				jetstream: enabled
+			}
+		}`, storeDir))
+
+	require_NoError(t, ncA.Publish("news.article", nil))
+	require_NoError(t, ncA.Flush())
+
+	si, err = jsB.StreamInfo("news")
+	require_NoError(t, err)
+	require_True(t, si.State.Msgs == 1)
+}
