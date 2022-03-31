@@ -2922,21 +2922,26 @@ func (c *client) checkDenySub(subject string) bool {
 // Create a message header for routes or leafnodes. Header and origin cluster aware.
 func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, acc *Account) []byte {
 	hasHeader := c.pa.hdr > 0
-	canReceiveHeader := rt.sub.client.headers
+	subclient := rt.sub.client
+	canReceiveHeader := subclient.headers
 
 	mh := c.msgb[:msgHeadProtoLen]
-	kind := rt.sub.client.kind
+	kind := subclient.kind
 	var lnoc bool
 
 	if kind == ROUTER {
 		// If we are coming from a leaf with an origin cluster we need to handle differently
 		// if we can. We will send a route based LMSG which has origin cluster and headers
 		// by default.
-		if c.kind == LEAF && c.remoteCluster() != _EMPTY_ && rt.sub.client.route.lnoc {
+		if c.kind == LEAF && c.remoteCluster() != _EMPTY_ {
+			subclient.mu.Lock()
+			lnoc = subclient.route.lnoc
+			subclient.mu.Unlock()
+		}
+		if lnoc {
 			mh[0] = 'L'
 			mh = append(mh, c.remoteCluster()...)
 			mh = append(mh, ' ')
-			lnoc = true
 		} else {
 			// Router (and Gateway) nodes are RMSG. Set here since leafnodes may rewrite.
 			mh[0] = 'R'

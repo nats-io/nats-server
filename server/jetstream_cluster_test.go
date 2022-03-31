@@ -10068,7 +10068,7 @@ func TestJetStreamClusterConsumerPendingBug(t *testing.T) {
 		}
 	}
 	// Wait for them to all be there.
-	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 		si, err := js.StreamInfo("foo")
 		require_NoError(t, err)
 		if si.State.Msgs != uint64(n) {
@@ -10082,14 +10082,17 @@ func TestJetStreamClusterConsumerPendingBug(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Error creating consumer: %v", err)
 		}
-		ci, err := js.ConsumerInfo("foo", "dlc")
-		require_NoError(t, err)
-		if ci.NumPending != uint64(n) {
-			t.Fatalf("Expected NumPending to be %d, got %d", n, ci.NumPending)
-		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("Timed out?")
 	}
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		ci, err := js.ConsumerInfo("foo", "dlc")
+		require_NoError(t, err)
+		if ci.NumPending != uint64(n) {
+			return fmt.Errorf("Expected NumPending to be %d, got %d", n, ci.NumPending)
+		}
+		return nil
+	})
 }
 
 func TestJetStreamClusterPullPerf(t *testing.T) {
