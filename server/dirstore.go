@@ -28,6 +28,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nats-io/nkeys"
+
 	"github.com/nats-io/jwt/v2" // only used to decode, not for storage
 )
 
@@ -321,6 +323,9 @@ func (store *DirJWTStore) Merge(pack string) error {
 			return fmt.Errorf("line in package didn't contain 2 entries: %q", line)
 		}
 		pubKey := split[0]
+		if !nkeys.IsValidPublicAccountKey(pubKey) {
+			return fmt.Errorf("key to merge is not a valid public account key")
+		}
 		if err := store.saveIfNewer(pubKey, split[1]); err != nil {
 			return err
 		}
@@ -368,6 +373,9 @@ func (store *DirJWTStore) Reload() error {
 
 func (store *DirJWTStore) pathForKey(publicKey string) string {
 	if len(publicKey) < 2 {
+		return _EMPTY_
+	}
+	if !nkeys.IsValidPublicKey(publicKey) {
 		return _EMPTY_
 	}
 	fileName := fmt.Sprintf("%s%s", publicKey, fileExtension)
@@ -488,7 +496,7 @@ func (store *DirJWTStore) save(publicKey string, theJWT string) error {
 }
 
 // Assumes the lock is NOT held, and only updates if the jwt is new, or the one on disk is older
-// returns true when the jwt changed
+// When changed, invokes jwt changed callback
 func (store *DirJWTStore) saveIfNewer(publicKey string, theJWT string) error {
 	if store.readonly {
 		return fmt.Errorf("store is read-only")
@@ -505,7 +513,7 @@ func (store *DirJWTStore) saveIfNewer(publicKey string, theJWT string) error {
 	}
 	if _, err := os.Stat(path); err == nil {
 		if newJWT, err := jwt.DecodeGeneric(theJWT); err != nil {
-			// skip if it can't be decoded
+			return err
 		} else if existing, err := ioutil.ReadFile(path); err != nil {
 			return err
 		} else if existingJWT, err := jwt.DecodeGeneric(string(existing)); err != nil {
@@ -514,6 +522,10 @@ func (store *DirJWTStore) saveIfNewer(publicKey string, theJWT string) error {
 			return nil
 		} else if existingJWT.IssuedAt > newJWT.IssuedAt {
 			return nil
+		} else if newJWT.Subject != publicKey {
+			return fmt.Errorf("jwt subject nkey and provided nkey do not match")
+		} else if existingJWT.Subject != newJWT.Subject {
+			return fmt.Errorf("subject of existing and new jwt do not match")
 		}
 	}
 	store.Lock()
