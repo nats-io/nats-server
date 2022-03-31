@@ -3286,6 +3286,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 					MemoryMaxStreamBytes: ac.Limits.JetStreamLimits.MemoryMaxStreamBytes,
 					StoreMaxStreamBytes:  ac.Limits.JetStreamLimits.DiskMaxStreamBytes,
 					MaxBytesRequired:     ac.Limits.JetStreamLimits.MaxBytesRequired,
+					MaxAckPending:        int(ac.Limits.JetStreamLimits.MaxAckPending),
 				},
 			}
 		} else {
@@ -3299,6 +3300,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 					MemoryMaxStreamBytes: l.MemoryMaxStreamBytes,
 					StoreMaxStreamBytes:  l.DiskMaxStreamBytes,
 					MaxBytesRequired:     l.MaxBytesRequired,
+					MaxAckPending:        int(l.MaxAckPending),
 				}
 			}
 		}

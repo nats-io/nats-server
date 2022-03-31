@@ -5414,6 +5414,88 @@ func TestJWTJetStreamTiers(t *testing.T) {
 	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
 }
 
+func TestJWTJetStreamMaxAckPendilng(t *testing.T) {
+	sysKp, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	sysCreds := newUser(t, sysKp)
+	defer removeFile(t, sysCreds)
+
+	accKp, accPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(accPub)
+	accClaim.Name = "acc"
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
+		DiskStorage: jwt.NoLimit, MemoryStorage: jwt.NoLimit,
+		Consumer: jwt.NoLimit, Streams: jwt.NoLimit, MaxAckPending: int64(1000),
+	}
+	accJwt1 := encodeClaim(t, accClaim, accPub)
+	accCreds := newUser(t, accKp)
+
+	start := time.Now()
+
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	dirSrv := createDir(t, "srv")
+	defer removeDir(t, dirSrv)
+	cf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		server_name: s1
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		leaf {
+			listen: 127.0.0.1:-1
+		}
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: full
+			dir: '%s'
+		}
+	`, storeDir, ojwt, syspub, dirSrv)))
+	defer removeFile(t, cf)
+
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	updateJwt(t, s.ClientURL(), sysCreds, sysJwt, 1)
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt1, 1)
+
+	nc := natsConnect(t, s.ClientURL(), nats.UserCredentials(accCreds))
+	defer nc.Close()
+
+	js, err := nc.JetStream()
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("foo", &nats.ConsumerConfig{
+		Durable: "dur1", AckPolicy: nats.AckAllPolicy, MaxAckPending: 2000})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "consumer max ack pending exceeds server limit")
+
+	ci, err := js.AddConsumer("foo", &nats.ConsumerConfig{
+		Durable: "dur2", AckPolicy: nats.AckAllPolicy, MaxAckPending: 500})
+	require_NoError(t, err)
+	require_True(t, ci.Config.MaxAckPending == 500)
+
+	_, err = js.UpdateConsumer("foo", &nats.ConsumerConfig{
+		Durable: "dur2", AckPolicy: nats.AckAllPolicy, MaxAckPending: 2000})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "consumer max ack pending exceeds server limit")
+
+	time.Sleep(time.Second - time.Since(start)) // make sure the time stamp changes
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
+		DiskStorage: jwt.NoLimit, MemoryStorage: jwt.NoLimit, Consumer: jwt.NoLimit,
+		Streams: jwt.NoLimit, MaxAckPending: int64(2000)}
+	accJwt2 := encodeClaim(t, accClaim, accPub)
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt2, 1)
+
+	ci, err = js.UpdateConsumer("foo", &nats.ConsumerConfig{
+		Durable: "dur2", AckPolicy: nats.AckAllPolicy, MaxAckPending: 2000})
+	require_NoError(t, err)
+	require_True(t, ci.Config.MaxAckPending == 2000)
+}
+
 func TestJWTJetStreamMaxStreamBytes(t *testing.T) {
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
