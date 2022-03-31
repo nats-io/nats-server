@@ -16846,15 +16846,16 @@ func TestJetStreamImportReload(t *testing.T) {
 
 	ncB := natsConnect(t, s.ClientURL(), nats.UserInfo("user_b", "pwd"))
 	defer ncB.Close()
+
 	jsB, err := ncB.JetStream()
 	require_NoError(t, err)
+
 	_, err = jsB.AddStream(&nats.StreamConfig{Name: "news", Subjects: []string{"news.>"}})
 	require_NoError(t, err)
-	defer jsB.DeleteStream("foo")
-	require_NoError(t, ncB.Flush())
 
 	require_NoError(t, ncA.Publish("news.article", nil))
 	require_NoError(t, ncA.Flush())
+
 	si, err := jsB.StreamInfo("news")
 	require_NoError(t, err)
 	require_True(t, si.State.Msgs == 1)
@@ -16875,6 +16876,7 @@ func TestJetStreamImportReload(t *testing.T) {
 
 	require_NoError(t, ncA.Publish("news.article", nil))
 	require_NoError(t, ncA.Flush())
+
 	si, err = jsB.StreamInfo("news")
 	require_NoError(t, err)
 	require_True(t, si.State.Msgs == 1)
