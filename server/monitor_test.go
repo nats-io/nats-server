@@ -4267,6 +4267,10 @@ func TestMonitorReloadTLSConfig(t *testing.T) {
 			cert_file: '%s'
 			key_file: '%s'
 			ca_file: '../test/configs/certs/ca.pem'
+
+			# Set this to make sure that it does not impact secure monitoring
+			# (which it did, see issue: https://github.com/nats-io/nats-server/issues/2980)
+			verify_and_map: true
 		}
 	`
 	conf := createConfFile(t, []byte(fmt.Sprintf(template,
@@ -4311,5 +4315,13 @@ func TestMonitorReloadTLSConfig(t *testing.T) {
 	c = tls.Client(c, tlsConfig.Clone())
 	if err := c.(*tls.Conn).Handshake(); err != nil {
 		t.Fatalf("Error on TLS handshake: %v", err)
+	}
+
+	// Need to read something to see if there is a problem with the certificate or not.
+	var buf [64]byte
+	c.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+	_, err = c.Read(buf[:])
+	if ne, ok := err.(net.Error); !ok || !ne.Timeout() {
+		t.Fatalf("Error: %v", err)
 	}
 }
