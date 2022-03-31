@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
@@ -3978,6 +3979,31 @@ func checkForJSClusterUp(t *testing.T, servers ...*Server) {
 		}
 		return nil
 	})
+}
+
+func TestMonitorJszNonJszServer(t *testing.T) {
+	srv := RunServer(DefaultOptions())
+	defer srv.Shutdown()
+
+	if !srv.ReadyForConnections(5 * time.Second) {
+		t.Fatalf("server did not become ready")
+	}
+
+	jsi, err := srv.Jsz(&JSzOptions{})
+	if err != nil {
+		t.Fatalf("jsi failed: %v", err)
+	}
+	if jsi.ID != srv.ID() {
+		t.Fatalf("did not receive valid info")
+	}
+
+	jsi, err = srv.Jsz(&JSzOptions{LeaderOnly: true})
+	if !errors.Is(err, errSkipZreq) {
+		t.Fatalf("expected a skip z req error: %v", err)
+	}
+	if jsi != nil {
+		t.Fatalf("expected no jsi: %v", jsi)
+	}
 }
 
 func TestMonitorJsz(t *testing.T) {
