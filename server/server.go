@@ -271,6 +271,10 @@ type Server struct {
 
 	// IPQueues map
 	ipQueues sync.Map
+
+	// To limit logging frequency
+	rateLimitLogging   sync.Map
+	rateLimitLoggingCh chan int64
 }
 
 // For tracking JS nodes.
@@ -1600,6 +1604,8 @@ func (s *Server) Start() {
 	s.grMu.Lock()
 	s.grRunning = true
 	s.grMu.Unlock()
+
+	s.startRateLimitLogExpiration()
 
 	// Pprof http endpoint for the profiler.
 	if opts.ProfPort != 0 {
@@ -3592,4 +3598,43 @@ func (s *Server) updateRemoteSubscription(acc *Account, sub *subscription, delta
 	}
 
 	s.updateLeafNodes(acc, sub, delta)
+}
+
+func (s *Server) startRateLimitLogExpiration() {
+	s.mu.Lock()
+	interval := int64(time.Second)
+	s.rateLimitLoggingCh = make(chan int64, 1)
+	s.mu.Unlock()
+
+	s.startGoRoutine(func() {
+		defer s.grWG.Done()
+
+		ticker := time.NewTicker(time.Second)
+		for {
+			select {
+			case <-s.quitCh:
+				return
+			case interval = <-s.rateLimitLoggingCh:
+				ticker.Reset(time.Duration(interval))
+			case <-ticker.C:
+				now := time.Now().UnixNano()
+				s.rateLimitLogging.Range(func(k, v interface{}) bool {
+					if start := v.(int64); now-start >= interval {
+						s.rateLimitLogging.Delete(k)
+					}
+					return true
+				})
+			}
+		}
+	})
+}
+
+func (s *Server) changeRateLimitLogInterval(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	select {
+	case s.rateLimitLoggingCh <- int64(d):
+	default:
+	}
 }

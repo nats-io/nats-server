@@ -8199,7 +8199,7 @@ func TestJetStreamPanicDecodingConsumerState(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "JSC", 3)
 	defer c.shutdown()
 
-	rch := make(chan struct{}, 1)
+	rch := make(chan struct{}, 2)
 	nc, js := jsClientConnect(t, c.randomServer(),
 		nats.ReconnectWait(50*time.Millisecond),
 		nats.MaxReconnects(-1),

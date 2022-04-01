@@ -5325,6 +5325,15 @@ func (c *client) Warnf(format string, v ...interface{}) {
 	c.srv.Warnf(format, v...)
 }
 
+func (c *client) RateLimitWarnf(format string, v ...interface{}) {
+	// Do the check before adding the client info to the format...
+	statement := fmt.Sprintf(format, v...)
+	if _, loaded := c.srv.rateLimitLogging.LoadOrStore(statement, time.Now().UnixNano()); loaded {
+		return
+	}
+	c.Warnf("%s", statement)
+}
+
 // Set the very first PING to a lower interval to capture the initial RTT.
 // After that the PING interval will be set to the user defined value.
 // Client lock should be held.
