@@ -208,7 +208,7 @@ func (s *Server) Warnf(format string, v ...interface{}) {
 
 func (s *Server) RateLimitWarnf(format string, v ...interface{}) {
 	statement := fmt.Sprintf(format, v...)
-	if _, loaded := s.rateLimitLogging.LoadOrStore(statement, time.Now().UnixNano()); loaded {
+	if _, loaded := s.rateLimitLogging.LoadOrStore(statement, time.Now()); loaded {
 		return
 	}
 	s.Warnf("%s", statement)

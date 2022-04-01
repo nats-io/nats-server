@@ -274,7 +274,7 @@ type Server struct {
 
 	// To limit logging frequency
 	rateLimitLogging   sync.Map
-	rateLimitLoggingCh chan int64
+	rateLimitLoggingCh chan time.Duration
 }
 
 // For tracking JS nodes.
@@ -361,19 +361,20 @@ func NewServer(opts *Options) (*Server, error) {
 	now := time.Now().UTC()
 
 	s := &Server{
-		kp:           kp,
-		configFile:   opts.ConfigFile,
-		info:         info,
-		prand:        rand.New(rand.NewSource(time.Now().UnixNano())),
-		opts:         opts,
-		done:         make(chan bool, 1),
-		start:        now,
-		configTime:   now,
-		gwLeafSubs:   NewSublistWithCache(),
-		httpBasePath: httpBasePath,
-		eventIds:     nuid.New(),
-		routesToSelf: make(map[string]struct{}),
-		httpReqStats: make(map[string]uint64), // Used to track HTTP requests
+		kp:                 kp,
+		configFile:         opts.ConfigFile,
+		info:               info,
+		prand:              rand.New(rand.NewSource(time.Now().UnixNano())),
+		opts:               opts,
+		done:               make(chan bool, 1),
+		start:              now,
+		configTime:         now,
+		gwLeafSubs:         NewSublistWithCache(),
+		httpBasePath:       httpBasePath,
+		eventIds:           nuid.New(),
+		routesToSelf:       make(map[string]struct{}),
+		httpReqStats:       make(map[string]uint64), // Used to track HTTP requests
+		rateLimitLoggingCh: make(chan time.Duration, 1),
 	}
 
 	if opts.TLSRateLimit > 0 {
@@ -3601,25 +3602,22 @@ func (s *Server) updateRemoteSubscription(acc *Account, sub *subscription, delta
 }
 
 func (s *Server) startRateLimitLogExpiration() {
-	s.mu.Lock()
-	interval := int64(time.Second)
-	s.rateLimitLoggingCh = make(chan int64, 1)
-	s.mu.Unlock()
-
+	interval := time.Second
 	s.startGoRoutine(func() {
 		defer s.grWG.Done()
 
 		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-s.quitCh:
 				return
 			case interval = <-s.rateLimitLoggingCh:
-				ticker.Reset(time.Duration(interval))
+				ticker.Reset(interval)
 			case <-ticker.C:
-				now := time.Now().UnixNano()
 				s.rateLimitLogging.Range(func(k, v interface{}) bool {
-					if start := v.(int64); now-start >= interval {
+					start := v.(time.Time)
+					if time.Since(start) >= interval {
 						s.rateLimitLogging.Delete(k)
 					}
 					return true
@@ -3634,7 +3632,7 @@ func (s *Server) changeRateLimitLogInterval(d time.Duration) {
 		return
 	}
 	select {
-	case s.rateLimitLoggingCh <- int64(d):
+	case s.rateLimitLoggingCh <- d:
 	default:
 	}
 }

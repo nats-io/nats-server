@@ -5328,7 +5328,7 @@ func (c *client) Warnf(format string, v ...interface{}) {
 func (c *client) RateLimitWarnf(format string, v ...interface{}) {
 	// Do the check before adding the client info to the format...
 	statement := fmt.Sprintf(format, v...)
-	if _, loaded := c.srv.rateLimitLogging.LoadOrStore(statement, time.Now().UnixNano()); loaded {
+	if _, loaded := c.srv.rateLimitLogging.LoadOrStore(statement, time.Now()); loaded {
 		return
 	}
 	c.Warnf("%s", statement)
