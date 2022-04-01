@@ -1445,15 +1445,22 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 		if defaultTier {
 			stats.Limits = l
 		} else {
+			skipped := 0
 			stats.Tiers = make(map[string]JetStreamTier)
 			for t, total := range jsa.usage {
-				stats.Tiers[t] = JetStreamTier{
-					Memory: uint64(total.total.mem),
-					Store:  uint64(total.total.store),
-					Limits: jsa.limits[t],
+				if _, ok := jsa.limits[t]; !ok && (*total) == (jsaStorage{}) {
+					// skip tiers not present that don't contain a count
+					// In case this shows an empty stream, that tier will be added when iterating over streams
+					skipped++
+				} else {
+					stats.Tiers[t] = JetStreamTier{
+						Memory: uint64(total.total.mem),
+						Store:  uint64(total.total.store),
+						Limits: jsa.limits[t],
+					}
 				}
 			}
-			if len(accJsLimits) != len(jsa.usage) {
+			if len(accJsLimits) != len(jsa.usage)-skipped {
 				// insert unused limits
 				for t, lim := range accJsLimits {
 					if _, ok := stats.Tiers[t]; !ok {
@@ -1805,38 +1812,38 @@ func (jsa *jsAccount) storageTotals() (uint64, uint64) {
 	return mem, store
 }
 
-func (jsa *jsAccount) limitsExceeded(storeType StorageType, tierName string) bool {
+func (jsa *jsAccount) limitsExceeded(storeType StorageType, tierName string) (bool, *ApiError) {
 	jsa.mu.RLock()
 	defer jsa.mu.RUnlock()
 
 	selectedLimits, ok := jsa.limits[tierName]
 	if !ok {
-		return true
+		return true, NewJSNoLimitsError()
 	}
 	inUse := jsa.usage[tierName]
 	if inUse == nil {
 		// Imply totals of 0
-		return false
+		return false, nil
 	}
 	if storeType == MemoryStorage {
 		totalMem := inUse.total.mem
 		if selectedLimits.MemoryMaxStreamBytes > 0 && totalMem > selectedLimits.MemoryMaxStreamBytes {
-			return true
+			return true, nil
 		}
 		if selectedLimits.MaxMemory >= 0 && totalMem > selectedLimits.MaxMemory {
-			return true
+			return true, nil
 		}
 	} else {
 		totalStore := inUse.total.store
 		if selectedLimits.StoreMaxStreamBytes > 0 && totalStore > selectedLimits.StoreMaxStreamBytes {
-			return true
+			return true, nil
 		}
 		if selectedLimits.MaxStore >= 0 && totalStore > selectedLimits.MaxStore {
-			return true
+			return true, nil
 		}
 	}
 
-	return false
+	return false, nil
 }
 
 // Check account limits.

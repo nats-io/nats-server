@@ -5787,6 +5787,110 @@ func TestJWTClusteredJetStreamTiersChange(t *testing.T) {
 	require_True(t, rAfter.Tiers["R1"].Streams == 0)
 }
 
+func TestJWTClusteredJetStreamDeleteTierWithStreamAndMove(t *testing.T) {
+	sysKp, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	sysCreds := newUser(t, sysKp)
+	defer removeFile(t, sysCreds)
+
+	accKp, aExpPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(aExpPub)
+	accClaim.Name = "acc"
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
+		DiskStorage: 1000, MemoryStorage: 0, Consumer: 1, Streams: 1}
+	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{
+		DiskStorage: 3000, MemoryStorage: 0, Consumer: 1, Streams: 1}
+	accJwt1 := encodeClaim(t, accClaim, aExpPub)
+	accCreds := newUser(t, accKp)
+
+	start := time.Now()
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+	dirSrv := createDir(t, "srv")
+	defer removeDir(t, dirSrv)
+
+	tmlp := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		leaf {
+			listen: 127.0.0.1:-1
+		}
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+	` + fmt.Sprintf(`
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: full
+			dir: '%s'
+		}
+	`, ojwt, syspub, dirSrv)
+
+	c := createJetStreamClusterWithTemplate(t, tmlp, "cluster", 3)
+	defer c.shutdown()
+
+	updateJwt(t, c.randomServer().ClientURL(), sysCreds, sysJwt, 3)
+	updateJwt(t, c.randomServer().ClientURL(), sysCreds, accJwt1, 3)
+
+	nc := natsConnect(t, c.randomServer().ClientURL(), nats.UserCredentials(accCreds))
+	defer nc.Close()
+
+	js, err := nc.JetStream()
+	require_NoError(t, err)
+
+	// Test tiers up to stream limits
+	cfg := &nats.StreamConfig{Name: "testR1-1", Replicas: 1, Subjects: []string{"testR1-1"}, MaxBytes: 1000}
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+
+	_, err = js.Publish("testR1-1", nil)
+	require_NoError(t, err)
+
+	time.Sleep(time.Second - time.Since(start)) // make sure the time stamp changes
+	delete(accClaim.Limits.JetStreamTieredLimits, "R1")
+	accJwt2 := encodeClaim(t, accClaim, aExpPub)
+	updateJwt(t, c.randomServer().ClientURL(), sysCreds, accJwt2, 3)
+
+	var respBefore JSApiAccountInfoResponse
+	m, err := nc.Request("$JS.API.INFO", nil, time.Second)
+	require_NoError(t, err)
+	err = json.Unmarshal(m.Data, &respBefore)
+	require_NoError(t, err)
+
+	require_True(t, respBefore.JetStreamAccountStats.Tiers["R3"].Streams == 0)
+	require_True(t, respBefore.JetStreamAccountStats.Tiers["R1"].Streams == 1)
+
+	_, err = js.Publish("testR1-1", nil)
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "nats: no JetStream default or applicable tiered limit present")
+
+	cfg.Replicas = 3
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	// I noticed this taking > 5 seconds
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		_, err = js.Publish("testR1-1", nil)
+		return err
+	})
+
+	var respAfter JSApiAccountInfoResponse
+	m, err = nc.Request("$JS.API.INFO", nil, time.Second)
+	require_NoError(t, err)
+	err = json.Unmarshal(m.Data, &respAfter)
+	require_NoError(t, err)
+
+	require_True(t, respAfter.JetStreamAccountStats.Tiers["R3"].Streams == 1)
+	require_True(t, respAfter.JetStreamAccountStats.Tiers["R3"].Store > 0)
+
+	_, ok := respAfter.JetStreamAccountStats.Tiers["R1"]
+	require_True(t, !ok)
+}
+
 func TestJWTQueuePermissions(t *testing.T) {
 	aExpKp, aExpPub := createKey(t)
 	aExpClaim := jwt.NewAccountClaims(aExpPub)
