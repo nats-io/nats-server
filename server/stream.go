@@ -3137,11 +3137,15 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			resp.Error = NewJSStreamStoreFailedError(err, Unless(err))
 			response, _ = json.Marshal(resp)
 		}
-	} else if jsa.limitsExceeded(stype, tierName) {
+	} else if exceeded, apiErr := jsa.limitsExceeded(stype, tierName); exceeded {
 		s.Warnf("JetStream resource limits exceeded for account: %q", accName)
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
-			resp.Error = NewJSAccountResourcesExceededError()
+			if apiErr == nil {
+				resp.Error = NewJSAccountResourcesExceededError()
+			} else {
+				resp.Error = apiErr
+			}
 			response, _ = json.Marshal(resp)
 		}
 		// If we did not succeed put those values back.

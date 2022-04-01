@@ -1738,7 +1738,7 @@ func (mset *stream) resetClusteredState(err error) bool {
 	}
 
 	// Account
-	if jsa.limitsExceeded(stype, tierName) {
+	if exceeded, _ := jsa.limitsExceeded(stype, tierName); exceeded {
 		s.Warnf("stream '%s > %s' errored, account resources exceeded", acc, mset.name())
 		return false
 	}
@@ -5530,7 +5530,11 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	tierName := mset.tier
 	mset.mu.RUnlock()
 
-	if mset.js.limitsExceeded(st) || mset.jsa.limitsExceeded(st, tierName) {
+	if mset.js.limitsExceeded(st) {
+		return 0, NewJSInsufficientResourcesError()
+	} else if exceeded, apiErr := mset.jsa.limitsExceeded(st, tierName); apiErr != nil {
+		return 0, apiErr
+	} else if exceeded {
 		return 0, NewJSInsufficientResourcesError()
 	}
 
