@@ -289,11 +289,6 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		return nil, NewJSStreamInvalidConfigError(err, Unless(err))
 	}
 
-	// Can't create a stream with a sealed state.
-	if cfg.Sealed {
-		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for create can not be sealed"))
-	}
-
 	singleServerMode := !s.JetStreamIsClustered() && s.standAloneMode()
 	if singleServerMode && cfg.Replicas > 1 {
 		return nil, ApiErrors[JSStreamReplicasNotSupportedErr]

@@ -16535,6 +16535,9 @@ func TestJetStreamBackOffCheckPending(t *testing.T) {
 
 func Benchmark__JetStreamPubWithAck(b *testing.B) {
 	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
 	defer s.Shutdown()
 
 	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: "foo"})
@@ -16563,6 +16566,9 @@ func Benchmark__JetStreamPubWithAck(b *testing.B) {
 
 func Benchmark____JetStreamPubNoAck(b *testing.B) {
 	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
 	defer s.Shutdown()
 
 	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: "foo"})
@@ -16594,6 +16600,9 @@ func Benchmark____JetStreamPubNoAck(b *testing.B) {
 
 func Benchmark_JetStreamPubAsyncAck(b *testing.B) {
 	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
 	defer s.Shutdown()
 
 	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: "foo"})
@@ -16647,6 +16656,9 @@ func Benchmark____JetStreamSubNoAck(b *testing.B) {
 	}
 
 	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
 	defer s.Shutdown()
 
 	mname := "foo"
@@ -16705,6 +16717,9 @@ func benchJetStreamWorkersAndBatch(b *testing.B, numWorkers, batchSize int) {
 	}
 
 	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
 	defer s.Shutdown()
 
 	mname := "MSET22"
@@ -17028,4 +17043,42 @@ func TestJetStreamImportReload(t *testing.T) {
 	si, err = jsB.StreamInfo("news")
 	require_NoError(t, err)
 	require_True(t, si.State.Msgs == 1)
+}
+
+func TestJetStreamRecoverSealedAfterServerRestart(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "foo"})
+	require_NoError(t, err)
+
+	for i := 0; i < 100; i++ {
+		js.PublishAsync("foo", []byte("OK"))
+	}
+	<-js.PublishAsyncComplete()
+
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "foo", Sealed: true})
+	require_NoError(t, err)
+
+	nc.Close()
+
+	// Stop current
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+	// Restart.
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err := js.StreamInfo("foo")
+	require_NoError(t, err)
+	require_True(t, si.State.Msgs == 100)
 }
