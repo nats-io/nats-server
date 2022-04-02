@@ -14,9 +14,11 @@
 package server
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"sync/atomic"
+	"time"
 
 	srvlog "github.com/nats-io/nats-server/v2/logger"
 )
@@ -202,6 +204,14 @@ func (s *Server) Warnf(format string, v ...interface{}) {
 	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
 		logger.Warnf(format, v...)
 	}, format, v...)
+}
+
+func (s *Server) RateLimitWarnf(format string, v ...interface{}) {
+	statement := fmt.Sprintf(format, v...)
+	if _, loaded := s.rateLimitLogging.LoadOrStore(statement, time.Now()); loaded {
+		return
+	}
+	s.Warnf("%s", statement)
 }
 
 // Fatalf logs a fatal error

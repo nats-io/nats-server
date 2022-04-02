@@ -5131,7 +5131,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	if !ok {
 		jsa.mu.RUnlock()
 		err := fmt.Errorf("no JetStream resource limits found account: %q", jsa.acc().Name)
-		s.Warnf(err.Error())
+		s.RateLimitWarnf(err.Error())
 		if canRespond {
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 			resp.Error = NewJSNoLimitsError()
@@ -5161,7 +5161,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// If we have exceeded our account limits go ahead and return.
 	if exceeded {
 		err := fmt.Errorf("JetStream resource limits exceeded for account: %q", jsa.acc().Name)
-		s.Warnf(err.Error())
+		s.RateLimitWarnf(err.Error())
 		if canRespond {
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 			resp.Error = NewJSAccountResourcesExceededError()
@@ -5174,7 +5174,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// Check msgSize if we have a limit set there. Again this works if it goes through but better to be pre-emptive.
 	if maxMsgSize >= 0 && (len(hdr)+len(msg)) > maxMsgSize {
 		err := fmt.Errorf("JetStream message size exceeds limits for '%s > %s'", jsa.acc().Name, mset.cfg.Name)
-		s.Warnf(err.Error())
+		s.RateLimitWarnf(err.Error())
 		if canRespond {
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 			resp.Error = NewJSStreamMessageExceedsMaximumError()
@@ -5188,7 +5188,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// Again this works if it goes through but better to be pre-emptive.
 	if len(hdr) > math.MaxUint16 {
 		err := fmt.Errorf("JetStream header size exceeds limits for '%s > %s'", jsa.acc().Name, mset.cfg.Name)
-		s.Warnf(err.Error())
+		s.RateLimitWarnf(err.Error())
 		if canRespond {
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 			resp.Error = NewJSStreamHeaderExceedsMaximumError()

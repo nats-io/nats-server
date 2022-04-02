@@ -1966,3 +1966,110 @@ func TestServerLogsConfigurationFile(t *testing.T) {
 		t.Fatalf("Config file location was not reported in log: %s", log)
 	}
 }
+
+func TestServerRateLimitLogging(t *testing.T) {
+	s := RunServer(DefaultOptions())
+	defer s.Shutdown()
+
+	s.changeRateLimitLogInterval(100 * time.Millisecond)
+
+	l := &captureWarnLogger{warn: make(chan string, 100)}
+	s.SetLogger(l, false, false)
+
+	s.RateLimitWarnf("Warning number 1")
+	s.RateLimitWarnf("Warning number 2")
+	s.RateLimitWarnf("Warning number 1")
+	s.RateLimitWarnf("Warning number 2")
+
+	checkLog := func(c1, c2 *client) {
+		t.Helper()
+
+		nb1 := "Warning number 1"
+		nb2 := "Warning number 2"
+		gotOne := 0
+		gotTwo := 0
+		for done := false; !done; {
+			select {
+			case w := <-l.warn:
+				if strings.Contains(w, nb1) {
+					gotOne++
+				} else if strings.Contains(w, nb2) {
+					gotTwo++
+				}
+			case <-time.After(150 * time.Millisecond):
+				done = true
+			}
+		}
+		if gotOne != 1 {
+			t.Fatalf("Should have had only 1 warning for nb1, got %v", gotOne)
+		}
+		if gotTwo != 1 {
+			t.Fatalf("Should have had only 1 warning for nb2, got %v", gotTwo)
+		}
+
+		// Wait for more than the expiration interval
+		time.Sleep(200 * time.Millisecond)
+		if c1 == nil {
+			s.RateLimitWarnf(nb1)
+		} else {
+			c1.RateLimitWarnf(nb1)
+			c2.RateLimitWarnf(nb1)
+		}
+		gotOne = 0
+		for {
+			select {
+			case w := <-l.warn:
+				if strings.Contains(w, nb1) {
+					gotOne++
+				}
+			case <-time.After(200 * time.Millisecond):
+				if gotOne == 0 {
+					t.Fatalf("Warning was still suppressed")
+				} else if gotOne > 1 {
+					t.Fatalf("Should have had only 1 warning for nb1, got %v", gotOne)
+				} else {
+					// OK! we are done
+					return
+				}
+			}
+		}
+	}
+
+	checkLog(nil, nil)
+
+	nc1 := natsConnect(t, s.ClientURL(), nats.Name("c1"))
+	defer nc1.Close()
+	nc2 := natsConnect(t, s.ClientURL(), nats.Name("c2"))
+	defer nc2.Close()
+
+	var c1 *client
+	var c2 *client
+	s.mu.Lock()
+	for _, cli := range s.clients {
+		cli.mu.Lock()
+		switch cli.opts.Name {
+		case "c1":
+			c1 = cli
+		case "c2":
+			c2 = cli
+		}
+		cli.mu.Unlock()
+		if c1 != nil && c2 != nil {
+			break
+		}
+	}
+	s.mu.Unlock()
+	if c1 == nil || c2 == nil {
+		t.Fatal("Did not find the clients")
+	}
+
+	// Wait for more than the expiration interval
+	time.Sleep(200 * time.Millisecond)
+
+	c1.RateLimitWarnf("Warning number 1")
+	c1.RateLimitWarnf("Warning number 2")
+	c2.RateLimitWarnf("Warning number 1")
+	c2.RateLimitWarnf("Warning number 2")
+
+	checkLog(c1, c2)
+}

@@ -2269,7 +2269,7 @@ func (t *streamTemplate) processInboundTemplateMsg(_ *subscription, pc *client, 
 	t.mu.Unlock()
 
 	if atLimit {
-		c.Warnf("JetStream could not create stream for account %q on subject %q, at limit", acc.Name, subject)
+		c.RateLimitWarnf("JetStream could not create stream for account %q on subject %q, at limit", acc.Name, subject)
 		return
 	}
 
@@ -2280,7 +2280,7 @@ func (t *streamTemplate) processInboundTemplateMsg(_ *subscription, pc *client, 
 	mset, err := acc.addStream(&cfg)
 	if err != nil {
 		acc.validateStreams(t)
-		c.Warnf("JetStream could not create stream for account %q on subject %q", acc.Name, subject)
+		c.RateLimitWarnf("JetStream could not create stream for account %q on subject %q: %v", acc.Name, subject, err)
 		return
 	}
 

@@ -1625,7 +1625,7 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 				mset.retryMirrorConsumer()
 			}
 		} else {
-			s.Warnf("Got error processing JetStream mirror msg: %v", err)
+			s.RateLimitWarnf("Got error processing JetStream mirror msg: %v", err)
 		}
 		if strings.Contains(err.Error(), "no space left") {
 			s.Errorf("JetStream out of space, will be DISABLED")
@@ -2236,7 +2236,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 			mset.cancelSourceConsumer(si.iname)
 			mset.retrySourceConsumer(si.iname)
 		} else {
-			s.Warnf("JetStream got an error processing inbound source msg: %v", err)
+			s.RateLimitWarnf("JetStream got an error processing inbound source msg: %v", err)
 		}
 		if strings.Contains(err.Error(), "no space left") {
 			s.Errorf("JetStream out of space, will be DISABLED")
@@ -3138,7 +3138,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			response, _ = json.Marshal(resp)
 		}
 	} else if exceeded, apiErr := jsa.limitsExceeded(stype, tierName); exceeded {
-		s.Warnf("JetStream resource limits exceeded for account: %q", accName)
+		s.RateLimitWarnf("JetStream resource limits exceeded for account: %q", accName)
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
 			if apiErr == nil {

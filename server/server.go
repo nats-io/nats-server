@@ -271,6 +271,10 @@ type Server struct {
 
 	// IPQueues map
 	ipQueues sync.Map
+
+	// To limit logging frequency
+	rateLimitLogging   sync.Map
+	rateLimitLoggingCh chan time.Duration
 }
 
 // For tracking JS nodes.
@@ -357,19 +361,20 @@ func NewServer(opts *Options) (*Server, error) {
 	now := time.Now().UTC()
 
 	s := &Server{
-		kp:           kp,
-		configFile:   opts.ConfigFile,
-		info:         info,
-		prand:        rand.New(rand.NewSource(time.Now().UnixNano())),
-		opts:         opts,
-		done:         make(chan bool, 1),
-		start:        now,
-		configTime:   now,
-		gwLeafSubs:   NewSublistWithCache(),
-		httpBasePath: httpBasePath,
-		eventIds:     nuid.New(),
-		routesToSelf: make(map[string]struct{}),
-		httpReqStats: make(map[string]uint64), // Used to track HTTP requests
+		kp:                 kp,
+		configFile:         opts.ConfigFile,
+		info:               info,
+		prand:              rand.New(rand.NewSource(time.Now().UnixNano())),
+		opts:               opts,
+		done:               make(chan bool, 1),
+		start:              now,
+		configTime:         now,
+		gwLeafSubs:         NewSublistWithCache(),
+		httpBasePath:       httpBasePath,
+		eventIds:           nuid.New(),
+		routesToSelf:       make(map[string]struct{}),
+		httpReqStats:       make(map[string]uint64), // Used to track HTTP requests
+		rateLimitLoggingCh: make(chan time.Duration, 1),
 	}
 
 	if opts.TLSRateLimit > 0 {
@@ -1600,6 +1605,8 @@ func (s *Server) Start() {
 	s.grMu.Lock()
 	s.grRunning = true
 	s.grMu.Unlock()
+
+	s.startRateLimitLogExpiration()
 
 	// Pprof http endpoint for the profiler.
 	if opts.ProfPort != 0 {
@@ -3592,4 +3599,40 @@ func (s *Server) updateRemoteSubscription(acc *Account, sub *subscription, delta
 	}
 
 	s.updateLeafNodes(acc, sub, delta)
+}
+
+func (s *Server) startRateLimitLogExpiration() {
+	interval := time.Second
+	s.startGoRoutine(func() {
+		defer s.grWG.Done()
+
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.quitCh:
+				return
+			case interval = <-s.rateLimitLoggingCh:
+				ticker.Reset(interval)
+			case <-ticker.C:
+				s.rateLimitLogging.Range(func(k, v interface{}) bool {
+					start := v.(time.Time)
+					if time.Since(start) >= interval {
+						s.rateLimitLogging.Delete(k)
+					}
+					return true
+				})
+			}
+		}
+	})
+}
+
+func (s *Server) changeRateLimitLogInterval(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	select {
+	case s.rateLimitLoggingCh <- d:
+	default:
+	}
 }
