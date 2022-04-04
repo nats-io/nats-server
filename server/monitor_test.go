@@ -4351,3 +4351,101 @@ func TestMonitorReloadTLSConfig(t *testing.T) {
 		t.Fatalf("Error: %v", err)
 	}
 }
+
+func TestMonitorMQTT(t *testing.T) {
+	o := DefaultOptions()
+	o.HTTPHost = "127.0.0.1"
+	o.HTTPPort = -1
+	o.ServerName = "mqtt_server"
+	o.Users = []*User{{Username: "someuser"}}
+	pinnedCerts := make(PinnedCertSet)
+	pinnedCerts["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069"] = struct{}{}
+	o.MQTT = MQTTOpts{
+		Host:           "127.0.0.1",
+		Port:           -1,
+		NoAuthUser:     "someuser",
+		JsDomain:       "js",
+		AuthTimeout:    2.0,
+		TLSMap:         true,
+		TLSTimeout:     3.0,
+		TLSPinnedCerts: pinnedCerts,
+		AckWait:        4 * time.Second,
+		MaxAckPending:  256,
+	}
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	expected := &MQTTOptsVarz{
+		Host:           "127.0.0.1",
+		Port:           o.MQTT.Port,
+		NoAuthUser:     "someuser",
+		JsDomain:       "js",
+		AuthTimeout:    2.0,
+		TLSMap:         true,
+		TLSTimeout:     3.0,
+		TLSPinnedCerts: []string{"7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069"},
+		AckWait:        4 * time.Second,
+		MaxAckPending:  256,
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+	for mode := 0; mode < 2; mode++ {
+		v := pollVarz(t, s, mode, url, nil)
+		vm := &v.MQTT
+		if !reflect.DeepEqual(vm, expected) {
+			t.Fatalf("Expected\n%+v\nGot:\n%+v", expected, vm)
+		}
+	}
+}
+
+func TestMonitorWebsocket(t *testing.T) {
+	o := DefaultOptions()
+	o.HTTPHost = "127.0.0.1"
+	o.HTTPPort = -1
+	kp, _ := nkeys.FromSeed(oSeed)
+	pub, _ := kp.PublicKey()
+	o.TrustedKeys = []string{pub}
+	o.Users = []*User{{Username: "someuser"}}
+	pinnedCerts := make(PinnedCertSet)
+	pinnedCerts["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069"] = struct{}{}
+	o.Websocket = WebsocketOpts{
+		Host:             "127.0.0.1",
+		Port:             -1,
+		Advertise:        "somehost:8080",
+		NoAuthUser:       "someuser",
+		JWTCookie:        "somecookiename",
+		AuthTimeout:      2.0,
+		NoTLS:            true,
+		TLSMap:           true,
+		TLSPinnedCerts:   pinnedCerts,
+		SameOrigin:       true,
+		AllowedOrigins:   []string{"origin1", "origin2"},
+		Compression:      true,
+		HandshakeTimeout: 4 * time.Second,
+	}
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	expected := &WebsocketOptsVarz{
+		Host:             "127.0.0.1",
+		Port:             o.Websocket.Port,
+		Advertise:        "somehost:8080",
+		NoAuthUser:       "someuser",
+		JWTCookie:        "somecookiename",
+		AuthTimeout:      2.0,
+		NoTLS:            true,
+		TLSMap:           true,
+		TLSPinnedCerts:   []string{"7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069"},
+		SameOrigin:       true,
+		AllowedOrigins:   []string{"origin1", "origin2"},
+		Compression:      true,
+		HandshakeTimeout: 4 * time.Second,
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+	for mode := 0; mode < 2; mode++ {
+		v := pollVarz(t, s, mode, url, nil)
+		vw := &v.Websocket
+		if !reflect.DeepEqual(vw, expected) {
+			t.Fatalf("Expected\n%+v\nGot:\n%+v", expected, vw)
+		}
+	}
+}

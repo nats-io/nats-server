@@ -1140,6 +1140,8 @@ type Varz struct {
 	Cluster               ClusterOptsVarz       `json:"cluster,omitempty"`
 	Gateway               GatewayOptsVarz       `json:"gateway,omitempty"`
 	LeafNode              LeafNodeOptsVarz      `json:"leaf,omitempty"`
+	MQTT                  MQTTOptsVarz          `json:"mqtt,omitempty"`
+	Websocket             WebsocketOptsVarz     `json:"websocket,omitempty"`
 	JetStream             JetStreamVarz         `json:"jetstream,omitempty"`
 	TLSTimeout            float64               `json:"tls_timeout"`
 	WriteDeadline         time.Duration         `json:"write_deadline"`
@@ -1234,6 +1236,37 @@ type RemoteLeafOptsVarz struct {
 	TLSTimeout   float64    `json:"tls_timeout,omitempty"`
 	URLs         []string   `json:"urls,omitempty"`
 	Deny         *DenyRules `json:"deny,omitempty"`
+}
+
+// MQTTOptsVarz contains monitoring MQTT information
+type MQTTOptsVarz struct {
+	Host           string        `json:"host,omitempty"`
+	Port           int           `json:"port,omitempty"`
+	NoAuthUser     string        `json:"no_auth_user,omitempty"`
+	AuthTimeout    float64       `json:"auth_timeout,omitempty"`
+	TLSMap         bool          `json:"tls_map,omitempty"`
+	TLSTimeout     float64       `json:"tls_timeout,omitempty"`
+	TLSPinnedCerts []string      `json:"tls_pinned_certs,omitempty"`
+	JsDomain       string        `json:"js_domain,omitempty"`
+	AckWait        time.Duration `json:"ack_wait,omitempty"`
+	MaxAckPending  uint16        `json:"max_ack_pending,omitempty"`
+}
+
+// WebsocketOptsVarz contains monitoring websocket information
+type WebsocketOptsVarz struct {
+	Host             string        `json:"host,omitempty"`
+	Port             int           `json:"port,omitempty"`
+	Advertise        string        `json:"advertise,omitempty"`
+	NoAuthUser       string        `json:"no_auth_user,omitempty"`
+	JWTCookie        string        `json:"jwt_cookie,omitempty"`
+	HandshakeTimeout time.Duration `json:"handshake_timeout,omitempty"`
+	AuthTimeout      float64       `json:"auth_timeout,omitempty"`
+	NoTLS            bool          `json:"no_tls,omitempty"`
+	TLSMap           bool          `json:"tls_map,omitempty"`
+	TLSPinnedCerts   []string      `json:"tls_pinned_certs,omitempty"`
+	SameOrigin       bool          `json:"same_origin,omitempty"`
+	AllowedOrigins   []string      `json:"allowed_origins,omitempty"`
+	Compression      bool          `json:"compression,omitempty"`
 }
 
 // VarzOptions are the options passed to Varz().
@@ -1379,6 +1412,8 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 	c := &opts.Cluster
 	gw := &opts.Gateway
 	ln := &opts.LeafNode
+	mqtt := &opts.MQTT
+	ws := &opts.Websocket
 	clustTlsReq := c.TLSConfig != nil
 	gatewayTlsReq := gw.TLSConfig != nil
 	leafTlsReq := ln.TLSConfig != nil
@@ -1427,6 +1462,31 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			TLSRequired: leafTlsReq,
 			TLSVerify:   leafTlsVerify,
 			Remotes:     []RemoteLeafOptsVarz{},
+		},
+		MQTT: MQTTOptsVarz{
+			Host:          mqtt.Host,
+			Port:          mqtt.Port,
+			NoAuthUser:    mqtt.NoAuthUser,
+			AuthTimeout:   mqtt.AuthTimeout,
+			TLSMap:        mqtt.TLSMap,
+			TLSTimeout:    mqtt.TLSTimeout,
+			JsDomain:      mqtt.JsDomain,
+			AckWait:       mqtt.AckWait,
+			MaxAckPending: mqtt.MaxAckPending,
+		},
+		Websocket: WebsocketOptsVarz{
+			Host:             ws.Host,
+			Port:             ws.Port,
+			Advertise:        ws.Advertise,
+			NoAuthUser:       ws.NoAuthUser,
+			JWTCookie:        ws.JWTCookie,
+			AuthTimeout:      ws.AuthTimeout,
+			NoTLS:            ws.NoTLS,
+			TLSMap:           ws.TLSMap,
+			SameOrigin:       ws.SameOrigin,
+			AllowedOrigins:   copyStrings(ws.AllowedOrigins),
+			Compression:      ws.Compression,
+			HandshakeTimeout: ws.HandshakeTimeout,
 		},
 		Start:                 s.start,
 		MaxSubs:               opts.MaxSubs,
@@ -1515,6 +1575,19 @@ func (s *Server) updateVarzConfigReloadableFields(v *Varz) {
 	if s.sys != nil && s.sys.account != nil {
 		v.SystemAccount = s.sys.account.GetName()
 	}
+	v.MQTT.TLSPinnedCerts = getPinnedCertsAsSlice(opts.MQTT.TLSPinnedCerts)
+	v.Websocket.TLSPinnedCerts = getPinnedCertsAsSlice(opts.Websocket.TLSPinnedCerts)
+}
+
+func getPinnedCertsAsSlice(certs PinnedCertSet) []string {
+	if len(certs) == 0 {
+		return nil
+	}
+	res := make([]string, 0, len(certs))
+	for cn := range certs {
+		res = append(res, cn)
+	}
+	return res
 }
 
 // Updates the runtime Varz fields, that is, fields that change during
