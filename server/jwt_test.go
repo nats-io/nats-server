@@ -5712,12 +5712,7 @@ func TestJWTClusteredJetStreamTiersChange(t *testing.T) {
 		DiskStorage: 1500, MemoryStorage: 0, Consumer: 1, Streams: 1}
 	accJwt1 := encodeClaim(t, accClaim, aExpPub)
 	accCreds := newUser(t, accKp)
-
 	start := time.Now()
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
-	dirSrv := createDir(t, "srv")
-	defer removeDir(t, dirSrv)
 
 	tmlp := `
 		listen: 127.0.0.1:-1
@@ -5731,16 +5726,17 @@ func TestJWTClusteredJetStreamTiersChange(t *testing.T) {
 			listen: 127.0.0.1:%d
 			routes = [%s]
 		}
-	` + fmt.Sprintf(`
-		operator: %s
-		system_account: %s
-		resolver: {
-			type: full
-			dir: '%s'
-		}
-	`, ojwt, syspub, dirSrv)
-
-	c := createJetStreamClusterWithTemplate(t, tmlp, "cluster", 3)
+	`
+	c := createJetStreamClusterWithTemplateAndModHook(t, tmlp, "cluster", 3,
+		func(serverName, clustername, storeDir, conf string) string {
+			return conf + fmt.Sprintf(`
+				operator: %s
+				system_account: %s
+				resolver: {
+					type: full
+					dir: '%s/jwt'
+				}`, ojwt, syspub, storeDir)
+		})
 	defer c.shutdown()
 
 	updateJwt(t, c.randomServer().ClientURL(), sysCreds, sysJwt, 3)
@@ -5802,12 +5798,7 @@ func TestJWTClusteredJetStreamDeleteTierWithStreamAndMove(t *testing.T) {
 		DiskStorage: 3000, MemoryStorage: 0, Consumer: 1, Streams: 1}
 	accJwt1 := encodeClaim(t, accClaim, aExpPub)
 	accCreds := newUser(t, accKp)
-
 	start := time.Now()
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
-	dirSrv := createDir(t, "srv")
-	defer removeDir(t, dirSrv)
 
 	tmlp := `
 		listen: 127.0.0.1:-1
@@ -5821,16 +5812,17 @@ func TestJWTClusteredJetStreamDeleteTierWithStreamAndMove(t *testing.T) {
 			listen: 127.0.0.1:%d
 			routes = [%s]
 		}
-	` + fmt.Sprintf(`
-		operator: %s
-		system_account: %s
-		resolver: {
-			type: full
-			dir: '%s'
-		}
-	`, ojwt, syspub, dirSrv)
-
-	c := createJetStreamClusterWithTemplate(t, tmlp, "cluster", 3)
+	`
+	c := createJetStreamClusterWithTemplateAndModHook(t, tmlp, "cluster", 3,
+		func(serverName, clustername, storeDir, conf string) string {
+			return conf + fmt.Sprintf(`
+				operator: %s
+				system_account: %s
+				resolver: {
+					type: full
+					dir: '%s/jwt'
+				}`, ojwt, syspub, storeDir)
+		})
 	defer c.shutdown()
 
 	updateJwt(t, c.randomServer().ClientURL(), sysCreds, sysJwt, 3)

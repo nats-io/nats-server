@@ -12165,12 +12165,22 @@ func createJetStreamClusterExplicit(t *testing.T, clusterName string, numServers
 }
 
 func createJetStreamClusterWithTemplate(t *testing.T, tmpl string, clusterName string, numServers int) *cluster {
+	return createJetStreamClusterWithTemplateAndModHook(t, tmpl, clusterName, numServers, nil)
+}
+
+func createJetStreamClusterWithTemplateAndModHook(t *testing.T, tmpl string, clusterName string, numServers int, modify modifyCb) *cluster {
 	startPorts := []int{7_022, 9_022, 11_022, 15_022}
 	port := startPorts[rand.Intn(len(startPorts))]
-	return createJetStreamCluster(t, tmpl, clusterName, _EMPTY_, numServers, port, true)
+	return createJetStreamClusterAndModHook(t, tmpl, clusterName, _EMPTY_, numServers, port, true, modify)
 }
 
 func createJetStreamCluster(t *testing.T, tmpl string, clusterName, snPre string, numServers int, portStart int, waitOnReady bool) *cluster {
+	return createJetStreamClusterAndModHook(t, tmpl, clusterName, snPre, numServers, portStart, waitOnReady, nil)
+}
+
+type modifyCb func(serverName, clusterName, storeDir, conf string) string
+
+func createJetStreamClusterAndModHook(t *testing.T, tmpl string, clusterName, snPre string, numServers int, portStart int, waitOnReady bool, modify modifyCb) *cluster {
 	t.Helper()
 	if clusterName == _EMPTY_ || numServers < 1 {
 		t.Fatalf("Bad params")
@@ -12205,6 +12215,9 @@ func createJetStreamCluster(t *testing.T, tmpl string, clusterName, snPre string
 		storeDir := createDir(t, JetStreamStoreDir)
 		sn := fmt.Sprintf("%sS-%d", snPre, cp-portStart+1)
 		conf := fmt.Sprintf(tmpl, sn, storeDir, clusterName, cp, routeConfig)
+		if modify != nil {
+			conf = modify(sn, clusterName, storeDir, conf)
+		}
 		s, o := RunServerWithConfig(createConfFile(t, []byte(conf)))
 		c.servers = append(c.servers, s)
 		c.opts = append(c.opts, o)
