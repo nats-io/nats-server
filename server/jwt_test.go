@@ -5731,16 +5731,17 @@ func TestJWTClusteredJetStreamTiersChange(t *testing.T) {
 			listen: 127.0.0.1:%d
 			routes = [%s]
 		}
-	` + fmt.Sprintf(`
-		operator: %s
-		system_account: %s
-		resolver: {
-			type: full
-			dir: '%s'
-		}
-	`, ojwt, syspub, dirSrv)
-
-	c := createJetStreamClusterWithTemplate(t, tmlp, "cluster", 3)
+	`
+	c := createJetStreamClusterWithTemplateAndModHook(t, tmlp, "cluster", 3,
+		func(serverName, clustername, storeDir, conf string) string {
+			return conf + fmt.Sprintf(`
+				operator: %s
+				system_account: %s
+				resolver: {
+					type: full
+					dir: '%s/jwt'
+				}`, ojwt, syspub, storeDir)
+		})
 	defer c.shutdown()
 
 	updateJwt(t, c.randomServer().ClientURL(), sysCreds, sysJwt, 3)
