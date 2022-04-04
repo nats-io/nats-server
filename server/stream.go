@@ -121,6 +121,9 @@ type PeerInfo struct {
 	Offline bool          `json:"offline,omitempty"`
 	Active  time.Duration `json:"active"`
 	Lag     uint64        `json:"lag,omitempty"`
+	// For migrations.
+	cluster string
+	peer    string
 }
 
 // StreamSourceInfo shows information about an upstream stream source.
@@ -204,6 +207,7 @@ type stream struct {
 	leader   string
 	lqsent   time.Time
 	catchups map[string]uint64
+	uch      chan struct{}
 }
 
 type sourceInfo struct {
@@ -396,6 +400,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		consumers: make(map[string]*consumer),
 		msgs:      s.newIPQueue(qpfx + "messages"), // of *inMsg
 		qch:       make(chan struct{}),
+		uch:       make(chan struct{}, 1),
 	}
 
 	// For no-ack consumers when we are interest retention.
@@ -512,6 +517,7 @@ func (mset *stream) streamAssignment() *streamAssignment {
 func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
+
 	mset.sa = sa
 	if sa == nil {
 		return
@@ -526,6 +532,21 @@ func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 		// Note below the way we subscribe here is so that we can send requests to ourselves.
 		mset.infoSub, _ = mset.srv.systemSubscribe(isubj, _EMPTY_, false, mset.sysc, mset.handleClusterStreamInfoRequest)
 	}
+
+	// Trigger update chan.
+	select {
+	case mset.uch <- struct{}{}:
+	default:
+	}
+}
+
+func (mset *stream) updateC() <-chan struct{} {
+	if mset == nil {
+		return nil
+	}
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+	return mset.uch
 }
 
 // IsLeader will return if we are the current leader.
@@ -1151,7 +1172,7 @@ func (mset *stream) update(config *StreamConfig) error {
 	// Now update config and store's version of our config.
 	mset.cfg = *cfg
 
-	// If we are the leader never suppres update advisory, simply send.
+	// If we are the leader never suppress update advisory, simply send.
 	if mset.isLeader() {
 		mset.sendUpdateAdvisoryLocked()
 	}

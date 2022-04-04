@@ -1228,6 +1228,43 @@ func (js *jetStream) processRemovePeer(peer string) {
 	}
 }
 
+// Remove old peers after the new leader has caught up and taken over.
+// We are the stream leader.
+func (js *jetStream) removeOldPeers(mset *stream) {
+	sa := mset.streamAssignment()
+	ci := js.clusterInfo(mset.raftGroup())
+
+	js.mu.Lock()
+	defer js.mu.Unlock()
+
+	cc, csa := js.cluster, sa.copyGroup()
+	numExpandedPeers := len(csa.Group.Peers)
+	csa.Group.Peers = csa.Group.Peers[:0]
+
+	if ci.Leader != _EMPTY_ {
+		csa.Group.Peers = append(csa.Group.Peers, string(getHash(ci.Leader)))
+	}
+	for _, r := range ci.Replicas {
+		if r.cluster == ci.Name {
+			csa.Group.Peers = append(csa.Group.Peers, r.peer)
+		}
+	}
+
+	// Now do consumers actually first here, followed by the owning stream.
+	for _, ca := range csa.consumers {
+		cca := ca.copyGroup()
+		numPeers := len(cca.Group.Peers)
+		if numPeers == numExpandedPeers {
+			cca.Group.Peers = csa.Group.Peers
+		} else {
+			cca.Group.Peers = cca.Group.Peers[len(cca.Group.Peers)-1:]
+		}
+		cc.meta.ForwardProposal(encodeAddConsumerAssignment(cca))
+	}
+
+	cc.meta.ForwardProposal(encodeUpdateStreamAssignment(csa))
+}
+
 // Assumes all checks have already been done.
 func (js *jetStream) removePeerFromStream(sa *streamAssignment, peer string) bool {
 	js.mu.Lock()
@@ -1497,7 +1534,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		return
 	}
 
-	qch, lch, aq := n.QuitC(), n.LeadChangeC(), n.ApplyQ()
+	qch, lch, aq, uch := n.QuitC(), n.LeadChangeC(), n.ApplyQ(), mset.updateC()
 
 	s.Debugf("Starting stream monitor for '%s > %s' [%s]", sa.Client.serviceAccount(), sa.Config.Name, n.Group())
 	defer s.Debugf("Exiting stream monitor for '%s > %s' [%s]", sa.Client.serviceAccount(), sa.Config.Name, n.Group())
@@ -1554,6 +1591,25 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// we replace with the restore chan.
 	restoreDoneCh := make(<-chan error)
 	isRecovering := true
+
+	// For migration tracking.
+	var migrating bool
+	var peerGroup peerMigrateType
+	var mmt *time.Ticker
+	var mmtc <-chan time.Time
+
+	startMigrationMonitoring := func() {
+		mmt = time.NewTicker(250 * time.Millisecond)
+		mmtc = mmt.C
+	}
+
+	stopMigrationMonitoring := func() {
+		if mmt != nil {
+			mmt.Stop()
+			mmtc = nil
+		}
+	}
+	defer stopMigrationMonitoring()
 
 	// This is triggered during a scale up from 1 to clustered mode. We need the new followers to catchup,
 	// similar to how we trigger the catchup mechanism post a backup/restore. It's ok to do here and preferred
@@ -1621,9 +1677,61 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				js.setStreamAssignmentRecovering(sa)
 			}
 
+			// Process our leader change.
 			js.processStreamLeaderChange(mset, isLeader)
+
+			// Check for migrations here. We set the state on the stream assignment update below.
+			if isLeader && migrating {
+				if peerGroup == oldPeerGroup {
+					startMigrationMonitoring()
+				} else {
+					stopMigrationMonitoring()
+					// We delay here since consumer migration, while in most cases is faster, is done after the stream itself.
+					// When we remove the stream from the old peers this will remove the consumers which might still be in flight.
+					time.AfterFunc(500*time.Millisecond, func() { js.removeOldPeers(mset) })
+				}
+			}
+
 		case <-t.C:
 			doSnapshot()
+		case <-uch:
+			// We get this when we have a new stream assignment caused by an update. We want
+			// to know if we are migrating.
+			migrating, peerGroup = mset.isMigrating()
+			// If we are migrating and in the old peer group and we are leader, monitor for the
+			// new peers to be caught up. We could not be leader yet, so we will do same check below
+			// on leadership change.
+			if isLeader && migrating && peerGroup == oldPeerGroup {
+				startMigrationMonitoring()
+			}
+		case <-mmtc:
+			if !isLeader {
+				// We are no longer leader, so not our job.
+				stopMigrationMonitoring()
+				continue
+			}
+			// Check to see that we have someone caught up.
+			ci := js.clusterInfo(mset.raftGroup())
+			if mset.hasCatchupPeers() {
+				mset.checkClusterInfo(ci)
+			}
+			// Track the new peers and check to make sure at least 1 is current and up to date.
+			var newPeers []*PeerInfo
+			for _, r := range ci.Replicas {
+				if r.cluster != ci.Name && r.Current {
+					newPeers = append(newPeers, r)
+				}
+			}
+			if len(newPeers) == mset.cfg.Replicas {
+				for _, r := range newPeers {
+					if r.Current {
+						stopMigrationMonitoring()
+						// Transfer leadership for stream.
+						mset.raftNode().StepDown(r.peer)
+						break
+					}
+				}
+			}
 		case err := <-restoreDoneCh:
 			// We have completed a restore from snapshot on this server. The stream assignment has
 			// already been assigned but the replicas will need to catch up out of band. Consumers
@@ -1638,6 +1746,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			if err == nil {
 				if mset, err = acc.lookupStream(sa.Config.Name); mset != nil {
 					mset.setStreamAssignment(sa)
+					// Make sure to update our updateC which would have been nil.
+					uch = mset.updateC()
 				}
 			}
 			if err != nil {
@@ -1717,6 +1827,75 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			}
 		}
 	}
+}
+
+// When we are migration denotes if we ourselves are part of the old peer set or the new one.
+// Both types will be running at the same time as we scale up to extend into the new cluster.
+// Once detected we will us our type to dictate our behavior.
+type peerMigrateType int8
+
+const (
+	oldPeerGroup = peerMigrateType(iota)
+	newPeerGroup
+)
+
+// Determine if we are migrating and if so if we are part of the old or new set.
+func (mset *stream) isMigrating() (bool, peerMigrateType) {
+	mset.mu.RLock()
+	s, js, sa := mset.srv, mset.js, mset.sa
+	mset.mu.RUnlock()
+
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+
+	// During migration we will always be R>1, even when we start R1.
+	// So if we do not have a group or node we no we are not migrating.
+	if sa == nil || sa.Group == nil || sa.Group.node == nil {
+		return false, oldPeerGroup
+	}
+	// The sign of migration is if our group peer count != configured replica count.
+	if sa.Config.Replicas == len(sa.Group.Peers) {
+		return false, oldPeerGroup
+	}
+	// So we believe we are migrating here, need to determine if we are the old set or new set.
+	// We can shor circuit this based on our group assigned cluster vs our own.
+	if sa.Group.Cluster == s.cachedClusterName() {
+		return true, newPeerGroup
+	}
+	return true, oldPeerGroup
+}
+
+// Determine if we are migrating and if so if we are part of the old or new set.
+func (o *consumer) isMigrating() (bool, peerMigrateType) {
+	o.mu.RLock()
+	s, js, ca, mset := o.srv, o.js, o.ca, o.mset
+	o.mu.RUnlock()
+
+	if mset == nil {
+		return false, oldPeerGroup
+	}
+
+	sa := mset.streamAssignment()
+
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+
+	// During migration we will always be R>1, even when we start R1.
+	// So if we do not have a group or node we no we are not migrating.
+	if sa == nil || ca == nil || ca.Group == nil || ca.Group.node == nil {
+		return false, oldPeerGroup
+	}
+	// The sign of migration is if our group peer count != configured replica count.
+	// We inherit this from the stream.
+	if len(ca.Group.Peers) == 1 || sa.Config.Replicas == len(ca.Group.Peers) {
+		return false, oldPeerGroup
+	}
+	// So we believe we are migrating here, need to determine if we are the old set or new set.
+	// We can shor circuit this based on our group assigned cluster vs our own.
+	if ca.Group.Cluster == s.cachedClusterName() {
+		return true, newPeerGroup
+	}
+	return true, oldPeerGroup
 }
 
 // resetClusteredState is called when a clustered stream had a sequence mismatch and needs to be reset.
@@ -2305,7 +2484,6 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 	if isMember {
 		sa.responded = false
 	}
-
 	js.mu.Unlock()
 
 	// Check if this is for us..
@@ -2313,8 +2491,12 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 		js.processClusterUpdateStream(acc, osa, sa)
 	} else if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
 		// We have one here even though we are not a member. This can happen on re-assignment.
-		s.Debugf("JetStream removing stream '%s > %s' from this server, re-assigned", sa.Client.serviceAccount(), sa.Config.Name)
+		s.Debugf("JetStream removing stream '%s > %s' from this server", sa.Client.serviceAccount(), sa.Config.Name)
+
 		if node := mset.raftNode(); node != nil {
+			if node.Leader() {
+				node.StepDown()
+			}
 			node.ProposeRemovePeer(ourID)
 		}
 		mset.stop(true, false)
@@ -2331,14 +2513,14 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	js.mu.Lock()
 	s, rg := js.srv, sa.Group
 	client, subject, reply := sa.Client, sa.Subject, sa.Reply
-	alreadyRunning, numReplicas := osa.Group.node != nil, sa.Config.Replicas
+	alreadyRunning, numReplicas := osa.Group.node != nil, len(rg.Peers)
 	needsNode := rg.node == nil
-	storage := sa.Config.Storage
+	storage, cfg := sa.Config.Storage, sa.Config
 	hasResponded := sa.responded
 	sa.responded = true
 	js.mu.Unlock()
 
-	mset, err := acc.lookupStream(sa.Config.Name)
+	mset, err := acc.lookupStream(cfg.Name)
 	if err == nil && mset != nil {
 		var needsSetLeader bool
 		if !alreadyRunning && numReplicas > 1 {
@@ -2351,17 +2533,19 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			mset.removeNode()
 			// Make sure we are leader now that we are R1.
 			needsSetLeader = true
-			// In case we nned to shutdown the cluster specific subs, etc.
+			// In case we need to shutdown the cluster specific subs, etc.
 			mset.setLeader(false)
 			js.mu.Lock()
 			rg.node = nil
 			js.mu.Unlock()
 		}
+
 		mset.setStreamAssignment(sa)
-		if err = mset.update(sa.Config); err != nil {
-			s.Warnf("JetStream cluster error updating stream %q for account %q: %v", sa.Config.Name, acc.Name, err)
+		if err = mset.update(cfg); err != nil {
+			s.Warnf("JetStream cluster error updating stream %q for account %q: %v", cfg.Name, acc.Name, err)
 			mset.setStreamAssignment(osa)
 		}
+
 		// Make sure we are the leader now that we are R1.
 		if needsSetLeader {
 			mset.setLeader(true)
@@ -2703,7 +2887,8 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 		return
 	}
 
-	if _, err := s.LookupAccount(accName); err != nil {
+	acc, err := s.LookupAccount(accName)
+	if err != nil {
 		ll := fmt.Sprintf("Account [%s] lookup for consumer create failed: %v", accName, err)
 		if isMember {
 			// If we can not lookup the account and we are a member, send this result back to the metacontroller leader.
@@ -2760,14 +2945,26 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 		// Check if we have a raft node running, meaning we are no longer part of the group but were.
 		js.mu.Lock()
 		if node := ca.Group.node; node != nil {
+			// We have one here even though we are not a member. This can happen on re-assignment.
+			s.Debugf("JetStream removing consumer '%s > %s > %s' from this server", sa.Client.serviceAccount(), sa.Config.Name, ca.Name)
 			if node.Leader() {
-				node.StepDown()
+				var nl string
+				if peers := ca.Group.Peers; len(peers) > 0 {
+					nl = peers[rand.Int31n(int32(len(peers)))]
+				}
+				node.StepDown(nl)
 			}
 			node.ProposeRemovePeer(ourID)
 		}
 		ca.Group.node = nil
 		ca.err = nil
 		js.mu.Unlock()
+
+		if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
+			if o := mset.lookupConsumer(ca.Name); o != nil {
+				o.deleteWithoutAdvisory()
+			}
+		}
 	}
 }
 
@@ -3107,7 +3304,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 		return
 	}
 
-	qch, lch, aq := n.QuitC(), n.LeadChangeC(), n.ApplyQ()
+	qch, lch, aq, uch := n.QuitC(), n.LeadChangeC(), n.ApplyQ(), o.updateC()
 
 	s.Debugf("Starting consumer monitor for '%s > %s > %s' [%s]", o.acc.Name, ca.Stream, ca.Name, n.Group())
 	defer s.Debugf("Exiting consumer monitor for '%s > %s > %s' [%s]", o.acc.Name, ca.Stream, ca.Name, n.Group())
@@ -3159,6 +3356,25 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	var isLeader bool
 	recovering := true
 
+	// For migration tracking.
+	var migrating bool
+	var peerGroup peerMigrateType
+	var mmt *time.Ticker
+	var mmtc <-chan time.Time
+
+	startMigrationMonitoring := func() {
+		mmt = time.NewTicker(250 * time.Millisecond)
+		mmtc = mmt.C
+	}
+
+	stopMigrationMonitoring := func() {
+		if mmt != nil {
+			mmt.Stop()
+			mmtc = nil
+		}
+	}
+	defer stopMigrationMonitoring()
+
 	for {
 		select {
 		case <-s.quitCh:
@@ -3194,6 +3410,41 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			}
 			if err := js.processConsumerLeaderChange(o, isLeader); err == nil && isLeader {
 				doSnapshot(true)
+			}
+			// Check for migrations here. We set the state on the stream assignment update below.
+			if isLeader && migrating {
+				if peerGroup == oldPeerGroup {
+					startMigrationMonitoring()
+				} else {
+					stopMigrationMonitoring()
+				}
+			}
+		case <-uch:
+			// We get this when we have a new consumer assignment caused by an update. We want
+			// to know if we are migrating.
+			migrating, peerGroup = o.isMigrating()
+			// If we are migrating and in the old peer group and we are leader, monitor for the
+			// new peers to be caught up. We could not be leader yet, so we will do same check above
+			// on leadership change.
+			if isLeader && migrating && peerGroup == oldPeerGroup {
+				startMigrationMonitoring()
+			}
+		case <-mmtc:
+			if !isLeader {
+				// We are no longer leader, so not our job.
+				stopMigrationMonitoring()
+				continue
+			}
+			// Check to see that we have someone caught up.
+			ci := js.clusterInfo(o.raftGroup())
+			// Track the new peers and check to make sure at least 1 is current and up to date.
+			for _, r := range ci.Replicas {
+				if r.cluster != ci.Name && r.Current {
+					stopMigrationMonitoring()
+					// Transfer leadership for this consumer.
+					o.raftNode().StepDown(r.peer)
+					break
+				}
 			}
 		case <-t.C:
 			doSnapshot(false)
@@ -3302,7 +3553,7 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) {
 	o.store.UpdateAcks(dseq, sseq)
 
 	mset := o.mset
-	if mset == nil || mset.cfg.Retention == LimitsPolicy {
+	if mset == nil || o.retention == LimitsPolicy {
 		o.mu.Unlock()
 		return
 	}
@@ -3899,12 +4150,7 @@ func groupNameForConsumer(peers []string, storage StorageType) string {
 }
 
 func groupName(prefix string, peers []string, storage StorageType) string {
-	var gns string
-	if len(peers) == 1 {
-		gns = peers[0]
-	} else {
-		gns = string(getHash(nuid.Next()))
-	}
+	gns := string(getHash(nuid.Next()))
 	return fmt.Sprintf("%s-R%d%s-%s", prefix, len(peers), storage.String()[:1], gns)
 }
 
@@ -4127,7 +4373,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
-	// Check for mirrot changes which are not allowed.
+	// Check for mirror changes which are not allowed.
 	if !reflect.DeepEqual(newCfg.Mirror, osa.Config.Mirror) {
 		resp.Error = NewJSStreamMirrorNotUpdatableError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -4150,11 +4396,27 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		}
 	}
 
+	// Make copy so to not change original.
+	rg := osa.copyGroup().Group
+
+	// Check for a move update.
+	// TODO(dlc) - Should add a resolve from Tags to cluster and check that vs reflect.
+	isMoveRequest := !reflect.DeepEqual(osa.Config.Placement, newCfg.Placement)
+
 	// Check for replica changes.
-	rg := osa.Group
+	isReplicaChange := newCfg.Replicas != len(rg.Peers)
+
+	// We stage consumer updates and do them after the stream update.
 	var consumers []*consumerAssignment
 
-	if newCfg.Replicas != len(rg.Peers) {
+	// Can not move and scale at same time.
+	if isMoveRequest && isReplicaChange {
+		resp.Error = NewJSStreamMoveAndScaleError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
+	}
+
+	if isReplicaChange {
 		// We are adding new peers here.
 		if newCfg.Replicas > len(rg.Peers) {
 			peers := cc.selectPeerGroup(newCfg.Replicas, rg.Cluster, newCfg, rg.Peers)
@@ -4172,8 +4434,79 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 			}
 			rg.Peers = peers
 		} else {
-			// We are deleting nodes here.
-			rg.Peers = rg.Peers[:newCfg.Replicas]
+			// We are deleting nodes here. We want to do our best to preserve the current leader.
+			// We have support now from above that guarantees we are in our own Go routine, so can
+			// ask for stream info from the stream leader to make sure we keep the leader in the new list.
+			var curLeader string
+			if !s.allPeersOffline(rg) {
+				// Need to release js lock.
+				js.mu.Unlock()
+				s.mu.Lock()
+				inbox := s.newRespInbox()
+				results := make(chan *StreamInfo, 1)
+				// Store our handler.
+				s.sys.replies[inbox] = func(sub *subscription, _ *client, _ *Account, subject, _ string, msg []byte) {
+					var si StreamInfo
+					if err := json.Unmarshal(msg, &si); err != nil {
+						s.Warnf("Error unmarshaling clustered stream info response:%v", err)
+						return
+					}
+					select {
+					case results <- &si:
+					default:
+						s.Warnf("Failed placing remote stream info result on internal channel")
+					}
+				}
+				s.mu.Unlock()
+
+				isubj := fmt.Sprintf(clusterStreamInfoT, ci.serviceAccount(), cfg.Name)
+				s.sendInternalMsgLocked(isubj, inbox, nil, nil)
+
+				const timeout = 2 * time.Second
+				notActive := time.NewTimer(timeout)
+				defer notActive.Stop()
+
+				select {
+				case <-s.quitCh:
+					break
+				case <-notActive.C:
+					s.Warnf("Did not receive stream info results for '%s > %s'", acc, cfg.Name)
+				case si := <-results:
+					if si.Cluster != nil {
+						// The leader here is the server name, but need to convert to internal name.
+						curLeader = string(getHash(si.Cluster.Leader))
+					}
+				}
+				// Clean up here.
+				s.mu.Lock()
+				if s.sys != nil && s.sys.replies != nil {
+					delete(s.sys.replies, inbox)
+				}
+				s.mu.Unlock()
+				// Re-acquire here.
+				js.mu.Lock()
+			}
+			// If we identified a leader make sure its part of the new group.
+			selected := make([]string, 0, newCfg.Replicas)
+
+			if curLeader != _EMPTY_ {
+				selected = append(selected, curLeader)
+			}
+			for _, peer := range rg.Peers {
+				if len(selected) == newCfg.Replicas {
+					break
+				}
+				if peer == curLeader {
+					continue
+				}
+				if si, ok := s.nodeToInfo.Load(peer); ok && si != nil {
+					if si.(nodeInfo).offline {
+						continue
+					}
+					selected = append(selected, peer)
+				}
+			}
+			rg.Peers = selected
 		}
 
 		// Need to remap any consumers.
@@ -4194,15 +4527,53 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 				consumers = append(consumers, cca)
 			}
 		}
+
+	} else if isMoveRequest {
+		nrg := js.createGroupForStream(ci, newCfg)
+		if nrg == nil {
+			resp.Error = NewJSInsufficientResourcesError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+			return
+		}
+		// Only change if resolved clusters are different.
+		if rg.Cluster != nrg.Cluster {
+			// If we are R1, make sure original is leader during scale up for move.
+			if len(rg.Peers) == 1 {
+				rg.Preferred = rg.Peers[0]
+			}
+			// Add in new peers since we will extend the peer group to straddle both clusters.
+			rg.Peers = append(rg.Peers, nrg.Peers...)
+			rg.Cluster = nrg.Cluster
+
+			for _, ca := range osa.consumers {
+				cca := ca.copyGroup()
+				// Ephemerals are R=1, so only auto-remap if consumer peer count == nrg peer count.
+				numPeers := len(ca.Group.Peers)
+				if numPeers == len(nrg.Peers) {
+					cca.Group.Peers = append(cca.Group.Peers, nrg.Peers...)
+				} else {
+					// This is an ephemeral, so R1. Just randomly pick a single peer from the new set.
+					pi := rand.Int31n(int32(len(nrg.Peers)))
+					cca.Group.Peers = append(cca.Group.Peers, nrg.Peers[pi])
+				}
+				// Make sure to set if not already set.
+				if cca.Group.Preferred == _EMPTY_ {
+					cca.Group.Preferred = cca.Group.Peers[0]
+				}
+				// We can not propose here before the stream itself so we collect them.
+				consumers = append(consumers, cca)
+			}
+		}
 	}
 
-	sa := &streamAssignment{Group: rg, Sync: osa.Sync, Config: newCfg, Subject: subject, Reply: reply, Client: ci}
+	sa := &streamAssignment{Group: rg, Sync: osa.Sync, Created: osa.Created, Config: newCfg, Subject: subject, Reply: reply, Client: ci}
 	cc.meta.Propose(encodeUpdateStreamAssignment(sa))
 
 	// Process any staged consumers.
 	for _, ca := range consumers {
 		cc.meta.Propose(encodeAddConsumerAssignment(ca))
 	}
+
 }
 
 func (s *Server) jsClusteredStreamDeleteRequest(ci *ClientInfo, acc *Account, stream, subject, reply string, rmsg []byte) {
@@ -4317,6 +4688,7 @@ func (s *Server) jsClusteredStreamRestoreRequest(
 	cc.meta.Propose(encodeAddStreamAssignment(sa))
 }
 
+// Determine if all peers for this group are offline.
 func (s *Server) allPeersOffline(rg *raftGroup) bool {
 	if rg == nil {
 		return false
@@ -4882,6 +5254,9 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		}
 		// Pick a preferred leader.
 		rg.setPreferred()
+
+		// Inherit cluster from stream.
+		rg.Cluster = sa.Group.Cluster
 
 		// We need to set the ephemeral here before replicating.
 		if !isDurableConsumer(cfg) {
@@ -5634,7 +6009,15 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 			}
 			if sir, ok := s.nodeToInfo.Load(rp.ID); ok && sir != nil {
 				si := sir.(nodeInfo)
-				pi := &PeerInfo{Name: si.name, Current: current, Offline: si.offline, Active: lastSeen, Lag: rp.Lag}
+				pi := &PeerInfo{
+					Name:    si.name,
+					Current: current,
+					Offline: si.offline,
+					Active:  lastSeen,
+					Lag:     rp.Lag,
+					cluster: si.cluster,
+					peer:    rp.ID,
+				}
 				ci.Replicas = append(ci.Replicas, pi)
 			}
 		}
@@ -5642,8 +6025,8 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 	return ci
 }
 
-func (mset *stream) checkClusterInfo(si *StreamInfo) {
-	for _, r := range si.Cluster.Replicas {
+func (mset *stream) checkClusterInfo(ci *ClusterInfo) {
+	for _, r := range ci.Replicas {
 		peer := string(getHash(r.Name))
 		if lag := mset.lagForCatchupPeer(peer); lag > 0 {
 			r.Current = false
@@ -5681,7 +6064,7 @@ func (mset *stream) handleClusterStreamInfoRequest(sub *subscription, c *client,
 
 	// Check for out of band catchups.
 	if mset.hasCatchupPeers() {
-		mset.checkClusterInfo(si)
+		mset.checkClusterInfo(si.Cluster)
 	}
 
 	sysc.sendInternalMsg(reply, _EMPTY_, nil, si)

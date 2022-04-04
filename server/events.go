@@ -691,6 +691,9 @@ func (s *Server) sendStatsz(subj string) {
 			ni := v.(nodeInfo)
 			ni.stats = jStat.Stats
 			ni.cfg = jStat.Config
+			s.optsMu.RLock()
+			ni.tags = copyStrings(s.opts.Tags)
+			s.optsMu.RUnlock()
 			s.nodeToInfo.Store(ourNode, ni)
 		}
 		// Metagroup info.

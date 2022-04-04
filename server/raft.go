@@ -749,6 +749,7 @@ func (n *raft) AdjustClusterSize(csz int) error {
 	if csz < 2 {
 		csz = 2
 	}
+
 	// Adjust.
 	n.csz = csz
 	n.qn = n.csz/2 + 1
@@ -1200,7 +1201,7 @@ func (n *raft) StepDown(preferred ...string) error {
 	// See if we have up to date followers.
 	nowts := time.Now().UnixNano()
 	maybeLeader := noLeader
-	if len(preferred) > 0 {
+	if len(preferred) > 0 && preferred[0] != _EMPTY_ {
 		maybeLeader = preferred[0]
 	}
 	for peer, ps := range n.peers {
@@ -2814,6 +2815,8 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 func (n *raft) processPeerState(ps *peerState) {
 	// Update our version of peers to that of the leader.
 	n.csz = ps.clusterSize
+	n.qn = n.csz/2 + 1
+
 	old := n.peers
 	n.peers = make(map[string]*lps)
 	for _, peer := range ps.knownPeers {
