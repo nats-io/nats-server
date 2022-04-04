@@ -774,6 +774,10 @@ func (s *Server) migrateEphemerals() {
 	var consumers []*consumerAssignment
 
 	js.mu.Lock()
+	if cc.meta == nil {
+		js.mu.Unlock()
+		return
+	}
 	ourID := cc.meta.ID()
 	for _, asa := range cc.streams {
 		for _, sa := range asa {
