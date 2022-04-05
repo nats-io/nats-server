@@ -11875,35 +11875,6 @@ func TestJetStreamClusterMovingStreamsAndConsumers(t *testing.T) {
 	}
 }
 
-func TestJetStreamClusterSendBadRequestResponseOnInvalidAPIRequest(t *testing.T) {
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
-	defer s.Shutdown()
-
-	c := createJetStreamClusterExplicit(t, "JSC", 3)
-	defer c.shutdown()
-
-	checkBadRequest := func(t *testing.T, s *Server) {
-		nc := natsConnect(t, s.ClientURL())
-		defer nc.Close()
-
-		// Send a consumer info but with a bad consumer name.
-		// Use low-level here to by-bass validity checks done in the client library.
-		msg, err := nc.Request(fmt.Sprintf(JSApiConsumerInfoT, "BAD_REQUESTS", "bad.consumer.name"), nil, time.Second)
-		require_NoError(t, err)
-
-		var resp JSApiConsumerInfoResponse
-		err = json.Unmarshal(msg.Data, &resp)
-		require_NoError(t, err)
-		require_Error(t, resp.Error, NewJSBadRequestError())
-	}
-
-	t.Run("Single", func(t *testing.T) { checkBadRequest(t, s) })
-	t.Run("Clustered", func(t *testing.T) { checkBadRequest(t, c.randomServer()) })
-}
-
 // Support functions
 
 // Used to setup superclusters for tests.

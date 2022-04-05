@@ -664,11 +664,6 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 
 	// Shortcircuit.
 	if len(rr.psubs)+len(rr.qsubs) == 0 {
-		ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
-		if err == nil {
-			resp := &ApiResponse{Type: JSApiOverloadedType, Error: NewJSBadRequestError()}
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		}
 		return
 	}
 
