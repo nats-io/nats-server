@@ -16529,6 +16529,188 @@ func TestJetStreamBackOffCheckPending(t *testing.T) {
 	}
 }
 
+func TestJetStreamCrossAccounts(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+        jetstream: enabled
+        accounts: {
+           A: {
+               users: [ {user: a, password: a} ]
+               jetstream: enabled
+               exports: [
+                   {service: '$JS.API.>' }
+                   {service: '$KV.>'}
+                   {stream: 'accI.>'}
+               ]
+           },
+           I: {
+               users: [ {user: i, password: i} ]
+               imports: [
+                   {service: {account: A, subject: '$JS.API.>'}, to: 'fromA.>' }
+                   {service: {account: A, subject: '$KV.>'}, to: 'fromA.$KV.>' }
+                   {stream: {subject: 'accI.>', account: A}}
+               ]
+           }
+		}`))
+	defer removeFile(t, conf)
+	s, _ := RunServerWithConfig(conf)
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	watchNext := func(w nats.KeyWatcher) nats.KeyValueEntry {
+		t.Helper()
+		select {
+		case e := <-w.Updates():
+			return e
+		case <-time.After(time.Second):
+			t.Fatal("Fail to get the next update")
+		}
+		return nil
+	}
+
+	nc1, js1 := jsClientConnect(t, s, nats.UserInfo("a", "a"))
+	defer nc1.Close()
+
+	kv1, err := js1.CreateKeyValue(&nats.KeyValueConfig{Bucket: "Map", History: 10})
+	if err != nil {
+		t.Fatalf("Error creating kv store: %v", err)
+	}
+
+	w1, err := kv1.Watch("map")
+	if err != nil {
+		t.Fatalf("Error creating watcher: %v", err)
+	}
+	if e := watchNext(w1); e != nil {
+		t.Fatalf("Expected nil entry, got %+v", e)
+	}
+
+	nc2, err := nats.Connect(s.ClientURL(), nats.UserInfo("i", "i"), nats.CustomInboxPrefix("accI"))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+	js2, err := nc2.JetStream(nats.APIPrefix("fromA"))
+	if err != nil {
+		t.Fatalf("Error getting jetstream context: %v", err)
+	}
+
+	kv2, err := js2.CreateKeyValue(&nats.KeyValueConfig{Bucket: "Map", History: 10})
+	if err != nil {
+		t.Fatalf("Error creating kv store: %v", err)
+	}
+
+	w2, err := kv2.Watch("map")
+	if err != nil {
+		t.Fatalf("Error creating watcher: %v", err)
+	}
+	if e := watchNext(w2); e != nil {
+		t.Fatalf("Expected nil entry, got %+v", e)
+	}
+
+	// Do a Put from kv2
+	rev, err := kv2.Put("map", []byte("value"))
+	if err != nil {
+		t.Fatalf("Error on put: %v", err)
+	}
+
+	// Get from kv1
+	e, err := kv1.Get("map")
+	if err != nil {
+		t.Fatalf("Error on get: %v", err)
+	}
+	if e.Key() != "map" || string(e.Value()) != "value" {
+		t.Fatalf("Unexpected entry: +%v", e)
+	}
+
+	// Get from kv2
+	e, err = kv2.Get("map")
+	if err != nil {
+		t.Fatalf("Error on get: %v", err)
+	}
+	if e.Key() != "map" || string(e.Value()) != "value" {
+		t.Fatalf("Unexpected entry: +%v", e)
+	}
+
+	// Watcher 1
+	if e := watchNext(w1); e == nil || e.Key() != "map" || string(e.Value()) != "value" {
+		t.Fatalf("Unexpected entry: %+v", e)
+	}
+
+	// Watcher 2
+	if e := watchNext(w2); e == nil || e.Key() != "map" || string(e.Value()) != "value" {
+		t.Fatalf("Unexpected entry: %+v", e)
+	}
+
+	// Try an update form kv2
+	if _, err := kv2.Update("map", []byte("updated"), rev); err != nil {
+		t.Fatalf("Failed to update: %v", err)
+	}
+
+	// Get from kv1
+	e, err = kv1.Get("map")
+	if err != nil {
+		t.Fatalf("Error on get: %v", err)
+	}
+	if e.Key() != "map" || string(e.Value()) != "updated" {
+		t.Fatalf("Unexpected entry: +%v", e)
+	}
+
+	// Get from kv2
+	e, err = kv2.Get("map")
+	if err != nil {
+		t.Fatalf("Error on get: %v", err)
+	}
+	if e.Key() != "map" || string(e.Value()) != "updated" {
+		t.Fatalf("Unexpected entry: +%v", e)
+	}
+
+	// Watcher 1
+	if e := watchNext(w1); e == nil || e.Key() != "map" || string(e.Value()) != "updated" {
+		t.Fatalf("Unexpected entry: %+v", e)
+	}
+
+	// Watcher 2
+	if e := watchNext(w2); e == nil || e.Key() != "map" || string(e.Value()) != "updated" {
+		t.Fatalf("Unexpected entry: %+v", e)
+	}
+
+	// Purge from kv2
+	if err := kv2.Purge("map"); err != nil {
+		t.Fatalf("Error on purge: %v", err)
+	}
+
+	// Check purge ok from w1
+	if e := watchNext(w1); e == nil || e.Operation() != nats.KeyValuePurge {
+		t.Fatalf("Unexpected entry: %+v", e)
+	}
+
+	// Check purge ok from w2
+	if e := watchNext(w2); e == nil || e.Operation() != nats.KeyValuePurge {
+		t.Fatalf("Unexpected entry: %+v", e)
+	}
+
+	// Delete purge records from kv2
+	if err := kv2.PurgeDeletes(nats.DeleteMarkersOlderThan(-1)); err != nil {
+		t.Fatalf("Error on purge deletes: %v", err)
+	}
+
+	// Check all gone from js1
+	if si, err := js1.StreamInfo("KV_Map"); err != nil || si == nil || si.State.Msgs != 0 {
+		t.Fatalf("Error getting stream info: err=%v si=%+v", err, si)
+	}
+
+	// Delete key from kv2
+	if err := kv2.Delete("map"); err != nil {
+		t.Fatalf("Error on delete: %v", err)
+	}
+
+	// Check key gone from kv1
+	if e, err := kv1.Get("map"); err != nats.ErrKeyNotFound || e != nil {
+		t.Fatalf("Expected key not found, got err=%v e=%+v", err, e)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
