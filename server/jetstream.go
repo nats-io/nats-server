@@ -1487,6 +1487,7 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 						u = JetStreamTier{}
 					}
 					u.Streams++
+					stats.Streams++
 					u.Consumers += len(sa.consumers)
 					stats.Tiers[tier] = u
 				}
@@ -1504,6 +1505,7 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 						u = JetStreamTier{}
 					}
 					u.Streams++
+					stats.Streams++
 					u.Consumers += consCount
 					stats.Tiers[mset.tier] = u
 				}

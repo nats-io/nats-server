@@ -5412,9 +5412,10 @@ func TestJWTJetStreamTiers(t *testing.T) {
 	_, err = js.Publish("testR1-3", []byte("1"))
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
+
 }
 
-func TestJWTJetStreamMaxAckPendilng(t *testing.T) {
+func TestJWTJetStreamMaxAckPending(t *testing.T) {
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
 	sysCreds := newUser(t, sysKp)
@@ -5599,9 +5600,9 @@ func TestJWTClusteredJetStreamTiers(t *testing.T) {
 	accClaim := jwt.NewAccountClaims(aExpPub)
 	accClaim.Name = "acc"
 	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
-		DiskStorage: 1100, MemoryStorage: 0, Consumer: 2, Streams: 2}
+		DiskStorage: 1100, Consumer: 2, Streams: 2}
 	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{
-		DiskStorage: 3300, MemoryStorage: 0, Consumer: 1, Streams: 1}
+		DiskStorage: 3300, Consumer: 1, Streams: 1}
 	accJwt := encodeClaim(t, accClaim, aExpPub)
 	accCreds := newUser(t, accKp)
 	tmlp := `
@@ -5686,7 +5687,7 @@ func TestJWTClusteredJetStreamTiers(t *testing.T) {
 	_, err = js.Publish("testR1-2", msg[:])
 	require_NoError(t, err)
 
-	time.Sleep(2000 * time.Millisecond) // wait for update timer to synchronize totals
+	time.Sleep(1700 * time.Millisecond) // wait for update timer to synchronize totals
 
 	// test exceeding tiered storage limit
 	_, err = js.Publish("testR1-1", []byte("1"))
@@ -5695,6 +5696,53 @@ func TestJWTClusteredJetStreamTiers(t *testing.T) {
 	_, err = js.Publish("testR3-1", []byte("fail this message!"))
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
+
+	// retrieve limits
+	var info JSApiAccountInfoResponse
+	m, err := nc.Request("$JS.API.INFO", nil, time.Second)
+	require_NoError(t, err)
+	err = json.Unmarshal(m.Data, &info)
+	require_NoError(t, err)
+
+	require_True(t, info.Memory == 0)
+	// R1 streams fail message with an add followed by remove, if the update was sent in between, the count is > limit
+	// Alternative to checking both values is, prior to the info request, wait for another update
+	require_True(t, info.Store == 4400 || info.Store == 4439)
+	require_True(t, info.Streams == 3)
+	require_True(t, info.Consumers == 3)
+	require_True(t, info.Limits == JetStreamAccountLimits{})
+	r1 := info.Tiers["R1"]
+	require_True(t, r1.Streams == 2)
+	require_True(t, r1.Consumers == 2)
+	// R1 streams fail message with an add followed by remove, if the update was sent in between, the count is > limit
+	// Alternative to checking both values is, prior to the info request, wait for another update
+	require_True(t, r1.Store == 1100 || r1.Store == 1139)
+	require_True(t, r1.Memory == 0)
+	require_True(t, r1.Limits == JetStreamAccountLimits{
+		MaxMemory:            0,
+		MaxStore:             1100,
+		MaxStreams:           2,
+		MaxConsumers:         2,
+		MaxAckPending:        -1,
+		MemoryMaxStreamBytes: -1,
+		StoreMaxStreamBytes:  -1,
+		MaxBytesRequired:     false,
+	})
+	r3 := info.Tiers["R3"]
+	require_True(t, r3.Streams == 1)
+	require_True(t, r3.Consumers == 1)
+	require_True(t, r3.Store == 3300)
+	require_True(t, r3.Memory == 0)
+	require_True(t, r3.Limits == JetStreamAccountLimits{
+		MaxMemory:            0,
+		MaxStore:             3300,
+		MaxStreams:           1,
+		MaxConsumers:         1,
+		MaxAckPending:        -1,
+		MemoryMaxStreamBytes: -1,
+		StoreMaxStreamBytes:  -1,
+		MaxBytesRequired:     false,
+	})
 }
 
 func TestJWTClusteredJetStreamTiersChange(t *testing.T) {

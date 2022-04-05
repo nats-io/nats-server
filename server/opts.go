@@ -1659,7 +1659,7 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 	return nil
 }
 
-var dynamicJSAccountLimits = JetStreamAccountLimits{-1, -1, -1, -1, 0, 0, 0, false}
+var dynamicJSAccountLimits = JetStreamAccountLimits{-1, -1, -1, -1, -1, -1, -1, false}
 var defaultJSAccountTiers = map[string]JetStreamAccountLimits{_EMPTY_: dynamicJSAccountLimits}
 
 // Parses jetstream account limits for an account. Simple setup with boolen is allowed, and we will
@@ -1685,7 +1685,7 @@ func parseJetStreamForAccount(v interface{}, acc *Account, errors *[]error, warn
 			return &configErr{tk, fmt.Sprintf("Expected 'enabled' or 'disabled' for string value, got '%s'", vv)}
 		}
 	case map[string]interface{}:
-		jsLimits := JetStreamAccountLimits{-1, -1, -1, -1, 0, 0, 0, false}
+		jsLimits := JetStreamAccountLimits{-1, -1, -1, -1, -1, -1, -1, false}
 		for mk, mv := range vv {
 			tk, mv = unwrapValue(mv, &lt)
 			switch strings.ToLower(mk) {
