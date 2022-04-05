@@ -188,7 +188,7 @@ const (
 	// JSMemoryResourcesExceededErr insufficient memory resources available
 	JSMemoryResourcesExceededErr ErrorIdentifier = 10028
 
-	// JSMirrorConsumerSetupFailedErrF Generic mirror consumer setup failure string ({err})
+	// JSMirrorConsumerSetupFailedErrF generic mirror consumer setup failure string ({err})
 	JSMirrorConsumerSetupFailedErrF ErrorIdentifier = 10029
 
 	// JSMirrorMaxMessageSizeTooBigErr stream mirror must have max message size >= source
@@ -203,7 +203,7 @@ const (
 	// JSMirrorWithSubjectFiltersErr stream mirrors can not contain filtered subjects
 	JSMirrorWithSubjectFiltersErr ErrorIdentifier = 10033
 
-	// JSMirrorWithSubjectsErr stream mirrors can not also contain subjects
+	// JSMirrorWithSubjectsErr stream mirrors can not contain subjects
 	JSMirrorWithSubjectsErr ErrorIdentifier = 10034
 
 	// JSNoAccountErr account not found
@@ -293,11 +293,14 @@ const (
 	// JSStreamMessageExceedsMaximumErr message size exceeds maximum allowed
 	JSStreamMessageExceedsMaximumErr ErrorIdentifier = 10054
 
-	// JSStreamMirrorNotUpdatableErr Mirror configuration can not be updated
+	// JSStreamMirrorNotUpdatableErr stream mirror configuration can not be updated
 	JSStreamMirrorNotUpdatableErr ErrorIdentifier = 10055
 
 	// JSStreamMismatchErr stream name in subject does not match request
 	JSStreamMismatchErr ErrorIdentifier = 10056
+
+	// JSStreamMoveAndScaleErr can not move and scale a stream in a single update
+	JSStreamMoveAndScaleErr ErrorIdentifier = 10123
 
 	// JSStreamMsgDeleteFailedF Generic message deletion failure error string ({err})
 	JSStreamMsgDeleteFailedF ErrorIdentifier = 10057
@@ -437,7 +440,7 @@ var (
 		JSMirrorWithSourcesErr:                     {Code: 400, ErrCode: 10031, Description: "stream mirrors can not also contain other sources"},
 		JSMirrorWithStartSeqAndTimeErr:             {Code: 400, ErrCode: 10032, Description: "stream mirrors can not have both start seq and start time configured"},
 		JSMirrorWithSubjectFiltersErr:              {Code: 400, ErrCode: 10033, Description: "stream mirrors can not contain filtered subjects"},
-		JSMirrorWithSubjectsErr:                    {Code: 400, ErrCode: 10034, Description: "stream mirrors can not also contain subjects"},
+		JSMirrorWithSubjectsErr:                    {Code: 400, ErrCode: 10034, Description: "stream mirrors can not contain subjects"},
 		JSNoAccountErr:                             {Code: 503, ErrCode: 10035, Description: "account not found"},
 		JSNoLimitsErr:                              {Code: 400, ErrCode: 10120, Description: "no JetStream default or applicable tiered limit present"},
 		JSNoMessageFoundErr:                        {Code: 404, ErrCode: 10037, Description: "no message found"},
@@ -467,8 +470,9 @@ var (
 		JSStreamMaxBytesRequired:                   {Code: 400, ErrCode: 10113, Description: "account requires a stream config to have max bytes set"},
 		JSStreamMaxStreamBytesExceeded:             {Code: 400, ErrCode: 10122, Description: "stream max bytes exceeds account limit max stream bytes"},
 		JSStreamMessageExceedsMaximumErr:           {Code: 400, ErrCode: 10054, Description: "message size exceeds maximum allowed"},
-		JSStreamMirrorNotUpdatableErr:              {Code: 400, ErrCode: 10055, Description: "Mirror configuration can not be updated"},
+		JSStreamMirrorNotUpdatableErr:              {Code: 400, ErrCode: 10055, Description: "stream mirror configuration can not be updated"},
 		JSStreamMismatchErr:                        {Code: 400, ErrCode: 10056, Description: "stream name in subject does not match request"},
+		JSStreamMoveAndScaleErr:                    {Code: 400, ErrCode: 10123, Description: "can not move and scale a stream in a single update"},
 		JSStreamMsgDeleteFailedF:                   {Code: 500, ErrCode: 10057, Description: "{err}"},
 		JSStreamNameExistErr:                       {Code: 400, ErrCode: 10058, Description: "stream name already in use"},
 		JSStreamNotFoundErr:                        {Code: 404, ErrCode: 10059, Description: "stream not found"},
@@ -483,7 +487,7 @@ var (
 		JSStreamSequenceNotMatchErr:                {Code: 503, ErrCode: 10063, Description: "expected stream sequence does not match"},
 		JSStreamSnapshotErrF:                       {Code: 500, ErrCode: 10064, Description: "snapshot failed: {err}"},
 		JSStreamStoreFailedF:                       {Code: 503, ErrCode: 10077, Description: "{err}"},
-		JSStreamSubjectOverlapErr:                  {Code: 500, ErrCode: 10065, Description: "subjects overlap with an existing stream"},
+		JSStreamSubjectOverlapErr:                  {Code: 400, ErrCode: 10065, Description: "subjects overlap with an existing stream"},
 		JSStreamTemplateCreateErrF:                 {Code: 500, ErrCode: 10066, Description: "{err}"},
 		JSStreamTemplateDeleteErrF:                 {Code: 500, ErrCode: 10067, Description: "{err}"},
 		JSStreamTemplateNotFoundErr:                {Code: 404, ErrCode: 10068, Description: "template not found"},
@@ -1219,7 +1223,7 @@ func NewJSMirrorWithSubjectFiltersError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSMirrorWithSubjectFiltersErr]
 }
 
-// NewJSMirrorWithSubjectsError creates a new JSMirrorWithSubjectsErr error: "stream mirrors can not also contain subjects"
+// NewJSMirrorWithSubjectsError creates a new JSMirrorWithSubjectsErr error: "stream mirrors can not contain subjects"
 func NewJSMirrorWithSubjectsError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
@@ -1597,7 +1601,7 @@ func NewJSStreamMessageExceedsMaximumError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSStreamMessageExceedsMaximumErr]
 }
 
-// NewJSStreamMirrorNotUpdatableError creates a new JSStreamMirrorNotUpdatableErr error: "Mirror configuration can not be updated"
+// NewJSStreamMirrorNotUpdatableError creates a new JSStreamMirrorNotUpdatableErr error: "stream mirror configuration can not be updated"
 func NewJSStreamMirrorNotUpdatableError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
@@ -1615,6 +1619,16 @@ func NewJSStreamMismatchError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSStreamMismatchErr]
+}
+
+// NewJSStreamMoveAndScaleError creates a new JSStreamMoveAndScaleErr error: "can not move and scale a stream in a single update"
+func NewJSStreamMoveAndScaleError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSStreamMoveAndScaleErr]
 }
 
 // NewJSStreamMsgDeleteFailedError creates a new JSStreamMsgDeleteFailedF error: "{err}"

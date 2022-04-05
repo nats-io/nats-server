@@ -10667,7 +10667,7 @@ func TestJetStreamClusterStreamReplicaUpdates(t *testing.T) {
 	updateReplicas(1)
 }
 
-func TestJetStreamClusterStreamReplicaUpdateFunctionCheck(t *testing.T) {
+func TestJetStreamClusterStreamAndConsumerScaleUpAndDown(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -10725,8 +10725,15 @@ func TestJetStreamClusterStreamReplicaUpdateFunctionCheck(t *testing.T) {
 		}
 	}
 
+	// Capture leader, we want to make sure when we scale down this does not change.
+	sl := c.streamLeader("$G", "TEST")
+
 	// Scale down to 1.
 	updateReplicas(1)
+
+	if sl != c.streamLeader("$G", "TEST") {
+		t.Fatalf("Expected same leader, but it changed")
+	}
 
 	// Make sure we can still send to the stream.
 	for i := 0; i < numMsgs; i++ {
@@ -10791,47 +10798,8 @@ func TestJetStreamClusterStreamReplicaUpdateFunctionCheck(t *testing.T) {
 }
 
 func TestJetStreamClusterStreamTagPlacement(t *testing.T) {
-	sc := createJetStreamSuperCluster(t, 3, 4)
+	sc := createJetStreamTaggedSuperCluster(t)
 	defer sc.shutdown()
-
-	reset := func(s *Server) {
-		s.mu.Lock()
-		rch := s.sys.resetCh
-		s.mu.Unlock()
-		if rch != nil {
-			rch <- struct{}{}
-		}
-		s.sendStatszUpdate()
-	}
-
-	// Make first cluster AWS, US country code.
-	for _, s := range sc.clusterForName("C1").servers {
-		opts := s.getOpts()
-		opts.Tags.Add("cloud:aws")
-		opts.Tags.Add("country:us")
-		reset(s)
-	}
-	// Make second cluster GCP, UK country code.
-	for _, s := range sc.clusterForName("C2").servers {
-		opts := s.getOpts()
-		opts.Tags.Add("cloud:gcp")
-		opts.Tags.Add("country:uk")
-		reset(s)
-	}
-	// Make third cluster AZ, JP country code.
-	for _, s := range sc.clusterForName("C3").servers {
-		opts := s.getOpts()
-		opts.Tags.Add("cloud:az")
-		opts.Tags.Add("country:jp")
-		reset(s)
-	}
-	// Make fourth cluster GCP, and SG country code.
-	for _, s := range sc.clusterForName("C4").servers {
-		opts := s.getOpts()
-		opts.Tags.Add("cloud:gcp")
-		opts.Tags.Add("country:sg")
-		reset(s)
-	}
 
 	placeOK := func(connectCluster string, tags []string, expectedCluster string) {
 		t.Helper()
@@ -10852,11 +10820,10 @@ func TestJetStreamClusterStreamTagPlacement(t *testing.T) {
 	placeOK("C2", []string{"cloud:aws"}, "C1")
 	placeOK("C2", []string{"country:jp"}, "C3")
 	placeOK("C1", []string{"cloud:gcp", "country:uk"}, "C2")
-	placeOK("C2", []string{"cloud:gcp", "country:sg"}, "C4")
 
 	// Case shoud not matter.
 	placeOK("C1", []string{"cloud:GCP", "country:UK"}, "C2")
-	placeOK("C2", []string{"Cloud:Gcp", "Country:Sg"}, "C4")
+	placeOK("C2", []string{"Cloud:AwS", "Country:uS"}, "C1")
 
 	placeErr := func(connectCluster string, tags []string) {
 		t.Helper()
@@ -11656,7 +11623,256 @@ func TestJetStreamClusterMemoryConsumerCompactVsSnapshot(t *testing.T) {
 		}
 		return nil
 	})
+}
 
+// This will test our ability to move streams and consumers between clusters.
+func TestJetStreamClusterMovingStreamsAndConsumers(t *testing.T) {
+	sc := createJetStreamTaggedSuperCluster(t)
+	defer sc.shutdown()
+
+	nc, js := jsClientConnect(t, sc.randomServer())
+	defer nc.Close()
+
+	for _, test := range []struct {
+		name     string
+		replicas int
+	}{
+		{"R1", 1},
+		{"R3", 3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			replicas := test.replicas
+
+			si, err := js.AddStream(&nats.StreamConfig{
+				Name:      "MOVE",
+				Replicas:  replicas,
+				Placement: &nats.Placement{Tags: []string{"cloud:aws"}},
+			})
+			require_NoError(t, err)
+			defer js.DeleteStream("MOVE")
+
+			if si.Cluster.Name != "C1" {
+				t.Fatalf("Failed to place properly in %q, got %q", "C1", si.Cluster.Name)
+			}
+
+			for i := 0; i < 1000; i++ {
+				_, err := js.PublishAsync("MOVE", []byte("Moving on up"))
+				require_NoError(t, err)
+			}
+			select {
+			case <-js.PublishAsyncComplete():
+			case <-time.After(5 * time.Second):
+				t.Fatalf("Did not receive completion signal")
+			}
+
+			// Durable Push Consumer, so same R.
+			dpushSub, err := js.SubscribeSync("MOVE", nats.Durable("dlc"))
+			require_NoError(t, err)
+			defer dpushSub.Unsubscribe()
+
+			// Ephemeral Push Consumer, R1.
+			epushSub, err := js.SubscribeSync("MOVE")
+			require_NoError(t, err)
+			defer epushSub.Unsubscribe()
+
+			// Durable Pull Consumer, so same R.
+			dpullSub, err := js.PullSubscribe("MOVE", "dlc-pull")
+			require_NoError(t, err)
+			defer dpullSub.Unsubscribe()
+
+			// TODO(dlc) - Server supports ephemeral pulls but Go client does not yet.
+
+			si, err = js.StreamInfo("MOVE")
+			require_NoError(t, err)
+			if si.State.Consumers != 3 {
+				t.Fatalf("Expected 3 attached consumers, got %d", si.State.Consumers)
+			}
+
+			initialState := si.State
+
+			checkSubsPending(t, dpushSub, int(initialState.Msgs))
+			checkSubsPending(t, epushSub, int(initialState.Msgs))
+
+			// Ack 100
+			toAck := 100
+			for i := 0; i < toAck; i++ {
+				m, err := dpushSub.NextMsg(time.Second)
+				require_NoError(t, err)
+				m.AckSync()
+				// Ephemeral
+				m, err = epushSub.NextMsg(time.Second)
+				require_NoError(t, err)
+				m.AckSync()
+			}
+
+			// Do same with pull subscriber.
+			for _, m := range fetchMsgs(t, dpullSub, toAck, 5*time.Second) {
+				m.AckSync()
+			}
+
+			// First make sure we disallow move and replica changes in same update.
+			_, err = js.UpdateStream(&nats.StreamConfig{
+				Name:      "MOVE",
+				Placement: &nats.Placement{Tags: []string{"cloud:gcp"}},
+				Replicas:  replicas + 1,
+			})
+			require_Error(t, err, NewJSStreamMoveAndScaleError())
+
+			// Now move to new cluster.
+			si, err = js.UpdateStream(&nats.StreamConfig{
+				Name:      "MOVE",
+				Replicas:  replicas,
+				Placement: &nats.Placement{Tags: []string{"cloud:gcp"}},
+			})
+			require_NoError(t, err)
+
+			if si.Cluster.Name != "C1" {
+				t.Fatalf("Expected cluster of %q but got %q", "C1", si.Cluster.Name)
+			}
+
+			checkFor(t, 10*time.Second, 10*time.Millisecond, func() error {
+				si, err := js.StreamInfo("MOVE")
+				if err != nil {
+					return err
+				}
+				// We should see 2X peers.
+				numPeers := len(si.Cluster.Replicas)
+				if si.Cluster.Leader != _EMPTY_ {
+					numPeers++
+				}
+				if numPeers != 2*replicas {
+					return fmt.Errorf("Expected to see %d replicas, got %d", 2*replicas, numPeers)
+				}
+				return nil
+			})
+
+			// Expect a new leader to emerge and replicas to drop as a leader is elected.
+			// We have to check fast or it might complete and we will not see intermediate steps.
+			sc.waitOnStreamLeader("$G", "MOVE")
+			checkFor(t, 10*time.Second, 10*time.Millisecond, func() error {
+				si, err := js.StreamInfo("MOVE")
+				if err != nil {
+					return err
+				}
+				if len(si.Cluster.Replicas) >= 2*replicas {
+					return fmt.Errorf("Expected <%d replicas, got %d", 2*replicas, len(si.Cluster.Replicas))
+				}
+				return nil
+			})
+
+			// Should see the cluster designation and leader switch to C2.
+			// We should also shrink back down to original replica count.
+			checkFor(t, 10*time.Second, 10*time.Millisecond, func() error {
+				si, err := js.StreamInfo("MOVE")
+				if err != nil {
+					return err
+				}
+				if si.Cluster.Name != "C2" {
+					return fmt.Errorf("Wrong cluster: %q", si.Cluster.Name)
+				}
+				if si.Cluster.Leader == _EMPTY_ {
+					return fmt.Errorf("No leader yet")
+				} else if !strings.HasPrefix(si.Cluster.Leader, "C2-") {
+					return fmt.Errorf("Wrong leader: %q", si.Cluster.Leader)
+				}
+				// Now we want to see that we shrink back to original.
+				if len(si.Cluster.Replicas) != replicas-1 {
+					return fmt.Errorf("Expected %d replicas, got %d", replicas-1, len(si.Cluster.Replicas))
+				}
+				return nil
+			})
+
+			// Check moved state is same as initial state.
+			si, err = js.StreamInfo("MOVE")
+			require_NoError(t, err)
+
+			if si.State != initialState {
+				t.Fatalf("States do not match after migration:\n%+v\nvs\n%+v", si.State, initialState)
+			}
+
+			// Make sure we can still send messages.
+			addN := toAck
+			for i := 0; i < addN; i++ {
+				_, err := js.Publish("MOVE", []byte("Done Moved"))
+				require_NoError(t, err)
+			}
+
+			si, err = js.StreamInfo("MOVE")
+			require_NoError(t, err)
+
+			expectedPushMsgs := initialState.Msgs + uint64(addN)
+			expectedPullMsgs := uint64(addN)
+
+			if si.State.Msgs != expectedPushMsgs {
+				t.Fatalf("Expected to be able to send new messages")
+			}
+
+			// Now check consumers, make sure the state is correct and that they transferred state and reflect the new messages.
+			// We Ack'd 100 and sent another 100, so should be same.
+			checkConsumer := func(sub *nats.Subscription, isPull bool) {
+				if isPull {
+					checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+						_, err := sub.ConsumerInfo()
+						return err
+					})
+				} else {
+					// Make sure we re-established being push bound and our sub got the messages too.
+					checkSubsPending(t, sub, int(initialState.Msgs))
+				}
+				ci, err := sub.ConsumerInfo()
+				require_NoError(t, err)
+				var expectedMsgs uint64
+				if isPull {
+					expectedMsgs = expectedPullMsgs
+				} else {
+					expectedMsgs = expectedPushMsgs
+				}
+				if ci.Delivered.Consumer != expectedMsgs || ci.Delivered.Stream != expectedMsgs {
+					t.Fatalf("Delivered for %q is not correct: %+v", ci.Name, ci.Delivered)
+				}
+				if ci.AckFloor.Consumer != uint64(toAck) || ci.AckFloor.Stream != uint64(toAck) {
+					t.Fatalf("AckFloor for %q is not correct: %+v", ci.Name, ci.AckFloor)
+				}
+				if isPull {
+					if ci.NumAckPending != 0 {
+						t.Fatalf("NumAckPending for %q is not correct: %v", ci.Name, ci.NumAckPending)
+					}
+				} else {
+					if ci.NumAckPending != int(initialState.Msgs) {
+						t.Fatalf("NumAckPending for %q is not correct: %v", ci.Name, ci.NumAckPending)
+					}
+				}
+				// Make sure the replicas etc are back to what is expected.
+				si, err := js.StreamInfo("MOVE")
+				require_NoError(t, err)
+				numExpected := si.Config.Replicas
+				if ci.Config.Durable == _EMPTY_ {
+					numExpected = 1
+				}
+				numPeers := len(ci.Cluster.Replicas)
+				if ci.Cluster.Leader != _EMPTY_ {
+					numPeers++
+				}
+				if numPeers != numExpected {
+					t.Fatalf("Expected %d peers, got %d", numPeers, numExpected)
+				}
+			}
+			checkPushConsumer := func(sub *nats.Subscription) {
+				checkConsumer(sub, false)
+			}
+			checkPullConsumer := func(sub *nats.Subscription) {
+				checkConsumer(sub, true)
+			}
+
+			checkPushConsumer(dpushSub)
+			checkPushConsumer(epushSub)
+			checkPullConsumer(dpullSub)
+
+			// Cleanup
+			err = js.DeleteStream("MOVE")
+			require_NoError(t, err)
+		})
+	}
 }
 
 func TestJetStreamClusterSendBadRequestResponseOnInvalidAPIRequest(t *testing.T) {
@@ -11707,6 +11923,30 @@ func (sc *supercluster) shutdown() {
 
 func (sc *supercluster) randomServer() *Server {
 	return sc.randomCluster().randomServer()
+}
+
+func (sc *supercluster) serverByName(sname string) *Server {
+	for _, c := range sc.clusters {
+		if s := c.serverByName(sname); s != nil {
+			return s
+		}
+	}
+	return nil
+}
+
+func (sc *supercluster) waitOnStreamLeader(account, stream string) {
+	sc.t.Helper()
+	expires := time.Now().Add(30 * time.Second)
+	for time.Now().Before(expires) {
+		for _, c := range sc.clusters {
+			if leader := c.streamLeader(account, stream); leader != nil {
+				time.Sleep(200 * time.Millisecond)
+				return
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	sc.t.Fatalf("Expected a stream leader for %q %q, got none", account, stream)
 }
 
 var jsClusterAccountsTempl = `
@@ -11863,6 +12103,74 @@ var jsMixedModeGlobalAccountTempl = `
 `
 
 var jsGWTempl = `%s{name: %s, urls: [%s]}`
+
+func createJetStreamTaggedSuperCluster(t *testing.T) *supercluster {
+	sc := createJetStreamSuperCluster(t, 3, 3)
+	sc.waitOnPeerCount(9)
+
+	reset := func(s *Server) {
+		s.mu.Lock()
+		rch := s.sys.resetCh
+		s.mu.Unlock()
+		if rch != nil {
+			rch <- struct{}{}
+		}
+		s.sendStatszUpdate()
+	}
+
+	// Make first cluster AWS, US country code.
+	for _, s := range sc.clusterForName("C1").servers {
+		s.optsMu.Lock()
+		s.opts.Tags.Add("cloud:aws")
+		s.opts.Tags.Add("country:us")
+		s.optsMu.Unlock()
+		reset(s)
+	}
+	// Make second cluster GCP, UK country code.
+	for _, s := range sc.clusterForName("C2").servers {
+		s.optsMu.Lock()
+		s.opts.Tags.Add("cloud:gcp")
+		s.opts.Tags.Add("country:uk")
+		s.optsMu.Unlock()
+		reset(s)
+	}
+	// Make third cluster AZ, JP country code.
+	for _, s := range sc.clusterForName("C3").servers {
+		s.optsMu.Lock()
+		s.opts.Tags.Add("cloud:az")
+		s.opts.Tags.Add("country:jp")
+		s.optsMu.Unlock()
+		reset(s)
+	}
+
+	ml := sc.leader()
+	js := ml.getJetStream()
+	require_True(t, js != nil)
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	cc := js.cluster
+	require_True(t, cc != nil)
+
+	// Walk and make sure all tags are registered.
+	expires := time.Now().Add(10 * time.Second)
+	for time.Now().Before(expires) {
+		allOK := true
+		for _, p := range cc.meta.Peers() {
+			si, ok := ml.nodeToInfo.Load(p.ID)
+			require_True(t, ok)
+			ni := si.(nodeInfo)
+			if len(ni.tags) == 0 {
+				allOK = false
+				reset(sc.serverByName(ni.name))
+			}
+		}
+		if allOK {
+			break
+		}
+	}
+
+	return sc
+}
 
 func createJetStreamSuperCluster(t *testing.T, numServersPer, numClusters int) *supercluster {
 	return createJetStreamSuperClusterWithTemplate(t, jsClusterTempl, numServersPer, numClusters)

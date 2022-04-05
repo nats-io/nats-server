@@ -1468,8 +1468,15 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, _ *Account,
 		return
 	}
 
+	// Handle clustered version here.
 	if s.JetStreamIsClustered() {
-		s.jsClusteredStreamUpdateRequest(ci, acc, subject, reply, rmsg, &cfg)
+		// If we are inline with client, we still may need to do a callout for stream info
+		// during this call, so place in Go routine to not block client.
+		if c.kind != ROUTER && c.kind != GATEWAY {
+			go s.jsClusteredStreamUpdateRequest(ci, acc, subject, reply, rmsg, &cfg)
+		} else {
+			s.jsClusteredStreamUpdateRequest(ci, acc, subject, reply, rmsg, &cfg)
+		}
 		return
 	}
 
@@ -1877,7 +1884,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 	}
 	// Check for out of band catchups.
 	if mset.hasCatchupPeers() {
-		mset.checkClusterInfo(resp.StreamInfo)
+		mset.checkClusterInfo(resp.StreamInfo.Cluster)
 	}
 
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
@@ -3655,14 +3662,15 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), ca.Group)
 				return
 			}
-			if ca == nil {
-				return
-			}
 			// We have a consumer assignment.
 			js.mu.RLock()
 			var node RaftNode
+			var leaderNotPartOfGroup bool
 			if rg := ca.Group; rg != nil && rg.node != nil && rg.isMember(ourID) {
 				node = rg.node
+				if gl := node.GroupLeader(); gl != _EMPTY_ && !rg.isMember(gl) {
+					leaderNotPartOfGroup = true
+				}
 			}
 			js.mu.RUnlock()
 			// Check if we should ignore all together.
@@ -3680,7 +3688,12 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 				}
 				return
 			}
+			// If we are a member and we have a group leader or we had a previous leader consider bailing out.
 			if node != nil && (node.GroupLeader() != _EMPTY_ || node.HadPreviousLeader()) {
+				if leaderNotPartOfGroup {
+					resp.Error = NewJSConsumerOfflineError()
+					s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil)
+				}
 				return
 			}
 			// If we are here we are a member and this is just a new consumer that does not have a leader yet.

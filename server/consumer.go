@@ -264,12 +264,14 @@ type consumer struct {
 	closed            bool
 
 	// Clustered.
-	ca      *consumerAssignment
-	node    RaftNode
-	infoSub *subscription
-	lqsent  time.Time
-	prm     map[string]struct{}
-	prOk    bool
+	ca        *consumerAssignment
+	node      RaftNode
+	infoSub   *subscription
+	lqsent    time.Time
+	prm       map[string]struct{}
+	prOk      bool
+	uch       chan struct{}
+	retention RetentionPolicy
 
 	// R>1 proposals
 	pch   chan struct{}
@@ -485,6 +487,7 @@ func checkConsumerCfg(config *ConsumerConfig, srvLim *JSLimitOpts, cfg *StreamCo
 func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment) (*consumer, error) {
 	mset.mu.RLock()
 	s, jsa, tierName, cfg, acc := mset.srv, mset.jsa, mset.tier, mset.cfg, mset.acc
+	retention := cfg.Retention
 	mset.mu.RUnlock()
 
 	// If we do not have the consumer currently assigned to us in cluster mode we will proceed but warn.
@@ -590,22 +593,24 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 
 	// Set name, which will be durable name if set, otherwise we create one at random.
 	o := &consumer{
-		mset:    mset,
-		js:      s.getJetStream(),
-		acc:     a,
-		srv:     s,
-		client:  s.createInternalJetStreamClient(),
-		sysc:    s.createInternalJetStreamClient(),
-		cfg:     *config,
-		dsubj:   config.DeliverSubject,
-		outq:    mset.outq,
-		active:  true,
-		qch:     make(chan struct{}),
-		mch:     make(chan struct{}, 1),
-		sfreq:   int32(sampleFreq),
-		maxdc:   uint64(config.MaxDeliver),
-		maxp:    config.MaxAckPending,
-		created: time.Now().UTC(),
+		mset:      mset,
+		js:        s.getJetStream(),
+		acc:       a,
+		srv:       s,
+		client:    s.createInternalJetStreamClient(),
+		sysc:      s.createInternalJetStreamClient(),
+		cfg:       *config,
+		dsubj:     config.DeliverSubject,
+		outq:      mset.outq,
+		active:    true,
+		qch:       make(chan struct{}),
+		uch:       make(chan struct{}, 1),
+		mch:       make(chan struct{}, 1),
+		sfreq:     int32(sampleFreq),
+		maxdc:     uint64(config.MaxDeliver),
+		maxp:      config.MaxAckPending,
+		retention: retention,
+		created:   time.Now().UTC(),
 	}
 
 	// Bind internal client to the user account.
@@ -768,11 +773,25 @@ func (o *consumer) consumerAssignment() *consumerAssignment {
 func (o *consumer) setConsumerAssignment(ca *consumerAssignment) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+
 	o.ca = ca
-	// Set our node.
-	if ca != nil {
-		o.node = ca.Group.node
+	if ca == nil {
+		return
 	}
+	// Set our node.
+	o.node = ca.Group.node
+
+	// Trigger update chan.
+	select {
+	case o.uch <- struct{}{}:
+	default:
+	}
+}
+
+func (o *consumer) updateC() <-chan struct{} {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.uch
 }
 
 // checkQueueInterest will check on our interest's queue group status.
