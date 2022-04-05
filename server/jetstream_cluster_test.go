@@ -12148,6 +12148,10 @@ func createJetStreamSuperCluster(t *testing.T, numServersPer, numClusters int) *
 }
 
 func createJetStreamSuperClusterWithTemplate(t *testing.T, tmpl string, numServersPer, numClusters int) *supercluster {
+	return createJetStreamSuperClusterWithTemplateAndModHook(t, tmpl, numServersPer, numClusters, nil)
+}
+
+func createJetStreamSuperClusterWithTemplateAndModHook(t *testing.T, tmpl string, numServersPer, numClusters int, modify modifyCb) *supercluster {
 	t.Helper()
 	if numServersPer < 1 {
 		t.Fatalf("Number of servers must be >= 1")
@@ -12199,6 +12203,9 @@ func createJetStreamSuperClusterWithTemplate(t *testing.T, tmpl string, numServe
 			bconf := fmt.Sprintf(tmpl, sn, storeDir, cn, cp+si, routeConfig)
 			conf := fmt.Sprintf(jsSuperClusterTempl, bconf, cn, gp, gwconf)
 			gp++
+			if modify != nil {
+				conf = modify(sn, cn, storeDir, conf)
+			}
 			s, o := RunServerWithConfig(createConfFile(t, []byte(conf)))
 			c.servers = append(c.servers, s)
 			c.opts = append(c.opts, o)

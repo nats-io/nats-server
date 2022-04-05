@@ -5590,6 +5590,88 @@ func TestJWTJetStreamMaxStreamBytes(t *testing.T) {
 	require_Equal(t, err.Error(), "account requires a stream config to have max bytes set")
 }
 
+func TestJWTJetStreamMoveWithTiers(t *testing.T) {
+	_, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+
+	accKp, aExpPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(aExpPub)
+	accClaim.Name = "acc"
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
+		DiskStorage: 1100, Consumer: 1, Streams: 1}
+	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{
+		DiskStorage: 3300, Consumer: 1, Streams: 1}
+	accJwt := encodeClaim(t, accClaim, aExpPub)
+	accCreds := newUser(t, accKp)
+
+	test := func(t *testing.T, replicas int) {
+		tmlp := `
+			listen: 127.0.0.1:-1
+			server_name: %s
+			jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+			leaf {
+				listen: 127.0.0.1:-1
+			}
+			cluster {
+				name: %s
+				listen: 127.0.0.1:%d
+				routes = [%s]
+			}
+		`
+		s := createJetStreamSuperClusterWithTemplateAndModHook(t, tmlp, 3, 3,
+			func(serverName, clustername, storeDir, conf string) string {
+				return conf + fmt.Sprintf(`
+					server_tags: [cloud:%s-tag]
+					operator: %s
+					system_account: %s
+					resolver = MEMORY
+					resolver_preload = {
+						%s : %s
+						%s : %s
+					}
+				`, clustername, ojwt, syspub, syspub, sysJwt, aExpPub, accJwt)
+			})
+		defer s.shutdown()
+
+		nc := natsConnect(t, s.randomServer().ClientURL(), nats.UserCredentials(accCreds))
+		defer nc.Close()
+
+		js, err := nc.JetStream()
+		require_NoError(t, err)
+
+		ci, err := js.AddStream(&nats.StreamConfig{Name: "MOVE-ME", Replicas: replicas,
+			Placement: &nats.Placement{Tags: []string{"cloud:C1-tag"}}})
+		require_NoError(t, err)
+		require_Equal(t, ci.Cluster.Name, "C1")
+		ci, err = js.UpdateStream(&nats.StreamConfig{Name: "MOVE-ME", Replicas: replicas,
+			Placement: &nats.Placement{Tags: []string{"cloud:C2-tag"}}})
+		require_NoError(t, err)
+		require_Equal(t, ci.Cluster.Name, "C1")
+
+		checkFor(t, 10*time.Second, 10*time.Millisecond, func() error {
+			if si, err := js.StreamInfo("MOVE-ME"); err != nil {
+				return err
+			} else if si.Cluster.Name != "C2" {
+				return fmt.Errorf("Wrong cluster: %q", si.Cluster.Name)
+			} else if si.Cluster.Leader == _EMPTY_ {
+				return fmt.Errorf("No leader yet")
+			} else if !strings.HasPrefix(si.Cluster.Leader, "C2-") {
+				return fmt.Errorf("Wrong leader: %q", si.Cluster.Leader)
+			} else if len(si.Cluster.Replicas) != replicas-1 {
+				return fmt.Errorf("Expected %d replicas, got %d", replicas-1, len(si.Cluster.Replicas))
+			}
+			return nil
+		})
+	}
+
+	t.Run("R1", func(t *testing.T) {
+		test(t, 1)
+	})
+	t.Run("R3", func(t *testing.T) {
+		test(t, 3)
+	})
+}
+
 func TestJWTClusteredJetStreamTiers(t *testing.T) {
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
