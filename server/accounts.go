@@ -3278,6 +3278,12 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	}
 
 	if ac.Limits.IsJSEnabled() {
+		toUnlimited := func(value int64) int64 {
+			if value > 0 {
+				return value
+			}
+			return -1
+		}
 		if ac.Limits.JetStreamLimits.DiskStorage != 0 || ac.Limits.JetStreamLimits.MemoryStorage != 0 {
 			// JetStreamAccountLimits and jwt.JetStreamLimits use same value for unlimited
 			a.jsLimits = map[string]JetStreamAccountLimits{
@@ -3286,10 +3292,10 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 					MaxStore:             ac.Limits.JetStreamLimits.DiskStorage,
 					MaxStreams:           int(ac.Limits.JetStreamLimits.Streams),
 					MaxConsumers:         int(ac.Limits.JetStreamLimits.Consumer),
-					MemoryMaxStreamBytes: ac.Limits.JetStreamLimits.MemoryMaxStreamBytes,
-					StoreMaxStreamBytes:  ac.Limits.JetStreamLimits.DiskMaxStreamBytes,
+					MemoryMaxStreamBytes: toUnlimited(ac.Limits.JetStreamLimits.MemoryMaxStreamBytes),
+					StoreMaxStreamBytes:  toUnlimited(ac.Limits.JetStreamLimits.DiskMaxStreamBytes),
 					MaxBytesRequired:     ac.Limits.JetStreamLimits.MaxBytesRequired,
-					MaxAckPending:        int(ac.Limits.JetStreamLimits.MaxAckPending),
+					MaxAckPending:        int(toUnlimited(ac.Limits.JetStreamLimits.MaxAckPending)),
 				},
 			}
 		} else {
@@ -3300,10 +3306,10 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 					MaxStore:             l.DiskStorage,
 					MaxStreams:           int(l.Streams),
 					MaxConsumers:         int(l.Consumer),
-					MemoryMaxStreamBytes: l.MemoryMaxStreamBytes,
-					StoreMaxStreamBytes:  l.DiskMaxStreamBytes,
+					MemoryMaxStreamBytes: toUnlimited(l.MemoryMaxStreamBytes),
+					StoreMaxStreamBytes:  toUnlimited(l.DiskMaxStreamBytes),
 					MaxBytesRequired:     l.MaxBytesRequired,
-					MaxAckPending:        int(l.MaxAckPending),
+					MaxAckPending:        int(toUnlimited(l.MaxAckPending)),
 				}
 			}
 		}
