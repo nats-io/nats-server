@@ -373,6 +373,18 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 		fs.ageChk.Stop()
 		fs.ageChk = nil
 	}
+
+	// Update our sfilter for the last block.
+	if lmb := fs.lmb; lmb != nil {
+		lmb.mu.Lock()
+		if len(fs.cfg.Subjects) == 1 {
+			lmb.sfilter = fs.cfg.Subjects[0]
+		} else {
+			lmb.sfilter = _EMPTY_
+		}
+		lmb.mu.Unlock()
+	}
+
 	fs.mu.Unlock()
 
 	if cfg.MaxAge != 0 {
@@ -550,9 +562,6 @@ const indexHdrSize = 7*binary.MaxVarintLen64 + hdrLen + checksumSize
 // Lock held on entry
 func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) (*msgBlock, error) {
 	mb := &msgBlock{fs: fs, index: index, cexp: fs.fcfg.CacheExpire}
-	if len(fs.cfg.Subjects) == 1 {
-		mb.sfilter = fs.cfg.Subjects[0]
-	}
 
 	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
 	mb.mfn = filepath.Join(mdir, fi.Name())
@@ -665,6 +674,12 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) (*msgBlock, e
 				}
 			}
 			fs.blks = append(fs.blks, mb)
+			// If we only have one subject registered we can optimize filtered lookups here.
+			if len(mb.fss) == 1 {
+				for sfilter := range mb.fss {
+					mb.sfilter = sfilter
+				}
+			}
 			return mb, nil
 		}
 	}
@@ -906,6 +921,13 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, error) {
 	// For empty msg blocks make sure we recover last seq correctly based off of first.
 	if mb.msgs == 0 && mb.first.seq > 0 {
 		mb.last.seq = mb.first.seq - 1
+	}
+
+	// If we only have one subject registered we can optimize filtered lookups here.
+	if len(mb.fss) == 1 {
+		for sfilter := range mb.fss {
+			mb.sfilter = sfilter
+		}
 	}
 
 	return nil, nil
@@ -1573,6 +1595,8 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	}
 
 	mb := &msgBlock{fs: fs, index: index, cexp: fs.fcfg.CacheExpire}
+
+	// If we only have one subject registered we can optimize filtered lookups here.
 	if len(fs.cfg.Subjects) == 1 {
 		mb.sfilter = fs.cfg.Subjects[0]
 	}
