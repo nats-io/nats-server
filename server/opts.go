@@ -178,8 +178,9 @@ type RemoteLeafOpts struct {
 }
 
 type JSLimitOpts struct {
-	MaxAckPending int
-	Duplicates    time.Duration
+	MaxAckPending            int
+	Duplicates               time.Duration
+	UniquePlacementTagPrefix string
 }
 
 // Options block for nats-server.
@@ -1813,6 +1814,8 @@ func parseJetStreamLimits(v interface{}, opts *Options, errors *[]error, warning
 			if err != nil {
 				*errors = append(*errors, err)
 			}
+		case "unique_placement_prefix":
+			lim.UniquePlacementTagPrefix = strings.ToLower(strings.TrimSpace(mv.(string)))
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
