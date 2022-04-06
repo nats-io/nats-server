@@ -981,6 +981,12 @@ func (fs *fileStore) recoverMsgs() error {
 	if len(fs.blks) > 0 {
 		sort.Slice(fs.blks, func(i, j int) bool { return fs.blks[i].index < fs.blks[j].index })
 		fs.lmb = fs.blks[len(fs.blks)-1]
+		// Update our sfilter for the last block since we could have only see one subject during recovery.
+		if len(fs.cfg.Subjects) == 1 {
+			fs.lmb.sfilter = fs.cfg.Subjects[0]
+		} else {
+			fs.lmb.sfilter = _EMPTY_
+		}
 	} else {
 		_, err = fs.newMsgBlockForWrite()
 	}
