@@ -4266,6 +4266,63 @@ func TestNoRaceJetStreamSparseConsumers(t *testing.T) {
 	}
 }
 
+func TestNoRaceJetStreamConsumerFilterPerfDegradation(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	js, err := nc.JetStream(nats.PublishAsyncMaxPending(256))
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "test",
+		Subjects: []string{"test.*.subj"},
+		Replicas: 1,
+	})
+	require_NoError(t, err)
+
+	toSend := 50_000
+	count := 0
+	ch := make(chan struct{}, 6)
+	_, err = js.Subscribe("test.*.subj", func(m *nats.Msg) {
+		m.Ack()
+		if count++; count == toSend {
+			ch <- struct{}{}
+		}
+	}, nats.DeliverNew(), nats.ManualAck())
+	require_NoError(t, err)
+
+	msg := make([]byte, 1024)
+	sent := int32(0)
+	send := func() {
+		defer func() { ch <- struct{}{} }()
+		for i := 0; i < toSend/5; i++ {
+			msgID := atomic.AddInt32(&sent, 1)
+			_, err := js.Publish(fmt.Sprintf("test.%d.subj", msgID), msg)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}
+	for i := 0; i < 5; i++ {
+		go send()
+	}
+	timeout := time.NewTimer(10 * time.Second)
+	for i := 0; i < 6; i++ {
+		select {
+		case <-ch:
+		case <-timeout.C:
+			t.Fatal("Took too long")
+		}
+	}
+}
+
 func TestNoRaceFileStoreSubjectInfoWithSnapshotCleanup(t *testing.T) {
 	storeDir := createDir(t, JetStreamStoreDir)
 	defer removeDir(t, storeDir)
