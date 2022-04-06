@@ -4434,10 +4434,17 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	isMoveRequest := !reflect.DeepEqual(osa.Config.Placement, newCfg.Placement)
 
 	// Check for replica changes.
-	isReplicaChange := newCfg.Replicas != len(rg.Peers)
+	isReplicaChange := newCfg.Replicas != osa.Config.Replicas
 
 	// We stage consumer updates and do them after the stream update.
 	var consumers []*consumerAssignment
+
+	// Check if this is a move request and we are already moving this stream.
+	if isMoveRequest && osa.Config.Replicas != len(rg.Peers) {
+		resp.Error = NewJSStreamMoveInProgressError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
+	}
 
 	// Can not move and scale at same time.
 	if isMoveRequest && isReplicaChange {

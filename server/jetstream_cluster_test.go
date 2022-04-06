@@ -11809,6 +11809,14 @@ func TestJetStreamClusterMovingStreamsAndConsumers(t *testing.T) {
 				t.Fatalf("Expected cluster of %q but got %q", "C1", si.Cluster.Name)
 			}
 
+			// Make sure we can not move an inflight stream and consumers, should error.
+			_, err = js.UpdateStream(&nats.StreamConfig{
+				Name:      "MOVE",
+				Replicas:  replicas,
+				Placement: &nats.Placement{Tags: []string{"cloud:aws"}},
+			})
+			require_Error(t, err, NewJSStreamMoveInProgressError())
+
 			checkFor(t, 10*time.Second, 10*time.Millisecond, func() error {
 				si, err := js.StreamInfo("MOVE")
 				if err != nil {
