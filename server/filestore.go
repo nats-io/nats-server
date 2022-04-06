@@ -121,6 +121,7 @@ type msgBlock struct {
 	rbytes  uint64 // Total bytes (raw) including deleted. Used for rolling to new blk.
 	msgs    uint64 // User visible message count.
 	fss     map[string]*SimpleState
+	sfilter string // Single subject filter
 	sfn     string
 	kfn     string
 	lwits   int64
@@ -546,8 +547,12 @@ const (
 // This is the max room needed for index header.
 const indexHdrSize = 7*binary.MaxVarintLen64 + hdrLen + checksumSize
 
+// Lock held on entry
 func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) (*msgBlock, error) {
 	mb := &msgBlock{fs: fs, index: index, cexp: fs.fcfg.CacheExpire}
+	if len(fs.cfg.Subjects) == 1 {
+		mb.sfilter = fs.cfg.Subjects[0]
+	}
 
 	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
 	mb.mfn = filepath.Join(mdir, fi.Name())
@@ -1175,14 +1180,18 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 
-	fseq, isAll, subs := start, filter == _EMPTY_ || filter == fwcs, []string{filter}
+	fseq, isAll, subs := start, filter == _EMPTY_ || filter == mb.sfilter || filter == fwcs, []string{filter}
 
-	if !isAll {
+	// Skip scan of mb.fss is number of messages in the block are less than
+	// 1/2 the number of subjects in mb.fss.
+	doLinearScan := isAll || 2*int(mb.last.seq-start) < len(mb.fss)
+
+	if !doLinearScan {
 		// If we have a wildcard match against all tracked subjects we know about.
 		if wc {
 			subs = subs[:0]
 			for subj := range mb.fss {
-				if isAll || subjectIsSubsetMatch(subj, filter) {
+				if subjectIsSubsetMatch(subj, filter) {
 					subs = append(subs, subj)
 				}
 			}
@@ -1222,12 +1231,20 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 			continue
 		}
 		expireOk := seq == mb.last.seq && mb.llseq == seq
-		if isAll || len(subs) == 1 && fsm.subj == subs[0] {
-			return fsm, expireOk, nil
-		}
-		for _, subj := range subs {
-			if fsm.subj == subj {
+		if doLinearScan {
+			if isAll {
 				return fsm, expireOk, nil
+			}
+			if wc && subjectIsSubsetMatch(fsm.subj, filter) {
+				return fsm, expireOk, nil
+			} else if !wc && fsm.subj == filter {
+				return fsm, expireOk, nil
+			}
+		} else {
+			for _, subj := range subs {
+				if fsm.subj == subj {
+					return fsm, expireOk, nil
+				}
 			}
 		}
 		// If we are here we did not match, so put the llseq back.
@@ -1556,6 +1573,9 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	}
 
 	mb := &msgBlock{fs: fs, index: index, cexp: fs.fcfg.CacheExpire}
+	if len(fs.cfg.Subjects) == 1 {
+		mb.sfilter = fs.cfg.Subjects[0]
+	}
 
 	// Lock should be held to quiet race detector.
 	mb.mu.Lock()
