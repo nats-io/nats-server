@@ -57,7 +57,7 @@ const leafNodeLoopDetectionSubjectPrefix = "$LDS."
 const leafNodeWSPath = "/leafnode"
 
 // This is the time the server will wait, when receiving a CONNECT,
-// before closing the connection is the required minimum version is not met.
+// before closing the connection if the required minimum version is not met.
 const leafNodeWaitBeforeClose = 5 * time.Second
 
 type leaf struct {
@@ -1386,7 +1386,7 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 		if !versionAtLeast(proto.Version, major, minor, update) {
 			// We are going to send back an INFO because otherwise recent
 			// versions of the remote server would simply break the connection
-			// after 2 seconds without receiving that. Instead, we want the
+			// after 2 seconds if not receiving it. Instead, we want the
 			// other side to just "stall" until we finish waiting for the holding
 			// period and close the connection below.
 			s.sendPermsAndAccountInfo(c)

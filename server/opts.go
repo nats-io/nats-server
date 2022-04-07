@@ -143,9 +143,11 @@ type LeafNodeOpts struct {
 	// For solicited connections to other clusters/superclusters.
 	Remotes []*RemoteLeafOpts `json:"remotes,omitempty"`
 
-	// The accepting side can set a minimum version for connected server.
-	// Note that since the server version in the CONNECT protocol is
-	// added started in v2.8.0, any version below that is invalid.
+	// This is the minimum version that is accepted for remote connections.
+	// Note that since the server version in the CONNECT protocol was added
+	// only starting at v2.8.0, any version below that would result in the
+	// connection being rejected (since empty version string in CONNECT would
+	// fail the "version at least" test).
 	MinVersion string
 
 	// Not exported, for tests.
