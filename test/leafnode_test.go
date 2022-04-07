@@ -1684,6 +1684,7 @@ func TestLeafNodeOperatorAndPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error on subscribe: %v", err)
 	}
+	leafnc.Flush()
 
 	// Make sure the interest on "bar" from "sl" server makes it to the "s" server.
 	checkSubInterest(t, s, acc.GetName(), "bar", time.Second)

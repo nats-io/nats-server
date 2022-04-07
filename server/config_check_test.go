@@ -1239,6 +1239,28 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  18,
 		},
 		{
+			name: "when leafnode min_version is wrong type",
+			config: `
+				leafnodes {
+					port: -1
+					min_version = 123
+				}`,
+			err:       errors.New(`interface conversion: interface {} is int64, not string`),
+			errorLine: 4,
+			errorPos:  6,
+		},
+		{
+			name: "when leafnode min_version has parsing error",
+			config: `
+				leafnodes {
+					port: -1
+					min_version = bad.version
+				}`,
+			err:       errors.New(`version parsing error: invalid semver`),
+			errorLine: 4,
+			errorPos:  6,
+		},
+		{
 			name: "when setting latency tracking with a system account",
 			config: `
                 system_account: sys
