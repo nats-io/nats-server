@@ -5769,7 +5769,7 @@ func TestJWTClusteredJetStreamTiers(t *testing.T) {
 	_, err = js.Publish("testR1-2", msg[:])
 	require_NoError(t, err)
 
-	time.Sleep(1700 * time.Millisecond) // wait for update timer to synchronize totals
+	time.Sleep(2000 * time.Millisecond) // wait for update timer to synchronize totals
 
 	// test exceeding tiered storage limit
 	_, err = js.Publish("testR1-1", []byte("1"))
