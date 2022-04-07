@@ -4567,7 +4567,7 @@ func TestJetStreamUniquePlacementTag(t *testing.T) {
 	tmlp := `
 		listen: 127.0.0.1:-1
 		server_name: %s
-		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s', limits: {unique_placement_prefix: az}}
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s', unique_tag: az}
 		leaf {listen: 127.0.0.1:-1}
 		cluster {
 			name: %s

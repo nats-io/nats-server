@@ -4064,7 +4064,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		}
 	}
 
-	uniqueTagPrefix := s.getOpts().JetStreamLimits.UniquePlacementTagPrefix
+	uniqueTagPrefix := s.getOpts().JetStreamUniqueTag
 	if uniqueTagPrefix != _EMPTY_ {
 		for _, tag := range tags {
 			if strings.HasPrefix(tag, uniqueTagPrefix) {
