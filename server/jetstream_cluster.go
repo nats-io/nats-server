@@ -4049,6 +4049,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 	}
 
 	var nodes []wn
+	// peers is a randomized list
 	s, peers := cc.s, cc.meta.Peers()
 
 	// Map existing.
@@ -4062,6 +4063,18 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 			ep[p] = struct{}{}
 		}
 	}
+
+	uniqueTagPrefix := s.getOpts().JetStreamUniqueTag
+	if uniqueTagPrefix != _EMPTY_ {
+		for _, tag := range tags {
+			if strings.HasPrefix(tag, uniqueTagPrefix) {
+				// disable uniqueness check of explicitly listed in tags
+				uniqueTagPrefix = _EMPTY_
+				break
+			}
+		}
+	}
+	var uniqueTags = make(map[string]struct{})
 
 	for _, p := range peers {
 		si, ok := s.nodeToInfo.Load(p.ID)
@@ -4118,6 +4131,23 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		// Otherwise check if we have enough room if maxBytes set.
 		if maxBytes > 0 && maxBytes > available {
 			continue
+		}
+
+		if uniqueTagPrefix != _EMPTY_ {
+			// default requires the unique prefix to be present
+			isUnique := false
+			for _, t := range ni.tags {
+				if strings.HasPrefix(t, uniqueTagPrefix) {
+					if _, ok := uniqueTags[t]; !ok {
+						uniqueTags[t] = struct{}{}
+						isUnique = true
+					}
+					break
+				}
+			}
+			if !isUnique {
+				continue
+			}
 		}
 		// Add to our list of potential nodes.
 		nodes = append(nodes, wn{p.ID, available})

@@ -187,6 +187,7 @@ type RemoteLeafOpts struct {
 type JSLimitOpts struct {
 	MaxAckPending int
 	Duplicates    time.Duration
+	UniqueTag     string
 }
 
 // Options block for nats-server.
@@ -238,6 +239,7 @@ type Options struct {
 	JetStreamDomain       string        `json:"-"`
 	JetStreamExtHint      string        `json:"-"`
 	JetStreamKey          string        `json:"-"`
+	JetStreamUniqueTag    string
 	JetStreamLimits       JSLimitOpts
 	StoreDir              string            `json:"-"`
 	JsAccDefaultDomain    map[string]string `json:"-"` // account to domain name mapping
@@ -1893,6 +1895,8 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 				if err := parseJetStreamLimits(tk, opts, errors, warnings); err != nil {
 					return err
 				}
+			case "unique_tag":
+				opts.JetStreamUniqueTag = strings.ToLower(strings.TrimSpace(mv.(string)))
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{

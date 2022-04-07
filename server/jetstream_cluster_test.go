@@ -4563,6 +4563,85 @@ func TestJetStreamClusterSuperClusterMetaPlacement(t *testing.T) {
 	}
 }
 
+func TestJetStreamUniquePlacementTag(t *testing.T) {
+	tmlp := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s', unique_tag: az}
+		leaf {listen: 127.0.0.1:-1}
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+		# For access to system account.
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+	`
+	s := createJetStreamSuperClusterWithTemplateAndModHook(t, tmlp, 5, 2,
+		func(serverName, clustername, storeDir, conf string) string {
+			azTag := map[string]string{
+				"C1-S1": "az:same",
+				"C1-S2": "az:same",
+				"C1-S3": "az:same",
+				"C1-S4": "az:same",
+				"C1-S5": "az:same",
+				"C2-S1": "az:1",
+				"C2-S2": "az:2",
+				"C2-S3": "az:1",
+				"C2-S4": "az:2",
+				"C2-S5": "az:1",
+			}
+			return conf + fmt.Sprintf("\nserver_tags: [cloud:%s-tag, %s]\n", clustername, azTag[serverName])
+		})
+	defer s.shutdown()
+
+	nc := natsConnect(t, s.randomServer().ClientURL())
+	defer nc.Close()
+
+	js, err := nc.JetStream()
+	require_NoError(t, err)
+
+	for i, test := range []struct {
+		placement *nats.Placement
+		replicas  int
+		fail      bool
+		cluster   string
+	}{
+		// these pass because replica count is 1
+		{&nats.Placement{Tags: []string{"az:same"}}, 1, false, "C1"},
+		{&nats.Placement{Tags: []string{"cloud:C1-tag", "az:same"}}, 1, false, "C1"},
+		{&nats.Placement{Tags: []string{"cloud:C1-tag"}}, 1, false, "C1"},
+		// pass because az is set, which disables the filter
+		{&nats.Placement{Tags: []string{"az:same"}}, 2, false, "C1"},
+		{&nats.Placement{Tags: []string{"cloud:C1-tag", "az:same"}}, 2, false, "C1"},
+		// fails because this cluster only has the same az
+		{&nats.Placement{Tags: []string{"cloud:C1-tag"}}, 2, true, ""},
+		// fails because no 3 unique tags exist
+		{&nats.Placement{Tags: []string{"cloud:C2-tag"}}, 3, true, ""},
+		{nil, 3, true, ""},
+		// pass because replica count is low enough
+		{nil, 2, false, "C2"},
+		{&nats.Placement{Tags: []string{"cloud:C2-tag"}}, 2, false, "C2"},
+		// pass because az is provided
+		{&nats.Placement{Tags: []string{"az:1"}}, 3, false, "C2"},
+		{&nats.Placement{Tags: []string{"az:2"}}, 2, false, "C2"},
+	} {
+		name := fmt.Sprintf("test-%d", i)
+		t.Run(name, func(t *testing.T) {
+			ci, err := js.AddStream(&nats.StreamConfig{Name: name, Replicas: test.replicas, Placement: test.placement})
+			if test.fail {
+				require_Error(t, err)
+				require_Equal(t, err.Error(), "insufficient resources")
+				return
+			}
+			require_NoError(t, err)
+			if test.cluster != _EMPTY_ {
+				require_Equal(t, ci.Cluster.Name, test.cluster)
+			}
+		})
+	}
+}
+
 func TestJetStreamClusterSuperClusterBasics(t *testing.T) {
 	sc := createJetStreamSuperCluster(t, 3, 3)
 	defer sc.shutdown()
