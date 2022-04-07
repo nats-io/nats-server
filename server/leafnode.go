@@ -56,6 +56,10 @@ const leafNodeLoopDetectionSubjectPrefix = "$LDS."
 // LEAF connection as opposed to a CLIENT.
 const leafNodeWSPath = "/leafnode"
 
+// This is the time the server will wait, when receiving a CONNECT,
+// before closing the connection if the required minimum version is not met.
+const leafNodeWaitBeforeClose = 5 * time.Second
+
 type leaf struct {
 	// We have any auth stuff here for solicited connections.
 	remote *leafNodeCfg
@@ -252,6 +256,18 @@ func validateLeafNode(o *Options) error {
 	if o.LeafNode.Port == 0 {
 		return nil
 	}
+
+	// If MinVersion is defined, check that it is valid.
+	if mv := o.LeafNode.MinVersion; mv != _EMPTY_ {
+		if err := checkLeafMinVersionConfig(mv); err != nil {
+			return err
+		}
+	}
+
+	// The checks below will be done only when detecting that we are configured
+	// with gateways. So if an option validation needs to be done regardless,
+	// it MUST be done before this point!
+
 	if o.Gateway.Name == "" && o.Gateway.Port == 0 {
 		return nil
 	}
@@ -262,6 +278,17 @@ func validateLeafNode(o *Options) error {
 	}
 	if err := validatePinnedCerts(o.LeafNode.TLSPinnedCerts); err != nil {
 		return fmt.Errorf("leafnode: %v", err)
+	}
+	return nil
+}
+
+func checkLeafMinVersionConfig(mv string) error {
+	if ok, err := versionAtLeastCheckError(mv, 2, 8, 0); !ok || err != nil {
+		if err != nil {
+			return fmt.Errorf("invalid leafnode's minimum version: %v", err)
+		} else {
+			return fmt.Errorf("the minimum version should be at least 2.8.0")
+		}
 	}
 	return nil
 }
@@ -613,6 +640,7 @@ var credsRe = regexp.MustCompile(`\s*(?:(?:[-]{3,}[^\n]*[-]{3,}\n)(.+)(?:\n\s*[-
 func (c *client) sendLeafConnect(clusterName string, tlsRequired, headers bool) error {
 	// We support basic user/pass and operator based user JWT with signatures.
 	cinfo := leafConnectInfo{
+		Version:   VERSION,
 		TLS:       tlsRequired,
 		ID:        c.srv.info.ID,
 		Domain:    c.srv.info.Domain,
@@ -1316,6 +1344,7 @@ func (s *Server) removeLeafNodeConnection(c *client) {
 
 // Connect information for solicited leafnodes.
 type leafConnectInfo struct {
+	Version   string   `json:"version,omitempty"`
 	JWT       string   `json:"jwt,omitempty"`
 	Sig       string   `json:"sig,omitempty"`
 	User      string   `json:"user,omitempty"`
@@ -1361,6 +1390,25 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 		c.sendErr(errTxt)
 		c.closeConnection(WrongGateway)
 		return ErrWrongGateway
+	}
+
+	if mv := s.getOpts().LeafNode.MinVersion; mv != _EMPTY_ {
+		major, minor, update, _ := versionComponents(mv)
+		if !versionAtLeast(proto.Version, major, minor, update) {
+			// We are going to send back an INFO because otherwise recent
+			// versions of the remote server would simply break the connection
+			// after 2 seconds if not receiving it. Instead, we want the
+			// other side to just "stall" until we finish waiting for the holding
+			// period and close the connection below.
+			s.sendPermsAndAccountInfo(c)
+			c.sendErrAndErr(fmt.Sprintf("connection rejected since minimum version required is %q", mv))
+			select {
+			case <-c.srv.quitCh:
+			case <-time.After(leafNodeWaitBeforeClose):
+			}
+			c.closeConnection(MinimumVersionRequired)
+			return ErrMinimumVersionRequired
+		}
 	}
 
 	// Check if this server supports headers.

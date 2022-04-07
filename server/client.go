@@ -202,6 +202,7 @@ const (
 	DuplicateRemoteLeafnodeConnection
 	DuplicateClientID
 	DuplicateServerName
+	MinimumVersionRequired
 )
 
 // Some flags passed to processMsgResults
@@ -1226,6 +1227,15 @@ func (c *client) readLoop(pre []byte) {
 		// to process messages, etc.
 		for i := 0; i < len(bufs); i++ {
 			if err := c.parse(bufs[i]); err != nil {
+				if err == ErrMinimumVersionRequired {
+					// Special case here, currently only for leaf node connections.
+					// When process the CONNECT protocol, if the minimum version
+					// required was not met, an error was printed and sent back to
+					// the remote, and connection was closed after a certain delay
+					// (to avoid "rapid" reconnection from the remote).
+					// We don't need to do any of the things below, simply return.
+					return
+				}
 				if dur := time.Since(start); dur >= readLoopReportThreshold {
 					c.Warnf("Readloop processing time: %v", dur)
 				}

@@ -188,6 +188,9 @@ var (
 	// ErrDuplicateServerName is returned when processing a server remote connection and
 	// the server reports that this server name is already used in the cluster.
 	ErrDuplicateServerName = errors.New("duplicate server name")
+
+	// ErrMinimumVersionRequired is returned when a connection is not at the minimum version required.
+	ErrMinimumVersionRequired = errors.New("minimum version required")
 )
 
 // configErr is a configuration error.

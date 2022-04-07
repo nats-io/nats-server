@@ -2230,6 +2230,8 @@ func (reason ClosedState) String() string {
 		return "Duplicate Client ID"
 	case DuplicateServerName:
 		return "Duplicate Server Name"
+	case MinimumVersionRequired:
+		return "Minimum Version Required"
 	}
 
 	return "Unknown State"

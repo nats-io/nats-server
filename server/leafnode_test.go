@@ -5280,3 +5280,142 @@ leafnodes:{
 	require_NoError(t, err)
 	test(jsAA, jsLL)
 }
+
+type checkLeafMinVersionLogger struct {
+	DummyLogger
+	errCh  chan string
+	connCh chan string
+}
+
+func (l *checkLeafMinVersionLogger) Errorf(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	if strings.Contains(msg, "minimum version") {
+		select {
+		case l.errCh <- msg:
+		default:
+		}
+	}
+}
+
+func (l *checkLeafMinVersionLogger) Noticef(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	if strings.Contains(msg, "Leafnode connection created") {
+		select {
+		case l.connCh <- msg:
+		default:
+		}
+	}
+}
+
+func TestLeafNodeMinVersion(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		port: -1
+		leafnodes {
+			port: -1
+			min_version: 2.8.0
+		}
+	`))
+	defer removeFile(t, conf)
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	rconf := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		leafnodes {
+			remotes [
+				{url: "nats://127.0.0.1:%d" }
+			]
+		}
+	`, o.LeafNode.Port)))
+	defer removeFile(t, rconf)
+	ln, _ := RunServerWithConfig(rconf)
+	defer ln.Shutdown()
+
+	checkLeafNodeConnected(t, s)
+	checkLeafNodeConnected(t, ln)
+
+	ln.Shutdown()
+	s.Shutdown()
+
+	// Now makes sure we validate options, not just config file.
+	for _, test := range []struct {
+		name    string
+		version string
+		err     string
+	}{
+		{"invalid version", "abc", "semver"},
+		{"version too low", "2.7.9", "the minimum version should be at least 2.8.0"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o.Port = -1
+			o.LeafNode.Port = -1
+			o.LeafNode.MinVersion = test.version
+			if s, err := NewServer(o); err == nil || !strings.Contains(err.Error(), test.err) {
+				if s != nil {
+					s.Shutdown()
+				}
+				t.Fatalf("Expected error to contain %q, got %v", test.err, err)
+			}
+		})
+	}
+
+	// Ok, so now to verify that a server rejects a leafnode connection
+	// we will set the min_version above our current VERSION. So first
+	// decompose the version:
+	major, minor, _, err := versionComponents(VERSION)
+	if err != nil {
+		t.Fatalf("The current server version %q is not valid: %v", VERSION, err)
+	}
+	// Let's make our minimum server an minor version above
+	mv := fmt.Sprintf("%d.%d.0", major, minor+1)
+	conf = createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		leafnodes {
+			port: -1
+			min_version: "%s"
+		}
+	`, mv)))
+	defer removeFile(t, conf)
+	s, o = RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	l := &checkLeafMinVersionLogger{errCh: make(chan string, 1), connCh: make(chan string, 1)}
+	s.SetLogger(l, false, false)
+
+	rconf = createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		leafnodes {
+			remotes [
+				{url: "nats://127.0.0.1:%d" }
+			]
+		}
+	`, o.LeafNode.Port)))
+	defer removeFile(t, rconf)
+	lo := LoadConfig(rconf)
+	lo.LeafNode.ReconnectInterval = 50 * time.Millisecond
+	ln = RunServer(lo)
+	defer ln.Shutdown()
+
+	select {
+	case <-l.connCh:
+	case <-time.After(time.Second):
+		t.Fatal("Remote did not try to connect")
+	}
+
+	select {
+	case <-l.errCh:
+	case <-time.After(time.Second):
+		t.Fatal("Did not get the minimum version required error")
+	}
+
+	// Since we have a very small reconnect interval, if the connection was
+	// closed "right away", then we should have had a reconnect attempt with
+	// another failure. This should not be the case because the server will
+	// wait 5s before closing the connection.
+	select {
+	case <-l.connCh:
+		t.Fatal("Should not have tried to reconnect")
+	case <-time.After(250 * time.Millisecond):
+		// OK
+	}
+}

@@ -143,6 +143,13 @@ type LeafNodeOpts struct {
 	// For solicited connections to other clusters/superclusters.
 	Remotes []*RemoteLeafOpts `json:"remotes,omitempty"`
 
+	// This is the minimum version that is accepted for remote connections.
+	// Note that since the server version in the CONNECT protocol was added
+	// only starting at v2.8.0, any version below that will be rejected
+	// (since empty version string in CONNECT would fail the "version at
+	// least" test).
+	MinVersion string
+
 	// Not exported, for tests.
 	resolver    netResolver
 	dialTimeout time.Duration
@@ -1981,6 +1988,14 @@ func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]e
 		case "no_advertise":
 			opts.LeafNode.NoAdvertise = mv.(bool)
 			trackExplicitVal(opts, &opts.inConfig, "LeafNode.NoAdvertise", opts.LeafNode.NoAdvertise)
+		case "min_version", "minimum_version":
+			version := mv.(string)
+			if err := checkLeafMinVersionConfig(version); err != nil {
+				err = &configErr{tk, err.Error()}
+				*errors = append(*errors, err)
+				continue
+			}
+			opts.LeafNode.MinVersion = version
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
