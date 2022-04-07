@@ -5338,14 +5338,25 @@ func TestLeafNodeMinVersion(t *testing.T) {
 	s.Shutdown()
 
 	// Now makes sure we validate options, not just config file.
-	o.Port = -1
-	o.LeafNode.Port = -1
-	o.LeafNode.MinVersion = "abc"
-	if s, err := NewServer(o); err == nil || !strings.Contains(err.Error(), "semver") {
-		if s != nil {
-			s.Shutdown()
-		}
-		t.Fatalf("Expected error about invalid version, got %v", err)
+	for _, test := range []struct {
+		name    string
+		version string
+		err     string
+	}{
+		{"invalid version", "abc", "semver"},
+		{"version too low", "2.7.9", "the minimum version should be at least 2.8.0"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o.Port = -1
+			o.LeafNode.Port = -1
+			o.LeafNode.MinVersion = test.version
+			if s, err := NewServer(o); err == nil || !strings.Contains(err.Error(), test.err) {
+				if s != nil {
+					s.Shutdown()
+				}
+				t.Fatalf("Expected error to contain %q, got %v", test.err, err)
+			}
+		})
 	}
 
 	// Ok, so now to verify that a server rejects a leafnode connection

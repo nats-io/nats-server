@@ -59,17 +59,22 @@ func versionComponents(version string) (major, minor, patch int, err error) {
 	return major, minor, patch, err
 }
 
-func versionAtLeast(version string, emajor, eminor, epatch int) bool {
+func versionAtLeastCheckError(version string, emajor, eminor, epatch int) (bool, error) {
 	major, minor, patch, err := versionComponents(version)
 	if err != nil {
-		return false
+		return false, err
 	}
 	if major > emajor ||
 		(major == emajor && minor > eminor) ||
 		(major == emajor && minor == eminor && patch >= epatch) {
-		return true
+		return true, nil
 	}
-	return false
+	return false, err
+}
+
+func versionAtLeast(version string, emajor, eminor, epatch int) bool {
+	res, _ := versionAtLeastCheckError(version, emajor, eminor, epatch)
+	return res
 }
 
 // parseSize expects decimal positive numbers. We

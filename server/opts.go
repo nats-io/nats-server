@@ -145,9 +145,9 @@ type LeafNodeOpts struct {
 
 	// This is the minimum version that is accepted for remote connections.
 	// Note that since the server version in the CONNECT protocol was added
-	// only starting at v2.8.0, any version below that would result in the
-	// connection being rejected (since empty version string in CONNECT would
-	// fail the "version at least" test).
+	// only starting at v2.8.0, any version below that will be rejected
+	// (since empty version string in CONNECT would fail the "version at
+	// least" test).
 	MinVersion string
 
 	// Not exported, for tests.
@@ -1990,8 +1990,8 @@ func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]e
 			trackExplicitVal(opts, &opts.inConfig, "LeafNode.NoAdvertise", opts.LeafNode.NoAdvertise)
 		case "min_version", "minimum_version":
 			version := mv.(string)
-			if _, _, _, err := versionComponents(version); err != nil {
-				err := &configErr{tk, fmt.Sprintf("version parsing error: %v", err)}
+			if err := checkLeafMinVersionConfig(version); err != nil {
+				err = &configErr{tk, err.Error()}
 				*errors = append(*errors, err)
 				continue
 			}

@@ -1256,7 +1256,18 @@ func TestConfigCheck(t *testing.T) {
 					port: -1
 					min_version = bad.version
 				}`,
-			err:       errors.New(`version parsing error: invalid semver`),
+			err:       errors.New(`invalid leafnode's minimum version: invalid semver`),
+			errorLine: 4,
+			errorPos:  6,
+		},
+		{
+			name: "when leafnode min_version is too low",
+			config: `
+				leafnodes {
+					port: -1
+					min_version = 2.7.9
+				}`,
+			err:       errors.New(`the minimum version should be at least 2.8.0`),
 			errorLine: 4,
 			errorPos:  6,
 		},

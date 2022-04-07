@@ -259,8 +259,8 @@ func validateLeafNode(o *Options) error {
 
 	// If MinVersion is defined, check that it is valid.
 	if mv := o.LeafNode.MinVersion; mv != _EMPTY_ {
-		if _, _, _, err := versionComponents(mv); err != nil {
-			return fmt.Errorf("invalid min_version in leafnode: %v", err)
+		if err := checkLeafMinVersionConfig(mv); err != nil {
+			return err
 		}
 	}
 
@@ -278,6 +278,17 @@ func validateLeafNode(o *Options) error {
 	}
 	if err := validatePinnedCerts(o.LeafNode.TLSPinnedCerts); err != nil {
 		return fmt.Errorf("leafnode: %v", err)
+	}
+	return nil
+}
+
+func checkLeafMinVersionConfig(mv string) error {
+	if ok, err := versionAtLeastCheckError(mv, 2, 8, 0); !ok || err != nil {
+		if err != nil {
+			return fmt.Errorf("invalid leafnode's minimum version: %v", err)
+		} else {
+			return fmt.Errorf("the minimum version should be at least 2.8.0")
+		}
 	}
 	return nil
 }
