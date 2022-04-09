@@ -4109,6 +4109,10 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		// We need to rewrite the subject and the reply.
 		if li := bytes.LastIndex(creply, []byte("@")); li != -1 && li < len(creply)-1 {
 			subj, creply = creply[li+1:], creply[:li]
+			// Make sure deliver is set if inbound from a route.
+			if c.kind == ROUTER {
+				deliver = subj
+			}
 		}
 	}
 
@@ -4161,6 +4165,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			} else {
 				dsubj = append(_dsubj[:0], sub.im.to...)
 			}
+
 			// If we are mapping for a deliver subject we will reverse roles.
 			// The original subj we set from above is correct for the msg header,
 			// but we need to transform the deliver subject to properly route.

@@ -6830,28 +6830,27 @@ func TestJetStreamSystemLimitsPlacement(t *testing.T) {
 		route1, route2, route3 := clusterPort, clusterPort+1, clusterPort+2
 
 		s, _ := RunServerWithConfig(createConfFile(t, []byte(fmt.Sprintf(`
-server_name: %s
-listen: 127.0.0.1:-1
+				server_name: %s
+				listen: 127.0.0.1:-1
 
-jetstream: {
-  enabled: true
-  store_dir: '%s'
-  max_mem: %d
-  max_file: %d
-}
+				jetstream: {
+				  enabled: true
+				  store_dir: '%s'
+				  max_mem: %d
+				  max_file: %d
+				}
 
-server_tags: [%s]
+				server_tags: [%s]
 
-cluster {
-  name: cluster-a
-  port: %d
-  routes: [
-    nats-route://127.0.0.1:%d
-    nats-route://127.0.0.1:%d
-    nats-route://127.0.0.1:%d
-  ]
-}
-	`,
+				cluster {
+				  name: cluster-a
+				  port: %d
+				  routes: [
+				    nats-route://127.0.0.1:%d
+				    nats-route://127.0.0.1:%d
+				    nats-route://127.0.0.1:%d
+				  ]
+				}`,
 			serverName,
 			storeDir,
 			systemLimit,
@@ -7108,38 +7107,37 @@ func TestJetStreamSuperClusterSystemLimitsPlacement(t *testing.T) {
 		route1, route2, route3 := clusterPort, clusterPort+1, clusterPort+2
 
 		s, _ := RunServerWithConfig(createConfFile(t, []byte(fmt.Sprintf(`
-server_name: %s
-listen: 127.0.0.1:-1
+				server_name: %s
+				listen: 127.0.0.1:-1
 
-jetstream: {
-  enabled: true
-  store_dir: '%s'
-  max_mem: %d
-  max_file: %d
-}
+				jetstream: {
+				  enabled: true
+				  store_dir: '%s'
+				  max_mem: %d
+				  max_file: %d
+				}
 
-server_tags: [%s]
+				server_tags: [%s]
 
-cluster {
-  name: %s
-  port: %d
-  routes: [
-    nats-route://127.0.0.1:%d
-    nats-route://127.0.0.1:%d
-    nats-route://127.0.0.1:%d
-  ]
-}
+				cluster {
+				  name: %s
+				  port: %d
+				  routes: [
+				    nats-route://127.0.0.1:%d
+				    nats-route://127.0.0.1:%d
+				    nats-route://127.0.0.1:%d
+				  ]
+				}
 
-gateway {
-  name: %s
-  port: %d
+				gateway {
+				  name: %s
+				  port: %d
 
-  gateways: [
-    {name: "cluster-a", url: "nats://localhost:%d"},
-    {name: "cluster-b", url: "nats://localhost:%d"},
-  ]
-}
-	`,
+				  gateways: [
+				    {name: "cluster-a", url: "nats://localhost:%d"},
+				    {name: "cluster-b", url: "nats://localhost:%d"},
+				  ]
+				}`,
 			serverName,
 			storeDir,
 			systemLimit,
@@ -17263,4 +17261,71 @@ func TestJetStreamRecoverSealedAfterServerRestart(t *testing.T) {
 	si, err := js.StreamInfo("foo")
 	require_NoError(t, err)
 	require_True(t, si.State.Msgs == 100)
+}
+
+func TestJetStreamImportConsumerStreamSubjectRemapSingle(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 4GB, max_file_store: 1TB}
+		accounts: {
+			JS: {
+				jetstream: enabled
+				users: [ {user: js, password: pwd} ]
+				exports [
+					# This is streaming to a delivery subject for a push based consumer.
+					{ stream: "deliver.ORDERS" }
+					# This is to ack received messages. This is a service to support sync ack.
+					{ service: "$JS.ACK.ORDERS.*.>" }
+					# To support ordered consumers, flow control.
+					{ service: "$JS.FC.>" }
+				]
+			},
+			IM: {
+				users: [ {user: im, password: pwd} ]
+				imports [
+					{ stream:  { account: JS, subject: "deliver.ORDERS" }, to: "d" }
+					{ service: {account: JS, subject: "$JS.FC.>" }}
+				]
+			},
+		}
+	`))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s, nats.UserInfo("js", "pwd"))
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "ORDERS",
+		Subjects: []string{"foo"}, // The JS subject.
+		Storage:  nats.MemoryStorage},
+	)
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", []byte("OK"))
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("ORDERS", &nats.ConsumerConfig{
+		DeliverSubject: "deliver.ORDERS",
+		AckPolicy:      nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	nc2, err := nats.Connect(s.ClientURL(), nats.UserInfo("im", "pwd"))
+	require_NoError(t, err)
+
+	sub, err := nc2.SubscribeSync("d")
+	require_NoError(t, err)
+
+	m, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+
+	if m.Subject != "foo" {
+		t.Fatalf("Subject not mapped correctly across account boundary, expected %q got %q", "foo", m.Subject)
+	}
 }
