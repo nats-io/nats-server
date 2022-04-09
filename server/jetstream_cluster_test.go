@@ -6695,7 +6695,7 @@ func TestJetStreamClusterSingleLeafNodeWithoutSharedSystemAccount(t *testing.T) 
 		t.Fatalf("Unexpected publish error: %v", err)
 	}
 	// Make sure the message arrives in our mirror.
-	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 		si, err := jsLocal.StreamInfo("M")
 		if err != nil {
 			return fmt.Errorf("Could not get stream info: %v", err)
