@@ -851,6 +851,13 @@ func (s *Server) shutdownJetStream() {
 	s.Noticef("Initiating JetStream Shutdown...")
 	defer s.Noticef("JetStream Shutdown")
 
+	// If we have folks blocked on sync requests, unblock.
+	// Send 1 is enough, but use select in case they were all present.
+	select {
+	case s.syncOutSem <- struct{}{}:
+	default:
+	}
+
 	var _a [512]*Account
 	accounts := _a[:0]
 

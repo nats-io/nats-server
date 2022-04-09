@@ -532,6 +532,9 @@ func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 
 	// Set our node.
 	mset.node = sa.Group.node
+	if mset.node != nil {
+		mset.node.UpdateKnownPeers(sa.Group.Peers)
+	}
 
 	// Setup our info sub here as well for all stream members. This is now by design.
 	if mset.infoSub == nil {
@@ -693,11 +696,12 @@ func (mset *stream) autoTuneFileStorageBlockSize(fsCfg *FileStoreConfig) {
 	if m := blkSize % 100; m != 0 {
 		blkSize += 100 - m
 	}
-	if blkSize < FileStoreMinBlkSize {
+	if blkSize <= FileStoreMinBlkSize {
 		blkSize = FileStoreMinBlkSize
-	}
-	if blkSize > FileStoreMaxBlkSize {
+	} else if blkSize >= FileStoreMaxBlkSize {
 		blkSize = FileStoreMaxBlkSize
+	} else {
+		blkSize = defaultMediumBlockSize
 	}
 	fsCfg.BlockSize = uint64(blkSize)
 }

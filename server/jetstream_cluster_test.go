@@ -3670,6 +3670,11 @@ func TestJetStreamClusterPeerOffline(t *testing.T) {
 }
 
 func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
+	// Make this shorter for the test.
+	old := lostQuorumInterval
+	lostQuorumInterval = hbIntervalDefault * 3
+	defer func() { lostQuorumInterval = old }()
+
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 

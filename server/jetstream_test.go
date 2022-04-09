@@ -359,8 +359,8 @@ func TestJetStreamAutoTuneFSConfig(t *testing.T) {
 
 	testBlkSize("foo", 1, 0, FileStoreMinBlkSize)
 	testBlkSize("foo", 1, 512, FileStoreMinBlkSize)
-	testBlkSize("foo", 1, 1024*1024, 262200)
-	testBlkSize("foo", 1, 8*1024*1024, 2097200)
+	testBlkSize("foo", 1, 1024*1024, defaultMediumBlockSize)
+	testBlkSize("foo", 1, 8*1024*1024, defaultMediumBlockSize)
 	testBlkSize("foo_bar_baz", -1, 32*1024*1024*1024, FileStoreMaxBlkSize)
 }
 
