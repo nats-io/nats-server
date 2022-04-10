@@ -56,6 +56,7 @@ type RaftNode interface {
 	ID() string
 	Group() string
 	Peers() []*Peer
+	UpdateKnownPeers(knownPeers []string)
 	ProposeAddPeer(peer string) error
 	ProposeRemovePeer(peer string) error
 	AdjustClusterSize(csz int) error
@@ -221,6 +222,7 @@ type catchupState struct {
 type lps struct {
 	ts int64
 	li uint64
+	kp bool // marks as known peer.
 }
 
 const (
@@ -255,14 +257,13 @@ var (
 	errNilCfg            = errors.New("raft: no config given")
 	errCorruptPeers      = errors.New("raft: corrupt peer state")
 	errEntryLoadFailed   = errors.New("raft: could not load entry from WAL")
-	errEntryStoreFailed  = errors.New("raft: could not storeentry to WAL")
+	errEntryStoreFailed  = errors.New("raft: could not store entry to WAL")
 	errNodeClosed        = errors.New("raft: node is closed")
 	errBadSnapName       = errors.New("raft: snapshot name could not be parsed")
 	errNoSnapAvailable   = errors.New("raft: no snapshot available")
 	errCatchupsRunning   = errors.New("raft: snapshot can not be installed while catchups running")
 	errSnapshotCorrupt   = errors.New("raft: snapshot corrupt")
 	errTooManyPrefs      = errors.New("raft: stepdown requires at most one preferred new leader")
-	errStepdownNoPeer    = errors.New("raft: stepdown failed, could not match new leader")
 	errNoPeerState       = errors.New("raft: no peerstate")
 	errAdjustBootCluster = errors.New("raft: can not adjust boot peer size on established group")
 	errLeaderLen         = fmt.Errorf("raft: leader should be exactly %d bytes", idLen)
@@ -284,7 +285,7 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 	expected := len(knownPeers)
 	// We need to adjust this is all peers are not known.
 	if !allPeersKnown {
-		s.Debugf("Determining expected peer size for JetStream metacontroller")
+		s.Debugf("Determining expected peer size for JetStream meta group")
 		if expected < 2 {
 			expected = 2
 		}
@@ -461,12 +462,12 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig) (RaftNode, error
 	n.apply.push(nil)
 
 	// Make sure to track ourselves.
-	n.trackPeer(n.id)
+	n.peers[n.id] = &lps{time.Now().UnixNano(), 0, true}
 	// Track known peers
 	for _, peer := range ps.knownPeers {
-		// Set these to 0 to start.
+		// Set these to 0 to start but mark as known peer.
 		if peer != n.id {
-			n.peers[peer] = &lps{0, 0}
+			n.peers[peer] = &lps{0, 0, true}
 		}
 	}
 
@@ -685,6 +686,17 @@ func (n *raft) ProposeAddPeer(peer string) error {
 	return nil
 }
 
+// As a leader if we are proposing to remove a peer assume its already gone.
+func (n *raft) doRemovePeerAsLeader(peer string) {
+	n.Lock()
+	if _, ok := n.peers[peer]; ok {
+		delete(n.peers, peer)
+		// We should decrease our cluster size since we are tracking this peer and the peer is most likely already gone.
+		n.adjustClusterSizeAndQuorum()
+	}
+	n.Unlock()
+}
+
 // ProposeRemovePeer is called to remove a peer from the group.
 func (n *raft) ProposeRemovePeer(peer string) error {
 	n.RLock()
@@ -700,6 +712,7 @@ func (n *raft) ProposeRemovePeer(peer string) error {
 
 	if isLeader {
 		prop.push(&Entry{EntryRemovePeer, []byte(peer)})
+		n.doRemovePeerAsLeader(peer)
 		return nil
 	}
 
@@ -1110,6 +1123,13 @@ func (n *raft) Leader() bool {
 	return isLeader
 }
 
+// Reports our catching up state.
+func (n *raft) isCatchingUp() bool {
+	n.RLock()
+	defer n.RUnlock()
+	return n.catchup != nil
+}
+
 // Lock should be held.
 func (n *raft) isCurrent() bool {
 	// First check if we match commit and applied.
@@ -1201,9 +1221,14 @@ func (n *raft) StepDown(preferred ...string) error {
 	// See if we have up to date followers.
 	nowts := time.Now().UnixNano()
 	maybeLeader := noLeader
-	if len(preferred) > 0 && preferred[0] != _EMPTY_ {
-		maybeLeader = preferred[0]
+	if len(preferred) > 0 {
+		if preferred[0] != _EMPTY_ {
+			maybeLeader = preferred[0]
+		} else {
+			preferred = nil
+		}
 	}
+
 	for peer, ps := range n.peers {
 		// If not us and alive and caughtup.
 		if peer != n.id && (nowts-ps.ts) < int64(hbInterval*3) {
@@ -1222,7 +1247,7 @@ func (n *raft) StepDown(preferred ...string) error {
 	n.Unlock()
 
 	if len(preferred) > 0 && maybeLeader == noLeader {
-		return errStepdownNoPeer
+		n.debug("Can not transfer to preferred peer %q", preferred[0])
 	}
 
 	if maybeLeader != noLeader {
@@ -1253,9 +1278,18 @@ func (n *raft) campaign() error {
 	if n.state == Leader {
 		return errAlreadyLeader
 	}
-	n.lxfer = true
 	n.resetElect(randCampaignTimeout())
+	return nil
+}
 
+// xferCampaign will have our node start an immediate leadership vote.
+// Lock should be held.
+func (n *raft) xferCampaign() error {
+	n.debug("Starting transfer campaign")
+	if n.state == Leader {
+		return errAlreadyLeader
+	}
+	n.resetElect(10 * time.Millisecond)
 	return nil
 }
 
@@ -1316,6 +1350,20 @@ func (n *raft) Peers() []*Peer {
 		peers = append(peers, p)
 	}
 	return peers
+}
+
+// Update our known set of peers.
+func (n *raft) UpdateKnownPeers(knownPeers []string) {
+	n.Lock()
+	ps := &peerState{knownPeers, len(knownPeers), n.extSt}
+	n.processPeerState(ps)
+	isLeader := n.state == Leader
+	n.Unlock()
+
+	// If we are the leader send this update out as well.
+	if isLeader {
+		n.sendPeerState()
+	}
 }
 
 func (n *raft) ApplyQ() *ipQueue         { return n.apply } // queue of *CommittedEntry
@@ -1574,6 +1622,8 @@ func (n *raft) runAsFollower() {
 			} else if n.isObserver() {
 				n.resetElect(48 * time.Hour)
 				n.debug("Not switching to candidate, observer only")
+			} else if n.isCatchingUp() {
+				n.debug("Not switching to candidate, catching up")
 			} else {
 				n.switchToCandidate()
 				return
@@ -1888,6 +1938,9 @@ func (n *raft) runAsLeader() {
 			sz := 0
 			for i, bi := range es {
 				b := bi.(*Entry)
+				if b.Type == EntryRemovePeer {
+					n.doRemovePeerAsLeader(string(b.Data))
+				}
 				entries = append(entries, b)
 				sz += len(b.Data) + 1
 				if i != len(es)-1 && sz < maxBatch && len(entries) < math.MaxUint16 {
@@ -2238,18 +2291,20 @@ func (n *raft) applyCommit(index uint64) error {
 				delete(n.removed, newPeer)
 			}
 
-			if _, ok := n.peers[newPeer]; !ok {
+			if lp, ok := n.peers[newPeer]; !ok {
 				// We are not tracking this one automatically so we need to bump cluster size.
-				n.peers[newPeer] = &lps{time.Now().UnixNano(), 0}
-				if n.csz < len(n.peers) {
-					n.debug("Expanding our clustersize: %d -> %d", n.csz, len(n.peers))
-					n.csz = len(n.peers)
-					n.qn = n.csz/2 + 1
-				}
+				n.peers[newPeer] = &lps{time.Now().UnixNano(), 0, true}
+			} else {
+				// Mark as added.
+				lp.kp = true
 			}
+			// Adjust cluster size and quorum if needed.
+			n.adjustClusterSizeAndQuorum()
+			// Write out our new state.
 			n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
 			// We pass these up as well.
 			committed = append(committed, e)
+
 		case EntryRemovePeer:
 			peer := string(e.Data)
 			n.debug("Removing peer %q", peer)
@@ -2261,13 +2316,11 @@ func (n *raft) applyCommit(index uint64) error {
 			n.removed[peer] = peer
 
 			if _, ok := n.peers[peer]; ok {
-				// We should decrease our cluster size since we are tracking this peer.
 				delete(n.peers, peer)
-				if n.csz != len(n.peers) {
-					n.debug("Decreasing our clustersize: %d -> %d", n.csz, len(n.peers))
-					n.csz = len(n.peers)
-					n.qn = n.csz/2 + 1
-				}
+				// We should decrease our cluster size since we are tracking this peer.
+				n.adjustClusterSizeAndQuorum()
+				// Write out our new state.
+				n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
 			}
 
 			// If this is us and we are the leader we should attempt to stepdown.
@@ -2275,8 +2328,6 @@ func (n *raft) applyCommit(index uint64) error {
 				n.stepdown.push(n.selectNextLeader())
 			}
 
-			// Write out our new state.
-			n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
 			// We pass these up as well.
 			committed = append(committed, e)
 		}
@@ -2323,13 +2374,13 @@ func (n *raft) trackResponse(ar *appendEntryResponse) {
 			// We have a quorum.
 			for index := n.commit + 1; index <= ar.index; index++ {
 				if err := n.applyCommit(index); err != nil {
+					n.error("Got an error apply commit for %d: %v", index, err)
 					break
 				}
 			}
 			sendHB = n.prop.len() == 0
 		}
 	}
-
 	n.Unlock()
 
 	if sendHB {
@@ -2337,29 +2388,49 @@ func (n *raft) trackResponse(ar *appendEntryResponse) {
 	}
 }
 
+// Used to adjust cluster size and peer count based on added official peers.
+// lock should be held.
+func (n *raft) adjustClusterSizeAndQuorum() {
+	pcsz, ncsz := n.csz, 0
+	for _, peer := range n.peers {
+		if peer.kp {
+			ncsz++
+		}
+	}
+	n.csz = ncsz
+	n.qn = n.csz/2 + 1
+
+	if ncsz > pcsz {
+		n.debug("Expanding our clustersize: %d -> %d", pcsz, ncsz)
+	} else if ncsz < pcsz {
+		n.debug("Decreasing our clustersize: %d -> %d", pcsz, ncsz)
+		if n.state == Leader {
+			go n.sendHeartbeat()
+		}
+	}
+}
+
 // Track interactions with this peer.
 func (n *raft) trackPeer(peer string) error {
 	n.Lock()
-	var needPeerUpdate, isRemoved bool
+	var needPeerAdd, isRemoved bool
 	if n.removed != nil {
 		_, isRemoved = n.removed[peer]
 	}
 	if n.state == Leader {
-		if _, ok := n.peers[peer]; !ok {
+		if lp, ok := n.peers[peer]; !ok || !lp.kp {
 			// Check if this peer had been removed previously.
-			if !isRemoved {
-				needPeerUpdate = true
-			}
+			needPeerAdd = !isRemoved
 		}
 	}
 	if ps := n.peers[peer]; ps != nil {
 		ps.ts = time.Now().UnixNano()
 	} else if !isRemoved {
-		n.peers[peer] = &lps{time.Now().UnixNano(), 0}
+		n.peers[peer] = &lps{time.Now().UnixNano(), 0, false}
 	}
 	n.Unlock()
 
-	if needPeerUpdate {
+	if needPeerAdd {
 		n.ProposeAddPeer(peer)
 	}
 	return nil
@@ -2430,7 +2501,7 @@ func (n *raft) runAsCandidate() {
 				n.trackPeer(vresp.peer)
 				votes++
 				if n.wonElection(votes) {
-					if votes == n.numActivePeers() || lxfer {
+					if true || votes == n.numActivePeers() || lxfer {
 						// Become LEADER if we have won and gotten a quorum with everyone we should hear from.
 						n.switchToLeader()
 						return
@@ -2452,6 +2523,7 @@ func (n *raft) runAsCandidate() {
 				n.writeTermVote()
 				n.debug("Stepping down from candidate, detected higher term: %d vs %d", vresp.term, n.term)
 				n.stepdown.push(noLeader)
+				n.lxfer = false
 				n.Unlock()
 				return
 			}
@@ -2598,7 +2670,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		if ps := n.peers[ae.leader]; ps != nil {
 			ps.ts = time.Now().UnixNano()
 		} else {
-			n.peers[ae.leader] = &lps{time.Now().UnixNano(), 0}
+			n.peers[ae.leader] = &lps{time.Now().UnixNano(), 0, true}
 		}
 	}
 
@@ -2774,16 +2846,17 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				if isNew {
 					maybeLeader := string(e.Data)
 					if maybeLeader == n.id && !n.observer && !n.paused {
-						n.campaign()
+						n.lxfer = true
+						n.xferCampaign()
 					}
 				}
 			case EntryAddPeer:
 				if newPeer := string(e.Data); len(newPeer) == idLen {
-					// Track directly
+					// Track directly, but wait for commit to be official
 					if ps := n.peers[newPeer]; ps != nil {
 						ps.ts = time.Now().UnixNano()
 					} else {
-						n.peers[newPeer] = &lps{time.Now().UnixNano(), 0}
+						n.peers[newPeer] = &lps{time.Now().UnixNano(), 0, false}
 					}
 				}
 			}
@@ -2821,9 +2894,10 @@ func (n *raft) processPeerState(ps *peerState) {
 	n.peers = make(map[string]*lps)
 	for _, peer := range ps.knownPeers {
 		if lp := old[peer]; lp != nil {
+			lp.kp = true
 			n.peers[peer] = lp
 		} else {
-			n.peers[peer] = &lps{0, 0}
+			n.peers[peer] = &lps{0, 0, true}
 		}
 	}
 	n.debug("Update peers from leader to %+v", n.peers)
@@ -2837,7 +2911,7 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 	if ar.success {
 		n.trackResponse(ar)
 	} else if ar.term > n.term {
-		// False here, check to make sure they do not have a higher term.
+		// False here and they have a higher term.
 		n.term = ar.term
 		n.vote = noVote
 		n.writeTermVote()
@@ -2988,8 +3062,10 @@ func decodePeerState(buf []byte) (*peerState, error) {
 // Lock should be held.
 func (n *raft) peerNames() []string {
 	var peers []string
-	for peer := range n.peers {
-		peers = append(peers, peer)
+	for name, peer := range n.peers {
+		if peer.kp {
+			peers = append(peers, name)
+		}
 	}
 	return peers
 }
@@ -3006,6 +3082,7 @@ func (n *raft) sendPeerState() {
 	n.sendAppendEntry([]*Entry{{EntryPeerState, encodePeerState(n.currentPeerState())}})
 }
 
+// Send a heartbeat.
 func (n *raft) sendHeartbeat() {
 	n.sendAppendEntry(nil)
 }
@@ -3420,7 +3497,6 @@ func (n *raft) switchToCandidate() {
 	if n.state != Candidate {
 		n.debug("Switching to candidate")
 	} else {
-		n.lxfer = false
 		if n.lostQuorumLocked() && time.Since(n.llqrt) > 20*time.Second {
 			// We signal to the upper layers such that can alert on quorum lost.
 			n.updateLeadChange(false)
@@ -3441,7 +3517,8 @@ func (n *raft) switchToLeader() {
 		return
 	}
 	n.debug("Switching to leader")
-	n.updateLeader(n.id)
+
 	n.lxfer = false
+	n.updateLeader(n.id)
 	n.switchState(Leader)
 }

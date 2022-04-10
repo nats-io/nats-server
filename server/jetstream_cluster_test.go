@@ -3407,11 +3407,14 @@ func TestJetStreamClusterPeerRemovalAPI(t *testing.T) {
 		t.Fatalf("Expected advisory about %s being removed, got %+v", rs.Name(), adv)
 	}
 
-	for _, s := range ml.JetStreamClusterPeers() {
-		if s == rs.Name() {
-			t.Fatalf("Still in the peer list")
+	checkFor(t, 2*time.Second, 250*time.Millisecond, func() error {
+		for _, s := range ml.JetStreamClusterPeers() {
+			if s == rs.Name() {
+				return fmt.Errorf("Still in the peer list")
+			}
 		}
-	}
+		return nil
+	})
 }
 
 func TestJetStreamClusterPeerRemovalAndStreamReassignment(t *testing.T) {
@@ -11849,7 +11852,7 @@ func TestJetStreamClusterMovingStreamsAndConsumers(t *testing.T) {
 
 			// Should see the cluster designation and leader switch to C2.
 			// We should also shrink back down to original replica count.
-			checkFor(t, 10*time.Second, 10*time.Millisecond, func() error {
+			checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
 				si, err := js.StreamInfo("MOVE")
 				if err != nil {
 					return err
@@ -11897,57 +11900,60 @@ func TestJetStreamClusterMovingStreamsAndConsumers(t *testing.T) {
 			// Now check consumers, make sure the state is correct and that they transferred state and reflect the new messages.
 			// We Ack'd 100 and sent another 100, so should be same.
 			checkConsumer := func(sub *nats.Subscription, isPull bool) {
-				if isPull {
-					checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
-						_, err := sub.ConsumerInfo()
+				t.Helper()
+				checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+					ci, err := sub.ConsumerInfo()
+					if err != nil {
 						return err
-					})
-				} else {
-					// Make sure we re-established being push bound and our sub got the messages too.
-					checkSubsPending(t, sub, int(initialState.Msgs))
-				}
-				ci, err := sub.ConsumerInfo()
-				require_NoError(t, err)
-				var expectedMsgs uint64
-				if isPull {
-					expectedMsgs = expectedPullMsgs
-				} else {
-					expectedMsgs = expectedPushMsgs
-				}
-				if ci.Delivered.Consumer != expectedMsgs || ci.Delivered.Stream != expectedMsgs {
-					t.Fatalf("Delivered for %q is not correct: %+v", ci.Name, ci.Delivered)
-				}
-				if ci.AckFloor.Consumer != uint64(toAck) || ci.AckFloor.Stream != uint64(toAck) {
-					t.Fatalf("AckFloor for %q is not correct: %+v", ci.Name, ci.AckFloor)
-				}
-				if isPull {
-					if ci.NumAckPending != 0 {
-						t.Fatalf("NumAckPending for %q is not correct: %v", ci.Name, ci.NumAckPending)
 					}
-				} else {
-					if ci.NumAckPending != int(initialState.Msgs) {
-						t.Fatalf("NumAckPending for %q is not correct: %v", ci.Name, ci.NumAckPending)
+					var expectedMsgs uint64
+					if isPull {
+						expectedMsgs = expectedPullMsgs
+					} else {
+						expectedMsgs = expectedPushMsgs
 					}
-				}
-				// Make sure the replicas etc are back to what is expected.
-				si, err := js.StreamInfo("MOVE")
-				require_NoError(t, err)
-				numExpected := si.Config.Replicas
-				if ci.Config.Durable == _EMPTY_ {
-					numExpected = 1
-				}
-				numPeers := len(ci.Cluster.Replicas)
-				if ci.Cluster.Leader != _EMPTY_ {
-					numPeers++
-				}
-				if numPeers != numExpected {
-					t.Fatalf("Expected %d peers, got %d", numPeers, numExpected)
-				}
+
+					if ci.Delivered.Consumer != expectedMsgs || ci.Delivered.Stream != expectedMsgs {
+						return fmt.Errorf("Delivered for %q is not correct: %+v", ci.Name, ci.Delivered)
+					}
+					if ci.AckFloor.Consumer != uint64(toAck) || ci.AckFloor.Stream != uint64(toAck) {
+						return fmt.Errorf("AckFloor for %q is not correct: %+v", ci.Name, ci.AckFloor)
+					}
+					if isPull && ci.NumAckPending != 0 {
+						return fmt.Errorf("NumAckPending for %q is not correct: %v", ci.Name, ci.NumAckPending)
+					} else if !isPull && ci.NumAckPending != int(initialState.Msgs) {
+						return fmt.Errorf("NumAckPending for %q is not correct: %v", ci.Name, ci.NumAckPending)
+					}
+					// Make sure the replicas etc are back to what is expected.
+					si, err := js.StreamInfo("MOVE")
+					if err != nil {
+						return err
+					}
+					numExpected := si.Config.Replicas
+					if ci.Config.Durable == _EMPTY_ {
+						numExpected = 1
+					}
+					numPeers := len(ci.Cluster.Replicas)
+					if ci.Cluster.Leader != _EMPTY_ {
+						numPeers++
+					}
+					if numPeers != numExpected {
+						return fmt.Errorf("Expected %d peers, got %d", numExpected, numPeers)
+					}
+					// If we are push check sub pending.
+					if !isPull {
+						checkSubsPending(t, sub, int(expectedPushMsgs)-toAck)
+					}
+					return nil
+				})
 			}
+
 			checkPushConsumer := func(sub *nats.Subscription) {
+				t.Helper()
 				checkConsumer(sub, false)
 			}
 			checkPullConsumer := func(sub *nats.Subscription) {
+				t.Helper()
 				checkConsumer(sub, true)
 			}
 
@@ -11959,6 +11965,171 @@ func TestJetStreamClusterMovingStreamsAndConsumers(t *testing.T) {
 			err = js.DeleteStream("MOVE")
 			require_NoError(t, err)
 		})
+	}
+}
+
+func TestJetStreamClusterMovingStreamsWithMirror(t *testing.T) {
+	sc := createJetStreamTaggedSuperCluster(t)
+	defer sc.shutdown()
+
+	nc, js := jsClientConnect(t, sc.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "SOURCE",
+		Subjects:  []string{"foo", "bar"},
+		Replicas:  3,
+		Placement: &nats.Placement{Tags: []string{"cloud:aws"}},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:      "MIRROR",
+		Replicas:  1,
+		Mirror:    &nats.StreamSource{Name: "SOURCE"},
+		Placement: &nats.Placement{Tags: []string{"cloud:gcp"}},
+	})
+	require_NoError(t, err)
+
+	done := make(chan struct{})
+	exited := make(chan struct{})
+	errors := make(chan error, 1)
+
+	numNoResp := uint64(0)
+
+	// We will run a separate routine and send at 100hz
+	go func() {
+		nc, js := jsClientConnect(t, sc.randomServer())
+		defer nc.Close()
+
+		defer close(exited)
+
+		for {
+			select {
+			case <-done:
+				return
+			case <-time.After(10 * time.Millisecond):
+				_, err := js.Publish("foo", []byte("100HZ"))
+				if err == nil {
+				} else if err == nats.ErrNoStreamResponse {
+					atomic.AddUint64(&numNoResp, 1)
+					continue
+				}
+				if err != nil {
+					errors <- err
+					return
+				}
+			}
+		}
+	}()
+
+	// Let it get going.
+	time.Sleep(500 * time.Millisecond)
+
+	// Now move the source to a new cluster.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "SOURCE",
+		Subjects:  []string{"foo", "bar"},
+		Replicas:  3,
+		Placement: &nats.Placement{Tags: []string{"cloud:gcp"}},
+	})
+	require_NoError(t, err)
+
+	checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("SOURCE")
+		if err != nil {
+			return err
+		}
+		if si.Cluster.Name != "C2" {
+			return fmt.Errorf("Wrong cluster: %q", si.Cluster.Name)
+		}
+		if si.Cluster.Leader == _EMPTY_ {
+			return fmt.Errorf("No leader yet")
+		} else if !strings.HasPrefix(si.Cluster.Leader, "C2-") {
+			return fmt.Errorf("Wrong leader: %q", si.Cluster.Leader)
+		}
+		// Now we want to see that we shrink back to original.
+		if len(si.Cluster.Replicas) != 2 {
+			return fmt.Errorf("Expected %d replicas, got %d", 2, len(si.Cluster.Replicas))
+		}
+		// Let's get to 50+ msgs.
+		if si.State.Msgs < 50 {
+			return fmt.Errorf("Only see %d msgs", si.State.Msgs)
+		}
+		return nil
+	})
+
+	close(done)
+	<-exited
+
+	if nnr := atomic.LoadUint64(&numNoResp); nnr > 0 {
+		t.Fatalf("Expected no failed message publishes, got %d", nnr)
+	}
+}
+
+func TestJetStreamClusterMemoryConsumerInterestRetention(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "test",
+		Storage:   nats.MemoryStorage,
+		Retention: nats.InterestPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	sub, err := js.SubscribeSync("test", nats.Durable("dlc"))
+	require_NoError(t, err)
+
+	for i := 0; i < 1000; i++ {
+		_, err := js.PublishAsync("test", nil)
+		require_NoError(t, err)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	toAck := 100
+	for i := 0; i < toAck; i++ {
+		m, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		m.AckSync()
+	}
+
+	si, err := js.StreamInfo("test")
+	require_NoError(t, err)
+
+	ci, err := sub.ConsumerInfo()
+	require_NoError(t, err)
+
+	// Make sure acks are not only replicated but processed in a way to remove messages from the replica streams.
+	_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "test"), nil, time.Second)
+	require_NoError(t, err)
+	c.waitOnStreamLeader("$G", "test")
+
+	_, err = nc.Request(fmt.Sprintf(JSApiConsumerLeaderStepDownT, "test", "dlc"), nil, time.Second)
+	require_NoError(t, err)
+	c.waitOnConsumerLeader("$G", "test", "dlc")
+
+	nsi, err := js.StreamInfo("test")
+	require_NoError(t, err)
+	if nsi.State != si.State {
+		t.Fatalf("Stream states do not match: %+v vs %+v", si.State, nsi.State)
+	}
+
+	nci, err := sub.ConsumerInfo()
+	require_NoError(t, err)
+
+	// Last may be skewed a very small amount.
+	ci.AckFloor.Last, nci.AckFloor.Last = nil, nil
+	if nci.AckFloor != ci.AckFloor {
+		t.Fatalf("Consumer AckFloors are not the same: %+v vs %+v", ci.AckFloor, nci.AckFloor)
 	}
 }
 
