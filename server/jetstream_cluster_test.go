@@ -2601,7 +2601,7 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	}
 
 	// Create another consumer as well and give it a non-simplistic state.
-	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy, AckWait: 5 * time.Second})
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy, AckWait: 7500 * time.Millisecond})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2791,7 +2791,7 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 
 	// Check that redelivered come in now..
 	redelivered := 50/3 + 1
-	fetchMsgs(t, jsub, redelivered, 5*time.Second)
+	fetchMsgs(t, jsub, redelivered, 10*time.Second)
 
 	// Now make sure the other server was properly caughtup.
 	// Need to call this by hand for now.
