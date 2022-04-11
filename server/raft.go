@@ -2923,9 +2923,10 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 		if index > seq {
 			// Reset to last before this one.
 			if ae, err := n.loadEntry(seq - 1); err == nil && ae != nil {
+				nl := n.selectNextLeader()
 				n.truncateWAL(ae.pterm, ae.pindex)
 				if n.state == Leader {
-					n.stepdown.push(n.selectNextLeader())
+					n.stepdown.push(nl)
 				}
 			} else {
 				panic(fmt.Sprintf("[%s | %s] Wrong index, ae is %+v, seq is %d, n.pindex is %d\n\n", n.s, n.group, ae, seq, n.pindex))

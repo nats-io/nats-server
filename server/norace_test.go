@@ -3447,8 +3447,7 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	require_NoError(t, err)
 
 	// This will cause us to stepdown and truncate our WAL.
-	msgs, err := sub.Fetch(100)
-	require_NoError(t, err)
+	msgs, _ := sub.Fetch(100)
 
 	// In case we have to retry, we need to adjust the tests that follow.
 	newDelivered, ackPending, more := 200, 75, 0
@@ -3459,7 +3458,7 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 		require_NoError(t, err)
 	}
 
-	checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
+	checkFor(t, 30*time.Second, 500*time.Millisecond, func() error {
 		// Make sure we changed leaders.
 		if clnew := c.consumerLeader("$G", "TEST", "dlc"); clnew == nil || cl == clnew {
 			return fmt.Errorf("Expected leader to have moved")
