@@ -6810,102 +6810,41 @@ func TestJetStreamSystemLimitsPlacement(t *testing.T) {
 	const mediumSystemLimit = smallSystemLimit * 2
 	const largeSystemLimit = smallSystemLimit * 3
 
-	startClusterPort := getStartClusterPort()
-
-	require_NoError(t, os.MkdirAll(tempRoot, 0755))
-	getServer := func(t *testing.T, serverName string) *Server {
-		storeDir, err := os.MkdirTemp(tempRoot, "jstests-storedir-")
-		require_NoError(t, err)
-
-		clusterPort := startClusterPort
-		systemLimit := smallSystemLimit
-		if serverName == "medium" {
-			clusterPort = startClusterPort + 1
-			systemLimit = mediumSystemLimit
-		} else if serverName == "large" {
-			clusterPort = startClusterPort + 2
-			systemLimit = largeSystemLimit
+	tmpl := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {
+			max_mem_store: _MAXMEM_
+			max_file_store: _MAXFILE_
+			store_dir: '%s',
 		}
-
-		route1, route2, route3 := clusterPort, clusterPort+1, clusterPort+2
-
-		s, _ := RunServerWithConfig(createConfFile(t, []byte(fmt.Sprintf(`
-				server_name: %s
-				listen: 127.0.0.1:-1
-
-				jetstream: {
-				  enabled: true
-				  store_dir: '%s'
-				  max_mem: %d
-				  max_file: %d
-				}
-
-				server_tags: [%s]
-
-				cluster {
-				  name: cluster-a
-				  port: %d
-				  routes: [
-				    nats-route://127.0.0.1:%d
-				    nats-route://127.0.0.1:%d
-				    nats-route://127.0.0.1:%d
-				  ]
-				}`,
-			serverName,
-			storeDir,
-			systemLimit,
-			systemLimit,
-			serverName,
-			clusterPort,
-			route1, route2, route3,
-		))))
-
-		return s
-	}
-
-	smallSrv := getServer(t, "small")
-	if config := smallSrv.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
-	defer smallSrv.Shutdown()
-
-	mediumSrv := getServer(t, "medium")
-	if config := mediumSrv.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
-	defer mediumSrv.Shutdown()
-
-	largeSrv := getServer(t, "large")
-	defer largeSrv.Shutdown()
-	if config := largeSrv.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
-	defer mediumSrv.Shutdown()
-
-	checkClusterFormed(t, smallSrv, mediumSrv, largeSrv)
-	checkForJSClusterUp(t, smallSrv, mediumSrv, largeSrv)
-
-	// Wait for servers to be current
-	for i, s := range []*Server{smallSrv, mediumSrv, largeSrv} {
-		checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
-			if !s.JetStreamIsCurrent() {
-				return fmt.Errorf("jetstream server %d is not current", i)
-			}
-			return nil
-		})
-	}
-
-	// Wait for all the peer nodes to be registered.
-	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
-		var peers []string
-		if ml := smallSrv; ml != nil {
-			peers = ml.ActivePeers()
-			if len(peers) == 3 {
-				return nil
-			}
+		leaf {
+			listen: 127.0.0.1:-1
 		}
-		return fmt.Errorf("unexpected peer count, got=%d, want=%d", len(peers), 3)
-	})
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+	`
+	storeCnf := func(serverName, clusterName, storeDir, conf string) string {
+		switch serverName {
+		case "S-1":
+			conf = strings.Replace(conf, "_MAXMEM_", fmt.Sprint(smallSystemLimit), 1)
+			return strings.Replace(conf, "_MAXFILE_", fmt.Sprint(smallSystemLimit), 1)
+		case "S-2":
+			conf = strings.Replace(conf, "_MAXMEM_", fmt.Sprint(mediumSystemLimit), 1)
+			return strings.Replace(conf, "_MAXFILE_", fmt.Sprint(mediumSystemLimit), 1)
+		case "S-3":
+			conf = strings.Replace(conf, "_MAXMEM_", fmt.Sprint(largeSystemLimit), 1)
+			return strings.Replace(conf, "_MAXFILE_", fmt.Sprint(largeSystemLimit), 1)
+		default:
+			return conf
+		}
+	}
+
+	cluster := createJetStreamClusterWithTemplateAndModHook(t, tmpl, "cluster-a", 3, storeCnf)
+	defer cluster.shutdown()
 
 	requestLeaderStepDown := func(clientURL string) error {
 		nc, err := nats.Connect(clientURL)
@@ -6933,6 +6872,7 @@ func TestJetStreamSystemLimitsPlacement(t *testing.T) {
 		return nil
 	}
 
+	largeSrv := cluster.servers[2]
 	// Force large server to be leader
 	err := checkForErr(15*time.Second, 500*time.Millisecond, func() error {
 		if largeSrv.JetStreamIsLeader() {
@@ -7055,147 +6995,44 @@ func TestJetStreamSystemLimitsPlacement(t *testing.T) {
 	}
 }
 
-func getStartClusterPort() int {
-	startClusterPorts := []int{20_022, 22_022, 24_022}
-	return startClusterPorts[rand.Intn(len(startClusterPorts))]
-}
-
-func getStartGatewayPort() int {
-	startGatewayPorts := []int{20_122, 22_122, 24_122}
-	return startGatewayPorts[rand.Intn(len(startGatewayPorts))]
-}
-
 func TestJetStreamSuperClusterSystemLimitsPlacement(t *testing.T) {
 	const largeSystemLimit = 1024
 	const smallSystemLimit = 512
 
-	startClusterPort := getStartClusterPort()
-	startGWPort := getStartGatewayPort()
-
-	require_NoError(t, os.MkdirAll(tempRoot, 0755))
-	getServer := func(t *testing.T, serverName string) *Server {
-		storeDir, err := os.MkdirTemp(tempRoot, "jstests-storedir-")
-		require_NoError(t, err)
-
-		var (
-			clusterName string
-			systemLimit int
-			clusterPort int
-			gatewayPort int
-		)
-		// serverName should be like "a0", "a1", "b0", "b1"
-		if strings.HasPrefix(serverName, "a") {
-			clusterName = "cluster-a"
-			systemLimit = largeSystemLimit
-
-			idx, err := strconv.Atoi(serverName[1:])
-			require_NoError(t, err)
-
-			clusterPort = startClusterPort + idx
-			gatewayPort = startGWPort + idx
-		} else if strings.HasPrefix(serverName, "b") {
-			clusterName = "cluster-b"
-			systemLimit = smallSystemLimit
-
-			idx, err := strconv.Atoi(serverName[1:])
-			require_NoError(t, err)
-
-			clusterPort = startClusterPort + 10 + idx
-			gatewayPort = startGWPort + 10 + idx
+	tmpl := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {
+			max_mem_store: _MAXMEM_
+			max_file_store: _MAXFILE_
+			store_dir: '%s',
+		}
+		leaf {
+			listen: 127.0.0.1:-1
+		}
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
 		}
 
-		route1, route2, route3 := clusterPort, clusterPort+1, clusterPort+2
-
-		s, _ := RunServerWithConfig(createConfFile(t, []byte(fmt.Sprintf(`
-				server_name: %s
-				listen: 127.0.0.1:-1
-
-				jetstream: {
-				  enabled: true
-				  store_dir: '%s'
-				  max_mem: %d
-				  max_file: %d
-				}
-
-				server_tags: [%s]
-
-				cluster {
-				  name: %s
-				  port: %d
-				  routes: [
-				    nats-route://127.0.0.1:%d
-				    nats-route://127.0.0.1:%d
-				    nats-route://127.0.0.1:%d
-				  ]
-				}
-
-				gateway {
-				  name: %s
-				  port: %d
-
-				  gateways: [
-				    {name: "cluster-a", url: "nats://localhost:%d"},
-				    {name: "cluster-b", url: "nats://localhost:%d"},
-				  ]
-				}`,
-			serverName,
-			storeDir,
-			systemLimit,
-			systemLimit,
-			serverName,
-			clusterName,
-			clusterPort,
-			route1, route2, route3,
-			clusterName,
-			gatewayPort,
-			startGWPort,
-			startGWPort+10,
-		))))
-
-		return s
-	}
-
-	var servers []*Server
-	for _, name := range []string{"a0", "a1", "a2", "b0", "b1", "b2"} {
-		s := getServer(t, name)
-		if config := s.JetStreamConfig(); config != nil {
-			defer removeDir(t, config.StoreDir)
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+	`
+	storeCnf := func(serverName, clusterName, storeDir, conf string) string {
+		switch {
+		case strings.HasPrefix(serverName, "C1"):
+			conf = strings.Replace(conf, "_MAXMEM_", fmt.Sprint(largeSystemLimit), 1)
+			return strings.Replace(conf, "_MAXFILE_", fmt.Sprint(largeSystemLimit), 1)
+		case strings.HasPrefix(serverName, "C2"):
+			conf = strings.Replace(conf, "_MAXMEM_", fmt.Sprint(smallSystemLimit), 1)
+			return strings.Replace(conf, "_MAXFILE_", fmt.Sprint(smallSystemLimit), 1)
+		default:
+			return conf
 		}
-		defer s.Shutdown()
-
-		servers = append(servers, s)
 	}
 
-	checkClusterFormed(t, servers[:3]...)
-	checkClusterFormed(t, servers[3:]...)
-
-	for _, s := range servers {
-		waitForOutboundGateways(t, s, 1, 2*time.Second)
-	}
-
-	checkForJSClusterUp(t, servers...)
-
-	// Wait for servers to be current
-	for i, s := range servers {
-		checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
-			if !s.JetStreamIsCurrent() {
-				return fmt.Errorf("jetstream server %d is not current", i)
-			}
-			return nil
-		})
-	}
-
-	// Wait for all the peer nodes to be registered.
-	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
-		var peers []string
-		if ml := servers[0]; ml != nil {
-			peers = ml.ActivePeers()
-			if len(peers) == len(servers) {
-				return nil
-			}
-		}
-		return fmt.Errorf("unexpected peer count, got=%d, want=%d", len(peers), len(servers))
-	})
+	sCluster := createJetStreamSuperClusterWithTemplateAndModHook(t, tmpl, 3, 2, storeCnf)
+	defer sCluster.shutdown()
 
 	requestLeaderStepDown := func(clientURL string) error {
 		nc, err := nats.Connect(clientURL)
@@ -7227,7 +7064,8 @@ func TestJetStreamSuperClusterSystemLimitsPlacement(t *testing.T) {
 	var largeLeader *Server
 	err := checkForErr(15*time.Second, 500*time.Millisecond, func() error {
 		// Range over cluster A, which is the large cluster.
-		for _, s := range servers[:3] {
+		servers := sCluster.clusters[0].servers
+		for _, s := range servers {
 			if s.JetStreamIsLeader() {
 				largeLeader = s
 				return nil
