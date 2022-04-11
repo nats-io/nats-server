@@ -6698,7 +6698,7 @@ func TestJetStreamClusterSingleLeafNodeWithoutSharedSystemAccount(t *testing.T) 
 		t.Fatalf("Unexpected publish error: %v", err)
 	}
 	// Make sure the message arrives in our mirror.
-	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 		si, err := jsLocal.StreamInfo("M")
 		if err != nil {
 			return fmt.Errorf("Could not get stream info: %v", err)
@@ -11709,6 +11709,9 @@ func TestJetStreamClusterMemoryConsumerCompactVsSnapshot(t *testing.T) {
 
 // This will test our ability to move streams and consumers between clusters.
 func TestJetStreamClusterMovingStreamsAndConsumers(t *testing.T) {
+
+	skip(t)
+
 	sc := createJetStreamTaggedSuperCluster(t)
 	defer sc.shutdown()
 
@@ -12130,6 +12133,81 @@ func TestJetStreamClusterMemoryConsumerInterestRetention(t *testing.T) {
 	ci.AckFloor.Last, nci.AckFloor.Last = nil, nil
 	if nci.AckFloor != ci.AckFloor {
 		t.Fatalf("Consumer AckFloors are not the same: %+v vs %+v", ci.AckFloor, nci.AckFloor)
+	}
+}
+
+func TestJetStreamImportConsumerStreamSubjectRemap(t *testing.T) {
+	template := `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, domain: HUB, store_dir: '%s'}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	accounts: {
+		JS: {
+			jetstream: enabled
+			users: [ {user: js, password: pwd} ]
+			exports [
+				# This is streaming to a delivery subject for a push based consumer.
+				{ stream: "deliver.ORDERS" }
+				# This is to ack received messages. This is a service to support sync ack.
+				{ service: "$JS.ACK.ORDERS.*.>" }
+				# To support ordered consumers, flow control.
+				{ service: "$JS.FC.>" }
+			]
+		},
+		IM: {
+			users: [ {user: im, password: pwd} ]
+			imports [
+				{ stream:  { account: JS, subject: "deliver.ORDERS" }}
+				{ service: {account: JS, subject: "$JS.FC.>" }}
+			]
+		},
+	}`
+
+	c := createJetStreamClusterWithTemplate(t, template, "SIMM", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s, nats.UserInfo("js", "pwd"))
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "ORDERS",
+		Subjects: []string{"foo"}, // The JS subject.
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", []byte("OK"))
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("ORDERS", &nats.ConsumerConfig{
+		Durable:        "oleg",
+		DeliverSubject: "deliver.ORDERS",
+		AckPolicy:      nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// This bug only happens when we go across a route, so pick another server other than the consumer leader.
+	s = c.randomNonConsumerLeader("JS", "ORDERS", "oleg")
+
+	nc2, err := nats.Connect(s.ClientURL(), nats.UserInfo("im", "pwd"))
+	require_NoError(t, err)
+
+	sub, err := nc2.SubscribeSync("deliver.ORDERS")
+	require_NoError(t, err)
+
+	m, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+
+	if m.Subject != "foo" {
+		t.Fatalf("Subject not mapped correctly across account boundary, expected %q got %q", "foo", m.Subject)
 	}
 }
 

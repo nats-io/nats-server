@@ -4103,11 +4103,13 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 
 	// Check for JetStream encoded reply subjects.
 	// For now these will only be on $JS.ACK prefixed reply subjects.
+	var remapped bool
 	if len(creply) > 0 &&
 		c.kind != CLIENT && c.kind != SYSTEM && c.kind != JETSTREAM && c.kind != ACCOUNT &&
 		bytes.HasPrefix(creply, []byte(jsAckPre)) {
 		// We need to rewrite the subject and the reply.
 		if li := bytes.LastIndex(creply, []byte("@")); li != -1 && li < len(creply)-1 {
+			remapped = true
 			subj, creply = creply[li+1:], creply[:li]
 		}
 	}
@@ -4160,6 +4162,11 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				dsubj = append(_dsubj[:0], subj...)
 			} else {
 				dsubj = append(_dsubj[:0], sub.im.to...)
+			}
+
+			// Make sure deliver is set if inbound from a route.
+			if remapped && c.kind == ROUTER {
+				deliver = subj
 			}
 			// If we are mapping for a deliver subject we will reverse roles.
 			// The original subj we set from above is correct for the msg header,
