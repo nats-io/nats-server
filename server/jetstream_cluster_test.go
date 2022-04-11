@@ -7334,6 +7334,88 @@ func TestJetStreamClusterSuperClusterGetNextRewrite(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterSuperClusterGetNextSubRace(t *testing.T) {
+	sc := createJetStreamSuperClusterWithTemplate(t, jsClusterAccountsTempl, 2, 2)
+	defer sc.shutdown()
+
+	// Will connect the leafnode to cluster C1. We will then connect the "client" to cluster C2 to cross gateways.
+	ln := sc.clusterForName("C1").createSingleLeafNodeNoSystemAccountAndEnablesJetStreamWithDomain("C", "nojs")
+	defer ln.Shutdown()
+
+	// Shutdown 1 of the server from C1, (the one LN is not connected to)
+	for _, s := range sc.clusterForName("C1").servers {
+		s.mu.Lock()
+		if len(s.leafs) == 0 {
+			s.mu.Unlock()
+			s.Shutdown()
+			break
+		}
+		s.mu.Unlock()
+	}
+
+	// Wait on meta leader in case shutdown of server above caused an election.
+	sc.waitOnLeader()
+
+	var c2Srv *Server
+	// Take the server from C2 that has no inbound from C1.
+	c2 := sc.clusterForName("C2")
+	for _, s := range c2.servers {
+		var gwsa [2]*client
+		gws := gwsa[:0]
+		s.getInboundGatewayConnections(&gws)
+		if len(gws) == 0 {
+			c2Srv = s
+			break
+		}
+	}
+	if c2Srv == nil {
+		t.Fatalf("Both servers in C2 had an inbound GW connection!")
+	}
+
+	nc, js := jsClientConnectEx(t, c2Srv, "C", nats.UserInfo("nojs", "p"))
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "foo"})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	for i := 0; i < 100; i++ {
+		sendStreamMsg(t, nc, "foo", "ok")
+	}
+
+	// Wait for all messages to appear in the consumer
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		ci, err := js.ConsumerInfo("foo", "dur")
+		if err != nil {
+			return err
+		}
+		if n := ci.NumPending; n != 100 {
+			return fmt.Errorf("Expected 100 msgs, got %v", n)
+		}
+		return nil
+	})
+
+	req := &JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second}
+	jreq, err := json.Marshal(req)
+	require_NoError(t, err)
+	// Create this by hand here to make sure we create the subscription
+	// on the reply subject for every single request
+	nextSubj := fmt.Sprintf(JSApiRequestNextT, "foo", "dur")
+	nextSubj = "$JS.C.API" + strings.TrimPrefix(nextSubj, "$JS.API")
+	for i := 0; i < 100; i++ {
+		inbox := nats.NewInbox()
+		sub := natsSubSync(t, nc, inbox)
+		natsPubReq(t, nc, nextSubj, inbox, jreq)
+		msg := natsNexMsg(t, sub, time.Second)
+		if len(msg.Header) != 0 && string(msg.Data) != "ok" {
+			t.Fatalf("Unexpected message: header=%+v data=%s", msg.Header, msg.Data)
+		}
+		sub.Unsubscribe()
+	}
+}
+
 func TestJetStreamClusterSuperClusterPullConsumerAndHeaders(t *testing.T) {
 	sc := createJetStreamSuperCluster(t, 3, 2)
 	defer sc.shutdown()

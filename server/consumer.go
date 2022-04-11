@@ -2489,14 +2489,16 @@ func (o *consumer) nextWaiting() *waitingRequest {
 			rr := wr.acc.sl.Match(wr.interest)
 			if len(rr.psubs)+len(rr.qsubs) > 0 {
 				return o.waiting.pop()
-			} else if o.srv.gateway.enabled {
-				if o.srv.hasGatewayInterest(wr.acc.Name, wr.interest) || time.Since(wr.received) < defaultGatewayRecentSubExpiration {
-					return o.waiting.pop()
-				}
+			} else if time.Since(wr.received) < defaultGatewayRecentSubExpiration && (o.srv.leafNodeEnabled || o.srv.gateway.enabled) {
+				return o.waiting.pop()
+			} else if o.srv.gateway.enabled && o.srv.hasGatewayInterest(wr.acc.Name, wr.interest) {
+				return o.waiting.pop()
 			}
 		}
-		hdr := []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
-		o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		if wr.interest != wr.reply {
+			hdr := []byte("NATS/1.0 408 Interest Expired\r\n\r\n")
+			o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		}
 		// Remove the current one, no longer valid.
 		o.waiting.removeCurrent()
 		if o.node != nil {
@@ -2808,10 +2810,12 @@ func (o *consumer) processWaiting() (int, int, int, time.Time) {
 		// Now check interest.
 		rr := wr.acc.sl.Match(wr.interest)
 		interest := len(rr.psubs)+len(rr.qsubs) > 0
-		if !interest && s.gateway.enabled {
-			// If we are here check on gateways.
+		if !interest && (s.leafNodeEnabled || s.gateway.enabled) {
+			// If we are here check on gateways and leaf nodes (as they can mask gateways on the other end).
 			// If we have interest or the request is too young break and do not expire.
-			if s.hasGatewayInterest(wr.acc.Name, wr.interest) || time.Since(wr.received) < defaultGatewayRecentSubExpiration {
+			if time.Since(wr.received) < defaultGatewayRecentSubExpiration {
+				interest = true
+			} else if s.gateway.enabled && s.hasGatewayInterest(wr.acc.Name, wr.interest) {
 				interest = true
 			}
 		}

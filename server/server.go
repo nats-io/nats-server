@@ -164,6 +164,7 @@ type Server struct {
 	}
 	leafRemoteCfgs     []*leafNodeCfg
 	leafRemoteAccounts sync.Map
+	leafNodeEnabled    bool
 
 	quitCh           chan struct{}
 	shutdownComplete chan struct{}
@@ -375,6 +376,7 @@ func NewServer(opts *Options) (*Server, error) {
 		routesToSelf:       make(map[string]struct{}),
 		httpReqStats:       make(map[string]uint64), // Used to track HTTP requests
 		rateLimitLoggingCh: make(chan time.Duration, 1),
+		leafNodeEnabled:    opts.LeafNode.Port != 0 || len(opts.LeafNode.Remotes) > 0,
 	}
 
 	if opts.TLSRateLimit > 0 {
