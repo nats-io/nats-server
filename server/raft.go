@@ -2436,22 +2436,6 @@ func (n *raft) trackPeer(peer string) error {
 	return nil
 }
 
-// Return the number of active peers for this group. We use this when we
-// are running as a candidate.
-// Lock should be held.
-func (n *raft) numActivePeers() int {
-	nap := 0
-	for id := range n.peers {
-		if sir, ok := n.s.nodeToInfo.Load(id); ok && sir != nil {
-			si := sir.(nodeInfo)
-			if !si.offline {
-				nap++
-			}
-		}
-	}
-	return nap
-}
-
 func (n *raft) runAsCandidate() {
 	n.Lock()
 	// Drain old responses.
@@ -2463,7 +2447,6 @@ func (n *raft) runAsCandidate() {
 
 	// We vote for ourselves.
 	votes := 1
-	won := false
 
 	for {
 		elect := n.electTimer()
@@ -2479,12 +2462,7 @@ func (n *raft) runAsCandidate() {
 		case <-n.quit:
 			return
 		case <-elect.C:
-			if won {
-				// we are here if we won the election but some server did not respond
-				n.switchToLeader()
-			} else {
-				n.switchToCandidate()
-			}
+			n.switchToCandidate()
 			return
 		case <-n.votes.ch:
 			// Because of drain() it is possible that we get nil from popOne().
@@ -2493,7 +2471,7 @@ func (n *raft) runAsCandidate() {
 				continue
 			}
 			n.RLock()
-			nterm, lxfer := n.term, n.lxfer
+			nterm := n.term
 			n.RUnlock()
 
 			if vresp.granted && nterm >= vresp.term {
@@ -2501,18 +2479,9 @@ func (n *raft) runAsCandidate() {
 				n.trackPeer(vresp.peer)
 				votes++
 				if n.wonElection(votes) {
-					if true || votes == n.numActivePeers() || lxfer {
-						// Become LEADER if we have won and gotten a quorum with everyone we should hear from.
-						n.switchToLeader()
-						return
-					} else {
-						// Not everyone is in this quorum, yet?
-						// Wait for the remaining responses and become leader once everyone did.
-						// Or Wait until after the election timeout and become leader then.
-						// In case another server responds with vresp.granted==false and vresp.term > n.term,
-						// we will start all over again.
-						won = true
-					}
+					// Become LEADER if we have won and gotten a quorum with everyone we should hear from.
+					n.switchToLeader()
+					return
 				}
 			} else if vresp.term > nterm {
 				// if we observe a bigger term, we should start over again or risk forming a quorum fully knowing

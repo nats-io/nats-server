@@ -11709,7 +11709,6 @@ func TestJetStreamClusterMemoryConsumerCompactVsSnapshot(t *testing.T) {
 
 // This will test our ability to move streams and consumers between clusters.
 func TestJetStreamClusterMovingStreamsAndConsumers(t *testing.T) {
-
 	skip(t)
 
 	sc := createJetStreamTaggedSuperCluster(t)
