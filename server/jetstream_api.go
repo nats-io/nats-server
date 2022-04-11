@@ -1388,7 +1388,12 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	resp.StreamInfo = &StreamInfo{Created: mset.createdTime(), State: mset.state(), Config: mset.config()}
+	resp.StreamInfo = &StreamInfo{
+		Created: mset.createdTime(),
+		State:   mset.state(),
+		Config:  mset.config(),
+		Domain:  s.getOpts().JetStreamDomain,
+	}
 	resp.DidCreate = true
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
@@ -1488,9 +1493,14 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, _ *Account,
 		return
 	}
 
-	js, _ := s.getJetStreamCluster()
-
-	resp.StreamInfo = &StreamInfo{Created: mset.createdTime(), State: mset.state(), Config: mset.config(), Cluster: js.clusterInfo(mset.raftGroup())}
+	resp.StreamInfo = &StreamInfo{
+		Created: mset.createdTime(),
+		State:   mset.state(),
+		Config:  mset.config(),
+		Domain:  s.getOpts().JetStreamDomain,
+		Mirror:  mset.mirrorInfo(),
+		Sources: mset.sourcesInfo(),
+	}
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -1702,13 +1712,15 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, s
 	}
 
 	for _, mset := range msets[offset:] {
+		config := mset.config()
 		resp.Streams = append(resp.Streams, &StreamInfo{
 			Created: mset.createdTime(),
 			State:   mset.state(),
-			Config:  mset.config(),
+			Config:  config,
+			Domain:  s.getOpts().JetStreamDomain,
 			Mirror:  mset.mirrorInfo(),
-			Sources: mset.sourcesInfo()},
-		)
+			Sources: mset.sourcesInfo(),
+		})
 		if len(resp.Streams) >= JSApiListLimit {
 			break
 		}
@@ -1845,11 +1857,14 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 	js, _ := s.getJetStreamCluster()
 
 	resp.StreamInfo = &StreamInfo{
-		Created: mset.createdTime(),
-		State:   mset.stateWithDetail(details),
-		Config:  config,
-		Domain:  s.getOpts().JetStreamDomain,
-		Cluster: js.clusterInfo(mset.raftGroup()),
+		Created:    mset.createdTime(),
+		State:      mset.stateWithDetail(details),
+		Config:     config,
+		Domain:     s.getOpts().JetStreamDomain,
+		Cluster:    js.clusterInfo(mset.raftGroup()),
+		Mirror:     mset.mirrorInfo(),
+		Sources:    mset.sourcesInfo(),
+		Alternates: js.streamAlternates(ci, config.Name),
 	}
 	if clusterWideConsCount > 0 {
 		resp.StreamInfo.State.Consumers = clusterWideConsCount
