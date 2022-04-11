@@ -109,11 +109,11 @@ func Run(server *Server) error {
 		server.Start()
 		return nil
 	}
-	isInteractive, err := svc.IsAnInteractiveSession()
+	isWindowsService, err := svc.IsWindowsService()
 	if err != nil {
 		return err
 	}
-	if isInteractive {
+	if !isWindowsService {
 		server.Start()
 		return nil
 	}
@@ -125,6 +125,6 @@ func isWindowsService() bool {
 	if dockerized {
 		return false
 	}
-	isInteractive, _ := svc.IsAnInteractiveSession()
-	return !isInteractive
+	isWindowsService, _ := svc.IsWindowsService()
+	return isWindowsService
 }
