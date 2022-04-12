@@ -4738,7 +4738,7 @@ var jsClusterStallCatchupTempl = `
 `
 
 // Test our global stall gate for outstanding catchup bytes.
-func TestJetStreamClusterCatchupStallGate(t *testing.T) {
+func TestNoRaceJetStreamClusterCatchupStallGate(t *testing.T) {
 	skip(t)
 
 	c := createJetStreamClusterWithTemplate(t, jsClusterStallCatchupTempl, "GSG", 3)
@@ -4801,7 +4801,7 @@ func TestJetStreamClusterCatchupStallGate(t *testing.T) {
 	fmt.Printf("MEM AFTER is %v\n", friendlyBytes(vz.Mem))
 }
 
-func TestJetStreamClusterCatchupBailMidway(t *testing.T) {
+func TestNoRaceJetStreamClusterCatchupBailMidway(t *testing.T) {
 	skip(t)
 
 	c := createJetStreamClusterWithTemplate(t, jsClusterStallCatchupTempl, "GSG", 3)
@@ -4865,6 +4865,37 @@ func TestJetStreamClusterCatchupBailMidway(t *testing.T) {
 		}
 		return fmt.Errorf("Not enough yet")
 	})
+}
+
+func TestNoRaceJetStreamAccountLimitsAndRestart(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterAccountLimitsTempl, "A3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	for i := 0; i < 20_000; i++ {
+		if _, err := js.Publish("TEST", []byte("A")); err != nil {
+			break
+		}
+		if i == 5_000 {
+			snl := c.randomNonStreamLeader("$JS", "TEST")
+			snl.Shutdown()
+		}
+	}
+
+	c.stopAll()
+	c.restartAll()
+	c.waitOnLeader()
+	c.waitOnStreamLeader("$JS", "TEST")
+
+	for _, cs := range c.servers {
+		c.waitOnStreamCurrent(cs, "$JS", "TEST")
+	}
 }
 
 // Net Proxy - For introducing RTT and BW constraints.
