@@ -6079,6 +6079,8 @@ func (js *jetStream) streamAlternates(ci *ClientInfo, stream string) []StreamAlt
 	defer js.mu.RUnlock()
 
 	s, cc := js.srv, js.cluster
+	// Track our domain.
+	domain := s.getOpts().JetStreamDomain
 
 	// No clustering just return nil.
 	if cc == nil {
@@ -6102,7 +6104,7 @@ func (js *jetStream) streamAlternates(ci *ClientInfo, stream string) []StreamAlt
 	for _, sa := range cc.streams[acc.Name] {
 		// Add in ourselves and any mirrors.
 		if sa.Config.Name == stream || (sa.Config.Mirror != nil && sa.Config.Mirror.Name == stream) {
-			alts = append(alts, StreamAlternate{Name: sa.Config.Name, Cluster: sa.Group.Cluster})
+			alts = append(alts, StreamAlternate{Name: sa.Config.Name, Domain: domain, Cluster: sa.Group.Cluster})
 		}
 	}
 	// If just us don't fill in.

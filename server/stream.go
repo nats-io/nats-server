@@ -108,6 +108,7 @@ type StreamInfo struct {
 
 type StreamAlternate struct {
 	Name    string `json:"name"`
+	Domain  string `json:"domain,omitempty"`
 	Cluster string `json:"cluster"`
 }
 
