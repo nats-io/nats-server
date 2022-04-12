@@ -12057,7 +12057,7 @@ func TestJetStreamImportConsumerStreamSubjectRemap(t *testing.T) {
 			users: [ {user: js, password: pwd} ]
 			exports [
 				# This is streaming to a delivery subject for a push based consumer.
-				{ stream: "deliver.ORDERS" }
+				{ stream: "deliver.ORDERS.*" }
 				# This is to ack received messages. This is a service to support sync ack.
 				{ service: "$JS.ACK.ORDERS.*.>" }
 				# To support ordered consumers, flow control.
@@ -12067,13 +12067,17 @@ func TestJetStreamImportConsumerStreamSubjectRemap(t *testing.T) {
 		IM: {
 			users: [ {user: im, password: pwd} ]
 			imports [
-				{ stream:  { account: JS, subject: "deliver.ORDERS" }}
+				{ stream:  { account: JS, subject: "deliver.ORDERS.*" }}
 				{ service: {account: JS, subject: "$JS.FC.>" }}
 			]
 		},
+		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] },
+	}
+	leaf {
+		listen: 127.0.0.1:-1
 	}`
 
-	c := createJetStreamClusterWithTemplate(t, template, "SIMM", 3)
+	c := createJetStreamSuperClusterWithTemplate(t, template, 3, 2)
 	defer c.shutdown()
 
 	s := c.randomServer()
@@ -12081,37 +12085,125 @@ func TestJetStreamImportConsumerStreamSubjectRemap(t *testing.T) {
 	defer nc.Close()
 
 	_, err := js.AddStream(&nats.StreamConfig{
-		Name:     "ORDERS",
-		Subjects: []string{"foo"}, // The JS subject.
-		Replicas: 3,
+		Name:      "ORDERS",
+		Subjects:  []string{"foo"}, // The JS subject.
+		Replicas:  3,
+		Placement: &nats.Placement{Cluster: "C1"},
 	})
 	require_NoError(t, err)
 
 	_, err = js.Publish("foo", []byte("OK"))
 	require_NoError(t, err)
 
-	_, err = js.AddConsumer("ORDERS", &nats.ConsumerConfig{
-		Durable:        "oleg",
-		DeliverSubject: "deliver.ORDERS",
-		AckPolicy:      nats.AckExplicitPolicy,
-	})
-	require_NoError(t, err)
-
-	// This bug only happens when we go across a route, so pick another server other than the consumer leader.
-	s = c.randomNonConsumerLeader("JS", "ORDERS", "oleg")
-
-	nc2, err := nats.Connect(s.ClientURL(), nats.UserInfo("im", "pwd"))
-	require_NoError(t, err)
-
-	sub, err := nc2.SubscribeSync("deliver.ORDERS")
-	require_NoError(t, err)
-
-	m, err := sub.NextMsg(time.Second)
-	require_NoError(t, err)
-
-	if m.Subject != "foo" {
-		t.Fatalf("Subject not mapped correctly across account boundary, expected %q got %q", "foo", m.Subject)
+	for dur, deliver := range map[string]string{
+		"dur-route":   "deliver.ORDERS.route",
+		"dur-gateway": "deliver.ORDERS.gateway",
+		"dur-leaf-1":  "deliver.ORDERS.leaf1",
+		"dur-leaf-2":  "deliver.ORDERS.leaf2",
+	} {
+		_, err = js.AddConsumer("ORDERS", &nats.ConsumerConfig{
+			Durable:        dur,
+			DeliverSubject: deliver,
+			AckPolicy:      nats.AckExplicitPolicy,
+		})
+		require_NoError(t, err)
 	}
+
+	test := func(t *testing.T, s *Server, dSubj string) {
+		nc2, err := nats.Connect(s.ClientURL(), nats.UserInfo("im", "pwd"))
+		require_NoError(t, err)
+		defer nc2.Close()
+
+		sub, err := nc2.SubscribeSync(dSubj)
+		require_NoError(t, err)
+
+		m, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+
+		if m.Subject != "foo" {
+			t.Fatalf("Subject not mapped correctly across account boundary, expected %q got %q", "foo", m.Subject)
+		}
+		require_False(t, strings.Contains(m.Reply, "@"))
+	}
+
+	t.Run("route", func(t *testing.T) {
+		// pick random non consumer leader so we receive via route
+		s := c.clusterForName("C1").randomNonConsumerLeader("JS", "ORDERS", "dur-route")
+		test(t, s, "deliver.ORDERS.route")
+	})
+	t.Run("gateway", func(t *testing.T) {
+		// pick server with inbound gateway from consumer leader, so we receive from gateway and have no route in between
+		scl := c.clusterForName("C1").consumerLeader("JS", "ORDERS", "dur-gateway")
+		var sfound *Server
+		for _, s := range c.clusterForName("C2").servers {
+			s.mu.Lock()
+			for _, c := range s.gateway.in {
+				if c.GetName() == scl.info.ID {
+					sfound = s
+					break
+				}
+			}
+			s.mu.Unlock()
+			if sfound != nil {
+				break
+			}
+		}
+		test(t, sfound, "deliver.ORDERS.gateway")
+	})
+	t.Run("leaf-post-export", func(t *testing.T) {
+		// create leaf node server connected post export/import
+		scl := c.clusterForName("C1").consumerLeader("JS", "ORDERS", "dur-leaf-1")
+		cf := createConfFile(t, []byte(fmt.Sprintf(`
+			port: -1
+			leafnodes {
+				remotes [ { url: "nats://im:pwd@127.0.0.1:%d" } ]
+			}
+			authorization: {
+				user: im,
+				password: pwd
+			}
+		`, scl.getOpts().LeafNode.Port)))
+		defer removeFile(t, cf)
+		s, _ := RunServerWithConfig(cf)
+		defer s.Shutdown()
+		checkLeafNodeConnected(t, scl)
+		test(t, s, "deliver.ORDERS.leaf1")
+	})
+	t.Run("leaf-pre-export", func(t *testing.T) {
+		// create leaf node server connected pre export, perform export/import on leaf node server
+		scl := c.clusterForName("C1").consumerLeader("JS", "ORDERS", "dur-leaf-2")
+		cf := createConfFile(t, []byte(fmt.Sprintf(`
+			port: -1
+			leafnodes {
+				remotes [ { url: "nats://im:pwd@127.0.0.1:%d", account: JS2 } ]
+			}
+			accounts: {
+				JS2: {
+					users: [ {user: js, password: pwd} ]
+					exports [
+						# This is streaming to a delivery subject for a push based consumer.
+						{ stream: "deliver.ORDERS.*" }
+						# This is to ack received messages. This is a service to support sync ack.
+						{ service: "$JS.ACK.ORDERS.*.>" }
+						# To support ordered consumers, flow control.
+						{ service: "$JS.FC.>" }
+					]
+				},
+				IM2: {
+					users: [ {user: im, password: pwd} ]
+					imports [
+						{ stream:  { account: JS2, subject: "deliver.ORDERS.*" }}
+						{ service: {account: JS2, subject: "$JS.FC.>" }}
+					]
+				},
+			}
+		`, scl.getOpts().LeafNode.Port)))
+		defer removeFile(t, cf)
+		s, _ := RunServerWithConfig(cf)
+		defer s.Shutdown()
+		checkLeafNodeConnected(t, scl)
+		test(t, s, "deliver.ORDERS.leaf2")
+	})
 }
 
 // Support functions
