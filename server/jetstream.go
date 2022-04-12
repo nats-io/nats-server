@@ -816,7 +816,7 @@ func (s *Server) migrateEphemerals() {
 						}
 						o.mu.Unlock()
 					}
-					state := o.readStoreState()
+					state, _ := o.store.State()
 					o.deleteWithoutAdvisory()
 					js.mu.Lock()
 					// Delete old one.

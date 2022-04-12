@@ -1905,35 +1905,6 @@ func (o *consumer) applyState(state *ConsumerState) {
 	}
 }
 
-func (o *consumer) readStoreState() *ConsumerState {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-	if o.store == nil {
-		return nil
-	}
-	if o.store.Type() == MemoryStorage {
-		state := o.liveState()
-		// Need to copy pending and rdc since we pass this up.
-		if len(state.Pending) > 0 {
-			pending := make(map[uint64]*Pending, len(state.Pending))
-			for seq, p := range state.Pending {
-				pending[seq] = &Pending{p.Sequence, p.Timestamp}
-			}
-			state.Pending = pending
-		}
-		if len(state.Redelivered) > 0 {
-			redelivered := make(map[uint64]uint64, len(state.Redelivered))
-			for seq, dc := range state.Redelivered {
-				redelivered[seq] = dc
-			}
-			state.Redelivered = redelivered
-		}
-		return state
-	}
-	state, _ := o.store.State()
-	return state
-}
-
 // Sets our store state from another source. Used in clustered mode on snapshot restore.
 func (o *consumer) setStoreState(state *ConsumerState) error {
 	if state == nil || o.store == nil {
@@ -1950,9 +1921,13 @@ func (o *consumer) writeStoreState() error {
 	return o.writeStoreStateUnlocked()
 }
 
+// Update our state to the store.
 // Lock should be held.
-func (o *consumer) liveState() *ConsumerState {
-	return &ConsumerState{
+func (o *consumer) writeStoreStateUnlocked() error {
+	if o.store == nil {
+		return nil
+	}
+	state := ConsumerState{
 		Delivered: SequencePair{
 			Consumer: o.dseq - 1,
 			Stream:   o.sseq - 1,
@@ -1964,15 +1939,7 @@ func (o *consumer) liveState() *ConsumerState {
 		Pending:     o.pending,
 		Redelivered: o.rdc,
 	}
-}
-
-// Update our state to the store.
-// Lock should be held.
-func (o *consumer) writeStoreStateUnlocked() error {
-	if o.store == nil {
-		return nil
-	}
-	return o.store.Update(o.liveState())
+	return o.store.Update(&state)
 }
 
 // Returns an initial info. Only applicable for non-clustered consumers.
@@ -3101,6 +3068,7 @@ func (o *consumer) deliverMsg(dsubj string, pmsg *jsPubMsg, dc uint64) {
 		pmsg.returnToPool()
 		return
 	}
+
 	// Update pending on first attempt. This can go upside down for a short bit, that is ok.
 	// See adjustedPending().
 	if dc == 1 {

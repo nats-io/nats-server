@@ -1567,13 +1567,8 @@ func TestNoRaceJetStreamClusterSuperClusterMirrors(t *testing.T) {
 		Placement: &nats.Placement{Cluster: "C1"},
 	})
 
-	// Faster timeout since we loop below checking for condition.
-	js2, err := nc.JetStream(nats.MaxWait(50 * time.Millisecond))
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
-		si, err := js2.StreamInfo("M1")
+		si, err := js.StreamInfo("M1")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -1602,7 +1597,7 @@ func TestNoRaceJetStreamClusterSuperClusterMirrors(t *testing.T) {
 	})
 
 	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
-		si, err := js2.StreamInfo("M2")
+		si, err := js.StreamInfo("M2")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -1636,8 +1631,8 @@ func TestNoRaceJetStreamClusterSuperClusterMirrors(t *testing.T) {
 	<-doneCh
 	sc.clusterForName("C3").waitOnStreamLeader("$G", "M2")
 
-	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
-		si, err := js2.StreamInfo("M2")
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("M2")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -3333,7 +3328,7 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	// Check consumer consistency.
 	checkConsumerWith := func(delivered, ackFloor uint64, ackPending int) {
 		t.Helper()
-		nc, js = jsClientConnect(t, c.randomServer())
+		nc, js := jsClientConnect(t, c.randomServer())
 		defer nc.Close()
 
 		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
@@ -3435,28 +3430,35 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 
 	cl = c.consumerLeader("$G", "TEST", "dlc")
 	mset, err = cl.GlobalAccount().lookupStream("TEST")
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
+	require_NoError(t, err)
 	o = mset.lookupConsumer("dlc")
-	if o == nil {
-		t.Fatalf("Error looking up consumer %q", "dlc")
-	}
+	require_NoError(t, err)
+
 	// Grab underlying raft node and the WAL (filestore) and truncate it.
 	// This will simulate the WAL losing state due to truncate and we want to make sure it recovers.
+
 	fs = o.raftNode().(*raft).wal.(*fileStore)
 	state = fs.State()
-	fs.Truncate(state.FirstSeq)
+	err = fs.Truncate(state.FirstSeq)
+	require_NoError(t, err)
+	state = fs.State()
 
 	sub, err = js.PullSubscribe("foo", "dlc")
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
+	require_NoError(t, err)
 
 	// This will cause us to stepdown and truncate our WAL.
-	sub.Fetch(100)
+	msgs, _ := sub.Fetch(100)
 
-	checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
+	// In case we have to retry, we need to adjust the tests that follow.
+	newDelivered, ackPending, more := 200, 75, 0
+
+	if len(msgs) != 100 {
+		more = 100 - len(msgs)
+		_, err = sub.Fetch(more)
+		require_NoError(t, err)
+	}
+
+	checkFor(t, 30*time.Second, 500*time.Millisecond, func() error {
 		// Make sure we changed leaders.
 		if clnew := c.consumerLeader("$G", "TEST", "dlc"); clnew == nil || cl == clnew {
 			return fmt.Errorf("Expected leader to have moved")
@@ -3465,9 +3467,9 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	})
 
 	// First one triggered stepdown so no updates would be distributed, now make sure we are ok.
-	checkConsumer()
-	fetchMsgs(t, sub, 100, 5*time.Second)
-	checkConsumerWith(300, 50, 175)
+	checkConsumerWith(uint64(newDelivered+more), 50, ackPending+more)
+	fetchMsgs(t, sub, 100, 10*time.Second)
+	checkConsumerWith(uint64(300+more), 50, 175+more)
 }
 
 func TestNoRaceJetStreamClusterInterestRetentionDeadlock(t *testing.T) {

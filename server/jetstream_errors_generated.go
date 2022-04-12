@@ -302,6 +302,9 @@ const (
 	// JSStreamMoveAndScaleErr can not move and scale a stream in a single update
 	JSStreamMoveAndScaleErr ErrorIdentifier = 10123
 
+	// JSStreamMoveInProgress can not move a stream already being migrated
+	JSStreamMoveInProgress ErrorIdentifier = 10124
+
 	// JSStreamMsgDeleteFailedF Generic message deletion failure error string ({err})
 	JSStreamMsgDeleteFailedF ErrorIdentifier = 10057
 
@@ -473,6 +476,7 @@ var (
 		JSStreamMirrorNotUpdatableErr:              {Code: 400, ErrCode: 10055, Description: "stream mirror configuration can not be updated"},
 		JSStreamMismatchErr:                        {Code: 400, ErrCode: 10056, Description: "stream name in subject does not match request"},
 		JSStreamMoveAndScaleErr:                    {Code: 400, ErrCode: 10123, Description: "can not move and scale a stream in a single update"},
+		JSStreamMoveInProgress:                     {Code: 400, ErrCode: 10124, Description: "can not move a stream already being migrated"},
 		JSStreamMsgDeleteFailedF:                   {Code: 500, ErrCode: 10057, Description: "{err}"},
 		JSStreamNameExistErr:                       {Code: 400, ErrCode: 10058, Description: "stream name already in use"},
 		JSStreamNotFoundErr:                        {Code: 404, ErrCode: 10059, Description: "stream not found"},
@@ -1629,6 +1633,16 @@ func NewJSStreamMoveAndScaleError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSStreamMoveAndScaleErr]
+}
+
+// NewJSStreamMoveInProgressError creates a new JSStreamMoveInProgress error: "can not move a stream already being migrated"
+func NewJSStreamMoveInProgressError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSStreamMoveInProgress]
 }
 
 // NewJSStreamMsgDeleteFailedError creates a new JSStreamMsgDeleteFailedF error: "{err}"

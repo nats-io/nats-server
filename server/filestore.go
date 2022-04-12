@@ -5461,73 +5461,22 @@ const seqsHdrSize = 6*binary.MaxVarintLen64 + hdrLen
 
 // Encode our consumer state, version 2.
 // Lock should be held.
-func (o *consumerFileStore) encodeState() ([]byte, error) {
+
+func (o *consumerFileStore) EncodedState() ([]byte, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
 	if o.closed {
 		return nil, ErrStoreClosed
 	}
 	return encodeConsumerState(&o.state), nil
 }
 
-func encodeConsumerState(state *ConsumerState) []byte {
-	var hdr [seqsHdrSize]byte
-	var buf []byte
-
-	maxSize := seqsHdrSize
-	if lp := len(state.Pending); lp > 0 {
-		maxSize += lp*(3*binary.MaxVarintLen64) + binary.MaxVarintLen64
+func (o *consumerFileStore) encodeState() ([]byte, error) {
+	if o.closed {
+		return nil, ErrStoreClosed
 	}
-	if lr := len(state.Redelivered); lr > 0 {
-		maxSize += lr*(2*binary.MaxVarintLen64) + binary.MaxVarintLen64
-	}
-	if maxSize == seqsHdrSize {
-		buf = hdr[:seqsHdrSize]
-	} else {
-		buf = make([]byte, maxSize)
-	}
-
-	// Write header
-	buf[0] = magic
-	buf[1] = 2
-
-	n := hdrLen
-	n += binary.PutUvarint(buf[n:], state.AckFloor.Consumer)
-	n += binary.PutUvarint(buf[n:], state.AckFloor.Stream)
-	n += binary.PutUvarint(buf[n:], state.Delivered.Consumer)
-	n += binary.PutUvarint(buf[n:], state.Delivered.Stream)
-	n += binary.PutUvarint(buf[n:], uint64(len(state.Pending)))
-
-	asflr := state.AckFloor.Stream
-	adflr := state.AckFloor.Consumer
-
-	// These are optional, but always write len. This is to avoid a truncate inline.
-	if len(state.Pending) > 0 {
-		// To save space we will use now rounded to seconds to be base timestamp.
-		mints := time.Now().Round(time.Second).Unix()
-		// Write minimum timestamp we found from above.
-		n += binary.PutVarint(buf[n:], mints)
-
-		for k, v := range state.Pending {
-			n += binary.PutUvarint(buf[n:], k-asflr)
-			n += binary.PutUvarint(buf[n:], v.Sequence-adflr)
-			// Downsample to seconds to save on space.
-			// Subsecond resolution not needed for recovery etc.
-			ts := v.Timestamp / 1_000_000_000
-			n += binary.PutVarint(buf[n:], mints-ts)
-		}
-	}
-
-	// We always write the redelivered len.
-	n += binary.PutUvarint(buf[n:], uint64(len(state.Redelivered)))
-
-	// We expect these to be small.
-	if len(state.Redelivered) > 0 {
-		for k, v := range state.Redelivered {
-			n += binary.PutUvarint(buf[n:], k-asflr)
-			n += binary.PutUvarint(buf[n:], v)
-		}
-	}
-
-	return buf[:n]
+	return encodeConsumerState(&o.state), nil
 }
 
 func (o *consumerFileStore) UpdateConfig(cfg *ConsumerConfig) error {
@@ -5756,6 +5705,10 @@ func (o *consumerFileStore) Type() StorageType { return FileStorage }
 func (o *consumerFileStore) State() (*ConsumerState, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+
+	if o.closed {
+		return nil, ErrStoreClosed
+	}
 
 	state := &ConsumerState{}
 
