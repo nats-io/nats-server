@@ -1435,7 +1435,7 @@ func (n *raft) shutdown(shouldDelete bool) {
 	}
 }
 
-// Wipe will force a on disk state reset and the call Delete().
+// Wipe will force an on disk state reset and then call Delete().
 // Useful in case we have been stopped before this point.
 func (n *raft) Wipe() {
 	n.RLock()
