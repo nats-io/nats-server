@@ -6067,6 +6067,59 @@ func (mset *stream) checkClusterInfo(ci *ClusterInfo) {
 	}
 }
 
+// Return a list of alternates, ranked by preference order to the request, of stream mirrors.
+// This allows clients to select or get more information about read replicas that could be a
+// better option to connect to versus the original source.
+func (js *jetStream) streamAlternates(ci *ClientInfo, stream string) []StreamAlternate {
+	if js == nil {
+		return nil
+	}
+
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+
+	s, cc := js.srv, js.cluster
+	// Track our domain.
+	domain := s.getOpts().JetStreamDomain
+
+	// No clustering just return nil.
+	if cc == nil {
+		return nil
+	}
+	acc, _ := s.LookupAccount(ci.serviceAccount())
+	if acc == nil {
+		return nil
+	}
+
+	// Collect our ordering first for clusters.
+	weights := make(map[string]int)
+	all := []string{ci.Cluster}
+	all = append(all, ci.Alternates...)
+
+	for i := 0; i < len(all); i++ {
+		weights[all[i]] = len(all) - i
+	}
+
+	var alts []StreamAlternate
+	for _, sa := range cc.streams[acc.Name] {
+		// Add in ourselves and any mirrors.
+		if sa.Config.Name == stream || (sa.Config.Mirror != nil && sa.Config.Mirror.Name == stream) {
+			alts = append(alts, StreamAlternate{Name: sa.Config.Name, Domain: domain, Cluster: sa.Group.Cluster})
+		}
+	}
+	// If just us don't fill in.
+	if len(alts) == 1 {
+		return nil
+	}
+
+	// Sort based on our weights that originate from the request itself.
+	sort.Slice(alts, func(i, j int) bool {
+		return weights[alts[i].Cluster] > weights[alts[j].Cluster]
+	})
+
+	return alts
+}
+
 func (mset *stream) handleClusterStreamInfoRequest(sub *subscription, c *client, _ *Account, subject, reply string, _ []byte) {
 	mset.mu.RLock()
 	sysc, js, sa, config := mset.sysc, mset.srv.js, mset.sa, mset.cfg

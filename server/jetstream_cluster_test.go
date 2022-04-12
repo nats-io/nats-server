@@ -12384,6 +12384,66 @@ func TestJetStreamImportConsumerStreamSubjectRemap(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterStreamAlternates(t *testing.T) {
+	sc := createJetStreamTaggedSuperCluster(t)
+	defer sc.shutdown()
+
+	nc, js := jsClientConnect(t, sc.randomServer())
+	defer nc.Close()
+
+	// C1
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "SOURCE",
+		Subjects:  []string{"foo", "bar", "baz"},
+		Replicas:  3,
+		Placement: &nats.Placement{Tags: []string{"cloud:aws", "country:us"}},
+	})
+	require_NoError(t, err)
+
+	// C2
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:      "MIRROR-1",
+		Replicas:  1,
+		Mirror:    &nats.StreamSource{Name: "SOURCE"},
+		Placement: &nats.Placement{Tags: []string{"cloud:gcp", "country:uk"}},
+	})
+	require_NoError(t, err)
+
+	// C3
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:      "MIRROR-2",
+		Replicas:  2,
+		Mirror:    &nats.StreamSource{Name: "SOURCE"},
+		Placement: &nats.Placement{Tags: []string{"cloud:az", "country:jp"}},
+	})
+	require_NoError(t, err)
+
+	// No client support yet, so do by hand.
+	getStreamInfo := func(nc *nats.Conn, expected string) {
+		t.Helper()
+		resp, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, "SOURCE"), nil, time.Second)
+		require_NoError(t, err)
+		var si StreamInfo
+		err = json.Unmarshal(resp.Data, &si)
+		require_NoError(t, err)
+		require_True(t, len(si.Alternates) == 3)
+		require_True(t, si.Alternates[0].Cluster == expected)
+		seen := make(map[string]struct{})
+		for _, alt := range si.Alternates {
+			seen[alt.Cluster] = struct{}{}
+		}
+		require_True(t, len(seen) == 3)
+	}
+
+	// Connect to different clusters to check ordering.
+	nc, _ = jsClientConnect(t, sc.clusterForName("C1").randomServer())
+	getStreamInfo(nc, "C1")
+	nc, _ = jsClientConnect(t, sc.clusterForName("C2").randomServer())
+	getStreamInfo(nc, "C2")
+	nc, _ = jsClientConnect(t, sc.clusterForName("C3").randomServer())
+	getStreamInfo(nc, "C3")
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
