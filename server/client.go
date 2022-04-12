@@ -3495,12 +3495,8 @@ func isReservedReply(reply []byte) bool {
 	}
 	rLen := len(reply)
 	// Faster to check with string([:]) than byte-by-byte
-	if rLen > jsAckPreLen+1 && string(reply[:jsAckPreLen]) == jsAckPre {
-		// Not sure what should happen if a JS message is relayed by a client (probably shouldn't support that)
-		// But it should never contain an @ (used for renaming)
-		if strings.Contains(string(reply[jsAckPreLen:]), "@") {
-			return true
-		}
+	if rLen > jsAckPreLen && string(reply[:jsAckPreLen]) == jsAckPre {
+		return true
 	} else if rLen > gwReplyPrefixLen && string(reply[:gwReplyPrefixLen]) == gwReplyPrefix {
 		return true
 	}
