@@ -5786,13 +5786,16 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 	if err := n.PauseApply(); err != nil {
 		return err
 	}
+
+	// ErrStreamStopped is when a catchup is terminated due to the stream going away.
+	var ErrStreamStopped = errors.New("stream has been stopped")
+
 	defer func() {
-		if e != nil {
-			// Wipe our raft state if exiting with an error.
+		if e == ErrServerNotRunning || e == ErrStreamStopped {
+			// Wipe our raft state if exiting with these errors.
 			n.Wipe()
-		} else {
-			n.ResumeApply()
 		}
+		n.ResumeApply()
 	}()
 
 	// Set our catchup state.
@@ -5958,7 +5961,7 @@ RETRY:
 		case <-s.quitCh:
 			return ErrServerNotRunning
 		case <-qch:
-			return fmt.Errorf("stream %q stopped during catchup", mset.name())
+			return ErrStreamStopped
 		case isLeader := <-lch:
 			if isLeader {
 				n.StepDown()
