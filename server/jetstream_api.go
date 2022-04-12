@@ -183,8 +183,9 @@ const (
 
 	// jsAckT is the template for the ack message stream coming back from a consumer
 	// when they ACK/NAK, etc a message.
-	jsAckT   = "$JS.ACK.%s.%s"
-	jsAckPre = "$JS.ACK."
+	jsAckT      = "$JS.ACK.%s.%s"
+	jsAckPre    = "$JS.ACK."
+	jsAckPreLen = len(jsAckPre)
 
 	// jsFlowControl is for flow control subjects.
 	jsFlowControlPre = "$JS.FC."
