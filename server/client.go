@@ -3493,8 +3493,11 @@ func isReservedReply(reply []byte) bool {
 	if isServiceReply(reply) {
 		return true
 	}
+	rLen := len(reply)
 	// Faster to check with string([:]) than byte-by-byte
-	if len(reply) > gwReplyPrefixLen && string(reply[:gwReplyPrefixLen]) == gwReplyPrefix {
+	if rLen > jsAckPreLen && string(reply[:jsAckPreLen]) == jsAckPre {
+		return true
+	} else if rLen > gwReplyPrefixLen && string(reply[:gwReplyPrefixLen]) == gwReplyPrefix {
 		return true
 	}
 	return false
