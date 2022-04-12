@@ -2734,14 +2734,18 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 			filterIdx = i
 		}
 		jsa.mu.RLock()
-		jsi.Streams += len(jsa.streams)
+		streams := make([]*stream, 0, len(jsa.streams))
 		for _, stream := range jsa.streams {
+			streams = append(streams, stream)
+		}
+		jsa.mu.RUnlock()
+		jsi.Streams += len(streams)
+		for _, stream := range streams {
 			streamState := stream.state()
 			jsi.Messages += streamState.Msgs
 			jsi.Bytes += streamState.Bytes
 			jsi.Consumers += streamState.Consumers
 		}
-		jsa.mu.RUnlock()
 	}
 
 	// filter logic

@@ -3670,6 +3670,11 @@ func TestJetStreamClusterPeerOffline(t *testing.T) {
 }
 
 func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
+	// Make this shorter for the test.
+	old := lostQuorumInterval
+	lostQuorumInterval = hbIntervalDefault * 3
+	defer func() { lostQuorumInterval = old }()
+
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -8957,37 +8962,6 @@ var jsClusterAccountLimitsTempl = `
 		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
 	}
 `
-
-func TestJetStreamAccountLimitsAndRestart(t *testing.T) {
-	c := createJetStreamClusterWithTemplate(t, jsClusterAccountLimitsTempl, "A3S", 3)
-	defer c.shutdown()
-
-	nc, js := jsClientConnect(t, c.randomServer())
-	defer nc.Close()
-
-	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3}); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-
-	for i := 0; i < 20_000; i++ {
-		if _, err := js.Publish("TEST", []byte("A")); err != nil {
-			break
-		}
-		if i == 5_000 {
-			snl := c.randomNonStreamLeader("$JS", "TEST")
-			snl.Shutdown()
-		}
-	}
-
-	c.stopAll()
-	c.restartAll()
-	c.waitOnLeader()
-	c.waitOnStreamLeader("$JS", "TEST")
-
-	for _, cs := range c.servers {
-		c.waitOnStreamCurrent(cs, "$JS", "TEST")
-	}
-}
 
 func TestJetStreamClusterMixedModeColdStartPrune(t *testing.T) {
 	// Purposely make this unbalanced. Without changes this will never form a quorum to elect the meta-leader.

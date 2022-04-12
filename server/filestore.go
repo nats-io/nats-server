@@ -218,14 +218,14 @@ const (
 	blkKeySize  = 72
 
 	// Default stream block size.
-	defaultLargeBlockSize = 16 * 1024 * 1024 // 16MB
+	defaultLargeBlockSize = 4 * 1024 * 1024 // 4MB
 	// Default for workqueue or interest based.
-	defaultMediumBlockSize = 8 * 1024 * 1024 // 8MB
-	// Default for KV based
-	defaultKVBlockSize = 8 * 1024 * 1024 // 8MB
+	defaultMediumBlockSize = 2 * 1024 * 1024 // 2MB
 	// For smaller reuse buffers. Usually being generated during contention on the lead write buffer.
 	// E.g. mirrors/sources etc.
-	defaultSmallBlockSize = 2 * 1024 * 1024 // 2MB
+	defaultSmallBlockSize = 1 * 1024 * 1024 // 1MB
+	// Default for KV based
+	defaultKVBlockSize = defaultMediumBlockSize
 	// max block size for now.
 	maxBlockSize = defaultLargeBlockSize
 	// Compact minimum threshold.
@@ -400,11 +400,12 @@ func dynBlkSize(retention RetentionPolicy, maxBytes int64) uint64 {
 		if m := blkSize % 100; m != 0 {
 			blkSize += 100 - m
 		}
-		if blkSize < FileStoreMinBlkSize {
+		if blkSize <= FileStoreMinBlkSize {
 			blkSize = FileStoreMinBlkSize
-		}
-		if blkSize > FileStoreMaxBlkSize {
+		} else if blkSize >= FileStoreMaxBlkSize {
 			blkSize = FileStoreMaxBlkSize
+		} else {
+			blkSize = defaultMediumBlockSize
 		}
 		return uint64(blkSize)
 	}
@@ -4837,6 +4838,8 @@ func (fs *fileStore) closeAllMsgBlocks(sync bool) {
 
 func (fs *fileStore) Delete() error {
 	if fs.isClosed() {
+		// Always attempt to remove since we could have been closed beforehand.
+		os.RemoveAll(fs.fcfg.StoreDir)
 		return ErrStoreClosed
 	}
 	fs.Purge()

@@ -70,6 +70,7 @@ type RaftNode interface {
 	Created() time.Time
 	Stop()
 	Delete()
+	Wipe()
 }
 
 type WAL interface {
@@ -231,7 +232,7 @@ const (
 	minCampaignTimeoutDefault = 100 * time.Millisecond
 	maxCampaignTimeoutDefault = 8 * minCampaignTimeoutDefault
 	hbIntervalDefault         = 500 * time.Millisecond
-	lostQuorumIntervalDefault = hbIntervalDefault * 5
+	lostQuorumIntervalDefault = hbIntervalDefault * 20 // 10 seconds
 )
 
 var (
@@ -1123,7 +1124,6 @@ func (n *raft) Leader() bool {
 	return isLeader
 }
 
-// Reports our catching up state.
 func (n *raft) isCatchingUp() bool {
 	n.RLock()
 	defer n.RUnlock()
@@ -1433,6 +1433,20 @@ func (n *raft) shutdown(shouldDelete bool) {
 			wal.Stop()
 		}
 	}
+}
+
+// Wipe will force an on disk state reset and then call Delete().
+// Useful in case we have been stopped before this point.
+func (n *raft) Wipe() {
+	n.RLock()
+	wal := n.wal
+	n.RUnlock()
+	// Delete our underlying storage.
+	if wal != nil {
+		wal.Delete()
+	}
+	// Now call delete.
+	n.Delete()
 }
 
 // Lock should be held (due to use of random generator)
@@ -2520,6 +2534,7 @@ func (n *raft) handleAppendEntry(sub *subscription, c *client, _ *Account, subje
 	} else {
 		n.warn("AppendEntry failed to be placed on internal channel: corrupt entry")
 	}
+	n.resetElectionTimeout()
 }
 
 // Lock should be held.
@@ -2626,8 +2641,6 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		}
 		n.stepdown.push(ae.leader)
 	}
-
-	n.resetElectionTimeout()
 
 	// Catching up state.
 	catchingUp := n.catchup != nil
@@ -2896,6 +2909,14 @@ func (n *raft) handleAppendEntryResponse(sub *subscription, c *client, _ *Accoun
 	ar := n.decodeAppendEntryResponse(msg)
 	ar.reply = reply
 	n.resp.push(ar)
+	if ar.success {
+		n.Lock()
+		// Update peer's last index.
+		if ps := n.peers[ar.peer]; ps != nil && ar.index > ps.li {
+			ps.li = ar.index
+		}
+		n.Unlock()
+	}
 }
 
 func (n *raft) buildAppendEntry(entries []*Entry) *appendEntry {
