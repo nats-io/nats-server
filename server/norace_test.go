@@ -3447,29 +3447,14 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	require_NoError(t, err)
 
 	// This will cause us to stepdown and truncate our WAL.
-	msgs, _ := sub.Fetch(100)
-
-	// In case we have to retry, we need to adjust the tests that follow.
-	newDelivered, ackPending, more := 200, 75, 0
-
-	if len(msgs) != 100 {
-		more = 100 - len(msgs)
-		_, err = sub.Fetch(more)
-		require_NoError(t, err)
+	sub.Fetch(100)
+	c.waitOnConsumerLeader("$G", "TEST", "dlc")
+	// We can't trust the results sans that we have a leader back in place and the ackFloor.
+	ci, err := js.ConsumerInfo("TEST", "dlc")
+	require_NoError(t, err)
+	if ci.AckFloor.Consumer != ci.AckFloor.Stream || ci.AckFloor.Consumer != 50 {
+		t.Fatalf("Expected %d for ack floor, got %+v", 50, ci.AckFloor)
 	}
-
-	checkFor(t, 30*time.Second, 500*time.Millisecond, func() error {
-		// Make sure we changed leaders.
-		if clnew := c.consumerLeader("$G", "TEST", "dlc"); clnew == nil || cl == clnew {
-			return fmt.Errorf("Expected leader to have moved")
-		}
-		return nil
-	})
-
-	// First one triggered stepdown so no updates would be distributed, now make sure we are ok.
-	checkConsumerWith(uint64(newDelivered+more), 50, ackPending+more)
-	fetchMsgs(t, sub, 100, 10*time.Second)
-	checkConsumerWith(uint64(300+more), 50, 175+more)
 }
 
 func TestNoRaceJetStreamClusterInterestRetentionDeadlock(t *testing.T) {
