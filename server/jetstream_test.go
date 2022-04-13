@@ -7361,11 +7361,13 @@ func TestJetStreamStreamStorageTrackingAndLimits(t *testing.T) {
 	nc.Flush()
 
 	state = mset.state()
-	usage = gacc.JetStreamUsage()
-
-	if usage.Memory != 0 {
-		t.Fatalf("Expected usage memeory to be 0, got %d", usage.Memory)
-	}
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		usage = gacc.JetStreamUsage()
+		if usage.Memory != 0 {
+			return fmt.Errorf("Expected usage memory to be 0, got %d", usage.Memory)
+		}
+		return nil
+	})
 
 	// Now send twice the number of messages. Should receive an error at some point, and we will check usage against limits.
 	var errSeen string
@@ -7382,12 +7384,15 @@ func TestJetStreamStreamStorageTrackingAndLimits(t *testing.T) {
 	}
 
 	state = mset.state()
-	usage = gacc.JetStreamUsage()
-
-	lim := al[_EMPTY_]
-	if usage.Memory > uint64(lim.MaxMemory) {
-		t.Fatalf("Expected memory to not exceed limit of %d, got %d", lim.MaxMemory, usage.Memory)
-	}
+	var lim JetStreamAccountLimits
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		usage = gacc.JetStreamUsage()
+		lim = al[_EMPTY_]
+		if usage.Memory > uint64(lim.MaxMemory) {
+			return fmt.Errorf("Expected memory to not exceed limit of %d, got %d", lim.MaxMemory, usage.Memory)
+		}
+		return nil
+	})
 
 	// make sure that unlimited accounts work
 	lim.MaxMemory = -1
