@@ -4303,7 +4303,9 @@ func TestLeafNodeAdvertiseInCluster(t *testing.T) {
 	expectNothing(t, lc)
 }
 
-func TestLeafNodeStreamAndShadowSubs(t *testing.T) {
+func TestLeafNodeAndGatewaysStreamAndShadowSubs(t *testing.T) {
+	server.SetGatewaysSolicitDelay(10 * time.Millisecond)
+	defer server.ResetGatewaysSolicitDelay()
 	conf1 := createConfFile(t, []byte(`
 		port: -1
 		system_account: SYS
@@ -4418,6 +4420,105 @@ func TestLeafNodeStreamAndShadowSubs(t *testing.T) {
 	if _, err := sub.NextMsg(time.Second); err != nil {
 		t.Fatalf("Did not receive message: %v", err)
 	}
+}
+
+func TestLeafNodeStreamAndShadowSubs(t *testing.T) {
+	hubConf := createConfFile(t, []byte(`
+		port: -1
+		leafnodes {
+			port: -1
+			authorization: {
+			  user: leaf
+			  password: leaf
+			  account: B
+			}
+		}
+		accounts: {
+			A: {
+			  users = [{user: usrA, password: usrA}]
+			  exports: [{stream: foo.*.>}]
+			}
+			B: {
+			  imports: [{stream: {account: A, subject: foo.*.>}}]
+			}
+		}
+	`))
+	defer removeFile(t, hubConf)
+	hub, hubo := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	leafConf := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		leafnodes {
+			remotes = [
+				{
+					url: "nats-leaf://leaf:leaf@127.0.0.1:%d"
+					account: B
+				}
+			]
+		}
+		accounts: {
+			B: {
+			  exports: [{stream: foo.*.>}]
+			}
+			C: {
+			  users: [{user: usrC, password: usrC}]
+			  imports: [{stream: {account: B, subject: foo.bar.>}}]
+			}
+		}
+	`, hubo.LeafNode.Port)))
+	defer removeFile(t, leafConf)
+	leafo := LoadConfig(leafConf)
+	leafo.LeafNode.ReconnectInterval = 50 * time.Millisecond
+	leaf := RunServer(leafo)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+
+	ncl, err := nats.Connect(leaf.ClientURL(), nats.UserInfo("usrC", "usrC"))
+	if err != nil {
+		t.Fatalf("Error connecting: %v", err)
+	}
+	defer ncl.Close()
+
+	// This will send an LS+ to the "hub" server.
+	sub, err := ncl.SubscribeSync("foo.*.baz")
+	if err != nil {
+		t.Fatalf("Error subscribing: %v", err)
+	}
+	ncl.Flush()
+
+	pubAndCheck := func() {
+		t.Helper()
+		ncm, err := nats.Connect(hub.ClientURL(), nats.UserInfo("usrA", "usrA"))
+		if err != nil {
+			t.Fatalf("Error connecting: %v", err)
+		}
+		defer ncm.Close()
+
+		// Try a few times in case subject interest has not propagated yet
+		for i := 0; i < 5; i++ {
+			ncm.Publish("foo.bar.baz", []byte("msg"))
+			if _, err := sub.NextMsg(time.Second); err == nil {
+				// OK, done!
+				return
+			}
+		}
+		t.Fatal("Message was not received")
+	}
+	pubAndCheck()
+
+	// Now cause a restart of the accepting side so that the leaf connection
+	// is recreated.
+	hub.Shutdown()
+	hub = RunServer(hubo)
+	defer hub.Shutdown()
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+
+	pubAndCheck()
 }
 
 func TestLeafnodeHeaders(t *testing.T) {
