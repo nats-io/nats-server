@@ -6816,8 +6816,13 @@ func TestJetStreamSystemLimitsPlacement(t *testing.T) {
 		jetstream: {
 			max_mem_store: _MAXMEM_
 			max_file_store: _MAXFILE_
-			store_dir: '%s',
+			store_dir: '%s'
 		}
+
+		server_tags: [
+			_TAG_
+		]
+
 		leaf {
 			listen: 127.0.0.1:-1
 		}
@@ -6831,13 +6836,16 @@ func TestJetStreamSystemLimitsPlacement(t *testing.T) {
 		switch serverName {
 		case "S-1":
 			conf = strings.Replace(conf, "_MAXMEM_", fmt.Sprint(smallSystemLimit), 1)
-			return strings.Replace(conf, "_MAXFILE_", fmt.Sprint(smallSystemLimit), 1)
+			conf = strings.Replace(conf, "_MAXFILE_", fmt.Sprint(smallSystemLimit), 1)
+			return strings.Replace(conf, "_TAG_", "small", 1)
 		case "S-2":
 			conf = strings.Replace(conf, "_MAXMEM_", fmt.Sprint(mediumSystemLimit), 1)
-			return strings.Replace(conf, "_MAXFILE_", fmt.Sprint(mediumSystemLimit), 1)
+			conf = strings.Replace(conf, "_MAXFILE_", fmt.Sprint(mediumSystemLimit), 1)
+			return strings.Replace(conf, "_TAG_", "medium", 1)
 		case "S-3":
 			conf = strings.Replace(conf, "_MAXMEM_", fmt.Sprint(largeSystemLimit), 1)
-			return strings.Replace(conf, "_MAXFILE_", fmt.Sprint(largeSystemLimit), 1)
+			conf = strings.Replace(conf, "_MAXFILE_", fmt.Sprint(largeSystemLimit), 1)
+			return strings.Replace(conf, "_TAG_", "large", 1)
 		default:
 			return conf
 		}
@@ -6926,19 +6934,18 @@ func TestJetStreamSystemLimitsPlacement(t *testing.T) {
 			serverTag:      "medium",
 			wantErr:        true,
 		},
-		// TODO: Debug and re-enable.
-		//{
-		//	name:           "file create large stream on large server",
-		//	storage:        nats.FileStorage,
-		//	createMaxBytes: largeSystemLimit,
-		//	serverTag:      "large",
-		//},
-		//{
-		//	name:           "memory create large stream on large server",
-		//	storage:        nats.MemoryStorage,
-		//	createMaxBytes: largeSystemLimit,
-		//	serverTag:      "large",
-		//},
+		{
+			name:           "file create large stream on large server",
+			storage:        nats.FileStorage,
+			createMaxBytes: largeSystemLimit,
+			serverTag:      "large",
+		},
+		{
+			name:           "memory create large stream on large server",
+			storage:        nats.MemoryStorage,
+			createMaxBytes: largeSystemLimit,
+			serverTag:      "large",
+		},
 	}
 
 	for i := 0; i < len(cases) && !t.Failed(); i++ {
@@ -7007,6 +7014,9 @@ func TestJetStreamSuperClusterSystemLimitsPlacement(t *testing.T) {
 			max_file_store: _MAXFILE_
 			store_dir: '%s',
 		}
+		server_tags: [
+			_TAG_
+		]
 		leaf {
 			listen: 127.0.0.1:-1
 		}
@@ -7022,10 +7032,12 @@ func TestJetStreamSuperClusterSystemLimitsPlacement(t *testing.T) {
 		switch {
 		case strings.HasPrefix(serverName, "C1"):
 			conf = strings.Replace(conf, "_MAXMEM_", fmt.Sprint(largeSystemLimit), 1)
-			return strings.Replace(conf, "_MAXFILE_", fmt.Sprint(largeSystemLimit), 1)
+			conf = strings.Replace(conf, "_MAXFILE_", fmt.Sprint(largeSystemLimit), 1)
+			return strings.Replace(conf, "_TAG_", serverName, 1)
 		case strings.HasPrefix(serverName, "C2"):
 			conf = strings.Replace(conf, "_MAXMEM_", fmt.Sprint(smallSystemLimit), 1)
-			return strings.Replace(conf, "_MAXFILE_", fmt.Sprint(smallSystemLimit), 1)
+			conf = strings.Replace(conf, "_MAXFILE_", fmt.Sprint(smallSystemLimit), 1)
+			return strings.Replace(conf, "_TAG_", serverName, 1)
 		default:
 			return conf
 		}
@@ -7102,81 +7114,80 @@ func TestJetStreamSuperClusterSystemLimitsPlacement(t *testing.T) {
 			name:           "file create large stream on small cluster b0",
 			storage:        nats.FileStorage,
 			createMaxBytes: smallSystemLimit + 1,
-			serverTag:      "b0",
+			serverTag:      "C2-S1",
 			wantErr:        true,
 		},
 		{
 			name:           "memory create large stream on small cluster b0",
 			storage:        nats.MemoryStorage,
 			createMaxBytes: smallSystemLimit + 1,
-			serverTag:      "b0",
+			serverTag:      "C2-S1",
 			wantErr:        true,
 		},
 		{
 			name:           "file create large stream on small cluster b1",
 			storage:        nats.FileStorage,
 			createMaxBytes: smallSystemLimit + 1,
-			serverTag:      "b1",
+			serverTag:      "C2-S2",
 			wantErr:        true,
 		},
 		{
 			name:           "memory create large stream on small cluster b1",
 			storage:        nats.MemoryStorage,
 			createMaxBytes: smallSystemLimit + 1,
-			serverTag:      "b1",
+			serverTag:      "C2-S2",
 			wantErr:        true,
 		},
 		{
 			name:           "file create large stream on small cluster b2",
 			storage:        nats.FileStorage,
 			createMaxBytes: smallSystemLimit + 1,
-			serverTag:      "b2",
+			serverTag:      "C2-S3",
 			wantErr:        true,
 		},
 		{
 			name:           "memory create large stream on small cluster b2",
 			storage:        nats.MemoryStorage,
 			createMaxBytes: smallSystemLimit + 1,
-			serverTag:      "b2",
+			serverTag:      "C2-S3",
 			wantErr:        true,
 		},
-		// TODO: The following tests are flaky. Re-enable after debugging.
-		//{
-		//	name:           "file create large stream on large cluster a0",
-		//	storage:        nats.FileStorage,
-		//	createMaxBytes: smallSystemLimit + 1,
-		//	serverTag:      "a0",
-		//},
-		//{
-		//	name:           "memory create large stream on large cluster a0",
-		//	storage:        nats.MemoryStorage,
-		//	createMaxBytes: smallSystemLimit + 1,
-		//	serverTag:      "a0",
-		//},
-		//{
-		//	name:           "file create large stream on large cluster a1",
-		//	storage:        nats.FileStorage,
-		//	createMaxBytes: smallSystemLimit + 1,
-		//	serverTag:      "a1",
-		//},
-		//{
-		//	name:           "memory create large stream on large cluster a1",
-		//	storage:        nats.MemoryStorage,
-		//	createMaxBytes: smallSystemLimit + 1,
-		//	serverTag:      "a1",
-		//},
-		//{
-		//	name:           "file create large stream on large cluster a2",
-		//	storage:        nats.FileStorage,
-		//	createMaxBytes: smallSystemLimit + 1,
-		//	serverTag:      "a2",
-		//},
-		//{
-		//	name:           "memory create large stream on large cluster a2",
-		//	storage:        nats.MemoryStorage,
-		//	createMaxBytes: smallSystemLimit + 1,
-		//	serverTag:      "a2",
-		//},
+		{
+			name:           "file create large stream on large cluster a0",
+			storage:        nats.FileStorage,
+			createMaxBytes: smallSystemLimit + 1,
+			serverTag:      "C1-S1",
+		},
+		{
+			name:           "memory create large stream on large cluster a0",
+			storage:        nats.MemoryStorage,
+			createMaxBytes: smallSystemLimit + 1,
+			serverTag:      "C1-S1",
+		},
+		{
+			name:           "file create large stream on large cluster a1",
+			storage:        nats.FileStorage,
+			createMaxBytes: smallSystemLimit + 1,
+			serverTag:      "C1-S2",
+		},
+		{
+			name:           "memory create large stream on large cluster a1",
+			storage:        nats.MemoryStorage,
+			createMaxBytes: smallSystemLimit + 1,
+			serverTag:      "C1-S2",
+		},
+		{
+			name:           "file create large stream on large cluster a2",
+			storage:        nats.FileStorage,
+			createMaxBytes: smallSystemLimit + 1,
+			serverTag:      "C1-S3",
+		},
+		{
+			name:           "memory create large stream on large cluster a2",
+			storage:        nats.MemoryStorage,
+			createMaxBytes: smallSystemLimit + 1,
+			serverTag:      "C1-S3",
+		},
 	}
 	for i := 0; i < len(cases) && !t.Failed(); i++ {
 		c := cases[i]
