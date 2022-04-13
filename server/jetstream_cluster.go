@@ -5299,14 +5299,12 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		// Inherit cluster from stream.
 		rg.Cluster = sa.Group.Cluster
 
-		check := true
 		// We need to set the ephemeral here before replicating.
 		if !isDurableConsumer(cfg) {
 			// We chose to have ephemerals be R=1 unless stream is interest or workqueue.
 			if sa.Config.Retention == LimitsPolicy {
 				rg.Peers = []string{rg.Preferred}
 				rg.Name = groupNameForConsumer(rg.Peers, rg.Storage)
-				check = false
 			}
 			// Make sure name is unique.
 			for {
@@ -5319,7 +5317,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 				break
 			}
 		}
-		if check {
+		if len(rg.Peers) > 1 {
 			if maxHaAssets := s.getOpts().JetStreamLimits.MaxHAAssets; maxHaAssets != 0 {
 				for _, peer := range rg.Peers {
 					if ni, ok := s.nodeToInfo.Load(peer); ok {
