@@ -6273,7 +6273,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	s := mset.srv
 	defer s.grWG.Done()
 
-	const maxOutBytes = int64(defaultMediumBlockSize) // 2MB for now.
+	const maxOutBytes = int64(32 * 1024 * 1024) // 32MB for now, these are all internal, from server to server
 	outb := int64(0)
 
 	// On abnormal exit make sure to update global total.
