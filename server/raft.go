@@ -1631,10 +1631,14 @@ func (n *raft) runAsFollower() {
 		case <-elect.C:
 			// If we are out of resources we just want to stay in this state for the moment.
 			if n.outOfResources() {
+				n.Lock()
 				n.resetElectionTimeout()
+				n.Unlock()
 				n.debug("Not switching to candidate, no resources")
 			} else if n.isObserver() {
+				n.Lock()
 				n.resetElect(48 * time.Hour)
+				n.Unlock()
 				n.debug("Not switching to candidate, observer only")
 			} else if n.isCatchingUp() {
 				n.debug("Not switching to candidate, catching up")
@@ -2534,7 +2538,9 @@ func (n *raft) handleAppendEntry(sub *subscription, c *client, _ *Account, subje
 	} else {
 		n.warn("AppendEntry failed to be placed on internal channel: corrupt entry")
 	}
+	n.Lock()
 	n.resetElectionTimeout()
+	n.Unlock()
 }
 
 // Lock should be held.
