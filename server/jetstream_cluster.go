@@ -4083,10 +4083,6 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		if ni.cluster != cluster || ni.offline || ni.cfg == nil || ni.stats == nil {
 			continue
 		}
-		// HAAssets contain _meta_ which we want to ignore
-		if maxHaAssets > 0 && ni.stats != nil && ni.stats.HAAssets > maxHaAssets {
-			continue
-		}
 
 		// If existing also skip, we will add back in to front of the list when done.
 		if ep != nil {
@@ -4148,6 +4144,13 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 			if !isUnique {
 				continue
 			}
+		}
+
+		// HAAssets contain _meta_ which we want to ignore
+		if maxHaAssets > 0 && ni.stats != nil && ni.stats.HAAssets > maxHaAssets {
+			s.Warnf("%s@%s (ha asset count: %d) exceeds max ha asset limit of %d for stream placement",
+				ni.name, ni.cluster, ni.stats.HAAssets, maxHaAssets)
+			continue
 		}
 		// Add to our list of potential nodes.
 		nodes = append(nodes, wn{p.ID, available})
@@ -5319,9 +5322,13 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			if maxHaAssets := s.getOpts().JetStreamLimits.MaxHAAssets; maxHaAssets != 0 {
 				for _, peer := range rg.Peers {
 					if ni, ok := s.nodeToInfo.Load(peer); ok {
-						if stats := ni.(nodeInfo).stats; stats != nil && stats.HAAssets > maxHaAssets {
+						ni := ni.(nodeInfo)
+						if stats := ni.stats; stats != nil && stats.HAAssets > maxHaAssets {
 							resp.Error = NewJSInsufficientResourcesError()
 							s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+							s.Warnf("%s@%s (ha asset count: %d) exceeds max ha asset limit of %d"+
+								" for (durable) consumer %s placement on stream %s",
+								ni.name, ni.cluster, ni.stats.HAAssets, maxHaAssets, oname, stream)
 							return
 						}
 					}
