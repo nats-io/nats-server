@@ -4070,6 +4070,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		}
 	}
 	var uniqueTags = make(map[string]struct{})
+	maxHaAssets := s.getOpts().JetStreamLimits.MaxHAAssets
 
 	for _, p := range peers {
 		si, ok := s.nodeToInfo.Load(p.ID)
@@ -4080,6 +4081,10 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		// Only select from the designated named cluster.
 		// If we know its offline or we do not have config or stats don't consider.
 		if ni.cluster != cluster || ni.offline || ni.cfg == nil || ni.stats == nil {
+			continue
+		}
+		// HAAssets contain _meta_ which we want to ignore
+		if maxHaAssets > 0 && ni.stats != nil && ni.stats.HAAssets > maxHaAssets {
 			continue
 		}
 
@@ -4426,7 +4431,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 
 	// Check for a move update.
 	// TODO(dlc) - Should add a resolve from Tags to cluster and check that vs reflect.
-	isMoveRequest := !reflect.DeepEqual(osa.Config.Placement, newCfg.Placement)
+	isMoveRequest := newCfg.Placement != nil && !reflect.DeepEqual(osa.Config.Placement, newCfg.Placement)
 
 	// Check for replica changes.
 	isReplicaChange := newCfg.Replicas != osa.Config.Replicas
@@ -5290,12 +5295,14 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		// Inherit cluster from stream.
 		rg.Cluster = sa.Group.Cluster
 
+		check := true
 		// We need to set the ephemeral here before replicating.
 		if !isDurableConsumer(cfg) {
 			// We chose to have ephemerals be R=1 unless stream is interest or workqueue.
 			if sa.Config.Retention == LimitsPolicy {
 				rg.Peers = []string{rg.Preferred}
 				rg.Name = groupNameForConsumer(rg.Peers, rg.Storage)
+				check = false
 			}
 			// Make sure name is unique.
 			for {
@@ -5306,6 +5313,19 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 					}
 				}
 				break
+			}
+		}
+		if check {
+			if maxHaAssets := s.getOpts().JetStreamLimits.MaxHAAssets; maxHaAssets != 0 {
+				for _, peer := range rg.Peers {
+					if ni, ok := s.nodeToInfo.Load(peer); ok {
+						if stats := ni.(nodeInfo).stats; stats != nil && stats.HAAssets > maxHaAssets {
+							resp.Error = NewJSInsufficientResourcesError()
+							s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+							return
+						}
+					}
+				}
 			}
 		}
 		ca = &consumerAssignment{
