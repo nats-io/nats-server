@@ -3478,6 +3478,16 @@ func TestJetStreamPublishExpect(t *testing.T) {
 		t.Fatalf("Expected an error, got %q", resp.Data)
 	}
 
+	// Or if we expect that there are no messages by setting "0" as the expected last seq
+	m.Header.Set(JSExpectedLastSeq, "0")
+	resp, err = nc.RequestMsg(m, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if pa := getPubAckResponse(resp.Data); pa == nil || pa.Error == nil {
+		t.Fatalf("Expected an error, got %q", resp.Data)
+	}
+
 	// Now send a message with a message ID and make sure we can match that.
 	m = nats.NewMsg("foo.bar")
 	m.Data = []byte("HELLO")
