@@ -645,6 +645,16 @@ func TestJetStreamConsumerMaxDeliveries(t *testing.T) {
 	}
 }
 
+func TestJetStreamNextReqFromMsg(t *testing.T) {
+	bef := time.Now()
+	expires, _, _, _, _, err := nextReqFromMsg([]byte(`{"expires":5000000000}`)) // nanoseconds
+	require_NoError(t, err)
+	now := time.Now()
+	if expires.Before(bef.Add(5*time.Second)) || expires.After(now.Add(5*time.Second)) {
+		t.Fatal("Expires out of expected range")
+	}
+}
+
 func TestJetStreamPullConsumerDelayedFirstPullWithReplayOriginal(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -7241,7 +7251,7 @@ func TestJetStreamSuperClusterSystemLimitsPlacement(t *testing.T) {
 	}
 }
 
-func TestStreamLimitUpdate(t *testing.T) {
+func TestJetStreamStreamLimitUpdate(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	if config := s.JetStreamConfig(); config != nil {
 		defer removeDir(t, config.StoreDir)
@@ -15699,7 +15709,7 @@ func TestJetStreamPullConsumerHeartBeats(t *testing.T) {
 	}
 }
 
-func TestStorageReservedBytes(t *testing.T) {
+func TestJetStreamStorageReservedBytes(t *testing.T) {
 	const systemLimit = 1024
 	opts := DefaultTestOptions
 	opts.Port = -1
