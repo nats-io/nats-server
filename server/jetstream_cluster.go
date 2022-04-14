@@ -4070,6 +4070,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		}
 	}
 	var uniqueTags = make(map[string]struct{})
+	maxHaAssets := s.getOpts().JetStreamLimits.MaxHAAssets
 
 	for _, p := range peers {
 		si, ok := s.nodeToInfo.Load(p.ID)
@@ -4125,6 +4126,14 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 
 		// Otherwise check if we have enough room if maxBytes set.
 		if maxBytes > 0 && maxBytes > available {
+			s.Warnf("%s@%s (Max Bytes: %d) exceeds available %s storage of %d bytes",
+				ni.name, ni.cluster, maxBytes, cfg.Storage.String(), available)
+			continue
+		}
+		// HAAssets contain _meta_ which we want to ignore
+		if maxHaAssets > 0 && ni.stats != nil && ni.stats.HAAssets > maxHaAssets {
+			s.Warnf("%s@%s (HA Asset Count: %d) exceeds max ha asset limit of %d for stream placement",
+				ni.name, ni.cluster, ni.stats.HAAssets, maxHaAssets)
 			continue
 		}
 
@@ -4426,7 +4435,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 
 	// Check for a move update.
 	// TODO(dlc) - Should add a resolve from Tags to cluster and check that vs reflect.
-	isMoveRequest := !reflect.DeepEqual(osa.Config.Placement, newCfg.Placement)
+	isMoveRequest := newCfg.Placement != nil && !reflect.DeepEqual(osa.Config.Placement, newCfg.Placement)
 
 	// Check for replica changes.
 	isReplicaChange := newCfg.Replicas != osa.Config.Replicas
@@ -5306,6 +5315,23 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 					}
 				}
 				break
+			}
+		}
+		if len(rg.Peers) > 1 {
+			if maxHaAssets := s.getOpts().JetStreamLimits.MaxHAAssets; maxHaAssets != 0 {
+				for _, peer := range rg.Peers {
+					if ni, ok := s.nodeToInfo.Load(peer); ok {
+						ni := ni.(nodeInfo)
+						if stats := ni.stats; stats != nil && stats.HAAssets > maxHaAssets {
+							resp.Error = NewJSInsufficientResourcesError()
+							s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+							s.Warnf("%s@%s (HA Asset Count: %d) exceeds max ha asset limit of %d"+
+								" for (durable) consumer %s placement on stream %s",
+								ni.name, ni.cluster, ni.stats.HAAssets, maxHaAssets, oname, stream)
+							return
+						}
+					}
+				}
 			}
 		}
 		ca = &consumerAssignment{

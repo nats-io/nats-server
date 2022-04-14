@@ -12358,6 +12358,108 @@ func TestJetStreamImportConsumerStreamSubjectRemap(t *testing.T) {
 	})
 }
 
+func TestJetStreamMaxHaAssets(t *testing.T) {
+	sc := createJetStreamSuperClusterWithTemplateAndModHook(t, `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s', limits: {max_ha_assets: 2}}
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+	`, 3, 2,
+		func(serverName, clusterName, storeDir, conf string) string {
+			return conf
+		})
+	defer sc.shutdown()
+
+	// speed up statsz reporting
+	for _, c := range sc.clusters {
+		for _, s := range c.servers {
+			s.mu.Lock()
+			s.sys.statsz = 10 * time.Millisecond
+			s.sys.cstatsz = s.sys.statsz
+			s.sys.stmr.Reset(s.sys.statsz)
+			s.mu.Unlock()
+		}
+	}
+
+	nc, js := jsClientConnect(t, sc.randomServer())
+	defer nc.Close()
+
+	ncSys := natsConnect(t, sc.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	statszSub, err := ncSys.SubscribeSync(fmt.Sprintf(serverStatsSubj, "*"))
+	require_NoError(t, err)
+	require_NoError(t, ncSys.Flush())
+
+	waitStatsz := func(peers, haassets int) {
+		t.Helper()
+		for peersWithExactHaAssets := 0; peersWithExactHaAssets < peers; {
+			m, err := statszSub.NextMsg(time.Second)
+			require_NoError(t, err)
+			var statsz ServerStatsMsg
+			err = json.Unmarshal(m.Data, &statsz)
+			require_NoError(t, err)
+			if statsz.Stats.JetStream == nil {
+				continue
+			}
+			if haassets == statsz.Stats.JetStream.Stats.HAAssets {
+				peersWithExactHaAssets++
+			}
+		}
+	}
+	waitStatsz(6, 1) // counts _meta_
+	_, err = js.AddStream(&nats.StreamConfig{Name: "S0", Replicas: 1, Placement: &nats.Placement{Cluster: "C1"}})
+	require_NoError(t, err)
+	waitStatsz(6, 1)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "S1", Replicas: 3, Placement: &nats.Placement{Cluster: "C1"}})
+	require_NoError(t, err)
+	waitStatsz(3, 2)
+	waitStatsz(3, 1)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "S2", Replicas: 3, Placement: &nats.Placement{Cluster: "C1"}})
+	require_NoError(t, err)
+	waitStatsz(3, 3)
+	waitStatsz(3, 1)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "S3", Replicas: 3, Placement: &nats.Placement{Cluster: "C1"}})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "insufficient resources")
+	require_NoError(t, js.DeleteStream("S1"))
+	waitStatsz(3, 2)
+	waitStatsz(3, 1)
+	_, err = js.AddConsumer("S2", &nats.ConsumerConfig{Durable: "DUR1", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	waitStatsz(3, 3)
+	waitStatsz(3, 1)
+	_, err = js.AddConsumer("S2", &nats.ConsumerConfig{Durable: "DUR2", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "insufficient resources")
+	_, err = js.AddConsumer("S2", &nats.ConsumerConfig{AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	waitStatsz(3, 3)
+	waitStatsz(3, 1)
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "S2", Replicas: 3, Description: "foobar"})
+	require_NoError(t, err)
+	waitStatsz(3, 3)
+	waitStatsz(3, 1)
+	si, err := js.AddStream(&nats.StreamConfig{Name: "S4", Replicas: 3})
+	require_NoError(t, err)
+	require_Equal(t, si.Cluster.Name, "C2")
+	waitStatsz(3, 3)
+	waitStatsz(3, 2)
+	si, err = js.AddStream(&nats.StreamConfig{Name: "S5", Replicas: 3})
+	require_NoError(t, err)
+	require_Equal(t, si.Cluster.Name, "C2")
+	waitStatsz(6, 3)
+	_, err = js.AddConsumer("S4", &nats.ConsumerConfig{Durable: "DUR2", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "insufficient resources")
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "S2", Replicas: 3, Placement: &nats.Placement{Cluster: "C2"}})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "insufficient resources")
+}
+
 func TestJetStreamClusterStreamAlternates(t *testing.T) {
 	sc := createJetStreamTaggedSuperCluster(t)
 	defer sc.shutdown()
