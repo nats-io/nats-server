@@ -1544,9 +1544,7 @@ func (n *raft) resetElectionTimeout() {
 }
 
 func (n *raft) resetElectionTimeoutWithLock() {
-	n.Lock()
-	n.resetElect(randElectionTimeout())
-	n.Unlock()
+	n.resetElectWithLock(randElectionTimeout())
 }
 
 // Lock should be held.
@@ -1591,7 +1589,7 @@ func (n *raft) run() {
 			select {
 			case <-s.quitCh:
 				return
-			case <-time.After(50 * time.Millisecond):
+			case <-time.After(100 * time.Millisecond):
 				s.RateLimitWarnf("Waiting for routing to established...")
 			}
 		} else {
