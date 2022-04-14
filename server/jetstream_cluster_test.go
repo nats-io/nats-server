@@ -4763,16 +4763,6 @@ func TestJetStreamClusterSuperClusterCrossClusterConsumerInterest(t *testing.T) 
 	checkSubsPending(t, sub, 2)
 }
 
-func TestJetStreamNextReqFromMsg(t *testing.T) {
-	bef := time.Now()
-	expires, _, _, _, _, err := nextReqFromMsg([]byte(`{"expires":5000000000}`)) // nanoseconds
-	require_NoError(t, err)
-	now := time.Now()
-	if expires.Before(bef.Add(5*time.Second)) || expires.After(now.Add(5*time.Second)) {
-		t.Fatal("Expires out of expected range")
-	}
-}
-
 func TestJetStreamClusterSuperClusterPeerReassign(t *testing.T) {
 	sc := createJetStreamSuperCluster(t, 3, 3)
 	defer sc.shutdown()
@@ -5373,7 +5363,7 @@ func TestJetStreamCrossAccountMirrorsAndSources(t *testing.T) {
 
 }
 
-func TestJetStreamFailMirrorsAndSources(t *testing.T) {
+func TestJetStreamClusterFailMirrorsAndSources(t *testing.T) {
 	c := createJetStreamClusterWithTemplate(t, jsClusterMirrorSourceImportsTempl, "C1", 3)
 	defer c.shutdown()
 
@@ -8211,7 +8201,7 @@ func TestJetStreamClusterSourceAndMirrorConsumersLeaderChange(t *testing.T) {
 	})
 }
 
-func TestPurgeBySequence(t *testing.T) {
+func TestJetStreamClusterPurgeBySequence(t *testing.T) {
 	for _, st := range []StorageType{FileStorage, MemoryStorage} {
 		t.Run(st.String(), func(t *testing.T) {
 
@@ -8364,7 +8354,7 @@ func TestJetStreamClusterMaxConsumersMultipleConcurrentRequests(t *testing.T) {
 	}
 }
 
-func TestJetStreamPanicDecodingConsumerState(t *testing.T) {
+func TestJetStreamClusterPanicDecodingConsumerState(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "JSC", 3)
 	defer c.shutdown()
 
@@ -8449,7 +8439,7 @@ func TestJetStreamPanicDecodingConsumerState(t *testing.T) {
 }
 
 // Had a report of leaked subs with pull subscribers.
-func TestJetStreamPullConsumerLeakedSubs(t *testing.T) {
+func TestJetStreamClusterPullConsumerLeakedSubs(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "JSC", 3)
 	defer c.shutdown()
 
@@ -8510,7 +8500,7 @@ func TestJetStreamPullConsumerLeakedSubs(t *testing.T) {
 	}
 }
 
-func TestJetStreamPushConsumerQueueGroup(t *testing.T) {
+func TestJetStreamClusterPushConsumerQueueGroup(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "JSC", 3)
 	defer c.shutdown()
 
@@ -8754,7 +8744,7 @@ func TestJetStreamRaceOnRAFTCreate(t *testing.T) {
 	wg.Wait()
 }
 
-func TestJetStreamDeadlockOnVarz(t *testing.T) {
+func TestJetStreamClusterDeadlockOnVarz(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -9430,7 +9420,7 @@ func TestJetStreamRollupSubjectAndWatchers(t *testing.T) {
 	expectUpdate("age", "50", 8)
 }
 
-func TestJetStreamAppendOnly(t *testing.T) {
+func TestJetStreamClusterAppendOnly(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "JSC", 3)
 	defer c.shutdown()
 
@@ -10674,7 +10664,7 @@ func TestJetStreamConsumerUpgrade(t *testing.T) {
 	t.Run("Clustered", func(t *testing.T) { testUpdate(t, c.randomServer()) })
 }
 
-func TestJetStreamAddConsumerWithInfo(t *testing.T) {
+func TestJetStreamClusterAddConsumerWithInfo(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	if config := s.JetStreamConfig(); config != nil {
 		defer removeDir(t, config.StoreDir)
@@ -11495,7 +11485,7 @@ func TestJetStreamConsumerDeliverNewBug(t *testing.T) {
 
 // If the config files have duplicate routes this can have the metagroup estimate a size for the system
 // which prevents reaching quorum and electing a meta-leader.
-func TestJetStreamDuplicateRoutesDisruptJetStreamMetaGroup(t *testing.T) {
+func TestJetStreamClusterDuplicateRoutesDisruptJetStreamMetaGroup(t *testing.T) {
 	tmpl := `
 	listen: 127.0.0.1:-1
 	server_name: %s
@@ -11534,7 +11524,7 @@ func TestJetStreamDuplicateRoutesDisruptJetStreamMetaGroup(t *testing.T) {
 	c.waitOnClusterReady()
 }
 
-func TestJetStreamDuplicateMsgIdsOnCatchupAndLeaderTakeover(t *testing.T) {
+func TestJetStreamClusterDuplicateMsgIdsOnCatchupAndLeaderTakeover(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "JSC", 3)
 	defer c.shutdown()
 
@@ -12158,6 +12148,17 @@ func TestJetStreamClusterMemoryConsumerInterestRetention(t *testing.T) {
 		m.AckSync()
 	}
 
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		si, err := js.StreamInfo("test")
+		if err != nil {
+			return err
+		}
+		if n := si.State.Msgs; n != 900 {
+			return fmt.Errorf("Waiting for msgs count to be 900, got %v", n)
+		}
+		return nil
+	})
+
 	si, err := js.StreamInfo("test")
 	require_NoError(t, err)
 
@@ -12189,7 +12190,7 @@ func TestJetStreamClusterMemoryConsumerInterestRetention(t *testing.T) {
 	}
 }
 
-func TestJetStreamImportConsumerStreamSubjectRemap(t *testing.T) {
+func TestJetStreamClusterImportConsumerStreamSubjectRemap(t *testing.T) {
 	template := `
 	listen: 127.0.0.1:-1
 	server_name: %s

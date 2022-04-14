@@ -651,9 +651,8 @@ const defaultMaxJSApiOut = int64(4096)
 var maxJSApiOut = defaultMaxJSApiOut
 
 func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, subject, reply string, rmsg []byte) {
-	js.mu.RLock()
+	// No lock needed, those are immutable.
 	s, rr := js.srv, js.apiSubs.Match(subject)
-	js.mu.RUnlock()
 
 	hdr, _ := c.msgParts(rmsg)
 	if len(getHeader(ClientInfoHdr, hdr)) == 0 {

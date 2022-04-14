@@ -3557,6 +3557,7 @@ func TestNoRaceJetStreamClusterStreamReset(t *testing.T) {
 	minElectionTimeout = 250 * time.Millisecond
 	maxElectionTimeout = time.Second
 	hbInterval = 50 * time.Millisecond
+	defer setDefaultRaftTimeouts()
 
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()

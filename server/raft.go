@@ -236,13 +236,28 @@ const (
 )
 
 var (
+	minElectionTimeout time.Duration
+	maxElectionTimeout time.Duration
+	minCampaignTimeout time.Duration
+	maxCampaignTimeout time.Duration
+	hbInterval         time.Duration
+	lostQuorumInterval time.Duration
+)
+
+func init() {
+	setDefaultRaftTimeouts()
+}
+
+// This is called on init, but also by tests that want to tweak the settings
+// and then call this as a defer to restore the defaults.
+func setDefaultRaftTimeouts() {
 	minElectionTimeout = minElectionTimeoutDefault
 	maxElectionTimeout = maxElectionTimeoutDefault
 	minCampaignTimeout = minCampaignTimeoutDefault
 	maxCampaignTimeout = maxCampaignTimeoutDefault
-	hbInterval         = hbIntervalDefault
+	hbInterval = hbIntervalDefault
 	lostQuorumInterval = lostQuorumIntervalDefault
-)
+}
 
 type RaftConfig struct {
 	Name     string
@@ -1528,6 +1543,12 @@ func (n *raft) resetElectionTimeout() {
 	n.resetElect(randElectionTimeout())
 }
 
+func (n *raft) resetElectionTimeoutWithLock() {
+	n.Lock()
+	n.resetElect(randElectionTimeout())
+	n.Unlock()
+}
+
 // Lock should be held.
 func (n *raft) resetElect(et time.Duration) {
 	if n.elect == nil {
@@ -1543,9 +1564,40 @@ func (n *raft) resetElect(et time.Duration) {
 	}
 }
 
+func (n *raft) resetElectWithLock(et time.Duration) {
+	n.Lock()
+	n.resetElect(et)
+	n.Unlock()
+}
+
 func (n *raft) run() {
 	s := n.s
 	defer s.grWG.Done()
+
+	// We want to wait for some routing to be enabled, so we will wait for
+	// at least a route, leaf or gateway connection to be established before
+	// starting the run loop.
+	gw := s.gateway
+	for {
+		s.mu.Lock()
+		ready := len(s.routes)+len(s.leafs) > 0
+		if !ready && gw.enabled {
+			gw.RLock()
+			ready = len(gw.out)+len(gw.in) > 0
+			gw.RUnlock()
+		}
+		s.mu.Unlock()
+		if !ready {
+			select {
+			case <-s.quitCh:
+				return
+			case <-time.After(50 * time.Millisecond):
+				s.RateLimitWarnf("Waiting for routing to established...")
+			}
+		} else {
+			break
+		}
+	}
 
 	for s.isRunning() {
 		switch n.State() {
@@ -1639,14 +1691,10 @@ func (n *raft) runAsFollower() {
 		case <-elect.C:
 			// If we are out of resources we just want to stay in this state for the moment.
 			if n.outOfResources() {
-				n.Lock()
-				n.resetElectionTimeout()
-				n.Unlock()
+				n.resetElectionTimeoutWithLock()
 				n.debug("Not switching to candidate, no resources")
 			} else if n.isObserver() {
-				n.Lock()
-				n.resetElect(48 * time.Hour)
-				n.Unlock()
+				n.resetElectWithLock(48 * time.Hour)
 				n.debug("Not switching to candidate, observer only")
 			} else if n.isCatchingUp() {
 				n.debug("Not switching to candidate, catching up")
