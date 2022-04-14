@@ -1696,6 +1696,10 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// Process our leader change.
 			js.processStreamLeaderChange(mset, isLeader)
 
+			// We may receive a leader change after the stream assignment which would cancel us
+			// monitoring for this closely. So re-assess our state here as well.
+			migrating, peerGroup = mset.isMigrating()
+
 			// Check for migrations here. We set the state on the stream assignment update below.
 			if isLeader && migrating {
 				if peerGroup == oldPeerGroup {

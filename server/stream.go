@@ -407,7 +407,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		consumers: make(map[string]*consumer),
 		msgs:      s.newIPQueue(qpfx + "messages"), // of *inMsg
 		qch:       make(chan struct{}),
-		uch:       make(chan struct{}, 1),
+		uch:       make(chan struct{}, 4),
 	}
 
 	// For no-ack consumers when we are interest retention.

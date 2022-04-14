@@ -1250,12 +1250,20 @@ func (n *raft) StepDown(preferred ...string) error {
 		n.debug("Can not transfer to preferred peer %q", preferred[0])
 	}
 
+	// If we have a new leader selected, let them start the vote process but do not actively stepdown.
 	if maybeLeader != noLeader {
-		n.debug("Stepping down, selected %q for new leader", maybeLeader)
+		n.debug("Selected %q for new leader", maybeLeader)
 		n.sendAppendEntry([]*Entry{{EntryLeaderTransfer, []byte(maybeLeader)}})
+		// If we chose also stepdown. If we were told let them take over.
+		if len(preferred) == 0 {
+			n.debug("Stepping down")
+			stepdown.push(noLeader)
+		}
+	} else {
+		// Force us to stepdown here.
+		n.debug("Stepping down")
+		stepdown.push(noLeader)
 	}
-	// Force us to stepdown here.
-	stepdown.push(noLeader)
 	return nil
 }
 
@@ -2539,7 +2547,10 @@ func (n *raft) handleAppendEntry(sub *subscription, c *client, _ *Account, subje
 		n.warn("AppendEntry failed to be placed on internal channel: corrupt entry")
 	}
 	n.Lock()
-	n.resetElectionTimeout()
+	// Don't reset here if we have been asked to assume leader position.
+	if !n.lxfer {
+		n.resetElectionTimeout()
+	}
 	n.Unlock()
 }
 
