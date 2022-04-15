@@ -3671,9 +3671,14 @@ func TestJetStreamClusterPeerOffline(t *testing.T) {
 
 func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	// Make this shorter for the test.
-	old := lostQuorumInterval
+	oldInterval := lostQuorumInterval
 	lostQuorumInterval = hbIntervalDefault * 3
-	defer func() { lostQuorumInterval = old }()
+	oldCheck := lostQuorumCheck
+	lostQuorumCheck = hbIntervalDefault * 2
+	defer func() {
+		lostQuorumInterval = oldInterval
+		lostQuorumCheck = oldCheck
+	}()
 
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -12081,7 +12086,7 @@ func TestJetStreamClusterMovingStreamsWithMirror(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 30*time.Second, 100*time.Millisecond, func() error {
 		si, err := js.StreamInfo("SOURCE")
 		if err != nil {
 			return err
@@ -12109,8 +12114,25 @@ func TestJetStreamClusterMovingStreamsWithMirror(t *testing.T) {
 	<-exited
 
 	if nnr := atomic.LoadUint64(&numNoResp); nnr > 0 {
-		t.Fatalf("Expected no failed message publishes, got %d", nnr)
+		if nnr > 5 {
+			t.Fatalf("Expected no or very few failed message publishes, got %d", nnr)
+		} else {
+			t.Logf("Got a few failed publishes: %d", nnr)
+		}
 	}
+
+	checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("SOURCE")
+		require_NoError(t, err)
+		mi, err := js.StreamInfo("MIRROR")
+		require_NoError(t, err)
+
+		if si.State != mi.State {
+			return fmt.Errorf("Expected mirror to be the same, got %+v vs %+v", mi.State, si.State)
+		}
+		return nil
+	})
+
 }
 
 func TestJetStreamClusterMemoryConsumerInterestRetention(t *testing.T) {
