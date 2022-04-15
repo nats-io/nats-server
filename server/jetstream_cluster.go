@@ -2528,11 +2528,11 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			js.mu.Unlock()
 		}
 
-		mset.setStreamAssignment(sa)
 		if err = mset.update(cfg); err != nil {
 			s.Warnf("JetStream cluster error updating stream %q for account %q: %v", cfg.Name, acc.Name, err)
-			mset.setStreamAssignment(osa)
 		}
+		// Set the new stream assignment.
+		mset.setStreamAssignment(sa)
 
 		// Make sure we are the leader now that we are R1.
 		if needsSetLeader {

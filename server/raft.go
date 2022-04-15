@@ -143,6 +143,7 @@ type raft struct {
 	elect    *time.Timer
 	active   time.Time
 	llqrt    time.Time
+	lsut     time.Time
 	term     uint64
 	pterm    uint64
 	pindex   uint64
@@ -227,12 +228,14 @@ type lps struct {
 }
 
 const (
-	minElectionTimeoutDefault = 2 * time.Second
-	maxElectionTimeoutDefault = 5 * time.Second
-	minCampaignTimeoutDefault = 100 * time.Millisecond
-	maxCampaignTimeoutDefault = 8 * minCampaignTimeoutDefault
-	hbIntervalDefault         = 500 * time.Millisecond
-	lostQuorumIntervalDefault = hbIntervalDefault * 20 // 10 seconds
+	minElectionTimeoutDefault      = 2 * time.Second
+	maxElectionTimeoutDefault      = 5 * time.Second
+	minCampaignTimeoutDefault      = 100 * time.Millisecond
+	maxCampaignTimeoutDefault      = 8 * minCampaignTimeoutDefault
+	hbIntervalDefault              = 500 * time.Millisecond
+	lostQuorumIntervalDefault      = hbIntervalDefault * 20 // 10 seconds
+	lostQuorumCheckIntervalDefault = hbIntervalDefault * 20 // 10 seconds
+
 )
 
 var (
@@ -242,6 +245,7 @@ var (
 	maxCampaignTimeout time.Duration
 	hbInterval         time.Duration
 	lostQuorumInterval time.Duration
+	lostQuorumCheck    time.Duration
 )
 
 func init() {
@@ -257,6 +261,7 @@ func setDefaultRaftTimeouts() {
 	maxCampaignTimeout = maxCampaignTimeoutDefault
 	hbInterval = hbIntervalDefault
 	lostQuorumInterval = lostQuorumIntervalDefault
+	lostQuorumCheck = lostQuorumCheckIntervalDefault
 }
 
 type RaftConfig struct {
@@ -1985,7 +1990,7 @@ func (n *raft) runAsLeader() {
 	hb := time.NewTicker(hbInterval)
 	defer hb.Stop()
 
-	lq := time.NewTicker(hbInterval * 2)
+	lq := time.NewTicker(lostQuorumCheck)
 	defer lq.Stop()
 
 	for {
@@ -2081,6 +2086,11 @@ func (n *raft) lostQuorum() bool {
 }
 
 func (n *raft) lostQuorumLocked() bool {
+	// Make sure we let any scale up actions settle before deciding.
+	if !n.lsut.IsZero() && time.Since(n.lsut) < lostQuorumInterval {
+		return false
+	}
+
 	now, nc := time.Now().UnixNano(), 1
 	for _, peer := range n.peers {
 		if now-peer.ts < int64(lostQuorumInterval) {
@@ -2474,6 +2484,7 @@ func (n *raft) adjustClusterSizeAndQuorum() {
 
 	if ncsz > pcsz {
 		n.debug("Expanding our clustersize: %d -> %d", pcsz, ncsz)
+		n.lsut = time.Now()
 	} else if ncsz < pcsz {
 		n.debug("Decreasing our clustersize: %d -> %d", pcsz, ncsz)
 		if n.state == Leader {
