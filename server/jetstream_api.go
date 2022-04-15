@@ -1812,12 +1812,12 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 			// while the new members work through the election and catchup process.
 			// Double check for that instead of exiting here and being silent. e.g. nats stream update test --replicas=3
 			js.mu.RLock()
-			rg, bail := sa.Group, true
+			rg := sa.Group
 			var ourID string
 			if cc.meta != nil {
 				ourID = cc.meta.ID()
 			}
-			bail = !rg.isMember(ourID)
+			bail := !rg.isMember(ourID)
 			if !bail {
 				// We know we are a member here, if this group is new and we are preferred allow us to answer.
 				bail = rg.Preferred != ourID || time.Since(rg.node.Created()) > lostQuorumInterval
