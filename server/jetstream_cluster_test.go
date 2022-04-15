@@ -12111,6 +12111,18 @@ func TestJetStreamClusterMovingStreamsWithMirror(t *testing.T) {
 	if nnr := atomic.LoadUint64(&numNoResp); nnr > 0 {
 		t.Fatalf("Expected no failed message publishes, got %d", nnr)
 	}
+
+	checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("SOURCE")
+		require_NoError(t, err)
+		mi, err := js.StreamInfo("MIRROR")
+		require_NoError(t, err)
+		if si.State != mi.State {
+			return fmt.Errorf("Expected mirror to be the same, got %+v vs %+v", mi.State, si.State)
+		}
+		return nil
+	})
+
 }
 
 func TestJetStreamClusterMemoryConsumerInterestRetention(t *testing.T) {
