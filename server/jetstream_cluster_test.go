@@ -12519,6 +12519,82 @@ func TestJetStreamClusterStreamAlternates(t *testing.T) {
 	getStreamInfo(nc, "C3")
 }
 
+func TestJetStreamClusterDeleteAndRestoreAndRestart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST"})
+	require_NoError(t, err)
+
+	for i := 0; i < 10; i++ {
+		_, err := js.Publish("TEST", []byte("OK"))
+		require_NoError(t, err)
+	}
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	require_NoError(t, js.DeleteConsumer("TEST", "dlc"))
+	require_NoError(t, js.DeleteStream("TEST"))
+
+	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST"})
+	require_NoError(t, err)
+
+	for i := 0; i < 22; i++ {
+		_, err := js.Publish("TEST", []byte("OK"))
+		require_NoError(t, err)
+	}
+	sub, err := js.SubscribeSync("TEST", nats.Durable("dlc"))
+	require_NoError(t, err)
+
+	for i := 0; i < 5; i++ {
+		m, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		m.AckSync()
+	}
+
+	// Now restart.
+	sl := c.streamLeader("$G", "TEST")
+	sl.Shutdown()
+	sl = c.restartServer(sl)
+	c.waitOnStreamLeader("$G", "TEST")
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	if si.State.Msgs != 22 {
+		t.Fatalf("State is not correct after restart")
+	}
+
+	ci, err := js.ConsumerInfo("TEST", "dlc")
+	require_NoError(t, err)
+
+	if ci.AckFloor.Consumer != 5 {
+		t.Fatalf("Bad ack floor: %+v", ci.AckFloor)
+	}
+
+	// Now delete and make sure consumer does not come back.
+	// First add a delete something else.
+	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST2"})
+	require_NoError(t, err)
+	require_NoError(t, js.DeleteStream("TEST2"))
+	// Now the consumer.
+	require_NoError(t, js.DeleteConsumer("TEST", "dlc"))
+
+	sl.Shutdown()
+	c.restartServer(sl)
+	c.waitOnStreamLeader("$G", "TEST")
+
+	_, err = js.ConsumerInfo("TEST", "dlc")
+	require_Error(t, err)
+
+}
+
 // Support functions
 
 // Used to setup superclusters for tests.
