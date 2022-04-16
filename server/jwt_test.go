@@ -6851,12 +6851,10 @@ func TestJWTSysAccUpdateMixedMode(t *testing.T) {
 
 	s := sc.clusterForName("C1").randomServer()
 
-	sysNc := natsConnect(t, s.ClientURL(), sUsr, disconnectCb)
+	sysNc := natsConnect(t, s.ClientURL(), sUsr, disconnectCb, nats.NoCallbacksAfterClientClose())
 	defer sysNc.Close()
-	defer sysNc.SetDisconnectErrHandler(nil)
-	aNc := natsConnect(t, s.ClientURL(), aUsr, disconnectCb)
+	aNc := natsConnect(t, s.ClientURL(), aUsr, disconnectCb, nats.NoCallbacksAfterClientClose())
 	defer aNc.Close()
-	defer aNc.SetDisconnectErrHandler(nil)
 
 	js, err := aNc.JetStream()
 	require_NoError(t, err)
