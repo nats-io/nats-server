@@ -12568,7 +12568,8 @@ func TestJetStreamClusterDeleteAndRestoreAndRestart(t *testing.T) {
 		_, err := js.Publish("TEST", []byte("OK"))
 		require_NoError(t, err)
 	}
-	sub, err := js.SubscribeSync("TEST", nats.Durable("dlc"))
+
+	sub, err := js.SubscribeSync("TEST", nats.Durable("dlc"), nats.Description("SECOND"))
 	require_NoError(t, err)
 
 	for i := 0; i < 5; i++ {
@@ -12582,6 +12583,7 @@ func TestJetStreamClusterDeleteAndRestoreAndRestart(t *testing.T) {
 	sl.Shutdown()
 	sl = c.restartServer(sl)
 	c.waitOnStreamLeader("$G", "TEST")
+	c.waitOnConsumerLeader("$G", "TEST", "dlc")
 
 	nc, js = jsClientConnect(t, c.randomServer())
 	defer nc.Close()
@@ -12612,9 +12614,13 @@ func TestJetStreamClusterDeleteAndRestoreAndRestart(t *testing.T) {
 	c.restartServer(sl)
 	c.waitOnStreamLeader("$G", "TEST")
 
-	_, err = js.ConsumerInfo("TEST", "dlc")
-	require_Error(t, err)
-
+	// In rare circumstances this could be recovered and then quickly deleted.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if _, err := js.ConsumerInfo("TEST", "dlc"); err == nil {
+			return fmt.Errorf("Not cleaned up yet")
+		}
+		return nil
+	})
 }
 
 // Support functions
