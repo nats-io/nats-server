@@ -1270,20 +1270,15 @@ func (n *raft) StepDown(preferred ...string) error {
 		n.debug("Can not transfer to preferred peer %q", preferred[0])
 	}
 
-	// If we have a new leader selected, let them start the vote process but do not actively stepdown.
+	// If we have a new leader selected, transfer over to them.
 	if maybeLeader != noLeader {
 		n.debug("Selected %q for new leader", maybeLeader)
 		n.sendAppendEntry([]*Entry{{EntryLeaderTransfer, []byte(maybeLeader)}})
-		// If we chose also stepdown. If we were told let them take over.
-		if len(preferred) == 0 {
-			n.debug("Stepping down")
-			stepdown.push(noLeader)
-		}
-	} else {
-		// Force us to stepdown here.
-		n.debug("Stepping down")
-		stepdown.push(noLeader)
 	}
+	// Force us to stepdown here.
+	n.debug("Stepping down")
+	stepdown.push(noLeader)
+
 	return nil
 }
 
@@ -1383,6 +1378,13 @@ func (n *raft) Peers() []*Peer {
 // Update our known set of peers.
 func (n *raft) UpdateKnownPeers(knownPeers []string) {
 	n.Lock()
+	// If this is a scale up, let the normal add peer logic take precedence.
+	// Otherwise if the new peers are slow to start we stall ourselves.
+	if len(knownPeers) > len(n.peers) {
+		n.Unlock()
+		return
+	}
+	// Process like peer state update.
 	ps := &peerState{knownPeers, len(knownPeers), n.extSt}
 	n.processPeerState(ps)
 	isLeader := n.state == Leader
