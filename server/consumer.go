@@ -962,6 +962,11 @@ func (o *consumer) setLeader(isLeader bool) {
 		// Reset waiting if we are in pull mode.
 		if o.isPullMode() {
 			o.waiting = newWaitQueue(o.cfg.MaxWaiting)
+			if !o.isDurable() {
+				stopAndClearTimer(&o.dtmr)
+			}
+		} else if o.srv.gateway.enabled {
+			stopAndClearTimer(&o.gwdtmr)
 		}
 		o.mu.Unlock()
 	}
