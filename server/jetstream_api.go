@@ -2085,7 +2085,9 @@ func (s *Server) jsConsumerLeaderStepDownRequest(sub *subscription, c *client, _
 	}
 
 	// Call actual stepdown.
-	o.raftNode().StepDown()
+	if n := o.raftNode(); n != nil {
+		n.StepDown()
+	}
 
 	resp.Success = true
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
