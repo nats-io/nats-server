@@ -13738,7 +13738,7 @@ func (c *cluster) waitOnServerCurrent(s *Server) {
 	expires := time.Now().Add(20 * time.Second)
 	for time.Now().Before(expires) {
 		time.Sleep(100 * time.Millisecond)
-		if s.JetStreamIsCurrent() {
+		if !s.JetStreamEnabled() || s.JetStreamIsCurrent() {
 			return
 		}
 	}

@@ -3039,9 +3039,6 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	}
 
 	jsEnabled := s.JetStreamEnabled()
-	if jsEnabled && a == s.SystemAccount() {
-		s.checkJetStreamExports()
-	}
 
 	streamTokenExpirationChanged := false
 	serviceTokenExpirationChanged := false

@@ -6787,3 +6787,132 @@ func TestJWTAccountConnzAccessAfterClaimUpdate(t *testing.T) {
 	// If export was wiped this would fail with timeout.
 	doRequest()
 }
+
+func TestJWTSysAccUpdateMixedMode(t *testing.T) {
+	skp, spub := createKey(t)
+	sUsr := createUserCreds(t, nil, skp)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "SYS"
+	sysJwt := encodeClaim(t, sysClaim, spub)
+	encodeJwt1Time := time.Now()
+
+	akp, apub := createKey(t)
+	aUsr := createUserCreds(t, nil, akp)
+	claim := jwt.NewAccountClaims(apub)
+	claim.Limits.JetStreamLimits.DiskStorage = 1024 * 1024
+	claim.Limits.JetStreamLimits.Streams = 1
+	jwt1 := encodeClaim(t, claim, apub)
+
+	basePath := "/ngs/v1/accounts/jwt/"
+	reqCount := int32(0)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == basePath {
+			w.Write([]byte("ok"))
+		} else if strings.HasSuffix(r.URL.Path, spub) {
+			w.Write([]byte(sysJwt))
+		} else if strings.HasSuffix(r.URL.Path, apub) {
+			w.Write([]byte(jwt1))
+		} else {
+			// only count requests that could be filled
+			return
+		}
+		atomic.AddInt32(&reqCount, 1)
+	}))
+	defer ts.Close()
+
+	tmpl := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+    `
+
+	sc := createJetStreamSuperClusterWithTemplateAndModHook(t, tmpl, 3, 2,
+		func(serverName, clusterName, storeDir, conf string) string {
+			// create an ngs like setup, with connection and non connection server
+			if clusterName == "C1" {
+				conf = strings.ReplaceAll(conf, "jetstream", "#jetstream")
+			}
+			return fmt.Sprintf(`%s
+				operator: %s
+				system_account: %s
+				resolver: URL("%s%s")`, conf, ojwt, spub, ts.URL, basePath)
+		})
+	defer sc.shutdown()
+	disconnectChan := make(chan struct{}, 100)
+	defer close(disconnectChan)
+	disconnectCb := nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
+		disconnectChan <- struct{}{}
+	})
+
+	s := sc.clusterForName("C1").randomServer()
+
+	sysNc := natsConnect(t, s.ClientURL(), sUsr, disconnectCb, nats.NoCallbacksAfterClientClose())
+	defer sysNc.Close()
+	aNc := natsConnect(t, s.ClientURL(), aUsr, disconnectCb, nats.NoCallbacksAfterClientClose())
+	defer aNc.Close()
+
+	js, err := aNc.JetStream()
+	require_NoError(t, err)
+
+	si, err := js.AddStream(&nats.StreamConfig{Name: "bar", Subjects: []string{"bar"}, Replicas: 3})
+	require_NoError(t, err)
+	require_Equal(t, si.Cluster.Name, "C2")
+	_, err = js.AccountInfo()
+	require_NoError(t, err)
+
+	r, err := sysNc.Request(fmt.Sprintf(serverPingReqSubj, "ACCOUNTZ"),
+		[]byte(fmt.Sprintf(`{"account":"%s"}`, spub)), time.Second)
+	require_NoError(t, err)
+	respb := ServerAPIResponse{Data: &Accountz{}}
+	require_NoError(t, json.Unmarshal(r.Data, &respb))
+
+	hasJSExp := func(resp *ServerAPIResponse) bool {
+		found := false
+		for _, e := range resp.Data.(*Accountz).Account.Exports {
+			if e.Subject == jsAllAPI {
+				found = true
+				break
+			}
+		}
+		return found
+	}
+	require_True(t, hasJSExp(&respb))
+
+	// make sure jti increased
+	time.Sleep(time.Second - time.Since(encodeJwt1Time))
+	sysJwt2 := encodeClaim(t, sysClaim, spub)
+
+	oldRcount := atomic.LoadInt32(&reqCount)
+	_, err = sysNc.Request(fmt.Sprintf(accUpdateEventSubjNew, spub), []byte(sysJwt2), time.Second)
+	require_NoError(t, err)
+	// test to make sure connected client (aNc) was not kicked
+	time.Sleep(200 * time.Millisecond)
+	require_True(t, len(disconnectChan) == 0)
+
+	// ensure nothing new has happened, lookup for account not found is skipped during inc
+	require_True(t, atomic.LoadInt32(&reqCount) == oldRcount)
+	// no responders
+	_, err = aNc.Request("foo", nil, time.Second)
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "nats: no responders available for request")
+
+	nc2, js2 := jsClientConnect(t, sc.clusterForName("C2").randomServer(), aUsr)
+	defer nc2.Close()
+	_, err = js2.AccountInfo()
+	require_NoError(t, err)
+
+	r, err = sysNc.Request(fmt.Sprintf(serverPingReqSubj, "ACCOUNTZ"),
+		[]byte(fmt.Sprintf(`{"account":"%s"}`, spub)), time.Second)
+	require_NoError(t, err)
+	respa := ServerAPIResponse{Data: &Accountz{}}
+	require_NoError(t, json.Unmarshal(r.Data, &respa))
+	require_True(t, hasJSExp(&respa))
+
+	_, err = js.AccountInfo()
+	require_NoError(t, err)
+}
