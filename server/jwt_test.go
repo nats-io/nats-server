@@ -6853,8 +6853,10 @@ func TestJWTSysAccUpdateMixedMode(t *testing.T) {
 
 	sysNc := natsConnect(t, s.ClientURL(), sUsr, disconnectCb)
 	defer sysNc.Close()
+	defer sysNc.SetDisconnectErrHandler(nil)
 	aNc := natsConnect(t, s.ClientURL(), aUsr, disconnectCb)
 	defer aNc.Close()
+	defer aNc.SetDisconnectErrHandler(nil)
 
 	js, err := aNc.JetStream()
 	require_NoError(t, err)
