@@ -1013,8 +1013,8 @@ func (s *Server) addSystemAccountExports(sacc *Account) {
 	if err := sacc.AddServiceExport(accSubsSubj, nil); err != nil {
 		s.Errorf("Error adding system service export for %q: %v", accSubsSubj, err)
 	}
-
-	if s.JetStreamEnabled() {
+	// in case of a mixed mode setup, enable js exports anyway
+	if s.JetStreamEnabled() || !s.standAloneMode() {
 		s.checkJetStreamExports()
 	}
 }
