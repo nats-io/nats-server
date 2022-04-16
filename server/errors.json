@@ -1193,7 +1193,7 @@
     "constant": "JSConsumerMaxPendingAckExcessErrF",
     "code": 400,
     "error_code": 10121,
-    "description": "consumer max ack pending exceeds server limit of {limit}",
+    "description": "consumer max ack pending exceeds system limit of {limit}",
     "comment": "",
     "help": "",
     "url": "",

@@ -16607,11 +16607,11 @@ func TestJetStreamLimits(t *testing.T) {
 
 		_, err = js.UpdateConsumer("foo", &nats.ConsumerConfig{Durable: "dur2", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 2000})
 		require_Error(t, err)
-		require_Equal(t, err.Error(), "consumer max ack pending exceeds server limit of 1000")
+		require_Equal(t, err.Error(), "consumer max ack pending exceeds system limit of 1000")
 
 		_, err = js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur3", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 2000})
 		require_Error(t, err)
-		require_Equal(t, err.Error(), "consumer max ack pending exceeds server limit of 1000")
+		require_Equal(t, err.Error(), "consumer max ack pending exceeds system limit of 1000")
 	}
 
 	t.Run("clustered", func(t *testing.T) {

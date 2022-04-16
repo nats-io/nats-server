@@ -107,7 +107,7 @@ const (
 	// JSConsumerMaxDeliverBackoffErr max deliver is required to be > length of backoff values
 	JSConsumerMaxDeliverBackoffErr ErrorIdentifier = 10116
 
-	// JSConsumerMaxPendingAckExcessErrF consumer max ack pending exceeds server limit of {limit}
+	// JSConsumerMaxPendingAckExcessErrF consumer max ack pending exceeds system limit of {limit}
 	JSConsumerMaxPendingAckExcessErrF ErrorIdentifier = 10121
 
 	// JSConsumerMaxPendingAckPolicyRequiredErr consumer requires ack policy for max ack pending
@@ -411,7 +411,7 @@ var (
 		JSConsumerInvalidPolicyErrF:                {Code: 400, ErrCode: 10094, Description: "{err}"},
 		JSConsumerInvalidSamplingErrF:              {Code: 400, ErrCode: 10095, Description: "failed to parse consumer sampling configuration: {err}"},
 		JSConsumerMaxDeliverBackoffErr:             {Code: 400, ErrCode: 10116, Description: "max deliver is required to be > length of backoff values"},
-		JSConsumerMaxPendingAckExcessErrF:          {Code: 400, ErrCode: 10121, Description: "consumer max ack pending exceeds server limit of {limit}"},
+		JSConsumerMaxPendingAckExcessErrF:          {Code: 400, ErrCode: 10121, Description: "consumer max ack pending exceeds system limit of {limit}"},
 		JSConsumerMaxPendingAckPolicyRequiredErr:   {Code: 400, ErrCode: 10082, Description: "consumer requires ack policy for max ack pending"},
 		JSConsumerMaxRequestBatchNegativeErr:       {Code: 400, ErrCode: 10114, Description: "consumer max request batch needs to be > 0"},
 		JSConsumerMaxRequestExpiresToSmall:         {Code: 400, ErrCode: 10115, Description: "consumer max request expires needs to be >= 1ms"},
@@ -889,7 +889,7 @@ func NewJSConsumerMaxDeliverBackoffError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSConsumerMaxDeliverBackoffErr]
 }
 
-// NewJSConsumerMaxPendingAckExcessError creates a new JSConsumerMaxPendingAckExcessErrF error: "consumer max ack pending exceeds server limit of {limit}"
+// NewJSConsumerMaxPendingAckExcessError creates a new JSConsumerMaxPendingAckExcessErrF error: "consumer max ack pending exceeds system limit of {limit}"
 func NewJSConsumerMaxPendingAckExcessError(limit interface{}, opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
