@@ -16573,282 +16573,6 @@ func TestJetStreamCrossAccounts(t *testing.T) {
 	}
 }
 
-///////////////////////////////////////////////////////////////////////////
-// Simple JetStream Benchmarks
-///////////////////////////////////////////////////////////////////////////
-
-func Benchmark__JetStreamPubWithAck(b *testing.B) {
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
-	}
-	defer s.Shutdown()
-
-	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: "foo"})
-	if err != nil {
-		b.Fatalf("Unexpected error adding stream: %v", err)
-	}
-	defer mset.delete()
-
-	nc, err := nats.Connect(s.ClientURL())
-	if err != nil {
-		b.Fatalf("Failed to create client: %v", err)
-	}
-	defer nc.Close()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		nc.Request("foo", []byte("Hello World!"), 50*time.Millisecond)
-	}
-	b.StopTimer()
-
-	state := mset.state()
-	if int(state.Msgs) != b.N {
-		b.Fatalf("Expected %d messages, got %d", b.N, state.Msgs)
-	}
-}
-
-func Benchmark____JetStreamPubNoAck(b *testing.B) {
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
-	}
-	defer s.Shutdown()
-
-	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: "foo"})
-	if err != nil {
-		b.Fatalf("Unexpected error adding stream: %v", err)
-	}
-	defer mset.delete()
-
-	nc, err := nats.Connect(s.ClientURL())
-	if err != nil {
-		b.Fatalf("Failed to create client: %v", err)
-	}
-	defer nc.Close()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if err := nc.Publish("foo", []byte("Hello World!")); err != nil {
-			b.Fatalf("Unexpected error: %v", err)
-		}
-	}
-	nc.Flush()
-	b.StopTimer()
-
-	state := mset.state()
-	if int(state.Msgs) != b.N {
-		b.Fatalf("Expected %d messages, got %d", b.N, state.Msgs)
-	}
-}
-
-func Benchmark_JetStreamPubAsyncAck(b *testing.B) {
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
-	}
-	defer s.Shutdown()
-
-	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: "foo"})
-	if err != nil {
-		b.Fatalf("Unexpected error adding stream: %v", err)
-	}
-	defer mset.delete()
-
-	nc, err := nats.Connect(s.ClientURL(), nats.NoReconnect())
-	if err != nil {
-		b.Fatalf("Failed to create client: %v", err)
-	}
-	defer nc.Close()
-
-	// Put ack stream on its own connection.
-	anc, err := nats.Connect(s.ClientURL())
-	if err != nil {
-		b.Fatalf("Failed to create client: %v", err)
-	}
-	defer anc.Close()
-
-	acks := nats.NewInbox()
-	sub, _ := anc.Subscribe(acks, func(m *nats.Msg) {
-		// Just eat them for this test.
-	})
-	// set max pending to unlimited.
-	sub.SetPendingLimits(-1, -1)
-	defer sub.Unsubscribe()
-
-	anc.Flush()
-	runtime.GC()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if err := nc.PublishRequest("foo", acks, []byte("Hello World!")); err != nil {
-			b.Fatalf("[%d] Unexpected error: %v", i, err)
-		}
-	}
-	nc.Flush()
-	b.StopTimer()
-
-	state := mset.state()
-	if int(state.Msgs) != b.N {
-		b.Fatalf("Expected %d messages, got %d", b.N, state.Msgs)
-	}
-}
-
-func Benchmark____JetStreamSubNoAck(b *testing.B) {
-	if b.N < 10000 {
-		return
-	}
-
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
-	}
-	defer s.Shutdown()
-
-	mname := "foo"
-	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: mname})
-	if err != nil {
-		b.Fatalf("Unexpected error adding stream: %v", err)
-	}
-	defer mset.delete()
-
-	nc, err := nats.Connect(s.ClientURL(), nats.NoReconnect())
-	if err != nil {
-		b.Fatalf("Failed to create client: %v", err)
-	}
-	defer nc.Close()
-
-	// Queue up messages.
-	for i := 0; i < b.N; i++ {
-		nc.Publish(mname, []byte("Hello World!"))
-	}
-	nc.Flush()
-
-	state := mset.state()
-	if state.Msgs != uint64(b.N) {
-		b.Fatalf("Expected %d messages, got %d", b.N, state.Msgs)
-	}
-
-	total := int32(b.N)
-	received := int32(0)
-	done := make(chan bool)
-
-	deliverTo := "DM"
-	oname := "O"
-
-	nc.Subscribe(deliverTo, func(m *nats.Msg) {
-		// We only are done when we receive all, we could check for gaps too.
-		if atomic.AddInt32(&received, 1) >= total {
-			done <- true
-		}
-	})
-	nc.Flush()
-
-	b.ResetTimer()
-	o, err := mset.addConsumer(&ConsumerConfig{DeliverSubject: deliverTo, Durable: oname, AckPolicy: AckNone})
-	if err != nil {
-		b.Fatalf("Expected no error with registered interest, got %v", err)
-	}
-	defer o.delete()
-	<-done
-	b.StopTimer()
-}
-
-func benchJetStreamWorkersAndBatch(b *testing.B, numWorkers, batchSize int) {
-	// Avoid running at too low of numbers since that chews up memory and GC.
-	if b.N < numWorkers*batchSize {
-		return
-	}
-
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer os.RemoveAll(config.StoreDir)
-	}
-	defer s.Shutdown()
-
-	mname := "MSET22"
-	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: mname})
-	if err != nil {
-		b.Fatalf("Unexpected error adding stream: %v", err)
-	}
-	defer mset.delete()
-
-	nc, err := nats.Connect(s.ClientURL(), nats.NoReconnect())
-	if err != nil {
-		b.Fatalf("Failed to create client: %v", err)
-	}
-	defer nc.Close()
-
-	// Queue up messages.
-	for i := 0; i < b.N; i++ {
-		nc.Publish(mname, []byte("Hello World!"))
-	}
-	nc.Flush()
-
-	state := mset.state()
-	if state.Msgs != uint64(b.N) {
-		b.Fatalf("Expected %d messages, got %d", b.N, state.Msgs)
-	}
-
-	// Create basic work queue mode consumer.
-	oname := "WQ"
-	o, err := mset.addConsumer(&ConsumerConfig{Durable: oname, AckPolicy: AckExplicit})
-	if err != nil {
-		b.Fatalf("Expected no error with registered interest, got %v", err)
-	}
-	defer o.delete()
-
-	total := int32(b.N)
-	received := int32(0)
-	start := make(chan bool)
-	done := make(chan bool)
-
-	batchSizeMsg := []byte(strconv.Itoa(batchSize))
-	reqNextMsgSubj := o.requestNextMsgSubject()
-
-	for i := 0; i < numWorkers; i++ {
-		nc, err := nats.Connect(s.ClientURL(), nats.NoReconnect())
-		if err != nil {
-			b.Fatalf("Failed to create client: %v", err)
-		}
-
-		deliverTo := nats.NewInbox()
-		nc.Subscribe(deliverTo, func(m *nats.Msg) {
-			if atomic.AddInt32(&received, 1) >= total {
-				done <- true
-			}
-			// Ack + Next request.
-			nc.PublishRequest(m.Reply, deliverTo, AckNext)
-		})
-		nc.Flush()
-		go func() {
-			<-start
-			nc.PublishRequest(reqNextMsgSubj, deliverTo, batchSizeMsg)
-		}()
-	}
-
-	b.ResetTimer()
-	close(start)
-	<-done
-	b.StopTimer()
-}
-
-func Benchmark___JetStream1x1Worker(b *testing.B) {
-	benchJetStreamWorkersAndBatch(b, 1, 1)
-}
-
-func Benchmark__JetStream1x1kWorker(b *testing.B) {
-	benchJetStreamWorkersAndBatch(b, 1, 1024)
-}
-
-func Benchmark_JetStream10x1kWorker(b *testing.B) {
-	benchJetStreamWorkersAndBatch(b, 10, 1024)
-}
-
-func Benchmark_JetStream4x512Worker(b *testing.B) {
-	benchJetStreamWorkersAndBatch(b, 4, 512)
-}
-
 func TestJetStreamLimits(t *testing.T) {
 	test := func(t *testing.T, s *Server) {
 		nc := natsConnect(t, s.ClientURL())
@@ -16883,11 +16607,11 @@ func TestJetStreamLimits(t *testing.T) {
 
 		_, err = js.UpdateConsumer("foo", &nats.ConsumerConfig{Durable: "dur2", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 2000})
 		require_Error(t, err)
-		require_Equal(t, err.Error(), "consumer max ack pending exceeds server limit")
+		require_Equal(t, err.Error(), "consumer max ack pending exceeds system limit of 1000")
 
 		_, err = js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur3", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 2000})
 		require_Error(t, err)
-		require_Equal(t, err.Error(), "consumer max ack pending exceeds server limit")
+		require_Equal(t, err.Error(), "consumer max ack pending exceeds system limit of 1000")
 	}
 
 	t.Run("clustered", func(t *testing.T) {
@@ -17192,4 +16916,280 @@ func TestJetStreamImportConsumerStreamSubjectRemapSingle(t *testing.T) {
 	if m.Subject != "foo" {
 		t.Fatalf("Subject not mapped correctly across account boundary, expected %q got %q", "foo", m.Subject)
 	}
+}
+
+///////////////////////////////////////////////////////////////////////////
+// Simple JetStream Benchmarks
+///////////////////////////////////////////////////////////////////////////
+
+func Benchmark__JetStreamPubWithAck(b *testing.B) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: "foo"})
+	if err != nil {
+		b.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset.delete()
+
+	nc, err := nats.Connect(s.ClientURL())
+	if err != nil {
+		b.Fatalf("Failed to create client: %v", err)
+	}
+	defer nc.Close()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		nc.Request("foo", []byte("Hello World!"), 50*time.Millisecond)
+	}
+	b.StopTimer()
+
+	state := mset.state()
+	if int(state.Msgs) != b.N {
+		b.Fatalf("Expected %d messages, got %d", b.N, state.Msgs)
+	}
+}
+
+func Benchmark____JetStreamPubNoAck(b *testing.B) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: "foo"})
+	if err != nil {
+		b.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset.delete()
+
+	nc, err := nats.Connect(s.ClientURL())
+	if err != nil {
+		b.Fatalf("Failed to create client: %v", err)
+	}
+	defer nc.Close()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := nc.Publish("foo", []byte("Hello World!")); err != nil {
+			b.Fatalf("Unexpected error: %v", err)
+		}
+	}
+	nc.Flush()
+	b.StopTimer()
+
+	state := mset.state()
+	if int(state.Msgs) != b.N {
+		b.Fatalf("Expected %d messages, got %d", b.N, state.Msgs)
+	}
+}
+
+func Benchmark_JetStreamPubAsyncAck(b *testing.B) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: "foo"})
+	if err != nil {
+		b.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset.delete()
+
+	nc, err := nats.Connect(s.ClientURL(), nats.NoReconnect())
+	if err != nil {
+		b.Fatalf("Failed to create client: %v", err)
+	}
+	defer nc.Close()
+
+	// Put ack stream on its own connection.
+	anc, err := nats.Connect(s.ClientURL())
+	if err != nil {
+		b.Fatalf("Failed to create client: %v", err)
+	}
+	defer anc.Close()
+
+	acks := nats.NewInbox()
+	sub, _ := anc.Subscribe(acks, func(m *nats.Msg) {
+		// Just eat them for this test.
+	})
+	// set max pending to unlimited.
+	sub.SetPendingLimits(-1, -1)
+	defer sub.Unsubscribe()
+
+	anc.Flush()
+	runtime.GC()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := nc.PublishRequest("foo", acks, []byte("Hello World!")); err != nil {
+			b.Fatalf("[%d] Unexpected error: %v", i, err)
+		}
+	}
+	nc.Flush()
+	b.StopTimer()
+
+	state := mset.state()
+	if int(state.Msgs) != b.N {
+		b.Fatalf("Expected %d messages, got %d", b.N, state.Msgs)
+	}
+}
+
+func Benchmark____JetStreamSubNoAck(b *testing.B) {
+	if b.N < 10000 {
+		return
+	}
+
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	mname := "foo"
+	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: mname})
+	if err != nil {
+		b.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset.delete()
+
+	nc, err := nats.Connect(s.ClientURL(), nats.NoReconnect())
+	if err != nil {
+		b.Fatalf("Failed to create client: %v", err)
+	}
+	defer nc.Close()
+
+	// Queue up messages.
+	for i := 0; i < b.N; i++ {
+		nc.Publish(mname, []byte("Hello World!"))
+	}
+	nc.Flush()
+
+	state := mset.state()
+	if state.Msgs != uint64(b.N) {
+		b.Fatalf("Expected %d messages, got %d", b.N, state.Msgs)
+	}
+
+	total := int32(b.N)
+	received := int32(0)
+	done := make(chan bool)
+
+	deliverTo := "DM"
+	oname := "O"
+
+	nc.Subscribe(deliverTo, func(m *nats.Msg) {
+		// We only are done when we receive all, we could check for gaps too.
+		if atomic.AddInt32(&received, 1) >= total {
+			done <- true
+		}
+	})
+	nc.Flush()
+
+	b.ResetTimer()
+	o, err := mset.addConsumer(&ConsumerConfig{DeliverSubject: deliverTo, Durable: oname, AckPolicy: AckNone})
+	if err != nil {
+		b.Fatalf("Expected no error with registered interest, got %v", err)
+	}
+	defer o.delete()
+	<-done
+	b.StopTimer()
+}
+
+func benchJetStreamWorkersAndBatch(b *testing.B, numWorkers, batchSize int) {
+	// Avoid running at too low of numbers since that chews up memory and GC.
+	if b.N < numWorkers*batchSize {
+		return
+	}
+
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer os.RemoveAll(config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	mname := "MSET22"
+	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: mname})
+	if err != nil {
+		b.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	defer mset.delete()
+
+	nc, err := nats.Connect(s.ClientURL(), nats.NoReconnect())
+	if err != nil {
+		b.Fatalf("Failed to create client: %v", err)
+	}
+	defer nc.Close()
+
+	// Queue up messages.
+	for i := 0; i < b.N; i++ {
+		nc.Publish(mname, []byte("Hello World!"))
+	}
+	nc.Flush()
+
+	state := mset.state()
+	if state.Msgs != uint64(b.N) {
+		b.Fatalf("Expected %d messages, got %d", b.N, state.Msgs)
+	}
+
+	// Create basic work queue mode consumer.
+	oname := "WQ"
+	o, err := mset.addConsumer(&ConsumerConfig{Durable: oname, AckPolicy: AckExplicit})
+	if err != nil {
+		b.Fatalf("Expected no error with registered interest, got %v", err)
+	}
+	defer o.delete()
+
+	total := int32(b.N)
+	received := int32(0)
+	start := make(chan bool)
+	done := make(chan bool)
+
+	batchSizeMsg := []byte(strconv.Itoa(batchSize))
+	reqNextMsgSubj := o.requestNextMsgSubject()
+
+	for i := 0; i < numWorkers; i++ {
+		nc, err := nats.Connect(s.ClientURL(), nats.NoReconnect())
+		if err != nil {
+			b.Fatalf("Failed to create client: %v", err)
+		}
+
+		deliverTo := nats.NewInbox()
+		nc.Subscribe(deliverTo, func(m *nats.Msg) {
+			if atomic.AddInt32(&received, 1) >= total {
+				done <- true
+			}
+			// Ack + Next request.
+			nc.PublishRequest(m.Reply, deliverTo, AckNext)
+		})
+		nc.Flush()
+		go func() {
+			<-start
+			nc.PublishRequest(reqNextMsgSubj, deliverTo, batchSizeMsg)
+		}()
+	}
+
+	b.ResetTimer()
+	close(start)
+	<-done
+	b.StopTimer()
+}
+
+func Benchmark___JetStream1x1Worker(b *testing.B) {
+	benchJetStreamWorkersAndBatch(b, 1, 1)
+}
+
+func Benchmark__JetStream1x1kWorker(b *testing.B) {
+	benchJetStreamWorkersAndBatch(b, 1, 1024)
+}
+
+func Benchmark_JetStream10x1kWorker(b *testing.B) {
+	benchJetStreamWorkersAndBatch(b, 10, 1024)
+}
+
+func Benchmark_JetStream4x512Worker(b *testing.B) {
+	benchJetStreamWorkersAndBatch(b, 4, 512)
 }

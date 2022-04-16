@@ -389,9 +389,11 @@ func checkConsumerCfg(config *ConsumerConfig, srvLim *JSLimitOpts, cfg *StreamCo
 			return NewJSConsumerMaxRequestExpiresToSmallError()
 		}
 	}
-	if srvLim.MaxAckPending > 0 && config.MaxAckPending > srvLim.MaxAckPending ||
-		accLim.MaxAckPending > 0 && config.MaxAckPending > accLim.MaxAckPending {
-		return NewJSConsumerMaxPendingAckExcessError()
+	if srvLim.MaxAckPending > 0 && config.MaxAckPending > srvLim.MaxAckPending {
+		return NewJSConsumerMaxPendingAckExcessError(srvLim.MaxAckPending)
+	}
+	if accLim.MaxAckPending > 0 && config.MaxAckPending > accLim.MaxAckPending {
+		return NewJSConsumerMaxPendingAckExcessError(accLim.MaxAckPending)
 	}
 
 	// Direct need to be non-mapped ephemerals.

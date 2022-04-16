@@ -5472,7 +5472,7 @@ func TestJWTJetStreamMaxAckPending(t *testing.T) {
 	_, err = js.AddConsumer("foo", &nats.ConsumerConfig{
 		Durable: "dur1", AckPolicy: nats.AckAllPolicy, MaxAckPending: 2000})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "consumer max ack pending exceeds server limit")
+	require_Equal(t, err.Error(), "consumer max ack pending exceeds system limit of 1000")
 
 	ci, err := js.AddConsumer("foo", &nats.ConsumerConfig{
 		Durable: "dur2", AckPolicy: nats.AckAllPolicy, MaxAckPending: 500})
@@ -5482,7 +5482,7 @@ func TestJWTJetStreamMaxAckPending(t *testing.T) {
 	_, err = js.UpdateConsumer("foo", &nats.ConsumerConfig{
 		Durable: "dur2", AckPolicy: nats.AckAllPolicy, MaxAckPending: 2000})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "consumer max ack pending exceeds server limit")
+	require_Equal(t, err.Error(), "consumer max ack pending exceeds system limit of 1000")
 
 	time.Sleep(time.Second - time.Since(start)) // make sure the time stamp changes
 	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{

@@ -107,8 +107,8 @@ const (
 	// JSConsumerMaxDeliverBackoffErr max deliver is required to be > length of backoff values
 	JSConsumerMaxDeliverBackoffErr ErrorIdentifier = 10116
 
-	// JSConsumerMaxPendingAckExcess consumer max ack pending exceeds server limit
-	JSConsumerMaxPendingAckExcess ErrorIdentifier = 10121
+	// JSConsumerMaxPendingAckExcessErrF consumer max ack pending exceeds system limit of {limit}
+	JSConsumerMaxPendingAckExcessErrF ErrorIdentifier = 10121
 
 	// JSConsumerMaxPendingAckPolicyRequiredErr consumer requires ack policy for max ack pending
 	JSConsumerMaxPendingAckPolicyRequiredErr ErrorIdentifier = 10082
@@ -302,7 +302,7 @@ const (
 	// JSStreamMoveAndScaleErr can not move and scale a stream in a single update
 	JSStreamMoveAndScaleErr ErrorIdentifier = 10123
 
-	// JSStreamMoveInProgress can not move a stream already being migrated
+	// JSStreamMoveInProgress stream move already in progress
 	JSStreamMoveInProgress ErrorIdentifier = 10124
 
 	// JSStreamMsgDeleteFailedF Generic message deletion failure error string ({err})
@@ -411,7 +411,7 @@ var (
 		JSConsumerInvalidPolicyErrF:                {Code: 400, ErrCode: 10094, Description: "{err}"},
 		JSConsumerInvalidSamplingErrF:              {Code: 400, ErrCode: 10095, Description: "failed to parse consumer sampling configuration: {err}"},
 		JSConsumerMaxDeliverBackoffErr:             {Code: 400, ErrCode: 10116, Description: "max deliver is required to be > length of backoff values"},
-		JSConsumerMaxPendingAckExcess:              {Code: 400, ErrCode: 10121, Description: "consumer max ack pending exceeds server limit"},
+		JSConsumerMaxPendingAckExcessErrF:          {Code: 400, ErrCode: 10121, Description: "consumer max ack pending exceeds system limit of {limit}"},
 		JSConsumerMaxPendingAckPolicyRequiredErr:   {Code: 400, ErrCode: 10082, Description: "consumer requires ack policy for max ack pending"},
 		JSConsumerMaxRequestBatchNegativeErr:       {Code: 400, ErrCode: 10114, Description: "consumer max request batch needs to be > 0"},
 		JSConsumerMaxRequestExpiresToSmall:         {Code: 400, ErrCode: 10115, Description: "consumer max request expires needs to be >= 1ms"},
@@ -476,7 +476,7 @@ var (
 		JSStreamMirrorNotUpdatableErr:              {Code: 400, ErrCode: 10055, Description: "stream mirror configuration can not be updated"},
 		JSStreamMismatchErr:                        {Code: 400, ErrCode: 10056, Description: "stream name in subject does not match request"},
 		JSStreamMoveAndScaleErr:                    {Code: 400, ErrCode: 10123, Description: "can not move and scale a stream in a single update"},
-		JSStreamMoveInProgress:                     {Code: 400, ErrCode: 10124, Description: "can not move a stream already being migrated"},
+		JSStreamMoveInProgress:                     {Code: 400, ErrCode: 10124, Description: "stream move already in progress"},
 		JSStreamMsgDeleteFailedF:                   {Code: 500, ErrCode: 10057, Description: "{err}"},
 		JSStreamNameExistErr:                       {Code: 400, ErrCode: 10058, Description: "stream name already in use"},
 		JSStreamNotFoundErr:                        {Code: 404, ErrCode: 10059, Description: "stream not found"},
@@ -889,14 +889,20 @@ func NewJSConsumerMaxDeliverBackoffError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSConsumerMaxDeliverBackoffErr]
 }
 
-// NewJSConsumerMaxPendingAckExcessError creates a new JSConsumerMaxPendingAckExcess error: "consumer max ack pending exceeds server limit"
-func NewJSConsumerMaxPendingAckExcessError(opts ...ErrorOption) *ApiError {
+// NewJSConsumerMaxPendingAckExcessError creates a new JSConsumerMaxPendingAckExcessErrF error: "consumer max ack pending exceeds system limit of {limit}"
+func NewJSConsumerMaxPendingAckExcessError(limit interface{}, opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
 		return ae
 	}
 
-	return ApiErrors[JSConsumerMaxPendingAckExcess]
+	e := ApiErrors[JSConsumerMaxPendingAckExcessErrF]
+	args := e.toReplacerArgs([]interface{}{"{limit}", limit})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
 }
 
 // NewJSConsumerMaxPendingAckPolicyRequiredError creates a new JSConsumerMaxPendingAckPolicyRequiredErr error: "consumer requires ack policy for max ack pending"
@@ -1635,7 +1641,7 @@ func NewJSStreamMoveAndScaleError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSStreamMoveAndScaleErr]
 }
 
-// NewJSStreamMoveInProgressError creates a new JSStreamMoveInProgress error: "can not move a stream already being migrated"
+// NewJSStreamMoveInProgressError creates a new JSStreamMoveInProgress error: "stream move already in progress"
 func NewJSStreamMoveInProgressError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
