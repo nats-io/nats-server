@@ -6892,7 +6892,7 @@ func TestJWTSysAccUpdateMixedMode(t *testing.T) {
 	sysJwt2 := encodeClaim(t, sysClaim, spub)
 
 	oldRcount := atomic.LoadInt32(&reqCount)
-	r, err = sysNc.Request(fmt.Sprintf(accUpdateEventSubjNew, spub), []byte(sysJwt2), time.Second)
+	_, err = sysNc.Request(fmt.Sprintf(accUpdateEventSubjNew, spub), []byte(sysJwt2), time.Second)
 	require_NoError(t, err)
 	// test to make sure connected client (aNc) was not kicked
 	time.Sleep(200 * time.Millisecond)
