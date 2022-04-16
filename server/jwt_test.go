@@ -6796,17 +6796,12 @@ func TestJWTSysAccUpdateMixedMode(t *testing.T) {
 	sysJwt := encodeClaim(t, sysClaim, spub)
 	encodeJwt1Time := time.Now()
 
-	// create two jwt, one with and one without bad import
 	akp, apub := createKey(t)
 	aUsr := createUserCreds(t, nil, akp)
 	claim := jwt.NewAccountClaims(apub)
 	claim.Limits.JetStreamLimits.DiskStorage = 1024 * 1024
 	claim.Limits.JetStreamLimits.Streams = 1
 	jwt1 := encodeClaim(t, claim, apub)
-
-	vr := jwt.ValidationResults{}
-	claim.Validate(&vr)
-	require_False(t, vr.IsBlocking(true))
 
 	basePath := "/ngs/v1/accounts/jwt/"
 	reqCount := int32(0)
@@ -6847,8 +6842,9 @@ func TestJWTSysAccUpdateMixedMode(t *testing.T) {
 				system_account: %s
 				resolver: URL("%s%s")`, conf, ojwt, spub, ts.URL, basePath)
 		})
-
+	defer sc.shutdown()
 	disconnectChan := make(chan struct{}, 100)
+	defer close(disconnectChan)
 	disconnectCb := nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
 		disconnectChan <- struct{}{}
 	})
