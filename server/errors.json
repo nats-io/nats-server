@@ -1228,5 +1228,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerMaxRequestBatchExceededF",
+    "code": 400,
+    "error_code": 10125,
+    "description": "consumer max request batch exceeds server limit of {limit}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

@@ -290,7 +290,8 @@ func generateJSMappingTable(domain string) map[string]string {
 const JSMaxDescriptionLen = 4 * 1024
 
 // JSMaxNameLen is the maximum name lengths for streams, consumers and templates.
-const JSMaxNameLen = 256
+// Picked 255 as it seems to be a widely used file name limit
+const JSMaxNameLen = 255
 
 // Responses for API calls.
 
@@ -1221,140 +1222,6 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 		return
 	}
 
-	hasStream := func(streamName string) (bool, int32, []string) {
-		var exists bool
-		var maxMsgSize int32
-		var subs []string
-		if s.JetStreamIsClustered() {
-			if js, _ := s.getJetStreamCluster(); js != nil {
-				js.mu.RLock()
-				if sa := js.streamAssignment(acc.Name, streamName); sa != nil {
-					maxMsgSize = sa.Config.MaxMsgSize
-					subs = sa.Config.Subjects
-					exists = true
-				}
-				js.mu.RUnlock()
-			}
-		} else if mset, err := acc.lookupStream(streamName); err == nil {
-			maxMsgSize = mset.cfg.MaxMsgSize
-			subs = mset.cfg.Subjects
-			exists = true
-		}
-		return exists, maxMsgSize, subs
-	}
-
-	var streamSubs []string
-	var deliveryPrefixes []string
-	var apiPrefixes []string
-
-	// Do some pre-checking for mirror config to avoid cycles in clustered mode.
-	if cfg.Mirror != nil {
-		if len(cfg.Subjects) > 0 {
-			resp.Error = NewJSMirrorWithSubjectsError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-		if len(cfg.Sources) > 0 {
-			resp.Error = NewJSMirrorWithSourcesError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-		if cfg.Mirror.FilterSubject != _EMPTY_ {
-			resp.Error = NewJSMirrorWithSubjectFiltersError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-		if cfg.Mirror.OptStartSeq > 0 && cfg.Mirror.OptStartTime != nil {
-			resp.Error = NewJSMirrorWithStartSeqAndTimeError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-		if cfg.Duplicates != time.Duration(0) {
-			resp.Error = &ApiError{Code: 400, Description: "stream mirrors do not make use of a de-duplication window"}
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-		// We do not require other stream to exist anymore, but if we can see it check payloads.
-		exists, maxMsgSize, subs := hasStream(cfg.Mirror.Name)
-		if len(subs) > 0 {
-			streamSubs = append(streamSubs, subs...)
-		}
-		if exists && cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
-			resp.Error = NewJSMirrorMaxMessageSizeTooBigError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-		if cfg.Mirror.External != nil {
-			if cfg.Mirror.External.DeliverPrefix != _EMPTY_ {
-				deliveryPrefixes = append(deliveryPrefixes, cfg.Mirror.External.DeliverPrefix)
-			}
-			if cfg.Mirror.External.ApiPrefix != _EMPTY_ {
-				apiPrefixes = append(apiPrefixes, cfg.Mirror.External.ApiPrefix)
-			}
-		}
-	}
-	if len(cfg.Sources) > 0 {
-		for _, src := range cfg.Sources {
-			if src.External == nil {
-				continue
-			}
-			exists, maxMsgSize, subs := hasStream(src.Name)
-			if len(subs) > 0 {
-				streamSubs = append(streamSubs, subs...)
-			}
-			if src.External.DeliverPrefix != _EMPTY_ {
-				deliveryPrefixes = append(deliveryPrefixes, src.External.DeliverPrefix)
-			}
-			if src.External.ApiPrefix != _EMPTY_ {
-				apiPrefixes = append(apiPrefixes, src.External.ApiPrefix)
-			}
-			if exists && cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
-				resp.Error = NewJSSourceMaxMessageSizeTooBigError()
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-				return
-			}
-		}
-	}
-	// check prefix overlap with subjects
-	for _, pfx := range deliveryPrefixes {
-		if !IsValidPublishSubject(pfx) {
-			resp.Error = NewJSStreamInvalidExternalDeliverySubjError(pfx)
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-		for _, sub := range streamSubs {
-			if SubjectsCollide(sub, fmt.Sprintf("%s.%s", pfx, sub)) {
-				resp.Error = NewJSStreamExternalDelPrefixOverlapsError(pfx, sub)
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-				return
-			}
-		}
-	}
-	// check if api prefixes overlap
-	for _, apiPfx := range apiPrefixes {
-		if !IsValidPublishSubject(apiPfx) {
-			resp.Error = &ApiError{Code: 400, Description: fmt.Sprintf("stream external api prefix %q must be a valid subject without wildcards", apiPfx)}
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-		if SubjectsCollide(apiPfx, JSApiPrefix) {
-			resp.Error = NewJSStreamExternalApiOverlapError(apiPfx, JSApiPrefix)
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-	}
-
-	// Check for MaxBytes required and it's limit
-	if required, limit := acc.maxBytesLimits(&cfg); required && cfg.MaxBytes <= 0 {
-		resp.Error = NewJSStreamMaxBytesRequiredError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	} else if limit > 0 && cfg.MaxBytes > limit {
-		resp.Error = NewJSStreamMaxStreamBytesExceededError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-
 	// Can't create a stream with a sealed state.
 	if cfg.Sealed {
 		resp.Error = NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for create can not be sealed"))
@@ -1368,16 +1235,8 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 		return
 	}
 
-	selectedLimits, tier, jsa, apiErr := acc.selectLimits(&cfg)
-
-	if apiErr != nil {
-		resp.Error = apiErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-
-	if selectedLimits.MaxStreams > 0 && jsa.countStreams(tier, &cfg) >= selectedLimits.MaxStreams {
-		resp.Error = NewJSMaximumStreamsLimitError()
+	if err := acc.jsNonClusteredStreamLimitsCheck(&cfg); err != nil {
+		resp.Error = err
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -1442,9 +1301,9 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, _ *Account,
 		return
 	}
 
-	cfg, err := checkStreamCfg(&ncfg, &s.getOpts().JetStreamLimits)
-	if err != nil {
-		resp.Error = NewJSStreamInvalidConfigError(err)
+	cfg, apiErr := s.checkStreamCfg(&ncfg, acc)
+	if apiErr != nil {
+		resp.Error = apiErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -1452,17 +1311,6 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, _ *Account,
 	streamName := streamNameFromSubject(subject)
 	if streamName != cfg.Name {
 		resp.Error = NewJSStreamMismatchError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-
-	// Check for MaxBytes required and it's limit
-	if required, limit := acc.maxBytesLimits(&cfg); required && cfg.MaxBytes <= 0 {
-		resp.Error = NewJSStreamMaxBytesRequiredError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	} else if limit > 0 && cfg.MaxBytes > limit {
-		resp.Error = NewJSStreamMaxStreamBytesExceededError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
@@ -2783,6 +2631,23 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, _ *Account, 
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
+func (acc *Account) jsNonClusteredStreamLimitsCheck(cfg *StreamConfig) *ApiError {
+	selectedLimits, tier, jsa, apiErr := acc.selectLimits(cfg)
+	if apiErr != nil {
+		return apiErr
+	}
+	jsa.mu.RLock()
+	defer jsa.mu.RUnlock()
+	if selectedLimits.MaxStreams > 0 && jsa.countStreams(tier, cfg) >= selectedLimits.MaxStreams {
+		return NewJSMaximumStreamsLimitError()
+	}
+	reserved := jsa.tieredReservation(tier, cfg)
+	if err := jsa.js.checkAllLimits(selectedLimits, cfg, reserved, 0); err != nil {
+		return NewJSStreamLimitsError(err, Unless(err))
+	}
+	return nil
+}
+
 // Request to restore a stream.
 func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	if c == nil || !s.JetStreamIsLeader() {
@@ -2819,8 +2684,22 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, _ *Account
 		req.Config.Name = stream
 	}
 
+	// check stream config at the start of the restore process, not at the end
+	cfg, apiErr := s.checkStreamCfg(&req.Config, acc)
+	if apiErr != nil {
+		resp.Error = apiErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
 	if s.JetStreamIsClustered() {
 		s.jsClusteredStreamRestoreRequest(ci, acc, &req, stream, subject, reply, rmsg)
+		return
+	}
+
+	if err := acc.jsNonClusteredStreamLimitsCheck(&cfg); err != nil {
+		resp.Error = err
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 

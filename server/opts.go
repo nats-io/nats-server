@@ -185,9 +185,10 @@ type RemoteLeafOpts struct {
 }
 
 type JSLimitOpts struct {
-	MaxAckPending int
-	MaxHAAssets   int
-	Duplicates    time.Duration
+	MaxRequestBatch int
+	MaxAckPending   int
+	MaxHAAssets     int
+	Duplicates      time.Duration
 }
 
 // Options block for nats-server.
@@ -1818,6 +1819,8 @@ func parseJetStreamLimits(v interface{}, opts *Options, errors *[]error, warning
 			lim.MaxAckPending = int(mv.(int64))
 		case "max_ha_assets":
 			lim.MaxHAAssets = int(mv.(int64))
+		case "max_request_batch":
+			lim.MaxRequestBatch = int(mv.(int64))
 		case "duplicate_window":
 			var err error
 			lim.Duplicates, err = time.ParseDuration(mv.(string))

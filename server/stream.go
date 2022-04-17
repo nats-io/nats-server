@@ -295,9 +295,9 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	}
 
 	// Sensible defaults.
-	cfg, err := checkStreamCfg(config, &s.getOpts().JetStreamLimits)
-	if err != nil {
-		return nil, NewJSStreamInvalidConfigError(err, Unless(err))
+	cfg, apiErr := s.checkStreamCfg(config, a)
+	if apiErr != nil {
+		return nil, apiErr
 	}
 
 	singleServerMode := !s.JetStreamIsClustered() && s.standAloneMode()
@@ -345,30 +345,6 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 			jsa.mu.Unlock()
 			return nil, fmt.Errorf("stream not owned by template")
 		}
-	}
-
-	// Check for mirror designation.
-	if cfg.Mirror != nil {
-		// Can't have subjects.
-		if len(cfg.Subjects) > 0 {
-			jsa.mu.Unlock()
-			return nil, fmt.Errorf("stream mirrors can not also contain subjects")
-		}
-		if len(cfg.Sources) > 0 {
-			jsa.mu.Unlock()
-			return nil, fmt.Errorf("stream mirrors can not also contain other sources")
-		}
-		if cfg.Mirror.FilterSubject != _EMPTY_ {
-			jsa.mu.Unlock()
-			return nil, fmt.Errorf("stream mirrors can not contain filtered subjects")
-		}
-		if cfg.Mirror.OptStartSeq > 0 && cfg.Mirror.OptStartTime != nil {
-			jsa.mu.Unlock()
-			return nil, fmt.Errorf("stream mirrors can not have both start seq and start time configured")
-		}
-	} else if len(cfg.Subjects) == 0 && len(cfg.Sources) == 0 {
-		jsa.mu.Unlock()
-		return nil, fmt.Errorf("stream needs at least one configured subject or mirror")
 	}
 
 	// Setup our internal indexed names here for sources.
@@ -870,18 +846,20 @@ func (jsa *jsAccount) subjectsOverlap(subjects []string) bool {
 // StreamDefaultDuplicatesWindow default duplicates window.
 const StreamDefaultDuplicatesWindow = 2 * time.Minute
 
-func checkStreamCfg(config *StreamConfig, lim *JSLimitOpts) (StreamConfig, error) {
+func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfig, *ApiError) {
+	lim := &s.getOpts().JetStreamLimits
+
 	if config == nil {
-		return StreamConfig{}, fmt.Errorf("stream configuration invalid")
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration invalid"))
 	}
 	if !isValidName(config.Name) {
-		return StreamConfig{}, fmt.Errorf("stream name is required and can not contain '.', '*', '>'")
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream name is required and can not contain '.', '*', '>'"))
 	}
 	if len(config.Name) > JSMaxNameLen {
-		return StreamConfig{}, fmt.Errorf("stream name is too long, maximum allowed is %d", JSMaxNameLen)
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream name is too long, maximum allowed is %d", JSMaxNameLen))
 	}
 	if len(config.Description) > JSMaxDescriptionLen {
-		return StreamConfig{}, fmt.Errorf("stream description is too long, maximum allowed is %d", JSMaxDescriptionLen)
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream description is too long, maximum allowed is %d", JSMaxDescriptionLen))
 	}
 
 	cfg := *config
@@ -894,7 +872,7 @@ func checkStreamCfg(config *StreamConfig, lim *JSLimitOpts) (StreamConfig, error
 		cfg.Replicas = 1
 	}
 	if cfg.Replicas > StreamMaxReplicas {
-		return cfg, fmt.Errorf("maximum replicas is %d", StreamMaxReplicas)
+		return cfg, NewJSStreamInvalidConfigError(fmt.Errorf("maximum replicas is %d", StreamMaxReplicas))
 	}
 	if cfg.MaxMsgs == 0 {
 		cfg.MaxMsgs = -1
@@ -911,7 +889,7 @@ func checkStreamCfg(config *StreamConfig, lim *JSLimitOpts) (StreamConfig, error
 	if cfg.MaxConsumers == 0 {
 		cfg.MaxConsumers = -1
 	}
-	if cfg.Duplicates == 0 {
+	if cfg.Duplicates == 0 && cfg.Mirror == nil {
 		maxWindow := StreamDefaultDuplicatesWindow
 		if lim.Duplicates > 0 && maxWindow > lim.Duplicates {
 			maxWindow = lim.Duplicates
@@ -923,18 +901,156 @@ func checkStreamCfg(config *StreamConfig, lim *JSLimitOpts) (StreamConfig, error
 		}
 	}
 	if cfg.Duplicates < 0 {
-		return StreamConfig{}, fmt.Errorf("duplicates window can not be negative")
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("duplicates window can not be negative"))
 	}
 	// Check that duplicates is not larger then age if set.
 	if cfg.MaxAge != 0 && cfg.Duplicates > cfg.MaxAge {
-		return StreamConfig{}, fmt.Errorf("duplicates window can not be larger then max age")
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("duplicates window can not be larger then max age"))
 	}
 	if lim.Duplicates > 0 && cfg.Duplicates > lim.Duplicates {
-		return StreamConfig{}, fmt.Errorf("duplicates window can not be larger then server limit of %v", lim.Duplicates.String())
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("duplicates window can not be larger then server limit of %v", lim.Duplicates.String()))
 	}
 
 	if cfg.DenyPurge && cfg.AllowRollup {
-		return StreamConfig{}, fmt.Errorf("roll-ups require the purge permission")
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("roll-ups require the purge permission"))
+	}
+
+	getStream := func(streamName string) (bool, StreamConfig) {
+		var exists bool
+		var cfg StreamConfig
+		if s.JetStreamIsClustered() {
+			if js, _ := s.getJetStreamCluster(); js != nil {
+				js.mu.RLock()
+				if sa := js.streamAssignment(acc.Name, streamName); sa != nil {
+					cfg = *sa.Config
+					exists = true
+				}
+				js.mu.RUnlock()
+			}
+		} else if mset, err := acc.lookupStream(streamName); err == nil {
+			cfg = mset.cfg
+			exists = true
+		}
+		return exists, cfg
+	}
+	hasStream := func(streamName string) (bool, int32, []string) {
+		exists, cfg := getStream(streamName)
+		return exists, cfg.MaxMsgSize, cfg.Subjects
+	}
+
+	var streamSubs []string
+	var deliveryPrefixes []string
+	var apiPrefixes []string
+
+	// Do some pre-checking for mirror config to avoid cycles in clustered mode.
+	if cfg.Mirror != nil {
+		if len(cfg.Subjects) > 0 {
+			return StreamConfig{}, NewJSMirrorWithSubjectsError()
+
+		}
+		if len(cfg.Sources) > 0 {
+			return StreamConfig{}, NewJSMirrorWithSourcesError()
+		}
+		if cfg.Mirror.FilterSubject != _EMPTY_ {
+			return StreamConfig{}, NewJSMirrorWithSubjectFiltersError()
+		}
+		if cfg.Mirror.OptStartSeq > 0 && cfg.Mirror.OptStartTime != nil {
+			return StreamConfig{}, NewJSMirrorWithStartSeqAndTimeError()
+		}
+		if cfg.Duplicates != time.Duration(0) {
+			return StreamConfig{}, NewJSStreamInvalidConfigError(
+				errors.New("stream mirrors do not make use of a de-duplication window"))
+		}
+		// We do not require other stream to exist anymore, but if we can see it check payloads.
+		exists, maxMsgSize, subs := hasStream(cfg.Mirror.Name)
+		if len(subs) > 0 {
+			streamSubs = append(streamSubs, subs...)
+		}
+		if exists && cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
+			return StreamConfig{}, NewJSMirrorMaxMessageSizeTooBigError()
+		}
+		if cfg.Mirror.External != nil {
+			if cfg.Mirror.External.DeliverPrefix != _EMPTY_ {
+				deliveryPrefixes = append(deliveryPrefixes, cfg.Mirror.External.DeliverPrefix)
+			}
+			if cfg.Mirror.External.ApiPrefix != _EMPTY_ {
+				apiPrefixes = append(apiPrefixes, cfg.Mirror.External.ApiPrefix)
+			}
+		}
+	}
+	if len(cfg.Sources) > 0 {
+		for _, src := range cfg.Sources {
+			if src.External == nil {
+				continue
+			}
+			exists, maxMsgSize, subs := hasStream(src.Name)
+			if len(subs) > 0 {
+				streamSubs = append(streamSubs, subs...)
+			}
+			if src.External.DeliverPrefix != _EMPTY_ {
+				deliveryPrefixes = append(deliveryPrefixes, src.External.DeliverPrefix)
+			}
+			if src.External.ApiPrefix != _EMPTY_ {
+				apiPrefixes = append(apiPrefixes, src.External.ApiPrefix)
+			}
+			if exists && cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
+				return StreamConfig{}, NewJSSourceMaxMessageSizeTooBigError()
+			}
+		}
+	}
+	// check prefix overlap with subjects
+	for _, pfx := range deliveryPrefixes {
+		if !IsValidPublishSubject(pfx) {
+			return StreamConfig{}, NewJSStreamInvalidExternalDeliverySubjError(pfx)
+		}
+		for _, sub := range streamSubs {
+			if SubjectsCollide(sub, fmt.Sprintf("%s.%s", pfx, sub)) {
+				return StreamConfig{}, NewJSStreamExternalDelPrefixOverlapsError(pfx, sub)
+			}
+		}
+	}
+	// check if api prefixes overlap
+	for _, apiPfx := range apiPrefixes {
+		if !IsValidPublishSubject(apiPfx) {
+			return StreamConfig{}, NewJSStreamInvalidConfigError(
+				fmt.Errorf("stream external api prefix %q must be a valid subject without wildcards", apiPfx))
+		}
+		if SubjectsCollide(apiPfx, JSApiPrefix) {
+			return StreamConfig{}, NewJSStreamExternalApiOverlapError(apiPfx, JSApiPrefix)
+		}
+	}
+
+	// cycle check for source cycle
+	toVisit := []*StreamConfig{&cfg}
+	visited := make(map[string]struct{})
+	for len(toVisit) > 0 {
+		cfg := toVisit[0]
+		toVisit = toVisit[1:]
+		visited[cfg.Name] = struct{}{}
+		for _, src := range cfg.Sources {
+			if src.External != nil {
+				// TODO (mh) look up service imports and see if src.External.ApiPrefix returns an account
+				// this will be much easier without the delivery subject
+				continue
+			}
+			if _, ok := visited[src.Name]; ok {
+				return StreamConfig{}, NewJSStreamInvalidConfigError(errors.New("detected cycle"))
+			}
+			if exists, cfg := getStream(src.Name); exists {
+				toVisit = append(toVisit, &cfg)
+			}
+		}
+		// Avoid cycles hiding behind mirrors
+		if m := cfg.Mirror; m != nil {
+			if m.External == nil {
+				if _, ok := visited[m.Name]; ok {
+					return StreamConfig{}, NewJSStreamInvalidConfigError(errors.New("detected cycle"))
+				}
+				if exists, cfg := getStream(m.Name); exists {
+					toVisit = append(toVisit, &cfg)
+				}
+			}
+		}
 	}
 
 	if len(cfg.Subjects) == 0 {
@@ -943,27 +1059,40 @@ func checkStreamCfg(config *StreamConfig, lim *JSLimitOpts) (StreamConfig, error
 		}
 	} else {
 		if cfg.Mirror != nil {
-			return StreamConfig{}, fmt.Errorf("stream mirrors may not have subjects")
+			return StreamConfig{}, NewJSMirrorWithSubjectsError()
 		}
 
 		// We can allow overlaps, but don't allow direct duplicates.
 		dset := make(map[string]struct{}, len(cfg.Subjects))
 		for _, subj := range cfg.Subjects {
 			if _, ok := dset[subj]; ok {
-				return StreamConfig{}, fmt.Errorf("duplicate subjects detected")
+				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("duplicate subjects detected"))
 			}
 			// Also check to make sure we do not overlap with our $JS API subjects.
 			if subjectIsSubsetMatch(subj, "$JS.API.>") {
-				return StreamConfig{}, fmt.Errorf("subjects overlap with jetstream api")
+				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with jetstream api"))
 			}
 			// Make sure the subject is valid.
 			if !IsValidSubject(subj) {
-				return StreamConfig{}, fmt.Errorf("invalid subject")
+				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("invalid subject"))
 			}
 			// Mark for duplicate check.
 			dset[subj] = struct{}{}
 		}
 	}
+
+	if len(cfg.Subjects) == 0 && len(cfg.Sources) == 0 && cfg.Mirror == nil {
+		return StreamConfig{}, NewJSStreamInvalidConfigError(
+			fmt.Errorf("stream needs at least one configured subject or be a source/mirror"))
+	}
+
+	// Check for MaxBytes required and it's limit
+	if required, limit := acc.maxBytesLimits(&cfg); required && cfg.MaxBytes <= 0 {
+		return StreamConfig{}, NewJSStreamMaxBytesRequiredError()
+	} else if limit > 0 && cfg.MaxBytes > limit {
+		return StreamConfig{}, NewJSStreamMaxStreamBytesExceededError()
+	}
+
 	return cfg, nil
 }
 
@@ -985,10 +1114,10 @@ func (mset *stream) fileStoreConfig() (FileStoreConfig, error) {
 }
 
 // Do not hold jsAccount or jetStream lock
-func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, lim *JSLimitOpts) (*StreamConfig, error) {
-	cfg, err := checkStreamCfg(new, lim)
-	if err != nil {
-		return nil, NewJSStreamInvalidConfigError(err, Unless(err))
+func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server) (*StreamConfig, error) {
+	cfg, apiErr := s.checkStreamCfg(new, jsa.acc())
+	if apiErr != nil {
+		return nil, apiErr
 	}
 
 	// Name must match.
@@ -1096,8 +1225,11 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, lim *JSLimitOpts
 
 // Update will allow certain configuration properties of an existing stream to be updated.
 func (mset *stream) update(config *StreamConfig) error {
-	ocfg := mset.config()
-	cfg, err := mset.jsa.configUpdateCheck(&ocfg, config, &mset.srv.getOpts().JetStreamLimits)
+	mset.mu.RLock()
+	ocfg := mset.cfg
+	s := mset.srv
+	mset.mu.RUnlock()
+	cfg, err := mset.jsa.configUpdateCheck(&ocfg, config, s)
 	if err != nil {
 		return NewJSStreamInvalidConfigError(err, Unless(err))
 	}
@@ -3793,14 +3925,14 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 		return nil, errors.New("nil config on stream restore")
 	}
 
-	cfg, err := checkStreamCfg(ncfg, &a.srv.getOpts().JetStreamLimits)
-	if err != nil {
-		return nil, NewJSStreamNotFoundError(Unless(err))
-	}
-
-	_, jsa, err := a.checkForJetStream()
+	s, jsa, err := a.checkForJetStream()
 	if err != nil {
 		return nil, err
+	}
+
+	cfg, apiErr := s.checkStreamCfg(ncfg, a)
+	if apiErr != nil {
+		return nil, apiErr
 	}
 
 	sd := filepath.Join(jsa.storeDir, snapsDir)
