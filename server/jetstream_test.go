@@ -16682,7 +16682,7 @@ func TestJetStreamLimits(t *testing.T) {
 		require_True(t, ci.Config.MaxAckPending == 1000)
 		require_True(t, ci.Config.MaxRequestBatch == 250)
 
-		ci, err = js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur2", AckPolicy: nats.AckExplicitPolicy, MaxRequestBatch: 500})
+		_, err = js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur2", AckPolicy: nats.AckExplicitPolicy, MaxRequestBatch: 500})
 		require_Error(t, err)
 		require_Equal(t, err.Error(), "consumer max request batch exceeds server limit of 250")
 

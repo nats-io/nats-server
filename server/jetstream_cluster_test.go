@@ -13935,6 +13935,7 @@ func TestJetStreamMirrorSourceLoop(t *testing.T) {
 			Replicas: replicas,
 			Sources:  []*nats.StreamSource{{Name: "DECOY"}, {Name: "2"}},
 		})
+		require_NoError(t, err)
 		_, err = js.AddStream(&nats.StreamConfig{
 			Name:     "DECOY",
 			Subjects: []string{"baz"},
