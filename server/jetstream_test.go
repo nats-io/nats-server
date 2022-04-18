@@ -4201,6 +4201,9 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	opts.JetStream = true
 	opts.JetStreamDomain = "domain"
 	opts.StoreDir = tdir
+	maxStore := int64(1024 * 1024 * 1024)
+	opts.maxStoreSet = true
+	opts.JetStreamMaxStore = maxStore
 	rurl, _ := url.Parse(fmt.Sprintf("nats-leaf://%s:%d", lopts.LeafNode.Host, lopts.LeafNode.Port))
 	opts.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{rurl}}}
 
@@ -12070,7 +12073,7 @@ func TestJetStreamMirrorUpdatePreventsSubjects(t *testing.T) {
 	require_NoError(t, err)
 
 	_, err = js.UpdateStream(&nats.StreamConfig{Name: "MIRROR", Mirror: &nats.StreamSource{Name: "ORIGINAL"}, Subjects: []string{"x"}})
-	if err == nil || err.Error() != "stream mirrors may not have subjects" {
+	if err == nil || err.Error() != "stream mirrors can not contain subjects" {
 		t.Fatalf("Expected to not be able to put subjects on a stream, got: %+v", err)
 	}
 }
@@ -13511,9 +13514,9 @@ func TestJetStreamLongStreamNamesAndPubAck(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
-	data := make([]byte, 256)
+	data := make([]byte, 255)
 	rand.Read(data)
-	stream := base64.StdEncoding.EncodeToString(data)[:256]
+	stream := base64.StdEncoding.EncodeToString(data)[:255]
 
 	cfg := &nats.StreamConfig{
 		Name:     stream,
@@ -16573,6 +16576,83 @@ func TestJetStreamCrossAccounts(t *testing.T) {
 	}
 }
 
+func TestJetStreamInvalidRestoreRequests(t *testing.T) {
+	test := func(t *testing.T, s *Server, replica int) {
+		nc := natsConnect(t, s.ClientURL())
+		// test invalid stream config in restore request
+		require_fail := func(cfg StreamConfig, errDesc string) {
+			t.Helper()
+			rreq := &JSApiStreamRestoreRequest{
+				Config: cfg,
+			}
+			req, err := json.Marshal(rreq)
+			require_NoError(t, err)
+			rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamRestoreT, "fail"), req, time.Second)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			var rresp JSApiStreamRestoreResponse
+			json.Unmarshal(rmsg.Data, &rresp)
+			require_True(t, rresp.Error != nil)
+			require_Equal(t, rresp.Error.Description, errDesc)
+		}
+		require_fail(StreamConfig{Name: "fail", MaxBytes: 1024, Storage: FileStorage, Replicas: 6},
+			"maximum replicas is 5")
+		require_fail(StreamConfig{Name: "fail", MaxBytes: 2 * 1012 * 1024, Storage: FileStorage, Replicas: replica},
+			"insufficient storage resources available")
+		js, err := nc.JetStream()
+		require_NoError(t, err)
+		_, err = js.AddStream(&nats.StreamConfig{Name: "stream", MaxBytes: 1024, Storage: nats.FileStorage, Replicas: 1})
+		require_NoError(t, err)
+		require_fail(StreamConfig{Name: "fail", MaxBytes: 1024, Storage: FileStorage},
+			"maximum number of streams reached")
+	}
+
+	commonAccSection := `
+		no_auth_user: u
+		accounts {
+			ONE {
+				users = [ { user: "u", pass: "s3cr3t!" } ]
+				jetstream: {
+					max_store: 1Mb
+					max_streams: 1
+				}
+			}
+			$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+		}`
+
+	t.Run("clustered", func(t *testing.T) {
+		c := createJetStreamClusterWithTemplate(t, `
+			listen: 127.0.0.1:-1
+			server_name: %s
+			jetstream: {
+				max_mem_store: 2MB,
+				max_file_store: 8MB,
+				store_dir: '%s',
+			}
+			cluster {
+				name: %s
+				listen: 127.0.0.1:%d
+				routes = [%s]
+			}`+commonAccSection, "clust", 3)
+		defer c.shutdown()
+		s := c.randomServer()
+		test(t, s, 3)
+	})
+	t.Run("single", func(t *testing.T) {
+		storeDir := createDir(t, JetStreamStoreDir)
+		defer removeDir(t, storeDir)
+		conf := createConfFile(t, []byte(fmt.Sprintf(`
+			listen: 127.0.0.1:-1
+			jetstream: {max_mem_store: 2MB, max_file_store: 8MB, store_dir: '%s'}
+			%s`, storeDir, commonAccSection)))
+		defer removeFile(t, conf)
+		s, _ := RunServerWithConfig(conf)
+		defer s.Shutdown()
+		test(t, s, 1)
+	})
+}
+
 func TestJetStreamLimits(t *testing.T) {
 	test := func(t *testing.T, s *Server) {
 		nc := natsConnect(t, s.ClientURL())
@@ -16585,9 +16665,9 @@ func TestJetStreamLimits(t *testing.T) {
 		require_NoError(t, err)
 		require_True(t, si.Config.Duplicates == time.Minute)
 
-		si, err = js.AddStream(&nats.StreamConfig{Name: "bar", Duplicates: 500 * time.Millisecond})
+		si, err = js.AddStream(&nats.StreamConfig{Name: "bar", Duplicates: 1500 * time.Millisecond})
 		require_NoError(t, err)
-		require_True(t, si.Config.Duplicates == 500*time.Millisecond)
+		require_True(t, si.Config.Duplicates == 1500*time.Millisecond)
 
 		_, err = js.UpdateStream(&nats.StreamConfig{Name: "bar", Duplicates: 2 * time.Minute})
 		require_Error(t, err)
@@ -16600,10 +16680,16 @@ func TestJetStreamLimits(t *testing.T) {
 		ci, err := js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur1", AckPolicy: nats.AckExplicitPolicy})
 		require_NoError(t, err)
 		require_True(t, ci.Config.MaxAckPending == 1000)
+		require_True(t, ci.Config.MaxRequestBatch == 250)
+
+		_, err = js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur2", AckPolicy: nats.AckExplicitPolicy, MaxRequestBatch: 500})
+		require_Error(t, err)
+		require_Equal(t, err.Error(), "consumer max request batch exceeds server limit of 250")
 
 		ci, err = js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur2", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 500})
 		require_NoError(t, err)
 		require_True(t, ci.Config.MaxAckPending == 500)
+		require_True(t, ci.Config.MaxRequestBatch == 250)
 
 		_, err = js.UpdateConsumer("foo", &nats.ConsumerConfig{Durable: "dur2", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 2000})
 		require_Error(t, err)
@@ -16622,7 +16708,7 @@ func TestJetStreamLimits(t *testing.T) {
 				max_mem_store: 2MB,
 				max_file_store: 8MB,
 				store_dir: '%s',
-				limits: {duplicate_window: "1m"}
+				limits: {duplicate_window: "1m", max_request_batch: 250}
 			}
 			cluster {
 				name: %s
@@ -16659,7 +16745,7 @@ func TestJetStreamLimits(t *testing.T) {
 				max_mem_store: 2MB,
 				max_file_store: 8MB,
 				store_dir: '%s',
-				limits: {duplicate_window: "1m"}
+				limits: {duplicate_window: "1m", max_request_batch: 250}
 			}
 			no_auth_user: u
 			accounts {

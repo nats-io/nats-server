@@ -113,6 +113,9 @@ const (
 	// JSConsumerMaxPendingAckPolicyRequiredErr consumer requires ack policy for max ack pending
 	JSConsumerMaxPendingAckPolicyRequiredErr ErrorIdentifier = 10082
 
+	// JSConsumerMaxRequestBatchExceededF consumer max request batch exceeds server limit of {limit}
+	JSConsumerMaxRequestBatchExceededF ErrorIdentifier = 10125
+
 	// JSConsumerMaxRequestBatchNegativeErr consumer max request batch needs to be > 0
 	JSConsumerMaxRequestBatchNegativeErr ErrorIdentifier = 10114
 
@@ -413,6 +416,7 @@ var (
 		JSConsumerMaxDeliverBackoffErr:             {Code: 400, ErrCode: 10116, Description: "max deliver is required to be > length of backoff values"},
 		JSConsumerMaxPendingAckExcessErrF:          {Code: 400, ErrCode: 10121, Description: "consumer max ack pending exceeds system limit of {limit}"},
 		JSConsumerMaxPendingAckPolicyRequiredErr:   {Code: 400, ErrCode: 10082, Description: "consumer requires ack policy for max ack pending"},
+		JSConsumerMaxRequestBatchExceededF:         {Code: 400, ErrCode: 10125, Description: "consumer max request batch exceeds server limit of {limit}"},
 		JSConsumerMaxRequestBatchNegativeErr:       {Code: 400, ErrCode: 10114, Description: "consumer max request batch needs to be > 0"},
 		JSConsumerMaxRequestExpiresToSmall:         {Code: 400, ErrCode: 10115, Description: "consumer max request expires needs to be >= 1ms"},
 		JSConsumerMaxWaitingNegativeErr:            {Code: 400, ErrCode: 10087, Description: "consumer max waiting needs to be positive"},
@@ -913,6 +917,22 @@ func NewJSConsumerMaxPendingAckPolicyRequiredError(opts ...ErrorOption) *ApiErro
 	}
 
 	return ApiErrors[JSConsumerMaxPendingAckPolicyRequiredErr]
+}
+
+// NewJSConsumerMaxRequestBatchExceededError creates a new JSConsumerMaxRequestBatchExceededF error: "consumer max request batch exceeds server limit of {limit}"
+func NewJSConsumerMaxRequestBatchExceededError(limit interface{}, opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	e := ApiErrors[JSConsumerMaxRequestBatchExceededF]
+	args := e.toReplacerArgs([]interface{}{"{limit}", limit})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
 }
 
 // NewJSConsumerMaxRequestBatchNegativeError creates a new JSConsumerMaxRequestBatchNegativeErr error: "consumer max request batch needs to be > 0"

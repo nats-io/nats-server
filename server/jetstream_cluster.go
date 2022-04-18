@@ -4299,6 +4299,26 @@ func (acc *Account) selectLimits(cfg *StreamConfig) (*JetStreamAccountLimits, st
 	return &selectedLimits, tierName, jsa, nil
 }
 
+// Read lock needs to be held
+func (js *jetStream) jsClusteredStreamLimitsCheck(acc *Account, cfg *StreamConfig) *ApiError {
+	selectedLimits, tier, _, apiErr := acc.selectLimits(cfg)
+	if apiErr != nil {
+		return apiErr
+	}
+
+	asa := js.cluster.streams[acc.Name]
+	numStreams, reservations := tieredStreamAndReservationCount(asa, tier, cfg)
+
+	if selectedLimits.MaxStreams > 0 && numStreams >= selectedLimits.MaxStreams {
+		return NewJSMaximumStreamsLimitError()
+	}
+	// Check for account limits here before proposing.
+	if err := js.checkAccountLimits(selectedLimits, cfg, reservations); err != nil {
+		return NewJSStreamLimitsError(err, Unless(err))
+	}
+	return nil
+}
+
 func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, config *StreamConfig) {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
@@ -4307,41 +4327,24 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 
 	var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
 
-	ccfg, err := checkStreamCfg(config, &s.getOpts().JetStreamLimits)
-	if err != nil {
-		resp.Error = NewJSStreamInvalidConfigError(err, Unless(err))
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
-		return
-	}
-	cfg := &ccfg
-
-	selectedLimits, tier, _, apiErr := acc.selectLimits(&ccfg)
+	ccfg, apiErr := s.checkStreamCfg(config, acc)
 	if apiErr != nil {
 		resp.Error = apiErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
+	cfg := &ccfg
 
-	// Check for stream limits here before proposing. These need to be tracked from meta layer, not jsa.
 	js.mu.RLock()
+	apiErr = js.jsClusteredStreamLimitsCheck(acc, cfg)
 	asa := cc.streams[acc.Name]
-	numStreams, reservations := tieredStreamAndReservationCount(asa, tier, config)
-
-	if selectedLimits.MaxStreams > 0 && numStreams >= selectedLimits.MaxStreams {
-		resp.Error = NewJSMaximumStreamsLimitError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
-		js.mu.RUnlock()
-		return
-	}
-
-	// Check for account limits here before proposing.
-	if err := js.checkAccountLimits(selectedLimits, cfg, reservations); err != nil {
-		resp.Error = NewJSStreamLimitsError(err, Unless(err))
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
-		js.mu.RUnlock()
-		return
-	}
 	js.mu.RUnlock()
+	// Check for stream limits here before proposing. These need to be tracked from meta layer, not jsa.
+	if apiErr != nil {
+		resp.Error = apiErr
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
+	}
 
 	// Now process the request and proposal.
 	js.mu.Lock()
@@ -4424,7 +4427,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	var newCfg *StreamConfig
 	if jsa := js.accounts[acc.Name]; jsa != nil {
 		js.mu.Unlock()
-		ncfg, err := jsa.configUpdateCheck(osa.Config, cfg, &s.getOpts().JetStreamLimits)
+		ncfg, err := jsa.configUpdateCheck(osa.Config, cfg, s)
 		js.mu.Lock()
 		if err != nil {
 			resp.Error = NewJSStreamUpdateError(err, Unless(err))
@@ -4741,6 +4744,12 @@ func (s *Server) jsClusteredStreamRestoreRequest(
 
 	cfg := &req.Config
 	resp := JSApiStreamRestoreResponse{ApiResponse: ApiResponse{Type: JSApiStreamRestoreResponseType}}
+
+	if err := js.jsClusteredStreamLimitsCheck(acc, cfg); err != nil {
+		resp.Error = err
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
+	}
 
 	if sa := js.streamAssignment(ci.serviceAccount(), cfg.Name); sa != nil {
 		resp.Error = NewJSStreamNameExistError()

@@ -2191,9 +2191,9 @@ func (a *Account) addStreamTemplate(tc *StreamTemplateConfig) (*streamTemplate, 
 	// FIXME(dlc) - Hacky
 	tcopy := tc.deepCopy()
 	tcopy.Config.Name = "_"
-	cfg, err := checkStreamCfg(tcopy.Config, &s.getOpts().JetStreamLimits)
-	if err != nil {
-		return nil, err
+	cfg, apiErr := s.checkStreamCfg(tcopy.Config, a)
+	if apiErr != nil {
+		return nil, apiErr
 	}
 	tcopy.Config = &cfg
 	t := &streamTemplate{

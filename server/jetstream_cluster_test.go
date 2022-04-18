@@ -13923,3 +13923,52 @@ func (c *cluster) stableTotalSubs() (total int) {
 	return nsubs
 
 }
+
+func TestJetStreamMirrorSourceLoop(t *testing.T) {
+	test := func(t *testing.T, s *Server, replicas int) {
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+		// Create a source/mirror loop
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "1",
+			Subjects: []string{"foo", "bar"},
+			Replicas: replicas,
+			Sources:  []*nats.StreamSource{{Name: "DECOY"}, {Name: "2"}},
+		})
+		require_NoError(t, err)
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "DECOY",
+			Subjects: []string{"baz"},
+			Replicas: replicas,
+			Sources:  []*nats.StreamSource{{Name: "NOTTHERE"}},
+		})
+		require_NoError(t, err)
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "2",
+			Replicas: replicas,
+			Sources:  []*nats.StreamSource{{Name: "3"}},
+		})
+		require_NoError(t, err)
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "3",
+			Replicas: replicas,
+			Sources:  []*nats.StreamSource{{Name: "1"}},
+		})
+		require_Error(t, err)
+		require_Equal(t, err.Error(), "detected cycle")
+	}
+
+	t.Run("Single", func(t *testing.T) {
+		s := RunBasicJetStreamServer()
+		if config := s.JetStreamConfig(); config != nil {
+			defer removeDir(t, config.StoreDir)
+		}
+		defer s.Shutdown()
+		test(t, s, 1)
+	})
+	t.Run("Clustered", func(t *testing.T) {
+		c := createJetStreamClusterExplicit(t, "JSC", 5)
+		defer c.shutdown()
+		test(t, c.randomServer(), 2)
+	})
+}
