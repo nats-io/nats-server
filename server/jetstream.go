@@ -1118,11 +1118,11 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 		}
 		buf, err := ioutil.ReadFile(metafile)
 		if err != nil {
-			s.Warnf("  Error reading metafile %q: %v", metasum, err)
+			s.Warnf("  Error reading metafile %q: %v", metafile, err)
 			continue
 		}
 		if _, err := os.Stat(metasum); os.IsNotExist(err) {
-			s.Warnf("  Missing stream checksum for %q", metasum)
+			s.Warnf("  Missing stream checksum file %q", metasum)
 			continue
 		}
 		sum, err := ioutil.ReadFile(metasum)
@@ -1133,7 +1133,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 		hh.Write(buf)
 		checksum := hex.EncodeToString(hh.Sum(nil))
 		if checksum != string(sum) {
-			s.Warnf("  Stream metafile checksums do not match %q vs %q", sum, checksum)
+			s.Warnf("  Stream metafile %q: checksums do not match %q vs %q", metafile, sum, checksum)
 			continue
 		}
 
@@ -1153,7 +1153,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 
 		var cfg FileStreamInfo
 		if err := json.Unmarshal(buf, &cfg); err != nil {
-			s.Warnf("  Error unmarshalling stream metafile: %v", err)
+			s.Warnf("  Error unmarshalling stream metafile %q: %v", metafile, err)
 			continue
 		}
 
@@ -1221,7 +1221,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 			}
 			buf, err := ioutil.ReadFile(metafile)
 			if err != nil {
-				s.Warnf("    Error reading consumer metafile %q: %v", metasum, err)
+				s.Warnf("    Error reading consumer metafile %q: %v", metafile, err)
 				continue
 			}
 			if _, err := os.Stat(metasum); os.IsNotExist(err) {
@@ -1241,7 +1241,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 
 			var cfg FileConsumerInfo
 			if err := json.Unmarshal(buf, &cfg); err != nil {
-				s.Warnf("    Error unmarshalling consumer metafile: %v", err)
+				s.Warnf("    Error unmarshalling consumer metafile %q: %v", metafile, err)
 				continue
 			}
 			isEphemeral := !isDurableConsumer(&cfg.ConsumerConfig)
@@ -1252,7 +1252,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 			}
 			obs, err := e.mset.addConsumer(&cfg.ConsumerConfig)
 			if err != nil {
-				s.Warnf("    Error adding consumer: %v", err)
+				s.Warnf("    Error adding consumer %q: %v", cfg.Name, err)
 				continue
 			}
 			if isEphemeral {
@@ -1266,7 +1266,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 			err = obs.readStoredState(lseq)
 			obs.mu.Unlock()
 			if err != nil {
-				s.Warnf("    Error restoring consumer state: %v", err)
+				s.Warnf("    Error restoring consumer %q state: %v", cfg.Name, err)
 			}
 		}
 	}
