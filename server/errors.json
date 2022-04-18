@@ -1240,10 +1240,10 @@
     "deprecates": ""
   },
   {
-    "constant": "JSConsumerMaxRequestBatchRequired",
+    "constant": "JSConsumerMaxRequestBatchRequiredF",
     "code": 400,
     "error_code": 10126,
-    "description": "consumer max request batch needs to be specified",
+    "description": "consumer max request batch needs to be specified and cannot be more than {limit}",
     "comment": "",
     "help": "",
     "url": "",

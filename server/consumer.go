@@ -390,7 +390,7 @@ func checkConsumerCfg(config *ConsumerConfig, srvLim *JSLimitOpts, cfg *StreamCo
 		}
 		if srvLim.MaxRequestBatch > 0 {
 			if config.MaxRequestBatch == 0 {
-				return NewJSConsumerMaxRequestBatchRequiredError()
+				return NewJSConsumerMaxRequestBatchRequiredError(srvLim.MaxRequestBatch)
 			} else if config.MaxRequestBatch > srvLim.MaxRequestBatch {
 				return NewJSConsumerMaxRequestBatchExceededError(srvLim.MaxRequestBatch)
 			}
