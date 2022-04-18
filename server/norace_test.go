@@ -1772,7 +1772,10 @@ func TestNoRaceJetStreamClusterSuperClusterSources(t *testing.T) {
 		for i := 0; i < 50; i++ {
 			msg := fmt.Sprintf("R-MSG-%d", i+1)
 			for _, sname := range []string{"foo", "bar", "baz"} {
-				if _, err := js.Publish(sname, []byte(msg)); err != nil {
+				m := nats.NewMsg(sname)
+				m.Header.Set(nats.MsgIdHdr, sname+"-"+msg)
+				m.Data = []byte(msg)
+				if _, err := js.PublishMsg(m); err != nil {
 					t.Errorf("Unexpected publish error: %v", err)
 				}
 			}
@@ -2399,7 +2402,7 @@ func TestNoRaceJetStreamFileStoreBufferReuse(t *testing.T) {
 	}
 
 	start = time.Now()
-	sub, err := js.Subscribe("*", cb, nats.EnableFlowControl(), nats.AckNone())
+	sub, err := js.Subscribe("*", cb, nats.EnableFlowControl(), nats.IdleHeartbeat(time.Second), nats.AckNone())
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
