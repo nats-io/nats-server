@@ -329,10 +329,6 @@ func setConsumerConfigDefaults(config *ConsumerConfig, lim *JSLimitOpts, accLim 
 		}
 		config.MaxAckPending = accPending
 	}
-	// if applicable set max request batch size
-	if config.DeliverSubject == _EMPTY_ && config.MaxRequestBatch == 0 && lim.MaxRequestBatch > 0 {
-		config.MaxRequestBatch = lim.MaxRequestBatch
-	}
 }
 
 func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
@@ -392,8 +388,12 @@ func checkConsumerCfg(config *ConsumerConfig, srvLim *JSLimitOpts, cfg *StreamCo
 		if config.MaxRequestExpires != 0 && config.MaxRequestExpires < time.Millisecond {
 			return NewJSConsumerMaxRequestExpiresToSmallError()
 		}
-		if srvLim.MaxRequestBatch > 0 && config.MaxRequestBatch > srvLim.MaxRequestBatch {
-			return NewJSConsumerMaxRequestBatchExceededError(srvLim.MaxRequestBatch)
+		if srvLim.MaxRequestBatch > 0 {
+			if config.MaxRequestBatch == 0 {
+				return NewJSConsumerMaxRequestBatchRequiredError()
+			} else if config.MaxRequestBatch > srvLim.MaxRequestBatch {
+				return NewJSConsumerMaxRequestBatchExceededError(srvLim.MaxRequestBatch)
+			}
 		}
 	}
 	if srvLim.MaxAckPending > 0 && config.MaxAckPending > srvLim.MaxAckPending {

@@ -119,6 +119,9 @@ const (
 	// JSConsumerMaxRequestBatchNegativeErr consumer max request batch needs to be > 0
 	JSConsumerMaxRequestBatchNegativeErr ErrorIdentifier = 10114
 
+	// JSConsumerMaxRequestBatchRequired consumer max request batch needs to be specified
+	JSConsumerMaxRequestBatchRequired ErrorIdentifier = 10126
+
 	// JSConsumerMaxRequestExpiresToSmall consumer max request expires needs to be >= 1ms
 	JSConsumerMaxRequestExpiresToSmall ErrorIdentifier = 10115
 
@@ -418,6 +421,7 @@ var (
 		JSConsumerMaxPendingAckPolicyRequiredErr:   {Code: 400, ErrCode: 10082, Description: "consumer requires ack policy for max ack pending"},
 		JSConsumerMaxRequestBatchExceededF:         {Code: 400, ErrCode: 10125, Description: "consumer max request batch exceeds server limit of {limit}"},
 		JSConsumerMaxRequestBatchNegativeErr:       {Code: 400, ErrCode: 10114, Description: "consumer max request batch needs to be > 0"},
+		JSConsumerMaxRequestBatchRequired:          {Code: 400, ErrCode: 10126, Description: "consumer max request batch needs to be specified"},
 		JSConsumerMaxRequestExpiresToSmall:         {Code: 400, ErrCode: 10115, Description: "consumer max request expires needs to be >= 1ms"},
 		JSConsumerMaxWaitingNegativeErr:            {Code: 400, ErrCode: 10087, Description: "consumer max waiting needs to be positive"},
 		JSConsumerNameExistErr:                     {Code: 400, ErrCode: 10013, Description: "consumer name already in use"},
@@ -943,6 +947,16 @@ func NewJSConsumerMaxRequestBatchNegativeError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSConsumerMaxRequestBatchNegativeErr]
+}
+
+// NewJSConsumerMaxRequestBatchRequiredError creates a new JSConsumerMaxRequestBatchRequired error: "consumer max request batch needs to be specified"
+func NewJSConsumerMaxRequestBatchRequiredError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerMaxRequestBatchRequired]
 }
 
 // NewJSConsumerMaxRequestExpiresToSmallError creates a new JSConsumerMaxRequestExpiresToSmall error: "consumer max request expires needs to be >= 1ms"

@@ -16678,24 +16678,23 @@ func TestJetStreamLimits(t *testing.T) {
 		require_Equal(t, err.Error(), "duplicates window can not be larger then server limit of 1m0s")
 
 		ci, err := js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur1", AckPolicy: nats.AckExplicitPolicy})
-		require_NoError(t, err)
-		require_True(t, ci.Config.MaxAckPending == 1000)
-		require_True(t, ci.Config.MaxRequestBatch == 250)
+		require_Error(t, err)
+		require_Equal(t, err.Error(), "consumer max request batch needs to be specified")
 
 		_, err = js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur2", AckPolicy: nats.AckExplicitPolicy, MaxRequestBatch: 500})
 		require_Error(t, err)
 		require_Equal(t, err.Error(), "consumer max request batch exceeds server limit of 250")
 
-		ci, err = js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur2", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 500})
+		ci, err = js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur2", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 500, MaxRequestBatch: 250})
 		require_NoError(t, err)
 		require_True(t, ci.Config.MaxAckPending == 500)
 		require_True(t, ci.Config.MaxRequestBatch == 250)
 
-		_, err = js.UpdateConsumer("foo", &nats.ConsumerConfig{Durable: "dur2", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 2000})
+		_, err = js.UpdateConsumer("foo", &nats.ConsumerConfig{Durable: "dur2", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 2000, MaxRequestBatch: 250})
 		require_Error(t, err)
 		require_Equal(t, err.Error(), "consumer max ack pending exceeds system limit of 1000")
 
-		_, err = js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur3", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 2000})
+		_, err = js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur3", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 2000, MaxRequestBatch: 250})
 		require_Error(t, err)
 		require_Equal(t, err.Error(), "consumer max ack pending exceeds system limit of 1000")
 	}
