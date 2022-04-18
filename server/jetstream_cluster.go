@@ -2495,9 +2495,12 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 	accStreams[stream] = sa
 	cc.streams[acc.Name] = accStreams
 
-	// Make sure we respond.
+	// Make sure we respond if we are a member.
 	if isMember {
 		sa.responded = false
+	} else {
+		// Make sure to clean up any old node in case this stream moves back here.
+		sa.Group.node = nil
 	}
 	js.mu.Unlock()
 
@@ -2507,7 +2510,6 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 	} else if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
 		// We have one here even though we are not a member. This can happen on re-assignment.
 		s.Debugf("JetStream removing stream '%s > %s' from this server", sa.Client.serviceAccount(), sa.Config.Name)
-
 		if node := mset.raftNode(); node != nil {
 			if node.Leader() {
 				node.StepDown(sa.Group.Preferred)
@@ -3008,6 +3010,7 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 				node.UpdateKnownPeers(ca.Group.Peers)
 			}
 		}
+		// Always clear the old node.
 		ca.Group.node = nil
 		ca.err = nil
 		js.mu.Unlock()
