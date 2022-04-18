@@ -1597,7 +1597,7 @@ func (n *raft) run() {
 			case <-s.quitCh:
 				return
 			case <-time.After(100 * time.Millisecond):
-				s.RateLimitWarnf("Waiting for routing to established...")
+				s.RateLimitWarnf("Waiting for routing to be established...")
 			}
 		} else {
 			break
