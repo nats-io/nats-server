@@ -4305,6 +4305,9 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.RoutesStr != "" {
 		mergeRoutes(&opts, flagOpts)
 	}
+	if flagOpts.JetStream {
+		fileOpts.JetStream = flagOpts.JetStream
+	}
 	return &opts
 }
 
