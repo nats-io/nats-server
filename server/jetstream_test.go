@@ -3332,7 +3332,7 @@ func TestJetStreamPublishDeDupe(t *testing.T) {
 	expect(4)
 
 	cfg = mset.config()
-	cfg.Duplicates = 25 * time.Millisecond
+	cfg.Duplicates = 100 * time.Millisecond
 	if err := mset.update(&cfg); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -8782,12 +8782,12 @@ func TestJetStreamUpdateStream(t *testing.T) {
 
 			// Now do age.
 			cfg = *c.mconfig
-			cfg.MaxAge = time.Millisecond
+			cfg.MaxAge = 100 * time.Millisecond
 			if err := mset.update(&cfg); err != nil {
 				t.Fatalf("Unexpected error %v", err)
 			}
 			// Just wait a bit for expiration.
-			time.Sleep(25 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond)
 			if mset.config().MaxAge != cfg.MaxAge {
 				t.Fatalf("Expected the change to take effect, %d vs %d", mset.config().MaxAge, cfg.MaxAge)
 			}

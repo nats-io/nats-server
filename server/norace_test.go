@@ -2501,7 +2501,7 @@ func TestNoRaceJetStreamStalledMirrorsAfterExpire(t *testing.T) {
 		Name:     "TEST",
 		Subjects: []string{"foo.*"},
 		Replicas: 1,
-		MaxAge:   250 * time.Microsecond,
+		MaxAge:   100 * time.Millisecond,
 	}
 
 	if _, err := js.AddStream(cfg); err != nil {
