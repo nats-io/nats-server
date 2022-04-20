@@ -5484,7 +5484,6 @@ func TestLeafNodeStreamAndShadowSubs(t *testing.T) {
 		}
 		defer ncl.Close()
 
-		fmt.Printf("@@IK: ------ sub to foo.*.baz -----\n")
 		// This will send an LS+ to the "hub" server.
 		sub, err := ncl.SubscribeSync("foo.*.baz")
 		if err != nil {
