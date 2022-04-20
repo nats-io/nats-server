@@ -16965,43 +16965,64 @@ func TestJetStreamImportConsumerStreamSubjectRemapSingle(t *testing.T) {
 	`))
 	defer removeFile(t, conf)
 
-	s, _ := RunServerWithConfig(conf)
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
+	test := func(t *testing.T, queue bool) {
+		s, _ := RunServerWithConfig(conf)
+		if config := s.JetStreamConfig(); config != nil {
+			defer removeDir(t, config.StoreDir)
+		}
+		defer s.Shutdown()
+
+		nc, js := jsClientConnect(t, s, nats.UserInfo("js", "pwd"))
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "ORDERS",
+			Subjects: []string{"foo"}, // The JS subject.
+			Storage:  nats.MemoryStorage},
+		)
+		require_NoError(t, err)
+
+		_, err = js.Publish("foo", []byte("OK"))
+		require_NoError(t, err)
+
+		queueName := ""
+		if queue {
+			queueName = "queue"
+		}
+
+		_, err = js.AddConsumer("ORDERS", &nats.ConsumerConfig{
+			DeliverSubject: "deliver.ORDERS",
+			AckPolicy:      nats.AckExplicitPolicy,
+			DeliverGroup:   queueName,
+		})
+		require_NoError(t, err)
+
+		nc2, err := nats.Connect(s.ClientURL(), nats.UserInfo("im", "pwd"))
+		require_NoError(t, err)
+
+		var sub *nats.Subscription
+		if queue {
+			sub, err = nc2.QueueSubscribeSync("d", queueName)
+			require_NoError(t, err)
+		} else {
+			sub, err = nc2.SubscribeSync("d")
+			require_NoError(t, err)
+		}
+
+		m, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+
+		if m.Subject != "foo" {
+			t.Fatalf("Subject not mapped correctly across account boundary, expected %q got %q", "foo", m.Subject)
+		}
 	}
-	defer s.Shutdown()
 
-	nc, js := jsClientConnect(t, s, nats.UserInfo("js", "pwd"))
-	defer nc.Close()
-
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:     "ORDERS",
-		Subjects: []string{"foo"}, // The JS subject.
-		Storage:  nats.MemoryStorage},
-	)
-	require_NoError(t, err)
-
-	_, err = js.Publish("foo", []byte("OK"))
-	require_NoError(t, err)
-
-	_, err = js.AddConsumer("ORDERS", &nats.ConsumerConfig{
-		DeliverSubject: "deliver.ORDERS",
-		AckPolicy:      nats.AckExplicitPolicy,
+	t.Run("noqueue", func(t *testing.T) {
+		test(t, false)
 	})
-	require_NoError(t, err)
-
-	nc2, err := nats.Connect(s.ClientURL(), nats.UserInfo("im", "pwd"))
-	require_NoError(t, err)
-
-	sub, err := nc2.SubscribeSync("d")
-	require_NoError(t, err)
-
-	m, err := sub.NextMsg(time.Second)
-	require_NoError(t, err)
-
-	if m.Subject != "foo" {
-		t.Fatalf("Subject not mapped correctly across account boundary, expected %q got %q", "foo", m.Subject)
-	}
+	t.Run("queue", func(t *testing.T) {
+		test(t, true)
+	})
 }
 
 ///////////////////////////////////////////////////////////////////////////
