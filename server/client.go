@@ -4167,8 +4167,8 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				dsubj = append(_dsubj[:0], sub.im.to...)
 			}
 
-			// Make sure deliver is set if inbound from a route. (leaf is fixed on send)
-			if remapped && (c.kind == GATEWAY || c.kind == ROUTER) {
+			// Make sure deliver is set if inbound from a route.
+			if remapped && (c.kind == GATEWAY || c.kind == ROUTER || c.kind == LEAF) {
 				deliver = subj
 			}
 			// If we are mapping for a deliver subject we will reverse roles.
@@ -4306,6 +4306,16 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 					dsubj = append(_dsubj[:0], subj...)
 				} else {
 					dsubj = append(_dsubj[:0], sub.im.to...)
+				}
+				// Make sure deliver is set if inbound from a route.
+				if remapped && (c.kind == GATEWAY || c.kind == ROUTER || c.kind == LEAF) {
+					deliver = subj
+				}
+				// If we are mapping for a deliver subject we will reverse roles.
+				// The original subj we set from above is correct for the msg header,
+				// but we need to transform the deliver subject to properly route.
+				if len(deliver) > 0 {
+					dsubj, subj = subj, dsubj
 				}
 			}
 
