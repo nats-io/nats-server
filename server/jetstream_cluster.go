@@ -1645,7 +1645,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 	startMigrationMonitoring := func() {
 		if mmt == nil {
-			mmt = time.NewTicker(250 * time.Millisecond)
+			mmt = time.NewTicker(1 * time.Second)
 			mmtc = mmt.C
 		}
 	}
@@ -1758,7 +1758,10 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				continue
 			}
 			// Check to see that we have someone caught up.
+			// TODO(dlc) - For now start checking after a second in order to give proper time to kick in any catchup logic needed.
+			// What we really need to do longer term is know if we need catchup and make sure that process has kicked off and/or completed.
 			ci := js.clusterInfo(mset.raftGroup())
+			// The polling interval of one second allows this to be kicked in if needed.
 			if mset.hasCatchupPeers() {
 				mset.checkClusterInfo(ci)
 			}
