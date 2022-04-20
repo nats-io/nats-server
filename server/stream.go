@@ -900,6 +900,9 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 			cfg.Duplicates = maxWindow
 		}
 	}
+	if cfg.MaxAge > 0 && cfg.MaxAge < 100*time.Millisecond {
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("max age needs to be >= 100ms"))
+	}
 	if cfg.Duplicates < 0 {
 		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("duplicates window can not be negative"))
 	}
@@ -909,6 +912,9 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 	}
 	if lim.Duplicates > 0 && cfg.Duplicates > lim.Duplicates {
 		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("duplicates window can not be larger then server limit of %v", lim.Duplicates.String()))
+	}
+	if cfg.Duplicates > 0 && cfg.Duplicates < 100*time.Millisecond {
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("duplicates window needs to be >= 100ms"))
 	}
 
 	if cfg.DenyPurge && cfg.AllowRollup {
