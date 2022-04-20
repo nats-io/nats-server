@@ -1482,6 +1482,8 @@ func (s *Server) reloadAuthorization() {
 						newAcc.clients[c] = struct{}{}
 					}
 				}
+				// Same for leafnodes
+				newAcc.lleafs = append([]*client(nil), acc.lleafs...)
 
 				newAcc.sl = acc.sl
 				newAcc.rm = acc.rm
