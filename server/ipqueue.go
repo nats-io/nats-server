@@ -191,6 +191,9 @@ func (q *ipQueue) len() int {
 // notified that there is something in the queue (reading from queue's `ch`)
 // may then get nothing if `drain()` is invoked before the `pop()` or `popOne()`.
 func (q *ipQueue) drain() {
+	if q == nil {
+		return
+	}
 	q.Lock()
 	if q.elts != nil {
 		q.resetAndReturnToPool(&q.elts)

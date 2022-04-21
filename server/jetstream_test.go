@@ -16233,12 +16233,20 @@ func TestJetStreamRemoveExternalSource(t *testing.T) {
 	_, err = jsa.AddStream(&nats.StreamConfig{Name: "queue", Subjects: []string{"queue"}})
 	require_NoError(t, err)
 
+	_, err = jsa.AddStream(&nats.StreamConfig{Name: "testdel", Subjects: []string{"testdel"}})
+	require_NoError(t, err)
+
 	ncb, jsb := jsClientConnect(t, l2)
 	defer ncb.Close()
 	_, err = jsb.AddStream(&nats.StreamConfig{Name: "test", Subjects: []string{"test"}})
 	require_NoError(t, err)
 	sendToStreamTest(jsb)
 	checkStreamMsgs(jsb, "test", 10)
+
+	_, err = jsb.AddStream(&nats.StreamConfig{Name: "testdelsrc1", Subjects: []string{"testdelsrc1"}})
+	require_NoError(t, err)
+	_, err = jsb.AddStream(&nats.StreamConfig{Name: "testdelsrc2", Subjects: []string{"testdelsrc2"}})
+	require_NoError(t, err)
 
 	// Add test as source to queue
 	si, err := jsa.UpdateStream(&nats.StreamConfig{
@@ -16282,6 +16290,54 @@ func TestJetStreamRemoveExternalSource(t *testing.T) {
 	// incorrectly happen if there is a bug.
 	time.Sleep(250 * time.Millisecond)
 	checkStreamMsgs(jsa, "queue", 20)
+
+	// Test that we delete correctly. First add source to a "testdel"
+	si, err = jsa.UpdateStream(&nats.StreamConfig{
+		Name:     "testdel",
+		Subjects: []string{"testdel"},
+		Sources: []*nats.StreamSource{
+			{
+				Name: "testdelsrc1",
+				External: &nats.ExternalStream{
+					APIPrefix: "$JS.b-leaf.API",
+				},
+			},
+		},
+	})
+	require_NoError(t, err)
+	require_True(t, len(si.Config.Sources) == 1)
+	// Now add the second one...
+	si, err = jsa.UpdateStream(&nats.StreamConfig{
+		Name:     "testdel",
+		Subjects: []string{"testdel"},
+		Sources: []*nats.StreamSource{
+			{
+				Name: "testdelsrc1",
+				External: &nats.ExternalStream{
+					APIPrefix: "$JS.b-leaf.API",
+				},
+			},
+			{
+				Name: "testdelsrc2",
+				External: &nats.ExternalStream{
+					APIPrefix: "$JS.b-leaf.API",
+				},
+			},
+		},
+	})
+	require_NoError(t, err)
+	require_True(t, len(si.Config.Sources) == 2)
+	// Now check that the stream testdel has still 2 source consumers...
+	acc, err := l1.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("testdel")
+	require_NoError(t, err)
+	mset.mu.RLock()
+	n := len(mset.sources)
+	mset.mu.RUnlock()
+	if n != 2 {
+		t.Fatalf("Expected 2 sources, got %v", n)
+	}
 
 	// Restart leaf "a"
 	nca.Close()
