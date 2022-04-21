@@ -9,7 +9,7 @@ require (
 	github.com/nats-io/nats.go v1.14.0
 	github.com/nats-io/nkeys v0.3.0
 	github.com/nats-io/nuid v1.0.1
-	golang.org/x/crypto v0.0.0-20220112180741-5e0467b6c7ce
+	golang.org/x/crypto v0.0.0-20220315160706-3147a52a75dd
 	golang.org/x/sys v0.0.0-20220111092808-5a964db01320
 	golang.org/x/time v0.0.0-20211116232009-f0f3c7e86c11
 )
