@@ -1164,9 +1164,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 		}
 
 		// We had a bug that set a default de dupe window on mirror, despite that being not a valid config
-		if cfg.Mirror != nil && cfg.StreamConfig.Duplicates != 0 {
-			cfg.StreamConfig.Duplicates = 0
-		}
+		fixCfgMirrorWithDedupWindow(&cfg.StreamConfig)
 
 		// We had a bug that could allow subjects in that had prefix or suffix spaces. We check for that here
 		// and will patch them on the fly for now. We will warn about them.
@@ -2581,4 +2579,14 @@ func validateJetStreamOptions(o *Options) error {
 		return fmt.Errorf("expected 'no_extend' for string value, got '%s'", h)
 	}
 	return nil
+}
+
+// We had a bug that set a default de dupe window on mirror, despite that being not a valid config
+func fixCfgMirrorWithDedupWindow(cfg *StreamConfig) {
+	if cfg == nil || cfg.Mirror == nil {
+		return
+	}
+	if cfg.Duplicates != 0 {
+		cfg.Duplicates = 0
+	}
 }

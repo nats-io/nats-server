@@ -14075,3 +14075,89 @@ func TestJetStreamMirrorSourceLoop(t *testing.T) {
 		test(t, c.randomServer(), 2)
 	})
 }
+
+func TestJetStreamClusterMirrorDeDupWindow(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	si, err := js.AddStream(&nats.StreamConfig{
+		Name:     "S",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	require_True(t, si.Cluster != nil)
+	require_True(t, si.Config.Replicas == 3)
+	require_True(t, len(si.Cluster.Replicas) == 2)
+
+	send := func(count int) {
+		t.Helper()
+		for i := 0; i < count; i++ {
+			_, err := js.Publish("foo", []byte("msg"))
+			require_NoError(t, err)
+		}
+	}
+
+	// Send 100 messages
+	send(100)
+
+	// First check that we can't create with a duplicates window
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:       "M",
+		Replicas:   3,
+		Mirror:     &nats.StreamSource{Name: "S"},
+		Duplicates: time.Hour,
+	})
+	require_Error(t, err)
+
+	// Now create a valid one.
+	si, err = js.AddStream(&nats.StreamConfig{
+		Name:     "M",
+		Replicas: 3,
+		Mirror:   &nats.StreamSource{Name: "S"},
+	})
+	require_NoError(t, err)
+	require_True(t, si.Cluster != nil)
+	require_True(t, si.Config.Replicas == 3)
+	require_True(t, len(si.Cluster.Replicas) == 2)
+
+	check := func(expected int) {
+		t.Helper()
+		// Wait for all messages to be in mirror
+		checkFor(t, 15*time.Second, 50*time.Millisecond, func() error {
+			si, err := js.StreamInfo("M")
+			if err != nil {
+				return err
+			}
+			if n := si.State.Msgs; int(n) != expected {
+				return fmt.Errorf("Expected %v msgs, got %v", expected, n)
+			}
+			return nil
+		})
+	}
+	check(100)
+
+	// Restart cluster
+	nc.Close()
+	c.stopAll()
+	c.restartAll()
+	c.waitOnLeader()
+	c.waitOnStreamLeader(globalAccountName, "S")
+	c.waitOnStreamLeader(globalAccountName, "M")
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	si, err = js.StreamInfo("M")
+	require_NoError(t, err)
+	require_True(t, si.Cluster != nil)
+	require_True(t, si.Config.Replicas == 3)
+	require_True(t, len(si.Cluster.Replicas) == 2)
+
+	// Send 100 messages
+	send(100)
+	check(200)
+}

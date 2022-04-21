@@ -1018,6 +1018,7 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, isRecovering bool) error {
 	// Build our new version here outside of js.
 	streams := make(map[string]map[string]*streamAssignment)
 	for _, wsa := range wsas {
+		fixCfgMirrorWithDedupWindow(wsa.Config)
 		as := streams[wsa.Client.serviceAccount()]
 		if as == nil {
 			as = make(map[string]*streamAssignment)
@@ -5226,6 +5227,10 @@ func encodeDeleteStreamAssignment(sa *streamAssignment) []byte {
 func decodeStreamAssignment(buf []byte) (*streamAssignment, error) {
 	var sa streamAssignment
 	err := json.Unmarshal(buf, &sa)
+	if err != nil {
+		return nil, err
+	}
+	fixCfgMirrorWithDedupWindow(sa.Config)
 	return &sa, err
 }
 
