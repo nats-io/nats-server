@@ -2881,6 +2881,11 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 	inch := o.inch
 	o.mu.Unlock()
 
+	// Grab the stream's retention policy
+	mset.mu.RLock()
+	rp := mset.cfg.Retention
+	mset.mu.RUnlock()
+
 	// Deliver all the msgs we have now, once done or on a condition, we wait for new ones.
 	for {
 		var (
@@ -2972,7 +2977,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		}
 
 		// Do actual delivery.
-		o.deliverMsg(dsubj, pmsg, dc)
+		o.deliverMsg(dsubj, pmsg, dc, rp)
 
 		// Reset our idle heartbeat timer if set.
 		if hb != nil {
@@ -3077,7 +3082,7 @@ func (o *consumer) adjustedPending() uint64 {
 
 // Deliver a msg to the consumer.
 // Lock should be held and o.mset validated to be non-nil.
-func (o *consumer) deliverMsg(dsubj string, pmsg *jsPubMsg, dc uint64) {
+func (o *consumer) deliverMsg(dsubj string, pmsg *jsPubMsg, dc uint64, rp RetentionPolicy) {
 	if o.mset == nil {
 		pmsg.returnToPool()
 		return
@@ -3149,7 +3154,7 @@ func (o *consumer) deliverMsg(dsubj string, pmsg *jsPubMsg, dc uint64) {
 	o.updateDelivered(dseq, seq, dc, ts)
 
 	// If we are ack none and mset is interest only we should make sure stream removes interest.
-	if ap == AckNone && mset.cfg.Retention != LimitsPolicy {
+	if ap == AckNone && rp != LimitsPolicy {
 		if o.node == nil || o.cfg.Direct {
 			mset.ackq.push(seq)
 		} else {

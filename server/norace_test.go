@@ -1646,6 +1646,116 @@ func TestNoRaceJetStreamClusterSuperClusterMirrors(t *testing.T) {
 	})
 }
 
+func TestNoRaceJetStreamClusterMirrorMixedMode(t *testing.T) {
+	// Unlike the similar sources test, this test is not reliably catching the bug
+	// that would cause mirrors to not have the expected messages count.
+	// Still, adding this test in case we have a regression and we are lucky in
+	// getting the failure while running this.
+
+	tmpl := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: { domain: ngs, max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		leaf: { listen: 127.0.0.1:-1 }
+
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+	`
+	sc := createJetStreamSuperClusterWithTemplateAndModHook(t, tmpl, 7, 4,
+		func(serverName, clusterName, storeDir, conf string) string {
+			sname := serverName[strings.Index(serverName, "-")+1:]
+			switch sname {
+			case "S5", "S6", "S7":
+				conf = strings.ReplaceAll(conf, "jetstream: { ", "#jetstream: { ")
+			default:
+				conf = strings.ReplaceAll(conf, "leaf: { ", "#leaf: { ")
+			}
+			return conf
+		})
+	defer sc.shutdown()
+
+	// Connect our client to a non JS server
+	c := sc.randomCluster()
+	var s *Server
+	for s == nil {
+		if as := c.randomServer(); !as.JetStreamEnabled() {
+			s = as
+			break
+		}
+	}
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	toSend := 1000
+	// Create 10 origin streams
+	for i := 0; i < 10; i++ {
+		name := fmt.Sprintf("S%d", i+1)
+		if _, err := js.AddStream(&nats.StreamConfig{Name: name}); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		// Load them up with a bunch of messages.
+		for n := 0; n < toSend; n++ {
+			m := nats.NewMsg(name)
+			m.Header.Set("stream", name)
+			m.Header.Set("idx", strconv.FormatInt(int64(n+1), 10))
+			if err := nc.PublishMsg(m); err != nil {
+				t.Fatalf("Unexpected publish error: %v", err)
+			}
+		}
+	}
+
+	for i := 0; i < 3; i++ {
+		// Now create our mirrors
+		wg := sync.WaitGroup{}
+		mirrorsCount := 10
+		wg.Add(mirrorsCount)
+		errCh := make(chan error, 1)
+		for m := 0; m < mirrorsCount; m++ {
+			sname := fmt.Sprintf("S%d", rand.Intn(10)+1)
+			go func(sname string, mirrorIdx int) {
+				defer wg.Done()
+				if _, err := js.AddStream(&nats.StreamConfig{
+					Name:     fmt.Sprintf("M%d", mirrorIdx),
+					Mirror:   &nats.StreamSource{Name: sname},
+					Replicas: 3,
+				}); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+				}
+			}(sname, m+1)
+		}
+		wg.Wait()
+		select {
+		case err := <-errCh:
+			t.Fatalf("Error creating mirrors: %v", err)
+		default:
+		}
+		// Now check the mirrors have all expected messages
+		for m := 0; m < mirrorsCount; m++ {
+			name := fmt.Sprintf("M%d", m+1)
+			checkFor(t, 15*time.Second, 500*time.Millisecond, func() error {
+				si, err := js.StreamInfo(name)
+				if err != nil {
+					t.Fatalf("Could not retrieve stream info")
+				}
+				if si.State.Msgs != uint64(toSend) {
+					return fmt.Errorf("Expected %d msgs, got state: %+v", toSend, si.State)
+				}
+				return nil
+			})
+			err := js.DeleteStream(name)
+			require_NoError(t, err)
+		}
+	}
+}
+
 func TestNoRaceJetStreamClusterSuperClusterSources(t *testing.T) {
 
 	sc := createJetStreamSuperCluster(t, 3, 3)
