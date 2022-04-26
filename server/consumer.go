@@ -257,6 +257,7 @@ type consumer struct {
 	inch              chan bool
 	sfreq             int32
 	ackEventT         string
+	nakEventT         string
 	deliveryExcEventT string
 	created           time.Time
 	ldt               time.Time
@@ -660,6 +661,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	// already under lock, mset.Name() would deadlock
 	o.stream = mset.cfg.Name
 	o.ackEventT = JSMetricConsumerAckPre + "." + o.stream + "." + o.name
+	o.nakEventT = JSAdvisoryConsumerMsgNakPre + "." + o.stream + "." + o.name
 	o.deliveryExcEventT = JSAdvisoryConsumerMaxDeliveryExceedPre + "." + o.stream + "." + o.name
 
 	if !isValidName(o.name) {
@@ -1768,6 +1770,29 @@ func (o *consumer) processNak(sseq, dseq, dc uint64, nak []byte) {
 			return
 		}
 	}
+
+	// Deliver an advisory
+	e := JSConsumerDeliveryNakAdvisory{
+		TypedEvent: TypedEvent{
+			Type: JSConsumerDeliveryNakAdvisoryType,
+			ID:   nuid.Next(),
+			Time: time.Now().UTC(),
+		},
+		Stream:      o.stream,
+		Consumer:    o.name,
+		ConsumerSeq: dseq,
+		StreamSeq:   sseq,
+		Deliveries:  dc,
+		Domain:      o.srv.getOpts().JetStreamDomain,
+	}
+
+	j, err := json.Marshal(e)
+	if err != nil {
+		return
+	}
+
+	o.sendAdvisory(o.nakEventT, j)
+
 	// Check to see if we have delays attached.
 	if len(nak) > len(AckNak) {
 		arg := bytes.TrimSpace(nak[len(AckNak):])

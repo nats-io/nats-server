@@ -204,6 +204,9 @@ const (
 	// JSAdvisoryConsumerMaxDeliveryExceedPre is a notification published when a message exceeds its delivery threshold.
 	JSAdvisoryConsumerMaxDeliveryExceedPre = "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES"
 
+	// JSAdvisoryConsumerMsgNakPre is a notification published when a message has been naked
+	JSAdvisoryConsumerMsgNakPre = "$JS.EVENT.ADVISORY.CONSUMER.MSG_NAKED"
+
 	// JSAdvisoryConsumerMsgTerminatedPre is a notification published when a message has been terminated.
 	JSAdvisoryConsumerMsgTerminatedPre = "$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED"
 
