@@ -28,17 +28,25 @@ elif [ "$1" = "no_race_tests" ]; then
 elif [ "$1" = "js_tests" ]; then
 
     # Run JetStream non-clustere tests. By convention, all JS tests start
-    # with `TestJetStream`. We exclude the clustered tests by using the
-    # `skip_js_cluster_tests` build tag.
+    # with `TestJetStream`. We exclude the clustered and super-clustered
+    # tests by using the `skip_js_cluster_tests` and `skip_js_super_cluster_tests`
+    # build tags.
 
-    go test -race -v -run=TestJetStream ./server -tags=skip_js_cluster_tests -count=1 -vet=off -timeout=30m -failfast
+    go test -race -v -run=TestJetStream ./server -tags=skip_js_cluster_tests,skip_js_super_cluster_tests -count=1 -vet=off -timeout=30m -failfast
 
 elif [ "$1" = "js_cluster_tests" ]; then
 
-    # Run JetStream clustered tests. By convention, all JS clustered tests
+    # Run JetStream clustered tests. By convention, all JS cluster tests
     # start with `TestJetStreamCluster`.
 
     go test -race -v -run=TestJetStreamCluster ./server -count=1 -vet=off -timeout=30m -failfast
+
+elif [ "$1" = "js_super_cluster_tests" ]; then
+
+    # Run JetStream super clustered tests. By convention, all JS super cluster
+    # tests with `TestJetStreamSuperCluster`.
+
+    go test -race -v -run=TestJetStreamSuperCluster ./server -count=1 -vet=off -timeout=30m -failfast
 
 elif [ "$1" = "srv_pkg_non_js_tests" ]; then
 

@@ -8,7 +8,6 @@ vm:
 language: go
 go:
 - 1.17.x
-- 1.16.x
 
 addons:
   apt:
@@ -16,13 +15,25 @@ addons:
     - rpm
 go_import_path: github.com/nats-io/nats-server
 
-env:
-- TEST_SUITE=compile
-- TEST_SUITE=no_race_tests
-- TEST_SUITE=js_tests
-- TEST_SUITE=js_cluster_tests
-- TEST_SUITE=srv_pkg_non_js_tests
-- TEST_SUITE=non_srv_pkg_tests
+jobs:
+  include:
+    - name: "Compile and various checks"
+      env: TEST_SUITE=compile
+    - name: "Run TestNoRace tests"
+      env: TEST_SUITE=no_race_tests
+    - name: "Run JetStream tests"
+      env: TEST_SUITE=js_tests
+    - name: "Run JetStream cluster tests"
+      env: TEST_SUITE=js_cluster_tests
+    - name: "Run JetStream super cluster tests"
+      env: TEST_SUITE=js_super_cluster_tests
+    - name: "Run non JetStreams tests form the server package"
+      env: TEST_SUITE=srv_pkg_non_js_tests
+    - name: "Run all tests from all other packages"
+      env: TEST_SUITE=non_srv_pkg_tests
+    - name: "Compile and various checks with older Go release"
+      go: 1.16.x
+      env: TEST_SUITE=compile
 
 script: ./runTestsOnTravis.sh $TEST_SUITE
 
