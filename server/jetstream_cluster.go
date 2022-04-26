@@ -5899,7 +5899,7 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 			o.mu.Lock()
 			if o.isLeader() {
 				// This expects mset lock to be held.
-				o.setInitialPendingAndStart()
+				o.setInitialPendingAndStart(false)
 			}
 			o.mu.Unlock()
 		}
