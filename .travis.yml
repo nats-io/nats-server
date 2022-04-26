@@ -8,32 +8,34 @@ vm:
 language: go
 go:
 - 1.17.x
-- 1.16.x
+
 addons:
   apt:
     packages:
     - rpm
-env:
-- GO111MODULE=on
 go_import_path: github.com/nats-io/nats-server
-install:
-- go install honnef.co/go/tools/cmd/staticcheck@v0.2.2
-- go install github.com/client9/misspell/cmd/misspell@latest
-before_script:
-- GO_LIST=$(go list ./...)
-- go build
-- $(exit $(go fmt $GO_LIST | wc -l))
-- go vet $GO_LIST
-- find . -type f -name "*.go" | xargs misspell -error -locale US
-- staticcheck $GO_LIST
-script:
-- set -e
-- if [[ $TRAVIS_TAG ]]; then go test -v -run=TestVersionMatchesTag ./server; fi
-- if [[ ! $TRAVIS_TAG ]]; then go test -v -run=TestNoRace --failfast -p=1 -timeout 30m ./...; fi
-- if [[ ! $TRAVIS_TAG ]]; then if [[ "$TRAVIS_GO_VERSION" =~ 1.16 ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race -p=1 --failfast -timeout 30m ./...; fi; fi
-- set +e
-after_success:
-- if [[ ! $TRAVIS_TAG ]]; then if [[ "$TRAVIS_GO_VERSION" =~ 1.16 ]]; then $HOME/gopath/bin/goveralls -coverprofile=acc.out -service travis-ci; fi; fi
+
+jobs:
+  include:
+    - name: "Compile and various checks"
+      env: TEST_SUITE=compile
+    - name: "Run TestNoRace tests"
+      env: TEST_SUITE=no_race_tests
+    - name: "Run JetStream tests"
+      env: TEST_SUITE=js_tests
+    - name: "Run JetStream cluster tests"
+      env: TEST_SUITE=js_cluster_tests
+    - name: "Run JetStream super cluster tests"
+      env: TEST_SUITE=js_super_cluster_tests
+    - name: "Run non JetStreams tests form the server package"
+      env: TEST_SUITE=srv_pkg_non_js_tests
+    - name: "Run all tests from all other packages"
+      env: TEST_SUITE=non_srv_pkg_tests
+    - name: "Compile and various checks with older Go release"
+      go: 1.16.x
+      env: TEST_SUITE=compile
+
+script: ./runTestsOnTravis.sh $TEST_SUITE
 
 deploy:
   provider: script
@@ -41,4 +43,4 @@ deploy:
   script: curl -sL http://git.io/goreleaser | bash
   on:
     tags: true
-    condition: $TRAVIS_GO_VERSION =~ 1.17
+    condition: ($TRAVIS_GO_VERSION =~ 1.17) && ($TEST_SUITE = "compile")
