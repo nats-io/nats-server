@@ -753,7 +753,12 @@ func (ms *memStore) removeSeqPerSubject(subj string, seq uint64) {
 	if seq != ss.First {
 		return
 	}
-	// TODO(dlc) - Might want to optimize this.
+	// If we know we only have 1 msg left don't need to search for next first.
+	if ss.Msgs == 1 {
+		ss.First = ss.Last
+		return
+	}
+	// TODO(dlc) - Might want to optimize this longer term.
 	for tseq := seq + 1; tseq <= ss.Last; tseq++ {
 		if sm := ms.msgs[tseq]; sm != nil && sm.subj == subj {
 			ss.First = tseq

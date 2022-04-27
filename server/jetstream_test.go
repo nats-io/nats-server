@@ -17359,3 +17359,34 @@ func Benchmark_JetStream10x1kWorker(b *testing.B) {
 func Benchmark_JetStream4x512Worker(b *testing.B) {
 	benchJetStreamWorkersAndBatch(b, 4, 512)
 }
+
+func TestJetStreamKVMemoryStorePerf(t *testing.T) {
+	// Comment out to run, holding place for now.
+	t.SkipNow()
+
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: "TEST", History: 1, Storage: nats.MemoryStorage})
+	require_NoError(t, err)
+
+	start := time.Now()
+	for i := 0; i < 100_000; i++ {
+		_, err := kv.PutString(fmt.Sprintf("foo.%d", i), "HELLO")
+		require_NoError(t, err)
+	}
+	fmt.Printf("Took %v for first run\n", time.Since(start))
+
+	start = time.Now()
+	for i := 0; i < 100_000; i++ {
+		_, err := kv.PutString(fmt.Sprintf("foo.%d", i), "HELLO")
+		require_NoError(t, err)
+	}
+	fmt.Printf("Took %v for second run\n", time.Since(start))
+}
