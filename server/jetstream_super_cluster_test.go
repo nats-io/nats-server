@@ -2419,3 +2419,67 @@ func TestJetStreamSuperClusterStreamAlternates(t *testing.T) {
 	nc, _ = jsClientConnect(t, sc.clusterForName("C3").randomServer())
 	getStreamInfo(nc, "C3")
 }
+
+// We had a scenario where a consumer would not recover properly on restart due to
+// the cluster state not being set properly when checking source subjects.
+func TestJetStreamSuperClusterStateOnRestartPreventsConsumerRecovery(t *testing.T) {
+	sc := createJetStreamTaggedSuperCluster(t)
+	defer sc.shutdown()
+
+	nc, js := jsClientConnect(t, sc.randomServer())
+	defer nc.Close()
+
+	// C1
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "SOURCE",
+		Subjects:  []string{"foo", "bar"},
+		Replicas:  3,
+		Placement: &nats.Placement{Tags: []string{"cloud:aws", "country:us"}},
+	})
+	require_NoError(t, err)
+
+	// C2
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:      "DS",
+		Subjects:  []string{"baz"},
+		Replicas:  3,
+		Sources:   []*nats.StreamSource{{Name: "SOURCE"}},
+		Placement: &nats.Placement{Tags: []string{"cloud:gcp", "country:uk"}},
+	})
+	require_NoError(t, err)
+
+	// Bind to DS and match filter subject of SOURCE.
+	_, err = js.AddConsumer("DS", &nats.ConsumerConfig{
+		Durable:        "dlc",
+		AckPolicy:      nats.AckExplicitPolicy,
+		FilterSubject:  "foo",
+		DeliverSubject: "d",
+	})
+	require_NoError(t, err)
+
+	// Send a few messages.
+	for i := 0; i < 100; i++ {
+		_, err := js.Publish("foo", []byte("HELLO"))
+		require_NoError(t, err)
+	}
+	sub := natsSubSync(t, nc, "d")
+	natsNexMsg(t, sub, time.Second)
+
+	c := sc.clusterForName("C2")
+	cl := c.consumerLeader("$G", "DS", "dlc")
+
+	// Pull source out from underneath the downstream stream.
+	err = js.DeleteStream("SOURCE")
+	require_NoError(t, err)
+
+	cl.Shutdown()
+	cl = c.restartServer(cl)
+	c.waitOnServerHealthz(cl)
+
+	// Now make sure the consumer is still on this server and has restarted properly.
+	mset, err := cl.GlobalAccount().lookupStream("DS")
+	require_NoError(t, err)
+	if o := mset.lookupConsumer("dlc"); o == nil {
+		t.Fatalf("Consumer was not properly restarted")
+	}
+}

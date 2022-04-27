@@ -1453,19 +1453,22 @@ func allSubjects(cfg *StreamConfig, acc *Account) ([]string, bool) {
 	var seen map[string]bool
 
 	if cfg.Mirror != nil {
-		var subjs []string
-		seen = make(map[string]bool)
-		subjs, hasExt = acc.streamSourceSubjects(cfg.Mirror, seen)
+		subjs, localHasExt := acc.streamSourceSubjects(cfg.Mirror, make(map[string]bool))
 		if len(subjs) > 0 {
 			subjects = append(subjects, subjs...)
 		}
+		if localHasExt {
+			hasExt = true
+		}
 	} else if len(cfg.Sources) > 0 {
-		var subjs []string
 		seen = make(map[string]bool)
 		for _, si := range cfg.Sources {
-			subjs, hasExt = acc.streamSourceSubjects(si, seen)
+			subjs, localHasExt := acc.streamSourceSubjects(si, seen)
 			if len(subjs) > 0 {
 				subjects = append(subjects, subjs...)
+			}
+			if localHasExt {
+				hasExt = true
 			}
 		}
 	}
@@ -1566,6 +1569,7 @@ func (a *Account) streamSourceSubjectsNotClustered(streamName string, seen map[s
 			}
 		}
 	}
+
 	return subjects, hasExt
 }
 

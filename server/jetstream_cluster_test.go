@@ -10471,3 +10471,60 @@ func TestJetStreamClusterMirrorDeDupWindow(t *testing.T) {
 	send(100)
 	check(200)
 }
+
+func TestJetStreamClusterNewHealthz(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "R1",
+		Subjects: []string{"foo"},
+		Replicas: 1,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "R3",
+		Subjects: []string{"bar"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Create subscribers (durable and ephemeral for each)
+	fsube, err := js.SubscribeSync("foo")
+	require_NoError(t, err)
+	fsubd, err := js.SubscribeSync("foo", nats.Durable("d"))
+	require_NoError(t, err)
+
+	_, err = js.SubscribeSync("bar")
+	require_NoError(t, err)
+	bsubd, err := js.SubscribeSync("bar", nats.Durable("d"))
+	require_NoError(t, err)
+
+	for i := 0; i < 20; i++ {
+		_, err = js.Publish("foo", []byte("foo"))
+		require_NoError(t, err)
+	}
+	checkSubsPending(t, fsube, 20)
+	checkSubsPending(t, fsubd, 20)
+
+	// Select the server where we know the R1 stream is running.
+	sl := c.streamLeader("$G", "R1")
+	sl.Shutdown()
+
+	// Do same on R3 so that sl has to recover some things before healthz should be good.
+	c.waitOnStreamLeader("$G", "R3")
+
+	for i := 0; i < 10; i++ {
+		_, err = js.Publish("bar", []byte("bar"))
+		require_NoError(t, err)
+	}
+	// Ephemeral is skipped, might have been on the downed server.
+	checkSubsPending(t, bsubd, 10)
+
+	sl = c.restartServer(sl)
+	c.waitOnServerHealthz(sl)
+}

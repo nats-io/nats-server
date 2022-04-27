@@ -2869,74 +2869,68 @@ func (s *Server) healthz() *HealthStatus {
 	if err := s.readyForConnections(time.Millisecond); err != nil {
 		health.Status = "error"
 		health.Error = err.Error()
-	} else if js := s.getJetStream(); js != nil {
-		// Check JetStream status here.
-		js.mu.RLock()
-		clustered, cc := !js.standAlone, js.cluster
-		js.mu.RUnlock()
-		if clustered {
-			// We do more checking for clustered mode to allow for proper rolling updates.
-			// We will make sure that we have seen the meta leader and that we are current with all assets.
-			node := js.getMetaGroup()
-			if node.GroupLeader() == _EMPTY_ {
-				health.Status = "unavailable"
-				health.Error = "JetStream has not established contact with a meta leader"
-			} else if !node.Current() {
-				health.Status = "unavailable"
-				health.Error = "JetStream is not current with the meta leader"
-			} else {
-				// If we are here we are current and have seen our meta leader.
-				// Now check assets.
-				var _a [512]*jsAccount
-				accounts := _a[:0]
-				js.mu.RLock()
-				// Collect accounts.
-				for _, jsa := range js.accounts {
-					accounts = append(accounts, jsa)
-				}
-				js.mu.RUnlock()
+		return health
+	}
 
-				var streams []*stream
-			Err:
-				// Walk our accounts and assets.
-				for _, jsa := range accounts {
-					if len(streams) > 0 {
-						streams = streams[:0]
-					}
-					jsa.mu.RLock()
-					accName := jsa.account.Name
-					for _, stream := range jsa.streams {
-						streams = append(streams, stream)
-					}
-					jsa.mu.RUnlock()
-					// Now walk the streams themselves.
-					js.mu.RLock()
-					for _, stream := range streams {
-						// Skip non-replicated.
-						if stream.cfg.Replicas <= 1 {
-							continue
-						}
-						sname := stream.name()
-						if !cc.isStreamCurrent(accName, sname) {
+	// Check JetStream
+	js := s.getJetStream()
+	if js == nil {
+		return health
+	}
+
+	// Clustered JetStream
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+
+	cc := js.cluster
+
+	// Currently single server mode this is a no-op.
+	if cc == nil || cc.meta == nil {
+		return health
+	}
+
+	// If we are here we want to check for any assets assigned to us.
+	meta := cc.meta
+	ourID := meta.ID()
+
+	// If no meta leader.
+	if meta.GroupLeader() == _EMPTY_ {
+		health.Status = "unavailable"
+		health.Error = "JetStream has not established contact with a meta leader"
+		return health
+	}
+	// If we are not current with the meta leader.
+	if !meta.Current() {
+		health.Status = "unavailable"
+		health.Error = "JetStream is not current with the meta leader"
+		return health
+	}
+
+	// Range across all accounts, the streams assigned to them, and the consumers.
+	// If they are assigned to this server check their status.
+	for acc, asa := range cc.streams {
+		for stream, sa := range asa {
+			if sa.Group.isMember(ourID) {
+				// Make sure we can look up
+				if !cc.isStreamCurrent(acc, stream) {
+					health.Status = "unavailable"
+					health.Error = fmt.Sprintf("JetStream stream '%s > %s' is not current", acc, stream)
+					return health
+				}
+				// Now check consumers.
+				for consumer, ca := range sa.consumers {
+					if ca.Group.isMember(ourID) {
+						if !cc.isConsumerCurrent(acc, stream, consumer) {
 							health.Status = "unavailable"
-							health.Error = fmt.Sprintf("JetStream stream %q for account %q is not current", sname, accName)
-							js.mu.RUnlock()
-							break Err
-						}
-						// Now do consumers.
-						for _, o := range stream.getConsumers() {
-							if node := o.raftNode(); node != nil && !node.Current() {
-								health.Status = "unavailable"
-								health.Error = fmt.Sprintf("JetStream consumer %q for stream %q and account %q is not current", o.String(), sname, accName)
-								js.mu.RUnlock()
-								break Err
-							}
+							health.Error = fmt.Sprintf("JetStream consumer '%s > %s > %s' is not current", acc, stream, consumer)
+							return health
 						}
 					}
-					js.mu.RUnlock()
 				}
 			}
 		}
 	}
+
+	// Success.
 	return health
 }
