@@ -4196,7 +4196,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 			obs.setCreatedTime(cfg.Created)
 		}
 		obs.mu.Lock()
-		err = obs.readStoredState(lseq)
+		_, err = obs.readStoredState(lseq)
 		obs.mu.Unlock()
 		if err != nil {
 			mset.stop(true, false)

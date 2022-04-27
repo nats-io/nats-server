@@ -870,8 +870,11 @@ func (o *consumer) setLeader(isLeader bool) {
 		mset.mu.RUnlock()
 
 		o.mu.Lock()
+		o.rdq, o.rdqi = nil, nil
 		// Restore our saved state. During non-leader status we just update our underlying store.
-		o.readStoredState(lseq)
+		hadState, _ := o.readStoredState(lseq)
+		// Setup initial pending and proper start sequence.
+		o.setInitialPendingAndStart(hadState)
 
 		// Do info sub.
 		if o.infoSub == nil && jsa != nil {
@@ -905,9 +908,6 @@ func (o *consumer) setLeader(isLeader bool) {
 				return
 			}
 		}
-
-		// Setup initial pending and proper start sequence.
-		o.setInitialPendingAndStart()
 
 		// If push mode, register for notifications on interest.
 		if o.isPushMode() {
@@ -964,6 +964,14 @@ func (o *consumer) setLeader(isLeader bool) {
 	} else {
 		// Shutdown the go routines and the subscriptions.
 		o.mu.Lock()
+		if o.qch != nil {
+			close(o.qch)
+			o.qch = nil
+		}
+		// Make sure to clear out any re delivery queues
+		stopAndClearTimer(&o.ptmr)
+		o.rdq, o.rdqi = nil, nil
+		o.pending = nil
 		// ok if they are nil, we protect inside unsubscribe()
 		o.unsubscribe(o.ackSub)
 		o.unsubscribe(o.reqSub)
@@ -972,10 +980,6 @@ func (o *consumer) setLeader(isLeader bool) {
 		if o.infoSub != nil {
 			o.srv.sysUnsubscribe(o.infoSub)
 			o.infoSub = nil
-		}
-		if o.qch != nil {
-			close(o.qch)
-			o.qch = nil
 		}
 		// Reset waiting if we are in pull mode.
 		if o.isPullMode() {
@@ -1913,18 +1917,19 @@ func (o *consumer) checkRedelivered(slseq uint64) {
 
 // This will restore the state from disk.
 // Lock should be held.
-func (o *consumer) readStoredState(slseq uint64) error {
+func (o *consumer) readStoredState(slseq uint64) (hadState bool, err error) {
 	if o.store == nil {
-		return nil
+		return false, nil
 	}
 	state, err := o.store.State()
 	if err == nil && state != nil && (state.Delivered.Consumer != 0 || state.Delivered.Stream != 0) {
 		o.applyState(state)
+		hadState = true
 		if len(o.rdc) > 0 {
 			o.checkRedelivered(slseq)
 		}
 	}
-	return err
+	return hadState, err
 }
 
 // Apply the consumer stored state.
@@ -3967,7 +3972,7 @@ func (o *consumer) requestNextMsgSubject() string {
 
 // Will set the initial pending and start sequence.
 // mset lock should be held.
-func (o *consumer) setInitialPendingAndStart() {
+func (o *consumer) setInitialPendingAndStart(hadState bool) {
 	mset := o.mset
 	if mset == nil || mset.store == nil {
 		return
@@ -3995,7 +4000,9 @@ func (o *consumer) setInitialPendingAndStart() {
 		// Here we are filtered.
 		if dp == DeliverLastPerSubject && o.hasSkipListPending() && o.sseq < o.lss.resume {
 			ss := mset.store.FilteredState(o.lss.resume+1, o.cfg.FilterSubject)
-			o.sseq = o.lss.seqs[0]
+			if !hadState {
+				o.sseq = o.lss.seqs[0]
+			}
 			o.sgap = ss.Msgs + uint64(len(o.lss.seqs))
 			o.lsgap = ss.Last
 		} else if ss := mset.store.FilteredState(o.sseq, o.cfg.FilterSubject); ss.Msgs > 0 {
@@ -4003,15 +4010,19 @@ func (o *consumer) setInitialPendingAndStart() {
 			o.lsgap = ss.Last
 			// See if we should update our starting sequence.
 			if dp == DeliverLast || dp == DeliverLastPerSubject {
-				o.sseq = ss.Last
+				if !hadState {
+					o.sseq = ss.Last
+				}
 			} else if dp == DeliverNew {
 				// If our original is larger we will ignore, we don't want to go backwards with DeliverNew.
 				// If its greater, we need to adjust pending.
 				if ss.Last >= o.sseq {
 					o.sgap -= (ss.Last - o.sseq + 1)
-					o.sseq = ss.Last + 1
+					if !hadState {
+						o.sseq = ss.Last + 1
+					}
 				}
-			} else {
+			} else if !hadState {
 				// DeliverAll, DeliverByStartSequence, DeliverByStartTime
 				o.sseq = ss.First
 			}
