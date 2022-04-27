@@ -350,7 +350,8 @@ func (cc *jetStreamCluster) isCurrent() bool {
 	return cc.meta.Current()
 }
 
-// isStreamCurrent will determine if this node is a participant for the stream and if its up to date.
+// isStreamCurrent will determine if the stream is up to date.
+// For R1 it will make sure the stream is present on this server.
 // Read lock should be held.
 func (cc *jetStreamCluster) isStreamCurrent(account, stream string) bool {
 	if cc == nil {
@@ -366,12 +367,11 @@ func (cc *jetStreamCluster) isStreamCurrent(account, stream string) bool {
 		return false
 	}
 	rg := sa.Group
-	if rg == nil || rg.node == nil {
+	if rg == nil {
 		return false
 	}
 
-	isCurrent := rg.node.Current()
-	if isCurrent {
+	if rg.node == nil || rg.node.Current() {
 		// Check if we are processing a snapshot and are catching up.
 		acc, err := cc.s.LookupAccount(account)
 		if err != nil {
@@ -384,9 +384,37 @@ func (cc *jetStreamCluster) isStreamCurrent(account, stream string) bool {
 		if mset.isCatchingUp() {
 			return false
 		}
+		// Success.
+		return true
 	}
 
-	return isCurrent
+	return false
+}
+
+// isConsumerCurrent will determine if the consumer is up to date.
+// For R1 it will make sure the consunmer is present on this server.
+// Read lock should be held.
+func (cc *jetStreamCluster) isConsumerCurrent(account, stream, consumer string) bool {
+	if cc == nil {
+		// Non-clustered mode
+		return true
+	}
+	acc, err := cc.s.LookupAccount(account)
+	if err != nil {
+		return false
+	}
+	mset, err := acc.lookupStream(stream)
+	if err != nil {
+		return false
+	}
+	o := mset.lookupConsumer(consumer)
+	if o == nil {
+		return false
+	}
+	if n := o.raftNode(); n != nil && !n.Current() {
+		return false
+	}
+	return true
 }
 
 func (a *Account) getJetStreamFromAccount() (*Server, *jetStream, *jsAccount) {
@@ -3112,7 +3140,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 	var didCreate bool
 	if o == nil {
 		// Add in the consumer if needed.
-		o, err = mset.addConsumerWithAssignment(ca.Config, ca.Name, ca)
+		o, err = mset.addConsumerWithAssignment(ca.Config, ca.Name, ca, false)
 		didCreate = true
 	} else {
 		if err := o.updateConfig(ca.Config); err != nil {
@@ -5268,7 +5296,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	// Make sure we have sane defaults
 	setConsumerConfigDefaults(cfg, srvLim, selectedLimits)
 
-	if err := checkConsumerCfg(cfg, srvLim, &streamCfg, acc, selectedLimits); err != nil {
+	if err := checkConsumerCfg(cfg, srvLim, &streamCfg, acc, selectedLimits, false); err != nil {
 		resp.Error = err
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return

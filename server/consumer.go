@@ -337,10 +337,19 @@ func setConsumerConfigDefaults(config *ConsumerConfig, lim *JSLimitOpts, accLim 
 }
 
 func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
-	return mset.addConsumerWithAssignment(config, _EMPTY_, nil)
+	return mset.addConsumerWithAssignment(config, _EMPTY_, nil, false)
 }
 
-func checkConsumerCfg(config *ConsumerConfig, srvLim *JSLimitOpts, cfg *StreamConfig, acc *Account, accLim *JetStreamAccountLimits) *ApiError {
+// Check the consumer config. If we are recovering don't check filter subjects.
+func checkConsumerCfg(
+	config *ConsumerConfig,
+	srvLim *JSLimitOpts,
+	cfg *StreamConfig,
+	acc *Account,
+	accLim *JetStreamAccountLimits,
+	isRecovering bool,
+) *ApiError {
+
 	// Check if we have a BackOff defined that MaxDeliver is within range etc.
 	if lbo := len(config.BackOff); lbo > 0 && config.MaxDeliver <= lbo {
 		return NewJSConsumerMaxDeliverBackoffError()
@@ -415,7 +424,7 @@ func checkConsumerCfg(config *ConsumerConfig, srvLim *JSLimitOpts, cfg *StreamCo
 	}
 
 	// As best we can make sure the filtered subject is valid.
-	if config.FilterSubject != _EMPTY_ {
+	if config.FilterSubject != _EMPTY_ && !isRecovering {
 		subjects, hasExt := allSubjects(cfg, acc)
 		if !validFilteredSubject(config.FilterSubject, subjects) && !hasExt {
 			return NewJSConsumerFilterNotSubsetError()
@@ -494,7 +503,7 @@ func checkConsumerCfg(config *ConsumerConfig, srvLim *JSLimitOpts, cfg *StreamCo
 	return nil
 }
 
-func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment) (*consumer, error) {
+func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment, isRecovering bool) (*consumer, error) {
 	mset.mu.RLock()
 	s, jsa, tierName, cfg, acc := mset.srv, mset.jsa, mset.tier, mset.cfg, mset.acc
 	retention := cfg.Retention
@@ -522,7 +531,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	// Make sure we have sane defaults.
 	setConsumerConfigDefaults(config, srvLim, &selectedLimits)
 
-	if err := checkConsumerCfg(config, srvLim, &cfg, acc, &selectedLimits); err != nil {
+	if err := checkConsumerCfg(config, srvLim, &cfg, acc, &selectedLimits, isRecovering); err != nil {
 		return nil, err
 	}
 
@@ -1595,7 +1604,7 @@ func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
 			sz += len(proposal.data)
 			if sz > maxBatch {
 				node.ProposeDirect(entries)
-				// We need to re-craete `entries` because there is a reference
+				// We need to re-create `entries` because there is a reference
 				// to it in the node's pae map.
 				sz, entries = 0, nil
 			}
