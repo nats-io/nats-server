@@ -5091,6 +5091,100 @@ func TestNoRaceJetStreamAccountLimitsAndRestart(t *testing.T) {
 	}
 }
 
+func TestNoRaceJetStreamPullConsumersAndInteriorDeletes(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "ID", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "foo",
+		Replicas:  3,
+		MaxMsgs:   50000,
+		Retention: nats.InterestPolicy,
+	})
+	require_NoError(t, err)
+
+	c.waitOnStreamLeader(globalAccountName, "foo")
+
+	_, err = js.AddConsumer("foo", &nats.ConsumerConfig{
+		Durable:       "foo",
+		FilterSubject: "foo",
+		MaxAckPending: 20000,
+		AckWait:       time.Minute,
+		AckPolicy:     nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	c.waitOnConsumerLeader(globalAccountName, "foo", "foo")
+
+	rcv := int32(0)
+	prods := 5
+	cons := 5
+	wg := sync.WaitGroup{}
+	wg.Add(prods + cons)
+	toSend := 100000
+
+	for i := 0; i < cons; i++ {
+		go func() {
+			defer wg.Done()
+
+			sub, err := js.PullSubscribe("foo", "foo")
+			if err != nil {
+				return
+			}
+			for {
+				msgs, err := sub.Fetch(200, nats.MaxWait(250*time.Millisecond))
+				if err != nil {
+					if n := int(atomic.LoadInt32(&rcv)); n >= toSend {
+						return
+					}
+					continue
+				}
+				for _, m := range msgs {
+					m.Ack()
+					atomic.AddInt32(&rcv, 1)
+				}
+			}
+		}()
+	}
+
+	for i := 0; i < prods; i++ {
+		go func() {
+			defer wg.Done()
+
+			for i := 0; i < toSend/prods; i++ {
+				js.Publish("foo", []byte("hello"))
+			}
+		}()
+	}
+
+	time.Sleep(time.Second)
+	resp, err := nc.Request(fmt.Sprintf(JSApiConsumerLeaderStepDownT, "foo", "foo"), nil, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var cdResp JSApiConsumerLeaderStepDownResponse
+	if err := json.Unmarshal(resp.Data, &cdResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if cdResp.Error != nil {
+		t.Fatalf("Unexpected error: %+v", cdResp.Error)
+	}
+	ch := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+	select {
+	case <-ch:
+		// OK
+	case <-time.After(20 * time.Second):
+		t.Fatalf("Consumers took too long to consumer all messages")
+	}
+}
+
 // Net Proxy - For introducing RTT and BW constraints.
 type netProxy struct {
 	listener net.Listener

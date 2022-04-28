@@ -3391,7 +3391,8 @@ func (o *consumer) checkPending() {
 	defer o.mu.Unlock()
 
 	mset := o.mset
-	if mset == nil {
+	// On stop, mset and timer will be nil.
+	if mset == nil || o.ptmr == nil {
 		return
 	}
 
