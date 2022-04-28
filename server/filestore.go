@@ -238,6 +238,8 @@ const (
 	rlBadThresh = 32 * 1024 * 1024
 	// Time threshold to write index info.
 	wiThresh = int64(2 * time.Second)
+	// Time threshold to write index info for non FIFO cases
+	winfThresh = int64(500 * time.Millisecond)
 )
 
 func newFileStore(fcfg FileStoreConfig, cfg StreamConfig) (*fileStore, error) {
@@ -2077,8 +2079,12 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 			}
 			mb.dmap[seq] = struct{}{}
 			// Check if <25% utilization and minimum size met.
-			if notLast && mb.rbytes > compactMinimum && mb.rbytes>>2 > mb.bytes {
-				mb.compact()
+			if notLast && mb.rbytes > compactMinimum {
+				// Remove the interior delete records
+				rbytes := mb.rbytes - uint64(len(mb.dmap)*emptyRecordLen)
+				if rbytes>>2 > mb.bytes {
+					mb.compact()
+				}
 			}
 		}
 	}
@@ -2097,7 +2103,13 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 	// Check if we need to write the index file and we are flush in place (fip).
 	if shouldWriteIndex && fs.fip {
 		// Check if this is the first message, common during expirations etc.
-		if !fifo || time.Now().UnixNano()-mb.lwits > wiThresh {
+		threshold := wiThresh
+		if !fifo {
+			// For out-of-order deletes, we will have a shorter threshold, but
+			// still won't write the index for every single delete.
+			threshold = winfThresh
+		}
+		if time.Now().UnixNano()-mb.lwits > threshold {
 			mb.writeIndexInfoLocked()
 		}
 	}

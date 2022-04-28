@@ -3458,7 +3458,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment, sendSn
 			needSnap = nb > 0 && ne >= compactNumMin || nb > compactSizeMin
 		}
 
-		if snap, err := o.store.EncodedState(); err == nil && !bytes.Equal(lastSnap, snap) || needSnap {
+		if snap, err := o.store.EncodedState(); err == nil && (!bytes.Equal(lastSnap, snap) || needSnap) {
 			if err := n.InstallSnapshot(snap); err == nil {
 				lastSnap, lastSnapTime = snap, time.Now()
 			} else {
