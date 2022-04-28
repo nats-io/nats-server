@@ -4728,8 +4728,6 @@ func (mb *msgBlock) readPerSubjectInfo() error {
 		return mb.generatePerSubjectInfo()
 	}
 
-	fss := make(map[string]*SimpleState)
-
 	bi := hdrLen
 	readU64 := func() uint64 {
 		if bi < 0 {
@@ -4744,8 +4742,11 @@ func (mb *msgBlock) readPerSubjectInfo() error {
 		return num
 	}
 
+	numEntries := readU64()
+	fss := make(map[string]*SimpleState, numEntries)
+
 	mb.mu.Lock()
-	for i, numEntries := uint64(0), readU64(); i < numEntries; i++ {
+	for i := uint64(0); i < numEntries; i++ {
 		lsubj := readU64()
 		// Make a copy or use a configured subject (to avoid mem allocation)
 		subj := mb.subjString(buf[bi : bi+int(lsubj)])
