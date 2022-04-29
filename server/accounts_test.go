@@ -3380,3 +3380,38 @@ func TestAccountLimitsServerConfig(t *testing.T) {
 	_, err = nats.Connect(s.ClientURL(), nats.UserInfo("derek", "foo"))
 	require_Error(t, err)
 }
+
+func TestAccountUserSubPermsWithQueueGroups(t *testing.T) {
+	cf := createConfFile(t, []byte(`
+	listen: 127.0.0.1:-1
+
+	authorization {
+	users = [
+		{ user: user, password: "pass",
+			permissions: {
+				publish: "foo.restricted"
+				subscribe: { allow: "foo.>", deny: "foo.restricted" }
+				allow_responses: { max: 1, ttl: 0s }
+			}
+		}
+	]}
+    `))
+	defer removeFile(t, cf)
+
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("user", "pass"))
+	require_NoError(t, err)
+
+	// qsub solo.
+	qsub, err := nc.QueueSubscribeSync("foo.>", "qg")
+	require_NoError(t, err)
+
+	err = nc.Publish("foo.restricted", []byte("RESTRICTED"))
+	require_NoError(t, err)
+	nc.Flush()
+
+	// Expect no msgs.
+	checkSubsPending(t, qsub, 0)
+}
