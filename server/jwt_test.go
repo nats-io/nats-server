@@ -5760,6 +5760,51 @@ func TestJWTStrictSigningKeys(t *testing.T) {
 	})
 }
 
+func TestJWTDisallowBearer(t *testing.T) {
+	opId, err := nkeys.CreateOperator()
+	require_NoError(t, err)
+	opIdPub, err := opId.PublicKey()
+	require_NoError(t, err)
+	oClaim := jwt.NewOperatorClaims(opIdPub)
+	oClaim.DisallowBearerToken = true
+	oJwt, err := oClaim.Encode(opId)
+	require_NoError(t, err)
+
+	accId, err := nkeys.CreateAccount()
+	require_NoError(t, err)
+	accIdPub, err := accId.PublicKey()
+	require_NoError(t, err)
+	aClaim := jwt.NewAccountClaims(accIdPub)
+	accJwt, err := aClaim.Encode(opId)
+	require_NoError(t, err)
+
+	uc := jwt.NewUserClaims("dummy")
+	uc.BearerToken = true
+	uOpt1 := createUserCredsEx(t, uc, accId)
+	uc.BearerToken = false
+	uOpt2 := createUserCredsEx(t, uc, accId)
+
+	cf := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		operator = %s
+		resolver: MEMORY
+		resolver_preload = {
+			%s : "%s"
+		}
+		`, oJwt, accIdPub, accJwt)))
+	defer removeFile(t, cf)
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	nc1, err := nats.Connect(s.ClientURL(), uOpt1)
+	require_Error(t, err)
+	defer nc1.Close()
+
+	nc2, err := nats.Connect(s.ClientURL(), uOpt2)
+	require_NoError(t, err)
+	defer nc2.Close()
+}
+
 func TestJWTAccountProtectedImport(t *testing.T) {
 	srvFmt := `
 		port: -1
