@@ -2654,7 +2654,7 @@ func (c *client) addShadowSub(sub *subscription, ime *ime) (*subscription, error
 	nsub := *sub // copy
 	nsub.im = im
 
-	if !im.usePub && ime.dyn {
+	if !im.usePub && ime.dyn && im.tr != nil {
 		if im.rtr == nil {
 			im.rtr = im.tr.reverse()
 		}
@@ -4159,7 +4159,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				continue
 			}
 			if sub.im.tr != nil {
-				to, _ := sub.im.tr.transformSubject(string(dsubj))
+				to, _ := sub.im.tr.transformSubject(string(subject))
 				dsubj = append(_dsubj[:0], to...)
 			} else if sub.im.usePub {
 				dsubj = append(_dsubj[:0], subj...)
@@ -4300,7 +4300,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 					continue
 				}
 				if sub.im.tr != nil {
-					to, _ := sub.im.tr.transformSubject(string(subj))
+					to, _ := sub.im.tr.transformSubject(string(subject))
 					dsubj = append(_dsubj[:0], to...)
 				} else if sub.im.usePub {
 					dsubj = append(_dsubj[:0], subj...)

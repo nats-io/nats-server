@@ -17006,7 +17006,8 @@ func TestJetStreamImportConsumerStreamSubjectRemapSingle(t *testing.T) {
 				users: [ {user: js, password: pwd} ]
 				exports [
 					# This is streaming to a delivery subject for a push based consumer.
-					{ stream: "deliver.ORDERS" }
+					{ stream: "deliver.*" }
+					{ stream: "foo.*" }
 					# This is to ack received messages. This is a service to support sync ack.
 					{ service: "$JS.ACK.ORDERS.*.>" }
 					# To support ordered consumers, flow control.
@@ -17016,8 +17017,9 @@ func TestJetStreamImportConsumerStreamSubjectRemapSingle(t *testing.T) {
 			IM: {
 				users: [ {user: im, password: pwd} ]
 				imports [
-					{ stream:  { account: JS, subject: "deliver.ORDERS" }, to: "d" }
-					{ service: {account: JS, subject: "$JS.FC.>" }}
+					{ stream:  { account: JS, subject: "deliver.ORDERS" }, to: "d.*" }
+					{ stream:  { account: JS, subject: "foo.*" }, to: "bar.*" }
+					{ service: { account: JS, subject: "$JS.FC.>" }}
 				]
 			},
 		}
@@ -17061,14 +17063,36 @@ func TestJetStreamImportConsumerStreamSubjectRemapSingle(t *testing.T) {
 
 		var sub *nats.Subscription
 		if queue {
-			sub, err = nc2.QueueSubscribeSync("d", queueName)
+			sub, err = nc2.QueueSubscribeSync("d.ORDERS", queueName)
 			require_NoError(t, err)
 		} else {
-			sub, err = nc2.SubscribeSync("d")
+			sub, err = nc2.SubscribeSync("d.ORDERS")
 			require_NoError(t, err)
 		}
 
 		m, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+
+		if m.Subject != "foo" {
+			t.Fatalf("Subject not mapped correctly across account boundary, expected %q got %q", "foo", m.Subject)
+		}
+
+		// Now do one that would kick in a transform.
+		_, err = js.AddConsumer("ORDERS", &nats.ConsumerConfig{
+			DeliverSubject: "foo.ORDERS",
+			AckPolicy:      nats.AckExplicitPolicy,
+			DeliverGroup:   queueName,
+		})
+		require_NoError(t, err)
+
+		if queue {
+			sub, err = nc2.QueueSubscribeSync("bar.ORDERS", queueName)
+			require_NoError(t, err)
+		} else {
+			sub, err = nc2.SubscribeSync("bar.ORDERS")
+			require_NoError(t, err)
+		}
+		m, err = sub.NextMsg(time.Second)
 		require_NoError(t, err)
 
 		if m.Subject != "foo" {
