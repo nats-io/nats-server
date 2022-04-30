@@ -970,8 +970,10 @@ func (s *Server) ActivePeers() (peers []string) {
 	return peers
 }
 
-// isTrustedIssuer will check that the issuer is a trusted public key.
+// isTrustedIssuer will check that the issuer is a trusted public key,
+// and if true, will also return if the operator disallows use of bearer token.
 // This is used to make sure an account was signed by a trusted operator.
+// If the account is not trusted, disallow bearer token will always be false.
 func (s *Server) isTrustedIssuer(issuer string) (bool, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

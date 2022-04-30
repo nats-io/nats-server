@@ -5796,9 +5796,8 @@ func TestJWTDisallowBearer(t *testing.T) {
 	s, _ := RunServerWithConfig(cf)
 	defer s.Shutdown()
 
-	nc1, err := nats.Connect(s.ClientURL(), uOpt1)
+	_, err = nats.Connect(s.ClientURL(), uOpt1)
 	require_Error(t, err)
-	defer nc1.Close()
 
 	nc2, err := nats.Connect(s.ClientURL(), uOpt2)
 	require_NoError(t, err)
