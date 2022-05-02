@@ -2576,6 +2576,7 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg 
 	if acc.nameTag != "" {
 		name = acc.nameTag
 	}
+	jsa.usageMu.RLock()
 	totalMem, totalStore := jsa.storageTotals()
 	detail := AccountDetail{
 		Name: name,
@@ -2590,6 +2591,7 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg 
 		},
 		Streams: make([]StreamDetail, 0, len(jsa.streams)),
 	}
+	jsa.usageMu.RUnlock()
 	var streams []*stream
 	if optStreams {
 		for _, stream := range jsa.streams {

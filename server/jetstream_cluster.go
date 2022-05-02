@@ -4324,9 +4324,9 @@ func (acc *Account) selectLimits(cfg *StreamConfig) (*JetStreamAccountLimits, st
 		return nil, _EMPTY_, nil, NewJSNotEnabledForAccountError()
 	}
 
-	jsa.mu.RLock()
+	jsa.usageMu.RLock()
 	selectedLimits, tierName, ok := jsa.selectLimits(cfg)
-	jsa.mu.RUnlock()
+	jsa.usageMu.RUnlock()
 
 	if !ok {
 		return nil, _EMPTY_, nil, NewJSNoLimitsError()
@@ -5641,10 +5641,10 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 
 	// Check here pre-emptively if we have exceeded our account limits.
 	var exceeded bool
-	jsa.mu.RLock()
+	jsa.usageMu.Lock()
 	jsaLimits, ok := jsa.limits[tierName]
 	if !ok {
-		jsa.mu.RUnlock()
+		jsa.usageMu.Unlock()
 		err := fmt.Errorf("no JetStream resource limits found account: %q", jsa.acc().Name)
 		s.RateLimitWarnf(err.Error())
 		if canRespond {
@@ -5671,7 +5671,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			exceeded = true
 		}
 	}
-	jsa.mu.RUnlock()
+	jsa.usageMu.Unlock()
 
 	// If we have exceeded our account limits go ahead and return.
 	if exceeded {

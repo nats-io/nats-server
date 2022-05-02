@@ -322,7 +322,9 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 			return nil, ApiErrors[JSStreamNameExistErr]
 		}
 	}
+	jsa.usageMu.RLock()
 	selected, tier, hasTier := jsa.selectLimits(&cfg)
+	jsa.usageMu.RUnlock()
 	reserved := int64(0)
 	if !isClustered {
 		reserved = jsa.tieredReservation(tier, &cfg)
@@ -1204,10 +1206,12 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server) (*Str
 	js, isClustered := jsa.jetStreamAndClustered()
 	jsa.mu.RLock()
 	acc := jsa.account
+	jsa.usageMu.RLock()
 	selected, tier, hasTier := jsa.selectLimits(&cfg)
 	if !hasTier && old.Replicas != cfg.Replicas {
 		selected, tier, hasTier = jsa.selectLimits(old)
 	}
+	jsa.usageMu.RUnlock()
 	reserved := int64(0)
 	if !isClustered {
 		reserved = jsa.tieredReservation(tier, &cfg)
@@ -1308,7 +1312,10 @@ func (mset *stream) update(config *StreamConfig) error {
 
 	if targetTier := tierName(cfg); mset.tier != targetTier {
 		// In cases such as R1->R3, only one update is needed
-		if _, ok := mset.jsa.limits[targetTier]; ok {
+		mset.jsa.usageMu.RLock()
+		_, ok := mset.jsa.limits[targetTier]
+		mset.jsa.usageMu.RUnlock()
+		if ok {
 			// error never set
 			_, reported, _ := mset.store.Utilization()
 			mset.jsa.updateUsage(mset.tier, mset.stype, -int64(reported))
