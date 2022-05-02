@@ -26,10 +26,10 @@ jobs:
 
       - name: Run code coverage
         shell: bash --noprofile --norc -x -eo pipefail {0}
-        # Do not make the build fail even if code coverage reported
-        # a test failure.
         run: |
+          set -e
           ./scripts/cov.sh upload
+          set +e
 
       - name: Convert coverage.out to coverage.lcov
         uses: jandelgado/gcov2lcov-action@v1.0.8
