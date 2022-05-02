@@ -849,12 +849,12 @@ func (a *Account) trackAPI() {
 	jsa := a.js
 	a.mu.RUnlock()
 	if jsa != nil {
-		jsa.mu.Lock()
+		jsa.usageMu.Lock()
 		jsa.usageApi++
 		jsa.apiTotal++
 		jsa.sendClusterUsageUpdate()
 		atomic.AddInt64(&jsa.js.apiTotal, 1)
-		jsa.mu.Unlock()
+		jsa.usageMu.Unlock()
 	}
 }
 
@@ -863,7 +863,7 @@ func (a *Account) trackAPIErr() {
 	jsa := a.js
 	a.mu.RUnlock()
 	if jsa != nil {
-		jsa.mu.Lock()
+		jsa.usageMu.Lock()
 		jsa.usageApi++
 		jsa.apiTotal++
 		jsa.usageErr++
@@ -871,7 +871,7 @@ func (a *Account) trackAPIErr() {
 		jsa.sendClusterUsageUpdate()
 		atomic.AddInt64(&jsa.js.apiTotal, 1)
 		atomic.AddInt64(&jsa.js.apiErrors, 1)
-		jsa.mu.Unlock()
+		jsa.usageMu.Unlock()
 	}
 }
 

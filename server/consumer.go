@@ -520,9 +520,9 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		return nil, NewJSConsumerConfigRequiredError()
 	}
 
-	jsa.mu.RLock()
+	jsa.usageMu.RLock()
 	selectedLimits, limitsFound := jsa.limits[tierName]
-	jsa.mu.RUnlock()
+	jsa.usageMu.RUnlock()
 	if !limitsFound {
 		return nil, NewJSNoLimitsError()
 	}
