@@ -658,6 +658,9 @@ func (js *jetStream) isGroupLeaderless(rg *raftGroup) bool {
 	cc := js.cluster
 
 	// If we are not a member we can not say..
+	if cc.meta == nil {
+		return false
+	}
 	if !rg.isMember(cc.meta.ID()) {
 		return false
 	}
