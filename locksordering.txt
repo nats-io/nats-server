@@ -2,6 +2,9 @@ Here is the list of some established lock ordering.
 
 In this list, A -> B means that you can have A.Lock() then B.Lock(), not the opposite.
 
-jetStream -> jsAccount -> Server -> client-> Account
+jetStream -> jsAccount -> Server -> client -> Account
 
-stream -> consumer
+jetStream -> jsAccount -> stream -> consumer
+
+A lock to protect jetstream account's usage has been introduced: jsAccount.usageMu.
+This lock is independent and can be invoked under any other lock: jsAccount -> jsa.usageMu, stream -> jsa.usageMu, etc...
