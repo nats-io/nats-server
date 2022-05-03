@@ -1630,7 +1630,7 @@ func (n *raft) debug(format string, args ...interface{}) {
 
 func (n *raft) warn(format string, args ...interface{}) {
 	nf := fmt.Sprintf("RAFT [%s - %s] %s", n.id, n.group, format)
-	n.s.Warnf(nf, args...)
+	n.s.RateLimitWarnf(nf, args...)
 }
 
 func (n *raft) error(format string, args ...interface{}) {
@@ -2259,14 +2259,14 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	var state StreamState
 	n.wal.FastState(&state)
 
-	if start < state.FirstSeq || state.Msgs == 0 && start <= state.LastSeq {
+	if start < state.FirstSeq || (state.Msgs == 0 && start <= state.LastSeq) {
 		n.debug("Need to send snapshot to follower")
 		if lastIndex, err := n.sendSnapshotToFollower(ar.reply); err != nil {
 			n.error("Error sending snapshot to follower [%s]: %v", ar.peer, err)
 			n.Unlock()
 			return
 		} else {
-			// If no other entries can just return here.
+			// If no other entries, we can just return here.
 			if state.Msgs == 0 {
 				n.debug("Finished catching up")
 				n.Unlock()
@@ -2279,15 +2279,16 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 
 	ae, err := n.loadEntry(start)
 	if err != nil {
+		n.warn("Request from follower for index [%d] possibly beyond our last index [%d] - %v", start, state.LastSeq, err)
 		ae, err = n.loadFirstEntry()
 	}
 	if err != nil || ae == nil {
-		n.debug("Could not find a starting entry: %v", err)
+		n.warn("Could not find a starting entry for catchup request: %v", err)
 		n.Unlock()
 		return
 	}
 	if ae.pindex != ar.index || ae.pterm != ar.term {
-		n.debug("Our first entry does not match request from follower")
+		n.debug("Our first entry [%d:%d] does not match request from follower [%d:%d]", ae.pterm, ae.pindex, ar.term, ar.index)
 	}
 	// Create a queue for delivering updates from responses.
 	indexUpdates := n.s.newIPQueue(fmt.Sprintf("[ACC:%s] RAFT '%s' indexUpdates", n.accName, n.group)) // of uint64
@@ -2703,8 +2704,9 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.Unlock()
 			n.debug("AppendEntry ignoring old term from another leader")
 			n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
-			return
 		}
+		// Always return here from processing.
+		return
 	}
 
 	// If we received an append entry as a candidate we should convert to a follower.
@@ -2754,6 +2756,8 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		if cs := n.catchup; cs != nil && n.pterm >= cs.cterm && n.pindex >= cs.cindex {
 			// If we are here we are good, so if we have a catchup pending we can cancel.
 			n.cancelCatchup()
+			// Reset our notion of catching up.
+			catchingUp = false
 		} else if isNew {
 			var ar *appendEntryResponse
 			var inbox string
@@ -2800,8 +2804,13 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			if eae, err := n.loadEntry(ae.pindex); err == nil && eae != nil {
 				// If terms mismatched, delete that entry and all others past it.
 				if ae.pterm > eae.pterm {
+					// Truncate will reset our pterm and pindex.
 					n.truncateWAL(ae.pterm, ae.pindex)
-					ar = &appendEntryResponse{n.pterm, n.pindex, n.id, false, _EMPTY_}
+					// Make sure to cancel any catchups in progress.
+					if catchingUp {
+						n.cancelCatchup()
+					}
+					ar = &appendEntryResponse{ae.pterm, ae.pindex, n.id, false, _EMPTY_}
 				} else {
 					ar = &appendEntryResponse{ae.pterm, ae.pindex, n.id, true, _EMPTY_}
 				}
@@ -2826,7 +2835,8 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				n.Unlock()
 				return
 			}
-			// Snapshots and peerstate will always be together when a leader is catching us up.
+			// This means we already entered into a catchup state but what the leader sent us did not match what we expected.
+			// Snapshots and peerstate will always be together when a leader is catching us up in this fashion.
 			if len(ae.entries) != 2 || ae.entries[0].Type != EntrySnapshot || ae.entries[1].Type != EntryPeerState {
 				n.warn("Expected first catchup entry to be a snapshot and peerstate, will retry")
 				n.cancelCatchup()

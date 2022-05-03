@@ -1781,6 +1781,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// new peers to be caught up. We could not be leader yet, so we will do same check below
 			// on leadership change.
 			if isLeader && migrating && peerGroup == oldPeerGroup {
+				doSnapshot()
 				startMigrationMonitoring()
 			}
 		case <-mmtc:
@@ -3263,7 +3264,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 			js.processConsumerLeaderChange(o, true)
 		} else {
 			if !alreadyRunning {
-				s.startGoRoutine(func() { js.monitorConsumer(o, ca, !didCreate) })
+				s.startGoRoutine(func() { js.monitorConsumer(o, ca) })
 			}
 			// Process if existing.
 			if wasExisting && (o.isLeader() || (!didCreate && rg.node.GroupLeader() == _EMPTY_)) {
@@ -3418,7 +3419,7 @@ func (o *consumer) raftNode() RaftNode {
 	return o.node
 }
 
-func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment, sendSnapshot bool) {
+func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	s, n := js.server(), o.raftNode()
 	defer s.grWG.Done()
 
@@ -3467,16 +3468,6 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment, sendSn
 			} else {
 				s.Warnf("Failed to install snapshot for '%s > %s > %s' [%s]: %v", o.acc.Name, ca.Stream, ca.Name, n.Group(), err)
 			}
-		}
-	}
-
-	// This is triggered during a scale up from 1 to clustered mode. We need the new followers to catchup,
-	// similar to how we trigger the catchup mechanism post a backup/restore. It's ok to do here and preferred
-	// over waiting to be elected, this just queues it up for the new members to see first and trigger the above
-	// RAFT layer catchup mechanism.
-	if sendSnapshot && o != nil {
-		if snap, err := o.store.EncodedState(); err == nil {
-			n.SendSnapshot(snap)
 		}
 	}
 
