@@ -1531,7 +1531,7 @@ func TestNoRaceJetStreamClusterStreamCreateAndLostQuorum(t *testing.T) {
 	checkSubsPending(t, sub, 0)
 }
 
-func TestNoRaceJetStreamClusterSuperClusterMirrors(t *testing.T) {
+func TestNoRaceJetStreamSuperClusterMirrors(t *testing.T) {
 	sc := createJetStreamSuperCluster(t, 3, 3)
 	defer sc.shutdown()
 
@@ -1646,7 +1646,7 @@ func TestNoRaceJetStreamClusterSuperClusterMirrors(t *testing.T) {
 	})
 }
 
-func TestNoRaceJetStreamClusterMirrorMixedMode(t *testing.T) {
+func TestNoRaceJetStreamSuperClusterMixedModeMirrors(t *testing.T) {
 	// Unlike the similar sources test, this test is not reliably catching the bug
 	// that would cause mirrors to not have the expected messages count.
 	// Still, adding this test in case we have a regression and we are lucky in
@@ -1756,7 +1756,7 @@ func TestNoRaceJetStreamClusterMirrorMixedMode(t *testing.T) {
 	}
 }
 
-func TestNoRaceJetStreamClusterSuperClusterSources(t *testing.T) {
+func TestNoRaceJetStreamSuperClusterSources(t *testing.T) {
 
 	sc := createJetStreamSuperCluster(t, 3, 3)
 	defer sc.shutdown()
@@ -1955,7 +1955,7 @@ func TestNoRaceJetStreamClusterSourcesMuxd(t *testing.T) {
 
 }
 
-func TestNoRaceJetStreamClusterSourcesMuxdMixedMode(t *testing.T) {
+func TestNoRaceJetStreamSuperClusterMixedModeSources(t *testing.T) {
 	tmpl := `
 		listen: 127.0.0.1:-1
 		server_name: %s
@@ -2217,7 +2217,7 @@ func TestNoRaceLargeActiveOnReplica(t *testing.T) {
 	}
 }
 
-func TestNoRaceJetStreamClusterSuperClusterRIPStress(t *testing.T) {
+func TestNoRaceJetStreamSuperClusterRIPStress(t *testing.T) {
 	// Uncomment to run. Needs to be on a big machine.
 	skip(t)
 
@@ -2743,7 +2743,7 @@ func TestNoRaceJetStreamStalledMirrorsAfterExpire(t *testing.T) {
 
 // We will use JetStream helpers to create supercluster but this test is about exposing the ability to access
 // account scoped connz with subject interest filtering.
-func TestNoRaceAccountConnz(t *testing.T) {
+func TestNoRaceJetStreamSuperClusterAccountConnz(t *testing.T) {
 	// This has 4 different account, 3 general and system.
 	sc := createJetStreamSuperClusterWithTemplate(t, jsClusterAccountsTempl, 3, 3)
 	defer sc.shutdown()
