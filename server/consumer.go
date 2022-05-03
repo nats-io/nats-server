@@ -2368,9 +2368,9 @@ func (wr *waitingRequest) recycle() {
 
 // waiting queue for requests that are waiting for new messages to arrive.
 type waitQueue struct {
-	rp, wp int
-	last   time.Time
-	reqs   []*waitingRequest
+	rp, wp, n int
+	last      time.Time
+	reqs      []*waitingRequest
 }
 
 // Create a new ring buffer with at most max items.
@@ -2401,25 +2401,20 @@ func (wq *waitQueue) add(wr *waitingRequest) error {
 	}
 	// Track last active via when we receive a request.
 	wq.last = wr.received
+	wq.n++
 	return nil
 }
 
 func (wq *waitQueue) isFull() bool {
-	return wq.rp == wq.wp
+	return wq.n == cap(wq.reqs)
 }
 
 func (wq *waitQueue) isEmpty() bool {
-	return wq.len() == 0
+	return wq.n == 0
 }
 
 func (wq *waitQueue) len() int {
-	if wq == nil || wq.rp < 0 {
-		return 0
-	}
-	if wq.rp < wq.wp {
-		return wq.wp - wq.rp
-	}
-	return cap(wq.reqs) - wq.rp + wq.wp
+	return wq.n
 }
 
 // Peek will return the next request waiting or nil if empty.
@@ -2454,8 +2449,9 @@ func (wq *waitQueue) removeCurrent() {
 	}
 	wq.reqs[wq.rp] = nil
 	wq.rp = (wq.rp + 1) % cap(wq.reqs)
+	wq.n--
 	// Check if we are empty.
-	if wq.rp == wq.wp {
+	if wq.n == 0 {
 		wq.rp, wq.wp = -1, 0
 	}
 }
@@ -2466,14 +2462,15 @@ func (wq *waitQueue) compact() {
 		return
 	}
 	nreqs, i := make([]*waitingRequest, cap(wq.reqs)), 0
-	for rp := wq.rp; rp != wq.wp; rp = (rp + 1) % cap(wq.reqs) {
+	for j, rp := 0, wq.rp; j < wq.n; j++ {
 		if wr := wq.reqs[rp]; wr != nil {
 			nreqs[i] = wr
 			i++
 		}
+		rp = (rp + 1) % cap(wq.reqs)
 	}
 	// Reset here.
-	wq.rp, wq.wp, wq.reqs = 0, i, nreqs
+	wq.rp, wq.wp, wq.n, wq.reqs = 0, i, i, nreqs
 }
 
 // Return the replies for our pending requests.
@@ -2485,10 +2482,11 @@ func (o *consumer) pendingRequestReplies() []string {
 		return nil
 	}
 	wq, m := o.waiting, make(map[string]struct{})
-	for rp := o.waiting.rp; o.waiting.rp >= 0 && rp != wq.wp; rp = (rp + 1) % cap(wq.reqs) {
+	for i, rp := 0, o.waiting.rp; i < wq.n; i++ {
 		if wr := wq.reqs[rp]; wr != nil {
 			m[wr.reply] = struct{}{}
 		}
+		rp = (rp + 1) % cap(wq.reqs)
 	}
 	var replies []string
 	for reply := range m {
@@ -2580,10 +2578,7 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 	// If we have the max number of requests already pending try to expire.
 	if o.waiting.isFull() {
 		// Try to expire some of the requests.
-		if expired, _, _, _ := o.processWaiting(); expired == 0 {
-			// Force expiration if needed.
-			o.forceExpireFirstWaiting()
-		}
+		o.processWaiting()
 	}
 
 	// If the request is for noWait and we have pending requests already, check if we have room.
@@ -2768,27 +2763,6 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 	return pmsg, dc, err
 }
 
-// forceExpireFirstWaiting will force expire the first waiting.
-// Lock should be held.
-func (o *consumer) forceExpireFirstWaiting() {
-	// FIXME(dlc) - Should we do advisory here as well?
-	wr := o.waiting.peek()
-	if wr == nil {
-		return
-	}
-	// If we are expiring this and we think there is still interest, alert.
-	if rr := wr.acc.sl.Match(wr.interest); len(rr.psubs)+len(rr.qsubs) > 0 && o.mset != nil {
-		// We still appear to have interest, so send alert as courtesy.
-		hdr := []byte("NATS/1.0 408 Request Canceled\r\n\r\n")
-		o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
-	}
-	o.waiting.removeCurrent()
-	if o.node != nil {
-		o.removeClusterPendingRequest(wr.reply)
-	}
-	wr.recycle()
-}
-
 // Will check for expiration and lack of interest on waiting requests.
 // Will also do any heartbeats and return the next expiration or HB interval.
 func (o *consumer) processWaiting() (int, int, int, time.Time) {
@@ -2817,14 +2791,14 @@ func (o *consumer) processWaiting() (int, int, int, time.Time) {
 	}
 
 	wq := o.waiting
-
-	for rp := o.waiting.rp; o.waiting.rp >= 0 && rp != wq.wp; rp = (rp + 1) % cap(wq.reqs) {
+	for i, rp, n := 0, wq.rp, wq.n; i < n; rp = (rp + 1) % cap(wq.reqs) {
 		wr := wq.reqs[rp]
 		// Check expiration.
 		if (wr.noWait && wr.d > 0) || (!wr.expires.IsZero() && now.After(wr.expires)) {
 			hdr := []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
 			o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 			remove(wr, rp)
+			i++
 			continue
 		}
 		// Now check interest.
@@ -2856,10 +2830,12 @@ func (o *consumer) processWaiting() (int, int, int, time.Time) {
 			if !wr.expires.IsZero() && (fexp.IsZero() || wr.expires.Before(fexp)) {
 				fexp = wr.expires
 			}
+			i++
 			continue
 		}
 		// No more interest here so go ahead and remove this one from our list.
 		remove(wr, rp)
+		i++
 	}
 
 	// If we have interior deletes from out of order invalidation, compact the waiting queue.
@@ -2867,7 +2843,7 @@ func (o *consumer) processWaiting() (int, int, int, time.Time) {
 		o.waiting.compact()
 	}
 
-	return expired, o.waiting.len(), brp, fexp
+	return expired, wq.len(), brp, fexp
 }
 
 // Will check to make sure those waiting still have registered interest.

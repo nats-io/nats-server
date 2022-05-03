@@ -1650,20 +1650,20 @@ func TestJetStreamWorkQueueMaxWaiting(t *testing.T) {
 			}
 			expectWaiting(JSWaitQueueDefaultMax)
 
-			// So when we submit our next request this one should succeed since we do not want these to fail.
-			// We should get notified that the first request is now stale and has been removed.
-			if _, err := nc.Request(getSubj, nil, 10*time.Millisecond); err != nats.ErrTimeout {
-				t.Fatalf("Expected timeout error, got: %v", err)
+			// We are at the max, so we should get a 409 saying that we have
+			// exceeded the number of pull requests.
+			m, err := nc.Request(getSubj, nil, 100*time.Millisecond)
+			require_NoError(t, err)
+			// Make sure this is the 409
+			if v := m.Header.Get("Status"); v != "409" {
+				t.Fatalf("Expected a 409 status code, got %q", v)
 			}
-			checkSubPending(1)
-			m, _ := sub.NextMsg(0)
-			// Make sure this is an alert that tells us our request is now stale.
-			if m.Header.Get("Status") != "408" {
-				t.Fatalf("Expected a 408 status code, got %q", m.Header.Get("Status"))
-			}
+			// The sub for the other requests should not have received anything
+			checkSubPending(0)
+			// Now send some messages that should make some of the requests complete
 			sendStreamMsg(t, nc, "foo", "Hello World!")
 			sendStreamMsg(t, nc, "bar", "Hello World!")
-			expectWaiting(JSWaitQueueDefaultMax - 3)
+			expectWaiting(JSWaitQueueDefaultMax - 2)
 		})
 	}
 }
@@ -9863,6 +9863,58 @@ func TestJetStreamPushConsumersPullError(t *testing.T) {
 	}
 	if m.Header.Get("Status") != "409" {
 		t.Fatalf("Expected a 409 status code, got %q", m.Header.Get("Status"))
+	}
+}
+
+func TestJetStreamPullConsumerMaxWaitingOfOne(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"TEST.A"}})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:    "dur",
+		MaxWaiting: 1,
+		AckPolicy:  nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// First check that a request can timeout (we had an issue where this was
+	// not the case for MaxWaiting of 1).
+	req := JSApiConsumerGetNextRequest{Batch: 1, Expires: 250 * time.Millisecond}
+	reqb, _ := json.Marshal(req)
+	msg, err := nc.Request("$JS.API.CONSUMER.MSG.NEXT.TEST.dur", reqb, 13000*time.Millisecond)
+	require_NoError(t, err)
+	if v := msg.Header.Get("Status"); v != "408" {
+		t.Fatalf("Expected 408, got: %s", v)
+	}
+
+	// Now have a request waiting...
+	req = JSApiConsumerGetNextRequest{Batch: 1}
+	reqb, _ = json.Marshal(req)
+	// Send the request, but do not block since we want then to send an extra
+	// request that should be rejected.
+	sub := natsSubSync(t, nc, nats.NewInbox())
+	err = nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.dur", sub.Subject, reqb)
+	require_NoError(t, err)
+
+	// Send a new request, this should be rejected as a 409.
+	req = JSApiConsumerGetNextRequest{Batch: 1, Expires: 250 * time.Millisecond}
+	reqb, _ = json.Marshal(req)
+	msg, err = nc.Request("$JS.API.CONSUMER.MSG.NEXT.TEST.dur", reqb, 300*time.Millisecond)
+	require_NoError(t, err)
+	if v := msg.Header.Get("Status"); v != "409" {
+		t.Fatalf("Expected 409, got: %s", v)
+	}
+	if v := msg.Header.Get("Description"); v != "Exceeded MaxWaiting" {
+		t.Fatalf("Expected error about exceeded max waiting, got: %s", v)
 	}
 }
 
