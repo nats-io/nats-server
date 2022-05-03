@@ -1705,11 +1705,13 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 		return ErrStoreClosed
 	}
 
+	var pscheck bool
+	var asl bool
 	// Check if we are discarding new messages when we reach the limit.
 	if fs.cfg.Discard == DiscardNew {
-		var asl bool
 		var fseq uint64
 		if fs.cfg.MaxMsgsPer > 0 && len(subj) > 0 {
+			pscheck = true
 			var msgs uint64
 			if msgs, fseq, _ = fs.perSubjectState(subj); msgs >= uint64(fs.cfg.MaxMsgsPer) {
 				asl = true
@@ -1760,7 +1762,9 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 
 	// Enforce per message limits.
 	if fs.cfg.MaxMsgsPer > 0 && len(subj) > 0 {
-		fs.enforcePerSubjectLimit(subj)
+		if !pscheck || asl {
+			fs.enforcePerSubjectLimit(subj)
+		}
 	}
 
 	// Limits checks and enforcement.
