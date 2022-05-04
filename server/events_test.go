@@ -45,10 +45,11 @@ func createAccount(s *Server) (*Account, nkeys.KeyPair) {
 	return acc, akp
 }
 
-func createUserCredsEx(t *testing.T, nuc *jwt.UserClaims, akp nkeys.KeyPair) nats.Option {
+func createUserCreds(t *testing.T, s *Server, akp nkeys.KeyPair) nats.Option {
 	t.Helper()
 	kp, _ := nkeys.CreateUser()
-	nuc.Subject, _ = kp.PublicKey()
+	pub, _ := kp.PublicKey()
+	nuc := jwt.NewUserClaims(pub)
 	ujwt, err := nuc.Encode(akp)
 	if err != nil {
 		t.Fatalf("Error generating user JWT: %v", err)
@@ -61,10 +62,6 @@ func createUserCredsEx(t *testing.T, nuc *jwt.UserClaims, akp nkeys.KeyPair) nat
 		return sig, nil
 	}
 	return nats.UserJWT(userCB, sigCB)
-}
-
-func createUserCreds(t *testing.T, s *Server, akp nkeys.KeyPair) nats.Option {
-	return createUserCredsEx(t, jwt.NewUserClaims("test"), akp)
 }
 
 func runTrustedServer(t *testing.T) (*Server, *Options) {

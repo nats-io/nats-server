@@ -209,8 +209,8 @@ type Server struct {
 
 	// Trusted public operator keys.
 	trustedKeys []string
-	// map of trusted keys to operator claims
-	keyToClaim map[string]*jwt.OperatorClaims
+	// map of trusted keys to operator setting StrictSigningKeyUsage
+	strictSigningKeyUsage map[string]struct{}
 
 	// We use this to minimize mem copies for requests to monitoring
 	// endpoint /varz (when it comes from http).
@@ -970,32 +970,27 @@ func (s *Server) ActivePeers() (peers []string) {
 	return peers
 }
 
-// isTrustedIssuer will check that the issuer is a trusted public key,
-// and if true, will also return if the operator disallows use of bearer token.
+// isTrustedIssuer will check that the issuer is a trusted public key.
 // This is used to make sure an account was signed by a trusted operator.
-// If the account is not trusted, disallow bearer token will always be false.
-func (s *Server) isTrustedIssuer(issuer string) (bool, bool) {
+func (s *Server) isTrustedIssuer(issuer string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// If we are not running in trusted mode and there is no issuer, that is ok.
 	if s.trustedKeys == nil && issuer == "" {
-		return true, false
+		return true
 	}
 	for _, tk := range s.trustedKeys {
 		if tk == issuer {
-			if op, ok := s.keyToClaim[issuer]; ok {
-				return true, op.DisallowBearerToken
-			}
-			return true, false
+			return true
 		}
 	}
-	return false, false
+	return false
 }
 
 // processTrustedKeys will process binary stamped and
 // options-based trusted nkeys. Returns success.
 func (s *Server) processTrustedKeys() bool {
-	s.keyToClaim = map[string]*jwt.OperatorClaims{}
+	s.strictSigningKeyUsage = map[string]struct{}{}
 	if trustedKeys != "" && !s.initStampedTrustedKeys() {
 		return false
 	} else if s.opts.TrustedKeys != nil {
@@ -1006,9 +1001,11 @@ func (s *Server) processTrustedKeys() bool {
 		}
 		s.trustedKeys = append([]string(nil), s.opts.TrustedKeys...)
 		for _, claim := range s.opts.TrustedOperators {
-			s.keyToClaim[claim.Subject] = claim
+			if !claim.StrictSigningKeyUsage {
+				continue
+			}
 			for _, key := range claim.SigningKeys {
-				s.keyToClaim[key] = claim
+				s.strictSigningKeyUsage[key] = struct{}{}
 			}
 		}
 	}
@@ -1225,7 +1222,7 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	}
 	// If we are running with trusted keys for an operator
 	// make sure we check the account is legit.
-	if isTrusted, _ := s.isTrustedIssuer(acc.Issuer); !isTrusted {
+	if !s.isTrustedIssuer(acc.Issuer) {
 		return ErrAccountValidation
 	}
 
@@ -1545,7 +1542,7 @@ func (s *Server) verifyAccountClaims(claimJWT string) (*jwt.AccountClaims, strin
 	if err != nil {
 		return nil, _EMPTY_, err
 	}
-	if isTrusted, _ := s.isTrustedIssuer(accClaims.Issuer); !isTrusted {
+	if !s.isTrustedIssuer(accClaims.Issuer) {
 		return nil, _EMPTY_, ErrAccountValidation
 	}
 	vr := jwt.CreateValidationResults()

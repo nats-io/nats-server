@@ -607,11 +607,8 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			c.Debugf("Account JWT lookup error: %v", err)
 			return false
 		}
-		if isTrusted, noBearer := s.isTrustedIssuer(acc.Issuer); !isTrusted {
+		if !s.isTrustedIssuer(acc.Issuer) {
 			c.Debugf("Account JWT not signed by trusted operator")
-			return false
-		} else if noBearer && juc.BearerToken {
-			c.Debugf("Bearer Token are disallowed by operator")
 			return false
 		}
 		if scope, ok := acc.hasIssuer(juc.Issuer); !ok {

@@ -2983,8 +2983,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 
 	// update account signing keys
 	a.signingKeys = nil
-	op, ok := s.keyToClaim[a.Issuer]
-	strict := ok && op.StrictSigningKeyUsage
+	_, strict := s.strictSigningKeyUsage[a.Issuer]
 	if len(ac.SigningKeys) > 0 || !strict {
 		a.signingKeys = make(map[string]jwt.Scope)
 	}
