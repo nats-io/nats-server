@@ -4363,8 +4363,16 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 	}
 
 	var smv StoreMsg
+	var err error
+	var isEmpty bool
 
 	smb.mu.Lock()
+	// Since we loaded before we acquired our lock, double check here under lock that we have the messages loaded.
+	if smb.cacheNotLoaded() {
+		if err = smb.loadMsgsWithLock(); err != nil {
+			goto SKIP
+		}
+	}
 	for mseq := smb.first.seq; mseq < seq; mseq++ {
 		sm, err := smb.cacheLookup(mseq, &smv)
 		if err == errDeletedMsg {
@@ -4388,7 +4396,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 	}
 
 	// Check if empty after processing, could happen if tail of messages are all deleted.
-	isEmpty := smb.msgs == 0
+	isEmpty = smb.msgs == 0
 	if isEmpty {
 		smb.dirtyCloseWithRemove(true)
 		// Update fs first here as well.
@@ -4405,8 +4413,9 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 		// Check if we should reclaim the head space from this block.
 		// This will be optimistic only, so don't continue if we encounter any errors here.
 		if smb.bytes*2 < smb.rbytes {
-			moff, _, _, err := smb.slotInfo(int(smb.first.seq - smb.cache.fseq))
-			if err != nil {
+			var moff uint32
+			moff, _, _, err = smb.slotInfo(int(smb.first.seq - smb.cache.fseq))
+			if err != nil || moff >= uint32(len(smb.cache.buf)) {
 				goto SKIP
 			}
 			buf := smb.cache.buf[moff:]
@@ -4423,10 +4432,10 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 				}
 				cbuf := make([]byte, len(nbuf))
 				rbek.XORKeyStream(cbuf, nbuf)
-				if err := ioutil.WriteFile(smb.mfn, cbuf, defaultFilePerms); err != nil {
+				if err = ioutil.WriteFile(smb.mfn, cbuf, defaultFilePerms); err != nil {
 					goto SKIP
 				}
-			} else if err := ioutil.WriteFile(smb.mfn, nbuf, defaultFilePerms); err != nil {
+			} else if err = ioutil.WriteFile(smb.mfn, nbuf, defaultFilePerms); err != nil {
 				goto SKIP
 			}
 			smb.clearCacheAndOffset()
@@ -4458,7 +4467,7 @@ SKIP:
 		cb(-int64(purged), -int64(bytes), 0, _EMPTY_)
 	}
 
-	return purged, nil
+	return purged, err
 }
 
 // Truncate will truncate a stream store up to and including seq. Sequence needs to be valid.

@@ -435,7 +435,11 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	// Set our known last sequence.
 	var state StreamState
 	mset.store.FastState(&state)
+
+	// Possible race with consumer.setLeader during recovery.
+	mset.mu.Lock()
 	mset.lseq = state.LastSeq
+	mset.mu.Unlock()
 
 	// If no msgs (new stream), set dedupe state loaded to true.
 	if state.Msgs == 0 {
