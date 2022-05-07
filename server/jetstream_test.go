@@ -889,6 +889,9 @@ func TestJetStreamAddStreamMaxMsgSize(t *testing.T) {
 
 func TestJetStreamAddStreamCanonicalNames(t *testing.T) {
 	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
 	defer s.Shutdown()
 
 	acc := s.GlobalAccount()
@@ -17158,6 +17161,108 @@ func TestJetStreamImportConsumerStreamSubjectRemapSingle(t *testing.T) {
 	t.Run("queue", func(t *testing.T) {
 		test(t, true)
 	})
+}
+
+func TestJetStreamWorkQueueSourceRestart(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	sent := 10
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "FOO",
+		Replicas: 1,
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < sent; i++ {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Replicas: 1,
+		// TODO test will pass when retention commented out
+		Retention: nats.WorkQueuePolicy,
+		Sources:   []*nats.StreamSource{{Name: "FOO"}}})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "dur", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe("foo", "dur", nats.BindStream("TEST"))
+	require_NoError(t, err)
+
+	ci, err := js.ConsumerInfo("TEST", "dur")
+	require_NoError(t, err)
+	require_True(t, ci.NumPending == uint64(sent))
+
+	msgs, err := sub.Fetch(sent)
+	require_NoError(t, err)
+	require_True(t, len(msgs) == sent)
+
+	for i := 0; i < sent; i++ {
+		err = msgs[i].AckSync()
+		require_NoError(t, err)
+	}
+
+	ci, err = js.ConsumerInfo("TEST", "dur")
+	require_NoError(t, err)
+	require_True(t, ci.NumPending == 0)
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.Msgs == 0)
+
+	// Restart server
+	nc.Close()
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+	time.Sleep(200 * time.Millisecond)
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		hs := s.healthz()
+		if hs.Status == "ok" && hs.Error == _EMPTY_ {
+			return nil
+		}
+		return fmt.Errorf("healthz %s %s", hs.Error, hs.Status)
+	})
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	if si.State.Msgs != 0 {
+		t.Fatalf("Expected 0 messages on restart, got %d", si.State.Msgs)
+	}
+
+	ctest, err := js.ConsumerInfo("TEST", "dur")
+	require_NoError(t, err)
+
+	//TODO (mh) I have experienced in other tests that NumPending has a value of 1 post restart.
+	// seems to go awary in single server setup. It's also unrelated to work queue
+	// but that error seems benign.
+	if ctest.NumPending != 0 {
+		t.Fatalf("Expected pending of 0 but got %d", ctest.NumPending)
+	}
+
+	sub, err = js.PullSubscribe("foo", "dur", nats.BindStream("TEST"))
+	require_NoError(t, err)
+	_, err = sub.Fetch(1, nats.MaxWait(time.Second))
+	if err != nats.ErrTimeout {
+		require_NoError(t, err)
+	}
 }
 
 ///////////////////////////////////////////////////////////////////////////
