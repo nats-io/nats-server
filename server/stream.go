@@ -226,6 +226,7 @@ type sourceInfo struct {
 	msgs  *ipQueue // of *inMsg
 	sseq  uint64
 	dseq  uint64
+	start time.Time
 	lag   uint64
 	err   *ApiError
 	last  time.Time
@@ -2230,6 +2231,7 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64) {
 			Direct:         true,
 		},
 	}
+
 	// If starting, check any configs.
 	if seq <= 1 {
 		if ssi.OptStartSeq > 0 {
@@ -2238,7 +2240,12 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64) {
 		} else if ssi.OptStartTime != nil {
 			req.Config.OptStartTime = ssi.OptStartTime
 			req.Config.DeliverPolicy = DeliverByStartTime
+		} else if !si.start.IsZero() {
+			// We are falling back to time based startup on a recover, but our messages are gone. e.g. purge, expired, retention policy.
+			req.Config.OptStartTime = &si.start
+			req.Config.DeliverPolicy = DeliverByStartTime
 		}
+
 	} else {
 		req.Config.OptStartSeq = seq
 		req.Config.DeliverPolicy = DeliverByStartSequence
@@ -2664,7 +2671,13 @@ func (mset *stream) startingSequenceForSources() {
 
 	var state StreamState
 	mset.store.FastState(&state)
+
+	// If we have no messages fall back to start by time for now.
+	// TODO(dlc) - This will be ok, but should formalize with new approach and more formal and durable state.
 	if state.Msgs == 0 {
+		for _, si := range mset.sources {
+			si.start = state.LastTime
+		}
 		return
 	}
 	// For short circuiting return.

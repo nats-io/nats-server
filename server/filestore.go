@@ -663,14 +663,16 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) (*msgBlock, e
 	}
 	// Grab last checksum from main block file.
 	var lchk [8]byte
-	file.ReadAt(lchk[:], fi.Size()-8)
+	if mb.rbytes >= checksumSize {
+		file.ReadAt(lchk[:], fi.Size()-checksumSize)
+	}
 	file.Close()
 
 	// Read our index file. Use this as source of truth if possible.
 	if err := mb.readIndexInfo(); err == nil {
 		// Quick sanity check here.
-		// Note this only checks that the message blk file is not newer then this file.
-		if bytes.Equal(lchk[:], mb.lchk[:]) {
+		// Note this only checks that the message blk file is not newer then this file, or is empty and we expect empty.
+		if (mb.rbytes == 0 && mb.msgs == 0) || bytes.Equal(lchk[:], mb.lchk[:]) {
 			if fs.tms {
 				if err = mb.readPerSubjectInfo(); err != nil {
 					return nil, err
@@ -2048,49 +2050,52 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 	fs.removePerSubject(sm.subj)
 	mb.removeSeqPerSubject(sm.subj, seq, &smv)
 
-	var shouldWriteIndex, firstSeqNeedsUpdate bool
-
 	if secure {
 		// Grab record info.
 		ri, rl, _, _ := mb.slotInfo(int(seq - mb.cache.fseq))
 		mb.eraseMsg(seq, int(ri), int(rl))
 	}
 
-	// Optimize for FIFO case.
 	fifo := seq == mb.first.seq
+	isLastBlock := mb == fs.lmb
+	isEmpty := mb.msgs == 0
+	shouldWriteIndex := !isEmpty
+
 	if fifo {
 		mb.selectNextFirst()
-		if mb.isEmpty() {
-			fs.removeMsgBlock(mb)
-			firstSeqNeedsUpdate = seq == fs.state.FirstSeq
-		} else {
-			shouldWriteIndex = true
+		if !isEmpty {
+			// Can update this one in place.
 			if seq == fs.state.FirstSeq {
 				fs.state.FirstSeq = mb.first.seq // new one.
 				fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
 			}
 		}
-	} else {
-		// Check if we are empty first, as long as not the last message block.
-		if notLast := mb != fs.lmb; notLast && mb.msgs == 0 {
-			fs.removeMsgBlock(mb)
-			firstSeqNeedsUpdate = seq == fs.state.FirstSeq
-		} else {
-			// Out of order delete.
-			shouldWriteIndex = true
-			if mb.dmap == nil {
-				mb.dmap = make(map[uint64]struct{})
-			}
-			mb.dmap[seq] = struct{}{}
-			// Check if <25% utilization and minimum size met.
-			if notLast && mb.rbytes > compactMinimum {
-				// Remove the interior delete records
-				rbytes := mb.rbytes - uint64(len(mb.dmap)*emptyRecordLen)
-				if rbytes>>2 > mb.bytes {
-					mb.compact()
-				}
+	} else if !isEmpty {
+		// Out of order delete.
+		if mb.dmap == nil {
+			mb.dmap = make(map[uint64]struct{})
+		}
+		mb.dmap[seq] = struct{}{}
+		// Check if <25% utilization and minimum size met.
+		if mb.rbytes > compactMinimum && !isLastBlock {
+			// Remove the interior delete records
+			rbytes := mb.rbytes - uint64(len(mb.dmap)*emptyRecordLen)
+			if rbytes>>2 > mb.bytes {
+				mb.compact()
 			}
 		}
+	}
+
+	var firstSeqNeedsUpdate bool
+
+	// Decide how we want to clean this up. If last block we will hold into index.
+	if isEmpty {
+		if isLastBlock {
+			mb.closeAndKeepIndex()
+		} else {
+			fs.removeMsgBlock(mb)
+		}
+		firstSeqNeedsUpdate = seq == fs.state.FirstSeq
 	}
 
 	var qch, fch chan struct{}
@@ -2120,15 +2125,13 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 	mb.mu.Unlock()
 
 	// Kick outside of lock.
-	if shouldWriteIndex {
-		if !fs.fip {
-			if qch == nil {
-				mb.spinUpFlushLoop()
-			}
-			select {
-			case fch <- struct{}{}:
-			default:
-			}
+	if !fs.fip && shouldWriteIndex {
+		if qch == nil {
+			mb.spinUpFlushLoop()
+		}
+		select {
+		case fch <- struct{}{}:
+		default:
 		}
 	}
 
@@ -3059,7 +3062,7 @@ func (fs *fileStore) writeMsgRecord(seq uint64, ts int64, subj string, hdr, msg 
 	}
 	// Grab our current last message block.
 	mb := fs.lmb
-	if mb == nil || mb.blkSize()+rl > fs.fcfg.BlockSize {
+	if mb == nil || mb.msgs > 0 && mb.blkSize()+rl > fs.fcfg.BlockSize {
 		if mb, err = fs.newMsgBlockForWrite(); err != nil {
 			return 0, err
 		}
@@ -4310,6 +4313,7 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	}
 	fs.lmb.first.seq = fs.state.FirstSeq
 	fs.lmb.last.seq = fs.state.LastSeq
+	fs.lmb.last.ts = fs.state.LastTime.UnixNano()
 
 	fs.lmb.writeIndexInfo()
 
@@ -4592,6 +4596,27 @@ func (fs *fileStore) removeMsgBlock(mb *msgBlock) {
 	}
 }
 
+// When we have an empty block but want to keep the index for timestamp info etc.
+// Lock should be held.
+func (mb *msgBlock) closeAndKeepIndex() {
+	// We will leave a 0 length blk marker.
+	if mb.mfd != nil {
+		mb.mfd.Truncate(0)
+	} else {
+		// We were closed, so just write out an empty file.
+		ioutil.WriteFile(mb.mfn, nil, defaultFilePerms)
+	}
+	// Close
+	mb.dirtyCloseWithRemove(false)
+	// Make sure to write the index file so we can remember last seq and ts.
+	mb.writeIndexInfoLocked()
+
+	// Clear any fss.
+	if mb.sfn != _EMPTY_ {
+		os.Remove(mb.sfn)
+	}
+}
+
 // Called by purge to simply get rid of the cache and close our fds.
 // Lock should not be held.
 func (mb *msgBlock) dirtyClose() {
@@ -4683,15 +4708,21 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 
+	if mb.fss == nil {
+		mb.fss = make(map[string]*SimpleState)
+	}
+
+	// Check if this mb is empty. This can happen when its the last one and we are holding onto it for seq and timestamp info.
+	if mb.msgs == 0 {
+		return nil
+	}
+
 	var shouldExpire bool
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			return err
 		}
 		shouldExpire = true
-	}
-	if mb.fss == nil {
-		mb.fss = make(map[string]*SimpleState)
 	}
 
 	var smv StoreMsg

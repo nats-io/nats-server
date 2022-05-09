@@ -3726,3 +3726,102 @@ func TestFileStoreCompactReclaimHeadSpace(t *testing.T) {
 	_, _, err = fs.StoreMsg(subj, nil, msg)
 	require_NoError(t, err)
 }
+
+func TestFileStoreRememberLastMsgTime(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	var fs *fileStore
+	getFS := func() *fileStore {
+		t.Helper()
+		fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "TEST", Storage: FileStorage, MaxAge: 500 * time.Millisecond})
+		require_NoError(t, err)
+		return fs
+	}
+	restartFS := func() {
+		t.Helper()
+		fs.Stop()
+		fs = getFS()
+	}
+
+	msg := bytes.Repeat([]byte("X"), 2*1024*1024)
+
+	// Get first one.
+	fs = getFS()
+	defer fs.Stop()
+
+	seq, ts, err := fs.StoreMsg("foo", nil, msg)
+	require_NoError(t, err)
+	// We will test that last msg time survives from delete, purge and expires after restart.
+	removed, err := fs.RemoveMsg(seq)
+	require_NoError(t, err)
+	require_True(t, removed)
+
+	lt := time.Unix(0, ts).UTC()
+	require_True(t, lt == fs.State().LastTime)
+
+	// Restart
+	restartFS()
+
+	// Test that last time survived.
+	require_True(t, lt == fs.State().LastTime)
+
+	seq, ts, err = fs.StoreMsg("foo", nil, msg)
+	require_NoError(t, err)
+
+	var smv StoreMsg
+	_, err = fs.LoadMsg(seq, &smv)
+	require_NoError(t, err)
+
+	fs.Purge()
+
+	// Restart
+	restartFS()
+
+	lt = time.Unix(0, ts).UTC()
+	require_True(t, lt == fs.State().LastTime)
+
+	_, _, err = fs.StoreMsg("foo", nil, msg)
+	require_NoError(t, err)
+	seq, ts, err = fs.StoreMsg("foo", nil, msg)
+	require_NoError(t, err)
+
+	require_True(t, seq == 4)
+
+	// Wait til messages expire.
+	checkFor(t, time.Second, 250*time.Millisecond, func() error {
+		state := fs.State()
+		if state.Msgs == 0 {
+			return nil
+		}
+		return fmt.Errorf("Still has %d msgs", state.Msgs)
+	})
+
+	// Restart
+	restartFS()
+
+	lt = time.Unix(0, ts).UTC()
+	require_True(t, lt == fs.State().LastTime)
+
+	// Now make sure we retain the true last seq.
+	_, _, err = fs.StoreMsg("foo", nil, msg)
+	require_NoError(t, err)
+	seq, ts, err = fs.StoreMsg("foo", nil, msg)
+	require_NoError(t, err)
+
+	require_True(t, seq == 6)
+	removed, err = fs.RemoveMsg(seq)
+	require_NoError(t, err)
+	require_True(t, removed)
+
+	removed, err = fs.RemoveMsg(seq - 1)
+	require_NoError(t, err)
+	require_True(t, removed)
+
+	// Restart
+	restartFS()
+
+	lt = time.Unix(0, ts).UTC()
+	require_True(t, lt == fs.State().LastTime)
+	require_True(t, seq == 6)
+}
