@@ -349,6 +349,89 @@ func TestAccountIsolationExportImport(t *testing.T) {
 	}
 }
 
+func TestMultiAccountsIsolation(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+	listen: 127.0.0.1:-1
+	accounts: {
+		PUBLIC: {
+			users:[{user: public, password: public}]
+			exports: [
+			  { stream: orders.client.stream.> }
+			  { stream: orders.client2.stream.> }
+			]
+		}
+		CLIENT: {
+			users:[{user: client, password: client}]
+			imports: [
+			  { stream: { account: PUBLIC, subject: orders.client.stream.> }}
+			]
+		}
+		CLIENT2: {
+			users:[{user: client2, password: client2}]
+			imports: [
+			  { stream: { account: PUBLIC, subject: orders.client2.stream.> }}
+			]
+		}
+	}`))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	// Create a connection for CLIENT and subscribe on orders.>
+	clientnc := natsConnect(t, s.ClientURL(), nats.UserInfo("client", "client"))
+	defer clientnc.Close()
+
+	clientsub := natsSubSync(t, clientnc, "orders.>")
+	natsFlush(t, clientnc)
+
+	// Now same for CLIENT2.
+	client2nc := natsConnect(t, s.ClientURL(), nats.UserInfo("client2", "client2"))
+	defer client2nc.Close()
+
+	client2sub := natsSubSync(t, client2nc, "orders.>")
+	natsFlush(t, client2nc)
+
+	// Now create a connection for PUBLIC
+	publicnc := natsConnect(t, s.ClientURL(), nats.UserInfo("public", "public"))
+	defer publicnc.Close()
+	// Publish on 'orders.client.stream.entry', so only CLIENT should receive it.
+	natsPub(t, publicnc, "orders.client.stream.entry", []byte("test1"))
+
+	// Verify that clientsub gets it.
+	msg := natsNexMsg(t, clientsub, time.Second)
+	require_Equal(t, string(msg.Data), "test1")
+
+	// And also verify that client2sub does NOT get it.
+	_, err := client2sub.NextMsg(100 * time.Microsecond)
+	require_Error(t, err, nats.ErrTimeout)
+
+	clientsub.Unsubscribe()
+	natsFlush(t, clientnc)
+	client2sub.Unsubscribe()
+	natsFlush(t, client2nc)
+
+	// Now have both accounts subscribe to "orders.*.stream.entry"
+	clientsub = natsSubSync(t, clientnc, "orders.*.stream.entry")
+	natsFlush(t, clientnc)
+
+	client2sub = natsSubSync(t, client2nc, "orders.*.stream.entry")
+	natsFlush(t, client2nc)
+
+	// Using the PUBLIC account, publish on the "CLIENT" subject
+	natsPub(t, publicnc, "orders.client.stream.entry", []byte("test2"))
+	natsFlush(t, publicnc)
+
+	msg = natsNexMsg(t, clientsub, time.Second)
+	require_Equal(t, string(msg.Data), "test2")
+
+	_, err = client2sub.NextMsg(100 * time.Microsecond)
+	require_Error(t, err, nats.ErrTimeout)
+}
+
 func TestAccountFromOptions(t *testing.T) {
 	opts := defaultServerOptions
 	opts.Accounts = []*Account{NewAccount("foo"), NewAccount("bar")}
