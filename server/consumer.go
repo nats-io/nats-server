@@ -2410,10 +2410,13 @@ func (wq *waitQueue) isFull() bool {
 }
 
 func (wq *waitQueue) isEmpty() bool {
-	return wq.n == 0
+	return wq.len() == 0
 }
 
 func (wq *waitQueue) len() int {
+	if wq == nil {
+		return 0
+	}
 	return wq.n
 }
 
