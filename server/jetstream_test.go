@@ -17265,6 +17265,110 @@ func TestJetStreamWorkQueueSourceRestart(t *testing.T) {
 	}
 }
 
+func TestJetStreamWorkQueueSourceNamingRestart(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "C1", Subjects: []string{"foo.*"}})
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "C2", Subjects: []string{"bar.*"}})
+	require_NoError(t, err)
+
+	sendCount := 10
+	for i := 0; i < sendCount; i++ {
+		_, err = js.Publish(fmt.Sprintf("foo.%d", i), nil)
+		require_NoError(t, err)
+		_, err = js.Publish(fmt.Sprintf("bar.%d", i), nil)
+		require_NoError(t, err)
+	}
+
+	// TODO Test will always pass if pending is 0
+	pending := 1
+	// For some yet unknown reason this failure seems to require 2 streams to source from.
+	// This might possibly be timing, as the test sometimes passes
+	streams := 2
+	totalPending := uint64(streams * pending)
+	totalMsgs := streams * sendCount
+	totalNonPending := streams * (sendCount - pending)
+
+	// TODO Test will always pass if this is named A (go returns directory names sorted)
+	// A: this stream is recovered BEFORE C1/C2, tbh, I'd expect this to be the case to fail, but it isn't
+	// D: this stream is recovered AFTER C1/C2, which is the case that fails (perhaps it is timing)
+	srcName := "D"
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:      srcName,
+		Retention: nats.WorkQueuePolicy,
+		Sources:   []*nats.StreamSource{{Name: "C1"}, {Name: "C2"}},
+	})
+	require_NoError(t, err)
+
+	// Add a consumer and consume all but totalPending messages
+	_, err = js.AddConsumer(srcName, &nats.ConsumerConfig{Durable: "dur", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe("", "dur", nats.BindStream(srcName))
+	require_NoError(t, err)
+
+	checkFor(t, 5*time.Second, time.Millisecond*200, func() error {
+		if ci, err := js.ConsumerInfo(srcName, "dur"); err != nil {
+			return err
+		} else if ci.NumPending != uint64(totalMsgs) {
+			return fmt.Errorf("not enough messages: %d", ci.NumPending)
+		}
+		return nil
+	})
+
+	// consume all but messages we want pending
+	msgs, err := sub.Fetch(totalNonPending)
+	require_NoError(t, err)
+	require_True(t, len(msgs) == totalNonPending)
+
+	for _, m := range msgs {
+		err = m.AckSync()
+		require_NoError(t, err)
+	}
+
+	ci, err := js.ConsumerInfo(srcName, "dur")
+	require_NoError(t, err)
+	require_True(t, ci.NumPending == totalPending)
+
+	si, err := js.StreamInfo(srcName)
+	require_NoError(t, err)
+	require_True(t, si.State.Msgs == totalPending)
+
+	// Restart server
+	nc.Close()
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+	time.Sleep(200 * time.Millisecond)
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		hs := s.healthz()
+		if hs.Status == "ok" && hs.Error == _EMPTY_ {
+			return nil
+		}
+		return fmt.Errorf("healthz %s %s", hs.Error, hs.Status)
+	})
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err = js.StreamInfo(srcName)
+	require_NoError(t, err)
+
+	if si.State.Msgs != totalPending {
+		t.Fatalf("Expected 0 messages on restart, got %d", si.State.Msgs)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////

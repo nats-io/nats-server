@@ -2245,7 +2245,6 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64) {
 			req.Config.OptStartTime = &si.start
 			req.Config.DeliverPolicy = DeliverByStartTime
 		}
-
 	} else {
 		req.Config.OptStartSeq = seq
 		req.Config.DeliverPolicy = DeliverByStartSequence
@@ -2672,14 +2671,18 @@ func (mset *stream) startingSequenceForSources() {
 	var state StreamState
 	mset.store.FastState(&state)
 
-	// If we have no messages fall back to start by time for now.
+	// If the last time has been stamped remember in case we need to fall back to this for any given upstream source.
 	// TODO(dlc) - This will be ok, but should formalize with new approach and more formal and durable state.
-	if state.Msgs == 0 {
+	if !state.LastTime.IsZero() {
 		for _, si := range mset.sources {
 			si.start = state.LastTime
 		}
+	}
+	// Bail if no messages, meaning no context.
+	if state.Msgs == 0 {
 		return
 	}
+
 	// For short circuiting return.
 	expected := len(mset.cfg.Sources)
 	seqs := make(map[string]uint64)
