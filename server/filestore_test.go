@@ -3825,3 +3825,85 @@ func TestFileStoreRememberLastMsgTime(t *testing.T) {
 	require_True(t, lt == fs.State().LastTime)
 	require_True(t, seq == 6)
 }
+
+func (fs *fileStore) getFirstBlock() *msgBlock {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	if len(fs.blks) == 0 {
+		return nil
+	}
+	return fs.blks[0]
+}
+
+func TestFileStoreRebuildStateDmapAccountingBug(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 1024 * 1024},
+		StreamConfig{Name: "TEST", Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	for i := 0; i < 100; i++ {
+		_, _, err = fs.StoreMsg("foo", nil, nil)
+		require_NoError(t, err)
+	}
+	// Delete 2-40.
+	for i := 2; i <= 40; i++ {
+		_, err := fs.RemoveMsg(uint64(i))
+		require_NoError(t, err)
+	}
+
+	mb := fs.getFirstBlock()
+	require_True(t, mb != nil)
+
+	check := func() {
+		t.Helper()
+		mb.mu.RLock()
+		defer mb.mu.RUnlock()
+		dmapLen := uint64(len(mb.dmap))
+		if mb.msgs != (mb.last.seq-mb.first.seq+1)-dmapLen {
+			t.Fatalf("Consistency check failed: %d != %d -> last %d first %d len(dmap) %d",
+				mb.msgs, (mb.last.seq-mb.first.seq+1)-dmapLen, mb.last.seq, mb.first.seq, dmapLen)
+		}
+	}
+
+	check()
+
+	mb.mu.Lock()
+	mb.compact()
+	mb.mu.Unlock()
+
+	// Now delete first.
+	_, err = fs.RemoveMsg(1)
+	require_NoError(t, err)
+
+	mb.mu.Lock()
+	_, err = mb.rebuildStateLocked()
+	require_NoError(t, err)
+	mb.mu.Unlock()
+
+	check()
+}
+
+func TestFileStorePurgeExWithSubject(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "TEST", Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	for i := 0; i < 100; i++ {
+		_, _, err = fs.StoreMsg("foo", nil, nil)
+		require_NoError(t, err)
+	}
+
+	// This should purge all.
+	fs.PurgeEx("foo", 1, 0)
+	require_True(t, fs.State().Msgs == 0)
+}

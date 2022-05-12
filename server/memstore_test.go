@@ -391,3 +391,17 @@ func TestMemStoreStreamTruncate(t *testing.T) {
 		t.Fatalf("Expected deleted to be %+v, got %+v\n", expected, state.Deleted)
 	}
 }
+
+func TestMemStorePurgeExWithSubject(t *testing.T) {
+	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage})
+	require_NoError(t, err)
+
+	for i := 0; i < 100; i++ {
+		_, _, err = ms.StoreMsg("foo", nil, nil)
+		require_NoError(t, err)
+	}
+
+	// This should purge all.
+	ms.PurgeEx("foo", 1, 0)
+	require_True(t, ms.State().Msgs == 0)
+}
