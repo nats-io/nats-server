@@ -2772,7 +2772,9 @@ func (fs *fileStore) expireMsgs() {
 	// Reason is that we need more information to adjust ack pending in consumers.
 	var smv StoreMsg
 	var sm *StoreMsg
+	fs.mu.RLock()
 	minAge := time.Now().UnixNano() - int64(fs.cfg.MaxAge)
+	fs.mu.RUnlock()
 	for sm, _ = fs.msgForSeq(0, &smv); sm != nil && sm.ts <= minAge; sm, _ = fs.msgForSeq(0, &smv) {
 		fs.removeMsg(sm.seq, false, true)
 	}
