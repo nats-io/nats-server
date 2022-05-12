@@ -428,6 +428,10 @@ func (ms *memStore) expireMsgs() {
 // PurgeEx will remove messages based on subject filters, sequence and number of messages to keep.
 // Will return the number of purged messages.
 func (ms *memStore) PurgeEx(subject string, sequence, keep uint64) (purged uint64, err error) {
+	if sequence > 1 && keep > 0 {
+		return 0, ErrPurgeArgMismatch
+	}
+
 	if subject == _EMPTY_ || subject == fwcs {
 		if keep == 0 && (sequence == 0 || sequence == 1) {
 			return ms.Purge()
@@ -455,7 +459,7 @@ func (ms *memStore) PurgeEx(subject string, sequence, keep uint64) (purged uint6
 			ss.Msgs -= keep
 		}
 		last := ss.Last
-		if sequence > 0 {
+		if sequence > 1 {
 			last = sequence - 1
 		}
 		ms.mu.Lock()
