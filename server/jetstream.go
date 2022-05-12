@@ -101,6 +101,7 @@ type jetStream struct {
 	storeReserved int64
 	memUsed       int64
 	storeUsed     int64
+	clustered     int32
 	mu            sync.RWMutex
 	srv           *Server
 	config        JetStreamConfig
@@ -1675,10 +1676,10 @@ func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, _ *Account
 func (jsa *jsAccount) updateUsage(tierName string, storeType StorageType, delta int64) {
 	// jsa.js is immutable and cannot be nil, so ok w/o lock.
 	js := jsa.js
-	// This function may be invoked under the mset's lock, so we can't get
-	// the js' lock to check if clustered. But again, js.cluster is immutable,
-	// so we check without the lock.
-	isClustered := js.cluster != nil
+	// updateUsage() may be invoked under the mset's lock, so we can't get
+	// the js' lock to check if clustered. So use this function that make
+	// use of an atomic to do the check without having data race reports.
+	isClustered := js.isClusteredNoLock()
 
 	jsa.usageMu.Lock()
 	defer jsa.usageMu.Unlock()

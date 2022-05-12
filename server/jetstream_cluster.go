@@ -523,6 +523,14 @@ func (js *jetStream) isClustered() bool {
 	return isClustered
 }
 
+// isClusteredNoLock returns if we are clustered, but unlike isClustered() does
+// not use the jetstream's lock, instead, uses an atomic operation.
+// There are situations where some code wants to know if we are clustered but
+// can't use js.isClustered() without causing a lock inversion.
+func (js *jetStream) isClusteredNoLock() bool {
+	return atomic.LoadInt32(&js.clustered) == 1
+}
+
 func (js *jetStream) setupMetaGroup() error {
 	s := js.srv
 	s.Noticef("Creating JetStream metadata controller")
@@ -607,6 +615,7 @@ func (js *jetStream) setupMetaGroup() error {
 		s:       s,
 		c:       c,
 	}
+	atomic.StoreInt32(&js.clustered, 1)
 	c.registerWithAccount(sacc)
 
 	js.srv.startGoRoutine(js.monitorCluster)
