@@ -629,6 +629,10 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			c.Debugf("Account JWT has expired")
 			return false
 		}
+		if juc.BearerToken && acc.failBearer() {
+			c.Debugf("Account does not allow bearer token")
+			return false
+		}
 		// skip validation of nonce when presented with a bearer token
 		// FIXME: if BearerToken is only for WSS, need check for server with that port enabled
 		if !juc.BearerToken {
