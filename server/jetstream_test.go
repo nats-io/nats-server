@@ -650,7 +650,7 @@ func TestJetStreamConsumerMaxDeliveries(t *testing.T) {
 
 func TestJetStreamNextReqFromMsg(t *testing.T) {
 	bef := time.Now()
-	expires, _, _, _, _, err := nextReqFromMsg([]byte(`{"expires":5000000000}`)) // nanoseconds
+	expires, _, _, _, _, _, err := nextReqFromMsg([]byte(`{"expires":5000000000}`)) // nanoseconds
 	require_NoError(t, err)
 	now := time.Now()
 	if expires.Before(bef.Add(5*time.Second)) || expires.After(now.Add(5*time.Second)) {
@@ -14435,15 +14435,16 @@ func TestJetStreamPullConsumerRequestMaximums(t *testing.T) {
 	require_NoError(t, err)
 
 	_, err = mset.addConsumer(&ConsumerConfig{
-		Durable:           "dlc",
-		MaxRequestBatch:   10,
-		MaxRequestExpires: time.Second,
-		AckPolicy:         AckExplicit,
+		Durable:            "dlc",
+		MaxRequestBatch:    10,
+		MaxRequestMaxBytes: 10_000,
+		MaxRequestExpires:  time.Second,
+		AckPolicy:          AckExplicit,
 	})
 	require_NoError(t, err)
 
-	genReq := func(b int, e time.Duration) []byte {
-		req := &JSApiConsumerGetNextRequest{Batch: b, Expires: e}
+	genReq := func(b, mb int, e time.Duration) []byte {
+		req := &JSApiConsumerGetNextRequest{Batch: b, Expires: e, MaxBytes: mb}
 		jreq, err := json.Marshal(req)
 		require_NoError(t, err)
 		return jreq
@@ -14452,14 +14453,21 @@ func TestJetStreamPullConsumerRequestMaximums(t *testing.T) {
 	rsubj := fmt.Sprintf(JSApiRequestNextT, "TEST", "dlc")
 
 	// Exceeds max batch size.
-	resp, err := nc.Request(rsubj, genReq(11, 100*time.Millisecond), time.Second)
+	resp, err := nc.Request(rsubj, genReq(11, 0, 100*time.Millisecond), time.Second)
 	require_NoError(t, err)
 	if status := resp.Header.Get("Status"); status != "409" {
 		t.Fatalf("Expected a 409 status code, got %q", status)
 	}
 
 	// Exceeds max expires.
-	resp, err = nc.Request(rsubj, genReq(1, 10*time.Minute), time.Second)
+	resp, err = nc.Request(rsubj, genReq(1, 0, 10*time.Minute), time.Second)
+	require_NoError(t, err)
+	if status := resp.Header.Get("Status"); status != "409" {
+		t.Fatalf("Expected a 409 status code, got %q", status)
+	}
+
+	// Exceeds max bytes.
+	resp, err = nc.Request(rsubj, genReq(10, 10_000*2, 10*time.Minute), time.Second)
 	require_NoError(t, err)
 	if status := resp.Header.Get("Status"); status != "409" {
 		t.Fatalf("Expected a 409 status code, got %q", status)
@@ -17367,6 +17375,113 @@ func TestJetStreamWorkQueueSourceNamingRestart(t *testing.T) {
 	if si.State.Msgs != totalPending {
 		t.Fatalf("Expected 0 messages on restart, got %d", si.State.Msgs)
 	}
+}
+
+func TestJetStreamPullMaxBytes(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name: "TEST",
+	})
+	require_NoError(t, err)
+
+	// Put in ~2MB, each ~100k
+	msz := 99_980
+	total, msg := 20, []byte(strings.Repeat("Z", msz))
+
+	for i := 0; i < total; i++ {
+		if _, err := js.Publish("TEST", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "pr",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	req := &JSApiConsumerGetNextRequest{MaxBytes: 100, NoWait: true}
+	jreq, _ := json.Marshal(req)
+
+	subj := fmt.Sprintf(JSApiRequestNextT, "TEST", "pr")
+	reply := "_pr_"
+	sub, _ := nc.SubscribeSync(reply)
+	defer sub.Unsubscribe()
+
+	checkHeader := func(m *nats.Msg, expected *nats.Header) {
+		t.Helper()
+		if len(m.Data) != 0 {
+			t.Fatalf("Did not expect data, got %d bytes", len(m.Data))
+		}
+		if !reflect.DeepEqual(&m.Header, expected) {
+			t.Fatalf("Expected %+v hdr, got %+v", expected, m.Header)
+		}
+	}
+
+	// If we ask for less MaxBytes then a single message make sure we get an error.
+	badReq := &nats.Header{"Status": []string{"408"}, "Description": []string{"Message Size Exceeds MaxBytes"}}
+
+	nc.PublishRequest(subj, reply, jreq)
+	m, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	checkSubsPending(t, sub, 0)
+	checkHeader(m, badReq)
+
+	// If we request a ton of max bytes make sure batch size overrides.
+	req = &JSApiConsumerGetNextRequest{Batch: 1, MaxBytes: 10_000_000, NoWait: true}
+	jreq, _ = json.Marshal(req)
+	nc.PublishRequest(subj, reply, jreq)
+	checkSubsPending(t, sub, 1)
+
+	m, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_True(t, len(m.Data) == msz)
+	require_True(t, len(m.Header) == 0)
+	checkSubsPending(t, sub, 0)
+
+	// Same but with batch > 1
+	req = &JSApiConsumerGetNextRequest{Batch: 5, MaxBytes: 10_000_000, NoWait: true}
+	jreq, _ = json.Marshal(req)
+	nc.PublishRequest(subj, reply, jreq)
+	checkSubsPending(t, sub, 5)
+	for i := 0; i < 5; i++ {
+		m, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		require_True(t, len(m.Data) == msz)
+		require_True(t, len(m.Header) == 0)
+	}
+	checkSubsPending(t, sub, 0)
+
+	// Now ask for large batch but make sure we are limited by batch size.
+	req = &JSApiConsumerGetNextRequest{Batch: 1_000, MaxBytes: msz * 5, NoWait: true}
+	jreq, _ = json.Marshal(req)
+	nc.PublishRequest(subj, reply, jreq)
+	checkSubsPending(t, sub, 5)
+	for i := 0; i < 5; i++ {
+		m, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		require_True(t, len(m.Data) == msz)
+		require_True(t, len(m.Header) == 0)
+	}
+	checkSubsPending(t, sub, 0)
+
+	req = &JSApiConsumerGetNextRequest{Batch: 1_000, MaxBytes: msz + 20, NoWait: true}
+	jreq, _ = json.Marshal(req)
+	nc.PublishRequest(subj, reply, jreq)
+	checkSubsPending(t, sub, 1)
+	m, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_True(t, len(m.Data) == msz)
+	require_True(t, len(m.Header) == 0)
+	checkSubsPending(t, sub, 0)
 }
 
 ///////////////////////////////////////////////////////////////////////////

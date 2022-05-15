@@ -68,8 +68,9 @@ type ConsumerConfig struct {
 	HeadersOnly     bool            `json:"headers_only,omitempty"`
 
 	// Pull based options.
-	MaxRequestBatch   int           `json:"max_batch,omitempty"`
-	MaxRequestExpires time.Duration `json:"max_expires,omitempty"`
+	MaxRequestBatch    int           `json:"max_batch,omitempty"`
+	MaxRequestExpires  time.Duration `json:"max_expires,omitempty"`
+	MaxRequestMaxBytes int           `json:"max_bytes,omitempty"`
 
 	// Push based consumers.
 	DeliverSubject string `json:"deliver_subject,omitempty"`
@@ -2296,36 +2297,36 @@ func (o *consumer) needAck(sseq uint64) bool {
 }
 
 // Helper for the next message requests.
-func nextReqFromMsg(msg []byte) (time.Time, int, bool, time.Duration, time.Time, error) {
+func nextReqFromMsg(msg []byte) (time.Time, int, int, bool, time.Duration, time.Time, error) {
 	req := bytes.TrimSpace(msg)
 
 	switch {
 	case len(req) == 0:
-		return time.Time{}, 1, false, 0, time.Time{}, nil
+		return time.Time{}, 1, 0, false, 0, time.Time{}, nil
 
 	case req[0] == '{':
 		var cr JSApiConsumerGetNextRequest
 		if err := json.Unmarshal(req, &cr); err != nil {
-			return time.Time{}, -1, false, 0, time.Time{}, err
+			return time.Time{}, -1, 0, false, 0, time.Time{}, err
 		}
 		var hbt time.Time
 		if cr.Heartbeat > 0 {
 			if cr.Heartbeat*2 > cr.Expires {
-				return time.Time{}, 1, false, 0, time.Time{}, errors.New("heartbeat value too large")
+				return time.Time{}, 1, 0, false, 0, time.Time{}, errors.New("heartbeat value too large")
 			}
 			hbt = time.Now().Add(cr.Heartbeat)
 		}
 		if cr.Expires == time.Duration(0) {
-			return time.Time{}, cr.Batch, cr.NoWait, cr.Heartbeat, hbt, nil
+			return time.Time{}, cr.Batch, cr.MaxBytes, cr.NoWait, cr.Heartbeat, hbt, nil
 		}
-		return time.Now().Add(cr.Expires), cr.Batch, cr.NoWait, cr.Heartbeat, hbt, nil
+		return time.Now().Add(cr.Expires), cr.Batch, cr.MaxBytes, cr.NoWait, cr.Heartbeat, hbt, nil
 	default:
 		if n, err := strconv.Atoi(string(req)); err == nil {
-			return time.Time{}, n, false, 0, time.Time{}, nil
+			return time.Time{}, n, 0, false, 0, time.Time{}, nil
 		}
 	}
 
-	return time.Time{}, 1, false, 0, time.Time{}, nil
+	return time.Time{}, 1, 0, false, 0, time.Time{}, nil
 }
 
 // Represents a request that is on the internal waiting queue
@@ -2335,6 +2336,7 @@ type waitingRequest struct {
 	reply    string
 	n        int // For batching
 	d        int
+	b        int // For max bytes tracking.
 	expires  time.Time
 	received time.Time
 	hb       time.Duration
@@ -2501,12 +2503,39 @@ func (o *consumer) pendingRequestReplies() []string {
 // Return next waiting request. This will check for expirations but not noWait or interest.
 // That will be handled by processWaiting.
 // Lock should be held.
-func (o *consumer) nextWaiting() *waitingRequest {
+func (o *consumer) nextWaiting(sz int) *waitingRequest {
 	if o.waiting == nil || o.waiting.isEmpty() {
 		return nil
 	}
 	for wr := o.waiting.peek(); !o.waiting.isEmpty(); wr = o.waiting.peek() {
-		if wr == nil || wr.expires.IsZero() || time.Now().Before(wr.expires) {
+		if wr == nil {
+			break
+		}
+		// Check if we have max bytes set.
+		if wr.b > 0 {
+			if sz <= wr.b {
+				wr.b -= sz
+				// If we are right now at zero, set batch to 1 to deliver this one but stop after.
+				if wr.b == 0 {
+					wr.n = 1
+				}
+			} else {
+				// If we have not delivered anything to the requestor let them know.
+				if wr.d == 0 {
+					hdr := []byte("NATS/1.0 408 Message Size Exceeds MaxBytes\r\n\r\n")
+					o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+				}
+				// Remove the current one, no longer valid due to max bytes limit.
+				o.waiting.removeCurrent()
+				if o.node != nil {
+					o.removeClusterPendingRequest(wr.reply)
+				}
+				wr.recycle()
+				continue
+			}
+		}
+
+		if wr.expires.IsZero() || time.Now().Before(wr.expires) {
 			rr := wr.acc.sl.Match(wr.interest)
 			if len(rr.psubs)+len(rr.qsubs) > 0 {
 				return o.waiting.pop()
@@ -2561,7 +2590,7 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 	}
 
 	// Check payload here to see if they sent in batch size or a formal request.
-	expires, batchSize, noWait, hb, hbt, err := nextReqFromMsg(msg)
+	expires, batchSize, maxBytes, noWait, hb, hbt, err := nextReqFromMsg(msg)
 	if err != nil {
 		sendErr(400, fmt.Sprintf("Bad Request - %v", err))
 		return
@@ -2575,6 +2604,11 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 
 	if !expires.IsZero() && o.cfg.MaxRequestExpires > 0 && expires.After(time.Now().Add(o.cfg.MaxRequestExpires)) {
 		sendErr(409, fmt.Sprintf("Exceeded MaxRequestExpires of %v", o.cfg.MaxRequestExpires))
+		return
+	}
+
+	if maxBytes > 0 && o.cfg.MaxRequestMaxBytes > 0 && maxBytes > o.cfg.MaxRequestMaxBytes {
+		sendErr(409, fmt.Sprintf("Exceeded MaxRequestMaxBytes of %v", o.cfg.MaxRequestMaxBytes))
 		return
 	}
 
@@ -2607,9 +2641,10 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 	// If we receive this request though an account export, we need to track that interest subject and account.
 	acc, interest := trackDownAccountAndInterest(o.acc, reply)
 
-	// In case we have to queue up this request.
+	// Create a waiting request.
 	wr := wrPool.Get().(*waitingRequest)
 	wr.acc, wr.interest, wr.reply, wr.n, wr.d, wr.noWait, wr.expires, wr.hb, wr.hbt = acc, interest, reply, batchSize, 0, noWait, expires, hb, hbt
+	wr.b = maxBytes
 	wr.received = time.Now()
 
 	if err := o.waiting.add(wr); err != nil {
@@ -2946,7 +2981,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 
 		if o.isPushMode() {
 			dsubj = o.dsubj
-		} else if wr := o.nextWaiting(); wr != nil {
+		} else if wr := o.nextWaiting(len(pmsg.hdr) + len(pmsg.msg)); wr != nil {
 			dsubj = wr.reply
 			if done := wr.recycleIfDone(); done && o.node != nil {
 				o.removeClusterPendingRequest(dsubj)
