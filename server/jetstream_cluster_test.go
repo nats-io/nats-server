@@ -10528,3 +10528,89 @@ func TestJetStreamClusterNewHealthz(t *testing.T) {
 	sl = c.restartServer(sl)
 	c.waitOnServerHealthz(sl)
 }
+
+func TestJetStreamClusterConsumerOverrides(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Test replica override.
+	// Make sure we can not go "wider" than the parent stream.
+	ccReq := CreateConsumerRequest{
+		Stream: "TEST",
+		Config: ConsumerConfig{
+			Durable:   "d",
+			AckPolicy: AckExplicit,
+			Replicas:  5,
+		},
+	}
+	req, err := json.Marshal(ccReq)
+	require_NoError(t, err)
+
+	ci, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, "TEST", "d"), req, time.Second)
+	require_NoError(t, err)
+
+	var resp JSApiConsumerCreateResponse
+	err = json.Unmarshal(ci.Data, &resp)
+	require_NoError(t, err)
+
+	if resp.Error == nil || !IsNatsErr(resp.Error, JSConsumerReplicasExceedsStream) {
+		t.Fatalf("Expected an error when replicas > parent stream, got %+v", resp.Error)
+	}
+
+	// Durables inherit the replica count from the stream, so make sure we can override that.
+	ccReq.Config.Replicas = 1
+	req, err = json.Marshal(ccReq)
+	require_NoError(t, err)
+
+	ci, err = nc.Request(fmt.Sprintf(JSApiDurableCreateT, "TEST", "d"), req, time.Second)
+	require_NoError(t, err)
+
+	resp.Error = nil
+	err = json.Unmarshal(ci.Data, &resp)
+	require_NoError(t, err)
+	require_True(t, resp.Error == nil)
+
+	checkCount := func(durable string, expected int) {
+		t.Helper()
+		count := 0
+		for _, s := range c.servers {
+			if mset, err := s.GlobalAccount().lookupStream("TEST"); err == nil {
+				if o := mset.lookupConsumer(durable); o != nil {
+					count++
+				}
+			}
+		}
+		if count != expected {
+			t.Fatalf("Expected %d consumers in cluster, got %d", expected, count)
+		}
+	}
+	checkCount("d", 1)
+
+	// Now override storage and force storage to memory based.
+	ccReq.Config.MemoryStorage = true
+	ccReq.Config.Durable = "m"
+	ccReq.Config.Replicas = 2
+
+	req, err = json.Marshal(ccReq)
+	require_NoError(t, err)
+
+	ci, err = nc.Request(fmt.Sprintf(JSApiDurableCreateT, "TEST", "m"), req, time.Second)
+	require_NoError(t, err)
+
+	resp.Error = nil
+	err = json.Unmarshal(ci.Data, &resp)
+	require_NoError(t, err)
+	require_True(t, resp.Error == nil)
+
+	checkCount("m", 2)
+}
