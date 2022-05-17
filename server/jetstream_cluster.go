@@ -1875,10 +1875,11 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// These are not currently assigned so we will need to do so here.
 			if consumers := mset.getPublicConsumers(); len(consumers) > 0 {
 				for _, o := range consumers {
-					rg := cc.createGroupForConsumer(sa)
+					name, cfg := o.String(), o.config()
+					rg := cc.createGroupForConsumer(&cfg, sa)
 					// Pick a preferred leader.
 					rg.setPreferred()
-					name, cfg := o.String(), o.config()
+
 					// Place our initial state here as well for assignment distribution.
 					state, _ := o.store.State()
 					ca := &consumerAssignment{
@@ -2808,8 +2809,9 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 						js.mu.RUnlock()
 
 						for _, o := range consumers {
-							rg := cc.createGroupForConsumer(sa)
 							name, cfg := o.String(), o.config()
+							rg := cc.createGroupForConsumer(&cfg, sa)
+
 							// Place our initial state here as well for assignment distribution.
 							ca := &consumerAssignment{
 								Group:   rg,
@@ -3139,7 +3141,11 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 
 	if !alreadyRunning {
 		// Process the raft group and make sure its running if needed.
-		js.createRaftGroup(acc.GetName(), rg, mset.config().Storage)
+		storage := mset.config().Storage
+		if ca.Config.MemoryStorage {
+			storage = MemoryStorage
+		}
+		js.createRaftGroup(acc.GetName(), rg, storage)
 	} else {
 		// If we are clustered update the known peers.
 		js.mu.RLock()
@@ -5265,13 +5271,21 @@ func decodeStreamAssignment(buf []byte) (*streamAssignment, error) {
 	return &sa, err
 }
 
-// createGroupForConsumer will create a new group with same peer set as the stream.
-func (cc *jetStreamCluster) createGroupForConsumer(sa *streamAssignment) *raftGroup {
-	peers := sa.Group.Peers
+// createGroupForConsumer will create a new group from same peer set as the stream.
+func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *streamAssignment) *raftGroup {
+	peers := copyStrings(sa.Group.Peers)
 	if len(peers) == 0 {
 		return nil
 	}
-	return &raftGroup{Name: groupNameForConsumer(peers, sa.Config.Storage), Storage: sa.Config.Storage, Peers: peers}
+	if cfg.Replicas > 0 && cfg.Replicas != len(peers) {
+		rand.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
+		peers = peers[:cfg.Replicas]
+	}
+	storage := sa.Config.Storage
+	if cfg.MemoryStorage {
+		storage = MemoryStorage
+	}
+	return &raftGroup{Name: groupNameForConsumer(peers, storage), Storage: storage, Peers: peers}
 }
 
 // jsClusteredConsumerRequest is first point of entry to create a consumer with R > 1.
@@ -5372,7 +5386,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 
 	// If this is new consumer.
 	if ca == nil {
-		rg := cc.createGroupForConsumer(sa)
+		rg := cc.createGroupForConsumer(cfg, sa)
 		if rg == nil {
 			resp.Error = NewJSInsufficientResourcesError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))

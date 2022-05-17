@@ -1238,5 +1238,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerReplicasExceedsStream",
+    "code": 400,
+    "error_code": 10126,
+    "description": "consumer config replica count exceeds parent stream",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

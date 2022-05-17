@@ -155,6 +155,9 @@ const (
 	// JSConsumerReplacementWithDifferentNameErr consumer replacement durable config not the same
 	JSConsumerReplacementWithDifferentNameErr ErrorIdentifier = 10106
 
+	// JSConsumerReplicasExceedsStream consumer config replica count exceeds parent stream
+	JSConsumerReplicasExceedsStream ErrorIdentifier = 10126
+
 	// JSConsumerSmallHeartbeatErr consumer idle heartbeat needs to be >= 100ms
 	JSConsumerSmallHeartbeatErr ErrorIdentifier = 10083
 
@@ -430,6 +433,7 @@ var (
 		JSConsumerPullWithRateLimitErr:             {Code: 400, ErrCode: 10086, Description: "consumer in pull mode can not have rate limit set"},
 		JSConsumerPushMaxWaitingErr:                {Code: 400, ErrCode: 10080, Description: "consumer in push mode can not set max waiting"},
 		JSConsumerReplacementWithDifferentNameErr:  {Code: 400, ErrCode: 10106, Description: "consumer replacement durable config not the same"},
+		JSConsumerReplicasExceedsStream:            {Code: 400, ErrCode: 10126, Description: "consumer config replica count exceeds parent stream"},
 		JSConsumerSmallHeartbeatErr:                {Code: 400, ErrCode: 10083, Description: "consumer idle heartbeat needs to be >= 100ms"},
 		JSConsumerStoreFailedErrF:                  {Code: 500, ErrCode: 10104, Description: "error creating store for consumer: {err}"},
 		JSConsumerWQConsumerNotDeliverAllErr:       {Code: 400, ErrCode: 10101, Description: "consumer must be deliver all on workqueue stream"},
@@ -1069,6 +1073,16 @@ func NewJSConsumerReplacementWithDifferentNameError(opts ...ErrorOption) *ApiErr
 	}
 
 	return ApiErrors[JSConsumerReplacementWithDifferentNameErr]
+}
+
+// NewJSConsumerReplicasExceedsStreamError creates a new JSConsumerReplicasExceedsStream error: "consumer config replica count exceeds parent stream"
+func NewJSConsumerReplicasExceedsStreamError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerReplicasExceedsStream]
 }
 
 // NewJSConsumerSmallHeartbeatError creates a new JSConsumerSmallHeartbeatErr error: "consumer idle heartbeat needs to be >= 100ms"

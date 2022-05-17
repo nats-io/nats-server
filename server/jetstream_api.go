@@ -1212,6 +1212,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 		}
 		return
 	}
+
 	var cfg StreamConfig
 	if err := json.Unmarshal(msg, &cfg); err != nil {
 		resp.Error = NewJSInvalidJSONError()
@@ -3247,6 +3248,13 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 
 	if isClustered && !req.Config.Direct {
 		s.jsClusteredConsumerRequest(ci, acc, subject, reply, rmsg, req.Stream, &req.Config)
+		return
+	}
+
+	// If we are here we are single server mode.
+	if req.Config.Replicas > 1 {
+		resp.Error = NewJSStreamReplicasNotSupportedError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 

@@ -79,6 +79,11 @@ type ConsumerConfig struct {
 	// Ephemeral inactivity threshold.
 	InactiveThreshold time.Duration `json:"inactive_threshold,omitempty"`
 
+	// Generally inherited by parent stream and other markers, now can be configured directly.
+	Replicas int `json:"num_replicas"`
+	// Force memory storage.
+	MemoryStorage bool `json:"mem_storage,omitempty"`
+
 	// Don't add to general clients.
 	Direct bool `json:"direct,omitempty"`
 }
@@ -350,6 +355,11 @@ func checkConsumerCfg(
 	accLim *JetStreamAccountLimits,
 	isRecovering bool,
 ) *ApiError {
+
+	// Check if replicas is defined but exceeds parent stream.
+	if config.Replicas > 0 && config.Replicas > cfg.Replicas {
+		return NewJSConsumerReplicasExceedsStreamError()
+	}
 
 	// Check if we have a BackOff defined that MaxDeliver is within range etc.
 	if lbo := len(config.BackOff); lbo > 0 && config.MaxDeliver <= lbo {
