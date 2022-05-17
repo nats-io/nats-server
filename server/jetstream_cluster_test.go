@@ -10614,3 +10614,67 @@ func TestJetStreamClusterConsumerOverrides(t *testing.T) {
 
 	checkCount("m", 2)
 }
+
+func TestJetStreamClusterStreamRepublish(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Do by hand for now.
+	cfg := &StreamConfig{
+		Name:     "RP",
+		Storage:  MemoryStorage,
+		Subjects: []string{"foo", "bar", "baz"},
+		Replicas: 1,
+		RePublish: &SubjectMapping{
+			Source:      ">",
+			Destination: "RP.>",
+		},
+	}
+
+	addStream(t, nc, cfg)
+
+	sub, err := nc.SubscribeSync("RP.>")
+	require_NoError(t, err)
+
+	msg, toSend := []byte("OK TO REPUBLISH?"), 100
+	for i := 0; i < toSend; i++ {
+		_, err = js.PublishAsync("foo", msg)
+		require_NoError(t, err)
+		_, err = js.PublishAsync("bar", msg)
+		require_NoError(t, err)
+		_, err = js.PublishAsync("baz", msg)
+		require_NoError(t, err)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	checkSubsPending(t, sub, toSend*3)
+
+	lseq := map[string]int{
+		"foo": 0,
+		"bar": 0,
+		"baz": 0,
+	}
+
+	for i := 1; i <= toSend; i++ {
+		m, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		// Grab info from Header
+		require_True(t, m.Header.Get(JSStream) == "RP")
+		// Make sure sequence is correct.
+		seq, err := strconv.Atoi(m.Header.Get(JSSequence))
+		require_NoError(t, err)
+		require_True(t, seq == i)
+		// Make sure last sequence matches last seq we received on this subject.
+		last, err := strconv.Atoi(m.Header.Get(JSLastSequence))
+		require_NoError(t, err)
+		require_True(t, last == lseq[m.Subject])
+		lseq[m.Subject] = seq
+	}
+}

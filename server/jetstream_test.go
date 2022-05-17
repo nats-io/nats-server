@@ -17484,6 +17484,62 @@ func TestJetStreamPullMaxBytes(t *testing.T) {
 	checkSubsPending(t, sub, 0)
 }
 
+func TestJetStreamStreamRepublishCycle(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Do by hand for now.
+	cfg := &StreamConfig{
+		Name:     "RPC",
+		Storage:  MemoryStorage,
+		Subjects: []string{"foo.>", "bar.*", "baz"},
+	}
+
+	expectFail := func() {
+		t.Helper()
+		req, err := json.Marshal(cfg)
+		require_NoError(t, err)
+		rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+		require_NoError(t, err)
+		var resp JSApiStreamCreateResponse
+		err = json.Unmarshal(rmsg.Data, &resp)
+		require_NoError(t, err)
+		if resp.Type != JSApiStreamCreateResponseType {
+			t.Fatalf("Invalid response type %s expected %s", resp.Type, JSApiStreamCreateResponseType)
+		}
+		if resp.Error == nil {
+			t.Fatalf("Expected error but got none")
+		}
+		if !strings.Contains(resp.Error.Description, "republish destination forms a cycle") {
+			t.Fatalf("Expected cycle error, got %q", resp.Error.Description)
+		}
+	}
+
+	cfg.RePublish = &SubjectMapping{
+		Source:      "foo.>",
+		Destination: "foo.>",
+	}
+	expectFail()
+
+	cfg.RePublish = &SubjectMapping{
+		Source:      "bar.bar",
+		Destination: "foo.bar",
+	}
+	expectFail()
+
+	cfg.RePublish = &SubjectMapping{
+		Source:      "baz",
+		Destination: "bar.bar",
+	}
+	expectFail()
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
