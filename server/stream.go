@@ -58,6 +58,9 @@ type StreamConfig struct {
 	Mirror       *StreamSource   `json:"mirror,omitempty"`
 	Sources      []*StreamSource `json:"sources,omitempty"`
 
+	// Allow republish of the message after being sequenced and stored.
+	RePublish *SubjectMapping `json:"republish,omitempty"`
+
 	// Optional qualifiers. These can not be modified after set to true.
 
 	// Sealed will seal a stream so no messages can get out or in.
@@ -69,6 +72,12 @@ type StreamConfig struct {
 	// AllowRollup allows messages to be placed into the system and purge
 	// all older messages using a special msg header.
 	AllowRollup bool `json:"allow_rollup_hdrs"`
+}
+
+// SubjectMapping allows a source subject to be mapped to a destination subject for republishing.
+type SubjectMapping struct {
+	Source      string `json:"src,omitempty"`
+	Destination string `json:"dest"`
 }
 
 // JSPubAckResponse is a formal response to a publish operation.
@@ -202,6 +211,9 @@ type stream struct {
 	// Indicates we have direct consumers.
 	directs int
 
+	// For republishing.
+	tr *transform
+
 	// TODO(dlc) - Hide everything below behind two pointers.
 	// Clustered mode.
 	sa       *streamAssignment
@@ -250,6 +262,13 @@ const (
 	JSMsgRollup           = "Nats-Rollup"
 	JSMsgSize             = "Nats-Msg-Size"
 	JSResponseType        = "Nats-Response-Type"
+)
+
+// Headers for republished messages.
+const (
+	JSStream       = "Nats-Stream"
+	JSSequence     = "Nats-Sequence"
+	JSLastSequence = "Nats-Last-Sequence"
 )
 
 // Rollups, can be subject only or all messages.
@@ -394,6 +413,17 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	// For no-ack consumers when we are interest retention.
 	if cfg.Retention != LimitsPolicy {
 		mset.ackq = s.newIPQueue(qpfx + "acks") // of uint64
+	}
+
+	// Check for RePublish.
+	if cfg.RePublish != nil {
+		tr, err := newTransform(cfg.RePublish.Source, cfg.RePublish.Destination)
+		if err != nil {
+			jsa.mu.Unlock()
+			return nil, fmt.Errorf("stream configuration for republish not valid")
+		}
+		// Assign our transform for republishing.
+		mset.tr = tr
 	}
 
 	jsa.streams[cfg.Name] = mset
@@ -3406,10 +3436,27 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	clfs := mset.clfs
 	mset.lseq++
 	tierName := mset.tier
+
+	// Republish state if needed.
+	var tsubj string
+	var tlseq uint64
+	if mset.tr != nil {
+		tsubj, _ = mset.tr.transformSubject(subject)
+	}
+	republish := tsubj != _EMPTY_
+
 	// We hold the lock to this point to make sure nothing gets between us since we check for pre-conditions.
 	// Currently can not hold while calling store b/c we have inline storage update calls that may need the lock.
 	// Note that upstream that sets seq/ts should be serialized as much as possible.
 	mset.mu.Unlock()
+
+	// If we are republishing grab last sequence for this exact subject. Aids in gap detection for lightweight clients.
+	if republish {
+		var smv StoreMsg
+		if sm, _ := store.LoadLastMsg(subject, &smv); sm != nil {
+			tlseq = sm.seq
+		}
+	}
 
 	// Store actual msg.
 	if lseq == 0 && ts == 0 {
@@ -3477,6 +3524,13 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		if canRespond {
 			response = append(pubAck, strconv.FormatUint(seq, 10)...)
 			response = append(response, '}')
+		}
+		// Check for republish.
+		if republish {
+			hdr = genHeader(hdr, JSStream, name)
+			hdr = genHeader(hdr, JSSequence, strconv.FormatUint(seq, 10))
+			hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(tlseq, 10))
+			mset.outq.send(newJSPubMsg(tsubj, subject, _EMPTY_, copyBytes(hdr), copyBytes(msg), nil, seq))
 		}
 	}
 

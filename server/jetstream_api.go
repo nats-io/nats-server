@@ -1234,6 +1234,41 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 		return
 	}
 
+	// If we have a republish directive check if we can create a transform here.
+	if cfg.RePublish != nil {
+		// Check to make sure source is a valid subset of the subjects we have.
+		// Also make sure it does not form a cycle.
+		var srcValid bool
+		for _, subj := range cfg.Subjects {
+			if SubjectsCollide(cfg.RePublish.Source, subj) {
+				srcValid = true
+				break
+			}
+		}
+		if !srcValid {
+			resp.Error = NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for republish source is not valid subset of subjects"))
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		var formsCycle bool
+		for _, subj := range cfg.Subjects {
+			if SubjectsCollide(cfg.RePublish.Destination, subj) {
+				formsCycle = true
+				break
+			}
+		}
+		if formsCycle {
+			resp.Error = NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for republish destination forms a cycle"))
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		if _, err := newTransform(cfg.RePublish.Source, cfg.RePublish.Destination); err != nil {
+			resp.Error = NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for republish not valid"))
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+	}
+
 	// Hand off to cluster for processing.
 	if s.JetStreamIsClustered() {
 		s.jsClusteredStreamRequest(ci, acc, subject, reply, rmsg, &cfg)

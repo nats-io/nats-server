@@ -314,9 +314,9 @@ func getURLsAsString(urls []*url.URL) []string {
 }
 
 // copyBytes make a new slice of the same size than `src` and copy its content.
-// If `src` is nil, then this returns `nil`
+// If `src` is nil or its length is 0, then this returns `nil`
 func copyBytes(src []byte) []byte {
-	if src == nil {
+	if len(src) == 0 {
 		return nil
 	}
 	dst := make([]byte, len(src))
