@@ -648,6 +648,15 @@ func (o *mqttMaxAckPendingReload) Apply(s *Server) {
 	s.Noticef("Reloaded: MQTT max_ack_pending = %v", o.newValue)
 }
 
+type mqttStreamReplicasReload struct {
+	noopOption
+	newValue int
+}
+
+func (o *mqttStreamReplicasReload) Apply(s *Server) {
+	s.Noticef("Reloaded: MQTT stream_replicas = %v", o.newValue)
+}
+
 // Compares options and disconnects clients that are no longer listed in pinned certs. Lock must not be held.
 func (s *Server) recheckPinnedCerts(curOpts *Options, newOpts *Options) {
 	s.mu.Lock()
@@ -1178,12 +1187,13 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		case "mqtt":
 			diffOpts = append(diffOpts, &mqttAckWaitReload{newValue: newValue.(MQTTOpts).AckWait})
 			diffOpts = append(diffOpts, &mqttMaxAckPendingReload{newValue: newValue.(MQTTOpts).MaxAckPending})
+			diffOpts = append(diffOpts, &mqttStreamReplicasReload{newValue: newValue.(MQTTOpts).StreamReplicas})
 			// Nil out/set to 0 the options that we allow to be reloaded so that
 			// we only fail reload if some that we don't support are changed.
 			tmpOld := oldValue.(MQTTOpts)
 			tmpNew := newValue.(MQTTOpts)
-			tmpOld.TLSConfig, tmpOld.AckWait, tmpOld.MaxAckPending = nil, 0, 0
-			tmpNew.TLSConfig, tmpNew.AckWait, tmpNew.MaxAckPending = nil, 0, 0
+			tmpOld.TLSConfig, tmpOld.AckWait, tmpOld.MaxAckPending, tmpOld.StreamReplicas = nil, 0, 0, 0
+			tmpNew.TLSConfig, tmpNew.AckWait, tmpNew.MaxAckPending, tmpNew.StreamReplicas = nil, 0, 0, 0
 			if !reflect.DeepEqual(tmpOld, tmpNew) {
 				// See TODO(ik) note below about printing old/new values.
 				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
@@ -1191,6 +1201,7 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			}
 			tmpNew.AckWait = newValue.(MQTTOpts).AckWait
 			tmpNew.MaxAckPending = newValue.(MQTTOpts).MaxAckPending
+			tmpNew.StreamReplicas = newValue.(MQTTOpts).StreamReplicas
 		case "connecterrorreports":
 			diffOpts = append(diffOpts, &connectErrorReports{newValue: newValue.(int)})
 		case "reconnecterrorreports":

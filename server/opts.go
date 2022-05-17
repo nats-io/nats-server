@@ -411,6 +411,13 @@ type MQTTOpts struct {
 	// JetStream domain mqtt is supposed to pick up
 	JsDomain string
 
+	// Number of replicas for MQTT streams.
+	// Negative or 0 value means that the server(s) will pick a replica
+	// number based on the known size of the cluster (but capped at 3).
+	// Note that if an account was already connected, the stream's replica
+	// count is not modified. Use the NATS CLI to update the count if desired.
+	StreamReplicas int
+
 	// Timeout for the authentication process.
 	AuthTimeout float64
 
@@ -4165,6 +4172,8 @@ func parseMQTT(v interface{}, o *Options, errors *[]error, warnings *[]error) er
 			}
 		case "js_domain":
 			o.MQTT.JsDomain = mv.(string)
+		case "stream_replicas":
+			o.MQTT.StreamReplicas = int(mv.(int64))
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{

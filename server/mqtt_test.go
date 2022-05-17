@@ -5533,6 +5533,153 @@ func TestMQTTClientIDInLogStatements(t *testing.T) {
 	}
 }
 
+func TestMQTTStreamReplicasOverride(t *testing.T) {
+	conf := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+
+		mqtt {
+			listen: 127.0.0.1:-1
+			stream_replicas: 3
+		}
+
+		# For access to system account.
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+	`
+	cl := createJetStreamClusterWithTemplate(t, conf, "MQTT", 3)
+	defer cl.shutdown()
+
+	connectAndCheck := func(restarted bool) {
+		o := cl.opts[0]
+		mc, r := testMQTTConnectRetry(t, &mqttConnInfo{clientID: "test", cleanSess: false}, o.MQTT.Host, o.MQTT.Port, 5)
+		defer mc.Close()
+		testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, restarted)
+
+		nc, js := jsClientConnect(t, cl.servers[2])
+		defer nc.Close()
+
+		streams := []string{mqttStreamName, mqttRetainedMsgsStreamName, mqttSessStreamName}
+		for _, sn := range streams {
+			si, err := js.StreamInfo(sn)
+			require_NoError(t, err)
+			if n := len(si.Cluster.Replicas); n != 2 {
+				t.Fatalf("Expected stream %q to have 2 replicas, got %v", sn, n)
+			}
+		}
+	}
+	connectAndCheck(false)
+
+	cl.stopAll()
+	for _, o := range cl.opts {
+		o.MQTT.StreamReplicas = 2
+	}
+	cl.restartAllSamePorts()
+	cl.waitOnStreamLeader(globalAccountName, mqttStreamName)
+	cl.waitOnStreamLeader(globalAccountName, mqttRetainedMsgsStreamName)
+	cl.waitOnStreamLeader(globalAccountName, mqttSessStreamName)
+
+	l := &captureWarnLogger{warn: make(chan string, 10)}
+	cl.servers[0].SetLogger(l, false, false)
+
+	connectAndCheck(true)
+
+	select {
+	case w := <-l.warn:
+		if !strings.Contains(w, "current is 3 but configuration is 2") {
+			t.Fatalf("Unexpected warning: %q", w)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Should have warned against replicas mismatch")
+	}
+}
+
+func TestMQTTStreamReplicasConfigReload(t *testing.T) {
+	tmpl := `
+		jetstream: enabled
+		server_name: mqtt
+		mqtt {
+			port: -1
+			stream_replicas: %v
+		}
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, 3)))
+	defer removeFile(t, conf)
+	s, o := RunServerWithConfig(conf)
+	defer testMQTTShutdownServer(s)
+
+	l := &captureErrorLogger{errCh: make(chan string, 10)}
+	s.SetLogger(l, false, false)
+
+	_, _, err := testMQTTConnectRetryWithError(t, &mqttConnInfo{clientID: "mqtt", cleanSess: false}, o.MQTT.Host, o.MQTT.Port, 0)
+	if err == nil {
+		t.Fatal("Expected to fail, did not")
+	}
+
+	select {
+	case e := <-l.errCh:
+		if !strings.Contains(e, NewJSStreamReplicasNotSupportedError().Description) {
+			t.Fatalf("Expected error regarding replicas, got %v", e)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Did not get the error regarding replicas count")
+	}
+
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, 1))
+
+	mc, r := testMQTTConnect(t, &mqttConnInfo{clientID: "mqtt", cleanSess: false}, o.MQTT.Host, o.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+}
+
+func TestMQTTStreamReplicasInsufficientResources(t *testing.T) {
+	conf := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+
+		mqtt {
+			listen: 127.0.0.1:-1
+			stream_replicas: 5
+		}
+
+		# For access to system account.
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+	`
+	cl := createJetStreamClusterWithTemplate(t, conf, "MQTT", 3)
+	defer cl.shutdown()
+
+	l := &captureErrorLogger{errCh: make(chan string, 10)}
+
+	o := cl.opts[1]
+	cl.servers[1].SetLogger(l, false, false)
+	_, _, err := testMQTTConnectRetryWithError(t, &mqttConnInfo{clientID: "mqtt", cleanSess: false}, o.MQTT.Host, o.MQTT.Port, 0)
+	if err == nil {
+		t.Fatal("Expected to fail, did not")
+	}
+
+	select {
+	case e := <-l.errCh:
+		if !strings.Contains(e, NewJSInsufficientResourcesError().Description) {
+			t.Fatalf("Expected error regarding insufficient resources, got %v", e)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Did not get the error regarding replicas count")
+	}
+}
+
 //////////////////////////////////////////////////////////////////////////
 //
 // Benchmarks
