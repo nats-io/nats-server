@@ -950,7 +950,8 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("duplicates window can not be larger then max age"))
 	}
 	if lim.Duplicates > 0 && cfg.Duplicates > lim.Duplicates {
-		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("duplicates window can not be larger then server limit of %v", lim.Duplicates.String()))
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("duplicates window can not be larger then server limit of %v",
+			lim.Duplicates.String()))
 	}
 	if cfg.Duplicates > 0 && cfg.Duplicates < 100*time.Millisecond {
 		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("duplicates window needs to be >= 100ms"))
@@ -1136,6 +1137,35 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		return StreamConfig{}, NewJSStreamMaxBytesRequiredError()
 	} else if limit > 0 && cfg.MaxBytes > limit {
 		return StreamConfig{}, NewJSStreamMaxStreamBytesExceededError()
+	}
+
+	// If we have a republish directive check if we can create a transform here.
+	if cfg.RePublish != nil {
+		// Check to make sure source is a valid subset of the subjects we have.
+		// Also make sure it does not form a cycle.
+		var srcValid bool
+		for _, subj := range cfg.Subjects {
+			if SubjectsCollide(cfg.RePublish.Source, subj) {
+				srcValid = true
+				break
+			}
+		}
+		if !srcValid {
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for republish source is not valid subset of subjects"))
+		}
+		var formsCycle bool
+		for _, subj := range cfg.Subjects {
+			if SubjectsCollide(cfg.RePublish.Destination, subj) {
+				formsCycle = true
+				break
+			}
+		}
+		if formsCycle {
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for republish destination forms a cycle"))
+		}
+		if _, err := newTransform(cfg.RePublish.Source, cfg.RePublish.Destination); err != nil {
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for republish not valid"))
+		}
 	}
 
 	return cfg, nil
