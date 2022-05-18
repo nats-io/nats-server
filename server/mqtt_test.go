@@ -5747,7 +5747,7 @@ func TestMQTTConsumerReplicasOverride(t *testing.T) {
 		t.Helper()
 
 		o := cl.opts[0]
-		mc, r := testMQTTConnect(t, &mqttConnInfo{clientID: "test", cleanSess: false}, o.MQTT.Host, o.MQTT.Port)
+		mc, r := testMQTTConnectRetry(t, &mqttConnInfo{clientID: "test", cleanSess: false}, o.MQTT.Host, o.MQTT.Port, 5)
 		defer mc.Close()
 		testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, restarted)
 		testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
