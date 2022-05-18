@@ -635,17 +635,20 @@ func (s *Server) configJetStream(acc *Account) error {
 	if acc == nil {
 		return nil
 	}
-	if acc.jsLimits != nil {
+	acc.mu.RLock()
+	jsLimits := acc.jsLimits
+	acc.mu.RUnlock()
+	if jsLimits != nil {
 		// Check if already enabled. This can be during a reload.
 		if acc.JetStreamEnabled() {
 			if err := acc.enableAllJetStreamServiceImportsAndMappings(); err != nil {
 				return err
 			}
-			if err := acc.UpdateJetStreamLimits(acc.jsLimits); err != nil {
+			if err := acc.UpdateJetStreamLimits(jsLimits); err != nil {
 				return err
 			}
 		} else {
-			if err := acc.EnableJetStream(acc.jsLimits); err != nil {
+			if err := acc.EnableJetStream(jsLimits); err != nil {
 				return err
 			}
 			if s.gateway.enabled {
