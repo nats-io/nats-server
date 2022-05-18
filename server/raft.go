@@ -233,36 +233,20 @@ const (
 	minCampaignTimeoutDefault      = 100 * time.Millisecond
 	maxCampaignTimeoutDefault      = 8 * minCampaignTimeoutDefault
 	hbIntervalDefault              = 1 * time.Second
-	lostQuorumIntervalDefault      = hbIntervalDefault * 20 // 10 seconds
-	lostQuorumCheckIntervalDefault = hbIntervalDefault * 20 // 10 seconds
+	lostQuorumIntervalDefault      = hbIntervalDefault * 10 // 10 seconds
+	lostQuorumCheckIntervalDefault = hbIntervalDefault * 10 // 10 seconds
 
 )
 
 var (
-	minElectionTimeout time.Duration
-	maxElectionTimeout time.Duration
-	minCampaignTimeout time.Duration
-	maxCampaignTimeout time.Duration
-	hbInterval         time.Duration
-	lostQuorumInterval time.Duration
-	lostQuorumCheck    time.Duration
-)
-
-func init() {
-	setDefaultRaftTimeouts()
-}
-
-// This is called on init, but also by tests that want to tweak the settings
-// and then call this as a defer to restore the defaults.
-func setDefaultRaftTimeouts() {
 	minElectionTimeout = minElectionTimeoutDefault
 	maxElectionTimeout = maxElectionTimeoutDefault
 	minCampaignTimeout = minCampaignTimeoutDefault
 	maxCampaignTimeout = maxCampaignTimeoutDefault
-	hbInterval = hbIntervalDefault
+	hbInterval         = hbIntervalDefault
 	lostQuorumInterval = lostQuorumIntervalDefault
-	lostQuorumCheck = lostQuorumCheckIntervalDefault
-}
+	lostQuorumCheck    = lostQuorumCheckIntervalDefault
+)
 
 type RaftConfig struct {
 	Name     string
