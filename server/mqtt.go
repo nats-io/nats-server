@@ -3601,8 +3601,9 @@ func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
 			FilterSubject:  mqttStreamSubjectPrefix + subject,
 			AckWait:        ackWait,
 			MaxAckPending:  maxAckPending,
+			MemoryStorage:  opts.MQTT.ConsumerMemoryStorage,
 		}
-		if r := c.srv.getOpts().MQTT.ConsumerReplicas; r > 0 {
+		if r := opts.MQTT.ConsumerReplicas; r > 0 {
 			cc.Replicas = r
 		}
 		if err := sess.createConsumer(cc); err != nil {

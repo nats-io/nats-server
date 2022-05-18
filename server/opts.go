@@ -427,6 +427,10 @@ type MQTTOpts struct {
 	// Note that existing consumers are not modified.
 	ConsumerReplicas int
 
+	// Indicate if the consumers should be created with memory storage.
+	// Note that existing consumers are not modified.
+	ConsumerMemoryStorage bool
+
 	// Timeout for the authentication process.
 	AuthTimeout float64
 
@@ -4185,6 +4189,8 @@ func parseMQTT(v interface{}, o *Options, errors *[]error, warnings *[]error) er
 			o.MQTT.StreamReplicas = int(mv.(int64))
 		case "consumer_replicas":
 			o.MQTT.ConsumerReplicas = int(mv.(int64))
+		case "consumer_memory_storage":
+			o.MQTT.ConsumerMemoryStorage = mv.(bool)
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{

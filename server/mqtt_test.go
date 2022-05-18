@@ -5734,6 +5734,7 @@ func TestMQTTConsumerReplicasOverride(t *testing.T) {
 			listen: 127.0.0.1:-1
 			stream_replicas: 5
 			consumer_replicas: 1
+			consumer_memory_storage: true
 		}
 
 		# For access to system account.
@@ -5771,6 +5772,7 @@ func TestMQTTConsumerReplicasOverride(t *testing.T) {
 	cl.stopAll()
 	for _, o := range cl.opts {
 		o.MQTT.ConsumerReplicas = 2
+		o.MQTT.ConsumerMemoryStorage = false
 	}
 	cl.restartAllSamePorts()
 	cl.waitOnStreamLeader(globalAccountName, mqttStreamName)
@@ -5787,9 +5789,10 @@ func TestMQTTConsumerReplicasReload(t *testing.T) {
 		mqtt {
 			port: -1
 			consumer_replicas: %v
+			consumer_memory_storage: %s
 		}
 	`
-	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, 3)))
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, 3, "false")))
 	defer removeFile(t, conf)
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)
@@ -5811,9 +5814,27 @@ func TestMQTTConsumerReplicasReload(t *testing.T) {
 		t.Fatalf("Did not get the error regarding replicas count")
 	}
 
-	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, 1))
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, 1, "true"))
 
 	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+
+	mset, err := s.GlobalAccount().lookupStream(mqttStreamName)
+	if err != nil {
+		t.Fatalf("Error looking up stream: %v", err)
+	}
+	var cons *consumer
+	mset.mu.RLock()
+	for _, c := range mset.consumers {
+		cons = c
+		break
+	}
+	mset.mu.RUnlock()
+	cons.mu.RLock()
+	st := cons.store.Type()
+	cons.mu.RUnlock()
+	if st != MemoryStorage {
+		t.Fatalf("Expected storage %v, got %v", MemoryStorage, st)
+	}
 }
 
 func TestMQTTConsumerReplicasExceedsParentStream(t *testing.T) {
