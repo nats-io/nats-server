@@ -103,6 +103,8 @@ type StreamStore interface {
 	Delete() error
 	Stop() error
 	ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerStore, error)
+	AddConsumer(o ConsumerStore) error
+	RemoveConsumer(o ConsumerStore) error
 	Snapshot(deadline time.Duration, includeConsumers, checkMsgs bool) (*SnapshotResult, error)
 	Utilization() (total, reported uint64, err error)
 }

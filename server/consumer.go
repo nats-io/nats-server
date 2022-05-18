@@ -693,6 +693,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	// Select starting sequence number
 	o.selectStartingSeqNo()
 
+	// Setup our storage if not a direct consumer.
 	if !config.Direct {
 		store, err := mset.store.ConsumerStore(o.name, config)
 		if err != nil {

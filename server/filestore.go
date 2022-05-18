@@ -93,7 +93,7 @@ type fileStore struct {
 	psmc    map[string]uint64
 	hh      hash.Hash64
 	qch     chan struct{}
-	cfs     []*consumerFileStore
+	cfs     []ConsumerStore
 	sips    int
 	closed  bool
 	fip     bool
@@ -4993,7 +4993,7 @@ func (fs *fileStore) Stop() error {
 	fs.cancelSyncTimer()
 	fs.cancelAgeChk()
 
-	var _cfs [256]*consumerFileStore
+	var _cfs [256]ConsumerStore
 	cfs := append(_cfs[:0], fs.cfs...)
 	fs.cfs = nil
 	fs.mu.Unlock()
@@ -5147,7 +5147,11 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includ
 	cfs := fs.cfs
 	fs.mu.Unlock()
 
-	for _, o := range cfs {
+	for _, cs := range cfs {
+		o, ok := cs.(*consumerFileStore)
+		if !ok {
+			continue
+		}
 		o.mu.Lock()
 		// Grab our general meta data.
 		// We do this now instead of pulling from files since they could be encrypted.
@@ -5261,6 +5265,15 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 	if cfg == nil || name == _EMPTY_ {
 		return nil, fmt.Errorf("bad consumer config")
 	}
+
+	// We now allow overrides from a stream being a filestore type and forcing a consumer to be memory store.
+	if cfg.MemoryStorage {
+		// Create directly here.
+		o := &consumerMemStore{ms: fs, cfg: *cfg}
+		fs.AddConsumer(o)
+		return o, nil
+	}
+
 	odir := filepath.Join(fs.fcfg.StoreDir, consumerDir, name)
 	if err := os.MkdirAll(odir, defaultDirPerms); err != nil {
 		return nil, fmt.Errorf("could not create consumer directory - %v", err)
@@ -5337,9 +5350,7 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 	o.qch = make(chan struct{})
 	go o.flushLoop()
 
-	fs.mu.Lock()
-	fs.cfs = append(fs.cfs, o)
-	fs.mu.Unlock()
+	fs.AddConsumer(o)
 
 	return o, nil
 }
@@ -6005,7 +6016,7 @@ func (o *consumerFileStore) Stop() error {
 	ifn, fs := o.ifn, o.fs
 	o.mu.Unlock()
 
-	fs.removeConsumer(o)
+	fs.RemoveConsumer(o)
 
 	if len(buf) > 0 {
 		o.waitOnFlusher()
@@ -6065,21 +6076,29 @@ func (o *consumerFileStore) delete(streamDeleted bool) error {
 	}
 
 	if !streamDeleted {
-		fs.removeConsumer(o)
+		fs.RemoveConsumer(o)
 	}
 
 	return err
 }
 
-func (fs *fileStore) removeConsumer(cfs *consumerFileStore) {
+func (fs *fileStore) AddConsumer(o ConsumerStore) error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
-	for i, o := range fs.cfs {
+	fs.cfs = append(fs.cfs, o)
+	return nil
+}
+
+func (fs *fileStore) RemoveConsumer(o ConsumerStore) error {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	for i, cfs := range fs.cfs {
 		if o == cfs {
 			fs.cfs = append(fs.cfs[:i], fs.cfs[i+1:]...)
 			break
 		}
 	}
+	return nil
 }
 
 ////////////////////////////////////////////////////////////////////////////////
