@@ -29,6 +29,15 @@ import (
 
 // Support functions
 
+func init() {
+	// Speed up raft for tests.
+	hbInterval = 200 * time.Millisecond
+	minElectionTimeout = 1 * time.Second
+	maxElectionTimeout = 3 * time.Second
+	lostQuorumInterval = time.Second
+	lostQuorumCheck = hbInterval
+}
+
 // Used to setup superclusters for tests.
 type supercluster struct {
 	t        *testing.T
@@ -1190,7 +1199,7 @@ func (c *cluster) expectNoLeader() {
 		if c.leader() == nil {
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
 	c.t.Fatalf("Expected no leader but have one")
 }

@@ -3746,10 +3746,15 @@ func TestNoRaceJetStreamClusterMaxConsumersAndDirect(t *testing.T) {
 // Make sure when we try to hard reset a stream state in a cluster that we also re-create the consumers.
 func TestNoRaceJetStreamClusterStreamReset(t *testing.T) {
 	// Speed up raft
+	omin, omax, ohb := minElectionTimeout, maxElectionTimeout, hbInterval
 	minElectionTimeout = 250 * time.Millisecond
 	maxElectionTimeout = time.Second
 	hbInterval = 50 * time.Millisecond
-	defer setDefaultRaftTimeouts()
+	defer func() {
+		minElectionTimeout = omin
+		maxElectionTimeout = omax
+		hbInterval = ohb
+	}()
 
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
