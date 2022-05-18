@@ -693,13 +693,9 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	// Select starting sequence number
 	o.selectStartingSeqNo()
 
+	// Setup our storage if not a direct consumer.
 	if !config.Direct {
-		streamStore := mset.store
-		// We now allow overrides from a stream being a filestore type and forcing a consumer to be memory store.
-		if config.MemoryStorage && streamStore.Type() == FileStorage {
-			streamStore = emptyMemStore
-		}
-		store, err := streamStore.ConsumerStore(o.name, config)
+		store, err := mset.store.ConsumerStore(o.name, config)
 		if err != nil {
 			mset.mu.Unlock()
 			o.deleteWithoutAdvisory()

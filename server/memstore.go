@@ -895,30 +895,13 @@ func (ms *memStore) isClosed() bool {
 	return ms.msgs == nil
 }
 
-func (ms *memStore) incConsumers() {
-	ms.mu.Lock()
-	ms.consumers++
-	ms.mu.Unlock()
-}
-
-func (ms *memStore) decConsumers() {
-	ms.mu.Lock()
-	if ms.consumers > 0 {
-		ms.consumers--
-	}
-	ms.mu.Unlock()
-}
-
 type consumerMemStore struct {
 	mu     sync.Mutex
-	ms     *memStore
+	ms     StreamStore
 	cfg    ConsumerConfig
 	state  ConsumerState
 	closed bool
 }
-
-// For when we need a consumer store that is memory based but stream is file based.
-var emptyMemStore = &memStore{msgs: make(map[uint64]*StoreMsg)}
 
 func (ms *memStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerStore, error) {
 	if ms == nil {
@@ -930,8 +913,25 @@ func (ms *memStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSto
 	if cfg == nil || name == _EMPTY_ {
 		return nil, fmt.Errorf("bad consumer config")
 	}
-	ms.incConsumers()
-	return &consumerMemStore{ms: ms, cfg: *cfg}, nil
+	o := &consumerMemStore{ms: ms, cfg: *cfg}
+	ms.AddConsumer(o)
+	return o, nil
+}
+
+func (ms *memStore) AddConsumer(o ConsumerStore) error {
+	ms.mu.Lock()
+	ms.consumers++
+	ms.mu.Unlock()
+	return nil
+}
+
+func (ms *memStore) RemoveConsumer(o ConsumerStore) error {
+	ms.mu.Lock()
+	if ms.consumers > 0 {
+		ms.consumers--
+	}
+	ms.mu.Unlock()
+	return nil
 }
 
 func (ms *memStore) Snapshot(_ time.Duration, _, _ bool) (*SnapshotResult, error) {
@@ -1119,7 +1119,7 @@ func (o *consumerMemStore) Stop() error {
 	o.closed = true
 	ms := o.ms
 	o.mu.Unlock()
-	ms.decConsumers()
+	ms.RemoveConsumer(o)
 	return nil
 }
 

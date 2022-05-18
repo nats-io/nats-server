@@ -10599,7 +10599,7 @@ func TestJetStreamClusterConsumerOverrides(t *testing.T) {
 	// Now override storage and force storage to memory based.
 	ccReq.Config.MemoryStorage = true
 	ccReq.Config.Durable = "m"
-	ccReq.Config.Replicas = 2
+	ccReq.Config.Replicas = 3
 
 	req, err = json.Marshal(ccReq)
 	require_NoError(t, err)
@@ -10612,7 +10612,7 @@ func TestJetStreamClusterConsumerOverrides(t *testing.T) {
 	require_NoError(t, err)
 	require_True(t, resp.Error == nil)
 
-	checkCount("m", 2)
+	checkCount("m", 3)
 
 	// Make sure memory setting is for both consumer raft log and consumer store.
 	s := c.consumerLeader("$G", "TEST", "m")
@@ -10633,6 +10633,42 @@ func TestJetStreamClusterConsumerOverrides(t *testing.T) {
 	rn.RUnlock()
 	require_True(t, wal.Type() == MemoryStorage)
 	require_True(t, st == MemoryStorage)
+
+	// Now make sure we account properly for the consumers.
+	// Add in normal here first.
+	_, err = js.SubscribeSync("foo", nats.Durable("d22"))
+	require_NoError(t, err)
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.Consumers == 3)
+
+	err = js.DeleteConsumer("TEST", "d")
+	require_NoError(t, err)
+
+	// Also make sure the stream leader direct store reports same with mixed and matched.
+	s = c.streamLeader("$G", "TEST")
+	require_True(t, s != nil)
+	mset, err = s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	state := mset.Store().State()
+	require_True(t, state.Consumers == 2)
+
+	// Fast state version as well.
+	fstate := mset.stateWithDetail(false)
+	require_True(t, fstate.Consumers == 2)
+
+	// Make sure delete accounting works too.
+	err = js.DeleteConsumer("TEST", "m")
+	require_NoError(t, err)
+
+	state = mset.Store().State()
+	require_True(t, state.Consumers == 1)
+
+	// Fast state version as well.
+	fstate = mset.stateWithDetail(false)
+	require_True(t, fstate.Consumers == 1)
 }
 
 func TestJetStreamClusterStreamRepublish(t *testing.T) {
