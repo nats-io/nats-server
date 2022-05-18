@@ -3996,6 +3996,13 @@ func TestJetStreamClusterNoDuplicateOnNodeRestart(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
+	sl := c.streamLeader("$G", "TEST")
+	if s == sl {
+		nc.Close()
+		nc, js = jsClientConnect(t, s)
+		defer nc.Close()
+	}
+
 	sub, err := js.SubscribeSync("foo", nats.Durable("dlc"))
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -4008,14 +4015,14 @@ func TestJetStreamClusterNoDuplicateOnNodeRestart(t *testing.T) {
 		m.AckSync()
 	}
 
-	sl := c.streamLeader("$G", "TEST")
 	sl.Shutdown()
 	c.restartServer(sl)
 	c.waitOnStreamLeader("$G", "TEST")
+	c.waitOnConsumerLeader("$G", "TEST", "dlc")
 
 	// Send second msg
 	js.Publish("foo", []byte("msg2"))
-	msg, err := sub.NextMsg(time.Second)
+	msg, err := sub.NextMsg(5 * time.Second)
 	if err != nil {
 		t.Fatalf("Error getting message: %v", err)
 	}

@@ -228,11 +228,11 @@ type lps struct {
 }
 
 const (
-	minElectionTimeoutDefault      = 2 * time.Second
-	maxElectionTimeoutDefault      = 5 * time.Second
+	minElectionTimeoutDefault      = 4 * time.Second
+	maxElectionTimeoutDefault      = 9 * time.Second
 	minCampaignTimeoutDefault      = 100 * time.Millisecond
 	maxCampaignTimeoutDefault      = 8 * minCampaignTimeoutDefault
-	hbIntervalDefault              = 500 * time.Millisecond
+	hbIntervalDefault              = 1 * time.Second
 	lostQuorumIntervalDefault      = hbIntervalDefault * 20 // 10 seconds
 	lostQuorumCheckIntervalDefault = hbIntervalDefault * 20 // 10 seconds
 
@@ -2606,12 +2606,6 @@ func (n *raft) handleAppendEntry(sub *subscription, c *client, _ *Account, subje
 	} else {
 		n.warn("AppendEntry failed to be placed on internal channel: corrupt entry")
 	}
-	n.Lock()
-	// Don't reset here if we have been asked to assume leader position.
-	if !n.lxfer {
-		n.resetElectionTimeout()
-	}
-	n.Unlock()
 }
 
 // Lock should be held.
@@ -2679,6 +2673,11 @@ func (n *raft) updateLeader(newLeader string) {
 // processAppendEntry will process an appendEntry.
 func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	n.Lock()
+
+	// Don't reset here if we have been asked to assume leader position.
+	if !n.lxfer {
+		n.resetElectionTimeout()
+	}
 
 	// Just return if closed or we had previous write error.
 	if n.state == Closed || n.werr != nil {
