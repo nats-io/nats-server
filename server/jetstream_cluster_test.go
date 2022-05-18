@@ -10613,6 +10613,26 @@ func TestJetStreamClusterConsumerOverrides(t *testing.T) {
 	require_True(t, resp.Error == nil)
 
 	checkCount("m", 2)
+
+	// Make sure memory setting is for both consumer raft log and consumer store.
+	s := c.consumerLeader("$G", "TEST", "m")
+	require_True(t, s != nil)
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("m")
+	require_True(t, o != nil)
+
+	o.mu.RLock()
+	st := o.store.Type()
+	n := o.raftNode()
+	o.mu.RUnlock()
+	require_True(t, n != nil)
+	rn := n.(*raft)
+	rn.RLock()
+	wal := rn.wal
+	rn.RUnlock()
+	require_True(t, wal.Type() == MemoryStorage)
+	require_True(t, st == MemoryStorage)
 }
 
 func TestJetStreamClusterStreamRepublish(t *testing.T) {

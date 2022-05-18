@@ -917,6 +917,9 @@ type consumerMemStore struct {
 	closed bool
 }
 
+// For when we need a consumer store that is memory based but stream is file based.
+var emptyMemStore = &memStore{msgs: make(map[uint64]*StoreMsg)}
+
 func (ms *memStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerStore, error) {
 	if ms == nil {
 		return nil, fmt.Errorf("memstore is nil")
