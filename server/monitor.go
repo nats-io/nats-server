@@ -749,10 +749,14 @@ type RouteInfo struct {
 	IsConfigured bool               `json:"is_configured"`
 	IP           string             `json:"ip"`
 	Port         int                `json:"port"`
+	Start        time.Time          `json:"start"`
+	LastActivity time.Time          `json:"last_activity"`
+	RTT          string             `json:"rtt,omitempty"`
+	Uptime       string             `json:"uptime"`
+	Idle         string             `json:"idle"`
 	Import       *SubjectPermission `json:"import,omitempty"`
 	Export       *SubjectPermission `json:"export,omitempty"`
 	Pending      int                `json:"pending_size"`
-	RTT          string             `json:"rtt,omitempty"`
 	InMsgs       int64              `json:"in_msgs"`
 	OutMsgs      int64              `json:"out_msgs"`
 	InBytes      int64              `json:"in_bytes"`
@@ -799,6 +803,10 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 			Import:       r.opts.Import,
 			Export:       r.opts.Export,
 			RTT:          r.getRTT().String(),
+			Start:        r.start,
+			LastActivity: r.last,
+			Uptime:       myUptime(rs.Now.Sub(r.start)),
+			Idle:         myUptime(rs.Now.Sub(r.last)),
 		}
 
 		if len(r.subs) > 0 {

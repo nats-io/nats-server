@@ -1313,6 +1313,7 @@ func TestConnzWithRoutes(t *testing.T) {
 	routeURL, _ := url.Parse(fmt.Sprintf("nats-route://127.0.0.1:%d", s.ClusterAddr().Port))
 	opts.Routes = []*url.URL{routeURL}
 
+	start := time.Now()
 	sc := RunServer(opts)
 	defer sc.Shutdown()
 
@@ -1324,10 +1325,10 @@ func TestConnzWithRoutes(t *testing.T) {
 		// Test contents..
 		// Make sure routes don't show up under connz, but do under routez
 		if c.NumConns != 0 {
-			t.Fatalf("Expected 0 connections, got %d\n", c.NumConns)
+			t.Fatalf("Expected 0 connections, got %d", c.NumConns)
 		}
 		if c.Conns == nil || len(c.Conns) != 0 {
-			t.Fatalf("Expected 0 connections in array, got %p\n", c.Conns)
+			t.Fatalf("Expected 0 connections in array, got %p", c.Conns)
 		}
 	}
 
@@ -1345,17 +1346,32 @@ func TestConnzWithRoutes(t *testing.T) {
 			rz := pollRoutez(t, s, mode, url+urlSuffix, &RoutezOptions{Subscriptions: subs == 1, SubscriptionsDetail: subs == 2})
 
 			if rz.NumRoutes != 1 {
-				t.Fatalf("Expected 1 route, got %d\n", rz.NumRoutes)
+				t.Fatalf("Expected 1 route, got %d", rz.NumRoutes)
 			}
 
 			if len(rz.Routes) != 1 {
-				t.Fatalf("Expected route array of 1, got %v\n", len(rz.Routes))
+				t.Fatalf("Expected route array of 1, got %v", len(rz.Routes))
 			}
 
 			route := rz.Routes[0]
 
 			if route.DidSolicit {
-				t.Fatalf("Expected unsolicited route, got %v\n", route.DidSolicit)
+				t.Fatalf("Expected unsolicited route, got %v", route.DidSolicit)
+			}
+
+			if route.Start.IsZero() {
+				t.Fatalf("Expected Start to be set, got %+v", route)
+			} else if route.Start.Before(start) {
+				t.Fatalf("Unexpected start time: route was started around %v, got %v", start, route.Start)
+			}
+			if route.LastActivity.IsZero() {
+				t.Fatalf("Expected LastActivity to be set, got %+v", route)
+			}
+			if route.Uptime == _EMPTY_ {
+				t.Fatalf("Expected Uptime to be set, it was not")
+			}
+			if route.Idle == _EMPTY_ {
+				t.Fatalf("Expected Idle to be set, it was not")
 			}
 
 			// Don't ask for subs, so there should not be any
