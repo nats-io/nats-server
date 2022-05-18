@@ -577,6 +577,10 @@ func validateMQTTOptions(o *Options) error {
 	if err := validatePinnedCerts(mo.TLSPinnedCerts); err != nil {
 		return fmt.Errorf("mqtt: %v", err)
 	}
+	if mo.ConsumerReplicas > 0 && mo.StreamReplicas > 0 && mo.ConsumerReplicas > mo.StreamReplicas {
+		return fmt.Errorf("mqtt: consumer_replicas (%v) cannot be higher than stream_replicas (%v)",
+			mo.ConsumerReplicas, mo.StreamReplicas)
+	}
 	return nil
 }
 
@@ -3597,6 +3601,9 @@ func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
 			FilterSubject:  mqttStreamSubjectPrefix + subject,
 			AckWait:        ackWait,
 			MaxAckPending:  maxAckPending,
+		}
+		if r := c.srv.getOpts().MQTT.ConsumerReplicas; r > 0 {
+			cc.Replicas = r
 		}
 		if err := sess.createConsumer(cc); err != nil {
 			c.Errorf("Unable to add JetStream consumer for subscription on %q: err=%v", subject, err)

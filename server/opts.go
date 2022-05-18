@@ -418,6 +418,15 @@ type MQTTOpts struct {
 	// count is not modified. Use the NATS CLI to update the count if desired.
 	StreamReplicas int
 
+	// Number of replicas for MQTT consumers.
+	// Negative or 0 value means that there is no override and the consumer
+	// will have the same replica factor that the stream it belongs to.
+	// If a value is specified, it will require to be lower than the stream
+	// replicas count (lower than StreamReplicas if specified, but also lower
+	// than the automatic value determined by cluster size).
+	// Note that existing consumers are not modified.
+	ConsumerReplicas int
+
 	// Timeout for the authentication process.
 	AuthTimeout float64
 
@@ -4174,6 +4183,8 @@ func parseMQTT(v interface{}, o *Options, errors *[]error, warnings *[]error) er
 			o.MQTT.JsDomain = mv.(string)
 		case "stream_replicas":
 			o.MQTT.StreamReplicas = int(mv.(int64))
+		case "consumer_replicas":
+			o.MQTT.ConsumerReplicas = int(mv.(int64))
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
