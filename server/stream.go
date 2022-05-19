@@ -3570,18 +3570,18 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	}
 
 	if err == nil && seq > 0 && numConsumers > 0 {
-		mset.mu.Lock()
+		mset.mu.RLock()
 		for _, o := range mset.consumers {
 			o.mu.Lock()
-			if o.isLeader() {
-				if seq > o.lsgap && o.isFilteredMatch(subject) {
-					o.sgap++
+			if o.isLeader() && o.isFilteredMatch(subject) {
+				if seq > o.npsm {
+					o.npc++
 				}
 				o.signalNewMessages()
 			}
 			o.mu.Unlock()
 		}
-		mset.mu.Unlock()
+		mset.mu.RUnlock()
 	}
 
 	return err
