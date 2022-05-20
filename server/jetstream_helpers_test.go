@@ -31,11 +31,11 @@ import (
 
 func init() {
 	// Speed up raft for tests.
-	hbInterval = 200 * time.Millisecond
+	hbInterval = 50 * time.Millisecond
 	minElectionTimeout = 1 * time.Second
 	maxElectionTimeout = 3 * time.Second
 	lostQuorumInterval = time.Second
-	lostQuorumCheck = hbInterval
+	lostQuorumCheck = 4 * hbInterval
 }
 
 // Used to setup superclusters for tests.

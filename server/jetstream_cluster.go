@@ -3598,7 +3598,9 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 				o.mu.Lock()
 				if !o.isLeader() {
 					var le = binary.LittleEndian
-					o.sseq = le.Uint64(buf[1:])
+					if sseq := le.Uint64(buf[1:]); sseq > o.sseq {
+						o.sseq = sseq
+					}
 				}
 				o.mu.Unlock()
 			case addPendingRequest:
@@ -5943,8 +5945,7 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 		for _, o := range mset.consumers {
 			o.mu.Lock()
 			if o.isLeader() {
-				// This expects mset lock to be held.
-				o.setInitialPendingAndStart(false)
+				o.streamNumPending()
 			}
 			o.mu.Unlock()
 		}
