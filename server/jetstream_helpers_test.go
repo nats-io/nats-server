@@ -1100,16 +1100,6 @@ func (c *cluster) randomNonStreamLeader(account, stream string) *Server {
 	return nil
 }
 
-func (c *cluster) randomStreamNotAssigned(account, stream string) *Server {
-	c.t.Helper()
-	for _, s := range c.servers {
-		if !s.JetStreamIsStreamAssigned(account, stream) {
-			return s
-		}
-	}
-	return nil
-}
-
 func (c *cluster) streamLeader(account, stream string) *Server {
 	c.t.Helper()
 	for _, s := range c.servers {

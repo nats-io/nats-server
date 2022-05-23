@@ -285,6 +285,9 @@ type Server struct {
 
 	// Total outbound syncRequests
 	syncOutSem chan struct{}
+
+	// Queue to process JS API requests that come from routes (or gateways)
+	jsAPIRoutedReqs *ipQueue
 }
 
 // For tracking JS nodes.
