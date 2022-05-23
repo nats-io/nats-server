@@ -837,7 +837,9 @@ func (s *Server) mqttHandleClosedClient(c *client) {
 
 	// This needs to be done outside of any lock.
 	if doClean {
-		sess.clear()
+		if err := sess.clear(); err != nil {
+			c.Errorf(err.Error())
+		}
 	}
 
 	// Now handle the "will". This function will be a no-op if there is no "will" to send.
@@ -2284,7 +2286,10 @@ func (sess *mqttSession) clear() error {
 	}
 	sess.subs, sess.pending, sess.cpending, sess.seq, sess.tmaxack = nil, nil, nil, 0, 0
 	for _, dur := range durs {
-		sess.jsa.sendq.push(&mqttJSPubMsg{subj: sess.jsa.prefixDomain(fmt.Sprintf(JSApiConsumerDeleteT, mqttStreamName, dur))})
+		if _, err := sess.jsa.deleteConsumer(mqttStreamName, dur); isErrorOtherThan(err, JSConsumerNotFoundErr) {
+			sess.mu.Unlock()
+			return fmt.Errorf("unable to delete consumer %q for session %q: %v", dur, sess.id, err)
+		}
 	}
 	sess.mu.Unlock()
 	if seq > 0 {
