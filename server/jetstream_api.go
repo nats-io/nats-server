@@ -649,11 +649,18 @@ type JSApiStreamTemplateNamesResponse struct {
 
 const JSApiStreamTemplateNamesResponseType = "io.nats.jetstream.api.v1.stream_template_names_response"
 
-// Default max API calls outstanding.
-const defaultMaxJSApiOut = int64(4096)
-
-// Max API calls outstanding.
-var maxJSApiOut = defaultMaxJSApiOut
+// Structure that holds state for a JetStream API request that is processed
+// in a separate long-lived go routine. This is to avoid possibly blocking
+// ROUTE and GATEWAY connections.
+type jsAPIRoutedReq struct {
+	jsub    *subscription
+	sub     *subscription
+	acc     *Account
+	subject string
+	reply   string
+	msg     []byte
+	pa      pubArg
+}
 
 func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, subject, reply string, rmsg []byte) {
 	// No lock needed, those are immutable.
@@ -687,36 +694,36 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 	}
 
 	// If we are here we have received this request over a non client connection.
-	// We need to make sure not to block. We will spin a Go routine per but also make
-	// sure we do not have too many outstanding.
-	if apiOut := atomic.AddInt64(&js.apiInflight, 1); apiOut > maxJSApiOut {
-		atomic.AddInt64(&js.apiInflight, -1)
-		ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
-		if err == nil {
-			resp := &ApiResponse{Type: JSApiOverloadedType, Error: NewJSInsufficientResourcesError()}
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		} else {
-			s.Warnf(badAPIRequestT, rmsg)
-		}
-		s.Warnf("JetStream API limit exceeded: %d calls outstanding", apiOut)
-		return
-	}
+	// We need to make sure not to block. We will send the request to a long-lived
+	// go routine.
 
-	// If we are here we can properly dispatch this API call.
-	// Copy the message and the client. Client for the pubArgs
-	// but note the JSAPI only uses the hdr index to piece apart
-	// the header from the msg body. No other references are needed.
-	// FIXME(dlc) - Should cleanup eventually and make sending
-	// and receiving internal messages more formal.
-	rmsg = copyBytes(rmsg)
+	// Copy the state. Note the JSAPI only uses the hdr index to piece apart the
+	// header from the msg body. No other references are needed.
+	s.jsAPIRoutedReqs.push(&jsAPIRoutedReq{jsub, sub, acc, subject, reply, copyBytes(rmsg), c.pa})
+}
+
+func (s *Server) processJSAPIRoutedRequests() {
+	defer s.grWG.Done()
+
+	s.mu.Lock()
+	queue := s.jsAPIRoutedReqs
 	client := &client{srv: s, kind: JETSTREAM}
-	client.pa = c.pa
+	s.mu.Unlock()
 
-	// Dispatch the API call to its own Go routine.
-	go func() {
-		jsub.icb(sub, client, acc, subject, reply, rmsg)
-		atomic.AddInt64(&js.apiInflight, -1)
-	}()
+	for {
+		select {
+		case <-queue.ch:
+			reqs := queue.pop()
+			for _, req := range reqs {
+				r := req.(*jsAPIRoutedReq)
+				client.pa = r.pa
+				r.jsub.icb(r.sub, client, r.acc, r.subject, r.reply, r.msg)
+			}
+			queue.recycle(&reqs)
+		case <-s.quitCh:
+			return
+		}
+	}
 }
 
 func (s *Server) setJetStreamExportSubs() error {
@@ -724,6 +731,11 @@ func (s *Server) setJetStreamExportSubs() error {
 	if js == nil {
 		return NewJSNotEnabledError()
 	}
+
+	// Start the go routine that will process API requests received by the
+	// subscription below when they are coming from routes, etc..
+	s.jsAPIRoutedReqs = s.newIPQueue("Routed JS API Requests")
+	s.startGoRoutine(s.processJSAPIRoutedRequests)
 
 	// This is the catch all now for all JetStream API calls.
 	if _, err := s.sysSubscribe(jsAllAPI, js.apiDispatch); err != nil {
