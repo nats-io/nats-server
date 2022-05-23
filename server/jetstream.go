@@ -1272,7 +1272,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 			}
 			lseq := e.mset.lastSeq()
 			obs.mu.Lock()
-			_, err = obs.readStoredState(lseq)
+			err = obs.readStoredState(lseq)
 			obs.mu.Unlock()
 			if err != nil {
 				s.Warnf("    Error restoring consumer %q state: %v", cfg.Name, err)

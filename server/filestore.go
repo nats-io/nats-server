@@ -5446,6 +5446,26 @@ func (o *consumerFileStore) flushLoop() {
 	}
 }
 
+// SetStarting sets our starting stream sequence.
+func (o *consumerFileStore) SetStarting(sseq uint64) error {
+	o.mu.Lock()
+	o.state.Delivered.Stream = sseq
+	buf, err := o.encodeState()
+	o.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return o.writeState(buf)
+}
+
+// HasState returns if this store has a recorded state.
+func (o *consumerFileStore) HasState() bool {
+	o.mu.Lock()
+	_, err := os.Stat(o.ifn)
+	o.mu.Unlock()
+	return err == nil
+}
+
 // UpdateDelivered is called whenever a new message has been delivered.
 func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) error {
 	o.mu.Lock()

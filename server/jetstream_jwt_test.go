@@ -287,7 +287,7 @@ func TestJetStreamJWTMove(t *testing.T) {
 		require_NoError(t, err)
 		require_Equal(t, ci.Cluster.Name, "C1")
 
-		checkFor(t, 10*time.Second, 10*time.Millisecond, func() error {
+		checkFor(t, 15*time.Second, 50*time.Millisecond, func() error {
 			if si, err := js.StreamInfo("MOVE-ME"); err != nil {
 				return err
 			} else if si.Cluster.Name != "C2" {

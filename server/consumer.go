@@ -690,9 +690,6 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		return nil, NewJSConsumerBadDurableNameError()
 	}
 
-	// Select starting sequence number
-	o.selectStartingSeqNo()
-
 	// Setup our storage if not a direct consumer.
 	if !config.Direct {
 		store, err := mset.store.ConsumerStore(o.name, config)
@@ -702,6 +699,14 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			return nil, NewJSConsumerStoreFailedError(err)
 		}
 		o.store = store
+	}
+
+	if o.store != nil && o.store.HasState() {
+		// Restore our saved state.
+		o.readStoredState(0)
+	} else {
+		// Select starting sequence number
+		o.selectStartingSeqNo()
 	}
 
 	// Now register with mset and create the ack subscription.
@@ -883,10 +888,22 @@ func (o *consumer) setLeader(isLeader bool) {
 
 		o.mu.Lock()
 		o.rdq, o.rdqi = nil, nil
+
 		// Restore our saved state. During non-leader status we just update our underlying store.
-		hadState, _ := o.readStoredState(lseq)
-		// Setup initial pending and proper start sequence.
-		o.setInitialPendingAndStart(hadState)
+		o.readStoredState(lseq)
+
+		// Setup initial num pending.
+		o.streamNumPending()
+
+		// Cleanup lss when we take over in clustered mode.
+		if o.hasSkipListPending() && o.sseq >= o.lss.resume {
+			o.lss = nil
+		}
+
+		// Update the group on the our starting sequence if we are starting but we skipped some in the stream.
+		if o.dseq == 1 && o.sseq > 1 {
+			o.updateSkipped()
+		}
 
 		// Do info sub.
 		if o.infoSub == nil && jsa != nil {
@@ -1929,19 +1946,18 @@ func (o *consumer) checkRedelivered(slseq uint64) {
 
 // This will restore the state from disk.
 // Lock should be held.
-func (o *consumer) readStoredState(slseq uint64) (hadState bool, err error) {
+func (o *consumer) readStoredState(slseq uint64) error {
 	if o.store == nil {
-		return false, nil
+		return nil
 	}
 	state, err := o.store.State()
-	if err == nil && state != nil && (state.Delivered.Consumer != 0 || state.Delivered.Stream != 0) {
+	if err == nil {
 		o.applyState(state)
-		hadState = true
 		if len(o.rdc) > 0 {
 			o.checkRedelivered(slseq)
 		}
 	}
-	return hadState, err
+	return err
 }
 
 // Apply the consumer stored state.
@@ -1950,8 +1966,12 @@ func (o *consumer) applyState(state *ConsumerState) {
 		return
 	}
 
+	// If o.sseq is greater don't update. Don't go backwards on o.sseq.
+	if o.sseq <= state.Delivered.Stream {
+		o.sseq = state.Delivered.Stream + 1
+	}
 	o.dseq = state.Delivered.Consumer + 1
-	o.sseq = state.Delivered.Stream + 1
+
 	o.adflr = state.AckFloor.Consumer
 	o.asflr = state.AckFloor.Stream
 	o.pending = state.Pending
@@ -3138,6 +3158,10 @@ func (o *consumer) numPending() uint64 {
 	if o.npsm == 0 {
 		o.streamNumPending()
 	}
+	// This can wrap based on possibly having a dec before the inc. Account for that here.
+	if o.npc&(1<<63) != 0 {
+		return 0
+	}
 	return o.npc
 }
 
@@ -3667,6 +3691,11 @@ func (o *consumer) selectStartingSeqNo() {
 	o.adflr = o.dseq - 1
 	// Set ack store floor to store-1
 	o.asflr = o.sseq - 1
+
+	// Set our starting sequence state.
+	if o.store != nil && o.sseq > 0 {
+		o.store.SetStarting(o.sseq - 1)
+	}
 }
 
 // Test whether a config represents a durable subscriber.
@@ -3999,67 +4028,6 @@ func (o *consumer) switchToEphemeral() {
 // Returns empty otherwise.
 func (o *consumer) requestNextMsgSubject() string {
 	return o.nextMsgSubj
-}
-
-// Will set the initial pending and start sequence.
-// mset lock should be held.
-func (o *consumer) setInitialPendingAndStart(hadState bool) {
-	mset := o.mset
-	if mset == nil || mset.store == nil {
-		return
-	}
-
-	// !filtered means we want all messages.
-	filtered, dp := o.cfg.FilterSubject != _EMPTY_, o.cfg.DeliverPolicy
-	if filtered {
-		// Check to see if we directly match the configured stream.
-		// Many clients will always send a filtered subject.
-		cfg := &mset.cfg
-		if len(cfg.Subjects) == 1 && cfg.Subjects[0] == o.cfg.FilterSubject {
-			filtered = false
-		}
-	}
-
-	if filtered || dp == DeliverLastPerSubject || dp == DeliverNew {
-		// Here we are filtered.
-		if dp == DeliverLastPerSubject && o.hasSkipListPending() && o.sseq < o.lss.resume {
-			if !hadState {
-				o.sseq = o.lss.seqs[0]
-			}
-		} else if ss := mset.store.FilteredState(o.sseq, o.cfg.FilterSubject); ss.Msgs > 0 {
-			// See if we should update our starting sequence.
-			if dp == DeliverLast || dp == DeliverLastPerSubject {
-				if !hadState {
-					o.sseq = ss.Last
-				}
-			} else if dp == DeliverNew {
-				// If our original is larger we will ignore, we don't want to go backwards with DeliverNew.
-				// If its greater, we need to adjust pending.
-				if ss.Last >= o.sseq {
-					if !hadState {
-						o.sseq = ss.Last + 1
-					}
-				}
-			} else if !hadState {
-				// DeliverAll, DeliverByStartSequence, DeliverByStartTime
-				o.sseq = ss.First
-			}
-			// Cleanup lss when we take over in clustered mode.
-			if dp == DeliverLastPerSubject && o.hasSkipListPending() && o.sseq >= o.lss.resume {
-				o.lss = nil
-			}
-		}
-		o.updateSkipped()
-	}
-
-	// Update our persisted state if something has changed.
-	if store := o.store; store != nil {
-		if state, _ := store.State(); state != nil {
-			if o.dseq-1 > state.Delivered.Consumer || o.sseq-1 > state.Delivered.Stream {
-				o.writeStoreStateUnlocked()
-			}
-		}
-	}
 }
 
 func (o *consumer) decStreamPending(sseq uint64, subj string) {

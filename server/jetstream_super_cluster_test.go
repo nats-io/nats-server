@@ -1569,7 +1569,7 @@ func TestJetStreamSuperClusterConsumerDeliverNewBug(t *testing.T) {
 	require_NoError(t, err)
 
 	// Put messages in..
-	num := 200
+	num := 100
 	for i := 0; i < num; i++ {
 		js.PublishAsync("T", []byte("OK"))
 	}
@@ -1586,7 +1586,7 @@ func TestJetStreamSuperClusterConsumerDeliverNewBug(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	if ci.Delivered.Consumer != 0 || ci.Delivered.Stream != 200 {
+	if ci.Delivered.Consumer != 0 || ci.Delivered.Stream != 100 {
 		t.Fatalf("Incorrect consumer delivered info: %+v", ci.Delivered)
 	}
 
@@ -1603,7 +1603,7 @@ func TestJetStreamSuperClusterConsumerDeliverNewBug(t *testing.T) {
 	ci, err = js.ConsumerInfo("T", "d")
 	require_NoError(t, err)
 
-	if ci.Delivered.Consumer != 0 || ci.Delivered.Stream != 200 {
+	if ci.Delivered.Consumer != 0 || ci.Delivered.Stream != 100 {
 		t.Fatalf("Incorrect consumer delivered info: %+v", ci.Delivered)
 	}
 	if ci.NumPending != 0 {

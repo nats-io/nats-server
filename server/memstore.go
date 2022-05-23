@@ -986,6 +986,19 @@ func (o *consumerMemStore) Update(state *ConsumerState) error {
 	return nil
 }
 
+// SetStarting sets our starting stream sequence.
+func (o *consumerMemStore) SetStarting(sseq uint64) error {
+	o.mu.Lock()
+	o.state.Delivered.Stream = sseq
+	o.mu.Unlock()
+	return nil
+}
+
+// HasState returns if this store has a recorded state.
+func (o *consumerMemStore) HasState() bool {
+	return false
+}
+
 func (o *consumerMemStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
