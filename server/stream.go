@@ -3574,7 +3574,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		for _, o := range mset.consumers {
 			o.mu.Lock()
 			if o.isLeader() && o.isFilteredMatch(subject) {
-				if seq > o.npsm {
+				if seq > o.npcm {
 					o.npc++
 				}
 				o.signalNewMessages()
@@ -4251,6 +4251,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 	if err := os.Rename(sdir, ndir); err != nil {
 		return nil, err
 	}
+
 	if cfg.Template != _EMPTY_ {
 		if err := jsa.addStreamNameToTemplate(cfg.Template, cfg.Name); err != nil {
 			return nil, err
@@ -4264,6 +4265,13 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 		mset.setCreatedTime(fcfg.Created)
 	}
 	lseq := mset.lastSeq()
+
+	// Make sure we do an update if the configs have changed.
+	if !reflect.DeepEqual(fcfg.StreamConfig, cfg) {
+		if err := mset.update(&cfg); err != nil {
+			return nil, err
+		}
+	}
 
 	// Now do consumers.
 	odir := filepath.Join(ndir, consumerDir)
