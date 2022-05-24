@@ -224,7 +224,7 @@ type consumer struct {
 	adflr             uint64
 	asflr             uint64
 	npc               uint64
-	npsm              uint64
+	npcm              uint64
 	dsubj             string
 	qgroup            string
 	lss               *lastSeqSkipList
@@ -3155,7 +3155,7 @@ func (o *consumer) setMaxPendingBytes(limit int) {
 
 // Lock should be held.
 func (o *consumer) numPending() uint64 {
-	if o.npsm == 0 {
+	if o.npcm == 0 {
 		o.streamNumPending()
 	}
 	// This can wrap based on possibly having a dec before the inc. Account for that here.
@@ -3166,11 +3166,25 @@ func (o *consumer) numPending() uint64 {
 }
 
 // Will force a set from the stream store of num pending.
+// Depends on delivery policy, for last per subject we calculate differently.
 // Lock should be held.
 func (o *consumer) streamNumPending() uint64 {
-	ss := o.mset.store.FilteredState(o.sseq, o.cfg.FilterSubject)
-	o.npc = ss.Msgs
-	o.npsm = ss.Last
+	if o.mset == nil || o.mset.store == nil {
+		o.npc, o.npcm = 0, 0
+	} else if o.cfg.DeliverPolicy == DeliverLastPerSubject {
+		o.npc, o.npcm = 0, 0
+		for _, ss := range o.mset.store.SubjectsState(o.cfg.FilterSubject) {
+			if o.sseq <= ss.Last {
+				o.npc++
+				if ss.Last > o.npcm {
+					o.npcm = ss.Last
+				}
+			}
+		}
+	} else {
+		ss := o.mset.store.FilteredState(o.sseq, o.cfg.FilterSubject)
+		o.npc, o.npcm = ss.Msgs, ss.Last
+	}
 	return o.npc
 }
 
@@ -3183,7 +3197,7 @@ func (o *consumer) deliverMsg(dsubj string, pmsg *jsPubMsg, dc uint64, rp Retent
 	}
 
 	// Update our cached num pending.
-	if dc == 1 && o.npsm > 0 {
+	if dc == 1 && o.npcm > 0 {
 		o.npc--
 	}
 
@@ -4033,7 +4047,7 @@ func (o *consumer) requestNextMsgSubject() string {
 func (o *consumer) decStreamPending(sseq uint64, subj string) {
 	o.mu.Lock()
 	// Update our cached num pending. Only do so if we think deliverMsg has not done so.
-	if sseq > o.npsm && sseq >= o.sseq && o.isFilteredMatch(subj) {
+	if sseq > o.npcm && sseq >= o.sseq && o.isFilteredMatch(subj) {
 		o.npc--
 	}
 	// Check if this message was pending.

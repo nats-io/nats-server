@@ -17612,6 +17612,60 @@ func TestJetStreamConsumerDeliverNewNotConsumingBeforeRestart(t *testing.T) {
 	checkCount(0)
 }
 
+func TestJetStreamConsumerNumPendingWithMaxPerSubjectGreaterThanOne(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	test := func(t *testing.T, st nats.StorageType) {
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:              "TEST",
+			Subjects:          []string{"KV.*.*"},
+			MaxMsgsPerSubject: 2,
+			Storage:           st,
+		})
+		require_NoError(t, err)
+
+		// If we allow more than one msg per subject, consumer's num pending can be off (bug in store level).
+		// This requires a filtered state, simple states work ok.
+		// Since we now rely on stream's filtered state when asked directly for consumer info in >=2.8.3.
+		js.PublishAsync("KV.plans.foo", []byte("OK"))
+		js.PublishAsync("KV.plans.bar", []byte("OK"))
+		js.PublishAsync("KV.plans.baz", []byte("OK"))
+		// These are required, the consumer needs to filter these out to see the bug.
+		js.PublishAsync("KV.config.foo", []byte("OK"))
+		js.PublishAsync("KV.config.bar", []byte("OK"))
+		js.PublishAsync("KV.config.baz", []byte("OK"))
+
+		// Double up some now.
+		js.PublishAsync("KV.plans.bar", []byte("OK"))
+		js.PublishAsync("KV.plans.baz", []byte("OK"))
+
+		ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+			Durable:       "d",
+			AckPolicy:     nats.AckExplicitPolicy,
+			DeliverPolicy: nats.DeliverLastPerSubjectPolicy,
+			FilterSubject: "KV.plans.*",
+		})
+		require_NoError(t, err)
+
+		err = js.DeleteStream("TEST")
+		require_NoError(t, err)
+
+		if ci.NumPending != 3 {
+			t.Fatalf("Expected 3 NumPending, but got %d", ci.NumPending)
+		}
+	}
+
+	t.Run("MemoryStore", func(t *testing.T) { test(t, nats.MemoryStorage) })
+	t.Run("FileStore", func(t *testing.T) { test(t, nats.FileStorage) })
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
