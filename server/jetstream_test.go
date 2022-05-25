@@ -2917,8 +2917,9 @@ func TestJetStreamWorkQueueNakRedelivery(t *testing.T) {
 
 			// Grab #6
 			m := getMsg(6, 6)
-			// NAK this one.
+			// NAK this one and make sure its processed.
 			m.Respond(AckNak)
+			nc.Flush()
 
 			// When we request again should be store sequence 6 again.
 			getMsg(6, 7)
@@ -5547,6 +5548,7 @@ func TestJetStreamRedeliverCount(t *testing.T) {
 
 				// Make sure it keeps getting sent back.
 				m.Respond(AckNak)
+				nc.Flush()
 			}
 		})
 	}
@@ -17917,4 +17919,86 @@ func TestJetStreamKVMemoryStorePerf(t *testing.T) {
 		require_NoError(t, err)
 	}
 	fmt.Printf("Took %v for second run\n", time.Since(start))
+}
+
+func TestJetStreamMultiplePullPerf(t *testing.T) {
+	skip(t)
+
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	js.AddStream(&nats.StreamConfig{Name: "mp22", Storage: nats.FileStorage})
+	defer js.DeleteStream("mp22")
+
+	n, msg := 1_000_000, []byte("OK")
+	for i := 0; i < n; i++ {
+		js.PublishAsync("mp22", msg)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(10 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	si, err := js.StreamInfo("mp22")
+	require_NoError(t, err)
+
+	fmt.Printf("msgs: %d, total_bytes: %v\n", si.State.Msgs, friendlyBytes(int64(si.State.Bytes)))
+
+	// 10 pull subscribers each asking for 100 msgs.
+	_, err = js.AddConsumer("mp22", &nats.ConsumerConfig{
+		Durable:       "d",
+		MaxAckPending: 8_000,
+		AckPolicy:     nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	startCh := make(chan bool)
+	var wg sync.WaitGroup
+
+	np, bs := 10, 100
+
+	count := 0
+
+	for i := 0; i < np; i++ {
+		_, js := jsClientConnect(t, s)
+		sub, err := js.PullSubscribe("mp22", "d")
+		require_NoError(t, err)
+
+		wg.Add(1)
+		go func(sub *nats.Subscription) {
+			defer wg.Done()
+			<-startCh
+			for i := 0; i < n/(np*bs); i++ {
+				msgs, err := sub.Fetch(bs)
+				if err != nil {
+					t.Logf("Got error on pull: %v", err)
+					return
+				}
+				if len(msgs) != bs {
+					t.Logf("Expected %d msgs, got %d", bs, len(msgs))
+					return
+				}
+				count += len(msgs)
+				for _, m := range msgs {
+					m.Ack()
+				}
+			}
+		}(sub)
+	}
+
+	start := time.Now()
+	close(startCh)
+	wg.Wait()
+
+	tt := time.Since(start)
+	fmt.Printf("Took %v to receive %d msgs [%d]\n", tt, n, count)
+	fmt.Printf("%.0f msgs/s\n", float64(n)/tt.Seconds())
+	fmt.Printf("%.0f mb/s\n\n", float64(si.State.Bytes/(1024*1024))/tt.Seconds())
 }

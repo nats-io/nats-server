@@ -981,6 +981,9 @@ func (o *consumer) setLeader(isLeader bool) {
 		// Now start up Go routine to deliver msgs.
 		go o.loopAndGatherMsgs(qch)
 
+		// Now start up Go routine to process acks.
+		go o.processInboundAcks(qch)
+
 		// If we are R>1 spin up our proposal loop.
 		if node != nil {
 			// Determine if we can send pending requests info to the group.
@@ -2104,7 +2107,7 @@ func (o *consumer) infoWithSnap(snap bool) *ConsumerInfo {
 
 	// If we are a pull mode consumer, report on number of waiting requests.
 	if o.isPullMode() {
-		o.processWaiting()
+		o.processWaiting(false)
 		info.NumWaiting = o.waiting.len()
 	}
 	// If we were asked to snapshot do so here.
@@ -2646,7 +2649,7 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 	// If we have the max number of requests already pending try to expire.
 	if o.waiting.isFull() {
 		// Try to expire some of the requests.
-		o.processWaiting()
+		o.processWaiting(false)
 	}
 
 	// If the request is for noWait and we have pending requests already, check if we have room.
@@ -2659,7 +2662,7 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 			return
 		}
 		if msgsPending > 0 {
-			_, _, batchPending, _ := o.processWaiting()
+			_, _, batchPending, _ := o.processWaiting(false)
 			if msgsPending < uint64(batchPending) {
 				sendErr(408, "Requests Pending")
 				return
@@ -2834,7 +2837,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 
 // Will check for expiration and lack of interest on waiting requests.
 // Will also do any heartbeats and return the next expiration or HB interval.
-func (o *consumer) processWaiting() (int, int, int, time.Time) {
+func (o *consumer) processWaiting(eos bool) (int, int, int, time.Time) {
 	var fexp time.Time
 	if o.srv == nil || o.waiting.isEmpty() {
 		return 0, 0, 0, fexp
@@ -2863,7 +2866,7 @@ func (o *consumer) processWaiting() (int, int, int, time.Time) {
 	for i, rp, n := 0, wq.rp, wq.n; i < n; rp = (rp + 1) % cap(wq.reqs) {
 		wr := wq.reqs[rp]
 		// Check expiration.
-		if (wr.noWait && wr.d > 0) || (!wr.expires.IsZero() && now.After(wr.expires)) {
+		if (eos && wr.noWait && wr.d > 0) || (!wr.expires.IsZero() && now.After(wr.expires)) {
 			hdr := []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
 			o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 			remove(wr, rp)
@@ -2917,7 +2920,7 @@ func (o *consumer) processWaiting() (int, int, int, time.Time) {
 
 // Will check to make sure those waiting still have registered interest.
 func (o *consumer) checkWaitingForInterest() bool {
-	o.processWaiting()
+	o.processWaiting(true)
 	return o.waiting.len() > 0
 }
 
@@ -2927,6 +2930,30 @@ func (o *consumer) hbTimer() (time.Duration, *time.Timer) {
 		return 0, nil
 	}
 	return o.cfg.Heartbeat, time.NewTimer(o.cfg.Heartbeat)
+}
+
+func (o *consumer) processInboundAcks(qch chan struct{}) {
+	// Grab the server lock to watch for server quit.
+	o.mu.RLock()
+	s := o.srv
+	o.mu.RUnlock()
+
+	for {
+		select {
+		case <-o.ackMsgs.ch:
+			acks := o.ackMsgs.pop()
+			for _, acki := range acks {
+				ack := acki.(*jsAckMsg)
+				o.processAck(ack.subject, ack.reply, ack.hdr, ack.msg)
+				ack.returnToPool()
+			}
+			o.ackMsgs.recycle(&acks)
+		case <-qch:
+			return
+		case <-s.quitCh:
+			return
+		}
+	}
 }
 
 func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
@@ -2970,22 +2997,25 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 	rp := mset.cfg.Retention
 	mset.mu.RUnlock()
 
+	var err error
+
 	// Deliver all the msgs we have now, once done or on a condition, we wait for new ones.
 	for {
 		var (
 			pmsg  *jsPubMsg
 			dc    uint64
 			dsubj string
-			err   error
 			delay time.Duration
 		)
-
 		o.mu.Lock()
 		// consumer is closed when mset is set to nil.
 		if o.mset == nil {
 			o.mu.Unlock()
 			return
 		}
+
+		// Clear last error.
+		err = nil
 
 		// If we are in push mode and not active or under flowcontrol let's stop sending.
 		if o.isPushMode() {
@@ -3080,7 +3110,8 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		// Make sure to process any expired requests that are pending.
 		var wrExp <-chan time.Time
 		if o.isPullMode() {
-			_, _, _, fexp := o.processWaiting()
+			// Dont expire oneshots if we are here because of max ack pending limit.
+			_, _, _, fexp := o.processWaiting(err != errMaxAckPending)
 			if !fexp.IsZero() {
 				expires := time.Until(fexp)
 				if expires <= 0 {
@@ -3095,25 +3126,17 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		o.mu.Unlock()
 
 		select {
-		case <-o.ackMsgs.ch:
-			acks := o.ackMsgs.pop()
-			for _, acki := range acks {
-				ack := acki.(*jsAckMsg)
-				o.processAck(ack.subject, ack.reply, ack.hdr, ack.msg)
-				ack.returnToPool()
-			}
-			o.ackMsgs.recycle(&acks)
+		case <-mch:
+			// Messages are waiting.
 		case interest := <-inch:
 			// inch can be nil on pull-based, but then this will
 			// just block and not fire.
 			o.updateDeliveryInterest(interest)
 		case <-qch:
 			return
-		case <-mch:
-			// Messages are waiting.
 		case <-wrExp:
 			o.mu.Lock()
-			o.processWaiting()
+			o.processWaiting(true)
 			o.mu.Unlock()
 		case <-hbc:
 			if o.isActive() {
