@@ -5591,7 +5591,7 @@ func TestJetStreamRedeliverAndLateAck(t *testing.T) {
 	// Wait for past ackwait time
 	time.Sleep(150 * time.Millisecond)
 	// Now ack!
-	msg.Respond(nil)
+	msg.AckSync()
 	// We should not get this back.
 	if _, err := nc.Request(nextSubj, nil, 10*time.Millisecond); err == nil {
 		t.Fatalf("Message should not have been sent back")
