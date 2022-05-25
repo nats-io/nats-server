@@ -3367,6 +3367,67 @@ func TestMQTTSessionMovingDomains(t *testing.T) {
 	connectSubAndDisconnect(c.opts[2].MQTT.Host, c.opts[2].MQTT.Port, true)
 }
 
+type remoteConnSameClientIDLogger struct {
+	DummyLogger
+	warn chan string
+}
+
+func (l *remoteConnSameClientIDLogger) Warnf(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	if strings.Contains(msg, "remote connection has started with the same client ID") {
+		l.warn <- msg
+	}
+}
+
+func TestMQTTSessionsDifferentDomains(t *testing.T) {
+	tmpl := strings.Replace(jsClusterTemplWithLeafAndMQTT, "{{leaf}}", `leafnodes { listen: 127.0.0.1:-1 }`, 1)
+	c := createJetStreamCluster(t, tmpl, "HUB", _EMPTY_, 3, 22020, true)
+	defer c.shutdown()
+	c.waitOnLeader()
+
+	tmpl = strings.Replace(jsClusterTemplWithLeafAndMQTT, "store_dir:", "domain: LEAF1, store_dir:", 1)
+	lnc1 := c.createLeafNodesWithTemplateAndStartPort(tmpl, "LEAF1", 2, 22111)
+	defer lnc1.shutdown()
+	lnc1.waitOnPeerCount(2)
+
+	l := &remoteConnSameClientIDLogger{warn: make(chan string, 10)}
+	lnc1.servers[0].SetLogger(l, false, false)
+
+	tmpl = strings.Replace(jsClusterTemplWithLeafAndMQTT, "store_dir:", "domain: LEAF2, store_dir:", 1)
+	lnc2 := c.createLeafNodesWithTemplateAndStartPort(tmpl, "LEAF2", 2, 23111)
+	defer lnc2.shutdown()
+	lnc2.waitOnPeerCount(2)
+
+	o := &(lnc1.opts[0].MQTT)
+	mc1, rc1 := testMQTTConnectRetry(t, &mqttConnInfo{clientID: "sub", cleanSess: false}, o.Host, o.Port, 5)
+	defer mc1.Close()
+	testMQTTCheckConnAck(t, rc1, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, mc1, rc1, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTFlush(t, mc1, nil, rc1)
+
+	o = &(lnc2.opts[0].MQTT)
+	connectSubAndDisconnect := func(host string, port int, present bool) {
+		t.Helper()
+		mc, rc := testMQTTConnectRetry(t, &mqttConnInfo{clientID: "sub", cleanSess: false}, host, port, 5)
+		defer mc.Close()
+		testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, present)
+		testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+		testMQTTFlush(t, mc, nil, rc)
+		testMQTTDisconnect(t, mc, nil)
+	}
+
+	for i := 0; i < 2; i++ {
+		connectSubAndDisconnect(o.Host, o.Port, i > 0)
+	}
+
+	select {
+	case w := <-l.warn:
+		t.Fatalf("Got a warning: %v", w)
+	case <-time.After(500 * time.Millisecond):
+		// OK
+	}
+}
+
 func TestMQTTParseUnsub(t *testing.T) {
 	for _, test := range []struct {
 		name  string
