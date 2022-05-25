@@ -1546,8 +1546,19 @@ func (as *mqttAccountSessionManager) processSessionPersist(_ *subscription, pc *
 	if err := par.Error; err != nil {
 		return
 	}
-	// We would need to lookup the message that that is a request/reply
-	// that we can do in place here. So move that to a long-running routine
+	as.mu.RLock()
+	// Note that as.domainTk includes a terminal '.', so strip to compare to PubAck.Domain.
+	dl := len(as.domainTk)
+	if dl > 0 {
+		dl--
+	}
+	ignore := par.Domain != as.domainTk[:dl]
+	as.mu.RUnlock()
+	if ignore {
+		return
+	}
+	// We would need to lookup the message and that would be a request/reply,
+	// which we can't do in place here. So move that to a long-running routine
 	// that will process the session persist record.
 	as.sp.push(par.Sequence)
 }
