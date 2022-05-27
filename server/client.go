@@ -2662,7 +2662,7 @@ func (c *client) addShadowSub(sub *subscription, ime *ime) (*subscription, error
 		if ime.overlapSubj != _EMPTY_ {
 			s = ime.overlapSubj
 		}
-		subj, err := im.rtr.transformSubject(s)
+		subj, err := im.rtr.TransformSubject(s)
 		if err != nil {
 			return nil, err
 		}
@@ -2943,7 +2943,7 @@ func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, ac
 		// Remap subject if its a shadow subscription, treat like a normal client.
 		if rt.sub.im != nil {
 			if rt.sub.im.tr != nil {
-				to, _ := rt.sub.im.tr.transformSubject(string(subj))
+				to, _ := rt.sub.im.tr.TransformSubject(string(subj))
 				subj = []byte(to)
 			} else if !rt.sub.im.usePub {
 				subj = []byte(rt.sub.im.to)
@@ -3894,7 +3894,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 
 	if si.tr != nil {
 		// FIXME(dlc) - This could be slow, may want to look at adding cache to bare transforms?
-		to, _ = si.tr.transformSubject(subject)
+		to, _ = si.tr.TransformSubject(subject)
 	} else if si.usePub {
 		to = subject
 	}
@@ -4138,7 +4138,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				continue
 			}
 			if sub.im.tr != nil {
-				to, _ := sub.im.tr.transformSubject(string(subject))
+				to, _ := sub.im.tr.TransformSubject(string(subject))
 				dsubj = append(_dsubj[:0], to...)
 			} else if sub.im.usePub {
 				dsubj = append(_dsubj[:0], subj...)
@@ -4279,7 +4279,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 					continue
 				}
 				if sub.im.tr != nil {
-					to, _ := sub.im.tr.transformSubject(string(subject))
+					to, _ := sub.im.tr.TransformSubject(string(subject))
 					dsubj = append(_dsubj[:0], to...)
 				} else if sub.im.usePub {
 					dsubj = append(_dsubj[:0], subj...)
