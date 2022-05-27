@@ -3471,7 +3471,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	var tsubj string
 	var tlseq uint64
 	if mset.tr != nil {
-		tsubj, _ = mset.tr.transformSubject(subject)
+		tsubj, _ = mset.tr.TransformSubject(subject)
 	}
 	republish := tsubj != _EMPTY_
 

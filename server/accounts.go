@@ -4225,6 +4225,20 @@ func placeHolderIndex(token string) ([]int, int32, error) {
 	return []int{-1}, -1, nil
 }
 
+// SubjectTransformer transforms subjects using mappings
+//
+// This API is not part of the public API and not subject to SemVer protections
+type SubjectTransformer interface {
+	TransformSubject(string) (string, error)
+}
+
+// NewSubjectTransformer creates a new SubjectTransformer
+//
+// This API is not part of the public API and not subject to SemVer protections
+func NewSubjectTransformer(src, dest string) (SubjectTransformer, error) {
+	return newTransform(src, dest)
+}
+
 // newTransform will create a new transform checking the src and dest subjects for accuracy.
 func newTransform(src, dest string) (*transform, error) {
 	// Both entries need to be valid subjects.
@@ -4305,8 +4319,10 @@ func (tr *transform) match(subject string) (string, error) {
 	return _EMPTY_, ErrNoTransforms
 }
 
-// Do not need to match, just transform.
-func (tr *transform) transformSubject(subject string) (string, error) {
+// TransformSubject do not need to match, just transform.
+//
+// This API is not part of the public API and not subject to SemVer protections
+func (tr *transform) TransformSubject(subject string) (string, error) {
 	// Tokenize the subject.
 	tsa := [32]string{}
 	tts := tsa[:0]
