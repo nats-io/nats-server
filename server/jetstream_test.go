@@ -17668,6 +17668,37 @@ func TestJetStreamConsumerNumPendingWithMaxPerSubjectGreaterThanOne(t *testing.T
 	t.Run("FileStore", func(t *testing.T) { test(t, nats.FileStorage) })
 }
 
+func TestJetStreamMsgGetNoAdvisory(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "foo"})
+	require_NoError(t, err)
+
+	for i := 0; i < 100; i++ {
+		js.PublishAsync("foo", []byte("ok"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	sub, err := nc.SubscribeSync("$JS.EVENT.ADVISORY.>")
+	require_NoError(t, err)
+
+	_, err = js.GetMsg("foo", 1)
+	require_NoError(t, err)
+
+	checkSubsPending(t, sub, 0)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////

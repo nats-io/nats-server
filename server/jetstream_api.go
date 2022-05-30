@@ -2530,7 +2530,9 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 		Data:     sm.msg,
 		Time:     time.Unix(0, sm.ts).UTC(),
 	}
-	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+
+	// Don't send response through API layer for this call.
+	s.sendInternalAccountMsg(nil, reply, s.jsonResponse(resp))
 }
 
 // Request to purge a stream.
