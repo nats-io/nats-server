@@ -1302,6 +1302,11 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server) (*Str
 
 // Update will allow certain configuration properties of an existing stream to be updated.
 func (mset *stream) update(config *StreamConfig) error {
+	return mset.updateWithAdvisory(config, true)
+}
+
+// Update will allow certain configuration properties of an existing stream to be updated.
+func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) error {
 	mset.mu.RLock()
 	ocfg := mset.cfg
 	s := mset.srv
@@ -1395,7 +1400,7 @@ func (mset *stream) update(config *StreamConfig) error {
 	mset.cfg = *cfg
 
 	// If we are the leader never suppress update advisory, simply send.
-	if mset.isLeader() {
+	if mset.isLeader() && sendAdvisory {
 		mset.sendUpdateAdvisoryLocked()
 	}
 	mset.mu.Unlock()
