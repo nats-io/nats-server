@@ -2711,7 +2711,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 		if err == nil && mset != nil {
 			osa := mset.streamAssignment()
 			mset.setStreamAssignment(sa)
-			if err = mset.update(sa.Config); err != nil {
+			if err = mset.updateWithAdvisory(sa.Config, false); err != nil {
 				s.Warnf("JetStream cluster error updating stream %q for account %q: %v", sa.Config.Name, acc.Name, err)
 				mset.setStreamAssignment(osa)
 			}
@@ -3156,7 +3156,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 	}
 
 	// Check if we already have this consumer running.
-	var didCreate bool
+	var didCreate, isConfigUpdate bool
 	if o == nil {
 		// Add in the consumer if needed.
 		o, err = mset.addConsumerWithAssignment(ca.Config, ca.Name, ca, false)
@@ -3194,6 +3194,8 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 			}
 			// If we look like we are scaling up, let's send our current state to the group.
 			sendState = len(ca.Group.Peers) > len(oca.Group.Peers) && leader
+			// Check if this is an update.
+			isConfigUpdate = reflect.DeepEqual(oca.Config, ca.Config)
 		}
 		n := rg.node
 		js.mu.Unlock()
@@ -3273,8 +3275,10 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 		if rg.node == nil {
 			// Single replica consumer, process manually here.
 			js.mu.Lock()
-			// to force response in case we think we have responded before.
-			ca.responded = false
+			// Force response in case we think this is an update.
+			if isConfigUpdate {
+				ca.responded = false
+			}
 			js.mu.Unlock()
 			js.processConsumerLeaderChange(o, true)
 		} else {

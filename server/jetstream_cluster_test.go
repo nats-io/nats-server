@@ -10815,3 +10815,73 @@ func TestJetStreamClusterConsumerDeliverNewNotConsumingBeforeStepDownOrRestart(t
 	}
 	checkCount(0)
 }
+
+func TestJetStreamClusterNoRestartAdvisories(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST2",
+		Subjects: []string{"bar"},
+		Replicas: 1,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	msg := bytes.Repeat([]byte("Z"), 1024)
+	for i := 0; i < 1000; i++ {
+		js.PublishAsync("foo", msg)
+		js.PublishAsync("bar", msg)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+	sub, err := js.PullSubscribe("foo", "dlc")
+	require_NoError(t, err)
+	for _, m := range fetchMsgs(t, sub, 5, time.Second) {
+		m.AckSync()
+	}
+	nc.Close()
+
+	// Speed up reconnect to see advisories.
+	rt := 2 * time.Microsecond
+	s := c.randomNonConsumerLeader("$G", "TEST", "dlc")
+	nc, _ = jsClientConnect(t, s, nats.ReconnectWait(rt), nats.ReconnectJitter(rt, rt))
+	defer nc.Close()
+
+	sub, err = nc.SubscribeSync("$JS.EVENT.ADVISORY.CONSUMER.DURABLE.>")
+	require_NoError(t, err)
+
+	s.Shutdown()
+	c.restartServer(s)
+	nc.Flush()
+
+	checkSubsPending(t, sub, 0)
+
+	s = c.streamLeader("$G", "TEST2")
+	nc, _ = jsClientConnect(t, s, nats.ReconnectWait(rt), nats.ReconnectJitter(rt, rt))
+	defer nc.Close()
+
+	sub, err = nc.SubscribeSync("$JS.EVENT.ADVISORY.STREAM.UPDATED.>")
+	require_NoError(t, err)
+
+	s.Shutdown()
+	c.restartServer(s)
+	nc.Flush()
+
+	checkSubsPending(t, sub, 0)
+}
