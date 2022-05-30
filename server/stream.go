@@ -59,7 +59,7 @@ type StreamConfig struct {
 	Sources      []*StreamSource `json:"sources,omitempty"`
 
 	// Allow republish of the message after being sequenced and stored.
-	RePublish *SubjectMapping `json:"republish,omitempty"`
+	RePublish *RePublish `json:"republish,omitempty"`
 
 	// Optional qualifiers. These can not be modified after set to true.
 
@@ -74,10 +74,11 @@ type StreamConfig struct {
 	AllowRollup bool `json:"allow_rollup_hdrs"`
 }
 
-// SubjectMapping allows a source subject to be mapped to a destination subject for republishing.
-type SubjectMapping struct {
+// RePublish is for republishing messages once committed to a stream.
+type RePublish struct {
 	Source      string `json:"src,omitempty"`
 	Destination string `json:"dest"`
+	HeadersOnly bool   `json:"headers_only,omitempty"`
 }
 
 // JSPubAckResponse is a formal response to a publish operation.
@@ -417,6 +418,10 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 
 	// Check for RePublish.
 	if cfg.RePublish != nil {
+		// Empty same as all.
+		if cfg.RePublish.Source == _EMPTY_ {
+			cfg.RePublish.Source = fwcs
+		}
 		tr, err := newTransform(cfg.RePublish.Source, cfg.RePublish.Destination)
 		if err != nil {
 			jsa.mu.Unlock()
@@ -1144,6 +1149,10 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		// Check to make sure source is a valid subset of the subjects we have.
 		// Also make sure it does not form a cycle.
 		var srcValid bool
+		// Empty same as all.
+		if cfg.RePublish.Source == _EMPTY_ {
+			cfg.RePublish.Source = fwcs
+		}
 		for _, subj := range cfg.Subjects {
 			if SubjectsCollide(cfg.RePublish.Source, subj) {
 				srcValid = true
@@ -3475,8 +3484,12 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	// Republish state if needed.
 	var tsubj string
 	var tlseq uint64
+	var thdrsOnly bool
 	if mset.tr != nil {
 		tsubj, _ = mset.tr.TransformSubject(subject)
+		if mset.cfg.RePublish != nil {
+			thdrsOnly = mset.cfg.RePublish.HeadersOnly
+		}
 	}
 	republish := tsubj != _EMPTY_
 
@@ -3562,10 +3575,28 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		}
 		// Check for republish.
 		if republish {
-			hdr = genHeader(hdr, JSStream, name)
-			hdr = genHeader(hdr, JSSequence, strconv.FormatUint(seq, 10))
-			hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(tlseq, 10))
-			mset.outq.send(newJSPubMsg(tsubj, subject, _EMPTY_, copyBytes(hdr), copyBytes(msg), nil, seq))
+			var rpMsg []byte
+			if len(hdr) == 0 {
+				const ht = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Sequence: %d\r\nNats-Last-Sequence: %d\r\n\r\n"
+				const htho = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Sequence: %d\r\nNats-Last-Sequence: %d\r\nNats-Msg-Size: %d\r\n\r\n"
+				if !thdrsOnly {
+					hdr = []byte(fmt.Sprintf(ht, name, seq, tlseq))
+					rpMsg = copyBytes(msg)
+				} else {
+					hdr = []byte(fmt.Sprintf(htho, name, seq, tlseq, len(msg)))
+				}
+			} else {
+				// Slow path.
+				hdr = genHeader(hdr, JSStream, name)
+				hdr = genHeader(hdr, JSSequence, strconv.FormatUint(seq, 10))
+				hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(tlseq, 10))
+				if !thdrsOnly {
+					rpMsg = copyBytes(msg)
+				} else {
+					hdr = genHeader(hdr, JSMsgSize, strconv.Itoa(len(msg)))
+				}
+			}
+			mset.outq.send(newJSPubMsg(tsubj, subject, _EMPTY_, copyBytes(hdr), rpMsg, nil, seq))
 		}
 	}
 

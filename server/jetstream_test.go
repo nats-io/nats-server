@@ -17523,23 +17523,70 @@ func TestJetStreamStreamRepublishCycle(t *testing.T) {
 		}
 	}
 
-	cfg.RePublish = &SubjectMapping{
+	cfg.RePublish = &RePublish{
 		Source:      "foo.>",
 		Destination: "foo.>",
 	}
 	expectFail()
 
-	cfg.RePublish = &SubjectMapping{
+	cfg.RePublish = &RePublish{
 		Source:      "bar.bar",
 		Destination: "foo.bar",
 	}
 	expectFail()
 
-	cfg.RePublish = &SubjectMapping{
+	cfg.RePublish = &RePublish{
 		Source:      "baz",
 		Destination: "bar.bar",
 	}
 	expectFail()
+}
+
+func TestJetStreamStreamRepublishHeadersOnly(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Do by hand for now.
+	cfg := &StreamConfig{
+		Name:     "RPC",
+		Storage:  MemoryStorage,
+		Subjects: []string{"foo", "bar", "baz"},
+		RePublish: &RePublish{
+			Destination: "RP.>",
+			HeadersOnly: true,
+		},
+	}
+	addStream(t, nc, cfg)
+
+	sub, err := nc.SubscribeSync("RP.>")
+	require_NoError(t, err)
+
+	msg, toSend := bytes.Repeat([]byte("Z"), 512), 100
+	for i := 0; i < toSend; i++ {
+		js.PublishAsync("foo", msg)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	checkSubsPending(t, sub, toSend)
+	m, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+
+	if len(m.Data) > 0 {
+		t.Fatalf("Expected no msg just headers, but got %d bytes", len(m.Data))
+	}
+	if sz := m.Header.Get(JSMsgSize); sz != "512" {
+		t.Fatalf("Expected msg size hdr, got %q", sz)
+	}
 }
 
 func TestJetStreamConsumerDeliverNewNotConsumingBeforeRestart(t *testing.T) {
