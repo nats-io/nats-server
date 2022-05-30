@@ -7993,24 +7993,6 @@ func TestJetStreamClusterSeal(t *testing.T) {
 	t.Run("Clustered", func(t *testing.T) { testSeal(t, c.randomServer(), 3) })
 }
 
-func addStream(t *testing.T, nc *nats.Conn, cfg *StreamConfig) *StreamInfo {
-	t.Helper()
-	req, err := json.Marshal(cfg)
-	require_NoError(t, err)
-	rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
-	require_NoError(t, err)
-	var resp JSApiStreamCreateResponse
-	err = json.Unmarshal(rmsg.Data, &resp)
-	require_NoError(t, err)
-	if resp.Type != JSApiStreamCreateResponseType {
-		t.Fatalf("Invalid response type %s expected %s", resp.Type, JSApiStreamCreateResponseType)
-	}
-	if resp.Error != nil {
-		t.Fatalf("Unexpected error: %+v", resp.Error)
-	}
-	return resp.StreamInfo
-}
-
 // Issue #2568
 func TestJetStreamClusteredStreamCreateIdempotent(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "JSC", 3)
@@ -10681,7 +10663,7 @@ func TestJetStreamClusterStreamRepublish(t *testing.T) {
 		Storage:  MemoryStorage,
 		Subjects: []string{"foo", "bar", "baz"},
 		Replicas: 1,
-		RePublish: &SubjectMapping{
+		RePublish: &RePublish{
 			Source:      ">",
 			Destination: "RP.>",
 		},
