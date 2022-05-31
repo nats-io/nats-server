@@ -10819,8 +10819,12 @@ func TestJetStreamClusterNoRestartAdvisories(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy})
-	require_NoError(t, err)
+	// Create 10 consumers
+	for i := 0; i < 10; i++ {
+		dur := fmt.Sprintf("dlc-%d", i)
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: dur, AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+	}
 
 	msg := bytes.Repeat([]byte("Z"), 1024)
 	for i := 0; i < 1000; i++ {
@@ -10832,38 +10836,42 @@ func TestJetStreamClusterNoRestartAdvisories(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("Did not receive completion signal")
 	}
-	sub, err := js.PullSubscribe("foo", "dlc")
+
+	// Add state to a consumer.
+	sub, err := js.PullSubscribe("foo", "dlc-2")
 	require_NoError(t, err)
 	for _, m := range fetchMsgs(t, sub, 5, time.Second) {
 		m.AckSync()
 	}
 	nc.Close()
 
-	// Speed up reconnect to see advisories.
-	rt := 2 * time.Microsecond
-	s := c.randomNonConsumerLeader("$G", "TEST", "dlc")
-	nc, _ = jsClientConnect(t, s, nats.ReconnectWait(rt), nats.ReconnectJitter(rt, rt))
+	// Required to show the bug.
+	c.leader().JetStreamSnapshotMeta()
+
+	nc, _ = jsClientConnect(t, c.consumerLeader("$G", "TEST", "dlc-2"))
 	defer nc.Close()
 
-	sub, err = nc.SubscribeSync("$JS.EVENT.ADVISORY.CONSUMER.DURABLE.>")
+	sub, err = nc.SubscribeSync("$JS.EVENT.ADVISORY.API")
 	require_NoError(t, err)
 
+	// Shutdown and Restart.
+	s := c.randomNonConsumerLeader("$G", "TEST", "dlc-2")
 	s.Shutdown()
-	c.restartServer(s)
-	nc.Flush()
+	s = c.restartServer(s)
+	c.waitOnServerHealthz(s)
 
 	checkSubsPending(t, sub, 0)
 
-	s = c.streamLeader("$G", "TEST2")
-	nc, _ = jsClientConnect(t, s, nats.ReconnectWait(rt), nats.ReconnectJitter(rt, rt))
+	nc, _ = jsClientConnect(t, c.randomNonStreamLeader("$G", "TEST"))
 	defer nc.Close()
 
 	sub, err = nc.SubscribeSync("$JS.EVENT.ADVISORY.STREAM.UPDATED.>")
 	require_NoError(t, err)
 
+	s = c.streamLeader("$G", "TEST2")
 	s.Shutdown()
-	c.restartServer(s)
-	nc.Flush()
+	s = c.restartServer(s)
+	c.waitOnServerHealthz(s)
 
 	checkSubsPending(t, sub, 0)
 }

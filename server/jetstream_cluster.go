@@ -1125,9 +1125,12 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, isRecovering bool) error {
 		if isRecovering {
 			js.setStreamAssignmentRecovering(sa)
 		}
+		// Let the processConsumerAssignment add them in first.
+		consumers := sa.consumers
+		sa.consumers = nil
 		js.processStreamAssignment(sa)
 		// We can simply add the consumers.
-		for _, ca := range sa.consumers {
+		for _, ca := range consumers {
 			if isRecovering {
 				js.setConsumerAssignmentRecovering(ca)
 			}
@@ -3285,9 +3288,8 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 			if !alreadyRunning {
 				s.startGoRoutine(func() { js.monitorConsumer(o, ca) })
 			}
-			// Process if existing.
 			if wasExisting && (o.isLeader() || (!didCreate && rg.node.GroupLeader() == _EMPTY_)) {
-				// This is essentially an update, so make sure to respond if needed.
+				// Process if existing as an update.
 				js.mu.RLock()
 				client, subject, reply := ca.Client, ca.Subject, ca.Reply
 				js.mu.RUnlock()
