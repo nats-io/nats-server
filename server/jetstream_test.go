@@ -17787,16 +17787,25 @@ func TestJetStreamDirectMsgGet(t *testing.T) {
 	require_True(t, string(m.Data) == "foo")
 	require_True(t, m.Header.Get(JSStream) == "DSMG")
 	require_True(t, m.Header.Get(JSSequence) == "1")
+	require_True(t, m.Header.Get(JSSubject) == "foo")
+	require_True(t, m.Subject != "foo")
+	require_True(t, m.Header.Get(JSTimeStamp) != _EMPTY_)
 
 	m = getMsg(&JSApiMsgGetRequest{LastFor: "bar"})
 	require_True(t, string(m.Data) == "bar")
 	require_True(t, m.Header.Get(JSStream) == "DSMG")
 	require_True(t, m.Header.Get(JSSequence) == "2")
+	require_True(t, m.Header.Get(JSSubject) == "bar")
+	require_True(t, m.Subject != "bar")
+	require_True(t, m.Header.Get(JSTimeStamp) != _EMPTY_)
 
 	m = getMsg(&JSApiMsgGetRequest{LastFor: "baz"})
 	require_True(t, string(m.Data) == "baz")
 	require_True(t, m.Header.Get(JSStream) == "DSMG")
 	require_True(t, m.Header.Get(JSSequence) == "3")
+	require_True(t, m.Header.Get(JSSubject) == "baz")
+	require_True(t, m.Subject != "baz")
+	require_True(t, m.Header.Get(JSTimeStamp) != _EMPTY_)
 
 	// Test error conditions
 

@@ -267,10 +267,12 @@ const (
 	JSResponseType        = "Nats-Response-Type"
 )
 
-// Headers for republished messages.
+// Headers for republished messages and direct gets.
 const (
 	JSStream       = "Nats-Stream"
 	JSSequence     = "Nats-Sequence"
+	JSTimeStamp    = "Nats-Time-Stamp"
+	JSSubject      = "Nats-Subject"
 	JSLastSequence = "Nats-Last-Sequence"
 )
 
@@ -3224,15 +3226,19 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 	}
 
 	hdr := sm.hdr
+	ts := time.Unix(0, sm.ts).UTC()
+
 	if len(hdr) == 0 {
-		const ht = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Sequence: %d\r\n\r\n"
-		hdr = []byte(fmt.Sprintf(ht, name, sm.seq))
+		const ht = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %v\r\n\r\n"
+		hdr = []byte(fmt.Sprintf(ht, name, sm.subj, sm.seq, ts))
 	} else {
 		hdr = copyBytes(hdr)
 		hdr = genHeader(hdr, JSStream, name)
+		hdr = genHeader(hdr, JSSubject, sm.subj)
 		hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
+		hdr = genHeader(hdr, JSTimeStamp, ts.String())
 	}
-	mset.outq.send(newJSPubMsg(reply, sm.subj, _EMPTY_, hdr, sm.msg, nil, 0))
+	mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, sm.msg, nil, 0))
 }
 
 // processInboundJetStreamMsg handles processing messages bound for a stream.
