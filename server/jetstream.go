@@ -94,23 +94,24 @@ type JetStreamAPIStats struct {
 // This is for internal accounting for JetStream for this server.
 type jetStream struct {
 	// These are here first because of atomics on 32bit systems.
-	apiInflight   int64
-	apiTotal      int64
-	apiErrors     int64
-	memReserved   int64
-	storeReserved int64
-	memUsed       int64
-	storeUsed     int64
-	clustered     int32
-	mu            sync.RWMutex
-	srv           *Server
-	config        JetStreamConfig
-	cluster       *jetStreamCluster
-	accounts      map[string]*jsAccount
-	apiSubs       *Sublist
-	standAlone    bool
-	disabled      bool
-	oos           bool
+	apiInflight    int64
+	apiTotal       int64
+	apiErrors      int64
+	memReserved    int64
+	storeReserved  int64
+	memUsed        int64
+	storeUsed      int64
+	clustered      int32
+	mu             sync.RWMutex
+	srv            *Server
+	config         JetStreamConfig
+	cluster        *jetStreamCluster
+	accounts       map[string]*jsAccount
+	apiSubs        *Sublist
+	metaRecovering bool
+	standAlone     bool
+	disabled       bool
+	oos            bool
 }
 
 type remoteUsage struct {
