@@ -3486,7 +3486,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	var tlseq uint64
 	var thdrsOnly bool
 	if mset.tr != nil {
-		tsubj, _ = mset.tr.TransformSubject(subject)
+		tsubj, _ = mset.tr.transformSubject(subject)
 		if mset.cfg.RePublish != nil {
 			thdrsOnly = mset.cfg.RePublish.HeadersOnly
 		}

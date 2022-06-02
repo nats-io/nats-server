@@ -4229,7 +4229,7 @@ func placeHolderIndex(token string) ([]int, int32, error) {
 //
 // This API is not part of the public API and not subject to SemVer protections
 type SubjectTransformer interface {
-	TransformSubject(string) (string, error)
+	Match(string) (string, error)
 }
 
 // NewSubjectTransformer creates a new SubjectTransformer
@@ -4294,10 +4294,13 @@ func newTransform(src, dest string) (*transform, error) {
 	return &transform{src: src, dest: dest, dtoks: dtokens, stoks: stokens, dtpi: dtpi, dtpinp: dtpinb}, nil
 }
 
-// match will take a literal published subject that is associated with a client and will match and transform
+// Match will take a literal published subject that is associated with a client and will match and transform
 // the subject if possible.
-// TODO(dlc) - We could add in client here to allow for things like foo -> foo.$ACCOUNT
-func (tr *transform) match(subject string) (string, error) {
+//
+// This API is not part of the public API and not subject to SemVer protections
+func (tr *transform) Match(subject string) (string, error) {
+	// TODO(dlc) - We could add in client here to allow for things like foo -> foo.$ACCOUNT
+
 	// Tokenize the subject. This should always be a literal subject.
 	tsa := [32]string{}
 	tts := tsa[:0]
@@ -4319,10 +4322,8 @@ func (tr *transform) match(subject string) (string, error) {
 	return _EMPTY_, ErrNoTransforms
 }
 
-// TransformSubject do not need to match, just transform.
-//
-// This API is not part of the public API and not subject to SemVer protections
-func (tr *transform) TransformSubject(subject string) (string, error) {
+// transformSubject do not need to match, just transform.
+func (tr *transform) transformSubject(subject string) (string, error) {
 	// Tokenize the subject.
 	tsa := [32]string{}
 	tts := tsa[:0]

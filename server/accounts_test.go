@@ -3296,7 +3296,7 @@ func TestSubjectTransforms(t *testing.T) {
 	shouldMatch := func(src, dest, sample, expected string) {
 		t.Helper()
 		tr := shouldBeOK(src, dest)
-		s, err := tr.match(sample)
+		s, err := tr.Match(sample)
 		if err != nil {
 			t.Fatalf("Got an error %v when expecting a match for %q to %q", err, sample, expected)
 		}
