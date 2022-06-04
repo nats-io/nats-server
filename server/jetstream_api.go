@@ -304,6 +304,12 @@ type ApiResponse struct {
 	Error *ApiError `json:"error,omitempty"`
 }
 
+// When passing back to the clients generalize store failures.
+var (
+	errStreamStoreFailed   = errors.New("error creating store for stream")
+	errConsumerStoreFailed = errors.New("error creating store for consumer")
+)
+
 // ToError checks if the response has a error and if it does converts it to an error avoiding
 // the pitfalls described by https://yourbasic.org/golang/gotcha-why-nil-error-not-equal-nil/
 func (r *ApiResponse) ToError() error {
@@ -1260,6 +1266,10 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 
 	mset, err := acc.addStream(&cfg)
 	if err != nil {
+		if IsNatsErr(err, JSStreamStoreFailedF) {
+			s.Warnf("Stream create failed for '%s > %s': %v", acc, streamName, err)
+			err = errStreamStoreFailed
+		}
 		resp.Error = NewJSStreamCreateError(err, Unless(err))
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -3280,7 +3290,13 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 	}
 
 	o, err := stream.addConsumer(&req.Config)
+
 	if err != nil {
+		if IsNatsErr(err, JSConsumerStoreFailedErrF) {
+			cname := req.Config.Durable // Will be empty if ephemeral.
+			s.Warnf("Consumer create failed for '%s > %s > %s': %v", acc, req.Stream, cname, err)
+			err = errConsumerStoreFailed
+		}
 		resp.Error = NewJSConsumerCreateError(err, Unless(err))
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return

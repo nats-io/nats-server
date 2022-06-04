@@ -28,7 +28,7 @@ func parseOpts(opts []ErrorOption) *errOpts {
 
 type ErrorIdentifier uint16
 
-// IsNatsErr determines if a error matches ID, if multiple IDs are given if the error matches any of these the function will be true
+// IsNatsErr determines if an error matches ID, if multiple IDs are given if the error matches any of these the function will be true
 func IsNatsErr(err error, ids ...ErrorIdentifier) bool {
 	if err == nil {
 		return false

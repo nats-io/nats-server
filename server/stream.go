@@ -456,7 +456,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 
 	if err := mset.setupStore(fsCfg); err != nil {
 		mset.stop(true, false)
-		return nil, err
+		return nil, NewJSStreamStoreFailedError(err)
 	}
 
 	// Create our pubAck template here. Better than json marshal each time on success.
@@ -4063,8 +4063,8 @@ func (mset *stream) removeConsumer(o *consumer) {
 
 // lookupConsumer will retrieve a consumer by name.
 func (mset *stream) lookupConsumer(name string) *consumer {
-	mset.mu.Lock()
-	defer mset.mu.Unlock()
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
 	return mset.consumers[name]
 }
 
