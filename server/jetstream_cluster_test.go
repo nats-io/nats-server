@@ -10662,7 +10662,7 @@ func TestJetStreamClusterStreamRepublish(t *testing.T) {
 		Name:     "RP",
 		Storage:  MemoryStorage,
 		Subjects: []string{"foo", "bar", "baz"},
-		Replicas: 1,
+		Replicas: 3,
 		RePublish: &RePublish{
 			Source:      ">",
 			Destination: "RP.>",

@@ -3569,7 +3569,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			thdrsOnly = mset.cfg.RePublish.HeadersOnly
 		}
 	}
-	republish := tsubj != _EMPTY_
+	republish := tsubj != _EMPTY_ && isLeader
 
 	// We hold the lock to this point to make sure nothing gets between us since we check for pre-conditions.
 	// Currently can not hold while calling store b/c we have inline storage update calls that may need the lock.
