@@ -118,6 +118,12 @@ const (
 	JSApiMsgGet  = "$JS.API.STREAM.MSG.GET.*"
 	JSApiMsgGetT = "$JS.API.STREAM.MSG.GET.%s"
 
+	// JSDirectMsgGet is the template for non-api layer direct requests for a message by its stream sequence number or last by subject.
+	// Will return the message similar to how a consumer receives the message, no JSON processing.
+	// If the message can not be found we will use a status header of 404. If the stream does not exist the client will get a no-responders or timeout.
+	JSDirectMsgGet  = "$JS.DS.GET.*"
+	JSDirectMsgGetT = "$JS.DS.GET.%s"
+
 	// JSApiConsumerCreate is the endpoint to create ephemeral consumers for streams.
 	// Will return JSON response.
 	JSApiConsumerCreate  = "$JS.API.CONSUMER.CREATE.*"
