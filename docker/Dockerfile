@@ -1,4 +1,4 @@
-FROM golang:1.16.8-alpine3.14 AS builder
+FROM golang:1.18.3-alpine3.16 AS builder
 
 ENV NATS_SERVER 2.6.1
 
@@ -7,7 +7,7 @@ RUN apk add --update --no-cache build-base libc6-compat
 COPY ./ /nats-server
 RUN cd /nats-server && go build -a -v -ldflags "-w -X main.version=${NATS_SERVER}" -o /bin/nats-server
 
-FROM alpine:3.14
+FROM alpine:3.16
 
 RUN apk add --update --no-cache ca-certificates libc6-compat && mkdir /etc/nats/
 
