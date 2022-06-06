@@ -964,7 +964,8 @@ func (n *raft) InstallSnapshot(data []byte) error {
 
 	if err := ioutil.WriteFile(sfile, n.encodeSnapshot(snap), 0640); err != nil {
 		n.Unlock()
-		n.setWriteErr(err)
+		// We could set write err here, but if this is a temporary situation, too many open files etc.
+		// we want to retry and snapshots are not fatal.
 		return err
 	}
 
@@ -3244,7 +3245,7 @@ func (n *raft) readTermVote() (term uint64, voted string, err error) {
 // Lock should be held.
 func (n *raft) setWriteErrLocked(err error) {
 	// Ignore if already set.
-	if n.werr == err {
+	if n.werr == err || err == nil {
 		return
 	}
 	// Ignore non-write errors.

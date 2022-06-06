@@ -5348,11 +5348,16 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 		}
 	}
 
+	// Track if we are creating the directory so that we can clean up if we encounter an error.
+	var didCreate bool
+
 	// Write our meta data iff does not exist.
 	meta := filepath.Join(odir, JetStreamMetaFile)
 	if _, err := os.Stat(meta); err != nil && os.IsNotExist(err) {
+		didCreate = true
 		csi.Created = time.Now().UTC()
 		if err := o.writeConsumerMeta(); err != nil {
+			os.RemoveAll(odir)
 			return nil, err
 		}
 	}
@@ -5363,12 +5368,18 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 		keyFile := filepath.Join(odir, JetStreamMetaFileKey)
 		if _, err := os.Stat(keyFile); err != nil && os.IsNotExist(err) {
 			if err := o.writeConsumerMeta(); err != nil {
+				if didCreate {
+					os.RemoveAll(odir)
+				}
 				return nil, err
 			}
 			// Redo the state file as well here if we have one and we can tell it was plaintext.
 			if buf, err := ioutil.ReadFile(o.ifn); err == nil {
 				if _, err := decodeConsumerState(buf); err == nil {
 					if err := ioutil.WriteFile(o.ifn, o.encryptState(buf), defaultFilePerms); err != nil {
+						if didCreate {
+							os.RemoveAll(odir)
+						}
 						return nil, err
 					}
 				}

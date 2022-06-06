@@ -2753,7 +2753,10 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 
 	// This is an error condition.
 	if err != nil {
-		s.Warnf("Stream create failed for '%s > %s': %v", sa.Client.serviceAccount(), sa.Config.Name, err)
+		if IsNatsErr(err, JSStreamStoreFailedF) {
+			s.Warnf("Stream create failed for '%s > %s': %v", sa.Client.serviceAccount(), sa.Config.Name, err)
+			err = errStreamStoreFailed
+		}
 		js.mu.Lock()
 
 		sa.err = err
@@ -2943,7 +2946,10 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 		sa.Group.node.Delete()
 	}
 
-	if !isMember || !wasLeader && hadLeader {
+	// Normally we want only the leader to respond here, but if we had no leader then all members will respond to make
+	// sure we get feedback to the user.
+	if !isMember || (hadLeader && !wasLeader) {
+		// If all the peers are offline and we are the meta leader we will also respond, so suppress returning here.
 		if !(offline && isMetaLeader) {
 			return
 		}
@@ -3245,6 +3251,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 	if err != nil {
 		if IsNatsErr(err, JSConsumerStoreFailedErrF) {
 			s.Warnf("Consumer create failed for '%s > %s > %s': %v", ca.Client.serviceAccount(), ca.Stream, ca.Name, err)
+			err = errConsumerStoreFailed
 		}
 
 		js.mu.Lock()
@@ -4748,11 +4755,6 @@ func (s *Server) jsClusteredStreamDeleteRequest(ci *ClientInfo, acc *Account, st
 		resp.Error = NewJSStreamNotFoundError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
-	}
-	// Remove any remaining consumers as well.
-	for _, ca := range osa.consumers {
-		ca.Reply, ca.State = _EMPTY_, nil
-		cc.meta.Propose(encodeDeleteConsumerAssignment(ca))
 	}
 
 	sa := &streamAssignment{Group: osa.Group, Config: osa.Config, Subject: subject, Reply: reply, Client: ci}
