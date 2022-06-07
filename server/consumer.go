@@ -2556,7 +2556,7 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 			} else {
 				// If we have not delivered anything to the requestor let them know.
 				if wr.d == 0 {
-					hdr := []byte("NATS/1.0 408 Message Size Exceeds MaxBytes\r\n\r\n")
+					hdr := []byte("NATS/1.0 409 Message Size Exceeds MaxBytes\r\n\r\n")
 					o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 				}
 				// Remove the current one, no longer valid due to max bytes limit.
