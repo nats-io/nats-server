@@ -352,3 +352,58 @@ func TestRemovePassFromTrace(t *testing.T) {
 		})
 	}
 }
+
+func TestSetGlobalLogger(t *testing.T) {
+	server := &Server{}
+	defer server.SetLogger(nil, false, false)
+	dl := &DummyLogger{}
+	server.SetLogger(dl, true, true)
+	server.enableLogging()
+
+	// We assert that the logger has change to the DummyLogger
+	_ = logging.logger.(*DummyLogger)
+
+	if logging.debug != 1 {
+		t.Fatalf("Expected debug 1, received value %d\n", logging.debug)
+	}
+
+	if logging.trace != 1 {
+		t.Fatalf("Expected trace 1, received value %d\n", logging.trace)
+	}
+
+	// Check traces
+	expectedStr := "This is a Notice"
+	logging.Noticef(expectedStr)
+	dl.CheckContent(t, expectedStr)
+	expectedStr = "This is an Error"
+	logging.Errorf(expectedStr)
+	dl.CheckContent(t, expectedStr)
+	expectedStr = "This is a Fatal"
+	logging.Fatalf(expectedStr)
+	dl.CheckContent(t, expectedStr)
+	expectedStr = "This is a Debug"
+	logging.Debugf(expectedStr)
+	dl.CheckContent(t, expectedStr)
+	expectedStr = "This is a Trace"
+	logging.Tracef(expectedStr)
+	dl.CheckContent(t, expectedStr)
+	expectedStr = "This is a Warning"
+	logging.Tracef(expectedStr)
+	dl.CheckContent(t, expectedStr)
+
+	// Make sure that we can reset to fal
+	server.SetLogger(dl, false, false)
+	server.enableLogging()
+	if logging.debug != 0 {
+		t.Fatalf("Expected debug 0, got %v", logging.debug)
+	}
+	if logging.trace != 0 {
+		t.Fatalf("Expected trace 0, got %v", logging.trace)
+	}
+	// Now, Debug and Trace should not produce anything
+	dl.Msg = ""
+	logging.Debugf("This Debug should not be traced")
+	dl.CheckContent(t, "")
+	logging.Tracef("This Trace should not be traced")
+	dl.CheckContent(t, "")
+}
