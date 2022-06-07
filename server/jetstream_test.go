@@ -17429,7 +17429,7 @@ func TestJetStreamPullMaxBytes(t *testing.T) {
 	}
 
 	// If we ask for less MaxBytes then a single message make sure we get an error.
-	badReq := &nats.Header{"Status": []string{"408"}, "Description": []string{"Message Size Exceeds MaxBytes"}}
+	badReq := &nats.Header{"Status": []string{"409"}, "Description": []string{"Message Size Exceeds MaxBytes"}}
 
 	nc.PublishRequest(subj, reply, jreq)
 	m, err := sub.NextMsg(time.Second)
