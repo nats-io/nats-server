@@ -23,6 +23,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -485,14 +487,31 @@ func (s *Server) createMQTTClient(conn net.Conn, ws *websocket) *client {
 		}
 	}
 
+	var websocketSslLogWriter *os.File
 	if tlsRequired {
 		if len(pre) > 0 {
 			c.nc = &tlsMixConn{c.nc, bytes.NewBuffer(pre)}
 			pre = nil
 		}
 
+		if opts.TlsLogFolderPath !=""{
+			currentPath,err := getProjectDir()
+			if err!=nil{
+				s.Fatalf("failed to get project folder: %s",err)
+				return nil
+			}
+			sslLogFile := path.Join(currentPath, opts.TlsLogFolderPath,"mqtt.log")
+			websocketSslLogWriter,err =os.OpenFile(sslLogFile, os.O_RDWR|os.O_CREATE, 0755)
+			if err != nil {
+				s.Fatalf("failed to open file: %s",err)
+				return nil
+			}
+			opts.MQTT.TLSConfig.KeyLogWriter= websocketSslLogWriter
+		}
+
 		// Perform server-side TLS handshake.
 		if err := c.doTLSServerHandshake("mqtt", opts.MQTT.TLSConfig, opts.MQTT.TLSTimeout, opts.MQTT.TLSPinnedCerts); err != nil {
+			websocketSslLogWriter.Close()
 			c.mu.Unlock()
 			return nil
 		}
