@@ -20,8 +20,10 @@ import (
 	"math"
 	"net"
 	"net/url"
+	"path"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -333,4 +335,14 @@ func copyStrings(src []string) []string {
 	dst := make([]string, len(src))
 	copy(dst, src)
 	return dst
+}
+
+func getProjectDir() (dir string,err error){
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		return "",fmt.Errorf("failed to get current frame by runtime.Caller")
+		return
+	}
+	currentPath := path.Dir(filename)
+	return currentPath,nil
 }

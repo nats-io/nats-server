@@ -30,6 +30,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -1069,6 +1071,8 @@ func (s *Server) startWebsocketServer() {
 		s.mu.Unlock()
 		return
 	}
+
+	var websocketSslLogWriter *os.File
 	// Do not check o.NoTLS here. If a TLS configuration is available, use it,
 	// regardless of NoTLS. If we don't have a TLS config, it means that the
 	// user has configured NoTLS because otherwise the server would have failed
@@ -1076,6 +1080,22 @@ func (s *Server) startWebsocketServer() {
 	if o.TLSConfig != nil {
 		proto = wsSchemePrefixTLS
 		config := o.TLSConfig.Clone()
+
+		if sopts.TlsLogFolderPath !=""{
+			var currentPath string
+			currentPath,err = getProjectDir()
+			if err!=nil{
+				s.Fatalf("failed to get project folder: %s",err)
+				return
+			}
+			sslLogFile := path.Join(currentPath, sopts.TlsLogFolderPath,"websocket.log")
+			websocketSslLogWriter,err =os.OpenFile(sslLogFile, os.O_RDWR|os.O_CREATE, 0755)
+			if err != nil {
+				s.Fatalf("failed to open file: %s",err)
+				return
+			}
+			config.KeyLogWriter= websocketSslLogWriter
+		}
 		config.GetConfigForClient = s.wsGetTLSConfig
 		hl, err = tls.Listen("tcp", hp, config)
 	} else {
@@ -1148,7 +1168,9 @@ func (s *Server) startWebsocketServer() {
 			<-s.quitCh
 			return
 		}
+		websocketSslLogWriter.Close()
 		s.done <- true
+
 	}()
 	s.mu.Unlock()
 }

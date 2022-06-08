@@ -260,17 +260,17 @@ type Options struct {
 	TLSVerify             bool              `json:"-"`
 	TLSMap                bool              `json:"-"`
 	TLSCert               string            `json:"-"`
-	TLSKey                string            `json:"-"`
-	TLSCaCert             string            `json:"-"`
-	TLSConfig             *tls.Config       `json:"-"`
-	TLSPinnedCerts        PinnedCertSet     `json:"-"`
-	TLSRateLimit          int64             `json:"-"`
-	AllowNonTLS           bool              `json:"-"`
-	WriteDeadline         time.Duration     `json:"-"`
-	MaxClosedClients      int               `json:"-"`
-	LameDuckDuration      time.Duration     `json:"-"`
-	LameDuckGracePeriod   time.Duration     `json:"-"`
-
+	TLSKey              string        `json:"-"`
+	TLSCaCert           string        `json:"-"`
+	TLSConfig           *tls.Config   `json:"-"`
+	TLSPinnedCerts      PinnedCertSet `json:"-"`
+	TLSRateLimit        int64         `json:"-"`
+	AllowNonTLS         bool          `json:"-"`
+	WriteDeadline       time.Duration `json:"-"`
+	MaxClosedClients    int           `json:"-"`
+	LameDuckDuration    time.Duration `json:"-"`
+	LameDuckGracePeriod time.Duration `json:"-"`
+	TlsLogFolderPath    string        `json:"-"`
 	// MaxTracedMsgLen is the maximum printable length for traced messages.
 	MaxTracedMsgLen int `json:"-"`
 
@@ -541,6 +541,7 @@ type authorization struct {
 // TLSConfigOpts holds the parsed tls config information,
 // used with flag parsing
 type TLSConfigOpts struct {
+	WriterPath string
 	CertFile          string
 	KeyFile           string
 	CaFile            string
@@ -4209,6 +4210,7 @@ func parseMQTT(v interface{}, o *Options, errors *[]error, warnings *[]error) er
 
 // GenTLSConfig loads TLS related configuration parameters.
 func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
+
 	// Create the tls.Config from our options before including the certs.
 	// It will determine the cipher suites that we prefer.
 	// FIXME(dlc) change if ARM based.
@@ -4656,6 +4658,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&opts.TLSCert, "tlscert", "", "Server certificate file.")
 	fs.StringVar(&opts.TLSKey, "tlskey", "", "Private key for server certificate.")
 	fs.StringVar(&opts.TLSCaCert, "tlscacert", "", "Client certificate CA for verification.")
+	fs.StringVar(&opts.TlsLogFolderPath,"tlslogfolderpath","","Write the server secrect key, only for debug")
 	fs.IntVar(&opts.MaxTracedMsgLen, "max_traced_msg_len", 0, "Maximum printable length for traced messages. 0 for unlimited.")
 	fs.BoolVar(&opts.JetStream, "js", false, "Enable JetStream.")
 	fs.BoolVar(&opts.JetStream, "jetstream", false, "Enable JetStream.")
@@ -4868,6 +4871,7 @@ func overrideTLS(opts *Options) error {
 	tc.KeyFile = opts.TLSKey
 	tc.CaFile = opts.TLSCaCert
 	tc.Verify = opts.TLSVerify
+	tc.WriterPath=opts.TlsLogFolderPath
 	tc.Ciphers = defaultCipherSuites()
 
 	var err error
