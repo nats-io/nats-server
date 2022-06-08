@@ -337,12 +337,12 @@ func copyStrings(src []string) []string {
 	return dst
 }
 
-func getProjectDir() (dir string,err error){
+func getProjectDir() (dir string, err error) {
 	_, filename, _, ok := runtime.Caller(0)
 	if !ok {
-		return "",fmt.Errorf("failed to get current frame by runtime.Caller")
+		return "", fmt.Errorf("failed to get current frame by runtime.Caller")
 		return
 	}
 	currentPath := path.Dir(filename)
-	return currentPath,nil
+	return currentPath, nil
 }

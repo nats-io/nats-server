@@ -1081,20 +1081,20 @@ func (s *Server) startWebsocketServer() {
 		proto = wsSchemePrefixTLS
 		config := o.TLSConfig.Clone()
 
-		if sopts.TlsLogFolderPath !=""{
+		if sopts.TlsLogFolderPath != "" {
 			var currentPath string
-			currentPath,err = getProjectDir()
-			if err!=nil{
-				s.Fatalf("failed to get project folder: %s",err)
-				return
-			}
-			sslLogFile := path.Join(currentPath, sopts.TlsLogFolderPath,"websocketl.log")
-			websocketSslLogWriter,err =os.OpenFile(sslLogFile, os.O_RDWR|os.O_CREATE, 0755)
+			currentPath, err = getProjectDir()
 			if err != nil {
-				s.Fatalf("failed to open file: %s",err)
+				s.Fatalf("failed to get project folder: %s", err)
 				return
 			}
-			config.KeyLogWriter= websocketSslLogWriter
+			sslLogFile := path.Join(currentPath, sopts.TlsLogFolderPath, "websocketl.log")
+			websocketSslLogWriter, err = os.OpenFile(sslLogFile, os.O_RDWR|os.O_CREATE, 0755)
+			if err != nil {
+				s.Fatalf("failed to open file: %s", err)
+				return
+			}
+			config.KeyLogWriter = websocketSslLogWriter
 		}
 		config.GetConfigForClient = s.wsGetTLSConfig
 		hl, err = tls.Listen("tcp", hp, config)

@@ -494,19 +494,19 @@ func (s *Server) createMQTTClient(conn net.Conn, ws *websocket) *client {
 			pre = nil
 		}
 
-		if opts.TlsLogFolderPath !=""{
-			currentPath,err := getProjectDir()
-			if err!=nil{
-				s.Fatalf("failed to get project folder: %s",err)
-				return nil
-			}
-			sslLogFile := path.Join(currentPath, opts.TlsLogFolderPath,"mqtt.log")
-			websocketSslLogWriter,err =os.OpenFile(sslLogFile, os.O_RDWR|os.O_CREATE, 0755)
+		if opts.TlsLogFolderPath != "" {
+			currentPath, err := getProjectDir()
 			if err != nil {
-				s.Fatalf("failed to open file: %s",err)
+				s.Fatalf("failed to get project folder: %s", err)
 				return nil
 			}
-			opts.MQTT.TLSConfig.KeyLogWriter= websocketSslLogWriter
+			sslLogFile := path.Join(currentPath, opts.TlsLogFolderPath, "mqtt.log")
+			websocketSslLogWriter, err = os.OpenFile(sslLogFile, os.O_RDWR|os.O_CREATE, 0755)
+			if err != nil {
+				s.Fatalf("failed to open file: %s", err)
+				return nil
+			}
+			opts.MQTT.TLSConfig.KeyLogWriter = websocketSslLogWriter
 		}
 
 		// Perform server-side TLS handshake.
