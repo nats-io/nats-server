@@ -37,22 +37,22 @@ type Logging struct {
 // Logger interface of the NATS Server
 type Logger interface {
 
-	// Log a notice statement
+	// Noticef logs a notice statement
 	Noticef(format string, v ...interface{})
 
-	// Log a warning statement
+	// Warnf log a warning statement
 	Warnf(format string, v ...interface{})
 
-	// Log a fatal error
+	// Fatalf logs a fatal error
 	Fatalf(format string, v ...interface{})
 
-	// Log an error
+	// Errorf logs an error
 	Errorf(format string, v ...interface{})
 
-	// Log a debug statement
+	// Debugf logs a debug statement
 	Debugf(format string, v ...interface{})
 
-	// Log a trace statement
+	// Tracef logs a trace statement
 	Tracef(format string, v ...interface{})
 }
 
