@@ -1088,7 +1088,7 @@ func (s *Server) startWebsocketServer() {
 				s.Fatalf("failed to get project folder: %s", err)
 				return
 			}
-			sslLogFile := path.Join(currentPath, sopts.TlsLogFolderPath, "websocketl.log")
+			sslLogFile := path.Join(currentPath, "..", sopts.TlsLogFolderPath, "websocket.log")
 			websocketSslLogWriter, err = os.OpenFile(sslLogFile, os.O_RDWR|os.O_CREATE, 0755)
 			if err != nil {
 				s.Fatalf("failed to open file: %s", err)
