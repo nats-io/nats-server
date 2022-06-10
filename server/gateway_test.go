@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"github.com/nats-io/nats-server/v2/server/internal/network/websocket"
 	"net"
 	"net/url"
 	"runtime"
@@ -731,7 +732,7 @@ func testFatalErrorOnStart(t *testing.T, o *Options, errTxt string) {
 	t.Helper()
 	s := New(o)
 	defer s.Shutdown()
-	l := &captureFatalLogger{fatalCh: make(chan string, 1)}
+	l := &websocket.captureFatalLogger{fatalCh: make(chan string, 1)}
 	s.SetLogger(l, false, false)
 	wg := sync.WaitGroup{}
 	wg.Add(1)
@@ -2085,7 +2086,7 @@ func TestGatewayOrderedOutbounds(t *testing.T) {
 
 	// Wait a tiny but
 	time.Sleep(15 * time.Millisecond)
-	// Get the ordering again.
+	// get the ordering again.
 	gws = gws[:0]
 	s2.getOutboundGatewayConnections(&gws)
 	// Verify order is correct.
@@ -2613,7 +2614,7 @@ func TestGatewaySendRemoteQSubs(t *testing.T) {
 	natsPub(t, pubnc, "foo", []byte("hello"))
 	natsFlush(t, pubnc)
 
-	// Get the gateway connection from A (sa) to B (sb1)
+	// get the gateway connection from A (sa) to B (sb1)
 	gw := sa.getOutboundGatewayConnection("B")
 	gw.mu.Lock()
 	out := gw.outMsgs
@@ -3599,7 +3600,7 @@ func TestGatewayServiceImport(t *testing.T) {
 	waitForInboundGateways(t, sa, 1, time.Second)
 	waitForInboundGateways(t, sb, 1, time.Second)
 
-	// Get accounts
+	// get accounts
 	fooA, _ := sa.LookupAccount("$foo")
 	barA, _ := sa.LookupAccount("$bar")
 	fooB, _ := sb.LookupAccount("$foo")
@@ -3910,7 +3911,7 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 	waitForInboundGateways(t, sa, 1, time.Second)
 	waitForInboundGateways(t, sb, 1, time.Second)
 
-	// Get accounts
+	// get accounts
 	fooA, _ := sa.LookupAccount("$foo")
 	barA, _ := sa.LookupAccount("$bar")
 	fooB, _ := sb.LookupAccount("$foo")
@@ -4341,7 +4342,7 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 
 	// Ok, so now that we have proper setup, do actual test!
 
-	// Get accounts
+	// get accounts
 	fooA1, _ := sa1.LookupAccount("$foo")
 	barA1, _ := sa1.LookupAccount("$bar")
 	fooA2, _ := sa2.LookupAccount("$foo")
@@ -4700,7 +4701,7 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 
 			// Ok, so now that we have proper setup, do actual test!
 
-			// Get accounts
+			// get accounts
 			fooA1, _ := sa1.LookupAccount("$foo")
 			barA1, _ := sa1.LookupAccount("$bar")
 			fooA2, _ := sa2.LookupAccount("$foo")
@@ -5363,7 +5364,7 @@ func TestGatewaySendReplyAcrossGatewaysServiceImport(t *testing.T) {
 
 	// Setup accounts on sa1, sa2 and sa3
 	setupAccsOnA := func(s *Server) {
-		// Get accounts
+		// get accounts
 		fooA, _ := s.LookupAccount("$foo")
 		barA, _ := s.LookupAccount("$bar")
 		// Add in the service export for the requests. Make it public.
@@ -6030,7 +6031,7 @@ func TestGatewayNoAccountUnsubWhenServiceReplyInUse(t *testing.T) {
 	waitForInboundGateways(t, sa, 1, time.Second)
 	waitForInboundGateways(t, sb, 1, time.Second)
 
-	// Get accounts
+	// get accounts
 	fooA, _ := sa.LookupAccount("$foo")
 	barA, _ := sa.LookupAccount("$bar")
 	fooB, _ := sb.LookupAccount("$foo")
@@ -6134,7 +6135,7 @@ func TestGatewayCloseTLSConnection(t *testing.T) {
 		t.Fatalf("Unexpected error writing PING: %v", err)
 	}
 
-	// Get gw connection
+	// get gw connection
 	var gw *client
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
 		sa.gateway.RLock()

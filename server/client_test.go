@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/nats-io/nats-server/v2/server/internal/network/websocket"
 	"io"
 	"math"
 	"net"
@@ -2060,7 +2061,7 @@ func TestNoClientLeakOnSlowConsumer(t *testing.T) {
 		t.Fatalf("Expected 'PONG' but got %q", line)
 	}
 
-	// Get the client from server map
+	// get the client from server map
 	cli := s.GetClient(info.CID)
 	if cli == nil {
 		t.Fatalf("No client registered")
@@ -2344,7 +2345,7 @@ func TestCloseConnectionVeryEarly(t *testing.T) {
 			// and closing it right away won't help reproduce the problem.
 			// So testing in 2 steps.
 
-			// Get a normal TCP connection to the server.
+			// get a normal TCP connection to the server.
 			c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", o.Port))
 			if err != nil {
 				t.Fatalf("Unable to create tcp connection")
@@ -2407,7 +2408,7 @@ func TestClientConnectionName(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			c := &client{srv: s, nc: &connString{}, kind: test.kind}
 			if test.ws {
-				c.ws = &websocket{}
+				c.ws = &websocket.websocket{}
 			}
 			if test.mqtt {
 				c.mqtt = &mqtt{}

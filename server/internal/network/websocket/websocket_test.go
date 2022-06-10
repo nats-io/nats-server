@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package server
+package websocket
 
 import (
 	"bufio"
@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/nats-io/nats-server/v2/server"
 	"io"
 	"io/ioutil"
 	"math/rand"
@@ -93,7 +94,7 @@ func TestWSGet(t *testing.T) {
 			if test.reterr {
 				tr.err = fmt.Errorf("on purpose")
 			}
-			res, np, err := wsGet(tr, rb, test.pos, test.needed)
+			res, np, err := get(tr, rb, test.pos, test.needed)
 			if test.reterr {
 				if err == nil {
 					t.Fatalf("Expected error, got none")
@@ -132,7 +133,7 @@ func TestWSIsControlFrame(t *testing.T) {
 		{"close", wsCloseMessage, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if res := wsIsControlFrame(test.code); res != test.isControl {
+			if res := isControlFrame(test.code); res != test.isControl {
 				t.Fatalf("Expected %q isControl to be %v, got %v", test.name, test.isControl, res)
 			}
 		})
@@ -160,7 +161,7 @@ func TestWSUnmask(t *testing.T) {
 		return buf
 	}
 
-	ri := &wsReadInfo{mask: true}
+	ri := &readInfo{mask: true}
 	ri.init()
 	copy(ri.mkey[:], key)
 
@@ -197,7 +198,7 @@ func TestWSCreateCloseMessage(t *testing.T) {
 			for i := 0; i < len(payload); i++ {
 				payload[i] = byte('A' + (i % 26))
 			}
-			res := wsCreateCloseMessage(test.status, string(payload))
+			res := createCloseMessage(test.status, string(payload))
 			if status := binary.BigEndian.Uint16(res[:2]); int(status) != test.status {
 				t.Fatalf("Expected status to be %v, got %v", test.status, status)
 			}
@@ -238,8 +239,8 @@ func TestWSCreateFrameHeader(t *testing.T) {
 		{"compressed 100000", wsTextMessage, true, 100000},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			res, _ := wsCreateFrameHeader(false, test.compressed, test.frameType, test.len)
-			// The server is always sending the message has a single frame,
+			res, _ := createFrameHeader(false, test.compressed, test.frameType, test.len)
+			// The Server is always sending the message has a single frame,
 			// so the "final" bit should be set.
 			expected := byte(test.frameType) | wsFinalBit
 			if test.compressed {
@@ -327,14 +328,14 @@ func testWSCreateClientMsg(frameType wsOpCode, frameNum int, final, compressed b
 	return frame[:pos]
 }
 
-func testWSSetupForRead() (*client, *wsReadInfo, *testReader) {
-	ri := &wsReadInfo{mask: true}
+func testWSSetupForRead() (*server.client, *readInfo, *testReader) {
+	ri := &readInfo{mask: true}
 	ri.init()
 	tr := &testReader{}
-	opts := DefaultOptions()
-	opts.MaxPending = MAX_PENDING_SIZE
-	s := &Server{opts: opts}
-	c := &client{srv: s, ws: &websocket{}}
+	opts := server.DefaultOptions()
+	opts.MaxPending = server.MAX_PENDING_SIZE
+	s := &server.Server{opts: opts}
+	c := &server.client{srv: s, ws: &websocket{}}
 	c.initClient()
 	return c, ri, tr
 }
@@ -992,31 +993,31 @@ func TestWSReadErrors(t *testing.T) {
 
 func TestWSEnqueueCloseMsg(t *testing.T) {
 	for _, test := range []struct {
-		reason ClosedState
+		reason server.ClosedState
 		status int
 	}{
-		{ClientClosed, wsCloseStatusNormalClosure},
-		{AuthenticationTimeout, wsCloseStatusPolicyViolation},
-		{AuthenticationViolation, wsCloseStatusPolicyViolation},
-		{SlowConsumerPendingBytes, wsCloseStatusPolicyViolation},
-		{SlowConsumerWriteDeadline, wsCloseStatusPolicyViolation},
-		{MaxAccountConnectionsExceeded, wsCloseStatusPolicyViolation},
-		{MaxConnectionsExceeded, wsCloseStatusPolicyViolation},
-		{MaxControlLineExceeded, wsCloseStatusPolicyViolation},
-		{MaxSubscriptionsExceeded, wsCloseStatusPolicyViolation},
-		{MissingAccount, wsCloseStatusPolicyViolation},
-		{AuthenticationExpired, wsCloseStatusPolicyViolation},
-		{Revocation, wsCloseStatusPolicyViolation},
-		{TLSHandshakeError, wsCloseStatusTLSHandshake},
-		{ParseError, wsCloseStatusProtocolError},
-		{ProtocolViolation, wsCloseStatusProtocolError},
-		{BadClientProtocolVersion, wsCloseStatusProtocolError},
-		{MaxPayloadExceeded, wsCloseStatusMessageTooBig},
-		{ServerShutdown, wsCloseStatusGoingAway},
-		{WriteError, wsCloseStatusAbnormalClosure},
-		{ReadError, wsCloseStatusAbnormalClosure},
-		{StaleConnection, wsCloseStatusAbnormalClosure},
-		{ClosedState(254), wsCloseStatusInternalSrvError},
+		{server.ClientClosed, wsCloseStatusNormalClosure},
+		{server.AuthenticationTimeout, wsCloseStatusPolicyViolation},
+		{server.AuthenticationViolation, wsCloseStatusPolicyViolation},
+		{server.SlowConsumerPendingBytes, wsCloseStatusPolicyViolation},
+		{server.SlowConsumerWriteDeadline, wsCloseStatusPolicyViolation},
+		{server.MaxAccountConnectionsExceeded, wsCloseStatusPolicyViolation},
+		{server.MaxConnectionsExceeded, wsCloseStatusPolicyViolation},
+		{server.MaxControlLineExceeded, wsCloseStatusPolicyViolation},
+		{server.MaxSubscriptionsExceeded, wsCloseStatusPolicyViolation},
+		{server.MissingAccount, wsCloseStatusPolicyViolation},
+		{server.AuthenticationExpired, wsCloseStatusPolicyViolation},
+		{server.Revocation, wsCloseStatusPolicyViolation},
+		{server.TLSHandshakeError, wsCloseStatusTLSHandshake},
+		{server.ParseError, wsCloseStatusProtocolError},
+		{server.ProtocolViolation, wsCloseStatusProtocolError},
+		{server.BadClientProtocolVersion, wsCloseStatusProtocolError},
+		{server.MaxPayloadExceeded, wsCloseStatusMessageTooBig},
+		{server.ServerShutdown, wsCloseStatusGoingAway},
+		{server.WriteError, wsCloseStatusAbnormalClosure},
+		{server.ReadError, wsCloseStatusAbnormalClosure},
+		{server.StaleConnection, wsCloseStatusAbnormalClosure},
+		{server.ClosedState(254), wsCloseStatusInternalSrvError},
 	} {
 		t.Run(test.reason.String(), func(t *testing.T) {
 			c, _, _ := testWSSetupForRead()
@@ -1107,18 +1108,18 @@ func (trw *testResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return trw.conn, trw.brw, trw.err
 }
 
-func testWSOptions() *Options {
-	opts := DefaultOptions()
+func testWSOptions() *server.Options {
+	opts := server.DefaultOptions()
 	opts.DisableShortFirstPing = true
 	opts.Websocket.Host = "127.0.0.1"
 	opts.Websocket.Port = -1
 	opts.NoSystemAccount = true
 	var err error
-	tc := &TLSConfigOpts{
-		CertFile: "./configs/certs/server.pem",
+	tc := &server.TLSConfigOpts{
+		CertFile: "./configs/certs/Server.pem",
 		KeyFile:  "./configs/certs/key.pem",
 	}
-	opts.Websocket.TLSConfig, err = GenTLSConfig(tc)
+	opts.Websocket.TLSConfig, err = server.GenTLSConfig(tc)
 	if err != nil {
 		panic(err)
 	}
@@ -1171,10 +1172,10 @@ func TestWSCheckOrigin(t *testing.T) {
 		{"list bad scheme", notSameOrigin, someList, "", false, "https://host2.com:1234", "not in the allowed list"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			opts := DefaultOptions()
+			opts := server.DefaultOptions()
 			opts.Websocket.SameOrigin = test.sameOrigin
 			opts.Websocket.AllowedOrigins = test.origins
-			s := &Server{opts: opts}
+			s := &server.Server{opts: opts}
 			s.wsSetOriginOptions(&opts.Websocket)
 
 			req := testWSCreateValidReq()
@@ -1198,13 +1199,13 @@ func TestWSCheckOrigin(t *testing.T) {
 func TestWSUpgradeValidationErrors(t *testing.T) {
 	for _, test := range []struct {
 		name   string
-		setup  func() (*Options, *testResponseWriter, *http.Request)
+		setup  func() (*server.Options, *testResponseWriter, *http.Request)
 		err    string
 		status int
 	}{
 		{
 			"bad method",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			func() (*server.Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				req := testWSCreateValidReq()
 				req.Method = "POST"
@@ -1215,7 +1216,7 @@ func TestWSUpgradeValidationErrors(t *testing.T) {
 		},
 		{
 			"no host",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			func() (*server.Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				req := testWSCreateValidReq()
 				req.Host = ""
@@ -1226,7 +1227,7 @@ func TestWSUpgradeValidationErrors(t *testing.T) {
 		},
 		{
 			"invalid upgrade header",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			func() (*server.Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				req := testWSCreateValidReq()
 				req.Header.Del("Upgrade")
@@ -1237,7 +1238,7 @@ func TestWSUpgradeValidationErrors(t *testing.T) {
 		},
 		{
 			"invalid connection header",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			func() (*server.Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				req := testWSCreateValidReq()
 				req.Header.Del("Connection")
@@ -1248,7 +1249,7 @@ func TestWSUpgradeValidationErrors(t *testing.T) {
 		},
 		{
 			"no key",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			func() (*server.Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				req := testWSCreateValidReq()
 				req.Header.Del("Sec-Websocket-Key")
@@ -1259,7 +1260,7 @@ func TestWSUpgradeValidationErrors(t *testing.T) {
 		},
 		{
 			"empty key",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			func() (*server.Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				req := testWSCreateValidReq()
 				req.Header.Set("Sec-Websocket-Key", "")
@@ -1270,7 +1271,7 @@ func TestWSUpgradeValidationErrors(t *testing.T) {
 		},
 		{
 			"missing version",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			func() (*server.Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				req := testWSCreateValidReq()
 				req.Header.Del("Sec-Websocket-Version")
@@ -1281,7 +1282,7 @@ func TestWSUpgradeValidationErrors(t *testing.T) {
 		},
 		{
 			"wrong version",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			func() (*server.Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				req := testWSCreateValidReq()
 				req.Header.Set("Sec-Websocket-Version", "99")
@@ -1292,7 +1293,7 @@ func TestWSUpgradeValidationErrors(t *testing.T) {
 		},
 		{
 			"origin",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			func() (*server.Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				opts.Websocket.SameOrigin = true
 				req := testWSCreateValidReq()
@@ -1304,7 +1305,7 @@ func TestWSUpgradeValidationErrors(t *testing.T) {
 		},
 		{
 			"hijack error",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			func() (*server.Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				rw := &testResponseWriter{err: fmt.Errorf("on purpose")}
 				req := testWSCreateValidReq()
@@ -1315,7 +1316,7 @@ func TestWSUpgradeValidationErrors(t *testing.T) {
 		},
 		{
 			"hijack buffered data",
-			func() (*Options, *testResponseWriter, *http.Request) {
+			func() (*server.Options, *testResponseWriter, *http.Request) {
 				opts := testWSOptions()
 				buf := &bytes.Buffer{}
 				buf.WriteString("some data")
@@ -1337,7 +1338,7 @@ func TestWSUpgradeValidationErrors(t *testing.T) {
 			if rw == nil {
 				rw = &testResponseWriter{}
 			}
-			s := &Server{opts: opts}
+			s := &server.Server{opts: opts}
 			s.wsSetOriginOptions(&opts.Websocket)
 			res, err := s.wsUpgrade(rw, req)
 			if err == nil || !strings.Contains(err.Error(), test.err) {
@@ -1360,7 +1361,7 @@ func TestWSUpgradeValidationErrors(t *testing.T) {
 
 func TestWSUpgradeResponseWriteError(t *testing.T) {
 	opts := testWSOptions()
-	s := &Server{opts: opts}
+	s := &server.Server{opts: opts}
 	expectedErr := errors.New("on purpose")
 	rw := &testResponseWriter{
 		conn: &testWSFakeNetConn{err: expectedErr},
@@ -1381,7 +1382,7 @@ func TestWSUpgradeResponseWriteError(t *testing.T) {
 func TestWSUpgradeConnDeadline(t *testing.T) {
 	opts := testWSOptions()
 	opts.Websocket.HandshakeTimeout = time.Second
-	s := &Server{opts: opts}
+	s := &server.Server{opts: opts}
 	rw := &testResponseWriter{}
 	req := testWSCreateValidReq()
 	res, err := s.wsUpgrade(rw, req)
@@ -1397,9 +1398,9 @@ func TestWSUpgradeConnDeadline(t *testing.T) {
 }
 
 func TestWSCompressNegotiation(t *testing.T) {
-	// No compression on the server, but client asks
+	// No compression on the Server, but client asks
 	opts := testWSOptions()
-	s := &Server{opts: opts}
+	s := &server.Server{opts: opts}
 	rw := &testResponseWriter{}
 	req := testWSCreateValidReq()
 	req.Header.Set("Sec-Websocket-Extensions", "permessage-deflate")
@@ -1410,10 +1411,10 @@ func TestWSCompressNegotiation(t *testing.T) {
 	// The http response should not contain "permessage-deflate"
 	output := rw.conn.wbuf.String()
 	if strings.Contains(output, "permessage-deflate") {
-		t.Fatalf("Compression disabled in server so response to client should not contain extension, got %s", output)
+		t.Fatalf("Compression disabled in Server so response to client should not contain extension, got %s", output)
 	}
 
-	// Option in the server and client, so compression should be negotiated.
+	// Option in the Server and client, so compression should be negotiated.
 	s.opts.Websocket.Compression = true
 	rw = &testResponseWriter{}
 	res, err = s.wsUpgrade(rw, req)
@@ -1423,10 +1424,10 @@ func TestWSCompressNegotiation(t *testing.T) {
 	// The http response should not contain "permessage-deflate"
 	output = rw.conn.wbuf.String()
 	if !strings.Contains(output, "permessage-deflate") {
-		t.Fatalf("Compression in server and client request, so response should contain extension, got %s", output)
+		t.Fatalf("Compression in Server and client request, so response should contain extension, got %s", output)
 	}
 
-	// Option in server but not asked by the client, so response should not contain "permessage-deflate"
+	// Option in Server but not asked by the client, so response should not contain "permessage-deflate"
 	rw = &testResponseWriter{}
 	req.Header.Del("Sec-Websocket-Extensions")
 	res, err = s.wsUpgrade(rw, req)
@@ -1436,7 +1437,7 @@ func TestWSCompressNegotiation(t *testing.T) {
 	// The http response should not contain "permessage-deflate"
 	output = rw.conn.wbuf.String()
 	if strings.Contains(output, "permessage-deflate") {
-		t.Fatalf("Compression in server but not in client, so response to client should not contain extension, got %s", output)
+		t.Fatalf("Compression in Server but not in client, so response to client should not contain extension, got %s", output)
 	}
 }
 
@@ -1444,7 +1445,7 @@ func TestWSParseOptions(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		content  string
-		checkOpt func(*WebsocketOpts) error
+		checkOpt func(*server.WebsocketOpts) error
 		err      string
 	}{
 		// Negative tests
@@ -1453,7 +1454,7 @@ func TestWSParseOptions(t *testing.T) {
 		{"bad port", `websocket: { port: "abc" }`, nil, "not int64"},
 		{"bad host", `websocket: { host: 123 }`, nil, "not string"},
 		{"bad advertise type", `websocket: { advertise: 123 }`, nil, "not string"},
-		{"bad tls", `websocket: { tls: 123 }`, nil, "not map[string]interface {}"},
+		{"bad Tls", `websocket: { Tls: 123 }`, nil, "not map[string]interface {}"},
 		{"bad same origin", `websocket: { same_origin: "abc" }`, nil, "not bool"},
 		{"bad allowed origins type", `websocket: { allowed_origins: {} }`, nil, "unsupported type"},
 		{"bad allowed origins values", `websocket: { allowed_origins: [ {} ] }`, nil, "unsupported type in array"},
@@ -1461,43 +1462,43 @@ func TestWSParseOptions(t *testing.T) {
 		{"bad handshake timeout duration", `websocket: { handshake_timeout: "abc" }`, nil, "invalid duration"},
 		{"unknown field", `websocket: { this_does_not_exist: 123 }`, nil, "unknown"},
 		// Positive tests
-		{"listen port only", `websocket { listen: 1234 }`, func(wo *WebsocketOpts) error {
+		{"listen port only", `websocket { listen: 1234 }`, func(wo *server.WebsocketOpts) error {
 			if wo.Port != 1234 {
 				return fmt.Errorf("expected 1234, got %v", wo.Port)
 			}
 			return nil
 		}, ""},
-		{"listen host and port", `websocket { listen: "localhost:1234" }`, func(wo *WebsocketOpts) error {
+		{"listen host and port", `websocket { listen: "localhost:1234" }`, func(wo *server.WebsocketOpts) error {
 			if wo.Host != "localhost" || wo.Port != 1234 {
 				return fmt.Errorf("expected localhost:1234, got %v:%v", wo.Host, wo.Port)
 			}
 			return nil
 		}, ""},
-		{"host", `websocket { host: "localhost" }`, func(wo *WebsocketOpts) error {
+		{"host", `websocket { host: "localhost" }`, func(wo *server.WebsocketOpts) error {
 			if wo.Host != "localhost" {
 				return fmt.Errorf("expected localhost, got %v", wo.Host)
 			}
 			return nil
 		}, ""},
-		{"port", `websocket { port: 1234 }`, func(wo *WebsocketOpts) error {
+		{"port", `websocket { port: 1234 }`, func(wo *server.WebsocketOpts) error {
 			if wo.Port != 1234 {
 				return fmt.Errorf("expected 1234, got %v", wo.Port)
 			}
 			return nil
 		}, ""},
-		{"advertise", `websocket { advertise: "host:1234" }`, func(wo *WebsocketOpts) error {
+		{"advertise", `websocket { advertise: "host:1234" }`, func(wo *server.WebsocketOpts) error {
 			if wo.Advertise != "host:1234" {
 				return fmt.Errorf("expected %q, got %q", "host:1234", wo.Advertise)
 			}
 			return nil
 		}, ""},
-		{"same origin", `websocket { same_origin: true }`, func(wo *WebsocketOpts) error {
+		{"same origin", `websocket { same_origin: true }`, func(wo *server.WebsocketOpts) error {
 			if !wo.SameOrigin {
 				return fmt.Errorf("expected same_origin==true, got %v", wo.SameOrigin)
 			}
 			return nil
 		}, ""},
-		{"allowed origins one only", `websocket { allowed_origins: "https://host.com/" }`, func(wo *WebsocketOpts) error {
+		{"allowed origins one only", `websocket { allowed_origins: "https://host.com/" }`, func(wo *server.WebsocketOpts) error {
 			expected := []string{"https://host.com/"}
 			if !reflect.DeepEqual(wo.AllowedOrigins, expected) {
 				return fmt.Errorf("expected allowed origins to be %q, got %q", expected, wo.AllowedOrigins)
@@ -1512,34 +1513,34 @@ func TestWSParseOptions(t *testing.T) {
 					"https://host2.com/"
 				]
 			}
-			`, func(wo *WebsocketOpts) error {
+			`, func(wo *server.WebsocketOpts) error {
 				expected := []string{"https://host1.com/", "https://host2.com/"}
 				if !reflect.DeepEqual(wo.AllowedOrigins, expected) {
 					return fmt.Errorf("expected allowed origins to be %q, got %q", expected, wo.AllowedOrigins)
 				}
 				return nil
 			}, ""},
-		{"handshake timeout in whole seconds", `websocket { handshake_timeout: 3 }`, func(wo *WebsocketOpts) error {
+		{"handshake timeout in whole seconds", `websocket { handshake_timeout: 3 }`, func(wo *server.WebsocketOpts) error {
 			if wo.HandshakeTimeout != 3*time.Second {
 				return fmt.Errorf("expected handshake to be 3s, got %v", wo.HandshakeTimeout)
 			}
 			return nil
 		}, ""},
-		{"handshake timeout n duration", `websocket { handshake_timeout: "4s" }`, func(wo *WebsocketOpts) error {
+		{"handshake timeout n duration", `websocket { handshake_timeout: "4s" }`, func(wo *server.WebsocketOpts) error {
 			if wo.HandshakeTimeout != 4*time.Second {
 				return fmt.Errorf("expected handshake to be 4s, got %v", wo.HandshakeTimeout)
 			}
 			return nil
 		}, ""},
-		{"tls config",
+		{"Tls config",
 			`
 			websocket {
-				tls {
-					cert_file: "./configs/certs/server.pem"
+				Tls {
+					cert_file: "./configs/certs/Server.pem"
 					key_file: "./configs/certs/key.pem"
 				}
 			}
-			`, func(wo *WebsocketOpts) error {
+			`, func(wo *server.WebsocketOpts) error {
 				if wo.TLSConfig == nil {
 					return fmt.Errorf("TLSConfig should have been set")
 				}
@@ -1550,7 +1551,7 @@ func TestWSParseOptions(t *testing.T) {
 			websocket {
 				compression: true
 			}
-			`, func(wo *WebsocketOpts) error {
+			`, func(wo *server.WebsocketOpts) error {
 				if !wo.Compression {
 					return fmt.Errorf("Compression should have been set")
 				}
@@ -1561,7 +1562,7 @@ func TestWSParseOptions(t *testing.T) {
 			websocket {
 				jwt_cookie: "jwtcookie"
 			}
-			`, func(wo *WebsocketOpts) error {
+			`, func(wo *server.WebsocketOpts) error {
 				if wo.JWTCookie != "jwtcookie" {
 					return fmt.Errorf("Invalid JWTCookie value: %q", wo.JWTCookie)
 				}
@@ -1572,7 +1573,7 @@ func TestWSParseOptions(t *testing.T) {
 			websocket {
 				no_auth_user: "noauthuser"
 			}
-			`, func(wo *WebsocketOpts) error {
+			`, func(wo *server.WebsocketOpts) error {
 				if wo.NoAuthUser != "noauthuser" {
 					return fmt.Errorf("Invalid NoAuthUser value: %q", wo.NoAuthUser)
 				}
@@ -1588,7 +1589,7 @@ func TestWSParseOptions(t *testing.T) {
 					timeout: 2.0
 				}
 			}
-			`, func(wo *WebsocketOpts) error {
+			`, func(wo *server.WebsocketOpts) error {
 				if wo.Username != "webuser" || wo.Password != "pwd" || wo.Token != "token" || wo.AuthTimeout != 2.0 {
 					return fmt.Errorf("Invalid auth block: %+v", wo)
 				}
@@ -1601,7 +1602,7 @@ func TestWSParseOptions(t *testing.T) {
 					timeout: 2
 				}
 			}
-			`, func(wo *WebsocketOpts) error {
+			`, func(wo *server.WebsocketOpts) error {
 				if wo.AuthTimeout != 2.0 {
 					return fmt.Errorf("Invalid auth timeout: %v", wo.AuthTimeout)
 				}
@@ -1609,10 +1610,10 @@ func TestWSParseOptions(t *testing.T) {
 			}, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			conf := createConfFile(t, []byte(test.content))
-			defer removeFile(t, conf)
-			o, err := ProcessConfigFile(conf)
-			if test.err != _EMPTY_ {
+			conf := server.createConfFile(t, []byte(test.content))
+			defer server.removeFile(t, conf)
+			o, err := server.ProcessConfigFile(conf)
+			if test.err != server._EMPTY_ {
 				if err == nil || !strings.Contains(err.Error(), test.err) {
 					t.Fatalf("For content: %q, expected error about %q, got %v", test.content, test.err, err)
 				}
@@ -1628,41 +1629,41 @@ func TestWSParseOptions(t *testing.T) {
 }
 
 func TestWSValidateOptions(t *testing.T) {
-	nwso := DefaultOptions()
+	nwso := server.DefaultOptions()
 	wso := testWSOptions()
 	for _, test := range []struct {
 		name    string
-		getOpts func() *Options
+		getOpts func() *server.Options
 		err     string
 	}{
-		{"websocket disabled", func() *Options { return nwso.Clone() }, ""},
-		{"no tls", func() *Options { o := wso.Clone(); o.Websocket.TLSConfig = nil; return o }, "requires TLS configuration"},
-		{"bad url in allowed list", func() *Options {
+		{"websocket disabled", func() *server.Options { return nwso.Clone() }, ""},
+		{"no Tls", func() *server.Options { o := wso.Clone(); o.Websocket.TLSConfig = nil; return o }, "requires TLS configuration"},
+		{"bad url in allowed list", func() *server.Options {
 			o := wso.Clone()
 			o.Websocket.AllowedOrigins = []string{"http://this:is:bad:url"}
 			return o
 		}, "unable to parse"},
-		{"missing trusted configuration", func() *Options {
+		{"missing trusted configuration", func() *server.Options {
 			o := wso.Clone()
 			o.Websocket.JWTCookie = "jwt"
 			return o
 		}, "keys configuration is required"},
-		{"websocket username not allowed if users specified", func() *Options {
+		{"websocket username not allowed if users specified", func() *server.Options {
 			o := wso.Clone()
-			o.Nkeys = []*NkeyUser{{Nkey: "abc"}}
+			o.Nkeys = []*server.NkeyUser{{Nkey: "abc"}}
 			o.Websocket.Username = "b"
 			o.Websocket.Password = "pwd"
 			return o
 		}, "websocket authentication username not compatible with presence of users/nkeys"},
-		{"websocket token not allowed if users specified", func() *Options {
+		{"websocket token not allowed if users specified", func() *server.Options {
 			o := wso.Clone()
-			o.Nkeys = []*NkeyUser{{Nkey: "abc"}}
+			o.Nkeys = []*server.NkeyUser{{Nkey: "abc"}}
 			o.Websocket.Token = "mytoken"
 			return o
 		}, "websocket authentication token not compatible with presence of users/nkeys"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			err := validateWebsocketOptions(test.getOpts())
+			err := ValidateWebsocketOptions(test.getOpts())
 			if test.err == "" && err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			} else if test.err != "" && (err == nil || !strings.Contains(err.Error(), test.err)) {
@@ -1683,8 +1684,8 @@ func TestWSSetOriginOptions(t *testing.T) {
 	} {
 		t.Run(test.err, func(t *testing.T) {
 			o.Websocket.AllowedOrigins = []string{test.content}
-			s := &Server{}
-			l := &captureErrorLogger{errCh: make(chan string, 1)}
+			s := &server.Server{}
+			l := &server.captureErrorLogger{errCh: make(chan string, 1)}
 			s.SetLogger(l, false, false)
 			s.wsSetOriginOptions(&o.Websocket)
 			select {
@@ -1701,7 +1702,7 @@ func TestWSSetOriginOptions(t *testing.T) {
 }
 
 type captureFatalLogger struct {
-	DummyLogger
+	server.DummyLogger
 	fatalCh chan string
 }
 
@@ -1713,7 +1714,7 @@ func (l *captureFatalLogger) Fatalf(format string, v ...interface{}) {
 }
 
 func TestWSFailureToStartServer(t *testing.T) {
-	// Create a listener to use a port
+	// Create a Listener to use a port
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Error listening: %v", err)
@@ -1728,9 +1729,9 @@ func TestWSFailureToStartServer(t *testing.T) {
 	o.Gateway.Port = 0
 	o.LeafNode.Port = 0
 	o.Websocket.Port = l.Addr().(*net.TCPAddr).Port
-	s, err := NewServer(o)
+	s, err := server.NewServer(o)
 	if err != nil {
-		t.Fatalf("Error creating server: %v", err)
+		t.Fatalf("Error creating Server: %v", err)
 	}
 	defer s.Shutdown()
 	logger := &captureFatalLogger{fatalCh: make(chan string, 1)}
@@ -1755,7 +1756,7 @@ func TestWSFailureToStartServer(t *testing.T) {
 	// exit on Fatal error, wait for the client port to be
 	// ready so when we shutdown we don't leave the accept
 	// loop hanging.
-	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+	server.checkFor(t, time.Second, 15*time.Millisecond, func() error {
 		s.mu.Lock()
 		ready := s.listener != nil
 		s.mu.Unlock()
@@ -1770,19 +1771,19 @@ func TestWSFailureToStartServer(t *testing.T) {
 
 func TestWSAbnormalFailureOfWebServer(t *testing.T) {
 	o := testWSOptions()
-	s := RunServer(o)
+	s := server.RunServer(o)
 	defer s.Shutdown()
 	logger := &captureFatalLogger{fatalCh: make(chan string, 1)}
 	s.SetLogger(logger, false, false)
 
-	// Now close the WS listener to cause a WebServer error
+	// Now close the WS Listener to cause a WebServer error
 	s.mu.Lock()
 	s.websocket.listener.Close()
 	s.mu.Unlock()
 
 	select {
 	case e := <-logger.fatalCh:
-		if !strings.Contains(e, "websocket listener error") {
+		if !strings.Contains(e, "websocket Listener error") {
 			t.Fatalf("Unexpected error: %v", e)
 		}
 	case <-time.After(2 * time.Second):
@@ -1832,7 +1833,7 @@ func testNewWSClientWithError(t testing.TB, o testWSClientOptions) (net.Conn, *b
 	if len(o.extraHeaders) > 0 {
 		for hdr, values := range o.extraHeaders {
 			if len(values) == 0 {
-				req.Header.Set(hdr, _EMPTY_)
+				req.Header.Set(hdr, server._EMPTY_)
 				continue
 			}
 			req.Header.Set(hdr, values[0])
@@ -1855,7 +1856,7 @@ func testNewWSClientWithError(t testing.TB, o testWSClientOptions) (net.Conn, *b
 		return nil, nil, nil, fmt.Errorf("Expected response status %v, got %v", http.StatusSwitchingProtocols, resp.StatusCode)
 	}
 	var info []byte
-	if o.path == mqttWSPath {
+	if o.path == server.mqttWSPath {
 		if v := resp.Header[wsSecProto]; len(v) != 1 || v[0] != wsMQTTSecProtoVal {
 			return nil, nil, nil, fmt.Errorf("No mqtt protocol in header: %v", resp.Header)
 		}
@@ -1877,10 +1878,10 @@ type testClaimsOptions struct {
 	expectAnswer   string
 }
 
-func testWSWithClaims(t *testing.T, s *Server, o testWSClientOptions, tclm testClaimsOptions) (kp nkeys.KeyPair, conn net.Conn, rdr *bufio.Reader, auth_was_required bool) {
+func testWSWithClaims(t *testing.T, s *server.Server, o testWSClientOptions, tclm testClaimsOptions) (kp nkeys.KeyPair, conn net.Conn, rdr *bufio.Reader, auth_was_required bool) {
 	t.Helper()
 
-	okp, _ := nkeys.FromSeed(oSeed)
+	okp, _ := nkeys.FromSeed(server.oSeed)
 
 	akp, _ := nkeys.CreateAccount()
 	apub, _ := akp.PublicKey()
@@ -1906,7 +1907,7 @@ func testWSWithClaims(t *testing.T, s *Server, o testWSClientOptions, tclm testC
 		t.Fatalf("Error generating user JWT: %v", err)
 	}
 
-	addAccountToMemResolver(s, apub, ajwt)
+	server.addAccountToMemResolver(s, apub, ajwt)
 
 	c, cr, l := testNewWSClient(t, o)
 
@@ -1945,13 +1946,13 @@ func testWSWithClaims(t *testing.T, s *Server, o testWSClientOptions, tclm testC
 	return akp, c, cr, info.AuthRequired
 }
 
-func setupAddTrusted(o *Options) {
-	kp, _ := nkeys.FromSeed(oSeed)
+func setupAddTrusted(o *server.Options) {
+	kp, _ := nkeys.FromSeed(server.oSeed)
 	pub, _ := kp.PublicKey()
 	o.TrustedKeys = []string{pub}
 }
 
-func setupAddCookie(o *Options) {
+func setupAddCookie(o *server.Options) {
 	o.Websocket.JWTCookie = "jwt"
 }
 
@@ -2034,14 +2035,14 @@ func TestWSPubSub(t *testing.T) {
 			if test.compression {
 				o.Websocket.Compression = true
 			}
-			s := RunServer(o)
+			s := server.RunServer(o)
 			defer s.Shutdown()
 
 			// Create a regular client to subscribe
-			nc := natsConnect(t, s.ClientURL())
+			nc := server.natsConnect(t, s.ClientURL())
 			defer nc.Close()
-			nsub := natsSubSync(t, nc, "foo")
-			checkExpectedSubs(t, 1, s)
+			nsub := server.natsSubSync(t, nc, "foo")
+			server.checkExpectedSubs(t, 1, s)
 
 			// Now create a WS client and send a message on "foo"
 			wsc, br := testWSCreateClient(t, test.compression, false, o.Websocket.Host, o.Websocket.Port)
@@ -2054,7 +2055,7 @@ func TestWSPubSub(t *testing.T) {
 			}
 
 			// Now check that message is received
-			msg := natsNexMsg(t, nsub, time.Second)
+			msg := server.natsNexMsg(t, nsub, time.Second)
 			if string(msg.Data) != "from ws" {
 				t.Fatalf("Expected message to be %q, got %q", "ok", string(msg.Data))
 			}
@@ -2064,11 +2065,11 @@ func TestWSPubSub(t *testing.T) {
 			if _, err := wsc.Write(wsmsg); err != nil {
 				t.Fatalf("Error sending subscription: %v", err)
 			}
-			// Wait for it to be registered on server
-			checkExpectedSubs(t, 2, s)
+			// Wait for it to be registered on Server
+			server.checkExpectedSubs(t, 2, s)
 			// Now publish from NATS connection and verify received on WS client
-			natsPub(t, nc, "bar", []byte("from nats"))
-			natsFlush(t, nc)
+			server.natsPub(t, nc, "bar", []byte("from nats"))
+			server.natsFlush(t, nc)
 
 			// Check for the "from nats" message...
 			// Set some deadline so we are not stuck forever on failure
@@ -2096,7 +2097,7 @@ func TestWSPubSub(t *testing.T) {
 
 func TestWSTLSConnection(t *testing.T) {
 	o := testWSOptions()
-	s := RunServer(o)
+	s := server.RunServer(o)
 	defer s.Shutdown()
 
 	addr := fmt.Sprintf("%s:%d", o.Websocket.Host, o.Websocket.Port)
@@ -2145,18 +2146,18 @@ func TestWSTLSConnection(t *testing.T) {
 
 func TestWSTLSVerifyClientCert(t *testing.T) {
 	o := testWSOptions()
-	tc := &TLSConfigOpts{
-		CertFile: "../test/configs/certs/server-cert.pem",
-		KeyFile:  "../test/configs/certs/server-key.pem",
+	tc := &server.TLSConfigOpts{
+		CertFile: "../test/configs/certs/Server-cert.pem",
+		KeyFile:  "../test/configs/certs/Server-key.pem",
 		CaFile:   "../test/configs/certs/ca.pem",
 		Verify:   true,
 	}
-	tlsc, err := GenTLSConfig(tc)
+	tlsc, err := server.GenTLSConfig(tc)
 	if err != nil {
-		t.Fatalf("Error creating tls config: %v", err)
+		t.Fatalf("Error creating Tls config: %v", err)
 	}
 	o.Websocket.TLSConfig = tlsc
-	s := RunServer(o)
+	s := server.RunServer(o)
 	defer s.Shutdown()
 
 	addr := fmt.Sprintf("%s:%d", o.Websocket.Host, o.Websocket.Port)
@@ -2176,14 +2177,14 @@ func TestWSTLSVerifyClientCert(t *testing.T) {
 			defer wsc.Close()
 			tlsc := &tls.Config{}
 			if test.provideCert {
-				tc := &TLSConfigOpts{
+				tc := &server.TLSConfigOpts{
 					CertFile: "../test/configs/certs/client-cert.pem",
 					KeyFile:  "../test/configs/certs/client-key.pem",
 				}
 				var err error
-				tlsc, err = GenTLSConfig(tc)
+				tlsc, err = server.GenTLSConfig(tc)
 				if err != nil {
-					t.Fatalf("Error generating tls config: %v", err)
+					t.Fatalf("Error generating Tls config: %v", err)
 				}
 			}
 			tlsc.InsecureSkipVerify = true
@@ -2232,9 +2233,9 @@ func testCreateAllowedConnectionTypes(list []string) map[string]struct{} {
 
 func TestWSTLSVerifyAndMap(t *testing.T) {
 	accName := "MyAccount"
-	acc := NewAccount(accName)
+	acc := server.NewAccount(accName)
 	certUserName := "CN=example.com,OU=NATS.io"
-	users := []*User{{Username: certUserName, Account: acc}}
+	users := []*server.User{{Username: certUserName, Account: acc}}
 
 	for _, test := range []struct {
 		name        string
@@ -2252,24 +2253,24 @@ func TestWSTLSVerifyAndMap(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := testWSOptions()
-			o.Accounts = []*Account{acc}
+			o.Accounts = []*server.Account{acc}
 			o.Users = users
 			if test.filtering {
 				o.Users[0].AllowedConnectionTypes = testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket})
 			}
-			tc := &TLSConfigOpts{
-				CertFile: "../test/configs/certs/tlsauth/server.pem",
-				KeyFile:  "../test/configs/certs/tlsauth/server-key.pem",
+			tc := &server.TLSConfigOpts{
+				CertFile: "../test/configs/certs/tlsauth/Server.pem",
+				KeyFile:  "../test/configs/certs/tlsauth/Server-key.pem",
 				CaFile:   "../test/configs/certs/tlsauth/ca.pem",
 				Verify:   true,
 			}
-			tlsc, err := GenTLSConfig(tc)
+			tlsc, err := server.GenTLSConfig(tc)
 			if err != nil {
-				t.Fatalf("Error creating tls config: %v", err)
+				t.Fatalf("Error creating Tls config: %v", err)
 			}
 			o.Websocket.TLSConfig = tlsc
 			o.Websocket.TLSMap = true
-			s := RunServer(o)
+			s := server.RunServer(o)
 			defer s.Shutdown()
 
 			addr := fmt.Sprintf("%s:%d", o.Websocket.Host, o.Websocket.Port)
@@ -2280,14 +2281,14 @@ func TestWSTLSVerifyAndMap(t *testing.T) {
 			defer wsc.Close()
 			tlscc := &tls.Config{}
 			if test.provideCert {
-				tc := &TLSConfigOpts{
+				tc := &server.TLSConfigOpts{
 					CertFile: "../test/configs/certs/tlsauth/client.pem",
 					KeyFile:  "../test/configs/certs/tlsauth/client-key.pem",
 				}
 				var err error
-				tlscc, err = GenTLSConfig(tc)
+				tlscc, err = server.GenTLSConfig(tc)
 				if err != nil {
-					t.Fatalf("Error generating tls config: %v", err)
+					t.Fatalf("Error generating Tls config: %v", err)
 				}
 			}
 			tlscc.InsecureSkipVerify = true
@@ -2324,7 +2325,7 @@ func TestWSTLSVerifyAndMap(t *testing.T) {
 			if !bytes.HasPrefix(l, []byte("INFO {")) {
 				t.Fatalf("Expected INFO, got %s", l)
 			}
-			var info serverInfo
+			var info server.serverInfo
 			if err := json.Unmarshal(l[5:], &info); err != nil {
 				t.Fatalf("Unable to unmarshal info: %v", err)
 			}
@@ -2362,15 +2363,15 @@ func TestWSTLSVerifyAndMap(t *testing.T) {
 func TestWSHandshakeTimeout(t *testing.T) {
 	o := testWSOptions()
 	o.Websocket.HandshakeTimeout = time.Millisecond
-	tc := &TLSConfigOpts{
-		CertFile: "./configs/certs/server.pem",
+	tc := &server.TLSConfigOpts{
+		CertFile: "./configs/certs/Server.pem",
 		KeyFile:  "./configs/certs/key.pem",
 	}
-	o.Websocket.TLSConfig, _ = GenTLSConfig(tc)
-	s := RunServer(o)
+	o.Websocket.TLSConfig, _ = server.GenTLSConfig(tc)
+	s := server.RunServer(o)
 	defer s.Shutdown()
 
-	logger := &captureErrorLogger{errCh: make(chan string, 1)}
+	logger := &server.captureErrorLogger{errCh: make(chan string, 1)}
 	s.SetLogger(logger, false, false)
 
 	addr := fmt.Sprintf("%s:%d", o.Websocket.Host, o.Websocket.Port)
@@ -2383,12 +2384,12 @@ func TestWSHandshakeTimeout(t *testing.T) {
 	// Delay the handshake
 	wsc = tls.Client(wsc, &tls.Config{InsecureSkipVerify: true})
 	time.Sleep(20 * time.Millisecond)
-	// We expect error since the server should have cut us off
+	// We expect error since the Server should have cut us off
 	if err := wsc.(*tls.Conn).Handshake(); err == nil {
 		t.Fatal("Expected error during handshake")
 	}
 
-	// Check that server logs error
+	// Check that Server logs error
 	select {
 	case e := <-logger.errCh:
 		// Check that log starts with "websocket: "
@@ -2405,10 +2406,10 @@ func TestWSHandshakeTimeout(t *testing.T) {
 
 func TestWSServerReportUpgradeFailure(t *testing.T) {
 	o := testWSOptions()
-	s := RunServer(o)
+	s := server.RunServer(o)
 	defer s.Shutdown()
 
-	logger := &captureErrorLogger{errCh: make(chan string, 1)}
+	logger := &server.captureErrorLogger{errCh: make(chan string, 1)}
 	s.SetLogger(logger, false, false)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", o.Websocket.Port)
@@ -2440,13 +2441,13 @@ func TestWSServerReportUpgradeFailure(t *testing.T) {
 		t.Fatalf("Expected status %v, got %v", http.StatusBadRequest, resp.StatusCode)
 	}
 
-	// Check that server logs error
+	// Check that Server logs error
 	select {
 	case e := <-logger.errCh:
 		if !strings.Contains(e, "invalid value for header 'Connection'") {
 			t.Fatalf("Unexpected error: %v", e)
 		}
-		// The client IP's local should be printed as a remote from server perspective.
+		// The client IP's local should be printed as a remote from Server perspective.
 		clientIP := wsc.LocalAddr().String()
 		if !strings.HasPrefix(e, clientIP) {
 			t.Fatalf("IP should have been logged, it was not: %v", e)
@@ -2458,14 +2459,14 @@ func TestWSServerReportUpgradeFailure(t *testing.T) {
 
 func TestWSCloseMsgSendOnConnectionClose(t *testing.T) {
 	o := testWSOptions()
-	s := RunServer(o)
+	s := server.RunServer(o)
 	defer s.Shutdown()
 
 	wsc, br := testWSCreateClient(t, false, false, o.Websocket.Host, o.Websocket.Port)
 	defer wsc.Close()
 
-	checkClientsCount(t, s, 1)
-	var c *client
+	server.checkClientsCount(t, s, 1)
+	var c *server.client
 	s.mu.Lock()
 	for _, cli := range s.clients {
 		c = cli
@@ -2473,7 +2474,7 @@ func TestWSCloseMsgSendOnConnectionClose(t *testing.T) {
 	}
 	s.mu.Unlock()
 
-	c.closeConnection(ProtocolViolation)
+	c.closeConnection(server.ProtocolViolation)
 	msg := testWSReadFrame(t, br)
 	if len(msg) < 2 {
 		t.Fatalf("Should have 2 bytes to represent the status, got %v", msg)
@@ -2481,7 +2482,7 @@ func TestWSCloseMsgSendOnConnectionClose(t *testing.T) {
 	if sc := int(binary.BigEndian.Uint16(msg[:2])); sc != wsCloseStatusProtocolError {
 		t.Fatalf("Expected status to be %v, got %v", wsCloseStatusProtocolError, sc)
 	}
-	expectedPayload := ProtocolViolation.String()
+	expectedPayload := server.ProtocolViolation.String()
 	if p := string(msg[2:]); p != expectedPayload {
 		t.Fatalf("Expected payload to be %q, got %q", expectedPayload, p)
 	}
@@ -2492,7 +2493,7 @@ func TestWSAdvertise(t *testing.T) {
 	o.Cluster.Port = 0
 	o.HTTPPort = 0
 	o.Websocket.Advertise = "xxx:host:yyy"
-	s, err := NewServer(o)
+	s, err := server.NewServer(o)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2512,7 +2513,7 @@ func TestWSAdvertise(t *testing.T) {
 
 	o1 := testWSOptions()
 	o1.Websocket.Advertise = "host1:1234"
-	s1 := RunServer(o1)
+	s1 := server.RunServer(o1)
 	defer s1.Shutdown()
 
 	wsc, br := testWSCreateClient(t, false, false, o1.Websocket.Host, o1.Websocket.Port)
@@ -2520,14 +2521,14 @@ func TestWSAdvertise(t *testing.T) {
 
 	o2 := testWSOptions()
 	o2.Websocket.Advertise = "host2:5678"
-	o2.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", o1.Cluster.Host, o1.Cluster.Port))
-	s2 := RunServer(o2)
+	o2.Routes = server.RoutesFromStr(fmt.Sprintf("nats://%s:%d", o1.Cluster.Host, o1.Cluster.Port))
+	s2 := server.RunServer(o2)
 	defer s2.Shutdown()
 
 	checkInfo := func(expected []string) {
 		t.Helper()
 		infob := testWSReadFrame(t, br)
-		info := &Info{}
+		info := &server.Info{}
 		json.Unmarshal(infob[5:], info)
 		if n := len(info.ClientConnectURLs); n != len(expected) {
 			t.Fatalf("Unexpected info: %+v", info)
@@ -2552,7 +2553,7 @@ func TestWSAdvertise(t *testing.T) {
 
 	// Restart with another advertise and check that it gets updated
 	o2.Websocket.Advertise = "host3:9012"
-	s2 = RunServer(o2)
+	s2 = server.RunServer(o2)
 	defer s2.Shutdown()
 	checkInfo([]string{"host1:1234", "host3:9012"})
 }
@@ -2602,7 +2603,7 @@ func TestWSFrameOutbound(t *testing.T) {
 				ob = append(ob, res[i]...)
 			}
 			if test.maskingWrite {
-				wsMaskBuf(getKey(res[0]), ob)
+				maskBuf(getKey(res[0]), ob)
 			}
 			if !bytes.Equal(ob, []byte("this is a set of buffers")) {
 				t.Fatalf("Unexpected outbound: %q", ob)
@@ -2645,7 +2646,7 @@ func TestWSFrameOutbound(t *testing.T) {
 				b.Write(res[1])
 				b.Write(res[2])
 				ud := b.Bytes()
-				wsMaskBuf(key, ud)
+				maskBuf(key, ud)
 				if string(ud) != "some smaller buffers" {
 					t.Fatalf("Unexpected result: %q", ud)
 				}
@@ -2654,7 +2655,7 @@ func TestWSFrameOutbound(t *testing.T) {
 				key = getKey(res[3])
 				b.Write(res[4])
 				ud = b.Bytes()
-				wsMaskBuf(key, ud)
+				maskBuf(key, ud)
 				for i := 0; i < len(ud); i++ {
 					if ud[i] != 0 {
 						t.Fatalf("Unexpected result: %v", ud)
@@ -2666,7 +2667,7 @@ func TestWSFrameOutbound(t *testing.T) {
 				b.Write(res[6])
 				b.Write(res[7])
 				ud = b.Bytes()
-				wsMaskBuf(key, ud)
+				maskBuf(key, ud)
 				for i := 0; i < len(ud[:10]); i++ {
 					if ud[i] != 0 {
 						t.Fatalf("Unexpected result: %v", ud[:10])
@@ -2708,7 +2709,7 @@ func TestWSFrameOutbound(t *testing.T) {
 			}
 			if test.maskingWrite {
 				key := getKey(res[5])
-				wsMaskBuf(key, res[6])
+				maskBuf(key, res[6])
 			}
 			if string(res[6]) != "then some more" {
 				t.Fatalf("Frame 6 incorrect: %q", res[6])
@@ -2771,7 +2772,7 @@ func TestWSFrameOutbound(t *testing.T) {
 			}
 			if test.maskingWrite {
 				key := getKey(res[4])
-				wsMaskBuf(key, res[5])
+				maskBuf(key, res[5])
 			}
 			if string(res[5]) != "then some more" {
 				t.Fatalf("Frame 6 incorrect %q", res[5])
@@ -2796,14 +2797,14 @@ func TestWSFrameOutbound(t *testing.T) {
 
 func TestWSWebrowserClient(t *testing.T) {
 	o := testWSOptions()
-	s := RunServer(o)
+	s := server.RunServer(o)
 	defer s.Shutdown()
 
 	wsc, br := testWSCreateClient(t, false, true, o.Websocket.Host, o.Websocket.Port)
 	defer wsc.Close()
 
-	checkClientsCount(t, s, 1)
-	var c *client
+	server.checkClientsCount(t, s, 1)
+	var c *server.client
 	s.mu.Lock()
 	for _, cli := range s.clients {
 		c = cli
@@ -2813,7 +2814,7 @@ func TestWSWebrowserClient(t *testing.T) {
 
 	proto := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("SUB foo 1\r\nPING\r\n"))
 	wsc.Write(proto)
-	if res := testWSReadFrame(t, br); !bytes.Equal(res, []byte(pongProto)) {
+	if res := testWSReadFrame(t, br); !bytes.Equal(res, []byte(server.pongProto)) {
 		t.Fatalf("Expected PONG back")
 	}
 
@@ -2824,7 +2825,7 @@ func TestWSWebrowserClient(t *testing.T) {
 		t.Fatalf("Client is not marked as webrowser client")
 	}
 
-	nc := natsConnect(t, s.ClientURL())
+	nc := server.natsConnect(t, s.ClientURL())
 	defer nc.Close()
 
 	// Send a big message and check that it is received in smaller frames
@@ -2879,7 +2880,7 @@ func TestWSCompressionBasic(t *testing.T) {
 
 	o := testWSOptions()
 	o.Websocket.Compression = true
-	s := RunServer(o)
+	s := server.RunServer(o)
 	defer s.Shutdown()
 
 	c, br := testWSCreateClient(t, true, false, o.Websocket.Host, o.Websocket.Port)
@@ -2888,7 +2889,7 @@ func TestWSCompressionBasic(t *testing.T) {
 	proto := testWSCreateClientMsg(wsBinaryMessage, 1, true, true, []byte("SUB foo 1\r\nPING\r\n"))
 	c.Write(proto)
 	l := testWSReadFrame(t, br)
-	if !bytes.Equal(l, []byte(pongProto)) {
+	if !bytes.Equal(l, []byte(server.pongProto)) {
 		t.Fatalf("Expected PONG, got %q", l)
 	}
 
@@ -2902,9 +2903,9 @@ func TestWSCompressionBasic(t *testing.T) {
 	}
 	s.mu.Unlock()
 
-	nc := natsConnect(t, s.ClientURL())
+	nc := server.natsConnect(t, s.ClientURL())
 	defer nc.Close()
-	natsPub(t, nc, "foo", []byte(payload))
+	server.natsPub(t, nc, "foo", []byte(payload))
 
 	res := &bytes.Buffer{}
 	for total := 0; total < len(msgProto); {
@@ -2947,7 +2948,7 @@ func TestWSCompressionBasic(t *testing.T) {
 	wc.mu.Unlock()
 
 	payload = "small"
-	natsPub(t, nc, "foo", []byte(payload))
+	server.natsPub(t, nc, "foo", []byte(payload))
 	msgProto = fmt.Sprintf("MSG foo 1 %d\r\n%s\r\n", len(payload), payload)
 	res = &bytes.Buffer{}
 	for total := 0; total < len(msgProto); {
@@ -2972,7 +2973,7 @@ func TestWSCompressionWithPartialWrite(t *testing.T) {
 
 	o := testWSOptions()
 	o.Websocket.Compression = true
-	s := RunServer(o)
+	s := server.RunServer(o)
 	defer s.Shutdown()
 
 	c, br := testWSCreateClient(t, true, false, o.Websocket.Host, o.Websocket.Port)
@@ -2981,7 +2982,7 @@ func TestWSCompressionWithPartialWrite(t *testing.T) {
 	proto := testWSCreateClientMsg(wsBinaryMessage, 1, true, true, []byte("SUB foo 1\r\nPING\r\n"))
 	c.Write(proto)
 	l := testWSReadFrame(t, br)
-	if !bytes.Equal(l, []byte(pongProto)) {
+	if !bytes.Equal(l, []byte(server.pongProto)) {
 		t.Fatalf("Expected PONG, got %q", l)
 	}
 
@@ -2989,7 +2990,7 @@ func TestWSCompressionWithPartialWrite(t *testing.T) {
 	pingFromWSClient := testWSCreateClientMsg(wsPingMessage, 1, true, false, pingPayload)
 
 	var wc *testWSWrappedConn
-	var ws *client
+	var ws *server.client
 	s.mu.Lock()
 	for _, c := range s.clients {
 		ws = c
@@ -3008,7 +3009,7 @@ func TestWSCompressionWithPartialWrite(t *testing.T) {
 	wc.partial = true
 	wc.mu.Unlock()
 
-	nc := natsConnect(t, s.ClientURL())
+	nc := server.natsConnect(t, s.ClientURL())
 	defer nc.Close()
 
 	expected := &bytes.Buffer{}
@@ -3017,7 +3018,7 @@ func TestWSCompressionWithPartialWrite(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 		expected.Write([]byte(msgProto))
-		natsPub(t, nc, "foo", []byte(payload))
+		server.natsPub(t, nc, "foo", []byte(payload))
 		if i == 1 {
 			c.Write(pingFromWSClient)
 		}
@@ -3041,7 +3042,7 @@ func TestWSCompressionWithPartialWrite(t *testing.T) {
 		t.Fatal("Did not get the ping response")
 	}
 
-	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+	server.checkFor(t, time.Second, 15*time.Millisecond, func() error {
 		ws.mu.Lock()
 		pb := ws.out.pb
 		wf := ws.ws.frames
@@ -3065,9 +3066,9 @@ func TestWSCompressionFrameSizeLimit(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			opts := testWSOptions()
-			opts.MaxPending = MAX_PENDING_SIZE
-			s := &Server{opts: opts}
-			c := &client{srv: s, ws: &websocket{compress: true, browser: true, nocompfrag: test.noLimit, maskwrite: test.maskWrite}}
+			opts.MaxPending = server.MAX_PENDING_SIZE
+			s := &server.Server{opts: opts}
+			c := &server.client{srv: s, ws: &websocket{compress: true, browser: true, nocompfrag: test.noLimit, maskwrite: test.maskWrite}}
 			c.initClient()
 
 			uncompressedPayload := make([]byte, 2*wsFrameSizeForBrowsers)
@@ -3098,7 +3099,7 @@ func TestWSCompressionFrameSizeLimit(t *testing.T) {
 					if i%2 == 0 {
 						key = b[len(b)-4:]
 					} else {
-						wsMaskBuf(key, b)
+						maskBuf(key, b)
 					}
 				}
 				// Check frame headers for the proper formatting.
@@ -3141,14 +3142,14 @@ func TestWSCompressionFrameSizeLimit(t *testing.T) {
 func TestWSBasicAuth(t *testing.T) {
 	for _, test := range []struct {
 		name string
-		opts func() *Options
+		opts func() *server.Options
 		user string
 		pass string
 		err  string
 	}{
 		{
 			"top level auth, no override, wrong u/p",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
 				o.Username = "normal"
 				o.Password = "client"
@@ -3158,7 +3159,7 @@ func TestWSBasicAuth(t *testing.T) {
 		},
 		{
 			"top level auth, no override, correct u/p",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
 				o.Username = "normal"
 				o.Password = "client"
@@ -3168,7 +3169,7 @@ func TestWSBasicAuth(t *testing.T) {
 		},
 		{
 			"no top level auth, ws auth, wrong u/p",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
 				o.Websocket.Username = "websocket"
 				o.Websocket.Password = "client"
@@ -3178,7 +3179,7 @@ func TestWSBasicAuth(t *testing.T) {
 		},
 		{
 			"no top level auth, ws auth, correct u/p",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
 				o.Websocket.Username = "websocket"
 				o.Websocket.Password = "client"
@@ -3188,7 +3189,7 @@ func TestWSBasicAuth(t *testing.T) {
 		},
 		{
 			"top level auth, ws override, wrong u/p",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
 				o.Username = "normal"
 				o.Password = "client"
@@ -3200,7 +3201,7 @@ func TestWSBasicAuth(t *testing.T) {
 		},
 		{
 			"top level auth, ws override, correct u/p",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
 				o.Username = "normal"
 				o.Password = "client"
@@ -3213,7 +3214,7 @@ func TestWSBasicAuth(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := test.opts()
-			s := RunServer(o)
+			s := server.RunServer(o)
 			defer s.Shutdown()
 
 			wsc, br, _ := testWSCreateClientGetInfo(t, false, false, o.Websocket.Host, o.Websocket.Port)
@@ -3252,13 +3253,13 @@ func TestWSAuthTimeout(t *testing.T) {
 			o.Websocket.Username = "websocket"
 			o.Websocket.Password = "client"
 			o.Websocket.AuthTimeout = test.wat
-			s := RunServer(o)
+			s := server.RunServer(o)
 			defer s.Shutdown()
 
 			wsc, br, l := testWSCreateClientGetInfo(t, false, false, o.Websocket.Host, o.Websocket.Port)
 			defer wsc.Close()
 
-			var info serverInfo
+			var info server.serverInfo
 			json.Unmarshal([]byte(l[5:]), &info)
 			// Make sure that we are told that auth is required.
 			if !info.AuthRequired {
@@ -3288,13 +3289,13 @@ func TestWSAuthTimeout(t *testing.T) {
 func TestWSTokenAuth(t *testing.T) {
 	for _, test := range []struct {
 		name  string
-		opts  func() *Options
+		opts  func() *server.Options
 		token string
 		err   string
 	}{
 		{
 			"top level auth, no override, wrong token",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
 				o.Authorization = "goodtoken"
 				return o
@@ -3303,7 +3304,7 @@ func TestWSTokenAuth(t *testing.T) {
 		},
 		{
 			"top level auth, no override, correct token",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
 				o.Authorization = "goodtoken"
 				return o
@@ -3312,7 +3313,7 @@ func TestWSTokenAuth(t *testing.T) {
 		},
 		{
 			"no top level auth, ws auth, wrong token",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
 				o.Websocket.Token = "goodtoken"
 				return o
@@ -3321,7 +3322,7 @@ func TestWSTokenAuth(t *testing.T) {
 		},
 		{
 			"no top level auth, ws auth, correct token",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
 				o.Websocket.Token = "goodtoken"
 				return o
@@ -3330,7 +3331,7 @@ func TestWSTokenAuth(t *testing.T) {
 		},
 		{
 			"top level auth, ws override, wrong token",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
 				o.Authorization = "clienttoken"
 				o.Websocket.Token = "websockettoken"
@@ -3340,7 +3341,7 @@ func TestWSTokenAuth(t *testing.T) {
 		},
 		{
 			"top level auth, ws override, correct token",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
 				o.Authorization = "clienttoken"
 				o.Websocket.Token = "websockettoken"
@@ -3351,7 +3352,7 @@ func TestWSTokenAuth(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := test.opts()
-			s := RunServer(o)
+			s := server.RunServer(o)
 			defer s.Shutdown()
 
 			wsc, br, _ := testWSCreateClientGetInfo(t, false, false, o.Websocket.Host, o.Websocket.Port)
@@ -3375,7 +3376,7 @@ func TestWSTokenAuth(t *testing.T) {
 }
 
 func TestWSBindToProperAccount(t *testing.T) {
-	conf := createConfFile(t, []byte(fmt.Sprintf(`
+	conf := server.createConfFile(t, []byte(fmt.Sprintf(`
 		listen: "127.0.0.1:-1"
 		accounts {
 			a {
@@ -3394,14 +3395,14 @@ func TestWSBindToProperAccount(t *testing.T) {
 			no_tls: true
 		}
 	`, jwt.ConnectionTypeStandard, strings.ToLower(jwt.ConnectionTypeWebsocket)))) // on purpose use lower case to ensure that it is converted.
-	defer removeFile(t, conf)
-	s, o := RunServerWithConfig(conf)
+	defer server.removeFile(t, conf)
+	s, o := server.RunServerWithConfig(conf)
 	defer s.Shutdown()
 
-	nc := natsConnect(t, fmt.Sprintf("nats://a:pwd@127.0.0.1:%d", o.Port))
+	nc := server.natsConnect(t, fmt.Sprintf("nats://a:pwd@127.0.0.1:%d", o.Port))
 	defer nc.Close()
 
-	sub := natsSubSync(t, nc, "foo")
+	sub := server.natsSubSync(t, nc, "foo")
 
 	wsc, br, _ := testNewWSClient(t, testWSClientOptions{host: o.Websocket.Host, port: o.Websocket.Port, noTLS: true})
 	// Send CONNECT and PING
@@ -3420,21 +3421,21 @@ func TestWSBindToProperAccount(t *testing.T) {
 		t.Fatalf("Error sending message: %v", err)
 	}
 
-	natsNexMsg(t, sub, time.Second)
+	server.natsNexMsg(t, sub, time.Second)
 }
 
 func TestWSUsersAuth(t *testing.T) {
-	users := []*User{{Username: "user", Password: "pwd"}}
+	users := []*server.User{{Username: "user", Password: "pwd"}}
 	for _, test := range []struct {
 		name string
-		opts func() *Options
+		opts func() *server.Options
 		user string
 		pass string
 		err  string
 	}{
 		{
 			"no filtering, wrong user",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
 				o.Users = users
 				return o
@@ -3443,7 +3444,7 @@ func TestWSUsersAuth(t *testing.T) {
 		},
 		{
 			"no filtering, correct user",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
 				o.Users = users
 				return o
@@ -3452,7 +3453,7 @@ func TestWSUsersAuth(t *testing.T) {
 		},
 		{
 			"filering, user not allowed",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
 				o.Users = users
 				// Only allowed for regular clients
@@ -3463,7 +3464,7 @@ func TestWSUsersAuth(t *testing.T) {
 		},
 		{
 			"filtering, user allowed",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
 				o.Users = users
 				o.Users[0].AllowedConnectionTypes = testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket})
@@ -3473,7 +3474,7 @@ func TestWSUsersAuth(t *testing.T) {
 		},
 		{
 			"filtering, wrong password",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
 				o.Users = users
 				o.Users[0].AllowedConnectionTypes = testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket})
@@ -3484,7 +3485,7 @@ func TestWSUsersAuth(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := test.opts()
-			s := RunServer(o)
+			s := server.RunServer(o)
 			defer s.Shutdown()
 
 			wsc, br, _ := testWSCreateClientGetInfo(t, false, false, o.Websocket.Host, o.Websocket.Port)
@@ -3509,17 +3510,17 @@ func TestWSUsersAuth(t *testing.T) {
 
 func TestWSNoAuthUserValidation(t *testing.T) {
 	o := testWSOptions()
-	o.Users = []*User{{Username: "user", Password: "pwd"}}
+	o.Users = []*server.User{{Username: "user", Password: "pwd"}}
 	// Should fail because it is not part of o.Users.
 	o.Websocket.NoAuthUser = "notfound"
-	if _, err := NewServer(o); err == nil || !strings.Contains(err.Error(), "not present as user") {
+	if _, err := server.NewServer(o); err == nil || !strings.Contains(err.Error(), "not present as user") {
 		t.Fatalf("Expected error saying not present as user, got %v", err)
 	}
 	// Set a valid no auth user for global options, but still should fail because
 	// of o.Websocket.NoAuthUser
 	o.NoAuthUser = "user"
 	o.Websocket.NoAuthUser = "notfound"
-	if _, err := NewServer(o); err == nil || !strings.Contains(err.Error(), "not present as user") {
+	if _, err := server.NewServer(o); err == nil || !strings.Contains(err.Error(), "not present as user") {
 		t.Fatalf("Expected error saying not present as user, got %v", err)
 	}
 }
@@ -3539,10 +3540,10 @@ func TestWSNoAuthUser(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := testWSOptions()
-			normalAcc := NewAccount("normal")
-			websocketAcc := NewAccount("websocket")
-			o.Accounts = []*Account{normalAcc, websocketAcc}
-			o.Users = []*User{
+			normalAcc := server.NewAccount("normal")
+			websocketAcc := server.NewAccount("websocket")
+			o.Accounts = []*server.Account{normalAcc, websocketAcc}
+			o.Users = []*server.User{
 				{Username: "noauth", Password: "pwd", Account: normalAcc},
 				{Username: "user", Password: "pwd", Account: normalAcc},
 				{Username: "wsnoauth", Password: "pwd", Account: websocketAcc},
@@ -3552,13 +3553,13 @@ func TestWSNoAuthUser(t *testing.T) {
 			if test.override {
 				o.Websocket.NoAuthUser = "wsnoauth"
 			}
-			s := RunServer(o)
+			s := server.RunServer(o)
 			defer s.Shutdown()
 
 			wsc, br, l := testWSCreateClientGetInfo(t, false, false, o.Websocket.Host, o.Websocket.Port)
 			defer wsc.Close()
 
-			var info serverInfo
+			var info server.serverInfo
 			json.Unmarshal([]byte(l[5:]), &info)
 
 			var connectProto string
@@ -3604,34 +3605,34 @@ func TestWSNkeyAuth(t *testing.T) {
 
 	for _, test := range []struct {
 		name string
-		opts func() *Options
+		opts func() *server.Options
 		nkey string
 		kp   nkeys.KeyPair
 		err  string
 	}{
 		{
 			"no filtering, wrong nkey",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
-				o.Nkeys = []*NkeyUser{{Nkey: pub}}
+				o.Nkeys = []*server.NkeyUser{{Nkey: pub}}
 				return o
 			},
 			badpub, badkp, "-ERR 'Authorization Violation'",
 		},
 		{
 			"no filtering, correct nkey",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
-				o.Nkeys = []*NkeyUser{{Nkey: pub}}
+				o.Nkeys = []*server.NkeyUser{{Nkey: pub}}
 				return o
 			},
 			pub, nkp, "",
 		},
 		{
 			"filtering, nkey not allowed",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
-				o.Nkeys = []*NkeyUser{
+				o.Nkeys = []*server.NkeyUser{
 					{
 						Nkey:                   pub,
 						AllowedConnectionTypes: testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard}),
@@ -3647,9 +3648,9 @@ func TestWSNkeyAuth(t *testing.T) {
 		},
 		{
 			"filtering, correct nkey",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
-				o.Nkeys = []*NkeyUser{
+				o.Nkeys = []*server.NkeyUser{
 					{Nkey: pub},
 					{
 						Nkey:                   wspub,
@@ -3662,9 +3663,9 @@ func TestWSNkeyAuth(t *testing.T) {
 		},
 		{
 			"filtering, wrong nkey",
-			func() *Options {
+			func() *server.Options {
 				o := testWSOptions()
-				o.Nkeys = []*NkeyUser{
+				o.Nkeys = []*server.NkeyUser{
 					{
 						Nkey:                   wspub,
 						AllowedConnectionTypes: testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket}),
@@ -3677,14 +3678,14 @@ func TestWSNkeyAuth(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := test.opts()
-			s := RunServer(o)
+			s := server.RunServer(o)
 			defer s.Shutdown()
 
 			wsc, br, infoMsg := testWSCreateClientGetInfo(t, false, false, o.Websocket.Host, o.Websocket.Port)
 			defer wsc.Close()
 
 			// Sign Nonce
-			var info nonceInfo
+			var info server.nonceInfo
 			json.Unmarshal([]byte(infoMsg[5:]), &info)
 			sigraw, _ := test.kp.Sign([]byte(info.Nonce))
 			sig := base64.RawURLEncoding.EncodeToString(sigraw)
@@ -3708,8 +3709,8 @@ func TestWSNkeyAuth(t *testing.T) {
 func TestWSJWTWithAllowedConnectionTypes(t *testing.T) {
 	o := testWSOptions()
 	setupAddTrusted(o)
-	s := RunServer(o)
-	buildMemAccResolver(s)
+	s := server.RunServer(o)
+	server.buildMemAccResolver(s)
 	defer s.Shutdown()
 
 	for _, test := range []struct {
@@ -3723,7 +3724,7 @@ func TestWSJWTWithAllowedConnectionTypes(t *testing.T) {
 		{"not allowed with unknown", []string{"SomeNewType"}, "-ERR"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			nuc := newJWTTestUserClaims()
+			nuc := server.newJWTTestUserClaims()
 			nuc.AllowedConnectionTypes = test.connectionTypes
 			claimOpt := testClaimsOptions{
 				nuc:          nuc,
@@ -3737,9 +3738,9 @@ func TestWSJWTWithAllowedConnectionTypes(t *testing.T) {
 
 func TestWSJWTCookieUser(t *testing.T) {
 
-	nucSigFunc := func() *jwt.UserClaims { return newJWTTestUserClaims() }
+	nucSigFunc := func() *jwt.UserClaims { return server.newJWTTestUserClaims() }
 	nucBearerFunc := func() *jwt.UserClaims {
-		ret := newJWTTestUserClaims()
+		ret := server.newJWTTestUserClaims()
 		ret.BearerToken = true
 		return ret
 	}
@@ -3747,12 +3748,12 @@ func TestWSJWTCookieUser(t *testing.T) {
 	o := testWSOptions()
 	setupAddTrusted(o)
 	setupAddCookie(o)
-	s := RunServer(o)
-	buildMemAccResolver(s)
+	s := server.RunServer(o)
+	server.buildMemAccResolver(s)
 	defer s.Shutdown()
 
 	genJwt := func(t *testing.T, nuc *jwt.UserClaims) string {
-		okp, _ := nkeys.FromSeed(oSeed)
+		okp, _ := nkeys.FromSeed(server.oSeed)
 
 		akp, _ := nkeys.CreateAccount()
 		apub, _ := akp.PublicKey()
@@ -3770,7 +3771,7 @@ func TestWSJWTCookieUser(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Error generating user JWT: %v", err)
 		}
-		addAccountToMemResolver(s, apub, ajwt)
+		server.addAccountToMemResolver(s, apub, ajwt)
 		return jwt
 	}
 
@@ -3857,19 +3858,19 @@ func TestWSReloadTLSConfig(t *testing.T) {
 		listen: "127.0.0.1:-1"
 		websocket {
 			listen: "127.0.0.1:-1"
-			tls {
+			Tls {
 				cert_file: '%s'
 				key_file: '%s'
 				ca_file: '../test/configs/certs/ca.pem'
 			}
 		}
 	`
-	conf := createConfFile(t, []byte(fmt.Sprintf(template,
-		"../test/configs/certs/server-noip.pem",
-		"../test/configs/certs/server-key-noip.pem")))
-	defer removeFile(t, conf)
+	conf := server.createConfFile(t, []byte(fmt.Sprintf(template,
+		"../test/configs/certs/Server-noip.pem",
+		"../test/configs/certs/Server-key-noip.pem")))
+	defer server.removeFile(t, conf)
 
-	s, o := RunServerWithConfig(conf)
+	s, o := server.RunServerWithConfig(conf)
 	defer s.Shutdown()
 
 	addr := fmt.Sprintf("127.0.0.1:%d", o.Websocket.Port)
@@ -3879,8 +3880,8 @@ func TestWSReloadTLSConfig(t *testing.T) {
 	}
 	defer wsc.Close()
 
-	tc := &TLSConfigOpts{CaFile: "../test/configs/certs/ca.pem"}
-	tlsConfig, err := GenTLSConfig(tc)
+	tc := &server.TLSConfigOpts{CaFile: "../test/configs/certs/ca.pem"}
+	tlsConfig, err := server.GenTLSConfig(tc)
 	if err != nil {
 		t.Fatalf("Error generating TLS config: %v", err)
 	}
@@ -3893,9 +3894,9 @@ func TestWSReloadTLSConfig(t *testing.T) {
 	}
 	wsc.Close()
 
-	reloadUpdateConfig(t, s, conf, fmt.Sprintf(template,
-		"../test/configs/certs/server-cert.pem",
-		"../test/configs/certs/server-key.pem"))
+	server.reloadUpdateConfig(t, s, conf, fmt.Sprintf(template,
+		"../test/configs/certs/Server-cert.pem",
+		"../test/configs/certs/Server-key.pem"))
 
 	wsc, err = net.Dial("tcp", addr)
 	if err != nil {
@@ -3910,7 +3911,7 @@ func TestWSReloadTLSConfig(t *testing.T) {
 }
 
 type captureClientConnectedLogger struct {
-	DummyLogger
+	server.DummyLogger
 	ch chan string
 }
 
@@ -3927,7 +3928,7 @@ func (l *captureClientConnectedLogger) Debugf(format string, v ...interface{}) {
 
 func TestWSXForwardedFor(t *testing.T) {
 	o := testWSOptions()
-	s := RunServer(o)
+	s := server.RunServer(o)
 	defer s.Shutdown()
 
 	l := &captureClientConnectedLogger{ch: make(chan string, 1)}
@@ -3941,20 +3942,20 @@ func TestWSXForwardedFor(t *testing.T) {
 	}{
 		{"nil map", func() map[string][]string {
 			return nil
-		}, false, _EMPTY_},
+		}, false, server._EMPTY_},
 		{"empty map", func() map[string][]string {
 			return make(map[string][]string)
-		}, false, _EMPTY_},
+		}, false, server._EMPTY_},
 		{"header present empty value", func() map[string][]string {
 			m := make(map[string][]string)
 			m[wsXForwardedForHeader] = []string{}
 			return m
-		}, false, _EMPTY_},
+		}, false, server._EMPTY_},
 		{"header present invalid IP", func() map[string][]string {
 			m := make(map[string][]string)
 			m[wsXForwardedForHeader] = []string{"not a valid IP"}
 			return m
-		}, false, _EMPTY_},
+		}, false, server._EMPTY_},
 		{"header present one IP", func() map[string][]string {
 			m := make(map[string][]string)
 			m[wsXForwardedForHeader] = []string{"1.2.3.4"}
@@ -4034,12 +4035,12 @@ func sizedStringForCompression(sz int) string {
 }
 
 func testWSFlushConn(b *testing.B, compress bool, c net.Conn, br *bufio.Reader) {
-	buf := testWSCreateClientMsg(wsBinaryMessage, 1, true, compress, []byte(pingProto))
+	buf := testWSCreateClientMsg(wsBinaryMessage, 1, true, compress, []byte(server.pingProto))
 	c.Write(buf)
 	c.SetReadDeadline(time.Now().Add(5 * time.Second))
 	res := testWSReadFrame(b, br)
 	c.SetReadDeadline(time.Time{})
-	if !bytes.HasPrefix(res, []byte(pongProto)) {
+	if !bytes.HasPrefix(res, []byte(server.pongProto)) {
 		b.Fatalf("Failed read of PONG: %s\n", res)
 	}
 }
@@ -4048,7 +4049,7 @@ func wsBenchPub(b *testing.B, numPubs int, compress bool, payload string) {
 	b.StopTimer()
 	opts := testWSOptions()
 	opts.Websocket.Compression = compress
-	s := RunServer(opts)
+	s := server.RunServer(opts)
 	defer s.Shutdown()
 
 	n := b.N
@@ -4236,7 +4237,7 @@ func wsBenchSub(b *testing.B, numSubs int, compress bool, payload string) {
 	b.StopTimer()
 	opts := testWSOptions()
 	opts.Websocket.Compression = compress
-	s := RunServer(opts)
+	s := server.RunServer(opts)
 	defer s.Shutdown()
 
 	var subs []*bufio.Reader
@@ -4255,7 +4256,7 @@ func wsBenchSub(b *testing.B, numSubs int, compress bool, payload string) {
 	wg.Add(numSubs)
 
 	// Use regular NATS client to publish messages
-	nc := natsConnect(b, s.ClientURL())
+	nc := server.natsConnect(b, s.ClientURL())
 	defer nc.Close()
 
 	b.StartTimer()
@@ -4271,7 +4272,7 @@ func wsBenchSub(b *testing.B, numSubs int, compress bool, payload string) {
 		}(br)
 	}
 	for i := 0; i < b.N; i++ {
-		natsPub(b, nc, testWSBenchSubject, []byte(payload))
+		server.natsPub(b, nc, testWSBenchSubject, []byte(payload))
 	}
 	wg.Wait()
 	b.StopTimer()

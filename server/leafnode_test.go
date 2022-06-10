@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"github.com/nats-io/nats-server/v2/server/internal/network/websocket"
 	"math/rand"
 	"net"
 	"net/url"
@@ -560,7 +561,7 @@ func TestLeafNodeRTT(t *testing.T) {
 	sb.Shutdown()
 
 	// Now check that initial RTT is computed prior to first PingInterval
-	// Get new options to avoid possible race changing the ping interval.
+	// get new options to avoid possible race changing the ping interval.
 	ob = DefaultOptions()
 	ob.PingInterval = time.Minute
 	ob.LeafNode.Host = "127.0.0.1"
@@ -999,7 +1000,7 @@ func TestLeafCloseTLSConnection(t *testing.T) {
 
 	checkLeafNodeConnected(t, s)
 
-	// Get leaf connection
+	// get leaf connection
 	var leaf *client
 	s.mu.Lock()
 	for _, l := range s.leafs {
@@ -2945,8 +2946,8 @@ func TestLeafNodeWSRemoteCompressAndMaskingOptions(t *testing.T) {
 }
 
 func TestLeafNodeWSNoMaskingRejected(t *testing.T) {
-	wsTestRejectNoMasking = true
-	defer func() { wsTestRejectNoMasking = false }()
+	websocket.wsTestRejectNoMasking = true
+	defer func() { websocket.wsTestRejectNoMasking = false }()
 
 	o := testDefaultLeafNodeWSOptions()
 	s := RunServer(o)

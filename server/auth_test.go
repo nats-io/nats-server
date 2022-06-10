@@ -15,6 +15,7 @@ package server
 
 import (
 	"fmt"
+	"github.com/nats-io/nats-server/v2/server/internal/network/websocket"
 	"net"
 	"net/url"
 	"os"
@@ -116,14 +117,14 @@ func TestUserUnknownAllowedConnectionType(t *testing.T) {
 	o.Users = []*User{{
 		Username:               "user",
 		Password:               "pwd",
-		AllowedConnectionTypes: testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, "someNewType"}),
+		AllowedConnectionTypes: websocket.testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, "someNewType"}),
 	}}
 	_, err := NewServer(o)
 	if err == nil || !strings.Contains(err.Error(), "connection type") {
 		t.Fatalf("Expected error about unknown connection type, got %v", err)
 	}
 
-	o.Users[0].AllowedConnectionTypes = testCreateAllowedConnectionTypes([]string{"websocket"})
+	o.Users[0].AllowedConnectionTypes = websocket.testCreateAllowedConnectionTypes([]string{"websocket"})
 	s, err := NewServer(o)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -140,13 +141,13 @@ func TestUserUnknownAllowedConnectionType(t *testing.T) {
 	o.Users = nil
 	o.Nkeys = []*NkeyUser{{
 		Nkey:                   "somekey",
-		AllowedConnectionTypes: testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, "someNewType"}),
+		AllowedConnectionTypes: websocket.testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, "someNewType"}),
 	}}
 	_, err = NewServer(o)
 	if err == nil || !strings.Contains(err.Error(), "connection type") {
 		t.Fatalf("Expected error about unknown connection type, got %v", err)
 	}
-	o.Nkeys[0].AllowedConnectionTypes = testCreateAllowedConnectionTypes([]string{"websocket"})
+	o.Nkeys[0].AllowedConnectionTypes = websocket.testCreateAllowedConnectionTypes([]string{"websocket"})
 	s, err = NewServer(o)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)

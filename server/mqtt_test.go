@@ -19,6 +19,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"github.com/nats-io/nats-server/v2/server/internal/network/websocket"
 	"io"
 	"math/rand"
 	"net"
@@ -66,7 +67,7 @@ type mqttWrapAsWs struct {
 }
 
 func (c *mqttWrapAsWs) Write(p []byte) (int, error) {
-	proto := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, p)
+	proto := websocket.testWSCreateClientMsg(websocket.wsBinaryMessage, 1, true, false, p)
 	return c.Conn.Write(proto)
 }
 
@@ -80,7 +81,7 @@ func (c *mqttWrapAsWs) Read(p []byte) (int, error) {
 			c.tmp = c.tmp[n:]
 			return n, nil
 		}
-		c.tmp = testWSReadFrame(c.t, c.br)
+		c.tmp = websocket.testWSReadFrame(c.t, c.br)
 	}
 }
 
@@ -614,7 +615,7 @@ func TestMQTTStart(t *testing.T) {
 		t.Fatalf("Error creating server: %v", err)
 	}
 	defer s2.Shutdown()
-	l := &captureFatalLogger{fatalCh: make(chan string, 1)}
+	l := &websocket.captureFatalLogger{fatalCh: make(chan string, 1)}
 	s2.SetLogger(l, false, false)
 
 	wg := sync.WaitGroup{}
@@ -784,7 +785,7 @@ func testMQTTConnectRetryWithError(t testing.TB, ci *mqttConnInfo, host string, 
 RETRY:
 	if ci.ws {
 		var br *bufio.Reader
-		c, br, _, err = testNewWSClientWithError(t, testWSClientOptions{
+		c, br, _, err = websocket.testNewWSClientWithError(t, websocket.testWSClientOptions{
 			host:  host,
 			port:  port,
 			noTLS: !ci.tls,
@@ -984,7 +985,7 @@ func TestMQTTTLSVerifyAndMap(t *testing.T) {
 			o.Accounts = []*Account{acc}
 			o.Users = users
 			if test.filtering {
-				o.Users[0].AllowedConnectionTypes = testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, jwt.ConnectionTypeMqtt})
+				o.Users[0].AllowedConnectionTypes = websocket.testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, jwt.ConnectionTypeMqtt})
 			}
 			tc := &TLSConfigOpts{
 				CertFile: "../test/configs/certs/tlsauth/server.pem",
@@ -1322,7 +1323,7 @@ func TestMQTTJWTWithAllowedConnectionTypes(t *testing.T) {
 	// Add system account and memory resolver to server options
 	o.SystemAccount = syspub
 	o.AccountResolver = mr
-	setupAddTrusted(o)
+	websocket.setupAddTrusted(o)
 
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
@@ -1414,7 +1415,7 @@ func TestMQTTUsersAuth(t *testing.T) {
 				o := testMQTTDefaultOptions()
 				o.Users = users
 				// Only allowed for regular clients
-				o.Users[0].AllowedConnectionTypes = testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard})
+				o.Users[0].AllowedConnectionTypes = websocket.testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard})
 				return o
 			},
 			"user", "pwd", mqttConnAckRCNotAuthorized,
@@ -1424,7 +1425,7 @@ func TestMQTTUsersAuth(t *testing.T) {
 			func() *Options {
 				o := testMQTTDefaultOptions()
 				o.Users = users
-				o.Users[0].AllowedConnectionTypes = testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, jwt.ConnectionTypeMqtt})
+				o.Users[0].AllowedConnectionTypes = websocket.testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, jwt.ConnectionTypeMqtt})
 				return o
 			},
 			"user", "pwd", mqttConnAckRCConnectionAccepted,
@@ -1434,7 +1435,7 @@ func TestMQTTUsersAuth(t *testing.T) {
 			func() *Options {
 				o := testMQTTDefaultOptions()
 				o.Users = users
-				o.Users[0].AllowedConnectionTypes = testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, jwt.ConnectionTypeMqtt})
+				o.Users[0].AllowedConnectionTypes = websocket.testCreateAllowedConnectionTypes([]string{jwt.ConnectionTypeStandard, jwt.ConnectionTypeMqtt})
 				return o
 			},
 			"user", "badpassword", mqttConnAckRCNotAuthorized,
@@ -4400,7 +4401,7 @@ func TestMQTTLockedSession(t *testing.T) {
 		t.Fatalf("account session manager not found")
 	}
 
-	// Get the session for "sub"
+	// get the session for "sub"
 	cli := testMQTTGetClient(t, s, "sub")
 	sess := cli.mqtt.sess
 
@@ -6243,23 +6244,23 @@ func BenchmarkMQTT_QoS0_Pub_______0b_Payload(b *testing.B) {
 }
 
 func BenchmarkMQTT_QoS0_Pub_______8b_Payload(b *testing.B) {
-	mqttBenchPubQoS0(b, mqttPubSubj, sizedString(8), 0)
+	mqttBenchPubQoS0(b, mqttPubSubj, websocket.sizedString(8), 0)
 }
 
 func BenchmarkMQTT_QoS0_Pub______32b_Payload(b *testing.B) {
-	mqttBenchPubQoS0(b, mqttPubSubj, sizedString(32), 0)
+	mqttBenchPubQoS0(b, mqttPubSubj, websocket.sizedString(32), 0)
 }
 
 func BenchmarkMQTT_QoS0_Pub_____128b_Payload(b *testing.B) {
-	mqttBenchPubQoS0(b, mqttPubSubj, sizedString(128), 0)
+	mqttBenchPubQoS0(b, mqttPubSubj, websocket.sizedString(128), 0)
 }
 
 func BenchmarkMQTT_QoS0_Pub_____256b_Payload(b *testing.B) {
-	mqttBenchPubQoS0(b, mqttPubSubj, sizedString(256), 0)
+	mqttBenchPubQoS0(b, mqttPubSubj, websocket.sizedString(256), 0)
 }
 
 func BenchmarkMQTT_QoS0_Pub_______1K_Payload(b *testing.B) {
-	mqttBenchPubQoS0(b, mqttPubSubj, sizedString(1024), 0)
+	mqttBenchPubQoS0(b, mqttPubSubj, websocket.sizedString(1024), 0)
 }
 
 func BenchmarkMQTT_QoS0_PubSub1___0b_Payload(b *testing.B) {
@@ -6267,23 +6268,23 @@ func BenchmarkMQTT_QoS0_PubSub1___0b_Payload(b *testing.B) {
 }
 
 func BenchmarkMQTT_QoS0_PubSub1___8b_Payload(b *testing.B) {
-	mqttBenchPubQoS0(b, mqttPubSubj, sizedString(8), 1)
+	mqttBenchPubQoS0(b, mqttPubSubj, websocket.sizedString(8), 1)
 }
 
 func BenchmarkMQTT_QoS0_PubSub1__32b_Payload(b *testing.B) {
-	mqttBenchPubQoS0(b, mqttPubSubj, sizedString(32), 1)
+	mqttBenchPubQoS0(b, mqttPubSubj, websocket.sizedString(32), 1)
 }
 
 func BenchmarkMQTT_QoS0_PubSub1_128b_Payload(b *testing.B) {
-	mqttBenchPubQoS0(b, mqttPubSubj, sizedString(128), 1)
+	mqttBenchPubQoS0(b, mqttPubSubj, websocket.sizedString(128), 1)
 }
 
 func BenchmarkMQTT_QoS0_PubSub1_256b_Payload(b *testing.B) {
-	mqttBenchPubQoS0(b, mqttPubSubj, sizedString(256), 1)
+	mqttBenchPubQoS0(b, mqttPubSubj, websocket.sizedString(256), 1)
 }
 
 func BenchmarkMQTT_QoS0_PubSub1___1K_Payload(b *testing.B) {
-	mqttBenchPubQoS0(b, mqttPubSubj, sizedString(1024), 1)
+	mqttBenchPubQoS0(b, mqttPubSubj, websocket.sizedString(1024), 1)
 }
 
 func BenchmarkMQTT_QoS0_PubSub2___0b_Payload(b *testing.B) {
@@ -6291,23 +6292,23 @@ func BenchmarkMQTT_QoS0_PubSub2___0b_Payload(b *testing.B) {
 }
 
 func BenchmarkMQTT_QoS0_PubSub2___8b_Payload(b *testing.B) {
-	mqttBenchPubQoS0(b, mqttPubSubj, sizedString(8), 2)
+	mqttBenchPubQoS0(b, mqttPubSubj, websocket.sizedString(8), 2)
 }
 
 func BenchmarkMQTT_QoS0_PubSub2__32b_Payload(b *testing.B) {
-	mqttBenchPubQoS0(b, mqttPubSubj, sizedString(32), 2)
+	mqttBenchPubQoS0(b, mqttPubSubj, websocket.sizedString(32), 2)
 }
 
 func BenchmarkMQTT_QoS0_PubSub2_128b_Payload(b *testing.B) {
-	mqttBenchPubQoS0(b, mqttPubSubj, sizedString(128), 2)
+	mqttBenchPubQoS0(b, mqttPubSubj, websocket.sizedString(128), 2)
 }
 
 func BenchmarkMQTT_QoS0_PubSub2_256b_Payload(b *testing.B) {
-	mqttBenchPubQoS0(b, mqttPubSubj, sizedString(256), 2)
+	mqttBenchPubQoS0(b, mqttPubSubj, websocket.sizedString(256), 2)
 }
 
 func BenchmarkMQTT_QoS0_PubSub2___1K_Payload(b *testing.B) {
-	mqttBenchPubQoS0(b, mqttPubSubj, sizedString(1024), 2)
+	mqttBenchPubQoS0(b, mqttPubSubj, websocket.sizedString(1024), 2)
 }
 
 func BenchmarkMQTT_QoS1_Pub_______0b_Payload(b *testing.B) {
@@ -6315,23 +6316,23 @@ func BenchmarkMQTT_QoS1_Pub_______0b_Payload(b *testing.B) {
 }
 
 func BenchmarkMQTT_QoS1_Pub_______8b_Payload(b *testing.B) {
-	mqttBenchPubQoS1(b, mqttPubSubj, sizedString(8), 0)
+	mqttBenchPubQoS1(b, mqttPubSubj, websocket.sizedString(8), 0)
 }
 
 func BenchmarkMQTT_QoS1_Pub______32b_Payload(b *testing.B) {
-	mqttBenchPubQoS1(b, mqttPubSubj, sizedString(32), 0)
+	mqttBenchPubQoS1(b, mqttPubSubj, websocket.sizedString(32), 0)
 }
 
 func BenchmarkMQTT_QoS1_Pub_____128b_Payload(b *testing.B) {
-	mqttBenchPubQoS1(b, mqttPubSubj, sizedString(128), 0)
+	mqttBenchPubQoS1(b, mqttPubSubj, websocket.sizedString(128), 0)
 }
 
 func BenchmarkMQTT_QoS1_Pub_____256b_Payload(b *testing.B) {
-	mqttBenchPubQoS1(b, mqttPubSubj, sizedString(256), 0)
+	mqttBenchPubQoS1(b, mqttPubSubj, websocket.sizedString(256), 0)
 }
 
 func BenchmarkMQTT_QoS1_Pub_______1K_Payload(b *testing.B) {
-	mqttBenchPubQoS1(b, mqttPubSubj, sizedString(1024), 0)
+	mqttBenchPubQoS1(b, mqttPubSubj, websocket.sizedString(1024), 0)
 }
 
 func BenchmarkMQTT_QoS1_PubSub1___0b_Payload(b *testing.B) {
@@ -6339,23 +6340,23 @@ func BenchmarkMQTT_QoS1_PubSub1___0b_Payload(b *testing.B) {
 }
 
 func BenchmarkMQTT_QoS1_PubSub1___8b_Payload(b *testing.B) {
-	mqttBenchPubQoS1(b, mqttPubSubj, sizedString(8), 1)
+	mqttBenchPubQoS1(b, mqttPubSubj, websocket.sizedString(8), 1)
 }
 
 func BenchmarkMQTT_QoS1_PubSub1__32b_Payload(b *testing.B) {
-	mqttBenchPubQoS1(b, mqttPubSubj, sizedString(32), 1)
+	mqttBenchPubQoS1(b, mqttPubSubj, websocket.sizedString(32), 1)
 }
 
 func BenchmarkMQTT_QoS1_PubSub1_128b_Payload(b *testing.B) {
-	mqttBenchPubQoS1(b, mqttPubSubj, sizedString(128), 1)
+	mqttBenchPubQoS1(b, mqttPubSubj, websocket.sizedString(128), 1)
 }
 
 func BenchmarkMQTT_QoS1_PubSub1_256b_Payload(b *testing.B) {
-	mqttBenchPubQoS1(b, mqttPubSubj, sizedString(256), 1)
+	mqttBenchPubQoS1(b, mqttPubSubj, websocket.sizedString(256), 1)
 }
 
 func BenchmarkMQTT_QoS1_PubSub1___1K_Payload(b *testing.B) {
-	mqttBenchPubQoS1(b, mqttPubSubj, sizedString(1024), 1)
+	mqttBenchPubQoS1(b, mqttPubSubj, websocket.sizedString(1024), 1)
 }
 
 func BenchmarkMQTT_QoS1_PubSub2___0b_Payload(b *testing.B) {
@@ -6363,21 +6364,21 @@ func BenchmarkMQTT_QoS1_PubSub2___0b_Payload(b *testing.B) {
 }
 
 func BenchmarkMQTT_QoS1_PubSub2___8b_Payload(b *testing.B) {
-	mqttBenchPubQoS1(b, mqttPubSubj, sizedString(8), 2)
+	mqttBenchPubQoS1(b, mqttPubSubj, websocket.sizedString(8), 2)
 }
 
 func BenchmarkMQTT_QoS1_PubSub2__32b_Payload(b *testing.B) {
-	mqttBenchPubQoS1(b, mqttPubSubj, sizedString(32), 2)
+	mqttBenchPubQoS1(b, mqttPubSubj, websocket.sizedString(32), 2)
 }
 
 func BenchmarkMQTT_QoS1_PubSub2_128b_Payload(b *testing.B) {
-	mqttBenchPubQoS1(b, mqttPubSubj, sizedString(128), 2)
+	mqttBenchPubQoS1(b, mqttPubSubj, websocket.sizedString(128), 2)
 }
 
 func BenchmarkMQTT_QoS1_PubSub2_256b_Payload(b *testing.B) {
-	mqttBenchPubQoS1(b, mqttPubSubj, sizedString(256), 2)
+	mqttBenchPubQoS1(b, mqttPubSubj, websocket.sizedString(256), 2)
 }
 
 func BenchmarkMQTT_QoS1_PubSub2___1K_Payload(b *testing.B) {
-	mqttBenchPubQoS1(b, mqttPubSubj, sizedString(1024), 2)
+	mqttBenchPubQoS1(b, mqttPubSubj, websocket.sizedString(1024), 2)
 }

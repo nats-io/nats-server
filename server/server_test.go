@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/nats-io/nats-server/v2/server/internal/network/websocket"
 	"io"
 	"io/ioutil"
 	"net"
@@ -961,7 +962,7 @@ func TestLameDuckMode(t *testing.T) {
 }
 
 func TestLameDuckModeInfo(t *testing.T) {
-	optsA := testWSOptions()
+	optsA := websocket.testWSOptions()
 	optsA.Cluster.Name = "abc"
 	optsA.Cluster.Host = "127.0.0.1"
 	optsA.Cluster.Port = -1
@@ -983,7 +984,7 @@ func TestLameDuckModeInfo(t *testing.T) {
 	defer c.Close()
 	client := bufio.NewReaderSize(c, maxBufSize)
 
-	wsconn, wsclient := testWSCreateClient(t, false, false, optsA.Websocket.Host, optsA.Websocket.Port)
+	wsconn, wsclient := websocket.testWSCreateClient(t, false, false, optsA.Websocket.Host, optsA.Websocket.Port)
 	defer wsconn.Close()
 
 	getInfo := func(ws bool) *serverInfo {
@@ -991,7 +992,7 @@ func TestLameDuckModeInfo(t *testing.T) {
 		var l string
 		var err error
 		if ws {
-			l = string(testWSReadFrame(t, wsclient))
+			l = string(websocket.testWSReadFrame(t, wsclient))
 		} else {
 			l, err = client.ReadString('\n')
 			if err != nil {
@@ -1009,7 +1010,7 @@ func TestLameDuckModeInfo(t *testing.T) {
 	c.Write([]byte("CONNECT {\"protocol\":1,\"verbose\":false}\r\nPING\r\n"))
 	client.ReadString('\n')
 
-	optsB := testWSOptions()
+	optsB := websocket.testWSOptions()
 	optsB.Cluster.Name = "abc"
 	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srvA.ClusterAddr().Port))
 	srvB := RunServer(optsB)
@@ -1036,7 +1037,7 @@ func TestLameDuckModeInfo(t *testing.T) {
 	expected := [][]string{{curla, curlb}, {wscurla, wscurlb}}
 	checkConnectURLs(expected)
 
-	optsC := testWSOptions()
+	optsC := websocket.testWSOptions()
 	testSetLDMGracePeriod(optsA, 5*time.Second)
 	optsC.Cluster.Name = "abc"
 	optsC.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srvA.ClusterAddr().Port))
@@ -1050,7 +1051,7 @@ func TestLameDuckModeInfo(t *testing.T) {
 	expected = [][]string{{curla, curlb, curlc}, {wscurla, wscurlb, wscurlc}}
 	checkConnectURLs(expected)
 
-	optsD := testWSOptions()
+	optsD := websocket.testWSOptions()
 	optsD.Cluster.Name = "abc"
 	optsD.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srvA.ClusterAddr().Port))
 	srvD := RunServer(optsD)

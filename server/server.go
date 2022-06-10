@@ -21,6 +21,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/nats-io/nats-server/v2/server/internal/network/websocket"
 	"io"
 	"io/ioutil"
 	"log"
@@ -237,7 +238,7 @@ type Server struct {
 	eventIds *nuid.NUID
 
 	// Websocket structure
-	websocket srvWebsocket
+	websocket websocket.SrvWebsocket
 
 	// MQTT structure
 	mqtt srvMQTT
@@ -446,7 +447,7 @@ func NewServer(opts *Options) (*Server, error) {
 
 	// Used internally for quick look-ups.
 	s.clientConnectURLsMap = make(refCountedUrlSet)
-	s.websocket.connectURLsMap = make(refCountedUrlSet)
+	s.websocket.ConnectURLsMap = make(refCountedUrlSet)
 	s.leafURLsMap = make(refCountedUrlSet)
 
 	// Ensure that non-exported options (used in tests) are properly set.
@@ -709,7 +710,7 @@ func validateOptions(o *Options) error {
 		return err
 	}
 	// Finally check websocket options.
-	return validateWebsocketOptions(o)
+	return websocket.ValidateWebsocketOptions(o)
 }
 
 func (s *Server) getOpts() *Options {
@@ -2683,7 +2684,7 @@ func (s *Server) updateServerINFOAndSendINFOToClients(curls, wsurls []string, ad
 		return wasUpdated
 	}
 	cliUpdated := updateMap(curls, s.clientConnectURLsMap)
-	wsUpdated := updateMap(wsurls, s.websocket.connectURLsMap)
+	wsUpdated := updateMap(wsurls, s.websocket.ConnectURLsMap)
 
 	updateInfo := func(infoURLs *[]string, urls []string, m refCountedUrlSet) {
 		// Recreate the info's slice from the map
@@ -2699,7 +2700,7 @@ func (s *Server) updateServerINFOAndSendINFOToClients(curls, wsurls []string, ad
 		updateInfo(&s.info.ClientConnectURLs, s.clientConnectURLs, s.clientConnectURLsMap)
 	}
 	if wsUpdated {
-		updateInfo(&s.info.WSConnectURLs, s.websocket.connectURLs, s.websocket.connectURLsMap)
+		updateInfo(&s.info.WSConnectURLs, s.websocket.ConnectURLs, s.websocket.ConnectURLsMap)
 	}
 	if cliUpdated || wsUpdated {
 		// Update the time of this update
@@ -2937,7 +2938,7 @@ func (s *Server) readyForConnections(d time.Duration) error {
 		chk["route"] = info{ok: (opts.Cluster.Port == 0 || s.routeListener != nil), err: s.routeListenerErr}
 		chk["gateway"] = info{ok: (opts.Gateway.Name == _EMPTY_ || s.gatewayListener != nil), err: s.gatewayListenerErr}
 		chk["leafNode"] = info{ok: (opts.LeafNode.Port == 0 || s.leafNodeListener != nil), err: s.leafNodeListenerErr}
-		chk["websocket"] = info{ok: (opts.Websocket.Port == 0 || s.websocket.listener != nil), err: s.websocket.listenerErr}
+		chk["websocket"] = info{ok: (opts.Websocket.Port == 0 || s.websocket.Listener != nil), err: s.websocket.listenerErr}
 		chk["mqtt"] = info{ok: (opts.MQTT.Port == 0 || s.mqtt.listener != nil), err: s.mqtt.listenerErr}
 		s.mu.Unlock()
 
@@ -3104,7 +3105,7 @@ func (s *Server) getNonLocalIPsIfHostIsIPAny(host string, all bool) (bool, []str
 	if !ip.IsUnspecified() {
 		return false, nil, nil
 	}
-	s.Debugf("Get non local IPs for %q", host)
+	s.Debugf("get non local IPs for %q", host)
 	var ips []string
 	ifaces, _ := net.Interfaces()
 	for _, i := range ifaces {
@@ -3192,8 +3193,8 @@ func (s *Server) PortsInfo(maxWait time.Duration) *Ports {
 		httpListener := s.http
 		clusterListener := s.routeListener
 		profileListener := s.profiler
-		wsListener := s.websocket.listener
-		wss := s.websocket.tls
+		wsListener := s.websocket.Listener
+		wss := s.websocket.Tls
 		s.mu.Unlock()
 
 		ports := Ports{}
@@ -3227,9 +3228,9 @@ func (s *Server) PortsInfo(maxWait time.Duration) *Ports {
 		}
 
 		if wsListener != nil {
-			protocol := wsSchemePrefix
+			protocol := websocket.SchemePrefix
 			if wss {
-				protocol = wsSchemePrefixTLS
+				protocol = websocket.SchemePrefixTLS
 			}
 			ports.WebSocket = formatURL(protocol, wsListener)
 		}
@@ -3338,7 +3339,7 @@ func (s *Server) serviceListeners() []net.Listener {
 		listeners = append(listeners, s.profiler)
 	}
 	if opts.Websocket.Port != 0 {
-		listeners = append(listeners, s.websocket.listener)
+		listeners = append(listeners, s.websocket.Listener)
 	}
 	return listeners
 }
@@ -3364,11 +3365,11 @@ func (s *Server) lameDuckMode() {
 	expected := 1
 	s.listener.Close()
 	s.listener = nil
-	if s.websocket.server != nil {
+	if s.websocket.Server != nil {
 		expected++
-		s.websocket.server.Close()
-		s.websocket.server = nil
-		s.websocket.listener = nil
+		s.websocket.Server.Close()
+		s.websocket.Server = nil
+		s.websocket.Listener = nil
 	}
 	s.ldmCh = make(chan bool, expected)
 	opts := s.getOpts()
@@ -3496,8 +3497,8 @@ func (s *Server) sendLDMToClients() {
 	s.info.LameDuckMode = true
 	// Clear this so that if there are further updates, we don't send our URLs.
 	s.clientConnectURLs = s.clientConnectURLs[:0]
-	if s.websocket.connectURLs != nil {
-		s.websocket.connectURLs = s.websocket.connectURLs[:0]
+	if s.websocket.ConnectURLs != nil {
+		s.websocket.ConnectURLs = s.websocket.ConnectURLs[:0]
 	}
 	// Reset content first.
 	s.info.ClientConnectURLs = s.info.ClientConnectURLs[:0]
@@ -3507,7 +3508,7 @@ func (s *Server) sendLDMToClients() {
 		for url := range s.clientConnectURLsMap {
 			s.info.ClientConnectURLs = append(s.info.ClientConnectURLs, url)
 		}
-		for url := range s.websocket.connectURLsMap {
+		for url := range s.websocket.ConnectURLsMap {
 			s.info.WSConnectURLs = append(s.info.WSConnectURLs, url)
 		}
 	}

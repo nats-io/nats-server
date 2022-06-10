@@ -19,6 +19,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"github.com/nats-io/nats-server/v2/server/internal/network/websocket"
 	"io"
 	"math/rand"
 	"net"
@@ -257,7 +258,7 @@ type client struct {
 	route *route
 	gw    *gateway
 	leaf  *leaf
-	ws    *websocket
+	ws    *websocket.websocket
 	mqtt  *mqtt
 
 	flags clientFlag // Compact booleans into a single field. Size will be increased when needed.
@@ -1170,9 +1171,9 @@ func (c *client) readLoop(pre []byte) {
 	var _bufs [1][]byte
 	bufs := _bufs[:1]
 
-	var wsr *wsReadInfo
+	var wsr *websocket.wsReadInfo
 	if ws {
-		wsr = &wsReadInfo{mask: masking}
+		wsr = &websocket.wsReadInfo{mask: masking}
 		wsr.init()
 	}
 

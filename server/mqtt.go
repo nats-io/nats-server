@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/nats-io/nats-server/v2/server/internal/network/websocket"
 	"io"
 	"net"
 	"net/http"
@@ -409,7 +410,7 @@ func (s *Server) startMQTT() {
 // This is similar to createClient() but has some modifications specifi to MQTT clients.
 // The comments have been kept to minimum to reduce code size. Check createClient() for
 // more details.
-func (s *Server) createMQTTClient(conn net.Conn, ws *websocket) *client {
+func (s *Server) createMQTTClient(conn net.Conn, ws *websocket.websocket) *client {
 	opts := s.getOpts()
 
 	maxPay := int32(opts.MaxPayload)
@@ -2398,7 +2399,7 @@ func (sess *mqttSession) trackPending(pQos byte, reply string, sub *subscription
 		sess.pending = make(map[uint16]*mqttPending)
 		sess.cpending = make(map[string]map[uint64]uint16)
 	}
-	// Get the stream sequence and other from the ack reply subject
+	// get the stream sequence and other from the ack reply subject
 	sseq, _, dcount := ackReplyInfo(reply)
 
 	var pending *mqttPending
@@ -2676,7 +2677,7 @@ func (s *Server) mqttProcessConnect(c *client, cp *mqttConnectProto, trace bool)
 		return ErrAuthentication
 	}
 	// Now that we are are authenticated, we have the client bound to the account.
-	// Get the account's level MQTT sessions manager. If it does not exists yet,
+	// get the account's level MQTT sessions manager. If it does not exists yet,
 	// this will create it along with the streams where sessions and messages
 	// are stored.
 	asm, err := s.getOrCreateMQTTAccountSessionManager(cid, c)
