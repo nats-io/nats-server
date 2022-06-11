@@ -2954,7 +2954,7 @@ func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, ac
 	mh = append(mh, ' ')
 
 	if len(rt.qs) > 0 {
-		if reply != nil {
+		if len(reply) > 0 {
 			mh = append(mh, "+ "...) // Signal that there is a reply.
 			mh = append(mh, reply...)
 			mh = append(mh, ' ')
@@ -2962,7 +2962,7 @@ func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, ac
 			mh = append(mh, "| "...) // Only queues
 		}
 		mh = append(mh, rt.qs...)
-	} else if reply != nil {
+	} else if len(reply) > 0 {
 		mh = append(mh, reply...)
 		mh = append(mh, ' ')
 	}
@@ -4180,7 +4180,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	// leaf nodes or routes even if there are no queue filters since we collect
 	// them above and do not process inline like normal clients.
 	// However, do select queue subs if asked to ignore empty queue filter.
-	if (c.kind == LEAF || c.kind == ROUTER || c.kind == GATEWAY) && qf == nil && flags&pmrIgnoreEmptyQueueFilter == 0 {
+	if (c.kind == LEAF || c.kind == ROUTER || c.kind == GATEWAY) && len(qf) == 0 && flags&pmrIgnoreEmptyQueueFilter == 0 {
 		goto sendToRoutesOrLeafs
 	}
 
