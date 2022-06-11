@@ -549,7 +549,7 @@ func (s *Server) setGatewayInfoHostPort(info *Info, o *Options) error {
 	gw := s.gateway
 	gw.Lock()
 	defer gw.Unlock()
-	gw.URLs.removeUrl(gw.URL)
+	gw.URLs.RemoveUrl(gw.URL)
 	if o.Gateway.Advertise != "" {
 		advHost, advPort, err := parseHostPort(o.Gateway.Advertise, o.Gateway.Port)
 		if err != nil {
@@ -606,7 +606,7 @@ func (g *srvGateway) generateInfoJSON() {
 	if !g.enabled {
 		return
 	}
-	g.info.GatewayURLs = g.URLs.getAsStringSlice()
+	g.info.GatewayURLs = g.URLs.GetAsStringSlice()
 	b, err := json.Marshal(g.info)
 	if err != nil {
 		panic(err)
@@ -1544,7 +1544,7 @@ func (g *gatewayCfg) addURLs(infoURLs []string) {
 // Server lock held on entry
 func (s *Server) addGatewayURL(urlStr string) bool {
 	s.gateway.Lock()
-	added := s.gateway.URLs.addUrl(urlStr)
+	added := s.gateway.URLs.AddUrl(urlStr)
 	if added {
 		s.gateway.generateInfoJSON()
 	}
@@ -1560,7 +1560,7 @@ func (s *Server) removeGatewayURL(urlStr string) bool {
 		return false
 	}
 	s.gateway.Lock()
-	removed := s.gateway.URLs.removeUrl(urlStr)
+	removed := s.gateway.URLs.RemoveUrl(urlStr)
 	if removed {
 		s.gateway.generateInfoJSON()
 	}

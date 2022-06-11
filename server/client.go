@@ -258,7 +258,7 @@ type client struct {
 	route *route
 	gw    *gateway
 	leaf  *leaf
-	ws    *websocket.websocket
+	ws    *websocket.Websocket
 	mqtt  *mqtt
 
 	flags clientFlag // Compact booleans into a single field. Size will be increased when needed.
@@ -1438,7 +1438,7 @@ func (c *client) flushOutbound() bool {
 	// Subtract from pending bytes and messages.
 	c.out.pb -= n
 	if c.isWebsocket() {
-		c.ws.fs -= n
+		c.ws.Fs -= n
 	}
 	c.out.pm -= apm // FIXME(dlc) - this will not be totally accurate on partials.
 
@@ -1493,6 +1493,12 @@ func (c *client) flushOutbound() bool {
 	}
 
 	return true
+}
+
+// Returns true if this connection is from a Websocket client.
+// Lock held on entry.
+func (c *client) isWebsocket() bool {
+	return c.ws != nil
 }
 
 // This is invoked from flushOutbound() for io/timeout error (slow consumer).

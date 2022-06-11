@@ -335,7 +335,7 @@ func testWSSetupForRead() (*server.client, *readInfo, *testReader) {
 	opts := server.DefaultOptions()
 	opts.MaxPending = server.MAX_PENDING_SIZE
 	s := &server.Server{opts: opts}
-	c := &server.client{srv: s, ws: &websocket{}}
+	c := &server.client{srv: s, ws: &Websocket{}}
 	c.initClient()
 	return c, ri, tr
 }
@@ -2611,7 +2611,7 @@ func TestWSFrameOutbound(t *testing.T) {
 
 			bufs = nil
 			c.out.pb = 0
-			c.ws.fs = 0
+			c.ws.Fs = 0
 			c.ws.frames = nil
 			c.ws.browser = true
 			bufs = append(bufs, []byte("some smaller "))
@@ -2680,7 +2680,7 @@ func TestWSFrameOutbound(t *testing.T) {
 
 			bufs = nil
 			c.out.pb = 0
-			c.ws.fs = 0
+			c.ws.Fs = 0
 			c.ws.frames = nil
 			c.ws.browser = true
 			bufs = append(bufs, []byte("some smaller "))
@@ -2717,7 +2717,7 @@ func TestWSFrameOutbound(t *testing.T) {
 
 			bufs = nil
 			c.out.pb = 0
-			c.ws.fs = 0
+			c.ws.Fs = 0
 			c.ws.frames = nil
 			c.ws.browser = true
 			bufs = append(bufs, []byte("some smaller "))
@@ -2745,7 +2745,7 @@ func TestWSFrameOutbound(t *testing.T) {
 
 			bufs = nil
 			c.out.pb = 0
-			c.ws.fs = 0
+			c.ws.Fs = 0
 			c.ws.frames = nil
 			c.ws.browser = true
 			bufs = append(bufs, []byte("some smaller buffer"))
@@ -2780,7 +2780,7 @@ func TestWSFrameOutbound(t *testing.T) {
 
 			bufs = nil
 			c.out.pb = 0
-			c.ws.fs = 0
+			c.ws.Fs = 0
 			c.ws.frames = nil
 			c.ws.browser = true
 			bufs = append(bufs, make([]byte, wsFrameSizeForBrowsers+100))
@@ -3046,7 +3046,7 @@ func TestWSCompressionWithPartialWrite(t *testing.T) {
 		ws.mu.Lock()
 		pb := ws.out.pb
 		wf := ws.ws.frames
-		fs := ws.ws.fs
+		fs := ws.ws.Fs
 		ws.mu.Unlock()
 		if pb != 0 || len(wf) != 0 || fs != 0 {
 			return fmt.Errorf("Expected pb, wf and fs to be 0, got %v, %v, %v", pb, wf, fs)
@@ -3068,7 +3068,7 @@ func TestWSCompressionFrameSizeLimit(t *testing.T) {
 			opts := testWSOptions()
 			opts.MaxPending = server.MAX_PENDING_SIZE
 			s := &server.Server{opts: opts}
-			c := &server.client{srv: s, ws: &websocket{compress: true, browser: true, nocompfrag: test.noLimit, maskwrite: test.maskWrite}}
+			c := &server.client{srv: s, ws: &Websocket{compress: true, browser: true, nocompfrag: test.noLimit, maskwrite: test.maskWrite}}
 			c.initClient()
 
 			uncompressedPayload := make([]byte, 2*wsFrameSizeForBrowsers)

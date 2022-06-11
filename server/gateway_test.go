@@ -6598,7 +6598,7 @@ func TestGatewayURLsNotRemovedOnDuplicateRoute(t *testing.T) {
 	checkURLs := func(s *Server) {
 		t.Helper()
 		s.mu.Lock()
-		urls := s.gateway.URLs.getAsStringSlice()
+		urls := s.gateway.URLs.GetAsStringSlice()
 		s.mu.Unlock()
 		if len(urls) != 2 {
 			t.Fatalf("Expected 2 urls, got %v", urls)

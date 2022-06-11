@@ -41,6 +41,9 @@ import (
 type wsOpCode int
 
 const (
+	// CR_LF string
+	CR_LF = "\r\n"
+
 	// From https://tools.ietf.org/html/rfc6455#section-5.2
 	wsTextMessage   = wsOpCode(1)
 	wsBinaryMessage = wsOpCode(2)
@@ -86,15 +89,16 @@ const (
 	wsNoMaskingHeader       = "Nats-No-Masking"
 	wsNoMaskingValue        = "true"
 	wsXForwardedForHeader   = "X-Forwarded-For"
-	wsNoMaskingFullResponse = wsNoMaskingHeader + ": " + wsNoMaskingValue + server.CR_LF
+	wsNoMaskingFullResponse = wsNoMaskingHeader + ": " + wsNoMaskingValue + CR_LF
 	wsPMCExtension          = "permessage-deflate" // per-message compression
 	wsPMCSrvNoCtx           = "server_no_context_takeover"
 	wsPMCCliNoCtx           = "client_no_context_takeover"
 	wsPMCReqHeaderValue     = wsPMCExtension + "; " + wsPMCSrvNoCtx + "; " + wsPMCCliNoCtx
-	wsPMCFullResponse       = "Sec-WebSocket-Extensions: " + wsPMCExtension + "; " + wsPMCSrvNoCtx + "; " + wsPMCCliNoCtx + server._CRLF_
+	wsPMCFullResponse       = "Sec-WebSocket-Extensions: " + wsPMCExtension + "; " + wsPMCSrvNoCtx + "; " +
+		wsPMCCliNoCtx + CR_LF
 	wsSecProto              = "Sec-Websocket-Protocol"
 	wsMQTTSecProtoVal       = "mqtt"
-	wsMQTTSecProto          = wsSecProto + ": " + wsMQTTSecProtoVal + server.CR_LF
+	wsMQTTSecProto          = wsSecProto + ": " + wsMQTTSecProtoVal + CR_LF
 )
 
 var decompressorPool sync.Pool
@@ -106,9 +110,9 @@ var wsGUID = []byte("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
 // Test can enable this so that Server does not support "no-masking" requests.
 var testRejectNoMasking = false
 
-type websocket struct {
+type Websocket struct {
 	frames     net.Buffers
-	fs         int64
+	Fs         int64
 	closeMsg   []byte
 	compress   bool
 	closeSent  bool
@@ -121,6 +125,12 @@ type websocket struct {
 	clientIP   string
 }
 
+type ConnURLsMap interface {
+	AddUrl(urlStr string) bool
+	RemoveUrl(urlStr string) bool
+	GetAsStringSlice() []string
+}
+
 type SrvWebsocket struct {
 	mu             sync.RWMutex
 	Server         *http.Server
@@ -130,7 +140,8 @@ type SrvWebsocket struct {
 	allowedOrigins map[string]*allowedOrigin // host will be the key
 	sameOrigin     bool
 	ConnectURLs    []string
-	ConnectURLsMap server.refCountedUrlSet
+
+	ConnectURLsMap ConnURLsMap
 	authOverride   bool // indicate if there is auth override in websocket config
 }
 
@@ -141,7 +152,7 @@ type allowedOrigin struct {
 
 type upgradeResult struct {
 	conn net.Conn
-	ws   *websocket
+	ws   *Websocket
 	kind int
 }
 
@@ -184,11 +195,6 @@ func get(r io.Reader, buf []byte, pos, needed int) ([]byte, int, error) {
 	return b, pos + avail, nil
 }
 
-// Returns true if this connection is from a Websocket client.
-// Lock held on entry.
-func (c *server.client) isWebsocket() bool {
-	return c.ws != nil
-}
 
 // Returns a slice of byte slices corresponding to payload of websocket frames.
 // The byte slice `buf` is filled with bytes from the connection's read loop.
@@ -781,7 +787,7 @@ func (s *server.Server) upgrade(w http.ResponseWriter, r *http.Request) (*upgrad
 	}
 	// Server always expect "clients" to send masked payload, unless the option
 	// "no-masking" has been enabled.
-	ws := &websocket{compress: compress, maskread: !noMasking}
+	ws := &Websocket{compress: compress, maskread: !noMasking}
 
 	// Check for X-Forwarded-For header
 	if cips, ok := r.Header[wsXForwardedForHeader]; ok {
@@ -1169,7 +1175,7 @@ func (s *server.Server) getTLSConfig(_ *tls.ClientHelloInfo) (*tls.Config, error
 // specific to handle websocket clients.
 // The comments have been kept to minimum to reduce code size.
 // Check createClient() for more details.
-func (s *server.Server) createWSClient(conn net.Conn, ws *websocket) *server.client {
+func (s *server.Server) createWSClient(conn net.Conn, ws *Websocket) *server.client {
 	opts := s.getOpts()
 
 	maxPay := int32(opts.MaxPayload)

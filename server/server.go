@@ -2675,9 +2675,9 @@ func (s *Server) updateServerINFOAndSendINFOToClients(curls, wsurls []string, ad
 	updateMap := func(urls []string, m refCountedUrlSet) bool {
 		wasUpdated := false
 		for _, url := range urls {
-			if add && m.addUrl(url) {
+			if add && m.AddUrl(url) {
 				wasUpdated = true
-			} else if remove && m.removeUrl(url) {
+			} else if remove && m.RemoveUrl(url) {
 				wasUpdated = true
 			}
 		}

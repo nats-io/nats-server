@@ -197,19 +197,19 @@ func comma(v int64) string {
 	return sign + strings.Join(parts[j:], ",")
 }
 
-// Adds urlStr to the given map. If the string was already present, simply
+// AddUrl adds urlStr to the given map. If the string was already present, simply
 // bumps the reference count.
 // Returns true only if it was added for the first time.
-func (m refCountedUrlSet) addUrl(urlStr string) bool {
+func (m refCountedUrlSet) AddUrl(urlStr string) bool {
 	m[urlStr]++
 	return m[urlStr] == 1
 }
 
-// Removes urlStr from the given map. If the string is not present, nothing
+// RemoveUrl removes urlStr from the given map. If the string is not present, nothing
 // is done and false is returned.
 // If the string was present, its reference count is decreased. Returns true
 // if this was the last reference, false otherwise.
-func (m refCountedUrlSet) removeUrl(urlStr string) bool {
+func (m refCountedUrlSet) RemoveUrl(urlStr string) bool {
 	removed := false
 	if ref, ok := m[urlStr]; ok {
 		if ref == 1 {
@@ -222,8 +222,8 @@ func (m refCountedUrlSet) removeUrl(urlStr string) bool {
 	return removed
 }
 
-// Returns the unique URLs in this map as a slice
-func (m refCountedUrlSet) getAsStringSlice() []string {
+// GetAsStringSlice returns the unique URLs in this map as a slice
+func (m refCountedUrlSet) GetAsStringSlice() []string {
 	a := make([]string, 0, len(m))
 	for u := range m {
 		a = append(a, u)
