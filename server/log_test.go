@@ -361,49 +361,49 @@ func TestSetGlobalLogger(t *testing.T) {
 	server.enableLogging()
 
 	// We assert that the logger has change to the DummyLogger
-	_ = logging.logger.(*DummyLogger)
+	_ = Logg.logger.(*DummyLogger)
 
-	if logging.debug != 1 {
-		t.Fatalf("Expected debug 1, received value %d\n", logging.debug)
+	if Logg.debug != 1 {
+		t.Fatalf("Expected debug 1, received value %d\n", Logg.debug)
 	}
 
-	if logging.trace != 1 {
-		t.Fatalf("Expected trace 1, received value %d\n", logging.trace)
+	if Logg.trace != 1 {
+		t.Fatalf("Expected trace 1, received value %d\n", Logg.trace)
 	}
 
 	// Check traces
 	expectedStr := "This is a Notice"
-	logging.Noticef(expectedStr)
+	Logg.Noticef(expectedStr)
 	dl.CheckContent(t, expectedStr)
 	expectedStr = "This is an Error"
-	logging.Errorf(expectedStr)
+	Logg.Errorf(expectedStr)
 	dl.CheckContent(t, expectedStr)
 	expectedStr = "This is a Fatal"
-	logging.Fatalf(expectedStr)
+	Logg.Fatalf(expectedStr)
 	dl.CheckContent(t, expectedStr)
 	expectedStr = "This is a Debug"
-	logging.Debugf(expectedStr)
+	Logg.Debugf(expectedStr)
 	dl.CheckContent(t, expectedStr)
 	expectedStr = "This is a Trace"
-	logging.Tracef(expectedStr)
+	Logg.Tracef(expectedStr)
 	dl.CheckContent(t, expectedStr)
 	expectedStr = "This is a Warning"
-	logging.Tracef(expectedStr)
+	Logg.Tracef(expectedStr)
 	dl.CheckContent(t, expectedStr)
 
 	// Make sure that we can reset to fal
 	server.SetLogger(dl, false, false)
 	server.enableLogging()
-	if logging.debug != 0 {
-		t.Fatalf("Expected debug 0, got %v", logging.debug)
+	if Logg.debug != 0 {
+		t.Fatalf("Expected debug 0, got %v", Logg.debug)
 	}
-	if logging.trace != 0 {
-		t.Fatalf("Expected trace 0, got %v", logging.trace)
+	if Logg.trace != 0 {
+		t.Fatalf("Expected trace 0, got %v", Logg.trace)
 	}
 	// Now, Debug and Trace should not produce anything
 	dl.Msg = ""
-	logging.Debugf("This Debug should not be traced")
+	Logg.Debugf("This Debug should not be traced")
 	dl.CheckContent(t, "")
-	logging.Tracef("This Trace should not be traced")
+	Logg.Tracef("This Trace should not be traced")
 	dl.CheckContent(t, "")
 }

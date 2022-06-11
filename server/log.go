@@ -24,7 +24,7 @@ import (
 	srvlog "github.com/nats-io/nats-server/v2/logger"
 )
 
-var logging *Logging = &Logging{}
+var Logg *Logging = &Logging{}
 
 type Logging struct {
 	sync.RWMutex
@@ -183,7 +183,7 @@ func (s *Server) ConfigureLogger() {
 }
 
 func (s *Server) enableLogging() {
-	logging = &s.logging
+	Logg = &s.logging
 }
 
 // Logger Returns our current logger.
