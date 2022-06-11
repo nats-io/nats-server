@@ -658,30 +658,41 @@ func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64, smp *Store
 	}
 
 	isAll := filter == _EMPTY_ || filter == fwcs
-	subs := []string{filter}
-	if wc || isAll {
-		subs = subs[:0]
-		for fsubj := range ms.fss {
-			if isAll || subjectIsSubsetMatch(fsubj, filter) {
-				subs = append(subs, fsubj)
+
+	// Skip scan of mb.fss is number of messages in the block are less than
+	// 1/2 the number of subjects in mb.fss. Or we have a wc and lots of fss entries.
+	const linearScanMaxFSS = 256
+	doLinearScan := isAll || 2*int(ms.state.LastSeq-start) < len(ms.fss) || (wc && len(ms.fss) > linearScanMaxFSS)
+
+	// Initial setup.
+	fseq, lseq := start, ms.state.LastSeq
+
+	if !doLinearScan {
+		subs := []string{filter}
+		if wc || isAll {
+			subs = subs[:0]
+			for fsubj := range ms.fss {
+				if isAll || subjectIsSubsetMatch(fsubj, filter) {
+					subs = append(subs, fsubj)
+				}
 			}
 		}
-	}
-	fseq, lseq := ms.state.LastSeq, uint64(0)
-	for _, subj := range subs {
-		ss := ms.fss[subj]
-		if ss == nil {
-			continue
+		fseq, lseq = ms.state.LastSeq, uint64(0)
+		for _, subj := range subs {
+			ss := ms.fss[subj]
+			if ss == nil {
+				continue
+			}
+			if ss.First < fseq {
+				fseq = ss.First
+			}
+			if ss.Last > lseq {
+				lseq = ss.Last
+			}
 		}
-		if ss.First < fseq {
-			fseq = ss.First
+		if fseq < start {
+			fseq = start
 		}
-		if ss.Last > lseq {
-			lseq = ss.Last
-		}
-	}
-	if fseq < start {
-		fseq = start
 	}
 
 	eq := subjectsEqual

@@ -1225,8 +1225,9 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 	fseq, isAll, subs := start, filter == _EMPTY_ || filter == mb.sfilter || filter == fwcs, []string{filter}
 
 	// Skip scan of mb.fss is number of messages in the block are less than
-	// 1/2 the number of subjects in mb.fss.
-	doLinearScan := isAll || 2*int(mb.last.seq-start) < len(mb.fss)
+	// 1/2 the number of subjects in mb.fss. Or we have a wc and lots of fss entries.
+	const linearScanMaxFSS = 32
+	doLinearScan := isAll || 2*int(mb.last.seq-start) < len(mb.fss) || (wc && len(mb.fss) > linearScanMaxFSS)
 
 	if !doLinearScan {
 		// If we have a wildcard match against all tracked subjects we know about.
