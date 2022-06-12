@@ -14,14 +14,21 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
 
+type client struct {
+	ws Websocket
+	mu sync.Mutex
+}
+
 // handleControlFrame Handles the PING, PONG and CLOSE websocket control frames.
 //
 // Client lock MUST NOT be held on entry.
-func (c *server.client) handleControlFrame(r *readInfo, frameType opCode, nc io.Reader, buf []byte, pos int) (int, error) {
+func (c *client) handleControlFrame(r *readInfo, frameType opCode, nc io.Reader, buf []byte, pos int) (int, error) {
 	var payload []byte
 	var err error
 
@@ -58,12 +65,12 @@ func (c *server.client) handleControlFrame(r *readInfo, frameType opCode, nc io.
 				}
 			}
 		}
-		c.wsEnqueueControlMessage(closeMessage, createCloseMessage(status, body))
+		c.enqueueControlMessage(closeMessage, createCloseMessage(status, body))
 		// Return io.EOF so that readLoop will close the connection as ClientClosed
 		// after processing pending buffers.
 		return pos, io.EOF
 	case pingMessage:
-		c.wsEnqueueControlMessage(wsPongMessage, payload)
+		c.enqueueControlMessage(wsPongMessage, payload)
 	case wsPongMessage:
 		// Nothing to do..
 	}
@@ -77,7 +84,7 @@ func (c *server.client) handleControlFrame(r *readInfo, frameType opCode, nc io.
 // `buf` should not be overwritten until the returned slices have been parsed.
 //
 // Client lock MUST NOT be held on entry.
-func (c *server.client) wsRead(r *readInfo, ior io.Reader, buf []byte) ([][]byte, error) {
+func (c *client) wsRead(r *readInfo, ior io.Reader, buf []byte) ([][]byte, error) {
 	var (
 		bufs   [][]byte
 		tmpBuf []byte
@@ -102,7 +109,7 @@ func (c *server.client) wsRead(r *readInfo, ior io.Reader, buf []byte) ([][]byte
 			// Clients MUST set the mask bit. If not set, reject.
 			// However, LEAF by default will not have masking, unless they are forced to, by configuration.
 			if r.mask && b1&maskBit == 0 {
-				return bufs, c.wsHandleProtocolError("mask bit missing")
+				return bufs, c.handleProtocolError("mask bit missing")
 			}
 
 			// Store size in case it is < 125
@@ -111,27 +118,27 @@ func (c *server.client) wsRead(r *readInfo, ior io.Reader, buf []byte) ([][]byte
 			switch frameType {
 			case pingMessage, wsPongMessage, closeMessage:
 				if r.rem > maxControlPayloadSize {
-					return bufs, c.wsHandleProtocolError(
+					return bufs, c.handleProtocolError(
 						fmt.Sprintf("control frame length bigger than maximum allowed of %v bytes",
 							maxControlPayloadSize))
 				}
 				if !final {
-					return bufs, c.wsHandleProtocolError("control frame does not have final bit set")
+					return bufs, c.handleProtocolError("control frame does not have final bit set")
 				}
 			case textMessage, binaryMessage:
 				if !r.ff {
-					return bufs, c.wsHandleProtocolError("new message started before final frame for previous message was received")
+					return bufs, c.handleProtocolError("new message started before final frame for previous message was received")
 				}
 				r.ff = final
 				r.fc = compressed
 			case continuationFrame:
 				// Compressed bit must be only set in the first frame
 				if r.ff || compressed {
-					return bufs, c.wsHandleProtocolError("invalid continuation frame")
+					return bufs, c.handleProtocolError("invalid continuation frame")
 				}
 				r.ff = final
 			default:
-				return bufs, c.wsHandleProtocolError(fmt.Sprintf("unknown opcode %v", frameType))
+				return bufs, c.handleProtocolError(fmt.Sprintf("unknown opcode %v", frameType))
 			}
 
 			switch r.rem {
@@ -161,7 +168,7 @@ func (c *server.client) wsRead(r *readInfo, ior io.Reader, buf []byte) ([][]byte
 
 			// Handle control messages in place...
 			if isControlFrame(frameType) {
-				pos, err = c.wsHandleControlFrame(r, frameType, ior, buf, pos)
+				pos, err = c.handleControlFrame(r, frameType, ior, buf, pos)
 				if err != nil {
 					return bufs, err
 				}
@@ -227,7 +234,7 @@ func (c *server.client) wsRead(r *readInfo, ior io.Reader, buf []byte) ([][]byte
 // This will prevent the generic closeConnection() to enqueue one.
 //
 // Client lock held on entry.
-func (c *server.client) enqueueControlMessageLocked(controlMsg opCode, payload []byte) {
+func (c *client) enqueueControlMessageLocked(controlMsg opCode, payload []byte) {
 	// Control messages are never compressed and their size will be
 	// less than maxControlPayloadSize, which means the frame header
 	// will be only 2 or 6 bytes.
@@ -262,16 +269,16 @@ func (c *server.client) enqueueControlMessageLocked(controlMsg opCode, payload [
 // Invokes enqueueControlMessageLocked under client lock.
 //
 // Client lock MUST NOT be held on entry
-func (c *server.client) wsEnqueueControlMessage(controlMsg opCode, payload []byte) {
+func (c *client) enqueueControlMessage(controlMsg opCode, payload []byte) {
 	c.mu.Lock()
-	c.wsEnqueueControlMessageLocked(controlMsg, payload)
+	c.enqueueControlMessageLocked(controlMsg, payload)
 	c.mu.Unlock()
 }
 
 // Enqueues a websocket close message with a status mapped from the given `reason`.
 //
 // Client lock held on entry
-func (c *server.client) enqueueCloseMessage(reason server.ClosedState) {
+func (c *client) enqueueCloseMessage(reason server.ClosedState) {
 	var status int
 	switch reason {
 	case server.ClientClosed:
@@ -294,20 +301,20 @@ func (c *server.client) enqueueCloseMessage(reason server.ClosedState) {
 		status = closeStatusInternalSrvError
 	}
 	body := createCloseMessage(status, reason.String())
-	c.wsEnqueueControlMessageLocked(closeMessage, body)
+	c.enqueueControlMessageLocked(closeMessage, body)
 }
 
 // Create and then enqueue a close message with a protocol error and the
 // given message. This is invoked when parsing websocket frames.
 //
 // Lock MUST NOT be held on entry.
-func (c *server.client) handleProtocolError(message string) error {
+func (c *client) handleProtocolError(message string) error {
 	buf := createCloseMessage(closeStatusProtocolError, message)
-	c.wsEnqueueControlMessage(closeMessage, buf)
+	c.enqueueControlMessage(closeMessage, buf)
 	return fmt.Errorf(message)
 }
 
-func (c *server.client) collapsePtoNB() (net.Buffers, int64) {
+func (c *client) collapsePtoNB() (net.Buffers, int64) {
 	var nb net.Buffers
 	var mfs int
 	var usz int
@@ -893,4 +900,197 @@ func ValidateWebsocketOptions(o *server.Options) error {
 		return fmt.Errorf("websocket: %v", err)
 	}
 	return nil
+}
+
+// ReadLoop is the websocket read functionality.
+// Runs in its own Go routine.
+func (c *client) ReadLoop(pre []byte, done chan struct{}) {
+	// Grab the connection off the client, it will be cleared on a close.
+	// We check for that after the loop, but want to avoid a nil dereference
+	c.mu.Lock()
+	defer func() {
+		done <- struct{}{}
+		close(done)
+	}()
+	if c.isClosed() {
+		c.mu.Unlock()
+		return
+	}
+	nc := c.nc
+	//ws := c.isWebsocket()
+	//if c.isMqtt() {
+	//	c.mqtt.r = &mqttReader{reader: nc}
+	//}
+	c.in.rsz = startBufSize
+
+	// Check the per-account-cache for closed subscriptions
+	cpacc := c.kind == ROUTER || c.kind == GATEWAY
+	// Last per-account-cache check for closed subscriptions
+	lpacc := time.Now()
+	acc := c.acc
+	var masking bool
+	masking = c.ws.maskread
+	c.mu.Unlock()
+
+	defer func() {
+		// These are used only in the readloop, so we can set them to nil
+		// on exit of the readLoop.
+		c.in.results, c.in.pacache = nil, nil
+	}()
+
+	// Start read buffer.
+	b := make([]byte, c.in.rsz)
+
+	// Websocket clients will return several slices if there are multiple
+	// websocket frames in the blind read. For non WS clients though, we
+	// will always have 1 slice per loop iteration. So we define this here
+	// so non WS clients will use bufs[0] = b[:n].
+	var _bufs [1][]byte
+	bufs := _bufs[:1]
+
+	var wsr *wsReadInfo
+	if ws {
+		wsr = &wsReadInfo{mask: masking}
+		wsr.init()
+	}
+
+	for {
+		var n int
+		var err error
+
+		// If we have a pre buffer parse that first.
+		if len(pre) > 0 {
+			b = pre
+			n = len(pre)
+			pre = nil
+		} else {
+			n, err = nc.Read(b)
+			// If we have any data we will try to parse and exit at the end.
+			if n == 0 && err != nil {
+				c.closeConnection(closedStateForErr(err))
+				return
+			}
+		}
+		if ws {
+			bufs, err = c.wsRead(wsr, nc, b[:n])
+			if bufs == nil && err != nil {
+				if err != io.EOF {
+					c.Errorf("read error: %v", err)
+				}
+				c.closeConnection(closedStateForErr(err))
+			} else if bufs == nil {
+				continue
+			}
+		} else {
+			bufs[0] = b[:n]
+		}
+		start := time.Now()
+
+		// Check if the account has mappings and if so set the local readcache flag.
+		// We check here to make sure any changes such as config reload are reflected here.
+		if c.kind == CLIENT || c.kind == LEAF {
+			if acc.hasMappings() {
+				c.in.flags.set(hasMappings)
+			} else {
+				c.in.flags.clear(hasMappings)
+			}
+		}
+
+		// Clear inbound stats cache
+		c.in.msgs = 0
+		c.in.bytes = 0
+		c.in.subs = 0
+
+		// Main call into parser for inbound data. This will generate callouts
+		// to process messages, etc.
+		for i := 0; i < len(bufs); i++ {
+			if err := c.parse(bufs[i]); err != nil {
+				if err == ErrMinimumVersionRequired {
+					// Special case here, currently only for leaf node connections.
+					// When process the CONNECT protocol, if the minimum version
+					// required was not met, an error was printed and sent back to
+					// the remote, and connection was closed after a certain delay
+					// (to avoid "rapid" reconnection from the remote).
+					// We don't need to do any of the things below, simply return.
+					return
+				}
+				if dur := time.Since(start); dur >= readLoopReportThreshold {
+					c.Warnf("Readloop processing time: %v", dur)
+				}
+				// Need to call flushClients because some of the clients have been
+				// assigned messages and their "fsp" incremented, and need now to be
+				// decremented and their writeLoop signaled.
+				c.flushClients(0)
+				// handled inline
+				if err != ErrMaxPayload && err != ErrAuthentication {
+					c.Error(err)
+					c.closeConnection(ProtocolViolation)
+				}
+				return
+			}
+		}
+
+		// Updates stats for client and server that were collected
+		// from parsing through the buffer.
+		if c.in.msgs > 0 {
+			atomic.AddInt64(&c.inMsgs, int64(c.in.msgs))
+			atomic.AddInt64(&c.inBytes, int64(c.in.bytes))
+			atomic.AddInt64(&s.inMsgs, int64(c.in.msgs))
+			atomic.AddInt64(&s.inBytes, int64(c.in.bytes))
+		}
+
+		// Signal to writeLoop to flush to socket.
+		last := c.flushClients(0)
+
+		// Update activity, check read buffer size.
+		c.mu.Lock()
+
+		// Activity based on interest changes or data/msgs.
+		if c.in.msgs > 0 || c.in.subs > 0 {
+			c.last = last
+		}
+
+		if n >= cap(b) {
+			c.in.srs = 0
+		} else if n < cap(b)/2 { // divide by 2 b/c we want less than what we would shrink to.
+			c.in.srs++
+		}
+
+		// Update read buffer size as/if needed.
+		if n >= cap(b) && cap(b) < maxBufSize {
+			// Grow
+			c.in.rsz = int32(cap(b) * 2)
+			b = make([]byte, c.in.rsz)
+		} else if n < cap(b) && cap(b) > minBufSize && c.in.srs > shortsToShrink {
+			// Shrink, for now don't accelerate, ping/pong will eventually sort it out.
+			c.in.rsz = int32(cap(b) / 2)
+			b = make([]byte, c.in.rsz)
+		}
+		// re-snapshot the account since it can change during reload, etc.
+		acc = c.acc
+		// Refresh nc because in some cases, we have upgraded c.nc to TLS.
+		nc = c.nc
+		c.mu.Unlock()
+
+		// Connection was closed
+		if nc == nil {
+			return
+		}
+
+		if dur := time.Since(start); dur >= readLoopReportThreshold {
+			c.Warnf("Readloop processing time: %v", dur)
+		}
+
+		// We could have had a read error from above but still read some data.
+		// If so do the close here unconditionally.
+		if err != nil {
+			c.closeConnection(closedStateForErr(err))
+			return
+		}
+
+		if cpacc && (start.Sub(lpacc)) >= closedSubsCheckInterval {
+			c.pruneClosedSubFromPerAccountCache()
+			lpacc = time.Now()
+		}
+	}
 }
