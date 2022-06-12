@@ -85,7 +85,7 @@ const (
 	pMCExtension          = "permessage-deflate" // per-message compression
 	pMCSrvNoCtx           = "server_no_context_takeover"
 	pMCCliNoCtx           = "client_no_context_takeover"
-	pMCReqHeaderValue     = pMCExtension + "; " + pMCSrvNoCtx + "; " + pMCCliNoCtx
+	PMCReqHeaderValue     = pMCExtension + "; " + pMCSrvNoCtx + "; " + pMCCliNoCtx
 	PMCFullResponse       = "Sec-WebSocket-Extensions: " + pMCExtension + "; " + pMCSrvNoCtx + "; " +
 		pMCCliNoCtx + cR_LF
 	secProto = "Sec-Websocket-Protocol"
@@ -113,7 +113,7 @@ type Websocket struct {
 	Browser    bool
 	Nocompfrag bool // No fragment for compressed frames
 	Maskread   bool
-	maskwrite  bool
+	Maskwrite  bool
 	compressor *flate.Writer
 	CookieJwt  string
 	ClientIP   string
@@ -498,7 +498,7 @@ func getHostAndPort(tls bool, hostport string) (string, string, error) {
 	return strings.ToLower(host), port, err
 }
 
-func wsMakeChallengeKey() (string, error) {
+func MakeChallengeKey() (string, error) {
 	p := make([]byte, 16)
 	if _, err := io.ReadFull(rand.Reader, p); err != nil {
 		return _EMPTY_, err

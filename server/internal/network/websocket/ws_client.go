@@ -237,7 +237,7 @@ func (c *client) enqueueControlMessageLocked(controlMsg opCode, payload []byte) 
 	// Control messages are never compressed and their size will be
 	// less than maxControlPayloadSize, which means the frame header
 	// will be only 2 or 6 bytes.
-	useMasking := c.ws.maskwrite
+	useMasking := c.ws.Maskwrite
 	sz := 2
 	if useMasking {
 		sz += 4
@@ -327,7 +327,7 @@ func (c *client) collapsePtoNB() (net.Buffers, int64) {
 	} else if len(c.out.nb) > 0 {
 		nb = c.out.nb
 	}
-	mask := c.ws.maskwrite
+	mask := c.ws.Maskwrite
 	// Start with possible already framed buffers (that we could have
 	// got from partials or control messages such as ws pings or pongs).
 	bufs := c.ws.frames
@@ -497,13 +497,13 @@ func (ws *SrvWebsocket) setOriginOptions(o *WebsocketOpts) {
 	}
 }
 
-// configAuth Given the websocket options, we check if any auth configuration
+// ConfigAuth Given the websocket options, we check if any auth configuration
 // has been provided. If so, possibly create users/nkey users and
 // store them in s.websocket.users/nkeys.
 // Also update a boolean that indicates if auth is required for
 // websocket clients.
 // Server lock is held on entry.
-func (ws *SrvWebsocket) configAuth(opts *WebsocketOpts) {
+func (ws *SrvWebsocket) ConfigAuth(opts *WebsocketOpts) {
 	// If any of those is specified, we consider that there is an override.
 	ws.AuthOverride = opts.Username != _EMPTY_ || opts.Token != _EMPTY_ || opts.NoAuthUser != _EMPTY_
 }

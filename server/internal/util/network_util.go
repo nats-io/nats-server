@@ -114,3 +114,41 @@ func getNonLocalIPsIfHostIsIPAny(host string, all bool) (bool, []string, error) 
 	}
 	return true, ips, nil
 }
+
+// AddUrl adds urlStr to the given map. If the string was already present, simply
+// bumps the reference count.
+// Returns true only if it was added for the first time.
+func (m RefCountedUrlSet) AddUrl(urlStr string) bool {
+	m[urlStr]++
+	return m[urlStr] == 1
+}
+
+// RemoveUrl removes urlStr from the given map. If the string is not present, nothing
+// is done and false is returned.
+// If the string was present, its reference count is decreased. Returns true
+// if this was the last reference, false otherwise.
+func (m RefCountedUrlSet) RemoveUrl(urlStr string) bool {
+	removed := false
+	if ref, ok := m[urlStr]; ok {
+		if ref == 1 {
+			removed = true
+			delete(m, urlStr)
+		} else {
+			m[urlStr]--
+		}
+	}
+	return removed
+}
+
+// GetAsStringSlice returns the unique URLs in this map as a slice
+func (m RefCountedUrlSet) GetAsStringSlice() []string {
+	a := make([]string, 0, len(m))
+	for u := range m {
+		a = append(a, u)
+	}
+	return a
+}
+
+// This map is used to store URLs string as the key with a reference count as
+// the value. This is used to handle gossiped URLs such as connect_urls, etc..
+type RefCountedUrlSet map[string]int

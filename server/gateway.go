@@ -19,6 +19,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"github.com/nats-io/nats-server/v2/server/internal/util"
 	"math/rand"
 	"net"
 	"net/url"
@@ -127,7 +128,7 @@ type srvGateway struct {
 	outo     []*client              // outbound gateways maintained in an order suitable for sending msgs (currently based on RTT)
 	in       map[uint64]*client     // inbound gateways
 	remotes  map[string]*gatewayCfg // Config of remote gateways
-	URLs     refCountedUrlSet       // Set of all Gateway URLs in the cluster
+	URLs     util.RefCountedUrlSet  // Set of all Gateway URLs in the cluster
 	URL      string                 // This server gateway URL (after possible random port is resolved)
 	info     *Info                  // Gateway Info protocol
 	infoJSON []byte                 // Marshal'ed Info protocol
@@ -342,7 +343,7 @@ func (s *Server) newGateway(opts *Options) error {
 		outo:     make([]*client, 0, 4),
 		in:       make(map[uint64]*client),
 		remotes:  make(map[string]*gatewayCfg),
-		URLs:     make(refCountedUrlSet),
+		URLs:     make(util.RefCountedUrlSet),
 		resolver: opts.Gateway.resolver,
 		runknown: opts.Gateway.RejectUnknown,
 		oldHash:  getOldHash(opts.Gateway.Name),

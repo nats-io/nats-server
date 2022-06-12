@@ -262,7 +262,8 @@ func (s *Server) configureAuthorization() {
 	}
 
 	// Do similar for websocket config
-	s.wsConfigAuth(&opts.Websocket)
+
+	s.websocket.ConfigAuth(&opts.Websocket)
 	// And for mqtt config
 	s.mqttConfigAuth(&opts.MQTT)
 }
@@ -390,7 +391,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 		case MQTT:
 			authRequired = s.mqtt.authOverride
 		case WS:
-			authRequired = s.websocket.authOverride
+			authRequired = s.websocket.AuthOverride
 		}
 	}
 	if !authRequired {
@@ -427,7 +428,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			tlsMap = wo.TLSMap
 			// The rest depends on if there was any auth override in
 			// the websocket's config.
-			if s.websocket.authOverride {
+			if s.websocket.AuthOverride {
 				noAuthUser = wo.NoAuthUser
 				username = wo.Username
 				password = wo.Password

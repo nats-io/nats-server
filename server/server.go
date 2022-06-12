@@ -22,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/nats-io/nats-server/v2/server/internal/network/websocket"
+	"github.com/nats-io/nats-server/v2/server/internal/util"
 	"io"
 	"io/ioutil"
 	"log"
@@ -158,7 +159,7 @@ type Server struct {
 	leafNodeListenerErr error
 	leafNodeInfo        Info
 	leafNodeInfoJSON    []byte
-	leafURLsMap         refCountedUrlSet
+	leafURLsMap         util.RefCountedUrlSet
 	leafNodeOpts        struct {
 		resolver    netResolver
 		dialTimeout time.Duration
@@ -190,7 +191,7 @@ type Server struct {
 	clientConnectURLs []string
 
 	// Used internally for quick look-ups.
-	clientConnectURLsMap refCountedUrlSet
+	clientConnectURLsMap util.RefCountedUrlSet
 
 	lastCURLsUpdate int64
 
@@ -446,9 +447,9 @@ func NewServer(opts *Options) (*Server, error) {
 	}
 
 	// Used internally for quick look-ups.
-	s.clientConnectURLsMap = make(refCountedUrlSet)
-	s.websocket.ConnectURLsMap = make(refCountedUrlSet)
-	s.leafURLsMap = make(refCountedUrlSet)
+	s.clientConnectURLsMap = make(util.RefCountedUrlSet)
+	s.websocket.ConnectURLsMap = make(util.RefCountedUrlSet)
+	s.leafURLsMap = make(util.RefCountedUrlSet)
 
 	// Ensure that non-exported options (used in tests) are properly set.
 	s.setLeafNodeNonExportedOptions()
@@ -2721,7 +2722,7 @@ func (s *Server) updateServerINFOAndSendINFOToClients(curls, wsurls []string, ad
 
 	remove := !add
 	// Will return true if we need alter the server's Info object.
-	updateMap := func(urls []string, m refCountedUrlSet) bool {
+	updateMap := func(urls []string, m util.RefCountedUrlSet) bool {
 		wasUpdated := false
 		for _, url := range urls {
 			if add && m.AddUrl(url) {
@@ -2735,7 +2736,7 @@ func (s *Server) updateServerINFOAndSendINFOToClients(curls, wsurls []string, ad
 	cliUpdated := updateMap(curls, s.clientConnectURLsMap)
 	wsUpdated := updateMap(wsurls, s.websocket.ConnectURLsMap)
 
-	updateInfo := func(infoURLs *[]string, urls []string, m refCountedUrlSet) {
+	updateInfo := func(infoURLs *[]string, urls []string, m util.RefCountedUrlSet) {
 		// Recreate the info's slice from the map
 		*infoURLs = (*infoURLs)[:0]
 		// Add this server client connect ULRs first...

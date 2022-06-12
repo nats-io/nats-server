@@ -2408,7 +2408,7 @@ func TestClientConnectionName(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			c := &client{srv: s, nc: &connString{}, kind: test.kind}
 			if test.ws {
-				c.ws = &websocket.websocket{}
+				c.ws = &websocket.Websocket{}
 			}
 			if test.mqtt {
 				c.mqtt = &mqtt{}
