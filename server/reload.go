@@ -17,6 +17,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/nats-io/nats-server/v2/server/internal/network/websocket"
 	"net/url"
 	"reflect"
 	"sort"
@@ -908,7 +909,7 @@ func imposeOrder(value interface{}) error {
 		sort.Slice(value.Gateways, func(i, j int) bool {
 			return value.Gateways[i].Name < value.Gateways[j].Name
 		})
-	case WebsocketOpts:
+	case websocket.WebsocketOpts:
 		sort.Strings(value.AllowedOrigins)
 	case string, bool, uint8, int, int32, int64, time.Duration, float64, nil, LeafNodeOpts, ClusterOpts, *tls.Config, PinnedCertSet,
 		*URLAccResolver, *MemAccResolver, *DirAccResolver, *CacheDirAccResolver, Authentication, MQTTOpts, jwt.TagList,
@@ -1192,8 +1193,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			}
 		case "websocket":
 			// Similar to gateways
-			tmpOld := oldValue.(WebsocketOpts)
-			tmpNew := newValue.(WebsocketOpts)
+			tmpOld := oldValue.(websocket.WebsocketOpts)
+			tmpNew := newValue.(websocket.WebsocketOpts)
 			tmpOld.TLSConfig = nil
 			tmpNew.TLSConfig = nil
 			// If there is really a change prevents reload.

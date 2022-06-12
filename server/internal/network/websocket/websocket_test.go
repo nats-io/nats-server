@@ -1445,7 +1445,7 @@ func TestWSParseOptions(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		content  string
-		checkOpt func(*server.WebsocketOpts) error
+		checkOpt func(*WebsocketOpts) error
 		err      string
 	}{
 		// Negative tests
@@ -1462,43 +1462,43 @@ func TestWSParseOptions(t *testing.T) {
 		{"bad handshake timeout duration", `websocket: { handshake_timeout: "abc" }`, nil, "invalid duration"},
 		{"unknown field", `websocket: { this_does_not_exist: 123 }`, nil, "unknown"},
 		// Positive tests
-		{"listen port only", `websocket { listen: 1234 }`, func(wo *server.WebsocketOpts) error {
+		{"listen port only", `websocket { listen: 1234 }`, func(wo *WebsocketOpts) error {
 			if wo.Port != 1234 {
 				return fmt.Errorf("expected 1234, got %v", wo.Port)
 			}
 			return nil
 		}, ""},
-		{"listen host and port", `websocket { listen: "localhost:1234" }`, func(wo *server.WebsocketOpts) error {
+		{"listen host and port", `websocket { listen: "localhost:1234" }`, func(wo *WebsocketOpts) error {
 			if wo.Host != "localhost" || wo.Port != 1234 {
 				return fmt.Errorf("expected localhost:1234, got %v:%v", wo.Host, wo.Port)
 			}
 			return nil
 		}, ""},
-		{"host", `websocket { host: "localhost" }`, func(wo *server.WebsocketOpts) error {
+		{"host", `websocket { host: "localhost" }`, func(wo *WebsocketOpts) error {
 			if wo.Host != "localhost" {
 				return fmt.Errorf("expected localhost, got %v", wo.Host)
 			}
 			return nil
 		}, ""},
-		{"port", `websocket { port: 1234 }`, func(wo *server.WebsocketOpts) error {
+		{"port", `websocket { port: 1234 }`, func(wo *WebsocketOpts) error {
 			if wo.Port != 1234 {
 				return fmt.Errorf("expected 1234, got %v", wo.Port)
 			}
 			return nil
 		}, ""},
-		{"advertise", `websocket { advertise: "host:1234" }`, func(wo *server.WebsocketOpts) error {
+		{"advertise", `websocket { advertise: "host:1234" }`, func(wo *WebsocketOpts) error {
 			if wo.Advertise != "host:1234" {
 				return fmt.Errorf("expected %q, got %q", "host:1234", wo.Advertise)
 			}
 			return nil
 		}, ""},
-		{"same origin", `websocket { same_origin: true }`, func(wo *server.WebsocketOpts) error {
+		{"same origin", `websocket { same_origin: true }`, func(wo *WebsocketOpts) error {
 			if !wo.SameOrigin {
 				return fmt.Errorf("expected same_origin==true, got %v", wo.SameOrigin)
 			}
 			return nil
 		}, ""},
-		{"allowed origins one only", `websocket { allowed_origins: "https://host.com/" }`, func(wo *server.WebsocketOpts) error {
+		{"allowed origins one only", `websocket { allowed_origins: "https://host.com/" }`, func(wo *WebsocketOpts) error {
 			expected := []string{"https://host.com/"}
 			if !reflect.DeepEqual(wo.AllowedOrigins, expected) {
 				return fmt.Errorf("expected allowed origins to be %q, got %q", expected, wo.AllowedOrigins)
@@ -1513,20 +1513,20 @@ func TestWSParseOptions(t *testing.T) {
 					"https://host2.com/"
 				]
 			}
-			`, func(wo *server.WebsocketOpts) error {
+			`, func(wo *WebsocketOpts) error {
 				expected := []string{"https://host1.com/", "https://host2.com/"}
 				if !reflect.DeepEqual(wo.AllowedOrigins, expected) {
 					return fmt.Errorf("expected allowed origins to be %q, got %q", expected, wo.AllowedOrigins)
 				}
 				return nil
 			}, ""},
-		{"handshake timeout in whole seconds", `websocket { handshake_timeout: 3 }`, func(wo *server.WebsocketOpts) error {
+		{"handshake timeout in whole seconds", `websocket { handshake_timeout: 3 }`, func(wo *WebsocketOpts) error {
 			if wo.HandshakeTimeout != 3*time.Second {
 				return fmt.Errorf("expected handshake to be 3s, got %v", wo.HandshakeTimeout)
 			}
 			return nil
 		}, ""},
-		{"handshake timeout n duration", `websocket { handshake_timeout: "4s" }`, func(wo *server.WebsocketOpts) error {
+		{"handshake timeout n duration", `websocket { handshake_timeout: "4s" }`, func(wo *WebsocketOpts) error {
 			if wo.HandshakeTimeout != 4*time.Second {
 				return fmt.Errorf("expected handshake to be 4s, got %v", wo.HandshakeTimeout)
 			}
@@ -1540,7 +1540,7 @@ func TestWSParseOptions(t *testing.T) {
 					key_file: "./configs/certs/key.pem"
 				}
 			}
-			`, func(wo *server.WebsocketOpts) error {
+			`, func(wo *WebsocketOpts) error {
 				if wo.TLSConfig == nil {
 					return fmt.Errorf("TLSConfig should have been set")
 				}
@@ -1551,7 +1551,7 @@ func TestWSParseOptions(t *testing.T) {
 			websocket {
 				compression: true
 			}
-			`, func(wo *server.WebsocketOpts) error {
+			`, func(wo *WebsocketOpts) error {
 				if !wo.Compression {
 					return fmt.Errorf("Compression should have been set")
 				}
@@ -1562,7 +1562,7 @@ func TestWSParseOptions(t *testing.T) {
 			websocket {
 				jwt_cookie: "jwtcookie"
 			}
-			`, func(wo *server.WebsocketOpts) error {
+			`, func(wo *WebsocketOpts) error {
 				if wo.JWTCookie != "jwtcookie" {
 					return fmt.Errorf("Invalid JWTCookie value: %q", wo.JWTCookie)
 				}
@@ -1573,7 +1573,7 @@ func TestWSParseOptions(t *testing.T) {
 			websocket {
 				no_auth_user: "noauthuser"
 			}
-			`, func(wo *server.WebsocketOpts) error {
+			`, func(wo *WebsocketOpts) error {
 				if wo.NoAuthUser != "noauthuser" {
 					return fmt.Errorf("Invalid NoAuthUser value: %q", wo.NoAuthUser)
 				}
@@ -1589,7 +1589,7 @@ func TestWSParseOptions(t *testing.T) {
 					timeout: 2.0
 				}
 			}
-			`, func(wo *server.WebsocketOpts) error {
+			`, func(wo *WebsocketOpts) error {
 				if wo.Username != "webuser" || wo.Password != "pwd" || wo.Token != "token" || wo.AuthTimeout != 2.0 {
 					return fmt.Errorf("Invalid auth block: %+v", wo)
 				}
@@ -1602,7 +1602,7 @@ func TestWSParseOptions(t *testing.T) {
 					timeout: 2
 				}
 			}
-			`, func(wo *server.WebsocketOpts) error {
+			`, func(wo *WebsocketOpts) error {
 				if wo.AuthTimeout != 2.0 {
 					return fmt.Errorf("Invalid auth timeout: %v", wo.AuthTimeout)
 				}

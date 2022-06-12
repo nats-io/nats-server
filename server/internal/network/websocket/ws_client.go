@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats-server/v2/server/internal/util"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -469,9 +469,11 @@ func (c *client) collapsePtoNB() (net.Buffers, int64) {
 	return bufs, c.ws.fs
 }
 
+type Server struct {
+}
+
 // setOriginOptions creates or updates the existing map
-func (s *server.Server) setOriginOptions(o *server.WebsocketOpts) {
-	ws := &s.websocket
+func (ws *SrvWebsocket) setOriginOptions(o *WebsocketOpts) {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	// Copy over the option's same origin boolean
@@ -486,7 +488,8 @@ func (s *server.Server) setOriginOptions(o *server.WebsocketOpts) {
 		// are parseable, but if we get an error, report and skip.
 		u, err := url.ParseRequestURI(ao)
 		if err != nil {
-			s.Errorf("error parsing allowed origin: %v", err)
+			// todo: wait to use global log in another pr
+			//s.Errorf("error parsing allowed origin: %v", err)
 			continue
 		}
 		h, p, _ := getHostAndPort(u.Scheme == "https", u.Host)
@@ -503,17 +506,16 @@ func (s *server.Server) setOriginOptions(o *server.WebsocketOpts) {
 // Also update a boolean that indicates if auth is required for
 // websocket clients.
 // Server lock is held on entry.
-func (s *server.Server) configAuth(opts *server.WebsocketOpts) {
-	ws := &s.websocket
+func (ws *SrvWebsocket) configAuth(opts *WebsocketOpts) {
 	// If any of those is specified, we consider that there is an override.
-	ws.authOverride = opts.Username != server._EMPTY_ || opts.Token != server._EMPTY_ || opts.NoAuthUser != server._EMPTY_
+	ws.authOverride = opts.Username != _EMPTY_ || opts.Token != _EMPTY_ || opts.NoAuthUser != _EMPTY_
 }
 
-func (s *server.Server) StartWebsocketServer() {
-	sopts := s.getOpts()
-	o := &sopts.Websocket
+// ProcessSrvWebsocket modify the ws as the config passed, the ws could run except the error is not nil
+// should check s.shutdown(unfinished)
+func (ws *SrvWebsocket) ProcessSrvWebsocket(server *http.Server, o *WebsocketOpts) error {
 
-	s.wsSetOriginOptions(o)
+	ws.setOriginOptions(o)
 
 	var hl net.Listener
 	var proto string
@@ -525,16 +527,12 @@ func (s *server.Server) StartWebsocketServer() {
 	}
 	hp := net.JoinHostPort(o.Host, strconv.Itoa(port))
 
-	// We are enforcing (when validating the options) the use of TLS, but the
-	// code was originally supporting both modes. The reason for TLS only is
-	// that we expect users to send JWTs with bearer tokens and we want to
-	// avoid the possibility of it being "intercepted".
+	//ws.mu.Lock()
+	//if ws.shutdown {
+	//	ws.mu.Unlock()
+	//	return
+	//}
 
-	s.mu.Lock()
-	if s.shutdown {
-		s.mu.Unlock()
-		return
-	}
 	// Do not check o.NoTLS here. If a TLS configuration is available, use it,
 	// regardless of NoTLS. If we don't have a TLS config, it means that the
 	// user has configured NoTLS because otherwise the Server would have failed
@@ -542,81 +540,38 @@ func (s *server.Server) StartWebsocketServer() {
 	if o.TLSConfig != nil {
 		proto = SchemePrefixTLS
 		config := o.TLSConfig.Clone()
-		config.GetConfigForClient = s.wsGetTLSConfig
+		config.GetConfigForClient = o.getTLSConfig
 		hl, err = tls.Listen("tcp", hp, config)
 	} else {
 		proto = SchemePrefix
 		hl, err = net.Listen("tcp", hp)
 	}
-	s.websocket.listenerErr = err
+	ws.listenerErr = err
 	if err != nil {
-		s.mu.Unlock()
-		s.Fatalf("Unable to listen for websocket connections: %v", err)
-		return
+		ws.mu.Unlock()
+		//ws.Fatalf("Unable to listen for websocket connections: %v", err)
+		return err
 	}
 	if port == 0 {
 		o.Port = hl.Addr().(*net.TCPAddr).Port
 	}
-	s.Noticef("Listening for websocket clients on %s://%s:%d", proto, o.Host, o.Port)
+	//ws.Noticef("Listening for websocket clients on %ws://%ws:%d", proto, o.Host, o.Port)
 	if proto == SchemePrefix {
-		s.Warnf("Websocket not configured with TLS. DO NOT USE IN PRODUCTION!")
+		//ws.Warnf("Websocket not configured with TLS. DO NOT USE IN PRODUCTION!")
 	}
 
-	s.websocket.tls = proto == "wss"
-	s.websocket.connectURLs, err = s.getConnectURLs(o.Advertise, o.Host, o.Port)
+	ws.Tls = proto == "wss"
+	ws.ConnectURLs, err = util.GetConnectURLs(o.Advertise, o.Host, o.Port)
 	if err != nil {
-		s.Fatalf("Unable to get websocket connect URLs: %v", err)
+		//ws.Fatalf("Unable to get websocket connect URLs: %v", err)
 		hl.Close()
-		s.mu.Unlock()
-		return
+		ws.mu.Unlock()
+		return err
 	}
-	hasLeaf := sopts.LeafNode.Port != 0
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		res, err := s.wsUpgrade(w, r)
-		if err != nil {
-			s.Errorf(err.Error())
-			return
-		}
-		switch res.kind {
-		case server.CLIENT:
-			s.createWSClient(res.conn, res.ws)
-		case server.MQTT:
-			s.createMQTTClient(res.conn, res.ws)
-		case server.LEAF:
-			if !hasLeaf {
-				s.Errorf("Not configured to accept leaf node connections")
-				// Silently close for now. If we want to send an error back, we would
-				// need to create the leafnode client anyway, so that is is handling websocket
-				// frames, then send the error to the remote.
-				res.conn.Close()
-				return
-			}
-			s.createLeafNode(res.conn, nil, nil, res.ws)
-		}
-	})
-	hs := &http.Server{
-		Addr:        hp,
-		Handler:     mux,
-		ReadTimeout: o.HandshakeTimeout,
-		ErrorLog:    log.New(&server.captureHTTPServerLog{s, "websocket: "}, server._EMPTY_, 0),
-	}
-	s.websocket.Server = hs
-	s.websocket.listener = hl
-	go func() {
-		if err := hs.Serve(hl); err != http.ErrServerClosed {
-			s.Fatalf("websocket Listener error: %v", err)
-		}
-		if s.isLameDuckMode() {
-			// Signal that we are not accepting new clients
-			s.ldmCh <- true
-			// Now wait for the Shutdown...
-			<-s.quitCh
-			return
-		}
-		s.done <- true
-	}()
-	s.mu.Unlock()
+	ws.Server = server
+	ws.Listener = hl
+	ws.mu.Unlock()
+	return nil
 }
 
 // The TLS configuration is passed to the Listener when the websocket
@@ -625,16 +580,15 @@ func (s *server.Server) StartWebsocketServer() {
 // we instruct the TLS handshake to ask for the Tls configuration to be
 // used for a specific client. We don't care which client, we always use
 // the same TLS configuration.
-func (s *server.Server) getTLSConfig(_ *tls.ClientHelloInfo) (*tls.Config, error) {
-	opts := s.getOpts()
-	return opts.Websocket.TLSConfig, nil
+func (opts *WebsocketOpts) getTLSConfig(_ *tls.ClientHelloInfo) (*tls.Config, error) {
+	return opts.TLSConfig, nil
 }
 
 // This is similar to createClient() but has some modifications
 // specific to handle websocket clients.
 // The comments have been kept to minimum to reduce code size.
 // Check createClient() for more details.
-func (s *server.Server) createWSClient(conn net.Conn, ws *Websocket) *server.client {
+func (s *Server) createWSClient(conn net.Conn, ws *Websocket) *server.client {
 	opts := s.getOpts()
 
 	maxPay := int32(opts.MaxPayload)

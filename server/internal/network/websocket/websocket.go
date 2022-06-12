@@ -424,11 +424,11 @@ func PMCExtensionSupport(header http.Header, checkPMCOnly bool) (bool, bool) {
 // the case if the request does not have the Origin header.
 // Otherwise, this will check that the Origin matches the same origin or
 // any origin in the allowed list.
-func (w *SrvWebsocket) CheckOrigin(r *http.Request) error {
-	w.mu.RLock()
-	checkSame := w.sameOrigin
-	listEmpty := len(w.allowedOrigins) == 0
-	w.mu.RUnlock()
+func (ws *SrvWebsocket) CheckOrigin(r *http.Request) error {
+	ws.mu.RLock()
+	checkSame := ws.sameOrigin
+	listEmpty := len(ws.allowedOrigins) == 0
+	ws.mu.RUnlock()
 	if !checkSame && listEmpty {
 		return nil
 	}
@@ -466,9 +466,9 @@ func (w *SrvWebsocket) CheckOrigin(r *http.Request) error {
 		// So continue with the next check.
 	}
 	if !listEmpty {
-		w.mu.RLock()
-		ao := w.allowedOrigins[oh]
-		w.mu.RUnlock()
+		ws.mu.RLock()
+		ao := ws.allowedOrigins[oh]
+		ws.mu.RUnlock()
 		if ao == nil || u.Scheme != ao.scheme || op != ao.port {
 			return errors.New("not in the allowed list")
 		}

@@ -76,7 +76,7 @@ func processRequestKind(r *http.Request) int {
 // Upgrade processes websocket client handshake. On success, returns the raw net.Conn that
 // will be used to create a *client object.
 // Invoked from the HTTP Server listening on websocket port.
-func Upgrade(w http.ResponseWriter, r *http.Request, srvWebsocket *websocket.SrvWebsocket, opts WebsocketOpts) (*UpgradeResult, error) {
+func Upgrade(w http.ResponseWriter, r *http.Request, srvWebsocket *websocket.SrvWebsocket, opts websocket.WebsocketOpts) (*UpgradeResult, error) {
 	kind := processRequestKind(r)
 
 	// From https://tools.ietf.org/html/rfc6455#section-4.2.1

@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/nats-io/nats-server/v2/server/internal/network/websocket"
 	"io/ioutil"
 	"math/rand"
 	"net"
@@ -4423,7 +4424,7 @@ func TestMonitorWebsocket(t *testing.T) {
 	o.Users = []*User{{Username: "someuser"}}
 	pinnedCerts := make(PinnedCertSet)
 	pinnedCerts["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069"] = struct{}{}
-	o.Websocket = WebsocketOpts{
+	o.Websocket = websocket.WebsocketOpts{
 		Host:             "127.0.0.1",
 		Port:             -1,
 		Advertise:        "somehost:8080",
