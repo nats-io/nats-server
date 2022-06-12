@@ -2371,3 +2371,26 @@ func TestServerEventsFilteredByTag(t *testing.T) {
 	require_Contains(t, string(m1.Data)+string(m2.Data), "srv-A", "srv-B", "foo", "bar", "baz")
 	require_Len(t, len(msgs), 0)
 }
+
+// https://github.com/nats-io/nats-server/issues/3177
+func TestServerEventsAndDQSubscribers(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterAccountsTempl, "DDQ", 3)
+	defer c.shutdown()
+
+	nc, err := nats.Connect(c.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	sub, err := nc.QueueSubscribeSync("$SYS.ACCOUNT.*.DISCONNECT", "qq")
+	require_NoError(t, err)
+	nc.Flush()
+
+	// Create and disconnect 10 random connections.
+	for i := 0; i < 10; i++ {
+		nc, err := nats.Connect(c.randomServer().ClientURL())
+		require_NoError(t, err)
+		nc.Close()
+	}
+
+	checkSubsPending(t, sub, 10)
+}
