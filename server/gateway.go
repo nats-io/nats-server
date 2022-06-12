@@ -301,7 +301,7 @@ func validateGatewayOptions(o *Options) error {
 			return fmt.Errorf("gateway %q has no URL", g.Name)
 		}
 	}
-	if err := validatePinnedCerts(o.Gateway.TLSPinnedCerts); err != nil {
+	if err := ValidatePinnedCerts(o.Gateway.TLSPinnedCerts); err != nil {
 		return fmt.Errorf("gateway %q: %v", o.Gateway.Name, err)
 	}
 	return nil

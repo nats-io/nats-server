@@ -1561,7 +1561,7 @@ func (c *client) markConnAsClosed(reason ClosedState) {
 	}
 	c.flags.set(connMarkedClosed)
 	// For a websocket client, unless we are told not to flush, enqueue
-	// a websocket CloseMessage based on the reason.
+	// a websocket closeMessage based on the reason.
 	if !skipFlush && c.isWebsocket() && !c.ws.closeSent {
 		c.wsEnqueueCloseMessage(reason)
 	}
@@ -3153,10 +3153,10 @@ func (c *client) deliverMsg(sub *subscription, acc *Account, subject, reply, mh,
 
 	// Update statistics
 
-	// The msg includes the CR_LF, so pull back out for accounting.
+	// The msg includes the cR_LF, so pull back out for accounting.
 	msgSize := int64(len(msg))
 	prodIsMQTT := c.isMqtt()
-	// MQTT producers send messages without CR_LF, so don't remove it for them.
+	// MQTT producers send messages without cR_LF, so don't remove it for them.
 	if !prodIsMQTT {
 		msgSize -= int64(LEN_CR_LF)
 	}
@@ -3234,7 +3234,7 @@ func (c *client) deliverMsg(sub *subscription, acc *Account, subject, reply, mh,
 	client.queueOutbound(mh)
 	client.queueOutbound(msg)
 	if prodIsMQTT {
-		// Need to add CR_LF since MQTT producers don't send CR_LF
+		// Need to add cR_LF since MQTT producers don't send cR_LF
 		client.queueOutbound([]byte(CR_LF))
 	}
 
@@ -3518,7 +3518,7 @@ func (c *client) selectMappedSubject() bool {
 // due to a permission issue.
 func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 	// Update statistics
-	// The msg includes the CR_LF, so pull back out for accounting.
+	// The msg includes the cR_LF, so pull back out for accounting.
 	c.in.msgs++
 	c.in.bytes += int32(len(msg) - LEN_CR_LF)
 

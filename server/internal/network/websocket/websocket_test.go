@@ -123,14 +123,14 @@ func TestWSGet(t *testing.T) {
 func TestWSIsControlFrame(t *testing.T) {
 	for _, test := range []struct {
 		name      string
-		code      wsOpCode
+		code      opCode
 		isControl bool
 	}{
-		{"binary", wsBinaryMessage, false},
-		{"text", wsTextMessage, false},
-		{"ping", wsPingMessage, true},
+		{"binary", binaryMessage, false},
+		{"text", textMessage, false},
+		{"ping", pingMessage, true},
 		{"pong", wsPongMessage, true},
-		{"close", wsCloseMessage, true},
+		{"close", closeMessage, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if res := isControlFrame(test.code); res != test.isControl {
@@ -190,8 +190,8 @@ func TestWSCreateCloseMessage(t *testing.T) {
 		psize     int
 		truncated bool
 	}{
-		{"fits", wsCloseStatusInternalSrvError, 10, false},
-		{"truncated", wsCloseStatusProtocolError, wsMaxControlPayloadSize + 10, true},
+		{"fits", closeStatusInternalSrvError, 10, false},
+		{"truncated", closeStatusProtocolError, maxControlPayloadSize + 10, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			payload := make([]byte, test.psize)
@@ -213,9 +213,9 @@ func TestWSCreateCloseMessage(t *testing.T) {
 				return
 			}
 			// Since the payload of a close message contains a 2 byte status, the
-			// actual max text size will be wsMaxControlPayloadSize-2
-			if int(psize) != wsMaxControlPayloadSize-2 {
-				t.Fatalf("Expected size to be capped to %v, got %v", wsMaxControlPayloadSize-2, psize)
+			// actual max text size will be maxControlPayloadSize-2
+			if int(psize) != maxControlPayloadSize-2 {
+				t.Fatalf("Expected size to be capped to %v, got %v", maxControlPayloadSize-2, psize)
 			}
 			if string(res[len(res)-3:]) != "..." {
 				t.Fatalf("Expected res to have `...` at the end, got %q", res[4:])
@@ -227,24 +227,24 @@ func TestWSCreateCloseMessage(t *testing.T) {
 func TestWSCreateFrameHeader(t *testing.T) {
 	for _, test := range []struct {
 		name       string
-		frameType  wsOpCode
+		frameType  opCode
 		compressed bool
 		len        int
 	}{
-		{"uncompressed 10", wsBinaryMessage, false, 10},
-		{"uncompressed 600", wsTextMessage, false, 600},
-		{"uncompressed 100000", wsTextMessage, false, 100000},
-		{"compressed 10", wsBinaryMessage, true, 10},
-		{"compressed 600", wsBinaryMessage, true, 600},
-		{"compressed 100000", wsTextMessage, true, 100000},
+		{"uncompressed 10", binaryMessage, false, 10},
+		{"uncompressed 600", textMessage, false, 600},
+		{"uncompressed 100000", textMessage, false, 100000},
+		{"compressed 10", binaryMessage, true, 10},
+		{"compressed 600", binaryMessage, true, 600},
+		{"compressed 100000", textMessage, true, 100000},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			res, _ := createFrameHeader(false, test.compressed, test.frameType, test.len)
 			// The Server is always sending the message has a single frame,
 			// so the "final" bit should be set.
-			expected := byte(test.frameType) | wsFinalBit
+			expected := byte(test.frameType) | finalBit
 			if test.compressed {
-				expected |= wsRsv1Bit
+				expected |= rsv1Bit
 			}
 			if b := res[0]; b != expected {
 				t.Fatalf("Expected first byte to be %v, got %v", expected, b)
@@ -284,7 +284,7 @@ func TestWSCreateFrameHeader(t *testing.T) {
 	}
 }
 
-func testWSCreateClientMsg(frameType wsOpCode, frameNum int, final, compressed bool, payload []byte) []byte {
+func testWSCreateClientMsg(frameType opCode, frameNum int, final, compressed bool, payload []byte) []byte {
 	if compressed {
 		buf := &bytes.Buffer{}
 		compressor, _ := flate.NewWriter(buf, 1)
@@ -299,23 +299,23 @@ func testWSCreateClientMsg(frameType wsOpCode, frameNum int, final, compressed b
 		frame[0] = byte(frameType)
 	}
 	if final {
-		frame[0] |= wsFinalBit
+		frame[0] |= finalBit
 	}
 	if compressed {
-		frame[0] |= wsRsv1Bit
+		frame[0] |= rsv1Bit
 	}
 	pos := 1
 	lenPayload := len(payload)
 	switch {
 	case lenPayload <= 125:
-		frame[pos] = byte(lenPayload) | wsMaskBit
+		frame[pos] = byte(lenPayload) | maskBit
 		pos++
 	case lenPayload < 65536:
-		frame[pos] = 126 | wsMaskBit
+		frame[pos] = 126 | maskBit
 		binary.BigEndian.PutUint16(frame[2:], uint16(lenPayload))
 		pos += 3
 	default:
-		frame[1] = 127 | wsMaskBit
+		frame[1] = 127 | maskBit
 		binary.BigEndian.PutUint64(frame[2:], uint64(lenPayload))
 		pos += 9
 	}
@@ -344,9 +344,9 @@ func TestWSReadUncompressedFrames(t *testing.T) {
 	c, ri, tr := testWSSetupForRead()
 	// Create 2 WS messages
 	pl1 := []byte("first message")
-	wsmsg1 := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, pl1)
+	wsmsg1 := testWSCreateClientMsg(binaryMessage, 1, true, false, pl1)
 	pl2 := []byte("second message")
-	wsmsg2 := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, pl2)
+	wsmsg2 := testWSCreateClientMsg(binaryMessage, 1, true, false, pl2)
 	// Add both in single buffer
 	orgrb := append([]byte(nil), wsmsg1...)
 	orgrb = append(orgrb, wsmsg2...)
@@ -411,7 +411,7 @@ func TestWSReadUncompressedFrames(t *testing.T) {
 func TestWSReadCompressedFrames(t *testing.T) {
 	c, ri, tr := testWSSetupForRead()
 	uncompressed := []byte("this is the uncompress data")
-	wsmsg1 := testWSCreateClientMsg(wsBinaryMessage, 1, true, true, uncompressed)
+	wsmsg1 := testWSCreateClientMsg(binaryMessage, 1, true, true, uncompressed)
 	rb := append([]byte(nil), wsmsg1...)
 	// Call with some but not all of the payload
 	bufs, err := c.wsRead(ri, tr, rb[:10])
@@ -458,9 +458,9 @@ func TestWSReadCompressedFrames(t *testing.T) {
 	// The last 4 bytes are dropped
 	compressed = compressed[:len(compressed)-4]
 	ncomp := 10
-	frag1 := testWSCreateClientMsg(wsBinaryMessage, 1, false, false, compressed[:ncomp])
-	frag1[0] |= wsRsv1Bit
-	frag2 := testWSCreateClientMsg(wsBinaryMessage, 2, true, false, compressed[ncomp:])
+	frag1 := testWSCreateClientMsg(binaryMessage, 1, false, false, compressed[:ncomp])
+	frag1[0] |= rsv1Bit
+	frag2 := testWSCreateClientMsg(binaryMessage, 2, true, false, compressed[ncomp:])
 	rb = append([]byte(nil), frag1...)
 	rb = append(rb, frag2...)
 	bufs, err = c.wsRead(ri, tr, rb)
@@ -478,7 +478,7 @@ func TestWSReadCompressedFrames(t *testing.T) {
 func TestWSReadCompressedFrameCorrupted(t *testing.T) {
 	c, ri, tr := testWSSetupForRead()
 	uncompressed := []byte("this is the uncompress data")
-	wsmsg1 := testWSCreateClientMsg(wsBinaryMessage, 1, true, true, uncompressed)
+	wsmsg1 := testWSCreateClientMsg(binaryMessage, 1, true, true, uncompressed)
 	copy(wsmsg1[10:], []byte{1, 2, 3, 4})
 	rb := append([]byte(nil), wsmsg1...)
 	bufs, err := c.wsRead(ri, tr, rb)
@@ -505,7 +505,7 @@ func TestWSReadVariousFrameSizes(t *testing.T) {
 			for i := 0; i < len(uncompressed); i++ {
 				uncompressed[i] = 'A' + byte(i%26)
 			}
-			wsmsg1 := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, uncompressed)
+			wsmsg1 := testWSCreateClientMsg(binaryMessage, 1, true, false, uncompressed)
 			rb := append([]byte(nil), wsmsg1...)
 			bufs, err := c.wsRead(ri, tr, rb)
 			if err != nil {
@@ -527,7 +527,7 @@ func TestWSReadFragmentedFrames(t *testing.T) {
 	var rb []byte
 	for i := 0; i < len(payloads); i++ {
 		final := i == len(payloads)-1
-		frag := testWSCreateClientMsg(wsBinaryMessage, i+1, final, false, []byte(payloads[i]))
+		frag := testWSCreateClientMsg(binaryMessage, i+1, final, false, []byte(payloads[i]))
 		rb = append(rb, frag...)
 	}
 	bufs, err := c.wsRead(ri, tr, rb)
@@ -546,8 +546,8 @@ func TestWSReadFragmentedFrames(t *testing.T) {
 
 func TestWSReadPartialFrameHeaderAtEndOfReadBuffer(t *testing.T) {
 	c, ri, tr := testWSSetupForRead()
-	msg1 := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("msg1"))
-	msg2 := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("msg2"))
+	msg1 := testWSCreateClientMsg(binaryMessage, 1, true, false, []byte("msg1"))
+	msg2 := testWSCreateClientMsg(binaryMessage, 1, true, false, []byte("msg2"))
 	rb := append([]byte(nil), msg1...)
 	rb = append(rb, msg2...)
 	// We will pass the first frame + the first byte of the next frame.
@@ -579,7 +579,7 @@ func TestWSReadPingFrame(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			c, ri, tr := testWSSetupForRead()
-			ping := testWSCreateClientMsg(wsPingMessage, 1, true, false, test.payload)
+			ping := testWSCreateClientMsg(pingMessage, 1, true, false, test.payload)
 			rb := append([]byte(nil), ping...)
 			bufs, err := c.wsRead(ri, tr, rb)
 			if err != nil {
@@ -599,7 +599,7 @@ func TestWSReadPingFrame(t *testing.T) {
 				t.Fatalf("Expected buffer to be %v bytes long, got %v", expected, len(nb[0]))
 			}
 			b := nb[0][0]
-			if b&wsFinalBit == 0 {
+			if b&finalBit == 0 {
 				t.Fatalf("Control frame should have been the final flag, it was not set: %v", b)
 			}
 			if b&byte(wsPongMessage) == 0 {
@@ -656,14 +656,14 @@ func TestWSReadCloseFrame(t *testing.T) {
 			c, ri, tr := testWSSetupForRead()
 			// a close message has a status in 2 bytes + optional payload
 			payload := make([]byte, 2+len(test.payload))
-			binary.BigEndian.PutUint16(payload[:2], wsCloseStatusNormalClosure)
+			binary.BigEndian.PutUint16(payload[:2], closeStatusNormalClosure)
 			if len(test.payload) > 0 {
 				copy(payload[2:], test.payload)
 			}
-			close := testWSCreateClientMsg(wsCloseMessage, 1, true, false, payload)
+			close := testWSCreateClientMsg(closeMessage, 1, true, false, payload)
 			// Have a normal frame prior to close to make sure that wsRead returns
-			// the normal frame along with io.EOF to indicate that wsCloseMessage was received.
-			msg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("msg"))
+			// the normal frame along with io.EOF to indicate that closeMessage was received.
+			msg := testWSCreateClientMsg(binaryMessage, 1, true, false, []byte("msg"))
 			rb := append([]byte(nil), msg...)
 			rb = append(rb, close...)
 			bufs, err := c.wsRead(ri, tr, rb)
@@ -688,14 +688,14 @@ func TestWSReadCloseFrame(t *testing.T) {
 				t.Fatalf("Expected buffer to be %v bytes long, got %v", expected, len(nb[0]))
 			}
 			b := nb[0][0]
-			if b&wsFinalBit == 0 {
+			if b&finalBit == 0 {
 				t.Fatalf("Control frame should have been the final flag, it was not set: %v", b)
 			}
-			if b&byte(wsCloseMessage) == 0 {
+			if b&byte(closeMessage) == 0 {
 				t.Fatalf("Should have been a CLOSE, it wasn't: %v", b)
 			}
-			if status := binary.BigEndian.Uint16(nb[0][2:4]); status != wsCloseStatusNormalClosure {
-				t.Fatalf("Expected status to be %v, got %v", wsCloseStatusNormalClosure, status)
+			if status := binary.BigEndian.Uint16(nb[0][2:4]); status != closeStatusNormalClosure {
+				t.Fatalf("Expected status to be %v, got %v", closeStatusNormalClosure, status)
 			}
 			if len(test.payload) > 0 {
 				if !bytes.Equal(nb[0][4:], test.payload) {
@@ -708,8 +708,8 @@ func TestWSReadCloseFrame(t *testing.T) {
 
 func TestWSReadControlFrameBetweebFragmentedFrames(t *testing.T) {
 	c, ri, tr := testWSSetupForRead()
-	frag1 := testWSCreateClientMsg(wsBinaryMessage, 1, false, false, []byte("first"))
-	frag2 := testWSCreateClientMsg(wsBinaryMessage, 2, true, false, []byte("second"))
+	frag1 := testWSCreateClientMsg(binaryMessage, 1, false, false, []byte("first"))
+	frag2 := testWSCreateClientMsg(binaryMessage, 2, true, false, []byte("second"))
 	ctrl := testWSCreateClientMsg(wsPongMessage, 1, true, false, nil)
 	rb := append([]byte(nil), frag1...)
 	rb = append(rb, ctrl...)
@@ -734,9 +734,9 @@ func TestWSCloseFrameWithPartialOrInvalid(t *testing.T) {
 	// a close message has a status in 2 bytes + optional payload
 	payloadTxt := []byte("hello")
 	payload := make([]byte, 2+len(payloadTxt))
-	binary.BigEndian.PutUint16(payload[:2], wsCloseStatusNormalClosure)
+	binary.BigEndian.PutUint16(payload[:2], closeStatusNormalClosure)
 	copy(payload[2:], payloadTxt)
-	closeMsg := testWSCreateClientMsg(wsCloseMessage, 1, true, false, payload)
+	closeMsg := testWSCreateClientMsg(closeMessage, 1, true, false, payload)
 
 	// We will pass to wsRead a buffer of small capacity that contains
 	// only 1 byte.
@@ -762,14 +762,14 @@ func TestWSCloseFrameWithPartialOrInvalid(t *testing.T) {
 		t.Fatalf("Expected buffer to be %v bytes long, got %v", expected, len(nb[0]))
 	}
 	b := nb[0][0]
-	if b&wsFinalBit == 0 {
+	if b&finalBit == 0 {
 		t.Fatalf("Control frame should have been the final flag, it was not set: %v", b)
 	}
-	if b&byte(wsCloseMessage) == 0 {
+	if b&byte(closeMessage) == 0 {
 		t.Fatalf("Should have been a CLOSE, it wasn't: %v", b)
 	}
-	if status := binary.BigEndian.Uint16(nb[0][2:4]); status != wsCloseStatusNormalClosure {
-		t.Fatalf("Expected status to be %v, got %v", wsCloseStatusNormalClosure, status)
+	if status := binary.BigEndian.Uint16(nb[0][2:4]); status != closeStatusNormalClosure {
+		t.Fatalf("Expected status to be %v, got %v", closeStatusNormalClosure, status)
 	}
 	if !bytes.Equal(nb[0][4:], payloadTxt) {
 		t.Fatalf("Unexpected content: %s", nb[0][4:])
@@ -778,8 +778,8 @@ func TestWSCloseFrameWithPartialOrInvalid(t *testing.T) {
 	// Now test close with invalid status size (1 instead of 2 bytes)
 	c, ri, tr = testWSSetupForRead()
 	payload[0] = 100
-	binary.BigEndian.PutUint16(payload, wsCloseStatusNormalClosure)
-	closeMsg = testWSCreateClientMsg(wsCloseMessage, 1, true, false, payload[:1])
+	binary.BigEndian.PutUint16(payload, closeStatusNormalClosure)
+	closeMsg = testWSCreateClientMsg(closeMessage, 1, true, false, payload[:1])
 
 	// We will pass to wsRead a buffer of small capacity that contains
 	// only 1 byte.
@@ -805,15 +805,15 @@ func TestWSCloseFrameWithPartialOrInvalid(t *testing.T) {
 		t.Fatalf("Expected buffer to be %v bytes long, got %v", expected, len(nb[0]))
 	}
 	b = nb[0][0]
-	if b&wsFinalBit == 0 {
+	if b&finalBit == 0 {
 		t.Fatalf("Control frame should have been the final flag, it was not set: %v", b)
 	}
-	if b&byte(wsCloseMessage) == 0 {
+	if b&byte(closeMessage) == 0 {
 		t.Fatalf("Should have been a CLOSE, it wasn't: %v", b)
 	}
-	// Since satus was not valid, we should get wsCloseStatusNoStatusReceived
-	if status := binary.BigEndian.Uint16(nb[0][2:4]); status != wsCloseStatusNoStatusReceived {
-		t.Fatalf("Expected status to be %v, got %v", wsCloseStatusNoStatusReceived, status)
+	// Since satus was not valid, we should get closeStatusNoStatusReceived
+	if status := binary.BigEndian.Uint16(nb[0][2:4]); status != closeStatusNoStatusReceived {
+		t.Fatalf("Expected status to be %v, got %v", closeStatusNoStatusReceived, status)
 	}
 	if len(nb[0][:]) != 4 {
 		t.Fatalf("Unexpected content: %s", nb[0][2:])
@@ -837,8 +837,8 @@ func TestWSReadGetErrors(t *testing.T) {
 	} {
 		t.Run("", func(t *testing.T) {
 			c, ri, _ := testWSSetupForRead()
-			msg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("msg"))
-			frame := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, make([]byte, test.lenPayload))
+			msg := testWSCreateClientMsg(binaryMessage, 1, true, false, []byte("msg"))
+			frame := testWSCreateClientMsg(binaryMessage, 1, true, false, make([]byte, test.lenPayload))
 			rb := append([]byte(nil), msg...)
 			rb = append(rb, frame...)
 			bufs, err := c.wsRead(ri, tr, rb[:len(msg)+test.rbextra])
@@ -862,9 +862,9 @@ func TestWSHandleControlFrameErrors(t *testing.T) {
 	// a close message has a status in 2 bytes + optional payload
 	text := []byte("this is a close message")
 	payload := make([]byte, 2+len(text))
-	binary.BigEndian.PutUint16(payload[:2], wsCloseStatusNormalClosure)
+	binary.BigEndian.PutUint16(payload[:2], closeStatusNormalClosure)
 	copy(payload[2:], text)
-	ctrl := testWSCreateClientMsg(wsCloseMessage, 1, true, false, payload)
+	ctrl := testWSCreateClientMsg(closeMessage, 1, true, false, payload)
 
 	bufs, err := c.wsRead(ri, tr, ctrl[:len(ctrl)-4])
 	if err == nil || err.Error() != "on purpose" {
@@ -878,10 +878,10 @@ func TestWSHandleControlFrameErrors(t *testing.T) {
 	c, ri, tr = testWSSetupForRead()
 	cp := append([]byte(nil), payload...)
 	cp[10] = 0xF1
-	ctrl = testWSCreateClientMsg(wsCloseMessage, 1, true, false, cp)
+	ctrl = testWSCreateClientMsg(closeMessage, 1, true, false, cp)
 	bufs, err = c.wsRead(ri, tr, ctrl)
 	// We should still receive an EOF but the message enqueued to the client
-	// should contain wsCloseStatusInvalidPayloadData and the error about invalid utf8
+	// should contain closeStatusInvalidPayloadData and the error about invalid utf8
 	if err != io.EOF {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -895,14 +895,14 @@ func TestWSHandleControlFrameErrors(t *testing.T) {
 		t.Fatalf("Expected buffers, got %v", n)
 	}
 	b := nb[0][0]
-	if b&wsFinalBit == 0 {
+	if b&finalBit == 0 {
 		t.Fatalf("Control frame should have been the final flag, it was not set: %v", b)
 	}
-	if b&byte(wsCloseMessage) == 0 {
+	if b&byte(closeMessage) == 0 {
 		t.Fatalf("Should have been a CLOSE, it wasn't: %v", b)
 	}
-	if status := binary.BigEndian.Uint16(nb[0][2:4]); status != wsCloseStatusInvalidPayloadData {
-		t.Fatalf("Expected status to be %v, got %v", wsCloseStatusInvalidPayloadData, status)
+	if status := binary.BigEndian.Uint16(nb[0][2:4]); status != closeStatusInvalidPayloadData {
+		t.Fatalf("Expected status to be %v, got %v", closeStatusInvalidPayloadData, status)
 	}
 	if !bytes.Contains(nb[0][4:], []byte("utf8")) {
 		t.Fatalf("Unexpected content: %s", nb[0][4:])
@@ -917,28 +917,28 @@ func TestWSReadErrors(t *testing.T) {
 	}{
 		{
 			func() []byte {
-				msg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("hello"))
-				msg[1] &= ^byte(wsMaskBit)
+				msg := testWSCreateClientMsg(binaryMessage, 1, true, false, []byte("hello"))
+				msg[1] &= ^byte(maskBit)
 				return msg
 			},
 			"mask bit missing", 1,
 		},
 		{
 			func() []byte {
-				return testWSCreateClientMsg(wsPingMessage, 1, true, false, make([]byte, 200))
+				return testWSCreateClientMsg(pingMessage, 1, true, false, make([]byte, 200))
 			},
 			"control frame length bigger than maximum allowed", 1,
 		},
 		{
 			func() []byte {
-				return testWSCreateClientMsg(wsPingMessage, 1, false, false, []byte("hello"))
+				return testWSCreateClientMsg(pingMessage, 1, false, false, []byte("hello"))
 			},
 			"control frame does not have final bit set", 1,
 		},
 		{
 			func() []byte {
-				frag1 := testWSCreateClientMsg(wsBinaryMessage, 1, false, false, []byte("frag1"))
-				newMsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("new message"))
+				frag1 := testWSCreateClientMsg(binaryMessage, 1, false, false, []byte("frag1"))
+				newMsg := testWSCreateClientMsg(binaryMessage, 1, true, false, []byte("new message"))
 				all := append([]byte(nil), frag1...)
 				all = append(all, newMsg...)
 				return all
@@ -947,8 +947,8 @@ func TestWSReadErrors(t *testing.T) {
 		},
 		{
 			func() []byte {
-				frame := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("frame"))
-				frag := testWSCreateClientMsg(wsBinaryMessage, 2, false, false, []byte("continuation"))
+				frame := testWSCreateClientMsg(binaryMessage, 1, true, false, []byte("frame"))
+				frag := testWSCreateClientMsg(binaryMessage, 2, false, false, []byte("continuation"))
 				all := append([]byte(nil), frame...)
 				all = append(all, frag...)
 				return all
@@ -957,7 +957,7 @@ func TestWSReadErrors(t *testing.T) {
 		},
 		{
 			func() []byte {
-				return testWSCreateClientMsg(wsBinaryMessage, 2, false, true, []byte("frame"))
+				return testWSCreateClientMsg(binaryMessage, 2, false, true, []byte("frame"))
 			},
 			"invalid continuation frame", 1,
 		},
@@ -971,7 +971,7 @@ func TestWSReadErrors(t *testing.T) {
 		t.Run(test.err, func(t *testing.T) {
 			c, ri, tr := testWSSetupForRead()
 			// Add a valid message first
-			msg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("hello"))
+			msg := testWSCreateClientMsg(binaryMessage, 1, true, false, []byte("hello"))
 			// Then add the bad frame
 			bad := test.cframe()
 			// Add them both to a read buffer
@@ -996,28 +996,28 @@ func TestWSEnqueueCloseMsg(t *testing.T) {
 		reason server.ClosedState
 		status int
 	}{
-		{server.ClientClosed, wsCloseStatusNormalClosure},
-		{server.AuthenticationTimeout, wsCloseStatusPolicyViolation},
-		{server.AuthenticationViolation, wsCloseStatusPolicyViolation},
-		{server.SlowConsumerPendingBytes, wsCloseStatusPolicyViolation},
-		{server.SlowConsumerWriteDeadline, wsCloseStatusPolicyViolation},
-		{server.MaxAccountConnectionsExceeded, wsCloseStatusPolicyViolation},
-		{server.MaxConnectionsExceeded, wsCloseStatusPolicyViolation},
-		{server.MaxControlLineExceeded, wsCloseStatusPolicyViolation},
-		{server.MaxSubscriptionsExceeded, wsCloseStatusPolicyViolation},
-		{server.MissingAccount, wsCloseStatusPolicyViolation},
-		{server.AuthenticationExpired, wsCloseStatusPolicyViolation},
-		{server.Revocation, wsCloseStatusPolicyViolation},
-		{server.TLSHandshakeError, wsCloseStatusTLSHandshake},
-		{server.ParseError, wsCloseStatusProtocolError},
-		{server.ProtocolViolation, wsCloseStatusProtocolError},
-		{server.BadClientProtocolVersion, wsCloseStatusProtocolError},
-		{server.MaxPayloadExceeded, wsCloseStatusMessageTooBig},
-		{server.ServerShutdown, wsCloseStatusGoingAway},
-		{server.WriteError, wsCloseStatusAbnormalClosure},
-		{server.ReadError, wsCloseStatusAbnormalClosure},
-		{server.StaleConnection, wsCloseStatusAbnormalClosure},
-		{server.ClosedState(254), wsCloseStatusInternalSrvError},
+		{server.ClientClosed, closeStatusNormalClosure},
+		{server.AuthenticationTimeout, closeStatusPolicyViolation},
+		{server.AuthenticationViolation, closeStatusPolicyViolation},
+		{server.SlowConsumerPendingBytes, closeStatusPolicyViolation},
+		{server.SlowConsumerWriteDeadline, closeStatusPolicyViolation},
+		{server.MaxAccountConnectionsExceeded, closeStatusPolicyViolation},
+		{server.MaxConnectionsExceeded, closeStatusPolicyViolation},
+		{server.MaxControlLineExceeded, closeStatusPolicyViolation},
+		{server.MaxSubscriptionsExceeded, closeStatusPolicyViolation},
+		{server.MissingAccount, closeStatusPolicyViolation},
+		{server.AuthenticationExpired, closeStatusPolicyViolation},
+		{server.Revocation, closeStatusPolicyViolation},
+		{server.TLSHandshakeError, closeStatusTLSHandshake},
+		{server.ParseError, closeStatusProtocolError},
+		{server.ProtocolViolation, closeStatusProtocolError},
+		{server.BadClientProtocolVersion, closeStatusProtocolError},
+		{server.MaxPayloadExceeded, closeStatusMessageTooBig},
+		{server.ServerShutdown, closeStatusGoingAway},
+		{server.WriteError, closeStatusAbnormalClosure},
+		{server.ReadError, closeStatusAbnormalClosure},
+		{server.StaleConnection, closeStatusAbnormalClosure},
+		{server.ClosedState(254), closeStatusInternalSrvError},
 	} {
 		t.Run(test.reason.String(), func(t *testing.T) {
 			c, _, _ := testWSSetupForRead()
@@ -1029,10 +1029,10 @@ func TestWSEnqueueCloseMsg(t *testing.T) {
 				t.Fatalf("Expected 1 buffer, got %v", n)
 			}
 			b := nb[0][0]
-			if b&wsFinalBit == 0 {
+			if b&finalBit == 0 {
 				t.Fatalf("Control frame should have been the final flag, it was not set: %v", b)
 			}
-			if b&byte(wsCloseMessage) == 0 {
+			if b&byte(closeMessage) == 0 {
 				t.Fatalf("Should have been a CLOSE, it wasn't: %v", b)
 			}
 			if status := binary.BigEndian.Uint16(nb[0][2:4]); int(status) != test.status {
@@ -1857,7 +1857,7 @@ func testNewWSClientWithError(t testing.TB, o testWSClientOptions) (net.Conn, *b
 	}
 	var info []byte
 	if o.path == server.mqttWSPath {
-		if v := resp.Header[wsSecProto]; len(v) != 1 || v[0] != wsMQTTSecProtoVal {
+		if v := resp.Header[secProto]; len(v) != 1 || v[0] != wsMQTTSecProtoVal {
 			return nil, nil, nil, fmt.Errorf("No mqtt protocol in header: %v", resp.Header)
 		}
 	} else {
@@ -1936,7 +1936,7 @@ func testWSWithClaims(t *testing.T, s *server.Server, o testWSClientOptions, tcl
 		} else {
 			cs = fmt.Sprintf("CONNECT {\"jwt\":%q,\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", jwt)
 		}
-		wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte(cs))
+		wsmsg := testWSCreateClientMsg(binaryMessage, 1, true, false, []byte(cs))
 		c.Write(wsmsg)
 		l = testWSReadFrame(t, cr)
 		if !strings.HasPrefix(string(l), tclm.expectAnswer) {
@@ -1969,7 +1969,7 @@ func testWSCreateClientGetInfo(t testing.TB, compress, web bool, host string, po
 func testWSCreateClient(t testing.TB, compress, web bool, host string, port int) (net.Conn, *bufio.Reader) {
 	wsc, br, _ := testWSCreateClientGetInfo(t, compress, web, host, port)
 	// Send CONNECT and PING
-	wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, compress, []byte("CONNECT {\"verbose\":false,\"protocol\":1}\r\nPING\r\n"))
+	wsmsg := testWSCreateClientMsg(binaryMessage, 1, true, compress, []byte("CONNECT {\"verbose\":false,\"protocol\":1}\r\nPING\r\n"))
 	if _, err := wsc.Write(wsmsg); err != nil {
 		t.Fatalf("Error sending message: %v", err)
 	}
@@ -1986,7 +1986,7 @@ func testWSReadFrame(t testing.TB, br *bufio.Reader) []byte {
 	if _, err := io.ReadAtLeast(br, fh[:2], 2); err != nil {
 		t.Fatalf("Error reading frame: %v", err)
 	}
-	fc := fh[0]&wsRsv1Bit != 0
+	fc := fh[0]&rsv1Bit != 0
 	sb := fh[1]
 	size := 0
 	switch {
@@ -2049,7 +2049,7 @@ func TestWSPubSub(t *testing.T) {
 			defer wsc.Close()
 
 			// Send a WS message for "PUB foo 2\r\nok\r\n"
-			wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("PUB foo 7\r\nfrom ws\r\n"))
+			wsmsg := testWSCreateClientMsg(binaryMessage, 1, true, false, []byte("PUB foo 7\r\nfrom ws\r\n"))
 			if _, err := wsc.Write(wsmsg); err != nil {
 				t.Fatalf("Error sending message: %v", err)
 			}
@@ -2061,7 +2061,7 @@ func TestWSPubSub(t *testing.T) {
 			}
 
 			// Now do reverse, create a subscription on WS client on bar
-			wsmsg = testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("SUB bar 1\r\n"))
+			wsmsg = testWSCreateClientMsg(binaryMessage, 1, true, false, []byte("SUB bar 1\r\n"))
 			if _, err := wsc.Write(wsmsg); err != nil {
 				t.Fatalf("Error sending subscription: %v", err)
 			}
@@ -2330,7 +2330,7 @@ func TestWSTLSVerifyAndMap(t *testing.T) {
 				t.Fatalf("Unable to unmarshal info: %v", err)
 			}
 			// Send CONNECT and PING
-			wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("CONNECT {\"verbose\":false,\"protocol\":1}\r\nPING\r\n"))
+			wsmsg := testWSCreateClientMsg(binaryMessage, 1, true, false, []byte("CONNECT {\"verbose\":false,\"protocol\":1}\r\nPING\r\n"))
 			if _, err := wsc.Write(wsmsg); err != nil {
 				t.Fatalf("Error sending message: %v", err)
 			}
@@ -2479,8 +2479,8 @@ func TestWSCloseMsgSendOnConnectionClose(t *testing.T) {
 	if len(msg) < 2 {
 		t.Fatalf("Should have 2 bytes to represent the status, got %v", msg)
 	}
-	if sc := int(binary.BigEndian.Uint16(msg[:2])); sc != wsCloseStatusProtocolError {
-		t.Fatalf("Expected status to be %v, got %v", wsCloseStatusProtocolError, sc)
+	if sc := int(binary.BigEndian.Uint16(msg[:2])); sc != closeStatusProtocolError {
+		t.Fatalf("Expected status to be %v, got %v", closeStatusProtocolError, sc)
 	}
 	expectedPayload := server.ProtocolViolation.String()
 	if p := string(msg[2:]); p != expectedPayload {
@@ -2616,7 +2616,7 @@ func TestWSFrameOutbound(t *testing.T) {
 			c.ws.browser = true
 			bufs = append(bufs, []byte("some smaller "))
 			bufs = append(bufs, []byte("buffers"))
-			bufs = append(bufs, make([]byte, wsFrameSizeForBrowsers+10))
+			bufs = append(bufs, make([]byte, frameSizeForBrowsers+10))
 			bufs = append(bufs, []byte("then some more"))
 			en = 2 + len(bufs[0]) + len(bufs[1])
 			en += 4 + len(bufs[2]) - 10
@@ -2634,8 +2634,8 @@ func TestWSFrameOutbound(t *testing.T) {
 			if len(res) != 8 {
 				t.Fatalf("Unexpected number of outbound buffers: %v", len(res))
 			}
-			if len(res[4]) != wsFrameSizeForBrowsers {
-				t.Fatalf("Big frame should have been limited to %v, got %v", wsFrameSizeForBrowsers, len(res[4]))
+			if len(res[4]) != frameSizeForBrowsers {
+				t.Fatalf("Big frame should have been limited to %v, got %v", frameSizeForBrowsers, len(res[4]))
 			}
 			if len(res[6]) != 10 {
 				t.Fatalf("Frame 6 should have the partial of 10 bytes, got %v", len(res[6]))
@@ -2686,7 +2686,7 @@ func TestWSFrameOutbound(t *testing.T) {
 			bufs = append(bufs, []byte("some smaller "))
 			bufs = append(bufs, []byte("buffers"))
 			// Have one of the exact max size
-			bufs = append(bufs, make([]byte, wsFrameSizeForBrowsers))
+			bufs = append(bufs, make([]byte, frameSizeForBrowsers))
 			bufs = append(bufs, []byte("then some more"))
 			en = 2 + len(bufs[0]) + len(bufs[1])
 			en += 4 + len(bufs[2])
@@ -2704,8 +2704,8 @@ func TestWSFrameOutbound(t *testing.T) {
 			if len(res) != 7 {
 				t.Fatalf("Unexpected number of outbound buffers: %v", len(res))
 			}
-			if len(res[4]) != wsFrameSizeForBrowsers {
-				t.Fatalf("Big frame should have been limited to %v, got %v", wsFrameSizeForBrowsers, len(res[4]))
+			if len(res[4]) != frameSizeForBrowsers {
+				t.Fatalf("Big frame should have been limited to %v, got %v", frameSizeForBrowsers, len(res[4]))
 			}
 			if test.maskingWrite {
 				key := getKey(res[5])
@@ -2723,7 +2723,7 @@ func TestWSFrameOutbound(t *testing.T) {
 			bufs = append(bufs, []byte("some smaller "))
 			bufs = append(bufs, []byte("buffers"))
 			// Have one of the exact max size, and last in the list
-			bufs = append(bufs, make([]byte, wsFrameSizeForBrowsers))
+			bufs = append(bufs, make([]byte, frameSizeForBrowsers))
 			en = 2 + len(bufs[0]) + len(bufs[1])
 			en += 4 + len(bufs[2])
 			c.mu.Lock()
@@ -2739,8 +2739,8 @@ func TestWSFrameOutbound(t *testing.T) {
 			if len(res) != 5 {
 				t.Fatalf("Unexpected number of outbound buffers: %v", len(res))
 			}
-			if len(res[4]) != wsFrameSizeForBrowsers {
-				t.Fatalf("Big frame should have been limited to %v, got %v", wsFrameSizeForBrowsers, len(res[4]))
+			if len(res[4]) != frameSizeForBrowsers {
+				t.Fatalf("Big frame should have been limited to %v, got %v", frameSizeForBrowsers, len(res[4]))
 			}
 
 			bufs = nil
@@ -2749,7 +2749,7 @@ func TestWSFrameOutbound(t *testing.T) {
 			c.ws.frames = nil
 			c.ws.browser = true
 			bufs = append(bufs, []byte("some smaller buffer"))
-			bufs = append(bufs, make([]byte, wsFrameSizeForBrowsers-5))
+			bufs = append(bufs, make([]byte, frameSizeForBrowsers-5))
 			bufs = append(bufs, []byte("then some more"))
 			en = 2 + len(bufs[0])
 			en += 4 + len(bufs[1])
@@ -2767,8 +2767,8 @@ func TestWSFrameOutbound(t *testing.T) {
 			if len(res) != 6 {
 				t.Fatalf("Unexpected number of outbound buffers: %v", len(res))
 			}
-			if len(res[3]) != wsFrameSizeForBrowsers-5 {
-				t.Fatalf("Big frame should have been limited to %v, got %v", wsFrameSizeForBrowsers, len(res[4]))
+			if len(res[3]) != frameSizeForBrowsers-5 {
+				t.Fatalf("Big frame should have been limited to %v, got %v", frameSizeForBrowsers, len(res[4]))
 			}
 			if test.maskingWrite {
 				key := getKey(res[4])
@@ -2783,7 +2783,7 @@ func TestWSFrameOutbound(t *testing.T) {
 			c.ws.Fs = 0
 			c.ws.frames = nil
 			c.ws.browser = true
-			bufs = append(bufs, make([]byte, wsFrameSizeForBrowsers+100))
+			bufs = append(bufs, make([]byte, frameSizeForBrowsers+100))
 			c.mu.Lock()
 			c.out.nb = bufs
 			res, _ = c.collapsePtoNB()
@@ -2812,7 +2812,7 @@ func TestWSWebrowserClient(t *testing.T) {
 	}
 	s.mu.Unlock()
 
-	proto := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("SUB foo 1\r\nPING\r\n"))
+	proto := testWSCreateClientMsg(binaryMessage, 1, true, false, []byte("SUB foo 1\r\nPING\r\n"))
 	wsc.Write(proto)
 	if res := testWSReadFrame(t, br); !bytes.Equal(res, []byte(server.pongProto)) {
 		t.Fatalf("Expected PONG back")
@@ -2839,7 +2839,7 @@ func TestWSWebrowserClient(t *testing.T) {
 		res := testWSReadFrame(t, br)
 		total += len(res)
 	}
-	if expected := psize / wsFrameSizeForBrowsers; expected > nframes {
+	if expected := psize / frameSizeForBrowsers; expected > nframes {
 		t.Fatalf("Expected %v frames, got %v", expected, nframes)
 	}
 }
@@ -2886,7 +2886,7 @@ func TestWSCompressionBasic(t *testing.T) {
 	c, br := testWSCreateClient(t, true, false, o.Websocket.Host, o.Websocket.Port)
 	defer c.Close()
 
-	proto := testWSCreateClientMsg(wsBinaryMessage, 1, true, true, []byte("SUB foo 1\r\nPING\r\n"))
+	proto := testWSCreateClientMsg(binaryMessage, 1, true, true, []byte("SUB foo 1\r\nPING\r\n"))
 	c.Write(proto)
 	l := testWSReadFrame(t, br)
 	if !bytes.Equal(l, []byte(server.pongProto)) {
@@ -2926,7 +2926,7 @@ func TestWSCompressionBasic(t *testing.T) {
 	}
 	header := res.Bytes()[:2]
 	body := res.Bytes()[2:]
-	expectedB0 := byte(wsBinaryMessage) | wsFinalBit | wsRsv1Bit
+	expectedB0 := byte(binaryMessage) | finalBit | rsv1Bit
 	expectedPS := len(compressed)
 	expectedB1 := byte(expectedPS)
 
@@ -2979,7 +2979,7 @@ func TestWSCompressionWithPartialWrite(t *testing.T) {
 	c, br := testWSCreateClient(t, true, false, o.Websocket.Host, o.Websocket.Port)
 	defer c.Close()
 
-	proto := testWSCreateClientMsg(wsBinaryMessage, 1, true, true, []byte("SUB foo 1\r\nPING\r\n"))
+	proto := testWSCreateClientMsg(binaryMessage, 1, true, true, []byte("SUB foo 1\r\nPING\r\n"))
 	c.Write(proto)
 	l := testWSReadFrame(t, br)
 	if !bytes.Equal(l, []byte(server.pongProto)) {
@@ -2987,7 +2987,7 @@ func TestWSCompressionWithPartialWrite(t *testing.T) {
 	}
 
 	pingPayload := []byte("my ping")
-	pingFromWSClient := testWSCreateClientMsg(wsPingMessage, 1, true, false, pingPayload)
+	pingFromWSClient := testWSCreateClientMsg(pingMessage, 1, true, false, pingPayload)
 
 	var wc *testWSWrappedConn
 	var ws *server.client
@@ -3071,7 +3071,7 @@ func TestWSCompressionFrameSizeLimit(t *testing.T) {
 			c := &server.client{srv: s, ws: &Websocket{compress: true, browser: true, nocompfrag: test.noLimit, maskwrite: test.maskWrite}}
 			c.initClient()
 
-			uncompressedPayload := make([]byte, 2*wsFrameSizeForBrowsers)
+			uncompressedPayload := make([]byte, 2*frameSizeForBrowsers)
 			for i := 0; i < len(uncompressedPayload); i++ {
 				uncompressedPayload[i] = byte(rand.Intn(256))
 			}
@@ -3091,7 +3091,7 @@ func TestWSCompressionFrameSizeLimit(t *testing.T) {
 				if !test.noLimit {
 					// frame header buffer are always very small. The payload should not be more
 					// than 10 bytes since that is what we passed as the limit.
-					if len(b) > wsFrameSizeForBrowsers {
+					if len(b) > frameSizeForBrowsers {
 						t.Fatalf("Frame size too big: %v (%q)", len(b), b)
 					}
 				}
@@ -3105,7 +3105,7 @@ func TestWSCompressionFrameSizeLimit(t *testing.T) {
 				// Check frame headers for the proper formatting.
 				if i%2 == 0 {
 					// Only the first frame should have the compress bit set.
-					if b[0]&wsRsv1Bit != 0 {
+					if b[0]&rsv1Bit != 0 {
 						if i > 0 {
 							t.Fatalf("Compressed bit should not be in continuation frame")
 						}
@@ -3115,8 +3115,8 @@ func TestWSCompressionFrameSizeLimit(t *testing.T) {
 				} else {
 					if test.noLimit {
 						// Since the payload is likely not well compressed, we are expecting
-						// the length to be > wsFrameSizeForBrowsers
-						if len(b) <= wsFrameSizeForBrowsers {
+						// the length to be > frameSizeForBrowsers
+						if len(b) <= frameSizeForBrowsers {
 							t.Fatalf("Expected frame to be bigger, got %v", len(b))
 						}
 					}
@@ -3223,7 +3223,7 @@ func TestWSBasicAuth(t *testing.T) {
 			connectProto := fmt.Sprintf("CONNECT {\"verbose\":false,\"protocol\":1,\"user\":\"%s\",\"pass\":\"%s\"}\r\nPING\r\n",
 				test.user, test.pass)
 
-			wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte(connectProto))
+			wsmsg := testWSCreateClientMsg(binaryMessage, 1, true, false, []byte(connectProto))
 			if _, err := wsc.Write(wsmsg); err != nil {
 				t.Fatalf("Error sending message: %v", err)
 			}
@@ -3269,7 +3269,7 @@ func TestWSAuthTimeout(t *testing.T) {
 			// Wait before sending connect
 			time.Sleep(100 * time.Millisecond)
 			connectProto := "CONNECT {\"verbose\":false,\"protocol\":1,\"user\":\"websocket\",\"pass\":\"client\"}\r\nPING\r\n"
-			wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte(connectProto))
+			wsmsg := testWSCreateClientMsg(binaryMessage, 1, true, false, []byte(connectProto))
 			if _, err := wsc.Write(wsmsg); err != nil {
 				t.Fatalf("Error sending message: %v", err)
 			}
@@ -3361,7 +3361,7 @@ func TestWSTokenAuth(t *testing.T) {
 			connectProto := fmt.Sprintf("CONNECT {\"verbose\":false,\"protocol\":1,\"auth_token\":\"%s\"}\r\nPING\r\n",
 				test.token)
 
-			wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte(connectProto))
+			wsmsg := testWSCreateClientMsg(binaryMessage, 1, true, false, []byte(connectProto))
 			if _, err := wsc.Write(wsmsg); err != nil {
 				t.Fatalf("Error sending message: %v", err)
 			}
@@ -3406,7 +3406,7 @@ func TestWSBindToProperAccount(t *testing.T) {
 
 	wsc, br, _ := testNewWSClient(t, testWSClientOptions{host: o.Websocket.Host, port: o.Websocket.Port, noTLS: true})
 	// Send CONNECT and PING
-	wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false,
+	wsmsg := testWSCreateClientMsg(binaryMessage, 1, true, false,
 		[]byte(fmt.Sprintf("CONNECT {\"verbose\":false,\"protocol\":1,\"user\":\"%s\",\"pass\":\"%s\"}\r\nPING\r\n", "a", "pwd")))
 	if _, err := wsc.Write(wsmsg); err != nil {
 		t.Fatalf("Error sending message: %v", err)
@@ -3416,7 +3416,7 @@ func TestWSBindToProperAccount(t *testing.T) {
 		t.Fatalf("Expected PONG, got %s", msg)
 	}
 
-	wsmsg = testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("PUB foo 7\r\nfrom ws\r\n"))
+	wsmsg = testWSCreateClientMsg(binaryMessage, 1, true, false, []byte("PUB foo 7\r\nfrom ws\r\n"))
 	if _, err := wsc.Write(wsmsg); err != nil {
 		t.Fatalf("Error sending message: %v", err)
 	}
@@ -3494,7 +3494,7 @@ func TestWSUsersAuth(t *testing.T) {
 			connectProto := fmt.Sprintf("CONNECT {\"verbose\":false,\"protocol\":1,\"user\":\"%s\",\"pass\":\"%s\"}\r\nPING\r\n",
 				test.user, test.pass)
 
-			wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte(connectProto))
+			wsmsg := testWSCreateClientMsg(binaryMessage, 1, true, false, []byte(connectProto))
 			if _, err := wsc.Write(wsmsg); err != nil {
 				t.Fatalf("Error sending message: %v", err)
 			}
@@ -3569,7 +3569,7 @@ func TestWSNoAuthUser(t *testing.T) {
 			} else {
 				connectProto = "CONNECT {\"verbose\":false,\"protocol\":1}\r\nPING\r\n"
 			}
-			wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte(connectProto))
+			wsmsg := testWSCreateClientMsg(binaryMessage, 1, true, false, []byte(connectProto))
 			if _, err := wsc.Write(wsmsg); err != nil {
 				t.Fatalf("Error sending message: %v", err)
 			}
@@ -3692,7 +3692,7 @@ func TestWSNkeyAuth(t *testing.T) {
 
 			connectProto := fmt.Sprintf("CONNECT {\"verbose\":false,\"protocol\":1,\"nkey\":\"%s\",\"sig\":\"%s\"}\r\nPING\r\n", test.nkey, sig)
 
-			wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte(connectProto))
+			wsmsg := testWSCreateClientMsg(binaryMessage, 1, true, false, []byte(connectProto))
 			if _, err := wsc.Write(wsmsg); err != nil {
 				t.Fatalf("Error sending message: %v", err)
 			}
@@ -3948,27 +3948,27 @@ func TestWSXForwardedFor(t *testing.T) {
 		}, false, server._EMPTY_},
 		{"header present empty value", func() map[string][]string {
 			m := make(map[string][]string)
-			m[wsXForwardedForHeader] = []string{}
+			m[xForwardedForHeader] = []string{}
 			return m
 		}, false, server._EMPTY_},
 		{"header present invalid IP", func() map[string][]string {
 			m := make(map[string][]string)
-			m[wsXForwardedForHeader] = []string{"not a valid IP"}
+			m[xForwardedForHeader] = []string{"not a valid IP"}
 			return m
 		}, false, server._EMPTY_},
 		{"header present one IP", func() map[string][]string {
 			m := make(map[string][]string)
-			m[wsXForwardedForHeader] = []string{"1.2.3.4"}
+			m[xForwardedForHeader] = []string{"1.2.3.4"}
 			return m
 		}, true, "1.2.3.4"},
 		{"header present multiple IPs", func() map[string][]string {
 			m := make(map[string][]string)
-			m[wsXForwardedForHeader] = []string{"1.2.3.4", "5.6.7.8"}
+			m[xForwardedForHeader] = []string{"1.2.3.4", "5.6.7.8"}
 			return m
 		}, true, "1.2.3.4"},
 		{"header present IPv6", func() map[string][]string {
 			m := make(map[string][]string)
-			m[wsXForwardedForHeader] = []string{"::1"}
+			m[xForwardedForHeader] = []string{"::1"}
 			return m
 		}, true, "[::1]"},
 	} {
@@ -3980,7 +3980,7 @@ func TestWSXForwardedFor(t *testing.T) {
 			})
 			defer c.Close()
 			// Send CONNECT and PING
-			wsmsg := testWSCreateClientMsg(wsBinaryMessage, 1, true, false, []byte("CONNECT {\"verbose\":false,\"protocol\":1}\r\nPING\r\n"))
+			wsmsg := testWSCreateClientMsg(binaryMessage, 1, true, false, []byte("CONNECT {\"verbose\":false,\"protocol\":1}\r\nPING\r\n"))
 			if _, err := c.Write(wsmsg); err != nil {
 				t.Fatalf("Error sending message: %v", err)
 			}
@@ -4035,7 +4035,7 @@ func sizedStringForCompression(sz int) string {
 }
 
 func testWSFlushConn(b *testing.B, compress bool, c net.Conn, br *bufio.Reader) {
-	buf := testWSCreateClientMsg(wsBinaryMessage, 1, true, compress, []byte(server.pingProto))
+	buf := testWSCreateClientMsg(binaryMessage, 1, true, compress, []byte(server.pingProto))
 	c.Write(buf)
 	c.SetReadDeadline(time.Now().Add(5 * time.Second))
 	res := testWSReadFrame(b, br)
@@ -4055,7 +4055,7 @@ func wsBenchPub(b *testing.B, numPubs int, compress bool, payload string) {
 	n := b.N
 	extra := 0
 	pubProto := []byte(fmt.Sprintf("PUB %s %d\r\n%s\r\n", testWSBenchSubject, len(payload), payload))
-	singleOpBuf := testWSCreateClientMsg(wsBinaryMessage, 1, true, compress, pubProto)
+	singleOpBuf := testWSCreateClientMsg(binaryMessage, 1, true, compress, pubProto)
 
 	// Simulate client that would buffer messages before framing/sending.
 	// Figure out how many we can fit in one frame based on b.N and length of pubProto
@@ -4070,7 +4070,7 @@ func wsBenchPub(b *testing.B, numPubs int, compress bool, payload string) {
 			break
 		}
 	}
-	sendBuf := testWSCreateClientMsg(wsBinaryMessage, 1, true, compress, tmp)
+	sendBuf := testWSCreateClientMsg(binaryMessage, 1, true, compress, tmp)
 	n = b.N / pb
 	extra = b.N - (n * pb)
 
@@ -4244,7 +4244,7 @@ func wsBenchSub(b *testing.B, numSubs int, compress bool, payload string) {
 	for i := 0; i < numSubs; i++ {
 		wsc, br := testWSCreateClient(b, compress, false, opts.Websocket.Host, opts.Websocket.Port)
 		defer wsc.Close()
-		subProto := testWSCreateClientMsg(wsBinaryMessage, 1, true, compress,
+		subProto := testWSCreateClientMsg(binaryMessage, 1, true, compress,
 			[]byte(fmt.Sprintf("SUB %s 1\r\nPING\r\n", testWSBenchSubject)))
 		wsc.Write(subProto)
 		// Waiting for PONG

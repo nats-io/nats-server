@@ -551,7 +551,7 @@ func validateMQTTOptions(o *Options) error {
 	// If there is a NoAuthUser, we need to have Users defined and
 	// the user to be present.
 	if mo.NoAuthUser != _EMPTY_ {
-		if err := validateNoAuthUser(o, mo.NoAuthUser); err != nil {
+		if err := ValidateNoAuthUser(o, mo.NoAuthUser); err != nil {
 			return err
 		}
 	}
@@ -575,7 +575,7 @@ func validateMQTTOptions(o *Options) error {
 		o.LeafNode.Port == 0 && len(o.LeafNode.Remotes) == 0 {
 		return errMQTTStandaloneNeedsJetStream
 	}
-	if err := validatePinnedCerts(mo.TLSPinnedCerts); err != nil {
+	if err := ValidatePinnedCerts(mo.TLSPinnedCerts); err != nil {
 		return fmt.Errorf("mqtt: %v", err)
 	}
 	if mo.ConsumerReplicas > 0 && mo.StreamReplicas > 0 && mo.ConsumerReplicas > mo.StreamReplicas {

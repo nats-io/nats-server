@@ -1110,7 +1110,7 @@ func comparePasswords(serverPassword, clientPassword string) bool {
 }
 
 func validateAuth(o *Options) error {
-	if err := validatePinnedCerts(o.TLSPinnedCerts); err != nil {
+	if err := ValidatePinnedCerts(o.TLSPinnedCerts); err != nil {
 		return err
 	}
 	for _, u := range o.Users {
@@ -1123,7 +1123,7 @@ func validateAuth(o *Options) error {
 			return err
 		}
 	}
-	return validateNoAuthUser(o, o.NoAuthUser)
+	return ValidateNoAuthUser(o, o.NoAuthUser)
 }
 
 func validateAllowedConnectionTypes(m map[string]struct{}) error {
@@ -1144,7 +1144,7 @@ func validateAllowedConnectionTypes(m map[string]struct{}) error {
 	return nil
 }
 
-func validateNoAuthUser(o *Options, noAuthUser string) error {
+func ValidateNoAuthUser(o *Options, noAuthUser string) error {
 	if noAuthUser == _EMPTY_ {
 		return nil
 	}

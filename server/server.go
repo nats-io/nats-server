@@ -647,7 +647,7 @@ func (s *Server) ClientURL() string {
 }
 
 func validateCluster(o *Options) error {
-	if err := validatePinnedCerts(o.Cluster.TLSPinnedCerts); err != nil {
+	if err := ValidatePinnedCerts(o.Cluster.TLSPinnedCerts); err != nil {
 		return fmt.Errorf("cluster: %v", err)
 	}
 	// Check that cluster name if defined matches any gateway name.
@@ -661,7 +661,7 @@ func validateCluster(o *Options) error {
 	return nil
 }
 
-func validatePinnedCerts(pinned PinnedCertSet) error {
+func ValidatePinnedCerts(pinned PinnedCertSet) error {
 	re := regexp.MustCompile("^[a-f0-9]{64}$")
 	for certId := range pinned {
 		entry := strings.ToLower(certId)

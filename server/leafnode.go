@@ -277,7 +277,7 @@ func validateLeafNode(o *Options) error {
 	if o.SystemAccount == "" {
 		return fmt.Errorf("leaf nodes and gateways (both being defined) require a system account to also be configured")
 	}
-	if err := validatePinnedCerts(o.LeafNode.TLSPinnedCerts); err != nil {
+	if err := ValidatePinnedCerts(o.LeafNode.TLSPinnedCerts); err != nil {
 		return fmt.Errorf("leafnode: %v", err)
 	}
 	return nil
@@ -2173,7 +2173,7 @@ func (c *client) processLeafMsgArgs(arg []byte) error {
 // processInboundLeafMsg is called to process an inbound msg from a leaf node.
 func (c *client) processInboundLeafMsg(msg []byte) {
 	// Update statistics
-	// The msg includes the CR_LF, so pull back out for accounting.
+	// The msg includes the cR_LF, so pull back out for accounting.
 	c.in.msgs++
 	c.in.bytes += int32(len(msg) - LEN_CR_LF)
 
