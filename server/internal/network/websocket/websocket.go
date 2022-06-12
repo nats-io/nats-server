@@ -16,11 +16,9 @@ package websocket
 import (
 	"compress/flate"
 	"crypto/rand"
-	"crypto/sha1"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"io/ioutil"
 	mrand "math/rand"
@@ -80,45 +78,45 @@ const (
 	SchemePrefix    = "ws"
 	SchemePrefixTLS = "wss"
 
-	noMaskingHeader       = "Nats-No-Masking"
-	noMaskingValue        = "true"
-	xForwardedForHeader   = "X-Forwarded-For"
-	noMaskingFullResponse = noMaskingHeader + ": " + noMaskingValue + cR_LF
+	NoMaskingHeader       = "Nats-No-Masking"
+	NoMaskingValue        = "true"
+	XForwardedForHeader   = "X-Forwarded-For"
+	NoMaskingFullResponse = NoMaskingHeader + ": " + NoMaskingValue + cR_LF
 	pMCExtension          = "permessage-deflate" // per-message compression
 	pMCSrvNoCtx           = "server_no_context_takeover"
 	pMCCliNoCtx           = "client_no_context_takeover"
 	pMCReqHeaderValue     = pMCExtension + "; " + pMCSrvNoCtx + "; " + pMCCliNoCtx
-	pMCFullResponse       = "Sec-WebSocket-Extensions: " + pMCExtension + "; " + pMCSrvNoCtx + "; " +
+	PMCFullResponse       = "Sec-WebSocket-Extensions: " + pMCExtension + "; " + pMCSrvNoCtx + "; " +
 		pMCCliNoCtx + cR_LF
 	secProto = "Sec-Websocket-Protocol"
 
 	//todo: try to separate them
 	wsMQTTSecProtoVal = "mqtt"
-	wsMQTTSecProto    = secProto + ": " + wsMQTTSecProtoVal + cR_LF
+	MQTTSecProto      = secProto + ": " + wsMQTTSecProtoVal + cR_LF
 )
 
 var decompressorPool sync.Pool
 var compressLastBlock = []byte{0x00, 0x00, 0xff, 0xff, 0x01, 0x00, 0x00, 0xff, 0xff}
 
 // From https://tools.ietf.org/html/rfc6455#section-1.3
-var wsGUID = []byte("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+var GUID = []byte("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
 
 // Test can enable this so that Server does not support "no-masking" requests.
-var testRejectNoMasking = false
+var TestRejectNoMasking = false
 
 type Websocket struct {
 	frames     net.Buffers
 	Fs         int64
-	closeMsg   []byte
-	compress   bool
-	closeSent  bool
-	browser    bool
-	nocompfrag bool // No fragment for compressed frames
-	maskread   bool
+	CloseMsg   []byte
+	Compress   bool
+	CloseSent  bool
+	Browser    bool
+	Nocompfrag bool // No fragment for compressed frames
+	Maskread   bool
 	maskwrite  bool
 	compressor *flate.Writer
-	cookieJwt  string
-	clientIP   string
+	CookieJwt  string
+	ClientIP   string
 }
 
 type ConnURLsMap interface {
@@ -144,12 +142,6 @@ type SrvWebsocket struct {
 type allowedOrigin struct {
 	scheme string
 	port   string
-}
-
-type upgradeResult struct {
-	conn net.Conn
-	ws   *Websocket
-	kind int
 }
 
 type readInfo struct {
@@ -393,21 +385,7 @@ func createCloseMessage(status int, body string) []byte {
 	return buf
 }
 
-// Returns true if the header named `name` contains a token with value `value`.
-func headerContains(header http.Header, name string, value string) bool {
-	for _, s := range header[name] {
-		tokens := strings.Split(s, ",")
-		for _, t := range tokens {
-			t = strings.Trim(t, " \t")
-			if strings.EqualFold(t, value) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func pMCExtensionSupport(header http.Header, checkPMCOnly bool) (bool, bool) {
+func PMCExtensionSupport(header http.Header, checkPMCOnly bool) (bool, bool) {
 	for _, extensionList := range header["Sec-Websocket-Extensions"] {
 		extensions := strings.Split(extensionList, ",")
 		for _, extension := range extensions {
@@ -441,21 +419,12 @@ func pMCExtensionSupport(header http.Header, checkPMCOnly bool) (bool, bool) {
 	return false, false
 }
 
-// Send an HTTP error with the given `status`` to the given http response writer `w`.
-// Return an error created based on the `reason` string.
-func returnHTTPError(w http.ResponseWriter, r *http.Request, status int, reason string) error {
-	err := fmt.Errorf("%s - websocket handshake error: %s", r.RemoteAddr, reason)
-	w.Header().Set("Sec-Websocket-Version", "13")
-	http.Error(w, http.StatusText(status), status)
-	return err
-}
-
 // If the Server is configured to accept any origin, then this function returns
 // `nil` without checking if the Origin is present and valid. This is also
 // the case if the request does not have the Origin header.
 // Otherwise, this will check that the Origin matches the same origin or
 // any origin in the allowed list.
-func (w *SrvWebsocket) checkOrigin(r *http.Request) error {
+func (w *SrvWebsocket) CheckOrigin(r *http.Request) error {
 	w.mu.RLock()
 	checkSame := w.sameOrigin
 	listEmpty := len(w.allowedOrigins) == 0
@@ -522,15 +491,6 @@ func getHostAndPort(tls bool, hostport string) (string, string, error) {
 		}
 	}
 	return strings.ToLower(host), port, err
-}
-
-// Concatenate the key sent by the client with the GUID, then computes the SHA1 hash
-// and returns it as a based64 encoded string.
-func acceptKey(key string) string {
-	h := sha1.New()
-	h.Write([]byte(key))
-	h.Write(wsGUID)
-	return base64.StdEncoding.EncodeToString(h.Sum(nil))
 }
 
 func wsMakeChallengeKey() (string, error) {

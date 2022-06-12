@@ -1186,7 +1186,7 @@ func TestWSCheckOrigin(t *testing.T) {
 			if test.origin != "" {
 				req.Header.Set("Origin", test.origin)
 			}
-			err := s.websocket.checkOrigin(req)
+			err := s.websocket.CheckOrigin(req)
 			if test.err == "" && err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			} else if test.err != "" && (err == nil || !strings.Contains(err.Error(), test.err)) {
@@ -2613,7 +2613,7 @@ func TestWSFrameOutbound(t *testing.T) {
 			c.out.pb = 0
 			c.ws.Fs = 0
 			c.ws.frames = nil
-			c.ws.browser = true
+			c.ws.Browser = true
 			bufs = append(bufs, []byte("some smaller "))
 			bufs = append(bufs, []byte("buffers"))
 			bufs = append(bufs, make([]byte, frameSizeForBrowsers+10))
@@ -2682,7 +2682,7 @@ func TestWSFrameOutbound(t *testing.T) {
 			c.out.pb = 0
 			c.ws.Fs = 0
 			c.ws.frames = nil
-			c.ws.browser = true
+			c.ws.Browser = true
 			bufs = append(bufs, []byte("some smaller "))
 			bufs = append(bufs, []byte("buffers"))
 			// Have one of the exact max size
@@ -2719,7 +2719,7 @@ func TestWSFrameOutbound(t *testing.T) {
 			c.out.pb = 0
 			c.ws.Fs = 0
 			c.ws.frames = nil
-			c.ws.browser = true
+			c.ws.Browser = true
 			bufs = append(bufs, []byte("some smaller "))
 			bufs = append(bufs, []byte("buffers"))
 			// Have one of the exact max size, and last in the list
@@ -2747,7 +2747,7 @@ func TestWSFrameOutbound(t *testing.T) {
 			c.out.pb = 0
 			c.ws.Fs = 0
 			c.ws.frames = nil
-			c.ws.browser = true
+			c.ws.Browser = true
 			bufs = append(bufs, []byte("some smaller buffer"))
 			bufs = append(bufs, make([]byte, frameSizeForBrowsers-5))
 			bufs = append(bufs, []byte("then some more"))
@@ -2782,7 +2782,7 @@ func TestWSFrameOutbound(t *testing.T) {
 			c.out.pb = 0
 			c.ws.Fs = 0
 			c.ws.frames = nil
-			c.ws.browser = true
+			c.ws.Browser = true
 			bufs = append(bufs, make([]byte, frameSizeForBrowsers+100))
 			c.mu.Lock()
 			c.out.nb = bufs
@@ -2819,7 +2819,7 @@ func TestWSWebrowserClient(t *testing.T) {
 	}
 
 	c.mu.Lock()
-	ok := c.isWebsocket() && c.ws.browser == true
+	ok := c.isWebsocket() && c.ws.Browser == true
 	c.mu.Unlock()
 	if !ok {
 		t.Fatalf("Client is not marked as webrowser client")
@@ -3068,7 +3068,7 @@ func TestWSCompressionFrameSizeLimit(t *testing.T) {
 			opts := testWSOptions()
 			opts.MaxPending = server.MAX_PENDING_SIZE
 			s := &server.Server{opts: opts}
-			c := &server.client{srv: s, ws: &Websocket{compress: true, browser: true, nocompfrag: test.noLimit, maskwrite: test.maskWrite}}
+			c := &server.client{srv: s, ws: &Websocket{Compress: true, Browser: true, Nocompfrag: test.noLimit, maskwrite: test.maskWrite}}
 			c.initClient()
 
 			uncompressedPayload := make([]byte, 2*frameSizeForBrowsers)
@@ -3948,27 +3948,27 @@ func TestWSXForwardedFor(t *testing.T) {
 		}, false, server._EMPTY_},
 		{"header present empty value", func() map[string][]string {
 			m := make(map[string][]string)
-			m[xForwardedForHeader] = []string{}
+			m[XForwardedForHeader] = []string{}
 			return m
 		}, false, server._EMPTY_},
 		{"header present invalid IP", func() map[string][]string {
 			m := make(map[string][]string)
-			m[xForwardedForHeader] = []string{"not a valid IP"}
+			m[XForwardedForHeader] = []string{"not a valid IP"}
 			return m
 		}, false, server._EMPTY_},
 		{"header present one IP", func() map[string][]string {
 			m := make(map[string][]string)
-			m[xForwardedForHeader] = []string{"1.2.3.4"}
+			m[XForwardedForHeader] = []string{"1.2.3.4"}
 			return m
 		}, true, "1.2.3.4"},
 		{"header present multiple IPs", func() map[string][]string {
 			m := make(map[string][]string)
-			m[xForwardedForHeader] = []string{"1.2.3.4", "5.6.7.8"}
+			m[XForwardedForHeader] = []string{"1.2.3.4", "5.6.7.8"}
 			return m
 		}, true, "1.2.3.4"},
 		{"header present IPv6", func() map[string][]string {
 			m := make(map[string][]string)
-			m[xForwardedForHeader] = []string{"::1"}
+			m[XForwardedForHeader] = []string{"::1"}
 			return m
 		}, true, "[::1]"},
 	} {

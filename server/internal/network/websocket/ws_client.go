@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -257,8 +256,8 @@ func (c *client) enqueueControlMessageLocked(controlMsg opCode, payload []byte) 
 		// We can't add the close message to the frames buffers
 		// now. It will be done on a flushOutbound() when there
 		// are no more pending buffers to send.
-		c.ws.closeSent = true
-		c.ws.closeMsg = cm
+		c.ws.CloseSent = true
+		c.ws.CloseMsg = cm
 	} else {
 		c.ws.frames = append(c.ws.frames, cm)
 		c.ws.fs += int64(len(cm))
@@ -318,7 +317,7 @@ func (c *client) collapsePtoNB() (net.Buffers, int64) {
 	var nb net.Buffers
 	var mfs int
 	var usz int
-	if c.ws.browser {
+	if c.ws.Browser {
 		mfs = frameSizeForBrowsers
 	}
 	if len(c.out.p) > 0 {
@@ -332,7 +331,7 @@ func (c *client) collapsePtoNB() (net.Buffers, int64) {
 	// Start with possible already framed buffers (that we could have
 	// got from partials or control messages such as ws pings or pongs).
 	bufs := c.ws.frames
-	compress := c.ws.compress
+	compress := c.ws.Compress
 	if compress && len(nb) > 0 {
 		// First, make sure we don't compress for very small cumulative buffers.
 		for _, b := range nb {
@@ -344,7 +343,7 @@ func (c *client) collapsePtoNB() (net.Buffers, int64) {
 	}
 	if compress && len(nb) > 0 {
 		// Overwrite mfs if this connection does not support fragmented compressed frames.
-		if mfs > 0 && c.ws.nocompfrag {
+		if mfs > 0 && c.ws.Nocompfrag {
 			mfs = 0
 		}
 		buf := &bytes.Buffer{}
@@ -461,10 +460,10 @@ func (c *client) collapsePtoNB() (net.Buffers, int64) {
 			c.ws.fs += int64(len(wsfh) + total)
 		}
 	}
-	if len(c.ws.closeMsg) > 0 {
-		bufs = append(bufs, c.ws.closeMsg)
-		c.ws.fs += int64(len(c.ws.closeMsg))
-		c.ws.closeMsg = nil
+	if len(c.ws.CloseMsg) > 0 {
+		bufs = append(bufs, c.ws.CloseMsg)
+		c.ws.fs += int64(len(c.ws.CloseMsg))
+		c.ws.CloseMsg = nil
 	}
 	c.ws.frames = nil
 	return bufs, c.ws.fs
@@ -727,136 +726,6 @@ func (s *server.Server) createWSClient(conn net.Conn, ws *Websocket) *server.cli
 	return c
 }
 
-// Process websocket client handshake. On success, returns the raw net.Conn that
-// will be used to create a *client object.
-// Invoked from the HTTP Server listening on websocket port.
-func (s *server.Server) upgrade(w http.ResponseWriter, r *http.Request) (*upgradeResult, error) {
-	kind := server.CLIENT
-	if r.URL != nil {
-		ep := r.URL.EscapedPath()
-		if strings.HasPrefix(ep, server.leafNodeWSPath) {
-			kind = server.LEAF
-		} else if strings.HasPrefix(ep, server.mqttWSPath) {
-			kind = server.MQTT
-		}
-	}
-
-	opts := s.getOpts()
-
-	// From https://tools.ietf.org/html/rfc6455#section-4.2.1
-	// Point 1.
-	if r.Method != "GET" {
-		return nil, returnHTTPError(w, r, http.StatusMethodNotAllowed, "request method must be GET")
-	}
-	// Point 2.
-	if r.Host == server._EMPTY_ {
-		return nil, returnHTTPError(w, r, http.StatusBadRequest, "'Host' missing in request")
-	}
-	// Point 3.
-	if !headerContains(r.Header, "Upgrade", "websocket") {
-		return nil, returnHTTPError(w, r, http.StatusBadRequest, "invalid value for header 'Upgrade'")
-	}
-	// Point 4.
-	if !headerContains(r.Header, "Connection", "Upgrade") {
-		return nil, returnHTTPError(w, r, http.StatusBadRequest, "invalid value for header 'Connection'")
-	}
-	// Point 5.
-	key := r.Header.Get("Sec-Websocket-Key")
-	if key == server._EMPTY_ {
-		return nil, returnHTTPError(w, r, http.StatusBadRequest, "key missing")
-	}
-	// Point 6.
-	if !headerContains(r.Header, "Sec-Websocket-Version", "13") {
-		return nil, returnHTTPError(w, r, http.StatusBadRequest, "invalid version")
-	}
-	// Others are optional
-	// Point 7.
-	if err := s.websocket.checkOrigin(r); err != nil {
-		return nil, returnHTTPError(w, r, http.StatusForbidden, fmt.Sprintf("origin not allowed: %v", err))
-	}
-	// Point 8.
-	// We don't have protocols, so ignore.
-	// Point 9.
-	// Extensions, only support for compression at the moment
-	compress := opts.Websocket.Compression
-	if compress {
-		// Simply check if permessage-deflate extension is present.
-		compress, _ = pMCExtensionSupport(r.Header, true)
-	}
-	// We will do masking if asked (unless we reject for tests)
-	noMasking := r.Header.Get(noMaskingHeader) == noMaskingValue && !testRejectNoMasking
-
-	h := w.(http.Hijacker)
-	conn, brw, err := h.Hijack()
-	if err != nil {
-		if conn != nil {
-			conn.Close()
-		}
-		return nil, returnHTTPError(w, r, http.StatusInternalServerError, err.Error())
-	}
-	if brw.Reader.Buffered() > 0 {
-		conn.Close()
-		return nil, returnHTTPError(w, r, http.StatusBadRequest, "client sent data before handshake is complete")
-	}
-
-	var buf [1024]byte
-	p := buf[:0]
-
-	// From https://tools.ietf.org/html/rfc6455#section-4.2.2
-	p = append(p, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "...)
-	p = append(p, acceptKey(key)...)
-	p = append(p, server._CRLF_...)
-	if compress {
-		p = append(p, pMCFullResponse...)
-	}
-	if noMasking {
-		p = append(p, noMaskingFullResponse...)
-	}
-	if kind == server.MQTT {
-		p = append(p, wsMQTTSecProto...)
-	}
-	p = append(p, server._CRLF_...)
-
-	if _, err = conn.Write(p); err != nil {
-		conn.Close()
-		return nil, err
-	}
-	// If there was a deadline set for the handshake, clear it now.
-	if opts.Websocket.HandshakeTimeout > 0 {
-		conn.SetDeadline(time.Time{})
-	}
-	// Server always expect "clients" to send masked payload, unless the option
-	// "no-masking" has been enabled.
-	ws := &Websocket{compress: compress, maskread: !noMasking}
-
-	// Check for X-Forwarded-For header
-	if cips, ok := r.Header[xForwardedForHeader]; ok {
-		cip := cips[0]
-		if net.ParseIP(cip) != nil {
-			ws.clientIP = cip
-		}
-	}
-
-	if kind == server.CLIENT || kind == server.MQTT {
-		// Indicate if this is likely coming from a browser.
-		if ua := r.Header.Get("User-Agent"); ua != server._EMPTY_ && strings.HasPrefix(ua, "Mozilla/") {
-			ws.browser = true
-			// Disable fragmentation of compressed frames for Safari browsers.
-			// Unfortunately, you could be running Chrome on macOS and this
-			// string will contain "Safari/" (along "Chrome/"). However, what
-			// I have found is that actual Safari browser also have "Version/".
-			// So make the combination of the two.
-			ws.nocompfrag = ws.compress && strings.Contains(ua, "Version/") && strings.Contains(ua, "Safari/")
-		}
-		if opts.Websocket.JWTCookie != server._EMPTY_ {
-			if c, err := r.Cookie(opts.Websocket.JWTCookie); err == nil && c != nil {
-				ws.cookieJwt = c.Value
-			}
-		}
-	}
-	return &upgradeResult{conn: conn, ws: ws, kind: kind}, nil
-}
-
 // ValidateWebsocketOptions validates the websocket related options.
 func ValidateWebsocketOptions(o *server.Options) error {
 	wo := &o.Websocket
@@ -929,7 +798,7 @@ func (c *client) ReadLoop(pre []byte, done chan struct{}) {
 	lpacc := time.Now()
 	acc := c.acc
 	var masking bool
-	masking = c.ws.maskread
+	masking = c.ws.Maskread
 	c.mu.Unlock()
 
 	defer func() {

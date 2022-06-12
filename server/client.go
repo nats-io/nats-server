@@ -54,6 +54,145 @@ const (
 	ACCOUNT
 )
 
+type UpgradeResult struct {
+	conn net.Conn
+	ws   *websocket.Websocket
+	kind int
+}
+
+func processRequestKind(r *http.Request) int {
+	kind := CLIENT
+	if r.URL != nil {
+		ep := r.URL.EscapedPath()
+		if strings.HasPrefix(ep, leafNodeWSPath) {
+			kind = LEAF
+		} else if strings.HasPrefix(ep, mqttWSPath) {
+			kind = MQTT
+		}
+	}
+	return kind
+}
+
+// Upgrade processes websocket client handshake. On success, returns the raw net.Conn that
+// will be used to create a *client object.
+// Invoked from the HTTP Server listening on websocket port.
+func Upgrade(w http.ResponseWriter, r *http.Request, srvWebsocket *websocket.SrvWebsocket, opts WebsocketOpts) (*UpgradeResult, error) {
+	kind := processRequestKind(r)
+
+	// From https://tools.ietf.org/html/rfc6455#section-4.2.1
+	// Point 1.
+	if r.Method != "GET" {
+		return nil, returnHTTPError(w, r, http.StatusMethodNotAllowed, "request method must be GET")
+	}
+	// Point 2.
+	if r.Host == _EMPTY_ {
+		return nil, returnHTTPError(w, r, http.StatusBadRequest, "'Host' missing in request")
+	}
+	// Point 3.
+	if !headerContains(r.Header, "Upgrade", "websocket") {
+		return nil, returnHTTPError(w, r, http.StatusBadRequest, "invalid value for header 'Upgrade'")
+	}
+	// Point 4.
+	if !headerContains(r.Header, "Connection", "Upgrade") {
+		return nil, returnHTTPError(w, r, http.StatusBadRequest, "invalid value for header 'Connection'")
+	}
+	// Point 5.
+	key := r.Header.Get("Sec-Websocket-Key")
+	if key == _EMPTY_ {
+		return nil, returnHTTPError(w, r, http.StatusBadRequest, "key missing")
+	}
+	// Point 6.
+	if !headerContains(r.Header, "Sec-Websocket-Version", "13") {
+		return nil, returnHTTPError(w, r, http.StatusBadRequest, "invalid version")
+	}
+	// Others are optional
+	// Point 7.
+	if err := srvWebsocket.CheckOrigin(r); err != nil {
+		return nil, returnHTTPError(w, r, http.StatusForbidden, fmt.Sprintf("origin not allowed: %v", err))
+	}
+	// Point 8.
+	// We don't have protocols, so ignore.
+	// Point 9.
+	// Extensions, only support for compression at the moment
+	compress := opts.Compression
+	if compress {
+		// Simply check if permessage-deflate extension is present.
+		compress, _ = websocket.PMCExtensionSupport(r.Header, true)
+	}
+	// We will do masking if asked (unless we reject for tests)
+	noMasking := r.Header.Get(websocket.NoMaskingHeader) == websocket.NoMaskingValue && !websocket.TestRejectNoMasking
+
+	h := w.(http.Hijacker)
+	conn, brw, err := h.Hijack()
+	if err != nil {
+		if conn != nil {
+			conn.Close()
+		}
+		return nil, returnHTTPError(w, r, http.StatusInternalServerError, err.Error())
+	}
+	if brw.Reader.Buffered() > 0 {
+		conn.Close()
+		return nil, returnHTTPError(w, r, http.StatusBadRequest, "client sent data before handshake is complete")
+	}
+
+	var buf [1024]byte
+	p := buf[:0]
+
+	// From https://tools.ietf.org/html/rfc6455#section-4.2.2
+	p = append(p, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "...)
+	p = append(p, acceptKey(key)...)
+	p = append(p, _CRLF_...)
+	if compress {
+		p = append(p, websocket.PMCFullResponse...)
+	}
+	if noMasking {
+		p = append(p, websocket.NoMaskingFullResponse...)
+	}
+	if kind == MQTT {
+		p = append(p, websocket.MQTTSecProto...)
+	}
+	p = append(p, _CRLF_...)
+
+	if _, err = conn.Write(p); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	// If there was a deadline set for the handshake, clear it now.
+	if opts.HandshakeTimeout > 0 {
+		conn.SetDeadline(time.Time{})
+	}
+	// Server always expect "clients" to send masked payload, unless the option
+	// "no-masking" has been enabled.
+	ws := &websocket.Websocket{Compress: compress, Maskread: !noMasking}
+
+	// Check for X-Forwarded-For header
+	if cips, ok := r.Header[websocket.XForwardedForHeader]; ok {
+		cip := cips[0]
+		if net.ParseIP(cip) != nil {
+			ws.ClientIP = cip
+		}
+	}
+
+	if kind == CLIENT || kind == MQTT {
+		// Indicate if this is likely coming from a browser.
+		if ua := r.Header.Get("User-Agent"); ua != _EMPTY_ && strings.HasPrefix(ua, "Mozilla/") {
+			ws.Browser = true
+			// Disable fragmentation of compressed frames for Safari browsers.
+			// Unfortunately, you could be running Chrome on macOS and this
+			// string will contain "Safari/" (along "Chrome/"). However, what
+			// I have found is that actual Safari browser also have "Version/".
+			// So make the combination of the two.
+			ws.Nocompfrag = ws.Compress && strings.Contains(ua, "Version/") && strings.Contains(ua, "Safari/")
+		}
+		if opts.JWTCookie != _EMPTY_ {
+			if c, err := r.Cookie(opts.JWTCookie); err == nil && c != nil {
+				ws.CookieJwt = c.Value
+			}
+		}
+	}
+	return &UpgradeResult{conn: conn, ws: ws, kind: kind}, nil
+}
+
 // Extended type of a CLIENT connection. This is returned by c.clientType()
 // and indicate what type of client connection we are dealing with.
 // If invoked on a non CLIENT connection, NON_CLIENT type is returned.

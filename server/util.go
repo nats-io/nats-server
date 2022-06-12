@@ -15,10 +15,14 @@ package server
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"github.com/nats-io/nats-server/v2/server/internal/network/websocket"
 	"math"
 	"net"
+	"net/http"
 	"net/url"
 	"reflect"
 	"regexp"
@@ -38,6 +42,38 @@ const (
 )
 
 var semVerRe = regexp.MustCompile(`\Av?([0-9]+)\.?([0-9]+)?\.?([0-9]+)?`)
+
+// Returns true if the header named `name` contains a token with value `value`.
+func headerContains(header http.Header, name string, value string) bool {
+	for _, s := range header[name] {
+		tokens := strings.Split(s, ",")
+		for _, t := range tokens {
+			t = strings.Trim(t, " \t")
+			if strings.EqualFold(t, value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Send an HTTP error with the given `status`` to the given http response writer `w`.
+// Return an error created based on the `reason` string.
+func returnHTTPError(w http.ResponseWriter, r *http.Request, status int, reason string) error {
+	err := fmt.Errorf("%s - websocket handshake error: %s", r.RemoteAddr, reason)
+	w.Header().Set("Sec-Websocket-Version", "13")
+	http.Error(w, http.StatusText(status), status)
+	return err
+}
+
+// Concatenate the key sent by the client with the GUID, then computes the SHA1 hash
+// and returns it as a based64 encoded string.
+func acceptKey(key string) string {
+	h := sha1.New()
+	h.Write([]byte(key))
+	h.Write(websocket.GUID)
+	return base64.StdEncoding.EncodeToString(h.Sum(nil))
+}
 
 func versionComponents(version string) (major, minor, patch int, err error) {
 	m := semVerRe.FindStringSubmatch(version)
