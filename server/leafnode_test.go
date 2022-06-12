@@ -2697,9 +2697,9 @@ func TestLeafNodeTLSConfigReloadForRemote(t *testing.T) {
 
 func testDefaultLeafNodeWSOptions() *Options {
 	o := DefaultOptions()
-	o.Websocket.Host = "127.0.0.1"
-	o.Websocket.Port = -1
-	o.Websocket.NoTLS = true
+	o.WebsocketOpt.Host = "127.0.0.1"
+	o.WebsocketOpt.Port = -1
+	o.WebsocketOpt.NoTLS = true
 	o.LeafNode.Host = "127.0.0.1"
 	o.LeafNode.Port = -1
 	return o
@@ -2709,7 +2709,7 @@ func testDefaultRemoteLeafNodeWSOptions(t *testing.T, o *Options, tls bool) *Opt
 	// Use some path in the URL.. we don't use that, but internally
 	// the server will prefix the path with /leafnode so that the
 	// WS webserver knows that it needs to create a LEAF connection.
-	u, _ := url.Parse(fmt.Sprintf("ws://127.0.0.1:%d/some/path", o.Websocket.Port))
+	u, _ := url.Parse(fmt.Sprintf("ws://127.0.0.1:%d/some/path", o.WebsocketOpt.Port))
 	lo := DefaultOptions()
 	lo.Cluster.Name = "LN"
 	remote := &RemoteLeafOpts{URLs: []*url.URL{u}}
@@ -2810,7 +2810,7 @@ func TestLeafNodeWSBasic(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := testDefaultLeafNodeWSOptions()
-			o.Websocket.NoTLS = !test.tls
+			o.WebsocketOpt.NoTLS = !test.tls
 			if test.tls {
 				tc := &TLSConfigOpts{
 					CertFile: "../test/configs/certs/server-cert.pem",
@@ -2821,9 +2821,9 @@ func TestLeafNodeWSBasic(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Error generating TLS config: %v", err)
 				}
-				o.Websocket.TLSConfig = tlsConf
+				o.WebsocketOpt.TLSConfig = tlsConf
 			}
-			o.Websocket.Compression = test.acceptCompression
+			o.WebsocketOpt.Compression = test.acceptCompression
 			s := RunServer(o)
 			defer s.Shutdown()
 
@@ -3085,7 +3085,7 @@ func TestLeafNodeWSAuth(t *testing.T) {
 	s.SetLogger(l, false, false)
 
 	lo := testDefaultRemoteLeafNodeWSOptions(t, o, false)
-	u, _ := url.Parse(fmt.Sprintf("ws://leaf:pleaf@127.0.0.1:%d", o.Websocket.Port))
+	u, _ := url.Parse(fmt.Sprintf("ws://leaf:pleaf@127.0.0.1:%d", o.WebsocketOpt.Port))
 	remote := &RemoteLeafOpts{URLs: []*url.URL{u}}
 	lo.LeafNode.Remotes = []*RemoteLeafOpts{remote}
 	lo.LeafNode.ReconnectInterval = 50 * time.Millisecond
@@ -3237,7 +3237,7 @@ func TestLeafNodeWSNoBufferCorruption(t *testing.T) {
 
 func TestLeafNodeWSRemoteNoTLSBlockWithWSSProto(t *testing.T) {
 	o := testDefaultLeafNodeWSOptions()
-	o.Websocket.NoTLS = false
+	o.WebsocketOpt.NoTLS = false
 	tc := &TLSConfigOpts{
 		CertFile: "../test/configs/certs/server-cert.pem",
 		KeyFile:  "../test/configs/certs/server-key.pem",
@@ -3247,7 +3247,7 @@ func TestLeafNodeWSRemoteNoTLSBlockWithWSSProto(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error generating TLS config: %v", err)
 	}
-	o.Websocket.TLSConfig = tlsConf
+	o.WebsocketOpt.TLSConfig = tlsConf
 	s := RunServer(o)
 	defer s.Shutdown()
 
@@ -3260,7 +3260,7 @@ func TestLeafNodeWSRemoteNoTLSBlockWithWSSProto(t *testing.T) {
 	// With the fix, the connection will fail because the remote will fail to verify
 	// the root CA, but at least, we will make sure that this is not an "invalid websocket connection"
 
-	u, _ := url.Parse(fmt.Sprintf("wss://127.0.0.1:%d/some/path", o.Websocket.Port))
+	u, _ := url.Parse(fmt.Sprintf("wss://127.0.0.1:%d/some/path", o.WebsocketOpt.Port))
 	lo := DefaultOptions()
 	lo.Cluster.Name = "LN"
 	remote := &RemoteLeafOpts{URLs: []*url.URL{u}}

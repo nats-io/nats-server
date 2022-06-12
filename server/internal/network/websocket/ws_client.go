@@ -469,9 +469,6 @@ func (c *client) collapsePtoNB() (net.Buffers, int64) {
 	return bufs, c.ws.fs
 }
 
-type Server struct {
-}
-
 // setOriginOptions creates or updates the existing map
 func (ws *SrvWebsocket) setOriginOptions(o *WebsocketOpts) {
 	ws.mu.Lock()
@@ -508,12 +505,12 @@ func (ws *SrvWebsocket) setOriginOptions(o *WebsocketOpts) {
 // Server lock is held on entry.
 func (ws *SrvWebsocket) configAuth(opts *WebsocketOpts) {
 	// If any of those is specified, we consider that there is an override.
-	ws.authOverride = opts.Username != _EMPTY_ || opts.Token != _EMPTY_ || opts.NoAuthUser != _EMPTY_
+	ws.AuthOverride = opts.Username != _EMPTY_ || opts.Token != _EMPTY_ || opts.NoAuthUser != _EMPTY_
 }
 
 // ProcessSrvWebsocket modify the ws as the config passed, the ws could run except the error is not nil
 // should check s.shutdown(unfinished)
-func (ws *SrvWebsocket) ProcessSrvWebsocket(server *http.Server, o *WebsocketOpts) error {
+func (ws *SrvWebsocket) ProcessSrvWebsocket(preparedServer *http.Server, o *WebsocketOpts) error {
 
 	ws.setOriginOptions(o)
 
@@ -526,6 +523,7 @@ func (ws *SrvWebsocket) ProcessSrvWebsocket(server *http.Server, o *WebsocketOpt
 		port = 0
 	}
 	hp := net.JoinHostPort(o.Host, strconv.Itoa(port))
+	preparedServer.Addr = hp
 
 	//ws.mu.Lock()
 	//if ws.shutdown {
@@ -568,7 +566,7 @@ func (ws *SrvWebsocket) ProcessSrvWebsocket(server *http.Server, o *WebsocketOpt
 		ws.mu.Unlock()
 		return err
 	}
-	ws.Server = server
+	ws.Server = preparedServer
 	ws.Listener = hl
 	ws.mu.Unlock()
 	return nil
@@ -582,102 +580,6 @@ func (ws *SrvWebsocket) ProcessSrvWebsocket(server *http.Server, o *WebsocketOpt
 // the same TLS configuration.
 func (opts *WebsocketOpts) getTLSConfig(_ *tls.ClientHelloInfo) (*tls.Config, error) {
 	return opts.TLSConfig, nil
-}
-
-// This is similar to createClient() but has some modifications
-// specific to handle websocket clients.
-// The comments have been kept to minimum to reduce code size.
-// Check createClient() for more details.
-func (s *Server) createWSClient(conn net.Conn, ws *Websocket) *server.client {
-	opts := s.getOpts()
-
-	maxPay := int32(opts.MaxPayload)
-	maxSubs := int32(opts.MaxSubs)
-	if maxSubs == 0 {
-		maxSubs = -1
-	}
-	now := time.Now().UTC()
-
-	c := &server.client{srv: s, nc: conn, opts: server.defaultOpts, mpay: maxPay, msubs: maxSubs, start: now, last: now, ws: ws}
-
-	c.registerWithAccount(s.globalAccount())
-
-	var info server.Info
-	var authRequired bool
-
-	s.mu.Lock()
-	info = s.copyInfo()
-	// Check auth, override if applicable.
-	if !info.AuthRequired {
-		// Set info.AuthRequired since this is what is sent to the client.
-		info.AuthRequired = s.websocket.authOverride
-	}
-	if s.nonceRequired() {
-		var raw [server.nonceLen]byte
-		nonce := raw[:]
-		s.generateNonce(nonce)
-		info.Nonce = string(nonce)
-	}
-	c.nonce = []byte(info.Nonce)
-	authRequired = info.AuthRequired
-
-	s.totalClients++
-	s.mu.Unlock()
-
-	c.mu.Lock()
-	if authRequired {
-		c.flags.set(server.expectConnect)
-	}
-	c.initClient()
-	c.Debugf("Client connection created")
-	c.sendProtoNow(c.generateClientInfoJSON(info))
-	c.mu.Unlock()
-
-	s.mu.Lock()
-	if !s.running || s.ldm {
-		if s.shutdown {
-			conn.Close()
-		}
-		s.mu.Unlock()
-		return c
-	}
-
-	if opts.MaxConn > 0 && len(s.clients) >= opts.MaxConn {
-		s.mu.Unlock()
-		c.maxConnExceeded()
-		return nil
-	}
-	s.clients[c.cid] = c
-
-	// Websocket clients do TLS in the websocket http Server.
-	// So no TLS here...
-	s.mu.Unlock()
-
-	c.mu.Lock()
-
-	if c.isClosed() {
-		c.mu.Unlock()
-		c.closeConnection(server.WriteError)
-		return nil
-	}
-
-	if authRequired {
-		timeout := opts.AuthTimeout
-		// Possibly override with Websocket specific value.
-		if opts.Websocket.AuthTimeout != 0 {
-			timeout = opts.Websocket.AuthTimeout
-		}
-		c.setAuthTimer(server.secondsToDuration(timeout))
-	}
-
-	c.setPingTimer()
-
-	s.startGoRoutine(func() { c.readLoop(nil) })
-	s.startGoRoutine(func() { c.writeLoop() })
-
-	c.mu.Unlock()
-
-	return c
 }
 
 // ValidateWebsocketOptions validates the websocket related options.

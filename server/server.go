@@ -1801,7 +1801,56 @@ func (s *Server) Start() {
 	// leaf node because we want to resolve the gateway host:port so that this
 	// information can be sent to other routes.
 	if opts.Websocket.Port != 0 {
-		s.startWebsocketServer()
+		sopts := s.getOpts()
+		hasLeaf := sopts.LeafNode.Port != 0
+		mux := http.NewServeMux()
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			res, err := Upgrade(w, r, &s.websocket, sopts.Websocket)
+			//s.websocket.Upgrade(w, r)
+			if err != nil {
+				s.Errorf(err.Error())
+				return
+			}
+			switch res.kind {
+			case CLIENT:
+				s.createWSClient(res.conn, res.ws)
+			case MQTT:
+				s.createMQTTClient(res.conn, res.ws)
+			case LEAF:
+				if !hasLeaf {
+					s.Errorf("Not configured to accept leaf node connections")
+					// Silently close for now. If we want to send an error back, we would
+					// need to create the leafnode client anyway, so that is is handling websocket
+					// frames, then send the error to the remote.
+					res.conn.Close()
+					return
+				}
+				s.createLeafNode(res.conn, nil, nil, res.ws)
+			}
+		})
+		preparedHttpServer := &http.Server{
+			Handler:     mux,
+			ReadTimeout: sopts.Websocket.HandshakeTimeout,
+			ErrorLog:    log.New(&captureHTTPServerLog{s, "websocket: "}, _EMPTY_, 0),
+		}
+
+		err := s.websocket.ProcessSrvWebsocket(preparedHttpServer, &sopts.Websocket)
+		if err != nil {
+			s.Fatalf("process websocket error: %v", err)
+		}
+		go func() {
+			if err := s.websocket.Serve(); err != http.ErrServerClosed {
+				s.Fatalf("websocket listener error: %v", err)
+			}
+			if s.isLameDuckMode() {
+				// Signal that we are not accepting new clients
+				s.ldmCh <- true
+				// Now wait for the Shutdown...
+				<-s.quitCh
+				return
+			}
+			s.done <- true
+		}()
 	}
 
 	// Start up listen if we want to accept leaf node connections.

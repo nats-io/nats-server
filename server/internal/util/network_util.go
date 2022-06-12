@@ -46,7 +46,7 @@ func GetConnectURLs(advertise, host string, port int) ([]string, error) {
 		urls = append(urls, net.JoinHostPort(h, strconv.Itoa(p)))
 	} else {
 		sPort := strconv.Itoa(port)
-		_, ips, err := s.getNonLocalIPsIfHostIsIPAny(host, true)
+		_, ips, err := getNonLocalIPsIfHostIsIPAny(host, true)
 		for _, ip := range ips {
 			urls = append(urls, net.JoinHostPort(ip, sPort))
 		}

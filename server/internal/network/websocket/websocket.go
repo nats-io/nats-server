@@ -136,7 +136,12 @@ type SrvWebsocket struct {
 	ConnectURLs    []string
 
 	ConnectURLsMap ConnURLsMap
-	authOverride   bool // indicate if there is auth override in websocket config
+	AuthOverride   bool // indicate if there is auth override in websocket config
+}
+
+func (ws *SrvWebsocket) Serve() error {
+	ws.mu.Lock()
+	return ws.Server.Serve(ws.Listener)
 }
 
 type allowedOrigin struct {

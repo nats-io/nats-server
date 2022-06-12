@@ -509,22 +509,22 @@ func TestMQTTParseOptions(t *testing.T) {
 				}
 			}
 			`, func(o *MQTTOpts) error {
-				if o.TLSConfig == nil {
-					return fmt.Errorf("TLSConfig should have been set")
-				}
-				return nil
-			}, ""},
+			if o.TLSConfig == nil {
+				return fmt.Errorf("TLSConfig should have been set")
+			}
+			return nil
+		}, ""},
 		{"no auth user",
 			`
 			mqtt {
 				no_auth_user: "noauthuser"
 			}
 			`, func(o *MQTTOpts) error {
-				if o.NoAuthUser != "noauthuser" {
-					return fmt.Errorf("Invalid NoAuthUser value: %q", o.NoAuthUser)
-				}
-				return nil
-			}, ""},
+			if o.NoAuthUser != "noauthuser" {
+				return fmt.Errorf("Invalid NoAuthUser value: %q", o.NoAuthUser)
+			}
+			return nil
+		}, ""},
 		{"auth block",
 			`
 			mqtt {
@@ -536,11 +536,11 @@ func TestMQTTParseOptions(t *testing.T) {
 				}
 			}
 			`, func(o *MQTTOpts) error {
-				if o.Username != "mqttuser" || o.Password != "pwd" || o.Token != "token" || o.AuthTimeout != 2.0 {
-					return fmt.Errorf("Invalid auth block: %+v", o)
-				}
-				return nil
-			}, ""},
+			if o.Username != "mqttuser" || o.Password != "pwd" || o.Token != "token" || o.AuthTimeout != 2.0 {
+				return fmt.Errorf("Invalid auth block: %+v", o)
+			}
+			return nil
+		}, ""},
 		{"auth timeout as int",
 			`
 			mqtt {
@@ -549,33 +549,33 @@ func TestMQTTParseOptions(t *testing.T) {
 				}
 			}
 			`, func(o *MQTTOpts) error {
-				if o.AuthTimeout != 2.0 {
-					return fmt.Errorf("Invalid auth timeout: %v", o.AuthTimeout)
-				}
-				return nil
-			}, ""},
+			if o.AuthTimeout != 2.0 {
+				return fmt.Errorf("Invalid auth timeout: %v", o.AuthTimeout)
+			}
+			return nil
+		}, ""},
 		{"ack wait",
 			`
 			mqtt {
 				ack_wait: "10s"
 			}
 			`, func(o *MQTTOpts) error {
-				if o.AckWait != 10*time.Second {
-					return fmt.Errorf("Invalid ack wait: %v", o.AckWait)
-				}
-				return nil
-			}, ""},
+			if o.AckWait != 10*time.Second {
+				return fmt.Errorf("Invalid ack wait: %v", o.AckWait)
+			}
+			return nil
+		}, ""},
 		{"max ack pending",
 			`
 			mqtt {
 				max_ack_pending: 123
 			}
 			`, func(o *MQTTOpts) error {
-				if o.MaxAckPending != 123 {
-					return fmt.Errorf("Invalid max ack pending: %v", o.MaxAckPending)
-				}
-				return nil
-			}, ""},
+			if o.MaxAckPending != 123 {
+				return fmt.Errorf("Invalid max ack pending: %v", o.MaxAckPending)
+			}
+			return nil
+		}, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(test.content))
