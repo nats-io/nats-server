@@ -5,9 +5,7 @@ import (
 	"compress/flate"
 	"crypto/tls"
 	"encoding/binary"
-	"errors"
 	"fmt"
-	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats-server/v2/server/internal/network"
 	"github.com/nats-io/nats-server/v2/server/internal/util"
 	"io"
@@ -437,27 +435,27 @@ func (c *Client) enqueueControlMessage(controlMsg opCode, payload []byte) {
 	c.Mu.Unlock()
 }
 
-// Enqueues a websocket close message with a status mapped from the given `reason`.
+// EnqueueCloseMessage enqueues a websocket close message with a status mapped from the given `reason`.
 //
 // Client lock held on entry
-func (c *Client) EnqueueCloseMessage(reason server.ClosedState) {
+func (c *Client) EnqueueCloseMessage(reason ClosedState) {
 	var status int
 	switch reason {
-	case server.ClientClosed:
+	case ClientClosed:
 		status = closeStatusNormalClosure
-	case server.AuthenticationTimeout, server.AuthenticationViolation, server.SlowConsumerPendingBytes, server.SlowConsumerWriteDeadline,
-		server.MaxAccountConnectionsExceeded, server.MaxConnectionsExceeded, server.MaxControlLineExceeded, server.MaxSubscriptionsExceeded,
-		server.MissingAccount, server.AuthenticationExpired, server.Revocation:
+	case AuthenticationTimeout, AuthenticationViolation, SlowConsumerPendingBytes, SlowConsumerWriteDeadline,
+		MaxAccountConnectionsExceeded, MaxConnectionsExceeded, MaxControlLineExceeded, MaxSubscriptionsExceeded,
+		MissingAccount, AuthenticationExpired, Revocation:
 		status = closeStatusPolicyViolation
-	case server.TLSHandshakeError:
+	case TLSHandshakeError:
 		status = closeStatusTLSHandshake
-	case server.ParseError, server.ProtocolViolation, server.BadClientProtocolVersion:
+	case ParseError, ProtocolViolation, BadClientProtocolVersion:
 		status = closeStatusProtocolError
-	case server.MaxPayloadExceeded:
+	case MaxPayloadExceeded:
 		status = closeStatusMessageTooBig
-	case server.ServerShutdown:
+	case ServerShutdown:
 		status = closeStatusGoingAway
-	case server.WriteError, server.ReadError, server.StaleConnection:
+	case WriteError, ReadError, StaleConnection:
 		status = closeStatusAbnormalClosure
 	default:
 		status = closeStatusInternalSrvError
@@ -587,51 +585,6 @@ func (ws *SrvWebsocket) ProcessSrvWebsocket(preparedServer *http.Server, o *Webs
 // the same TLS configuration.
 func (opts *WebsocketOpts) getTLSConfig(_ *tls.ClientHelloInfo) (*tls.Config, error) {
 	return opts.TLSConfig, nil
-}
-
-// ValidateWebsocketOptions validates the websocket related options.
-func ValidateWebsocketOptions(o *server.Options) error {
-	wo := &o.Websocket
-	// If no port is defined, we don't care about other options
-	if wo.Port == 0 {
-		return nil
-	}
-	// Enforce TLS... unless NoTLS is set to true.
-	if wo.TLSConfig == nil && !wo.NoTLS {
-		return errors.New("websocket requires TLS configuration")
-	}
-	// Make sure that allowed origins, if specified, can be parsed.
-	for _, ao := range wo.AllowedOrigins {
-		if _, err := url.Parse(ao); err != nil {
-			return fmt.Errorf("unable to parse allowed origin: %v", err)
-		}
-	}
-	// If there is a NoAuthUser, we need to have Users defined and
-	// the user to be present.
-	if wo.NoAuthUser != _EMPTY_ {
-		if err := server.ValidateNoAuthUser(o, wo.NoAuthUser); err != nil {
-			return err
-		}
-	}
-	// Token/Username not possible if there are users/nkeys
-	if len(o.Users) > 0 || len(o.Nkeys) > 0 {
-		if wo.Username != _EMPTY_ {
-			return fmt.Errorf("websocket authentication username not compatible with presence of users/nkeys")
-		}
-		if wo.Token != _EMPTY_ {
-			return fmt.Errorf("websocket authentication token not compatible with presence of users/nkeys")
-		}
-	}
-	// Using JWT requires Trusted Keys
-	if wo.JWTCookie != _EMPTY_ {
-		if len(o.TrustedOperators) == 0 && len(o.TrustedKeys) == 0 {
-			return fmt.Errorf("trusted operators or trusted keys configuration is required for JWT authentication via cookie %q", wo.JWTCookie)
-		}
-	}
-	if err := server.ValidatePinnedCerts(wo.TLSPinnedCerts); err != nil {
-		return fmt.Errorf("websocket: %v", err)
-	}
-	return nil
 }
 
 //// ReadLoop is the websocket read functionality.

@@ -1709,7 +1709,7 @@ func (c *client) markConnAsClosed(reason ClosedState) {
 	// For a websocket client, unless we are told not to flush, enqueue
 	// a websocket closeMessage based on the reason.
 	if !skipFlush && c.isWebsocket() && !c.websocketClient.Ws.CloseSent {
-		c.websocketClient.EnqueueCloseMessage(reason)
+		c.websocketClient.EnqueueCloseMessage(websocket.ClosedState(reason))
 	}
 	// Be consistent with the creation: for routes, gateways and leaf,
 	// we use Noticef on create, so use that too for delete.

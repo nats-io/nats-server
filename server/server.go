@@ -711,7 +711,7 @@ func validateOptions(o *Options) error {
 		return err
 	}
 	// Finally check websocket options.
-	return websocket.ValidateWebsocketOptions(o)
+	return ValidateWebsocketOptions(o)
 }
 
 func (s *Server) getOpts() *Options {

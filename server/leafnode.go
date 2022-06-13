@@ -782,7 +782,12 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 
 	// For accepted LN connections, ws will be != nil if it was accepted
 	// through the Websocket port.
-	c.ws = ws
+	c.websocketClient = &websocket.Client{
+		Ws:  ws,
+		Mu:  &c.mu,
+		Nc:  c.nc,
+		Out: &c.out,
+	}
 
 	// For remote, check if the scheme starts with "ws", if so, we will initiate
 	// a remote Leaf Node connection as a websocket connection.

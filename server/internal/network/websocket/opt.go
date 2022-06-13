@@ -2,7 +2,6 @@ package websocket
 
 import (
 	"crypto/tls"
-	"github.com/nats-io/nats-server/v2/server"
 	"time"
 )
 
@@ -48,7 +47,7 @@ type WebsocketOpts struct {
 	TLSMap bool
 
 	// When present, accepted client certificates (verify/verify_and_map) must be in this list
-	TLSPinnedCerts server.PinnedCertSet
+	TLSPinnedCerts map[string]struct{}
 
 	// If true, the Origin header must match the request's host.
 	SameOrigin bool

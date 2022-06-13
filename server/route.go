@@ -1699,7 +1699,7 @@ func (s *Server) startRouteAcceptLoop() {
 	// Set this if only if advertise is not disabled
 	if !opts.Cluster.NoAdvertise {
 		info.ClientConnectURLs = s.clientConnectURLs
-		info.WSConnectURLs = s.websocket.connectURLs
+		info.WSConnectURLs = s.websocket.ConnectURLs
 	}
 	// If we have selected a random port...
 	if port == 0 {

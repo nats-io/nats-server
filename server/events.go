@@ -614,7 +614,7 @@ func routeStat(r *client) *RouteStat {
 			Msgs:  atomic.LoadInt64(&r.inMsgs),
 			Bytes: atomic.LoadInt64(&r.inBytes),
 		},
-		Pending: int(r.out.pb),
+		Pending: int(r.out.Pb),
 	}
 	if r.route != nil {
 		rs.Name = r.route.remoteName

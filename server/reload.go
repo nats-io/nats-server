@@ -334,7 +334,7 @@ func (c *clusterOption) Apply(s *Server) {
 		s.routeInfo.WSConnectURLs = nil
 	} else {
 		s.routeInfo.ClientConnectURLs = s.clientConnectURLs
-		s.routeInfo.WSConnectURLs = s.websocket.connectURLs
+		s.routeInfo.WSConnectURLs = s.websocket.ConnectURLs
 	}
 	s.setRouteInfoHostPortAndIP()
 	s.mu.Unlock()
