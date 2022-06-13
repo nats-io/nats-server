@@ -42,12 +42,18 @@ func prepareWsClient(conn net.Conn, ws *websocket.Websocket, opts *Options) *cli
 	}
 	now := time.Now().UTC()
 
-	c := &client{nc: conn, opts: defaultOpts, mpay: maxPay, msubs: maxSubs, start: now, last: now, ws: ws}
+	c := &client{nc: conn, opts: defaultOpts, mpay: maxPay, msubs: maxSubs, start: now, last: now,
+		websocketClient: &websocket.Client{Ws: ws}}
 
 	return c
 }
 
 func (c *client) finalizeWsClient(s *Server) error {
+	c.mu.Lock()
+	c.websocketClient.Mu = &c.mu
+	c.websocketClient.Nc = c.nc
+	c.websocketClient.Out = &c.out
+
 	c.srv = s
 	err := c.registerWithAccount(s.globalAccount())
 	if err != nil {

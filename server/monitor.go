@@ -544,7 +544,7 @@ func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time) {
 	ci.OutMsgs = client.outMsgs
 	ci.OutBytes = client.outBytes
 	ci.NumSubs = uint32(len(client.subs))
-	ci.Pending = int(client.out.pb)
+	ci.Pending = int(client.out.Pb)
 	ci.Name = client.opts.Name
 	ci.Lang = client.opts.Lang
 	ci.Version = client.opts.Version

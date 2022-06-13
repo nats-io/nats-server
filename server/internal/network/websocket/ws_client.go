@@ -21,9 +21,9 @@ import (
 
 type Client struct {
 	Ws  *Websocket
-	mu  sync.Mutex
-	out network.Outbound
-	nc  net.Conn
+	Mu  *sync.Mutex
+	Out *network.Outbound
+	Nc  net.Conn
 }
 
 // Returns a slice of byte slices corresponding to payload of websocket Frames.
@@ -185,12 +185,12 @@ func (c *Client) CollapsePtoNB() (net.Buffers, int64, error) {
 	if c.Ws.Browser {
 		mfs = frameSizeForBrowsers
 	}
-	if len(c.out.P) > 0 {
-		p := c.out.P
-		c.out.P = nil
-		nb = append(c.out.Nb, p)
-	} else if len(c.out.Nb) > 0 {
-		nb = c.out.Nb
+	if len(c.Out.P) > 0 {
+		p := c.Out.P
+		c.Out.P = nil
+		nb = append(c.Out.Nb, p)
+	} else if len(c.Out.Nb) > 0 {
+		nb = c.Out.Nb
 	}
 	mask := c.Ws.Maskwrite
 	// Start with possible already framed buffers (that we could have
@@ -259,7 +259,7 @@ func (c *Client) CollapsePtoNB() (net.Buffers, int64, error) {
 		// Add to pb the compressed data size (including headers), but
 		// remove the original uncompressed data size that was added
 		// during the queueing.
-		c.out.Pb += int64(csz) - int64(usz)
+		c.Out.Pb += int64(csz) - int64(usz)
 		c.Ws.Fs += int64(csz)
 	} else if len(nb) > 0 {
 		var total int
@@ -271,7 +271,7 @@ func (c *Client) CollapsePtoNB() (net.Buffers, int64, error) {
 			}
 			endFrame := func(idx, size int) {
 				n, key := fillFrameHeader(bufs[idx], mask, firstFrame, finalFrame, uncompressedFrame, binaryMessage, size)
-				c.out.Pb += int64(n)
+				c.Out.Pb += int64(n)
 				c.Ws.Fs += int64(n + size)
 				bufs[idx] = bufs[idx][:n]
 				if mask {
@@ -313,7 +313,7 @@ func (c *Client) CollapsePtoNB() (net.Buffers, int64, error) {
 				total += len(b)
 			}
 			wsfh, key := createFrameHeader(mask, false, binaryMessage, total)
-			c.out.Pb += int64(len(wsfh))
+			c.Out.Pb += int64(len(wsfh))
 			bufs = append(bufs, wsfh)
 			idx := len(bufs)
 			bufs = append(bufs, nb...)
@@ -356,7 +356,7 @@ func (c *Client) enqueueControlMessageLocked(controlMsg opCode, payload []byte) 
 			maskBuf(key, cm[n:])
 		}
 	}
-	c.out.Pb += int64(len(cm))
+	c.Out.Pb += int64(len(cm))
 	if controlMsg == closeMessage {
 		// We can't add the close message to the Frames buffers
 		// now. It will be done on a flushOutbound() when there
@@ -373,7 +373,7 @@ func (c *Client) enqueueControlMessageLocked(controlMsg opCode, payload []byte) 
 // flushSignal will use server to queue the flush IO operation to a pool of flushers.
 // Lock must be held.
 func (c *Client) flushSignal() {
-	c.out.Sg.Signal()
+	c.Out.Sg.Signal()
 }
 
 // handleControlFrame Handles the PING, PONG and CLOSE websocket control Frames.
@@ -432,9 +432,9 @@ func (c *Client) handleControlFrame(r *ReadInfo, frameType opCode, nc io.Reader,
 //
 // Client lock MUST NOT be held on entry
 func (c *Client) enqueueControlMessage(controlMsg opCode, payload []byte) {
-	c.mu.Lock()
+	c.Mu.Lock()
 	c.enqueueControlMessageLocked(controlMsg, payload)
-	c.mu.Unlock()
+	c.Mu.Unlock()
 }
 
 // Enqueues a websocket close message with a status mapped from the given `reason`.
@@ -532,9 +532,9 @@ func (ws *SrvWebsocket) ProcessSrvWebsocket(preparedServer *http.Server, o *Webs
 	hp := net.JoinHostPort(o.Host, strconv.Itoa(port))
 	preparedServer.Addr = hp
 
-	//Ws.mu.Lock()
+	//Ws.Mu.Lock()
 	//if Ws.shutdown {
-	//	Ws.mu.Unlock()
+	//	Ws.Mu.Unlock()
 	//	return
 	//}
 
@@ -639,19 +639,19 @@ func ValidateWebsocketOptions(o *server.Options) error {
 //func (c *Client) ReadLoop(pre []byte, done chan struct{}) {
 //	// Grab the connection off the client, it will be cleared on a close.
 //	// We check for that after the loop, but want to avoid a nil dereference
-//	c.mu.Lock()
+//	c.Mu.Lock()
 //	defer func() {
 //		done <- struct{}{}
 //		close(done)
 //	}()
 //	if c.isClosed() {
-//		c.mu.Unlock()
+//		c.Mu.Unlock()
 //		return
 //	}
-//	nc := c.nc
+//	Nc := c.Nc
 //	//Ws := c.isWebsocket()
 //	//if c.isMqtt() {
-//	//	c.mqtt.r = &mqttReader{reader: nc}
+//	//	c.mqtt.r = &mqttReader{reader: Nc}
 //	//}
 //	c.in.rsz = startBufSize
 //
@@ -662,7 +662,7 @@ func ValidateWebsocketOptions(o *server.Options) error {
 //	acc := c.acc
 //	var masking bool
 //	masking = c.Ws.Maskread
-//	c.mu.Unlock()
+//	c.Mu.Unlock()
 //
 //	defer func() {
 //		// These are used only in the readloop, so we can set them to nil
@@ -696,7 +696,7 @@ func ValidateWebsocketOptions(o *server.Options) error {
 //			n = len(pre)
 //			pre = nil
 //		} else {
-//			n, err = nc.Read(b)
+//			n, err = Nc.Read(b)
 //			// If we have any data we will try to parse and exit at the end.
 //			if n == 0 && err != nil {
 //				c.closeConnection(closedStateForErr(err))
@@ -704,7 +704,7 @@ func ValidateWebsocketOptions(o *server.Options) error {
 //			}
 //		}
 //		if Ws {
-//			bufs, err = c.Read(wsr, nc, b[:n])
+//			bufs, err = c.Read(wsr, Nc, b[:n])
 //			if bufs == nil && err != nil {
 //				if err != io.EOF {
 //					c.Errorf("read error: %v", err)
@@ -775,7 +775,7 @@ func ValidateWebsocketOptions(o *server.Options) error {
 //		last := c.flushClients(0)
 //
 //		// Update activity, check read buffer size.
-//		c.mu.Lock()
+//		c.Mu.Lock()
 //
 //		// Activity based on interest changes or data/msgs.
 //		if c.in.msgs > 0 || c.in.subs > 0 {
@@ -794,18 +794,18 @@ func ValidateWebsocketOptions(o *server.Options) error {
 //			c.in.rsz = int32(cap(b) * 2)
 //			b = make([]byte, c.in.rsz)
 //		} else if n < cap(b) && cap(b) > minBufSize && c.in.srs > shortsToShrink {
-//			// Shrink, for now don't accelerate, ping/pong will eventually sort it out.
+//			// Shrink, for now don't accelerate, ping/pong will eventually sort it Out.
 //			c.in.rsz = int32(cap(b) / 2)
 //			b = make([]byte, c.in.rsz)
 //		}
 //		// re-snapshot the account since it can change during reload, etc.
 //		acc = c.acc
-//		// Refresh nc because in some cases, we have upgraded c.nc to TLS.
-//		nc = c.nc
-//		c.mu.Unlock()
+//		// Refresh Nc because in some cases, we have upgraded c.Nc to TLS.
+//		Nc = c.Nc
+//		c.Mu.Unlock()
 //
 //		// Connection was closed
-//		if nc == nil {
+//		if Nc == nil {
 //			return
 //		}
 //

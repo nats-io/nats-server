@@ -19,6 +19,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"github.com/nats-io/nats-server/v2/server/internal/network"
 	"github.com/nats-io/nats-server/v2/server/internal/network/websocket"
 	"io"
 	"math/rand"
@@ -376,7 +377,7 @@ type client struct {
 	pubKey     string
 	nc         net.Conn
 	ncs        atomic.Value
-	out        outbound
+	out        network.Outbound
 	user       *NkeyUser
 	host       string
 	port       uint16
@@ -717,12 +718,12 @@ func (c *client) initClient() {
 	c.cid = atomic.AddUint64(&s.gcid, 1)
 
 	// Outbound data structure setup
-	c.out.sz = startBufSize
-	c.out.sg = sync.NewCond(&(c.mu))
+	c.out.Sz = startBufSize
+	c.out.Sg = sync.NewCond(&(c.mu))
 	opts := s.getOpts()
 	// Snapshots to avoid mutex access in fast paths.
-	c.out.wdl = opts.WriteDeadline
-	c.out.mp = opts.MaxPending
+	c.out.Wdl = opts.WriteDeadline
+	c.out.Mp = opts.MaxPending
 	// Snapshot max control line since currently can not be changed on reload and we
 	// were checking it on each call to parse. If this changes and we allow MaxControlLine
 	// to be reloaded without restart, this code will need to change.
@@ -1199,9 +1200,9 @@ func (c *client) writeLoop() {
 	for {
 		c.mu.Lock()
 		if closed = c.isClosed(); !closed {
-			owtf := c.out.fsp > 0 && c.out.pb < maxBufSize && c.out.fsp < maxFlushPending
-			if waitOk && (c.out.pb == 0 || owtf) {
-				c.out.sg.Wait()
+			owtf := c.out.Fsp > 0 && c.out.Pb < maxBufSize && c.out.Fsp < maxFlushPending
+			if waitOk && (c.out.Pb == 0 || owtf) {
+				c.out.Sg.Wait()
 				// Check that connection has not been closed while lock was released
 				// in the conditional wait.
 				closed = c.isClosed()
@@ -1243,7 +1244,7 @@ func (c *client) flushClients(budget time.Duration) time.Time {
 		// Update last activity for message delivery
 		cp.last = last
 		// Remove ourselves from the pending list.
-		cp.out.fsp--
+		cp.out.Fsp--
 
 		// Just ignore if this was closed.
 		if cp.isClosed() {
@@ -1251,8 +1252,8 @@ func (c *client) flushClients(budget time.Duration) time.Time {
 			continue
 		}
 
-		if budget > 0 && cp.out.lft < 2*budget && cp.flushOutbound() {
-			budget -= cp.out.lft
+		if budget > 0 && cp.out.Lft < 2*budget && cp.flushOutbound() {
+			budget -= cp.out.Lft
 		} else {
 			cp.flushSignal()
 		}
@@ -1477,12 +1478,12 @@ func (c *client) collapsePtoNB() (net.Buffers, int64) {
 		}
 		return b, i
 	}
-	if c.out.p != nil {
-		p := c.out.p
-		c.out.p = nil
-		return append(c.out.nb, p), c.out.pb
+	if c.out.P != nil {
+		p := c.out.P
+		c.out.P = nil
+		return append(c.out.Nb, p), c.out.Pb
 	}
-	return c.out.nb, c.out.pb
+	return c.out.Nb, c.out.Pb
 }
 
 // This will handle the fixup needed on a partial write.
@@ -1494,7 +1495,7 @@ func (c *client) handlePartialWrite(pnb net.Buffers) {
 	}
 	nb, _ := c.collapsePtoNB()
 	// The partial needs to be first, so append nb to pnb
-	c.out.nb = append(pnb, nb...)
+	c.out.Nb = append(pnb, nb...)
 }
 
 // flushOutbound will flush outbound buffer to a client.
@@ -1514,13 +1515,13 @@ func (c *client) flushOutbound() bool {
 	defer c.flags.clear(flushOutbound)
 
 	// Check for nothing to do.
-	if c.nc == nil || c.srv == nil || c.out.pb == 0 {
+	if c.nc == nil || c.srv == nil || c.out.Pb == 0 {
 		return true // true because no need to queue a signal.
 	}
 
 	// Place primary on nb, assign primary to secondary, nil out nb and secondary.
 	nb, attempted := c.collapsePtoNB()
-	c.out.p, c.out.nb, c.out.s = c.out.s, nil, nil
+	c.out.P, c.out.Nb, c.out.S = c.out.S, nil, nil
 	if nb == nil {
 		return true
 	}
@@ -1534,10 +1535,10 @@ func (c *client) flushOutbound() bool {
 
 	// In case it goes away after releasing the lock.
 	nc := c.nc
-	apm := c.out.pm
+	apm := c.out.Pm
 
 	// Capture this (we change the value in some tests)
-	wdl := c.out.wdl
+	wdl := c.out.Wdl
 	// Do NOT hold lock during actual IO.
 	c.mu.Unlock()
 
@@ -1578,63 +1579,63 @@ func (c *client) flushOutbound() bool {
 	}
 
 	// Update flush time statistics.
-	c.out.lft = lft
+	c.out.Lft = lft
 
 	// Subtract from pending bytes and messages.
-	c.out.pb -= n
+	c.out.Pb -= n
 	if c.isWebsocket() {
 		c.websocketClient.Ws.Fs -= n
 	}
-	c.out.pm -= apm // FIXME(dlc) - this will not be totally accurate on partials.
+	c.out.Pm -= apm // FIXME(dlc) - this will not be totally accurate on partials.
 
 	// Check for partial writes
 	// TODO(dlc) - zero write with no error will cause lost message and the writeloop to spin.
 	if n != attempted && n > 0 {
 		c.handlePartialWrite(nb)
-	} else if int32(n) >= c.out.sz {
-		c.out.sws = 0
+	} else if int32(n) >= c.out.Sz {
+		c.out.Sws = 0
 	}
 
 	// Adjust based on what we wrote plus any pending.
-	pt := n + c.out.pb
+	pt := n + c.out.Pb
 
 	// Adjust sz as needed downward, keeping power of 2.
 	// We do this at a slower rate.
-	if pt < int64(c.out.sz) && c.out.sz > minBufSize {
-		c.out.sws++
-		if c.out.sws > shortsToShrink {
-			c.out.sz >>= 1
+	if pt < int64(c.out.Sz) && c.out.Sz > minBufSize {
+		c.out.Sws++
+		if c.out.Sws > shortsToShrink {
+			c.out.Sz >>= 1
 		}
 	}
 	// Adjust sz as needed upward, keeping power of 2.
-	if pt > int64(c.out.sz) && c.out.sz < maxBufSize {
-		c.out.sz <<= 1
+	if pt > int64(c.out.Sz) && c.out.Sz < maxBufSize {
+		c.out.Sz <<= 1
 	}
 
 	// Check to see if we can reuse buffers.
 	if lfs != 0 && n >= int64(lfs) {
 		oldp := cnb[0][:0]
-		if cap(oldp) >= int(c.out.sz) {
+		if cap(oldp) >= int(c.out.Sz) {
 			// Replace primary or secondary if they are nil, reusing same buffer.
-			if c.out.p == nil {
-				c.out.p = oldp
-			} else if c.out.s == nil || cap(c.out.s) < int(c.out.sz) {
-				c.out.s = oldp
+			if c.out.P == nil {
+				c.out.P = oldp
+			} else if c.out.S == nil || cap(c.out.S) < int(c.out.Sz) {
+				c.out.S = oldp
 			}
 		}
 	}
 
 	// Check that if there is still data to send and writeLoop is in wait,
 	// then we need to signal.
-	if c.out.pb > 0 {
+	if c.out.Pb > 0 {
 		c.flushSignal()
 	}
 
 	// Check if we have a stalled gate and if so and we are recovering release
 	// any stalled producers. Only kind==CLIENT will stall.
-	if c.out.stc != nil && (n == attempted || c.out.pb < c.out.mp/2) {
-		close(c.out.stc)
-		c.out.stc = nil
+	if c.out.Stc != nil && (n == attempted || c.out.Pb < c.out.Mp/2) {
+		close(c.out.Stc)
+		c.out.Stc = nil
 	}
 
 	return true
@@ -1671,7 +1672,7 @@ func (c *client) handleWriteTimeout(written, attempted int64, numChunks int) boo
 	// Slow consumer here..
 	atomic.AddInt64(&c.srv.slowConsumers, 1)
 	c.Noticef("Slow Consumer Detected: WriteDeadline of %v exceeded with %d chunks of %d total bytes.",
-		c.out.wdl, numChunks, attempted)
+		c.out.Wdl, numChunks, attempted)
 
 	// We always close CLIENT connections, or when nothing was written at all...
 	if c.kind == CLIENT || written == 0 {
@@ -1749,7 +1750,7 @@ func (c *client) markConnAsClosed(reason ClosedState) {
 // flushSignal will use server to queue the flush IO operation to a pool of flushers.
 // Lock must be held.
 func (c *client) flushSignal() {
-	c.out.sg.Signal()
+	c.out.Sg.Signal()
 }
 
 // Traces a message.
@@ -2125,46 +2126,46 @@ func (c *client) queueOutbound(data []byte) {
 	}
 
 	// Add to pending bytes total.
-	c.out.pb += int64(len(data))
+	c.out.Pb += int64(len(data))
 
 	// Check for slow consumer via pending bytes limit.
 	// ok to return here, client is going away.
-	if c.kind == CLIENT && c.out.pb > c.out.mp {
+	if c.kind == CLIENT && c.out.Pb > c.out.Mp {
 		// Perf wise, it looks like it is faster to optimistically add than
 		// checking current pb+len(data) and then add to pb.
-		c.out.pb -= int64(len(data))
+		c.out.Pb -= int64(len(data))
 		atomic.AddInt64(&c.srv.slowConsumers, 1)
-		c.Noticef("Slow Consumer Detected: MaxPending of %d Exceeded", c.out.mp)
+		c.Noticef("Slow Consumer Detected: MaxPending of %d Exceeded", c.out.Mp)
 		c.markConnAsClosed(SlowConsumerPendingBytes)
 		return
 	}
 
-	if c.out.p == nil && len(data) < maxBufSize {
-		if c.out.sz == 0 {
-			c.out.sz = startBufSize
+	if c.out.P == nil && len(data) < maxBufSize {
+		if c.out.Sz == 0 {
+			c.out.Sz = startBufSize
 		}
-		if c.out.s != nil && cap(c.out.s) >= int(c.out.sz) {
-			c.out.p = c.out.s
-			c.out.s = nil
+		if c.out.S != nil && cap(c.out.S) >= int(c.out.Sz) {
+			c.out.P = c.out.S
+			c.out.S = nil
 		} else {
 			// FIXME(dlc) - make power of 2 if less than maxBufSize?
-			c.out.p = make([]byte, 0, c.out.sz)
+			c.out.P = make([]byte, 0, c.out.Sz)
 		}
 	}
 	// Determine if we copy or reference
-	available := cap(c.out.p) - len(c.out.p)
+	available := cap(c.out.P) - len(c.out.P)
 	if len(data) > available {
 		// We can't fit everything into existing primary, but message will
 		// fit in next one we allocate or utilize from the secondary.
 		// So copy what we can.
-		if available > 0 && len(data) < int(c.out.sz) {
-			c.out.p = append(c.out.p, data[:available]...)
+		if available > 0 && len(data) < int(c.out.Sz) {
+			c.out.P = append(c.out.P, data[:available]...)
 			data = data[available:]
 		}
 		// Put the primary on the nb if it has a payload
-		if len(c.out.p) > 0 {
-			c.out.nb = append(c.out.nb, c.out.p)
-			c.out.p = nil
+		if len(c.out.P) > 0 {
+			c.out.Nb = append(c.out.Nb, c.out.P)
+			c.out.P = nil
 		}
 		// TODO: It was found with LeafNode and Websocket that referencing
 		// the data buffer when > maxBufSize would cause corruption
@@ -2172,30 +2173,30 @@ func (c *client) queueOutbound(data []byte) {
 		// So always make a copy for now.
 
 		// We will copy to primary.
-		if c.out.p == nil {
+		if c.out.P == nil {
 			// Grow here
-			if (c.out.sz << 1) <= maxBufSize {
-				c.out.sz <<= 1
+			if (c.out.Sz << 1) <= maxBufSize {
+				c.out.Sz <<= 1
 			}
-			if len(data) > int(c.out.sz) {
-				c.out.p = make([]byte, 0, len(data))
+			if len(data) > int(c.out.Sz) {
+				c.out.P = make([]byte, 0, len(data))
 			} else {
-				if c.out.s != nil && cap(c.out.s) >= int(c.out.sz) { // TODO(dlc) - Size mismatch?
-					c.out.p = c.out.s
-					c.out.s = nil
+				if c.out.S != nil && cap(c.out.S) >= int(c.out.Sz) { // TODO(dlc) - Size mismatch?
+					c.out.P = c.out.S
+					c.out.S = nil
 				} else {
-					c.out.p = make([]byte, 0, c.out.sz)
+					c.out.P = make([]byte, 0, c.out.Sz)
 				}
 			}
 		}
 	}
-	c.out.p = append(c.out.p, data...)
+	c.out.P = append(c.out.P, data...)
 
 	// Check here if we should create a stall channel if we are falling behind.
 	// We do this here since if we wait for consumer's writeLoop it could be
 	// too late with large number of fan in producers.
-	if c.out.pb > c.out.mp/2 && c.out.stc == nil {
-		c.out.stc = make(chan struct{})
+	if c.out.Pb > c.out.Mp/2 && c.out.Stc == nil {
+		c.out.Stc = make(chan struct{})
 	}
 }
 
@@ -3190,8 +3191,8 @@ func (c *client) msgHeader(subj, reply []byte, sub *subscription) []byte {
 }
 
 func (c *client) stalledWait(producer *client) {
-	stall := c.out.stc
-	ttl := stallDuration(c.out.pb, c.out.mp)
+	stall := c.out.Stc
+	ttl := stallDuration(c.out.Pb, c.out.Mp)
 	c.mu.Unlock()
 	defer c.mu.Lock()
 
@@ -3338,7 +3339,7 @@ func (c *client) deliverMsg(sub *subscription, acc *Account, subject, reply, mh,
 	// If we are a client and we detect that the consumer we are
 	// sending to is in a stalled state, go ahead and wait here
 	// with a limit.
-	if c.kind == CLIENT && client.out.stc != nil {
+	if c.kind == CLIENT && client.out.Stc != nil {
 		client.stalledWait(c)
 	}
 
@@ -3385,7 +3386,7 @@ func (c *client) deliverMsg(sub *subscription, acc *Account, subject, reply, mh,
 		client.queueOutbound([]byte(CR_LF))
 	}
 
-	client.out.pm++
+	client.out.Pm++
 
 	// If we are tracking dynamic publish permissions that track reply subjects,
 	// do that accounting here. We only look at client.replies which will be non-nil.
@@ -3401,7 +3402,7 @@ func (c *client) deliverMsg(sub *subscription, acc *Account, subject, reply, mh,
 	// to intervene before this producer goes back to top of readloop. We are in the producer's
 	// readloop go routine at this point.
 	// FIXME(dlc) - We may call this alot, maybe suppress after first call?
-	if client.out.pm > 1 && client.out.pb > maxBufSize*2 {
+	if client.out.Pm > 1 && client.out.Pb > maxBufSize*2 {
 		client.flushSignal()
 	}
 
@@ -3424,7 +3425,7 @@ func (c *client) deliverMsg(sub *subscription, acc *Account, subject, reply, mh,
 // if `client` is same than `c`.
 func (c *client) addToPCD(client *client) {
 	if _, ok := c.pcd[client]; !ok {
-		client.out.fsp++
+		client.out.Fsp++
 		c.pcd[client] = needFlush
 	}
 }
@@ -4725,18 +4726,18 @@ func (c *client) setExpirationTimer(d time.Duration) {
 // minimal write deadline.
 // Lock is held on entry.
 func (c *client) flushAndClose(minimalFlush bool) {
-	if !c.flags.isSet(skipFlushOnClose) && c.out.pb > 0 {
+	if !c.flags.isSet(skipFlushOnClose) && c.out.Pb > 0 {
 		if minimalFlush {
 			const lowWriteDeadline = 100 * time.Millisecond
 
 			// Reduce the write deadline if needed.
-			if c.out.wdl > lowWriteDeadline {
-				c.out.wdl = lowWriteDeadline
+			if c.out.Wdl > lowWriteDeadline {
+				c.out.Wdl = lowWriteDeadline
 			}
 		}
 		c.flushOutbound()
 	}
-	c.out.p, c.out.s = nil, nil
+	c.out.P, c.out.S = nil, nil
 
 	// Close the low level connection.
 	if c.nc != nil {
@@ -4871,9 +4872,9 @@ func (c *client) closeConnection(reason ClosedState) {
 	c.markConnAsClosed(reason)
 
 	// Unblock anyone who is potentially stalled waiting on us.
-	if c.out.stc != nil {
-		close(c.out.stc)
-		c.out.stc = nil
+	if c.out.Stc != nil {
+		close(c.out.Stc)
+		c.out.Stc = nil
 	}
 
 	var (
