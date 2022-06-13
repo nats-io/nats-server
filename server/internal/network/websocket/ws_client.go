@@ -27,19 +27,19 @@ type client struct {
 // handleControlFrame Handles the PING, PONG and CLOSE websocket control frames.
 //
 // Client lock MUST NOT be held on entry.
-func (c *client) handleControlFrame(r *readInfo, frameType opCode, nc io.Reader, buf []byte, pos int) (int, error) {
+func (c *client) handleControlFrame(r *ReadInfo, frameType opCode, nc io.Reader, buf []byte, pos int) (int, error) {
 	var payload []byte
 	var err error
 
-	if r.rem > 0 {
-		payload, pos, err = get(nc, buf, pos, r.rem)
+	if r.Rem > 0 {
+		payload, pos, err = get(nc, buf, pos, r.Rem)
 		if err != nil {
 			return pos, err
 		}
-		if r.mask {
+		if r.Mask {
 			r.unmask(payload)
 		}
-		r.rem = 0
+		r.Rem = 0
 	}
 	switch frameType {
 	case closeMessage:
@@ -83,7 +83,7 @@ func (c *client) handleControlFrame(r *readInfo, frameType opCode, nc io.Reader,
 // `buf` should not be overwritten until the returned slices have been parsed.
 //
 // Client lock MUST NOT be held on entry.
-func (c *client) wsRead(r *readInfo, ior io.Reader, buf []byte) ([][]byte, error) {
+func (c *client) wsRead(r *ReadInfo, ior io.Reader, buf []byte) ([][]byte, error) {
 	var (
 		bufs   [][]byte
 		tmpBuf []byte
@@ -92,7 +92,7 @@ func (c *client) wsRead(r *readInfo, ior io.Reader, buf []byte) ([][]byte, error
 		max    = len(buf)
 	)
 	for pos != max {
-		if r.fs {
+		if r.Fs {
 			b0 := buf[pos]
 			frameType := opCode(b0 & 0xF)
 			final := b0&finalBit != 0
@@ -107,16 +107,16 @@ func (c *client) wsRead(r *readInfo, ior io.Reader, buf []byte) ([][]byte, error
 
 			// Clients MUST set the mask bit. If not set, reject.
 			// However, LEAF by default will not have masking, unless they are forced to, by configuration.
-			if r.mask && b1&maskBit == 0 {
+			if r.Mask && b1&maskBit == 0 {
 				return bufs, c.handleProtocolError("mask bit missing")
 			}
 
 			// Store size in case it is < 125
-			r.rem = int(b1 & 0x7F)
+			r.Rem = int(b1 & 0x7F)
 
 			switch frameType {
 			case pingMessage, wsPongMessage, closeMessage:
-				if r.rem > maxControlPayloadSize {
+				if r.Rem > maxControlPayloadSize {
 					return bufs, c.handleProtocolError(
 						fmt.Sprintf("control frame length bigger than maximum allowed of %v bytes",
 							maxControlPayloadSize))
@@ -125,44 +125,44 @@ func (c *client) wsRead(r *readInfo, ior io.Reader, buf []byte) ([][]byte, error
 					return bufs, c.handleProtocolError("control frame does not have final bit set")
 				}
 			case textMessage, binaryMessage:
-				if !r.ff {
+				if !r.Ff {
 					return bufs, c.handleProtocolError("new message started before final frame for previous message was received")
 				}
-				r.ff = final
-				r.fc = compressed
+				r.Ff = final
+				r.Fc = compressed
 			case continuationFrame:
 				// Compressed bit must be only set in the first frame
-				if r.ff || compressed {
+				if r.Ff || compressed {
 					return bufs, c.handleProtocolError("invalid continuation frame")
 				}
-				r.ff = final
+				r.Ff = final
 			default:
 				return bufs, c.handleProtocolError(fmt.Sprintf("unknown opcode %v", frameType))
 			}
 
-			switch r.rem {
+			switch r.Rem {
 			case 126:
 				tmpBuf, pos, err = get(ior, buf, pos, 2)
 				if err != nil {
 					return bufs, err
 				}
-				r.rem = int(binary.BigEndian.Uint16(tmpBuf))
+				r.Rem = int(binary.BigEndian.Uint16(tmpBuf))
 			case 127:
 				tmpBuf, pos, err = get(ior, buf, pos, 8)
 				if err != nil {
 					return bufs, err
 				}
-				r.rem = int(binary.BigEndian.Uint64(tmpBuf))
+				r.Rem = int(binary.BigEndian.Uint64(tmpBuf))
 			}
 
-			if r.mask {
+			if r.Mask {
 				// Read masking key
 				tmpBuf, pos, err = get(ior, buf, pos, 4)
 				if err != nil {
 					return bufs, err
 				}
-				copy(r.mkey[:], tmpBuf)
-				r.mkpos = 0
+				copy(r.Mkey[:], tmpBuf)
+				r.Mkpos = 0
 			}
 
 			// Handle control messages in place...
@@ -175,39 +175,39 @@ func (c *client) wsRead(r *readInfo, ior io.Reader, buf []byte) ([][]byte, error
 			}
 
 			// Done with the frame header
-			r.fs = false
+			r.Fs = false
 		}
 		if pos < max {
 			var b []byte
 			var n int
 
-			n = r.rem
+			n = r.Rem
 			if pos+n > max {
 				n = max - pos
 			}
 			b = buf[pos : pos+n]
 			pos += n
-			r.rem -= n
+			r.Rem -= n
 			// If needed, unmask the buffer
-			if r.mask {
+			if r.Mask {
 				r.unmask(b)
 			}
 			addToBufs := true
 			// Handle compressed message
-			if r.fc {
+			if r.Fc {
 				// Assume that we may have continuation frames or not the full payload.
 				addToBufs = false
 				// Make a copy of the buffer before adding it to the list
 				// of compressed fragments.
-				r.cbufs = append(r.cbufs, append([]byte(nil), b...))
+				r.Cbufs = append(r.Cbufs, append([]byte(nil), b...))
 				// When we have the final frame and we have read the full payload,
 				// we can decompress it.
-				if r.ff && r.rem == 0 {
+				if r.Ff && r.Rem == 0 {
 					b, err = r.decompress()
 					if err != nil {
 						return bufs, err
 					}
-					r.fc = false
+					r.Fc = false
 					// Now we can add to `bufs`
 					addToBufs = true
 				}
@@ -219,8 +219,8 @@ func (c *client) wsRead(r *readInfo, ior io.Reader, buf []byte) ([][]byte, error
 			}
 			// If payload has been fully read, then indicate that next
 			// is the start of a frame.
-			if r.rem == 0 {
-				r.fs = true
+			if r.Rem == 0 {
+				r.Fs = true
 			}
 		}
 	}

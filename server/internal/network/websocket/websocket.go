@@ -150,20 +150,20 @@ type allowedOrigin struct {
 	port   string
 }
 
-type readInfo struct {
-	rem   int
-	fs    bool
-	ff    bool
-	fc    bool
-	mask  bool // Incoming leafnode connections may not have masking.
-	mkpos byte
-	mkey  [4]byte
-	cbufs [][]byte
-	coff  int
+type ReadInfo struct {
+	Rem   int
+	Fs    bool
+	Ff    bool
+	Fc    bool
+	Mask  bool // Incoming leafnode connections may not have masking.
+	Mkpos byte
+	Mkey  [4]byte
+	Cbufs [][]byte
+	Coff  int
 }
 
-func (r *readInfo) init() {
-	r.fs, r.ff = true, true
+func (r *ReadInfo) Init() {
+	r.Fs, r.Ff = true, true
 }
 
 // Returns a slice containing `needed` bytes from the given buffer `buf`
@@ -189,63 +189,63 @@ func get(r io.Reader, buf []byte, pos, needed int) ([]byte, int, error) {
 	return b, pos + avail, nil
 }
 
-func (r *readInfo) Read(dst []byte) (int, error) {
+func (r *ReadInfo) Read(dst []byte) (int, error) {
 	if len(dst) == 0 {
 		return 0, nil
 	}
-	if len(r.cbufs) == 0 {
+	if len(r.Cbufs) == 0 {
 		return 0, io.EOF
 	}
 	copied := 0
 	rem := len(dst)
-	for buf := r.cbufs[0]; buf != nil && rem > 0; {
-		n := len(buf[r.coff:])
+	for buf := r.Cbufs[0]; buf != nil && rem > 0; {
+		n := len(buf[r.Coff:])
 		if n > rem {
 			n = rem
 		}
-		copy(dst[copied:], buf[r.coff:r.coff+n])
+		copy(dst[copied:], buf[r.Coff:r.Coff+n])
 		copied += n
 		rem -= n
-		r.coff += n
+		r.Coff += n
 		buf = r.nextCBuf()
 	}
 	return copied, nil
 }
 
-func (r *readInfo) nextCBuf() []byte {
+func (r *ReadInfo) nextCBuf() []byte {
 	// We still have remaining data in the first buffer
-	if r.coff != len(r.cbufs[0]) {
-		return r.cbufs[0]
+	if r.Coff != len(r.Cbufs[0]) {
+		return r.Cbufs[0]
 	}
 	// We read the full first buffer. Reset offset.
-	r.coff = 0
+	r.Coff = 0
 	// We were at the last buffer, so we are done.
-	if len(r.cbufs) == 1 {
-		r.cbufs = nil
+	if len(r.Cbufs) == 1 {
+		r.Cbufs = nil
 		return nil
 	}
 	// Here we move to the next buffer.
-	r.cbufs = r.cbufs[1:]
-	return r.cbufs[0]
+	r.Cbufs = r.Cbufs[1:]
+	return r.Cbufs[0]
 }
 
-func (r *readInfo) ReadByte() (byte, error) {
-	if len(r.cbufs) == 0 {
+func (r *ReadInfo) ReadByte() (byte, error) {
+	if len(r.Cbufs) == 0 {
 		return 0, io.EOF
 	}
-	b := r.cbufs[0][r.coff]
-	r.coff++
+	b := r.Cbufs[0][r.Coff]
+	r.Coff++
 	r.nextCBuf()
 	return b, nil
 }
 
-func (r *readInfo) decompress() ([]byte, error) {
-	r.coff = 0
+func (r *ReadInfo) decompress() ([]byte, error) {
+	r.Coff = 0
 	// As per https://tools.ietf.org/html/rfc7692#section-7.2.2
 	// add 0x00, 0x00, 0xff, 0xff and then a final block so that flate reader
 	// does not report unexpected EOF.
-	r.cbufs = append(r.cbufs, compressLastBlock)
-	// get a decompressor from the pool and bind it to this object (readInfo)
+	r.Cbufs = append(r.Cbufs, compressLastBlock)
+	// get a decompressor from the pool and bind it to this object (ReadInfo)
 	// that provides Read() and ReadByte() APIs that will consume the compressed
 	// buffers (r.cbufs).
 	d, _ := decompressorPool.Get().(io.ReadCloser)
@@ -258,24 +258,24 @@ func (r *readInfo) decompress() ([]byte, error) {
 	b, err := ioutil.ReadAll(d)
 	decompressorPool.Put(d)
 	// Now reset the compressed buffers list.
-	r.cbufs = nil
+	r.Cbufs = nil
 	return b, err
 }
 
 // Unmask the given slice.
-func (r *readInfo) unmask(buf []byte) {
-	p := int(r.mkpos)
+func (r *ReadInfo) unmask(buf []byte) {
+	p := int(r.Mkpos)
 	if len(buf) < 16 {
 		for i := 0; i < len(buf); i++ {
-			buf[i] ^= r.mkey[p&3]
+			buf[i] ^= r.Mkey[p&3]
 			p++
 		}
-		r.mkpos = byte(p & 3)
+		r.Mkpos = byte(p & 3)
 		return
 	}
 	var k [8]byte
 	for i := 0; i < 8; i++ {
-		k[i] = r.mkey[(p+i)&3]
+		k[i] = r.Mkey[(p+i)&3]
 	}
 	km := binary.BigEndian.Uint64(k[:])
 	n := (len(buf) / 8) * 8
@@ -286,10 +286,10 @@ func (r *readInfo) unmask(buf []byte) {
 	}
 	buf = buf[n:]
 	for i := 0; i < len(buf); i++ {
-		buf[i] ^= r.mkey[p&3]
+		buf[i] ^= r.Mkey[p&3]
 		p++
 	}
-	r.mkpos = byte(p & 3)
+	r.Mkpos = byte(p & 3)
 }
 
 // Returns true if the op code corresponds to a control frame.

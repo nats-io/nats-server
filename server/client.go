@@ -1287,7 +1287,7 @@ func (c *client) readLoop(pre []byte) {
 	acc := c.acc
 	var masking bool
 	if ws {
-		masking = c.ws.maskread
+		masking = c.ws.Maskread
 	}
 	c.mu.Unlock()
 
@@ -1310,10 +1310,10 @@ func (c *client) readLoop(pre []byte) {
 	var _bufs [1][]byte
 	bufs := _bufs[:1]
 
-	var wsr *websocket.wsReadInfo
+	var wsr *websocket.ReadInfo
 	if ws {
-		wsr = &websocket.wsReadInfo{mask: masking}
-		wsr.init()
+		wsr = &websocket.ReadInfo{Mask: masking}
+		wsr.Init()
 	}
 
 	for {
