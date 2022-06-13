@@ -1,18 +1,14 @@
 package server
 
 import (
+	"fmt"
 	"github.com/nats-io/nats-server/v2/server/internal/network/websocket"
 	"net"
 	"time"
 )
 
-// This is similar to createClient() but has some modifications
-// specific to handle websocket clients.
-// The comments have been kept to minimum to reduce code size.
-// Check createClient() for more details.
-func (s *Server) createWSClient(conn net.Conn, ws *websocket.Websocket) *client {
-	opts := s.getOpts()
-
+// prepareWsClient creates a client without assigning srv.
+func prepareWsClient(conn net.Conn, ws *websocket.Websocket, opts *Options) *client {
 	maxPay := int32(opts.MaxPayload)
 	maxSubs := int32(opts.MaxSubs)
 	if maxSubs == 0 {
@@ -20,10 +16,18 @@ func (s *Server) createWSClient(conn net.Conn, ws *websocket.Websocket) *client 
 	}
 	now := time.Now().UTC()
 
-	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: maxPay, msubs: maxSubs, start: now, last: now, ws: ws}
+	c := &client{nc: conn, opts: defaultOpts, mpay: maxPay, msubs: maxSubs, start: now, last: now, ws: ws}
 
-	c.registerWithAccount(s.globalAccount())
+	return c
+}
 
+func (c *client) finalizeWsClient(s *Server) error {
+	c.srv = s
+	err := c.registerWithAccount(s.globalAccount())
+	if err != nil {
+		return err
+	}
+	opts := s.getOpts()
 	var info Info
 	var authRequired bool
 
@@ -55,32 +59,18 @@ func (s *Server) createWSClient(conn net.Conn, ws *websocket.Websocket) *client 
 	c.sendProtoNow(c.generateClientInfoJSON(info))
 	c.mu.Unlock()
 
-	s.mu.Lock()
-	if !s.running || s.ldm {
-		if s.shutdown {
-			conn.Close()
-		}
-		s.mu.Unlock()
-		return c
-	}
-
 	if opts.MaxConn > 0 && len(s.clients) >= opts.MaxConn {
 		s.mu.Unlock()
 		c.maxConnExceeded()
 		return nil
 	}
+	s.clients[c.cid] = c
 
 	// Websocket clients do TLS in the websocket http Server.
 	// So no TLS here...
 	s.mu.Unlock()
 
 	c.mu.Lock()
-
-	if c.isClosed() {
-		c.mu.Unlock()
-		c.closeConnection(WriteError)
-		return nil
-	}
 
 	if authRequired {
 		timeout := opts.AuthTimeout
@@ -90,13 +80,48 @@ func (s *Server) createWSClient(conn net.Conn, ws *websocket.Websocket) *client 
 		}
 		c.setAuthTimer(secondsToDuration(timeout))
 	}
+	c.mu.Unlock()
+
+	return nil
+}
+
+func (s *Server) startWebsocketClient(c *client) {
+	c.mu.Lock()
+	if c.isClosed() {
+		c.mu.Unlock()
+		c.closeConnection(WriteError)
+		return
+	}
 
 	c.setPingTimer()
 
 	s.startGoRoutine(func() { c.readLoop(nil) })
 	s.startGoRoutine(func() { c.writeLoop() })
-
 	c.mu.Unlock()
+}
 
-	return c
+// This is similar to createClient() but has some modifications
+// specific to handle websocket clients.
+// The comments have been kept to minimum to reduce code size.
+// Check createClient() for more details.
+func (s *Server) processWSClient(conn net.Conn, ws *websocket.Websocket) error {
+	opts := s.getOpts()
+	preparedClient := prepareWsClient(conn, ws, opts)
+
+	err := preparedClient.finalizeWsClient(s)
+	if err != nil {
+		return err
+	}
+	c := preparedClient
+
+	s.mu.Lock()
+	if !s.running || s.ldm {
+		if s.shutdown {
+			conn.Close()
+		}
+		s.mu.Unlock()
+		return fmt.Errorf("server is not running or not in lameDuck mode during runing websocket")
+	}
+	s.startWebsocketClient(c)
+	return nil
 }

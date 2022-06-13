@@ -19,6 +19,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
+	"github.com/nats-io/nats-server/v2/server/internal/util"
 	"io"
 	"io/ioutil"
 	mrand "math/rand"
@@ -129,13 +130,13 @@ type SrvWebsocket struct {
 	mu             sync.RWMutex
 	Server         *http.Server
 	Listener       net.Listener
-	listenerErr    error
+	ListenerErr    error
 	Tls            bool
 	allowedOrigins map[string]*allowedOrigin // host will be the key
 	sameOrigin     bool
 	ConnectURLs    []string
 
-	ConnectURLsMap ConnURLsMap
+	ConnectURLsMap util.RefCountedUrlSet
 	AuthOverride   bool // indicate if there is auth override in websocket config
 }
 

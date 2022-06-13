@@ -1804,6 +1804,7 @@ func (s *Server) Start() {
 	if opts.Websocket.Port != 0 {
 		sopts := s.getOpts()
 		hasLeaf := sopts.LeafNode.Port != 0
+
 		mux := http.NewServeMux()
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			res, err := Upgrade(w, r, &s.websocket, sopts.Websocket)
@@ -1814,7 +1815,7 @@ func (s *Server) Start() {
 			}
 			switch res.kind {
 			case CLIENT:
-				s.createWSClient(res.conn, res.ws)
+				_ = s.processWSClient(res.conn, res.ws)
 			case MQTT:
 				s.createMQTTClient(res.conn, res.ws)
 			case LEAF:
@@ -1839,6 +1840,7 @@ func (s *Server) Start() {
 		if err != nil {
 			s.Fatalf("process websocket error: %v", err)
 		}
+
 		go func() {
 			if err := s.websocket.Serve(); err != http.ErrServerClosed {
 				s.Fatalf("websocket listener error: %v", err)
@@ -1985,11 +1987,11 @@ func (s *Server) Shutdown() {
 	}
 
 	// Kick websocket server
-	if s.websocket.server != nil {
+	if s.websocket.Server != nil {
 		doneExpected++
-		s.websocket.server.Close()
-		s.websocket.server = nil
-		s.websocket.listener = nil
+		s.websocket.Server.Close()
+		s.websocket.Server = nil
+		s.websocket.Listener = nil
 	}
 
 	// Kick MQTT accept loop
@@ -2988,7 +2990,7 @@ func (s *Server) readyForConnections(d time.Duration) error {
 		chk["route"] = info{ok: (opts.Cluster.Port == 0 || s.routeListener != nil), err: s.routeListenerErr}
 		chk["gateway"] = info{ok: (opts.Gateway.Name == _EMPTY_ || s.gatewayListener != nil), err: s.gatewayListenerErr}
 		chk["leafNode"] = info{ok: (opts.LeafNode.Port == 0 || s.leafNodeListener != nil), err: s.leafNodeListenerErr}
-		chk["websocket"] = info{ok: (opts.Websocket.Port == 0 || s.websocket.Listener != nil), err: s.websocket.listenerErr}
+		chk["websocket"] = info{ok: (opts.Websocket.Port == 0 || s.websocket.Listener != nil), err: s.websocket.ListenerErr}
 		chk["mqtt"] = info{ok: (opts.MQTT.Port == 0 || s.mqtt.listener != nil), err: s.mqtt.listenerErr}
 		s.mu.Unlock()
 

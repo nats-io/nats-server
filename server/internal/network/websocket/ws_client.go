@@ -544,7 +544,7 @@ func (ws *SrvWebsocket) ProcessSrvWebsocket(preparedServer *http.Server, o *Webs
 		proto = SchemePrefix
 		hl, err = net.Listen("tcp", hp)
 	}
-	ws.listenerErr = err
+	ws.ListenerErr = err
 	if err != nil {
 		ws.mu.Unlock()
 		//ws.Fatalf("Unable to listen for websocket connections: %v", err)
