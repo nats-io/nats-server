@@ -410,7 +410,7 @@ func (s *Server) startMQTT() {
 // This is similar to createClient() but has some modifications specifi to MQTT clients.
 // The comments have been kept to minimum to reduce code size. Check createClient() for
 // more details.
-func (s *Server) createMQTTClient(conn net.Conn, ws *websocket.websocket) *client {
+func (s *Server) createMQTTClient(conn net.Conn, ws *websocket.Websocket) *client {
 	opts := s.getOpts()
 
 	maxPay := int32(opts.MaxPayload)
@@ -420,7 +420,8 @@ func (s *Server) createMQTTClient(conn net.Conn, ws *websocket.websocket) *clien
 	}
 	now := time.Now().UTC()
 
-	c := &client{srv: s, nc: conn, mpay: maxPay, msubs: maxSubs, start: now, last: now, mqtt: &mqtt{}, ws: ws}
+	c := &client{srv: s, nc: conn, mpay: maxPay, msubs: maxSubs, start: now, last: now, mqtt: &mqtt{},
+		websocketClient: &websocket.Client{Ws: ws}}
 	c.headers = true
 	c.mqtt.pp = &mqttPublish{}
 	// MQTT clients don't send NATS CONNECT protocols. So make it an "echo"

@@ -793,7 +793,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 	// a remote Leaf Node connection as a websocket connection.
 	if remote != nil && rURL != nil && websocket.IsWebsocketURL(rURL) {
 		remote.RLock()
-		c.ws = &websocket.Websocket{Compress: remote.Websocket.Compression, Maskwrite: !remote.Websocket.NoMasking}
+		c.websocketClient.Ws = &websocket.Websocket{Compress: remote.Websocket.Compression, Maskwrite: !remote.Websocket.NoMasking}
 		remote.RUnlock()
 	}
 
@@ -844,7 +844,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 	} else {
 		c.flags.set(expectConnect)
 		if ws != nil {
-			c.Debugf("Leafnode compression=%v", c.ws.Compress)
+			c.Debugf("Leafnode compression=%v", c.websocketClient.Ws.Compress)
 		}
 	}
 	c.mu.Unlock()
@@ -2428,14 +2428,16 @@ func (c *client) leafNodeSolicitWSConnection(opts *Options, rURL *url.URL, remot
 		err = fmt.Errorf("invalid websocket connection")
 	}
 	// Check compression extension...
-	if err == nil && c.ws.Compress {
+	// As c.websocketClient is created when the client is initialized, so don't worry it's nil. btw check
+	// it anyway.
+	if err == nil && c.isWebsocket() && c.websocketClient.Ws.Compress {
 		// Check that not only permessage-deflate extension is present, but that
 		// we also have server and client no context take over.
 		srvCompress, noCtxTakeover := websocket.PMCExtensionSupport(resp.Header, false)
 
 		// If server does not support compression, then simply disable it in our side.
 		if !srvCompress {
-			c.ws.Compress = false
+			c.websocketClient.Ws.Compress = false
 		} else if !noCtxTakeover {
 			err = fmt.Errorf("compression negotiation error")
 		}
@@ -2445,7 +2447,7 @@ func (c *client) leafNodeSolicitWSConnection(opts *Options, rURL *url.URL, remot
 		// Check if server accepts no masking
 		if resp.Header.Get(websocket.NoMaskingHeader) != websocket.NoMaskingValue {
 			// Nope, need to mask our writes as any client would do.
-			c.ws.Maskwrite = true
+			c.websocketClient.Ws.Maskwrite = true
 		}
 	}
 	if resp != nil {
@@ -2454,7 +2456,7 @@ func (c *client) leafNodeSolicitWSConnection(opts *Options, rURL *url.URL, remot
 	if err != nil {
 		return nil, ReadError, err
 	}
-	c.Debugf("Leafnode compression=%v masking=%v", c.ws.Compress, c.ws.Maskwrite)
+	c.Debugf("Leafnode compression=%v masking=%v", c.websocketClient.Ws.Compress, c.websocketClient.Ws.Maskwrite)
 
 	var preBuf []byte
 	// We have to slurp whatever is in the bufio reader and pass that to the readloop.
