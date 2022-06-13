@@ -1721,6 +1721,51 @@ func TestSystemAccountNoAuthUser(t *testing.T) {
 	}
 }
 
+func TestServerAccountConns(t *testing.T) {
+	// speed up hb
+	eventsHBInterval = time.Millisecond * 100
+	conf := createConfFile(t, []byte(`
+	   host: 127.0.0.1
+	   port: -1
+	   system_account: SYS
+	   accounts: {
+			   SYS: {users: [{user: s, password: s}]}
+			   ACC: {users: [{user: a, password: a}]}
+	   }`))
+	defer removeFile(t, conf)
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL(), nats.UserInfo("a", "a"))
+	defer nc.Close()
+
+	subOut, err := nc.SubscribeSync("foo")
+	require_NoError(t, err)
+	hw := "HELLO WORLD"
+	nc.Publish("foo", []byte(hw))
+	nc.Publish("bar", []byte(hw)) // will only count towards received
+	nc.Flush()
+	m, err := subOut.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Equal(t, string(m.Data), hw)
+
+	ncs := natsConnect(t, s.ClientURL(), nats.UserInfo("s", "s"))
+	defer ncs.Close()
+	subs, err := ncs.SubscribeSync("$SYS.ACCOUNT.ACC.SERVER.CONNS")
+	require_NoError(t, err)
+
+	m, err = subs.NextMsg(time.Second)
+	require_NoError(t, err)
+	accConns := &AccountNumConns{}
+	err = json.Unmarshal(m.Data, accConns)
+	require_NoError(t, err)
+
+	require_True(t, accConns.Received.Msgs == 2)
+	require_True(t, accConns.Received.Bytes == 2*int64(len(hw)))
+	require_True(t, accConns.Sent.Msgs == 1)
+	require_True(t, accConns.Sent.Bytes == int64(len(hw)))
+}
+
 func TestServerEventsStatsZ(t *testing.T) {
 	serverStatsReqSubj := "$SYS.REQ.SERVER.%s.STATSZ"
 	preStart := time.Now().UTC()
