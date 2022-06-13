@@ -76,7 +76,7 @@ const (
 	finalFrame        = true
 	uncompressedFrame = false
 
-	SchemePrefix    = "ws"
+	SchemePrefix    = "Ws"
 	SchemePrefixTLS = "wss"
 
 	NoMaskingHeader       = "Nats-No-Masking"
@@ -106,13 +106,13 @@ var GUID = []byte("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
 var TestRejectNoMasking = false
 
 type Websocket struct {
-	frames     net.Buffers
+	Frames     net.Buffers
 	Fs         int64
 	CloseMsg   []byte
 	Compress   bool
 	CloseSent  bool
 	Browser    bool
-	Nocompfrag bool // No fragment for compressed frames
+	Nocompfrag bool // No fragment for compressed Frames
 	Maskread   bool
 	Maskwrite  bool
 	compressor *flate.Writer

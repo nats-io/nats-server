@@ -7,6 +7,32 @@ import (
 	"time"
 )
 
+// processWSClient is similar to createClient() but has some modifications
+// specific to handle websocket clients.
+// The comments have been kept to minimum to reduce code size.
+// Check createClient() for more details.
+func (s *Server) processWSClient(conn net.Conn, ws *websocket.Websocket) error {
+	opts := s.getOpts()
+	preparedClient := prepareWsClient(conn, ws, opts)
+
+	err := preparedClient.finalizeWsClient(s)
+	if err != nil {
+		return err
+	}
+	c := preparedClient
+
+	s.mu.Lock()
+	if !s.running || s.ldm {
+		if s.shutdown {
+			conn.Close()
+		}
+		s.mu.Unlock()
+		return fmt.Errorf("server is not running or not in lameDuck mode during runing websocket")
+	}
+	s.startWebsocketClient(c)
+	return nil
+}
+
 // prepareWsClient creates a client without assigning srv.
 func prepareWsClient(conn net.Conn, ws *websocket.Websocket, opts *Options) *client {
 	maxPay := int32(opts.MaxPayload)
@@ -98,30 +124,4 @@ func (s *Server) startWebsocketClient(c *client) {
 	s.startGoRoutine(func() { c.readLoop(nil) })
 	s.startGoRoutine(func() { c.writeLoop() })
 	c.mu.Unlock()
-}
-
-// This is similar to createClient() but has some modifications
-// specific to handle websocket clients.
-// The comments have been kept to minimum to reduce code size.
-// Check createClient() for more details.
-func (s *Server) processWSClient(conn net.Conn, ws *websocket.Websocket) error {
-	opts := s.getOpts()
-	preparedClient := prepareWsClient(conn, ws, opts)
-
-	err := preparedClient.finalizeWsClient(s)
-	if err != nil {
-		return err
-	}
-	c := preparedClient
-
-	s.mu.Lock()
-	if !s.running || s.ldm {
-		if s.shutdown {
-			conn.Close()
-		}
-		s.mu.Unlock()
-		return fmt.Errorf("server is not running or not in lameDuck mode during runing websocket")
-	}
-	s.startWebsocketClient(c)
-	return nil
 }

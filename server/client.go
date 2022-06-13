@@ -394,11 +394,12 @@ type client struct {
 	rtt      time.Duration
 	rttStart time.Time
 
-	route *route
-	gw    *gateway
-	leaf  *leaf
-	ws    *websocket.Websocket
-	mqtt  *mqtt
+	route           *route
+	gw              *gateway
+	leaf            *leaf
+	websocketClient *websocket.Client
+	//ws              *websocket.Websocket
+	mqtt *mqtt
 
 	flags clientFlag // Compact booleans into a single field. Size will be increased when needed.
 
@@ -753,8 +754,8 @@ func (c *client) initClient() {
 				host, port, _ := net.SplitHostPort(conn)
 				iPort, _ := strconv.Atoi(port)
 				c.host, c.port = host, uint16(iPort)
-				if c.isWebsocket() && c.ws.clientIP != _EMPTY_ {
-					cip := c.ws.clientIP
+				if c.isWebsocket() && c.websocketClient.Ws.ClientIP != _EMPTY_ {
+					cip := c.websocketClient.Ws.ClientIP
 					// Surround IPv6 addresses with square brackets, as
 					// net.JoinHostPort would do...
 					if strings.Contains(cip, ":") {
@@ -1287,7 +1288,7 @@ func (c *client) readLoop(pre []byte) {
 	acc := c.acc
 	var masking bool
 	if ws {
-		masking = c.ws.Maskread
+		masking = c.websocketClient.Ws.Maskread
 	}
 	c.mu.Unlock()
 
@@ -1334,7 +1335,7 @@ func (c *client) readLoop(pre []byte) {
 			}
 		}
 		if ws {
-			bufs, err = c.wsRead(wsr, nc, b[:n])
+			bufs, err = c.websocketClient.Read(wsr, nc, b[:n])
 			if bufs == nil && err != nil {
 				if err != io.EOF {
 					c.Errorf("read error: %v", err)
@@ -1469,7 +1470,12 @@ func closedStateForErr(err error) ClosedState {
 // This will return a copy on purpose.
 func (c *client) collapsePtoNB() (net.Buffers, int64) {
 	if c.isWebsocket() {
-		return c.wsCollapsePtoNB()
+		b, i, err := c.websocketClient.CollapsePtoNB()
+		if err != nil {
+			c.markConnAsClosed(WriteError)
+			return nil, 0
+		}
+		return b, i
 	}
 	if c.out.p != nil {
 		p := c.out.p
@@ -1483,7 +1489,7 @@ func (c *client) collapsePtoNB() (net.Buffers, int64) {
 // Assume pending has been already calculated correctly.
 func (c *client) handlePartialWrite(pnb net.Buffers) {
 	if c.isWebsocket() {
-		c.ws.frames = append(pnb, c.ws.frames...)
+		c.websocketClient.Ws.Frames = append(pnb, c.websocketClient.Ws.Frames...)
 		return
 	}
 	nb, _ := c.collapsePtoNB()
@@ -1577,7 +1583,7 @@ func (c *client) flushOutbound() bool {
 	// Subtract from pending bytes and messages.
 	c.out.pb -= n
 	if c.isWebsocket() {
-		c.ws.Fs -= n
+		c.websocketClient.Ws.Fs -= n
 	}
 	c.out.pm -= apm // FIXME(dlc) - this will not be totally accurate on partials.
 
@@ -1637,7 +1643,7 @@ func (c *client) flushOutbound() bool {
 // Returns true if this connection is from a Websocket client.
 // Lock held on entry.
 func (c *client) isWebsocket() bool {
-	return c.ws != nil
+	return c.websocketClient != nil && c.websocketClient.Ws != nil
 }
 
 // This is invoked from flushOutbound() for io/timeout error (slow consumer).
@@ -1701,8 +1707,8 @@ func (c *client) markConnAsClosed(reason ClosedState) {
 	c.flags.set(connMarkedClosed)
 	// For a websocket client, unless we are told not to flush, enqueue
 	// a websocket closeMessage based on the reason.
-	if !skipFlush && c.isWebsocket() && !c.ws.closeSent {
-		c.wsEnqueueCloseMessage(reason)
+	if !skipFlush && c.isWebsocket() && !c.websocketClient.Ws.CloseSent {
+		c.websocketClient.EnqueueCloseMessage(reason)
 	}
 	// Be consistent with the creation: for routes, gateways and leaf,
 	// we use Noticef on create, so use that too for delete.
@@ -1936,9 +1942,11 @@ func (c *client) processConnect(arg []byte) error {
 	}
 
 	// If websocket client and JWT not in the CONNECT, use the cookie JWT (possibly empty).
-	if ws := c.ws; ws != nil && c.opts.JWT == "" {
-		c.opts.JWT = ws.cookieJwt
+	if c.isWebsocket() && c.opts.JWT == "" {
+		c.opts.JWT = c.websocketClient.Ws.CookieJwt
+
 	}
+
 	// when not in operator mode, discard the jwt
 	if srv != nil && srv.trustedKeys == nil {
 		c.opts.JWT = _EMPTY_
