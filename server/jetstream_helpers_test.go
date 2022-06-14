@@ -1345,3 +1345,19 @@ func addStream(t *testing.T, nc *nats.Conn, cfg *StreamConfig) *StreamInfo {
 	}
 	return resp.StreamInfo
 }
+
+// setInActiveDeleteThreshold sets the delete threshold for how long to wait
+// before deleting an inactive consumer.
+func (o *consumer) setInActiveDeleteThreshold(dthresh time.Duration) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	deleteWasRunning := o.dtmr != nil
+	stopAndClearTimer(&o.dtmr)
+	// Do not add jitter if set via here.
+	o.dthresh = dthresh
+	if deleteWasRunning {
+		o.dtmr = time.AfterFunc(o.dthresh, func() { o.deleteNotActive() })
+	}
+	return nil
+}

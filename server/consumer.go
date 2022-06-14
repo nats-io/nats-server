@@ -745,14 +745,13 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	o.ackSubj = fmt.Sprintf("%s.*.*.*.*.*", pre)
 	o.nextMsgSubj = fmt.Sprintf(JSApiRequestNextT, mn, o.name)
 
-	// If not durable determine the inactive threshold.
-	if !o.isDurable() {
-		if o.cfg.InactiveThreshold != 0 {
-			o.dthresh = o.cfg.InactiveThreshold
-		} else {
-			// Add in 1 sec of jitter above and beyond the default of 5s.
-			o.dthresh = JsDeleteWaitTimeDefault + time.Duration(rand.Int63n(1000))*time.Millisecond
-		}
+	// If the user has set the inactive threshold, set that up here.
+	if o.cfg.InactiveThreshold > 0 {
+		o.dthresh = o.cfg.InactiveThreshold
+	} else if !o.isDurable() {
+		// Ephemerals will always have inactive thresholds.
+		// Add in 1 sec of jitter above and beyond the default of 5s.
+		o.dthresh = JsDeleteWaitTimeDefault + time.Duration(rand.Int63n(1000))*time.Millisecond
 	}
 
 	if o.isPushMode() {
@@ -953,11 +952,11 @@ func (o *consumer) setLeader(isLeader bool) {
 				stopAndClearTimer(&o.gwdtmr)
 				o.gwdtmr = time.AfterFunc(time.Second, func() { o.watchGWinterest() })
 			}
-		} else if !o.isDurable() {
-			// Ephemeral pull consumer. We run the dtmr all the time for this one.
-			if o.dtmr != nil {
-				stopAndClearTimer(&o.dtmr)
-			}
+		}
+
+		if o.dthresh > 0 && (o.isPullMode() || !o.active) {
+			// Pull consumer. We run the dtmr all the time for this one.
+			stopAndClearTimer(&o.dtmr)
 			o.dtmr = time.AfterFunc(o.dthresh, func() { o.deleteNotActive() })
 		}
 
@@ -1200,9 +1199,9 @@ func (o *consumer) updateDeliveryInterest(localInterest bool) bool {
 	// Stop and clear the delete timer always.
 	stopAndClearTimer(&o.dtmr)
 
-	// If we do not have interest anymore and we are not durable start
+	// If we do not have interest anymore and have a delete threshold set, then set
 	// a timer to delete us. We wait for a bit in case of server reconnect.
-	if !o.isDurable() && !interest {
+	if !interest && o.dthresh > 0 {
 		o.dtmr = time.AfterFunc(o.dthresh, func() { o.deleteNotActive() })
 		return true
 	}
@@ -4015,25 +4014,6 @@ func validFilteredSubject(filteredSubject string, subjects []string) bool {
 		}
 	}
 	return false
-}
-
-// setInActiveDeleteThreshold sets the delete threshold for how long to wait
-// before deleting an inactive ephemeral consumer.
-func (o *consumer) setInActiveDeleteThreshold(dthresh time.Duration) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	if o.isDurable() {
-		return fmt.Errorf("consumer is not ephemeral")
-	}
-	deleteWasRunning := o.dtmr != nil
-	stopAndClearTimer(&o.dtmr)
-	// Do not add jitter if set via here.
-	o.dthresh = dthresh
-	if deleteWasRunning {
-		o.dtmr = time.AfterFunc(o.dthresh, func() { o.deleteNotActive() })
-	}
-	return nil
 }
 
 // switchToEphemeral is called on startup when recovering ephemerals.
