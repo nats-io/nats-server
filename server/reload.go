@@ -957,16 +957,19 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			return nil, err
 		}
 
-		if changed := !reflect.DeepEqual(oldValue, newValue); !changed {
-			// Check to make sure we are running JetStream if we think we should be.
-			if strings.ToLower(field.Name) == "jetstream" && newValue.(bool) {
-				if !jsEnabled {
-					diffOpts = append(diffOpts, &jetStreamOption{newValue: true})
+		optName := strings.ToLower(field.Name)
+		if optName != "accounts" && optName != "users" {
+			if changed := !reflect.DeepEqual(oldValue, newValue); !changed {
+				// Check to make sure we are running JetStream if we think we should be.
+				if strings.ToLower(field.Name) == "jetstream" && newValue.(bool) {
+					if !jsEnabled {
+						diffOpts = append(diffOpts, &jetStreamOption{newValue: true})
+					}
 				}
+				continue
 			}
-			continue
 		}
-		switch optName := strings.ToLower(field.Name); optName {
+		switch optName {
 		case "traceverbose":
 			diffOpts = append(diffOpts, &traceVerboseOption{newValue: newValue.(bool)})
 		case "trace":
