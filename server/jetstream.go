@@ -456,9 +456,13 @@ func (s *Server) restartJetStream() error {
 // checkStreamExports will check if we have the JS exports setup
 // on the system account, and if not go ahead and set them up.
 func (s *Server) checkJetStreamExports() {
-	sacc := s.SystemAccount()
-	if sacc != nil && sacc.getServiceExport(jsAllAPI) == nil {
-		s.setupJetStreamExports()
+	if sacc := s.SystemAccount(); sacc != nil {
+		sacc.mu.RLock()
+		se := sacc.getServiceExport(jsAllAPI)
+		sacc.mu.RUnlock()
+		if se == nil {
+			s.setupJetStreamExports()
+		}
 	}
 }
 
