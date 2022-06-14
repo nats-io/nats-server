@@ -5372,7 +5372,6 @@ func TestJetStreamConsumerInactiveNoDeadlock(t *testing.T) {
 			// the internal sendq.
 			sub.Unsubscribe()
 			nc.Flush()
-
 		})
 	}
 }
@@ -17837,6 +17836,79 @@ func TestJetStreamDirectMsgGet(t *testing.T) {
 	require_True(t, len(m.Data) == 0)
 	require_True(t, m.Header.Get("Status") == "404")
 	require_True(t, m.Header.Get("Description") == "Message Not Found")
+}
+
+func TestJetStreamConsumerInactiveThreshold(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+
+	for i := 0; i < 10; i++ {
+		js.PublishAsync("foo", []byte("ok"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	waitOnCleanup := func(ci *nats.ConsumerInfo) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+			_, err := js.ConsumerInfo(ci.Stream, ci.Name)
+			if err == nil {
+				return fmt.Errorf("Consumer still present")
+			}
+			return nil
+		})
+	}
+
+	// Test to make sure inactive threshold is enforced for all types.
+	// Ephemeral and Durable, both push and pull.
+
+	// Ephemeral Push (no bind to deliver subject)
+	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		DeliverSubject:    "_no_bind_",
+		InactiveThreshold: 50 * time.Millisecond,
+	})
+	require_NoError(t, err)
+	waitOnCleanup(ci)
+
+	// Ephemeral Pull
+	ci, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		AckPolicy:         nats.AckExplicitPolicy,
+		InactiveThreshold: 50 * time.Millisecond,
+	})
+	require_NoError(t, err)
+	waitOnCleanup(ci)
+
+	// Support InactiveThresholds for Durables as well.
+
+	// Durable Push (no bind to deliver subject)
+	ci, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:           "d1",
+		DeliverSubject:    "_no_bind_",
+		InactiveThreshold: 50 * time.Millisecond,
+	})
+	require_NoError(t, err)
+	waitOnCleanup(ci)
+
+	// Durable Pull
+	ci, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:           "d2",
+		AckPolicy:         nats.AckExplicitPolicy,
+		InactiveThreshold: 50 * time.Millisecond,
+	})
+	require_NoError(t, err)
+	waitOnCleanup(ci)
 }
 
 ///////////////////////////////////////////////////////////////////////////
