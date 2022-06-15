@@ -6003,20 +6003,20 @@ func TestMQTTSessionNotDeletedOnDeleteConsumerError(t *testing.T) {
 
 // Test for auto-cleanup of consumers.
 func TestMQTTConsumerInactiveThreshold(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	tmpl := `
 		listen: 127.0.0.1:-1
 		server_name: mqtt
 		jetstream: enabled
 
 		mqtt {
 			listen: 127.0.0.1:-1
-			consumer_inactive_threshold: "0.2s"
+			consumer_inactive_threshold: %q
 		}
 
 		# For access to system account.
 		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
-	`))
-
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, "0.2s")))
 	defer removeFile(t, conf)
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)
@@ -6040,6 +6040,13 @@ func TestMQTTConsumerInactiveThreshold(t *testing.T) {
 		}
 		return nil
 	})
+
+	// Check reload.
+	// We will not redo existing consumers however.
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, "22s"))
+	if opts := s.getOpts(); opts.MQTT.ConsumerInactiveThreshold != 22*time.Second {
+		t.Fatalf("Expected reloaded value of %v but got %v", 22*time.Second, opts.MQTT.ConsumerInactiveThreshold)
+	}
 }
 
 //////////////////////////////////////////////////////////////////////////
