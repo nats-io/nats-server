@@ -3622,6 +3622,9 @@ func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
 		if r := opts.MQTT.ConsumerReplicas; r > 0 {
 			cc.Replicas = r
 		}
+		if opts.MQTT.ConsumerInactiveThreshold > 0 {
+			cc.InactiveThreshold = opts.MQTT.ConsumerInactiveThreshold
+		}
 		if err := sess.createConsumer(cc); err != nil {
 			c.Errorf("Unable to add JetStream consumer for subscription on %q: err=%v", subject, err)
 			return nil, nil, err

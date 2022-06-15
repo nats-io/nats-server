@@ -431,6 +431,10 @@ type MQTTOpts struct {
 	// Note that existing consumers are not modified.
 	ConsumerMemoryStorage bool
 
+	// If specified will have the system auto-cleanup the consumers after being
+	// inactive for the specified amount of time.
+	ConsumerInactiveThreshold time.Duration
+
 	// Timeout for the authentication process.
 	AuthTimeout float64
 
@@ -4191,6 +4195,9 @@ func parseMQTT(v interface{}, o *Options, errors *[]error, warnings *[]error) er
 			o.MQTT.ConsumerReplicas = int(mv.(int64))
 		case "consumer_memory_storage":
 			o.MQTT.ConsumerMemoryStorage = mv.(bool)
+		case "consumer_inactive_threshold", "consumer_auto_cleanup":
+			o.MQTT.ConsumerInactiveThreshold = parseDuration("consumer_inactive_threshold", tk, mv, errors, warnings)
+
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
