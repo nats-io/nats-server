@@ -958,6 +958,9 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		}
 
 		optName := strings.ToLower(field.Name)
+		// accounts and users (referencing accounts) will always differ as accounts
+		// contain internal state, say locks etc..., so we don't bother here.
+		// This also avoids races with atomic stats counters
 		if optName != "accounts" && optName != "users" {
 			if changed := !reflect.DeepEqual(oldValue, newValue); !changed {
 				// Check to make sure we are running JetStream if we think we should be.
