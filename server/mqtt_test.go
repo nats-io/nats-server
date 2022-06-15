@@ -6001,6 +6001,54 @@ func TestMQTTSessionNotDeletedOnDeleteConsumerError(t *testing.T) {
 	require_True(t, si.State.Msgs == 1)
 }
 
+// Test for auto-cleanup of consumers.
+func TestMQTTConsumerInactiveThreshold(t *testing.T) {
+	tmpl := `
+		listen: 127.0.0.1:-1
+		server_name: mqtt
+		jetstream: enabled
+
+		mqtt {
+			listen: 127.0.0.1:-1
+			consumer_inactive_threshold: %q
+		}
+
+		# For access to system account.
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, "0.2s")))
+	defer removeFile(t, conf)
+	s, o := RunServerWithConfig(conf)
+	defer testMQTTShutdownServer(s)
+
+	mc, r := testMQTTConnectRetry(t, &mqttConnInfo{clientID: "test", cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	ci := <-js.ConsumersInfo("$MQTT_msgs")
+
+	// Make sure we clean up this consumer.
+	mc.Close()
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		_, err := js.ConsumerInfo(ci.Stream, ci.Name)
+		if err == nil {
+			return fmt.Errorf("Consumer still present")
+		}
+		return nil
+	})
+
+	// Check reload.
+	// We will not redo existing consumers however.
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, "22s"))
+	if opts := s.getOpts(); opts.MQTT.ConsumerInactiveThreshold != 22*time.Second {
+		t.Fatalf("Expected reloaded value of %v but got %v", 22*time.Second, opts.MQTT.ConsumerInactiveThreshold)
+	}
+}
+
 //////////////////////////////////////////////////////////////////////////
 //
 // Benchmarks
