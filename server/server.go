@@ -3043,15 +3043,15 @@ func (s *Server) getClientConnectURLs() []string {
 	// Ignore error here since we know that if there is client advertise, the
 	// parseHostPort is correct because we did it right before calling this
 	// function in Server.New().
-	urls, _ := s.getConnectURLs(opts.ClientAdvertise, opts.Host, opts.Port)
+	urls, _ := getConnectURLs(s.getContextWithLogger(), opts.ClientAdvertise, opts.Host, opts.Port)
 	return urls
 }
 
 // Generic version that will return an array of URLs based on the given
 // advertise, host and port values.
-func (s *Server) getConnectURLs(advertise, host string, port int) ([]string, error) {
+func getConnectURLs(ctx context.Context, advertise, host string, port int) ([]string, error) {
 	urls := make([]string, 0, 1)
-
+	l := getLogger(ctx)
 	// short circuit if advertise is set
 	if advertise != "" {
 		h, p, err := parseHostPort(advertise, port)
@@ -3061,7 +3061,7 @@ func (s *Server) getConnectURLs(advertise, host string, port int) ([]string, err
 		urls = append(urls, net.JoinHostPort(h, strconv.Itoa(p)))
 	} else {
 		sPort := strconv.Itoa(port)
-		_, ips, err := s.getNonLocalIPsIfHostIsIPAny(host, true)
+		_, ips, err := getNonLocalIPsIfHostIsIPAny(ctx, host, true)
 		for _, ip := range ips {
 			urls = append(urls, net.JoinHostPort(ip, sPort))
 		}
@@ -3073,7 +3073,7 @@ func (s *Server) getConnectURLs(advertise, host string, port int) ([]string, err
 			// ended-up returning 0.0.0.0, which is problematic for Windows clients.
 			// Check for 0.0.0.0 or :: specifically, and ignore if that's the case.
 			if host == "0.0.0.0" || host == "::" {
-				s.Errorf("Address %q can not be resolved properly", host)
+				l.Errorf("Address %q can not be resolved properly", host)
 			} else {
 				urls = append(urls, net.JoinHostPort(host, sPort))
 			}
@@ -3088,7 +3088,8 @@ func (s *Server) getConnectURLs(advertise, host string, port int) ([]string, err
 // The boolean indicate if the provided host was 0.0.0.0 (or ::)
 // so that if the returned array is empty caller can decide
 // what to do next.
-func (s *Server) getNonLocalIPsIfHostIsIPAny(host string, all bool) (bool, []string, error) {
+func getNonLocalIPsIfHostIsIPAny(ctx context.Context, host string, all bool) (bool, []string, error) {
+	l := getLogger(ctx)
 	ip := net.ParseIP(host)
 	// If this is not an IP, we are done
 	if ip == nil {
@@ -3098,7 +3099,7 @@ func (s *Server) getNonLocalIPsIfHostIsIPAny(host string, all bool) (bool, []str
 	if !ip.IsUnspecified() {
 		return false, nil, nil
 	}
-	s.Debugf("Get non local IPs for %q", host)
+	l.Debugf("Get non local IPs for %q", host)
 	var ips []string
 	ifaces, _ := net.Interfaces()
 	for _, i := range ifaces {
@@ -3116,7 +3117,7 @@ func (s *Server) getNonLocalIPsIfHostIsIPAny(host string, all bool) (bool, []str
 				ip = nil
 				continue
 			}
-			s.Debugf("  ip=%s", ipStr)
+			l.Debugf("  ip=%s", ipStr)
 			ips = append(ips, ipStr)
 			if !all {
 				break

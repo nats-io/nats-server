@@ -14,6 +14,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	srvlog "github.com/nats-io/nats-server/v2/logger"
 	"io"
@@ -26,6 +27,17 @@ import (
 const (
 	loggerInsideContextName = "server_logger"
 )
+
+func getLogger(ctx context.Context) Logger {
+	if logger, ok := ctx.Value(loggerInsideContextName).(Logger); ok {
+		return logger
+	}
+	return nil
+}
+
+func (s *Server) getContextWithLogger() context.Context {
+	return context.WithValue(context.Background(), loggerInsideContextName, &s.logging)
+}
 
 type logging struct {
 	sync.RWMutex

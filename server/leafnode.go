@@ -1132,7 +1132,7 @@ func (s *Server) setLeafNodeInfoHostPortAndIP() error {
 		s.leafNodeInfo.Port = opts.LeafNode.Port
 		// If the host is "0.0.0.0" or "::" we need to resolve to a public IP.
 		// This will return at most 1 IP.
-		hostIsIPAny, ips, err := s.getNonLocalIPsIfHostIsIPAny(s.leafNodeInfo.Host, false)
+		hostIsIPAny, ips, err := getNonLocalIPsIfHostIsIPAny(s.getContextWithLogger(), s.leafNodeInfo.Host, false)
 		if err != nil {
 			return err
 		}

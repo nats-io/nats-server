@@ -1097,7 +1097,7 @@ func (s *Server) startWebsocketServer() {
 	}
 
 	s.websocket.tls = proto == "wss"
-	s.websocket.connectURLs, err = s.getConnectURLs(o.Advertise, o.Host, o.Port)
+	s.websocket.connectURLs, err = getConnectURLs(s.getContextWithLogger(), o.Advertise, o.Host, o.Port)
 	if err != nil {
 		s.Fatalf("Unable to get websocket connect URLs: %v", err)
 		hl.Close()

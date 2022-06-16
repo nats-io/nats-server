@@ -562,7 +562,7 @@ func (s *Server) setGatewayInfoHostPort(info *Info, o *Options) error {
 		info.Port = o.Gateway.Port
 		// If the host is "0.0.0.0" or "::" we need to resolve to a public IP.
 		// This will return at most 1 IP.
-		hostIsIPAny, ips, err := s.getNonLocalIPsIfHostIsIPAny(info.Host, false)
+		hostIsIPAny, ips, err := getNonLocalIPsIfHostIsIPAny(s.getContextWithLogger(), info.Host, false)
 		if err != nil {
 			return err
 		}
