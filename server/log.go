@@ -15,13 +15,25 @@ package server
 
 import (
 	"fmt"
+	srvlog "github.com/nats-io/nats-server/v2/logger"
 	"io"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
-
-	srvlog "github.com/nats-io/nats-server/v2/logger"
 )
+
+const (
+	loggerInsideContextName = "server_logger"
+)
+
+type logging struct {
+	sync.RWMutex
+	logger      Logger
+	trace       int32
+	debug       int32
+	traceSysAcc int32
+}
 
 // Logger interface of the NATS Server
 type Logger interface {
@@ -90,7 +102,7 @@ func (s *Server) ConfigureLogger() {
 	s.SetLoggerV2(log, opts.Debug, opts.Trace, opts.TraceVerbose)
 }
 
-// Returns our current logger.
+// Logger returns our current logger.
 func (s *Server) Logger() Logger {
 	s.logging.Lock()
 	defer s.logging.Unlock()
@@ -102,7 +114,7 @@ func (s *Server) SetLogger(logger Logger, debugFlag, traceFlag bool) {
 	s.SetLoggerV2(logger, debugFlag, traceFlag, false)
 }
 
-// SetLogger sets the logger of the server
+// SetLoggerV2 sets the logger of the server
 func (s *Server) SetLoggerV2(logger Logger, debugFlag, traceFlag, sysTrace bool) {
 	if debugFlag {
 		atomic.StoreInt32(&s.logging.debug, 1)
@@ -164,48 +176,6 @@ func (s *Server) ReOpenLogFile() {
 	}
 }
 
-// Noticef logs a notice statement
-func (s *Server) Noticef(format string, v ...interface{}) {
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
-		logger.Noticef(format, v...)
-	}, format, v...)
-}
-
-// Errorf logs an error
-func (s *Server) Errorf(format string, v ...interface{}) {
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
-		logger.Errorf(format, v...)
-	}, format, v...)
-}
-
-// Error logs an error with a scope
-func (s *Server) Errors(scope interface{}, e error) {
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
-		logger.Errorf(format, v...)
-	}, "%s - %s", scope, UnpackIfErrorCtx(e))
-}
-
-// Error logs an error with a context
-func (s *Server) Errorc(ctx string, e error) {
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
-		logger.Errorf(format, v...)
-	}, "%s: %s", ctx, UnpackIfErrorCtx(e))
-}
-
-// Error logs an error with a scope and context
-func (s *Server) Errorsc(scope interface{}, ctx string, e error) {
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
-		logger.Errorf(format, v...)
-	}, "%s - %s: %s", scope, ctx, UnpackIfErrorCtx(e))
-}
-
-// Warnf logs a warning error
-func (s *Server) Warnf(format string, v ...interface{}) {
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
-		logger.Warnf(format, v...)
-	}, format, v...)
-}
-
 func (s *Server) RateLimitWarnf(format string, v ...interface{}) {
 	statement := fmt.Sprintf(format, v...)
 	if _, loaded := s.rateLimitLogging.LoadOrStore(statement, time.Now()); loaded {
@@ -214,16 +184,58 @@ func (s *Server) RateLimitWarnf(format string, v ...interface{}) {
 	s.Warnf("%s", statement)
 }
 
+// Noticef logs a notice statement
+func (s *logging) Noticef(format string, v ...interface{}) {
+	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Noticef(format, v...)
+	}, format, v...)
+}
+
+// Errorf logs an error
+func (s *logging) Errorf(format string, v ...interface{}) {
+	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Errorf(format, v...)
+	}, format, v...)
+}
+
+// Errors logs an error with a scope
+func (s *logging) Errors(scope interface{}, e error) {
+	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Errorf(format, v...)
+	}, "%s - %s", scope, UnpackIfErrorCtx(e))
+}
+
+// Errorc logs an error with a context
+func (s *logging) Errorc(ctx string, e error) {
+	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Errorf(format, v...)
+	}, "%s: %s", ctx, UnpackIfErrorCtx(e))
+}
+
+// Errorsc logs an error with a scope and context
+func (s *logging) Errorsc(scope interface{}, ctx string, e error) {
+	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Errorf(format, v...)
+	}, "%s - %s: %s", scope, ctx, UnpackIfErrorCtx(e))
+}
+
+// Warnf logs a warning error
+func (s *logging) Warnf(format string, v ...interface{}) {
+	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+		logger.Warnf(format, v...)
+	}, format, v...)
+}
+
 // Fatalf logs a fatal error
-func (s *Server) Fatalf(format string, v ...interface{}) {
+func (s *logging) Fatalf(format string, v ...interface{}) {
 	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
 		logger.Fatalf(format, v...)
 	}, format, v...)
 }
 
 // Debugf logs a debug statement
-func (s *Server) Debugf(format string, v ...interface{}) {
-	if atomic.LoadInt32(&s.logging.debug) == 0 {
+func (s *logging) Debugf(format string, v ...interface{}) {
+	if atomic.LoadInt32(&s.debug) == 0 {
 		return
 	}
 
@@ -233,8 +245,8 @@ func (s *Server) Debugf(format string, v ...interface{}) {
 }
 
 // Tracef logs a trace statement
-func (s *Server) Tracef(format string, v ...interface{}) {
-	if atomic.LoadInt32(&s.logging.trace) == 0 {
+func (s *logging) Tracef(format string, v ...interface{}) {
+	if atomic.LoadInt32(&s.trace) == 0 {
 		return
 	}
 
@@ -243,12 +255,12 @@ func (s *Server) Tracef(format string, v ...interface{}) {
 	}, format, v...)
 }
 
-func (s *Server) executeLogCall(f func(logger Logger, format string, v ...interface{}), format string, args ...interface{}) {
-	s.logging.RLock()
-	defer s.logging.RUnlock()
-	if s.logging.logger == nil {
+func (l *logging) executeLogCall(f func(logger Logger, format string, v ...interface{}), format string, args ...interface{}) {
+	l.RLock()
+	defer l.RUnlock()
+	if l.logger == nil {
 		return
 	}
 
-	f(s.logging.logger, format, args...)
+	f(l.logger, format, args...)
 }

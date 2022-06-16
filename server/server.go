@@ -178,13 +178,7 @@ type Server struct {
 	cproto     int64     // number of clients supporting async INFO
 	configTime time.Time // last time config was loaded
 
-	logging struct {
-		sync.RWMutex
-		logger      Logger
-		trace       int32
-		debug       int32
-		traceSysAcc int32
-	}
+	logging logging
 
 	clientConnectURLs []string
 
