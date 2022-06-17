@@ -15,15 +15,15 @@ package server
 
 import (
 	"bytes"
+	"github.com/nats-io/nats-server/v2/internal/testhelper"
+	"github.com/nats-io/nats-server/v2/logger"
+	"github.com/stretchr/testify/assert"
 	"io/ioutil"
 	"os"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/nats-io/nats-server/v2/internal/testhelper"
-	"github.com/nats-io/nats-server/v2/logger"
 )
 
 func TestSetLogger(t *testing.T) {
@@ -351,4 +351,20 @@ func TestRemovePassFromTrace(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSetGetLoggerInsideContext(t *testing.T) {
+	server := &Server{}
+	dl := &DummyLogger{}
+	server.SetLogger(dl, true, true)
+	expected := &server.logging
+	ctx := server.getContextWithLogger()
+	result := getLogger(ctx)
+	assert.Equal(t, expected, result)
+
+	l, ok := result.(*logging)
+	if !ok {
+		t.Fatalf("failed to convert logger to logging type")
+	}
+	assert.Equal(t, &expected.RWMutex, &l.RWMutex)
 }
