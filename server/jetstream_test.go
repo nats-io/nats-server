@@ -13573,12 +13573,8 @@ func TestJetStreamLongStreamNamesAndPubAck(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
-	data := make([]byte, 255)
-	rand.Read(data)
-	stream := base64.StdEncoding.EncodeToString(data)[:255]
-
 	cfg := &nats.StreamConfig{
-		Name:     stream,
+		Name:     strings.Repeat("ZABC", 256/4)[:255],
 		Subjects: []string{"foo"},
 	}
 	if _, err := js.AddStream(cfg); err != nil {
