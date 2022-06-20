@@ -10899,3 +10899,26 @@ func TestJetStreamClusterR1StreamPlacementNoReservation(t *testing.T) {
 		}
 	}
 }
+
+func TestJetStreamClusterConsumerAndStreamNamesWithPathSeparators(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "usr/bin"})
+	require_Error(t, err, NewJSStreamNameContainsPathSeparatorsError(), nats.ErrInvalidStreamName)
+	_, err = js.AddStream(&nats.StreamConfig{Name: `Documents\readme.txt`})
+	require_Error(t, err, NewJSStreamNameContainsPathSeparatorsError(), nats.ErrInvalidStreamName)
+
+	// Now consumers.
+	_, err = js.AddStream(&nats.StreamConfig{Name: "T"})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("T", &nats.ConsumerConfig{Durable: "a/b", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err, NewJSConsumerNameContainsPathSeparatorsError(), nats.ErrInvalidConsumerName)
+
+	_, err = js.AddConsumer("T", &nats.ConsumerConfig{Durable: `a\b`, AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err, NewJSConsumerNameContainsPathSeparatorsError(), nats.ErrInvalidConsumerName)
+}
