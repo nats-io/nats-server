@@ -4349,3 +4349,33 @@ func TestLeafNodeStreamAndShadowSubs(t *testing.T) {
 	// Check again
 	subPubAndCheck()
 }
+
+func TestLeafNodeAuthConfigReload(t *testing.T) {
+	template := `
+		listen: 127.0.0.1:-1
+		accounts { test: {} }
+		leaf {
+			listen: "127.0.0.1:7422"
+			tls {
+				cert_file: "../test/configs/certs/server-cert.pem"
+				key_file:  "../test/configs/certs/server-key.pem"
+				ca_file:   "../test/configs/certs/ca.pem"
+			}
+			authorization {
+				# These are only fields allowed atm.
+				users = [ { user: test, password: "s3cret1", account: "test"  } ]
+			}
+		}
+	`
+	conf := createConfFile(t, []byte(template))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	lg := &captureErrorLogger{errCh: make(chan string, 10)}
+	s.SetLogger(lg, false, false)
+
+	// Reload here should work ok.
+	reloadUpdateConfig(t, s, conf, template)
+}
