@@ -1248,5 +1248,25 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerNameContainsPathSeparatorsErr",
+    "code": 400,
+    "error_code": 10127,
+    "description": "Consumer name can not contain path separators",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSStreamNameContainsPathSeparatorsErr",
+    "code": 400,
+    "error_code": 10128,
+    "description": "Stream name can not contain path separators",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

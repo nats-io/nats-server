@@ -125,6 +125,9 @@ const (
 	// JSConsumerMaxWaitingNegativeErr consumer max waiting needs to be positive
 	JSConsumerMaxWaitingNegativeErr ErrorIdentifier = 10087
 
+	// JSConsumerNameContainsPathSeparatorsErr Consumer name can not contain path separators
+	JSConsumerNameContainsPathSeparatorsErr ErrorIdentifier = 10127
+
 	// JSConsumerNameExistErr consumer name already in use
 	JSConsumerNameExistErr ErrorIdentifier = 10013
 
@@ -314,6 +317,9 @@ const (
 	// JSStreamMsgDeleteFailedF Generic message deletion failure error string ({err})
 	JSStreamMsgDeleteFailedF ErrorIdentifier = 10057
 
+	// JSStreamNameContainsPathSeparatorsErr Stream name can not contain path separators
+	JSStreamNameContainsPathSeparatorsErr ErrorIdentifier = 10128
+
 	// JSStreamNameExistErr stream name already in use
 	JSStreamNameExistErr ErrorIdentifier = 10058
 
@@ -423,6 +429,7 @@ var (
 		JSConsumerMaxRequestBatchNegativeErr:       {Code: 400, ErrCode: 10114, Description: "consumer max request batch needs to be > 0"},
 		JSConsumerMaxRequestExpiresToSmall:         {Code: 400, ErrCode: 10115, Description: "consumer max request expires needs to be >= 1ms"},
 		JSConsumerMaxWaitingNegativeErr:            {Code: 400, ErrCode: 10087, Description: "consumer max waiting needs to be positive"},
+		JSConsumerNameContainsPathSeparatorsErr:    {Code: 400, ErrCode: 10127, Description: "Consumer name can not contain path separators"},
 		JSConsumerNameExistErr:                     {Code: 400, ErrCode: 10013, Description: "consumer name already in use"},
 		JSConsumerNameTooLongErrF:                  {Code: 400, ErrCode: 10102, Description: "consumer name is too long, maximum allowed is {max}"},
 		JSConsumerNotFoundErr:                      {Code: 404, ErrCode: 10014, Description: "consumer not found"},
@@ -486,6 +493,7 @@ var (
 		JSStreamMoveAndScaleErr:                    {Code: 400, ErrCode: 10123, Description: "can not move and scale a stream in a single update"},
 		JSStreamMoveInProgress:                     {Code: 400, ErrCode: 10124, Description: "stream move already in progress"},
 		JSStreamMsgDeleteFailedF:                   {Code: 500, ErrCode: 10057, Description: "{err}"},
+		JSStreamNameContainsPathSeparatorsErr:      {Code: 400, ErrCode: 10128, Description: "Stream name can not contain path separators"},
 		JSStreamNameExistErr:                       {Code: 400, ErrCode: 10058, Description: "stream name already in use"},
 		JSStreamNotFoundErr:                        {Code: 404, ErrCode: 10059, Description: "stream not found"},
 		JSStreamNotMatchErr:                        {Code: 400, ErrCode: 10060, Description: "expected stream does not match"},
@@ -967,6 +975,16 @@ func NewJSConsumerMaxWaitingNegativeError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSConsumerMaxWaitingNegativeErr]
+}
+
+// NewJSConsumerNameContainsPathSeparatorsError creates a new JSConsumerNameContainsPathSeparatorsErr error: "Consumer name can not contain path separators"
+func NewJSConsumerNameContainsPathSeparatorsError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerNameContainsPathSeparatorsErr]
 }
 
 // NewJSConsumerNameExistError creates a new JSConsumerNameExistErr error: "consumer name already in use"
@@ -1699,6 +1717,16 @@ func NewJSStreamMsgDeleteFailedError(err error, opts ...ErrorOption) *ApiError {
 		ErrCode:     e.ErrCode,
 		Description: strings.NewReplacer(args...).Replace(e.Description),
 	}
+}
+
+// NewJSStreamNameContainsPathSeparatorsError creates a new JSStreamNameContainsPathSeparatorsErr error: "Stream name can not contain path separators"
+func NewJSStreamNameContainsPathSeparatorsError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSStreamNameContainsPathSeparatorsErr]
 }
 
 // NewJSStreamNameExistError creates a new JSStreamNameExistErr error: "stream name already in use"

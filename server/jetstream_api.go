@@ -1251,6 +1251,13 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 		return
 	}
 
+	// Check for path like separators in the name.
+	if strings.ContainsAny(streamName, `\/`) {
+		resp.Error = NewJSStreamNameContainsPathSeparatorsError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
 	// Can't create a stream with a sealed state.
 	if cfg.Sealed {
 		resp.Error = NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for create can not be sealed"))
@@ -3263,6 +3270,13 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
+		// Check for path like separators in the name.
+		if strings.ContainsAny(consumerName, `\/`) {
+			resp.Error = NewJSConsumerNameContainsPathSeparatorsError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+
 	} else {
 		if numTokens(subject) != 5 {
 			resp.Error = NewJSConsumerEphemeralWithDurableInSubjectError()
