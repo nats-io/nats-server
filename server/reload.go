@@ -1,4 +1,4 @@
-// Copyright 2017-2021 The NATS Authors
+// Copyright 2017-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1097,19 +1097,19 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 
 			// Special check for leafnode remotes changes which are not supported right now.
 			leafRemotesChanged := func(a, b LeafNodeOpts) bool {
-				if len(tmpOld.Remotes) != len(tmpNew.Remotes) {
+				if len(a.Remotes) != len(b.Remotes) {
 					return true
 				}
 
 				// Check whether all remotes URLs are still the same.
-				for _, oldRemote := range tmpOld.Remotes {
+				for _, oldRemote := range a.Remotes {
 					var found bool
 
 					if oldRemote.LocalAccount == _EMPTY_ {
 						oldRemote.LocalAccount = globalAccountName
 					}
 
-					for _, newRemote := range tmpNew.Remotes {
+					for _, newRemote := range b.Remotes {
 						// Bind to global account in case not defined.
 						if newRemote.LocalAccount == _EMPTY_ {
 							newRemote.LocalAccount = globalAccountName
@@ -1120,7 +1120,6 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 							break
 						}
 					}
-
 					if !found {
 						return true
 					}
@@ -1134,6 +1133,41 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			if !leafRemotesChanged(tmpOld, tmpNew) {
 				tmpOld.Remotes = nil
 				tmpNew.Remotes = nil
+			}
+
+			// Special check for auth users to detect changes.
+			// If anything is off will fall through and fail below.
+			// If we detect they are semantically the same we nil them out
+			// to pass the check below.
+			if tmpOld.Users != nil || tmpNew.Users != nil {
+				if len(tmpOld.Users) == len(tmpNew.Users) {
+					oua := make(map[string]*User, len(tmpOld.Users))
+					nua := make(map[string]*User, len(tmpOld.Users))
+					for _, u := range tmpOld.Users {
+						oua[u.Username] = u
+					}
+					for _, u := range tmpNew.Users {
+						nua[u.Username] = u
+					}
+					same := true
+					for uname, u := range oua {
+						// If we can not find new one with same name, drop through to fail.
+						nu, ok := nua[uname]
+						if !ok {
+							same = false
+							break
+						}
+						// If username or password or account different break.
+						if u.Username != nu.Username || u.Password != nu.Password || u.Account.GetName() != nu.Account.GetName() {
+							same = false
+							break
+						}
+					}
+					// We can nil out here.
+					if same {
+						tmpOld.Users, tmpNew.Users = nil, nil
+					}
+				}
 			}
 
 			// If there is really a change prevents reload.
