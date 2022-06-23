@@ -578,7 +578,7 @@ func TestSublistValidLiteralSubjects(t *testing.T) {
 	checkBool(IsValidLiteralSubject(">bar"), true, t)
 }
 
-func TestSublistValidlSubjects(t *testing.T) {
+func TestSublistValidSubjects(t *testing.T) {
 	checkBool(IsValidSubject("."), false, t)
 	checkBool(IsValidSubject(".foo"), false, t)
 	checkBool(IsValidSubject("foo."), false, t)
@@ -603,6 +603,9 @@ func TestSublistValidlSubjects(t *testing.T) {
 	checkBool(IsValidSubject("foo.>bar"), true, t)
 	checkBool(IsValidSubject("foo>.bar"), true, t)
 	checkBool(IsValidSubject(">bar"), true, t)
+	checkBool(IsValidSubject("{{wildcard(1)}}"), true, t)
+	checkBool(IsValidSubject("{{ wildcard(1) }}"), true, t)
+
 }
 
 func TestSublistMatchLiterals(t *testing.T) {

@@ -1061,11 +1061,21 @@ func IsValidSubject(subject string) bool {
 	sfwc := false
 	tokens := strings.Split(subject, tsep)
 	for _, t := range tokens {
-		if len(t) == 0 || sfwc {
+		length := len(t)
+		if length == 0 || sfwc {
 			return false
 		}
-		if len(t) > 1 {
-			if strings.ContainsAny(t, "\t\n\f\r ") {
+		if length > 1 {
+			if strings.ContainsAny(t, "\t\n\f\r") {
+				return false
+			}
+			// if the token is a moustache don't worry about spaces inside
+			if length > 4 {
+				if t[0] == '{' && t[1] == '{' && t[length-2] == '}' && t[length-1] == '}' {
+					return true
+				}
+			}
+			if strings.Contains(t, " ") {
 				return false
 			}
 			continue
