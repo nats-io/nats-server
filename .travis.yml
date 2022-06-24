@@ -7,7 +7,7 @@ vm:
 
 language: go
 go:
-- 1.17.x
+- 1.18.x
 
 addons:
   apt:
@@ -32,10 +32,10 @@ jobs:
     - name: "Run all tests from all other packages"
       env: TEST_SUITE=non_srv_pkg_tests
     - name: "Compile and various checks with older Go release"
-      go: 1.16.x
-      env: TEST_SUITE=compile
+      go: 1.17.x
+      env: TEST_SUITE=build_only
 
-script: ./runTestsOnTravis.sh $TEST_SUITE
+script: ./scripts/runTestsOnTravis.sh $TEST_SUITE
 
 deploy:
   provider: script
@@ -43,4 +43,4 @@ deploy:
   script: curl -sL http://git.io/goreleaser | bash
   on:
     tags: true
-    condition: ($TRAVIS_GO_VERSION =~ 1.17) && ($TEST_SUITE = "compile")
+    condition: ($TRAVIS_GO_VERSION =~ 1.18) && ($TEST_SUITE = "compile")
