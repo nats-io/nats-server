@@ -3529,6 +3529,7 @@ func (s *Server) acceptError(acceptName string, err error, tmpDelay time.Duratio
 	if !s.isRunning() {
 		return -1
 	}
+	//lint:ignore SA1019 We want to retry on a bunch of errors here.
 	if ne, ok := err.(net.Error); ok && ne.Temporary() {
 		s.Errorf("Temporary %s Accept Error(%v), sleeping %dms", acceptName, ne, tmpDelay/time.Millisecond)
 		select {
