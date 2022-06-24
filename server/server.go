@@ -27,13 +27,12 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
-	"regexp"
-
 	// Allow dynamic profiling.
 	_ "net/http/pprof"
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -2082,7 +2081,40 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	s.clientConnectURLs = s.getClientConnectURLs()
 	s.listener = l
 
-	go s.acceptConnections(l, "Client", func(conn net.Conn) { s.createClient(conn) },
+	go s.acceptConnections(
+		l,
+		"Client",
+		func(conn net.Conn) {
+			maybeGet := make([]byte, 4)
+
+			// make a fail-fast read attempt to see if this is a HTTP client
+			conn.SetReadDeadline(time.Now().Add(time.Millisecond * 20))
+			_, err := conn.Read(maybeGet)
+
+			if err == nil && bytes.Equal(maybeGet, []byte("GET ")) {
+				defer conn.Close()
+
+				s.Logger().Debugf("%s - probable HTTP client request detected", conn.RemoteAddr().String())
+
+				var body strings.Builder
+				body.WriteString("Congratulations! You are able to reach this NATS server, however I do not speak HTTP. See https://nats.io/ for more information.\n\nINFO: ")
+				json.NewEncoder(&body).Encode(s.info)
+
+				fmt.Fprintf(conn, strings.Join([]string{
+					"HTTP/1.1 400 Bad Request",
+					"Connection: close",
+					fmt.Sprintf("Content-length: %d", body.Len()),
+					"",
+					body.String(),
+				}, "\r\n"))
+
+				return
+			}
+
+			conn.SetReadDeadline(time.Time{})
+
+			s.createClient(conn)
+		},
 		func(_ error) bool {
 			if s.isLameDuckMode() {
 				// Signal that we are not accepting new clients
@@ -2795,9 +2827,9 @@ func (s *Server) addToTempClients(cid uint64, c *client) bool {
 	return added
 }
 
-/////////////////////////////////////////////////////////////////
+// ///////////////////////////////////////////////////////////////
 // These are some helpers for accounting in functional tests.
-/////////////////////////////////////////////////////////////////
+// ///////////////////////////////////////////////////////////////
 
 // NumRoutes will report the number of registered routes.
 func (s *Server) NumRoutes() int {
