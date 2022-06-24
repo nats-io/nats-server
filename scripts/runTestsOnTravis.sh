@@ -6,7 +6,7 @@ if [ "$1" = "compile" ]; then
 
     # We will compile and run some vet, spelling and some other checks.
 
-    go install honnef.co/go/tools/cmd/staticcheck@v0.2.2;
+    go install honnef.co/go/tools/cmd/staticcheck@latest;
     go install github.com/client9/misspell/cmd/misspell@latest;
     GO_LIST=$(go list ./...);
     go build;
