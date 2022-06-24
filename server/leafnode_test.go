@@ -2610,7 +2610,7 @@ func TestLeafNodeTLSConfigReload(t *testing.T) {
 	// Wait for the error
 	select {
 	case err := <-lg.errCh:
-		if !strings.Contains(err, "unknown") {
+		if !strings.Contains(err, "unknown") && !strings.Contains(err, "broken") {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 	case <-time.After(2 * time.Second):
