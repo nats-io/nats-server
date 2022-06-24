@@ -19,6 +19,9 @@ if [ "$1" = "compile" ]; then
         go test -race -v -run=TestVersionMatchesTag ./server -count=1 -vet=off
     fi
 
+elif [ "$1" = "build_only" ]; then
+    go build;
+
 elif [ "$1" = "no_race_tests" ]; then
 
     # Run tests without the `-race` flag. By convention, those tests start
