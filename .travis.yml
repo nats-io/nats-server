@@ -33,7 +33,7 @@ jobs:
       env: TEST_SUITE=non_srv_pkg_tests
     - name: "Compile and various checks with older Go release"
       go: 1.17.x
-      env: TEST_SUITE=compile
+      env: TEST_SUITE=build_only
 
 script: ./scripts/runTestsOnTravis.sh $TEST_SUITE
 
