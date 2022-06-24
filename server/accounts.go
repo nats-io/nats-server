@@ -4185,7 +4185,7 @@ func placeHolderIndex(token string) ([]int, int32, error) {
 		if token[0] == '$' { // simple non-partition mapping
 			tp, err := strconv.Atoi(token[1:])
 			if err != nil {
-				return []int{-1}, -1, ErrorMappingDestinationFunctionInvalidArgument
+				return []int{-1}, -1, nil
 			}
 			return []int{tp}, -1, nil
 		}
