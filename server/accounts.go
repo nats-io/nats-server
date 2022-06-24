@@ -166,8 +166,8 @@ const (
 )
 
 var commaSeparatorRegEx = regexp.MustCompile(`,\s*`)
-var partitionMappingFunctionRegEx = regexp.MustCompile(`{{\s*partition\s*\((.*)\)\s*}}`)
-var wildcardMappingFunctionRegEx = regexp.MustCompile(`{{\s*wildcard\s*\((.*)\)\s*}}`)
+var PartitionMappingFunctionRegEx = regexp.MustCompile(`{{\s*partition\s*\((.*)\)\s*}}`)
+var WildcardMappingFunctionRegEx = regexp.MustCompile(`{{\s*wildcard\s*\((.*)\)\s*}}`)
 
 // String helper.
 func (rt ServiceRespType) String() string {
@@ -617,8 +617,9 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 		if tw > 100 {
 			return fmt.Errorf("total weight needs to be <= 100")
 		}
-		if !IsValidSubject(d.Subject) {
-			return ErrBadSubject
+		err := ValidateDestinationSubject(d.Subject)
+		if err != nil {
+			return err
 		}
 		tr, err := newTransform(src, d.Subject)
 		if err != nil {
@@ -4184,38 +4185,44 @@ func placeHolderIndex(token string) ([]int, int32, error) {
 		if token[0] == '$' { // simple non-partition mapping
 			tp, err := strconv.Atoi(token[1:])
 			if err != nil {
-				return []int{-1}, -1, nil
+				return []int{-1}, -1, ErrorMappingDestinationFunctionInvalidArgument
 			}
 			return []int{tp}, -1, nil
 		}
 
-		// New 'moustache' style mapping
+		// New 'mustache' style mapping
 		// wildcard(wildcard token index) (equivalent to $)
-		args := getMappingFunctionArgs(wildcardMappingFunctionRegEx, token)
+		args := getMappingFunctionArgs(WildcardMappingFunctionRegEx, token)
 		if args != nil {
+			if len(args) == 0 {
+				return []int{-1}, -1, ErrorMappingDestinationFunctionNotEnoughArguments
+			}
 			if len(args) == 1 {
 				tp, err := strconv.Atoi(strings.Trim(args[0], " "))
 				if err != nil {
-					return []int{}, -1, err
+					return []int{}, -1, ErrorMappingDestinationFunctionInvalidArgument
 				}
 				return []int{tp}, -1, nil
 			}
 		}
 
 		// partition(number of partitions, token1, token2, ...)
-		args = getMappingFunctionArgs(partitionMappingFunctionRegEx, token)
+		args = getMappingFunctionArgs(PartitionMappingFunctionRegEx, token)
 		if args != nil {
+			if len(args) < 2 {
+				return []int{-1}, -1, ErrorMappingDestinationFunctionNotEnoughArguments
+			}
 			if len(args) >= 2 {
 				tphnp, err := strconv.Atoi(strings.Trim(args[0], " "))
 				if err != nil {
-					return []int{}, -1, err
+					return []int{}, -1, ErrorMappingDestinationFunctionInvalidArgument
 				}
 				var numPositions = len(args[1:])
 				tps := make([]int, numPositions)
 				for ti, t := range args[1:] {
 					i, err := strconv.Atoi(strings.Trim(t, " "))
 					if err != nil {
-						return []int{}, -1, err
+						return []int{}, -1, ErrorMappingDestinationFunctionInvalidArgument
 					}
 					tps[ti] = i
 				}
@@ -4268,7 +4275,7 @@ func newTransform(src, dest string) (*transform, error) {
 		for _, token := range dtokens {
 			tp, nb, err := placeHolderIndex(token)
 			if err != nil {
-				return nil, ErrBadSubjectMappingDestination
+				return nil, err
 			}
 			if tp[0] >= 0 {
 				nphs++
@@ -4276,7 +4283,7 @@ func newTransform(src, dest string) (*transform, error) {
 				var stis []int
 				for _, position := range tp {
 					if position > npwcs {
-						return nil, ErrBadSubjectMappingDestination
+						return nil, ErrorMappingDestinationFunctionWildcardIndexOutOfRange
 					}
 					stis = append(stis, sti[position])
 				}

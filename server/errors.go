@@ -191,6 +191,18 @@ var (
 
 	// ErrMinimumVersionRequired is returned when a connection is not at the minimum version required.
 	ErrMinimumVersionRequired = errors.New("minimum version required")
+
+	// ErrUnknownMappingDestinationFunction is returned when a subject mapping destination contains an unknown mustache-escaped mapping function.
+	ErrUnknownMappingDestinationFunction = errors.New("unknown {{}} function in the subject mapping destination")
+
+	// ErrorMappingDestinationFunctionWildcardIndexOutOfRange is returned when the mapping destination function is passed an out of range wildcard index value for one of it's arguments
+	ErrorMappingDestinationFunctionWildcardIndexOutOfRange = errors.New("mapping destination function wildcard index out of range")
+
+	// ErrorMappingDestinationFunctionNotEnoughArguments is returned when the mapping destination function is not passed enough arguments
+	ErrorMappingDestinationFunctionNotEnoughArguments = errors.New("not enough arguments passed to the mapping destination function")
+
+	// ErrorMappingDestinationFunctionInvalidArgument is returned when the mapping destination function is passed and invalid argument
+	ErrorMappingDestinationFunctionInvalidArgument = errors.New("mapping destination function argument is invalid or in the wrong format")
 )
 
 // configErr is a configuration error.

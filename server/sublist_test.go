@@ -551,6 +551,13 @@ func checkBool(b, expected bool, t *testing.T) {
 	}
 }
 
+func checkError(err, expected error, t *testing.T) {
+	t.Helper()
+	if err != expected {
+		t.Fatalf("Expected %v, but got %v\n", expected, err)
+	}
+}
+
 func TestSublistValidLiteralSubjects(t *testing.T) {
 	checkBool(IsValidLiteralSubject("foo"), true, t)
 	checkBool(IsValidLiteralSubject(".foo"), false, t)
@@ -603,9 +610,6 @@ func TestSublistValidSubjects(t *testing.T) {
 	checkBool(IsValidSubject("foo.>bar"), true, t)
 	checkBool(IsValidSubject("foo>.bar"), true, t)
 	checkBool(IsValidSubject(">bar"), true, t)
-	checkBool(IsValidSubject("{{wildcard(1)}}"), true, t)
-	checkBool(IsValidSubject("{{ wildcard(1) }}"), true, t)
-
 }
 
 func TestSublistMatchLiterals(t *testing.T) {
@@ -648,6 +652,26 @@ func TestSubjectIsLiteral(t *testing.T) {
 	checkBool(subjectIsLiteral("foo.*.>"), false, t)
 	checkBool(subjectIsLiteral("foo.*.bar"), false, t)
 	checkBool(subjectIsLiteral("foo.bar.>"), false, t)
+}
+
+func TestValidateDestinationSubject(t *testing.T) {
+	checkError(ValidateDestinationSubject("foo"), nil, t)
+	checkError(ValidateDestinationSubject("foo.bar"), nil, t)
+	checkError(ValidateDestinationSubject("*"), nil, t)
+	checkError(ValidateDestinationSubject(">"), nil, t)
+	checkError(ValidateDestinationSubject("foo.*"), nil, t)
+	checkError(ValidateDestinationSubject("foo.>"), nil, t)
+	checkError(ValidateDestinationSubject("foo.*.>"), nil, t)
+	checkError(ValidateDestinationSubject("foo.*.bar"), nil, t)
+	checkError(ValidateDestinationSubject("foo.bar.>"), nil, t)
+	checkError(ValidateDestinationSubject("foo.{{wildcard(1)}}"), nil, t)
+	checkError(ValidateDestinationSubject("foo.{{ wildcard(1) }}"), nil, t)
+	checkError(ValidateDestinationSubject("foo.{{wildcard( 1 )}}"), nil, t)
+	checkError(ValidateDestinationSubject("foo.{{partition(2,1)}}"), nil, t)
+	checkError(ValidateDestinationSubject("foo.{{unknown(1)}}"), ErrUnknownMappingDestinationFunction, t)
+	checkError(ValidateDestinationSubject("foo..}"), ErrBadSubjectMappingDestination, t)
+	checkError(ValidateDestinationSubject("foo. bar}"), ErrBadSubjectMappingDestination, t)
+
 }
 
 func TestSubjectToken(t *testing.T) {
