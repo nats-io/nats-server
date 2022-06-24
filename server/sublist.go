@@ -1066,16 +1066,7 @@ func IsValidSubject(subject string) bool {
 			return false
 		}
 		if length > 1 {
-			if strings.ContainsAny(t, "\t\n\f\r") {
-				return false
-			}
-			// if the token is a moustache don't worry about spaces inside
-			if length > 4 {
-				if t[0] == '{' && t[1] == '{' && t[length-2] == '}' && t[length-1] == '}' {
-					return true
-				}
-			}
-			if strings.Contains(t, " ") {
+			if strings.ContainsAny(t, "\t\n\f\r ") {
 				return false
 			}
 			continue
@@ -1136,6 +1127,42 @@ func isValidLiteralSubject(tokens []string) bool {
 		}
 	}
 	return true
+}
+
+// ValidateDestinationSubject returns nil error if the subject is a valid subject mapping destination subject
+func ValidateDestinationSubject(subject string) error {
+	subjectTokens := strings.Split(subject, tsep)
+	sfwc := false
+	for _, t := range subjectTokens {
+		length := len(t)
+		if length == 0 || sfwc {
+			return ErrBadSubjectMappingDestination
+		}
+
+		if length > 4 && t[0] == '{' && t[1] == '{' && t[length-2] == '}' && t[length-1] == '}' {
+			if !PartitionMappingFunctionRegEx.MatchString(t) && !WildcardMappingFunctionRegEx.MatchString(t) {
+				return ErrUnknownMappingDestinationFunction
+			} else {
+				continue
+			}
+		}
+
+		if length > 1 {
+			if strings.ContainsAny(t, "\t\n\f\r ") {
+				return ErrBadSubjectMappingDestination
+			} else {
+				continue
+			}
+		}
+
+		switch t[0] {
+		case fwc:
+			sfwc = true
+		case ' ', '\t', '\n', '\r', '\f':
+			return ErrBadSubjectMappingDestination
+		}
+	}
+	return nil
 }
 
 // Will check tokens and report back if the have any partial or full wildcards.
