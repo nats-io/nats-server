@@ -293,6 +293,15 @@ func (a *authTimeoutOption) Apply(server *Server) {
 	server.Noticef("Reloaded: authorization timeout = %v", a.newValue)
 }
 
+// tagsOption implements the option interface for the `tags` setting.
+type tagsOption struct {
+	noopOption // Not authOption because this is a no-op; will be reloaded with options.
+}
+
+func (u *tagsOption) Apply(server *Server) {
+	server.Noticef("Reloaded: tags")
+}
+
 // usersOption implements the option interface for the authorization `users`
 // setting.
 type usersOption struct {
@@ -1000,6 +1009,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &usernameOption{})
 		case "password":
 			diffOpts = append(diffOpts, &passwordOption{})
+		case "tags":
+			diffOpts = append(diffOpts, &tagsOption{})
 		case "authorization":
 			diffOpts = append(diffOpts, &authorizationOption{})
 		case "authtimeout":

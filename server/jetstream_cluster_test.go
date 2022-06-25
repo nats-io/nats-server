@@ -3599,6 +3599,253 @@ func TestJetStreamClusterPeerRemovalAndStreamReassignmentWithoutSpace(t *testing
 	streamCurrent(2)
 }
 
+func TestJetStreamClusterPeerExclusionTag(t *testing.T) {
+	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "C", 3,
+		func(serverName, clusterName, storeDir, conf string) string {
+			switch serverName {
+			case "S-1":
+				return fmt.Sprintf("%s\nserver_tags: [server:%s, intersect, %s]", conf, serverName, jsExcludePlacement)
+			case "S-2":
+				return fmt.Sprintf("%s\nserver_tags: [server:%s, intersect]", conf, serverName)
+			default:
+				return fmt.Sprintf("%s\nserver_tags: [server:%s]", conf, serverName)
+			}
+		})
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	for i, c := range []nats.StreamConfig{
+		{Replicas: 1, Placement: &nats.Placement{Tags: []string{"server:S-1"}}},
+		{Replicas: 2, Placement: &nats.Placement{Tags: []string{"intersect"}}},
+		{Replicas: 3}, // not enough server without !jetstream
+	} {
+		c.Name = fmt.Sprintf("TEST%d", i)
+		c.Subjects = []string{c.Name}
+		_, err := js.AddStream(&c)
+		require_Error(t, err)
+		require_Contains(t, err.Error(), "insufficient resources")
+	}
+
+	// Test update failure
+	cfg := &nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 2}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	cfg.Replicas = 3
+	_, err = js.UpdateStream(cfg)
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "insufficient resources")
+
+	// Test tag reload removing !jetstream tag, and allowing placement again
+
+	srv := c.serverByName("S-1")
+
+	v, err := srv.Varz(nil)
+	require_NoError(t, err)
+	require_True(t, v.Tags.Contains(jsExcludePlacement))
+	content, err := os.ReadFile(srv.configFile)
+	require_NoError(t, err)
+	newContent := strings.ReplaceAll(string(content), fmt.Sprintf(", %s]", jsExcludePlacement), "]")
+	changeCurrentConfigContentWithNewContent(t, srv.configFile, []byte(newContent))
+
+	ncSys := natsConnect(t, c.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	sub, err := ncSys.SubscribeSync(fmt.Sprintf("$SYS.SERVER.%s.STATSZ", srv.ID()))
+	require_NoError(t, err)
+
+	require_NoError(t, srv.Reload())
+	v, err = srv.Varz(nil)
+	require_NoError(t, err)
+	require_True(t, !v.Tags.Contains(jsExcludePlacement))
+
+	m, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_True(t, strings.Contains(string(m.Data), `"tags":["server:s-1","intersect"]`))
+
+	cfg.Replicas = 3
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+}
+
+func TestJetStreamClusterPeerEvacuationAndStreamReassignment(t *testing.T) {
+	s := createJetStreamSuperClusterWithTemplateAndModHook(t, jsClusterTempl, 4, 2,
+		func(serverName, clusterName, storeDir, conf string) string {
+			return fmt.Sprintf("%s\nserver_tags: [cluster:%s, server:%s]", conf, clusterName, serverName)
+		})
+	defer s.shutdown()
+
+	c := s.clusterForName("C1")
+
+	// Client based API
+	srv := c.randomNonLeader()
+	nc, js := jsClientConnect(t, srv)
+	defer nc.Close()
+
+	test := func(r int, moveTags []string, targetCluster string, testMigrateTo bool) {
+		si, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Replicas: r,
+		})
+		require_NoError(t, err)
+		defer js.DeleteStream("TEST")
+		toMoveFrom := si.Cluster.Leader
+
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "DUR", AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+
+		sub, err := js.SubscribeSync("foo")
+		require_NoError(t, err)
+
+		for i := 0; i < 100; i++ {
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+		}
+
+		sEmpty := c.serverByName(toMoveFrom)
+		jszBefore, err := sEmpty.Jsz(nil)
+		require_NoError(t, err)
+		require_True(t, jszBefore.Streams == 1)
+		require_True(t, jszBefore.Consumers >= 1)
+		require_True(t, jszBefore.Store != 0)
+
+		migrateToServer := _EMPTY_
+		if testMigrateTo {
+			// find an empty server
+			for _, s := range c.servers {
+				name := s.Name()
+				found := si.Cluster.Leader == name
+				if !found {
+					for _, r := range si.Cluster.Replicas {
+						if r.Name == name {
+							found = true
+							break
+						}
+					}
+				}
+				if !found {
+					migrateToServer = name
+					break
+				}
+			}
+			jszAfter, err := c.serverByName(migrateToServer).Jsz(nil)
+			require_NoError(t, err)
+			require_True(t, jszAfter.Streams == 0)
+
+			moveTags = append(moveTags, fmt.Sprintf("server:%s", migrateToServer))
+		}
+
+		ncsys, err := nats.Connect(srv.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+		require_NoError(t, err)
+		defer ncsys.Close()
+		/*
+			infoReq, err := json.Marshal(&JSApiMetaServerStreamInfoRequest{Server: toMoveFrom})
+			require_NoError(t, err)
+			rmsg, err := ncsys.Request(JSApiServerStreamInfo, infoReq, time.Second)
+			require_NoError(t, err)
+			var infoResp JSApiMetaServerStreamInfoResponse
+			require_NoError(t, json.Unmarshal(rmsg.Data, &infoResp))
+			require_True(t, infoResp.Error == nil)
+
+			found := false
+			for _, sCfg := range infoResp.Content["$G"] {
+				if sCfg.Name == "TEST" {
+					found = true
+					break
+				}
+			}
+			require_True(t, found)
+		*/
+		moveReq, err := json.Marshal(&JSApiMetaServerStreamMoveRequest{
+			Server: toMoveFrom, Account: "$G", Stream: "TEST", Tags: moveTags})
+		require_NoError(t, err)
+		rmsg, err := ncsys.Request(JSApiServerStreamMove, moveReq, 100*time.Second)
+		require_NoError(t, err)
+		var moveResp JSApiStreamUpdateResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &moveResp))
+		require_True(t, moveResp.Error == nil)
+
+		// test draining
+		checkFor(t, 20*time.Second, 1000*time.Millisecond, func() error {
+			jszAfter, err := sEmpty.Jsz(nil)
+			if err != nil {
+				return fmt.Errorf("could not fetch JS info for server: %v", err)
+			}
+			if jszAfter.Streams != 0 {
+				return fmt.Errorf("empty server still has %d streams", jszAfter.Streams)
+			}
+			if jszAfter.Consumers != 0 {
+				return fmt.Errorf("empty server still has %d consumers", jszAfter.Consumers)
+			}
+			if jszAfter.Store != 0 {
+				return fmt.Errorf("empty server still has %d storage", jszAfter.Store)
+			}
+			return nil
+		})
+		// test move to particular server
+		if testMigrateTo {
+			toSrv := c.serverByName(migrateToServer)
+			checkFor(t, 20*time.Second, 1000*time.Millisecond, func() error {
+				jszAfter, err := toSrv.Jsz(nil)
+				if err != nil {
+					return fmt.Errorf("could not fetch JS info for server: %v", err)
+				}
+				if jszAfter.Streams != 1 {
+					return fmt.Errorf("server expected to have one stream, has %d", jszAfter.Streams)
+				}
+				return nil
+			})
+		}
+		// Now wait until the stream is now current.
+		checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
+			si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
+			if err != nil {
+				return fmt.Errorf("could not fetch stream info: %v", err)
+			}
+			if si.Cluster.Leader == toMoveFrom {
+				return fmt.Errorf("peer not removed yet: %+v", toMoveFrom)
+			}
+			if len(si.Cluster.Replicas) != r-1 {
+				return fmt.Errorf("not yet downsized replica should be empty has: %d", len(si.Cluster.Replicas))
+			}
+			if si.Config.Replicas != r {
+				return fmt.Errorf("bad replica count %d", si.Config.Replicas)
+			}
+			if si.Cluster.Name != targetCluster {
+				return fmt.Errorf("stream expected in %s but found in %s", si.Cluster.Name, targetCluster)
+			}
+			sNew := s.serverByName(si.Cluster.Leader)
+			if jszNew, err := sNew.Jsz(nil); err != nil {
+				return err
+			} else if jszNew.Streams != 1 {
+				return fmt.Errorf("new leader has %d streams, not one", jszNew.Streams)
+			} else if jszNew.Store != jszBefore.Store {
+				return fmt.Errorf("new leader has %d storage, should have %d", jszNew.Store, jszBefore.Store)
+			}
+			return nil
+		})
+		// consume messages from ephemeral consumer
+		for i := 0; i < 100; i++ {
+			_, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+		}
+	}
+
+	for i := 1; i <= 3; i++ {
+		t.Run(fmt.Sprintf("r%d", i), func(t *testing.T) {
+			test(i, nil, "C1", false)
+		})
+		t.Run(fmt.Sprintf("r%d-explicit", i), func(t *testing.T) {
+			test(i, nil, "C1", true)
+		})
+	}
+
+	t.Run("r3-cluster-move", func(t *testing.T) {
+		test(3, []string{"cluster:C2"}, "C2", false)
+	})
+}
+
 func TestJetStreamClusterPeerOffline(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R5S", 5)
 	defer c.shutdown()
