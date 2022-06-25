@@ -16,5 +16,6 @@ require (
 
 require (
 	github.com/golang/protobuf v1.4.2 // indirect
+	go.uber.org/automaxprocs v1.5.1 // indirect
 	google.golang.org/protobuf v1.23.0 // indirect
 )
