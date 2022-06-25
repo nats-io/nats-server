@@ -112,7 +112,7 @@ type Server struct {
 	// How often user logon fails due to the issuer account not being pinned.
 	pinnedAccFail uint64
 	stats
-	mu                  sync.Mutex
+	mu                  sync.RWMutex
 	kp                  nkeys.KeyPair
 	prand               *rand.Rand
 	info                Info
@@ -571,9 +571,9 @@ func (s *Server) logRejectedTLSConns() {
 
 // clusterName returns our cluster name which could be dynamic.
 func (s *Server) ClusterName() string {
-	s.mu.Lock()
+	s.mu.RLock()
 	cn := s.info.Cluster
-	s.mu.Unlock()
+	s.mu.RUnlock()
 	return cn
 }
 
@@ -726,9 +726,9 @@ func (s *Server) setOpts(opts *Options) {
 }
 
 func (s *Server) globalAccount() *Account {
-	s.mu.Lock()
+	s.mu.RLock()
 	gacc := s.gacc
-	s.mu.Unlock()
+	s.mu.RUnlock()
 	return gacc
 }
 
@@ -936,7 +936,7 @@ func (s *Server) globalAccountOnly() bool {
 		return false
 	}
 
-	s.mu.Lock()
+	s.mu.RLock()
 	s.accounts.Range(func(k, v interface{}) bool {
 		acc := v.(*Account)
 		// Ignore global and system
@@ -946,7 +946,7 @@ func (s *Server) globalAccountOnly() bool {
 		hasOthers = true
 		return false
 	})
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	return !hasOthers
 }
@@ -976,10 +976,10 @@ func (s *Server) ActivePeers() (peers []string) {
 // isTrustedIssuer will check that the issuer is a trusted public key.
 // This is used to make sure an account was signed by a trusted operator.
 func (s *Server) isTrustedIssuer(issuer string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	// If we are not running in trusted mode and there is no issuer, that is ok.
-	if s.trustedKeys == nil && issuer == "" {
+	if s.trustedKeys == nil && issuer == _EMPTY_ {
 		return true
 	}
 	for _, tk := range s.trustedKeys {
@@ -1085,9 +1085,9 @@ func (s *Server) Running() bool {
 
 // Protected check on running state
 func (s *Server) isRunning() bool {
-	s.mu.Lock()
+	s.mu.RLock()
 	running := s.running
-	s.mu.Unlock()
+	s.mu.RUnlock()
 	return running
 }
 
@@ -1121,12 +1121,12 @@ func (s *Server) decActiveAccounts() {
 // range over all accounts in the sync.Map to count.
 func (s *Server) numAccounts() int {
 	count := 0
-	s.mu.Lock()
+	s.mu.RLock()
 	s.accounts.Range(func(k, v interface{}) bool {
 		count++
 		return true
 	})
-	s.mu.Unlock()
+	s.mu.RUnlock()
 	return count
 }
 
@@ -1187,19 +1187,19 @@ func (s *Server) SetSystemAccount(accName string) error {
 // SystemAccount returns the system account if set.
 func (s *Server) SystemAccount() *Account {
 	var sacc *Account
-	s.mu.Lock()
+	s.mu.RLock()
 	if s.sys != nil {
 		sacc = s.sys.account
 	}
-	s.mu.Unlock()
+	s.mu.RUnlock()
 	return sacc
 }
 
 // GlobalAccount returns the global account.
 // Default clients will use the global account.
 func (s *Server) GlobalAccount() *Account {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.gacc
 }
 
@@ -2801,30 +2801,30 @@ func (s *Server) addToTempClients(cid uint64, c *client) bool {
 
 // NumRoutes will report the number of registered routes.
 func (s *Server) NumRoutes() int {
-	s.mu.Lock()
+	s.mu.RLock()
 	nr := len(s.routes)
-	s.mu.Unlock()
+	s.mu.RUnlock()
 	return nr
 }
 
 // NumRemotes will report number of registered remotes.
 func (s *Server) NumRemotes() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return len(s.remotes)
 }
 
 // NumLeafNodes will report number of leaf node connections.
 func (s *Server) NumLeafNodes() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return len(s.leafs)
 }
 
 // NumClients will report the number of registered clients.
 func (s *Server) NumClients() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return len(s.clients)
 }
 
@@ -2835,22 +2835,22 @@ func (s *Server) GetClient(cid uint64) *client {
 
 // getClient will return the client associated with cid.
 func (s *Server) getClient(cid uint64) *client {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.clients[cid]
 }
 
 // GetLeafNode returns the leafnode associated with the cid.
 func (s *Server) GetLeafNode(cid uint64) *client {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.leafs[cid]
 }
 
 // NumSubscriptions will report how many subscriptions are active.
 func (s *Server) NumSubscriptions() uint32 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.numSubscriptions()
 }
 
@@ -2875,15 +2875,15 @@ func (s *Server) NumSlowConsumers() int64 {
 
 // ConfigTime will report the last time the server configuration was loaded.
 func (s *Server) ConfigTime() time.Time {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.configTime
 }
 
 // Addr will return the net.Addr object for the current listener.
 func (s *Server) Addr() net.Addr {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.listener == nil {
 		return nil
 	}
@@ -2892,8 +2892,8 @@ func (s *Server) Addr() net.Addr {
 
 // MonitorAddr will return the net.Addr object for the monitoring listener.
 func (s *Server) MonitorAddr() *net.TCPAddr {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.http == nil {
 		return nil
 	}
@@ -2902,8 +2902,8 @@ func (s *Server) MonitorAddr() *net.TCPAddr {
 
 // ClusterAddr returns the net.Addr object for the route listener.
 func (s *Server) ClusterAddr() *net.TCPAddr {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.routeListener == nil {
 		return nil
 	}
@@ -2912,8 +2912,8 @@ func (s *Server) ClusterAddr() *net.TCPAddr {
 
 // ProfilerAddr returns the net.Addr object for the profiler listener.
 func (s *Server) ProfilerAddr() *net.TCPAddr {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.profiler == nil {
 		return nil
 	}
@@ -2932,14 +2932,14 @@ func (s *Server) readyForConnections(d time.Duration) error {
 
 	end := time.Now().Add(d)
 	for time.Now().Before(end) {
-		s.mu.Lock()
+		s.mu.RLock()
 		chk["server"] = info{ok: s.listener != nil, err: s.listenerErr}
 		chk["route"] = info{ok: (opts.Cluster.Port == 0 || s.routeListener != nil), err: s.routeListenerErr}
 		chk["gateway"] = info{ok: (opts.Gateway.Name == _EMPTY_ || s.gatewayListener != nil), err: s.gatewayListenerErr}
 		chk["leafNode"] = info{ok: (opts.LeafNode.Port == 0 || s.leafNodeListener != nil), err: s.leafNodeListenerErr}
 		chk["websocket"] = info{ok: (opts.Websocket.Port == 0 || s.websocket.listener != nil), err: s.websocket.listenerErr}
 		chk["mqtt"] = info{ok: (opts.MQTT.Port == 0 || s.mqtt.listener != nil), err: s.mqtt.listenerErr}
-		s.mu.Unlock()
+		s.mu.RUnlock()
 
 		var numOK int
 		for _, inf := range chk {
@@ -3021,20 +3021,20 @@ func (s *Server) startGoRoutine(f func()) bool {
 }
 
 func (s *Server) numClosedConns() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.closed.len()
 }
 
 func (s *Server) totalClosedConns() uint64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.closed.totalConns()
 }
 
 func (s *Server) closedClients() []*closedClient {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.closed.closedClients()
 }
 
@@ -3186,7 +3186,7 @@ func (s *Server) PortsInfo(maxWait time.Duration) *Ports {
 	if s.readyForListeners(maxWait) {
 		opts := s.getOpts()
 
-		s.mu.Lock()
+		s.mu.RLock()
 		tls := s.info.TLSRequired
 		listener := s.listener
 		httpListener := s.http
@@ -3194,7 +3194,7 @@ func (s *Server) PortsInfo(maxWait time.Duration) *Ports {
 		profileListener := s.profiler
 		wsListener := s.websocket.listener
 		wss := s.websocket.tls
-		s.mu.Unlock()
+		s.mu.RUnlock()
 
 		ports := Ports{}
 
@@ -3295,9 +3295,9 @@ func (s *Server) logPorts() {
 func (s *Server) readyForListeners(dur time.Duration) bool {
 	end := time.Now().Add(dur)
 	for time.Now().Before(end) {
-		s.mu.Lock()
+		s.mu.RLock()
 		listeners := s.serviceListeners()
-		s.mu.Unlock()
+		s.mu.RUnlock()
 		if len(listeners) == 0 {
 			return false
 		}
@@ -3345,8 +3345,8 @@ func (s *Server) serviceListeners() []net.Listener {
 
 // Returns true if in lame duck mode.
 func (s *Server) isLameDuckMode() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.ldm
 }
 
