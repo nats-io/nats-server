@@ -3246,7 +3246,9 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 
 	// If we have an initial state set apply that now.
 	if state != nil && o != nil {
+		o.mu.Lock()
 		err = o.setStoreState(state)
+		o.mu.Unlock()
 	}
 	if err != nil {
 		if IsNatsErr(err, JSConsumerStoreFailedErrF) {
