@@ -1812,19 +1812,7 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 		rt = se.respType
 		lat = se.latency
 	}
-	s := dest.srv
 	dest.mu.RUnlock()
-
-	// Track if this maps us to the system account.
-	// We will always share information with them.
-	var isSysAcc bool
-	if s != nil {
-		s.mu.Lock()
-		if s.sys != nil && dest == s.sys.account {
-			isSysAcc = true
-		}
-		s.mu.Unlock()
-	}
 
 	a.mu.Lock()
 	if a.imports.services == nil {
@@ -1862,8 +1850,7 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 			}
 		}
 	}
-	// Turn on sharing by default if importing from system services.
-	share := isSysAcc
+	var share bool
 	if claim != nil {
 		share = claim.Share
 	}
