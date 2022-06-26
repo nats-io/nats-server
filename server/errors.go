@@ -203,6 +203,9 @@ var (
 
 	// ErrorMappingDestinationFunctionInvalidArgument is returned when the mapping destination function is passed and invalid argument
 	ErrorMappingDestinationFunctionInvalidArgument = errors.New("mapping destination function argument is invalid or in the wrong format")
+
+	// ErrorMappingDestinationFunctionTooManyArguments is returned when the mapping destination function is passed too many arguments
+	ErrorMappingDestinationFunctionTooManyArguments = errors.New("too many arguments passed to the mapping destination function")
 )
 
 // configErr is a configuration error.
