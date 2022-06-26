@@ -3262,7 +3262,7 @@ func TestSamplingHeader(t *testing.T) {
 func TestSubjectTransforms(t *testing.T) {
 	shouldErr := func(src, dest string) {
 		t.Helper()
-		if _, err := newTransform(src, dest); err != ErrBadSubject && err != ErrBadSubjectMappingDestination && err != ErrorMappingDestinationFunctionWildcardIndexOutOfRange && err != ErrUnknownMappingDestinationFunction && err != ErrorMappingDestinationFunctionNotEnoughArguments && err != ErrorMappingDestinationFunctionInvalidArgument {
+		if _, err := newTransform(src, dest); err != ErrBadSubject && err != ErrBadSubjectMappingDestination && err != ErrorMappingDestinationFunctionWildcardIndexOutOfRange && err != ErrUnknownMappingDestinationFunction && err != ErrorMappingDestinationFunctionNotEnoughArguments && err != ErrorMappingDestinationFunctionInvalidArgument && err != ErrorMappingDestinationFunctionTooManyArguments {
 			t.Fatalf("Did not get an error for src=%q and dest=%q", src, dest)
 		}
 	}
@@ -3284,6 +3284,8 @@ func TestSubjectTransforms(t *testing.T) {
 	shouldErr("foo.*", "foo.{{unimplemented(1)}}") // Mapping trying to use an unknown mapping function
 	shouldErr("foo.*", "foo.{{partition(10)}}")    // Not enough arguments passed to the mapping function
 	shouldErr("foo.*", "foo.{{wildcard(foo)}}")    // Invalid argument passed to the mapping function
+	shouldErr("foo.*", "foo.{{wildcard()}}")       // Not enough arguments passed to the mapping function
+	shouldErr("foo.*", "foo.{{wildcard(1,2)}}")    // Too many arguments passed to the mapping function
 
 	shouldBeOK := func(src, dest string) *transform {
 		t.Helper()

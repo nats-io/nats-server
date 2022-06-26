@@ -4194,7 +4194,7 @@ func placeHolderIndex(token string) ([]int, int32, error) {
 		// wildcard(wildcard token index) (equivalent to $)
 		args := getMappingFunctionArgs(WildcardMappingFunctionRegEx, token)
 		if args != nil {
-			if len(args) == 0 {
+			if len(args) == 1 && args[0] == "" {
 				return []int{-1}, -1, ErrorMappingDestinationFunctionNotEnoughArguments
 			}
 			if len(args) == 1 {
@@ -4203,6 +4203,8 @@ func placeHolderIndex(token string) ([]int, int32, error) {
 					return []int{}, -1, ErrorMappingDestinationFunctionInvalidArgument
 				}
 				return []int{tp}, -1, nil
+			} else {
+				return []int{}, -1, ErrorMappingDestinationFunctionTooManyArguments
 			}
 		}
 
