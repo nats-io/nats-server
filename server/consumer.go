@@ -1963,6 +1963,7 @@ func (o *consumer) readStoredState(slseq uint64) error {
 }
 
 // Apply the consumer stored state.
+// Lock should be held.
 func (o *consumer) applyState(state *ConsumerState) {
 	if state == nil {
 		return
@@ -1993,6 +1994,7 @@ func (o *consumer) applyState(state *ConsumerState) {
 }
 
 // Sets our store state from another source. Used in clustered mode on snapshot restore.
+// Lock should be held.
 func (o *consumer) setStoreState(state *ConsumerState) error {
 	if state == nil || o.store == nil {
 		return nil

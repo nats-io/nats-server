@@ -3848,12 +3848,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// However the GetNext for consumers is a no-op and causes buildups of service imports,
 	// response service imports and rrMap entries which all will need to simply expire.
 	// TODO(dlc) - Come up with something better.
-	if checkJSGetNext && si.se != nil && si.se.acc == c.srv.SystemAccount() {
-		shouldReturn = true
-	}
-
-	// Check for short circuit return.
-	if shouldReturn {
+	if shouldReturn || (checkJSGetNext && si.se != nil && si.se.acc == c.srv.SystemAccount()) {
 		return
 	}
 
@@ -3920,6 +3915,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// Place our client info for the request in the original message.
 	// This will survive going across routes, etc.
 	if !isResponse {
+		isSysImport := si.acc == c.srv.SystemAccount()
 		var ci *ClientInfo
 		if hadPrevSi && c.pa.hdr >= 0 {
 			var cis ClientInfo
@@ -3928,15 +3924,22 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 				ci.Service = acc.Name
 				// Check if we are moving into a share details account from a non-shared
 				// and add in server and cluster details.
-				if !share && si.share {
+				if !share && (si.share || isSysImport) {
 					c.addServerAndClusterInfo(ci)
 				}
 			}
 		} else if c.kind != LEAF || c.pa.hdr < 0 || len(getHeader(ClientInfoHdr, msg[:c.pa.hdr])) == 0 {
 			ci = c.getClientInfo(share)
-		} else if c.kind == LEAF && si.share {
+			// If we did not share but the imports destination is the system account add in the server and cluster info.
+			if !share && isSysImport {
+				c.addServerAndClusterInfo(ci)
+			}
+		} else if c.kind == LEAF && (si.share || isSysImport) {
 			// We have a leaf header here for ci, augment as above.
 			ci = c.getClientInfo(si.share)
+			if !si.share && isSysImport {
+				c.addServerAndClusterInfo(ci)
+			}
 		}
 		// Set clientInfo if present.
 		if ci != nil {

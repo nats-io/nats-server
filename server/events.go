@@ -296,9 +296,9 @@ func (s *Server) internalSendLoop(wg *sync.WaitGroup) {
 	defer wg.Done()
 
 RESET:
-	s.mu.Lock()
+	s.mu.RLock()
 	if s.sys == nil || s.sys.sendq == nil {
-		s.mu.Unlock()
+		s.mu.RUnlock()
 		return
 	}
 	sysc := s.sys.client
@@ -314,7 +314,7 @@ RESET:
 	if s.gateway.enabled {
 		cluster = s.getGatewayName()
 	}
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	// Grab tags.
 	tags := s.getOpts().Tags
@@ -541,17 +541,17 @@ func (s *Server) eventsRunning() bool {
 	if s == nil {
 		return false
 	}
-	s.mu.Lock()
+	s.mu.RLock()
 	er := s.running && s.eventsEnabled()
-	s.mu.Unlock()
+	s.mu.RUnlock()
 	return er
 }
 
 // EventsEnabled will report if the server has internal events enabled via
 // a defined system account.
 func (s *Server) EventsEnabled() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.eventsEnabled()
 }
 
@@ -564,8 +564,8 @@ func (s *Server) eventsEnabled() bool {
 // TrackedRemoteServers returns how many remote servers we are tracking
 // from a system events perspective.
 func (s *Server) TrackedRemoteServers() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if !s.running || !s.eventsEnabled() {
 		return -1
 	}
@@ -764,8 +764,8 @@ func getHash(name string) []byte {
 
 // Returns the node name for this server which is a hash of the server name.
 func (s *Server) Node() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.sys != nil {
 		return s.sys.shash
 	}
@@ -977,9 +977,9 @@ func (s *Server) initEventTracking() {
 func (s *Server) registerSystemImportsForExisting() {
 	var accounts []*Account
 
-	s.mu.Lock()
+	s.mu.RLock()
 	if s.sys == nil {
-		s.mu.Unlock()
+		s.mu.RUnlock()
 		return
 	}
 	sacc := s.sys.account
@@ -990,7 +990,7 @@ func (s *Server) registerSystemImportsForExisting() {
 		}
 		return true
 	})
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	for _, a := range accounts {
 		s.registerSystemImports(a)
@@ -1290,9 +1290,9 @@ func (s *Server) leafNodeConnected(sub *subscription, _ *client, _ *Account, sub
 		return
 	}
 
-	s.mu.Lock()
+	s.mu.RLock()
 	na := m.Account == _EMPTY_ || !s.eventsEnabled() || !s.gateway.enabled
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	if na {
 		return
@@ -1382,10 +1382,7 @@ func (s *Server) filterRequest(fOpts *EventFilterOptions) bool {
 		return true
 	}
 	if fOpts.Cluster != _EMPTY_ {
-		s.mu.Lock()
-		cluster := s.info.Cluster
-		s.mu.Unlock()
-		if !strings.Contains(cluster, fOpts.Cluster) {
+		if !strings.Contains(s.ClusterName(), fOpts.Cluster) {
 			return true
 		}
 	}
@@ -1808,6 +1805,7 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 	}
 	eid := s.nextEventID()
 	s.mu.Unlock()
+
 	now := time.Now().UTC()
 	c.mu.Lock()
 	m := DisconnectEventMsg{
@@ -1908,13 +1906,13 @@ func (s *Server) sysUnsubscribe(sub *subscription) {
 	if sub == nil {
 		return
 	}
-	s.mu.Lock()
+	s.mu.RLock()
 	if !s.eventsEnabled() {
-		s.mu.Unlock()
+		s.mu.RUnlock()
 		return
 	}
 	c := sub.client
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	if c != nil {
 		c.processUnsub(sub.sid)
@@ -1996,13 +1994,13 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, _ *Account, s
 // This is used for all inbox replies so that we do not send supercluster wide interest
 // updates for every request. Same trick used in modern NATS clients.
 func (s *Server) inboxReply(sub *subscription, c *client, acc *Account, subject, reply string, msg []byte) {
-	s.mu.Lock()
+	s.mu.RLock()
 	if !s.eventsEnabled() || s.sys.replies == nil {
-		s.mu.Unlock()
+		s.mu.RUnlock()
 		return
 	}
 	cb, ok := s.sys.replies[subject]
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	if ok && cb != nil {
 		cb(sub, c, acc, subject, reply, msg)
