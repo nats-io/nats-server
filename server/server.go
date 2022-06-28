@@ -2972,7 +2972,7 @@ func (s *Server) readyForConnections(d time.Duration) error {
 	chk := make(map[string]info)
 
 	for time.Now().Before(end) {
-		s.mu.Lock()
+		s.mu.RLock()
 		chk["server"] = info{ok: s.listener != nil || opts.DontListen, err: s.listenerErr}
 		chk["route"] = info{ok: (opts.Cluster.Port == 0 || s.routeListener != nil), err: s.routeListenerErr}
 		chk["gateway"] = info{ok: (opts.Gateway.Name == _EMPTY_ || s.gatewayListener != nil), err: s.gatewayListenerErr}
