@@ -17933,6 +17933,71 @@ func TestJetStreamConsumerAndStreamNamesWithPathSeparators(t *testing.T) {
 	require_Error(t, err, NewJSConsumerNameContainsPathSeparatorsError(), nats.ErrInvalidConsumerName)
 }
 
+func TestJetStreamConsumerUpdateFilterSubject(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "T", Subjects: []string{"foo", "bar", "baz"}})
+	require_NoError(t, err)
+
+	// 10 foo
+	for i := 0; i < 10; i++ {
+		js.PublishAsync("foo", []byte("OK"))
+	}
+	// 20 bar
+	for i := 0; i < 20; i++ {
+		js.PublishAsync("bar", []byte("OK"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	sub, err := js.PullSubscribe("foo", "d")
+	require_NoError(t, err)
+
+	// Consume 5 msgs
+	msgs, err := sub.Fetch(5)
+	require_NoError(t, err)
+	require_True(t, len(msgs) == 5)
+
+	// Now update to different filter subject.
+	_, err = js.UpdateConsumer("T", &nats.ConsumerConfig{
+		Durable:       "d",
+		FilterSubject: "bar",
+		AckPolicy:     nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	sub, err = js.PullSubscribe("bar", "d")
+	require_NoError(t, err)
+
+	msgs, err = sub.Fetch(1)
+	require_NoError(t, err)
+
+	// Make sure meta and pending etc are all correct.
+	m := msgs[0]
+	meta, err := m.Metadata()
+	require_NoError(t, err)
+
+	if meta.Sequence.Consumer != 6 || meta.Sequence.Stream != 11 {
+		t.Fatalf("Sequence incorrect %+v", meta.Sequence)
+	}
+	if meta.NumDelivered != 1 {
+		t.Fatalf("Expected NumDelivered to be 1, got %d", meta.NumDelivered)
+	}
+	if meta.NumPending != 19 {
+		t.Fatalf("Expected NumPending to be 19, got %d", meta.NumPending)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////

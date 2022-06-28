@@ -1382,9 +1382,6 @@ func (acc *Account) checkNewConsumerConfig(cfg, ncfg *ConsumerConfig) error {
 		return nil
 	}
 	// Something different, so check since we only allow certain things to be updated.
-	if cfg.FilterSubject != ncfg.FilterSubject {
-		return errors.New("filter subject can not be updated")
-	}
 	if cfg.DeliverPolicy != ncfg.DeliverPolicy {
 		return errors.New("deliver policy can not be updated")
 	}

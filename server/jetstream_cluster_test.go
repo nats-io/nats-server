@@ -8870,11 +8870,6 @@ func TestJetStreamClusterConsumerUpdates(t *testing.T) {
 
 		// These all should fail.
 		ncfg = *cfg
-		ncfg.FilterSubject = "bar"
-		_, err = js.AddConsumer("TEST", &ncfg)
-		require_Error(t, err)
-
-		ncfg = *cfg
 		ncfg.DeliverPolicy = nats.DeliverLastPolicy
 		_, err = js.AddConsumer("TEST", &ncfg)
 		require_Error(t, err)
