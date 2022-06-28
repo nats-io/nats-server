@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"os"
 
+	_ "go.uber.org/automaxprocs"
+
 	"github.com/nats-io/nats-server/v2/server"
 )
 
