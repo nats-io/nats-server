@@ -60,6 +60,9 @@ type option interface {
 	// IsJetStreamChange inidicates a change in the servers config for JetStream.
 	// Account changes will be handled separately in reloadAuthorization.
 	IsJetStreamChange() bool
+
+	// Indicates a change in the server that requires publishing the server's statz
+	IsStatszChange() bool
 }
 
 // noopOption is a base struct that provides default no-op behaviors.
@@ -86,6 +89,10 @@ func (n noopOption) IsClusterPermsChange() bool {
 }
 
 func (n noopOption) IsJetStreamChange() bool {
+	return false
+}
+
+func (n noopOption) IsStatszChange() bool {
 	return false
 }
 
@@ -300,6 +307,10 @@ type tagsOption struct {
 
 func (u *tagsOption) Apply(server *Server) {
 	server.Noticef("Reloaded: tags")
+}
+
+func (u *tagsOption) IsStatszChange() bool {
+	return true
 }
 
 // usersOption implements the option interface for the authorization `users`
@@ -588,6 +599,10 @@ func (a *jetStreamOption) Apply(s *Server) {
 }
 
 func (jso jetStreamOption) IsJetStreamChange() bool {
+	return true
+}
+
+func (jso jetStreamOption) IsStatszChange() bool {
 	return true
 }
 
@@ -1393,6 +1408,7 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 		reloadJetstream    = false
 		jsEnabled          = false
 		reloadTLS          = false
+		isStatszChange     = false
 	)
 	for _, opt := range opts {
 		opt.Apply(s)
@@ -1414,6 +1430,9 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 		if opt.IsJetStreamChange() {
 			reloadJetstream = true
 			jsEnabled = opt.(*jetStreamOption).newValue
+		}
+		if opt.IsStatszChange() {
+			isStatszChange = true
 		}
 	}
 
@@ -1440,6 +1459,8 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 		}
 		// Make sure to reset the internal loop's version of JS.
 		s.resetInternalLoopInfo()
+	}
+	if isStatszChange {
 		s.sendStatszUpdate()
 	}
 
@@ -1579,7 +1600,12 @@ func (s *Server) reloadAuthorization() {
 				newAcc.lleafs = append([]*client(nil), acc.lleafs...)
 
 				newAcc.sl = acc.sl
-				newAcc.rm = acc.rm
+				if acc.rm != nil {
+					newAcc.rm = make(map[string]int32)
+				}
+				for k, v := range acc.rm {
+					newAcc.rm[k] = v
+				}
 				// Transfer internal client state. The configureAccounts call from above may have set up a new one.
 				// We need to use the old one, and the isid to not confuse internal subs.
 				newAcc.ic, newAcc.isid = acc.ic, acc.isid
