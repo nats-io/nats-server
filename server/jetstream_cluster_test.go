@@ -3659,9 +3659,14 @@ func TestJetStreamClusterPeerExclusionTag(t *testing.T) {
 	require_NoError(t, err)
 	require_True(t, !v.Tags.Contains(jsExcludePlacement))
 
-	m, err := sub.NextMsg(time.Second)
-	require_NoError(t, err)
-	require_True(t, strings.Contains(string(m.Data), `"tags":["server:s-1","intersect"]`))
+	// it is possible that sub already received a stasz message prior to reload, retry once
+	cmp := false
+	for i := 0; i < 2 && !cmp; i++ {
+		m, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		cmp = strings.Contains(string(m.Data), `"tags":["server:s-1","intersect"]`)
+	}
+	require_True(t, cmp)
 
 	cfg.Replicas = 3
 	_, err = js.UpdateStream(cfg)

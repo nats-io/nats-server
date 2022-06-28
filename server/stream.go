@@ -4041,6 +4041,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		mset.outq.unregister()
 	}
 
+	store := mset.store
 	// Clustered cleanup.
 	mset.mu.Unlock()
 
@@ -4050,16 +4051,16 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		sysc.closeConnection(ClientClosed)
 	}
 
-	if mset.store == nil {
+	if store == nil {
 		return nil
 	}
 
 	if deleteFlag {
-		if err := mset.store.Delete(); err != nil {
+		if err := store.Delete(); err != nil {
 			return err
 		}
 		js.releaseStreamResources(&mset.cfg)
-	} else if err := mset.store.Stop(); err != nil {
+	} else if err := store.Stop(); err != nil {
 		return err
 	}
 
