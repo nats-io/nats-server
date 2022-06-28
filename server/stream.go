@@ -3207,8 +3207,28 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 		return
 	}
 
+	inlineOk := c.kind != ROUTER && c.kind != GATEWAY && c.kind != LEAF
+	if !inlineOk {
+		// Check how long we have been away from the readloop for the route or gateway or leafnode.
+		// If too long move to a separate go routine.
+		if elapsed := time.Since(c.in.start); elapsed < noBlockThresh {
+			inlineOk = true
+		}
+	}
+
+	if inlineOk {
+		mset.getDirectRequest(&req, reply)
+	} else {
+		go mset.getDirectRequest(&req, reply)
+	}
+}
+
+// Do actual work on a direct msg request.
+// This could be called in a Go routine if we are inline for a non-client connection.
+func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 	var svp StoreMsg
 	var sm *StoreMsg
+	var err error
 
 	mset.mu.RLock()
 	store, name := mset.store, mset.cfg.Name

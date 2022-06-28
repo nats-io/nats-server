@@ -110,6 +110,9 @@ const (
 	// For stalling fast producers
 	stallClientMinDuration = 100 * time.Millisecond
 	stallClientMaxDuration = time.Second
+
+	// Threshold for not knowingly doing a potential blocking operation when internal and on a route or gateway or leafnode.
+	noBlockThresh = 500 * time.Millisecond
 )
 
 var readLoopReportThreshold = readLoopReport
@@ -384,6 +387,9 @@ type readCache struct {
 
 	// These are for readcache flags to avoind locks.
 	flags readCacheFlag
+
+	// Capture the time we started processing our readLoop.
+	start time.Time
 }
 
 // set the flag (would be equivalent to set the boolean to true)
@@ -1206,7 +1212,6 @@ func (c *client) readLoop(pre []byte) {
 		} else {
 			bufs[0] = b[:n]
 		}
-		start := time.Now()
 
 		// Check if the account has mappings and if so set the local readcache flag.
 		// We check here to make sure any changes such as config reload are reflected here.
@@ -1217,6 +1222,8 @@ func (c *client) readLoop(pre []byte) {
 				c.in.flags.clear(hasMappings)
 			}
 		}
+
+		c.in.start = time.Now()
 
 		// Clear inbound stats cache
 		c.in.msgs = 0
@@ -1236,7 +1243,7 @@ func (c *client) readLoop(pre []byte) {
 					// We don't need to do any of the things below, simply return.
 					return
 				}
-				if dur := time.Since(start); dur >= readLoopReportThreshold {
+				if dur := time.Since(c.in.start); dur >= readLoopReportThreshold {
 					c.Warnf("Readloop processing time: %v", dur)
 				}
 				// Need to call flushClients because some of the clients have been
@@ -1303,7 +1310,7 @@ func (c *client) readLoop(pre []byte) {
 			return
 		}
 
-		if dur := time.Since(start); dur >= readLoopReportThreshold {
+		if dur := time.Since(c.in.start); dur >= readLoopReportThreshold {
 			c.Warnf("Readloop processing time: %v", dur)
 		}
 
@@ -1314,7 +1321,7 @@ func (c *client) readLoop(pre []byte) {
 			return
 		}
 
-		if cpacc && (start.Sub(lpacc)) >= closedSubsCheckInterval {
+		if cpacc && (c.in.start.Sub(lpacc)) >= closedSubsCheckInterval {
 			c.pruneClosedSubFromPerAccountCache()
 			lpacc = time.Now()
 		}
@@ -3854,15 +3861,21 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	}
 
 	acc.mu.RLock()
+	var checkJS bool
 	shouldReturn := si.invalid || acc.sl == nil
-	checkJSGetNext := !isResponse && si.to == jsAllAPI && strings.HasPrefix(string(c.pa.subject), jsRequestNextPre)
+	if !shouldReturn && !isResponse && si.to == jsAllAPI {
+		subj := string(c.pa.subject)
+		if strings.HasPrefix(subj, jsRequestNextPre) || strings.HasPrefix(subj, jsDirectGetPre) {
+			checkJS = true
+		}
+	}
 	acc.mu.RUnlock()
 
 	// We have a special case where JetStream pulls in all service imports through one export.
-	// However the GetNext for consumers is a no-op and causes buildups of service imports,
+	// However the GetNext for consumers and DirectGet for streams are a no-op and causes buildups of service imports,
 	// response service imports and rrMap entries which all will need to simply expire.
 	// TODO(dlc) - Come up with something better.
-	if shouldReturn || (checkJSGetNext && si.se != nil && si.se.acc == c.srv.SystemAccount()) {
+	if shouldReturn || (checkJS && si.se != nil && si.se.acc == c.srv.SystemAccount()) {
 		return
 	}
 

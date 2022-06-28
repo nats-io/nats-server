@@ -2599,7 +2599,20 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 		return
 	}
 	_, msg = c.msgParts(msg)
-	o.processNextMsgRequest(reply, msg)
+
+	inlineOk := c.kind != ROUTER && c.kind != GATEWAY && c.kind != LEAF
+	if !inlineOk {
+		// Check how long we have been away from the readloop for the route or gateway or leafnode.
+		// If too long move to a separate go routine.
+		if elapsed := time.Since(c.in.start); elapsed < noBlockThresh {
+			inlineOk = true
+		}
+	}
+	if inlineOk {
+		o.processNextMsgRequest(reply, msg)
+	} else {
+		go o.processNextMsgRequest(reply, copyBytes(msg))
+	}
 }
 
 func (o *consumer) processNextMsgRequest(reply string, msg []byte) {

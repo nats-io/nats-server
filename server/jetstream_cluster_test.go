@@ -4764,6 +4764,49 @@ func TestJetStreamClusterStreamGetMsg(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterStreamDirectGetMsg(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3F", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Do by hand for now.
+	cfg := &StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		Storage:     MemoryStorage,
+		Replicas:    3,
+		MaxMsgsPer:  1,
+		AllowDirect: true,
+	}
+	addStream(t, nc, cfg)
+	sendStreamMsg(t, nc, "foo", "bar")
+
+	getSubj := fmt.Sprintf(JSDirectMsgGetT, "TEST")
+	getMsg := func(req *JSApiMsgGetRequest) *nats.Msg {
+		var b []byte
+		var err error
+		if req != nil {
+			b, err = json.Marshal(req)
+			require_NoError(t, err)
+		}
+		m, err := nc.Request(getSubj, b, time.Second)
+		require_NoError(t, err)
+		return m
+	}
+
+	m := getMsg(&JSApiMsgGetRequest{LastFor: "foo"})
+	require_True(t, string(m.Data) == "bar")
+	require_True(t, m.Header.Get(JSStream) == "TEST")
+	require_True(t, m.Header.Get(JSSequence) == "1")
+	require_True(t, m.Header.Get(JSSubject) == "foo")
+	require_True(t, m.Subject != "foo")
+	require_True(t, m.Header.Get(JSTimeStamp) != _EMPTY_)
+}
+
 func TestJetStreamClusterStreamPerf(t *testing.T) {
 	// Comment out to run, holding place for now.
 	skip(t)
