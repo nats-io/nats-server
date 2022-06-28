@@ -1844,7 +1844,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			if len(ci.Replicas)+1 != len(rg.Peers) {
 				continue
 			}
+			mset.mu.RLock()
 			replicas := mset.cfg.Replicas
+			mset.mu.RUnlock()
 			if len(rg.Peers) <= replicas {
 				stopMigrationMonitoring()
 				continue
@@ -1874,7 +1876,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				}
 			}
 			// If all are current we are good, or if we have some offline and we have a quorum.
-			if quorum := mset.cfg.Replicas/2 + 1; currentCount >= quorum {
+			if quorum := replicas/2 + 1; currentCount >= quorum {
 				stopMigrationMonitoring()
 				// Remove the old peers and transfer leadership.
 				time.AfterFunc(2*time.Second, func() { js.removeOldPeers(mset, firstPeer, newPeerSet) })
