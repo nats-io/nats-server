@@ -49,6 +49,7 @@ var maxSubLimitReportThreshold = defaultMaxSubLimitReportThreshold
 // Account are subject namespace definitions. By default no messages are shared between accounts.
 // You can share via Exports and Imports of Streams and Services.
 type Account struct {
+	stats
 	gwReplyMapping
 	Name         string
 	Nkey         string

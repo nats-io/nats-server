@@ -1257,6 +1257,10 @@ func (c *client) readLoop(pre []byte) {
 		if c.in.msgs > 0 {
 			atomic.AddInt64(&c.inMsgs, int64(c.in.msgs))
 			atomic.AddInt64(&c.inBytes, int64(c.in.bytes))
+			if acc != nil {
+				atomic.AddInt64(&acc.inMsgs, int64(c.in.msgs))
+				atomic.AddInt64(&acc.inBytes, int64(c.in.bytes))
+			}
 			atomic.AddInt64(&s.inMsgs, int64(c.in.msgs))
 			atomic.AddInt64(&s.inBytes, int64(c.in.bytes))
 		}
@@ -1518,6 +1522,9 @@ func (c *client) handleWriteTimeout(written, attempted int64, numChunks int) boo
 
 	// Slow consumer here..
 	atomic.AddInt64(&c.srv.slowConsumers, 1)
+	if c.acc != nil {
+		atomic.AddInt64(&c.acc.slowConsumers, 1)
+	}
 	c.Noticef("Slow Consumer Detected: WriteDeadline of %v exceeded with %d chunks of %d total bytes.",
 		c.out.wdl, numChunks, attempted)
 
@@ -1980,6 +1987,9 @@ func (c *client) queueOutbound(data []byte) {
 		// checking current pb+len(data) and then add to pb.
 		c.out.pb -= int64(len(data))
 		atomic.AddInt64(&c.srv.slowConsumers, 1)
+		if c.acc != nil {
+			atomic.AddInt64(&c.acc.slowConsumers, 1)
+		}
 		c.Noticef("Slow Consumer Detected: MaxPending of %d Exceeded", c.out.mp)
 		c.markConnAsClosed(SlowConsumerPendingBytes)
 		return
@@ -3178,6 +3188,10 @@ func (c *client) deliverMsg(sub *subscription, acc *Account, subject, reply, mh,
 	}
 
 	// We don't count internal deliveries so we update server statistics here.
+	if acc != nil {
+		atomic.AddInt64(&acc.outMsgs, 1)
+		atomic.AddInt64(&acc.outBytes, msgSize)
+	}
 	atomic.AddInt64(&srv.outMsgs, 1)
 	atomic.AddInt64(&srv.outBytes, msgSize)
 

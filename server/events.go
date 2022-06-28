@@ -138,11 +138,14 @@ const DisconnectEventMsgType = "io.nats.server.advisory.v1.client_disconnect"
 // updates in the absence of any changes.
 type AccountNumConns struct {
 	TypedEvent
-	Server     ServerInfo `json:"server"`
-	Account    string     `json:"acc"`
-	Conns      int        `json:"conns"`
-	LeafNodes  int        `json:"leafnodes"`
-	TotalConns int        `json:"total_conns"`
+	Server        ServerInfo `json:"server"`
+	Account       string     `json:"acc"`
+	Conns         int        `json:"conns"`
+	LeafNodes     int        `json:"leafnodes"`
+	TotalConns    int        `json:"total_conns"`
+	Sent          DataStats  `json:"sent"`
+	Received      DataStats  `json:"received"`
+	SlowConsumers int64      `json:"slow_consumers"`
 }
 
 const AccountNumConnsMsgType = "io.nats.server.advisory.v1.account_connections"
@@ -1641,6 +1644,7 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 	eid := s.nextEventID()
 	a.mu.Lock()
 	localConns := a.numLocalConnections()
+	leafConns := a.numLocalLeafNodes()
 	m := &AccountNumConns{
 		TypedEvent: TypedEvent{
 			Type: AccountNumConnsMsgType,
@@ -1649,8 +1653,15 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 		},
 		Account:    a.Name,
 		Conns:      localConns,
-		LeafNodes:  a.numLocalLeafNodes(),
-		TotalConns: localConns + a.numLocalLeafNodes(),
+		LeafNodes:  leafConns,
+		TotalConns: localConns + leafConns,
+		Received: DataStats{
+			Msgs:  atomic.LoadInt64(&a.inMsgs),
+			Bytes: atomic.LoadInt64(&a.inBytes)},
+		Sent: DataStats{
+			Msgs:  atomic.LoadInt64(&a.outMsgs),
+			Bytes: atomic.LoadInt64(&a.outBytes)},
+		SlowConsumers: atomic.LoadInt64(&a.slowConsumers),
 	}
 	// Set timer to fire again unless we are at zero.
 	if localConns == 0 {
