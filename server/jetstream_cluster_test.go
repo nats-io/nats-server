@@ -10689,15 +10689,6 @@ func TestJetStreamClusterMirrorDeDupWindow(t *testing.T) {
 	// Send 100 messages
 	send(100)
 
-	// First check that we can't create with a duplicates window
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name:       "M",
-		Replicas:   3,
-		Mirror:     &nats.StreamSource{Name: "S"},
-		Duplicates: time.Hour,
-	})
-	require_Error(t, err)
-
 	// Now create a valid one.
 	si, err = js.AddStream(&nats.StreamConfig{
 		Name:     "M",
@@ -11217,4 +11208,64 @@ func TestJetStreamClusterConsumerAndStreamNamesWithPathSeparators(t *testing.T) 
 
 	_, err = js.AddConsumer("T", &nats.ConsumerConfig{Durable: `a\b`, AckPolicy: nats.AckExplicitPolicy})
 	require_Error(t, err, NewJSConsumerNameContainsPathSeparatorsError(), nats.ErrInvalidConsumerName)
+}
+
+func TestJetStreamClusterFilteredMirrors(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "MSR", 5)
+	defer c.shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Origin
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar", "baz"},
+	})
+	require_NoError(t, err)
+
+	msg := bytes.Repeat([]byte("Z"), 3)
+	for i := 0; i < 100; i++ {
+		js.PublishAsync("foo", msg)
+		js.PublishAsync("bar", msg)
+		js.PublishAsync("baz", msg)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// Create Mirror now.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:   "M",
+		Mirror: &nats.StreamSource{Name: "TEST", FilterSubject: "foo"},
+	})
+	require_NoError(t, err)
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("M")
+		require_NoError(t, err)
+		if si.State.Msgs != 100 {
+			return fmt.Errorf("Expected 100 msgs, got state: %+v", si.State)
+		}
+		return nil
+	})
+
+	sub, err := js.PullSubscribe("foo", "d", nats.BindStream("M"))
+	require_NoError(t, err)
+
+	// Make sure we only have "foo" and that sequence numbers preserved.
+	sseq, dseq := uint64(1), uint64(1)
+	for _, m := range fetchMsgs(t, sub, 100, 5*time.Second) {
+		require_True(t, m.Subject == "foo")
+		meta, err := m.Metadata()
+		require_NoError(t, err)
+		require_True(t, meta.Sequence.Consumer == dseq)
+		dseq++
+		require_True(t, meta.Sequence.Stream == sseq)
+		sseq += 3
+	}
+
 }
