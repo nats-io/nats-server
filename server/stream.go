@@ -1006,16 +1006,6 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		if len(cfg.Sources) > 0 {
 			return StreamConfig{}, NewJSMirrorWithSourcesError()
 		}
-		if cfg.Mirror.FilterSubject != _EMPTY_ {
-			return StreamConfig{}, NewJSMirrorWithSubjectFiltersError()
-		}
-		if cfg.Mirror.OptStartSeq > 0 && cfg.Mirror.OptStartTime != nil {
-			return StreamConfig{}, NewJSMirrorWithStartSeqAndTimeError()
-		}
-		if cfg.Duplicates != time.Duration(0) {
-			return StreamConfig{}, NewJSStreamInvalidConfigError(
-				errors.New("stream mirrors do not make use of a de-duplication window"))
-		}
 		// We do not require other stream to exist anymore, but if we can see it check payloads.
 		exists, maxMsgSize, subs := hasStream(cfg.Mirror.Name)
 		if len(subs) > 0 {
@@ -2048,6 +2038,11 @@ func (mset *stream) setupMirrorConsumer() error {
 	if req.Config.OptStartSeq == 0 && req.Config.OptStartTime == nil {
 		// If starting out and lastSeq is 0.
 		req.Config.DeliverPolicy = DeliverAll
+	}
+
+	// Filters
+	if mset.cfg.Mirror.FilterSubject != _EMPTY_ {
+		req.Config.FilterSubject = mset.cfg.Mirror.FilterSubject
 	}
 
 	respCh := make(chan *JSApiConsumerCreateResponse, 1)
