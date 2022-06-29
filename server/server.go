@@ -2949,19 +2949,6 @@ func (s *Server) ProfilerAddr() *net.TCPAddr {
 }
 
 func (s *Server) readyForConnections(d time.Duration) error {
-	end := time.Now().Add(d)
-
-	// Wait for startup. At this point AcceptLoop will only just be
-	// starting, so we'll still check for the presence of listeners
-	// after this.
-	select {
-	case <-s.startupComplete:
-	case <-time.After(d):
-		return fmt.Errorf(
-			"failed to be ready for connections after %s", d,
-		)
-	}
-
 	// Snapshot server options.
 	opts := s.getOpts()
 
@@ -2971,6 +2958,7 @@ func (s *Server) readyForConnections(d time.Duration) error {
 	}
 	chk := make(map[string]info)
 
+	end := time.Now().Add(d)
 	for time.Now().Before(end) {
 		s.mu.RLock()
 		chk["server"] = info{ok: s.listener != nil || opts.DontListen, err: s.listenerErr}
@@ -2988,6 +2976,16 @@ func (s *Server) readyForConnections(d time.Duration) error {
 			}
 		}
 		if numOK == len(chk) {
+			// In the case of DontListen option (no accept loop), we still want
+			// to make sure that Start() has done all the work, so we wait on
+			// that.
+			if opts.DontListen {
+				select {
+				case <-s.startupComplete:
+				case <-time.After(d):
+					return fmt.Errorf("failed to be ready for connections after %s: startup did not complete", d)
+				}
+			}
 			return nil
 		}
 		if d > 25*time.Millisecond {

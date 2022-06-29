@@ -3017,7 +3017,7 @@ func TestMQTTClusterReplicasCount(t *testing.T) {
 				s = cl.randomServer()
 			}
 
-			mc, rc := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: false}, o.MQTT.Host, o.MQTT.Port)
+			mc, rc := testMQTTConnectRetry(t, &mqttConnInfo{clientID: "sub", cleanSess: false}, o.MQTT.Host, o.MQTT.Port, 5)
 			defer mc.Close()
 			testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, false)
 			testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "foo/#", qos: 1}}, []byte{1})

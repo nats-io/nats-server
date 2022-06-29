@@ -6140,6 +6140,8 @@ func TestJetStreamClusterDomains(t *testing.T) {
 		strings.ReplaceAll(jsClusterTemplWithSingleLeafNode, "store_dir:", "extension_hint: will_extend, domain: CORE, store_dir:"))
 	defer ln.Shutdown()
 
+	checkLeafNodeConnectedCount(t, ln, 2)
+
 	// This shows we have extended this system.
 	c.waitOnPeerCount(4)
 	if ml := c.leader(); ml == ln {
@@ -6150,6 +6152,8 @@ func TestJetStreamClusterDomains(t *testing.T) {
 	tmpl = strings.Replace(jsClusterTemplWithSingleLeafNode, "store_dir:", "domain: SPOKE, store_dir:", 1)
 	spoke := c.createLeafNodeWithTemplate("LN-SPOKE", tmpl)
 	defer spoke.Shutdown()
+
+	checkLeafNodeConnectedCount(t, spoke, 2)
 
 	// Should be the same, should not extend the CORE domain.
 	c.waitOnPeerCount(4)
@@ -6642,6 +6646,8 @@ func TestJetStreamClusterLeafNodesWithoutJS(t *testing.T) {
 
 	ln := c.createLeafNodeWithTemplate("LN-SYS-S-NOJS", jsClusterTemplWithSingleLeafNodeNoJS)
 	defer ln.Shutdown()
+
+	checkLeafNodeConnectedCount(t, ln, 2)
 
 	// Check that we can access JS in the $G account on the cluster through the leafnode.
 	testJS(ln, "HUB", true)
