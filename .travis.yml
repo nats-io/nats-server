@@ -17,7 +17,7 @@ go_import_path: github.com/nats-io/nats-server
 
 jobs:
   include:
-    - name: "Compile and various checks"
+    - name: "Compile and various other checks"
       env: TEST_SUITE=compile
     - name: "Run TestNoRace tests"
       env: TEST_SUITE=no_race_tests
@@ -27,11 +27,11 @@ jobs:
       env: TEST_SUITE=js_cluster_tests
     - name: "Run JetStream super cluster tests"
       env: TEST_SUITE=js_super_cluster_tests
-    - name: "Run non JetStreams tests form the server package"
+    - name: "Run non JetStream tests from the server package"
       env: TEST_SUITE=srv_pkg_non_js_tests
     - name: "Run all tests from all other packages"
       env: TEST_SUITE=non_srv_pkg_tests
-    - name: "Compile and various checks with older Go release"
+    - name: "Compile with older Go release"
       go: 1.17.x
       env: TEST_SUITE=build_only
 

@@ -32,7 +32,7 @@ elif [ "$1" = "no_race_tests" ]; then
 
 elif [ "$1" = "js_tests" ]; then
 
-    # Run JetStream non-clustere tests. By convention, all JS tests start
+    # Run JetStream non-clustered tests. By convention, all JS tests start
     # with `TestJetStream`. We exclude the clustered and super-clustered
     # tests by using the `skip_js_cluster_tests` and `skip_js_super_cluster_tests`
     # build tags.
