@@ -2669,12 +2669,14 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 		// If no pending at all, decide what to do with request.
 		// If no expires was set then fail.
 		if msgsPending == 0 && expires.IsZero() {
+			o.waiting.last = time.Now()
 			sendErr(404, "No Messages")
 			return
 		}
 		if msgsPending > 0 {
 			_, _, batchPending, _ := o.processWaiting(false)
 			if msgsPending < uint64(batchPending) {
+				o.waiting.last = time.Now()
 				sendErr(408, "Requests Pending")
 				return
 			}

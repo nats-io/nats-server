@@ -14539,6 +14539,41 @@ func TestJetStreamEphemeralPullConsumers(t *testing.T) {
 	})
 }
 
+func TestJetStreamEphemeralPullConsumersInactiveThresholdAndNoWait(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "ECIT", Storage: nats.MemoryStorage})
+	require_NoError(t, err)
+
+	ci, err := js.AddConsumer("ECIT", &nats.ConsumerConfig{
+		AckPolicy:         nats.AckExplicitPolicy,
+		InactiveThreshold: 100 * time.Millisecond,
+	})
+	require_NoError(t, err)
+
+	// Send 10 no_wait requests every 25ms and consumer should still be present.
+	req := &JSApiConsumerGetNextRequest{Batch: 10, NoWait: true}
+	jreq, err := json.Marshal(req)
+	require_NoError(t, err)
+	rsubj := fmt.Sprintf(JSApiRequestNextT, "ECIT", ci.Name)
+	for i := 0; i < 10; i++ {
+		err = nc.PublishRequest(rsubj, "xx", jreq)
+		require_NoError(t, err)
+		nc.Flush()
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	_, err = js.ConsumerInfo("ECIT", ci.Name)
+	require_NoError(t, err)
+}
+
 func TestJetStreamPullConsumerCrossAccountExpires(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		listen: 127.0.0.1:-1
