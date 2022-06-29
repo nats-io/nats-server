@@ -54,8 +54,6 @@ type jetStreamCluster struct {
 	peerRemove *subscription
 	// System level request to evacuate a peer.
 	peerStreamMove *subscription
-	// System level request to obtain which streams a server
-	//peerStreamInfo *subscription
 }
 
 // Used to guide placement of streams and meta controllers in clustered JetStream.
@@ -4056,11 +4054,6 @@ func (js *jetStream) startUpdatesSub() {
 	if cc.peerRemove == nil {
 		cc.peerRemove, _ = s.systemSubscribe(JSApiRemoveServer, _EMPTY_, false, c, s.jsLeaderServerRemoveRequest)
 	}
-	/*
-		if cc.peerStreamInfo == nil {
-			cc.peerStreamInfo, _ = s.systemSubscribe(JSApiServerStreamInfo, _EMPTY_, false, c, s.jsLeaderServerStreamInfoRequest)
-		}
-	*/
 	if cc.peerStreamMove == nil {
 		cc.peerStreamMove, _ = s.systemSubscribe(JSApiServerStreamMove, _EMPTY_, false, c, s.jsLeaderServerStreamMoveRequest)
 	}
@@ -4085,12 +4078,6 @@ func (js *jetStream) stopUpdatesSub() {
 		cc.s.sysUnsubscribe(cc.peerRemove)
 		cc.peerRemove = nil
 	}
-	/*
-		if cc.peerStreamInfo != nil {
-			cc.s.sysUnsubscribe(cc.peerStreamInfo)
-			cc.peerStreamInfo = nil
-		}
-	*/
 	if cc.peerStreamMove != nil {
 		cc.s.sysUnsubscribe(cc.peerStreamMove)
 		cc.peerStreamMove = nil

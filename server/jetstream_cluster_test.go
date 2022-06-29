@@ -3744,24 +3744,7 @@ func TestJetStreamClusterPeerEvacuationAndStreamReassignment(t *testing.T) {
 		ncsys, err := nats.Connect(srv.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
 		require_NoError(t, err)
 		defer ncsys.Close()
-		/*
-			infoReq, err := json.Marshal(&JSApiMetaServerStreamInfoRequest{Server: toMoveFrom})
-			require_NoError(t, err)
-			rmsg, err := ncsys.Request(JSApiServerStreamInfo, infoReq, time.Second)
-			require_NoError(t, err)
-			var infoResp JSApiMetaServerStreamInfoResponse
-			require_NoError(t, json.Unmarshal(rmsg.Data, &infoResp))
-			require_True(t, infoResp.Error == nil)
 
-			found := false
-			for _, sCfg := range infoResp.Content["$G"] {
-				if sCfg.Name == "TEST" {
-					found = true
-					break
-				}
-			}
-			require_True(t, found)
-		*/
 		moveReq, err := json.Marshal(&JSApiMetaServerStreamMoveRequest{
 			Server: toMoveFrom, Account: "$G", Stream: "TEST", Tags: moveTags})
 		require_NoError(t, err)

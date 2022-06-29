@@ -195,11 +195,6 @@ const (
 	// Will return JSON response.
 	JSApiServerStreamMove = "$JS.API.SERVER.STREAM.MOVE"
 
-	// JSApiServerInfo is the endpoint to abtain which stream a server contains
-	// Only works from system account.
-	// Will return JSON response.
-	//JSApiServerStreamInfo = "$JS.API.SERVER.STREAM.INFO"
-
 	// jsAckT is the template for the ack message stream coming back from a consumer
 	// when they ACK/NAK, etc a message.
 	jsAckT      = "$JS.ACK.%s.%s"
@@ -2199,111 +2194,6 @@ func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, _ *Ac
 	s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 }
 
-/*
-// Request to have the metaleader provide which streams a server contains
-func (s *Server) jsLeaderServerStreamInfoRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-	if c == nil || !s.JetStreamEnabled() {
-		return
-	}
-
-	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
-	if err != nil {
-		s.Warnf(badAPIRequestT, msg)
-		return
-	}
-
-	js, cc := s.getJetStreamCluster()
-	if js == nil && (cc != nil && cc.meta == nil) {
-		return
-	}
-
-	// Extra checks here but only leader is listening.
-	js.mu.RLock()
-	isLeader := cc.isLeader()
-	js.mu.RUnlock()
-
-	if !isLeader {
-		return
-	}
-
-	var resp = JSApiMetaServerStreamInfoResponse{ApiResponse: ApiResponse{Type: JSApiMetaServerStreamInfoType}}
-
-	if isEmptyRequest(msg) {
-		resp.Error = NewJSBadRequestError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-
-	var req JSApiMetaServerStreamInfoRequest
-	if err := json.Unmarshal(msg, &req); err != nil {
-		resp.Error = NewJSInvalidJSONError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-
-	if cc == nil {
-		// single server logic
-		if req.Server != s.info.Name {
-			resp.Error = NewJSClusterServerNotMemberError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-
-		resp.Content = make(map[string][]StreamConfig)
-		resp.Success = true
-		js.mu.RLock()
-		for aName, jsa := range js.accounts {
-			jsa.mu.RLock()
-			for _, s := range jsa.streams {
-				resp.Content[aName] = append(resp.Content[aName], s.cfg)
-			}
-			jsa.mu.RUnlock()
-		}
-		js.mu.RUnlock()
-		return
-	}
-	// clustered code
-
-	var found string
-	js.mu.RLock()
-	for _, p := range cc.meta.Peers() {
-		si, ok := s.nodeToInfo.Load(p.ID)
-		if ok && si.(nodeInfo).name == req.Server {
-			found = p.ID
-			break
-		}
-	}
-	js.mu.RUnlock()
-
-	if found == _EMPTY_ {
-		resp.Error = NewJSClusterServerNotMemberError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-
-	resp.Content = make(map[string][]StreamConfig)
-	js.mu.Lock()
-	for aName, a := range cc.streams {
-		for _, s := range a {
-			contains := false
-			for _, p := range s.Group.Peers {
-				if p == found {
-					contains = true
-					break
-				}
-			}
-			if contains {
-				resp.Content[aName] = append(resp.Content[aName], *s.Config)
-			}
-		}
-	}
-	js.mu.Unlock()
-
-	resp.Success = true
-	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-}
-*/
-
 // Request to have the metaleader move a stream on a peer to another
 func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	if c == nil || !s.JetStreamEnabled() {
@@ -2448,6 +2338,8 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 
 	cfg.Placement = origPlacement
 
+	// execute on a go routine for route or gateway, as this may block waiting from responses from other servers and
+	// therefore block all route/gateway traffic.
 	if c.kind != ROUTER && c.kind != GATEWAY {
 		go s.jsClusteredStreamUpdateRequest(&ciNew, targetAcc.(*Account), subject, reply, rmsg, &cfg, peers)
 	} else {
