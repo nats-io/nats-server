@@ -96,10 +96,11 @@ type Account struct {
 
 // Account based limits.
 type limits struct {
-	mpay   int32
-	msubs  int32
-	mconns int32
-	mleafs int32
+	mpay           int32
+	msubs          int32
+	mconns         int32
+	mleafs         int32
+	disallowBearer bool
 }
 
 // Used to track remote clients and leafnodes per remote server.
@@ -230,7 +231,7 @@ type importMap struct {
 func NewAccount(name string) *Account {
 	a := &Account{
 		Name:     name,
-		limits:   limits{-1, -1, -1, -1},
+		limits:   limits{-1, -1, -1, -1, false},
 		eventIds: nuid.New(),
 	}
 	return a
@@ -2838,6 +2839,13 @@ func (a *Account) checkUserRevoked(nkey string, issuedAt int64) bool {
 	return isRevoked(a.usersRevoked, nkey, issuedAt)
 }
 
+// failBearer will return if bearer token are allowed (false) or disallowed (true)
+func (a *Account) failBearer() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.disallowBearer
+}
+
 // Check expiration and set the proper state as needed.
 func (a *Account) checkExpiration(claims *jwt.ClaimsData) {
 	a.mu.Lock()
@@ -3242,6 +3250,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	a.mpay = int32(ac.Limits.Payload)
 	a.mconns = int32(ac.Limits.Conn)
 	a.mleafs = int32(ac.Limits.LeafNodeConn)
+	a.disallowBearer = ac.Limits.DisallowBearer
 	// Check for any revocations
 	if len(ac.Revocations) > 0 {
 		// We will always replace whatever we had with most current, so no
@@ -3344,9 +3353,13 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		theJWT := c.opts.JWT
 		c.mu.Unlock()
 		// Check for being revoked here. We use ac one to avoid the account lock.
-		if ac.Revocations != nil && theJWT != _EMPTY_ {
+		if (ac.Revocations != nil || ac.Limits.DisallowBearer) && theJWT != _EMPTY_ {
 			if juc, err := jwt.DecodeUserClaims(theJWT); err != nil {
 				c.Debugf("User JWT not valid: %v", err)
+				c.authViolation()
+				continue
+			} else if juc.BearerToken && ac.Limits.DisallowBearer {
+				c.Debugf("Bearer User JWT not allowed")
 				c.authViolation()
 				continue
 			} else if ok := ac.IsClaimRevoked(juc); ok {

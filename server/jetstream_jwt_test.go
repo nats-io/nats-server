@@ -210,6 +210,77 @@ func TestJetStreamJWTLimits(t *testing.T) {
 	c.Close()
 }
 
+func TestJetStreamJWTDisallowBearer(t *testing.T) {
+	sysKp, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	sysCreds := newUser(t, sysKp)
+	defer removeFile(t, sysCreds)
+
+	accKp, err := nkeys.CreateAccount()
+	require_NoError(t, err)
+	accIdPub, err := accKp.PublicKey()
+	require_NoError(t, err)
+	aClaim := jwt.NewAccountClaims(accIdPub)
+	accJwt1, err := aClaim.Encode(oKp)
+	require_NoError(t, err)
+	aClaim.Limits.DisallowBearer = true
+	accJwt2, err := aClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	uc := jwt.NewUserClaims("dummy")
+	uc.BearerToken = true
+	uOpt1 := createUserCredsEx(t, uc, accKp)
+	uc.BearerToken = false
+	uOpt2 := createUserCredsEx(t, uc, accKp)
+
+	dir := createDir(t, "srv")
+	defer removeDir(t, dir)
+	cf := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		operator = %s
+		system_account: %s
+		resolver: {
+			type: full
+			dir: '%s/jwt'
+		}
+		resolver_preload = {
+			%s : "%s"
+		}
+		`, ojwt, syspub, dir, syspub, sysJwt)))
+	defer removeFile(t, cf)
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt1, 1)
+	disconnectErrCh := make(chan error, 10)
+	defer close(disconnectErrCh)
+	nc1, err := nats.Connect(s.ClientURL(), uOpt1,
+		nats.NoReconnect(),
+		nats.ErrorHandler(func(conn *nats.Conn, s *nats.Subscription, err error) {
+			disconnectErrCh <- err
+		}))
+	require_NoError(t, err)
+	defer nc1.Close()
+
+	// update jwt and observe bearer token get disconnected
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt2, 1)
+	select {
+	case err := <-disconnectErrCh:
+		require_Contains(t, err.Error(), "authorization violation")
+	case <-time.After(time.Second):
+		t.Fatalf("expected error on disconnect")
+	}
+
+	// assure bearer token is not allowed to connect
+	_, err = nats.Connect(s.ClientURL(), uOpt1)
+	require_Error(t, err)
+
+	// assure non bearer token can connect
+	nc2, err := nats.Connect(s.ClientURL(), uOpt2)
+	require_NoError(t, err)
+	defer nc2.Close()
+}
+
 func TestJetStreamJWTMove(t *testing.T) {
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
