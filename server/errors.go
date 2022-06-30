@@ -228,10 +228,6 @@ func (e *mappingDestinationErr) Is(target error) bool {
 	return target == ErrInvalidMappingDestination
 }
 
-func (e *mappingDestinationErr) Unwrap(err error) error {
-	return ErrInvalidMappingDestination
-}
-
 // configErr is a configuration error.
 type configErr struct {
 	token  token
