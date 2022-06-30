@@ -75,6 +75,10 @@ var (
 	// attempted to connect to the leaf node listen port.
 	ErrClientConnectedToLeafNodePort = errors.New("attempted to connect to leaf node port")
 
+	// ErrLeafNodeHasSameClusterName represents an error condition when a leafnode is a cluster
+	// and it has the same cluster name as the hub cluster.
+	ErrLeafNodeHasSameClusterName = errors.New("remote leafnode has same cluster name")
+
 	// ErrConnectedToWrongPort represents an error condition when a connection is attempted
 	// to the wrong listen port (for instance a LeafNode to a client port, etc...)
 	ErrConnectedToWrongPort = errors.New("attempted to connect to wrong port")
