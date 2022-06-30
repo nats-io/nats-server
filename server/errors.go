@@ -189,11 +189,11 @@ var (
 	// ErrMinimumVersionRequired is returned when a connection is not at the minimum version required.
 	ErrMinimumVersionRequired = errors.New("minimum version required")
 
-	// ErrInvalidSubjectMappingDestination
+	// ErrInvalidMappingDestination is used for all subject mapping destination errors
 	ErrInvalidMappingDestination = errors.New("invalid mapping destination")
 
-	// ErrInvalidSubjectMappingDestination is used to error on a bad transform destination mapping
-	ErrInvalidSubjectMappingDestination = fmt.Errorf("%w: invalid subject", ErrInvalidMappingDestination)
+	// ErrInvalidMappingDestinationSubject is used to error on a bad transform destination mapping
+	ErrInvalidMappingDestinationSubject = fmt.Errorf("%w: invalid subject", ErrInvalidMappingDestination)
 
 	// ErrMappingDestinationNotUsingAllWildcards is used to error on a transform destination not using all of the token wildcards
 	ErrMappingDestinationNotUsingAllWildcards = fmt.Errorf("%w: not using all of the token wildcard(s)", ErrInvalidMappingDestination)

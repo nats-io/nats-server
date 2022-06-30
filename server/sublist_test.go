@@ -14,6 +14,7 @@
 package server
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"math/rand"
@@ -553,7 +554,7 @@ func checkBool(b, expected bool, t *testing.T) {
 
 func checkError(err, expected error, t *testing.T) {
 	t.Helper()
-	if err != expected {
+	if err != expected && err != nil && !errors.Is(err, expected) {
 		t.Fatalf("Expected %v, but got %v\n", expected, err)
 	}
 }
@@ -668,9 +669,9 @@ func TestValidateDestinationSubject(t *testing.T) {
 	checkError(ValidateMappingDestination("foo.{{ wildcard(1) }}"), nil, t)
 	checkError(ValidateMappingDestination("foo.{{wildcard( 1 )}}"), nil, t)
 	checkError(ValidateMappingDestination("foo.{{partition(2,1)}}"), nil, t)
-	checkError(ValidateMappingDestination("foo.{{unknown(1)}}"), ErrUnknownMappingDestinationFunction, t)
-	checkError(ValidateMappingDestination("foo..}"), ErrInvalidSubjectMappingDestination, t)
-	checkError(ValidateMappingDestination("foo. bar}"), ErrInvalidSubjectMappingDestination, t)
+	checkError(ValidateMappingDestination("foo.{{unknown(1)}}"), ErrInvalidMappingDestination, t)
+	checkError(ValidateMappingDestination("foo..}"), ErrInvalidMappingDestination, t)
+	checkError(ValidateMappingDestination("foo. bar}"), ErrInvalidMappingDestinationSubject, t)
 
 }
 

@@ -1136,7 +1136,7 @@ func ValidateMappingDestination(subject string) error {
 	for _, t := range subjectTokens {
 		length := len(t)
 		if length == 0 || sfwc {
-			return &mappingDestinationErr{t, ErrInvalidSubjectMappingDestination}
+			return &mappingDestinationErr{t, ErrInvalidMappingDestinationSubject}
 		}
 
 		if length > 4 && t[0] == '{' && t[1] == '{' && t[length-2] == '}' && t[length-1] == '}' {
@@ -1150,7 +1150,7 @@ func ValidateMappingDestination(subject string) error {
 		if length == 1 && t[0] == fwc {
 			sfwc = true
 		} else if strings.ContainsAny(t, "\t\n\f\r ") {
-			return ErrInvalidSubjectMappingDestination
+			return ErrInvalidMappingDestinationSubject
 		}
 	}
 	return nil
