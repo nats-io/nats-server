@@ -655,22 +655,22 @@ func TestSubjectIsLiteral(t *testing.T) {
 }
 
 func TestValidateDestinationSubject(t *testing.T) {
-	checkError(ValidateDestinationSubject("foo"), nil, t)
-	checkError(ValidateDestinationSubject("foo.bar"), nil, t)
-	checkError(ValidateDestinationSubject("*"), nil, t)
-	checkError(ValidateDestinationSubject(">"), nil, t)
-	checkError(ValidateDestinationSubject("foo.*"), nil, t)
-	checkError(ValidateDestinationSubject("foo.>"), nil, t)
-	checkError(ValidateDestinationSubject("foo.*.>"), nil, t)
-	checkError(ValidateDestinationSubject("foo.*.bar"), nil, t)
-	checkError(ValidateDestinationSubject("foo.bar.>"), nil, t)
-	checkError(ValidateDestinationSubject("foo.{{wildcard(1)}}"), nil, t)
-	checkError(ValidateDestinationSubject("foo.{{ wildcard(1) }}"), nil, t)
-	checkError(ValidateDestinationSubject("foo.{{wildcard( 1 )}}"), nil, t)
-	checkError(ValidateDestinationSubject("foo.{{partition(2,1)}}"), nil, t)
-	checkError(ValidateDestinationSubject("foo.{{unknown(1)}}"), ErrUnknownMappingDestinationFunction, t)
-	checkError(ValidateDestinationSubject("foo..}"), ErrBadSubjectMappingDestination, t)
-	checkError(ValidateDestinationSubject("foo. bar}"), ErrBadSubjectMappingDestination, t)
+	checkError(ValidateMappingDestination("foo"), nil, t)
+	checkError(ValidateMappingDestination("foo.bar"), nil, t)
+	checkError(ValidateMappingDestination("*"), nil, t)
+	checkError(ValidateMappingDestination(">"), nil, t)
+	checkError(ValidateMappingDestination("foo.*"), nil, t)
+	checkError(ValidateMappingDestination("foo.>"), nil, t)
+	checkError(ValidateMappingDestination("foo.*.>"), nil, t)
+	checkError(ValidateMappingDestination("foo.*.bar"), nil, t)
+	checkError(ValidateMappingDestination("foo.bar.>"), nil, t)
+	checkError(ValidateMappingDestination("foo.{{wildcard(1)}}"), nil, t)
+	checkError(ValidateMappingDestination("foo.{{ wildcard(1) }}"), nil, t)
+	checkError(ValidateMappingDestination("foo.{{wildcard( 1 )}}"), nil, t)
+	checkError(ValidateMappingDestination("foo.{{partition(2,1)}}"), nil, t)
+	checkError(ValidateMappingDestination("foo.{{unknown(1)}}"), ErrUnknownMappingDestinationFunction, t)
+	checkError(ValidateMappingDestination("foo..}"), ErrInvalidSubjectMappingDestination, t)
+	checkError(ValidateMappingDestination("foo. bar}"), ErrInvalidSubjectMappingDestination, t)
 
 }
 

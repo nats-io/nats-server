@@ -1129,37 +1129,28 @@ func isValidLiteralSubject(tokens []string) bool {
 	return true
 }
 
-// ValidateDestinationSubject returns nil error if the subject is a valid subject mapping destination subject
-func ValidateDestinationSubject(subject string) error {
+// ValidateMappingDestination returns nil error if the subject is a valid subject mapping destination subject
+func ValidateMappingDestination(subject string) error {
 	subjectTokens := strings.Split(subject, tsep)
 	sfwc := false
 	for _, t := range subjectTokens {
 		length := len(t)
 		if length == 0 || sfwc {
-			return ErrBadSubjectMappingDestination
+			return &mappingDestinationErr{t, ErrInvalidSubjectMappingDestination}
 		}
 
 		if length > 4 && t[0] == '{' && t[1] == '{' && t[length-2] == '}' && t[length-1] == '}' {
-			if !PartitionMappingFunctionRegEx.MatchString(t) && !WildcardMappingFunctionRegEx.MatchString(t) {
-				return ErrUnknownMappingDestinationFunction
+			if !partitionMappingFunctionRegEx.MatchString(t) && !wildcardMappingFunctionRegEx.MatchString(t) {
+				return &mappingDestinationErr{t, ErrUnknownMappingDestinationFunction}
 			} else {
 				continue
 			}
 		}
 
-		if length > 1 {
-			if strings.ContainsAny(t, "\t\n\f\r ") {
-				return ErrBadSubjectMappingDestination
-			} else {
-				continue
-			}
-		}
-
-		switch t[0] {
-		case fwc:
+		if length == 1 && t[0] == fwc {
 			sfwc = true
-		case ' ', '\t', '\n', '\r', '\f':
-			return ErrBadSubjectMappingDestination
+		} else if strings.ContainsAny(t, "\t\n\f\r ") {
+			return ErrInvalidSubjectMappingDestination
 		}
 	}
 	return nil

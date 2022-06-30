@@ -16,6 +16,7 @@ package server
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -3262,10 +3263,13 @@ func TestSamplingHeader(t *testing.T) {
 func TestSubjectTransforms(t *testing.T) {
 	shouldErr := func(src, dest string) {
 		t.Helper()
-		if _, err := newTransform(src, dest); err != ErrBadSubject && err != ErrBadSubjectMappingDestination && err != ErrorMappingDestinationFunctionWildcardIndexOutOfRange && err != ErrUnknownMappingDestinationFunction && err != ErrorMappingDestinationFunctionNotEnoughArguments && err != ErrorMappingDestinationFunctionInvalidArgument && err != ErrorMappingDestinationFunctionTooManyArguments {
+		//if _, err := newTransform(src, dest); err != ErrBadSubject && err != ErrInvalidSubjectMappingDestination && err != ErrorMappingDestinationFunctionWildcardIndexOutOfRange && err != ErrUnknownMappingDestinationFunction && err != ErrorMappingDestinationFunctionNotEnoughArguments && err != ErrorMappingDestinationFunctionInvalidArgument && err != ErrorMappingDestinationFunctionTooManyArguments {
+		if _, err := newTransform(src, dest); err != ErrBadSubject && !errors.Is(err, ErrInvalidMappingDestination) {
 			t.Fatalf("Did not get an error for src=%q and dest=%q", src, dest)
 		}
 	}
+
+	shouldErr("foo.*.*", "bar.$2") // Must place all pwcs.
 
 	// Must be valid subjects.
 	shouldErr("foo", "")

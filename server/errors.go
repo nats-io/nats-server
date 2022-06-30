@@ -46,9 +46,6 @@ var (
 	// ErrBadSubject represents an error condition for an invalid subject.
 	ErrBadSubject = errors.New("invalid subject")
 
-	// ErrBadSubjectMappingDestination is used to error on a bad transform destination mapping
-	ErrBadSubjectMappingDestination = errors.New("invalid subject mapping destination")
-
 	// ErrBadQualifier is used to error on a bad qualifier for a transform.
 	ErrBadQualifier = errors.New("bad qualifier")
 
@@ -192,21 +189,48 @@ var (
 	// ErrMinimumVersionRequired is returned when a connection is not at the minimum version required.
 	ErrMinimumVersionRequired = errors.New("minimum version required")
 
+	// ErrInvalidSubjectMappingDestination
+	ErrInvalidMappingDestination = errors.New("invalid mapping destination")
+
+	// ErrInvalidSubjectMappingDestination is used to error on a bad transform destination mapping
+	ErrInvalidSubjectMappingDestination = fmt.Errorf("%w: invalid subject", ErrInvalidMappingDestination)
+
+	// ErrMappingDestinationNotUsingAllWildcards is used to error on a transform destination not using all of the token wildcards
+	ErrMappingDestinationNotUsingAllWildcards = fmt.Errorf("%w: not using all of the token wildcard(s)", ErrInvalidMappingDestination)
+
 	// ErrUnknownMappingDestinationFunction is returned when a subject mapping destination contains an unknown mustache-escaped mapping function.
-	ErrUnknownMappingDestinationFunction = errors.New("unknown {{}} function in the subject mapping destination")
+	ErrUnknownMappingDestinationFunction = fmt.Errorf("%w: unknown function", ErrInvalidSubjectMappingDestination)
 
 	// ErrorMappingDestinationFunctionWildcardIndexOutOfRange is returned when the mapping destination function is passed an out of range wildcard index value for one of it's arguments
-	ErrorMappingDestinationFunctionWildcardIndexOutOfRange = errors.New("mapping destination function wildcard index out of range")
+	ErrorMappingDestinationFunctionWildcardIndexOutOfRange = fmt.Errorf("%w: wildcard index out of range", ErrInvalidSubjectMappingDestination)
 
 	// ErrorMappingDestinationFunctionNotEnoughArguments is returned when the mapping destination function is not passed enough arguments
-	ErrorMappingDestinationFunctionNotEnoughArguments = errors.New("not enough arguments passed to the mapping destination function")
+	ErrorMappingDestinationFunctionNotEnoughArguments = fmt.Errorf("%w: not enough arguments passed to the function", ErrInvalidSubjectMappingDestination)
 
 	// ErrorMappingDestinationFunctionInvalidArgument is returned when the mapping destination function is passed and invalid argument
-	ErrorMappingDestinationFunctionInvalidArgument = errors.New("mapping destination function argument is invalid or in the wrong format")
+	ErrorMappingDestinationFunctionInvalidArgument = fmt.Errorf("%w: function argument is invalid or in the wrong format", ErrInvalidSubjectMappingDestination)
 
 	// ErrorMappingDestinationFunctionTooManyArguments is returned when the mapping destination function is passed too many arguments
-	ErrorMappingDestinationFunctionTooManyArguments = errors.New("too many arguments passed to the mapping destination function")
+	ErrorMappingDestinationFunctionTooManyArguments = fmt.Errorf("%w: too many arguments passed to the function", ErrInvalidSubjectMappingDestination)
 )
+
+// mappingDestinationErr is a type of subject mapping destination error
+type mappingDestinationErr struct {
+	token string
+	err   error
+}
+
+func (e *mappingDestinationErr) Error() string {
+	return fmt.Sprintf("%s in %s", e.err, e.token)
+}
+
+func (e *mappingDestinationErr) Is(target error) bool {
+	return target == ErrInvalidMappingDestination
+}
+
+func (e *mappingDestinationErr) Unwrap(err error) error {
+	return ErrInvalidMappingDestination
+}
 
 // configErr is a configuration error.
 type configErr struct {
