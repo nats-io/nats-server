@@ -4194,7 +4194,7 @@ func placeHolderIndex(token string) ([]int, int32, error) {
 		// wildcard(wildcard token index) (equivalent to $)
 		args := getMappingFunctionArgs(wildcardMappingFunctionRegEx, token)
 		if args != nil {
-			if len(args) == 1 && args[0] == "" {
+			if len(args) == 1 && args[0] == _EMPTY_ {
 				return []int{-1}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
 			}
 			if len(args) == 1 {
@@ -4296,7 +4296,8 @@ func newTransform(src, dest string) (*transform, error) {
 				dtpinb = append(dtpinb, -1)
 			}
 		}
-		if nphs < npwcs { // not all wildcards are being used in the destination
+		if nphs < npwcs {
+			// not all wildcards are being used in the destination
 			return nil, &mappingDestinationErr{dest, ErrMappingDestinationNotUsingAllWildcards}
 		}
 	}
