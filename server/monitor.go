@@ -2240,6 +2240,8 @@ func (reason ClosedState) String() string {
 		return "Duplicate Server Name"
 	case MinimumVersionRequired:
 		return "Minimum Version Required"
+	case ClusterNamesIdentical:
+		return "Cluster Names Identical"
 	}
 
 	return "Unknown State"

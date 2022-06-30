@@ -360,6 +360,7 @@ func TestLeafNodeAccountNotFound(t *testing.T) {
 	u, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", ob.LeafNode.Port))
 
 	oa := DefaultOptions()
+	oa.Cluster.Name = "xyz"
 	oa.LeafNode.ReconnectInterval = 10 * time.Millisecond
 	oa.LeafNode.Remotes = []*RemoteLeafOpts{
 		{
@@ -498,6 +499,7 @@ func TestLeafNodeRTT(t *testing.T) {
 
 	lnBURL, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", ob.LeafNode.Port))
 	oa := DefaultOptions()
+	oa.Cluster.Name = "xyz"
 	oa.PingInterval = 15 * time.Millisecond
 	oa.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{lnBURL}}}
 	sa := RunServer(oa)
@@ -562,6 +564,7 @@ func TestLeafNodeRTT(t *testing.T) {
 	// Now check that initial RTT is computed prior to first PingInterval
 	// Get new options to avoid possible race changing the ping interval.
 	ob = DefaultOptions()
+	ob.Cluster.Name = "xyz"
 	ob.PingInterval = time.Minute
 	ob.LeafNode.Host = "127.0.0.1"
 	ob.LeafNode.Port = -1
@@ -857,6 +860,7 @@ func TestLeafNodeLoop(t *testing.T) {
 	sa.SetLogger(l, false, false)
 
 	ob := DefaultOptions()
+	ob.Cluster.Name = "xyz"
 	ob.LeafNode.ReconnectInterval = 10 * time.Millisecond
 	ob.LeafNode.Port = 5678
 	ua, _ := url.Parse("nats://127.0.0.1:1234")
@@ -1262,6 +1266,7 @@ func TestLeafNodePermissions(t *testing.T) {
 
 	u, _ := url.Parse(fmt.Sprintf("nats://%s:%d", lo1.LeafNode.Host, lo1.LeafNode.Port))
 	lo2 := DefaultOptions()
+	lo2.Cluster.Name = "xyz"
 	lo2.LeafNode.ReconnectInterval = 5 * time.Millisecond
 	lo2.LeafNode.connDelay = 100 * time.Millisecond
 	lo2.LeafNode.Remotes = []*RemoteLeafOpts{
@@ -1405,6 +1410,7 @@ func TestLeafNodePermissionsConcurrentAccess(t *testing.T) {
 
 	u, _ := url.Parse(fmt.Sprintf("nats://%s:%d", lo1.LeafNode.Host, lo1.LeafNode.Port))
 	lo2 := DefaultOptions()
+	lo2.Cluster.Name = "xyz"
 	lo2.LeafNode.ReconnectInterval = 5 * time.Millisecond
 	lo2.LeafNode.connDelay = 500 * time.Millisecond
 	lo2.LeafNode.Remotes = []*RemoteLeafOpts{
@@ -1674,6 +1680,7 @@ func TestLeafNodeTmpClients(t *testing.T) {
 	// Check with normal leafnode connection that once connected,
 	// the tmp map is also emptied.
 	bo := DefaultOptions()
+	bo.Cluster.Name = "xyz"
 	bo.LeafNode.ReconnectInterval = 5 * time.Millisecond
 	u, err := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", ao.LeafNode.Port))
 	if err != nil {
@@ -1729,6 +1736,8 @@ func TestLeafNodeTLSVerifyAndMap(t *testing.T) {
 			defer s.Shutdown()
 
 			slo := DefaultOptions()
+			slo.Cluster.Name = "xyz"
+
 			sltlsc := &tls.Config{}
 			if test.provideCert {
 				tc := &TLSConfigOpts{
@@ -1969,7 +1978,7 @@ func TestLeafNodeOriginClusterInfo(t *testing.T) {
 			remotes [ { url: "nats://127.0.0.1:%d" } ]
 		}
 		cluster {
-			name: "abc"
+			name: "xyz"
 			listen: "127.0.0.1:-1"
 		}
 	`, hopts.LeafNode.Port)))
@@ -1987,8 +1996,8 @@ func TestLeafNodeOriginClusterInfo(t *testing.T) {
 	checkLeafNodeConnected(t, s)
 
 	l = grabLeaf()
-	if rc := l.remoteCluster(); rc != "abc" {
-		t.Fatalf("Expected a remote cluster name of \"abc\", got %q", rc)
+	if rc := l.remoteCluster(); rc != "xyz" {
+		t.Fatalf("Expected a remote cluster name of \"xyz\", got %q", rc)
 	}
 	pcid := l.cid
 
@@ -2265,6 +2274,7 @@ func TestLeafNodeNoDuplicateWithinCluster(t *testing.T) {
 
 	oLeaf1 := DefaultOptions()
 	oLeaf1.ServerName = "leaf1"
+	oLeaf1.Cluster.Name = "xyz"
 	oLeaf1.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}}}
 	leaf1 := RunServer(oLeaf1)
 	defer leaf1.Shutdown()
@@ -2273,6 +2283,7 @@ func TestLeafNodeNoDuplicateWithinCluster(t *testing.T) {
 
 	oLeaf2 := DefaultOptions()
 	oLeaf2.ServerName = "leaf2"
+	oLeaf2.Cluster.Name = "xyz"
 	oLeaf2.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}}}
 	oLeaf2.Routes = RoutesFromStr(leaf1ClusterURL)
 	leaf2 := RunServer(oLeaf2)
@@ -2378,11 +2389,13 @@ func TestLeafNodeLMsgSplit(t *testing.T) {
 	remoteLeafs := []*RemoteLeafOpts{{URLs: []*url.URL{u1, u2}}}
 
 	oLeaf1 := DefaultOptions()
+	oLeaf1.Cluster.Name = "xyz"
 	oLeaf1.LeafNode.Remotes = remoteLeafs
 	leaf1 := RunServer(oLeaf1)
 	defer leaf1.Shutdown()
 
 	oLeaf2 := DefaultOptions()
+	oLeaf2.Cluster.Name = "xyz"
 	oLeaf2.LeafNode.Remotes = remoteLeafs
 	oLeaf2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", oLeaf1.Cluster.Port))
 	leaf2 := RunServer(oLeaf2)
@@ -2475,6 +2488,7 @@ func TestLeafNodeRouteParseLSUnsub(t *testing.T) {
 	remoteLeafs := []*RemoteLeafOpts{{URLs: []*url.URL{u2}}}
 
 	oLeaf2 := DefaultOptions()
+	oLeaf2.Cluster.Name = "xyz"
 	oLeaf2.LeafNode.Remotes = remoteLeafs
 	leaf2 := RunServer(oLeaf2)
 	defer leaf2.Shutdown()
@@ -3296,6 +3310,7 @@ func TestLeafNodeStreamImport(t *testing.T) {
 
 	o2 := DefaultOptions()
 	o2.LeafNode.Port = -1
+	o2.Cluster.Name = "xyz"
 
 	accB := NewAccount("B")
 	if err := accB.AddStreamExport(">", nil); err != nil {

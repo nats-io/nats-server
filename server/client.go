@@ -206,6 +206,7 @@ const (
 	DuplicateClientID
 	DuplicateServerName
 	MinimumVersionRequired
+	ClusterNamesIdentical
 )
 
 // Some flags passed to processMsgResults

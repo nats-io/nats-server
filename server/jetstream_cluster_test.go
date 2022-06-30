@@ -11194,7 +11194,7 @@ func TestJetStreamClusterConsumerAndStreamNamesWithPathSeparators(t *testing.T) 
 }
 
 func TestJetStreamClusterFilteredMirrors(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "MSR", 5)
+	c := createJetStreamClusterExplicit(t, "MSR", 3)
 	defer c.shutdown()
 
 	// Client for API requests.
@@ -11250,5 +11250,22 @@ func TestJetStreamClusterFilteredMirrors(t *testing.T) {
 		require_True(t, meta.Sequence.Stream == sseq)
 		sseq += 3
 	}
+}
 
+// Test for making sure we error on same cluster name.
+func TestJetStreamClusterSameClusterLeafNodes(t *testing.T) {
+	c := createJetStreamCluster(t, jsClusterAccountsTempl, "SAME", _EMPTY_, 3, 11233, true)
+	defer c.shutdown()
+
+	// Do by hand since by default we check for connections.
+	tmpl := c.createLeafSolicit(jsClusterTemplWithLeafNode)
+	lc := createJetStreamCluster(t, tmpl, "SAME", "S-", 2, 22111, false)
+	defer lc.shutdown()
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Make sure no leafnodes are connected.
+	for _, s := range lc.servers {
+		checkLeafNodeConnectedCount(t, s, 0)
+	}
 }

@@ -410,16 +410,22 @@ func createJetStreamSuperClusterWithTemplateAndModHook(t *testing.T, tmpl string
 }
 
 func (sc *supercluster) createLeafNodes(clusterName string, numServers int) *cluster {
+	sc.t.Helper()
+
 	// Create our leafnode cluster template first.
 	return sc.createLeafNodesWithDomain(clusterName, numServers, "")
 }
 
 func (sc *supercluster) createLeafNodesWithDomain(clusterName string, numServers int, domain string) *cluster {
+	sc.t.Helper()
+
 	// Create our leafnode cluster template first.
 	return sc.randomCluster().createLeafNodes(clusterName, numServers, domain)
 }
 
 func (sc *supercluster) createSingleLeafNode(extend bool) *Server {
+	sc.t.Helper()
+
 	return sc.randomCluster().createLeafNode(extend)
 }
 
@@ -828,14 +834,17 @@ var jsLeafFrag = `
 `
 
 func (c *cluster) createLeafNodes(clusterName string, numServers int, domain string) *cluster {
+	c.t.Helper()
 	return c.createLeafNodesWithStartPortAndDomain(clusterName, numServers, 22111, domain)
 }
 
 func (c *cluster) createLeafNodesNoJS(clusterName string, numServers int) *cluster {
+	c.t.Helper()
 	return c.createLeafNodesWithTemplateAndStartPort(jsClusterTemplWithLeafNodeNoJS, clusterName, numServers, 21333)
 }
 
 func (c *cluster) createLeafNodesWithStartPortAndDomain(clusterName string, numServers int, portStart int, domain string) *cluster {
+	c.t.Helper()
 	if domain == _EMPTY_ {
 		return c.createLeafNodesWithTemplateAndStartPort(jsClusterTemplWithLeafNode, clusterName, numServers, portStart)
 	}
@@ -844,6 +853,7 @@ func (c *cluster) createLeafNodesWithStartPortAndDomain(clusterName string, numS
 }
 
 func (c *cluster) createLeafNode(extend bool) *Server {
+	c.t.Helper()
 	if extend {
 		return c.createLeafNodeWithTemplate("LNS",
 			strings.ReplaceAll(jsClusterTemplWithSingleLeafNode, "store_dir:", " extension_hint: will_extend, store_dir:"))
@@ -853,6 +863,7 @@ func (c *cluster) createLeafNode(extend bool) *Server {
 }
 
 func (c *cluster) createLeafNodeWithTemplate(name, template string) *Server {
+	c.t.Helper()
 	tmpl := c.createLeafSolicit(template)
 	conf := fmt.Sprintf(tmpl, name, createDir(c.t, JetStreamStoreDir))
 	s, o := RunServerWithConfig(createConfFile(c.t, []byte(conf)))
@@ -863,6 +874,8 @@ func (c *cluster) createLeafNodeWithTemplate(name, template string) *Server {
 
 // Helper to generate the leaf solicit configs.
 func (c *cluster) createLeafSolicit(tmpl string) string {
+	c.t.Helper()
+
 	// Create our leafnode cluster template first.
 	var lns, lnss []string
 	for _, s := range c.servers {
@@ -880,6 +893,8 @@ func (c *cluster) createLeafSolicit(tmpl string) string {
 }
 
 func (c *cluster) createLeafNodesWithTemplateMixedMode(template, clusterName string, numJsServers, numNonServers int, doJSConfig bool) *cluster {
+	c.t.Helper()
+
 	// Create our leafnode cluster template first.
 	tmpl := c.createLeafSolicit(template)
 	pre := clusterName + "-"
@@ -894,6 +909,8 @@ func (c *cluster) createLeafNodesWithTemplateMixedMode(template, clusterName str
 }
 
 func (c *cluster) createLeafNodesWithTemplateAndStartPort(template, clusterName string, numServers int, portStart int) *cluster {
+	c.t.Helper()
+
 	// Create our leafnode cluster template first.
 	tmpl := c.createLeafSolicit(template)
 	pre := clusterName + "-"
@@ -906,6 +923,8 @@ func (c *cluster) createLeafNodesWithTemplateAndStartPort(template, clusterName 
 
 // Will add in the mapping for the account to each server.
 func (c *cluster) addSubjectMapping(account, src, dest string) {
+	c.t.Helper()
+
 	for _, s := range c.servers {
 		if s.ClusterName() != c.name {
 			continue

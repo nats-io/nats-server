@@ -2526,6 +2526,7 @@ func TestClientClampMaxSubsErrReport(t *testing.T) {
 	s1.SetLogger(l, false, false)
 
 	o2 := DefaultOptions()
+	o2.Cluster.Name = "xyz"
 	u, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", o1.LeafNode.Port))
 	o2.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}}}
 	s2 := RunServer(o2)

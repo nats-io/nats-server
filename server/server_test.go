@@ -1828,6 +1828,7 @@ func TestReconnectErrorReports(t *testing.T) {
 
 	// Now try with leaf nodes
 	csOpts.Cluster.Port = 0
+	csOpts.Cluster.Name = _EMPTY_
 	csOpts.LeafNode.Host = "127.0.0.1"
 	csOpts.LeafNode.Port = -1
 
@@ -1835,6 +1836,7 @@ func TestReconnectErrorReports(t *testing.T) {
 	defer cs.Shutdown()
 
 	opts.Cluster.Port = 0
+	opts.Cluster.Name = _EMPTY_
 	opts.Routes = nil
 	u, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", csOpts.LeafNode.Port))
 	opts.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}}}
