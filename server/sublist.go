@@ -1061,10 +1061,11 @@ func IsValidSubject(subject string) bool {
 	sfwc := false
 	tokens := strings.Split(subject, tsep)
 	for _, t := range tokens {
-		if len(t) == 0 || sfwc {
+		length := len(t)
+		if length == 0 || sfwc {
 			return false
 		}
-		if len(t) > 1 {
+		if length > 1 {
 			if strings.ContainsAny(t, "\t\n\f\r ") {
 				return false
 			}
@@ -1126,6 +1127,33 @@ func isValidLiteralSubject(tokens []string) bool {
 		}
 	}
 	return true
+}
+
+// ValidateMappingDestination returns nil error if the subject is a valid subject mapping destination subject
+func ValidateMappingDestination(subject string) error {
+	subjectTokens := strings.Split(subject, tsep)
+	sfwc := false
+	for _, t := range subjectTokens {
+		length := len(t)
+		if length == 0 || sfwc {
+			return &mappingDestinationErr{t, ErrInvalidMappingDestinationSubject}
+		}
+
+		if length > 4 && t[0] == '{' && t[1] == '{' && t[length-2] == '}' && t[length-1] == '}' {
+			if !partitionMappingFunctionRegEx.MatchString(t) && !wildcardMappingFunctionRegEx.MatchString(t) {
+				return &mappingDestinationErr{t, ErrUnknownMappingDestinationFunction}
+			} else {
+				continue
+			}
+		}
+
+		if length == 1 && t[0] == fwc {
+			sfwc = true
+		} else if strings.ContainsAny(t, "\t\n\f\r ") {
+			return ErrInvalidMappingDestinationSubject
+		}
+	}
+	return nil
 }
 
 // Will check tokens and report back if the have any partial or full wildcards.

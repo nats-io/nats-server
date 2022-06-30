@@ -16,6 +16,7 @@ package server
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -3262,10 +3263,12 @@ func TestSamplingHeader(t *testing.T) {
 func TestSubjectTransforms(t *testing.T) {
 	shouldErr := func(src, dest string) {
 		t.Helper()
-		if _, err := newTransform(src, dest); err != ErrBadSubject && err != ErrBadSubjectMappingDestination {
+		if _, err := newTransform(src, dest); err != ErrBadSubject && !errors.Is(err, ErrInvalidMappingDestination) {
 			t.Fatalf("Did not get an error for src=%q and dest=%q", src, dest)
 		}
 	}
+
+	shouldErr("foo.*.*", "bar.$2") // Must place all pwcs.
 
 	// Must be valid subjects.
 	shouldErr("foo", "")
@@ -3275,10 +3278,17 @@ func TestSubjectTransforms(t *testing.T) {
 	// e.g. foo.* -> bar.$1.
 	// Need to have as many pwcs as placements on other side.
 	shouldErr("foo.*", "bar.*")
-	shouldErr("foo.*", "bar.$2")   // Bad pwc token identifier
-	shouldErr("foo.*", "bar.$1.>") // fwcs have to match.
-	shouldErr("foo.>", "bar.baz")  // fwcs have to match.
-	shouldErr("foo.*.*", "bar.$2") // Must place all pwcs.
+	shouldErr("foo.*", "bar.$2")                   // Bad pwc token identifier
+	shouldErr("foo.*", "bar.$1.>")                 // fwcs have to match.
+	shouldErr("foo.>", "bar.baz")                  // fwcs have to match.
+	shouldErr("foo.*.*", "bar.$2")                 // Must place all pwcs.
+	shouldErr("foo.*", "foo.$foo")                 // invalid $ value
+	shouldErr("foo.*", "foo.{{wildcard(2)}}")      // Mapping function being passed an out of range wildcard index
+	shouldErr("foo.*", "foo.{{unimplemented(1)}}") // Mapping trying to use an unknown mapping function
+	shouldErr("foo.*", "foo.{{partition(10)}}")    // Not enough arguments passed to the mapping function
+	shouldErr("foo.*", "foo.{{wildcard(foo)}}")    // Invalid argument passed to the mapping function
+	shouldErr("foo.*", "foo.{{wildcard()}}")       // Not enough arguments passed to the mapping function
+	shouldErr("foo.*", "foo.{{wildcard(1,2)}}")    // Too many arguments passed to the mapping function
 
 	shouldBeOK := func(src, dest string) *transform {
 		t.Helper()

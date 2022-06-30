@@ -617,8 +617,9 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 		if tw > 100 {
 			return fmt.Errorf("total weight needs to be <= 100")
 		}
-		if !IsValidSubject(d.Subject) {
-			return ErrBadSubject
+		err := ValidateMappingDestination(d.Subject)
+		if err != nil {
+			return err
 		}
 		tr, err := newTransform(src, d.Subject)
 		if err != nil {
@@ -4189,33 +4190,41 @@ func placeHolderIndex(token string) ([]int, int32, error) {
 			return []int{tp}, -1, nil
 		}
 
-		// New 'moustache' style mapping
+		// New 'mustache' style mapping
 		// wildcard(wildcard token index) (equivalent to $)
 		args := getMappingFunctionArgs(wildcardMappingFunctionRegEx, token)
 		if args != nil {
+			if len(args) == 1 && args[0] == _EMPTY_ {
+				return []int{-1}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
+			}
 			if len(args) == 1 {
 				tp, err := strconv.Atoi(strings.Trim(args[0], " "))
 				if err != nil {
-					return []int{}, -1, err
+					return []int{}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
 				}
 				return []int{tp}, -1, nil
+			} else {
+				return []int{}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionTooManyArguments}
 			}
 		}
 
 		// partition(number of partitions, token1, token2, ...)
 		args = getMappingFunctionArgs(partitionMappingFunctionRegEx, token)
 		if args != nil {
+			if len(args) < 2 {
+				return []int{-1}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
+			}
 			if len(args) >= 2 {
 				tphnp, err := strconv.Atoi(strings.Trim(args[0], " "))
 				if err != nil {
-					return []int{}, -1, err
+					return []int{}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
 				}
 				var numPositions = len(args[1:])
 				tps := make([]int, numPositions)
 				for ti, t := range args[1:] {
 					i, err := strconv.Atoi(strings.Trim(t, " "))
 					if err != nil {
-						return []int{}, -1, err
+						return []int{}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
 					}
 					tps[ti] = i
 				}
@@ -4268,7 +4277,7 @@ func newTransform(src, dest string) (*transform, error) {
 		for _, token := range dtokens {
 			tp, nb, err := placeHolderIndex(token)
 			if err != nil {
-				return nil, ErrBadSubjectMappingDestination
+				return nil, err
 			}
 			if tp[0] >= 0 {
 				nphs++
@@ -4276,7 +4285,7 @@ func newTransform(src, dest string) (*transform, error) {
 				var stis []int
 				for _, position := range tp {
 					if position > npwcs {
-						return nil, ErrBadSubjectMappingDestination
+						return nil, &mappingDestinationErr{fmt.Sprintf("%s: [%d]", token, position), ErrorMappingDestinationFunctionWildcardIndexOutOfRange}
 					}
 					stis = append(stis, sti[position])
 				}
@@ -4288,7 +4297,8 @@ func newTransform(src, dest string) (*transform, error) {
 			}
 		}
 		if nphs < npwcs {
-			return nil, ErrBadSubjectMappingDestination
+			// not all wildcards are being used in the destination
+			return nil, &mappingDestinationErr{dest, ErrMappingDestinationNotUsingAllWildcards}
 		}
 	}
 
