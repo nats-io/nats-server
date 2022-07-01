@@ -1720,6 +1720,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	stopMigrationMonitoring := func() {
 		if mmt != nil {
 			mmt.Stop()
+			mmt = nil
 			mmtc = nil
 		}
 	}

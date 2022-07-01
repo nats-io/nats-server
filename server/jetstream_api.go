@@ -587,11 +587,15 @@ const JSApiMetaServerStreamInfoType = "io.nats.jetstream.api.v1.meta_server_stre
 // response to this will come as JSApiStreamUpdateResponse/JSApiStreamUpdateResponseType
 type JSApiMetaServerStreamMoveRequest struct {
 	// Server name of the peer to be evacuated.
-	Server string `json:"peer"`
+	Server string `json:"server"`
+	// Cluster the server is in
+	Cluster string `json:"cluster,omitempty"`
+	// Domain the sever is in
+	Domain string `json:"domain,omitempty"`
 	// Account name the stream to move is in
 	Account string `json:"account"`
 	// Name of stream to move
-	Stream string `json:"string"`
+	Stream string `json:"stream"`
 	// Ephemeral placement tags for the move
 	Tags []string `json:"tags,omitempty"`
 }
@@ -2240,8 +2244,12 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 	for _, p := range cc.meta.Peers() {
 		si, ok := s.nodeToInfo.Load(p.ID)
 		if ok && si.(nodeInfo).name == req.Server {
-			srcPeer = p.ID
-			break
+			if req.Cluster == _EMPTY_ || req.Cluster == si.(nodeInfo).cluster {
+				if req.Domain == _EMPTY_ || req.Domain == si.(nodeInfo).domain {
+					srcPeer = p.ID
+					break
+				}
+			}
 		}
 	}
 	js.mu.RUnlock()

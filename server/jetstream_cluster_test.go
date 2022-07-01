@@ -3673,6 +3673,127 @@ func TestJetStreamClusterPeerExclusionTag(t *testing.T) {
 	require_NoError(t, err)
 }
 
+func TestJetStreamClusterDoubleStreamReassignment(t *testing.T) {
+	server := map[string]struct{}{}
+	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "C", 4,
+		func(serverName, clusterName, storeDir, conf string) string {
+			server[serverName] = struct{}{}
+			return fmt.Sprintf("%s\nserver_tags: [cluster:%s, server:%s]", conf, clusterName, serverName)
+		})
+	defer c.shutdown()
+
+	// Client based API
+	srv := c.randomNonLeader()
+	nc, js := jsClientConnect(t, srv)
+	defer nc.Close()
+
+	si, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	toMoveFrom := []string{si.Cluster.Leader, si.Cluster.Replicas[0].Name, si.Cluster.Replicas[1].Name}
+	// determine empty server
+	for _, s := range toMoveFrom {
+		delete(server, s)
+	}
+	firstEmpty := ""
+	for s := range server {
+		firstEmpty = s
+	}
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "DUR", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	for i := 0; i < 100; i++ {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	ncsys, err := nats.Connect(srv.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer ncsys.Close()
+
+	move := func(fromSrv string, toTags ...string) {
+		sEmpty := c.serverByName(fromSrv)
+		jszBefore, err := sEmpty.Jsz(nil)
+		require_NoError(t, err)
+		require_True(t, jszBefore.Streams == 1)
+
+		moveReq, err := json.Marshal(&JSApiMetaServerStreamMoveRequest{
+			Server: fromSrv, Account: "$G", Stream: "TEST", Tags: toTags})
+		require_NoError(t, err)
+		rmsg, err := ncsys.Request(JSApiServerStreamMove, moveReq, 100*time.Second)
+		require_NoError(t, err)
+		var moveResp JSApiStreamUpdateResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &moveResp))
+		require_True(t, moveResp.Error == nil)
+	}
+
+	serverEmpty := func(fromSrv string) error {
+		sEmpty := c.serverByName(fromSrv)
+		jszAfter, err := sEmpty.Jsz(nil)
+		if err != nil {
+			return fmt.Errorf("could not fetch JS info for server: %v", err)
+		}
+		if jszAfter.Streams != 0 {
+			return fmt.Errorf("empty server still has %d streams", jszAfter.Streams)
+		}
+		if jszAfter.Consumers != 0 {
+			return fmt.Errorf("empty server still has %d consumers", jszAfter.Consumers)
+		}
+		if jszAfter.Store != 0 {
+			return fmt.Errorf("empty server still has %d storage", jszAfter.Store)
+		}
+		return nil
+	}
+
+	moveComplete := func() error {
+		si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
+		if err != nil {
+			return fmt.Errorf("could not fetch stream info: %v", err)
+		}
+		if len(si.Cluster.Replicas)+1 != si.Config.Replicas {
+			return fmt.Errorf("not yet downsized replica should be empty has: %d %s", len(si.Cluster.Replicas), si.Cluster.Leader)
+		}
+		if si.Cluster.Leader == _EMPTY_ {
+			return fmt.Errorf("Leader not found")
+		}
+		return nil
+	}
+
+	checkFor(t, 20*time.Second, 1000*time.Millisecond, func() error { return serverEmpty(firstEmpty) })
+	move(toMoveFrom[0], fmt.Sprintf("server:%s", firstEmpty))
+	checkFor(t, 120*time.Second, 100*time.Millisecond, moveComplete)
+	checkFor(t, 20*time.Second, 1000*time.Millisecond, func() error { return serverEmpty(toMoveFrom[0]) })
+	move(toMoveFrom[1], fmt.Sprintf("server:%s", toMoveFrom[0]))
+	checkFor(t, 120*time.Second, 100*time.Millisecond, moveComplete)
+	checkFor(t, 20*time.Second, 1000*time.Millisecond, func() error { return serverEmpty(toMoveFrom[1]) })
+	move(toMoveFrom[2], fmt.Sprintf("server:%s", toMoveFrom[1]))
+	checkFor(t, 120*time.Second, 100*time.Millisecond, moveComplete)
+	checkFor(t, 40*time.Second, 1000*time.Millisecond, func() error { return serverEmpty(toMoveFrom[2]) })
+	move(firstEmpty, fmt.Sprintf("server:%s", toMoveFrom[2]))
+	checkFor(t, 120*time.Second, 100*time.Millisecond, moveComplete)
+	checkFor(t, 40*time.Second, 1000*time.Millisecond, func() error { return serverEmpty(firstEmpty) })
+
+	// now the order is toMove[0-2]
+	// TODO this move typically fails with the downsize not having happened.
+	move(toMoveFrom[0], fmt.Sprintf("server:%s", firstEmpty))
+	checkFor(t, 120*time.Second, 100*time.Millisecond, moveComplete)
+	checkFor(t, 20*time.Second, 1000*time.Millisecond, func() error { return serverEmpty(toMoveFrom[0]) })
+	move(toMoveFrom[1], fmt.Sprintf("server:%s", toMoveFrom[0]))
+	checkFor(t, 120*time.Second, 100*time.Millisecond, moveComplete)
+	checkFor(t, 20*time.Second, 1000*time.Millisecond, func() error { return serverEmpty(toMoveFrom[1]) })
+	move(toMoveFrom[2], fmt.Sprintf("server:%s", toMoveFrom[1]))
+	checkFor(t, 120*time.Second, 100*time.Millisecond, moveComplete)
+	checkFor(t, 20*time.Second, 1000*time.Millisecond, func() error { return serverEmpty(toMoveFrom[2]) })
+	move(firstEmpty, fmt.Sprintf("server:%s", toMoveFrom[2]))
+	checkFor(t, 120*time.Second, 100*time.Millisecond, moveComplete)
+	checkFor(t, 20*time.Second, 1000*time.Millisecond, func() error { return serverEmpty(firstEmpty) })
+
+}
+
 func TestJetStreamClusterPeerEvacuationAndStreamReassignment(t *testing.T) {
 	s := createJetStreamSuperClusterWithTemplateAndModHook(t, jsClusterTempl, 4, 2,
 		func(serverName, clusterName, storeDir, conf string) string {
