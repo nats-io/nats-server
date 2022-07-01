@@ -1709,9 +1709,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	isRecovering := true
 
 	// For migration tracking.
-	var migrating bool
-	var peerGroup peerMigrateType
-
 	var mmt *time.Ticker
 	var mmtc <-chan time.Time
 
@@ -1757,7 +1754,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	if sendSnapshot && mset != nil && n != nil {
 		n.SendSnapshot(mset.stateSnapshot())
 	}
-
 	for {
 		select {
 		case <-s.quitCh:
@@ -1824,15 +1820,14 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 			// We may receive a leader change after the stream assignment which would cancel us
 			// monitoring for this closely. So re-assess our state here as well.
-			migrating, peerGroup = mset.isMigrating(cc.meta.ID())
+			// Or the old leader is no longer part of the set and transferred leadership
+			// for this leader to resume with removal
+			migrating := mset.isMigrating()
 
 			// Check for migrations here. We set the state on the stream assignment update below.
-			if isLeader && migrating {
-				if peerGroup == oldPeerGroup {
-					startMigrationMonitoring()
-				} else {
-					stopMigrationMonitoring()
-				}
+			if isLeader && migrating && mmtc == nil {
+				doSnapshot()
+				startMigrationMonitoring()
 			}
 
 			// Here we are checking if we are not the leader but we have been asked to allow
@@ -1881,15 +1876,14 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		case <-uch:
 			// We get this when we have a new stream assignment caused by an update. We want
 			// to know if we are migrating.
-			if cc == nil || cc.meta == nil {
-				migrating = false
-			} else {
-				migrating, peerGroup = mset.isMigrating(cc.meta.ID())
+			migrating := false
+			if cc != nil && cc.meta != nil {
+				migrating = mset.isMigrating()
 			}
-			// If we are migrating and in the old peer group and we are leader, monitor for the
-			// new peers to be caught up. We could not be leader yet, so we will do same check below
-			// on leadership change.
-			if isLeader && migrating && peerGroup == oldPeerGroup {
+			// If we are migrating, monitor for the new peers to be caught up.
+			if !migrating {
+				stopMigrationMonitoring()
+			} else if isLeader && mmtc == nil {
 				doSnapshot()
 				startMigrationMonitoring()
 			}
@@ -1909,13 +1903,11 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				mset.checkClusterInfo(ci)
 			}
 			// Track the new peers and check the ones that are current.
-			if len(ci.Replicas)+1 != len(rg.Peers) {
-				continue
-			}
 			mset.mu.RLock()
 			replicas := mset.cfg.Replicas
 			mset.mu.RUnlock()
 			if len(rg.Peers) <= replicas {
+				// Migration no longer happening, so not our job anymore
 				stopMigrationMonitoring()
 				continue
 			}
@@ -1924,6 +1916,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			newPeerSet := rg.Peers[toSkip:]
 			currentCount := 0
 			firstPeer := _EMPTY_
+			foundSelf := false
+			selfId := cc.meta.ID()
 			for _, peer := range newPeerSet {
 				foundCurrent := peer == mset.leader
 				if !foundCurrent {
@@ -1942,12 +1936,21 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 						firstPeer = peer
 					}
 				}
+				if peer == selfId {
+					foundSelf = true
+				}
 			}
 			// If all are current we are good, or if we have some offline and we have a quorum.
 			if quorum := replicas/2 + 1; currentCount >= quorum {
-				stopMigrationMonitoring()
-				// Remove the old peers and transfer leadership.
-				time.AfterFunc(2*time.Second, func() { js.removeOldPeers(mset, firstPeer, newPeerSet) })
+				// Remove the old peers or transfer leadership (after which new leader resumes with peer removal).
+				// stopMigrationMonitoring is invoked on actual leadership change or
+				// on the next tick when migration completed.
+				// In case these operations fail, the next tick will retry
+				if !foundSelf {
+					n.StepDown(firstPeer)
+				} else {
+					js.removeOldPeers(mset, selfId, newPeerSet)
+				}
 			}
 		case err := <-restoreDoneCh:
 			// We have completed a restore from snapshot on this server. The stream assignment has
@@ -2048,18 +2051,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	}
 }
 
-// When we are migration denotes if we ourselves are part of the old peer set or the new one.
-// Both types will be running at the same time as we scale up to extend into the new cluster.
-// Once detected we will us our type to dictate our behavior.
-type peerMigrateType int8
-
-const (
-	oldPeerGroup = peerMigrateType(iota)
-	newPeerGroup
-)
-
-// Determine if we are migrating and if so if we are part of the old or new set.
-func (mset *stream) isMigrating(selfPeer string) (bool, peerMigrateType) {
+// Determine if we are migrating
+func (mset *stream) isMigrating() bool {
 	mset.mu.RLock()
 	js, sa := mset.js, mset.sa
 	mset.mu.RUnlock()
@@ -2070,23 +2063,13 @@ func (mset *stream) isMigrating(selfPeer string) (bool, peerMigrateType) {
 	// During migration we will always be R>1, even when we start R1.
 	// So if we do not have a group or node we no we are not migrating.
 	if sa == nil || sa.Group == nil || sa.Group.node == nil {
-		return false, oldPeerGroup
+		return false
 	}
 	// The sign of migration is if our group peer count != configured replica count.
 	if sa.Config.Replicas == len(sa.Group.Peers) {
-		return false, oldPeerGroup
+		return false
 	}
-	// So we believe we are migrating here, need to determine if we are the old set or new set.
-	for i, peer := range sa.Group.Peers {
-		if peer == selfPeer {
-			if i >= sa.Config.Replicas {
-				return true, newPeerGroup
-			}
-			break
-		}
-	}
-
-	return true, oldPeerGroup
+	return true
 }
 
 // resetClusteredState is called when a clustered stream had a sequence mismatch and needs to be reset.
@@ -2332,8 +2315,17 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 			}
 			js.mu.RUnlock()
 			// We only need to do processing if this is us.
-			if peer := string(e.Data); peer == ourID {
-				mset.stop(true, false)
+			if peer := string(e.Data); peer == ourID && mset != nil {
+				// Double check here with the registered stream assignment.
+				shouldRemove := true
+				if sa := mset.streamAssignment(); sa != nil && sa.Group != nil {
+					js.mu.RLock()
+					shouldRemove = !sa.Group.isMember(ourID)
+					js.mu.RUnlock()
+				}
+				if shouldRemove {
+					mset.stop(true, false)
+				}
 			}
 			return nil
 		}
@@ -3701,7 +3693,17 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 			}
 			js.mu.RUnlock()
 			if peer := string(e.Data); peer == ourID {
-				o.stopWithFlags(true, false, false, false)
+				shouldRemove := true
+				if mset := o.getStream(); mset != nil {
+					if sa := mset.streamAssignment(); sa != nil && sa.Group != nil {
+						js.mu.RLock()
+						shouldRemove = !sa.Group.isMember(ourID)
+						js.mu.RUnlock()
+					}
+				}
+				if shouldRemove {
+					o.stopWithFlags(true, false, false, false)
+				}
 			}
 			return nil
 		} else if e.Type == EntryAddPeer {
@@ -4251,7 +4253,7 @@ func (cc *jetStreamCluster) remapStreamAssignment(sa *streamAssignment, removePe
 }
 
 // selectPeerGroup will select a group of peers to start a raft group.
-func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamConfig, existing []string) []string {
+func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamConfig, existing []string) (re []string) {
 	if cluster == _EMPTY_ || cfg == nil {
 		return nil
 	}
@@ -4287,6 +4289,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		ep = make(map[string]struct{})
 		for _, p := range existing {
 			ep[p] = struct{}{}
+			//TODO preload unique tag prefix
 		}
 	}
 

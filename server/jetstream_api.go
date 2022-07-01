@@ -566,28 +566,15 @@ type JSApiMetaServerRemoveResponse struct {
 
 const JSApiMetaServerRemoveResponseType = "io.nats.jetstream.api.v1.meta_server_remove_response"
 
-/*
-// JSApiMetaServerStreamInfoRequest will provide which streams are located on a particular server
-type JSApiMetaServerStreamInfoRequest struct {
-	// Server name of the peer to be evacuated.
-	Server string `json:"peer"`
-}
-
-// JSApiMetaServerStreamInfoResponse is the response to a peer evacuation request in the meta group.
-type JSApiMetaServerStreamInfoResponse struct {
-	ApiResponse
-	Success bool                      `json:"success,omitempty"`
-	Content map[string][]StreamConfig `json:"content,omitempty"`
-}
-
-const JSApiMetaServerStreamInfoType = "io.nats.jetstream.api.v1.meta_server_stream_info"
-*/
-
 // JSApiMetaServerStreamMoveRequest will move a stream on a server to another
 // response to this will come as JSApiStreamUpdateResponse/JSApiStreamUpdateResponseType
 type JSApiMetaServerStreamMoveRequest struct {
 	// Server name of the peer to be evacuated.
-	Server string `json:"peer"`
+	Server string `json:"server"`
+	// Cluster the server is in
+	Cluster string `json:"cluster,omitempty"`
+	// Domain the sever is in
+	Domain string `json:"domain,omitempty"`
 	// Account name the stream to move is in
 	Account string `json:"account"`
 	// Name of stream to move
@@ -2243,17 +2230,15 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 	for _, p := range cc.meta.Peers() {
 		si, ok := s.nodeToInfo.Load(p.ID)
 		if ok && si.(nodeInfo).name == req.Server {
-			srcPeer = p.ID
-			break
+			if req.Cluster == _EMPTY_ || req.Cluster == si.(nodeInfo).cluster {
+				if req.Domain == _EMPTY_ || req.Domain == si.(nodeInfo).domain {
+					srcPeer = p.ID
+					break
+				}
+			}
 		}
 	}
 	js.mu.RUnlock()
-
-	if srcPeer == _EMPTY_ {
-		resp.Error = NewJSClusterServerNotMemberError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
 
 	targetAcc, ok := s.accounts.Load(req.Account)
 	if !ok {
@@ -2279,19 +2264,34 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 	}
 	js.mu.Unlock()
 
-	// make sure src peer is first. Removal will drop peers from the left
-	for i := 0; i < len(currPeers); i++ {
-		if currPeers[i] == srcPeer {
-			currPeers[i] = currPeers[0]
-			currPeers[0] = srcPeer
-			break
-		}
-	}
-
 	if !streamFound {
 		resp.Error = NewJSStreamNotFoundError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
+	}
+
+	// if server was picked, make sure src peer exists and move it to first position.
+	// removal will drop peers from the left
+	if req.Server != _EMPTY_ {
+		if srcPeer == _EMPTY_ {
+			resp.Error = NewJSClusterServerNotMemberError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		peerFound := false
+		for i := 0; i < len(currPeers); i++ {
+			if currPeers[i] == srcPeer {
+				copy(currPeers[1:], currPeers[:i])
+				currPeers[0] = srcPeer
+				peerFound = true
+				break
+			}
+		}
+		if !peerFound {
+			resp.Error = NewJSClusterPeerNotMemberError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
 	}
 
 	// make sure client is scoped to requested account

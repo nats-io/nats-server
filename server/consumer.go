@@ -3794,6 +3794,13 @@ func (mset *stream) deleteConsumer(o *consumer) error {
 	return o.delete()
 }
 
+func (o *consumer) getStream() *stream {
+	o.mu.RLock()
+	mset := o.mset
+	o.mu.RUnlock()
+	return mset
+}
+
 func (o *consumer) streamName() string {
 	o.mu.RLock()
 	mset := o.mset
@@ -3887,6 +3894,8 @@ func (o *consumer) delete() error {
 
 func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	o.mu.Lock()
+	js := o.js
+
 	if o.closed {
 		o.mu.Unlock()
 		return nil
@@ -3940,6 +3949,12 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	n := o.node
 	qgroup := o.cfg.DeliverGroup
 	o.ackMsgs.unregister()
+
+	// For cleaning up the node assignment.
+	var ca *consumerAssignment
+	if dflag {
+		ca = o.ca
+	}
 	o.mu.Unlock()
 
 	if c != nil {
@@ -3991,6 +4006,14 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 		} else {
 			n.Stop()
 		}
+	}
+
+	if ca != nil {
+		js.mu.Lock()
+		if ca.Group != nil {
+			ca.Group.node = nil
+		}
+		js.mu.Unlock()
 	}
 
 	// Clean up our store.

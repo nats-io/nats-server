@@ -4087,9 +4087,11 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	}
 
 	// Cluster cleanup
+	var sa *streamAssignment
 	if n := mset.node; n != nil {
 		if deleteFlag {
 			n.Delete()
+			sa = mset.sa
 		} else {
 			n.Stop()
 		}
@@ -4136,6 +4138,16 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	store := mset.store
 	// Clustered cleanup.
 	mset.mu.Unlock()
+
+	// Check if the stream assignment has the group node specified.
+	// We need this cleared for if the stream gets reassigned here.
+	if sa != nil {
+		js.mu.Lock()
+		if sa.Group != nil {
+			sa.Group.node = nil
+		}
+		js.mu.Unlock()
+	}
 
 	c.closeConnection(ClientClosed)
 
