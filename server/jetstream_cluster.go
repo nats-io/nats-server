@@ -1685,6 +1685,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		return
 	}
 
+	selfID := cc.meta.ID()
+
 	var lastSnap []byte
 
 	// Should only to be called from leader.
@@ -1706,12 +1708,12 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 	// For migration tracking.
 	var migrating bool
-	var peerGroup peerMigrateType
 	var mmt *time.Ticker
 	var mmtc <-chan time.Time
 
 	startMigrationMonitoring := func() {
 		if mmt == nil {
+			fmt.Printf("%s startMigrationMonitoring leader %t\n", selfID, isLeader)
 			mmt = time.NewTicker(1 * time.Second)
 			mmtc = mmt.C
 		}
@@ -1719,6 +1721,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 	stopMigrationMonitoring := func() {
 		if mmt != nil {
+			fmt.Printf("%s stopMigrationMonitoring leader %t\n", selfID, isLeader)
 			mmt.Stop()
 			mmt = nil
 			mmtc = nil
@@ -1797,30 +1800,30 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 			// We may receive a leader change after the stream assignment which would cancel us
 			// monitoring for this closely. So re-assess our state here as well.
-			migrating, peerGroup = mset.isMigrating(cc.meta.ID())
+			migrating = mset.isMigrating()
 
 			// Check for migrations here. We set the state on the stream assignment update below.
-			if isLeader && migrating {
-				if peerGroup == oldPeerGroup {
-					startMigrationMonitoring()
-				} else {
-					stopMigrationMonitoring()
-				}
+			if isLeader && migrating && mmtc == nil {
+				doSnapshot()
+				startMigrationMonitoring()
 			}
 		case <-t.C:
 			doSnapshot()
 		case <-uch:
+			fmt.Printf("%s update channel isleader %t\n", selfID, isLeader)
 			// We get this when we have a new stream assignment caused by an update. We want
 			// to know if we are migrating.
 			if cc == nil || cc.meta == nil {
 				migrating = false
 			} else {
-				migrating, peerGroup = mset.isMigrating(cc.meta.ID())
+				migrating = mset.isMigrating()
 			}
 			// If we are migrating and in the old peer group and we are leader, monitor for the
 			// new peers to be caught up. We could not be leader yet, so we will do same check below
 			// on leadership change.
-			if isLeader && migrating && peerGroup == oldPeerGroup {
+			if !migrating {
+				stopMigrationMonitoring()
+			} else if isLeader && mmtc == nil {
 				doSnapshot()
 				startMigrationMonitoring()
 			}
@@ -1850,16 +1853,21 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				stopMigrationMonitoring()
 				continue
 			}
-			//
 			toSkip := len(rg.Peers) - replicas
 			newPeerSet := rg.Peers[toSkip:]
+			fmt.Printf("peers now %+v peers later %+v", rg.Peers, newPeerSet)
 			currentCount := 0
 			firstPeer := _EMPTY_
+			foundSelf := false
 			for _, peer := range newPeerSet {
 				foundCurrent := peer == mset.leader
 				if !foundCurrent {
 					for _, p := range ci.Replicas {
 						if peer == string(getHash(p.Name)) {
+							// TODO it'd be better if p *PeerInfo carries the meta data version
+							// Then we can compare that against the version of the meta data record
+							// of the stream. if meta_ver_stream <= met_ver_peer then we are current
+							// Ideally communicate and look up the version of the stream as well.
 							if p.Current {
 								foundCurrent = true
 							}
@@ -1873,12 +1881,20 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 						firstPeer = peer
 					}
 				}
+				if peer == selfID {
+					foundSelf = true
+				}
 			}
 			// If all are current we are good, or if we have some offline and we have a quorum.
-			if quorum := replicas/2 + 1; currentCount >= quorum {
-				stopMigrationMonitoring()
+			if foundSelf {
+				if replicas == currentCount {
+					js.removeOldPeers(mset, firstPeer, newPeerSet)
+				}
+			} else if quorum := replicas/2 + 1; currentCount >= quorum {
+				fmt.Printf("quorum %d replicas %d currentCount %d\n", quorum, replicas, currentCount)
+				//stopMigrationMonitoring()
 				// Remove the old peers and transfer leadership.
-				time.AfterFunc(2*time.Second, func() { js.removeOldPeers(mset, firstPeer, newPeerSet) })
+				js.removeOldPeers(mset, firstPeer, newPeerSet)
 			}
 		case err := <-restoreDoneCh:
 			// We have completed a restore from snapshot on this server. The stream assignment has
@@ -1979,18 +1995,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	}
 }
 
-// When we are migration denotes if we ourselves are part of the old peer set or the new one.
-// Both types will be running at the same time as we scale up to extend into the new cluster.
-// Once detected we will us our type to dictate our behavior.
-type peerMigrateType int8
-
-const (
-	oldPeerGroup = peerMigrateType(iota)
-	newPeerGroup
-)
-
 // Determine if we are migrating and if so if we are part of the old or new set.
-func (mset *stream) isMigrating(selfPeer string) (bool, peerMigrateType) {
+func (mset *stream) isMigrating() bool {
 	mset.mu.RLock()
 	js, sa := mset.js, mset.sa
 	mset.mu.RUnlock()
@@ -2001,23 +2007,13 @@ func (mset *stream) isMigrating(selfPeer string) (bool, peerMigrateType) {
 	// During migration we will always be R>1, even when we start R1.
 	// So if we do not have a group or node we no we are not migrating.
 	if sa == nil || sa.Group == nil || sa.Group.node == nil {
-		return false, oldPeerGroup
+		return false
 	}
 	// The sign of migration is if our group peer count != configured replica count.
 	if sa.Config.Replicas == len(sa.Group.Peers) {
-		return false, oldPeerGroup
+		return false
 	}
-	// So we believe we are migrating here, need to determine if we are the old set or new set.
-	for i, peer := range sa.Group.Peers {
-		if peer == selfPeer {
-			if i >= sa.Config.Replicas {
-				return true, newPeerGroup
-			}
-			break
-		}
-	}
-
-	return true, oldPeerGroup
+	return true
 }
 
 // resetClusteredState is called when a clustered stream had a sequence mismatch and needs to be reset.

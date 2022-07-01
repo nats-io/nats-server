@@ -3716,6 +3716,7 @@ func TestJetStreamClusterDoubleStreamReassignment(t *testing.T) {
 	defer ncsys.Close()
 
 	move := func(fromSrv string, toTags ...string) {
+		fmt.Printf("\n\nmove %s -> %+v\n", fromSrv, toTags)
 		sEmpty := c.serverByName(fromSrv)
 		jszBefore, err := sEmpty.Jsz(nil)
 		require_NoError(t, err)
@@ -3776,7 +3777,7 @@ func TestJetStreamClusterDoubleStreamReassignment(t *testing.T) {
 	move(firstEmpty, fmt.Sprintf("server:%s", toMoveFrom[2]))
 	checkFor(t, 120*time.Second, 100*time.Millisecond, moveComplete)
 	checkFor(t, 40*time.Second, 1000*time.Millisecond, func() error { return serverEmpty(firstEmpty) })
-
+	fmt.Printf("----------\n")
 	// now the order is toMove[0-2]
 	// TODO this move typically fails with the downsize not having happened.
 	move(toMoveFrom[0], fmt.Sprintf("server:%s", firstEmpty))
