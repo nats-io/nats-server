@@ -2483,3 +2483,103 @@ func TestJetStreamSuperClusterStateOnRestartPreventsConsumerRecovery(t *testing.
 		t.Fatalf("Consumer was not properly restarted")
 	}
 }
+
+// We allow mirrors to opt-in to direct get in a distributed queue group.
+func TestJetStreamSuperClusterStreamDirectGetMirrorQueueGroup(t *testing.T) {
+	sc := createJetStreamTaggedSuperCluster(t)
+	defer sc.shutdown()
+
+	nc, js := jsClientConnect(t, sc.randomServer())
+	defer nc.Close()
+
+	// C1
+	// Do by hand for now.
+	cfg := &StreamConfig{
+		Name:        "SOURCE",
+		Subjects:    []string{"kv.>"},
+		MaxMsgsPer:  1,
+		Placement:   &Placement{Tags: []string{"cloud:aws", "country:us"}},
+		AllowDirect: true,
+		Replicas:    3,
+		Storage:     MemoryStorage,
+	}
+	addStream(t, nc, cfg)
+
+	num := 100
+	for i := 0; i < num; i++ {
+		js.PublishAsync(fmt.Sprintf("kv.%d", i), []byte("VAL"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// C2
+	cfg = &StreamConfig{
+		Name:         "M1",
+		Mirror:       &StreamSource{Name: "SOURCE"},
+		Placement:    &Placement{Tags: []string{"cloud:gcp", "country:uk"}},
+		MirrorDirect: true,
+		Storage:      MemoryStorage,
+	}
+	addStream(t, nc, cfg)
+
+	// C3 (clustered)
+	cfg = &StreamConfig{
+		Name:         "M2",
+		Mirror:       &StreamSource{Name: "SOURCE"},
+		Replicas:     3,
+		Placement:    &Placement{Tags: []string{"country:jp"}},
+		MirrorDirect: true,
+		Storage:      MemoryStorage,
+	}
+	addStream(t, nc, cfg)
+
+	// Since last one was an R3, check and wait for subscription.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		sl := sc.clusterForName("C3").streamLeader("$G", "M2")
+		if mset, err := sl.GlobalAccount().lookupStream("M2"); err == nil {
+			mset.mu.RLock()
+			ok := mset.mirror.dsub != nil
+			mset.mu.RUnlock()
+			if ok {
+				return nil
+			}
+		}
+		return fmt.Errorf("No dsub yet")
+	})
+
+	// Always do a direct get to the source, but check that we are getting answers from the mirrors when connected to their cluster.
+	getSubj := fmt.Sprintf(JSDirectMsgGetT, "SOURCE")
+	req := []byte(`{"last_by_subj":"kv.22"}`)
+	getMsg := func(c *nats.Conn) *nats.Msg {
+		m, err := c.Request(getSubj, req, time.Second)
+		require_NoError(t, err)
+		require_True(t, string(m.Data) == "VAL")
+		require_True(t, m.Header.Get(JSSequence) == "23")
+		require_True(t, m.Header.Get(JSSubject) == "kv.22")
+		return m
+	}
+
+	// C1 -> SOURCE
+	nc, _ = jsClientConnect(t, sc.clusterForName("C1").randomServer())
+	defer nc.Close()
+
+	m := getMsg(nc)
+	require_True(t, m.Header.Get(JSStream) == "SOURCE")
+
+	// C2 -> M1
+	nc, _ = jsClientConnect(t, sc.clusterForName("C2").randomServer())
+	defer nc.Close()
+
+	m = getMsg(nc)
+	require_True(t, m.Header.Get(JSStream) == "M1")
+
+	// C3 -> M2
+	nc, _ = jsClientConnect(t, sc.clusterForName("C3").randomServer())
+	defer nc.Close()
+
+	m = getMsg(nc)
+	require_True(t, m.Header.Get(JSStream) == "M2")
+}

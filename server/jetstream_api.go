@@ -1303,6 +1303,13 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 		return
 	}
 
+	// If we are told to do mirror direct but are not mirroring, error.
+	if cfg.MirrorDirect && cfg.Mirror == nil {
+		resp.Error = NewJSStreamInvalidConfigError(fmt.Errorf("stream has no mirror but does have mirror direct"))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
 	// Hand off to cluster for processing.
 	if s.JetStreamIsClustered() {
 		s.jsClusteredStreamRequest(ci, acc, subject, reply, rmsg, &cfg)
@@ -1797,11 +1804,6 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 	}
 	if clusterWideConsCount > 0 {
 		resp.StreamInfo.State.Consumers = clusterWideConsCount
-	}
-	if mset.isMirror() {
-		resp.StreamInfo.Mirror = mset.mirrorInfo()
-	} else if mset.hasSources() {
-		resp.StreamInfo.Sources = mset.sourcesInfo()
 	}
 
 	// Check if they have asked for subject details.
