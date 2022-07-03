@@ -2536,7 +2536,16 @@ func TestJetStreamSuperClusterStreamDirectGetMirrorQueueGroup(t *testing.T) {
 	}
 	addStream(t, nc, cfg)
 
-	// Since last one was an R3, check and wait for subscription.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("M2")
+		require_NoError(t, err)
+		if si.State.Msgs != uint64(num) {
+			return fmt.Errorf("Expected %d msgs, got state: %d", num, si.State.Msgs)
+		}
+		return nil
+	})
+
+	// Since last one was an R3, check and wait for the direct subscription.
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
 		sl := sc.clusterForName("C3").streamLeader("$G", "M2")
 		if mset, err := sl.GlobalAccount().lookupStream("M2"); err == nil {

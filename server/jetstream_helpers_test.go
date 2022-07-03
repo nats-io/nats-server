@@ -17,15 +17,18 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
+	"net"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"golang.org/x/time/rate"
 )
 
 // Support functions
@@ -1365,6 +1368,24 @@ func addStream(t *testing.T, nc *nats.Conn, cfg *StreamConfig) *StreamInfo {
 	return resp.StreamInfo
 }
 
+func updateStream(t *testing.T, nc *nats.Conn, cfg *StreamConfig) *StreamInfo {
+	t.Helper()
+	req, err := json.Marshal(cfg)
+	require_NoError(t, err)
+	rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamUpdateT, cfg.Name), req, time.Second)
+	require_NoError(t, err)
+	var resp JSApiStreamCreateResponse
+	err = json.Unmarshal(rmsg.Data, &resp)
+	require_NoError(t, err)
+	if resp.Type != JSApiStreamUpdateResponseType {
+		t.Fatalf("Invalid response type %s expected %s", resp.Type, JSApiStreamUpdateResponseType)
+	}
+	if resp.Error != nil {
+		t.Fatalf("Unexpected error: %+v", resp.Error)
+	}
+	return resp.StreamInfo
+}
+
 // setInActiveDeleteThreshold sets the delete threshold for how long to wait
 // before deleting an inactive consumer.
 func (o *consumer) setInActiveDeleteThreshold(dthresh time.Duration) error {
@@ -1379,4 +1400,80 @@ func (o *consumer) setInActiveDeleteThreshold(dthresh time.Duration) error {
 		o.dtmr = time.AfterFunc(o.dthresh, func() { o.deleteNotActive() })
 	}
 	return nil
+}
+
+// Net Proxy - For introducing RTT and BW constraints.
+type netProxy struct {
+	listener net.Listener
+	conns    []net.Conn
+	url      string
+}
+
+func newNetProxy(rtt time.Duration, upRate, downRate int, serverURL string) *netProxy {
+	hp := net.JoinHostPort("127.0.0.1", "0")
+	l, e := net.Listen("tcp", hp)
+	if e != nil {
+		panic(fmt.Sprintf("Error listening on port: %s, %q", hp, e))
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	proxy := &netProxy{listener: l}
+	go func() {
+		client, err := l.Accept()
+		if err != nil {
+			return
+		}
+		server, err := net.DialTimeout("tcp", serverURL[7:], time.Second)
+		if err != nil {
+			panic("Can't connect to NATS server")
+		}
+		proxy.conns = append(proxy.conns, client, server)
+		go proxy.loop(rtt, upRate, client, server)
+		go proxy.loop(rtt, downRate, server, client)
+	}()
+	proxy.url = fmt.Sprintf("nats://127.0.0.1:%d", port)
+	return proxy
+}
+
+func (np *netProxy) clientURL() string {
+	return np.url
+}
+
+func (np *netProxy) loop(rtt time.Duration, tbw int, r, w net.Conn) {
+	delay := rtt / 2
+	const rbl = 8192
+	var buf [rbl]byte
+	ctx := context.Background()
+
+	rl := rate.NewLimiter(rate.Limit(tbw), rbl)
+
+	for fr := true; ; {
+		sr := time.Now()
+		n, err := r.Read(buf[:])
+		if err != nil {
+			return
+		}
+		// RTT delays
+		if fr || time.Since(sr) > 2*time.Millisecond {
+			fr = false
+			if delay > 0 {
+				time.Sleep(delay)
+			}
+		}
+		if err := rl.WaitN(ctx, n); err != nil {
+			return
+		}
+		if _, err = w.Write(buf[:n]); err != nil {
+			return
+		}
+	}
+}
+
+func (np *netProxy) stop() {
+	if np.listener != nil {
+		np.listener.Close()
+		np.listener = nil
+		for _, c := range np.conns {
+			c.Close()
+		}
+	}
 }

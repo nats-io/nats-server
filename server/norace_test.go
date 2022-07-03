@@ -20,7 +20,6 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
-	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -48,7 +47,6 @@ import (
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
-	"golang.org/x/time/rate"
 )
 
 // IMPORTANT: Tests in this file are not executed when running with the -race flag.
@@ -5171,6 +5169,7 @@ func TestNoRaceJetStreamClusterInterestPullConsumerStreamLimitBug(t *testing.T) 
 					return
 				}
 			case <-qch:
+				pt.Stop()
 				return
 			}
 		}
@@ -5230,78 +5229,107 @@ func TestNoRaceJetStreamClusterInterestPullConsumerStreamLimitBug(t *testing.T) 
 	}
 }
 
-// Net Proxy - For introducing RTT and BW constraints.
-type netProxy struct {
-	listener net.Listener
-	conns    []net.Conn
-	url      string
-}
+// Test that all peers have the direct access subs that participate in a queue group,
+// but only when they are current and ready. So we will start with R1, add in messages
+// then scale up while also still adding messages.
+func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
 
-func newNetProxy(rtt time.Duration, upRate, downRate int, serverURL string) *netProxy {
-	hp := net.JoinHostPort("127.0.0.1", "0")
-	l, e := net.Listen("tcp", hp)
-	if e != nil {
-		panic(fmt.Sprintf("Error listening on port: %s, %q", hp, e))
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Start as R1
+	cfg := &StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"kv.>"},
+		MaxMsgsPer:  10,
+		AllowDirect: true,
+		Replicas:    1,
+		Storage:     FileStorage,
 	}
-	port := l.Addr().(*net.TCPAddr).Port
-	proxy := &netProxy{listener: l}
-	go func() {
-		client, err := l.Accept()
-		if err != nil {
-			return
-		}
-		server, err := net.DialTimeout("tcp", serverURL[7:], time.Second)
-		if err != nil {
-			panic("Can't connect to NATS server")
-		}
-		proxy.conns = append(proxy.conns, client, server)
-		go proxy.loop(rtt, upRate, client, server)
-		go proxy.loop(rtt, downRate, server, client)
-	}()
-	proxy.url = fmt.Sprintf("nats://127.0.0.1:%d", port)
-	return proxy
-}
+	addStream(t, nc, cfg)
 
-func (np *netProxy) clientURL() string {
-	return np.url
-}
+	// Seed with enough messages to start then we will scale up while still adding more messages.
+	num, msg := 1000, bytes.Repeat([]byte("XYZ"), 64)
+	for i := 0; i < num; i++ {
+		js.PublishAsync(fmt.Sprintf("kv.%d", i), msg)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
 
-func (np *netProxy) loop(rtt time.Duration, tbw int, r, w net.Conn) {
-	delay := rtt / 2
-	const rbl = 8192
-	var buf [rbl]byte
-	ctx := context.Background()
+	getSubj := fmt.Sprintf(JSDirectMsgGetT, "TEST")
+	getMsg := func(key string) *nats.Msg {
+		req := []byte(fmt.Sprintf(`{"last_by_subj":%q}`, key))
+		m, err := nc.Request(getSubj, req, time.Second)
+		require_NoError(t, err)
+		require_True(t, m.Header.Get(JSSubject) == key)
+		return m
+	}
 
-	rl := rate.NewLimiter(rate.Limit(tbw), rbl)
+	// Just make sure we can succeed here.
+	getMsg("kv.22")
 
-	for fr := true; ; {
-		sr := time.Now()
-		n, err := r.Read(buf[:])
-		if err != nil {
-			return
-		}
-		// RTT delays
-		if fr || time.Since(sr) > 2*time.Millisecond {
-			fr = false
-			if delay > 0 {
-				time.Sleep(delay)
+	// Now crank up a go routine to continue sending more messages.
+	qch := make(chan bool)
+	var wg sync.WaitGroup
+
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			nc, _ := jsClientConnect(t, c.randomServer())
+			js, _ := nc.JetStream(nats.MaxWait(500 * time.Millisecond))
+			defer nc.Close()
+			for {
+				pt := time.NewTimer(time.Duration(time.Millisecond))
+				select {
+				case <-pt.C:
+					js.Publish(fmt.Sprintf("kv.%d", rand.Intn(1000)), msg)
+				case <-qch:
+					pt.Stop()
+					return
+				}
 			}
-		}
-		if err := rl.WaitN(ctx, n); err != nil {
-			return
-		}
-		if _, err = w.Write(buf[:n]); err != nil {
-			return
-		}
+		}()
 	}
-}
 
-func (np *netProxy) stop() {
-	if np.listener != nil {
-		np.listener.Close()
-		np.listener = nil
-		for _, c := range np.conns {
-			c.Close()
-		}
+	time.Sleep(100 * time.Millisecond)
+
+	// Now let's scale up to an R3.
+	cfg.Replicas = 3
+	updateStream(t, nc, cfg)
+	c.waitOnStreamLeader("$G", "TEST")
+
+	// For each non-leader check that the direct sub fires up.
+	// We just test all, the leader will already have a directSub.
+	for _, s := range c.servers {
+		mset, err := s.GlobalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
+			mset.mu.RLock()
+			ok := mset.directSub != nil
+			mset.mu.RUnlock()
+			if ok {
+				return nil
+			}
+			return fmt.Errorf("No directSub yet")
+		})
+	}
+
+	close(qch)
+	wg.Wait()
+
+	// Just make sure we can succeed here.
+	getMsg("kv.22")
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	if si.State.Msgs == uint64(num) {
+		t.Fatalf("Expected to see messages increase, got %d", si.State.Msgs)
 	}
 }
