@@ -3167,8 +3167,10 @@ func TestMQTTLeafnodeWithoutJSToClusterWithJSNoSharedSysAcc(t *testing.T) {
 			for _, s := range cluster {
 				if s.JetStreamIsLeader() {
 					// Need to wait for usage updates now to propagate to meta leader.
-					time.Sleep(250 * time.Millisecond)
-					return nil
+					if len(s.JetStreamClusterPeers()) == len(cluster) {
+						time.Sleep(100 * time.Millisecond)
+						return nil
+					}
 				}
 			}
 			return fmt.Errorf("no leader yet")

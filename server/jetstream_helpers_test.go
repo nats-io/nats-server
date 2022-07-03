@@ -1257,11 +1257,13 @@ func (c *cluster) waitOnClusterReadyWithNumPeers(numPeersExpected int) {
 	}
 
 	if leader == nil {
+		c.shutdown()
 		c.t.Fatalf("Failed to elect a meta-leader")
 	}
 
 	peersSeen := len(leader.JetStreamClusterPeers())
 	c.shutdown()
+
 	if leader == nil {
 		c.t.Fatalf("Expected a cluster leader and fully formed cluster, no leader")
 	} else {
