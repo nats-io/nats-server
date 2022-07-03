@@ -5309,7 +5309,7 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 	for _, s := range c.servers {
 		mset, err := s.GlobalAccount().lookupStream("TEST")
 		require_NoError(t, err)
-		checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
+		checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
 			mset.mu.RLock()
 			ok := mset.directSub != nil
 			mset.mu.RUnlock()
