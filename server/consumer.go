@@ -2467,12 +2467,19 @@ func (wq *waitQueue) peek() *waitingRequest {
 }
 
 // pop will return the next request and move the read cursor.
+// This will now place a request that still has pending items at the ends of the list.
 func (wq *waitQueue) pop() *waitingRequest {
 	wr := wq.peek()
 	if wr != nil {
 		wr.d++
 		wr.n--
-		if wr.n <= 0 {
+
+		// Always remove current now on a pop, and move to end if still valid.
+		// If we were the only one don't need to remove since this can be a no-op.
+		if wr.n > 0 && wq.n > 1 {
+			wq.removeCurrent()
+			wq.add(wr)
+		} else if wr.n <= 0 {
 			wq.removeCurrent()
 		}
 	}
