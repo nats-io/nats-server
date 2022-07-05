@@ -72,8 +72,11 @@ type StreamConfig struct {
 	// AllowRollup allows messages to be placed into the system and purge
 	// all older messages using a special msg header.
 	AllowRollup bool `json:"allow_rollup_hdrs"`
-	// Allow higher peformance, direct access to get individual messages.
+
+	// Allow higher performance, direct access to get individual messages. E.g. KeyValue
 	AllowDirect bool `json:"allow_direct,omitempty"`
+	// Allow higher performance and unified direct access for mirrors as well.
+	MirrorDirect bool `json:"mirror_direct,omitempty"`
 }
 
 // RePublish is for republishing messages once committed to a stream.
@@ -231,6 +234,9 @@ type stream struct {
 	lqsent   time.Time
 	catchups map[string]uint64
 	uch      chan struct{}
+
+	// Direct get subscription.
+	directSub *subscription
 }
 
 type sourceInfo struct {
@@ -238,6 +244,7 @@ type sourceInfo struct {
 	iname string
 	cname string
 	sub   *subscription
+	dsub  *subscription
 	msgs  *ipQueue // of *inMsg
 	sseq  uint64
 	dseq  uint64
@@ -250,6 +257,12 @@ type sourceInfo struct {
 	sip   bool // setup in progress
 	wg    sync.WaitGroup
 }
+
+// For mirrors and direct get
+const (
+	dgetGroup          = "_zz_"
+	dgetCaughtUpThresh = 10
+)
 
 // Headers for published messages.
 const (
@@ -1512,12 +1525,6 @@ func (mset *stream) isMirror() bool {
 	return mset.cfg.Mirror != nil
 }
 
-func (mset *stream) hasSources() bool {
-	mset.mu.RLock()
-	defer mset.mu.RUnlock()
-	return len(mset.sources) > 0
-}
-
 func (mset *stream) sourcesInfo() (sis []*StreamSourceInfo) {
 	mset.mu.RLock()
 	defer mset.mu.RUnlock()
@@ -1838,6 +1845,15 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 		mset.mirror.lag = 0
 	} else {
 		mset.mirror.lag = pending - 1
+	}
+
+	// Check if we allow mirror direct here. If so check they we have mostly caught up.
+	// The reason we do not require 0 is if the source is active we may always be slightly behind.
+	if mset.cfg.MirrorDirect && mset.mirror.dsub == nil && pending < dgetCaughtUpThresh {
+		if err := mset.subscribeToMirrorDirect(); err != nil {
+			// Disable since we had problems above.
+			mset.cfg.MirrorDirect = false
+		}
 	}
 
 	js, stype := mset.js, mset.cfg.Storage
@@ -2218,6 +2234,11 @@ func (mset *stream) cancelSourceInfo(si *sourceInfo) {
 	if si.sub != nil {
 		mset.unsubscribe(si.sub)
 		si.sub = nil
+	}
+	// In case we had a mirror direct subscription.
+	if si.dsub != nil {
+		mset.unsubscribe(si.dsub)
+		si.dsub = nil
 	}
 	mset.removeInternalConsumer(si)
 	if si.qch != nil {
@@ -2843,14 +2864,44 @@ func (mset *stream) subscribeToStream() error {
 			return err
 		}
 	}
+	// Check for direct get access.
 	if mset.cfg.AllowDirect {
-		dsubj := fmt.Sprintf(JSDirectMsgGetT, mset.cfg.Name)
-		if _, err := mset.subscribeInternal(dsubj, mset.processDirectGetRequest); err != nil {
+		if err := mset.subscribeToDirect(); err != nil {
 			return err
 		}
 	}
 
 	mset.active = true
+	return nil
+}
+
+// Lock should be held.
+func (mset *stream) subscribeToDirect() error {
+	if mset.directSub != nil {
+		return nil
+	}
+	dsubj := fmt.Sprintf(JSDirectMsgGetT, mset.cfg.Name)
+	// We will make this listen on a queue group by default, which can allow mirrors to participate on opt-in basis.
+	if sub, err := mset.queueSubscribeInternal(dsubj, dgetGroup, mset.processDirectGetRequest); err != nil {
+		return err
+	} else {
+		mset.directSub = sub
+	}
+	return nil
+}
+
+// Lock should be held.
+func (mset *stream) subscribeToMirrorDirect() error {
+	if mset.mirror == nil || mset.mirror.dsub != nil {
+		return nil
+	}
+	dsubj := fmt.Sprintf(JSDirectMsgGetT, mset.mirror.name)
+	// We will make this listen on a queue group by default, which can allow mirrors to participate on opt-in basis.
+	if sub, err := mset.queueSubscribeInternal(dsubj, dgetGroup, mset.processDirectGetRequest); err != nil {
+		return err
+	} else {
+		mset.mirror.dsub = sub
+	}
 	return nil
 }
 
@@ -2881,12 +2932,15 @@ func (mset *stream) unsubscribeToStream() error {
 		mset.mirror = nil
 	}
 
-	if len(mset.cfg.Sources) > 0 {
+	if len(mset.sources) > 0 {
 		mset.stopSourceConsumers()
 	}
 
 	// In case we had a direct get subscription.
-	mset.unsubscribeInternal(fmt.Sprintf(JSDirectMsgGetT, mset.cfg.Name))
+	if mset.directSub != nil {
+		mset.unsubscribe(mset.directSub)
+		mset.directSub = nil
+	}
 
 	mset.active = false
 	return nil
@@ -2913,6 +2967,22 @@ func (mset *stream) subscribeInternalUnlocked(subject string, cb msgHandler) (*s
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 	return mset.subscribeInternal(subject, cb)
+}
+
+// Lock should be held.
+func (mset *stream) queueSubscribeInternal(subject, group string, cb msgHandler) (*subscription, error) {
+	c := mset.client
+	if c == nil {
+		return nil, fmt.Errorf("invalid stream")
+	}
+	if cb == nil {
+		return nil, fmt.Errorf("undefined message handler")
+	}
+
+	mset.sid++
+
+	// Now create the subscription
+	return c.processSub([]byte(subject), []byte(group), []byte(strconv.Itoa(mset.sid)), cb, false)
 }
 
 // This will unsubscribe us from the exact subject given.

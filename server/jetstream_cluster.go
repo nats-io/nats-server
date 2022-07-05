@@ -1707,6 +1707,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// For migration tracking.
 	var migrating bool
 	var peerGroup peerMigrateType
+
 	var mmt *time.Ticker
 	var mmtc <-chan time.Time
 
@@ -1720,10 +1721,30 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	stopMigrationMonitoring := func() {
 		if mmt != nil {
 			mmt.Stop()
-			mmtc = nil
+			mmt, mmtc = nil, nil
 		}
 	}
 	defer stopMigrationMonitoring()
+
+	// This is to optionally track when we are ready as a non-leader for direct access participation.
+	// Either direct or if we are a direct mirror, or both.
+	var dat *time.Ticker
+	var datc <-chan time.Time
+
+	startDirectAccessMonitoring := func() {
+		if dat == nil {
+			dat = time.NewTicker(1 * time.Second)
+			datc = dat.C
+		}
+	}
+
+	stopDirectMonitoring := func() {
+		if dat != nil {
+			dat.Stop()
+			dat, datc = nil, nil
+		}
+	}
+	defer stopDirectMonitoring()
 
 	// This is triggered during a scale up from 1 to clustered mode. We need the new followers to catchup,
 	// similar to how we trigger the catchup mechanism post a backup/restore. It's ok to do here and preferred
@@ -1787,6 +1808,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				} else if n.NeedSnapshot() {
 					doSnapshot()
 				}
+				// Always cancel if this was running.
+				stopDirectMonitoring()
+
 			} else if n.GroupLeader() != noLeader {
 				js.setStreamAssignmentRecovering(sa)
 			}
@@ -1806,6 +1830,48 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					stopMigrationMonitoring()
 				}
 			}
+
+			// Here we are checking if we are not the leader but we have been asked to allow
+			// direct access. We now allow non-leaders to participate in the queue group.
+			if !isLeader && mset != nil {
+				mset.mu.Lock()
+				// Check direct gets first.
+				if mset.cfg.AllowDirect {
+					if mset.directSub == nil && mset.isCurrent() {
+						mset.subscribeToDirect()
+					} else {
+						startDirectAccessMonitoring()
+					}
+				}
+				// Now check for mirror directs as well.
+				if mset.cfg.MirrorDirect {
+					if mset.mirror != nil && mset.mirror.dsub == nil && mset.isCurrent() {
+						mset.subscribeToMirrorDirect()
+					} else {
+						startDirectAccessMonitoring()
+					}
+				}
+				mset.mu.Unlock()
+			}
+
+		case <-datc:
+			mset.mu.Lock()
+			ad, md, current := mset.cfg.AllowDirect, mset.cfg.MirrorDirect, mset.isCurrent()
+			if !current {
+				mset.mu.Unlock()
+				continue
+			}
+			// We are current, cancel monitoring and create the direct subs as needed.
+			if ad {
+				mset.subscribeToDirect()
+			}
+			if md {
+				mset.subscribeToMirrorDirect()
+			}
+			mset.mu.Unlock()
+			// Stop monitoring.
+			stopDirectMonitoring()
+
 		case <-t.C:
 			doSnapshot()
 		case <-uch:
@@ -5982,6 +6048,15 @@ func (mset *stream) isCatchingUp() bool {
 	mset.mu.RLock()
 	defer mset.mu.RUnlock()
 	return mset.catchup
+}
+
+// Determine if a non-leader is current.
+// Lock should be held.
+func (mset *stream) isCurrent() bool {
+	if mset.node == nil {
+		return true
+	}
+	return mset.node.Current() && !mset.catchup
 }
 
 // Maximum requests for the whole server that can be in flight.

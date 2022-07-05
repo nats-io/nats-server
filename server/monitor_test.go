@@ -3984,17 +3984,10 @@ func TestMonitorAuthorizedUsers(t *testing.T) {
 // Helper function to check that a JS cluster is formed
 func checkForJSClusterUp(t *testing.T, servers ...*Server) {
 	t.Helper()
-	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
-		for _, s := range servers {
-			if !s.JetStreamEnabled() {
-				return fmt.Errorf("jetstream not enabled")
-			}
-			if !s.JetStreamIsCurrent() {
-				return fmt.Errorf("jetstream not current")
-			}
-		}
-		return nil
-	})
+	// We will use the other JetStream helpers here.
+	c := &cluster{t: t, servers: servers}
+	c.checkClusterFormed()
+	c.waitOnClusterReady()
 }
 
 func TestMonitorJszNonJszServer(t *testing.T) {
