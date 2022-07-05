@@ -495,8 +495,13 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 			if url != rURL.Host {
 				ipStr = fmt.Sprintf(" (%s)", url)
 			}
-			s.Debugf("Trying to connect as leafnode to remote server on %q%s", rURL.Host, ipStr)
-			conn, err = natsDialTimeout("tcp", url, dialTimeout)
+			if s.isLeafNodeEnabled() {
+				s.Debugf("Trying to connect as leafnode to remote server on %q%s", rURL.Host, ipStr)
+				conn, err = natsDialTimeout("tcp", url, dialTimeout)
+			} else {
+				s.Debugf("Will not attempt to connect to remote server on %q%s, leafnodes currently disabled", rURL.Host, ipStr)
+				err = ErrLeafNodeDisabled
+			}
 		}
 		if err != nil {
 			attempts++
@@ -509,6 +514,8 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 			case <-s.quitCh:
 				return
 			case <-time.After(reconnectDelay):
+				// Check if we should migrate any JetStream assets while this remote is down.
+				s.checkJetStreamMigrate(remote)
 				continue
 			}
 		}
@@ -522,6 +529,50 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 		s.createLeafNode(conn, rURL, remote, nil)
 		return
 	}
+}
+
+// Check to see if we should migrate any assets from this account.
+func (s *Server) checkJetStreamMigrate(remote *leafNodeCfg) {
+	s.mu.RLock()
+	accName, shouldMigrate := remote.LocalAccount, remote.JetStreamClusterMigrate
+	s.mu.RUnlock()
+
+	if !shouldMigrate {
+		return
+	}
+
+	acc, err := s.LookupAccount(accName)
+	if err != nil {
+		s.Debugf("Error looking up account [%s] checking for JetStream migration on a leafnode", accName)
+		return
+	}
+
+	// Walk all streams looking for any clustered stream, skip otherwise.
+	// If we are the leader force stepdown.
+	for _, mset := range acc.streams() {
+		node := mset.raftNode()
+		if node == nil {
+			// Not R>1
+			continue
+		}
+		// Collect any consumers
+		for _, o := range mset.getConsumers() {
+			if n := o.raftNode(); n != nil && n.Leader() {
+				n.StepDown()
+			}
+		}
+		// Stepdown if this stream was leader.
+		if node.Leader() {
+			node.StepDown()
+		}
+	}
+}
+
+// Helper for checking.
+func (s *Server) isLeafNodeEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.leafNodeEnabled
 }
 
 // Save off the tlsName for when we use TLS and mix hostnames and IPs. IPs usually

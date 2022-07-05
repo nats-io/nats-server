@@ -182,6 +182,12 @@ type RemoteLeafOpts struct {
 	}
 
 	tlsConfigOpts *TLSConfigOpts
+
+	// If we are clustered and our local account has JetStream, if apps are accessing
+	// a stream or consumer leader through this LN and it gets dropped, the apps will
+	// not be able to work. This tells the system to migrate the leaders away from this server.
+	// This only changes leader for R>1 assets.
+	JetStreamClusterMigrate bool `json:"jetstream_cluster_migrate,omitempty"`
 }
 
 type JSLimitOpts struct {
@@ -2252,6 +2258,8 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 				remote.Websocket.Compression = v.(bool)
 			case "ws_no_masking", "websocket_no_masking":
 				remote.Websocket.NoMasking = v.(bool)
+			case "jetstream_cluster_migrate", "js_cluster_migrate":
+				remote.JetStreamClusterMigrate = true
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{

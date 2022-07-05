@@ -79,6 +79,9 @@ var (
 	// and it has the same cluster name as the hub cluster.
 	ErrLeafNodeHasSameClusterName = errors.New("remote leafnode has same cluster name")
 
+	// ErrLeafNodeDisabled is when we disable leafnodes.
+	ErrLeafNodeDisabled = errors.New("leafnodes disabled")
+
 	// ErrConnectedToWrongPort represents an error condition when a connection is attempted
 	// to the wrong listen port (for instance a LeafNode to a client port, etc...)
 	ErrConnectedToWrongPort = errors.New("attempted to connect to wrong port")
