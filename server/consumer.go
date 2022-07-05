@@ -3052,6 +3052,10 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 
 		// On error either wait or return.
 		if err != nil || pmsg == nil {
+			// If we are stalled here in pull mode, invalidate all requests that have had deliveries.
+			if err == errMaxAckPending && o.isPullMode() {
+				o.processWaiting(true)
+			}
 			if err == ErrStoreMsgNotFound || err == ErrStoreEOF || err == errMaxAckPending || err == errPartialCache {
 				goto waitForMsgs
 			} else {

@@ -18093,6 +18093,40 @@ func TestJetStreamConsumerPullConsumerFIFO(t *testing.T) {
 	}
 }
 
+// Make sure that when we reach an ack limit that we follow one shot semantics.
+func TestJetStreamConsumerPullConsumerOneShotOnMaxAckLimit(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "T"})
+	require_NoError(t, err)
+
+	for i := 0; i < 10; i++ {
+		js.Publish("T", []byte("OK"))
+	}
+
+	sub, err := js.PullSubscribe("T", "d", nats.MaxAckPending(5))
+	require_NoError(t, err)
+
+	start := time.Now()
+	msgs, err := sub.Fetch(10, nats.MaxWait(2*time.Second))
+	require_NoError(t, err)
+
+	if elapsed := time.Since(start); elapsed >= 2*time.Second {
+		t.Fatalf("Took too long, not one shot behavior: %v", elapsed)
+	}
+
+	if len(msgs) != 5 {
+		t.Fatalf("Expected 5 msgs, got %d", len(msgs))
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Simple JetStream Benchmarks
 ///////////////////////////////////////////////////////////////////////////
