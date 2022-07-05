@@ -5929,7 +5929,7 @@ func TestMQTTConsumerReplicasExceedsParentStream(t *testing.T) {
 	}
 
 	o := cl.opts[0]
-	mc, r := testMQTTConnect(t, &mqttConnInfo{clientID: "test", cleanSess: false}, o.MQTT.Host, o.MQTT.Port)
+	mc, r := testMQTTConnectRetry(t, &mqttConnInfo{clientID: "test", cleanSess: false}, o.MQTT.Host, o.MQTT.Port, 2)
 	defer mc.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{mqttSubAckFailure})
