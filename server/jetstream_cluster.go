@@ -1638,8 +1638,12 @@ func (mset *stream) removeNode() {
 
 // Monitor our stream node for this stream.
 func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnapshot bool) {
-	s, cc, n := js.server(), js.cluster, sa.Group.node
+	s, cc := js.server(), js.cluster
 	defer s.grWG.Done()
+
+	js.mu.RLock()
+	n := sa.Group.node
+	js.mu.RUnlock()
 
 	if n == nil {
 		s.Warnf("No RAFT group for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
