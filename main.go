@@ -115,15 +115,17 @@ func main() {
 	// Configure the logger based on the flags
 	s.ConfigureLogger()
 
-	// Adjust MAXPROCS if running under linux/cgroups quotas.
-	// We ignore undo.
-	if _, err := maxprocs.Set(); err != nil {
-		server.PrintAndDie(fmt.Sprintf("failed to set GOMAXPROCS: %v", err))
-	}
-
 	// Start things up. Block here until done.
 	if err := server.Run(s); err != nil {
 		server.PrintAndDie(err.Error())
 	}
+
+	// Adjust MAXPROCS if running under linux/cgroups quotas.
+	undo, err := maxprocs.Set(maxprocs.Logger(s.Debugf))
+	if err != nil {
+		server.PrintAndDie(fmt.Sprintf("failed to set GOMAXPROCS: %v", err))
+	}
+	defer undo()
+
 	s.WaitForShutdown()
 }
