@@ -5285,7 +5285,7 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 			js, _ := nc.JetStream(nats.MaxWait(500 * time.Millisecond))
 			defer nc.Close()
 			for {
-				pt := time.NewTimer(time.Duration(time.Millisecond))
+				pt := time.NewTimer(time.Duration(50 * time.Millisecond))
 				select {
 				case <-pt.C:
 					js.Publish(fmt.Sprintf("kv.%d", rand.Intn(1000)), msg)
@@ -5302,7 +5302,21 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 	// Now let's scale up to an R3.
 	cfg.Replicas = 3
 	updateStream(t, nc, cfg)
-	c.waitOnStreamLeader("$G", "TEST")
+
+	// Wait for the stream to register the new replicas and have a leader.
+	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		if err != nil {
+			return err
+		}
+		if si.Cluster == nil {
+			return fmt.Errorf("No cluster yet")
+		}
+		if si.Cluster.Leader == _EMPTY_ || len(si.Cluster.Replicas) != 2 {
+			return fmt.Errorf("Cluster not ready yet")
+		}
+		return nil
+	})
 
 	// For each non-leader check that the direct sub fires up.
 	// We just test all, the leader will already have a directSub.
