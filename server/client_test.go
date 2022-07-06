@@ -2567,3 +2567,19 @@ func TestClientClampMaxSubsErrReport(t *testing.T) {
 	natsSubSync(t, nc, "bat")
 	check()
 }
+
+func TestClientDenySysGroupSub(t *testing.T) {
+	s := RunServer(DefaultOptions())
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(s.ClientURL(), nats.ErrorHandler(func(*nats.Conn, *nats.Subscription, error) {}))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	_, err = nc.QueueSubscribeSync("foo", sysGroup)
+	require_NoError(t, err)
+	nc.Flush()
+	err = nc.LastError()
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "Permissions Violation")
+}
