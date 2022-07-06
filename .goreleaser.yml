@@ -52,6 +52,10 @@ nfpms:
     formats:
     - deb
     - rpm
+    contents:
+    - src: /usr/bin/nats-server
+      dst: /usr/local/bin/nats-server
+      type: "symlink"
 
 archives:
   - name_template: '{{.ProjectName}}-{{.Tag}}-{{.Os}}-{{.Arch}}{{if .Arm}}{{.Arm}}{{end}}'
