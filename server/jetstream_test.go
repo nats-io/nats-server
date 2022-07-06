@@ -17869,6 +17869,69 @@ func TestJetStreamDirectMsgGet(t *testing.T) {
 	require_True(t, m.Header.Get("Description") == "Message Not Found")
 }
 
+// This allows support for a get next given a sequence as a starting.
+// This allows these to be chained together if needed for sparse streams.
+func TestJetStreamDirectMsgGetNext(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Do by hand for now.
+	cfg := &StreamConfig{
+		Name:        "DSMG",
+		Storage:     MemoryStorage,
+		Subjects:    []string{"foo", "bar", "baz"},
+		AllowDirect: true,
+	}
+	addStream(t, nc, cfg)
+
+	sendStreamMsg(t, nc, "foo", "foo")
+	for i := 0; i < 10; i++ {
+		sendStreamMsg(t, nc, "bar", "bar")
+	}
+	for i := 0; i < 10; i++ {
+		sendStreamMsg(t, nc, "baz", "baz")
+	}
+	sendStreamMsg(t, nc, "foo", "foo")
+
+	getSubj := fmt.Sprintf(JSDirectMsgGetT, "DSMG")
+	getMsg := func(seq uint64, subj string) *nats.Msg {
+		req := []byte(fmt.Sprintf(`{"seq": %d, "next_by_subj": %q}`, seq, subj))
+		m, err := nc.Request(getSubj, req, time.Second)
+		require_NoError(t, err)
+		return m
+	}
+
+	m := getMsg(0, "foo")
+	require_True(t, m.Header.Get(JSSequence) == "1")
+	require_True(t, m.Header.Get(JSSubject) == "foo")
+
+	m = getMsg(1, "foo")
+	require_True(t, m.Header.Get(JSSequence) == "1")
+	require_True(t, m.Header.Get(JSSubject) == "foo")
+
+	m = getMsg(2, "foo")
+	require_True(t, m.Header.Get(JSSequence) == "22")
+	require_True(t, m.Header.Get(JSSubject) == "foo")
+
+	m = getMsg(2, "bar")
+	require_True(t, m.Header.Get(JSSequence) == "2")
+	require_True(t, m.Header.Get(JSSubject) == "bar")
+
+	m = getMsg(5, "baz")
+	require_True(t, m.Header.Get(JSSequence) == "12")
+	require_True(t, m.Header.Get(JSSubject) == "baz")
+
+	m = getMsg(14, "baz")
+	require_True(t, m.Header.Get(JSSequence) == "14")
+	require_True(t, m.Header.Get(JSSubject) == "baz")
+}
+
 func TestJetStreamConsumerInactiveThreshold(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	if config := s.JetStreamConfig(); config != nil {
