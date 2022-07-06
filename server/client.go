@@ -361,6 +361,7 @@ type readCacheFlag uint16
 
 const (
 	hasMappings readCacheFlag = 1 << iota // For account subject mappings.
+	sysGroup                  = "_sys_"
 )
 
 // Used in readloop to cache hot subject lookups and group statistics.
@@ -2459,7 +2460,7 @@ func (c *client) processSubEx(subject, queue, bsid []byte, cb msgHandler, noForw
 		// allow = ["foo", "foo v1"]  -> can subscribe to 'foo' but can only queue subscribe to 'foo v1'
 		//
 		if sub.queue != nil {
-			if !c.canSubscribe(string(sub.subject), string(sub.queue)) {
+			if !c.canSubscribe(string(sub.subject), string(sub.queue)) || string(sub.queue) == sysGroup {
 				c.mu.Unlock()
 				c.subPermissionViolation(sub)
 				return nil, ErrSubscribePermissionViolation

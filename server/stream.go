@@ -260,7 +260,7 @@ type sourceInfo struct {
 
 // For mirrors and direct get
 const (
-	dgetGroup          = "_zz_"
+	dgetGroup          = sysGroup
 	dgetCaughtUpThresh = 10
 )
 
