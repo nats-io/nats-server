@@ -630,7 +630,7 @@ func (mset *stream) setLeader(isLeader bool) error {
 		// Stop responding to sync requests.
 		mset.stopClusterSubs()
 		// Unsubscribe from direct stream.
-		mset.unsubscribeToStream()
+		mset.unsubscribeToStream(false)
 		// Clear catchup state
 		mset.clearAllCatchupPeers()
 		// Check on any fixup state and optionally clear.
@@ -2923,7 +2923,7 @@ func (mset *stream) removeInternalConsumer(si *sourceInfo) {
 
 // Will unsubscribe from the stream.
 // Lock should be held.
-func (mset *stream) unsubscribeToStream() error {
+func (mset *stream) unsubscribeToStream(stopping bool) error {
 	for _, subject := range mset.cfg.Subjects {
 		mset.unsubscribeInternal(subject)
 	}
@@ -2937,7 +2937,7 @@ func (mset *stream) unsubscribeToStream() error {
 	}
 
 	// In case we had a direct get subscription.
-	if mset.directSub != nil {
+	if mset.directSub != nil && stopping {
 		mset.unsubscribe(mset.directSub)
 		mset.directSub = nil
 	}
@@ -3260,13 +3260,18 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 		return
 	}
 	// Check if nothing set.
-	if req.Seq == 0 && req.LastFor == _EMPTY_ {
+	if req.Seq == 0 && req.LastFor == _EMPTY_ && req.NextFor == _EMPTY_ {
 		hdr := []byte("NATS/1.0 408 Empty Request\r\n\r\n")
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		return
 	}
 	// Check that we do not have both options set.
 	if req.Seq > 0 && req.LastFor != _EMPTY_ {
+		hdr := []byte("NATS/1.0 408 Bad Request\r\n\r\n")
+		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		return
+	}
+	if req.LastFor != _EMPTY_ && req.NextFor != _EMPTY_ {
 		hdr := []byte("NATS/1.0 408 Bad Request\r\n\r\n")
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		return
@@ -3299,8 +3304,10 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 	store, name := mset.store, mset.cfg.Name
 	mset.mu.RUnlock()
 
-	if req.Seq > 0 {
+	if req.Seq > 0 && req.NextFor == _EMPTY_ {
 		sm, err = store.LoadMsg(req.Seq, &svp)
+	} else if req.NextFor != _EMPTY_ {
+		sm, _, err = store.LoadNextMsg(req.NextFor, subjectHasWildcard(req.NextFor), req.Seq, &svp)
 	} else {
 		sm, err = store.LoadLastMsg(req.LastFor, &svp)
 	}
@@ -4071,7 +4078,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	// Stop responding to sync requests.
 	mset.stopClusterSubs()
 	// Unsubscribe from direct stream.
-	mset.unsubscribeToStream()
+	mset.unsubscribeToStream(true)
 
 	// Our info sub if we spun it up.
 	if mset.infoSub != nil {
