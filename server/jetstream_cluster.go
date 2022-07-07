@@ -4283,19 +4283,6 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 	// peers is a randomized list
 	s, peers := cc.s, cc.meta.Peers()
 
-	// Map existing.
-	var ep map[string]struct{}
-	if le := len(existing); le > 0 {
-		if le >= r {
-			return existing
-		}
-		ep = make(map[string]struct{})
-		for _, p := range existing {
-			ep[p] = struct{}{}
-			//TODO preload unique tag prefix
-		}
-	}
-
 	uniqueTagPrefix := s.getOpts().JetStreamUniqueTag
 	if uniqueTagPrefix != _EMPTY_ {
 		for _, tag := range tags {
@@ -4307,6 +4294,44 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		}
 	}
 	var uniqueTags = make(map[string]struct{})
+
+	checkUniqueTag := func(ni *nodeInfo) bool {
+		// default requires the unique prefix to be present
+		isUnique := false
+		for _, t := range ni.tags {
+			if strings.HasPrefix(t, uniqueTagPrefix) {
+				if _, ok := uniqueTags[t]; !ok {
+					uniqueTags[t] = struct{}{}
+					isUnique = true
+				}
+				break
+			}
+		}
+		return isUnique
+	}
+
+	// Map existing.
+	var ep map[string]struct{}
+	if le := len(existing); le > 0 {
+		if le >= r {
+			return existing
+		}
+		ep = make(map[string]struct{})
+		for _, p := range existing {
+			ep[p] = struct{}{}
+			if uniqueTagPrefix == _EMPTY_ {
+				continue
+			}
+			si, ok := s.nodeToInfo.Load(p)
+			if !ok || si == nil {
+				continue
+			}
+			ni := si.(nodeInfo)
+			// collect unique tags, but do not require them as this node is already part of the peerset
+			checkUniqueTag(&ni)
+		}
+	}
+
 	maxHaAssets := s.getOpts().JetStreamLimits.MaxHAAssets
 
 	// Shuffle them up.
@@ -4384,21 +4409,8 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 			continue
 		}
 
-		if uniqueTagPrefix != _EMPTY_ {
-			// default requires the unique prefix to be present
-			isUnique := false
-			for _, t := range ni.tags {
-				if strings.HasPrefix(t, uniqueTagPrefix) {
-					if _, ok := uniqueTags[t]; !ok {
-						uniqueTags[t] = struct{}{}
-						isUnique = true
-					}
-					break
-				}
-			}
-			if !isUnique {
-				continue
-			}
+		if uniqueTagPrefix != _EMPTY_ && !checkUniqueTag(&ni) {
+			continue
 		}
 		// Add to our list of potential nodes.
 		nodes = append(nodes, wn{p.ID, available, ha})
