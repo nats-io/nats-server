@@ -5973,7 +5973,7 @@ func TestMQTTSessionNotDeletedOnDeleteConsumerError(t *testing.T) {
 	nc, js := jsClientConnect(t, s1)
 	defer nc.Close()
 
-	mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	mc, r := testMQTTConnectRetry(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
 	defer mc.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 
