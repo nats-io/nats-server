@@ -358,7 +358,7 @@ func TestJetStreamJWTMove(t *testing.T) {
 		require_NoError(t, err)
 		require_Equal(t, ci.Cluster.Name, "C1")
 
-		checkFor(t, 15*time.Second, 50*time.Millisecond, func() error {
+		checkFor(t, 20*time.Second, 250*time.Millisecond, func() error {
 			if si, err := js.StreamInfo("MOVE-ME"); err != nil {
 				return err
 			} else if si.Cluster.Name != "C2" {
@@ -371,6 +371,14 @@ func TestJetStreamJWTMove(t *testing.T) {
 				return fmt.Errorf("Expected %d replicas, got %d", replicas-1, len(si.Cluster.Replicas))
 			} else if si.State.Msgs != 1 {
 				return fmt.Errorf("expected one message")
+			}
+			// Now make sure consumer has leader etc..
+			if ci, err := js.ConsumerInfo("MOVE-ME", "dur"); err != nil {
+				return err
+			} else if ci.Cluster.Name != "C2" {
+				return fmt.Errorf("Wrong cluster: %q", ci.Cluster.Name)
+			} else if ci.Cluster.Leader == _EMPTY_ {
+				return fmt.Errorf("No leader yet")
 			}
 			return nil
 		})
