@@ -3187,12 +3187,12 @@ func getExpectedStream(hdr []byte) string {
 }
 
 // Fast lookup of expected stream.
-func getExpectedLastSeq(hdr []byte) uint64 {
+func getExpectedLastSeq(hdr []byte) (uint64, bool) {
 	bseq := getHeader(JSExpectedLastSeq, hdr)
 	if len(bseq) == 0 {
-		return 0
+		return 0, false
 	}
-	return uint64(parseInt64(bseq))
+	return uint64(parseInt64(bseq)), true
 }
 
 // Fast lookup of rollups.
@@ -3472,7 +3472,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			return errors.New("expected stream does not match")
 		}
 		// Expected last sequence.
-		if seq := getExpectedLastSeq(hdr); seq > 0 && seq != mset.lseq {
+		if seq, exists := getExpectedLastSeq(hdr); exists && seq != mset.lseq {
 			mlseq := mset.lseq
 			mset.clfs++
 			mset.mu.Unlock()
