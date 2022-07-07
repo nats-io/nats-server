@@ -5182,7 +5182,9 @@ func TestNoRaceJetStreamClusterInterestPullConsumerStreamLimitBug(t *testing.T) 
 	for i := 0; i < 100; i++ {
 		go func() {
 			defer wg.Done()
-			_, js := jsClientConnect(t, c.randomServer())
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
 			sub, err := js.PullSubscribe("foo", "dur")
 			require_NoError(t, err)
 
