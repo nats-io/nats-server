@@ -703,7 +703,10 @@ func (s *Server) JetStreamIsStreamAssigned(account, stream string) bool {
 	if acc == nil {
 		return false
 	}
-	return cc.isStreamAssigned(acc, stream)
+	js.mu.RLock()
+	assigned := cc.isStreamAssigned(acc, stream)
+	js.mu.RUnlock()
+	return assigned
 }
 
 // streamAssigned informs us if this server has this stream assigned.
