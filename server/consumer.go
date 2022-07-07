@@ -2266,10 +2266,11 @@ func (o *consumer) isFiltered() bool {
 	if mset == nil {
 		return true
 	}
-	if len(mset.cfg.Subjects) > 1 {
-		return true
+	if len(mset.cfg.Subjects) == 1 {
+		return o.cfg.FilterSubject != mset.cfg.Subjects[0]
 	}
-	return o.cfg.FilterSubject != mset.cfg.Subjects[0]
+	// All else return true.
+	return true
 }
 
 // Check if we need an ack for this store seq.
