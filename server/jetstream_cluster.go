@@ -52,8 +52,10 @@ type jetStreamCluster struct {
 	stepdown *subscription
 	// System level requests to remove a peer.
 	peerRemove *subscription
-	// System level request to evacuate a peer.
+	// System level request to move a stream
 	peerStreamMove *subscription
+	// System level request to cancel a stream move
+	peerStreamCancelMove *subscription
 }
 
 // Used to guide placement of streams and meta controllers in clustered JetStream.
@@ -4132,6 +4134,9 @@ func (js *jetStream) startUpdatesSub() {
 	if cc.peerStreamMove == nil {
 		cc.peerStreamMove, _ = s.systemSubscribe(JSApiServerStreamMove, _EMPTY_, false, c, s.jsLeaderServerStreamMoveRequest)
 	}
+	if cc.peerStreamCancelMove == nil {
+		cc.peerStreamCancelMove, _ = s.systemSubscribe(JSApiServerStreamCancelMove, _EMPTY_, false, c, s.jsLeaderServerStreamCancelMoveRequest)
+	}
 }
 
 // Lock should be held.
@@ -4156,6 +4161,10 @@ func (js *jetStream) stopUpdatesSub() {
 	if cc.peerStreamMove != nil {
 		cc.s.sysUnsubscribe(cc.peerStreamMove)
 		cc.peerStreamMove = nil
+	}
+	if cc.peerStreamCancelMove != nil {
+		cc.s.sysUnsubscribe(cc.peerStreamCancelMove)
+		cc.peerStreamCancelMove = nil
 	}
 }
 
@@ -4702,9 +4711,20 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 
 	// Check for a move update.
 	// TODO(dlc) - Should add a resolve from Tags to cluster and check that vs reflect.
-	var isMoveRequest bool
-	if len(peerSet) > 0 {
+	isMoveRequest, isMoveCancel := false, false
+	if lPeerSet := len(peerSet); lPeerSet > 0 {
 		isMoveRequest = true
+		// check if this is a cancellation
+		if lPeerSet == osa.Config.Replicas && lPeerSet <= len(rg.Peers) {
+			isMoveCancel = true
+			// can only be a cancellation if the peer sets overlap as expected
+			for i := 0; i < lPeerSet; i++ {
+				if peerSet[i] != rg.Peers[i] {
+					isMoveCancel = false
+					break
+				}
+			}
+		}
 	} else {
 		isMoveRequest = newCfg.Placement != nil && !reflect.DeepEqual(osa.Config.Placement, newCfg.Placement)
 	}
@@ -4715,8 +4735,8 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	// We stage consumer updates and do them after the stream update.
 	var consumers []*consumerAssignment
 
-	// Check if this is a move request and we are already moving this stream.
-	if isMoveRequest && osa.Config.Replicas != len(rg.Peers) {
+	// Check if this is a move request, but no cancellation, and we are already moving this stream.
+	if isMoveRequest && !isMoveCancel && osa.Config.Replicas != len(rg.Peers) {
 		resp.Error = NewJSStreamMoveInProgressError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return

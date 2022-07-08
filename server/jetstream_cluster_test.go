@@ -3813,7 +3813,7 @@ func TestJetStreamClusterDoubleStreamReassignment(t *testing.T) {
 	moveAndCheck := func(from, to string, expectedSet ...string) {
 		move(from, to)
 		checkFor(t, 20*time.Second, 100*time.Millisecond, func() error { return moveComplete(to, expectedSet...) })
-		checkFor(t, 20*time.Second, 100*time.Millisecond, func() error { return serverEmpty(from) })
+		checkFor(t, 120*time.Second, 100*time.Millisecond, func() error { return serverEmpty(from) })
 	}
 
 	checkFor(t, 20*time.Second, 1000*time.Millisecond, func() error { return serverEmpty(srvMoveList[3]) })
