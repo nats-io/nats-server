@@ -11541,3 +11541,59 @@ func TestJetStreamClusterLeafNodeSPOFMigrateLeaders(t *testing.T) {
 		return err
 	})
 }
+
+func TestJetStreamClusterStreamCatchupWithTruncateAndPriorSnapshot(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3F", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Shutdown a replica
+	rs := c.randomNonStreamLeader("$G", "TEST")
+	rs.Shutdown()
+	if s == rs {
+		nc.Close()
+		s = c.randomServer()
+		nc, js = jsClientConnect(t, s)
+		defer nc.Close()
+	}
+
+	msg, toSend := []byte("OK"), 100
+	for i := 0; i < toSend; i++ {
+		_, err := js.PublishAsync("foo", msg)
+		require_NoError(t, err)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	sl := c.streamLeader("$G", "TEST")
+	mset, err := sl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	// Force snapshot
+	require_NoError(t, mset.raftNode().InstallSnapshot(mset.stateSnapshot()))
+
+	// Now truncate the store on purpose.
+	err = mset.store.Truncate(50)
+	require_NoError(t, err)
+
+	// Restart Server.
+	rs = c.restartServer(rs)
+
+	// Make sure we can become current.
+	// With bug we would fail here.
+	c.waitOnStreamCurrent(rs, "$G", "TEST")
+}

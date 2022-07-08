@@ -6287,6 +6287,9 @@ RETRY:
 			}
 			msgsQ.recycle(&mrecs)
 		case <-notActive.C:
+			if mrecs := msgsQ.pop(); len(mrecs) > 0 {
+				msgsQ.recycle(&mrecs)
+			}
 			s.Warnf("Catchup for stream '%s > %s' stalled", mset.account(), mset.name())
 			goto RETRY
 		case <-s.quitCh:
@@ -6657,6 +6660,24 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 			sm, err := mset.store.LoadMsg(seq, &smv)
 			// if this is not a deleted msg, bail out.
 			if err != nil && err != ErrStoreMsgNotFound && err != errDeletedMsg {
+				if err == ErrStoreEOF {
+					var state StreamState
+					mset.store.FastState(&state)
+					if seq > state.LastSeq {
+						// The snapshot has a larger last sequence then we have. This could be due to a truncation
+						// when trying to recover after corruption, still not 100% sure. Could be off by 1 too somehow,
+						// but tested a ton of those with no success.
+						s.Warnf("Catchup for stream '%s > %s' completed, but requested sequence %d was larger then current state: %+v",
+							mset.account(), mset.name(), seq, state)
+						// Try our best to redo our invalidated snapshot as well.
+						if n := mset.raftNode(); n != nil {
+							n.InstallSnapshot(mset.stateSnapshot())
+						}
+						// Signal EOF
+						s.sendInternalMsgLocked(sendSubject, _EMPTY_, nil, nil)
+						return false
+					}
+				}
 				s.Warnf("Error loading message for catchup '%s > %s': %v", mset.account(), mset.name(), err)
 				return false
 			}
