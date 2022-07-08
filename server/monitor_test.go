@@ -3854,7 +3854,7 @@ func TestMonitorLeafz(t *testing.T) {
 				t.Fatalf("RTT not tracked?")
 			}
 			// LDS should be only one.
-			if ln.NumSubs != 3 || len(ln.Subs) != 3 {
+			if ln.NumSubs != 4 || len(ln.Subs) != 4 {
 				t.Fatalf("Expected 3 subs, got %v (%v)", ln.NumSubs, ln.Subs)
 			}
 		}
@@ -3864,28 +3864,26 @@ func TestMonitorLeafz(t *testing.T) {
 func TestMonitorAccountz(t *testing.T) {
 	s := RunServer(DefaultMonitorOptions())
 	defer s.Shutdown()
-	body := string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d/accountz", s.MonitorAddr().Port)))
-	if !strings.Contains(body, `$G`) {
-		t.Fatalf("Body missing value. Contains: %s", body)
-	} else if !strings.Contains(body, `$SYS`) {
-		t.Fatalf("Body missing value. Contains: %s", body)
-	} else if !strings.Contains(body, `"accounts": [`) {
-		t.Fatalf("Body missing value. Contains: %s", body)
-	} else if !strings.Contains(body, `"system_account": "$SYS"`) {
-		t.Fatalf("Body missing value. Contains: %s", body)
-	}
-	body = string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d/accountz?acc=$SYS", s.MonitorAddr().Port)))
-	if !strings.Contains(body, `"account_detail": {`) {
-		t.Fatalf("Body missing value. Contains: %s", body)
-	} else if !strings.Contains(body, `"account_name": "$SYS",`) {
-		t.Fatalf("Body missing value. Contains: %s", body)
-	} else if !strings.Contains(body, `"subscriptions": 36,`) {
-		t.Fatalf("Body missing value. Contains: %s", body)
-	} else if !strings.Contains(body, `"is_system": true,`) {
-		t.Fatalf("Body missing value. Contains: %s", body)
-	} else if !strings.Contains(body, `"system_account": "$SYS"`) {
-		t.Fatalf("Body missing value. Contains: %s", body)
-	}
+	body := string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d%s", s.MonitorAddr().Port, AccountzPath)))
+	require_Contains(t, body, `$G`)
+	require_Contains(t, body, `$SYS`)
+	require_Contains(t, body, `"accounts": [`)
+	require_Contains(t, body, `"system_account": "$SYS"`)
+
+	body = string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d%s?acc=$SYS", s.MonitorAddr().Port, AccountzPath)))
+	require_Contains(t, body, `"account_detail": {`)
+	require_Contains(t, body, `"account_name": "$SYS",`)
+	require_Contains(t, body, `"subscriptions": 42,`)
+	require_Contains(t, body, `"is_system": true,`)
+	require_Contains(t, body, `"system_account": "$SYS"`)
+
+	body = string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d%s?unused=1", s.MonitorAddr().Port, AccountStatzPath)))
+	require_Contains(t, body, `"acc": "$G"`)
+	require_Contains(t, body, `"acc": "$SYS"`)
+	require_Contains(t, body, `"sent": {`)
+	require_Contains(t, body, `"received": {`)
+	require_Contains(t, body, `"total_conns": 0,`)
+	require_Contains(t, body, `"leafnodes": 0,`)
 }
 
 func TestMonitorAuthorizedUsers(t *testing.T) {

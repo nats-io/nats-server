@@ -42,7 +42,8 @@ const (
 
 	connectEventSubj    = "$SYS.ACCOUNT.%s.CONNECT"
 	disconnectEventSubj = "$SYS.ACCOUNT.%s.DISCONNECT"
-	accReqSubj          = "$SYS.REQ.ACCOUNT.%s.%s"
+	accDirectReqSubj    = "$SYS.REQ.ACCOUNT.%s.%s"
+	accPingReqSubj      = "$SYS.REQ.ACCOUNT.PING.%s" // atm. only used for STATZ and CONNZ import from system account
 	// kept for backward compatibility when using http resolver
 	// this overlaps with the names for events but you'd have to have the operator private key in order to succeed.
 	accUpdateEventSubjOld    = "$SYS.ACCOUNT.%s.CLAIMS.UPDATE"
@@ -59,7 +60,6 @@ const (
 	leafNodeConnectEventSubj = "$SYS.ACCOUNT.%s.LEAFNODE.CONNECT" // for internal use only
 	remoteLatencyEventSubj   = "$SYS.LATENCY.M2.%s"
 	inboxRespSubj            = "$SYS._INBOX.%s.%s"
-	accConnzReqSubj          = "$SYS.REQ.ACCOUNT.PING.CONNZ"
 
 	// FIXME(dlc) - Should account scope, even with wc for now, but later on
 	// we can then shard as needed.
@@ -138,14 +138,19 @@ const DisconnectEventMsgType = "io.nats.server.advisory.v1.client_disconnect"
 // updates in the absence of any changes.
 type AccountNumConns struct {
 	TypedEvent
-	Server        ServerInfo `json:"server"`
-	Account       string     `json:"acc"`
-	Conns         int        `json:"conns"`
-	LeafNodes     int        `json:"leafnodes"`
-	TotalConns    int        `json:"total_conns"`
-	Sent          DataStats  `json:"sent"`
-	Received      DataStats  `json:"received"`
-	SlowConsumers int64      `json:"slow_consumers"`
+	Server ServerInfo `json:"server"`
+	*AccountStat
+}
+
+// AccountStat contains the data common between AccountNumConns and AccountStatz
+type AccountStat struct {
+	Account       string    `json:"acc"`
+	Conns         int       `json:"conns"`
+	LeafNodes     int       `json:"leafnodes"`
+	TotalConns    int       `json:"total_conns"`
+	Sent          DataStats `json:"sent"`
+	Received      DataStats `json:"received"`
+	SlowConsumers int64     `json:"slow_consumers"`
 }
 
 const AccountNumConnsMsgType = "io.nats.server.advisory.v1.account_connections"
@@ -865,9 +870,17 @@ func (s *Server) initEventTracking() {
 			optz := &AccountzEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Accountz(&optz.AccountzOptions) })
 		},
+		"ACC_STATZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
+			optz := &AccountStatzEventOptions{}
+			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.AccountStatz(&optz.AccountStatzOptions) })
+		},
 		"JSZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &JszEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Jsz(&optz.JSzOptions) })
+		},
+		"HEALTHZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
+			optz := &EventFilterOptions{}
+			s.zReq(c, reply, msg, optz, optz, func() (interface{}, error) { return s.healthz(), nil })
 		},
 	}
 	for name, req := range monSrvc {
@@ -951,12 +964,88 @@ func (s *Server) initEventTracking() {
 				}
 			})
 		},
+		// STATZ is essentially a duplicate of CONNS with an envelope identical to the others.
+		// For historical reasons CONNS is the odd one out.
+		// STATZ is also less heavy weight than INFO
+		"STATZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
+			optz := &EventFilterOptions{}
+			s.zReq(c, reply, msg, optz, optz, func() (interface{}, error) {
+				if acc, err := extractAccount(subject); err != nil {
+					return nil, err
+				} else {
+					if a, ok := s.accounts.Load(acc); !ok {
+						return nil, errSkipZreq
+					} else {
+						a := a.(*Account)
+						a.mu.Lock()
+						defer a.mu.Unlock()
+						return a.accConns(), nil
+					}
+				}
+			})
+		},
 		"CONNS": s.connsRequest,
 	}
 	for name, req := range monAccSrvc {
-		if _, err := s.sysSubscribe(fmt.Sprintf(accReqSubj, "*", name), req); err != nil {
+		if _, err := s.sysSubscribe(fmt.Sprintf(accDirectReqSubj, "*", name), req); err != nil {
 			s.Errorf("Error setting up internal tracking: %v", err)
 		}
+	}
+
+	// For now only the CONNS subject has an account specific ping equivalent.
+	// TODO (mh) turn this into a zReq style function once a second one is added
+	// Other account specific ones are special cases of server specific serverStatsPingReqSubj
+	// and thus don't need to be exposed again
+	// This implementation also differs from the server counterparts as follows:
+	// there: one server one message.
+	// here:  one server responds with one message per (requested) account
+	if _, err := s.sysSubscribe(fmt.Sprintf(accPingReqSubj, "STATZ"),
+		func(sub *subscription, c *client, acc *Account, subject, reply string, rmsg []byte) {
+			optz := &AccountStatzEventOptions{}
+			var err error
+			_, msg := c.msgParts(rmsg)
+			if len(msg) != 0 {
+				if err = json.Unmarshal(msg, optz); err != nil {
+					s.sendInternalResponse(reply,
+						&ServerAPIResponse{
+							Server: &ServerInfo{},
+							Error:  &ApiError{Code: http.StatusBadRequest, Description: err.Error()},
+						},
+					)
+					return
+				} else if s.filterRequest(&optz.EventFilterOptions) {
+					return
+				}
+			}
+			accountRespond := func(acc *Account) {
+				if !optz.AccountStatzOptions.IncludeUnused && acc.NumLocalConnections() == 0 {
+					return
+				}
+				acc.mu.Lock()
+				data := acc.accConns()
+				acc.mu.Unlock()
+				s.sendInternalResponse(reply,
+					&ServerAPIResponse{
+						Server: &ServerInfo{},
+						Data:   data,
+					},
+				)
+			}
+			if len(optz.Accounts) == 0 {
+				s.accounts.Range(func(accName, a interface{}) bool {
+					accountRespond(a.(*Account))
+					return true
+				})
+			} else {
+				for _, accName := range optz.Accounts {
+					if a, ok := s.accounts.Load(accName); ok {
+						accountRespond(a.(*Account))
+					}
+				}
+			}
+		},
+	); err != nil {
+		s.Errorf("Error setting up internal tracking: %v", err)
 	}
 
 	// Listen for updates when leaf nodes connect for a given account. This will
@@ -1005,9 +1094,13 @@ func (s *Server) addSystemAccountExports(sacc *Account) {
 	if !s.EventsEnabled() {
 		return
 	}
-	accConnzSubj := fmt.Sprintf(accReqSubj, "*", "CONNZ")
+	accConnzSubj := fmt.Sprintf(accDirectReqSubj, "*", "CONNZ")
 	if err := sacc.AddServiceExportWithResponse(accConnzSubj, Streamed, nil); err != nil {
 		s.Errorf("Error adding system service export for %q: %v", accConnzSubj, err)
+	}
+	accStatzSubj := fmt.Sprintf(accDirectReqSubj, "*", "STATZ")
+	if err := sacc.AddServiceExportWithResponse(accStatzSubj, Streamed, nil); err != nil {
+		s.Errorf("Error adding system service export for %q: %v", accStatzSubj, err)
 	}
 	// Register any accounts that existed prior.
 	s.registerSystemImportsForExisting()
@@ -1369,6 +1462,12 @@ type AccountzEventOptions struct {
 	EventFilterOptions
 }
 
+// In the context of system events, AccountzEventOptions are options passed to Accountz
+type AccountStatzEventOptions struct {
+	AccountStatzOptions
+	EventFilterOptions
+}
+
 // In the context of system events, JszEventOptions are options passed to Jsz
 type JszEventOptions struct {
 	JSzOptions
@@ -1572,21 +1671,21 @@ func (s *Server) registerSystemImports(a *Account) {
 		return
 	}
 	// FIXME(dlc) - make a shared list between sys exports etc.
-	connzSubj := fmt.Sprintf(serverPingReqSubj, "CONNZ")
-	mappedSubj := fmt.Sprintf(accReqSubj, a.Name, "CONNZ")
 
+	importSrvc := func(subj, mappedSubj string) {
+		if !a.serviceImportExists(subj) {
+			if err := a.AddServiceImport(sacc, subj, mappedSubj); err != nil {
+				s.Errorf("Error setting up system service import %s -> %s for account: %v",
+					subj, mappedSubj, err)
+			}
+		}
+	}
 	// Add in this to the account in 2 places.
 	// "$SYS.REQ.SERVER.PING.CONNZ" and "$SYS.REQ.ACCOUNT.PING.CONNZ"
-	if !a.serviceImportExists(connzSubj) {
-		if err := a.AddServiceImport(sacc, connzSubj, mappedSubj); err != nil {
-			s.Errorf("Error setting up system service imports for account: %v", err)
-		}
-	}
-	if !a.serviceImportExists(accConnzReqSubj) {
-		if err := a.AddServiceImport(sacc, accConnzReqSubj, mappedSubj); err != nil {
-			s.Errorf("Error setting up system service imports for account: %v", err)
-		}
-	}
+	mappedConnzSubj := fmt.Sprintf(accDirectReqSubj, a.Name, "CONNZ")
+	importSrvc(fmt.Sprintf(accPingReqSubj, "CONNZ"), mappedConnzSubj)
+	importSrvc(fmt.Sprintf(serverPingReqSubj, "CONNZ"), mappedConnzSubj)
+	importSrvc(fmt.Sprintf(accPingReqSubj, "STATZ"), fmt.Sprintf(accDirectReqSubj, a.Name, "STATZ"))
 }
 
 // Setup tracking for this account. This allows us to track global account activity.
@@ -1600,7 +1699,7 @@ func (s *Server) enableAccountTracking(a *Account) {
 	// May need to ensure we do so only if there is a known interest.
 	// This can get complicated with gateways.
 
-	subj := fmt.Sprintf(accReqSubj, a.Name, "CONNS")
+	subj := fmt.Sprintf(accDirectReqSubj, a.Name, "CONNS")
 	reply := fmt.Sprintf(connsRespSubj, s.info.ID)
 	m := accNumConnsReq{Account: a.Name}
 	s.sendInternalMsg(subj, reply, &m.Server, &m)
@@ -1643,29 +1742,17 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 	// Build event with account name and number of local clients and leafnodes.
 	eid := s.nextEventID()
 	a.mu.Lock()
-	localConns := a.numLocalConnections()
-	leafConns := a.numLocalLeafNodes()
-	m := &AccountNumConns{
+	m := AccountNumConns{
 		TypedEvent: TypedEvent{
 			Type: AccountNumConnsMsgType,
 			ID:   eid,
 			Time: time.Now().UTC(),
 		},
-		Account:    a.Name,
-		Conns:      localConns,
-		LeafNodes:  leafConns,
-		TotalConns: localConns + leafConns,
-		Received: DataStats{
-			Msgs:  atomic.LoadInt64(&a.inMsgs),
-			Bytes: atomic.LoadInt64(&a.inBytes)},
-		Sent: DataStats{
-			Msgs:  atomic.LoadInt64(&a.outMsgs),
-			Bytes: atomic.LoadInt64(&a.outBytes)},
-		SlowConsumers: atomic.LoadInt64(&a.slowConsumers),
+		AccountStat: a.accConns(),
 	}
 	// Set timer to fire again unless we are at zero, but only if the account
 	// is not configured for JetStream.
-	if localConns == 0 && !a.jetStreamConfiguredNoLock() {
+	if m.TotalConns == 0 && !a.jetStreamConfiguredNoLock() {
 		clearTimer(&a.ctmr)
 	} else {
 		// Check to see if we have an HB running and update.
@@ -1680,6 +1767,25 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 		sendQ.push(msg)
 	}
 	a.mu.Unlock()
+}
+
+// Lock shoulc be held on entry
+func (a *Account) accConns() *AccountStat {
+	localConns := a.numLocalConnections()
+	leafConns := a.numLocalLeafNodes()
+	return &AccountStat{
+		Account:    a.Name,
+		Conns:      localConns,
+		LeafNodes:  leafConns,
+		TotalConns: localConns + leafConns,
+		Received: DataStats{
+			Msgs:  atomic.LoadInt64(&a.inMsgs),
+			Bytes: atomic.LoadInt64(&a.inBytes)},
+		Sent: DataStats{
+			Msgs:  atomic.LoadInt64(&a.outMsgs),
+			Bytes: atomic.LoadInt64(&a.outBytes)},
+		SlowConsumers: atomic.LoadInt64(&a.slowConsumers),
+	}
 }
 
 // accConnsUpdate is called whenever there is a change to the account's

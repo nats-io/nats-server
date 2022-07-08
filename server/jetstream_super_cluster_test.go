@@ -516,7 +516,7 @@ func TestJetStreamSuperClusterConnectionCount(t *testing.T) {
 
 	sysNc := natsConnect(t, sc.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
 	defer sysNc.Close()
-	_, err := sysNc.Request(fmt.Sprintf(accReqSubj, "ONE", "CONNS"), nil, 100*time.Millisecond)
+	_, err := sysNc.Request(fmt.Sprintf(accDirectReqSubj, "ONE", "CONNS"), nil, 100*time.Millisecond)
 	// this is a timeout as the server only responds when it has connections....
 	// not convinced this should be that way, but also not the issue to investigate.
 	require_True(t, err == nats.ErrTimeout)
@@ -561,7 +561,7 @@ func TestJetStreamSuperClusterConnectionCount(t *testing.T) {
 	// There should be no active NATS CLIENT connections, but we still need
 	// to wait a little bit...
 	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
-		_, err := sysNc.Request(fmt.Sprintf(accReqSubj, "ONE", "CONNS"), nil, 100*time.Millisecond)
+		_, err := sysNc.Request(fmt.Sprintf(accDirectReqSubj, "ONE", "CONNS"), nil, 100*time.Millisecond)
 		if err != nats.ErrTimeout {
 			return fmt.Errorf("Expected timeout, got %v", err)
 		}
@@ -2087,6 +2087,7 @@ func TestJetStreamSuperClusterMovingStreamAndMoveBack(t *testing.T) {
 
 			checkMove := func(cluster string) {
 				t.Helper()
+				sc.waitOnStreamLeader("$G", "TEST")
 				checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
 					si, err := js.StreamInfo("TEST")
 					if err != nil {

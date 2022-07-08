@@ -1348,6 +1348,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	<a href=.%s>JetStream</a>
 	<a href=.%s>Connections</a>
 	<a href=.%s>Accounts</a>
+	<a href=.%s>Account stats</a>
 	<a href=.%s>Subscriptions</a>
 	<a href=.%s>Routes</a>
 	<a href=.%s>LeafNodes</a>
@@ -1362,6 +1363,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 		s.basePath(JszPath),
 		s.basePath(ConnzPath),
 		s.basePath(AccountzPath),
+		s.basePath(AccountStatzPath),
 		s.basePath(SubszPath),
 		s.basePath(RoutezPath),
 		s.basePath(LeafzPath),
@@ -2150,6 +2152,76 @@ func (s *Server) HandleLeafz(w http.ResponseWriter, r *http.Request) {
 	b, err := json.MarshalIndent(l, "", "  ")
 	if err != nil {
 		s.Errorf("Error marshaling response to /leafz request: %v", err)
+	}
+
+	// Handle response
+	ResponseHandler(w, r, b)
+}
+
+// Leafz represents detailed information on Leafnodes.
+type AccountStatz struct {
+	ID       string         `json:"server_id"`
+	Now      time.Time      `json:"now"`
+	Accounts []*AccountStat `json:"account_statz"`
+}
+
+// LeafzOptions are options passed to Leafz
+type AccountStatzOptions struct {
+	Accounts      []string `json:"accounts"`
+	IncludeUnused bool     `json:"include_unused"`
+}
+
+// Leafz returns a AccountStatz structure containing summary information about accounts.
+func (s *Server) AccountStatz(opts *AccountStatzOptions) (*AccountStatz, error) {
+	stz := &AccountStatz{
+		ID:       s.ID(),
+		Now:      time.Now().UTC(),
+		Accounts: []*AccountStat{},
+	}
+	if opts == nil || len(opts.Accounts) == 0 {
+		s.accounts.Range(func(key, a interface{}) bool {
+			acc := a.(*Account)
+			acc.mu.RLock()
+			if opts.IncludeUnused || acc.numLocalConnections() != 0 {
+				stz.Accounts = append(stz.Accounts, acc.accConns())
+			}
+			acc.mu.RUnlock()
+			return true
+		})
+	} else {
+		for _, a := range opts.Accounts {
+			if acc, ok := s.accounts.Load(a); ok {
+				acc := acc.(*Account)
+				acc.mu.RLock()
+				stz.Accounts = append(stz.Accounts, acc.accConns())
+				acc.mu.RUnlock()
+			}
+		}
+	}
+	return stz, nil
+}
+
+// HandleAccountStatz process HTTP requests for statz information of all accounts.
+func (s *Server) HandleAccountStatz(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	s.httpReqStats[AccountStatzPath]++
+	s.mu.Unlock()
+
+	unused, err := decodeBool(w, r, "unused")
+	if err != nil {
+		return
+	}
+
+	l, err := s.AccountStatz(&AccountStatzOptions{IncludeUnused: unused})
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	b, err := json.MarshalIndent(l, "", "  ")
+	if err != nil {
+		s.Errorf("Error marshaling response to %s request: %v", AccountStatzPath, err)
+		return
 	}
 
 	// Handle response
