@@ -2714,7 +2714,13 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 	}
 
 	// Check that we do not have both options set.
-	if req.Seq > 0 && req.LastFor != _EMPTY_ || req.Seq == 0 && req.LastFor == _EMPTY_ {
+	if req.Seq > 0 && req.LastFor != _EMPTY_ || req.Seq == 0 && req.LastFor == _EMPTY_ && req.NextFor == _EMPTY_ {
+		resp.Error = NewJSBadRequestError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	// Check that both last and next not both set.
+	if req.LastFor != _EMPTY_ && req.NextFor != _EMPTY_ {
 		resp.Error = NewJSBadRequestError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -2730,8 +2736,10 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 	var svp StoreMsg
 	var sm *StoreMsg
 
-	if req.Seq > 0 {
+	if req.Seq > 0 && req.NextFor == _EMPTY_ {
 		sm, err = mset.store.LoadMsg(req.Seq, &svp)
+	} else if req.NextFor != _EMPTY_ {
+		sm, _, err = mset.store.LoadNextMsg(req.NextFor, subjectHasWildcard(req.NextFor), req.Seq, &svp)
 	} else {
 		sm, err = mset.store.LoadLastMsg(req.LastFor, &svp)
 	}

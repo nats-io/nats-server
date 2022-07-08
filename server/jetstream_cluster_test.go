@@ -5001,6 +5001,83 @@ func TestJetStreamClusterStreamDirectGetMsg(t *testing.T) {
 	require_True(t, m.Header.Get(JSTimeStamp) != _EMPTY_)
 }
 
+func TestJetStreamClusterStreamAndMirrorDirectGetMsgUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3F", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  MemoryStorage,
+		Replicas: 3,
+	}
+	addStream(t, nc, cfg)
+	sendStreamMsg(t, nc, "foo", "bar")
+
+	getSubj := fmt.Sprintf(JSDirectMsgGetT, "TEST")
+	req := []byte(`{"last_by_subj": "foo"}`)
+
+	_, err := nc.Request(getSubj, req, 50*time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+
+	cfg.AllowDirect = true
+	jreq, err := json.Marshal(cfg)
+	require_NoError(t, err)
+
+	resp, err := nc.Request(fmt.Sprintf(JSApiStreamUpdateT, "TEST"), jreq, time.Second)
+	require_NoError(t, err)
+	var scResp JSApiStreamCreateResponse
+	err = json.Unmarshal(resp.Data, &scResp)
+	require_NoError(t, err)
+	require_True(t, scResp.Error == nil)
+
+	_, err = nc.Request(getSubj, req, 50*time.Millisecond)
+	require_NoError(t, err)
+
+	// Make sure we can turn it off as well.
+	cfg.AllowDirect = false
+	jreq, err = json.Marshal(cfg)
+	require_NoError(t, err)
+
+	resp, err = nc.Request(fmt.Sprintf(JSApiStreamUpdateT, "TEST"), jreq, time.Second)
+	require_NoError(t, err)
+	err = json.Unmarshal(resp.Data, &scResp)
+	require_NoError(t, err)
+	require_True(t, scResp.Error == nil)
+
+	_, err = nc.Request(getSubj, req, 50*time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+
+	// Now test mirrors as well.
+	cfg = &StreamConfig{
+		Name:    "M",
+		Mirror:  &StreamSource{Name: "TEST"},
+		Storage: MemoryStorage,
+	}
+	addStream(t, nc, cfg)
+
+	_, err = nc.Request(getSubj, req, 50*time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+
+	cfg.MirrorDirect = true
+	jreq, err = json.Marshal(cfg)
+	require_NoError(t, err)
+
+	resp, err = nc.Request(fmt.Sprintf(JSApiStreamUpdateT, "M"), jreq, time.Second)
+	require_NoError(t, err)
+	err = json.Unmarshal(resp.Data, &scResp)
+	require_NoError(t, err)
+	require_True(t, scResp.Error == nil)
+
+	_, err = nc.Request(getSubj, req, 50*time.Millisecond)
+	require_NoError(t, err)
+}
+
 func TestJetStreamClusterStreamPerf(t *testing.T) {
 	// Comment out to run, holding place for now.
 	skip(t)
