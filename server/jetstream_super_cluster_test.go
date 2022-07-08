@@ -124,6 +124,25 @@ func TestJetStreamSuperClusterUniquePlacementTag(t *testing.T) {
 		})
 	defer s.shutdown()
 
+	inDifferentAz := func(ci *nats.ClusterInfo) (bool, error) {
+		t.Helper()
+		if len(ci.Replicas) == 0 {
+			return true, nil
+		}
+		// if R2 (has replica, this setup does not support R3), test if the server in a cluster picked the same az,
+		// as determined by modulo2 of server number which aligns with az
+		dummy := 0
+		srvnum1 := 0
+		srvnum2 := 0
+		if n, _ := fmt.Sscanf(ci.Leader, "C%d-S%d", &dummy, &srvnum1); n != 2 {
+			return false, fmt.Errorf("couldn't parse leader")
+		}
+		if n, _ := fmt.Sscanf(ci.Replicas[0].Name, "C%d-S%d", &dummy, &srvnum2); n != 2 {
+			return false, fmt.Errorf("couldn't parse replica")
+		}
+		return srvnum1%2 != srvnum2%2, nil
+	}
+
 	nc := natsConnect(t, s.randomServer().ClientURL())
 	defer nc.Close()
 
@@ -157,7 +176,7 @@ func TestJetStreamSuperClusterUniquePlacementTag(t *testing.T) {
 	} {
 		name := fmt.Sprintf("test-%d", i)
 		t.Run(name, func(t *testing.T) {
-			ci, err := js.AddStream(&nats.StreamConfig{Name: name, Replicas: test.replicas, Placement: test.placement})
+			si, err := js.AddStream(&nats.StreamConfig{Name: name, Replicas: test.replicas, Placement: test.placement})
 			if test.fail {
 				require_Error(t, err)
 				require_Equal(t, err.Error(), "insufficient resources")
@@ -165,10 +184,46 @@ func TestJetStreamSuperClusterUniquePlacementTag(t *testing.T) {
 			}
 			require_NoError(t, err)
 			if test.cluster != _EMPTY_ {
-				require_Equal(t, ci.Cluster.Name, test.cluster)
+				require_Equal(t, si.Cluster.Name, test.cluster)
 			}
+			// skip placement test if tags call for a particular az
+			if test.placement != nil && len(test.placement.Tags) > 0 {
+				for _, tag := range test.placement.Tags {
+					if strings.HasPrefix(tag, "az:") {
+						return
+					}
+				}
+			}
+			diff, err := inDifferentAz(si.Cluster)
+			require_NoError(t, err)
+			require_True(t, diff)
 		})
 	}
+
+	t.Run("scale-up-test", func(t *testing.T) {
+		// create enough streams so we hit it eventually
+		for i := 0; i < 10; i++ {
+			cfg := &nats.StreamConfig{Name: fmt.Sprintf("scale-up-%d", i), Replicas: 1,
+				Placement: &nats.Placement{Tags: []string{"cloud:C2-tag"}}}
+			si, err := js.AddStream(cfg)
+			require_NoError(t, err)
+			require_Equal(t, si.Cluster.Name, "C2")
+			cfg.Replicas = 2
+			si, err = js.UpdateStream(cfg)
+			require_NoError(t, err)
+			require_Equal(t, si.Cluster.Name, "C2")
+			checkFor(t, 10, 250*time.Millisecond, func() error {
+				if si, err := js.StreamInfo(cfg.Name); err != nil {
+					return err
+				} else if diff, err := inDifferentAz(si.Cluster); err != nil {
+					return err
+				} else if !diff {
+					return fmt.Errorf("not in different AZ")
+				}
+				return nil
+			})
+		}
+	})
 }
 
 func TestJetStreamSuperClusterBasics(t *testing.T) {
