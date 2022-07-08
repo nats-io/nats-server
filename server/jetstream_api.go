@@ -193,12 +193,14 @@ const (
 	// JSApiServerStreamMove is the endpoint to move streams off a server
 	// Only works from system account.
 	// Will return JSON response.
-	JSApiServerStreamMove = "$JS.API.SERVER.STREAM.MOVE"
+	JSApiServerStreamMove  = "$JS.API.ACCOUNT.STREAM.MOVE.*.*"
+	JSApiServerStreamMoveT = "$JS.API.ACCOUNT.STREAM.MOVE.%s.%s"
 
 	// JSApiServerStreamCancelMove is the endpoint to cancel a stream move
 	// Only works from system account.
 	// Will return JSON response.
-	JSApiServerStreamCancelMove = "$JS.API.SERVER.STREAM.CANCEL_MOVE"
+	JSApiServerStreamCancelMove  = "$JS.API.ACCOUNT.STREAM.CANCEL_MOVE.*.*"
+	JSApiServerStreamCancelMoveT = "$JS.API.ACCOUNT.STREAM.CANCEL_MOVE.%s.%s"
 
 	// jsAckT is the template for the ack message stream coming back from a consumer
 	// when they ACK/NAK, etc a message.
@@ -580,14 +582,8 @@ type JSApiMetaServerStreamMoveRequest struct {
 	Cluster string `json:"cluster,omitempty"`
 	// Domain the sever is in
 	Domain string `json:"domain,omitempty"`
-	// Account name the stream to move is in
-	Account string `json:"account"`
-	// Name of stream to move
-	Stream string `json:"stream"`
 	// Ephemeral placement tags for the move
 	Tags []string `json:"tags,omitempty"`
-	// Cancel a previous request
-	Cancel bool `json:"cancel,omitempty"`
 }
 
 // JSApiMsgGetRequest get a message request.
@@ -2203,6 +2199,24 @@ func (s *Server) peerSetToNames(ps []string) []string {
 	return names
 }
 
+// looks up the peer id for a given server name. Cluster and domain name are optional filter criteria
+func (s *Server) nameToPeer(js *jetStream, serverName, clusterName, domainName string) string {
+	js.mu.RLock()
+	cc := js.cluster
+	defer js.mu.RUnlock()
+	for _, p := range cc.meta.Peers() {
+		si, ok := s.nodeToInfo.Load(p.ID)
+		if ok && si.(nodeInfo).name == serverName {
+			if clusterName == _EMPTY_ || clusterName == si.(nodeInfo).cluster {
+				if domainName == _EMPTY_ || domainName == si.(nodeInfo).domain {
+					return p.ID
+				}
+			}
+		}
+	}
+	return _EMPTY_
+}
+
 // Request to have the metaleader move a stream on a peer to another
 func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	if c == nil || !s.JetStreamEnabled() {
@@ -2229,13 +2243,10 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 		return
 	}
 
-	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
+	accName := tokenAt(subject, 6)
+	streamName := tokenAt(subject, 7)
 
-	if isEmptyRequest(msg) {
-		resp.Error = NewJSBadRequestError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
+	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
 
 	var req JSApiMetaServerStreamMoveRequest
 	if err := json.Unmarshal(msg, &req); err != nil {
@@ -2244,24 +2255,12 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 		return
 	}
 
-	var srcPeer string
+	srcPeer := _EMPTY_
 	if req.Server != _EMPTY_ {
-		js.mu.RLock()
-		for _, p := range cc.meta.Peers() {
-			si, ok := s.nodeToInfo.Load(p.ID)
-			if ok && si.(nodeInfo).name == req.Server {
-				if req.Cluster == _EMPTY_ || req.Cluster == si.(nodeInfo).cluster {
-					if req.Domain == _EMPTY_ || req.Domain == si.(nodeInfo).domain {
-						srcPeer = p.ID
-						break
-					}
-				}
-			}
-		}
-		js.mu.RUnlock()
+		srcPeer = s.nameToPeer(js, req.Server, req.Cluster, req.Domain)
 	}
 
-	targetAcc, ok := s.accounts.Load(req.Account)
+	targetAcc, ok := s.accounts.Load(accName)
 	if !ok {
 		resp.Error = NewJSNoAccountError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -2273,9 +2272,9 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 	currPeers := []string{}
 	currCluster := _EMPTY_
 	js.mu.Lock()
-	streams, ok := cc.streams[req.Account]
+	streams, ok := cc.streams[accName]
 	if ok {
-		sa, ok := streams[req.Stream]
+		sa, ok := streams[streamName]
 		if ok {
 			cfg = *sa.Config
 			streamFound = true
@@ -2317,7 +2316,7 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 
 	// make sure client is scoped to requested account
 	ciNew := *(ci)
-	ciNew.Account = req.Account
+	ciNew.Account = accName
 
 	// backup placement such that peers can be looked up with modified tag list
 	var origPlacement *Placement
@@ -2363,7 +2362,7 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 	cfg.Placement = origPlacement
 
 	s.Noticef("Requested move of: R=%d stream %s in account %s from old peer set %+v to new peer set %+v",
-		cfg.Replicas, req.Stream, req.Account, s.peerSetToNames(currPeers), s.peerSetToNames(peers))
+		cfg.Replicas, streamName, accName, s.peerSetToNames(currPeers), s.peerSetToNames(peers))
 
 	// execute on a go routine for route or gateway, as this may block waiting from responses from other servers and
 	// therefore block all route/gateway traffic.
@@ -2402,26 +2401,10 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 
 	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
 
-	if isEmptyRequest(msg) {
-		resp.Error = NewJSBadRequestError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
+	accName := tokenAt(subject, 6)
+	streamName := tokenAt(subject, 7)
 
-	var req JSApiMetaServerStreamMoveRequest
-	if err := json.Unmarshal(msg, &req); err != nil {
-		resp.Error = NewJSInvalidJSONError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-
-	if req.Cancel && (req.Server != _EMPTY_ || len(req.Tags) > 0) {
-		resp.Error = NewJSBadRequestError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-		return
-	}
-
-	targetAcc, ok := s.accounts.Load(req.Account)
+	targetAcc, ok := s.accounts.Load(accName)
 	if !ok {
 		resp.Error = NewJSNoAccountError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -2432,9 +2415,9 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 	cfg := StreamConfig{}
 	currPeers := []string{}
 	js.mu.Lock()
-	streams, ok := cc.streams[req.Account]
+	streams, ok := cc.streams[accName]
 	if ok {
-		sa, ok := streams[req.Stream]
+		sa, ok := streams[streamName]
 		if ok {
 			cfg = *sa.Config
 			streamFound = true
@@ -2449,7 +2432,7 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 		return
 	}
 
-	if req.Cancel && len(currPeers) <= cfg.Replicas {
+	if len(currPeers) <= cfg.Replicas {
 		resp.Error = NewJSStreamMoveNotInProgressError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -2457,12 +2440,12 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 
 	// make sure client is scoped to requested account
 	ciNew := *(ci)
-	ciNew.Account = req.Account
+	ciNew.Account = streamName
 
 	peers := currPeers[:cfg.Replicas]
 
 	s.Noticef("Requested cancel of move: R=%d stream %s in account %s from old peer set %+v to new peer set %+v",
-		cfg.Replicas, req.Stream, req.Account, s.peerSetToNames(currPeers), s.peerSetToNames(peers))
+		cfg.Replicas, streamName, accName, s.peerSetToNames(currPeers), s.peerSetToNames(peers))
 
 	// execute on a go routine for route or gateway, as this may block waiting from responses from other servers and
 	// therefore block all route/gateway traffic.
