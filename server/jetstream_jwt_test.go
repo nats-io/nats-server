@@ -358,13 +358,13 @@ func TestJetStreamJWTMove(t *testing.T) {
 		require_NoError(t, err)
 		require_Equal(t, ci.Cluster.Name, "C1")
 
+		sc.waitOnStreamLeader(aExpPub, "MOVE-ME")
+
 		checkFor(t, 20*time.Second, 250*time.Millisecond, func() error {
 			if si, err := js.StreamInfo("MOVE-ME"); err != nil {
 				return err
 			} else if si.Cluster.Name != "C2" {
 				return fmt.Errorf("Wrong cluster: %q", si.Cluster.Name)
-			} else if si.Cluster.Leader == _EMPTY_ {
-				return fmt.Errorf("No leader yet")
 			} else if !strings.HasPrefix(si.Cluster.Leader, "C2-") {
 				return fmt.Errorf("Wrong leader: %q", si.Cluster.Leader)
 			} else if len(si.Cluster.Replicas) != replicas-1 {
