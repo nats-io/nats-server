@@ -1726,7 +1726,9 @@ func TestSystemAccountNoAuthUser(t *testing.T) {
 
 func TestServerAccountConns(t *testing.T) {
 	// speed up hb
+	orgHBInterval := eventsHBInterval
 	eventsHBInterval = time.Millisecond * 100
+	defer func() { eventsHBInterval = orgHBInterval }()
 	conf := createConfFile(t, []byte(`
 	   host: 127.0.0.1
 	   port: -1
