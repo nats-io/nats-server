@@ -870,10 +870,6 @@ func (s *Server) initEventTracking() {
 			optz := &AccountzEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Accountz(&optz.AccountzOptions) })
 		},
-		"ACC_STATZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
-			optz := &AccountStatzEventOptions{}
-			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.AccountStatz(&optz.AccountStatzOptions) })
-		},
 		"JSZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &JszEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Jsz(&optz.JSzOptions) })
@@ -893,10 +889,18 @@ func (s *Server) initEventTracking() {
 			s.Errorf("Error setting up internal tracking: %v", err)
 		}
 	}
-	extractAccount := func(subject string) (string, error) {
+	extractAccount := func(c *client, subject string, msg []byte) (string, error) {
 		if tk := strings.Split(subject, tsep); len(tk) != accReqTokens {
 			return _EMPTY_, fmt.Errorf("subject %q is malformed", subject)
 		} else {
+			acc := tk[accReqAccIndex]
+			if ci, _, _, _, err := c.srv.getRequestInfo(c, msg); err == nil && ci.Account != _EMPTY_ {
+				// Make sure the accounts match.
+				if ci.Account != acc {
+					// Do not leak too much here.
+					return _EMPTY_, fmt.Errorf("bad request")
+				}
+			}
 			return tk[accReqAccIndex], nil
 		}
 	}
@@ -904,7 +908,7 @@ func (s *Server) initEventTracking() {
 		"SUBSZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &SubszEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
-				if acc, err := extractAccount(subject); err != nil {
+				if acc, err := extractAccount(c, subject, msg); err != nil {
 					return nil, err
 				} else {
 					optz.SubszOptions.Subscriptions = true
@@ -916,17 +920,9 @@ func (s *Server) initEventTracking() {
 		"CONNZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &ConnzEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
-				if acc, err := extractAccount(subject); err != nil {
+				if acc, err := extractAccount(c, subject, msg); err != nil {
 					return nil, err
 				} else {
-					if ci, _, _, _, err := c.srv.getRequestInfo(c, msg); err == nil && ci.Account != _EMPTY_ {
-						// Make sure the accounts match.
-						if ci.Account != acc {
-							// Do not leak too much here.
-							return nil, fmt.Errorf("bad request")
-						}
-						optz.ConnzOptions.isAccountReq = true
-					}
 					optz.ConnzOptions.Account = acc
 					return s.Connz(&optz.ConnzOptions)
 				}
@@ -935,7 +931,7 @@ func (s *Server) initEventTracking() {
 		"LEAFZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &LeafzEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
-				if acc, err := extractAccount(subject); err != nil {
+				if acc, err := extractAccount(c, subject, msg); err != nil {
 					return nil, err
 				} else {
 					optz.LeafzOptions.Account = acc
@@ -946,7 +942,7 @@ func (s *Server) initEventTracking() {
 		"JSZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &JszEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
-				if acc, err := extractAccount(subject); err != nil {
+				if acc, err := extractAccount(c, subject, msg); err != nil {
 					return nil, err
 				} else {
 					optz.Account = acc
@@ -957,7 +953,7 @@ func (s *Server) initEventTracking() {
 		"INFO": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &AccInfoEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
-				if acc, err := extractAccount(subject); err != nil {
+				if acc, err := extractAccount(c, subject, msg); err != nil {
 					return nil, err
 				} else {
 					return s.accountInfo(acc)
@@ -968,18 +964,20 @@ func (s *Server) initEventTracking() {
 		// For historical reasons CONNS is the odd one out.
 		// STATZ is also less heavy weight than INFO
 		"STATZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
-			optz := &EventFilterOptions{}
-			s.zReq(c, reply, msg, optz, optz, func() (interface{}, error) {
-				if acc, err := extractAccount(subject); err != nil {
+			optz := &AccountStatzEventOptions{}
+			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
+				if acc, err := extractAccount(c, subject, msg); err != nil {
 					return nil, err
+				} else if acc == "PING" { // Filter ping subject, this happens for server too, but filter is less explicit
+					return nil, errSkipZreq
 				} else {
-					if a, ok := s.accounts.Load(acc); !ok {
+					optz.Accounts = []string{acc}
+					if stz, err := s.AccountStatz(&optz.AccountStatzOptions); err != nil {
+						return nil, err
+					} else if len(stz.Accounts) == 0 && !optz.IncludeUnused {
 						return nil, errSkipZreq
 					} else {
-						a := a.(*Account)
-						a.mu.Lock()
-						defer a.mu.Unlock()
-						return a.accConns(), nil
+						return stz, nil
 					}
 				}
 			})
@@ -992,59 +990,20 @@ func (s *Server) initEventTracking() {
 		}
 	}
 
-	// For now only the CONNS subject has an account specific ping equivalent.
-	// TODO (mh) turn this into a zReq style function once a second one is added
-	// Other account specific ones are special cases of server specific serverStatsPingReqSubj
-	// and thus don't need to be exposed again
-	// This implementation also differs from the server counterparts as follows:
-	// there: one server one message.
-	// here:  one server responds with one message per (requested) account
+	// For now only the STATZ subject has an account specific ping equivalent.
 	if _, err := s.sysSubscribe(fmt.Sprintf(accPingReqSubj, "STATZ"),
-		func(sub *subscription, c *client, acc *Account, subject, reply string, rmsg []byte) {
+		func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &AccountStatzEventOptions{}
-			var err error
-			_, msg := c.msgParts(rmsg)
-			if len(msg) != 0 {
-				if err = json.Unmarshal(msg, optz); err != nil {
-					s.sendInternalResponse(reply,
-						&ServerAPIResponse{
-							Server: &ServerInfo{},
-							Error:  &ApiError{Code: http.StatusBadRequest, Description: err.Error()},
-						},
-					)
-					return
-				} else if s.filterRequest(&optz.EventFilterOptions) {
-					return
+			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
+				if stz, err := s.AccountStatz(&optz.AccountStatzOptions); err != nil {
+					return nil, err
+				} else if len(stz.Accounts) == 0 && !optz.IncludeUnused {
+					return nil, errSkipZreq
+				} else {
+					return stz, nil
 				}
-			}
-			accountRespond := func(acc *Account) {
-				if !optz.AccountStatzOptions.IncludeUnused && acc.NumLocalConnections() == 0 {
-					return
-				}
-				acc.mu.Lock()
-				data := acc.accConns()
-				acc.mu.Unlock()
-				s.sendInternalResponse(reply,
-					&ServerAPIResponse{
-						Server: &ServerInfo{},
-						Data:   data,
-					},
-				)
-			}
-			if len(optz.Accounts) == 0 {
-				s.accounts.Range(func(accName, a interface{}) bool {
-					accountRespond(a.(*Account))
-					return true
-				})
-			} else {
-				for _, accName := range optz.Accounts {
-					if a, ok := s.accounts.Load(accName); ok {
-						accountRespond(a.(*Account))
-					}
-				}
-			}
-		},
-	); err != nil {
+			})
+		}); err != nil {
 		s.Errorf("Error setting up internal tracking: %v", err)
 	}
 

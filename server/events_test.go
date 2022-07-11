@@ -1295,13 +1295,11 @@ func TestAccountReqMonitoring(t *testing.T) {
 	require_NoError(t, err)
 	require_NoError(t, ncSys.PublishRequest(pStatz, rIb, nil))
 	minRespContentForBothAcc := []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"acc":"`}
-	// expect one response per account
-	for i := 0; i < 2; i++ {
-		m, err := rSub.NextMsg(time.Second)
-		require_NoError(t, err)
-		// due to ordering skip check for sent/received etc..
-		require_Contains(t, string(m.Data), minRespContentForBothAcc...)
-	}
+	resp, err = rSub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Contains(t, string(resp.Data), minRespContentForBothAcc...)
+	// expect one entry per account
+	require_Contains(t, string(resp.Data), fmt.Sprintf(`"acc":"%s"`, acc.Name), fmt.Sprintf(`"acc":"%s"`, sacc.Name))
 
 	// Test ping with filter by account name
 	require_NoError(t, ncSys.PublishRequest(pStatz, rIb, []byte(fmt.Sprintf(`{"accounts":["%s"]}`, sacc.Name))))
@@ -1326,9 +1324,9 @@ func TestAccountReqMonitoring(t *testing.T) {
 
 	require_NoError(t, ncSys.PublishRequest(pStatz, rIb,
 		[]byte(fmt.Sprintf(`{"accounts":["%s"], "include_unused":true}`, unusedAcc.Name))))
-	m, err = rSub.NextMsg(time.Second)
+	resp, err = rSub.NextMsg(time.Second)
 	require_NoError(t, err)
-	require_Contains(t, string(m.Data), unusedContent...)
+	require_Contains(t, string(resp.Data), unusedContent...)
 
 	require_NoError(t, ncSys.PublishRequest(pStatz, rIb, []byte(fmt.Sprintf(`{"accounts":["%s"]}`, unusedAcc.Name))))
 	_, err = rSub.NextMsg(200 * time.Millisecond)
@@ -1658,7 +1656,7 @@ func TestSystemAccountWithGateways(t *testing.T) {
 
 	// If this tests fails with wrong number after 10 seconds we may have
 	// added a new inititial subscription for the eventing system.
-	checkExpectedSubs(t, 47, sa)
+	checkExpectedSubs(t, 45, sa)
 
 	// Create a client on B and see if we receive the event
 	urlb := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
@@ -2155,8 +2153,6 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 			[]string{"now", "leafs"}},
 		{"ACCOUNTZ", &AccountzOptions{Account: sysAcc}, &Accountz{},
 			[]string{"now", "account_detail"}},
-		{"ACC_STATZ", &AccountStatzOptions{Accounts: []string{sysAcc}}, &Accountz{},
-			[]string{"now", "account_statz"}},
 		{"LEAFZ", &LeafzOptions{Account: sysAcc}, &Leafz{},
 			[]string{"now", "leafs"}},
 

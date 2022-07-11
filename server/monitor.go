@@ -2193,7 +2193,9 @@ func (s *Server) AccountStatz(opts *AccountStatzOptions) (*AccountStatz, error) 
 			if acc, ok := s.accounts.Load(a); ok {
 				acc := acc.(*Account)
 				acc.mu.RLock()
-				stz.Accounts = append(stz.Accounts, acc.accConns())
+				if opts.IncludeUnused || acc.numLocalConnections() != 0 {
+					stz.Accounts = append(stz.Accounts, acc.accConns())
+				}
 				acc.mu.RUnlock()
 			}
 		}
