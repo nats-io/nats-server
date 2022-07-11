@@ -1663,8 +1663,9 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 			Bytes: atomic.LoadInt64(&a.outBytes)},
 		SlowConsumers: atomic.LoadInt64(&a.slowConsumers),
 	}
-	// Set timer to fire again unless we are at zero.
-	if localConns == 0 {
+	// Set timer to fire again unless we are at zero, but only if the account
+	// is not configured for JetStream.
+	if localConns == 0 && !a.jetStreamConfiguredNoLock() {
 		clearTimer(&a.ctmr)
 	} else {
 		// Check to see if we have an HB running and update.

@@ -11674,3 +11674,44 @@ func TestJetStreamClusterStreamCatchupWithTruncateAndPriorSnapshot(t *testing.T)
 	// With bug we would fail here.
 	c.waitOnStreamCurrent(rs, "$G", "TEST")
 }
+
+func TestJetStreamClusterNoOrphanedDueToNoConnection(t *testing.T) {
+	orgEventsHBInterval := eventsHBInterval
+	eventsHBInterval = 500 * time.Millisecond
+	defer func() { eventsHBInterval = orgEventsHBInterval }()
+
+	c := createJetStreamClusterExplicit(t, "R3F", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	checkSysServers := func() {
+		t.Helper()
+		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+			for _, s := range c.servers {
+				s.mu.RLock()
+				num := len(s.sys.servers)
+				s.mu.RUnlock()
+				if num != 2 {
+					return fmt.Errorf("Expected server %q to have 2 servers, got %v", s, num)
+				}
+			}
+			return nil
+		})
+	}
+
+	checkSysServers()
+	nc.Close()
+
+	time.Sleep(7 * eventsHBInterval)
+	checkSysServers()
+}
