@@ -4180,7 +4180,8 @@ func getMappingFunctionArgs(functionRegEx *regexp.Regexp, token string) []string
 
 // Helper to pull raw place holder indexes and number of partitions. Returns -1 if not a place holder.
 func placeHolderIndex(token string) ([]int, int32, error) {
-	if len(token) > 1 {
+	length := len(token)
+	if length > 1 {
 		// old $1, $2, etc... mapping format still supported to maintain backwards compatibility
 		if token[0] == '$' { // simple non-partition mapping
 			tp, err := strconv.Atoi(token[1:])
@@ -4191,45 +4192,47 @@ func placeHolderIndex(token string) ([]int, int32, error) {
 		}
 
 		// New 'mustache' style mapping
-		// wildcard(wildcard token index) (equivalent to $)
-		args := getMappingFunctionArgs(wildcardMappingFunctionRegEx, token)
-		if args != nil {
-			if len(args) == 1 && args[0] == _EMPTY_ {
-				return []int{-1}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
-			}
-			if len(args) == 1 {
-				tp, err := strconv.Atoi(strings.Trim(args[0], " "))
-				if err != nil {
-					return []int{}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
+		if length > 4 && token[0] == '{' && token[1] == '{' && token[length-2] == '}' && token[length-1] == '}' {
+			// wildcard(wildcard token index) (equivalent to $)
+			args := getMappingFunctionArgs(wildcardMappingFunctionRegEx, token)
+			if args != nil {
+				if len(args) == 1 && args[0] == _EMPTY_ {
+					return []int{-1}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
 				}
-				return []int{tp}, -1, nil
-			} else {
-				return []int{}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionTooManyArguments}
-			}
-		}
-
-		// partition(number of partitions, token1, token2, ...)
-		args = getMappingFunctionArgs(partitionMappingFunctionRegEx, token)
-		if args != nil {
-			if len(args) < 2 {
-				return []int{-1}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
-			}
-			if len(args) >= 2 {
-				tphnp, err := strconv.Atoi(strings.Trim(args[0], " "))
-				if err != nil {
-					return []int{}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
-				}
-				var numPositions = len(args[1:])
-				tps := make([]int, numPositions)
-				for ti, t := range args[1:] {
-					i, err := strconv.Atoi(strings.Trim(t, " "))
+				if len(args) == 1 {
+					tp, err := strconv.Atoi(strings.Trim(args[0], " "))
 					if err != nil {
 						return []int{}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
 					}
-					tps[ti] = i
+					return []int{tp}, -1, nil
+				} else {
+					return []int{}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionTooManyArguments}
 				}
-				return tps, int32(tphnp), nil
 			}
+			// partition(number of partitions, token1, token2, ...)
+			args = getMappingFunctionArgs(partitionMappingFunctionRegEx, token)
+			if args != nil {
+				if len(args) < 2 {
+					return []int{-1}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
+				}
+				if len(args) >= 2 {
+					tphnp, err := strconv.Atoi(strings.Trim(args[0], " "))
+					if err != nil {
+						return []int{}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
+					}
+					var numPositions = len(args[1:])
+					tps := make([]int, numPositions)
+					for ti, t := range args[1:] {
+						i, err := strconv.Atoi(strings.Trim(t, " "))
+						if err != nil {
+							return []int{}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
+						}
+						tps[ti] = i
+					}
+					return tps, int32(tphnp), nil
+				}
+			}
+			return []int{}, -1, &mappingDestinationErr{token, ErrUnknownMappingDestinationFunction}
 		}
 	}
 	return []int{-1}, -1, nil

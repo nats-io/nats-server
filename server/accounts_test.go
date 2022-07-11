@@ -3289,6 +3289,7 @@ func TestSubjectTransforms(t *testing.T) {
 	shouldErr("foo.*", "foo.{{wildcard(foo)}}")    // Invalid argument passed to the mapping function
 	shouldErr("foo.*", "foo.{{wildcard()}}")       // Not enough arguments passed to the mapping function
 	shouldErr("foo.*", "foo.{{wildcard(1,2)}}")    // Too many arguments passed to the mapping function
+	shouldErr("foo.*", "foo.{{ wildcard5) }}")     // Bad mapping function
 
 	shouldBeOK := func(src, dest string) *transform {
 		t.Helper()
