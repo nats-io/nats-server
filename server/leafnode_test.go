@@ -1306,7 +1306,7 @@ func TestLeafNodePermissions(t *testing.T) {
 	// Create a sub on ">" on LN1
 	subAll := natsSubSync(t, nc1, ">")
 	// this should be registered in LN2 (there is 1 sub for LN1 $LDS subject) + SYS IMPORTS
-	checkSubs(ln2.globalAccount(), 8)
+	checkSubs(ln2.globalAccount(), 10)
 
 	// Check deny export clause from messages published from LN2
 	for _, test := range []struct {
@@ -1333,7 +1333,7 @@ func TestLeafNodePermissions(t *testing.T) {
 
 	subAll.Unsubscribe()
 	// Goes down by 1.
-	checkSubs(ln2.globalAccount(), 7)
+	checkSubs(ln2.globalAccount(), 9)
 
 	// We used to make sure we would not do subscriptions however that
 	// was incorrect. We need to check publishes, not the subscriptions.
@@ -1358,7 +1358,7 @@ func TestLeafNodePermissions(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			sub := natsSubSync(t, nc2, test.subSubject)
-			checkSubs(ln2.globalAccount(), 8)
+			checkSubs(ln2.globalAccount(), 10)
 
 			if !test.ok {
 				nc1.Publish(test.pubSubject, []byte("msg"))
@@ -1366,12 +1366,12 @@ func TestLeafNodePermissions(t *testing.T) {
 					t.Fatalf("Did not expect to get the message")
 				}
 			} else {
-				checkSubs(ln1.globalAccount(), 7)
+				checkSubs(ln1.globalAccount(), 9)
 				nc1.Publish(test.pubSubject, []byte("msg"))
 				natsNexMsg(t, sub, time.Second)
 			}
 			sub.Unsubscribe()
-			checkSubs(ln1.globalAccount(), 6)
+			checkSubs(ln1.globalAccount(), 8)
 		})
 	}
 }
@@ -1492,8 +1492,8 @@ func TestLeafNodeExportPermissionsNotForSpecialSubs(t *testing.T) {
 	// The deny is totally restrictive, but make sure that we still accept the $LDS, $GR and _GR_ go from LN1.
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
 		// We should have registered the 3 subs from the accepting leafnode.
-		if n := ln2.globalAccount().TotalSubs(); n != 7 {
-			return fmt.Errorf("Expected %d subs, got %v", 7, n)
+		if n := ln2.globalAccount().TotalSubs(); n != 8 {
+			return fmt.Errorf("Expected %d subs, got %v", 8, n)
 		}
 		return nil
 	})
@@ -3395,7 +3395,7 @@ func TestLeafNodeRouteSubWithOrigin(t *testing.T) {
 	r1.Shutdown()
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
 		acc := l2.GlobalAccount()
-		if n := acc.TotalSubs(); n != 3 {
+		if n := acc.TotalSubs(); n != 4 {
 			return fmt.Errorf("Account %q should have 3 subs, got %v", acc.GetName(), n)
 		}
 		return nil

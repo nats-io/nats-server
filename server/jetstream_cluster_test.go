@@ -3948,7 +3948,7 @@ func TestJetStreamClusterPeerEvacuationAndStreamReassignment(t *testing.T) {
 			})
 		}
 		// Now wait until the stream is now current.
-		checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
+		checkFor(t, 50*time.Second, 100*time.Millisecond, func() error {
 			si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
 			if err != nil {
 				return fmt.Errorf("could not fetch stream info: %v", err)

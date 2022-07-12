@@ -1239,14 +1239,15 @@ func TestAccountReqMonitoring(t *testing.T) {
 	sacc, sakp := createAccount(s)
 	s.setSystemAccount(sacc)
 	s.EnableJetStream(nil)
+	unusedAcc, _ := createAccount(s)
 	acc, akp := createAccount(s)
-	if acc == nil {
-		t.Fatalf("did not create account")
-	}
 	acc.EnableJetStream(nil)
-	subsz := fmt.Sprintf(accReqSubj, acc.Name, "SUBSZ")
-	connz := fmt.Sprintf(accReqSubj, acc.Name, "CONNZ")
-	jsz := fmt.Sprintf(accReqSubj, acc.Name, "JSZ")
+	subsz := fmt.Sprintf(accDirectReqSubj, acc.Name, "SUBSZ")
+	connz := fmt.Sprintf(accDirectReqSubj, acc.Name, "CONNZ")
+	jsz := fmt.Sprintf(accDirectReqSubj, acc.Name, "JSZ")
+
+	pStatz := fmt.Sprintf(accPingReqSubj, "STATZ")
+	statz := func(name string) string { return fmt.Sprintf(accDirectReqSubj, name, "STATZ") }
 	// Create system account connection to query
 	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
 	ncSys, err := nats.Connect(url, createUserCreds(t, s, sakp))
@@ -1261,42 +1262,86 @@ func TestAccountReqMonitoring(t *testing.T) {
 	}
 	defer nc.Close()
 	// query SUBSZ for account
-	if resp, err := ncSys.Request(subsz, nil, time.Second); err != nil {
-		t.Fatalf("Error on request: %v", err)
-	} else if !strings.Contains(string(resp.Data), `"num_subscriptions":3,`) {
-		t.Fatalf("unexpected subs count (expected 3): %v", string(resp.Data))
-	}
+	resp, err := ncSys.Request(subsz, nil, time.Second)
+	require_NoError(t, err)
+	require_Contains(t, string(resp.Data), `"num_subscriptions":4,`)
 	// create a subscription
-	if sub, err := nc.Subscribe("foo", func(msg *nats.Msg) {}); err != nil {
-		t.Fatalf("error on subscribe %v", err)
-	} else {
-		defer sub.Unsubscribe()
-	}
-	nc.Flush()
+	sub, err := nc.Subscribe("foo", func(msg *nats.Msg) {})
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+
+	require_NoError(t, nc.Flush())
 	// query SUBSZ for account
-	if resp, err := ncSys.Request(subsz, nil, time.Second); err != nil {
-		t.Fatalf("Error on request: %v", err)
-	} else if !strings.Contains(string(resp.Data), `"num_subscriptions":4,`) {
-		t.Fatalf("unexpected subs count (expected 4): %v", string(resp.Data))
-	} else if !strings.Contains(string(resp.Data), `"subject":"foo"`) {
-		t.Fatalf("expected subscription foo: %v", string(resp.Data))
-	}
+	resp, err = ncSys.Request(subsz, nil, time.Second)
+	require_NoError(t, err)
+	require_Contains(t, string(resp.Data), `"num_subscriptions":5,`, `"subject":"foo"`)
 	// query connections for account
-	if resp, err := ncSys.Request(connz, nil, time.Second); err != nil {
-		t.Fatalf("Error on request: %v", err)
-	} else if !strings.Contains(string(resp.Data), `"num_connections":1,`) {
-		t.Fatalf("unexpected subs count (expected 1): %v", string(resp.Data))
-	} else if !strings.Contains(string(resp.Data), `"total":1,`) {
-		t.Fatalf("unexpected subs count (expected 1): %v", string(resp.Data))
-	}
+	resp, err = ncSys.Request(connz, nil, time.Second)
+	require_NoError(t, err)
+	require_Contains(t, string(resp.Data), `"num_connections":1,`, `"total":1,`)
 	// query connections for js account
-	if resp, err := ncSys.Request(jsz, nil, time.Second); err != nil {
-		t.Fatalf("Error on request: %v", err)
-	} else if !strings.Contains(string(resp.Data), `"memory":0,`) {
-		t.Fatalf("jetstream should be enabled but empty: %v", string(resp.Data))
-	} else if !strings.Contains(string(resp.Data), `"storage":0,`) {
-		t.Fatalf("jetstream should be enabled but empty: %v", string(resp.Data))
-	}
+	resp, err = ncSys.Request(jsz, nil, time.Second)
+	require_NoError(t, err)
+	require_Contains(t, string(resp.Data), `"memory":0,`, `"storage":0,`)
+	// query statz/conns for account
+	resp, err = ncSys.Request(statz(acc.Name), nil, time.Second)
+	require_NoError(t, err)
+	respContentAcc := []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"sent":{"msgs":0,"bytes":0}`,
+		`"received":{"msgs":0,"bytes":0}`, fmt.Sprintf(`"acc":"%s"`, acc.Name)}
+	require_Contains(t, string(resp.Data), respContentAcc...)
+
+	rIb := ncSys.NewRespInbox()
+	rSub, err := ncSys.SubscribeSync(rIb)
+	require_NoError(t, err)
+	require_NoError(t, ncSys.PublishRequest(pStatz, rIb, nil))
+	minRespContentForBothAcc := []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"acc":"`}
+	resp, err = rSub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Contains(t, string(resp.Data), minRespContentForBothAcc...)
+	// expect one entry per account
+	require_Contains(t, string(resp.Data), fmt.Sprintf(`"acc":"%s"`, acc.Name), fmt.Sprintf(`"acc":"%s"`, sacc.Name))
+
+	// Test ping with filter by account name
+	require_NoError(t, ncSys.PublishRequest(pStatz, rIb, []byte(fmt.Sprintf(`{"accounts":["%s"]}`, sacc.Name))))
+	m, err := rSub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Contains(t, string(m.Data), minRespContentForBothAcc...)
+
+	require_NoError(t, ncSys.PublishRequest(pStatz, rIb, []byte(fmt.Sprintf(`{"accounts":["%s"]}`, acc.Name))))
+	m, err = rSub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Contains(t, string(m.Data), respContentAcc...)
+
+	// Test include unused for statz and ping of statz
+	unusedContent := []string{`"conns":0,`, `"total_conns":0`, `"slow_consumers":0`,
+		fmt.Sprintf(`"acc":"%s"`, unusedAcc.Name)}
+
+	resp, err = ncSys.Request(statz(unusedAcc.Name),
+		[]byte(fmt.Sprintf(`{"accounts":["%s"], "include_unused":true}`, unusedAcc.Name)),
+		time.Second)
+	require_NoError(t, err)
+	require_Contains(t, string(resp.Data), unusedContent...)
+
+	require_NoError(t, ncSys.PublishRequest(pStatz, rIb,
+		[]byte(fmt.Sprintf(`{"accounts":["%s"], "include_unused":true}`, unusedAcc.Name))))
+	resp, err = rSub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Contains(t, string(resp.Data), unusedContent...)
+
+	require_NoError(t, ncSys.PublishRequest(pStatz, rIb, []byte(fmt.Sprintf(`{"accounts":["%s"]}`, unusedAcc.Name))))
+	_, err = rSub.NextMsg(200 * time.Millisecond)
+	require_Error(t, err)
+
+	// Test ping from within account
+	ib := nc.NewRespInbox()
+	rSub, err = nc.SubscribeSync(ib)
+	require_NoError(t, err)
+	require_NoError(t, nc.PublishRequest(pStatz, ib, nil))
+	resp, err = rSub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Contains(t, string(resp.Data), respContentAcc...)
+	_, err = rSub.NextMsg(200 * time.Millisecond)
+	require_Error(t, err)
 }
 
 func TestAccountReqInfo(t *testing.T) {
@@ -1312,7 +1357,7 @@ func TestAccountReqInfo(t *testing.T) {
 	ajwt1, _ := nac1.Encode(oKp)
 	addAccountToMemResolver(s, pub1, ajwt1)
 	s.LookupAccount(pub1)
-	info1 := fmt.Sprintf(accReqSubj, pub1, "INFO")
+	info1 := fmt.Sprintf(accDirectReqSubj, pub1, "INFO")
 	// Now add an account with service imports.
 	akp2, _ := nkeys.CreateAccount()
 	pub2, _ := akp2.PublicKey()
@@ -1321,7 +1366,7 @@ func TestAccountReqInfo(t *testing.T) {
 	ajwt2, _ := nac2.Encode(oKp)
 	addAccountToMemResolver(s, pub2, ajwt2)
 	s.LookupAccount(pub2)
-	info2 := fmt.Sprintf(accReqSubj, pub2, "INFO")
+	info2 := fmt.Sprintf(accDirectReqSubj, pub2, "INFO")
 	// Create system account connection to query
 	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
 	ncSys, err := nats.Connect(url, createUserCreds(t, s, sakp))
@@ -1369,7 +1414,7 @@ func TestAccountReqInfo(t *testing.T) {
 		t.Fatalf("Unmarshalling failed: %v", err)
 	} else if len(info.Exports) != 1 {
 		t.Fatalf("Unexpected value: %v", info.Exports)
-	} else if len(info.Imports) != 2 {
+	} else if len(info.Imports) != 3 {
 		t.Fatalf("Unexpected value: %+v", info.Imports)
 	} else if info.Exports[0].Subject != "req.*" {
 		t.Fatalf("Unexpected value: %v", info.Exports)
@@ -1377,7 +1422,7 @@ func TestAccountReqInfo(t *testing.T) {
 		t.Fatalf("Unexpected value: %v", info.Exports)
 	} else if info.Exports[0].ResponseType != jwt.ResponseTypeSingleton {
 		t.Fatalf("Unexpected value: %v", info.Exports)
-	} else if info.SubCnt != 2 {
+	} else if info.SubCnt != 3 {
 		t.Fatalf("Unexpected value: %v", info.SubCnt)
 	} else {
 		checkCommon(&info, &srv, pub1, ajwt1)
@@ -1390,7 +1435,7 @@ func TestAccountReqInfo(t *testing.T) {
 		t.Fatalf("Unmarshalling failed: %v", err)
 	} else if len(info.Exports) != 0 {
 		t.Fatalf("Unexpected value: %v", info.Exports)
-	} else if len(info.Imports) != 3 {
+	} else if len(info.Imports) != 4 {
 		t.Fatalf("Unexpected value: %+v", info.Imports)
 	}
 	// Here we need to find our import
@@ -1408,7 +1453,7 @@ func TestAccountReqInfo(t *testing.T) {
 		t.Fatalf("Unexpected value: %+v", si)
 	} else if si.Account != pub1 {
 		t.Fatalf("Unexpected value: %+v", si)
-	} else if info.SubCnt != 3 {
+	} else if info.SubCnt != 4 {
 		t.Fatalf("Unexpected value: %+v", si)
 	} else {
 		checkCommon(&info, &srv, pub2, ajwt2)
@@ -1611,7 +1656,7 @@ func TestSystemAccountWithGateways(t *testing.T) {
 
 	// If this tests fails with wrong number after 10 seconds we may have
 	// added a new inititial subscription for the eventing system.
-	checkExpectedSubs(t, 40, sa)
+	checkExpectedSubs(t, 45, sa)
 
 	// Create a client on B and see if we receive the event
 	urlb := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
@@ -2123,6 +2168,8 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 			[]string{"now", "routes"}},
 
 		{"JSZ", nil, &JSzOptions{}, []string{"now", "disabled"}},
+
+		{"HEALTHZ", nil, &JSzOptions{}, []string{"status"}},
 	}
 
 	for i, test := range tests {

@@ -440,7 +440,7 @@ func TestLeafNodeAndRoutes(t *testing.T) {
 	lc := createLeafConn(t, optsA.LeafNode.Host, optsA.LeafNode.Port)
 	defer lc.Close()
 
-	leafSend, leafExpect := setupLeaf(t, lc, 4)
+	leafSend, leafExpect := setupLeaf(t, lc, 5)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -834,7 +834,7 @@ func TestLeafNodeGatewaySendsSystemEvent(t *testing.T) {
 	defer lc.Close()
 
 	// This is for our global responses since we are setting up GWs above.
-	leafSend, leafExpect := setupLeaf(t, lc, 6)
+	leafSend, leafExpect := setupLeaf(t, lc, 7)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -878,13 +878,13 @@ func TestLeafNodeGatewayInterestPropagation(t *testing.T) {
 	buf := leafExpect(infoRe)
 	buf = infoRe.ReplaceAll(buf, []byte(nil))
 	foundFoo := false
-	for count := 0; count != 8; {
+	for count := 0; count != 9; {
 		// skip first time if we still have data (buf from above may already have some left)
 		if count != 0 || len(buf) == 0 {
 			buf = append(buf, leafExpect(anyRe)...)
 		}
 		count += len(lsubRe.FindAllSubmatch(buf, -1))
-		if count > 8 {
+		if count > 9 {
 			t.Fatalf("Expected %v matches, got %v (buf=%s)", 8, count, buf)
 		}
 		if strings.Contains(string(buf), "foo") {
@@ -937,7 +937,7 @@ func TestLeafNodeWithRouteAndGateway(t *testing.T) {
 	defer lc.Close()
 
 	// This is for our global responses since we are setting up GWs above.
-	leafSend, leafExpect := setupLeaf(t, lc, 6)
+	leafSend, leafExpect := setupLeaf(t, lc, 7)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -996,7 +996,7 @@ func TestLeafNodeWithGatewaysAndStaggeredStart(t *testing.T) {
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	leafSend, leafExpect := setupLeaf(t, lc, 6)
+	leafSend, leafExpect := setupLeaf(t, lc, 7)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -1036,7 +1036,7 @@ func TestLeafNodeWithGatewaysServerRestart(t *testing.T) {
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	leafSend, leafExpect := setupLeaf(t, lc, 6)
+	leafSend, leafExpect := setupLeaf(t, lc, 7)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -1070,7 +1070,7 @@ func TestLeafNodeWithGatewaysServerRestart(t *testing.T) {
 	lc = createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	_, leafExpect = setupLeaf(t, lc, 6)
+	_, leafExpect = setupLeaf(t, lc, 7)
 
 	// Now wait on GW solicit to fire
 	time.Sleep(500 * time.Millisecond)
@@ -1530,7 +1530,7 @@ func TestLeafNodeMultipleAccounts(t *testing.T) {
 	defer s.Shutdown()
 
 	// Setup the two accounts for this server.
-	_, akp1 := createAccount(t, s)
+	a, akp1 := createAccount(t, s)
 	kp1, _ := nkeys.CreateUser()
 	pub1, _ := kp1.PublicKey()
 	nuc1 := jwt.NewUserClaims(pub1)
@@ -1575,12 +1575,7 @@ func TestLeafNodeMultipleAccounts(t *testing.T) {
 	lsub, _ := ncl.SubscribeSync("foo.test")
 
 	// Wait for the subs to propagate. LDS + foo.test
-	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
-		if subs := s.NumSubscriptions(); subs < 4 {
-			return fmt.Errorf("Number of subs is %d", subs)
-		}
-		return nil
-	})
+	checkSubInterest(t, s, a.GetName(), "foo.test", 2*time.Second)
 
 	// Now send from nc1 with account 1, should be received by our leafnode subscriber.
 	nc1.Publish("foo.test", nil)
@@ -1909,12 +1904,7 @@ func TestLeafNodeExportsImports(t *testing.T) {
 	lsub, _ := ncl.SubscribeSync("import.foo.stream")
 
 	// Wait for all subs to propagate.
-	checkFor(t, time.Second, 10*time.Millisecond, func() error {
-		if subs := s.NumSubscriptions(); subs < 5 {
-			return fmt.Errorf("Number of subs is %d", subs)
-		}
-		return nil
-	})
+	checkSubInterest(t, s, acc1.GetName(), "import.foo.stream", time.Second)
 
 	// Pub to other account with export on original subject.
 	nc2.Publish("foo.stream", nil)
@@ -2074,7 +2064,7 @@ func TestLeafNodeExportImportComplexSetup(t *testing.T) {
 
 	// Wait for the sub to propagate to s2. LDS + subject above.
 	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
-		if acc1.RoutedSubs() != 4 {
+		if acc1.RoutedSubs() != 5 {
 			return fmt.Errorf("Still no routed subscription: %d", acc1.RoutedSubs())
 		}
 		return nil
@@ -2660,7 +2650,7 @@ func TestLeafNodeSwitchGatewayToInterestModeOnly(t *testing.T) {
 	defer lc.Close()
 
 	// This is for our global responses since we are setting up GWs above.
-	leafSend, leafExpect := setupLeaf(t, lc, 6)
+	leafSend, leafExpect := setupLeaf(t, lc, 7)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 }

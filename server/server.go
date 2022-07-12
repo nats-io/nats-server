@@ -2267,18 +2267,19 @@ func (s *Server) StartMonitoring() error {
 
 // HTTP endpoints
 const (
-	RootPath     = "/"
-	VarzPath     = "/varz"
-	ConnzPath    = "/connz"
-	RoutezPath   = "/routez"
-	GatewayzPath = "/gatewayz"
-	LeafzPath    = "/leafz"
-	SubszPath    = "/subsz"
-	StackszPath  = "/stacksz"
-	AccountzPath = "/accountz"
-	JszPath      = "/jsz"
-	HealthzPath  = "/healthz"
-	IPQueuesPath = "/ipqueuesz"
+	RootPath         = "/"
+	VarzPath         = "/varz"
+	ConnzPath        = "/connz"
+	RoutezPath       = "/routez"
+	GatewayzPath     = "/gatewayz"
+	LeafzPath        = "/leafz"
+	SubszPath        = "/subsz"
+	StackszPath      = "/stacksz"
+	AccountzPath     = "/accountz"
+	AccountStatzPath = "/accstatz"
+	JszPath          = "/jsz"
+	HealthzPath      = "/healthz"
+	IPQueuesPath     = "/ipqueuesz"
 )
 
 func (s *Server) basePath(p string) string {
@@ -2381,6 +2382,8 @@ func (s *Server) startMonitoring(secure bool) error {
 	mux.HandleFunc(s.basePath(StackszPath), s.HandleStacksz)
 	// Accountz
 	mux.HandleFunc(s.basePath(AccountzPath), s.HandleAccountz)
+	// Accstatz
+	mux.HandleFunc(s.basePath(AccountStatzPath), s.HandleAccountStatz)
 	// Jsz
 	mux.HandleFunc(s.basePath(JszPath), s.HandleJsz)
 	// Healthz
