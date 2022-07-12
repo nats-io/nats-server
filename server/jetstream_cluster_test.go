@@ -3735,9 +3735,9 @@ func TestJetStreamClusterDoubleStreamReassignment(t *testing.T) {
 		require_True(t, jszBefore.Streams == 1)
 
 		moveReq, err := json.Marshal(&JSApiMetaServerStreamMoveRequest{
-			Server: fromSrv, Account: "$G", Stream: "TEST", Tags: toTags})
+			Server: fromSrv, Tags: toTags})
 		require_NoError(t, err)
-		rmsg, err := ncsys.Request(JSApiServerStreamMove, moveReq, 100*time.Second)
+		rmsg, err := ncsys.Request(fmt.Sprintf(JSApiServerStreamMoveT, "$G", "TEST"), moveReq, 100*time.Second)
 		require_NoError(t, err)
 		var moveResp JSApiStreamUpdateResponse
 		require_NoError(t, json.Unmarshal(rmsg.Data, &moveResp))
@@ -3812,7 +3812,7 @@ func TestJetStreamClusterDoubleStreamReassignment(t *testing.T) {
 
 	moveAndCheck := func(from, to string, expectedSet ...string) {
 		move(from, to)
-		checkFor(t, 20*time.Second, 100*time.Millisecond, func() error { return moveComplete(to, expectedSet...) })
+		checkFor(t, 40*time.Second, 100*time.Millisecond, func() error { return moveComplete(to, expectedSet...) })
 		checkFor(t, 20*time.Second, 100*time.Millisecond, func() error { return serverEmpty(from) })
 	}
 
@@ -3925,9 +3925,9 @@ func TestJetStreamClusterPeerEvacuationAndStreamReassignment(t *testing.T) {
 		defer ncsys.Close()
 
 		moveReq, err := json.Marshal(&JSApiMetaServerStreamMoveRequest{
-			Server: toMoveFrom, Account: "$G", Stream: "TEST", Tags: moveTags})
+			Server: toMoveFrom, Tags: moveTags})
 		require_NoError(t, err)
-		rmsg, err := ncsys.Request(JSApiServerStreamMove, moveReq, 100*time.Second)
+		rmsg, err := ncsys.Request(fmt.Sprintf(JSApiServerStreamMoveT, "$G", "TEST"), moveReq, 100*time.Second)
 		require_NoError(t, err)
 		var moveResp JSApiStreamUpdateResponse
 		require_NoError(t, json.Unmarshal(rmsg.Data, &moveResp))

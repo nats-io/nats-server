@@ -1268,5 +1268,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSStreamMoveNotInProgress",
+    "code": 400,
+    "error_code": 10129,
+    "description": "stream move not in progress",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

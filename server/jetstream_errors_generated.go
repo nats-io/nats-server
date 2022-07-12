@@ -314,6 +314,9 @@ const (
 	// JSStreamMoveInProgress stream move already in progress
 	JSStreamMoveInProgress ErrorIdentifier = 10124
 
+	// JSStreamMoveNotInProgress stream move not in progress
+	JSStreamMoveNotInProgress ErrorIdentifier = 10129
+
 	// JSStreamMsgDeleteFailedF Generic message deletion failure error string ({err})
 	JSStreamMsgDeleteFailedF ErrorIdentifier = 10057
 
@@ -492,6 +495,7 @@ var (
 		JSStreamMismatchErr:                        {Code: 400, ErrCode: 10056, Description: "stream name in subject does not match request"},
 		JSStreamMoveAndScaleErr:                    {Code: 400, ErrCode: 10123, Description: "can not move and scale a stream in a single update"},
 		JSStreamMoveInProgress:                     {Code: 400, ErrCode: 10124, Description: "stream move already in progress"},
+		JSStreamMoveNotInProgress:                  {Code: 400, ErrCode: 10129, Description: "stream move not in progress"},
 		JSStreamMsgDeleteFailedF:                   {Code: 500, ErrCode: 10057, Description: "{err}"},
 		JSStreamNameContainsPathSeparatorsErr:      {Code: 400, ErrCode: 10128, Description: "Stream name can not contain path separators"},
 		JSStreamNameExistErr:                       {Code: 400, ErrCode: 10058, Description: "stream name already in use"},
@@ -1701,6 +1705,16 @@ func NewJSStreamMoveInProgressError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSStreamMoveInProgress]
+}
+
+// NewJSStreamMoveNotInProgressError creates a new JSStreamMoveNotInProgress error: "stream move not in progress"
+func NewJSStreamMoveNotInProgressError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSStreamMoveNotInProgress]
 }
 
 // NewJSStreamMsgDeleteFailedError creates a new JSStreamMsgDeleteFailedF error: "{err}"
