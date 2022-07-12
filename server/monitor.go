@@ -92,10 +92,6 @@ type ConnzOptions struct {
 
 	// Filter by subject interest
 	FilterSubject string `json:"filter_subject"`
-
-	// Private indication that this request is from an account and not a system account.
-	// Used to not leak system level information to the account.
-	isAccountReq bool
 }
 
 // ConnState is for filtering states of connections. We will only have two, open and closed.
@@ -256,9 +252,6 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 
 	var clist map[uint64]*client
 
-	// If this is an account scoped request from a no $SYS account.
-	isAccReq := acc != _EMPTY_ && opts.isAccountReq
-
 	if acc != _EMPTY_ {
 		var err error
 		a, err = s.lookupAccount(acc)
@@ -300,7 +293,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	}
 
 	// We may need to filter these connections.
-	if isAccReq && len(closedClients) > 0 {
+	if acc != _EMPTY_ && len(closedClients) > 0 {
 		var ccc []*closedClient
 		for _, cc := range closedClients {
 			if cc.acc == acc {
@@ -2183,7 +2176,7 @@ func (s *Server) AccountStatz(opts *AccountStatzOptions) (*AccountStatz, error) 
 			acc := a.(*Account)
 			acc.mu.RLock()
 			if opts.IncludeUnused || acc.numLocalConnections() != 0 {
-				stz.Accounts = append(stz.Accounts, acc.accConns())
+				stz.Accounts = append(stz.Accounts, acc.statz())
 			}
 			acc.mu.RUnlock()
 			return true
@@ -2194,7 +2187,7 @@ func (s *Server) AccountStatz(opts *AccountStatzOptions) (*AccountStatz, error) 
 				acc := acc.(*Account)
 				acc.mu.RLock()
 				if opts.IncludeUnused || acc.numLocalConnections() != 0 {
-					stz.Accounts = append(stz.Accounts, acc.accConns())
+					stz.Accounts = append(stz.Accounts, acc.statz())
 				}
 				acc.mu.RUnlock()
 			}

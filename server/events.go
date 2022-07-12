@@ -139,7 +139,7 @@ const DisconnectEventMsgType = "io.nats.server.advisory.v1.client_disconnect"
 type AccountNumConns struct {
 	TypedEvent
 	Server ServerInfo `json:"server"`
-	*AccountStat
+	AccountStat
 }
 
 // AccountStat contains the data common between AccountNumConns and AccountStatz
@@ -901,7 +901,7 @@ func (s *Server) initEventTracking() {
 					return _EMPTY_, fmt.Errorf("bad request")
 				}
 			}
-			return tk[accReqAccIndex], nil
+			return acc, nil
 		}
 	}
 	monAccSrvc := map[string]msgHandler{
@@ -968,7 +968,7 @@ func (s *Server) initEventTracking() {
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
 				if acc, err := extractAccount(c, subject, msg); err != nil {
 					return nil, err
-				} else if acc == "PING" { // Filter ping subject, this happens for server too, but filter is less explicit
+				} else if acc == "PING" { // Filter PING subject. Happens for server as well. But wildcards are not used
 					return nil, errSkipZreq
 				} else {
 					optz.Accounts = []string{acc}
@@ -1701,13 +1701,14 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 	// Build event with account name and number of local clients and leafnodes.
 	eid := s.nextEventID()
 	a.mu.Lock()
+	stat := a.statz()
 	m := AccountNumConns{
 		TypedEvent: TypedEvent{
 			Type: AccountNumConnsMsgType,
 			ID:   eid,
 			Time: time.Now().UTC(),
 		},
-		AccountStat: a.accConns(),
+		AccountStat: *stat,
 	}
 	// Set timer to fire again unless we are at zero, but only if the account
 	// is not configured for JetStream.
@@ -1729,7 +1730,7 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 }
 
 // Lock shoulc be held on entry
-func (a *Account) accConns() *AccountStat {
+func (a *Account) statz() *AccountStat {
 	localConns := a.numLocalConnections()
 	leafConns := a.numLocalLeafNodes()
 	return &AccountStat{
