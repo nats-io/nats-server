@@ -2361,11 +2361,11 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 
 	cfg.Placement = origPlacement
 
-	s.Noticef("Requested move of: R=%d stream %s in account %s from old peer set %+v to new peer set %+v",
+	s.Noticef("Requested move of: R=%d stream '%s > %s' from old peer set %+v to new peer set %+v",
 		cfg.Replicas, streamName, accName, s.peerSetToNames(currPeers), s.peerSetToNames(peers))
 
-	// execute on a go routine for route or gateway, as this may block waiting from responses from other servers and
-	// therefore block all route/gateway traffic.
+	// If we are inline with client, we still may need to do a callout for stream info
+	// during this call, so place in Go routine to not block client.
 	if c.kind != ROUTER && c.kind != GATEWAY {
 		go s.jsClusteredStreamUpdateRequest(&ciNew, targetAcc.(*Account), subject, reply, rmsg, &cfg, peers)
 	} else {
@@ -2444,11 +2444,11 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 
 	peers := currPeers[:cfg.Replicas]
 
-	s.Noticef("Requested cancel of move: R=%d stream %s in account %s from old peer set %+v to new peer set %+v",
+	s.Noticef("Requested cancel of move: R=%d '%s > %s' from old peer set %+v to new peer set %+v",
 		cfg.Replicas, streamName, accName, s.peerSetToNames(currPeers), s.peerSetToNames(peers))
 
-	// execute on a go routine for route or gateway, as this may block waiting from responses from other servers and
-	// therefore block all route/gateway traffic.
+	// If we are inline with client, we still may need to do a callout for stream info
+	// during this call, so place in Go routine to not block client.
 	if c.kind != ROUTER && c.kind != GATEWAY {
 		go s.jsClusteredStreamUpdateRequest(&ciNew, targetAcc.(*Account), subject, reply, rmsg, &cfg, peers)
 	} else {
