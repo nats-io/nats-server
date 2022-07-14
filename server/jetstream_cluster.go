@@ -1831,7 +1831,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 			// Check for migrations here. We set the state on the stream assignment update below.
 			if isLeader && migrating && mmtc == nil {
-				doSnapshot()
 				startMigrationMonitoring()
 			}
 
@@ -4891,18 +4890,48 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 
 		for _, ca := range osa.consumers {
 			cca := ca.copyGroup()
-			// Ephemerals are R=1, so only auto-remap if consumer peer count == nrg peer count.
-			if len(ca.Group.Peers) == newCfg.Replicas {
-				cca.Group.Peers = peerSet
-			} else {
+			// We chose to have ephemerals be R=1 unless stream is interest or workqueue.
+			if isR1 := !isDurableConsumer(cca.Config) && newCfg.Retention == LimitsPolicy; isR1 {
 				// This is an ephemeral, so R1. Just randomly pick a single peer from the new set.
-				randPeer := peerSet[len(peerSet)-newCfg.Replicas:][rand.Int31n(int32(newCfg.Replicas))]
-				cca.Group.Peers = append(cca.Group.Peers, randPeer)
+				randPeer := peerSet[len(peerSet)-newCfg.Replicas:][rand.Intn(newCfg.Replicas)]
+				if len(peerSet) == newCfg.Replicas {
+					// explicit set or cancel
+					// Prefer the peer present in peerSet. If none is found, default to random entry
+				CHECK_PEERS:
+					for _, s := range peerSet {
+						for _, p := range cca.Group.Peers {
+							if s == p {
+								// prefer peer that exists in both sets
+								randPeer = p
+								break CHECK_PEERS
+							}
+						}
+					}
+					cca.Group.Peers = []string{randPeer}
+				} else {
+					cca.Group.Peers = append(cca.Group.Peers, randPeer)
+				}
+			} else {
+				// exactly track stream peerSet
+				cca.Group.Peers = peerSet
+			}
+			// make sure it overlaps with peers
+			if cca.Group.Preferred != _EMPTY_ {
+				found := false
+				for _, p := range cca.Group.Peers {
+					if p == cca.Group.Preferred {
+						found = true
+						break
+					}
+				}
+				if !found {
+					cca.Group.Preferred = _EMPTY_
+				}
 			}
 			// Make sure to set if not already set.
-			if cca.Group.Preferred == _EMPTY_ {
-				cca.Group.Preferred = cca.Group.Peers[0]
-			}
+			//if cca.Group.Preferred == _EMPTY_ {
+			//	cca.Group.Preferred = cca.Group.Peers[0]
+			//}
 			// We can not propose here before the stream itself so we collect them.
 			consumers = append(consumers, cca)
 		}
@@ -5496,8 +5525,8 @@ func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *stre
 		return nil
 	}
 	if cfg.Replicas > 0 && cfg.Replicas != len(peers) {
-		rand.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
 		peers = peers[:cfg.Replicas]
+		rand.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
 	}
 	storage := sa.Config.Storage
 	if cfg.MemoryStorage {

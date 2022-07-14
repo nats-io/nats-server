@@ -35,6 +35,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats-server/v2/logger"
+
 	"github.com/nats-io/nats.go"
 )
 
@@ -3673,7 +3675,142 @@ func TestJetStreamClusterPeerExclusionTag(t *testing.T) {
 	require_NoError(t, err)
 }
 
-func TestJetStreamClusterDoubleStreamReassignment(t *testing.T) {
+func TestJetStreamClusterMoveCancel(t *testing.T) {
+	server := map[string]struct{}{}
+	sc := createJetStreamSuperClusterWithTemplateAndModHook(t, jsClusterTempl, 4, 2,
+		func(serverName, clusterName, storeDir, conf string) string {
+			server[serverName] = struct{}{}
+			return fmt.Sprintf("%s\nserver_tags: [%s]", conf, serverName)
+		})
+	defer sc.shutdown()
+
+	// Client based API
+	c := sc.randomCluster()
+	srv := c.randomNonLeader()
+	nc, js := jsClientConnect(t, srv)
+	defer nc.Close()
+
+	siCreate, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	streamPeerSrv := []string{siCreate.Cluster.Leader, siCreate.Cluster.Replicas[0].Name, siCreate.Cluster.Replicas[1].Name}
+	// determine empty server
+	for _, s := range streamPeerSrv {
+		delete(server, s)
+	}
+	// pick left over server in same cluster as other server
+	emptySrv := _EMPTY_
+	for s := range server {
+		// server name is prefixed with cluster name
+		if strings.HasPrefix(s, c.name) {
+			emptySrv = s
+			break
+		}
+	}
+
+	expectedPeers := map[string]struct{}{
+		string(getHash(streamPeerSrv[0])): {},
+		string(getHash(streamPeerSrv[1])): {},
+		string(getHash(streamPeerSrv[2])): {},
+	}
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "DUR", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{InactiveThreshold: time.Hour, AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	ephName := ci.Name
+
+	toSend := uint64(100_000)
+	for i := uint64(0); i < toSend; i++ {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	serverEmpty := func(fromSrv string) error {
+		if jszAfter, err := c.serverByName(fromSrv).Jsz(nil); err != nil {
+			return fmt.Errorf("could not fetch JS info for server: %v", err)
+		} else if jszAfter.Streams != 0 {
+			return fmt.Errorf("empty server still has %d streams", jszAfter.Streams)
+		} else if jszAfter.Consumers != 0 {
+			return fmt.Errorf("empty server still has %d consumers", jszAfter.Consumers)
+		} else if jszAfter.Store != 0 {
+			return fmt.Errorf("empty server still has %d storage", jszAfter.Store)
+		}
+		return nil
+	}
+
+	checkSrvInvariant := func(s *Server, expectedPeers map[string]struct{}) error {
+		js, cc := s.getJetStreamCluster()
+		js.mu.Lock()
+		defer js.mu.Unlock()
+		if sa, ok := cc.streams["$G"]["TEST"]; !ok {
+			return fmt.Errorf("stream not found")
+		} else if len(sa.Group.Peers) != len(expectedPeers) {
+			return fmt.Errorf("stream peer group size not %d, but %d", len(expectedPeers), len(sa.Group.Peers))
+		} else if da, ok := sa.consumers["DUR"]; !ok {
+			return fmt.Errorf("durable not found")
+		} else if len(da.Group.Peers) != len(expectedPeers) {
+			return fmt.Errorf("durable peer group size not %d, but %d", len(expectedPeers), len(da.Group.Peers))
+		} else if ea, ok := sa.consumers[ephName]; !ok {
+			return fmt.Errorf("ephemeral not found")
+		} else if len(ea.Group.Peers) != 1 {
+			return fmt.Errorf("ephemeral peer group size not 1, but %d", len(ea.Group.Peers))
+		} else {
+			foundEphemeral := false
+			for i, p := range sa.Group.Peers {
+				if da.Group.Peers[i] != p {
+					return fmt.Errorf("durable peer group does not match stream peer group")
+				}
+				if ea.Group.Peers[0] == p {
+					foundEphemeral = true
+				}
+				if _, ok := expectedPeers[p]; !ok {
+					return fmt.Errorf("peer not expected")
+				}
+			}
+			if !foundEphemeral {
+				return fmt.Errorf("ephemeral peer not overlapping with stream")
+			}
+		}
+		return nil
+	}
+
+	ncsys, err := nats.Connect(srv.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer ncsys.Close()
+
+	moveFromSrv := streamPeerSrv[rand.Intn(len(streamPeerSrv))]
+	moveReq, err := json.Marshal(&JSApiMetaServerStreamMoveRequest{Server: moveFromSrv, Tags: []string{emptySrv}})
+	require_NoError(t, err)
+	rmsg, err := ncsys.Request(fmt.Sprintf(JSApiServerStreamMoveT, "$G", "TEST"), moveReq, 5*time.Second)
+	require_NoError(t, err)
+	var moveResp JSApiStreamUpdateResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &moveResp))
+	require_True(t, moveResp.Error == nil)
+
+	rmsg, err = ncsys.Request(fmt.Sprintf(JSApiServerStreamCancelMoveT, "$G", "TEST"), nil, 5*time.Second)
+	require_NoError(t, err)
+	var cancelResp JSApiStreamUpdateResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &cancelResp))
+	if cancelResp.Error != nil && ErrorIdentifier(cancelResp.Error.ErrCode) == JSStreamMoveNotInProgress {
+		t.Skip("This can happen with delays, when Move completed before Cancel", cancelResp.Error)
+		return
+	}
+	require_True(t, cancelResp.Error == nil)
+
+	for _, sExpected := range streamPeerSrv {
+		s := c.serverByName(sExpected)
+		require_True(t, s.JetStreamIsStreamAssigned("$G", "TEST"))
+		//TODO should be able to just have: require_NoError(t, checkSrvInvariant(s))
+		checkFor(t, 20*time.Second, 100*time.Millisecond, func() error { return checkSrvInvariant(s, expectedPeers) })
+	}
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error { return serverEmpty(emptySrv) })
+}
+
+func TestJetStreamClusterDoubleStreamMove(t *testing.T) {
 	server := map[string]struct{}{}
 	sc := createJetStreamSuperClusterWithTemplateAndModHook(t, jsClusterTempl, 4, 2,
 		func(serverName, clusterName, storeDir, conf string) string {
@@ -3767,6 +3904,7 @@ func TestJetStreamClusterDoubleStreamReassignment(t *testing.T) {
 			}
 			// test list order invariant
 			js, cc := s.getJetStreamCluster()
+			sExpHash := string(getHash(sExpected))
 			js.mu.Lock()
 			if sa, ok := cc.streams["$G"]["TEST"]; !ok {
 				js.mu.Unlock()
@@ -3774,10 +3912,17 @@ func TestJetStreamClusterDoubleStreamReassignment(t *testing.T) {
 			} else if len(sa.Group.Peers) != 3 {
 				js.mu.Unlock()
 				return fmt.Errorf("peers not reset")
-			} else if sa.Group.Peers[i] != string(getHash(sExpected)) {
+			} else if sa.Group.Peers[i] != sExpHash {
 				js.mu.Unlock()
-				return fmt.Errorf("expected peer %s on index %d, got %s/%s",
-					sa.Group.Peers[i], i, string(getHash(sExpected)), sExpected)
+				return fmt.Errorf("stream: expected peer %s on index %d, got %s/%s",
+					sa.Group.Peers[i], i, sExpHash, sExpected)
+			} else if ca, ok := sa.consumers["DUR"]; !ok {
+				js.mu.Unlock()
+				return fmt.Errorf("durable not found in stream")
+			} else if ca.Group.Peers[i] != sExpHash {
+				js.mu.Unlock()
+				return fmt.Errorf("consumer expected peer %s on index %d, got %s/%s",
+					sa.Group.Peers[i], i, sExpHash, sExpected)
 			}
 			js.mu.Unlock()
 		}
@@ -3924,6 +4069,8 @@ func TestJetStreamClusterPeerEvacuationAndStreamReassignment(t *testing.T) {
 		require_NoError(t, err)
 		defer ncsys.Close()
 
+		s.leader().SetLoggerV2(logger.NewTestLogger("", true), false, false, true)
+
 		moveReq, err := json.Marshal(&JSApiMetaServerStreamMoveRequest{
 			Server: toMoveFrom, Tags: moveTags})
 		require_NoError(t, err)
@@ -3960,7 +4107,7 @@ func TestJetStreamClusterPeerEvacuationAndStreamReassignment(t *testing.T) {
 				return fmt.Errorf("no leader yet")
 			}
 			if len(si.Cluster.Replicas) != r-1 {
-				return fmt.Errorf("not yet downsized replica should be empty has: %d", len(si.Cluster.Replicas))
+				return fmt.Errorf("not yet downsized replica should be %d has: %d", r-1, len(si.Cluster.Replicas))
 			}
 			if si.Config.Replicas != r {
 				return fmt.Errorf("bad replica count %d", si.Config.Replicas)

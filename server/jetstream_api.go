@@ -2434,11 +2434,11 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 
 	// make sure client is scoped to requested account
 	ciNew := *(ci)
-	ciNew.Account = streamName
+	ciNew.Account = accName
 
 	peers := currPeers[:cfg.Replicas]
 
-	s.Noticef("Requested cancel of move: R=%d '%s > %s' from old peer set %+v to new peer set %+v",
+	s.Noticef("Requested cancel of move: R=%d '%s > %s' to peer set %+v and restore previous peer set %+v",
 		cfg.Replicas, streamName, accName, s.peerSetToNames(currPeers), s.peerSetToNames(peers))
 
 	// we will always have peers and therefore never do a callout, therefore it is safe to call inline
