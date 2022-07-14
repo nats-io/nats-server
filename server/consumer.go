@@ -203,6 +203,17 @@ var (
 	AckTerm = []byte("+TERM")
 )
 
+func (consCfg ConsumerConfig) replicas(strCfg *StreamConfig) int {
+	if consCfg.Replicas == 0 {
+		if !isDurableConsumer(&consCfg) && strCfg.Retention == LimitsPolicy {
+			return 1
+		}
+		return strCfg.Replicas
+	} else {
+		return consCfg.Replicas
+	}
+}
+
 // Consumer is a jetstream consumer.
 type consumer struct {
 	// Atomic used to notify that we want to process an ack.

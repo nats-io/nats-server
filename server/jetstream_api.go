@@ -2332,7 +2332,7 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 		cfg.Placement.Tags = append(cfg.Placement.Tags, req.Tags...)
 	}
 
-	peers := cc.selectPeerGroup(cfg.Replicas+1, currCluster, &cfg, currPeers)
+	peers := cc.selectPeerGroup(cfg.Replicas+1, currCluster, &cfg, currPeers, 1)
 	if len(peers) <= cfg.Replicas {
 		// since expanding in the same cluster did not yield a result, try in different cluster
 		peers = nil
@@ -2345,7 +2345,7 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 			return true
 		})
 		for cluster := range clusters {
-			newPeers := cc.selectPeerGroup(cfg.Replicas, cluster, &cfg, nil)
+			newPeers := cc.selectPeerGroup(cfg.Replicas, cluster, &cfg, nil, 0)
 			if len(newPeers) >= cfg.Replicas {
 				peers = append([]string{}, currPeers...)
 				peers = append(peers, newPeers[:cfg.Replicas]...)

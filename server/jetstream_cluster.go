@@ -1323,8 +1323,8 @@ func (js *jetStream) processRemovePeer(peer string) {
 }
 
 // Remove old peers after the new peers are caught up.
-// We are the old stream leader here.
-func (js *jetStream) removeOldPeers(mset *stream, newPreferred string, newPeerSet []string) {
+// We are the stream leader here
+func (js *jetStream) truncateOldPeers(mset *stream, newPreferred string) {
 	// Make sure still valid.
 	mset.mu.Lock()
 	isValid := mset.qch != nil
@@ -1345,19 +1345,12 @@ func (js *jetStream) removeOldPeers(mset *stream, newPreferred string, newPeerSe
 	}
 
 	cc, csa := js.cluster, sa.copyGroup()
-	numExpandedPeers := len(csa.Group.Peers)
-	csa.Group.Peers = newPeerSet
-
+	csa.Group.Peers = csa.Group.Peers[len(csa.Group.Peers)-csa.Config.Replicas:]
 	// Now do consumers actually first here, followed by the owning stream.
 	for _, ca := range csa.consumers {
 		cca := ca.copyGroup()
-		numPeers := len(cca.Group.Peers)
-		if numPeers == numExpandedPeers {
-			cca.Group.Peers = csa.Group.Peers
-			cca.Group.Preferred = _EMPTY_
-		} else {
-			cca.Group.Peers = cca.Group.Peers[len(cca.Group.Peers)-1:]
-		}
+		r := cca.Config.replicas(csa.Config)
+		cca.Group.Peers = cca.Group.Peers[len(cca.Group.Peers)-r:]
 		cc.meta.ForwardProposal(encodeAddConsumerAssignment(cca))
 	}
 
@@ -1953,7 +1946,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				if !foundSelf {
 					n.StepDown(firstPeer)
 				} else {
-					js.removeOldPeers(mset, selfId, newPeerSet)
+					js.truncateOldPeers(mset, selfId)
 				}
 			}
 		case err := <-restoreDoneCh:
@@ -4264,7 +4257,8 @@ func (cc *jetStreamCluster) remapStreamAssignment(sa *streamAssignment, removePe
 }
 
 // selectPeerGroup will select a group of peers to start a raft group.
-func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamConfig, existing []string) (re []string) {
+// when peers exist already the unique tag prefix check for the replaceFirstExisting will be skipped
+func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamConfig, existing []string, replaceFirstExisting int) (re []string) {
 	if cluster == _EMPTY_ || cfg == nil {
 		return nil
 	}
@@ -4325,13 +4319,13 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 			return existing
 		}
 		ep = make(map[string]struct{})
-		for _, p := range existing {
+		for i, p := range existing {
 			ep[p] = struct{}{}
 			if uniqueTagPrefix == _EMPTY_ {
 				continue
 			}
 			si, ok := s.nodeToInfo.Load(p)
-			if !ok || si == nil {
+			if !ok || si == nil || i < replaceFirstExisting {
 				continue
 			}
 			ni := si.(nodeInfo)
@@ -4511,7 +4505,7 @@ func (js *jetStream) createGroupForStream(ci *ClientInfo, cfg *StreamConfig) *ra
 
 	// Need to create a group here.
 	for _, cn := range clusters {
-		peers := cc.selectPeerGroup(replicas, cn, cfg, nil)
+		peers := cc.selectPeerGroup(replicas, cn, cfg, nil, 0)
 		if len(peers) < replicas {
 			continue
 		}
@@ -4751,7 +4745,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	if isReplicaChange {
 		// We are adding new peers here.
 		if newCfg.Replicas > len(rg.Peers) {
-			peers := cc.selectPeerGroup(newCfg.Replicas, rg.Cluster, newCfg, rg.Peers)
+			peers := cc.selectPeerGroup(newCfg.Replicas, rg.Cluster, newCfg, rg.Peers, 0)
 			if len(peers) != newCfg.Replicas {
 				resp.Error = NewJSInsufficientResourcesError()
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -4890,32 +4884,34 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 
 		for _, ca := range osa.consumers {
 			cca := ca.copyGroup()
-			// We chose to have ephemerals be R=1 unless stream is interest or workqueue.
-			if isR1 := !isDurableConsumer(cca.Config) && newCfg.Retention == LimitsPolicy; isR1 {
-				// This is an ephemeral, so R1. Just randomly pick a single peer from the new set.
-				randPeer := peerSet[len(peerSet)-newCfg.Replicas:][rand.Intn(newCfg.Replicas)]
-				if len(peerSet) == newCfg.Replicas {
-					// explicit set or cancel
-					// Prefer the peer present in peerSet. If none is found, default to random entry
-				CHECK_PEERS:
-					for _, s := range peerSet {
-						for _, p := range cca.Group.Peers {
-							if s == p {
-								// prefer peer that exists in both sets
-								randPeer = p
-								break CHECK_PEERS
-							}
-						}
+			r := cca.Config.replicas(osa.Config)
+			// shuffle part of cluster peer set we will be keeping
+			randPeerSet := copyStrings(peerSet[len(peerSet)-newCfg.Replicas:])
+			rand.Shuffle(newCfg.Replicas, func(i, j int) { randPeerSet[i], randPeerSet[j] = randPeerSet[j], randPeerSet[i] })
+			// move overlapping peers at the end of randPeerSet and keep a tally of non overlapping peers
+			dropPeerSet := make([]string, 0, len(cca.Group.Peers))
+			for _, p := range cca.Group.Peers {
+				found := false
+				for i, rp := range randPeerSet {
+					if p == rp {
+						randPeerSet[i] = randPeerSet[newCfg.Replicas-1]
+						randPeerSet[newCfg.Replicas-1] = p
+						found = true
+						break
 					}
-					cca.Group.Peers = []string{randPeer}
-				} else {
-					cca.Group.Peers = append(cca.Group.Peers, randPeer)
 				}
-			} else {
-				// exactly track stream peerSet
-				cca.Group.Peers = peerSet
+				if !found {
+					dropPeerSet = append(dropPeerSet, p)
+				}
 			}
-			// make sure it overlaps with peers
+			cPeerSet := randPeerSet[newCfg.Replicas-r:]
+			// In case of a set or cancel simply assign
+			if len(peerSet) == newCfg.Replicas {
+				cca.Group.Peers = cPeerSet
+			} else {
+				cca.Group.Peers = append(dropPeerSet, cPeerSet...)
+			}
+			// make sure it overlaps with peers and remove if not
 			if cca.Group.Preferred != _EMPTY_ {
 				found := false
 				for _, p := range cca.Group.Peers {
@@ -4928,10 +4924,6 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 					cca.Group.Preferred = _EMPTY_
 				}
 			}
-			// Make sure to set if not already set.
-			//if cca.Group.Preferred == _EMPTY_ {
-			//	cca.Group.Preferred = cca.Group.Peers[0]
-			//}
 			// We can not propose here before the stream itself so we collect them.
 			consumers = append(consumers, cca)
 		}
