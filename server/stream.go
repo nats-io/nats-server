@@ -1246,6 +1246,10 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server) (*Str
 	if !cfg.DenyPurge && old.DenyPurge {
 		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not cancel deny purge"))
 	}
+	// Check for mirror changes which are not allowed.
+	if !reflect.DeepEqual(cfg.Mirror, old.Mirror) {
+		return nil, NewJSStreamMirrorNotUpdatableError()
+	}
 
 	// Do some adjustments for being sealed.
 	if cfg.Sealed {
@@ -2005,6 +2009,16 @@ func (mset *stream) scheduleSetupMirrorConsumerRetryAsap() {
 func (mset *stream) setupMirrorConsumer() error {
 	if mset.outq == nil {
 		return errors.New("outq required")
+	}
+	// We use to prevent update of a mirror configuration in cluster
+	// mode but not in standalone. This is now fixed. However, without
+	// rejecting the update, it could be that if the source stream was
+	// removed and then later the mirrored stream config changed to
+	// remove mirror configuration, this function would panic when
+	// accessing mset.cfg.Mirror fields. Adding this protection in case
+	// we allow in the future the mirror config to be changed (removed).
+	if mset.cfg.Mirror == nil {
+		return errors.New("invalid mirror configuration")
 	}
 
 	// If this is the first time

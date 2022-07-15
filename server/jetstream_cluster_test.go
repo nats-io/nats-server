@@ -1448,21 +1448,18 @@ func TestJetStreamClusterStreamExtendedUpdates(t *testing.T) {
 		return si
 	}
 
-	expectError := func() {
-		if _, err := js.UpdateStream(cfg); err == nil {
-			t.Fatalf("Expected error and got none")
-		}
-	}
-
-	// Subjects
+	// Subjects can be updated
 	cfg.Subjects = []string{"bar", "baz"}
 	if si := updateStream(); !reflect.DeepEqual(si.Config.Subjects, cfg.Subjects) {
 		t.Fatalf("Did not get expected stream info: %+v", si)
 	}
-	// Mirror changes
-	cfg.Replicas = 3
+	// Mirror changes are not supported for now
+	cfg.Subjects = nil
 	cfg.Mirror = &nats.StreamSource{Name: "ORDERS"}
-	expectError()
+	if _, err := js.UpdateStream(cfg); err == nil ||
+		!strings.Contains(NewJSStreamMirrorNotUpdatableError().Error(), err.Error()) {
+		t.Fatalf("Expected error %q, got %q", NewJSStreamMirrorNotUpdatableError(), err)
+	}
 }
 
 func TestJetStreamClusterDoubleAdd(t *testing.T) {
