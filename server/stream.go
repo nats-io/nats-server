@@ -1246,6 +1246,10 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server) (*Str
 	if !cfg.DenyPurge && old.DenyPurge {
 		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not cancel deny purge"))
 	}
+	// Check for mirror changes which are not allowed.
+	if !reflect.DeepEqual(cfg.Mirror, old.Mirror) {
+		return nil, NewJSStreamMirrorNotUpdatableError()
+	}
 
 	// Do some adjustments for being sealed.
 	if cfg.Sealed {

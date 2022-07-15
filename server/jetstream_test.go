@@ -18637,3 +18637,30 @@ func TestJetStreamMultiplePullPerf(t *testing.T) {
 	fmt.Printf("%.0f msgs/s\n", float64(n)/tt.Seconds())
 	fmt.Printf("%.0f mb/s\n\n", float64(si.State.Bytes/(1024*1024))/tt.Seconds())
 }
+
+func TestJetStreamMirrorUpdatesNotSupported(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "SOURCE"})
+	require_NoError(t, err)
+
+	cfg := &nats.StreamConfig{
+		Name:   "M",
+		Mirror: &nats.StreamSource{Name: "SOURCE"},
+	}
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+
+	cfg.Mirror = nil
+	if _, err := js.UpdateStream(cfg); err == nil ||
+		!strings.Contains(NewJSStreamMirrorNotUpdatableError().Error(), err.Error()) {
+		t.Fatalf("Expected error %q, got %q", NewJSStreamMirrorNotUpdatableError(), err)
+	}
+}
