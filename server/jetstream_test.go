@@ -17594,23 +17594,23 @@ func TestJetStreamStreamRepublishOneTokenMatch(t *testing.T) {
 
 	// Do by hand for now.
 	cfg := &StreamConfig{
-		Name:     "RPC",
+		Name:     "Stream1",
 		Storage:  MemoryStorage,
-		Subjects: []string{"foo", "bar", "baz"},
+		Subjects: []string{"one", "four"},
 		RePublish: &RePublish{
-			Source:      "baz",
-			Destination: "bazmonitor",
-			HeadersOnly: true,
+			Source:      "one",
+			Destination: "uno",
+			HeadersOnly: false,
 		},
 	}
 	addStream(t, nc, cfg)
 
-	sub, err := nc.SubscribeSync("bazmonitor")
+	sub, err := nc.SubscribeSync("uno")
 	require_NoError(t, err)
 
 	msg, toSend := bytes.Repeat([]byte("Z"), 512), 100
 	for i := 0; i < toSend; i++ {
-		js.PublishAsync("baz", msg)
+		js.PublishAsync("one", msg)
 	}
 	select {
 	case <-js.PublishAsyncComplete():
@@ -17622,7 +17622,7 @@ func TestJetStreamStreamRepublishOneTokenMatch(t *testing.T) {
 	m, err := sub.NextMsg(time.Second)
 	require_NoError(t, err)
 
-	if len(m.Data) < 0 {
+	if !(len(m.Data) > 0) {
 		t.Fatalf("Expected msg data")
 	}
 }
@@ -17639,23 +17639,23 @@ func TestJetStreamStreamRepublishMultiTokenMatch(t *testing.T) {
 
 	// Do by hand for now.
 	cfg := &StreamConfig{
-		Name:     "RPC",
+		Name:     "Stream1",
 		Storage:  MemoryStorage,
-		Subjects: []string{"foo.>", "bar.>", "baz.>"},
+		Subjects: []string{"one.>", "four.>"},
 		RePublish: &RePublish{
-			Source:      "baz.a.doowop.>",
-			Destination: "bazmonitor.>",
-			HeadersOnly: true,
+			Source:      "one.two.>",
+			Destination: "uno.dos.>",
+			HeadersOnly: false,
 		},
 	}
 	addStream(t, nc, cfg)
 
-	sub, err := nc.SubscribeSync("bazmonitor.>")
+	sub, err := nc.SubscribeSync("uno.dos.>")
 	require_NoError(t, err)
 
 	msg, toSend := bytes.Repeat([]byte("Z"), 512), 100
 	for i := 0; i < toSend; i++ {
-		js.PublishAsync("baz.a.doowop.hamburger", msg)
+		js.PublishAsync("one.two.three", msg)
 	}
 	select {
 	case <-js.PublishAsyncComplete():
@@ -17667,7 +17667,7 @@ func TestJetStreamStreamRepublishMultiTokenMatch(t *testing.T) {
 	m, err := sub.NextMsg(time.Second)
 	require_NoError(t, err)
 
-	if len(m.Data) < 0 {
+	if !(len(m.Data) > 0) {
 		t.Fatalf("Expected msg data")
 	}
 }
@@ -17684,23 +17684,23 @@ func TestJetStreamStreamRepublishMultiTokenNoMatch(t *testing.T) {
 
 	// Do by hand for now.
 	cfg := &StreamConfig{
-		Name:     "RPC",
+		Name:     "Stream1",
 		Storage:  MemoryStorage,
-		Subjects: []string{"foo.>", "bar.>", "baz.>"},
+		Subjects: []string{"one.>", "four.>"},
 		RePublish: &RePublish{
-			Source:      "baz.a.doowop.>",
-			Destination: "bazmonitor.>",
+			Source:      "one.two.>",
+			Destination: "uno.dos.>",
 			HeadersOnly: true,
 		},
 	}
 	addStream(t, nc, cfg)
 
-	sub, err := nc.SubscribeSync("bazmonitor.>")
+	sub, err := nc.SubscribeSync("uno.dos.>")
 	require_NoError(t, err)
 
 	msg, toSend := bytes.Repeat([]byte("Z"), 512), 100
 	for i := 0; i < toSend; i++ {
-		js.PublishAsync("baz.b.doowop.hamburger", msg)
+		js.PublishAsync("four.five.six", msg)
 	}
 	select {
 	case <-js.PublishAsyncComplete():
@@ -17724,23 +17724,23 @@ func TestJetStreamStreamRepublishOneTokenNoMatch(t *testing.T) {
 
 	// Do by hand for now.
 	cfg := &StreamConfig{
-		Name:     "RPC",
+		Name:     "Stream1",
 		Storage:  MemoryStorage,
-		Subjects: []string{"foo", "bar", "baz"},
+		Subjects: []string{"one", "four"},
 		RePublish: &RePublish{
-			Source:      "baz",
-			Destination: "bazmonitor",
+			Source:      "one",
+			Destination: "uno",
 			HeadersOnly: true,
 		},
 	}
 	addStream(t, nc, cfg)
 
-	sub, err := nc.SubscribeSync("bazmonitor")
+	sub, err := nc.SubscribeSync("uno")
 	require_NoError(t, err)
 
 	msg, toSend := bytes.Repeat([]byte("Z"), 512), 100
 	for i := 0; i < toSend; i++ {
-		js.PublishAsync("foo", msg)
+		js.PublishAsync("four", msg)
 	}
 	select {
 	case <-js.PublishAsyncComplete():
