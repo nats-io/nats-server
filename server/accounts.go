@@ -4330,7 +4330,7 @@ func (tr *transform) Match(subject string) (string, error) {
 		return _EMPTY_, ErrBadSubject
 	}
 
-	if isSubsetMatch(tts, tr.src) {
+	if (tr.src == "" || tr.src == ">") || isSubsetMatch(tts, tr.src) {
 		return tr.transform(tts)
 	}
 	return _EMPTY_, ErrNoTransforms
