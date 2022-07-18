@@ -2332,7 +2332,7 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 		cfg.Placement.Tags = append(cfg.Placement.Tags, req.Tags...)
 	}
 
-	peers := cc.selectPeerGroup(cfg.Replicas+1, currCluster, &cfg, currPeers)
+	peers := cc.selectPeerGroup(cfg.Replicas+1, currCluster, &cfg, currPeers, 1)
 	if len(peers) <= cfg.Replicas {
 		// since expanding in the same cluster did not yield a result, try in different cluster
 		peers = nil
@@ -2345,7 +2345,7 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 			return true
 		})
 		for cluster := range clusters {
-			newPeers := cc.selectPeerGroup(cfg.Replicas, cluster, &cfg, nil)
+			newPeers := cc.selectPeerGroup(cfg.Replicas, cluster, &cfg, nil, 0)
 			if len(newPeers) >= cfg.Replicas {
 				peers = append([]string{}, currPeers...)
 				peers = append(peers, newPeers[:cfg.Replicas]...)
@@ -2434,11 +2434,11 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 
 	// make sure client is scoped to requested account
 	ciNew := *(ci)
-	ciNew.Account = streamName
+	ciNew.Account = accName
 
 	peers := currPeers[:cfg.Replicas]
 
-	s.Noticef("Requested cancel of move: R=%d '%s > %s' from old peer set %+v to new peer set %+v",
+	s.Noticef("Requested cancel of move: R=%d '%s > %s' to peer set %+v and restore previous peer set %+v",
 		cfg.Replicas, streamName, accName, s.peerSetToNames(currPeers), s.peerSetToNames(peers))
 
 	// we will always have peers and therefore never do a callout, therefore it is safe to call inline
