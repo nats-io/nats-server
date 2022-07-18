@@ -4315,6 +4315,12 @@ func newTransform(src, dest string) (*transform, error) {
 func (tr *transform) Match(subject string) (string, error) {
 	// TODO(dlc) - We could add in client here to allow for things like foo -> foo.$ACCOUNT
 
+	// Special case: matches any and no no-op transform. May not be legal config for some features
+	// but specific validations made at transform create time
+	if (tr.src == fwcs || tr.src == _EMPTY_) && (tr.dest == fwcs || tr.dest == _EMPTY_) {
+		return subject, nil
+	}
+
 	// Tokenize the subject. This should always be a literal subject.
 	tsa := [32]string{}
 	tts := tsa[:0]
@@ -4330,7 +4336,7 @@ func (tr *transform) Match(subject string) (string, error) {
 		return _EMPTY_, ErrBadSubject
 	}
 
-	if isSubsetMatch(tts, tr.src) {
+	if (tr.src == _EMPTY_ || tr.src == fwcs) || isSubsetMatch(tts, tr.src) {
 		return tr.transform(tts)
 	}
 	return _EMPTY_, ErrNoTransforms

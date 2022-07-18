@@ -17582,6 +17582,220 @@ func TestJetStreamStreamRepublishCycle(t *testing.T) {
 	expectFail()
 }
 
+func TestJetStreamStreamRepublishOneTokenMatch(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Do by hand for now.
+	cfg := &StreamConfig{
+		Name:     "Stream1",
+		Storage:  MemoryStorage,
+		Subjects: []string{"one", "four"},
+		RePublish: &RePublish{
+			Source:      "one",
+			Destination: "uno",
+			HeadersOnly: false,
+		},
+	}
+	addStream(t, nc, cfg)
+
+	sub, err := nc.SubscribeSync("uno")
+	require_NoError(t, err)
+
+	msg, toSend := bytes.Repeat([]byte("Z"), 512), 100
+	for i := 0; i < toSend; i++ {
+		js.PublishAsync("one", msg)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	checkSubsPending(t, sub, toSend)
+	m, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+
+	if !(len(m.Data) > 0) {
+		t.Fatalf("Expected msg data")
+	}
+}
+
+func TestJetStreamStreamRepublishMultiTokenMatch(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Do by hand for now.
+	cfg := &StreamConfig{
+		Name:     "Stream1",
+		Storage:  MemoryStorage,
+		Subjects: []string{"one.>", "four.>"},
+		RePublish: &RePublish{
+			Source:      "one.two.>",
+			Destination: "uno.dos.>",
+			HeadersOnly: false,
+		},
+	}
+	addStream(t, nc, cfg)
+
+	sub, err := nc.SubscribeSync("uno.dos.>")
+	require_NoError(t, err)
+
+	msg, toSend := bytes.Repeat([]byte("Z"), 512), 100
+	for i := 0; i < toSend; i++ {
+		js.PublishAsync("one.two.three", msg)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	checkSubsPending(t, sub, toSend)
+	m, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+
+	if !(len(m.Data) > 0) {
+		t.Fatalf("Expected msg data")
+	}
+}
+
+func TestJetStreamStreamRepublishAnySubjectMatch(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Do by hand for now.
+	cfg := &StreamConfig{
+		Name:     "Stream1",
+		Storage:  MemoryStorage,
+		Subjects: []string{"one.>", "four.>"},
+		RePublish: &RePublish{
+			Destination: "uno.dos.>",
+			HeadersOnly: false,
+		},
+	}
+	addStream(t, nc, cfg)
+
+	sub, err := nc.SubscribeSync("uno.dos.>")
+	require_NoError(t, err)
+
+	msg, toSend := bytes.Repeat([]byte("Z"), 512), 100
+	for i := 0; i < toSend; i++ {
+		js.PublishAsync("one.two.three", msg)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	checkSubsPending(t, sub, toSend)
+	m, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+
+	if !(len(m.Data) > 0) {
+		t.Fatalf("Expected msg data")
+	}
+}
+
+func TestJetStreamStreamRepublishMultiTokenNoMatch(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Do by hand for now.
+	cfg := &StreamConfig{
+		Name:     "Stream1",
+		Storage:  MemoryStorage,
+		Subjects: []string{"one.>", "four.>"},
+		RePublish: &RePublish{
+			Source:      "one.two.>",
+			Destination: "uno.dos.>",
+			HeadersOnly: true,
+		},
+	}
+	addStream(t, nc, cfg)
+
+	sub, err := nc.SubscribeSync("uno.dos.>")
+	require_NoError(t, err)
+
+	msg, toSend := bytes.Repeat([]byte("Z"), 512), 100
+	for i := 0; i < toSend; i++ {
+		js.PublishAsync("four.five.six", msg)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	checkSubsPending(t, sub, 0)
+	require_NoError(t, err)
+}
+
+func TestJetStreamStreamRepublishOneTokenNoMatch(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Do by hand for now.
+	cfg := &StreamConfig{
+		Name:     "Stream1",
+		Storage:  MemoryStorage,
+		Subjects: []string{"one", "four"},
+		RePublish: &RePublish{
+			Source:      "one",
+			Destination: "uno",
+			HeadersOnly: true,
+		},
+	}
+	addStream(t, nc, cfg)
+
+	sub, err := nc.SubscribeSync("uno")
+	require_NoError(t, err)
+
+	msg, toSend := bytes.Repeat([]byte("Z"), 512), 100
+	for i := 0; i < toSend; i++ {
+		js.PublishAsync("four", msg)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	checkSubsPending(t, sub, 0)
+	require_NoError(t, err)
+}
+
 func TestJetStreamStreamRepublishHeadersOnly(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	if config := s.JetStreamConfig(); config != nil {
