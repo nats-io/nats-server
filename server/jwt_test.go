@@ -4326,8 +4326,14 @@ func TestJWTActivationRevocation(t *testing.T) {
 		aExp1Jwt := encodeClaim(t, aExpClaim, aExpPub)
 		aExpCreds := newUser(t, aExpKp)
 
-		time.Sleep(1100 * time.Millisecond)
 		aImpKp, aImpPub := createKey(t)
+
+		ac := &jwt.ActivationClaims{}
+		ac.Subject = aImpPub
+		ac.ImportSubject = "foo"
+		ac.ImportType = jwt.Stream
+		token, err := ac.Encode(aExpKp)
+		require_NoError(t, err)
 
 		revPubKey := aImpPub
 		if all {
@@ -4339,13 +4345,6 @@ func TestJWTActivationRevocation(t *testing.T) {
 
 		aExpClaim.Exports[0].ClearRevocation(revPubKey)
 		aExp3Jwt := encodeClaim(t, aExpClaim, aExpPub)
-
-		ac := &jwt.ActivationClaims{}
-		ac.Subject = aImpPub
-		ac.ImportSubject = "foo"
-		ac.ImportType = jwt.Stream
-		token, err := ac.Encode(aExpKp)
-		require_NoError(t, err)
 
 		aImpClaim := jwt.NewAccountClaims(aImpPub)
 		aImpClaim.Name = "Import"
