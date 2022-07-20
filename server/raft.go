@@ -2218,7 +2218,7 @@ func (n *raft) sendSnapshotToFollower(subject string) (uint64, error) {
 	var state StreamState
 	n.wal.FastState(&state)
 	if snap.lastIndex < state.FirstSeq && state.FirstSeq != 0 {
-		snap.lastIndex = state.FirstSeq
+		snap.lastIndex = state.FirstSeq - 1
 		ae.pindex = snap.lastIndex
 	}
 	encoding, err := ae.encode(nil)
