@@ -16276,7 +16276,7 @@ func TestJetStreamConsumerAckSamplingSpecifiedUsingUpdateConsumer(t *testing.T) 
 	}
 }
 
-func TestJetStreamConsumerMaxDeliveryUpdate(t *testing.T) {
+func TestJetStreamConsumerMaxDeliverUpdate(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	if config := s.JetStreamConfig(); config != nil {
 		defer removeDir(t, config.StoreDir)
@@ -16287,67 +16287,6 @@ func TestJetStreamConsumerMaxDeliveryUpdate(t *testing.T) {
 	defer nc.Close()
 
 	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
-	require_NoError(t, err)
-
-	maxDeliver := 2
-	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
-		Durable:       "ard",
-		AckPolicy:     nats.AckExplicitPolicy,
-		FilterSubject: "foo",
-		MaxDeliver:    maxDeliver,
-	})
-	require_NoError(t, err)
-
-	sub, err := js.PullSubscribe("foo", "ard")
-	require_NoError(t, err)
-
-	_, err = js.Publish("foo", []byte("Hello"))
-	require_NoError(t, err)
-
-	for i := 0; i <= maxDeliver; i++ {
-		msgs, err := sub.Fetch(2, nats.MaxWait(10*time.Millisecond))
-		if i < maxDeliver {
-			require_NoError(t, err)
-			require_Len(t, 1, len(msgs))
-			_ = msgs[0].Nak()
-		} else {
-			require_Error(t, err, nats.ErrTimeout)
-		}
-	}
-
-	// update maxDeliver
-	maxDeliver = maxDeliver + 1
-	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
-		Durable:       "ard",
-		AckPolicy:     nats.AckExplicitPolicy,
-		FilterSubject: "foo",
-		MaxDeliver:    maxDeliver,
-	})
-	require_NoError(t, err)
-
-	_, err = js.Publish("foo", []byte("Hello"))
-	require_NoError(t, err)
-
-	for i := 0; i <= maxDeliver; i++ {
-		msgs, err := sub.Fetch(2, nats.MaxWait(10*time.Millisecond))
-		if i < maxDeliver {
-			require_NoError(t, err)
-			require_Len(t, 1, len(msgs))
-			_ = msgs[0].Nak()
-		} else {
-			require_Error(t, err, nats.ErrTimeout)
-		}
-	}
-}
-
-func TestJetStreamClusterConsumerMaxDeliveryUpdate(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "JSC", 3)
-	defer c.shutdown()
-
-	nc, js := jsClientConnect(t, c.randomServer())
-	defer nc.Close()
-
-	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
 	require_NoError(t, err)
 
 	maxDeliver := 2
