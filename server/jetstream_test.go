@@ -16320,7 +16320,7 @@ func TestJetStreamConsumerMaxDeliverUpdate(t *testing.T) {
 	checkMaxDeliver()
 
 	// update maxDeliver
-	maxDeliver = maxDeliver + 1
+	maxDeliver++
 	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
 		Durable:       "ard",
 		AckPolicy:     nats.AckExplicitPolicy,
