@@ -16276,6 +16276,64 @@ func TestJetStreamConsumerAckSamplingSpecifiedUsingUpdateConsumer(t *testing.T) 
 	}
 }
 
+func TestJetStreamConsumerMaxDeliverUpdate(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+
+	maxDeliver := 2
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:       "ard",
+		AckPolicy:     nats.AckExplicitPolicy,
+		FilterSubject: "foo",
+		MaxDeliver:    maxDeliver,
+	})
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe("foo", "ard")
+	require_NoError(t, err)
+
+	checkMaxDeliver := func() {
+		t.Helper()
+		for i := 0; i <= maxDeliver; i++ {
+			msgs, err := sub.Fetch(2, nats.MaxWait(100*time.Millisecond))
+			if i < maxDeliver {
+				require_NoError(t, err)
+				require_Len(t, 1, len(msgs))
+				_ = msgs[0].Nak()
+			} else {
+				require_Error(t, err, nats.ErrTimeout)
+			}
+		}
+	}
+
+	_, err = js.Publish("foo", []byte("Hello"))
+	require_NoError(t, err)
+	checkMaxDeliver()
+
+	// update maxDeliver
+	maxDeliver++
+	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
+		Durable:       "ard",
+		AckPolicy:     nats.AckExplicitPolicy,
+		FilterSubject: "foo",
+		MaxDeliver:    maxDeliver,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", []byte("Hello"))
+	require_NoError(t, err)
+	checkMaxDeliver()
+}
+
 func TestJetStreamRemoveExternalSource(t *testing.T) {
 	ho := DefaultTestOptions
 	ho.Port = 4000 //-1

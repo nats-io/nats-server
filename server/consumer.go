@@ -1429,6 +1429,11 @@ func (acc *Account) checkNewConsumerConfig(cfg, ncfg *ConsumerConfig) error {
 		}
 	}
 
+	// Check if BackOff is defined, MaxDeliver is within range.
+	if lbo := len(ncfg.BackOff); lbo > 0 && ncfg.MaxDeliver <= lbo {
+		return NewJSConsumerMaxDeliverBackoffError()
+	}
+
 	return nil
 }
 
@@ -1476,9 +1481,13 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 		sampleFreq, _ := strconv.Atoi(s)
 		o.sfreq = int32(sampleFreq)
 	}
+	// Set MaxDeliver if changed
+	if cfg.MaxDeliver != o.cfg.MaxDeliver {
+		o.maxdc = uint64(cfg.MaxDeliver)
+	}
 
 	// Record new config for others that do not need special handling.
-	// Allowed but considered no-op, [Description, MaxDeliver, SampleFrequency, MaxWaiting, HeadersOnly]
+	// Allowed but considered no-op, [Description, SampleFrequency, MaxWaiting, HeadersOnly]
 	o.cfg = *cfg
 
 	return nil
