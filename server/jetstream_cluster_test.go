@@ -9262,22 +9262,26 @@ func TestJetStreamClusterConsumerMaxDeliverUpdate(t *testing.T) {
 	sub, err := js.PullSubscribe("foo", "ard")
 	require_NoError(t, err)
 
-	_, err = js.Publish("foo", []byte("Hello"))
-	require_NoError(t, err)
-
-	for i := 0; i <= maxDeliver; i++ {
-		msgs, err := sub.Fetch(2, nats.MaxWait(10*time.Millisecond))
-		if i < maxDeliver {
-			require_NoError(t, err)
-			require_Len(t, 1, len(msgs))
-			_ = msgs[0].Nak()
-		} else {
-			require_Error(t, err, nats.ErrTimeout)
+	checkMaxDeliver := func() {
+		t.Helper()
+		for i := 0; i <= maxDeliver; i++ {
+			msgs, err := sub.Fetch(2, nats.MaxWait(100*time.Millisecond))
+			if i < maxDeliver {
+				require_NoError(t, err)
+				require_Len(t, 1, len(msgs))
+				_ = msgs[0].Nak()
+			} else {
+				require_Error(t, err, nats.ErrTimeout)
+			}
 		}
 	}
 
+	_, err = js.Publish("foo", []byte("Hello"))
+	require_NoError(t, err)
+	checkMaxDeliver()
+
 	// update maxDeliver
-	maxDeliver = maxDeliver + 1
+	maxDeliver++
 	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
 		Durable:       "ard",
 		AckPolicy:     nats.AckExplicitPolicy,
@@ -9288,17 +9292,7 @@ func TestJetStreamClusterConsumerMaxDeliverUpdate(t *testing.T) {
 
 	_, err = js.Publish("foo", []byte("Hello"))
 	require_NoError(t, err)
-
-	for i := 0; i <= maxDeliver; i++ {
-		msgs, err := sub.Fetch(2, nats.MaxWait(10*time.Millisecond))
-		if i < maxDeliver {
-			require_NoError(t, err)
-			require_Len(t, 1, len(msgs))
-			_ = msgs[0].Nak()
-		} else {
-			require_Error(t, err, nats.ErrTimeout)
-		}
-	}
+	checkMaxDeliver()
 }
 
 func TestJetStreamClusterAccountReservations(t *testing.T) {
