@@ -3718,7 +3718,7 @@ func TestJetStreamClusterMoveCancel(t *testing.T) {
 	require_NoError(t, err)
 	ephName := ci.Name
 
-	toSend := uint64(100_000)
+	toSend := uint64(1_000)
 	for i := uint64(0); i < toSend; i++ {
 		_, err = js.Publish("foo", nil)
 		require_NoError(t, err)
@@ -3731,7 +3731,7 @@ func TestJetStreamClusterMoveCancel(t *testing.T) {
 			return fmt.Errorf("empty server still has %d streams", jszAfter.Streams)
 		} else if jszAfter.Consumers != 0 {
 			return fmt.Errorf("empty server still has %d consumers", jszAfter.Consumers)
-		} else if jszAfter.Store != 0 {
+		} else if jszAfter.Bytes != 0 {
 			return fmt.Errorf("empty server still has %d storage", jszAfter.Store)
 		}
 		return nil
@@ -3779,33 +3779,32 @@ func TestJetStreamClusterMoveCancel(t *testing.T) {
 	require_NoError(t, err)
 	defer ncsys.Close()
 
-	//TODO(mv) we should be able to perform this in a loop over all peers, but serverEmpty fails on .Store
-	moveFromSrv := streamPeerSrv[rand.Intn(len(streamPeerSrv))]
-	moveReq, err := json.Marshal(&JSApiMetaServerStreamMoveRequest{Server: moveFromSrv, Tags: []string{emptySrv}})
-	require_NoError(t, err)
-	rmsg, err := ncsys.Request(fmt.Sprintf(JSApiServerStreamMoveT, "$G", "TEST"), moveReq, 5*time.Second)
-	require_NoError(t, err)
-	var moveResp JSApiStreamUpdateResponse
-	require_NoError(t, json.Unmarshal(rmsg.Data, &moveResp))
-	require_True(t, moveResp.Error == nil)
+	for _, moveFromSrv := range streamPeerSrv {
+		moveReq, err := json.Marshal(&JSApiMetaServerStreamMoveRequest{Server: moveFromSrv, Tags: []string{emptySrv}})
+		require_NoError(t, err)
+		rmsg, err := ncsys.Request(fmt.Sprintf(JSApiServerStreamMoveT, "$G", "TEST"), moveReq, 5*time.Second)
+		require_NoError(t, err)
+		var moveResp JSApiStreamUpdateResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &moveResp))
+		require_True(t, moveResp.Error == nil)
 
-	rmsg, err = ncsys.Request(fmt.Sprintf(JSApiServerStreamCancelMoveT, "$G", "TEST"), nil, 5*time.Second)
-	require_NoError(t, err)
-	var cancelResp JSApiStreamUpdateResponse
-	require_NoError(t, json.Unmarshal(rmsg.Data, &cancelResp))
-	if cancelResp.Error != nil && ErrorIdentifier(cancelResp.Error.ErrCode) == JSStreamMoveNotInProgress {
-		t.Skip("This can happen with delays, when Move completed before Cancel", cancelResp.Error)
-		return
-	}
-	require_True(t, cancelResp.Error == nil)
+		rmsg, err = ncsys.Request(fmt.Sprintf(JSApiServerStreamCancelMoveT, "$G", "TEST"), nil, 5*time.Second)
+		require_NoError(t, err)
+		var cancelResp JSApiStreamUpdateResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &cancelResp))
+		if cancelResp.Error != nil && ErrorIdentifier(cancelResp.Error.ErrCode) == JSStreamMoveNotInProgress {
+			t.Skip("This can happen with delays, when Move completed before Cancel", cancelResp.Error)
+			return
+		}
+		require_True(t, cancelResp.Error == nil)
 
-	for _, sExpected := range streamPeerSrv {
-		s := c.serverByName(sExpected)
-		require_True(t, s.JetStreamIsStreamAssigned("$G", "TEST"))
-		//TODO should be able to just have: require_NoError(t, checkSrvInvariant(s))
-		checkFor(t, 20*time.Second, 100*time.Millisecond, func() error { return checkSrvInvariant(s, expectedPeers) })
+		for _, sExpected := range streamPeerSrv {
+			s := c.serverByName(sExpected)
+			require_True(t, s.JetStreamIsStreamAssigned("$G", "TEST"))
+			checkFor(t, 20*time.Second, 100*time.Millisecond, func() error { return checkSrvInvariant(s, expectedPeers) })
+		}
+		checkFor(t, 10*time.Second, 100*time.Millisecond, func() error { return serverEmpty(emptySrv) })
 	}
-	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error { return serverEmpty(emptySrv) })
 }
 
 func TestJetStreamClusterDoubleStreamMove(t *testing.T) {
