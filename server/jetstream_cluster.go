@@ -2050,6 +2050,10 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 // Determine if we are migrating
 func (mset *stream) isMigrating() bool {
+	if mset == nil {
+		return false
+	}
+
 	mset.mu.RLock()
 	js, sa := mset.js, mset.sa
 	mset.mu.RUnlock()
