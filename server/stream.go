@@ -4488,7 +4488,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 
 	// See if this stream already exists.
 	if _, err := a.lookupStream(cfg.Name); err == nil {
-		return nil, NewJSStreamNameExistError()
+		return nil, NewJSStreamNameExistRestoreFailedError()
 	}
 	// Move into the correct place here.
 	ndir := filepath.Join(jsa.storeDir, streamsDir, cfg.Name)

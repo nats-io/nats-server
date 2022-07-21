@@ -323,8 +323,11 @@ const (
 	// JSStreamNameContainsPathSeparatorsErr Stream name can not contain path separators
 	JSStreamNameContainsPathSeparatorsErr ErrorIdentifier = 10128
 
-	// JSStreamNameExistErr stream name already in use
+	// JSStreamNameExistErr stream name already in use with a different configuration
 	JSStreamNameExistErr ErrorIdentifier = 10058
+
+	// JSStreamNameExistRestoreFailedErr stream name already in use, cannot restore
+	JSStreamNameExistRestoreFailedErr ErrorIdentifier = 10130
 
 	// JSStreamNotFoundErr stream not found
 	JSStreamNotFoundErr ErrorIdentifier = 10059
@@ -498,7 +501,8 @@ var (
 		JSStreamMoveNotInProgress:                  {Code: 400, ErrCode: 10129, Description: "stream move not in progress"},
 		JSStreamMsgDeleteFailedF:                   {Code: 500, ErrCode: 10057, Description: "{err}"},
 		JSStreamNameContainsPathSeparatorsErr:      {Code: 400, ErrCode: 10128, Description: "Stream name can not contain path separators"},
-		JSStreamNameExistErr:                       {Code: 400, ErrCode: 10058, Description: "stream name already in use"},
+		JSStreamNameExistErr:                       {Code: 400, ErrCode: 10058, Description: "stream name already in use with a different configuration"},
+		JSStreamNameExistRestoreFailedErr:          {Code: 400, ErrCode: 10130, Description: "stream name already in use, cannot restore"},
 		JSStreamNotFoundErr:                        {Code: 404, ErrCode: 10059, Description: "stream not found"},
 		JSStreamNotMatchErr:                        {Code: 400, ErrCode: 10060, Description: "expected stream does not match"},
 		JSStreamOfflineErr:                         {Code: 500, ErrCode: 10118, Description: "stream is offline"},
@@ -1743,7 +1747,7 @@ func NewJSStreamNameContainsPathSeparatorsError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSStreamNameContainsPathSeparatorsErr]
 }
 
-// NewJSStreamNameExistError creates a new JSStreamNameExistErr error: "stream name already in use"
+// NewJSStreamNameExistError creates a new JSStreamNameExistErr error: "stream name already in use with a different configuration"
 func NewJSStreamNameExistError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
@@ -1751,6 +1755,16 @@ func NewJSStreamNameExistError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSStreamNameExistErr]
+}
+
+// NewJSStreamNameExistRestoreFailedError creates a new JSStreamNameExistRestoreFailedErr error: "stream name already in use, cannot restore"
+func NewJSStreamNameExistRestoreFailedError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSStreamNameExistRestoreFailedErr]
 }
 
 // NewJSStreamNotFoundError creates a new JSStreamNotFoundErr error: "stream not found"

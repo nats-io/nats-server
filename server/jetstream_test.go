@@ -4369,7 +4369,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 		t.Fatalf("Unexpected error on snapshot request: %v", err)
 	}
 	json.Unmarshal(rmsg.Data, &rresp)
-	if !IsNatsErr(rresp.Error, JSStreamNameExistErr) {
+	if !IsNatsErr(rresp.Error, JSStreamNameExistRestoreFailedErr) {
 		t.Fatalf("Did not get correct error response: %+v", rresp.Error)
 	}
 
