@@ -3049,7 +3049,7 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, _ *Account
 	}
 
 	if _, err := acc.lookupStream(stream); err == nil {
-		resp.Error = NewJSStreamNameExistError()
+		resp.Error = NewJSStreamNameExistRestoreFailedError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
