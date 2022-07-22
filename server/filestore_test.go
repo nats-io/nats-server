@@ -3907,3 +3907,71 @@ func TestFileStorePurgeExWithSubject(t *testing.T) {
 	fs.PurgeEx("foo", 1, 0)
 	require_True(t, fs.State().Msgs == 0)
 }
+
+// When the N.idx file is shorter than the previous write we could fail to recover the idx properly.
+// For instance, with encryption and an expiring stream that has no messages, when a restart happens the decrypt will fail
+// since their are extra bytes, and this could lead to a stream sequence reset to zero.
+func TestFileStoreShortIndexWriteBug(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	// Encrypted mode shows, but could effect non-encrypted mode.
+	prf := func(context []byte) ([]byte, error) {
+		h := hmac.New(sha256.New, []byte("offby1"))
+		if _, err := h.Write(context); err != nil {
+			return nil, err
+		}
+		return h.Sum(nil), nil
+	}
+
+	created := time.Now()
+
+	fs, err := newFileStoreWithCreated(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "TEST", Storage: FileStorage, MaxAge: time.Second},
+		created,
+		prf,
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	for i := 0; i < 100; i++ {
+		_, _, err = fs.StoreMsg("foo", nil, nil)
+		require_NoError(t, err)
+	}
+	// Wait til messages all go away.
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		if state := fs.State(); state.Msgs != 0 {
+			return fmt.Errorf("Expected no msgs, got %d", state.Msgs)
+		}
+		return nil
+	})
+
+	if state := fs.State(); state.FirstSeq != 101 {
+		t.Fatalf("Expected first sequence of 101 vs %d", state.FirstSeq)
+	}
+
+	// I noticed that we also would dangle an open ifd when we did closeAndKeepIndex(), check that we do not anymore.
+	fs.mu.RLock()
+	mb := fs.lmb
+	mb.mu.RLock()
+	hasIfd := mb.ifd != nil
+	mb.mu.RUnlock()
+	fs.mu.RUnlock()
+	require_False(t, hasIfd)
+
+	// Now restart..
+	fs.Stop()
+	fs, err = newFileStoreWithCreated(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "TEST", Storage: FileStorage, MaxAge: time.Second},
+		created,
+		prf,
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	if state := fs.State(); state.FirstSeq != 101 {
+		t.Fatalf("Expected first sequence of 101 vs %d", state.FirstSeq)
+	}
+}
