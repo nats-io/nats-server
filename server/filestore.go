@@ -2153,7 +2153,8 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 	if firstSeqNeedsUpdate {
 		fs.selectNextFirst()
 		// Write out the new first message block if we have one.
-		if len(fs.blks) > 0 {
+		// We can ignore if we really have not changed message blocks from above.
+		if len(fs.blks) > 0 && fs.blks[0] != mb {
 			fmb := fs.blks[0]
 			fmb.writeIndexInfo()
 		}
@@ -4030,6 +4031,14 @@ func (mb *msgBlock) writeIndexInfoLocked() error {
 
 	mb.lwits = time.Now().UnixNano()
 
+	// Check if this will be a short write, and if so truncate before writing here.
+	if int64(len(buf)) < mb.liwsz {
+		if err := mb.ifd.Truncate(0); err != nil {
+			mb.werr = err
+			return err
+		}
+	}
+
 	var err error
 	if n, err = mb.ifd.WriteAt(buf, 0); err == nil {
 		mb.liwsz = int64(n)
@@ -4682,10 +4691,10 @@ func (mb *msgBlock) closeAndKeepIndex() {
 		// We were closed, so just write out an empty file.
 		ioutil.WriteFile(mb.mfn, nil, defaultFilePerms)
 	}
-	// Close
-	mb.dirtyCloseWithRemove(false)
 	// Make sure to write the index file so we can remember last seq and ts.
 	mb.writeIndexInfoLocked()
+	// Close
+	mb.dirtyCloseWithRemove(false)
 
 	// Clear any fss.
 	if mb.sfn != _EMPTY_ {
