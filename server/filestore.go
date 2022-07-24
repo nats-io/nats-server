@@ -1067,13 +1067,20 @@ func (fs *fileStore) expireMsgsOnRecover() {
 		if mb.last.ts <= minAge {
 			purged += mb.msgs
 			bytes += mb.bytes
-			mb.dirtyCloseWithRemove(true)
+			// If we are the last keep state to remember first sequence.
+			if mb == fs.lmb {
+				// Do this part by hand since not deleting one by one.
+				mb.first.seq, mb.first.ts = mb.last.seq+1, 0
+				mb.closeAndKeepIndex()
+			} else {
+				mb.dirtyCloseWithRemove(true)
+				deleted++
+			}
 			newFirst := mb.last.seq + 1
 			mb.mu.Unlock()
 			// Update fs first here as well.
 			fs.state.FirstSeq = newFirst
 			fs.state.FirstTime = time.Time{}
-			deleted++
 			continue
 		}
 
