@@ -3102,6 +3102,7 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 	}
 
 	checkNumBlks := func(expected int) {
+		t.Helper()
 		fs.mu.RLock()
 		n := len(fs.blks)
 		fs.mu.RUnlock()
@@ -3174,7 +3175,8 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 	loadMsgs(500)
 	restartFS(ttl + 100*time.Millisecond)
 	checkState(0, 501, 500)
-	checkNumBlks(0)
+	// We actually hold onto the last one now to remember our starting sequence.
+	checkNumBlks(1)
 
 	// Now check partial expires and the fss tracking state.
 	// Small numbers is to keep them in one block.

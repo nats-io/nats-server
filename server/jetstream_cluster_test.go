@@ -11979,3 +11979,86 @@ func TestJetStreamClusterNoOrphanedDueToNoConnection(t *testing.T) {
 	time.Sleep(7 * eventsHBInterval)
 	checkSysServers()
 }
+
+func TestJetStreamClusterStreamResetOnExpirationDuringPeerDownAndRestartWithLeaderChange(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3F", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+		MaxAge:   time.Second,
+	})
+	require_NoError(t, err)
+
+	n := 100
+	for i := 0; i < n; i++ {
+		js.PublishAsync("foo", []byte("NORESETPLS"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// Shutdown a non-leader before expiration.
+	nsl := c.randomNonStreamLeader("$G", "TEST")
+	nsl.Shutdown()
+
+	// Wait for all messages to expire.
+	checkFor(t, 2*time.Second, 20*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		require_NoError(t, err)
+		if si.State.Msgs == 0 {
+			return nil
+		}
+		return fmt.Errorf("Wanted 0 messages, got %d", si.State.Msgs)
+	})
+
+	// Now restart the non-leader server, twice. First time clears raft,
+	// second will not have any index state or raft to tell it what is first sequence.
+	nsl = c.restartServer(nsl)
+	c.checkClusterFormed()
+	c.waitOnServerCurrent(nsl)
+
+	// Now clear raft WAL.
+	mset, err := nsl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	require_NoError(t, mset.raftNode().InstallSnapshot(mset.stateSnapshot()))
+
+	nsl.Shutdown()
+	nsl = c.restartServer(nsl)
+	c.checkClusterFormed()
+	c.waitOnServerCurrent(nsl)
+
+	// We will now check this server directly.
+	mset, err = nsl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	if state := mset.state(); state.FirstSeq != uint64(n+1) {
+		t.Fatalf("Expected first sequence of %d, got %d", n+1, state.FirstSeq)
+	}
+
+	// Now move the leader there and double check, but above test is sufficient.
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST"), nil, time.Second)
+		require_NoError(t, err)
+		c.waitOnStreamLeader("$G", "TEST")
+		if c.streamLeader("$G", "TEST") == nsl {
+			return nil
+		}
+		return fmt.Errorf("No correct leader yet")
+	})
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	if state := si.State; state.FirstSeq != uint64(n+1) {
+		t.Fatalf("Expected first sequence of %d, got %d", n+1, state.FirstSeq)
+	}
+}
