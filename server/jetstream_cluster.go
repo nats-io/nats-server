@@ -5358,7 +5358,7 @@ LOOP:
 		})
 	}
 
-	resp.Total = len(resp.Streams)
+	resp.Total = scnt
 	resp.Limit = JSApiListLimit
 	resp.Offset = offset
 	resp.Missing = missingNames

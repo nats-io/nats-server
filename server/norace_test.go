@@ -5349,3 +5349,57 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 		t.Fatalf("Expected to see messages increase, got %d", si.State.Msgs)
 	}
 }
+
+func TestNoRaceJetStreamClusterStreamNamesAndInfosMoreThanAPILimit(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	createStream := func(name string) {
+		t.Helper()
+		if _, err := js.AddStream(&nats.StreamConfig{Name: name}); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+
+	max := JSApiListLimit
+	if JSApiNamesLimit > max {
+		max = JSApiNamesLimit
+	}
+	max += 10
+
+	for i := 0; i < max; i++ {
+		name := fmt.Sprintf("foo_%d", i)
+		createStream(name)
+	}
+
+	// Not using the JS API here beacause we want to make sure that the
+	// server returns the proper Total count, but also that it does not
+	// send more than when the API limit is in one go.
+	check := func(subj string, limit int) {
+		t.Helper()
+
+		nreq := JSApiStreamNamesRequest{}
+		b, _ := json.Marshal(nreq)
+		msg, err := nc.Request(subj, b, 2*time.Second)
+		require_NoError(t, err)
+
+		nresp := JSApiStreamNamesResponse{}
+		json.Unmarshal(msg.Data, &nresp)
+		if n := nresp.ApiPaged.Total; n != max {
+			t.Fatalf("Expected total to be %v, got %v", max, n)
+		}
+		if n := nresp.ApiPaged.Limit; n != limit {
+			t.Fatalf("Expected limit to be %v, got %v", limit, n)
+		}
+		if n := len(nresp.Streams); n != limit {
+			t.Fatalf("Expected number of streams to be %v, got %v", limit, n)
+		}
+	}
+
+	check(JSApiStreams, JSApiNamesLimit)
+	check(JSApiStreamList, JSApiListLimit)
+}
