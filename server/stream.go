@@ -598,8 +598,8 @@ func (mset *stream) updateC() <-chan struct{} {
 
 // IsLeader will return if we are the current leader.
 func (mset *stream) IsLeader() bool {
-	mset.mu.Lock()
-	defer mset.mu.Unlock()
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
 	return mset.isLeader()
 }
 
@@ -3246,6 +3246,13 @@ func getExpectedLastSeqPerSubject(hdr []byte) (uint64, bool) {
 	return uint64(parseInt64(bseq)), true
 }
 
+// Signal if we are clustered. Will acquire rlock.
+func (mset *stream) IsClustered() bool {
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+	return mset.isClustered()
+}
+
 // Lock should be held.
 func (mset *stream) isClustered() bool {
 	return mset.node != nil
@@ -3369,7 +3376,7 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 // processInboundJetStreamMsg handles processing messages bound for a stream.
 func (mset *stream) processInboundJetStreamMsg(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	mset.mu.RLock()
-	isLeader, isClustered, isSealed := mset.isLeader(), mset.node != nil, mset.cfg.Sealed
+	isLeader, isClustered, isSealed := mset.isLeader(), mset.isClustered(), mset.cfg.Sealed
 	mset.mu.RUnlock()
 
 	// If we are not the leader just ignore.
@@ -3436,6 +3443,12 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	var buf [256]byte
 	pubAck := append(buf[:0], mset.pubAck...)
+
+	// If this is a non-clustered msg and we are not considered active, meaning no active subscription, do not process.
+	if lseq == 0 && ts == 0 && !mset.active {
+		mset.mu.Unlock()
+		return nil
+	}
 
 	// For clustering the lower layers will pass our expected lseq. If it is present check for that here.
 	if lseq > 0 && lseq != (mset.lseq+mset.clfs) {
@@ -4027,13 +4040,11 @@ func (mset *stream) internalLoop() {
 			outq.recycle(&pms)
 		case <-msgs.ch:
 			// This can possibly change now so needs to be checked here.
-			mset.mu.RLock()
-			isClustered := mset.node != nil
-			mset.mu.RUnlock()
-
+			isClustered := mset.IsClustered()
 			ims := msgs.pop()
 			for _, imi := range ims {
 				im := imi.(*inMsg)
+
 				// If we are clustered we need to propose this message to the underlying raft group.
 				if isClustered {
 					mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg)

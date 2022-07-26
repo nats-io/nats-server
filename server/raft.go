@@ -959,8 +959,6 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	snapDir := filepath.Join(n.sd, snapshotsDir)
 	sn := fmt.Sprintf(snapFileT, snap.lastTerm, snap.lastIndex)
 	sfile := filepath.Join(snapDir, sn)
-	// Remember our latest snapshot file.
-	n.snapfile = sfile
 
 	if err := ioutil.WriteFile(sfile, n.encodeSnapshot(snap), 0640); err != nil {
 		n.Unlock()
@@ -968,6 +966,9 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		// we want to retry and snapshots are not fatal.
 		return err
 	}
+
+	// Remember our latest snapshot file.
+	n.snapfile = sfile
 
 	if _, err := n.wal.Compact(snap.lastIndex); err != nil {
 		n.Unlock()
@@ -1137,8 +1138,8 @@ func (n *raft) isCatchingUp() bool {
 
 // Lock should be held.
 func (n *raft) isCurrent() bool {
-	// First check if we match commit and applied.
-	if n.commit != n.applied {
+	// First check if have had activity and we match commit and applied.
+	if n.commit == 0 || n.commit != n.applied {
 		n.debug("Not current, commit %d != applied %d", n.commit, n.applied)
 		return false
 	}
