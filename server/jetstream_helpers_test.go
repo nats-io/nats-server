@@ -114,6 +114,8 @@ var jsClusterAccountsTempl = `
 var jsClusterTempl = `
 	listen: 127.0.0.1:-1
 	server_name: %s
+	#debug: true
+	log_file: /tmp/logs/nats-server/%s
 	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
 
 	leaf {
@@ -671,7 +673,7 @@ func createJetStreamClusterAndModHook(t *testing.T, tmpl string, clusterName, sn
 	for cp := portStart; cp < portStart+numServers; cp++ {
 		storeDir := createDir(t, JetStreamStoreDir)
 		sn := fmt.Sprintf("%sS-%d", snPre, cp-portStart+1)
-		conf := fmt.Sprintf(tmpl, sn, storeDir, clusterName, cp, routeConfig)
+		conf := fmt.Sprintf(tmpl, sn, sn, storeDir, clusterName, cp, routeConfig)
 		if modify != nil {
 			conf = modify(sn, clusterName, storeDir, conf)
 		}
