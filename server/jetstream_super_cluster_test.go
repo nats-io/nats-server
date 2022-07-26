@@ -2067,6 +2067,8 @@ func TestJetStreamSuperClusterMovingStreamAndMoveBack(t *testing.T) {
 			})
 			require_NoError(t, err)
 
+			sc.waitOnStreamLeader("$G", "TEST")
+
 			toSend := 10_000
 			for i := 0; i < toSend; i++ {
 				_, err := js.PublishAsync("TEST", []byte("HELLO WORLD"))
