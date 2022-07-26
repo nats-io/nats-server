@@ -1014,6 +1014,27 @@ func jsClientConnectEx(t *testing.T, s *Server, domain string, opts ...nats.Opti
 	return nc, js
 }
 
+func jsClientConnectCluster(t *testing.T, c *cluster, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
+	t.Helper()
+
+	var sb strings.Builder
+
+	for _, s := range c.servers {
+		sb.WriteString(s.ClientURL())
+		sb.WriteString(",")
+	}
+
+	nc, err := nats.Connect(sb.String(), opts...)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	js, err := nc.JetStream(nats.MaxWait(10 * time.Second))
+	if err != nil {
+		t.Fatalf("Unexpected error getting JetStream context: %v", err)
+	}
+	return nc, js
+}
+
 func checkSubsPending(t *testing.T, sub *nats.Subscription, numExpected int) {
 	t.Helper()
 	checkFor(t, 10*time.Second, 20*time.Millisecond, func() error {
@@ -1199,6 +1220,13 @@ func (c *cluster) waitOnServerCurrent(s *Server) {
 func (c *cluster) waitOnAllCurrent() {
 	for _, cs := range c.servers {
 		c.waitOnServerCurrent(cs)
+	}
+}
+
+func (c *cluster) waitOnClusterHealthz() {
+	c.t.Helper()
+	for _, cs := range c.servers {
+		c.waitOnServerHealthz(cs)
 	}
 }
 
