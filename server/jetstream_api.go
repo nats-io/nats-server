@@ -1520,7 +1520,12 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, _ *Account, 
 		numStreams = len(resp.Streams)
 		if offset > numStreams {
 			offset = numStreams
-			resp.Streams = resp.Streams[:offset]
+		}
+		if offset > 0 {
+			resp.Streams = resp.Streams[offset:]
+		}
+		if len(resp.Streams) > JSApiNamesLimit {
+			resp.Streams = resp.Streams[:JSApiNamesLimit]
 		}
 	} else {
 		msets := acc.filteredStreams(filter)
