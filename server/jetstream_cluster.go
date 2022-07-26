@@ -1322,46 +1322,6 @@ func (js *jetStream) processRemovePeer(peer string) {
 	}
 }
 
-// Remove old peers after the new peers are caught up.
-// We are the stream leader here
-func (js *jetStream) truncateOldPeers(mset *stream, newPreferred string) {
-	// Make sure still valid.
-	mset.mu.Lock()
-	isValid := mset.qch != nil
-	mset.mu.Unlock()
-
-	if !isValid {
-		return
-	}
-
-	sa := mset.streamAssignment()
-
-	js.mu.Lock()
-	defer js.mu.Unlock()
-
-	// Make sure still valid.
-	if js.srv == nil || !js.srv.isRunning() {
-		return
-	}
-
-	cc, csa := js.cluster, sa.copyGroup()
-	csa.Group.Peers = csa.Group.Peers[len(csa.Group.Peers)-csa.Config.Replicas:]
-	// Now do consumers still needing truncating first here, followed by the owning stream.
-	for _, ca := range csa.consumers {
-		if r := ca.Config.replicas(csa.Config); r != len(ca.Group.Peers) {
-			cca := ca.copyGroup()
-			cca.Group.Peers = cca.Group.Peers[len(cca.Group.Peers)-r:]
-			cc.meta.ForwardProposal(encodeAddConsumerAssignment(cca))
-		}
-	}
-
-	si, _ := js.srv.nodeToInfo.Load(newPreferred)
-	csa.Group.Cluster = si.(nodeInfo).cluster
-
-	csa.Group.Preferred = newPreferred
-	cc.meta.ForwardProposal(encodeUpdateStreamAssignment(csa))
-}
-
 // Assumes all checks have already been done.
 func (js *jetStream) removePeerFromStream(sa *streamAssignment, peer string) bool {
 	js.mu.Lock()
@@ -1958,6 +1918,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// First make sure all consumer are properly scaled down
 			toSkip := len(rg.Peers) - replicas
 			newPeerSet := rg.Peers[toSkip:]
+			oldPeerSet := rg.Peers[:toSkip]
 			newPeerTbl := map[string]struct{}{}
 			for _, peer := range newPeerSet {
 				newPeerTbl[peer] = struct{}{}
@@ -1987,7 +1948,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			js.mu.RUnlock()
 
 			if waitOnConsumerScaledown {
-
 				continue
 			}
 
@@ -2002,7 +1962,14 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				if !foundLeader {
 					n.StepDown(firstPeer)
 				} else {
-					js.truncateOldPeers(mset, selfId)
+					for _, p := range oldPeerSet {
+						n.ProposeRemovePeer(p)
+					}
+					csa := sa.copyGroup()
+					csa.Group.Peers = newPeerSet
+					csa.Group.Cluster = s.ClusterName() // use cluster name of leader/self
+					csa.Group.Preferred = firstPeer
+					cc.meta.ForwardProposal(encodeUpdateStreamAssignment(csa))
 				}
 			}
 		case err := <-restoreDoneCh:
@@ -3794,6 +3761,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			}
 			toSkip := len(rg.Peers) - replicas
 			newPeerSet := rg.Peers[toSkip:]
+			oldPeerSet := rg.Peers[:toSkip]
 
 			ci := js.clusterInfo(rg)
 
@@ -3809,7 +3777,11 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 					n.StepDown(firstPeer)
 				} else {
 					// truncate this consumer
+					for _, p := range oldPeerSet {
+						n.ProposeRemovePeer(p)
+					}
 					cca := ca.copyGroup()
+					cca.Group.Cluster = s.ClusterName() // use cluster name of leader/self
 					cca.Group.Peers = newPeerSet
 					cc.meta.ForwardProposal(encodeAddConsumerAssignment(cca))
 				}

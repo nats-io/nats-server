@@ -137,7 +137,7 @@ type raft struct {
 	csz      int
 	qn       int
 	peers    map[string]*lps
-	removed  map[string]string
+	removed  map[string]struct{}
 	acks     map[uint64]map[string]struct{}
 	pae      map[uint64]*appendEntry
 	elect    *time.Timer
@@ -694,6 +694,10 @@ func (n *raft) ProposeAddPeer(peer string) error {
 // As a leader if we are proposing to remove a peer assume its already gone.
 func (n *raft) doRemovePeerAsLeader(peer string) {
 	n.Lock()
+	if n.removed == nil {
+		n.removed = map[string]struct{}{}
+	}
+	n.removed[peer] = struct{}{}
 	if _, ok := n.peers[peer]; ok {
 		delete(n.peers, peer)
 		// We should decrease our cluster size since we are tracking this peer and the peer is most likely already gone.
@@ -2382,9 +2386,9 @@ func (n *raft) applyCommit(index uint64) error {
 
 			// Make sure we have our removed map.
 			if n.removed == nil {
-				n.removed = make(map[string]string)
+				n.removed = make(map[string]struct{})
 			}
-			n.removed[peer] = peer
+			n.removed[peer] = struct{}{}
 
 			if _, ok := n.peers[peer]; ok {
 				delete(n.peers, peer)
