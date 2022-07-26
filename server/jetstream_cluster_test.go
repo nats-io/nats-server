@@ -6291,6 +6291,109 @@ func TestJetStreamClusterAckPendingWithMaxRedelivered(t *testing.T) {
 	})
 }
 
+func TestJetStreamOrderedConsumerWithClusterRestarts(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnectCluster(t, c)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Send in 100 messages.
+	msg, toSend := []byte("HELLO"), 20000
+
+	for i := 0; i < toSend; i++ {
+		if _, err = js.Publish("foo", msg); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	sub, err := js.SubscribeSync("foo",
+		nats.OrderedConsumer(),
+	)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer sub.Unsubscribe()
+
+	const maxRetries = 12
+	const retryDelay = 250 * time.Millisecond
+	const fetchTimeout = 200 * time.Millisecond
+
+	for i := 1; i <= toSend; i++ {
+		var msg *nats.Msg
+		var nextMsgErr error
+
+		nextMsgRetryLoop:
+		for r := 0; r <= maxRetries; r++ {
+			msg, nextMsgErr = sub.NextMsg(fetchTimeout)
+			if nextMsgErr == nil {
+				if r > 0 {
+					fmt.Printf("NextMsg success after %d retries\n", r)
+				}
+				break nextMsgRetryLoop
+			} else {
+				fmt.Printf("NextMsg error, message sequence %d, attempt %d/%d: %v\n", i, r, maxRetries, nextMsgErr)
+				time.Sleep(retryDelay)
+			}
+		}
+
+		if nextMsgErr != nil {
+			t.Fatalf("Exceeded max retries for NextMsg: %v", err)
+		}
+
+		metadata, err := msg.Metadata()
+		if err != nil {
+			t.Fatalf("Failed to get message metadata: %v", err)
+		}
+
+		if metadata.Sequence.Stream != uint64(i) {
+			t.Fatalf("Stream sequence error, expecting %d, got %d", i, metadata.Sequence.Stream)
+		}
+
+		var ackErr error
+
+		ackRetryLoop:
+		for r := 0; r <= maxRetries; r++ {
+			ackErr = nil
+			ackErr = msg.AckSync()
+			if ackErr == nil {
+				if r > 0 {
+					fmt.Printf("ACK success after %d retries\n", r)
+				}
+				break ackRetryLoop
+			} else {
+				fmt.Printf("AckSync error, message sequence %d, attempt %d/%d: %v\n", i, r, maxRetries, ackErr)
+				time.Sleep(retryDelay)
+			}
+		}
+
+		if ackErr != nil {
+			t.Fatalf("Exceeded max retries for AckSync: %v", ackErr)
+		}
+
+		if i % 100 == 0 {
+			fmt.Printf("Consumed and ACKed %d/%d, restarting cluster\n", i, toSend)
+			c.stopAll()
+			time.Sleep(1 * time.Second)
+			c.restartAllSamePorts()
+
+			c.waitOnClusterHealthz()
+			c.waitOnClusterReady()
+			c.waitOnAllCurrent()
+			c.waitOnLeader()
+		}
+	}
+}
+
 func TestJetStreamClusterMixedMode(t *testing.T) {
 	for _, test := range []struct {
 		name string
