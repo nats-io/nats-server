@@ -3477,7 +3477,10 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 			}
 			// Only send response if not recovering.
 			if !js.isMetaRecovering() {
-				if wasExisting && (o.isLeader() || (!didCreate && rg.node.GroupLeader() == _EMPTY_)) {
+				o.mu.RLock()
+				isLeader := o.isLeader()
+				o.mu.RUnlock()
+				if wasExisting && (isLeader || (!didCreate && rg.node.GroupLeader() == _EMPTY_)) {
 					// Process if existing as an update.
 					js.mu.RLock()
 					client, subject, reply := ca.Client, ca.Subject, ca.Reply
@@ -3898,22 +3901,22 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 				}
 				o.mu.Unlock()
 			case addPendingRequest:
+				o.mu.Lock()
 				if !o.isLeader() {
-					o.mu.Lock()
 					if o.prm == nil {
 						o.prm = make(map[string]struct{})
 					}
 					o.prm[string(buf[1:])] = struct{}{}
-					o.mu.Unlock()
 				}
+				o.mu.Unlock()
 			case removePendingRequest:
+				o.mu.Lock()
 				if !o.isLeader() {
-					o.mu.Lock()
 					if o.prm != nil {
 						delete(o.prm, string(buf[1:]))
 					}
-					o.mu.Unlock()
 				}
+				o.mu.Unlock()
 			default:
 				panic(fmt.Sprintf("JetStream Cluster Unknown group entry op type! %v", entryOp(buf[0])))
 			}
