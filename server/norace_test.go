@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"runtime/debug"
 	"strconv"
@@ -5265,6 +5266,7 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 
 	getSubj := fmt.Sprintf(JSDirectMsgGetT, "TEST")
 	getMsg := func(key string) *nats.Msg {
+		t.Helper()
 		req := []byte(fmt.Sprintf(`{"last_by_subj":%q}`, key))
 		m, err := nc.Request(getSubj, req, time.Second)
 		require_NoError(t, err)
@@ -5287,13 +5289,12 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 			js, _ := nc.JetStream(nats.MaxWait(500 * time.Millisecond))
 			defer nc.Close()
 			for {
-				pt := time.NewTimer(time.Duration(50 * time.Millisecond))
 				select {
-				case <-pt.C:
-					js.Publish(fmt.Sprintf("kv.%d", rand.Intn(1000)), msg)
 				case <-qch:
-					pt.Stop()
 					return
+				default:
+					// Send as fast as we can.
+					js.PublishAsync(fmt.Sprintf("kv.%d", rand.Intn(1000)), msg)
 				}
 			}
 		}()
@@ -5320,12 +5321,18 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 		return nil
 	})
 
+	close(qch)
+	wg.Wait()
+
+	// Just make sure we can succeed here.
+	getMsg("kv.22")
+
 	// For each non-leader check that the direct sub fires up.
 	// We just test all, the leader will already have a directSub.
 	for _, s := range c.servers {
 		mset, err := s.GlobalAccount().lookupStream("TEST")
 		require_NoError(t, err)
-		checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+		checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
 			mset.mu.RLock()
 			ok := mset.directSub != nil
 			mset.mu.RUnlock()
@@ -5336,18 +5343,30 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 		})
 	}
 
-	close(qch)
-	wg.Wait()
-
-	// Just make sure we can succeed here.
-	getMsg("kv.22")
-
 	si, err := js.StreamInfo("TEST")
 	require_NoError(t, err)
 
 	if si.State.Msgs == uint64(num) {
 		t.Fatalf("Expected to see messages increase, got %d", si.State.Msgs)
 	}
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		// Make sure they are all the same from a state perspective.
+		// Leader will have the expected state.
+		lmset, err := c.streamLeader("$G", "TEST").GlobalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		expected := lmset.state()
+
+		for _, s := range c.servers {
+			mset, err := s.GlobalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+			if state := mset.state(); !reflect.DeepEqual(expected, state) {
+				return fmt.Errorf("Expected %+v, got %+v", expected, state)
+			}
+		}
+		return nil
+	})
+
 }
 
 func TestNoRaceJetStreamClusterStreamNamesAndInfosMoreThanAPILimit(t *testing.T) {
