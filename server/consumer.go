@@ -795,7 +795,10 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	}
 
 	// This is always true in single server mode.
-	if o.isLeader() {
+	o.mu.RLock()
+	isLdr := o.isLeader()
+	o.mu.RUnlock()
+	if isLdr {
 		// Send advisory.
 		var suppress bool
 		if !s.standAloneMode() && ca == nil {
