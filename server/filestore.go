@@ -342,6 +342,22 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	return fs, nil
 }
 
+// Lock all existing message blocks.
+// Lock held on entry.
+func (fs *fileStore) lockAllMsgBlocks() {
+	for _, mb := range fs.blks {
+		mb.mu.Lock()
+	}
+}
+
+// Unlock all existing message blocks.
+// Lock held on entry.
+func (fs *fileStore) unlockAllMsgBlocks() {
+	for _, mb := range fs.blks {
+		mb.mu.Unlock()
+	}
+}
+
 func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	if fs.isClosed() {
 		return ErrStoreClosed
@@ -356,9 +372,16 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	fs.mu.Lock()
 	new_cfg := FileStreamInfo{Created: fs.cfg.Created, StreamConfig: *cfg}
 	old_cfg := fs.cfg
+	// Messages block reference fs.cfg.Subjects (in subjString) under the
+	// mb's lock, not fs' lock. So do the switch here under all existing
+	// message blocks' lock.
+	fs.lockAllMsgBlocks()
 	fs.cfg = new_cfg
+	fs.unlockAllMsgBlocks()
 	if err := fs.writeStreamMeta(); err != nil {
+		fs.lockAllMsgBlocks()
 		fs.cfg = old_cfg
+		fs.unlockAllMsgBlocks()
 		fs.mu.Unlock()
 		return err
 	}
