@@ -3670,6 +3670,98 @@ func TestJetStreamClusterPeerExclusionTag(t *testing.T) {
 	require_NoError(t, err)
 }
 
+func TestJetStreamClusterScaleConsumer(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterTempl, "C", 3)
+	defer c.shutdown()
+
+	srv := c.randomNonLeader()
+	nc, js := jsClientConnect(t, srv)
+	defer nc.Close()
+
+	si, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	durCfg := &nats.ConsumerConfig{Durable: "DUR", AckPolicy: nats.AckExplicitPolicy}
+	ci, err := js.AddConsumer("TEST", durCfg)
+	require_NoError(t, err)
+	require_True(t, ci.Config.Replicas == 0)
+
+	toSend := uint64(1_000)
+	for i := uint64(0); i < toSend; i++ {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	s, err := js.PullSubscribe("foo", "DUR")
+	require_NoError(t, err)
+
+	consumeOne := func(expSeq uint64) error {
+		if ci, err := js.ConsumerInfo("TEST", "DUR"); err != nil {
+			return err
+		} else if ci.Delivered.Stream != expSeq {
+			return fmt.Errorf("pre: not expected delivered stream %d, got %d", expSeq, ci.Delivered.Stream)
+		} else if ci.Delivered.Consumer != expSeq {
+			return fmt.Errorf("pre: not expected delivered consumer %d, got %d", expSeq, ci.Delivered.Consumer)
+		} else if ci.AckFloor.Stream != expSeq {
+			return fmt.Errorf("pre: not expected ack stream %d, got %d", expSeq, ci.AckFloor.Stream)
+		} else if ci.AckFloor.Consumer != expSeq {
+			return fmt.Errorf("pre: not expected ack consumer %d, got %d", expSeq, ci.AckFloor.Consumer)
+		}
+		if m, err := s.Fetch(1); err != nil {
+			return err
+		} else if err := m[0].AckSync(); err != nil {
+			return err
+		}
+		expSeq = expSeq + 1
+		if ci, err := js.ConsumerInfo("TEST", "DUR"); err != nil {
+			return err
+		} else if ci.Delivered.Stream != expSeq {
+			return fmt.Errorf("post: not expected delivered stream %d, got %d", expSeq, ci.Delivered.Stream)
+		} else if ci.Delivered.Consumer != expSeq {
+			return fmt.Errorf("post: not expected delivered consumer %d, got %d", expSeq, ci.Delivered.Consumer)
+		} else if ci.AckFloor.Stream != expSeq {
+			return fmt.Errorf("post: not expected ack stream %d, got %d", expSeq, ci.AckFloor.Stream)
+		} else if ci.AckFloor.Consumer != expSeq {
+			return fmt.Errorf("post: not expected ack consumer %d, got %d", expSeq, ci.AckFloor.Consumer)
+		}
+		return nil
+	}
+
+	require_NoError(t, consumeOne(0))
+
+	// scale down, up, down and up to default == 3 again
+	for i, r := range []int{1, 3, 1, 0} {
+		durCfg.Replicas = r
+		if r == 0 {
+			r = si.Config.Replicas
+		}
+		js.UpdateConsumer("TEST", durCfg)
+
+		checkFor(t, time.Second*30, time.Millisecond*250, func() error {
+			if ci, err = js.ConsumerInfo("TEST", "DUR"); err != nil {
+				return err
+			} else if ci.Cluster.Leader == _EMPTY_ {
+				return fmt.Errorf("no leader")
+			} else if len(ci.Cluster.Replicas) != r-1 {
+				return fmt.Errorf("not enough replica, got %d wanted %d", len(ci.Cluster.Replicas), r-1)
+			} else {
+				for _, r := range ci.Cluster.Replicas {
+					if !r.Current || r.Offline || r.Lag != 0 {
+						return fmt.Errorf("replica %s not current %t offline %t lag %d", r.Name, r.Current, r.Offline, r.Lag)
+					}
+				}
+			}
+			return nil
+		})
+
+		require_NoError(t, consumeOne(uint64(i+1)))
+	}
+}
+
 func TestJetStreamClusterMoveCancel(t *testing.T) {
 	server := map[string]struct{}{}
 	sc := createJetStreamSuperClusterWithTemplateAndModHook(t, jsClusterTempl, 4, 2,
