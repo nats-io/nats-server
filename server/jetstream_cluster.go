@@ -1878,6 +1878,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		case <-uch:
 			// keep stream assignment current
 			sa = mset.streamAssignment()
+			// keep peer list up to date with config
+			js.checkPeers(mset.raftGroup())
 			// We get this when we have a new stream assignment caused by an update.
 			// We want to know if we are migrating.
 			migrating := mset.isMigrating()
@@ -3739,7 +3741,8 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			// We get this when we have a new consumer assignment caused by an update.
 			// We want to know if we are migrating.
 			rg := o.raftGroup()
-
+			// keep peer list up to date with config
+			js.checkPeers(rg)
 			// If we are migrating, monitor for the new peers to be caught up.
 			if isLeader && len(rg.Peers) != o.replica() {
 				startMigrationMonitoring()
@@ -4764,6 +4767,57 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	cc.meta.Propose(encodeAddStreamAssignment(sa))
 }
 
+var (
+	errReqTimeout = errors.New("timeout while waiting for response")
+	errReqSrvExit = errors.New("server shutdown while waiting for response")
+)
+
+// blocking utility call to perform requests on the system account
+// returns (synchronized) v or error
+func (s *Server) sysRequest(v interface{}, subjFormat string, args ...interface{}) (interface{}, error) {
+	isubj := fmt.Sprintf(subjFormat, args...)
+	s.mu.Lock()
+	inbox := s.newRespInbox()
+	results := make(chan interface{}, 1)
+	// Store our handler.
+	s.sys.replies[inbox] = func(sub *subscription, _ *client, _ *Account, subject, _ string, msg []byte) {
+		if err := json.Unmarshal(msg, v); err != nil {
+			s.Warnf("Error unmarshalling response for request '%s':%v", isubj, err)
+			return
+		}
+		select {
+		case results <- v:
+		default:
+			s.Warnf("Failed placing request response on internal channel")
+		}
+	}
+	s.mu.Unlock()
+
+	s.sendInternalMsgLocked(isubj, inbox, nil, nil)
+
+	const timeout = 2 * time.Second
+	notActive := time.NewTimer(timeout)
+	defer notActive.Stop()
+
+	var err error
+	var data interface{}
+
+	select {
+	case <-s.quitCh:
+		err = errReqSrvExit
+	case <-notActive.C:
+		err = errReqTimeout
+	case data = <-results:
+	}
+	// Clean up here.
+	s.mu.Lock()
+	if s.sys != nil && s.sys.replies != nil {
+		delete(s.sys.replies, inbox)
+	}
+	s.mu.Unlock()
+	return data, err
+}
+
 func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, cfg *StreamConfig, peerSet []string) {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
@@ -4891,48 +4945,11 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 			if !s.allPeersOffline(rg) {
 				// Need to release js lock.
 				js.mu.Unlock()
-				s.mu.Lock()
-				inbox := s.newRespInbox()
-				results := make(chan *StreamInfo, 1)
-				// Store our handler.
-				s.sys.replies[inbox] = func(sub *subscription, _ *client, _ *Account, subject, _ string, msg []byte) {
-					var si StreamInfo
-					if err := json.Unmarshal(msg, &si); err != nil {
-						s.Warnf("Error unmarshaling clustered stream info response:%v", err)
-						return
-					}
-					select {
-					case results <- &si:
-					default:
-						s.Warnf("Failed placing remote stream info result on internal channel")
-					}
+				if si, err := s.sysRequest(&StreamInfo{}, clusterStreamInfoT, ci.serviceAccount(), cfg.Name); err != nil {
+					s.Warnf("Did not receive stream info results for '%s > %s' due to: %s", acc, cfg.Name, err)
+				} else if cl := si.(*StreamInfo).Cluster; cl != nil {
+					curLeader = string(getHash(cl.Leader))
 				}
-				s.mu.Unlock()
-
-				isubj := fmt.Sprintf(clusterStreamInfoT, ci.serviceAccount(), cfg.Name)
-				s.sendInternalMsgLocked(isubj, inbox, nil, nil)
-
-				const timeout = 2 * time.Second
-				notActive := time.NewTimer(timeout)
-				defer notActive.Stop()
-
-				select {
-				case <-s.quitCh:
-					break
-				case <-notActive.C:
-					s.Warnf("Did not receive stream info results for '%s > %s'", acc, cfg.Name)
-				case si := <-results:
-					if si.Cluster != nil {
-						// The leader here is the server name, but need to convert to internal name.
-						curLeader = string(getHash(si.Cluster.Leader))
-					}
-				}
-				// Clean up here.
-				s.mu.Lock()
-				if s.sys != nil && s.sys.replies != nil {
-					delete(s.sys.replies, inbox)
-				}
-				s.mu.Unlock()
 				// Re-acquire here.
 				js.mu.Lock()
 			}
@@ -5807,13 +5824,74 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			Created: time.Now().UTC(),
 		}
 	} else {
+		nca := ca.copyGroup()
+
+		rBefore := ca.Config.replicas(sa.Config)
+		rAfter := cfg.replicas(sa.Config)
+
+		var curLeader string
+		if rBefore != rAfter {
+			// We are modifying nodes here. We want to do our best to preserve the current leader.
+			// We have support now from above that guarantees we are in our own Go routine, so can
+			// ask for stream info from the stream leader to make sure we keep the leader in the new list.
+			if !s.allPeersOffline(ca.Group) {
+				// Need to release js lock.
+				js.mu.Unlock()
+				if ci, err := s.sysRequest(&ConsumerInfo{}, clusterConsumerInfoT, ci.serviceAccount(), sa.Config.Name, cfg.Durable); err != nil {
+					s.Warnf("Did not receive consumer info results for '%s > %s > %s' due to: %s", acc, sa.Config.Name, cfg.Durable, err)
+				} else if cl := ci.(*ConsumerInfo).Cluster; cl != nil {
+					curLeader = string(getHash(cl.Leader))
+				}
+				// Re-acquire here.
+				js.mu.Lock()
+			}
+		}
+
+		if rBefore < rAfter {
+			newPeerSet := nca.Group.Peers
+			// scale up by adding new members from the stream peer set that are not yet in the consumer peer set
+			streamPeerSet := copyStrings(sa.Group.Peers)
+			rand.Shuffle(rAfter, func(i, j int) { streamPeerSet[i], streamPeerSet[j] = streamPeerSet[j], streamPeerSet[i] })
+			for _, p := range streamPeerSet {
+				found := false
+				for _, sp := range newPeerSet {
+					if sp == p {
+						found = true
+						break
+					}
+				}
+				if !found {
+					newPeerSet = append(newPeerSet, p)
+					if len(newPeerSet) == rAfter {
+						break
+					}
+				}
+			}
+			nca.Group.Peers = newPeerSet
+			nca.Group.Preferred = curLeader
+		} else if rBefore > rAfter {
+			newPeerSet := nca.Group.Peers
+			// mark leader preferred and move it to end
+			nca.Group.Preferred = curLeader
+			if nca.Group.Preferred != _EMPTY_ {
+				for i, p := range newPeerSet {
+					if nca.Group.Preferred == p {
+						newPeerSet[i] = newPeerSet[len(newPeerSet)-1]
+						newPeerSet[len(newPeerSet)-1] = p
+					}
+				}
+			}
+			// scale down by removing peers from the end
+			newPeerSet = newPeerSet[len(newPeerSet)-rAfter:]
+			nca.Group.Peers = newPeerSet
+		}
+
 		// Update config and client info on copy of existing.
-		nca := *ca
 		nca.Config = cfg
 		nca.Client = ci
 		nca.Subject = subject
 		nca.Reply = reply
-		ca = &nca
+		ca = nca
 	}
 
 	eca := encodeAddConsumerAssignment(ca)

@@ -3593,7 +3593,13 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 	}
 
 	if isClustered && !req.Config.Direct {
-		s.jsClusteredConsumerRequest(ci, acc, subject, reply, rmsg, req.Stream, &req.Config)
+		// If we are inline with client, we still may need to do a callout for consumer info
+		// during this call, so place in Go routine to not block client.
+		if c.kind != ROUTER && c.kind != GATEWAY {
+			go s.jsClusteredConsumerRequest(ci, acc, subject, reply, rmsg, req.Stream, &req.Config)
+		} else {
+			s.jsClusteredConsumerRequest(ci, acc, subject, reply, rmsg, req.Stream, &req.Config)
+		}
 		return
 	}
 
