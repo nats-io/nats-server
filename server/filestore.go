@@ -374,7 +374,7 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	old_cfg := fs.cfg
 	// Messages block reference fs.cfg.Subjects (in subjString) under the
 	// mb's lock, not fs' lock. So do the switch here under all existing
-	// message blocks' lock.
+	// message blocks' lock in order to silence the DATA RACE detector.
 	fs.lockAllMsgBlocks()
 	fs.cfg = new_cfg
 	fs.unlockAllMsgBlocks()
