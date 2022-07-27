@@ -4767,6 +4767,11 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	cc.meta.Propose(encodeAddStreamAssignment(sa))
 }
 
+var (
+	errReqTimeout = errors.New("timeout while waiting for response")
+	errReqSrvExit = errors.New("server shutdown while waiting for response")
+)
+
 // blocking utility call to perform requests on the system account
 // returns (synchronized) v or error
 func (s *Server) sysRequest(v interface{}, subjFormat string, args ...interface{}) (interface{}, error) {
@@ -4799,9 +4804,9 @@ func (s *Server) sysRequest(v interface{}, subjFormat string, args ...interface{
 
 	select {
 	case <-s.quitCh:
-		err = fmt.Errorf("server shutdown while waiting for response")
+		err = errReqSrvExit
 	case <-notActive.C:
-		err = fmt.Errorf("timeout")
+		err = errReqTimeout
 	case data = <-results:
 	}
 	// Clean up here.
