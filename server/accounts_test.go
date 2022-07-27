@@ -50,47 +50,47 @@ func simpleAccountServer(t *testing.T) (*Server, *Account, *Account) {
 
 func TestPlaceHolderIndex(t *testing.T) {
 	testString := "$1"
-	indexes, nbPartitions, err := placeHolderIndex(testString)
+	transformType, indexes, nbPartitions, err := indexPlaceHolders(testString)
 
-	if err != nil || len(indexes) != 1 || indexes[0] != 1 || nbPartitions != -1 {
+	if err != nil || transformType != Wildcard || len(indexes) != 1 || indexes[0] != 1 || nbPartitions != -1 {
 		t.Fatalf("Error parsing %s", testString)
 	}
 
 	testString = "{{partition(10,1,2,3)}}"
 
-	indexes, nbPartitions, err = placeHolderIndex(testString)
+	transformType, indexes, nbPartitions, err = indexPlaceHolders(testString)
 
-	if err != nil || !reflect.DeepEqual(indexes, []int{1, 2, 3}) || nbPartitions != 10 {
+	if err != nil || transformType != Partition || !reflect.DeepEqual(indexes, []int{1, 2, 3}) || nbPartitions != 10 {
 		t.Fatalf("Error parsing %s", testString)
 	}
 
 	testString = "{{ partition(10,1,2,3) }}"
 
-	indexes, nbPartitions, err = placeHolderIndex(testString)
+	transformType, indexes, nbPartitions, err = indexPlaceHolders(testString)
 
-	if err != nil || !reflect.DeepEqual(indexes, []int{1, 2, 3}) || nbPartitions != 10 {
+	if err != nil || transformType != Partition || !reflect.DeepEqual(indexes, []int{1, 2, 3}) || nbPartitions != 10 {
 		t.Fatalf("Error parsing %s", testString)
 	}
 
 	testString = "{{partition (10,1,2,3)}}"
 
-	indexes, nbPartitions, err = placeHolderIndex(testString)
+	transformType, indexes, nbPartitions, err = indexPlaceHolders(testString)
 
-	if err != nil || !reflect.DeepEqual(indexes, []int{1, 2, 3}) || nbPartitions != 10 {
+	if err != nil || transformType != Partition || !reflect.DeepEqual(indexes, []int{1, 2, 3}) || nbPartitions != 10 {
 		t.Fatalf("Error parsing %s", testString)
 	}
 
 	testString = "{{wildcard(2)}}"
-	indexes, nbPartitions, err = placeHolderIndex(testString)
+	transformType, indexes, nbPartitions, err = indexPlaceHolders(testString)
 
-	if err != nil || len(indexes) != 1 || indexes[0] != 2 || nbPartitions != -1 {
+	if err != nil || transformType != Wildcard || len(indexes) != 1 || indexes[0] != 2 || nbPartitions != -1 {
 		t.Fatalf("Error parsing %s", testString)
 	}
 
 	testString = "{{ wildcard (2) }}"
-	indexes, nbPartitions, err = placeHolderIndex(testString)
+	transformType, indexes, nbPartitions, err = indexPlaceHolders(testString)
 
-	if err != nil || len(indexes) != 1 || indexes[0] != 2 || nbPartitions != -1 {
+	if err != nil || transformType != Wildcard || len(indexes) != 1 || indexes[0] != 2 || nbPartitions != -1 {
 		t.Fatalf("Error parsing %s", testString)
 	}
 }
