@@ -11593,7 +11593,13 @@ func TestJetStreamClusterStreamResetOnExpirationDuringPeerDownAndRestartWithLead
 	mset, err = nsl.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
 
-	if state := mset.state(); state.FirstSeq != uint64(n+1) {
+	if state := mset.state(); state.FirstSeq != uint64(n+1) || state.LastSeq != uint64(n) {
+		t.Fatalf("Expected first sequence of %d, got %d", n+1, state.FirstSeq)
+	}
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	if state := si.State; state.FirstSeq != uint64(n+1) || state.LastSeq != uint64(n) {
 		t.Fatalf("Expected first sequence of %d, got %d", n+1, state.FirstSeq)
 	}
 
@@ -11608,10 +11614,13 @@ func TestJetStreamClusterStreamResetOnExpirationDuringPeerDownAndRestartWithLead
 		return fmt.Errorf("No correct leader yet")
 	})
 
-	si, err := js.StreamInfo("TEST")
-	require_NoError(t, err)
+	if state := mset.state(); state.FirstSeq != uint64(n+1) || state.LastSeq != uint64(n) {
+		t.Fatalf("Expected first sequence of %d, got %d", n+1, state.FirstSeq)
+	}
 
-	if state := si.State; state.FirstSeq != uint64(n+1) {
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	if state := si.State; state.FirstSeq != uint64(n+1) || state.LastSeq != uint64(n) {
 		t.Fatalf("Expected first sequence of %d, got %d", n+1, state.FirstSeq)
 	}
 }

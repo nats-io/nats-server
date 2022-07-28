@@ -3973,7 +3973,7 @@ func TestFileStoreShortIndexWriteBug(t *testing.T) {
 	require_NoError(t, err)
 	defer fs.Stop()
 
-	if state := fs.State(); state.FirstSeq != 101 {
+	if state := fs.State(); state.FirstSeq != 101 || state.LastSeq != 100 {
 		t.Fatalf("Expected first sequence of 101 vs %d", state.FirstSeq)
 	}
 }
