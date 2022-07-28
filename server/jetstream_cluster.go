@@ -3737,7 +3737,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			// We set the state on the stream assignment update below.
 			replicas, err := o.replica()
 			if err != nil {
-				return
+				continue
 			}
 			if isLeader && len(rg.Peers) != replicas {
 				startMigrationMonitoring()
@@ -3755,7 +3755,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			// If we are migrating, monitor for the new peers to be caught up.
 			replicas, err := o.replica()
 			if err != nil {
-				return
+				continue
 			}
 			if isLeader && len(rg.Peers) != replicas {
 				startMigrationMonitoring()
@@ -3771,7 +3771,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			rg := o.raftGroup()
 			replicas, err := o.replica()
 			if err != nil {
-				return
+				continue
 			}
 			if len(rg.Peers) <= replicas {
 				// Migration no longer happening, so not our job anymore
