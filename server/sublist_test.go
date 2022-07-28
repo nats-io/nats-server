@@ -669,8 +669,6 @@ func TestValidateDestinationSubject(t *testing.T) {
 	checkError(ValidateMappingDestination("foo.{{ wildcard(1) }}"), nil, t)
 	checkError(ValidateMappingDestination("foo.{{wildcard( 1 )}}"), nil, t)
 	checkError(ValidateMappingDestination("foo.{{partition(2,1)}}"), nil, t)
-	checkError(ValidateMappingDestination("foo.{{SplitFromLeft(2,1)}}"), nil, t)
-	checkError(ValidateMappingDestination("foo.{{SplitFromRight(2,1)}}"), nil, t)
 	checkError(ValidateMappingDestination("foo.{{unknown(1)}}"), ErrInvalidMappingDestination, t)
 	checkError(ValidateMappingDestination("foo..}"), ErrInvalidMappingDestination, t)
 	checkError(ValidateMappingDestination("foo. bar}"), ErrInvalidMappingDestinationSubject, t)
