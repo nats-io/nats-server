@@ -2624,7 +2624,11 @@ func TestLeafNodeTLSConfigReload(t *testing.T) {
 	// Wait for the error
 	select {
 	case err := <-lg.errCh:
-		if !strings.Contains(err, "unknown") && !strings.Contains(err, "broken") {
+		// Since Go 1.18, we had to regenerate certs to not have to use GODEBUG="x509sha1=1"
+		// But on macOS, with our test CA certs, no SCTs included, it will fail
+		// for the reason "x509: “localhost” certificate is not standards compliant"
+		// instead of "unknown authority".
+		if !strings.Contains(err, "unknown") && !strings.Contains(err, "compliant") {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 	case <-time.After(2 * time.Second):
