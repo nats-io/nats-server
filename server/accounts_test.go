@@ -50,54 +50,47 @@ func simpleAccountServer(t *testing.T) (*Server, *Account, *Account) {
 
 func TestPlaceHolderIndex(t *testing.T) {
 	testString := "$1"
-	transformType, indexes, nbPartitions, _, err := indexPlaceHolders(testString)
-	var position int32
+	indexes, nbPartitions, err := placeHolderIndex(testString)
 
-	if err != nil || transformType != Wildcard || len(indexes) != 1 || indexes[0] != 1 || nbPartitions != -1 {
+	if err != nil || len(indexes) != 1 || indexes[0] != 1 || nbPartitions != -1 {
 		t.Fatalf("Error parsing %s", testString)
 	}
 
 	testString = "{{partition(10,1,2,3)}}"
 
-	transformType, indexes, nbPartitions, _, err = indexPlaceHolders(testString)
+	indexes, nbPartitions, err = placeHolderIndex(testString)
 
-	if err != nil || transformType != Partition || !reflect.DeepEqual(indexes, []int{1, 2, 3}) || nbPartitions != 10 {
+	if err != nil || !reflect.DeepEqual(indexes, []int{1, 2, 3}) || nbPartitions != 10 {
 		t.Fatalf("Error parsing %s", testString)
 	}
 
-	testString = "{{ Partition (10,1,2,3) }}"
+	testString = "{{ partition(10,1,2,3) }}"
 
-	transformType, indexes, nbPartitions, _, err = indexPlaceHolders(testString)
+	indexes, nbPartitions, err = placeHolderIndex(testString)
 
-	if err != nil || transformType != Partition || !reflect.DeepEqual(indexes, []int{1, 2, 3}) || nbPartitions != 10 {
+	if err != nil || !reflect.DeepEqual(indexes, []int{1, 2, 3}) || nbPartitions != 10 {
+		t.Fatalf("Error parsing %s", testString)
+	}
+
+	testString = "{{partition (10,1,2,3)}}"
+
+	indexes, nbPartitions, err = placeHolderIndex(testString)
+
+	if err != nil || !reflect.DeepEqual(indexes, []int{1, 2, 3}) || nbPartitions != 10 {
 		t.Fatalf("Error parsing %s", testString)
 	}
 
 	testString = "{{wildcard(2)}}"
-	transformType, indexes, nbPartitions, _, err = indexPlaceHolders(testString)
+	indexes, nbPartitions, err = placeHolderIndex(testString)
 
-	if err != nil || transformType != Wildcard || len(indexes) != 1 || indexes[0] != 2 || nbPartitions != -1 {
+	if err != nil || len(indexes) != 1 || indexes[0] != 2 || nbPartitions != -1 {
 		t.Fatalf("Error parsing %s", testString)
 	}
 
-	testString = "{{SplitFromLeft(2,1)}}"
-	transformType, indexes, position, _, err = indexPlaceHolders(testString)
+	testString = "{{ wildcard (2) }}"
+	indexes, nbPartitions, err = placeHolderIndex(testString)
 
-	if err != nil || transformType != SplitFromLeft || len(indexes) != 1 || indexes[0] != 2 || position != 1 {
-		t.Fatalf("Error parsing %s", testString)
-	}
-
-	testString = "{{SplitFromRight(3,2)}}"
-	transformType, indexes, position, _, err = indexPlaceHolders(testString)
-
-	if err != nil || transformType != SplitFromRight || len(indexes) != 1 || indexes[0] != 3 || position != 2 {
-		t.Fatalf("Error parsing %s", testString)
-	}
-
-	testString = "{{SliceFromLeft(2,2)}}"
-	transformType, indexes, sliceSize, _, err := indexPlaceHolders(testString)
-
-	if err != nil || transformType != SliceFromLeft || len(indexes) != 1 || indexes[0] != 2 || sliceSize != 2 {
+	if err != nil || len(indexes) != 1 || indexes[0] != 2 || nbPartitions != -1 {
 		t.Fatalf("Error parsing %s", testString)
 	}
 }
@@ -3297,7 +3290,6 @@ func TestSubjectTransforms(t *testing.T) {
 	shouldErr("foo.*", "foo.{{wildcard()}}")       // Not enough arguments passed to the mapping function
 	shouldErr("foo.*", "foo.{{wildcard(1,2)}}")    // Too many arguments passed to the mapping function
 	shouldErr("foo.*", "foo.{{ wildcard5) }}")     // Bad mapping function
-	shouldErr("foo.*", "foo.{{splitLeft(2,2}}")    // arg out of range
 
 	shouldBeOK := func(src, dest string) *transform {
 		t.Helper()
@@ -3311,7 +3303,6 @@ func TestSubjectTransforms(t *testing.T) {
 	shouldBeOK("foo", "bar")
 	shouldBeOK("foo.*.bar.*.baz", "req.$2.$1")
 	shouldBeOK("baz.>", "mybaz.>")
-	shouldBeOK("*", "{{splitfromleft(1,1)}}")
 
 	shouldMatch := func(src, dest, sample, expected string) {
 		t.Helper()
@@ -3330,12 +3321,6 @@ func TestSubjectTransforms(t *testing.T) {
 	shouldMatch("baz.>", "my.pre.>", "baz.1.2.3", "my.pre.1.2.3")
 	shouldMatch("baz.>", "foo.bar.>", "baz.1.2.3", "foo.bar.1.2.3")
 	shouldMatch("*", "foo.bar.$1", "foo", "foo.bar.foo")
-	shouldMatch("*", "{{splitfromleft(1,3)}}", "12345", "123.45")
-	shouldMatch("*", "{{SplitFromRight(1,3)}}", "12345", "12.345")
-	shouldMatch("*", "{{SliceFromLeft(1,3)}}", "1234567890", "123.456.789.0")
-	shouldMatch("*", "{{SliceFromRight(1,3)}}", "1234567890", "1.234.567.890")
-	shouldMatch("*", "{{split(1,-)}}", "-abc-def--ghi-", "abc.def.ghi")
-	shouldMatch("*.*", "{{split(2,-)}}.{{splitfromleft(1,2)}}", "foo.-abc-def--ghij-", "abc.def.ghij.fo.o") // combo + checks split for multiple instance of deliminator and deliminator being at the start or end
 }
 
 func TestAccountSystemPermsWithGlobalAccess(t *testing.T) {
