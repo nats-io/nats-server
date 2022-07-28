@@ -1140,7 +1140,13 @@ func ValidateMappingDestination(subject string) error {
 		}
 
 		if length > 4 && t[0] == '{' && t[1] == '{' && t[length-2] == '}' && t[length-1] == '}' {
-			if !partitionMappingFunctionRegEx.MatchString(t) && !wildcardMappingFunctionRegEx.MatchString(t) {
+			if !partitionMappingFunctionRegEx.MatchString(t) &&
+				!wildcardMappingFunctionRegEx.MatchString(t) &&
+				!splitFromLeftMappingFunctionRegEx.MatchString(t) &&
+				!splitFromRightMappingFunctionRegEx.MatchString(t) &&
+				!sliceFromLeftMappingFunctionRegEx.MatchString(t) &&
+				!sliceFromRightMappingFunctionRegEx.MatchString(t) &&
+				!splitMappingFunctionRegEx.MatchString(t) {
 				return &mappingDestinationErr{t, ErrUnknownMappingDestinationFunction}
 			} else {
 				continue
