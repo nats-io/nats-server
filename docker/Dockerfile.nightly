@@ -9,7 +9,7 @@ RUN mkdir -p src/github.com/nats-io && \
     cd natscli/nats && \
     go build -ldflags "-w -X main.version=${VERSION}" -o /nats
 
-RUN go get github.com/nats-io/nsc
+RUN go install github.com/nats-io/nsc@latest
 
 FROM alpine:latest
 
