@@ -2226,6 +2226,7 @@ func (n *raft) sendSnapshotToFollower(subject string) (uint64, error) {
 		snap.lastIndex = state.FirstSeq - 1
 		ae.pindex = snap.lastIndex
 	}
+
 	encoding, err := ae.encode(nil)
 	if err != nil {
 		return 0, err
@@ -2244,11 +2245,13 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 		delete(n.progress, ar.peer)
 		q.push(n.pindex)
 	}
+
 	// Check to make sure we have this entry.
 	start := ar.index + 1
 	var state StreamState
 	n.wal.FastState(&state)
 
+	var didSnap bool
 	if start < state.FirstSeq || (state.Msgs == 0 && start <= state.LastSeq) {
 		n.debug("Need to send snapshot to follower")
 		if lastIndex, err := n.sendSnapshotToFollower(ar.reply); err != nil {
@@ -2263,7 +2266,7 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 				return
 			}
 			n.debug("Snapshot sent, reset first entry to %d", lastIndex)
-			start = lastIndex
+			start, didSnap = lastIndex, true
 		}
 	}
 
@@ -2282,7 +2285,12 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	}
 	// Create a queue for delivering updates from responses.
 	indexUpdates := n.s.newIPQueue(fmt.Sprintf("[ACC:%s] RAFT '%s' indexUpdates", n.accName, n.group)) // of uint64
-	indexUpdates.push(ae.pindex)
+	// If we did send a snapshot above, that means we skipped ahead so bump entry pindex by 1 to start for catchup stream.
+	if didSnap {
+		indexUpdates.push(ae.pindex + 1)
+	} else {
+		indexUpdates.push(ae.pindex)
+	}
 	n.progress[ar.peer] = indexUpdates
 	n.Unlock()
 
@@ -2644,11 +2652,21 @@ func (n *raft) createCatchup(ae *appendEntry) string {
 }
 
 // Truncate our WAL and reset.
-func (n *raft) truncateWAL(pterm, pindex uint64) {
+// Lock should be held.
+func (n *raft) truncateWAL(term, index uint64) {
 	n.debug("Truncating and repairing WAL")
-	n.pterm, n.pindex = pterm, pindex
-	if err := n.wal.Truncate(pindex); err != nil {
+
+	n.pterm, n.pindex = term, index
+	if err := n.wal.Truncate(index); err != nil {
 		n.setWriteErrLocked(err)
+		return
+	}
+
+	// Check to see if we invalidated any snapshots that might have held state
+	// from the entries we are truncating.
+	if snap, _ := n.loadLastSnapshot(); snap != nil && snap.lastIndex > index {
+		os.Remove(n.snapfile)
+		n.snapfile = _EMPTY_
 	}
 }
 
@@ -2789,25 +2807,30 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	if ae.pterm != n.pterm || ae.pindex != n.pindex {
 		// Check if this is a lower index than what we were expecting.
 		if ae.pindex < n.pindex {
+			n.warn("AppendEntry detected pindex less than ours: %d:%d vs %d:%d", ae.pterm, ae.pindex, n.pterm, n.pindex)
 			var ar *appendEntryResponse
-			if eae, err := n.loadEntry(ae.pindex); err == nil && eae != nil {
-				// If terms mismatched, delete that entry and all others past it.
-				if ae.pterm > eae.pterm {
-					// Truncate will reset our pterm and pindex.
+
+			var success bool
+			eae, err := n.loadEntry(ae.pindex)
+			// If terms mismatched, or we got an error loading, delete that entry and all others past it.
+			if eae != nil && ae.pterm > eae.pterm || err != nil {
+				// Truncate will reset our pterm and pindex. Only do so if we have an entry.
+				if eae != nil {
 					n.truncateWAL(ae.pterm, ae.pindex)
-					// Make sure to cancel any catchups in progress.
-					if catchingUp {
-						n.cancelCatchup()
-					}
-					ar = &appendEntryResponse{ae.pterm, ae.pindex, n.id, false, _EMPTY_}
-				} else {
-					ar = &appendEntryResponse{ae.pterm, ae.pindex, n.id, true, _EMPTY_}
 				}
+				// Make sure to cancel any catchups in progress.
+				if catchingUp {
+					n.cancelCatchup()
+				}
+			} else {
+				// Inherit regardless.
+				n.pterm = ae.pterm
+				success = true
 			}
+			// Create response.
+			ar = &appendEntryResponse{ae.pterm, ae.pindex, n.id, success, _EMPTY_}
 			n.Unlock()
-			if ar != nil {
-				n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
-			}
+			n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
 			return
 		}
 
@@ -2843,6 +2866,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				n.Unlock()
 				return
 			}
+
 			n.pindex = ae.pindex
 			n.pterm = ae.pterm
 			n.commit = ae.pindex
