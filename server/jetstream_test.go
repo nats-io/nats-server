@@ -9932,6 +9932,37 @@ func TestJetStreamPullConsumerMaxWaitingOfOne(t *testing.T) {
 	}
 }
 
+func TestJetStreamPullConsumerMaxWaiting(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"test.*"}})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:    "dur",
+		AckPolicy:  nats.AckExplicitPolicy,
+		MaxWaiting: 10,
+	})
+	require_NoError(t, err)
+
+	// Cannot be updated.
+	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
+		Durable:    "dur",
+		AckPolicy:  nats.AckExplicitPolicy,
+		MaxWaiting: 1,
+	})
+	if !strings.Contains(err.Error(), "can not be updated") {
+		t.Fatalf(`expected "cannot be updated" error, got %s`, err)
+	}
+}
+
 ////////////////////////////////////////
 // Benchmark placeholders
 // TODO(dlc) - move
