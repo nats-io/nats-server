@@ -2656,11 +2656,13 @@ func (n *raft) createCatchup(ae *appendEntry) string {
 func (n *raft) truncateWAL(term, index uint64) {
 	n.debug("Truncating and repairing WAL")
 
-	n.pterm, n.pindex = term, index
 	if err := n.wal.Truncate(index); err != nil {
 		n.setWriteErrLocked(err)
 		return
 	}
+
+	// Set after we know we have truncated properly.
+	n.pterm, n.pindex = term, index
 
 	// Check to see if we invalidated any snapshots that might have held state
 	// from the entries we are truncating.
@@ -3039,17 +3041,11 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 
 	// Sanity checking for now.
 	if index := ae.pindex + 1; index != seq {
-		// We are missing store state from our state.
+		n.warn("Wrong index, ae is %+v, index stored was %d, n.pindex is %d", ae, seq, n.pindex)
 		if index > seq {
-			// Reset to last before this one.
-			if ae, err := n.loadEntry(seq - 1); err == nil && ae != nil {
-				nl := n.selectNextLeader()
-				n.truncateWAL(ae.pterm, ae.pindex)
-				if n.state == Leader {
-					n.stepdown.push(nl)
-				}
-			} else {
-				panic(fmt.Sprintf("[%s | %s] Wrong index, ae is %+v, seq is %d, n.pindex is %d\n\n", n.s, n.group, ae, seq, n.pindex))
+			// We are missing store state from our state. We need to stepdown at this point.
+			if n.state == Leader {
+				n.stepdown.push(n.selectNextLeader())
 			}
 		} else {
 			// Truncate back to our last known.

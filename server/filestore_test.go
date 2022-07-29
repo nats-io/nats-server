@@ -786,7 +786,20 @@ func TestFileStoreCompact(t *testing.T) {
 	storeDir := createDir(t, JetStreamStoreDir)
 	defer removeDir(t, storeDir)
 
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	prf := func(context []byte) ([]byte, error) {
+		h := hmac.New(sha256.New, []byte("dlc22"))
+		if _, err := h.Write(context); err != nil {
+			return nil, err
+		}
+		return h.Sum(nil), nil
+	}
+
+	fs, err := newFileStoreWithCreated(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 350},
+		StreamConfig{Name: "zzz", Storage: FileStorage},
+		time.Now(),
+		prf,
+	)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -821,6 +834,22 @@ func TestFileStoreCompact(t *testing.T) {
 	if n != 5 {
 		t.Fatalf("Expected to have purged 5 msgs, got %d", n)
 	}
+	if state = fs.State(); state.FirstSeq != 100 {
+		t.Fatalf("Expected first seq of 100, got %d", state.FirstSeq)
+	}
+
+	fs.Stop()
+	fs, err = newFileStoreWithCreated(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 350},
+		StreamConfig{Name: "zzz", Storage: FileStorage},
+		time.Now(),
+		prf,
+	)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
 	if state = fs.State(); state.FirstSeq != 100 {
 		t.Fatalf("Expected first seq of 100, got %d", state.FirstSeq)
 	}
@@ -942,9 +971,19 @@ func TestFileStoreStreamTruncate(t *testing.T) {
 	storeDir := createDir(t, JetStreamStoreDir)
 	defer removeDir(t, storeDir)
 
-	fs, err := newFileStore(
+	prf := func(context []byte) ([]byte, error) {
+		h := hmac.New(sha256.New, []byte("dlc22"))
+		if _, err := h.Write(context); err != nil {
+			return nil, err
+		}
+		return h.Sum(nil), nil
+	}
+
+	fs, err := newFileStoreWithCreated(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 350},
 		StreamConfig{Name: "zzz", Storage: FileStorage},
+		time.Now(),
+		prf,
 	)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -996,7 +1035,12 @@ func TestFileStoreStreamTruncate(t *testing.T) {
 
 	// Make sure we can recover same state.
 	fs.Stop()
-	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	fs, err = newFileStoreWithCreated(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 350},
+		StreamConfig{Name: "zzz", Storage: FileStorage},
+		time.Now(),
+		prf,
+	)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1005,6 +1049,10 @@ func TestFileStoreStreamTruncate(t *testing.T) {
 	if state := fs.State(); !reflect.DeepEqual(state, before) {
 		t.Fatalf("Expected state of %+v, got %+v", before, state)
 	}
+
+	mb := fs.getFirstBlock()
+	require_True(t, mb != nil)
+	require_NoError(t, mb.loadMsgs())
 }
 
 func TestFileStoreRemovePartialRecovery(t *testing.T) {
