@@ -1631,7 +1631,6 @@ func TestJetStreamClusterStreamSnapshotCatchup(t *testing.T) {
 	deleteMsg(pseq/2 + 1)
 
 	nsl := c.streamLeader("$G", "TEST")
-
 	nsl.JetStreamSnapshotStream("$G", "TEST")
 
 	// Do some activity post snapshot as well.
@@ -1640,11 +1639,22 @@ func TestJetStreamClusterStreamSnapshotCatchup(t *testing.T) {
 	// Send another batch.
 	sendBatch(100)
 
+	mset, err := nsl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	ostate := mset.stateWithDetail(true)
+
 	sl = c.restartServer(sl)
 	c.checkClusterFormed()
 
 	c.waitOnServerCurrent(sl)
 	c.waitOnStreamCurrent(sl, "$G", "TEST")
+
+	mset, err = sl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	if nstate := mset.stateWithDetail(true); !reflect.DeepEqual(ostate, nstate) {
+		t.Fatalf("States do not match after recovery: %+v vs %+v", ostate, nstate)
+	}
 }
 
 func TestJetStreamClusterDeleteMsg(t *testing.T) {
