@@ -11662,3 +11662,49 @@ func TestJetStreamClusterPullConsumerMaxWaiting(t *testing.T) {
 		t.Fatalf(`expected "cannot be updated" error, got %s`, err)
 	}
 }
+
+func TestJetStreamClusterEncryptedDoubleSnapshotBug(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterEncryptedTempl, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		MaxAge:   time.Second,
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	numMsgs := 50
+	for i := 0; i < numMsgs; i++ {
+		js.PublishAsync("foo", []byte("SNAP"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// Perform a snapshot on a follower.
+	nl := c.randomNonStreamLeader("$G", "TEST")
+	mset, err := nl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	err = mset.raftNode().InstallSnapshot(mset.stateSnapshot())
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", []byte("SNAP2"))
+	require_NoError(t, err)
+
+	for _, seq := range []uint64{1, 11, 22, 51} {
+		js.DeleteMsg("TEST", seq)
+	}
+
+	err = mset.raftNode().InstallSnapshot(mset.stateSnapshot())
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", []byte("SNAP3"))
+	require_NoError(t, err)
+}

@@ -652,11 +652,7 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) (*msgBlock, e
 		}
 		// Undo cache from above for later.
 		mb.cache = nil
-		wbek, err := chacha20.NewUnauthenticatedCipher(mb.seed, mb.nonce)
-		if err != nil {
-			return nil, err
-		}
-		wbek.XORKeyStream(buf, buf)
+		mb.bek.XORKeyStream(buf, buf)
 		if err := ioutil.WriteFile(mb.mfn, buf, defaultFilePerms); err != nil {
 			return nil, err
 		}
@@ -4545,16 +4541,15 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 			// Check for encryption.
 			if smb.bek != nil && len(nbuf) > 0 {
 				// Recreate to reset counter.
-				rbek, err := chacha20.NewUnauthenticatedCipher(smb.seed, smb.nonce)
+				bek, err := chacha20.NewUnauthenticatedCipher(smb.seed, smb.nonce)
 				if err != nil {
 					goto SKIP
 				}
-				cbuf := make([]byte, len(nbuf))
-				rbek.XORKeyStream(cbuf, nbuf)
-				if err = ioutil.WriteFile(smb.mfn, cbuf, defaultFilePerms); err != nil {
-					goto SKIP
-				}
-			} else if err = ioutil.WriteFile(smb.mfn, nbuf, defaultFilePerms); err != nil {
+				// For future writes make sure to set smb.bek to keep counter correct.
+				smb.bek = bek
+				smb.bek.XORKeyStream(nbuf, nbuf)
+			}
+			if err = ioutil.WriteFile(smb.mfn, nbuf, defaultFilePerms); err != nil {
 				goto SKIP
 			}
 			smb.clearCacheAndOffset()

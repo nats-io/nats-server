@@ -4025,3 +4025,45 @@ func TestFileStoreShortIndexWriteBug(t *testing.T) {
 		t.Fatalf("Expected first sequence of 101 vs %d", state.FirstSeq)
 	}
 }
+
+func TestFileStoreDoubleCompactWithWriteInBetweenEncryptedBug(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer os.RemoveAll(storeDir)
+
+	prf := func(context []byte) ([]byte, error) {
+		h := hmac.New(sha256.New, []byte("dlc22"))
+		if _, err := h.Write(context); err != nil {
+			return nil, err
+		}
+		return h.Sum(nil), nil
+	}
+
+	fs, err := newFileStoreWithCreated(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "zzz", Storage: FileStorage},
+		time.Now(),
+		prf,
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	subj, msg := "foo", []byte("ouch")
+	for i := 0; i < 5; i++ {
+		fs.StoreMsg(subj, nil, msg)
+	}
+	_, err = fs.Compact(5)
+	require_NoError(t, err)
+
+	if state := fs.State(); state.LastSeq != 5 {
+		t.Fatalf("Expected last sequence to be 5 but got %d", state.LastSeq)
+	}
+	for i := 0; i < 5; i++ {
+		fs.StoreMsg(subj, nil, msg)
+	}
+	_, err = fs.Compact(10)
+	require_NoError(t, err)
+
+	if state := fs.State(); state.LastSeq != 10 {
+		t.Fatalf("Expected last sequence to be 10 but got %d", state.LastSeq)
+	}
+}
