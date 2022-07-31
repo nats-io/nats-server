@@ -4361,8 +4361,22 @@ func TestMQTTFlappingSession(t *testing.T) {
 	defer c.Close()
 	proto := mqttCreateConnectProto(ci)
 	if _, err := testMQTTWrite(c, proto); err != nil {
-		t.Fatalf("Error writing connect: %v", err)
+		t.Fatalf("Error writing protocols: %v", err)
 	}
+	// Misbehave and send a SUB protocol without waiting for the CONNACK
+	w := &mqttWriter{}
+	pkLen := 2 // for pi
+	// Topic "foo"
+	pkLen += 2 + 3 + 1
+	w.WriteByte(mqttPacketSub | mqttSubscribeFlags)
+	w.WriteVarInt(pkLen)
+	w.WriteUint16(1)
+	w.WriteBytes([]byte("foo"))
+	w.WriteByte(1)
+	if _, err := testMQTTWrite(c, w.Bytes()); err != nil {
+		t.Fatalf("Error writing protocols: %v", err)
+	}
+	// Now read the CONNACK and we should have been disconnected.
 	if _, err := testMQTTRead(c); err == nil {
 		t.Fatal("Expected connection to fail")
 	}

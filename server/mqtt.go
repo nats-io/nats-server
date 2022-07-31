@@ -2708,11 +2708,17 @@ CHECK:
 			// Will hold this client for a second and then close it. We
 			// do this so that if the client has a reconnect feature we
 			// don't end-up with very rapid flapping between apps.
-			time.AfterFunc(mqttSessJailDur, func() {
-				c.closeConnection(DuplicateClientID)
-			})
+			// We need to wait in place and not schedule the connection
+			// close because if this is a misbehaved client that does
+			// not wait for the CONNACK and sends other protocols, the
+			// server would not have a fully setup client and may panic.
 			asm.mu.Unlock()
-			return nil
+			select {
+			case <-s.quitCh:
+			case <-time.After(mqttSessJailDur):
+			}
+			c.closeConnection(DuplicateClientID)
+			return ErrConnectionClosed
 		}
 	}
 	// If an existing session is in the process of processing some packet, we can't
