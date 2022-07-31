@@ -652,11 +652,7 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) (*msgBlock, e
 		}
 		// Undo cache from above for later.
 		mb.cache = nil
-		wbek, err := chacha20.NewUnauthenticatedCipher(mb.seed, mb.nonce)
-		if err != nil {
-			return nil, err
-		}
-		wbek.XORKeyStream(buf, buf)
+		mb.bek.XORKeyStream(buf, buf)
 		if err := ioutil.WriteFile(mb.mfn, buf, defaultFilePerms); err != nil {
 			return nil, err
 		}
@@ -3532,24 +3528,22 @@ checkCache:
 
 	// Check if we need to decrypt.
 	if mb.bek != nil && len(buf) > 0 {
-		rbek, err := chacha20.NewUnauthenticatedCipher(mb.seed, mb.nonce)
+		bek, err := chacha20.NewUnauthenticatedCipher(mb.seed, mb.nonce)
 		if err != nil {
 			return err
 		}
-		rbek.XORKeyStream(buf, buf)
+		mb.bek = bek
+		mb.bek.XORKeyStream(buf, buf)
 	}
 
 	if err := mb.indexCacheBuf(buf); err != nil {
 		if err == errCorruptState {
-			fs := mb.fs
-			mb.mu.Unlock()
 			var ld *LostStreamData
-			if ld, err = mb.rebuildState(); ld != nil {
+			if ld, err = mb.rebuildStateLocked(); ld != nil {
 				// We do not know if fs is locked or not at this point.
 				// This should be an exceptional condition so do so in Go routine.
-				go fs.rebuildState(ld)
+				go mb.fs.rebuildState(ld)
 			}
-			mb.mu.Lock()
 		}
 		if err != nil {
 			return err
@@ -4545,16 +4539,15 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 			// Check for encryption.
 			if smb.bek != nil && len(nbuf) > 0 {
 				// Recreate to reset counter.
-				rbek, err := chacha20.NewUnauthenticatedCipher(smb.seed, smb.nonce)
+				bek, err := chacha20.NewUnauthenticatedCipher(smb.seed, smb.nonce)
 				if err != nil {
 					goto SKIP
 				}
-				cbuf := make([]byte, len(nbuf))
-				rbek.XORKeyStream(cbuf, nbuf)
-				if err = ioutil.WriteFile(smb.mfn, cbuf, defaultFilePerms); err != nil {
-					goto SKIP
-				}
-			} else if err = ioutil.WriteFile(smb.mfn, nbuf, defaultFilePerms); err != nil {
+				// For future writes make sure to set smb.bek to keep counter correct.
+				smb.bek = bek
+				smb.bek.XORKeyStream(nbuf, nbuf)
+			}
+			if err = ioutil.WriteFile(smb.mfn, nbuf, defaultFilePerms); err != nil {
 				goto SKIP
 			}
 			smb.clearCacheAndOffset()
@@ -4729,6 +4722,13 @@ func (mb *msgBlock) closeAndKeepIndex() {
 	// Clear any fss.
 	if mb.sfn != _EMPTY_ {
 		os.Remove(mb.sfn)
+	}
+
+	// If we are encrypted we should reset our bek counter.
+	if mb.bek != nil {
+		if bek, err := chacha20.NewUnauthenticatedCipher(mb.seed, mb.nonce); err == nil {
+			mb.bek = bek
+		}
 	}
 }
 
