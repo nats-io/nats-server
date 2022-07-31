@@ -3528,24 +3528,22 @@ checkCache:
 
 	// Check if we need to decrypt.
 	if mb.bek != nil && len(buf) > 0 {
-		rbek, err := chacha20.NewUnauthenticatedCipher(mb.seed, mb.nonce)
+		bek, err := chacha20.NewUnauthenticatedCipher(mb.seed, mb.nonce)
 		if err != nil {
 			return err
 		}
-		rbek.XORKeyStream(buf, buf)
+		mb.bek = bek
+		mb.bek.XORKeyStream(buf, buf)
 	}
 
 	if err := mb.indexCacheBuf(buf); err != nil {
 		if err == errCorruptState {
-			fs := mb.fs
-			mb.mu.Unlock()
 			var ld *LostStreamData
-			if ld, err = mb.rebuildState(); ld != nil {
+			if ld, err = mb.rebuildStateLocked(); ld != nil {
 				// We do not know if fs is locked or not at this point.
 				// This should be an exceptional condition so do so in Go routine.
-				go fs.rebuildState(ld)
+				go mb.fs.rebuildState(ld)
 			}
-			mb.mu.Lock()
 		}
 		if err != nil {
 			return err
@@ -4724,6 +4722,13 @@ func (mb *msgBlock) closeAndKeepIndex() {
 	// Clear any fss.
 	if mb.sfn != _EMPTY_ {
 		os.Remove(mb.sfn)
+	}
+
+	// If we are encrypted we should reset our bek counter.
+	if mb.bek != nil {
+		if bek, err := chacha20.NewUnauthenticatedCipher(mb.seed, mb.nonce); err == nil {
+			mb.bek = bek
+		}
 	}
 }
 

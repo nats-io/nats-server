@@ -4067,3 +4067,62 @@ func TestFileStoreDoubleCompactWithWriteInBetweenEncryptedBug(t *testing.T) {
 		t.Fatalf("Expected last sequence to be 10 but got %d", state.LastSeq)
 	}
 }
+
+// When we kept the empty block for tracking sequence, we needed to reset the bek
+// counter when encrypted for subsequent writes to be correct. The bek in place could
+// possibly still have a non-zero counter from previous writes.
+// Happens when all messages expire and the are flushed and then subsequent writes occur.
+func TestFileStoreEncryptedKeepIndexNeedBekResetBug(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer os.RemoveAll(storeDir)
+
+	prf := func(context []byte) ([]byte, error) {
+		h := hmac.New(sha256.New, []byte("dlc22"))
+		if _, err := h.Write(context); err != nil {
+			return nil, err
+		}
+		return h.Sum(nil), nil
+	}
+
+	ttl := 250 * time.Millisecond
+	fs, err := newFileStoreWithCreated(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "zzz", Storage: FileStorage, MaxAge: ttl},
+		time.Now(),
+		prf,
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	subj, msg := "foo", []byte("ouch")
+	for i := 0; i < 5; i++ {
+		fs.StoreMsg(subj, nil, msg)
+	}
+
+	// What to go to 0.
+	// This will leave the marker.
+	checkFor(t, time.Second, ttl, func() error {
+		if state := fs.State(); state.Msgs != 0 {
+			return fmt.Errorf("Expected no msgs, got %d", state.Msgs)
+		}
+		return nil
+	})
+
+	// Now write additional messages.
+	for i := 0; i < 5; i++ {
+		fs.StoreMsg(subj, nil, msg)
+	}
+
+	// Make sure the buffer is cleared.
+	fs.mu.RLock()
+	mb := fs.lmb
+	fs.mu.RUnlock()
+	mb.mu.Lock()
+	mb.clearCacheAndOffset()
+	mb.mu.Unlock()
+
+	// Now make sure we can read.
+	var smv StoreMsg
+	_, err = fs.LoadMsg(10, &smv)
+	require_NoError(t, err)
+}
