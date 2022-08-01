@@ -23,6 +23,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -34,6 +35,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/nats-io/jwt/v2"
 
 	"github.com/nats-io/nats.go"
 )
@@ -3678,6 +3681,309 @@ func TestJetStreamClusterPeerExclusionTag(t *testing.T) {
 	cfg.Replicas = 3
 	_, err = js.UpdateStream(cfg)
 	require_NoError(t, err)
+}
+
+func TestJetStreamClusterAccountPurge(t *testing.T) {
+	sysKp, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	sysCreds := newUser(t, sysKp)
+	defer removeFile(t, sysCreds)
+	accKp, accpub := createKey(t)
+	accClaim := jwt.NewAccountClaims(accpub)
+	accClaim.Limits.JetStreamLimits.DiskStorage = 1024 * 1024 * 5
+	accClaim.Limits.JetStreamLimits.MemoryStorage = 1024 * 1024 * 5
+	accJwt := encodeClaim(t, accClaim, accpub)
+	accCreds := newUser(t, accKp)
+	defer removeFile(t, accCreds)
+
+	tmlp := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		leaf {
+			listen: 127.0.0.1:-1
+		}
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+	`
+	c := createJetStreamClusterWithTemplateAndModHook(t, tmlp, "cluster", 3,
+		func(serverName, clustername, storeDir, conf string) string {
+			return conf + fmt.Sprintf(`
+				operator: %s
+				system_account: %s
+				resolver: {
+					type: full
+					dir: '%s/jwt'
+				}`, ojwt, syspub, storeDir)
+		})
+	defer c.shutdown()
+
+	c.waitOnLeader()
+
+	updateJwt(t, c.randomServer().ClientURL(), sysCreds, sysJwt, 3)
+	updateJwt(t, c.randomServer().ClientURL(), sysCreds, accJwt, 3)
+
+	createTestData := func() {
+		t.Helper()
+		nc := natsConnect(t, c.randomNonLeader().ClientURL(), nats.UserCredentials(accCreds))
+		defer nc.Close()
+
+		js, err := nc.JetStream()
+		require_NoError(t, err)
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "TEST1",
+			Subjects: []string{"foo"},
+			Replicas: 3,
+		})
+		require_NoError(t, err)
+
+		ci, err := js.AddConsumer("TEST1",
+			&nats.ConsumerConfig{Durable: "DUR1",
+				AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+		require_True(t, ci.Config.Replicas == 0)
+
+		ci, err = js.AddConsumer("TEST1",
+			&nats.ConsumerConfig{Durable: "DUR2",
+				AckPolicy: nats.AckExplicitPolicy,
+				Replicas:  1})
+		require_NoError(t, err)
+		require_True(t, ci.Config.Replicas == 1)
+
+		toSend := uint64(1_000)
+		for i := uint64(0); i < toSend; i++ {
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+		}
+
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "TEST2",
+			Subjects: []string{"bar"},
+			Replicas: 1,
+		})
+		require_NoError(t, err)
+
+		ci, err = js.AddConsumer("TEST2",
+			&nats.ConsumerConfig{Durable: "DUR1",
+				AckPolicy: nats.AckExplicitPolicy,
+				Replicas:  0})
+		require_NoError(t, err)
+		require_True(t, ci.Config.Replicas == 0)
+
+		for i := uint64(0); i < toSend; i++ {
+			_, err = js.Publish("bar", nil)
+			require_NoError(t, err)
+		}
+	}
+
+	inspectDirs := func(t *testing.T, sysTotal, accTotal int) error {
+		t.Helper()
+		sysDirs := 0
+		accDirs := 0
+		for _, s := range c.servers {
+			files, err := ioutil.ReadDir(s.getOpts().StoreDir + "/jetstream/" + syspub + "/_js_/")
+			require_NoError(t, err)
+			sysDirs += len(files) - 1 // sub 1 for _meta_
+			files, err = ioutil.ReadDir(s.getOpts().StoreDir + "/jetstream/" + accpub + "/streams/")
+			if err == nil || (err != nil && err.(*os.PathError).Error() == "no such file or directory") {
+				accDirs += len(files)
+			}
+		}
+		if sysDirs != sysTotal || accDirs != accTotal {
+			return fmt.Errorf("expected directory count does not match %d == %d, %d == %d",
+				sysDirs, sysTotal, accDirs, accTotal)
+		}
+		return nil
+	}
+
+	checkForDirs := func(t *testing.T, sysTotal, accTotal int) {
+		t.Helper()
+		checkFor(t, 20*time.Second, 250*time.Millisecond, func() error {
+			return inspectDirs(t, sysTotal, accTotal)
+		})
+	}
+
+	purge := func(t *testing.T) {
+		t.Helper()
+		ncsys, err := nats.Connect(c.randomServer().ClientURL(), nats.UserCredentials(sysCreds))
+		require_NoError(t, err)
+		defer ncsys.Close()
+
+		request := func() error {
+			var resp JSApiAccountPurgeResponse
+			m, err := ncsys.Request(fmt.Sprintf(JSApiAccountPurgeT, accpub), nil, time.Second)
+			if err != nil {
+				return err
+			}
+			if err := json.Unmarshal(m.Data, &resp); err != nil {
+				return err
+			}
+			if !resp.Initiated {
+				return fmt.Errorf("not started")
+			}
+			return nil
+		}
+		checkFor(t, 30*time.Second, 250*time.Millisecond, request)
+	}
+
+	t.Run("startup-cleanup", func(t *testing.T) {
+		_, newCleanupAcc1 := createKey(t)
+		_, newCleanupAcc2 := createKey(t)
+		for _, s := range c.servers {
+			os.MkdirAll(filepath.Join(s.getOpts().StoreDir, JetStreamStoreDir, newCleanupAcc1, streamsDir), defaultDirPerms)
+			os.MkdirAll(filepath.Join(s.getOpts().StoreDir, JetStreamStoreDir, newCleanupAcc2), defaultDirPerms)
+		}
+		createTestData()
+		checkForDirs(t, 6, 4)
+		c.stopAll()
+		c.restartAll()
+		for _, s := range c.servers {
+			accDir := filepath.Join(s.getOpts().StoreDir, JetStreamStoreDir, newCleanupAcc1)
+			_, e := os.Stat(filepath.Join(accDir, streamsDir))
+			require_Error(t, e)
+			require_True(t, os.IsNotExist(e))
+			_, e = os.Stat(accDir)
+			require_Error(t, e)
+			require_True(t, os.IsNotExist(e))
+			_, e = os.Stat(filepath.Join(s.getOpts().StoreDir, JetStreamStoreDir, newCleanupAcc2))
+			require_Error(t, e)
+			require_True(t, os.IsNotExist(e))
+		}
+		checkForDirs(t, 6, 4)
+	})
+
+	t.Run("purge-with-restart", func(t *testing.T) {
+		createTestData()
+		checkForDirs(t, 6, 4)
+		purge(t)
+		checkForDirs(t, 0, 0)
+		c.stopAll()
+		c.restartAll()
+		checkForDirs(t, 0, 0)
+	})
+
+	t.Run("purge-with-reuse", func(t *testing.T) {
+		createTestData()
+		checkForDirs(t, 6, 4)
+		purge(t)
+		checkForDirs(t, 0, 0)
+		createTestData()
+		checkForDirs(t, 6, 4)
+		purge(t)
+		checkForDirs(t, 0, 0)
+	})
+
+	t.Run("purge-deleted-account", func(t *testing.T) {
+		createTestData()
+		checkForDirs(t, 6, 4)
+		c.stopAll()
+		for _, s := range c.servers {
+			require_NoError(t, os.Remove(s.getOpts().StoreDir+"/jwt/"+accpub+".jwt"))
+		}
+		c.restartAll()
+		checkForDirs(t, 6, 4)
+		c.waitOnClusterReady() // unfortunately, this does not wait until leader is not catching up.
+		purge(t)
+		checkForDirs(t, 0, 0)
+		c.stopAll()
+		c.restartAll()
+		checkForDirs(t, 0, 0)
+	})
+}
+
+func TestJetStreamAccountPurge(t *testing.T) {
+	sysKp, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	sysCreds := newUser(t, sysKp)
+	defer removeFile(t, sysCreds)
+	accKp, accpub := createKey(t)
+	accClaim := jwt.NewAccountClaims(accpub)
+	accClaim.Limits.JetStreamLimits.DiskStorage = 1024 * 1024 * 5
+	accClaim.Limits.JetStreamLimits.MemoryStorage = 1024 * 1024 * 5
+	accJwt := encodeClaim(t, accClaim, accpub)
+	accCreds := newUser(t, accKp)
+	defer removeFile(t, accCreds)
+
+	storeDir := createDir(t, _EMPTY_)
+	defer os.RemoveAll(storeDir)
+
+	cfg := createConfFile(t, []byte(fmt.Sprintf(`
+        host: 127.0.0.1
+        port:-1
+        server_name: S1
+        operator: %s
+        system_account: %s
+        resolver: {
+                type: full
+                dir: '%s/jwt'
+        }
+        jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s/js'}
+`, ojwt, syspub, storeDir, storeDir)))
+	defer os.Remove(cfg)
+
+	s, o := RunServerWithConfig(cfg)
+	updateJwt(t, s.ClientURL(), sysCreds, sysJwt, 1)
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt, 1)
+	defer s.Shutdown()
+
+	inspectDirs := func(t *testing.T, accTotal int) error {
+		t.Helper()
+		if accTotal == 0 {
+			files, err := ioutil.ReadDir(o.StoreDir + "/jetstream/" + accpub)
+			require_True(t, len(files) == accTotal || err != nil)
+		} else {
+			files, err := ioutil.ReadDir(o.StoreDir + "/jetstream/" + accpub + "/streams")
+			require_NoError(t, err)
+			require_True(t, len(files) == accTotal)
+		}
+		return nil
+	}
+
+	createTestData := func() {
+		nc := natsConnect(t, s.ClientURL(), nats.UserCredentials(accCreds))
+		defer nc.Close()
+		js, err := nc.JetStream()
+		require_NoError(t, err)
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "TEST1",
+			Subjects: []string{"foo"},
+		})
+		require_NoError(t, err)
+		_, err = js.AddConsumer("TEST1",
+			&nats.ConsumerConfig{Durable: "DUR1",
+				AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+	}
+
+	purge := func(t *testing.T) {
+		t.Helper()
+		var resp JSApiAccountPurgeResponse
+		ncsys := natsConnect(t, s.ClientURL(), nats.UserCredentials(sysCreds))
+		defer ncsys.Close()
+		m, err := ncsys.Request(fmt.Sprintf(JSApiAccountPurgeT, accpub), nil, 5*time.Second)
+		require_NoError(t, err)
+		err = json.Unmarshal(m.Data, &resp)
+		require_NoError(t, err)
+		require_True(t, resp.Initiated)
+	}
+
+	createTestData()
+	inspectDirs(t, 1)
+	purge(t)
+	inspectDirs(t, 0)
+	createTestData()
+	inspectDirs(t, 1)
+
+	s.Shutdown()
+	require_NoError(t, os.Remove(storeDir+"/jwt/"+accpub+".jwt"))
+
+	s, o = RunServerWithConfig(o.ConfigFile)
+	inspectDirs(t, 1)
+	purge(t)
+	inspectDirs(t, 0)
 }
 
 func TestJetStreamClusterScaleConsumer(t *testing.T) {

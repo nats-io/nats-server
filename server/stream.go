@@ -4198,6 +4198,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	// Remove from our account map.
 	jsa.mu.Lock()
 	delete(jsa.streams, mset.cfg.Name)
+	accName := jsa.account.Name
 	jsa.mu.Unlock()
 
 	// Clean up consumers.
@@ -4318,6 +4319,12 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 			return err
 		}
 		js.releaseStreamResources(&mset.cfg)
+
+		// cleanup directories after the stream
+		accDir := filepath.Join(js.config.StoreDir, accName)
+		// no op if not empty
+		os.Remove(filepath.Join(accDir, streamsDir))
+		os.Remove(accDir)
 	} else if err := store.Stop(); err != nil {
 		return err
 	}
