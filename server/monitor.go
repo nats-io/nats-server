@@ -2603,6 +2603,12 @@ type JSzOptions struct {
 	Limit      int    `json:"limit,omitempty"`
 }
 
+// HealthzOptions are options passed to Healthz
+type HealthzOptions struct {
+	JSEnabled    bool `json:"js-enabled,omitempty"`
+	JSServerOnly bool `json:"js-server-only,omitempty"`
+}
+
 type StreamDetail struct {
 	Name     string              `json:"name"`
 	Cluster  *ClusterInfo        `json:"cluster,omitempty"`
@@ -2928,7 +2934,19 @@ func (s *Server) HandleHealthz(w http.ResponseWriter, r *http.Request) {
 	s.httpReqStats[HealthzPath]++
 	s.mu.Unlock()
 
-	hs := s.healthz()
+	jsEnabled, err := decodeBool(w, r, "js-enabled")
+	if err != nil {
+		return
+	}
+	jsServerOnly, err := decodeBool(w, r, "js-server-only")
+	if err != nil {
+		return
+	}
+
+	hs := s.healthz(&HealthzOptions{
+		JSEnabled:    jsEnabled,
+		JSServerOnly: jsServerOnly,
+	})
 	if hs.Error != _EMPTY_ {
 		s.Warnf("Healthcheck failed: %q", hs.Error)
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -2942,8 +2960,13 @@ func (s *Server) HandleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 // Generate health status.
-func (s *Server) healthz() *HealthStatus {
+func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 	var health = &HealthStatus{Status: "ok"}
+
+	// set option defaults
+	if opts == nil {
+		opts = &HealthzOptions{}
+	}
 
 	if err := s.readyForConnections(time.Millisecond); err != nil {
 		health.Status = "error"
@@ -2954,6 +2977,12 @@ func (s *Server) healthz() *HealthStatus {
 	// Check JetStream
 	js := s.getJetStream()
 	if js == nil {
+		// If JetStream should be enabled then return error status.
+		if opts.JSEnabled {
+			health.Status = "unavailable"
+			health.Error = NewJSNotEnabledError().Error()
+			return health
+		}
 		return health
 	}
 
@@ -2982,6 +3011,11 @@ func (s *Server) healthz() *HealthStatus {
 	if !meta.Current() {
 		health.Status = "unavailable"
 		health.Error = "JetStream is not current with the meta leader"
+		return health
+	}
+
+	// If JSServerOnly is true, then do not check further accounts, streams and consumers.
+	if opts.JSServerOnly {
 		return health
 	}
 

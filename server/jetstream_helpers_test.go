@@ -1194,13 +1194,13 @@ func (c *cluster) waitOnServerHealthz(s *Server) {
 	c.t.Helper()
 	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
-		hs := s.healthz()
+		hs := s.healthz(nil)
 		if hs.Status == "ok" && hs.Error == _EMPTY_ {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	c.t.Fatalf("Expected server %q to eventually return healthz 'ok', but got %q", s, s.healthz().Error)
+	c.t.Fatalf("Expected server %q to eventually return healthz 'ok', but got %q", s, s.healthz(nil).Error)
 }
 
 func (c *cluster) waitOnServerCurrent(s *Server) {

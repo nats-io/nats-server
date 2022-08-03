@@ -17369,7 +17369,7 @@ func TestJetStreamWorkQueueSourceRestart(t *testing.T) {
 	defer s.Shutdown()
 
 	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
-		hs := s.healthz()
+		hs := s.healthz(nil)
 		if hs.Status == "ok" && hs.Error == _EMPTY_ {
 			return nil
 		}
@@ -17490,7 +17490,7 @@ func TestJetStreamWorkQueueSourceNamingRestart(t *testing.T) {
 	defer s.Shutdown()
 
 	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
-		hs := s.healthz()
+		hs := s.healthz(nil)
 		if hs.Status == "ok" && hs.Error == _EMPTY_ {
 			return nil
 		}
@@ -17506,6 +17506,22 @@ func TestJetStreamWorkQueueSourceNamingRestart(t *testing.T) {
 	if si.State.Msgs != totalPending {
 		t.Fatalf("Expected 0 messages on restart, got %d", si.State.Msgs)
 	}
+}
+
+func TestJetStreamDisabledHealthz(t *testing.T) {
+	s := RunRandClientPortServer()
+	defer s.Shutdown()
+
+	if s.JetStreamEnabled() {
+		t.Fatalf("Expected JetStream to be disabled")
+	}
+
+	hs := s.healthz(&HealthzOptions{JSEnabled: true})
+	if hs.Status == "unavailable" && hs.Error == NewJSNotEnabledError().Error() {
+		return
+	}
+
+	t.Fatalf("Expected healthz to return error if JetStream is disabled, got status: %s", hs.Status)
 }
 
 func TestJetStreamPullMaxBytes(t *testing.T) {
