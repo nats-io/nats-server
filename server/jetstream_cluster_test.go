@@ -7229,7 +7229,7 @@ func TestJetStreamClusterLeafDifferentAccounts(t *testing.T) {
 	nc, js := jsClientConnect(t, ln.randomServer())
 	defer nc.Close()
 
-	// Make sure we can properly indentify the right account when the leader received the request.
+	// Make sure we can properly identify the right account when the leader received the request.
 	// We need to map the client info header to the new account once received by the hub.
 	if _, err := js.AccountInfo(); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
