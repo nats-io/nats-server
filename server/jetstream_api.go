@@ -124,6 +124,11 @@ const (
 	JSDirectMsgGet  = "$JS.API.DIRECT.GET.*"
 	JSDirectMsgGetT = "$JS.API.DIRECT.GET.%s"
 
+	// This is a direct version of get last by subject, which will be the dominant pattern for KV access once 2.9 is released.
+	// The stream and the key will be part of the subject to allow for no-marshal payloads and subject based security permissions.
+	JSDirectGetLastBySubject  = "$JS.API.DIRECT.GET.*.>"
+	JSDirectGetLastBySubjectT = "$JS.API.DIRECT.GET.%s.%s"
+
 	// jsDirectGetPre
 	jsDirectGetPre = "$JS.API.DIRECT.GET"
 

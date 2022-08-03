@@ -18967,3 +18967,106 @@ func TestJetStreamMirrorUpdatesNotSupported(t *testing.T) {
 		t.Fatalf("Expected error %q, got %q", NewJSStreamMirrorNotUpdatableError(), err)
 	}
 }
+
+func TestJetStreamDirectGetBySubject(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 64GB, max_file_store: 10TB}
+
+		ONLYME = {
+			publish = { allow = "$JS.API.DIRECT.GET.KV.vid.22.>"}
+		}
+
+		accounts: {
+			A: {
+				jetstream: enabled
+				users: [
+					{ user: admin, password: s3cr3t },
+					{ user: user, password: pwd, permissions: $ONLYME},
+				]
+			},
+		}
+	`))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s, nats.UserInfo("admin", "s3cr3t"))
+	defer nc.Close()
+
+	// Do by hand for now.
+	cfg := &StreamConfig{
+		Name:        "KV",
+		Storage:     MemoryStorage,
+		Subjects:    []string{"vid.*.>"},
+		MaxMsgsPer:  1,
+		AllowDirect: true,
+	}
+	addStream(t, nc, cfg)
+
+	// Add in mirror as well.
+	cfg = &StreamConfig{
+		Name:         "M",
+		Storage:      MemoryStorage,
+		Mirror:       &StreamSource{Name: "KV"},
+		MirrorDirect: true,
+	}
+	addStream(t, nc, cfg)
+
+	v22 := "vid.22.speed"
+	v33 := "vid.33.speed"
+	_, err := js.Publish(v22, []byte("100"))
+	require_NoError(t, err)
+	_, err = js.Publish(v33, []byte("55"))
+	require_NoError(t, err)
+
+	// User the restricted user.
+	nc, _ = jsClientConnect(t, s, nats.UserInfo("user", "pwd"))
+	defer nc.Close()
+
+	errCh := make(chan error, 10)
+	nc.SetErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, e error) {
+		select {
+		case errCh <- e:
+		default:
+		}
+	})
+
+	getSubj := fmt.Sprintf(JSDirectGetLastBySubjectT, "KV", v22)
+	m, err := nc.Request(getSubj, nil, time.Second)
+	require_NoError(t, err)
+	require_True(t, string(m.Data) == "100")
+
+	// Now attempt to access vid 33 data..
+	getSubj = fmt.Sprintf(JSDirectGetLastBySubjectT, "KV", v33)
+	_, err = nc.Request(getSubj, nil, 200*time.Millisecond)
+	require_Error(t, err) // timeout here.
+
+	select {
+	case e := <-errCh:
+		if !strings.HasPrefix(e.Error(), "nats: Permissions Violation") {
+			t.Fatalf("Expected a permissions violation but got %v", e)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("Expected to get a permissions error, got none")
+	}
+
+	// Now make sure mirrors are doing right thing with new way as well.
+	var sawMirror bool
+	getSubj = fmt.Sprintf(JSDirectGetLastBySubjectT, "KV", v22)
+	for i := 0; i < 100; i++ {
+		m, err := nc.Request(getSubj, nil, time.Second)
+		require_NoError(t, err)
+		if shdr := m.Header.Get(JSStream); shdr == "M" {
+			sawMirror = true
+			break
+		}
+	}
+	if !sawMirror {
+		t.Fatalf("Expected to see the mirror respond at least once")
+	}
+}
