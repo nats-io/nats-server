@@ -1272,6 +1272,10 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server) (*Str
 	if !reflect.DeepEqual(cfg.Mirror, old.Mirror) {
 		return nil, NewJSStreamMirrorNotUpdatableError()
 	}
+	// Can't change RePublish
+	if !reflect.DeepEqual(cfg.RePublish, old.RePublish) {
+		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not change RePublish"))
+	}
 
 	// Do some adjustments for being sealed.
 	if cfg.Sealed {
