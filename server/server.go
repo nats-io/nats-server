@@ -114,7 +114,6 @@ type Server struct {
 	stats
 	mu                  sync.RWMutex
 	kp                  nkeys.KeyPair
-	prand               *rand.Rand
 	info                Info
 	configFile          string
 	optsMu              sync.RWMutex
@@ -378,7 +377,6 @@ func NewServer(opts *Options) (*Server, error) {
 		kp:                 kp,
 		configFile:         opts.ConfigFile,
 		info:               info,
-		prand:              rand.New(rand.NewSource(time.Now().UnixNano())),
 		opts:               opts,
 		done:               make(chan bool, 1),
 		start:              now,
