@@ -237,6 +237,7 @@ type stream struct {
 
 	// Direct get subscription.
 	directSub *subscription
+	lastBySub *subscription
 }
 
 type sourceInfo struct {
@@ -245,6 +246,7 @@ type sourceInfo struct {
 	cname string
 	sub   *subscription
 	dsub  *subscription
+	lbsub *subscription
 	msgs  *ipQueue // of *inMsg
 	sseq  uint64
 	dseq  uint64
@@ -1433,14 +1435,20 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 	}
 
 	// Check for mirror. If set but we are not a mirror just ignore for now.
-	if mset.cfg.MirrorDirect && mset.cfg.Mirror != nil && mset.mirror.dsub == nil {
+	if mset.cfg.MirrorDirect && mset.cfg.Mirror != nil {
 		if err := mset.subscribeToMirrorDirect(); err != nil {
 			// Disable since we had problems above.
 			mset.cfg.MirrorDirect = false
 		}
-	} else if !mset.cfg.MirrorDirect && mset.mirror != nil && mset.mirror.dsub != nil {
-		mset.unsubscribe(mset.mirror.dsub)
-		mset.mirror.dsub = nil
+	} else if !mset.cfg.MirrorDirect && mset.mirror != nil {
+		if mset.mirror.dsub != nil {
+			mset.unsubscribe(mset.mirror.dsub)
+			mset.mirror.dsub = nil
+		}
+		if mset.mirror.lbsub != nil {
+			mset.unsubscribe(mset.mirror.lbsub)
+			mset.mirror.lbsub = nil
+		}
 	}
 	mset.mu.Unlock()
 
@@ -2910,31 +2918,56 @@ func (mset *stream) subscribeToStream() error {
 
 // Lock should be held.
 func (mset *stream) subscribeToDirect() error {
-	if mset.directSub != nil {
-		return nil
-	}
-	dsubj := fmt.Sprintf(JSDirectMsgGetT, mset.cfg.Name)
 	// We will make this listen on a queue group by default, which can allow mirrors to participate on opt-in basis.
-	if sub, err := mset.queueSubscribeInternal(dsubj, dgetGroup, mset.processDirectGetRequest); err != nil {
-		return err
-	} else {
-		mset.directSub = sub
+	if mset.directSub == nil {
+		dsubj := fmt.Sprintf(JSDirectMsgGetT, mset.cfg.Name)
+		if sub, err := mset.queueSubscribeInternal(dsubj, dgetGroup, mset.processDirectGetRequest); err == nil {
+			mset.directSub = sub
+		} else {
+			return err
+		}
 	}
+	// Now the one that will have subject appended past stream name.
+	if mset.lastBySub == nil {
+		dsubj := fmt.Sprintf(JSDirectGetLastBySubjectT, mset.cfg.Name, fwcs)
+		// We will make this listen on a queue group by default, which can allow mirrors to participate on opt-in basis.
+		if sub, err := mset.queueSubscribeInternal(dsubj, dgetGroup, mset.processDirectGetLastBySubjectRequest); err == nil {
+			mset.lastBySub = sub
+		} else {
+			return err
+		}
+	}
+
 	return nil
 }
 
 // Lock should be held.
 func (mset *stream) subscribeToMirrorDirect() error {
-	if mset.mirror == nil || mset.mirror.dsub != nil {
+	if mset.mirror == nil {
 		return nil
 	}
-	dsubj := fmt.Sprintf(JSDirectMsgGetT, mset.mirror.name)
+
 	// We will make this listen on a queue group by default, which can allow mirrors to participate on opt-in basis.
-	if sub, err := mset.queueSubscribeInternal(dsubj, dgetGroup, mset.processDirectGetRequest); err != nil {
-		return err
-	} else {
-		mset.mirror.dsub = sub
+	if mset.mirror.dsub == nil {
+		dsubj := fmt.Sprintf(JSDirectMsgGetT, mset.mirror.name)
+		// We will make this listen on a queue group by default, which can allow mirrors to participate on opt-in basis.
+		if sub, err := mset.queueSubscribeInternal(dsubj, dgetGroup, mset.processDirectGetRequest); err == nil {
+			mset.mirror.dsub = sub
+		} else {
+			return err
+		}
 	}
+	// Now the one that will have subject appended past stream name.
+	if mset.mirror.lbsub == nil {
+		dsubj := fmt.Sprintf(JSDirectGetLastBySubjectT, mset.mirror.name, fwcs)
+		// We will make this listen on a queue group by default, which can allow mirrors to participate on opt-in basis.
+		if sub, err := mset.queueSubscribeInternal(dsubj, dgetGroup, mset.processDirectGetLastBySubjectRequest); err == nil {
+			mset.mirror.lbsub = sub
+		} else {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -2969,10 +3002,16 @@ func (mset *stream) unsubscribeToStream(stopping bool) error {
 		mset.stopSourceConsumers()
 	}
 
-	// In case we had a direct get subscription.
-	if mset.directSub != nil && stopping {
-		mset.unsubscribe(mset.directSub)
-		mset.directSub = nil
+	// In case we had a direct get subscriptions.
+	if stopping {
+		if mset.directSub != nil {
+			mset.unsubscribe(mset.directSub)
+			mset.directSub = nil
+		}
+		if mset.lastBySub != nil {
+			mset.unsubscribe(mset.lastBySub)
+			mset.lastBySub = nil
+		}
 	}
 
 	mset.active = false
@@ -3330,6 +3369,53 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 		mset.getDirectRequest(&req, reply)
 	} else {
 		go mset.getDirectRequest(&req, reply)
+	}
+}
+
+// This is for direct get by last subject which is part of the subject itself.
+func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
+	_, msg := c.msgParts(rmsg)
+	if len(reply) == 0 {
+		return
+	}
+	// This version expects no payload.
+	if len(msg) != 0 {
+		hdr := []byte("NATS/1.0 408 Bad Request\r\n\r\n")
+		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		return
+	}
+	// Extract the key.
+	var key string
+	for i, n := 0, 0; i < len(subject); i++ {
+		if subject[i] == btsep {
+			if n == 4 {
+				if start := i + 1; start < len(subject) {
+					key = subject[i+1:]
+				}
+				break
+			}
+			n++
+		}
+	}
+	if len(key) == 0 {
+		hdr := []byte("NATS/1.0 408 Bad Request\r\n\r\n")
+		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		return
+	}
+
+	inlineOk := c.kind != ROUTER && c.kind != GATEWAY && c.kind != LEAF
+	if !inlineOk {
+		// Check how long we have been away from the readloop for the route or gateway or leafnode.
+		// If too long move to a separate go routine.
+		if elapsed := time.Since(c.in.start); elapsed < noBlockThresh {
+			inlineOk = true
+		}
+	}
+
+	if inlineOk {
+		mset.getDirectRequest(&JSApiMsgGetRequest{LastFor: key}, reply)
+	} else {
+		go mset.getDirectRequest(&JSApiMsgGetRequest{LastFor: key}, reply)
 	}
 }
 
