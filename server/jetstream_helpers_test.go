@@ -1315,6 +1315,13 @@ func (c *cluster) waitOnClusterReadyWithNumPeers(numPeersExpected int) {
 	}
 }
 
+func (c *cluster) waitOnClusterHealthz() {
+	c.t.Helper()
+	for _, cs := range c.servers {
+		c.waitOnServerHealthz(cs)
+	}
+}
+
 // Helper function to remove JetStream from a server.
 func (c *cluster) removeJetStream(s *Server) {
 	c.t.Helper()
@@ -1345,6 +1352,13 @@ func (c *cluster) removeJetStream(s *Server) {
 func (c *cluster) stopAll() {
 	c.t.Helper()
 	for _, s := range c.servers {
+		s.Shutdown()
+	}
+}
+
+func (c *cluster) stopSubset(toStop []*Server) {
+	c.t.Helper()
+	for _, s := range toStop {
 		s.Shutdown()
 	}
 }
@@ -1394,6 +1408,19 @@ func (c *cluster) stableTotalSubs() (total int) {
 	})
 	return nsubs
 
+}
+
+func (c *cluster) selectRandomServers(numServers int) []*Server {
+	c.t.Helper()
+	if numServers > len(c.servers) {
+		panic(fmt.Sprintf("Can't select %d servers in a cluster of %d", numServers, len(c.servers)))
+	}
+	var selectedServers []*Server
+	selectedServers = append(selectedServers, c.servers...)
+	rand.Shuffle(len(selectedServers), func(x, y int) {
+		selectedServers[x], selectedServers[y] = selectedServers[y], selectedServers[x]
+	})
+	return selectedServers[0:numServers]
 }
 
 func addStream(t *testing.T, nc *nats.Conn, cfg *StreamConfig) *StreamInfo {

@@ -6,6 +6,7 @@
 # Folders
 _obj
 _test
+dist
 
 # Configuration Files
 *.conf
@@ -35,6 +36,9 @@ _testmain.go
 *~
 \#*\#
 .\#*
+
+# Visual Studio Code
+.vscode
 
 # Mac
 .DS_Store
