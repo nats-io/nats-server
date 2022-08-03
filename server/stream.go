@@ -61,6 +61,11 @@ type StreamConfig struct {
 	// Allow republish of the message after being sequenced and stored.
 	RePublish *RePublish `json:"republish,omitempty"`
 
+	// Allow higher performance, direct access to get individual messages. E.g. KeyValue
+	AllowDirect bool `json:"allow_direct,omitempty"`
+	// Allow higher performance and unified direct access for mirrors as well.
+	MirrorDirect bool `json:"mirror_direct,omitempty"`
+
 	// Optional qualifiers. These can not be modified after set to true.
 
 	// Sealed will seal a stream so no messages can get out or in.
@@ -72,11 +77,6 @@ type StreamConfig struct {
 	// AllowRollup allows messages to be placed into the system and purge
 	// all older messages using a special msg header.
 	AllowRollup bool `json:"allow_rollup_hdrs"`
-
-	// Allow higher performance, direct access to get individual messages. E.g. KeyValue
-	AllowDirect bool `json:"allow_direct,omitempty"`
-	// Allow higher performance and unified direct access for mirrors as well.
-	MirrorDirect bool `json:"mirror_direct,omitempty"`
 }
 
 // RePublish is for republishing messages once committed to a stream.
@@ -1037,6 +1037,21 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 				apiPrefixes = append(apiPrefixes, cfg.Mirror.External.ApiPrefix)
 			}
 		}
+		// Determine if we are inheriting direct gets.
+		if exists, ocfg := getStream(cfg.Mirror.Name); exists {
+			cfg.MirrorDirect = ocfg.AllowDirect
+		} else if js := s.getJetStream(); js != nil && js.isClustered() {
+			// Could not find it here. If we are clustered we can look it up.
+			js.mu.RLock()
+			if cc := js.cluster; cc != nil {
+				if as := cc.streams[acc.Name]; as != nil {
+					if sa := as[cfg.Mirror.Name]; sa != nil {
+						cfg.MirrorDirect = sa.Config.AllowDirect
+					}
+				}
+			}
+			js.mu.RUnlock()
+		}
 	}
 	if len(cfg.Sources) > 0 {
 		for _, src := range cfg.Sources {
@@ -1184,6 +1199,11 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		if _, err := newTransform(cfg.RePublish.Source, cfg.RePublish.Destination); err != nil {
 			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for republish not valid"))
 		}
+	}
+
+	// Here we will auto set direct gets if MaxMsgsPerSubject is set.
+	if cfg.MaxMsgsPer != 0 {
+		cfg.AllowDirect = true
 	}
 
 	return cfg, nil
