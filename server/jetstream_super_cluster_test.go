@@ -3187,3 +3187,37 @@ func TestJetStreamSuperClusterPeerEvacuationAndStreamReassignment(t *testing.T) 
 		test(3, []string{"cluster:C2"}, "C2", false, true)
 	})
 }
+
+func TestJetStreamSuperClusterMirrorInheritsAllowDirect(t *testing.T) {
+	sc := createJetStreamTaggedSuperCluster(t)
+	defer sc.shutdown()
+
+	nc, js := jsClientConnect(t, sc.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:              "KV",
+		Subjects:          []string{"key.*"},
+		Placement:         &nats.Placement{Tags: []string{"cloud:aws", "country:us"}},
+		MaxMsgsPerSubject: 1,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:      "M",
+		Mirror:    &nats.StreamSource{Name: "KV"},
+		Placement: &nats.Placement{Tags: []string{"cloud:gcp", "country:uk"}},
+	})
+	require_NoError(t, err)
+
+	// Do direct grab for now.
+	resp, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, "M"), nil, time.Second)
+	require_NoError(t, err)
+	var si StreamInfo
+	err = json.Unmarshal(resp.Data, &si)
+	require_NoError(t, err)
+
+	if !si.Config.MirrorDirect {
+		t.Fatalf("Expected MirrorDirect to be inherited as true")
+	}
+}
