@@ -2809,7 +2809,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	if ae.pterm != n.pterm || ae.pindex != n.pindex {
 		// Check if this is a lower index than what we were expecting.
 		if ae.pindex < n.pindex {
-			n.warn("AppendEntry detected pindex less than ours: %d:%d vs %d:%d", ae.pterm, ae.pindex, n.pterm, n.pindex)
+			n.debug("AppendEntry detected pindex less than ours: %d:%d vs %d:%d", ae.pterm, ae.pindex, n.pterm, n.pindex)
 			var ar *appendEntryResponse
 
 			var success bool
