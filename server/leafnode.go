@@ -2289,6 +2289,12 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 			atomic.LoadInt64(&c.srv.gateway.totalQSubs) > 0 {
 			flag |= pmrCollectQueueNames
 		}
+		// If this is a mapped subject that means the mapped interest
+		// is what got us here, but this might not have a queue designation
+		// If that is the case, make sure we ignore to process local queue subscribers.
+		if len(c.pa.mapped) > 0 && len(c.pa.queues) == 0 {
+			flag |= pmrIgnoreEmptyQueueFilter
+		}
 		_, qnames = c.processMsgResults(acc, r, msg, nil, c.pa.subject, c.pa.reply, flag)
 	}
 
