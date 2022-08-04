@@ -3094,8 +3094,10 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 		sa.Group.node.Delete()
 	}
 
-	// Cleanup in case account does not exist or node was nil
-	if sacc := s.SystemAccount(); sacc != nil {
+	// This is a stop gap cleanup in case
+	// 1) the account does not exist (and mset couldn't be stopped) and/or
+	// 2) node was nil (and couldn't be deleted)
+	if sacc := s.SystemAccount(); sacc != nil && (!stopped || sa.Group.node == nil) {
 		os.RemoveAll(filepath.Join(js.config.StoreDir, sacc.GetName(), defaultStoreDirName, sa.Group.Name))
 		// cleanup dependent consumer groups
 		if !stopped {
@@ -3524,6 +3526,7 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 	}
 	js.mu.RUnlock()
 
+	stopped := false
 	var resp = JSApiConsumerDeleteResponse{ApiResponse: ApiResponse{Type: JSApiConsumerDeleteResponseType}}
 	var err error
 	var acc *Account
@@ -3533,6 +3536,7 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 		if mset, _ := acc.lookupStream(ca.Stream); mset != nil {
 			if o := mset.lookupConsumer(ca.Name); o != nil {
 				err = o.stopWithFlags(true, false, true, wasLeader)
+				stopped = true
 			}
 		}
 	}
@@ -3542,8 +3546,10 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 		ca.Group.node.Delete()
 	}
 
-	// Cleanup in case account does not exist or node was nil
-	if sacc := s.SystemAccount(); sacc != nil {
+	// This is a stop gap cleanup in case
+	// 1) the account does not exist (and mset consumer couldn't be stopped) and/or
+	// 2) node was nil (and couldn't be deleted)
+	if sacc := s.SystemAccount(); sacc != nil && (!stopped || ca.Group.node == nil) {
 		os.RemoveAll(filepath.Join(js.config.StoreDir, sacc.GetName(), defaultStoreDirName, ca.Group.Name))
 	}
 

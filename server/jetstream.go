@@ -895,7 +895,7 @@ func (s *Server) shutdownJetStream() {
 	var _a [512]*Account
 	accounts := _a[:0]
 
-	js.mu.RLock()
+	js.mu.Lock()
 	// Collect accounts.
 	for _, jsa := range js.accounts {
 		if a := jsa.acc(); a != nil {
@@ -903,7 +903,8 @@ func (s *Server) shutdownJetStream() {
 		}
 	}
 	accPurgeSub := js.accountPurge
-	js.mu.RUnlock()
+	js.accountPurge = nil
+	js.mu.Unlock()
 
 	if accPurgeSub != nil {
 		s.sysUnsubscribe(accPurgeSub)
