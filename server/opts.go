@@ -159,18 +159,24 @@ type LeafNodeOpts struct {
 	tlsConfigOpts *TLSConfigOpts
 }
 
+// SignatureHandler is used to sign a nonce from the server while
+// authenticating with Nkeys. The callback should sign the nonce and
+// return the JWT and the raw signature.
+type SignatureHandler func([]byte) (string, []byte, error)
+
 // RemoteLeafOpts are options for connecting to a remote server as a leaf node.
 type RemoteLeafOpts struct {
-	LocalAccount string      `json:"local_account,omitempty"`
-	NoRandomize  bool        `json:"-"`
-	URLs         []*url.URL  `json:"urls,omitempty"`
-	Credentials  string      `json:"-"`
-	TLS          bool        `json:"-"`
-	TLSConfig    *tls.Config `json:"-"`
-	TLSTimeout   float64     `json:"tls_timeout,omitempty"`
-	Hub          bool        `json:"hub,omitempty"`
-	DenyImports  []string    `json:"-"`
-	DenyExports  []string    `json:"-"`
+	LocalAccount string           `json:"local_account,omitempty"`
+	NoRandomize  bool             `json:"-"`
+	URLs         []*url.URL       `json:"urls,omitempty"`
+	Credentials  string           `json:"-"`
+	SignatureCB  SignatureHandler `json:"-"`
+	TLS          bool             `json:"-"`
+	TLSConfig    *tls.Config      `json:"-"`
+	TLSTimeout   float64          `json:"tls_timeout,omitempty"`
+	Hub          bool             `json:"hub,omitempty"`
+	DenyImports  []string         `json:"-"`
+	DenyExports  []string         `json:"-"`
 
 	// When an URL has the "ws" (or "wss") scheme, then the server will initiate the
 	// connection as a websocket connection. By default, the websocket frames will be

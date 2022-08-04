@@ -707,8 +707,24 @@ func (c *client) sendLeafConnect(clusterName string, tlsRequired, headers bool) 
 		DenyPub:   c.leaf.remote.DenyImports,
 	}
 
-	// Check for credentials first, that will take precedence..
-	if creds := c.leaf.remote.Credentials; creds != _EMPTY_ {
+	// If a signature callback is specified, this takes precedence over anything else.
+	if cb := c.leaf.remote.SignatureCB; cb != nil {
+		nonce := c.nonce
+		c.mu.Unlock()
+		jwt, sigraw, err := cb(nonce)
+		c.mu.Lock()
+		if err == nil && c.isClosed() {
+			err = ErrConnectionClosed
+		}
+		if err != nil {
+			c.Errorf("Error signing the nonce: %v", err)
+			return err
+		}
+		sig := base64.RawURLEncoding.EncodeToString(sigraw)
+		cinfo.JWT, cinfo.Sig = jwt, sig
+
+	} else if creds := c.leaf.remote.Credentials; creds != _EMPTY_ {
+		// Check for credentials first, that will take precedence..
 		c.Debugf("Authenticating with credentials file %q", c.leaf.remote.Credentials)
 		contents, err := ioutil.ReadFile(creds)
 		if err != nil {
