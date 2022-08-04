@@ -164,6 +164,7 @@ type Server struct {
 	leafRemoteCfgs     []*leafNodeCfg
 	leafRemoteAccounts sync.Map
 	leafNodeEnabled    bool
+	leafDisableConnect bool // Used in test only
 
 	quitCh           chan struct{}
 	startupComplete  chan struct{}
@@ -1625,6 +1626,11 @@ func (s *Server) Start() {
 	// Avoid RACE between Start() and Shutdown()
 	s.mu.Lock()
 	s.running = true
+	// Update leafNodeEnabled in case options have changed post NewServer()
+	// and before Start() (we should not be able to allow that, but server has
+	// direct reference to user-provided options - at least before a Reload() is
+	// performed.
+	s.leafNodeEnabled = opts.LeafNode.Port != 0 || len(opts.LeafNode.Remotes) > 0
 	s.mu.Unlock()
 
 	s.grMu.Lock()
