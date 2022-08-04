@@ -495,12 +495,13 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 			if url != rURL.Host {
 				ipStr = fmt.Sprintf(" (%s)", url)
 			}
-			if s.isLeafNodeEnabled() {
-				s.Debugf("Trying to connect as leafnode to remote server on %q%s", rURL.Host, ipStr)
-				conn, err = natsDialTimeout("tcp", url, dialTimeout)
-			} else {
+			// Some test may want to disable remotes from connecting
+			if s.isLeafConnectDisabled() {
 				s.Debugf("Will not attempt to connect to remote server on %q%s, leafnodes currently disabled", rURL.Host, ipStr)
 				err = ErrLeafNodeDisabled
+			} else {
+				s.Debugf("Trying to connect as leafnode to remote server on %q%s", rURL.Host, ipStr)
+				conn, err = natsDialTimeout("tcp", url, dialTimeout)
 			}
 		}
 		if err != nil {
@@ -569,10 +570,10 @@ func (s *Server) checkJetStreamMigrate(remote *leafNodeCfg) {
 }
 
 // Helper for checking.
-func (s *Server) isLeafNodeEnabled() bool {
+func (s *Server) isLeafConnectDisabled() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.leafNodeEnabled
+	return s.leafDisableConnect
 }
 
 // Save off the tlsName for when we use TLS and mix hostnames and IPs. IPs usually

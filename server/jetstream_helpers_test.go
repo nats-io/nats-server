@@ -951,7 +951,7 @@ func (s *Server) closeAndDisableLeafnodes() {
 		leafs = append(leafs, ln)
 	}
 	// Disable leafnodes for now.
-	s.leafNodeEnabled = false
+	s.leafDisableConnect = true
 	s.mu.Unlock()
 
 	for _, ln := range leafs {

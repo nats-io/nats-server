@@ -164,6 +164,7 @@ type Server struct {
 	leafRemoteCfgs     []*leafNodeCfg
 	leafRemoteAccounts sync.Map
 	leafNodeEnabled    bool
+	leafDisableConnect bool // Used in test only
 
 	quitCh           chan struct{}
 	startupComplete  chan struct{}
