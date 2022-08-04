@@ -305,6 +305,7 @@ func generateJSMappingTable(domain string) map[string]string {
 		"INFO":       JSApiAccountInfo,
 		"STREAM.>":   "$JS.API.STREAM.>",
 		"CONSUMER.>": "$JS.API.CONSUMER.>",
+		"DIRECT.>":   "$JS.API.DIRECT.>",
 		"META.>":     "$JS.API.META.>",
 		"SERVER.>":   "$JS.API.SERVER.>",
 		"$KV.>":      "$KV.>",

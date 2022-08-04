@@ -10541,7 +10541,7 @@ func TestJetStreamClusterMemoryConsumerInterestRetention(t *testing.T) {
 
 	nsi, err := js.StreamInfo("test")
 	require_NoError(t, err)
-	if nsi.State != si.State {
+	if !reflect.DeepEqual(nsi.State, si.State) {
 		t.Fatalf("Stream states do not match: %+v vs %+v", si.State, nsi.State)
 	}
 
@@ -11700,4 +11700,39 @@ func TestJetStreamClusterRePublishUpdateNotSupported(t *testing.T) {
 
 	t.Run("Single", func(t *testing.T) { test(t, s, "single", 1) })
 	t.Run("Clustered", func(t *testing.T) { test(t, c.randomServer(), "clustered", 3) })
+}
+
+func TestJetStreamDirectGetFromLeafnode(t *testing.T) {
+	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: CORE, store_dir:", 1)
+	c := createJetStreamCluster(t, tmpl, "CORE", _EMPTY_, 3, 19022, true)
+	defer c.shutdown()
+
+	tmpl = strings.Replace(jsClusterTemplWithSingleLeafNode, "store_dir:", "domain: SPOKE, store_dir:", 1)
+	ln := c.createLeafNodeWithTemplate("LN-SPOKE", tmpl)
+	defer ln.Shutdown()
+
+	checkLeafNodeConnectedCount(t, ln, 2)
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: "KV"})
+	require_NoError(t, err)
+
+	_, err = kv.PutString("age", "22")
+	require_NoError(t, err)
+
+	// Now connect to the ln and make sure we can do a domain direct get.
+	nc, _ = jsClientConnect(t, ln)
+	defer nc.Close()
+
+	js, err = nc.JetStream(nats.Domain("CORE"))
+	require_NoError(t, err)
+
+	kv, err = js.KeyValue("KV")
+	require_NoError(t, err)
+
+	entry, err := kv.Get("age")
+	require_NoError(t, err)
+	require_True(t, string(entry.Value()) == "22")
 }

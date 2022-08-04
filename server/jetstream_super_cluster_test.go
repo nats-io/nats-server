@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1835,7 +1836,7 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 			si, err = js.StreamInfo("MOVE")
 			require_NoError(t, err)
 
-			if si.State != initialState {
+			if !reflect.DeepEqual(si.State, initialState) {
 				t.Fatalf("States do not match after migration:\n%+v\nvs\n%+v", si.State, initialState)
 			}
 
@@ -2035,7 +2036,7 @@ func TestJetStreamSuperClusterMovingStreamsWithMirror(t *testing.T) {
 		mi, err := js.StreamInfo("MIRROR")
 		require_NoError(t, err)
 
-		if si.State != mi.State {
+		if !reflect.DeepEqual(si.State, mi.State) {
 			return fmt.Errorf("Expected mirror to be the same, got %+v vs %+v", mi.State, si.State)
 		}
 		return nil
