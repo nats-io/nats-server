@@ -11702,7 +11702,7 @@ func TestJetStreamClusterRePublishUpdateNotSupported(t *testing.T) {
 	t.Run("Clustered", func(t *testing.T) { test(t, c.randomServer(), "clustered", 3) })
 }
 
-func TestJetStreamDirectGetFromLeafnode(t *testing.T) {
+func TestJetStreamClusterDirectGetFromLeafnode(t *testing.T) {
 	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: CORE, store_dir:", 1)
 	c := createJetStreamCluster(t, tmpl, "CORE", _EMPTY_, 3, 19022, true)
 	defer c.shutdown()
