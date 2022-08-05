@@ -80,10 +80,10 @@
     "deprecates": ""
   },
   {
-    "constant": "JSClusterNoPeersErr",
+    "constant": "JSClusterNoPeersErrF",
     "code": 400,
     "error_code": 10005,
-    "description": "no suitable peers for placement",
+    "description": "no suitable peers for placement: {err}",
     "comment": "",
     "help": "",
     "url": "",

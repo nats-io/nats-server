@@ -2357,7 +2357,7 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 		cfg.Placement.Tags = append(cfg.Placement.Tags, req.Tags...)
 	}
 
-	peers := cc.selectPeerGroup(cfg.Replicas+1, currCluster, &cfg, currPeers, 1)
+	peers, e := cc.selectPeerGroup(cfg.Replicas+1, currCluster, &cfg, currPeers, 1)
 	if len(peers) <= cfg.Replicas {
 		// since expanding in the same cluster did not yield a result, try in different cluster
 		peers = nil
@@ -2369,16 +2369,18 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 			}
 			return true
 		})
+		errs := selectPeerErrors{e}
 		for cluster := range clusters {
-			newPeers := cc.selectPeerGroup(cfg.Replicas, cluster, &cfg, nil, 0)
+			newPeers, _ := cc.selectPeerGroup(cfg.Replicas, cluster, &cfg, nil, 0)
 			if len(newPeers) >= cfg.Replicas {
 				peers = append([]string{}, currPeers...)
 				peers = append(peers, newPeers[:cfg.Replicas]...)
 				break
 			}
+			errs = append(errs, e)
 		}
 		if peers == nil {
-			resp.Error = NewJSClusterNoPeersError()
+			resp.Error = NewJSClusterNoPeersError(&errs)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
@@ -2619,7 +2621,7 @@ func (s *Server) jsLeaderStepDownRequest(sub *subscription, c *client, _ *Accoun
 			}
 		}
 		if len(peers) == 0 {
-			resp.Error = NewJSClusterNoPeersError()
+			resp.Error = NewJSClusterNoPeersError(fmt.Errorf("no replacement peer connected"))
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
