@@ -26,7 +26,6 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"io/ioutil"
 	"net"
 	"os"
 	"path/filepath"
@@ -274,7 +273,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	} else if stat == nil || !stat.IsDir() {
 		return nil, fmt.Errorf("storage directory is not a directory")
 	}
-	tmpfile, err := ioutil.TempFile(fcfg.StoreDir, "_test_")
+	tmpfile, err := os.CreateTemp(fcfg.StoreDir, "_test_")
 	if err != nil {
 		return nil, fmt.Errorf("storage directory is not writable")
 	}
@@ -488,7 +487,7 @@ func (fs *fileStore) writeStreamMeta() error {
 		if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		if err := ioutil.WriteFile(keyFile, encrypted, defaultFilePerms); err != nil {
+		if err := os.WriteFile(keyFile, encrypted, defaultFilePerms); err != nil {
 			return err
 		}
 	}
@@ -508,14 +507,14 @@ func (fs *fileStore) writeStreamMeta() error {
 		b = fs.aek.Seal(nonce, nonce, b, nil)
 	}
 
-	if err := ioutil.WriteFile(meta, b, defaultFilePerms); err != nil {
+	if err := os.WriteFile(meta, b, defaultFilePerms); err != nil {
 		return err
 	}
 	fs.hh.Reset()
 	fs.hh.Write(b)
 	checksum := hex.EncodeToString(fs.hh.Sum(nil))
 	sum := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFileSum)
-	if err := ioutil.WriteFile(sum, []byte(checksum), defaultFilePerms); err != nil {
+	if err := os.WriteFile(sum, []byte(checksum), defaultFilePerms); err != nil {
 		return err
 	}
 	return nil
@@ -599,7 +598,7 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) (*msgBlock, e
 
 	// Check if encryption is enabled.
 	if fs.prf != nil {
-		ekey, err := ioutil.ReadFile(filepath.Join(mdir, fmt.Sprintf(keyScan, mb.index)))
+		ekey, err := os.ReadFile(filepath.Join(mdir, fmt.Sprintf(keyScan, mb.index)))
 		if err != nil {
 			// We do not seem to have keys even though we should. Could be a plaintext conversion.
 			// Create the keys and we will double check below.
@@ -649,15 +648,15 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint64) (*msgBlock, e
 		// Undo cache from above for later.
 		mb.cache = nil
 		mb.bek.XORKeyStream(buf, buf)
-		if err := ioutil.WriteFile(mb.mfn, buf, defaultFilePerms); err != nil {
+		if err := os.WriteFile(mb.mfn, buf, defaultFilePerms); err != nil {
 			return nil, err
 		}
-		if buf, err = ioutil.ReadFile(mb.ifn); err == nil && len(buf) > 0 {
+		if buf, err = os.ReadFile(mb.ifn); err == nil && len(buf) > 0 {
 			if err := checkHeader(buf); err != nil {
 				return nil, err
 			}
 			buf = mb.aek.Seal(buf[:0], mb.nonce, buf, nil)
-			if err := ioutil.WriteFile(mb.ifn, buf, defaultFilePerms); err != nil {
+			if err := os.WriteFile(mb.ifn, buf, defaultFilePerms); err != nil {
 				return nil, err
 			}
 		}
@@ -963,7 +962,7 @@ func (fs *fileStore) recoverMsgs() error {
 	}
 
 	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
-	fis, err := ioutil.ReadDir(mdir)
+	fis, err := os.ReadDir(mdir)
 	if err != nil {
 		return errNotReadable
 	}
@@ -973,7 +972,11 @@ func (fs *fileStore) recoverMsgs() error {
 	for _, fi := range fis {
 		var index uint64
 		if n, err := fmt.Sscanf(fi.Name(), blkScan, &index); err == nil && n == 1 {
-			if mb, err := fs.recoverMsgBlock(fi, index); err == nil && mb != nil {
+			finfo, err := fi.Info()
+			if err != nil {
+				return err
+			}
+			if mb, err := fs.recoverMsgBlock(finfo, index); err == nil && mb != nil {
 				if fs.state.FirstSeq == 0 || mb.first.seq < fs.state.FirstSeq {
 					fs.state.FirstSeq = mb.first.seq
 					fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
@@ -1687,7 +1690,7 @@ func (fs *fileStore) genEncryptionKeysForBlock(mb *msgBlock) error {
 	if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if err := ioutil.WriteFile(keyFile, encrypted, defaultFilePerms); err != nil {
+	if err := os.WriteFile(keyFile, encrypted, defaultFilePerms); err != nil {
 		return err
 	}
 	mb.kfn = keyFile
@@ -2250,7 +2253,7 @@ func (mb *msgBlock) compact() {
 
 	// We will write to a new file and mv/rename it in case of failure.
 	mfn := filepath.Join(filepath.Join(mb.fs.fcfg.StoreDir, msgDir), fmt.Sprintf(newScan, mb.index))
-	if err := ioutil.WriteFile(mfn, nbuf, defaultFilePerms); err != nil {
+	if err := os.WriteFile(mfn, nbuf, defaultFilePerms); err != nil {
 		os.Remove(mfn)
 		return
 	}
@@ -3368,7 +3371,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 	return fsLostData, mb.werr
 }
 
-//  Lock should be held.
+// Lock should be held.
 func (mb *msgBlock) clearLoading() {
 	mb.loading = false
 }
@@ -4042,7 +4045,7 @@ func (mb *msgBlock) writeIndexInfoLocked() error {
 
 // readIndexInfo will read in the index information for the message block.
 func (mb *msgBlock) readIndexInfo() error {
-	buf, err := ioutil.ReadFile(mb.ifn)
+	buf, err := os.ReadFile(mb.ifn)
 	if err != nil {
 		return err
 	}
@@ -4513,7 +4516,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 				smb.bek = bek
 				smb.bek.XORKeyStream(nbuf, nbuf)
 			}
-			if err = ioutil.WriteFile(smb.mfn, nbuf, defaultFilePerms); err != nil {
+			if err = os.WriteFile(smb.mfn, nbuf, defaultFilePerms); err != nil {
 				goto SKIP
 			}
 			smb.clearCacheAndOffset()
@@ -4678,7 +4681,7 @@ func (mb *msgBlock) closeAndKeepIndex() {
 		mb.mfd.Truncate(0)
 	} else {
 		// We were closed, so just write out an empty file.
-		ioutil.WriteFile(mb.mfn, nil, defaultFilePerms)
+		os.WriteFile(mb.mfn, nil, defaultFilePerms)
 	}
 	// Make sure to write the index file so we can remember last seq and ts.
 	mb.writeIndexInfoLocked()
@@ -4847,7 +4850,7 @@ func (mb *msgBlock) readPerSubjectInfo() error {
 		minFileSize   = 24
 	)
 
-	buf, err := ioutil.ReadFile(mb.sfn)
+	buf, err := os.ReadFile(mb.sfn)
 
 	if err != nil || len(buf) < minFileSize || checkHeader(buf) != nil {
 		return mb.generatePerSubjectInfo()
@@ -4926,7 +4929,7 @@ func (mb *msgBlock) writePerSubjectInfo() error {
 	// Now copy over checksum from the block itself, this allows us to know if we are in sync.
 	b.Write(mb.lchk[:])
 
-	return ioutil.WriteFile(mb.sfn, b.Bytes(), defaultFilePerms)
+	return os.WriteFile(mb.sfn, b.Bytes(), defaultFilePerms)
 }
 
 // Close the message block.
@@ -5122,7 +5125,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includ
 			mb.writeIndexInfo()
 		}
 		mb.mu.Lock()
-		buf, err := ioutil.ReadFile(mb.ifn)
+		buf, err := os.ReadFile(mb.ifn)
 		if err != nil {
 			mb.mu.Unlock()
 			writeErr(fmt.Sprintf("Could not read message block [%d] index file: %v", mb.index, err))
@@ -5161,7 +5164,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includ
 		}
 		// Make sure we snapshot the per subject info.
 		mb.writePerSubjectInfo()
-		buf, err = ioutil.ReadFile(mb.sfn)
+		buf, err = os.ReadFile(mb.sfn)
 		// If not there that is ok and not fatal.
 		if err == nil && writeFile(msgPre+fmt.Sprintf(fssScan, mb.index), buf) != nil {
 			mb.mu.Unlock()
@@ -5333,7 +5336,7 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 
 	// Check for encryption.
 	if o.prf != nil {
-		if ekey, err := ioutil.ReadFile(filepath.Join(odir, JetStreamMetaFileKey)); err == nil {
+		if ekey, err := os.ReadFile(filepath.Join(odir, JetStreamMetaFileKey)); err == nil {
 			// Recover key encryption key.
 			rb, err := fs.prf([]byte(fs.cfg.Name + tsep + o.name))
 			if err != nil {
@@ -5380,9 +5383,9 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 				return nil, err
 			}
 			// Redo the state file as well here if we have one and we can tell it was plaintext.
-			if buf, err := ioutil.ReadFile(o.ifn); err == nil {
+			if buf, err := os.ReadFile(o.ifn); err == nil {
 				if _, err := decodeConsumerState(buf); err == nil {
-					if err := ioutil.WriteFile(o.ifn, o.encryptState(buf), defaultFilePerms); err != nil {
+					if err := os.WriteFile(o.ifn, o.encryptState(buf), defaultFilePerms); err != nil {
 						if didCreate {
 							os.RemoveAll(odir)
 						}
@@ -5774,7 +5777,7 @@ func (o *consumerFileStore) writeState(buf []byte) error {
 
 	// Lock not held here but we do limit number of outstanding calls that could block OS threads.
 	<-dios
-	err := ioutil.WriteFile(ifn, buf, defaultFilePerms)
+	err := os.WriteFile(ifn, buf, defaultFilePerms)
 	dios <- struct{}{}
 
 	o.mu.Lock()
@@ -5814,7 +5817,7 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 		if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		if err := ioutil.WriteFile(keyFile, encrypted, defaultFilePerms); err != nil {
+		if err := os.WriteFile(keyFile, encrypted, defaultFilePerms); err != nil {
 			return err
 		}
 	}
@@ -5830,14 +5833,14 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 		b = cfs.aek.Seal(nonce, nonce, b, nil)
 	}
 
-	if err := ioutil.WriteFile(meta, b, defaultFilePerms); err != nil {
+	if err := os.WriteFile(meta, b, defaultFilePerms); err != nil {
 		return err
 	}
 	cfs.hh.Reset()
 	cfs.hh.Write(b)
 	checksum := hex.EncodeToString(cfs.hh.Sum(nil))
 	sum := filepath.Join(cfs.odir, JetStreamMetaFileSum)
-	if err := ioutil.WriteFile(sum, []byte(checksum), defaultFilePerms); err != nil {
+	if err := os.WriteFile(sum, []byte(checksum), defaultFilePerms); err != nil {
 		return err
 	}
 	return nil
@@ -5909,7 +5912,7 @@ func (o *consumerFileStore) State() (*ConsumerState, error) {
 	}
 
 	// Read the state in here from disk..
-	buf, err := ioutil.ReadFile(o.ifn)
+	buf, err := os.ReadFile(o.ifn)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -6089,7 +6092,7 @@ func (o *consumerFileStore) Stop() error {
 	if len(buf) > 0 {
 		o.waitOnFlusher()
 		<-dios
-		err = ioutil.WriteFile(ifn, buf, defaultFilePerms)
+		err = os.WriteFile(ifn, buf, defaultFilePerms)
 		dios <- struct{}{}
 	}
 	return err
@@ -6203,7 +6206,7 @@ func (ts *templateFileStore) Store(t *streamTemplate) error {
 	if err != nil {
 		return err
 	}
-	if err := ioutil.WriteFile(meta, b, defaultFilePerms); err != nil {
+	if err := os.WriteFile(meta, b, defaultFilePerms); err != nil {
 		return err
 	}
 	// FIXME(dlc) - Do checksum
@@ -6211,7 +6214,7 @@ func (ts *templateFileStore) Store(t *streamTemplate) error {
 	ts.hh.Write(b)
 	checksum := hex.EncodeToString(ts.hh.Sum(nil))
 	sum := filepath.Join(dir, JetStreamMetaFileSum)
-	if err := ioutil.WriteFile(sum, []byte(checksum), defaultFilePerms); err != nil {
+	if err := os.WriteFile(sum, []byte(checksum), defaultFilePerms); err != nil {
 		return err
 	}
 	return nil

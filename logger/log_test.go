@@ -17,7 +17,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -115,7 +114,7 @@ func TestFileLogger(t *testing.T) {
 	defer logger.Close()
 	logger.Noticef("foo")
 
-	buf, err := ioutil.ReadFile(file.Name())
+	buf, err := os.ReadFile(file.Name())
 	if err != nil {
 		t.Fatalf("Could not read logfile: %v", err)
 	}
@@ -134,7 +133,7 @@ func TestFileLogger(t *testing.T) {
 	defer logger.Close()
 	logger.Errorf("foo")
 
-	buf, err = ioutil.ReadFile(file.Name())
+	buf, err = os.ReadFile(file.Name())
 	if err != nil {
 		t.Fatalf("Could not read logfile: %v", err)
 	}
@@ -191,7 +190,7 @@ func TestFileLoggerSizeLimit(t *testing.T) {
 		logger.Noticef("This is a line in the log file")
 	}
 
-	files, err := ioutil.ReadDir(tmpDir)
+	files, err := os.ReadDir(tmpDir)
 	if err != nil {
 		t.Fatalf("Error reading logs dir: %v", err)
 	}
@@ -202,7 +201,7 @@ func TestFileLoggerSizeLimit(t *testing.T) {
 	if err := logger.Close(); err != nil {
 		t.Fatalf("Error closing log: %v", err)
 	}
-	content, err := ioutil.ReadFile(file.Name())
+	content, err := os.ReadFile(file.Name())
 	if err != nil {
 		t.Fatalf("Error loading latest log: %v", err)
 	}
@@ -224,7 +223,7 @@ func TestFileLoggerSizeLimit(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		logger.Noticef("This is line %d in the log file", i+1)
 	}
-	files, err = ioutil.ReadDir(tmpDir)
+	files, err = os.ReadDir(tmpDir)
 	if err != nil {
 		t.Fatalf("Error reading logs dir: %v", err)
 	}
@@ -235,7 +234,7 @@ func TestFileLoggerSizeLimit(t *testing.T) {
 	// Now set a limit that is below current size
 	logger.SetSizeLimit(1000)
 	// Should have triggered rotation
-	files, err = ioutil.ReadDir(tmpDir)
+	files, err = os.ReadDir(tmpDir)
 	if err != nil {
 		t.Fatalf("Error reading logs dir: %v", err)
 	}
@@ -246,7 +245,7 @@ func TestFileLoggerSizeLimit(t *testing.T) {
 		t.Fatalf("Error closing log: %v", err)
 	}
 	lastBackup = files[len(files)-1]
-	content, err = ioutil.ReadFile(file.Name())
+	content, err = os.ReadFile(file.Name())
 	if err != nil {
 		t.Fatalf("Error loading latest log: %v", err)
 	}
@@ -277,12 +276,12 @@ func TestFileLoggerSizeLimit(t *testing.T) {
 	// Close
 	logger.Close()
 
-	files, err = ioutil.ReadDir(tmpDir)
+	files, err = os.ReadDir(tmpDir)
 	if err != nil {
 		t.Fatalf("Error reading logs dir: %v", err)
 	}
 	lastBackup = files[len(files)-1]
-	content, err = ioutil.ReadFile(filepath.Join(tmpDir, lastBackup.Name()))
+	content, err = os.ReadFile(filepath.Join(tmpDir, lastBackup.Name()))
 	if err != nil {
 		t.Fatalf("Error reading backup file: %v", err)
 	}
@@ -331,7 +330,7 @@ func createDir(t *testing.T, prefix string) string {
 	if err := os.MkdirAll(tempRoot, 0700); err != nil {
 		t.Fatal(err)
 	}
-	dir, err := ioutil.TempDir(tempRoot, prefix)
+	dir, err := os.MkdirTemp(tempRoot, prefix)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +339,7 @@ func createDir(t *testing.T, prefix string) string {
 
 func createFileAtDir(t *testing.T, dir, prefix string) *os.File {
 	t.Helper()
-	f, err := ioutil.TempFile(dir, prefix)
+	f, err := os.CreateTemp(dir, prefix)
 	if err != nil {
 		t.Fatal(err)
 	}

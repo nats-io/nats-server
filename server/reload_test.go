@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -41,7 +40,7 @@ import (
 
 func newServerWithConfig(t *testing.T, configFile string) (*Server, *Options, string) {
 	t.Helper()
-	content, err := ioutil.ReadFile(configFile)
+	content, err := os.ReadFile(configFile)
 	if err != nil {
 		t.Fatalf("Error loading file: %v", err)
 	}
@@ -70,7 +69,7 @@ func createConfFile(t *testing.T, content []byte) string {
 	conf := createFile(t, "")
 	fName := conf.Name()
 	conf.Close()
-	if err := ioutil.WriteFile(fName, content, 0666); err != nil {
+	if err := os.WriteFile(fName, content, 0666); err != nil {
 		removeFile(t, fName)
 		t.Fatalf("Error writing conf file: %v", err)
 	}
@@ -79,7 +78,7 @@ func createConfFile(t *testing.T, content []byte) string {
 
 func runReloadServerWithConfig(t *testing.T, configFile string) (*Server, *Options, string) {
 	t.Helper()
-	content, err := ioutil.ReadFile(configFile)
+	content, err := os.ReadFile(configFile)
 	if err != nil {
 		t.Fatalf("Error loading file: %v", err)
 	}
@@ -97,7 +96,7 @@ func runReloadServerWithContent(t *testing.T, content []byte) (*Server, *Options
 
 func changeCurrentConfigContent(t *testing.T, curConfig, newConfig string) {
 	t.Helper()
-	content, err := ioutil.ReadFile(newConfig)
+	content, err := os.ReadFile(newConfig)
 	if err != nil {
 		t.Fatalf("Error loading file: %v", err)
 	}
@@ -106,7 +105,7 @@ func changeCurrentConfigContent(t *testing.T, curConfig, newConfig string) {
 
 func changeCurrentConfigContentWithNewContent(t *testing.T, curConfig string, content []byte) {
 	t.Helper()
-	if err := ioutil.WriteFile(curConfig, content, 0666); err != nil {
+	if err := os.WriteFile(curConfig, content, 0666); err != nil {
 		t.Fatalf("Error writing config: %v", err)
 	}
 }
@@ -266,7 +265,7 @@ func TestConfigReload(t *testing.T) {
 	}
 	platformConf := filepath.Join(dir, "platform.conf")
 	defer removeFile(t, platformConf)
-	if err := ioutil.WriteFile(platformConf, content, 0666); err != nil {
+	if err := os.WriteFile(platformConf, content, 0666); err != nil {
 		t.Fatalf("Unable to write config file: %v", err)
 	}
 
@@ -1627,7 +1626,7 @@ func TestConfigReloadClusterRemoveSolicitedRoutes(t *testing.T) {
 
 func reloadUpdateConfig(t *testing.T, s *Server, conf, content string) {
 	t.Helper()
-	if err := ioutil.WriteFile(conf, []byte(content), 0666); err != nil {
+	if err := os.WriteFile(conf, []byte(content), 0666); err != nil {
 		t.Fatalf("Error creating config file: %v", err)
 	}
 	if err := s.Reload(); err != nil {
@@ -1787,7 +1786,7 @@ func TestConfigReloadMaxSubsUnsupported(t *testing.T) {
 	defer removeFile(t, conf)
 	defer s.Shutdown()
 
-	if err := ioutil.WriteFile(conf, []byte(`max_subs: 10`), 0666); err != nil {
+	if err := os.WriteFile(conf, []byte(`max_subs: 10`), 0666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
 	if err := s.Reload(); err == nil {
@@ -4138,7 +4137,7 @@ func TestLoggingReload(t *testing.T) {
 
 	check := func(filename string, valid func([]byte) bool) {
 		t.Helper()
-		log, err := ioutil.ReadFile(filename)
+		log, err := os.ReadFile(filename)
 		if err != nil {
 			t.Fatalf("Error reading log file %s: %v\n", filename, err)
 		}

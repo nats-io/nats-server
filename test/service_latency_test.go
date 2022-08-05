@@ -16,9 +16,9 @@ package test
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"math/rand"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1492,7 +1492,7 @@ func TestServiceLatencyRequestorSharesConfig(t *testing.T) {
 
 		system_account: SYS
 	`)
-	if err := ioutil.WriteFile(conf, newConf, 0600); err != nil {
+	if err := os.WriteFile(conf, newConf, 0600); err != nil {
 		t.Fatalf("Error rewriting server's config file: %v", err)
 	}
 	if err := srv.Reload(); err != nil {

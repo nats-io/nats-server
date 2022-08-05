@@ -22,7 +22,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/url"
 	"os"
@@ -1625,7 +1624,7 @@ func TestConnectErrorReports(t *testing.T) {
 	checkContent := func(t *testing.T, txt string, attempt int, shouldBeThere bool) {
 		t.Helper()
 		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
-			content, err := ioutil.ReadFile(log)
+			content, err := os.ReadFile(log)
 			if err != nil {
 				return fmt.Errorf("Error reading log file: %v", err)
 			}
@@ -1673,7 +1672,7 @@ func TestConnectErrorReports(t *testing.T) {
 	checkLeafContent := func(t *testing.T, txt, host string, attempt int, shouldBeThere bool) {
 		t.Helper()
 		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
-			content, err := ioutil.ReadFile(log)
+			content, err := os.ReadFile(log)
 			if err != nil {
 				return fmt.Errorf("Error reading log file: %v", err)
 			}
@@ -1789,7 +1788,7 @@ func TestReconnectErrorReports(t *testing.T) {
 	checkContent := func(t *testing.T, txt string, attempt int, shouldBeThere bool) {
 		t.Helper()
 		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
-			content, err := ioutil.ReadFile(log)
+			content, err := os.ReadFile(log)
 			if err != nil {
 				return fmt.Errorf("Error reading log file: %v", err)
 			}
@@ -1852,7 +1851,7 @@ func TestReconnectErrorReports(t *testing.T) {
 	checkLeafContent := func(t *testing.T, txt, host string, attempt int, shouldBeThere bool) {
 		t.Helper()
 		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
-			content, err := ioutil.ReadFile(log)
+			content, err := os.ReadFile(log)
 			if err != nil {
 				return fmt.Errorf("Error reading log file: %v", err)
 			}
@@ -1960,7 +1959,7 @@ func TestServerLogsConfigurationFile(t *testing.T) {
 	s := RunServer(o)
 	s.Shutdown()
 
-	log, err := ioutil.ReadFile(file.Name())
+	log, err := os.ReadFile(file.Name())
 	if err != nil {
 		t.Fatalf("Error reading log file: %v", err)
 	}

@@ -24,7 +24,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	"net"
 	"net/http"
@@ -2014,7 +2013,7 @@ func testWSReadFrame(t testing.TB, br *bufio.Reader) []byte {
 	buf = append(buf, 0x00, 0x00, 0xff, 0xff, 0x01, 0x00, 0x00, 0xff, 0xff)
 	dbr := bytes.NewBuffer(buf)
 	d := flate.NewReader(dbr)
-	uncompressed, err := ioutil.ReadAll(d)
+	uncompressed, err := io.ReadAll(d)
 	if err != nil {
 		t.Fatalf("Error reading frame: %v", err)
 	}
@@ -3127,7 +3126,7 @@ func TestWSCompressionFrameSizeLimit(t *testing.T) {
 			buf = append(buf, 0x00, 0x00, 0xff, 0xff, 0x01, 0x00, 0x00, 0xff, 0xff)
 			dbr := bytes.NewBuffer(buf)
 			d := flate.NewReader(dbr)
-			uncompressed, err := ioutil.ReadAll(d)
+			uncompressed, err := io.ReadAll(d)
 			if err != nil {
 				t.Fatalf("Error reading frame: %v", err)
 			}

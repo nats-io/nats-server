@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"math/rand"
 	"os"
@@ -4548,7 +4547,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 			return nil, fmt.Errorf("could not create snapshots directory - %v", err)
 		}
 	}
-	sdir, err := ioutil.TempDir(sd, "snap-")
+	sdir, err := os.MkdirTemp(sd, "snap-")
 	if err != nil {
 		return nil, err
 	}
@@ -4601,7 +4600,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 	// Check metadata.
 	// The cfg passed in will be the new identity for the stream.
 	var fcfg FileStreamInfo
-	b, err := ioutil.ReadFile(filepath.Join(sdir, JetStreamMetaFile))
+	b, err := os.ReadFile(filepath.Join(sdir, JetStreamMetaFile))
 	if err != nil {
 		return nil, err
 	}
@@ -4656,7 +4655,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 
 	// Now do consumers.
 	odir := filepath.Join(ndir, consumerDir)
-	ofis, _ := ioutil.ReadDir(odir)
+	ofis, _ := os.ReadDir(odir)
 	for _, ofi := range ofis {
 		metafile := filepath.Join(odir, ofi.Name(), JetStreamMetaFile)
 		metasum := filepath.Join(odir, ofi.Name(), JetStreamMetaFileSum)
@@ -4664,7 +4663,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 			mset.stop(true, false)
 			return nil, fmt.Errorf("error restoring consumer [%q]: %v", ofi.Name(), err)
 		}
-		buf, err := ioutil.ReadFile(metafile)
+		buf, err := os.ReadFile(metafile)
 		if err != nil {
 			mset.stop(true, false)
 			return nil, fmt.Errorf("error restoring consumer [%q]: %v", ofi.Name(), err)

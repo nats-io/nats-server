@@ -15,7 +15,7 @@ package test
 
 import (
 	"fmt"
-	"io/ioutil"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -151,7 +151,7 @@ func TestClusterTLSInsecure(t *testing.T) {
 	srvB.SetLogger(wl, false, false)
 
 	// Need to add "insecure: true" and reload
-	if err := ioutil.WriteFile(confB,
+	if err := os.WriteFile(confB,
 		[]byte(fmt.Sprintf(bConfigTemplate, "insecure: true", optsA.Cluster.Host, optsA.Cluster.Port)),
 		0666); err != nil {
 		t.Fatalf("Error rewriting file: %v", err)

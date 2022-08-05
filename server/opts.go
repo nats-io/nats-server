@@ -20,7 +20,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"math"
 	"net"
 	"net/url"
@@ -2987,10 +2986,10 @@ func parseAccount(v map[string]interface{}, errors, warnings *[]error) (string, 
 
 // Parse an export stream or service.
 // e.g.
-//   {stream: "public.>"} # No accounts means public.
-//   {stream: "synadia.private.>", accounts: [cncf, natsio]}
-//   {service: "pub.request"} # No accounts means public.
-//   {service: "pub.special.request", accounts: [nats.io]}
+// {stream: "public.>"} # No accounts means public.
+// {stream: "synadia.private.>", accounts: [cncf, natsio]}
+// {service: "pub.request"} # No accounts means public.
+// {service: "pub.special.request", accounts: [nats.io]}
 func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*export, *export, error) {
 	var (
 		curStream  *export
@@ -3255,9 +3254,9 @@ func parseServiceLatency(root token, v interface{}) (l *serviceLatency, retErr e
 
 // Parse an import stream or service.
 // e.g.
-//   {stream: {account: "synadia", subject:"public.synadia"}, prefix: "imports.synadia"}
-//   {stream: {account: "synadia", subject:"synadia.private.*"}}
-//   {service: {account: "synadia", subject: "pub.special.request"}, to: "synadia.request"}
+// {stream: {account: "synadia", subject:"public.synadia"}, prefix: "imports.synadia"}
+// {stream: {account: "synadia", subject:"synadia.private.*"}}
+// {service: {account: "synadia", subject: "pub.special.request"}, to: "synadia.request"}
 func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*importStream, *importService, error) {
 	var (
 		curStream  *importStream
@@ -4266,7 +4265,7 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 	}
 	// Add in CAs if applicable.
 	if tc.CaFile != "" {
-		rootPEM, err := ioutil.ReadFile(tc.CaFile)
+		rootPEM, err := os.ReadFile(tc.CaFile)
 		if err != nil || rootPEM == nil {
 			return nil, err
 		}
@@ -4976,7 +4975,7 @@ func processSignal(signal string) error {
 // 2. If such a file exists and can be read, return its contents.
 // 3. Otherwise, return the original "pidStr" string.
 func maybeReadPidFile(pidStr string) string {
-	if b, err := ioutil.ReadFile(pidStr); err == nil {
+	if b, err := os.ReadFile(pidStr); err == nil {
 		return string(b)
 	}
 	return pidStr

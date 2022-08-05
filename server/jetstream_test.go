@@ -24,7 +24,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"math/rand"
 	"net/http"
@@ -93,7 +92,7 @@ func RunBasicJetStreamServer() *Server {
 	opts := DefaultTestOptions
 	opts.Port = -1
 	opts.JetStream = true
-	tdir, _ := ioutil.TempDir(tempRoot, "jstests-storedir-")
+	tdir, _ := os.MkdirTemp(tempRoot, "jstests-storedir-")
 	opts.StoreDir = tdir
 	return RunServer(&opts)
 }
@@ -4129,7 +4128,7 @@ func TestJetStreamSnapshots(t *testing.T) {
 		t.Fatalf("Error getting snapshot: %v", err)
 	}
 	zr := sr.Reader
-	snapshot, err := ioutil.ReadAll(zr)
+	snapshot, err := io.ReadAll(zr)
 	if err != nil {
 		t.Fatalf("Error reading snapshot")
 	}
@@ -9679,7 +9678,7 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 			},
 		}
 	`)
-	if err := ioutil.WriteFile(conf, newConf, 0600); err != nil {
+	if err := os.WriteFile(conf, newConf, 0600); err != nil {
 		t.Fatalf("Error rewriting server's config file: %v", err)
 	}
 	if err := s.Reload(); err != nil {
@@ -9813,7 +9812,7 @@ func TestJetStreamStoreDirectoryFix(t *testing.T) {
 
 	// Now move stuff up from the jetstream directory etc.
 	jssd := filepath.Join(sd, JetStreamStoreDir)
-	fis, _ := ioutil.ReadDir(jssd)
+	fis, _ := os.ReadDir(jssd)
 	// This will be accounts, move them up one directory.
 	for _, fi := range fis {
 		os.Rename(filepath.Join(jssd, fi.Name()), filepath.Join(sd, fi.Name()))
@@ -11524,7 +11523,7 @@ func TestJetStreamConfigReloadWithGlobalAccount(t *testing.T) {
 		t.Fatalf("Expected %d msgs after restart, got %d", toSend, si.State.Msgs)
 	}
 
-	if err := ioutil.WriteFile(conf, []byte(fmt.Sprintf(template, "pwd2")), 0666); err != nil {
+	if err := os.WriteFile(conf, []byte(fmt.Sprintf(template, "pwd2")), 0666); err != nil {
 		t.Fatalf("Error writing config: %v", err)
 	}
 
@@ -12640,7 +12639,7 @@ func TestJetStreamServerEncryption(t *testing.T) {
 	// Make sure we can not find any plaintext strings in the target file.
 	checkFor := func(fn string, strs ...string) {
 		t.Helper()
-		data, err := ioutil.ReadFile(fn)
+		data, err := os.ReadFile(fn)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -12669,7 +12668,7 @@ func TestJetStreamServerEncryption(t *testing.T) {
 		checkKeyFile(filepath.Join(sdir, "obs", "dlc", JetStreamMetaFileKey))
 		checkFor(filepath.Join(sdir, "obs", "dlc", JetStreamMetaFile), "TEST", "dlc", "foo", "bar", "baz", "max_msgs", "ack_policy")
 		// Load and see if we can parse the consumer state.
-		state, err := ioutil.ReadFile(filepath.Join(sdir, "obs", "dlc", "o.dat"))
+		state, err := os.ReadFile(filepath.Join(sdir, "obs", "dlc", "o.dat"))
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -12733,7 +12732,7 @@ func TestJetStreamServerEncryption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error getting snapshot: %v", err)
 	}
-	snapshot, err := ioutil.ReadAll(sr.Reader)
+	snapshot, err := io.ReadAll(sr.Reader)
 	if err != nil {
 		t.Fatalf("Error reading snapshot")
 	}
@@ -15008,11 +15007,11 @@ func TestJetStreamPullConsumerCrossAccountsAndLeafNodes(t *testing.T) {
 }
 
 // This test is to explicitly test for all combinations of pull consumer behavior.
-// 1. Long poll, will be used to emulate push. A request is only invalidated when batch is filled, it expires, or we lose interest.
-// 2. Batch 1, will return no messages or a message. Works today.
-// 3. Conditional wait, or one shot. This is what the clients do when the do a fetch().
-//    They expect to wait up to a given time for any messages but will return once they have any to deliver, so parital fills.
-// 4. Try, which never waits at all ever.
+//  1. Long poll, will be used to emulate push. A request is only invalidated when batch is filled, it expires, or we lose interest.
+//  2. Batch 1, will return no messages or a message. Works today.
+//  3. Conditional wait, or one shot. This is what the clients do when the do a fetch().
+//     They expect to wait up to a given time for any messages but will return once they have any to deliver, so parital fills.
+//  4. Try, which never waits at all ever.
 func TestJetStreamPullConsumersOneShotBehavior(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	if config := s.JetStreamConfig(); config != nil {
@@ -15858,7 +15857,7 @@ func TestJetStreamStorageReservedBytes(t *testing.T) {
 	opts.JetStream = true
 	opts.JetStreamMaxMemory = systemLimit
 	opts.JetStreamMaxStore = systemLimit
-	tdir, _ := ioutil.TempDir(tempRoot, "jstests-storedir-")
+	tdir, _ := os.MkdirTemp(tempRoot, "jstests-storedir-")
 	opts.StoreDir = tdir
 	opts.HTTPPort = -1
 	s := RunServer(&opts)
@@ -16376,7 +16375,7 @@ func TestJetStreamRemoveExternalSource(t *testing.T) {
 	lu, err := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", ho.LeafNode.Port))
 	require_NoError(t, err)
 
-	tdir, _ := ioutil.TempDir(tempRoot, "jstests-storedir-")
+	tdir, _ := os.MkdirTemp(tempRoot, "jstests-storedir-")
 	defer removeDir(t, tdir)
 	lo1 := DefaultTestOptions
 	lo1.Port = 4111 //-1
@@ -16388,7 +16387,7 @@ func TestJetStreamRemoveExternalSource(t *testing.T) {
 	l1 := RunServer(&lo1)
 	defer l1.Shutdown()
 
-	tdir, _ = ioutil.TempDir(tempRoot, "jstests-storedir-")
+	tdir, _ = os.MkdirTemp(tempRoot, "jstests-storedir-")
 	defer removeDir(t, tdir)
 	lo2 := DefaultTestOptions
 	lo2.Port = 2111 //-1

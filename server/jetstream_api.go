@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -3199,7 +3198,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 		}
 	}
 
-	tfile, err := ioutil.TempFile(snapDir, "js-restore-")
+	tfile, err := os.CreateTemp(snapDir, "js-restore-")
 	if err != nil {
 		resp.Error = NewJSTempStorageFailedError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, msg, s.jsonResponse(&resp))

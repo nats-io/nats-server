@@ -20,10 +20,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"math/rand"
 	"net"
 	"net/url"
+	"os"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -103,7 +103,7 @@ func TestNoRaceRouteSendSubs(t *testing.T) {
 			"nats://%s:%d"
 		]
 	`, optsA.Cluster.Host, optsA.Cluster.Port)
-	if err := ioutil.WriteFile(cfb, []byte(fmt.Sprintf(template, routes)), 0600); err != nil {
+	if err := os.WriteFile(cfb, []byte(fmt.Sprintf(template, routes)), 0600); err != nil {
 		t.Fatalf("Error rewriting B's config file: %v", err)
 	}
 	if err := srvB.Reload(); err != nil {
@@ -220,7 +220,7 @@ func TestNoRaceRouteSendSubs(t *testing.T) {
 	// Otherwise, on test shutdown the client close
 	// will cause the server to try to send unsubs and
 	// this can delay the test.
-	if err := ioutil.WriteFile(cfb, []byte(fmt.Sprintf(template, "")), 0600); err != nil {
+	if err := os.WriteFile(cfb, []byte(fmt.Sprintf(template, "")), 0600); err != nil {
 		t.Fatalf("Error rewriting B's config file: %v", err)
 	}
 	if err := srvB.Reload(); err != nil {

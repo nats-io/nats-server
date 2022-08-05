@@ -20,9 +20,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"math/rand"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -712,7 +712,7 @@ func createJetStreamClusterAndModHook(t *testing.T, tmpl string, clusterName, sn
 func (c *cluster) addInNewServer() *Server {
 	c.t.Helper()
 	sn := fmt.Sprintf("S-%d", len(c.servers)+1)
-	storeDir, _ := ioutil.TempDir(tempRoot, JetStreamStoreDir)
+	storeDir, _ := os.MkdirTemp(tempRoot, JetStreamStoreDir)
 	seedRoute := fmt.Sprintf("nats-route://127.0.0.1:%d", c.opts[0].Cluster.Port)
 	conf := fmt.Sprintf(jsClusterTempl, sn, storeDir, c.name, -1, seedRoute)
 	s, o := RunServerWithConfig(createConfFile(c.t, []byte(conf)))
@@ -1333,14 +1333,14 @@ func (c *cluster) removeJetStream(s *Server) {
 		}
 	}
 	cf := c.opts[index].ConfigFile
-	cb, _ := ioutil.ReadFile(cf)
+	cb, _ := os.ReadFile(cf)
 	var sb strings.Builder
 	for _, l := range strings.Split(string(cb), "\n") {
 		if !strings.HasPrefix(strings.TrimSpace(l), "jetstream") {
 			sb.WriteString(l + "\n")
 		}
 	}
-	if err := ioutil.WriteFile(cf, []byte(sb.String()), 0644); err != nil {
+	if err := os.WriteFile(cf, []byte(sb.String()), 0644); err != nil {
 		c.t.Fatalf("Error writing updated config file: %v", err)
 	}
 	if err := s.Reload(); err != nil {

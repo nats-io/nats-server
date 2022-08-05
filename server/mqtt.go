@@ -3831,11 +3831,11 @@ func mqttFilterToNATSSubject(filter []byte) ([]byte, error) {
 // - '/' is the topic level separator.
 //
 // Conversion that occurs:
-// - '/' is replaced with '/.' if it is the first character in mt
-// - '/' is replaced with './' if the last or next character in mt is '/'
-//   For instance, foo//bar would become foo./.bar
-// - '/' is replaced with '.' for all other conditions (foo/bar -> foo.bar)
-// - '.' and ' ' cause an error to be returned.
+//   - '/' is replaced with '/.' if it is the first character in mt
+//   - '/' is replaced with './' if the last or next character in mt is '/'
+//     For instance, foo//bar would become foo./.bar
+//   - '/' is replaced with '.' for all other conditions (foo/bar -> foo.bar)
+//   - '.' and ' ' cause an error to be returned.
 //
 // If there is no need to convert anything (say "foo" remains "foo"), then
 // the no memory is allocated and the returned slice is the original `mt`.

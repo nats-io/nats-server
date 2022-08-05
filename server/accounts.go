@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"hash/maphash"
-	"io/ioutil"
+	"io"
 	"math"
 	"math/rand"
 	"net/http"
@@ -1326,7 +1326,10 @@ func (a *Account) sendBackendErrorTrackingLatency(si *serviceImport, reason rsiR
 // received the response.
 // TODO(dlc) - holding locks for RTTs may be too much long term. Should revisit.
 func (a *Account) sendTrackingLatency(si *serviceImport, responder *client) bool {
-	if si.rc == nil {
+	a.mu.RLock()
+	rc := si.rc
+	a.mu.RUnlock()
+	if rc == nil {
 		return true
 	}
 
@@ -3598,7 +3601,7 @@ func (ur *URLAccResolver) Fetch(name string) (string, error) {
 		return _EMPTY_, fmt.Errorf("could not fetch <%q>: %v", redactURLString(url), resp.Status)
 	}
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return _EMPTY_, err
 	}

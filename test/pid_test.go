@@ -15,7 +15,6 @@ package test
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"testing"
 )
@@ -33,7 +32,7 @@ func TestPidFile(t *testing.T) {
 	s := RunServer(&opts)
 	s.Shutdown()
 
-	buf, err := ioutil.ReadFile(opts.PidFile)
+	buf, err := os.ReadFile(opts.PidFile)
 	if err != nil {
 		t.Fatalf("Could not read pid_file: %v", err)
 	}

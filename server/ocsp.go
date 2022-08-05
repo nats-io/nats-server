@@ -21,7 +21,7 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -129,7 +129,7 @@ func (oc *OCSPMonitor) getLocalStatus() ([]byte, *ocsp.Response, error) {
 	key := fmt.Sprintf("%x", sha256.Sum256(oc.Leaf.Raw))
 
 	oc.mu.Lock()
-	raw, err := ioutil.ReadFile(filepath.Join(storeDir, defaultOCSPStoreDir, key))
+	raw, err := os.ReadFile(filepath.Join(storeDir, defaultOCSPStoreDir, key))
 	oc.mu.Unlock()
 	if err != nil {
 		return nil, nil, err
@@ -168,7 +168,7 @@ func (oc *OCSPMonitor) getRemoteStatus() ([]byte, *ocsp.Response, error) {
 			return nil, fmt.Errorf("non-ok http status: %d", resp.StatusCode)
 		}
 
-		return ioutil.ReadAll(resp.Body)
+		return io.ReadAll(resp.Body)
 	}
 
 	// Request documentation:
@@ -734,7 +734,7 @@ func hasOCSPStatusRequest(cert *x509.Certificate) bool {
 // new path, in an attempt to avoid corrupting existing data.
 func (oc *OCSPMonitor) writeOCSPStatus(storeDir, file string, data []byte) error {
 	storeDir = filepath.Join(storeDir, defaultOCSPStoreDir)
-	tmp, err := ioutil.TempFile(storeDir, "tmp-cert-status")
+	tmp, err := os.CreateTemp(storeDir, "tmp-cert-status")
 	if err != nil {
 		return err
 	}
@@ -760,7 +760,7 @@ func (oc *OCSPMonitor) writeOCSPStatus(storeDir, file string, data []byte) error
 }
 
 func parseCertPEM(name string) ([]*x509.Certificate, error) {
-	data, err := ioutil.ReadFile(name)
+	data, err := os.ReadFile(name)
 	if err != nil {
 		return nil, err
 	}

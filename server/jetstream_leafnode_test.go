@@ -18,7 +18,6 @@ package server
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strings"
 	"testing"
@@ -891,7 +890,7 @@ leafnodes: {
 		require_True(t, err == nats.ErrNoResponders)
 
 		// Add in default domain and restart server
-		require_NoError(t, ioutil.WriteFile(confHub, []byte(fmt.Sprintf(tmplHub,
+		require_NoError(t, os.WriteFile(confHub, []byte(fmt.Sprintf(tmplHub,
 			sHub.opts.Port,
 			"disabled",
 			"disabled",
@@ -914,7 +913,7 @@ leafnodes: {
 		sdHub := createDir(t, JetStreamStoreDir)
 		defer os.RemoveAll(sdHub)
 		jsEnabled := fmt.Sprintf(`{ domain: "%s", store_dir: '%s', max_mem: 100Mb, max_file: 100Mb }`, domain, sdHub)
-		require_NoError(t, ioutil.WriteFile(confHub, []byte(fmt.Sprintf(tmplHub,
+		require_NoError(t, os.WriteFile(confHub, []byte(fmt.Sprintf(tmplHub,
 			sHubUpd1.opts.Port,
 			"disabled",
 			jsEnabled,
@@ -935,7 +934,7 @@ leafnodes: {
 
 		// Enable jetstream in account A of hub
 		// This is a mis config, as you can't have it both ways, local jetstream but default to another one
-		require_NoError(t, ioutil.WriteFile(confHub, []byte(fmt.Sprintf(tmplHub,
+		require_NoError(t, os.WriteFile(confHub, []byte(fmt.Sprintf(tmplHub,
 			sHubUpd2.opts.Port,
 			"enabled",
 			jsEnabled,
@@ -1052,7 +1051,7 @@ leafnodes: {
 		require_True(t, err == nats.ErrNoResponders)
 
 		// Add in default domain and restart server
-		require_NoError(t, ioutil.WriteFile(confHub, []byte(fmt.Sprintf(tmplHub,
+		require_NoError(t, os.WriteFile(confHub, []byte(fmt.Sprintf(tmplHub,
 			sHub.opts.Port, ojwt, syspub, syspub, sysJwt, aPub, aJwt, sHub.opts.LeafNode.Port,
 			fmt.Sprintf(`default_js_domain: {%s:"%s"}`, aPub, domain))), 0664))
 

@@ -24,7 +24,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/bits"
 	"math/rand"
 	"os"
@@ -1242,7 +1241,7 @@ func TestFileStoreBitRot(t *testing.T) {
 		// Now twiddle some bits.
 		fs.mu.Lock()
 		lmb := fs.lmb
-		contents, _ := ioutil.ReadFile(lmb.mfn)
+		contents, _ := os.ReadFile(lmb.mfn)
 		var index int
 		for {
 			index = rand.Intn(len(contents))
@@ -1253,7 +1252,7 @@ func TestFileStoreBitRot(t *testing.T) {
 				break
 			}
 		}
-		ioutil.WriteFile(lmb.mfn, contents, 0644)
+		os.WriteFile(lmb.mfn, contents, 0644)
 		fs.mu.Unlock()
 
 		ld := fs.checkMsgs()
@@ -1421,7 +1420,7 @@ func TestFileStoreMeta(t *testing.T) {
 		t.Fatalf("Expected metafile's checksum %q to exist", metasum)
 	}
 
-	buf, err := ioutil.ReadFile(metafile)
+	buf, err := os.ReadFile(metafile)
 	if err != nil {
 		t.Fatalf("Error reading metafile: %v", err)
 	}
@@ -1432,7 +1431,7 @@ func TestFileStoreMeta(t *testing.T) {
 	if !reflect.DeepEqual(mconfig, mconfig2) {
 		t.Fatalf("Stream configs not equal, got %+v vs %+v", mconfig2, mconfig)
 	}
-	checksum, err := ioutil.ReadFile(metasum)
+	checksum, err := os.ReadFile(metasum)
 	if err != nil {
 		t.Fatalf("Error reading metafile checksum: %v", err)
 	}
@@ -1466,7 +1465,7 @@ func TestFileStoreMeta(t *testing.T) {
 		t.Fatalf("Expected consumer metafile's checksum %q to exist", ometasum)
 	}
 
-	buf, err = ioutil.ReadFile(ometafile)
+	buf, err = os.ReadFile(ometafile)
 	if err != nil {
 		t.Fatalf("Error reading consumer metafile: %v", err)
 	}
@@ -1478,7 +1477,7 @@ func TestFileStoreMeta(t *testing.T) {
 	if !reflect.DeepEqual(oconfig2, oconfig) {
 		t.Fatalf("Consumer configs not equal, got %+v vs %+v", oconfig2, oconfig)
 	}
-	checksum, err = ioutil.ReadFile(ometasum)
+	checksum, err = os.ReadFile(ometasum)
 
 	if err != nil {
 		t.Fatalf("Error reading consumer metafile checksum: %v", err)
@@ -1808,7 +1807,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Error creating snapshot")
 		}
-		snapshot, err := ioutil.ReadAll(r.Reader)
+		snapshot, err := io.ReadAll(r.Reader)
 		if err != nil {
 			t.Fatalf("Error reading snapshot")
 		}
@@ -2843,7 +2842,7 @@ func TestFileStoreStreamDeleteDirNotEmpty(t *testing.T) {
 		g := filepath.Join(storeDir, "g")
 		ready <- true
 		for i := 0; i < 100; i++ {
-			ioutil.WriteFile(g, []byte("OK"), defaultFilePerms)
+			os.WriteFile(g, []byte("OK"), defaultFilePerms)
 		}
 	}()
 
@@ -2928,7 +2927,7 @@ func TestFileStoreStreamIndexBug(t *testing.T) {
 	dir := createDir(t, "js-bad-idx-")
 	defer removeDir(t, dir)
 	fn := filepath.Join(dir, "1.idx")
-	ioutil.WriteFile(fn, badIdxBytes, 0644)
+	os.WriteFile(fn, badIdxBytes, 0644)
 	mb := &msgBlock{index: 1, ifn: fn}
 	if err := mb.readIndexInfo(); err == nil || !strings.Contains(err.Error(), "short index") {
 		t.Fatalf("Expected error during readIndexInfo(): %v", err)

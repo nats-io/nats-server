@@ -3096,7 +3096,7 @@ func (c *client) gatewaySwitchAccountToSendAllSubs(e *insie, accName string) {
 // If `client` is nil, the mapping is stored in the client's account's gwReplyMapping
 // structure. Account lock will be explicitly acquired.
 // This is a server receiver because we use a timer interval that is avail in
-/// Server.gateway object.
+// Server.gateway object.
 func (s *Server) trackGWReply(c *client, acc *Account, reply, routedReply []byte) {
 	var l sync.Locker
 	var g *gwReplyMapping

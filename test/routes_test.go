@@ -16,8 +16,9 @@ package test
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
+	"os"
 	"runtime"
 	"strconv"
 	"sync"
@@ -450,11 +451,11 @@ func TestMultipleRoutesSameId(t *testing.T) {
 	// We should only receive on one route, not both.
 	// Check both manually.
 	route1.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-	buf, _ := ioutil.ReadAll(route1)
+	buf, _ := io.ReadAll(route1)
 	route1.SetReadDeadline(time.Time{})
 	if len(buf) <= 0 {
 		route2.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-		buf, _ = ioutil.ReadAll(route2)
+		buf, _ = io.ReadAll(route2)
 		route2.SetReadDeadline(time.Time{})
 		if len(buf) <= 0 {
 			t.Fatal("Expected to get one message on a route, received none.")
@@ -1103,7 +1104,7 @@ func createConfFile(t *testing.T, content []byte) string {
 	conf := createFile(t, "")
 	fName := conf.Name()
 	conf.Close()
-	if err := ioutil.WriteFile(fName, content, 0666); err != nil {
+	if err := os.WriteFile(fName, content, 0666); err != nil {
 		removeFile(t, fName)
 		t.Fatalf("Error writing conf file: %v", err)
 	}

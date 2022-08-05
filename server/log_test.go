@@ -15,7 +15,6 @@ package server
 
 import (
 	"bytes"
-	"io/ioutil"
 	"os"
 	"runtime"
 	"strings"
@@ -109,7 +108,7 @@ func TestReOpenLogFile(t *testing.T) {
 	expectedStr := "This is a Notice"
 	s.Noticef(expectedStr)
 	// Check content of log
-	buf, err := ioutil.ReadFile(s.opts.LogFile)
+	buf, err := os.ReadFile(s.opts.LogFile)
 	if err != nil {
 		t.Fatalf("Error reading file: %v", err)
 	}
@@ -123,7 +122,7 @@ func TestReOpenLogFile(t *testing.T) {
 	// Now re-open LogFile
 	s.ReOpenLogFile()
 	// Content should indicate that we have re-opened the log
-	buf, err = ioutil.ReadFile(s.opts.LogFile)
+	buf, err = os.ReadFile(s.opts.LogFile)
 	if err != nil {
 		t.Fatalf("Error reading file: %v", err)
 	}
@@ -132,7 +131,7 @@ func TestReOpenLogFile(t *testing.T) {
 	}
 	// Make sure we can append to the log
 	s.Noticef("New message")
-	buf, err = ioutil.ReadFile(s.opts.LogFile)
+	buf, err = os.ReadFile(s.opts.LogFile)
 	if err != nil {
 		t.Fatalf("Error reading file: %v", err)
 	}
@@ -163,7 +162,7 @@ func TestFileLoggerSizeLimitAndReopen(t *testing.T) {
 	s.ReOpenLogFile()
 
 	// Content should indicate that we have re-opened the log
-	buf, err := ioutil.ReadFile(s.opts.LogFile)
+	buf, err := os.ReadFile(s.opts.LogFile)
 	if err != nil {
 		t.Fatalf("Error reading file: %v", err)
 	}
@@ -182,7 +181,7 @@ func TestFileLoggerSizeLimitAndReopen(t *testing.T) {
 	}
 	s.Noticef(string(txt))
 
-	buf, err = ioutil.ReadFile(s.opts.LogFile)
+	buf, err = os.ReadFile(s.opts.LogFile)
 	if err != nil {
 		t.Fatalf("Error reading file: %v", err)
 	}
