@@ -1202,7 +1202,7 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 	}
 
 	// Here we will auto set direct gets if MaxMsgsPerSubject is set.
-	if cfg.MaxMsgsPer != 0 {
+	if cfg.MaxMsgsPer > 0 {
 		cfg.AllowDirect = true
 	}
 
