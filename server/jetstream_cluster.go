@@ -6562,7 +6562,7 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 
 	var gotMsgs bool
 	getActivityInterval := func() (dur time.Duration) {
-		defer s.Noticef("getActivityInterval -> %v", dur.Seconds())
+		defer func() { s.Noticef("getActivityInterval -> %v", dur.Seconds()) }()
 		if gotMsgs || activityInterval == maxActivityInterval {
 			return maxActivityInterval
 		}
