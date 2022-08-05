@@ -195,6 +195,12 @@ const (
 	// Will return JSON response.
 	JSApiRemoveServer = "$JS.API.SERVER.REMOVE"
 
+	// JSApiAccountPurge is the endpoint to purge the js content of an account
+	// Only works from system account.
+	// Will return JSON response.
+	JSApiAccountPurge  = "$JS.API.ACCOUNT.PURGE.*"
+	JSApiAccountPurgeT = "$JS.API.ACCOUNT.PURGE.%s"
+
 	// JSApiServerStreamMove is the endpoint to move streams off a server
 	// Only works from system account.
 	// Will return JSON response.
@@ -308,6 +314,7 @@ func generateJSMappingTable(domain string) map[string]string {
 		"DIRECT.>":   "$JS.API.DIRECT.>",
 		"META.>":     "$JS.API.META.>",
 		"SERVER.>":   "$JS.API.SERVER.>",
+		"ACCOUNT.>":  "$JS.API.ACCOUNT.>",
 		"$KV.>":      "$KV.>",
 		"$OBJ.>":     "$OBJ.>",
 	} {
@@ -590,6 +597,14 @@ type JSApiMetaServerStreamMoveRequest struct {
 	Domain string `json:"domain,omitempty"`
 	// Ephemeral placement tags for the move
 	Tags []string `json:"tags,omitempty"`
+}
+
+const JSApiAccountPurgeResponseType = "io.nats.jetstream.api.v1.account_purge_response"
+
+// JSApiAccountPurgeResponse is the response to a purge request in the meta group.
+type JSApiAccountPurgeResponse struct {
+	ApiResponse
+	Initiated bool `json:"initiated,omitempty"`
 }
 
 // JSApiMsgGetRequest get a message request.
@@ -2454,6 +2469,100 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 
 	// we will always have peers and therefore never do a callout, therefore it is safe to call inline
 	s.jsClusteredStreamUpdateRequest(&ciNew, targetAcc.(*Account), subject, reply, rmsg, &cfg, peers)
+}
+
+// Request to have an account purged
+func (s *Server) jsLeaderAccountPurgeRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
+	if c == nil || !s.JetStreamEnabled() {
+		return
+	}
+
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+
+	js := s.getJetStream()
+	if js == nil {
+		return
+	}
+
+	accName := tokenAt(subject, 5)
+
+	var resp = JSApiAccountPurgeResponse{ApiResponse: ApiResponse{Type: JSApiAccountPurgeResponseType}}
+
+	if !s.JetStreamIsClustered() {
+		var streams []*stream
+		var ac *Account
+		if ac, err = s.lookupAccount(accName); err == nil && ac != nil {
+			streams = ac.streams()
+		}
+
+		s.Noticef("Purge request for account %s (streams: %d, hasAccount: %t)",
+			accName, len(streams), ac != nil)
+
+		for _, mset := range streams {
+			err := mset.delete()
+			if err != nil {
+				resp.Error = NewJSStreamDeleteError(err)
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
+			}
+		}
+		if err := os.RemoveAll(filepath.Join(js.config.StoreDir, accName)); err != nil {
+			resp.Error = NewJSStreamGeneralError(err)
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		resp.Initiated = true
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	_, cc := s.getJetStreamCluster()
+	if cc == nil || cc.meta == nil || !cc.isLeader() {
+		return
+	}
+
+	if js.isMetaRecovering() {
+		// While in recovery mode, the data structures are not fully initialized
+		resp.Error = NewJSClusterNotAvailError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	rm := recoveryRemovals{
+		streams:   make(map[string]*streamAssignment),
+		consumers: make(map[string]*consumerAssignment),
+	}
+
+	js.mu.Lock()
+	streams, hasAccount := cc.streams[accName]
+	if hasAccount {
+		for _, s := range streams {
+			key := accName + ":" + s.Config.Name
+			rm.streams[key] = s.copyGroup()
+			for _, c := range s.consumers {
+				key := accName + ":" + s.Config.Name + ":" + c.Config.Durable
+				rm.consumers[key] = c.copyGroup()
+			}
+		}
+	}
+	js.mu.Unlock()
+
+	s.Noticef("Purge request for account %s (streams: %d, consumer: %d, hasAccount: %t)",
+		accName, len(rm.streams), len(rm.consumers), hasAccount)
+
+	for _, ca := range rm.consumers {
+		cc.meta.Propose(encodeDeleteConsumerAssignment(ca))
+	}
+	for _, sa := range rm.streams {
+		cc.meta.Propose(encodeDeleteStreamAssignment(sa))
+	}
+	resp.Initiated = true
+
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 }
 
 // Request to have the meta leader stepdown.

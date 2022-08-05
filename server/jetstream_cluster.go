@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -914,11 +915,11 @@ func (js *jetStream) monitorCluster() {
 					js.clearMetaRecovering()
 
 					// Process any removes that are still valid after recovery.
-					for _, sa := range rm.streams {
-						js.processStreamRemoval(sa)
-					}
 					for _, ca := range rm.consumers {
 						js.processConsumerRemoval(ca)
+					}
+					for _, sa := range rm.streams {
+						js.processStreamRemoval(sa)
 					}
 					// Clear.
 					rm = nil
@@ -1077,16 +1078,15 @@ func (js *jetStream) metaSnapshot() []byte {
 }
 
 func (js *jetStream) applyMetaSnapshot(buf []byte) error {
-	if len(buf) == 0 {
-		return nil
-	}
-	jse, err := s2.Decode(nil, buf)
-	if err != nil {
-		return err
-	}
 	var wsas []writeableStreamAssignment
-	if err = json.Unmarshal(jse, &wsas); err != nil {
-		return err
+	if len(buf) != 0 {
+		jse, err := s2.Decode(nil, buf)
+		if err != nil {
+			return err
+		}
+		if err = json.Unmarshal(jse, &wsas); err != nil {
+			return err
+		}
 	}
 
 	// Build our new version here outside of js.
@@ -1146,6 +1146,8 @@ func (js *jetStream) applyMetaSnapshot(buf []byte) error {
 		}
 	}
 	isRecovering := js.metaRecovering
+	storeDir := js.config.StoreDir
+	srv := js.srv
 	js.mu.Unlock()
 
 	// Do removals first.
@@ -1181,6 +1183,20 @@ func (js *jetStream) applyMetaSnapshot(buf []byte) error {
 			js.setConsumerAssignmentRecovering(ca)
 		}
 		js.processConsumerAssignment(ca)
+	}
+
+	// Delete directories not part of snapshot
+	sysAcc := srv.SystemAccount().GetName()
+	if de, err := os.ReadDir(storeDir); err == nil {
+		for _, entry := range de {
+			acc := entry.Name()
+			if acc == sysAcc {
+				continue
+			}
+			if _, found := streams[acc]; !found {
+				os.RemoveAll(filepath.Join(storeDir, acc))
+			}
+		}
 	}
 
 	return nil
@@ -2573,6 +2589,23 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) bool {
 		return false
 	}
 
+	js.mu.Lock()
+	accStreams := cc.streams[accName]
+	if accStreams == nil {
+		accStreams = make(map[string]*streamAssignment)
+	} else if osa := accStreams[stream]; osa != nil && osa != sa {
+		// Copy over private existing state from former SA.
+		sa.Group.node = osa.Group.node
+		sa.consumers = osa.consumers
+		sa.responded = osa.responded
+		sa.err = osa.err
+	}
+
+	// Update our state.
+	accStreams[stream] = sa
+	cc.streams[accName] = accStreams
+	js.mu.Unlock()
+
 	acc, err := s.LookupAccount(accName)
 	if err != nil {
 		ll := fmt.Sprintf("Account [%s] lookup for stream create failed: %v", accName, err)
@@ -2591,23 +2624,6 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) bool {
 		}
 		return false
 	}
-
-	js.mu.Lock()
-	accStreams := cc.streams[acc.Name]
-	if accStreams == nil {
-		accStreams = make(map[string]*streamAssignment)
-	} else if osa := accStreams[stream]; osa != nil && osa != sa {
-		// Copy over private existing state from former SA.
-		sa.Group.node = osa.Group.node
-		sa.consumers = osa.consumers
-		sa.responded = osa.responded
-		sa.err = osa.err
-	}
-
-	// Update our state.
-	accStreams[stream] = sa
-	cc.streams[acc.Name] = accStreams
-	js.mu.Unlock()
 
 	var didRemove bool
 
@@ -2651,11 +2667,7 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 		return
 	}
 
-	acc, err := s.LookupAccount(sa.Client.serviceAccount())
-	if err != nil {
-		// TODO(dlc) - log error
-		return
-	}
+	accName := sa.Client.serviceAccount()
 	stream := sa.Config.Name
 
 	js.mu.Lock()
@@ -2670,7 +2682,7 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 		isMember = sa.Group.isMember(ourID)
 	}
 
-	accStreams := cc.streams[acc.Name]
+	accStreams := cc.streams[accName]
 	if accStreams == nil {
 		js.mu.Unlock()
 		return
@@ -2693,7 +2705,7 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 
 	// Update our state.
 	accStreams[stream] = sa
-	cc.streams[acc.Name] = accStreams
+	cc.streams[accName] = accStreams
 
 	// Make sure we respond if we are a member.
 	if isMember {
@@ -2703,6 +2715,12 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 		sa.Group.node = nil
 	}
 	js.mu.Unlock()
+
+	acc, err := s.LookupAccount(accName)
+	if err != nil {
+		s.Warnf("Update Stream Account %s, error on lookup: %v", accName, err)
+		return
+	}
 
 	// Check if this is for us..
 	if isMember {
@@ -3050,7 +3068,8 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 	}
 	js.mu.RLock()
 	s := js.srv
-	hadLeader := sa.Group.node == nil || sa.Group.node.GroupLeader() != noLeader
+	node := sa.Group.node
+	hadLeader := node == nil || node.GroupLeader() != noLeader
 	offline := s.allPeersOffline(sa.Group)
 	var isMetaLeader bool
 	if cc := js.cluster; cc != nil {
@@ -3058,6 +3077,7 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 	}
 	js.mu.RUnlock()
 
+	stopped := false
 	var resp = JSApiStreamDeleteResponse{ApiResponse: ApiResponse{Type: JSApiStreamDeleteResponseType}}
 	var err error
 	var acc *Account
@@ -3066,13 +3086,36 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 	if acc, _ = s.LookupAccount(sa.Client.serviceAccount()); acc != nil {
 		if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
 			err = mset.stop(true, wasLeader)
+			stopped = true
 		}
 	}
 
 	// Always delete the node if present.
-	if sa.Group.node != nil {
-		sa.Group.node.Delete()
+	if node != nil {
+		node.Delete()
 	}
+
+	// This is a stop gap cleanup in case
+	// 1) the account does not exist (and mset couldn't be stopped) and/or
+	// 2) node was nil (and couldn't be deleted)
+	if !stopped || node == nil {
+		if sacc := s.SystemAccount(); sacc != nil {
+			os.RemoveAll(filepath.Join(js.config.StoreDir, sacc.GetName(), defaultStoreDirName, sa.Group.Name))
+			// cleanup dependent consumer groups
+			if !stopped {
+				for _, ca := range sa.consumers {
+					os.RemoveAll(filepath.Join(js.config.StoreDir, sacc.GetName(), defaultStoreDirName, ca.Group.Name))
+				}
+			}
+		}
+	}
+	accDir := filepath.Join(js.config.StoreDir, sa.Client.serviceAccount())
+	streamDir := filepath.Join(accDir, streamsDir)
+	os.RemoveAll(filepath.Join(streamDir, sa.Config.Name))
+
+	// no op if not empty
+	os.Remove(streamDir)
+	os.Remove(accDir)
 
 	// Normally we want only the leader to respond here, but if we had no leader then all members will respond to make
 	// sure we get feedback to the user.
@@ -3081,6 +3124,11 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 		if !(offline && isMetaLeader) {
 			return
 		}
+	}
+
+	// Do not respond if the account does not exist any longer
+	if acc == nil {
+		return
 	}
 
 	if err != nil {
@@ -3109,26 +3157,6 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	js.mu.RUnlock()
 
 	if s == nil || noMeta {
-		return
-	}
-
-	acc, err := s.LookupAccount(accName)
-	if err != nil {
-		ll := fmt.Sprintf("Account [%s] lookup for consumer create failed: %v", accName, err)
-		if isMember {
-			// If we can not lookup the account and we are a member, send this result back to the metacontroller leader.
-			result := &consumerAssignmentResult{
-				Account:  accName,
-				Stream:   stream,
-				Consumer: consumerName,
-				Response: &JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}},
-			}
-			result.Response.Error = NewJSNoAccountError()
-			s.sendInternalMsgLocked(consumerAssignmentSubj, _EMPTY_, nil, result)
-			s.Warnf(ll)
-		} else {
-			s.Debugf(ll)
-		}
 		return
 	}
 
@@ -3165,6 +3193,26 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	// Ok to replace an existing one, we check on process call below.
 	sa.consumers[ca.Name] = ca
 	js.mu.Unlock()
+
+	acc, err := s.LookupAccount(accName)
+	if err != nil {
+		ll := fmt.Sprintf("Account [%s] lookup for consumer create failed: %v", accName, err)
+		if isMember {
+			// If we can not lookup the account and we are a member, send this result back to the metacontroller leader.
+			result := &consumerAssignmentResult{
+				Account:  accName,
+				Stream:   stream,
+				Consumer: consumerName,
+				Response: &JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}},
+			}
+			result.Response.Error = NewJSNoAccountError()
+			s.sendInternalMsgLocked(consumerAssignmentSubj, _EMPTY_, nil, result)
+			s.Warnf(ll)
+		} else {
+			s.Debugf(ll)
+		}
+		return
+	}
 
 	// Check if this is for us..
 	if isMember {
@@ -3474,6 +3522,7 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 	}
 	js.mu.RLock()
 	s := js.srv
+	node := ca.Group.node
 	offline := s.allPeersOffline(ca.Group)
 	var isMetaLeader bool
 	if cc := js.cluster; cc != nil {
@@ -3481,6 +3530,7 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 	}
 	js.mu.RUnlock()
 
+	stopped := false
 	var resp = JSApiConsumerDeleteResponse{ApiResponse: ApiResponse{Type: JSApiConsumerDeleteResponseType}}
 	var err error
 	var acc *Account
@@ -3490,19 +3540,34 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 		if mset, _ := acc.lookupStream(ca.Stream); mset != nil {
 			if o := mset.lookupConsumer(ca.Name); o != nil {
 				err = o.stopWithFlags(true, false, true, wasLeader)
+				stopped = true
 			}
 		}
 	}
 
 	// Always delete the node if present.
-	if ca.Group.node != nil {
-		ca.Group.node.Delete()
+	if node != nil {
+		node.Delete()
+	}
+
+	// This is a stop gap cleanup in case
+	// 1) the account does not exist (and mset consumer couldn't be stopped) and/or
+	// 2) node was nil (and couldn't be deleted)
+	if !stopped || node == nil {
+		if sacc := s.SystemAccount(); sacc != nil {
+			os.RemoveAll(filepath.Join(js.config.StoreDir, sacc.GetName(), defaultStoreDirName, ca.Group.Name))
+		}
 	}
 
 	if !wasLeader || ca.Reply == _EMPTY_ {
 		if !(offline && isMetaLeader) {
 			return
 		}
+	}
+
+	// Do not respond if the account does not exist any longer
+	if acc == nil {
+		return
 	}
 
 	if err != nil {
@@ -4277,6 +4342,9 @@ func (js *jetStream) startUpdatesSub() {
 	if cc.peerStreamCancelMove == nil {
 		cc.peerStreamCancelMove, _ = s.systemSubscribe(JSApiServerStreamCancelMove, _EMPTY_, false, c, s.jsLeaderServerStreamCancelMoveRequest)
 	}
+	if js.accountPurge == nil {
+		js.accountPurge, _ = s.systemSubscribe(JSApiAccountPurge, _EMPTY_, false, c, s.jsLeaderAccountPurgeRequest)
+	}
 }
 
 // Lock should be held.
@@ -4305,6 +4373,10 @@ func (js *jetStream) stopUpdatesSub() {
 	if cc.peerStreamCancelMove != nil {
 		cc.s.sysUnsubscribe(cc.peerStreamCancelMove)
 		cc.peerStreamCancelMove = nil
+	}
+	if js.accountPurge != nil {
+		cc.s.sysUnsubscribe(js.accountPurge)
+		js.accountPurge = nil
 	}
 }
 

@@ -94,20 +94,22 @@ type JetStreamAPIStats struct {
 // This is for internal accounting for JetStream for this server.
 type jetStream struct {
 	// These are here first because of atomics on 32bit systems.
-	apiInflight    int64
-	apiTotal       int64
-	apiErrors      int64
-	memReserved    int64
-	storeReserved  int64
-	memUsed        int64
-	storeUsed      int64
-	clustered      int32
-	mu             sync.RWMutex
-	srv            *Server
-	config         JetStreamConfig
-	cluster        *jetStreamCluster
-	accounts       map[string]*jsAccount
-	apiSubs        *Sublist
+	apiInflight   int64
+	apiTotal      int64
+	apiErrors     int64
+	memReserved   int64
+	storeReserved int64
+	memUsed       int64
+	storeUsed     int64
+	clustered     int32
+	mu            sync.RWMutex
+	srv           *Server
+	config        JetStreamConfig
+	cluster       *jetStreamCluster
+	accounts      map[string]*jsAccount
+	apiSubs       *Sublist
+	// System level request to purge a stream move
+	accountPurge   *subscription
 	metaRecovering bool
 	standAlone     bool
 	disabled       bool
@@ -689,6 +691,21 @@ func (s *Server) configAllJetStreamAccounts() error {
 		return nil
 	}
 
+	if s.sys != nil {
+		// clustered stream removal will perform this cleanup as well
+		// this is mainly for initial cleanup
+		saccName := s.sys.account.Name
+		accStoreDirs, _ := ioutil.ReadDir(js.config.StoreDir)
+		for _, acc := range accStoreDirs {
+			if accName := acc.Name(); accName != saccName {
+				// no op if not empty
+				accDir := filepath.Join(js.config.StoreDir, accName)
+				os.Remove(filepath.Join(accDir, streamsDir))
+				os.Remove(accDir)
+			}
+		}
+	}
+
 	var jsAccounts []*Account
 	s.accounts.Range(func(k, v interface{}) bool {
 		jsAccounts = append(jsAccounts, v.(*Account))
@@ -741,6 +758,12 @@ func (js *jetStream) setJetStreamStandAlone(isStandAlone bool) {
 	js.mu.Lock()
 	defer js.mu.Unlock()
 	js.standAlone = isStandAlone
+
+	if isStandAlone {
+		js.accountPurge, _ = js.srv.systemSubscribe(JSApiAccountPurge, _EMPTY_, false, nil, js.srv.jsLeaderAccountPurgeRequest)
+	} else if js.accountPurge != nil {
+		js.srv.sysUnsubscribe(js.accountPurge)
+	}
 }
 
 // JetStreamEnabled reports if jetstream is enabled for this server.
@@ -872,14 +895,20 @@ func (s *Server) shutdownJetStream() {
 	var _a [512]*Account
 	accounts := _a[:0]
 
-	js.mu.RLock()
+	js.mu.Lock()
 	// Collect accounts.
 	for _, jsa := range js.accounts {
 		if a := jsa.acc(); a != nil {
 			accounts = append(accounts, a)
 		}
 	}
-	js.mu.RUnlock()
+	accPurgeSub := js.accountPurge
+	js.accountPurge = nil
+	js.mu.Unlock()
+
+	if accPurgeSub != nil {
+		s.sysUnsubscribe(accPurgeSub)
+	}
 
 	for _, a := range accounts {
 		a.removeJetStream()
@@ -1052,7 +1081,8 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 		// Just need to make sure we can write to the directory.
 		// Remove the directory will create later if needed.
 		os.RemoveAll(sdir)
-
+		// when empty remove parent directory, which may have been created as well
+		os.Remove(jsa.storeDir)
 	} else {
 		// Restore any state here.
 		s.Debugf("Recovering JetStream state for account %q", a.Name)
