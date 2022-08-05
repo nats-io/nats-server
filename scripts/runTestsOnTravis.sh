@@ -35,7 +35,7 @@ elif [ "$1" = "js_tests" ]; then
     # tests by using the `skip_js_cluster_tests` and `skip_js_super_cluster_tests`
     # build tags.
 
-    go test -race -v -run=TestJetStream ./server -tags=skip_js_cluster_tests,skip_js_super_cluster_tests,skip_js_cluster_chaos_tests -count=1 -vet=off -timeout=30m -failfast
+    go test -race -v -run=TestJetStream ./server -tags=skip_js_cluster_tests,skip_js_super_cluster_tests,skip_js_chaos_tests -count=1 -vet=off -timeout=30m -failfast
 
 elif [ "$1" = "js_cluster_tests" ]; then
 
