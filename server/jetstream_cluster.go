@@ -3068,7 +3068,8 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 	}
 	js.mu.RLock()
 	s := js.srv
-	hadLeader := sa.Group.node == nil || sa.Group.node.GroupLeader() != noLeader
+	node := sa.Group.node
+	hadLeader := node == nil || node.GroupLeader() != noLeader
 	offline := s.allPeersOffline(sa.Group)
 	var isMetaLeader bool
 	if cc := js.cluster; cc != nil {
@@ -3090,19 +3091,21 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 	}
 
 	// Always delete the node if present.
-	if sa.Group.node != nil {
-		sa.Group.node.Delete()
+	if node != nil {
+		node.Delete()
 	}
 
 	// This is a stop gap cleanup in case
 	// 1) the account does not exist (and mset couldn't be stopped) and/or
 	// 2) node was nil (and couldn't be deleted)
-	if sacc := s.SystemAccount(); sacc != nil && (!stopped || sa.Group.node == nil) {
-		os.RemoveAll(filepath.Join(js.config.StoreDir, sacc.GetName(), defaultStoreDirName, sa.Group.Name))
-		// cleanup dependent consumer groups
-		if !stopped {
-			for _, ca := range sa.consumers {
-				os.RemoveAll(filepath.Join(js.config.StoreDir, sacc.GetName(), defaultStoreDirName, ca.Group.Name))
+	if !stopped || node == nil {
+		if sacc := s.SystemAccount(); sacc != nil {
+			os.RemoveAll(filepath.Join(js.config.StoreDir, sacc.GetName(), defaultStoreDirName, sa.Group.Name))
+			// cleanup dependent consumer groups
+			if !stopped {
+				for _, ca := range sa.consumers {
+					os.RemoveAll(filepath.Join(js.config.StoreDir, sacc.GetName(), defaultStoreDirName, ca.Group.Name))
+				}
 			}
 		}
 	}
@@ -3519,6 +3522,7 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 	}
 	js.mu.RLock()
 	s := js.srv
+	node := ca.Group.node
 	offline := s.allPeersOffline(ca.Group)
 	var isMetaLeader bool
 	if cc := js.cluster; cc != nil {
@@ -3542,15 +3546,17 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 	}
 
 	// Always delete the node if present.
-	if ca.Group.node != nil {
-		ca.Group.node.Delete()
+	if node != nil {
+		node.Delete()
 	}
 
 	// This is a stop gap cleanup in case
 	// 1) the account does not exist (and mset consumer couldn't be stopped) and/or
 	// 2) node was nil (and couldn't be deleted)
-	if sacc := s.SystemAccount(); sacc != nil && (!stopped || ca.Group.node == nil) {
-		os.RemoveAll(filepath.Join(js.config.StoreDir, sacc.GetName(), defaultStoreDirName, ca.Group.Name))
+	if !stopped || node == nil {
+		if sacc := s.SystemAccount(); sacc != nil {
+			os.RemoveAll(filepath.Join(js.config.StoreDir, sacc.GetName(), defaultStoreDirName, ca.Group.Name))
+		}
 	}
 
 	if !wasLeader || ca.Reply == _EMPTY_ {
