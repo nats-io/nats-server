@@ -3725,8 +3725,7 @@ func TestJetStreamClusterAccountPurge(t *testing.T) {
 	updateJwt(t, c.randomServer().ClientURL(), sysCreds, sysJwt, 3)
 	updateJwt(t, c.randomServer().ClientURL(), sysCreds, accJwt, 3)
 
-	createTestData := func() {
-		t.Helper()
+	createTestData := func(t *testing.T) {
 		nc := natsConnect(t, c.randomNonLeader().ClientURL(), nats.UserCredentials(accCreds))
 		defer nc.Close()
 
@@ -3738,6 +3737,7 @@ func TestJetStreamClusterAccountPurge(t *testing.T) {
 			Replicas: 3,
 		})
 		require_NoError(t, err)
+		c.waitOnStreamLeader(accpub, "TEST1")
 
 		ci, err := js.AddConsumer("TEST1",
 			&nats.ConsumerConfig{Durable: "DUR1",
@@ -3835,7 +3835,7 @@ func TestJetStreamClusterAccountPurge(t *testing.T) {
 			os.MkdirAll(filepath.Join(s.getOpts().StoreDir, JetStreamStoreDir, newCleanupAcc1, streamsDir), defaultDirPerms)
 			os.MkdirAll(filepath.Join(s.getOpts().StoreDir, JetStreamStoreDir, newCleanupAcc2), defaultDirPerms)
 		}
-		createTestData()
+		createTestData(t)
 		checkForDirs(t, 6, 4)
 		c.stopAll()
 		c.restartAll()
@@ -3855,7 +3855,7 @@ func TestJetStreamClusterAccountPurge(t *testing.T) {
 	})
 
 	t.Run("purge-with-restart", func(t *testing.T) {
-		createTestData()
+		createTestData(t)
 		checkForDirs(t, 6, 4)
 		purge(t)
 		checkForDirs(t, 0, 0)
@@ -3865,18 +3865,18 @@ func TestJetStreamClusterAccountPurge(t *testing.T) {
 	})
 
 	t.Run("purge-with-reuse", func(t *testing.T) {
-		createTestData()
+		createTestData(t)
 		checkForDirs(t, 6, 4)
 		purge(t)
 		checkForDirs(t, 0, 0)
-		createTestData()
+		createTestData(t)
 		checkForDirs(t, 6, 4)
 		purge(t)
 		checkForDirs(t, 0, 0)
 	})
 
 	t.Run("purge-deleted-account", func(t *testing.T) {
-		createTestData()
+		createTestData(t)
 		checkForDirs(t, 6, 4)
 		c.stopAll()
 		for _, s := range c.servers {
