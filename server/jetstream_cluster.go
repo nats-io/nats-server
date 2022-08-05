@@ -7103,7 +7103,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 		// Update our activity timer.
 		notActive.Reset(activityInterval)
 
-		s.Warnf("sendNextBatchAndContinue pre for first seq %d last %d", seq, last)
+		s.Warnf("sendNextBatchAndContinue pre for first seq %d last %d out bytes %d outmsgs %d, gcbtotal %d", seq, last, atomic.LoadInt64(&outb), atomic.LoadInt32(&outm), s.gcbTotal())
 		startseq := seq
 		var smv StoreMsg
 		for ; seq <= last && atomic.LoadInt64(&outb) <= maxOutBytes && atomic.LoadInt32(&outm) <= maxOutMsgs && s.gcbTotal() <= maxTotalCatchupOutBytes; seq++ {
@@ -7155,7 +7155,8 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 				return false
 			}
 		}
-		s.Warnf("sendNextBatchAndContinue post for start seq %d seq %d last %d", startseq, seq, last)
+		s.Warnf("sendNextBatchAndContinue post for start seq %d seq %d last %d out bytes %d outmsgs %d gcbtotal %d",
+			startseq, seq, last, atomic.LoadInt64(&outb), atomic.LoadInt32(&outm), s.gcbTotal())
 		return true
 	}
 
