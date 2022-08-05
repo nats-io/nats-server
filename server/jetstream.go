@@ -694,7 +694,7 @@ func (s *Server) configAllJetStreamAccounts() error {
 		// clustered stream removal will perform this cleanup as well
 		// this is mainly for initial cleanup
 		saccName := s.sys.account.Name
-		accStoreDirs, _ := ioutil.ReadDir(js.config.StoreDir)
+		accStoreDirs, _ := os.ReadDir(js.config.StoreDir)
 		for _, acc := range accStoreDirs {
 			if accName := acc.Name(); accName != saccName {
 				// no op if not empty
