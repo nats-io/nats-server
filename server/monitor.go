@@ -1341,7 +1341,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	<a href=.%s>JetStream</a>
 	<a href=.%s>Connections</a>
 	<a href=.%s>Accounts</a>
-	<a href=.%s>Account stats</a>
+	<a href=.%s>Account Stats</a>
 	<a href=.%s>Subscriptions</a>
 	<a href=.%s>Routes</a>
 	<a href=.%s>LeafNodes</a>
