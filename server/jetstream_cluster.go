@@ -6557,7 +6557,8 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 	defer notActive.Stop()
 
 	var gotMsgs bool
-	getActivityInterval := func() time.Duration {
+	getActivityInterval := func() (dur time.Duration) {
+		defer s.Noticef("getActivityInterval -> %v", dur.Seconds())
 		if gotMsgs || activityInterval == maxActivityInterval {
 			return maxActivityInterval
 		}
@@ -6627,6 +6628,7 @@ RETRY:
 	if !notActive.Stop() {
 		select {
 		case <-notActive.C:
+			s.Warnf("Not active timer fired")
 		default:
 		}
 	}
@@ -6687,17 +6689,21 @@ RETRY:
 				// Check for eof signaling.
 				if len(msg) == 0 {
 					msgsQ.recycle(&mrecs)
+					s.Warnf("Catchup for stream '%s > %s' got eof signal", mset.account(), mset.name())
 					return nil
 				}
 				if lseq, err := mset.processCatchupMsg(msg); err == nil {
 					if lseq >= last {
 						msgsQ.recycle(&mrecs)
+						s.Warnf("Catchup for stream '%s > %s' lseq %d >= last %d", mset.account(), mset.name(), lseq, last)
 						return nil
 					}
 				} else if isOutOfSpaceErr(err) {
+					s.Warnf("Catchup for stream '%s > %s' is out of space", mset.account(), mset.name())
 					return err
 				} else if err == NewJSInsufficientResourcesError() {
 					if mset.js.limitsExceeded(mset.cfg.Storage) {
+						s.Warnf("Catchup for stream '%s > %s' resources exceeded", mset.account(), mset.name())
 						s.resourcesExeededError()
 					} else {
 						s.Warnf("Catchup for stream '%s > %s' errored, account resources exceeded: %v", mset.account(), mset.name(), err)
@@ -6793,6 +6799,11 @@ func (mset *stream) handleClusterSyncRequest(sub *subscription, c *client, _ *Ac
 		// Log error.
 		return
 	}
+	var state StreamState
+	mset.store.FastState(&state)
+	mset.srv.Warnf("handleClusterSyncRequest pterm %d pindex %d request %+v local fast state %v",
+		mset.node.(*raft).pindex, mset.node.(*raft).pterm, sreq, state)
+
 	mset.srv.startGoRoutine(func() { mset.runCatchup(reply, &sreq) })
 }
 
@@ -7083,6 +7094,8 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 		// Update our activity timer.
 		notActive.Reset(activityInterval)
 
+		s.Warnf("sendNextBatchAndContinue pre for seq %d last %d", seq, last)
+
 		var smv StoreMsg
 		for ; seq <= last && atomic.LoadInt64(&outb) <= maxOutBytes && atomic.LoadInt32(&outm) <= maxOutMsgs && s.gcbTotal() <= maxTotalCatchupOutBytes; seq++ {
 			sm, err := mset.store.LoadMsg(seq, &smv)
@@ -7091,6 +7104,9 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 				if err == ErrStoreEOF {
 					var state StreamState
 					mset.store.FastState(&state)
+
+					s.Warnf("sendNextBatchAndContinue for eof seq %d last %d %+v", seq, last, state)
+
 					if seq > state.LastSeq {
 						// The snapshot has a larger last sequence then we have. This could be due to a truncation
 						// when trying to recover after corruption, still not 100% sure. Could be off by 1 too somehow,
@@ -7130,6 +7146,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 				return false
 			}
 		}
+		s.Warnf("sendNextBatchAndContinue post for seq %d last %d", seq, last)
 		return true
 	}
 
