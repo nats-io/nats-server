@@ -3783,10 +3783,10 @@ func TestJetStreamClusterAccountPurge(t *testing.T) {
 		sysDirs := 0
 		accDirs := 0
 		for _, s := range c.servers {
-			files, err := os.ReadDir(s.getOpts().StoreDir + "/jetstream/" + syspub + "/_js_/")
+			files, err := os.ReadDir(filepath.Join(s.getOpts().StoreDir, "jetstream", syspub, "_js_"))
 			require_NoError(t, err)
 			sysDirs += len(files) - 1 // sub 1 for _meta_
-			files, err = os.ReadDir(s.getOpts().StoreDir + "/jetstream/" + accpub + "/streams/")
+			files, err = os.ReadDir(filepath.Join(s.getOpts().StoreDir, "jetstream", accpub, "streams"))
 			if err == nil || (err != nil && err.(*os.PathError).Error() == "no such file or directory") {
 				accDirs += len(files)
 			}
@@ -3931,10 +3931,10 @@ func TestJetStreamAccountPurge(t *testing.T) {
 	inspectDirs := func(t *testing.T, accTotal int) error {
 		t.Helper()
 		if accTotal == 0 {
-			files, err := os.ReadDir(o.StoreDir + "/jetstream/" + accpub)
+			files, err := os.ReadDir(filepath.Join(o.StoreDir, "jetstream", accpub))
 			require_True(t, len(files) == accTotal || err != nil)
 		} else {
-			files, err := os.ReadDir(o.StoreDir + "/jetstream/" + accpub + "/streams")
+			files, err := os.ReadDir(filepath.Join(o.StoreDir, "jetstream", accpub, "streams"))
 			require_NoError(t, err)
 			require_True(t, len(files) == accTotal)
 		}
