@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -5753,8 +5754,8 @@ func TestMQTTStreamReplicasInsufficientResources(t *testing.T) {
 
 	select {
 	case e := <-l.errCh:
-		if !strings.Contains(e, NewJSInsufficientResourcesError().Description) {
-			t.Fatalf("Expected error regarding insufficient resources, got %v", e)
+		if !strings.Contains(e, fmt.Sprintf("%d", NewJSClusterNoPeersError(errors.New("")).ErrCode)) {
+			t.Fatalf("Expected error regarding no peers error, got %v", e)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("Did not get the error regarding replicas count")

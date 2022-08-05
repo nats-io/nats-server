@@ -148,7 +148,7 @@ func TestJetStreamClusterStreamLimitWithAccountDefaults(t *testing.T) {
 		Replicas: 2,
 		MaxBytes: 15 * 1024 * 1024,
 	})
-	require_Error(t, err, NewJSInsufficientResourcesError(), NewJSStorageResourcesExceededError())
+	require_Contains(t, err.Error(), "no suitable peers for placement")
 }
 
 func TestJetStreamClusterSingleReplicaStreams(t *testing.T) {
@@ -1047,7 +1047,7 @@ func TestJetStreamClusterMaxBytesForStream(t *testing.T) {
 	cfg.Name = "TEST2"
 	cfg.MaxBytes *= 2
 	_, err = js.AddStream(cfg)
-	require_Error(t, err, NewJSInsufficientResourcesError(), NewJSStorageResourcesExceededError())
+	require_Contains(t, err.Error(), "no suitable peers for placement")
 }
 
 func TestJetStreamClusterStreamPublishWithActiveConsumers(t *testing.T) {
@@ -3634,7 +3634,8 @@ func TestJetStreamClusterPeerExclusionTag(t *testing.T) {
 		c.Subjects = []string{c.Name}
 		_, err := js.AddStream(&c)
 		require_Error(t, err)
-		require_Contains(t, err.Error(), "insufficient resources")
+		require_Contains(t, err.Error(), "no suitable peers for placement", "3 peers",
+			"excludeTag: 1", "offline: 0", "uniqueTag: 0")
 	}
 
 	// Test update failure
@@ -3645,8 +3646,8 @@ func TestJetStreamClusterPeerExclusionTag(t *testing.T) {
 	cfg.Replicas = 3
 	_, err = js.UpdateStream(cfg)
 	require_Error(t, err)
-	require_Contains(t, err.Error(), "insufficient resources")
-
+	require_Contains(t, err.Error(), "no suitable peers for placement", "3 peers",
+		"excludeTag: 1", "offline: 0", "uniqueTag: 0")
 	// Test tag reload removing !jetstream tag, and allowing placement again
 
 	srv := c.serverByName("S-1")
@@ -9398,7 +9399,7 @@ func TestJetStreamClusterBalancedPlacement(t *testing.T) {
 		Replicas: 2,
 		MaxBytes: 1 * 1024 * 1024 * 1024,
 	})
-	require_Error(t, err, NewJSInsufficientResourcesError(), NewJSStorageResourcesExceededError())
+	require_Contains(t, err.Error(), "no suitable peers for placement")
 }
 
 func TestJetStreamClusterConsumerPendingBug(t *testing.T) {

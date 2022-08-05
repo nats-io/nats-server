@@ -180,7 +180,7 @@ func TestJetStreamSuperClusterUniquePlacementTag(t *testing.T) {
 			si, err := js.AddStream(&nats.StreamConfig{Name: name, Replicas: test.replicas, Placement: test.placement})
 			if test.fail {
 				require_Error(t, err)
-				require_Equal(t, err.Error(), "insufficient resources")
+				require_Contains(t, err.Error(), "no suitable peers for placement")
 				return
 			}
 			require_NoError(t, err)
@@ -848,8 +848,8 @@ func TestJetStreamSuperClusterLeafNodesWithSharedSystemAccountAndDifferentDomain
 		Replicas:  2,
 		Placement: &nats.Placement{Cluster: pcn},
 	})
-	if err == nil || !strings.Contains(err.Error(), "insufficient resources") {
-		t.Fatalf("Expected insufficient resources, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "no suitable peers for placement") {
+		t.Fatalf("Expected no suitable peers for placement, got: %v", err)
 	}
 }
 
@@ -1380,8 +1380,7 @@ func TestJetStreamSuperClusterOverflowPlacement(t *testing.T) {
 		MaxBytes:  2 * 1024 * 1024 * 1024,
 		Placement: &nats.Placement{Cluster: pcn},
 	})
-	require_Error(t, err, NewJSInsufficientResourcesError(), NewJSStorageResourcesExceededError())
-
+	require_Contains(t, err.Error(), "no suitable peers for placement")
 	// Now test actual overflow placement. So try again with no placement designation.
 	// This will test the peer picker's logic since they are updated at this point and the meta leader
 	// knows it can not place it in C2.
@@ -1497,7 +1496,7 @@ func TestJetStreamSuperClusterStreamTagPlacement(t *testing.T) {
 			Subjects:  []string{"foo"},
 			Placement: &nats.Placement{Tags: tags},
 		})
-		require_Error(t, err, NewJSInsufficientResourcesError())
+		require_Contains(t, err.Error(), "no suitable peers for placement")
 	}
 
 	placeErr("C1", []string{"cloud:GCP", "country:US"})
@@ -2381,7 +2380,8 @@ func TestJetStreamSuperClusterMaxHaAssets(t *testing.T) {
 	waitStatsz(3, 1)
 	_, err = js.AddStream(&nats.StreamConfig{Name: "S3", Replicas: 3, Placement: &nats.Placement{Cluster: "C1"}})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "insufficient resources")
+	require_Contains(t, err.Error(), "no suitable peers for placement")
+	require_Contains(t, err.Error(), "misc: 3")
 	require_NoError(t, js.DeleteStream("S1"))
 	waitStatsz(3, 2)
 	waitStatsz(3, 1)
@@ -2414,7 +2414,8 @@ func TestJetStreamSuperClusterMaxHaAssets(t *testing.T) {
 	require_Equal(t, err.Error(), "insufficient resources")
 	_, err = js.UpdateStream(&nats.StreamConfig{Name: "S2", Replicas: 3, Placement: &nats.Placement{Cluster: "C2"}})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "insufficient resources")
+	require_Contains(t, err.Error(), "no suitable peers for placement")
+	require_Contains(t, err.Error(), "misc: 3")
 }
 
 func TestJetStreamSuperClusterStreamAlternates(t *testing.T) {

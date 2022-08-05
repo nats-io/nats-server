@@ -484,7 +484,7 @@ leafnodes:{
 					require_NoError(t, err)
 				} else {
 					require_Error(t, err)
-					require_Contains(t, err.Error(), "insufficient resources")
+					require_Contains(t, err.Error(), "no suitable peers for placement")
 				}
 				ncL := natsConnect(t, fmt.Sprintf("nats://a1:a1@127.0.0.1:%d", sLA.opts.Port))
 				defer ncL.Close()
@@ -499,7 +499,7 @@ leafnodes:{
 					require_NoError(t, err)
 				} else {
 					require_Error(t, err)
-					require_Contains(t, err.Error(), "insufficient resources")
+					require_Contains(t, err.Error(), "no suitable peers for placement")
 				}
 			}
 			clusterLnCnt := func(expected int) error {

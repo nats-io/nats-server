@@ -14,8 +14,8 @@ const (
 	// JSClusterIncompleteErr incomplete results
 	JSClusterIncompleteErr ErrorIdentifier = 10004
 
-	// JSClusterNoPeersErr no suitable peers for placement
-	JSClusterNoPeersErr ErrorIdentifier = 10005
+	// JSClusterNoPeersErrF no suitable peers for placement: {err}
+	JSClusterNoPeersErrF ErrorIdentifier = 10005
 
 	// JSClusterNotActiveErr JetStream not in clustered mode
 	JSClusterNotActiveErr ErrorIdentifier = 10006
@@ -398,7 +398,7 @@ var (
 		JSAccountResourcesExceededErr:              {Code: 400, ErrCode: 10002, Description: "resource limits exceeded for account"},
 		JSBadRequestErr:                            {Code: 400, ErrCode: 10003, Description: "bad request"},
 		JSClusterIncompleteErr:                     {Code: 503, ErrCode: 10004, Description: "incomplete results"},
-		JSClusterNoPeersErr:                        {Code: 400, ErrCode: 10005, Description: "no suitable peers for placement"},
+		JSClusterNoPeersErrF:                       {Code: 400, ErrCode: 10005, Description: "no suitable peers for placement: {err}"},
 		JSClusterNotActiveErr:                      {Code: 500, ErrCode: 10006, Description: "JetStream not in clustered mode"},
 		JSClusterNotAssignedErr:                    {Code: 500, ErrCode: 10007, Description: "JetStream cluster not assigned to this server"},
 		JSClusterNotAvailErr:                       {Code: 503, ErrCode: 10008, Description: "JetStream system temporarily unavailable"},
@@ -579,14 +579,20 @@ func NewJSClusterIncompleteError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSClusterIncompleteErr]
 }
 
-// NewJSClusterNoPeersError creates a new JSClusterNoPeersErr error: "no suitable peers for placement"
-func NewJSClusterNoPeersError(opts ...ErrorOption) *ApiError {
+// NewJSClusterNoPeersError creates a new JSClusterNoPeersErrF error: "no suitable peers for placement: {err}"
+func NewJSClusterNoPeersError(err error, opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
 		return ae
 	}
 
-	return ApiErrors[JSClusterNoPeersErr]
+	e := ApiErrors[JSClusterNoPeersErrF]
+	args := e.toReplacerArgs([]interface{}{"{err}", err})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
 }
 
 // NewJSClusterNotActiveError creates a new JSClusterNotActiveErr error: "JetStream not in clustered mode"
