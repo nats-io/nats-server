@@ -11,8 +11,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !skip_js_tests && !skip_js_cluster_tests && !skip_js_chaos_tests
-// +build !skip_js_tests,!skip_js_cluster_tests,!skip_js_chaos_tests
+//go:build js_chaos_tests
+// +build js_chaos_tests
 
 package server
 

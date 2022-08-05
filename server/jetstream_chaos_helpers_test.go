@@ -11,17 +11,47 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !skip_js_tests && !skip_js_cluster_tests && !skip_js_chaos_tests
-// +build !skip_js_tests,!skip_js_cluster_tests,!skip_js_chaos_tests
+//go:build js_chaos_tests
+// +build js_chaos_tests
 
 package server
 
 import (
+	"fmt"
 	"math/rand"
 	"sync"
 	"testing"
 	"time"
 )
+
+// Additional cluster helpers
+
+func (c *cluster) waitOnClusterHealthz() {
+	c.t.Helper()
+	for _, cs := range c.servers {
+		c.waitOnServerHealthz(cs)
+	}
+}
+
+func (c *cluster) stopSubset(toStop []*Server) {
+	c.t.Helper()
+	for _, s := range toStop {
+		s.Shutdown()
+	}
+}
+
+func (c *cluster) selectRandomServers(numServers int) []*Server {
+	c.t.Helper()
+	if numServers > len(c.servers) {
+		panic(fmt.Sprintf("Can't select %d servers in a cluster of %d", numServers, len(c.servers)))
+	}
+	var selectedServers []*Server
+	selectedServers = append(selectedServers, c.servers...)
+	rand.Shuffle(len(selectedServers), func(x, y int) {
+		selectedServers[x], selectedServers[y] = selectedServers[y], selectedServers[x]
+	})
+	return selectedServers[0:numServers]
+}
 
 // Support functions for "chaos" testing (random injected failures)
 
