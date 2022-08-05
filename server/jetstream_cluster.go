@@ -4484,7 +4484,7 @@ type selectPeerError struct {
 	offline      int
 	excludeTag   int
 	noTagMatch   int
-	noSpace      int
+	noStorage    int
 	uniqueTag    int
 	misc         int
 }
@@ -4494,11 +4494,11 @@ func (e *selectPeerError) Error() string {
 offline: %d
 excludeTag: %d
 noTagMatch: %d
-noSpace: %d
+noStorage: %d
 uniqueTag: %d
 misc: %d
 `,
-		e.cluster, e.clusterPeers, e.offline, e.excludeTag, e.noTagMatch, e.noSpace, e.uniqueTag, e.misc)
+		e.cluster, e.clusterPeers, e.offline, e.excludeTag, e.noTagMatch, e.noStorage, e.uniqueTag, e.misc)
 }
 
 type selectPeerErrors []*selectPeerError
@@ -4676,7 +4676,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		if maxBytes > 0 && maxBytes > available {
 			s.Warnf("Peer selection: discard %s@%s (Max Bytes: %d) exceeds available %s storage of %d bytes",
 				ni.name, ni.cluster, maxBytes, cfg.Storage.String(), available)
-			err.noSpace++
+			err.noStorage++
 			continue
 		}
 		// HAAssets contain _meta_ which we want to ignore
