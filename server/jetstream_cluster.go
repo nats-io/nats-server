@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -6502,11 +6503,14 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 	// Update any deletes, etc.
 	mset.processSnapshotDeletes(snap)
 
+	defer debug.PrintStack()
+
 	mset.mu.Lock()
 	var state StreamState
 	mset.clfs = snap.Failed
 	mset.store.FastState(&state)
 	sreq := mset.calculateSyncRequest(&state, snap)
+	mset.srv.Warnf(" Initial sync request: %+v %+v %+v\n", sreq, state, snap)
 
 	s, js, subject, n := mset.srv, mset.js, mset.sa.Sync, mset.node
 	qname := fmt.Sprintf("[ACC:%s] stream '%s' snapshot", mset.acc.Name, mset.cfg.Name)
@@ -6641,6 +6645,9 @@ RETRY:
 		mset.store.FastState(&state)
 		sreq = mset.calculateSyncRequest(&state, snap)
 		mset.mu.Unlock()
+
+		s.Warnf(" Grab sync request: %+v %+v %+v\n", sreq, state, snap)
+
 		if sreq == nil {
 			return nil
 		}
@@ -6801,7 +6808,7 @@ func (mset *stream) handleClusterSyncRequest(sub *subscription, c *client, _ *Ac
 	}
 	var state StreamState
 	mset.store.FastState(&state)
-	mset.srv.Warnf("handleClusterSyncRequest pterm %d pindex %d request %+v local fast state %v",
+	mset.srv.Warnf("handleClusterSyncRequest pterm %d pindex %d request %+v local fast state %+v",
 		mset.node.(*raft).pindex, mset.node.(*raft).pterm, sreq, state)
 
 	mset.srv.startGoRoutine(func() { mset.runCatchup(reply, &sreq) })
@@ -7045,6 +7052,7 @@ func (s *Server) cbKickChan() <-chan struct{} {
 func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	s := mset.srv
 	defer s.grWG.Done()
+	defer debug.PrintStack()
 
 	const maxOutBytes = int64(32 * 1024 * 1024) // 32MB for now, these are all internal, from server to server
 	const maxOutMsgs = int32(128 * 1024)
@@ -7087,6 +7095,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 
 	// Setup sequences to walk through.
 	seq, last := sreq.FirstSeq, sreq.LastSeq
+
 	mset.setCatchupPeer(sreq.Peer, last-seq)
 	defer mset.clearCatchupPeer(sreq.Peer)
 
@@ -7094,8 +7103,8 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 		// Update our activity timer.
 		notActive.Reset(activityInterval)
 
-		s.Warnf("sendNextBatchAndContinue pre for seq %d last %d", seq, last)
-
+		s.Warnf("sendNextBatchAndContinue pre for first seq %d last %d", seq, last)
+		startseq := seq
 		var smv StoreMsg
 		for ; seq <= last && atomic.LoadInt64(&outb) <= maxOutBytes && atomic.LoadInt32(&outm) <= maxOutMsgs && s.gcbTotal() <= maxTotalCatchupOutBytes; seq++ {
 			sm, err := mset.store.LoadMsg(seq, &smv)
@@ -7146,7 +7155,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 				return false
 			}
 		}
-		s.Warnf("sendNextBatchAndContinue post for seq %d last %d", seq, last)
+		s.Warnf("sendNextBatchAndContinue post for start seq %d seq %d last %d", startseq, seq, last)
 		return true
 	}
 

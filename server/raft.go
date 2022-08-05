@@ -2187,7 +2187,7 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue /* of 
 				return
 			}
 		case <-timeout.C:
-			n.debug("Catching up for %q stalled", peer)
+			n.warn("Catching up for %q stalled", peer)
 			return
 		case <-indexUpdatesQ.ch:
 			index := indexUpdatesQ.popOne().(uint64)
