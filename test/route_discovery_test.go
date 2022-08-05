@@ -17,7 +17,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
 	"runtime"
@@ -528,7 +528,7 @@ func readHTTPRoutez(t *testing.T, url string) *server.Routez {
 	if resp.StatusCode != 200 {
 		stackFatalf(t, "Expected a 200 response, got %d\n", resp.StatusCode)
 	}
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		stackFatalf(t, "Got an error reading the body: %v\n", err)
 	}

@@ -15,8 +15,8 @@ package server
 
 import (
 	"fmt"
-	"io/ioutil"
 	"net"
+	"os"
 	"strings"
 	"time"
 
@@ -34,7 +34,7 @@ func ReadOperatorJWT(jwtfile string) (*jwt.OperatorClaims, error) {
 }
 
 func readOperatorJWT(jwtfile string) (string, *jwt.OperatorClaims, error) {
-	contents, err := ioutil.ReadFile(jwtfile)
+	contents, err := os.ReadFile(jwtfile)
 	if err != nil {
 		// Check to see if the JWT has been inlined.
 		if !strings.HasPrefix(jwtfile, jwtPrefix) {

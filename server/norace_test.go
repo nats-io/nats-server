@@ -24,7 +24,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	"net"
 	"net/http"
@@ -2902,13 +2901,13 @@ func TestNoRaceCompressedConnz(t *testing.T) {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 			defer zr.Close()
-			buf, err = ioutil.ReadAll(zr)
+			buf, err = io.ReadAll(zr)
 			if err != nil && err != io.ErrUnexpectedEOF {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 		case "snappy", "s2":
 			sr := s2.NewReader(bytes.NewReader(buf))
-			buf, err = ioutil.ReadAll(sr)
+			buf, err = io.ReadAll(sr)
 			if err != nil && err != io.ErrUnexpectedEOF {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -4210,7 +4209,7 @@ func TestNoRaceJetStreamClusterHealthz(t *testing.T) {
 		resp, err := http.Get(url)
 		require_NoError(t, err)
 		defer resp.Body.Close()
-		body, err := ioutil.ReadAll(resp.Body)
+		body, err := io.ReadAll(resp.Body)
 		require_NoError(t, err)
 		var hs HealthStatus
 		err = json.Unmarshal(body, &hs)
@@ -5183,10 +5182,19 @@ func TestNoRaceJetStreamClusterInterestPullConsumerStreamLimitBug(t *testing.T) 
 	for i := 0; i < 100; i++ {
 		go func() {
 			defer wg.Done()
-			nc, js := jsClientConnect(t, c.randomServer())
+			nc := natsConnect(t, c.randomServer().ClientURL())
 			defer nc.Close()
 
-			sub, err := js.PullSubscribe("foo", "dur")
+			js, err := nc.JetStream(nats.MaxWait(time.Second))
+			require_NoError(t, err)
+
+			var sub *nats.Subscription
+			for j := 0; j < 5; j++ {
+				sub, err = js.PullSubscribe("foo", "dur")
+				if err == nil {
+					break
+				}
+			}
 			require_NoError(t, err)
 
 			for {

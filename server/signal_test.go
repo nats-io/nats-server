@@ -19,7 +19,6 @@ package server
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"strings"
@@ -52,7 +51,7 @@ func TestSignalToReOpenLogFile(t *testing.T) {
 	// Add a trace
 	expectedStr := "This is a Notice"
 	s.Noticef(expectedStr)
-	buf, err := ioutil.ReadFile(logFile)
+	buf, err := os.ReadFile(logFile)
 	if err != nil {
 		t.Fatalf("Error reading file: %v", err)
 	}
@@ -67,7 +66,7 @@ func TestSignalToReOpenLogFile(t *testing.T) {
 	syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
 	// Wait a bit for action to be performed
 	time.Sleep(500 * time.Millisecond)
-	buf, err = ioutil.ReadFile(logFile)
+	buf, err = os.ReadFile(logFile)
 	if err != nil {
 		t.Fatalf("Error reading file: %v", err)
 	}

@@ -19,9 +19,9 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -91,7 +91,7 @@ func TestTLSClientCertificate(t *testing.T) {
 	}
 
 	// Load in root CA for server verification
-	rootPEM, err := ioutil.ReadFile("./configs/certs/ca.pem")
+	rootPEM, err := os.ReadFile("./configs/certs/ca.pem")
 	if err != nil || rootPEM == nil {
 		t.Fatalf("failed to read root certificate")
 	}
@@ -1840,7 +1840,7 @@ func TestTLSPinnedCertsClient(t *testing.T) {
 		t.Fatalf("Expected error trying to connect without a certificate in pinned_certs")
 	}
 
-	ioutil.WriteFile(confFileName, []byte(fmt.Sprintf(tmpl, "bf6f821f09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9")), 0660)
+	os.WriteFile(confFileName, []byte(fmt.Sprintf(tmpl, "bf6f821f09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9")), 0660)
 	if err := srv.Reload(); err != nil {
 		t.Fatalf("on Reload got %v", err)
 	}
@@ -1963,7 +1963,7 @@ func TestTLSPinnedCertsRoute(t *testing.T) {
 	checkClusterFormed(t, srvSeed, srv)
 
 	// this change will result in the server being and remaining disconnected
-	ioutil.WriteFile(confSrv, []byte(fmt.Sprintf(tmplSrv, o.Cluster.Port, "aaaaaaaa09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9")), 0660)
+	os.WriteFile(confSrv, []byte(fmt.Sprintf(tmplSrv, o.Cluster.Port, "aaaaaaaa09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9")), 0660)
 	if err := srv.Reload(); err != nil {
 		t.Fatalf("on Reload got %v", err)
 	}

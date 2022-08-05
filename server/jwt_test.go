@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -3158,7 +3157,7 @@ func TestJWTExpiredUserCredentialsRenewal(t *testing.T) {
 		conf := createFile(t, "")
 		fName := conf.Name()
 		conf.Close()
-		if err := ioutil.WriteFile(fName, content, 0666); err != nil {
+		if err := os.WriteFile(fName, content, 0666); err != nil {
 			removeFile(t, fName)
 			t.Fatalf("Error writing conf file: %v", err)
 		}
@@ -3243,7 +3242,7 @@ func TestJWTExpiredUserCredentialsRenewal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error encoding credentials: %v", err)
 	}
-	if err := ioutil.WriteFile(chainedFile, creds, 0666); err != nil {
+	if err := os.WriteFile(chainedFile, creds, 0666); err != nil {
 		t.Fatalf("Error writing conf file: %v", err)
 	}
 
@@ -3317,7 +3316,7 @@ func require_JWTPresent(t *testing.T, dir string, pub string) {
 
 func require_JWTEqual(t *testing.T, dir string, pub string, jwt string) {
 	t.Helper()
-	content, err := ioutil.ReadFile(filepath.Join(dir, pub+".jwt"))
+	content, err := os.ReadFile(filepath.Join(dir, pub+".jwt"))
 	require_NoError(t, err)
 	require_Equal(t, string(content), jwt)
 }
@@ -3326,7 +3325,7 @@ func createDir(t testing.TB, prefix string) string {
 	t.Helper()
 	err := os.MkdirAll(tempRoot, 0700)
 	require_NoError(t, err)
-	dir, err := ioutil.TempDir(tempRoot, prefix)
+	dir, err := os.MkdirTemp(tempRoot, prefix)
 	require_NoError(t, err)
 	return dir
 }
@@ -3340,7 +3339,7 @@ func createFile(t *testing.T, prefix string) *os.File {
 
 func createFileAtDir(t *testing.T, dir, prefix string) *os.File {
 	t.Helper()
-	f, err := ioutil.TempFile(dir, prefix)
+	f, err := os.CreateTemp(dir, prefix)
 	require_NoError(t, err)
 	return f
 }
@@ -3361,7 +3360,7 @@ func removeFile(t *testing.T, p string) {
 
 func writeJWT(t *testing.T, dir string, pub string, jwt string) {
 	t.Helper()
-	err := ioutil.WriteFile(filepath.Join(dir, pub+".jwt"), []byte(jwt), 0644)
+	err := os.WriteFile(filepath.Join(dir, pub+".jwt"), []byte(jwt), 0644)
 	require_NoError(t, err)
 }
 

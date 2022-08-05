@@ -24,7 +24,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	mrand "math/rand"
 	"net"
@@ -406,7 +405,7 @@ func (r *wsReadInfo) decompress() ([]byte, error) {
 		d.(flate.Resetter).Reset(r, nil)
 	}
 	// This will do the decompression.
-	b, err := ioutil.ReadAll(d)
+	b, err := io.ReadAll(d)
 	decompressorPool.Put(d)
 	// Now reset the compressed buffers list.
 	r.cbufs = nil
@@ -858,7 +857,7 @@ func wsPMCExtensionSupport(header http.Header, checkPMCOnly bool) (bool, bool) {
 	return false, false
 }
 
-// Send an HTTP error with the given `status`` to the given http response writer `w`.
+// Send an HTTP error with the given `status` to the given http response writer `w`.
 // Return an error created based on the `reason` string.
 func wsReturnHTTPError(w http.ResponseWriter, r *http.Request, status int, reason string) error {
 	err := fmt.Errorf("%s - websocket handshake error: %s", r.RemoteAddr, reason)

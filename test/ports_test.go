@@ -17,7 +17,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,7 +34,7 @@ func waitForFile(path string, dur time.Duration) ([]byte, error) {
 			time.Sleep(25 * time.Millisecond)
 			continue
 		} else {
-			return ioutil.ReadFile(path)
+			return os.ReadFile(path)
 		}
 	}
 	return nil, errors.New("Timeout")
@@ -138,7 +137,7 @@ func TestPortsFileReload(t *testing.T) {
 	`, dirA)
 	config = strings.Replace(config, "\\", "/", -1)
 	confPath := filepath.Join(tempDir, fmt.Sprintf("%d.conf", os.Getpid()))
-	if err := ioutil.WriteFile(confPath, []byte(config), 0666); err != nil {
+	if err := os.WriteFile(confPath, []byte(config), 0666); err != nil {
 		t.Fatalf("Error writing ports file (%s): %v", confPath, err)
 	}
 
@@ -179,7 +178,7 @@ func TestPortsFileReload(t *testing.T) {
 		port: -1
 	`, dirB)
 	config = strings.Replace(config, "\\", "/", -1)
-	if err := ioutil.WriteFile(confPath, []byte(config), 0666); err != nil {
+	if err := os.WriteFile(confPath, []byte(config), 0666); err != nil {
 		t.Fatalf("Error writing ports file (%s): %v", confPath, err)
 	}
 

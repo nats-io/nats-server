@@ -20,7 +20,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"math"
 	"os"
 	"path/filepath"
@@ -146,8 +145,8 @@ const (
 //
 // limit defines how many files are allowed at any given time. Set to math.MaxInt64 to disable.
 // evictOnLimit determines the behavior once limit is reached.
-//     true - Evict based on lru strategy
-//     false - return an error
+// * true - Evict based on lru strategy
+// * false - return an error
 func NewExpiringDirJWTStore(dirPath string, shard bool, create bool, delete deleteType, expireCheck time.Duration, limit int64,
 	evictOnLimit bool, ttl time.Duration, changeNotification JWTChanged, _ ...dirJWTStoreOption) (*DirJWTStore, error) {
 	fullPath, err := newDir(dirPath, create)
@@ -175,7 +174,7 @@ func NewExpiringDirJWTStore(dirPath string, shard bool, create bool, delete dele
 	theStore.Lock()
 	err = filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
 		if strings.HasSuffix(path, fileExtension) {
-			if theJwt, err := ioutil.ReadFile(path); err == nil {
+			if theJwt, err := os.ReadFile(path); err == nil {
 				hash := sha256.Sum256(theJwt)
 				_, file := filepath.Split(path)
 				theStore.expiration.track(strings.TrimSuffix(file, fileExtension), &hash, string(theJwt))
@@ -241,7 +240,7 @@ func (store *DirJWTStore) Pack(maxJWTs int) (string, error) {
 					return nil // only include indexed files
 				}
 			}
-			jwtBytes, err := ioutil.ReadFile(path)
+			jwtBytes, err := os.ReadFile(path)
 			if err != nil {
 				return err
 			}
@@ -285,7 +284,7 @@ func (store *DirJWTStore) PackWalk(maxJWTs int, cb func(partialPackMsg string)) 
 				}
 			}
 			store.Unlock()
-			jwtBytes, err := ioutil.ReadFile(path)
+			jwtBytes, err := os.ReadFile(path)
 			if err != nil {
 				return err
 			}
@@ -351,7 +350,7 @@ func (store *DirJWTStore) Reload() error {
 	store.Unlock()
 	return filepath.Walk(store.directory, func(path string, info os.FileInfo, err error) error {
 		if strings.HasSuffix(path, fileExtension) {
-			if theJwt, err := ioutil.ReadFile(path); err == nil {
+			if theJwt, err := os.ReadFile(path); err == nil {
 				hash := sha256.Sum256(theJwt)
 				_, file := filepath.Split(path)
 				pkey := strings.TrimSuffix(file, fileExtension)
@@ -394,7 +393,7 @@ func (store *DirJWTStore) load(publicKey string) (string, error) {
 	defer store.Unlock()
 	if path := store.pathForKey(publicKey); path == _EMPTY_ {
 		return _EMPTY_, fmt.Errorf("invalid public key")
-	} else if data, err := ioutil.ReadFile(path); err != nil {
+	} else if data, err := os.ReadFile(path); err != nil {
 		return _EMPTY_, err
 	} else {
 		if store.expiration != nil {
@@ -432,7 +431,7 @@ func (store *DirJWTStore) write(path string, publicKey string, theJWT string) (b
 			}
 		}
 	}
-	if err := ioutil.WriteFile(path, []byte(theJWT), defaultFilePerms); err != nil {
+	if err := os.WriteFile(path, []byte(theJWT), defaultFilePerms); err != nil {
 		return false, err
 	} else if store.expiration != nil {
 		store.expiration.track(publicKey, newHash, theJWT)
@@ -514,7 +513,7 @@ func (store *DirJWTStore) saveIfNewer(publicKey string, theJWT string) error {
 	if _, err := os.Stat(path); err == nil {
 		if newJWT, err := jwt.DecodeGeneric(theJWT); err != nil {
 			return err
-		} else if existing, err := ioutil.ReadFile(path); err != nil {
+		} else if existing, err := os.ReadFile(path); err != nil {
 			return err
 		} else if existingJWT, err := jwt.DecodeGeneric(string(existing)); err != nil {
 			// skip if it can't be decoded

@@ -18,9 +18,10 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -178,7 +179,7 @@ func TestVarz(t *testing.T) {
 		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
 	}
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
@@ -204,7 +205,7 @@ func TestVarz(t *testing.T) {
 		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
 	}
 	defer resp.Body.Close()
-	body, err = ioutil.ReadAll(resp.Body)
+	body, err = io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
@@ -256,7 +257,7 @@ func TestConnz(t *testing.T) {
 		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
 	}
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
@@ -288,7 +289,7 @@ func TestConnz(t *testing.T) {
 		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
 	}
 	defer resp.Body.Close()
-	body, err = ioutil.ReadAll(resp.Body)
+	body, err = io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
@@ -370,7 +371,7 @@ func TestTLSConnz(t *testing.T) {
 
 	url := fmt.Sprintf("https://127.0.0.1:%d/", opts.HTTPSPort)
 	tlsConfig := &tls.Config{}
-	caCert, err := ioutil.ReadFile(rootCAFile)
+	caCert, err := os.ReadFile(rootCAFile)
 	if err != nil {
 		t.Fatalf("Got error reading RootCA file: %s", err)
 	}
@@ -394,7 +395,7 @@ func TestTLSConnz(t *testing.T) {
 		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
 	}
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 
 	if err != nil {
 		t.Fatalf("Got an error reading the body: %v\n", err)
@@ -477,7 +478,7 @@ func TestConnzWithSubs(t *testing.T) {
 		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
 	}
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
@@ -523,7 +524,7 @@ func TestConnzWithAuth(t *testing.T) {
 		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
 	}
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
@@ -584,7 +585,7 @@ func TestConnzWithAccounts(t *testing.T) {
 			t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
 		}
 		defer resp.Body.Close()
-		body, err := ioutil.ReadAll(resp.Body)
+		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			t.Fatalf("Got an error reading the body: %v\n", err)
 		}
@@ -702,7 +703,7 @@ func TestConnzWithOffsetAndLimit(t *testing.T) {
 		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
 	}
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
@@ -741,7 +742,7 @@ func TestSubsz(t *testing.T) {
 		t.Fatalf("Expected a 200 response, got %d\n", resp.StatusCode)
 	}
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}

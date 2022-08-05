@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"net/url"
 	"os"
 	"reflect"
@@ -1134,7 +1133,7 @@ func TestBadNkeyConfig(t *testing.T) {
     authorization {
       users = [ {nkey: "Ufoo"}]
     }`
-	if err := ioutil.WriteFile(confFileName, []byte(content), 0666); err != nil {
+	if err := os.WriteFile(confFileName, []byte(content), 0666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
 	if _, err := ProcessConfigFile(confFileName); err == nil {
@@ -1151,7 +1150,7 @@ func TestNkeyWithPassConfig(t *testing.T) {
         {nkey: "UDKTV7HZVYJFJN64LLMYQBUR6MTNNYCDC3LAZH4VHURW3GZLL3FULBXV", pass: "foo"}
       ]
     }`
-	if err := ioutil.WriteFile(confFileName, []byte(content), 0666); err != nil {
+	if err := os.WriteFile(confFileName, []byte(content), 0666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
 	if _, err := ProcessConfigFile(confFileName); err == nil {
@@ -1168,7 +1167,7 @@ func TestTokenWithUserPass(t *testing.T) {
 		pass: password
 		token: $2a$11$whatever
 	}`
-	if err := ioutil.WriteFile(confFileName, []byte(content), 0666); err != nil {
+	if err := os.WriteFile(confFileName, []byte(content), 0666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
 	_, err := ProcessConfigFile(confFileName)
@@ -1190,7 +1189,7 @@ func TestTokenWithUsers(t *testing.T) {
 			{user: test, password: test}
 		]
 	}`
-	if err := ioutil.WriteFile(confFileName, []byte(content), 0666); err != nil {
+	if err := os.WriteFile(confFileName, []byte(content), 0666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
 	_, err := ProcessConfigFile(confFileName)
@@ -1205,7 +1204,7 @@ func TestTokenWithUsers(t *testing.T) {
 func TestParseWriteDeadline(t *testing.T) {
 	confFile := "test.conf"
 	defer removeFile(t, confFile)
-	if err := ioutil.WriteFile(confFile, []byte("write_deadline: \"1x\""), 0666); err != nil {
+	if err := os.WriteFile(confFile, []byte("write_deadline: \"1x\""), 0666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
 	_, err := ProcessConfigFile(confFile)
@@ -1216,7 +1215,7 @@ func TestParseWriteDeadline(t *testing.T) {
 		t.Fatalf("Expected error related to parsing, got %v", err)
 	}
 	removeFile(t, confFile)
-	if err := ioutil.WriteFile(confFile, []byte("write_deadline: \"1s\""), 0666); err != nil {
+	if err := os.WriteFile(confFile, []byte("write_deadline: \"1s\""), 0666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
 	opts, err := ProcessConfigFile(confFile)
@@ -1234,7 +1233,7 @@ func TestParseWriteDeadline(t *testing.T) {
 		os.Stdout = oldStdout
 	}()
 	os.Stdout = w
-	if err := ioutil.WriteFile(confFile, []byte("write_deadline: 2"), 0666); err != nil {
+	if err := os.WriteFile(confFile, []byte("write_deadline: 2"), 0666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
 	opts, err = ProcessConfigFile(confFile)
@@ -2109,7 +2108,7 @@ func TestParsingGateways(t *testing.T) {
 	`
 	file := "server_config_gateways.conf"
 	defer removeFile(t, file)
-	if err := ioutil.WriteFile(file, []byte(content), 0600); err != nil {
+	if err := os.WriteFile(file, []byte(content), 0600); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
 	opts, err := ProcessConfigFile(file)
@@ -2363,7 +2362,7 @@ func TestParsingGatewaysErrors(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			file := fmt.Sprintf("server_config_gateways_%s.conf", test.name)
 			defer removeFile(t, file)
-			if err := ioutil.WriteFile(file, []byte(test.content), 0600); err != nil {
+			if err := os.WriteFile(file, []byte(test.content), 0600); err != nil {
 				t.Fatalf("Error writing config file: %v", err)
 			}
 			_, err := ProcessConfigFile(file)
@@ -2570,7 +2569,7 @@ func TestLargeMaxControlLine(t *testing.T) {
 	content := `
     max_control_line = 3000000000
     `
-	if err := ioutil.WriteFile(confFileName, []byte(content), 0666); err != nil {
+	if err := os.WriteFile(confFileName, []byte(content), 0666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
 	if _, err := ProcessConfigFile(confFileName); err == nil {

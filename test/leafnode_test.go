@@ -19,7 +19,6 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"math/rand"
 	"net"
 	"net/url"
@@ -3594,7 +3593,7 @@ func TestClusterTLSMixedIPAndDNS(t *testing.T) {
 	remote := &server.RemoteLeafOpts{URLs: []*url.URL{rurl}}
 	remote.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	pool := x509.NewCertPool()
-	rootPEM, err := ioutil.ReadFile("./configs/certs/ca.pem")
+	rootPEM, err := os.ReadFile("./configs/certs/ca.pem")
 	if err != nil || rootPEM == nil {
 		t.Fatalf("Error loading or parsing rootCA file: %v", err)
 	}

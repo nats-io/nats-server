@@ -19,11 +19,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"reflect"
 	"runtime"
 	"sort"
@@ -158,7 +159,7 @@ func readBodyEx(t *testing.T, url string, status int, content string) []byte {
 	if ct != content {
 		stackFatalf(t, "Expected %s content-type, got %s\n", content, ct)
 	}
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		stackFatalf(t, "Got an error reading the body: %v\n", err)
 	}
@@ -1672,7 +1673,7 @@ func TestHandleRoot(t *testing.T) {
 		t.Fatalf("Expected a %d response, got %d\n", http.StatusOK, resp.StatusCode)
 	}
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("Expected no error reading body: Got %v\n", err)
 	}
@@ -2010,7 +2011,7 @@ func TestConcurrentMonitoring(t *testing.T) {
 					ech <- fmt.Sprintf("Expected application/json content-type, got %s\n", ct)
 					return
 				}
-				if _, err := ioutil.ReadAll(resp.Body); err != nil {
+				if _, err := io.ReadAll(resp.Body); err != nil {
 					ech <- fmt.Sprintf("Got an error reading the body: %v\n", err)
 					return
 				}
@@ -2404,7 +2405,7 @@ func Benchmark_VarzHttp(b *testing.B) {
 			b.Fatalf("Expected no error: Got %v\n", err)
 		}
 		defer resp.Body.Close()
-		body, err := ioutil.ReadAll(resp.Body)
+		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			b.Fatalf("Got an error reading the body: %v\n", err)
 		}
@@ -3595,7 +3596,7 @@ func TestMonitorOpJWT(t *testing.T) {
 	sa, _ := RunServerWithConfig(conf)
 	defer sa.Shutdown()
 
-	theJWT, err := ioutil.ReadFile("../test/configs/nkeys/op.jwt")
+	theJWT, err := os.ReadFile("../test/configs/nkeys/op.jwt")
 	require_NoError(t, err)
 	theJWT = []byte(strings.Split(string(theJWT), "\n")[1])
 	claim, err := jwt.DecodeOperatorClaims(string(theJWT))

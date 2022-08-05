@@ -15,7 +15,7 @@ package test
 
 import (
 	"fmt"
-	"io/ioutil"
+	"os"
 	"testing"
 
 	"github.com/nats-io/nats.go"
@@ -73,7 +73,7 @@ func TestTokenInConfig(t *testing.T) {
 		token: ` + testToken + `
 		timeout: 5
 	}`
-	if err := ioutil.WriteFile(confFileName, []byte(content), 0666); err != nil {
+	if err := os.WriteFile(confFileName, []byte(content), 0666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
 	s, opts := RunServerWithConfig(confFileName)

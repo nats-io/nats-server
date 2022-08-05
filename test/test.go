@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"os"
 	"path/filepath"
@@ -644,7 +643,7 @@ func createDir(t *testing.T, prefix string) string {
 	if err := os.MkdirAll(tempRoot, 0700); err != nil {
 		t.Fatal(err)
 	}
-	dir, err := ioutil.TempDir(tempRoot, prefix)
+	dir, err := os.MkdirTemp(tempRoot, prefix)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -661,7 +660,7 @@ func createFile(t *testing.T, prefix string) *os.File {
 
 func createFileAtDir(t *testing.T, dir, prefix string) *os.File {
 	t.Helper()
-	f, err := ioutil.TempFile(dir, prefix)
+	f, err := os.CreateTemp(dir, prefix)
 	if err != nil {
 		t.Fatal(err)
 	}
