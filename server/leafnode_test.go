@@ -4398,3 +4398,107 @@ func TestLeafNodeAuthConfigReload(t *testing.T) {
 	// Reload here should work ok.
 	reloadUpdateConfig(t, s, conf, template)
 }
+
+func TestLeafNodeSignatureCB(t *testing.T) {
+	content := `
+		port: -1
+		server_name: OP
+		operator = "../test/configs/nkeys/op.jwt"
+		resolver = MEMORY
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`
+	conf := createConfFile(t, []byte(content))
+	s, opts := RunServerWithConfig(conf)
+	defer removeFile(t, conf)
+	defer s.Shutdown()
+
+	_, akp := createAccount(s)
+	kp, _ := nkeys.CreateUser()
+	pub, _ := kp.PublicKey()
+	nuc := jwt.NewUserClaims(pub)
+	ujwt, err := nuc.Encode(akp)
+	if err != nil {
+		t.Fatalf("Error generating user JWT: %v", err)
+	}
+
+	lopts := &DefaultTestOptions
+	u, err := url.Parse(fmt.Sprintf("nats://%s:%d", opts.LeafNode.Host, opts.LeafNode.Port))
+	if err != nil {
+		t.Fatalf("Error parsing url: %v", err)
+	}
+	remote := &RemoteLeafOpts{URLs: []*url.URL{u}}
+	remote.SignatureCB = func(nonce []byte) (string, []byte, error) {
+		return "", nil, fmt.Errorf("on purpose")
+	}
+	lopts.LeafNode.Remotes = []*RemoteLeafOpts{remote}
+	lopts.LeafNode.ReconnectInterval = 100 * time.Millisecond
+	sl := RunServer(lopts)
+	defer sl.Shutdown()
+
+	slog := &captureErrorLogger{errCh: make(chan string, 10)}
+	sl.SetLogger(slog, false, false)
+
+	// Now check that the leafnode got the error that the callback returned.
+	select {
+	case err := <-slog.errCh:
+		if !strings.Contains(err, "on purpose") {
+			t.Fatalf("Expected error from cb, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Did not get expected error")
+	}
+
+	sl.Shutdown()
+	// Now check what happens if the connection is closed while in the callback.
+	blockCh := make(chan struct{})
+	remote.SignatureCB = func(nonce []byte) (string, []byte, error) {
+		<-blockCh
+		sig, err := kp.Sign(nonce)
+		return ujwt, sig, err
+	}
+	sl = RunServer(lopts)
+	defer sl.Shutdown()
+
+	// Recreate the logger so that we are sure not to have possible previous errors
+	slog = &captureErrorLogger{errCh: make(chan string, 10)}
+	sl.SetLogger(slog, false, false)
+
+	// Get the leaf connection from the temp clients map and close it.
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		var c *client
+		sl.grMu.Lock()
+		for _, cli := range sl.grTmpClients {
+			c = cli
+		}
+		sl.grMu.Unlock()
+		if c == nil {
+			return fmt.Errorf("Client still not found in temp map")
+		}
+		c.closeConnection(ClientClosed)
+		return nil
+	})
+
+	// Release the callback, and check we get the appropriate error.
+	close(blockCh)
+	select {
+	case err := <-slog.errCh:
+		if !strings.Contains(err, ErrConnectionClosed.Error()) {
+			t.Fatalf("Expected error that connection was closed, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Did not get expected error")
+	}
+
+	sl.Shutdown()
+	// Change to a good CB and now it should work
+	remote.SignatureCB = func(nonce []byte) (string, []byte, error) {
+		sig, err := kp.Sign(nonce)
+		return ujwt, sig, err
+	}
+	sl = RunServer(lopts)
+	defer sl.Shutdown()
+	checkLeafNodeConnected(t, sl)
+}
