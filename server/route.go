@@ -1608,7 +1608,7 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 		if ls, ok := lqws[key]; ok && ls == n {
 			acc.mu.Unlock()
 			return
-		} else {
+		} else if n > 0 {
 			lqws[key] = n
 		}
 		acc.mu.Unlock()
