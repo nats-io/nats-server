@@ -12118,3 +12118,84 @@ func TestJetStreamClusterUnknownReplicaOnClusterRestart(t *testing.T) {
 		t.Fatalf("Should have had an unknown server name, did not: %+v - %+v", si.Cluster.Replicas[0], si.Cluster.Replicas[1])
 	}
 }
+
+func TestJetStreamClusterSnapshotBeforePurgeAndCatchup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		MaxAge:   5 * time.Second,
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	sl := c.streamLeader("$G", "TEST")
+	nl := c.randomNonStreamLeader("$G", "TEST")
+
+	// Make sure we do not get disconnected when shutting the non-leader down.
+	nc, js = jsClientConnect(t, sl)
+	defer nc.Close()
+
+	send1k := func() {
+		t.Helper()
+		for i := 0; i < 1000; i++ {
+			js.PublishAsync("foo", []byte("SNAP"))
+		}
+		select {
+		case <-js.PublishAsyncComplete():
+		case <-time.After(5 * time.Second):
+			t.Fatalf("Did not receive completion signal")
+		}
+	}
+
+	// Send first 100 to everyone.
+	send1k()
+
+	// Now shutdown a non-leader.
+	c.waitOnStreamCurrent(nl, "$G", "TEST")
+	nl.Shutdown()
+
+	// Send another 100.
+	send1k()
+
+	// Force snapshot on the leader.
+	mset, err := sl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	err = mset.raftNode().InstallSnapshot(mset.stateSnapshot())
+	require_NoError(t, err)
+
+	// Purge
+	err = js.PurgeStream("TEST")
+	require_NoError(t, err)
+
+	// Send another 100.
+	send1k()
+
+	// We want to make sure we do not send unnecessary skip msgs when we know we do not have all of these messages.
+	nc, _ = jsClientConnect(t, sl, nats.UserInfo("admin", "s3cr3t!"))
+	sub, err := nc.SubscribeSync("$JSC.R.>")
+	require_NoError(t, err)
+
+	// Now restart non-leader.
+	nl = c.restartServer(nl)
+	c.waitOnStreamCurrent(nl, "$G", "TEST")
+
+	// Grab state directly from non-leader.
+	mset, err = nl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	if state := mset.state(); state.FirstSeq != 2001 || state.LastSeq != 3000 {
+		t.Fatalf("Incorrect state: %+v", state)
+	}
+
+	// Make sure we only sent 1 sync catchup msg.
+	nmsgs, _, _ := sub.Pending()
+	if nmsgs != 1 {
+		t.Fatalf("Expected only 1 sync catchup msg to be sent signaling eof, but got %d", nmsgs)
+	}
+}
