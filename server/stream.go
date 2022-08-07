@@ -795,12 +795,12 @@ func (mset *stream) setLastSeq(lseq uint64) {
 }
 
 func (mset *stream) sendCreateAdvisory() {
-	mset.mu.Lock()
+	mset.mu.RLock()
 	name := mset.cfg.Name
 	template := mset.cfg.Template
 	outq := mset.outq
 	srv := mset.srv
-	mset.mu.Unlock()
+	mset.mu.RUnlock()
 
 	if outq == nil {
 		return
@@ -2586,11 +2586,11 @@ func (m *inMsg) isControlMsg() bool {
 
 // Sends a reply to a flow control request.
 func (mset *stream) sendFlowControlReply(reply string) {
-	mset.mu.Lock()
+	mset.mu.RLock()
 	if mset.isLeader() && mset.outq != nil {
 		mset.outq.sendMsg(reply, nil)
 	}
-	mset.mu.Unlock()
+	mset.mu.RUnlock()
 }
 
 // handleFlowControl will properly handle flow control messages for both R==1 and R>1.
