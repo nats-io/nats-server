@@ -12178,6 +12178,7 @@ func TestJetStreamClusterSnapshotBeforePurgeAndCatchup(t *testing.T) {
 
 	// We want to make sure we do not send unnecessary skip msgs when we know we do not have all of these messages.
 	nc, _ = jsClientConnect(t, sl, nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
 	sub, err := nc.SubscribeSync("$JSC.R.>")
 	require_NoError(t, err)
 
@@ -12197,5 +12198,77 @@ func TestJetStreamClusterSnapshotBeforePurgeAndCatchup(t *testing.T) {
 	nmsgs, _, _ := sub.Pending()
 	if nmsgs != 1 {
 		t.Fatalf("Expected only 1 sync catchup msg to be sent signaling eof, but got %d", nmsgs)
+	}
+}
+
+func TestJetStreamClusterStreamResetWithLargeFirstSeq(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		MaxAge:   5 * time.Second,
+		Replicas: 1,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// Fake a very large first seq.
+	sl := c.streamLeader("$G", "TEST")
+	mset, err := sl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	mset.mu.Lock()
+	mset.store.Compact(1_000_000)
+	mset.mu.Unlock()
+	// Restart
+	sl.Shutdown()
+	sl = c.restartServer(sl)
+	c.waitOnStreamLeader("$G", "TEST")
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Make sure we have the correct state after restart.
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.FirstSeq == 1_000_000)
+
+	// Now add in 10,000 messages.
+	num := 10_000
+	for i := 0; i < num; i++ {
+		js.PublishAsync("foo", []byte("SNAP"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.FirstSeq == 1_000_000)
+	require_True(t, si.State.LastSeq == uint64(1_000_000+num-1))
+
+	// We want to make sure we do not send unnecessary skip msgs when we know we do not have all of these messages.
+	ncs, _ := jsClientConnect(t, sl, nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+	sub, err := ncs.SubscribeSync("$JSC.R.>")
+	require_NoError(t, err)
+
+	// Now scale up to R3.
+	cfg.Replicas = 3
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	nl := c.randomNonStreamLeader("$G", "TEST")
+	c.waitOnStreamCurrent(nl, "$G", "TEST")
+
+	// Make sure we only sent the number of catchup msgs we expected.
+	if nmsgs, _, _ := sub.Pending(); nmsgs != (cfg.Replicas-1)*(num+1) {
+		t.Fatalf("Expected %d catchup msgs, but got %d", (cfg.Replicas-1)*(num+1), nmsgs)
 	}
 }

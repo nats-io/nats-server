@@ -6399,11 +6399,11 @@ func (mset *stream) calculateSyncRequest(state *StreamState, snap *streamSnapsho
 func (mset *stream) processSnapshotDeletes(snap *streamSnapshot) {
 	state := mset.state()
 
-	// Adjust if FirstSeq has moved.
-	if snap.FirstSeq > state.FirstSeq && state.FirstSeq != 0 {
+	// Always adjust if FirstSeq has moved beyond our state.
+	if snap.FirstSeq > state.FirstSeq {
 		mset.store.Compact(snap.FirstSeq)
 		state = mset.store.State()
-		mset.setLastSeq(snap.LastSeq)
+		mset.setLastSeq(state.LastSeq)
 	}
 	// Range the deleted and delete if applicable.
 	for _, dseq := range snap.Deleted {
@@ -6536,11 +6536,10 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 	var ErrStreamStopped = errors.New("stream has been stopped")
 
 	defer func() {
-		if e == ErrServerNotRunning || e == ErrStreamStopped {
-			// Wipe our raft state if exiting with these errors.
-			n.Wipe()
+		// Don't bother resuming if server or stream is gone.
+		if e != ErrStreamStopped && e != ErrServerNotRunning {
+			n.ResumeApply()
 		}
-		n.ResumeApply()
 	}()
 
 	// Set our catchup state.
@@ -6561,7 +6560,7 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 		if gotMsgs || activityInterval == maxActivityInterval {
 			return maxActivityInterval
 		}
-		activityInterval *= 2
+		activityInterval *= 5
 		if activityInterval > maxActivityInterval {
 			activityInterval = maxActivityInterval
 		}
