@@ -1834,6 +1834,18 @@ func TestJetStreamClusterExtendedStreamInfo(t *testing.T) {
 		t.Fatalf("Expected %d replicas, got %d", 2, len(si.Cluster.Replicas))
 	}
 
+	// Make sure that returned array is ordered
+	for i := 0; i < 50; i++ {
+		si, err := js.StreamInfo("TEST")
+		require_NoError(t, err)
+		require_True(t, len(si.Cluster.Replicas) == 2)
+		s1 := si.Cluster.Replicas[0].Name
+		s2 := si.Cluster.Replicas[1].Name
+		if s1 > s2 {
+			t.Fatalf("Expected replicas to be ordered, got %s then %s", s1, s2)
+		}
+	}
+
 	// Faster timeout since we loop below checking for condition.
 	js2, err := nc.JetStream(nats.MaxWait(250 * time.Millisecond))
 	if err != nil {
@@ -12041,4 +12053,68 @@ func TestJetStreamClusterDirectGetFromLeafnode(t *testing.T) {
 	entry, err := kv.Get("age")
 	require_NoError(t, err)
 	require_True(t, string(entry.Value()) == "22")
+}
+
+func TestJetStreamClusterUnknownReplicaOnClusterRestart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	lname := c.streamLeader(globalAccountName, "TEST").Name()
+	sendStreamMsg(t, nc, "foo", "msg1")
+
+	nc.Close()
+	c.stopAll()
+	// Restart the leader...
+	for _, s := range c.servers {
+		if s.Name() == lname {
+			c.restartServer(s)
+		}
+	}
+	// And one of the other servers
+	for _, s := range c.servers {
+		if s.Name() != lname {
+			c.restartServer(s)
+			break
+		}
+	}
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+	sendStreamMsg(t, nc, "foo", "msg2")
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	if len(si.Cluster.Replicas) != 2 {
+		t.Fatalf("Leader is %s - expected 2 peers, got %+v", si.Cluster.Leader, si.Cluster.Replicas[0])
+	}
+	// However, since the leader does not know the name of the server
+	// we should report an "unknown" name.
+	var ok bool
+	for _, r := range si.Cluster.Replicas {
+		if strings.Contains(r.Name, "unknown") {
+			// Check that it has no lag reported, and the it is not current.
+			if r.Current {
+				t.Fatal("Expected non started node to be marked as not current")
+			}
+			if r.Lag != 0 {
+				t.Fatalf("Expected lag to not be set, was %v", r.Lag)
+			}
+			if r.Active != 0 {
+				t.Fatalf("Expected active to not be set, was: %v", r.Active)
+			}
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		t.Fatalf("Should have had an unknown server name, did not: %+v - %+v", si.Cluster.Replicas[0], si.Cluster.Replicas[1])
+	}
 }
