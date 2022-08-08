@@ -6711,6 +6711,15 @@ RETRY:
 			notActive.Reset(getActivityInterval())
 
 			mrecs := msgsQ.pop()
+
+			// Send acks first for longer RTT situations.
+			for _, mreci := range mrecs {
+				mrec := mreci.(*im)
+				if mrec.reply != _EMPTY_ {
+					s.sendInternalMsgLocked(mrec.reply, _EMPTY_, nil, nil)
+				}
+			}
+
 			for _, mreci := range mrecs {
 				mrec := mreci.(*im)
 				msg := mrec.msg
@@ -6753,9 +6762,6 @@ RETRY:
 						}
 					}
 					goto RETRY
-				}
-				if mrec.reply != _EMPTY_ {
-					s.sendInternalMsgLocked(mrec.reply, _EMPTY_, nil, nil)
 				}
 			}
 			msgsQ.recycle(&mrecs)
@@ -7164,6 +7170,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 		}
 
 		var smv StoreMsg
+
 		for ; seq <= last && atomic.LoadInt64(&outb) <= maxOutBytes && atomic.LoadInt32(&outm) <= maxOutMsgs && s.gcbTotal() <= maxTotalCatchupOutBytes; seq++ {
 			sm, err := mset.store.LoadMsg(seq, &smv)
 			// if this is not a deleted msg, bail out.
@@ -7197,6 +7204,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 				// Skip record for deleted msg.
 				em = encodeStreamMsg(_EMPTY_, _EMPTY_, nil, nil, seq, 0)
 			}
+
 			// Place size in reply subject for flow control.
 			l := int64(len(em))
 			reply := fmt.Sprintf(ackReplyT, l)

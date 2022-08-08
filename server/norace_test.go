@@ -1674,7 +1674,7 @@ func TestNoRaceJetStreamSuperClusterMixedModeMirrors(t *testing.T) {
 				conf = strings.ReplaceAll(conf, "leaf: { ", "#leaf: { ")
 			}
 			return conf
-		})
+		}, nil)
 	defer sc.shutdown()
 
 	// Connect our client to a non JS server
@@ -1978,7 +1978,7 @@ func TestNoRaceJetStreamSuperClusterMixedModeSources(t *testing.T) {
 				conf = strings.ReplaceAll(conf, "leaf: { ", "#leaf: { ")
 			}
 			return conf
-		})
+		}, nil)
 	defer sc.shutdown()
 
 	// Connect our client to a non JS server

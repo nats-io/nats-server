@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -46,6 +47,7 @@ func init() {
 type supercluster struct {
 	t        *testing.T
 	clusters []*cluster
+	nproxies []*netProxy
 }
 
 func (sc *supercluster) shutdown() {
@@ -54,6 +56,9 @@ func (sc *supercluster) shutdown() {
 	}
 	for _, c := range sc.clusters {
 		shutdownCluster(c)
+	}
+	for _, np := range sc.nproxies {
+		np.stop()
 	}
 }
 
@@ -260,7 +265,11 @@ var jsMixedModeGlobalAccountTempl = `
 var jsGWTempl = `%s{name: %s, urls: [%s]}`
 
 func createJetStreamTaggedSuperCluster(t *testing.T) *supercluster {
-	sc := createJetStreamSuperCluster(t, 3, 3)
+	return createJetStreamTaggedSuperClusterWithGWProxy(t, nil)
+}
+
+func createJetStreamTaggedSuperClusterWithGWProxy(t *testing.T, gwm gwProxyMap) *supercluster {
+	sc := createJetStreamSuperClusterWithTemplateAndModHook(t, jsClusterTempl, 3, 3, nil, gwm)
 	sc.waitOnPeerCount(9)
 
 	reset := func(s *Server) {
@@ -332,10 +341,20 @@ func createJetStreamSuperCluster(t *testing.T, numServersPer, numClusters int) *
 }
 
 func createJetStreamSuperClusterWithTemplate(t *testing.T, tmpl string, numServersPer, numClusters int) *supercluster {
-	return createJetStreamSuperClusterWithTemplateAndModHook(t, tmpl, numServersPer, numClusters, nil)
+	return createJetStreamSuperClusterWithTemplateAndModHook(t, tmpl, numServersPer, numClusters, nil, nil)
 }
 
-func createJetStreamSuperClusterWithTemplateAndModHook(t *testing.T, tmpl string, numServersPer, numClusters int, modify modifyCb) *supercluster {
+// For doing proxyies in GWs.
+type gwProxy struct {
+	rtt  time.Duration
+	up   int
+	down int
+}
+
+// Maps cluster names to proxy settings.
+type gwProxyMap map[string]*gwProxy
+
+func createJetStreamSuperClusterWithTemplateAndModHook(t *testing.T, tmpl string, numServersPer, numClusters int, modify modifyCb, gwm gwProxyMap) *supercluster {
 	t.Helper()
 	if numServersPer < 1 {
 		t.Fatalf("Number of servers must be >= 1")
@@ -355,19 +374,30 @@ func createJetStreamSuperClusterWithTemplateAndModHook(t *testing.T, tmpl string
 
 	cp, gp := startClusterPort, startGWPort
 	var clusters []*cluster
-
+	var nproxies []*netProxy
 	var gws []string
+
 	// Build GWs first, will be same for all servers.
 	for i, port := 1, gp; i <= numClusters; i++ {
 		cn := fmt.Sprintf("C%d", i)
+		var gwp *gwProxy
+		if len(gwm) > 0 {
+			gwp = gwm[cn]
+		}
 		var urls []string
 		for n := 0; n < numServersPer; n++ {
-			urls = append(urls, fmt.Sprintf("nats-route://127.0.0.1:%d", port))
+			routeURL := fmt.Sprintf("nats-route://127.0.0.1:%d", port)
+			if gwp != nil {
+				np := createNetProxy(gwp.rtt, gwp.up, gwp.down, routeURL, false)
+				nproxies = append(nproxies, np)
+				routeURL = np.routeURL()
+			}
+			urls = append(urls, routeURL)
 			port++
 		}
 		gws = append(gws, fmt.Sprintf(jsGWTempl, "\n\t\t\t", cn, strings.Join(urls, ",")))
 	}
-	gwconf := strings.Join(gws, "")
+	gwconf := strings.Join(gws, _EMPTY_)
 
 	for i := 1; i <= numClusters; i++ {
 		cn := fmt.Sprintf("C%d", i)
@@ -400,15 +430,20 @@ func createJetStreamSuperClusterWithTemplateAndModHook(t *testing.T, tmpl string
 		c.t = t
 	}
 
+	// Start any proxies.
+	for _, np := range nproxies {
+		np.start()
+	}
+
 	// Wait for the supercluster to be formed.
 	egws := numClusters - 1
 	for _, c := range clusters {
 		for _, s := range c.servers {
-			waitForOutboundGateways(t, s, egws, 2*time.Second)
+			waitForOutboundGateways(t, s, egws, 10*time.Second)
 		}
 	}
 
-	sc := &supercluster{t, clusters}
+	sc := &supercluster{t, clusters, nproxies}
 	sc.waitOnLeader()
 	sc.waitOnAllCurrent()
 
@@ -1452,36 +1487,66 @@ func (o *consumer) setInActiveDeleteThreshold(dthresh time.Duration) error {
 type netProxy struct {
 	listener net.Listener
 	conns    []net.Conn
+	rtt      time.Duration
+	up       int
+	down     int
 	url      string
+	surl     string
 }
 
 func newNetProxy(rtt time.Duration, upRate, downRate int, serverURL string) *netProxy {
+	return createNetProxy(rtt, upRate, downRate, serverURL, true)
+}
+
+func createNetProxy(rtt time.Duration, upRate, downRate int, serverURL string, start bool) *netProxy {
 	hp := net.JoinHostPort("127.0.0.1", "0")
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
 		panic(fmt.Sprintf("Error listening on port: %s, %q", hp, e))
 	}
 	port := l.Addr().(*net.TCPAddr).Port
-	proxy := &netProxy{listener: l}
-	go func() {
-		client, err := l.Accept()
-		if err != nil {
-			return
-		}
-		server, err := net.DialTimeout("tcp", serverURL[7:], time.Second)
-		if err != nil {
-			panic("Can't connect to NATS server")
-		}
-		proxy.conns = append(proxy.conns, client, server)
-		go proxy.loop(rtt, upRate, client, server)
-		go proxy.loop(rtt, downRate, server, client)
-	}()
-	proxy.url = fmt.Sprintf("nats://127.0.0.1:%d", port)
+	proxy := &netProxy{
+		listener: l,
+		rtt:      rtt,
+		up:       upRate,
+		down:     downRate,
+		url:      fmt.Sprintf("nats://127.0.0.1:%d", port),
+		surl:     serverURL,
+	}
+	if start {
+		proxy.start()
+	}
 	return proxy
+}
+
+func (np *netProxy) start() {
+	go func() {
+		for {
+			client, err := np.listener.Accept()
+			if err != nil {
+				return
+			}
+			u, err := url.Parse(np.surl)
+			if err != nil {
+				panic(fmt.Sprintf("Could not parse server URL: %v", err))
+			}
+			server, err := net.DialTimeout("tcp", u.Host, time.Second)
+			if err != nil {
+				panic("Can't connect proxy to NATS server")
+			}
+			np.conns = append(np.conns, client, server)
+			go np.loop(np.rtt, np.up, client, server)
+			go np.loop(np.rtt, np.down, server, client)
+		}
+	}()
 }
 
 func (np *netProxy) clientURL() string {
 	return np.url
+}
+
+func (np *netProxy) routeURL() string {
+	return strings.Replace(np.url, "nats", "nats-route", 1)
 }
 
 func (np *netProxy) loop(rtt time.Duration, tbw int, r, w net.Conn) {
@@ -1499,7 +1564,7 @@ func (np *netProxy) loop(rtt time.Duration, tbw int, r, w net.Conn) {
 			return
 		}
 		// RTT delays
-		if fr || time.Since(sr) > 2*time.Millisecond {
+		if fr || time.Since(sr) > 250*time.Millisecond {
 			fr = false
 			if delay > 0 {
 				time.Sleep(delay)
