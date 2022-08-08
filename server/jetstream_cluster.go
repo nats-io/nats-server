@@ -6870,7 +6870,7 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 				// If not, then add a name that indicates that the server name
 				// is unknown at this time, and clear the lag since it is misleading
 				// (the node may not have that much lag).
-				pi.Name, pi.Lag = fmt.Sprintf("<unknown (peerID: %s)>", rp.ID), 0
+				pi.Name, pi.Lag = fmt.Sprintf("Server name unknown at this time (peerID: %s)", rp.ID), 0
 			}
 			ci.Replicas = append(ci.Replicas, pi)
 		}
