@@ -5315,7 +5315,7 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 	updateStream(t, nc, cfg)
 
 	// Wait for the stream to register the new replicas and have a leader.
-	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+	checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
 		si, err := js.StreamInfo("TEST")
 		if err != nil {
 			return err

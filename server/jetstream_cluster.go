@@ -6549,23 +6549,9 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 	var sub *subscription
 	var err error
 
-	const maxActivityInterval = 10 * time.Second
-	const minActivityInterval = time.Second
-	activityInterval := minActivityInterval
+	const activityInterval = 10 * time.Second
 	notActive := time.NewTimer(activityInterval)
 	defer notActive.Stop()
-
-	var gotMsgs bool
-	getActivityInterval := func() time.Duration {
-		if gotMsgs || activityInterval == maxActivityInterval {
-			return maxActivityInterval
-		}
-		activityInterval *= 5
-		if activityInterval > maxActivityInterval {
-			activityInterval = maxActivityInterval
-		}
-		return activityInterval
-	}
 
 	defer func() {
 		if sub != nil {
@@ -6656,7 +6642,7 @@ RETRY:
 		default:
 		}
 	}
-	notActive.Reset(getActivityInterval())
+	notActive.Reset(activityInterval)
 
 	// Grab sync request again on failures.
 	if sreq == nil {
@@ -6707,8 +6693,7 @@ RETRY:
 	for qch, lch := n.QuitC(), n.LeadChangeC(); ; {
 		select {
 		case <-msgsQ.ch:
-			gotMsgs = true
-			notActive.Reset(getActivityInterval())
+			notActive.Reset(activityInterval)
 
 			mrecs := msgsQ.pop()
 
