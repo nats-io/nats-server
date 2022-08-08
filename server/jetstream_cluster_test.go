@@ -8859,7 +8859,7 @@ func TestJetStreamClusterStreamUpdateSyncBug(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	// Shutdown a server. The bug is that the update wiped the sync subject used to cacthup a stream that has the RAFT layer snapshotted.
+	// Shutdown a server. The bug is that the update wiped the sync subject used to catchup a stream that has the RAFT layer snapshotted.
 	nsl := c.randomNonStreamLeader("$G", "TEST")
 	nsl.Shutdown()
 	// make sure a leader exists
@@ -12271,4 +12271,53 @@ func TestJetStreamClusterStreamResetWithLargeFirstSeq(t *testing.T) {
 	if nmsgs, _, _ := sub.Pending(); nmsgs != (cfg.Replicas-1)*(num+1) {
 		t.Fatalf("Expected %d catchup msgs, but got %d", (cfg.Replicas-1)*(num+1), nmsgs)
 	}
+}
+
+func TestJetStreamClusterStreamCatchupInteriorNilMsgs(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	num := 100
+	for l := 0; l < 5; l++ {
+		for i := 0; i < num-1; i++ {
+			js.PublishAsync("foo", []byte("SNAP"))
+		}
+		// Blank msg.
+		js.PublishAsync("foo", nil)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// Make sure we have the correct state after restart.
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.Msgs == 500)
+
+	// Now scale up to R3.
+	cfg.Replicas = 3
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	nl := c.randomNonStreamLeader("$G", "TEST")
+	c.waitOnStreamCurrent(nl, "$G", "TEST")
+
+	mset, err := nl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	mset.mu.RLock()
+	state := mset.store.State()
+	mset.mu.RUnlock()
+	require_True(t, state.Msgs == 500)
 }
