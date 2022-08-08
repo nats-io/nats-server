@@ -326,7 +326,7 @@ func TestJetStreamJWTMove(t *testing.T) {
 						%s : %s
 					}
 				`, clustername, ojwt, syspub, storeDir, syspub, sysJwt)
-			})
+			}, nil)
 		defer sc.shutdown()
 
 		s := sc.serverByName("C1-S1")
@@ -813,7 +813,7 @@ func TestJetStreamJWTSysAccUpdateMixedMode(t *testing.T) {
 				operator: %s
 				system_account: %s
 				resolver: URL("%s%s")`, conf, ojwt, spub, ts.URL, basePath)
-		})
+		}, nil)
 	defer sc.shutdown()
 	disconnectChan := make(chan struct{}, 100)
 	defer close(disconnectChan)

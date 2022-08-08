@@ -6399,11 +6399,11 @@ func (mset *stream) calculateSyncRequest(state *StreamState, snap *streamSnapsho
 func (mset *stream) processSnapshotDeletes(snap *streamSnapshot) {
 	state := mset.state()
 
-	// Adjust if FirstSeq has moved.
-	if snap.FirstSeq > state.FirstSeq && state.FirstSeq != 0 {
+	// Always adjust if FirstSeq has moved beyond our state.
+	if snap.FirstSeq > state.FirstSeq {
 		mset.store.Compact(snap.FirstSeq)
 		state = mset.store.State()
-		mset.setLastSeq(snap.LastSeq)
+		mset.setLastSeq(state.LastSeq)
 	}
 	// Range the deleted and delete if applicable.
 	for _, dseq := range snap.Deleted {
@@ -6536,11 +6536,10 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 	var ErrStreamStopped = errors.New("stream has been stopped")
 
 	defer func() {
-		if e == ErrServerNotRunning || e == ErrStreamStopped {
-			// Wipe our raft state if exiting with these errors.
-			n.Wipe()
+		// Don't bother resuming if server or stream is gone.
+		if e != ErrStreamStopped && e != ErrServerNotRunning {
+			n.ResumeApply()
 		}
-		n.ResumeApply()
 	}()
 
 	// Set our catchup state.
@@ -6550,23 +6549,9 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 	var sub *subscription
 	var err error
 
-	const maxActivityInterval = 10 * time.Second
-	const minActivityInterval = time.Second
-	activityInterval := minActivityInterval
+	const activityInterval = 10 * time.Second
 	notActive := time.NewTimer(activityInterval)
 	defer notActive.Stop()
-
-	var gotMsgs bool
-	getActivityInterval := func() time.Duration {
-		if gotMsgs || activityInterval == maxActivityInterval {
-			return maxActivityInterval
-		}
-		activityInterval *= 2
-		if activityInterval > maxActivityInterval {
-			activityInterval = maxActivityInterval
-		}
-		return activityInterval
-	}
 
 	defer func() {
 		if sub != nil {
@@ -6599,6 +6584,33 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 	// On exit, we will release our semaphore if we acquired it.
 	defer releaseSyncOutSem()
 
+	// Check our final state when we exit cleanly.
+	// If this snapshot was for messages no longer held by the leader we want to make sure
+	// we are synched for the next message sequence properly.
+	lastRequested := sreq.LastSeq
+	checkFinalState := func() {
+		if mset != nil {
+			mset.mu.Lock()
+			var state StreamState
+			mset.store.FastState(&state)
+			var didReset bool
+			firstExpected := lastRequested + 1
+			if state.FirstSeq != firstExpected {
+				// Reset our notion of first.
+				mset.store.Compact(firstExpected)
+				mset.store.FastState(&state)
+				// Make sure last is also correct in case this also moved.
+				mset.lseq = state.LastSeq
+				didReset = true
+			}
+			mset.mu.Unlock()
+			if didReset {
+				s.Warnf("Catchup for stream '%s > %s' resetting first sequence: %d on catchup complete",
+					mset.account(), mset.name(), firstExpected)
+			}
+		}
+	}
+
 RETRY:
 	// On retry, we need to release the semaphore we got. Call will be no-op
 	// if releaseSem boolean has not been set to true on successfully getting
@@ -6630,7 +6642,7 @@ RETRY:
 		default:
 		}
 	}
-	notActive.Reset(getActivityInterval())
+	notActive.Reset(activityInterval)
 
 	// Grab sync request again on failures.
 	if sreq == nil {
@@ -6642,6 +6654,8 @@ RETRY:
 		if sreq == nil {
 			return nil
 		}
+		// Reset notion of lastRequested
+		lastRequested = sreq.LastSeq
 	}
 
 	// Used to transfer message from the wire to another Go routine internally.
@@ -6665,8 +6679,11 @@ RETRY:
 		err = nil
 		goto RETRY
 	}
+	// Send our sync request.
 	b, _ := json.Marshal(sreq)
 	s.sendInternalMsgLocked(subject, reply, nil, b)
+	// Remember when we sent this out to avoimd loop spins on errors below.
+	reqSendTime := time.Now()
 
 	// Clear our sync request and capture last.
 	last := sreq.LastSeq
@@ -6676,10 +6693,18 @@ RETRY:
 	for qch, lch := n.QuitC(), n.LeadChangeC(); ; {
 		select {
 		case <-msgsQ.ch:
-			gotMsgs = true
-			notActive.Reset(getActivityInterval())
+			notActive.Reset(activityInterval)
 
 			mrecs := msgsQ.pop()
+
+			// Send acks first for longer RTT situations.
+			for _, mreci := range mrecs {
+				mrec := mreci.(*im)
+				if mrec.reply != _EMPTY_ {
+					s.sendInternalMsgLocked(mrec.reply, _EMPTY_, nil, nil)
+				}
+			}
+
 			for _, mreci := range mrecs {
 				mrec := mreci.(*im)
 				msg := mrec.msg
@@ -6687,6 +6712,7 @@ RETRY:
 				// Check for eof signaling.
 				if len(msg) == 0 {
 					msgsQ.recycle(&mrecs)
+					checkFinalState()
 					return nil
 				}
 				if lseq, err := mset.processCatchupMsg(msg); err == nil {
@@ -6707,10 +6733,20 @@ RETRY:
 				} else {
 					s.Warnf("Catchup for stream '%s > %s' errored, will retry: %v", mset.account(), mset.name(), err)
 					msgsQ.recycle(&mrecs)
+
+					// Make sure we do not spin and make things worse.
+					const minRetryWait = 2 * time.Second
+					elapsed := time.Since(reqSendTime)
+					if elapsed < minRetryWait {
+						select {
+						case <-s.quitCh:
+							return ErrServerNotRunning
+						case <-qch:
+							return ErrStreamStopped
+						case <-time.After(minRetryWait - elapsed):
+						}
+					}
 					goto RETRY
-				}
-				if mrec.reply != _EMPTY_ {
-					s.sendInternalMsgLocked(mrec.reply, _EMPTY_, nil, nil)
 				}
 			}
 			msgsQ.recycle(&mrecs)
@@ -7087,6 +7123,20 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	notActive := time.NewTimer(activityInterval)
 	defer notActive.Stop()
 
+	// Grab our state.
+	var state StreamState
+	mset.mu.RLock()
+	mset.store.FastState(&state)
+	mset.mu.RUnlock()
+
+	// Reset notion of first if this request wants sequences before our starting sequence
+	// and we would have nothing to send. If we have partial messages still need to send skips for those.
+	if sreq.FirstSeq < state.FirstSeq && state.FirstSeq > sreq.LastSeq {
+		s.Debugf("Catchup for stream '%s > %s' resetting request first sequence from %d to %d",
+			mset.account(), mset.name(), sreq.FirstSeq, state.FirstSeq)
+		sreq.FirstSeq = state.FirstSeq
+	}
+
 	// Setup sequences to walk through.
 	seq, last := sreq.FirstSeq, sreq.LastSeq
 	mset.setCatchupPeer(sreq.Peer, last-seq)
@@ -7096,7 +7146,16 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 		// Update our activity timer.
 		notActive.Reset(activityInterval)
 
+		// Check if we know we will not enter the loop because we are done.
+		if seq > last {
+			s.Noticef("Catchup for stream '%s > %s' complete", mset.account(), mset.name())
+			// EOF
+			s.sendInternalMsgLocked(sendSubject, _EMPTY_, nil, nil)
+			return false
+		}
+
 		var smv StoreMsg
+
 		for ; seq <= last && atomic.LoadInt64(&outb) <= maxOutBytes && atomic.LoadInt32(&outm) <= maxOutMsgs && s.gcbTotal() <= maxTotalCatchupOutBytes; seq++ {
 			sm, err := mset.store.LoadMsg(seq, &smv)
 			// if this is not a deleted msg, bail out.
@@ -7130,6 +7189,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 				// Skip record for deleted msg.
 				em = encodeStreamMsg(_EMPTY_, _EMPTY_, nil, nil, seq, 0)
 			}
+
 			// Place size in reply subject for flow control.
 			l := int64(len(em))
 			reply := fmt.Sprintf(ackReplyT, l)

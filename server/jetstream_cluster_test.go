@@ -8859,7 +8859,7 @@ func TestJetStreamClusterStreamUpdateSyncBug(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	// Shutdown a server. The bug is that the update wiped the sync subject used to cacthup a stream that has the RAFT layer snapshotted.
+	// Shutdown a server. The bug is that the update wiped the sync subject used to catchup a stream that has the RAFT layer snapshotted.
 	nsl := c.randomNonStreamLeader("$G", "TEST")
 	nsl.Shutdown()
 	// make sure a leader exists
@@ -12117,4 +12117,210 @@ func TestJetStreamClusterUnknownReplicaOnClusterRestart(t *testing.T) {
 	if !ok {
 		t.Fatalf("Should have had an unknown server name, did not: %+v - %+v", si.Cluster.Replicas[0], si.Cluster.Replicas[1])
 	}
+}
+
+func TestJetStreamClusterSnapshotBeforePurgeAndCatchup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		MaxAge:   5 * time.Second,
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	sl := c.streamLeader("$G", "TEST")
+	nl := c.randomNonStreamLeader("$G", "TEST")
+
+	// Make sure we do not get disconnected when shutting the non-leader down.
+	nc, js = jsClientConnect(t, sl)
+	defer nc.Close()
+
+	send1k := func() {
+		t.Helper()
+		for i := 0; i < 1000; i++ {
+			js.PublishAsync("foo", []byte("SNAP"))
+		}
+		select {
+		case <-js.PublishAsyncComplete():
+		case <-time.After(5 * time.Second):
+			t.Fatalf("Did not receive completion signal")
+		}
+	}
+
+	// Send first 100 to everyone.
+	send1k()
+
+	// Now shutdown a non-leader.
+	c.waitOnStreamCurrent(nl, "$G", "TEST")
+	nl.Shutdown()
+
+	// Send another 100.
+	send1k()
+
+	// Force snapshot on the leader.
+	mset, err := sl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	err = mset.raftNode().InstallSnapshot(mset.stateSnapshot())
+	require_NoError(t, err)
+
+	// Purge
+	err = js.PurgeStream("TEST")
+	require_NoError(t, err)
+
+	// Send another 100.
+	send1k()
+
+	// We want to make sure we do not send unnecessary skip msgs when we know we do not have all of these messages.
+	nc, _ = jsClientConnect(t, sl, nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+	sub, err := nc.SubscribeSync("$JSC.R.>")
+	require_NoError(t, err)
+
+	// Now restart non-leader.
+	nl = c.restartServer(nl)
+	c.waitOnStreamCurrent(nl, "$G", "TEST")
+
+	// Grab state directly from non-leader.
+	mset, err = nl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	if state := mset.state(); state.FirstSeq != 2001 || state.LastSeq != 3000 {
+		t.Fatalf("Incorrect state: %+v", state)
+	}
+
+	// Make sure we only sent 1 sync catchup msg.
+	nmsgs, _, _ := sub.Pending()
+	if nmsgs != 1 {
+		t.Fatalf("Expected only 1 sync catchup msg to be sent signaling eof, but got %d", nmsgs)
+	}
+}
+
+func TestJetStreamClusterStreamResetWithLargeFirstSeq(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		MaxAge:   5 * time.Second,
+		Replicas: 1,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// Fake a very large first seq.
+	sl := c.streamLeader("$G", "TEST")
+	mset, err := sl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	mset.mu.Lock()
+	mset.store.Compact(1_000_000)
+	mset.mu.Unlock()
+	// Restart
+	sl.Shutdown()
+	sl = c.restartServer(sl)
+	c.waitOnStreamLeader("$G", "TEST")
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Make sure we have the correct state after restart.
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.FirstSeq == 1_000_000)
+
+	// Now add in 10,000 messages.
+	num := 10_000
+	for i := 0; i < num; i++ {
+		js.PublishAsync("foo", []byte("SNAP"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.FirstSeq == 1_000_000)
+	require_True(t, si.State.LastSeq == uint64(1_000_000+num-1))
+
+	// We want to make sure we do not send unnecessary skip msgs when we know we do not have all of these messages.
+	ncs, _ := jsClientConnect(t, sl, nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+	sub, err := ncs.SubscribeSync("$JSC.R.>")
+	require_NoError(t, err)
+
+	// Now scale up to R3.
+	cfg.Replicas = 3
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	nl := c.randomNonStreamLeader("$G", "TEST")
+	c.waitOnStreamCurrent(nl, "$G", "TEST")
+
+	// Make sure we only sent the number of catchup msgs we expected.
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		if nmsgs, _, _ := sub.Pending(); nmsgs != (cfg.Replicas-1)*(num+1) {
+			return fmt.Errorf("expected %d catchup msgs, but got %d", (cfg.Replicas-1)*(num+1), nmsgs)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterStreamCatchupInteriorNilMsgs(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	num := 100
+	for l := 0; l < 5; l++ {
+		for i := 0; i < num-1; i++ {
+			js.PublishAsync("foo", []byte("SNAP"))
+		}
+		// Blank msg.
+		js.PublishAsync("foo", nil)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// Make sure we have the correct state after restart.
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.Msgs == 500)
+
+	// Now scale up to R3.
+	cfg.Replicas = 3
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	nl := c.randomNonStreamLeader("$G", "TEST")
+	c.waitOnStreamCurrent(nl, "$G", "TEST")
+
+	mset, err := nl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	mset.mu.RLock()
+	state := mset.store.State()
+	mset.mu.RUnlock()
+	require_True(t, state.Msgs == 500)
 }
