@@ -12268,9 +12268,12 @@ func TestJetStreamClusterStreamResetWithLargeFirstSeq(t *testing.T) {
 	c.waitOnStreamCurrent(nl, "$G", "TEST")
 
 	// Make sure we only sent the number of catchup msgs we expected.
-	if nmsgs, _, _ := sub.Pending(); nmsgs != (cfg.Replicas-1)*(num+1) {
-		t.Fatalf("Expected %d catchup msgs, but got %d", (cfg.Replicas-1)*(num+1), nmsgs)
-	}
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		if nmsgs, _, _ := sub.Pending(); nmsgs != (cfg.Replicas-1)*(num+1) {
+			return fmt.Errorf("expected %d catchup msgs, but got %d", (cfg.Replicas-1)*(num+1), nmsgs)
+		}
+		return nil
+	})
 }
 
 func TestJetStreamClusterStreamCatchupInteriorNilMsgs(t *testing.T) {
