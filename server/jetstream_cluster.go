@@ -6497,6 +6497,14 @@ func (mset *stream) isCurrent() bool {
 // Maximum requests for the whole server that can be in flight.
 const maxConcurrentSyncRequests = 8
 
+var (
+	errCatchupCorruptSnapshot = errors.New("corrupt stream snapshot detected")
+	errCatchupStalled         = errors.New("catchup stalled")
+	errCatchupStreamStopped   = errors.New("stream has been stopped") // when a catchup is terminated due to the stream going away.
+	errCatchupBadMsg          = errors.New("bad catchup msg")
+	errCatchupWrongSeqForSkip = errors.New("wrong sequence for skipped msg")
+)
+
 // Process a stream snapshot.
 func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 	// Update any deletes, etc.
@@ -6519,7 +6527,7 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 
 	// Bug that would cause this to be empty on stream update.
 	if subject == _EMPTY_ {
-		return errors.New("corrupt stream snapshot detected")
+		return errCatchupCorruptSnapshot
 	}
 
 	// Just return if up to date or already exceeded limits.
@@ -6532,12 +6540,9 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 		return err
 	}
 
-	// ErrStreamStopped is when a catchup is terminated due to the stream going away.
-	var ErrStreamStopped = errors.New("stream has been stopped")
-
 	defer func() {
 		// Don't bother resuming if server or stream is gone.
-		if e != ErrStreamStopped && e != ErrServerNotRunning {
+		if e != errCatchupStreamStopped && e != ErrServerNotRunning {
 			n.ResumeApply()
 		}
 	}()
@@ -6748,7 +6753,7 @@ RETRY:
 						case <-s.quitCh:
 							return ErrServerNotRunning
 						case <-qch:
-							return ErrStreamStopped
+							return errCatchupStreamStopped
 						case <-time.After(minRetryWait - elapsed):
 						}
 					}
@@ -6759,7 +6764,7 @@ RETRY:
 		case <-notActive.C:
 			if mrecs := msgsQ.pop(); len(mrecs) > 0 {
 				mrec := mrecs[0].(*im)
-				notifyLeaderStopCatchup(mrec, fmt.Errorf("catchup stalled"))
+				notifyLeaderStopCatchup(mrec, errCatchupStalled)
 				msgsQ.recycle(&mrecs)
 			}
 			s.Warnf("Catchup for stream '%s > %s' stalled", mset.account(), mset.name())
@@ -6767,7 +6772,7 @@ RETRY:
 		case <-s.quitCh:
 			return ErrServerNotRunning
 		case <-qch:
-			return ErrStreamStopped
+			return errCatchupStreamStopped
 		case isLeader := <-lch:
 			if isLeader {
 				n.StepDown()
@@ -6780,12 +6785,12 @@ RETRY:
 // processCatchupMsg will be called to process out of band catchup msgs from a sync request.
 func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	if len(msg) == 0 || entryOp(msg[0]) != streamMsgOp {
-		return 0, errors.New("bad catchup msg")
+		return 0, errCatchupBadMsg
 	}
 
 	subj, _, hdr, msg, seq, ts, err := decodeStreamMsg(msg[1:])
 	if err != nil {
-		return 0, errors.New("bad catchup msg")
+		return 0, errCatchupBadMsg
 	}
 
 	mset.mu.RLock()
@@ -6807,7 +6812,7 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	// TODO(dlc) - formalize with skipMsgOp
 	if subj == _EMPTY_ && ts == 0 {
 		if lseq := mset.store.SkipMsg(); lseq != seq {
-			return 0, errors.New("wrong sequence for skipped msg")
+			return 0, errCatchupWrongSeqForSkip
 		}
 	} else if err := mset.store.StoreRawMsg(subj, hdr, msg, seq, ts); err != nil {
 		return 0, err
