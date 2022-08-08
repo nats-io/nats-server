@@ -6852,21 +6852,34 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 			if current && lastSeen > lostQuorumInterval {
 				current = false
 			}
+			// Create a peer info with common settings if the peer has not been seen
+			// yet (which can happen after the whole cluster is stopped and only some
+			// of the nodes are restarted).
+			pi := &PeerInfo{
+				Current: current,
+				Offline: true,
+				Active:  lastSeen,
+				Lag:     rp.Lag,
+				peer:    rp.ID,
+			}
+			// If node is found, complete/update the settings.
 			if sir, ok := s.nodeToInfo.Load(rp.ID); ok && sir != nil {
 				si := sir.(nodeInfo)
-				pi := &PeerInfo{
-					Name:    si.name,
-					Current: current,
-					Offline: si.offline,
-					Active:  lastSeen,
-					Lag:     rp.Lag,
-					cluster: si.cluster,
-					peer:    rp.ID,
-				}
-				ci.Replicas = append(ci.Replicas, pi)
+				pi.Name, pi.Offline, pi.cluster = si.name, si.offline, si.cluster
+			} else {
+				// If not, then add a name that indicates that the server name
+				// is unknown at this time, and clear the lag since it is misleading
+				// (the node may not have that much lag).
+				pi.Name, pi.Lag = fmt.Sprintf("<unknown (peerID: %s)>", rp.ID), 0
 			}
+			ci.Replicas = append(ci.Replicas, pi)
 		}
 	}
+	// Order the result based on the name so that we get something consistent
+	// when doing repeated stream info in the CLI, etc...
+	sort.Slice(ci.Replicas, func(i, j int) bool {
+		return ci.Replicas[i].Name < ci.Replicas[j].Name
+	})
 	return ci
 }
 
