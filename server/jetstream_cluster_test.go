@@ -12324,3 +12324,194 @@ func TestJetStreamClusterStreamCatchupInteriorNilMsgs(t *testing.T) {
 	mset.mu.RUnlock()
 	require_True(t, state.Msgs == 500)
 }
+
+type captureCatchupWarnLogger struct {
+	DummyLogger
+	ch chan string
+}
+
+func (l *captureCatchupWarnLogger) Warnf(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	if strings.Contains(msg, "simulate error") {
+		select {
+		case l.ch <- msg:
+		default:
+		}
+	}
+}
+
+type catchupMockStore struct {
+	StreamStore
+	ch chan uint64
+}
+
+func (s catchupMockStore) LoadMsg(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
+	s.ch <- seq
+	return s.StreamStore.LoadMsg(seq, sm)
+}
+
+func TestJetStreamClusterLeaderAbortsCatchupOnFollowerError(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	payload := string(make([]byte, 1024))
+	total := 100
+	for i := 0; i < total; i++ {
+		sendStreamMsg(t, nc, "foo", payload)
+	}
+
+	c.waitOnAllCurrent()
+
+	// Get the stream leader
+	leader := c.streamLeader(globalAccountName, "TEST")
+	mset, err := leader.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	var syncSubj string
+	mset.mu.RLock()
+	if mset.syncSub != nil {
+		syncSubj = string(mset.syncSub.subject)
+	}
+	mset.mu.RUnlock()
+
+	if syncSubj == _EMPTY_ {
+		t.Fatal("Did not find the sync request subject")
+	}
+
+	// Setup the logger on the leader to make sure we capture the error and print
+	// and also stop the runCatchup.
+	l := &captureCatchupWarnLogger{ch: make(chan string, 10)}
+	leader.SetLogger(l, false, false)
+
+	// Set a fake message store that will allow us to verify
+	// a few things.
+	mset.mu.Lock()
+	orgMS := mset.store
+	ms := catchupMockStore{StreamStore: mset.store, ch: make(chan uint64)}
+	mset.store = ms
+	mset.mu.Unlock()
+
+	// Need the system account to simulate the sync request that we are going to send.
+	sysNC := natsConnect(t, c.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	defer sysNC.Close()
+	// Setup a subscription to receive the messages sent by the leader.
+	sub := natsSubSync(t, sysNC, nats.NewInbox())
+	req := &streamSyncRequest{
+		FirstSeq: 1,
+		LastSeq:  uint64(total),
+		Peer:     "bozo", // Should be one of the node name, but does not matter here
+	}
+	b, _ := json.Marshal(req)
+	// Send the sync request and use our sub's subject for destination where leader
+	// needs to send messages to.
+	natsPubReq(t, sysNC, syncSubj, sub.Subject, b)
+
+	// The mock store is blocked loading the first message, so we need to consume
+	// the sequence before being able to receive the message in our sub.
+	if seq := <-ms.ch; seq != 1 {
+		t.Fatalf("Expected sequence to be 1, got %v", seq)
+	}
+
+	// Now consume and the leader should report the error and terminate runCatchup
+	msg := natsNexMsg(t, sub, time.Second)
+	msg.Respond([]byte("simulate error"))
+
+	select {
+	case <-l.ch:
+		// OK
+	case <-time.After(time.Second):
+		t.Fatal("Did not get the expected error")
+	}
+
+	// The mock store should be blocked in seq==2 now, but after consuming, it should
+	// abort the runCatchup.
+	if seq := <-ms.ch; seq != 2 {
+		t.Fatalf("Expected sequence to be 2, got %v", seq)
+	}
+	// We may have some more messages loaded as a race between when the sub will
+	// indicate that the catchup should stop and the part where we send messages
+	// in the batch, but we should likely not have sent all messages.
+	loaded := 0
+	for done := false; !done; {
+		select {
+		case <-ms.ch:
+			loaded++
+		case <-time.After(250 * time.Millisecond):
+			done = true
+		}
+	}
+	if loaded > 10 {
+		t.Fatalf("Too many messages were sent after detecting remote is done: %v", loaded)
+	}
+
+	ch := make(chan string, 1)
+	mset.mu.Lock()
+	mset.store = orgMS
+	leader.sysUnsubscribe(mset.syncSub)
+	mset.syncSub = nil
+	leader.systemSubscribe(syncSubj, _EMPTY_, false, mset.sysc, func(_ *subscription, _ *client, _ *Account, _, reply string, msg []byte) {
+		var sreq streamSyncRequest
+		if err := json.Unmarshal(msg, &sreq); err != nil {
+			return
+		}
+		select {
+		case ch <- reply:
+		default:
+		}
+	})
+	mset.mu.Unlock()
+	syncRepl := natsSubSync(t, sysNC, nats.NewInbox()+".>")
+	// Make sure our sub is propagated
+	time.Sleep(250 * time.Millisecond)
+
+	if v := leader.gcbTotal(); v != 0 {
+		t.Fatalf("Expected gcbTotal to be 0, got %v", v)
+	}
+
+	buf := make([]byte, 1_000_000)
+	n := runtime.Stack(buf, true)
+	if bytes.Contains(buf[:n], []byte("runCatchup")) {
+		t.Fatalf("Looks like runCatchup is still running:\n%s", buf[:n])
+	}
+
+	mset.mu.Lock()
+	var state StreamState
+	mset.store.FastState(&state)
+	snapshot := &streamSnapshot{
+		Msgs:     state.Msgs,
+		Bytes:    state.Bytes,
+		FirstSeq: state.FirstSeq,
+		LastSeq:  state.LastSeq + 1,
+	}
+	b, _ = json.Marshal(snapshot)
+	mset.node.SendSnapshot(b)
+	mset.mu.Unlock()
+
+	var sreqSubj string
+	select {
+	case sreqSubj = <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("Did not receive sync request")
+	}
+
+	// Now send a message with a wrong sequence and expect to receive an error.
+	em := encodeStreamMsg("foo", _EMPTY_, nil, []byte("fail"), 102, time.Now().UnixNano())
+	leader.sendInternalMsgLocked(sreqSubj, syncRepl.Subject, nil, em)
+	msg = natsNexMsg(t, syncRepl, time.Second)
+	if len(msg.Data) == 0 {
+		t.Fatal("Expected err response from the remote")
+	}
+}

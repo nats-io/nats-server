@@ -6497,6 +6497,14 @@ func (mset *stream) isCurrent() bool {
 // Maximum requests for the whole server that can be in flight.
 const maxConcurrentSyncRequests = 8
 
+var (
+	errCatchupCorruptSnapshot = errors.New("corrupt stream snapshot detected")
+	errCatchupStalled         = errors.New("catchup stalled")
+	errCatchupStreamStopped   = errors.New("stream has been stopped") // when a catchup is terminated due to the stream going away.
+	errCatchupBadMsg          = errors.New("bad catchup msg")
+	errCatchupWrongSeqForSkip = errors.New("wrong sequence for skipped msg")
+)
+
 // Process a stream snapshot.
 func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 	// Update any deletes, etc.
@@ -6519,7 +6527,7 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 
 	// Bug that would cause this to be empty on stream update.
 	if subject == _EMPTY_ {
-		return errors.New("corrupt stream assignment detected")
+		return errCatchupCorruptSnapshot
 	}
 
 	// Just return if up to date or already exceeded limits.
@@ -6532,12 +6540,9 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 		return err
 	}
 
-	// ErrStreamStopped is when a catchup is terminated due to the stream going away.
-	var ErrStreamStopped = errors.New("stream has been stopped")
-
 	defer func() {
 		// Don't bother resuming if server or stream is gone.
-		if e != ErrStreamStopped && e != ErrServerNotRunning {
+		if e != errCatchupStreamStopped && e != ErrServerNotRunning {
 			n.ResumeApply()
 		}
 	}()
@@ -6663,6 +6668,14 @@ RETRY:
 		msg   []byte
 		reply string
 	}
+	// This is used to notify the leader that it should stop the runCatchup
+	// because we are either bailing out or going to retry due to an error.
+	notifyLeaderStopCatchup := func(mrec *im, err error) {
+		if mrec.reply == _EMPTY_ {
+			return
+		}
+		s.sendInternalMsgLocked(mrec.reply, _EMPTY_, nil, err.Error())
+	}
 
 	msgsQ := s.newIPQueue(qname) // of *im
 	defer msgsQ.unregister()
@@ -6697,14 +6710,6 @@ RETRY:
 
 			mrecs := msgsQ.pop()
 
-			// Send acks first for longer RTT situations.
-			for _, mreci := range mrecs {
-				mrec := mreci.(*im)
-				if mrec.reply != _EMPTY_ {
-					s.sendInternalMsgLocked(mrec.reply, _EMPTY_, nil, nil)
-				}
-			}
-
 			for _, mreci := range mrecs {
 				mrec := mreci.(*im)
 				msg := mrec.msg
@@ -6716,13 +6721,18 @@ RETRY:
 					return nil
 				}
 				if lseq, err := mset.processCatchupMsg(msg); err == nil {
+					if mrec.reply != _EMPTY_ {
+						s.sendInternalMsgLocked(mrec.reply, _EMPTY_, nil, nil)
+					}
 					if lseq >= last {
 						msgsQ.recycle(&mrecs)
 						return nil
 					}
 				} else if isOutOfSpaceErr(err) {
+					notifyLeaderStopCatchup(mrec, err)
 					return err
 				} else if err == NewJSInsufficientResourcesError() {
+					notifyLeaderStopCatchup(mrec, err)
 					if mset.js.limitsExceeded(mset.cfg.Storage) {
 						s.resourcesExeededError()
 					} else {
@@ -6731,6 +6741,7 @@ RETRY:
 					msgsQ.recycle(&mrecs)
 					return err
 				} else {
+					notifyLeaderStopCatchup(mrec, err)
 					s.Warnf("Catchup for stream '%s > %s' errored, will retry: %v", mset.account(), mset.name(), err)
 					msgsQ.recycle(&mrecs)
 
@@ -6742,7 +6753,7 @@ RETRY:
 						case <-s.quitCh:
 							return ErrServerNotRunning
 						case <-qch:
-							return ErrStreamStopped
+							return errCatchupStreamStopped
 						case <-time.After(minRetryWait - elapsed):
 						}
 					}
@@ -6752,6 +6763,8 @@ RETRY:
 			msgsQ.recycle(&mrecs)
 		case <-notActive.C:
 			if mrecs := msgsQ.pop(); len(mrecs) > 0 {
+				mrec := mrecs[0].(*im)
+				notifyLeaderStopCatchup(mrec, errCatchupStalled)
 				msgsQ.recycle(&mrecs)
 			}
 			s.Warnf("Catchup for stream '%s > %s' stalled", mset.account(), mset.name())
@@ -6759,7 +6772,7 @@ RETRY:
 		case <-s.quitCh:
 			return ErrServerNotRunning
 		case <-qch:
-			return ErrStreamStopped
+			return errCatchupStreamStopped
 		case isLeader := <-lch:
 			if isLeader {
 				n.StepDown()
@@ -6772,12 +6785,12 @@ RETRY:
 // processCatchupMsg will be called to process out of band catchup msgs from a sync request.
 func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	if len(msg) == 0 || entryOp(msg[0]) != streamMsgOp {
-		return 0, errors.New("bad catchup msg")
+		return 0, errCatchupBadMsg
 	}
 
 	subj, _, hdr, msg, seq, ts, err := decodeStreamMsg(msg[1:])
 	if err != nil {
-		return 0, errors.New("bad catchup msg")
+		return 0, errCatchupBadMsg
 	}
 
 	mset.mu.RLock()
@@ -6799,7 +6812,7 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	// TODO(dlc) - formalize with skipMsgOp
 	if subj == _EMPTY_ && ts == 0 {
 		if lseq := mset.store.SkipMsg(); lseq != seq {
-			return 0, errors.New("wrong sequence for skipped msg")
+			return 0, errCatchupWrongSeqForSkip
 		}
 	} else if err := mset.store.StoreRawMsg(subj, hdr, msg, seq, ts); err != nil {
 		return 0, err
@@ -7102,10 +7115,18 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 
 	nextBatchC := make(chan struct{}, 1)
 	nextBatchC <- struct{}{}
+	remoteQuitCh := make(chan struct{})
 
 	// Setup ackReply for flow control.
 	ackReply := syncAckSubject()
 	ackSub, _ := s.sysSubscribe(ackReply, func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
+		if len(msg) > 0 {
+			s.Warnf("Catchup for stream '%s > %s' was aborted on the remote due to: %q",
+				mset.account(), mset.name(), msg)
+			s.sysUnsubscribe(sub)
+			close(remoteQuitCh)
+			return
+		}
 		sz := ackReplySize(subject)
 		s.gcbSub(&outb, sz)
 		atomic.AddInt32(&outm, -1)
@@ -7142,7 +7163,8 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	mset.setCatchupPeer(sreq.Peer, last-seq)
 	defer mset.clearCatchupPeer(sreq.Peer)
 
-	sendNextBatchAndContinue := func() bool {
+	var spb int
+	sendNextBatchAndContinue := func(qch chan struct{}) bool {
 		// Update our activity timer.
 		notActive.Reset(activityInterval)
 
@@ -7152,6 +7174,28 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 			// EOF
 			s.sendInternalMsgLocked(sendSubject, _EMPTY_, nil, nil)
 			return false
+		}
+
+		// If we already sent a batch, we will try to make sure we process around
+		// half the FC responses - or reach a certain amount of time - before sending
+		// the next batch.
+		if spb > 0 {
+			mw := time.NewTimer(100 * time.Millisecond)
+			for done := false; !done; {
+				select {
+				case <-nextBatchC:
+					done = int(atomic.LoadInt32(&outm)) <= spb/2
+				case <-mw.C:
+					done = true
+				case <-s.quitCh:
+					return false
+				case <-qch:
+					return false
+				case <-remoteQuitCh:
+					return false
+				}
+			}
+			spb = 0
 		}
 
 		var smv StoreMsg
@@ -7196,11 +7240,17 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 			s.gcbAdd(&outb, l)
 			atomic.AddInt32(&outm, 1)
 			s.sendInternalMsgLocked(sendSubject, reply, nil, em)
+			spb++
 			if seq == last {
 				s.Noticef("Catchup for stream '%s > %s' complete", mset.account(), mset.name())
 				// EOF
 				s.sendInternalMsgLocked(sendSubject, _EMPTY_, nil, nil)
 				return false
+			}
+			select {
+			case <-remoteQuitCh:
+				return false
+			default:
 			}
 		}
 		return true
@@ -7225,15 +7275,17 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 			return
 		case <-qch:
 			return
+		case <-remoteQuitCh:
+			return
 		case <-notActive.C:
 			s.Warnf("Catchup for stream '%s > %s' stalled", mset.account(), mset.name())
 			return
 		case <-nextBatchC:
-			if !sendNextBatchAndContinue() {
+			if !sendNextBatchAndContinue(qch) {
 				return
 			}
 		case <-cbKick:
-			if !sendNextBatchAndContinue() {
+			if !sendNextBatchAndContinue(qch) {
 				return
 			}
 		}
