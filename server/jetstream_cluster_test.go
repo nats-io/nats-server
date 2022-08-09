@@ -5436,32 +5436,13 @@ func TestJetStreamClusterSourcesFilterSubjectUpdate(t *testing.T) {
 
 }
 
-func TestJetStreamClusterMirrorAndSourcesClusterRestart(t *testing.T) {
+func TestJetStreamClusterSourcesUpdateOriginError(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "MSR", 5)
 	defer c.shutdown()
 
 	// Client for API requests.
 	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
-
-	// Origin
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:     "TEST",
-		Subjects: []string{"foo", "bar", "baz.*"},
-		Replicas: 2,
-	})
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	// Create Mirror now.
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name:     "M",
-		Mirror:   &nats.StreamSource{Name: "TEST"},
-		Replicas: 2,
-	})
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
 
 	sendBatch := func(subject string, n int) {
 		t.Helper()
@@ -5473,27 +5454,58 @@ func TestJetStreamClusterMirrorAndSourcesClusterRestart(t *testing.T) {
 		}
 	}
 
-	checkSync := func() {
+	checkSync := func(msgsTest, msgsM uint64) {
 		t.Helper()
 		checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
-			tsi, err := js.StreamInfo("TEST")
-			if err != nil {
-				t.Fatalf("Unexpected error: %v", err)
-			}
-			msi, err := js.StreamInfo("M")
-			if err != nil {
-				t.Fatalf("Unexpected error: %v", err)
-			}
-			if tsi.State.Msgs != msi.State.Msgs {
-				return fmt.Errorf("Total messages not the same: TEST %d vs M %d", tsi.State.Msgs, msi.State.Msgs)
+			if tsi, err := js.StreamInfo("TEST"); err != nil {
+				return err
+			} else if msi, err := js.StreamInfo("M"); err != nil {
+				return err
+			} else if tsi.State.Msgs != msgsTest {
+				return fmt.Errorf("received %d msgs from TEST, expected %d", tsi.State.Msgs, msgsTest)
+			} else if msi.State.Msgs != msgsM {
+				return fmt.Errorf("received %d msgs from TEST, expected %d", msi.State.Msgs, msgsM)
 			}
 			return nil
 		})
 	}
 
+	// Origin
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 2,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "M",
+		Sources:  []*nats.StreamSource{{Name: "TEST", FilterSubject: "foo"}},
+		Replicas: 2,
+	})
+
+	require_NoError(t, err)
+
 	// Send 100 msgs.
 	sendBatch("foo", 100)
-	checkSync()
+	checkSync(100, 100)
+
+	// update makes source invalid
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"bar"},
+		Replicas: 2,
+	})
+	require_NoError(t, err)
+
+	// TODO check for downstream error propagation
+
+	_, err = js.Publish("foo", nil)
+	require_Error(t, err)
+
+	sendBatch("bar", 100)
+	// The source stream remains at 100 msgs as it still uses foo as it's filter
+	checkSync(200, 100)
 
 	c.stopAll()
 	c.restartAll()
@@ -5503,8 +5515,189 @@ func TestJetStreamClusterMirrorAndSourcesClusterRestart(t *testing.T) {
 	nc, js = jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
+	checkSync(200, 100)
+
+	_, err = js.Publish("foo", nil)
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "nats: no response from stream")
+
 	sendBatch("bar", 100)
-	checkSync()
+	// The source stream remains at 100 msgs as it still uses foo as it's filter
+	checkSync(300, 100)
+}
+
+func TestJetStreamClusterMirrorAndSourcesUpdate(t *testing.T) {
+	test := func(t *testing.T, mirror bool) {
+		t.Helper()
+		c := createJetStreamClusterExplicit(t, "MSR", 5)
+		defer c.shutdown()
+
+		// Client for API requests.
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		// Origin
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo", "bar", "baz.*"},
+			Replicas: 2,
+		})
+		require_NoError(t, err)
+
+		// Create Mirror/Source now.
+		if mirror {
+			_, err = js.AddStream(&nats.StreamConfig{
+				Name:     "M",
+				Mirror:   &nats.StreamSource{Name: "TEST", FilterSubject: "foo"},
+				Replicas: 2,
+			})
+		} else {
+			_, err = js.AddStream(&nats.StreamConfig{
+				Name:     "M",
+				Sources:  []*nats.StreamSource{{Name: "TEST", FilterSubject: "foo"}},
+				Replicas: 2,
+			})
+		}
+		require_NoError(t, err)
+
+		sendBatch := func(subject string, n int) {
+			t.Helper()
+			// Send a batch to a given subject.
+			for i := 0; i < n; i++ {
+				if _, err := js.Publish(subject, []byte("OK")); err != nil {
+					t.Fatalf("Unexpected publish error: %v", err)
+				}
+			}
+		}
+
+		checkSync := func(msgsTest, msgsM uint64) {
+			t.Helper()
+			checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+				if tsi, err := js.StreamInfo("TEST"); err != nil {
+					return err
+				} else if msi, err := js.StreamInfo("M"); err != nil {
+					return err
+				} else if tsi.State.Msgs != msgsTest {
+					return fmt.Errorf("received %d msgs from TEST, expected %d", tsi.State.Msgs, msgsTest)
+				} else if msi.State.Msgs != msgsM {
+					return fmt.Errorf("received %d msgs from TEST, expected %d", msi.State.Msgs, msgsM)
+				}
+				return nil
+			})
+		}
+
+		// send messages that are and are not filtered
+		sendBatch("foo", 100)
+		checkSync(100, 100)
+		sendBatch("bar", 100)
+		checkSync(200, 100)
+
+		c.stopAll()
+		c.restartAll()
+		c.waitOnStreamLeader("$G", "TEST")
+		c.waitOnStreamLeader("$G", "M")
+
+		nc, js = jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		// send more messages and ensure filtering still works as expected
+		checkSync(200, 100)
+		sendBatch("foo", 100)
+		checkSync(300, 200)
+		sendBatch("bar", 100)
+		checkSync(400, 200)
+	}
+	t.Run("mirror", func(t *testing.T) {
+		test(t, true)
+	})
+	t.Run("source", func(t *testing.T) {
+		test(t, false)
+	})
+}
+
+func TestJetStreamClusterMirrorAndSourcesClusterRestart(t *testing.T) {
+	test := func(t *testing.T, mirror bool) {
+		c := createJetStreamClusterExplicit(t, "MSR", 5)
+		defer c.shutdown()
+
+		// Client for API requests.
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		// Origin
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo", "bar", "baz.*"},
+			Replicas: 2,
+		})
+		require_NoError(t, err)
+
+		// Create Mirror/Source now.
+		if mirror {
+			_, err = js.AddStream(&nats.StreamConfig{
+				Name:     "M",
+				Mirror:   &nats.StreamSource{Name: "TEST"},
+				Replicas: 2,
+			})
+		} else {
+			_, err = js.AddStream(&nats.StreamConfig{
+				Name:     "M",
+				Sources:  []*nats.StreamSource{{Name: "TEST"}},
+				Replicas: 2,
+			})
+		}
+		require_NoError(t, err)
+
+		sendBatch := func(subject string, n int) {
+			t.Helper()
+			// Send a batch to a given subject.
+			for i := 0; i < n; i++ {
+				if _, err := js.Publish(subject, []byte("OK")); err != nil {
+					t.Fatalf("Unexpected publish error: %v", err)
+				}
+			}
+		}
+
+		checkSync := func(msgs uint64) {
+			t.Helper()
+			checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+				tsi, err := js.StreamInfo("TEST")
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				msi, err := js.StreamInfo("M")
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				if tsi.State.Msgs != msi.State.Msgs {
+					return fmt.Errorf("Total messages not the same: TEST %d vs M %d", tsi.State.Msgs, msi.State.Msgs)
+				}
+				require_True(t, tsi.State.Msgs == msgs)
+				return nil
+			})
+		}
+
+		// Send 100 msgs.
+		sendBatch("foo", 100)
+		checkSync(100)
+
+		c.stopAll()
+		c.restartAll()
+		c.waitOnStreamLeader("$G", "TEST")
+		c.waitOnStreamLeader("$G", "M")
+
+		nc, js = jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		sendBatch("bar", 100)
+		checkSync(200)
+	}
+	t.Run("mirror", func(t *testing.T) {
+		test(t, true)
+	})
+	t.Run("source", func(t *testing.T) {
+		test(t, false)
+	})
 }
 
 func TestJetStreamClusterSourceFilterSubjectUpdateFail(t *testing.T) {
