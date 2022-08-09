@@ -4451,53 +4451,6 @@ func TestNoRaceJetStreamConsumerFilterPerfDegradation(t *testing.T) {
 	}
 }
 
-func TestNoRaceFileStoreSubjectInfoWithSnapshotCleanup(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
-
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 1024 * 1024}, StreamConfig{Name: "TEST", Storage: FileStorage})
-	require_NoError(t, err)
-	defer fs.Stop()
-
-	n, msg := 10_000, []byte(strings.Repeat("Z", 1024))
-	for i := 0; i < n; i++ {
-		_, _, err := fs.StoreMsg(fmt.Sprintf("X.%d", i), nil, msg)
-		require_NoError(t, err)
-	}
-
-	// Snapshot causes us to write out per subject info, fss files.
-	// We want to make sure they get cleaned up.
-	sr, err := fs.Snapshot(5*time.Second, false, false)
-	require_NoError(t, err)
-	var buf [4 * 1024 * 1024]byte
-	for {
-		if _, err = sr.Reader.Read(buf[:]); err == io.EOF {
-			break
-		}
-		require_NoError(t, err)
-	}
-
-	var seqs []uint64
-	for i := 1; i <= n; i++ {
-		seqs = append(seqs, uint64(i))
-	}
-	// Randomly delete msgs, make sure we cleanup as we empty the message blocks.
-	rand.Shuffle(len(seqs), func(i, j int) { seqs[i], seqs[j] = seqs[j], seqs[i] })
-
-	for _, seq := range seqs {
-		_, err := fs.RemoveMsg(seq)
-		require_NoError(t, err)
-	}
-
-	// We will have cleanup the main .blk and .idx sans the lmb, but we should not have any *.fss files.
-	fms, err := filepath.Glob(filepath.Join(storeDir, msgDir, fssScanAll))
-	require_NoError(t, err)
-
-	if len(fms) > 0 {
-		t.Fatalf("Expected to find no fss files, found %d", len(fms))
-	}
-}
-
 func TestNoRaceFileStoreKeyFileCleanup(t *testing.T) {
 	storeDir := createDir(t, JetStreamStoreDir)
 	defer removeDir(t, storeDir)
@@ -5429,4 +5382,63 @@ func TestNoRaceJetStreamClusterStreamNamesAndInfosMoreThanAPILimit(t *testing.T)
 
 	check(JSApiStreams, JSApiNamesLimit)
 	check(JSApiStreamList, JSApiListLimit)
+}
+
+func TestNoRaceFileStoreLargeKVAccessTiming(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	blkSize := uint64(4 * 1024)
+	// Compensate for slower IO on MacOSX
+	if runtime.GOOS == "darwin" {
+		blkSize *= 4
+	}
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: blkSize, CacheExpire: 5 * time.Second},
+		StreamConfig{Name: "zzz", Storage: FileStorage, MaxMsgsPer: 1},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	tmpl := "KV.STREAM_NAME.%d"
+	nkeys, val := 100_000, bytes.Repeat([]byte("Z"), 1024)
+
+	for i := 1; i <= nkeys; i++ {
+		subj := fmt.Sprintf(tmpl, i)
+		_, _, err := fs.StoreMsg(subj, nil, val)
+		require_NoError(t, err)
+	}
+
+	first := fmt.Sprintf(tmpl, 1)
+	last := fmt.Sprintf(tmpl, nkeys)
+
+	start := time.Now()
+	_, err = fs.LoadLastMsg(last, nil)
+	require_NoError(t, err)
+	base := time.Since(start)
+
+	start = time.Now()
+	_, err = fs.LoadLastMsg(first, nil)
+	require_NoError(t, err)
+	slow := time.Since(start)
+
+	if slow > 2*base {
+		t.Fatalf("Took too long to look up first key vs last: %v vs %v", base, slow)
+	}
+
+	// time first seq lookup for both as well.
+	// Base will be first in this case.
+	fs.mu.RLock()
+	start = time.Now()
+	fs.firstSeqForSubj(first)
+	base = time.Since(start)
+	start = time.Now()
+	fs.firstSeqForSubj(last)
+	slow = time.Since(start)
+	fs.mu.RUnlock()
+
+	if slow > 2*base {
+		t.Fatalf("Took too long to look up last key by subject vs first: %v vs %v", base, slow)
+	}
 }

@@ -12338,10 +12338,14 @@ func TestJetStreamTemplatedErrorsBug(t *testing.T) {
 }
 
 func TestJetStreamServerEncryption(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	tmpl := `
 		listen: 127.0.0.1:-1
-		jetstream: {key: $JS_KEY}
-	`))
+		jetstream: {key: $JS_KEY, store_dir: '%s'}
+	`
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, storeDir)))
 	defer removeFile(t, conf)
 
 	os.Setenv("JS_KEY", "s3cr3t!!")

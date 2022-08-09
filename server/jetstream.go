@@ -1232,6 +1232,8 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 			cfg.StreamConfig.Subjects = nil
 		}
 
+		s.Noticef("  Starting restore for stream '%s > %s'", a.Name, cfg.StreamConfig.Name)
+
 		// Add in the stream.
 		mset, err := a.addStream(&cfg.StreamConfig)
 		if err != nil {
