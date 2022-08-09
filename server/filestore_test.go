@@ -1034,6 +1034,7 @@ func TestFileStoreStreamTruncate(t *testing.T) {
 
 	// Make sure we can recover same state.
 	fs.Stop()
+
 	fs, err = newFileStoreWithCreated(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 350},
 		StreamConfig{Name: "zzz", Storage: FileStorage},
@@ -1733,7 +1734,7 @@ func TestFileStorePartialIndexes(t *testing.T) {
 
 	// Force idx to expire by resetting last remove ts.
 	mb.mu.Lock()
-	mb.lrts = mb.lrts - int64(defaultCacheIdxExpiration*2)
+	mb.llts = mb.llts - int64(defaultCacheBufferExpiration*2)
 	mb.mu.Unlock()
 
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
@@ -3047,7 +3048,7 @@ func TestFileStoreStreamFailToRollBug(t *testing.T) {
 	// Grab some info for introspection.
 	fs.mu.RLock()
 	numBlks := len(fs.blks)
-	var index uint64
+	var index uint32
 	var blkSize int64
 	if numBlks > 0 {
 		mb := fs.blks[0]
@@ -4124,4 +4125,119 @@ func TestFileStoreEncryptedKeepIndexNeedBekResetBug(t *testing.T) {
 	var smv StoreMsg
 	_, err = fs.LoadMsg(10, &smv)
 	require_NoError(t, err)
+}
+
+func (fs *fileStore) reportMeta() (hasPSIM, hasAnyFSS bool) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	hasPSIM = fs.psim != nil
+	for _, mb := range fs.blks {
+		mb.mu.RLock()
+		hasAnyFSS = hasAnyFSS || mb.fss != nil
+		mb.mu.RUnlock()
+		if hasAnyFSS {
+			break
+		}
+	}
+	return hasPSIM, hasAnyFSS
+}
+
+func TestFileStoreExpireSubjectMeta(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 1024, CacheExpire: time.Second},
+		StreamConfig{Name: "zzz", Storage: FileStorage, MaxMsgsPer: 1},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	ns := 100
+	for i := 1; i <= ns; i++ {
+		subj := fmt.Sprintf("kv.%d", i)
+		_, _, err := fs.StoreMsg(subj, nil, []byte("value"))
+		require_NoError(t, err)
+	}
+
+	checkNoMeta := func() {
+		t.Helper()
+		if _, hasAnyFSS := fs.reportMeta(); hasAnyFSS {
+			t.Fatalf("Expected no mbs to have fss state")
+		}
+	}
+
+	// Test that on restart we do not have extensize metadata but do have correct number of subjects/keys.
+	// Only thing really needed for store state / stream info.
+	fs.Stop()
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 1024, CacheExpire: time.Second},
+		StreamConfig{Name: "zzz", Storage: FileStorage, MaxMsgsPer: 1},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	var ss StreamState
+	fs.FastState(&ss)
+	if ss.NumSubjects != ns {
+		t.Fatalf("Expected NumSubjects of %d, got %d", ns, ss.NumSubjects)
+	}
+
+	// Make sure we clear mb fss meta
+	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+		if _, hasAnyFSS := fs.reportMeta(); hasAnyFSS {
+			return fmt.Errorf("Still have mb fss state")
+		}
+		return nil
+	})
+
+	// Load by sequence should not load meta.
+	_, err = fs.LoadMsg(1, nil)
+	require_NoError(t, err)
+	checkNoMeta()
+
+	// LoadLast, which is what KV uses, should load meta and succeed.
+	_, err = fs.LoadLastMsg("kv.22", nil)
+	require_NoError(t, err)
+	// Make sure we clear mb fss meta
+	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+		if _, hasAnyFSS := fs.reportMeta(); hasAnyFSS {
+			return fmt.Errorf("Still have mb fss state")
+		}
+		return nil
+	})
+}
+
+func TestFileStoreMaxMsgsPerSubject(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 128, CacheExpire: time.Second},
+		StreamConfig{Name: "zzz", Subjects: []string{"kv.>"}, Storage: FileStorage, MaxMsgsPer: 1},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	ns := 100
+	for i := 1; i <= ns; i++ {
+		subj := fmt.Sprintf("kv.%d", i)
+		_, _, err := fs.StoreMsg(subj, nil, []byte("value"))
+		require_NoError(t, err)
+	}
+
+	for i := 1; i <= ns; i++ {
+		subj := fmt.Sprintf("kv.%d", i)
+		_, _, err := fs.StoreMsg(subj, nil, []byte("value"))
+		require_NoError(t, err)
+	}
+
+	if state := fs.State(); state.Msgs != 100 || state.FirstSeq != 101 || state.LastSeq != 200 || len(state.Deleted) != 0 {
+		t.Fatalf("Bad state: %+v", state)
+	}
+
+	if nb := fs.numMsgBlocks(); nb != 34 {
+		t.Fatalf("Expected 34 blocks, got %d", nb)
+	}
 }
