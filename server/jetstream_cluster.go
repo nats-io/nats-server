@@ -2011,6 +2011,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// If we were successful lookup up our stream now.
 			if err == nil {
 				if mset, err = acc.lookupStream(sa.Config.Name); mset != nil {
+					mset.monitorWg.Add(1)
+					defer mset.monitorWg.Done()
 					mset.setStreamAssignment(sa)
 					// Make sure to update our updateC which would have been nil.
 					uch = mset.updateC()
@@ -2736,10 +2738,8 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 				node.StepDown(sa.Group.Preferred)
 			}
 			node.ProposeRemovePeer(ourID)
-		}
-		// shut down monitor by shutting down raft
-		if n := mset.node; n != nil {
-			n.Delete()
+			// shut down monitor by shutting down raft
+			node.Delete()
 		}
 		// wait for monitor to be shut down
 		mset.monitorWg.Wait()
@@ -3099,7 +3099,7 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 	if acc, _ = s.LookupAccount(sa.Client.serviceAccount()); acc != nil {
 		if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
 			// shut down monitor by shutting down raft
-			if n := mset.node; n != nil {
+			if n := mset.raftNode(); n != nil {
 				n.Delete()
 			}
 			// wait for monitor to be shut down
