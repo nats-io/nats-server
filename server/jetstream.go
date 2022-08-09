@@ -1748,7 +1748,7 @@ func (jsa *jsAccount) updateUsage(tierName string, storeType StorageType, delta 
 	}
 }
 
-const usageTick = 1500 * time.Millisecond
+var usageTick = 1500 * time.Millisecond
 
 func (jsa *jsAccount) sendClusterUsageUpdateTimer() {
 	jsa.usageMu.Lock()
