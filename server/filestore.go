@@ -5016,7 +5016,10 @@ func (mb *msgBlock) ensurePerSubjectInfoLoaded() error {
 
 // Called on recovery to populate the global psim state.
 func (fs *fileStore) populateGlobalPerSubjectInfo(mb *msgBlock) {
-	if err := mb.readPerSubjectInfo(false); err != nil {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	if err := mb.readPerSubjectInfo(true); err != nil {
 		return
 	}
 	// Now populate psim.
