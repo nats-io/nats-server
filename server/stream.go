@@ -3504,14 +3504,14 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 	ts := time.Unix(0, sm.ts).UTC()
 
 	if len(hdr) == 0 {
-		const ht = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %v\r\n\r\n"
-		hdr = []byte(fmt.Sprintf(ht, name, sm.subj, sm.seq, ts))
+		const ht = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\n\r\n"
+		hdr = []byte(fmt.Sprintf(ht, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano)))
 	} else {
 		hdr = copyBytes(hdr)
 		hdr = genHeader(hdr, JSStream, name)
 		hdr = genHeader(hdr, JSSubject, sm.subj)
 		hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
-		hdr = genHeader(hdr, JSTimeStamp, ts.String())
+		hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
 	}
 	mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, sm.msg, nil, 0))
 }
