@@ -1011,14 +1011,12 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		if filter == _EMPTY_ || len(streamSubs) == 0 {
 			return true
 		}
-		subjectOverlap := false
 		for _, sub := range streamSubs {
 			if SubjectsCollide(sub, filter) {
-				subjectOverlap = true
-				break
+				return true
 			}
 		}
-		return subjectOverlap
+		return false
 	}
 
 	var streamSubs []string
