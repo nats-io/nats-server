@@ -1007,6 +1007,18 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		return exists, cfg.MaxMsgSize, cfg.Subjects
 	}
 
+	hasFilterSubjectOverlap := func(filter string, streamSubs []string) bool {
+		if filter == _EMPTY_ || len(streamSubs) == 0 {
+			return true
+		}
+		for _, sub := range streamSubs {
+			if SubjectsCollide(sub, filter) {
+				return true
+			}
+		}
+		return false
+	}
+
 	var streamSubs []string
 	var deliveryPrefixes []string
 	var apiPrefixes []string
@@ -1025,8 +1037,15 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		if len(subs) > 0 {
 			streamSubs = append(streamSubs, subs...)
 		}
-		if exists && cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
-			return StreamConfig{}, NewJSMirrorMaxMessageSizeTooBigError()
+		if exists {
+			if cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
+				return StreamConfig{}, NewJSMirrorMaxMessageSizeTooBigError()
+			}
+			if !hasFilterSubjectOverlap(cfg.Mirror.FilterSubject, subs) {
+				return StreamConfig{}, NewJSStreamInvalidConfigError(
+					fmt.Errorf("mirror '%s' filter subject '%s' does not overlap with any origin stream subject",
+						cfg.Mirror.Name, cfg.Mirror.FilterSubject))
+			}
 		}
 		if cfg.Mirror.External != nil {
 			if cfg.Mirror.External.DeliverPrefix != _EMPTY_ {
@@ -1054,21 +1073,28 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 	}
 	if len(cfg.Sources) > 0 {
 		for _, src := range cfg.Sources {
-			if src.External == nil {
-				continue
-			}
 			exists, maxMsgSize, subs := hasStream(src.Name)
 			if len(subs) > 0 {
 				streamSubs = append(streamSubs, subs...)
+			}
+			if exists {
+				if cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
+					return StreamConfig{}, NewJSSourceMaxMessageSizeTooBigError()
+				}
+				if !hasFilterSubjectOverlap(src.FilterSubject, streamSubs) {
+					return StreamConfig{}, NewJSStreamInvalidConfigError(
+						fmt.Errorf("source '%s' filter subject '%s' does not overlap with any origin stream subject",
+							src.Name, src.FilterSubject))
+				}
+			}
+			if src.External == nil {
+				continue
 			}
 			if src.External.DeliverPrefix != _EMPTY_ {
 				deliveryPrefixes = append(deliveryPrefixes, src.External.DeliverPrefix)
 			}
 			if src.External.ApiPrefix != _EMPTY_ {
 				apiPrefixes = append(apiPrefixes, src.External.ApiPrefix)
-			}
-			if exists && cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
-				return StreamConfig{}, NewJSSourceMaxMessageSizeTooBigError()
 			}
 		}
 	}

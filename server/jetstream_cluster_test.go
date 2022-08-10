@@ -5419,6 +5419,39 @@ func TestJetStreamClusterMirrorAndSourcesClusterRestart(t *testing.T) {
 	checkSync()
 }
 
+func TestJetStreamClusterSourceFilterSubjectUpdateFail(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "MSR", 3)
+	defer c.shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Origin
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 2,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "S",
+		Sources:  []*nats.StreamSource{{Name: "TEST", FilterSubject: "notthere"}},
+		Replicas: 2,
+	})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "source 'TEST' filter subject 'notthere' does not overlap with any origin stream subject")
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "M",
+		Mirror:   &nats.StreamSource{Name: "TEST", FilterSubject: "notthere"},
+		Replicas: 2,
+	})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "mirror 'TEST' filter subject 'notthere' does not overlap with any origin stream subject")
+}
+
 func TestJetStreamClusterMirrorAndSourcesFilteredConsumers(t *testing.T) {
 	c := createJetStreamClusterWithTemplate(t, jsClusterMirrorSourceImportsTempl, "MS5", 5)
 	defer c.shutdown()
