@@ -3082,7 +3082,7 @@ func TestJetStreamSuperClusterPeerEvacuationAndStreamReassignment(t *testing.T) 
 	nc, js := jsClientConnect(t, srv)
 	defer nc.Close()
 
-	test := func(r int, moveTags []string, targetCluster string, testMigrateTo bool, listFrom bool) {
+	test := func(t *testing.T, r int, moveTags []string, targetCluster string, testMigrateTo bool, listFrom bool) {
 		si, err := js.AddStream(&nats.StreamConfig{
 			Name:     "TEST",
 			Subjects: []string{"foo"},
@@ -3208,7 +3208,9 @@ func TestJetStreamSuperClusterPeerEvacuationAndStreamReassignment(t *testing.T) 
 			if !listFrom {
 				// when needed determine which server move moved away from
 				si, err := js.StreamInfo("TEST", nats.MaxWait(2*time.Second))
-				require_NoError(t, err)
+				if err != nil {
+					return fmt.Errorf("could not fetch stream info: %v", err)
+				}
 				for n := range startSet {
 					if n != si.Cluster.Leader {
 						found := false
@@ -3252,21 +3254,21 @@ func TestJetStreamSuperClusterPeerEvacuationAndStreamReassignment(t *testing.T) 
 
 	for i := 1; i <= 3; i++ {
 		t.Run(fmt.Sprintf("r%d", i), func(t *testing.T) {
-			test(i, nil, "C1", false, true)
+			test(t, i, nil, "C1", false, true)
 		})
 		t.Run(fmt.Sprintf("r%d-explicit", i), func(t *testing.T) {
-			test(i, nil, "C1", true, true)
+			test(t, i, nil, "C1", true, true)
 		})
 		t.Run(fmt.Sprintf("r%d-nosrc", i), func(t *testing.T) {
-			test(i, nil, "C1", false, false)
+			test(t, i, nil, "C1", false, false)
 		})
 	}
 
 	t.Run("r3-cluster-move", func(t *testing.T) {
-		test(3, []string{"cluster:C2"}, "C2", false, false)
+		test(t, 3, []string{"cluster:C2"}, "C2", false, false)
 	})
 	t.Run("r3-cluster-move-nosrc", func(t *testing.T) {
-		test(3, []string{"cluster:C2"}, "C2", false, true)
+		test(t, 3, []string{"cluster:C2"}, "C2", false, true)
 	})
 }
 
