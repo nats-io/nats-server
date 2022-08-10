@@ -2465,6 +2465,34 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 
 	peers := currPeers[:cfg.Replicas]
 
+	// Remove placement in case tags don't match
+	// This can happen if the move was initiated by modifying the tags.
+	// This is an account operation.
+	// This can NOT happen when the move was initiated by the system account.
+	// There move honors the original tag list.
+	if cfg.Placement != nil && len(cfg.Placement.Tags) != 0 {
+	FOR_TAGCHECK:
+		for _, peer := range peers {
+			si, ok := s.nodeToInfo.Load(peer)
+			if !ok {
+				// can't verify tags, do the safe thing and error
+				resp.Error = NewJSStreamGeneralError(
+					fmt.Errorf("peer %s not present for tag validation", peer))
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
+			}
+			nodeTags := si.(nodeInfo).tags
+			for _, tag := range cfg.Placement.Tags {
+				if !nodeTags.Contains(tag) {
+					// clear placement as tags don't match
+					cfg.Placement = nil
+					break FOR_TAGCHECK
+				}
+			}
+
+		}
+	}
+
 	s.Noticef("Requested cancel of move: R=%d '%s > %s' to peer set %+v and restore previous peer set %+v",
 		cfg.Replicas, streamName, accName, s.peerSetToNames(currPeers), s.peerSetToNames(peers))
 

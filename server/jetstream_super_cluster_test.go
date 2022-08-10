@@ -2652,6 +2652,66 @@ func TestJetStreamSuperClusterStreamDirectGetMirrorQueueGroup(t *testing.T) {
 	require_True(t, m.Header.Get(JSStream) == "M2")
 }
 
+func TestJetStreamSuperClusterTagInducedMoveCancel(t *testing.T) {
+	server := map[string]struct{}{}
+	sc := createJetStreamSuperClusterWithTemplateAndModHook(t, jsClusterTempl, 4, 2,
+		func(serverName, clusterName, storeDir, conf string) string {
+			server[serverName] = struct{}{}
+			return fmt.Sprintf("%s\nserver_tags: [%s]", conf, clusterName)
+		}, nil)
+	defer sc.shutdown()
+
+	// Client based API
+	c := sc.randomCluster()
+	srv := c.randomNonLeader()
+	nc, js := jsClientConnect(t, srv)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Placement: &nats.Placement{Tags: []string{"C1"}},
+		Replicas:  3,
+	}
+	siCreate, err := js.AddStream(cfg)
+	require_NoError(t, err)
+	require_Equal(t, siCreate.Cluster.Name, "C1")
+
+	toSend := uint64(1_000)
+	for i := uint64(0); i < toSend; i++ {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	ncsys, err := nats.Connect(srv.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer ncsys.Close()
+
+	// cause a move by altering placement tags
+	cfg.Placement.Tags = []string{"C2"}
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	rmsg, err := ncsys.Request(fmt.Sprintf(JSApiServerStreamCancelMoveT, "$G", "TEST"), nil, 5*time.Second)
+	require_NoError(t, err)
+	var cancelResp JSApiStreamUpdateResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &cancelResp))
+	if cancelResp.Error != nil && ErrorIdentifier(cancelResp.Error.ErrCode) == JSStreamMoveNotInProgress {
+		t.Skip("This can happen with delays, when Move completed before Cancel", cancelResp.Error)
+		return
+	}
+	require_True(t, cancelResp.Error == nil)
+
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		require_NoError(t, err)
+		if si.Config.Placement != nil {
+			return fmt.Errorf("expected placement to be cleared got: %+v", si.Config.Placement)
+		}
+		return nil
+	})
+}
+
 func TestJetStreamSuperClusterMoveCancel(t *testing.T) {
 	server := map[string]struct{}{}
 	sc := createJetStreamSuperClusterWithTemplateAndModHook(t, jsClusterTempl, 4, 2,
