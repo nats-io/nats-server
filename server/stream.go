@@ -1423,13 +1423,13 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 
 		// Check for Sources.
 		if len(cfg.Sources) > 0 || len(ocfg.Sources) > 0 {
-			current := make(map[string]struct{})
+			current := make(map[string]string)
 			for _, s := range ocfg.Sources {
-				current[s.iname] = struct{}{}
+				current[s.iname] = s.FilterSubject
 			}
 			for _, s := range cfg.Sources {
 				s.setIndexName()
-				if _, ok := current[s.iname]; !ok {
+				if oFilter, ok := current[s.iname]; !ok {
 					if mset.sources == nil {
 						mset.sources = make(map[string]*sourceInfo)
 					}
@@ -1438,6 +1438,12 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 					mset.sources[s.iname] = si
 					mset.setStartingSequenceForSource(s.iname)
 					mset.setSourceConsumer(s.iname, si.sseq+1)
+				} else if oFilter != s.FilterSubject {
+					if si, ok := mset.sources[s.iname]; ok {
+						// si.sseq is the last message we received
+						// if upstream has more messages, that we used to filter, now we get now
+						mset.setSourceConsumer(s.iname, si.sseq+1)
+					}
 				}
 				delete(current, s.iname)
 			}

@@ -5348,6 +5348,94 @@ func TestJetStreamClusterLeaderStepdown(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterSourcesFilterSubjectUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "MSR", 5)
+	defer c.shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	sendBatch := func(subject string, n int) {
+		t.Helper()
+		// Send a batch to a given subject.
+		for i := 0; i < n; i++ {
+			if _, err := js.Publish(subject, []byte("OK")); err != nil {
+				t.Fatalf("Unexpected publish error: %v", err)
+			}
+		}
+	}
+
+	checkSync := func(msgsTest, msgsM uint64) {
+		t.Helper()
+		checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+			if tsi, err := js.StreamInfo("TEST"); err != nil {
+				return err
+			} else if msi, err := js.StreamInfo("M"); err != nil {
+				return err
+			} else if tsi.State.Msgs != msgsTest {
+				return fmt.Errorf("received %d msgs from TEST, expected %d", tsi.State.Msgs, msgsTest)
+			} else if msi.State.Msgs != msgsM {
+				return fmt.Errorf("received %d msgs from M, expected %d", msi.State.Msgs, msgsM)
+			}
+			return nil
+		})
+	}
+
+	// Origin
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar"},
+		Replicas: 2,
+	})
+	require_NoError(t, err)
+	defer js.DeleteStream("TEST")
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "M",
+		Sources:  []*nats.StreamSource{{Name: "TEST", FilterSubject: "foo"}},
+		Replicas: 2,
+	})
+	require_NoError(t, err)
+	defer js.DeleteStream("M")
+
+	sendBatch("bar", 100)
+	checkSync(100, 0)
+	sendBatch("foo", 100)
+	// The source stream remains at 100 msgs as it filters for foo
+	checkSync(200, 100)
+
+	// change filter subject
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "M",
+		Sources:  []*nats.StreamSource{{Name: "TEST", FilterSubject: "bar"}},
+		Replicas: 2,
+	})
+	require_NoError(t, err)
+
+	sendBatch("foo", 100)
+	// The source stream remains at 100 msgs as it filters for bar
+	checkSync(300, 100)
+
+	sendBatch("bar", 100)
+	checkSync(400, 200)
+
+	// test unsuspected re delivery by sending to filtered subject
+	sendBatch("foo", 100)
+	checkSync(500, 200)
+
+	// change filter subject to foo, as the internal sequence number does not cover the previously filtered tail end
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "M",
+		Sources:  []*nats.StreamSource{{Name: "TEST", FilterSubject: "foo"}},
+		Replicas: 2,
+	})
+	require_NoError(t, err)
+	// no send was necessary as we received previously filtered messages
+	checkSync(500, 300)
+
+}
+
 func TestJetStreamClusterMirrorAndSourcesClusterRestart(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "MSR", 5)
 	defer c.shutdown()
