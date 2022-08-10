@@ -2713,6 +2713,12 @@ func TestJetStreamSuperClusterTagInducedMoveCancel(t *testing.T) {
 }
 
 func TestJetStreamSuperClusterMoveCancel(t *testing.T) {
+	usageTickOld := usageTick
+	usageTick = 250 * time.Millisecond
+	defer func() {
+		usageTick = usageTickOld
+	}()
+
 	server := map[string]struct{}{}
 	sc := createJetStreamSuperClusterWithTemplateAndModHook(t, jsClusterTempl, 4, 2,
 		func(serverName, clusterName, storeDir, conf string) string {
@@ -2821,6 +2827,10 @@ func TestJetStreamSuperClusterMoveCancel(t *testing.T) {
 	require_NoError(t, err)
 	defer ncsys.Close()
 
+	time.Sleep(2 * usageTick)
+	aiBefore, err := js.AccountInfo()
+	require_NoError(t, err)
+
 	for _, moveFromSrv := range streamPeerSrv {
 		moveReq, err := json.Marshal(&JSApiMetaServerStreamMoveRequest{Server: moveFromSrv, Tags: []string{emptySrv}})
 		require_NoError(t, err)
@@ -2846,6 +2856,15 @@ func TestJetStreamSuperClusterMoveCancel(t *testing.T) {
 			checkFor(t, 20*time.Second, 100*time.Millisecond, func() error { return checkSrvInvariant(s, expectedPeers) })
 		}
 		checkFor(t, 10*time.Second, 100*time.Millisecond, func() error { return serverEmpty(emptySrv) })
+		checkFor(t, 3*usageTick, 100*time.Millisecond, func() error {
+			if aiAfter, err := js.AccountInfo(); err != nil {
+				return err
+			} else if aiAfter.Store != aiBefore.Store {
+				return fmt.Errorf("store before %d and after %d don't match", aiBefore.Store, aiAfter.Store)
+			} else {
+				return nil
+			}
+		})
 	}
 }
 

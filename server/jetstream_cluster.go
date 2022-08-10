@@ -1478,6 +1478,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, rm *recoveryRemovals) (b
 				if isRecovering {
 					js.setStreamAssignmentRecovering(sa)
 				}
+
 				js.processUpdateStreamAssignment(sa)
 			default:
 				panic("JetStream Cluster Unknown meta entry op type")
@@ -1647,7 +1648,9 @@ func currentPeerCount(ci *ClusterInfo, peerSet []string, leaderId string) (curre
 func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnapshot bool) {
 	s, cc := js.server(), js.cluster
 	defer s.grWG.Done()
-
+	if mset != nil {
+		defer mset.monitorWg.Done()
+	}
 	js.mu.RLock()
 	n := sa.Group.node
 	meta := cc.meta
@@ -2008,6 +2011,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// If we were successful lookup up our stream now.
 			if err == nil {
 				if mset, err = acc.lookupStream(sa.Config.Name); mset != nil {
+					mset.monitorWg.Add(1)
+					defer mset.monitorWg.Done()
 					mset.setStreamAssignment(sa)
 					// Make sure to update our updateC which would have been nil.
 					uch = mset.updateC()
@@ -2733,7 +2738,11 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 				node.StepDown(sa.Group.Preferred)
 			}
 			node.ProposeRemovePeer(ourID)
+			// shut down monitor by shutting down raft
+			node.Delete()
 		}
+		// wait for monitor to be shut down
+		mset.monitorWg.Wait()
 		mset.stop(true, false)
 	}
 }
@@ -2763,6 +2772,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 				mset.setLeader(false)
 				js.createRaftGroup(acc.GetName(), rg, storage)
 			}
+			mset.monitorWg.Add(1)
 			// Start monitoring..
 			s.startGoRoutine(func() { js.monitorStream(mset, sa, needsNode) })
 		} else if numReplicas == 1 && alreadyRunning {
@@ -2938,6 +2948,9 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	// Start our monitoring routine.
 	if rg.node != nil {
 		if !alreadyRunning {
+			if mset != nil {
+				mset.monitorWg.Add(1)
+			}
 			s.startGoRoutine(func() { js.monitorStream(mset, sa, false) })
 		}
 	} else {
@@ -3085,6 +3098,12 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 	// Go ahead and delete the stream if we have it and the account here.
 	if acc, _ = s.LookupAccount(sa.Client.serviceAccount()); acc != nil {
 		if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
+			// shut down monitor by shutting down raft
+			if n := mset.raftNode(); n != nil {
+				n.Delete()
+			}
+			// wait for monitor to be shut down
+			mset.monitorWg.Wait()
 			err = mset.stop(true, wasLeader)
 			stopped = true
 		}

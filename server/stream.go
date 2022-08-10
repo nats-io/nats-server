@@ -237,6 +237,8 @@ type stream struct {
 	// Direct get subscription.
 	directSub *subscription
 	lastBySub *subscription
+
+	monitorWg sync.WaitGroup
 }
 
 type sourceInfo struct {
