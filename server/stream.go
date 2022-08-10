@@ -1414,7 +1414,6 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 					mset.setSourceConsumer(s.iname, si.sseq+1)
 				} else if oFilter != s.FilterSubject {
 					if si, ok := mset.sources[s.iname]; ok {
-						mset.cancelSourceInfo(si)
 						// si.sseq is the last message we received
 						// if upstream has more messages, that we used to filter, now we get now
 						mset.setSourceConsumer(s.iname, si.sseq+1)
