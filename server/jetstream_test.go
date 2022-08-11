@@ -19046,3 +19046,62 @@ func TestJetStreamServerCipherConvert(t *testing.T) {
 		t.Fatalf("Consumer infos did not match\n%+v\nvs\n%+v", ci, ci2)
 	}
 }
+
+func TestJetStreamConsumerDeliverNewMaxRedeliveriesAndServerRestart(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.*"},
+	})
+	require_NoError(t, err)
+
+	inbox := nats.NewInbox()
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		DeliverSubject: inbox,
+		Durable:        "dur",
+		AckPolicy:      nats.AckExplicitPolicy,
+		DeliverPolicy:  nats.DeliverNewPolicy,
+		MaxDeliver:     3,
+		AckWait:        250 * time.Millisecond,
+		FilterSubject:  "foo.bar",
+	})
+	require_NoError(t, err)
+
+	sendStreamMsg(t, nc, "foo.bar", "msg")
+
+	sub := natsSubSync(t, nc, inbox)
+	for i := 0; i < 3; i++ {
+		natsNexMsg(t, sub, time.Second)
+	}
+	// Now check that there is no more redeliveries
+	if msg, err := sub.NextMsg(300 * time.Millisecond); err != nats.ErrTimeout {
+		t.Fatalf("Expected timeout, got msg=%+v err=%v", msg, err)
+	}
+
+	// Give a chance to things to be persisted
+	time.Sleep(300 * time.Millisecond)
+
+	// Check server restart
+	nc.Close()
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc, _ = jsClientConnect(t, s)
+	defer nc.Close()
+
+	sub = natsSubSync(t, nc, inbox)
+	// We should not have messages being redelivered.
+	if msg, err := sub.NextMsg(300 * time.Millisecond); err != nats.ErrTimeout {
+		t.Fatalf("Expected timeout, got msg=%+v err=%v", msg, err)
+	}
+}
