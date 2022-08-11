@@ -402,7 +402,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	// Check for overlapping subjects. These are not allowed for now.
 	if jsa.subjectsOverlap(cfg.Subjects) {
 		jsa.mu.Unlock()
-		return nil, fmt.Errorf("subjects overlap with an existing stream")
+		return nil, NewJSStreamSubjectOverlapError()
 	}
 
 	if !hasTier {

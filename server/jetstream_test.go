@@ -18908,3 +18908,45 @@ func TestJetStreamDirectGetAutoSet(t *testing.T) {
 		t.Fatalf("Expected to see the mirror respond at least once")
 	}
 }
+
+func TestJetStreamProperErrorDueToOverlapSubjects(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	test := func(t *testing.T, s *Server) {
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo.*"},
+		})
+		require_NoError(t, err)
+
+		// Now do this by end since we want to check the error returned.
+		sc := &nats.StreamConfig{
+			Name:     "TEST2",
+			Subjects: []string{"foo.>"},
+		}
+		req, _ := json.Marshal(sc)
+		msg, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, sc.Name), req, time.Second)
+		require_NoError(t, err)
+
+		var scResp JSApiStreamCreateResponse
+		err = json.Unmarshal(msg.Data, &scResp)
+		require_NoError(t, err)
+
+		if scResp.Error == nil || !IsNatsErr(scResp.Error, JSStreamSubjectOverlapErr) {
+			t.Fatalf("Did not receive correct error: %+v", scResp)
+		}
+	}
+
+	t.Run("standalone", func(t *testing.T) { test(t, s) })
+	t.Run("clustered", func(t *testing.T) { test(t, c.randomServer()) })
+}
