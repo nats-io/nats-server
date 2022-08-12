@@ -1536,9 +1536,29 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 		return nil
 	}
 
+	start, stop := fs.blks[0], fs.lmb
+	// We can short circuit if not a wildcard using psim for start and stop.
+	if !subjectHasWildcard(subject) {
+		info := fs.psim[subject]
+		if info == nil {
+			return nil
+		}
+		start, stop = fs.bim[info.fblk], fs.bim[info.lblk]
+	}
+
 	fss := make(map[string]SimpleState)
+	var startFound bool
+
 	for _, mb := range fs.blks {
-		mb.mu.RLock()
+		if !startFound {
+			if mb != start {
+				continue
+			}
+			startFound = true
+		}
+
+		mb.mu.Lock()
+		mb.ensurePerSubjectInfoLoaded()
 		for subj, ss := range mb.fss {
 			if subject == _EMPTY_ || subject == fwcs || subjectIsSubsetMatch(subj, subject) {
 				oss := fss[subj]
@@ -1551,8 +1571,13 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 				}
 			}
 		}
-		mb.mu.RUnlock()
+		mb.mu.Unlock()
+
+		if mb == stop {
+			break
+		}
 	}
+
 	return fss
 }
 
@@ -1726,9 +1751,6 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 	var psmc uint64
 	psmax := fs.cfg.MaxMsgsPer > 0 && len(subj) > 0
 	if psmax {
-
-		// FIXME(dlc) = psim nil??
-
 		if info, ok := fs.psim[subj]; ok {
 			psmc = info.total
 		}

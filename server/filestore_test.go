@@ -4241,3 +4241,65 @@ func TestFileStoreMaxMsgsPerSubject(t *testing.T) {
 		t.Fatalf("Expected 34 blocks, got %d", nb)
 	}
 }
+
+func TestFileStoreSubjectStateCacheExpiration(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 32, CacheExpire: time.Second},
+		StreamConfig{Name: "zzz", Subjects: []string{"kv.>"}, Storage: FileStorage, MaxMsgsPer: 2},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	for i := 1; i <= 100; i++ {
+		subj := fmt.Sprintf("kv.foo.%d", i)
+		_, _, err := fs.StoreMsg(subj, nil, []byte("value"))
+		require_NoError(t, err)
+	}
+	for i := 1; i <= 100; i++ {
+		subj := fmt.Sprintf("kv.bar.%d", i)
+		_, _, err := fs.StoreMsg(subj, nil, []byte("value"))
+		require_NoError(t, err)
+	}
+
+	// Make sure we clear mb fss meta before asking for SubjectState.
+	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+		if _, hasAnyFSS := fs.reportMeta(); hasAnyFSS {
+			return fmt.Errorf("Still have mb fss state")
+		}
+		return nil
+	})
+
+	if fss := fs.SubjectsState("kv.bar.>"); len(fss) != 100 {
+		t.Fatalf("Expected 100 entries but got %d", len(fss))
+	}
+
+	fss := fs.SubjectsState("kv.bar.99")
+	if len(fss) != 1 {
+		t.Fatalf("Expected 1 entry but got %d", len(fss))
+	}
+	expected := SimpleState{Msgs: 1, First: 199, Last: 199}
+	if ss := fss["kv.bar.99"]; ss != expected {
+		t.Fatalf("Bad subject state, expected %+v but got %+v", expected, ss)
+	}
+
+	// Now add one to end and check as well for non-wildcard.
+	_, _, err = fs.StoreMsg("kv.foo.1", nil, []byte("value22"))
+	require_NoError(t, err)
+
+	if state := fs.State(); state.Msgs != 201 {
+		t.Fatalf("Expected 201 msgs but got %+v", state)
+	}
+
+	fss = fs.SubjectsState("kv.foo.1")
+	if len(fss) != 1 {
+		t.Fatalf("Expected 1 entry but got %d", len(fss))
+	}
+	expected = SimpleState{Msgs: 2, First: 1, Last: 201}
+	if ss := fss["kv.foo.1"]; ss != expected {
+		t.Fatalf("Bad subject state, expected %+v but got %+v", expected, ss)
+	}
+
+}
