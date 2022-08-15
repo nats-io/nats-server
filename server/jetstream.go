@@ -14,12 +14,13 @@
 package server
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -202,10 +203,6 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 		return err
 	}
 
-	if ek := s.getOpts().JetStreamKey; ek != _EMPTY_ {
-		s.Warnf("JetStream Encryption is Beta")
-	}
-
 	return s.enableJetStream(cfg)
 }
 
@@ -232,8 +229,8 @@ func (s *Server) jsKeyGen(info string) keyGen {
 
 // Decode the encrypted metafile.
 func (s *Server) decryptMeta(ekey, buf []byte, acc, context string) ([]byte, error) {
-	if len(ekey) != metaKeySize {
-		return nil, errors.New("bad encryption key")
+	if len(ekey) < minMetaKeySize {
+		return nil, errBadKeySize
 	}
 	prf := s.jsKeyGen(acc)
 	if prf == nil {
@@ -243,7 +240,18 @@ func (s *Server) decryptMeta(ekey, buf []byte, acc, context string) ([]byte, err
 	if err != nil {
 		return nil, err
 	}
-	kek, err := chacha20poly1305.NewX(rb)
+
+	sc := s.getOpts().JetStreamCipher
+	var kek cipher.AEAD
+	if sc == ChaCha {
+		kek, err = chacha20poly1305.NewX(rb)
+	} else if sc == AES {
+		block, e := aes.NewCipher(rb)
+		if e != nil {
+			return nil, err
+		}
+		kek, err = cipher.NewGCMWithNonceSize(block, block.BlockSize())
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -252,11 +260,20 @@ func (s *Server) decryptMeta(ekey, buf []byte, acc, context string) ([]byte, err
 	if err != nil {
 		return nil, err
 	}
-	aek, err := chacha20poly1305.NewX(seed[:])
+	var aek cipher.AEAD
+	if sc == ChaCha {
+		aek, err = chacha20poly1305.NewX(seed[:])
+	} else if sc == AES {
+		block, e := aes.NewCipher(seed)
+		if e != nil {
+			return nil, err
+		}
+		aek, err = cipher.NewGCMWithNonceSize(block, block.BlockSize())
+	}
 	if err != nil {
 		return nil, err
 	}
-	ns = kek.NonceSize()
+
 	plain, err := aek.Open(nil, buf[:ns], buf[ns:], nil)
 	if err != nil {
 		return nil, err
@@ -1180,7 +1197,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 		// Check if we are encrypted.
 		if key, err := os.ReadFile(filepath.Join(mdir, JetStreamMetaFileKey)); err == nil {
 			s.Debugf("  Stream metafile is encrypted, reading encrypted keyfile")
-			if len(key) != metaKeySize {
+			if len(key) < minMetaKeySize {
 				s.Warnf("  Bad stream encryption key length of %d", len(key))
 				continue
 			}

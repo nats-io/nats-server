@@ -4099,7 +4099,7 @@ func TestFileStoreEncryptedKeepIndexNeedBekResetBug(t *testing.T) {
 		fs.StoreMsg(subj, nil, msg)
 	}
 
-	// What to go to 0.
+	// Want to go to 0.
 	// This will leave the marker.
 	checkFor(t, time.Second, ttl, func() error {
 		if state := fs.State(); state.Msgs != 0 {
@@ -4301,5 +4301,68 @@ func TestFileStoreSubjectStateCacheExpiration(t *testing.T) {
 	if ss := fss["kv.foo.1"]; ss != expected {
 		t.Fatalf("Bad subject state, expected %+v but got %+v", expected, ss)
 	}
+}
 
+func TestFileStoreEncryptedAES(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer os.RemoveAll(storeDir)
+
+	prf := func(context []byte) ([]byte, error) {
+		h := hmac.New(sha256.New, []byte("dlc22"))
+		if _, err := h.Write(context); err != nil {
+			return nil, err
+		}
+		return h.Sum(nil), nil
+	}
+
+	fs, err := newFileStoreWithCreated(
+		FileStoreConfig{StoreDir: storeDir, Cipher: AES},
+		StreamConfig{Name: "zzz", Storage: FileStorage},
+		time.Now(),
+		prf,
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	subj, msg := "foo", []byte("aes ftw")
+	for i := 0; i < 50; i++ {
+		fs.StoreMsg(subj, nil, msg)
+	}
+
+	o, err := fs.ConsumerStore("o22", &ConsumerConfig{})
+	require_NoError(t, err)
+
+	state := &ConsumerState{}
+	state.Delivered.Consumer = 22
+	state.Delivered.Stream = 22
+	state.AckFloor.Consumer = 11
+	state.AckFloor.Stream = 11
+	err = o.Update(state)
+	require_NoError(t, err)
+
+	fs.Stop()
+
+	fs, err = newFileStoreWithCreated(
+		FileStoreConfig{StoreDir: storeDir, Cipher: AES},
+		StreamConfig{Name: "zzz", Storage: FileStorage},
+		time.Now(),
+		prf,
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Now make sure we can read.
+	var smv StoreMsg
+	sm, err := fs.LoadMsg(10, &smv)
+	require_NoError(t, err)
+	require_True(t, string(sm.msg) == "aes ftw")
+
+	o, err = fs.ConsumerStore("o22", &ConsumerConfig{})
+	require_NoError(t, err)
+	rstate, err := o.State()
+	require_NoError(t, err)
+
+	if rstate.Delivered != state.Delivered || rstate.AckFloor != state.AckFloor {
+		t.Fatalf("Bad recovered consumer state, expected %+v got %+v", state, rstate)
+	}
 }

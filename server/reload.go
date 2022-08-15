@@ -945,7 +945,7 @@ func imposeOrder(value interface{}) error {
 		sort.Strings(value.AllowedOrigins)
 	case string, bool, uint8, int, int32, int64, time.Duration, float64, nil, LeafNodeOpts, ClusterOpts, *tls.Config, PinnedCertSet,
 		*URLAccResolver, *MemAccResolver, *DirAccResolver, *CacheDirAccResolver, Authentication, MQTTOpts, jwt.TagList,
-		*OCSPConfig, map[string]string, JSLimitOpts:
+		*OCSPConfig, map[string]string, JSLimitOpts, StoreCipher:
 		// explicitly skipped types
 	default:
 		// this will fail during unit tests
@@ -976,7 +976,7 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 		field := oldConfig.Type().Field(i)
 		// field.PkgPath is empty for exported fields, and is not for unexported ones.
 		// We skip the unexported fields.
-		if field.PkgPath != "" {
+		if field.PkgPath != _EMPTY_ {
 			continue
 		}
 		var (
