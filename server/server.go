@@ -1872,8 +1872,8 @@ func (s *Server) Shutdown() {
 	if s == nil {
 		return
 	}
-	// Transfer off any raft nodes that we are a leader by shutting them all down.
-	s.shutdownRaftNodes()
+	// Transfer off any raft nodes that we are a leader by stepping them down.
+	s.stepdownRaftNodes()
 
 	// This is for clustered JetStream and ephemeral consumers.
 	// No-op if not clustered or not running JetStream.
@@ -1910,6 +1910,9 @@ func (s *Server) Shutdown() {
 
 	// Now check jetstream.
 	s.shutdownJetStream()
+
+	// Now shutdown the nodes
+	s.shutdownRaftNodes()
 
 	s.mu.Lock()
 	conns := make(map[uint64]*client)

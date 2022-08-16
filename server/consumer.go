@@ -4031,6 +4031,10 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 		if dflag {
 			n.Delete()
 		} else {
+			// Try to install snapshot on clean exit
+			if snap, err := o.store.EncodedState(); err == nil {
+				n.InstallSnapshot(snap)
+			}
 			n.Stop()
 		}
 	}
