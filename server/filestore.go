@@ -464,6 +464,21 @@ func dynBlkSize(retention RetentionPolicy, maxBytes int64) uint64 {
 	}
 }
 
+func genEncryptionKey(sc StoreCipher, seed []byte) (ek cipher.AEAD, err error) {
+	if sc == ChaCha {
+		ek, err = chacha20poly1305.NewX(seed)
+	} else if sc == AES {
+		block, e := aes.NewCipher(seed)
+		if e != nil {
+			return nil, err
+		}
+		ek, err = cipher.NewGCMWithNonceSize(block, block.BlockSize())
+	} else {
+		err = errUnknownCipher
+	}
+	return ek, err
+}
+
 // Generate an asset encryption key from the context and server PRF.
 func (fs *fileStore) genEncryptionKeys(context string) (aek cipher.AEAD, bek cipher.Stream, seed, encrypted []byte, err error) {
 	if fs.prf == nil {
@@ -477,18 +492,7 @@ func (fs *fileStore) genEncryptionKeys(context string) (aek cipher.AEAD, bek cip
 
 	sc := fs.fcfg.Cipher
 
-	var kek cipher.AEAD
-	if sc == ChaCha {
-		kek, err = chacha20poly1305.NewX(rb)
-	} else if sc == AES {
-		block, e := aes.NewCipher(rb)
-		if e != nil {
-			return nil, nil, nil, nil, err
-		}
-		kek, err = cipher.NewGCMWithNonceSize(block, block.BlockSize())
-	} else {
-		err = errUnknownCipher
-	}
+	kek, err := genEncryptionKey(sc, rb)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -500,15 +504,7 @@ func (fs *fileStore) genEncryptionKeys(context string) (aek cipher.AEAD, bek cip
 		return nil, nil, nil, nil, err
 	}
 
-	if sc == ChaCha {
-		aek, err = chacha20poly1305.NewX(seed)
-	} else if sc == AES {
-		block, e := aes.NewCipher(seed)
-		if e != nil {
-			return nil, nil, nil, nil, err
-		}
-		aek, err = cipher.NewGCMWithNonceSize(block, block.BlockSize())
-	}
+	aek, err = genEncryptionKey(sc, seed)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -683,16 +679,7 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint32) (*msgBlock, e
 			}
 
 			sc := fs.fcfg.Cipher
-			var kek cipher.AEAD
-			if sc == ChaCha {
-				kek, err = chacha20poly1305.NewX(rb)
-			} else if sc == AES {
-				block, e := aes.NewCipher(rb)
-				if e != nil {
-					return nil, err
-				}
-				kek, err = cipher.NewGCMWithNonceSize(block, block.BlockSize())
-			}
+			kek, err := genEncryptionKey(sc, rb)
 			if err != nil {
 				return nil, err
 			}
@@ -706,16 +693,7 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint32) (*msgBlock, e
 			} else {
 				mb.seed, mb.nonce = seed, ekey[:ns]
 			}
-
-			if sc == ChaCha {
-				mb.aek, err = chacha20poly1305.NewX(mb.seed)
-			} else if sc == AES {
-				block, e := aes.NewCipher(mb.seed)
-				if e != nil {
-					return nil, err
-				}
-				mb.aek, err = cipher.NewGCMWithNonceSize(block, block.BlockSize())
-			}
+			mb.aek, err = genEncryptionKey(sc, mb.seed)
 			if err != nil {
 				return nil, err
 			}
@@ -856,17 +834,7 @@ func (mb *msgBlock) convertCipher() error {
 	if err != nil {
 		return err
 	}
-
-	var kek cipher.AEAD
-	if osc == ChaCha {
-		kek, err = chacha20poly1305.NewX(rb)
-	} else if osc == AES {
-		block, e := aes.NewCipher(rb)
-		if e != nil {
-			return err
-		}
-		kek, err = cipher.NewGCMWithNonceSize(block, block.BlockSize())
-	}
+	kek, err := genEncryptionKey(osc, rb)
 	if err != nil {
 		return err
 	}
@@ -5748,16 +5716,7 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 			}
 
 			sc := fs.fcfg.Cipher
-			var kek cipher.AEAD
-			if sc == ChaCha {
-				kek, err = chacha20poly1305.NewX(rb)
-			} else if sc == AES {
-				block, e := aes.NewCipher(rb)
-				if e != nil {
-					return nil, err
-				}
-				kek, err = cipher.NewGCMWithNonceSize(block, block.BlockSize())
-			}
+			kek, err := genEncryptionKey(sc, rb)
 			if err != nil {
 				return nil, err
 			}
@@ -5770,15 +5729,7 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 					return nil, err
 				}
 			} else {
-				if sc == ChaCha {
-					o.aek, err = chacha20poly1305.NewX(seed)
-				} else if sc == AES {
-					block, e := aes.NewCipher(seed)
-					if e != nil {
-						return nil, err
-					}
-					o.aek, err = cipher.NewGCMWithNonceSize(block, block.BlockSize())
-				}
+				o.aek, err = genEncryptionKey(sc, seed)
 			}
 			if err != nil {
 				return nil, err
@@ -5854,16 +5805,11 @@ func (o *consumerFileStore) convertCipher() error {
 
 	// Do these in reverse since converting.
 	sc := fs.fcfg.Cipher
-	var kek, aek cipher.AEAD
+	osc := AES
 	if sc == AES {
-		kek, err = chacha20poly1305.NewX(rb)
-	} else if sc == ChaCha {
-		block, e := aes.NewCipher(rb)
-		if e != nil {
-			return err
-		}
-		kek, err = cipher.NewGCMWithNonceSize(block, block.BlockSize())
+		osc = ChaCha
 	}
+	kek, err := genEncryptionKey(osc, rb)
 	if err != nil {
 		return err
 	}
@@ -5873,20 +5819,10 @@ func (o *consumerFileStore) convertCipher() error {
 	if err != nil {
 		return err
 	}
-
-	if sc == AES {
-		aek, err = chacha20poly1305.NewX(seed)
-	} else if sc == ChaCha {
-		block, e := aes.NewCipher(seed)
-		if e != nil {
-			return err
-		}
-		aek, err = cipher.NewGCMWithNonceSize(block, block.BlockSize())
-	}
+	aek, err := genEncryptionKey(osc, seed)
 	if err != nil {
 		return err
 	}
-
 	// Now read in and decode our state using the old cipher.
 	buf, err := os.ReadFile(o.ifn)
 	if err != nil {

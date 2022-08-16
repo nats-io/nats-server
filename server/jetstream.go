@@ -14,8 +14,6 @@
 package server
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
@@ -35,7 +33,6 @@ import (
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
-	"golang.org/x/crypto/chacha20poly1305"
 )
 
 // JetStreamConfig determines this server's configuration.
@@ -241,16 +238,7 @@ func (s *Server) decryptMeta(sc StoreCipher, ekey, buf []byte, acc, context stri
 		return nil, err
 	}
 
-	var kek cipher.AEAD
-	if sc == ChaCha {
-		kek, err = chacha20poly1305.NewX(rb)
-	} else if sc == AES {
-		block, e := aes.NewCipher(rb)
-		if e != nil {
-			return nil, err
-		}
-		kek, err = cipher.NewGCMWithNonceSize(block, block.BlockSize())
-	}
+	kek, err := genEncryptionKey(sc, rb)
 	if err != nil {
 		return nil, err
 	}
@@ -259,20 +247,10 @@ func (s *Server) decryptMeta(sc StoreCipher, ekey, buf []byte, acc, context stri
 	if err != nil {
 		return nil, err
 	}
-	var aek cipher.AEAD
-	if sc == ChaCha {
-		aek, err = chacha20poly1305.NewX(seed[:])
-	} else if sc == AES {
-		block, e := aes.NewCipher(seed)
-		if e != nil {
-			return nil, err
-		}
-		aek, err = cipher.NewGCMWithNonceSize(block, block.BlockSize())
-	}
+	aek, err := genEncryptionKey(sc, seed)
 	if err != nil {
 		return nil, err
 	}
-
 	plain, err := aek.Open(nil, buf[:ns], buf[ns:], nil)
 	if err != nil {
 		return nil, err
