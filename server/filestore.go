@@ -16,6 +16,7 @@ package server
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
@@ -55,12 +56,32 @@ type FileStoreConfig struct {
 	SyncInterval time.Duration
 	// AsyncFlush allows async flush to batch write operations.
 	AsyncFlush bool
+	// Cipher is the cipher to use when encrypting.
+	Cipher StoreCipher
 }
 
 // FileStreamInfo allows us to remember created time.
 type FileStreamInfo struct {
 	Created time.Time
 	StreamConfig
+}
+
+type StoreCipher int
+
+const (
+	ChaCha StoreCipher = iota
+	AES
+)
+
+func (cipher StoreCipher) String() string {
+	switch cipher {
+	case ChaCha:
+		return "ChaCha20-Poly1305"
+	case AES:
+		return "AES-GCM"
+	default:
+		return "Unknown StoreCipher"
+	}
 }
 
 // File ConsumerInfo is used for creating consumer stores.
@@ -113,7 +134,7 @@ type msgBlock struct {
 	mu      sync.RWMutex
 	fs      *fileStore
 	aek     cipher.AEAD
-	bek     *chacha20.Cipher
+	bek     cipher.Stream
 	seed    []byte
 	nonce   []byte
 	mfn     string
@@ -215,8 +236,8 @@ const (
 	JetStreamMetaFileKey = "meta.key"
 
 	// AEK key sizes
-	metaKeySize = 72
-	blkKeySize  = 72
+	minMetaKeySize = 64
+	minBlkKeySize  = 64
 
 	// Default stream block size.
 	defaultLargeBlockSize = 8 * 1024 * 1024 // 8MB
@@ -443,8 +464,23 @@ func dynBlkSize(retention RetentionPolicy, maxBytes int64) uint64 {
 	}
 }
 
+func genEncryptionKey(sc StoreCipher, seed []byte) (ek cipher.AEAD, err error) {
+	if sc == ChaCha {
+		ek, err = chacha20poly1305.NewX(seed)
+	} else if sc == AES {
+		block, e := aes.NewCipher(seed)
+		if e != nil {
+			return nil, err
+		}
+		ek, err = cipher.NewGCMWithNonceSize(block, block.BlockSize())
+	} else {
+		err = errUnknownCipher
+	}
+	return ek, err
+}
+
 // Generate an asset encryption key from the context and server PRF.
-func (fs *fileStore) genEncryptionKeys(context string) (aek cipher.AEAD, bek *chacha20.Cipher, seed, encrypted []byte, err error) {
+func (fs *fileStore) genEncryptionKeys(context string) (aek cipher.AEAD, bek cipher.Stream, seed, encrypted []byte, err error) {
 	if fs.prf == nil {
 		return nil, nil, nil, nil, errNoEncryption
 	}
@@ -453,16 +489,22 @@ func (fs *fileStore) genEncryptionKeys(context string) (aek cipher.AEAD, bek *ch
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	kek, err := chacha20poly1305.NewX(rb)
+
+	sc := fs.fcfg.Cipher
+
+	kek, err := genEncryptionKey(sc, rb)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 	// Generate random asset encryption key seed.
-	seed = make([]byte, 32)
-	if n, err := rand.Read(seed); err != nil || n != 32 {
+
+	const seedSize = 32
+	seed = make([]byte, seedSize)
+	if n, err := rand.Read(seed); err != nil || n != seedSize {
 		return nil, nil, nil, nil, err
 	}
-	aek, err = chacha20poly1305.NewX(seed)
+
+	aek, err = genEncryptionKey(sc, seed)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -470,12 +512,27 @@ func (fs *fileStore) genEncryptionKeys(context string) (aek cipher.AEAD, bek *ch
 	// Generate our nonce. Use same buffer to hold encrypted seed.
 	nonce := make([]byte, kek.NonceSize(), kek.NonceSize()+len(seed)+kek.Overhead())
 	mrand.Read(nonce)
-	bek, err = chacha20.NewUnauthenticatedCipher(seed[:], nonce)
+
+	bek, err = genBlockEncryptionKey(sc, seed[:], nonce)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 
 	return aek, bek, seed, kek.Seal(nonce, nonce, seed, nil), nil
+}
+
+// Will generate the block encryption key.
+func genBlockEncryptionKey(sc StoreCipher, seed, nonce []byte) (cipher.Stream, error) {
+	if sc == ChaCha {
+		return chacha20.NewUnauthenticatedCipher(seed, nonce)
+	} else if sc == AES {
+		block, err := aes.NewCipher(seed)
+		if err != nil {
+			return nil, err
+		}
+		return cipher.NewCTR(block, nonce), nil
+	}
+	return nil, errUnknownCipher
 }
 
 // Write out meta and the checksum.
@@ -486,7 +543,6 @@ func (fs *fileStore) writeStreamMeta() error {
 		if err != nil {
 			return err
 		}
-		fs.aek = key
 		keyFile := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFileKey)
 		if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
 			return err
@@ -494,6 +550,8 @@ func (fs *fileStore) writeStreamMeta() error {
 		if err := os.WriteFile(keyFile, encrypted, defaultFilePerms); err != nil {
 			return err
 		}
+		// Set our aek.
+		fs.aek = key
 	}
 
 	meta := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFile)
@@ -611,7 +669,7 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint32) (*msgBlock, e
 			}
 			createdKeys = true
 		} else {
-			if len(ekey) != blkKeySize {
+			if len(ekey) < minBlkKeySize {
 				return nil, errBadKeySize
 			}
 			// Recover key encryption key.
@@ -619,20 +677,27 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint32) (*msgBlock, e
 			if err != nil {
 				return nil, err
 			}
-			kek, err := chacha20poly1305.NewX(rb)
+
+			sc := fs.fcfg.Cipher
+			kek, err := genEncryptionKey(sc, rb)
 			if err != nil {
 				return nil, err
 			}
 			ns := kek.NonceSize()
 			seed, err := kek.Open(nil, ekey[:ns], ekey[ns:], nil)
 			if err != nil {
+				// We may be here on a cipher conversion, so attempt to convert.
+				if err = mb.convertCipher(); err != nil {
+					return nil, err
+				}
+			} else {
+				mb.seed, mb.nonce = seed, ekey[:ns]
+			}
+			mb.aek, err = genEncryptionKey(sc, mb.seed)
+			if err != nil {
 				return nil, err
 			}
-			mb.seed, mb.nonce = seed, ekey[:ns]
-			if mb.aek, err = chacha20poly1305.NewX(seed); err != nil {
-				return nil, err
-			}
-			if mb.bek, err = chacha20.NewUnauthenticatedCipher(seed, ekey[:ns]); err != nil {
+			if mb.bek, err = genBlockEncryptionKey(sc, mb.seed, mb.nonce); err != nil {
 				return nil, err
 			}
 		}
@@ -743,6 +808,75 @@ func (fs *fileStore) rebuildStateLocked(ld *LostStreamData) {
 	}
 }
 
+// Attempt to convert the cipher used for this message block.
+func (mb *msgBlock) convertCipher() error {
+	fs := mb.fs
+	sc := fs.fcfg.Cipher
+
+	var osc StoreCipher
+	switch sc {
+	case ChaCha:
+		osc = AES
+	case AES:
+		osc = ChaCha
+	}
+
+	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
+	ekey, err := os.ReadFile(filepath.Join(mdir, fmt.Sprintf(keyScan, mb.index)))
+	if err != nil {
+		return err
+	}
+	if len(ekey) < minBlkKeySize {
+		return errBadKeySize
+	}
+	// Recover key encryption key.
+	rb, err := fs.prf([]byte(fmt.Sprintf("%s:%d", fs.cfg.Name, mb.index)))
+	if err != nil {
+		return err
+	}
+	kek, err := genEncryptionKey(osc, rb)
+	if err != nil {
+		return err
+	}
+	ns := kek.NonceSize()
+	seed, err := kek.Open(nil, ekey[:ns], ekey[ns:], nil)
+	if err != nil {
+		return err
+	}
+	nonce := ekey[:ns]
+
+	bek, err := genBlockEncryptionKey(osc, seed, nonce)
+	if err != nil {
+		return err
+	}
+
+	buf, _ := mb.loadBlock(nil)
+	bek.XORKeyStream(buf, buf)
+	// Make sure we can parse with old cipher and key file.
+	if err = mb.indexCacheBuf(buf); err != nil {
+		return err
+	}
+	// Reset the cache since we just read everything in.
+	mb.cache = nil
+
+	// Generate new keys based on our
+	if err := fs.genEncryptionKeysForBlock(mb); err != nil {
+		// Put the old keyfile back.
+		keyFile := filepath.Join(mdir, fmt.Sprintf(keyScan, mb.index))
+		os.WriteFile(keyFile, ekey, defaultFilePerms)
+		return err
+	}
+	mb.bek.XORKeyStream(buf, buf)
+	if err := os.WriteFile(mb.mfn, buf, defaultFilePerms); err != nil {
+		return err
+	}
+	// If we are here we want to delete other meta, e.g. idx, fss.
+	os.Remove(mb.ifn)
+	os.Remove(mb.sfn)
+
+	return nil
+}
+
 // Convert a plaintext block to encrypted.
 func (mb *msgBlock) convertToEncrypted() error {
 	if mb.bek == nil {
@@ -797,7 +931,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, error) {
 	// Check if we need to decrypt.
 	if mb.bek != nil && len(buf) > 0 {
 		// Recreate to reset counter.
-		mb.bek, err = chacha20.NewUnauthenticatedCipher(mb.seed, mb.nonce)
+		mb.bek, err = genBlockEncryptionKey(mb.fs.fcfg.Cipher, mb.seed, mb.nonce)
 		if err != nil {
 			return nil, err
 		}
@@ -2329,7 +2463,7 @@ func (mb *msgBlock) compact() {
 	// Check for encryption.
 	if mb.bek != nil && len(nbuf) > 0 {
 		// Recreate to reset counter.
-		rbek, err := chacha20.NewUnauthenticatedCipher(mb.seed, mb.nonce)
+		rbek, err := genBlockEncryptionKey(mb.fs.fcfg.Cipher, mb.seed, mb.nonce)
 		if err != nil {
 			return
 		}
@@ -3584,7 +3718,7 @@ checkCache:
 
 	// Check if we need to decrypt.
 	if mb.bek != nil && len(buf) > 0 {
-		bek, err := chacha20.NewUnauthenticatedCipher(mb.seed, mb.nonce)
+		bek, err := genBlockEncryptionKey(mb.fs.fcfg.Cipher, mb.seed, mb.nonce)
 		if err != nil {
 			return err
 		}
@@ -3635,18 +3769,19 @@ func (mb *msgBlock) fetchMsg(seq uint64, sm *StoreMsg) (*StoreMsg, bool, error) 
 }
 
 var (
-	errNoCache      = errors.New("no message cache")
-	errBadMsg       = errors.New("malformed or corrupt message")
-	errDeletedMsg   = errors.New("deleted message")
-	errPartialCache = errors.New("partial cache")
-	errNoPending    = errors.New("message block does not have pending data")
-	errNotReadable  = errors.New("storage directory not readable")
-	errCorruptState = errors.New("corrupt state file")
-	errPendingData  = errors.New("pending data still present")
-	errNoEncryption = errors.New("encryption not enabled")
-	errBadKeySize   = errors.New("encryption bad key size")
-	errNoMsgBlk     = errors.New("no message block")
-	errMsgBlkTooBig = errors.New("message block size exceeded int capacity")
+	errNoCache       = errors.New("no message cache")
+	errBadMsg        = errors.New("malformed or corrupt message")
+	errDeletedMsg    = errors.New("deleted message")
+	errPartialCache  = errors.New("partial cache")
+	errNoPending     = errors.New("message block does not have pending data")
+	errNotReadable   = errors.New("storage directory not readable")
+	errCorruptState  = errors.New("corrupt state file")
+	errPendingData   = errors.New("pending data still present")
+	errNoEncryption  = errors.New("encryption not enabled")
+	errBadKeySize    = errors.New("encryption bad key size")
+	errNoMsgBlk      = errors.New("no message block")
+	errMsgBlkTooBig  = errors.New("message block size exceeded int capacity")
+	errUnknownCipher = errors.New("unknown cipher")
 )
 
 // Used for marking messages that have had their checksums checked.
@@ -4638,7 +4773,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 			// Check for encryption.
 			if smb.bek != nil && len(nbuf) > 0 {
 				// Recreate to reset counter.
-				bek, err := chacha20.NewUnauthenticatedCipher(smb.seed, smb.nonce)
+				bek, err := genBlockEncryptionKey(smb.fs.fcfg.Cipher, smb.seed, smb.nonce)
 				if err != nil {
 					goto SKIP
 				}
@@ -4839,7 +4974,7 @@ func (mb *msgBlock) closeAndKeepIndex() {
 
 	// If we are encrypted we should reset our bek counter.
 	if mb.bek != nil {
-		if bek, err := chacha20.NewUnauthenticatedCipher(mb.seed, mb.nonce); err == nil {
+		if bek, err := genBlockEncryptionKey(mb.fs.fcfg.Cipher, mb.seed, mb.nonce); err == nil {
 			mb.bek = bek
 		}
 	}
@@ -5388,7 +5523,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includ
 		}
 		// Check for encryption.
 		if mb.bek != nil && len(bbuf) > 0 {
-			rbek, err := chacha20.NewUnauthenticatedCipher(mb.seed, mb.nonce)
+			rbek, err := genBlockEncryptionKey(fs.fcfg.Cipher, mb.seed, mb.nonce)
 			if err != nil {
 				mb.mu.Unlock()
 				writeErr(fmt.Sprintf("Could not create encryption key for message block [%d]: %v", mb.index, err))
@@ -5446,7 +5581,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includ
 			writeErr(fmt.Sprintf("Could not encode consumer state for %q: %v", o.name, err))
 			return
 		}
-		odirPre := consumerDir + "/" + o.name
+		odirPre := filepath.Join(consumerDir, o.name)
 		o.mu.Unlock()
 
 		// Write all the consumer files.
@@ -5571,21 +5706,32 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 	// Check for encryption.
 	if o.prf != nil {
 		if ekey, err := os.ReadFile(filepath.Join(odir, JetStreamMetaFileKey)); err == nil {
+			if len(ekey) < minBlkKeySize {
+				return nil, errBadKeySize
+			}
 			// Recover key encryption key.
 			rb, err := fs.prf([]byte(fs.cfg.Name + tsep + o.name))
 			if err != nil {
 				return nil, err
 			}
-			kek, err := chacha20poly1305.NewX(rb)
+
+			sc := fs.fcfg.Cipher
+			kek, err := genEncryptionKey(sc, rb)
 			if err != nil {
 				return nil, err
 			}
 			ns := kek.NonceSize()
-			seed, err := kek.Open(nil, ekey[:ns], ekey[ns:], nil)
+			nonce := ekey[:ns]
+			seed, err := kek.Open(nil, nonce, ekey[ns:], nil)
 			if err != nil {
-				return nil, err
+				// We may be here on a cipher conversion, so attempt to convert.
+				if err = o.convertCipher(); err != nil {
+					return nil, err
+				}
+			} else {
+				o.aek, err = genEncryptionKey(sc, seed)
 			}
-			if o.aek, err = chacha20poly1305.NewX(seed); err != nil {
+			if err != nil {
 				return nil, err
 			}
 		}
@@ -5638,6 +5784,63 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 	fs.AddConsumer(o)
 
 	return o, nil
+}
+
+func (o *consumerFileStore) convertCipher() error {
+	fs := o.fs
+	odir := filepath.Join(fs.fcfg.StoreDir, consumerDir, o.name)
+
+	ekey, err := os.ReadFile(filepath.Join(odir, JetStreamMetaFileKey))
+	if err != nil {
+		return err
+	}
+	if len(ekey) < minBlkKeySize {
+		return errBadKeySize
+	}
+	// Recover key encryption key.
+	rb, err := fs.prf([]byte(fs.cfg.Name + tsep + o.name))
+	if err != nil {
+		return err
+	}
+
+	// Do these in reverse since converting.
+	sc := fs.fcfg.Cipher
+	osc := AES
+	if sc == AES {
+		osc = ChaCha
+	}
+	kek, err := genEncryptionKey(osc, rb)
+	if err != nil {
+		return err
+	}
+	ns := kek.NonceSize()
+	nonce := ekey[:ns]
+	seed, err := kek.Open(nil, nonce, ekey[ns:], nil)
+	if err != nil {
+		return err
+	}
+	aek, err := genEncryptionKey(osc, seed)
+	if err != nil {
+		return err
+	}
+	// Now read in and decode our state using the old cipher.
+	buf, err := os.ReadFile(o.ifn)
+	if err != nil {
+		return err
+	}
+	buf, err = aek.Open(nil, buf[:ns], buf[ns:], nil)
+	if err != nil {
+		return err
+	}
+
+	// Since we are here we recovered our old state.
+	// Now write our meta, which will generate the new keys with the new cipher.
+	if err := o.writeConsumerMeta(); err != nil {
+		return err
+	}
+
+	// Now write out or state with the new cipher.
+	return o.writeState(buf)
 }
 
 // Kick flusher for this consumer.

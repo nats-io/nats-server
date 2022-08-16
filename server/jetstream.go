@@ -19,7 +19,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -34,7 +33,6 @@ import (
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
-	"golang.org/x/crypto/chacha20poly1305"
 )
 
 // JetStreamConfig determines this server's configuration.
@@ -202,10 +200,6 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 		return err
 	}
 
-	if ek := s.getOpts().JetStreamKey; ek != _EMPTY_ {
-		s.Warnf("JetStream Encryption is Beta")
-	}
-
 	return s.enableJetStream(cfg)
 }
 
@@ -231,9 +225,9 @@ func (s *Server) jsKeyGen(info string) keyGen {
 }
 
 // Decode the encrypted metafile.
-func (s *Server) decryptMeta(ekey, buf []byte, acc, context string) ([]byte, error) {
-	if len(ekey) != metaKeySize {
-		return nil, errors.New("bad encryption key")
+func (s *Server) decryptMeta(sc StoreCipher, ekey, buf []byte, acc, context string) ([]byte, error) {
+	if len(ekey) < minMetaKeySize {
+		return nil, errBadKeySize
 	}
 	prf := s.jsKeyGen(acc)
 	if prf == nil {
@@ -243,7 +237,8 @@ func (s *Server) decryptMeta(ekey, buf []byte, acc, context string) ([]byte, err
 	if err != nil {
 		return nil, err
 	}
-	kek, err := chacha20poly1305.NewX(rb)
+
+	kek, err := genEncryptionKey(sc, rb)
 	if err != nil {
 		return nil, err
 	}
@@ -252,11 +247,10 @@ func (s *Server) decryptMeta(ekey, buf []byte, acc, context string) ([]byte, err
 	if err != nil {
 		return nil, err
 	}
-	aek, err := chacha20poly1305.NewX(seed[:])
+	aek, err := genEncryptionKey(sc, seed)
 	if err != nil {
 		return nil, err
 	}
-	ns = kek.NonceSize()
 	plain, err := aek.Open(nil, buf[:ns], buf[ns:], nil)
 	if err != nil {
 		return nil, err
@@ -370,6 +364,10 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	s.Noticef("  Store Directory: \"%s\"", cfg.StoreDir)
 	if cfg.Domain != _EMPTY_ {
 		s.Noticef("  Domain:          %s", cfg.Domain)
+	}
+	opts := s.getOpts()
+	if ek := opts.JetStreamKey; ek != _EMPTY_ {
+		s.Noticef("  Encryption:      %s", opts.JetStreamCipher)
 	}
 	s.Noticef("-------------------------------------------")
 
@@ -1141,6 +1139,11 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 	}
 	var consumers []*ce
 
+	// Remember if we should be encrypted and what cipher we think we should use.
+	encrypted := s.getOpts().JetStreamKey != _EMPTY_
+	plaintext := true
+	sc := s.getOpts().JetStreamCipher
+
 	// Now recover the streams.
 	fis, _ := os.ReadDir(sdir)
 	for _, fi := range fis {
@@ -1177,18 +1180,40 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 			continue
 		}
 
+		// Track if we are converting ciphers.
+		var osc StoreCipher
+		var convertingCiphers bool
+
 		// Check if we are encrypted.
-		if key, err := os.ReadFile(filepath.Join(mdir, JetStreamMetaFileKey)); err == nil {
+		keyFile := filepath.Join(mdir, JetStreamMetaFileKey)
+		if key, err := os.ReadFile(keyFile); err == nil {
 			s.Debugf("  Stream metafile is encrypted, reading encrypted keyfile")
-			if len(key) != metaKeySize {
+			if len(key) < minMetaKeySize {
 				s.Warnf("  Bad stream encryption key length of %d", len(key))
 				continue
 			}
 			// Decode the buffer before proceeding.
-			if buf, err = s.decryptMeta(key, buf, a.Name, fi.Name()); err != nil {
-				s.Warnf("  Error decrypting our stream metafile: %v", err)
-				continue
+			nbuf, err := s.decryptMeta(sc, key, buf, a.Name, fi.Name())
+			if err != nil {
+				// See if we are changing ciphers.
+				switch sc {
+				case ChaCha:
+					nbuf, err = s.decryptMeta(AES, key, buf, a.Name, fi.Name())
+					osc, convertingCiphers = AES, true
+				case AES:
+					nbuf, err = s.decryptMeta(ChaCha, key, buf, a.Name, fi.Name())
+					osc, convertingCiphers = ChaCha, true
+				}
+				if err != nil {
+					s.Warnf("  Error decrypting our stream metafile: %v", err)
+					continue
+				}
 			}
+			buf = nbuf
+			plaintext = false
+
+			// Remove the key file to have system regenerate with the new cipher.
+			os.Remove(keyFile)
 		}
 
 		var cfg FileStreamInfo
@@ -1234,6 +1259,15 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 
 		s.Noticef("  Starting restore for stream '%s > %s'", a.Name, cfg.StreamConfig.Name)
 
+		// Log if we are converting from plaintext to encrypted.
+		if encrypted {
+			if plaintext {
+				s.Noticef("  Encrypting stream '%s > %s'", a.Name, cfg.StreamConfig.Name)
+			} else if convertingCiphers {
+				s.Noticef("  Converting from %s to %s for stream '%s > %s'", osc, sc, a.Name, cfg.StreamConfig.Name)
+			}
+		}
+
 		// Add in the stream.
 		mset, err := a.addStream(&cfg.StreamConfig)
 		if err != nil {
@@ -1278,10 +1312,22 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 			if key, err := os.ReadFile(filepath.Join(e.odir, ofi.Name(), JetStreamMetaFileKey)); err == nil {
 				s.Debugf("  Consumer metafile is encrypted, reading encrypted keyfile")
 				// Decode the buffer before proceeding.
-				if buf, err = s.decryptMeta(key, buf, a.Name, e.mset.name()+tsep+ofi.Name()); err != nil {
-					s.Warnf("  Error decrypting our consumer metafile: %v", err)
-					continue
+				ctxName := e.mset.name() + tsep + ofi.Name()
+				nbuf, err := s.decryptMeta(sc, key, buf, a.Name, ctxName)
+				if err != nil {
+					// See if we are changing ciphers.
+					switch sc {
+					case ChaCha:
+						nbuf, err = s.decryptMeta(AES, key, buf, a.Name, ctxName)
+					case AES:
+						nbuf, err = s.decryptMeta(ChaCha, key, buf, a.Name, ctxName)
+					}
+					if err != nil {
+						s.Warnf("  Error decrypting our consumer metafile: %v", err)
+						continue
+					}
 				}
+				buf = nbuf
 			}
 
 			var cfg FileConsumerInfo

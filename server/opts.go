@@ -252,6 +252,7 @@ type Options struct {
 	JetStreamDomain       string        `json:"-"`
 	JetStreamExtHint      string        `json:"-"`
 	JetStreamKey          string        `json:"-"`
+	JetStreamCipher       StoreCipher   `json:"-"`
 	JetStreamUniqueTag    string
 	JetStreamLimits       JSLimitOpts
 	StoreDir              string            `json:"-"`
@@ -1930,6 +1931,15 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 				doEnable = mv.(bool)
 			case "key", "ek", "encryption_key":
 				opts.JetStreamKey = mv.(string)
+			case "cipher":
+				switch strings.ToLower(mv.(string)) {
+				case "chacha", "chachapoly":
+					opts.JetStreamCipher = ChaCha
+				case "aes":
+					opts.JetStreamCipher = AES
+				default:
+					return &configErr{tk, fmt.Sprintf("Unknown cipher type: %q", mv)}
+				}
 			case "extension_hint":
 				opts.JetStreamExtHint = mv.(string)
 			case "limits":
