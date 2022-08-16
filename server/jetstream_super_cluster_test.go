@@ -1812,7 +1812,7 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 
 			// Should see the cluster designation and leader switch to C2.
 			// We should also shrink back down to original replica count.
-			checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+			checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
 				si, err := js.StreamInfo("MOVE")
 				if err != nil {
 					return err
