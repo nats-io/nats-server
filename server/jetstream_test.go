@@ -18965,3 +18965,84 @@ func TestJetStreamProperErrorDueToOverlapSubjects(t *testing.T) {
 	t.Run("standalone", func(t *testing.T) { test(t, s) })
 	t.Run("clustered", func(t *testing.T) { test(t, c.randomServer()) })
 }
+
+func TestJetStreamServerCipherConvert(t *testing.T) {
+	tmpl := `
+		listen: 127.0.0.1:-1
+		jetstream: {key: s3cr3t, store_dir: '%s', cipher: %s}
+	`
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	// Create a stream and a consumer under one cipher, and restart the server with a new cipher.
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, storeDir, "AES")))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	}
+	if _, err := js.AddStream(cfg); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	for i := 0; i < 1000; i++ {
+		msg := []byte(fmt.Sprintf("TOP SECRET DOCUMENT #%d", i+1))
+		_, err := js.Publish("foo", msg)
+		require_NoError(t, err)
+	}
+
+	// Make sure consumers convert as well.
+	sub, err := js.PullSubscribe("foo", "dlc")
+	require_NoError(t, err)
+	for _, m := range fetchMsgs(t, sub, 100, 5*time.Second) {
+		m.AckSync()
+	}
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	ci, err := js.ConsumerInfo("TEST", "dlc")
+	require_NoError(t, err)
+
+	// Stop current
+	s.Shutdown()
+
+	conf = createConfFile(t, []byte(fmt.Sprintf(tmpl, storeDir, "ChaCha")))
+	defer removeFile(t, conf)
+
+	s, _ = RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	si2, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	if !reflect.DeepEqual(si, si2) {
+		t.Fatalf("Stream infos did not match\n%+v\nvs\n%+v", si, si2)
+	}
+
+	ci2, err := js.ConsumerInfo("TEST", "dlc")
+	require_NoError(t, err)
+
+	// Consumer create times can be slightly off after restore from disk.
+	now := time.Now()
+	ci.Created, ci2.Created = now, now
+	ci.Delivered.Last, ci2.Delivered.Last = nil, nil
+	ci.AckFloor.Last, ci2.AckFloor.Last = nil, nil
+	// Also clusters will be different.
+	ci.Cluster, ci2.Cluster = nil, nil
+
+	if !reflect.DeepEqual(ci, ci2) {
+		t.Fatalf("Consumer infos did not match\n%+v\nvs\n%+v", ci, ci2)
+	}
+}

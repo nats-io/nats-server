@@ -76,9 +76,9 @@ const (
 func (cipher StoreCipher) String() string {
 	switch cipher {
 	case ChaCha:
-		return "ChaCha"
+		return "ChaCha20-Poly1305"
 	case AES:
-		return "AES"
+		return "AES-GCM"
 	default:
 		return "Unknown StoreCipher"
 	}
@@ -682,10 +682,11 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint32) (*msgBlock, e
 				return nil, err
 			}
 
+			sc := fs.fcfg.Cipher
 			var kek cipher.AEAD
-			if fs.fcfg.Cipher == ChaCha {
+			if sc == ChaCha {
 				kek, err = chacha20poly1305.NewX(rb)
-			} else if fs.fcfg.Cipher == AES {
+			} else if sc == AES {
 				block, e := aes.NewCipher(rb)
 				if e != nil {
 					return nil, err
@@ -698,13 +699,17 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint32) (*msgBlock, e
 			ns := kek.NonceSize()
 			seed, err := kek.Open(nil, ekey[:ns], ekey[ns:], nil)
 			if err != nil {
-				return nil, err
+				// We may be here on a cipher conversion, so attempt to convert.
+				if err = mb.convertCipher(); err != nil {
+					return nil, err
+				}
+			} else {
+				mb.seed, mb.nonce = seed, ekey[:ns]
 			}
-			mb.seed, mb.nonce = seed, ekey[:ns]
 
-			if fs.fcfg.Cipher == ChaCha {
+			if sc == ChaCha {
 				mb.aek, err = chacha20poly1305.NewX(mb.seed)
-			} else if fs.fcfg.Cipher == AES {
+			} else if sc == AES {
 				block, e := aes.NewCipher(mb.seed)
 				if e != nil {
 					return nil, err
@@ -714,7 +719,7 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint32) (*msgBlock, e
 			if err != nil {
 				return nil, err
 			}
-			if mb.bek, err = genBlockEncryptionKey(fs.fcfg.Cipher, mb.seed, mb.nonce); err != nil {
+			if mb.bek, err = genBlockEncryptionKey(sc, mb.seed, mb.nonce); err != nil {
 				return nil, err
 			}
 		}
@@ -823,6 +828,85 @@ func (fs *fileStore) rebuildStateLocked(ld *LostStreamData) {
 		fs.state.LastTime = time.Unix(0, mb.last.ts).UTC()
 		mb.mu.RUnlock()
 	}
+}
+
+// Attempt to convert the cipher used for this message block.
+func (mb *msgBlock) convertCipher() error {
+	fs := mb.fs
+	sc := fs.fcfg.Cipher
+
+	var osc StoreCipher
+	switch sc {
+	case ChaCha:
+		osc = AES
+	case AES:
+		osc = ChaCha
+	}
+
+	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
+	ekey, err := os.ReadFile(filepath.Join(mdir, fmt.Sprintf(keyScan, mb.index)))
+	if err != nil {
+		return err
+	}
+	if len(ekey) < minBlkKeySize {
+		return errBadKeySize
+	}
+	// Recover key encryption key.
+	rb, err := fs.prf([]byte(fmt.Sprintf("%s:%d", fs.cfg.Name, mb.index)))
+	if err != nil {
+		return err
+	}
+
+	var kek cipher.AEAD
+	if osc == ChaCha {
+		kek, err = chacha20poly1305.NewX(rb)
+	} else if osc == AES {
+		block, e := aes.NewCipher(rb)
+		if e != nil {
+			return err
+		}
+		kek, err = cipher.NewGCMWithNonceSize(block, block.BlockSize())
+	}
+	if err != nil {
+		return err
+	}
+	ns := kek.NonceSize()
+	seed, err := kek.Open(nil, ekey[:ns], ekey[ns:], nil)
+	if err != nil {
+		return err
+	}
+	nonce := ekey[:ns]
+
+	bek, err := genBlockEncryptionKey(osc, seed, nonce)
+	if err != nil {
+		return err
+	}
+
+	buf, _ := mb.loadBlock(nil)
+	bek.XORKeyStream(buf, buf)
+	// Make sure we can parse with old cipher and key file.
+	if err = mb.indexCacheBuf(buf); err != nil {
+		return err
+	}
+	// Reset the cache since we just read everything in.
+	mb.cache = nil
+
+	// Generate new keys based on our
+	if err := fs.genEncryptionKeysForBlock(mb); err != nil {
+		// Put the old keyfile back.
+		keyFile := filepath.Join(mdir, fmt.Sprintf(keyScan, mb.index))
+		os.WriteFile(keyFile, ekey, defaultFilePerms)
+		return err
+	}
+	mb.bek.XORKeyStream(buf, buf)
+	if err := os.WriteFile(mb.mfn, buf, defaultFilePerms); err != nil {
+		return err
+	}
+	// If we are here we want to delete other meta, e.g. idx, fss.
+	os.Remove(mb.ifn)
+	os.Remove(mb.sfn)
+
+	return nil
 }
 
 // Convert a plaintext block to encrypted.
@@ -5529,7 +5613,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includ
 			writeErr(fmt.Sprintf("Could not encode consumer state for %q: %v", o.name, err))
 			return
 		}
-		odirPre := consumerDir + "/" + o.name
+		odirPre := filepath.Join(consumerDir, o.name)
 		o.mu.Unlock()
 
 		// Write all the consumer files.
@@ -5678,19 +5762,23 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 				return nil, err
 			}
 			ns := kek.NonceSize()
-			seed, err := kek.Open(nil, ekey[:ns], ekey[ns:], nil)
+			nonce := ekey[:ns]
+			seed, err := kek.Open(nil, nonce, ekey[ns:], nil)
 			if err != nil {
-				return nil, err
-			}
-
-			if sc == ChaCha {
-				o.aek, err = chacha20poly1305.NewX(seed)
-			} else if sc == AES {
-				block, e := aes.NewCipher(seed)
-				if e != nil {
+				// We may be here on a cipher conversion, so attempt to convert.
+				if err = o.convertCipher(); err != nil {
 					return nil, err
 				}
-				o.aek, err = cipher.NewGCMWithNonceSize(block, block.BlockSize())
+			} else {
+				if sc == ChaCha {
+					o.aek, err = chacha20poly1305.NewX(seed)
+				} else if sc == AES {
+					block, e := aes.NewCipher(seed)
+					if e != nil {
+						return nil, err
+					}
+					o.aek, err = cipher.NewGCMWithNonceSize(block, block.BlockSize())
+				}
 			}
 			if err != nil {
 				return nil, err
@@ -5745,6 +5833,78 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 	fs.AddConsumer(o)
 
 	return o, nil
+}
+
+func (o *consumerFileStore) convertCipher() error {
+	fs := o.fs
+	odir := filepath.Join(fs.fcfg.StoreDir, consumerDir, o.name)
+
+	ekey, err := os.ReadFile(filepath.Join(odir, JetStreamMetaFileKey))
+	if err != nil {
+		return err
+	}
+	if len(ekey) < minBlkKeySize {
+		return errBadKeySize
+	}
+	// Recover key encryption key.
+	rb, err := fs.prf([]byte(fs.cfg.Name + tsep + o.name))
+	if err != nil {
+		return err
+	}
+
+	// Do these in reverse since converting.
+	sc := fs.fcfg.Cipher
+	var kek, aek cipher.AEAD
+	if sc == AES {
+		kek, err = chacha20poly1305.NewX(rb)
+	} else if sc == ChaCha {
+		block, e := aes.NewCipher(rb)
+		if e != nil {
+			return err
+		}
+		kek, err = cipher.NewGCMWithNonceSize(block, block.BlockSize())
+	}
+	if err != nil {
+		return err
+	}
+	ns := kek.NonceSize()
+	nonce := ekey[:ns]
+	seed, err := kek.Open(nil, nonce, ekey[ns:], nil)
+	if err != nil {
+		return err
+	}
+
+	if sc == AES {
+		aek, err = chacha20poly1305.NewX(seed)
+	} else if sc == ChaCha {
+		block, e := aes.NewCipher(seed)
+		if e != nil {
+			return err
+		}
+		aek, err = cipher.NewGCMWithNonceSize(block, block.BlockSize())
+	}
+	if err != nil {
+		return err
+	}
+
+	// Now read in and decode our state using the old cipher.
+	buf, err := os.ReadFile(o.ifn)
+	if err != nil {
+		return err
+	}
+	buf, err = aek.Open(nil, buf[:ns], buf[ns:], nil)
+	if err != nil {
+		return err
+	}
+
+	// Since we are here we recovered our old state.
+	// Now write our meta, which will generate the new keys with the new cipher.
+	if err := o.writeConsumerMeta(); err != nil {
+		return err
+	}
+
+	// Now write out or state with the new cipher.
+	return o.writeState(buf)
 }
 
 // Kick flusher for this consumer.
