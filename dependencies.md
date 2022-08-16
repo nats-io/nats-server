@@ -15,6 +15,6 @@ This file lists the dependencies used in this repository.
 | golang.org/x/sys v0.0.0-20220520151302-bc2c85ada10a | BSD 3-Clause "New" or "Revised" License |
 | golang.org/x/time v0.0.0-20220411224347-583f2d630306 | BSD 3-Clause "New" or "Revised" License |
 | google.golang.org/protobuf v1.23.0 | BSD 3-Clause "New" or "Revised" License |
-| github.com/klauspost/compress v1.15.9 | Apache License 2.0 |
+| github.com/klauspost/compress/s2 v1.15.9 | BSD 3-Clause "New" or "Revised" License |
 | github.com/minio/highwayhash v1.0.2 | Apache License 2.0 |
 | go.uber.org/automaxprocs v1.5.1 | MIT License |
