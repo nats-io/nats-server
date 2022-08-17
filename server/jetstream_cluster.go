@@ -1079,7 +1079,7 @@ func (js *jetStream) metaSnapshot() []byte {
 
 func (js *jetStream) applyMetaSnapshot(buf []byte) error {
 	var wsas []writeableStreamAssignment
-	if len(buf) != 0 {
+	if len(buf) > 0 {
 		jse, err := s2.Decode(nil, buf)
 		if err != nil {
 			return err
@@ -1146,8 +1146,6 @@ func (js *jetStream) applyMetaSnapshot(buf []byte) error {
 		}
 	}
 	isRecovering := js.metaRecovering
-	storeDir := js.config.StoreDir
-	srv := js.srv
 	js.mu.Unlock()
 
 	// Do removals first.
@@ -1183,20 +1181,6 @@ func (js *jetStream) applyMetaSnapshot(buf []byte) error {
 			js.setConsumerAssignmentRecovering(ca)
 		}
 		js.processConsumerAssignment(ca)
-	}
-
-	// Delete directories not part of snapshot
-	sysAcc := srv.SystemAccount().GetName()
-	if de, err := os.ReadDir(storeDir); err == nil {
-		for _, entry := range de {
-			acc := entry.Name()
-			if acc == sysAcc {
-				continue
-			}
-			if _, found := streams[acc]; !found {
-				os.RemoveAll(filepath.Join(storeDir, acc))
-			}
-		}
 	}
 
 	return nil
