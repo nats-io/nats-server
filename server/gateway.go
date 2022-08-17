@@ -603,7 +603,7 @@ func (g *srvGateway) generateInfoJSON() {
 	// We could be here when processing a route INFO that has a gateway URL,
 	// but this server is not configured for gateways, so simply ignore here.
 	// The configuration mismatch is reported somewhere else.
-	if !g.enabled {
+	if !g.enabled || g.info == nil {
 		return
 	}
 	g.info.GatewayURLs = g.URLs.getAsStringSlice()

@@ -6749,3 +6749,34 @@ func TestGatewayDuplicateServerName(t *testing.T) {
 	// to cluster "A"
 	checkForDupError(scl.errCh)
 }
+
+func TestGatewayNoPanicOnStartupWithMonitoring(t *testing.T) {
+	o := testDefaultOptionsForGateway("B")
+	o.HTTPHost = "127.0.0.1"
+	o.HTTPPort = 8888
+	s, err := NewServer(o)
+	require_NoError(t, err)
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		time.Sleep(50 * time.Millisecond)
+		s.Start()
+		s.WaitForShutdown()
+	}()
+
+	for {
+		g, err := s.Gatewayz(nil)
+		if err != nil {
+			continue
+		}
+		if g.Port != 0 && g.Port != s.GatewayAddr().Port {
+			t.Fatalf("Unexpected port: %v vs %v", g.Port, s.GatewayAddr().Port)
+		}
+		break
+	}
+	s.Shutdown()
+	wg.Wait()
+}

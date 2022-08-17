@@ -1777,7 +1777,7 @@ func (s *Server) Gatewayz(opts *GatewayzOptions) (*Gatewayz, error) {
 	now := time.Now().UTC()
 	gw := s.gateway
 	gw.RLock()
-	if !gw.enabled {
+	if !gw.enabled || gw.info == nil {
 		gw.RUnlock()
 		gwz := &Gatewayz{
 			ID:               srvID,
