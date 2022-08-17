@@ -3562,6 +3562,8 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	}
 	// Grab underlying raft node and the WAL (filestore) and we will attempt to "corrupt" it.
 	node := o.raftNode().(*raft)
+	// We are doing a stop here to prevent the internal consumer snapshot from happening on exit
+	node.Stop()
 	fs := node.wal.(*fileStore)
 	fcfg, cfg := fs.fcfg, fs.cfg.StreamConfig
 	// Stop all the servers.
