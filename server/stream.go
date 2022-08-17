@@ -1482,31 +1482,6 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 	if mset.isLeader() && sendAdvisory {
 		mset.sendUpdateAdvisoryLocked()
 	}
-
-	// Check for AllowDirect
-	if mset.cfg.AllowDirect {
-		mset.subscribeToDirect()
-	} else if mset.directSub != nil {
-		mset.unsubscribe(mset.directSub)
-		mset.directSub = nil
-	}
-
-	// Check for mirror. If set but we are not a mirror just ignore for now.
-	if mset.cfg.MirrorDirect && mset.cfg.Mirror != nil {
-		if err := mset.subscribeToMirrorDirect(); err != nil {
-			// Disable since we had problems above.
-			mset.cfg.MirrorDirect = false
-		}
-	} else if !mset.cfg.MirrorDirect && mset.mirror != nil {
-		if mset.mirror.dsub != nil {
-			mset.unsubscribe(mset.mirror.dsub)
-			mset.mirror.dsub = nil
-		}
-		if mset.mirror.lbsub != nil {
-			mset.unsubscribe(mset.mirror.lbsub)
-			mset.mirror.lbsub = nil
-		}
-	}
 	mset.mu.Unlock()
 
 	if js != nil {

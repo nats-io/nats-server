@@ -12818,3 +12818,76 @@ func TestJetStreamClusterLeaderAbortsCatchupOnFollowerError(t *testing.T) {
 		t.Fatal("Expected err response from the remote")
 	}
 }
+
+func TestJetStreamClusterStreamDirectGetNotTooSoon(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3F", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Do by hand for now.
+	cfg := &StreamConfig{
+		Name:        "TEST",
+		Storage:     FileStorage,
+		Subjects:    []string{"foo"},
+		Replicas:    3,
+		MaxMsgsPer:  1,
+		AllowDirect: true,
+	}
+	addStream(t, nc, cfg)
+	sendStreamMsg(t, nc, "foo", "bar")
+
+	getSubj := fmt.Sprintf(JSDirectGetLastBySubjectT, "TEST", "foo")
+
+	// Make sure we get all direct subs.
+	checkForDirectSubs := func() {
+		t.Helper()
+		checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+			for _, s := range c.servers {
+				mset, err := s.GlobalAccount().lookupStream("TEST")
+				if err != nil {
+					return err
+				}
+				mset.mu.RLock()
+				hasBoth := mset.directSub != nil && mset.lastBySub != nil
+				mset.mu.RUnlock()
+				if !hasBoth {
+					return fmt.Errorf("%v does not have both direct subs registered", s)
+				}
+			}
+			return nil
+		})
+	}
+
+	_, err := nc.Request(getSubj, nil, time.Second)
+	require_NoError(t, err)
+
+	checkForDirectSubs()
+
+	// We want to make sure that when starting up we do not listen until we have a leader.
+	nc.Close()
+	c.stopAll()
+
+	// Start just one..
+	s, opts := RunServerWithConfig(c.opts[0].ConfigFile)
+	c.servers[0] = s
+	c.opts[0] = opts
+
+	nc, _ = jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err = nc.Request(getSubj, nil, time.Second)
+	require_Error(t, err, nats.ErrTimeout)
+
+	// Now start all and make sure they all eventually have subs for direct access.
+	c.restartAll()
+	c.waitOnStreamLeader("$G", "TEST")
+
+	_, err = nc.Request(getSubj, nil, time.Second)
+	require_NoError(t, err)
+
+	checkForDirectSubs()
+}
