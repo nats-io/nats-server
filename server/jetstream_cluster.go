@@ -5076,7 +5076,34 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 
 	// Check if this is a move request, but no cancellation, and we are already moving this stream.
 	if isMoveRequest && !isMoveCancel && osa.Config.Replicas != len(rg.Peers) {
-		resp.Error = NewJSStreamMoveInProgressError()
+		// obtain stats to include in error message
+		msg := _EMPTY_
+		if s.allPeersOffline(rg) {
+			msg = fmt.Sprintf("all %d peers offline", len(rg.Peers))
+		} else {
+			// Need to release js lock.
+			js.mu.Unlock()
+			if si, err := s.sysRequest(&StreamInfo{}, clusterStreamInfoT, ci.serviceAccount(), cfg.Name); err != nil {
+				msg = fmt.Sprintf("error retrieving info: %s", err.Error())
+			} else if si := si.(*StreamInfo); si != nil {
+				currentCount := 0
+				if si.Cluster.Leader != _EMPTY_ {
+					currentCount++
+				}
+				combinedLag := uint64(0)
+				for _, r := range si.Cluster.Replicas {
+					if r.Current {
+						currentCount++
+					}
+					combinedLag += r.Lag
+				}
+				msg = fmt.Sprintf("total peers: %d, current peers: %d, combined lag: %d",
+					len(rg.Peers), currentCount, combinedLag)
+			}
+			// Re-acquire here.
+			js.mu.Lock()
+		}
+		resp.Error = NewJSStreamMoveInProgressError(msg)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
