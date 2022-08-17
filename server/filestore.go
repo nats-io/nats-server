@@ -5098,12 +5098,10 @@ func (mb *msgBlock) generatePerSubjectInfo(hasLock bool) error {
 		return nil
 	}
 
-	var shouldExpire bool
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			return err
 		}
-		shouldExpire = true
 	}
 
 	// Create new one regardless.
@@ -5132,9 +5130,11 @@ func (mb *msgBlock) generatePerSubjectInfo(hasLock bool) error {
 			}
 		}
 	}
-	if shouldExpire {
-		// Expire this cache before moving on.
-		mb.tryForceExpireCacheLocked()
+
+	if len(mb.fss) > 0 {
+		// Make sure we run the cache expire timer.
+		mb.llts = time.Now().UnixNano()
+		mb.startCacheExpireTimer()
 	}
 	return nil
 }
@@ -5221,10 +5221,6 @@ func (mb *msgBlock) readPerSubjectInfo(hasLock bool) error {
 		}
 	}()
 
-	// Make sure we run the cache expire timer.
-	mb.llts = time.Now().UnixNano()
-	mb.startCacheExpireTimer()
-
 	buf, err := mb.loadPerSubjectInfo()
 	// On failure re-generate.
 	if err != nil {
@@ -5260,6 +5256,12 @@ func (mb *msgBlock) readPerSubjectInfo(hasLock bool) error {
 		fss[subj] = &SimpleState{Msgs: msgs, First: first, Last: last}
 	}
 	mb.fss = fss
+
+	// Make sure we run the cache expire timer.
+	if len(mb.fss) > 0 {
+		mb.llts = time.Now().UnixNano()
+		mb.startCacheExpireTimer()
+	}
 
 	if !hasLock {
 		mb.mu.Unlock()
