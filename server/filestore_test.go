@@ -980,7 +980,7 @@ func TestFileStoreStreamTruncate(t *testing.T) {
 
 	fs, err := newFileStoreWithCreated(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 350},
-		StreamConfig{Name: "zzz", Storage: FileStorage},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
 		time.Now(),
 		prf,
 	)
@@ -1037,7 +1037,7 @@ func TestFileStoreStreamTruncate(t *testing.T) {
 
 	fs, err = newFileStoreWithCreated(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 350},
-		StreamConfig{Name: "zzz", Storage: FileStorage},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
 		time.Now(),
 		prf,
 	)
@@ -1059,7 +1059,10 @@ func TestFileStoreRemovePartialRecovery(t *testing.T) {
 	storeDir := createDir(t, JetStreamStoreDir)
 	defer removeDir(t, storeDir)
 
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1088,7 +1091,10 @@ func TestFileStoreRemovePartialRecovery(t *testing.T) {
 	// Make sure we recover same state.
 	fs.Stop()
 
-	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1104,7 +1110,10 @@ func TestFileStoreRemoveOutOfOrderRecovery(t *testing.T) {
 	storeDir := createDir(t, JetStreamStoreDir)
 	defer removeDir(t, storeDir)
 
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1145,7 +1154,10 @@ func TestFileStoreRemoveOutOfOrderRecovery(t *testing.T) {
 	// Make sure we recover same state.
 	fs.Stop()
 
-	fs, err = newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1765,7 +1777,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir},
-		StreamConfig{Name: "zzz", Storage: FileStorage},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
 	)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -1848,7 +1860,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 
 		fsr, err := newFileStore(
 			FileStoreConfig{StoreDir: rstoreDir},
-			StreamConfig{Name: "zzz", Storage: FileStorage},
+			StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
 		)
 		if err != nil {
 			t.Fatalf("Error restoring from snapshot: %v", err)
@@ -4149,7 +4161,7 @@ func TestFileStoreExpireSubjectMeta(t *testing.T) {
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 1024, CacheExpire: time.Second},
-		StreamConfig{Name: "zzz", Storage: FileStorage, MaxMsgsPer: 1},
+		StreamConfig{Name: "zzz", Subjects: []string{"kv.>"}, Storage: FileStorage, MaxMsgsPer: 1},
 	)
 	require_NoError(t, err)
 	defer fs.Stop()
@@ -4173,7 +4185,7 @@ func TestFileStoreExpireSubjectMeta(t *testing.T) {
 	fs.Stop()
 	fs, err = newFileStore(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 1024, CacheExpire: time.Second},
-		StreamConfig{Name: "zzz", Storage: FileStorage, MaxMsgsPer: 1},
+		StreamConfig{Name: "zzz", Subjects: []string{"kv.>"}, Storage: FileStorage, MaxMsgsPer: 1},
 	)
 	require_NoError(t, err)
 	defer fs.Stop()
@@ -4364,5 +4376,50 @@ func TestFileStoreEncryptedAES(t *testing.T) {
 
 	if rstate.Delivered != state.Delivered || rstate.AckFloor != state.AckFloor {
 		t.Fatalf("Bad recovered consumer state, expected %+v got %+v", state, rstate)
+	}
+}
+
+// Make sure we do not go through block loads when we know no subjects will exists, e.g. raft.
+func TestFileStoreNoFSSWhenNoSubjects(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer os.RemoveAll(storeDir)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "zzz", Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	n, msg := 100, []byte("raft state")
+	for i := 0; i < n; i++ {
+		_, _, err := fs.StoreMsg(_EMPTY_, nil, msg)
+		require_NoError(t, err)
+	}
+
+	state := fs.State()
+	require_True(t, state.Msgs == uint64(n))
+
+	fs.Stop()
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "zzz", Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Make sure we did not load the block trying to generate fss.
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	fs.mu.RUnlock()
+
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	if mb.cloads > 0 {
+		t.Fatalf("Expected no cache loads but got %d", mb.cloads)
+	}
+	if mb.fss != nil {
+		t.Fatalf("Expected fss to be nil")
 	}
 }
