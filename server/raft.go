@@ -569,6 +569,27 @@ func (s *Server) reloadDebugRaftNodes() {
 	s.rnMu.RUnlock()
 }
 
+func (s *Server) stepdownRaftNodes() {
+	if s == nil {
+		return
+	}
+	var nodes []RaftNode
+	s.rnMu.RLock()
+	if len(s.raftNodes) > 0 {
+		s.Debugf("Stepping down all leader raft nodes")
+	}
+	for _, n := range s.raftNodes {
+		if n.Leader() {
+			nodes = append(nodes, n)
+		}
+	}
+	s.rnMu.RUnlock()
+
+	for _, node := range nodes {
+		node.StepDown()
+	}
+}
+
 func (s *Server) shutdownRaftNodes() {
 	if s == nil {
 		return
@@ -584,9 +605,6 @@ func (s *Server) shutdownRaftNodes() {
 	s.rnMu.RUnlock()
 
 	for _, node := range nodes {
-		if node.Leader() {
-			node.StepDown()
-		}
 		node.Stop()
 	}
 }
@@ -973,7 +991,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	// Remember our latest snapshot file.
 	n.snapfile = sfile
 
-	if _, err := n.wal.Compact(snap.lastIndex); err != nil {
+	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 		n.Unlock()
 		n.setWriteErr(err)
 		return err

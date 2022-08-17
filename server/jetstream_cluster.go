@@ -1416,7 +1416,9 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, rm *recoveryRemovals) (b
 					key := sa.Client.Account + ":" + sa.Config.Name
 					delete(rm.streams, key)
 				}
-				didRemove = js.processStreamAssignment(sa)
+				if js.processStreamAssignment(sa) {
+					didRemove = true
+				}
 			case removeStreamOp:
 				sa, err := decodeStreamAssignment(buf[1:])
 				if err != nil {

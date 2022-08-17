@@ -2183,7 +2183,7 @@ func TestNoRaceJetStreamClusterMirrorExpirationAndMissingSequences(t *testing.T)
 	checkMirror(20)
 }
 
-func TestNoRaceLargeActiveOnReplica(t *testing.T) {
+func TestNoRaceJetStreamClusterLargeActiveOnReplica(t *testing.T) {
 	// Uncomment to run.
 	skip(t)
 
@@ -3562,6 +3562,8 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	}
 	// Grab underlying raft node and the WAL (filestore) and we will attempt to "corrupt" it.
 	node := o.raftNode().(*raft)
+	// We are doing a stop here to prevent the internal consumer snapshot from happening on exit
+	node.Stop()
 	fs := node.wal.(*fileStore)
 	fcfg, cfg := fs.fcfg, fs.cfg.StreamConfig
 	// Stop all the servers.
@@ -4107,7 +4109,7 @@ func TestNoRaceJetStreamMemstoreWithLargeInteriorDeletes(t *testing.T) {
 // This is related to an issue reported where we were exhausting threads by trying to
 // cleanup too many consumers at the same time.
 // https://github.com/nats-io/nats-server/issues/2742
-func TestNoRaceConsumerFileStoreConcurrentDiskIO(t *testing.T) {
+func TestNoRaceJetStreamConsumerFileStoreConcurrentDiskIO(t *testing.T) {
 	storeDir := createDir(t, JetStreamStoreDir)
 	defer removeDir(t, storeDir)
 
@@ -4451,7 +4453,7 @@ func TestNoRaceJetStreamConsumerFilterPerfDegradation(t *testing.T) {
 	}
 }
 
-func TestNoRaceFileStoreKeyFileCleanup(t *testing.T) {
+func TestNoRaceJetStreamFileStoreKeyFileCleanup(t *testing.T) {
 	storeDir := createDir(t, JetStreamStoreDir)
 	defer removeDir(t, storeDir)
 
@@ -4498,7 +4500,7 @@ func TestNoRaceFileStoreKeyFileCleanup(t *testing.T) {
 	}
 }
 
-func TestNoRaceMsgIdPerfDuringCatchup(t *testing.T) {
+func TestNoRaceJetStreamMsgIdPerfDuringCatchup(t *testing.T) {
 	// Uncomment to run. Needs to be on a bigger machine. Do not want as part of Travis tests atm.
 	skip(t)
 
@@ -4582,7 +4584,7 @@ func TestNoRaceMsgIdPerfDuringCatchup(t *testing.T) {
 	}
 }
 
-func TestNoRaceRebuildDeDupeAndMemoryPerf(t *testing.T) {
+func TestNoRaceJetStreamRebuildDeDupeAndMemoryPerf(t *testing.T) {
 	skip(t)
 
 	s := RunBasicJetStreamServer()
@@ -4666,7 +4668,7 @@ func TestNoRaceRebuildDeDupeAndMemoryPerf(t *testing.T) {
 	fmt.Printf("Memory: %v\n", friendlyBytes(v.Mem))
 }
 
-func TestNoRaceMemoryUsageOnLimitedStreamWithMirror(t *testing.T) {
+func TestNoRaceJetStreamMemoryUsageOnLimitedStreamWithMirror(t *testing.T) {
 	skip(t)
 
 	s := RunBasicJetStreamServer()
@@ -4719,7 +4721,7 @@ func TestNoRaceMemoryUsageOnLimitedStreamWithMirror(t *testing.T) {
 	fmt.Printf("Memory AFTER SEND: %v\n", friendlyBytes(v.Mem))
 }
 
-func TestNoRaceOrderedConsumerLongRTTPerformance(t *testing.T) {
+func TestNoRaceJetStreamOrderedConsumerLongRTTPerformance(t *testing.T) {
 	skip(t)
 
 	s := RunBasicJetStreamServer()
@@ -5384,7 +5386,7 @@ func TestNoRaceJetStreamClusterStreamNamesAndInfosMoreThanAPILimit(t *testing.T)
 	check(JSApiStreamList, JSApiListLimit)
 }
 
-func TestNoRaceFileStoreLargeKVAccessTiming(t *testing.T) {
+func TestNoRaceJetStreamFileStoreLargeKVAccessTiming(t *testing.T) {
 	storeDir := createDir(t, JetStreamStoreDir)
 	defer removeDir(t, storeDir)
 
