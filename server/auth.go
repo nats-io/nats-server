@@ -423,7 +423,7 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 			tokens := strings.Split(list[i], tsep)
 
 			newTokens := make([]string, len(tokens))
-			tagValues := map[int][]string{} // indexed by token
+			tagValues := [][]string{}
 
 			for tokenNum, tk := range tokens {
 				if strings.HasPrefix(tk, "{{") && strings.HasSuffix(tk, "}}") {
@@ -460,11 +460,15 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 								strings.TrimSuffix(strings.TrimPrefix(op, "tag("), ")")))
 						}
 
+						valueList := []string{}
 						for _, tag := range tags {
 							if strings.HasPrefix(tag, tagPrefix) {
 								tagValue := strings.TrimPrefix(tag, tagPrefix)
-								tagValues[tokenNum] = append(tagValues[tokenNum], tagValue)
+								valueList = append(valueList, tagValue)
 							}
+						}
+						if len(valueList) != 0 {
+							tagValues = append(tagValues, valueList)
 						}
 					default:
 						// if macro is not recognized, throw off subject check on purpose
@@ -483,12 +487,8 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 				}
 				// else skip emitting
 			} else {
-				orderedList := make([][]string, 0, len(tagValues))
-				for _, valueList := range tagValues {
-					orderedList = append(orderedList, valueList)
-				}
 				// compute the cartesian product and compute subject to emit for each combination
-				for _, valueList := range nArrayCartesianProduct(orderedList...) {
+				for _, valueList := range nArrayCartesianProduct(tagValues...) {
 					b := strings.Builder{}
 					for i, token := range newTokens {
 						if token == _EMPTY_ {
@@ -777,7 +777,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 				c.Debugf("User JWT is not valid")
 				return false
 			} else if juc.UserPermissionLimits, err = processUserPermissionsTemplate(uSc.Template, juc, acc); err != nil {
-				c.Debugf("User JWT is not valid")
+				c.Debugf("User JWT generated invalid permissions")
 				return false
 			}
 		}

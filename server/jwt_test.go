@@ -4205,6 +4205,11 @@ func TestJwtTemplates(t *testing.T) {
 	require_True(t, len(resLim.Sub.Allow) == 0)
 	require_True(t, len(resLim.Sub.Deny) == 1)
 	require_Contains(t, resLim.Sub.Deny[0], fmt.Sprintf("foo.myname.%s.accname.%s.bar", upub, aPub))
+
+	lim.Pub.Deny.Add("{{tag(NOT_THERE)}}")
+	_, err = processUserPermissionsTemplate(lim, uclaim, acc)
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "generated invalid subject")
 }
 
 func TestJWTLimitsTemplate(t *testing.T) {
