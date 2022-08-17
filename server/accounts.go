@@ -4201,6 +4201,26 @@ func getMappingFunctionArgs(functionRegEx *regexp.Regexp, token string) []string
 	return nil
 }
 
+// Helper for mapping functions that take a wildcard index and an integer as arguments
+func transformIndexIntArgsHelper(token string, args []string, transformType int16) (int16, []int, int32, string, error) {
+	if len(args) < 2 {
+		return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
+	}
+	if len(args) > 2 {
+		return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
+	}
+	i, err := strconv.Atoi(strings.Trim(args[0], " "))
+	if err != nil {
+		return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
+	}
+	mappingFunctionIntArg, err := strconv.Atoi(strings.Trim(args[1], " "))
+	if err != nil {
+		return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
+	}
+
+	return transformType, []int{i}, int32(mappingFunctionIntArg), "", nil
+}
+
 // Helper to ingest and index the transform destination token (e.g. $x or {{}}) in the token
 // returns a transformation type, and three function arguments: an array of source subject token indexes, and a single number (e.g. number of partitions, or a slice size), and a string (e.g.a split delimiter)
 
@@ -4263,85 +4283,25 @@ func indexPlaceHolders(token string) (int16, []int, int32, string, error) {
 			// SplitFromLeft(token, position)
 			args = getMappingFunctionArgs(splitFromLeftMappingFunctionRegEx, token)
 			if args != nil {
-				if len(args) < 2 {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
-				}
-				if len(args) > 2 {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
-				}
-				i, err := strconv.Atoi(strings.Trim(args[0], " "))
-				if err != nil {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
-				}
-				mappingFunctionIntArg, err := strconv.Atoi(strings.Trim(args[1], " "))
-				if err != nil {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
-				}
-
-				return SplitFromLeft, []int{i}, int32(mappingFunctionIntArg), "", nil
+				return transformIndexIntArgsHelper(token, args, SplitFromLeft)
 			}
 
 			// SplitFromRight(token, position)
 			args = getMappingFunctionArgs(splitFromRightMappingFunctionRegEx, token)
 			if args != nil {
-				if len(args) < 2 {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
-				}
-				if len(args) > 2 {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
-				}
-				i, err := strconv.Atoi(strings.Trim(args[0], " "))
-				if err != nil {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
-				}
-				mappingFunctionIntArg, err := strconv.Atoi(strings.Trim(args[1], " "))
-				if err != nil {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
-				}
-
-				return SplitFromRight, []int{i}, int32(mappingFunctionIntArg), "", nil
+				return transformIndexIntArgsHelper(token, args, SplitFromRight)
 			}
 
 			// SliceFromLeft(token, position)
 			args = getMappingFunctionArgs(sliceFromLeftMappingFunctionRegEx, token)
 			if args != nil {
-				if len(args) < 2 {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
-				}
-				if len(args) > 2 {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
-				}
-				i, err := strconv.Atoi(strings.Trim(args[0], " "))
-				if err != nil {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
-				}
-				mappingFunctionIntArg, err := strconv.Atoi(strings.Trim(args[1], " "))
-				if err != nil {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
-				}
-
-				return SliceFromLeft, []int{i}, int32(mappingFunctionIntArg), "", nil
+				return transformIndexIntArgsHelper(token, args, SliceFromLeft)
 			}
 
 			// SliceFromRight(token, position)
 			args = getMappingFunctionArgs(sliceFromRightMappingFunctionRegEx, token)
 			if args != nil {
-				if len(args) < 2 {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
-				}
-				if len(args) > 2 {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
-				}
-				i, err := strconv.Atoi(strings.Trim(args[0], " "))
-				if err != nil {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
-				}
-				mappingFunctionIntArg, err := strconv.Atoi(strings.Trim(args[1], " "))
-				if err != nil {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
-				}
-
-				return SliceFromRight, []int{i}, int32(mappingFunctionIntArg), "", nil
+				return transformIndexIntArgsHelper(token, args, SliceFromRight)
 			}
 
 			// split(token, deliminator)
@@ -4514,7 +4474,6 @@ func (tr *transform) transform(tokens []string) (string, error) {
 	}
 
 	var b strings.Builder
-	var transformedToken string
 
 	// We need to walk destination tokens and create the mapped subject pulling tokens or mapping functions
 	// This is slow and that is ok, transforms should have caching layer in front for mapping transforms
@@ -4522,11 +4481,11 @@ func (tr *transform) transform(tokens []string) (string, error) {
 	li := len(tr.dtokmftypes) - 1
 	for i, mfType := range tr.dtokmftypes {
 		if mfType == NoTransform {
-			transformedToken = tr.dtoks[i]
 			// Break if fwc
-			if len(transformedToken) == 1 && transformedToken[0] == fwc {
+			if len(tr.dtoks[i]) == 1 && tr.dtoks[i][0] == fwc {
 				break
 			}
+			b.WriteString(tr.dtoks[i])
 		} else {
 			switch mfType {
 			case Partition:
@@ -4537,80 +4496,77 @@ func (tr *transform) transform(tokens []string) (string, error) {
 				for _, sourceToken := range tr.dtokmftokindexesargs[i] {
 					keyForHashing = append(keyForHashing, []byte(tokens[sourceToken])...)
 				}
-				transformedToken = tr.getHashPartition(keyForHashing, int(tr.dtokmfintargs[i]))
+				b.WriteString(tr.getHashPartition(keyForHashing, int(tr.dtokmfintargs[i])))
 			case Wildcard: // simple substitution
-				transformedToken = tokens[tr.dtokmftokindexesargs[i][0]]
+				b.WriteString(tokens[tr.dtokmftokindexesargs[i][0]])
 			case SplitFromLeft:
 				sourceToken := tokens[tr.dtokmftokindexesargs[i][0]]
 				sourceTokenLen := len(sourceToken)
 				position := int(tr.dtokmfintargs[i])
 				if position > 0 && position < sourceTokenLen {
-					transformedToken = sourceToken[:position] + "." + sourceToken[position:]
+					b.WriteString(sourceToken[:position] + "." + sourceToken[position:])
 				} else { // too small to split at the requested position: don't split
-					transformedToken = sourceToken
+					b.WriteString(sourceToken)
 				}
 			case SplitFromRight:
 				sourceToken := tokens[tr.dtokmftokindexesargs[i][0]]
 				sourceTokenLen := len(sourceToken)
 				position := int(tr.dtokmfintargs[i])
 				if position > 0 && position < sourceTokenLen {
-					transformedToken = sourceToken[:sourceTokenLen-position] + "." + sourceToken[sourceTokenLen-position:]
+					b.WriteString(sourceToken[:sourceTokenLen-position] + "." + sourceToken[sourceTokenLen-position:])
 				} else { // too small to split at the requested position: don't split
-					transformedToken = sourceToken
+					b.WriteString(sourceToken)
 				}
 			case SliceFromLeft:
 				sourceToken := tokens[tr.dtokmftokindexesargs[i][0]]
 				sourceTokenLen := len(sourceToken)
 				sliceSize := int(tr.dtokmfintargs[i])
 				if sliceSize > 0 && sliceSize < sourceTokenLen {
-					transformedToken = ""
 					for i := 0; i+sliceSize <= sourceTokenLen; i += sliceSize {
 						if i != 0 {
-							transformedToken = transformedToken + "."
+							b.WriteString(".")
 						}
-						transformedToken = transformedToken + sourceToken[i:i+sliceSize]
+						b.WriteString(sourceToken[i : i+sliceSize])
 						if i+sliceSize != sourceTokenLen && i+sliceSize+sliceSize > sourceTokenLen {
-							transformedToken = transformedToken + "." + sourceToken[i+sliceSize:]
+							b.WriteString("." + sourceToken[i+sliceSize:])
 							break
 						}
 					}
 				} else { // too small to slice at the requested size: don't slice
-					transformedToken = sourceToken
+					b.WriteString(sourceToken)
 				}
 			case SliceFromRight:
 				sourceToken := tokens[tr.dtokmftokindexesargs[i][0]]
 				sourceTokenLen := len(sourceToken)
 				sliceSize := int(tr.dtokmfintargs[i])
 				if sliceSize > 0 && sliceSize < sourceTokenLen {
-					transformedToken = ""
 					remainder := sourceTokenLen % sliceSize
 					if remainder > 0 {
-						transformedToken = transformedToken + sourceToken[:remainder] + "."
+						b.WriteString(sourceToken[:remainder] + ".")
 					}
 					for i := remainder; i+sliceSize <= sourceTokenLen; i += sliceSize {
-						transformedToken = transformedToken + sourceToken[i:i+sliceSize]
+						b.WriteString(sourceToken[i : i+sliceSize])
 						if i+sliceSize < sourceTokenLen {
-							transformedToken = transformedToken + "."
+							b.WriteString(".")
 						}
 					}
 				} else { // too small to slice at the requested size: don't slice
-					transformedToken = sourceToken
+					b.WriteString(sourceToken)
 				}
 			case Split:
 				sourceToken := tokens[tr.dtokmftokindexesargs[i][0]]
 				splits := strings.Split(sourceToken, tr.dtokmfstringargs[i])
-				transformedToken = ""
 				for j, split := range splits {
 					if split != "" {
-						transformedToken = transformedToken + split
+						b.WriteString(split)
 					}
 					if j < len(splits)-1 && splits[j+1] != "" && j != 0 {
-						transformedToken = transformedToken + "."
+						b.WriteString(".")
 					}
 				}
 			}
 		}
-		b.WriteString(transformedToken)
+
 		if i < li {
 			b.WriteByte(btsep)
 		}
