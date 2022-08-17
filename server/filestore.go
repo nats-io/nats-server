@@ -161,12 +161,13 @@ type msgBlock struct {
 	cexp    time.Duration
 	ctmr    *time.Timer
 	werr    error
-	loading bool
-	flusher bool
 	dmap    map[uint64]struct{}
 	fch     chan struct{}
 	qch     chan struct{}
 	lchk    [8]byte
+	loading bool
+	flusher bool
+	noSubj  bool
 	closed  bool
 }
 
@@ -646,6 +647,11 @@ const indexHdrSize = 7*binary.MaxVarintLen64 + hdrLen + checksumSize
 func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint32) (*msgBlock, error) {
 	mb := &msgBlock{fs: fs, index: index, cexp: fs.fcfg.CacheExpire}
 
+	// Check if we should be monitoring subjects.
+	if len(fs.cfg.Subjects) == 0 {
+		mb.noSubj = true
+	}
+
 	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
 	mb.mfn = filepath.Join(mdir, fi.Name())
 	mb.ifn = filepath.Join(mdir, fmt.Sprintf(indexScan, index))
@@ -742,7 +748,7 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint32) (*msgBlock, e
 		// Quick sanity check here.
 		// Note this only checks that the message blk file is not newer then this file, or is empty and we expect empty.
 		if (mb.rbytes == 0 && mb.msgs == 0) || bytes.Equal(lchk[:], mb.lchk[:]) {
-			if mb.msgs > 0 && fs.psim != nil {
+			if mb.msgs > 0 && !mb.noSubj && fs.psim != nil {
 				fs.populateGlobalPerSubjectInfo(mb)
 			}
 			fs.addMsgBlock(mb)
@@ -754,7 +760,7 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint32) (*msgBlock, e
 	if ld, _ := mb.rebuildState(); ld != nil {
 		fs.rebuildStateLocked(ld)
 	}
-	if mb.msgs > 0 && fs.psim != nil {
+	if mb.msgs > 0 && !mb.noSubj && fs.psim != nil {
 		fs.populateGlobalPerSubjectInfo(mb)
 	}
 
@@ -1784,8 +1790,10 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 
 	mb := &msgBlock{fs: fs, index: index, cexp: fs.fcfg.CacheExpire}
 
-	// If we only have one subject registered we can optimize filtered lookups here.
-	if len(fs.cfg.Subjects) == 1 {
+	// Optimize lookups if we have zero or one subject.
+	if nsubj := len(fs.cfg.Subjects); nsubj == 0 {
+		mb.noSubj = true
+	} else if nsubj == 1 {
 		mb.sfilter = fs.cfg.Subjects[0]
 	}
 
@@ -5090,12 +5098,10 @@ func (mb *msgBlock) generatePerSubjectInfo(hasLock bool) error {
 		return nil
 	}
 
-	var shouldExpire bool
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			return err
 		}
-		shouldExpire = true
 	}
 
 	// Create new one regardless.
@@ -5124,9 +5130,11 @@ func (mb *msgBlock) generatePerSubjectInfo(hasLock bool) error {
 			}
 		}
 	}
-	if shouldExpire {
-		// Expire this cache before moving on.
-		mb.tryForceExpireCacheLocked()
+
+	if len(mb.fss) > 0 {
+		// Make sure we run the cache expire timer.
+		mb.llts = time.Now().UnixNano()
+		mb.startCacheExpireTimer()
 	}
 	return nil
 }
@@ -5196,9 +5204,9 @@ func (fs *fileStore) populateGlobalPerSubjectInfo(mb *msgBlock) {
 
 // readPerSubjectInfo will attempt to restore the per subject information.
 func (mb *msgBlock) readPerSubjectInfo(hasLock bool) error {
-	// Make sure we run the cache expire timer.
-	mb.llts = time.Now().UnixNano()
-	mb.startCacheExpireTimer()
+	if mb.noSubj {
+		return nil
+	}
 
 	defer func() {
 		if !hasLock {
@@ -5248,6 +5256,12 @@ func (mb *msgBlock) readPerSubjectInfo(hasLock bool) error {
 		fss[subj] = &SimpleState{Msgs: msgs, First: first, Last: last}
 	}
 	mb.fss = fss
+
+	// Make sure we run the cache expire timer.
+	if len(mb.fss) > 0 {
+		mb.llts = time.Now().UnixNano()
+		mb.startCacheExpireTimer()
+	}
 
 	if !hasLock {
 		mb.mu.Unlock()
