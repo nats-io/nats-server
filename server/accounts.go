@@ -4204,21 +4204,21 @@ func getMappingFunctionArgs(functionRegEx *regexp.Regexp, token string) []string
 // Helper for mapping functions that take a wildcard index and an integer as arguments
 func transformIndexIntArgsHelper(token string, args []string, transformType int16) (int16, []int, int32, string, error) {
 	if len(args) < 2 {
-		return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
+		return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
 	}
 	if len(args) > 2 {
-		return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
+		return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionTooManyArguments}
 	}
 	i, err := strconv.Atoi(strings.Trim(args[0], " "))
 	if err != nil {
-		return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
+		return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
 	}
 	mappingFunctionIntArg, err := strconv.Atoi(strings.Trim(args[1], " "))
 	if err != nil {
-		return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
+		return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
 	}
 
-	return transformType, []int{i}, int32(mappingFunctionIntArg), "", nil
+	return transformType, []int{i}, int32(mappingFunctionIntArg), _EMPTY_, nil
 }
 
 // Helper to ingest and index the transform destination token (e.g. $x or {{}}) in the token
@@ -4231,7 +4231,8 @@ func indexPlaceHolders(token string) (int16, []int, int32, string, error) {
 		if token[0] == '$' { // simple non-partition mapping
 			tp, err := strconv.Atoi(token[1:])
 			if err != nil {
-				return NoTransform, []int{-1}, -1, "", nil // other things rely on tokens starting with $ so not an error just leave it as is
+				// other things rely on tokens starting with $ so not an error just leave it as is
+				return NoTransform, []int{-1}, -1, "", nil
 			}
 			return Wildcard, []int{tp}, -1, "", nil
 		}
@@ -4242,16 +4243,16 @@ func indexPlaceHolders(token string) (int16, []int, int32, string, error) {
 			args := getMappingFunctionArgs(wildcardMappingFunctionRegEx, token)
 			if args != nil {
 				if len(args) == 1 && args[0] == _EMPTY_ {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
+					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
 				}
 				if len(args) == 1 {
 					tokenIndex, err := strconv.Atoi(strings.Trim(args[0], " "))
 					if err != nil {
-						return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
+						return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
 					}
-					return Wildcard, []int{tokenIndex}, -1, "", nil
+					return Wildcard, []int{tokenIndex}, -1, _EMPTY_, nil
 				} else {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionTooManyArguments}
+					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionTooManyArguments}
 				}
 			}
 
@@ -4259,24 +4260,24 @@ func indexPlaceHolders(token string) (int16, []int, int32, string, error) {
 			args = getMappingFunctionArgs(partitionMappingFunctionRegEx, token)
 			if args != nil {
 				if len(args) < 2 {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
+					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
 				}
 				if len(args) >= 2 {
 					mappingFunctionIntArg, err := strconv.Atoi(strings.Trim(args[0], " "))
 					if err != nil {
-						return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
+						return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
 					}
 					var numPositions = len(args[1:])
 					tokenIndexes := make([]int, numPositions)
 					for ti, t := range args[1:] {
 						i, err := strconv.Atoi(strings.Trim(t, " "))
 						if err != nil {
-							return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
+							return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
 						}
 						tokenIndexes[ti] = i
 					}
 
-					return Partition, tokenIndexes, int32(mappingFunctionIntArg), "", nil
+					return Partition, tokenIndexes, int32(mappingFunctionIntArg), _EMPTY_, nil
 				}
 			}
 
@@ -4308,26 +4309,26 @@ func indexPlaceHolders(token string) (int16, []int, int32, string, error) {
 			args = getMappingFunctionArgs(splitMappingFunctionRegEx, token)
 			if args != nil {
 				if len(args) < 2 {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
+					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
 				}
 				if len(args) > 2 {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
+					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionTooManyArguments}
 				}
 				i, err := strconv.Atoi(strings.Trim(args[0], " "))
 				if err != nil {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
+					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
 				}
 				if strings.Contains(args[1], " ") || strings.Contains(args[1], ".") {
-					return BadTransform, []int{}, -1, "", &mappingDestinationErr{token: token, err: ErrorMappingDestinationFunctionInvalidArgument}
+					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token: token, err: ErrorMappingDestinationFunctionInvalidArgument}
 				}
 
 				return Split, []int{i}, -1, args[1], nil
 			}
 
-			return BadTransform, []int{}, -1, "", &mappingDestinationErr{token, ErrUnknownMappingDestinationFunction}
+			return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrUnknownMappingDestinationFunction}
 		}
 	}
-	return NoTransform, []int{-1}, -1, "", nil
+	return NoTransform, []int{-1}, -1, _EMPTY_, nil
 }
 
 // SubjectTransformer transforms subjects using mappings
@@ -4378,12 +4379,10 @@ func newTransform(src, dest string) (*transform, error) {
 			}
 
 			if tranformType == NoTransform {
-				{
-					dtokMappingFunctionTypes = append(dtokMappingFunctionTypes, NoTransform)
-					dtokMappingFunctionTokenIndexes = append(dtokMappingFunctionTokenIndexes, []int{-1})
-					dtokMappingFunctionIntArgs = append(dtokMappingFunctionIntArgs, -1)
-					dtokMappingFunctionStringArgs = append(dtokMappingFunctionStringArgs, "")
-				}
+				dtokMappingFunctionTypes = append(dtokMappingFunctionTypes, NoTransform)
+				dtokMappingFunctionTokenIndexes = append(dtokMappingFunctionTokenIndexes, []int{-1})
+				dtokMappingFunctionIntArgs = append(dtokMappingFunctionIntArgs, -1)
+				dtokMappingFunctionStringArgs = append(dtokMappingFunctionStringArgs, "")
 			} else {
 				nphs++
 				// Now build up our runtime mapping from dest to source tokens.
