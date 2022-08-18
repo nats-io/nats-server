@@ -166,8 +166,26 @@ const (
 )
 
 var commaSeparatorRegEx = regexp.MustCompile(`,\s*`)
-var partitionMappingFunctionRegEx = regexp.MustCompile(`{{\s*partition\s*\((.*)\)\s*}}`)
-var wildcardMappingFunctionRegEx = regexp.MustCompile(`{{\s*wildcard\s*\((.*)\)\s*}}`)
+var partitionMappingFunctionRegEx = regexp.MustCompile(`{{\s*[pP]artition\s*\((.*)\)\s*}}`)
+var wildcardMappingFunctionRegEx = regexp.MustCompile(`{{\s*[wW]ildcard\s*\((.*)\)\s*}}`)
+var splitFromLeftMappingFunctionRegEx = regexp.MustCompile(`{{\s*[sS]plit[fF]rom[lL]eft\s*\((.*)\)\s*}}`)
+var splitFromRightMappingFunctionRegEx = regexp.MustCompile(`{{\s*[sS]plit[fF]rom[rR]ight\s*\((.*)\)\s*}}`)
+var sliceFromLeftMappingFunctionRegEx = regexp.MustCompile(`{{\s*[sS]lice[fF]rom[lL]eft\s*\((.*)\)\s*}}`)
+var sliceFromRightMappingFunctionRegEx = regexp.MustCompile(`{{\s*[sS]lice[fF]rom[rR]ight\s*\((.*)\)\s*}}`)
+var splitMappingFunctionRegEx = regexp.MustCompile(`{{\s*[sS]plit\s*\((.*)\)\s*}}`)
+
+// Enum for the subject mapping transform function types
+const (
+	NoTransform int16 = iota
+	BadTransform
+	Partition
+	Wildcard
+	SplitFromLeft
+	SplitFromRight
+	SliceFromLeft
+	SliceFromRight
+	Split
+)
 
 // String helper.
 func (rt ServiceRespType) String() string {
@@ -845,7 +863,7 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 	}
 
 	if d != nil {
-		if len(d.tr.dtpi) == 0 {
+		if len(d.tr.dtokmftokindexesargs) == 0 {
 			ndest = d.tr.dest
 		} else if nsubj, err := d.tr.transform(tts); err == nil {
 			ndest = nsubj
@@ -948,7 +966,7 @@ func (a *Account) removeClient(c *client) int {
 
 func setExportAuth(ea *exportAuth, subject string, accounts []*Account, accountPos uint) error {
 	if accountPos > 0 {
-		token := strings.Split(subject, ".")
+		token := strings.Split(subject, tsep)
 		if len(token) < int(accountPos) || token[accountPos-1] != "*" {
 			return ErrInvalidSubject
 		}
@@ -2442,7 +2460,7 @@ func (a *Account) AddStreamExport(subject string, accounts []*Account) error {
 // AddStreamExport will add an export to the account. If accounts is nil
 // it will signify a public export, meaning anyone can import.
 // if accountPos is > 0, all imports will be granted where the following holds:
-// strings.Split(subject, ".")[accountPos] == account id will be granted.
+// strings.Split(subject, tsep)[accountPos] == account id will be granted.
 func (a *Account) addStreamExportWithAccountPos(subject string, accounts []*Account, accountPos uint) error {
 	if a == nil {
 		return ErrMissingAccount
@@ -4166,11 +4184,13 @@ func (dr *CacheDirAccResolver) Reload() error {
 // These can also be used for proper mapping on wildcard exports/imports.
 // These will be grouped and caching and locking are assumed to be in the upper layers.
 type transform struct {
-	src, dest string
-	dtoks     []string
-	stoks     []string
-	dtpi      [][]int // destination token position indexes
-	dtpinp    []int32 // destination token position index number of partitions
+	src, dest            string
+	dtoks                []string // destination tokens
+	stoks                []string // source tokens
+	dtokmftypes          []int16  // destination token mapping function types
+	dtokmftokindexesargs [][]int  // destination token mapping function array of source token index arguments
+	dtokmfintargs        []int32  // destination token mapping function int32 arguments
+	dtokmfstringargs     []string // destination token mapping function string arguments
 }
 
 func getMappingFunctionArgs(functionRegEx *regexp.Regexp, token string) []string {
@@ -4181,17 +4201,40 @@ func getMappingFunctionArgs(functionRegEx *regexp.Regexp, token string) []string
 	return nil
 }
 
-// Helper to pull raw place holder indexes and number of partitions. Returns -1 if not a place holder.
-func placeHolderIndex(token string) ([]int, int32, error) {
+// Helper for mapping functions that take a wildcard index and an integer as arguments
+func transformIndexIntArgsHelper(token string, args []string, transformType int16) (int16, []int, int32, string, error) {
+	if len(args) < 2 {
+		return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
+	}
+	if len(args) > 2 {
+		return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionTooManyArguments}
+	}
+	i, err := strconv.Atoi(strings.Trim(args[0], " "))
+	if err != nil {
+		return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
+	}
+	mappingFunctionIntArg, err := strconv.Atoi(strings.Trim(args[1], " "))
+	if err != nil {
+		return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
+	}
+
+	return transformType, []int{i}, int32(mappingFunctionIntArg), _EMPTY_, nil
+}
+
+// Helper to ingest and index the transform destination token (e.g. $x or {{}}) in the token
+// returns a transformation type, and three function arguments: an array of source subject token indexes, and a single number (e.g. number of partitions, or a slice size), and a string (e.g.a split delimiter)
+
+func indexPlaceHolders(token string) (int16, []int, int32, string, error) {
 	length := len(token)
 	if length > 1 {
 		// old $1, $2, etc... mapping format still supported to maintain backwards compatibility
 		if token[0] == '$' { // simple non-partition mapping
 			tp, err := strconv.Atoi(token[1:])
 			if err != nil {
-				return []int{-1}, -1, nil
+				// other things rely on tokens starting with $ so not an error just leave it as is
+				return NoTransform, []int{-1}, -1, _EMPTY_, nil
 			}
-			return []int{tp}, -1, nil
+			return Wildcard, []int{tp}, -1, _EMPTY_, nil
 		}
 
 		// New 'mustache' style mapping
@@ -4200,45 +4243,92 @@ func placeHolderIndex(token string) ([]int, int32, error) {
 			args := getMappingFunctionArgs(wildcardMappingFunctionRegEx, token)
 			if args != nil {
 				if len(args) == 1 && args[0] == _EMPTY_ {
-					return []int{-1}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
+					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
 				}
 				if len(args) == 1 {
-					tp, err := strconv.Atoi(strings.Trim(args[0], " "))
+					tokenIndex, err := strconv.Atoi(strings.Trim(args[0], " "))
 					if err != nil {
-						return []int{}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
+						return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
 					}
-					return []int{tp}, -1, nil
+					return Wildcard, []int{tokenIndex}, -1, _EMPTY_, nil
 				} else {
-					return []int{}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionTooManyArguments}
+					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionTooManyArguments}
 				}
 			}
+
 			// partition(number of partitions, token1, token2, ...)
 			args = getMappingFunctionArgs(partitionMappingFunctionRegEx, token)
 			if args != nil {
 				if len(args) < 2 {
-					return []int{-1}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
+					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
 				}
 				if len(args) >= 2 {
-					tphnp, err := strconv.Atoi(strings.Trim(args[0], " "))
+					mappingFunctionIntArg, err := strconv.Atoi(strings.Trim(args[0], " "))
 					if err != nil {
-						return []int{}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
+						return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
 					}
 					var numPositions = len(args[1:])
-					tps := make([]int, numPositions)
+					tokenIndexes := make([]int, numPositions)
 					for ti, t := range args[1:] {
 						i, err := strconv.Atoi(strings.Trim(t, " "))
 						if err != nil {
-							return []int{}, -1, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
+							return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
 						}
-						tps[ti] = i
+						tokenIndexes[ti] = i
 					}
-					return tps, int32(tphnp), nil
+
+					return Partition, tokenIndexes, int32(mappingFunctionIntArg), _EMPTY_, nil
 				}
 			}
-			return []int{}, -1, &mappingDestinationErr{token, ErrUnknownMappingDestinationFunction}
+
+			// SplitFromLeft(token, position)
+			args = getMappingFunctionArgs(splitFromLeftMappingFunctionRegEx, token)
+			if args != nil {
+				return transformIndexIntArgsHelper(token, args, SplitFromLeft)
+			}
+
+			// SplitFromRight(token, position)
+			args = getMappingFunctionArgs(splitFromRightMappingFunctionRegEx, token)
+			if args != nil {
+				return transformIndexIntArgsHelper(token, args, SplitFromRight)
+			}
+
+			// SliceFromLeft(token, position)
+			args = getMappingFunctionArgs(sliceFromLeftMappingFunctionRegEx, token)
+			if args != nil {
+				return transformIndexIntArgsHelper(token, args, SliceFromLeft)
+			}
+
+			// SliceFromRight(token, position)
+			args = getMappingFunctionArgs(sliceFromRightMappingFunctionRegEx, token)
+			if args != nil {
+				return transformIndexIntArgsHelper(token, args, SliceFromRight)
+			}
+
+			// split(token, deliminator)
+			args = getMappingFunctionArgs(splitMappingFunctionRegEx, token)
+			if args != nil {
+				if len(args) < 2 {
+					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
+				}
+				if len(args) > 2 {
+					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionTooManyArguments}
+				}
+				i, err := strconv.Atoi(strings.Trim(args[0], " "))
+				if err != nil {
+					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
+				}
+				if strings.Contains(args[1], " ") || strings.Contains(args[1], tsep) {
+					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token: token, err: ErrorMappingDestinationFunctionInvalidArgument}
+				}
+
+				return Split, []int{i}, -1, args[1], nil
+			}
+
+			return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrUnknownMappingDestinationFunction}
 		}
 	}
-	return []int{-1}, -1, nil
+	return NoTransform, []int{-1}, -1, _EMPTY_, nil
 }
 
 // SubjectTransformer transforms subjects using mappings
@@ -4266,8 +4356,10 @@ func newTransform(src, dest string) (*transform, error) {
 		return nil, ErrBadSubject
 	}
 
-	var dtpi [][]int
-	var dtpinb []int32
+	var dtokMappingFunctionTypes []int16
+	var dtokMappingFunctionTokenIndexes [][]int
+	var dtokMappingFunctionIntArgs []int32
+	var dtokMappingFunctionStringArgs []string
 
 	// If the src has partial wildcards then the dest needs to have the token place markers.
 	if npwcs > 0 || hasFwc {
@@ -4281,25 +4373,31 @@ func newTransform(src, dest string) (*transform, error) {
 
 		nphs := 0
 		for _, token := range dtokens {
-			tp, nb, err := placeHolderIndex(token)
+			tranformType, transformArgWildcardIndexes, transfomArgInt, transformArgString, err := indexPlaceHolders(token)
 			if err != nil {
 				return nil, err
 			}
-			if tp[0] >= 0 {
+
+			if tranformType == NoTransform {
+				dtokMappingFunctionTypes = append(dtokMappingFunctionTypes, NoTransform)
+				dtokMappingFunctionTokenIndexes = append(dtokMappingFunctionTokenIndexes, []int{-1})
+				dtokMappingFunctionIntArgs = append(dtokMappingFunctionIntArgs, -1)
+				dtokMappingFunctionStringArgs = append(dtokMappingFunctionStringArgs, _EMPTY_)
+			} else {
 				nphs++
 				// Now build up our runtime mapping from dest to source tokens.
 				var stis []int
-				for _, position := range tp {
-					if position > npwcs {
-						return nil, &mappingDestinationErr{fmt.Sprintf("%s: [%d]", token, position), ErrorMappingDestinationFunctionWildcardIndexOutOfRange}
+				for _, wildcardIndex := range transformArgWildcardIndexes {
+					if wildcardIndex > npwcs {
+						return nil, &mappingDestinationErr{fmt.Sprintf("%s: [%d]", token, wildcardIndex), ErrorMappingDestinationFunctionWildcardIndexOutOfRange}
 					}
-					stis = append(stis, sti[position])
+					stis = append(stis, sti[wildcardIndex])
 				}
-				dtpi = append(dtpi, stis)
-				dtpinb = append(dtpinb, nb)
-			} else {
-				dtpi = append(dtpi, []int{-1})
-				dtpinb = append(dtpinb, -1)
+				dtokMappingFunctionTypes = append(dtokMappingFunctionTypes, tranformType)
+				dtokMappingFunctionTokenIndexes = append(dtokMappingFunctionTokenIndexes, stis)
+				dtokMappingFunctionIntArgs = append(dtokMappingFunctionIntArgs, transfomArgInt)
+				dtokMappingFunctionStringArgs = append(dtokMappingFunctionStringArgs, transformArgString)
+
 			}
 		}
 		if nphs < npwcs {
@@ -4308,7 +4406,7 @@ func newTransform(src, dest string) (*transform, error) {
 		}
 	}
 
-	return &transform{src: src, dest: dest, dtoks: dtokens, stoks: stokens, dtpi: dtpi, dtpinp: dtpinb}, nil
+	return &transform{src: src, dest: dest, dtoks: dtokens, stoks: stokens, dtokmftypes: dtokMappingFunctionTypes, dtokmftokindexesargs: dtokMappingFunctionTokenIndexes, dtokmfintargs: dtokMappingFunctionIntArgs, dtokmfstringargs: dtokMappingFunctionStringArgs}, nil
 }
 
 // Match will take a literal published subject that is associated with a client and will match and transform
@@ -4370,41 +4468,110 @@ func (tr *transform) getHashPartition(key []byte, numBuckets int) string {
 
 // Do a transform on the subject to the dest subject.
 func (tr *transform) transform(tokens []string) (string, error) {
-	if len(tr.dtpi) == 0 {
+	if len(tr.dtokmftypes) == 0 {
 		return tr.dest, nil
 	}
 
 	var b strings.Builder
-	var token string
 
-	// We need to walk destination tokens and create the mapped subject pulling tokens from src.
+	// We need to walk destination tokens and create the mapped subject pulling tokens or mapping functions
 	// This is slow and that is ok, transforms should have caching layer in front for mapping transforms
 	// and export/import semantics with streams and services.
-	li := len(tr.dtpi) - 1
-	for i, index := range tr.dtpi {
-		// <0 means use destination token.
-		if index[0] < 0 {
-			token = tr.dtoks[i]
+	li := len(tr.dtokmftypes) - 1
+	for i, mfType := range tr.dtokmftypes {
+		if mfType == NoTransform {
 			// Break if fwc
-			if len(token) == 1 && token[0] == fwc {
+			if len(tr.dtoks[i]) == 1 && tr.dtoks[i][0] == fwc {
 				break
 			}
+			b.WriteString(tr.dtoks[i])
 		} else {
-			// >= 0 means use source map index to figure out which source token to pull.
-			if tr.dtpinp[i] > 0 { // there is a valid (i.e. not -1) value for number of partitions, this is a partition transform token
+			switch mfType {
+			case Partition:
 				var (
 					_buffer       [64]byte
 					keyForHashing = _buffer[:0]
 				)
-				for _, sourceToken := range tr.dtpi[i] {
+				for _, sourceToken := range tr.dtokmftokindexesargs[i] {
 					keyForHashing = append(keyForHashing, []byte(tokens[sourceToken])...)
 				}
-				token = tr.getHashPartition(keyForHashing, int(tr.dtpinp[i]))
-			} else { // back to normal substitution
-				token = tokens[tr.dtpi[i][0]]
+				b.WriteString(tr.getHashPartition(keyForHashing, int(tr.dtokmfintargs[i])))
+			case Wildcard: // simple substitution
+				b.WriteString(tokens[tr.dtokmftokindexesargs[i][0]])
+			case SplitFromLeft:
+				sourceToken := tokens[tr.dtokmftokindexesargs[i][0]]
+				sourceTokenLen := len(sourceToken)
+				position := int(tr.dtokmfintargs[i])
+				if position > 0 && position < sourceTokenLen {
+					b.WriteString(sourceToken[:position])
+					b.WriteString(tsep)
+					b.WriteString(sourceToken[position:])
+				} else { // too small to split at the requested position: don't split
+					b.WriteString(sourceToken)
+				}
+			case SplitFromRight:
+				sourceToken := tokens[tr.dtokmftokindexesargs[i][0]]
+				sourceTokenLen := len(sourceToken)
+				position := int(tr.dtokmfintargs[i])
+				if position > 0 && position < sourceTokenLen {
+					b.WriteString(sourceToken[:sourceTokenLen-position])
+					b.WriteString(tsep)
+					b.WriteString(sourceToken[sourceTokenLen-position:])
+				} else { // too small to split at the requested position: don't split
+					b.WriteString(sourceToken)
+				}
+			case SliceFromLeft:
+				sourceToken := tokens[tr.dtokmftokindexesargs[i][0]]
+				sourceTokenLen := len(sourceToken)
+				sliceSize := int(tr.dtokmfintargs[i])
+				if sliceSize > 0 && sliceSize < sourceTokenLen {
+					for i := 0; i+sliceSize <= sourceTokenLen; i += sliceSize {
+						if i != 0 {
+							b.WriteString(tsep)
+						}
+						b.WriteString(sourceToken[i : i+sliceSize])
+						if i+sliceSize != sourceTokenLen && i+sliceSize+sliceSize > sourceTokenLen {
+							b.WriteString(tsep)
+							b.WriteString(sourceToken[i+sliceSize:])
+							break
+						}
+					}
+				} else { // too small to slice at the requested size: don't slice
+					b.WriteString(sourceToken)
+				}
+			case SliceFromRight:
+				sourceToken := tokens[tr.dtokmftokindexesargs[i][0]]
+				sourceTokenLen := len(sourceToken)
+				sliceSize := int(tr.dtokmfintargs[i])
+				if sliceSize > 0 && sliceSize < sourceTokenLen {
+					remainder := sourceTokenLen % sliceSize
+					if remainder > 0 {
+						b.WriteString(sourceToken[:remainder])
+						b.WriteString(tsep)
+					}
+					for i := remainder; i+sliceSize <= sourceTokenLen; i += sliceSize {
+						b.WriteString(sourceToken[i : i+sliceSize])
+						if i+sliceSize < sourceTokenLen {
+							b.WriteString(tsep)
+						}
+					}
+				} else { // too small to slice at the requested size: don't slice
+					b.WriteString(sourceToken)
+				}
+			case Split:
+				sourceToken := tokens[tr.dtokmftokindexesargs[i][0]]
+				splits := strings.Split(sourceToken, tr.dtokmfstringargs[i])
+				for j, split := range splits {
+					if split != _EMPTY_ {
+						b.WriteString(split)
+					}
+					if j < len(splits)-1 && splits[j+1] != _EMPTY_ && j != 0 {
+						b.WriteString(tsep)
+					}
+				}
 			}
 		}
-		b.WriteString(token)
+
 		if i < li {
 			b.WriteByte(btsep)
 		}
@@ -4424,7 +4591,7 @@ func (tr *transform) transform(tokens []string) (string, error) {
 
 // Reverse a transform.
 func (tr *transform) reverse() *transform {
-	if len(tr.dtpi) == 0 {
+	if len(tr.dtokmftokindexesargs) == 0 {
 		rtr, _ := newTransform(tr.dest, tr.src)
 		return rtr
 	}
