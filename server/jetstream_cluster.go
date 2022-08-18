@@ -1985,7 +1985,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				s.Debugf("Scale down of '%s' step down ('%s' preferred)", sa.Config.Name, firstPeer)
 				n.StepDown(firstPeer)
 			} else {
-				s.Noticef("Scale down of '%s' to %+v ('%s' preferred)", sa.Config.Name, newPeerSet, firstPeer)
+				s.Noticef("Scale down of '%s' to %+v ('%s' preferred)",
+					sa.Config.Name, s.peerSetToNames(newPeerSet), firstPeer)
 				for _, p := range oldPeerSet {
 					n.ProposeRemovePeer(p)
 				}
@@ -3889,7 +3890,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 					s.Debugf("Scale down of '%s > %s' step down ('%s' preferred)", ca.Stream, ca.Name, firstPeer)
 					n.StepDown(firstPeer)
 				} else {
-					s.Noticef("Scale down of '%s > %s' to %+v", ca.Stream, ca.Name, newPeerSet)
+					s.Noticef("Scale down of '%s > %s' to %+v", ca.Stream, ca.Name, s.peerSetToNames(newPeerSet))
 					// truncate this consumer
 					for _, p := range oldPeerSet {
 						n.ProposeRemovePeer(p)
