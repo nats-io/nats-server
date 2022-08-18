@@ -7329,6 +7329,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 		case <-qch:
 			return
 		case <-remoteQuitCh:
+			mset.clearCatchupPeer(sreq.Peer)
 			return
 		case <-notActive.C:
 			s.Warnf("Catchup for stream '%s > %s' stalled", mset.account(), mset.name())
