@@ -966,7 +966,7 @@ func (a *Account) removeClient(c *client) int {
 
 func setExportAuth(ea *exportAuth, subject string, accounts []*Account, accountPos uint) error {
 	if accountPos > 0 {
-		token := strings.Split(subject, ".")
+		token := strings.Split(subject, tsep)
 		if len(token) < int(accountPos) || token[accountPos-1] != "*" {
 			return ErrInvalidSubject
 		}
@@ -2460,7 +2460,7 @@ func (a *Account) AddStreamExport(subject string, accounts []*Account) error {
 // AddStreamExport will add an export to the account. If accounts is nil
 // it will signify a public export, meaning anyone can import.
 // if accountPos is > 0, all imports will be granted where the following holds:
-// strings.Split(subject, ".")[accountPos] == account id will be granted.
+// strings.Split(subject, tsep)[accountPos] == account id will be granted.
 func (a *Account) addStreamExportWithAccountPos(subject string, accounts []*Account, accountPos uint) error {
 	if a == nil {
 		return ErrMissingAccount
@@ -4232,9 +4232,9 @@ func indexPlaceHolders(token string) (int16, []int, int32, string, error) {
 			tp, err := strconv.Atoi(token[1:])
 			if err != nil {
 				// other things rely on tokens starting with $ so not an error just leave it as is
-				return NoTransform, []int{-1}, -1, "", nil
+				return NoTransform, []int{-1}, -1, _EMPTY_, nil
 			}
-			return Wildcard, []int{tp}, -1, "", nil
+			return Wildcard, []int{tp}, -1, _EMPTY_, nil
 		}
 
 		// New 'mustache' style mapping
@@ -4318,7 +4318,7 @@ func indexPlaceHolders(token string) (int16, []int, int32, string, error) {
 				if err != nil {
 					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
 				}
-				if strings.Contains(args[1], " ") || strings.Contains(args[1], ".") {
+				if strings.Contains(args[1], " ") || strings.Contains(args[1], tsep) {
 					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token: token, err: ErrorMappingDestinationFunctionInvalidArgument}
 				}
 
@@ -4382,7 +4382,7 @@ func newTransform(src, dest string) (*transform, error) {
 				dtokMappingFunctionTypes = append(dtokMappingFunctionTypes, NoTransform)
 				dtokMappingFunctionTokenIndexes = append(dtokMappingFunctionTokenIndexes, []int{-1})
 				dtokMappingFunctionIntArgs = append(dtokMappingFunctionIntArgs, -1)
-				dtokMappingFunctionStringArgs = append(dtokMappingFunctionStringArgs, "")
+				dtokMappingFunctionStringArgs = append(dtokMappingFunctionStringArgs, _EMPTY_)
 			} else {
 				nphs++
 				// Now build up our runtime mapping from dest to source tokens.
@@ -4503,7 +4503,9 @@ func (tr *transform) transform(tokens []string) (string, error) {
 				sourceTokenLen := len(sourceToken)
 				position := int(tr.dtokmfintargs[i])
 				if position > 0 && position < sourceTokenLen {
-					b.WriteString(sourceToken[:position] + "." + sourceToken[position:])
+					b.WriteString(sourceToken[:position])
+					b.WriteString(tsep)
+					b.WriteString(sourceToken[position:])
 				} else { // too small to split at the requested position: don't split
 					b.WriteString(sourceToken)
 				}
@@ -4512,7 +4514,9 @@ func (tr *transform) transform(tokens []string) (string, error) {
 				sourceTokenLen := len(sourceToken)
 				position := int(tr.dtokmfintargs[i])
 				if position > 0 && position < sourceTokenLen {
-					b.WriteString(sourceToken[:sourceTokenLen-position] + "." + sourceToken[sourceTokenLen-position:])
+					b.WriteString(sourceToken[:sourceTokenLen-position])
+					b.WriteString(tsep)
+					b.WriteString(sourceToken[sourceTokenLen-position:])
 				} else { // too small to split at the requested position: don't split
 					b.WriteString(sourceToken)
 				}
@@ -4523,11 +4527,12 @@ func (tr *transform) transform(tokens []string) (string, error) {
 				if sliceSize > 0 && sliceSize < sourceTokenLen {
 					for i := 0; i+sliceSize <= sourceTokenLen; i += sliceSize {
 						if i != 0 {
-							b.WriteString(".")
+							b.WriteString(tsep)
 						}
 						b.WriteString(sourceToken[i : i+sliceSize])
 						if i+sliceSize != sourceTokenLen && i+sliceSize+sliceSize > sourceTokenLen {
-							b.WriteString("." + sourceToken[i+sliceSize:])
+							b.WriteString(tsep)
+							b.WriteString(sourceToken[i+sliceSize:])
 							break
 						}
 					}
@@ -4541,12 +4546,13 @@ func (tr *transform) transform(tokens []string) (string, error) {
 				if sliceSize > 0 && sliceSize < sourceTokenLen {
 					remainder := sourceTokenLen % sliceSize
 					if remainder > 0 {
-						b.WriteString(sourceToken[:remainder] + ".")
+						b.WriteString(sourceToken[:remainder])
+						b.WriteString(tsep)
 					}
 					for i := remainder; i+sliceSize <= sourceTokenLen; i += sliceSize {
 						b.WriteString(sourceToken[i : i+sliceSize])
 						if i+sliceSize < sourceTokenLen {
-							b.WriteString(".")
+							b.WriteString(tsep)
 						}
 					}
 				} else { // too small to slice at the requested size: don't slice
@@ -4556,11 +4562,11 @@ func (tr *transform) transform(tokens []string) (string, error) {
 				sourceToken := tokens[tr.dtokmftokindexesargs[i][0]]
 				splits := strings.Split(sourceToken, tr.dtokmfstringargs[i])
 				for j, split := range splits {
-					if split != "" {
+					if split != _EMPTY_ {
 						b.WriteString(split)
 					}
-					if j < len(splits)-1 && splits[j+1] != "" && j != 0 {
-						b.WriteString(".")
+					if j < len(splits)-1 && splits[j+1] != _EMPTY_ && j != 0 {
+						b.WriteString(tsep)
 					}
 				}
 			}
