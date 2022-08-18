@@ -5431,9 +5431,22 @@ func TestJetStreamClusterSourcesFilterSubjectUpdate(t *testing.T) {
 		Replicas: 2,
 	})
 	require_NoError(t, err)
-	// no send was necessary as we received previously filtered messages
-	checkSync(500, 300)
+	// The filter was completely switched, which is why we only receive new messages
+	checkSync(500, 200)
+	sendBatch("foo", 100)
+	checkSync(600, 300)
+	sendBatch("bar", 100)
+	checkSync(700, 300)
 
+	// change filter subject to *, as the internal sequence number does not cover the previously filtered tail end
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "M",
+		Sources:  []*nats.StreamSource{{Name: "TEST", FilterSubject: "*"}},
+		Replicas: 2,
+	})
+	require_NoError(t, err)
+	// no send was necessary as we received previously filtered messages
+	checkSync(700, 400)
 }
 
 func TestJetStreamClusterSourcesUpdateOriginError(t *testing.T) {
