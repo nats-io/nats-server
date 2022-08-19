@@ -98,6 +98,7 @@ type Info struct {
 	GatewayCmd        byte     `json:"gateway_cmd,omitempty"`         // Command code for the receiving server to know what to do
 	GatewayCmdPayload []byte   `json:"gateway_cmd_payload,omitempty"` // Command payload when needed
 	GatewayNRP        bool     `json:"gateway_nrp,omitempty"`         // Uses new $GNR. prefix for mapped replies
+	GatewayIOM        bool     `json:"gateway_iom,omitempty"`         // Indicate that all accounts will be switched to InterestOnly mode "right away"
 
 	// LeafNode Specific
 	LeafNodeURLs  []string `json:"leafnode_urls,omitempty"`  // LeafNode URLs that the server can reconnect to.
@@ -1413,6 +1414,12 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 	// Can not have server lock here.
 	s.mu.Unlock()
 	s.registerSystemImports(acc)
+	// Starting 2.9.0, we are phasing out the optimistic mode, so change
+	// the account to interest-only mode (except if instructed not to do
+	// it in some tests).
+	if s.gateway.enabled && !gwDoNotForceInterestOnlyMode {
+		s.switchAccountToInterestMode(acc.GetName())
+	}
 	s.mu.Lock()
 
 	return nil

@@ -2665,6 +2665,9 @@ func TestLeafNodeSwitchGatewayToInterestModeOnly(t *testing.T) {
 
 // route connections to simulate.
 func TestLeafNodeResetsMSGProto(t *testing.T) {
+	server.GatewayDoNotForceInterestOnlyMode(true)
+	defer server.GatewayDoNotForceInterestOnlyMode(false)
+
 	opts := testDefaultOptionsForLeafNodes()
 	opts.Cluster.Name = "xyz"
 	opts.Cluster.Host = opts.Host

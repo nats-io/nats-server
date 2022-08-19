@@ -3168,6 +3168,9 @@ func TestMonitorGatewayz(t *testing.T) {
 }
 
 func TestMonitorGatewayzAccounts(t *testing.T) {
+	GatewayDoNotForceInterestOnlyMode(true)
+	defer GatewayDoNotForceInterestOnlyMode(false)
+
 	resetPreviousHTTPConnections()
 
 	// Create bunch of Accounts

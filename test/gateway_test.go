@@ -82,6 +82,9 @@ func expectNumberOfProtos(t *testing.T, expFn expectFun, proto *regexp.Regexp, e
 }
 
 func TestGatewayAccountInterest(t *testing.T) {
+	server.GatewayDoNotForceInterestOnlyMode(true)
+	defer server.GatewayDoNotForceInterestOnlyMode(false)
+
 	ob := testDefaultOptionsForGateway("B")
 	sb := runGatewayServer(ob)
 	defer sb.Shutdown()
@@ -159,6 +162,9 @@ func TestGatewayAccountInterest(t *testing.T) {
 }
 
 func TestGatewaySubjectInterest(t *testing.T) {
+	server.GatewayDoNotForceInterestOnlyMode(true)
+	defer server.GatewayDoNotForceInterestOnlyMode(false)
+
 	ob := testDefaultOptionsForGateway("B")
 	fooAcc := server.NewAccount("$foo")
 	ob.Accounts = []*server.Account{fooAcc}
@@ -301,6 +307,9 @@ func TestGatewaySubjectInterest(t *testing.T) {
 }
 
 func TestGatewayQueue(t *testing.T) {
+	server.GatewayDoNotForceInterestOnlyMode(true)
+	defer server.GatewayDoNotForceInterestOnlyMode(false)
+
 	ob := testDefaultOptionsForGateway("B")
 	fooAcc := server.NewAccount("$foo")
 	ob.Accounts = []*server.Account{fooAcc}
@@ -403,6 +412,9 @@ func TestGatewayQueue(t *testing.T) {
 }
 
 func TestGatewaySendAllSubs(t *testing.T) {
+	server.GatewayDoNotForceInterestOnlyMode(true)
+	defer server.GatewayDoNotForceInterestOnlyMode(false)
+
 	ob := testDefaultOptionsForGateway("B")
 	sb := runGatewayServer(ob)
 	defer sb.Shutdown()
@@ -496,6 +508,9 @@ func TestGatewayNoPanicOnBadProtocol(t *testing.T) {
 }
 
 func TestGatewayNoAccUnsubAfterQSub(t *testing.T) {
+	server.GatewayDoNotForceInterestOnlyMode(true)
+	defer server.GatewayDoNotForceInterestOnlyMode(false)
+
 	ob := testDefaultOptionsForGateway("B")
 	sb := runGatewayServer(ob)
 	defer sb.Shutdown()
@@ -531,6 +546,9 @@ func TestGatewayNoAccUnsubAfterQSub(t *testing.T) {
 }
 
 func TestGatewayErrorOnRSentFromOutbound(t *testing.T) {
+	server.GatewayDoNotForceInterestOnlyMode(true)
+	defer server.GatewayDoNotForceInterestOnlyMode(false)
+
 	ob := testDefaultOptionsForGateway("B")
 	sb := runGatewayServer(ob)
 	defer sb.Shutdown()
@@ -675,6 +693,9 @@ func TestGatewayTLSMixedIPAndDNS(t *testing.T) {
 }
 
 func TestGatewayAdvertiseInCluster(t *testing.T) {
+	server.GatewayDoNotForceInterestOnlyMode(true)
+	defer server.GatewayDoNotForceInterestOnlyMode(false)
+
 	ob1 := testDefaultOptionsForGateway("B")
 	ob1.Cluster.Name = "B"
 	ob1.Cluster.Host = "127.0.0.1"
@@ -770,6 +791,9 @@ func TestGatewayAuthTimeout(t *testing.T) {
 }
 
 func TestGatewayFirstPingGoesAfterConnect(t *testing.T) {
+	server.GatewayDoNotForceInterestOnlyMode(true)
+	defer server.GatewayDoNotForceInterestOnlyMode(false)
+
 	ob := testDefaultOptionsForGateway("B")
 	// For this test, we want the first ping to NOT be disabled.
 	ob.DisableShortFirstPing = false
