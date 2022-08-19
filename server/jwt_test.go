@@ -4106,6 +4106,219 @@ func TestJWTTimeExpiration(t *testing.T) {
 	})
 }
 
+func NewJwtAccountClaim(name string) (nkeys.KeyPair, string, *jwt.AccountClaims) {
+	sysKp, _ := nkeys.CreateAccount()
+	sysPub, _ := sysKp.PublicKey()
+	claim := jwt.NewAccountClaims(sysPub)
+	claim.Name = name
+	return sysKp, sysPub, claim
+}
+
+func TestJWTSysImportForDifferentAccount(t *testing.T) {
+	_, sysPub, sysClaim := NewJwtAccountClaim("SYS")
+	sysClaim.Exports.Add(&jwt.Export{
+		Type:    jwt.Service,
+		Subject: "$SYS.REQ.ACCOUNT.*.INFO",
+	})
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// create account
+	aKp, aPub, claim := NewJwtAccountClaim("A")
+	claim.Imports.Add(&jwt.Import{
+		Type:         jwt.Service,
+		Subject:      "$SYS.REQ.ACCOUNT.*.INFO",
+		LocalSubject: "COMMON.ADVISORY.SYS.REQ.ACCOUNT.*.INFO",
+		Account:      sysPub,
+	})
+	aJwt, err := claim.Encode(oKp)
+	require_NoError(t, err)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+			%s: %s
+		}
+    `, ojwt, sysPub, sysPub, sysJwt, aPub, aJwt)))
+	defer removeFile(t, conf)
+	sA, _ := RunServerWithConfig(conf)
+	defer sA.Shutdown()
+
+	nc := natsConnect(t, sA.ClientURL(), createUserCreds(t, nil, aKp))
+	defer nc.Close()
+	// user for account a requests for a different account, the system account
+	m, err := nc.Request(fmt.Sprintf("COMMON.ADVISORY.SYS.REQ.ACCOUNT.%s.INFO", sysPub), nil, time.Second)
+	require_NoError(t, err)
+	resp := &ServerAPIResponse{}
+	require_NoError(t, json.Unmarshal(m.Data, resp))
+	require_True(t, resp.Error == nil)
+}
+
+func TestJWTSysImportFromNothing(t *testing.T) {
+	_, sysPub, sysClaim := NewJwtAccountClaim("SYS")
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// create account
+	aKp, aPub, claim := NewJwtAccountClaim("A")
+	claim.Imports.Add(&jwt.Import{
+		Type: jwt.Service,
+		// fails as it's not for own account, but system account
+		Subject:      jwt.Subject(fmt.Sprintf("$SYS.REQ.ACCOUNT.%s.CONNZ", sysPub)),
+		LocalSubject: "fail1",
+		Account:      sysPub,
+	})
+	claim.Imports.Add(&jwt.Import{
+		Type: jwt.Service,
+		// fails as it's not for own account but all accounts
+		Subject:      "$SYS.REQ.ACCOUNT.*.CONNZ",
+		LocalSubject: "fail2.*",
+		Account:      sysPub,
+	})
+	claim.Imports.Add(&jwt.Import{
+		Type:         jwt.Service,
+		Subject:      jwt.Subject(fmt.Sprintf("$SYS.REQ.ACCOUNT.%s.CONNZ", aPub)),
+		LocalSubject: "pass",
+		Account:      sysPub,
+	})
+	aJwt, err := claim.Encode(oKp)
+	require_NoError(t, err)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+			%s: %s
+		}
+    `, ojwt, sysPub, sysPub, sysJwt, aPub, aJwt)))
+	defer removeFile(t, conf)
+	sA, _ := RunServerWithConfig(conf)
+	defer sA.Shutdown()
+
+	nc := natsConnect(t, sA.ClientURL(), createUserCreds(t, nil, aKp))
+	defer nc.Close()
+	// user for account a requests for a different account, the system account
+	_, err = nc.Request("pass", nil, time.Second)
+	require_NoError(t, err)
+	// default import
+	_, err = nc.Request("$SYS.REQ.ACCOUNT.PING.CONNZ", nil, time.Second)
+	require_NoError(t, err)
+	_, err = nc.Request("fail1", nil, time.Second)
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "no responders")
+	// fails even for own account, as the import itself is bad
+	_, err = nc.Request("fail2."+aPub, nil, time.Second)
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "no responders")
+}
+
+func TestJWTSysImportOverwritePublic(t *testing.T) {
+	_, sysPub, sysClaim := NewJwtAccountClaim("SYS")
+	// this changes the export permissions to allow for requests for every account
+	sysClaim.Exports.Add(&jwt.Export{
+		Type:    jwt.Service,
+		Subject: "$SYS.REQ.ACCOUNT.*.>",
+	})
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// create account
+	aKp, aPub, claim := NewJwtAccountClaim("A")
+	claim.Imports.Add(&jwt.Import{
+		Type:         jwt.Service,
+		Subject:      jwt.Subject(fmt.Sprintf("$SYS.REQ.ACCOUNT.%s.CONNZ", sysPub)),
+		LocalSubject: "pass1",
+		Account:      sysPub,
+	})
+	claim.Imports.Add(&jwt.Import{
+		Type:         jwt.Service,
+		Subject:      jwt.Subject(fmt.Sprintf("$SYS.REQ.ACCOUNT.%s.CONNZ", aPub)),
+		LocalSubject: "pass2",
+		Account:      sysPub,
+	})
+	claim.Imports.Add(&jwt.Import{
+		Type:         jwt.Service,
+		Subject:      "$SYS.REQ.ACCOUNT.*.CONNZ",
+		LocalSubject: "pass3.*",
+		Account:      sysPub,
+	})
+	aJwt, err := claim.Encode(oKp)
+	require_NoError(t, err)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+			%s: %s
+		}
+    `, ojwt, sysPub, sysPub, sysJwt, aPub, aJwt)))
+	defer removeFile(t, conf)
+	sA, _ := RunServerWithConfig(conf)
+	defer sA.Shutdown()
+
+	nc := natsConnect(t, sA.ClientURL(), createUserCreds(t, nil, aKp))
+	defer nc.Close()
+	// user for account a requests for a different account, the system account
+	_, err = nc.Request("pass1", nil, time.Second)
+	require_NoError(t, err)
+	_, err = nc.Request("pass2", nil, time.Second)
+	require_NoError(t, err)
+	_, err = nc.Request("pass3."+sysPub, nil, time.Second)
+	require_NoError(t, err)
+	_, err = nc.Request("pass3."+aPub, nil, time.Second)
+	require_NoError(t, err)
+	_, err = nc.Request("pass3.PING", nil, time.Second)
+	require_NoError(t, err)
+}
+
+func TestJWTSysImportOverwriteToken(t *testing.T) {
+	_, sysPub, sysClaim := NewJwtAccountClaim("SYS")
+	// this changes the export permissions in a way that the internal imports can't satisfy
+	sysClaim.Exports.Add(&jwt.Export{
+		Type:     jwt.Service,
+		Subject:  "$SYS.REQ.>",
+		TokenReq: true,
+	})
+
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// create account
+	aKp, aPub, claim := NewJwtAccountClaim("A")
+	aJwt, err := claim.Encode(oKp)
+	require_NoError(t, err)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+			%s: %s
+		}
+    `, ojwt, sysPub, sysPub, sysJwt, aPub, aJwt)))
+	defer removeFile(t, conf)
+	sA, _ := RunServerWithConfig(conf)
+	defer sA.Shutdown()
+
+	nc := natsConnect(t, sA.ClientURL(), createUserCreds(t, nil, aKp))
+	defer nc.Close()
+	// make sure the internal import still got added
+	_, err = nc.Request("$SYS.REQ.ACCOUNT.PING.CONNZ", nil, time.Second)
+	require_NoError(t, err)
+}
+
 func TestJWTLimits(t *testing.T) {
 	doNotExpire := time.Now().AddDate(1, 0, 0)
 	// create account

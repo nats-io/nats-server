@@ -1440,6 +1440,12 @@ func (a *Account) lowestServiceExportResponseTime() time.Duration {
 
 // AddServiceImportWithClaim will add in the service import via the jwt claim.
 func (a *Account) AddServiceImportWithClaim(destination *Account, from, to string, imClaim *jwt.Import) error {
+	return a.addServiceImportWithClaim(destination, from, to, imClaim, false)
+}
+
+// addServiceImportWithClaim will add in the service import via the jwt claim.
+// It will also skip the authorization check in cases where internal is true
+func (a *Account) addServiceImportWithClaim(destination *Account, from, to string, imClaim *jwt.Import, internal bool) error {
 	if destination == nil {
 		return ErrMissingAccount
 	}
@@ -1452,7 +1458,7 @@ func (a *Account) AddServiceImportWithClaim(destination *Account, from, to strin
 	}
 
 	// First check to see if the account has authorized us to route to the "to" subject.
-	if !destination.checkServiceImportAuthorized(a, to, imClaim) {
+	if !internal && !destination.checkServiceImportAuthorized(a, to, imClaim) {
 		return ErrServiceImportAuthorization
 	}
 
@@ -1500,6 +1506,16 @@ func (a *Account) checkServiceImportsForCycles(from string, visited map[string]b
 
 func (a *Account) streamImportFormsCycle(dest *Account, to string) error {
 	return dest.checkStreamImportsForCycles(to, map[string]bool{a.Name: true})
+}
+
+// Lock should be held.
+func (a *Account) hasServiceExportMatching(to string) bool {
+	for subj := range a.exports.services {
+		if subjectIsSubsetMatch(to, subj) {
+			return true
+		}
+	}
+	return false
 }
 
 // Lock should be held.
