@@ -893,15 +893,7 @@ func (s *Server) initEventTracking() {
 		if tk := strings.Split(subject, tsep); len(tk) != accReqTokens {
 			return _EMPTY_, fmt.Errorf("subject %q is malformed", subject)
 		} else {
-			acc := tk[accReqAccIndex]
-			if ci, _, _, _, err := c.srv.getRequestInfo(c, msg); err == nil && ci.Account != _EMPTY_ {
-				// Make sure the accounts match.
-				if ci.Account != acc {
-					// Do not leak too much here.
-					return _EMPTY_, fmt.Errorf("bad request")
-				}
-			}
-			return acc, nil
+			return tk[accReqAccIndex], nil
 		}
 	}
 	monAccSrvc := map[string]msgHandler{
@@ -1054,20 +1046,32 @@ func (s *Server) addSystemAccountExports(sacc *Account) {
 		return
 	}
 	accConnzSubj := fmt.Sprintf(accDirectReqSubj, "*", "CONNZ")
-	if err := sacc.AddServiceExportWithResponse(accConnzSubj, Streamed, nil); err != nil {
-		s.Errorf("Error adding system service export for %q: %v", accConnzSubj, err)
+	// prioritize not automatically added exports
+	if !sacc.hasServiceExportMatching(accConnzSubj) {
+		// pick export type that clamps importing account id into subject
+		if err := sacc.addServiceExportWithResponseAndAccountPos(accConnzSubj, Streamed, nil, 4); err != nil {
+			//if err := sacc.AddServiceExportWithResponse(accConnzSubj, Streamed, nil); err != nil {
+			s.Errorf("Error adding system service export for %q: %v", accConnzSubj, err)
+		}
 	}
+	// prioritize not automatically added exports
 	accStatzSubj := fmt.Sprintf(accDirectReqSubj, "*", "STATZ")
-	if err := sacc.AddServiceExportWithResponse(accStatzSubj, Streamed, nil); err != nil {
-		s.Errorf("Error adding system service export for %q: %v", accStatzSubj, err)
+	if !sacc.hasServiceExportMatching(accStatzSubj) {
+		// pick export type that clamps importing account id into subject
+		if err := sacc.addServiceExportWithResponseAndAccountPos(accStatzSubj, Streamed, nil, 4); err != nil {
+			s.Errorf("Error adding system service export for %q: %v", accStatzSubj, err)
+		}
 	}
+	// FIXME(dlc) - Old experiment, Remove?
+	if !sacc.hasServiceExportMatching(accSubsSubj) {
+		if err := sacc.AddServiceExport(accSubsSubj, nil); err != nil {
+			s.Errorf("Error adding system service export for %q: %v", accSubsSubj, err)
+		}
+	}
+
 	// Register any accounts that existed prior.
 	s.registerSystemImportsForExisting()
 
-	// FIXME(dlc) - Old experiment, Remove?
-	if err := sacc.AddServiceExport(accSubsSubj, nil); err != nil {
-		s.Errorf("Error adding system service export for %q: %v", accSubsSubj, err)
-	}
 	// in case of a mixed mode setup, enable js exports anyway
 	if s.JetStreamEnabled() || !s.standAloneMode() {
 		s.checkJetStreamExports()
@@ -1639,7 +1643,7 @@ func (s *Server) registerSystemImports(a *Account) {
 
 	importSrvc := func(subj, mappedSubj string) {
 		if !a.serviceImportExists(subj) {
-			if err := a.AddServiceImport(sacc, subj, mappedSubj); err != nil {
+			if err := a.addServiceImportWithClaim(sacc, subj, mappedSubj, nil, true); err != nil {
 				s.Errorf("Error setting up system service import %s -> %s for account: %v",
 					subj, mappedSubj, err)
 			}
