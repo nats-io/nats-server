@@ -735,6 +735,9 @@ func (cc *jetStreamCluster) isStreamAssigned(a *Account, stream string) bool {
 	if cc == nil {
 		return true
 	}
+	if cc.meta == nil {
+		return false
+	}
 	as := cc.streams[a.Name]
 	if as == nil {
 		return false
@@ -3625,6 +3628,9 @@ func (cc *jetStreamCluster) isConsumerAssigned(a *Account, stream, consumer stri
 	// Non-clustered mode always return true.
 	if cc == nil {
 		return true
+	}
+	if cc.meta == nil {
+		return false
 	}
 	var sa *streamAssignment
 	accStreams := cc.streams[a.Name]
