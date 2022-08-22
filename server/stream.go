@@ -1612,8 +1612,7 @@ func (mset *stream) sourcesInfo() (sis []*StreamSourceInfo) {
 	return sis
 }
 
-func allSubjects(cfg *StreamConfig, acc *Account) ([]string, bool) {
-	subjects := copyStrings(cfg.Subjects)
+func gatherSourceMirrorSubjects(subjects []string, cfg *StreamConfig, acc *Account) ([]string, bool) {
 	var hasExt bool
 	var seen map[string]bool
 

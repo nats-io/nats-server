@@ -446,9 +446,14 @@ func checkConsumerCfg(
 	}
 
 	// As best we can make sure the filtered subject is valid.
-	if config.FilterSubject != _EMPTY_ && !isRecovering {
-		subjects, hasExt := allSubjects(cfg, acc)
-		if !validFilteredSubject(config.FilterSubject, subjects) && !hasExt {
+	if config.FilterSubject != _EMPTY_ {
+		subjects := copyStrings(cfg.Subjects)
+		// explicitly skip validFilteredSubject when recovering
+		hasExt := isRecovering
+		if !isRecovering {
+			subjects, hasExt = gatherSourceMirrorSubjects(subjects, cfg, acc)
+		}
+		if !hasExt && !validFilteredSubject(config.FilterSubject, subjects) {
 			return NewJSConsumerFilterNotSubsetError()
 		}
 	}

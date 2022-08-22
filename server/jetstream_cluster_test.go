@@ -5477,7 +5477,7 @@ func TestJetStreamClusterSourcesUpdateOriginError(t *testing.T) {
 			} else if tsi.State.Msgs != msgsTest {
 				return fmt.Errorf("received %d msgs from TEST, expected %d", tsi.State.Msgs, msgsTest)
 			} else if msi.State.Msgs != msgsM {
-				return fmt.Errorf("received %d msgs from TEST, expected %d", msi.State.Msgs, msgsM)
+				return fmt.Errorf("received %d msgs from M, expected %d", msi.State.Msgs, msgsM)
 			}
 			return nil
 		})
