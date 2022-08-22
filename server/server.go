@@ -2655,7 +2655,7 @@ func (s *Server) saveClosedClient(c *client, nc net.Conn, reason ClosedState) {
 	c.mu.Lock()
 
 	cc := &closedClient{}
-	cc.fill(c, nc, now)
+	cc.fill(c, nc, now, false)
 	cc.Stop = &now
 	cc.Reason = reason.String()
 

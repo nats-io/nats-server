@@ -14,7 +14,10 @@
 package server
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -108,38 +111,45 @@ const (
 
 // ConnInfo has detailed information on a per connection basis.
 type ConnInfo struct {
-	Cid            uint64      `json:"cid"`
-	Kind           string      `json:"kind,omitempty"`
-	Type           string      `json:"type,omitempty"`
-	IP             string      `json:"ip"`
-	Port           int         `json:"port"`
-	Start          time.Time   `json:"start"`
-	LastActivity   time.Time   `json:"last_activity"`
-	Stop           *time.Time  `json:"stop,omitempty"`
-	Reason         string      `json:"reason,omitempty"`
-	RTT            string      `json:"rtt,omitempty"`
-	Uptime         string      `json:"uptime"`
-	Idle           string      `json:"idle"`
-	Pending        int         `json:"pending_bytes"`
-	InMsgs         int64       `json:"in_msgs"`
-	OutMsgs        int64       `json:"out_msgs"`
-	InBytes        int64       `json:"in_bytes"`
-	OutBytes       int64       `json:"out_bytes"`
-	NumSubs        uint32      `json:"subscriptions"`
-	Name           string      `json:"name,omitempty"`
-	Lang           string      `json:"lang,omitempty"`
-	Version        string      `json:"version,omitempty"`
-	TLSVersion     string      `json:"tls_version,omitempty"`
-	TLSCipher      string      `json:"tls_cipher_suite,omitempty"`
-	AuthorizedUser string      `json:"authorized_user,omitempty"`
-	Account        string      `json:"account,omitempty"`
-	Subs           []string    `json:"subscriptions_list,omitempty"`
-	SubsDetail     []SubDetail `json:"subscriptions_list_detail,omitempty"`
-	JWT            string      `json:"jwt,omitempty"`
-	IssuerKey      string      `json:"issuer_key,omitempty"`
-	NameTag        string      `json:"name_tag,omitempty"`
-	Tags           jwt.TagList `json:"tags,omitempty"`
-	MQTTClient     string      `json:"mqtt_client,omitempty"` // This is the MQTT client id
+	Cid            uint64         `json:"cid"`
+	Kind           string         `json:"kind,omitempty"`
+	Type           string         `json:"type,omitempty"`
+	IP             string         `json:"ip"`
+	Port           int            `json:"port"`
+	Start          time.Time      `json:"start"`
+	LastActivity   time.Time      `json:"last_activity"`
+	Stop           *time.Time     `json:"stop,omitempty"`
+	Reason         string         `json:"reason,omitempty"`
+	RTT            string         `json:"rtt,omitempty"`
+	Uptime         string         `json:"uptime"`
+	Idle           string         `json:"idle"`
+	Pending        int            `json:"pending_bytes"`
+	InMsgs         int64          `json:"in_msgs"`
+	OutMsgs        int64          `json:"out_msgs"`
+	InBytes        int64          `json:"in_bytes"`
+	OutBytes       int64          `json:"out_bytes"`
+	NumSubs        uint32         `json:"subscriptions"`
+	Name           string         `json:"name,omitempty"`
+	Lang           string         `json:"lang,omitempty"`
+	Version        string         `json:"version,omitempty"`
+	TLSVersion     string         `json:"tls_version,omitempty"`
+	TLSCipher      string         `json:"tls_cipher_suite,omitempty"`
+	TLSPeerCerts   []*TLSPeerCert `json:"tls_peer_certs,omitempty"`
+	AuthorizedUser string         `json:"authorized_user,omitempty"`
+	Account        string         `json:"account,omitempty"`
+	Subs           []string       `json:"subscriptions_list,omitempty"`
+	SubsDetail     []SubDetail    `json:"subscriptions_list_detail,omitempty"`
+	JWT            string         `json:"jwt,omitempty"`
+	IssuerKey      string         `json:"issuer_key,omitempty"`
+	NameTag        string         `json:"name_tag,omitempty"`
+	Tags           jwt.TagList    `json:"tags,omitempty"`
+	MQTTClient     string         `json:"mqtt_client,omitempty"` // This is the MQTT client id
+}
+
+// TLSPeerCert contains basic information about a TLS peer certificate
+type TLSPeerCert struct {
+	Subject      string `json:"subject,omitempty"`
+	Fingerprints string `json:"fprints,omitempty"`
 }
 
 // DefaultConnListSize is the default size of the connection list.
@@ -394,7 +404,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	for _, client := range openClients {
 		client.mu.Lock()
 		ci := &conns[i]
-		ci.fill(client, client.nc, c.Now)
+		ci.fill(client, client.nc, c.Now, auth)
 		// Fill in subscription data if requested.
 		if len(client.subs) > 0 {
 			if subsDet {
@@ -524,7 +534,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 
 // Fills in the ConnInfo from the client.
 // client should be locked.
-func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time) {
+func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time, auth bool) {
 	ci.Cid = client.cid
 	ci.MQTTClient = client.getMQTTClientID()
 	ci.Kind = client.kindString()
@@ -554,12 +564,31 @@ func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time) {
 		cs := conn.ConnectionState()
 		ci.TLSVersion = tlsVersion(cs.Version)
 		ci.TLSCipher = tlsCipher(cs.CipherSuite)
+		if auth && len(cs.PeerCertificates) > 0 {
+			ci.TLSPeerCerts = makePeerCerts(cs.PeerCertificates)
+		}
 	}
 
 	if client.port != 0 {
 		ci.Port = int(client.port)
 		ci.IP = client.host
 	}
+}
+
+func makePeerCerts(pc []*x509.Certificate) []*TLSPeerCert {
+	res := make([]*TLSPeerCert, len(pc))
+	for i, c := range pc {
+		fp := sha256.Sum256(c.Raw)
+		var buf bytes.Buffer
+		for i, f := range fp {
+			if i > 0 {
+				fmt.Fprintf(&buf, ":")
+			}
+			fmt.Fprintf(&buf, "%02X", f)
+		}
+		res[i] = &TLSPeerCert{Subject: c.Subject.String(), Fingerprints: buf.String()}
+	}
+	return res
 }
 
 // Assume lock is held
@@ -1869,7 +1898,7 @@ func createOutboundRemoteGatewayz(c *client, opts *GatewayzOptions, now time.Tim
 			rgw.IsConfigured = !c.gw.cfg.isImplicit()
 		}
 		rgw.Connection = &ConnInfo{}
-		rgw.Connection.fill(c, c.nc, now)
+		rgw.Connection.fill(c, c.nc, now, false)
 		name = c.gw.name
 	}
 	c.mu.Unlock()
@@ -1953,7 +1982,7 @@ func (s *Server) createInboundsRemoteGatewayz(opts *GatewayzOptions, now time.Ti
 				rgw.Accounts = createInboundAccountsGatewayz(opts, c.gw)
 			}
 			rgw.Connection = &ConnInfo{}
-			rgw.Connection.fill(c, c.nc, now)
+			rgw.Connection.fill(c, c.nc, now, false)
 			igws = append(igws, rgw)
 			m[c.gw.name] = igws
 		}
