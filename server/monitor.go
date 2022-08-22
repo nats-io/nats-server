@@ -149,7 +149,7 @@ type ConnInfo struct {
 // TLSPeerCert contains basic information about a TLS peer certificate
 type TLSPeerCert struct {
 	Subject      string `json:"subject,omitempty"`
-	Fingerprints string `json:"fprints,omitempty"`
+	Fingerprints string `json:"finger_prints,omitempty"`
 }
 
 // DefaultConnListSize is the default size of the connection list.
