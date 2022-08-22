@@ -1645,7 +1645,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	meta := cc.meta
 	js.mu.RUnlock()
 
-	if n == nil {
+	if n == nil || meta == nil {
 		s.Warnf("No RAFT group for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
 		return
 	}
