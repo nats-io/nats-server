@@ -2869,6 +2869,10 @@ func TestJetStreamSuperClusterMoveCancel(t *testing.T) {
 }
 
 func TestJetStreamSuperClusterDoubleStreamMove(t *testing.T) {
+	// Shorten this test by factor of 2.
+	scaleDownDelayTicks = 0
+	defer func() { scaleDownDelayTicks = defaultScaleDownDelayTicks }()
+
 	server := map[string]struct{}{}
 	sc := createJetStreamSuperClusterWithTemplateAndModHook(t, jsClusterTempl, 4, 2,
 		func(serverName, clusterName, storeDir, conf string) string {
@@ -3069,6 +3073,10 @@ func TestJetStreamSuperClusterDoubleStreamMove(t *testing.T) {
 }
 
 func TestJetStreamSuperClusterPeerEvacuationAndStreamReassignment(t *testing.T) {
+	// Shorten this test by factor of 2.
+	scaleDownDelayTicks = 0
+	defer func() { scaleDownDelayTicks = defaultScaleDownDelayTicks }()
+
 	s := createJetStreamSuperClusterWithTemplateAndModHook(t, jsClusterTempl, 4, 2,
 		func(serverName, clusterName, storeDir, conf string) string {
 			return fmt.Sprintf("%s\nserver_tags: [cluster:%s, server:%s]", conf, clusterName, serverName)
