@@ -1633,8 +1633,10 @@ func currentPeerCount(ci *ClusterInfo, peerSet []string, leaderId string) (curre
 	return
 }
 
+const defaultScaleDownDelayTicks = 2
+
 // how many migration tracker ticks of delay to induce
-const scaleDownDelayTicks = 2
+var scaleDownDelayTicks = defaultScaleDownDelayTicks
 
 // Monitor our stream node for this stream.
 func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnapshot bool) {
