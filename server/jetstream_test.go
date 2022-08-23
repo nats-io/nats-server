@@ -19178,3 +19178,44 @@ func TestJetStreamConsumerPendingLowerThanStreamFirstSeq(t *testing.T) {
 		return nil
 	})
 }
+
+func TestJetStreamAllowDirectAfterUpdate(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"*"},
+	})
+	require_NoError(t, err)
+	sendStreamMsg(t, nc, "foo", "msg")
+
+	si, err := js.UpdateStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"*"},
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+	require_True(t, si.Config.AllowDirect)
+
+	_, err = js.GetLastMsg("TEST", "foo", nats.DirectGet(), nats.MaxWait(100*time.Millisecond))
+	require_NoError(t, err)
+
+	// Make sure turning off works too.
+	si, err = js.UpdateStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"*"},
+		AllowDirect: false,
+	})
+	require_NoError(t, err)
+	require_False(t, si.Config.AllowDirect)
+
+	_, err = js.GetLastMsg("TEST", "foo", nats.DirectGet(), nats.MaxWait(100*time.Millisecond))
+	require_Error(t, err)
+}

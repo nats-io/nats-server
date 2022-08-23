@@ -991,7 +991,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	// Remember our latest snapshot file.
 	n.snapfile = sfile
 
-	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
+	if _, err := n.wal.Compact(snap.lastIndex); err != nil {
 		n.Unlock()
 		n.setWriteErr(err)
 		return err
@@ -2977,11 +2977,16 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		}
 	}
 
-	ar := appendEntryResponse{n.pterm, n.pindex, n.id, true, _EMPTY_}
+	var ar *appendEntryResponse
+	if sub != nil {
+		ar = &appendEntryResponse{n.pterm, n.pindex, n.id, true, _EMPTY_}
+	}
 	n.Unlock()
 
 	// Success. Send our response.
-	n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
+	if ar != nil {
+		n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
+	}
 }
 
 // Lock should be held.
@@ -3216,15 +3221,13 @@ func (n *raft) decodeVoteRequest(msg []byte, reply string) *voteRequest {
 	if len(msg) != voteRequestLen {
 		return nil
 	}
-	// Need to copy for now b/c of candidate.
-	msg = copyBytes(msg)
 
 	var le = binary.LittleEndian
 	return &voteRequest{
 		term:      le.Uint64(msg[0:]),
 		lastTerm:  le.Uint64(msg[8:]),
 		lastIndex: le.Uint64(msg[16:]),
-		candidate: string(msg[24 : 24+idLen]),
+		candidate: string(copyBytes(msg[24 : 24+idLen])),
 		reply:     reply,
 	}
 }
@@ -3615,13 +3618,24 @@ func (n *raft) switchToCandidate() {
 
 func (n *raft) switchToLeader() {
 	n.Lock()
-	defer n.Unlock()
 	if n.state == Closed {
+		n.Unlock()
 		return
 	}
 	n.debug("Switching to leader")
 
+	var state StreamState
+	n.wal.FastState(&state)
+
+	// Check if we have items pending as we are taking over.
+	sendHB := state.LastSeq > n.commit
+
 	n.lxfer = false
 	n.updateLeader(n.id)
 	n.switchState(Leader)
+	n.Unlock()
+
+	if sendHB {
+		n.sendHeartbeat()
+	}
 }

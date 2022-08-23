@@ -2229,14 +2229,24 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					continue
 				}
 
-				// Grab last sequence.
-				last := mset.lastSeq()
+				// Grab last sequence and CLFS.
+				last, clfs := mset.lastSeqAndCLFS()
 
 				// We can skip if we know this is less than what we already have.
-				if lseq < last {
-					s.Debugf("Apply stream entries for '%s > %s' skipping message with sequence %d with last of %d",
-						mset.account(), mset.name(), lseq, last)
-					continue
+				if lseq-clfs < last {
+					// If we are not recovering reset to leader.
+					if !isRecovering && !mset.IsLeader() {
+						// Force hard reset here.
+						// Shutdown the direct subs if they are running inline.
+						mset.mu.Lock()
+						mset.unsubscribeToDirect()
+						mset.mu.Unlock()
+						return errFirstSequenceMismatch
+					} else {
+						s.Debugf("Apply stream entries for '%s > %s' skipping message with sequence %d with last of %d",
+							mset.account(), mset.name(), lseq+1-clfs, last)
+						continue
+					}
 				}
 
 				// Skip by hand here since first msg special case.
@@ -2362,6 +2372,15 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						return err
 					}
 				}
+			} else if isRecovering && mset != nil {
+				// On recovery, reset CLFS/FAILED.
+				var snap streamSnapshot
+				if err := json.Unmarshal(e.Data, &snap); err != nil {
+					return err
+				}
+				mset.mu.Lock()
+				mset.clfs = snap.Failed
+				mset.mu.Unlock()
 			}
 		} else if e.Type == EntryRemovePeer {
 			js.mu.RLock()
@@ -6277,7 +6296,12 @@ type streamSnapshot struct {
 func (mset *stream) stateSnapshot() []byte {
 	mset.mu.RLock()
 	defer mset.mu.RUnlock()
+	return mset.stateSnapshotLocked()
+}
 
+// Grab a snapshot of a stream for clustered mode.
+// Lock should be held.
+func (mset *stream) stateSnapshotLocked() []byte {
 	state := mset.store.State()
 	snap := &streamSnapshot{
 		Msgs:     state.Msgs,
@@ -6299,7 +6323,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 
 	mset.mu.RLock()
 	canRespond := !mset.cfg.NoAck && len(reply) > 0
-	name, stype := mset.cfg.Name, mset.cfg.Storage
+	name, stype, store := mset.cfg.Name, mset.cfg.Storage, mset.store
 	s, js, jsa, st, rf, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
 	isLeader := mset.isLeader()
@@ -6389,6 +6413,41 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		return err
 	}
 
+	// Some header checks can be checked pre proposal. Most can not.
+	if len(hdr) > 0 {
+		// For CAS operations, e.g. ExpectedLastSeqPerSubject, we can also check here and not have to go through.
+		// Can only precheck for seq != 0.
+		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists && store != nil && seq > 0 {
+			var smv StoreMsg
+			var fseq uint64
+			sm, err := store.LoadLastMsg(subject, &smv)
+			if sm != nil {
+				fseq = sm.seq
+			}
+			if err != nil || fseq != seq {
+				if canRespond {
+					var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+					resp.PubAck = &PubAck{Stream: name}
+					resp.Error = NewJSStreamWrongLastSequenceError(fseq)
+					b, _ := json.Marshal(resp)
+					outq.sendMsg(reply, b)
+				}
+				return fmt.Errorf("last sequence by subject mismatch: %d vs %d", seq, fseq)
+			}
+		}
+		// Expected stream name can also be pre-checked.
+		if sname := getExpectedStream(hdr); sname != _EMPTY_ && sname != name {
+			if canRespond {
+				var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+				resp.PubAck = &PubAck{Stream: name}
+				resp.Error = NewJSStreamNotMatchError()
+				b, _ := json.Marshal(resp)
+				outq.sendMsg(reply, b)
+			}
+			return errors.New("expected stream does not match")
+		}
+	}
+
 	// Since we encode header len as u16 make sure we do not exceed.
 	// Again this works if it goes through but better to be pre-emptive.
 	if len(hdr) > math.MaxUint16 {
@@ -6409,7 +6468,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// Check if we need to set initial value here
 	mset.clMu.Lock()
 	if mset.clseq == 0 || mset.clseq < lseq {
-		mset.clseq = mset.lastSeq()
+		mset.clseq = mset.lastSeq() + mset.clfs
 	}
 
 	esm := encodeStreamMsg(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano())
