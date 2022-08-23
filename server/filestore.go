@@ -1884,7 +1884,7 @@ func (fs *fileStore) genEncryptionKeysForBlock(mb *msgBlock) error {
 
 // Stores a raw message with expected sequence number and timestamp.
 // Lock should be held.
-func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int64) error {
+func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int64) (err error) {
 	if fs.closed {
 		return ErrStoreClosed
 	}
@@ -1902,7 +1902,6 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 	// Check if we are discarding new messages when we reach the limit.
 	if fs.cfg.Discard == DiscardNew {
 		var asl bool
-		var err error
 		if psmax && psmc >= uint64(fs.cfg.MaxMsgsPer) {
 			fseq, err = fs.firstSeqForSubj(subj)
 			if err != nil {
@@ -4034,6 +4033,10 @@ func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err err
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
+	if fs.closed || fs.lmb == nil {
+		return nil, ErrStoreClosed
+	}
+
 	if len(fs.blks) == 0 {
 		return nil, ErrStoreMsgNotFound
 	}
@@ -4080,16 +4083,16 @@ func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err err
 
 // LoadLastMsg will return the last message we have that matches a given subject.
 // The subject can be a wildcard.
-func (fs *fileStore) LoadLastMsg(subject string, sm *StoreMsg) (*StoreMsg, error) {
+func (fs *fileStore) LoadLastMsg(subject string, smv *StoreMsg) (sm *StoreMsg, err error) {
 	if subject == _EMPTY_ || subject == fwcs {
-		sm, _ = fs.msgForSeq(fs.lastSeq(), sm)
+		sm, err = fs.msgForSeq(fs.lastSeq(), sm)
 	} else {
-		sm, _ = fs.loadLast(subject, sm)
+		sm, err = fs.loadLast(subject, sm)
 	}
-	if sm == nil {
-		return nil, ErrStoreMsgNotFound
+	if err != nil && err != ErrStoreClosed {
+		err = ErrStoreMsgNotFound
 	}
-	return sm, nil
+	return sm, err
 }
 
 func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *StoreMsg) (*StoreMsg, uint64, error) {

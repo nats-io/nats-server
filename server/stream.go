@@ -627,8 +627,6 @@ func (mset *stream) setLeader(isLeader bool) error {
 			mset.mu.Unlock()
 			return err
 		}
-		// Clear and fixup state we had for last state.
-		mset.clfs = 0
 	} else {
 		// Stop responding to sync requests.
 		mset.stopClusterSubs()
@@ -636,10 +634,6 @@ func (mset *stream) setLeader(isLeader bool) error {
 		mset.unsubscribeToStream(false)
 		// Clear catchup state
 		mset.clearAllCatchupPeers()
-		// Check on any fixup state and optionally clear.
-		if mset.isClustered() && mset.leader != _EMPTY_ && mset.leader != mset.node.GroupLeader() {
-			mset.clfs = 0
-		}
 	}
 	// Track group leader.
 	if mset.isClustered() {
@@ -781,6 +775,12 @@ func (mset *stream) rebuildDedupe() {
 			mset.lmsgId = msgId
 		}
 	}
+}
+
+func (mset *stream) lastSeqAndCLFS() (uint64, uint64) {
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+	return mset.lseq, mset.clfs
 }
 
 func (mset *stream) lastSeq() uint64 {
@@ -2991,6 +2991,18 @@ func (mset *stream) subscribeToDirect() error {
 }
 
 // Lock should be held.
+func (mset *stream) unsubscribeToDirect() {
+	if mset.directSub != nil {
+		mset.unsubscribe(mset.directSub)
+		mset.directSub = nil
+	}
+	if mset.lastBySub != nil {
+		mset.unsubscribe(mset.lastBySub)
+		mset.lastBySub = nil
+	}
+}
+
+// Lock should be held.
 func (mset *stream) subscribeToMirrorDirect() error {
 	if mset.mirror == nil {
 		return nil
@@ -3053,14 +3065,7 @@ func (mset *stream) unsubscribeToStream(stopping bool) error {
 
 	// In case we had a direct get subscriptions.
 	if stopping {
-		if mset.directSub != nil {
-			mset.unsubscribe(mset.directSub)
-			mset.directSub = nil
-		}
-		if mset.lastBySub != nil {
-			mset.unsubscribe(mset.lastBySub)
-			mset.lastBySub = nil
-		}
+		mset.unsubscribeToDirect()
 	}
 
 	mset.active = false
@@ -3558,8 +3563,7 @@ var (
 // processJetStreamMsg is where we try to actually process the stream msg.
 func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64) error {
 	mset.mu.Lock()
-	store := mset.store
-	c, s := mset.client, mset.srv
+	c, s, store := mset.client, mset.srv, mset.store
 	if c == nil {
 		mset.mu.Unlock()
 		return nil
@@ -3630,6 +3634,23 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	if len(hdr) > 0 {
 		outq := mset.outq
+		isClustered := mset.isClustered()
+
+		// Certain checks have already been performed if in clustered mode, so only check if not.
+		if !isClustered {
+			// Expected stream.
+			if sname := getExpectedStream(hdr); sname != _EMPTY_ && sname != name {
+				mset.clfs++
+				mset.mu.Unlock()
+				if canRespond {
+					resp.PubAck = &PubAck{Stream: name}
+					resp.Error = NewJSStreamNotMatchError()
+					b, _ := json.Marshal(resp)
+					outq.sendMsg(reply, b)
+				}
+				return errors.New("expected stream does not match")
+			}
+		}
 
 		// Dedupe detection.
 		if msgId = getMsgId(hdr); msgId != _EMPTY_ {
@@ -3644,19 +3665,33 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				return errMsgIdDuplicate
 			}
 		}
-
-		// Expected stream.
-		if sname := getExpectedStream(hdr); sname != _EMPTY_ && sname != name {
-			mset.clfs++
-			mset.mu.Unlock()
-			if canRespond {
-				resp.PubAck = &PubAck{Stream: name}
-				resp.Error = NewJSStreamNotMatchError()
-				b, _ := json.Marshal(resp)
-				outq.sendMsg(reply, b)
+		// Expected last sequence per subject.
+		// If we are clustered we have prechecked seq > 0.
+		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists && (!isClustered || seq == 0) {
+			// TODO(dlc) - We could make a new store func that does this all in one.
+			var smv StoreMsg
+			var fseq uint64
+			sm, err := store.LoadLastMsg(subject, &smv)
+			if sm != nil {
+				fseq = sm.seq
 			}
-			return errors.New("expected stream does not match")
+			// If seq passed in is zero that signals we expect no msg to be present.
+			if err == ErrStoreMsgNotFound && seq == 0 {
+				fseq, err = 0, nil
+			}
+			if err != nil || fseq != seq {
+				mset.clfs++
+				mset.mu.Unlock()
+				if canRespond {
+					resp.PubAck = &PubAck{Stream: name}
+					resp.Error = NewJSStreamWrongLastSequenceError(fseq)
+					b, _ := json.Marshal(resp)
+					outq.sendMsg(reply, b)
+				}
+				return fmt.Errorf("last sequence by subject mismatch: %d vs %d", seq, fseq)
+			}
 		}
+
 		// Expected last sequence.
 		if seq, exists := getExpectedLastSeq(hdr); exists && seq != mset.lseq {
 			mlseq := mset.lseq
@@ -3686,31 +3721,6 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 					outq.sendMsg(reply, b)
 				}
 				return fmt.Errorf("last msgid mismatch: %q vs %q", lmsgId, last)
-			}
-		}
-		// Expected last sequence per subject.
-		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists {
-			// TODO(dlc) - We could make a new store func that does this all in one.
-			var smv StoreMsg
-			var fseq uint64
-			sm, err := mset.store.LoadLastMsg(subject, &smv)
-			if sm != nil {
-				fseq = sm.seq
-			}
-			// If seq passed in is zero that signals we expect no msg to be present.
-			if err == ErrStoreMsgNotFound && seq == 0 {
-				fseq, err = 0, nil
-			}
-			if err != nil || fseq != seq {
-				mset.clfs++
-				mset.mu.Unlock()
-				if canRespond {
-					resp.PubAck = &PubAck{Stream: name}
-					resp.Error = NewJSStreamWrongLastSequenceError(fseq)
-					b, _ := json.Marshal(resp)
-					outq.sendMsg(reply, b)
-				}
-				return fmt.Errorf("last sequence by subject mismatch: %d vs %d", seq, fseq)
 			}
 		}
 		// Check for any rollups.
@@ -4278,6 +4288,8 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 			n.Delete()
 			sa = mset.sa
 		} else {
+			// Attempt snapshot on clean exit.
+			n.InstallSnapshot(mset.stateSnapshotLocked())
 			n.Stop()
 		}
 	}
@@ -4320,7 +4332,9 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		mset.outq.unregister()
 	}
 
+	// Snapshot store.
 	store := mset.store
+
 	// Clustered cleanup.
 	mset.mu.Unlock()
 

@@ -12904,3 +12904,81 @@ func TestJetStreamClusterStreamDirectGetNotTooSoon(t *testing.T) {
 
 	checkForDirectSubs()
 }
+
+func TestJetStreamClusterStaleReadsOnRestart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3F", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar", "baz"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	sl := c.streamLeader("$G", "TEST")
+
+	r1 := c.randomNonStreamLeader("$G", "TEST")
+	r1.Shutdown()
+
+	nc.Close()
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err = js.Publish("bar", nil)
+	require_NoError(t, err)
+
+	_, err = js.Publish("baz", nil)
+	require_NoError(t, err)
+
+	r2 := c.randomNonStreamLeader("$G", "TEST")
+	r2.Shutdown()
+
+	sl.Shutdown()
+
+	c.restartServer(r2)
+	c.restartServer(r1)
+
+	c.waitOnStreamLeader("$G", "TEST")
+
+	nc.Close()
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	_, err = js.Publish("bar", nil)
+	require_NoError(t, err)
+
+	_, err = js.Publish("baz", nil)
+	require_NoError(t, err)
+
+	c.restartServer(sl)
+	c.waitOnAllCurrent()
+
+	var state StreamState
+
+	for _, s := range c.servers {
+		if s.Running() {
+			mset, err := s.GlobalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+			var fs StreamState
+			mset.store.FastState(&fs)
+			if state.FirstSeq == 0 {
+				state = fs
+			}
+			if !reflect.DeepEqual(fs, state) {
+				t.Fatalf("States do not match, exepected %+v but got %+v", state, fs)
+			}
+		}
+	}
+}

@@ -395,7 +395,7 @@ func TestJetStreamChaosKvCAS(t *testing.T) {
 			} else if updateErr != nil && strings.Contains(fmt.Sprint(updateErr), "wrong last sequence") {
 				// CAS rejected update, learn current revision for this key
 				casRejectUpdates += 1
-			getRetryLoop:
+
 				for r := 0; r <= maxRetries; r++ {
 					kve, getErr := kv.Get(key)
 					if getErr == nil {
@@ -403,12 +403,14 @@ func TestJetStreamChaosKvCAS(t *testing.T) {
 						if currentRevision < knownRevisions[key] {
 							// Revision number moved backward, this should never happen
 							t.Fatalf("Current revision for key %s is %d, which is lower than the last known revision %d", key, currentRevision, knownRevisions[key])
+
 						}
+
 						knownRevisions[key] = currentRevision
 						if chaosKvTestsDebug {
 							t.Logf("Client %d learn key %s revision: %d", clientId, key, currentRevision)
 						}
-						break getRetryLoop
+						break
 					} else if r == maxRetries {
 						t.Fatalf("Failed to GET (retried %d times): %v", maxRetries, getErr)
 					} else {
