@@ -144,6 +144,60 @@ func checkForAccountNoInterest(t *testing.T, c *client, account string, expected
 	})
 }
 
+func checkGWInterestOnlyMode(t *testing.T, s *Server, outboundGWName, accName string) {
+	t.Helper()
+	checkGWInterestOnlyModeOrNotPresent(t, s, outboundGWName, accName, false)
+}
+
+func checkGWInterestOnlyModeOrNotPresent(t *testing.T, s *Server, outboundGWName, accName string, notPresentOk bool) {
+	t.Helper()
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		gwc := s.getOutboundGatewayConnection(outboundGWName)
+		if gwc == nil {
+			return fmt.Errorf("No outbound gateway connection %q for server %v", outboundGWName, s)
+		}
+		gwc.mu.Lock()
+		defer gwc.mu.Unlock()
+		out, ok := gwc.gw.outsim.Load(accName)
+		if !ok {
+			if notPresentOk {
+				return nil
+			} else {
+				return fmt.Errorf("Server %v - outbound gateway connection %q: no account %q found in map",
+					s, outboundGWName, accName)
+			}
+		}
+		if out == nil {
+			return fmt.Errorf("Server %v - outbound gateway connection %q: interest map not found for account %q",
+				s, outboundGWName, accName)
+		} else if mode := out.(*outsie).mode; mode != InterestOnly {
+			return fmt.Errorf(
+				"Server %v - outbound gateway connection %q: account %q mode shoule be InterestOnly but is %v",
+				s, outboundGWName, accName, mode)
+		}
+		return nil
+	})
+}
+
+func checkGWInterestOnlyModeInterestOn(t *testing.T, s *Server, outboundGWName, accName, subject string) {
+	t.Helper()
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		c := s.getOutboundGatewayConnection(outboundGWName)
+		outsiei, _ := c.gw.outsim.Load(accName)
+		if outsiei == nil {
+			return fmt.Errorf("Server %s - outbound gateway connection %q: no map entry found for account %q",
+				s, outboundGWName, accName)
+		}
+		outsie := outsiei.(*outsie)
+		r := outsie.sl.Match(subject)
+		if len(r.psubs) == 0 {
+			return fmt.Errorf("Server %s - outbound gateway connection %q - account %q: no subject interest for %q",
+				s, outboundGWName, accName, subject)
+		}
+		return nil
+	})
+}
+
 func waitCh(t *testing.T, ch chan bool, errTxt string) {
 	t.Helper()
 	select {
@@ -1666,6 +1720,9 @@ func setAccountUserPassInOptions(o *Options, accName, username, password string)
 }
 
 func TestGatewayAccountInterest(t *testing.T) {
+	GatewayDoNotForceInterestOnlyMode(true)
+	defer GatewayDoNotForceInterestOnlyMode(false)
+
 	o2 := testDefaultOptionsForGateway("B")
 	// Add users to cause s2 to require auth. Will add an account with user later.
 	o2.Users = append([]*User(nil), &User{Username: "test", Password: "pwd"})
@@ -1841,6 +1898,9 @@ func TestGatewayAccountUnsub(t *testing.T) {
 }
 
 func TestGatewaySubjectInterest(t *testing.T) {
+	GatewayDoNotForceInterestOnlyMode(true)
+	defer GatewayDoNotForceInterestOnlyMode(false)
+
 	o1 := testDefaultOptionsForGateway("A")
 	setAccountUserPassInOptions(o1, "$foo", "ivan", "password")
 	s1 := runGatewayServer(o1)
@@ -2497,6 +2557,9 @@ func TestGatewaySendQSubsOnGatewayConnect(t *testing.T) {
 }
 
 func TestGatewaySendRemoteQSubs(t *testing.T) {
+	GatewayDoNotForceInterestOnlyMode(true)
+	defer GatewayDoNotForceInterestOnlyMode(false)
+
 	ob1 := testDefaultOptionsForGateway("B")
 	sb1 := runGatewayServer(ob1)
 	defer sb1.Shutdown()
@@ -3281,6 +3344,9 @@ func getInboundGatewayConnection(s *Server, name string) *client {
 }
 
 func TestGatewaySendAllSubs(t *testing.T) {
+	GatewayDoNotForceInterestOnlyMode(true)
+	defer GatewayDoNotForceInterestOnlyMode(false)
+
 	gatewayMaxRUnsubBeforeSwitch = 100
 	defer func() { gatewayMaxRUnsubBeforeSwitch = defaultGatewayMaxRUnsubBeforeSwitch }()
 
@@ -3392,21 +3458,9 @@ func TestGatewaySendAllSubs(t *testing.T) {
 		if !switchedMode {
 			return fmt.Errorf("C has still not switched mode")
 		}
-		switchedMode = false
-		// Now check B outbound connection to C
-		c = sb.getOutboundGatewayConnection("C")
-		ei, _ := c.gw.outsim.Load(globalAccountName)
-		if ei != nil {
-			e := ei.(*outsie)
-			e.RLock()
-			switchedMode = e.ni == nil && e.mode == InterestOnly
-			e.RUnlock()
-		}
-		if !switchedMode {
-			return fmt.Errorf("C has still not switched mode")
-		}
 		return nil
 	})
+	checkGWInterestOnlyMode(t, sb, "C", globalAccountName)
 	wg.Wait()
 
 	// Check consCount and accsCount on C
@@ -3582,6 +3636,9 @@ func TestGatewayRaceOnClose(t *testing.T) {
 // Similar to TestNewRoutesServiceImport but with 2 GW servers instead
 // of a cluster of 2 servers.
 func TestGatewayServiceImport(t *testing.T) {
+	GatewayDoNotForceInterestOnlyMode(true)
+	defer GatewayDoNotForceInterestOnlyMode(false)
+
 	oa := testDefaultOptionsForGateway("A")
 	setAccountUserPassInOptions(oa, "$foo", "clientA", "password")
 	setAccountUserPassInOptions(oa, "$bar", "yyyyyyy", "password")
@@ -3809,21 +3866,7 @@ func TestGatewayServiceImport(t *testing.T) {
 	}
 	natsFlush(t, clientB)
 
-	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
-		c := sb.getOutboundGatewayConnection("A")
-		outsiei, _ := c.gw.outsim.Load("$foo")
-		if outsiei == nil {
-			return fmt.Errorf("Nothing found for $foo")
-		}
-		outsie := outsiei.(*outsie)
-		outsie.RLock()
-		mode := outsie.mode
-		outsie.RUnlock()
-		if mode != InterestOnly {
-			return fmt.Errorf("Should have switched to interest only mode")
-		}
-		return nil
-	})
+	checkGWInterestOnlyMode(t, sb, "A", "$foo")
 
 	// Go back to clientB on $bar.
 	clientB.Close()
@@ -3839,19 +3882,7 @@ func TestGatewayServiceImport(t *testing.T) {
 
 	// Sine it is interest-only, B should receive an interest
 	// on $foo test.request
-	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
-		c := sb.getOutboundGatewayConnection("A")
-		outsiei, _ := c.gw.outsim.Load("$foo")
-		if outsiei == nil {
-			return fmt.Errorf("Nothing found for $foo")
-		}
-		outsie := outsiei.(*outsie)
-		r := outsie.sl.Match("test.request")
-		if len(r.psubs) != 1 {
-			return fmt.Errorf("No registered interest on test.request")
-		}
-		return nil
-	})
+	checkGWInterestOnlyModeInterestOn(t, sb, "A", "$foo", "test.request")
 
 	// Send the request from clientB on foo.request,
 	natsPubReq(t, clientB, "foo.request", "reply", []byte("hi"))
@@ -3893,6 +3924,9 @@ func TestGatewayServiceImport(t *testing.T) {
 }
 
 func TestGatewayServiceImportWithQueue(t *testing.T) {
+	GatewayDoNotForceInterestOnlyMode(true)
+	defer GatewayDoNotForceInterestOnlyMode(false)
+
 	oa := testDefaultOptionsForGateway("A")
 	setAccountUserPassInOptions(oa, "$foo", "clientA", "password")
 	setAccountUserPassInOptions(oa, "$bar", "yyyyyyy", "password")
@@ -4124,21 +4158,7 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 	}
 	natsFlush(t, clientB)
 
-	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
-		c := sb.getOutboundGatewayConnection("A")
-		outsiei, _ := c.gw.outsim.Load("$foo")
-		if outsiei == nil {
-			return fmt.Errorf("Nothing found for $foo")
-		}
-		outsie := outsiei.(*outsie)
-		outsie.RLock()
-		mode := outsie.mode
-		outsie.RUnlock()
-		if mode != InterestOnly {
-			return fmt.Errorf("Should have switched to interest only mode")
-		}
-		return nil
-	})
+	checkGWInterestOnlyMode(t, sb, "A", "$foo")
 
 	// Go back to clientB on $bar.
 	clientB.Close()
@@ -4154,19 +4174,7 @@ func TestGatewayServiceImportWithQueue(t *testing.T) {
 
 	// Sine it is interest-only, B should receive an interest
 	// on $foo test.request
-	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
-		c := sb.getOutboundGatewayConnection("A")
-		outsiei, _ := c.gw.outsim.Load("$foo")
-		if outsiei == nil {
-			return fmt.Errorf("Nothing found for $foo")
-		}
-		outsie := outsiei.(*outsie)
-		r := outsie.sl.Match("test.request")
-		if len(r.psubs) != 1 {
-			return fmt.Errorf("No registered interest on test.request")
-		}
-		return nil
-	})
+	checkGWInterestOnlyModeInterestOn(t, sb, "A", "$foo", "test.request")
 
 	// Send the request from clientB on foo.request,
 	natsPubReq(t, clientB, "foo.request", "reply", []byte("hi"))
@@ -4517,24 +4525,7 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 	}
 	natsFlush(t, clientA)
 	// Wait for B2 to switch to interest-only
-	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
-		c := sa2.getOutboundGatewayConnection("B")
-		if c == nil {
-			return fmt.Errorf("No outbound to B2")
-		}
-		outsiei, _ := c.gw.outsim.Load("$foo")
-		if outsiei == nil {
-			return fmt.Errorf("Nothing for $foo")
-		}
-		outsie := outsiei.(*outsie)
-		outsie.RLock()
-		mode := outsie.mode
-		outsie.RUnlock()
-		if mode != InterestOnly {
-			return fmt.Errorf("Not in interest-only mode yet")
-		}
-		return nil
-	})
+	checkGWInterestOnlyMode(t, sa2, "B", "$foo")
 
 	subA = natsSubSync(t, clientA, "test.request")
 	natsFlush(t, clientA)
@@ -4890,24 +4881,7 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 			natsFlush(t, clientA)
 
 			// Wait for B2 to switch to interest-only
-			checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
-				c := sa2.getOutboundGatewayConnection("B")
-				if c == nil {
-					return fmt.Errorf("No outbound to B2")
-				}
-				outsiei, _ := c.gw.outsim.Load("$foo")
-				if outsiei == nil {
-					return fmt.Errorf("Nothing for $foo")
-				}
-				outsie := outsiei.(*outsie)
-				outsie.RLock()
-				mode := outsie.mode
-				outsie.RUnlock()
-				if mode != InterestOnly {
-					return fmt.Errorf("Not in interest-only mode yet")
-				}
-				return nil
-			})
+			checkGWInterestOnlyMode(t, sa2, "B", "$foo")
 
 			subA = natsSubSync(t, clientA, "ngs.update.*")
 			natsFlush(t, clientA)
@@ -5541,6 +5515,9 @@ func TestGatewayClientsDontReceiveMsgsOnGWPrefix(t *testing.T) {
 }
 
 func TestGatewayNoAccInterestThenQSubThenRegularSub(t *testing.T) {
+	GatewayDoNotForceInterestOnlyMode(true)
+	defer GatewayDoNotForceInterestOnlyMode(false)
+
 	ob := testDefaultOptionsForGateway("B")
 	sb := runGatewayServer(ob)
 	defer sb.Shutdown()
@@ -5600,6 +5577,9 @@ func TestGatewayNoAccInterestThenQSubThenRegularSub(t *testing.T) {
 // Similar to TestGatewayNoAccInterestThenQSubThenRegularSub but simulate
 // older incorrect behavior.
 func TestGatewayHandleUnexpectedASubUnsub(t *testing.T) {
+	GatewayDoNotForceInterestOnlyMode(true)
+	defer GatewayDoNotForceInterestOnlyMode(false)
+
 	ob := testDefaultOptionsForGateway("B")
 	sb := runGatewayServer(ob)
 	defer sb.Shutdown()
@@ -5735,6 +5715,9 @@ func (l *captureGWInterestSwitchLogger) Debugf(format string, args ...interface{
 }
 
 func TestGatewayLogAccountInterestModeSwitch(t *testing.T) {
+	GatewayDoNotForceInterestOnlyMode(true)
+	defer GatewayDoNotForceInterestOnlyMode(false)
+
 	ob := testDefaultOptionsForGateway("B")
 	sb := runGatewayServer(ob)
 	defer sb.Shutdown()
@@ -5782,21 +5765,7 @@ func TestGatewayLogAccountInterestModeSwitch(t *testing.T) {
 		return nil
 	})
 
-	gwB := sa.getOutboundGatewayConnection("B")
-	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
-		ei, ok := gwB.gw.outsim.Load(globalAccountName)
-		if !ok || ei == nil {
-			return fmt.Errorf("not switched yet")
-		}
-		e := ei.(*outsie)
-		e.RLock()
-		mode := e.mode
-		e.RUnlock()
-		if mode != InterestOnly {
-			return fmt.Errorf("not in interest mode only yet")
-		}
-		return nil
-	})
+	checkGWInterestOnlyMode(t, sa, "B", globalAccountName)
 
 	checkLog := func(t *testing.T, l *captureGWInterestSwitchLogger) {
 		t.Helper()
@@ -5835,6 +5804,9 @@ func TestGatewayLogAccountInterestModeSwitch(t *testing.T) {
 }
 
 func TestGatewayAccountInterestModeSwitchOnlyOncePerAccount(t *testing.T) {
+	GatewayDoNotForceInterestOnlyMode(true)
+	defer GatewayDoNotForceInterestOnlyMode(false)
+
 	ob := testDefaultOptionsForGateway("B")
 	sb := runGatewayServer(ob)
 	defer sb.Shutdown()
@@ -6779,4 +6751,73 @@ func TestGatewayNoPanicOnStartupWithMonitoring(t *testing.T) {
 	}
 	s.Shutdown()
 	wg.Wait()
+}
+
+func TestGatewaySwitchToInterestOnlyModeImmediately(t *testing.T) {
+	o2 := testDefaultOptionsForGateway("B")
+	// Add users to cause s2 to require auth. Will add an account with user later.
+	o2.Users = append([]*User(nil), &User{Username: "test", Password: "pwd"})
+	s2 := runGatewayServer(o2)
+	defer s2.Shutdown()
+
+	o1 := testGatewayOptionsFromToWithServers(t, "A", "B", s2)
+	setAccountUserPassInOptions(o1, "$foo", "ivan", "password")
+	s1 := runGatewayServer(o1)
+	defer s1.Shutdown()
+
+	waitForOutboundGateways(t, s1, 1, time.Second)
+	waitForOutboundGateways(t, s2, 1, time.Second)
+
+	s1Url := fmt.Sprintf("nats://ivan:password@127.0.0.1:%d", o1.Port)
+	nc := natsConnect(t, s1Url)
+	defer nc.Close()
+	natsPub(t, nc, "foo", []byte("hello"))
+	natsFlush(t, nc)
+
+	checkCount := func(t *testing.T, c *client, expected int) {
+		t.Helper()
+		c.mu.Lock()
+		out := c.outMsgs
+		c.mu.Unlock()
+		if int(out) != expected {
+			t.Fatalf("Expected %d message(s) to be sent over, got %v", expected, out)
+		}
+	}
+	// No message should be sent
+	gwcb := s1.getOutboundGatewayConnection("B")
+	checkCount(t, gwcb, 0)
+
+	// Check that we are in interest-only mode, but in this case, since s2 does
+	// have the account, we should have the account not even present in the map.
+	checkGWInterestOnlyModeOrNotPresent(t, s1, "B", "$foo", true)
+
+	// Add account to S2 and a client.
+	s2FooAcc, err := s2.RegisterAccount("$foo")
+	if err != nil {
+		t.Fatalf("Error registering account: %v", err)
+	}
+	s2.mu.Lock()
+	s2.users["ivan"] = &User{Account: s2FooAcc, Username: "ivan", Password: "password"}
+	s2.mu.Unlock()
+	s2Url := fmt.Sprintf("nats://ivan:password@127.0.0.1:%d", o2.Port)
+	ncS2 := natsConnect(t, s2Url)
+	defer ncS2.Close()
+	natsSubSync(t, ncS2, "asub")
+	// This time we will have the account in the map and it will be interest-only
+	checkGWInterestOnlyMode(t, s1, "B", "$foo")
+
+	// Now publish a message, still should not go because the sub is on "asub"
+	natsPub(t, nc, "foo", []byte("hello"))
+	natsFlush(t, nc)
+	checkCount(t, gwcb, 0)
+
+	natsSubSync(t, ncS2, "foo")
+	natsFlush(t, ncS2)
+
+	checkGWInterestOnlyModeInterestOn(t, s1, "B", "$foo", "foo")
+
+	// Publish on foo
+	natsPub(t, nc, "foo", []byte("hello"))
+	natsFlush(t, nc)
+	checkCount(t, gwcb, 1)
 }
