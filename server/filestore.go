@@ -4085,11 +4085,11 @@ func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err err
 // The subject can be a wildcard.
 func (fs *fileStore) LoadLastMsg(subject string, smv *StoreMsg) (sm *StoreMsg, err error) {
 	if subject == _EMPTY_ || subject == fwcs {
-		sm, err = fs.msgForSeq(fs.lastSeq(), sm)
+		sm, err = fs.msgForSeq(fs.lastSeq(), smv)
 	} else {
-		sm, err = fs.loadLast(subject, sm)
+		sm, err = fs.loadLast(subject, smv)
 	}
-	if err != nil && err != ErrStoreClosed {
+	if sm == nil || (err != nil && err != ErrStoreClosed) {
 		err = ErrStoreMsgNotFound
 	}
 	return sm, err
