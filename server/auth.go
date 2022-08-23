@@ -513,6 +513,10 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 		}
 		return emittedList, nil
 	}
+
+	subAllowWasNotEmpty := len(lim.Permissions.Sub.Allow) > 0
+	pubAllowWasNotEmpty := len(lim.Permissions.Pub.Allow) > 0
+
 	var err error
 	if lim.Permissions.Sub.Allow, err = applyTemplate(lim.Permissions.Sub.Allow, false); err != nil {
 		return jwt.UserPermissionLimits{}, err
@@ -522,6 +526,14 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 		return jwt.UserPermissionLimits{}, err
 	} else if lim.Permissions.Pub.Deny, err = applyTemplate(lim.Permissions.Pub.Deny, true); err != nil {
 		return jwt.UserPermissionLimits{}, err
+	}
+
+	// if pub/sub allow were not empty, but are empty post template processing, add in a "deny >" to compensate
+	if subAllowWasNotEmpty && len(lim.Permissions.Sub.Allow) == 0 {
+		lim.Permissions.Sub.Deny.Add(">")
+	}
+	if pubAllowWasNotEmpty && len(lim.Permissions.Pub.Allow) == 0 {
+		lim.Permissions.Pub.Deny.Add(">")
 	}
 	return lim, nil
 }

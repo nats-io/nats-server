@@ -4416,8 +4416,10 @@ func TestJwtTemplates(t *testing.T) {
 	test(resLim.Pub.Deny, []string{"foo1.acc1", "foo1.acc2", "foo2.acc1", "foo2.acc2"})
 
 	require_True(t, len(resLim.Sub.Allow) == 0)
-	require_True(t, len(resLim.Sub.Deny) == 1)
+	require_True(t, len(resLim.Sub.Deny) == 2)
 	require_Contains(t, resLim.Sub.Deny[0], fmt.Sprintf("foo.myname.%s.accname.%s.bar", upub, aPub))
+	// added in to compensate for sub allow not resolving
+	require_Contains(t, resLim.Sub.Deny[1], ">")
 
 	lim.Pub.Deny.Add("{{tag(NOT_THERE)}}")
 	_, err = processUserPermissionsTemplate(lim, uclaim, acc)
