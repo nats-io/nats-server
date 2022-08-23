@@ -3561,7 +3561,6 @@ func TestAccountImportCycle(t *testing.T) {
 	// setup reply
 	subCp, err := ncCp.SubscribeSync("q1.>")
 	require_NoError(t, err)
-	require_NoError(t, err)
 	// setup requestor and send reply
 	ib := "q2.inbox"
 	subAResp, err := ncA.SubscribeSync(ib)
