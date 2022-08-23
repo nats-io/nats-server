@@ -167,7 +167,7 @@ type msgBlock struct {
 	lchk    [8]byte
 	loading bool
 	flusher bool
-	noSubj  bool
+	noTrack bool
 	closed  bool
 }
 
@@ -643,14 +643,14 @@ const (
 // This is the max room needed for index header.
 const indexHdrSize = 7*binary.MaxVarintLen64 + hdrLen + checksumSize
 
+// Lock should be held.
+func (fs *fileStore) noTrackSubjects() bool {
+	return !(len(fs.psim) > 0 || len(fs.cfg.Subjects) > 0 || fs.cfg.Mirror != nil || len(fs.cfg.Sources) > 0)
+}
+
 // Lock held on entry
 func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint32) (*msgBlock, error) {
-	mb := &msgBlock{fs: fs, index: index, cexp: fs.fcfg.CacheExpire}
-
-	// Check if we should be monitoring subjects.
-	if len(fs.cfg.Subjects) == 0 {
-		mb.noSubj = true
-	}
+	mb := &msgBlock{fs: fs, index: index, cexp: fs.fcfg.CacheExpire, noTrack: fs.noTrackSubjects()}
 
 	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
 	mb.mfn = filepath.Join(mdir, fi.Name())
@@ -748,7 +748,7 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint32) (*msgBlock, e
 		// Quick sanity check here.
 		// Note this only checks that the message blk file is not newer then this file, or is empty and we expect empty.
 		if (mb.rbytes == 0 && mb.msgs == 0) || bytes.Equal(lchk[:], mb.lchk[:]) {
-			if mb.msgs > 0 && !mb.noSubj && fs.psim != nil {
+			if mb.msgs > 0 && !mb.noTrack && fs.psim != nil {
 				fs.populateGlobalPerSubjectInfo(mb)
 			}
 			fs.addMsgBlock(mb)
@@ -760,7 +760,7 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint32) (*msgBlock, e
 	if ld, _ := mb.rebuildState(); ld != nil {
 		fs.rebuildStateLocked(ld)
 	}
-	if mb.msgs > 0 && !mb.noSubj && fs.psim != nil {
+	if mb.msgs > 0 && !mb.noTrack && fs.psim != nil {
 		fs.populateGlobalPerSubjectInfo(mb)
 	}
 
@@ -991,9 +991,6 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, error) {
 		return &ld
 	}
 
-	// Rebuild per subject info.
-	mb.fss = make(map[string]*SimpleState)
-
 	for index, lbuf := uint32(0), uint32(len(buf)); index < lbuf; {
 		if index+msgHdrSize > lbuf {
 			truncate(index)
@@ -1076,8 +1073,11 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, error) {
 			mb.msgs++
 			mb.bytes += uint64(rl)
 
-			// Do per subject info.
+			// Rebuild per subject info if needed.
 			if slen > 0 {
+				if mb.fss == nil {
+					mb.fss = make(map[string]*SimpleState)
+				}
 				// For the lookup, we cast the byte slice and there won't be any copy
 				if ss := mb.fss[string(data[:slen])]; ss != nil {
 					ss.Msgs++
@@ -1252,6 +1252,7 @@ func (fs *fileStore) expireMsgsOnRecover() {
 		var smv StoreMsg
 
 		// Walk messages and remove if expired.
+		mb.ensurePerSubjectInfoLoaded()
 		for seq := mb.first.seq; seq <= mb.last.seq; seq++ {
 			sm, err := mb.cacheLookup(seq, &smv)
 			// Process interior deleted msgs.
@@ -1293,7 +1294,8 @@ func (fs *fileStore) expireMsgsOnRecover() {
 				purged++
 			}
 			// Update fss
-			mb.removeSeqPerSubject(sm.subj, seq, &smv)
+			// Make sure we have fss loaded.
+			mb.removeSeqPerSubject(sm.subj, seq, nil)
 			fs.removePerSubject(sm.subj)
 		}
 
@@ -1394,13 +1396,11 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 
-	fseq, isAll, subs := start, filter == _EMPTY_ || filter == mb.sfilter || filter == fwcs, []string{filter}
-
-	if mb.fss == nil {
-		if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
-			return nil, false, err
-		}
+	if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
+		return nil, false, err
 	}
+
+	fseq, isAll, subs := start, filter == _EMPTY_ || filter == mb.sfilter || filter == fwcs, []string{filter}
 
 	// Skip scan of mb.fss if number of messages in the block are less than
 	// 1/2 the number of subjects in mb.fss. Or we have a wc and lots of fss entries.
@@ -1486,9 +1486,7 @@ func (mb *msgBlock) filteredPending(subj string, wc bool, seq uint64) (total, fi
 // Lock should be held.
 func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, seq uint64) (total, first, last uint64) {
 	// Make sure we have fss loaded.
-	if mb.fss == nil {
-		mb.ensurePerSubjectInfoLoaded()
-	}
+	mb.ensurePerSubjectInfoLoaded()
 
 	isAll := filter == _EMPTY_ || filter == fwcs
 	subs := []string{filter}
@@ -1686,6 +1684,7 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 		start, stop = fs.bim[info.fblk], fs.bim[info.lblk]
 	}
 
+	// Aggregate fss.
 	fss := make(map[string]SimpleState)
 	var startFound bool
 
@@ -1698,6 +1697,7 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 		}
 
 		mb.mu.Lock()
+		// Make sure we have fss loaded.
 		mb.ensurePerSubjectInfoLoaded()
 		for subj, ss := range mb.fss {
 			if subject == _EMPTY_ || subject == fwcs || subjectIsSubsetMatch(subj, subject) {
@@ -1788,12 +1788,11 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 		}
 	}
 
-	mb := &msgBlock{fs: fs, index: index, cexp: fs.fcfg.CacheExpire}
+	mb := &msgBlock{fs: fs, index: index, cexp: fs.fcfg.CacheExpire, noTrack: fs.noTrackSubjects()}
 
-	// Optimize lookups if we have zero or one subject.
-	if nsubj := len(fs.cfg.Subjects); nsubj == 0 {
-		mb.noSubj = true
-	} else if nsubj == 1 {
+	// Optimize lookups if we have one subject.
+	// TODO(dlc) - Make work for mirrors?
+	if !mb.noTrack && len(fs.cfg.Subjects) == 1 {
 		mb.sfilter = fs.cfg.Subjects[0]
 	}
 
@@ -2273,6 +2272,9 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 	// Now local mb updates.
 	mb.msgs--
 	mb.bytes -= msz
+
+	// If we are tracking subjects here make sure we update that accounting.
+	mb.ensurePerSubjectInfoLoaded()
 
 	// If we are tracking multiple subjects here make sure we update that accounting.
 	mb.removeSeqPerSubject(sm.subj, seq, &smv)
@@ -3178,12 +3180,15 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 	mb.updateAccounting(seq, ts, rl)
 
 	// Check if we are tracking per subject for our simple state.
-	if len(subj) > 0 && mb.fss != nil {
-		if ss := mb.fss[subj]; ss != nil {
-			ss.Msgs++
-			ss.Last = seq
-		} else {
-			mb.fss[subj] = &SimpleState{Msgs: 1, First: seq, Last: seq}
+	if len(subj) > 0 {
+		mb.ensurePerSubjectInfoLoaded()
+		if mb.fss != nil {
+			if ss := mb.fss[subj]; ss != nil {
+				ss.Msgs++
+				ss.Last = seq
+			} else {
+				mb.fss[subj] = &SimpleState{Msgs: 1, First: seq, Last: seq}
+			}
 		}
 	}
 
@@ -4106,6 +4111,8 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *Store
 		start = fs.state.FirstSeq
 	}
 
+	// TODO(dlc) - If num blocks gets large maybe use selectMsgBlock but have it return index b/c
+	// we need to keep walking if no match found in first mb.
 	for _, mb := range fs.blks {
 		// Skip blocks that are less than our starting sequence.
 		if start > atomic.LoadUint64(&mb.last.seq) {
@@ -5053,6 +5060,7 @@ func (mb *msgBlock) dirtyCloseWithRemove(remove bool) {
 // Remove a seq from the fss and select new first.
 // Lock should be held.
 func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64, smp *StoreMsg) {
+	mb.ensurePerSubjectInfoLoaded()
 	ss := mb.fss[subj]
 	if ss == nil {
 		return
@@ -5173,10 +5181,10 @@ func (mb *msgBlock) loadPerSubjectInfo() ([]byte, error) {
 	return buf, nil
 }
 
-// Helper to make sure fss loaded.
+// Helper to make sure fss loaded if we are tracking.
 // Lock should be held
 func (mb *msgBlock) ensurePerSubjectInfoLoaded() error {
-	if mb.fss == nil {
+	if mb.fss == nil && !mb.noTrack {
 		return mb.readPerSubjectInfo(true)
 	}
 	return nil
@@ -5207,7 +5215,7 @@ func (fs *fileStore) populateGlobalPerSubjectInfo(mb *msgBlock) {
 
 // readPerSubjectInfo will attempt to restore the per subject information.
 func (mb *msgBlock) readPerSubjectInfo(hasLock bool) error {
-	if mb.noSubj {
+	if mb.noTrack {
 		return nil
 	}
 

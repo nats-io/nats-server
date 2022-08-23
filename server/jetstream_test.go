@@ -19219,3 +19219,68 @@ func TestJetStreamAllowDirectAfterUpdate(t *testing.T) {
 	_, err = js.GetLastMsg("TEST", "foo", nats.DirectGet(), nats.MaxWait(100*time.Millisecond))
 	require_Error(t, err)
 }
+
+// Bug when stream's consumer config does not force filestore to track per subject information.
+func TestJetStreamConsumerEOFBugNewFileStore(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.bar.*"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:   "M",
+		Mirror: &nats.StreamSource{Name: "TEST"},
+	})
+	require_NoError(t, err)
+
+	dsubj := nats.NewInbox()
+	sub, err := nc.SubscribeSync(dsubj)
+	require_NoError(t, err)
+	nc.Flush()
+
+	// Filter needs to be a wildcard. Need to bind to the
+	_, err = js.AddConsumer("M", &nats.ConsumerConfig{DeliverSubject: dsubj, FilterSubject: "foo.>"})
+	require_NoError(t, err)
+
+	for i := 0; i < 100; i++ {
+		_, err := js.PublishAsync("foo.bar.baz", []byte("OK"))
+		require_NoError(t, err)
+	}
+
+	for i := 0; i < 100; i++ {
+		m, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		m.Respond(nil)
+	}
+
+	// Now force an expiration.
+	mset, err := s.GlobalAccount().lookupStream("M")
+	require_NoError(t, err)
+	mset.mu.RLock()
+	store := mset.store.(*fileStore)
+	mset.mu.RUnlock()
+	store.mu.RLock()
+	mb := store.blks[0]
+	store.mu.RUnlock()
+	mb.mu.Lock()
+	mb.fss = nil
+	mb.mu.Unlock()
+
+	// Now send another message.
+	_, err = js.PublishAsync("foo.bar.baz", []byte("OK"))
+	require_NoError(t, err)
+
+	// This will fail with the bug.
+	_, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+}
