@@ -3524,3 +3524,56 @@ func TestAccountUserSubPermsWithQueueGroups(t *testing.T) {
 	// Expect no msgs.
 	checkSubsPending(t, qsub, 0)
 }
+
+func TestAccountImportCycle(t *testing.T) {
+	cf := createConfFile(t, []byte(`
+               port: -1
+               accounts: {
+                 CP: {
+                       users: [
+                         {user: cp, password: cp},
+                       ],
+                       exports: [
+                         {service: "q1.>", response_type: Singleton},
+                         {service: "q2.>", response_type: Singleton},
+                       ],
+                 },
+                 A: {
+                       users: [
+                         {user: a, password: a},
+                       ],
+                       imports: [
+                         {service: {account: CP, subject: "q1.>"}},
+                         {service: {account: CP, subject: "q2.>"}},
+                       ]
+                 },
+               }
+    `))
+	defer removeFile(t, cf)
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+	ncCp, err := nats.Connect(s.ClientURL(), nats.UserInfo("cp", "cp"))
+	require_NoError(t, err)
+	defer ncCp.Close()
+	ncA, err := nats.Connect(s.ClientURL(), nats.UserInfo("a", "a"))
+	require_NoError(t, err)
+	defer ncA.Close()
+	// setup reply
+	subCp, err := ncCp.SubscribeSync("q1.>")
+	require_NoError(t, err)
+	// setup requestor and send reply
+	ib := "q2.inbox"
+	subAResp, err := ncA.SubscribeSync(ib)
+	require_NoError(t, err)
+	// send request
+	err = ncA.PublishRequest("q1.a", ib, []byte("test"))
+	require_NoError(t, err)
+	// reply
+	mReq, err := subCp.NextMsg(time.Second)
+	require_NoError(t, err)
+	err = mReq.Respond([]byte("reply"))
+	require_NoError(t, err)
+	mRep, err := subAResp.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Contains(t, string(mRep.Data), "reply")
+}

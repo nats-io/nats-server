@@ -2141,8 +2141,15 @@ func (a *Account) processServiceImportResponse(sub *subscription, c *client, _ *
 	}
 	a.mu.RUnlock()
 
+	old := c.pa.subject
+	if c.kind == CLIENT || c.kind == LEAF {
+		// reset state to prior to service invocation (code to reset c.pa.subject to old may not be necessary)
+		c.pa.subject = []byte(si.to)
+	}
+
 	// Send for normal processing.
 	c.processServiceImport(si, a, msg)
+	c.pa.subject = old
 }
 
 // Will create the response prefix for fast generation of responses.
