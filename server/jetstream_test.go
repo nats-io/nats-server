@@ -19105,3 +19105,76 @@ func TestJetStreamConsumerDeliverNewMaxRedeliveriesAndServerRestart(t *testing.T
 		t.Fatalf("Expected timeout, got msg=%+v err=%v", msg, err)
 	}
 }
+
+func TestJetStreamConsumerPendingLowerThanStreamFirstSeq(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 100; i++ {
+		sendStreamMsg(t, nc, "foo", "msg")
+	}
+
+	inbox := nats.NewInbox()
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		DeliverSubject: inbox,
+		Durable:        "dur",
+		AckPolicy:      nats.AckExplicitPolicy,
+		DeliverPolicy:  nats.DeliverAllPolicy,
+	})
+	require_NoError(t, err)
+
+	sub := natsSubSync(t, nc, inbox)
+	for i := 0; i < 10; i++ {
+		natsNexMsg(t, sub, time.Second)
+	}
+
+	acc, err := s.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("dur")
+	require_True(t, o != nil)
+	o.stop()
+	mset.store.Compact(1_000_000)
+	nc.Close()
+
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.FirstSeq == 1_000_000)
+	require_True(t, si.State.LastSeq == 999_999)
+
+	natsSubSync(t, nc, inbox)
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		ci, err := js.ConsumerInfo("TEST", "dur")
+		if err != nil {
+			return err
+		}
+		if ci.NumAckPending != 0 {
+			return fmt.Errorf("NumAckPending should be 0, got %v", ci.NumAckPending)
+		}
+		if ci.Delivered.Stream != 999_999 {
+			return fmt.Errorf("Delivered.Stream should be 999,999, got %v", ci.Delivered.Stream)
+		}
+		return nil
+	})
+}
