@@ -1470,6 +1470,17 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 				delete(mset.sources, iname)
 			}
 		}
+
+		// If we are not clustered here and we want allow direct, go ahead and inline here.
+		// use cfg.Replicas vs isClustered() in case we are updating.
+		if cfg.Replicas == 1 {
+			// Check direct.
+			if cfg.AllowDirect {
+				mset.subscribeToDirect()
+			} else {
+				mset.unsubscribeToDirect()
+			}
+		}
 	}
 
 	js := mset.js
