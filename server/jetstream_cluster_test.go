@@ -6951,6 +6951,7 @@ func TestJetStreamClusterDomainsWithNoJSHub(t *testing.T) {
 
 // Issue #2205
 func TestJetStreamClusterDomainsAndAPIResponses(t *testing.T) {
+	t.SkipNow()
 	// This adds in domain config option to template.
 	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: CORE, store_dir:", 1)
 	c := createJetStreamCluster(t, tmpl, "CORE", _EMPTY_, 3, 12232, true)
