@@ -3244,6 +3244,8 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 	loadMsgs(10)
 	time.Sleep(100 * time.Millisecond)
 	loadMsgs(10)
+	checkFiltered("orders.*", SimpleState{Msgs: 20, First: 1, Last: 20})
+
 	restartFS(ttl - 100*time.Millisecond + 25*time.Millisecond) // Just want half
 	checkState(10, 11, 20)
 	checkNumBlks(1)
@@ -3955,7 +3957,7 @@ func TestFileStorePurgeExWithSubject(t *testing.T) {
 	defer removeDir(t, storeDir)
 
 	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "TEST", Storage: FileStorage},
+		FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: FileStorage},
 	)
 	require_NoError(t, err)
 	defer fs.Stop()
@@ -4421,5 +4423,49 @@ func TestFileStoreNoFSSWhenNoSubjects(t *testing.T) {
 	}
 	if mb.fss != nil {
 		t.Fatalf("Expected fss to be nil")
+	}
+}
+
+func TestFileStoreNoFSSBugAfterRemoveFirst(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer os.RemoveAll(storeDir)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 8 * 1024 * 1024, CacheExpire: 200 * time.Millisecond},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.bar.*"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	n, msg := 100, bytes.Repeat([]byte("ZZZ"), 33) // ~100bytes
+	for i := 0; i < n; i++ {
+		subj := fmt.Sprintf("foo.bar.%d", i)
+		_, _, err := fs.StoreMsg(subj, nil, msg)
+		require_NoError(t, err)
+	}
+
+	state := fs.State()
+	require_True(t, state.Msgs == uint64(n))
+
+	// Let fss expire.
+	time.Sleep(250 * time.Millisecond)
+
+	_, err = fs.RemoveMsg(1)
+	require_NoError(t, err)
+
+	sm, _, err := fs.LoadNextMsg("foo.>", true, 1, nil)
+	require_NoError(t, err)
+	require_True(t, sm.subj == "foo.bar.1")
+
+	// Make sure mb.fss does not have the entry for foo.bar.0
+	fs.mu.Lock()
+	mb := fs.blks[0]
+	fs.mu.Unlock()
+	mb.mu.RLock()
+	ss := mb.fss["foo.bar.0"]
+	mb.mu.RUnlock()
+
+	if ss != nil {
+		t.Fatalf("Expected no state for %q, but got %+v\n", "foo.bar.0", ss)
 	}
 }
