@@ -2141,6 +2141,9 @@ func (a *Account) processServiceImportResponse(sub *subscription, c *client, _ *
 	}
 	a.mu.RUnlock()
 
+	// reset state to prior to service invocation
+	c.pa.subject = []byte(si.to)
+
 	// Send for normal processing.
 	c.processServiceImport(si, a, msg)
 }
