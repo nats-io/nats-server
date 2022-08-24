@@ -12982,3 +12982,87 @@ func TestJetStreamClusterStaleReadsOnRestart(t *testing.T) {
 		}
 	}
 }
+
+func TestJetStreamClusterReplicasChangeStreamInfo(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3F", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	numStreams := 1
+	msgsPerStream := 10
+	for i := 0; i < numStreams; i++ {
+		sname := fmt.Sprintf("TEST_%v", i)
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     sname,
+			Replicas: 3,
+		})
+		require_NoError(t, err)
+		for j := 0; j < msgsPerStream; j++ {
+			sendStreamMsg(t, nc, sname, "msg")
+		}
+	}
+
+	checkStreamInfo := func(js nats.JetStreamContext) {
+		t.Helper()
+		checkFor(t, 20*time.Second, 15*time.Millisecond, func() error {
+			for i := 0; i < numStreams; i++ {
+				si, err := js.StreamInfo(fmt.Sprintf("TEST_%v", i))
+				if err != nil {
+					return err
+				}
+				if si.State.Msgs != uint64(msgsPerStream) || si.State.FirstSeq != 1 || si.State.LastSeq != uint64(msgsPerStream) {
+					return fmt.Errorf("Invalid stream info for %s: %+v", si.Config.Name, si.State)
+				}
+			}
+			return nil
+		})
+	}
+	checkStreamInfo(js)
+
+	// Update replicas down to 1
+	for i := 0; i < numStreams; i++ {
+		sname := fmt.Sprintf("TEST_%v", i)
+		_, err := js.UpdateStream(&nats.StreamConfig{
+			Name:     sname,
+			Replicas: 1,
+		})
+		require_NoError(t, err)
+	}
+	checkStreamInfo(js)
+
+	// Back up to 3
+	for i := 0; i < numStreams; i++ {
+		sname := fmt.Sprintf("TEST_%v", i)
+		_, err := js.UpdateStream(&nats.StreamConfig{
+			Name:     sname,
+			Replicas: 3,
+		})
+		require_NoError(t, err)
+		c.waitOnStreamLeader(globalAccountName, sname)
+		for _, s := range c.servers {
+			c.waitOnStreamCurrent(s, globalAccountName, sname)
+		}
+	}
+	checkStreamInfo(js)
+
+	// Now shutdown the cluster and restart it
+	nc.Close()
+	c.stopAll()
+	c.restartAll()
+
+	for i := 0; i < numStreams; i++ {
+		sname := fmt.Sprintf("TEST_%v", i)
+		c.waitOnStreamLeader(globalAccountName, sname)
+		for _, s := range c.servers {
+			c.waitOnStreamCurrent(s, globalAccountName, sname)
+		}
+	}
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	checkStreamInfo(js)
+}
