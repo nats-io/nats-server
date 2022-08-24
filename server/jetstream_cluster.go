@@ -1947,11 +1947,13 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 			currentCount, firstPeer, foundLeader := currentPeerCount(ci, newPeerSet, selfId)
 			// make sure to wait to ensure that catchup has started.
-			if currentCount == replicas {
-				if mDelayTc < scaleDownDelayTicks {
-					mDelayTc++
-					continue
-				}
+			if currentCount != replicas {
+				mDelayTc = 0
+				continue
+			}
+			if mDelayTc < scaleDownDelayTicks {
+				mDelayTc++
+				continue
 			}
 
 			// First make sure all consumer are properly scaled down
