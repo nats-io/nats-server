@@ -2231,8 +2231,11 @@ func TestConnzTLSPeerCerts(t *testing.T) {
 				if d.Subject != "CN=localhost,OU=nats.io,O=Synadia,ST=California,C=US" {
 					t.Fatalf("Unexpected subject: %s", d.Subject)
 				}
-				if n := strings.Count(d.Fingerprints, ":"); n != 31 {
-					t.Fatalf("Unexpected fingerprints: %s", d.Fingerprints)
+				if len(d.SubjectPKISha256) != 64 {
+					t.Fatalf("Unexpected spki_sha256: %s", d.SubjectPKISha256)
+				}
+				if len(d.CertSha256) != 64 {
+					t.Fatalf("Unexpected cert_sha256: %s", d.CertSha256)
 				}
 			}
 		}

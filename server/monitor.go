@@ -14,10 +14,10 @@
 package server
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -148,8 +148,9 @@ type ConnInfo struct {
 
 // TLSPeerCert contains basic information about a TLS peer certificate
 type TLSPeerCert struct {
-	Subject      string `json:"subject,omitempty"`
-	Fingerprints string `json:"finger_prints,omitempty"`
+	Subject          string `json:"subject,omitempty"`
+	SubjectPKISha256 string `json:"spki_sha256,omitempty"`
+	CertSha256       string `json:"cert_sha256,omitempty"`
 }
 
 // DefaultConnListSize is the default size of the connection list.
@@ -578,15 +579,11 @@ func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time, auth bool) 
 func makePeerCerts(pc []*x509.Certificate) []*TLSPeerCert {
 	res := make([]*TLSPeerCert, len(pc))
 	for i, c := range pc {
-		fp := sha256.Sum256(c.Raw)
-		var buf bytes.Buffer
-		for i, f := range fp {
-			if i > 0 {
-				fmt.Fprintf(&buf, ":")
-			}
-			fmt.Fprintf(&buf, "%02X", f)
-		}
-		res[i] = &TLSPeerCert{Subject: c.Subject.String(), Fingerprints: buf.String()}
+		tmp := sha256.Sum256(c.RawSubjectPublicKeyInfo)
+		ssha := hex.EncodeToString(tmp[:])
+		tmp = sha256.Sum256(c.Raw)
+		csha := hex.EncodeToString(tmp[:])
+		res[i] = &TLSPeerCert{Subject: c.Subject.String(), SubjectPKISha256: ssha, CertSha256: csha}
 	}
 	return res
 }
