@@ -2186,6 +2186,62 @@ func TestConnzTLSCfg(t *testing.T) {
 	}
 }
 
+func TestConnzTLSPeerCerts(t *testing.T) {
+	resetPreviousHTTPConnections()
+
+	tc := &TLSConfigOpts{}
+	tc.CertFile = "../test/configs/certs/server-cert.pem"
+	tc.KeyFile = "../test/configs/certs/server-key.pem"
+	tc.CaFile = "../test/configs/certs/ca.pem"
+	tc.Verify = true
+	tc.Timeout = 2.0
+
+	var err error
+	opts := DefaultMonitorOptions()
+	opts.TLSConfig, err = GenTLSConfig(tc)
+	require_NoError(t, err)
+
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL(),
+		nats.ClientCert("../test/configs/certs/client-cert.pem", "../test/configs/certs/client-key.pem"),
+		nats.RootCAs("../test/configs/certs/ca.pem"))
+	defer nc.Close()
+
+	endpoint := fmt.Sprintf("http://%s:%d/connz", opts.HTTPHost, s.MonitorAddr().Port)
+	for mode := 0; mode < 2; mode++ {
+		// Without "auth" option, we should not get the details
+		connz := pollConz(t, s, mode, endpoint, nil)
+		require_True(t, len(connz.Conns) == 1)
+		c := connz.Conns[0]
+		if c.TLSPeerCerts != nil {
+			t.Fatalf("Did not expect TLSPeerCerts when auth is not specified: %+v", c.TLSPeerCerts)
+		}
+		// Now specify "auth" option
+		connz = pollConz(t, s, mode, endpoint+"?auth=1", &ConnzOptions{Username: true})
+		require_True(t, len(connz.Conns) == 1)
+		c = connz.Conns[0]
+		if c.TLSPeerCerts == nil {
+			t.Fatal("Expected TLSPeerCerts to be set, was not")
+		} else if len(c.TLSPeerCerts) != 1 {
+			t.Fatalf("Unexpected peer certificates: %+v", c.TLSPeerCerts)
+		} else {
+			for _, d := range c.TLSPeerCerts {
+				if d.Subject != "CN=localhost,OU=nats.io,O=Synadia,ST=California,C=US" {
+					t.Fatalf("Unexpected subject: %s", d.Subject)
+				}
+				if len(d.SubjectPKISha256) != 64 {
+					t.Fatalf("Unexpected spki_sha256: %s", d.SubjectPKISha256)
+				}
+				if len(d.CertSha256) != 64 {
+					t.Fatalf("Unexpected cert_sha256: %s", d.CertSha256)
+				}
+			}
+		}
+	}
+}
+
 func TestServerIDs(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
