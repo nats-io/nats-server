@@ -4150,7 +4150,8 @@ func (o *consumer) decStreamPending(sseq uint64, subj string) {
 	// If it was pending process it like an ack.
 	// TODO(dlc) - we could do a term here instead with a reason to generate the advisory.
 	if wasPending {
-		o.processAckMsg(sseq, p.Sequence, rdc, false)
+		// We could have lock for stream so do this in a go routine.
+		go o.processTerm(sseq, p.Sequence, rdc)
 	}
 }
 
