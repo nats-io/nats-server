@@ -618,7 +618,7 @@ var jsClusterImportsTempl = `
 	}
 `
 
-func createMixedModeCluster(t *testing.T, tmpl string, clusterName, snPre string, numJsServers, numNonServers int, doJSConfig bool) *cluster {
+func createMixedModeCluster(t testing.TB, tmpl string, clusterName, snPre string, numJsServers, numNonServers int, doJSConfig bool) *cluster {
 	t.Helper()
 
 	if clusterName == _EMPTY_ || numJsServers < 0 || numNonServers < 1 {
@@ -672,27 +672,27 @@ func createMixedModeCluster(t *testing.T, tmpl string, clusterName, snPre string
 
 // This will create a cluster that is explicitly configured for the routes, etc.
 // and also has a defined clustername. All configs for routes and cluster name will be the same.
-func createJetStreamClusterExplicit(t *testing.T, clusterName string, numServers int) *cluster {
+func createJetStreamClusterExplicit(t testing.TB, clusterName string, numServers int) *cluster {
 	return createJetStreamClusterWithTemplate(t, jsClusterTempl, clusterName, numServers)
 }
 
-func createJetStreamClusterWithTemplate(t *testing.T, tmpl string, clusterName string, numServers int) *cluster {
+func createJetStreamClusterWithTemplate(t testing.TB, tmpl string, clusterName string, numServers int) *cluster {
 	return createJetStreamClusterWithTemplateAndModHook(t, tmpl, clusterName, numServers, nil)
 }
 
-func createJetStreamClusterWithTemplateAndModHook(t *testing.T, tmpl string, clusterName string, numServers int, modify modifyCb) *cluster {
+func createJetStreamClusterWithTemplateAndModHook(t testing.TB, tmpl string, clusterName string, numServers int, modify modifyCb) *cluster {
 	startPorts := []int{7_022, 9_022, 11_022, 15_022}
 	port := startPorts[rand.Intn(len(startPorts))]
 	return createJetStreamClusterAndModHook(t, tmpl, clusterName, _EMPTY_, numServers, port, true, modify)
 }
 
-func createJetStreamCluster(t *testing.T, tmpl string, clusterName, snPre string, numServers int, portStart int, waitOnReady bool) *cluster {
+func createJetStreamCluster(t testing.TB, tmpl string, clusterName, snPre string, numServers int, portStart int, waitOnReady bool) *cluster {
 	return createJetStreamClusterAndModHook(t, tmpl, clusterName, snPre, numServers, portStart, waitOnReady, nil)
 }
 
 type modifyCb func(serverName, clusterName, storeDir, conf string) string
 
-func createJetStreamClusterAndModHook(t *testing.T, tmpl string, clusterName, snPre string, numServers int, portStart int, waitOnReady bool, modify modifyCb) *cluster {
+func createJetStreamClusterAndModHook(t testing.TB, tmpl string, clusterName, snPre string, numServers int, portStart int, waitOnReady bool, modify modifyCb) *cluster {
 	t.Helper()
 	if clusterName == _EMPTY_ || numServers < 1 {
 		t.Fatalf("Bad params")
@@ -1043,7 +1043,7 @@ var skip = func(t *testing.T) {
 	t.SkipNow()
 }
 
-func jsClientConnect(t *testing.T, s *Server, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
+func jsClientConnect(t testing.TB, s *Server, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
 	t.Helper()
 	nc, err := nats.Connect(s.ClientURL(), opts...)
 	if err != nil {
@@ -1056,7 +1056,7 @@ func jsClientConnect(t *testing.T, s *Server, opts ...nats.Option) (*nats.Conn, 
 	return nc, js
 }
 
-func jsClientConnectEx(t *testing.T, s *Server, domain string, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
+func jsClientConnectEx(t testing.TB, s *Server, domain string, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
 	t.Helper()
 	nc, err := nats.Connect(s.ClientURL(), opts...)
 	if err != nil {
@@ -1069,7 +1069,7 @@ func jsClientConnectEx(t *testing.T, s *Server, domain string, opts ...nats.Opti
 	return nc, js
 }
 
-func jsClientConnectCluster(t *testing.T, c *cluster, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
+func jsClientConnectCluster(t testing.TB, c *cluster, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
 	t.Helper()
 
 	var sb strings.Builder
@@ -1082,7 +1082,7 @@ func jsClientConnectCluster(t *testing.T, c *cluster, opts ...nats.Option) (*nat
 	return jsClientConnectURL(t, sb.String(), opts...)
 }
 
-func jsClientConnectURL(t *testing.T, url string, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
+func jsClientConnectURL(t testing.TB, url string, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
 	t.Helper()
 
 	nc, err := nats.Connect(url, opts...)

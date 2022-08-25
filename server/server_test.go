@@ -50,7 +50,7 @@ func checkForErr(totalWait, sleepDur time.Duration, f func() error) error {
 	return err
 }
 
-func checkFor(t *testing.T, totalWait, sleepDur time.Duration, f func() error) {
+func checkFor(t testing.TB, totalWait, sleepDur time.Duration, f func() error) {
 	t.Helper()
 	err := checkForErr(totalWait, sleepDur, f)
 	if err != nil {

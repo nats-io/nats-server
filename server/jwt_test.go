@@ -3330,28 +3330,28 @@ func createDir(t testing.TB, prefix string) string {
 	return dir
 }
 
-func createFile(t *testing.T, prefix string) *os.File {
+func createFile(t testing.TB, prefix string) *os.File {
 	t.Helper()
 	err := os.MkdirAll(tempRoot, 0700)
 	require_NoError(t, err)
 	return createFileAtDir(t, tempRoot, prefix)
 }
 
-func createFileAtDir(t *testing.T, dir, prefix string) *os.File {
+func createFileAtDir(t testing.TB, dir, prefix string) *os.File {
 	t.Helper()
 	f, err := os.CreateTemp(dir, prefix)
 	require_NoError(t, err)
 	return f
 }
 
-func removeDir(t *testing.T, dir string) {
+func removeDir(t testing.TB, dir string) {
 	t.Helper()
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func removeFile(t *testing.T, p string) {
+func removeFile(t testing.TB, p string) {
 	t.Helper()
 	if err := os.Remove(p); err != nil {
 		t.Fatal(err)

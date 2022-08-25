@@ -285,7 +285,7 @@ func TestServerRoutesWithAuthAndBCrypt(t *testing.T) {
 }
 
 // Helper function to check that a cluster is formed
-func checkClusterFormed(t *testing.T, servers ...*Server) {
+func checkClusterFormed(t testing.TB, servers ...*Server) {
 	t.Helper()
 	expectedNumRoutes := len(servers) - 1
 	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
