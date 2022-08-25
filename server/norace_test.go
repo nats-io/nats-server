@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -5443,4 +5444,75 @@ func TestNoRaceJetStreamFileStoreLargeKVAccessTiming(t *testing.T) {
 	if slow > 2*base {
 		t.Fatalf("Took too long to look up last key by subject vs first: %v vs %v", base, slow)
 	}
+}
+
+func TestNoRaceJetStreamKVLock(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: "LOCKS"})
+	require_NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	start := make(chan bool)
+
+	var tracker int64
+
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+			kv, err := js.KeyValue("LOCKS")
+			require_NoError(t, err)
+
+			<-start
+
+			for {
+				last, err := kv.Create("MY_LOCK", []byte("Z"))
+				if err != nil {
+					select {
+					case <-time.After(10 * time.Millisecond):
+						continue
+					case <-ctx.Done():
+						return
+					}
+				}
+
+				if v := atomic.AddInt64(&tracker, 1); v != 1 {
+					t.Logf("TRACKER NOT 1 -> %d\n", v)
+					cancel()
+				}
+
+				time.Sleep(10 * time.Millisecond)
+				if v := atomic.AddInt64(&tracker, -1); v != 0 {
+					t.Logf("TRACKER NOT 0 AFTER RELEASE -> %d\n", v)
+					cancel()
+				}
+
+				err = kv.Delete("MY_LOCK", nats.LastRevision(last))
+				if err != nil {
+					t.Logf("Could not unlock for last %d: %v", last, err)
+				}
+
+				if ctx.Err() != nil {
+					return
+				}
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
 }
