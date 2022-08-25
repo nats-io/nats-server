@@ -2236,19 +2236,9 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 				// We can skip if we know this is less than what we already have.
 				if lseq-clfs < last {
-					// If we are not recovering reset to leader.
-					if !isRecovering && !mset.IsLeader() {
-						// Force hard reset here.
-						// Shutdown the direct subs if they are running inline.
-						mset.mu.Lock()
-						mset.unsubscribeToDirect()
-						mset.mu.Unlock()
-						return errFirstSequenceMismatch
-					} else {
-						s.Debugf("Apply stream entries for '%s > %s' skipping message with sequence %d with last of %d",
-							mset.account(), mset.name(), lseq+1-clfs, last)
-						continue
-					}
+					s.Debugf("Apply stream entries for '%s > %s' skipping message with sequence %d with last of %d",
+						mset.account(), mset.name(), lseq+1-clfs, last)
+					continue
 				}
 
 				// Skip by hand here since first msg special case.
