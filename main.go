@@ -123,9 +123,10 @@ func main() {
 	// Adjust MAXPROCS if running under linux/cgroups quotas.
 	undo, err := maxprocs.Set(maxprocs.Logger(s.Debugf))
 	if err != nil {
-		server.PrintAndDie(fmt.Sprintf("failed to set GOMAXPROCS: %v", err))
+		s.Warnf("Failed to set GOMAXPROCS: %v", err)
+	} else {
+		defer undo()
 	}
-	defer undo()
 
 	s.WaitForShutdown()
 }
