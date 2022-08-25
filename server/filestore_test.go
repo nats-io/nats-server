@@ -4469,3 +4469,44 @@ func TestFileStoreNoFSSBugAfterRemoveFirst(t *testing.T) {
 		t.Fatalf("Expected no state for %q, but got %+v\n", "foo.bar.0", ss)
 	}
 }
+
+func TestFileStoreNoFSSAfterRecover(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer os.RemoveAll(storeDir)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	n, msg := 100, []byte("no fss for you!")
+	for i := 0; i < n; i++ {
+		_, _, err := fs.StoreMsg(_EMPTY_, nil, msg)
+		require_NoError(t, err)
+	}
+
+	state := fs.State()
+	require_True(t, state.Msgs == uint64(n))
+
+	fs.Stop()
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Make sure we did not load the block trying to generate fss.
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	fs.mu.RUnlock()
+
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	if mb.fss != nil {
+		t.Fatalf("Expected no fss post recover")
+	}
+}

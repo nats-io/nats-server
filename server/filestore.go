@@ -750,6 +750,8 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint32) (*msgBlock, e
 		if (mb.rbytes == 0 && mb.msgs == 0) || bytes.Equal(lchk[:], mb.lchk[:]) {
 			if mb.msgs > 0 && !mb.noTrack && fs.psim != nil {
 				fs.populateGlobalPerSubjectInfo(mb)
+				// Try to dump any state we needed on recovery.
+				mb.tryForceExpireCacheLocked()
 			}
 			fs.addMsgBlock(mb)
 			return mb, nil
@@ -762,6 +764,8 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint32) (*msgBlock, e
 	}
 	if mb.msgs > 0 && !mb.noTrack && fs.psim != nil {
 		fs.populateGlobalPerSubjectInfo(mb)
+		// Try to dump any state we needed on recovery.
+		mb.tryForceExpireCacheLocked()
 	}
 
 	// Rewrite this to make sure we are sync'd.
@@ -2978,16 +2982,12 @@ func (mb *msgBlock) expireCacheLocked() {
 
 	// Check if we can clear out our fss and idx unless under force expire.
 	// We used to hold onto the idx longer but removes need buf now so no point.
-	if mb.llts > 0 {
-		mb.writePerSubjectInfo()
-		mb.fss = nil
-		if mb.indexNeedsUpdateLocked() {
-			mb.writeIndexInfoLocked()
-		}
-		mb.clearCache()
-	} else {
-		mb.resetCacheExpireTimer(mb.cexp)
+	mb.writePerSubjectInfo()
+	mb.fss = nil
+	if mb.indexNeedsUpdateLocked() {
+		mb.writeIndexInfoLocked()
 	}
+	mb.clearCache()
 }
 
 func (fs *fileStore) startAgeChk() {
