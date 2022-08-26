@@ -3526,29 +3526,32 @@ func TestAccountUserSubPermsWithQueueGroups(t *testing.T) {
 }
 
 func TestAccountImportCycle(t *testing.T) {
-	cf := createConfFile(t, []byte(`
-               port: -1
-               accounts: {
-                 CP: {
-                       users: [
-                         {user: cp, password: cp},
-                       ],
-                       exports: [
-                         {service: "q1.>", response_type: Singleton},
-                         {service: "q2.>", response_type: Singleton},
-                       ],
-                 },
-                 A: {
-                       users: [
-                         {user: a, password: a},
-                       ],
-                       imports: [
-                         {service: {account: CP, subject: "q1.>"}},
-                         {service: {account: CP, subject: "q2.>"}},
-                       ]
-                 },
-               }
-    `))
+	tmpl := `
+	port: -1
+	accounts: {
+		CP: {
+			users: [
+				{user: cp, password: cp},
+			],
+			exports: [
+				{service: "q1.>", response_type: Singleton},
+				{service: "q2.>", response_type: Singleton},
+				%s
+			],
+		},
+		A: {
+			users: [
+				{user: a, password: a},
+			],
+			imports: [
+				{service: {account: CP, subject: "q1.>"}},
+				{service: {account: CP, subject: "q2.>"}},
+				%s
+			]
+		},
+	}
+	`
+	cf := createConfFile(t, []byte(fmt.Sprintf(tmpl, _EMPTY_, _EMPTY_)))
 	defer removeFile(t, cf)
 	s, _ := RunServerWithConfig(cf)
 	defer s.Shutdown()
@@ -3558,22 +3561,27 @@ func TestAccountImportCycle(t *testing.T) {
 	ncA, err := nats.Connect(s.ClientURL(), nats.UserInfo("a", "a"))
 	require_NoError(t, err)
 	defer ncA.Close()
-	// setup reply
-	subCp, err := ncCp.SubscribeSync("q1.>")
-	require_NoError(t, err)
-	// setup requestor and send reply
+	// setup responder
+	natsSub(t, ncCp, "q1.>", func(m *nats.Msg) { m.Respond([]byte("reply")) })
+	// setup requestor
 	ib := "q2.inbox"
 	subAResp, err := ncA.SubscribeSync(ib)
 	require_NoError(t, err)
-	// send request
-	err = ncA.PublishRequest("q1.a", ib, []byte("test"))
+	req := func() {
+		t.Helper()
+		// send request
+		err = ncA.PublishRequest("q1.a", ib, []byte("test"))
+		require_NoError(t, err)
+		mRep, err := subAResp.NextMsg(time.Second)
+		require_NoError(t, err)
+		require_Equal(t, string(mRep.Data), "reply")
+	}
+	req()
+
+	// Update the config and do a config reload and make sure it all still work
+	changeCurrentConfigContentWithNewContent(t, cf, []byte(
+		fmt.Sprintf(tmpl, `{service: "q3.>", response_type: Singleton},`, `{service: {account: CP, subject: "q3.>"}},`)))
+	err = s.Reload()
 	require_NoError(t, err)
-	// reply
-	mReq, err := subCp.NextMsg(time.Second)
-	require_NoError(t, err)
-	err = mReq.Respond([]byte("reply"))
-	require_NoError(t, err)
-	mRep, err := subAResp.NextMsg(time.Second)
-	require_NoError(t, err)
-	require_Contains(t, string(mRep.Data), "reply")
+	req()
 }
