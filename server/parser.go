@@ -48,7 +48,7 @@ type pubArg struct {
 	queues  [][]byte
 	size    int
 	hdr     int
-	psi     *serviceImport
+	psi     []*serviceImport
 }
 
 // Parser constants
