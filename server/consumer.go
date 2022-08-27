@@ -48,7 +48,9 @@ type ConsumerInfo struct {
 }
 
 type ConsumerConfig struct {
+	// Durable is deprecated. All consumers will have names. picked by clients.
 	Durable         string          `json:"durable_name,omitempty"`
+	Name            string          `json:"name,omitempty"`
 	Description     string          `json:"description,omitempty"`
 	DeliverPolicy   DeliverPolicy   `json:"deliver_policy"`
 	OptStartSeq     uint64          `json:"opt_start_seq,omitempty"`
@@ -353,10 +355,6 @@ func setConsumerConfigDefaults(config *ConsumerConfig, lim *JSLimitOpts, accLim 
 	}
 }
 
-func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
-	return mset.addConsumerWithAssignment(config, _EMPTY_, nil, false)
-}
-
 // Check the consumer config. If we are recovering don't check filter subjects.
 func checkConsumerCfg(
 	config *ConsumerConfig,
@@ -530,6 +528,10 @@ func checkConsumerCfg(
 	return nil
 }
 
+func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
+	return mset.addConsumerWithAssignment(config, _EMPTY_, nil, false)
+}
+
 func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment, isRecovering bool) (*consumer, error) {
 	mset.mu.RLock()
 	s, jsa, tierName, cfg, acc := mset.srv, mset.jsa, mset.tier, mset.cfg, mset.acc
@@ -589,8 +591,14 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	}
 
 	// If this one is durable and already exists, we let that be ok as long as only updating what should be allowed.
+	var cName string
 	if isDurableConsumer(config) {
-		if eo, ok := mset.consumers[config.Durable]; ok {
+		cName = config.Durable
+	} else if config.Name != _EMPTY_ {
+		cName = config.Name
+	}
+	if cName != _EMPTY_ {
+		if eo, ok := mset.consumers[cName]; ok {
 			mset.mu.Unlock()
 			err := eo.updateConfig(config)
 			if err == nil {
@@ -674,11 +682,17 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	} else if oname != _EMPTY_ {
 		o.name = oname
 	} else {
-		for {
-			o.name = createConsumerName()
-			if _, ok := mset.consumers[o.name]; !ok {
-				break
+		if config.Name != _EMPTY_ {
+			o.name = config.Name
+		} else {
+			// Legacy ephemeral auto-generated.
+			for {
+				o.name = createConsumerName()
+				if _, ok := mset.consumers[o.name]; !ok {
+					break
+				}
 			}
+			config.Name = o.name
 		}
 	}
 	// Create ackMsgs queue now that we have a consumer name
@@ -768,6 +782,8 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		// Ephemerals will always have inactive thresholds.
 		// Add in 1 sec of jitter above and beyond the default of 5s.
 		o.dthresh = JsDeleteWaitTimeDefault + time.Duration(rand.Int63n(1000))*time.Millisecond
+		// Only stamp config with default sans jitter.
+		o.cfg.InactiveThreshold = JsDeleteWaitTimeDefault
 	}
 
 	if o.isPushMode() {

@@ -1288,5 +1288,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerCreateFilterSubjectMismatchErr",
+    "code": 400,
+    "error_code": 10131,
+    "description": "Consumer create request did not match filtered subject from create subject",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

@@ -53,6 +53,9 @@ const (
 	// JSConsumerCreateErrF General consumer creation failure string ({err})
 	JSConsumerCreateErrF ErrorIdentifier = 10012
 
+	// JSConsumerCreateFilterSubjectMismatchErr Consumer create request did not match filtered subject from create subject
+	JSConsumerCreateFilterSubjectMismatchErr ErrorIdentifier = 10131
+
 	// JSConsumerDeliverCycleErr consumer deliver subject forms a cycle
 	JSConsumerDeliverCycleErr ErrorIdentifier = 10081
 
@@ -411,6 +414,7 @@ var (
 		JSConsumerBadDurableNameErr:                {Code: 400, ErrCode: 10103, Description: "durable name can not contain '.', '*', '>'"},
 		JSConsumerConfigRequiredErr:                {Code: 400, ErrCode: 10078, Description: "consumer config required"},
 		JSConsumerCreateErrF:                       {Code: 500, ErrCode: 10012, Description: "{err}"},
+		JSConsumerCreateFilterSubjectMismatchErr:   {Code: 400, ErrCode: 10131, Description: "Consumer create request did not match filtered subject from create subject"},
 		JSConsumerDeliverCycleErr:                  {Code: 400, ErrCode: 10081, Description: "consumer deliver subject forms a cycle"},
 		JSConsumerDeliverToWildcardsErr:            {Code: 400, ErrCode: 10079, Description: "consumer deliver subject has wildcards"},
 		JSConsumerDescriptionTooLongErrF:           {Code: 400, ErrCode: 10107, Description: "consumer description is too long, maximum allowed is {max}"},
@@ -719,6 +723,16 @@ func NewJSConsumerCreateError(err error, opts ...ErrorOption) *ApiError {
 		ErrCode:     e.ErrCode,
 		Description: strings.NewReplacer(args...).Replace(e.Description),
 	}
+}
+
+// NewJSConsumerCreateFilterSubjectMismatchError creates a new JSConsumerCreateFilterSubjectMismatchErr error: "Consumer create request did not match filtered subject from create subject"
+func NewJSConsumerCreateFilterSubjectMismatchError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerCreateFilterSubjectMismatchErr]
 }
 
 // NewJSConsumerDeliverCycleError creates a new JSConsumerDeliverCycleErr error: "consumer deliver subject forms a cycle"
