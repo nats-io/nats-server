@@ -23,6 +23,7 @@ CA_NAME="Certificate Authority $(date +%Y-%m-%d)"
 readonly CA_NAME
 readonly RSA_SIZE=2048
 readonly DIGEST_ALG=sha256
+readonly CERT_DURATION=$((10 * 365))
 
 okay=true
 for cmd in openssl ; do
@@ -77,7 +78,7 @@ private_key = \$dir/$TEMP_CA_KEY_REL
 rand_serial = yes
 unique_subject = no
 # modern TLS is moving towards rejecting longer-lived certs, be prepared to lower this to less than a year and regenerate more often
-default_days = $(( 10 * 365 ))
+default_days = $CERT_DURATION
 default_md = $DIGEST_ALG
 copy_extensions = copy
 policy = policy_anything
@@ -172,7 +173,7 @@ sign_csr() {
 }
 
 make_keyfile "$CA_KEY"
-o_req -x509 -new -key "$CA_KEY" -out "$CA_FILE" -outform PEM -subj "$COMMON_SUBJECT/CN=$CA_NAME" -extensions v3_ca
+o_req -x509 -new -key "$CA_KEY" -out "$CA_FILE" -outform PEM -days "$CERT_DURATION" -subj "$COMMON_SUBJECT/CN=$CA_NAME" -extensions v3_ca
 
 echo
 readonly CLIENT_KEY=client-key.pem
