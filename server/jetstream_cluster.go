@@ -91,6 +91,8 @@ const (
 	// For updating information on pending pull requests.
 	addPendingRequest
 	removePendingRequest
+	// For sending compressed streams, either through RAFT or catchup.
+	compressedStreamMsgOp
 )
 
 // raftGroups are controlled by the metagroup controller.
@@ -2241,15 +2243,24 @@ func isControlHdr(hdr []byte) bool {
 func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isRecovering bool) error {
 	for _, e := range ce.Entries {
 		if e.Type == EntryNormal {
-			buf := e.Data
-			switch entryOp(buf[0]) {
-			case streamMsgOp:
+			buf, op := e.Data, entryOp(e.Data[0])
+			switch op {
+			case streamMsgOp, compressedStreamMsgOp:
 				if mset == nil {
 					continue
 				}
 				s := js.srv
 
-				subject, reply, hdr, msg, lseq, ts, err := decodeStreamMsg(buf[1:])
+				mbuf := buf[1:]
+				if op == compressedStreamMsgOp {
+					var err error
+					mbuf, err = s2.Decode(nil, mbuf)
+					if err != nil {
+						panic(err.Error())
+					}
+				}
+
+				subject, reply, hdr, msg, lseq, ts, err := decodeStreamMsg(mbuf)
 				if err != nil {
 					if node := mset.raftNode(); node != nil {
 						s.Errorf("JetStream cluster could not decode stream msg for '%s > %s' [%s]",
@@ -2480,6 +2491,7 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 	client, subject, reply := sa.Client, sa.Subject, sa.Reply
 	hasResponded := sa.responded
 	sa.responded = true
+	peers := copyStrings(sa.Group.Peers)
 	js.mu.Unlock()
 
 	streamName := mset.name()
@@ -2489,6 +2501,7 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 		s.sendStreamLeaderElectAdvisory(mset)
 		// Check for peer removal and process here if needed.
 		js.checkPeers(sa.Group)
+		mset.checkAllowMsgCompress(peers)
 	} else {
 		// We are stepping down.
 		// Make sure if we are doing so because we have lost quorum that we send the appropriate advisories.
@@ -6274,7 +6287,25 @@ func decodeStreamMsg(buf []byte) (subject, reply string, hdr, msg []byte, lseq u
 	return subject, reply, hdr, msg, lseq, ts, nil
 }
 
+// Helper to return if compression allowed.
+func (mset *stream) compressAllowed() bool {
+	mset.clMu.Lock()
+	defer mset.clMu.Unlock()
+	return mset.compressOK
+}
+
 func encodeStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64) []byte {
+	return encodeStreamMsgAllowCompress(subject, reply, hdr, msg, lseq, ts, false)
+}
+
+// Threshold for compression.
+// TODO(dlc) - Eventually make configurable.
+const compressThreshold = 4 * 1024
+
+// If allowed and contents over the threshold we will compress.
+func encodeStreamMsgAllowCompress(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, compressOK bool) []byte {
+	shouldCompress := compressOK && len(subject)+len(reply)+len(hdr)+len(msg) > compressThreshold
+
 	elen := 1 + 8 + 8 + len(subject) + len(reply) + len(hdr) + len(msg)
 	elen += (2 + 2 + 2 + 4) // Encoded lengths, 4bytes
 	// TODO(dlc) - check sizes of subject, reply and hdr, make sure uint16 ok.
@@ -6306,6 +6337,20 @@ func encodeStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int
 		copy(buf[wi:], msg)
 		wi += len(msg)
 	}
+
+	// Check if we should compress.
+	if shouldCompress {
+		nbuf := make([]byte, s2.MaxEncodedLen(elen))
+		nbuf[0] = byte(compressedStreamMsgOp)
+		ebuf := s2.Encode(nbuf[1:], buf[1:wi])
+		// Only pay cost of decode the other side if we compressed.
+		// S2 will allow us to try without major penalty for non-compressable data.
+		if len(ebuf) < wi {
+			nbuf = nbuf[:len(ebuf)+1]
+			buf, wi = nbuf, len(nbuf)
+		}
+	}
+
 	return buf[:wi]
 }
 
@@ -6340,6 +6385,31 @@ func (mset *stream) stateSnapshotLocked() []byte {
 	}
 	b, _ := json.Marshal(snap)
 	return b
+}
+
+// Wiil check if we can do message compression in RAFT and catchup logic.
+// TODO(dlc) - Currently version based, could make capability based, but be more involved.
+func (mset *stream) checkAllowMsgCompress(peers []string) {
+	var ff, allowed bool
+	for _, id := range peers {
+		if sir, ok := mset.srv.nodeToInfo.Load(id); ok && sir != nil {
+			// Check for capability.
+			if si := sir.(nodeInfo); si.cfg != nil && si.cfg.CompressOK {
+				if !ff {
+					ff, allowed = true, true
+				} else {
+					allowed = allowed && true
+				}
+			} else {
+				ff, allowed = true, false
+			}
+		}
+	}
+	if allowed {
+		mset.mu.Lock()
+		mset.compressOK = true
+		mset.mu.Unlock()
+	}
 }
 
 // processClusteredMsg will propose the inbound message to the underlying raft group.
@@ -6497,7 +6567,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		mset.clseq = mset.lastSeq() + mset.clfs
 	}
 
-	esm := encodeStreamMsg(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano())
+	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano(), mset.compressOK)
 	mset.clseq++
 
 	// Do proposal.
@@ -6931,11 +7001,24 @@ RETRY:
 
 // processCatchupMsg will be called to process out of band catchup msgs from a sync request.
 func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
-	if len(msg) == 0 || entryOp(msg[0]) != streamMsgOp {
+	if len(msg) == 0 {
+		return 0, errCatchupBadMsg
+	}
+	op := entryOp(msg[0])
+	if op != streamMsgOp && op != compressedStreamMsgOp {
 		return 0, errCatchupBadMsg
 	}
 
-	subj, _, hdr, msg, seq, ts, err := decodeStreamMsg(msg[1:])
+	mbuf := msg[1:]
+	if op == compressedStreamMsgOp {
+		var err error
+		mbuf, err = s2.Decode(nil, mbuf)
+		if err != nil {
+			panic(err.Error())
+		}
+	}
+
+	subj, _, hdr, msg, seq, ts, err := decodeStreamMsg(mbuf)
 	if err != nil {
 		return 0, errCatchupBadMsg
 	}
@@ -7317,6 +7400,9 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	seq, last := sreq.FirstSeq, sreq.LastSeq
 	mset.setCatchupPeer(sreq.Peer, last-seq)
 
+	// Check if we can compress during this.
+	compressOk := mset.compressAllowed()
+
 	var spb int
 	sendNextBatchAndContinue := func(qch chan struct{}) bool {
 		// Update our activity timer.
@@ -7379,10 +7465,9 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 				s.Warnf("Error loading message for catchup '%s > %s': %v", mset.account(), mset.name(), err)
 				return false
 			}
-			// S2?
 			var em []byte
 			if sm != nil {
-				em = encodeStreamMsg(sm.subj, _EMPTY_, sm.hdr, sm.msg, sm.seq, sm.ts)
+				em = encodeStreamMsgAllowCompress(sm.subj, _EMPTY_, sm.hdr, sm.msg, sm.seq, sm.ts, compressOk)
 			} else {
 				// Skip record for deleted msg.
 				em = encodeStreamMsg(_EMPTY_, _EMPTY_, nil, nil, seq, 0)
