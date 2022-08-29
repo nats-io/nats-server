@@ -7,7 +7,7 @@ RUN apk add --update --no-cache build-base libc6-compat
 COPY ./ /nats-server
 RUN cd /nats-server && go build -a -v -ldflags "-w -X main.version=${NATS_SERVER}" -o /bin/nats-server
 
-FROM alpine:3.16
+FROM alpine:3.16.2
 
 RUN apk add --update --no-cache ca-certificates libc6-compat && mkdir /etc/nats/
 
