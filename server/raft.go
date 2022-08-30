@@ -996,7 +996,6 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		n.setWriteErr(err)
 		return err
 	}
-
 	n.Unlock()
 
 	psnaps, _ := os.ReadDir(snapDir)
@@ -1486,7 +1485,27 @@ func (n *raft) Wipe() {
 	n.Delete()
 }
 
+const (
+	raftAllSubj        = "$NRG.>"
+	raftVoteSubj       = "$NRG.V.%s"
+	raftAppendSubj     = "$NRG.AE.%s"
+	raftPropSubj       = "$NRG.P.%s"
+	raftRemovePeerSubj = "$NRG.RP.%s"
+	raftReply          = "$NRG.R.%s"
+	raftCatchupReply   = "$NRG.CR.%s"
+)
+
 // Lock should be held (due to use of random generator)
+func (n *raft) newCatchupInbox() string {
+	var b [replySuffixLen]byte
+	rn := n.prand.Int63()
+	for i, l := 0, rn; i < len(b); i++ {
+		b[i] = digits[l%base]
+		l /= base
+	}
+	return fmt.Sprintf(raftCatchupReply, b[:])
+}
+
 func (n *raft) newInbox() string {
 	var b [replySuffixLen]byte
 	rn := n.prand.Int63()
@@ -1494,17 +1513,8 @@ func (n *raft) newInbox() string {
 		b[i] = digits[l%base]
 		l /= base
 	}
-	return fmt.Sprintf(raftReplySubj, b[:])
+	return fmt.Sprintf(raftReply, b[:])
 }
-
-const (
-	raftAllSubj        = "$NRG.>"
-	raftVoteSubj       = "$NRG.V.%s"
-	raftAppendSubj     = "$NRG.AE.%s"
-	raftPropSubj       = "$NRG.P.%s"
-	raftRemovePeerSubj = "$NRG.RP.%s"
-	raftReplySubj      = "$NRG.R.%s"
-)
 
 // Our internal subscribe.
 // Lock should be held.
@@ -1848,6 +1858,8 @@ func (n *raft) decodeAppendEntry(msg []byte, sub *subscription, reply string) (*
 		commit: le.Uint64(msg[16:]),
 		pterm:  le.Uint64(msg[24:]),
 		pindex: le.Uint64(msg[32:]),
+		sub:    sub,
+		reply:  reply,
 	}
 	// Decode Entries.
 	ne, ri := int(le.Uint16(msg[40:])), 42
@@ -1864,8 +1876,6 @@ func (n *raft) decodeAppendEntry(msg []byte, sub *subscription, reply string) (*
 		ae.entries = append(ae.entries, &Entry{etype, msg[ri+1 : ri+le]})
 		ri += le
 	}
-	ae.reply = reply
-	ae.sub = sub
 	ae.buf = msg
 	return ae, nil
 }
@@ -2626,6 +2636,7 @@ func (n *raft) handleAppendEntry(sub *subscription, c *client, _ *Account, subje
 // Lock should be held.
 func (n *raft) cancelCatchup() {
 	n.debug("Canceling catchup subscription since we are now up to date")
+
 	if n.catchup != nil && n.catchup.sub != nil {
 		n.unsubscribe(n.catchup.sub)
 	}
@@ -2661,7 +2672,7 @@ func (n *raft) createCatchup(ae *appendEntry) string {
 		pindex: n.pindex,
 		active: time.Now(),
 	}
-	inbox := n.newInbox()
+	inbox := n.newCatchupInbox()
 	sub, _ := n.subscribe(inbox, n.handleAppendEntry)
 	n.catchup.sub = sub
 

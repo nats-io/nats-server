@@ -38,10 +38,11 @@ import (
 // JetStreamConfig determines this server's configuration.
 // MaxMemory and MaxStore are in bytes.
 type JetStreamConfig struct {
-	MaxMemory int64  `json:"max_memory"`
-	MaxStore  int64  `json:"max_storage"`
-	StoreDir  string `json:"store_dir,omitempty"`
-	Domain    string `json:"domain,omitempty"`
+	MaxMemory  int64  `json:"max_memory"`
+	MaxStore   int64  `json:"max_storage"`
+	StoreDir   string `json:"store_dir,omitempty"`
+	Domain     string `json:"domain,omitempty"`
+	CompressOK bool   `json:"compress_ok,omitempty"`
 }
 
 // Statistics about JetStream for this server.

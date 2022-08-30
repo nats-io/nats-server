@@ -54,11 +54,11 @@ func (sc *supercluster) shutdown() {
 	if sc == nil {
 		return
 	}
-	for _, c := range sc.clusters {
-		shutdownCluster(c)
-	}
 	for _, np := range sc.nproxies {
 		np.stop()
+	}
+	for _, c := range sc.clusters {
+		shutdownCluster(c)
 	}
 }
 
@@ -511,6 +511,7 @@ func (sc *supercluster) waitOnLeader() {
 }
 
 func (sc *supercluster) waitOnAllCurrent() {
+	sc.t.Helper()
 	for _, c := range sc.clusters {
 		c.waitOnAllCurrent()
 	}
@@ -1278,6 +1279,7 @@ func (c *cluster) waitOnServerCurrent(s *Server) {
 }
 
 func (c *cluster) waitOnAllCurrent() {
+	c.t.Helper()
 	for _, cs := range c.servers {
 		c.waitOnServerCurrent(cs)
 	}
@@ -1547,19 +1549,21 @@ func createNetProxy(rtt time.Duration, upRate, downRate int, serverURL string, s
 }
 
 func (np *netProxy) start() {
+	u, err := url.Parse(np.surl)
+	if err != nil {
+		panic(fmt.Sprintf("Could not parse server URL: %v", err))
+	}
+	host := u.Host
+
 	go func() {
 		for {
 			client, err := np.listener.Accept()
 			if err != nil {
 				return
 			}
-			u, err := url.Parse(np.surl)
+			server, err := net.DialTimeout("tcp", host, time.Second)
 			if err != nil {
-				panic(fmt.Sprintf("Could not parse server URL: %v", err))
-			}
-			server, err := net.DialTimeout("tcp", u.Host, time.Second)
-			if err != nil {
-				panic("Can't connect proxy to NATS server")
+				continue
 			}
 			np.conns = append(np.conns, client, server)
 			go np.loop(np.rtt, np.up, client, server)

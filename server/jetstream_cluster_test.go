@@ -13114,6 +13114,7 @@ func TestJetStreamClusterMaxOutstandingCatchup(t *testing.T) {
 		Replicas: 3,
 	})
 	require_NoError(t, err)
+
 	// Close client now and will create new one
 	nc.Close()
 
@@ -13154,4 +13155,31 @@ func TestJetStreamClusterMaxOutstandingCatchup(t *testing.T) {
 	require_NoError(t, err)
 	err = s.Reload()
 	require_Error(t, err, fmt.Errorf("config reload not supported for JetStreamMaxCatchup: old=1024, new=1048576"))
+}
+
+func TestJetStreamClusterCompressedStreamMessages(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3F", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// 32k (compress threshold ~4k)
+	toSend, msg := 10_000, []byte(strings.Repeat("ABCD", 8*1024))
+	for i := 0; i < toSend; i++ {
+		js.PublishAsync("foo", msg)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
 }

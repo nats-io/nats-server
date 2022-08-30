@@ -225,18 +225,19 @@ type stream struct {
 
 	// TODO(dlc) - Hide everything below behind two pointers.
 	// Clustered mode.
-	sa       *streamAssignment
-	node     RaftNode
-	catchup  bool
-	syncSub  *subscription
-	infoSub  *subscription
-	clMu     sync.Mutex
-	clseq    uint64
-	clfs     uint64
-	leader   string
-	lqsent   time.Time
-	catchups map[string]uint64
-	uch      chan struct{}
+	sa         *streamAssignment
+	node       RaftNode
+	catchup    bool
+	syncSub    *subscription
+	infoSub    *subscription
+	clMu       sync.Mutex
+	clseq      uint64
+	clfs       uint64
+	leader     string
+	lqsent     time.Time
+	catchups   map[string]uint64
+	uch        chan struct{}
+	compressOK bool
 
 	// Direct get subscription.
 	directSub *subscription
