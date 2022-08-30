@@ -17,10 +17,8 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
 	"math/rand"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -176,91 +174,4 @@ func (m *clusterBouncerChaosMonkey) run(t *testing.T, c *cluster, stopCh <-chan 
 		c.waitOnAllCurrent()
 		c.waitOnLeader()
 	}
-}
-
-// Bitset, aka bitvector, allows tracking of large number of bits efficiently
-type bitset struct {
-	// Bit map storage
-	bitmap []uint8
-	// Number of bits currently set to 1
-	currentCount uint64
-	// Number of bits stored
-	size uint64
-}
-
-func NewBitset(size uint64) *bitset {
-	byteSize := (size + 7) / 8 //Round up to the nearest byte
-
-	return &bitset{
-		bitmap:       make([]uint8, int(byteSize)),
-		size:         size,
-		currentCount: 0,
-	}
-}
-
-func (b *bitset) get(index uint64) bool {
-	if index >= b.size {
-		panic(fmt.Sprintf("Index %d out of bounds, size %d", index, b.size))
-	}
-	byteIndex := index / 8
-	bitIndex := uint(index % 8)
-	bit := (b.bitmap[byteIndex] & (uint8(1) << bitIndex))
-	return bit != 0
-}
-
-func (b *bitset) set(index uint64, value bool) {
-	if index >= b.size {
-		panic(fmt.Sprintf("Index %d out of bounds, size %d", index, b.size))
-	}
-	byteIndex := index / 8
-	bitIndex := uint(index % 8)
-	byteMask := uint8(1) << bitIndex
-	isSet := (b.bitmap[byteIndex] & (uint8(1) << bitIndex)) != 0
-	if value {
-		b.bitmap[byteIndex] |= byteMask
-		if !isSet {
-			b.currentCount += 1
-		}
-	} else {
-		b.bitmap[byteIndex] &= ^byteMask
-		if isSet {
-			b.currentCount -= 1
-		}
-	}
-}
-
-func (b *bitset) count() uint64 {
-	return b.currentCount
-}
-
-func (b *bitset) String() string {
-	const block = 8 // 8 bytes, 64 bits per line
-	sb := strings.Builder{}
-
-	sb.WriteString(fmt.Sprintf("Bits set: %d/%d\n", b.currentCount, b.size))
-	for i := 0; i < len(b.bitmap); i++ {
-		if i%block == 0 {
-			if i > 0 {
-				sb.WriteString("\n")
-			}
-			sb.WriteString(fmt.Sprintf("[%4d] ", i*8))
-		}
-		for j := uint8(0); j < 8; j++ {
-			if b.bitmap[i]&(1<<j) > 0 {
-				sb.WriteString("1")
-			} else {
-				sb.WriteString("0")
-			}
-		}
-	}
-	sb.WriteString("\n")
-	return sb.String()
-}
-
-func toIndentedJsonString(v interface{}) string {
-	jsonBytes, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return fmt.Sprintf("Marshal error: %s", err)
-	}
-	return string(jsonBytes)
 }
