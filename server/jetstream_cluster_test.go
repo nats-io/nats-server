@@ -13067,7 +13067,7 @@ func TestJetStreamClusterReplicasChangeStreamInfo(t *testing.T) {
 	checkStreamInfo(js)
 }
 
-func TestJetStreamClusterMaxCatchup(t *testing.T) {
+func TestJetStreamClusterMaxOutstandingCatchup(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "MCB", 3)
 	defer c.shutdown()
 
@@ -13076,7 +13076,7 @@ func TestJetStreamClusterMaxCatchup(t *testing.T) {
 		v := s.gcbOutMax
 		s.gcbMu.RUnlock()
 		if v != defaultMaxTotalCatchupOutBytes {
-			t.Fatalf("Server %v, expected max catchup to be %v, got %v", s, defaultMaxTotalCatchupOutBytes, v)
+			t.Fatalf("Server %v, expected max_outstanding_catchup to be %v, got %v", s, defaultMaxTotalCatchupOutBytes, v)
 		}
 	}
 
@@ -13085,7 +13085,7 @@ func TestJetStreamClusterMaxCatchup(t *testing.T) {
 	tmpl := `
 		listen: 127.0.0.1:-1
 		server_name: %s
-		jetstream: { max_catchup: 1KB, domain: ngs, max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		jetstream: { max_outstanding_catchup: 1KB, domain: ngs, max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
 		leaf: { listen: 127.0.0.1:-1 }
 		cluster {
 			name: %s
@@ -13101,7 +13101,7 @@ func TestJetStreamClusterMaxCatchup(t *testing.T) {
 		v := s.gcbOutMax
 		s.gcbMu.RUnlock()
 		if v != 1024 {
-			t.Fatalf("Server %v, expected max catchup to be 1KB, got %v", s, v)
+			t.Fatalf("Server %v, expected max_outstanding_catchup to be 1KB, got %v", s, v)
 		}
 	}
 
@@ -13149,7 +13149,7 @@ func TestJetStreamClusterMaxCatchup(t *testing.T) {
 	content, err := os.ReadFile(cfile)
 	require_NoError(t, err)
 	conf := string(content)
-	conf = strings.ReplaceAll(conf, "max_catchup: 1KB,", "max_catchup: 1MB,")
+	conf = strings.ReplaceAll(conf, "max_outstanding_catchup: 1KB,", "max_outstanding_catchup: 1MB,")
 	err = os.WriteFile(cfile, []byte(conf), 0644)
 	require_NoError(t, err)
 	err = s.Reload()

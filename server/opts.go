@@ -1949,7 +1949,7 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 				}
 			case "unique_tag":
 				opts.JetStreamUniqueTag = strings.ToLower(strings.TrimSpace(mv.(string)))
-			case "max_catchup", "max_catchup_bytes", "max_total_catchup_bytes":
+			case "max_outstanding_catchup":
 				s, err := getStorageSize(mv)
 				if err != nil {
 					return &configErr{tk, fmt.Sprintf("%s %s", strings.ToLower(mk), err)}
