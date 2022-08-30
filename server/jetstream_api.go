@@ -131,10 +131,14 @@ const (
 	// jsDirectGetPre
 	jsDirectGetPre = "$JS.API.DIRECT.GET"
 
-	// JSApiConsumerCreate is the endpoint to create ephemeral consumers for streams.
+	// JSApiConsumerCreate is the endpoint to create consumers for streams.
+	// This was also the legacy endpoint for ephemeral consumers.
+	// It now can take consumer name and optional filter subject, which when part of the subject controls access.
 	// Will return JSON response.
-	JSApiConsumerCreate  = "$JS.API.CONSUMER.CREATE.*"
-	JSApiConsumerCreateT = "$JS.API.CONSUMER.CREATE.%s"
+	JSApiConsumerCreate    = "$JS.API.CONSUMER.CREATE.*"
+	JSApiConsumerCreateT   = "$JS.API.CONSUMER.CREATE.%s"
+	JSApiConsumerCreateEx  = "$JS.API.CONSUMER.CREATE.*.>"
+	JSApiConsumerCreateExT = "$JS.API.CONSUMER.CREATE.%s.%s.%s"
 
 	// JSApiDurableCreate is the endpoint to create durable consumers for streams.
 	// You need to include the stream and consumer name in the subject.
@@ -832,8 +836,9 @@ func (s *Server) setJetStreamExportSubs() error {
 		{JSApiConsumerLeaderStepDown, s.jsConsumerLeaderStepDownRequest},
 		{JSApiMsgDelete, s.jsMsgDeleteRequest},
 		{JSApiMsgGet, s.jsMsgGetRequest},
+		{JSApiConsumerCreateEx, s.jsConsumerCreateRequest},
 		{JSApiConsumerCreate, s.jsConsumerCreateRequest},
-		{JSApiDurableCreate, s.jsDurableCreateRequest},
+		{JSApiDurableCreate, s.jsConsumerCreateRequest},
 		{JSApiConsumers, s.jsConsumerNamesRequest},
 		{JSApiConsumerList, s.jsConsumerListRequest},
 		{JSApiConsumerInfo, s.jsConsumerInfoRequest},
@@ -3609,17 +3614,19 @@ done:
 	mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, nil, nil, 0))
 }
 
-// Request to create a durable consumer.
-func (s *Server) jsDurableCreateRequest(sub *subscription, c *client, acc *Account, subject, reply string, msg []byte) {
-	s.jsConsumerCreate(sub, c, acc, subject, reply, msg, true)
-}
+// For determining consumer request type.
+type ccReqType uint8
 
-// Request to create a consumer.
-func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, acc *Account, subject, reply string, msg []byte) {
-	s.jsConsumerCreate(sub, c, acc, subject, reply, msg, false)
-}
+const (
+	ccNew = iota
+	ccLegacyEphemeral
+	ccLegacyDurable
+)
 
-func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subject, reply string, rmsg []byte, expectDurable bool) {
+// Request to create a consumer where stream and optional consumer name are part of the subject, and optional
+// filtered subjects can be at the tail end.
+// Assumes stream and consumer names are single tokens.
+func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Account, subject, reply string, rmsg []byte) {
 	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
@@ -3631,13 +3638,6 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 	}
 
 	var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
-
-	var streamName string
-	if expectDurable {
-		streamName = tokenAt(subject, 6)
-	} else {
-		streamName = tokenAt(subject, 5)
-	}
 
 	var req CreateConsumerRequest
 	if err := json.Unmarshal(msg, &req); err != nil {
@@ -3653,7 +3653,7 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 	if isClustered {
 		if req.Config.Direct {
 			// Check to see if we have this stream and are the stream leader.
-			if !acc.JetStreamIsStreamLeader(streamName) {
+			if !acc.JetStreamIsStreamLeader(streamNameFromSubject(subject)) {
 				return
 			}
 		} else {
@@ -3674,6 +3674,38 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 		}
 	}
 
+	var streamName, consumerName, filteredSubject string
+	var rt ccReqType
+
+	if n := numTokens(subject); n < 5 {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	} else if n == 5 {
+		// Legacy ephemeral.
+		rt = ccLegacyEphemeral
+		streamName = streamNameFromSubject(subject)
+	} else {
+		// New style and durable legacy.
+		if tokenAt(subject, 4) == "DURABLE" {
+			rt = ccLegacyDurable
+			if n != 7 {
+				resp.Error = NewJSConsumerDurableNameNotInSubjectError()
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
+			}
+			streamName = tokenAt(subject, 6)
+			consumerName = tokenAt(subject, 7)
+		} else {
+			streamName = streamNameFromSubject(subject)
+			consumerName = consumerNameFromSubject(subject)
+		}
+		// New has optional filtered subject as part of main subject..
+		if n > 7 {
+			tokens := strings.Split(subject, tsep)
+			filteredSubject = strings.Join(tokens[6:], tsep)
+		}
+	}
+
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
 			resp.Error = NewJSNotEnabledForAccountError()
@@ -3681,14 +3713,25 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 		}
 		return
 	}
+
 	if streamName != req.Stream {
 		resp.Error = NewJSStreamMismatchError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
-	if expectDurable {
-		if numTokens(subject) != 7 {
+	if consumerName != _EMPTY_ {
+		// Check for path like separators in the name.
+		if strings.ContainsAny(consumerName, `\/`) {
+			resp.Error = NewJSConsumerNameContainsPathSeparatorsError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+	}
+
+	// Should we expect a durable name
+	if rt == ccLegacyDurable {
+		if numTokens(subject) < 7 {
 			resp.Error = NewJSConsumerDurableNameNotInSubjectError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -3699,30 +3742,36 @@ func (s *Server) jsConsumerCreate(sub *subscription, c *client, a *Account, subj
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		consumerName := tokenAt(subject, 7)
 		if consumerName != req.Config.Durable {
 			resp.Error = NewJSConsumerDurableNameNotMatchSubjectError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		// Check for path like separators in the name.
-		if strings.ContainsAny(consumerName, `\/`) {
-			resp.Error = NewJSConsumerNameContainsPathSeparatorsError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-
-	} else {
-		if numTokens(subject) != 5 {
-			resp.Error = NewJSConsumerEphemeralWithDurableInSubjectError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
+	}
+	// If new style and durable set make sure they match.
+	if rt == ccNew {
 		if req.Config.Durable != _EMPTY_ {
-			resp.Error = NewJSConsumerEphemeralWithDurableNameError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
+			if consumerName != req.Config.Durable {
+				resp.Error = NewJSConsumerDurableNameNotMatchSubjectError()
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
+			}
 		}
+		// New style ephemeral so we need to honor the name.
+		req.Config.Name = consumerName
+	}
+	// Check for legacy ephemeral mis-configuration.
+	if rt == ccLegacyEphemeral && req.Config.Durable != _EMPTY_ {
+		resp.Error = NewJSConsumerEphemeralWithDurableNameError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	// Check for a filter subject.
+	if filteredSubject != _EMPTY_ && req.Config.FilterSubject != filteredSubject {
+		resp.Error = NewJSConsumerCreateFilterSubjectMismatchError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
 	}
 
 	if isClustered && !req.Config.Direct {

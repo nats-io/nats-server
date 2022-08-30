@@ -19284,3 +19284,129 @@ func TestJetStreamConsumerEOFBugNewFileStore(t *testing.T) {
 	_, err = sub.NextMsg(time.Second)
 	require_NoError(t, err)
 }
+
+func TestJetStreamSubjectBasedFilteredConsumers(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 64GB, max_file_store: 10TB}
+		accounts: {
+			A: {
+				jetstream: enabled
+				users: [ {
+					user: u,
+					password: p
+					permissions {
+						publish {
+							allow: [
+								'ID.>',
+								'$JS.API.INFO',
+								'$JS.API.STREAM.>',
+								'$JS.API.CONSUMER.INFO.>',
+								'$JS.API.CONSUMER.CREATE.TEST.VIN-xxx.ID.foo.>', # Only allow ID.foo.
+							]
+							deny: [ '$JS.API.CONSUMER.CREATE.*', '$JS.API.CONSUMER.DURABLE.CREATE.*.*']
+						}
+					}
+				} ]
+			},
+		}
+	`))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s, nats.UserInfo("u", "p"), nats.ErrorHandler(noOpErrHandler))
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"ID.*.*"},
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 100; i++ {
+		js.Publish(fmt.Sprintf("ID.foo.%d", i*3), nil)
+		js.Publish(fmt.Sprintf("ID.bar.%d", i*3+1), nil)
+		js.Publish(fmt.Sprintf("ID.baz.%d", i*3+2), nil)
+	}
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.Msgs == 300)
+
+	// Trying to create a consumer with non filtered API should fail.
+	js, err = nc.JetStream(nats.MaxWait(200 * time.Millisecond))
+	require_NoError(t, err)
+
+	_, err = js.SubscribeSync("ID.foo.*")
+	require_Error(t, err, nats.ErrTimeout)
+
+	_, err = js.SubscribeSync("ID.foo.*", nats.Durable("dlc"))
+	require_Error(t, err, nats.ErrTimeout)
+
+	// Direct filtered should work.
+	// Need to do by hand for now.
+	ecSubj := fmt.Sprintf(JSApiConsumerCreateExT, "TEST", "VIN-xxx", "ID.foo.*")
+
+	crReq := CreateConsumerRequest{
+		Stream: "TEST",
+		Config: ConsumerConfig{
+			DeliverPolicy: DeliverLast,
+			FilterSubject: "ID.foo.*",
+			AckPolicy:     AckExplicit,
+		},
+	}
+	req, err := json.Marshal(crReq)
+	require_NoError(t, err)
+
+	resp, err := nc.Request(ecSubj, req, 500*time.Millisecond)
+	require_NoError(t, err)
+	var ccResp JSApiConsumerCreateResponse
+	err = json.Unmarshal(resp.Data, &ccResp)
+	require_NoError(t, err)
+	if ccResp.Error != nil {
+		t.Fatalf("Unexpected error: %v", ccResp.Error)
+	}
+	cfg := ccResp.Config
+	ci := ccResp.ConsumerInfo
+	// Make sure we recognized as an ephemeral (since no durable was set) and that we have an InactiveThreshold.
+	// Make sure we captured preferred ephemeral name.
+	if ci.Name != "VIN-xxx" {
+		t.Fatalf("Did not get correct name, expected %q got %q", "xxx", ci.Name)
+	}
+	if cfg.InactiveThreshold == 0 {
+		t.Fatalf("Expected default inactive threshold to be set, got %v", cfg.InactiveThreshold)
+	}
+
+	// Make sure we can not use different consumer name since locked above.
+	ecSubj = fmt.Sprintf(JSApiConsumerCreateExT, "TEST", "VIN-zzz", "ID.foo.*")
+	_, err = nc.Request(ecSubj, req, 500*time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+
+	// Now check that we error when we mismatch filtersubject.
+	crReq = CreateConsumerRequest{
+		Stream: "TEST",
+		Config: ConsumerConfig{
+			DeliverPolicy: DeliverLast,
+			FilterSubject: "ID.bar.*",
+			AckPolicy:     AckExplicit,
+		},
+	}
+	req, err = json.Marshal(crReq)
+	require_NoError(t, err)
+
+	ecSubj = fmt.Sprintf(JSApiConsumerCreateExT, "TEST", "VIN-xxx", "ID.foo.*")
+	resp, err = nc.Request(ecSubj, req, 500*time.Millisecond)
+	require_NoError(t, err)
+	err = json.Unmarshal(resp.Data, &ccResp)
+	require_NoError(t, err)
+	checkNatsError(t, ccResp.Error, JSConsumerCreateFilterSubjectMismatchErr)
+
+	// Now make sure if we change subject to match that we can not create a filtered consumer on ID.bar.>
+	ecSubj = fmt.Sprintf(JSApiConsumerCreateExT, "TEST", "VIN-xxx", "ID.bar.*")
+	_, err = nc.Request(ecSubj, req, 500*time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+}
