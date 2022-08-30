@@ -851,10 +851,12 @@ func (js *jetStream) isMetaRecovering() bool {
 	return js.metaRecovering
 }
 
-// During recovery track any stream and consumer delete operations.
-type recoveryRemovals struct {
-	streams   map[string]*streamAssignment
-	consumers map[string]*consumerAssignment
+// During recovery track any stream and consumer delete and update operations.
+type recoveryUpdates struct {
+	removeStreams   map[string]*streamAssignment
+	removeConsumers map[string]*consumerAssignment
+	updateStreams   map[string]*streamAssignment
+	updateConsumers map[string]*consumerAssignment
 }
 
 func (js *jetStream) monitorCluster() {
@@ -899,9 +901,11 @@ func (js *jetStream) monitorCluster() {
 		}
 	}
 
-	rm := &recoveryRemovals{
-		streams:   make(map[string]*streamAssignment),
-		consumers: make(map[string]*consumerAssignment),
+	ru := &recoveryUpdates{
+		removeStreams:   make(map[string]*streamAssignment),
+		removeConsumers: make(map[string]*consumerAssignment),
+		updateStreams:   make(map[string]*streamAssignment),
+		updateConsumers: make(map[string]*consumerAssignment),
 	}
 
 	for {
@@ -918,20 +922,27 @@ func (js *jetStream) monitorCluster() {
 					js.clearMetaRecovering()
 
 					// Process any removes that are still valid after recovery.
-					for _, ca := range rm.consumers {
+					for _, ca := range ru.removeConsumers {
 						js.processConsumerRemoval(ca)
 					}
-					for _, sa := range rm.streams {
+					for _, sa := range ru.removeStreams {
 						js.processStreamRemoval(sa)
 					}
+					// Same with any pending updates.
+					for _, sa := range ru.updateStreams {
+						js.processUpdateStreamAssignment(sa)
+					}
+					for _, ca := range ru.updateConsumers {
+						js.processConsumerAssignment(ca)
+					}
 					// Clear.
-					rm = nil
+					ru = nil
 					s.Debugf("Recovered JetStream cluster metadata")
 					continue
 				}
 				ce := cei.(*CommittedEntry)
 				// FIXME(dlc) - Deal with errors.
-				if didSnap, didRemoval, err := js.applyMetaEntries(ce.Entries, rm); err == nil {
+				if didSnap, didRemoval, err := js.applyMetaEntries(ce.Entries, ru); err == nil {
 					_, nb := n.Applied(ce.Index)
 					if js.hasPeerEntries(ce.Entries) || didSnap || (didRemoval && time.Since(lastSnapTime) > 2*time.Second) {
 						// Since we received one make sure we have our own since we do not store
@@ -1373,7 +1384,23 @@ func (js *jetStream) hasPeerEntries(entries []*Entry) bool {
 	return false
 }
 
-func (js *jetStream) applyMetaEntries(entries []*Entry, rm *recoveryRemovals) (bool, bool, error) {
+const ksep = ":"
+
+func (sa *streamAssignment) recoveryKey() string {
+	if sa == nil {
+		return _EMPTY_
+	}
+	return sa.Client.serviceAccount() + ksep + sa.Config.Name
+}
+
+func (ca *consumerAssignment) recoveryKey() string {
+	if ca == nil {
+		return _EMPTY_
+	}
+	return ca.Client.serviceAccount() + ksep + ca.Stream + ksep + ca.Name
+}
+
+func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bool, bool, error) {
 	var didSnap, didRemove bool
 	isRecovering := js.isMetaRecovering()
 
@@ -1400,8 +1427,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, rm *recoveryRemovals) (b
 				}
 				if isRecovering {
 					js.setStreamAssignmentRecovering(sa)
-					key := sa.Client.Account + ":" + sa.Config.Name
-					delete(rm.streams, key)
+					delete(ru.removeStreams, sa.recoveryKey())
 				}
 				if js.processStreamAssignment(sa) {
 					didRemove = true
@@ -1414,8 +1440,9 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, rm *recoveryRemovals) (b
 				}
 				if isRecovering {
 					js.setStreamAssignmentRecovering(sa)
-					key := sa.Client.Account + ":" + sa.Config.Name
-					rm.streams[key] = sa
+					key := sa.recoveryKey()
+					ru.removeStreams[key] = sa
+					delete(ru.updateStreams, key)
 				} else {
 					js.processStreamRemoval(sa)
 					didRemove = true
@@ -1428,10 +1455,12 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, rm *recoveryRemovals) (b
 				}
 				if isRecovering {
 					js.setConsumerAssignmentRecovering(ca)
-					key := ca.Client.Account + ":" + ca.Name
-					delete(rm.consumers, key)
+					key := ca.recoveryKey()
+					delete(ru.removeConsumers, key)
+					ru.updateConsumers[key] = ca
+				} else {
+					js.processConsumerAssignment(ca)
 				}
-				js.processConsumerAssignment(ca)
 			case assignCompressedConsumerOp:
 				ca, err := decodeConsumerAssignmentCompressed(buf[1:])
 				if err != nil {
@@ -1440,10 +1469,12 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, rm *recoveryRemovals) (b
 				}
 				if isRecovering {
 					js.setConsumerAssignmentRecovering(ca)
-					key := ca.Client.Account + ":" + ca.Name
-					delete(rm.consumers, key)
+					key := ca.recoveryKey()
+					delete(ru.removeConsumers, key)
+					ru.updateConsumers[key] = ca
+				} else {
+					js.processConsumerAssignment(ca)
 				}
-				js.processConsumerAssignment(ca)
 			case removeConsumerOp:
 				ca, err := decodeConsumerAssignment(buf[1:])
 				if err != nil {
@@ -1452,8 +1483,9 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, rm *recoveryRemovals) (b
 				}
 				if isRecovering {
 					js.setConsumerAssignmentRecovering(ca)
-					key := ca.Client.Account + ":" + ca.Name
-					rm.consumers[key] = ca
+					key := ca.recoveryKey()
+					ru.removeConsumers[key] = ca
+					delete(ru.updateConsumers, key)
 				} else {
 					js.processConsumerRemoval(ca)
 					didRemove = true
@@ -1466,9 +1498,12 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, rm *recoveryRemovals) (b
 				}
 				if isRecovering {
 					js.setStreamAssignmentRecovering(sa)
+					key := sa.recoveryKey()
+					ru.updateStreams[key] = sa
+					delete(ru.removeStreams, key)
+				} else {
+					js.processUpdateStreamAssignment(sa)
 				}
-
-				js.processUpdateStreamAssignment(sa)
 			default:
 				panic("JetStream Cluster Unknown meta entry op type")
 			}
@@ -6304,7 +6339,6 @@ func (mset *stream) stateSnapshotLocked() []byte {
 		Deleted:  state.Deleted,
 	}
 	b, _ := json.Marshal(snap)
-
 	return b
 }
 
