@@ -279,8 +279,9 @@ type Server struct {
 	rateLimitLoggingCh chan time.Duration
 
 	// Total outstanding catchup bytes in flight.
-	gcbMu  sync.RWMutex
-	gcbOut int64
+	gcbMu     sync.RWMutex
+	gcbOut    int64
+	gcbOutMax int64 // Taken from JetStreamMaxCatchup or defaultMaxTotalCatchupOutBytes
 	// A global chanel to kick out stalled catchup sequences.
 	gcbKick chan struct{}
 

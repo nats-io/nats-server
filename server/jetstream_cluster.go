@@ -7177,13 +7177,21 @@ func (mset *stream) handleClusterStreamInfoRequest(sub *subscription, c *client,
 	sysc.sendInternalMsg(reply, _EMPTY_, nil, si)
 }
 
-const maxTotalCatchupOutBytes = int64(128 * 1024 * 1024) // 128MB for now, for the total server.
+const defaultMaxTotalCatchupOutBytes = int64(32 * 1024 * 1024) // 32MB for now, for the total server.
 
 // Current total outstanding catchup bytes.
 func (s *Server) gcbTotal() int64 {
 	s.gcbMu.RLock()
 	defer s.gcbMu.RUnlock()
 	return s.gcbOut
+}
+
+// Returns true if Current total outstanding catchup bytes is below
+// the maximum configured.
+func (s *Server) gcbBelowMax() bool {
+	s.gcbMu.RLock()
+	defer s.gcbMu.RUnlock()
+	return s.gcbOut <= s.gcbOutMax
 }
 
 // Adds `sz` to the server's total outstanding catchup bytes and to `localsz`
@@ -7193,7 +7201,7 @@ func (s *Server) gcbAdd(localsz *int64, sz int64) {
 	s.gcbMu.Lock()
 	atomic.AddInt64(localsz, sz)
 	s.gcbOut += sz
-	if s.gcbOut >= maxTotalCatchupOutBytes && s.gcbKick == nil {
+	if s.gcbOut >= s.gcbOutMax && s.gcbKick == nil {
 		s.gcbKick = make(chan struct{})
 	}
 	s.gcbMu.Unlock()
@@ -7209,7 +7217,7 @@ func (s *Server) gcbSubLocked(localsz *int64, sz int64) {
 	}
 	atomic.AddInt64(localsz, -sz)
 	s.gcbOut -= sz
-	if s.gcbKick != nil && s.gcbOut < maxTotalCatchupOutBytes {
+	if s.gcbKick != nil && s.gcbOut < s.gcbOutMax {
 		close(s.gcbKick)
 		s.gcbKick = nil
 	}
@@ -7244,8 +7252,8 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	s := mset.srv
 	defer s.grWG.Done()
 
-	const maxOutBytes = int64(32 * 1024 * 1024) // 32MB for now, these are all internal, from server to server
-	const maxOutMsgs = int32(128 * 1024)
+	const maxOutBytes = int64(8 * 1024 * 1024) // 8MB for now, these are all internal, from server to server
+	const maxOutMsgs = int32(32 * 1024)
 	outb := int64(0)
 	outm := int32(0)
 
@@ -7346,7 +7354,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 
 		var smv StoreMsg
 
-		for ; seq <= last && atomic.LoadInt64(&outb) <= maxOutBytes && atomic.LoadInt32(&outm) <= maxOutMsgs && s.gcbTotal() <= maxTotalCatchupOutBytes; seq++ {
+		for ; seq <= last && atomic.LoadInt64(&outb) <= maxOutBytes && atomic.LoadInt32(&outm) <= maxOutMsgs && s.gcbBelowMax(); seq++ {
 			sm, err := mset.store.LoadMsg(seq, &smv)
 			// if this is not a deleted msg, bail out.
 			if err != nil && err != ErrStoreMsgNotFound && err != errDeletedMsg {
