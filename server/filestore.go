@@ -1235,6 +1235,8 @@ func (fs *fileStore) expireMsgsOnRecover() {
 				// Do this part by hand since not deleting one by one.
 				mb.first.seq, mb.first.ts = mb.last.seq+1, 0
 				mb.closeAndKeepIndex()
+				// Clear any global subject state.
+				fs.psim = make(map[string]*psi)
 			} else {
 				mb.dirtyCloseWithRemove(true)
 				deleted++
@@ -3065,12 +3067,17 @@ func (fs *fileStore) checkMsgs() *LostStreamData {
 
 	fs.checkAndFlushAllBlocks()
 
+	// Clear any global subject state.
+	fs.psim = make(map[string]*psi)
+
 	for _, mb := range fs.blks {
 		if ld, err := mb.rebuildState(); err != nil && ld != nil {
 			// Rebuild fs state too.
 			mb.fs.rebuildStateLocked(ld)
 		}
+		fs.populateGlobalPerSubjectInfo(mb)
 	}
+
 	return fs.ld
 }
 
@@ -4990,6 +4997,12 @@ func (mb *msgBlock) closeAndKeepIndex() {
 	// Close
 	mb.dirtyCloseWithRemove(false)
 
+	// Make sure to remove fss state.
+	mb.fss = nil
+	if mb.sfn != _EMPTY_ {
+		os.Remove(mb.sfn)
+	}
+
 	// If we are encrypted we should reset our bek counter.
 	if mb.bek != nil {
 		if bek, err := genBlockEncryptionKey(mb.fs.fcfg.Cipher, mb.seed, mb.nonce); err == nil {
@@ -5191,6 +5204,7 @@ func (mb *msgBlock) ensurePerSubjectInfoLoaded() error {
 }
 
 // Called on recovery to populate the global psim state.
+// Lock should be held.
 func (fs *fileStore) populateGlobalPerSubjectInfo(mb *msgBlock) {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
@@ -5198,6 +5212,20 @@ func (fs *fileStore) populateGlobalPerSubjectInfo(mb *msgBlock) {
 	if err := mb.readPerSubjectInfo(true); err != nil {
 		return
 	}
+
+	// Quick sanity check.
+	// TODO(dlc) - This is here to auto-clear a bug.
+	fssMsgs := uint64(0)
+	for subj, ss := range mb.fss {
+		if len(subj) > 0 {
+			fssMsgs += ss.Msgs
+		}
+	}
+	// If we are off rebuild.
+	if fssMsgs != mb.msgs {
+		mb.generatePerSubjectInfo(true)
+	}
+
 	// Now populate psim.
 	for subj, ss := range mb.fss {
 		if len(subj) > 0 {

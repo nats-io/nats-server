@@ -4510,3 +4510,79 @@ func TestFileStoreNoFSSAfterRecover(t *testing.T) {
 		t.Fatalf("Expected no fss post recover")
 	}
 }
+
+func TestFileStoreFSSCloseAndKeepOnExpireOnRecoverBug(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer os.RemoveAll(storeDir)
+
+	ttl := 100 * time.Millisecond
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage, MaxAge: ttl},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("foo", nil, nil)
+	require_NoError(t, err)
+
+	fs.Stop()
+
+	time.Sleep(2 * ttl)
+
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage, MaxAge: ttl},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	if state := fs.State(); state.NumSubjects != 0 {
+		t.Fatalf("Expected no subjects with no messages, got %d", state.NumSubjects)
+	}
+}
+
+func TestFileStoreFSSBadStateBug(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer os.RemoveAll(storeDir)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("foo", nil, nil)
+	require_NoError(t, err)
+	_, _, err = fs.StoreMsg("foo", nil, nil)
+	require_NoError(t, err)
+
+	// Force write of fss.
+	mb := fs.getFirstBlock()
+	mb.mu.Lock()
+	mb.writePerSubjectInfo()
+	fssFile := filepath.Join(storeDir, msgDir, fmt.Sprintf(fssScan, 1))
+	buf, err := os.ReadFile(fssFile)
+	require_NoError(t, err)
+	mb.mu.Unlock()
+
+	// Now remove one of them.
+	fs.RemoveMsg(1)
+	fs.Stop()
+
+	// Now put back wrong fss with msgs == 2
+	err = os.WriteFile(fssFile, buf, defaultFilePerms)
+	require_NoError(t, err)
+
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	if fss := fs.SubjectsState("foo")["foo"]; fss.Msgs != 1 {
+		t.Fatalf("Got bad state on restart: %+v", fss)
+	}
+}
