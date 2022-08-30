@@ -1848,11 +1848,10 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	// Race detector wants these protected.
 	mb.mu.Lock()
 	mb.llts, mb.lwts = ts, ts
-	mb.mu.Unlock()
-
 	// Remember our last sequence number.
 	mb.first.seq = fs.state.LastSeq + 1
 	mb.last.seq = fs.state.LastSeq
+	mb.mu.Unlock()
 
 	// If we know we will need this so go ahead and spin up.
 	if !fs.fip {
@@ -3183,21 +3182,19 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 	// Decide if we write index info if flushing in place.
 	writeIndex := ts-mb.lwits > wiThresh
 
-	// Accounting
-	mb.updateAccounting(seq, ts, rl)
-
 	// Check if we are tracking per subject for our simple state.
-	if len(subj) > 0 {
+	if len(subj) > 0 && !mb.noTrack {
 		mb.ensurePerSubjectInfoLoaded()
-		if mb.fss != nil {
-			if ss := mb.fss[subj]; ss != nil {
-				ss.Msgs++
-				ss.Last = seq
-			} else {
-				mb.fss[subj] = &SimpleState{Msgs: 1, First: seq, Last: seq}
-			}
+		if ss := mb.fss[subj]; ss != nil {
+			ss.Msgs++
+			ss.Last = seq
+		} else {
+			mb.fss[subj] = &SimpleState{Msgs: 1, First: seq, Last: seq}
 		}
 	}
+
+	// Accounting
+	mb.updateAccounting(seq, ts, rl)
 
 	fch, werr := mb.fch, mb.werr
 
@@ -5197,10 +5194,15 @@ func (mb *msgBlock) loadPerSubjectInfo() ([]byte, error) {
 // Helper to make sure fss loaded if we are tracking.
 // Lock should be held
 func (mb *msgBlock) ensurePerSubjectInfoLoaded() error {
-	if mb.fss == nil && !mb.noTrack {
-		return mb.readPerSubjectInfo(true)
+	if mb.fss != nil || mb.noTrack {
+		return nil
 	}
-	return nil
+	if mb.msgs == 0 {
+		mb.fss = make(map[string]*SimpleState)
+		return nil
+	}
+	// Load from file.
+	return mb.readPerSubjectInfo(true)
 }
 
 // Called on recovery to populate the global psim state.

@@ -5399,7 +5399,7 @@ func TestNoRaceJetStreamFileStoreLargeKVAccessTiming(t *testing.T) {
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: blkSize, CacheExpire: 5 * time.Second},
-		StreamConfig{Name: "zzz", Storage: FileStorage, MaxMsgsPer: 1},
+		StreamConfig{Name: "zzz", Subjects: []string{"KV.STREAM_NAME.*"}, Storage: FileStorage, MaxMsgsPer: 1},
 	)
 	require_NoError(t, err)
 	defer fs.Stop()

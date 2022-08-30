@@ -3506,7 +3506,9 @@ func TestFileStorePurgeExKeepOneBug(t *testing.T) {
 	storeDir := createDir(t, JetStreamStoreDir)
 	defer removeDir(t, storeDir)
 
-	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 128}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 128},
+		StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -4584,5 +4586,28 @@ func TestFileStoreFSSBadStateBug(t *testing.T) {
 
 	if fss := fs.SubjectsState("foo")["foo"]; fss.Msgs != 1 {
 		t.Fatalf("Got bad state on restart: %+v", fss)
+	}
+}
+
+func TestFileStoreFSSExpireNumPendingBug(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer os.RemoveAll(storeDir)
+
+	cexp := 100 * time.Millisecond
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, CacheExpire: cexp},
+		StreamConfig{Name: "zzz", Subjects: []string{"KV.>"}, MaxMsgsPer: 1, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Let FSS meta expire.
+	time.Sleep(2 * cexp)
+
+	_, _, err = fs.StoreMsg("KV.X", nil, []byte("Y"))
+	require_NoError(t, err)
+
+	if fss := fs.FilteredState(1, "KV.X"); fss.Msgs != 1 {
+		t.Fatalf("Expected only 1 msg, got %d", fss.Msgs)
 	}
 }
