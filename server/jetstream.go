@@ -322,6 +322,11 @@ func (s *Server) checkStoreDir(cfg *JetStreamConfig) error {
 // enableJetStream will start up the JetStream subsystem.
 func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	js := &jetStream{srv: s, config: cfg, accounts: make(map[string]*jsAccount), apiSubs: NewSublistNoCache()}
+	s.gcbMu.Lock()
+	if s.gcbOutMax = s.getOpts().JetStreamMaxCatchup; s.gcbOutMax == 0 {
+		s.gcbOutMax = defaultMaxTotalCatchupOutBytes
+	}
+	s.gcbMu.Unlock()
 
 	s.mu.Lock()
 	s.js = js
@@ -2673,6 +2678,10 @@ func validateJetStreamOptions(o *Options) error {
 		o.JetStreamExtHint = h
 	default:
 		return fmt.Errorf("expected 'no_extend' for string value, got '%s'", h)
+	}
+
+	if o.JetStreamMaxCatchup < 0 {
+		return fmt.Errorf("jetstream max catchup cannot be negative")
 	}
 	return nil
 }

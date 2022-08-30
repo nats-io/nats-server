@@ -255,6 +255,7 @@ type Options struct {
 	JetStreamCipher       StoreCipher   `json:"-"`
 	JetStreamUniqueTag    string
 	JetStreamLimits       JSLimitOpts
+	JetStreamMaxCatchup   int64
 	StoreDir              string            `json:"-"`
 	JsAccDefaultDomain    map[string]string `json:"-"` // account to domain name mapping
 	Websocket             WebsocketOpts     `json:"-"`
@@ -1948,6 +1949,12 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 				}
 			case "unique_tag":
 				opts.JetStreamUniqueTag = strings.ToLower(strings.TrimSpace(mv.(string)))
+			case "max_outstanding_catchup":
+				s, err := getStorageSize(mv)
+				if err != nil {
+					return &configErr{tk, fmt.Sprintf("%s %s", strings.ToLower(mk), err)}
+				}
+				opts.JetStreamMaxCatchup = s
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{

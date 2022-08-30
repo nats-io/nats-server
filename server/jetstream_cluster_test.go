@@ -13066,3 +13066,92 @@ func TestJetStreamClusterReplicasChangeStreamInfo(t *testing.T) {
 
 	checkStreamInfo(js)
 }
+
+func TestJetStreamClusterMaxOutstandingCatchup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "MCB", 3)
+	defer c.shutdown()
+
+	for _, s := range c.servers {
+		s.gcbMu.RLock()
+		v := s.gcbOutMax
+		s.gcbMu.RUnlock()
+		if v != defaultMaxTotalCatchupOutBytes {
+			t.Fatalf("Server %v, expected max_outstanding_catchup to be %v, got %v", s, defaultMaxTotalCatchupOutBytes, v)
+		}
+	}
+
+	c.shutdown()
+
+	tmpl := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: { max_outstanding_catchup: 1KB, domain: ngs, max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		leaf: { listen: 127.0.0.1:-1 }
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+	`
+	c = createJetStreamClusterWithTemplate(t, tmpl, "MCB", 3)
+	defer c.shutdown()
+
+	for _, s := range c.servers {
+		s.gcbMu.RLock()
+		v := s.gcbOutMax
+		s.gcbMu.RUnlock()
+		if v != 1024 {
+			t.Fatalf("Server %v, expected max_outstanding_catchup to be 1KB, got %v", s, v)
+		}
+	}
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	// Close client now and will create new one
+	nc.Close()
+
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	follower := c.randomNonStreamLeader(globalAccountName, "TEST")
+	follower.Shutdown()
+
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	// Create new connection in case we would have been connected to follower.
+	nc, _ = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	payload := string(make([]byte, 2048))
+	for i := 0; i < 1000; i++ {
+		sendStreamMsg(t, nc, "foo", payload)
+	}
+
+	// Cause snapshots on leader
+	mset, err := c.streamLeader(globalAccountName, "TEST").GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	err = mset.raftNode().InstallSnapshot(mset.stateSnapshot())
+	require_NoError(t, err)
+
+	// Resart server and it should be able to catchup
+	follower = c.restartServer(follower)
+	c.waitOnStreamCurrent(follower, globalAccountName, "TEST")
+
+	// Config reload not supported
+	s := c.servers[0]
+	cfile := s.getOpts().ConfigFile
+	content, err := os.ReadFile(cfile)
+	require_NoError(t, err)
+	conf := string(content)
+	conf = strings.ReplaceAll(conf, "max_outstanding_catchup: 1KB,", "max_outstanding_catchup: 1MB,")
+	err = os.WriteFile(cfile, []byte(conf), 0644)
+	require_NoError(t, err)
+	err = s.Reload()
+	require_Error(t, err, fmt.Errorf("config reload not supported for JetStreamMaxCatchup: old=1024, new=1048576"))
+}
