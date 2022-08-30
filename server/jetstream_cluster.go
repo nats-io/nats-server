@@ -1642,38 +1642,22 @@ func (mset *stream) removeNode() {
 	}
 }
 
-// utility function to return the number of current peers in the specified set,
-// as well as the first current peer and if the leader (always current) is part of the set or not
-func currentPeerCount(ci *ClusterInfo, peerSet []string, leaderId string) (currentCount int, firstPeer string, foundLeader bool) {
-	for _, peer := range peerSet {
-		// selfId is leaderId
-		foundCurrent := peer == leaderId
-		if foundCurrent {
-			foundLeader = true
+// Helper function to generate peer info.
+// lists and sets for old and new.
+func genPeerInfo(peers []string, split int) (newPeers, oldPeers []string, newPeerSet, oldPeerSet map[string]bool) {
+	newPeers = peers[split:]
+	oldPeers = peers[:split]
+	newPeerSet = make(map[string]bool, len(newPeers))
+	oldPeerSet = make(map[string]bool, len(oldPeers))
+	for i, peer := range peers {
+		if i < split {
+			oldPeerSet[peer] = true
 		} else {
-			for _, p := range ci.Replicas {
-				if peer == string(getHash(p.Name)) {
-					if p.Current {
-						foundCurrent = true
-					}
-					break
-				}
-			}
-		}
-		if foundCurrent {
-			currentCount++
-			if firstPeer == _EMPTY_ {
-				firstPeer = peer
-			}
+			newPeerSet[peer] = true
 		}
 	}
 	return
 }
-
-const defaultScaleDownDelayTicks = 2
-
-// how many migration tracker ticks of delay to induce
-var scaleDownDelayTicks = defaultScaleDownDelayTicks
 
 // Monitor our stream node for this stream.
 func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnapshot bool) {
@@ -1692,7 +1676,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		return
 	}
 
-	qch, lch, aq, uch, selfId := n.QuitC(), n.LeadChangeC(), n.ApplyQ(), mset.updateC(), meta.ID()
+	qch, lch, aq, uch, ourPeerId := n.QuitC(), n.LeadChangeC(), n.ApplyQ(), mset.updateC(), meta.ID()
 
 	s.Debugf("Starting stream monitor for '%s > %s' [%s]", sa.Client.serviceAccount(), sa.Config.Name, n.Group())
 	defer s.Debugf("Exiting stream monitor for '%s > %s' [%s]", sa.Client.serviceAccount(), sa.Config.Name, n.Group())
@@ -1754,20 +1738,18 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// For migration tracking.
 	var mmt *time.Ticker
 	var mmtc <-chan time.Time
-	var mDelayTc int
 
 	startMigrationMonitoring := func() {
 		if mmt == nil {
-			mmt = time.NewTicker(1 * time.Second)
+			mmt = time.NewTicker(500 * time.Millisecond)
 			mmtc = mmt.C
-			mDelayTc = 0
 		}
 	}
 
 	stopMigrationMonitoring := func() {
 		if mmt != nil {
 			mmt.Stop()
-			mmt, mmtc, mDelayTc = nil, nil, 0
+			mmt, mmtc = nil, nil
 		}
 	}
 	defer stopMigrationMonitoring()
@@ -1935,15 +1917,13 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		case <-uch:
 			// keep stream assignment current
 			sa = mset.streamAssignment()
+
 			// keep peer list up to date with config
 			js.checkPeers(mset.raftGroup())
 			// We get this when we have a new stream assignment caused by an update.
 			// We want to know if we are migrating.
-			migrating := mset.isMigrating()
-			// If we are migrating, monitor for the new peers to be caught up.
-			if isLeader && migrating {
-				if mmtc == nil {
-					doSnapshot()
+			if migrating := mset.isMigrating(); migrating {
+				if isLeader && mmtc == nil {
 					startMigrationMonitoring()
 				}
 			} else {
@@ -1955,15 +1935,12 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				stopMigrationMonitoring()
 				continue
 			}
-			// Check to see that we have someone caught up.
-			// TODO(dlc) - For now start checking after a second in order to give proper time to kick in any catchup logic needed.
-			// What we really need to do longer term is know if we need catchup and make sure that process has kicked off and/or completed.
+
+			// Check to see where we are..
 			rg := mset.raftGroup()
 			ci := js.clusterInfo(rg)
-			// The polling interval of one second allows this to be kicked in if needed.
-			if mset.hasCatchupPeers() {
-				mset.checkClusterInfo(ci)
-			}
+			mset.checkClusterInfo(ci)
+
 			// Track the new peers and check the ones that are current.
 			mset.mu.RLock()
 			replicas := mset.cfg.Replicas
@@ -1973,74 +1950,65 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				stopMigrationMonitoring()
 				continue
 			}
-			// Determine if process is finished
-			toSkip := len(rg.Peers) - replicas
-			newPeerSet := rg.Peers[toSkip:]
-			oldPeerSet := rg.Peers[:toSkip]
-			newPeerTbl := map[string]struct{}{}
-			for _, peer := range newPeerSet {
-				newPeerTbl[peer] = struct{}{}
-			}
 
-			currentCount, firstPeer, foundLeader := currentPeerCount(ci, newPeerSet, selfId)
-			// make sure to wait to ensure that catchup has started.
-			if currentCount != replicas {
-				mDelayTc = 0
-				continue
-			}
-			if mDelayTc < scaleDownDelayTicks {
-				mDelayTc++
-				continue
-			}
+			newPeers, oldPeers, newPeerSet, oldPeerSet := genPeerInfo(rg.Peers, len(rg.Peers)-replicas)
 
-			// First make sure all consumer are properly scaled down
-			waitOnConsumerScaledown := false
-			js.mu.RLock()
-			if san, ok := cc.streams[accName][sa.Config.Name]; ok {
-			FOR_CONSUMER_SCALEDOWN:
-				for cName, c := range san.consumers {
-					if c.pending || len(c.Group.Peers) > c.Config.replicas(san.Config) {
-						waitOnConsumerScaledown = true
-						s.Debugf("Scale down of '%s > %s' blocked by consumer '%s'",
-							accName, san.Config.Name, cName)
+			// If we are part of the new peerset and we have been passed the baton.
+			// We will handle scale down.
+			if newPeerSet[ourPeerId] {
+				// First need to check on any consumers and make sure they have moved properly before scaling down ourselves.
+				js.mu.RLock()
+				var needToWait bool
+				for name, c := range sa.consumers {
+					for _, peer := range c.Group.Peers {
+						// If we have peers still in the old set block.
+						if oldPeerSet[peer] {
+							s.Debugf("Scale down of '%s > %s' blocked by consumer '%s'", accName, sa.Config.Name, name)
+							needToWait = true
+							break
+						}
+					}
+					if needToWait {
 						break
 					}
-					for _, peer := range c.Group.Peers {
-						if _, ok := newPeerTbl[peer]; !ok {
-							waitOnConsumerScaledown = true
-							s.Debugf("Scale down of '%s > %s' blocked by consumer '%s' with old peer %s",
-								accName, san.Config.Name, cName, peer)
-							break FOR_CONSUMER_SCALEDOWN
+				}
+				js.mu.RUnlock()
+				if needToWait {
+					continue
+				}
+
+				// We are good to go, can scale down here.
+				for _, p := range oldPeers {
+					n.ProposeRemovePeer(p)
+				}
+
+				csa := sa.copyGroup()
+				csa.Group.Peers = newPeers
+				csa.Group.Preferred = ourPeerId
+				csa.Group.Cluster = s.cachedClusterName()
+				cc.meta.ForwardProposal(encodeUpdateStreamAssignment(csa))
+				s.Noticef("Scaling down '%s > %s' to %+v", accName, sa.Config.Name, s.peerSetToNames(newPeers))
+
+			} else {
+				// We are the old leader here, from the original peer set.
+				// We are simply waiting on the new peerset to be caught up so we can transfer leadership.
+				var newLeaderPeer, newLeader string
+				neededCurrent, current := replicas/2+1, 0
+				for _, r := range ci.Replicas {
+					if r.Current && newPeerSet[r.peer] {
+						current++
+						if newLeader == _EMPTY_ {
+							newLeaderPeer, newLeader = r.peer, r.Name
 						}
 					}
 				}
-			}
-			js.mu.RUnlock()
-
-			if waitOnConsumerScaledown {
-				continue
-			}
-
-			// Remove the old peers or transfer leadership (after which new leader resumes with peer removal).
-			// stopMigrationMonitoring is invoked on actual leadership change or
-			// on the next tick when migration completed.
-			// In case these operations fail, the next tick will retry
-			if !foundLeader {
-				s.Debugf("Scale down of '%s' step down ('%s' preferred)", sa.Config.Name, firstPeer)
-				n.StepDown(firstPeer)
-			} else {
-				s.Noticef("Scale down of '%s' to %+v ('%s' preferred)",
-					sa.Config.Name, s.peerSetToNames(newPeerSet), firstPeer)
-				for _, p := range oldPeerSet {
-					n.ProposeRemovePeer(p)
+				// Check if we have a quorom.
+				if current >= neededCurrent {
+					s.Noticef("Transfer of stream leader for '%s > %s' to '%s'", accName, sa.Config.Name, newLeader)
+					n.StepDown(newLeaderPeer)
 				}
-				csa := sa.copyGroup()
-				csa.Group.Peers = newPeerSet
-				csa.Group.Cluster = s.ClusterName() // use cluster name of leader/self
-				csa.Group.Preferred = firstPeer
-				cc.meta.ForwardProposal(encodeUpdateStreamAssignment(csa))
 			}
-			mDelayTc = 0
+
 		case err := <-restoreDoneCh:
 			// We have completed a restore from snapshot on this server. The stream assignment has
 			// already been assigned but the replicas will need to catch up out of band. Consumers
@@ -3779,7 +3747,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 		s.Warnf("No RAFT group for consumer")
 		return
 	}
-	qch, lch, aq, uch, selfId := n.QuitC(), n.LeadChangeC(), n.ApplyQ(), o.updateC(), cc.meta.ID()
+	qch, lch, aq, uch, ourPeerId := n.QuitC(), n.LeadChangeC(), n.ApplyQ(), o.updateC(), cc.meta.ID()
 
 	s.Debugf("Starting consumer monitor for '%s > %s > %s' [%s]", o.acc.Name, ca.Stream, ca.Name, n.Group())
 	defer s.Debugf("Exiting consumer monitor for '%s > %s > %s' [%s]", o.acc.Name, ca.Stream, ca.Name, n.Group())
@@ -3825,20 +3793,18 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	// For migration tracking.
 	var mmt *time.Ticker
 	var mmtc <-chan time.Time
-	var mDelayTc int
 
 	startMigrationMonitoring := func() {
 		if mmt == nil {
-			mmt = time.NewTicker(1 * time.Second)
+			mmt = time.NewTicker(500 * time.Millisecond)
 			mmtc = mmt.C
-			mDelayTc = 0
 		}
 	}
 
 	stopMigrationMonitoring := func() {
 		if mmt != nil {
 			mmt.Stop()
-			mmt, mmtc, mDelayTc = nil, nil, 0
+			mmt, mmtc = nil, nil
 		}
 	}
 	defer stopMigrationMonitoring()
@@ -3926,6 +3892,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				continue
 			}
 			rg := o.raftGroup()
+			ci := js.clusterInfo(rg)
 			replicas, err := o.replica()
 			if err != nil {
 				continue
@@ -3935,40 +3902,39 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				stopMigrationMonitoring()
 				continue
 			}
-			toSkip := len(rg.Peers) - replicas
-			newPeerSet := rg.Peers[toSkip:]
-			oldPeerSet := rg.Peers[:toSkip]
+			newPeers, oldPeers, newPeerSet, _ := genPeerInfo(rg.Peers, len(rg.Peers)-replicas)
 
-			ci := js.clusterInfo(rg)
-
-			currentCount, firstPeer, foundLeader := currentPeerCount(ci, newPeerSet, selfId)
-
-			// If all are current we are good
-			if currentCount == replicas {
-				if mDelayTc < scaleDownDelayTicks {
-					mDelayTc++
-					continue
+			// If we are part of the new peerset and we have been passed the baton.
+			// We will handle scale down.
+			if newPeerSet[ourPeerId] {
+				for _, p := range oldPeers {
+					n.ProposeRemovePeer(p)
 				}
-				// Remove the old peers or transfer leadership (after which new leader resumes with peer removal).
-				// stopMigrationMonitoring is invoked on actual leadership change or
-				// on the next tick when migration completed.
-				// In case these operations fail, the next tick will retry
-				if !foundLeader {
-					s.Debugf("Scale down of '%s > %s' step down ('%s' preferred)", ca.Stream, ca.Name, firstPeer)
-					n.StepDown(firstPeer)
-				} else {
-					s.Noticef("Scale down of '%s > %s' to %+v", ca.Stream, ca.Name, s.peerSetToNames(newPeerSet))
-					// truncate this consumer
-					for _, p := range oldPeerSet {
-						n.ProposeRemovePeer(p)
+				cca := ca.copyGroup()
+				cca.Group.Peers = newPeers
+				cca.Group.Cluster = s.cachedClusterName()
+				cc.meta.ForwardProposal(encodeAddConsumerAssignment(cca))
+				s.Noticef("Scaling down '%s > %s > %s' to %+v", ca.Client.serviceAccount(), ca.Stream, ca.Name, s.peerSetToNames(newPeers))
+
+			} else {
+				var newLeaderPeer, newLeader, newCluster string
+				neededCurrent, current := replicas/2+1, 0
+				for _, r := range ci.Replicas {
+					if r.Current && newPeerSet[r.peer] {
+						current++
+						if newCluster == _EMPTY_ {
+							newLeaderPeer, newLeader, newCluster = r.peer, r.Name, r.cluster
+						}
 					}
-					cca := ca.copyGroup()
-					cca.Group.Cluster = s.ClusterName() // use cluster name of leader/self
-					cca.Group.Peers = newPeerSet
-					cc.meta.ForwardProposal(encodeAddConsumerAssignment(cca))
+				}
+
+				// Check if we have a quorom
+				if current >= neededCurrent {
+					s.Noticef("Transfer of consumer leader for '%s > %s > %s' to '%s'", ca.Client.serviceAccount(), ca.Stream, ca.Name, newLeader)
+					n.StepDown(newLeaderPeer)
 				}
 			}
-			mDelayTc = 0
+
 		case <-t.C:
 			doSnapshot(false)
 		}
@@ -5137,9 +5103,8 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	// Make copy so to not change original.
 	rg := osa.copyGroup().Group
 
-	// Check for a move update.
-	// TODO(dlc) - Should add a resolve from Tags to cluster and check that vs reflect.
-	isMoveRequest, isMoveCancel := false, false
+	// Check for a move request.
+	var isMoveRequest, isMoveCancel bool
 	if lPeerSet := len(peerSet); lPeerSet > 0 {
 		isMoveRequest = true
 		// check if this is a cancellation
@@ -5301,8 +5266,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 			}
 			peerSet = append(peerSet, nrg.Peers...)
 		}
-		origPeers := len(rg.Peers)
-		if origPeers == 1 {
+		if len(rg.Peers) == 1 {
 			rg.Preferred = peerSet[0]
 		}
 		rg.Peers = peerSet
@@ -6387,29 +6351,24 @@ func (mset *stream) stateSnapshotLocked() []byte {
 	return b
 }
 
-// Wiil check if we can do message compression in RAFT and catchup logic.
-// TODO(dlc) - Currently version based, could make capability based, but be more involved.
+// Will check if we can do message compression in RAFT and catchup logic.
 func (mset *stream) checkAllowMsgCompress(peers []string) {
-	var ff, allowed bool
+	allowed := true
 	for _, id := range peers {
-		if sir, ok := mset.srv.nodeToInfo.Load(id); ok && sir != nil {
-			// Check for capability.
-			if si := sir.(nodeInfo); si.cfg != nil && si.cfg.CompressOK {
-				if !ff {
-					ff, allowed = true, true
-				} else {
-					allowed = allowed && true
-				}
-			} else {
-				ff, allowed = true, false
-			}
+		sir, ok := mset.srv.nodeToInfo.Load(id)
+		if !ok || sir == nil {
+			allowed = false
+			break
+		}
+		// Check for capability.
+		if si := sir.(nodeInfo); si.cfg == nil || !si.cfg.CompressOK {
+			allowed = false
+			break
 		}
 	}
-	if allowed {
-		mset.mu.Lock()
-		mset.compressOK = true
-		mset.mu.Unlock()
-	}
+	mset.mu.Lock()
+	mset.compressOK = allowed
+	mset.mu.Unlock()
 }
 
 // processClusteredMsg will propose the inbound message to the underlying raft group.

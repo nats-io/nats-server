@@ -1418,13 +1418,8 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, _ *Account,
 
 	// Handle clustered version here.
 	if s.JetStreamIsClustered() {
-		// If we are inline with client, we still may need to do a callout for stream info
-		// during this call, so place in Go routine to not block client.
-		if c.kind != ROUTER && c.kind != GATEWAY {
-			go s.jsClusteredStreamUpdateRequest(ci, acc, subject, reply, rmsg, &cfg, nil)
-		} else {
-			s.jsClusteredStreamUpdateRequest(ci, acc, subject, reply, rmsg, &cfg, nil)
-		}
+		// Always do in separate Go routine.
+		go s.jsClusteredStreamUpdateRequest(ci, acc, subject, reply, copyBytes(rmsg), &cfg, nil)
 		return
 	}
 
@@ -2297,7 +2292,7 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 		return
 	}
 
-	streamFound := false
+	var streamFound bool
 	cfg := StreamConfig{}
 	currPeers := []string{}
 	currCluster := _EMPTY_
@@ -2328,7 +2323,7 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		peerFound := false
+		var peerFound bool
 		for i := 0; i < len(currPeers); i++ {
 			if currPeers[i] == srcPeer {
 				copy(currPeers[1:], currPeers[:i])
@@ -2393,9 +2388,10 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 
 	cfg.Placement = origPlacement
 
-	s.Noticef("Requested move of: R=%d stream '%s > %s' from old peer set %+v to new peer set %+v",
-		cfg.Replicas, streamName, accName, s.peerSetToNames(currPeers), s.peerSetToNames(peers))
-	// we will always have peers and therefore never do a callout, therefore it is safe to call inline
+	s.Noticef("Requested move for stream '%s > %s' R=%d from %+v to %+v",
+		streamName, accName, cfg.Replicas, s.peerSetToNames(currPeers), s.peerSetToNames(peers))
+
+	// We will always have peers and therefore never do a callout, therefore it is safe to call inline
 	s.jsClusteredStreamUpdateRequest(&ciNew, targetAcc.(*Account), subject, reply, rmsg, &cfg, peers)
 }
 
@@ -2501,7 +2497,7 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 	s.Noticef("Requested cancel of move: R=%d '%s > %s' to peer set %+v and restore previous peer set %+v",
 		cfg.Replicas, streamName, accName, s.peerSetToNames(currPeers), s.peerSetToNames(peers))
 
-	// we will always have peers and therefore never do a callout, therefore it is safe to call inline
+	// We will always have peers and therefore never do a callout, therefore it is safe to call inline
 	s.jsClusteredStreamUpdateRequest(&ciNew, targetAcc.(*Account), subject, reply, rmsg, &cfg, peers)
 }
 

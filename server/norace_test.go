@@ -5516,3 +5516,67 @@ func TestNoRaceJetStreamKVLock(t *testing.T) {
 	close(start)
 	wg.Wait()
 }
+
+func TestNoRaceJetStreamSuperClusterStreamMoveLongRTT(t *testing.T) {
+	// Make C2 far away.
+	gwm := gwProxyMap{
+		"C2": &gwProxy{
+			rtt:  400 * time.Millisecond,
+			up:   1 * 1024 * 1024 * 1024, // 1gbit
+			down: 1 * 1024 * 1024 * 1024, // 1gbit
+		},
+	}
+	sc := createJetStreamTaggedSuperClusterWithGWProxy(t, gwm)
+	defer sc.shutdown()
+
+	nc, js := jsClientConnect(t, sc.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"chunk.*"},
+		Placement: &nats.Placement{Tags: []string{"cloud:aws", "country:us"}},
+		Replicas:  3,
+	}
+
+	// Place a stream in C1.
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	chunk := bytes.Repeat([]byte("Z"), 1000*1024) // ~1MB
+	// 256 MB
+	for i := 0; i < 256; i++ {
+		subj := fmt.Sprintf("chunk.%d", i)
+		js.PublishAsync(subj, chunk)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// C2, slow RTT.
+	cfg.Placement = &nats.Placement{Tags: []string{"cloud:gcp", "country:uk"}}
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	checkFor(t, 10*time.Second, time.Second, func() error {
+		si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
+		if err != nil {
+			return err
+		}
+		if si.Cluster.Name != "C2" {
+			return fmt.Errorf("Wrong cluster: %q", si.Cluster.Name)
+		}
+		if si.Cluster.Leader == _EMPTY_ {
+			return fmt.Errorf("No leader yet")
+		} else if !strings.HasPrefix(si.Cluster.Leader, "C2-") {
+			return fmt.Errorf("Wrong leader: %q", si.Cluster.Leader)
+		}
+		// Now we want to see that we shrink back to original.
+		if len(si.Cluster.Replicas) != cfg.Replicas-1 {
+			return fmt.Errorf("Expected %d replicas, got %d", cfg.Replicas-1, len(si.Cluster.Replicas))
+		}
+		return nil
+	})
+}
