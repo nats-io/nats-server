@@ -70,7 +70,7 @@ func require_True(t *testing.T, b bool) {
 func require_False(t *testing.T, b bool) {
 	t.Helper()
 	if b {
-		t.Fatalf("require no false, but got true")
+		t.Fatalf("require false, but got true")
 	}
 }
 

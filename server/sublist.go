@@ -1215,10 +1215,18 @@ func SubjectsCollide(subj1, subj2 string) bool {
 	if !fwc1 && !fwc2 && len(toks1) != len(toks2) {
 		return false
 	}
+	if lt1, lt2 := len(toks1), len(toks2); lt1 != lt2 {
+		// If the shorter one only has partials then these will not collide.
+		if lt1 < lt2 && !fwc1 || lt2 < lt1 && !fwc2 {
+			return false
+		}
+	}
+
 	stop := len(toks1)
 	if len(toks2) < stop {
 		stop = len(toks2)
 	}
+
 	// We look for reasons to say no.
 	for i := 0; i < stop; i++ {
 		t1, t2 := toks1[i], toks2[i]
@@ -1226,6 +1234,7 @@ func SubjectsCollide(subj1, subj2 string) bool {
 			return false
 		}
 	}
+
 	return true
 }
 
