@@ -27,7 +27,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-func checkFor(t *testing.T, totalWait, sleepDur time.Duration, f func() error) {
+func checkFor(t testing.TB, totalWait, sleepDur time.Duration, f func() error) {
 	t.Helper()
 	timeout := time.Now().Add(totalWait)
 	var err error

@@ -57,7 +57,7 @@ type cluster struct {
 	servers []*Server
 	opts    []*Options
 	name    string
-	t       *testing.T
+	t       testing.TB
 }
 
 func require_True(t *testing.T, b bool) {

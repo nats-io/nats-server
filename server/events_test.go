@@ -423,13 +423,13 @@ func runSolicitWithCredentials(t *testing.T, opts *Options, creds string) (*Serv
 }
 
 // Helper function to check that a leaf node has connected to our server.
-func checkLeafNodeConnected(t *testing.T, s *Server) {
+func checkLeafNodeConnected(t testing.TB, s *Server) {
 	t.Helper()
 	checkLeafNodeConnectedCount(t, s, 1)
 }
 
 // Helper function to check that a leaf node has connected to n server.
-func checkLeafNodeConnectedCount(t *testing.T, s *Server, lnCons int) {
+func checkLeafNodeConnectedCount(t testing.TB, s *Server, lnCons int) {
 	t.Helper()
 	checkFor(t, 5*time.Second, 15*time.Millisecond, func() error {
 		if nln := s.NumLeafNodes(); nln != lnCons {
