@@ -1458,6 +1458,14 @@ func TestSublistMatchWithEmptyTokens(t *testing.T) {
 	}
 }
 
+func TestSublistSubjectCollide(t *testing.T) {
+	require_False(t, SubjectsCollide("foo.*", "foo.*.bar.>"))
+	require_False(t, SubjectsCollide("foo.*.bar.>", "foo.*"))
+	require_True(t, SubjectsCollide("foo.*", "foo.foo"))
+	require_True(t, SubjectsCollide("foo.*", "*.foo"))
+	require_True(t, SubjectsCollide("foo.bar.>", "*.bar.foo"))
+}
+
 // -- Benchmarks Setup --
 
 var benchSublistSubs []*subscription
