@@ -4576,6 +4576,41 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	}
 }
 
+func TestJetStreamPubAckFutureComplete(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "foo", Storage: nats.MemoryStorage}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	toSend := 1_000_000
+	pending := make([]nats.PubAckFuture, 0, toSend)
+	for i := 0; i < toSend; i++ {
+		pubAckFuture, err := js.PublishAsync("foo", []byte("OK"))
+		if err != nil {
+			t.Fatalf("Failed to publish: %v", err)
+		}
+		pending = append(pending, pubAckFuture)
+	}
+	<-js.PublishAsyncComplete()
+	for i, pubAckFuture := range pending {
+		select {
+		case <-pubAckFuture.Ok():
+		case err := <-pubAckFuture.Err():
+			t.Fatalf("Failed to publish: %v", err)
+		default:
+			t.Fatalf("PubAck %d still pending after publish completed", i)
+		}
+	}
+}
+
 func TestJetStreamPubAckPerf(t *testing.T) {
 	// Comment out to run, holding place for now.
 	t.SkipNow()
