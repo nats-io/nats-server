@@ -19427,4 +19427,18 @@ func TestJetStreamStreamSubjectsOverlap(t *testing.T) {
 	})
 	require_Error(t, err)
 	require_True(t, strings.Contains(err.Error(), "overlaps"))
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.*"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.*", "foo.A"},
+	})
+	require_Error(t, err)
+	require_True(t, strings.Contains(err.Error(), "overlaps"))
+
 }
