@@ -7219,7 +7219,7 @@ func (mset *stream) handleClusterStreamInfoRequest(sub *subscription, c *client,
 	sysc.sendInternalMsg(reply, _EMPTY_, nil, si)
 }
 
-const defaultMaxTotalCatchupOutBytes = int64(32 * 1024 * 1024) // 32MB for now, for the total server.
+const defaultMaxTotalCatchupOutBytes = int64(128 * 1024 * 1024) // 128MB for now, for the total server.
 
 // Current total outstanding catchup bytes.
 func (s *Server) gcbTotal() int64 {
