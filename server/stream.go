@@ -404,10 +404,24 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		}
 	}
 
-	// Check for overlapping subjects. These are not allowed for now.
+	// Check for overlapping subjects with other streams.
+	// These are not allowed for now.
 	if jsa.subjectsOverlap(cfg.Subjects) {
 		jsa.mu.Unlock()
 		return nil, NewJSStreamSubjectOverlapError()
+	}
+
+	// Now check if we have multiple subjects they we do not overlap ourselves
+	// which would cause duplicate entries (assuming no MsgID).
+	if len(cfg.Subjects) > 1 {
+		for _, subj := range cfg.Subjects {
+			for _, tsubj := range cfg.Subjects {
+				if tsubj != subj && SubjectsCollide(tsubj, subj) {
+					jsa.mu.Unlock()
+					return nil, fmt.Errorf("subject %q overlaps with %q", subj, tsubj)
+				}
+			}
+		}
 	}
 
 	if !hasTier {
