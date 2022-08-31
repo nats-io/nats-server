@@ -2134,6 +2134,9 @@ func (js *jetStream) sufficientResources(limits map[string]JetStreamAccountLimit
 	// Since we know if we are here we are single server mode, check the account reservations.
 	var storeReserved, memReserved int64
 	for _, jsa := range js.accounts {
+		if jsa.account.IsExpired() {
+			continue
+		}
 		jsa.usageMu.RLock()
 		maxMemory, maxStore := totalMaxBytes(jsa.limits)
 		jsa.usageMu.RUnlock()
