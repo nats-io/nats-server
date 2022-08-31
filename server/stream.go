@@ -404,7 +404,8 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		}
 	}
 
-	// Check for overlapping subjects. These are not allowed for now.
+	// Check for overlapping subjects with other streams.
+	// These are not allowed for now.
 	if jsa.subjectsOverlap(cfg.Subjects) {
 		jsa.mu.Unlock()
 		return nil, NewJSStreamSubjectOverlapError()
@@ -1198,6 +1199,18 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		return StreamConfig{}, NewJSStreamMaxBytesRequiredError()
 	} else if limit > 0 && cfg.MaxBytes > limit {
 		return StreamConfig{}, NewJSStreamMaxStreamBytesExceededError()
+	}
+
+	// Now check if we have multiple subjects they we do not overlap ourselves
+	// which would cause duplicate entries (assuming no MsgID).
+	if len(cfg.Subjects) > 1 {
+		for _, subj := range cfg.Subjects {
+			for _, tsubj := range cfg.Subjects {
+				if tsubj != subj && SubjectsCollide(tsubj, subj) {
+					return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject %q overlaps with %q", subj, tsubj))
+				}
+			}
+		}
 	}
 
 	// If we have a republish directive check if we can create a transform here.

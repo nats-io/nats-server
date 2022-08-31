@@ -19410,3 +19410,35 @@ func TestJetStreamSubjectBasedFilteredConsumers(t *testing.T) {
 	_, err = nc.Request(ecSubj, req, 500*time.Millisecond)
 	require_Error(t, err, nats.ErrTimeout)
 }
+
+func TestJetStreamStreamSubjectsOverlap(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.*", "foo.A"},
+	})
+	require_Error(t, err)
+	require_True(t, strings.Contains(err.Error(), "overlaps"))
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.*"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.*", "foo.A"},
+	})
+	require_Error(t, err)
+	require_True(t, strings.Contains(err.Error(), "overlaps"))
+
+}
