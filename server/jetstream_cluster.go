@@ -5247,7 +5247,8 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		if len(peerSet) == 0 {
 			nrg, err := js.createGroupForStream(ci, newCfg)
 			if err != nil {
-				resp.Error = NewJSClusterNoPeersError(err)
+				// err helpful for development debug, but concise message sufficient for API return
+				resp.Error = NewJSClusterNoPeersError(fmt.Errorf("cluster does not match placement criteria for move"))
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 				return
 			}

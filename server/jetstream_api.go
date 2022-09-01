@@ -2380,7 +2380,8 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 			errs = append(errs, e)
 		}
 		if peers == nil {
-			resp.Error = NewJSClusterNoPeersError(&errs)
+			// per-cluster errs helpful for development debug, but concise message sufficient for API return
+			resp.Error = NewJSClusterNoPeersError(fmt.Errorf("no clusters match placement criteria for move"))
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
