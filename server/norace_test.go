@@ -1091,10 +1091,7 @@ func TestNoRaceAcceptLoopsDoNotLeaveOpenedConn(t *testing.T) {
 }
 
 func TestNoRaceJetStreamDeleteStreamManyConsumers(t *testing.T) {
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	mname := "MYS"
@@ -1123,10 +1120,7 @@ func TestNoRaceJetStreamDeleteStreamManyConsumers(t *testing.T) {
 // This is not limited to the case above, its just the one that exposed it.
 // This test is to show that issue and that the fix works, meaning we no longer swap c.acc.
 func TestNoRaceJetStreamServiceImportAccountSwapIssue(t *testing.T) {
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	// Client based API
@@ -1200,10 +1194,7 @@ func TestNoRaceJetStreamServiceImportAccountSwapIssue(t *testing.T) {
 }
 
 func TestNoRaceJetStreamAPIStreamListPaging(t *testing.T) {
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	// Create 2X limit
@@ -1267,10 +1258,7 @@ func TestNoRaceJetStreamAPIStreamListPaging(t *testing.T) {
 }
 
 func TestNoRaceJetStreamAPIConsumerListPaging(t *testing.T) {
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	sname := "MYSTREAM"
@@ -1333,7 +1321,7 @@ func TestNoRaceJetStreamAPIConsumerListPaging(t *testing.T) {
 }
 
 func TestNoRaceJetStreamWorkQueueLoadBalance(t *testing.T) {
-	s := RunBasicJetStreamServer()
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	mname := "MY_MSG_SET"
@@ -2047,10 +2035,7 @@ func TestNoRaceJetStreamClusterExtendedStreamPurgeStall(t *testing.T) {
 		}
 	}
 
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	nc, js := jsClientConnect(t, s)
@@ -2377,10 +2362,7 @@ func TestNoRaceJetStreamSuperClusterRIPStress(t *testing.T) {
 }
 
 func TestNoRaceJetStreamSlowFilteredInititalPendingAndFirstMsg(t *testing.T) {
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	// Create directly here to force multiple blocks, etc.
@@ -2530,10 +2512,7 @@ func TestNoRaceJetStreamFileStoreBufferReuse(t *testing.T) {
 	// Uncomment to run. Needs to be on a big machine.
 	skip(t)
 
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	cfg := &StreamConfig{Name: "TEST", Subjects: []string{"foo", "bar", "baz"}, Storage: FileStorage}
@@ -2873,11 +2852,7 @@ func TestNoRaceJetStreamSuperClusterAccountConnz(t *testing.T) {
 }
 
 func TestNoRaceCompressedConnz(t *testing.T) {
-	s := RunBasicJetStreamServer()
-	config := s.JetStreamConfig()
-	if config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	nc, _ := jsClientConnect(t, s)
@@ -3105,11 +3080,7 @@ func TestNoRaceJetStreamClusterExtendedStreamPurge(t *testing.T) {
 }
 
 func TestNoRaceJetStreamFileStoreCompaction(t *testing.T) {
-	s := RunBasicJetStreamServer()
-	config := s.JetStreamConfig()
-	if config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	nc, js := jsClientConnect(t, s)
@@ -3161,7 +3132,6 @@ func TestNoRaceJetStreamEncryptionEnabledOnRestartWithExpire(t *testing.T) {
 		listen: 127.0.0.1:-1
 		jetstream: enabled
 	`))
-	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -3210,7 +3180,6 @@ func TestNoRaceJetStreamEncryptionEnabledOnRestartWithExpire(t *testing.T) {
 
 	ncs := fmt.Sprintf("\nlisten: 127.0.0.1:-1\njetstream: {key: %q, store_dir: %q}\n", "s3cr3t!", config.StoreDir)
 	conf = createConfFile(t, []byte(ncs))
-	defer removeFile(t, conf)
 
 	// Try to drain entropy to see if effects startup time.
 	drain := make([]byte, 32*1024*1024) // Pull 32Mb of crypto rand.
@@ -3231,11 +3200,7 @@ func TestNoRaceJetStreamOrderedConsumerMissingMsg(t *testing.T) {
 	// Uncomment to run. Needs to be on a big machine. Do not want as part of Travis tests atm.
 	skip(t)
 
-	s := RunBasicJetStreamServer()
-	config := s.JetStreamConfig()
-	if config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	nc, js := jsClientConnect(t, s)
@@ -3388,7 +3353,7 @@ func TestNoRaceJetStreamClusterInterestPolicyAckNone(t *testing.T) {
 // There was a bug in the filestore compact code that would cause a store
 // with JSExpectedLastSubjSeq to fail with "wrong last sequence: 0"
 func TestNoRaceJetStreamLastSubjSeqAndFilestoreCompact(t *testing.T) {
-	s := RunBasicJetStreamServer()
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	// Client based API
@@ -4058,11 +4023,7 @@ func TestNoRaceJetStreamClusterStreamDropCLFS(t *testing.T) {
 }
 
 func TestNoRaceJetStreamMemstoreWithLargeInteriorDeletes(t *testing.T) {
-	s := RunBasicJetStreamServer()
-	config := s.JetStreamConfig()
-	if config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	// Client for API requests.
@@ -4115,8 +4076,7 @@ func TestNoRaceJetStreamMemstoreWithLargeInteriorDeletes(t *testing.T) {
 // cleanup too many consumers at the same time.
 // https://github.com/nats-io/nats-server/issues/2742
 func TestNoRaceJetStreamConsumerFileStoreConcurrentDiskIO(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	// Artificially adjust our environment for this test.
 	gmp := runtime.GOMAXPROCS(32)
@@ -4253,7 +4213,6 @@ func TestNoRaceJetStreamStreamInfoSubjectDetailsLimits(t *testing.T) {
 		  }
 		}
 	`))
-	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
 	if config := s.JetStreamConfig(); config != nil {
@@ -4324,10 +4283,7 @@ func TestNoRaceJetStreamStreamInfoSubjectDetailsLimits(t *testing.T) {
 }
 
 func TestNoRaceJetStreamSparseConsumers(t *testing.T) {
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	nc, js := jsClientConnect(t, s)
@@ -4402,10 +4358,7 @@ func TestNoRaceJetStreamSparseConsumers(t *testing.T) {
 }
 
 func TestNoRaceJetStreamConsumerFilterPerfDegradation(t *testing.T) {
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	nc, _ := jsClientConnect(t, s)
@@ -4459,8 +4412,7 @@ func TestNoRaceJetStreamConsumerFilterPerfDegradation(t *testing.T) {
 }
 
 func TestNoRaceJetStreamFileStoreKeyFileCleanup(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	prf := func(context []byte) ([]byte, error) {
 		h := hmac.New(sha256.New, []byte("dlc22"))
@@ -4592,10 +4544,7 @@ func TestNoRaceJetStreamMsgIdPerfDuringCatchup(t *testing.T) {
 func TestNoRaceJetStreamRebuildDeDupeAndMemoryPerf(t *testing.T) {
 	skip(t)
 
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	nc, js := jsClientConnect(t, s)
@@ -4676,10 +4625,7 @@ func TestNoRaceJetStreamRebuildDeDupeAndMemoryPerf(t *testing.T) {
 func TestNoRaceJetStreamMemoryUsageOnLimitedStreamWithMirror(t *testing.T) {
 	skip(t)
 
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	nc, js := jsClientConnect(t, s)
@@ -4729,10 +4675,7 @@ func TestNoRaceJetStreamMemoryUsageOnLimitedStreamWithMirror(t *testing.T) {
 func TestNoRaceJetStreamOrderedConsumerLongRTTPerformance(t *testing.T) {
 	skip(t)
 
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	nc, _ := jsClientConnect(t, s)
@@ -5392,8 +5335,7 @@ func TestNoRaceJetStreamClusterStreamNamesAndInfosMoreThanAPILimit(t *testing.T)
 }
 
 func TestNoRaceJetStreamFileStoreLargeKVAccessTiming(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	blkSize := uint64(4 * 1024)
 	// Compensate for slower IO on MacOSX
@@ -5451,10 +5393,7 @@ func TestNoRaceJetStreamFileStoreLargeKVAccessTiming(t *testing.T) {
 }
 
 func TestNoRaceJetStreamKVLock(t *testing.T) {
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	nc, js := jsClientConnect(t, s)

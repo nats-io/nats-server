@@ -253,7 +253,6 @@ func TestOCSPMustStapleAutoDoesNotShutdown(t *testing.T) {
 		}
 	`
 	conf := createConfFile(t, []byte(content))
-	defer removeFile(t, conf)
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
@@ -535,7 +534,6 @@ func TestOCSPClient(t *testing.T) {
 			test.configure()
 			content := test.config
 			conf := createConfFile(t, []byte(content))
-			defer removeFile(t, conf)
 			s, opts := RunServerWithConfig(conf)
 			defer s.Shutdown()
 
@@ -593,7 +591,6 @@ func TestOCSPReloadRotateTLSCertWithNoURL(t *testing.T) {
 		}
 	`
 	conf := createConfFile(t, []byte(content))
-	defer removeFile(t, conf)
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
@@ -684,8 +681,7 @@ func TestOCSPReloadRotateTLSCertDisableMustStaple(t *testing.T) {
 	addr := fmt.Sprintf("http://%s", ocspr.Addr)
 	setOCSPStatus(t, addr, serverCert, ocsp.Good)
 
-	storeDir := createDir(t, "_ocsp")
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	originalContent := `
 		port: -1
@@ -702,7 +698,6 @@ func TestOCSPReloadRotateTLSCertDisableMustStaple(t *testing.T) {
 
 	content := fmt.Sprintf(originalContent, storeDir)
 	conf := createConfFile(t, []byte(content))
-	defer removeFile(t, conf)
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
@@ -895,7 +890,6 @@ func TestOCSPReloadRotateTLSCertEnableMustStaple(t *testing.T) {
 		}
 	`
 	conf := createConfFile(t, []byte(content))
-	defer removeFile(t, conf)
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
@@ -990,12 +984,9 @@ func TestOCSPCluster(t *testing.T) {
 	setOCSPStatus(t, addr, "configs/certs/ocsp/server-status-request-url-08-cert.pem", ocsp.Good)
 
 	// Store Dirs
-	storeDirA := createDir(t, "_ocspA")
-	defer removeDir(t, storeDirA)
-	storeDirB := createDir(t, "_ocspB")
-	defer removeDir(t, storeDirB)
-	storeDirC := createDir(t, "_ocspC")
-	defer removeDir(t, storeDirC)
+	storeDirA := t.TempDir()
+	storeDirB := t.TempDir()
+	storeDirC := t.TempDir()
 
 	// Seed server configuration
 	srvConfA := `
@@ -1027,7 +1018,6 @@ func TestOCSPCluster(t *testing.T) {
 	`
 	srvConfA = fmt.Sprintf(srvConfA, storeDirA)
 	sconfA := createConfFile(t, []byte(srvConfA))
-	defer removeFile(t, sconfA)
 	srvA, optsA := RunServerWithConfig(sconfA)
 	defer srvA.Shutdown()
 
@@ -1064,7 +1054,6 @@ func TestOCSPCluster(t *testing.T) {
 	`
 	srvConfB = fmt.Sprintf(srvConfB, storeDirB, optsA.Cluster.Port)
 	conf := createConfFile(t, []byte(srvConfB))
-	defer removeFile(t, conf)
 	srvB, optsB := RunServerWithConfig(conf)
 	defer srvB.Shutdown()
 
@@ -1131,7 +1120,6 @@ func TestOCSPCluster(t *testing.T) {
 	`
 	srvConfC = fmt.Sprintf(srvConfC, storeDirC, optsA.Cluster.Port)
 	conf = createConfFile(t, []byte(srvConfC))
-	defer removeFile(t, conf)
 	srvC, optsC := RunServerWithConfig(conf)
 	defer srvC.Shutdown()
 
@@ -1264,12 +1252,9 @@ func TestOCSPLeaf(t *testing.T) {
 	setOCSPStatus(t, addr, "configs/certs/ocsp/server-status-request-url-08-cert.pem", ocsp.Good)
 
 	// Store Dirs
-	storeDirA := createDir(t, "_ocspA")
-	defer removeDir(t, storeDirA)
-	storeDirB := createDir(t, "_ocspB")
-	defer removeDir(t, storeDirB)
-	storeDirC := createDir(t, "_ocspC")
-	defer removeDir(t, storeDirC)
+	storeDirA := t.TempDir()
+	storeDirB := t.TempDir()
+	storeDirC := t.TempDir()
 
 	// LeafNode server configuration
 	srvConfA := `
@@ -1300,7 +1285,6 @@ func TestOCSPLeaf(t *testing.T) {
 	`
 	srvConfA = fmt.Sprintf(srvConfA, storeDirA)
 	sconfA := createConfFile(t, []byte(srvConfA))
-	defer removeFile(t, sconfA)
 	srvA, optsA := RunServerWithConfig(sconfA)
 	defer srvA.Shutdown()
 
@@ -1332,7 +1316,6 @@ func TestOCSPLeaf(t *testing.T) {
 	`
 	srvConfB = fmt.Sprintf(srvConfB, storeDirB, optsA.LeafNode.Port)
 	conf := createConfFile(t, []byte(srvConfB))
-	defer removeFile(t, conf)
 	srvB, optsB := RunServerWithConfig(conf)
 	defer srvB.Shutdown()
 
@@ -1393,7 +1376,6 @@ func TestOCSPLeaf(t *testing.T) {
 	`
 	srvConfC = fmt.Sprintf(srvConfC, storeDirC, optsA.LeafNode.Port)
 	conf = createConfFile(t, []byte(srvConfC))
-	defer removeFile(t, conf)
 	srvC, optsC := RunServerWithConfig(conf)
 	defer srvC.Shutdown()
 
@@ -1535,12 +1517,9 @@ func TestOCSPGateway(t *testing.T) {
 	setOCSPStatus(t, addr, "configs/certs/ocsp/server-status-request-url-08-cert.pem", ocsp.Good)
 
 	// Store Dirs
-	storeDirA := createDir(t, "_ocspA")
-	defer removeDir(t, storeDirA)
-	storeDirB := createDir(t, "_ocspB")
-	defer removeDir(t, storeDirB)
-	storeDirC := createDir(t, "_ocspC")
-	defer removeDir(t, storeDirC)
+	storeDirA := t.TempDir()
+	storeDirB := t.TempDir()
+	storeDirC := t.TempDir()
 
 	// Gateway server configuration
 	srvConfA := `
@@ -1572,7 +1551,6 @@ func TestOCSPGateway(t *testing.T) {
 	`
 	srvConfA = fmt.Sprintf(srvConfA, storeDirA)
 	sconfA := createConfFile(t, []byte(srvConfA))
-	defer removeFile(t, sconfA)
 	srvA, optsA := RunServerWithConfig(sconfA)
 	defer srvA.Shutdown()
 
@@ -1615,7 +1593,6 @@ func TestOCSPGateway(t *testing.T) {
 	`
 	srvConfB = fmt.Sprintf(srvConfB, storeDirB, optsA.Gateway.Port)
 	conf := createConfFile(t, []byte(srvConfB))
-	defer removeFile(t, conf)
 	srvB, optsB := RunServerWithConfig(conf)
 	defer srvB.Shutdown()
 
@@ -1679,7 +1656,6 @@ func TestOCSPGateway(t *testing.T) {
 	`
 	srvConfC = fmt.Sprintf(srvConfC, storeDirC, optsA.Gateway.Port)
 	conf = createConfFile(t, []byte(srvConfC))
-	defer removeFile(t, conf)
 	srvC, optsC := RunServerWithConfig(conf)
 	defer srvC.Shutdown()
 
@@ -1841,7 +1817,6 @@ func TestOCSPGatewayIntermediate(t *testing.T) {
 	`
 	srvConfA = fmt.Sprintf(srvConfA, addr)
 	sconfA := createConfFile(t, []byte(srvConfA))
-	defer removeFile(t, sconfA)
 	srvA, optsA := RunServerWithConfig(sconfA)
 	defer srvA.Shutdown()
 
@@ -1875,7 +1850,6 @@ func TestOCSPGatewayIntermediate(t *testing.T) {
 	`
 	srvConfB = fmt.Sprintf(srvConfB, addr, optsA.Gateway.Port)
 	conf := createConfFile(t, []byte(srvConfB))
-	defer removeFile(t, conf)
 	srvB, optsB := RunServerWithConfig(conf)
 	defer srvB.Shutdown()
 
@@ -2133,7 +2107,6 @@ func TestOCSPCustomConfig(t *testing.T) {
 			test.configure()
 			content := test.config
 			conf := createConfFile(t, []byte(content))
-			defer removeFile(t, conf)
 			s, opts := RunServerWithConfig(conf)
 			defer s.Shutdown()
 
@@ -2195,7 +2168,6 @@ func TestOCSPCustomConfigReloadDisable(t *testing.T) {
 		}
 	`
 	conf := createConfFile(t, []byte(content))
-	defer removeFile(t, conf)
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
@@ -2297,7 +2269,6 @@ func TestOCSPCustomConfigReloadEnable(t *testing.T) {
 		}
 	`
 	conf := createConfFile(t, []byte(content))
-	defer removeFile(t, conf)
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
@@ -2599,14 +2570,10 @@ func TestOCSPSuperCluster(t *testing.T) {
 	setOCSPStatus(t, addr, "configs/certs/ocsp/server-cert.pem", ocsp.Good)
 
 	// Store Dirs
-	storeDirA := createDir(t, "_ocspA")
-	defer removeDir(t, storeDirA)
-	storeDirB := createDir(t, "_ocspB")
-	defer removeDir(t, storeDirB)
-	storeDirC := createDir(t, "_ocspC")
-	defer removeDir(t, storeDirC)
-	storeDirD := createDir(t, "_ocspD")
-	defer removeDir(t, storeDirD)
+	storeDirA := t.TempDir()
+	storeDirB := t.TempDir()
+	storeDirC := t.TempDir()
+	storeDirD := t.TempDir()
 
 	// Gateway server configuration
 	srvConfA := `
@@ -2656,7 +2623,6 @@ func TestOCSPSuperCluster(t *testing.T) {
 	`
 	srvConfA = fmt.Sprintf(srvConfA, storeDirA)
 	sconfA := createConfFile(t, []byte(srvConfA))
-	defer removeFile(t, sconfA)
 	srvA, optsA := RunServerWithConfig(sconfA)
 	defer srvA.Shutdown()
 
@@ -2710,7 +2676,6 @@ func TestOCSPSuperCluster(t *testing.T) {
 	`
 	srvConfB = fmt.Sprintf(srvConfB, storeDirB, optsA.Cluster.Port)
 	conf := createConfFile(t, []byte(srvConfB))
-	defer removeFile(t, conf)
 	srvB, optsB := RunServerWithConfig(conf)
 	defer srvB.Shutdown()
 
@@ -2775,7 +2740,6 @@ func TestOCSPSuperCluster(t *testing.T) {
 	`
 	srvConfC = fmt.Sprintf(srvConfC, storeDirC, optsA.Gateway.Port)
 	conf = createConfFile(t, []byte(srvConfC))
-	defer removeFile(t, conf)
 	srvC, optsC := RunServerWithConfig(conf)
 	defer srvC.Shutdown()
 
@@ -2838,7 +2802,6 @@ func TestOCSPSuperCluster(t *testing.T) {
 	`
 	srvConfD = fmt.Sprintf(srvConfD, addr, storeDirD, optsA.Gateway.Port, optsC.Gateway.Port)
 	conf = createConfFile(t, []byte(srvConfD))
-	defer removeFile(t, conf)
 	srvD, _ := RunServerWithConfig(conf)
 	defer srvD.Shutdown()
 

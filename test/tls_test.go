@@ -151,7 +151,6 @@ func TestTLSClientCertificateCheckWithAllowedConnectionTypes(t *testing.T) {
 			]
 		}
 	`))
-	defer removeFile(t, conf)
 	s, o := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
@@ -1180,7 +1179,6 @@ func TestTLSHandshakeFailureMemUsage(t *testing.T) {
 				}
 			`)
 			conf := createConfFile(t, []byte(content))
-			defer removeFile(t, conf)
 			s, opts := RunServerWithConfig(conf)
 			defer s.Shutdown()
 
@@ -1517,7 +1515,6 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 				}
 			`)
 			conf := createConfFile(t, []byte(content))
-			defer removeFile(t, conf)
 			s, opts := RunServerWithConfig(conf)
 			defer s.Shutdown()
 
@@ -1637,7 +1634,6 @@ func TestTLSClientAuthWithRDNSequenceReordered(t *testing.T) {
 				}
 			`)
 			conf := createConfFile(t, []byte(content))
-			defer removeFile(t, conf)
 			s, opts := RunServerWithConfig(conf)
 			defer s.Shutdown()
 
@@ -1770,7 +1766,6 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 				}
 			`)
 			conf := createConfFile(t, []byte(content))
-			defer removeFile(t, conf)
 			s, opts := RunServerWithConfig(conf)
 			defer s.Shutdown()
 
@@ -1821,7 +1816,6 @@ func TestTLSPinnedCertsClient(t *testing.T) {
 	}`
 
 	confFileName := createConfFile(t, []byte(fmt.Sprintf(tmpl, "aaaaaaaa09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9")))
-	defer removeFile(t, confFileName)
 	srv, o := RunServerWithConfig(confFileName)
 	defer srv.Shutdown()
 
@@ -1891,8 +1885,6 @@ func TestTLSConnectionRate(t *testing.T) {
 	`
 
 	confFileName := createConfFile(t, []byte(config))
-	defer removeFile(t, confFileName)
-
 	srv, _ := RunServerWithConfig(confFileName)
 	logger := newCaptureWarnLogger()
 	srv.SetLogger(logger, false, false)
@@ -1951,12 +1943,10 @@ func TestTLSPinnedCertsRoute(t *testing.T) {
 	}`
 
 	confSeed := createConfFile(t, []byte(tmplSeed))
-	defer removeFile(t, confSeed)
 	srvSeed, o := RunServerWithConfig(confSeed)
 	defer srvSeed.Shutdown()
 
 	confSrv := createConfFile(t, []byte(fmt.Sprintf(tmplSrv, o.Cluster.Port, "89386860ea1222698ea676fc97310bdf2bff6f7e2b0420fac3b3f8f5a08fede5")))
-	defer removeFile(t, confSrv)
 	srv, _ := RunServerWithConfig(confSrv)
 	defer srv.Shutdown()
 

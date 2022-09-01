@@ -37,8 +37,7 @@ import (
 )
 
 func TestFileStoreBasics(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -106,8 +105,7 @@ func TestFileStoreBasics(t *testing.T) {
 }
 
 func TestFileStoreMsgHeaders(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -138,8 +136,7 @@ func TestFileStoreMsgHeaders(t *testing.T) {
 }
 
 func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fcfg := FileStoreConfig{StoreDir: storeDir}
 
@@ -271,8 +268,7 @@ func TestFileStoreBasicWriteMsgsAndRestore(t *testing.T) {
 }
 
 func TestFileStoreSelectNextFirst(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 256}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -310,8 +306,7 @@ func TestFileStoreSelectNextFirst(t *testing.T) {
 }
 
 func TestFileStoreSkipMsg(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 256}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -399,8 +394,7 @@ func TestFileStoreSkipMsg(t *testing.T) {
 }
 
 func TestFileStoreWriteExpireWrite(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	cexp := 10 * time.Millisecond
 	fs, err := newFileStore(
@@ -464,8 +458,7 @@ func TestFileStoreWriteExpireWrite(t *testing.T) {
 }
 
 func TestFileStoreMsgLimit(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage, MaxMsgs: 10})
 	if err != nil {
@@ -501,8 +494,7 @@ func TestFileStoreMsgLimit(t *testing.T) {
 }
 
 func TestFileStoreMsgLimitBug(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage, MaxMsgs: 1})
 	if err != nil {
@@ -530,8 +522,7 @@ func TestFileStoreBytesLimit(t *testing.T) {
 	toStore := uint64(1024)
 	maxBytes := storedMsgSize * toStore
 
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage, MaxBytes: int64(maxBytes)})
 	if err != nil {
@@ -574,8 +565,7 @@ func TestFileStoreBytesLimit(t *testing.T) {
 func TestFileStoreAgeLimit(t *testing.T) {
 	maxAge := 250 * time.Millisecond
 
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 256},
@@ -635,8 +625,7 @@ func TestFileStoreAgeLimit(t *testing.T) {
 }
 
 func TestFileStoreTimeStamps(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -665,8 +654,7 @@ func TestFileStoreTimeStamps(t *testing.T) {
 }
 
 func TestFileStorePurge(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	blkSize := uint64(64 * 1024)
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: blkSize}, StreamConfig{Name: "zzz", Storage: FileStorage})
@@ -782,8 +770,7 @@ func TestFileStorePurge(t *testing.T) {
 }
 
 func TestFileStoreCompact(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	prf := func(context []byte) ([]byte, error) {
 		h := hmac.New(sha256.New, []byte("dlc22"))
@@ -855,8 +842,7 @@ func TestFileStoreCompact(t *testing.T) {
 }
 
 func TestFileStoreCompactLastPlusOne(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 8192, AsyncFlush: false}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -889,8 +875,7 @@ func TestFileStoreCompactLastPlusOne(t *testing.T) {
 }
 
 func TestFileStoreCompactMsgCountBug(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -931,8 +916,7 @@ func TestFileStoreCompactMsgCountBug(t *testing.T) {
 func TestFileStoreCompactPerf(t *testing.T) {
 	t.SkipNow()
 
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 8192, AsyncFlush: true}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -967,8 +951,7 @@ func TestFileStoreCompactPerf(t *testing.T) {
 }
 
 func TestFileStoreStreamTruncate(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	prf := func(context []byte) ([]byte, error) {
 		h := hmac.New(sha256.New, []byte("dlc22"))
@@ -1056,8 +1039,7 @@ func TestFileStoreStreamTruncate(t *testing.T) {
 }
 
 func TestFileStoreRemovePartialRecovery(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir},
@@ -1107,8 +1089,7 @@ func TestFileStoreRemovePartialRecovery(t *testing.T) {
 }
 
 func TestFileStoreRemoveOutOfOrderRecovery(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir},
@@ -1181,8 +1162,7 @@ func TestFileStoreRemoveOutOfOrderRecovery(t *testing.T) {
 func TestFileStoreAgeLimitRecovery(t *testing.T) {
 	maxAge := 10 * time.Millisecond
 
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir, CacheExpire: 1 * time.Millisecond},
@@ -1226,8 +1206,7 @@ func TestFileStoreAgeLimitRecovery(t *testing.T) {
 }
 
 func TestFileStoreBitRot(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -1295,8 +1274,7 @@ func TestFileStoreBitRot(t *testing.T) {
 }
 
 func TestFileStoreEraseMsg(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -1357,8 +1335,7 @@ func TestFileStoreEraseMsg(t *testing.T) {
 }
 
 func TestFileStoreEraseAndNoIndexRecovery(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -1411,8 +1388,7 @@ func TestFileStoreEraseAndNoIndexRecovery(t *testing.T) {
 }
 
 func TestFileStoreMeta(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	mconfig := StreamConfig{Name: "ZZ-22-33", Storage: FileStorage, Subjects: []string{"foo.*"}, Replicas: 22}
 
@@ -1508,8 +1484,7 @@ func TestFileStoreMeta(t *testing.T) {
 }
 
 func TestFileStoreWriteAndReadSameBlock(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir},
@@ -1531,8 +1506,7 @@ func TestFileStoreWriteAndReadSameBlock(t *testing.T) {
 }
 
 func TestFileStoreAndRetrieveMultiBlock(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	subj, msg := "foo", []byte("Hello World!")
 	storedMsgSize := fileStoreMsgSize(subj, nil, msg)
@@ -1572,8 +1546,7 @@ func TestFileStoreAndRetrieveMultiBlock(t *testing.T) {
 }
 
 func TestFileStoreCollapseDmap(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	subj, msg := "foo", []byte("Hello World!")
 	storedMsgSize := fileStoreMsgSize(subj, nil, msg)
@@ -1649,8 +1622,7 @@ func TestFileStoreReadCache(t *testing.T) {
 	subj, msg := "foo.bar", make([]byte, 1024)
 	storedMsgSize := fileStoreMsgSize(subj, nil, msg)
 
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, CacheExpire: 100 * time.Millisecond}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -1700,8 +1672,7 @@ func TestFileStoreReadCache(t *testing.T) {
 }
 
 func TestFileStorePartialCacheExpiration(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	cexp := 10 * time.Millisecond
 
@@ -1725,8 +1696,7 @@ func TestFileStorePartialCacheExpiration(t *testing.T) {
 }
 
 func TestFileStorePartialIndexes(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	cexp := 10 * time.Millisecond
 
@@ -1772,8 +1742,7 @@ func TestFileStorePartialIndexes(t *testing.T) {
 }
 
 func TestFileStoreSnapshot(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	subj, msg := "foo", []byte("Hello Snappy!")
 
@@ -1836,8 +1805,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 		r := bytes.NewReader(snap)
 		tr := tar.NewReader(s2.NewReader(r))
 
-		rstoreDir := createDir(t, JetStreamStoreDir)
-		defer removeDir(t, rstoreDir)
+		rstoreDir := t.TempDir()
 
 		for {
 			hdr, err := tr.Next()
@@ -1960,8 +1928,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 }
 
 func TestFileStoreConsumer(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -2140,10 +2107,13 @@ func TestFileStoreWriteFailures(t *testing.T) {
 	if stat, err := os.Stat(tdir); err != nil || !stat.IsDir() {
 		t.SkipNow()
 	}
-	defer removeDir(t, tdir)
 
 	storeDir := filepath.Join(tdir, JetStreamStoreDir)
-	os.MkdirAll(storeDir, 0755)
+	err := os.MkdirAll(storeDir, 0755)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer removeDir(t, storeDir)
 
 	subj, msg := "foo", []byte("Hello Write Failures!")
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
@@ -2239,8 +2209,7 @@ func TestFileStorePerf(t *testing.T) {
 		friendlyBytes(int64(toStore*storedMsgSize)),
 	)
 
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir, AsyncFlush: true},
@@ -2378,8 +2347,7 @@ func TestFileStoreReadBackMsgPerf(t *testing.T) {
 		friendlyBytes(int64(toStore*storedMsgSize)),
 	)
 
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir},
@@ -2427,8 +2395,7 @@ func TestFileStoreStoreLimitRemovePerf(t *testing.T) {
 	// 1GB
 	toStore := 1 * 1024 * 1024 * 1024 / storedMsgSize
 
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir},
@@ -2483,8 +2450,7 @@ func TestFileStorePubPerfWithSmallBlkSize(t *testing.T) {
 		friendlyBytes(int64(toStore*storedMsgSize)),
 	)
 
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: FileStoreMinBlkSize},
@@ -2508,8 +2474,7 @@ func TestFileStorePubPerfWithSmallBlkSize(t *testing.T) {
 
 // Saw this manifest from a restart test with max delivered set for JetStream.
 func TestFileStoreConsumerRedeliveredLost(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -2578,8 +2543,7 @@ func TestFileStoreConsumerRedeliveredLost(t *testing.T) {
 }
 
 func TestFileStoreConsumerFlusher(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -2612,8 +2576,7 @@ func TestFileStoreConsumerFlusher(t *testing.T) {
 }
 
 func TestFileStoreConsumerDeliveredUpdates(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -2669,8 +2632,7 @@ func TestFileStoreConsumerDeliveredUpdates(t *testing.T) {
 }
 
 func TestFileStoreConsumerDeliveredAndAckUpdates(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -2785,8 +2747,7 @@ func TestFileStoreConsumerDeliveredAndAckUpdates(t *testing.T) {
 }
 
 func TestFileStoreStreamStateDeleted(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -2835,8 +2796,7 @@ func TestFileStoreStreamStateDeleted(t *testing.T) {
 // We have reports that sometimes under load a stream could complain about a storage directory
 // not being empty.
 func TestFileStoreStreamDeleteDirNotEmpty(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -2871,8 +2831,7 @@ func TestFileStoreConsumerPerf(t *testing.T) {
 	// Comment out to run, holding place for now.
 	t.SkipNow()
 
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -2939,8 +2898,7 @@ func TestFileStoreConsumerPerf(t *testing.T) {
 func TestFileStoreStreamIndexBug(t *testing.T) {
 	// https://github.com/nats-io/jetstream/issues/406
 	badIdxBytes, _ := base64.StdEncoding.DecodeString("FgGBkw7D/f8/772iDPDIgbU=")
-	dir := createDir(t, "js-bad-idx-")
-	defer removeDir(t, dir)
+	dir := t.TempDir()
 	fn := filepath.Join(dir, "1.idx")
 	os.WriteFile(fn, badIdxBytes, 0644)
 	mb := &msgBlock{index: 1, ifn: fn}
@@ -2951,8 +2909,7 @@ func TestFileStoreStreamIndexBug(t *testing.T) {
 
 // Reported by Ivan.
 func TestFileStoreStreamDeleteCacheBug(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, CacheExpire: 50 * time.Millisecond}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -2979,8 +2936,7 @@ func TestFileStoreStreamDeleteCacheBug(t *testing.T) {
 
 // https://github.com/nats-io/nats-server/issues/2068
 func TestFileStoreStreamPurgeAndDirtyRestartBug(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	if err != nil {
@@ -3039,8 +2995,7 @@ func TestFileStoreStreamPurgeAndDirtyRestartBug(t *testing.T) {
 
 // rip
 func TestFileStoreStreamFailToRollBug(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 512},
@@ -3096,8 +3051,7 @@ func TestBadConsumerState(t *testing.T) {
 }
 
 func TestFileStoreExpireMsgsOnStart(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	ttl := 250 * time.Millisecond
 	cfg := StreamConfig{Name: "ORDERS", Subjects: []string{"orders.*"}, Storage: FileStorage, MaxAge: ttl}
@@ -3326,8 +3280,7 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 }
 
 func TestFileStoreSparseCompaction(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	cfg := StreamConfig{Name: "KV", Subjects: []string{"kv.>"}, Storage: FileStorage}
 	var fs *fileStore
@@ -3459,8 +3412,7 @@ func TestFileStoreSparseCompaction(t *testing.T) {
 }
 
 func TestFileStoreSparseCompactionWithInteriorDeletes(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	cfg := StreamConfig{Name: "KV", Subjects: []string{"kv.>"}, Storage: FileStorage}
 	var fs *fileStore
@@ -3505,8 +3457,7 @@ func TestFileStoreSparseCompactionWithInteriorDeletes(t *testing.T) {
 // This is because we would not break out of iterator across more message blocks.
 // Issue #2622
 func TestFileStorePurgeExKeepOneBug(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 128},
@@ -3540,8 +3491,7 @@ func TestFileStorePurgeExKeepOneBug(t *testing.T) {
 }
 
 func TestFileStoreRemoveLastWriteIndex(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "TEST", Storage: FileStorage})
 	if err != nil {
@@ -3570,8 +3520,7 @@ func TestFileStoreRemoveLastWriteIndex(t *testing.T) {
 }
 
 func TestFileStoreFilteredPendingBug(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "TEST", Storage: FileStorage})
 	if err != nil {
@@ -3601,8 +3550,7 @@ func TestFileStoreFetchPerf(t *testing.T) {
 	// Comment out to run.
 	t.SkipNow()
 
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, BlockSize: 8192, AsyncFlush: true}, StreamConfig{Name: "TEST", Storage: FileStorage})
 	if err != nil {
@@ -3633,8 +3581,7 @@ func TestFileStoreFetchPerf(t *testing.T) {
 // For things like raft log when we compact and have a message block that could reclaim > 50% of space for block we want to do that.
 // https://github.com/nats-io/nats-server/issues/2936
 func TestFileStoreCompactReclaimHeadSpace(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 1024 * 1024},
@@ -3796,8 +3743,7 @@ func TestFileStoreCompactReclaimHeadSpace(t *testing.T) {
 }
 
 func TestFileStoreRememberLastMsgTime(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	var fs *fileStore
 	getFS := func() *fileStore {
@@ -3904,8 +3850,7 @@ func (fs *fileStore) getFirstBlock() *msgBlock {
 }
 
 func TestFileStoreRebuildStateDmapAccountingBug(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 1024 * 1024},
@@ -3957,8 +3902,7 @@ func TestFileStoreRebuildStateDmapAccountingBug(t *testing.T) {
 }
 
 func TestFileStorePurgeExWithSubject(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: FileStorage},
@@ -3980,8 +3924,7 @@ func TestFileStorePurgeExWithSubject(t *testing.T) {
 // For instance, with encryption and an expiring stream that has no messages, when a restart happens the decrypt will fail
 // since their are extra bytes, and this could lead to a stream sequence reset to zero.
 func TestFileStoreShortIndexWriteBug(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	// Encrypted mode shows, but could effect non-encrypted mode.
 	prf := func(context []byte) ([]byte, error) {
@@ -4045,8 +3988,7 @@ func TestFileStoreShortIndexWriteBug(t *testing.T) {
 }
 
 func TestFileStoreDoubleCompactWithWriteInBetweenEncryptedBug(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(storeDir)
+	storeDir := t.TempDir()
 
 	prf := func(context []byte) ([]byte, error) {
 		h := hmac.New(sha256.New, []byte("dlc22"))
@@ -4091,8 +4033,7 @@ func TestFileStoreDoubleCompactWithWriteInBetweenEncryptedBug(t *testing.T) {
 // possibly still have a non-zero counter from previous writes.
 // Happens when all messages expire and the are flushed and then subsequent writes occur.
 func TestFileStoreEncryptedKeepIndexNeedBekResetBug(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(storeDir)
+	storeDir := t.TempDir()
 
 	prf := func(context []byte) ([]byte, error) {
 		h := hmac.New(sha256.New, []byte("dlc22"))
@@ -4162,8 +4103,7 @@ func (fs *fileStore) reportMeta() (hasPSIM, hasAnyFSS bool) {
 }
 
 func TestFileStoreExpireSubjectMeta(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 1024, CacheExpire: time.Second},
@@ -4228,8 +4168,7 @@ func TestFileStoreExpireSubjectMeta(t *testing.T) {
 }
 
 func TestFileStoreMaxMsgsPerSubject(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 128, CacheExpire: time.Second},
@@ -4261,8 +4200,7 @@ func TestFileStoreMaxMsgsPerSubject(t *testing.T) {
 }
 
 func TestFileStoreSubjectStateCacheExpiration(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 32, CacheExpire: time.Second},
@@ -4322,8 +4260,7 @@ func TestFileStoreSubjectStateCacheExpiration(t *testing.T) {
 }
 
 func TestFileStoreEncryptedAES(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(storeDir)
+	storeDir := t.TempDir()
 
 	prf := func(context []byte) ([]byte, error) {
 		h := hmac.New(sha256.New, []byte("dlc22"))
@@ -4387,8 +4324,7 @@ func TestFileStoreEncryptedAES(t *testing.T) {
 
 // Make sure we do not go through block loads when we know no subjects will exists, e.g. raft.
 func TestFileStoreNoFSSWhenNoSubjects(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir},
@@ -4431,8 +4367,7 @@ func TestFileStoreNoFSSWhenNoSubjects(t *testing.T) {
 }
 
 func TestFileStoreNoFSSBugAfterRemoveFirst(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 8 * 1024 * 1024, CacheExpire: 200 * time.Millisecond},
@@ -4475,8 +4410,7 @@ func TestFileStoreNoFSSBugAfterRemoveFirst(t *testing.T) {
 }
 
 func TestFileStoreNoFSSAfterRecover(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir},
@@ -4516,8 +4450,7 @@ func TestFileStoreNoFSSAfterRecover(t *testing.T) {
 }
 
 func TestFileStoreFSSCloseAndKeepOnExpireOnRecoverBug(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(storeDir)
+	storeDir := t.TempDir()
 
 	ttl := 100 * time.Millisecond
 	fs, err := newFileStore(
@@ -4547,8 +4480,7 @@ func TestFileStoreFSSCloseAndKeepOnExpireOnRecoverBug(t *testing.T) {
 }
 
 func TestFileStoreFSSBadStateBug(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(storeDir)
+	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir},
@@ -4592,8 +4524,7 @@ func TestFileStoreFSSBadStateBug(t *testing.T) {
 }
 
 func TestFileStoreFSSExpireNumPendingBug(t *testing.T) {
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(storeDir)
+	storeDir := t.TempDir()
 
 	cexp := 100 * time.Millisecond
 	fs, err := newFileStore(

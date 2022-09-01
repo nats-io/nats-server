@@ -15,7 +15,6 @@ package test
 
 import (
 	"fmt"
-	"os"
 	"testing"
 
 	"github.com/nats-io/nats.go"
@@ -65,18 +64,14 @@ func TestMultipleUserAuth(t *testing.T) {
 const testToken = "$2a$05$3sSWEVA1eMCbV0hWavDjXOx.ClBjI6u1CuUdLqf22cbJjXsnzz8/."
 
 func TestTokenInConfig(t *testing.T) {
-	confFileName := "test.conf"
-	defer removeFile(t, confFileName)
-	content := `
+	content := []byte(`
 	listen: 127.0.0.1:4567
 	authorization={
 		token: ` + testToken + `
 		timeout: 5
-	}`
-	if err := os.WriteFile(confFileName, []byte(content), 0666); err != nil {
-		t.Fatalf("Error writing config file: %v", err)
-	}
-	s, opts := RunServerWithConfig(confFileName)
+	}`)
+	conf := createConfFile(t, content)
+	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
 	url := fmt.Sprintf("nats://test@%s:%d/", opts.Host, opts.Port)

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -31,9 +32,7 @@ import (
 )
 
 func TestSignalToReOpenLogFile(t *testing.T) {
-	logFile := "test.log"
-	defer removeFile(t, logFile)
-	defer removeFile(t, logFile+".bak")
+	logFile := filepath.Join(t.TempDir(), "test.log")
 	opts := &Options{
 		Host:    "127.0.0.1",
 		Port:    -1,

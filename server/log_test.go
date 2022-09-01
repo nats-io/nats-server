@@ -16,6 +16,7 @@ package server
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -99,9 +100,10 @@ func TestReOpenLogFile(t *testing.T) {
 	dl.CheckContent(t, "File log re-open ignored, not a file logger")
 
 	// Set a File log
-	s.opts.LogFile = "test.log"
-	defer removeFile(t, s.opts.LogFile)
-	defer removeFile(t, s.opts.LogFile+".bak")
+	tmpDir := t.TempDir()
+	logFile := filepath.Join(tmpDir, "test.log")
+	logBackupFile := filepath.Join(tmpDir, "test.log")
+	s.opts.LogFile = logFile
 	fileLog := logger.NewFileLogger(s.opts.LogFile, s.opts.Logtime, s.opts.Debug, s.opts.Trace, true)
 	s.SetLogger(fileLog, false, false)
 	// Add some log
@@ -116,7 +118,7 @@ func TestReOpenLogFile(t *testing.T) {
 		t.Fatalf("Expected log to contain: %q, got %q", expectedStr, string(buf))
 	}
 	// Close the file and rename it
-	if err := os.Rename(s.opts.LogFile, s.opts.LogFile+".bak"); err != nil {
+	if err := os.Rename(logFile, logBackupFile); err != nil {
 		t.Fatalf("Unable to rename log file: %v", err)
 	}
 	// Now re-open LogFile
@@ -141,9 +143,7 @@ func TestReOpenLogFile(t *testing.T) {
 }
 
 func TestFileLoggerSizeLimitAndReopen(t *testing.T) {
-	tmpDir := createDir(t, "nats-server")
-	defer removeDir(t, tmpDir)
-	file := createFileAtDir(t, tmpDir, "log_")
+	file := createFileAtDir(t, t.TempDir(), "log_")
 	file.Close()
 
 	s := &Server{opts: &Options{}}

@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -470,11 +469,9 @@ func TestSystemAccountingWithLeafNodes(t *testing.T) {
 	}
 	seed, _ := kp.Seed()
 	mycreds := genCredsFile(t, ujwt, seed)
-	defer removeFile(t, mycreds)
 
 	// Create a server that solicits a leafnode connection.
-	sl, slopts, lnconf := runSolicitWithCredentials(t, opts, mycreds)
-	defer removeFile(t, lnconf)
+	sl, slopts, _ := runSolicitWithCredentials(t, opts, mycreds)
 	defer sl.Shutdown()
 
 	checkLeafNodeConnected(t, s)
@@ -1165,7 +1162,6 @@ func TestSystemAccountFromConfig(t *testing.T) {
     `
 
 	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, opub, apub, ts.URL)))
-	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -1720,7 +1716,6 @@ func TestSystemAccountNoAuthUser(t *testing.T) {
 			}
 		}
 	`))
-	defer os.Remove(conf)
 	s, o := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
@@ -1782,7 +1777,6 @@ func TestServerAccountConns(t *testing.T) {
 			   SYS: {users: [{user: s, password: s}]}
 			   ACC: {users: [{user: a, password: a}]}
 	   }`))
-	defer removeFile(t, conf)
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
@@ -2404,7 +2398,6 @@ func TestServerEventsFilteredByTag(t *testing.T) {
 		}
 		no_auth_user: b
     `))
-	defer removeFile(t, confA)
 	sA, _ := RunServerWithConfig(confA)
 	defer sA.Shutdown()
 	confB := createConfFile(t, []byte(fmt.Sprintf(`
@@ -2429,7 +2422,6 @@ func TestServerEventsFilteredByTag(t *testing.T) {
 		}
 		no_auth_user: b
     `, sA.opts.Cluster.Port)))
-	defer removeFile(t, confB)
 	sB, _ := RunServerWithConfig(confB)
 	defer sB.Shutdown()
 	checkClusterFormed(t, sA, sB)

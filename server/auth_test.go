@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -227,7 +226,6 @@ func TestNoAuthUser(t *testing.T) {
 		}
 		no_auth_user: "foo"
 	`))
-	defer os.Remove(conf)
 	s, o := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
@@ -285,7 +283,6 @@ func TestNoAuthUserNoConnectProto(t *testing.T) {
 		authorization { timeout: 1 }
 		no_auth_user: "foo"
 	`))
-	defer os.Remove(conf)
 	s, o := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
