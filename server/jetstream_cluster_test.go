@@ -12096,7 +12096,10 @@ func TestJetStreamClusterNoOrphanedDueToNoConnection(t *testing.T) {
 	checkSysServers()
 	nc.Close()
 
-	time.Sleep(7 * eventsHBInterval)
+	s.mu.RLock()
+	val := (s.sys.orphMax / eventsHBInterval) + 2
+	s.mu.RUnlock()
+	time.Sleep(val * eventsHBInterval)
 	checkSysServers()
 }
 

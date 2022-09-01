@@ -3835,3 +3835,121 @@ func TestJetStreamSuperClusterGWReplyRewrite(t *testing.T) {
 	case <-time.After(10 * time.Second):
 	}
 }
+
+func TestJetStreamSuperClusterGWOfflineSatus(t *testing.T) {
+	orgEventsHBInterval := eventsHBInterval
+	eventsHBInterval = 500 * time.Millisecond //time.Second
+	defer func() { eventsHBInterval = orgEventsHBInterval }()
+
+	tmpl := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+		gateway {
+			name: "local"
+			listen: 127.0.0.1:-1
+		}
+
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+
+		accounts {
+			SYS {
+				users [{user: sys, password: pwd}]
+			}
+			ONE {
+				jetstream: enabled
+				users [{user: one, password: pwd}]
+			}
+		}
+		system_account=SYS
+	`
+	c := createJetStreamClusterWithTemplate(t, tmpl, "local", 3)
+	defer c.shutdown()
+
+	var gwURLs string
+	for i, s := range c.servers {
+		if i > 0 {
+			gwURLs += ","
+		}
+		gwURLs += `"nats://` + s.GatewayAddr().String() + `"`
+	}
+
+	tmpl2 := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+		gateway {
+			name: "remote"
+			listen: 127.0.0.1:-1
+			__remote__
+		}
+
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+
+		accounts {
+			SYS {
+				users [{user: sys, password: pwd}]
+			}
+			ONE {
+				jetstream: enabled
+				users [{user: one, password: pwd}]
+			}
+		}
+		system_account=SYS
+	`
+	c2 := createJetStreamClusterAndModHook(t, tmpl2, "remote", "R", 2, 16022, false,
+		func(serverName, clusterName, storeDir, conf string) string {
+			conf = strings.Replace(conf, "__remote__", fmt.Sprintf("gateways [ { name: 'local', urls: [%s] } ]", gwURLs), 1)
+			return conf
+		})
+	defer c2.shutdown()
+
+	for _, s := range c.servers {
+		waitForOutboundGateways(t, s, 1, 2*time.Second)
+	}
+	for _, s := range c2.servers {
+		waitForOutboundGateways(t, s, 1, 2*time.Second)
+	}
+	c.waitOnPeerCount(5)
+
+	// Simulate going offline without sending shutdown protocol
+	for _, s := range c2.servers {
+		c := s.getOutboundGatewayConnection("local")
+		c.setNoReconnect()
+		c.mu.Lock()
+		c.nc.Close()
+		c.mu.Unlock()
+	}
+	c2.shutdown()
+
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		var ok int
+		for _, s := range c.servers {
+			jsz, err := s.Jsz(nil)
+			if err != nil {
+				return err
+			}
+			for _, r := range jsz.Meta.Replicas {
+				if r.Name == "RS-1" && r.Offline {
+					ok++
+				} else if r.Name == "RS-2" && r.Offline {
+					ok++
+				}
+			}
+		}
+		if ok != 2 {
+			return fmt.Errorf("RS-1 or RS-2 still marked as online")
+		}
+		return nil
+	})
+}

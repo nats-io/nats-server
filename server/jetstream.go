@@ -1669,12 +1669,7 @@ func (a *Account) jetStreamConfigured() bool {
 		return false
 	}
 	a.mu.RLock()
-	jsc := a.jetStreamConfiguredNoLock()
-	a.mu.RUnlock()
-	return jsc
-}
-
-func (a *Account) jetStreamConfiguredNoLock() bool {
+	defer a.mu.RUnlock()
 	return len(a.jsLimits) > 0
 }
 
