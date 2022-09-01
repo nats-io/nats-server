@@ -1212,6 +1212,11 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 		stats,
 		false, si.JetStream,
 	})
+	s.mu.Lock()
+	if s.running && s.eventsEnabled() && ssm.Server.ID != s.info.ID {
+		s.updateRemoteServer(&si)
+	}
+	s.mu.Unlock()
 }
 
 // updateRemoteServer is called when we have an update from a remote server.
@@ -1720,9 +1725,8 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 		},
 		AccountStat: *stat,
 	}
-	// Set timer to fire again unless we are at zero, but only if the account
-	// is not configured for JetStream.
-	if m.TotalConns == 0 && !a.jetStreamConfiguredNoLock() {
+	// Set timer to fire again unless we are at zero.
+	if m.TotalConns == 0 {
 		clearTimer(&a.ctmr)
 	} else {
 		// Check to see if we have an HB running and update.
