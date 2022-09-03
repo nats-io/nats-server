@@ -122,6 +122,16 @@ func TestEnvVariableStringStartingWithNumber(t *testing.T) {
 	}
 }
 
+func TestEnvVariableStringStartingWithNumberAndSizeUnit(t *testing.T) {
+	ex := map[string]interface{}{
+		"foo": "3Gyz",
+	}
+	evar := "__UNIQ22__"
+	os.Setenv(evar, "3Gyz")
+	defer os.Unsetenv(evar)
+	test(t, fmt.Sprintf("foo = $%s", evar), ex)
+}
+
 func TestEnvVariableStringStartingWithNumberUsingQuotes(t *testing.T) {
 	ex := map[string]interface{}{
 		"foo": "3xyz",
