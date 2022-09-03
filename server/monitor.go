@@ -2700,6 +2700,11 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg 
 		},
 		Streams: make([]StreamDetail, 0, len(jsa.streams)),
 	}
+	if reserved, ok := jsa.limits[_EMPTY_]; ok {
+		detail.JetStreamStats.ReservedMemory = uint64(reserved.MaxMemory)
+		detail.JetStreamStats.ReservedStore = uint64(reserved.MaxStore)
+	}
+
 	jsa.usageMu.RUnlock()
 	var streams []*stream
 	if optStreams {
