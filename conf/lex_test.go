@@ -330,6 +330,16 @@ func TestConvenientIntegerValues(t *testing.T) {
 	}
 	lx = lex("foo = 3Mbs,")
 	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemInteger, "4Gb", 1, 6},
+		{itemKey, "bar", 1, 11},
+		{itemString, "5Gø", 1, 17},
+		{itemEOF, "", 1, 0},
+	}
+	lx = lex("foo = 4Gb, bar = 5Gø")
+	expect(t, lx, expectedItems)
 }
 
 func TestSimpleKeyFloatValues(t *testing.T) {
