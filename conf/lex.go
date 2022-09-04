@@ -1009,17 +1009,12 @@ func lexConvenientNumber(lx *lexer) stateFn {
 	case r == 'b' || r == 'B' || r == 'i' || r == 'I':
 		return lexConvenientNumber
 	}
+	lx.backup()
 	if isNL(r) || r == eof || r == mapEnd || r == optValTerm || r == mapValTerm || isWhitespace(r) || unicode.IsDigit(r) {
-		lx.backup()
 		lx.emit(itemInteger)
 		return lx.pop()
 	}
-	// This is not a number, so we have to backup to the start and consider
-	// this to be a string
-	pos, start := lx.pos, lx.start
-	for i := pos; i > start; i-- {
-		lx.backup()
-	}
+	// This is not a number, so treat it as a string.
 	lx.stringStateFn = lexString
 	return lexString
 }
