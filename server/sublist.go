@@ -427,7 +427,6 @@ func (s *Sublist) Insert(sub *subscription) error {
 	} else {
 		if n.qsubs == nil {
 			n.qsubs = make(map[string]map[*subscription]*subscription)
-			isnew = true
 		}
 		qname := string(sub.queue)
 		// This is a queue subscription
@@ -435,6 +434,7 @@ func (s *Sublist) Insert(sub *subscription) error {
 		if !ok {
 			subs = make(map[*subscription]*subscription)
 			n.qsubs[qname] = subs
+			isnew = true
 		}
 		subs[sub] = sub
 	}
@@ -892,8 +892,10 @@ func (s *Sublist) removeFromNode(n *node, sub *subscription) (found, last bool) 
 	_, found = qsub[sub]
 	delete(qsub, sub)
 	if len(qsub) == 0 {
+		// This is the last queue subscription interest when len(qsub) == 0, not
+		// when n.qsubs is empty.
+		last = true
 		delete(n.qsubs, string(sub.queue))
-		last = len(n.qsubs) == 0
 	}
 	return found, last
 }
