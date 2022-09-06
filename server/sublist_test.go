@@ -1125,7 +1125,7 @@ func TestSublistRegisterInterestNotification(t *testing.T) {
 	}
 
 	tt := time.NewTimer(time.Second)
-	expectBool := func(b bool) {
+	expectBoolWithCh := func(ch chan bool, b bool) {
 		t.Helper()
 		tt.Reset(time.Second)
 		defer tt.Stop()
@@ -1137,6 +1137,10 @@ func TestSublistRegisterInterestNotification(t *testing.T) {
 		case <-tt.C:
 			t.Fatalf("Timeout waiting for expected value")
 		}
+	}
+	expectBool := func(b bool) {
+		t.Helper()
+		expectBoolWithCh(ch, b)
 	}
 	expectFalse := func() {
 		t.Helper()
@@ -1152,11 +1156,15 @@ func TestSublistRegisterInterestNotification(t *testing.T) {
 			t.Fatalf("Expected no notifications, had %d and first was %v", lch, <-ch)
 		}
 	}
-	expectOne := func() {
+	expectOneWithCh := func(ch chan bool) {
 		t.Helper()
 		if len(ch) != 1 {
 			t.Fatalf("Expected 1 notification")
 		}
+	}
+	expectOne := func() {
+		t.Helper()
+		expectOneWithCh(ch)
 	}
 
 	expectOne()
@@ -1345,6 +1353,43 @@ func TestSublistRegisterInterestNotification(t *testing.T) {
 	expectFalse()
 
 	if !s.ClearQueueNotification("queue.test.node", "q22", ch) {
+		t.Fatalf("Expected to return true")
+	}
+
+	if err := s.RegisterQueueNotification("some.subject", "queue1", ch); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	expectOne()
+	expectFalse()
+
+	qsub1 = newQSub("some.subject", "queue1")
+	s.Insert(qsub1)
+	expectTrue()
+
+	// Create a second channel for this other queue
+	ch2 := make(chan bool, 1)
+	if err := s.RegisterQueueNotification("some.subject", "queue2", ch2); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	expectOneWithCh(ch2)
+	expectBoolWithCh(ch2, false)
+
+	qsub2 = newQSub("some.subject", "queue2")
+	s.Insert(qsub2)
+	expectBoolWithCh(ch2, true)
+
+	// But we should not get notification on queue1
+	expectNone()
+
+	s.Remove(qsub1)
+	expectFalse()
+	s.Remove(qsub2)
+	expectBoolWithCh(ch2, false)
+
+	if !s.ClearQueueNotification("some.subject", "queue1", ch) {
+		t.Fatalf("Expected to return true")
+	}
+	if !s.ClearQueueNotification("some.subject", "queue2", ch2) {
 		t.Fatalf("Expected to return true")
 	}
 
