@@ -3294,6 +3294,7 @@ func TestJetStreamSuperClusterMirrorInheritsAllowDirect(t *testing.T) {
 		Subjects:          []string{"key.*"},
 		Placement:         &nats.Placement{Tags: []string{"cloud:aws", "country:us"}},
 		MaxMsgsPerSubject: 1,
+		AllowDirect:       true,
 	})
 	require_NoError(t, err)
 

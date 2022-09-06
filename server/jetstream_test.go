@@ -18866,64 +18866,6 @@ func TestJetStreamDirectGetBySubject(t *testing.T) {
 	}
 }
 
-// v2.9 will move to direct gets, this tests that we autoset them and auto-promote older streams.
-// This is keyed off a config setting for MaxMsgsPerSubject.
-func TestJetStreamDirectGetAutoSet(t *testing.T) {
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
-	defer s.Shutdown()
-
-	nc, js := jsClientConnect(t, s)
-	defer nc.Close()
-
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:              "KV",
-		Subjects:          []string{"key.*"},
-		MaxMsgsPerSubject: 1,
-	})
-	require_NoError(t, err)
-
-	_, err = js.Publish("key.22", []byte("22"))
-	require_NoError(t, err)
-
-	// Make sure direct get was auto turned on.
-	subj := fmt.Sprintf(JSDirectMsgGetT, "KV")
-	req := []byte(`{"last_by_subj": "key.22"}`)
-	m, err := nc.Request(subj, req, time.Second)
-	require_NoError(t, err)
-	require_True(t, string(m.Data) == "22")
-
-	// New direct with key in subject.
-	subj = fmt.Sprintf(JSDirectGetLastBySubjectT, "KV", "key.22")
-	m, err = nc.Request(subj, nil, time.Second)
-	require_NoError(t, err)
-	require_True(t, string(m.Data) == "22")
-
-	// Make sure mirrors inherit.
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name:   "M",
-		Mirror: &nats.StreamSource{Name: "KV"},
-	})
-	require_NoError(t, err)
-
-	// Now make sure mirrors are doing right thing with new way as well.
-	var sawMirror bool
-	subj = fmt.Sprintf(JSDirectGetLastBySubjectT, "KV", "key.22")
-	for i := 0; i < 100; i++ {
-		m, err := nc.Request(subj, nil, time.Second)
-		require_NoError(t, err)
-		if shdr := m.Header.Get(JSStream); shdr == "M" {
-			sawMirror = true
-			break
-		}
-	}
-	if !sawMirror {
-		t.Fatalf("Expected to see the mirror respond at least once")
-	}
-}
-
 func TestJetStreamProperErrorDueToOverlapSubjects(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	if config := s.JetStreamConfig(); config != nil {
@@ -19440,5 +19382,38 @@ func TestJetStreamStreamSubjectsOverlap(t *testing.T) {
 	})
 	require_Error(t, err)
 	require_True(t, strings.Contains(err.Error(), "overlaps"))
+}
 
+func TestJetStreamSuppressAllowDirect(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err := js.AddStream(&nats.StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"key.*"},
+		MaxMsgsPerSubject: 1,
+		AllowDirect:       true,
+	})
+	require_NoError(t, err)
+	require_True(t, si.Config.AllowDirect)
+
+	si, err = js.UpdateStream(&nats.StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"key.*"},
+		MaxMsgsPerSubject: 1,
+		AllowDirect:       false,
+	})
+	require_NoError(t, err)
+	require_False(t, si.Config.AllowDirect)
+
+	sendStreamMsg(t, nc, "key.22", "msg")
+
+	_, err = js.GetLastMsg("TEST", "foo", nats.DirectGet(), nats.MaxWait(100*time.Millisecond))
+	require_Error(t, err)
 }
