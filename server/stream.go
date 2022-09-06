@@ -61,9 +61,9 @@ type StreamConfig struct {
 	RePublish *RePublish `json:"republish,omitempty"`
 
 	// Allow higher performance, direct access to get individual messages. E.g. KeyValue
-	AllowDirect bool `json:"allow_direct,omitempty"`
+	AllowDirect bool `json:"allow_direct"`
 	// Allow higher performance and unified direct access for mirrors as well.
-	MirrorDirect bool `json:"mirror_direct,omitempty"`
+	MirrorDirect bool `json:"mirror_direct"`
 
 	// Optional qualifiers. These can not be modified after set to true.
 
@@ -1244,11 +1244,6 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		if _, err := newTransform(cfg.RePublish.Source, cfg.RePublish.Destination); err != nil {
 			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for republish not valid"))
 		}
-	}
-
-	// Here we will auto set direct gets if MaxMsgsPerSubject is set.
-	if cfg.MaxMsgsPer > 0 {
-		cfg.AllowDirect = true
 	}
 
 	return cfg, nil

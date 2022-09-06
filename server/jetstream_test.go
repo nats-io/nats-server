@@ -11933,7 +11933,7 @@ func TestJetStreamMirrorUpdatePreventsSubjects(t *testing.T) {
 	require_NoError(t, err)
 
 	_, err = js.UpdateStream(&nats.StreamConfig{Name: "MIRROR", Mirror: &nats.StreamSource{Name: "ORIGINAL"}, Subjects: []string{"x"}})
-	if err == nil || err.Error() != "stream mirrors can not contain subjects" {
+	if err == nil || err.Error() != "nats: stream mirrors can not contain subjects" {
 		t.Fatalf("Expected to not be able to put subjects on a stream, got: %+v", err)
 	}
 }
@@ -13584,7 +13584,7 @@ func TestJetStreamNegativeDupeWindow(t *testing.T) {
 		Replicas:          1,
 		NoAck:             false,
 	})
-	if err == nil || err.Error() != "duplicates window can not be negative" {
+	if err == nil || err.Error() != "nats: duplicates window can not be negative" {
 		t.Fatalf("Expected dupe window error got: %v", err)
 	}
 }
@@ -14974,12 +14974,20 @@ func TestJetStreamConsumerUpdateSurvival(t *testing.T) {
 	_, err := js.AddStream(&nats.StreamConfig{Name: "X"})
 	require_NoError(t, err)
 
-	// First create a consumer that is push based.
-	_, err = js.AddConsumer("X", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 1024})
+	// First create a consumer with max ack pending.
+	_, err = js.AddConsumer("X", &nats.ConsumerConfig{
+		Durable:       "dlc",
+		AckPolicy:     nats.AckExplicitPolicy,
+		MaxAckPending: 1024,
+	})
 	require_NoError(t, err)
 
 	// Now do same name but pull. This will update the MaxAcKPending
-	ci, err := js.AddConsumer("X", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 22})
+	ci, err := js.UpdateConsumer("X", &nats.ConsumerConfig{
+		Durable:       "dlc",
+		AckPolicy:     nats.AckExplicitPolicy,
+		MaxAckPending: 22,
+	})
 	require_NoError(t, err)
 
 	if ci.Config.MaxAckPending != 22 {
@@ -16703,11 +16711,11 @@ func TestJetStreamLimits(t *testing.T) {
 
 		_, err = js.UpdateStream(&nats.StreamConfig{Name: "bar", Duplicates: 2 * time.Minute})
 		require_Error(t, err)
-		require_Equal(t, err.Error(), "duplicates window can not be larger then server limit of 1m0s")
+		require_Equal(t, err.Error(), "nats: duplicates window can not be larger then server limit of 1m0s")
 
 		_, err = js.AddStream(&nats.StreamConfig{Name: "baz", Duplicates: 2 * time.Minute})
 		require_Error(t, err)
-		require_Equal(t, err.Error(), "duplicates window can not be larger then server limit of 1m0s")
+		require_Equal(t, err.Error(), "nats: duplicates window can not be larger then server limit of 1m0s")
 
 		ci, err := js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur1", AckPolicy: nats.AckExplicitPolicy})
 		require_NoError(t, err)
@@ -16716,7 +16724,7 @@ func TestJetStreamLimits(t *testing.T) {
 
 		_, err = js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur2", AckPolicy: nats.AckExplicitPolicy, MaxRequestBatch: 500})
 		require_Error(t, err)
-		require_Equal(t, err.Error(), "consumer max request batch exceeds server limit of 250")
+		require_Equal(t, err.Error(), "nats: consumer max request batch exceeds server limit of 250")
 
 		ci, err = js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur2", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 500})
 		require_NoError(t, err)
@@ -16725,11 +16733,11 @@ func TestJetStreamLimits(t *testing.T) {
 
 		_, err = js.UpdateConsumer("foo", &nats.ConsumerConfig{Durable: "dur2", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 2000})
 		require_Error(t, err)
-		require_Equal(t, err.Error(), "consumer max ack pending exceeds system limit of 1000")
+		require_Equal(t, err.Error(), "nats: consumer max ack pending exceeds system limit of 1000")
 
 		_, err = js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur3", AckPolicy: nats.AckExplicitPolicy, MaxAckPending: 2000})
 		require_Error(t, err)
-		require_Equal(t, err.Error(), "consumer max ack pending exceeds system limit of 1000")
+		require_Equal(t, err.Error(), "nats: consumer max ack pending exceeds system limit of 1000")
 	}
 
 	t.Run("clustered", func(t *testing.T) {
@@ -18757,10 +18765,8 @@ func TestJetStreamMirrorUpdatesNotSupported(t *testing.T) {
 	require_NoError(t, err)
 
 	cfg.Mirror = nil
-	if _, err := js.UpdateStream(cfg); err == nil ||
-		!strings.Contains(NewJSStreamMirrorNotUpdatableError().Error(), err.Error()) {
-		t.Fatalf("Expected error %q, got %q", NewJSStreamMirrorNotUpdatableError(), err)
-	}
+	_, err = js.UpdateStream(cfg)
+	require_Error(t, err, NewJSStreamMirrorNotUpdatableError())
 }
 
 func TestJetStreamDirectGetBySubject(t *testing.T) {
@@ -18855,64 +18861,6 @@ func TestJetStreamDirectGetBySubject(t *testing.T) {
 	getSubj = fmt.Sprintf(JSDirectGetLastBySubjectT, "KV", v22)
 	for i := 0; i < 100; i++ {
 		m, err := nc.Request(getSubj, nil, time.Second)
-		require_NoError(t, err)
-		if shdr := m.Header.Get(JSStream); shdr == "M" {
-			sawMirror = true
-			break
-		}
-	}
-	if !sawMirror {
-		t.Fatalf("Expected to see the mirror respond at least once")
-	}
-}
-
-// v2.9 will move to direct gets, this tests that we autoset them and auto-promote older streams.
-// This is keyed off a config setting for MaxMsgsPerSubject.
-func TestJetStreamDirectGetAutoSet(t *testing.T) {
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
-	defer s.Shutdown()
-
-	nc, js := jsClientConnect(t, s)
-	defer nc.Close()
-
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:              "KV",
-		Subjects:          []string{"key.*"},
-		MaxMsgsPerSubject: 1,
-	})
-	require_NoError(t, err)
-
-	_, err = js.Publish("key.22", []byte("22"))
-	require_NoError(t, err)
-
-	// Make sure direct get was auto turned on.
-	subj := fmt.Sprintf(JSDirectMsgGetT, "KV")
-	req := []byte(`{"last_by_subj": "key.22"}`)
-	m, err := nc.Request(subj, req, time.Second)
-	require_NoError(t, err)
-	require_True(t, string(m.Data) == "22")
-
-	// New direct with key in subject.
-	subj = fmt.Sprintf(JSDirectGetLastBySubjectT, "KV", "key.22")
-	m, err = nc.Request(subj, nil, time.Second)
-	require_NoError(t, err)
-	require_True(t, string(m.Data) == "22")
-
-	// Make sure mirrors inherit.
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name:   "M",
-		Mirror: &nats.StreamSource{Name: "KV"},
-	})
-	require_NoError(t, err)
-
-	// Now make sure mirrors are doing right thing with new way as well.
-	var sawMirror bool
-	subj = fmt.Sprintf(JSDirectGetLastBySubjectT, "KV", "key.22")
-	for i := 0; i < 100; i++ {
-		m, err := nc.Request(subj, nil, time.Second)
 		require_NoError(t, err)
 		if shdr := m.Header.Get(JSStream); shdr == "M" {
 			sawMirror = true
@@ -19440,5 +19388,38 @@ func TestJetStreamStreamSubjectsOverlap(t *testing.T) {
 	})
 	require_Error(t, err)
 	require_True(t, strings.Contains(err.Error(), "overlaps"))
+}
 
+func TestJetStreamSuppressAllowDirect(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err := js.AddStream(&nats.StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"key.*"},
+		MaxMsgsPerSubject: 1,
+		AllowDirect:       true,
+	})
+	require_NoError(t, err)
+	require_True(t, si.Config.AllowDirect)
+
+	si, err = js.UpdateStream(&nats.StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"key.*"},
+		MaxMsgsPerSubject: 1,
+		AllowDirect:       false,
+	})
+	require_NoError(t, err)
+	require_False(t, si.Config.AllowDirect)
+
+	sendStreamMsg(t, nc, "key.22", "msg")
+
+	_, err = js.GetLastMsg("TEST", "foo", nats.DirectGet(), nats.MaxWait(100*time.Millisecond))
+	require_Error(t, err)
 }
