@@ -400,8 +400,8 @@ func checkConsumerCfg(
 			return NewJSConsumerSmallHeartbeatError()
 		}
 	} else {
-		// Pull mode / work queue mode require explicit ack.
-		if config.AckPolicy == AckNone {
+		// Pull mode with work queue retention from the stream requires an explicit ack.
+		if config.AckPolicy == AckNone && cfg.Retention == WorkQueuePolicy {
 			return NewJSConsumerPullRequiresAckError()
 		}
 		if config.RateLimit > 0 {

@@ -1208,8 +1208,8 @@ func TestJetStreamCreateConsumer(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{"MemoryStore", &StreamConfig{Name: "foo", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}}},
-		{"FileStore", &StreamConfig{Name: "foo", Storage: FileStorage, Subjects: []string{"foo", "bar"}}},
+		{"MemoryStore", &StreamConfig{Name: "foo", Storage: MemoryStorage, Subjects: []string{"foo", "bar"}, Retention: WorkQueuePolicy}},
+		{"FileStore", &StreamConfig{Name: "foo", Storage: FileStorage, Subjects: []string{"foo", "bar"}, Retention: WorkQueuePolicy}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1278,7 +1278,7 @@ func TestJetStreamCreateConsumer(t *testing.T) {
 			defer sub.Unsubscribe()
 			nc.Flush()
 
-			o, err := mset.addConsumer(&ConsumerConfig{DeliverSubject: delivery})
+			o, err := mset.addConsumer(&ConsumerConfig{DeliverSubject: delivery, AckPolicy: AckExplicit})
 			if err != nil {
 				t.Fatalf("Expected no error with registered interest, got %v", err)
 			}
@@ -1291,7 +1291,7 @@ func TestJetStreamCreateConsumer(t *testing.T) {
 			dcfg := &ConsumerConfig{
 				Durable:        "ddd",
 				DeliverSubject: delivery,
-				AckPolicy:      AckAll,
+				AckPolicy:      AckExplicit,
 			}
 			if _, err = mset.addConsumer(dcfg); err != nil {
 				t.Fatalf("Unexpected error creating consumer: %v", err)
@@ -19422,4 +19422,27 @@ func TestJetStreamSuppressAllowDirect(t *testing.T) {
 
 	_, err = js.GetLastMsg("TEST", "foo", nats.DirectGet(), nats.MaxWait(100*time.Millisecond))
 	require_Error(t, err)
+}
+
+func TestJetStreamPullConsumerNoAck(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"ORDERS.*"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "dlc",
+		AckPolicy: nats.AckNonePolicy,
+	})
+	require_NoError(t, err)
 }
