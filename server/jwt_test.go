@@ -5514,7 +5514,7 @@ func TestJWTJetStreamTiers(t *testing.T) {
 	// Test exceeding tiered stream limit
 	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-3", Replicas: 1, Subjects: []string{"testR1-3"}})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "maximum number of streams reached")
+	require_Equal(t, err.Error(), "nats: maximum number of streams reached")
 
 	// Test tiers up to consumer limits
 	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur1", AckPolicy: nats.AckExplicitPolicy})
@@ -5525,10 +5525,10 @@ func TestJWTJetStreamTiers(t *testing.T) {
 	// test exceeding tiered consumer limits
 	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur4", AckPolicy: nats.AckExplicitPolicy})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "maximum consumers limit reached")
+	require_Equal(t, err.Error(), "nats: maximum consumers limit reached")
 	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur5", AckPolicy: nats.AckExplicitPolicy})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "maximum consumers limit reached")
+	require_Equal(t, err.Error(), "nats: maximum consumers limit reached")
 
 	// test tiered storage limit
 	msg := [512]byte{}
@@ -5553,12 +5553,12 @@ func TestJWTJetStreamTiers(t *testing.T) {
 	require_NoError(t, err)
 	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-4", Replicas: 1, Subjects: []string{"testR1-4"}})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "maximum number of streams reached")
+	require_Equal(t, err.Error(), "nats: maximum number of streams reached")
 	_, err = js.AddConsumer("testR1-3", &nats.ConsumerConfig{Durable: "dur6", AckPolicy: nats.AckExplicitPolicy})
 	require_NoError(t, err)
 	_, err = js.AddConsumer("testR1-3", &nats.ConsumerConfig{Durable: "dur7", AckPolicy: nats.AckExplicitPolicy})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "maximum consumers limit reached")
+	require_Equal(t, err.Error(), "nats: maximum consumers limit reached")
 	_, err = js.Publish("testR1-3", msg[:])
 	require_NoError(t, err)
 	_, err = js.Publish("testR1-3", []byte("1"))
@@ -5624,7 +5624,7 @@ func TestJWTJetStreamMaxAckPending(t *testing.T) {
 	_, err = js.AddConsumer("foo", &nats.ConsumerConfig{
 		Durable: "dur1", AckPolicy: nats.AckAllPolicy, MaxAckPending: 2000})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "consumer max ack pending exceeds system limit of 1000")
+	require_Equal(t, err.Error(), "nats: consumer max ack pending exceeds system limit of 1000")
 
 	ci, err := js.AddConsumer("foo", &nats.ConsumerConfig{
 		Durable: "dur2", AckPolicy: nats.AckAllPolicy, MaxAckPending: 500})
@@ -5634,7 +5634,7 @@ func TestJWTJetStreamMaxAckPending(t *testing.T) {
 	_, err = js.UpdateConsumer("foo", &nats.ConsumerConfig{
 		Durable: "dur2", AckPolicy: nats.AckAllPolicy, MaxAckPending: 2000})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "consumer max ack pending exceeds system limit of 1000")
+	require_Equal(t, err.Error(), "nats: consumer max ack pending exceeds system limit of 1000")
 
 	time.Sleep(time.Second - time.Since(start)) // make sure the time stamp changes
 	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
@@ -5703,7 +5703,7 @@ func TestJWTJetStreamMaxStreamBytes(t *testing.T) {
 
 	_, err = js.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, MaxBytes: 2048})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "stream max bytes exceeds account limit max stream bytes")
+	require_Equal(t, err.Error(), "nats: stream max bytes exceeds account limit max stream bytes")
 	_, err = js.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, MaxBytes: 1024})
 	require_NoError(t, err)
 
@@ -5725,7 +5725,7 @@ func TestJWTJetStreamMaxStreamBytes(t *testing.T) {
 
 	_, err = js.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 1, MaxBytes: 3000})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "stream max bytes exceeds account limit max stream bytes")
+	require_Equal(t, err.Error(), "nats: stream max bytes exceeds account limit max stream bytes")
 	_, err = js.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 1, MaxBytes: 2048})
 	require_NoError(t, err)
 
@@ -5739,7 +5739,7 @@ func TestJWTJetStreamMaxStreamBytes(t *testing.T) {
 	// test disabling max bytes required
 	_, err = js.UpdateStream(&nats.StreamConfig{Name: "bar", Replicas: 1})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "account requires a stream config to have max bytes set")
+	require_Equal(t, err.Error(), "nats: account requires a stream config to have max bytes set")
 }
 
 func TestJWTQueuePermissions(t *testing.T) {

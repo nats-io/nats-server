@@ -1458,10 +1458,8 @@ func TestJetStreamClusterStreamExtendedUpdates(t *testing.T) {
 	// Mirror changes are not supported for now
 	cfg.Subjects = nil
 	cfg.Mirror = &nats.StreamSource{Name: "ORDERS"}
-	if _, err := js.UpdateStream(cfg); err == nil ||
-		!strings.Contains(NewJSStreamMirrorNotUpdatableError().Error(), err.Error()) {
-		t.Fatalf("Expected error %q, got %q", NewJSStreamMirrorNotUpdatableError(), err)
-	}
+	_, err := js.UpdateStream(cfg)
+	require_Error(t, err, NewJSStreamMirrorNotUpdatableError())
 }
 
 func TestJetStreamClusterDoubleAdd(t *testing.T) {
@@ -5665,7 +5663,7 @@ func TestJetStreamClusterSourceFilterSubjectUpdateFail(t *testing.T) {
 		Replicas: 2,
 	})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "source 'TEST' filter subject 'notthere' does not overlap with any origin stream subject")
+	require_Equal(t, err.Error(), "nats: source 'TEST' filter subject 'notthere' does not overlap with any origin stream subject")
 
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     "M",
@@ -5673,7 +5671,7 @@ func TestJetStreamClusterSourceFilterSubjectUpdateFail(t *testing.T) {
 		Replicas: 2,
 	})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "mirror 'TEST' filter subject 'notthere' does not overlap with any origin stream subject")
+	require_Equal(t, err.Error(), "nats: mirror 'TEST' filter subject 'notthere' does not overlap with any origin stream subject")
 }
 
 func TestJetStreamClusterMirrorAndSourcesFilteredConsumers(t *testing.T) {
@@ -9313,9 +9311,8 @@ func TestJetStreamClusterAccountInfoForSystemAccount(t *testing.T) {
 	nc, js := jsClientConnect(t, c.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
 	defer nc.Close()
 
-	if _, err := js.AccountInfo(); err != nats.ErrJetStreamNotEnabled {
-		t.Fatalf("Expected a not enabled error for system account, got %v", err)
-	}
+	_, err := js.AccountInfo()
+	require_Error(t, err, nats.ErrJetStreamNotEnabledForAccount)
 }
 
 func TestJetStreamClusterListFilter(t *testing.T) {
@@ -9387,6 +9384,7 @@ func TestJetStreamClusterConsumerUpdates(t *testing.T) {
 	testConsumerUpdate := func(t *testing.T, s *Server, replicas int) {
 		nc, js := jsClientConnect(t, s)
 		defer nc.Close()
+
 		// Create a stream.
 		_, err := js.AddStream(&nats.StreamConfig{
 			Name:     "TEST",
@@ -9409,7 +9407,6 @@ func TestJetStreamClusterConsumerUpdates(t *testing.T) {
 			MaxDeliver:     5,
 			MaxAckPending:  50,
 		}
-
 		_, err = js.AddConsumer("TEST", cfg)
 		require_NoError(t, err)
 
@@ -9432,13 +9429,13 @@ func TestJetStreamClusterConsumerUpdates(t *testing.T) {
 
 		// Description
 		cfg.Description = "New Description"
-		_, err = js.AddConsumer("TEST", cfg)
+		_, err = js.UpdateConsumer("TEST", cfg)
 		require_NoError(t, err)
 
 		// MaxAckPending
 		checkSubsPending(t, sub, 50)
 		cfg.MaxAckPending = 75
-		_, err = js.AddConsumer("TEST", cfg)
+		_, err = js.UpdateConsumer("TEST", cfg)
 		require_NoError(t, err)
 		checkSubsPending(t, sub, 75)
 
@@ -9454,54 +9451,54 @@ func TestJetStreamClusterConsumerUpdates(t *testing.T) {
 		// AckWait
 		checkSubsPending(t, sub, 0)
 		cfg.AckWait = 200 * time.Millisecond
-		_, err = js.AddConsumer("TEST", cfg)
+		_, err = js.UpdateConsumer("TEST", cfg)
 		require_NoError(t, err)
 		checkSubsPending(t, sub, 10)
 
 		// Rate Limit
 		cfg.RateLimit = 8 * 1024
-		_, err = js.AddConsumer("TEST", cfg)
+		_, err = js.UpdateConsumer("TEST", cfg)
 		require_NoError(t, err)
 
 		cfg.RateLimit = 0
-		_, err = js.AddConsumer("TEST", cfg)
+		_, err = js.UpdateConsumer("TEST", cfg)
 		require_NoError(t, err)
 
 		// These all should fail.
 		ncfg = *cfg
 		ncfg.DeliverPolicy = nats.DeliverLastPolicy
-		_, err = js.AddConsumer("TEST", &ncfg)
+		_, err = js.UpdateConsumer("TEST", &ncfg)
 		require_Error(t, err)
 
 		ncfg = *cfg
 		ncfg.OptStartSeq = 22
-		_, err = js.AddConsumer("TEST", &ncfg)
+		_, err = js.UpdateConsumer("TEST", &ncfg)
 		require_Error(t, err)
 
 		ncfg = *cfg
 		now := time.Now()
 		ncfg.OptStartTime = &now
-		_, err = js.AddConsumer("TEST", &ncfg)
+		_, err = js.UpdateConsumer("TEST", &ncfg)
 		require_Error(t, err)
 
 		ncfg = *cfg
 		ncfg.AckPolicy = nats.AckAllPolicy
-		_, err = js.AddConsumer("TEST", &ncfg)
+		_, err = js.UpdateConsumer("TEST", &ncfg)
 		require_Error(t, err)
 
 		ncfg = *cfg
 		ncfg.ReplayPolicy = nats.ReplayOriginalPolicy
-		_, err = js.AddConsumer("TEST", &ncfg)
+		_, err = js.UpdateConsumer("TEST", &ncfg)
 		require_Error(t, err)
 
 		ncfg = *cfg
 		ncfg.Heartbeat = time.Second
-		_, err = js.AddConsumer("TEST", &ncfg)
+		_, err = js.UpdateConsumer("TEST", &ncfg)
 		require_Error(t, err)
 
 		ncfg = *cfg
 		ncfg.FlowControl = true
-		_, err = js.AddConsumer("TEST", &ncfg)
+		_, err = js.UpdateConsumer("TEST", &ncfg)
 		require_Error(t, err)
 
 	}
@@ -9581,7 +9578,7 @@ func TestJetStreamClusterAccountReservations(t *testing.T) {
 
 		_, err = js.AddStream(&nats.StreamConfig{Name: "S2", Subjects: []string{"s2"}, MaxBytes: 1024, Replicas: replica})
 		require_Error(t, err)
-		require_Equal(t, err.Error(), "insufficient storage resources available")
+		require_Equal(t, err.Error(), "nats: insufficient storage resources available")
 
 		_, err = js.UpdateStream(&nats.StreamConfig{Name: "S1", Subjects: []string{"s1"}, MaxBytes: mb / 2, Replicas: replica})
 		require_NoError(t, err)
@@ -9591,11 +9588,11 @@ func TestJetStreamClusterAccountReservations(t *testing.T) {
 
 		_, err = js.AddStream(&nats.StreamConfig{Name: "S3", Subjects: []string{"s3"}, MaxBytes: 1024, Replicas: replica})
 		require_Error(t, err)
-		require_Equal(t, err.Error(), "insufficient storage resources available")
+		require_Equal(t, err.Error(), "nats: insufficient storage resources available")
 
 		_, err = js.UpdateStream(&nats.StreamConfig{Name: "S2", Subjects: []string{"s2"}, MaxBytes: mb/2 + 1, Replicas: replica})
 		require_Error(t, err)
-		require_Equal(t, err.Error(), "insufficient storage resources available")
+		require_Equal(t, err.Error(), "nats: insufficient storage resources available")
 
 		require_NoError(t, js.DeleteStream("S1"))
 		require_NoError(t, js.DeleteStream("S2"))
@@ -9631,7 +9628,7 @@ func TestJetStreamClusterConcurrentAccountLimits(t *testing.T) {
 		})
 		if err != nil {
 			atomic.AddInt32(&failCount, 1)
-			require_Equal(t, err.Error(), "insufficient storage resources available")
+			require_Equal(t, err.Error(), "nats: insufficient storage resources available")
 		}
 	}
 
@@ -11243,7 +11240,7 @@ func TestJetStreamClusterMirrorSourceLoop(t *testing.T) {
 			Sources:  []*nats.StreamSource{{Name: "1"}},
 		})
 		require_Error(t, err)
-		require_Equal(t, err.Error(), "detected cycle")
+		require_Equal(t, err.Error(), "nats: detected cycle")
 	}
 
 	t.Run("Single", func(t *testing.T) {

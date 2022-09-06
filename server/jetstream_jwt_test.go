@@ -468,10 +468,10 @@ func TestJetStreamJWTClusteredTiers(t *testing.T) {
 	// Test absent tiers
 	_, err = js.AddStream(&nats.StreamConfig{Name: "testR2", Replicas: 2, Subjects: []string{"testR2"}})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "no JetStream default or applicable tiered limit present")
+	require_Equal(t, err.Error(), "nats: no JetStream default or applicable tiered limit present")
 	_, err = js.AddStream(&nats.StreamConfig{Name: "testR5", Replicas: 5, Subjects: []string{"testR5"}})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "no JetStream default or applicable tiered limit present")
+	require_Equal(t, err.Error(), "nats: no JetStream default or applicable tiered limit present")
 
 	// Test tiers up to stream limits
 	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-1", Replicas: 1, Subjects: []string{"testR1-1"}})
@@ -484,10 +484,10 @@ func TestJetStreamJWTClusteredTiers(t *testing.T) {
 	// Test exceeding tiered stream limit
 	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-3", Replicas: 1, Subjects: []string{"testR1-3"}})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "maximum number of streams reached")
+	require_Equal(t, err.Error(), "nats: maximum number of streams reached")
 	_, err = js.AddStream(&nats.StreamConfig{Name: "testR3-3", Replicas: 3, Subjects: []string{"testR3-3"}})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "maximum number of streams reached")
+	require_Equal(t, err.Error(), "nats: maximum number of streams reached")
 
 	// Test tiers up to consumer limits
 	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur1", AckPolicy: nats.AckExplicitPolicy})
@@ -500,10 +500,10 @@ func TestJetStreamJWTClusteredTiers(t *testing.T) {
 	// test exceeding tiered consumer limits
 	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur4", AckPolicy: nats.AckExplicitPolicy})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "maximum consumers limit reached")
+	require_Equal(t, err.Error(), "nats: maximum consumers limit reached")
 	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur5", AckPolicy: nats.AckExplicitPolicy})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "maximum consumers limit reached")
+	require_Equal(t, err.Error(), "nats: maximum consumers limit reached")
 
 	// test tiered storage limit
 	msg := [512]byte{}
@@ -633,7 +633,7 @@ func TestJetStreamJWTClusteredTiersChange(t *testing.T) {
 	cfg.Replicas = 3
 	_, err = js.UpdateStream(cfg)
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "insufficient storage resources available")
+	require_Equal(t, err.Error(), "nats: insufficient storage resources available")
 
 	time.Sleep(time.Second - time.Since(start)) // make sure the time stamp changes
 	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{

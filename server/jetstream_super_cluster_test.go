@@ -1387,7 +1387,7 @@ func TestJetStreamSuperClusterOverflowPlacement(t *testing.T) {
 		MaxBytes:  2 * 1024 * 1024 * 1024,
 		Placement: &nats.Placement{Cluster: pcn},
 	})
-	require_Contains(t, err.Error(), "no suitable peers for placement")
+	require_Contains(t, err.Error(), "nats: no suitable peers for placement")
 	// Now test actual overflow placement. So try again with no placement designation.
 	// This will test the peer picker's logic since they are updated at this point and the meta leader
 	// knows it can not place it in C2.
@@ -2391,7 +2391,7 @@ func TestJetStreamSuperClusterMaxHaAssets(t *testing.T) {
 	waitStatsz(3, 1)
 	_, err = js.AddStream(&nats.StreamConfig{Name: "S3", Replicas: 3, Placement: &nats.Placement{Cluster: "C1"}})
 	require_Error(t, err)
-	require_Contains(t, err.Error(), "no suitable peers for placement")
+	require_Contains(t, err.Error(), "nats: no suitable peers for placement")
 	require_Contains(t, err.Error(), "misc: 3")
 	require_NoError(t, js.DeleteStream("S1"))
 	waitStatsz(3, 2)
@@ -2402,7 +2402,7 @@ func TestJetStreamSuperClusterMaxHaAssets(t *testing.T) {
 	waitStatsz(3, 1)
 	_, err = js.AddConsumer("S2", &nats.ConsumerConfig{Durable: "DUR2", AckPolicy: nats.AckExplicitPolicy})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "insufficient resources")
+	require_Equal(t, err.Error(), "nats: insufficient resources")
 	_, err = js.AddConsumer("S2", &nats.ConsumerConfig{AckPolicy: nats.AckExplicitPolicy})
 	require_NoError(t, err)
 	waitStatsz(3, 3)
@@ -2422,10 +2422,10 @@ func TestJetStreamSuperClusterMaxHaAssets(t *testing.T) {
 	waitStatsz(6, 3)
 	_, err = js.AddConsumer("S4", &nats.ConsumerConfig{Durable: "DUR2", AckPolicy: nats.AckExplicitPolicy})
 	require_Error(t, err)
-	require_Equal(t, err.Error(), "insufficient resources")
+	require_Equal(t, err.Error(), "nats: insufficient resources")
 	_, err = js.UpdateStream(&nats.StreamConfig{Name: "S2", Replicas: 3, Placement: &nats.Placement{Cluster: "C2"}})
 	require_Error(t, err)
-	require_Contains(t, err.Error(), "no suitable peers for placement")
+	require_Contains(t, err.Error(), "nats: no suitable peers for placement")
 	require_Contains(t, err.Error(), "misc: 3")
 }
 

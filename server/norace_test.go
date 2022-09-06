@@ -3344,7 +3344,11 @@ func TestNoRaceJetStreamClusterInterestPolicyAckNone(t *testing.T) {
 				atomic.AddUint32(&received, 1)
 			}
 
-			_, err = js.Subscribe("cluster.created", mh, nats.Durable(test.durable), nats.DeliverNew(), nats.AckNone())
+			opts := []nats.SubOpt{nats.DeliverNew(), nats.AckNone()}
+			if test.durable != _EMPTY_ {
+				opts = append(opts, nats.Durable(test.durable))
+			}
+			_, err = js.Subscribe("cluster.created", mh, opts...)
 			if err != nil {
 				t.Fatalf("Unexepected error: %v", err)
 			}

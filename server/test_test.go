@@ -98,8 +98,15 @@ func require_Error(t *testing.T, err error, expected ...error) {
 	if len(expected) == 0 {
 		return
 	}
+	// Try to strip nats prefix from Go library if present.
+	const natsErrPre = "nats: "
+	eStr := err.Error()
+	if strings.HasPrefix(eStr, natsErrPre) {
+		eStr = strings.Replace(eStr, natsErrPre, _EMPTY_, 1)
+	}
+
 	for _, e := range expected {
-		if err == e || strings.Contains(e.Error(), err.Error()) {
+		if err == e || strings.Contains(e.Error(), eStr) {
 			return
 		}
 	}
