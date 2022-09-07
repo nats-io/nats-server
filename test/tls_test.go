@@ -27,8 +27,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+
+	"github.com/nats-io/nats-server/v2/server"
 )
 
 var noOpErrHandler = func(_ *nats.Conn, _ *nats.Subscription, _ error) {}
@@ -1228,6 +1229,7 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 		rerr   error
 	}{
 		// To generate certs for these tests:
+		// USE `regenerate_rdns_svid.sh` TO REGENERATE
 		//
 		// ```
 		// openssl req -newkey rsa:2048  -nodes -keyout client-$CLIENT_ID.key -subj "/C=US/ST=CA/L=Los Angeles/OU=NATS/O=NATS/CN=*.example.com/DC=example/DC=com" -addext extendedKeyUsage=clientAuth -out client-$CLIENT_ID.csr
@@ -1455,7 +1457,7 @@ func TestTLSClientAuthWithRDNSequence(t *testing.T) {
 				}
 			`,
 			//
-			// OpenSSL: -subj "/DC=org/DC=OpenSSL/DC=DEV+O=users/CN=John Doe"
+			// OpenSSL: -subj "/DC=org/DC=OpenSSL/DC=DEV+O=users/CN=John Doe" -multivalue-rdn
 			// Go:       CN=John Doe,O=users
 			// RFC2253:  CN=John Doe,DC=DEV+O=users,DC=OpenSSL,DC=org
 			//
