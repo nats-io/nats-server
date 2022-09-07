@@ -602,6 +602,9 @@ func TestNoRaceRouteMemUsage(t *testing.T) {
 
 	for i := 0; i < 100; i++ {
 		requestor := natsConnect(t, bURL)
+		// Don't use a defer here otherwise that will make the memory check fail!
+		// We are closing the connection just after these few instructions that
+		// are not calling t.Fatal() anyway.
 		inbox := nats.NewInbox()
 		sub := natsSubSync(t, requestor, inbox)
 		natsPubReq(t, requestor, "foo", inbox, payload)
@@ -2761,13 +2764,12 @@ func TestNoRaceJetStreamSuperClusterAccountConnz(t *testing.T) {
 		}
 
 		nc, js := jsClientConnect(t, sc.randomServer(), nats.UserInfo("two", "p"), nats.Name("two"))
+		defer nc.Close()
 		nc.SubscribeSync("baz")
 		nc.SubscribeSync("foo.bar.*")
 		nc.SubscribeSync(fmt.Sprintf("id.%d", i+1))
 
 		js.AddStream(&nats.StreamConfig{Name: fmt.Sprintf("TEST:%d", i+1)})
-
-		defer nc.Close()
 	}
 
 	type czapi struct {
@@ -4792,6 +4794,7 @@ func TestNoRaceJetStreamOrderedConsumerLongRTTPerformance(t *testing.T) {
 
 	nc, err = nats.Connect(proxy.clientURL())
 	require_NoError(t, err)
+	defer nc.Close()
 	js, err = nc.JetStream()
 	require_NoError(t, err)
 
@@ -5254,8 +5257,8 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			nc, _ := jsClientConnect(t, c.randomServer())
-			js, _ := nc.JetStream(nats.MaxWait(500 * time.Millisecond))
 			defer nc.Close()
+			js, _ := nc.JetStream(nats.MaxWait(500 * time.Millisecond))
 			for {
 				select {
 				case <-qch:

@@ -794,6 +794,7 @@ func TestServerPoolUpdatedWhenRouteGoesAway(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error on connect")
 	}
+	defer nc.Close()
 
 	s2Opts := DefaultOptions()
 	s2Opts.ServerName = "B"
@@ -1512,12 +1513,14 @@ func testTLSRoutesCertificateImplicitAllow(t *testing.T, pass bool) {
 
 func TestSubjectRenameViaJetStreamAck(t *testing.T) {
 	s := RunRandClientPortServer()
+	defer s.Shutdown()
 	errChan := make(chan error)
 	defer close(errChan)
 	ncPub := natsConnect(t, s.ClientURL(), nats.UserInfo("client", "pwd"),
 		nats.ErrorHandler(func(conn *nats.Conn, s *nats.Subscription, err error) {
 			errChan <- err
 		}))
+	defer ncPub.Close()
 	require_NoError(t, ncPub.PublishRequest("SVC.ALLOWED", "$JS.ACK.whatever@ADMIN", nil))
 	select {
 	case err := <-errChan:

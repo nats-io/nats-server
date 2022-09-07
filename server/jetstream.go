@@ -1037,9 +1037,45 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 	}
 
 	js.mu.Lock()
-	if _, ok := js.accounts[a.Name]; ok && a.JetStreamEnabled() {
+	if _, ok := js.accounts[a.Name]; ok {
+		if a.JetStreamEnabled() {
+			js.mu.Unlock()
+			return fmt.Errorf("jetstream already enabled for account")
+		}
+		// Otherwise, we have a race where multiple go routines are trying to
+		// lookup the same account. We can't use a lock around lookupAccount
+		// due to some recursion (with import/export). However, in situations
+		// where we are here, it is safe to block and wait for the account
+		// referenced in rjsa.account to complete its full registration.
 		js.mu.Unlock()
-		return fmt.Errorf("jetstream already enabled for account")
+
+		timeout := time.NewTimer(2 * time.Second)
+		defer timeout.Stop()
+		// Start with a very small duration, will bump it after the first check.
+		tick := time.NewTicker(25 * time.Millisecond)
+		defer tick.Stop()
+
+		start := time.Now()
+		defer func() {
+			s.Warnf("Enabling JetStream for account %q took %v", a.Name, time.Since(start))
+		}()
+		// Do a first test and that may be enough time for the other to complete.
+		// Otherwise, we will check based on the ticker.
+		if _, ok := s.accounts.Load(a.Name); ok {
+			return nil
+		}
+		for {
+			select {
+			case <-tick.C:
+				if _, ok := s.accounts.Load(a.Name); ok {
+					return nil
+				}
+			case <-timeout.C:
+				return fmt.Errorf("enabling JetStream for account %q timed-out", a.Name)
+			case <-s.quitCh:
+				return ErrServerNotRunning
+			}
+		}
 	}
 
 	// Check the limits against existing reservations.
@@ -1061,12 +1097,11 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 	jsa.usageMu.Unlock()
 
 	js.accounts[a.Name] = jsa
-	js.mu.Unlock()
-
-	// Stamp inside account as well.
+	// Stamp inside account as well and do it under js's lock to detect races.
 	a.mu.Lock()
 	a.js = jsa
 	a.mu.Unlock()
+	js.mu.Unlock()
 
 	// Create the proper imports here.
 	if err := a.enableAllJetStreamServiceImportsAndMappings(); err != nil {

@@ -27,6 +27,7 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -16619,6 +16620,7 @@ func TestJetStreamCrossAccounts(t *testing.T) {
 func TestJetStreamInvalidRestoreRequests(t *testing.T) {
 	test := func(t *testing.T, s *Server, replica int) {
 		nc := natsConnect(t, s.ClientURL())
+		defer nc.Close()
 		// test invalid stream config in restore request
 		require_fail := func(cfg StreamConfig, errDesc string) {
 			t.Helper()
@@ -17041,6 +17043,7 @@ func TestJetStreamImportConsumerStreamSubjectRemapSingle(t *testing.T) {
 
 		nc2, err := nats.Connect(s.ClientURL(), nats.UserInfo("im", "pwd"))
 		require_NoError(t, err)
+		defer nc2.Close()
 
 		var sub *nats.Subscription
 		if queue {
@@ -18544,6 +18547,7 @@ func benchJetStreamWorkersAndBatch(b *testing.B, numWorkers, batchSize int) {
 		if err != nil {
 			b.Fatalf("Failed to create client: %v", err)
 		}
+		defer nc.Close()
 
 		deliverTo := nats.NewInbox()
 		nc.Subscribe(deliverTo, func(m *nats.Msg) {
@@ -18708,7 +18712,8 @@ func TestJetStreamMultiplePullPerf(t *testing.T) {
 	count := 0
 
 	for i := 0; i < np; i++ {
-		_, js := jsClientConnect(t, s)
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
 		sub, err := js.PullSubscribe("mp22", "d")
 		require_NoError(t, err)
 
@@ -19445,4 +19450,198 @@ func TestJetStreamPullConsumerNoAck(t *testing.T) {
 		AckPolicy: nats.AckNonePolicy,
 	})
 	require_NoError(t, err)
+}
+
+func TestJetStreamAccountPurge(t *testing.T) {
+	sysKp, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	sysCreds := newUser(t, sysKp)
+	defer removeFile(t, sysCreds)
+	accKp, accpub := createKey(t)
+	accClaim := jwt.NewAccountClaims(accpub)
+	accClaim.Limits.JetStreamLimits.DiskStorage = 1024 * 1024 * 5
+	accClaim.Limits.JetStreamLimits.MemoryStorage = 1024 * 1024 * 5
+	accJwt := encodeClaim(t, accClaim, accpub)
+	accCreds := newUser(t, accKp)
+	defer removeFile(t, accCreds)
+
+	storeDir := createDir(t, _EMPTY_)
+	defer os.RemoveAll(storeDir)
+
+	cfg := createConfFile(t, []byte(fmt.Sprintf(`
+        host: 127.0.0.1
+        port:-1
+        server_name: S1
+        operator: %s
+        system_account: %s
+        resolver: {
+                type: full
+                dir: '%s/jwt'
+        }
+        jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s/js'}
+`, ojwt, syspub, storeDir, storeDir)))
+	defer os.Remove(cfg)
+
+	s, o := RunServerWithConfig(cfg)
+	updateJwt(t, s.ClientURL(), sysCreds, sysJwt, 1)
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt, 1)
+	defer s.Shutdown()
+
+	inspectDirs := func(t *testing.T, accTotal int) error {
+		t.Helper()
+		if accTotal == 0 {
+			files, err := os.ReadDir(filepath.Join(o.StoreDir, "jetstream", accpub))
+			require_True(t, len(files) == accTotal || err != nil)
+		} else {
+			files, err := os.ReadDir(filepath.Join(o.StoreDir, "jetstream", accpub, "streams"))
+			require_NoError(t, err)
+			require_True(t, len(files) == accTotal)
+		}
+		return nil
+	}
+
+	createTestData := func() {
+		nc := natsConnect(t, s.ClientURL(), nats.UserCredentials(accCreds))
+		defer nc.Close()
+		js, err := nc.JetStream()
+		require_NoError(t, err)
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "TEST1",
+			Subjects: []string{"foo"},
+		})
+		require_NoError(t, err)
+		_, err = js.AddConsumer("TEST1",
+			&nats.ConsumerConfig{Durable: "DUR1",
+				AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+	}
+
+	purge := func(t *testing.T) {
+		t.Helper()
+		var resp JSApiAccountPurgeResponse
+		ncsys := natsConnect(t, s.ClientURL(), nats.UserCredentials(sysCreds))
+		defer ncsys.Close()
+		m, err := ncsys.Request(fmt.Sprintf(JSApiAccountPurgeT, accpub), nil, 5*time.Second)
+		require_NoError(t, err)
+		err = json.Unmarshal(m.Data, &resp)
+		require_NoError(t, err)
+		require_True(t, resp.Initiated)
+	}
+
+	createTestData()
+	inspectDirs(t, 1)
+	purge(t)
+	inspectDirs(t, 0)
+	createTestData()
+	inspectDirs(t, 1)
+
+	s.Shutdown()
+	require_NoError(t, os.Remove(storeDir+"/jwt/"+accpub+".jwt"))
+
+	s, o = RunServerWithConfig(o.ConfigFile)
+	defer s.Shutdown()
+	inspectDirs(t, 1)
+	purge(t)
+	inspectDirs(t, 0)
+}
+
+func TestJetStreamLookupAccountRace(t *testing.T) {
+	kp, _ := nkeys.FromSeed(oSeed)
+
+	skp, _ := nkeys.CreateAccount()
+	spub, _ := skp.PublicKey()
+	nac := jwt.NewAccountClaims(spub)
+	sjwt, err := nac.Encode(kp)
+	require_NoError(t, err)
+
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac = jwt.NewAccountClaims(apub)
+	// Set some limits to enable JS.
+	nac.Limits.JetStreamLimits.DiskStorage = 1024 * 1024
+	nac.Limits.JetStreamLimits.Streams = 1
+	ajwt, err := nac.Encode(kp)
+	require_NoError(t, err)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, spub) {
+			w.Write([]byte(sjwt))
+		} else {
+			w.Write([]byte(ajwt))
+		}
+	}))
+	defer ts.Close()
+
+	operator := fmt.Sprintf(`
+		operator: %s
+		resolver: URL("%s/ngs/v1/accounts/jwt/")
+	`, ojwt, ts.URL)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		server_name: my_server
+		jetstream: { max_mem_store: 256MB, max_file_store: 2GB}
+		system_account: %s
+	`+operator, spub)))
+	defer os.Remove(conf)
+	s, _ := RunServerWithConfig(conf)
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	// We are going to simulate situations on the server where multiple
+	// go routines perform a LookupAccount that caused racing conditions
+	// leading to leaked jsAccount objects.
+	count := 10
+	accs := make(chan *Account, count)
+	errs := make(chan error, count)
+	wg := sync.WaitGroup{}
+	wg.Add(count)
+	for i := 0; i < count; i++ {
+		go func() {
+			defer wg.Done()
+			acc, err := s.LookupAccount(apub)
+			errs <- err
+			accs <- acc
+		}()
+	}
+	wg.Wait()
+
+	// All accounts should be the same pointer, and all should have JS enabled.
+	var prev *Account
+	for i := 0; i < count; i++ {
+		err := <-errs
+		if err != nil {
+			t.Fatalf("Failed with %v", err)
+		}
+		acc := <-accs
+		if prev != nil && prev != acc {
+			t.Fatalf("Got 2 different pointers for the same account: prev=%v now=%v", prev, acc)
+		}
+		if !acc.JetStreamEnabled() {
+			t.Fatalf("JetStream should be enabled for acc=%v", acc)
+		}
+		prev = acc
+	}
+
+	prev.mu.RLock()
+	jsa := prev.js
+	prev.mu.RUnlock()
+
+	js := s.getJetStream()
+	js.mu.RLock()
+	if sjsa := js.accounts[apub]; sjsa != jsa {
+		js.mu.RUnlock()
+		t.Fatalf("The jsAccount stored in js.accounts (%p) is not the same than the account's (%p)",
+			sjsa, jsa)
+	}
+	js.mu.RUnlock()
+
+	jsa.mu.RLock()
+	if jsa.acc() != prev {
+		jsa.mu.RUnlock()
+		t.Fatalf("The account in jsAccount does not match the registered account")
+	}
+	jsa.mu.RUnlock()
 }

@@ -102,6 +102,7 @@ func TestOCSPAlwaysMustStapleAndShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer nc.Close()
 	sub, err := nc.SubscribeSync("foo")
 	if err != nil {
 		t.Fatal(err)
@@ -199,6 +200,7 @@ func TestOCSPMustStapleShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer nc.Close()
 	sub, err := nc.SubscribeSync("foo")
 	if err != nil {
 		t.Fatal(err)
@@ -616,6 +618,7 @@ func TestOCSPReloadRotateTLSCertWithNoURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer nc.Close()
 	sub, err := nc.SubscribeSync("foo")
 	if err != nil {
 		t.Fatal(err)
@@ -727,6 +730,7 @@ func TestOCSPReloadRotateTLSCertDisableMustStaple(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer nc.Close()
 	sub, err := nc.SubscribeSync("foo")
 	if err != nil {
 		t.Fatal(err)
@@ -914,6 +918,7 @@ func TestOCSPReloadRotateTLSCertEnableMustStaple(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer nc.Close()
 	sub, err := nc.SubscribeSync("foo")
 	if err != nil {
 		t.Fatal(err)
@@ -2214,6 +2219,7 @@ func TestOCSPCustomConfigReloadDisable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer nc.Close()
 	sub, err := nc.SubscribeSync("foo")
 	if err != nil {
 		t.Fatal(err)
@@ -2316,6 +2322,7 @@ func TestOCSPCustomConfigReloadEnable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer nc.Close()
 	sub, err := nc.SubscribeSync("foo")
 	if err != nil {
 		t.Fatal(err)

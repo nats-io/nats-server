@@ -2357,6 +2357,7 @@ func TestJetStreamSuperClusterMaxHaAssets(t *testing.T) {
 	defer nc.Close()
 
 	ncSys := natsConnect(t, sc.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	defer ncSys.Close()
 	statszSub, err := ncSys.SubscribeSync(fmt.Sprintf(serverStatsSubj, "*"))
 	require_NoError(t, err)
 	require_NoError(t, ncSys.Flush())
@@ -2482,10 +2483,13 @@ func TestJetStreamSuperClusterStreamAlternates(t *testing.T) {
 
 	// Connect to different clusters to check ordering.
 	nc, _ = jsClientConnect(t, sc.clusterForName("C1").randomServer())
+	defer nc.Close()
 	getStreamInfo(nc, "C1")
 	nc, _ = jsClientConnect(t, sc.clusterForName("C2").randomServer())
+	defer nc.Close()
 	getStreamInfo(nc, "C2")
 	nc, _ = jsClientConnect(t, sc.clusterForName("C3").randomServer())
+	defer nc.Close()
 	getStreamInfo(nc, "C3")
 }
 
