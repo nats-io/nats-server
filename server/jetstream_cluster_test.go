@@ -3737,12 +3737,10 @@ func TestJetStreamClusterAccountPurge(t *testing.T) {
 	updateJwt(t, c.randomServer().ClientURL(), sysCreds, accJwt, 3)
 
 	createTestData := func(t *testing.T) {
-		nc := natsConnect(t, c.randomNonLeader().ClientURL(), nats.UserCredentials(accCreds))
+		nc, js := jsClientConnect(t, c.randomNonLeader(), nats.UserCredentials(accCreds))
 		defer nc.Close()
 
-		js, err := nc.JetStream()
-		require_NoError(t, err)
-		_, err = js.AddStream(&nats.StreamConfig{
+		_, err := js.AddStream(&nats.StreamConfig{
 			Name:     "TEST1",
 			Subjects: []string{"foo"},
 			Replicas: 3,
@@ -3866,6 +3864,7 @@ func TestJetStreamClusterAccountPurge(t *testing.T) {
 	})
 
 	t.Run("purge-with-restart", func(t *testing.T) {
+		c.waitOnStreamLeader(accpub, "TEST1")
 		createTestData(t)
 		checkForDirs(t, 6, 4)
 		purge(t)
