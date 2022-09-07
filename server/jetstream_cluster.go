@@ -690,16 +690,26 @@ func (js *jetStream) isGroupLeaderless(rg *raftGroup) bool {
 	// If we don't have a leader.
 	if rg.node.GroupLeader() == _EMPTY_ {
 		// Threshold for jetstream startup.
-		const startupThreshold = 2 * time.Second
+		const startupThreshold = 5 * time.Second
+		// Minimum threshold for lost quorom reporting.
+		const minLostThreshold = 3 * time.Second
 
 		if rg.node.HadPreviousLeader() {
 			// Make sure we have been running long enough to intelligently determine this.
 			if time.Since(js.started) > startupThreshold {
 				return true
+			} else {
+				return false
 			}
 		}
+
+		// Set to lower threshold
+		lqThreshold := lostQuorumInterval
+		if lqThreshold < minLostThreshold {
+			lqThreshold = minLostThreshold
+		}
 		// Make sure we have been running for enough time.
-		if time.Since(rg.node.Created()) > lostQuorumInterval {
+		if time.Since(rg.node.Created()) > lqThreshold {
 			return true
 		}
 	}
