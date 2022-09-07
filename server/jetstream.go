@@ -106,6 +106,8 @@ type jetStream struct {
 	cluster       *jetStreamCluster
 	accounts      map[string]*jsAccount
 	apiSubs       *Sublist
+	started       time.Time
+
 	// System level request to purge a stream move
 	accountPurge   *subscription
 	metaRecovering bool
@@ -408,6 +410,9 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 			return err
 		}
 	}
+
+	// Mark when we are up and running.
+	js.setStarted()
 
 	return nil
 }
@@ -742,6 +747,13 @@ func (s *Server) configAllJetStreamAccounts() error {
 	}
 
 	return nil
+}
+
+// Mark our started time.
+func (js *jetStream) setStarted() {
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	js.started = time.Now()
 }
 
 func (js *jetStream) isEnabled() bool {
