@@ -4205,6 +4205,41 @@ func TestMonitorJsz(t *testing.T) {
 			}
 		}
 	})
+	t.Run("accounts reserved metrics", func(t *testing.T) {
+		for _, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url + "?accounts=true&acc=ACC")
+			if len(info.AccountDetails) != 1 {
+				t.Fatalf("expected single account")
+			}
+			acc := info.AccountDetails[0]
+			got := int(acc.ReservedMemory)
+			expected := 5242880
+			if got != expected {
+				t.Errorf("Expected: %v, got: %v", expected, got)
+			}
+			got = int(acc.ReservedStore)
+			expected = 4194304
+			if got != expected {
+				t.Errorf("Expected: %v, got: %v", expected, got)
+			}
+
+			info = readJsInfo(url + "?accounts=true&acc=BCC_TO_HAVE_ONE_EXTRA")
+			if len(info.AccountDetails) != 1 {
+				t.Fatalf("expected single account")
+			}
+			acc = info.AccountDetails[0]
+			got = int(acc.ReservedMemory)
+			expected = -1
+			if got != expected {
+				t.Errorf("Expected: %v, got: %v", expected, got)
+			}
+			got = int(acc.ReservedStore)
+			expected = -1
+			if got != expected {
+				t.Errorf("Expected: %v, got: %v", expected, got)
+			}
+		}
+	})
 	t.Run("offset-too-big", func(t *testing.T) {
 		for _, url := range []string{monUrl1, monUrl2} {
 			info := readJsInfo(url + "?accounts=true&offset=10")
