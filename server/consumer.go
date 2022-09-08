@@ -3102,10 +3102,6 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 
 		// On error either wait or return.
 		if err != nil || pmsg == nil {
-			// If we are stalled here in pull mode, invalidate all requests that have had deliveries.
-			if err == errMaxAckPending && o.isPullMode() {
-				o.processWaiting(true)
-			}
 			if err == ErrStoreMsgNotFound || err == ErrStoreEOF || err == errMaxAckPending || err == errPartialCache {
 				goto waitForMsgs
 			} else {
@@ -3128,7 +3124,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		}
 		// Calculate payload size. This can be calculated on client side.
 		// We do not include transport subject here since not generally known on client.
-		sz = len(pmsg.subj) + +len(ackReply) + len(pmsg.hdr) + len(pmsg.msg)
+		sz = len(pmsg.subj) + len(ackReply) + len(pmsg.hdr) + len(pmsg.msg)
 
 		if o.isPushMode() {
 			dsubj = o.dsubj
