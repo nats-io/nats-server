@@ -17329,8 +17329,8 @@ func TestJetStreamPullMaxBytes(t *testing.T) {
 	require_NoError(t, err)
 
 	// Put in ~2MB, each ~100k
-	msz := 99_980
-	total, msg := 20, []byte(strings.Repeat("Z", msz))
+	msz, dsz := 100_000, 99_950
+	total, msg := 20, []byte(strings.Repeat("Z", dsz))
 
 	for i := 0; i < total; i++ {
 		if _, err := js.Publish("TEST", msg); err != nil {
@@ -17379,7 +17379,7 @@ func TestJetStreamPullMaxBytes(t *testing.T) {
 
 	m, err = sub.NextMsg(time.Second)
 	require_NoError(t, err)
-	require_True(t, len(m.Data) == msz)
+	require_True(t, len(m.Data) == dsz)
 	require_True(t, len(m.Header) == 0)
 	checkSubsPending(t, sub, 0)
 
@@ -17391,31 +17391,31 @@ func TestJetStreamPullMaxBytes(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		m, err = sub.NextMsg(time.Second)
 		require_NoError(t, err)
-		require_True(t, len(m.Data) == msz)
+		require_True(t, len(m.Data) == dsz)
 		require_True(t, len(m.Header) == 0)
 	}
 	checkSubsPending(t, sub, 0)
 
 	// Now ask for large batch but make sure we are limited by batch size.
-	req = &JSApiConsumerGetNextRequest{Batch: 1_000, MaxBytes: msz * 5, NoWait: true}
+	req = &JSApiConsumerGetNextRequest{Batch: 1_000, MaxBytes: msz * 4, NoWait: true}
 	jreq, _ = json.Marshal(req)
 	nc.PublishRequest(subj, reply, jreq)
-	checkSubsPending(t, sub, 5)
-	for i := 0; i < 5; i++ {
+	checkSubsPending(t, sub, 4)
+	for i := 0; i < 4; i++ {
 		m, err = sub.NextMsg(time.Second)
 		require_NoError(t, err)
-		require_True(t, len(m.Data) == msz)
+		require_True(t, len(m.Data) == dsz)
 		require_True(t, len(m.Header) == 0)
 	}
 	checkSubsPending(t, sub, 0)
 
-	req = &JSApiConsumerGetNextRequest{Batch: 1_000, MaxBytes: msz + 20, NoWait: true}
+	req = &JSApiConsumerGetNextRequest{Batch: 1_000, MaxBytes: msz, NoWait: true}
 	jreq, _ = json.Marshal(req)
 	nc.PublishRequest(subj, reply, jreq)
 	checkSubsPending(t, sub, 1)
 	m, err = sub.NextMsg(time.Second)
 	require_NoError(t, err)
-	require_True(t, len(m.Data) == msz)
+	require_True(t, len(m.Data) == dsz)
 	require_True(t, len(m.Header) == 0)
 	checkSubsPending(t, sub, 0)
 }

@@ -5581,3 +5581,90 @@ func TestNoRaceJetStreamSuperClusterStreamMoveLongRTT(t *testing.T) {
 		return nil
 	})
 }
+
+// https://github.com/nats-io/nats-server/issues/3455
+func TestNoRaceJetStreamConcurrentPullConsumerBatch(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"ORDERS.*"},
+		Storage:   nats.MemoryStorage,
+		Retention: nats.WorkQueuePolicy,
+	})
+	require_NoError(t, err)
+
+	toSend := int32(100_000)
+
+	for i := 0; i < 100_000; i++ {
+		subj := fmt.Sprintf("ORDERS.%d", i+1)
+		js.PublishAsync(subj, []byte("BUY"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:       "PROCESSOR",
+		AckPolicy:     nats.AckExplicitPolicy,
+		MaxAckPending: 5000,
+	})
+	require_NoError(t, err)
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	sub1, err := js.PullSubscribe(_EMPTY_, _EMPTY_, nats.Bind("TEST", "PROCESSOR"))
+	require_NoError(t, err)
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	sub2, err := js.PullSubscribe(_EMPTY_, _EMPTY_, nats.Bind("TEST", "PROCESSOR"))
+	require_NoError(t, err)
+
+	startCh := make(chan bool)
+
+	var received int32
+
+	wg := sync.WaitGroup{}
+
+	fetchSize := 1000
+	fetch := func(sub *nats.Subscription) {
+		<-startCh
+		defer wg.Done()
+
+		for {
+			msgs, err := sub.Fetch(fetchSize, nats.MaxWait(time.Second))
+			if atomic.AddInt32(&received, int32(len(msgs))) >= toSend {
+				break
+			}
+			// We should always receive a full batch here if not last competing fetch.
+			if err != nil || len(msgs) != fetchSize {
+				break
+			}
+			for _, m := range msgs {
+				m.Ack()
+			}
+		}
+	}
+
+	wg.Add(2)
+
+	go fetch(sub1)
+	go fetch(sub2)
+
+	close(startCh)
+
+	wg.Wait()
+	require_True(t, received == toSend)
+}
