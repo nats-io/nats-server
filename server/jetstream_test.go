@@ -19446,3 +19446,95 @@ func TestJetStreamPullConsumerNoAck(t *testing.T) {
 	})
 	require_NoError(t, err)
 }
+
+func TestJetStreamAccountPurge(t *testing.T) {
+	sysKp, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	sysCreds := newUser(t, sysKp)
+	defer removeFile(t, sysCreds)
+	accKp, accpub := createKey(t)
+	accClaim := jwt.NewAccountClaims(accpub)
+	accClaim.Limits.JetStreamLimits.DiskStorage = 1024 * 1024 * 5
+	accClaim.Limits.JetStreamLimits.MemoryStorage = 1024 * 1024 * 5
+	accJwt := encodeClaim(t, accClaim, accpub)
+	accCreds := newUser(t, accKp)
+	defer removeFile(t, accCreds)
+
+	storeDir := createDir(t, _EMPTY_)
+	defer os.RemoveAll(storeDir)
+
+	cfg := createConfFile(t, []byte(fmt.Sprintf(`
+        host: 127.0.0.1
+        port:-1
+        server_name: S1
+        operator: %s
+        system_account: %s
+        resolver: {
+                type: full
+                dir: '%s/jwt'
+        }
+        jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s/js'}
+`, ojwt, syspub, storeDir, storeDir)))
+	defer os.Remove(cfg)
+
+	s, o := RunServerWithConfig(cfg)
+	updateJwt(t, s.ClientURL(), sysCreds, sysJwt, 1)
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt, 1)
+	defer s.Shutdown()
+
+	inspectDirs := func(t *testing.T, accTotal int) error {
+		t.Helper()
+		if accTotal == 0 {
+			files, err := os.ReadDir(filepath.Join(o.StoreDir, "jetstream", accpub))
+			require_True(t, len(files) == accTotal || err != nil)
+		} else {
+			files, err := os.ReadDir(filepath.Join(o.StoreDir, "jetstream", accpub, "streams"))
+			require_NoError(t, err)
+			require_True(t, len(files) == accTotal)
+		}
+		return nil
+	}
+
+	createTestData := func() {
+		nc := natsConnect(t, s.ClientURL(), nats.UserCredentials(accCreds))
+		defer nc.Close()
+		js, err := nc.JetStream()
+		require_NoError(t, err)
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "TEST1",
+			Subjects: []string{"foo"},
+		})
+		require_NoError(t, err)
+		_, err = js.AddConsumer("TEST1",
+			&nats.ConsumerConfig{Durable: "DUR1",
+				AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+	}
+
+	purge := func(t *testing.T) {
+		t.Helper()
+		var resp JSApiAccountPurgeResponse
+		ncsys := natsConnect(t, s.ClientURL(), nats.UserCredentials(sysCreds))
+		defer ncsys.Close()
+		m, err := ncsys.Request(fmt.Sprintf(JSApiAccountPurgeT, accpub), nil, 5*time.Second)
+		require_NoError(t, err)
+		err = json.Unmarshal(m.Data, &resp)
+		require_NoError(t, err)
+		require_True(t, resp.Initiated)
+	}
+
+	createTestData()
+	inspectDirs(t, 1)
+	purge(t)
+	inspectDirs(t, 0)
+	createTestData()
+	inspectDirs(t, 1)
+
+	s.Shutdown()
+	require_NoError(t, os.Remove(storeDir+"/jwt/"+accpub+".jwt"))
+
+	s, o = RunServerWithConfig(o.ConfigFile)
+	inspectDirs(t, 1)
+	purge(t)
+	inspectDirs(t, 0)
+}
