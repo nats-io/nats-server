@@ -3614,6 +3614,7 @@ func TestGatewayRaceOnClose(t *testing.T) {
 
 	bURL := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
 	ncB := natsConnect(t, bURL, nats.NoReconnect())
+	defer ncB.Close()
 
 	wg := sync.WaitGroup{}
 	wg.Add(1)

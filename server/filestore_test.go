@@ -1544,6 +1544,7 @@ func TestFileStoreAndRetrieveMultiBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	defer fs.Stop()
 
 	for i := 0; i < 20; i++ {
 		fs.StoreMsg(subj, nil, msg)
@@ -2249,6 +2250,7 @@ func TestFileStorePerf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	defer fs.Stop()
 
 	start := time.Now()
 	for i := 0; i < int(toStore); i++ {
@@ -2273,6 +2275,7 @@ func TestFileStorePerf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	defer fs.Stop()
 	fmt.Printf("time to restore is %v\n\n", time.Since(start))
 
 	fmt.Printf("LOAD: reading %d msgs of %s each, totalling %s\n",
@@ -2322,6 +2325,7 @@ func TestFileStorePerf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	defer fs.Stop()
 
 	fmt.Printf("\nremoving [in order] %d msgs of %s each, totalling %s\n",
 		toStore,
@@ -2388,6 +2392,7 @@ func TestFileStoreReadBackMsgPerf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	defer fs.Stop()
 
 	start := time.Now()
 	for i := 0; i < int(toStore); i++ {
@@ -2437,6 +2442,7 @@ func TestFileStoreStoreLimitRemovePerf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	defer fs.Stop()
 
 	fs.RegisterStorageUpdates(func(md, bd int64, seq uint64, subj string) {})
 
@@ -2493,6 +2499,7 @@ func TestFileStorePubPerfWithSmallBlkSize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	defer fs.Stop()
 
 	start := time.Now()
 	for i := 0; i < int(toStore); i++ {
@@ -3336,6 +3343,7 @@ func TestFileStoreSparseCompaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	defer fs.Stop()
 
 	msg := bytes.Repeat([]byte("ABC"), 33) // ~100bytes
 	loadMsgs := func(n int) {
@@ -3443,6 +3451,7 @@ func TestFileStoreSparseCompaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	defer fs.Stop()
 
 	loadMsgs(1000)
 	checkState(1000, 1, 1000)
@@ -3469,6 +3478,7 @@ func TestFileStoreSparseCompactionWithInteriorDeletes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	defer fs.Stop()
 
 	for i := 1; i <= 1000; i++ {
 		if _, _, err := fs.StoreMsg(fmt.Sprintf("kv.%d", i%10), nil, []byte("OK")); err != nil {

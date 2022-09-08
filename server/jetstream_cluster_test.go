@@ -3671,6 +3671,7 @@ func TestJetStreamClusterPeerExclusionTag(t *testing.T) {
 	changeCurrentConfigContentWithNewContent(t, srv.configFile, []byte(newContent))
 
 	ncSys := natsConnect(t, c.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	defer ncSys.Close()
 	sub, err := ncSys.SubscribeSync(fmt.Sprintf("$SYS.SERVER.%s.STATSZ", srv.ID()))
 	require_NoError(t, err)
 
@@ -5026,7 +5027,8 @@ func TestJetStreamClusterStreamPerf(t *testing.T) {
 	var conns []nats.JetStream
 	for i := 0; i < numConnections; i++ {
 		s := c.randomServer()
-		_, js := jsClientConnect(t, s)
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
 		conns = append(conns, js)
 	}
 

@@ -1206,7 +1206,7 @@ default_js_domain: {B:"DHUB"}
 	require_Equal(t, si.Cluster.Name, "HUB")
 }
 
-func TestLeafNodeSvcImportExportCycle(t *testing.T) {
+func TestJetStreamLeafNodeSvcImportExportCycle(t *testing.T) {
 	accounts := `
 	accounts {
 		SYS: {

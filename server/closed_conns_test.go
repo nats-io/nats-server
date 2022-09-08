@@ -110,6 +110,7 @@ func TestClosedConnsSubsAccounting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error on subscribe: %v", err)
 	}
+	defer nc.Close()
 
 	// Now create some subscriptions
 	numSubs := 10

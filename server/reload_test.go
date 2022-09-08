@@ -4186,6 +4186,7 @@ func TestLoggingReload(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Error creating client: %v\n", err)
 		}
+		defer nc.Close()
 
 		msgs := make(chan *nats.Msg, 1)
 		defer close(msgs)

@@ -16619,6 +16619,7 @@ func TestJetStreamCrossAccounts(t *testing.T) {
 func TestJetStreamInvalidRestoreRequests(t *testing.T) {
 	test := func(t *testing.T, s *Server, replica int) {
 		nc := natsConnect(t, s.ClientURL())
+		defer nc.Close()
 		// test invalid stream config in restore request
 		require_fail := func(cfg StreamConfig, errDesc string) {
 			t.Helper()
@@ -17041,6 +17042,7 @@ func TestJetStreamImportConsumerStreamSubjectRemapSingle(t *testing.T) {
 
 		nc2, err := nats.Connect(s.ClientURL(), nats.UserInfo("im", "pwd"))
 		require_NoError(t, err)
+		defer nc2.Close()
 
 		var sub *nats.Subscription
 		if queue {
@@ -18544,6 +18546,7 @@ func benchJetStreamWorkersAndBatch(b *testing.B, numWorkers, batchSize int) {
 		if err != nil {
 			b.Fatalf("Failed to create client: %v", err)
 		}
+		defer nc.Close()
 
 		deliverTo := nats.NewInbox()
 		nc.Subscribe(deliverTo, func(m *nats.Msg) {
@@ -18708,7 +18711,8 @@ func TestJetStreamMultiplePullPerf(t *testing.T) {
 	count := 0
 
 	for i := 0; i < np; i++ {
-		_, js := jsClientConnect(t, s)
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
 		sub, err := js.PullSubscribe("mp22", "d")
 		require_NoError(t, err)
 
