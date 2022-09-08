@@ -584,6 +584,7 @@ func TestServiceLatencyNoSubsLeak(t *testing.T) {
 
 	for i := 0; i < 100; i++ {
 		nc := clientConnect(t, sc.clusters[1].opts[1], "bar")
+		defer nc.Close()
 		if _, err := nc.Request("ngs.usage", []byte("1h"), time.Second); err != nil {
 			t.Fatalf("Error on request: %v", err)
 		}

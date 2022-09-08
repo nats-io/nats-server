@@ -4024,11 +4024,11 @@ func TestJWTTimeExpiration(t *testing.T) {
 						errChan <- struct{}{}
 					}
 				}))
+			defer c.Close()
 			chanRecv(t, errChan, 10*time.Second)
 			chanRecv(t, disconnectChan, 10*time.Second)
 			require_True(t, c.IsReconnecting())
 			require_False(t, c.IsConnected())
-			c.Close()
 		})
 	}
 	t.Run("double expiration", func(t *testing.T) {
@@ -4064,12 +4064,12 @@ func TestJWTTimeExpiration(t *testing.T) {
 					errChan <- struct{}{}
 				}
 			}))
+		defer c.Close()
 		chanRecv(t, errChan, 10*time.Second)
 		chanRecv(t, reConnectChan, 10*time.Second)
 		require_False(t, c.IsReconnecting())
 		require_True(t, c.IsConnected())
 		chanRecv(t, errChan, 10*time.Second)
-		c.Close()
 	})
 	t.Run("lower jwt expiration overwrites time", func(t *testing.T) {
 		start := time.Now()
@@ -4098,11 +4098,11 @@ func TestJWTTimeExpiration(t *testing.T) {
 					errChan <- struct{}{}
 				}
 			}))
+		defer c.Close()
 		chanRecv(t, errChan, 10*time.Second)
 		chanRecv(t, disconnectChan, 10*time.Second)
 		require_True(t, c.IsReconnecting())
 		require_False(t, c.IsConnected())
-		c.Close()
 	})
 }
 

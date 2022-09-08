@@ -2278,7 +2278,9 @@ func (mset *stream) setupMirrorConsumer() error {
 				mirror.qch = make(chan struct{})
 				mirror.wg.Add(1)
 				ready.Add(1)
-				mset.srv.startGoRoutine(func() { mset.processMirrorMsgs(mirror, &ready) })
+				if !mset.srv.startGoRoutine(func() { mset.processMirrorMsgs(mirror, &ready) }) {
+					ready.Done()
+				}
 			}
 			mset.mu.Unlock()
 			ready.Wait()
@@ -2554,7 +2556,9 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 					si.qch = make(chan struct{})
 					si.wg.Add(1)
 					ready.Add(1)
-					mset.srv.startGoRoutine(func() { mset.processSourceMsgs(si, &ready) })
+					if !mset.srv.startGoRoutine(func() { mset.processSourceMsgs(si, &ready) }) {
+						ready.Done()
+					}
 				}
 			}
 			mset.mu.Unlock()

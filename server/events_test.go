@@ -783,6 +783,7 @@ func TestSystemAccountConnectionUpdatesStopAfterNoLocal(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Error on connect: %v", err)
 		}
+		defer nc.Close()
 		clients = append(clients, nc)
 	}
 
@@ -1589,11 +1590,15 @@ func TestAccountConnsLimitExceededAfterUpdateDisconnectNewOnly(t *testing.T) {
 	newConns := make([]*nats.Conn, 0, 5)
 	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
 	for i := 0; i < 5; i++ {
-		nats.Connect(url, nats.NoReconnect(), createUserCreds(t, s, akp))
+		nc, err := nats.Connect(url, nats.NoReconnect(), createUserCreds(t, s, akp))
+		require_NoError(t, err)
+		defer nc.Close()
 	}
 	time.Sleep(500 * time.Millisecond)
 	for i := 0; i < 5; i++ {
-		nc, _ := nats.Connect(url, nats.NoReconnect(), createUserCreds(t, s, akp))
+		nc, err := nats.Connect(url, nats.NoReconnect(), createUserCreds(t, s, akp))
+		require_NoError(t, err)
+		defer nc.Close()
 		newConns = append(newConns, nc)
 	}
 

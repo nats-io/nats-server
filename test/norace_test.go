@@ -451,8 +451,10 @@ func TestNoRaceClusterLeaksSubscriptions(t *testing.T) {
 	// Create 100 repliers
 	for i := 0; i < 50; i++ {
 		nc1, _ := nats.Connect(urlA)
+		defer nc1.Close()
 		nc1.SetErrorHandler(noOpErrHandler)
 		nc2, _ := nats.Connect(urlB)
+		defer nc2.Close()
 		nc2.SetErrorHandler(noOpErrHandler)
 		repliers = append(repliers, nc1, nc2)
 		nc1.Subscribe("test.reply", func(m *nats.Msg) {

@@ -5834,7 +5834,7 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 	// Create channels to control our flush go routine.
 	o.fch = make(chan struct{}, 1)
 	o.qch = make(chan struct{})
-	go o.flushLoop()
+	go o.flushLoop(o.fch, o.qch)
 
 	fs.AddConsumer(o)
 
@@ -5932,10 +5932,7 @@ func (o *consumerFileStore) inFlusher() bool {
 }
 
 // flushLoop watches for consumer updates and the quit channel.
-func (o *consumerFileStore) flushLoop() {
-	o.mu.Lock()
-	fch, qch := o.fch, o.qch
-	o.mu.Unlock()
+func (o *consumerFileStore) flushLoop(fch, qch chan struct{}) {
 
 	o.setInFlusher()
 	defer o.clearInFlusher()

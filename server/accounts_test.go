@@ -308,9 +308,9 @@ func TestAccountIsolationExportImport(t *testing.T) {
 			// Connect with different accounts.
 			ncExp := natsConnect(t, s.ClientURL(), createUserCreds(t, nil, accExpPair),
 				nats.Name(fmt.Sprintf("nc-exporter-%s", c.exp)))
+			defer ncExp.Close()
 			ncImp := natsConnect(t, s.ClientURL(), createUserCreds(t, nil, accImpPair),
 				nats.Name(fmt.Sprintf("nc-importer-%s", c.imp)))
-			defer ncExp.Close()
 			defer ncImp.Close()
 
 			checkIsolation(t, c.pubSubj, ncExp, ncImp)
@@ -344,9 +344,9 @@ func TestAccountIsolationExportImport(t *testing.T) {
 			// Connect with different accounts.
 			ncExp := natsConnect(t, s.ClientURL(), nats.UserInfo("accExp", "accExp"),
 				nats.Name(fmt.Sprintf("nc-exporter-%s", c.exp)))
+			defer ncExp.Close()
 			ncImp := natsConnect(t, s.ClientURL(), nats.UserInfo("accImp", "accImp"),
 				nats.Name(fmt.Sprintf("nc-importer-%s", c.imp)))
-			defer ncExp.Close()
 			defer ncImp.Close()
 
 			checkIsolation(t, c.pubSubj, ncExp, ncImp)
@@ -3512,6 +3512,7 @@ func TestAccountUserSubPermsWithQueueGroups(t *testing.T) {
 
 	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("user", "pass"))
 	require_NoError(t, err)
+	defer nc.Close()
 
 	// qsub solo.
 	qsub, err := nc.QueueSubscribeSync("foo.>", "qg")
