@@ -170,10 +170,14 @@ func checkGWInterestOnlyModeOrNotPresent(t *testing.T, s *Server, outboundGWName
 		if out == nil {
 			return fmt.Errorf("Server %v - outbound gateway connection %q: interest map not found for account %q",
 				s, outboundGWName, accName)
-		} else if mode := out.(*outsie).mode; mode != InterestOnly {
+		}
+		e := out.(*outsie)
+		e.RLock()
+		defer e.RUnlock()
+		if e.mode != InterestOnly {
 			return fmt.Errorf(
 				"Server %v - outbound gateway connection %q: account %q mode shoule be InterestOnly but is %v",
-				s, outboundGWName, accName, mode)
+				s, outboundGWName, accName, e.mode)
 		}
 		return nil
 	})

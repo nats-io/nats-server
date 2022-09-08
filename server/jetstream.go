@@ -832,7 +832,8 @@ func (s *Server) migrateEphemerals() {
 		for _, sa := range asa {
 			if rg := sa.Group; rg != nil && len(rg.Peers) > 1 && rg.isMember(ourID) && len(sa.consumers) > 0 {
 				for _, ca := range sa.consumers {
-					if ca.Group != nil && len(ca.Group.Peers) == 1 && ca.Group.isMember(ourID) {
+					// Make sure this is not a durable that has an override of the replicas count.
+					if ca.Config.Durable == _EMPTY_ && ca.Group != nil && len(ca.Group.Peers) == 1 && ca.Group.isMember(ourID) {
 						// Need to select possible new peer from parent stream.
 						for _, p := range rg.Peers {
 							if p != ourID {
