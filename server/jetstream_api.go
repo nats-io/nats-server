@@ -2395,18 +2395,19 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 			}
 			return true
 		})
-		errs := selectPeerErrors{e}
+		errs := &selectPeerError{}
+		errs.accumulate(e)
 		for cluster := range clusters {
-			newPeers, _ := cc.selectPeerGroup(cfg.Replicas, cluster, &cfg, nil, 0)
+			newPeers, e := cc.selectPeerGroup(cfg.Replicas, cluster, &cfg, nil, 0)
 			if len(newPeers) >= cfg.Replicas {
 				peers = append([]string{}, currPeers...)
 				peers = append(peers, newPeers[:cfg.Replicas]...)
 				break
 			}
-			errs = append(errs, e)
+			errs.accumulate(e)
 		}
 		if peers == nil {
-			resp.Error = NewJSClusterNoPeersError(&errs)
+			resp.Error = NewJSClusterNoPeersError(errs)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
