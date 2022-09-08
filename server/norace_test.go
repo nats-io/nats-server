@@ -4289,37 +4289,31 @@ func TestNoRaceJetStreamStreamInfoSubjectDetailsLimits(t *testing.T) {
 		t.Fatalf("Did not receive completion signal")
 	}
 
-	getInfo := func(filter string) *StreamInfo {
-		t.Helper()
-		// Need to grab StreamInfo by hand for now.
-		req, err := json.Marshal(&JSApiStreamInfoRequest{SubjectsFilter: filter})
-		require_NoError(t, err)
-		resp, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, "TEST"), req, 5*time.Second)
-		require_NoError(t, err)
-		var si StreamInfo
-		err = json.Unmarshal(resp.Data, &si)
-		require_NoError(t, err)
-		return &si
-	}
-
-	si := getInfo("X.*")
+	// Need to grab StreamInfo by hand for now.
+	req, err := json.Marshal(&JSApiStreamInfoRequest{SubjectsFilter: "X.*"})
+	require_NoError(t, err)
+	resp, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, "TEST"), req, 5*time.Second)
+	require_NoError(t, err)
+	var si StreamInfo
+	err = json.Unmarshal(resp.Data, &si)
+	require_NoError(t, err)
 	if len(si.State.Subjects) != n {
 		t.Fatalf("Expected to get %d subject details, got %d", n, len(si.State.Subjects))
 	}
 
-	// Now add one more message in which will exceed our internal limits for subject details.
+	// Now add one more message to check pagination
 	_, err = js.Publish("foo", []byte("TOO MUCH"))
 	require_NoError(t, err)
 
-	req, err := json.Marshal(&JSApiStreamInfoRequest{SubjectsFilter: nats.AllKeys})
+	req, err = json.Marshal(&JSApiStreamInfoRequest{ApiPagedRequest: ApiPagedRequest{Offset: n}, SubjectsFilter: nats.AllKeys})
 	require_NoError(t, err)
-	resp, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, "TEST"), req, 5*time.Second)
+	resp, err = nc.Request(fmt.Sprintf(JSApiStreamInfoT, "TEST"), req, 5*time.Second)
 	require_NoError(t, err)
 	var sir JSApiStreamInfoResponse
 	err = json.Unmarshal(resp.Data, &sir)
 	require_NoError(t, err)
-	if !IsNatsErr(sir.Error, JSStreamInfoMaxSubjectsErr) {
-		t.Fatalf("Did not get correct error response: %+v", sir.Error)
+	if len(sir.State.Subjects) != 1 {
+		t.Fatalf("Expected to get 1 extra subject detail, got %d", len(sir.State.Subjects))
 	}
 }
 

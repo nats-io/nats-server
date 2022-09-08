@@ -396,16 +396,18 @@ type JSApiStreamDeleteResponse struct {
 
 const JSApiStreamDeleteResponseType = "io.nats.jetstream.api.v1.stream_delete_response"
 
-// Maximum number of subject details we will send in the stream info.
+// JSMaxSubjectDetails The limit of the number of subject details we will send in a stream info response.
 const JSMaxSubjectDetails = 100_000
 
 type JSApiStreamInfoRequest struct {
+	ApiPagedRequest
 	DeletedDetails bool   `json:"deleted_details,omitempty"`
 	SubjectsFilter string `json:"subjects_filter,omitempty"`
 }
 
 type JSApiStreamInfoResponse struct {
 	ApiResponse
+	ApiPaged
 	*StreamInfo
 }
 
@@ -1788,6 +1790,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 
 	var details bool
 	var subjects string
+	var offset int
 	if !isEmptyRequest(msg) {
 		var req JSApiStreamInfoRequest
 		if err := json.Unmarshal(msg, &req); err != nil {
@@ -1796,6 +1799,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 			return
 		}
 		details, subjects = req.DeletedDetails, req.SubjectsFilter
+		offset = req.Offset
 	}
 
 	mset, err := acc.lookupStream(streamName)
@@ -1825,17 +1829,39 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 	// Check if they have asked for subject details.
 	if subjects != _EMPTY_ {
 		if mss := mset.store.SubjectsState(subjects); len(mss) > 0 {
-			if len(mss) > JSMaxSubjectDetails {
-				resp.StreamInfo = nil
-				resp.Error = NewJSStreamInfoMaxSubjectsError()
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-				return
+			// As go iterates over map in a non-consistent order, no choice but to buffer it a slice
+
+			buffer := make([]string, 0, len(mss))
+			for subj := range mss {
+				buffer = append(buffer, subj)
 			}
-			sd := make(map[string]uint64, len(mss))
-			for subj, ss := range mss {
-				sd[subj] = ss.Msgs
+
+			// Sort it
+			sort.Strings(buffer)
+
+			if offset > len(buffer) {
+				offset = len(buffer)
 			}
+
+			end := offset + JSMaxSubjectDetails
+			if end > len(buffer) {
+				end = len(buffer)
+			}
+
+			actualSize := end - offset
+			var sd map[string]uint64
+
+			if actualSize > 0 {
+				sd = make(map[string]uint64, actualSize)
+				for _, ss := range buffer[offset:end] {
+					sd[ss] = mss[ss].Msgs
+				}
+			}
+
 			resp.StreamInfo.State.Subjects = sd
+			resp.Offset = offset
+			resp.Limit = JSMaxSubjectDetails
+			resp.Total = len(mss)
 		}
 
 	}
