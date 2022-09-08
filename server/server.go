@@ -1663,7 +1663,12 @@ func (s *Server) Start() {
 		s.Noticef("  System  : %q", opc.Audience)
 		s.Noticef("  Operator: %q", opc.Name)
 		s.Noticef("  Issued  : %v", time.Unix(opc.IssuedAt, 0))
-		s.Noticef("  Expires : %v", time.Unix(opc.Expires, 0))
+		switch opc.Expires {
+		case 0:
+			s.Noticef("  Expires : Never")
+		default:
+			s.Noticef("  Expires : %v", time.Unix(opc.Expires, 0))
+		}
 	}
 	if hasOperators && opts.SystemAccount == _EMPTY_ {
 		s.Warnf("Trusted Operators should utilize a System Account")
