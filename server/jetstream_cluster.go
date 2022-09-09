@@ -4555,7 +4555,6 @@ type selectPeerError struct {
 
 func (e *selectPeerError) Error() string {
 	b := strings.Builder{}
-	b.WriteString("peer selection")
 	var firstWritten bool
 	writeBoolErrReason := func(hasErr bool, errMsg string) {
 		if !hasErr {
@@ -4567,7 +4566,6 @@ func (e *selectPeerError) Error() string {
 		firstWritten = true
 		b.WriteString(errMsg)
 	}
-	b.WriteString(" failures: ")
 	writeBoolErrReason(e.offline, "peer offline")
 	writeBoolErrReason(e.excludeTag, "exclude tag set")
 	writeBoolErrReason(e.noStorage, "insufficient storage")
