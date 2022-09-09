@@ -4544,43 +4544,80 @@ func (cc *jetStreamCluster) remapStreamAssignment(sa *streamAssignment, removePe
 }
 
 type selectPeerError struct {
-	cluster      string
-	clusterPeers int
-	offline      int
-	excludeTag   int
-	noTagMatch   int
-	noStorage    int
-	uniqueTag    int
-	misc         int
+	excludeTag  bool
+	offline     bool
+	noStorage   bool
+	uniqueTag   bool
+	misc        bool
+	noJsClust   bool
+	noMatchTags map[string]struct{}
 }
 
 func (e *selectPeerError) Error() string {
-	return fmt.Sprintf(`peer selection cluster '%s' with %d peers
-offline: %d
-excludeTag: %d
-noTagMatch: %d
-noStorage: %d
-uniqueTag: %d
-misc: %d
-`,
-		e.cluster, e.clusterPeers, e.offline, e.excludeTag, e.noTagMatch, e.noStorage, e.uniqueTag, e.misc)
+	b := strings.Builder{}
+	writeBoolErrReason := func(hasErr bool, errMsg string) {
+		if !hasErr {
+			return
+		}
+		b.WriteString(", ")
+		b.WriteString(errMsg)
+	}
+	b.WriteString("no suitable peers for placement")
+	writeBoolErrReason(e.offline, "peer offline")
+	writeBoolErrReason(e.excludeTag, "exclude tag set")
+	writeBoolErrReason(e.noStorage, "insufficient storage")
+	writeBoolErrReason(e.uniqueTag, "server tag not unique")
+	writeBoolErrReason(e.misc, "miscellaneous issue")
+	writeBoolErrReason(e.noJsClust, "jetstream not enabled in cluster")
+	if len(e.noMatchTags) != 0 {
+		b.WriteString(", tags not matched [")
+		var firstTagWritten bool
+		for tag := range e.noMatchTags {
+			if firstTagWritten {
+				b.WriteString(", ")
+			}
+			firstTagWritten = true
+			b.WriteRune('\'')
+			b.WriteString(tag)
+			b.WriteRune('\'')
+		}
+		b.WriteString("]")
+	}
+	return b.String()
 }
 
-type selectPeerErrors []*selectPeerError
-
-func (e *selectPeerErrors) Error() string {
-	errors := make([]string, len(*e))
-	for i, err := range *e {
-		errors[i] = err.Error()
+func (e *selectPeerError) addMissingTag(t string) {
+	if e.noMatchTags == nil {
+		e.noMatchTags = map[string]struct{}{}
 	}
-	return strings.Join(errors, "\n")
+	e.noMatchTags[t] = struct{}{}
+}
+
+func (e *selectPeerError) accumulate(eAdd *selectPeerError) {
+	if eAdd == nil {
+		return
+	}
+	acc := func(val *bool, valAdd bool) {
+		if valAdd {
+			*val = valAdd
+		}
+	}
+	acc(&e.offline, eAdd.offline)
+	acc(&e.excludeTag, eAdd.excludeTag)
+	acc(&e.noStorage, eAdd.noStorage)
+	acc(&e.uniqueTag, eAdd.uniqueTag)
+	acc(&e.misc, eAdd.misc)
+	acc(&e.noJsClust, eAdd.noJsClust)
+	for tag := range eAdd.noMatchTags {
+		e.addMissingTag(tag)
+	}
 }
 
 // selectPeerGroup will select a group of peers to start a raft group.
 // when peers exist already the unique tag prefix check for the replaceFirstExisting will be skipped
 func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamConfig, existing []string, replaceFirstExisting int) ([]string, *selectPeerError) {
 	if cluster == _EMPTY_ || cfg == nil {
-		return nil, &selectPeerError{cluster: cluster, misc: 1}
+		return nil, &selectPeerError{misc: true}
 	}
 
 	var maxBytes uint64
@@ -4658,14 +4695,14 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 
 	// An error is a result of multiple individual placement decisions.
 	// Which is why we keep taps on how often which one happened.
-	err := selectPeerError{cluster: cluster}
+	err := selectPeerError{}
 
 	// Shuffle them up.
 	rand.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
 	for _, p := range peers {
 		si, ok := s.nodeToInfo.Load(p.ID)
 		if !ok || si == nil {
-			err.misc++
+			err.misc = true
 			continue
 		}
 		ni := si.(nodeInfo)
@@ -4674,12 +4711,11 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 			s.Debugf("Peer selection: discard %s@%s reason: not target cluster %s", ni.name, ni.cluster, cluster)
 			continue
 		}
-		err.clusterPeers++
 
 		// If we know its offline or we do not have config or err don't consider.
 		if ni.offline || ni.cfg == nil || ni.stats == nil {
 			s.Debugf("Peer selection: discard %s@%s reason: offline", ni.name, ni.cluster)
-			err.offline++
+			err.offline = true
 			continue
 		}
 
@@ -4693,7 +4729,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		if ni.tags.Contains(jsExcludePlacement) {
 			s.Debugf("Peer selection: discard %s@%s tags: %v reason: %s present",
 				ni.name, ni.cluster, ni.tags, jsExcludePlacement)
-			err.excludeTag++
+			err.excludeTag = true
 			continue
 		}
 
@@ -4704,11 +4740,11 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 					matched = false
 					s.Debugf("Peer selection: discard %s@%s tags: %v reason: mandatory tag %s not present",
 						ni.name, ni.cluster, ni.tags, t)
+					err.addMissingTag(t)
 					break
 				}
 			}
 			if !matched {
-				err.noTagMatch++
 				continue
 			}
 		}
@@ -4741,14 +4777,14 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		if maxBytes > 0 && maxBytes > available {
 			s.Warnf("Peer selection: discard %s@%s (Max Bytes: %d) exceeds available %s storage of %d bytes",
 				ni.name, ni.cluster, maxBytes, cfg.Storage.String(), available)
-			err.noStorage++
+			err.noStorage = true
 			continue
 		}
 		// HAAssets contain _meta_ which we want to ignore
 		if maxHaAssets > 0 && ni.stats != nil && ni.stats.HAAssets > maxHaAssets {
 			s.Warnf("Peer selection: discard %s@%s (HA Asset Count: %d) exceeds max ha asset limit of %d for stream placement",
 				ni.name, ni.cluster, ni.stats.HAAssets, maxHaAssets)
-			err.misc++
+			err.misc = true
 			continue
 		}
 
@@ -4761,7 +4797,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 					s.Debugf("Peer selection: discard %s@%s tags:%v reason: unique prefix %s not present",
 						ni.name, ni.cluster, ni.tags)
 				}
-				err.uniqueTag++
+				err.uniqueTag = true
 				continue
 			}
 		}
@@ -4773,6 +4809,9 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 	if len(nodes) < (r - len(existing)) {
 		s.Debugf("Peer selection: required %d nodes but found %d (cluster: %s replica: %d existing: %v/%d peers: %d result-peers: %d err: %+v)",
 			(r - len(existing)), len(nodes), cluster, r, existing, replaceFirstExisting, len(peers), len(nodes), err)
+		if len(peers) == 0 {
+			err.noJsClust = true
+		}
 		return nil, &err
 	}
 	// Sort based on available from most to least.
@@ -4838,7 +4877,7 @@ func tieredStreamAndReservationCount(asa map[string]*streamAssignment, tier stri
 
 // createGroupForStream will create a group for assignment for the stream.
 // Lock should be held.
-func (js *jetStream) createGroupForStream(ci *ClientInfo, cfg *StreamConfig) (*raftGroup, *selectPeerErrors) {
+func (js *jetStream) createGroupForStream(ci *ClientInfo, cfg *StreamConfig) (*raftGroup, *selectPeerError) {
 	replicas := cfg.Replicas
 	if replicas == 0 {
 		replicas = 1
@@ -4857,16 +4896,16 @@ func (js *jetStream) createGroupForStream(ci *ClientInfo, cfg *StreamConfig) (*r
 	}
 
 	// Need to create a group here.
-	errFirst := selectPeerErrors{}
+	errs := &selectPeerError{}
 	for _, cn := range clusters {
 		peers, err := cc.selectPeerGroup(replicas, cn, cfg, nil, 0)
 		if len(peers) < replicas {
-			errFirst = append(errFirst, err)
+			errs.accumulate(err)
 			continue
 		}
 		return &raftGroup{Name: groupNameForStream(peers, cfg.Storage), Storage: cfg.Storage, Peers: peers, Cluster: cn}, nil
 	}
-	return nil, &errFirst
+	return nil, errs
 }
 
 func (acc *Account) selectLimits(cfg *StreamConfig) (*JetStreamAccountLimits, string, *jsAccount, *ApiError) {

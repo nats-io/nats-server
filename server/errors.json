@@ -83,8 +83,8 @@
     "constant": "JSClusterNoPeersErrF",
     "code": 400,
     "error_code": 10005,
-    "description": "no suitable peers for placement: {err}",
-    "comment": "",
+    "description": "{err}",
+    "comment": "Error causing no peers to be available",
     "help": "",
     "url": "",
     "deprecates": ""

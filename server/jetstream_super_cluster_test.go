@@ -79,7 +79,7 @@ func TestJetStreamSuperClusterMetaPlacement(t *testing.T) {
 
 	// Make sure we get correct errors for tags and bad or unavailable cluster placement.
 	sdr := stepdown("C22")
-	if sdr.Error == nil || !strings.Contains(sdr.Error.Description, "no suitable peers") {
+	if sdr.Error == nil || !strings.Contains(sdr.Error.Description, "no replacement peer connected") {
 		t.Fatalf("Got incorrect error result: %+v", sdr.Error)
 	}
 	// Should work.
@@ -184,7 +184,7 @@ func TestJetStreamSuperClusterUniquePlacementTag(t *testing.T) {
 			si, err := js.AddStream(&nats.StreamConfig{Name: name, Replicas: test.replicas, Placement: test.placement})
 			if test.fail {
 				require_Error(t, err)
-				require_Contains(t, err.Error(), "no suitable peers for placement")
+				require_Contains(t, err.Error(), "no suitable peers for placement", "server tag not unique")
 				return
 			}
 			require_NoError(t, err)
@@ -1503,7 +1503,8 @@ func TestJetStreamSuperClusterStreamTagPlacement(t *testing.T) {
 			Subjects:  []string{"foo"},
 			Placement: &nats.Placement{Tags: tags},
 		})
-		require_Contains(t, err.Error(), "no suitable peers for placement")
+		require_Contains(t, err.Error(), "no suitable peers for placement", "tags not matched")
+		require_Contains(t, err.Error(), tags...)
 	}
 
 	placeErr("C1", []string{"cloud:GCP", "country:US"})
@@ -2393,7 +2394,7 @@ func TestJetStreamSuperClusterMaxHaAssets(t *testing.T) {
 	_, err = js.AddStream(&nats.StreamConfig{Name: "S3", Replicas: 3, Placement: &nats.Placement{Cluster: "C1"}})
 	require_Error(t, err)
 	require_Contains(t, err.Error(), "nats: no suitable peers for placement")
-	require_Contains(t, err.Error(), "misc: 3")
+	require_Contains(t, err.Error(), "miscellaneous issue")
 	require_NoError(t, js.DeleteStream("S1"))
 	waitStatsz(3, 2)
 	waitStatsz(3, 1)
@@ -2427,7 +2428,7 @@ func TestJetStreamSuperClusterMaxHaAssets(t *testing.T) {
 	_, err = js.UpdateStream(&nats.StreamConfig{Name: "S2", Replicas: 3, Placement: &nats.Placement{Cluster: "C2"}})
 	require_Error(t, err)
 	require_Contains(t, err.Error(), "nats: no suitable peers for placement")
-	require_Contains(t, err.Error(), "misc: 3")
+	require_Contains(t, err.Error(), "miscellaneous issue")
 }
 
 func TestJetStreamSuperClusterStreamAlternates(t *testing.T) {
