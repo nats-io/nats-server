@@ -3335,6 +3335,7 @@ func TestSubjectTransforms(t *testing.T) {
 	shouldMatch("*", "{{SliceFromLeft(1,3)}}", "1234567890", "123.456.789.0")
 	shouldMatch("*", "{{SliceFromRight(1,3)}}", "1234567890", "1.234.567.890")
 	shouldMatch("*", "{{split(1,-)}}", "-abc-def--ghi-", "abc.def.ghi")
+	shouldMatch("*", "{{split(1,-)}}", "abc-def--ghi-", "abc.def.ghi")
 	shouldMatch("*.*", "{{split(2,-)}}.{{splitfromleft(1,2)}}", "foo.-abc-def--ghij-", "abc.def.ghij.fo.o") // combo + checks split for multiple instance of deliminator and deliminator being at the start or end
 }
 
