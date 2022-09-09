@@ -4581,7 +4581,7 @@ func (e *selectPeerError) Error() string {
 		firstWritten = true
 		b.WriteString("tags not matched {")
 		var firstTagWritten bool
-		for tag, _ := range e.noMatchTags {
+		for tag := range e.noMatchTags {
 			if firstTagWritten {
 				b.WriteString(", ")
 			}
@@ -4617,7 +4617,7 @@ func (e *selectPeerError) accumulate(eAdd *selectPeerError) {
 	acc(&e.uniqueTag, eAdd.uniqueTag)
 	acc(&e.misc, eAdd.misc)
 	acc(&e.noJsClust, eAdd.noJsClust)
-	for tag, _ := range eAdd.noMatchTags {
+	for tag := range eAdd.noMatchTags {
 		e.addMissingTag(tag)
 	}
 }
