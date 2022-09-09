@@ -4555,17 +4555,14 @@ type selectPeerError struct {
 
 func (e *selectPeerError) Error() string {
 	b := strings.Builder{}
-	var firstWritten bool
 	writeBoolErrReason := func(hasErr bool, errMsg string) {
 		if !hasErr {
 			return
 		}
-		if firstWritten {
-			b.WriteString(", ")
-		}
-		firstWritten = true
+		b.WriteString(", ")
 		b.WriteString(errMsg)
 	}
+	b.WriteString("no suitable peers for placement")
 	writeBoolErrReason(e.offline, "peer offline")
 	writeBoolErrReason(e.excludeTag, "exclude tag set")
 	writeBoolErrReason(e.noStorage, "insufficient storage")
@@ -4573,11 +4570,7 @@ func (e *selectPeerError) Error() string {
 	writeBoolErrReason(e.misc, "miscellaneous issue")
 	writeBoolErrReason(e.noJsClust, "jetstream not enabled in cluster")
 	if len(e.noMatchTags) != 0 {
-		if firstWritten {
-			b.WriteString(", ")
-		}
-		firstWritten = true
-		b.WriteString("tags not matched {")
+		b.WriteString(", tags not matched [")
 		var firstTagWritten bool
 		for tag := range e.noMatchTags {
 			if firstTagWritten {
@@ -4588,7 +4581,7 @@ func (e *selectPeerError) Error() string {
 			b.WriteString(tag)
 			b.WriteRune('\'')
 		}
-		b.WriteString("}")
+		b.WriteString("]")
 	}
 	return b.String()
 }
