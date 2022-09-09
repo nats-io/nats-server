@@ -4581,7 +4581,7 @@ func (tr *transform) transform(tokens []string) (string, error) {
 					if split != _EMPTY_ {
 						b.WriteString(split)
 					}
-					if j < len(splits)-1 && splits[j+1] != _EMPTY_ && j != 0 {
+					if j < len(splits)-1 && splits[j+1] != _EMPTY_ && !(j == 0 && split == _EMPTY_) {
 						b.WriteString(tsep)
 					}
 				}
