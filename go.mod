@@ -10,7 +10,7 @@ require (
 	github.com/nats-io/nkeys v0.3.0
 	github.com/nats-io/nuid v1.0.1
 	go.uber.org/automaxprocs v1.5.1
-	golang.org/x/crypto v0.0.0-20220829220503-c86fa9a7ed90
+	golang.org/x/crypto v0.0.0-20210314154223-e6e6c4f2bb5b
 	golang.org/x/sys v0.0.0-20220906135438-9e1f76180b77
 	golang.org/x/time v0.0.0-20220722155302-e5dcc9cfc0b9
 )
