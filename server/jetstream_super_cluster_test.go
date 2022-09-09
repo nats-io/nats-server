@@ -79,7 +79,7 @@ func TestJetStreamSuperClusterMetaPlacement(t *testing.T) {
 
 	// Make sure we get correct errors for tags and bad or unavailable cluster placement.
 	sdr := stepdown("C22")
-	if sdr.Error == nil || !strings.Contains(sdr.Error.Description, "no suitable peers") {
+	if sdr.Error == nil || !strings.Contains(sdr.Error.Description, "no replacement peer connected") {
 		t.Fatalf("Got incorrect error result: %+v", sdr.Error)
 	}
 	// Should work.
