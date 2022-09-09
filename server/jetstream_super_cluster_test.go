@@ -11,8 +11,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !skip_js_tests && !skip_js_cluster_tests && !skip_js_super_cluster_tests
-// +build !skip_js_tests,!skip_js_cluster_tests,!skip_js_super_cluster_tests
+//go:build !skip_js_tests && !skip_js_cluster_tests && !skip_js_cluster_tests_2 && !skip_js_super_cluster_tests
+// +build !skip_js_tests,!skip_js_cluster_tests,!skip_js_cluster_tests_2,!skip_js_super_cluster_tests
 
 package server
 
