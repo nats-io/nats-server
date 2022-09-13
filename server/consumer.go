@@ -2320,6 +2320,15 @@ func (o *consumer) isFiltered() bool {
 	return true
 }
 
+// needAck can be called lots of times if there are multiple consumers,
+// so having a pool here drastically reduces the number of allocations
+// and GC pressure.
+var storeMsgPool = &sync.Pool{
+	New: func() interface{} {
+		return &StoreMsg{}
+	},
+}
+
 // Check if we need an ack for this store seq.
 // This is called for interest based retention streams to remove messages.
 func (o *consumer) needAck(sseq uint64) bool {
@@ -2329,10 +2338,11 @@ func (o *consumer) needAck(sseq uint64) bool {
 	o.mu.RLock()
 
 	// Check first if we are filtered, and if so check if this is even applicable to us.
-	var svp StoreMsg
 	if o.isFiltered() && o.mset != nil {
+		svp := storeMsgPool.Get().(*StoreMsg)
 		svp.clear()
-		sm, err := o.mset.store.LoadMsg(sseq, &svp)
+		defer storeMsgPool.Put(svp)
+		sm, err := o.mset.store.LoadMsg(sseq, svp)
 		if err != nil || !o.isFilteredMatch(sm.subj) {
 			o.mu.RUnlock()
 			return false
