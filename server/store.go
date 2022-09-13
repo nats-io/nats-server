@@ -547,8 +547,7 @@ func (sm *StoreMsg) clear() {
 	if sm == nil {
 		return
 	}
-	*sm = StoreMsg{_EMPTY_, nil, nil, sm.buf, 0, 0}
-	if len(sm.buf) > 0 {
-		sm.buf = sm.buf[:0]
-	}
+	sm.subj = _EMPTY_
+	sm.hdr, sm.msg, sm.buf = sm.hdr[:0], sm.msg[:0], sm.buf[:0]
+	sm.seq, sm.ts = 0, 0
 }

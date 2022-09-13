@@ -2329,8 +2329,9 @@ func (o *consumer) needAck(sseq uint64) bool {
 	o.mu.RLock()
 
 	// Check first if we are filtered, and if so check if this is even applicable to us.
+	var svp StoreMsg
 	if o.isFiltered() && o.mset != nil {
-		var svp StoreMsg
+		svp.clear()
 		sm, err := o.mset.store.LoadMsg(sseq, &svp)
 		if err != nil || !o.isFilteredMatch(sm.subj) {
 			o.mu.RUnlock()
