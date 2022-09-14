@@ -5668,3 +5668,59 @@ func TestNoRaceJetStreamConcurrentPullConsumerBatch(t *testing.T) {
 	wg.Wait()
 	require_True(t, received == toSend)
 }
+
+func TestNoRaceJetStreamManyPullConsumersNeedAckOptimization(t *testing.T) {
+	// Uncomment to run. Do not want as part of Travis tests atm.
+	// Run with cpu and memory profiling to make sure we have improved.
+	skip(t)
+
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "ORDERS",
+		Subjects:  []string{"ORDERS.*"},
+		Storage:   nats.MemoryStorage,
+		Retention: nats.InterestPolicy,
+	})
+	require_NoError(t, err)
+
+	toSend := 100_000
+	numConsumers := 500
+
+	// Create 500 consumers
+	for i := 1; i <= numConsumers; i++ {
+		_, err := js.AddConsumer("ORDERS", &nats.ConsumerConfig{
+			Durable:       fmt.Sprintf("ORDERS_%d", i),
+			FilterSubject: fmt.Sprintf("ORDERS.%d", i),
+			AckPolicy:     nats.AckAllPolicy,
+		})
+		require_NoError(t, err)
+	}
+
+	for i := 1; i <= toSend; i++ {
+		subj := fmt.Sprintf("ORDERS.%d", i%numConsumers+1)
+		js.PublishAsync(subj, []byte("HELLO"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	sub, err := js.PullSubscribe("ORDERS.500", "ORDERS_500")
+	require_NoError(t, err)
+
+	fetchSize := toSend / numConsumers
+	msgs, err := sub.Fetch(fetchSize, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+
+	last := msgs[len(msgs)-1]
+	last.AckSync()
+}

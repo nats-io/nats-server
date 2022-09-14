@@ -4550,9 +4550,30 @@ func (mset *stream) partitionUnique(partition string) bool {
 }
 
 // Lock should be held.
+func (mset *stream) potentialFilteredConsumers() bool {
+	numSubjects := len(mset.cfg.Subjects)
+	if len(mset.consumers) == 0 || numSubjects == 0 {
+		return false
+	}
+	if numSubjects > 1 || subjectHasWildcard(mset.cfg.Subjects[0]) {
+		return true
+	}
+	return false
+}
+
 func (mset *stream) checkInterest(seq uint64, obs *consumer) bool {
+	var subj string
+	if mset.potentialFilteredConsumers() {
+		pmsg := getJSPubMsgFromPool()
+		defer pmsg.returnToPool()
+		sm, err := mset.store.LoadMsg(seq, &pmsg.StoreMsg)
+		if err != nil {
+			return false
+		}
+		subj = sm.subj
+	}
 	for _, o := range mset.consumers {
-		if o != obs && o.needAck(seq) {
+		if o != obs && o.needAck(seq, subj) {
 			return true
 		}
 	}

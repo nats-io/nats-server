@@ -2328,17 +2328,22 @@ func (o *consumer) isFiltered() bool {
 
 // Check if we need an ack for this store seq.
 // This is called for interest based retention streams to remove messages.
-func (o *consumer) needAck(sseq uint64) bool {
+func (o *consumer) needAck(sseq uint64, subj string) bool {
 	var needAck bool
 	var asflr, osseq uint64
 	var pending map[uint64]*Pending
 	o.mu.RLock()
 
-	// Check first if we are filtered, and if so check if this is even applicable to us.
+	// Check if we are filtered, and if so check if this is even applicable to us.
 	if o.isFiltered() && o.mset != nil {
-		var svp StoreMsg
-		sm, err := o.mset.store.LoadMsg(sseq, &svp)
-		if err != nil || !o.isFilteredMatch(sm.subj) {
+		if subj == _EMPTY_ {
+			var svp StoreMsg
+			if _, err := o.mset.store.LoadMsg(sseq, &svp); err != nil {
+				return false
+			}
+			subj = svp.subj
+		}
+		if !o.isFilteredMatch(subj) {
 			o.mu.RUnlock()
 			return false
 		}
@@ -2378,6 +2383,7 @@ func (o *consumer) needAck(sseq uint64) bool {
 			}
 		}
 	}
+
 	o.mu.RUnlock()
 	return needAck
 }
