@@ -1298,5 +1298,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerCreateDurableAndNameMismatch",
+    "code": 400,
+    "error_code": 10132,
+    "description": "Consumer Durable and Name have to be equal if both are provided",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
