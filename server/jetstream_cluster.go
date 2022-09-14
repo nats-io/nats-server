@@ -5950,8 +5950,9 @@ func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *stre
 		return nil
 	}
 	if cfg.Replicas > 0 && cfg.Replicas != len(peers) {
-		peers = peers[:cfg.Replicas]
+		// First shuffle the peers and then select to account for replica = 1.
 		rand.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
+		peers = peers[:cfg.Replicas]
 	}
 	storage := sa.Config.Storage
 	if cfg.MemoryStorage {
