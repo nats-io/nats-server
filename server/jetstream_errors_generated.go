@@ -50,6 +50,9 @@ const (
 	// JSConsumerConfigRequiredErr consumer config required
 	JSConsumerConfigRequiredErr ErrorIdentifier = 10078
 
+	// JSConsumerCreateDurableAndNameMismatch Consumer Durable and Name have to be equal if both are provided
+	JSConsumerCreateDurableAndNameMismatch ErrorIdentifier = 10132
+
 	// JSConsumerCreateErrF General consumer creation failure string ({err})
 	JSConsumerCreateErrF ErrorIdentifier = 10012
 
@@ -413,6 +416,7 @@ var (
 		JSClusterUnSupportFeatureErr:               {Code: 503, ErrCode: 10036, Description: "not currently supported in clustered mode"},
 		JSConsumerBadDurableNameErr:                {Code: 400, ErrCode: 10103, Description: "durable name can not contain '.', '*', '>'"},
 		JSConsumerConfigRequiredErr:                {Code: 400, ErrCode: 10078, Description: "consumer config required"},
+		JSConsumerCreateDurableAndNameMismatch:     {Code: 400, ErrCode: 10132, Description: "Consumer Durable and Name have to be equal if both are provided"},
 		JSConsumerCreateErrF:                       {Code: 500, ErrCode: 10012, Description: "{err}"},
 		JSConsumerCreateFilterSubjectMismatchErr:   {Code: 400, ErrCode: 10131, Description: "Consumer create request did not match filtered subject from create subject"},
 		JSConsumerDeliverCycleErr:                  {Code: 400, ErrCode: 10081, Description: "consumer deliver subject forms a cycle"},
@@ -707,6 +711,16 @@ func NewJSConsumerConfigRequiredError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSConsumerConfigRequiredErr]
+}
+
+// NewJSConsumerCreateDurableAndNameMismatchError creates a new JSConsumerCreateDurableAndNameMismatch error: "Consumer Durable and Name have to be equal if both are provided"
+func NewJSConsumerCreateDurableAndNameMismatchError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerCreateDurableAndNameMismatch]
 }
 
 // NewJSConsumerCreateError creates a new JSConsumerCreateErrF error: "{err}"

@@ -525,6 +525,12 @@ func checkConsumerCfg(
 		return NewJSConsumerWithFlowControlNeedsHeartbeatsError()
 	}
 
+	if config.Durable != _EMPTY_ && config.Name != _EMPTY_ {
+		if config.Name != config.Durable {
+			return NewJSConsumerCreateDurableAndNameMismatchError()
+		}
+	}
+
 	return nil
 }
 

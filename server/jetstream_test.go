@@ -416,6 +416,49 @@ func TestJetStreamConsumerAndStreamDescriptions(t *testing.T) {
 		t.Fatalf("Expected an error but got none")
 	}
 }
+func TestJetStreamConsumerWithNameAndDurable(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	descr := "foo asset"
+	name := "name"
+	durable := "durable"
+	acc := s.GlobalAccount()
+
+	// Check stream's first.
+	mset, err := acc.addStream(&StreamConfig{Name: "foo", Description: descr})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	if cfg := mset.config(); cfg.Description != descr {
+		t.Fatalf("Expected a description of %q, got %q", descr, cfg.Description)
+	}
+
+	// it's ok to specify  both durable and name, but they have to be the same.
+	_, err = mset.addConsumer(&ConsumerConfig{
+		DeliverSubject: "to",
+		Durable:        "consumer",
+		Name:           "consumer",
+		AckPolicy:      AckNone})
+	if err != nil {
+		t.Fatalf("Unexpected error adding consumer: %v", err)
+	}
+
+	// if they're not the same, expect error
+	_, err = mset.addConsumer(&ConsumerConfig{
+		DeliverSubject: "to",
+		Durable:        durable,
+		Name:           name,
+		AckPolicy:      AckNone})
+
+	if !strings.Contains(err.Error(), "Consumer Durable and Name have to be equal") {
+		t.Fatalf("Wrong error while adding consumer with not matching Name and Durable: %v", err)
+	}
+
+}
 
 func TestJetStreamPubAck(t *testing.T) {
 	s := RunBasicJetStreamServer()
