@@ -7259,3 +7259,8 @@ func TestJetStreamClusterCompressedStreamMessages(t *testing.T) {
 		t.Fatalf("Did not receive completion signal")
 	}
 }
+
+//
+// DO NOT ADD NEW TESTS IN THIS FILE
+// Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
+//

@@ -143,9 +143,9 @@ type PeerInfo struct {
 	Offline bool          `json:"offline,omitempty"`
 	Active  time.Duration `json:"active"`
 	Lag     uint64        `json:"lag,omitempty"`
+	Peer    string        `json:"peer"`
 	// For migrations.
 	cluster string
-	peer    string
 }
 
 // StreamSourceInfo shows information about an upstream stream source.
