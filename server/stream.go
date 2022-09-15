@@ -4550,9 +4550,30 @@ func (mset *stream) partitionUnique(partition string) bool {
 }
 
 // Lock should be held.
+func (mset *stream) potentialFilteredConsumers() bool {
+	numSubjects := len(mset.cfg.Subjects)
+	if len(mset.consumers) == 0 || numSubjects == 0 {
+		return false
+	}
+	if numSubjects > 1 || subjectHasWildcard(mset.cfg.Subjects[0]) {
+		return true
+	}
+	return false
+}
+
 func (mset *stream) checkInterest(seq uint64, obs *consumer) bool {
+	var subj string
+	if mset.potentialFilteredConsumers() {
+		pmsg := getJSPubMsgFromPool()
+		defer pmsg.returnToPool()
+		sm, err := mset.store.LoadMsg(seq, &pmsg.StoreMsg)
+		if err != nil {
+			return false
+		}
+		subj = sm.subj
+	}
 	for _, o := range mset.consumers {
-		if o != obs && o.needAck(seq) {
+		if o != obs && o.needAck(seq, subj) {
 			return true
 		}
 	}
@@ -4561,11 +4582,19 @@ func (mset *stream) checkInterest(seq uint64, obs *consumer) bool {
 
 // ackMsg is called into from a consumer when we have a WorkQueue or Interest Retention Policy.
 func (mset *stream) ackMsg(o *consumer, seq uint64) {
-	var shouldRemove bool
-
-	switch mset.cfg.Retention {
-	case LimitsPolicy:
+	if mset.cfg.Retention == LimitsPolicy {
 		return
+	}
+
+	// Make sure this sequence is not below our first sequence.
+	var state StreamState
+	mset.store.FastState(&state)
+	if seq < state.FirstSeq {
+		return
+	}
+
+	var shouldRemove bool
+	switch mset.cfg.Retention {
 	case WorkQueuePolicy:
 		// Normally we just remove a message when its ack'd here but if we have direct consumers
 		// from sources and/or mirrors we need to make sure they have delivered the msg.
