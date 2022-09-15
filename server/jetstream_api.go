@@ -581,7 +581,9 @@ const JSApiLeaderStepDownResponseType = "io.nats.jetstream.api.v1.meta_leader_st
 type JSApiMetaServerRemoveRequest struct {
 	// Server name of the peer to be removed.
 	Server string `json:"peer"`
-	ByID   bool   `json:"by_id,omitempty"`
+	// Peer ID of the peer to be removed. If specified this is used
+	// instead of the server name.
+	Peer string `json:"peer_id,omitempty"`
 }
 
 // JSApiMetaServerRemoveResponse is the response to a peer removal request in the meta group.
@@ -2216,9 +2218,10 @@ func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, _ *Ac
 	var found string
 	js.mu.RLock()
 	for _, p := range cc.meta.Peers() {
-		if req.ByID {
-			if p.ID == req.Server {
-				found = req.Server
+		// If Peer is specified, it takes precedence
+		if req.Peer != _EMPTY_ {
+			if p.ID == req.Peer {
+				found = req.Peer
 				break
 			}
 			continue

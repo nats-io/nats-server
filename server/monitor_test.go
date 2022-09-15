@@ -4365,6 +4365,11 @@ func TestMonitorJsz(t *testing.T) {
 			info := readJsInfo(url + "")
 			if info.Meta.Replicas != nil {
 				found++
+				for _, r := range info.Meta.Replicas {
+					if r.Peer == _EMPTY_ {
+						t.Fatalf("Replicas' Peer is empty: %+v", r)
+					}
+				}
 				if info.Meta.Leader != srvs[i].Name() {
 					t.Fatalf("received cluster info from non leader: leader %s, server: %s", info.Meta.Leader, srvs[i].Name())
 				}

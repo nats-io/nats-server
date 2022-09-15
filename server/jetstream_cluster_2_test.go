@@ -7317,8 +7317,7 @@ func TestJetStreamClusterRemovePeerByID(t *testing.T) {
 	require_True(t, IsNatsErr(resp.Error, JSClusterServerNotMemberErr))
 
 	// Now try by ID, but first with an ID that does not match any peerID
-	req.Server = "some_bad_id"
-	req.ByID = true
+	req.Peer = "some_bad_id"
 	jsreq, err = json.Marshal(req)
 	require_NoError(t, err)
 	rmsg, err = nc.Request(JSApiRemoveServer, jsreq, 2*time.Second)
@@ -7331,7 +7330,7 @@ func TestJetStreamClusterRemovePeerByID(t *testing.T) {
 	require_True(t, IsNatsErr(resp.Error, JSClusterServerNotMemberErr))
 
 	// Now with the proper peer ID
-	req.Server = peerID
+	req.Peer = peerID
 	jsreq, err = json.Marshal(req)
 	require_NoError(t, err)
 	rmsg, err = nc.Request(JSApiRemoveServer, jsreq, 2*time.Second)

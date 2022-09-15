@@ -2000,10 +2000,10 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				var newLeaderPeer, newLeader string
 				neededCurrent, current := replicas/2+1, 0
 				for _, r := range ci.Replicas {
-					if r.Current && newPeerSet[r.peer] {
+					if r.Current && newPeerSet[r.Peer] {
 						current++
 						if newLeader == _EMPTY_ {
-							newLeaderPeer, newLeader = r.peer, r.Name
+							newLeaderPeer, newLeader = r.Peer, r.Name
 						}
 					}
 				}
@@ -2427,7 +2427,7 @@ func (s *Server) replicas(node RaftNode) []*PeerInfo {
 	for _, rp := range node.Peers() {
 		if sir, ok := s.nodeToInfo.Load(rp.ID); ok && sir != nil {
 			si := sir.(nodeInfo)
-			pi := &PeerInfo{Name: si.name, Current: rp.Current, Active: now.Sub(rp.Last), Offline: si.offline, Lag: rp.Lag}
+			pi := &PeerInfo{Peer: rp.ID, Name: si.name, Current: rp.Current, Active: now.Sub(rp.Last), Offline: si.offline, Lag: rp.Lag}
 			replicas = append(replicas, pi)
 		}
 	}
@@ -3925,10 +3925,10 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				var newLeaderPeer, newLeader, newCluster string
 				neededCurrent, current := replicas/2+1, 0
 				for _, r := range ci.Replicas {
-					if r.Current && newPeerSet[r.peer] {
+					if r.Current && newPeerSet[r.Peer] {
 						current++
 						if newCluster == _EMPTY_ {
-							newLeaderPeer, newLeader, newCluster = r.peer, r.Name, r.cluster
+							newLeaderPeer, newLeader, newCluster = r.Peer, r.Name, r.cluster
 						}
 					}
 				}
@@ -7087,7 +7087,7 @@ func (js *jetStream) offlineClusterInfo(rg *raftGroup) *ClusterInfo {
 	for _, peer := range rg.Peers {
 		if sir, ok := s.nodeToInfo.Load(peer); ok && sir != nil {
 			si := sir.(nodeInfo)
-			pi := &PeerInfo{Name: si.name, Current: false, Offline: true}
+			pi := &PeerInfo{Peer: peer, Name: si.name, Current: false, Offline: true}
 			ci.Replicas = append(ci.Replicas, pi)
 		}
 	}
@@ -7143,7 +7143,7 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 				Offline: true,
 				Active:  lastSeen,
 				Lag:     rp.Lag,
-				peer:    rp.ID,
+				Peer:    rp.ID,
 			}
 			// If node is found, complete/update the settings.
 			if sir, ok := s.nodeToInfo.Load(rp.ID); ok && sir != nil {
@@ -7153,6 +7153,8 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 				// If not, then add a name that indicates that the server name
 				// is unknown at this time, and clear the lag since it is misleading
 				// (the node may not have that much lag).
+				// Note: We return now the Peer ID in PeerInfo, so the "(peerID: %s)"
+				// would technically not be required, but keeping it for now.
 				pi.Name, pi.Lag = fmt.Sprintf("Server name unknown at this time (peerID: %s)", rp.ID), 0
 			}
 			ci.Replicas = append(ci.Replicas, pi)
