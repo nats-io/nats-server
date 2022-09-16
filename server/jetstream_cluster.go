@@ -4846,7 +4846,7 @@ func groupNameForConsumer(peers []string, storage StorageType) string {
 }
 
 func groupName(prefix string, peers []string, storage StorageType) string {
-	gns := string(getHash(nuid.Next()))
+	gns := getHash(nuid.Next())
 	return fmt.Sprintf("%s-R%d%s-%s", prefix, len(peers), storage.String()[:1], gns)
 }
 
@@ -5245,7 +5245,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 				if si, err := s.sysRequest(&StreamInfo{}, clusterStreamInfoT, ci.serviceAccount(), cfg.Name); err != nil {
 					s.Warnf("Did not receive stream info results for '%s > %s' due to: %s", acc, cfg.Name, err)
 				} else if cl := si.(*StreamInfo).Cluster; cl != nil {
-					curLeader = string(getHash(cl.Leader))
+					curLeader = getHash(cl.Leader)
 				}
 				// Re-acquire here.
 				js.mu.Lock()
@@ -6137,7 +6137,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 				if ci, err := s.sysRequest(&ConsumerInfo{}, clusterConsumerInfoT, ci.serviceAccount(), sa.Config.Name, cfg.Durable); err != nil {
 					s.Warnf("Did not receive consumer info results for '%s > %s > %s' due to: %s", acc, sa.Config.Name, cfg.Durable, err)
 				} else if cl := ci.(*ConsumerInfo).Cluster; cl != nil {
-					curLeader = string(getHash(cl.Leader))
+					curLeader = getHash(cl.Leader)
 				}
 				// Re-acquire here.
 				js.mu.Lock()
@@ -7174,7 +7174,7 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 
 func (mset *stream) checkClusterInfo(ci *ClusterInfo) {
 	for _, r := range ci.Replicas {
-		peer := string(getHash(r.Name))
+		peer := getHash(r.Name)
 		if lag := mset.lagForCatchupPeer(peer); lag > 0 {
 			r.Current = false
 			r.Lag = lag

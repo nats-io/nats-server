@@ -426,7 +426,7 @@ func NewServer(opts *Options) (*Server, error) {
 
 	// Place ourselves in the JetStream nodeInfo if needed.
 	if opts.JetStream {
-		ourNode := string(getHash(serverName))
+		ourNode := getHash(serverName)
 		s.nodeToInfo.Store(ourNode, nodeInfo{
 			serverName,
 			VERSION,
@@ -3057,7 +3057,7 @@ func (s *Server) ID() string {
 
 // NodeName returns the node name for this server.
 func (s *Server) NodeName() string {
-	return string(getHash(s.info.Name))
+	return getHash(s.info.Name)
 }
 
 // Name returns the server's name. This will be the same as the ID if it was not set.

@@ -555,7 +555,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 // use additional information in case the stream names are the same.
 func (ssi *StreamSource) setIndexName() {
 	if ssi.External != nil {
-		ssi.iname = ssi.Name + ":" + string(getHash(ssi.External.ApiPrefix))
+		ssi.iname = ssi.Name + ":" + getHash(ssi.External.ApiPrefix)
 	} else {
 		ssi.iname = ssi.Name
 	}

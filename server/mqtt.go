@@ -926,7 +926,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	c := s.createInternalAccountClient()
 	c.acc = acc
 
-	id := string(getHash(s.Name()))
+	id := getHash(s.Name())
 	replicas := opts.MQTT.StreamReplicas
 	if replicas <= 0 {
 		replicas = s.mqttDetermineReplicas()
@@ -2110,7 +2110,7 @@ func (as *mqttAccountSessionManager) createOrRestoreSession(clientID string, opt
 		return nil, false, fmt.Errorf("%s for account %q, session %q: %v", errTxt, accName, clientID, err)
 	}
 
-	hash := string(getHash(clientID))
+	hash := getHash(clientID)
 	subject := mqttSessStreamSubjectPrefix + as.domainTk + hash
 	smsg, err := jsa.loadLastMsgFor(mqttSessStreamName, subject)
 	if err != nil {
@@ -2208,7 +2208,7 @@ func (as *mqttAccountSessionManager) transferUniqueSessStreamsToMuxed(log *Serve
 			continue
 		}
 		// Compute subject where the session is being stored
-		subject := mqttSessStreamSubjectPrefix + as.domainTk + string(getHash(ps.ID))
+		subject := mqttSessStreamSubjectPrefix + as.domainTk + getHash(ps.ID)
 		// Store record to MQTT session stream
 		if _, err := jsa.storeMsgWithKind(mqttJSASessPersist, subject, 0, smsg.Data); err != nil {
 			log.Errorf("    Unable to transfer the session record: %v", err)

@@ -4363,6 +4363,9 @@ func TestMonitorJsz(t *testing.T) {
 		found := 0
 		for i, url := range []string{monUrl1, monUrl2} {
 			info := readJsInfo(url + "")
+			if info.Meta.Peer != getHash(info.Meta.Leader) {
+				t.Fatalf("Invalid Peer: %+v", info.Meta)
+			}
 			if info.Meta.Replicas != nil {
 				found++
 				for _, r := range info.Meta.Replicas {

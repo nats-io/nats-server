@@ -2770,9 +2770,9 @@ func TestJetStreamSuperClusterMoveCancel(t *testing.T) {
 	}
 
 	expectedPeers := map[string]struct{}{
-		string(getHash(streamPeerSrv[0])): {},
-		string(getHash(streamPeerSrv[1])): {},
-		string(getHash(streamPeerSrv[2])): {},
+		getHash(streamPeerSrv[0]): {},
+		getHash(streamPeerSrv[1]): {},
+		getHash(streamPeerSrv[2]): {},
 	}
 
 	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "DUR", AckPolicy: nats.AckExplicitPolicy})
@@ -2981,7 +2981,7 @@ func TestJetStreamSuperClusterDoubleStreamMove(t *testing.T) {
 			}
 			// test list order invariant
 			js, cc := s.getJetStreamCluster()
-			sExpHash := string(getHash(sExpected))
+			sExpHash := getHash(sExpected)
 			js.mu.Lock()
 			if sa, ok := cc.streams["$G"]["TEST"]; !ok {
 				js.mu.Unlock()

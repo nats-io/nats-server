@@ -3413,7 +3413,7 @@ func TestNoRaceJetStreamLastSubjSeqAndFilestoreCompact(t *testing.T) {
 	secondPayload := make([]byte, 380)
 	for iter := 0; iter < 2; iter++ {
 		for i := 0; i < 4000; i++ {
-			subj := "MQTT.sess." + string(getHash(fmt.Sprintf("client_%d", i)))
+			subj := "MQTT.sess." + getHash(fmt.Sprintf("client_%d", i))
 			pa, err := js.Publish(subj, firstPayload)
 			if err != nil {
 				t.Fatalf("Error on publish: %v", err)

@@ -15,8 +15,10 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -29,6 +31,7 @@ import (
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
+	"github.com/nats-io/nuid"
 )
 
 func createAccount(s *Server) (*Account, nkeys.KeyPair) {
@@ -2497,4 +2500,45 @@ func TestServerEventsAndDQSubscribers(t *testing.T) {
 	}
 
 	checkSubsPending(t, sub, 10)
+}
+
+func Benchmark_GetHash(b *testing.B) {
+	b.StopTimer()
+	// Get 100 random names
+	names := make([]string, 0, 100)
+	for i := 0; i < 100; i++ {
+		names = append(names, nuid.Next())
+	}
+	hashes := make([]string, 0, 100)
+	for j := 0; j < 100; j++ {
+		sha := sha256.New()
+		sha.Write([]byte(names[j]))
+		b := sha.Sum(nil)
+		for i := 0; i < 8; i++ {
+			b[i] = digits[int(b[i]%base)]
+		}
+		hashes = append(hashes, string(b[:8]))
+	}
+	wg := sync.WaitGroup{}
+	wg.Add(8)
+	errCh := make(chan error, 8)
+	b.StartTimer()
+	for i := 0; i < 8; i++ {
+		go func() {
+			defer wg.Done()
+			for i := 0; i < b.N; i++ {
+				idx := rand.Intn(100)
+				if h := getHash(names[idx]); h != hashes[idx] {
+					errCh <- fmt.Errorf("Hash for name %q was %q, but should be %q", names[idx], h, hashes[idx])
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	select {
+	case err := <-errCh:
+		b.Fatal(err.Error())
+	default:
+	}
 }

@@ -320,21 +320,10 @@ func validateGatewayOptions(o *Options) error {
 	return nil
 }
 
-// Computes a hash for the given `name`. The result will be `size` characters long.
-func getHashSize(name string, size int) []byte {
-	sha := sha256.New()
-	sha.Write([]byte(name))
-	b := sha.Sum(nil)
-	for i := 0; i < size; i++ {
-		b[i] = digits[int(b[i]%base)]
-	}
-	return b[:size]
-}
-
 // Computes a hash of 6 characters for the name.
 // This will be used for routing of replies.
 func getGWHash(name string) []byte {
-	return getHashSize(name, gwHashLen)
+	return []byte(getHashSize(name, gwHashLen))
 }
 
 func getOldHash(name string) []byte {
