@@ -609,7 +609,7 @@ func (c *client) processRouteInfo(info *Info) {
 		c.route.leafnodeURL = info.LeafNodeURLs[0]
 	}
 	// Compute the hash of this route based on remote server name
-	c.route.hash = string(getHash(info.Name))
+	c.route.hash = getHash(info.Name)
 	// Same with remote server ID (used for GW mapped replies routing).
 	// Use getGWHash since we don't use the same hash len for that
 	// for backward compatibility.

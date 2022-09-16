@@ -5290,7 +5290,7 @@ func TestMQTTTransferSessionStreamsToMuxed(t *testing.T) {
 	// Create 2 streams that start with "$MQTT_sess_" to check for transfer to new
 	// mux'ed unique "$MQTT_sess" stream. One of this stream will not contain a
 	// proper session record, and we will check that the stream does not get deleted.
-	sessStreamName1 := mqttSessionsStreamNamePrefix + string(getHash("sub"))
+	sessStreamName1 := mqttSessionsStreamNamePrefix + getHash("sub")
 	if _, err := js.AddStream(&nats.StreamConfig{
 		Name:     sessStreamName1,
 		Subjects: []string{sessStreamName1},

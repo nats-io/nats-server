@@ -2149,7 +2149,7 @@ func (s *Server) jsStreamRemovePeerRequest(sub *subscription, c *client, _ *Acco
 
 	// Check to see if we are a member of the group and if the group has no leader.
 	// Peers here is a server name, convert to node name.
-	nodeName := string(getHash(req.Peer))
+	nodeName := getHash(req.Peer)
 
 	js.mu.RLock()
 	rg := sa.Group

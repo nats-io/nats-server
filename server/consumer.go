@@ -3857,7 +3857,7 @@ func (o *consumer) String() string {
 }
 
 func createConsumerName() string {
-	return string(getHash(nuid.Next()))
+	return getHash(nuid.Next())
 }
 
 // deleteConsumer will delete the consumer from this stream.
