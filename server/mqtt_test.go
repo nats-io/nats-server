@@ -40,7 +40,7 @@ var testMQTTTimeout = 4 * time.Second
 var jsClusterTemplWithLeafAndMQTT = `
 	listen: 127.0.0.1:-1
 	server_name: %s
-	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: "%s"}
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
 
 	{{leaf}}
 
@@ -949,11 +949,13 @@ func testMQTTEnableJSForAccount(t *testing.T, s *Server, accName string) {
 	if err != nil {
 		t.Fatalf("Error looking up account: %v", err)
 	}
-	limits := &JetStreamAccountLimits{
-		MaxConsumers: -1,
-		MaxStreams:   -1,
-		MaxMemory:    1024 * 1024,
-		MaxStore:     1024 * 1024,
+	limits := map[string]JetStreamAccountLimits{
+		_EMPTY_: {
+			MaxConsumers: -1,
+			MaxStreams:   -1,
+			MaxMemory:    1024 * 1024,
+			MaxStore:     1024 * 1024,
+		},
 	}
 	if err := acc.EnableJetStream(limits); err != nil {
 		t.Fatalf("Error enabling JS: %v", err)
@@ -3365,6 +3367,67 @@ func TestMQTTSessionMovingDomains(t *testing.T) {
 	connectSubAndDisconnect(c.opts[2].MQTT.Host, c.opts[2].MQTT.Port, true)
 }
 
+type remoteConnSameClientIDLogger struct {
+	DummyLogger
+	warn chan string
+}
+
+func (l *remoteConnSameClientIDLogger) Warnf(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	if strings.Contains(msg, "remote connection has started with the same client ID") {
+		l.warn <- msg
+	}
+}
+
+func TestMQTTSessionsDifferentDomains(t *testing.T) {
+	tmpl := strings.Replace(jsClusterTemplWithLeafAndMQTT, "{{leaf}}", `leafnodes { listen: 127.0.0.1:-1 }`, 1)
+	c := createJetStreamCluster(t, tmpl, "HUB", _EMPTY_, 3, 22020, true)
+	defer c.shutdown()
+	c.waitOnLeader()
+
+	tmpl = strings.Replace(jsClusterTemplWithLeafAndMQTT, "store_dir:", "domain: LEAF1, store_dir:", 1)
+	lnc1 := c.createLeafNodesWithTemplateAndStartPort(tmpl, "LEAF1", 2, 22111)
+	defer lnc1.shutdown()
+	lnc1.waitOnPeerCount(2)
+
+	l := &remoteConnSameClientIDLogger{warn: make(chan string, 10)}
+	lnc1.servers[0].SetLogger(l, false, false)
+
+	tmpl = strings.Replace(jsClusterTemplWithLeafAndMQTT, "store_dir:", "domain: LEAF2, store_dir:", 1)
+	lnc2 := c.createLeafNodesWithTemplateAndStartPort(tmpl, "LEAF2", 2, 23111)
+	defer lnc2.shutdown()
+	lnc2.waitOnPeerCount(2)
+
+	o := &(lnc1.opts[0].MQTT)
+	mc1, rc1 := testMQTTConnectRetry(t, &mqttConnInfo{clientID: "sub", cleanSess: false}, o.Host, o.Port, 5)
+	defer mc1.Close()
+	testMQTTCheckConnAck(t, rc1, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, mc1, rc1, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTFlush(t, mc1, nil, rc1)
+
+	o = &(lnc2.opts[0].MQTT)
+	connectSubAndDisconnect := func(host string, port int, present bool) {
+		t.Helper()
+		mc, rc := testMQTTConnectRetry(t, &mqttConnInfo{clientID: "sub", cleanSess: false}, host, port, 5)
+		defer mc.Close()
+		testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, present)
+		testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+		testMQTTFlush(t, mc, nil, rc)
+		testMQTTDisconnect(t, mc, nil)
+	}
+
+	for i := 0; i < 2; i++ {
+		connectSubAndDisconnect(o.Host, o.Port, i > 0)
+	}
+
+	select {
+	case w := <-l.warn:
+		t.Fatalf("Got a warning: %v", w)
+	case <-time.After(500 * time.Millisecond):
+		// OK
+	}
+}
+
 func TestMQTTParseUnsub(t *testing.T) {
 	for _, test := range []struct {
 		name  string
@@ -4674,6 +4737,9 @@ func TestMQTTMaxAckPending(t *testing.T) {
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownRestartedServer(&s)
 
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
 	dir := strings.TrimSuffix(s.JetStreamConfig().StoreDir, JetStreamStoreDir)
 
 	cisub := &mqttConnInfo{clientID: "sub", cleanSess: false}
@@ -4700,8 +4766,15 @@ func TestMQTTMaxAckPending(t *testing.T) {
 	testMQTTCheckPubMsg(t, c, r, "foo", mqttPubQos1, []byte("msg2"))
 	testMQTTDisconnect(t, c, nil)
 
-	// Give a chance to the server to register that this client is gone.
-	checkClientsCount(t, s, 1)
+	// Give a chance to the server to "close" the consumer
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		for ci := range js.ConsumersInfo("$MQTT_msgs") {
+			if ci.PushBound {
+				return fmt.Errorf("Consumer still connected")
+			}
+		}
+		return nil
+	})
 
 	// Send 2 messages while sub is offline
 	testMQTTPublish(t, cp, rp, 1, false, false, "foo", 1, []byte("msg3"))
@@ -5519,6 +5592,413 @@ func TestMQTTClientIDInLogStatements(t *testing.T) {
 			t.Fatal("Did not get the debug statements or client_id in them")
 		}
 	}
+}
+
+func TestMQTTStreamReplicasOverride(t *testing.T) {
+	conf := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+
+		mqtt {
+			listen: 127.0.0.1:-1
+			stream_replicas: 3
+		}
+
+		# For access to system account.
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+	`
+	cl := createJetStreamClusterWithTemplate(t, conf, "MQTT", 3)
+	defer cl.shutdown()
+
+	connectAndCheck := func(restarted bool) {
+		t.Helper()
+
+		o := cl.opts[0]
+		mc, r := testMQTTConnectRetry(t, &mqttConnInfo{clientID: "test", cleanSess: false}, o.MQTT.Host, o.MQTT.Port, 5)
+		defer mc.Close()
+		testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, restarted)
+
+		nc, js := jsClientConnect(t, cl.servers[2])
+		defer nc.Close()
+
+		streams := []string{mqttStreamName, mqttRetainedMsgsStreamName, mqttSessStreamName}
+		for _, sn := range streams {
+			si, err := js.StreamInfo(sn)
+			require_NoError(t, err)
+			if n := len(si.Cluster.Replicas); n != 2 {
+				t.Fatalf("Expected stream %q to have 2 replicas, got %v", sn, n)
+			}
+		}
+	}
+	connectAndCheck(false)
+
+	cl.stopAll()
+	for _, o := range cl.opts {
+		o.MQTT.StreamReplicas = 2
+	}
+	cl.restartAllSamePorts()
+	cl.waitOnStreamLeader(globalAccountName, mqttStreamName)
+	cl.waitOnStreamLeader(globalAccountName, mqttRetainedMsgsStreamName)
+	cl.waitOnStreamLeader(globalAccountName, mqttSessStreamName)
+
+	l := &captureWarnLogger{warn: make(chan string, 10)}
+	cl.servers[0].SetLogger(l, false, false)
+
+	connectAndCheck(true)
+
+	select {
+	case w := <-l.warn:
+		if !strings.Contains(w, "current is 3 but configuration is 2") {
+			t.Fatalf("Unexpected warning: %q", w)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Should have warned against replicas mismatch")
+	}
+}
+
+func TestMQTTStreamReplicasConfigReload(t *testing.T) {
+	tmpl := `
+		jetstream: enabled
+		server_name: mqtt
+		mqtt {
+			port: -1
+			stream_replicas: %v
+		}
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, 3)))
+	defer removeFile(t, conf)
+	s, o := RunServerWithConfig(conf)
+	defer testMQTTShutdownServer(s)
+
+	l := &captureErrorLogger{errCh: make(chan string, 10)}
+	s.SetLogger(l, false, false)
+
+	_, _, err := testMQTTConnectRetryWithError(t, &mqttConnInfo{clientID: "mqtt", cleanSess: false}, o.MQTT.Host, o.MQTT.Port, 0)
+	if err == nil {
+		t.Fatal("Expected to fail, did not")
+	}
+
+	select {
+	case e := <-l.errCh:
+		if !strings.Contains(e, NewJSStreamReplicasNotSupportedError().Description) {
+			t.Fatalf("Expected error regarding replicas, got %v", e)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Did not get the error regarding replicas count")
+	}
+
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, 1))
+
+	mc, r := testMQTTConnect(t, &mqttConnInfo{clientID: "mqtt", cleanSess: false}, o.MQTT.Host, o.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+}
+
+func TestMQTTStreamReplicasInsufficientResources(t *testing.T) {
+	conf := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+
+		mqtt {
+			listen: 127.0.0.1:-1
+			stream_replicas: 5
+		}
+
+		# For access to system account.
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+	`
+	cl := createJetStreamClusterWithTemplate(t, conf, "MQTT", 3)
+	defer cl.shutdown()
+
+	l := &captureErrorLogger{errCh: make(chan string, 10)}
+	for _, s := range cl.servers {
+		s.SetLogger(l, false, false)
+	}
+
+	o := cl.opts[1]
+	_, _, err := testMQTTConnectRetryWithError(t, &mqttConnInfo{clientID: "mqtt", cleanSess: false}, o.MQTT.Host, o.MQTT.Port, 0)
+	if err == nil {
+		t.Fatal("Expected to fail, did not")
+	}
+
+	select {
+	case e := <-l.errCh:
+		if !strings.Contains(e, NewJSInsufficientResourcesError().Description) {
+			t.Fatalf("Expected error regarding insufficient resources, got %v", e)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Did not get the error regarding replicas count")
+	}
+}
+
+func TestMQTTConsumerReplicasValidate(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	for _, test := range []struct {
+		name string
+		sr   int
+		cr   int
+		err  bool
+	}{
+		{"stream replicas neg", -1, 3, false},
+		{"stream replicas 0", 0, 3, false},
+		{"consumer replicas neg", 0, -1, false},
+		{"consumer replicas 0", -1, 0, false},
+		{"consumer replicas too high", 1, 2, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o.MQTT.StreamReplicas = test.sr
+			o.MQTT.ConsumerReplicas = test.cr
+			err := validateMQTTOptions(o)
+			if test.err {
+				if err == nil {
+					t.Fatal("Expected error, did not get one")
+				}
+				if !strings.Contains(err.Error(), "cannot be higher") {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				// OK
+				return
+			} else if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestMQTTConsumerReplicasOverride(t *testing.T) {
+	conf := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+
+		mqtt {
+			listen: 127.0.0.1:-1
+			stream_replicas: 5
+			consumer_replicas: 1
+			consumer_memory_storage: true
+		}
+
+		# For access to system account.
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+	`
+	cl := createJetStreamClusterWithTemplate(t, conf, "MQTT", 5)
+	defer cl.shutdown()
+
+	connectAndCheck := func(subject string, restarted bool) {
+		t.Helper()
+
+		o := cl.opts[0]
+		mc, r := testMQTTConnectRetry(t, &mqttConnInfo{clientID: "test", cleanSess: false}, o.MQTT.Host, o.MQTT.Port, 5)
+		defer mc.Close()
+		testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, restarted)
+		testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+
+		nc, js := jsClientConnect(t, cl.servers[2])
+		defer nc.Close()
+
+		for ci := range js.ConsumersInfo(mqttStreamName) {
+			if ci.Config.FilterSubject == mqttStreamSubjectPrefix+"foo" {
+				if len(ci.Cluster.Replicas) != 0 {
+					t.Fatalf("Expected consumer to be R1, got: %+v", ci.Cluster)
+				}
+			} else {
+				if len(ci.Cluster.Replicas) != 1 {
+					t.Fatalf("Expected consumer to be R2, got: %+v", ci.Cluster)
+				}
+			}
+		}
+	}
+	connectAndCheck("foo", false)
+
+	cl.stopAll()
+	for _, o := range cl.opts {
+		o.MQTT.ConsumerReplicas = 2
+		o.MQTT.ConsumerMemoryStorage = false
+	}
+	cl.restartAllSamePorts()
+	cl.waitOnStreamLeader(globalAccountName, mqttStreamName)
+	cl.waitOnStreamLeader(globalAccountName, mqttRetainedMsgsStreamName)
+	cl.waitOnStreamLeader(globalAccountName, mqttSessStreamName)
+
+	connectAndCheck("bar", true)
+}
+
+func TestMQTTConsumerReplicasReload(t *testing.T) {
+	tmpl := `
+		jetstream: enabled
+		server_name: mqtt
+		mqtt {
+			port: -1
+			consumer_replicas: %v
+			consumer_memory_storage: %s
+		}
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, 3, "false")))
+	defer removeFile(t, conf)
+	s, o := RunServerWithConfig(conf)
+	defer testMQTTShutdownServer(s)
+
+	l := &captureErrorLogger{errCh: make(chan string, 10)}
+	s.SetLogger(l, false, false)
+
+	c, r := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: false}, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{mqttSubAckFailure})
+
+	select {
+	case e := <-l.errCh:
+		if !strings.Contains(e, NewJSStreamReplicasNotSupportedError().Description) {
+			t.Fatalf("Expected error regarding replicas, got %v", e)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Did not get the error regarding replicas count")
+	}
+
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, 1, "true"))
+
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+
+	mset, err := s.GlobalAccount().lookupStream(mqttStreamName)
+	if err != nil {
+		t.Fatalf("Error looking up stream: %v", err)
+	}
+	var cons *consumer
+	mset.mu.RLock()
+	for _, c := range mset.consumers {
+		cons = c
+		break
+	}
+	mset.mu.RUnlock()
+	cons.mu.RLock()
+	st := cons.store.Type()
+	cons.mu.RUnlock()
+	if st != MemoryStorage {
+		t.Fatalf("Expected storage %v, got %v", MemoryStorage, st)
+	}
+}
+
+func TestMQTTConsumerReplicasExceedsParentStream(t *testing.T) {
+	conf := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+
+		mqtt {
+			listen: 127.0.0.1:-1
+			consumer_replicas: 4
+		}
+
+		# For access to system account.
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+	`
+	cl := createJetStreamClusterWithTemplate(t, conf, "MQTT", 3)
+	defer cl.shutdown()
+
+	l := &captureErrorLogger{errCh: make(chan string, 10)}
+	for _, s := range cl.servers {
+		s.SetLogger(l, false, false)
+	}
+
+	o := cl.opts[0]
+	mc, r := testMQTTConnect(t, &mqttConnInfo{clientID: "test", cleanSess: false}, o.MQTT.Host, o.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{mqttSubAckFailure})
+
+	select {
+	case e := <-l.errCh:
+		if !strings.Contains(e, NewJSConsumerReplicasExceedsStreamError().Description) {
+			t.Fatalf("Expected error regarding replicas exceeded parent, got %v", e)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Did not get the error regarding replicas count")
+	}
+}
+
+type unableToDeleteConsLogger struct {
+	DummyLogger
+	errCh chan string
+}
+
+func (l *unableToDeleteConsLogger) Errorf(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	if strings.Contains(msg, "unable to delete consumer") {
+		l.errCh <- msg
+	}
+}
+
+func TestMQTTSessionNotDeletedOnDeleteConsumerError(t *testing.T) {
+	org := mqttJSAPITimeout
+	mqttJSAPITimeout = 1000 * time.Millisecond
+	defer func() { mqttJSAPITimeout = org }()
+
+	cl := createJetStreamClusterWithTemplate(t, testMQTTGetClusterTemplaceNoLeaf(), "MQTT", 2)
+	defer cl.shutdown()
+
+	o := cl.opts[0]
+	s1 := cl.servers[0]
+	// Plug error logger to s1
+	l := &unableToDeleteConsLogger{errCh: make(chan string, 10)}
+	s1.SetLogger(l, false, false)
+
+	nc, js := jsClientConnect(t, s1)
+	defer nc.Close()
+
+	mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTFlush(t, mc, nil, r)
+
+	// Now shutdown server 2, we should lose quorum
+	cl.servers[1].Shutdown()
+
+	// Close the MQTT client:
+	testMQTTDisconnect(t, mc, nil)
+
+	// We should have reported that there was an error deleting the consumer
+	select {
+	case <-l.errCh:
+		// OK
+	case <-time.After(time.Second):
+		t.Fatal("Server did not report any error")
+	}
+
+	// Now restart the server 2 so that we can check that the session is still persisted.
+	cl.restartAllSamePorts()
+	cl.waitOnStreamLeader(globalAccountName, mqttSessStreamName)
+
+	si, err := js.StreamInfo(mqttSessStreamName)
+	require_NoError(t, err)
+	require_True(t, si.State.Msgs == 1)
 }
 
 //////////////////////////////////////////////////////////////////////////

@@ -82,8 +82,9 @@ func TestNRGAppendEntryDecode(t *testing.T) {
 
 	for i := 0; i < 100; i++ {
 		b := copyBytes(buf)
-		bi := rand.Intn(len(b))
-		if b[bi] != 0 {
+		// modifying the header (idx < 42) will not result in an error by decodeAppendEntry
+		bi := 42 + rand.Intn(len(b)-42)
+		if b[bi] != 0 && bi != 40 {
 			b[bi] = 0
 			_, err = node.decodeAppendEntry(b, nil, _EMPTY_)
 			require_Error(t, err, errBadAppendEntry)

@@ -1,0 +1,43 @@
+name: NATS Server Code Coverage
+on:
+  workflow_dispatch: {}
+
+  schedule:
+    - cron: "40 4 * * *"
+
+jobs:
+  nightly_coverage:
+    runs-on: ubuntu-latest
+
+    env:
+      GOPATH: /home/runner/work/nats-server
+      GO111MODULE: "on"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v1
+        with:
+          path: src/github.com/nats-io/nats-server
+
+      - name: Set up Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: 1.17.x
+
+      - name: Run code coverage
+        shell: bash --noprofile --norc -x -eo pipefail {0}
+        run: |
+          set -e
+          ./scripts/cov.sh upload
+          set +e
+
+      - name: Convert coverage.out to coverage.lcov
+        uses: jandelgado/gcov2lcov-action@v1.0.8
+        with:
+          infile: acc.out
+
+      - name: Coveralls
+        uses: coverallsapp/github-action@1.1.3
+        with:
+          github-token: ${{ secrets.github_token }}
+          path-to-lcov: coverage.lcov

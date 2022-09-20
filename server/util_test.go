@@ -192,6 +192,34 @@ func TestURLRedaction(t *testing.T) {
 	}
 }
 
+func TestVersionAtLeast(t *testing.T) {
+	for _, test := range []struct {
+		version string
+		major   int
+		minor   int
+		update  int
+		result  bool
+	}{
+		{"2.0.0-beta", 1, 9, 9, true},
+		{"2.0.0", 1, 99, 9, true},
+		{"2.2.0", 2, 1, 9, true},
+		{"2.2.2", 2, 2, 2, true},
+		{"2.2.2", 2, 2, 3, false},
+		{"2.2.2", 2, 3, 2, false},
+		{"2.2.2", 3, 2, 2, false},
+		{"2.22.2", 3, 0, 0, false},
+		{"2.2.22", 2, 3, 0, false},
+		{"bad.version", 1, 2, 3, false},
+	} {
+		t.Run(_EMPTY_, func(t *testing.T) {
+			if res := versionAtLeast(test.version, test.major, test.minor, test.update); res != test.result {
+				t.Fatalf("For check version %q at least %d.%d.%d result should have been %v, got %v",
+					test.version, test.major, test.minor, test.update, test.result, res)
+			}
+		})
+	}
+}
+
 func BenchmarkParseInt(b *testing.B) {
 	b.SetBytes(1)
 	n := "12345678"

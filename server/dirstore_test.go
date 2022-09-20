@@ -30,6 +30,40 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
+var (
+	one, two, three, four  = "", "", "", ""
+	jwt1, jwt2, jwt3, jwt4 = "", "", "", ""
+	op                     nkeys.KeyPair
+)
+
+func init() {
+	op, _ = nkeys.CreateOperator()
+
+	nkone, _ := nkeys.CreateAccount()
+	pub, _ := nkone.PublicKey()
+	one = pub
+	ac := jwt.NewAccountClaims(pub)
+	jwt1, _ = ac.Encode(op)
+
+	nktwo, _ := nkeys.CreateAccount()
+	pub, _ = nktwo.PublicKey()
+	two = pub
+	ac = jwt.NewAccountClaims(pub)
+	jwt2, _ = ac.Encode(op)
+
+	nkthree, _ := nkeys.CreateAccount()
+	pub, _ = nkthree.PublicKey()
+	three = pub
+	ac = jwt.NewAccountClaims(pub)
+	jwt3, _ = ac.Encode(op)
+
+	nkfour, _ := nkeys.CreateAccount()
+	pub, _ = nkfour.PublicKey()
+	four = pub
+	ac = jwt.NewAccountClaims(pub)
+	jwt4, _ = ac.Encode(op)
+}
+
 func TestShardedDirStoreWriteAndReadonly(t *testing.T) {
 	t.Parallel()
 	dir := createDir(t, "jwtstore_test")
@@ -38,10 +72,10 @@ func TestShardedDirStoreWriteAndReadonly(t *testing.T) {
 	require_NoError(t, err)
 
 	expected := map[string]string{
-		"one":   "alpha",
-		"two":   "beta",
-		"three": "gamma",
-		"four":  "delta",
+		one:   "alpha",
+		two:   "beta",
+		three: "gamma",
+		four:  "delta",
 	}
 
 	for k, v := range expected {
@@ -91,10 +125,10 @@ func TestUnshardedDirStoreWriteAndReadonly(t *testing.T) {
 	require_NoError(t, err)
 
 	expected := map[string]string{
-		"one":   "alpha",
-		"two":   "beta",
-		"three": "gamma",
-		"four":  "delta",
+		one:   "alpha",
+		two:   "beta",
+		three: "gamma",
+		four:  "delta",
 	}
 
 	require_False(t, store.IsReadOnly())
@@ -172,10 +206,10 @@ func TestShardedDirStorePackMerge(t *testing.T) {
 	require_NoError(t, err)
 
 	expected := map[string]string{
-		"one":   "alpha",
-		"two":   "beta",
-		"three": "gamma",
-		"four":  "delta",
+		one:   "alpha",
+		two:   "beta",
+		three: "gamma",
+		four:  "delta",
 	}
 
 	require_False(t, store.IsReadOnly())
@@ -246,10 +280,10 @@ func TestShardedToUnsharedDirStorePackMerge(t *testing.T) {
 	require_NoError(t, err)
 
 	expected := map[string]string{
-		"one":   "alpha",
-		"two":   "beta",
-		"three": "gamma",
-		"four":  "delta",
+		one:   "alpha",
+		two:   "beta",
+		three: "gamma",
+		four:  "delta",
 	}
 
 	require_False(t, store.IsReadOnly())
@@ -848,10 +882,10 @@ const infDur = time.Duration(math.MaxInt64)
 func TestNotificationOnPack(t *testing.T) {
 	t.Parallel()
 	jwts := map[string]string{
-		"key1": "value",
-		"key2": "value",
-		"key3": "value",
-		"key4": "value",
+		one:   jwt1,
+		two:   jwt2,
+		three: jwt3,
+		four:  jwt4,
 	}
 	notificationChan := make(chan struct{}, len(jwts)) // set to same len so all extra will block
 	notification := func(pubKey string) {
@@ -921,12 +955,13 @@ func TestNotificationOnPackWalk(t *testing.T) {
 		store[i] = mergeStore
 	}
 	for i := 0; i < iterCnt; i++ { //iterations
-		jwt := make(map[string]string)
+		jwts := make(map[string]string)
 		for j := 0; j < keyCnt; j++ {
-			key := fmt.Sprintf("key%d-%d", i, j)
-			value := "value"
-			jwt[key] = value
-			store[0].SaveAcc(key, value)
+			kp, _ := nkeys.CreateAccount()
+			key, _ := kp.PublicKey()
+			ac := jwt.NewAccountClaims(key)
+			jwts[key], _ = ac.Encode(op)
+			require_NoError(t, store[0].SaveAcc(key, jwts[key]))
 		}
 		for j := 0; j < storeCnt-1; j++ { // stores
 			err := store[j].PackWalk(3, func(partialPackMsg string) {

@@ -46,6 +46,9 @@ var (
 	// ErrBadSubject represents an error condition for an invalid subject.
 	ErrBadSubject = errors.New("invalid subject")
 
+	// ErrBadSubjectMappingDestination is used to error on a bad transform destination mapping
+	ErrBadSubjectMappingDestination = errors.New("invalid subject mapping destination")
+
 	// ErrBadQualifier is used to error on a bad qualifier for a transform.
 	ErrBadQualifier = errors.New("bad qualifier")
 
@@ -181,6 +184,13 @@ var (
 
 	// ErrCertNotPinned is returned when pinned certs are set and the certificate is not in it
 	ErrCertNotPinned = errors.New("certificate not pinned")
+
+	// ErrDuplicateServerName is returned when processing a server remote connection and
+	// the server reports that this server name is already used in the cluster.
+	ErrDuplicateServerName = errors.New("duplicate server name")
+
+	// ErrMinimumVersionRequired is returned when a connection is not at the minimum version required.
+	ErrMinimumVersionRequired = errors.New("minimum version required")
 )
 
 // configErr is a configuration error.

@@ -38,17 +38,22 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-func checkFor(t *testing.T, totalWait, sleepDur time.Duration, f func() error) {
-	t.Helper()
+func checkForErr(totalWait, sleepDur time.Duration, f func() error) error {
 	timeout := time.Now().Add(totalWait)
 	var err error
 	for time.Now().Before(timeout) {
 		err = f()
 		if err == nil {
-			return
+			return nil
 		}
 		time.Sleep(sleepDur)
 	}
+	return err
+}
+
+func checkFor(t *testing.T, totalWait, sleepDur time.Duration, f func() error) {
+	t.Helper()
+	err := checkForErr(totalWait, sleepDur, f)
 	if err != nil {
 		t.Fatal(err.Error())
 	}
@@ -1279,9 +1284,6 @@ func TestServerShutdownDuringStart(t *testing.T) {
 	ch := make(chan struct{}, 1)
 	go func() {
 		s.Start()
-		// Since the server has already been shutdown and we don't want to leave
-		// the ipqLog run() routine running, stop it now.
-		s.ipqLog.stop()
 		close(ch)
 	}()
 	select {
@@ -1946,7 +1948,7 @@ func TestServerLogsConfigurationFile(t *testing.T) {
 
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
 	port: -1
-	logfile: "%s"
+	logfile: '%s'
 	`, file.Name())))
 	defer removeFile(t, conf)
 
@@ -1965,35 +1967,109 @@ func TestServerLogsConfigurationFile(t *testing.T) {
 	}
 }
 
-func TestServerIPQueueLogger(t *testing.T) {
-	o := DefaultOptions()
-	s := RunServer(o)
+func TestServerRateLimitLogging(t *testing.T) {
+	s := RunServer(DefaultOptions())
 	defer s.Shutdown()
+
+	s.changeRateLimitLogInterval(100 * time.Millisecond)
 
 	l := &captureWarnLogger{warn: make(chan string, 100)}
 	s.SetLogger(l, false, false)
 
-	q := newIPQueue(ipQueue_Logger("test", s.ipqLog))
-	// Normally, lt is immutable and set to ipQueueDefaultWarnThreshold, but
-	// for test, we set it to a low value.
-	q.lt = 2
-	q.push(1)
-	// This one should case a warning
-	q.push(2)
+	s.RateLimitWarnf("Warning number 1")
+	s.RateLimitWarnf("Warning number 2")
+	s.RateLimitWarnf("Warning number 1")
+	s.RateLimitWarnf("Warning number 2")
 
-	for {
-		select {
-		case w := <-l.warn:
-			// In case we get other warnings a runtime, just check that we
-			// get the one we expect and be done.
-			if strings.Contains(w, "test queue") {
-				if strings.Contains(w, "test queue pending size: 2") {
+	checkLog := func(c1, c2 *client) {
+		t.Helper()
+
+		nb1 := "Warning number 1"
+		nb2 := "Warning number 2"
+		gotOne := 0
+		gotTwo := 0
+		for done := false; !done; {
+			select {
+			case w := <-l.warn:
+				if strings.Contains(w, nb1) {
+					gotOne++
+				} else if strings.Contains(w, nb2) {
+					gotTwo++
+				}
+			case <-time.After(150 * time.Millisecond):
+				done = true
+			}
+		}
+		if gotOne != 1 {
+			t.Fatalf("Should have had only 1 warning for nb1, got %v", gotOne)
+		}
+		if gotTwo != 1 {
+			t.Fatalf("Should have had only 1 warning for nb2, got %v", gotTwo)
+		}
+
+		// Wait for more than the expiration interval
+		time.Sleep(200 * time.Millisecond)
+		if c1 == nil {
+			s.RateLimitWarnf(nb1)
+		} else {
+			c1.RateLimitWarnf(nb1)
+			c2.RateLimitWarnf(nb1)
+		}
+		gotOne = 0
+		for {
+			select {
+			case w := <-l.warn:
+				if strings.Contains(w, nb1) {
+					gotOne++
+				}
+			case <-time.After(200 * time.Millisecond):
+				if gotOne == 0 {
+					t.Fatalf("Warning was still suppressed")
+				} else if gotOne > 1 {
+					t.Fatalf("Should have had only 1 warning for nb1, got %v", gotOne)
+				} else {
+					// OK! we are done
 					return
 				}
-				t.Fatalf("Invalid warning: %v", w)
 			}
-		case <-time.After(time.Second):
-			t.Fatal("Did not get warning")
 		}
 	}
+
+	checkLog(nil, nil)
+
+	nc1 := natsConnect(t, s.ClientURL(), nats.Name("c1"))
+	defer nc1.Close()
+	nc2 := natsConnect(t, s.ClientURL(), nats.Name("c2"))
+	defer nc2.Close()
+
+	var c1 *client
+	var c2 *client
+	s.mu.Lock()
+	for _, cli := range s.clients {
+		cli.mu.Lock()
+		switch cli.opts.Name {
+		case "c1":
+			c1 = cli
+		case "c2":
+			c2 = cli
+		}
+		cli.mu.Unlock()
+		if c1 != nil && c2 != nil {
+			break
+		}
+	}
+	s.mu.Unlock()
+	if c1 == nil || c2 == nil {
+		t.Fatal("Did not find the clients")
+	}
+
+	// Wait for more than the expiration interval
+	time.Sleep(200 * time.Millisecond)
+
+	c1.RateLimitWarnf("Warning number 1")
+	c1.RateLimitWarnf("Warning number 2")
+	c2.RateLimitWarnf("Warning number 1")
+	c2.RateLimitWarnf("Warning number 2")
+
+	checkLog(c1, c2)
 }

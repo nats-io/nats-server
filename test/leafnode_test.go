@@ -825,8 +825,8 @@ func TestLeafNodeGatewaySendsSystemEvent(t *testing.T) {
 	defer c.Close()
 
 	// Listen for the leaf node event.
-	send, expect := setupConnWithAccount(t, c, "$SYS")
-	send("SUB $SYS.ACCOUNT.*.LEAFNODE.CONNECT 1\r\nPING\r\n")
+	send, expect := setupConnWithAccount(t, ca.servers[0], c, "$SYS")
+	send("SUB $SYS.ACCOUNT.$G.LEAFNODE.CONNECT 1\r\nPING\r\n")
 	expect(pongRe)
 
 	opts = cb.opts[0]
@@ -1684,6 +1684,7 @@ func TestLeafNodeOperatorAndPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error on subscribe: %v", err)
 	}
+	leafnc.Flush()
 
 	// Make sure the interest on "bar" from "sl" server makes it to the "s" server.
 	checkSubInterest(t, s, acc.GetName(), "bar", time.Second)
@@ -4302,7 +4303,9 @@ func TestLeafNodeAdvertiseInCluster(t *testing.T) {
 	expectNothing(t, lc)
 }
 
-func TestLeafNodeStreamAndShadowSubs(t *testing.T) {
+func TestLeafNodeAndGatewaysStreamAndShadowSubs(t *testing.T) {
+	server.SetGatewaysSolicitDelay(10 * time.Millisecond)
+	defer server.ResetGatewaysSolicitDelay()
 	conf1 := createConfFile(t, []byte(`
 		port: -1
 		system_account: SYS

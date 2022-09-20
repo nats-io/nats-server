@@ -162,6 +162,7 @@ type ServerInfo struct {
 	Cluster   string    `json:"cluster,omitempty"`
 	Domain    string    `json:"domain,omitempty"`
 	Version   string    `json:"ver"`
+	Tags      []string  `json:"tags,omitempty"`
 	Seq       uint64    `json:"seq"`
 	JetStream bool      `json:"jetstream"`
 	Time      time.Time `json:"time"`
@@ -315,6 +316,9 @@ RESET:
 	}
 	s.mu.Unlock()
 
+	// Grab tags.
+	tags := s.getOpts().Tags
+
 	for s.eventsRunning() {
 		select {
 		case <-sendq.ch:
@@ -331,6 +335,7 @@ RESET:
 					pm.si.Version = VERSION
 					pm.si.Time = time.Now().UTC()
 					pm.si.JetStream = js
+					pm.si.Tags = tags
 				}
 				var b []byte
 				if pm.msg != nil {
@@ -343,7 +348,6 @@ RESET:
 						b, _ = json.Marshal(pm.msg)
 					}
 				}
-
 				// Setup our client. If the user wants to use a non-system account use our internal
 				// account scoped here so that we are not changing out accounts for the system client.
 				var c *client
@@ -429,6 +433,7 @@ RESET:
 					// there is a chance that the process will exit before the
 					// writeLoop has a chance to send it.
 					c.flushClients(time.Second)
+					sendq.recycle(&msgs)
 					return
 				}
 				pm.returnToPool()
@@ -685,6 +690,10 @@ func (s *Server) sendStatsz(subj string) {
 		if v, ok := s.nodeToInfo.Load(ourNode); ok && v != nil {
 			ni := v.(nodeInfo)
 			ni.stats = jStat.Stats
+			ni.cfg = jStat.Config
+			s.optsMu.RLock()
+			ni.tags = copyStrings(s.opts.Tags)
+			s.optsMu.RUnlock()
 			s.nodeToInfo.Store(ourNode, ni)
 		}
 		// Metagroup info.
@@ -1004,8 +1013,8 @@ func (s *Server) addSystemAccountExports(sacc *Account) {
 	if err := sacc.AddServiceExport(accSubsSubj, nil); err != nil {
 		s.Errorf("Error adding system service export for %q: %v", accSubsSubj, err)
 	}
-
-	if s.JetStreamEnabled() {
+	// in case of a mixed mode setup, enable js exports anyway
+	if s.JetStreamEnabled() || !s.standAloneMode() {
 		s.checkJetStreamExports()
 	}
 }
@@ -1135,9 +1144,11 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 	node := string(getHash(si.Name))
 	s.nodeToInfo.Store(node, nodeInfo{
 		si.Name,
+		si.Version,
 		si.Cluster,
 		si.Domain,
 		si.ID,
+		si.Tags,
 		cfg,
 		stats,
 		false, si.JetStream,
@@ -1176,7 +1187,7 @@ func (s *Server) processNewServer(si *ServerInfo) {
 		node := string(getHash(si.Name))
 		// Only update if non-existent
 		if _, ok := s.nodeToInfo.Load(node); !ok {
-			s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Cluster, si.Domain, si.ID, nil, nil, false, si.JetStream})
+			s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Version, si.Cluster, si.Domain, si.ID, si.Tags, nil, nil, false, si.JetStream})
 		}
 	}
 	// Announce ourselves..
@@ -1566,12 +1577,12 @@ func (s *Server) registerSystemImports(a *Account) {
 
 	// Add in this to the account in 2 places.
 	// "$SYS.REQ.SERVER.PING.CONNZ" and "$SYS.REQ.ACCOUNT.PING.CONNZ"
-	if _, ok := a.imports.services[connzSubj]; !ok {
+	if !a.serviceImportExists(connzSubj) {
 		if err := a.AddServiceImport(sacc, connzSubj, mappedSubj); err != nil {
 			s.Errorf("Error setting up system service imports for account: %v", err)
 		}
 	}
-	if _, ok := a.imports.services[accConnzReqSubj]; !ok {
+	if !a.serviceImportExists(accConnzReqSubj) {
 		if err := a.AddServiceImport(sacc, accConnzReqSubj, mappedSubj); err != nil {
 			s.Errorf("Error setting up system service imports for account: %v", err)
 		}
@@ -1615,7 +1626,7 @@ func (s *Server) sendLeafNodeConnect(a *Account) {
 func (s *Server) sendLeafNodeConnectMsg(accName string) {
 	subj := fmt.Sprintf(leafNodeConnectEventSubj, accName)
 	m := accNumConnsReq{Account: accName}
-	s.sendInternalMsg(subj, "", &m.Server, &m)
+	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
 }
 
 // sendAccConnsUpdate is called to send out our information on the

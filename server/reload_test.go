@@ -4161,6 +4161,10 @@ func TestLoggingReload(t *testing.T) {
 	conf := createConfFile(t, []byte(commonCfg))
 	defer removeFile(t, conf)
 
+	defer removeFile(t, "off-pre.log")
+	defer removeFile(t, "on.log")
+	defer removeFile(t, "off-post.log")
+
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
@@ -4204,12 +4208,10 @@ func TestLoggingReload(t *testing.T) {
 		nc.Close()
 	}
 
-	defer removeFile(t, "off-pre.log")
 	reload("log_file: off-pre.log")
 
 	traffic(10) // generate NO trace/debug entries in off-pre.log
 
-	defer removeFile(t, "on.log")
 	reload(`
 		log_file: on.log
 		debug: true
@@ -4218,7 +4220,6 @@ func TestLoggingReload(t *testing.T) {
 
 	traffic(10) // generate trace/debug entries in on.log
 
-	defer removeFile(t, "off-post.log")
 	reload(`
 		log_file: off-post.log
 		debug: false

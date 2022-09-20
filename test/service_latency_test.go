@@ -19,7 +19,7 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"net/http"
-	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -361,7 +361,6 @@ func TestServiceLatencyClientRTTSlowerVsServiceRTT(t *testing.T) {
 		}
 
 		// Send the request.
-		start = time.Now()
 		_, err := nc2.Request("ngs.usage", []byte("1h"), time.Second)
 		if err != nil {
 			t.Fatalf("Expected a response")
@@ -1500,7 +1499,6 @@ func TestServiceLatencyRequestorSharesConfig(t *testing.T) {
 		t.Fatalf("Error on server reload: %v", err)
 	}
 
-	start = time.Now()
 	if _, err = nc2.Request("SVC", []byte("1h"), time.Second); err != nil {
 		t.Fatalf("Expected a response")
 	}
@@ -1816,7 +1814,7 @@ func TestServiceLatencyMissingResults(t *testing.T) {
 		server_name: s1
 		cluster { port: -1 }
 		include %q
-	`, path.Base(accConf))))
+	`, filepath.Base(accConf))))
 	defer removeFile(t, s1Conf)
 
 	s1, opts1 := RunServerWithConfig(s1Conf)
@@ -1830,7 +1828,7 @@ func TestServiceLatencyMissingResults(t *testing.T) {
 			routes = [ nats-route://127.0.0.1:%d ]
 		}
 		include %q
-	`, opts1.Cluster.Port, path.Base(accConf))))
+	`, opts1.Cluster.Port, filepath.Base(accConf))))
 	defer removeFile(t, s2Conf)
 
 	s2, opts2 := RunServerWithConfig(s2Conf)

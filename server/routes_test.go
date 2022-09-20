@@ -1465,6 +1465,7 @@ func testTLSRoutesCertificateImplicitAllow(t *testing.T, pass bool) {
 	if err := cfg.Sync(); err != nil {
 		t.Fatal(err)
 	}
+	cfg.Close()
 
 	optsA := LoadConfig(cfg.Name())
 	optsB := LoadConfig(cfg.Name())
@@ -1506,5 +1507,22 @@ func testTLSRoutesCertificateImplicitAllow(t *testing.T, pass bool) {
 			}
 			return nil
 		})
+	}
+}
+
+func TestSubjectRenameViaJetStreamAck(t *testing.T) {
+	s := RunRandClientPortServer()
+	errChan := make(chan error)
+	defer close(errChan)
+	ncPub := natsConnect(t, s.ClientURL(), nats.UserInfo("client", "pwd"),
+		nats.ErrorHandler(func(conn *nats.Conn, s *nats.Subscription, err error) {
+			errChan <- err
+		}))
+	require_NoError(t, ncPub.PublishRequest("SVC.ALLOWED", "$JS.ACK.whatever@ADMIN", nil))
+	select {
+	case err := <-errChan:
+		require_Contains(t, err.Error(), "Permissions Violation for Publish with Reply of")
+	case <-time.After(time.Second):
+		t.Fatalf("Expected error")
 	}
 }

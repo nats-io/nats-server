@@ -278,11 +278,27 @@ func setupConnWithProto(t tLogger, c net.Conn, proto int) (sendFun, expectFun) {
 	return sendCommand(t, c), expectCommand(t, c)
 }
 
-func setupConnWithAccount(t tLogger, c net.Conn, account string) (sendFun, expectFun) {
-	checkInfoMsg(t, c)
-	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"tls_required\":%v,\"account\":%q}\r\n", false, false, false, account)
+func setupConnWithAccount(t tLogger, s *server.Server, c net.Conn, account string) (sendFun, expectFun) {
+	info := checkInfoMsg(t, c)
+	s.RegisterAccount(account)
+	acc, err := s.LookupAccount(account)
+	if err != nil {
+		t.Fatalf("Unexpected Error: %v", err)
+	}
+	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"tls_required\":%v}\r\n", false, false, false)
 	sendProto(t, c, cs)
-	return sendCommand(t, c), expectCommand(t, c)
+
+	send, expect := sendCommand(t, c), expectCommand(t, c)
+	send("PING\r\n")
+	expect(pongRe)
+
+	nc := s.GetClient(info.CID)
+	if nc == nil {
+		t.Fatalf("Could not get client for CID:%d", info.CID)
+	}
+	nc.RegisterUser(&server.User{Account: acc})
+
+	return send, expect
 }
 
 func setupConnWithUserPass(t tLogger, c net.Conn, username, password string) (sendFun, expectFun) {

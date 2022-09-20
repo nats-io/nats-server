@@ -3487,7 +3487,7 @@ func TestJWTAccountNATSResolverFetch(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 			interval: "200ms"
 			limit: 4
 		}
@@ -3513,7 +3513,7 @@ func TestJWTAccountNATSResolverFetch(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 			interval: "200ms"
 			limit: 4
 		}
@@ -3537,7 +3537,7 @@ func TestJWTAccountNATSResolverFetch(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: cache
-			dir: %s
+			dir: '%s'
 			ttl: "%dms"
 			limit: 4
 		}
@@ -3729,7 +3729,7 @@ func TestJWTAccountNATSResolverCrossClusterFetch(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 			interval: "200ms"
 		}
 		gateway: {
@@ -3753,7 +3753,7 @@ func TestJWTAccountNATSResolverCrossClusterFetch(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 			interval: "200ms"
 		}
 		gateway: {
@@ -3780,7 +3780,7 @@ func TestJWTAccountNATSResolverCrossClusterFetch(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 			interval: "200ms"
 		}
 		gateway: {
@@ -3807,7 +3807,7 @@ func TestJWTAccountNATSResolverCrossClusterFetch(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 			interval: "200ms"
 		}
 		cluster {
@@ -4196,283 +4196,251 @@ func TestJWTNoOperatorMode(t *testing.T) {
 	}
 }
 
-func TestJWTJetStreamLimits(t *testing.T) {
-	updateJwt := func(url string, creds string, pubKey string, jwt string) {
-		t.Helper()
-		c := natsConnect(t, url, nats.UserCredentials(creds))
-		defer c.Close()
-		if msg, err := c.Request(fmt.Sprintf(accUpdateEventSubjNew, pubKey), []byte(jwt), time.Second); err != nil {
-			t.Fatal("error not expected in this test", err)
-		} else {
-			content := make(map[string]interface{})
-			if err := json.Unmarshal(msg.Data, &content); err != nil {
-				t.Fatalf("%v", err)
-			} else if _, ok := content["data"]; !ok {
-				t.Fatalf("did not get an ok response got: %v", content)
-			}
-		}
-	}
-	require_IdenticalLimits := func(infoLim JetStreamAccountLimits, lim jwt.JetStreamLimits) {
-		t.Helper()
-		if int64(infoLim.MaxConsumers) != lim.Consumer || int64(infoLim.MaxStreams) != lim.Streams ||
-			infoLim.MaxMemory != lim.MemoryStorage || infoLim.MaxStore != lim.DiskStorage {
-			t.Fatalf("limits do not match %v != %v", infoLim, lim)
-		}
-	}
-	expect_JSDisabledForAccount := func(c *nats.Conn) {
-		t.Helper()
-		if _, err := c.Request("$JS.API.INFO", nil, time.Second); err != nats.ErrTimeout && err != nats.ErrNoResponders {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-	}
-	expect_InfoError := func(c *nats.Conn) {
-		t.Helper()
-		var info JSApiAccountInfoResponse
-		if resp, err := c.Request("$JS.API.INFO", nil, time.Second); err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		} else if err = json.Unmarshal(resp.Data, &info); err != nil {
-			t.Fatalf("response1 %v got error %v", string(resp.Data), err)
-		} else if info.Error == nil {
-			t.Fatalf("expected error")
-		}
-	}
-	validate_limits := func(c *nats.Conn, expectedLimits jwt.JetStreamLimits) {
-		t.Helper()
-		var info JSApiAccountInfoResponse
-		if resp, err := c.Request("$JS.API.INFO", nil, time.Second); err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		} else if err = json.Unmarshal(resp.Data, &info); err != nil {
-			t.Fatalf("response1 %v got error %v", string(resp.Data), err)
-		} else {
-			require_IdenticalLimits(info.Limits, expectedLimits)
-		}
-	}
-	// create system account
-	sysKp, _ := nkeys.CreateAccount()
-	sysPub, _ := sysKp.PublicKey()
-	sysUKp, _ := nkeys.CreateUser()
-	sysUSeed, _ := sysUKp.Seed()
-	uclaim := newJWTTestUserClaims()
-	uclaim.Subject, _ = sysUKp.PublicKey()
-	sysUserJwt, err := uclaim.Encode(sysKp)
-	require_NoError(t, err)
-	sysKp.Seed()
-	sysCreds := genCredsFile(t, sysUserJwt, sysUSeed)
-	// limits to apply and check
-	limits1 := jwt.JetStreamLimits{MemoryStorage: 1024 * 1024, DiskStorage: 2048 * 1024, Streams: 1, Consumer: 2, MaxBytesRequired: true}
-	// has valid limits that would fail when incorrectly applied twice
-	limits2 := jwt.JetStreamLimits{MemoryStorage: 4096 * 1024, DiskStorage: 8192 * 1024, Streams: 3, Consumer: 4}
-	// limits exceeding actual configured value of DiskStorage
-	limitsExceeded := jwt.JetStreamLimits{MemoryStorage: 8192 * 1024, DiskStorage: 16384 * 1024, Streams: 5, Consumer: 6}
-	// create account using jetstream with both limits
-	akp, _ := nkeys.CreateAccount()
-	aPub, _ := akp.PublicKey()
-	claim := jwt.NewAccountClaims(aPub)
-	claim.Limits.JetStreamLimits = limits1
-	aJwt1, err := claim.Encode(oKp)
-	require_NoError(t, err)
-	claim.Limits.JetStreamLimits = limits2
-	aJwt2, err := claim.Encode(oKp)
-	require_NoError(t, err)
-	claim.Limits.JetStreamLimits = limitsExceeded
-	aJwtLimitsExceeded, err := claim.Encode(oKp)
-	require_NoError(t, err)
-	claim.Limits.JetStreamLimits = jwt.JetStreamLimits{} // disabled
-	aJwt4, err := claim.Encode(oKp)
-	require_NoError(t, err)
-	// account user
-	uKp, _ := nkeys.CreateUser()
-	uSeed, _ := uKp.Seed()
-	uclaim = newJWTTestUserClaims()
-	uclaim.Subject, _ = uKp.PublicKey()
-	userJwt, err := uclaim.Encode(akp)
-	require_NoError(t, err)
-	userCreds := genCredsFile(t, userJwt, uSeed)
-	dir := createDir(t, "srv")
-	defer removeDir(t, dir)
-	conf := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: 127.0.0.1:-1
-		jetstream: {max_mem_store: 10Mb, max_file_store: 10Mb}
-		operator: %s
-		resolver: {
-			type: full
-			dir: %s
-		}
-		system_account: %s
-    `, ojwt, dir, sysPub)))
-	defer removeFile(t, conf)
-	s, opts := RunServerWithConfig(conf)
-	defer s.Shutdown()
-	port := opts.Port
-	updateJwt(s.ClientURL(), sysCreds, aPub, aJwt1)
-	c := natsConnect(t, s.ClientURL(), nats.UserCredentials(userCreds), nats.ReconnectWait(200*time.Millisecond))
-	defer c.Close()
-	validate_limits(c, limits1)
-	// keep using the same connection
-	updateJwt(s.ClientURL(), sysCreds, aPub, aJwt2)
-	validate_limits(c, limits2)
-	// keep using the same connection but do NOT CHANGE anything.
-	// This tests if the jwt is applied a second time (would fail)
-	updateJwt(s.ClientURL(), sysCreds, aPub, aJwt2)
-	validate_limits(c, limits2)
-	// keep using the same connection. This update EXCEEDS LIMITS
-	updateJwt(s.ClientURL(), sysCreds, aPub, aJwtLimitsExceeded)
-	validate_limits(c, limits2)
-	// disable test after failure
-	updateJwt(s.ClientURL(), sysCreds, aPub, aJwt4)
-	expect_InfoError(c)
-	// re enable, again testing with a value that can't be applied twice
-	updateJwt(s.ClientURL(), sysCreds, aPub, aJwt2)
-	validate_limits(c, limits2)
-	// disable test no prior failure
-	updateJwt(s.ClientURL(), sysCreds, aPub, aJwt4)
-	expect_InfoError(c)
-	// Wrong limits form start
-	updateJwt(s.ClientURL(), sysCreds, aPub, aJwtLimitsExceeded)
-	expect_JSDisabledForAccount(c)
-	// enable js but exceed limits. Followed by fix via restart
-	updateJwt(s.ClientURL(), sysCreds, aPub, aJwt2)
-	validate_limits(c, limits2)
-	updateJwt(s.ClientURL(), sysCreds, aPub, aJwtLimitsExceeded)
-	validate_limits(c, limits2)
-	s.Shutdown()
-	conf = createConfFile(t, []byte(fmt.Sprintf(`
-		listen: 127.0.0.1:%d
-		jetstream: {max_mem_store: 20Mb, max_file_store: 20Mb}
-		operator: %s
-		resolver: {
-			type: full
-			dir: %s
-		}
-		system_account: %s
-    `, port, ojwt, dir, sysPub)))
-	defer removeFile(t, conf)
-	s, _ = RunServerWithConfig(conf)
-	defer s.Shutdown()
-	c.Flush() // force client to discover the disconnect
-	checkClientsCount(t, s, 1)
-	validate_limits(c, limitsExceeded)
-	s.Shutdown()
-	// disable jetstream test
-	conf = createConfFile(t, []byte(fmt.Sprintf(`
-		listen: 127.0.0.1:%d
-		operator: %s
-		resolver: {
-			type: full
-			dir: %s
-		}
-		system_account: %s
-    `, port, ojwt, dir, sysPub)))
-	defer removeFile(t, conf)
-	s, _ = RunServerWithConfig(conf)
-	defer s.Shutdown()
-	c.Flush() // force client to discover the disconnect
-	checkClientsCount(t, s, 1)
-	expect_JSDisabledForAccount(c)
-	// test that it stays disabled
-	updateJwt(s.ClientURL(), sysCreds, aPub, aJwt2)
-	expect_JSDisabledForAccount(c)
-	c.Close()
-}
-
 func TestJWTUserRevocation(t *testing.T) {
-	createAccountAndUser := func(done chan struct{}, pubKey, jwt1, jwt2, creds1, creds2 *string) {
-		t.Helper()
-		kp, _ := nkeys.CreateAccount()
-		*pubKey, _ = kp.PublicKey()
-		claim := jwt.NewAccountClaims(*pubKey)
-		var err error
-		*jwt1, err = claim.Encode(oKp)
-		require_NoError(t, err)
+	test := func(all bool) {
+		createAccountAndUser := func(done chan struct{}, pubKey, jwt1, jwt2, creds1, creds2 *string) {
+			t.Helper()
+			kp, _ := nkeys.CreateAccount()
+			*pubKey, _ = kp.PublicKey()
+			claim := jwt.NewAccountClaims(*pubKey)
+			var err error
+			*jwt1, err = claim.Encode(oKp)
+			require_NoError(t, err)
 
-		ukp, _ := nkeys.CreateUser()
-		seed, _ := ukp.Seed()
-		upub, _ := ukp.PublicKey()
-		uclaim := newJWTTestUserClaims()
-		uclaim.Subject = upub
+			ukp, _ := nkeys.CreateUser()
+			seed, _ := ukp.Seed()
+			upub, _ := ukp.PublicKey()
+			uclaim := newJWTTestUserClaims()
+			uclaim.Subject = upub
 
-		ujwt1, err := uclaim.Encode(kp)
-		require_NoError(t, err)
-		*creds1 = genCredsFile(t, ujwt1, seed)
+			ujwt1, err := uclaim.Encode(kp)
+			require_NoError(t, err)
+			*creds1 = genCredsFile(t, ujwt1, seed)
 
-		// create updated claim need to assure that issue time differs
-		claim.Revoke(upub) // revokes all jwt from now on
-		time.Sleep(time.Millisecond * 1100)
-		*jwt2, err = claim.Encode(oKp)
-		require_NoError(t, err)
+			// create updated claim need to assure that issue time differs
+			if all {
+				claim.Revoke(jwt.All) // revokes all jwt from now on
+			} else {
+				claim.Revoke(upub) // revokes this jwt from now on
+			}
+			time.Sleep(time.Millisecond * 1100)
+			*jwt2, err = claim.Encode(oKp)
+			require_NoError(t, err)
 
-		ujwt2, err := uclaim.Encode(kp)
-		require_NoError(t, err)
-		*creds2 = genCredsFile(t, ujwt2, seed)
+			ujwt2, err := uclaim.Encode(kp)
+			require_NoError(t, err)
+			*creds2 = genCredsFile(t, ujwt2, seed)
 
-		done <- struct{}{}
-	}
-	// Create Accounts and corresponding revoked and non revoked user creds. Do so concurrently to speed up the test
-	doneChan := make(chan struct{}, 2)
-	defer close(doneChan)
-	var syspub, sysjwt, dummy1, sysCreds, dummyCreds string
-	go createAccountAndUser(doneChan, &syspub, &sysjwt, &dummy1, &sysCreds, &dummyCreds)
-	var apub, ajwt1, ajwt2, aCreds1, aCreds2 string
-	go createAccountAndUser(doneChan, &apub, &ajwt1, &ajwt2, &aCreds1, &aCreds2)
-	for i := 0; i < cap(doneChan); i++ {
-		<-doneChan
-	}
-	defer removeFile(t, sysCreds)
-	defer removeFile(t, dummyCreds)
-	defer removeFile(t, aCreds1)
-	defer removeFile(t, aCreds2)
-	dirSrv := createDir(t, "srv")
-	defer removeDir(t, dirSrv)
-	conf := createConfFile(t, []byte(fmt.Sprintf(`
+			done <- struct{}{}
+		}
+		// Create Accounts and corresponding revoked and non revoked user creds. Do so concurrently to speed up the test
+		doneChan := make(chan struct{}, 2)
+		defer close(doneChan)
+		var syspub, sysjwt, dummy1, sysCreds, dummyCreds string
+		go createAccountAndUser(doneChan, &syspub, &sysjwt, &dummy1, &sysCreds, &dummyCreds)
+		var apub, ajwt1, ajwt2, aCreds1, aCreds2 string
+		go createAccountAndUser(doneChan, &apub, &ajwt1, &ajwt2, &aCreds1, &aCreds2)
+		for i := 0; i < cap(doneChan); i++ {
+			<-doneChan
+		}
+		defer removeFile(t, sysCreds)
+		defer removeFile(t, dummyCreds)
+		defer removeFile(t, aCreds1)
+		defer removeFile(t, aCreds2)
+		dirSrv := createDir(t, "srv")
+		defer removeDir(t, dirSrv)
+		conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		operator: %s
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 		}
     `, ojwt, syspub, dirSrv)))
-	defer removeFile(t, conf)
-	srv, _ := RunServerWithConfig(conf)
-	defer srv.Shutdown()
-	updateJwt(t, srv.ClientURL(), sysCreds, sysjwt, 1) // update system account jwt
-	updateJwt(t, srv.ClientURL(), sysCreds, ajwt1, 1)  // set account jwt without revocation
-	ncSys := natsConnect(t, srv.ClientURL(), nats.UserCredentials(sysCreds), nats.Name("conn name"))
-	defer ncSys.Close()
-	ncChan := make(chan *nats.Msg, 10)
-	defer close(ncChan)
-	sub, _ := ncSys.ChanSubscribe(fmt.Sprintf(disconnectEventSubj, apub), ncChan) // observe disconnect message
-	defer sub.Unsubscribe()
-	// use credentials that will be revoked ans assure that the connection will be disconnected
-	nc := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aCreds1),
-		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
-			if err != nil && strings.Contains(err.Error(), "authentication revoked") {
-				doneChan <- struct{}{}
-			}
-		}),
-	)
-	defer nc.Close()
-	// update account jwt to contain revocation
-	if updateJwt(t, srv.ClientURL(), sysCreds, ajwt2, 1) != 1 {
-		t.Fatalf("Expected jwt update to pass")
+		defer removeFile(t, conf)
+		srv, _ := RunServerWithConfig(conf)
+		defer srv.Shutdown()
+		updateJwt(t, srv.ClientURL(), sysCreds, sysjwt, 1) // update system account jwt
+		updateJwt(t, srv.ClientURL(), sysCreds, ajwt1, 1)  // set account jwt without revocation
+		ncSys := natsConnect(t, srv.ClientURL(), nats.UserCredentials(sysCreds), nats.Name("conn name"))
+		defer ncSys.Close()
+		ncChan := make(chan *nats.Msg, 10)
+		defer close(ncChan)
+		sub, _ := ncSys.ChanSubscribe(fmt.Sprintf(disconnectEventSubj, apub), ncChan) // observe disconnect message
+		defer sub.Unsubscribe()
+		// use credentials that will be revoked ans assure that the connection will be disconnected
+		nc := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aCreds1),
+			nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+				if err != nil && strings.Contains(err.Error(), "authentication revoked") {
+					doneChan <- struct{}{}
+				}
+			}),
+		)
+		defer nc.Close()
+		// update account jwt to contain revocation
+		if updateJwt(t, srv.ClientURL(), sysCreds, ajwt2, 1) != 1 {
+			t.Fatalf("Expected jwt update to pass")
+		}
+		// assure that nc got disconnected due to the revocation
+		select {
+		case <-doneChan:
+		case <-time.After(time.Second):
+			t.Fatalf("Expected connection to have failed")
+		}
+		m := <-ncChan
+		require_Len(t, strings.Count(string(m.Data), apub), 2)
+		require_True(t, strings.Contains(string(m.Data), `"jwt":"eyJ0`))
+		// try again with old credentials. Expected to fail
+		if nc1, err := nats.Connect(srv.ClientURL(), nats.UserCredentials(aCreds1)); err == nil {
+			nc1.Close()
+			t.Fatalf("Expected revoked credentials to fail")
+		}
+		// Assure new creds pass
+		nc2 := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aCreds2))
+		defer nc2.Close()
 	}
-	// assure that nc got disconnected due to the revocation
-	select {
-	case <-doneChan:
-	case <-time.After(time.Second):
-		t.Fatalf("Expected connection to have failed")
+	t.Run("specific-key", func(t *testing.T) {
+		test(false)
+	})
+	t.Run("all-key", func(t *testing.T) {
+		test(true)
+	})
+}
+
+func TestJWTActivationRevocation(t *testing.T) {
+	test := func(all bool) {
+		sysKp, syspub := createKey(t)
+		sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+		sysCreds := newUser(t, sysKp)
+		defer removeFile(t, sysCreds)
+
+		aExpKp, aExpPub := createKey(t)
+		aExpClaim := jwt.NewAccountClaims(aExpPub)
+		aExpClaim.Name = "Export"
+		aExpClaim.Exports.Add(&jwt.Export{
+			Subject:  "foo",
+			Type:     jwt.Stream,
+			TokenReq: true,
+		})
+		aExp1Jwt := encodeClaim(t, aExpClaim, aExpPub)
+		aExpCreds := newUser(t, aExpKp)
+
+		time.Sleep(1100 * time.Millisecond)
+		aImpKp, aImpPub := createKey(t)
+
+		revPubKey := aImpPub
+		if all {
+			revPubKey = jwt.All
+		}
+
+		aExpClaim.Exports[0].RevokeAt(revPubKey, time.Now())
+		aExp2Jwt := encodeClaim(t, aExpClaim, aExpPub)
+
+		aExpClaim.Exports[0].ClearRevocation(revPubKey)
+		aExp3Jwt := encodeClaim(t, aExpClaim, aExpPub)
+
+		ac := &jwt.ActivationClaims{}
+		ac.Subject = aImpPub
+		ac.ImportSubject = "foo"
+		ac.ImportType = jwt.Stream
+		token, err := ac.Encode(aExpKp)
+		require_NoError(t, err)
+
+		aImpClaim := jwt.NewAccountClaims(aImpPub)
+		aImpClaim.Name = "Import"
+		aImpClaim.Imports.Add(&jwt.Import{
+			Subject: "foo",
+			Type:    jwt.Stream,
+			Account: aExpPub,
+			Token:   token,
+		})
+		aImpJwt := encodeClaim(t, aImpClaim, aImpPub)
+		aImpCreds := newUser(t, aImpKp)
+		defer removeFile(t, aExpCreds)
+		defer removeFile(t, aImpCreds)
+
+		dirSrv := createDir(t, "srv")
+		defer removeDir(t, dirSrv)
+		conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: full
+			dir: '%s'
+		}
+    `, ojwt, syspub, dirSrv)))
+		defer removeFile(t, conf)
+
+		t.Run("token-expired-on-connect", func(t *testing.T) {
+			srv, _ := RunServerWithConfig(conf)
+			defer srv.Shutdown()
+			defer removeDir(t, dirSrv) // clean jwt directory
+
+			updateJwt(t, srv.ClientURL(), sysCreds, sysJwt, 1)   // update system account jwt
+			updateJwt(t, srv.ClientURL(), sysCreds, aExp2Jwt, 1) // set account jwt without revocation
+			updateJwt(t, srv.ClientURL(), sysCreds, aImpJwt, 1)
+
+			ncExp1 := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aExpCreds))
+			defer ncExp1.Close()
+
+			ncImp := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aImpCreds))
+			defer ncImp.Close()
+
+			sub, err := ncImp.SubscribeSync("foo")
+			require_NoError(t, err)
+			require_NoError(t, ncImp.Flush())
+			require_NoError(t, ncExp1.Publish("foo", []byte("1")))
+			_, err = sub.NextMsg(time.Second)
+			require_Error(t, err)
+			require_Equal(t, err.Error(), "nats: timeout")
+		})
+
+		t.Run("token-expired-on-update", func(t *testing.T) {
+			srv, _ := RunServerWithConfig(conf)
+			defer srv.Shutdown()
+			defer removeDir(t, dirSrv) // clean jwt directory
+
+			updateJwt(t, srv.ClientURL(), sysCreds, sysJwt, 1)   // update system account jwt
+			updateJwt(t, srv.ClientURL(), sysCreds, aExp1Jwt, 1) // set account jwt without revocation
+			updateJwt(t, srv.ClientURL(), sysCreds, aImpJwt, 1)
+
+			ncExp1 := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aExpCreds))
+			defer ncExp1.Close()
+
+			ncImp := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aImpCreds))
+			defer ncImp.Close()
+
+			sub, err := ncImp.SubscribeSync("foo")
+			require_NoError(t, err)
+			require_NoError(t, ncImp.Flush())
+			require_NoError(t, ncExp1.Publish("foo", []byte("1")))
+			m1, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Equal(t, string(m1.Data), "1")
+
+			updateJwt(t, srv.ClientURL(), sysCreds, aExp2Jwt, 1) // set account jwt with revocation
+
+			require_NoError(t, ncExp1.Publish("foo", []byte("2")))
+			_, err = sub.NextMsg(time.Second)
+			require_Error(t, err)
+			require_Equal(t, err.Error(), "nats: timeout")
+
+			updateJwt(t, srv.ClientURL(), sysCreds, aExp3Jwt, 1) // set account with revocation cleared
+
+			require_NoError(t, ncExp1.Publish("foo", []byte("3")))
+			m2, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Equal(t, string(m2.Data), "3")
+		})
 	}
-	m := <-ncChan
-	require_Len(t, strings.Count(string(m.Data), apub), 2)
-	require_True(t, strings.Contains(string(m.Data), `"jwt":"eyJ0`))
-	// try again with old credentials. Expected to fail
-	if nc1, err := nats.Connect(srv.ClientURL(), nats.UserCredentials(aCreds1)); err == nil {
-		nc1.Close()
-		t.Fatalf("Expected revoked credentials to fail")
-	}
-	// Assure new creds pass
-	nc2 := natsConnect(t, srv.ClientURL(), nats.UserCredentials(aCreds2))
-	defer nc2.Close()
+	t.Run("specific-key", func(t *testing.T) {
+		test(false)
+	})
+	t.Run("all-key", func(t *testing.T) {
+		test(true)
+	})
 }
 
 func TestJWTAccountFetchTimeout(t *testing.T) {
@@ -4513,7 +4481,7 @@ func TestJWTAccountFetchTimeout(t *testing.T) {
 		resolver: {
 			%s
 			timeout: "100ms"
-			dir: %s
+			dir: '%s'
 		}
     `, ojwt, syspub, cfg, dirSrv)))
 			defer removeFile(t, conf)
@@ -4594,7 +4562,7 @@ func TestJWTAccountOps(t *testing.T) {
 		system_account: %s
 		resolver: {
 			%s
-			dir: %s
+			dir: '%s'
 		}
     `, opJwt, syspub, cfg, dirSrv)))
 			disconnectErrChan := make(chan struct{}, 1)
@@ -4729,7 +4697,7 @@ func TestJWTHeader(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 		}
     `, ojwt, syspub, dirSrv)))
 		defer removeFile(t, conf)
@@ -5033,7 +5001,7 @@ func TestJWTAccountTokenImportMisuse(t *testing.T) {
 			system_account: %s
 			resolver: {
 				type: full
-				dir: %s
+				dir: '%s'
 			}
 		`, ojwt, syspub, dirSrv)))
 
@@ -5155,6 +5123,292 @@ func TestJWTResponseThreshold(t *testing.T) {
 			t.Fatalf("Expected a timeout")
 		}
 	})
+}
+
+func TestJWTJetStreamTiers(t *testing.T) {
+	sysKp, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	sysCreds := newUser(t, sysKp)
+	defer removeFile(t, sysCreds)
+
+	accKp, accPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(accPub)
+	accClaim.Name = "acc"
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
+		DiskStorage: 1100, MemoryStorage: 0, Consumer: 2, Streams: 2}
+	accJwt1 := encodeClaim(t, accClaim, accPub)
+	accCreds := newUser(t, accKp)
+
+	start := time.Now()
+
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	dirSrv := createDir(t, "srv")
+	defer removeDir(t, dirSrv)
+	cf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		server_name: s1
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		leaf {
+			listen: 127.0.0.1:-1
+		}
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: full
+			dir: '%s'
+		}
+	`, storeDir, ojwt, syspub, dirSrv)))
+	defer removeFile(t, cf)
+
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	updateJwt(t, s.ClientURL(), sysCreds, sysJwt, 1)
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt1, 1)
+
+	nc := natsConnect(t, s.ClientURL(), nats.UserCredentials(accCreds))
+	defer nc.Close()
+
+	js, err := nc.JetStream()
+	require_NoError(t, err)
+
+	// Test tiers up to stream limits
+	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-1", Replicas: 1, Subjects: []string{"testR1-1"}})
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-2", Replicas: 1, Subjects: []string{"testR1-2"}})
+	require_NoError(t, err)
+
+	// Test exceeding tiered stream limit
+	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-3", Replicas: 1, Subjects: []string{"testR1-3"}})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "maximum number of streams reached")
+
+	// Test tiers up to consumer limits
+	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur1", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur3", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// test exceeding tiered consumer limits
+	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur4", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "maximum consumers limit reached")
+	_, err = js.AddConsumer("testR1-1", &nats.ConsumerConfig{Durable: "dur5", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "maximum consumers limit reached")
+
+	// test tiered storage limit
+	msg := [512]byte{}
+	_, err = js.Publish("testR1-1", msg[:])
+	require_NoError(t, err)
+	_, err = js.Publish("testR1-2", msg[:])
+	require_NoError(t, err)
+
+	// test exceeding tiered storage limit
+	_, err = js.Publish("testR1-1", []byte("1"))
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
+
+	time.Sleep(time.Second - time.Since(start)) // make sure the time stamp changes
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
+		DiskStorage: 1650, MemoryStorage: 0, Consumer: 1, Streams: 3}
+	accJwt2 := encodeClaim(t, accClaim, accPub)
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt2, 1)
+
+	// test same sequence as before, add stream, fail add stream, add consumer, fail add consumer, publish, fail publish
+	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-3", Replicas: 1, Subjects: []string{"testR1-3"}})
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "testR1-4", Replicas: 1, Subjects: []string{"testR1-4"}})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "maximum number of streams reached")
+	_, err = js.AddConsumer("testR1-3", &nats.ConsumerConfig{Durable: "dur6", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("testR1-3", &nats.ConsumerConfig{Durable: "dur7", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "maximum consumers limit reached")
+	_, err = js.Publish("testR1-3", msg[:])
+	require_NoError(t, err)
+	_, err = js.Publish("testR1-3", []byte("1"))
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
+
+}
+
+func TestJWTJetStreamMaxAckPending(t *testing.T) {
+	sysKp, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	sysCreds := newUser(t, sysKp)
+	defer removeFile(t, sysCreds)
+
+	accKp, accPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(accPub)
+	accClaim.Name = "acc"
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
+		DiskStorage: jwt.NoLimit, MemoryStorage: jwt.NoLimit,
+		Consumer: jwt.NoLimit, Streams: jwt.NoLimit, MaxAckPending: int64(1000),
+	}
+	accJwt1 := encodeClaim(t, accClaim, accPub)
+	accCreds := newUser(t, accKp)
+
+	start := time.Now()
+
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	dirSrv := createDir(t, "srv")
+	defer removeDir(t, dirSrv)
+	cf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		server_name: s1
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		leaf {
+			listen: 127.0.0.1:-1
+		}
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: full
+			dir: '%s'
+		}
+	`, storeDir, ojwt, syspub, dirSrv)))
+	defer removeFile(t, cf)
+
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	updateJwt(t, s.ClientURL(), sysCreds, sysJwt, 1)
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt1, 1)
+
+	nc := natsConnect(t, s.ClientURL(), nats.UserCredentials(accCreds))
+	defer nc.Close()
+
+	js, err := nc.JetStream()
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("foo", &nats.ConsumerConfig{
+		Durable: "dur1", AckPolicy: nats.AckAllPolicy, MaxAckPending: 2000})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "consumer max ack pending exceeds system limit of 1000")
+
+	ci, err := js.AddConsumer("foo", &nats.ConsumerConfig{
+		Durable: "dur2", AckPolicy: nats.AckAllPolicy, MaxAckPending: 500})
+	require_NoError(t, err)
+	require_True(t, ci.Config.MaxAckPending == 500)
+
+	_, err = js.UpdateConsumer("foo", &nats.ConsumerConfig{
+		Durable: "dur2", AckPolicy: nats.AckAllPolicy, MaxAckPending: 2000})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "consumer max ack pending exceeds system limit of 1000")
+
+	time.Sleep(time.Second - time.Since(start)) // make sure the time stamp changes
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
+		DiskStorage: jwt.NoLimit, MemoryStorage: jwt.NoLimit, Consumer: jwt.NoLimit,
+		Streams: jwt.NoLimit, MaxAckPending: int64(2000)}
+	accJwt2 := encodeClaim(t, accClaim, accPub)
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt2, 1)
+
+	ci, err = js.UpdateConsumer("foo", &nats.ConsumerConfig{
+		Durable: "dur2", AckPolicy: nats.AckAllPolicy, MaxAckPending: 2000})
+	require_NoError(t, err)
+	require_True(t, ci.Config.MaxAckPending == 2000)
+}
+
+func TestJWTJetStreamMaxStreamBytes(t *testing.T) {
+	sysKp, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	sysCreds := newUser(t, sysKp)
+	defer removeFile(t, sysCreds)
+
+	accKp, accPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(accPub)
+	accClaim.Name = "acc"
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
+		DiskStorage: jwt.NoLimit, MemoryStorage: jwt.NoLimit,
+		Consumer: jwt.NoLimit, Streams: jwt.NoLimit,
+		DiskMaxStreamBytes: 1024, MaxBytesRequired: false,
+	}
+	accJwt1 := encodeClaim(t, accClaim, accPub)
+	accCreds := newUser(t, accKp)
+
+	start := time.Now()
+
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	dirSrv := createDir(t, "srv")
+	defer removeDir(t, dirSrv)
+	cf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		server_name: s1
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		leaf {
+			listen: 127.0.0.1:-1
+		}
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: full
+			dir: '%s'
+		}
+	`, storeDir, ojwt, syspub, dirSrv)))
+	defer removeFile(t, cf)
+
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	updateJwt(t, s.ClientURL(), sysCreds, sysJwt, 1)
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt1, 1)
+
+	nc := natsConnect(t, s.ClientURL(), nats.UserCredentials(accCreds))
+	defer nc.Close()
+
+	js, err := nc.JetStream()
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, MaxBytes: 2048})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "stream max bytes exceeds account limit max stream bytes")
+	_, err = js.AddStream(&nats.StreamConfig{Name: "foo", Replicas: 1, MaxBytes: 1024})
+	require_NoError(t, err)
+
+	msg := [900]byte{}
+	_, err = js.AddStream(&nats.StreamConfig{Name: "baz", Replicas: 1})
+	require_NoError(t, err)
+	_, err = js.Publish("baz", msg[:])
+	require_NoError(t, err)
+	_, err = js.Publish("baz", msg[:]) // exceeds max stream bytes
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
+
+	time.Sleep(time.Second - time.Since(start)) // make sure the time stamp changes
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
+		DiskStorage: jwt.NoLimit, MemoryStorage: jwt.NoLimit, Consumer: jwt.NoLimit, Streams: jwt.NoLimit,
+		DiskMaxStreamBytes: 2048, MaxBytesRequired: true}
+	accJwt2 := encodeClaim(t, accClaim, accPub)
+	updateJwt(t, s.ClientURL(), sysCreds, accJwt2, 1)
+
+	_, err = js.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 1, MaxBytes: 3000})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "stream max bytes exceeds account limit max stream bytes")
+	_, err = js.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 1, MaxBytes: 2048})
+	require_NoError(t, err)
+
+	// test if we can push more messages into the stream
+	_, err = js.Publish("baz", msg[:])
+	require_NoError(t, err)
+	_, err = js.Publish("baz", msg[:]) // exceeds max stream bytes
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
+
+	// test disabling max bytes required
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "bar", Replicas: 1})
+	require_Error(t, err)
+	require_Equal(t, err.Error(), "account requires a stream config to have max bytes set")
 }
 
 func TestJWTQueuePermissions(t *testing.T) {
@@ -5282,7 +5536,7 @@ func TestJWScopedSigningKeys(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 		}
     `, ojwt, syspub, dirSrv)))
 	defer removeFile(t, cf)
@@ -5467,7 +5721,7 @@ func TestJWTStrictSigningKeys(t *testing.T) {
 		operator = %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 		}
 		resolver_preload = {
 			%s : "%s"
@@ -5639,7 +5893,7 @@ func TestJWTAccountProtectedImport(t *testing.T) {
 		system_account = %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 		}`, ojwt, sysPub, dirSrv)))
 		defer removeFile(t, cf)
 		s, _ := RunServerWithConfig(cf)
@@ -5717,7 +5971,7 @@ func TestJWTMappings(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 		}
     `, ojwt, syspub, dirSrv)))
 	defer removeFile(t, conf)
@@ -5829,7 +6083,7 @@ func TestJWTNoSystemAccountButNatsResolver(t *testing.T) {
 			operator: %s
 			resolver: {
 				type: %s
-				dir: %s
+				dir: '%s'
 			}`, ojwt, resType, dirSrv)))
 			defer removeFile(t, conf)
 			opts := LoadConfig(conf)
@@ -5871,7 +6125,7 @@ func TestJWTAccountConnzAccessAfterClaimUpdate(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
-			dir: %s
+			dir: '%s'
 		}
     `, ojwt, spub, dirSrv)))
 	defer removeFile(t, conf)

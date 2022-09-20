@@ -81,7 +81,6 @@ func TestOperatorRestrictions(t *testing.T) {
 		opts.Accounts = nil
 		opts.Users = nil
 		opts.Nkeys = nil
-		opts.AllowNewAccounts = false
 	}
 
 	wipeOpts()
@@ -100,12 +99,7 @@ func TestOperatorRestrictions(t *testing.T) {
 		t.Fatalf("Expected an error with Nkey Users defined")
 	}
 	wipeOpts()
-	opts.AllowNewAccounts = true
-	if _, err := server.NewServer(opts); err == nil {
-		t.Fatalf("Expected an error with AllowNewAccounts set to true")
-	}
 
-	wipeOpts()
 	opts.AccountResolver = nil
 	if _, err := server.NewServer(opts); err == nil {
 		t.Fatalf("Expected an error without an AccountResolver defined")
@@ -614,7 +608,7 @@ func TestConnsRequestDoesNotLoadAccountCheckingConnLimits(t *testing.T) {
 	sysJWT, sysKP := createAccountForConfig(t)
 	sysPub, _ := sysKP.PublicKey()
 
-	// Do this account by nad to add in connection limits
+	// Do this account by hand to add in connection limits
 	okp, _ := nkeys.FromSeed(oSeed)
 	accKP, _ := nkeys.CreateAccount()
 	accPub, _ := accKP.PublicKey()

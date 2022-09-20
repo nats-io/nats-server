@@ -1,4 +1,4 @@
-// Copyright 2018-2020 The NATS Authors
+// Copyright 2018-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -212,7 +212,7 @@ func TestNewRouteConnectSubsWithAccount(t *testing.T) {
 	c := createClientConn(t, opts.Host, opts.Port)
 	defer c.Close()
 
-	send, expect := setupConnWithAccount(t, c, accName)
+	send, expect := setupConnWithAccount(t, s, c, accName)
 
 	// Create 10 normal subs and 10 queue subscribers.
 	for i := 0; i < 10; i++ {
@@ -283,7 +283,7 @@ func TestNewRouteRSubs(t *testing.T) {
 
 	// Create a client an account foo.
 	clientA := createClientConn(t, opts.Host, opts.Port)
-	sendA, expectA := setupConnWithAccount(t, clientA, "$foo")
+	sendA, expectA := setupConnWithAccount(t, s, clientA, "$foo")
 	defer clientA.Close()
 	sendA("PING\r\n")
 	expectA(pongRe)
@@ -312,7 +312,7 @@ func TestNewRouteRSubs(t *testing.T) {
 
 	// Now create a new client for account $bar and have them subscribe.
 	clientB := createClientConn(t, opts.Host, opts.Port)
-	sendB, expectB := setupConnWithAccount(t, clientB, "$bar")
+	sendB, expectB := setupConnWithAccount(t, s, clientB, "$bar")
 	defer clientB.Close()
 
 	sendB("PING\r\n")
@@ -539,9 +539,6 @@ func TestNewRouteRUnsubAccountSpecific(t *testing.T) {
 	s, opts := runNewRouteServer(t)
 	defer s.Shutdown()
 
-	// Allow new accounts to be created on the fly.
-	opts.AllowNewAccounts = true
-
 	// Create a routeConn
 	rc := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
 	defer rc.Close()
@@ -554,6 +551,7 @@ func TestNewRouteRUnsubAccountSpecific(t *testing.T) {
 	// Now create 500 subs on same subject but all different accounts.
 	for i := 0; i < 500; i++ {
 		account := fmt.Sprintf("$foo.account.%d", i)
+		s.RegisterAccount(account)
 		routeSend(fmt.Sprintf("RS+ %s foo\r\n", account))
 	}
 	routeSend("PING\r\n")
@@ -566,7 +564,7 @@ func TestNewRouteRUnsubAccountSpecific(t *testing.T) {
 	c := createClientConn(t, opts.Host, opts.Port)
 	defer c.Close()
 
-	send, expect := setupConnWithAccount(t, c, "$foo.account.22")
+	send, expect := setupConnWithAccount(t, s, c, "$foo.account.22")
 	send("PUB foo 2\r\nok\r\nPING\r\n")
 	expect(pongRe)
 	c.Close()
@@ -574,7 +572,7 @@ func TestNewRouteRUnsubAccountSpecific(t *testing.T) {
 	// But make sure we still receive on others
 	c = createClientConn(t, opts.Host, opts.Port)
 	defer c.Close()
-	send, expect = setupConnWithAccount(t, c, "$foo.account.33")
+	send, expect = setupConnWithAccount(t, s, c, "$foo.account.33")
 	send("PUB foo 2\r\nok\r\nPING\r\n")
 	expect(pongRe)
 
@@ -588,9 +586,6 @@ func TestNewRouteRUnsubAccountSpecific(t *testing.T) {
 func TestNewRouteRSubCleanupOnDisconnect(t *testing.T) {
 	s, opts := runNewRouteServer(t)
 	defer s.Shutdown()
-
-	// Allow new accounts to be created on the fly.
-	opts.AllowNewAccounts = true
 
 	// Create a routeConn
 	rc := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
@@ -885,15 +880,14 @@ func TestNewRouteSinglePublishOnNewAccount(t *testing.T) {
 	defer srvA.Shutdown()
 	defer srvB.Shutdown()
 
-	// Allow new accounts to be created on the fly.
-	optsA.AllowNewAccounts = true
-	optsB.AllowNewAccounts = true
+	srvA.RegisterAccount("$TEST22")
+	srvB.RegisterAccount("$TEST22")
 
 	// Create and establish a listener on foo for $TEST22 account.
 	clientA := createClientConn(t, optsA.Host, optsA.Port)
 	defer clientA.Close()
 
-	sendA, expectA := setupConnWithAccount(t, clientA, "$TEST22")
+	sendA, expectA := setupConnWithAccount(t, srvA, clientA, "$TEST22")
 	sendA("SUB foo 1\r\nPING\r\n")
 	expectA(pongRe)
 
@@ -905,7 +899,7 @@ func TestNewRouteSinglePublishOnNewAccount(t *testing.T) {
 	defer clientB.Close()
 
 	// Send a message, flush to make sure server processed and close connection.
-	sendB, expectB := setupConnWithAccount(t, clientB, "$TEST22")
+	sendB, expectB := setupConnWithAccount(t, srvB, clientB, "$TEST22")
 	sendB("PUB foo 2\r\nok\r\nPING\r\n")
 	expectB(pongRe)
 	clientB.Close()
@@ -921,15 +915,14 @@ func TestNewRouteSinglePublishToQueueSubscriberOnNewAccount(t *testing.T) {
 	defer srvA.Shutdown()
 	defer srvB.Shutdown()
 
-	// Allow new accounts to be created on the fly.
-	optsA.AllowNewAccounts = true
-	optsB.AllowNewAccounts = true
+	srvA.RegisterAccount("$TEST22")
+	srvB.RegisterAccount("$TEST22")
 
 	// Create and establish a listener on foo for $TEST22 account.
 	clientA := createClientConn(t, optsA.Host, optsA.Port)
 	defer clientA.Close()
 
-	sendA, expectA := setupConnWithAccount(t, clientA, "$TEST22")
+	sendA, expectA := setupConnWithAccount(t, srvA, clientA, "$TEST22")
 	sendA("SUB foo bar 1\r\nPING\r\n")
 	expectA(pongRe)
 
@@ -937,7 +930,7 @@ func TestNewRouteSinglePublishToQueueSubscriberOnNewAccount(t *testing.T) {
 	defer clientB.Close()
 
 	// Send a message, flush to make sure server processed and close connection.
-	sendB, expectB := setupConnWithAccount(t, clientB, "$TEST22")
+	sendB, expectB := setupConnWithAccount(t, srvB, clientB, "$TEST22")
 	sendB("PUB foo bar 2\r\nok\r\nPING\r\n")
 	expectB(pongRe)
 	defer clientB.Close()
@@ -959,23 +952,22 @@ func TestNewRouteSinglePublishToMultipleQueueSubscriberOnNewAccount(t *testing.T
 	defer srvB.Shutdown()
 	defer srvC.Shutdown()
 
-	// Allow new accounts to be created on the fly.
-	optsA.AllowNewAccounts = true
-	optsB.AllowNewAccounts = true
-	optsC.AllowNewAccounts = true
+	srvA.RegisterAccount("$TEST22")
+	srvB.RegisterAccount("$TEST22")
+	srvC.RegisterAccount("$TEST22")
 
 	// Create and establish a listener on foo/bar for $TEST22 account. Do this on ClientA and ClientC.
 	clientA := createClientConn(t, optsA.Host, optsA.Port)
 	defer clientA.Close()
 
-	sendA, expectA := setupConnWithAccount(t, clientA, "$TEST22")
+	sendA, expectA := setupConnWithAccount(t, srvA, clientA, "$TEST22")
 	sendA("SUB foo bar 11\r\nPING\r\n")
 	expectA(pongRe)
 
 	clientC := createClientConn(t, optsC.Host, optsC.Port)
 	defer clientC.Close()
 
-	sendC, expectC := setupConnWithAccount(t, clientC, "$TEST22")
+	sendC, expectC := setupConnWithAccount(t, srvC, clientC, "$TEST22")
 	sendC("SUB foo bar 33\r\nPING\r\n")
 	expectC(pongRe)
 
@@ -990,7 +982,7 @@ func TestNewRouteSinglePublishToMultipleQueueSubscriberOnNewAccount(t *testing.T
 	time.Sleep(100 * time.Millisecond)
 
 	// Send a message, flush to make sure server processed and close connection.
-	sendB, expectB := setupConnWithAccount(t, clientB, "$TEST22")
+	sendB, expectB := setupConnWithAccount(t, srvB, clientB, "$TEST22")
 	sendB("PUB foo 2\r\nok\r\nPING\r\n")
 	expectB(pongRe)
 	defer clientB.Close()
@@ -1086,14 +1078,14 @@ func testNewRouteStreamImport(t *testing.T, duplicateSub bool) {
 	clientA := createClientConn(t, optsA.Host, optsA.Port)
 	defer clientA.Close()
 
-	sendA, expectA := setupConnWithAccount(t, clientA, "$foo")
+	sendA, expectA := setupConnWithAccount(t, srvA, clientA, "$foo")
 
 	// Now setup client B on srvB who will do a sub from account $bar
 	// that should map account $foo's foo subject.
 	clientB := createClientConn(t, optsB.Host, optsB.Port)
 	defer clientB.Close()
 
-	sendB, expectB := setupConnWithAccount(t, clientB, "$bar")
+	sendB, expectB := setupConnWithAccount(t, srvB, clientB, "$bar")
 	sendB("SUB foo 1\r\n")
 	if duplicateSub {
 		sendB("SUB foo 1\r\n")
@@ -1183,7 +1175,7 @@ func TestNewRouteStreamImportLargeFanout(t *testing.T) {
 	for i := 0; i < fanout; i++ {
 		clientB[i] = createClientConn(t, optsB.Host, optsB.Port)
 		defer clientB[i].Close()
-		sendB[i], expectB[i] = setupConnWithAccount(t, clientB[i], barA[i].Name)
+		sendB[i], expectB[i] = setupConnWithAccount(t, srvB, clientB[i], barA[i].Name)
 		sendB[i]("SUB foo 1\r\nPING\r\n")
 		expectB[i](pongRe)
 	}
@@ -1252,7 +1244,7 @@ func TestNewRouteServiceImport(t *testing.T) {
 	clientA := createClientConn(t, optsA.Host, optsA.Port)
 	defer clientA.Close()
 
-	sendA, expectA := setupConnWithAccount(t, clientA, "$foo")
+	sendA, expectA := setupConnWithAccount(t, srvA, clientA, "$foo")
 	sendA("SUB test.request 1\r\nPING\r\n")
 	expectA(pongRe)
 
@@ -1261,7 +1253,7 @@ func TestNewRouteServiceImport(t *testing.T) {
 	clientB := createClientConn(t, optsB.Host, optsB.Port)
 	defer clientB.Close()
 
-	sendB, expectB := setupConnWithAccount(t, clientB, "$bar")
+	sendB, expectB := setupConnWithAccount(t, srvB, clientB, "$bar")
 	sendB("SUB reply 1\r\nPING\r\n")
 	expectB(pongRe)
 
@@ -1353,7 +1345,7 @@ func TestNewRouteServiceExportWithWildcards(t *testing.T) {
 			clientA := createClientConn(t, optsA.Host, optsA.Port)
 			defer clientA.Close()
 
-			sendA, expectA := setupConnWithAccount(t, clientA, "$foo")
+			sendA, expectA := setupConnWithAccount(t, srvA, clientA, "$foo")
 			sendA("SUB ngs.update.* 1\r\nPING\r\n")
 			expectA(pongRe)
 
@@ -1362,7 +1354,7 @@ func TestNewRouteServiceExportWithWildcards(t *testing.T) {
 			clientB := createClientConn(t, optsB.Host, optsB.Port)
 			defer clientB.Close()
 
-			sendB, expectB := setupConnWithAccount(t, clientB, "$bar")
+			sendB, expectB := setupConnWithAccount(t, srvB, clientB, "$bar")
 			sendB("SUB reply 1\r\nPING\r\n")
 			expectB(pongRe)
 
@@ -1433,7 +1425,7 @@ func TestNewRouteServiceImportQueueGroups(t *testing.T) {
 	clientA := createClientConn(t, optsA.Host, optsA.Port)
 	defer clientA.Close()
 
-	sendA, expectA := setupConnWithAccount(t, clientA, "$foo")
+	sendA, expectA := setupConnWithAccount(t, srvA, clientA, "$foo")
 	sendA("SUB test.request QGROUP 1\r\nPING\r\n")
 	expectA(pongRe)
 
@@ -1442,7 +1434,7 @@ func TestNewRouteServiceImportQueueGroups(t *testing.T) {
 	clientB := createClientConn(t, optsB.Host, optsB.Port)
 	defer clientB.Close()
 
-	sendB, expectB := setupConnWithAccount(t, clientB, "$bar")
+	sendB, expectB := setupConnWithAccount(t, srvB, clientB, "$bar")
 	sendB("SUB reply QGROUP_TOO 1\r\nPING\r\n")
 	expectB(pongRe)
 
@@ -1512,7 +1504,7 @@ func TestNewRouteServiceImportDanglingRemoteSubs(t *testing.T) {
 	clientA := createClientConn(t, optsA.Host, optsA.Port)
 	defer clientA.Close()
 
-	sendA, expectA := setupConnWithAccount(t, clientA, "$foo")
+	sendA, expectA := setupConnWithAccount(t, srvA, clientA, "$foo")
 	// Express interest.
 	sendA("SUB test.request 1\r\nPING\r\n")
 	expectA(pongRe)
@@ -1522,7 +1514,7 @@ func TestNewRouteServiceImportDanglingRemoteSubs(t *testing.T) {
 	clientB := createClientConn(t, optsB.Host, optsB.Port)
 	defer clientB.Close()
 
-	sendB, expectB := setupConnWithAccount(t, clientB, "$bar")
+	sendB, expectB := setupConnWithAccount(t, srvB, clientB, "$bar")
 	sendB("SUB reply 1\r\nPING\r\n")
 	expectB(pongRe)
 

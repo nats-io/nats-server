@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
@@ -677,7 +678,6 @@ func TestConnzLastActivity(t *testing.T) {
 		if barLA.Equal(nextLA) {
 			t.Fatalf("Publish should have triggered update to LastActivity\n")
 		}
-		barLA = nextLA
 
 		// Message delivery on ncFoo should have triggered as well.
 		nextLA = ciFoo.LastActivity
@@ -1085,7 +1085,7 @@ func TestConnzSortedByStopTimeClosedConn(t *testing.T) {
 	}
 	checkClosedConns(t, s, 4, time.Second)
 
-	//Now adjust the Stop times for these with some random values.
+	// Now adjust the Stop times for these with some random values.
 	s.mu.Lock()
 	now := time.Now().UTC()
 	ccs := s.closed.closedClients()
@@ -1130,7 +1130,7 @@ func TestConnzSortedByReason(t *testing.T) {
 	}
 	checkClosedConns(t, s, 20, time.Second)
 
-	//Now adjust the Reasons for these with some random values.
+	// Now adjust the Reasons for these with some random values.
 	s.mu.Lock()
 	ccs := s.closed.closedClients()
 	max := int(ServerShutdown)
@@ -1313,6 +1313,7 @@ func TestConnzWithRoutes(t *testing.T) {
 	routeURL, _ := url.Parse(fmt.Sprintf("nats-route://127.0.0.1:%d", s.ClusterAddr().Port))
 	opts.Routes = []*url.URL{routeURL}
 
+	start := time.Now()
 	sc := RunServer(opts)
 	defer sc.Shutdown()
 
@@ -1324,10 +1325,10 @@ func TestConnzWithRoutes(t *testing.T) {
 		// Test contents..
 		// Make sure routes don't show up under connz, but do under routez
 		if c.NumConns != 0 {
-			t.Fatalf("Expected 0 connections, got %d\n", c.NumConns)
+			t.Fatalf("Expected 0 connections, got %d", c.NumConns)
 		}
 		if c.Conns == nil || len(c.Conns) != 0 {
-			t.Fatalf("Expected 0 connections in array, got %p\n", c.Conns)
+			t.Fatalf("Expected 0 connections in array, got %p", c.Conns)
 		}
 	}
 
@@ -1345,17 +1346,32 @@ func TestConnzWithRoutes(t *testing.T) {
 			rz := pollRoutez(t, s, mode, url+urlSuffix, &RoutezOptions{Subscriptions: subs == 1, SubscriptionsDetail: subs == 2})
 
 			if rz.NumRoutes != 1 {
-				t.Fatalf("Expected 1 route, got %d\n", rz.NumRoutes)
+				t.Fatalf("Expected 1 route, got %d", rz.NumRoutes)
 			}
 
 			if len(rz.Routes) != 1 {
-				t.Fatalf("Expected route array of 1, got %v\n", len(rz.Routes))
+				t.Fatalf("Expected route array of 1, got %v", len(rz.Routes))
 			}
 
 			route := rz.Routes[0]
 
 			if route.DidSolicit {
-				t.Fatalf("Expected unsolicited route, got %v\n", route.DidSolicit)
+				t.Fatalf("Expected unsolicited route, got %v", route.DidSolicit)
+			}
+
+			if route.Start.IsZero() {
+				t.Fatalf("Expected Start to be set, got %+v", route)
+			} else if route.Start.Before(start) {
+				t.Fatalf("Unexpected start time: route was started around %v, got %v", start, route.Start)
+			}
+			if route.LastActivity.IsZero() {
+				t.Fatalf("Expected LastActivity to be set, got %+v", route)
+			}
+			if route.Uptime == _EMPTY_ {
+				t.Fatalf("Expected Uptime to be set, it was not")
+			}
+			if route.Idle == _EMPTY_ {
+				t.Fatalf("Expected Idle to be set, it was not")
 			}
 
 			// Don't ask for subs, so there should not be any
@@ -3981,6 +3997,31 @@ func checkForJSClusterUp(t *testing.T, servers ...*Server) {
 	})
 }
 
+func TestMonitorJszNonJszServer(t *testing.T) {
+	srv := RunServer(DefaultOptions())
+	defer srv.Shutdown()
+
+	if !srv.ReadyForConnections(5 * time.Second) {
+		t.Fatalf("server did not become ready")
+	}
+
+	jsi, err := srv.Jsz(&JSzOptions{})
+	if err != nil {
+		t.Fatalf("jsi failed: %v", err)
+	}
+	if jsi.ID != srv.ID() {
+		t.Fatalf("did not receive valid info")
+	}
+
+	jsi, err = srv.Jsz(&JSzOptions{LeaderOnly: true})
+	if !errors.Is(err, errSkipZreq) {
+		t.Fatalf("expected a skip z req error: %v", err)
+	}
+	if jsi != nil {
+		t.Fatalf("expected no jsi: %v", jsi)
+	}
+}
+
 func TestMonitorJsz(t *testing.T) {
 	readJsInfo := func(url string) *JSInfo {
 		t.Helper()
@@ -4023,7 +4064,7 @@ func TestMonitorJsz(t *testing.T) {
 		jetstream: {
 			max_mem_store: 10Mb
 			max_file_store: 10Mb
-			store_dir: %s
+			store_dir: '%s'
 		}
 		cluster {
 			name: cluster_name
@@ -4056,6 +4097,14 @@ func TestMonitorJsz(t *testing.T) {
 		Replicas: 1,
 	})
 	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "my-stream-mirror",
+		Replicas: 2,
+		Mirror: &nats.StreamSource{
+			Name: "my-stream-replicated",
+		},
+	})
+	require_NoError(t, err)
 	_, err = js.AddConsumer("my-stream-replicated", &nats.ConsumerConfig{
 		Durable:   "my-consumer-replicated",
 		AckPolicy: nats.AckExplicitPolicy,
@@ -4066,9 +4115,16 @@ func TestMonitorJsz(t *testing.T) {
 		AckPolicy: nats.AckExplicitPolicy,
 	})
 	require_NoError(t, err)
+	_, err = js.AddConsumer("my-stream-mirror", &nats.ConsumerConfig{
+		Durable:   "my-consumer-mirror",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
 	nc.Flush()
 	_, err = js.Publish("foo", nil)
 	require_NoError(t, err)
+	// Wait for mirror replication
+	time.Sleep(100 * time.Millisecond)
 
 	monUrl1 := fmt.Sprintf("http://127.0.0.1:%d/jsz", 7501)
 	monUrl2 := fmt.Sprintf("http://127.0.0.1:%d/jsz", 5501)
@@ -4080,13 +4136,13 @@ func TestMonitorJsz(t *testing.T) {
 				t.Fatalf("expected no account to be returned by %s but got %v", url, info)
 			}
 			if info.Streams == 0 {
-				t.Fatalf("expected stream count to be 2 but got %d", info.Streams)
+				t.Fatalf("expected stream count to be 3 but got %d", info.Streams)
 			}
 			if info.Consumers == 0 {
-				t.Fatalf("expected consumer count to be 2 but got %d", info.Consumers)
+				t.Fatalf("expected consumer count to be 3 but got %d", info.Consumers)
 			}
-			if info.Messages != 1 {
-				t.Fatalf("expected one message but got %d", info.Messages)
+			if info.Messages != 2 {
+				t.Fatalf("expected two message but got %d", info.Messages)
 			}
 		}
 	})
@@ -4192,6 +4248,49 @@ func TestMonitorJsz(t *testing.T) {
 			}
 		}
 	})
+	t.Run("replication", func(t *testing.T) {
+		// The replication lag may only be present on the leader
+		replicationFound := false
+		for _, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url + "?acc=ACC&streams=true")
+			if len(info.AccountDetails) != 1 {
+				t.Fatalf("expected account ACC to be returned by %s but got %v", url, info)
+			}
+			streamFound := false
+			for _, stream := range info.AccountDetails[0].Streams {
+				if stream.Name == "my-stream-mirror" {
+					streamFound = true
+					if stream.Mirror != nil {
+						replicationFound = true
+					}
+				}
+			}
+			if !streamFound {
+				t.Fatalf("Did not locate my-stream-mirror stream in results")
+			}
+		}
+		if !replicationFound {
+			t.Fatal("ReplicationLag expected to be present for my-stream-mirror stream")
+		}
+	})
+	t.Run("cluster-info", func(t *testing.T) {
+		found := 0
+		for i, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url + "")
+			if info.Meta.Replicas != nil {
+				found++
+				if info.Meta.Leader != srvs[i].Name() {
+					t.Fatalf("received cluster info from non leader: leader %s, server: %s", info.Meta.Leader, srvs[i].Name())
+				}
+			}
+		}
+		if found == 0 {
+			t.Fatalf("did not receive cluster info from any node")
+		}
+		if found > 1 {
+			t.Fatalf("received cluster info from multiple nodes")
+		}
+	})
 	t.Run("account-non-existing", func(t *testing.T) {
 		for _, url := range []string{monUrl1, monUrl2} {
 			info := readJsInfo(url + "?acc=DOES_NOT_EXIT")
@@ -4210,6 +4309,10 @@ func TestMonitorReloadTLSConfig(t *testing.T) {
 			cert_file: '%s'
 			key_file: '%s'
 			ca_file: '../test/configs/certs/ca.pem'
+
+			# Set this to make sure that it does not impact secure monitoring
+			# (which it did, see issue: https://github.com/nats-io/nats-server/issues/2980)
+			verify_and_map: true
 		}
 	`
 	conf := createConfFile(t, []byte(fmt.Sprintf(template,
@@ -4254,5 +4357,111 @@ func TestMonitorReloadTLSConfig(t *testing.T) {
 	c = tls.Client(c, tlsConfig.Clone())
 	if err := c.(*tls.Conn).Handshake(); err != nil {
 		t.Fatalf("Error on TLS handshake: %v", err)
+	}
+
+	// Need to read something to see if there is a problem with the certificate or not.
+	var buf [64]byte
+	c.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+	_, err = c.Read(buf[:])
+	if ne, ok := err.(net.Error); !ok || !ne.Timeout() {
+		t.Fatalf("Error: %v", err)
+	}
+}
+
+func TestMonitorMQTT(t *testing.T) {
+	o := DefaultOptions()
+	o.HTTPHost = "127.0.0.1"
+	o.HTTPPort = -1
+	o.ServerName = "mqtt_server"
+	o.Users = []*User{{Username: "someuser"}}
+	pinnedCerts := make(PinnedCertSet)
+	pinnedCerts["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069"] = struct{}{}
+	o.MQTT = MQTTOpts{
+		Host:           "127.0.0.1",
+		Port:           -1,
+		NoAuthUser:     "someuser",
+		JsDomain:       "js",
+		AuthTimeout:    2.0,
+		TLSMap:         true,
+		TLSTimeout:     3.0,
+		TLSPinnedCerts: pinnedCerts,
+		AckWait:        4 * time.Second,
+		MaxAckPending:  256,
+	}
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	expected := &MQTTOptsVarz{
+		Host:           "127.0.0.1",
+		Port:           o.MQTT.Port,
+		NoAuthUser:     "someuser",
+		JsDomain:       "js",
+		AuthTimeout:    2.0,
+		TLSMap:         true,
+		TLSTimeout:     3.0,
+		TLSPinnedCerts: []string{"7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069"},
+		AckWait:        4 * time.Second,
+		MaxAckPending:  256,
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+	for mode := 0; mode < 2; mode++ {
+		v := pollVarz(t, s, mode, url, nil)
+		vm := &v.MQTT
+		if !reflect.DeepEqual(vm, expected) {
+			t.Fatalf("Expected\n%+v\nGot:\n%+v", expected, vm)
+		}
+	}
+}
+
+func TestMonitorWebsocket(t *testing.T) {
+	o := DefaultOptions()
+	o.HTTPHost = "127.0.0.1"
+	o.HTTPPort = -1
+	kp, _ := nkeys.FromSeed(oSeed)
+	pub, _ := kp.PublicKey()
+	o.TrustedKeys = []string{pub}
+	o.Users = []*User{{Username: "someuser"}}
+	pinnedCerts := make(PinnedCertSet)
+	pinnedCerts["7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069"] = struct{}{}
+	o.Websocket = WebsocketOpts{
+		Host:             "127.0.0.1",
+		Port:             -1,
+		Advertise:        "somehost:8080",
+		NoAuthUser:       "someuser",
+		JWTCookie:        "somecookiename",
+		AuthTimeout:      2.0,
+		NoTLS:            true,
+		TLSMap:           true,
+		TLSPinnedCerts:   pinnedCerts,
+		SameOrigin:       true,
+		AllowedOrigins:   []string{"origin1", "origin2"},
+		Compression:      true,
+		HandshakeTimeout: 4 * time.Second,
+	}
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	expected := &WebsocketOptsVarz{
+		Host:             "127.0.0.1",
+		Port:             o.Websocket.Port,
+		Advertise:        "somehost:8080",
+		NoAuthUser:       "someuser",
+		JWTCookie:        "somecookiename",
+		AuthTimeout:      2.0,
+		NoTLS:            true,
+		TLSMap:           true,
+		TLSPinnedCerts:   []string{"7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069"},
+		SameOrigin:       true,
+		AllowedOrigins:   []string{"origin1", "origin2"},
+		Compression:      true,
+		HandshakeTimeout: 4 * time.Second,
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+	for mode := 0; mode < 2; mode++ {
+		v := pollVarz(t, s, mode, url, nil)
+		vw := &v.Websocket
+		if !reflect.DeepEqual(vw, expected) {
+			t.Fatalf("Expected\n%+v\nGot:\n%+v", expected, vw)
+		}
 	}
 }
