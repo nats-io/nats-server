@@ -608,6 +608,11 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 
 	if !ao {
 		noAuthUser = opts.NoAuthUser
+		// If a leaf connects using websocket, and websocket{} block has a no_auth_user
+		// use that one instead.
+		if c.kind == LEAF && c.isWebsocket() && opts.Websocket.NoAuthUser != _EMPTY_ {
+			noAuthUser = opts.Websocket.NoAuthUser
+		}
 		username = opts.Username
 		password = opts.Password
 		token = opts.Authorization
