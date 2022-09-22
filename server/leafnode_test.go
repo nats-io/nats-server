@@ -3301,6 +3301,68 @@ func TestLeafNodeWSRemoteNoTLSBlockWithWSSProto(t *testing.T) {
 	}
 }
 
+func TestLeafNodeWSNoAuthUser(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+	port: -1
+	accounts {
+		A { users [ {user: a, password: a} ]}
+		B { users [ {user: b, password: b} ]}
+	}
+	websocket {
+		port: -1
+		no_tls: true
+		no_auth_user: a
+	}
+	leafnodes {
+		port: -1
+	}
+	`))
+	defer removeFile(t, conf)
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc1 := natsConnect(t, fmt.Sprintf("nats://a:a@127.0.0.1:%d", o.Port))
+	defer nc1.Close()
+
+	lconf := createConfFile(t, []byte(fmt.Sprintf(`
+	port: -1
+	accounts {
+		A { users [ {user: a, password: a} ]}
+		B { users [ {user: b, password: b} ]}
+	}
+	leafnodes {
+		remotes [
+			{
+				url: "ws://127.0.0.1:%d"
+				account: A
+			}
+		]
+	}
+	`, o.Websocket.Port)))
+	defer removeFile(t, lconf)
+
+	ln, lo := RunServerWithConfig(lconf)
+	defer ln.Shutdown()
+
+	checkLeafNodeConnected(t, s)
+	checkLeafNodeConnected(t, ln)
+
+	nc2 := natsConnect(t, fmt.Sprintf("nats://a:a@127.0.0.1:%d", lo.Port))
+	defer nc2.Close()
+
+	sub := natsSubSync(t, nc2, "foo")
+	natsFlush(t, nc2)
+
+	checkSubInterest(t, s, "A", "foo", time.Second)
+
+	natsPub(t, nc1, "foo", []byte("msg1"))
+	msg := natsNexMsg(t, sub, time.Second)
+
+	if md := string(msg.Data); md != "msg1" {
+		t.Fatalf("Invalid message: %q", md)
+	}
+}
+
 func TestLeafNodeStreamImport(t *testing.T) {
 	o1 := DefaultOptions()
 	o1.LeafNode.Port = -1
