@@ -134,7 +134,6 @@ func TestJetStreamClusterDiscardNewAndMaxMsgsPerSubject(t *testing.T) {
 				Name:          "KV",
 				Subjects:      []string{"KV.>"},
 				Storage:       test.storage,
-				MaxMsgsPer:    1,
 				AllowDirect:   true,
 				DiscardNewPer: true,
 				MaxMsgs:       10,
@@ -145,8 +144,17 @@ func TestJetStreamClusterDiscardNewAndMaxMsgsPerSubject(t *testing.T) {
 			} else if apiErr.ErrCode != 10052 || !strings.Contains(apiErr.Description, "discard new per subject requires discard new policy") {
 				t.Fatalf("Got wrong error: %+v", apiErr)
 			}
+
 			// Set broad discard new policy to engage DiscardNewPer
 			cfg.Discard = DiscardNew
+			// We should also error here since we have not setup max msgs per subject.
+			if _, apiErr := addStreamWithError(t, nc, cfg); apiErr == nil {
+				t.Fatalf("Expected API error but got none")
+			} else if apiErr.ErrCode != 10052 || !strings.Contains(apiErr.Description, "discard new per subject requires max msgs per subject > 0") {
+				t.Fatalf("Got wrong error: %+v", apiErr)
+			}
+
+			cfg.MaxMsgsPer = 1
 			addStream(t, nc, cfg)
 
 			// We want to test that we reject new messages on a per subject basis if the

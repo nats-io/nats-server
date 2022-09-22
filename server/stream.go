@@ -996,8 +996,13 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 	}
 
 	// Check for new discard new per subject, we require the discard policy to also be new.
-	if cfg.DiscardNewPer && cfg.Discard != DiscardNew {
-		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("discard new per subject requires discard new policy to be set"))
+	if cfg.DiscardNewPer {
+		if cfg.Discard != DiscardNew {
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("discard new per subject requires discard new policy to be set"))
+		}
+		if cfg.MaxMsgsPer <= 0 {
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("discard new per subject requires max msgs per subject > 0"))
+		}
 	}
 
 	getStream := func(streamName string) (bool, StreamConfig) {
@@ -1326,8 +1331,13 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server) (*Str
 	}
 
 	// Check on new discard new per subject.
-	if cfg.DiscardNewPer && old.Discard != DiscardNew {
-		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("discard new per subject requires discard new policy to be set"))
+	if cfg.DiscardNewPer {
+		if cfg.Discard != DiscardNew {
+			return nil, NewJSStreamInvalidConfigError(fmt.Errorf("discard new per subject requires discard new policy to be set"))
+		}
+		if cfg.MaxMsgsPer <= 0 {
+			return nil, NewJSStreamInvalidConfigError(fmt.Errorf("discard new per subject requires max msgs per subject > 0"))
+		}
 	}
 
 	// Do some adjustments for being sealed.
