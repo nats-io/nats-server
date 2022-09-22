@@ -18,6 +18,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -163,7 +164,8 @@ func TestJetStreamClusterDiscardNewAndMaxMsgsPerSubject(t *testing.T) {
 			require_NoError(t, err)
 
 			_, err = js.Publish("KV.foo", nil)
-			require_Error(t, err)
+			// Go client does not have const for this one.
+			require_Error(t, err, errors.New("nats: maximum messages per subject exceeded"))
 		})
 	}
 }
