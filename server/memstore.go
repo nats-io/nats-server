@@ -98,6 +98,9 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 
 	// Check if we are discarding new messages when we reach the limit.
 	if ms.cfg.Discard == DiscardNew {
+		if asl && ms.cfg.DiscardNewPer {
+			return ErrMaxMsgsPerSubject
+		}
 		if ms.cfg.MaxMsgs > 0 && ms.state.Msgs >= uint64(ms.cfg.MaxMsgs) {
 			// If we are tracking max messages per subject and are at the limit we will replace, so this is ok.
 			if !asl {

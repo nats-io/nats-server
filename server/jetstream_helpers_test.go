@@ -1461,6 +1461,15 @@ func (c *cluster) stableTotalSubs() (total int) {
 
 func addStream(t *testing.T, nc *nats.Conn, cfg *StreamConfig) *StreamInfo {
 	t.Helper()
+	si, err := addStreamWithError(t, nc, cfg)
+	if err != nil {
+		t.Fatalf("Unexpected error: %+v", err)
+	}
+	return si
+}
+
+func addStreamWithError(t *testing.T, nc *nats.Conn, cfg *StreamConfig) (*StreamInfo, *ApiError) {
+	t.Helper()
 	req, err := json.Marshal(cfg)
 	require_NoError(t, err)
 	rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
@@ -1471,10 +1480,7 @@ func addStream(t *testing.T, nc *nats.Conn, cfg *StreamConfig) *StreamInfo {
 	if resp.Type != JSApiStreamCreateResponseType {
 		t.Fatalf("Invalid response type %s expected %s", resp.Type, JSApiStreamCreateResponseType)
 	}
-	if resp.Error != nil {
-		t.Fatalf("Unexpected error: %+v", resp.Error)
-	}
-	return resp.StreamInfo
+	return resp.StreamInfo, resp.Error
 }
 
 func updateStream(t *testing.T, nc *nats.Conn, cfg *StreamConfig) *StreamInfo {

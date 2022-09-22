@@ -18,6 +18,8 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,4 +107,65 @@ func TestJetStreamClusterRemovePeerByID(t *testing.T) {
 	require_NoError(t, err)
 	require_True(t, resp.Error == nil)
 	require_True(t, resp.Success)
+}
+
+func TestJetStreamClusterDiscardNewAndMaxMsgsPerSubject(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client for API requests.
+	s := c.randomNonLeader()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	for _, test := range []struct {
+		name     string
+		storage  StorageType
+		replicas int
+	}{
+		{"MEM-R1", MemoryStorage, 1},
+		{"FILE-R1", FileStorage, 1},
+		{"MEM-R3", MemoryStorage, 3},
+		{"FILE-R3", FileStorage, 3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			js.DeleteStream("KV")
+			// Make sure setting new without DiscardPolicy also being new is error.
+			cfg := &StreamConfig{
+				Name:          "KV",
+				Subjects:      []string{"KV.>"},
+				Storage:       test.storage,
+				AllowDirect:   true,
+				DiscardNewPer: true,
+				MaxMsgs:       10,
+				Replicas:      test.replicas,
+			}
+			if _, apiErr := addStreamWithError(t, nc, cfg); apiErr == nil {
+				t.Fatalf("Expected API error but got none")
+			} else if apiErr.ErrCode != 10052 || !strings.Contains(apiErr.Description, "discard new per subject requires discard new policy") {
+				t.Fatalf("Got wrong error: %+v", apiErr)
+			}
+
+			// Set broad discard new policy to engage DiscardNewPer
+			cfg.Discard = DiscardNew
+			// We should also error here since we have not setup max msgs per subject.
+			if _, apiErr := addStreamWithError(t, nc, cfg); apiErr == nil {
+				t.Fatalf("Expected API error but got none")
+			} else if apiErr.ErrCode != 10052 || !strings.Contains(apiErr.Description, "discard new per subject requires max msgs per subject > 0") {
+				t.Fatalf("Got wrong error: %+v", apiErr)
+			}
+
+			cfg.MaxMsgsPer = 1
+			addStream(t, nc, cfg)
+
+			// We want to test that we reject new messages on a per subject basis if the
+			// max msgs per subject limit has been hit, even if other limits have not.
+			_, err := js.Publish("KV.foo", nil)
+			require_NoError(t, err)
+
+			_, err = js.Publish("KV.foo", nil)
+			// Go client does not have const for this one.
+			require_Error(t, err, errors.New("nats: maximum messages per subject exceeded"))
+		})
+	}
 }

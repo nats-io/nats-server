@@ -1879,6 +1879,10 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 	if fs.cfg.Discard == DiscardNew {
 		var asl bool
 		if psmax && psmc >= uint64(fs.cfg.MaxMsgsPer) {
+			// If we are instructed to discard new per subject, this is an error.
+			if fs.cfg.DiscardNewPer {
+				return ErrMaxMsgsPerSubject
+			}
 			fseq, err = fs.firstSeqForSubj(subj)
 			if err != nil {
 				return err

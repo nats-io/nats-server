@@ -65,6 +65,9 @@ type StreamConfig struct {
 	// Allow higher performance and unified direct access for mirrors as well.
 	MirrorDirect bool `json:"mirror_direct"`
 
+	// Allow KV like semantics to also discard new on a per subject basis
+	DiscardNewPer bool `json:"discard_new_per_subject,omitempty"`
+
 	// Optional qualifiers. These can not be modified after set to true.
 
 	// Sealed will seal a stream so no messages can get out or in.
@@ -992,6 +995,16 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("roll-ups require the purge permission"))
 	}
 
+	// Check for new discard new per subject, we require the discard policy to also be new.
+	if cfg.DiscardNewPer {
+		if cfg.Discard != DiscardNew {
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("discard new per subject requires discard new policy to be set"))
+		}
+		if cfg.MaxMsgsPer <= 0 {
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("discard new per subject requires max msgs per subject > 0"))
+		}
+	}
+
 	getStream := func(streamName string) (bool, StreamConfig) {
 		var exists bool
 		var cfg StreamConfig
@@ -1315,6 +1328,16 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server) (*Str
 	// Can't change RePublish
 	if !reflect.DeepEqual(cfg.RePublish, old.RePublish) {
 		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not change RePublish"))
+	}
+
+	// Check on new discard new per subject.
+	if cfg.DiscardNewPer {
+		if cfg.Discard != DiscardNew {
+			return nil, NewJSStreamInvalidConfigError(fmt.Errorf("discard new per subject requires discard new policy to be set"))
+		}
+		if cfg.MaxMsgsPer <= 0 {
+			return nil, NewJSStreamInvalidConfigError(fmt.Errorf("discard new per subject requires max msgs per subject > 0"))
+		}
 	}
 
 	// Do some adjustments for being sealed.
