@@ -4623,3 +4623,50 @@ func TestFileStoreFSSExpireNumPendingBug(t *testing.T) {
 		t.Fatalf("Expected only 1 msg, got %d", fss.Msgs)
 	}
 }
+
+// https://github.com/nats-io/nats-server/issues/3484
+func TestFileStoreFilteredFirstMatchingBug(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer os.RemoveAll(storeDir)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.>"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("foo.foo", nil, []byte("A"))
+	require_NoError(t, err)
+
+	_, _, err = fs.StoreMsg("foo.foo", nil, []byte("B"))
+	require_NoError(t, err)
+
+	_, _, err = fs.StoreMsg("foo.foo", nil, []byte("C"))
+	require_NoError(t, err)
+
+	fs.mu.RLock()
+	mb := fs.lmb
+	fs.mu.RUnlock()
+
+	mb.mu.Lock()
+	// Simulate swapping out the fss state and reading it back in with only one subject
+	// present in the block.
+	if mb.fss != nil {
+		mb.writePerSubjectInfo()
+		mb.fss = nil
+	}
+	// Now load info back in.
+	mb.readPerSubjectInfo(true)
+	mb.mu.Unlock()
+
+	// Now add in a different subject.
+	_, _, err = fs.StoreMsg("foo.bar", nil, []byte("X"))
+	require_NoError(t, err)
+
+	// Now see if a filtered load would incorrectly succeed.
+	sm, _, err := fs.LoadNextMsg("foo.foo", false, 4, nil)
+	if err == nil || sm != nil {
+		t.Fatalf("Loaded filtered message with wrong subject, wanted %q got %q", "foo.foo", sm.subj)
+	}
+}
