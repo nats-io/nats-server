@@ -591,7 +591,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 
 	// Hold mset lock here.
 	mset.mu.Lock()
-	if mset.client == nil || mset.store == nil {
+	if mset.client == nil || mset.store == nil || mset.consumers == nil {
 		mset.mu.Unlock()
 		return nil, errors.New("invalid stream")
 	}
