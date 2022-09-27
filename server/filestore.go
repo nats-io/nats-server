@@ -1819,7 +1819,7 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	ts := time.Now().UnixNano()
 	// Race detector wants these protected.
 	mb.mu.Lock()
-	mb.llts, mb.lwts = ts, ts
+	mb.llts, mb.lwts = 0, ts
 	// Remember our last sequence number.
 	mb.first.seq = fs.state.LastSeq + 1
 	mb.last.seq = fs.state.LastSeq
@@ -4782,7 +4782,11 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 			if err = os.WriteFile(smb.mfn, nbuf, defaultFilePerms); err != nil {
 				goto SKIP
 			}
+			// Make sure to remove fss state.
 			smb.fss = nil
+			if smb.sfn != _EMPTY_ {
+				os.Remove(smb.sfn)
+			}
 			smb.clearCacheAndOffset()
 			smb.rbytes = uint64(len(nbuf))
 		}
