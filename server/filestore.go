@@ -1819,7 +1819,7 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	ts := time.Now().UnixNano()
 	// Race detector wants these protected.
 	mb.mu.Lock()
-	mb.llts, mb.lwts = ts, ts
+	mb.llts, mb.lwts = 0, ts
 	// Remember our last sequence number.
 	mb.first.seq = fs.state.LastSeq + 1
 	mb.last.seq = fs.state.LastSeq
