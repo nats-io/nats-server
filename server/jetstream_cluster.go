@@ -3537,7 +3537,11 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 				// Need to clear from rg too.
 				js.mu.Lock()
 				rg.node = nil
+				client, subject, reply := ca.Client, ca.Subject, ca.Reply
 				js.mu.Unlock()
+				var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
+				resp.ConsumerInfo = o.info()
+				s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 				return
 			}
 		}

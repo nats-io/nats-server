@@ -169,3 +169,44 @@ func TestJetStreamClusterDiscardNewAndMaxMsgsPerSubject(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamClusterCreateConsumerWithReplicaOneGetsResponse(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	s := c.randomNonLeader()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "C3",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "C3")
+
+	// Update to scale down to R1, that should work (get a response)
+	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "C3",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "C3")
+
+	ci, err := js.ConsumerInfo("TEST", "C3")
+	require_NoError(t, err)
+	require_True(t, ci.Config.Replicas == 1)
+	require_True(t, len(ci.Cluster.Replicas) == 0)
+}
