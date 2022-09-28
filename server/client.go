@@ -3084,7 +3084,7 @@ var needFlush = struct{}{}
 
 // deliverMsg will deliver a message to a matching subscription and its underlying client.
 // We process all connection/client types. mh is the part that will be protocol/client specific.
-func (c *client) deliverMsg(sub *subscription, acc *Account, subject, reply, mh, msg []byte, gwrply bool) bool {
+func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, subject, reply, mh, msg []byte, gwrply bool) bool {
 	if sub.client == nil {
 		return false
 	}
@@ -3167,7 +3167,6 @@ func (c *client) deliverMsg(sub *subscription, acc *Account, subject, reply, mh,
 
 	// The msg includes the CR_LF, so pull back out for accounting.
 	msgSize := int64(len(msg))
-	prodIsMQTT := c.isMqtt()
 	// MQTT producers send messages without CR_LF, so don't remove it for them.
 	if !prodIsMQTT {
 		msgSize -= int64(LEN_CR_LF)
@@ -3195,14 +3194,6 @@ func (c *client) deliverMsg(sub *subscription, acc *Account, subject, reply, mh,
 		}
 		return true
 	}
-
-	// We don't count internal deliveries so we update server statistics here.
-	if acc != nil {
-		atomic.AddInt64(&acc.outMsgs, 1)
-		atomic.AddInt64(&acc.outBytes, msgSize)
-	}
-	atomic.AddInt64(&srv.outMsgs, 1)
-	atomic.AddInt64(&srv.outBytes, msgSize)
 
 	// If we are a client and we detect that the consumer we are
 	// sending to is in a stalled state, go ahead and wait here
@@ -4140,6 +4131,37 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	// Used as scratch if mapping
 	var _dsubj [64]byte
 
+	// For stats, we will keep track of the number of messages that have been
+	// delivered and then multiply by the size of that message and update
+	// server and account stats in a "single" operation (instead of per-sub).
+	// However, we account for situations where the message is possibly changed
+	// by having an extra size
+	var dlvMsgs int64
+	var dlvExtraSize int64
+
+	// We need to know if this is a MQTT producer because they send messages
+	// without CR_LF (we otherwise remove the size of CR_LF from message size).
+	prodIsMQTT := c.isMqtt()
+
+	updateStats := func() {
+		if dlvMsgs == 0 {
+			return
+		}
+		totalBytes := dlvMsgs*int64(len(msg)) + dlvExtraSize
+		// For non MQTT producers, remove the CR_LF * number of messages
+		if !prodIsMQTT {
+			totalBytes -= dlvMsgs * int64(LEN_CR_LF)
+		}
+		if acc != nil {
+			atomic.AddInt64(&acc.outMsgs, dlvMsgs)
+			atomic.AddInt64(&acc.outBytes, totalBytes)
+		}
+		if srv := c.srv; srv != nil {
+			atomic.AddInt64(&srv.outMsgs, dlvMsgs)
+			atomic.AddInt64(&srv.outBytes, totalBytes)
+		}
+	}
+
 	// Loop over all normal subscriptions that match.
 	for _, sub := range r.psubs {
 		// Check if this is a send to a ROUTER. We now process
@@ -4202,7 +4224,13 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 
 		// Normal delivery
 		mh := c.msgHeader(dsubj, creply, sub)
-		didDeliver = c.deliverMsg(sub, acc, dsubj, creply, mh, msg, rplyHasGWPrefix) || didDeliver
+		if c.deliverMsg(prodIsMQTT, sub, acc, dsubj, creply, mh, msg, rplyHasGWPrefix) {
+			// We don't count internal deliveries, so do only when sub.icb is nil.
+			if sub.icb == nil {
+				dlvMsgs++
+			}
+			didDeliver = true
+		}
 	}
 
 	// Set these up to optionally filter based on the queue lists.
@@ -4336,7 +4364,10 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			}
 
 			mh := c.msgHeader(dsubj, creply, sub)
-			if c.deliverMsg(sub, acc, subject, creply, mh, msg, rplyHasGWPrefix) {
+			if c.deliverMsg(prodIsMQTT, sub, acc, subject, creply, mh, msg, rplyHasGWPrefix) {
+				if sub.icb == nil {
+					dlvMsgs++
+				}
 				didDeliver = true
 				// Clear rsub
 				rsub = nil
@@ -4361,6 +4392,7 @@ sendToRoutesOrLeafs:
 
 	// If no messages for routes or leafnodes return here.
 	if len(c.in.rts) == 0 {
+		updateStats()
 		return didDeliver, queues
 	}
 
@@ -4413,13 +4445,20 @@ sendToRoutesOrLeafs:
 		}
 
 		mh := c.msgHeaderForRouteOrLeaf(subject, reply, rt, acc)
-		didDeliver = c.deliverMsg(rt.sub, acc, subject, reply, mh, dmsg, false) || didDeliver
+		if c.deliverMsg(prodIsMQTT, rt.sub, acc, subject, reply, mh, dmsg, false) {
+			if rt.sub.icb == nil {
+				dlvMsgs++
+				dlvExtraSize += int64(len(dmsg) - len(msg))
+			}
+			didDeliver = true
+		}
 
 		// If we set the header reset the origin pub args.
 		if hset {
 			c.pa = pa
 		}
 	}
+	updateStats()
 	return didDeliver, queues
 }
 

@@ -2444,7 +2444,8 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 	// This is in fast path, so avoid calling functions when possible.
 	// Get the outbound connections in place instead of calling
 	// getOutboundGatewayConnections().
-	gw := c.srv.gateway
+	srv := c.srv
+	gw := srv.gateway
 	gw.RLock()
 	for i := 0; i < len(gw.outo); i++ {
 		gws = append(gws, gw.outo[i])
@@ -2465,6 +2466,8 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 		dstHash    []byte
 		checkReply = len(reply) > 0
 		didDeliver bool
+		prodIsMQTT = c.isMqtt()
+		dlvMsgs    int64
 	)
 
 	// Get a subscription from the pool
@@ -2593,7 +2596,26 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 		sub.nm, sub.max = 0, 0
 		sub.client = gwc
 		sub.subject = subject
-		didDeliver = c.deliverMsg(sub, acc, subject, mreply, mh, msg, false) || didDeliver
+		if c.deliverMsg(prodIsMQTT, sub, acc, subject, mreply, mh, msg, false) {
+			// We don't count internal deliveries so count only if sub.icb is nil
+			if sub.icb == nil {
+				dlvMsgs++
+			}
+			didDeliver = true
+		}
+	}
+	if dlvMsgs > 0 {
+		totalBytes := dlvMsgs * int64(len(msg))
+		// For non MQTT producers, remove the CR_LF * number of messages
+		if !prodIsMQTT {
+			totalBytes -= dlvMsgs * int64(LEN_CR_LF)
+		}
+		if acc != nil {
+			atomic.AddInt64(&acc.outMsgs, dlvMsgs)
+			atomic.AddInt64(&acc.outBytes, totalBytes)
+		}
+		atomic.AddInt64(&srv.outMsgs, dlvMsgs)
+		atomic.AddInt64(&srv.outBytes, totalBytes)
 	}
 	// Done with subscription, put back to pool. We don't need
 	// to reset content since we explicitly set when using it.
