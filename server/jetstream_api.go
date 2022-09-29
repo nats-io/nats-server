@@ -151,7 +151,8 @@ const (
 	JSApiConsumersT = "$JS.API.CONSUMER.NAMES.%s"
 
 	// JSApiConsumerList is the endpoint that will return all detailed consumer information
-	JSApiConsumerList = "$JS.API.CONSUMER.LIST.*"
+	JSApiConsumerList  = "$JS.API.CONSUMER.LIST.*"
+	JSApiConsumerListT = "$JS.API.CONSUMER.LIST.%s"
 
 	// JSApiConsumerInfo is for obtaining general information about a consumer.
 	// Will return JSON response.
@@ -3934,7 +3935,10 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 		numConsumers = len(resp.Consumers)
 		if offset > numConsumers {
 			offset = numConsumers
-			resp.Consumers = resp.Consumers[:offset]
+		}
+		resp.Consumers = resp.Consumers[offset:]
+		if len(resp.Consumers) > JSApiNamesLimit {
+			resp.Consumers = resp.Consumers[:JSApiNamesLimit]
 		}
 		js.mu.RUnlock()
 
