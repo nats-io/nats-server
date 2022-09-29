@@ -1044,6 +1044,12 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 	var deliveryPrefixes []string
 	var apiPrefixes []string
 
+	// Some errors we want to suppress on recovery.
+	var isRecovering bool
+	if js := s.getJetStream(); js != nil {
+		isRecovering = js.isMetaRecovering()
+	}
+
 	// Do some pre-checking for mirror config to avoid cycles in clustered mode.
 	if cfg.Mirror != nil {
 		if len(cfg.Subjects) > 0 {
@@ -1062,7 +1068,7 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 			if cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
 				return StreamConfig{}, NewJSMirrorMaxMessageSizeTooBigError()
 			}
-			if !hasFilterSubjectOverlap(cfg.Mirror.FilterSubject, subs) {
+			if !isRecovering && !hasFilterSubjectOverlap(cfg.Mirror.FilterSubject, subs) {
 				return StreamConfig{}, NewJSStreamInvalidConfigError(
 					fmt.Errorf("mirror '%s' filter subject '%s' does not overlap with any origin stream subject",
 						cfg.Mirror.Name, cfg.Mirror.FilterSubject))
@@ -1102,7 +1108,7 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 				if cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
 					return StreamConfig{}, NewJSSourceMaxMessageSizeTooBigError()
 				}
-				if !hasFilterSubjectOverlap(src.FilterSubject, streamSubs) {
+				if !isRecovering && !hasFilterSubjectOverlap(src.FilterSubject, streamSubs) {
 					return StreamConfig{}, NewJSStreamInvalidConfigError(
 						fmt.Errorf("source '%s' filter subject '%s' does not overlap with any origin stream subject",
 							src.Name, src.FilterSubject))
