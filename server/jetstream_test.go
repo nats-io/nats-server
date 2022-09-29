@@ -19345,10 +19345,10 @@ func TestJetStreamSubjectBasedFilteredConsumers(t *testing.T) {
 	require_NoError(t, err)
 
 	_, err = js.SubscribeSync("ID.foo.*")
-	require_Error(t, err, nats.ErrTimeout)
+	require_Error(t, err, nats.ErrTimeout, context.DeadlineExceeded)
 
 	_, err = js.SubscribeSync("ID.foo.*", nats.Durable("dlc"))
-	require_Error(t, err, nats.ErrTimeout)
+	require_Error(t, err, nats.ErrTimeout, context.DeadlineExceeded)
 
 	// Direct filtered should work.
 	// Need to do by hand for now.
