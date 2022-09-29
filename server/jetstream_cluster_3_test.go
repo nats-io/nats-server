@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -300,5 +301,67 @@ func TestJetStreamClusterConsumerListPaging(t *testing.T) {
 			}
 			results[name] = true
 		}
+	}
+}
+
+func TestJetStreamClusterMetaRecoveryLogic(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	s := c.randomNonLeader()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar"},
+		Replicas: 1,
+	})
+	require_NoError(t, err)
+
+	err = js.DeleteStream("TEST")
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	err = js.DeleteStream("TEST")
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"baz"},
+		Replicas: 1,
+	})
+	require_NoError(t, err)
+
+	osi, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	c.stopAll()
+	c.restartAll()
+	c.waitOnLeader()
+	c.waitOnStreamLeader("$G", "TEST")
+
+	s = c.randomNonLeader()
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	if !reflect.DeepEqual(si.Config, osi.Config) {
+		t.Fatalf("Expected %+v, but got %+v", osi.Config, si.Config)
 	}
 }

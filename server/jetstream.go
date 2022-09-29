@@ -937,7 +937,13 @@ func (s *Server) shutdownJetStream() {
 	js.mu.Lock()
 	js.accounts = nil
 
+	var qch chan struct{}
+
 	if cc := js.cluster; cc != nil {
+		if cc.qch != nil {
+			qch = cc.qch
+			cc.qch = nil
+		}
 		js.stopUpdatesSub()
 		if cc.c != nil {
 			cc.c.closeConnection(ClientClosed)
@@ -946,6 +952,21 @@ func (s *Server) shutdownJetStream() {
 		cc.meta = nil
 	}
 	js.mu.Unlock()
+
+	// If we were clustered signal the monitor consumer go routine.
+	// We will wait for a bit for it to close.
+	// Do this without the lock.
+	if qch != nil {
+		select {
+		case qch <- struct{}{}:
+			select {
+			case <-qch:
+			case <-time.After(2 * time.Second):
+				s.Warnf("Did not receive signal for successful shutdown of cluster routine")
+			}
+		default:
+		}
+	}
 }
 
 // JetStreamConfig will return the current config. Useful if the system

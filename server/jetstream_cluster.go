@@ -57,6 +57,8 @@ type jetStreamCluster struct {
 	peerStreamMove *subscription
 	// System level request to cancel a stream move
 	peerStreamCancelMove *subscription
+	// To pop out the monitorCluster before the raft layer.
+	qch chan struct{}
 }
 
 // Used to guide placement of streams and meta controllers in clustered JetStream.
@@ -624,6 +626,7 @@ func (js *jetStream) setupMetaGroup() error {
 		streams: make(map[string]map[string]*streamAssignment),
 		s:       s,
 		c:       c,
+		qch:     make(chan struct{}),
 	}
 	atomic.StoreInt32(&js.clustered, 1)
 	c.registerWithAccount(sacc)
@@ -834,6 +837,16 @@ func (cc *jetStreamCluster) isConsumerLeader(account, stream, consumer string) b
 	return false
 }
 
+// Return the cluster quit chan.
+func (js *jetStream) clusterQuitC() chan struct{} {
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	if js.cluster != nil {
+		return js.cluster.qch
+	}
+	return nil
+}
+
 // Mark that the meta layer is recovering.
 func (js *jetStream) setMetaRecovering() {
 	js.mu.Lock()
@@ -868,7 +881,7 @@ type recoveryUpdates struct {
 
 func (js *jetStream) monitorCluster() {
 	s, n := js.server(), js.getMetaGroup()
-	qch, lch, aq := n.QuitC(), n.LeadChangeC(), n.ApplyQ()
+	qch, rqch, lch, aq := js.clusterQuitC(), n.QuitC(), n.LeadChangeC(), n.ApplyQ()
 
 	defer s.grWG.Done()
 
@@ -919,7 +932,13 @@ func (js *jetStream) monitorCluster() {
 		select {
 		case <-s.quitCh:
 			return
+		case <-rqch:
+			return
 		case <-qch:
+			// Clean signal from shutdown routine so attempt to snapshot meta layer.
+			doSnapshot()
+			// Return the signal back since shutdown will be waiting.
+			close(qch)
 			return
 		case <-aq.ch:
 			ces := aq.pop()
