@@ -953,7 +953,7 @@ func (s *Server) shutdownJetStream() {
 	}
 	js.mu.Unlock()
 
-	// If we were clustered signal the monitor consumer go routine.
+	// If we were clustered signal the monitor cluster go routine.
 	// We will wait for a bit for it to close.
 	// Do this without the lock.
 	if qch != nil {
