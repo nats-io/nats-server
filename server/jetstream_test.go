@@ -19593,3 +19593,54 @@ func TestJetStreamAccountPurge(t *testing.T) {
 	purge(t)
 	inspectDirs(t, 0)
 }
+
+func TestJetStreamPullConsumerLastPerSubjectRedeliveries(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.>"},
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 20; i++ {
+		sendStreamMsg(t, nc, fmt.Sprintf("foo.%v", i), "msg")
+	}
+
+	// Create a pull sub with a maxackpending that is <= of the number of
+	// messages in the stream and as much as we are going to Fetch() below.
+	sub, err := js.PullSubscribe(">", "dur",
+		nats.AckExplicit(),
+		nats.BindStream("TEST"),
+		nats.DeliverLastPerSubject(),
+		nats.MaxAckPending(10),
+		nats.MaxRequestBatch(10),
+		nats.AckWait(250*time.Millisecond))
+	require_NoError(t, err)
+
+	// Fetch the max number of message we can get, and don't ack them.
+	_, err = sub.Fetch(10, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+
+	// Wait for more than redelivery time.
+	time.Sleep(500 * time.Millisecond)
+
+	// Fetch again, make sure we can get those 10 messages.
+	msgs, err := sub.Fetch(10, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_True(t, len(msgs) == 10)
+	// Make sure those were the first 10 messages
+	for i, m := range msgs {
+		if m.Subject != fmt.Sprintf("foo.%v", i) {
+			t.Fatalf("Expected message for subject foo.%v, got %v", i, m.Subject)
+		}
+		m.Ack()
+	}
+}

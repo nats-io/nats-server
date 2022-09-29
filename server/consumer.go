@@ -2853,16 +2853,8 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 		return nil, 0, errBadConsumer
 	}
 	seq, dc := o.sseq, uint64(1)
-	if o.hasSkipListPending() {
-		seq = o.lss.seqs[0]
-		if len(o.lss.seqs) == 1 {
-			o.sseq = o.lss.resume
-			o.lss = nil
-			o.updateSkipped()
-		} else {
-			o.lss.seqs = o.lss.seqs[1:]
-		}
-	} else if o.hasRedeliveries() {
+	// Process redelivered messages before looking at possibly "skip list" (deliver last per subject)
+	if o.hasRedeliveries() {
 		for seq = o.getNextToRedeliver(); seq > 0; seq = o.getNextToRedeliver() {
 			dc = o.incDeliveryCount(seq)
 			if o.maxdc > 0 && dc > o.maxdc {
@@ -2886,6 +2878,18 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 		}
 		// Fallback if all redeliveries are gone.
 		seq, dc = o.sseq, 1
+	}
+	// Don't make it a "else" because it is possible that there were redeliveries
+	// but we exhausted the redelivery count and are back to try deliver the next message.
+	if o.hasSkipListPending() {
+		seq = o.lss.seqs[0]
+		if len(o.lss.seqs) == 1 {
+			o.sseq = o.lss.resume
+			o.lss = nil
+			o.updateSkipped()
+		} else {
+			o.lss.seqs = o.lss.seqs[1:]
+		}
 	}
 
 	// Check if we have max pending.
