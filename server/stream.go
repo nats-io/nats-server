@@ -947,6 +947,9 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 	if cfg.Replicas > StreamMaxReplicas {
 		return cfg, NewJSStreamInvalidConfigError(fmt.Errorf("maximum replicas is %d", StreamMaxReplicas))
 	}
+	if cfg.Replicas < 0 {
+		return cfg, NewJSReplicasCountCannotBeNegativeError()
+	}
 	if cfg.MaxMsgs == 0 {
 		cfg.MaxMsgs = -1
 	}
