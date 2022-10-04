@@ -1570,14 +1570,15 @@ func (rg *raftGroup) setPreferred() {
 // createRaftGroup is called to spin up this raft group if needed.
 func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage StorageType) error {
 	js.mu.Lock()
-	defer js.mu.Unlock()
 	s, cc := js.srv, js.cluster
 	if cc == nil || cc.meta == nil {
+		js.mu.Unlock()
 		return NewJSClusterNotActiveError()
 	}
 
 	// If this is a single peer raft group or we are not a member return.
 	if len(rg.Peers) <= 1 || !rg.isMember(cc.meta.ID()) {
+		js.mu.Unlock()
 		// Nothing to do here.
 		return nil
 	}
@@ -1586,8 +1587,10 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage Stor
 	if node := s.lookupRaftNode(rg.Name); node != nil {
 		s.Debugf("JetStream cluster already has raft group %q assigned", rg.Name)
 		rg.node = node
+		js.mu.Unlock()
 		return nil
 	}
+	js.mu.Unlock()
 
 	s.Debugf("JetStream cluster creating raft group:%+v", rg)
 
@@ -1631,12 +1634,14 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage Stor
 		s.Debugf("Error creating raft group: %v", err)
 		return err
 	}
+	// Need locking here for the assignment to avoid data-race reports
+	js.mu.Lock()
 	rg.node = n
-
 	// See if we are preferred and should start campaign immediately.
 	if n.ID() == rg.Preferred && n.Term() == 0 {
 		n.Campaign()
 	}
+	js.mu.Unlock()
 	return nil
 }
 
