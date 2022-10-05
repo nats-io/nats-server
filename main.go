@@ -28,7 +28,7 @@ var usageStr = `
 Usage: nats-server [options]
 
 Server Options:
-    -a, --addr,--net <host>          Bind to host address (default: 0.0.0.0)
+    -a, --addr, --net <host>         Bind to host address (default: 0.0.0.0)
     -p, --port <port>                Use port for clients (default: 4222)
     -n, --name <server_name>         Server name (default: auto)
     -P, --pid <file>                 File to store PID
