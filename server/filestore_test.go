@@ -3971,19 +3971,27 @@ func TestFileStorePurgeExWithSubject(t *testing.T) {
 	defer removeDir(t, storeDir)
 
 	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: FileStorage},
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 1000},
+		StreamConfig{Name: "TEST", Subjects: []string{"foo.>"}, Storage: FileStorage},
 	)
 	require_NoError(t, err)
 	defer fs.Stop()
 
-	for i := 0; i < 100; i++ {
-		_, _, err = fs.StoreMsg("foo", nil, nil)
+	payload := make([]byte, 20)
+	total := 200
+	for i := 0; i < total; i++ {
+		_, _, err = fs.StoreMsg("foo.1", nil, payload)
 		require_NoError(t, err)
 	}
+	_, _, err = fs.StoreMsg("foo.2", nil, []byte("xxxxxx"))
+	require_NoError(t, err)
 
 	// This should purge all.
-	fs.PurgeEx("foo", 1, 0)
-	require_True(t, fs.State().Msgs == 0)
+	p, err := fs.PurgeEx("foo.1", 1, 0)
+	require_NoError(t, err)
+	require_True(t, int(p) == total)
+	require_True(t, int(p) == total)
+	require_True(t, fs.State().Msgs == 1)
 }
 
 // When the N.idx file is shorter than the previous write we could fail to recover the idx properly.
