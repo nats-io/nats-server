@@ -4513,7 +4513,10 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 	var smv StoreMsg
 
 	fs.mu.Lock()
-	for _, mb := range fs.blks {
+	// We may remove blocks as we purge, so don't range directly on fs.blks
+	// otherwise we may jump over some (see https://github.com/nats-io/nats-server/issues/3528)
+	for i := 0; i < len(fs.blks); i++ {
+		mb := fs.blks[i]
 		mb.mu.Lock()
 		if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
 			mb.mu.Unlock()
@@ -4555,6 +4558,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 					mb.selectNextFirst()
 					if mb.isEmpty() {
 						fs.removeMsgBlock(mb)
+						i--
 						firstSeqNeedsUpdate = seq == fs.state.FirstSeq
 					} else if seq == fs.state.FirstSeq {
 						fs.state.FirstSeq = mb.first.seq // new one.
