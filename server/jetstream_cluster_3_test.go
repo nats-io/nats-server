@@ -365,3 +365,98 @@ func TestJetStreamClusterMetaRecoveryLogic(t *testing.T) {
 		t.Fatalf("Expected %+v, but got %+v", osi.Config, si.Config)
 	}
 }
+
+func TestJetStreamClusterDeleteConsumerWhileServerDown(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomNonLeader())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "DC",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	s := c.randomNonConsumerLeader("$G", "TEST", "DC")
+	s.Shutdown()
+
+	c.waitOnLeader()                                 // In case that was metaleader.
+	nc, js = jsClientConnect(t, c.randomNonLeader()) // In case we were connected there.
+	defer nc.Close()
+
+	err = js.DeleteConsumer("TEST", "DC")
+	require_NoError(t, err)
+
+	// Restart.
+	s = c.restartServer(s)
+	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+		hs := s.healthz(&HealthzOptions{
+			JSEnabled:    true,
+			JSServerOnly: false,
+		})
+		if hs.Error != _EMPTY_ {
+			return errors.New(hs.Error)
+		}
+		return nil
+	})
+
+	// Make sure we can not see it on the server that was down at the time of delete.
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	if o := mset.lookupConsumer("DC"); o != nil {
+		t.Fatalf("Expected to not find consumer, but did")
+	}
+
+	// Now repeat but force a meta snapshot.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "DC",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	s = c.randomNonConsumerLeader("$G", "TEST", "DC")
+	s.Shutdown()
+
+	c.waitOnLeader()                                 // In case that was metaleader.
+	nc, js = jsClientConnect(t, c.randomNonLeader()) // In case we were connected there.
+	defer nc.Close()
+
+	err = js.DeleteConsumer("TEST", "DC")
+	require_NoError(t, err)
+
+	err = c.leader().JetStreamSnapshotMeta()
+	require_NoError(t, err)
+
+	// Restart.
+	s = c.restartServer(s)
+	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+		hs := s.healthz(&HealthzOptions{
+			JSEnabled:    true,
+			JSServerOnly: false,
+		})
+		if hs.Error != _EMPTY_ {
+			return errors.New(hs.Error)
+		}
+		return nil
+	})
+
+	// Make sure we can not see it on the server that was down at the time of delete.
+	mset, err = s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	if o := mset.lookupConsumer("DC"); o != nil {
+		t.Fatalf("Expected to not find consumer, but did")
+	}
+}
