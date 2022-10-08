@@ -1081,6 +1081,7 @@ func TestJetStreamAddStreamOverlapWithJSAPISubjects(t *testing.T) {
 	expectErr(acc.addStream(&StreamConfig{Name: "a", Subjects: []string{"$JS.API.foo", "$JS.API.bar"}}))
 	expectErr(acc.addStream(&StreamConfig{Name: "b", Subjects: []string{"$JS.API.>"}}))
 	expectErr(acc.addStream(&StreamConfig{Name: "c", Subjects: []string{"$JS.API.*"}}))
+	expectErr(acc.addStream(&StreamConfig{Name: "d", Subjects: []string{"$JS.>"}}))
 
 	// Events and Advisories etc should be ok.
 	if _, err := acc.addStream(&StreamConfig{Name: "a", Subjects: []string{"$JS.EVENT.>"}}); err != nil {
