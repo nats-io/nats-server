@@ -1147,9 +1147,12 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		}
 	}
 
-	for _, subj := range cfg.Subjects {
-		if SubjectsCollide(subj, JSApiPrefix) {
-			return StreamConfig{}, NewJSStreamApiPrefixOverlapError(JSApiPrefix, subj)
+	// if Ack is on, forbid a creating stream that would respond Acks in lieu of the API.
+	if !cfg.NoAck {
+		for _, subj := range cfg.Subjects {
+			if SubjectsCollide(subj, JSApiPrefix) {
+				return StreamConfig{}, NewJSStreamApiPrefixOverlapError(JSApiPrefix, subj)
+			}
 		}
 	}
 
