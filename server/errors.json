@@ -1308,5 +1308,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSStreamApiPrefixOverlapError",
+    "code": 400,
+    "error_code": 10133,
+    "description": "stream subject {subject} must not overlap with {apiprefix}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

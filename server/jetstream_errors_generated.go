@@ -263,6 +263,9 @@ const (
 	// JSStorageResourcesExceededErr insufficient storage resources available
 	JSStorageResourcesExceededErr ErrorIdentifier = 10047
 
+	// JSStreamApiPrefixOverlapError stream subject {subject} must not overlap with {apiprefix}
+	JSStreamApiPrefixOverlapError ErrorIdentifier = 10133
+
 	// JSStreamAssignmentErrF Generic stream assignment error string ({err})
 	JSStreamAssignmentErrF ErrorIdentifier = 10048
 
@@ -487,6 +490,7 @@ var (
 		JSSourceConsumerSetupFailedErrF:            {Code: 500, ErrCode: 10045, Description: "{err}"},
 		JSSourceMaxMessageSizeTooBigErr:            {Code: 400, ErrCode: 10046, Description: "stream source must have max message size >= target"},
 		JSStorageResourcesExceededErr:              {Code: 500, ErrCode: 10047, Description: "insufficient storage resources available"},
+		JSStreamApiPrefixOverlapError:              {Code: 400, ErrCode: 10133, Description: "stream subject {subject} must not overlap with {apiprefix}"},
 		JSStreamAssignmentErrF:                     {Code: 500, ErrCode: 10048, Description: "{err}"},
 		JSStreamCreateErrF:                         {Code: 500, ErrCode: 10049, Description: "{err}"},
 		JSStreamDeleteErrF:                         {Code: 500, ErrCode: 10050, Description: "{err}"},
@@ -1499,6 +1503,22 @@ func NewJSStorageResourcesExceededError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSStorageResourcesExceededErr]
+}
+
+// NewJSStreamApiPrefixOverlapError creates a new JSStreamApiPrefixOverlapError error: "stream subject {subject} must not overlap with {apiprefix}"
+func NewJSStreamApiPrefixOverlapError(apiprefix interface{}, subject interface{}, opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	e := ApiErrors[JSStreamApiPrefixOverlapError]
+	args := e.toReplacerArgs([]interface{}{"{apiprefix}", apiprefix, "{subject}", subject})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
 }
 
 // NewJSStreamAssignmentError creates a new JSStreamAssignmentErrF error: "{err}"

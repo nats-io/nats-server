@@ -1147,6 +1147,12 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		}
 	}
 
+	for _, subj := range cfg.Subjects {
+		if SubjectsCollide(subj, JSApiPrefix) {
+			return StreamConfig{}, NewJSStreamApiPrefixOverlapError(JSApiPrefix, subj)
+		}
+	}
+
 	// cycle check for source cycle
 	toVisit := []*StreamConfig{&cfg}
 	visited := make(map[string]struct{})
