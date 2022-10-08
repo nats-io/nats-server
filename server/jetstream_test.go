@@ -1083,10 +1083,23 @@ func TestJetStreamAddStreamOverlapWithJSAPISubjects(t *testing.T) {
 	expectErr(acc.addStream(&StreamConfig{Name: "c", Subjects: []string{"$JS.API.*"}}))
 	expectErr(acc.addStream(&StreamConfig{Name: "d", Subjects: []string{"$JS.>"}}))
 
-	// Events and Advisories etc should be ok.
-	if _, err := acc.addStream(&StreamConfig{Name: "a", Subjects: []string{"$JS.EVENT.>"}}); err != nil {
-		t.Fatalf("Expected this to work: %v", err)
+	// Ensure that all the API subject may be ingested into a stream if Ack is disabled
+	expectOK := func(s *stream, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("Expected this to work: %v", err)
+		}
+		if err := s.delete(); err != nil {
+			t.Fatal("could not delete stream to continue")
+		}
 	}
+	expectOK(acc.addStream(&StreamConfig{Name: "a", NoAck: true, Subjects: []string{"$JS.API.foo", "$JS.API.bar"}}))
+	expectOK(acc.addStream(&StreamConfig{Name: "b", NoAck: true, Subjects: []string{"$JS.API.>"}}))
+	expectOK(acc.addStream(&StreamConfig{Name: "c", NoAck: true, Subjects: []string{"$JS.API.*"}}))
+	expectOK(acc.addStream(&StreamConfig{Name: "d", NoAck: true, Subjects: []string{"$JS.>"}}))
+
+	// Events and Advisories etc should be ok.
+	expectOK(acc.addStream(&StreamConfig{Name: "a", Subjects: []string{"$JS.EVENT.>"}}))
 }
 
 func TestJetStreamAddStreamSameConfigOK(t *testing.T) {

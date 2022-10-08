@@ -1205,8 +1205,10 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("duplicate subjects detected"))
 			}
 			// Also check to make sure we do not overlap with our $JS API subjects.
-			if subjectIsSubsetMatch(subj, "$JS.API.>") {
-				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with jetstream api"))
+			if !cfg.NoAck { // unless Ack is disabled
+				if subjectIsSubsetMatch(subj, "$JS.API.>") {
+					return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with jetstream api"))
+				}
 			}
 			// Make sure the subject is valid.
 			if !IsValidSubject(subj) {
