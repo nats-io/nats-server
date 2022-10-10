@@ -3847,9 +3847,8 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	if (c.kind == GATEWAY || c.kind == ROUTER) && !isResponse {
 		return
 	}
-	// If we are here and we are a serviceImport response make sure we are not matching back
-	// to the import/export pair that started the request. If so ignore.
-	if isResponse && len(c.pa.psi) > 0 {
+	// Detect cycles and ignore (return) when we detect one.
+	if len(c.pa.psi) > 0 {
 		for i := len(c.pa.psi) - 1; i >= 0; i-- {
 			if psi := c.pa.psi[i]; psi.se == si.se {
 				return
