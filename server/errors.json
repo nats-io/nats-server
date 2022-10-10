@@ -1308,5 +1308,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSReplicasCountCannotBeNegative",
+    "code": 400,
+    "error_code": 10133,
+    "description": "replicas count cannot be negative",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

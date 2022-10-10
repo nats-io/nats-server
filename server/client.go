@@ -3187,10 +3187,14 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 		client.mu.Unlock()
 
 		// Internal account clients are for service imports and need the '\r\n'.
+		start := time.Now()
 		if client.kind == ACCOUNT {
 			sub.icb(sub, c, acc, string(subject), string(reply), msg)
 		} else {
 			sub.icb(sub, c, acc, string(subject), string(reply), msg[:msgSize])
+		}
+		if dur := time.Since(start); dur >= readLoopReportThreshold {
+			srv.Warnf("Internal subscription on %q took too long: %v", subject, dur)
 		}
 		return true
 	}
@@ -3847,9 +3851,8 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	if (c.kind == GATEWAY || c.kind == ROUTER) && !isResponse {
 		return
 	}
-	// If we are here and we are a serviceImport response make sure we are not matching back
-	// to the import/export pair that started the request. If so ignore.
-	if isResponse && len(c.pa.psi) > 0 {
+	// Detect cycles and ignore (return) when we detect one.
+	if len(c.pa.psi) > 0 {
 		for i := len(c.pa.psi) - 1; i >= 0; i-- {
 			if psi := c.pa.psi[i]; psi.se == si.se {
 				return

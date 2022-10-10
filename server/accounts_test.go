@@ -3587,3 +3587,33 @@ func TestAccountImportCycle(t *testing.T) {
 	require_NoError(t, err)
 	req()
 }
+
+func TestAccountImportOwnExport(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		port: -1
+		accounts: {
+			A: {
+			exports: [
+				{ service: echo, accounts: [A], latency: { subject: "latency.echo" } }
+			],
+			imports: [
+				{ service: { account: A, subject: echo } }
+			]
+
+			users: [
+				{ user: user, pass: pass }
+			]
+			}
+		}
+	`))
+	defer removeFile(t, conf)
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL(), nats.UserInfo("user", "pass"))
+	defer nc.Close()
+
+	natsSub(t, nc, "echo", func(m *nats.Msg) { m.Respond(nil) })
+	_, err := nc.Request("echo", []byte("request"), time.Second)
+	require_NoError(t, err)
+}
