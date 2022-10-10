@@ -760,7 +760,11 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 
 	// If this is directly from a client connection ok to do in place.
 	if c.kind != ROUTER && c.kind != GATEWAY {
+		start := time.Now()
 		jsub.icb(sub, c, acc, subject, reply, rmsg)
+		if dur := time.Since(start); dur >= readLoopReportThreshold {
+			s.Warnf("Internal subscription on %q took too long: %v", subject, dur)
+		}
 		return
 	}
 
@@ -788,7 +792,11 @@ func (s *Server) processJSAPIRoutedRequests() {
 			for _, req := range reqs {
 				r := req.(*jsAPIRoutedReq)
 				client.pa = r.pa
+				start := time.Now()
 				r.jsub.icb(r.sub, client, r.acc, r.subject, r.reply, r.msg)
+				if dur := time.Since(start); dur >= readLoopReportThreshold {
+					s.Warnf("Internal subscription on %q took too long: %v", r.subject, dur)
+				}
 			}
 			queue.recycle(&reqs)
 		case <-s.quitCh:
