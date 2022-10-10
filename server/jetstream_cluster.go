@@ -6076,9 +6076,14 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	var ca *consumerAssignment
 	var oname string
 
-	// See if we have an existing one already under same durable name.
-	if isDurableConsumer(cfg) {
-		oname = cfg.Durable
+	// See if we have an existing one already under same durable name or
+	// if name was set by the user.
+	if isDurableConsumer(cfg) || cfg.Name != _EMPTY_ {
+		if cfg.Name != _EMPTY_ {
+			oname = cfg.Name
+		} else {
+			oname = cfg.Durable
+		}
 		if ca = sa.consumers[oname]; ca != nil && !ca.deleted {
 			// Do quick sanity check on new cfg to prevent here if possible.
 			if err := acc.checkNewConsumerConfig(ca.Config, cfg); err != nil {
@@ -6110,15 +6115,19 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 				rg.Peers = []string{rg.Preferred}
 				rg.Name = groupNameForConsumer(rg.Peers, rg.Storage)
 			}
-			// Make sure name is unique.
-			for {
-				oname = createConsumerName()
-				if sa.consumers != nil {
-					if sa.consumers[oname] != nil {
-						continue
+			if cfg.Name != _EMPTY_ {
+				oname = cfg.Name
+			} else {
+				// Make sure name is unique.
+				for {
+					oname = createConsumerName()
+					if sa.consumers != nil {
+						if sa.consumers[oname] != nil {
+							continue
+						}
 					}
+					break
 				}
-				break
 			}
 		}
 		if len(rg.Peers) > 1 {

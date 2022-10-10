@@ -519,3 +519,65 @@ func TestJetStreamClusterNegativeReplicas(t *testing.T) {
 	t.Run("Standalone", func(t *testing.T) { testBadReplicas(t, s, "TEST1") })
 	t.Run("Clustered", func(t *testing.T) { testBadReplicas(t, c.randomServer(), "TEST2") })
 }
+
+func TestJetStreamClusterUserSelectedConsName(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	test := func(t *testing.T, s *Server, stream string, replicas int, cons string) {
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     stream,
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+
+		cc := &CreateConsumerRequest{
+			Stream: stream,
+			Config: ConsumerConfig{
+				Name:              cons,
+				FilterSubject:     stream,
+				InactiveThreshold: 10 * time.Second,
+			},
+		}
+		subj := fmt.Sprintf(JSApiConsumerCreateExT, stream, cons, stream)
+		req, err := json.Marshal(cc)
+		require_NoError(t, err)
+
+		reply, err := nc.Request(subj, req, 2*time.Second)
+		require_NoError(t, err)
+
+		var cresp JSApiConsumerCreateResponse
+		json.Unmarshal(reply.Data, &cresp)
+		if cresp.Error != nil {
+			t.Fatalf("Unexpected error: %v", cresp.Error)
+		}
+		require_Equal(t, cresp.Name, cons)
+		require_Equal(t, cresp.Config.Name, cons)
+
+		// Resend the add request but before change something that the server
+		// should reject since the consumer already exist and we don't support
+		// the update of the consumer that way.
+		cc.Config.DeliverPolicy = DeliverNew
+		req, err = json.Marshal(cc)
+		require_NoError(t, err)
+		reply, err = nc.Request(subj, req, 2*time.Second)
+		require_NoError(t, err)
+
+		cresp = JSApiConsumerCreateResponse{}
+		json.Unmarshal(reply.Data, &cresp)
+		require_Error(t, cresp.Error, NewJSConsumerCreateError(errors.New("deliver policy can not be updated")))
+	}
+
+	t.Run("Standalone", func(t *testing.T) { test(t, s, "TEST", 1, "cons") })
+	t.Run("Clustered R1", func(t *testing.T) { test(t, c.randomServer(), "TEST2", 1, "cons2") })
+	t.Run("Clustered R3", func(t *testing.T) { test(t, c.randomServer(), "TEST3", 3, "cons3") })
+}
