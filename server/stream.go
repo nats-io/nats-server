@@ -1147,6 +1147,15 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		}
 	}
 
+	// if Ack is on, forbid a creating stream that would respond Acks in lieu of the API.
+	if !cfg.NoAck {
+		for _, subj := range cfg.Subjects {
+			if SubjectsCollide(subj, JSApiPrefix) {
+				return StreamConfig{}, NewJSStreamApiPrefixOverlapError(JSApiPrefix, subj)
+			}
+		}
+	}
+
 	// cycle check for source cycle
 	toVisit := []*StreamConfig{&cfg}
 	visited := make(map[string]struct{})
@@ -1196,8 +1205,10 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("duplicate subjects detected"))
 			}
 			// Also check to make sure we do not overlap with our $JS API subjects.
-			if subjectIsSubsetMatch(subj, "$JS.API.>") {
-				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with jetstream api"))
+			if !cfg.NoAck { // unless Ack is disabled
+				if subjectIsSubsetMatch(subj, "$JS.API.>") {
+					return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with jetstream api"))
+				}
 			}
 			// Make sure the subject is valid.
 			if !IsValidSubject(subj) {
