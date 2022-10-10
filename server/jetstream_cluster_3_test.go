@@ -460,3 +460,62 @@ func TestJetStreamClusterDeleteConsumerWhileServerDown(t *testing.T) {
 		t.Fatalf("Expected to not find consumer, but did")
 	}
 }
+
+func TestJetStreamClusterNegativeReplicas(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	testBadReplicas := func(t *testing.T, s *Server, name string) {
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     name,
+			Replicas: -1,
+		})
+		require_Error(t, err, NewJSReplicasCountCannotBeNegativeError())
+
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     name,
+			Replicas: 1,
+		})
+		require_NoError(t, err)
+
+		// Check upadte now.
+		_, err = js.UpdateStream(&nats.StreamConfig{
+			Name:     name,
+			Replicas: -11,
+		})
+		require_Error(t, err, NewJSReplicasCountCannotBeNegativeError())
+
+		// Now same for consumers
+		durName := fmt.Sprintf("%s_dur", name)
+		_, err = js.AddConsumer(name, &nats.ConsumerConfig{
+			Durable:  durName,
+			Replicas: -1,
+		})
+		require_Error(t, err, NewJSReplicasCountCannotBeNegativeError())
+
+		_, err = js.AddConsumer(name, &nats.ConsumerConfig{
+			Durable:  durName,
+			Replicas: 1,
+		})
+		require_NoError(t, err)
+
+		// Check update now
+		_, err = js.UpdateConsumer(name, &nats.ConsumerConfig{
+			Durable:  durName,
+			Replicas: -11,
+		})
+		require_Error(t, err, NewJSReplicasCountCannotBeNegativeError())
+	}
+
+	t.Run("Standalone", func(t *testing.T) { testBadReplicas(t, s, "TEST1") })
+	t.Run("Clustered", func(t *testing.T) { testBadReplicas(t, c.randomServer(), "TEST2") })
+}
