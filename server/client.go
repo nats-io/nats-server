@@ -3187,10 +3187,14 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 		client.mu.Unlock()
 
 		// Internal account clients are for service imports and need the '\r\n'.
+		start := time.Now()
 		if client.kind == ACCOUNT {
 			sub.icb(sub, c, acc, string(subject), string(reply), msg)
 		} else {
 			sub.icb(sub, c, acc, string(subject), string(reply), msg[:msgSize])
+		}
+		if dur := time.Since(start); dur >= readLoopReportThreshold {
+			srv.Warnf("Internal subscription on %q took too long: %v", subject, dur)
 		}
 		return true
 	}
