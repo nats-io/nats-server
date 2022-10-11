@@ -1781,6 +1781,26 @@ func (c *client) processConnect(arg []byte) error {
 	account := c.opts.Account
 	accountNew := c.opts.AccountNew
 
+	//TODO: lets inject WASM load here
+
+	fmt.Println("ECH FRM CNCT ", c.echo)
+	// var echo uint64 = 0
+	// if c.echo {
+	// 	echo = 1
+	// }
+	// now := time.Now()
+	// ctx := context.Background()
+	// for i := 0; i < 10; i++ {
+
+	// 	_, err := c.srv.callout.Call(ctx, echo)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// }
+	// since := time.Since(now)
+	// fmt.Println("WASM CALL TOOK ", since)
+	// fmt.Println("WASM RESULT: ", result[0])
+
 	if c.kind == CLIENT {
 		var ncs string
 		if c.opts.Version != _EMPTY_ {

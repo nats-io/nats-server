@@ -22,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"math/rand"
 	"net"
@@ -41,10 +42,12 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nats-server/v2/logger"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
-
-	"github.com/nats-io/nats-server/v2/logger"
+	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/api"
+	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
 const (
@@ -107,6 +110,7 @@ type Info struct {
 
 // Server is our main struct.
 type Server struct {
+	callout api.Function
 	// Fields accessed with atomic operations need to be 64-bit aligned
 	gcid uint64
 	// How often user logon fails due to the issuer account not being pinned.
@@ -1626,6 +1630,31 @@ func (s *Server) Start() {
 	s.Noticef("  ID:       %s", s.info.ID)
 
 	defer s.Noticef("Server is ready")
+
+	ctx := context.Background()
+	r := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
+
+	wasi_snapshot_preview1.MustInstantiate(ctx, r)
+
+	wasmMod, err := ioutil.ReadFile("./wasm/callout.wasm")
+	if err != nil {
+		panic(err)
+	}
+
+	// Instantiate the guest Wasm into the same runtime. It exports the `add`
+	// function, implemented in WebAssembly.
+	mod, err := r.InstantiateModuleFromBinary(ctx, wasmMod)
+	if err != nil {
+		log.Panicln(err)
+	}
+
+	callout := mod.ExportedFunction("callout")
+	result, err := callout.Call(ctx, 1)
+	if err != nil {
+		panic(err)
+	}
+	s.callout = callout
+	fmt.Println("result from wasm ", result[0])
 
 	// Check for insecure configurations.
 	s.checkAuthforWarnings()

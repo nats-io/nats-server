@@ -16,9 +16,12 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"net/textproto"
+	"time"
 )
 
 type parserState int
@@ -393,6 +396,16 @@ func (c *client) parse(buf []byte) error {
 		case OP_PUB:
 			switch b {
 			case ' ', '\t':
+				rand.Seed(time.Now().UnixNano())
+				r := uint64(rand.Intn(2))
+
+				now := time.Now()
+				result, errs := c.srv.callout.Call(context.Background(), r)
+				if errs != nil {
+					panic(errs)
+				}
+				after := time.Since(now)
+				fmt.Printf("PUB CALLAOUT in %v with %v\n ", after, result[0])
 				c.state = OP_PUB_SPC
 			default:
 				goto parseErr

@@ -3902,6 +3902,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	mset.lseq++
 	tierName := mset.tier
 
+
+
 	// Republish state if needed.
 	var tsubj string
 	var tlseq uint64
