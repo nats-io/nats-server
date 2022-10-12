@@ -34,9 +34,9 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt/v2"
-	"github.com/nats-io/nkeys"
-
 	"github.com/nats-io/nats-server/v2/conf"
+	"github.com/nats-io/nats-server/v2/server/certstore"
+	"github.com/nats-io/nkeys"
 )
 
 var allowUnknownTopLevelField = int32(0)
@@ -53,7 +53,7 @@ func NoErrOnUnknownFields(noError bool) {
 	atomic.StoreInt32(&allowUnknownTopLevelField, val)
 }
 
-// Set of lower case hex-encoded sha256 of DER encoded SubjectPublicKeyInfo
+// PinnedCertSet is a set of lower case hex-encoded sha256 of DER encoded SubjectPublicKeyInfo
 type PinnedCertSet map[string]struct{}
 
 // ClusterOpts are options for clusters.
@@ -202,7 +202,7 @@ type JSLimitOpts struct {
 	Duplicates      time.Duration
 }
 
-// And AuthCallout option used to map external AuthN to NATS based AuthZ.
+// AuthCallout option used to map external AuthN to NATS based AuthZ.
 type AuthCallout struct {
 	// Must be a public account Nkey.
 	Issuer string
@@ -587,6 +587,9 @@ type TLSConfigOpts struct {
 	Ciphers           []uint16
 	CurvePreferences  []tls.CurveID
 	PinnedCerts       PinnedCertSet
+	CertStore         certstore.StoreType
+	CertMatchBy       certstore.MatchByType
+	CertMatch         string
 }
 
 // OCSPConfig represents the options of OCSP stapling options.
@@ -3920,6 +3923,9 @@ func PrintTLSHelpAndDie() {
 	for k := range curvePreferenceMap {
 		fmt.Printf("    %s\n", k)
 	}
+	if runtime.GOOS == "windows" {
+		fmt.Printf("%s", certstore.Usage)
+	}
 	os.Exit(0)
 }
 
@@ -4077,6 +4083,32 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 				}
 				tc.PinnedCerts = wl
 			}
+		case "cert_store":
+			certStore, ok := mv.(string)
+			if !ok || certStore == _EMPTY_ {
+				return nil, &configErr{tk, certstore.ErrBadCertStoreField.Error()}
+			}
+			certStoreType, err := certstore.ParseCertStore(certStore)
+			if err != nil {
+				return nil, &configErr{tk, err.Error()}
+			}
+			tc.CertStore = certStoreType
+		case "cert_match_by":
+			certMatchBy, ok := mv.(string)
+			if !ok || certMatchBy == _EMPTY_ {
+				return nil, &configErr{tk, certstore.ErrBadCertMatchByField.Error()}
+			}
+			certMatchByType, err := certstore.ParseCertMatchBy(certMatchBy)
+			if err != nil {
+				return nil, &configErr{tk, err.Error()}
+			}
+			tc.CertMatchBy = certMatchByType
+		case "cert_match":
+			certMatch, ok := mv.(string)
+			if !ok || certMatch == _EMPTY_ {
+				return nil, &configErr{tk, certstore.ErrBadCertMatchField.Error()}
+			}
+			tc.CertMatch = certMatch
 		default:
 			return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, unknown field [%q]", mk)}
 		}
@@ -4356,6 +4388,8 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 	}
 
 	switch {
+	case tc.CertFile != _EMPTY_ && tc.CertStore != certstore.STOREEMPTY:
+		return nil, certstore.ErrConflictCertFileAndStore
 	case tc.CertFile != _EMPTY_ && tc.KeyFile == _EMPTY_:
 		return nil, fmt.Errorf("missing 'key_file' in TLS configuration")
 	case tc.CertFile == _EMPTY_ && tc.KeyFile != _EMPTY_:
@@ -4371,6 +4405,11 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 			return nil, fmt.Errorf("error parsing certificate: %v", err)
 		}
 		config.Certificates = []tls.Certificate{cert}
+	case tc.CertStore != certstore.STOREEMPTY:
+		err := certstore.TLSConfig(tc.CertStore, tc.CertMatchBy, tc.CertMatch, &config)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Require client certificates as needed

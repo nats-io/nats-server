@@ -1,0 +1,230 @@
+// Copyright 2022-2023 The NATS Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//go:build windows
+
+package server
+
+import (
+	"fmt"
+	"net/url"
+	"os"
+	"os/exec"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/nats-io/nats.go"
+)
+
+func runPowershellScript(scriptFile string, args []string) error {
+	_ = args
+	psExec, _ := exec.LookPath("powershell.exe")
+	execArgs := []string{psExec, "-command", fmt.Sprintf("& '%s'", scriptFile)}
+
+	cmdImport := &exec.Cmd{
+		Path:   psExec,
+		Args:   execArgs,
+		Stdout: os.Stdout,
+		Stderr: os.Stderr,
+	}
+	return cmdImport.Run()
+}
+
+func runConfiguredLeaf(t *testing.T, hubPort int, certStore string, matchBy string, match string, expectedLeafCount int) {
+
+	// Fire up the leaf
+	u, err := url.Parse(fmt.Sprintf("nats://localhost:%d", hubPort))
+	if err != nil {
+		t.Fatalf("Error parsing url: %v", err)
+	}
+
+	configStr := fmt.Sprintf(`
+		port: -1
+		leaf {
+			remotes [
+				{
+					url: "%s"
+					tls {
+						cert_store: "%s"
+						cert_match_by: "%s"
+						cert_match: "%s"
+
+						# Above should be equivalent to:
+						# cert_file: "../test/configs/certs/tlsauth/client.pem"
+						# key_file: "../test/configs/certs/tlsauth/client-key.pem"
+
+						ca_file: "../test/configs/certs/tlsauth/ca.pem"
+						timeout: 5
+					}
+				}
+			]
+		}
+	`, u.String(), certStore, matchBy, match)
+
+	leafConfig := createConfFile(t, []byte(configStr))
+	defer removeFile(t, leafConfig)
+	leafServer, _ := RunServerWithConfig(leafConfig)
+	defer leafServer.Shutdown()
+
+	// After client verify, hub will match by SAN email, SAN dns, and Subject (in that order)
+	// Our test client specifies Subject only so we should match on that...
+
+	// A little settle time
+	time.Sleep(1 * time.Second)
+	checkLeafNodeConnectedCount(t, leafServer, expectedLeafCount)
+}
+
+// TestLeafTLSWindowsCertStore tests the topology of two NATS Servers connected as leaf and hub with authentication of
+// leaf to hub via mTLS with leaf's certificate and signing key provisioned in the Windows certificate store.
+func TestLeafTLSWindowsCertStore(t *testing.T) {
+
+	// Client Identity (client.pem)
+	// Issuer: O = Synadia Communications Inc., OU = NATS.io, CN = localhost
+	// Subject: OU = NATS.io, CN = example.com
+
+	// Make sure windows cert store is reset to avoid conflict with other tests
+	err := runPowershellScript("../test/configs/certs/tlsauth/certstore/delete-cert-from-store.ps1", nil)
+	if err != nil {
+		t.Fatalf("expected powershell cert delete to succeed: %s", err.Error())
+	}
+
+	// Provision Windows cert store with client cert and secret
+	err = runPowershellScript("../test/configs/certs/tlsauth/certstore/import-p12-client.ps1", nil)
+	if err != nil {
+		t.Fatalf("expected powershell provision to succeed: %s", err.Error())
+	}
+
+	// Fire up the hub
+	hubConfig := createConfFile(t, []byte(`
+		port: -1
+		leaf {
+			listen: "127.0.0.1:-1"
+			tls {
+				ca_file: "../test/configs/certs/tlsauth/ca.pem"
+				cert_file: "../test/configs/certs/tlsauth/server.pem"
+				key_file:  "../test/configs/certs/tlsauth/server-key.pem"
+				timeout: 5
+				verify_and_map: true
+			}
+		}
+
+		accounts: {
+			AcctA: {
+			  users: [ {user: "OU = NATS.io, CN = example.com"} ]
+			},
+			AcctB: {
+			  users: [ {user: UserB1} ]
+			},
+			SYS: {
+				users: [ {user: System} ]
+			}
+		}
+		system_account: "SYS"
+	`))
+	defer removeFile(t, hubConfig)
+	hubServer, hubOptions := RunServerWithConfig(hubConfig)
+	defer hubServer.Shutdown()
+
+	testCases := []struct {
+		certStore         string
+		certMatchBy       string
+		certMatch         string
+		expectedLeafCount int
+	}{
+		{"WindowsCurrentUser", "Subject", "example.com", 1},
+		{"WindowsCurrentUser", "Issuer", "Synadia Communications Inc.", 1},
+		{"WindowsCurrentUser", "Issuer", "Frodo Baggins, Inc.", 0},
+	}
+	for _, tc := range testCases {
+		t.Run(fmt.Sprintf("%s by %s match %s", tc.certStore, tc.certMatchBy, tc.certMatch), func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					if tc.expectedLeafCount != 0 {
+						t.Fatalf("did not expect panic")
+					} else {
+						if !strings.Contains(fmt.Sprintf("%v", r), "Error processing configuration file") {
+							t.Fatalf("did not expect unknown panic cause")
+						}
+					}
+				}
+			}()
+			runConfiguredLeaf(t, hubOptions.LeafNode.Port, tc.certStore, tc.certMatchBy, tc.certMatch, tc.expectedLeafCount)
+		})
+	}
+}
+
+// TestServerTLSWindowsCertStore tests the topology of a NATS server requiring TLS and gettings it own server
+// cert identiy (as used when accepting NATS client connections and negotiating TLS) from Windows certificate store.
+func TestServerTLSWindowsCertStore(t *testing.T) {
+
+	// Server Identity (server.pem)
+	// Issuer: O = Synadia Communications Inc., OU = NATS.io, CN = localhost
+	// Subject: OU = NATS.io Operators, CN = localhost
+
+	// Make sure windows cert store is reset to avoid conflict with other tests
+	err := runPowershellScript("../test/configs/certs/tlsauth/certstore/delete-cert-from-store.ps1", nil)
+	if err != nil {
+		t.Fatalf("expected powershell cert delete to succeed: %s", err.Error())
+	}
+
+	// Provision Windows cert store with server cert and secret
+	err = runPowershellScript("../test/configs/certs/tlsauth/certstore/import-p12-server.ps1", nil)
+	if err != nil {
+		t.Fatalf("expected powershell provision to succeed: %s", err.Error())
+	}
+
+	// Fire up the server
+	srvConfig := createConfFile(t, []byte(`
+	listen: "localhost:-1"
+	tls {
+		cert_store: "WindowsCurrentUser"
+		cert_match_by: "Subject"
+		cert_match: "NATS.io Operators"
+		timeout: 5
+	}
+	`))
+	defer removeFile(t, srvConfig)
+	srvServer, _ := RunServerWithConfig(srvConfig)
+	if srvServer == nil {
+		t.Fatalf("expected to be able start server with cert store configuration")
+	}
+	defer srvServer.Shutdown()
+
+	testCases := []struct {
+		clientCA string
+		expect   bool
+	}{
+		{"../test/configs/certs/tlsauth/ca.pem", true},
+		{"../test/configs/certs/tlsauth/client.pem", false},
+	}
+	for _, tc := range testCases {
+		t.Run(fmt.Sprintf("Client CA: %s", tc.clientCA), func(t *testing.T) {
+			nc, _ := nats.Connect(srvServer.clientConnectURLs[0], nats.RootCAs(tc.clientCA))
+			err := nc.Publish("foo", []byte("hello TLS server-authenticated server"))
+			if (err != nil) == tc.expect {
+				t.Fatalf("expected publish result %v to TLS authenticated server", tc.expect)
+			}
+			nc.Close()
+
+			for i := 0; i < 5; i++ {
+				nc, _ = nats.Connect(srvServer.clientConnectURLs[0], nats.RootCAs(tc.clientCA))
+				err = nc.Publish("foo", []byte("hello TLS server-authenticated server"))
+				if (err != nil) == tc.expect {
+					t.Fatalf("expected repeated connection result %v to TLS authenticated server", tc.expect)
+				}
+				nc.Close()
+			}
+		})
+	}
+}
