@@ -347,6 +347,7 @@ type mqttWriter struct {
 type mqttWill struct {
 	topic   []byte
 	subject []byte
+	mapped  []byte
 	message []byte
 	qos     byte
 	retain  bool
@@ -362,6 +363,7 @@ type mqttFilter struct {
 type mqttPublish struct {
 	topic   []byte
 	subject []byte
+	mapped  []byte
 	msg     []byte
 	sz      int
 	pi      uint16
@@ -616,6 +618,7 @@ func (c *client) mqttParse(buf []byte) error {
 			r.reader.SetReadDeadline(time.Time{})
 		}
 	}
+	hasMappings := c.in.flags.isSet(hasMappings)
 	c.mu.Unlock()
 
 	r.reset(buf)
@@ -661,7 +664,7 @@ func (c *client) mqttParse(buf []byte) error {
 		case mqttPacketPub:
 			pp := c.mqtt.pp
 			pp.flags = b & mqttPacketFlagMask
-			err = c.mqttParsePub(r, pl, pp)
+			err = c.mqttParsePub(r, pl, pp, hasMappings)
 			if trace {
 				c.traceInOp("PUBLISH", errOrTrace(err, mqttPubTrace(pp)))
 				if err == nil {
@@ -737,7 +740,7 @@ func (c *client) mqttParse(buf []byte) error {
 			var rc byte
 			var cp *mqttConnectProto
 			var sessp bool
-			rc, cp, err = c.mqttParseConnect(r, pl)
+			rc, cp, err = c.mqttParseConnect(r, pl, hasMappings)
 			// Add the client id to the client's string, regardless of error.
 			// We may still get the client_id if the call above fails somewhere
 			// after parsing the client ID itself.
@@ -872,6 +875,41 @@ func (s *Server) mqttUpdateMaxAckPending(newmaxp uint16) {
 		asm.mu.RUnlock()
 		return true
 	})
+}
+
+func (s *Server) mqttGetJSAForAccount(acc string) *mqttJSA {
+	sm := &s.mqtt.sessmgr
+
+	sm.mu.RLock()
+	asm := sm.sessions[acc]
+	sm.mu.RUnlock()
+
+	if asm == nil {
+		return nil
+	}
+
+	asm.mu.RLock()
+	jsa := &asm.jsa
+	asm.mu.RUnlock()
+	return jsa
+}
+
+func (s *Server) mqttStoreQoS1MsgForAccountOnNewSubject(hdr int, msg []byte, acc, subject string) {
+	if s == nil || hdr <= 0 {
+		return
+	}
+	nhv := getHeader(mqttNatsHeader, msg[:hdr])
+	if len(nhv) < 1 {
+		return
+	}
+	if qos := nhv[0] - '0'; qos != 1 {
+		return
+	}
+	jsa := s.mqttGetJSAForAccount(acc)
+	if jsa == nil {
+		return
+	}
+	jsa.storeMsg(mqttStreamSubjectPrefix+subject, hdr, msg)
 }
 
 // Returns the MQTT sessions manager for a given account.
@@ -2464,7 +2502,7 @@ func (sess *mqttSession) deleteConsumer(cc *ConsumerConfig) {
 //////////////////////////////////////////////////////////////////////////////
 
 // Parse the MQTT connect protocol
-func (c *client) mqttParseConnect(r *mqttReader, pl int) (byte, *mqttConnectProto, error) {
+func (c *client) mqttParseConnect(r *mqttReader, pl int, hasMappings bool) (byte, *mqttConnectProto, error) {
 	// Protocol name
 	proto, err := r.readBytes("protocol name", false)
 	if err != nil {
@@ -2582,11 +2620,28 @@ func (c *client) mqttParseConnect(r *mqttReader, pl int) (byte, *mqttConnectProt
 		if !utf8.Valid(topic) {
 			return 0, nil, fmt.Errorf("invalid utf8 for Will topic %q", topic)
 		}
-		cp.will.topic = topic
 		// Convert MQTT topic to NATS subject
-		if cp.will.subject, err = mqttTopicToNATSPubSubject(topic); err != nil {
+		cp.will.subject, err = mqttTopicToNATSPubSubject(topic)
+		if err != nil {
 			return 0, nil, err
 		}
+		// Check for subject mapping.
+		if hasMappings {
+			// For selectMappedSubject to work, we need to have c.pa.subject set.
+			// If there is a change, c.pa.mapped will be set after the call.
+			c.pa.subject = cp.will.subject
+			if changed := c.selectMappedSubject(); changed {
+				// We need to keep track of the NATS subject/mapped in the `cp` structure.
+				cp.will.subject = c.pa.subject
+				cp.will.mapped = c.pa.mapped
+				// We also now need to map the original MQTT topic to the new topic
+				// based on the new subject.
+				topic = natsSubjectToMQTTTopic(string(cp.will.subject))
+			}
+			// Reset those now.
+			c.pa.subject, c.pa.mapped = nil, nil
+		}
+		cp.will.topic = topic
 		// Now "will" message.
 		// Ask for a copy since we need to hold to this after parsing of this protocol.
 		cp.will.message, err = r.readBytes("Will message", true)
@@ -2866,6 +2921,7 @@ func (s *Server) mqttHandleWill(c *client) {
 	pp := c.mqtt.pp
 	pp.topic = will.topic
 	pp.subject = will.subject
+	pp.mapped = will.mapped
 	pp.msg = will.message
 	pp.sz = len(will.message)
 	pp.pi = 0
@@ -2884,7 +2940,7 @@ func (s *Server) mqttHandleWill(c *client) {
 //
 //////////////////////////////////////////////////////////////////////////////
 
-func (c *client) mqttParsePub(r *mqttReader, pl int, pp *mqttPublish) error {
+func (c *client) mqttParsePub(r *mqttReader, pl int, pp *mqttPublish, hasMappings bool) error {
 	qos := mqttGetQoS(pp.flags)
 	if qos > 1 {
 		return fmt.Errorf("publish QoS=%v not supported", qos)
@@ -2908,6 +2964,23 @@ func (c *client) mqttParsePub(r *mqttReader, pl int, pp *mqttPublish) error {
 	pp.subject, err = mqttTopicToNATSPubSubject(pp.topic)
 	if err != nil {
 		return err
+	}
+
+	// Check for subject mapping.
+	if hasMappings {
+		// For selectMappedSubject to work, we need to have c.pa.subject set.
+		// If there is a change, c.pa.mapped will be set after the call.
+		c.pa.subject = pp.subject
+		if changed := c.selectMappedSubject(); changed {
+			// We need to keep track of the NATS subject/mapped in the `pp` structure.
+			pp.subject = c.pa.subject
+			pp.mapped = c.pa.mapped
+			// We also now need to map the original MQTT topic to the new topic
+			// based on the new subject.
+			pp.topic = natsSubjectToMQTTTopic(string(pp.subject))
+		}
+		// Reset those now.
+		c.pa.subject, c.pa.mapped = nil, nil
 	}
 
 	if qos > 0 {
@@ -2952,7 +3025,7 @@ func mqttPubTrace(pp *mqttPublish) string {
 // Runs from the client's readLoop.
 // No lock held on entry.
 func (s *Server) mqttProcessPub(c *client, pp *mqttPublish) error {
-	c.pa.subject, c.pa.hdr, c.pa.size, c.pa.reply = pp.subject, -1, pp.sz, nil
+	c.pa.subject, c.pa.mapped, c.pa.hdr, c.pa.size, c.pa.reply = pp.subject, pp.mapped, -1, pp.sz, nil
 
 	bb := bytes.Buffer{}
 	bb.WriteString(hdrLine)
@@ -2974,7 +3047,7 @@ func (s *Server) mqttProcessPub(c *client, pp *mqttPublish) error {
 	if _, permIssue := c.processInboundClientMsg(msgToSend); !permIssue && mqttGetQoS(pp.flags) > 0 {
 		_, err = c.mqtt.sess.jsa.storeMsg(mqttStreamSubjectPrefix+string(c.pa.subject), c.pa.hdr, msgToSend)
 	}
-	c.pa.subject, c.pa.hdr, c.pa.size, c.pa.szb, c.pa.reply = nil, -1, 0, nil, nil
+	c.pa.subject, c.pa.mapped, c.pa.hdr, c.pa.size, c.pa.szb, c.pa.reply = nil, nil, -1, 0, nil, nil
 	return err
 }
 
@@ -3362,6 +3435,10 @@ func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, _ 
 			return
 		}
 		topic = pc.mqtt.pp.topic
+		// Check for service imports where subject mapping is in play.
+		if len(pc.pa.mapped) > 0 && len(pc.pa.psi) > 0 {
+			topic = natsSubjectToMQTTTopic(subject)
+		}
 		retained = mqttIsRetained(pc.mqtt.pp.flags)
 
 	} else {
