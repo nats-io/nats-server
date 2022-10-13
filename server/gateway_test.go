@@ -568,6 +568,8 @@ func TestGatewayHeaderSupport(t *testing.T) {
 
 	// s1 should have an outbound gateway to s2.
 	waitForOutboundGateways(t, s1, 1, time.Second)
+	// and an inbound too
+	waitForInboundGateways(t, s1, 1, time.Second)
 	// s2 should have an inbound gateway
 	waitForInboundGateways(t, s2, 1, time.Second)
 	// and an outbound too
@@ -584,6 +586,9 @@ func TestGatewayHeaderSupport(t *testing.T) {
 	if _, err := cr.ReadString('\n'); err != nil {
 		t.Fatalf("Error receiving msg from server: %v\n", err)
 	}
+
+	// Wait for interest to be registered on s2
+	checkGWInterestOnlyModeInterestOn(t, s2, "A", globalAccountName, "foo")
 
 	b, _, _ := newClientForServer(s2)
 	defer b.close()
@@ -633,6 +638,8 @@ func TestGatewayHeaderDeliverStrippedMsg(t *testing.T) {
 
 	// s1 should have an outbound gateway to s2.
 	waitForOutboundGateways(t, s1, 1, time.Second)
+	// and an inbound too
+	waitForInboundGateways(t, s1, 1, time.Second)
 	// s2 should have an inbound gateway
 	waitForInboundGateways(t, s2, 1, time.Second)
 	// and an outbound too
@@ -649,6 +656,9 @@ func TestGatewayHeaderDeliverStrippedMsg(t *testing.T) {
 	if _, err := cr.ReadString('\n'); err != nil {
 		t.Fatalf("Error receiving msg from server: %v\n", err)
 	}
+
+	// Wait for interest to be registered on s2
+	checkGWInterestOnlyModeInterestOn(t, s2, "A", globalAccountName, "foo")
 
 	b, _, _ := newClientForServer(s2)
 	defer b.close()
