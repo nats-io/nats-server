@@ -786,7 +786,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	o.nextMsgSubj = fmt.Sprintf(JSApiRequestNextT, mn, o.name)
 
 	// If the user has set the inactive threshold, set that up here.
-	o.cfg.InactiveThreshold = o.updateInactiveThresholdLocked(o.cfg.InactiveThreshold)
+	o.cfg.InactiveThreshold = o.updateInactiveThresholdLocked(o.cfg.InactiveThreshold, false)
 
 	if o.isPushMode() {
 		if !o.isDurable() {
@@ -1517,7 +1517,7 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 
 	// Set InactiveThreshold if changed.
 	if cfg.InactiveThreshold != o.cfg.InactiveThreshold {
-		cfg.InactiveThreshold = o.updateInactiveThresholdLocked(cfg.InactiveThreshold)
+		cfg.InactiveThreshold = o.updateInactiveThresholdLocked(cfg.InactiveThreshold, true)
 	}
 
 	// Record new config for others that do not need special handling.
@@ -1530,34 +1530,26 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 // updateInactiveThresholdLocked sets the dthres and either resets the
 // dtmr (if there is one) or forcibly starts one, depending on the value
 // of the "forceStart" parameter. It then returns what the final value
-// for InactiveThreshold will be (so that the non-jittery default for
-// ephemeral consumers can be captured in config).
-func (o *consumer) updateInactiveThresholdLocked(threshold time.Duration) time.Duration {
-	if threshold == o.dthresh {
-		// If the threshold hasn't changed, don't do anything. It would
-		// be surprising to reset it just because some other part of the
-		// config was updated.
-		return threshold
-	}
+// for InactiveThreshold will be (so that the jittery default for ephemeral
+// consumers can be captured in config).
+func (o *consumer) updateInactiveThresholdLocked(threshold time.Duration, forceStart bool) time.Duration {
+	started := o.dtmr != nil
 	defer func() {
-		stopAndClearTimer(&o.dtmr)
-		if threshold > 0 {
+		if forceStart || started {
+			stopAndClearTimer(&o.dtmr)
 			o.dtmr = time.AfterFunc(o.dthresh, func() { o.deleteNotActive() })
 		}
 	}()
-	if o.isDurable() || threshold > 0 {
-		// Allow either:
-		// * setting durable consumers to zero or non-zero
-		// * setting ephemeral consumers to non-zero
+	if threshold > 0 {
 		o.dthresh = threshold
-		return threshold
-	} else {
+	} else if !o.isDurable() {
 		// Ephemerals will always have inactive thresholds.
 		// Add in 1 sec of jitter above and beyond the default of 5s.
 		o.dthresh = JsDeleteWaitTimeDefault + time.Duration(rand.Int63n(1000))*time.Millisecond
 		// Only stamp config with default sans jitter.
 		return JsDeleteWaitTimeDefault
 	}
+	return threshold
 }
 
 // This is a config change for the delivery subject for a
@@ -4185,7 +4177,7 @@ func (o *consumer) switchToEphemeral() {
 	o.cfg.Durable = _EMPTY_
 	store, ok := o.store.(*consumerFileStore)
 	rr := o.acc.sl.Match(o.cfg.DeliverSubject)
-	o.updateInactiveThresholdLocked(o.cfg.InactiveThreshold)
+	o.updateInactiveThresholdLocked(o.cfg.InactiveThreshold, true)
 	o.mu.Unlock()
 
 	// Update interest

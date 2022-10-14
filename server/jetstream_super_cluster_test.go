@@ -1003,7 +1003,7 @@ func TestJetStreamSuperClusterEphemeralCleanup(t *testing.T) {
 			}
 			cons := mset.getConsumers()[0]
 			cons.mu.Lock()
-			cons.dthresh = 1250 * time.Millisecond
+			cons.updateInactiveThresholdLocked(1250*time.Millisecond, false)
 			active := cons.active
 			dtimerSet := cons.dtmr != nil
 			deliver := cons.cfg.DeliverSubject
