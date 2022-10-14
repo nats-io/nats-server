@@ -873,7 +873,9 @@ func (s *Server) migrateEphemerals() {
 					cc.meta.ForwardProposal(encodeDeleteConsumerAssignment(ca))
 					// Encode state and new name.
 					ca.State = state
-					ca.Name = createConsumerName()
+					if ca.Config.Name == _EMPTY_ {
+						ca.Name = createConsumerName()
+					}
 					addEntry := encodeAddConsumerAssignmentCompressed(ca)
 					cc.meta.ForwardProposal(addEntry)
 					js.mu.Unlock()

@@ -520,7 +520,7 @@ func TestJetStreamClusterNegativeReplicas(t *testing.T) {
 	t.Run("Clustered", func(t *testing.T) { testBadReplicas(t, c.randomServer(), "TEST2") })
 }
 
-func TestJetStreamClusterUserSelectedConsName(t *testing.T) {
+func TestJetStreamClusterUserGivenConsName(t *testing.T) {
 	s := RunBasicJetStreamServer()
 	if config := s.JetStreamConfig(); config != nil {
 		defer removeDir(t, config.StoreDir)
@@ -580,4 +580,80 @@ func TestJetStreamClusterUserSelectedConsName(t *testing.T) {
 	t.Run("Standalone", func(t *testing.T) { test(t, s, "TEST", 1, "cons") })
 	t.Run("Clustered R1", func(t *testing.T) { test(t, c.randomServer(), "TEST2", 1, "cons2") })
 	t.Run("Clustered R3", func(t *testing.T) { test(t, c.randomServer(), "TEST3", 3, "cons3") })
+}
+
+func TestJetStreamClusterUserGivenConsNameWithLeaderChange(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	for i := 0; i < 100; i++ {
+		sendStreamMsg(t, nc, "foo", "msg")
+	}
+
+	consName := "myephemeral"
+	cc := &CreateConsumerRequest{
+		Stream: "TEST",
+		Config: ConsumerConfig{
+			Name:              consName,
+			FilterSubject:     "foo",
+			InactiveThreshold: time.Hour,
+		},
+	}
+	subj := fmt.Sprintf(JSApiConsumerCreateExT, "TEST", consName, "foo")
+	req, err := json.Marshal(cc)
+	require_NoError(t, err)
+
+	reply, err := nc.Request(subj, req, 2*time.Second)
+	require_NoError(t, err)
+
+	var cresp JSApiConsumerCreateResponse
+	json.Unmarshal(reply.Data, &cresp)
+	if cresp.Error != nil {
+		t.Fatalf("Unexpected error: %v", cresp.Error)
+	}
+	require_Equal(t, cresp.Name, consName)
+	require_Equal(t, cresp.Config.Name, consName)
+
+	// Consumer leader name
+	clname := cresp.ConsumerInfo.Cluster.Leader
+
+	nreq := &JSApiConsumerGetNextRequest{Batch: 1, Expires: time.Second}
+	req, err = json.Marshal(nreq)
+	require_NoError(t, err)
+
+	sub := natsSubSync(t, nc, "xxx")
+	rsubj := fmt.Sprintf(JSApiRequestNextT, "TEST", consName)
+	err = nc.PublishRequest(rsubj, "xxx", req)
+	require_NoError(t, err)
+
+	msg := natsNexMsg(t, sub, time.Second)
+	require_Equal(t, string(msg.Data), "msg")
+
+	// Shutdown the consumer leader
+	cl := c.serverByName(clname)
+	cl.Shutdown()
+
+	// Wait for a bit to be sure that we lost leadership
+	time.Sleep(250 * time.Millisecond)
+
+	// Wait for new leader
+	c.waitOnConsumerLeader(globalAccountName, "TEST", consName)
+
+	// Make sure we can still consume.
+	err = nc.PublishRequest(rsubj, "xxx", req)
+	require_NoError(t, err)
+
+	msg = natsNexMsg(t, sub, time.Second)
+	require_Equal(t, string(msg.Data), "msg")
 }
