@@ -2343,6 +2343,7 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 		if subj == _EMPTY_ {
 			var svp StoreMsg
 			if _, err := o.mset.store.LoadMsg(sseq, &svp); err != nil {
+				o.mu.RUnlock()
 				return false
 			}
 			subj = svp.subj
