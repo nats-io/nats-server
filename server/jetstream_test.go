@@ -18135,7 +18135,8 @@ func TestJetStreamConsumerInactiveThreshold(t *testing.T) {
 	}
 
 	// Test to make sure inactive threshold is enforced for all types.
-	// Ephemeral and Durable, both push and pull.
+	// Ephemeral and Durable, both push and pull, configured at creation
+	// and afterwards.
 
 	// Ephemeral Push (no bind to deliver subject)
 	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
@@ -18164,9 +18165,38 @@ func TestJetStreamConsumerInactiveThreshold(t *testing.T) {
 	require_NoError(t, err)
 	waitOnCleanup(ci)
 
+	// Durable Push (no bind to deliver subject) with an activity
+	// threshold set after creation
+	ci, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "d1",
+		DeliverSubject: "_no_bind_",
+	})
+	require_NoError(t, err)
+	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
+		Durable:           "d1",
+		DeliverSubject:    "_no_bind_",
+		InactiveThreshold: 50 * time.Millisecond,
+	})
+	require_NoError(t, err)
+	waitOnCleanup(ci)
+
 	// Durable Pull
 	ci, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
 		Durable:           "d2",
+		AckPolicy:         nats.AckExplicitPolicy,
+		InactiveThreshold: 50 * time.Millisecond,
+	})
+	require_NoError(t, err)
+	waitOnCleanup(ci)
+
+	// Durable Pull with an inactivity threshold set after creation
+	ci, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "d3",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
+		Durable:           "d3",
 		AckPolicy:         nats.AckExplicitPolicy,
 		InactiveThreshold: 50 * time.Millisecond,
 	})
