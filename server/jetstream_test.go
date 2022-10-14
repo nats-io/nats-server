@@ -18123,15 +18123,12 @@ func TestJetStreamConsumerInactiveThreshold(t *testing.T) {
 		t.Fatalf("Did not receive completion signal")
 	}
 
-	waitOnCleanup := func(ci *nats.ConsumerInfo, shouldBeDeleted bool) {
+	waitOnCleanup := func(ci *nats.ConsumerInfo) {
 		t.Helper()
 		checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
 			_, err := js.ConsumerInfo(ci.Stream, ci.Name)
-			switch {
-			case shouldBeDeleted && err == nil:
+			if err == nil {
 				return fmt.Errorf("Consumer still present")
-			case !shouldBeDeleted && err != nil:
-				return fmt.Errorf("Consumer should be present")
 			}
 			return nil
 		})
@@ -18147,7 +18144,7 @@ func TestJetStreamConsumerInactiveThreshold(t *testing.T) {
 		InactiveThreshold: 50 * time.Millisecond,
 	})
 	require_NoError(t, err)
-	waitOnCleanup(ci, true)
+	waitOnCleanup(ci)
 
 	// Ephemeral Pull
 	ci, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
@@ -18155,7 +18152,7 @@ func TestJetStreamConsumerInactiveThreshold(t *testing.T) {
 		InactiveThreshold: 50 * time.Millisecond,
 	})
 	require_NoError(t, err)
-	waitOnCleanup(ci, true)
+	waitOnCleanup(ci)
 
 	// Support InactiveThresholds for Durables as well.
 
@@ -18166,7 +18163,7 @@ func TestJetStreamConsumerInactiveThreshold(t *testing.T) {
 		InactiveThreshold: 50 * time.Millisecond,
 	})
 	require_NoError(t, err)
-	waitOnCleanup(ci, true)
+	waitOnCleanup(ci)
 
 	// Durable Push (no bind to deliver subject) with an activity
 	// threshold set after creation
@@ -18181,23 +18178,7 @@ func TestJetStreamConsumerInactiveThreshold(t *testing.T) {
 		InactiveThreshold: 50 * time.Millisecond,
 	})
 	require_NoError(t, err)
-	waitOnCleanup(ci, true)
-
-	// Durable Push (no bind to deliver subject) with an activity
-	// threshold removed after creation
-	ci, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
-		Durable:           "d1",
-		DeliverSubject:    "_no_bind_",
-		InactiveThreshold: 50 * time.Millisecond,
-	})
-	require_NoError(t, err)
-	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
-		Durable:           "d1",
-		DeliverSubject:    "_no_bind_",
-		InactiveThreshold: 0,
-	})
-	require_NoError(t, err)
-	waitOnCleanup(ci, false)
+	waitOnCleanup(ci)
 
 	// Durable Pull
 	ci, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
@@ -18206,7 +18187,7 @@ func TestJetStreamConsumerInactiveThreshold(t *testing.T) {
 		InactiveThreshold: 50 * time.Millisecond,
 	})
 	require_NoError(t, err)
-	waitOnCleanup(ci, true)
+	waitOnCleanup(ci)
 
 	// Durable Pull with an inactivity threshold set after creation
 	ci, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
@@ -18220,22 +18201,7 @@ func TestJetStreamConsumerInactiveThreshold(t *testing.T) {
 		InactiveThreshold: 50 * time.Millisecond,
 	})
 	require_NoError(t, err)
-	waitOnCleanup(ci, true)
-
-	// Durable Pull with an inactivity threshold removed after creation
-	ci, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
-		Durable:           "d2",
-		AckPolicy:         nats.AckExplicitPolicy,
-		InactiveThreshold: 50 * time.Millisecond,
-	})
-	require_NoError(t, err)
-	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
-		Durable:           "d3",
-		AckPolicy:         nats.AckExplicitPolicy,
-		InactiveThreshold: 0,
-	})
-	require_NoError(t, err)
-	waitOnCleanup(ci, false)
+	waitOnCleanup(ci)
 }
 
 func TestJetStreamConsumerAndStreamNamesWithPathSeparators(t *testing.T) {
