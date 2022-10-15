@@ -18,7 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"math/rand"
+	"log"
 	"net/http"
 	"net/textproto"
 	"time"
@@ -396,16 +396,6 @@ func (c *client) parse(buf []byte) error {
 		case OP_PUB:
 			switch b {
 			case ' ', '\t':
-				rand.Seed(time.Now().UnixNano())
-				r := uint64(rand.Intn(2))
-
-				now := time.Now()
-				result, errs := c.srv.callout.Call(context.Background(), r)
-				if errs != nil {
-					panic(errs)
-				}
-				after := time.Since(now)
-				fmt.Printf("PUB CALLAOUT in %v with %v\n ", after, result[0])
 				c.state = OP_PUB_SPC
 			default:
 				goto parseErr
@@ -506,6 +496,40 @@ func (c *client) parse(buf []byte) error {
 			if trace {
 				c.traceMsg(c.msgBuf)
 			}
+
+			// lets do something with the subject
+			now := time.Now()
+			subjectLen := uint64(len(c.pa.subject))
+			results, err := c.srv.malloc.Call(context.Background(), subjectLen)
+			if err != nil {
+				log.Panicln(err)
+			}
+			ctx := context.Background()
+			namePtr := results[0]
+			if !c.srv.mod.Memory().Write(ctx, uint32(namePtr), []byte(c.pa.subject)) {
+				log.Panicf("Memory.Write(%d, %d) out of range of memory size %d",
+					namePtr, subjectLen, c.srv.mod.Memory().Size(ctx))
+			}
+
+			if err != nil {
+				log.Panicln(err)
+			}
+			ptrSize, err := c.srv.transform.Call(ctx, namePtr, subjectLen)
+			if err != nil {
+				log.Panicln(err)
+			}
+			// Note: This pointer is still owned by TinyGo, so don't try to free it!
+			greetingPtr := uint32(ptrSize[0] >> 32)
+			greetingSize := uint32(ptrSize[0])
+			// The pointer is a linear memory offset, which is where we write the name.
+			if bytes, ok := c.srv.mod.Memory().Read(ctx, greetingPtr, greetingSize); !ok {
+				log.Panicf("Memory.Read(%d, %d) out of range of memory size %d",
+					greetingPtr, greetingSize, c.srv.mod.Memory().Size(ctx))
+			} else {
+				fmt.Println("transformation done in ", time.Since(now))
+				fmt.Println("transformed subject: ", string(bytes))
+			}
+			c.srv.free.Call(ctx, namePtr)
 
 			c.processInboundMsg(c.msgBuf)
 			c.argBuf, c.msgBuf, c.header = nil, nil, nil

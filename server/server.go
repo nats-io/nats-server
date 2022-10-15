@@ -110,7 +110,11 @@ type Info struct {
 
 // Server is our main struct.
 type Server struct {
-	callout api.Function
+	callout   api.Function
+	transform api.Function
+	malloc    api.Function
+	free      api.Function
+	mod       api.Module
 	// Fields accessed with atomic operations need to be 64-bit aligned
 	gcid uint64
 	// How often user logon fails due to the issuer account not being pinned.
@@ -1641,20 +1645,19 @@ func (s *Server) Start() {
 		panic(err)
 	}
 
-	// Instantiate the guest Wasm into the same runtime. It exports the `add`
-	// function, implemented in WebAssembly.
+	// Instantiate the guest Wasm into the same runtime.
 	mod, err := r.InstantiateModuleFromBinary(ctx, wasmMod)
 	if err != nil {
 		log.Panicln(err)
 	}
+	s.mod = mod
 
-	callout := mod.ExportedFunction("callout")
-	result, err := callout.Call(ctx, 1)
-	if err != nil {
-		panic(err)
-	}
-	s.callout = callout
-	fmt.Println("result from wasm ", result[0])
+	// register few functions
+	s.malloc = mod.ExportedFunction("malloc")
+	s.free = mod.ExportedFunction("free")
+
+	s.callout = mod.ExportedFunction("callout")
+	s.transform = mod.ExportedFunction("transform")
 
 	// Check for insecure configurations.
 	s.checkAuthforWarnings()
