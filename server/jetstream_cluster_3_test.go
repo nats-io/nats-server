@@ -17,11 +17,14 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -716,4 +719,82 @@ func TestJetStreamClusterMirrorCrossDomainOnLeadnodeNoSystemShare(t *testing.T) 
 		}
 		return fmt.Errorf("State not current: %+v", si.State)
 	})
+}
+
+func TestJetStreamClusterFirstSeqMismatch(t *testing.T) {
+	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "C", 3,
+		func(serverName, clusterName, storeDir, conf string) string {
+			tf := createFile(t, "")
+			logName := tf.Name()
+			tf.Close()
+			return fmt.Sprintf("%s\nlogfile: '%s'", conf, logName)
+		})
+	defer c.shutdown()
+
+	rs := c.randomServer()
+	nc, js := jsClientConnect(t, rs)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+		MaxAge:   2 * time.Second,
+	})
+	require_NoError(t, err)
+
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	mset, err := c.streamLeader(globalAccountName, "TEST").GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	node := mset.raftNode()
+
+	nl := c.randomNonStreamLeader(globalAccountName, "TEST")
+	if rs == nl {
+		nc.Close()
+		for _, s := range c.servers {
+			if s != nl {
+				nc, _ = jsClientConnect(t, s)
+				defer nc.Close()
+				break
+			}
+		}
+	}
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	ch := make(chan struct{})
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			sendStreamMsg(t, nc, "foo", "msg")
+			select {
+			case <-ch:
+				return
+			default:
+			}
+		}
+	}()
+
+	time.Sleep(2500 * time.Millisecond)
+	nl.Shutdown()
+
+	time.Sleep(500 * time.Millisecond)
+	node.InstallSnapshot(mset.stateSnapshot())
+	time.Sleep(3500 * time.Millisecond)
+
+	c.restartServer(nl)
+	c.waitOnAllCurrent()
+
+	close(ch)
+	wg.Wait()
+
+	log := nl.getOpts().LogFile
+	nl.Shutdown()
+
+	content, err := os.ReadFile(log)
+	require_NoError(t, err)
+	if bytes.Contains(content, []byte(errFirstSequenceMismatch.Error())) {
+		t.Fatalf("First sequence mismatch occurred!")
+	}
 }
