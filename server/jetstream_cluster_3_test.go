@@ -657,3 +657,63 @@ func TestJetStreamClusterUserGivenConsNameWithLeaderChange(t *testing.T) {
 	msg = natsNexMsg(t, sub, time.Second)
 	require_Equal(t, string(msg.Data), "msg")
 }
+
+func TestJetStreamClusterMirrorCrossDomainOnLeadnodeNoSystemShare(t *testing.T) {
+	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: HUB, store_dir:", 1)
+	c := createJetStreamCluster(t, tmpl, "CORE", _EMPTY_, 3, 18033, true)
+	defer c.shutdown()
+
+	tmpl = strings.Replace(jsClusterTemplWithSingleLeafNode, "store_dir:", "domain: SPOKE, store_dir:", 1)
+	ln := c.createLeafNodeWithTemplateNoSystem("LN-SPOKE", tmpl)
+	defer ln.Shutdown()
+
+	checkLeafNodeConnectedCount(t, ln, 1)
+
+	// Create origin stream in hub.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"foo"},
+		MaxMsgsPerSubject: 10,
+		AllowDirect:       true,
+	})
+	require_NoError(t, err)
+
+	// Now create the mirror on the leafnode.
+	lnc, ljs := jsClientConnect(t, ln)
+	defer lnc.Close()
+
+	_, err = ljs.AddStream(&nats.StreamConfig{
+		Name:              "M",
+		MaxMsgsPerSubject: 10,
+		AllowDirect:       true,
+		MirrorDirect:      true,
+		Mirror: &nats.StreamSource{
+			Name: "TEST",
+			External: &nats.ExternalStream{
+				APIPrefix: "$JS.HUB.API",
+			},
+		},
+	})
+	require_NoError(t, err)
+
+	// Publish to the hub stream and make sure the mirror gets those messages.
+	for i := 0; i < 20; i++ {
+		js.Publish("foo", nil)
+	}
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.Msgs == 10)
+
+	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+		si, err := ljs.StreamInfo("M")
+		require_NoError(t, err)
+		if si.State.Msgs == 10 {
+			return nil
+		}
+		return fmt.Errorf("State not current: %+v", si.State)
+	})
+}

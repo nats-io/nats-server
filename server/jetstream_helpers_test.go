@@ -890,6 +890,13 @@ var jsLeafFrag = `
 		]
 	}
 `
+var jsLeafNoSysFrag = `
+	leaf {
+		remotes [
+			{ urls: [ %s ] }
+		]
+	}
+`
 
 func (c *cluster) createLeafNodes(clusterName string, numServers int, domain string) *cluster {
 	c.t.Helper()
@@ -930,6 +937,16 @@ func (c *cluster) createLeafNodeWithTemplate(name, template string) *Server {
 	return s
 }
 
+func (c *cluster) createLeafNodeWithTemplateNoSystem(name, template string) *Server {
+	c.t.Helper()
+	tmpl := c.createLeafSolicitNoSystem(template)
+	conf := fmt.Sprintf(tmpl, name, createDir(c.t, JetStreamStoreDir))
+	s, o := RunServerWithConfig(createConfFile(c.t, []byte(conf)))
+	c.servers = append(c.servers, s)
+	c.opts = append(c.opts, o)
+	return s
+}
+
 // Helper to generate the leaf solicit configs.
 func (c *cluster) createLeafSolicit(tmpl string) string {
 	c.t.Helper()
@@ -948,6 +965,21 @@ func (c *cluster) createLeafSolicit(tmpl string) string {
 	lnsc := strings.Join(lnss, ", ")
 	lconf := fmt.Sprintf(jsLeafFrag, lnc, lnsc)
 	return strings.Replace(tmpl, "{{leaf}}", lconf, 1)
+}
+
+func (c *cluster) createLeafSolicitNoSystem(tmpl string) string {
+	c.t.Helper()
+
+	// Create our leafnode cluster template first.
+	var lns string
+	for _, s := range c.servers {
+		if s.ClusterName() != c.name {
+			continue
+		}
+		ln := s.getOpts().LeafNode
+		lns = fmt.Sprintf("nats://%s:%d", ln.Host, ln.Port)
+	}
+	return strings.Replace(tmpl, "{{leaf}}", fmt.Sprintf(jsLeafNoSysFrag, lns), 1)
 }
 
 func (c *cluster) createLeafNodesWithTemplateMixedMode(template, clusterName string, numJsServers, numNonServers int, doJSConfig bool) *cluster {
