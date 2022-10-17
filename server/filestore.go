@@ -3160,7 +3160,9 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 
 	// Check if we are tracking per subject for our simple state.
 	if len(subj) > 0 && !mb.noTrack {
-		mb.ensurePerSubjectInfoLoaded()
+		if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
+			return fmt.Errorf("error loading fss: %w", err)
+		}
 		if ss := mb.fss[subj]; ss != nil {
 			ss.Msgs++
 			ss.Last = seq
