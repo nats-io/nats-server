@@ -2431,6 +2431,8 @@ func TestJetStreamClusterRaceOnRAFTCreate(t *testing.T) {
 		t.Fatalf("Error creating stream: %v", err)
 	}
 
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
 	js, err = nc.JetStream(nats.MaxWait(2 * time.Second))
 	if err != nil {
 		t.Fatal(err)
@@ -2440,12 +2442,12 @@ func TestJetStreamClusterRaceOnRAFTCreate(t *testing.T) {
 	wg := sync.WaitGroup{}
 	wg.Add(size)
 	for i := 0; i < size; i++ {
-		go func(i int) {
+		go func() {
 			defer wg.Done()
-			if _, err := js.PullSubscribe("foo", "shared"); err != nil {
-				t.Errorf("Unexpected error on %v: %v", i, err)
-			}
-		}(i)
+			// We don't care about possible failures here, we just want
+			// parallel creation of a consumer.
+			js.PullSubscribe("foo", "shared")
+		}()
 	}
 	wg.Wait()
 }
