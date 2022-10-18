@@ -168,6 +168,9 @@ type msgBlock struct {
 	flusher bool
 	noTrack bool
 	closed  bool
+
+	// Used to mock write failures.
+	mockWriteErr bool
 }
 
 // Write through caching layer that is also used on loading messages.
@@ -3095,6 +3098,21 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 		}
 	}
 
+	// Check if we are tracking per subject for our simple state.
+	// Do this before changing the cache that would trigger a flush pending msgs call
+	// if we needed to regenerate the per subject info.
+	if len(subj) > 0 && !mb.noTrack {
+		if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
+			return err
+		}
+		if ss := mb.fss[subj]; ss != nil {
+			ss.Msgs++
+			ss.Last = seq
+		} else {
+			mb.fss[subj] = &SimpleState{Msgs: 1, First: seq, Last: seq}
+		}
+	}
+
 	// Indexing
 	index := len(mb.cache.buf) + int(mb.cache.off)
 
@@ -3158,19 +3176,6 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 	// Decide if we write index info if flushing in place.
 	writeIndex := ts-mb.lwits > wiThresh
 
-	// Check if we are tracking per subject for our simple state.
-	if len(subj) > 0 && !mb.noTrack {
-		if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
-			return fmt.Errorf("error loading fss: %w", err)
-		}
-		if ss := mb.fss[subj]; ss != nil {
-			ss.Msgs++
-			ss.Last = seq
-		} else {
-			mb.fss[subj] = &SimpleState{Msgs: 1, First: seq, Last: seq}
-		}
-	}
-
 	// Accounting
 	mb.updateAccounting(seq, ts, rl)
 
@@ -3186,9 +3191,9 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 			return err
 		}
 		if writeIndex {
-			if err := mb.writeIndexInfoLocked(); err != nil {
-				return err
-			}
+			// If this fails still proceed on since the write above succeeded.
+			// We can recover this condition.
+			mb.writeIndexInfoLocked()
 		}
 	} else {
 		// Kick the flusher here.
@@ -3485,6 +3490,19 @@ func (mb *msgBlock) flushPendingMsgs() error {
 	return err
 }
 
+// Write function for actual data.
+// mb.mfd should not be nil.
+// Lock should held.
+func (mb *msgBlock) writeAt(buf []byte, woff int64) (int, error) {
+	// Used to mock write failures.
+	if mb.mockWriteErr {
+		// Reset on trip.
+		mb.mockWriteErr = false
+		return 0, errors.New("mock write error")
+	}
+	return mb.mfd.WriteAt(buf, woff)
+}
+
 // flushPendingMsgsLocked writes out any messages for this message block.
 // Lock should be held.
 func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
@@ -3529,15 +3547,13 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 
 	// Append new data to the message block file.
 	for lbb := lob; lbb > 0; lbb = len(buf) {
-		n, err := mb.mfd.WriteAt(buf, woff)
+		n, err := mb.writeAt(buf, woff)
 		if err != nil {
+			mb.removePerSubjectInfoLocked()
 			mb.removeIndexFileLocked()
 			mb.dirtyCloseWithRemove(false)
-			if !isOutOfSpaceErr(err) {
-				if ld, err := mb.rebuildStateLocked(); err != nil && ld != nil {
-					fsLostData = ld
-				}
-			}
+			fsLostData, _ := mb.rebuildStateLocked()
+			mb.werr = err
 			return fsLostData, err
 		}
 		// Update our write offset.
@@ -3551,8 +3567,8 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 		}
 	}
 
-	// set write err to any error.
-	mb.werr = err
+	// Clear any error.
+	mb.werr = nil
 
 	// Cache may be gone.
 	if mb.cache == nil || mb.mfd == nil {
@@ -4790,9 +4806,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 			}
 			// Make sure to remove fss state.
 			smb.fss = nil
-			if smb.sfn != _EMPTY_ {
-				os.Remove(smb.sfn)
-			}
+			smb.removePerSubjectInfoLocked()
 			smb.clearCacheAndOffset()
 			smb.rbytes = uint64(len(nbuf))
 		}
@@ -4932,6 +4946,12 @@ func (mb *msgBlock) removeIndexFileLocked() {
 	}
 }
 
+func (mb *msgBlock) removePerSubjectInfoLocked() {
+	if mb.sfn != _EMPTY_ {
+		os.Remove(mb.sfn)
+	}
+}
+
 // Will add a new msgBlock.
 // Lock should be held.
 func (fs *fileStore) addMsgBlock(mb *msgBlock) {
@@ -4982,9 +5002,7 @@ func (mb *msgBlock) closeAndKeepIndex() {
 
 	// Make sure to remove fss state.
 	mb.fss = nil
-	if mb.sfn != _EMPTY_ {
-		os.Remove(mb.sfn)
-	}
+	mb.removePerSubjectInfoLocked()
 
 	// If we are encrypted we should reset our bek counter.
 	if mb.bek != nil {
