@@ -22,6 +22,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/bits"
@@ -4676,5 +4677,50 @@ func TestFileStoreFilteredFirstMatchingBug(t *testing.T) {
 	sm, _, err := fs.LoadNextMsg("foo.foo", false, 4, nil)
 	if err == nil || sm != nil {
 		t.Fatalf("Loaded filtered message with wrong subject, wanted %q got %q", "foo.foo", sm.subj)
+	}
+}
+
+func TestFileStoreOutOfSpaceRebuildState(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer os.RemoveAll(storeDir)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("foo", nil, []byte("A"))
+	require_NoError(t, err)
+
+	_, _, err = fs.StoreMsg("bar", nil, []byte("B"))
+	require_NoError(t, err)
+
+	// Grab state.
+	state := fs.State()
+	ss := fs.SubjectsState(">")
+
+	// Set mock out of space error to trip.
+	fs.mu.RLock()
+	mb := fs.lmb
+	fs.mu.RUnlock()
+
+	mb.mu.Lock()
+	mb.mockWriteErr = true
+	mb.mu.Unlock()
+
+	_, _, err = fs.StoreMsg("baz", nil, []byte("C"))
+	require_Error(t, err, errors.New("mock write error"))
+
+	nstate := fs.State()
+	nss := fs.SubjectsState(">")
+
+	if !reflect.DeepEqual(state, nstate) {
+		t.Fatalf("State expected to be\n  %+v\nvs\n  %+v", state, nstate)
+	}
+
+	if !reflect.DeepEqual(ss, nss) {
+		t.Fatalf("Subject state expected to be\n  %+v\nvs\n  %+v", ss, nss)
 	}
 }
