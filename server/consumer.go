@@ -32,6 +32,12 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// Headers sent with Request Timeout
+const (
+	JSPullRequestPendingMsgs  = "Nats-Pending-Messages"
+	JSPullRequestPendingBytes = "Nats-Pending-Bytes"
+)
+
 type ConsumerInfo struct {
 	Stream         string          `json:"stream_name"`
 	Name           string          `json:"name"`
@@ -2626,7 +2632,7 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 			} else {
 				// Since we can't send that message to the requestor, we need to
 				// notify that we are closing the request.
-				hdr := []byte("NATS/1.0 409 Message Size Exceeds MaxBytes\r\n\r\n")
+				hdr := []byte(fmt.Sprintf("NATS/1.0 409 Message Size Exceeds MaxBytes\r\n%s: %d\r\n%s: %d\r\n\r\n", JSPullRequestPendingMsgs, wr.n, JSPullRequestPendingBytes, wr.b))
 				o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 				// Remove the current one, no longer valid due to max bytes limit.
 				o.waiting.removeCurrent()
@@ -2649,7 +2655,7 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 			}
 		}
 		if wr.interest != wr.reply {
-			hdr := []byte("NATS/1.0 408 Interest Expired\r\n\r\n")
+			hdr := []byte(fmt.Sprintf("NATS/1.0 408 Interest Expired\r\n%s: %d\r\n%s: %d\r\n\r\n", JSPullRequestPendingMsgs, wr.n, JSPullRequestPendingBytes, wr.b))
 			o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		}
 		// Remove the current one, no longer valid.
@@ -2955,7 +2961,7 @@ func (o *consumer) processWaiting(eos bool) (int, int, int, time.Time) {
 		wr := wq.reqs[rp]
 		// Check expiration.
 		if (eos && wr.noWait && wr.d > 0) || (!wr.expires.IsZero() && now.After(wr.expires)) {
-			hdr := []byte("NATS/1.0 408 Request Timeout\r\n\r\n")
+			hdr := []byte(fmt.Sprintf("NATS/1.0 408 Request Timeout\r\n%s: %d\r\n%s: %d\r\n\r\n", JSPullRequestPendingMsgs, wr.n, JSPullRequestPendingBytes, wr.b))
 			o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 			remove(wr, rp)
 			i++
