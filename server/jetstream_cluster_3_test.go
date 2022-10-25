@@ -611,6 +611,7 @@ func TestJetStreamClusterUserGivenConsNameWithLeaderChange(t *testing.T) {
 			Name:              consName,
 			FilterSubject:     "foo",
 			InactiveThreshold: time.Hour,
+			Replicas:          3,
 		},
 	}
 	subj := fmt.Sprintf(JSApiConsumerCreateExT, "TEST", consName, "foo")
@@ -651,6 +652,7 @@ func TestJetStreamClusterUserGivenConsNameWithLeaderChange(t *testing.T) {
 	time.Sleep(250 * time.Millisecond)
 
 	// Wait for new leader
+	c.waitOnStreamLeader(globalAccountName, "TEST")
 	c.waitOnConsumerLeader(globalAccountName, "TEST", consName)
 
 	// Make sure we can still consume.
