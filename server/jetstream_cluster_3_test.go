@@ -798,3 +798,139 @@ func TestJetStreamClusterFirstSeqMismatch(t *testing.T) {
 		t.Fatalf("First sequence mismatch occurred!")
 	}
 }
+
+func TestJetStreamClusterConsumerInactiveThreshold(t *testing.T) {
+	// Create a standalone, a cluster, and a super cluster
+
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	sc := createJetStreamSuperCluster(t, 3, 2)
+	defer sc.shutdown()
+
+	test := func(t *testing.T, c *cluster, s *Server, replicas int) {
+		if c != nil {
+			s = c.randomServer()
+		}
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		sname := fmt.Sprintf("TEST%d", replicas)
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     sname,
+			Subjects: []string{sname},
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+
+		if c != nil {
+			c.waitOnStreamLeader(globalAccountName, sname)
+		}
+
+		for i := 0; i < 10; i++ {
+			js.PublishAsync(sname, []byte("ok"))
+		}
+		select {
+		case <-js.PublishAsyncComplete():
+		case <-time.After(5 * time.Second):
+			t.Fatalf("Did not receive completion signal")
+		}
+
+		waitOnCleanup := func(ci *nats.ConsumerInfo) {
+			t.Helper()
+			checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+				_, err := js.ConsumerInfo(ci.Stream, ci.Name)
+				if err == nil {
+					return fmt.Errorf("Consumer still present")
+				}
+				return nil
+			})
+		}
+
+		// Test to make sure inactive threshold is enforced for all types.
+		// Ephemeral and Durable, both push and pull.
+
+		// Ephemeral Push (no bind to deliver subject)
+		ci, err := js.AddConsumer(sname, &nats.ConsumerConfig{
+			DeliverSubject:    "_no_bind_",
+			InactiveThreshold: 50 * time.Millisecond,
+		})
+		require_NoError(t, err)
+		waitOnCleanup(ci)
+
+		// Ephemeral Pull
+		ci, err = js.AddConsumer(sname, &nats.ConsumerConfig{
+			AckPolicy:         nats.AckExplicitPolicy,
+			InactiveThreshold: 50 * time.Millisecond,
+		})
+		require_NoError(t, err)
+		waitOnCleanup(ci)
+
+		// Support InactiveThresholds for Durables as well.
+
+		// Durable Push (no bind to deliver subject)
+		ci, err = js.AddConsumer(sname, &nats.ConsumerConfig{
+			Durable:           "d1",
+			DeliverSubject:    "_no_bind_",
+			InactiveThreshold: 50 * time.Millisecond,
+		})
+		require_NoError(t, err)
+		waitOnCleanup(ci)
+
+		// Durable Push (no bind to deliver subject) with an activity
+		// threshold set after creation
+		ci, err = js.AddConsumer(sname, &nats.ConsumerConfig{
+			Durable:        "d2",
+			DeliverSubject: "_no_bind_",
+		})
+		require_NoError(t, err)
+		if c != nil {
+			c.waitOnConsumerLeader(globalAccountName, sname, "d2")
+		}
+		_, err = js.UpdateConsumer(sname, &nats.ConsumerConfig{
+			Durable:           "d2",
+			DeliverSubject:    "_no_bind_",
+			InactiveThreshold: 50 * time.Millisecond,
+		})
+		require_NoError(t, err)
+		waitOnCleanup(ci)
+
+		// Durable Pull
+		ci, err = js.AddConsumer(sname, &nats.ConsumerConfig{
+			Durable:           "d3",
+			AckPolicy:         nats.AckExplicitPolicy,
+			InactiveThreshold: 50 * time.Millisecond,
+		})
+		require_NoError(t, err)
+		waitOnCleanup(ci)
+
+		// Durable Pull with an inactivity threshold set after creation
+		ci, err = js.AddConsumer(sname, &nats.ConsumerConfig{
+			Durable:   "d4",
+			AckPolicy: nats.AckExplicitPolicy,
+		})
+		require_NoError(t, err)
+		if c != nil {
+			c.waitOnConsumerLeader(globalAccountName, sname, "d4")
+		}
+		_, err = js.UpdateConsumer(sname, &nats.ConsumerConfig{
+			Durable:           "d4",
+			AckPolicy:         nats.AckExplicitPolicy,
+			InactiveThreshold: 50 * time.Millisecond,
+		})
+		require_NoError(t, err)
+		waitOnCleanup(ci)
+	}
+
+	t.Run("standalone", func(t *testing.T) { test(t, nil, s, 1) })
+	t.Run("cluster-r1", func(t *testing.T) { test(t, c, nil, 1) })
+	t.Run("cluster-r3", func(t *testing.T) { test(t, c, nil, 3) })
+	t.Run("super-cluster-r1", func(t *testing.T) { test(t, sc.randomCluster(), nil, 1) })
+	t.Run("super-cluster-r3", func(t *testing.T) { test(t, sc.randomCluster(), nil, 3) })
+}

@@ -785,16 +785,8 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	o.ackSubj = fmt.Sprintf("%s.*.*.*.*.*", pre)
 	o.nextMsgSubj = fmt.Sprintf(JSApiRequestNextT, mn, o.name)
 
-	// If the user has set the inactive threshold, set that up here.
-	if o.cfg.InactiveThreshold > 0 {
-		o.dthresh = o.cfg.InactiveThreshold
-	} else if !o.isDurable() {
-		// Ephemerals will always have inactive thresholds.
-		// Add in 1 sec of jitter above and beyond the default of 5s.
-		o.dthresh = JsDeleteWaitTimeDefault + time.Duration(rand.Int63n(1000))*time.Millisecond
-		// Only stamp config with default sans jitter.
-		o.cfg.InactiveThreshold = JsDeleteWaitTimeDefault
-	}
+	// Check/update the inactive threshold
+	o.updateInactiveThreshold(&o.cfg)
 
 	if o.isPushMode() {
 		if !o.isDurable() {
@@ -843,6 +835,23 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	}
 
 	return o, nil
+}
+
+// Updates the consumer `dthresh` delete timer duration and set
+// cfg.InactiveThreshold to JsDeleteWaitTimeDefault for ephemerals
+// if not explicitly already specified by the user.
+// Lock should be held.
+func (o *consumer) updateInactiveThreshold(cfg *ConsumerConfig) {
+	// Ephemerals will always have inactive thresholds.
+	if !o.isDurable() && cfg.InactiveThreshold <= 0 {
+		// Add in 1 sec of jitter above and beyond the default of 5s.
+		o.dthresh = JsDeleteWaitTimeDefault + time.Duration(rand.Int63n(1000))*time.Millisecond
+		// Only stamp config with default sans jitter.
+		cfg.InactiveThreshold = JsDeleteWaitTimeDefault
+	} else if cfg.InactiveThreshold >= 0 {
+		// We accept InactiveThreshold be set to 0 (for durables)
+		o.dthresh = cfg.InactiveThreshold
+	}
 }
 
 func (o *consumer) consumerAssignment() *consumerAssignment {
@@ -1237,7 +1246,9 @@ func (o *consumer) updateDeliveryInterest(localInterest bool) bool {
 	}
 
 	// If the delete timer has already been set do not clear here and return.
-	if o.dtmr != nil && !o.isDurable() && !interest {
+	// Note that durable can now have an inactive threshold, so don't check
+	// for durable status, instead check for dthresh > 0.
+	if o.dtmr != nil && o.dthresh > 0 && !interest {
 		return true
 	}
 
@@ -1521,6 +1532,18 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 	// Set MaxDeliver if changed
 	if cfg.MaxDeliver != o.cfg.MaxDeliver {
 		o.maxdc = uint64(cfg.MaxDeliver)
+	}
+	// Set InactiveThreshold if changed.
+	if val := cfg.InactiveThreshold; val != o.cfg.InactiveThreshold {
+		o.updateInactiveThreshold(cfg)
+		// Clear and restart timer only if we are the leader.
+		if o.isLeader() {
+			stopAndClearTimer(&o.dtmr)
+			// Restart only if new value is > 0
+			if o.dthresh > 0 {
+				o.dtmr = time.AfterFunc(o.dthresh, func() { o.deleteNotActive() })
+			}
+		}
 	}
 
 	// Record new config for others that do not need special handling.
@@ -4157,14 +4180,7 @@ func (o *consumer) switchToEphemeral() {
 	store, ok := o.store.(*consumerFileStore)
 	rr := o.acc.sl.Match(o.cfg.DeliverSubject)
 	// Setup dthresh.
-	if o.dthresh == 0 {
-		if o.cfg.InactiveThreshold != 0 {
-			o.dthresh = o.cfg.InactiveThreshold
-		} else {
-			// Add in 1 sec of jitter above and beyond the default of 5s.
-			o.dthresh = JsDeleteWaitTimeDefault + time.Duration(rand.Int63n(1000))*time.Millisecond
-		}
-	}
+	o.updateInactiveThreshold(&o.cfg)
 	o.mu.Unlock()
 
 	// Update interest
