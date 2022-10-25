@@ -2608,8 +2608,6 @@ func (wq *waitQueue) compact() {
 // Return the replies for our pending requests.
 // No-op if push consumer or invalid etc.
 func (o *consumer) pendingRequestReplies() []string {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
 	if o.waiting == nil {
 		return nil
 	}
