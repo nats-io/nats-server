@@ -6636,8 +6636,8 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// TODO(dlc) - Make this a limit where we drop messages to protect ourselves, but allow to be configured.
 	const warnThreshold = 10_000
 	if mset.clseq-lseq > warnThreshold {
-		err := fmt.Errorf("JetStream stream '%s > %s' has high message lag", jsa.acc().Name, mset.cfg.Name)
-		s.RateLimitWarnf(err.Error())
+		lerr := fmt.Errorf("JetStream stream '%s > %s' has high message lag", jsa.acc().Name, mset.cfg.Name)
+		s.RateLimitWarnf(lerr.Error())
 	}
 	mset.clMu.Unlock()
 
