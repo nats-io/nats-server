@@ -16868,11 +16868,19 @@ func TestJetStreamConsumerStreamUpdate(t *testing.T) {
 		_, err = js.AddStream(&nats.StreamConfig{Name: "foo", Duplicates: 1 * time.Minute, Replicas: replica})
 		defer js.DeleteStream("foo")
 		require_NoError(t, err)
+		// Update with no change
 		_, err = js.UpdateStream(&nats.StreamConfig{Name: "foo", Duplicates: 1 * time.Minute, Replicas: replica})
+		require_NoError(t, err)
+		// Update with change
+		_, err = js.UpdateStream(&nats.StreamConfig{Description: "stream", Name: "foo", Duplicates: 1 * time.Minute, Replicas: replica})
 		require_NoError(t, err)
 		_, err = js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dur1", AckPolicy: nats.AckExplicitPolicy})
 		require_NoError(t, err)
+		// Update with no change
 		_, err = js.UpdateConsumer("foo", &nats.ConsumerConfig{Durable: "dur1", AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+		// Update with change
+		_, err = js.UpdateConsumer("foo", &nats.ConsumerConfig{Description: "consumer", Durable: "dur1", AckPolicy: nats.AckExplicitPolicy})
 		require_NoError(t, err)
 	}
 	t.Run("clustered", func(t *testing.T) {

@@ -3486,8 +3486,8 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 			}
 			// If we look like we are scaling up, let's send our current state to the group.
 			sendState = len(ca.Group.Peers) > len(oca.Group.Peers) && leader
-			// Check if this is an update.
-			isConfigUpdate = reflect.DeepEqual(oca.Config, ca.Config)
+			// Signal that this is an update
+			isConfigUpdate = true
 		}
 		n := rg.node
 		js.mu.Unlock()
@@ -3575,7 +3575,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 			// Single replica consumer, process manually here.
 			js.mu.Lock()
 			// Force response in case we think this is an update.
-			if isConfigUpdate {
+			if !js.metaRecovering && isConfigUpdate {
 				ca.responded = false
 			}
 			js.mu.Unlock()
