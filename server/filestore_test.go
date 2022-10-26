@@ -4724,3 +4724,77 @@ func TestFileStoreOutOfSpaceRebuildState(t *testing.T) {
 		t.Fatalf("Subject state expected to be\n  %+v\nvs\n  %+v", ss, nss)
 	}
 }
+
+func TestFileStoreRebuildStateProperlyWithMaxMsgsPerSubject(t *testing.T) {
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 4096},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo", "bar", "baz"}, Storage: FileStorage, MaxMsgsPer: 1},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Send one to baz at beginning.
+	_, _, err = fs.StoreMsg("baz", nil, nil)
+	require_NoError(t, err)
+
+	ns := 1000
+	for i := 1; i <= ns; i++ {
+		_, _, err := fs.StoreMsg("foo", nil, nil)
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("bar", nil, nil)
+		require_NoError(t, err)
+	}
+
+	checkState := func() {
+		var ss StreamState
+		fs.FastState(&ss)
+		if ss.NumSubjects != 3 {
+			t.Fatalf("Expected NumSubjects of 3, got %d", ss.NumSubjects)
+		}
+		if ss.Msgs != 3 {
+			t.Fatalf("Expected NumMsgs of 3, got %d", ss.Msgs)
+		}
+	}
+
+	checkState()
+
+	// Stop filestore but invalidate the idx files by removing them.
+	// This will simulate a server panic or kill -9 scenario.
+	fs.Stop()
+
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.removeIndexFile()
+	}
+	fs.mu.RUnlock()
+
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 4096},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo", "bar", "baz"}, Storage: FileStorage, MaxMsgsPer: 1},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	checkState()
+
+	// Make sure we wrote all index files from recovery.
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.Lock()
+		if err := mb.readIndexInfo(); err != nil {
+			mb.mu.Unlock()
+			fs.mu.RUnlock()
+			t.Fatalf("Unexpected error reading index info: %v", err)
+		}
+		if mb.msgs == 0 {
+			mb.mu.Unlock()
+			fs.mu.RUnlock()
+			t.Fatalf("Expected msgs for all blks, got none for index %d", mb.index)
+		}
+		mb.mu.Unlock()
+	}
+	fs.mu.RUnlock()
+}

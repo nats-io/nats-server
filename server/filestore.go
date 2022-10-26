@@ -1178,6 +1178,11 @@ func (fs *fileStore) recoverMsgs() error {
 		fs.startAgeChk()
 	}
 
+	// If we have max msgs per subject make sure the is also enforced.
+	if fs.cfg.MaxMsgsPer > 0 {
+		fs.enforceMsgPerSubjectLimit()
+	}
+
 	return nil
 }
 
@@ -2133,6 +2138,71 @@ func (fs *fileStore) enforceBytesLimit() {
 			fs.rebuildFirst()
 			return
 		}
+	}
+}
+
+// Will make sure we have limits honored for max msgs per subject on recovery.
+// We will make sure to go through all msg blocks etc. but in practice this
+// will most likely only be the last one, so can take a more conservative approach.
+// Lock should be held.
+func (fs *fileStore) enforceMsgPerSubjectLimit() {
+	maxMsgsPer := uint64(fs.cfg.MaxMsgsPer)
+
+	// We want to suppress callbacks from remove during this process
+	// since these should have already been deleted and accounted for.
+	cb := fs.scb
+	fs.scb = nil
+	defer func() { fs.scb = cb }()
+
+	// collect all that are not correct.
+	needAttention := make(map[string]*psi)
+	for subj, psi := range fs.psim {
+		if psi.total > maxMsgsPer {
+			needAttention[subj] = psi
+		}
+	}
+
+	// Collect all the msgBlks we alter.
+	blks := make(map[*msgBlock]struct{})
+
+	// For re-use below.
+	var sm StoreMsg
+
+	// Walk all subjects that need attention here.
+	for subj, info := range needAttention {
+		total, start, stop := info.total, info.fblk, info.lblk
+
+		for i := start; i <= stop; i++ {
+			mb := fs.bim[i]
+			if mb == nil {
+				continue
+			}
+			// Grab the ss entry for this subject in case sparse.
+			mb.mu.Lock()
+			mb.ensurePerSubjectInfoLoaded()
+			ss := mb.fss[subj]
+			mb.mu.Unlock()
+
+			for seq := ss.First; seq <= ss.Last && total > maxMsgsPer; {
+				m, _, err := mb.firstMatching(subj, false, seq, &sm)
+				if err == nil {
+					seq = m.seq + 1
+					if removed, _ := fs.removeMsg(m.seq, false, false); removed {
+						total--
+						blks[mb] = struct{}{}
+					}
+				} else {
+					// On error just do single increment.
+					seq++
+				}
+			}
+		}
+	}
+
+	// Now write updated index for all affected msgBlks.
+	for mb := range blks {
+		mb.writeIndexInfo()
+		mb.tryForceExpireCacheLocked()
 	}
 }
 
