@@ -2182,7 +2182,9 @@ func (fs *fileStore) enforceMsgPerSubjectLimit() {
 			mb.ensurePerSubjectInfoLoaded()
 			ss := mb.fss[subj]
 			mb.mu.Unlock()
-
+			if ss == nil {
+				continue
+			}
 			for seq := ss.First; seq <= ss.Last && total > maxMsgsPer; {
 				m, _, err := mb.firstMatching(subj, false, seq, &sm)
 				if err == nil {
