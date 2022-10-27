@@ -19629,18 +19629,29 @@ func TestJetStreamPullConsumersTimeoutHeaders(t *testing.T) {
 
 	bytesReceived := 0
 	messagesReceived := 0
-	for {
+
+	checkHeaders := func(expectedStatus, expectedDesc string, m *nats.Msg) {
+		t.Helper()
+		if value := m.Header.Get("Status"); value != expectedStatus {
+			t.Fatalf("Expected status %q, got %q", expectedStatus, value)
+		}
+		if value := m.Header.Get("Description"); value != expectedDesc {
+			t.Fatalf("Expected description %q, got %q", expectedDesc, value)
+		}
+		if value := m.Header.Get(JSPullRequestPendingMsgs); value != fmt.Sprint(batch-messagesReceived) {
+			t.Fatalf("Expected %d messages, got %s", batch-messagesReceived, value)
+		}
+		if value := m.Header.Get(JSPullRequestPendingBytes); value != fmt.Sprint(maxBytes-bytesReceived) {
+			t.Fatalf("Expected %d bytes, got %s", maxBytes-bytesReceived, value)
+		}
+	}
+
+	for done := false; !done; {
 		select {
 		case m := <-msgs:
 			if len(m.Data) == 0 && m.Header != nil {
-
-				if value := m.Header.Get(JSPullRequestPendingMsgs); value != fmt.Sprint(batch-messagesReceived) {
-					t.Fatalf("Expected %d messages, got %s", batch-messagesReceived, value)
-				}
-				if value := m.Header.Get(JSPullRequestPendingBytes); value != fmt.Sprint(maxBytes-bytesReceived) {
-					t.Fatalf("Expected %d bytes, got %s", maxBytes-bytesReceived, value)
-				}
-				return
+				checkHeaders("408", "Request Timeout", m)
+				done = true
 			} else {
 				messagesReceived += 1
 				bytesReceived += (len(m.Data) + len(m.Header) + len(m.Reply) + len(m.Subject))
@@ -19650,4 +19661,23 @@ func TestJetStreamPullConsumersTimeoutHeaders(t *testing.T) {
 		}
 	}
 
+	// Now resend the request but then shutdown the server and
+	// make sure we have the same info.
+	err = nc.PublishRequest(rsubj, reply, jreq)
+	require_NoError(t, err)
+	natsFlush(t, nc)
+
+	s.Shutdown()
+
+	// It is possible that the client did not receive, so let's not fail
+	// on that. But if the 409 indicating the the server is shutdown
+	// is received, then it should have the new headers.
+	messagesReceived, bytesReceived = 0, 0
+	select {
+	case m := <-msgs:
+		checkHeaders("409", "Server Shutdown", m)
+	case <-time.After(500 * time.Millisecond):
+		// we can't fail for that.
+		t.Logf("Subscription did not receive the pull request response on server shutdown")
+	}
 }

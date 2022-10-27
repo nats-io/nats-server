@@ -2611,24 +2611,20 @@ func (wq *waitQueue) compact() {
 	wq.rp, wq.wp, wq.n, wq.reqs = 0, i, i, nreqs
 }
 
-// Return the replies for our pending requests.
+// Return the map of pending requests keyed by the reply subject.
 // No-op if push consumer or invalid etc.
-func (o *consumer) pendingRequestReplies() []string {
+func (o *consumer) pendingRequests() map[string]*waitingRequest {
 	if o.waiting == nil {
 		return nil
 	}
-	wq, m := o.waiting, make(map[string]struct{})
+	wq, m := o.waiting, make(map[string]*waitingRequest)
 	for i, rp := 0, o.waiting.rp; i < wq.n; i++ {
 		if wr := wq.reqs[rp]; wr != nil {
-			m[wr.reply] = struct{}{}
+			m[wr.reply] = wr
 		}
 		rp = (rp + 1) % cap(wq.reqs)
 	}
-	var replies []string
-	for reply := range m {
-		replies = append(replies, reply)
-	}
-	return replies
+	return m
 }
 
 // Return next waiting request. This will check for expirations but not noWait or interest.
