@@ -840,6 +840,11 @@ func (c *client) RegisterUser(user *User) {
 		c.opts.Username = user.Username
 	}
 
+	// if a deadline time stamp is set we start a timer to disconnect the user at that time
+	if !user.ConnectionDeadline.IsZero() {
+		c.atmr = time.AfterFunc(time.Until(user.ConnectionDeadline), c.authExpired)
+	}
+
 	c.mu.Unlock()
 }
 

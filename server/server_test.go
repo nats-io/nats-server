@@ -611,6 +611,8 @@ func TestNilMonitoringPort(t *testing.T) {
 type DummyAuth struct {
 	t         *testing.T
 	needNonce bool
+	deadline  time.Time
+	register  bool
 }
 
 func (d *DummyAuth) Check(c ClientAuthentication) bool {
@@ -620,12 +622,26 @@ func (d *DummyAuth) Check(c ClientAuthentication) bool {
 		d.t.Fatalf("Received a nonce when none was expected")
 	}
 
-	return c.GetOpts().Username == "valid"
+	if c.GetOpts().Username != "valid" {
+		return false
+	}
+
+	if !d.register {
+		return true
+	}
+
+	u := &User{
+		Username:           c.GetOpts().Username,
+		ConnectionDeadline: d.deadline,
+	}
+	c.RegisterUser(u)
+
+	return true
 }
 
 func TestCustomClientAuthentication(t *testing.T) {
 	testAuth := func(t *testing.T, nonce bool) {
-		clientAuth := &DummyAuth{t, nonce}
+		clientAuth := &DummyAuth{t: t, needNonce: nonce}
 
 		opts := DefaultOptions()
 		opts.CustomClientAuthentication = clientAuth
