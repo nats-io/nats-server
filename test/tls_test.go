@@ -1973,3 +1973,40 @@ func TestTLSPinnedCertsRoute(t *testing.T) {
 	checkNumRoutes(t, srvSeed, 0)
 	checkNumRoutes(t, srv, 0)
 }
+
+func TestAllowNonTLSReload(t *testing.T) {
+	tmpl := `
+		listen: "127.0.0.1:-1"
+		ping_interval: "%s"
+		tls {
+			ca_file: "configs/certs/ca.pem"
+			cert_file: "configs/certs/server-cert.pem"
+			key_file: "configs/certs/server-key.pem"
+		}
+		allow_non_tls: true
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, "10s")))
+	defer removeFile(t, conf)
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	check := func() {
+		t.Helper()
+		nc := createClientConn(t, "127.0.0.1", o.Port)
+		defer nc.Close()
+		info := checkInfoMsg(t, nc)
+		if !info.TLSAvailable {
+			t.Fatal("TLSAvailable should be true, was false")
+		}
+		if info.TLSRequired {
+			t.Fatal("TLSRequired should be false, was true")
+		}
+	}
+	check()
+
+	os.WriteFile(conf, []byte(fmt.Sprintf(tmpl, "20s")), 0660)
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Error on reload: %v", err)
+	}
+	check()
+}
