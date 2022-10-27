@@ -822,7 +822,7 @@ func (s *Server) signalPullConsumers() {
 	defer js.mu.RUnlock()
 
 	// In case we have stale pending requests.
-	hdr := []byte("NATS/1.0 409 Server Shutdown\r\n\r\n")
+	const hdr = "NATS/1.0 409 Server Shutdown\r\n" + JSPullRequestPendingMsgs + ": %d\r\n" + JSPullRequestPendingBytes + ": %d\r\n\r\n"
 	var didSend bool
 
 	for _, jsa := range js.accounts {
@@ -833,8 +833,9 @@ func (s *Server) signalPullConsumers() {
 				o.mu.RLock()
 				// Only signal on R1.
 				if o.cfg.Replicas <= 1 {
-					for _, reply := range o.pendingRequestReplies() {
-						o.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+					for reply, wr := range o.pendingRequests() {
+						shdr := fmt.Sprintf(hdr, wr.n, wr.b)
+						o.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, []byte(shdr), nil, nil, 0))
 						didSend = true
 					}
 				}
