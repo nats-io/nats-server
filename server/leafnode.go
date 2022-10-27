@@ -1670,7 +1670,8 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	c.leaf.smap = make(map[string]int32)
 	for _, sub := range subs {
 		subj := string(sub.subject)
-		if c.isSpokeLeafNode() && !c.canSubscribe(subj) {
+		// Check perms regardless of role.
+		if !c.canSubscribe(subj) {
 			c.Debugf("Not permitted to subscribe to %q on behalf of %s%s", subj, accName, accNTag)
 			continue
 		}
@@ -1970,6 +1971,7 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	if checkPerms && subjectIsLiteral(string(sub.subject)) && !c.pubAllowedFullCheck(string(sub.subject), true, true) {
 		c.mu.Unlock()
 		c.leafSubPermViolation(sub.subject)
+		c.Debugf(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
 		return nil
 	}
 

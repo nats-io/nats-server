@@ -4564,3 +4564,101 @@ func TestLeafNodeSignatureCB(t *testing.T) {
 	defer sl.Shutdown()
 	checkLeafNodeConnected(t, sl)
 }
+
+type testLeafTraceLogger struct {
+	DummyLogger
+	ch chan string
+}
+
+func (l *testLeafTraceLogger) Tracef(format string, v ...interface{}) {
+	msg := fmt.Sprintf(format, v...)
+	// We will sub to 'baz' and to 'bar', so filter on 'ba' prefix.
+	if strings.Contains(msg, "[LS+ ba") {
+		select {
+		case l.ch <- msg:
+		default:
+		}
+	}
+}
+
+// Make sure permissioned denied subs do not make it to the leafnode even if existing.
+func TestLeafNodePermsSuppressSubs(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		authorization {
+		  PERMS = {
+		    publish = "foo"
+		    subscribe = ["_INBOX.>"]
+		  }
+		  users = [
+		    {user: "user", password: "pass"}
+		    {user: "ln",  password: "pass" , permissions: $PERMS }
+		  ]
+		}
+		no_auth_user: user
+
+		leafnodes {
+		  listen: 127.0.0.1:7422
+		}
+	`))
+	defer removeFile(t, conf)
+
+	lconf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		leafnodes {
+		  remotes = [ { url: "nats://ln:pass@127.0.0.1" } ]
+		}
+		trace = true
+	`))
+	defer removeFile(t, lconf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Connect client to the hub.
+	nc, err := nats.Connect(s.ClientURL())
+	require_NoError(t, err)
+
+	// This should not be seen on leafnode side since we only allow pub to "foo"
+	_, err = nc.SubscribeSync("baz")
+	require_NoError(t, err)
+
+	ln, _ := RunServerWithConfig(lconf)
+	defer ln.Shutdown()
+
+	// Setup logger to capture trace events.
+	l := &testLeafTraceLogger{ch: make(chan string, 10)}
+	ln.SetLogger(l, true, true)
+
+	checkLeafNodeConnected(t, ln)
+
+	// Need to have ot reconnect to trigger since logger attaches too late.
+	ln.mu.Lock()
+	for _, c := range ln.leafs {
+		c.mu.Lock()
+		c.nc.Close()
+		c.mu.Unlock()
+	}
+	ln.mu.Unlock()
+	checkLeafNodeConnectedCount(t, ln, 0)
+	checkLeafNodeConnectedCount(t, ln, 1)
+
+	select {
+	case msg := <-l.ch:
+		t.Fatalf("Unexpected LS+ seen on leafnode: %s", msg)
+	case <-time.After(50 * time.Millisecond):
+		// OK
+	}
+
+	// Now double check that new subs also do not propagate.
+	// This behavior was working already.
+	_, err = nc.SubscribeSync("bar")
+	require_NoError(t, err)
+
+	select {
+	case msg := <-l.ch:
+		t.Fatalf("Unexpected LS+ seen on leafnode: %s", msg)
+	case <-time.After(50 * time.Millisecond):
+		// OK
+	}
+}
