@@ -206,7 +206,7 @@ type tlsOption struct {
 func (t *tlsOption) Apply(server *Server) {
 	server.mu.Lock()
 	tlsRequired := t.newValue != nil
-	server.info.TLSRequired = tlsRequired
+	server.info.TLSRequired = tlsRequired && !server.getOpts().AllowNonTLS
 	message := "disabled"
 	if tlsRequired {
 		server.info.TLSVerify = (t.newValue.ClientAuth == tls.RequireAndVerifyClientCert)
