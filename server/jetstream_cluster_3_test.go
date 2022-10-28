@@ -656,11 +656,18 @@ func TestJetStreamClusterUserGivenConsNameWithLeaderChange(t *testing.T) {
 	c.waitOnConsumerLeader(globalAccountName, "TEST", consName)
 
 	// Make sure we can still consume.
-	err = nc.PublishRequest(rsubj, "xxx", req)
-	require_NoError(t, err)
+	for i := 0; i < 2; i++ {
+		err = nc.PublishRequest(rsubj, "xxx", req)
+		require_NoError(t, err)
 
-	msg = natsNexMsg(t, sub, time.Second)
-	require_Equal(t, string(msg.Data), "msg")
+		msg = natsNexMsg(t, sub, time.Second)
+		if len(msg.Data) == 0 {
+			continue
+		}
+		require_Equal(t, string(msg.Data), "msg")
+		return
+	}
+	t.Fatal("Did not receive message")
 }
 
 func TestJetStreamClusterMirrorCrossDomainOnLeadnodeNoSystemShare(t *testing.T) {
