@@ -927,6 +927,7 @@ type SublistStats struct {
 	AvgFanout    float64 `json:"avg_fanout"`
 	totFanout    int
 	cacheCnt     int
+	cacheHits    uint64
 }
 
 func (s *SublistStats) add(stat *SublistStats) {
@@ -935,7 +936,7 @@ func (s *SublistStats) add(stat *SublistStats) {
 	s.NumInserts += stat.NumInserts
 	s.NumRemoves += stat.NumRemoves
 	s.NumMatches += stat.NumMatches
-	s.CacheHitRate += stat.CacheHitRate
+	s.cacheHits += stat.cacheHits
 	if s.MaxFanout < stat.MaxFanout {
 		s.MaxFanout = stat.MaxFanout
 	}
@@ -946,6 +947,9 @@ func (s *SublistStats) add(stat *SublistStats) {
 	s.cacheCnt += stat.cacheCnt
 	if s.totFanout > 0 {
 		s.AvgFanout = float64(s.totFanout) / float64(s.cacheCnt)
+	}
+	if s.NumMatches > 0 {
+		s.CacheHitRate = float64(s.cacheHits) / float64(s.NumMatches)
 	}
 }
 
@@ -963,8 +967,9 @@ func (s *Sublist) Stats() *SublistStats {
 
 	st.NumCache = uint32(cc)
 	st.NumMatches = atomic.LoadUint64(&s.matches)
+	st.cacheHits = atomic.LoadUint64(&s.cacheHits)
 	if st.NumMatches > 0 {
-		st.CacheHitRate = float64(atomic.LoadUint64(&s.cacheHits)) / float64(st.NumMatches)
+		st.CacheHitRate = float64(st.cacheHits) / float64(st.NumMatches)
 	}
 
 	// whip through cache for fanout stats, this can be off if cache is full and doing evictions.
