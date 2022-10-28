@@ -6801,12 +6801,6 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 	qname := fmt.Sprintf("[ACC:%s] stream '%s' snapshot", mset.acc.Name, mset.cfg.Name)
 	mset.mu.Unlock()
 
-	// See if our state's first sequence is >= the leader's snapshot.
-	// This signifies messages have been expired, purged, deleted and the leader no longer has them.
-	if snap.FirstSeq < state.FirstSeq {
-		sreq.FirstSeq = state.FirstSeq + 1
-	}
-
 	// Bug that would cause this to be empty on stream update.
 	if subject == _EMPTY_ {
 		return errCatchupCorruptSnapshot
@@ -6815,6 +6809,12 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 	// Just return if up to date or already exceeded limits.
 	if sreq == nil || js.limitsExceeded(mset.cfg.Storage) {
 		return nil
+	}
+
+	// See if our state's first sequence is >= the leader's snapshot.
+	// This signifies messages have been expired, purged, deleted and the leader no longer has them.
+	if snap.FirstSeq < state.FirstSeq {
+		sreq.FirstSeq = state.FirstSeq + 1
 	}
 
 	// Pause the apply channel for our raft group while we catch up.
