@@ -1511,6 +1511,31 @@ func TestSublistSubjectCollide(t *testing.T) {
 	require_True(t, SubjectsCollide("foo.bar.>", "*.bar.foo"))
 }
 
+func TestSublistAddCacheHitRate(t *testing.T) {
+	sl1 := NewSublistWithCache()
+	fooSub := newSub("foo")
+	sl1.Insert(fooSub)
+	for i := 0; i < 4; i++ {
+		sl1.Match("foo")
+	}
+	stats1 := sl1.Stats()
+	require_True(t, stats1.CacheHitRate == 0.75)
+
+	sl2 := NewSublistWithCache()
+	barSub := newSub("bar")
+	sl2.Insert(barSub)
+	for i := 0; i < 4; i++ {
+		sl2.Match("bar")
+	}
+	stats2 := sl2.Stats()
+	require_True(t, stats2.CacheHitRate == 0.75)
+
+	ts := &SublistStats{}
+	ts.add(stats1)
+	ts.add(stats2)
+	require_True(t, ts.CacheHitRate == 0.75)
+}
+
 // -- Benchmarks Setup --
 
 var benchSublistSubs []*subscription
