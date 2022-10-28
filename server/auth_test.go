@@ -14,6 +14,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"
@@ -273,6 +274,42 @@ func TestNoAuthUser(t *testing.T) {
 				t.Fatalf("The account should have been %q, got %q", test.account, accName)
 			}
 		})
+	}
+}
+
+func TestUserConnectionDeadline(t *testing.T) {
+	clientAuth := &DummyAuth{
+		t:        t,
+		register: true,
+		deadline: time.Now().Add(50 * time.Millisecond),
+	}
+
+	opts := DefaultOptions()
+	opts.CustomClientAuthentication = clientAuth
+
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	var dcerr error
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+
+	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("valid", ""), nats.NoReconnect(), nats.ErrorHandler(func(nc *nats.Conn, _ *nats.Subscription, err error) {
+		dcerr = err
+		cancel()
+	}))
+	if err != nil {
+		t.Fatalf("Expected client to connect, got: %s", err)
+	}
+
+	<-ctx.Done()
+
+	if nc.IsConnected() {
+		t.Fatalf("Expected to be disconnected")
+	}
+
+	if dcerr == nil || dcerr.Error() != "nats: authentication expired" {
+		t.Fatalf("Expected a auth expired error: got: %v", dcerr)
 	}
 }
 

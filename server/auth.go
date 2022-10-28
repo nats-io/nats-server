@@ -71,6 +71,7 @@ type User struct {
 	Password               string              `json:"password"`
 	Permissions            *Permissions        `json:"permissions,omitempty"`
 	Account                *Account            `json:"account,omitempty"`
+	ConnectionDeadline     time.Time           `json:"connection_deadline,omitempty"`
 	AllowedConnectionTypes map[string]struct{} `json:"connection_types,omitempty"`
 }
 
@@ -83,6 +84,14 @@ func (u *User) clone() *User {
 	clone := &User{}
 	*clone = *u
 	clone.Permissions = u.Permissions.clone()
+
+	if len(u.AllowedConnectionTypes) > 0 {
+		clone.AllowedConnectionTypes = make(map[string]struct{})
+		for k, v := range u.AllowedConnectionTypes {
+			clone.AllowedConnectionTypes[k] = v
+		}
+	}
+
 	return clone
 }
 
