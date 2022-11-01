@@ -405,3 +405,40 @@ func TestMemStorePurgeExWithSubject(t *testing.T) {
 	ms.PurgeEx("foo", 1, 0)
 	require_True(t, ms.State().Msgs == 0)
 }
+
+func TestMemStoreUpdateMaxMsgsPerSubject(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:       "TEST",
+		Storage:    MemoryStorage,
+		Subjects:   []string{"foo"},
+		MaxMsgsPer: 10,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+
+	// Make sure this is honored on an update.
+	cfg.MaxMsgsPer = 50
+	err = ms.UpdateConfig(cfg)
+	require_NoError(t, err)
+
+	numStored := 22
+	for i := 0; i < numStored; i++ {
+		_, _, err = ms.StoreMsg("foo", nil, nil)
+		require_NoError(t, err)
+	}
+
+	ss := ms.SubjectsState("foo")["foo"]
+	if ss.Msgs != uint64(numStored) {
+		t.Fatalf("Expected to have %d stored, got %d", numStored, ss.Msgs)
+	}
+
+	// Now make sure we trunk if setting to lower value.
+	cfg.MaxMsgsPer = 10
+	err = ms.UpdateConfig(cfg)
+	require_NoError(t, err)
+
+	ss = ms.SubjectsState("foo")["foo"]
+	if ss.Msgs != 10 {
+		t.Fatalf("Expected to have %d stored, got %d", 10, ss.Msgs)
+	}
+}
