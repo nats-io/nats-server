@@ -72,6 +72,18 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 		ms.ageChk.Stop()
 		ms.ageChk = nil
 	}
+	// Make sure to update MaxMsgsPer
+	maxp := ms.maxp
+	ms.maxp = cfg.MaxMsgsPer
+	// If the value is smaller we need to enforce that.
+	if ms.maxp != 0 && ms.maxp < maxp {
+		lm := uint64(ms.maxp)
+		for _, ss := range ms.fss {
+			if ss.Msgs > lm {
+				ms.enforcePerSubjectLimit(ss)
+			}
+		}
+	}
 	ms.mu.Unlock()
 
 	if cfg.MaxAge != 0 {

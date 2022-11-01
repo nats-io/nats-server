@@ -6683,7 +6683,7 @@ func (mset *stream) processSnapshotDeletes(snap *streamSnapshot) {
 	// Always adjust if FirstSeq has moved beyond our state.
 	if snap.FirstSeq > state.FirstSeq {
 		mset.store.Compact(snap.FirstSeq)
-		state = mset.store.State()
+		mset.store.FastState(&state)
 		mset.setLastSeq(state.LastSeq)
 	}
 	// Range the deleted and delete if applicable.
@@ -6800,12 +6800,6 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 	s, js, subject, n := mset.srv, mset.js, mset.sa.Sync, mset.node
 	qname := fmt.Sprintf("[ACC:%s] stream '%s' snapshot", mset.acc.Name, mset.cfg.Name)
 	mset.mu.Unlock()
-
-	// See if our state's first sequence is >= the leader's snapshot.
-	// This signifies messages have been expired, purged, deleted and the leader no longer has them.
-	if snap.FirstSeq < state.FirstSeq {
-		sreq.FirstSeq = state.FirstSeq + 1
-	}
 
 	// Bug that would cause this to be empty on stream update.
 	if subject == _EMPTY_ {
@@ -6940,11 +6934,6 @@ RETRY:
 		mset.mu.Unlock()
 		if sreq == nil {
 			return nil
-		}
-		// See if our state's first sequence is >= the leader's snapshot.
-		// This signifies messages have been expired, purged, deleted and the leader no longer has them.
-		if snap.FirstSeq < state.FirstSeq {
-			sreq.FirstSeq = state.FirstSeq + 1
 		}
 		// Reset notion of lastRequested
 		lastRequested = sreq.LastSeq
