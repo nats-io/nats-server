@@ -4798,3 +4798,45 @@ func TestFileStoreRebuildStateProperlyWithMaxMsgsPerSubject(t *testing.T) {
 	}
 	fs.mu.RUnlock()
 }
+
+func TestFileStoreUpdateMaxMsgsPerSubject(t *testing.T) {
+	cfg := StreamConfig{
+		Name:       "TEST",
+		Storage:    FileStorage,
+		Subjects:   []string{"foo"},
+		MaxMsgsPer: 10,
+	}
+
+	storeDir := createDir(t, JetStreamStoreDir)
+	defer removeDir(t, storeDir)
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Make sure this is honored on an update.
+	cfg.MaxMsgsPer = 50
+	err = fs.UpdateConfig(&cfg)
+	require_NoError(t, err)
+
+	numStored := 22
+	for i := 0; i < numStored; i++ {
+		_, _, err = fs.StoreMsg("foo", nil, nil)
+		require_NoError(t, err)
+	}
+
+	ss := fs.SubjectsState("foo")["foo"]
+	if ss.Msgs != uint64(numStored) {
+		t.Fatalf("Expected to have %d stored, got %d", numStored, ss.Msgs)
+	}
+
+	// Now make sure we trunk if setting to lower value.
+	cfg.MaxMsgsPer = 10
+	err = fs.UpdateConfig(&cfg)
+	require_NoError(t, err)
+
+	ss = fs.SubjectsState("foo")["foo"]
+	if ss.Msgs != 10 {
+		t.Fatalf("Expected to have %d stored, got %d", 10, ss.Msgs)
+	}
+}

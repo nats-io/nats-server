@@ -421,6 +421,10 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 		fs.ageChk.Stop()
 		fs.ageChk = nil
 	}
+
+	if cfg.MaxMsgsPer > 0 && cfg.MaxMsgsPer < old_cfg.MaxMsgsPer {
+		fs.enforceMsgPerSubjectLimit()
+	}
 	fs.mu.Unlock()
 
 	if cfg.MaxAge != 0 {
@@ -2141,7 +2145,7 @@ func (fs *fileStore) enforceBytesLimit() {
 	}
 }
 
-// Will make sure we have limits honored for max msgs per subject on recovery.
+// Will make sure we have limits honored for max msgs per subject on recovery or config update.
 // We will make sure to go through all msg blocks etc. but in practice this
 // will most likely only be the last one, so can take a more conservative approach.
 // Lock should be held.
