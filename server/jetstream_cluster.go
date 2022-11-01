@@ -6683,7 +6683,7 @@ func (mset *stream) processSnapshotDeletes(snap *streamSnapshot) {
 	// Always adjust if FirstSeq has moved beyond our state.
 	if snap.FirstSeq > state.FirstSeq {
 		mset.store.Compact(snap.FirstSeq)
-		state = mset.store.State()
+		mset.store.FastState(&state)
 		mset.setLastSeq(state.LastSeq)
 	}
 	// Range the deleted and delete if applicable.
@@ -6811,12 +6811,6 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 		return nil
 	}
 
-	// See if our state's first sequence is >= the leader's snapshot.
-	// This signifies messages have been expired, purged, deleted and the leader no longer has them.
-	if snap.FirstSeq < state.FirstSeq {
-		sreq.FirstSeq = state.FirstSeq + 1
-	}
-
 	// Pause the apply channel for our raft group while we catch up.
 	if err := n.PauseApply(); err != nil {
 		return err
@@ -6940,11 +6934,6 @@ RETRY:
 		mset.mu.Unlock()
 		if sreq == nil {
 			return nil
-		}
-		// See if our state's first sequence is >= the leader's snapshot.
-		// This signifies messages have been expired, purged, deleted and the leader no longer has them.
-		if snap.FirstSeq < state.FirstSeq {
-			sreq.FirstSeq = state.FirstSeq + 1
 		}
 		// Reset notion of lastRequested
 		lastRequested = sreq.LastSeq
