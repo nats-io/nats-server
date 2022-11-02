@@ -943,3 +943,63 @@ func TestJetStreamClusterConsumerInactiveThreshold(t *testing.T) {
 	t.Run("super-cluster-r1", func(t *testing.T) { test(t, sc.randomCluster(), nil, 1) })
 	t.Run("super-cluster-r3", func(t *testing.T) { test(t, sc.randomCluster(), nil, 3) })
 }
+
+// To capture our false warnings for clustered stream lag.
+type testStreamLagWarnLogger struct {
+	DummyLogger
+	ch chan string
+}
+
+func (l *testStreamLagWarnLogger) Warnf(format string, v ...interface{}) {
+	msg := fmt.Sprintf(format, v...)
+	if strings.Contains(msg, "has high message lag") {
+		select {
+		case l.ch <- msg:
+		default:
+		}
+	}
+}
+
+// False triggering warnings on stream lag because not offsetting by failures.
+func TestJetStreamClusterStreamLagWarning(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	sl := c.streamLeader("$G", "TEST")
+
+	l := &testStreamLagWarnLogger{ch: make(chan string, 10)}
+	sl.SetLogger(l, false, false)
+
+	// We only need to trigger post RAFT propose failures that increment mset.clfs.
+	// Dedupe with msgIDs is one, so we will use that.
+	m := nats.NewMsg("foo")
+	m.Data = []byte("OK")
+	m.Header.Set(JSMsgId, "zz")
+
+	// Make sure we know we will trip the warning threshold.
+	for i := 0; i < 2*streamLagWarnThreshold; i++ {
+		js.PublishMsgAsync(m)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	select {
+	case msg := <-l.ch:
+		t.Fatalf("Unexpected msg lag warning seen: %s", msg)
+	case <-time.After(100 * time.Millisecond):
+		// OK
+	}
+}
