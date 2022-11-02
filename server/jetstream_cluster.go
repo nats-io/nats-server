@@ -6468,6 +6468,9 @@ func (mset *stream) checkAllowMsgCompress(peers []string) {
 	mset.mu.Unlock()
 }
 
+// To warn when we are getting too far behind from what has been proposed vs what has been committed.
+const streamLagWarnThreshold = 10_000
+
 // processClusteredMsg will propose the inbound message to the underlying raft group.
 func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg []byte) error {
 	// For possible error response.
@@ -6477,7 +6480,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	canRespond := !mset.cfg.NoAck && len(reply) > 0
 	name, stype, store := mset.cfg.Name, mset.cfg.Storage, mset.store
 	s, js, jsa, st, rf, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
-	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
+	maxMsgSize, lseq, clfs := int(mset.cfg.MaxMsgSize), mset.lseq, mset.clfs
 	isLeader := mset.isLeader()
 	mset.mu.RUnlock()
 
@@ -6620,7 +6623,9 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// Check if we need to set initial value here
 	mset.clMu.Lock()
 	if mset.clseq == 0 || mset.clseq < lseq {
-		mset.clseq = mset.lastSeq() + mset.clfs
+		// Re-capture
+		lseq, clfs = mset.lastSeqAndCLFS()
+		mset.clseq = lseq + clfs
 	}
 
 	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano(), mset.compressOK)
@@ -6634,8 +6639,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 
 	// Check to see if we are being overrun.
 	// TODO(dlc) - Make this a limit where we drop messages to protect ourselves, but allow to be configured.
-	const warnThreshold = 10_000
-	if mset.clseq-lseq > warnThreshold {
+	if mset.clseq-(lseq+clfs) > streamLagWarnThreshold {
 		lerr := fmt.Errorf("JetStream stream '%s > %s' has high message lag", jsa.acc().Name, mset.cfg.Name)
 		s.RateLimitWarnf(lerr.Error())
 	}
