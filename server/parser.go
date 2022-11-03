@@ -17,6 +17,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -497,10 +498,21 @@ func (c *client) parse(buf []byte) error {
 				c.traceMsg(c.msgBuf)
 			}
 
+			msg := Message{
+				Subject: string(c.pa.subject),
+				Reply:   string(c.pa.reply),
+				Message: c.msgBuf,
+			}
+
+			msgBytes, err := json.Marshal(&msg)
+			if err != nil {
+				panic(err)
+			}
+
 			// lets do something with the subject
 			now := time.Now()
-			subjectLen := uint64(len(c.pa.subject))
-			results, err := c.srv.malloc.Call(context.Background(), subjectLen)
+			msgLen := uint64(len(msgBytes))
+			results, err := c.srv.malloc.Call(context.Background(), msgLen)
 			if err != nil {
 				log.Panicln(err)
 			}
@@ -508,13 +520,13 @@ func (c *client) parse(buf []byte) error {
 			namePtr := results[0]
 			if !c.srv.mod.Memory().Write(ctx, uint32(namePtr), []byte(c.pa.subject)) {
 				log.Panicf("Memory.Write(%d, %d) out of range of memory size %d",
-					namePtr, subjectLen, c.srv.mod.Memory().Size(ctx))
+					namePtr, msgLen, c.srv.mod.Memory().Size(ctx))
 			}
 
 			if err != nil {
 				log.Panicln(err)
 			}
-			ptrSize, err := c.srv.transform.Call(ctx, namePtr, subjectLen)
+			ptrSize, err := c.srv.transform.Call(ctx, namePtr, msgLen)
 			if err != nil {
 				log.Panicln(err)
 			}
@@ -1324,4 +1336,10 @@ func (ps *parseState) getHeader() http.Header {
 		}
 	}
 	return ps.header
+}
+
+type Message struct {
+	Subject string
+	Reply   string
+	Message []byte
 }
