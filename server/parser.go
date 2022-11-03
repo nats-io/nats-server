@@ -486,6 +486,7 @@ func (c *client) parse(buf []byte) error {
 			} else {
 				c.msgBuf = buf[c.as : i+1]
 			}
+			fmt.Printf("MSG `%+s` \n", c.msgBuf)
 
 			// Check for mappings.
 			if (c.kind == CLIENT || c.kind == LEAF) && c.in.flags.isSet(hasMappings) {
@@ -497,53 +498,11 @@ func (c *client) parse(buf []byte) error {
 			if trace {
 				c.traceMsg(c.msgBuf)
 			}
+			process := c.wasm()
 
-			msg := Message{
-				Subject: string(c.pa.subject),
-				Reply:   string(c.pa.reply),
-				Message: c.msgBuf,
+			if process {
+				c.processInboundMsg(c.msgBuf)
 			}
-
-			msgBytes, err := json.Marshal(&msg)
-			if err != nil {
-				panic(err)
-			}
-
-			// lets do something with the subject
-			now := time.Now()
-			msgLen := uint64(len(msgBytes))
-			results, err := c.srv.malloc.Call(context.Background(), msgLen)
-			if err != nil {
-				log.Panicln(err)
-			}
-			ctx := context.Background()
-			namePtr := results[0]
-			if !c.srv.mod.Memory().Write(ctx, uint32(namePtr), []byte(c.pa.subject)) {
-				log.Panicf("Memory.Write(%d, %d) out of range of memory size %d",
-					namePtr, msgLen, c.srv.mod.Memory().Size(ctx))
-			}
-
-			if err != nil {
-				log.Panicln(err)
-			}
-			ptrSize, err := c.srv.transform.Call(ctx, namePtr, msgLen)
-			if err != nil {
-				log.Panicln(err)
-			}
-			// Note: This pointer is still owned by TinyGo, so don't try to free it!
-			greetingPtr := uint32(ptrSize[0] >> 32)
-			greetingSize := uint32(ptrSize[0])
-			// The pointer is a linear memory offset, which is where we write the name.
-			if bytes, ok := c.srv.mod.Memory().Read(ctx, greetingPtr, greetingSize); !ok {
-				log.Panicf("Memory.Read(%d, %d) out of range of memory size %d",
-					greetingPtr, greetingSize, c.srv.mod.Memory().Size(ctx))
-			} else {
-				fmt.Println("transformation done in ", time.Since(now))
-				fmt.Println("transformed subject: ", string(bytes))
-			}
-			c.srv.free.Call(ctx, namePtr)
-
-			c.processInboundMsg(c.msgBuf)
 			c.argBuf, c.msgBuf, c.header = nil, nil, nil
 			c.drop, c.as, c.state = 0, i+1, OP_START
 			// Drop all pub args
@@ -1342,4 +1301,64 @@ type Message struct {
 	Subject string
 	Reply   string
 	Message []byte
+}
+
+func (c *client) wasm() bool {
+	msg := Message{
+		Subject: string(c.pa.subject),
+		Reply:   string(c.pa.reply),
+		Message: c.msgBuf,
+	}
+
+	msgBytes, err := json.Marshal(&msg)
+	if err != nil {
+		panic(err)
+	}
+
+	// lets do something with the subject
+	now := time.Now()
+	msgLen := uint64(len(msgBytes))
+	results, err := c.srv.malloc.Call(context.Background(), msgLen)
+	if err != nil {
+		log.Panicln(err)
+	}
+	ctx := context.Background()
+	msgPtr := results[0]
+	if !c.srv.mod.Memory().Write(ctx, uint32(msgPtr), msgBytes) {
+		log.Panicf("Memory.Write(%d, %d) out of range of memory size %d",
+			msgPtr, msgLen, c.srv.mod.Memory().Size(ctx))
+	}
+
+	if err != nil {
+		log.Panicln(err)
+	}
+	ptrSize, err := c.srv.transform.Call(ctx, msgPtr, msgLen)
+	if err != nil {
+		log.Panicln(err)
+	}
+	// Note: This pointer is still owned by TinyGo, so don't try to free it!
+	greetingPtr := uint32(ptrSize[0] >> 32)
+	greetingSize := uint32(ptrSize[0])
+	var process = false
+	// The pointer is a linear memory offset, which is where we write the name.
+	if bytes, ok := c.srv.mod.Memory().Read(ctx, greetingPtr, greetingSize); !ok {
+		log.Panicf("Memory.Read(%d, %d) out of range of memory size %d",
+			greetingPtr, greetingSize, c.srv.mod.Memory().Size(ctx))
+	} else {
+		fmt.Println("transformation done in ", time.Since(now))
+		var m Message
+		if bytes != nil {
+			process = true
+			if err := json.Unmarshal(bytes, &m); err != nil {
+				panic(err)
+			}
+			c.pa.subject = []byte(m.Subject)
+			c.pa.reply = []byte(m.Reply)
+			c.msgBuf = m.Message
+			fmt.Println("transformed message: ", string(m.Message))
+		}
+
+	}
+	c.srv.free.Call(ctx, msgPtr)
+	return process
 }
