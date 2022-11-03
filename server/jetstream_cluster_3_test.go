@@ -1003,3 +1003,50 @@ func TestJetStreamClusterStreamLagWarning(t *testing.T) {
 		// OK
 	}
 }
+
+// https://github.com/nats-io/nats-server/issues/3603
+func TestJetStreamClusterSignalPullConsumersOnDelete(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Create 2 pull consumers.
+	sub1, err := js.PullSubscribe("foo", "d1")
+	require_NoError(t, err)
+
+	sub2, err := js.PullSubscribe("foo", "d2")
+	require_NoError(t, err)
+
+	// We want to make sure we get kicked out prior to the timeout
+	// when consumers are being deleted or the parent stream is being deleted.
+	// Note this should be lower case, Go client needs to be updated.
+	expectedErr := errors.New("nats: Consumer Deleted")
+
+	// Queue up the delete for sub1
+	time.AfterFunc(250*time.Millisecond, func() { js.DeleteConsumer("TEST", "d1") })
+	start := time.Now()
+	_, err = sub1.Fetch(1, nats.MaxWait(10*time.Second))
+	require_Error(t, err, expectedErr)
+
+	// Check that we bailed early.
+	if time.Since(start) > time.Second {
+		t.Fatalf("Took to long to bail out on consumer delete")
+	}
+
+	time.AfterFunc(250*time.Millisecond, func() { js.DeleteStream("TEST") })
+	start = time.Now()
+	_, err = sub2.Fetch(1, nats.MaxWait(10*time.Second))
+	require_Error(t, err, expectedErr)
+	if time.Since(start) > time.Second {
+		t.Fatalf("Took to long to bail out on stream delete")
+	}
+}
