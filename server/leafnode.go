@@ -816,6 +816,7 @@ func (s *Server) removeLeafNodeURL(urlStr string) bool {
 
 // Server lock is held on entry
 func (s *Server) generateLeafNodeInfoJSON() {
+	s.leafNodeInfo.Cluster = s.cachedClusterName()
 	s.leafNodeInfo.LeafNodeURLs = s.leafURLsMap.getAsStringSlice()
 	s.leafNodeInfo.WSConnectURLs = s.websocket.connectURLsMap.getAsStringSlice()
 	b, _ := json.Marshal(s.leafNodeInfo)
@@ -1767,6 +1768,11 @@ func (s *Server) updateLeafNodes(acc *Account, sub *subscription, delta int32) {
 		// Check to make sure this sub does not have an origin cluster than matches the leafnode.
 		ln.mu.Lock()
 		skip := (sub.origin != nil && string(sub.origin) == ln.remoteCluster()) || !ln.canSubscribe(string(sub.subject))
+		// If skipped, make sure that we still let go the "$LDS." subscription that allows
+		// the detection of a loop.
+		if skip && bytes.HasPrefix(sub.subject, []byte(leafNodeLoopDetectionSubjectPrefix)) {
+			skip = false
+		}
 		ln.mu.Unlock()
 		if skip {
 			continue
