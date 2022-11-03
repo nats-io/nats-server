@@ -191,6 +191,7 @@ type ClientInfo struct {
 	RTT        time.Duration `json:"rtt,omitempty"`
 	Server     string        `json:"server,omitempty"`
 	Cluster    string        `json:"cluster,omitempty"`
+	Domain     string        `json:"domain,omitempty"`
 	Alternates []string      `json:"alts,omitempty"`
 	Stop       *time.Time    `json:"stop,omitempty"`
 	Jwt        string        `json:"jwt,omitempty"`

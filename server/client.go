@@ -5132,11 +5132,13 @@ func (c *client) addServerAndClusterInfo(ci *ClientInfo) {
 	// Server
 	if c.kind != LEAF {
 		ci.Server = c.srv.Name()
+		ci.Cluster = c.srv.cachedClusterName()
+		ci.Domain = c.srv.Domain()
 	} else if c.kind == LEAF {
 		ci.Server = c.leaf.remoteServer
+		ci.Cluster = c.leaf.remoteCluster
+		ci.Domain = c.leaf.remoteDomain
 	}
-	// Cluster
-	ci.Cluster = c.srv.cachedClusterName()
 	// If we have gateways fill in cluster alternates.
 	// These will be in RTT asc order.
 	if c.srv.gateway.enabled {

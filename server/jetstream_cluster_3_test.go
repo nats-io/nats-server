@@ -1003,3 +1003,46 @@ func TestJetStreamClusterStreamLagWarning(t *testing.T) {
 		// OK
 	}
 }
+
+func TestJetStreamClusterStreamMirrorAlternatesOnLeafnodes(t *testing.T) {
+	skip(t)
+
+	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: CORE, store_dir:", 1)
+	c := createJetStreamCluster(t, tmpl, "CORE", _EMPTY_, 3, 19022, true)
+	defer c.shutdown()
+
+	tmpl = strings.Replace(jsClusterTemplWithSingleLeafNode, "store_dir:", "domain: SPOKE, store_dir:", 1)
+	ln := c.createLeafNodeWithTemplate("LN-SPOKE", tmpl)
+	defer ln.Shutdown()
+
+	checkLeafNodeConnectedCount(t, ln, 2)
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST"})
+	require_NoError(t, err)
+
+	lnc, ljs := jsClientConnect(t, ln)
+	defer lnc.Close()
+
+	_, err = ljs.AddStream(&nats.StreamConfig{
+		Name: "M",
+		Mirror: &nats.StreamSource{
+			Name:   "TEST",
+			Domain: "CORE",
+		},
+	})
+	require_NoError(t, err)
+
+	// Grab StreamInfo for TEST from being connected to leafnode with proper domain and make sure we see
+	// the mirror on our leafnode as alternate.
+	// NOTE will not work other way around.
+	rjs, err := lnc.JetStream(nats.Domain("CORE"))
+	require_NoError(t, err)
+
+	si, err := rjs.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	fmt.Printf("si is %+v\n", si)
+}

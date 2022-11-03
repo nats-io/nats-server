@@ -3069,6 +3069,10 @@ func (s *Server) String() string {
 	return s.info.Name
 }
 
+func (s *Server) Domain() string {
+	return s.info.Domain
+}
+
 func (s *Server) startGoRoutine(f func()) bool {
 	var started bool
 	s.grMu.Lock()
