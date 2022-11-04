@@ -1315,6 +1315,8 @@ func (c *client) wasm() bool {
 		panic(err)
 	}
 
+	fmt.Println("MARSHALLED: ", string(msgBytes))
+
 	// lets do something with the subject
 	now := time.Now()
 	msgLen := uint64(len(msgBytes))
@@ -1352,6 +1354,7 @@ func (c *client) wasm() bool {
 			if err := json.Unmarshal(bytes, &m); err != nil {
 				panic(err)
 			}
+			fmt.Println("MESSAGE RECEICED: ", string(bytes))
 			c.pa.subject = []byte(m.Subject)
 			c.pa.reply = []byte(m.Reply)
 			c.msgBuf = m.Message

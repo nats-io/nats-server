@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/base64"
+	"fmt"
 	"reflect"
 	"unsafe"
 
@@ -17,22 +19,46 @@ func add(x, y uint32) uint32 {
 	return x + y
 }
 
-func transform(message []byte) []byte {
-	// msg.Message = jsonparser.Get("message")
-	// msg.Subject = jsonparser.Get("subject")
-	s, err := jsonparser.Set(message, []byte(`"blada"`), "subject")
-	if err != nil {
-		panic(err)
+func transform(message Message) Message {
+	return Message{
+		Subject: message.Subject,
+		Reply:   message.Reply,
+		Message: message.Message,
 	}
-	return s
 }
 
 //export transform
 func _transform(ptr, size uint32) (ptrSize uint64) {
 	message := ptrToBytes(ptr, size)
-	transformed := transform(message)
-	ptr, size = bytesToPtr(transformed)
+	var msg Message
+	subject, err := jsonparser.GetString(message, "Subject")
+	if err != nil {
+		panic(err)
+	}
+	msg.Subject = subject
+	reply, err := jsonparser.GetString(message, "Reply")
+	if err != nil {
+		panic(err)
+	}
+	msg.Reply = reply
+	payload, err := jsonparser.GetString(message, "Message")
+	if err != nil {
+		panic(err)
+	}
+	pp, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		panic(err)
+	}
+	msg.Message = pp
+
+	transformed := transform(msg)
+	ptr, size = bytesToPtr(Marshal(transformed))
 	return (uint64(ptr) << uint64(32)) | uint64(size)
+}
+
+func Marshal(msg Message) []byte {
+	paylaod := base64.StdEncoding.EncodeToString(msg.Message)
+	return []byte(fmt.Sprintf(`{"subject": "%s","reply":"%s","message":"%s"}`, msg.Subject, msg.Reply, paylaod))
 }
 
 // func message_process(ptr, size uint32) (ptrSize uint64) {

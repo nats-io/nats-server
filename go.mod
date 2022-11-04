@@ -4,7 +4,9 @@ go 1.19
 
 require (
 	github.com/buger/jsonparser v1.1.1
+	github.com/google/flatbuffers v22.10.26+incompatible
 	github.com/klauspost/compress v1.15.11
+	github.com/mailru/easyjson v0.7.7
 	github.com/minio/highwayhash v1.0.2
 	github.com/nats-io/jwt/v2 v2.3.0
 	github.com/nats-io/nats.go v1.17.0
@@ -19,5 +21,6 @@ require (
 
 require (
 	github.com/golang/protobuf v1.4.2 // indirect
+	github.com/josharian/intern v1.0.0 // indirect
 	google.golang.org/protobuf v1.23.0 // indirect
 )
