@@ -5282,7 +5282,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 				js.mu.Unlock()
 				if si, err := s.sysRequest(&StreamInfo{}, clusterStreamInfoT, ci.serviceAccount(), cfg.Name); err != nil {
 					s.Warnf("Did not receive stream info results for '%s > %s' due to: %s", acc, cfg.Name, err)
-				} else if cl := si.(*StreamInfo).Cluster; cl != nil {
+				} else if cl := si.(*StreamInfo).Cluster; cl != nil && cl.Leader != _EMPTY_ {
 					curLeader = getHash(cl.Leader)
 				}
 				// Re-acquire here.
