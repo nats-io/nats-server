@@ -50,9 +50,10 @@ type pubArg struct {
 	szb     []byte
 	hdb     []byte
 	queues  [][]byte
-	size    int
-	hdr     int
-	psi     []*serviceImport
+	// message size (headers + payload)
+	size int
+	hdr  int
+	psi  []*serviceImport
 }
 
 // Parser constants
@@ -486,7 +487,6 @@ func (c *client) parse(buf []byte) error {
 			} else {
 				c.msgBuf = buf[c.as : i+1]
 			}
-			fmt.Printf("MSG `%+s` \n", c.msgBuf)
 
 			// Check for mappings.
 			if (c.kind == CLIENT || c.kind == LEAF) && c.in.flags.isSet(hasMappings) {
@@ -498,6 +498,7 @@ func (c *client) parse(buf []byte) error {
 			if trace {
 				c.traceMsg(c.msgBuf)
 			}
+			fmt.Println("WTF IS I: ", i)
 			process := c.wasm()
 
 			if process {
@@ -1304,6 +1305,7 @@ type Message struct {
 }
 
 func (c *client) wasm() bool {
+	fmt.Printf("PAYLOAD: `%q`\n", string(c.msgBuf))
 	msg := Message{
 		Subject: string(c.pa.subject),
 		Reply:   string(c.pa.reply),
@@ -1341,7 +1343,7 @@ func (c *client) wasm() bool {
 	// Note: This pointer is still owned by TinyGo, so don't try to free it!
 	greetingPtr := uint32(ptrSize[0] >> 32)
 	greetingSize := uint32(ptrSize[0])
-	var process = false
+	// var process = false
 	// The pointer is a linear memory offset, which is where we write the name.
 	if bytes, ok := c.srv.mod.Memory().Read(ctx, greetingPtr, greetingSize); !ok {
 		log.Panicf("Memory.Read(%d, %d) out of range of memory size %d",
@@ -1350,18 +1352,19 @@ func (c *client) wasm() bool {
 		fmt.Println("transformation done in ", time.Since(now))
 		var m Message
 		if bytes != nil {
-			process = true
+			// process = true
 			if err := json.Unmarshal(bytes, &m); err != nil {
 				panic(err)
 			}
 			fmt.Println("MESSAGE RECEICED: ", string(bytes))
 			c.pa.subject = []byte(m.Subject)
 			c.pa.reply = []byte(m.Reply)
+			c.pa.size = len(m.Message)
 			c.msgBuf = m.Message
-			fmt.Println("transformed message: ", string(m.Message))
+			fmt.Printf("transformed message: %q\n ", string(m.Message))
 		}
 
 	}
 	c.srv.free.Call(ctx, msgPtr)
-	return process
+	return true
 }

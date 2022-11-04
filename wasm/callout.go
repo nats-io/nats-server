@@ -21,9 +21,9 @@ func add(x, y uint32) uint32 {
 
 func transform(message Message) Message {
 	return Message{
-		Subject: message.Subject,
+		Subject: "blada",
 		Reply:   message.Reply,
-		Message: message.Message,
+		Message: []byte("123456\r\n"),
 	}
 }
 
