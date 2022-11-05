@@ -1420,6 +1420,19 @@ func wasmRust(c *client) bool {
 			transformedPtr, transformedSize, c.srv.mod.Memory().Size(ctx))
 	} else {
 		fmt.Println("go >>", string(bytes))
+		if bytes != nil {
+			// process = true
+			var m Message
+			if err := json.Unmarshal(bytes, &m); err != nil {
+				panic(err)
+			}
+			c.pa.subject = []byte(m.Subject)
+			c.pa.reply = []byte(m.Reply)
+			c.pa.size = len(m.Message)
+			c.msgBuf = m.Message
+			fmt.Printf("transformed message: %q\n ", string(m.Message))
+		}
+
 	}
 	return true
 

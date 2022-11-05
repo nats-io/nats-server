@@ -3,76 +3,38 @@ extern crate core;
 extern crate wee_alloc;
 
 use alloc::vec::Vec;
+use serde::{Deserialize, Serialize};
 use std::mem::MaybeUninit;
 use std::slice;
 
-/// Prints a greeting to the console using [`log`].
-fn greet(name: &String) {
-    log(&["wasm >> ", &greeting(name)].concat());
-}
-
-/// Gets a greeting for the name.
-fn greeting(name: &String) -> String {
-    return ["Hello, ", &name, "!"].concat();
-}
-
-/// Logs a message to the console using [`_log`].
-fn log(message: &String) {
-    unsafe {
-        let (ptr, len) = string_to_ptr(message);
-    }
-}
-
-/// WebAssembly export that accepts a string (linear memory offset, byteCount)
-/// and calls [`greet`].
-///
-/// Note: The input parameters were returned by [`allocate`]. This is not an
-/// ownership transfer, so the inputs can be reused after this call.
-#[cfg_attr(all(target_arch = "wasm32"), export_name = "greet")]
-#[no_mangle]
-pub unsafe extern "C" fn _greet(ptr: u32, len: u32) {
-    greet(&ptr_to_string(ptr, len));
-}
-
-/// WebAssembly export that accepts a string (linear memory offset, byteCount)
-/// and returns a pointer/size pair packed into a u64.
-///
-/// Note: The return value is leaked to the caller, so it must call
-/// [`deallocate`] when finished.
-/// Note: This uses a u64 instead of two result values for compatibility with
-/// WebAssembly 1.0.
-#[cfg_attr(all(target_arch = "wasm32"), export_name = "greeting")]
-#[no_mangle]
-pub unsafe extern "C" fn _greeting(ptr: u32, len: u32) -> u64 {
-    let name = &ptr_to_string(ptr, len);
-    let g = greeting(name);
-    let (ptr, len) = string_to_ptr(&g);
-    // Note: This changes ownership of the pointer to the external caller. If
-    // we didn't call forget, the caller would read back a corrupt value. Since
-    // we call forget, the caller must deallocate externally to prevent leaks.
-    std::mem::forget(g);
-    return ((ptr as u64) << 32) | len as u64;
+fn transform(message: Vec<u8>) -> String {
+    let m: Message = serde_json::from_slice(message.as_ref()).unwrap();
+    // let m = Message {
+    //     payload: b"blada".to_vec(),
+    //     subject: "blada".to_string(),
+    //     reply: "".to_string(),
+    // };
+    serde_json::to_string(&m).unwrap()
 }
 
 #[cfg_attr(all(target_arch = "wasm32"), export_name = "transform")]
 #[no_mangle]
 pub unsafe extern "C" fn _transform(ptr: u32, len: u32) -> u64 {
-    let name = &ptr_to_string(ptr, len);
-    let re = r#"{"Subject":"blada"}"#.to_string();
-    let (ptr, len) = string_to_ptr(&re);
+    let name = ptr_to_bytes(ptr, len);
+    // let re = r#"{"Subject":"blada"}"#.to_string();
+    let transformed = transform(name);
+    let (ptr, len) = string_to_ptr(&transformed);
     // Note: This changes ownership of the pointer to the external caller. If
     // we didn't call forget, the caller would read back a corrupt value. Since
     // we call forget, the caller must deallocate externally to prevent leaks.
-    std::mem::forget(re);
+    std::mem::forget(transformed);
     return ((ptr as u64) << 32) | len as u64;
 }
 
 /// Returns a string from WebAssembly compatible numeric types representing
 /// its pointer and length.
-unsafe fn ptr_to_string(ptr: u32, len: u32) -> String {
-    let slice = slice::from_raw_parts_mut(ptr as *mut u8, len as usize);
-    let utf8 = std::str::from_utf8_unchecked_mut(slice);
-    return String::from(utf8);
+unsafe fn ptr_to_bytes(ptr: u32, len: u32) -> Vec<u8> {
+    slice::from_raw_parts_mut(ptr as *mut u8, len as usize).to_vec()
 }
 
 /// Returns a pointer and size pair for the given string in a way compatible
@@ -119,4 +81,37 @@ pub unsafe extern "C" fn _deallocate(ptr: u32, size: u32) {
 /// Retakes the pointer which allows its memory to be freed.
 unsafe fn deallocate(ptr: *mut u8, size: usize) {
     let _ = Vec::from_raw_parts(ptr, 0, size);
+}
+
+#[derive(Serialize, Deserialize)]
+struct Message {
+    #[serde(rename = "Message", with = "base64")]
+    payload: Option<Vec<u8>>,
+    #[serde(rename = "Subject")]
+    subject: String,
+    #[serde(rename = "Reply")]
+    reply: String,
+}
+
+mod base64 {
+    use serde::{Deserialize, Serialize};
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &Option<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
+        let base64 = match v {
+            Some(v) => Some(base64::encode(v)),
+            None => None,
+        };
+        <Option<String>>::serialize(&base64, s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<u8>>, D::Error> {
+        let base64 = <Option<String>>::deserialize(d)?;
+        match base64 {
+            Some(v) => base64::decode(v.as_bytes())
+                .map(|v| Some(v))
+                .map_err(|e| serde::de::Error::custom(e)),
+            None => Ok(None),
+        }
+    }
 }
