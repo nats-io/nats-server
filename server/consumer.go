@@ -4105,13 +4105,18 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	// We will do this consistently on all replicas. Note that if in clustered mode the
 	// non-leader consumers will need to restore state first.
 	if dflag && rp == InterestPolicy {
-		stop := mset.lastSeq()
+		state := mset.state()
+		stop := state.LastSeq
 		o.mu.Lock()
 		if !o.isLeader() {
 			o.readStoredState(stop)
 		}
 		start := o.asflr
 		o.mu.Unlock()
+		// Make sure we start at worst with first sequence in the stream.
+		if start < state.FirstSeq {
+			start = state.FirstSeq
+		}
 
 		var rmseqs []uint64
 		mset.mu.RLock()
