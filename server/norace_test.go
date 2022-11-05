@@ -5724,3 +5724,59 @@ func TestNoRaceJetStreamManyPullConsumersNeedAckOptimization(t *testing.T) {
 	last := msgs[len(msgs)-1]
 	last.AckSync()
 }
+
+// https://github.com/nats-io/nats-server/issues/3499
+func TestNoRaceJetStreamDeleteConsumerWithInterestStreamAndHighSeqs(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"log.>"},
+		Retention: nats.InterestPolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "c",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// Set baseline for time to delete so we can see linear increase as sequence numbers increase.
+	start := time.Now()
+	err = js.DeleteConsumer("TEST", "c")
+	require_NoError(t, err)
+	elapsed := time.Since(start)
+
+	// Crank up sequence numbers.
+	msg := []byte(strings.Repeat("ZZZ", 128))
+	for i := 0; i < 5_000_000; i++ {
+		nc.Publish("log.Z", msg)
+	}
+	nc.Flush()
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "c",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// We have a bug that spins unecessarily through all the sequences from this consumer's
+	// ackfloor(0) and the last sequence for the stream. We will detect by looking for the time
+	// to delete being 100x more. Should be the same since both times no messages exist in the stream.
+	start = time.Now()
+	err = js.DeleteConsumer("TEST", "c")
+	require_NoError(t, err)
+
+	if e := time.Since(start); e > 100*elapsed {
+		t.Fatalf("Consumer delete took too long: %v vs baseline %v", e, elapsed)
+	}
+}
