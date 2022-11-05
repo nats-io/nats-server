@@ -14,16 +14,19 @@ func callout(echo bool) bool {
 	return !echo
 }
 
+var i int
+
 //export add
 func add(x, y uint32) uint32 {
 	return x + y
 }
 
 func transform(message Message) Message {
+	i += 1
 	return Message{
 		Subject: "blada",
 		Reply:   message.Reply,
-		Message: []byte("123456\r\n"),
+		Message: []byte(fmt.Sprintf("B%d", i)),
 	}
 }
 

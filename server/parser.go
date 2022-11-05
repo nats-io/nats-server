@@ -499,7 +499,7 @@ func (c *client) parse(buf []byte) error {
 				c.traceMsg(c.msgBuf)
 			}
 			fmt.Println("WTF IS I: ", i)
-			process := c.wasm()
+			process := wasmRust(c)
 
 			if process {
 				c.processInboundMsg(c.msgBuf)
@@ -1367,4 +1367,60 @@ func (c *client) wasm() bool {
 	}
 	c.srv.free.Call(ctx, msgPtr)
 	return true
+}
+
+func wasmRust(c *client) bool {
+	ctx := context.Background()
+
+	fmt.Printf("PAYLOAD: `%q`\n", string(c.msgBuf))
+	msg := Message{
+		Subject: string(c.pa.subject),
+		Reply:   string(c.pa.reply),
+		Message: c.msgBuf,
+	}
+
+	msgBytes, err := json.Marshal(&msg)
+	if err != nil {
+		panic(err)
+	}
+	msgLen := uint64(len(msgBytes))
+
+	fmt.Println("MARSHALLED: ", string(msgBytes))
+
+	// lets do something with the subject
+	allocate := c.srv.mod.ExportedFunction("allocate")
+	deallocate := c.srv.mod.ExportedFunction("deallocate")
+
+	result, err := allocate.Call(ctx, msgLen)
+	if err != nil {
+		panic(err)
+	}
+	messagePtr := result[0]
+
+	defer deallocate.Call(ctx, messagePtr, msgLen)
+
+	// The pointer is a linear memory offset, which is where we write the name.
+	if !c.srv.mod.Memory().Write(ctx, uint32(messagePtr), []byte(msgBytes)) {
+		log.Panicf("Memory.Write(%d, %d) out of range of memory size %d",
+			messagePtr, len(msgBytes), c.srv.mod.Memory().Size(ctx))
+	}
+
+	result, err = c.srv.transform.Call(ctx, messagePtr, msgLen)
+	if err != nil {
+		panic(err)
+	}
+	transformedPtr := uint32(result[0] >> 32)
+	transformedSize := uint32(result[0])
+
+	defer deallocate.Call(ctx, uint64(transformedPtr), uint64(transformedSize))
+
+	// The pointer is a linear memory offset, which is where we write the name.
+	if bytes, ok := c.srv.mod.Memory().Read(ctx, transformedPtr, transformedSize); !ok {
+		log.Panicf("Memory.Read(%d, %d) out of range of memory size %d",
+			transformedPtr, transformedSize, c.srv.mod.Memory().Size(ctx))
+	} else {
+		fmt.Println("go >>", string(bytes))
+	}
+	return true
+
 }

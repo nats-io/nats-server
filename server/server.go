@@ -1640,7 +1640,7 @@ func (s *Server) Start() {
 
 	wasi_snapshot_preview1.MustInstantiate(ctx, r)
 
-	wasmMod, err := ioutil.ReadFile("./wasm/callout.wasm")
+	wasmMod, err := ioutil.ReadFile("./wasm/transform.wasm")
 	if err != nil {
 		panic(err)
 	}

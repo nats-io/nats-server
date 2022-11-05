@@ -1,0 +1,23 @@
+[package]
+name = "transform"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# cdylib builds a a %.wasm file with `cargo build --release --target wasm32-unknown-unknown`
+crate-type = ["cdylib"]
+name = "transform"
+path = "transform.rs"
+
+[dependencies]
+# wee_aloc is a WebAssembly optimized allocator, which is needed to use non-numeric types like strings.
+# See https://docs.rs/wee_alloc/latest/wee_alloc/
+wee_alloc = "0.4.5"
+
+# Below settings dramatically reduce wasm output size
+# See https://rustwasm.github.io/book/reference/code-size.html#optimizing-builds-for-code-sizewasm-opt -Oz -o
+# See https://doc.rust-lang.org/cargo/reference/profiles.html#codegen-units
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
