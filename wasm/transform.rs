@@ -9,27 +9,39 @@ use std::slice;
 
 pub fn process(message: Message) -> std::io::Result<Option<Message>> {
     let m = Message {
-        payload: Some(b"blabla\r\n".to_vec()),
+        payload: Some(b"blabla".to_vec()),
         reply: "reply".to_string(),
         ..message
     };
-    // Ok(Some(m))
+    Ok(Some(m))
     // Err(std::io::Error::new(
     //     std::io::ErrorKind::Other,
     //     "SCHEMA IS BAD",
     // ))
+    // Ok(None)
 }
 
 fn transform(message: Vec<u8>) -> Vec<u8> {
-    let m: Message = serde_json::from_slice(message.as_ref()).unwrap();
+    let mut m: Message = serde_json::from_slice(message.as_ref()).unwrap();
+    if let Some(p) = m.payload.as_mut() {
+        p.truncate(p.len().saturating_sub(2))
+    }
     serde_json::to_vec(&process(m).map_or_else(
         |err| Response {
             message: None,
             error: Some(err.to_string()),
         },
-        |message| Response {
-            message,
-            error: None,
+        |mut message| {
+            message.as_mut().map(|p| {
+                p.payload.as_mut().map(|p| {
+                    p.append(&mut b"\r\n".to_vec());
+                    p
+                })
+            });
+            Response {
+                message,
+                error: None,
+            }
         },
     ))
     .unwrap()
