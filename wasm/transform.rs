@@ -23,11 +23,6 @@ pub fn process(message: Message) -> std::io::Result<Option<Message>> {
         ..message
     };
     Ok(Some(m))
-    // Err(std::io::Error::new(
-    //     std::io::ErrorKind::Other,
-    //     "SCHEMA IS BAD",
-    // ))
-    // Ok(None)
 }
 
 fn transform(message: Vec<u8>) -> Vec<u8> {
@@ -36,9 +31,8 @@ fn transform(message: Vec<u8>) -> Vec<u8> {
         p.truncate(p.len().saturating_sub(2))
     }
     serde_json::to_vec(&process(m).map_or_else(
-        |err| Response {
-            message: None,
-            error: Some(err.to_string()),
+        |err| Response::Error {
+            error: err.to_string(),
         },
         |mut message| {
             message.as_mut().map(|p| {
@@ -47,10 +41,7 @@ fn transform(message: Vec<u8>) -> Vec<u8> {
                     p
                 })
             });
-            Response {
-                message,
-                error: None,
-            }
+            Response::Message { message }
         },
     ))
     .unwrap()
@@ -133,11 +124,12 @@ pub struct Message {
 }
 
 #[derive(Serialize)]
-pub struct Response {
-    #[serde(rename = "Message", skip_serializing_if = "Option::is_none")]
-    message: Option<Message>,
-    #[serde(rename = "Error", skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+#[serde(untagged)]
+pub enum Response {
+    #[serde(rename = "Message")]
+    Message { message: Option<Message> },
+    #[serde(rename = "Error")]
+    Error { error: String },
 }
 
 mod base64 {
