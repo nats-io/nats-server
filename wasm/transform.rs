@@ -7,14 +7,22 @@ use serde::{Deserialize, Serialize};
 use std::mem::MaybeUninit;
 use std::slice;
 
-fn transform(message: Vec<u8>) -> String {
+pub fn process(message: Message) -> std::io::Result<Option<Message>> {
+    let m = Message {
+        payload: Some(b"blabla\r\n".to_vec()),
+        reply: "reply".to_string(),
+        ..message
+    };
+    Ok(Some(m))
+}
+
+fn transform(message: Vec<u8>) -> Vec<u8> {
     let m: Message = serde_json::from_slice(message.as_ref()).unwrap();
-    // let m = Message {
-    //     payload: b"blada".to_vec(),
-    //     subject: "blada".to_string(),
-    //     reply: "".to_string(),
-    // };
-    serde_json::to_string(&m).unwrap()
+    let m = process(m).unwrap();
+    if let Some(m) = m {
+        return serde_json::to_vec(&m).unwrap();
+    }
+    Vec::new()
 }
 
 #[cfg_attr(all(target_arch = "wasm32"), export_name = "transform")]
@@ -42,7 +50,7 @@ unsafe fn ptr_to_bytes(ptr: u32, len: u32) -> Vec<u8> {
 ///
 /// Note: This doesn't change the ownership of the String. To intentionally
 /// leak it, use [`std::mem::forget`] on the input after calling this.
-unsafe fn string_to_ptr(s: &String) -> (u32, u32) {
+unsafe fn string_to_ptr(s: &Vec<u8>) -> (u32, u32) {
     return (s.as_ptr() as u32, s.len() as u32);
 }
 
@@ -84,13 +92,13 @@ unsafe fn deallocate(ptr: *mut u8, size: usize) {
 }
 
 #[derive(Serialize, Deserialize)]
-struct Message {
+pub struct Message {
     #[serde(rename = "Message", with = "base64")]
-    payload: Option<Vec<u8>>,
+    pub payload: Option<Vec<u8>>,
     #[serde(rename = "Subject")]
-    subject: String,
+    pub subject: String,
     #[serde(rename = "Reply")]
-    reply: String,
+    pub reply: String,
 }
 
 mod base64 {

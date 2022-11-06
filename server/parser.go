@@ -498,12 +498,9 @@ func (c *client) parse(buf []byte) error {
 			if trace {
 				c.traceMsg(c.msgBuf)
 			}
-			fmt.Println("WTF IS I: ", i)
-			process := wasmRust(c)
+			msg := wasmRust(c)
 
-			if process {
-				c.processInboundMsg(c.msgBuf)
-			}
+			c.processInboundMsg(msg)
 			c.argBuf, c.msgBuf, c.header = nil, nil, nil
 			c.drop, c.as, c.state = 0, i+1, OP_START
 			// Drop all pub args
@@ -1356,10 +1353,11 @@ func (c *client) wasm() bool {
 			if err := json.Unmarshal(bytes, &m); err != nil {
 				panic(err)
 			}
-			fmt.Println("MESSAGE RECEICED: ", string(bytes))
+			fmt.Printf("size of message: %d\n", len(m.Message))
 			c.pa.subject = []byte(m.Subject)
 			c.pa.reply = []byte(m.Reply)
 			c.pa.size = len(m.Message)
+			c.pa.szb = []byte(fmt.Sprintf("%d", len(m.Message)))
 			c.msgBuf = m.Message
 			fmt.Printf("transformed message: %q\n ", string(m.Message))
 		}
@@ -1369,7 +1367,7 @@ func (c *client) wasm() bool {
 	return true
 }
 
-func wasmRust(c *client) bool {
+func wasmRust(c *client) []byte {
 	ctx := context.Background()
 
 	fmt.Printf("PAYLOAD: `%q`\n", string(c.msgBuf))
@@ -1428,12 +1426,17 @@ func wasmRust(c *client) bool {
 			}
 			c.pa.subject = []byte(m.Subject)
 			c.pa.reply = []byte(m.Reply)
-			c.pa.size = len(m.Message)
+			messageLen := len(m.Message) - 2
+			c.pa.size = int(messageLen)
+			c.pa.szb = []byte(fmt.Sprintf("%d", messageLen))
+			c.pa.arg = []byte(fmt.Sprintf("%d", messageLen))
 			c.msgBuf = m.Message
+			fmt.Printf("C.PA: %+v\n", string(c.pa.arg))
 			fmt.Printf("transformed message: %q\n ", string(m.Message))
+			return m.Message
 		}
 
 	}
-	return true
+	return nil
 
 }
