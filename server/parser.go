@@ -1429,7 +1429,9 @@ func wasmRust(c *client) []byte {
 			messageLen := len(m.Message) - 2
 			c.pa.size = int(messageLen)
 			c.pa.szb = []byte(fmt.Sprintf("%d", messageLen))
-			c.pa.arg = []byte(fmt.Sprintf("%d", messageLen))
+			// FIXME: (tp) should properly count headers and paylaod size
+			// c.pa.arg = []byte(fmt.Sprintf("%d", messageLen))
+			c.pa.hdb = []byte("0")
 			c.msgBuf = m.Message
 			fmt.Printf("C.PA: %+v\n", string(c.pa.arg))
 			fmt.Printf("transformed message: %q\n ", string(m.Message))
