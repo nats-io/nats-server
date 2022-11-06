@@ -8,6 +8,15 @@ use std::mem::MaybeUninit;
 use std::slice;
 
 pub fn process(message: Message) -> std::io::Result<Option<Message>> {
+    if message.payload == Some(b"filter".to_vec()) {
+        return Ok(None);
+    }
+    if message.payload == Some(b"error".to_vec()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "error in process",
+        ));
+    }
     let m = Message {
         payload: Some(b"blabla".to_vec()),
         reply: "reply".to_string(),
