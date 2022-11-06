@@ -13,16 +13,26 @@ pub fn process(message: Message) -> std::io::Result<Option<Message>> {
         reply: "reply".to_string(),
         ..message
     };
-    Ok(Some(m))
+    // Ok(Some(m))
+    // Err(std::io::Error::new(
+    //     std::io::ErrorKind::Other,
+    //     "SCHEMA IS BAD",
+    // ))
 }
 
 fn transform(message: Vec<u8>) -> Vec<u8> {
     let m: Message = serde_json::from_slice(message.as_ref()).unwrap();
-    let m = process(m).unwrap();
-    if let Some(m) = m {
-        return serde_json::to_vec(&m).unwrap();
-    }
-    Vec::new()
+    serde_json::to_vec(&process(m).map_or_else(
+        |err| Response {
+            message: None,
+            error: Some(err.to_string()),
+        },
+        |message| Response {
+            message,
+            error: None,
+        },
+    ))
+    .unwrap()
 }
 
 #[cfg_attr(all(target_arch = "wasm32"), export_name = "transform")]
@@ -99,6 +109,14 @@ pub struct Message {
     pub subject: String,
     #[serde(rename = "Reply")]
     pub reply: String,
+}
+
+#[derive(Serialize)]
+pub struct Response {
+    #[serde(rename = "Message", skip_serializing_if = "Option::is_none")]
+    message: Option<Message>,
+    #[serde(rename = "Error", skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 mod base64 {

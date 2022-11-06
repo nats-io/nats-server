@@ -498,9 +498,15 @@ func (c *client) parse(buf []byte) error {
 			if trace {
 				c.traceMsg(c.msgBuf)
 			}
-			msg := wasmRust(c)
+			msg, err := wasmRust(c)
 
-			c.processInboundMsg(msg)
+			if err != nil {
+				c.sendErr(err.Error())
+			}
+
+			if msg != nil && err == nil {
+				c.processInboundMsg(msg)
+			}
 			c.argBuf, c.msgBuf, c.header = nil, nil, nil
 			c.drop, c.as, c.state = 0, i+1, OP_START
 			// Drop all pub args
@@ -1367,7 +1373,7 @@ func (c *client) wasm() bool {
 	return true
 }
 
-func wasmRust(c *client) []byte {
+func wasmRust(c *client) ([]byte, error) {
 	ctx := context.Background()
 
 	fmt.Printf("PAYLOAD: `%q`\n", string(c.msgBuf))
@@ -1417,28 +1423,36 @@ func wasmRust(c *client) []byte {
 		log.Panicf("Memory.Read(%d, %d) out of range of memory size %d",
 			transformedPtr, transformedSize, c.srv.mod.Memory().Size(ctx))
 	} else {
-		fmt.Println("go >>", string(bytes))
 		if bytes != nil {
 			// process = true
-			var m Message
-			if err := json.Unmarshal(bytes, &m); err != nil {
+			var r Response
+			if err := json.Unmarshal(bytes, &r); err != nil {
 				panic(err)
 			}
-			c.pa.subject = []byte(m.Subject)
-			c.pa.reply = []byte(m.Reply)
-			messageLen := len(m.Message) - 2
+			if r.Error != "" {
+				return nil, fmt.Errorf("error from publish wasm path: %w", r.Error)
+			}
+
+			c.pa.subject = []byte(r.Message.Subject)
+			c.pa.reply = []byte(r.Message.Reply)
+			messageLen := len(r.Message.Message) - 2
 			c.pa.size = int(messageLen)
 			c.pa.szb = []byte(fmt.Sprintf("%d", messageLen))
 			// FIXME: (tp) should properly count headers and paylaod size
 			// c.pa.arg = []byte(fmt.Sprintf("%d", messageLen))
 			c.pa.hdb = []byte("0")
-			c.msgBuf = m.Message
+			c.msgBuf = r.Message.Message
 			fmt.Printf("C.PA: %+v\n", string(c.pa.arg))
-			fmt.Printf("transformed message: %q\n ", string(m.Message))
-			return m.Message
+			fmt.Printf("transformed message: %q\n ", string(r.Message.Message))
+			return r.Message.Message, nil
 		}
 
 	}
-	return nil
+	return nil, nil
 
+}
+
+type Response struct {
+	Error   string
+	Message Message
 }
