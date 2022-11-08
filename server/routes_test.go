@@ -1670,3 +1670,60 @@ func TestRouteSolicitedReconnectsEvenIfImplicit(t *testing.T) {
 		// OK
 	}
 }
+
+func TestRouteSaveTLSName(t *testing.T) {
+	c1Conf := createConfFile(t, []byte(`
+		port: -1
+		cluster {
+			name: "abc"
+			port: -1
+			tls {
+				cert_file: '../test/configs/certs/server-noip.pem'
+				key_file: '../test/configs/certs/server-key-noip.pem'
+				ca_file: '../test/configs/certs/ca.pem'
+			}
+		}
+	`))
+	defer removeFile(t, c1Conf)
+	s1, o1 := RunServerWithConfig(c1Conf)
+	defer s1.Shutdown()
+
+	c2And3Conf := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		cluster {
+			name: "abc"
+			port: -1
+			routes: ["nats://localhost:%d"]
+			tls {
+				cert_file: '../test/configs/certs/server-noip.pem'
+				key_file: '../test/configs/certs/server-key-noip.pem'
+				ca_file: '../test/configs/certs/ca.pem'
+			}
+		}
+	`, o1.Cluster.Port)))
+	defer removeFile(t, c2And3Conf)
+	s2, _ := RunServerWithConfig(c2And3Conf)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	s3, _ := RunServerWithConfig(c2And3Conf)
+	defer s3.Shutdown()
+
+	checkClusterFormed(t, s1, s2, s3)
+
+	// Do a reload of s2 and close the route connections and make sure it
+	// reconnects properly.
+	err := s2.Reload()
+	require_NoError(t, err)
+
+	s2.mu.RLock()
+	for _, r := range s2.routes {
+		r.mu.Lock()
+		r.nc.Close()
+		r.mu.Unlock()
+	}
+	s2.mu.RUnlock()
+
+	checkClusterFormed(t, s1, s2, s3)
+}
