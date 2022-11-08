@@ -554,6 +554,9 @@ func (a *Account) RoutedSubs() int {
 func (a *Account) TotalSubs() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+	if a.sl == nil {
+		return 0
+	}
 	return int(a.sl.Count())
 }
 

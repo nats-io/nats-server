@@ -1906,21 +1906,19 @@ func (c *client) isSolicitedRoute() bool {
 // Save the first hostname found in route URLs. This will be used in gossip mode
 // when trying to create a TLS connection by setting the tlsConfig.ServerName.
 // Lock is held on entry
-func (s *Server) saveRouteTLSName() {
-	var tlsName string
-	for _, u := range s.getOpts().Routes {
-		if tlsName == _EMPTY_ && net.ParseIP(u.Hostname()) == nil {
-			tlsName = u.Hostname()
+func (s *Server) saveRouteTLSName(routes []*url.URL) {
+	for _, u := range routes {
+		if s.routeTLSName == _EMPTY_ && net.ParseIP(u.Hostname()) == nil {
+			s.routeTLSName = u.Hostname()
 		}
 	}
-	s.routeTLSName = tlsName
 }
 
 // Start connection process to provided routes. Each route connection will
 // be started in a dedicated go routine.
 // Lock is held on entry
 func (s *Server) solicitRoutes(routes []*url.URL) {
-	s.saveRouteTLSName()
+	s.saveRouteTLSName(routes)
 	for _, r := range routes {
 		route := r
 		s.startGoRoutine(func() { s.connectToRoute(route, true, true) })
