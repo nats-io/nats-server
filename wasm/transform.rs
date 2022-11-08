@@ -7,6 +7,14 @@ use serde::{Deserialize, Serialize};
 use std::mem::MaybeUninit;
 use std::slice;
 
+pub fn callout(connect_info: ConnectInfo, cert: Key) -> HTTPRequest {
+
+}
+
+pub fn process_callout_response(resp: HTTPResponse) -> JWT {
+
+}
+
 pub fn process(message: Message) -> std::io::Result<Option<Message>> {
     if message.payload == Some(b"filter".to_vec()) {
         return Ok(None);

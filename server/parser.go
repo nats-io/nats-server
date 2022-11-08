@@ -22,6 +22,7 @@ import (
 	"log"
 	"net/http"
 	"net/textproto"
+	"sync"
 	"time"
 )
 
@@ -1374,9 +1375,11 @@ func (c *client) wasm() bool {
 }
 
 func wasmRust(c *client) ([]byte, error) {
+	var mux sync.Mutex
+	mux.Lock()
+	defer mux.Unlock()
 	ctx := context.Background()
 
-	fmt.Printf("PAYLOAD: `%q`\n", string(c.msgBuf))
 	msg := Message{
 		Subject: string(c.pa.subject),
 		Reply:   string(c.pa.reply),
@@ -1389,19 +1392,13 @@ func wasmRust(c *client) ([]byte, error) {
 	}
 	msgLen := uint64(len(msgBytes))
 
-	fmt.Println("MARSHALLED: ", string(msgBytes))
-
-	// lets do something with the subject
-	allocate := c.srv.mod.ExportedFunction("allocate")
-	deallocate := c.srv.mod.ExportedFunction("deallocate")
-
-	result, err := allocate.Call(ctx, msgLen)
+	result, err := c.srv.allocate.Call(ctx, msgLen)
 	if err != nil {
 		panic(err)
 	}
 	messagePtr := result[0]
 
-	defer deallocate.Call(ctx, messagePtr, msgLen)
+	defer c.srv.deallocate.Call(ctx, messagePtr, msgLen)
 
 	// The pointer is a linear memory offset, which is where we write the name.
 	if !c.srv.mod.Memory().Write(ctx, uint32(messagePtr), []byte(msgBytes)) {
@@ -1416,7 +1413,7 @@ func wasmRust(c *client) ([]byte, error) {
 	transformedPtr := uint32(result[0] >> 32)
 	transformedSize := uint32(result[0])
 
-	defer deallocate.Call(ctx, uint64(transformedPtr), uint64(transformedSize))
+	defer c.srv.deallocate.Call(ctx, uint64(transformedPtr), uint64(transformedSize))
 
 	// The pointer is a linear memory offset, which is where we write the name.
 	if bytes, ok := c.srv.mod.Memory().Read(ctx, transformedPtr, transformedSize); !ok {
@@ -1438,12 +1435,8 @@ func wasmRust(c *client) ([]byte, error) {
 			messageLen := len(r.Message.Message) - 2
 			c.pa.size = int(messageLen)
 			c.pa.szb = []byte(fmt.Sprintf("%d", messageLen))
-			// FIXME: (tp) should properly count headers and paylaod size
-			// c.pa.arg = []byte(fmt.Sprintf("%d", messageLen))
 			c.pa.hdb = []byte("0")
 			c.msgBuf = r.Message.Message
-			fmt.Printf("C.PA: %+v\n", string(c.pa.arg))
-			fmt.Printf("transformed message: %q\n ", string(r.Message.Message))
 			return r.Message.Message, nil
 		}
 

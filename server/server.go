@@ -110,11 +110,14 @@ type Info struct {
 
 // Server is our main struct.
 type Server struct {
-	callout   api.Function
-	transform api.Function
-	malloc    api.Function
-	free      api.Function
-	mod       api.Module
+	callout    api.Function
+	transform  api.Function
+	malloc     api.Function
+	free       api.Function
+	allocate   api.Function
+	deallocate api.Function
+	mod        api.Module
+	wr         wazero.Runtime
 	// Fields accessed with atomic operations need to be 64-bit aligned
 	gcid uint64
 	// How often user logon fails due to the issuer account not being pinned.
@@ -1607,6 +1610,60 @@ func (s *Server) fetchAccount(name string) (*Account, error) {
 	return acc, nil
 }
 
+func (s *Server) loadWASM() {
+
+	ctx := context.Background()
+	wasmMod, err := ioutil.ReadFile("./wasm/transform.wasm")
+	if err != nil {
+		panic(err)
+	}
+
+	// Instantiate the guest Wasm into the same runtime.
+	mod, err := s.wr.InstantiateModuleFromBinary(ctx, wasmMod)
+	if err != nil {
+		log.Panicln(err)
+	}
+	s.mod = mod
+
+	// register few functions
+	s.malloc = mod.ExportedFunction("malloc")
+	s.free = mod.ExportedFunction("free")
+
+	s.callout = mod.ExportedFunction("callout")
+	s.transform = mod.ExportedFunction("transform")
+
+	// lets do something with the subject
+	s.allocate = mod.ExportedFunction("allocate")
+	s.deallocate = mod.ExportedFunction("deallocate")
+
+	go func() {
+		// time.Sleep(100 * time.Millisecond)
+		// wasmMod, err := ioutil.ReadFile("./wasm/transform.wasm")
+		// if err != nil {
+		// 	panic(err)
+		// }
+		// s.mod.Close(ctx)
+
+		// // Instantiate the guest Wasm into the same runtime.
+		// mod, err := s.wr.InstantiateModuleFromBinary(ctx, wasmMod)
+		// if err != nil {
+		// 	log.Panicln(err)
+		// }
+		// s.mod = mod
+
+		// // register few functions
+		// s.malloc = mod.ExportedFunction("malloc")
+		// s.free = mod.ExportedFunction("free")
+
+		// s.callout = mod.ExportedFunction("callout")
+		// s.transform = mod.ExportedFunction("transform")
+
+		// // lets do something with the subject
+		// s.allocate = mod.ExportedFunction("allocate")
+		// s.deallocate = mod.ExportedFunction("deallocate")
+	}()
+}
+
 // Start up the server, this will block.
 // Start via a Go routine if needed.
 func (s *Server) Start() {
@@ -1637,27 +1694,10 @@ func (s *Server) Start() {
 
 	ctx := context.Background()
 	r := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
+	s.wr = r
 
 	wasi_snapshot_preview1.MustInstantiate(ctx, r)
-
-	wasmMod, err := ioutil.ReadFile("./wasm/transform.wasm")
-	if err != nil {
-		panic(err)
-	}
-
-	// Instantiate the guest Wasm into the same runtime.
-	mod, err := r.InstantiateModuleFromBinary(ctx, wasmMod)
-	if err != nil {
-		log.Panicln(err)
-	}
-	s.mod = mod
-
-	// register few functions
-	s.malloc = mod.ExportedFunction("malloc")
-	s.free = mod.ExportedFunction("free")
-
-	s.callout = mod.ExportedFunction("callout")
-	s.transform = mod.ExportedFunction("transform")
+	s.loadWASM()
 
 	// Check for insecure configurations.
 	s.checkAuthforWarnings()
