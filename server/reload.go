@@ -413,7 +413,9 @@ func (r *routesOption) Apply(server *Server) {
 	}
 
 	// Add routes.
+	server.mu.Lock()
 	server.solicitRoutes(r.add)
+	server.mu.Unlock()
 
 	server.Noticef("Reloaded: cluster routes")
 }
