@@ -1305,6 +1305,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 	authRequired := s.routeInfo.AuthRequired
 	tlsRequired := s.routeInfo.TLSRequired
 	clusterName := s.info.Cluster
+	tlsName := s.routeTLSName
 	s.mu.Unlock()
 
 	// Grab lock
@@ -1329,8 +1330,13 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 			tlsConfig = tlsConfig.Clone()
 		}
 		// Perform (server or client side) TLS handshake.
-		if _, err := c.doTLSHandshake("route", didSolicit, rURL, tlsConfig, _EMPTY_, opts.Cluster.TLSTimeout, opts.Cluster.TLSPinnedCerts); err != nil {
+		if resetTLSName, err := c.doTLSHandshake("route", didSolicit, rURL, tlsConfig, tlsName, opts.Cluster.TLSTimeout, opts.Cluster.TLSPinnedCerts); err != nil {
 			c.mu.Unlock()
+			if resetTLSName {
+				s.mu.Lock()
+				s.routeTLSName = _EMPTY_
+				s.mu.Unlock()
+			}
 			return nil
 		}
 	}
@@ -1897,7 +1903,24 @@ func (c *client) isSolicitedRoute() bool {
 	return c.kind == ROUTER && c.route != nil && c.route.didSolicit
 }
 
+// Save the first hostname found in route URLs. This will be used in gossip mode
+// when trying to create a TLS connection by setting the tlsConfig.ServerName.
+// Lock is held on entry
+func (s *Server) saveRouteTLSName() {
+	var tlsName string
+	for _, u := range s.getOpts().Routes {
+		if tlsName == _EMPTY_ && net.ParseIP(u.Hostname()) == nil {
+			tlsName = u.Hostname()
+		}
+	}
+	s.routeTLSName = tlsName
+}
+
+// Start connection process to provided routes. Each route connection will
+// be started in a dedicated go routine.
+// Lock is held on entry
 func (s *Server) solicitRoutes(routes []*url.URL) {
+	s.saveRouteTLSName()
 	for _, r := range routes {
 		route := r
 		s.startGoRoutine(func() { s.connectToRoute(route, true, true) })

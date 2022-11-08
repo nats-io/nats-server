@@ -152,6 +152,7 @@ type Server struct {
 	routeInfoJSON       []byte
 	routeResolver       netResolver
 	routesToSelf        map[string]struct{}
+	routeTLSName        string
 	leafNodeListener    net.Listener
 	leafNodeListenerErr error
 	leafNodeInfo        Info
