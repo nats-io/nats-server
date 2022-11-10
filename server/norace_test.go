@@ -5399,7 +5399,7 @@ func TestNoRaceJetStreamFileStoreLargeKVAccessTiming(t *testing.T) {
 	}
 
 	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: storeDir, BlockSize: blkSize, CacheExpire: 5 * time.Second},
+		FileStoreConfig{StoreDir: storeDir, BlockSize: blkSize, CacheExpire: 30 * time.Second},
 		StreamConfig{Name: "zzz", Subjects: []string{"KV.STREAM_NAME.*"}, Storage: FileStorage, MaxMsgsPer: 1},
 	)
 	require_NoError(t, err)
@@ -5418,16 +5418,20 @@ func TestNoRaceJetStreamFileStoreLargeKVAccessTiming(t *testing.T) {
 	last := fmt.Sprintf(tmpl, nkeys)
 
 	start := time.Now()
-	_, err = fs.LoadLastMsg(last, nil)
+	sm, err := fs.LoadLastMsg(last, nil)
 	require_NoError(t, err)
 	base := time.Since(start)
+
+	if !bytes.Equal(sm.msg, val) {
+		t.Fatalf("Retrieved value did not match")
+	}
 
 	start = time.Now()
 	_, err = fs.LoadLastMsg(first, nil)
 	require_NoError(t, err)
 	slow := time.Since(start)
 
-	if slow > 2*base {
+	if slow > 4*base || slow > time.Millisecond {
 		t.Fatalf("Took too long to look up first key vs last: %v vs %v", base, slow)
 	}
 
@@ -5442,7 +5446,7 @@ func TestNoRaceJetStreamFileStoreLargeKVAccessTiming(t *testing.T) {
 	slow = time.Since(start)
 	fs.mu.RUnlock()
 
-	if slow > 2*base {
+	if slow > 4*base || slow > time.Millisecond {
 		t.Fatalf("Took too long to look up last key by subject vs first: %v vs %v", base, slow)
 	}
 }
