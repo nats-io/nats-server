@@ -1603,6 +1603,16 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage Stor
 		return errors.New("shutting down")
 	}
 
+	// Check here to see if we have a max HA Assets limit set.
+	if maxHaAssets := s.getOpts().JetStreamLimits.MaxHAAssets; maxHaAssets > 0 {
+		if s.numRaftNodes() > maxHaAssets {
+			s.Warnf("Maximum HA Assets limit reached: %d", maxHaAssets)
+			// Since the meta leader assigned this, send a statsz update to them to get them up to date.
+			go s.sendStatszUpdate()
+			return errors.New("system limit reached")
+		}
+	}
+
 	storeDir := filepath.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, rg.Name)
 	var store StreamStore
 	if storage == FileStorage {
@@ -4822,7 +4832,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 			err.noStorage = true
 			continue
 		}
-		// HAAssets contain _meta_ which we want to ignore
+		// HAAssets contain _meta_ which we want to ignore, hence > and not >=.
 		if maxHaAssets > 0 && ni.stats != nil && ni.stats.HAAssets > maxHaAssets {
 			s.Warnf("Peer selection: discard %s@%s (HA Asset Count: %d) exceeds max ha asset limit of %d for stream placement",
 				ni.name, ni.cluster, ni.stats.HAAssets, maxHaAssets)
