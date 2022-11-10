@@ -1281,3 +1281,37 @@ func TestJetStreamClusterScaleDownWhileNoQuorum(t *testing.T) {
 	checkClusterFormed(t, c.servers...)
 	c.waitOnStreamLeader(globalAccountName, "TEST")
 }
+
+// We noticed that ha_assets enforcement seemed to not be upheld when assets created in a rapid fashion.
+func TestJetStreamClusterHAssetsEnforcement(t *testing.T) {
+	tmpl := strings.Replace(jsClusterTempl, "store_dir:", "limits: {max_ha_assets: 2}, store_dir:", 1)
+	c := createJetStreamClusterWithTemplateAndModHook(t, tmpl, "R3S", 3, nil)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST-1",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST-2",
+		Subjects: []string{"bar"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	exceededErrs := []error{errors.New("system limit reached"), errors.New("no suitable peers")}
+
+	// Should fail.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST-3",
+		Subjects: []string{"baz"},
+		Replicas: 3,
+	})
+	require_Error(t, err, exceededErrs...)
+}
