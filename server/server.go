@@ -1769,6 +1769,7 @@ func (s *Server) Start() {
 			MaxStore:   opts.JetStreamMaxStore,
 			Domain:     opts.JetStreamDomain,
 			CompressOK: true,
+			UniqueTag:  opts.JetStreamUniqueTag,
 		}
 		if err := s.EnableJetStream(cfg); err != nil {
 			s.Fatalf("Can't start JetStream: %v", err)
