@@ -4124,7 +4124,7 @@ func TestMonitorJsz(t *testing.T) {
 			routes: [nats-route://127.0.0.1:%d]
 		}
 		server_name: server_%d
-        server_tags: [ "az:%d" ] `, test.port, test.mport, tmpDir, test.cport, test.routed, test.port, test.port)))
+		server_tags: [ "az:%d" ] `, test.port, test.mport, tmpDir, test.cport, test.routed, test.port, test.port)))
 		defer removeFile(t, cf)
 
 		s, _ := RunServerWithConfig(cf)
