@@ -4116,13 +4116,15 @@ func TestMonitorJsz(t *testing.T) {
 			max_mem_store: 10Mb
 			max_file_store: 10Mb
 			store_dir: '%s'
+			unique_tag: az
 		}
 		cluster {
 			name: cluster_name
 			listen: 127.0.0.1:%d
 			routes: [nats-route://127.0.0.1:%d]
 		}
-		server_name: server_%d `, test.port, test.mport, tmpDir, test.cport, test.routed, test.port)))
+		server_name: server_%d
+		server_tags: [ "az:%d" ] `, test.port, test.mport, tmpDir, test.cport, test.routed, test.port, test.port)))
 		defer removeFile(t, cf)
 
 		s, _ := RunServerWithConfig(cf)
@@ -4390,6 +4392,14 @@ func TestMonitorJsz(t *testing.T) {
 			info := readJsInfo(url + "?acc=DOES_NOT_EXIT")
 			if len(info.AccountDetails) != 0 {
 				t.Fatalf("expected no account to be returned by %s but got %v", url, info)
+			}
+		}
+	})
+	t.Run("unique-tag-exists", func(t *testing.T) {
+		for _, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url)
+			if len(info.Config.UniqueTag) == 0 {
+				t.Fatalf("expected unique_tag to be returned by %s but got %v", url, info)
 			}
 		}
 	})

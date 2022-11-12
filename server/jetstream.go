@@ -43,6 +43,7 @@ type JetStreamConfig struct {
 	StoreDir   string `json:"store_dir,omitempty"`
 	Domain     string `json:"domain,omitempty"`
 	CompressOK bool   `json:"compress_ok,omitempty"`
+	UniqueTag  string `json:"unique_tag,omitempty"`
 }
 
 // Statistics about JetStream for this server.
@@ -174,10 +175,10 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 
 	s.Noticef("Starting JetStream")
 	if config == nil || config.MaxMemory <= 0 || config.MaxStore <= 0 {
-		var storeDir, domain string
+		var storeDir, domain, uniqueTag string
 		var maxStore, maxMem int64
 		if config != nil {
-			storeDir, domain = config.StoreDir, config.Domain
+			storeDir, domain, uniqueTag = config.StoreDir, config.Domain, config.UniqueTag
 			maxStore, maxMem = config.MaxStore, config.MaxMemory
 		}
 		config = s.dynJetStreamConfig(storeDir, maxStore, maxMem)
@@ -186,6 +187,9 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 		}
 		if domain != _EMPTY_ {
 			config.Domain = domain
+		}
+		if uniqueTag != _EMPTY_ {
+			config.UniqueTag = uniqueTag
 		}
 		s.Debugf("JetStream creating dynamic configuration - %s memory, %s disk", friendlyBytes(config.MaxMemory), friendlyBytes(config.MaxStore))
 	} else if config.StoreDir != _EMPTY_ {
