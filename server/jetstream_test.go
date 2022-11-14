@@ -19681,3 +19681,76 @@ func TestJetStreamPullConsumersTimeoutHeaders(t *testing.T) {
 		t.Logf("Subscription did not receive the pull request response on server shutdown")
 	}
 }
+
+// For issue https://github.com/nats-io/nats-server/issues/3612
+// Do auto cleanup.
+func TestJetStreamDanglingMessageAutoCleanup(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.InterestPolicy,
+	})
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe("foo", "dlc", nats.MaxAckPending(10))
+	require_NoError(t, err)
+
+	// Send 100 msgs
+	n := 100
+	for i := 0; i < n; i++ {
+		sendStreamMsg(t, nc, "foo", "msg")
+	}
+
+	// Grab and ack 10 messages.
+	for _, m := range fetchMsgs(t, sub, 10, time.Second) {
+		m.AckSync()
+	}
+
+	ci, err := sub.ConsumerInfo()
+	require_NoError(t, err)
+	require_True(t, ci.AckFloor.Stream == 10)
+
+	// Stop current
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+
+	// We will hand move the ackfloor to simulate dangling message condition.
+	cstore := filepath.Join(sd, "$G", "streams", "TEST", "obs", "dlc", "o.dat")
+
+	buf, err := os.ReadFile(cstore)
+	require_NoError(t, err)
+
+	state, err := decodeConsumerState(buf)
+	require_NoError(t, err)
+
+	// Update from 10 for delivered and ack to 90.
+	state.Delivered.Stream, state.Delivered.Consumer = 90, 90
+	state.AckFloor.Stream, state.AckFloor.Consumer = 90, 90
+
+	err = os.WriteFile(cstore, encodeConsumerState(state), defaultFilePerms)
+	require_NoError(t, err)
+
+	// Restart.
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	if si.State.Msgs != 10 {
+		t.Fatalf("Expected auto-cleanup to have worked but got %d msgs vs 10", si.State.Msgs)
+	}
+}
