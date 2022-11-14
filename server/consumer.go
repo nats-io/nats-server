@@ -2410,7 +2410,7 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 			o.mu.RUnlock()
 			return false
 		}
-		state, err := o.store.State()
+		state, err := o.store.BorrowState()
 		if err != nil || state == nil {
 			// Fall back to what we track internally for now.
 			needAck := sseq > o.asflr && !o.isFiltered()

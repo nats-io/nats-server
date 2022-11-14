@@ -177,6 +177,7 @@ type ConsumerStore interface {
 	UpdateConfig(cfg *ConsumerConfig) error
 	Update(*ConsumerState) error
 	State() (*ConsumerState, error)
+	BorrowState() (*ConsumerState, error)
 	EncodedState() ([]byte, error)
 	Type() StorageType
 	Stop() error
