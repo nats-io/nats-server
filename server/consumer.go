@@ -2417,22 +2417,19 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 			o.mu.RUnlock()
 			return needAck
 		}
-		asflr, osseq = state.AckFloor.Stream, o.sseq
-		pending = state.Pending
+		// If loading state as here, the osseq is +1.
+		asflr, osseq, pending = state.AckFloor.Stream, state.Delivered.Stream+1, state.Pending
 	}
+
 	switch o.cfg.AckPolicy {
 	case AckNone, AckAll:
 		needAck = sseq > asflr
 	case AckExplicit:
 		if sseq > asflr {
-			// Generally this means we need an ack, but just double check pending acks.
-			needAck = true
-			if sseq < osseq {
-				if len(pending) == 0 {
-					needAck = false
-				} else {
-					_, needAck = pending[sseq]
-				}
+			if sseq >= osseq {
+				needAck = true
+			} else {
+				_, needAck = pending[sseq]
 			}
 		}
 	}
