@@ -4859,3 +4859,37 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 	}
 	return mset, nil
 }
+
+// This is to check for dangling messages.
+// Issue https://github.com/nats-io/nats-server/issues/3612
+func (mset *stream) checkForOrphanMsgs() {
+	// We need to grab the low water mark for all consumers.
+	var ackFloor uint64
+	mset.mu.RLock()
+	for _, o := range mset.consumers {
+		o.mu.RLock()
+		if o.store != nil {
+			if state, err := o.store.BorrowState(); err == nil {
+				if ackFloor == 0 || state.AckFloor.Stream < ackFloor {
+					ackFloor = state.AckFloor.Stream
+				}
+			}
+		}
+		o.mu.RUnlock()
+	}
+	// Grabs stream state.
+	var state StreamState
+	mset.store.FastState(&state)
+	s, acc := mset.srv, mset.acc
+	mset.mu.RUnlock()
+
+	if ackFloor > state.FirstSeq {
+		req := &JSApiStreamPurgeRequest{Sequence: ackFloor + 1}
+		purged, err := mset.purge(req)
+		if err != nil {
+			s.Warnf("stream '%s > %s' could not auto purge orphaned messages: %v", acc, mset.name(), err)
+		} else {
+			s.Debugf("stream '%s > %s' auto purged %d messages", acc, mset.name(), purged)
+		}
+	}
+}

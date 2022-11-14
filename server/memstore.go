@@ -1171,6 +1171,16 @@ func (o *consumerMemStore) StreamDelete() error {
 }
 
 func (o *consumerMemStore) State() (*ConsumerState, error) {
+	return o.stateWithCopy(true)
+}
+
+// This will not copy pending or redelivered, so should only be done under the
+// consumer owner's lock.
+func (o *consumerMemStore) BorrowState() (*ConsumerState, error) {
+	return o.stateWithCopy(false)
+}
+
+func (o *consumerMemStore) stateWithCopy(doCopy bool) (*ConsumerState, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -1183,10 +1193,18 @@ func (o *consumerMemStore) State() (*ConsumerState, error) {
 	state.Delivered = o.state.Delivered
 	state.AckFloor = o.state.AckFloor
 	if len(o.state.Pending) > 0 {
-		state.Pending = o.copyPending()
+		if doCopy {
+			state.Pending = o.copyPending()
+		} else {
+			state.Pending = o.state.Pending
+		}
 	}
 	if len(o.state.Redelivered) > 0 {
-		state.Redelivered = o.copyRedelivered()
+		if doCopy {
+			state.Redelivered = o.copyRedelivered()
+		} else {
+			state.Redelivered = o.state.Redelivered
+		}
 	}
 	return state, nil
 }
