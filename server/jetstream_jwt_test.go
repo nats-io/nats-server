@@ -989,3 +989,127 @@ func TestJetStreamExpiredAccountNotCountedTowardLimits(t *testing.T) {
 	require_NoError(t, err)
 	require_True(t, ai.Limits.MaxMemory == 7*1024*1024)
 }
+
+func TestJetStreamDeletedAccountDoesNotLeakSubscriptions(t *testing.T) {
+	op, _ := nkeys.CreateOperator()
+	opPk, _ := op.PublicKey()
+	sk, _ := nkeys.CreateOperator()
+	skPk, _ := sk.PublicKey()
+	opClaim := jwt.NewOperatorClaims(opPk)
+	opClaim.SigningKeys.Add(skPk)
+	opJwt, err := opClaim.Encode(op)
+	require_NoError(t, err)
+	createAccountAndUser := func(pubKey, jwt1, creds1 *string) {
+		t.Helper()
+		kp, _ := nkeys.CreateAccount()
+		*pubKey, _ = kp.PublicKey()
+		claim := jwt.NewAccountClaims(*pubKey)
+		claim.Limits.JetStreamLimits = jwt.JetStreamLimits{MemoryStorage: 7 * 1024 * 1024, DiskStorage: 7 * 1024 * 1024, Streams: 10}
+		var err error
+		*jwt1, err = claim.Encode(sk)
+		require_NoError(t, err)
+
+		ukp, _ := nkeys.CreateUser()
+		seed, _ := ukp.Seed()
+		upub, _ := ukp.PublicKey()
+		uclaim := newJWTTestUserClaims()
+		uclaim.Subject = upub
+
+		ujwt1, err := uclaim.Encode(kp)
+		require_NoError(t, err)
+		*creds1 = genCredsFile(t, ujwt1, seed)
+	}
+	generateRequest := func(accs []string, kp nkeys.KeyPair) []byte {
+		t.Helper()
+		opk, _ := kp.PublicKey()
+		c := jwt.NewGenericClaims(opk)
+		c.Data["accounts"] = accs
+		cJwt, err := c.Encode(kp)
+		if err != nil {
+			t.Fatalf("Expected no error %v", err)
+		}
+		return []byte(cJwt)
+	}
+
+	var syspub, sysjwt, sysCreds string
+	createAccountAndUser(&syspub, &sysjwt, &sysCreds)
+	defer removeFile(t, sysCreds)
+
+	dirSrv := createDir(t, "srv")
+	defer removeDir(t, dirSrv)
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		jetstream: {max_mem_store: 10Mb, max_file_store: 10Mb}
+		system_account: %s
+		resolver: {
+			type: full
+			allow_delete: true
+			dir: '%s'
+			timeout: "500ms"
+		}
+	`, opJwt, syspub, dirSrv)))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	checkNumSubs := func(expected uint32) uint32 {
+		t.Helper()
+		// Wait a bit before capturing number of subs...
+		time.Sleep(250 * time.Millisecond)
+
+		var ns uint32
+		checkFor(t, time.Second, 50*time.Millisecond, func() error {
+			subsz, err := s.Subsz(nil)
+			if err != nil {
+				return err
+			}
+			ns = subsz.NumSubs
+			if expected > 0 && ns > expected {
+				return fmt.Errorf("Expected num subs to be back at %v, got %v",
+					expected, ns)
+			}
+			return nil
+		})
+		return ns
+	}
+	beforeCreate := checkNumSubs(0)
+
+	// update system account jwt
+	updateJwt(t, s.ClientURL(), sysCreds, sysjwt, 1)
+
+	createAndDelete := func() {
+		t.Helper()
+
+		var apub, ajwt1, aCreds1 string
+		createAccountAndUser(&apub, &ajwt1, &aCreds1)
+		defer removeFile(t, aCreds1)
+		// push jwt (for full resolver)
+		updateJwt(t, s.ClientURL(), sysCreds, ajwt1, 1)
+
+		ncA, jsA := jsClientConnect(t, s, nats.UserCredentials(aCreds1))
+		defer ncA.Close()
+
+		ai, err := jsA.AccountInfo()
+		require_NoError(t, err)
+		require_True(t, ai.Limits.MaxMemory == 7*1024*1024)
+		ncA.Close()
+
+		nc := natsConnect(t, s.ClientURL(), nats.UserCredentials(sysCreds))
+		defer nc.Close()
+
+		resp, err := nc.Request(accDeleteReqSubj, generateRequest([]string{apub}, sk), time.Second)
+		require_NoError(t, err)
+		require_True(t, strings.Contains(string(resp.Data), `"message":"deleted 1 accounts"`))
+	}
+
+	// Create and delete multiple accounts
+	for i := 0; i < 10; i++ {
+		createAndDelete()
+	}
+
+	// There is a subscription on `_R_.>` that is created on the system account
+	// and that will not go away, so discount it.
+	checkNumSubs(beforeCreate + 1)
+}
