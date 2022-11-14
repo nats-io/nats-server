@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net"
 	"os"
 	"reflect"
@@ -1314,4 +1315,61 @@ func TestJetStreamClusterHAssetsEnforcement(t *testing.T) {
 		Replicas: 3,
 	})
 	require_Error(t, err, exceededErrs...)
+}
+
+func TestJetStreamClusterInterestStreamConsumer(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.InterestPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	var subs []*nats.Subscription
+	ns := 5
+
+	for i := 0; i < ns; i++ {
+		dn := fmt.Sprintf("d%d", i)
+		sub, err := js.PullSubscribe("foo", dn)
+		require_NoError(t, err)
+		subs = append(subs, sub)
+	}
+
+	// Send 10 msgs
+	n := 10
+	for i := 0; i < n; i++ {
+		sendStreamMsg(t, nc, "foo", "msg")
+	}
+
+	// Collect all the messages.
+	var msgs []*nats.Msg
+	for _, sub := range subs {
+		lmsgs := fetchMsgs(t, sub, n, time.Second)
+		if len(lmsgs) != n {
+			t.Fatalf("Did not receive all msgs: %d vs %d", len(lmsgs), n)
+		}
+		msgs = append(msgs, lmsgs...)
+	}
+
+	// Shuffle
+	rand.Shuffle(len(msgs), func(i, j int) { msgs[i], msgs[j] = msgs[j], msgs[i] })
+	for _, m := range msgs {
+		m.AckSync()
+	}
+	// Make sure replicated acks are processed.
+	time.Sleep(250 * time.Millisecond)
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	if si.State.Msgs != 0 {
+		t.Fatalf("Should not have any messages left: %d of %d", si.State.Msgs, n)
+	}
 }

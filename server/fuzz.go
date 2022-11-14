@@ -26,7 +26,7 @@ var defaultFuzzServerOptions = Options{
 }
 
 func dummyFuzzClient() *client {
-	return &client{srv: New(&defaultFuzzServerOptions), msubs: -1, mpay: -1, mcl: MAX_CONTROL_LINE_SIZE}
+	return &client{srv: New(&defaultFuzzServerOptions), msubs: -1, mpay: MAX_PAYLOAD_SIZE, mcl: MAX_CONTROL_LINE_SIZE}
 }
 
 func FuzzClient(data []byte) int {
