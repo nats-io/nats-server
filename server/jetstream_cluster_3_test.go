@@ -1373,3 +1373,42 @@ func TestJetStreamClusterInterestStreamConsumer(t *testing.T) {
 		t.Fatalf("Should not have any messages left: %d of %d", si.State.Msgs, n)
 	}
 }
+
+func TestJetStreamClusterNoPanicOnStreamInfoWhenNoLeaderYet(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc := natsConnect(t, c.randomServer().ClientURL())
+	defer nc.Close()
+
+	js, _ := nc.JetStream(nats.MaxWait(500 * time.Millisecond))
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	ch := make(chan struct{})
+	go func() {
+		defer wg.Done()
+
+		for {
+			js.StreamInfo("TEST")
+			select {
+			case <-ch:
+				return
+			case <-time.After(15 * time.Millisecond):
+			}
+		}
+	}()
+
+	time.Sleep(250 * time.Millisecond)
+
+	// Don't care if this succeeds or not (could get a context deadline
+	// due to the low MaxWait() when creating the context).
+	js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+
+	close(ch)
+	wg.Wait()
+}
