@@ -1780,7 +1780,10 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 			if cc.meta != nil {
 				ourID = cc.meta.ID()
 			}
-			bail := !rg.isMember(ourID)
+			// We have seen cases where rg or rg.node is nil at this point,
+			// so check explicitly on those conditions and bail if that is
+			// the case.
+			bail := rg == nil || rg.node == nil || !rg.isMember(ourID)
 			if !bail {
 				// We know we are a member here, if this group is new and we are preferred allow us to answer.
 				bail = rg.Preferred != ourID || time.Since(rg.node.Created()) > lostQuorumIntervalDefault
