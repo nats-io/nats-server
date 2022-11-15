@@ -225,6 +225,8 @@ type stream struct {
 	// For processing consumers as a list without main stream lock.
 	clsMu sync.RWMutex
 	cList []*consumer
+	sch   chan struct{}
+	sigq  *ipQueue // of *cMsg
 
 	// TODO(dlc) - Hide everything below behind two pointers.
 	// Clustered mode.
@@ -438,7 +440,12 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		msgs:      s.newIPQueue(qpfx + "messages"), // of *inMsg
 		qch:       make(chan struct{}),
 		uch:       make(chan struct{}, 4),
+		sch:       make(chan struct{}, 1),
 	}
+
+	// Start our signaling routine to process consumers.
+	mset.sigq = s.newIPQueue(qpfx + "obs") // of *cMsg
+	go mset.signalConsumersLoop()
 
 	// For no-ack consumers when we are interest retention.
 	if cfg.Retention != LimitsPolicy {
@@ -4039,21 +4046,100 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// Signal consumers for new messages.
 	if numConsumers > 0 {
-		mset.clsMu.RLock()
-		for _, o := range mset.cList {
-			o.mu.Lock()
-			if o.isLeader() && o.isFilteredMatch(subject) {
-				if seq > o.npcm {
-					o.npc++
-				}
-				o.signalNewMessages()
+		if numConsumers > consumerSignalThreshold {
+			mset.sigq.push(newCMsg(subject, seq))
+			select {
+			case mset.sch <- struct{}{}:
+			default:
 			}
-			o.mu.Unlock()
+		} else {
+			mset.signalConsumers(subject, seq)
 		}
-		mset.clsMu.RUnlock()
 	}
 
 	return nil
+}
+
+// Number of consumers to consider offloading signal processing.
+const consumerSignalThreshold = 10
+
+// Used to signal inbound message to registered consumers.
+type cMsg struct {
+	seq  uint64
+	subj string
+}
+
+// Pool to recycle consumer bound msgs.
+var cMsgPool sync.Pool
+
+// Used to queue up consumer bound msgs for signaling.
+func newCMsg(subj string, seq uint64) *cMsg {
+	var m *cMsg
+	cm := cMsgPool.Get()
+	if cm != nil {
+		m = cm.(*cMsg)
+	} else {
+		m = new(cMsg)
+	}
+	m.subj, m.seq = subj, seq
+
+	return m
+}
+
+func (m *cMsg) returnToPool() {
+	if m == nil {
+		return
+	}
+	m.subj, m.seq = _EMPTY_, 0
+	cMsgPool.Put(m)
+}
+
+// Go routine to signal consumers.
+// Offloaded from stream msg processing.
+func (mset *stream) signalConsumersLoop() {
+	mset.mu.RLock()
+	s, qch, sch, msgs := mset.srv, mset.qch, mset.sch, mset.sigq
+	mset.mu.RUnlock()
+
+	for {
+		select {
+		case <-s.quitCh:
+			return
+		case <-qch:
+			return
+		case <-sch:
+			cms := msgs.pop()
+			for _, cm := range cms {
+				m := cm.(*cMsg)
+				seq, subj := m.seq, m.subj
+				m.returnToPool()
+				// Signal all appropriate consumers.
+				mset.signalConsumers(subj, seq)
+			}
+			msgs.recycle(&cms)
+		}
+	}
+}
+
+// This will update and signal all consumers that match.
+func (mset *stream) signalConsumers(subj string, seq uint64) {
+	mset.clsMu.RLock()
+	defer mset.clsMu.RUnlock()
+
+	for _, o := range mset.cList {
+		o.mu.Lock()
+		if o.isLeader() && o.isFilteredMatch(subj) {
+			if seq > o.npcm {
+				o.npc++
+			}
+			if o.mset != nil {
+				if o.isPushMode() && o.active || o.isPullMode() && !o.waiting.isEmpty() {
+					o.signalNewMessages()
+				}
+			}
+		}
+		o.mu.Unlock()
+	}
 }
 
 // Internal message for use by jetstream subsystem.
@@ -4399,6 +4485,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		mset.msgs.unregister()
 		mset.ackq.unregister()
 		mset.outq.unregister()
+		mset.sigq.unregister()
 	}
 
 	// Snapshot store.
