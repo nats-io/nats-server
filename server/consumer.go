@@ -749,7 +749,9 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 
 	if o.store != nil && o.store.HasState() {
 		// Restore our saved state.
+		o.mu.Lock()
 		o.readStoredState(0)
+		o.mu.Unlock()
 	} else {
 		// Select starting sequence number
 		o.selectStartingSeqNo()
