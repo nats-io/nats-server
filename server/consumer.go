@@ -853,7 +853,7 @@ func (o *consumer) updateInactiveThreshold(cfg *ConsumerConfig) {
 	// Ephemerals will always have inactive thresholds.
 	if !o.isDurable() && cfg.InactiveThreshold <= 0 {
 		// Add in 1 sec of jitter above and beyond the default of 5s.
-		o.dthresh = cfg.InactiveThreshold + 100*time.Millisecond + time.Duration(rand.Int63n(900))*time.Millisecond
+		o.dthresh = JsDeleteWaitTimeDefault + 100*time.Millisecond + time.Duration(rand.Int63n(900))*time.Millisecond
 		// Only stamp config with default sans jitter.
 		cfg.InactiveThreshold = JsDeleteWaitTimeDefault
 	} else if cfg.InactiveThreshold > 0 {
