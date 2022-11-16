@@ -4675,7 +4675,8 @@ func (mset *stream) partitionUnique(partition string) bool {
 		if o.cfg.FilterSubject == _EMPTY_ {
 			return false
 		}
-		if subjectIsSubsetMatch(partition, o.cfg.FilterSubject) {
+		if subjectIsSubsetMatch(partition, o.cfg.FilterSubject) ||
+			subjectIsSubsetMatch(o.cfg.FilterSubject, partition) {
 			return false
 		}
 	}
