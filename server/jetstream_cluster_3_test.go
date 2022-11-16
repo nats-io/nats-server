@@ -1412,3 +1412,56 @@ func TestJetStreamClusterNoPanicOnStreamInfoWhenNoLeaderYet(t *testing.T) {
 	close(ch)
 	wg.Wait()
 }
+
+// Issue https://github.com/nats-io/nats-server/issues/3630
+func TestJetStreamClusterPullConsumerAcksExtendInactivityThreshold(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+
+	n := 10
+	for i := 0; i < n; i++ {
+		sendStreamMsg(t, nc, "foo", "msg")
+	}
+
+	// Pull Consumer
+	sub, err := js.PullSubscribe("foo", "d", nats.InactiveThreshold(time.Second))
+	require_NoError(t, err)
+
+	fetchMsgs(t, sub, n/2, time.Second)
+	// Will wait for .5s.
+	time.Sleep(500 * time.Millisecond)
+	msgs := fetchMsgs(t, sub, n/2, time.Second)
+	if len(msgs) != n/2 {
+		t.Fatalf("Did not receive msgs: %d vs %d", len(msgs), n/2)
+	}
+
+	// Wait for .5s.
+	time.Sleep(500 * time.Millisecond)
+	msgs[0].Ack() // Ack
+	// Wait another .5s.
+	time.Sleep(500 * time.Millisecond)
+	msgs[1].Nak() // Nak
+	// Wait another .5s.
+	time.Sleep(500 * time.Millisecond)
+	msgs[2].Term() // Term
+	time.Sleep(500 * time.Millisecond)
+	msgs[3].InProgress() // WIP
+
+	// The above should have kept the consumer alive.
+	_, err = js.ConsumerInfo("TEST", "d")
+	require_NoError(t, err)
+
+	// Make sure it gets cleaned up.
+	time.Sleep(2 * time.Second)
+	_, err = js.ConsumerInfo("TEST", "d")
+	require_Error(t, err, nats.ErrConsumerNotFound)
+}
