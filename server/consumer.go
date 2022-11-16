@@ -863,9 +863,9 @@ func (o *consumer) updateInactiveThreshold(cfg *ConsumerConfig) {
 		} else {
 			o.dthresh = cfg.InactiveThreshold
 		}
-	} else {
+	} else if cfg.InactiveThreshold <= 0 {
 		// We accept InactiveThreshold be set to 0 (for durables)
-		o.dthresh = cfg.InactiveThreshold
+		o.dthresh = 0
 	}
 }
 
@@ -1564,13 +1564,10 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 	// Set InactiveThreshold if changed.
 	if val := cfg.InactiveThreshold; val != o.cfg.InactiveThreshold {
 		o.updateInactiveThreshold(cfg)
-		// Clear and restart timer only if we are the leader.
-		if o.isLeader() {
-			stopAndClearTimer(&o.dtmr)
-			// Restart only if new value is > 0
-			if o.dthresh > 0 {
-				o.dtmr = time.AfterFunc(o.dthresh, func() { o.deleteNotActive() })
-			}
+		stopAndClearTimer(&o.dtmr)
+		// Restart timer only if we are the leader.
+		if o.isLeader() && o.dthresh > 0 {
+			o.dtmr = time.AfterFunc(o.dthresh, func() { o.deleteNotActive() })
 		}
 	}
 
