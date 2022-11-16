@@ -14634,7 +14634,8 @@ func TestJetStreamPullConsumerCrossAccountExpires(t *testing.T) {
 		return nil
 	})
 	// Now make sure the ephemeral goes away too.
-	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+	// Ephemerals have jitter by default of up to 1s.
+	checkFor(t, 6*time.Second, 10*time.Millisecond, func() error {
 		_, err := js.ConsumerInfo("PC", ci.Name)
 		if err == nil {
 			return fmt.Errorf("Consumer still present")

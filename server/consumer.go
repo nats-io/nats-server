@@ -853,12 +853,19 @@ func (o *consumer) updateInactiveThreshold(cfg *ConsumerConfig) {
 	// Ephemerals will always have inactive thresholds.
 	if !o.isDurable() && cfg.InactiveThreshold <= 0 {
 		// Add in 1 sec of jitter above and beyond the default of 5s.
-		o.dthresh = JsDeleteWaitTimeDefault + time.Duration(rand.Int63n(1000))*time.Millisecond
+		o.dthresh = JsDeleteWaitTimeDefault + 100*time.Millisecond + time.Duration(rand.Int63n(900))*time.Millisecond
 		// Only stamp config with default sans jitter.
 		cfg.InactiveThreshold = JsDeleteWaitTimeDefault
-	} else if cfg.InactiveThreshold >= 0 {
+	} else if cfg.InactiveThreshold > 0 {
+		// Add in up to 1 sec of jitter if pull mode.
+		if o.isPullMode() {
+			o.dthresh = cfg.InactiveThreshold + 100*time.Millisecond + time.Duration(rand.Int63n(900))*time.Millisecond
+		} else {
+			o.dthresh = cfg.InactiveThreshold
+		}
+	} else if cfg.InactiveThreshold <= 0 {
 		// We accept InactiveThreshold be set to 0 (for durables)
-		o.dthresh = cfg.InactiveThreshold
+		o.dthresh = 0
 	}
 }
 
@@ -1286,12 +1293,25 @@ func (o *consumer) deleteNotActive() {
 			return
 		}
 	} else {
-		// These need to keep firing so reset first.
-		if o.dtmr != nil {
-			o.dtmr.Reset(o.dthresh)
+		// Pull mode.
+		elapsed := time.Since(o.waiting.last)
+		if elapsed <= o.cfg.InactiveThreshold {
+			// These need to keep firing so reset but use delta.
+			if o.dtmr != nil {
+				o.dtmr.Reset(o.dthresh - elapsed)
+			} else {
+				o.dtmr = time.AfterFunc(o.dthresh-elapsed, func() { o.deleteNotActive() })
+			}
+			o.mu.Unlock()
+			return
 		}
-		// Check if we have had a request lately, or if we still have valid requests waiting.
-		if time.Since(o.waiting.last) <= o.dthresh || o.checkWaitingForInterest() {
+		// Check if we still have valid requests waiting.
+		if o.checkWaitingForInterest() {
+			if o.dtmr != nil {
+				o.dtmr.Reset(o.dthresh)
+			} else {
+				o.dtmr = time.AfterFunc(o.dthresh, func() { o.deleteNotActive() })
+			}
 			o.mu.Unlock()
 			return
 		}
@@ -1544,13 +1564,10 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 	// Set InactiveThreshold if changed.
 	if val := cfg.InactiveThreshold; val != o.cfg.InactiveThreshold {
 		o.updateInactiveThreshold(cfg)
-		// Clear and restart timer only if we are the leader.
-		if o.isLeader() {
-			stopAndClearTimer(&o.dtmr)
-			// Restart only if new value is > 0
-			if o.dthresh > 0 {
-				o.dtmr = time.AfterFunc(o.dthresh, func() { o.deleteNotActive() })
-			}
+		stopAndClearTimer(&o.dtmr)
+		// Restart timer only if we are the leader.
+		if o.isLeader() && o.dthresh > 0 {
+			o.dtmr = time.AfterFunc(o.dthresh, func() { o.deleteNotActive() })
 		}
 	}
 
@@ -3067,6 +3084,7 @@ func (o *consumer) processInboundAcks(qch chan struct{}) {
 	// Grab the server lock to watch for server quit.
 	o.mu.RLock()
 	s := o.srv
+	hasInactiveThresh := o.cfg.InactiveThreshold > 0
 	o.mu.RUnlock()
 
 	for {
@@ -3079,11 +3097,29 @@ func (o *consumer) processInboundAcks(qch chan struct{}) {
 				ack.returnToPool()
 			}
 			o.ackMsgs.recycle(&acks)
+			// If we have an inactiveThreshold set, mark our activity.
+			if hasInactiveThresh {
+				o.suppressDeletion()
+			}
 		case <-qch:
 			return
 		case <-s.quitCh:
 			return
 		}
+	}
+}
+
+// Suppress auto cleanup on ack activity of any kind.
+func (o *consumer) suppressDeletion() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	if o.isPushMode() && o.dtmr != nil {
+		// if dtmr is not nil we have started the countdown, simply reset to threshold.
+		o.dtmr.Reset(o.dthresh)
+	} else if o.isPullMode() {
+		// Pull mode always has timer running, just update last on waiting queue.
+		o.waiting.last = time.Now()
 	}
 }
 
@@ -3425,6 +3461,11 @@ func (o *consumer) deliverMsg(dsubj, ackReply string, pmsg *jsPubMsg, dc uint64,
 	// Flow control.
 	if o.maxpb > 0 && o.needFlowControl(psz) {
 		o.sendFlowControl()
+	}
+
+	// If pull mode and we have inactivity threshold, signaled by dthresh, update last activity.
+	if o.isPullMode() && o.dthresh > 0 {
+		o.waiting.last = time.Now()
 	}
 
 	// FIXME(dlc) - Capture errors?
