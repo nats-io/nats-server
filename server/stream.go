@@ -2231,7 +2231,14 @@ func (mset *stream) setupMirrorConsumer() error {
 	}
 
 	b, _ := json.Marshal(req)
-	subject := fmt.Sprintf(JSApiConsumerCreateT, mset.cfg.Mirror.Name)
+
+	var subject string
+	if req.Config.FilterSubject != _EMPTY_ {
+		req.Config.Name = fmt.Sprintf("mirror-%s", createConsumerName())
+		subject = fmt.Sprintf(JSApiConsumerCreateExT, mset.cfg.Mirror.Name, req.Config.Name, req.Config.FilterSubject)
+	} else {
+		subject = fmt.Sprintf(JSApiConsumerCreateT, mset.cfg.Mirror.Name)
+	}
 	if ext != nil {
 		subject = strings.Replace(subject, JSApiPrefix, ext.ApiPrefix, 1)
 		subject = strings.ReplaceAll(subject, "..", ".")
