@@ -3819,6 +3819,10 @@ func getHeader(key string, hdr []byte) []byte {
 	if index < 0 {
 		return nil
 	}
+	// Make sure this key does not have additional prefix.
+	if index < 2 || hdr[index-1] != '\n' || hdr[index-2] != '\r' {
+		return nil
+	}
 	index += len(key)
 	if index >= len(hdr) {
 		return nil
