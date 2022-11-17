@@ -2637,6 +2637,7 @@ type HealthzOptions struct {
 
 type StreamDetail struct {
 	Name     string              `json:"name"`
+	Created  time.Time           `json:"created"`
 	Cluster  *ClusterInfo        `json:"cluster,omitempty"`
 	Config   *StreamConfig       `json:"config,omitempty"`
 	State    StreamState         `json:"state,omitempty"`
@@ -2725,6 +2726,7 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg 
 			}
 			sdet := StreamDetail{
 				Name:    stream.name(),
+				Created: stream.createdTime(),
 				State:   stream.state(),
 				Cluster: ci,
 				Config:  cfg,
