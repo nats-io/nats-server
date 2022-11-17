@@ -2358,13 +2358,13 @@ func TestJetStreamWorkQueueRetentionStream(t *testing.T) {
 		{name: "MemoryStore", mconfig: &StreamConfig{
 			Name:      "MWQ",
 			Storage:   MemoryStorage,
-			Subjects:  []string{"MY_WORK_QUEUE.*"},
+			Subjects:  []string{"MY_WORK_QUEUE.>"},
 			Retention: WorkQueuePolicy},
 		},
 		{name: "FileStore", mconfig: &StreamConfig{
 			Name:      "MWQ",
 			Storage:   FileStorage,
-			Subjects:  []string{"MY_WORK_QUEUE.*"},
+			Subjects:  []string{"MY_WORK_QUEUE.>"},
 			Retention: WorkQueuePolicy},
 		},
 	}
@@ -2430,7 +2430,7 @@ func TestJetStreamWorkQueueRetentionStream(t *testing.T) {
 			if _, err := mset.addConsumer(pConfig("MY_WORK_QUEUE.A")); err == nil {
 				t.Fatalf("Expected an error on attempt for partitioned consumer for a workqueue")
 			}
-			if _, err := mset.addConsumer(pConfig("MY_WORK_QUEUE.A")); err == nil {
+			if _, err := mset.addConsumer(pConfig("MY_WORK_QUEUE.B")); err == nil {
 				t.Fatalf("Expected an error on attempt for partitioned consumer for a workqueue")
 			}
 
@@ -2442,6 +2442,22 @@ func TestJetStreamWorkQueueRetentionStream(t *testing.T) {
 			o.delete()
 			o2.delete()
 			o3.delete()
+
+			// Test with wildcards, first from wider to narrower
+			o, err = mset.addConsumer(pConfig("MY_WORK_QUEUE.>"))
+			require_NoError(t, err)
+			if _, err := mset.addConsumer(pConfig("MY_WORK_QUEUE.*.BAR")); err == nil {
+				t.Fatalf("Expected an error on attempt for partitioned consumer for a workqueue")
+			}
+			o.delete()
+
+			// Now from narrower to wider
+			o, err = mset.addConsumer(pConfig("MY_WORK_QUEUE.*.BAR"))
+			require_NoError(t, err)
+			if _, err := mset.addConsumer(pConfig("MY_WORK_QUEUE.>")); err == nil {
+				t.Fatalf("Expected an error on attempt for partitioned consumer for a workqueue")
+			}
+			o.delete()
 
 			// Push based will be allowed now, including ephemerals.
 			// They can not overlap etc meaning same rules as above apply.
