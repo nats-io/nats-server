@@ -19771,3 +19771,59 @@ func TestJetStreamDanglingMessageAutoCleanup(t *testing.T) {
 		t.Fatalf("Expected auto-cleanup to have worked but got %d msgs vs 10", si.State.Msgs)
 	}
 }
+
+// Issue https://github.com/nats-io/nats-server/issues/3645
+func TestJetStreamMsgIDHeaderCollision(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"ORDERS.*"},
+	})
+	require_NoError(t, err)
+
+	m := nats.NewMsg("ORDERS.test")
+	m.Header.Add(JSMsgId, "1")
+	m.Data = []byte("ok")
+
+	_, err = js.PublishMsg(m)
+	require_NoError(t, err)
+
+	m.Header = make(nats.Header)
+	m.Header.Add("Orig-Nats-Msg-Id", "1")
+
+	_, err = js.PublishMsg(m)
+	require_NoError(t, err)
+
+	m.Header = make(nats.Header)
+	m.Header.Add("Original-Nats-Msg-Id", "1")
+
+	_, err = js.PublishMsg(m)
+	require_NoError(t, err)
+
+	m.Header = make(nats.Header)
+	m.Header.Add("Original-Nats-Msg-Id", "1")
+	m.Header.Add("Really-Original-Nats-Msg-Id", "1")
+
+	_, err = js.PublishMsg(m)
+	require_NoError(t, err)
+
+	m.Header = make(nats.Header)
+	m.Header.Add("X", "Nats-Msg-Id:1")
+
+	_, err = js.PublishMsg(m)
+	require_NoError(t, err)
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	require_True(t, si.State.Msgs == 5)
+}
