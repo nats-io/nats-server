@@ -650,9 +650,25 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 				mset.mu.Unlock()
 				return nil, NewJSConsumerWQMultipleUnfilteredError()
 			} else if !mset.partitionUnique(config.FilterSubject) {
-				// We have a partition but it is not unique amongst the others.
-				mset.mu.Unlock()
-				return nil, NewJSConsumerWQConsumerNotUniqueError()
+				// Prior to v2.9.7, on a stream with WorkQueue policy, the servers
+				// were not catching the error of having multiple consumers with
+				// overlapping filter subjects depending on the scope, for instance
+				// creating "foo.*.bar" and then "foo.>" was not detected, while
+				// "foo.>" and then "foo.*.bar" would have been. Failing here
+				// in recovery mode would leave the rejected consumer in a bad state,
+				// so we will simply warn here, asking the user to remove this
+				// consumer administratively. Otherwise, if this is the creation
+				// of a new consumer, we will return the error.
+				if isRecovering {
+					s.Warnf("Consumer %q > %q has a filter subject that overlaps "+
+						"with other consumers, which is not allowed for a stream "+
+						"with WorkQueue policy, it should be administratively deleted",
+						cfg.Name, cName)
+				} else {
+					// We have a partition but it is not unique amongst the others.
+					mset.mu.Unlock()
+					return nil, NewJSConsumerWQConsumerNotUniqueError()
+				}
 			}
 		}
 		if config.DeliverPolicy != DeliverAll {
