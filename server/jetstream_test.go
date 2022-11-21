@@ -19827,3 +19827,37 @@ func TestJetStreamMsgIDHeaderCollision(t *testing.T) {
 
 	require_True(t, si.State.Msgs == 5)
 }
+
+// https://github.com/nats-io/nats-server/issues/3657
+func TestJetStreamServerCrashOnPullConsumerDeleteWithInactiveThresholdAfterAck(t *testing.T) {
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	sendStreamMsg(t, nc, "foo", "msg")
+
+	sub, err := js.PullSubscribe("foo", "dlc", nats.InactiveThreshold(10*time.Second))
+	require_NoError(t, err)
+
+	msgs := fetchMsgs(t, sub, 1, time.Second)
+	require_True(t, len(msgs) == 1)
+	msgs[0].Ack()
+	err = js.DeleteConsumer("TEST", "dlc")
+	require_NoError(t, err)
+
+	// If server crashes this will fail.
+	_, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+}
