@@ -3130,10 +3130,14 @@ func (o *consumer) suppressDeletion() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
+	if o.closed {
+		return
+	}
+
 	if o.isPushMode() && o.dtmr != nil {
 		// if dtmr is not nil we have started the countdown, simply reset to threshold.
 		o.dtmr.Reset(o.dthresh)
-	} else if o.isPullMode() {
+	} else if o.isPullMode() && o.waiting != nil {
 		// Pull mode always has timer running, just update last on waiting queue.
 		o.waiting.last = time.Now()
 	}
