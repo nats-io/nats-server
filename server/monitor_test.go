@@ -2250,15 +2250,15 @@ func TestServerIDs(t *testing.T) {
 
 	for mode := 0; mode < 2; mode++ {
 		v := pollVarz(t, s, mode, murl+"varz", nil)
-		if v.ID == "" {
+		if v.ID == _EMPTY_ {
 			t.Fatal("Varz ID is empty")
 		}
 		c := pollConz(t, s, mode, murl+"connz", nil)
-		if c.ID == "" {
+		if c.ID == _EMPTY_ {
 			t.Fatal("Connz ID is empty")
 		}
 		r := pollRoutez(t, s, mode, murl+"routez", nil)
-		if r.ID == "" {
+		if r.ID == _EMPTY_ {
 			t.Fatal("Routez ID is empty")
 		}
 		if v.ID != c.ID || v.ID != r.ID {
@@ -3933,7 +3933,7 @@ func TestMonitorAccountz(t *testing.T) {
 	body = string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d%s?acc=$SYS", s.MonitorAddr().Port, AccountzPath)))
 	require_Contains(t, body, `"account_detail": {`)
 	require_Contains(t, body, `"account_name": "$SYS",`)
-	require_Contains(t, body, `"subscriptions": 40,`)
+	require_Contains(t, body, `"subscriptions": 42,`)
 	require_Contains(t, body, `"is_system": true,`)
 	require_Contains(t, body, `"system_account": "$SYS"`)
 
@@ -4568,4 +4568,31 @@ func TestMonitorWebsocket(t *testing.T) {
 			t.Fatalf("Expected\n%+v\nGot:\n%+v", expected, vw)
 		}
 	}
+}
+
+func TestServerIDZRequest(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		server_name: TEST22
+		# For access to system account.
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+	`))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+
+	subject := fmt.Sprintf(serverPingReqSubj, "IDZ")
+	resp, err := nc.Request(subject, nil, time.Second)
+	require_NoError(t, err)
+
+	var sid ServerID
+	err = json.Unmarshal(resp.Data, &sid)
+	require_NoError(t, err)
+
+	require_True(t, sid.Name == "TEST22")
+	require_True(t, strings.HasPrefix(sid.ID, "N"))
 }
