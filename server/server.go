@@ -2524,6 +2524,12 @@ func (s *Server) createClient(conn net.Conn) *client {
 	c.nonce = []byte(info.Nonce)
 	authRequired = info.AuthRequired
 
+	// Check to see if we have auth_required set but we also have a no_auth_user.
+	// If so set back to false.
+	if info.AuthRequired && opts.NoAuthUser != _EMPTY_ {
+		info.AuthRequired = false
+	}
+
 	s.totalClients++
 	s.mu.Unlock()
 

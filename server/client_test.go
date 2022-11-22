@@ -1,4 +1,4 @@
-// Copyright 2012-2020 The NATS Authors
+// Copyright 2012-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -2582,4 +2582,26 @@ func TestClientDenySysGroupSub(t *testing.T) {
 	err = nc.LastError()
 	require_Error(t, err)
 	require_Contains(t, err.Error(), "Permissions Violation")
+}
+
+func TestClientAuthRequiredNoAuthUser(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		accounts: {
+			A: { users: [ { user: user, password: pass } ] }
+		}
+		no_auth_user: user
+	`))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(s.ClientURL())
+	require_NoError(t, err)
+	defer nc.Close()
+
+	if nc.AuthRequired() {
+		t.Fatalf("Expected AuthRequired to be false due to 'no_auth_user'")
+	}
 }
