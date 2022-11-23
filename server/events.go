@@ -163,6 +163,13 @@ type accNumConnsReq struct {
 	Account string     `json:"acc"`
 }
 
+// ServerID is basic static info for a server.
+type ServerID struct {
+	Name string `json:"name"`
+	Host string `json:"host"`
+	ID   string `json:"id"`
+}
+
 // ServerInfo identifies remote servers.
 type ServerInfo struct {
 	Name      string    `json:"name"`
@@ -881,6 +888,7 @@ func (s *Server) initEventTracking() {
 		s.Errorf("Error setting up internal tracking: %v", err)
 	}
 	monSrvc := map[string]msgHandler{
+		"IDZ":    s.idzReq,
 		"STATSZ": s.statszReq,
 		"VARZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 			optz := &VarzEventOptions{}
@@ -1572,6 +1580,19 @@ func (s *Server) statszReq(sub *subscription, c *client, _ *Account, subject, re
 	s.mu.Lock()
 	s.sendStatsz(reply)
 	s.mu.Unlock()
+}
+
+// idzReq is for a request for basic static server info.
+// Try to not hold the write lock or dynamically create data.
+func (s *Server) idzReq(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	id := &ServerID{
+		Name: s.info.Name,
+		Host: s.info.Host,
+		ID:   s.info.ID,
+	}
+	s.sendInternalMsg(reply, _EMPTY_, nil, &id)
 }
 
 var errSkipZreq = errors.New("filtered response")
