@@ -455,7 +455,7 @@ func NewServer(opts *Options) (*Server, error) {
 	s.setLeafNodeNonExportedOptions()
 
 	// Setup OCSP Stapling. This will abort server from starting if there
-	// are no valid staples and OCSP policy is to Always or MustStaple.
+	// are no valid staples and OCSP policy is set to Always or MustStaple.
 	if err := s.enableOCSP(); err != nil {
 		return nil, err
 	}
@@ -517,7 +517,7 @@ func NewServer(opts *Options) (*Server, error) {
 	// If there is an URL account resolver, do basic test to see if anyone is home.
 	if ar := opts.AccountResolver; ar != nil {
 		if ur, ok := ar.(*URLAccResolver); ok {
-			if _, err := ur.Fetch(""); err != nil {
+			if _, err := ur.Fetch(_EMPTY_); err != nil {
 				return nil, err
 			}
 		}
@@ -852,7 +852,8 @@ func (s *Server) configureAccounts() error {
 		// If we have defined a system account here check to see if its just us and the $G account.
 		// We would do this to add user/pass to the system account. If this is the case add in
 		// no-auth-user for $G.
-		if numAccounts == 2 && s.opts.NoAuthUser == _EMPTY_ {
+		// Only do this if non-operator mode.
+		if len(opts.TrustedOperators) == 0 && numAccounts == 2 && s.opts.NoAuthUser == _EMPTY_ {
 			// If we come here from config reload, let's not recreate the fake user name otherwise
 			// it will cause currently clients to be disconnected.
 			uname := s.sysAccOnlyNoAuthUser
@@ -1001,7 +1002,7 @@ func (s *Server) isTrustedIssuer(issuer string) bool {
 // options-based trusted nkeys. Returns success.
 func (s *Server) processTrustedKeys() bool {
 	s.strictSigningKeyUsage = map[string]struct{}{}
-	if trustedKeys != "" && !s.initStampedTrustedKeys() {
+	if trustedKeys != _EMPTY_ && !s.initStampedTrustedKeys() {
 		return false
 	} else if s.opts.TrustedKeys != nil {
 		for _, key := range s.opts.TrustedKeys {
@@ -2526,7 +2527,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 	// Check to see if we have auth_required set but we also have a no_auth_user.
 	// If so set back to false.
-	if info.AuthRequired && opts.NoAuthUser != _EMPTY_ {
+	if info.AuthRequired && opts.NoAuthUser != _EMPTY_ && opts.NoAuthUser != s.sysAccOnlyNoAuthUser {
 		info.AuthRequired = false
 	}
 
