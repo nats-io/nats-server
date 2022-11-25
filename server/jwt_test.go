@@ -3512,6 +3512,7 @@ func TestJWTAccountNATSResolverFetch(t *testing.T) {
 		system_account: %s
 		resolver: {
 			type: full
+
 			dir: '%s'
 			interval: "200ms"
 			limit: 4
@@ -6646,4 +6647,55 @@ func TestAccountWeightedMappingInSuperCluster(t *testing.T) {
 	if v2 < 350 || v2 > 450 {
 		t.Fatalf("Expected v2 to receive 40%%, got %v/1000", v2)
 	}
+}
+
+func TestServerOperatorModeNoAuthRequired(t *testing.T) {
+	_, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	akp, apub := createKey(t)
+	accClaim := jwt.NewAccountClaims(apub)
+	accClaim.Name = "TEST"
+	accJwt, err := accClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	ukp, _ := nkeys.CreateUser()
+	seed, _ := ukp.Seed()
+	upub, _ := ukp.PublicKey()
+	nuc := jwt.NewUserClaims(upub)
+	ujwt, err := nuc.Encode(akp)
+	require_NoError(t, err)
+	creds := genCredsFile(t, ujwt, seed)
+
+	dirSrv := createDir(t, "srv")
+	defer removeDir(t, dirSrv)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		server_name: srv-A
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: full
+			dir: '%s'
+			interval: "200ms"
+			limit: 4
+		}
+		resolver_preload: {
+			%s: %s
+			%s: %s
+		}
+    `, ojwt, spub, dirSrv, spub, sysJwt, apub, accJwt)))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL(), nats.UserCredentials(creds))
+	defer nc.Close()
+
+	require_True(t, nc.AuthRequired())
 }
