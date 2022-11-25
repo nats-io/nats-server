@@ -1362,7 +1362,7 @@ func (o *consumer) deleteNotActive() {
 					js.mu.RUnlock()
 					if ca != nil {
 						if fs {
-							s.Warnf("Consumer assignment not cleaned up, retrying")
+							s.Warnf("Consumer assignment not cleaned up for account: '%s', stream: '%s', consumer: '%s', retrying", acc, stream, name)
 							meta.ForwardProposal(removeEntry)
 						}
 						fs = true
