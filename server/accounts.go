@@ -1567,9 +1567,14 @@ func (a *Account) checkStreamImportsForCycles(to string, visited map[string]bool
 // SetServiceImportSharing will allow sharing of information about requests with the export account.
 // Used for service latency tracking at the moment.
 func (a *Account) SetServiceImportSharing(destination *Account, to string, allow bool) error {
+	return a.setServiceImportSharing(destination, to, true, allow)
+}
+
+// setServiceImportSharing will allow sharing of information about requests with the export account.
+func (a *Account) setServiceImportSharing(destination *Account, to string, check, allow bool) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.isClaimAccount() {
+	if check && a.isClaimAccount() {
 		return fmt.Errorf("claim based accounts can not be updated directly")
 	}
 	for _, si := range a.imports.services {
