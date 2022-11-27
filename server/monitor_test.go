@@ -3914,8 +3914,8 @@ func TestMonitorLeafz(t *testing.T) {
 				t.Fatalf("RTT not tracked?")
 			}
 			// LDS should be only one.
-			if ln.NumSubs != 4 || len(ln.Subs) != 4 {
-				t.Fatalf("Expected 3 subs, got %v (%v)", ln.NumSubs, ln.Subs)
+			if ln.NumSubs != 5 || len(ln.Subs) != 5 {
+				t.Fatalf("Expected 5 subs, got %v (%v)", ln.NumSubs, ln.Subs)
 			}
 		}
 	}
@@ -3933,7 +3933,7 @@ func TestMonitorAccountz(t *testing.T) {
 	body = string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d%s?acc=$SYS", s.MonitorAddr().Port, AccountzPath)))
 	require_Contains(t, body, `"account_detail": {`)
 	require_Contains(t, body, `"account_name": "$SYS",`)
-	require_Contains(t, body, `"subscriptions": 42,`)
+	require_Contains(t, body, `"subscriptions": 44,`)
 	require_Contains(t, body, `"is_system": true,`)
 	require_Contains(t, body, `"system_account": "$SYS"`)
 
