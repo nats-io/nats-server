@@ -250,6 +250,7 @@ type client struct {
 	darray     []string
 	pcd        map[*client]struct{}
 	atmr       *time.Timer
+	expires    time.Time
 	ping       pinfo
 	msgb       [msgScratchSize]byte
 	last       time.Time
@@ -4711,7 +4712,21 @@ func (c *client) awaitingAuth() bool {
 func (c *client) setExpirationTimer(d time.Duration) {
 	c.mu.Lock()
 	c.atmr = time.AfterFunc(d, c.authExpired)
+	// This is an JWT expiration.
+	if c.flags.isSet(connectReceived) {
+		c.expires = time.Now().Add(d).Truncate(time.Second)
+	}
 	c.mu.Unlock()
+}
+
+// Return when this client expires via a claim, or 0 if not set.
+func (c *client) claimExpiration() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.expires.IsZero() {
+		return 0
+	}
+	return time.Until(c.expires).Truncate(time.Second)
 }
 
 // Possibly flush the connection and then close the low level connection.

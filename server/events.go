@@ -1079,9 +1079,10 @@ func (s *Server) initEventTracking() {
 // For account information they will need to ping that separately, and this allows security
 // controls on each subsystem if desired, e.g. account info, jetstream account info, etc.
 type UserInfo struct {
-	UserID      string       `json:"user"`
-	Account     string       `json:"account"`
-	Permissions *Permissions `json:"permissions,omitempty"`
+	UserID      string        `json:"user"`
+	Account     string        `json:"account"`
+	Permissions *Permissions  `json:"permissions,omitempty"`
+	Expires     time.Duration `json:"expires,omitempty"`
 }
 
 // Process a user info request.
@@ -1103,6 +1104,7 @@ func (s *Server) userInfoReq(sub *subscription, c *client, _ *Account, subject, 
 		UserID:      ci.User,
 		Account:     ci.Account,
 		Permissions: c.publicPermissions(),
+		Expires:     c.claimExpiration(),
 	}
 	s.sendInternalResponse(reply, response)
 }
